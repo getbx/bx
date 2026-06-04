@@ -38,8 +38,12 @@ func (p *Pool) Alloc(domain string) netip.Addr {
 	ip := p.next
 	p.next = ip.Next()
 	if !p.prefix.Contains(p.next) {
-		// 用尽则回绕(覆盖最早的映射);MVP 简单处理
+		// 用尽则回绕(覆盖最早的映射)
 		p.next = p.prefix.Addr().Next()
+	}
+	// 该 IP 若已属于旧域名,先清除旧域名的正向映射,避免两域名共享同一 IP。
+	if old, ok := p.ip2d[ip]; ok {
+		delete(p.d2ip, old)
 	}
 	p.d2ip[domain] = ip
 	p.ip2d[ip] = domain
