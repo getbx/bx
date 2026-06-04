@@ -100,3 +100,27 @@ func TestDialKillswitchBlocksWhenDown(t *testing.T) {
 		t.Fatalf("隧道挂+kill-switch 应阻断, got %v", err)
 	}
 }
+
+// 安全不变量:kill-switch 只阻断「代理」决策,直连域名在隧道挂时仍正常,
+// 保证隧道故障期间国内服务不中断。
+func TestDialKillswitchDirectDomainUnaffectedWhenDown(t *testing.T) {
+	res := fakeResolver{ip: netip.MustParseAddr("1.2.3.4")}
+	d, _, dr := newTestDialer(nil, res, false, true) // healthy=false, killswitch=true
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "x.baidu.com", Port: 80}); err != nil {
+		t.Fatalf("隧道挂时直连域名不应被阻断: %v", err)
+	}
+	if dr.lastAddr != "1.2.3.4:80" {
+		t.Fatalf("应直连解析后的真实 IP, got %q", dr.lastAddr)
+	}
+}
+
+// 安全不变量:裸中国 IP 在隧道挂+kill-switch 时仍直连。
+func TestDialKillswitchRawChinaIPDirectWhenDown(t *testing.T) {
+	d, _, dr := newTestDialer(nil, fakeResolver{}, false, true)
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("1.2.3.4"), Port: 22}); err != nil {
+		t.Fatalf("隧道挂时裸中国 IP 不应被阻断: %v", err)
+	}
+	if dr.lastAddr != "1.2.3.4:22" {
+		t.Fatalf("应直连, got %q", dr.lastAddr)
+	}
+}
