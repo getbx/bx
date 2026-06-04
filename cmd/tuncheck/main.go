@@ -29,8 +29,12 @@ import (
 type fixedDialer struct{ upstream string }
 
 func (d fixedDialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
-	log.Printf("捕获连接: dst=%s:%d udp=%v → 转发到 %s", m.IP, m.Port, m.UDP, d.upstream)
-	return (&net.Dialer{}).DialContext(ctx, "tcp", d.upstream)
+	netw := "tcp"
+	if m.UDP {
+		netw = "udp"
+	}
+	log.Printf("捕获连接: dst=%s:%d udp=%v → %s %s", m.IP, m.Port, m.UDP, netw, d.upstream)
+	return (&net.Dialer{}).DialContext(ctx, netw, d.upstream)
 }
 
 func main() {

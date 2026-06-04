@@ -106,6 +106,42 @@ func TestEngine_TCP_DialerReceivesDestination(t *testing.T) {
 	}
 }
 
+func TestEngine_UDP_DialerReceivesDestination(t *testing.T) {
+	const mtu = 1500
+	engineLink, clientLink := pipe.New("", "", mtu)
+
+	dialer := newCaptureDialer()
+	eng, err := New(engineLink, dialer, mtu)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer eng.Close()
+
+	client := newClientStack(t, clientLink, tcpip.AddrFrom4([4]byte{10, 0, 0, 2}))
+
+	raddr := tcpip.FullAddress{Addr: tcpip.AddrFrom4([4]byte{1, 2, 3, 4}), Port: 53}
+	conn, err := gonet.DialUDP(client, nil, &raddr, ipv4.ProtocolNumber)
+	if err != nil {
+		t.Fatalf("DialUDP: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("q")); err != nil {
+		t.Fatalf("udp write: %v", err)
+	}
+
+	select {
+	case <-dialer.peers:
+	case <-time.After(2 * time.Second):
+		t.Fatal("引擎未在超时内捕获 UDP 连接")
+	}
+
+	got := dialer.lastMeta(t)
+	want := route.Meta{IP: netip.AddrFrom4([4]byte{1, 2, 3, 4}), Port: 53, UDP: true}
+	if got != want {
+		t.Fatalf("Meta = %+v, want %+v", got, want)
+	}
+}
+
 func TestEngine_TCP_SplicesBytesBothWays(t *testing.T) {
 	const mtu = 1500
 	engineLink, clientLink := pipe.New("", "", mtu)
