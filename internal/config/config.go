@@ -22,12 +22,13 @@ type Lists struct {
 }
 
 type Config struct {
-	Server     string `yaml:"server"`
-	Password   string `yaml:"password"`
-	Killswitch bool   `yaml:"killswitch"`
-	DNS        DNS    `yaml:"dns"`
-	Rules      []Rule `yaml:"rules"`
-	Lists      Lists  `yaml:"lists"`
+	Server     string   `yaml:"server"`
+	Password   string   `yaml:"password"`
+	Killswitch bool     `yaml:"killswitch"`
+	DNS        DNS      `yaml:"dns"`
+	Rules      []Rule   `yaml:"rules"`
+	Lists      Lists    `yaml:"lists"`
+	Bypass     []string `yaml:"bypass"` // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
 }
 
 // Parse 解析并校验配置字节。
