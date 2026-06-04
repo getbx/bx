@@ -45,6 +45,7 @@ func upFlags() []cli.Flag {
 		&cli.StringFlag{Name: "china-cidr", Value: filepath.Join(home, ".brook/china_cidr4.txt")},
 		&cli.StringFlag{Name: "probe", Value: "1.1.1.1:443", Usage: "隧道健康检查目标"},
 		&cli.DurationFlag{Name: "test-timeout", Usage: "死手定时器:到点自动还原(远程实测保命)"},
+		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "全局模式:除内网(bypass)/用户 direct 规则外,一切(含中国)走代理"},
 	}
 }
 
@@ -66,6 +67,7 @@ func optsFromFlags(c *cli.Context) supervisor.Options {
 		ChinaCIDRPath:   c.String("china-cidr"),
 		Probe:           c.String("probe"),
 		Deadman:         c.Duration("test-timeout"),
+		Global:          c.Bool("global"),
 	}
 }
 

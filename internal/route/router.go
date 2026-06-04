@@ -10,6 +10,7 @@ type Router struct {
 	UserProxyIP  *CIDRSet   // 用户强制代理网段(可选)
 	ChinaDomain  *DomainSet // 国内域名列表
 	ChinaCIDR    *CIDRSet   // 国内 IP 段(geoip-cn)
+	GlobalProxy  bool       // 全局模式:跳过 china 判定,除用户 direct 规则外一律走代理
 }
 
 // Decide 按优先级判定。返回 NeedResolve 表示有域名但未命中,
@@ -21,7 +22,7 @@ func (r *Router) Decide(m Meta) Decision {
 			return Direct
 		case r.UserProxy != nil && r.UserProxy.Match(m.Domain):
 			return Proxy
-		case r.ChinaDomain != nil && r.ChinaDomain.Match(m.Domain):
+		case !r.GlobalProxy && r.ChinaDomain != nil && r.ChinaDomain.Match(m.Domain):
 			return Direct
 		default:
 			// 未命中任何列表:默认走代理。
@@ -44,7 +45,7 @@ func (r *Router) DecideIP(ip netip.Addr) Decision {
 	if r.UserProxyIP != nil && r.UserProxyIP.Contains(ip) {
 		return Proxy
 	}
-	if r.ChinaCIDR != nil && r.ChinaCIDR.Contains(ip) {
+	if !r.GlobalProxy && r.ChinaCIDR != nil && r.ChinaCIDR.Contains(ip) {
 		return Direct
 	}
 	return Proxy
