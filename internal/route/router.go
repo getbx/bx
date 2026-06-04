@@ -24,7 +24,10 @@ func (r *Router) Decide(m Meta) Decision {
 		case r.ChinaDomain != nil && r.ChinaDomain.Match(m.Domain):
 			return Direct
 		default:
-			return NeedResolve
+			// 未命中任何列表:默认走代理。
+			// 不再用(可能被污染的)国内 DNS 做 geoip,避免境外域名被误判
+			// 直连而泄漏真实 IP。裸 IP 连接仍走 DecideIP 的 geoip。
+			return Proxy
 		}
 	}
 	if m.IP.IsValid() {
