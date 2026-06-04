@@ -64,8 +64,11 @@ func New(link stack.LinkEndpoint, d Dialer, mtu uint32) (*Engine, error) {
 		{Destination: header.IPv6EmptySubnet, NIC: nicID},
 	})
 
-	fwd := tcp.NewForwarder(s, 0, tcpMaxInFlight, e.handleTCP)
-	s.SetTransportProtocolHandler(tcp.ProtocolNumber, fwd.HandlePacket)
+	tfwd := tcp.NewForwarder(s, 0, tcpMaxInFlight, e.handleTCP)
+	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tfwd.HandlePacket)
+
+	ufwd := udp.NewForwarder(s, e.handleUDP)
+	s.SetTransportProtocolHandler(udp.ProtocolNumber, ufwd.HandlePacket)
 
 	return e, nil
 }
@@ -88,6 +91,19 @@ func (e *Engine) handleTCP(r *tcp.ForwarderRequest) {
 	r.Complete(false)
 	conn := gonet.NewTCPConn(&wq, ep)
 	go e.handleConn(conn, metaFromID(id, false))
+}
+
+// handleUDP 接受一条被转发的 UDP 流(按 5 元组),交给 handleConn。
+func (e *Engine) handleUDP(r *udp.ForwarderRequest) bool {
+	id := r.ID()
+	var wq waiter.Queue
+	ep, terr := r.CreateEndpoint(&wq)
+	if terr != nil {
+		return true // 已处理(丢弃)
+	}
+	conn := gonet.NewUDPConn(&wq, ep)
+	go e.handleConn(conn, metaFromID(id, true))
+	return true
 }
 
 // handleConn 把一条已终结的连接问 Dialer 拿到出口,再双向 splice。
