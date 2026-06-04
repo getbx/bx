@@ -18,6 +18,28 @@ func newTestRouter() *Router {
 	}
 }
 
+func TestDecideGlobalProxy(t *testing.T) {
+	r := newTestRouter()
+	r.GlobalProxy = true
+	tests := []struct {
+		name string
+		meta Meta
+		want Decision
+	}{
+		// global 模式:china 列表/geoip 不再触发直连,一律走代理
+		{"china 域名→代理", Meta{Domain: "x.baidu.com"}, Proxy},
+		{"china 裸 IP→代理", Meta{IP: netip.MustParseAddr("1.2.3.4")}, Proxy},
+		// 但用户显式 direct 规则仍生效(可保留例外)
+		{"用户直连域名仍直连", Meta{Domain: "a.internal.com"}, Direct},
+		{"用户直连网段仍直连", Meta{IP: netip.MustParseAddr("10.5.5.5")}, Direct},
+	}
+	for _, tc := range tests {
+		if got := r.Decide(tc.meta); got != tc.want {
+			t.Errorf("%s: Decide=%v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestDecide(t *testing.T) {
 	r := newTestRouter()
 	tests := []struct {

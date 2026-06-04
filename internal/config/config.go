@@ -29,6 +29,7 @@ type Config struct {
 	Rules      []Rule   `yaml:"rules"`
 	Lists      Lists    `yaml:"lists"`
 	Bypass     []string `yaml:"bypass"` // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
+	Global     bool     `yaml:"global"` // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
 }
 
 // Parse 解析并校验配置字节。

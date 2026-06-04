@@ -44,6 +44,7 @@ type Options struct {
 	ChinaCIDRPath   string
 	Probe           string        // 隧道健康检查目标,如 1.1.1.1:443
 	Deadman         time.Duration // >0:到点自动还原(远程实测保命)
+	Global          bool          // 全局模式:除 bypass/用户 direct 规则外一切走代理
 }
 
 // Run 启动全局透明代理:建隧道→建 TUN→接线引擎→劫持默认路由,
@@ -56,7 +57,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("构建分流脑: %w", err)
 	}
-	log.Printf("分流脑就绪: china_domain=%d china_cidr=%d", len(chinaDomain), len(chinaCIDR))
+	router.GlobalProxy = cfg.Global || opts.Global
+	mode := "分流(中国直连/其余代理)"
+	if router.GlobalProxy {
+		mode = "全局(除内网/用户 direct 外一切走代理)"
+	}
+	log.Printf("分流脑就绪: 模式=%s china_domain=%d china_cidr=%d", mode, len(chinaDomain), len(chinaCIDR))
 
 	// 2) brook 隧道
 	tun0, err := tunnel.NewBrook(opts.BrookBin, cfg.Server, opts.Probe)
