@@ -39,10 +39,11 @@ func TestDecide(t *testing.T) {
 	}
 }
 
-func TestDecideNeedResolve(t *testing.T) {
+func TestDecideUnmatchedDomainProxy(t *testing.T) {
+	// 未命中任何列表的域名默认走代理(避免被污染/CDN 误判直连泄漏真实 IP)。
 	r := newTestRouter()
-	if got := r.Decide(Meta{Domain: "unknown-foreign.com"}); got != NeedResolve {
-		t.Fatalf("want NeedResolve got %v", got)
+	if got := r.Decide(Meta{Domain: "unknown-foreign.com"}); got != Proxy {
+		t.Fatalf("未命中域名应默认 Proxy,got %v", got)
 	}
 }
 
