@@ -1,11 +1,18 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/urfave/cli/v2"
 )
@@ -16,16 +23,12 @@ func New() *cli.App {
 		Name:  "bx",
 		Usage: "基于 brook 的透明全局代理",
 		Commands: []*cli.Command{
-			{
-				Name:   "up",
-				Usage:  "启动全局代理",
-				Flags:  upFlags(),
-				Action: upAction,
-			},
-			{Name: "down", Usage: "停止", Action: notImpl("down")},
-			{Name: "status", Usage: "查看状态", Action: notImpl("status")},
+			{Name: "up", Usage: "启动全局代理", Flags: upFlags(), Action: upAction},
+			{Name: "down", Usage: "停止运行中的 bx", Action: downAction},
+			{Name: "status", Usage: "查看状态面板", Action: statusAction},
 			{Name: "reload", Usage: "热重载规则", Action: notImpl("reload")},
-			{Name: "install", Usage: "安装 systemd 自启服务", Action: notImpl("install")},
+			{Name: "install", Usage: "安装 systemd 自启服务", Flags: upFlags(), Action: installAction},
+			{Name: "uninstall", Usage: "卸载 systemd 服务", Action: uninstallAction},
 		},
 	}
 }
@@ -46,15 +49,15 @@ func upFlags() []cli.Flag {
 }
 
 func upAction(c *cli.Context) error {
-	b, err := os.ReadFile(c.String("config"))
-	if err != nil {
-		return fmt.Errorf("读配置 %s: %w", c.String("config"), err)
-	}
-	cfg, err := config.Parse(b)
+	cfg, err := loadConfig(c.String("config"))
 	if err != nil {
 		return err
 	}
-	opts := supervisor.Options{
+	return supervisor.Run(c.Context, cfg, optsFromFlags(c))
+}
+
+func optsFromFlags(c *cli.Context) supervisor.Options {
+	return supervisor.Options{
 		TunName:         c.String("tun"),
 		TunAddr:         c.String("tun-addr"),
 		MTU:             uint32(c.Uint("mtu")),
@@ -64,7 +67,68 @@ func upAction(c *cli.Context) error {
 		Probe:           c.String("probe"),
 		Deadman:         c.Duration("test-timeout"),
 	}
-	return supervisor.Run(c.Context, cfg, opts)
+}
+
+func loadConfig(path string) (*config.Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读配置 %s: %w", path, err)
+	}
+	return config.Parse(b)
+}
+
+func statusAction(c *cli.Context) error {
+	conn, err := net.Dial("unix", supervisor.SockPath)
+	if err != nil {
+		return fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
+	}
+	defer conn.Close()
+	var rep stats.Report
+	if err := json.NewDecoder(conn).Decode(&rep); err != nil {
+		return fmt.Errorf("读状态: %w", err)
+	}
+	fmt.Print(stats.Render(rep))
+	return nil
+}
+
+func downAction(c *cli.Context) error {
+	b, err := os.ReadFile(supervisor.PidPath)
+	if err != nil {
+		return fmt.Errorf("找不到运行中的 bx(%s): %w", supervisor.PidPath, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return fmt.Errorf("pid 文件损坏: %w", err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("停止 bx(pid %d): %w", pid, err)
+	}
+	fmt.Printf("已向 bx (pid %d) 发送停止信号\n", pid)
+	return nil
+}
+
+func installAction(c *cli.Context) error {
+	bin, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// 构造自洽的 ExecStart(绝对路径),systemd 以 root 跑也能找对文件。
+	execStart := fmt.Sprintf("%s up -c %s --brook %s --china-domain %s --china-cidr %s --tun %s --tun-addr %s --probe %s",
+		bin, c.String("config"), c.String("brook"), c.String("china-domain"),
+		c.String("china-cidr"), c.String("tun"), c.String("tun-addr"), c.String("probe"))
+	if err := install.Install(execStart); err != nil {
+		return err
+	}
+	fmt.Println("✅ bx 已安装为 systemd 服务并启动(开机自启)。`systemctl status bx` 查看,`bx status` 看面板。")
+	return nil
+}
+
+func uninstallAction(c *cli.Context) error {
+	if err := install.Uninstall(); err != nil {
+		return err
+	}
+	fmt.Println("已卸载 bx systemd 服务")
+	return nil
 }
 
 func notImpl(name string) cli.ActionFunc {

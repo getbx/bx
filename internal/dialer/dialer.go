@@ -24,6 +24,13 @@ type Resolver interface {
 	Resolve(ctx context.Context, domain string) (netip.Addr, error)
 }
 
+// DecisionCounter 按分流决策计数(由 stats.Counters 实现)。
+type DecisionCounter interface {
+	Proxy()
+	Direct()
+	Blocked()
+}
+
 // Dialer 把 Router 决策落到实际拨号。
 type Dialer struct {
 	Router     *route.Router
@@ -33,6 +40,7 @@ type Dialer struct {
 	Direct     ContextDialer // 直连
 	Healthy    func() bool   // 隧道是否健康(kill-switch 用),可空
 	Killswitch bool
+	Stats      DecisionCounter // 可空:决策计数
 }
 
 func network(udp bool) string {
@@ -68,6 +76,9 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 	port := strconv.Itoa(int(m.Port))
 	switch dec {
 	case route.Direct:
+		if d.Stats != nil {
+			d.Stats.Direct()
+		}
 		if m.Domain != "" {
 			ip := resolved
 			if !ip.IsValid() {
@@ -83,7 +94,13 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 
 	case route.Proxy:
 		if d.Killswitch && d.Healthy != nil && !d.Healthy() {
+			if d.Stats != nil {
+				d.Stats.Blocked()
+			}
 			return nil, ErrBlocked
+		}
+		if d.Stats != nil {
+			d.Stats.Proxy()
 		}
 		host := m.Domain
 		if host == "" {
@@ -92,6 +109,9 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 		return d.Proxy.DialContext(ctx, network(m.UDP), net.JoinHostPort(host, port))
 
 	default: // Block
+		if d.Stats != nil {
+			d.Stats.Blocked()
+		}
 		return nil, ErrBlocked
 	}
 }
