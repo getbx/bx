@@ -39,11 +39,20 @@ type DNSResponder interface {
 	Respond(query []byte) ([]byte, error)
 }
 
+// ConnCounter 记录连接与字节计数(由 stats.Counters 实现)。
+type ConnCounter interface {
+	ConnOpen()
+	ConnClose()
+	AddUp(n int64)
+	AddDown(n int64)
+}
+
 // Engine 是 TUN 引擎:在 link 上跑 netstack,终结 TCP/UDP 并交给 Dialer。
 type Engine struct {
 	stack  *stack.Stack
 	dialer Dialer
 	dns    DNSResponder // 可空:非空时 UDP:53 由它就地应答(fake-IP)
+	stats  ConnCounter  // 可空:活跃连接 + 上下行字节计数
 }
 
 // Option 配置 Engine。
@@ -51,6 +60,9 @@ type Option func(*Engine)
 
 // WithDNS 让引擎就地处理 UDP:53 查询(fake-IP),不再转发到 Dialer。
 func WithDNS(r DNSResponder) Option { return func(e *Engine) { e.dns = r } }
+
+// WithStats 接上连接/字节计数器。
+func WithStats(c ConnCounter) Option { return func(e *Engine) { e.stats = c } }
 
 // New 在给定 link 端点上建引擎(测试用 channel/pipe,生产用 fdbased TUN)。
 // 返回后即开始服务:netstack 收到新连接会回调 Dialer。
@@ -134,7 +146,11 @@ func (e *Engine) handleConn(local net.Conn, m route.Meta) {
 		local.Close()
 		return
 	}
-	relay(local, upstream)
+	if e.stats != nil {
+		e.stats.ConnOpen()
+		defer e.stats.ConnClose()
+	}
+	e.relay(local, upstream)
 }
 
 // serveDNS 在一条 UDP 流上循环处理 DNS 查询(请求→应答),空闲即关。
@@ -157,25 +173,39 @@ func (e *Engine) serveDNS(conn net.Conn) {
 	}
 }
 
-// relay 在两条连接间双向转发,任一方向读到 EOF 就半关闭对端的写,
-// 两个方向都结束后关闭两端。
-func relay(a, b net.Conn) {
+// relay 在 local↔upstream 间双向转发并计量字节:
+// local→upstream 记为上行,upstream→local 记为下行。
+// 任一方向读到 EOF 就半关闭对端的写,两个方向都结束后关闭两端。
+func (e *Engine) relay(local, upstream net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); copyOneWay(b, a) }()
-	go func() { defer wg.Done(); copyOneWay(a, b) }()
+	go func() {
+		defer wg.Done()
+		n := copyOneWay(upstream, local)
+		if e.stats != nil {
+			e.stats.AddUp(n)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		n := copyOneWay(local, upstream)
+		if e.stats != nil {
+			e.stats.AddDown(n)
+		}
+	}()
 	wg.Wait()
-	a.Close()
-	b.Close()
+	local.Close()
+	upstream.Close()
 }
 
-func copyOneWay(dst, src net.Conn) {
-	io.Copy(dst, src)
+func copyOneWay(dst, src net.Conn) int64 {
+	n, _ := io.Copy(dst, src)
 	// 源读完了,给目标发 FIN(半关闭),让对端感知收尾;
 	// 不支持 CloseWrite 的连接(如 net.Pipe)忽略。
 	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 		cw.CloseWrite()
 	}
+	return n
 }
 
 // metaFromID 把 netstack 的连接 ID 转成分流脑要的 Meta。

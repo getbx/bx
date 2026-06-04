@@ -5,7 +5,9 @@ package supervisor
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -20,6 +22,7 @@ import (
 	"github.com/getbx/bx/internal/dialer"
 	bxdns "github.com/getbx/bx/internal/dns"
 	"github.com/getbx/bx/internal/fakeip"
+	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tun"
 	"github.com/getbx/bx/internal/tunnel"
 	"golang.org/x/net/proxy"
@@ -72,6 +75,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	dnsSrv := bxdns.NewServer(pool, 1)
 
 	// 4) Dialer:fake-IP 反查 + marked 直连 + socks 代理 + 国内 DNS resolver
+	counters := &stats.Counters{}
 	direct := markedDialer(fwMark)
 	proxyDialer, err := socksProxy(tun0.SocksAddr(), direct)
 	if err != nil {
@@ -85,6 +89,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		Direct:     direct,
 		Healthy:    tun0.Healthy,
 		Killswitch: cfg.Killswitch,
+		Stats:      counters,
 	}
 
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
@@ -92,11 +97,23 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("建 TUN: %w", err)
 	}
-	eng, err := tun.New(link, d, opts.MTU, tun.WithDNS(dnsSrv))
+	eng, err := tun.New(link, d, opts.MTU, tun.WithDNS(dnsSrv), tun.WithStats(counters))
 	if err != nil {
 		return fmt.Errorf("启动引擎: %w", err)
 	}
 	defer eng.Close()
+
+	// 状态查询 socket + pidfile
+	serverHostForReport, _ := serverHostFromLink(cfg.Server)
+	if closer, err := serveStats(counters, tun0, serverHostForReport); err != nil {
+		log.Printf("状态 socket 启动失败(忽略): %v", err)
+	} else {
+		defer closer.Close()
+		defer os.Remove(SockPath)
+	}
+	if err := os.WriteFile(PidPath, []byte(itoa(os.Getpid())), 0o644); err == nil {
+		defer os.Remove(PidPath)
+	}
 
 	// 5) 劫持默认路由(含 bypass 保 SSH + 服务器防环)
 	gw, gwDev, err := defaultRoute()
@@ -137,6 +154,36 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		log.Printf("ctx 取消,还原中…")
 	}
 	return nil
+}
+
+// serveStats 在 unix socket 上提供状态查询:每个连接回一份 JSON Report。
+func serveStats(c *stats.Counters, t *tunnel.Tunnel, server string) (io.Closer, error) {
+	_ = os.Remove(SockPath)
+	ln, err := net.Listen("unix", SockPath)
+	if err != nil {
+		return nil, err
+	}
+	_ = os.Chmod(SockPath, 0o666)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			ts := t.Stats()
+			rep := stats.Report{
+				Snapshot:      c.Snapshot(),
+				Server:        server,
+				SocksAddr:     t.SocksAddr(),
+				TunnelHealthy: ts.Up,
+				LatencyMS:     ts.LatencyMS,
+				Restarts:      ts.Restarts,
+			}
+			_ = json.NewEncoder(conn).Encode(rep)
+			conn.Close()
+		}
+	}()
+	return ln, nil
 }
 
 // markedDialer 返回打 SO_MARK 的直连器:让 bx 自身的直连绕过 tun(防环)。
