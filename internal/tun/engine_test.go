@@ -1,13 +1,32 @@
 package tun
 
 import (
+	"net"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/route"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
+
+// 挂死(无数据)连接应被空闲超时收尾,copyOneWay 返回,避免 goroutine/fd 泄漏。
+func TestCopyOneWay_IdleTimeout(t *testing.T) {
+	src, _ := net.Pipe() // 对端永不写,src.Read 将一直阻塞直到空闲超时
+	dst, _ := net.Pipe()
+	done := make(chan int64, 1)
+	go func() { done <- copyOneWay(dst, src, 80*time.Millisecond) }()
+
+	select {
+	case n := <-done:
+		if n != 0 {
+			t.Errorf("空闲连接应转发 0 字节, got %d", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("空闲超时未触发:copyOneWay 未及时返回(连接会泄漏)")
+	}
+}
 
 // metaFromID 把 netstack 的连接 ID 转成分流脑要的 Meta:
 // TUN 入站连接里,LocalAddress/LocalPort 就是程序要连的目标。

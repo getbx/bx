@@ -5,7 +5,6 @@ package tun
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"sync"
@@ -156,7 +155,7 @@ func (e *Engine) handleConn(local net.Conn, m route.Meta) {
 // serveDNS 在一条 UDP 流上循环处理 DNS 查询(请求→应答),空闲即关。
 func (e *Engine) serveDNS(conn net.Conn) {
 	defer conn.Close()
-	buf := make([]byte, 1500)
+	buf := make([]byte, 4096) // EDNS0 可达 4096
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		n, err := conn.Read(buf)
@@ -181,14 +180,14 @@ func (e *Engine) relay(local, upstream net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		n := copyOneWay(upstream, local)
+		n := copyOneWay(upstream, local, defaultIdleTimeout)
 		if e.stats != nil {
 			e.stats.AddUp(n)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		n := copyOneWay(local, upstream)
+		n := copyOneWay(local, upstream, defaultIdleTimeout)
 		if e.stats != nil {
 			e.stats.AddDown(n)
 		}
@@ -198,14 +197,34 @@ func (e *Engine) relay(local, upstream net.Conn) {
 	upstream.Close()
 }
 
-func copyOneWay(dst, src net.Conn) int64 {
-	n, _ := io.Copy(dst, src)
-	// 源读完了,给目标发 FIN(半关闭),让对端感知收尾;
+// defaultIdleTimeout 是单向转发的空闲超时:超过该时长无数据则收尾,
+// 防止挂死(half-open)连接永久泄漏 goroutine/fd。
+const defaultIdleTimeout = 5 * time.Minute
+
+// copyOneWay 把 src 转发到 dst,每次读写刷新空闲超时;返回转发字节数。
+func copyOneWay(dst, src net.Conn, idle time.Duration) int64 {
+	var total int64
+	buf := make([]byte, 32*1024)
+	for {
+		_ = src.SetReadDeadline(time.Now().Add(idle))
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			_ = dst.SetWriteDeadline(time.Now().Add(idle))
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				break
+			}
+			total += int64(n)
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	// 源读完/出错,给目标发 FIN(半关闭),让对端感知收尾;
 	// 不支持 CloseWrite 的连接(如 net.Pipe)忽略。
 	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 		cw.CloseWrite()
 	}
-	return n
+	return total
 }
 
 // metaFromID 把 netstack 的连接 ID 转成分流脑要的 Meta。

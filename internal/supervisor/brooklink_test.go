@@ -13,6 +13,13 @@ func TestServerHostFromLink(t *testing.T) {
 	}
 }
 
+func TestHostToCIDRs_IP(t *testing.T) {
+	got := hostToCIDRs("203.0.113.10")
+	if len(got) != 1 || got[0] != "203.0.113.10/32" {
+		t.Fatalf("hostToCIDRs(IP) = %v, want [203.0.113.10/32]", got)
+	}
+}
+
 func TestServerHostFromLink_PlainHostPort(t *testing.T) {
 	// 也支持直接 host:port(配置可不用 brook:// link)
 	host, err := serverHostFromLink("1.2.3.4:8080")

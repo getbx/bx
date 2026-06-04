@@ -124,7 +124,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("取服务器 IP: %w", err)
 	}
-	bypass := append([]string{serverHost + "/32"}, cfg.Bypass...)
+	// 服务器可能是域名:解析成 IP 段再 bypass(避免 brook 到服务器的连接被 tun 捕获成环)。
+	serverBypass := hostToCIDRs(serverHost)
+	if len(serverBypass) == 0 {
+		return fmt.Errorf("无法解析 brook 服务器 %q 为 IP(bypass 必需,否则成环)", serverHost)
+	}
+	bypass := append(serverBypass, cfg.Bypass...)
 	nc := &netConf{
 		tunName: opts.TunName, tunAddr: opts.TunAddr,
 		gw: gw, gwDev: gwDev, bypass: bypass,
@@ -140,6 +145,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 6) 阻塞:信号 / deadman / ctx
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
 	var deadman <-chan time.Time
 	if opts.Deadman > 0 {
 		log.Printf("⏲ 死手定时器 %s 后自动还原", opts.Deadman)
