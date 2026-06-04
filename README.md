@@ -45,6 +45,7 @@ sudo cp bx /usr/local/bin/bx
 ```yaml
 server: "brook://..."            # brook 服务器 link(或 host:port)
 killswitch: true                 # 隧道挂时阻断代理连接,不泄漏真实 IP
+global: false                    # 全局模式:true=除内网/用户direct外一切走代理(亦可用 --global)
 dns:
   china: 223.5.5.5               # 直连域名用的国内 DNS
   fakeip_cidr: 198.18.0.0/15     # fake-IP 段
@@ -94,6 +95,13 @@ sudo bx down                 # 任意 shell;或 tmux attach -t bx 后 Ctrl-C
 ```
 
 > 启动头几秒隧道健康确认前,kill-switch 会阻断境外连接(fail-closed),属正常。
+
+**两种分流模式**:默认按 china 列表分流(中国直连);加 `--global`(或 config `global: true`)则
+**除内网(bypass)和用户 `direct` 规则外,一切流量(含中国)都走 VPS**——LAN/SSH 始终受 bypass 保护。
+
+```bash
+sudo bx up --global ...   # 全局:全走 VPS,除内网
+```
 
 ## 用法二:开机自启(专机)
 
