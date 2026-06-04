@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	bxdns "github.com/getbx/bx/internal/dns"
+	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/route"
+	"golang.org/x/net/dns/dnsmessage"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -139,6 +142,68 @@ func TestEngine_UDP_DialerReceivesDestination(t *testing.T) {
 	want := route.Meta{IP: netip.AddrFrom4([4]byte{1, 2, 3, 4}), Port: 53, UDP: true}
 	if got != want {
 		t.Fatalf("Meta = %+v, want %+v", got, want)
+	}
+}
+
+func TestEngine_DNS_RespondsWithFakeIP(t *testing.T) {
+	const mtu = 1500
+	engineLink, clientLink := pipe.New("", "", mtu)
+
+	pool, _ := fakeip.New("198.18.0.0/15")
+	dialer := newCaptureDialer()
+	eng, err := New(engineLink, dialer, mtu, WithDNS(bxdns.NewServer(pool, 1)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer eng.Close()
+
+	client := newClientStack(t, clientLink, tcpip.AddrFrom4([4]byte{10, 0, 0, 2}))
+
+	// 向任意 :53(这里 8.8.8.8)发查询;引擎应就地用 fake-IP 应答。
+	raddr := tcpip.FullAddress{Addr: tcpip.AddrFrom4([4]byte{8, 8, 8, 8}), Port: 53}
+	conn, err := gonet.DialUDP(client, nil, &raddr, ipv4.ProtocolNumber)
+	if err != nil {
+		t.Fatalf("DialUDP: %v", err)
+	}
+	defer conn.Close()
+
+	qb := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 0x1234, RecursionDesired: true})
+	qb.StartQuestions()
+	qb.Question(dnsmessage.Question{Name: dnsmessage.MustNewName("example.com."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET})
+	query, _ := qb.Finish()
+	if _, err := conn.Write(query); err != nil {
+		t.Fatalf("写查询: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1500)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("读应答: %v", err)
+	}
+
+	var p dnsmessage.Parser
+	if _, err := p.Start(buf[:n]); err != nil {
+		t.Fatalf("解析应答: %v", err)
+	}
+	p.SkipAllQuestions()
+	if _, err := p.AnswerHeader(); err != nil {
+		t.Fatalf("应答无 answer: %v", err)
+	}
+	ar, err := p.AResource()
+	if err != nil {
+		t.Fatalf("应答无 A 记录: %v", err)
+	}
+	ip := netip.AddrFrom4(ar.A)
+	if dom, ok := pool.Domain(ip); !ok || dom != "example.com" {
+		t.Errorf("fake IP %v 反查 = %q,%v; want example.com,true", ip, dom, ok)
+	}
+
+	// :53 不应走到 Dialer
+	select {
+	case <-dialer.peers:
+		t.Error("DNS 查询不应触发 Dialer")
+	default:
 	}
 }
 

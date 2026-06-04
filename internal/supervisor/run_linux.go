@@ -18,7 +18,8 @@ import (
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/dialer"
-	"github.com/getbx/bx/internal/route"
+	bxdns "github.com/getbx/bx/internal/dns"
+	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/tun"
 	"github.com/getbx/bx/internal/tunnel"
 	"golang.org/x/net/proxy"
@@ -63,7 +64,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	defer tun0.Stop()
 	log.Printf("brook 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
 
-	// 3) Dialer:marked 直连 + socks 代理 + 国内 DNS resolver
+	// 3) fake-IP 池 + DNS 处理器
+	pool, err := fakeip.New(cfg.DNS.FakeipCIDR)
+	if err != nil {
+		return fmt.Errorf("建 fake-IP 池: %w", err)
+	}
+	dnsSrv := bxdns.NewServer(pool, 1)
+
+	// 4) Dialer:fake-IP 反查 + marked 直连 + socks 代理 + 国内 DNS resolver
 	direct := markedDialer(fwMark)
 	proxyDialer, err := socksProxy(tun0.SocksAddr(), direct)
 	if err != nil {
@@ -71,6 +79,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	d := &dialer.Dialer{
 		Router:     router,
+		Fake:       pool, // 连接回到 TUN 时,用 fake IP 反查域名做精确分流
 		Resolver:   newResolver(cfg.DNS.China, direct),
 		Proxy:      proxyDialer,
 		Direct:     direct,
@@ -78,16 +87,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		Killswitch: cfg.Killswitch,
 	}
 
-	// 4) TUN 设备 + 引擎
+	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
 	link, err := tun.OpenDevice(opts.TunName, opts.MTU)
 	if err != nil {
 		return fmt.Errorf("建 TUN: %w", err)
 	}
-	// DNS 重定向:所有 :53 查询强制走中国 DNS 直连。
-	// (brook 免费版的 socks5 仅 TCP,UDP-over-proxy 不可用;且系统 resolv.conf
-	//  可能指向境外 DNS。真正的防污染 fake-IP 是后续 M5。)
-	engineDialer := dnsRedirect{inner: d, direct: direct, china: cfg.DNS.China}
-	eng, err := tun.New(link, engineDialer, opts.MTU)
+	eng, err := tun.New(link, d, opts.MTU, tun.WithDNS(dnsSrv))
 	if err != nil {
 		return fmt.Errorf("启动引擎: %w", err)
 	}
@@ -132,20 +137,6 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		log.Printf("ctx 取消,还原中…")
 	}
 	return nil
-}
-
-// dnsRedirect 把所有 UDP :53 查询重定向到中国 DNS 直连,其余委托给内层 Dialer。
-type dnsRedirect struct {
-	inner  tun.Dialer
-	direct *net.Dialer
-	china  string
-}
-
-func (d dnsRedirect) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
-	if m.UDP && m.Port == 53 {
-		return d.direct.DialContext(ctx, "udp", net.JoinHostPort(d.china, "53"))
-	}
-	return d.inner.Dial(ctx, m)
 }
 
 // markedDialer 返回打 SO_MARK 的直连器:让 bx 自身的直连绕过 tun(防环)。
