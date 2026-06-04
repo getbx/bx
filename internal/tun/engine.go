@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/getbx/bx/internal/route"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -33,20 +34,35 @@ type Dialer interface {
 	Dial(ctx context.Context, m route.Meta) (net.Conn, error)
 }
 
+// DNSResponder 处理一条 DNS 查询(请求 → 应答字节)。用于 fake-IP。
+type DNSResponder interface {
+	Respond(query []byte) ([]byte, error)
+}
+
 // Engine 是 TUN 引擎:在 link 上跑 netstack,终结 TCP/UDP 并交给 Dialer。
 type Engine struct {
 	stack  *stack.Stack
 	dialer Dialer
+	dns    DNSResponder // 可空:非空时 UDP:53 由它就地应答(fake-IP)
 }
+
+// Option 配置 Engine。
+type Option func(*Engine)
+
+// WithDNS 让引擎就地处理 UDP:53 查询(fake-IP),不再转发到 Dialer。
+func WithDNS(r DNSResponder) Option { return func(e *Engine) { e.dns = r } }
 
 // New 在给定 link 端点上建引擎(测试用 channel/pipe,生产用 fdbased TUN)。
 // 返回后即开始服务:netstack 收到新连接会回调 Dialer。
-func New(link stack.LinkEndpoint, d Dialer, mtu uint32) (*Engine, error) {
+func New(link stack.LinkEndpoint, d Dialer, mtu uint32, opts ...Option) (*Engine, error) {
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 	e := &Engine{stack: s, dialer: d}
+	for _, o := range opts {
+		o(e)
+	}
 
 	if err := s.CreateNIC(nicID, link); err != nil {
 		return nil, fmt.Errorf("create NIC: %v", err)
@@ -107,13 +123,38 @@ func (e *Engine) handleUDP(r *udp.ForwarderRequest) bool {
 }
 
 // handleConn 把一条已终结的连接问 Dialer 拿到出口,再双向 splice。
+// UDP:53 且配了 DNS 处理器时,就地应答(fake-IP),不转发。
 func (e *Engine) handleConn(local net.Conn, m route.Meta) {
+	if m.UDP && m.Port == 53 && e.dns != nil {
+		e.serveDNS(local)
+		return
+	}
 	upstream, err := e.dialer.Dial(context.Background(), m)
 	if err != nil {
 		local.Close()
 		return
 	}
 	relay(local, upstream)
+}
+
+// serveDNS 在一条 UDP 流上循环处理 DNS 查询(请求→应答),空闲即关。
+func (e *Engine) serveDNS(conn net.Conn) {
+	defer conn.Close()
+	buf := make([]byte, 1500)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		n, err := conn.Read(buf)
+		if err != nil {
+			return
+		}
+		resp, err := e.dns.Respond(buf[:n])
+		if err != nil {
+			continue
+		}
+		if _, err := conn.Write(resp); err != nil {
+			return
+		}
+	}
 }
 
 // relay 在两条连接间双向转发,任一方向读到 EOF 就半关闭对端的写,
