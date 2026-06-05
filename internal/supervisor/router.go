@@ -42,14 +42,19 @@ func BuildRouter(cfg *config.Config, chinaDomain, chinaCIDR []string) (*route.Ro
 	if err != nil {
 		return nil, err
 	}
+	privateIP, err := route.NewCIDRSet(route.DefaultPrivateCIDRs)
+	if err != nil {
+		return nil, err
+	}
 
 	return &route.Router{
-		UserDirect:   route.NewDomainSet(directDoms),
-		UserProxy:    route.NewDomainSet(proxyDoms),
-		UserDirectIP: directIP,
-		UserProxyIP:  proxyIP,
-		ChinaDomain:  route.NewDomainSet(chinaDomain),
-		ChinaCIDR:    cnIP,
+		UserDirect:    route.NewDomainSet(directDoms),
+		UserProxy:     route.NewDomainSet(proxyDoms),
+		UserDirectIP:  directIP,
+		UserProxyIP:   proxyIP,
+		PrivateDirect: privateIP,
+		ChinaDomain:   route.NewDomainSet(chinaDomain),
+		ChinaCIDR:     cnIP,
 	}, nil
 }
 
