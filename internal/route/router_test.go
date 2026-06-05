@@ -78,3 +78,42 @@ func TestDecideIP(t *testing.T) {
 		t.Fatal("foreign ip should be proxy")
 	}
 }
+
+// 透明代理永远不该把私网/docker/link-local 段隧道出去:它们应内建直连,
+// 否则 bx up 后宿主机访问 docker 容器/内网会被甩给远端服务器而断网。
+func TestPrivateRangesDirect(t *testing.T) {
+	r := &Router{PrivateDirect: mustSet(DefaultPrivateCIDRs), GlobalProxy: true}
+	for _, ip := range []string{
+		"172.17.0.2",   // docker0 默认网桥
+		"172.19.0.5",   // compose 网络(也是默认 tun-addr 所在段)
+		"172.31.255.1", // docker 默认地址池上界
+		"10.0.10.25",  // 内网(sandbox reward)
+		"192.168.1.1",  // 家用 LAN
+		"169.254.0.1",  // link-local
+		"100.64.0.1",   // CGNAT
+		"127.0.0.1",    // loopback
+	} {
+		if got := r.DecideIP(netip.MustParseAddr(ip)); got != Direct {
+			t.Errorf("%s 应内建直连,got %v", ip, got)
+		}
+	}
+	// fakeip 段不能被私网默认直连吃掉(它要进 DNS 反查),不在默认表内
+	if got := r.DecideIP(netip.MustParseAddr("198.18.0.1")); got != Proxy {
+		t.Errorf("fakeip 段不应被私网默认直连,got %v", got)
+	}
+}
+
+// 用户显式 proxy 规则优先级高于私网内建直连,可强制把某私段走代理。
+func TestUserProxyOverridesPrivateDirect(t *testing.T) {
+	r := &Router{
+		UserProxyIP:   mustSet([]string{"192.168.99.0/24"}),
+		PrivateDirect: mustSet(DefaultPrivateCIDRs),
+		GlobalProxy:   true,
+	}
+	if got := r.DecideIP(netip.MustParseAddr("192.168.99.5")); got != Proxy {
+		t.Errorf("用户 proxy 规则应覆盖私网内建直连,got %v", got)
+	}
+	if got := r.DecideIP(netip.MustParseAddr("192.168.1.5")); got != Direct {
+		t.Errorf("未被用户 proxy 覆盖的私段仍应直连,got %v", got)
+	}
+}
