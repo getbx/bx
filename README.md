@@ -60,6 +60,13 @@ lists:
 ```
 
 > brook 服务器 IP 会自动加入 bypass(避免 brook→服务器的连接被 tun 捕获成环)。
+>
+> 私网/docker 段(`10/8`、`172.16/12`、`192.168/16`、`169.254/16`、`100.64/10`、`127/8`)**内建绕过 tun**,
+> 无需再写进配置。两层兜底:① `bx up` 装 `ip rule to <段> lookup main pref 150`(< 全量进 tun 的 200),
+> 让宿主机访问 docker 容器/内网的包**永不进 tun**、由内核原路由 native 投递(docker0/br-* on-link、内网 via 网关);
+> ② 分流脑对到达 dialer 的私网 IP(如 fakeip 反查出的内网域名)也判直连。该 `ip rule` 随每次 `bx up` 重装,
+> 不存在「手动加的规则在 VPN 重连后丢失」问题。如需把某私段强制走代理,用 `rules.proxy`。
+> TUN 默认地址用 TEST-NET-2 `198.51.100.1/30`,刻意避开 docker 默认地址池 `172.16/12`,防止与 compose 网段撞段。
 
 ## 命令
 
