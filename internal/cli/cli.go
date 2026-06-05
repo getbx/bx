@@ -38,7 +38,7 @@ func upFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: filepath.Join(home, ".config/bx/config.yaml"), Usage: "配置文件路径"},
 		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "TUN 设备名"},
-		&cli.StringFlag{Name: "tun-addr", Value: "172.19.0.1/24", Usage: "TUN 接口地址"},
+		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "TUN 接口地址(TEST-NET-2,避开 docker 默认地址池 172.16/12 防撞段)"},
 		&cli.UintFlag{Name: "mtu", Value: 1500},
 		&cli.StringFlag{Name: "brook", Value: filepath.Join(home, ".nami/bin/brook"), Usage: "brook 二进制路径"},
 		&cli.StringFlag{Name: "china-domain", Value: filepath.Join(home, ".brook/china_domain.txt")},
