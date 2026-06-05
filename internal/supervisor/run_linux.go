@@ -22,6 +22,7 @@ import (
 	"github.com/getbx/bx/internal/dialer"
 	bxdns "github.com/getbx/bx/internal/dns"
 	"github.com/getbx/bx/internal/fakeip"
+	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tun"
 	"github.com/getbx/bx/internal/tunnel"
@@ -37,7 +38,7 @@ const (
 // Options 是 bx up 的运行期参数(非配置文件项)。
 type Options struct {
 	TunName         string
-	TunAddr         string // 给 TUN 配的地址/掩码,如 172.19.0.1/24
+	TunAddr         string // 给 TUN 配的地址/掩码,如 198.51.100.1/30(避开 docker 172.16/12)
 	MTU             uint32
 	BrookBin        string
 	ChinaDomainPath string
@@ -139,6 +140,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	nc := &netConf{
 		tunName: opts.TunName, tunAddr: opts.TunAddr,
 		gw: gw, gwDev: gwDev, bypass: bypass,
+		mainLookup: route.DefaultPrivateCIDRs, // 私网/docker 段在内核层分流到主表,绕开 tun
 	}
 	if err := nc.up(); err != nil {
 		nc.down()
@@ -252,14 +254,16 @@ func (d *dnsResolver) Resolve(ctx context.Context, domain string) (netip.Addr, e
 
 // netConf 管理 TUN 接口 + 策略路由(table + rule + fwmark)。
 type netConf struct {
-	tunName string
-	tunAddr string
-	gw      string
-	gwDev   string
-	bypass  []string
+	tunName    string
+	tunAddr    string
+	gw         string
+	gwDev      string
+	bypass     []string // 走原网关绕过 tun 的网段(table 100 via gw),用户指定的公网/管理网
+	mainLookup []string // 私网/docker 段:ip rule 送主表(pref 150),native 本地投递、绕开 tun
 }
 
-func (n *netConf) up() error {
+// upSteps 是 up() 要执行的 ip 命令序列(纯构造,无副作用,便于测试)。
+func (n *netConf) upSteps() [][]string {
 	steps := [][]string{
 		{"addr", "add", n.tunAddr, "dev", n.tunName},
 		{"link", "set", n.tunName, "up"},
@@ -270,9 +274,18 @@ func (n *netConf) up() error {
 	steps = append(steps,
 		[]string{"route", "add", "default", "dev", n.tunName, "table", itoa(routeTable)},
 		[]string{"rule", "add", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"},
-		[]string{"rule", "add", "pref", "200", "table", itoa(routeTable)},
 	)
-	for _, s := range steps {
+	// 私网/docker 段:pref 150(< 全量进 tun 的 200)送主表,由内核原路由 native 投递
+	// (docker0/br-* on-link、内网 via 网关),宿主机访问容器/内网的包永不进 tun。
+	for _, c := range n.mainLookup {
+		steps = append(steps, []string{"rule", "add", "to", c, "pref", "150", "table", "main"})
+	}
+	steps = append(steps, []string{"rule", "add", "pref", "200", "table", itoa(routeTable)})
+	return steps
+}
+
+func (n *netConf) up() error {
+	for _, s := range n.upSteps() {
 		if err := runIP(s...); err != nil {
 			return err
 		}
@@ -280,12 +293,27 @@ func (n *netConf) up() error {
 	return nil
 }
 
+// downSteps 是 down() 要执行的还原命令序列(与 upSteps 对称)。
+func (n *netConf) downSteps() [][]string {
+	steps := [][]string{
+		{"rule", "del", "pref", "200", "table", itoa(routeTable)},
+	}
+	for _, c := range n.mainLookup {
+		steps = append(steps, []string{"rule", "del", "to", c, "pref", "150", "table", "main"})
+	}
+	steps = append(steps,
+		[]string{"rule", "del", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"},
+		[]string{"route", "flush", "table", itoa(routeTable)},
+		[]string{"link", "del", n.tunName},
+	)
+	return steps
+}
+
 // down 尽力还原(忽略单步错误)。
 func (n *netConf) down() {
-	_ = runIPQuiet("rule", "del", "pref", "200", "table", itoa(routeTable))
-	_ = runIPQuiet("rule", "del", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main")
-	_ = runIPQuiet("route", "flush", "table", itoa(routeTable))
-	_ = runIPQuiet("link", "del", n.tunName)
+	for _, s := range n.downSteps() {
+		_ = runIPQuiet(s...)
+	}
 }
 
 // defaultRoute 解析当前 IPv4 默认路由的网关与出口设备。
@@ -341,5 +369,5 @@ func readLines(path string) []string {
 	return out
 }
 
-func itoa(i int) string  { return fmt.Sprintf("%d", i) }
+func itoa(i int) string    { return fmt.Sprintf("%d", i) }
 func fmtMark(m int) string { return fmt.Sprintf("0x%x", m) }
