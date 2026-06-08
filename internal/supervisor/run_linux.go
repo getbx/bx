@@ -63,17 +63,22 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 1) 分流脑(global 模式不需要 china 列表)
 	var chinaDomain, chinaCIDR []string
 	var domainPath, cidrPath string
+	var listsOverridden bool
 	if !global {
 		domainPath, cidrPath, err = provision.EnsureLists(cfg.DataDir, embedded.ChinaDomain(), embedded.ChinaCIDR())
 		if err != nil {
 			log.Printf("准备 china 列表失败(降级空列表,等刷新补): %v", err)
 		}
-		if opts.ChinaDomainPath != "" {
-			domainPath = opts.ChinaDomainPath
+		// 列表路径覆盖优先级:CLI flag > config lists.* > 内嵌/刷新快照
+		domainOverride := firstNonEmpty(opts.ChinaDomainPath, cfg.Lists.ChinaDomain)
+		cidrOverride := firstNonEmpty(opts.ChinaCIDRPath, cfg.Lists.ChinaCIDR)
+		if domainOverride != "" {
+			domainPath = domainOverride
 		}
-		if opts.ChinaCIDRPath != "" {
-			cidrPath = opts.ChinaCIDRPath
+		if cidrOverride != "" {
+			cidrPath = cidrOverride
 		}
+		listsOverridden = domainOverride != "" || cidrOverride != ""
 		chinaDomain = readLines(domainPath)
 		chinaCIDR = readLines(cidrPath)
 	}
@@ -174,7 +179,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 brook。")
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
-	if !global && cfg.Lists.AutoUpdateEnabled() {
+	if !global && cfg.Lists.AutoUpdateEnabled() && !listsOverridden {
 		go refreshLoop(ctx, cfg.Lists.RefreshInterval(), tun0.Healthy, func() error {
 			client := proxyHTTPClient(proxyDialer)
 			if err := fetchLists(ctx, client, cfg.DataDir); err != nil {
