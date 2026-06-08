@@ -34,10 +34,12 @@ func newTestDialer(fake *fakeip.Pool, res Resolver, healthy bool, ks bool) (*Dia
 		ChinaCIDR:   cn,
 	}
 	px, dr := &recordDialer{}, &recordDialer{}
-	return &Dialer{
-		Router: r, Fake: fake, Resolver: res, Proxy: px, Direct: dr,
+	d := &Dialer{
+		Fake: fake, Resolver: res, Proxy: px, Direct: dr,
 		Healthy: func() bool { return healthy }, Killswitch: ks,
-	}, px, dr
+	}
+	d.SetRouter(r)
+	return d, px, dr
 }
 
 func TestDialProxyDomain(t *testing.T) {
@@ -122,5 +124,30 @@ func TestDialKillswitchRawChinaIPDirectWhenDown(t *testing.T) {
 	}
 	if dr.lastAddr != "1.2.3.4:22" {
 		t.Fatalf("应直连, got %q", dr.lastAddr)
+	}
+}
+
+func TestDialerHotSwapRouter(t *testing.T) {
+	cn, _ := route.NewCIDRSet([]string{"1.2.0.0/16"})
+	px, dr := &recordDialer{}, &recordDialer{}
+	d := &Dialer{Proxy: px, Direct: dr, Healthy: func() bool { return true }}
+
+	// 路由 A:8.8.8.8 非中国 → 代理
+	d.SetRouter(&route.Router{ChinaCIDR: cn})
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 443}); err != nil {
+		t.Fatal(err)
+	}
+	if px.lastAddr != "8.8.8.8:443" {
+		t.Fatalf("路由A应代理, got proxy=%q", px.lastAddr)
+	}
+
+	// 热切到路由 B:8.8.8.8 用户直连 → 直连
+	udi, _ := route.NewCIDRSet([]string{"8.8.8.8/32"})
+	d.SetRouter(&route.Router{UserDirectIP: udi})
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 443}); err != nil {
+		t.Fatal(err)
+	}
+	if dr.lastAddr != "8.8.8.8:443" {
+		t.Fatalf("热切后应直连, got direct=%q", dr.lastAddr)
 	}
 }
