@@ -17,6 +17,8 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+const defaultConfigPath = "/etc/bx/config.yaml"
+
 // New 返回配置好子命令的 bx App。
 func New() *cli.App {
 	return &cli.App{
@@ -35,7 +37,7 @@ func New() *cli.App {
 
 func upFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: "/etc/bx/config.yaml", Usage: "配置文件路径(默认 /etc/bx/config.yaml,非 root 回退 ~/.config/bx/config.yaml)"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "配置文件路径(默认 /etc/bx/config.yaml,非 root 回退 ~/.config/bx/config.yaml)"},
 		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "TUN 设备名"},
 		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "TUN 接口地址(TEST-NET-2,避开 docker 默认地址池 172.16/12 防撞段)"},
 		&cli.UintFlag{Name: "mtu", Value: 1500},
@@ -84,10 +86,13 @@ func resolveConfigPath(path string) string {
 	if _, err := os.Stat(path); err == nil {
 		return path
 	}
-	home, _ := os.UserHomeDir()
-	alt := filepath.Join(home, ".config/bx/config.yaml")
-	if _, err := os.Stat(alt); err == nil {
-		return alt
+	// 仅默认路径才回退到家目录;用户显式 -c 的路径原样返回,让错误带上用户路径
+	if path == defaultConfigPath {
+		home, _ := os.UserHomeDir()
+		alt := filepath.Join(home, ".config/bx/config.yaml")
+		if _, err := os.Stat(alt); err == nil {
+			return alt
+		}
 	}
 	return path
 }

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -185,7 +186,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			if err := fetchLists(ctx, client, cfg.DataDir); err != nil {
 				return err
 			}
-			nr, err := rebuildRouterFromFiles(cfg, domainPath, cidrPath, global)
+			nr, err := rebuildRouterFromFiles(cfg,
+				filepath.Join(cfg.DataDir, "china_domain.txt"),
+				filepath.Join(cfg.DataDir, "china_cidr4.txt"),
+				global)
 			if err != nil {
 				return err
 			}
