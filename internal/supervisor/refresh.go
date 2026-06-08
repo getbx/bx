@@ -24,8 +24,12 @@ const (
 // proxyHTTPClient 构造经 socks5 代理拨号的 http.Client(绕过 github 直连封锁)。
 func proxyHTTPClient(pd dialer.ContextDialer) *http.Client {
 	return &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: &http.Transport{DialContext: pd.DialContext},
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			DialContext:     pd.DialContext,
+			MaxIdleConns:    4,
+			IdleConnTimeout: 90 * time.Second,
+		},
 	}
 }
 
@@ -92,8 +96,17 @@ func rebuildRouterFromFiles(cfg *config.Config, domainPath, cidrPath string, glo
 	return r, nil
 }
 
-// refreshLoop 周期刷新:仅在 healthy() 为真时执行 doRefresh;失败非致命。ctx 取消即退出。
+// healthyPollInterval 是 refreshLoop 启动阶段等待隧道健康的轮询间隔。
+const healthyPollInterval = 2 * time.Second
+
+// refreshLoop 列表周期刷新:先等隧道健康→立即刷一次→之后每 interval 刷。
+// 仅在 healthy() 为真时执行 doRefresh;失败非致命。ctx 取消即退出。
 func refreshLoop(ctx context.Context, interval time.Duration, healthy func() bool, doRefresh func() error) {
+	if !waitHealthy(ctx, healthy) {
+		return // ctx 取消
+	}
+	runRefresh(doRefresh) // 启动即刷一次,不等满 interval
+
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -104,12 +117,30 @@ func refreshLoop(ctx context.Context, interval time.Duration, healthy func() boo
 			if !healthy() {
 				continue
 			}
-			if err := doRefresh(); err != nil {
-				log.Printf("列表刷新失败(保留旧列表): %v", err)
-			} else {
-				log.Printf("china 列表已刷新并热重载")
-			}
+			runRefresh(doRefresh)
 		}
+	}
+}
+
+// waitHealthy 阻塞至 healthy() 为真或 ctx 取消;返回 true 表示已健康。
+func waitHealthy(ctx context.Context, healthy func() bool) bool {
+	for {
+		if healthy() {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(healthyPollInterval):
+		}
+	}
+}
+
+func runRefresh(doRefresh func() error) {
+	if err := doRefresh(); err != nil {
+		log.Printf("列表刷新失败(保留旧列表): %v", err)
+	} else {
+		log.Printf("china 列表已刷新并热重载")
 	}
 }
 
