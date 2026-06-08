@@ -34,15 +34,14 @@ func New() *cli.App {
 }
 
 func upFlags() []cli.Flag {
-	home, _ := os.UserHomeDir()
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: filepath.Join(home, ".config/bx/config.yaml"), Usage: "配置文件路径"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: "/etc/bx/config.yaml", Usage: "配置文件路径(默认 /etc/bx/config.yaml,非 root 回退 ~/.config/bx/config.yaml)"},
 		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "TUN 设备名"},
 		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "TUN 接口地址(TEST-NET-2,避开 docker 默认地址池 172.16/12 防撞段)"},
 		&cli.UintFlag{Name: "mtu", Value: 1500},
-		&cli.StringFlag{Name: "brook", Value: filepath.Join(home, ".nami/bin/brook"), Usage: "brook 二进制路径"},
-		&cli.StringFlag{Name: "china-domain", Value: filepath.Join(home, ".brook/china_domain.txt")},
-		&cli.StringFlag{Name: "china-cidr", Value: filepath.Join(home, ".brook/china_cidr4.txt")},
+		&cli.StringFlag{Name: "brook", Value: "", Usage: "brook 二进制路径(留空=用内嵌 brook)"},
+		&cli.StringFlag{Name: "china-domain", Value: "", Usage: "china 域名列表(留空=用内嵌/自动刷新快照)"},
+		&cli.StringFlag{Name: "china-cidr", Value: "", Usage: "china IP 段(留空=用内嵌/自动刷新快照)"},
 		&cli.StringFlag{Name: "probe", Value: "1.1.1.1:443", Usage: "隧道健康检查目标"},
 		&cli.DurationFlag{Name: "test-timeout", Usage: "死手定时器:到点自动还原(远程实测保命)"},
 		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "全局模式:除内网(bypass)/用户 direct 规则外,一切(含中国)走代理"},
@@ -72,11 +71,25 @@ func optsFromFlags(c *cli.Context) supervisor.Options {
 }
 
 func loadConfig(path string) (*config.Config, error) {
+	path = resolveConfigPath(path)
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("读配置 %s: %w", path, err)
 	}
 	return config.Parse(b)
+}
+
+// resolveConfigPath: 默认路径不存在时回退到家目录配置(便于非 root 只读命令)。
+func resolveConfigPath(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	home, _ := os.UserHomeDir()
+	alt := filepath.Join(home, ".config/bx/config.yaml")
+	if _, err := os.Stat(alt); err == nil {
+		return alt
+	}
+	return path
 }
 
 func statusAction(c *cli.Context) error {
@@ -114,15 +127,20 @@ func installAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	// 构造自洽的 ExecStart(绝对路径),systemd 以 root 跑也能找对文件。
-	execStart := fmt.Sprintf("%s up -c %s --brook %s --china-domain %s --china-cidr %s --tun %s --tun-addr %s --probe %s",
-		bin, c.String("config"), c.String("brook"), c.String("china-domain"),
-		c.String("china-cidr"), c.String("tun"), c.String("tun-addr"), c.String("probe"))
-	if err := install.Install(execStart); err != nil {
+	cfgPath, err := filepath.Abs(resolveConfigPath(c.String("config")))
+	if err != nil {
+		return err
+	}
+	if err := install.Install(buildExecStart(bin, cfgPath)); err != nil {
 		return err
 	}
 	fmt.Println("✅ bx 已安装为 systemd 服务并启动(开机自启)。`systemctl status bx` 查看,`bx status` 看面板。")
 	return nil
+}
+
+// buildExecStart 构造自洽的 systemd ExecStart:只需绝对 bx 与绝对 config,其余走二进制内默认。
+func buildExecStart(bin, configPath string) string {
+	return fmt.Sprintf("%s up -c %s", bin, configPath)
 }
 
 func uninstallAction(c *cli.Context) error {
