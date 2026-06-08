@@ -181,8 +181,8 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
 	if !global && cfg.Lists.AutoUpdateEnabled() && !listsOverridden {
+		client := proxyHTTPClient(proxyDialer) // 单个客户端复用连接池,跨刷新周期不重建
 		go refreshLoop(ctx, cfg.Lists.RefreshInterval(), tun0.Healthy, func() error {
-			client := proxyHTTPClient(proxyDialer)
 			if err := fetchLists(ctx, client, cfg.DataDir); err != nil {
 				return err
 			}

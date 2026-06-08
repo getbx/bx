@@ -68,3 +68,18 @@ func TestRefreshLoopSkipsWhenUnhealthy(t *testing.T) {
 		t.Fatalf("不健康不应刷新, got %d", n)
 	}
 }
+
+func TestRefreshLoopRefreshesImmediatelyWhenHealthy(t *testing.T) {
+	// 大 interval:若没有「启动即刷」,doRefresh 在 ctx 超时前永不会被调用。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var n int32
+	refreshLoop(ctx, time.Hour, func() bool { return true }, func() error {
+		atomic.AddInt32(&n, 1)
+		cancel() // 刷一次就结束
+		return nil
+	})
+	if atomic.LoadInt32(&n) != 1 {
+		t.Fatalf("启动健康后应立即刷新一次(不等满 interval), got %d", n)
+	}
+}
