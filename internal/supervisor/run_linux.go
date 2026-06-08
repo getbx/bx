@@ -21,7 +21,9 @@ import (
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/dialer"
 	bxdns "github.com/getbx/bx/internal/dns"
+	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/fakeip"
+	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tun"
@@ -51,22 +53,43 @@ type Options struct {
 // Run 启动全局透明代理:建隧道→建 TUN→接线引擎→劫持默认路由,
 // 阻塞到收到信号(或 deadman 到点),然后还原一切。
 func Run(ctx context.Context, cfg *config.Config, opts Options) error {
-	// 1) 分流脑
-	chinaDomain := readLines(opts.ChinaDomainPath)
-	chinaCIDR := readLines(opts.ChinaCIDRPath)
+	// 0) 物料:内嵌 brook/列表落盘(零外部依赖)
+	brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion())
+	if err != nil {
+		return fmt.Errorf("准备 brook: %w", err)
+	}
+	global := cfg.Global || opts.Global
+
+	// 1) 分流脑(global 模式不需要 china 列表)
+	var chinaDomain, chinaCIDR []string
+	var domainPath, cidrPath string
+	if !global {
+		domainPath, cidrPath, err = provision.EnsureLists(cfg.DataDir, embedded.ChinaDomain(), embedded.ChinaCIDR())
+		if err != nil {
+			log.Printf("准备 china 列表失败(降级空列表,等刷新补): %v", err)
+		}
+		if opts.ChinaDomainPath != "" {
+			domainPath = opts.ChinaDomainPath
+		}
+		if opts.ChinaCIDRPath != "" {
+			cidrPath = opts.ChinaCIDRPath
+		}
+		chinaDomain = readLines(domainPath)
+		chinaCIDR = readLines(cidrPath)
+	}
 	router, err := BuildRouter(cfg, chinaDomain, chinaCIDR)
 	if err != nil {
 		return fmt.Errorf("构建分流脑: %w", err)
 	}
-	router.GlobalProxy = cfg.Global || opts.Global
+	router.GlobalProxy = global
 	mode := "分流(中国直连/其余代理)"
-	if router.GlobalProxy {
+	if global {
 		mode = "全局(除内网/用户 direct 外一切走代理)"
 	}
 	log.Printf("分流脑就绪: 模式=%s china_domain=%d china_cidr=%d", mode, len(chinaDomain), len(chinaCIDR))
 
 	// 2) brook 隧道
-	tun0, err := tunnel.NewBrook(opts.BrookBin, cfg.Server, opts.Probe)
+	tun0, err := tunnel.NewBrook(brookPath, cfg.Server, opts.Probe)
 	if err != nil {
 		return fmt.Errorf("构建隧道: %w", err)
 	}
@@ -149,6 +172,23 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	defer nc.down()
 	log.Printf("默认路由已劫持进 %s;bypass=%v via %s dev %s", opts.TunName, bypass, gw, gwDev)
 	log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 brook。")
+
+	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
+	if !global && cfg.Lists.AutoUpdateEnabled() {
+		go refreshLoop(ctx, cfg.Lists.RefreshInterval(), tun0.Healthy, func() error {
+			client := proxyHTTPClient(proxyDialer)
+			if err := fetchLists(ctx, client, cfg.DataDir); err != nil {
+				return err
+			}
+			nr, err := rebuildRouterFromFiles(cfg, domainPath, cidrPath, global)
+			if err != nil {
+				return err
+			}
+			d.SetRouter(nr)
+			return nil
+		})
+		log.Printf("china 列表自动刷新已启用: 间隔=%s", cfg.Lists.RefreshInterval())
+	}
 
 	// 6) 阻塞:信号 / deadman / ctx
 	sig := make(chan os.Signal, 1)

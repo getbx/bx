@@ -112,3 +112,10 @@ func refreshLoop(ctx context.Context, interval time.Duration, healthy func() boo
 		}
 	}
 }
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
