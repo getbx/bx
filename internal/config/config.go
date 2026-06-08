@@ -41,8 +41,7 @@ func (l Lists) RefreshInterval() time.Duration {
 }
 
 type Config struct {
-	Server     string   `yaml:"server"`
-	Password   string   `yaml:"password"`
+	Server     string   `yaml:"server"` // brook 链接(自带凭据;故无独立 password 字段)
 	Killswitch bool     `yaml:"killswitch"`
 	DNS        DNS      `yaml:"dns"`
 	Rules      []Rule   `yaml:"rules"`
@@ -50,7 +49,7 @@ type Config struct {
 	Brook      string   `yaml:"brook"`    // 可选;空=用内嵌 brook
 	DataDir    string   `yaml:"data_dir"` // 运行期数据目录;空=默认 /var/lib/bx
 	Bypass     []string `yaml:"bypass"`   // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
-	Global     bool     `yaml:"global"` // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
+	Global     bool     `yaml:"global"`   // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
 }
 
 // Parse 解析并校验配置字节。
