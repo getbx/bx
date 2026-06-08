@@ -38,9 +38,33 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o bx .
 sudo cp bx /usr/local/bin/bx
 ```
 
-运行时依赖:`brook` 二进制、china 列表(`china_domain.txt` / `china_cidr4.txt`)、root(TUN + 路由)。
+运行时依赖:root(TUN + 路由)。brook 二进制与 china 列表已**内嵌进二进制**,首次运行自解压到 `/var/lib/bx`,无需手动准备;仅当想替换为外部自带的 brook 或自定义列表时才需额外文件。
 
-## 配置 `~/.config/bx/config.yaml`
+## 快速开始(开箱即用)
+
+bx 是**单一静态二进制**,brook 与 china 列表已内嵌——无需手动装 brook、无需下列表。
+
+```bash
+# ① 构建并安装(需 Go ≥ 1.26)
+CGO_ENABLED=0 go build -trimpath -o bx . && sudo install -m755 bx /usr/local/bin/bx
+
+# ② 写一行配置
+sudo mkdir -p /etc/bx
+sudo tee /etc/bx/config.yaml >/dev/null <<'YAML'
+server: "brook://server?server=1.2.3.4%3A9999&password=你的密码"
+global: true                 # 全局;按 china 列表分流则改 false
+YAML
+
+# ③ 跑 —— 二选一
+sudo bx install              # systemd 自启,开机即跑(推荐)
+sudo bx up                   # 或前台跑
+```
+
+就这些。`bx install` 的 `ExecStart` 收敛为 `bx up -c /etc/bx/config.yaml`,不再需要 `--brook`/`--china-*`。
+docker/私网段内建绕过 tun(见下文「配置」注),分流模式下 china 列表起来后经隧道自动刷新。
+RFC1918 内网已自动绕过,SSH 不会被锁死;仅当管理地址是公网 IP 才需在 `bypass:` 里写它。
+
+## 配置 `/etc/bx/config.yaml`(非 root 回退 `~/.config/bx/config.yaml`)
 
 ```yaml
 server: "brook://..."            # brook 服务器 link(或 host:port)
@@ -54,9 +78,9 @@ bypass:                          # ⚠️ 绕过 tun、走原路由的网段
 rules:                           # 可选,优先级最高
   - direct: ["*.corp.internal", "10.0.0.0/8"]
   - proxy:  ["*.openai.com"]
-lists:
-  china_domain: /home/you/.brook/china_domain.txt
-  china_cidr:   /home/you/.brook/china_cidr4.txt
+lists:                           # 可选:默认用内嵌快照并自动刷新,留空即可
+  china_domain: /home/you/.brook/china_domain.txt   # 可选,外部覆盖
+  china_cidr:   /home/you/.brook/china_cidr4.txt    # 可选,外部覆盖
 ```
 
 > brook 服务器 IP 会自动加入 bypass(避免 brook→服务器的连接被 tun 捕获成环)。
@@ -78,7 +102,7 @@ lists:
 | `bx install [flags]` | 安装 systemd 自启服务 | root |
 | `bx uninstall` | 卸载服务 | root |
 
-以 root 运行时家目录为 `/root`,故 `--config` / `--brook` / `--china-domain` / `--china-cidr` 建议用**绝对路径**。
+以 root 运行时家目录为 `/root`,通常只需 `-c /etc/bx/config.yaml`(brook 与 china 列表已内嵌);`--brook` / `--china-domain` / `--china-cidr` 仅作可选覆盖,用时建议**绝对路径**。
 `--test-timeout 90s` 可设死手定时器(到点自动还原,远程首跑保命)。
 
 ## 用法一:按需启停(共享机推荐)
@@ -88,8 +112,7 @@ lists:
 ```bash
 # ① 开启
 tmux new -s bx
-sudo bx up -c /abs/config.yaml --brook /abs/brook \
-  --china-domain /abs/china_domain.txt --china-cidr /abs/china_cidr4.txt
+sudo bx up -c /etc/bx/config.yaml
 #   看到「✅ bx 已全局接管」即可;Ctrl-b d 脱离 tmux,bx 继续后台跑
 
 # ② 使用(开着期间整机外网自动分流,无需配代理)
@@ -113,8 +136,7 @@ sudo bx up --global ...   # 全局:全走 VPS,除内网
 ## 用法二:开机自启(专机)
 
 ```bash
-sudo bx install -c /abs/config.yaml --brook /abs/brook \
-  --china-domain /abs/china_domain.txt --china-cidr /abs/china_cidr4.txt
+sudo bx install -c /etc/bx/config.yaml
 systemctl status bx          # 查看;开机/崩溃自动拉起
 sudo bx uninstall            # 停用并删除
 ```

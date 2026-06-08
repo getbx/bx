@@ -1,0 +1,44 @@
+name: embed-brook
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 每日 UTC 06:00
+  workflow_dispatch:
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 取上游最新 brook tag 与当前内嵌版本
+        id: v
+        run: |
+          tag=$(curl -fsSL https://api.github.com/repos/txthinking/brook/releases/latest | jq -r .tag_name)
+          cur=$(cat internal/embedded/assets/BROOK_VERSION 2>/dev/null || echo none)
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "cur=$cur" >>"$GITHUB_OUTPUT"
+          echo "changed=$([ "$tag" != "$cur" ] && echo yes || echo no)" >>"$GITHUB_OUTPUT"
+      - name: 下载并重新内嵌 brook + 列表
+        if: steps.v.outputs.changed == 'yes'
+        run: |
+          curl -fsSL "https://github.com/txthinking/brook/releases/download/${{ steps.v.outputs.tag }}/brook_linux_amd64" \
+               -o internal/embedded/assets/brook_linux_amd64
+          chmod +x internal/embedded/assets/brook_linux_amd64
+          curl -fsSL https://txthinking.github.io/bypass/china_domain.txt -o internal/embedded/assets/china_domain.txt
+          curl -fsSL https://txthinking.github.io/bypass/china_cidr4.txt  -o internal/embedded/assets/china_cidr4.txt
+          printf '%s' "${{ steps.v.outputs.tag }}" > internal/embedded/assets/BROOK_VERSION
+      - uses: actions/setup-go@v5
+        if: steps.v.outputs.changed == 'yes'
+        with:
+          go-version: '1.26'
+      - name: 验证可编译可过测
+        if: steps.v.outputs.changed == 'yes'
+        run: go build ./... && go test ./...
+      - name: 提交
+        if: steps.v.outputs.changed == 'yes'
+        run: |
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git add internal/embedded/assets
+          git commit -m "chore(embed): brook 升级到 ${{ steps.v.outputs.tag }}(自动)"
+          git push
