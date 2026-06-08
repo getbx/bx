@@ -32,21 +32,24 @@ WantedBy=multi-user.target
 `
 }
 
-// Install 写入 unit 文件并 enable+start(需 root)。execStart 是完整启动命令。
-func Install(execStart string) error {
+// WriteUnit 写入 unit 文件并 daemon-reload(不 enable、不 start)。需 root。
+func WriteUnit(execStart string) error {
 	if err := os.WriteFile(unitPath, []byte(UnitText(execStart)), 0o644); err != nil {
 		return fmt.Errorf("写 %s(需 root): %w", unitPath, err)
 	}
-	for _, args := range [][]string{
-		{"daemon-reload"},
-		{"enable", ServiceName},
-		{"restart", ServiceName},
-	} {
-		if err := runSystemctl(args...); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runSystemctl("daemon-reload")
+}
+
+// Enable 启动并设为开机自启。
+func Enable() error { return runSystemctl("enable", "--now", ServiceName) }
+
+// Disable 停止并取消开机自启。
+func Disable() error { return runSystemctl("disable", "--now", ServiceName) }
+
+// UnitInstalled 报告 unit 文件是否已就位(用于 up 前置校验)。
+func UnitInstalled() bool {
+	_, err := os.Stat(unitPath)
+	return err == nil
 }
 
 // Uninstall 停用并删除服务。
