@@ -1,12 +1,25 @@
 package cli
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/getbx/bx/internal/blink"
+)
 
 func TestBuildExecStart(t *testing.T) {
 	got := buildExecStart("/usr/local/bin/bx", "/etc/bx/config.yaml")
-	want := "/usr/local/bin/bx up -c /etc/bx/config.yaml"
+	want := "/usr/local/bin/bx run -c /etc/bx/config.yaml"
 	if got != want {
-		t.Fatalf("ExecStart 应收敛为仅 -c, got %q", got)
+		t.Fatalf("ExecStart 应跑 run, got %q", got)
+	}
+}
+
+func TestBlinkRoundTripThroughCLI(t *testing.T) {
+	link := "brook://server?server=1.2.3.4%3A9999&password=pw"
+	enc := blink.Encode(link)
+	dec, err := blink.Decode(enc)
+	if err != nil || dec != link {
+		t.Fatalf("round-trip 失败: %q err=%v", dec, err)
 	}
 }
 

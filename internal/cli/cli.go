@@ -6,12 +6,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
+	"time"
 
+	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/provision"
+	"github.com/getbx/bx/internal/setup"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/urfave/cli/v2"
@@ -25,17 +28,68 @@ func New() *cli.App {
 		Name:  "bx",
 		Usage: "基于 brook 的透明全局代理",
 		Commands: []*cli.Command{
-			{Name: "up", Usage: "启动全局代理", Flags: upFlags(), Action: upAction},
-			{Name: "down", Usage: "停止运行中的 bx", Action: downAction},
+			{Name: "setup", Usage: "首次配置:写配置+装服务+连通检测(不启动)", ArgsUsage: "blink://...", Flags: setupFlags(), Action: setupAction},
+			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
+			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
+			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
 			{Name: "status", Usage: "查看状态面板", Action: statusAction},
-			{Name: "reload", Usage: "热重载规则", Action: notImpl("reload")},
-			{Name: "install", Usage: "安装 systemd 自启服务", Flags: upFlags(), Action: installAction},
+			{Name: "blink", Usage: "由 brook 链接生成 blink://(发给用户)", ArgsUsage: "brook://...", Action: blinkAction},
 			{Name: "uninstall", Usage: "卸载 systemd 服务", Action: uninstallAction},
 		},
 	}
 }
 
-func upFlags() []cli.Flag {
+func setupFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "配置写入路径"},
+		&cli.StringFlag{Name: "probe", Value: "1.1.1.1:443", Usage: "连通检测目标"},
+		&cli.BoolFlag{Name: "force", Usage: "覆盖已存在的配置"},
+		&cli.BoolFlag{Name: "strict", Usage: "连通检测失败则中止(默认仅警告)"},
+	}
+}
+
+func setupAction(c *cli.Context) error {
+	arg := c.Args().First()
+	if arg == "" {
+		return fmt.Errorf("用法: sudo bx setup blink://...")
+	}
+	link, err := blink.Decode(arg)
+	if err != nil {
+		return err
+	}
+	cfgPath := c.String("config")
+	brookPath, err := provision.EnsureBrook("/var/lib/bx", "", embedded.Brook(), embedded.BrookVersion())
+	if err != nil {
+		return fmt.Errorf("准备 brook: %w", err)
+	}
+	fmt.Println("⏳ 连通检测中…")
+	if lat, perr := setup.ProbeServer(brookPath, link, c.String("probe"), 15*time.Second); perr != nil {
+		if c.Bool("strict") {
+			return fmt.Errorf("连通检测失败: %w", perr)
+		}
+		fmt.Printf("⚠️  连通检测未通过(仍写配置,稍后可排查): %v\n", perr)
+	} else {
+		fmt.Printf("✅ 服务器连通,延迟 %dms\n", lat)
+	}
+	if err := setup.WriteConfig(cfgPath, link, c.Bool("force")); err != nil {
+		return err
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(cfgPath)
+	if err != nil {
+		return err
+	}
+	if err := install.WriteUnit(buildExecStart(bin, abs)); err != nil {
+		return err
+	}
+	fmt.Printf("✅ 已写配置 %s 并装好服务。下一步:sudo bx up\n", cfgPath)
+	return nil
+}
+
+func runFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "配置文件路径(默认 /etc/bx/config.yaml,非 root 回退 ~/.config/bx/config.yaml)"},
 		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "TUN 设备名"},
@@ -50,7 +104,7 @@ func upFlags() []cli.Flag {
 	}
 }
 
-func upAction(c *cli.Context) error {
+func runAction(c *cli.Context) error {
 	cfg, err := loadConfig(c.String("config"))
 	if err != nil {
 		return err
@@ -70,6 +124,48 @@ func optsFromFlags(c *cli.Context) supervisor.Options {
 		Deadman:         c.Duration("test-timeout"),
 		Global:          c.Bool("global"),
 	}
+}
+
+func upAction(c *cli.Context) error {
+	if !install.UnitInstalled() {
+		return fmt.Errorf("尚未配置。先运行: sudo bx setup blink://...")
+	}
+	if err := install.Enable(); err != nil {
+		return err
+	}
+	fmt.Println("✅ bx 已启动并设为开机自启。`bx status` 看面板。")
+	return nil
+}
+
+func downAction(c *cli.Context) error {
+	if err := install.Disable(); err != nil {
+		return err
+	}
+	fmt.Println("✅ bx 已停止并取消开机自启。")
+	return nil
+}
+
+func blinkAction(c *cli.Context) error {
+	arg := c.Args().First()
+	if !strings.HasPrefix(arg, "brook://") {
+		return fmt.Errorf("用法: bx blink brook://...")
+	}
+	fmt.Println(blink.Encode(arg))
+	return nil
+}
+
+func statusAction(c *cli.Context) error {
+	conn, err := net.Dial("unix", supervisor.SockPath)
+	if err != nil {
+		return fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
+	}
+	defer conn.Close()
+	var rep stats.Report
+	if err := json.NewDecoder(conn).Decode(&rep); err != nil {
+		return fmt.Errorf("读状态: %w", err)
+	}
+	fmt.Print(stats.Render(rep))
+	return nil
 }
 
 func loadConfig(path string) (*config.Config, error) {
@@ -97,55 +193,9 @@ func resolveConfigPath(path string) string {
 	return path
 }
 
-func statusAction(c *cli.Context) error {
-	conn, err := net.Dial("unix", supervisor.SockPath)
-	if err != nil {
-		return fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
-	}
-	defer conn.Close()
-	var rep stats.Report
-	if err := json.NewDecoder(conn).Decode(&rep); err != nil {
-		return fmt.Errorf("读状态: %w", err)
-	}
-	fmt.Print(stats.Render(rep))
-	return nil
-}
-
-func downAction(c *cli.Context) error {
-	b, err := os.ReadFile(supervisor.PidPath)
-	if err != nil {
-		return fmt.Errorf("找不到运行中的 bx(%s): %w", supervisor.PidPath, err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil {
-		return fmt.Errorf("pid 文件损坏: %w", err)
-	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		return fmt.Errorf("停止 bx(pid %d): %w", pid, err)
-	}
-	fmt.Printf("已向 bx (pid %d) 发送停止信号\n", pid)
-	return nil
-}
-
-func installAction(c *cli.Context) error {
-	bin, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cfgPath, err := filepath.Abs(resolveConfigPath(c.String("config")))
-	if err != nil {
-		return err
-	}
-	if err := install.Install(buildExecStart(bin, cfgPath)); err != nil {
-		return err
-	}
-	fmt.Println("✅ bx 已安装为 systemd 服务并启动(开机自启)。`systemctl status bx` 查看,`bx status` 看面板。")
-	return nil
-}
-
 // buildExecStart 构造自洽的 systemd ExecStart:只需绝对 bx 与绝对 config,其余走二进制内默认。
 func buildExecStart(bin, configPath string) string {
-	return fmt.Sprintf("%s up -c %s", bin, configPath)
+	return fmt.Sprintf("%s run -c %s", bin, configPath)
 }
 
 func uninstallAction(c *cli.Context) error {
@@ -154,8 +204,4 @@ func uninstallAction(c *cli.Context) error {
 	}
 	fmt.Println("已卸载 bx systemd 服务")
 	return nil
-}
-
-func notImpl(name string) cli.ActionFunc {
-	return func(*cli.Context) error { return fmt.Errorf("%s: 尚未实现", name) }
 }
