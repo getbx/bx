@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,6 +20,24 @@ type Rule struct {
 type Lists struct {
 	ChinaDomain string `yaml:"china_domain"`
 	ChinaCIDR   string `yaml:"china_cidr"`
+	AutoUpdate  *bool  `yaml:"auto_update"` // nil=默认 true
+	Interval    string `yaml:"interval"`    // 如 "24h";空=默认 24h
+}
+
+// AutoUpdateEnabled 报告是否启用列表自动刷新(默认 true)。
+func (l Lists) AutoUpdateEnabled() bool {
+	if l.AutoUpdate == nil {
+		return true
+	}
+	return *l.AutoUpdate
+}
+
+// RefreshInterval 返回刷新间隔(非法/空时回退 24h)。
+func (l Lists) RefreshInterval() time.Duration {
+	if d, err := time.ParseDuration(l.Interval); err == nil && d > 0 {
+		return d
+	}
+	return 24 * time.Hour
 }
 
 type Config struct {
@@ -28,7 +47,9 @@ type Config struct {
 	DNS        DNS      `yaml:"dns"`
 	Rules      []Rule   `yaml:"rules"`
 	Lists      Lists    `yaml:"lists"`
-	Bypass     []string `yaml:"bypass"` // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
+	Brook      string   `yaml:"brook"`    // 可选;空=用内嵌 brook
+	DataDir    string   `yaml:"data_dir"` // 运行期数据目录;空=默认 /var/lib/bx
+	Bypass     []string `yaml:"bypass"`   // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
 	Global     bool     `yaml:"global"` // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
 }
 
@@ -46,6 +67,9 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.DNS.FakeipCIDR == "" {
 		c.DNS.FakeipCIDR = "198.18.0.0/15"
+	}
+	if c.DataDir == "" {
+		c.DataDir = "/var/lib/bx"
 	}
 	return &c, nil
 }
