@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadValid(t *testing.T) {
 	yaml := []byte(`
@@ -34,5 +37,34 @@ lists:
 func TestParseRejectsEmptyServer(t *testing.T) {
 	if _, err := Parse([]byte(`killswitch: true`)); err == nil {
 		t.Fatal("expected error for missing server")
+	}
+}
+
+func TestParseDefaultsForBootstrap(t *testing.T) {
+	c, err := Parse([]byte("server: \"brook://x\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DataDir != "/var/lib/bx" {
+		t.Errorf("DataDir 默认应为 /var/lib/bx, got %q", c.DataDir)
+	}
+	if !c.Lists.AutoUpdateEnabled() {
+		t.Error("AutoUpdate 默认应为 true")
+	}
+	if c.Lists.RefreshInterval() != 24*time.Hour {
+		t.Errorf("Interval 默认应为 24h, got %v", c.Lists.RefreshInterval())
+	}
+}
+
+func TestParseListsOverrides(t *testing.T) {
+	c, err := Parse([]byte("server: \"brook://x\"\nlists:\n  auto_update: false\n  interval: 1h\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Lists.AutoUpdateEnabled() {
+		t.Error("auto_update:false 应禁用")
+	}
+	if c.Lists.RefreshInterval() != time.Hour {
+		t.Errorf("interval:1h 应解析为 1h, got %v", c.Lists.RefreshInterval())
 	}
 }
