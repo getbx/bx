@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/route"
@@ -33,7 +34,7 @@ type DecisionCounter interface {
 
 // Dialer 把 Router 决策落到实际拨号。
 type Dialer struct {
-	Router     *route.Router
+	router     atomic.Pointer[route.Router]
 	Fake       *fakeip.Pool // 可空:无 fake-IP 时按 IP 直判
 	Resolver   Resolver
 	Proxy      ContextDialer // 经 brook socks5
@@ -42,6 +43,9 @@ type Dialer struct {
 	Killswitch bool
 	Stats      DecisionCounter // 可空:决策计数
 }
+
+// SetRouter 原子替换当前分流脑(用于列表刷新后的热重载)。
+func (d *Dialer) SetRouter(r *route.Router) { d.router.Store(r) }
 
 func network(udp bool) string {
 	if udp {
@@ -52,6 +56,7 @@ func network(udp bool) string {
 
 // Dial 处理一条来自 TUN 的连接,返回到出口的 net.Conn。
 func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
+	rt := d.router.Load()
 	// 1) fake IP 反查域名
 	if m.Domain == "" && d.Fake != nil {
 		if dom, ok := d.Fake.Domain(m.IP); ok {
@@ -59,7 +64,7 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 		}
 	}
 
-	dec := d.Router.Decide(m)
+	dec := rt.Decide(m)
 
 	// 2) 未命中域名:用国内 DNS 解析后按 IP 二次判定
 	var resolved netip.Addr
@@ -69,7 +74,7 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 			dec = route.Proxy // 解析失败保守走代理
 		} else {
 			resolved = ip
-			dec = d.Router.DecideIP(ip)
+			dec = rt.DecideIP(ip)
 		}
 	}
 
