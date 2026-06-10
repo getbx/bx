@@ -42,19 +42,20 @@ sudo cp bx /usr/local/bin/bx
 
 ## 快速开始(傻瓜版)
 
-bx 是单一静态二进制,brook/列表已内嵌。管理员把服务器链接转成 `blink://` 发给用户,用户三步即跑:
+bx 是单一静态二进制,brook/列表已内嵌。管理员把服务器链接转成 `blink://` 发给用户,用户拿到 bx 文件后两步即跑:
 
 ```bash
 # (管理员)由 brook 链接生成 blink,发给用户
 bx blink "brook://server?server=1.2.3.4%3A9999&password=xxx"
 #   → blink://YnJvb2s6Ly...
 
-# (用户)① 放上二进制  ② 配置(自动连通检测,不启动)  ③ 启动
-sudo install -m755 bx /usr/local/bin/bx
-sudo bx setup blink://YnJvb2s6Ly...      # 看到 ✅ 服务器连通
-sudo bx up                                # 后台起 + 开机自启
+# (用户)① 配置:setup 自动把 bx 装进 PATH + 连通检测(不启动)  ② 启动
+sudo ./bx setup blink://YnJvb2s6Ly...     # 自动装到 /usr/local/bin/bx,看到 ✅ 服务器连通
+sudo bx up                                 # 后台起 + 开机自启
+#   想先前台测一把:sudo bx run             # 前台带 log,Ctrl-C 退出
 ```
 
+只下载一个 `bx` 文件、跑一次 `sudo ./bx setup blink://...`,之后 `bx` 全局可用——无需 `cp`/`install`。
 日常只用两个词:`sudo bx down`(停+取消自启)、`sudo bx up`(起+自启)。
 `bx status` 看面板;`sudo bx run` 前台带 log 排错;`sudo bx uninstall` 卸载。
 私网/docker 自动绕过 tun,SSH 不会被锁死;无需写任何 YAML。

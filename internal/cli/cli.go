@@ -74,9 +74,9 @@ func setupAction(c *cli.Context) error {
 	if err := setup.WriteConfig(cfgPath, link, c.Bool("force")); err != nil {
 		return err
 	}
-	bin, err := os.Executable()
+	bin, err := install.SelfInstall()
 	if err != nil {
-		return err
+		return fmt.Errorf("安装 bx 到 PATH: %w", err)
 	}
 	abs, err := filepath.Abs(cfgPath)
 	if err != nil {
@@ -85,7 +85,7 @@ func setupAction(c *cli.Context) error {
 	if err := install.WriteUnit(buildExecStart(bin, abs)); err != nil {
 		return err
 	}
-	fmt.Printf("✅ 已写配置 %s 并装好服务。下一步:sudo bx up\n", cfgPath)
+	fmt.Printf("✅ bx 已装到 %s、写好配置 %s、装好服务。下一步:sudo bx up\n", install.BinPath, cfgPath)
 	return nil
 }
 
