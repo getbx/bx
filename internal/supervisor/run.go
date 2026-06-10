@@ -1,5 +1,6 @@
-//go:build linux
-
+// run.go 是 Supervisor 的平台无关核心:编排隧道/分流脑/TUN 引擎/状态,
+// 一切 OS 专属的事(开 TUN、防环直连器、劫持路由)经 platform 接口下沉到
+// platform_<os>.go。读这里应当看不出自己在哪个操作系统上。
 package supervisor
 
 import (
@@ -12,10 +13,8 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -25,17 +24,11 @@ import (
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/provision"
-	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tun"
 	"github.com/getbx/bx/internal/tunnel"
 	"golang.org/x/net/proxy"
-	"golang.org/x/sys/unix"
-)
-
-const (
-	routeTable = 100   // tun 默认路由所在表
-	fwMark     = 0x162 // bx 自身直连流量打的标(走原路由表绕过 tun)
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 // Options 是 bx up 的运行期参数(非配置文件项)。
@@ -51,9 +44,33 @@ type Options struct {
 	Global          bool          // 全局模式:除 bypass/用户 direct 规则外一切走代理
 }
 
+// tunHandle 是 OpenTUN 返回的设备句柄,交给 Hijack 配路由。
+// Name 在 macOS 上可能与请求名不同(utun 由内核分配),故由平台回填。
+type tunHandle struct {
+	Name string
+	Addr string
+	MTU  uint32
+}
+
+// platform 抽象 Run 需要的全部 OS 专属能力,每个 OS 一份实现(按构建标签选取)。
+// 接口按「意图」定义而非「机制」:例如 DirectDialer 表达「不绕回隧道的直连器」,
+// Linux 用 SO_MARK、macOS 用 IP_BOUND_IF、Windows 用 IP_UNICAST_IF 各自实现。
+type platform interface {
+	// OpenTUN 创建 TUN 设备,返回 gVisor link 端点 + 句柄(供 Hijack 用)。
+	OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint, tunHandle, error)
+	// DirectDialer 返回一个直连器:其连接绕过 TUN(防环),供 bx 自身出站用
+	//(直连决策、国内 DNS 解析、拨号到本地 socks)。
+	DirectDialer() *net.Dialer
+	// Hijack 把默认流量劫进 TUN,但 serverBypass(brook 服务器)与 userBypass
+	//(管理网/SSH)仍走原网关;私网/docker 段由平台各自处理。返回还原闭包。
+	Hijack(tun tunHandle, serverBypass, userBypass []string) (teardown func(), err error)
+}
+
 // Run 启动全局透明代理:建隧道→建 TUN→接线引擎→劫持默认路由,
 // 阻塞到收到信号(或 deadman 到点),然后还原一切。
 func Run(ctx context.Context, cfg *config.Config, opts Options) error {
+	plat := newPlatform()
+
 	// 0) 物料:内嵌 brook/列表落盘(零外部依赖)
 	brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion())
 	if err != nil {
@@ -110,9 +127,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	dnsSrv := bxdns.NewServer(pool, 1)
 
-	// 4) Dialer:fake-IP 反查 + marked 直连 + socks 代理 + 国内 DNS resolver
+	// 4) Dialer:fake-IP 反查 + 防环直连 + socks 代理 + 国内 DNS resolver
 	counters := &stats.Counters{}
-	direct := markedDialer(fwMark)
+	direct := plat.DirectDialer()
 	proxyDialer, err := socksProxy(tun0.SocksAddr(), direct)
 	if err != nil {
 		return fmt.Errorf("构建 socks 代理: %w", err)
@@ -129,7 +146,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	d.SetRouter(router)
 
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
-	link, err := tun.OpenDevice(opts.TunName, opts.MTU)
+	link, tunH, err := plat.OpenTUN(opts.TunName, opts.TunAddr, opts.MTU)
 	if err != nil {
 		return fmt.Errorf("建 TUN: %w", err)
 	}
@@ -151,11 +168,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		defer os.Remove(PidPath)
 	}
 
-	// 5) 劫持默认路由(含 bypass 保 SSH + 服务器防环)
-	gw, gwDev, err := defaultRoute()
-	if err != nil {
-		return fmt.Errorf("探测默认网关: %w", err)
-	}
+	// 6) 劫持默认路由(含 bypass 保 SSH + 服务器防环)
 	serverHost, err := serverHostFromLink(cfg.Server)
 	if err != nil {
 		return fmt.Errorf("取服务器 IP: %w", err)
@@ -165,18 +178,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if len(serverBypass) == 0 {
 		return fmt.Errorf("无法解析 brook 服务器 %q 为 IP(bypass 必需,否则成环)", serverHost)
 	}
-	bypass := append(serverBypass, cfg.Bypass...)
-	nc := &netConf{
-		tunName: opts.TunName, tunAddr: opts.TunAddr,
-		gw: gw, gwDev: gwDev, bypass: bypass,
-		mainLookup: route.DefaultPrivateCIDRs, // 私网/docker 段在内核层分流到主表,绕开 tun
-	}
-	if err := nc.up(); err != nil {
-		nc.down()
+	teardown, err := plat.Hijack(tunH, serverBypass, cfg.Bypass)
+	if err != nil {
 		return fmt.Errorf("配置路由: %w", err)
 	}
-	defer nc.down()
-	log.Printf("默认路由已劫持进 %s;bypass=%v via %s dev %s", opts.TunName, bypass, gw, gwDev)
+	defer teardown()
 	log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 brook。")
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
@@ -199,7 +205,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		log.Printf("china 列表自动刷新已启用: 间隔=%s", cfg.Lists.RefreshInterval())
 	}
 
-	// 6) 阻塞:信号 / deadman / ctx
+	// 7) 阻塞:信号 / deadman / ctx
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
@@ -249,22 +255,6 @@ func serveStats(c *stats.Counters, t *tunnel.Tunnel, server string) (io.Closer, 
 	return ln, nil
 }
 
-// markedDialer 返回打 SO_MARK 的直连器:让 bx 自身的直连绕过 tun(防环)。
-func markedDialer(mark int) *net.Dialer {
-	return &net.Dialer{
-		Timeout: 10 * time.Second,
-		Control: func(_, _ string, c syscall.RawConn) error {
-			var serr error
-			if err := c.Control(func(fd uintptr) {
-				serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, mark)
-			}); err != nil {
-				return err
-			}
-			return serr
-		},
-	}
-}
-
 // socksProxy 把 brook 本地 socks5 包成带 context 的拨号器。
 func socksProxy(socksAddr string, base proxy.Dialer) (dialer.ContextDialer, error) {
 	d, err := proxy.SOCKS5("tcp", socksAddr, nil, base)
@@ -278,7 +268,7 @@ func socksProxy(socksAddr string, base proxy.Dialer) (dialer.ContextDialer, erro
 	return cd, nil
 }
 
-// dnsResolver 用指定 DNS 服务器解析(经 marked 直连器,绕过 tun)。
+// dnsResolver 用指定 DNS 服务器解析(经防环直连器,绕过 tun)。
 type dnsResolver struct{ r *net.Resolver }
 
 func newResolver(server string, base *net.Dialer) *dnsResolver {
@@ -301,104 +291,6 @@ func (d *dnsResolver) Resolve(ctx context.Context, domain string) (netip.Addr, e
 	return ips[0].Unmap(), nil
 }
 
-// netConf 管理 TUN 接口 + 策略路由(table + rule + fwmark)。
-type netConf struct {
-	tunName    string
-	tunAddr    string
-	gw         string
-	gwDev      string
-	bypass     []string // 走原网关绕过 tun 的网段(table 100 via gw),用户指定的公网/管理网
-	mainLookup []string // 私网/docker 段:ip rule 送主表(pref 150),native 本地投递、绕开 tun
-}
-
-// upSteps 是 up() 要执行的 ip 命令序列(纯构造,无副作用,便于测试)。
-func (n *netConf) upSteps() [][]string {
-	steps := [][]string{
-		{"addr", "add", n.tunAddr, "dev", n.tunName},
-		{"link", "set", n.tunName, "up"},
-	}
-	for _, b := range n.bypass {
-		steps = append(steps, []string{"route", "add", b, "via", n.gw, "dev", n.gwDev, "table", itoa(routeTable)})
-	}
-	steps = append(steps,
-		[]string{"route", "add", "default", "dev", n.tunName, "table", itoa(routeTable)},
-		[]string{"rule", "add", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"},
-	)
-	// 私网/docker 段:pref 150(< 全量进 tun 的 200)送主表,由内核原路由 native 投递
-	// (docker0/br-* on-link、内网 via 网关),宿主机访问容器/内网的包永不进 tun。
-	for _, c := range n.mainLookup {
-		steps = append(steps, []string{"rule", "add", "to", c, "pref", "150", "table", "main"})
-	}
-	steps = append(steps, []string{"rule", "add", "pref", "200", "table", itoa(routeTable)})
-	return steps
-}
-
-func (n *netConf) up() error {
-	for _, s := range n.upSteps() {
-		if err := runIP(s...); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// downSteps 是 down() 要执行的还原命令序列(与 upSteps 对称)。
-func (n *netConf) downSteps() [][]string {
-	steps := [][]string{
-		{"rule", "del", "pref", "200", "table", itoa(routeTable)},
-	}
-	for _, c := range n.mainLookup {
-		steps = append(steps, []string{"rule", "del", "to", c, "pref", "150", "table", "main"})
-	}
-	steps = append(steps,
-		[]string{"rule", "del", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"},
-		[]string{"route", "flush", "table", itoa(routeTable)},
-		[]string{"link", "del", n.tunName},
-	)
-	return steps
-}
-
-// down 尽力还原(忽略单步错误)。
-func (n *netConf) down() {
-	for _, s := range n.downSteps() {
-		_ = runIPQuiet(s...)
-	}
-}
-
-// defaultRoute 解析当前 IPv4 默认路由的网关与出口设备。
-func defaultRoute() (gw, dev string, err error) {
-	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()
-	if err != nil {
-		return "", "", err
-	}
-	f := strings.Fields(string(out))
-	for i := 0; i+1 < len(f); i++ {
-		switch f[i] {
-		case "via":
-			gw = f[i+1]
-		case "dev":
-			dev = f[i+1]
-		}
-	}
-	if gw == "" || dev == "" {
-		return "", "", fmt.Errorf("解析默认路由失败: %q", strings.TrimSpace(string(out)))
-	}
-	return gw, dev, nil
-}
-
-func runIP(args ...string) error {
-	cmd := exec.Command("ip", args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ip %s: %w", strings.Join(args, " "), err)
-	}
-	return nil
-}
-
-func runIPQuiet(args ...string) error {
-	return exec.Command("ip", args...).Run()
-}
-
 func readLines(path string) []string {
 	if path == "" {
 		return nil
@@ -418,5 +310,4 @@ func readLines(path string) []string {
 	return out
 }
 
-func itoa(i int) string    { return fmt.Sprintf("%d", i) }
-func fmtMark(m int) string { return fmt.Sprintf("0x%x", m) }
+func itoa(i int) string { return fmt.Sprintf("%d", i) }
