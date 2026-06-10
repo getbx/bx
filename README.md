@@ -31,10 +31,11 @@
 
 ## 构建
 
-单一静态二进制(无 CGO):
+单一静态二进制(无 CGO)。内嵌 brook 按目标架构自动选取,支持 **linux/amd64** 与 **linux/arm64**:
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o bx .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o bx .   # x86-64
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o bx .   # ARM64(树莓派/ARM 云主机)
 sudo cp bx /usr/local/bin/bx
 ```
 
@@ -144,7 +145,7 @@ sudo bx uninstall                      # 停用并删除
 - UDP 不走代理(brook 免费版 socks5 仅 TCP);DNS 由引擎就地 fake-IP 应答
 - `bx reload` 热重载未实现:改配置后 `bx down && bx up` 或 `systemctl restart bx`
 - 单节点(多节点/故障转移属 YAGNI 未做)
-- 仅 Linux
+- 仅 Linux(amd64 / arm64;macOS/Windows 因依赖 TUN+netlink+SO_MARK+systemd 暂不支持)
 
 ## 测试
 

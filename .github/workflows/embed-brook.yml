@@ -18,12 +18,14 @@ jobs:
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
           echo "cur=$cur" >>"$GITHUB_OUTPUT"
           echo "changed=$([ "$tag" != "$cur" ] && echo yes || echo no)" >>"$GITHUB_OUTPUT"
-      - name: 下载并重新内嵌 brook + 列表
+      - name: 下载并重新内嵌 brook(amd64+arm64)+ 列表
         if: steps.v.outputs.changed == 'yes'
         run: |
-          curl -fsSL "https://github.com/txthinking/brook/releases/download/${{ steps.v.outputs.tag }}/brook_linux_amd64" \
-               -o internal/embedded/assets/brook_linux_amd64
-          chmod +x internal/embedded/assets/brook_linux_amd64
+          for arch in amd64 arm64; do
+            curl -fsSL "https://github.com/txthinking/brook/releases/download/${{ steps.v.outputs.tag }}/brook_linux_${arch}" \
+                 -o "internal/embedded/assets/brook_linux_${arch}"
+            chmod +x "internal/embedded/assets/brook_linux_${arch}"
+          done
           curl -fsSL https://txthinking.github.io/bypass/china_domain.txt -o internal/embedded/assets/china_domain.txt
           curl -fsSL https://txthinking.github.io/bypass/china_cidr4.txt  -o internal/embedded/assets/china_cidr4.txt
           printf '%s' "${{ steps.v.outputs.tag }}" > internal/embedded/assets/BROOK_VERSION
@@ -31,9 +33,11 @@ jobs:
         if: steps.v.outputs.changed == 'yes'
         with:
           go-version: '1.26'
-      - name: 验证可编译可过测
+      - name: 验证可编译可过测(amd64 原生 + arm64 交叉)
         if: steps.v.outputs.changed == 'yes'
-        run: go build ./... && go test ./...
+        run: |
+          go build ./... && go test ./...
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /dev/null ./...
       - name: 提交
         if: steps.v.outputs.changed == 'yes'
         run: |
