@@ -130,6 +130,15 @@ func upAction(c *cli.Context) error {
 	if !install.UnitInstalled() {
 		return fmt.Errorf("尚未配置。先运行: sudo bx setup blink://...")
 	}
+	// 防呆:命令模型重排后 up=enable service、run=前台。旧 unit 的 ExecStart 仍写
+	// `bx up`,配新二进制会让 service 启动时递归调用 up → 死锁。检测到就报错让用户重装。
+	cmd, err := install.ExecStartCmd()
+	if err != nil {
+		return err
+	}
+	if cmd != "run" {
+		return fmt.Errorf("检测到旧版 systemd unit(ExecStart 子命令是 %q,应为 run):直接 up 会让服务递归调用自身。请重跑 sudo bx setup blink://... 重写 unit", cmd)
+	}
 	if err := install.Enable(); err != nil {
 		return err
 	}

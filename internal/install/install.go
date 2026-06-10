@@ -110,6 +110,34 @@ func UnitInstalled() bool {
 	return err == nil
 }
 
+// ExecStartCmd 读取已安装 unit,返回其 ExecStart 的子命令(run/up/…)。
+// 命令模型重排后 up=systemctl enable;若旧 unit 仍写 `bx up`,新二进制启动 service
+// 会让 up 递归调用自身。up 前用它防呆。unit 不存在或无法读时报错。
+func ExecStartCmd() (string, error) {
+	b, err := os.ReadFile(unitPath)
+	if err != nil {
+		return "", fmt.Errorf("读 %s: %w", unitPath, err)
+	}
+	return execStartCmd(string(b)), nil
+}
+
+// execStartCmd 从 unit 文本里取出 ExecStart 的子命令(二进制路径后的第一个参数)。
+// 例:"ExecStart=/usr/local/bin/bx run -c /etc/bx/config.yaml" → "run"。
+// 没有 ExecStart 或其后无子命令则返回 ""。
+func execStartCmd(unitText string) string {
+	for _, line := range strings.Split(unitText, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "ExecStart=")
+		if !ok {
+			continue
+		}
+		if fields := strings.Fields(rest); len(fields) >= 2 {
+			return fields[1] // fields[0] 是 bx 二进制路径,[1] 是子命令
+		}
+		return ""
+	}
+	return ""
+}
+
 // Uninstall 停用并删除服务。
 func Uninstall() error {
 	_ = runSystemctl("disable", "--now", ServiceName)
