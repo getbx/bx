@@ -32,12 +32,13 @@ func newPlatform() platform { return linuxPlatform{} }
 type linuxPlatform struct{}
 
 // OpenTUN 打开 /dev/net/tun 并接上 gVisor 协议栈(地址/置 up/路由由 Hijack 完成)。
-func (linuxPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint, tunHandle, error) {
+// Linux 设备由 Hijack 的 `ip link del` 移除、fd 随进程退出回收,故 closeTUN 为空操作。
+func (linuxPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint, tunHandle, func(), error) {
 	link, err := tun.OpenDevice(name, mtu)
 	if err != nil {
-		return nil, tunHandle{}, err
+		return nil, tunHandle{}, nil, err
 	}
-	return link, tunHandle{Name: name, Addr: addr, MTU: mtu}, nil
+	return link, tunHandle{Name: name, Addr: addr, MTU: mtu}, func() {}, nil
 }
 
 // DirectDialer 返回打 SO_MARK 的直连器(配合 pref 100 fwmark 规则绕过 tun)。

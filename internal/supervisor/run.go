@@ -56,8 +56,9 @@ type tunHandle struct {
 // 接口按「意图」定义而非「机制」:例如 DirectDialer 表达「不绕回隧道的直连器」,
 // Linux 用 SO_MARK、macOS 用 IP_BOUND_IF、Windows 用 IP_UNICAST_IF 各自实现。
 type platform interface {
-	// OpenTUN 创建 TUN 设备,返回 gVisor link 端点 + 句柄(供 Hijack 用)。
-	OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint, tunHandle, error)
+	// OpenTUN 创建 TUN 设备,返回 gVisor link 端点、句柄(供 Hijack 用)、
+	// 以及关闭该设备的闭包(由 Run 用 defer 接管,确保任何提前返回都不泄漏设备/goroutine)。
+	OpenTUN(name, addr string, mtu uint32) (link stack.LinkEndpoint, tun tunHandle, closeTUN func(), err error)
 	// DirectDialer 返回一个直连器:其连接绕过 TUN(防环),供 bx 自身出站用
 	//(直连决策、国内 DNS 解析、拨号到本地 socks)。
 	DirectDialer() *net.Dialer
@@ -146,10 +147,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	d.SetRouter(router)
 
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
-	link, tunH, err := plat.OpenTUN(opts.TunName, opts.TunAddr, opts.MTU)
+	link, tunH, closeTUN, err := plat.OpenTUN(opts.TunName, opts.TunAddr, opts.MTU)
 	if err != nil {
 		return fmt.Errorf("建 TUN: %w", err)
 	}
+	defer closeTUN() // Run 任何提前返回都会关 TUN(停 pump、移除设备),不泄漏
 	eng, err := tun.New(link, d, opts.MTU, tun.WithDNS(dnsSrv), tun.WithStats(counters))
 	if err != nil {
 		return fmt.Errorf("启动引擎: %w", err)

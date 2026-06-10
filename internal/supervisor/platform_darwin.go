@@ -33,34 +33,32 @@ var darwinDirectCIDRs = []string{
 	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
 }
 
-func newPlatform() platform { return &darwinPlatform{} }
+func newPlatform() platform { return darwinPlatform{} }
 
-type darwinPlatform struct {
-	closeTUN func() // wgEndpoint 的停止/清理闭包,由 OpenTUN 设置、Hijack 的 teardown 调用
-}
+type darwinPlatform struct{}
 
 // OpenTUN 创建 utun 设备(名字须 utunN 或 "utun" 由内核分配),桥接成 gVisor 端点。
-func (p *darwinPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint, tunHandle, error) {
+// 返回的 closeTUN 停 pump、关设备,由 Run 用 defer 接管。
+func (darwinPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint, tunHandle, func(), error) {
 	// macOS utun 不允许任意名(bx 默认的 "bx0" 不合法),非 utun 前缀一律交内核分配。
 	if !strings.HasPrefix(name, "utun") {
 		name = "utun"
 	}
 	dev, err := wgtun.CreateTUN(name, int(mtu))
 	if err != nil {
-		return nil, tunHandle{}, fmt.Errorf("创建 utun(需 root): %w", err)
+		return nil, tunHandle{}, nil, fmt.Errorf("创建 utun(需 root): %w", err)
 	}
 	real, err := dev.Name()
 	if err != nil {
 		_ = dev.Close()
-		return nil, tunHandle{}, fmt.Errorf("取 utun 名: %w", err)
+		return nil, tunHandle{}, nil, fmt.Errorf("取 utun 名: %w", err)
 	}
 	link, closeTUN := tun.NewWGEndpoint(dev, mtu)
-	p.closeTUN = closeTUN
-	return link, tunHandle{Name: real, Addr: addr, MTU: mtu}, nil
+	return link, tunHandle{Name: real, Addr: addr, MTU: mtu}, closeTUN, nil
 }
 
 // DirectDialer 返回 IP_BOUND_IF 绑物理出口网卡的直连器(bx 自身出站绕过 utun)。
-func (p *darwinPlatform) DirectDialer() *net.Dialer {
+func (darwinPlatform) DirectDialer() *net.Dialer {
 	idx := 0
 	if _, dev, err := defaultRouteDarwin(); err == nil {
 		if ifi, e := net.InterfaceByName(dev); e == nil {
@@ -95,19 +93,18 @@ func boundIfDialer(ifIndex int) *net.Dialer {
 
 // Hijack 给 utun 配地址,装 split-default 把默认流量劫进 utun,
 // 服务器/用户/私网段经物理网关旁路。返回还原闭包(删路由 + 关 utun)。
-func (p *darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (func(), error) {
+func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (func(), error) {
 	gw, _, err := defaultRouteDarwin()
 	if err != nil {
 		return nil, fmt.Errorf("探测默认网关: %w", err)
 	}
 
-	// 1) utun 配地址并 up(点对点:本端=对端=同一地址)。
+	// 1) utun 配地址并 up(点对点:本端=对端=同一地址)。TUN 关闭由 Run 的 closeTUN 负责。
 	ip := t.Addr
 	if i := strings.IndexByte(ip, '/'); i >= 0 {
 		ip = ip[:i]
 	}
 	if err := runCmd("ifconfig", t.Name, "inet", ip, ip, "up"); err != nil {
-		p.teardownTUN()
 		return nil, fmt.Errorf("配置 utun 地址: %w", err)
 	}
 
@@ -131,12 +128,11 @@ func (p *darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) 
 		specs = append(specs, spec{[]string{"-n", "add", "-net", c, "-interface", t.Name}, c})
 	}
 
-	var done []string // 已加路由的 cidr,用于还原
+	var done []string // 已加路由的 cidr,用于还原(只管路由;TUN 关闭归 Run 的 closeTUN)
 	cleanup := func() {
 		for i := len(done) - 1; i >= 0; i-- {
 			_ = runCmdQuiet("route", "-n", "delete", "-net", done[i])
 		}
-		p.teardownTUN()
 	}
 	for _, s := range specs {
 		if err := runCmd("route", s.add...); err != nil {
@@ -147,13 +143,6 @@ func (p *darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) 
 	}
 	log.Printf("默认路由已劫持进 %s;serverBypass=%v userBypass=%v via %s", t.Name, serverBypass, userBypass, gw)
 	return cleanup, nil
-}
-
-func (p *darwinPlatform) teardownTUN() {
-	if p.closeTUN != nil {
-		p.closeTUN()
-		p.closeTUN = nil
-	}
 }
 
 // defaultRouteDarwin 解析 `route -n get default` 的网关与出口网卡。
