@@ -23,6 +23,26 @@ func TestUnitText(t *testing.T) {
 	}
 }
 
+func TestExecStartCmd(t *testing.T) {
+	cases := []struct {
+		name string
+		unit string
+		want string
+	}{
+		{"新版 run", UnitText("/usr/local/bin/bx run -c /etc/bx/config.yaml"), "run"},
+		{"旧版 up(递归陷阱)", UnitText("/usr/local/bin/bx up -c /etc/bx/config.yaml"), "up"},
+		{"无 ExecStart", "[Service]\nType=simple\n", ""},
+		{"ExecStart 无子命令", "ExecStart=/usr/local/bin/bx\n", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := execStartCmd(c.unit); got != c.want {
+				t.Fatalf("execStartCmd = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestUnitInstalledFalseWhenAbsent(t *testing.T) {
 	// 只验证函数可调用且返回 bool(/etc/systemd/system/bx.service 在测试环境状态不定)
 	_ = UnitInstalled()
