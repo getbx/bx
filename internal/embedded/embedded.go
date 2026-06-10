@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-//go:embed assets/brook_linux_amd64
-var brook []byte
+// brook 由架构专属文件按 GOARCH 内嵌:embedded_amd64.go / embedded_arm64.go。
+// 仅支持 linux/amd64 与 linux/arm64;其他架构无对应 brook,编译期即报 undefined: brook。
 
 //go:embed assets/china_domain.txt
 var chinaDomain []byte
@@ -19,7 +19,7 @@ var chinaCIDR []byte
 //go:embed assets/BROOK_VERSION
 var brookVersion string
 
-// Brook 返回内嵌的 brook linux/amd64 二进制字节(只读,调用方不得修改返回的切片)。
+// Brook 返回内嵌的、与当前架构匹配的 brook 二进制字节(只读,调用方不得修改返回的切片)。
 func Brook() []byte { return brook }
 
 // ChinaDomain 返回内嵌的 china 域名列表快照(只读,调用方不得修改返回的切片)。
