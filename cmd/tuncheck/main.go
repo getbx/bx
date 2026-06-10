@@ -1,3 +1,5 @@
+//go:build linux
+
 // Command tuncheck 是 TUN 引擎的端到端冒烟工具(需 root)。
 //
 // 它建一个 TUN 设备,用「固定上游」Dialer(忽略目标、一律连到 -upstream)
