@@ -10,6 +10,7 @@ import (
 
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/route"
+	"github.com/getbx/bx/internal/splitdns"
 )
 
 // ErrBlocked 表示连接被 kill-switch 或 Block 决策拦截。
@@ -42,6 +43,8 @@ type Dialer struct {
 	Healthy    func() bool   // 隧道是否健康(kill-switch 用),可空
 	Killswitch bool
 	Stats      DecisionCounter // 可空:决策计数
+	// SplitDirect 可空:split-DNS 解析出的内网真实 IP 集,命中即强制直连(绕 Router)。
+	SplitDirect *splitdns.Set
 }
 
 // SetRouter 原子替换当前分流脑(用于列表刷新后的热重载)。
@@ -64,7 +67,12 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 		}
 	}
 
-	dec := rt.Decide(m)
+	var dec route.Decision
+	if m.Domain == "" && d.SplitDirect != nil && d.SplitDirect.Contains(m.IP) {
+		dec = route.Direct // split 解析出的内网真实 IP:强制直连,跳过 Router
+	} else {
+		dec = rt.Decide(m)
+	}
 
 	// 2) 未命中域名:用国内 DNS 解析后按 IP 二次判定
 	var resolved netip.Addr
