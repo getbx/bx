@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -57,9 +58,10 @@ func (linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fun
 		mainLookup: route.DefaultPrivateCIDRs, // 私网/docker 段在内核层分流到主表,绕开 tun
 	}
 	// v6 内核启用时才装 fail-closed 阻断;禁用(ipv6.disable=1 / 未编译)则跳过,不连累 v4 启动。
+	// 私网段静态 carve + 动态补 on-link 全局前缀,保住同链路 GUA 邻居的直连。
 	if ipv6Enabled() {
 		nc.blockV6 = true
-		nc.mainLookupV6 = route.DefaultPrivateV6CIDRs
+		nc.mainLookupV6 = append(append([]string{}, route.DefaultPrivateV6CIDRs...), onLinkV6Prefixes()...)
 	}
 	if err := nc.up(); err != nil {
 		nc.down()
@@ -209,6 +211,53 @@ func ipv6Enabled() bool {
 	_, err := os.Stat("/proc/net/if_inet6")
 	return err == nil
 }
+
+// onLinkV6Prefixes 读 `ip -6 route show` 提取 on-link 全局 v6 前缀,用于 carve 出阻断,
+// 让同链路用 GUA 寻址的邻居在 bx 阻断全局 v6 时仍可直连。失败返回 nil(无额外 carve,不致命)。
+func onLinkV6Prefixes() []string {
+	out, err := exec.Command("ip", "-6", "route", "show").Output()
+	if err != nil {
+		return nil
+	}
+	return parseOnLinkV6Prefixes(string(out))
+}
+
+// parseOnLinkV6Prefixes 纯解析:提取「有 dev 无 via(连接路由)、属 2000::/3 全局单播、非 default」
+// 的前缀。link-local(fe80)/ULA(fc00)已由 DefaultPrivateV6CIDRs 静态 carve,这里只补全局段。
+func parseOnLinkV6Prefixes(routeOutput string) []string {
+	var out []string
+	for _, line := range strings.Split(routeOutput, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || f[0] == "default" {
+			continue
+		}
+		var hasVia, hasDev bool
+		for _, t := range f {
+			switch t {
+			case "via":
+				hasVia = true
+			case "dev":
+				hasDev = true
+			}
+		}
+		if hasVia || !hasDev || !isGlobalUnicastV6Prefix(f[0]) {
+			continue
+		}
+		out = append(out, f[0])
+	}
+	return out
+}
+
+// isGlobalUnicastV6Prefix 报告前缀的网络地址是否落在 2000::/3(全局单播)。
+func isGlobalUnicastV6Prefix(prefix string) bool {
+	p, err := netip.ParsePrefix(prefix)
+	if err != nil || !p.Addr().Is6() {
+		return false
+	}
+	return globalUnicastV6.Contains(p.Addr())
+}
+
+var globalUnicastV6 = netip.MustParsePrefix("2000::/3")
 
 func runIP(args ...string) error {
 	cmd := exec.Command("ip", args...)

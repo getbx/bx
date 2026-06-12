@@ -166,3 +166,28 @@ func TestDefaultPrivateV6CIDRsWiredIn(t *testing.T) {
 		t.Fatal("DefaultPrivateV6CIDRs 不应为空(v6 阻断需私网 carve-out)")
 	}
 }
+
+// parseOnLinkV6Prefixes 从 `ip -6 route show` 输出提取需 carve-out 的 on-link 全局 v6 前缀:
+// 有 dev 无 via(连接路由)、属 2000::/3 全局单播、非 default。link-local(fe80)/ULA(fc00)
+// 已由 DefaultPrivateV6CIDRs 静态 carve,不重复;default / via 网关路由 / loopback 一律排除。
+// 这样同链路用 GUA 寻址的邻居在 bx 阻断全局 v6 时仍可直连(消掉 on-link GUA 局限)。
+func TestParseOnLinkV6Prefixes(t *testing.T) {
+	out := `2001:db8:1::/64 dev eno1 proto ra metric 100 pref medium
+fe80::/64 dev eno1 proto kernel metric 1024 pref medium
+default via fe80::1 dev eno1 proto ra metric 1024 pref medium
+2001:db8:2::/64 via 2001:db8:1::1 dev eno1 metric 100 pref medium
+::1 dev lo proto kernel metric 256 pref medium
+2400:abcd::/48 dev enp3s0 proto kernel metric 256 pref medium`
+
+	got := parseOnLinkV6Prefixes(out)
+	want := map[string]bool{"2001:db8:1::/64": true, "2400:abcd::/48": true}
+
+	if len(got) != len(want) {
+		t.Fatalf("应只提取 2 条 on-link 全局前缀,实得 %v", got)
+	}
+	for _, p := range got {
+		if !want[p] {
+			t.Errorf("不该包含 %q(应为 on-link 全局单播)", p)
+		}
+	}
+}
