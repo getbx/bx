@@ -8,6 +8,7 @@ import (
 
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/route"
+	"github.com/getbx/bx/internal/splitdns"
 )
 
 // recordDialer 记录被请求拨号的地址,返回一个假连接。
@@ -149,5 +150,43 @@ func TestDialerHotSwapRouter(t *testing.T) {
 	}
 	if dr.lastAddr != "8.8.8.8:443" {
 		t.Fatalf("热切后应直连, got direct=%q", dr.lastAddr)
+	}
+}
+
+func TestDialSplitDirectForcesDirect(t *testing.T) {
+	set := splitdns.NewSet()
+	ip := netip.MustParseAddr("10.0.13.45")
+	set.Add(ip)
+
+	direct, proxy := &recordDialer{}, &recordDialer{}
+	d := &Dialer{Proxy: proxy, Direct: direct, SplitDirect: set}
+	d.SetRouter(&route.Router{GlobalProxy: true}) // global:默认本会判 Proxy
+
+	conn, err := d.Dial(context.Background(), route.Meta{IP: ip, Port: 443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	directUsed := direct.lastAddr != ""
+	proxyUsed := proxy.lastAddr != ""
+	if !directUsed || proxyUsed {
+		t.Fatalf("split 命中应强制 Direct(direct.used=%v proxy.used=%v)", directUsed, proxyUsed)
+	}
+}
+
+func TestDialNonSplitPublicGoesProxy(t *testing.T) {
+	direct, proxy := &recordDialer{}, &recordDialer{}
+	d := &Dialer{Proxy: proxy, Direct: direct, SplitDirect: splitdns.NewSet()}
+	d.SetRouter(&route.Router{GlobalProxy: true})
+
+	conn, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("1.1.1.1"), Port: 443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	directUsed := direct.lastAddr != ""
+	proxyUsed := proxy.lastAddr != ""
+	if !proxyUsed || directUsed {
+		t.Fatalf("未命中 split 的公网 IP 应走 Proxy(direct.used=%v proxy.used=%v)", directUsed, proxyUsed)
 	}
 }
