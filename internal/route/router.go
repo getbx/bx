@@ -16,6 +16,16 @@ var DefaultPrivateCIDRs = []string{
 	"127.0.0.0/8",
 }
 
+// DefaultPrivateV6CIDRs 是任何模式下都内建直连的 v6 非全局段,对应 v4 的 DefaultPrivateCIDRs:
+// loopback、link-local、ULA(私网)、multicast(mDNS/NDP/RA)。bx 对全局 v6 fail-closed 阻断
+// (unreachable 默认路由),这些段必须 carve-out 走主表直连,否则打断局域网 / 邻居发现。
+var DefaultPrivateV6CIDRs = []string{
+	"::1/128",   // loopback
+	"fe80::/10", // link-local
+	"fc00::/7",  // ULA(对应 v4 私网)
+	"ff00::/8",  // multicast(mDNS / NDP / RA)
+}
+
 // Router 是纯逻辑分流脑。所有字段由上层从配置构建后注入。
 type Router struct {
 	UserDirect    *DomainSet // 用户强制直连域名

@@ -62,5 +62,6 @@ type platform interface {
 
 ## 跨平台待办
 
-- **macOS**:代码能编译、review 过(桥接引用计数/生命周期已验证)。**待真机 sudo 验证**:① `Hijack` 的 `route`/`ifconfig` 语义;② IPv6 决策(当前只劫 v4,有 IPv6 会泄漏——决定隧道 v6 还是阻断);③ launchd 服务层(`bx up`/`down` 在 mac 的自启)未做。
+- **IPv6**:决策已定 = **fail-closed 阻断**(不走隧道),设计见 `docs/superpowers/specs/2026-06-11-bx-ipv6-blackhole-design.md`。**Linux 已实现**:`Hijack` 探测 `/proc/net/if_inet6`,v6 内核启用时装 `-6 unreachable` 默认路由(table 100 + pref 200)把全局 v6 堵死,`route.DefaultPrivateV6CIDRs`(`::1`/`fe80::`/`fc00::`/`ff00::`)走主表 carve-out;v6 禁用则零 `-6` 步骤、不连累 v4。已知局限:on-link GUA 邻居被连带阻断(follow-up:动态读 `scope link` 路由补 carve-out)。**darwin 未实现**(待真机验 `route -inet6` 语义)。
+- **macOS**:代码能编译、review 过(桥接引用计数/生命周期已验证)。**待真机 sudo 验证**:① `Hijack` 的 `route`/`ifconfig` 语义;② IPv6 阻断的 darwin 侧实现(见上);③ launchd 服务层(`bx up`/`down` 在 mac 的自启)未做。
 - **Windows**:未做。需 wintun.dll 分发 + 路由(route/WFP)+ `IP_UNICAST_IF` + Windows Service。最重的一档,留到 macOS 跑通后再做。

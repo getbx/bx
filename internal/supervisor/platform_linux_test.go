@@ -68,3 +68,101 @@ func TestDefaultPrivateCIDRsWiredIn(t *testing.T) {
 		t.Fatal("DefaultPrivateCIDRs 不应为空")
 	}
 }
+
+// stepSet 把 upSteps/downSteps 拍平成「空格连接的命令字符串」集合,便于断言某条规则在不在。
+func stepSet(steps [][]string) map[string]bool {
+	m := make(map[string]bool, len(steps))
+	for _, s := range steps {
+		m[strings.Join(s, " ")] = true
+	}
+	return m
+}
+
+// v6 启用时(blockV6=true),bx up 必须 fail-closed 地阻断全局 IPv6:装 `unreachable` 默认路由
+// (回 EHOSTUNREACH,让双栈应用快速回落 v4)、pref 200 全量进阻断表;同时 v6 私网/链路本地
+// (mainLookupV6)carve-out 走主表直连、bx 自身 v6 出站经 fwmark 旁路(防自锁)。v6 步骤一律 `-6` 前缀。
+func TestUpStepsUnreachableV6Default(t *testing.T) {
+	nc := &netConf{
+		tunName: "bx0", tunAddr: "198.51.100.1/30",
+		gw: "10.0.14.1", gwDev: "eno1",
+		bypass:       []string{"10.0.0.0/16"},
+		mainLookup:   []string{"172.16.0.0/12"},
+		blockV6:      true,
+		mainLookupV6: []string{"fc00::/7", "fe80::/10"},
+	}
+	got := stepSet(nc.upSteps())
+
+	want := []string{
+		"-6 rule add pref 100 fwmark " + fmtMark(fwMark) + " table main", // bx 自身 v6 防环旁路
+		"-6 rule add to fc00::/7 pref 150 table main",                    // v6 私网 carve-out
+		"-6 rule add to fe80::/10 pref 150 table main",                   // v6 链路本地 carve-out
+		"-6 route add unreachable default table " + itoa(routeTable),     // 全局 v6 → 不可达(EHOSTUNREACH)
+		"-6 rule add pref 200 table " + itoa(routeTable),                 // 全量 v6 进阻断表
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("upSteps 缺少 v6 阻断规则: %q", w)
+		}
+	}
+	// 选 unreachable 而非 blackhole:blackhole 回 EINVAL,部分应用不回落 v4。
+	if got["-6 route add blackhole default table "+itoa(routeTable)] {
+		t.Error("v6 默认路由应为 unreachable(回 EHOSTUNREACH),不是 blackhole(回 EINVAL,妨碍 v4 回落)")
+	}
+	// v4 私网规则零回归。
+	if !got["rule add to 172.16.0.0/12 pref 150 table main"] {
+		t.Error("v6 改动不应影响 v4 私网→主表规则")
+	}
+}
+
+// v6 内核禁用时(blockV6=false),upSteps 必须一条 `-6` 都不产 —— 否则 `ip -6` 在这类机器上
+// 报错,连累整个 bx up(含能用的 v4)起不来。这是对 v6-disabled 主机的零回归保证。
+func TestUpStepsSkipsV6WhenDisabled(t *testing.T) {
+	nc := &netConf{
+		tunName: "bx0", tunAddr: "198.51.100.1/30",
+		gw: "10.0.14.1", gwDev: "eno1",
+		mainLookup:   []string{"172.16.0.0/12"},
+		blockV6:      false,
+		mainLookupV6: []string{"fc00::/7"}, // 即便填了,blockV6=false 也不该产 v6 步骤
+	}
+	for _, s := range nc.upSteps() {
+		if len(s) > 0 && s[0] == "-6" {
+			t.Errorf("blockV6=false 时不应产出 v6 步骤,却有: %q", strings.Join(s, " "))
+		}
+	}
+	// v4 步骤仍在。
+	if !stepSet(nc.upSteps())["rule add to 172.16.0.0/12 pref 150 table main"] {
+		t.Error("v6 禁用不应影响 v4 私网规则")
+	}
+}
+
+// down 必须对称清掉自己装的 v6 阻断规则并 flush v6 阻断表(否则残留 / 锁死 v6);
+// 同样仅 blockV6=true 时产 v6 还原步骤。
+func TestDownStepsRemovesV6(t *testing.T) {
+	nc := &netConf{
+		tunName:      "bx0",
+		mainLookup:   []string{"172.16.0.0/12"},
+		blockV6:      true,
+		mainLookupV6: []string{"fc00::/7", "fe80::/10"},
+	}
+	got := stepSet(nc.downSteps())
+
+	want := []string{
+		"-6 rule del pref 200 table " + itoa(routeTable),
+		"-6 rule del to fc00::/7 pref 150 table main",
+		"-6 rule del to fe80::/10 pref 150 table main",
+		"-6 rule del pref 100 fwmark " + fmtMark(fwMark) + " table main",
+		"-6 route flush table " + itoa(routeTable),
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("downSteps 缺少 v6 还原规则: %q", w)
+		}
+	}
+}
+
+// Hijack 应把内建 v6 私网段(DefaultPrivateV6CIDRs)灌进 netConf.mainLookupV6(v6 启用时)。
+func TestDefaultPrivateV6CIDRsWiredIn(t *testing.T) {
+	if len(route.DefaultPrivateV6CIDRs) == 0 {
+		t.Fatal("DefaultPrivateV6CIDRs 不应为空(v6 阻断需私网 carve-out)")
+	}
+}

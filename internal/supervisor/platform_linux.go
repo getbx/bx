@@ -56,6 +56,11 @@ func (linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fun
 		gw: gw, gwDev: gwDev, bypass: bypass,
 		mainLookup: route.DefaultPrivateCIDRs, // 私网/docker 段在内核层分流到主表,绕开 tun
 	}
+	// v6 内核启用时才装 fail-closed 阻断;禁用(ipv6.disable=1 / 未编译)则跳过,不连累 v4 启动。
+	if ipv6Enabled() {
+		nc.blockV6 = true
+		nc.mainLookupV6 = route.DefaultPrivateV6CIDRs
+	}
 	if err := nc.up(); err != nil {
 		nc.down()
 		return nil, err
@@ -88,6 +93,11 @@ type netConf struct {
 	gwDev      string
 	bypass     []string // 走原网关绕过 tun 的网段(table 100 via gw),用户指定的公网/管理网
 	mainLookup []string // 私网/docker 段:ip rule 送主表(pref 150),native 本地投递、绕开 tun
+
+	// v6 阻断(fail-closed):宿主 v6 内核启用时由 Hijack 置 blockV6=true,装 `-6 unreachable`
+	// 默认路由把全局 v6 堵死;v6 禁用则保持 false、一条 -6 都不产(不连累 v4 启动)。
+	blockV6      bool
+	mainLookupV6 []string // v6 私网/链路本地段:-6 rule 送主表(pref 150),carve-out 出阻断
 }
 
 // upSteps 是 up() 要执行的 ip 命令序列(纯构造,无副作用,便于测试)。
@@ -109,6 +119,19 @@ func (n *netConf) upSteps() [][]string {
 		steps = append(steps, []string{"rule", "add", "to", c, "pref", "150", "table", "main"})
 	}
 	steps = append(steps, []string{"rule", "add", "pref", "200", "table", itoa(routeTable)})
+
+	// v6 阻断(fail-closed):仅在宿主 v6 内核启用时(blockV6)产出,镜像上面的 v4 策略路由。
+	// fwmark 旁路(防 bx 自锁)→ v6 私网 carve-out → unreachable 默认 → 全量进阻断表。
+	if n.blockV6 {
+		steps = append(steps, []string{"-6", "rule", "add", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"})
+		for _, c := range n.mainLookupV6 {
+			steps = append(steps, []string{"-6", "rule", "add", "to", c, "pref", "150", "table", "main"})
+		}
+		steps = append(steps,
+			[]string{"-6", "route", "add", "unreachable", "default", "table", itoa(routeTable)},
+			[]string{"-6", "rule", "add", "pref", "200", "table", itoa(routeTable)},
+		)
+	}
 	return steps
 }
 
@@ -134,6 +157,21 @@ func (n *netConf) downSteps() [][]string {
 		[]string{"route", "flush", "table", itoa(routeTable)},
 		[]string{"link", "del", n.tunName},
 	)
+
+	// 对称清理 v6 阻断(仅 blockV6 时装过)。
+	if n.blockV6 {
+		v6 := [][]string{
+			{"-6", "rule", "del", "pref", "200", "table", itoa(routeTable)},
+		}
+		for _, c := range n.mainLookupV6 {
+			v6 = append(v6, []string{"-6", "rule", "del", "to", c, "pref", "150", "table", "main"})
+		}
+		v6 = append(v6,
+			[]string{"-6", "rule", "del", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"},
+			[]string{"-6", "route", "flush", "table", itoa(routeTable)},
+		)
+		steps = append(steps, v6...)
+	}
 	return steps
 }
 
@@ -163,6 +201,13 @@ func defaultRoute() (gw, dev string, err error) {
 		return "", "", fmt.Errorf("解析默认路由失败: %q", strings.TrimSpace(string(out)))
 	}
 	return gw, dev, nil
+}
+
+// ipv6Enabled 判断宿主内核是否启用 IPv6:/proc/net/if_inet6 仅在 ipv6 模块加载时存在
+// (ipv6.disable=1 或未编译时缺席)。缺席即无 v6 可漏,跳过 v6 阻断步骤。
+func ipv6Enabled() bool {
+	_, err := os.Stat("/proc/net/if_inet6")
+	return err == nil
 }
 
 func runIP(args ...string) error {
