@@ -61,7 +61,8 @@ func (s *Server) Respond(query []byte) ([]byte, error) {
 
 	domain := strings.ToLower(strings.TrimSuffix(q.Name.String(), "."))
 
-	// split 命中且非 AAAA:转发到内网 DNS,注册真实 IP,原样返回。
+	// split 命中:A 及 CNAME/SRV 等非 AAAA 类型一律转发到内网 DNS(保内网解析完整),
+	// 注册其中真实 A 记录后原样返回。仅 AAAA 不转发 → 落到下面默认路径成 NODATA(逼 v4)。
 	if rt := s.matchSplit(domain); rt != nil && q.Type != dnsmessage.TypeAAAA {
 		resp, err := s.fwd.Forward(context.Background(), rt.Server, query)
 		if err != nil {
