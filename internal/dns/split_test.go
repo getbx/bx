@@ -195,3 +195,38 @@ func rcode(t *testing.T, msg []byte) dnsmessage.RCode {
 	}
 	return h.RCode
 }
+
+// multiAForwarder 返回两条 A 记录(10.0.13.45 与 10.0.13.46)。
+type multiAForwarder struct{}
+
+func (multiAForwarder) Forward(_ context.Context, _ string, query []byte) ([]byte, error) {
+	var p dnsmessage.Parser
+	h, _ := p.Start(query)
+	q, _ := p.Question()
+	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: h.ID, Response: true, RCode: dnsmessage.RCodeSuccess})
+	_ = b.StartQuestions()
+	_ = b.Question(q)
+	_ = b.StartAnswers()
+	for _, ip := range []string{"10.0.13.45", "10.0.13.46"} {
+		_ = b.AResource(
+			dnsmessage.ResourceHeader{Name: q.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60},
+			dnsmessage.AResource{A: netip.MustParseAddr(ip).As4()},
+		)
+	}
+	out, _ := b.Finish()
+	return out, nil
+}
+
+func TestRespondSplitRegistersAllARecords(t *testing.T) {
+	set := splitdns.NewSet()
+	s := newSplitServer(multiAForwarder{}, set)
+
+	if _, err := s.Respond(buildQuery(t, 1, "app.shanghai-electric.com.", dnsmessage.TypeA)); err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range []string{"10.0.13.45", "10.0.13.46"} {
+		if !set.Contains(netip.MustParseAddr(ip)) {
+			t.Fatalf("应注册全部 A 记录,缺 %s", ip)
+		}
+	}
+}
