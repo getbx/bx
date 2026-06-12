@@ -87,8 +87,10 @@ func Parse(b []byte) (*Config, error) {
 		if strings.TrimSpace(r.Server) == "" {
 			return nil, fmt.Errorf("config: dns.split[%d].server 不能为空", i)
 		}
-		if _, _, err := net.SplitHostPort(r.Server); err != nil {
-			r.Server = net.JoinHostPort(r.Server, "53") // 无端口补 :53
+		if host, port, err := net.SplitHostPort(r.Server); err != nil {
+			r.Server = net.JoinHostPort(strings.Trim(r.Server, "[]"), "53") // 无端口补 :53(strip 裸 [::1] 的括号)
+		} else if port == "" {
+			r.Server = net.JoinHostPort(host, "53") // 形如 "10.0.13.23:" 的空端口也补 :53
 		}
 	}
 	if c.DataDir == "" {

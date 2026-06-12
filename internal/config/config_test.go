@@ -114,3 +114,30 @@ dns:
 		t.Fatal("expected error for split rule without server")
 	}
 }
+
+func TestParseSplitServerTrailingColon(t *testing.T) {
+	c, err := Parse([]byte("server: \"brook://abc\"\ndns:\n  split:\n    - domains: [\"*.x.com\"]\n      server: \"10.0.13.23:\"\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.DNS.Split[0].Server != "10.0.13.23:53" {
+		t.Fatalf("trailing colon should normalize to :53, got %q", c.DNS.Split[0].Server)
+	}
+}
+
+func TestParseSplitServerKeepsExplicitPort(t *testing.T) {
+	c, err := Parse([]byte("server: \"brook://abc\"\ndns:\n  split:\n    - domains: [\"*.x.com\"]\n      server: \"10.0.13.23:5353\"\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.DNS.Split[0].Server != "10.0.13.23:5353" {
+		t.Fatalf("explicit port must be preserved, got %q", c.DNS.Split[0].Server)
+	}
+}
+
+func TestParseRejectsSplitEmptyDomains(t *testing.T) {
+	_, err := Parse([]byte("server: \"brook://abc\"\ndns:\n  split:\n    - server: 10.0.13.23\n"))
+	if err == nil {
+		t.Fatal("expected error for empty domains list")
+	}
+}
