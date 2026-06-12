@@ -4,6 +4,7 @@
 //   - OpenTUN:utun(经 wireguard-go tun.CreateTUN)+ wgbridge 适配成 gVisor 端点
 //   - DirectDialer:IP_BOUND_IF 把直连 socket 绑物理出口网卡(防环;macOS 无 SO_MARK)
 //   - Hijack:split-default(0/1+128/1)劫进 utun + 服务器/私网经物理网关旁路
+//     + v6 fail-closed:两个 /1 的 `-reject` 阻断全局 IPv6(回 EHOSTUNREACH 逼回 v4)
 //
 // ⚠️ 路由部分(Hijack)依赖 macOS `route`/`ifconfig` 语义,无法在 Linux 上验证,
 //
@@ -108,30 +109,15 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 		return nil, fmt.Errorf("配置 utun 地址: %w", err)
 	}
 
-	// 2) 组装路由:私网经物理网关、服务器+用户 bypass 经物理网关、split-default 进 utun。
-	type spec struct {
-		add  []string
-		cidr string
-	}
-	var specs []spec
-	viaGW := func(cidr string) spec { return spec{[]string{"-n", "add", "-net", cidr, gw}, cidr} }
-	for _, c := range darwinDirectCIDRs {
-		specs = append(specs, viaGW(c))
-	}
-	for _, c := range serverBypass {
-		specs = append(specs, viaGW(c))
-	}
-	for _, c := range userBypass {
-		specs = append(specs, viaGW(c))
-	}
-	for _, c := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
-		specs = append(specs, spec{[]string{"-n", "add", "-net", c, "-interface", t.Name}, c})
-	}
+	// 2) 组装路由:v4 私网/bypass 经物理网关、split-default 劫进 utun;
+	//    v6(内核启用时)fail-closed reject 全局 v6(纯构造见 darwinRouteSpecs)。
+	blockV6 := ipv6EnabledDarwin()
+	specs := darwinRouteSpecs(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, blockV6)
 
-	var done []string // 已加路由的 cidr,用于还原(只管路由;TUN 关闭归 Run 的 closeTUN)
+	var done []routeSpec // 已加路由,用于对称还原(只管路由;TUN 关闭归 Run 的 closeTUN)
 	cleanup := func() {
 		for i := len(done) - 1; i >= 0; i-- {
-			_ = runCmdQuiet("route", "-n", "delete", "-net", done[i])
+			_ = runCmdQuiet("route", done[i].del...)
 		}
 	}
 	for _, s := range specs {
@@ -139,10 +125,29 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 			cleanup()
 			return nil, fmt.Errorf("route %s: %w", strings.Join(s.add, " "), err)
 		}
-		done = append(done, s.cidr)
+		done = append(done, s)
 	}
-	log.Printf("默认路由已劫持进 %s;serverBypass=%v userBypass=%v via %s", t.Name, serverBypass, userBypass, gw)
+	log.Printf("默认路由已劫持进 %s;serverBypass=%v userBypass=%v via %s;v6阻断=%v", t.Name, serverBypass, userBypass, gw, blockV6)
 	return cleanup, nil
+}
+
+// ipv6EnabledDarwin 判断宿主是否有可用 IPv6(任一非 loopback 接口带 v6 地址 ⇒ v6 栈活跃)。
+// 缺席即无 v6 可漏,跳过 v6 阻断步骤,避免在禁用 v6 的机器上 `route -inet6` 失败连累启动。
+func ipv6EnabledDarwin() bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if ip := ipn.IP; ip.To4() == nil && ip.To16() != nil && !ip.IsLoopback() {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultRouteDarwin 解析 `route -n get default` 的网关与出口网卡。

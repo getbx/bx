@@ -1,0 +1,68 @@
+package supervisor
+
+import (
+	"strings"
+	"testing"
+)
+
+func specAdds(specs []routeSpec) map[string]bool {
+	m := map[string]bool{}
+	for _, s := range specs {
+		m[strings.Join(s.add, " ")] = true
+	}
+	return m
+}
+
+func specDels(specs []routeSpec) map[string]bool {
+	m := map[string]bool{}
+	for _, s := range specs {
+		m[strings.Join(s.del, " ")] = true
+	}
+	return m
+}
+
+// v6 启用时(blockV6=true),darwin Hijack 必须 fail-closed 阻断全局 IPv6:
+// 两个 /1 的 -reject 盖全量(回 EHOSTUNREACH 逼 v4 回落);link-local/ULA/组播/loopback
+// 因有更具体的 on-link/本地路由按最长前缀自动直连,无需显式 carve-out。v4 行为零回归。
+func TestDarwinRouteSpecsBlocksV6(t *testing.T) {
+	specs := darwinRouteSpecs("utun5", "192.168.1.1",
+		[]string{"10.0.0.0/8"}, []string{"1.2.3.4/32"}, nil, true)
+	adds := specAdds(specs)
+	dels := specDels(specs)
+
+	wantAdd := []string{
+		"-n add -inet6 -net ::/1 ::1 -reject",     // 全局 v6 下半 → reject
+		"-n add -inet6 -net 8000::/1 ::1 -reject",  // 全局 v6 上半 → reject
+		"-n add -net 0.0.0.0/1 -interface utun5",   // v4 split-default 零回归
+		"-n add -net 10.0.0.0/8 192.168.1.1",       // v4 私网经网关零回归
+		"-n add -net 1.2.3.4/32 192.168.1.1",       // serverBypass 零回归
+	}
+	for _, w := range wantAdd {
+		if !adds[w] {
+			t.Errorf("缺 add 命令: %q", w)
+		}
+	}
+	wantDel := []string{
+		"-n delete -inet6 -net ::/1",
+		"-n delete -inet6 -net 8000::/1",
+	}
+	for _, w := range wantDel {
+		if !dels[w] {
+			t.Errorf("缺对称 del 命令: %q", w)
+		}
+	}
+}
+
+// v6 禁用时(blockV6=false),不产任何 -inet6 路由(不连累 v4),v4 split-default 仍在。
+func TestDarwinRouteSpecsSkipsV6WhenDisabled(t *testing.T) {
+	specs := darwinRouteSpecs("utun5", "192.168.1.1",
+		[]string{"10.0.0.0/8"}, nil, nil, false)
+	for _, s := range specs {
+		if strings.Contains(strings.Join(s.add, " "), "-inet6") {
+			t.Errorf("blockV6=false 不应产 v6 路由: %q", strings.Join(s.add, " "))
+		}
+	}
+	if !specAdds(specs)["-n add -net 0.0.0.0/1 -interface utun5"] {
+		t.Error("v4 split-default 应仍在")
+	}
+}
