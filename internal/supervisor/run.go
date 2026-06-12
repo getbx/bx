@@ -24,6 +24,8 @@ import (
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/provision"
+	"github.com/getbx/bx/internal/route"
+	"github.com/getbx/bx/internal/splitdns"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tun"
 	"github.com/getbx/bx/internal/tunnel"
@@ -128,6 +130,20 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	dnsSrv := bxdns.NewServer(pool, 1)
 
+	// split-DNS:匹配域名转发到内网 DNS 解析,真实 IP 注册进 splitDirect 强制直连。
+	splitDirect := splitdns.NewSet()
+	if len(cfg.DNS.Split) > 0 {
+		var routes []bxdns.SplitRoute
+		for _, r := range cfg.DNS.Split {
+			routes = append(routes, bxdns.SplitRoute{
+				Match:  route.NewDomainSet(r.Domains),
+				Server: r.Server,
+			})
+		}
+		dnsSrv.SetSplit(routes, bxdns.NewUDPForwarder(plat.DirectDialer()), splitDirect)
+		log.Printf("split-DNS 已启用:%d 条规则", len(routes))
+	}
+
 	// 4) Dialer:fake-IP 反查 + 防环直连 + socks 代理 + 国内 DNS resolver
 	counters := &stats.Counters{}
 	direct := plat.DirectDialer()
@@ -136,13 +152,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return fmt.Errorf("构建 socks 代理: %w", err)
 	}
 	d := &dialer.Dialer{
-		Fake:       pool, // 连接回到 TUN 时,用 fake IP 反查域名做精确分流
-		Resolver:   newResolver(cfg.DNS.China, direct),
-		Proxy:      proxyDialer,
-		Direct:     direct,
-		Healthy:    tun0.Healthy,
-		Killswitch: cfg.Killswitch,
-		Stats:      counters,
+		Fake:        pool, // 连接回到 TUN 时,用 fake IP 反查域名做精确分流
+		Resolver:    newResolver(cfg.DNS.China, direct),
+		Proxy:       proxyDialer,
+		Direct:      direct,
+		Healthy:     tun0.Healthy,
+		Killswitch:  cfg.Killswitch,
+		Stats:       counters,
+		SplitDirect: splitDirect,
 	}
 	d.SetRouter(router)
 
