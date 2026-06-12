@@ -68,3 +68,49 @@ func TestParseListsOverrides(t *testing.T) {
 		t.Errorf("interval:1h 应解析为 1h, got %v", c.Lists.RefreshInterval())
 	}
 }
+
+func TestParseSplitDNS(t *testing.T) {
+	c, err := Parse([]byte(`
+server: "brook://abc"
+dns:
+  split:
+    - domains: ["*.shanghai-electric.com"]
+      server: 10.0.13.23
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(c.DNS.Split) != 1 {
+		t.Fatalf("want 1 split rule, got %d", len(c.DNS.Split))
+	}
+	r := c.DNS.Split[0]
+	if len(r.Domains) != 1 || r.Domains[0] != "*.shanghai-electric.com" {
+		t.Fatalf("bad domains: %+v", r.Domains)
+	}
+	if r.Server != "10.0.13.23:53" { // 无端口时补 :53
+		t.Fatalf("want server 10.0.13.23:53, got %q", r.Server)
+	}
+}
+
+func TestParseRejectsUnknownField(t *testing.T) {
+	// 严格模式:未知字段必须报错(就是 dns.split 这次该报而没报的根因)。
+	_, err := Parse([]byte(`
+server: "brook://abc"
+totally_unknown_field: 1
+`))
+	if err == nil {
+		t.Fatal("expected error for unknown field, got nil")
+	}
+}
+
+func TestParseRejectsSplitMissingServer(t *testing.T) {
+	_, err := Parse([]byte(`
+server: "brook://abc"
+dns:
+  split:
+    - domains: ["*.x.com"]
+`))
+	if err == nil {
+		t.Fatal("expected error for split rule without server")
+	}
+}

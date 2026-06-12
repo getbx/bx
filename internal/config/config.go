@@ -1,15 +1,25 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"net"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
+// SplitRule:把匹配域名交给指定内网 DNS 解析(并由分流层强制直连)。
+type SplitRule struct {
+	Domains []string `yaml:"domains"` // 支持 *.suffix 通配
+	Server  string   `yaml:"server"`  // 内网 DNS;无端口时补 :53
+}
+
 type DNS struct {
-	China      string `yaml:"china"`
-	FakeipCIDR string `yaml:"fakeip_cidr"`
+	China      string      `yaml:"china"`
+	FakeipCIDR string      `yaml:"fakeip_cidr"`
+	Split      []SplitRule `yaml:"split"`
 }
 
 type Rule struct {
@@ -55,7 +65,9 @@ type Config struct {
 // Parse 解析并校验配置字节。
 func Parse(b []byte) (*Config, error) {
 	var c Config
-	if err := yaml.Unmarshal(b, &c); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true) // 未知字段直接报错,杜绝「配了但静默失效」
+	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("yaml: %w", err)
 	}
 	if c.Server == "" {
@@ -66,6 +78,18 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.DNS.FakeipCIDR == "" {
 		c.DNS.FakeipCIDR = "198.18.0.0/15"
+	}
+	for i := range c.DNS.Split {
+		r := &c.DNS.Split[i]
+		if len(r.Domains) == 0 {
+			return nil, fmt.Errorf("config: dns.split[%d].domains 不能为空", i)
+		}
+		if strings.TrimSpace(r.Server) == "" {
+			return nil, fmt.Errorf("config: dns.split[%d].server 不能为空", i)
+		}
+		if _, _, err := net.SplitHostPort(r.Server); err != nil {
+			r.Server = net.JoinHostPort(r.Server, "53") // 无端口补 :53
+		}
 	}
 	if c.DataDir == "" {
 		c.DataDir = "/var/lib/bx"
