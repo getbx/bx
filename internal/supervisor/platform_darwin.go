@@ -28,12 +28,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-// darwinDirectCIDRs:macOS 下保持原生直连(经物理网关)的私网段——RFC1918 + CGNAT + docker。
-// 刻意不含 loopback(127/8)与 link-local(169.254/16):它们已有正确的本地路由,绝不可改写。
-var darwinDirectCIDRs = []string{
-	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
-}
-
 func newPlatform() platform { return darwinPlatform{} }
 
 type darwinPlatform struct{}
