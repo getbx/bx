@@ -167,6 +167,43 @@ func TestDefaultPrivateV6CIDRsWiredIn(t *testing.T) {
 	}
 }
 
+// CGNAT 段(100.64.0.0/10)是 tailscale overlay 网段,其 peer 路由在 tailscale 的 table 52,
+// 不在 main。若只 carve 到 main(pref 150),从 bx 主机主动连 tailscale peer 的 TCP 会因 main
+// 无路由而漏到物理网卡被丢(ping 走用户态故不暴露)。故 CGNAT 需在 pref 149(< 150)额外送
+// table 52:tailscale 在则命中 peer 路由走 tailscale0;tailscale 不在则 table 52 空、内核回落
+// 到 pref 150 → main(运营商 CGNAT 直连)。两种场景都正确。
+func TestUpStepsCGNATToTailscaleTable(t *testing.T) {
+	nc := &netConf{
+		tunName: "bx0", tunAddr: "198.51.100.1/30",
+		gw: "10.0.14.1", gwDev: "eno1",
+		mainLookup: []string{"172.16.0.0/12", "100.64.0.0/10"},
+	}
+	got := stepSet(nc.upSteps())
+
+	// CGNAT 先送 tailscale table 52(pref 149 < 150 先命中)
+	if !got["rule add to 100.64.0.0/10 pref 149 table "+itoa(tailscaleTable)] {
+		t.Error("缺少 CGNAT→tailscale table 52 规则(pref 149)")
+	}
+	// 仍保留 →main 兜底(tailscale 不在 / table 52 无路由时回落)
+	if !got["rule add to 100.64.0.0/10 pref 150 table main"] {
+		t.Error("应保留 CGNAT→main 兜底规则(pref 150)")
+	}
+	// 非 CGNAT 私网段不该产 149/table 52 规则
+	if got["rule add to 172.16.0.0/12 pref 149 table "+itoa(tailscaleTable)] {
+		t.Error("非 CGNAT 段不应送 tailscale table 52")
+	}
+}
+
+// down 必须对称清掉 CGNAT→table 52 规则(否则残留)。
+func TestDownStepsRemovesCGNATTailscale(t *testing.T) {
+	nc := &netConf{
+		tunName: "bx0", mainLookup: []string{"100.64.0.0/10"},
+	}
+	if !stepSet(nc.downSteps())["rule del to 100.64.0.0/10 pref 149 table "+itoa(tailscaleTable)] {
+		t.Error("down 未清理 CGNAT→tailscale table 52 规则")
+	}
+}
+
 // parseOnLinkV6Prefixes 从 `ip -6 route show` 输出提取需 carve-out 的 on-link 全局 v6 前缀:
 // 有 dev 无 via(连接路由)、属 2000::/3 全局单播、非 default。link-local(fe80)/ULA(fc00)
 // 已由 DefaultPrivateV6CIDRs 静态 carve,不重复;default / via 网关路由 / loopback 一律排除。
