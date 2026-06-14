@@ -53,6 +53,27 @@ func TestDarwinRouteSpecsBlocksV6(t *testing.T) {
 	}
 }
 
+// macOS 单路由表:bx 若把 CGNAT(100.64.0.0/10)route → 物理网关,会和 tailscale 的 overlay
+// 路由(100.64.0.0/10 → tailscale utun,同前缀)冲突,从 bx 主机主动连 tailscale peer 的 TCP
+// 因此被丢。tailscale 的 100.64/10 比 split-default 的 0/1 更具体,按最长前缀自然抢赢,故
+// bx 在 macOS 不该认领 CGNAT —— darwinDirectCIDRs 不含 100.64/10,其余私网段直连零回归。
+func TestDarwinDoesNotClaimCGNAT(t *testing.T) {
+	specs := darwinRouteSpecs("utun5", "192.168.1.1", darwinDirectCIDRs, nil, nil, false)
+	adds := specAdds(specs)
+	if adds["-n add -net 100.64.0.0/10 192.168.1.1"] {
+		t.Error("macOS 不应把 CGNAT 100.64.0.0/10 route 到物理网关(会和 tailscale overlay 同前缀冲突)")
+	}
+	for _, w := range []string{
+		"-n add -net 10.0.0.0/8 192.168.1.1",
+		"-n add -net 172.16.0.0/12 192.168.1.1",
+		"-n add -net 192.168.0.0/16 192.168.1.1",
+	} {
+		if !adds[w] {
+			t.Errorf("私网直连零回归丢失: %q", w)
+		}
+	}
+}
+
 // v6 禁用时(blockV6=false),不产任何 -inet6 路由(不连累 v4),v4 split-default 仍在。
 func TestDarwinRouteSpecsSkipsV6WhenDisabled(t *testing.T) {
 	specs := darwinRouteSpecs("utun5", "192.168.1.1",

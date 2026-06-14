@@ -3,6 +3,17 @@ package supervisor
 // darwin_routes.go 是 macOS Hijack 的**纯路由命令构造**(无 build tag、不执行 route,
 // 故可在任意平台免 root 单测)。真正调用 `route`/检测 v6 的部分在 platform_darwin.go。
 
+// darwinDirectCIDRs:macOS 下保持原生直连(经物理网关)的私网段——RFC1918 + docker。
+// 刻意不含 loopback(127/8)与 link-local(169.254/16):它们已有正确的本地路由,绝不可改写。
+// 刻意不含 CGNAT(100.64.0.0/10):macOS 单路由表下,把它 route → 物理网关会和 tailscale 的
+// overlay 路由(100.64.0.0/10 → tailscale utun,同前缀)冲突,断掉主动连 tailscale peer。
+// tailscale 的 100.64/10 比 split-default 的 0/1 更具体,按最长前缀自然抢赢,无需 bx 认领;
+// 无 tailscale 时本地 CGNAT 子网亦有更具体的 connected 路由直连,故不漏。
+// （放在无 build tag 的本文件,便于在任意平台免 root 单测。）
+var darwinDirectCIDRs = []string{
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+}
+
 // routeSpec 是一条 macOS 路由:add 命令与对称的 del 命令(均为 `route` 的参数,不含 "route" 本身)。
 type routeSpec struct {
 	add []string
