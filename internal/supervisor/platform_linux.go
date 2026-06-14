@@ -26,6 +26,11 @@ import (
 const (
 	routeTable = 100   // tun 默认路由所在表
 	fwMark     = 0x162 // bx 自身直连流量打的标(走原路由表绕过 tun)
+
+	// tailscaleTable 是 tailscale 在 Linux 默认装 peer 路由的策略路由表(`ip route show
+	// table 52`)。CGNAT overlay 段(cgnatV4CIDR)的 peer 路由在此表、不在 main,故需单独 carve。
+	tailscaleTable = 52
+	cgnatV4CIDR    = "100.64.0.0/10" // RFC6598 CGNAT;tailscale overlay(100.64/10)即用此段
 )
 
 func newPlatform() platform { return linuxPlatform{} }
@@ -118,6 +123,13 @@ func (n *netConf) upSteps() [][]string {
 	// 私网/docker 段:pref 150(< 全量进 tun 的 200)送主表,由内核原路由 native 投递
 	// (docker0/br-* on-link、内网 via 网关),宿主机访问容器/内网的包永不进 tun。
 	for _, c := range n.mainLookup {
+		// CGNAT overlay:tailscale peer 路由在 table 52(不在 main),故先在 pref 149
+		// 送 table 52——tailscale 在则命中走 tailscale0;table 52 空(无 tailscale)则内核
+		// 回落到下面 pref 150 → main(运营商 CGNAT 直连)。否则主动连 tailscale peer 的 TCP
+		// 会因 main 无路由漏到物理网卡被丢。
+		if c == cgnatV4CIDR {
+			steps = append(steps, []string{"rule", "add", "to", c, "pref", "149", "table", itoa(tailscaleTable)})
+		}
 		steps = append(steps, []string{"rule", "add", "to", c, "pref", "150", "table", "main"})
 	}
 	steps = append(steps, []string{"rule", "add", "pref", "200", "table", itoa(routeTable)})
@@ -152,6 +164,9 @@ func (n *netConf) downSteps() [][]string {
 		{"rule", "del", "pref", "200", "table", itoa(routeTable)},
 	}
 	for _, c := range n.mainLookup {
+		if c == cgnatV4CIDR {
+			steps = append(steps, []string{"rule", "del", "to", c, "pref", "149", "table", itoa(tailscaleTable)})
+		}
 		steps = append(steps, []string{"rule", "del", "to", c, "pref", "150", "table", "main"})
 	}
 	steps = append(steps,
