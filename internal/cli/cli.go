@@ -17,6 +17,7 @@ import (
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/procredact"
 	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/setup"
 	"github.com/getbx/bx/internal/stats"
@@ -202,7 +203,13 @@ func serveAction(c *cli.Context) error {
 	}
 	cmd := exec.CommandContext(c.Context, path, "server", "-l", cfg.Listen, "-p", cfg.Password)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if err := procredact.RedactArg(cmd.Process.Pid, cfg.Password); err != nil && os.Getenv("BX_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "warning: could not redact server secret from child argv: %v\n", err)
+	}
+	return cmd.Wait()
 }
 
 func setupFlags() []cli.Flag {
