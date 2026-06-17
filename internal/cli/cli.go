@@ -21,6 +21,7 @@ import (
 	"github.com/getbx/bx/internal/setup"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
+	"github.com/getbx/bx/internal/version"
 	"github.com/urfave/cli/v2"
 	"gopkg.in/yaml.v3"
 )
@@ -32,8 +33,9 @@ const defaultProbeTarget = "github.com:443"
 // New 返回配置好子命令的 bx App。
 func New() *cli.App {
 	return &cli.App{
-		Name:  "bx",
-		Usage: "透明全局代理",
+		Name:    "bx",
+		Usage:   "透明全局代理",
+		Version: version.String(),
 		Commands: []*cli.Command{
 			{Name: "setup", Usage: "首次配置:写配置+装服务+连通检测(不启动)", ArgsUsage: "bx://...", Flags: setupFlags(), Action: setupAction},
 			{Name: "probe", Usage: "检测 bx:// 链接连通性(不写配置/不改路由)", ArgsUsage: "bx://...", Flags: probeFlags(), Action: probeAction},
