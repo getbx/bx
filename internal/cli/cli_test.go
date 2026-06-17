@@ -80,6 +80,12 @@ func TestDoctorHelpers(t *testing.T) {
 	if got := redactLink("brook://server?password=pw"); got != "internal-link:<redacted>" {
 		t.Fatalf("redact internal link = %q", got)
 	}
+	if got := shareDoctorStatus("active", "listening"); got != "ok" {
+		t.Fatalf("shareDoctorStatus active/listening = %q", got)
+	}
+	if got := shareDoctorStatus("inactive", "listening"); got != "warn" {
+		t.Fatalf("shareDoctorStatus inactive/listening = %q", got)
+	}
 }
 
 func TestIsListening(t *testing.T) {

@@ -149,6 +149,7 @@ func doctorFlags() []cli.Flag {
 func serverDoctorFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
+		&cli.StringFlag{Name: "shares-dir", Value: defaultShareDir, Usage: "share 配置目录"},
 	}
 }
 
@@ -275,6 +276,10 @@ func serverSharesAction(c *cli.Context) error {
 	shares, err := readShares(c.String("dir"))
 	if err != nil {
 		return err
+	}
+	if len(shares) == 0 {
+		fmt.Println("No shares.")
+		return nil
 	}
 	fmt.Println("NAME\tLISTEN\tSTATUS")
 	for _, s := range shares {
@@ -476,7 +481,45 @@ func serverDoctorAction(c *cli.Context) error {
 	doctorLine(boolStatus(install.ServerUnitInstalled()), "service installed", install.ServerServiceName)
 	doctorLine(systemdStatus("is-active", install.ServerServiceName), "service active", systemctlState("is-active", install.ServerServiceName))
 	doctorLine(systemdStatus("is-enabled", install.ServerServiceName), "service enabled", systemctlState("is-enabled", install.ServerServiceName))
+	doctorShares(c.String("shares-dir"))
 	return nil
+}
+
+func doctorShares(dir string) {
+	shares, err := readShares(dir)
+	if err != nil {
+		doctorLine("warn", "shares", err.Error())
+		return
+	}
+	if len(shares) == 0 {
+		doctorLine("info", "shares", "none")
+		return
+	}
+	for _, s := range shares {
+		state := systemctlState("is-active", install.ShareServiceName(s.Name))
+		port := listenPort(s.Config.Listen)
+		if port == "" {
+			doctorLine("fail", "share "+s.Name, "bad listen "+s.Config.Listen)
+			continue
+		}
+		listenState := shareListenState(port)
+		status := shareDoctorStatus(state, listenState)
+		doctorLine(status, "share "+s.Name, fmt.Sprintf("%s, tcp/%s %s", state, port, listenState))
+	}
+}
+
+func shareListenState(port string) string {
+	if isListening(port) {
+		return "listening"
+	}
+	return "not-listening"
+}
+
+func shareDoctorStatus(serviceState, listenState string) string {
+	if serviceState == "active" && listenState == "listening" {
+		return "ok"
+	}
+	return "warn"
 }
 
 func doctorProbe(link, target string, timeout time.Duration) {
