@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/blink"
 	"gopkg.in/yaml.v3"
 )
 
@@ -51,12 +52,12 @@ func (l Lists) RefreshInterval() time.Duration {
 }
 
 type Config struct {
-	Server     string   `yaml:"server"` // brook 链接(自带凭据;故无独立 password 字段)
+	Server     string   `yaml:"server"` // bx:// 链接或内部传输链接(自带凭据;故无独立 password 字段)
 	Killswitch bool     `yaml:"killswitch"`
 	DNS        DNS      `yaml:"dns"`
 	Rules      []Rule   `yaml:"rules"`
 	Lists      Lists    `yaml:"lists"`
-	Brook      string   `yaml:"brook"`    // 可选;空=用内嵌 brook
+	Brook      string   `yaml:"brook"`    // 可选调试入口;空=用内嵌传输
 	DataDir    string   `yaml:"data_dir"` // 运行期数据目录;空=默认 /var/lib/bx
 	Bypass     []string `yaml:"bypass"`   // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
 	Global     bool     `yaml:"global"`   // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
@@ -72,6 +73,13 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.Server == "" {
 		return nil, fmt.Errorf("config: server 不能为空")
+	}
+	if strings.HasPrefix(c.Server, "bx://") || strings.HasPrefix(c.Server, "blink://") {
+		link, err := blink.Decode(c.Server)
+		if err != nil {
+			return nil, err
+		}
+		c.Server = link
 	}
 	if c.DNS.China == "" {
 		c.DNS.China = "223.5.5.5"

@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	errProcessExited = errors.New("brook 进程退出")
+	errProcessExited = errors.New("传输进程退出")
 	errUnhealthy     = errors.New("健康检查失败")
 )
 
@@ -29,6 +29,7 @@ type Stats struct {
 	Up        bool
 	LatencyMS int64
 	Restarts  int
+	LastError string
 }
 
 // Tunnel 监督 brook 子进程:健康检查 + 自动重连。
@@ -43,6 +44,7 @@ type Tunnel struct {
 	up       bool
 	lat      int64
 	restarts int
+	lastErr  string
 	runner   Runner
 
 	cancel context.CancelFunc
@@ -76,18 +78,21 @@ func (t *Tunnel) Healthy() bool {
 func (t *Tunnel) Stats() Stats {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return Stats{Up: t.up, LatencyMS: t.lat, Restarts: t.restarts}
+	return Stats{Up: t.up, LatencyMS: t.lat, Restarts: t.restarts, LastError: t.lastErr}
 }
 
 func (t *Tunnel) setUp(lat int64) {
 	t.mu.Lock()
-	t.up, t.lat = true, lat
+	t.up, t.lat, t.lastErr = true, lat, ""
 	t.mu.Unlock()
 }
 
-func (t *Tunnel) setDown() {
+func (t *Tunnel) setDown(err error) {
 	t.mu.Lock()
 	t.up = false
+	if err != nil {
+		t.lastErr = err.Error()
+	}
 	t.mu.Unlock()
 }
 
@@ -144,6 +149,7 @@ func (t *Tunnel) supervise(ctx context.Context) {
 func (t *Tunnel) runOnce(ctx context.Context) error {
 	r, err := t.factory(t.socksAddr)
 	if err != nil {
+		t.setDown(err)
 		return err
 	}
 	t.mu.Lock()
@@ -165,10 +171,10 @@ func (t *Tunnel) runOnce(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-exitCh:
-			t.setDown()
+			t.setDown(errProcessExited)
 			return errProcessExited
 		case <-startup.C:
-			t.setDown()
+			t.setDown(errUnhealthy)
 			return errUnhealthy
 		case <-startupTick.C:
 			lat, herr := t.health(t.socksAddr)
@@ -176,7 +182,7 @@ func (t *Tunnel) runOnce(ctx context.Context) error {
 				t.setUp(lat)
 				goto monitor
 			}
-			t.setDown()
+			t.setDown(herr)
 		}
 	}
 
@@ -186,12 +192,12 @@ monitor:
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-exitCh:
-			t.setDown()
+			t.setDown(errProcessExited)
 			return errProcessExited
 		case <-ticker.C:
 			lat, herr := t.health(t.socksAddr)
 			if herr != nil {
-				t.setDown()
+				t.setDown(herr)
 				return errUnhealthy
 			}
 			t.setUp(lat)

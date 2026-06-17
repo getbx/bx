@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	ServiceName = "bx.service"
-	unitPath    = "/etc/systemd/system/bx.service"
+	ServiceName       = "bx.service"
+	ServerServiceName = "bx-server.service"
+	unitPath          = "/etc/systemd/system/bx.service"
+	serverUnitPath    = "/etc/systemd/system/bx-server.service"
 	// BinPath 是 bx 自身安装到 PATH 的规范位置。
 	BinPath = "/usr/local/bin/bx"
 )
@@ -73,8 +75,13 @@ func copyExecutable(src, dst string) error {
 
 // UnitText 返回 systemd unit 文件内容。execStart 是完整启动命令。
 func UnitText(execStart string) string {
+	return UnitTextWithDescription("bx 透明全局代理", execStart)
+}
+
+// UnitTextWithDescription 返回 systemd unit 文件内容。execStart 是完整启动命令。
+func UnitTextWithDescription(description, execStart string) string {
 	return `[Unit]
-Description=bx 透明全局代理
+Description=` + description + `
 After=network-online.target
 Wants=network-online.target
 
@@ -92,8 +99,17 @@ WantedBy=multi-user.target
 
 // WriteUnit 写入 unit 文件并 daemon-reload(不 enable、不 start)。需 root。
 func WriteUnit(execStart string) error {
-	if err := os.WriteFile(unitPath, []byte(UnitText(execStart)), 0o644); err != nil {
-		return fmt.Errorf("写 %s(需 root): %w", unitPath, err)
+	return writeUnitFile(unitPath, UnitText(execStart))
+}
+
+// WriteServerUnit 写入 bx server unit 文件并 daemon-reload(不 enable、不 start)。需 root。
+func WriteServerUnit(execStart string) error {
+	return writeUnitFile(serverUnitPath, UnitTextWithDescription("bx server", execStart))
+}
+
+func writeUnitFile(path, text string) error {
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return fmt.Errorf("写 %s(需 root): %w", path, err)
 	}
 	return runSystemctl("daemon-reload")
 }
@@ -104,9 +120,21 @@ func Enable() error { return runSystemctl("enable", "--now", ServiceName) }
 // Disable 停止并取消开机自启。
 func Disable() error { return runSystemctl("disable", "--now", ServiceName) }
 
+// EnableServer 启动 bx server 并设为开机自启。
+func EnableServer() error { return runSystemctl("enable", "--now", ServerServiceName) }
+
+// DisableServer 停止 bx server 并取消开机自启。
+func DisableServer() error { return runSystemctl("disable", "--now", ServerServiceName) }
+
 // UnitInstalled 报告 unit 文件是否已就位(用于 up 前置校验)。
 func UnitInstalled() bool {
 	_, err := os.Stat(unitPath)
+	return err == nil
+}
+
+// ServerUnitInstalled 报告 bx server unit 是否已就位。
+func ServerUnitInstalled() bool {
+	_, err := os.Stat(serverUnitPath)
 	return err == nil
 }
 
@@ -142,6 +170,13 @@ func execStartCmd(unitText string) string {
 func Uninstall() error {
 	_ = runSystemctl("disable", "--now", ServiceName)
 	_ = os.Remove(unitPath)
+	return runSystemctl("daemon-reload")
+}
+
+// UninstallServer 停用并删除 bx server 服务。
+func UninstallServer() error {
+	_ = runSystemctl("disable", "--now", ServerServiceName)
+	_ = os.Remove(serverUnitPath)
 	return runSystemctl("daemon-reload")
 }
 
