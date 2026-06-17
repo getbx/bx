@@ -221,22 +221,23 @@ func serverShareAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	password := c.String("password")
+	dir := stringFlag(c, "dir")
+	password := stringFlag(c, "password")
 	if password == "" {
 		password, err = randomPassword()
 		if err != nil {
 			return err
 		}
 	}
-	listen := c.String("listen")
+	listen := stringFlag(c, "listen")
 	if listen == "" {
-		listen, err = nextShareListen(c.String("dir"))
+		listen, err = nextShareListen(dir)
 		if err != nil {
 			return err
 		}
 	}
 	cfg := serverConfig{Listen: listen, Password: password}
-	path := shareConfigPath(c.String("dir"), name)
+	path := shareConfigPath(dir, name)
 	if err := writeServerConfig(path, cfg, false); err != nil {
 		return err
 	}
@@ -258,7 +259,7 @@ func serverShareAction(c *cli.Context) error {
 	if hint := serverFirewallHint(cfg.Listen); hint != "" {
 		fmt.Println(hint)
 	}
-	if host := c.String("host"); host != "" {
+	if host := stringFlag(c, "host"); host != "" {
 		link, err := bxServerLink(host, cfg)
 		if err != nil {
 			return err
@@ -858,6 +859,26 @@ func cleanShareName(name string) (string, error) {
 		return "", fmt.Errorf("share name 只能包含字母、数字、-、_")
 	}
 	return name, nil
+}
+
+func stringFlag(c *cli.Context, name string) string {
+	if v := c.String(name); v != "" {
+		return v
+	}
+	return stringFlagFromArgs(c.Args().Slice(), name)
+}
+
+func stringFlagFromArgs(args []string, name string) string {
+	prefix := "--" + name + "="
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--"+name && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(args[i], prefix) {
+			return strings.TrimPrefix(args[i], prefix)
+		}
+	}
+	return ""
 }
 
 func shareConfigPath(dir, name string) string {
