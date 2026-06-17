@@ -67,6 +67,12 @@ func TestServerFirewallHint(t *testing.T) {
 	}
 }
 
+func TestOpenUFWRejectsBadListen(t *testing.T) {
+	if err := openUFW("bad-listen"); err == nil {
+		t.Fatal("bad listen should fail")
+	}
+}
+
 func TestDoctorHelpers(t *testing.T) {
 	if got := boolStatus(true); got != "ok" {
 		t.Fatalf("boolStatus(true)=%q", got)

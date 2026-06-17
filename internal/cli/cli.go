@@ -116,6 +116,7 @@ func serverShareFlags() []cli.Flag {
 		&cli.StringFlag{Name: "host", Usage: "生成链接使用的公网地址或域名"},
 		&cli.StringFlag{Name: "listen", Usage: "监听地址(留空自动分配端口)"},
 		&cli.StringFlag{Name: "password", Usage: "连接密码(留空自动生成)"},
+		&cli.BoolFlag{Name: "open-ufw", Usage: "创建后自动执行 ufw allow <port>/tcp"},
 	}
 }
 
@@ -257,6 +258,11 @@ func serverShareAction(c *cli.Context) error {
 		return err
 	}
 	fmt.Printf("✅ share %s 已创建。\n", name)
+	if c.Bool("open-ufw") {
+		if err := openUFW(cfg.Listen); err != nil {
+			return err
+		}
+	}
 	if hint := serverFirewallHint(cfg.Listen); hint != "" {
 		fmt.Println(hint)
 	}
@@ -885,6 +891,19 @@ func serverFirewallHint(listen string) string {
 		return ""
 	}
 	return fmt.Sprintf("如果 VPS 启用了防火墙,请确认已放行 TCP %s; ufw 可用: sudo ufw allow %s/tcp", port, port)
+}
+
+func openUFW(listen string) error {
+	port := listenPort(listen)
+	if port == "" {
+		return fmt.Errorf("无法从 listen=%q 推导端口", listen)
+	}
+	cmd := exec.Command("ufw", "allow", port+"/tcp")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ufw allow %s/tcp: %w", port, err)
+	}
+	return nil
 }
 
 func cleanShareName(name string) (string, error) {

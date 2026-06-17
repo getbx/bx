@@ -52,6 +52,12 @@ sudo bx server shares
 sudo bx server revoke alice
 ```
 
+如果 VPS 使用 ufw,创建分享时可显式放行端口:
+
+```bash
+sudo bx server share alice --host <VPS_IP或域名> --open-ufw
+```
+
 ### 2. 客户端安装 bx
 
 ```bash
