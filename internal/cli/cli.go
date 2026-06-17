@@ -41,6 +41,7 @@ func New() *cli.App {
 			{Name: "setup", Usage: "首次配置:写配置+装服务+连通检测(不启动)", ArgsUsage: "bx://...", Flags: setupFlags(), Action: setupAction},
 			{Name: "probe", Usage: "检测 bx:// 链接连通性(不写配置/不改路由)", ArgsUsage: "bx://...", Flags: probeFlags(), Action: probeAction},
 			{Name: "server", Usage: "管理 bx server", Subcommands: serverCommands()},
+			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
@@ -66,6 +67,7 @@ func serverCommands() []*cli.Command {
 		{Name: "start", Usage: "启动并设为开机自启", Action: serverStartAction},
 		{Name: "stop", Usage: "停止并取消开机自启", Action: serverStopAction},
 		{Name: "status", Usage: "查看服务状态", Action: serverStatusAction},
+		{Name: "doctor", Usage: "诊断 bx server 配置和运行状态", Flags: serverDoctorFlags(), Action: serverDoctorAction},
 		{Name: "uninstall", Usage: "卸载 bx server 服务", Action: serverUninstallAction},
 	}
 }
@@ -88,6 +90,21 @@ func serverLinkFlags() []cli.Flag {
 }
 
 func serveFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
+	}
+}
+
+func doctorFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
+		&cli.DurationFlag{Name: "timeout", Value: 8 * time.Second, Usage: "链接探测超时"},
+		&cli.StringFlag{Name: "target", Value: defaultProbeTarget, Usage: "链接探测目标"},
+		&cli.BoolFlag{Name: "skip-probe", Usage: "跳过 bx:// 链接探测"},
+	}
+}
+
+func serverDoctorFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
 	}
@@ -210,6 +227,101 @@ func serveAction(c *cli.Context) error {
 		fmt.Fprintf(os.Stderr, "warning: could not redact server secret from child argv: %v\n", err)
 	}
 	return cmd.Wait()
+}
+
+func doctorAction(c *cli.Context) error {
+	fmt.Println("bx doctor")
+	doctorLine("ok", "version", version.String())
+	cfgPath := resolveConfigPath(c.String("config"))
+	doctorLine("info", "config", cfgPath)
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		doctorLine("fail", "config readable", err.Error())
+		doctorLine("hint", "setup", "sudo bx setup bx://...")
+	} else {
+		doctorLine("ok", "config readable", "yes")
+		checkFileMode(cfgPath, 0o600)
+		cfg, err := config.Parse(b)
+		if err != nil {
+			doctorLine("fail", "config parse", err.Error())
+		} else {
+			doctorLine("ok", "config parse", "yes")
+			if cfg.Server == "" {
+				doctorLine("fail", "server link", "empty")
+			} else if _, err := blink.Decode(cfg.Server); err != nil && !strings.HasPrefix(cfg.Server, "brook://") {
+				doctorLine("fail", "server link", err.Error())
+			} else {
+				doctorLine("ok", "server link", redactLink(cfg.Server))
+				if !c.Bool("skip-probe") {
+					doctorProbe(cfg.Server, c.String("target"), c.Duration("timeout"))
+				}
+			}
+		}
+	}
+	doctorLine(boolStatus(install.UnitInstalled()), "service installed", install.ServiceName)
+	doctorLine(systemdStatus("is-active", install.ServiceName), "service active", systemctlState("is-active", install.ServiceName))
+	doctorLine(systemdStatus("is-enabled", install.ServiceName), "service enabled", systemctlState("is-enabled", install.ServiceName))
+	if err := checkStatusSocket(); err != nil {
+		doctorLine("warn", "status socket", err.Error())
+	} else {
+		doctorLine("ok", "status socket", "reachable")
+	}
+	return nil
+}
+
+func serverDoctorAction(c *cli.Context) error {
+	fmt.Println("bx server doctor")
+	doctorLine("ok", "version", version.String())
+	cfgPath := c.String("config")
+	doctorLine("info", "config", cfgPath)
+	cfg, err := readServerConfig(cfgPath)
+	if err != nil {
+		doctorLine("fail", "config parse", err.Error())
+		doctorLine("hint", "install", "sudo bx server install --host <VPS_IP或域名>")
+	} else {
+		doctorLine("ok", "config parse", "yes")
+		checkFileMode(cfgPath, 0o600)
+		if port := listenPort(cfg.Listen); port == "" {
+			doctorLine("fail", "listen", cfg.Listen)
+		} else {
+			doctorLine("ok", "listen", cfg.Listen)
+			if isListening(port) {
+				doctorLine("ok", "port listening", "tcp/"+port)
+			} else {
+				doctorLine("warn", "port listening", "tcp/"+port+" not detected")
+			}
+			if hint := serverFirewallHint(cfg.Listen); hint != "" {
+				doctorLine("hint", "firewall", hint)
+			}
+		}
+	}
+	doctorLine(boolStatus(install.ServerUnitInstalled()), "service installed", install.ServerServiceName)
+	doctorLine(systemdStatus("is-active", install.ServerServiceName), "service active", systemctlState("is-active", install.ServerServiceName))
+	doctorLine(systemdStatus("is-enabled", install.ServerServiceName), "service enabled", systemctlState("is-enabled", install.ServerServiceName))
+	return nil
+}
+
+func doctorProbe(link, target string, timeout time.Duration) {
+	raw, err := blink.Decode(link)
+	if err != nil {
+		raw = link
+	}
+	dir, err := userRuntimeDir()
+	if err != nil {
+		doctorLine("warn", "probe", err.Error())
+		return
+	}
+	brookPath, err := provision.EnsureBrook(dir, "", embedded.Brook(), embedded.BrookVersion())
+	if err != nil {
+		doctorLine("warn", "probe", err.Error())
+		return
+	}
+	lat, err := setup.ProbeServer(brookPath, raw, target, timeout)
+	if err != nil {
+		doctorLine("fail", "probe", err.Error())
+		return
+	}
+	doctorLine("ok", "probe", fmt.Sprintf("%s %dms", target, lat))
 }
 
 func setupFlags() []cli.Flag {
@@ -537,6 +649,81 @@ func serverFirewallHint(listen string) string {
 		return ""
 	}
 	return fmt.Sprintf("如果 VPS 启用了防火墙,请确认已放行 TCP %s; ufw 可用: sudo ufw allow %s/tcp", port, port)
+}
+
+func doctorLine(status, name, detail string) {
+	fmt.Printf("[%s] %s: %s\n", strings.ToUpper(status), name, detail)
+}
+
+func boolStatus(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "fail"
+}
+
+func systemdStatus(action, service string) string {
+	state := systemctlState(action, service)
+	switch action {
+	case "is-active":
+		if state == "active" {
+			return "ok"
+		}
+	case "is-enabled":
+		if state == "enabled" {
+			return "ok"
+		}
+	}
+	if state == "unknown" {
+		return "warn"
+	}
+	return "fail"
+}
+
+func checkFileMode(path string, want os.FileMode) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		doctorLine("warn", "config permissions", err.Error())
+		return
+	}
+	got := fi.Mode().Perm()
+	if got == want {
+		doctorLine("ok", "config permissions", fmt.Sprintf("%#o", got))
+		return
+	}
+	doctorLine("warn", "config permissions", fmt.Sprintf("%#o, want %#o", got, want))
+}
+
+func checkStatusSocket() error {
+	conn, err := net.DialTimeout("unix", supervisor.SockPath, 500*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func redactLink(link string) string {
+	switch {
+	case strings.HasPrefix(link, "bx://"):
+		return "bx://<redacted>"
+	case strings.HasPrefix(link, "blink://"):
+		return "blink://<legacy-redacted>"
+	case strings.HasPrefix(link, "brook://"):
+		return "internal-link:<redacted>"
+	default:
+		return "<redacted>"
+	}
+}
+
+func isListening(port string) bool {
+	for _, addr := range []string{net.JoinHostPort("127.0.0.1", port), net.JoinHostPort("::1", port)} {
+		conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
+	}
+	return false
 }
 
 func randomPassword() (string, error) {

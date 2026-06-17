@@ -55,6 +55,7 @@ sudo bx up
 
 ```bash
 bx status
+bx doctor
 sudo bx down
 sudo bx up
 ```
@@ -72,8 +73,10 @@ sudo bx up
 | `sudo bx up` | 启动客户端并设为开机自启 |
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `bx status` | 查看客户端状态面板 |
+| `bx doctor` | 诊断客户端配置、服务状态和链接连通性 |
 | `sudo bx run` | 前台运行,用于调试 |
 | `sudo bx uninstall` | 卸载客户端服务 |
+| `sudo bx server doctor` | 诊断服务端配置、监听端口和服务状态 |
 
 ## 配置
 
