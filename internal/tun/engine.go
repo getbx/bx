@@ -214,17 +214,19 @@ func (e *Engine) relay(local, upstream net.Conn, initial []byte) {
 				e.stats.AddUp(int64(len(initial)))
 			}
 		}
-		n := copyOneWay(upstream, local, defaultIdleTimeout)
+		var onWrite func(int64)
 		if e.stats != nil {
-			e.stats.AddUp(n)
+			onWrite = e.stats.AddUp
 		}
+		copyOneWay(upstream, local, defaultIdleTimeout, onWrite)
 	}()
 	go func() {
 		defer wg.Done()
-		n := copyOneWay(local, upstream, defaultIdleTimeout)
 		if e.stats != nil {
-			e.stats.AddDown(n)
+			copyOneWay(local, upstream, defaultIdleTimeout, e.stats.AddDown)
+			return
 		}
+		copyOneWay(local, upstream, defaultIdleTimeout, nil)
 	}()
 	wg.Wait()
 	local.Close()
@@ -236,7 +238,8 @@ func (e *Engine) relay(local, upstream net.Conn, initial []byte) {
 const defaultIdleTimeout = 5 * time.Minute
 
 // copyOneWay 把 src 转发到 dst,每次读写刷新空闲超时;返回转发字节数。
-func copyOneWay(dst, src net.Conn, idle time.Duration) int64 {
+// onWrite 非空时会在每次成功写入后调用,用于实时刷新流量统计。
+func copyOneWay(dst, src net.Conn, idle time.Duration, onWrite func(int64)) int64 {
 	var total int64
 	buf := make([]byte, 32*1024)
 	for {
@@ -244,10 +247,11 @@ func copyOneWay(dst, src net.Conn, idle time.Duration) int64 {
 		n, rerr := src.Read(buf)
 		if n > 0 {
 			_ = dst.SetWriteDeadline(time.Now().Add(idle))
-			if _, werr := dst.Write(buf[:n]); werr != nil {
+			written, werr := writeAll(dst, buf[:n], onWrite)
+			total += written
+			if werr != nil {
 				break
 			}
-			total += int64(n)
 		}
 		if rerr != nil {
 			break
@@ -259,6 +263,28 @@ func copyOneWay(dst, src net.Conn, idle time.Duration) int64 {
 		cw.CloseWrite()
 	}
 	return total
+}
+
+func writeAll(dst net.Conn, b []byte, onWrite func(int64)) (int64, error) {
+	var total int64
+	for len(b) > 0 {
+		n, err := dst.Write(b)
+		if n > 0 {
+			written := int64(n)
+			total += written
+			if onWrite != nil {
+				onWrite(written)
+			}
+			b = b[n:]
+		}
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, net.ErrClosed
+		}
+	}
+	return total, nil
 }
 
 // metaFromID 把 netstack 的连接 ID 转成分流脑要的 Meta。
