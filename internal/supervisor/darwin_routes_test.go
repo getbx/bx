@@ -32,10 +32,10 @@ func TestDarwinRouteSpecsBlocksV6(t *testing.T) {
 
 	wantAdd := []string{
 		"-n add -inet6 -net ::/1 ::1 -reject",     // 全局 v6 下半 → reject
-		"-n add -inet6 -net 8000::/1 ::1 -reject",  // 全局 v6 上半 → reject
-		"-n add -net 0.0.0.0/1 -interface utun5",   // v4 split-default 零回归
-		"-n add -net 10.0.0.0/8 192.168.1.1",       // v4 私网经网关零回归
-		"-n add -net 1.2.3.4/32 192.168.1.1",       // serverBypass 零回归
+		"-n add -inet6 -net 8000::/1 ::1 -reject", // 全局 v6 上半 → reject
+		"-n add -net 0.0.0.0/1 -interface utun5",  // v4 split-default 零回归
+		"-n add -net 10.0.0.0/8 192.168.1.1",      // v4 私网经网关零回归
+		"-n add -net 1.2.3.4/32 192.168.1.1",      // serverBypass 零回归
 	}
 	for _, w := range wantAdd {
 		if !adds[w] {
@@ -86,4 +86,46 @@ func TestDarwinRouteSpecsSkipsV6WhenDisabled(t *testing.T) {
 	if !specAdds(specs)["-n add -net 0.0.0.0/1 -interface utun5"] {
 		t.Error("v4 split-default 应仍在")
 	}
+}
+
+func TestDarwinRoutePlanIsDryRunText(t *testing.T) {
+	apply, cleanup := DarwinRoutePlan(DarwinRoutePlanOptions{
+		TunName:      "utun9",
+		TunAddr:      "198.51.100.1/30",
+		Gateway:      "192.168.1.1",
+		ServerBypass: []string{"1.2.3.4/32"},
+		UserBypass:   []string{"203.0.113.0/24"},
+		BlockV6:      true,
+	})
+
+	wantApply := []string{
+		"ifconfig utun9 inet 198.51.100.1 198.51.100.1 up",
+		"route -n add -net 1.2.3.4/32 192.168.1.1",
+		"route -n add -net 203.0.113.0/24 192.168.1.1",
+		"route -n add -net 0.0.0.0/1 -interface utun9",
+		"route -n add -inet6 -net ::/1 ::1 -reject",
+	}
+	for _, w := range wantApply {
+		if !stringSliceContains(apply, w) {
+			t.Errorf("apply 缺命令: %q", w)
+		}
+	}
+	if stringSliceContains(apply, "route -n add -net 100.64.0.0/10 192.168.1.1") {
+		t.Error("dry-run 计划不应认领 macOS CGNAT")
+	}
+	if !stringSliceContains(cleanup, "route -n delete -inet6 -net ::/1") {
+		t.Error("cleanup 缺 IPv6 reject 清理命令")
+	}
+	if !stringSliceContains(cleanup, "route -n delete -net 0.0.0.0/1") {
+		t.Error("cleanup 缺 split-default 清理命令")
+	}
+}
+
+func stringSliceContains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }

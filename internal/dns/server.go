@@ -5,13 +5,23 @@ package dns
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/netip"
+	"os"
 	"strings"
 
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/splitdns"
 	"golang.org/x/net/dns/dnsmessage"
 )
+
+var debug = os.Getenv("BX_DEBUG") != ""
+
+func debugf(format string, args ...any) {
+	if debug {
+		log.Printf(format, args...)
+	}
+}
 
 // Server 处理 DNS 查询,A 记录用 fake IP 应答。
 type Server struct {
@@ -90,6 +100,7 @@ func (s *Server) Respond(query []byte) ([]byte, error) {
 
 	if q.Type == dnsmessage.TypeA && q.Class == dnsmessage.ClassINET {
 		ip := s.pool.Alloc(domain)
+		debugf("dns fake: %s -> %s", domain, ip)
 		if err := b.StartAnswers(); err != nil {
 			return nil, err
 		}

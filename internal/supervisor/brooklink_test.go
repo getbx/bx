@@ -3,13 +3,34 @@ package supervisor
 import "testing"
 
 func TestServerHostFromLink(t *testing.T) {
-	link := "brook://server?server=203.0.113.10%3A9999&username&password=boai.py1314"
+	link := "brook://server?server=203.0.113.10%3A9999&username&password=pw"
 	host, err := serverHostFromLink(link)
 	if err != nil {
 		t.Fatalf("serverHostFromLink: %v", err)
 	}
 	if host != "203.0.113.10" {
 		t.Fatalf("host = %q, want 203.0.113.10", host)
+	}
+}
+
+func TestServerHostFromLink_WSSServer(t *testing.T) {
+	link := "brook://wssserver?wssserver=wss%3A%2F%2Fvps.example.com%3A443&username&password=pw"
+	host, err := serverHostFromLink(link)
+	if err != nil {
+		t.Fatalf("serverHostFromLink: %v", err)
+	}
+	if host != "vps.example.com" {
+		t.Fatalf("host = %q, want vps.example.com", host)
+	}
+}
+
+func TestServerHostFromLink_BareHost(t *testing.T) {
+	host, err := serverHostFromLink("example.com")
+	if err != nil {
+		t.Fatalf("serverHostFromLink: %v", err)
+	}
+	if host != "example.com" {
+		t.Fatalf("host = %q, want example.com", host)
 	}
 }
 

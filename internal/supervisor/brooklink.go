@@ -36,19 +36,33 @@ func serverHostFromLink(server string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("解析 brook link: %w", err)
 		}
-		hp := u.Query().Get("server")
-		if hp == "" {
-			return "", fmt.Errorf("brook link 缺 server 参数")
+		q := u.Query()
+		endpoint := q.Get("server")
+		if endpoint == "" && u.Host != "" {
+			endpoint = q.Get(u.Host)
 		}
-		host, _, err := net.SplitHostPort(hp)
-		if err != nil {
-			return "", fmt.Errorf("拆分 server %q: %w", hp, err)
+		if endpoint == "" {
+			return "", fmt.Errorf("brook link 缺 server/%s endpoint 参数", u.Host)
+		}
+		return hostFromEndpoint(endpoint)
+	}
+	return hostFromEndpoint(server)
+}
+
+func hostFromEndpoint(endpoint string) (string, error) {
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		host := u.Hostname()
+		if host == "" {
+			return "", fmt.Errorf("拆分 endpoint %q: host 为空", endpoint)
 		}
 		return host, nil
 	}
-	host, _, err := net.SplitHostPort(server)
+	host, _, err := net.SplitHostPort(endpoint)
 	if err != nil {
-		return "", fmt.Errorf("拆分 host:port %q: %w", server, err)
+		if strings.Count(endpoint, ":") == 0 && endpoint != "" {
+			return endpoint, nil
+		}
+		return "", fmt.Errorf("拆分 endpoint %q: %w", endpoint, err)
 	}
 	return host, nil
 }

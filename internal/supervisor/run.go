@@ -122,6 +122,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	tun0.Start()
 	defer tun0.Stop()
 	log.Printf("brook 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
+	if err := waitTunnelHealthy(ctx, tun0, 20*time.Second); err != nil {
+		return err
+	}
+	log.Printf("brook 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)
 
 	// 3) fake-IP 池 + DNS 处理器
 	pool, err := fakeip.New(cfg.DNS.FakeipCIDR)
@@ -147,7 +151,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 4) Dialer:fake-IP 反查 + 防环直连 + socks 代理 + 国内 DNS resolver
 	counters := &stats.Counters{}
 	direct := plat.DirectDialer()
-	proxyDialer, err := socksProxy(tun0.SocksAddr(), direct)
+	// 这里连的是本机 brook socks5(127.0.0.1),必须走普通 loopback dialer。
+	// macOS 的 DirectDialer 会 IP_BOUND_IF 绑物理网卡,绑后反而无法可靠连接 127/8。
+	proxyDialer, err := socksProxy(tun0.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
 	if err != nil {
 		return fmt.Errorf("构建 socks 代理: %w", err)
 	}
@@ -242,6 +248,26 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		log.Printf("ctx 取消,还原中…")
 	}
 	return nil
+}
+
+func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if t.Healthy() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			s := t.Stats()
+			return fmt.Errorf("brook 隧道健康检查超时(%s): restarts=%d", timeout, s.Restarts)
+		case <-tick.C:
+		}
+	}
 }
 
 // serveStats 在 unix socket 上提供状态查询:每个连接回一份 JSON Report。

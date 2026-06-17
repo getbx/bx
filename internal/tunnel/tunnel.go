@@ -156,6 +156,31 @@ func (t *Tunnel) runOnce(ctx context.Context) error {
 
 	ticker := time.NewTicker(t.interval)
 	defer ticker.Stop()
+	startup := time.NewTimer(10 * time.Second)
+	defer startup.Stop()
+	startupTick := time.NewTicker(200 * time.Millisecond)
+	defer startupTick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-exitCh:
+			t.setDown()
+			return errProcessExited
+		case <-startup.C:
+			t.setDown()
+			return errUnhealthy
+		case <-startupTick.C:
+			lat, herr := t.health(t.socksAddr)
+			if herr == nil {
+				t.setUp(lat)
+				goto monitor
+			}
+			t.setDown()
+		}
+	}
+
+monitor:
 	for {
 		select {
 		case <-ctx.Done():

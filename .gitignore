@@ -1,5 +1,6 @@
 /bx
 /dist/
+.bx-test-logs/
 *.test
 *.out
 .env

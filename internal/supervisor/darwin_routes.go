@@ -1,5 +1,7 @@
 package supervisor
 
+import "strings"
+
 // darwin_routes.go 是 macOS Hijack 的**纯路由命令构造**(无 build tag、不执行 route,
 // 故可在任意平台免 root 单测)。真正调用 `route`/检测 v6 的部分在 platform_darwin.go。
 
@@ -20,6 +22,37 @@ type routeSpec struct {
 	del []string
 }
 
+// DarwinRoutePlanOptions 是 macOS 路由 dry-run 的输入。它只用于生成命令文本,不执行任何命令。
+type DarwinRoutePlanOptions struct {
+	TunName      string
+	TunAddr      string
+	Gateway      string
+	ServerBypass []string
+	UserBypass   []string
+	BlockV6      bool
+}
+
+// DarwinRoutePlan 生成 macOS Hijack 将执行的命令和对称清理命令,供真机验证前审计。
+func DarwinRoutePlan(opts DarwinRoutePlanOptions) (apply []string, cleanup []string) {
+	tunIP := opts.TunAddr
+	if i := strings.IndexByte(tunIP, '/'); i >= 0 {
+		tunIP = tunIP[:i]
+	}
+	apply = append(apply, commandString("ifconfig", opts.TunName, "inet", tunIP, tunIP, "up"))
+	specs := darwinRouteSpecs(opts.TunName, opts.Gateway, darwinDirectCIDRs, opts.ServerBypass, opts.UserBypass, opts.BlockV6)
+	for _, s := range specs {
+		apply = append(apply, commandString("route", s.add...))
+	}
+	for i := len(specs) - 1; i >= 0; i-- {
+		cleanup = append(cleanup, commandString("route", specs[i].del...))
+	}
+	return apply, cleanup
+}
+
+func commandString(name string, args ...string) string {
+	return strings.Join(append([]string{name}, args...), " ")
+}
+
 // darwinRouteSpecs 纯构造 macOS Hijack 的全部 route 命令序列:
 //   - v4:directCIDRs(私网/docker)+ serverBypass + userBypass 经物理网关 gw 旁路;
 //     split-default(0.0.0.0/1 + 128.0.0.0/1)把默认流量劫进 tunName(utun)。
@@ -37,6 +70,12 @@ func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass 
 			del: []string{"-n", "delete", "-net", cidr},
 		}
 	}
+	viaTun := func(cidr string) routeSpec {
+		return routeSpec{
+			add: []string{"-n", "add", "-net", cidr, "-interface", tunName},
+			del: []string{"-n", "delete", "-net", cidr},
+		}
+	}
 	for _, c := range directCIDRs {
 		specs = append(specs, viaGW(c))
 	}
@@ -47,10 +86,7 @@ func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass 
 		specs = append(specs, viaGW(c))
 	}
 	for _, c := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
-		specs = append(specs, routeSpec{
-			add: []string{"-n", "add", "-net", c, "-interface", tunName},
-			del: []string{"-n", "delete", "-net", c},
-		})
+		specs = append(specs, viaTun(c))
 	}
 	if blockV6 {
 		for _, c := range []string{"::/1", "8000::/1"} {

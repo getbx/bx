@@ -3,8 +3,10 @@ package dialer
 import (
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
 	"sync/atomic"
 
@@ -15,6 +17,14 @@ import (
 
 // ErrBlocked 表示连接被 kill-switch 或 Block 决策拦截。
 var ErrBlocked = errors.New("blocked by killswitch")
+
+var debug = os.Getenv("BX_DEBUG") != ""
+
+func debugf(format string, args ...any) {
+	if debug {
+		log.Printf(format, args...)
+	}
+}
 
 // ContextDialer 是带 context 的拨号器(net.Dialer 与 socks5 dialer 都满足)。
 type ContextDialer interface {
@@ -64,6 +74,8 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 	if m.Domain == "" && d.Fake != nil {
 		if dom, ok := d.Fake.Domain(m.IP); ok {
 			m.Domain = dom
+		} else if m.IP.Is4() {
+			debugf("fake-ip miss: ip=%s port=%d udp=%v", m.IP, m.Port, m.UDP)
 		}
 	}
 
@@ -92,6 +104,7 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 		if d.Stats != nil {
 			d.Stats.Direct()
 		}
+		var target string
 		if m.Domain != "" {
 			ip := resolved
 			if !ip.IsValid() {
@@ -101,9 +114,16 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 				}
 				ip = r
 			}
-			return d.Direct.DialContext(ctx, network(m.UDP), net.JoinHostPort(ip.String(), port))
+			target = net.JoinHostPort(ip.String(), port)
+		} else {
+			target = net.JoinHostPort(m.IP.String(), port)
 		}
-		return d.Direct.DialContext(ctx, network(m.UDP), net.JoinHostPort(m.IP.String(), port))
+		debugf("dial direct: domain=%q ip=%s target=%s udp=%v", m.Domain, m.IP, target, m.UDP)
+		conn, err := d.Direct.DialContext(ctx, network(m.UDP), target)
+		if err != nil {
+			debugf("dial direct failed: target=%s err=%v", target, err)
+		}
+		return conn, err
 
 	case route.Proxy:
 		if d.Killswitch && d.Healthy != nil && !d.Healthy() {
@@ -119,7 +139,13 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 		if host == "" {
 			host = m.IP.String()
 		}
-		return d.Proxy.DialContext(ctx, network(m.UDP), net.JoinHostPort(host, port))
+		target := net.JoinHostPort(host, port)
+		debugf("dial proxy: domain=%q ip=%s target=%s udp=%v", m.Domain, m.IP, target, m.UDP)
+		conn, err := d.Proxy.DialContext(ctx, network(m.UDP), target)
+		if err != nil {
+			debugf("dial proxy failed: target=%s err=%v", target, err)
+		}
+		return conn, err
 
 	default: // Block
 		if d.Stats != nil {
