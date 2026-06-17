@@ -54,6 +54,18 @@ func TestBXServerLinkRejectsHostWithPort(t *testing.T) {
 	}
 }
 
+func TestServerFirewallHint(t *testing.T) {
+	got := serverFirewallHint(":9998")
+	for _, want := range []string{"TCP 9998", "sudo ufw allow 9998/tcp"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("firewall hint = %q, want contains %q", got, want)
+		}
+	}
+	if got := serverFirewallHint("bad-listen"); got != "" {
+		t.Fatalf("bad listen should not produce hint, got %q", got)
+	}
+}
+
 func TestWriteReadServerConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	cfg := serverConfig{Listen: ":9999", Password: "pw"}

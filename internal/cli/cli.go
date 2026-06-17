@@ -117,6 +117,9 @@ func serverInstallAction(c *cli.Context) error {
 		return err
 	}
 	fmt.Printf("✅ bx server 已安装。下一步:sudo bx server start\n")
+	if hint := serverFirewallHint(cfg.Listen); hint != "" {
+		fmt.Println(hint)
+	}
 	if host := c.String("host"); host != "" {
 		link, err := bxServerLink(host, cfg)
 		if err != nil {
@@ -519,6 +522,14 @@ func listenPort(listen string) string {
 		return strings.TrimPrefix(listen, ":")
 	}
 	return ""
+}
+
+func serverFirewallHint(listen string) string {
+	port := listenPort(listen)
+	if port == "" {
+		return ""
+	}
+	return fmt.Sprintf("如果 VPS 启用了防火墙,请确认已放行 TCP %s; ufw 可用: sudo ufw allow %s/tcp", port, port)
 }
 
 func randomPassword() (string, error) {
