@@ -175,6 +175,16 @@ func TestShareHelpers(t *testing.T) {
 	}
 }
 
+func TestStringFlagReadsPostArgFlags(t *testing.T) {
+	args := []string{"alice", "--host", "example.com", "--listen=:10077"}
+	if got := stringFlagFromArgs(args, "host"); got != "example.com" {
+		t.Fatalf("host = %q", got)
+	}
+	if got := stringFlagFromArgs(args, "listen"); got != ":10077" {
+		t.Fatalf("listen = %q", got)
+	}
+}
+
 func TestReadSharesSorted(t *testing.T) {
 	dir := t.TempDir()
 	for _, item := range []struct {
