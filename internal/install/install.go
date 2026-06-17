@@ -156,6 +156,9 @@ func EnableServer() error { return runSystemctl("enable", "--now", ServerService
 // DisableServer 停止 bx server 并取消开机自启。
 func DisableServer() error { return runSystemctl("disable", "--now", ServerServiceName) }
 
+// RestartServer 重启 bx server。
+func RestartServer() error { return runSystemctl("restart", ServerServiceName) }
+
 // UnitInstalled 报告 unit 文件是否已就位(用于 up 前置校验)。
 func UnitInstalled() bool {
 	_, err := os.Stat(unitPath)

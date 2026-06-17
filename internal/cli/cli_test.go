@@ -136,6 +136,30 @@ func TestWriteServerConfigForceResetsPermissions(t *testing.T) {
 	}
 }
 
+func TestRotateServerConfigPreservesListenAndResetsPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	if err := writeServerConfig(path, serverConfig{Listen: ":9999", Password: "old"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := rotateServerConfig(path, "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Listen != ":9999" || got.Password != "new" {
+		t.Fatalf("rotated config = %+v", got)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("server config perm = %o, want 0600", fi.Mode().Perm())
+	}
+}
+
 func TestResolveConfigPathKeepsExplicitMissingPath(t *testing.T) {
 	// 用户显式传入的不存在路径应原样返回(不偷偷回退),便于错误信息指向用户路径
 	p := "/nonexistent/explicit/whoami-bx-test.yaml"
