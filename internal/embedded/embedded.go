@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// brook 由架构专属文件按 GOARCH 内嵌:embedded_amd64.go / embedded_arm64.go。
-// 仅支持 linux/amd64 与 linux/arm64;其他架构无对应 brook,编译期即报 undefined: brook。
+// brook 由系统+架构专属文件按 GOOS/GOARCH 内嵌。
+// 目前支持 linux/darwin 的 amd64 与 arm64;其他平台无对应 brook,编译期即报 undefined: brook。
 
 //go:embed assets/china_domain.txt
 var chinaDomain []byte

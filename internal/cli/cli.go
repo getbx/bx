@@ -163,9 +163,18 @@ func serverStopAction(c *cli.Context) error {
 }
 
 func serverStatusAction(c *cli.Context) error {
-	cmd := exec.Command("systemctl", "status", install.ServerServiceName, "--no-pager")
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
+	active := systemctlState("is-active", install.ServerServiceName)
+	enabled := systemctlState("is-enabled", install.ServerServiceName)
+	fmt.Printf("bx server: %s, boot: %s\n", active, enabled)
+	return nil
+}
+
+func systemctlState(args ...string) string {
+	out, err := exec.Command("systemctl", args...).Output()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func serverUninstallAction(c *cli.Context) error {

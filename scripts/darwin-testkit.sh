@@ -5,19 +5,19 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/darwin-testkit.sh --server-bypass A.B.C.D/32 [options]
-  sudo BX_BROOK_LINK='brook://...' scripts/darwin-testkit.sh --execute --server-bypass A.B.C.D/32 [options]
+  sudo BX_LINK='bx://...' scripts/darwin-testkit.sh --execute --server-bypass A.B.C.D/32 [options]
 
 Options:
   --execute                 Actually run the short macOS test. Without this, only logs a dry-run plan.
   --bx PATH                 bx binary path. Default: /tmp/bx-mac/bx, built automatically if missing.
-  --brook PATH              macOS brook CLI path. Default: /tmp/bx-mac/brook_darwin_arm64
-  --link LINK               brook:// link. Default: $BX_BROOK_LINK
-  --server-bypass CIDR      brook server IP/CIDR that must bypass utun. Required; may be repeated.
+  --brook PATH              Internal transport binary override for debugging.
+  --link LINK               bx:// link. Default: $BX_LINK; old $BX_BROOK_LINK still works.
+  --server-bypass CIDR      Server IP/CIDR that must bypass utun. Required; may be repeated.
   --bypass CIDR             Extra user bypass CIDR. May be repeated.
   --gateway IP              Physical default gateway. Default: detected from route -n get default.
   --tun NAME                Requested utun name. Default: utun
   --duration SECONDS        bx --test-timeout duration. Default: 45
-  --probe HOST:PORT         bx brook health probe target. Default: github.com:443
+  --probe HOST:PORT         bx health probe target. Default: github.com:443
   --health-timeout SECONDS  bx tunnel health startup timeout. Default: 45
   --rollback-after SECONDS  External rollback delay. Default: 75
   --log-dir DIR             Log directory. Default: ./.bx-test-logs/bx-mac-test-YYYYmmdd-HHMMSS
@@ -103,8 +103,8 @@ fix_log_permissions() {
 
 BX="/tmp/bx-mac/bx"
 BX_PROVIDED=0
-BROOK="/tmp/bx-mac/brook_darwin_arm64"
-LINK="${BX_BROOK_LINK:-}"
+BROOK=""
+LINK="${BX_LINK:-${BX_BROOK_LINK:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GATEWAY=""
@@ -145,7 +145,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -x "$BROOK" ]] || die "brook CLI not executable: $BROOK"
 [[ ${#SERVER_BYPASS[@]} -gt 0 ]] || die "--server-bypass A.B.C.D/32 is required"
 
 if [[ "$BX_PROVIDED" != "1" || ! -x "$BX" ]]; then
@@ -186,7 +185,7 @@ fi
 {
   echo "log_dir=$LOG_DIR"
   echo "bx=$BX"
-  echo "brook=$BROOK"
+  echo "transport_override=$BROOK"
   echo "gateway=$GATEWAY"
   echo "tun=$TUN"
   echo "duration=$DURATION"
@@ -200,7 +199,9 @@ fi
   echo "user_bypass=${USER_BYPASS[*]}"
   sw_vers 2>/dev/null || true
   uname -a
-  "$BROOK" --version || true
+  if [[ -n "$BROOK" && -x "$BROOK" ]]; then
+    "$BROOK" --version || true
+  fi
 } >"$LOG_DIR/meta.txt" 2>&1
 
 capture_state before
@@ -247,7 +248,7 @@ if [[ "$EXECUTE" != "1" ]]; then
   echo
   echo "Dry-run complete. Logs: $LOG_DIR"
   echo "No network changes were made."
-  execute_hint=(sudo BX_BROOK_LINK='brook://...' "$0" --execute)
+  execute_hint=(sudo BX_LINK='bx://...' "$0" --execute)
   for cidr in "${SERVER_BYPASS[@]}"; do
     execute_hint+=(--server-bypass "$cidr")
   done
@@ -263,7 +264,7 @@ if [[ "$EXECUTE" != "1" ]]; then
 fi
 
 [[ "$(id -u)" == "0" ]] || die "--execute must run as root via sudo"
-[[ -n "$LINK" ]] || die "--execute requires --link or BX_BROOK_LINK"
+[[ -n "$LINK" ]] || die "--execute requires --link or BX_LINK"
 
 if [[ "$SET_SYSTEM_DNS" == "1" ]]; then
   save_dns_state "$DNS_SERVICE"
@@ -298,7 +299,11 @@ chmod 600 "$CONFIG"
 ) >"$LOG_DIR/rollback.log" 2>&1 &
 echo "$!" >"$LOG_DIR/rollback.pid"
 
-RUN_ARGS=(run -c "$CONFIG" --brook "$BROOK" --probe "$PROBE" --health-timeout "${HEALTH_TIMEOUT}s" --test-timeout "${DURATION}s")
+RUN_ARGS=(run -c "$CONFIG" --probe "$PROBE" --health-timeout "${HEALTH_TIMEOUT}s" --test-timeout "${DURATION}s")
+if [[ -n "$BROOK" ]]; then
+  [[ -x "$BROOK" ]] || die "transport override not executable: $BROOK"
+  RUN_ARGS+=(--brook "$BROOK")
+fi
 if [[ "$SET_SYSTEM_DNS" == "1" ]]; then
   RUN_ARGS+=(--listen-dns 127.0.0.1:53)
 fi
