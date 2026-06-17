@@ -76,6 +76,16 @@ func TestDialFakeIPRecoversDomain(t *testing.T) {
 	}
 }
 
+func TestDialBlocksUDPBeforeSocks(t *testing.T) {
+	d, px, dr := newTestDialer(nil, fakeResolver{}, true, true)
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("198.18.0.93"), Port: 443, UDP: true}); err != ErrBlocked {
+		t.Fatalf("UDP 应快速阻断, got %v", err)
+	}
+	if px.lastAddr != "" || dr.lastAddr != "" {
+		t.Fatalf("UDP 不应触达 socks/direct, proxy=%q direct=%q", px.lastAddr, dr.lastAddr)
+	}
+}
+
 func TestDialNeedResolveForeignGoesProxy(t *testing.T) {
 	res := fakeResolver{ip: netip.MustParseAddr("8.8.8.8")}
 	d, px, _ := newTestDialer(nil, res, true, true)

@@ -69,11 +69,27 @@ func network(udp bool) string {
 
 // Dial 处理一条来自 TUN 的连接,返回到出口的 net.Conn。
 func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
+	return d.DialWithInitial(ctx, m, nil)
+}
+
+// DialWithInitial 可用 TCP 首包中的 TLS SNI / HTTP Host 为未知 fake-IP 恢复域名。
+func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []byte) (net.Conn, error) {
 	rt := d.router.Load()
+	if m.UDP {
+		if d.Stats != nil {
+			d.Stats.Blocked()
+		}
+		debugf("udp blocked: ip=%s domain=%q port=%d", m.IP, m.Domain, m.Port)
+		return nil, ErrBlocked
+	}
+
 	// 1) fake IP 反查域名
 	if m.Domain == "" && d.Fake != nil {
 		if dom, ok := d.Fake.Domain(m.IP); ok {
 			m.Domain = dom
+		} else if sniffed := sniffDomain(initial); sniffed != "" {
+			m.Domain = sniffed
+			debugf("domain sniffed: ip=%s domain=%q port=%d udp=%v", m.IP, m.Domain, m.Port, m.UDP)
 		} else if m.IP.Is4() {
 			debugf("fake-ip miss: ip=%s port=%d udp=%v", m.IP, m.Port, m.UDP)
 		}

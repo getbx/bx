@@ -42,8 +42,10 @@ type Options struct {
 	ChinaDomainPath string
 	ChinaCIDRPath   string
 	Probe           string        // 隧道健康检查目标,如 1.1.1.1:443
+	HealthTimeout   time.Duration // 等待隧道健康的启动窗口
 	Deadman         time.Duration // >0:到点自动还原(远程实测保命)
 	Global          bool          // 全局模式:除 bypass/用户 direct 规则外一切走代理
+	DNSListen       string        // 可选:本地 DNS 监听地址,如 127.0.0.1:53(macOS 系统 DNS 接入)
 }
 
 // tunHandle 是 OpenTUN 返回的设备句柄,交给 Hijack 配路由。
@@ -122,7 +124,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	tun0.Start()
 	defer tun0.Stop()
 	log.Printf("brook 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
-	if err := waitTunnelHealthy(ctx, tun0, 20*time.Second); err != nil {
+	healthTimeout := opts.HealthTimeout
+	if healthTimeout <= 0 {
+		healthTimeout = 20 * time.Second
+	}
+	if err := waitTunnelHealthy(ctx, tun0, healthTimeout); err != nil {
 		return err
 	}
 	log.Printf("brook 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)
@@ -133,6 +139,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return fmt.Errorf("建 fake-IP 池: %w", err)
 	}
 	dnsSrv := bxdns.NewServer(pool, 1)
+	if opts.DNSListen != "" {
+		dnsListener, err := bxdns.ListenUDP(opts.DNSListen, dnsSrv)
+		if err != nil {
+			return err
+		}
+		defer dnsListener.Close()
+		log.Printf("本地 DNS 已监听: udp://%s", dnsListener.LocalAddr())
+	}
 
 	// split-DNS:匹配域名转发到内网 DNS 解析,真实 IP 注册进 splitDirect 强制直连。
 	splitDirect := splitdns.NewSet()
