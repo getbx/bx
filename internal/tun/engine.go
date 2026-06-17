@@ -33,6 +33,11 @@ type Dialer interface {
 	Dial(ctx context.Context, m route.Meta) (net.Conn, error)
 }
 
+// InitialDialer 可在 TCP 首包已知时用首包辅助恢复域名(如 TLS SNI/HTTP Host)。
+type InitialDialer interface {
+	DialWithInitial(ctx context.Context, m route.Meta, initial []byte) (net.Conn, error)
+}
+
 // DNSResponder 处理一条 DNS 查询(请求 → 应答字节)。用于 fake-IP。
 type DNSResponder interface {
 	Respond(query []byte) ([]byte, error)
@@ -140,7 +145,14 @@ func (e *Engine) handleConn(local net.Conn, m route.Meta) {
 		e.serveDNS(local)
 		return
 	}
-	upstream, err := e.dialer.Dial(context.Background(), m)
+	initial := e.readInitial(local, m)
+	var upstream net.Conn
+	var err error
+	if d, ok := e.dialer.(InitialDialer); ok {
+		upstream, err = d.DialWithInitial(context.Background(), m, initial)
+	} else {
+		upstream, err = e.dialer.Dial(context.Background(), m)
+	}
 	if err != nil {
 		local.Close()
 		return
@@ -149,7 +161,21 @@ func (e *Engine) handleConn(local net.Conn, m route.Meta) {
 		e.stats.ConnOpen()
 		defer e.stats.ConnClose()
 	}
-	e.relay(local, upstream)
+	e.relay(local, upstream, initial)
+}
+
+func (e *Engine) readInitial(conn net.Conn, m route.Meta) []byte {
+	if m.UDP {
+		return nil
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 4096)
+	n, err := conn.Read(buf)
+	_ = conn.SetReadDeadline(time.Time{})
+	if err != nil || n == 0 {
+		return nil
+	}
+	return append([]byte(nil), buf[:n]...)
 }
 
 // serveDNS 在一条 UDP 流上循环处理 DNS 查询(请求→应答),空闲即关。
@@ -175,11 +201,19 @@ func (e *Engine) serveDNS(conn net.Conn) {
 // relay 在 local↔upstream 间双向转发并计量字节:
 // local→upstream 记为上行,upstream→local 记为下行。
 // 任一方向读到 EOF 就半关闭对端的写,两个方向都结束后关闭两端。
-func (e *Engine) relay(local, upstream net.Conn) {
+func (e *Engine) relay(local, upstream net.Conn, initial []byte) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		if len(initial) > 0 {
+			if _, err := upstream.Write(initial); err != nil {
+				return
+			}
+			if e.stats != nil {
+				e.stats.AddUp(int64(len(initial)))
+			}
+		}
 		n := copyOneWay(upstream, local, defaultIdleTimeout)
 		if e.stats != nil {
 			e.stats.AddUp(n)
