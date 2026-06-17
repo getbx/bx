@@ -79,7 +79,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 0) 物料:内嵌 brook/列表落盘(零外部依赖)
 	brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion())
 	if err != nil {
-		return fmt.Errorf("准备 brook: %w", err)
+		return fmt.Errorf("准备运行环境: %w", err)
 	}
 	global := cfg.Global || opts.Global
 
@@ -123,7 +123,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	tun0.Start()
 	defer tun0.Stop()
-	log.Printf("brook 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
+	log.Printf("bx 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
 	healthTimeout := opts.HealthTimeout
 	if healthTimeout <= 0 {
 		healthTimeout = 20 * time.Second
@@ -131,7 +131,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err := waitTunnelHealthy(ctx, tun0, healthTimeout); err != nil {
 		return err
 	}
-	log.Printf("brook 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)
+	log.Printf("bx 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)
 
 	// 3) fake-IP 池 + DNS 处理器
 	pool, err := fakeip.New(cfg.DNS.FakeipCIDR)
@@ -215,14 +215,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 服务器可能是域名:解析成 IP 段再 bypass(避免 brook 到服务器的连接被 tun 捕获成环)。
 	serverBypass := hostToCIDRs(serverHost)
 	if len(serverBypass) == 0 {
-		return fmt.Errorf("无法解析 brook 服务器 %q 为 IP(bypass 必需,否则成环)", serverHost)
+		return fmt.Errorf("无法解析服务器 %q 为 IP(bypass 必需,否则成环)", serverHost)
 	}
 	teardown, err := plat.Hijack(tunH, serverBypass, cfg.Bypass)
 	if err != nil {
 		return fmt.Errorf("配置路由: %w", err)
 	}
 	defer teardown()
-	log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 brook。")
+	log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。")
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
 	if !global && cfg.Lists.AutoUpdateEnabled() && !listsOverridden {
@@ -278,7 +278,7 @@ func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Durat
 			return ctx.Err()
 		case <-deadline.C:
 			s := t.Stats()
-			return fmt.Errorf("brook 隧道健康检查超时(%s): restarts=%d", timeout, s.Restarts)
+			return fmt.Errorf("bx 隧道健康检查超时(%s): restarts=%d", timeout, s.Restarts)
 		case <-tick.C:
 		}
 	}

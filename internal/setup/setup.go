@@ -19,20 +19,23 @@ type minimalConfig struct {
 }
 
 // WriteConfig 写最小配置(global+killswitch 默认开)。文件已存在且 !force 则报错。
-func WriteConfig(path, brookLink string, force bool) error {
+func WriteConfig(path, link string, force bool) error {
 	if !force {
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("配置已存在 %s(加 --force 覆盖)", path)
 		}
 	}
-	b, err := yaml.Marshal(minimalConfig{Server: brookLink, Global: true, Killswitch: true})
+	b, err := yaml.Marshal(minimalConfig{Server: link, Global: true, Killswitch: true})
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 // ProbeServer 临时起 brook 隧道探测服务器连通,返回延迟 ms;不建 TUN。
@@ -50,6 +53,9 @@ func ProbeServer(brookPath, brookLink, probe string, timeout time.Duration) (int
 	for {
 		select {
 		case <-deadline.C:
+			if last := t.Stats().LastError; last != "" {
+				return 0, fmt.Errorf("%s 内未连通(最近错误: %s)", timeout, last)
+			}
 			return 0, fmt.Errorf("%s 内未连通(检查 server/密码/网络)", timeout)
 		case <-tick.C:
 			if t.Healthy() {

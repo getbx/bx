@@ -1,32 +1,60 @@
-// Package blink 是 bx 对外的链接别名:把 brook 链接 base64url 换壳成 blink://,
-// 对用户隐藏 brook/IP/密码明文。仅在 setup 入口解码回 brook,运行时不涉及。
+// Package blink 是 bx 对外的链接别名:把内部传输链接 base64url 换壳成 bx://。
+// 旧 blink:// 仍可解码,用于兼容已发出的早期链接。
 package blink
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
 
-const scheme = "blink://"
+const (
+	scheme       = "bx://"
+	legacyScheme = "blink://"
+)
 
-// Encode 把 brook 链接包成 blink://(不校验输入是否为 brook,调用方保证)。
-func Encode(brookLink string) string {
-	return scheme + base64.RawURLEncoding.EncodeToString([]byte(brookLink))
+type envelope struct {
+	Version   int    `json:"v"`
+	Transport string `json:"transport"`
+	Link      string `json:"link"`
 }
 
-// Decode 还原 blink:// 为 brook 链接;校验 scheme、base64、内容前缀。
+// Encode 把内部传输链接包成 bx://。
+func Encode(link string) string {
+	e := envelope{Version: 1, Transport: "brook", Link: link}
+	b, _ := json.Marshal(e)
+	return scheme + base64.RawURLEncoding.EncodeToString(b)
+}
+
+// Decode 还原 bx:// 或旧 blink:// 为内部传输链接;校验 scheme、base64、内容前缀。
 func Decode(s string) (string, error) {
-	if !strings.HasPrefix(s, scheme) {
-		return "", fmt.Errorf("不是 blink 链接(应以 %s 开头)", scheme)
+	prefix := scheme
+	if strings.HasPrefix(s, legacyScheme) {
+		prefix = legacyScheme
+	} else if !strings.HasPrefix(s, scheme) {
+		return "", fmt.Errorf("不是 bx 链接(应以 %s 开头)", scheme)
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(s, scheme))
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(s, prefix))
 	if err != nil {
-		return "", fmt.Errorf("blink 解码失败: %w", err)
+		return "", fmt.Errorf("bx 链接解码失败: %w", err)
 	}
 	link := string(raw)
+	if strings.HasPrefix(strings.TrimSpace(link), "{") {
+		var e envelope
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return "", fmt.Errorf("bx 链接解析失败: %w", err)
+		}
+		if e.Version != 1 {
+			return "", fmt.Errorf("不支持的 bx 链接版本: %d", e.Version)
+		}
+		if e.Transport != "brook" {
+			return "", fmt.Errorf("不支持的 bx transport: %s", e.Transport)
+		}
+		link = e.Link
+	}
 	if !strings.HasPrefix(link, "brook://") {
-		return "", fmt.Errorf("blink 内容不是 brook 链接")
+		return "", fmt.Errorf("bx 链接内容不受支持")
 	}
 	return link, nil
 }

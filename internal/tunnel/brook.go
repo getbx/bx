@@ -26,7 +26,7 @@ func brookFactory(brookBin, link string) RunnerFactory {
 	return func(socksAddr string) (Runner, error) {
 		cmd := exec.Command(brookBin, "connect", "-l", link, "--socks5", socksAddr)
 		if err := cmd.Start(); err != nil {
-			return nil, fmt.Errorf("启动 brook: %w", err)
+			return nil, fmt.Errorf("启动传输进程: %w", err)
 		}
 		return &execRunner{cmd: cmd}, nil
 	}

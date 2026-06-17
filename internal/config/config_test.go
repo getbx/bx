@@ -3,6 +3,8 @@ package config
 import (
 	"testing"
 	"time"
+
+	"github.com/getbx/bx/internal/blink"
 )
 
 func TestLoadValid(t *testing.T) {
@@ -37,6 +39,17 @@ lists:
 func TestParseRejectsEmptyServer(t *testing.T) {
 	if _, err := Parse([]byte(`killswitch: true`)); err == nil {
 		t.Fatal("expected error for missing server")
+	}
+}
+
+func TestParseDecodesBXServerLink(t *testing.T) {
+	raw := "brook://server?server=1.2.3.4%3A9999&password=pw"
+	c, err := Parse([]byte("server: \"" + blink.Encode(raw) + "\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Server != raw {
+		t.Fatalf("server = %q, want %q", c.Server, raw)
 	}
 }
 
