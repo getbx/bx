@@ -69,6 +69,7 @@ func serverCommands() []*cli.Command {
 		{Name: "stop", Usage: "停止并取消开机自启", Action: serverStopAction},
 		{Name: "status", Usage: "查看服务状态", Action: serverStatusAction},
 		{Name: "doctor", Usage: "诊断 bx server 配置和运行状态", Flags: serverDoctorFlags(), Action: serverDoctorAction},
+		{Name: "logs", Usage: "查看 bx server 日志", Flags: serverLogsFlags(), Action: serverLogsAction},
 		{Name: "uninstall", Usage: "卸载 bx server 服务", Action: serverUninstallAction},
 	}
 }
@@ -117,6 +118,13 @@ func doctorFlags() []cli.Flag {
 func serverDoctorFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
+	}
+}
+
+func serverLogsFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 100, Usage: "显示最近 N 行日志"},
+		&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "持续跟随日志"},
 	}
 }
 
@@ -238,6 +246,16 @@ func serverStatusAction(c *cli.Context) error {
 	enabled := systemctlState("is-enabled", install.ServerServiceName)
 	fmt.Printf("bx server: %s, boot: %s\n", active, enabled)
 	return nil
+}
+
+func serverLogsAction(c *cli.Context) error {
+	args := []string{"-u", install.ServerServiceName, "--no-pager", "-n", fmt.Sprint(c.Int("lines"))}
+	if c.Bool("follow") {
+		args = append(args, "-f")
+	}
+	cmd := exec.Command("journalctl", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
 }
 
 func systemctlState(args ...string) string {
