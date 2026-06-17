@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,36 @@ func TestServerFirewallHint(t *testing.T) {
 	}
 	if got := serverFirewallHint("bad-listen"); got != "" {
 		t.Fatalf("bad listen should not produce hint, got %q", got)
+	}
+}
+
+func TestDoctorHelpers(t *testing.T) {
+	if got := boolStatus(true); got != "ok" {
+		t.Fatalf("boolStatus(true)=%q", got)
+	}
+	if got := boolStatus(false); got != "fail" {
+		t.Fatalf("boolStatus(false)=%q", got)
+	}
+	if got := redactLink("bx://secret"); got != "bx://<redacted>" {
+		t.Fatalf("redact bx link = %q", got)
+	}
+	if got := redactLink("brook://server?password=pw"); got != "internal-link:<redacted>" {
+		t.Fatalf("redact internal link = %q", got)
+	}
+}
+
+func TestIsListening(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isListening(port) {
+		t.Fatalf("port %s should be detected as listening", port)
 	}
 }
 
