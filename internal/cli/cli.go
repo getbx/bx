@@ -27,6 +27,7 @@ import (
 
 const defaultConfigPath = "/etc/bx/config.yaml"
 const defaultServerConfigPath = "/etc/bx/server.yaml"
+const defaultProbeTarget = "github.com:443"
 
 // New 返回配置好子命令的 bx App。
 func New() *cli.App {
@@ -202,7 +203,7 @@ func serveAction(c *cli.Context) error {
 func setupFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "配置写入路径"},
-		&cli.StringFlag{Name: "probe", Value: "1.1.1.1:443", Usage: "连通检测目标"},
+		&cli.StringFlag{Name: "probe", Value: defaultProbeTarget, Usage: "连通检测目标"},
 		&cli.BoolFlag{Name: "force", Usage: "覆盖已存在的配置"},
 		&cli.BoolFlag{Name: "strict", Usage: "连通检测失败则中止(默认仅警告)"},
 	}
@@ -210,7 +211,7 @@ func setupFlags() []cli.Flag {
 
 func probeFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "target", Value: "1.1.1.1:443", Usage: "连通检测目标"},
+		&cli.StringFlag{Name: "target", Value: defaultProbeTarget, Usage: "连通检测目标"},
 		&cli.DurationFlag{Name: "timeout", Value: 15 * time.Second, Usage: "检测超时"},
 	}
 }
@@ -303,7 +304,7 @@ func runFlags() []cli.Flag {
 		&cli.StringFlag{Name: "brook", Value: "", Usage: "内部传输二进制路径", Hidden: true},
 		&cli.StringFlag{Name: "china-domain", Value: "", Usage: "china 域名列表(留空=用内嵌/自动刷新快照)"},
 		&cli.StringFlag{Name: "china-cidr", Value: "", Usage: "china IP 段(留空=用内嵌/自动刷新快照)"},
-		&cli.StringFlag{Name: "probe", Value: "1.1.1.1:443", Usage: "隧道健康检查目标"},
+		&cli.StringFlag{Name: "probe", Value: defaultProbeTarget, Usage: "隧道健康检查目标"},
 		&cli.DurationFlag{Name: "health-timeout", Value: 20 * time.Second, Usage: "等待隧道健康的启动超时"},
 		&cli.DurationFlag{Name: "test-timeout", Usage: "死手定时器:到点自动还原(远程实测保命)"},
 		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "全局模式:除内网(bypass)/用户 direct 规则外,一切(含中国)走代理"},
