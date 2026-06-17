@@ -23,6 +23,26 @@ func TestUnitText(t *testing.T) {
 	}
 }
 
+func TestServerUnitTextIsHardened(t *testing.T) {
+	u := ServerUnitText("/usr/local/bin/bx serve -c /etc/bx/server.yaml")
+	for _, want := range []string{
+		"ExecStart=/usr/local/bin/bx serve -c /etc/bx/server.yaml",
+		"UMask=0077",
+		"NoNewPrivileges=true",
+		"PrivateTmp=true",
+		"ProtectSystem=strict",
+		"ProtectHome=true",
+		"ReadOnlyPaths=/etc/bx",
+		"ReadWritePaths=/var/lib/bx",
+		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
+		"CapabilityBoundingSet=",
+	} {
+		if !strings.Contains(u, want) {
+			t.Errorf("server unit 应含 %q,实际:\n%s", want, u)
+		}
+	}
+}
+
 func TestExecStartCmd(t *testing.T) {
 	cases := []struct {
 		name string
