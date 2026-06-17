@@ -97,6 +97,36 @@ WantedBy=multi-user.target
 `
 }
 
+// ServerUnitText 返回 bx server 的 systemd unit。server 不需要 TUN/路由权限,
+// 因此默认加一组保守沙箱,把可写范围收敛到运行期数据目录。
+func ServerUnitText(execStart string) string {
+	return `[Unit]
+Description=bx server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=` + execStart + `
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/bx
+ReadWritePaths=/var/lib/bx
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
+`
+}
+
 // WriteUnit 写入 unit 文件并 daemon-reload(不 enable、不 start)。需 root。
 func WriteUnit(execStart string) error {
 	return writeUnitFile(unitPath, UnitText(execStart))
@@ -104,7 +134,7 @@ func WriteUnit(execStart string) error {
 
 // WriteServerUnit 写入 bx server unit 文件并 daemon-reload(不 enable、不 start)。需 root。
 func WriteServerUnit(execStart string) error {
-	return writeUnitFile(serverUnitPath, UnitTextWithDescription("bx server", execStart))
+	return writeUnitFile(serverUnitPath, ServerUnitText(execStart))
 }
 
 func writeUnitFile(path, text string) error {
