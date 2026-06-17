@@ -4,7 +4,7 @@
 //   - OpenTUN:utun(经 wireguard-go tun.CreateTUN)+ wgbridge 适配成 gVisor 端点
 //   - DirectDialer:IP_BOUND_IF 把直连 socket 绑物理出口网卡(防环;macOS 无 SO_MARK)
 //   - Hijack:split-default(0/1+128/1)劫进 utun + 服务器/私网经物理网关旁路
-//     + v6 fail-closed:两个 /1 的 `-reject` 阻断全局 IPv6(回 EHOSTUNREACH 逼回 v4)
+//   - v6 fail-closed:两个 /1 的 `-reject` 阻断全局 IPv6(回 EHOSTUNREACH 逼回 v4)
 //
 // ⚠️ 路由部分(Hijack)依赖 macOS `route`/`ifconfig` 语义,无法在 Linux 上验证,
 //

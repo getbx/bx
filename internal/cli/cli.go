@@ -34,6 +34,7 @@ func New() *cli.App {
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
 			{Name: "status", Usage: "查看状态面板", Action: statusAction},
 			{Name: "blink", Usage: "由 brook 链接生成 blink://(发给用户)", ArgsUsage: "brook://...", Action: blinkAction},
+			{Name: "darwin-plan", Usage: "打印 macOS 路由 dry-run 计划(不改网络)", Flags: darwinPlanFlags(), Action: darwinPlanAction},
 			{Name: "uninstall", Usage: "卸载 systemd 服务", Action: uninstallAction},
 		},
 	}
@@ -124,6 +125,41 @@ func optsFromFlags(c *cli.Context) supervisor.Options {
 		Deadman:         c.Duration("test-timeout"),
 		Global:          c.Bool("global"),
 	}
+}
+
+func darwinPlanFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "tun", Value: "utunX", Usage: "计划中的 utun 设备名"},
+		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "计划中的 TUN 接口地址"},
+		&cli.StringFlag{Name: "gateway", Usage: "当前物理默认网关,例如 192.168.1.1"},
+		&cli.StringSliceFlag{Name: "server-bypass", Usage: "brook 服务器旁路 CIDR,可重复"},
+		&cli.StringSliceFlag{Name: "bypass", Usage: "用户旁路 CIDR,可重复"},
+		&cli.BoolFlag{Name: "block-v6", Usage: "包含 macOS IPv6 reject 路由计划"},
+	}
+}
+
+func darwinPlanAction(c *cli.Context) error {
+	if c.String("gateway") == "" {
+		return fmt.Errorf("必须显式传 --gateway,例如: bx darwin-plan --gateway 192.168.1.1 --server-bypass 1.2.3.4/32")
+	}
+	apply, cleanup := supervisor.DarwinRoutePlan(supervisor.DarwinRoutePlanOptions{
+		TunName:      c.String("tun"),
+		TunAddr:      c.String("tun-addr"),
+		Gateway:      c.String("gateway"),
+		ServerBypass: c.StringSlice("server-bypass"),
+		UserBypass:   c.StringSlice("bypass"),
+		BlockV6:      c.Bool("block-v6"),
+	})
+	fmt.Println("# dry-run only: no commands executed")
+	fmt.Println("# apply")
+	for _, line := range apply {
+		fmt.Println(line)
+	}
+	fmt.Println("# cleanup")
+	for _, line := range cleanup {
+		fmt.Println(line)
+	}
+	return nil
 }
 
 func upAction(c *cli.Context) error {
