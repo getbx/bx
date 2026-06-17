@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 
 const defaultConfigPath = "/etc/bx/config.yaml"
 const defaultServerConfigPath = "/etc/bx/server.yaml"
+const defaultShareDir = "/etc/bx/shares"
 const defaultProbeTarget = "github.com:443"
 
 // New 返回配置好子命令的 bx App。
@@ -60,10 +62,18 @@ type serverConfig struct {
 	Password string `yaml:"password"`
 }
 
+type shareInfo struct {
+	Name   string
+	Config serverConfig
+}
+
 func serverCommands() []*cli.Command {
 	return []*cli.Command{
 		{Name: "install", Usage: "安装 bx server 服务", Flags: serverInstallFlags(), Action: serverInstallAction},
 		{Name: "link", Usage: "生成客户端 bx:// 链接", Flags: serverLinkFlags(), Action: serverLinkAction},
+		{Name: "share", Usage: "分享给一个人", ArgsUsage: "<name>", Flags: serverShareFlags(), Action: serverShareAction},
+		{Name: "shares", Usage: "查看已分享的链接", Flags: serverSharesFlags(), Action: serverSharesAction},
+		{Name: "revoke", Usage: "撤销一个分享", ArgsUsage: "<name>", Flags: serverRevokeFlags(), Action: serverRevokeAction},
 		{Name: "rotate", Usage: "轮换 server 密码并生成新链接", Flags: serverRotateFlags(), Action: serverRotateAction},
 		{Name: "start", Usage: "启动并设为开机自启", Action: serverStartAction},
 		{Name: "stop", Usage: "停止并取消开机自启", Action: serverStopAction},
@@ -97,6 +107,27 @@ func serverRotateFlags() []cli.Flag {
 		&cli.StringFlag{Name: "host", Usage: "生成新链接使用的公网地址或域名"},
 		&cli.StringFlag{Name: "password", Usage: "新连接密码(留空自动生成)"},
 		&cli.BoolFlag{Name: "no-restart", Usage: "只写配置,不重启正在运行的 server"},
+	}
+}
+
+func serverShareFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
+		&cli.StringFlag{Name: "host", Usage: "生成链接使用的公网地址或域名"},
+		&cli.StringFlag{Name: "listen", Usage: "监听地址(留空自动分配端口)"},
+		&cli.StringFlag{Name: "password", Usage: "连接密码(留空自动生成)"},
+	}
+}
+
+func serverSharesFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
+	}
+}
+
+func serverRevokeFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
 	}
 }
 
@@ -182,6 +213,87 @@ func serverLinkAction(c *cli.Context) error {
 		return err
 	}
 	fmt.Println(link)
+	return nil
+}
+
+func serverShareAction(c *cli.Context) error {
+	name, err := cleanShareName(c.Args().First())
+	if err != nil {
+		return err
+	}
+	password := c.String("password")
+	if password == "" {
+		password, err = randomPassword()
+		if err != nil {
+			return err
+		}
+	}
+	listen := c.String("listen")
+	if listen == "" {
+		listen, err = nextShareListen(c.String("dir"))
+		if err != nil {
+			return err
+		}
+	}
+	cfg := serverConfig{Listen: listen, Password: password}
+	path := shareConfigPath(c.String("dir"), name)
+	if err := writeServerConfig(path, cfg, false); err != nil {
+		return err
+	}
+	bin, err := install.SelfInstall()
+	if err != nil {
+		return fmt.Errorf("安装 bx 到 PATH: %w", err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if err := install.WriteShareUnit(name, fmt.Sprintf("%s serve -c %s", bin, abs)); err != nil {
+		return err
+	}
+	if err := install.EnableShare(name); err != nil {
+		return err
+	}
+	fmt.Printf("✅ share %s 已创建。\n", name)
+	if hint := serverFirewallHint(cfg.Listen); hint != "" {
+		fmt.Println(hint)
+	}
+	if host := c.String("host"); host != "" {
+		link, err := bxServerLink(host, cfg)
+		if err != nil {
+			return err
+		}
+		fmt.Println(link)
+	} else {
+		fmt.Println("需要链接时运行: sudo bx server share " + name + " --host <VPS_IP或域名>")
+	}
+	return nil
+}
+
+func serverSharesAction(c *cli.Context) error {
+	shares, err := readShares(c.String("dir"))
+	if err != nil {
+		return err
+	}
+	fmt.Println("NAME\tLISTEN\tSTATUS")
+	for _, s := range shares {
+		fmt.Printf("%s\t%s\t%s\n", s.Name, s.Config.Listen, systemctlState("is-active", install.ShareServiceName(s.Name)))
+	}
+	return nil
+}
+
+func serverRevokeAction(c *cli.Context) error {
+	name, err := cleanShareName(c.Args().First())
+	if err != nil {
+		return err
+	}
+	if err := install.UninstallShare(name); err != nil {
+		return err
+	}
+	if err := os.Remove(shareConfigPath(c.String("dir"), name)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	fmt.Printf("✅ share %s 已撤销。\n", name)
 	return nil
 }
 
@@ -729,6 +841,77 @@ func serverFirewallHint(listen string) string {
 		return ""
 	}
 	return fmt.Sprintf("如果 VPS 启用了防火墙,请确认已放行 TCP %s; ufw 可用: sudo ufw allow %s/tcp", port, port)
+}
+
+func cleanShareName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("share name 不能为空")
+	}
+	if len(name) > 48 {
+		return "", fmt.Errorf("share name 太长")
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return "", fmt.Errorf("share name 只能包含字母、数字、-、_")
+	}
+	return name, nil
+}
+
+func shareConfigPath(dir, name string) string {
+	return filepath.Join(dir, name+".yaml")
+}
+
+func readShares(dir string) ([]shareInfo, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var shares []shareInfo
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".yaml")
+		cfg, err := readServerConfig(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		shares = append(shares, shareInfo{Name: name, Config: cfg})
+	}
+	sort.Slice(shares, func(i, j int) bool { return shares[i].Name < shares[j].Name })
+	return shares, nil
+}
+
+func nextShareListen(dir string) (string, error) {
+	used := map[string]bool{}
+	if cfg, err := readServerConfig(defaultServerConfigPath); err == nil {
+		if port := listenPort(cfg.Listen); port != "" {
+			used[port] = true
+		}
+	}
+	shares, err := readShares(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range shares {
+		if port := listenPort(s.Config.Listen); port != "" {
+			used[port] = true
+		}
+	}
+	for port := 10000; port <= 10999; port++ {
+		p := fmt.Sprint(port)
+		if used[p] || isListening(p) {
+			continue
+		}
+		return ":" + p, nil
+	}
+	return "", fmt.Errorf("没有可用 share 端口(10000-10999)")
 }
 
 func doctorLine(status, name, detail string) {

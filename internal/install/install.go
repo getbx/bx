@@ -15,6 +15,7 @@ const (
 	ServerServiceName = "bx-server.service"
 	unitPath          = "/etc/systemd/system/bx.service"
 	serverUnitPath    = "/etc/systemd/system/bx-server.service"
+	shareUnitPrefix   = "/etc/systemd/system/bx-share-"
 	// BinPath 是 bx 自身安装到 PATH 的规范位置。
 	BinPath = "/usr/local/bin/bx"
 )
@@ -137,6 +138,14 @@ func WriteServerUnit(execStart string) error {
 	return writeUnitFile(serverUnitPath, ServerUnitText(execStart))
 }
 
+// ShareServiceName 返回命名分享对应的 systemd service 名。
+func ShareServiceName(name string) string { return "bx-share-" + name + ".service" }
+
+// WriteShareUnit 写入命名分享的 unit 文件并 daemon-reload。
+func WriteShareUnit(name, execStart string) error {
+	return writeUnitFile(shareUnitPrefix+name+".service", ServerUnitText(execStart))
+}
+
 func writeUnitFile(path, text string) error {
 	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 		return fmt.Errorf("写 %s(需 root): %w", path, err)
@@ -158,6 +167,12 @@ func DisableServer() error { return runSystemctl("disable", "--now", ServerServi
 
 // RestartServer 重启 bx server。
 func RestartServer() error { return runSystemctl("restart", ServerServiceName) }
+
+// EnableShare 启动命名分享并设为开机自启。
+func EnableShare(name string) error { return runSystemctl("enable", "--now", ShareServiceName(name)) }
+
+// DisableShare 停止命名分享并取消开机自启。
+func DisableShare(name string) error { return runSystemctl("disable", "--now", ShareServiceName(name)) }
 
 // UnitInstalled 报告 unit 文件是否已就位(用于 up 前置校验)。
 func UnitInstalled() bool {
@@ -210,6 +225,13 @@ func Uninstall() error {
 func UninstallServer() error {
 	_ = runSystemctl("disable", "--now", ServerServiceName)
 	_ = os.Remove(serverUnitPath)
+	return runSystemctl("daemon-reload")
+}
+
+// UninstallShare 停用并删除命名分享服务。
+func UninstallShare(name string) error {
+	_ = runSystemctl("disable", "--now", ShareServiceName(name))
+	_ = os.Remove(shareUnitPrefix + name + ".service")
 	return runSystemctl("daemon-reload")
 }
 
