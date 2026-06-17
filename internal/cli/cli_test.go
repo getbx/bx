@@ -160,6 +160,57 @@ func TestRotateServerConfigPreservesListenAndResetsPermissions(t *testing.T) {
 	}
 }
 
+func TestShareHelpers(t *testing.T) {
+	if got, err := cleanShareName("alice-1"); err != nil || got != "alice-1" {
+		t.Fatalf("cleanShareName = %q, %v", got, err)
+	}
+	for _, bad := range []string{"", "../x", "a b", "x/y"} {
+		if _, err := cleanShareName(bad); err == nil {
+			t.Fatalf("bad share name %q should fail", bad)
+		}
+	}
+	dir := t.TempDir()
+	if got := shareConfigPath(dir, "alice"); got != filepath.Join(dir, "alice.yaml") {
+		t.Fatalf("shareConfigPath = %q", got)
+	}
+}
+
+func TestReadSharesSorted(t *testing.T) {
+	dir := t.TempDir()
+	for _, item := range []struct {
+		name   string
+		listen string
+	}{
+		{"bob", ":10002"},
+		{"alice", ":10001"},
+	} {
+		if err := writeServerConfig(shareConfigPath(dir, item.name), serverConfig{Listen: item.listen, Password: "pw"}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := readShares(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name != "alice" || got[1].Name != "bob" {
+		t.Fatalf("shares = %+v", got)
+	}
+}
+
+func TestNextShareListenSkipsExistingShares(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeServerConfig(shareConfigPath(dir, "alice"), serverConfig{Listen: ":10000", Password: "pw"}, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := nextShareListen(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ":10001" {
+		t.Fatalf("nextShareListen = %q, want :10001", got)
+	}
+}
+
 func TestResolveConfigPathKeepsExplicitMissingPath(t *testing.T) {
 	// 用户显式传入的不存在路径应原样返回(不偷偷回退),便于错误信息指向用户路径
 	p := "/nonexistent/explicit/whoami-bx-test.yaml"

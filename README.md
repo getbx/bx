@@ -44,6 +44,14 @@ sudo bx server start
 sudo bx server link --host <VPS_IP或域名>
 ```
 
+分享给其他人:
+
+```bash
+sudo bx server share alice --host <VPS_IP或域名>
+sudo bx server shares
+sudo bx server revoke alice
+```
+
 ### 2. 客户端安装 bx
 
 ```bash
@@ -68,6 +76,9 @@ sudo bx up
 | `sudo bx server start` | 启动 bx server 并设为开机自启 |
 | `sudo bx server stop` | 停止 bx server 并取消开机自启 |
 | `sudo bx server link --host <host>` | 生成客户端 `bx://` 链接 |
+| `sudo bx server share <name> --host <host>` | 创建一个独立分享链接 |
+| `sudo bx server shares` | 查看已分享的链接 |
+| `sudo bx server revoke <name>` | 撤销一个分享 |
 | `sudo bx server rotate --host <host>` | 轮换 server 密码并生成新的 `bx://` 链接 |
 | `sudo bx server logs` | 查看服务端日志 |
 | `sudo bx server uninstall` | 卸载 bx server 服务 |
