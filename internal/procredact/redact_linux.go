@@ -5,10 +5,12 @@ package procredact
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"strings"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 type memRange struct {
@@ -23,28 +25,84 @@ func RedactArg(pid int, secret string) error {
 	if len(target) == 0 {
 		return nil
 	}
-	ranges, err := stackRanges(pid)
+	ranges, err := argvRanges(pid)
 	if err != nil {
 		return err
 	}
-	mem, err := os.OpenFile(fmt.Sprintf("/proc/%d/mem", pid), os.O_RDWR, 0)
-	if err != nil {
-		return fmt.Errorf("open process memory: %w", err)
+	if err := attach(pid); err != nil {
+		return err
 	}
-	defer mem.Close()
+	defer unix.PtraceDetach(pid)
 	replacement := bytes.Repeat([]byte{'x'}, len(target))
 	found := 0
 	for _, r := range ranges {
-		n, err := redactRange(mem, r, target, replacement)
+		n, err := redactRange(pid, r, target, replacement)
 		found += n
 		if err != nil {
 			return err
 		}
 	}
 	if found == 0 {
-		return fmt.Errorf("secret not found in process stack")
+		return fmt.Errorf("secret not found in process argv")
 	}
 	return nil
+}
+
+func attach(pid int) error {
+	if err := unix.PtraceAttach(pid); err != nil {
+		return fmt.Errorf("ptrace attach: %w", err)
+	}
+	var status unix.WaitStatus
+	if _, err := unix.Wait4(pid, &status, 0, nil); err != nil {
+		_ = unix.PtraceDetach(pid)
+		return fmt.Errorf("ptrace wait: %w", err)
+	}
+	return nil
+}
+
+func argvRanges(pid int) ([]memRange, error) {
+	r, err := argvRangeFromStat(pid)
+	if err == nil {
+		return []memRange{r}, nil
+	}
+	ranges, fallbackErr := stackRanges(pid)
+	if fallbackErr != nil {
+		return nil, err
+	}
+	return ranges, nil
+}
+
+func argvRangeFromStat(pid int) (memRange, error) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return memRange{}, fmt.Errorf("read process stat: %w", err)
+	}
+	s := string(b)
+	endComm := strings.LastIndex(s, ") ")
+	if endComm < 0 {
+		return memRange{}, fmt.Errorf("bad process stat")
+	}
+	fields := strings.Fields(s[endComm+2:])
+	const (
+		argStartField = 48
+		argEndField   = 49
+		fieldOffset   = 3
+	)
+	if len(fields) <= argEndField-fieldOffset {
+		return memRange{}, fmt.Errorf("process stat missing argv range")
+	}
+	start, err := strconv.ParseInt(fields[argStartField-fieldOffset], 10, 64)
+	if err != nil {
+		return memRange{}, fmt.Errorf("bad argv start: %w", err)
+	}
+	end, err := strconv.ParseInt(fields[argEndField-fieldOffset], 10, 64)
+	if err != nil {
+		return memRange{}, fmt.Errorf("bad argv end: %w", err)
+	}
+	if end <= start {
+		return memRange{}, fmt.Errorf("empty argv range")
+	}
+	return memRange{start: start, end: end}, nil
 }
 
 func stackRanges(pid int) ([]memRange, error) {
@@ -92,7 +150,7 @@ func parseRange(s string) (memRange, error) {
 	return memRange{start: start, end: end}, nil
 }
 
-func redactRange(mem *os.File, r memRange, target, replacement []byte) (int, error) {
+func redactRange(pid int, r memRange, target, replacement []byte) (int, error) {
 	const chunkSize = 64 * 1024
 	overlap := len(target) - 1
 	if overlap < 0 {
@@ -102,9 +160,13 @@ func redactRange(mem *os.File, r memRange, target, replacement []byte) (int, err
 	var carry []byte
 	found := 0
 	for off := r.start; off < r.end; off += chunkSize {
-		n, err := mem.ReadAt(buf[len(carry):chunkSize+len(carry)], off)
-		if err != nil && err != io.EOF {
-			return found, fmt.Errorf("read process stack: %w", err)
+		want := chunkSize
+		if remaining := int(r.end - off); remaining < want {
+			want = remaining
+		}
+		n, err := readProcess(pid, uintptr(off), buf[len(carry):len(carry)+want])
+		if err != nil {
+			return found, fmt.Errorf("read process argv: %w", err)
 		}
 		if n == 0 {
 			continue
@@ -119,8 +181,8 @@ func redactRange(mem *os.File, r memRange, target, replacement []byte) (int, err
 			}
 			pos := searchStart + idx
 			abs := off - int64(len(carry)) + int64(pos)
-			if _, err := mem.WriteAt(replacement, abs); err != nil {
-				return found, fmt.Errorf("write process stack: %w", err)
+			if err := writeProcess(pid, uintptr(abs), replacement); err != nil {
+				return found, fmt.Errorf("write process argv: %w", err)
 			}
 			found++
 			searchStart = pos + len(target)
@@ -134,4 +196,31 @@ func redactRange(mem *os.File, r memRange, target, replacement []byte) (int, err
 		}
 	}
 	return found, nil
+}
+
+func readProcess(pid int, addr uintptr, dst []byte) (int, error) {
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	local := []unix.Iovec{{Base: &dst[0]}}
+	local[0].SetLen(len(dst))
+	remote := []unix.RemoteIovec{{Base: addr, Len: len(dst)}}
+	return unix.ProcessVMReadv(pid, local, remote, 0)
+}
+
+func writeProcess(pid int, addr uintptr, src []byte) error {
+	if len(src) == 0 {
+		return nil
+	}
+	local := []unix.Iovec{{Base: (*byte)(unsafe.Pointer(&src[0]))}}
+	local[0].SetLen(len(src))
+	remote := []unix.RemoteIovec{{Base: addr, Len: len(src)}}
+	n, err := unix.ProcessVMWritev(pid, local, remote, 0)
+	if err != nil {
+		return err
+	}
+	if n != len(src) {
+		return fmt.Errorf("short write: %d/%d", n, len(src))
+	}
+	return nil
 }
