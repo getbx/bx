@@ -68,6 +68,7 @@ sudo bx up
 | `sudo bx server start` | 启动 bx server 并设为开机自启 |
 | `sudo bx server stop` | 停止 bx server 并取消开机自启 |
 | `sudo bx server link --host <host>` | 生成客户端 `bx://` 链接 |
+| `sudo bx server rotate --host <host>` | 轮换 server 密码并生成新的 `bx://` 链接 |
 | `sudo bx server uninstall` | 卸载 bx server 服务 |
 | `sudo bx setup bx://...` | 客户端首次配置 |
 | `sudo bx up` | 启动客户端并设为开机自启 |

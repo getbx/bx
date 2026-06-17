@@ -64,6 +64,7 @@ func serverCommands() []*cli.Command {
 	return []*cli.Command{
 		{Name: "install", Usage: "安装 bx server 服务", Flags: serverInstallFlags(), Action: serverInstallAction},
 		{Name: "link", Usage: "生成客户端 bx:// 链接", Flags: serverLinkFlags(), Action: serverLinkAction},
+		{Name: "rotate", Usage: "轮换 server 密码并生成新链接", Flags: serverRotateFlags(), Action: serverRotateAction},
 		{Name: "start", Usage: "启动并设为开机自启", Action: serverStartAction},
 		{Name: "stop", Usage: "停止并取消开机自启", Action: serverStopAction},
 		{Name: "status", Usage: "查看服务状态", Action: serverStatusAction},
@@ -86,6 +87,15 @@ func serverLinkFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
 		&cli.StringFlag{Name: "host", Usage: "公网地址或域名"},
+	}
+}
+
+func serverRotateFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
+		&cli.StringFlag{Name: "host", Usage: "生成新链接使用的公网地址或域名"},
+		&cli.StringFlag{Name: "password", Usage: "新连接密码(留空自动生成)"},
+		&cli.BoolFlag{Name: "no-restart", Usage: "只写配置,不重启正在运行的 server"},
 	}
 }
 
@@ -164,6 +174,43 @@ func serverLinkAction(c *cli.Context) error {
 		return err
 	}
 	fmt.Println(link)
+	return nil
+}
+
+func serverRotateAction(c *cli.Context) error {
+	password := c.String("password")
+	if password == "" {
+		var err error
+		password, err = randomPassword()
+		if err != nil {
+			return err
+		}
+	}
+	cfg, err := rotateServerConfig(c.String("config"), password)
+	if err != nil {
+		return err
+	}
+	fmt.Println("✅ bx server 密码已轮换。旧 bx:// 链接将失效。")
+	if !c.Bool("no-restart") {
+		switch state := systemctlState("is-active", install.ServerServiceName); state {
+		case "active":
+			if err := install.RestartServer(); err != nil {
+				return err
+			}
+			fmt.Println("✅ bx server 已重启,新链接已生效。")
+		default:
+			fmt.Printf("server 当前状态: %s。启动后新链接生效: sudo bx server start\n", state)
+		}
+	}
+	if host := c.String("host"); host != "" {
+		link, err := bxServerLink(host, cfg)
+		if err != nil {
+			return err
+		}
+		fmt.Println(link)
+	} else {
+		fmt.Println("需要新客户端链接时运行: sudo bx server link --host <VPS_IP或域名>")
+	}
 	return nil
 }
 
@@ -609,6 +656,21 @@ func readServerConfig(path string) (serverConfig, error) {
 	}
 	if cfg.Listen == "" || cfg.Password == "" {
 		return cfg, fmt.Errorf("server 配置不完整")
+	}
+	return cfg, nil
+}
+
+func rotateServerConfig(path, password string) (serverConfig, error) {
+	if password == "" {
+		return serverConfig{}, fmt.Errorf("password 不能为空")
+	}
+	cfg, err := readServerConfig(path)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Password = password
+	if err := writeServerConfig(path, cfg, true); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }
