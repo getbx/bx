@@ -3,10 +3,18 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/getbx/bx/internal/blink"
 )
+
+func TestAppHasVersion(t *testing.T) {
+	app := New()
+	if strings.TrimSpace(app.Version) == "" {
+		t.Fatal("app version should not be empty")
+	}
+}
 
 func TestBuildExecStart(t *testing.T) {
 	got := buildExecStart("/usr/local/bin/bx", "/etc/bx/config.yaml")
