@@ -58,6 +58,20 @@ sudo bx server revoke alice
 sudo bx server share alice --host <VPS_IP或域名> --open-ufw
 ```
 
+也可以启动一个只监听本机的极简 Web UI:
+
+```bash
+sudo bx server ui --host <VPS_IP或域名>
+```
+
+然后从自己的电脑通过 SSH 隧道访问:
+
+```bash
+ssh -L 8787:127.0.0.1:8787 <VPS>
+```
+
+浏览器打开 `http://127.0.0.1:8787`。
+
 ### 2. 客户端安装 bx
 
 ```bash
@@ -87,6 +101,7 @@ sudo bx up
 | `sudo bx server revoke <name>` | 撤销一个分享 |
 | `sudo bx server rotate --host <host>` | 轮换 server 密码并生成新的 `bx://` 链接 |
 | `sudo bx server logs` | 查看服务端日志 |
+| `sudo bx server ui --host <host>` | 启动只监听本机的极简 Web UI |
 | `sudo bx server uninstall` | 卸载 bx server 服务 |
 | `sudo bx setup bx://...` | 客户端首次配置 |
 | `sudo bx up` | 启动客户端并设为开机自启 |
