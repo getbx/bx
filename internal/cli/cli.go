@@ -80,6 +80,7 @@ func serverCommands() []*cli.Command {
 		{Name: "status", Usage: "查看服务状态", Action: serverStatusAction},
 		{Name: "doctor", Usage: "诊断 bx server 配置和运行状态", Flags: serverDoctorFlags(), Action: serverDoctorAction},
 		{Name: "logs", Usage: "查看 bx server 日志", Flags: serverLogsFlags(), Action: serverLogsAction},
+		{Name: "ui", Usage: "启动本地 Web 管理界面", Flags: serverUIFlags(), Action: serverUIAction},
 		{Name: "uninstall", Usage: "卸载 bx server 服务", Action: serverUninstallAction},
 	}
 }
@@ -161,6 +162,14 @@ func serverLogsFlags() []cli.Flag {
 	}
 }
 
+func serverUIFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "listen", Value: "127.0.0.1:8787", Usage: "Web UI 监听地址"},
+		&cli.StringFlag{Name: "host", Usage: "生成链接使用的公网地址或域名"},
+		&cli.StringFlag{Name: "shares-dir", Value: defaultShareDir, Usage: "share 配置目录"},
+	}
+}
+
 func serverInstallAction(c *cli.Context) error {
 	password := c.String("password")
 	if password == "" {
@@ -238,39 +247,21 @@ func serverShareAction(c *cli.Context) error {
 			return err
 		}
 	}
-	cfg := serverConfig{Listen: listen, Password: password}
-	path := shareConfigPath(dir, name)
-	if err := writeServerConfig(path, cfg, false); err != nil {
-		return err
-	}
-	bin, err := install.SelfInstall()
+	host := stringFlag(c, "host")
+	link, listen, err := createShare(name, host, dir, listen, password)
 	if err != nil {
-		return fmt.Errorf("安装 bx 到 PATH: %w", err)
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return err
-	}
-	if err := install.WriteShareUnit(name, fmt.Sprintf("%s serve -c %s", bin, abs)); err != nil {
-		return err
-	}
-	if err := install.EnableShare(name); err != nil {
 		return err
 	}
 	fmt.Printf("✅ share %s 已创建。\n", name)
 	if c.Bool("open-ufw") {
-		if err := openUFW(cfg.Listen); err != nil {
+		if err := openUFW(listen); err != nil {
 			return err
 		}
 	}
-	if hint := serverFirewallHint(cfg.Listen); hint != "" {
+	if hint := serverFirewallHint(listen); hint != "" {
 		fmt.Println(hint)
 	}
-	if host := stringFlag(c, "host"); host != "" {
-		link, err := bxServerLink(host, cfg)
-		if err != nil {
-			return err
-		}
+	if host != "" {
 		fmt.Println(link)
 	} else {
 		fmt.Println("需要链接时运行: sudo bx server share " + name + " --host <VPS_IP或域名>")
@@ -299,13 +290,61 @@ func serverRevokeAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := install.UninstallShare(name); err != nil {
-		return err
-	}
-	if err := os.Remove(shareConfigPath(c.String("dir"), name)); err != nil && !os.IsNotExist(err) {
+	if err := revokeShare(name, c.String("dir")); err != nil {
 		return err
 	}
 	fmt.Printf("✅ share %s 已撤销。\n", name)
+	return nil
+}
+
+func createShare(name, host, dir, listen, password string) (link string, effectiveListen string, err error) {
+	if password == "" {
+		password, err = randomPassword()
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if listen == "" {
+		listen, err = nextShareListen(dir)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	cfg := serverConfig{Listen: listen, Password: password}
+	path := shareConfigPath(dir, name)
+	if err := writeServerConfig(path, cfg, false); err != nil {
+		return "", "", err
+	}
+	bin, err := install.SelfInstall()
+	if err != nil {
+		return "", "", fmt.Errorf("安装 bx 到 PATH: %w", err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", err
+	}
+	if err := install.WriteShareUnit(name, fmt.Sprintf("%s serve -c %s", bin, abs)); err != nil {
+		return "", "", err
+	}
+	if err := install.EnableShare(name); err != nil {
+		return "", "", err
+	}
+	if host != "" {
+		link, err = bxServerLink(host, cfg)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	return link, listen, nil
+}
+
+func revokeShare(name, dir string) error {
+	if err := install.UninstallShare(name); err != nil {
+		return err
+	}
+	if err := os.Remove(shareConfigPath(dir, name)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return nil
 }
 
