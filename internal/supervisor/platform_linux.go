@@ -47,8 +47,16 @@ func (linuxPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint,
 	return link, tunHandle{Name: name, Addr: addr, MTU: mtu}, func() {}, nil
 }
 
-// DirectDialer 返回打 SO_MARK 的直连器(配合 pref 100 fwmark 规则绕过 tun)。
-func (linuxPlatform) DirectDialer() *net.Dialer { return markedDialer(fwMark) }
+// DirectDialer 返回 bx 自身出站的直连器:始终 SO_MARK(配合 pref 100 fwmark 规则绕过 tun),
+// 并对公网目的地额外绑物理出口网卡(SO_BINDTODEVICE),防宿主 CONNMARK 清掉 mark 后直连自环。
+// 在 Hijack 前调用,defaultRoute() 取到的是原始物理默认出口;探测失败则退化为仅 SO_MARK。
+func (linuxPlatform) DirectDialer() *net.Dialer {
+	dev := ""
+	if _, d, err := defaultRoute(); err == nil {
+		dev = d
+	}
+	return markedBoundDialer(fwMark, dev)
+}
 
 // Hijack 探测默认网关,装策略路由把默认流量劫进 tun,bypass 段仍走原网关。
 func (linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (func(), error) {
@@ -76,14 +84,28 @@ func (linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fun
 	return nc.down, nil
 }
 
-// markedDialer 返回打 SO_MARK 的直连器:让 bx 自身的直连绕过 tun(防环)。
-func markedDialer(mark int) *net.Dialer {
+// markedBoundDialer 返回 bx 自身出站的直连器:始终打 SO_MARK(让直连经 pref 100 fwmark 规则
+// 走主表绕过 tun,防自环),并对公网目的地额外 SO_BINDTODEVICE 绑物理出口网卡 dev。
+//
+// 绑设备解决一类宿主:其 netfilter 在 mangle OUTPUT 用 `CONNMARK --restore-mark`(宽掩码)把
+// 包的 fwmark 从连接标记恢复,会把 bx 的 SO_MARK 清成 0(如 QNAP QTS)。mark 一旦被清,fwmark
+// 旁路规则失配,直连包落回 pref 200 → tun 自环,公网直连全断。绑物理口让包直接从该网卡出,
+// 不再依赖会被清掉的 mark。因掩码常是全 32 位,改 mark 值救不了,故用绑设备兜底(defense-in-depth)。
+//
+// 仅公网目的地绑(shouldBindToDevice):私网/docker/loopback/link-local 交策略路由原生投递,
+// 绑物理口反而到不了 lo/docker0/内网邻居。dev 为空(探测失败)时只打 SO_MARK,行为同旧版。
+func markedBoundDialer(mark int, dev string) *net.Dialer {
 	return &net.Dialer{
 		Timeout: 10 * time.Second,
-		Control: func(_, _ string, c syscall.RawConn) error {
+		Control: func(_, address string, c syscall.RawConn) error {
 			var serr error
 			if err := c.Control(func(fd uintptr) {
-				serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, mark)
+				if serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, mark); serr != nil {
+					return
+				}
+				if dev != "" && shouldBindToDevice(address) {
+					serr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, dev)
+				}
 			}); err != nil {
 				return err
 			}
