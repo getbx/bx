@@ -69,7 +69,7 @@ func (s uiServer) handleShares(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, shares)
+	writeHTTPJSON(w, shares)
 }
 
 func (s uiServer) handleShare(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +95,7 @@ func (s uiServer) handleShare(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"name": name, "listen": listen, "link": link})
+	writeHTTPJSON(w, map[string]string{"name": name, "listen": listen, "link": link})
 }
 
 func (s uiServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +112,7 @@ func (s uiServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"ok": "true"})
+	writeHTTPJSON(w, map[string]string{"ok": "true"})
 }
 
 func (s uiServer) shareViews() ([]shareView, error) {
@@ -120,6 +120,10 @@ func (s uiServer) shareViews() ([]shareView, error) {
 	if err != nil {
 		return nil, err
 	}
+	return shareViews(shares), nil
+}
+
+func shareViews(shares []shareInfo) []shareView {
 	out := make([]shareView, 0, len(shares))
 	for _, share := range shares {
 		out = append(out, shareView{
@@ -128,10 +132,10 @@ func (s uiServer) shareViews() ([]shareView, error) {
 			Status: systemctlState("is-active", install.ShareServiceName(share.Name)),
 		})
 	}
-	return out, nil
+	return out
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
+func writeHTTPJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(v)
 }

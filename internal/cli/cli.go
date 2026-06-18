@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -67,6 +68,30 @@ type shareInfo struct {
 	Config serverConfig
 }
 
+type sharesReport struct {
+	OK              bool        `json:"ok"`
+	SecretsRedacted bool        `json:"secrets_redacted"`
+	Shares          []shareView `json:"shares"`
+}
+
+type checkReport struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+	Hint   string `json:"hint,omitempty"`
+}
+
+type doctorReport struct {
+	OK              bool          `json:"ok"`
+	Kind            string        `json:"kind"`
+	Version         string        `json:"version"`
+	SecretsRedacted bool          `json:"secrets_redacted"`
+	ChangesSystem   bool          `json:"changes_system"`
+	ChangesNetwork  bool          `json:"changes_network"`
+	RequiresRoot    bool          `json:"requires_root"`
+	Checks          []checkReport `json:"checks"`
+}
+
 func serverCommands() []*cli.Command {
 	return []*cli.Command{
 		{Name: "install", Usage: "安装 bx server 服务", Flags: serverInstallFlags(), Action: serverInstallAction},
@@ -124,6 +149,7 @@ func serverShareFlags() []cli.Flag {
 func serverSharesFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
+		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
 	}
 }
 
@@ -145,6 +171,7 @@ func doctorFlags() []cli.Flag {
 		&cli.DurationFlag{Name: "timeout", Value: 8 * time.Second, Usage: "链接探测超时"},
 		&cli.StringFlag{Name: "target", Value: defaultProbeTarget, Usage: "链接探测目标"},
 		&cli.BoolFlag{Name: "skip-probe", Usage: "跳过 bx:// 链接探测"},
+		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
 	}
 }
 
@@ -152,6 +179,7 @@ func serverDoctorFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
 		&cli.StringFlag{Name: "shares-dir", Value: defaultShareDir, Usage: "share 配置目录"},
+		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
 	}
 }
 
@@ -273,6 +301,9 @@ func serverSharesAction(c *cli.Context) error {
 	shares, err := readShares(c.String("dir"))
 	if err != nil {
 		return err
+	}
+	if c.Bool("json") {
+		return writeJSON(os.Stdout, sharesReport{OK: true, SecretsRedacted: true, Shares: shareViews(shares)})
 	}
 	if len(shares) == 0 {
 		fmt.Println("No shares.")
@@ -458,6 +489,9 @@ func serveAction(c *cli.Context) error {
 }
 
 func doctorAction(c *cli.Context) error {
+	if c.Bool("json") {
+		return writeJSON(os.Stdout, collectClientDoctor(c.String("config"), c.String("target"), c.Duration("timeout"), c.Bool("skip-probe")))
+	}
 	fmt.Println("bx doctor")
 	doctorLine("ok", "version", version.String())
 	cfgPath := resolveConfigPath(c.String("config"))
@@ -498,6 +532,9 @@ func doctorAction(c *cli.Context) error {
 }
 
 func serverDoctorAction(c *cli.Context) error {
+	if c.Bool("json") {
+		return writeJSON(os.Stdout, collectServerDoctor(c.String("config"), c.String("shares-dir")))
+	}
 	fmt.Println("bx server doctor")
 	doctorLine("ok", "version", version.String())
 	cfgPath := c.String("config")
@@ -530,6 +567,104 @@ func serverDoctorAction(c *cli.Context) error {
 	return nil
 }
 
+func collectClientDoctor(configPath, target string, timeout time.Duration, skipProbe bool) doctorReport {
+	rep := doctorReport{Kind: "client", Version: version.String(), SecretsRedacted: true}
+	cfgPath := resolveConfigPath(configPath)
+	rep.addCheck("config", "info", cfgPath, "")
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		rep.addCheck("config_readable", "fail", err.Error(), "sudo bx setup bx://...")
+	} else {
+		rep.addCheck("config_readable", "ok", "yes", "")
+		if modeCheck(cfgPath, 0o600) {
+			rep.addCheck("config_permissions", "ok", "0600", "")
+		} else {
+			rep.addCheck("config_permissions", "warn", "not 0600", "chmod 600 "+cfgPath)
+		}
+		cfg, err := config.Parse(b)
+		if err != nil {
+			rep.addCheck("config_parse", "fail", err.Error(), "")
+		} else {
+			rep.addCheck("config_parse", "ok", "yes", "")
+			if cfg.Server == "" {
+				rep.addCheck("server_link", "fail", "empty", "sudo bx setup bx://...")
+			} else if _, err := blink.Decode(cfg.Server); err != nil && !strings.HasPrefix(cfg.Server, "brook://") {
+				rep.addCheck("server_link", "fail", err.Error(), "")
+			} else {
+				rep.addCheck("server_link", "ok", redactLink(cfg.Server), "")
+				if !skipProbe {
+					rep.addReport(probeCheck(cfg.Server, target, timeout))
+				}
+			}
+		}
+	}
+	rep.addCheck("service_installed", boolStatus(install.UnitInstalled()), install.ServiceName, "sudo bx setup bx://...")
+	rep.addCheck("service_active", systemdStatus("is-active", install.ServiceName), systemctlState("is-active", install.ServiceName), "sudo bx up")
+	rep.addCheck("service_enabled", systemdStatus("is-enabled", install.ServiceName), systemctlState("is-enabled", install.ServiceName), "sudo bx up")
+	if err := checkStatusSocket(); err != nil {
+		rep.addCheck("status_socket", "warn", err.Error(), "")
+	} else {
+		rep.addCheck("status_socket", "ok", "reachable", "")
+	}
+	rep.OK = !rep.hasFail()
+	return rep
+}
+
+func collectServerDoctor(configPath, sharesDir string) doctorReport {
+	rep := doctorReport{Kind: "server", Version: version.String(), SecretsRedacted: true, RequiresRoot: true}
+	cfg, err := readServerConfig(configPath)
+	if err != nil {
+		rep.addCheck("config_parse", "fail", err.Error(), "sudo bx server install --host <host>")
+	} else {
+		rep.addCheck("config_parse", "ok", "yes", "")
+		if modeCheck(configPath, 0o600) {
+			rep.addCheck("config_permissions", "ok", "0600", "")
+		} else {
+			rep.addCheck("config_permissions", "warn", "not 0600", "chmod 600 "+configPath)
+		}
+		if port := listenPort(cfg.Listen); port == "" {
+			rep.addCheck("listen", "fail", cfg.Listen, "")
+		} else {
+			rep.addCheck("listen", "ok", cfg.Listen, "")
+			status := "warn"
+			detail := "tcp/" + port + " not detected"
+			if isListening(port) {
+				status = "ok"
+				detail = "tcp/" + port
+			}
+			rep.addCheck("port_listening", status, detail, serverFirewallHint(cfg.Listen))
+		}
+	}
+	rep.addCheck("service_installed", boolStatus(install.ServerUnitInstalled()), install.ServerServiceName, "sudo bx server install --host <host>")
+	rep.addCheck("service_active", systemdStatus("is-active", install.ServerServiceName), systemctlState("is-active", install.ServerServiceName), "sudo bx server start")
+	rep.addCheck("service_enabled", systemdStatus("is-enabled", install.ServerServiceName), systemctlState("is-enabled", install.ServerServiceName), "sudo bx server start")
+	for _, check := range shareChecks(sharesDir) {
+		rep.addReport(check)
+	}
+	rep.OK = !rep.hasFail()
+	return rep
+}
+
+func probeCheck(link, target string, timeout time.Duration) checkReport {
+	raw, err := blink.Decode(link)
+	if err != nil {
+		raw = link
+	}
+	dir, err := userRuntimeDir()
+	if err != nil {
+		return checkReport{Name: "probe", Status: "warn", Detail: err.Error()}
+	}
+	brookPath, err := provision.EnsureBrook(dir, "", embedded.Brook(), embedded.BrookVersion())
+	if err != nil {
+		return checkReport{Name: "probe", Status: "warn", Detail: err.Error()}
+	}
+	lat, err := setup.ProbeServer(brookPath, raw, target, timeout)
+	if err != nil {
+		return checkReport{Name: "probe", Status: "fail", Detail: err.Error()}
+	}
+	return checkReport{Name: "probe", Status: "ok", Detail: fmt.Sprintf("%s %dms", target, lat)}
+}
+
 func doctorShares(dir string) {
 	shares, err := readShares(dir)
 	if err != nil {
@@ -553,6 +688,33 @@ func doctorShares(dir string) {
 	}
 }
 
+func shareChecks(dir string) []checkReport {
+	shares, err := readShares(dir)
+	if err != nil {
+		return []checkReport{{Name: "shares", Status: "warn", Detail: err.Error()}}
+	}
+	if len(shares) == 0 {
+		return []checkReport{{Name: "shares", Status: "info", Detail: "none"}}
+	}
+	var checks []checkReport
+	for _, s := range shares {
+		state := systemctlState("is-active", install.ShareServiceName(s.Name))
+		port := listenPort(s.Config.Listen)
+		if port == "" {
+			checks = append(checks, checkReport{Name: "share." + s.Name, Status: "fail", Detail: "bad listen " + s.Config.Listen})
+			continue
+		}
+		listenState := shareListenState(port)
+		checks = append(checks, checkReport{
+			Name:   "share." + s.Name,
+			Status: shareDoctorStatus(state, listenState),
+			Detail: fmt.Sprintf("%s, tcp/%s %s", state, port, listenState),
+			Hint:   serverFirewallHint(s.Config.Listen),
+		})
+	}
+	return checks
+}
+
 func shareListenState(port string) string {
 	if isListening(port) {
 		return "listening"
@@ -565,6 +727,23 @@ func shareDoctorStatus(serviceState, listenState string) string {
 		return "ok"
 	}
 	return "warn"
+}
+
+func (r *doctorReport) addCheck(name, status, detail, hint string) {
+	r.addReport(checkReport{Name: name, Status: status, Detail: detail, Hint: hint})
+}
+
+func (r *doctorReport) addReport(check checkReport) {
+	r.Checks = append(r.Checks, check)
+}
+
+func (r doctorReport) hasFail() bool {
+	for _, c := range r.Checks {
+		if c.Status == "fail" {
+			return true
+		}
+	}
+	return false
 }
 
 func doctorProbe(link, target string, timeout time.Duration) {
@@ -932,6 +1111,13 @@ func serverFirewallHint(listen string) string {
 	return fmt.Sprintf("如果 VPS 启用了防火墙,请确认已放行 TCP %s; ufw 可用: sudo ufw allow %s/tcp", port, port)
 }
 
+func writeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
+}
+
 func openUFW(listen string) error {
 	port := listenPort(listen)
 	if port == "" {
@@ -1077,6 +1263,11 @@ func checkFileMode(path string, want os.FileMode) {
 		return
 	}
 	doctorLine("warn", "config permissions", fmt.Sprintf("%#o, want %#o", got, want))
+}
+
+func modeCheck(path string, want os.FileMode) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().Perm() == want
 }
 
 func checkStatusSocket() error {

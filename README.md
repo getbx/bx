@@ -88,6 +88,16 @@ sudo bx down
 sudo bx up
 ```
 
+给脚本或 AI agent 诊断时,使用 JSON 输出:
+
+```bash
+bx doctor --json
+sudo bx server doctor --json
+sudo bx server shares --json
+```
+
+这些命令只读取状态并输出机器可解析结果,不会修改系统或网络配置。
+
 ## 命令
 
 | 命令 | 作用 |
@@ -98,6 +108,7 @@ sudo bx up
 | `sudo bx server link --host <host>` | 生成客户端 `bx://` 链接 |
 | `sudo bx server share <name> --host <host>` | 创建一个独立分享链接 |
 | `sudo bx server shares` | 查看已分享的链接 |
+| `sudo bx server shares --json` | 以 JSON 查看已分享的链接 |
 | `sudo bx server revoke <name>` | 撤销一个分享 |
 | `sudo bx server rotate --host <host>` | 轮换 server 密码并生成新的 `bx://` 链接 |
 | `sudo bx server logs` | 查看服务端日志 |
@@ -108,9 +119,11 @@ sudo bx up
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `bx status` | 查看客户端状态面板 |
 | `bx doctor` | 诊断客户端配置、服务状态和链接连通性 |
+| `bx doctor --json` | 输出客户端机器可读诊断 |
 | `sudo bx run` | 前台运行,用于调试 |
 | `sudo bx uninstall` | 卸载客户端服务 |
 | `sudo bx server doctor` | 诊断服务端配置、监听端口和服务状态 |
+| `sudo bx server doctor --json` | 输出服务端机器可读诊断 |
 
 ## 配置
 
