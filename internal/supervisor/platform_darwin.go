@@ -64,11 +64,13 @@ func (darwinPlatform) DirectDialer() *net.Dialer {
 }
 
 // boundIfDialer 用 IP_BOUND_IF / IPV6_BOUND_IF 把出站绑到指定网卡索引(0=不绑)。
+// 仅对公网目的地绑(shouldBindToDevice):loopback/私网/link-local 不绑——绑物理口
+// 反而连不通 lo/内网邻居(IP_BOUND_IF 绑后无法可靠连 127/8 即此故),交主表原生投递。
 func boundIfDialer(ifIndex int) *net.Dialer {
 	return &net.Dialer{
 		Timeout: 10 * time.Second,
-		Control: func(network, _ string, c syscall.RawConn) error {
-			if ifIndex == 0 {
+		Control: func(network, address string, c syscall.RawConn) error {
+			if ifIndex == 0 || !shouldBindToDevice(address) {
 				return nil
 			}
 			var serr error
