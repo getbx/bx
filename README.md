@@ -91,12 +91,13 @@ sudo bx up
 给脚本或 AI agent 诊断时,使用 JSON 输出:
 
 ```bash
+bx capabilities
 bx doctor --json
 sudo bx server doctor --json
 sudo bx server shares --json
 ```
 
-这些命令只读取状态并输出机器可解析结果,不会修改系统或网络配置。
+`bx capabilities` 会输出稳定的机器可读能力清单,标明每个入口是否需要 root、是否会修改系统或网络、是否读取敏感配置。上面的 JSON 诊断命令只读取状态并输出机器可解析结果,不会修改系统或网络配置。
 
 ## 命令
 
@@ -118,6 +119,7 @@ sudo bx server shares --json
 | `sudo bx up` | 启动客户端并设为开机自启 |
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `bx status` | 查看客户端状态面板 |
+| `bx capabilities` | 输出机器可读能力清单 |
 | `bx doctor` | 诊断客户端配置、服务状态和链接连通性 |
 | `bx doctor --json` | 输出客户端机器可读诊断 |
 | `sudo bx run` | 前台运行,用于调试 |

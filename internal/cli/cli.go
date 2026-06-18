@@ -45,6 +45,7 @@ func New() *cli.App {
 			{Name: "probe", Usage: "检测 bx:// 链接连通性(不写配置/不改路由)", ArgsUsage: "bx://...", Flags: probeFlags(), Action: probeAction},
 			{Name: "server", Usage: "管理 bx server", Subcommands: serverCommands()},
 			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
+			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
@@ -90,6 +91,27 @@ type doctorReport struct {
 	ChangesNetwork  bool          `json:"changes_network"`
 	RequiresRoot    bool          `json:"requires_root"`
 	Checks          []checkReport `json:"checks"`
+}
+
+type capabilitiesReport struct {
+	SchemaVersion   int                 `json:"schema_version"`
+	Product         string              `json:"product"`
+	Version         string              `json:"version"`
+	SecretsRedacted bool                `json:"secrets_redacted"`
+	Commands        []commandCapability `json:"commands"`
+}
+
+type commandCapability struct {
+	Command        string   `json:"command"`
+	Category       string   `json:"category"`
+	Summary        string   `json:"summary"`
+	Stable         bool     `json:"stable"`
+	RequiresRoot   bool     `json:"requires_root"`
+	ChangesSystem  bool     `json:"changes_system"`
+	ChangesNetwork bool     `json:"changes_network"`
+	ReadsSecrets   bool     `json:"reads_secrets"`
+	Outputs        []string `json:"outputs,omitempty"`
+	SafeNotes      []string `json:"safe_notes,omitempty"`
 }
 
 func serverCommands() []*cli.Command {
@@ -565,6 +587,145 @@ func serverDoctorAction(c *cli.Context) error {
 	doctorLine(systemdStatus("is-enabled", install.ServerServiceName), "service enabled", systemctlState("is-enabled", install.ServerServiceName))
 	doctorShares(c.String("shares-dir"))
 	return nil
+}
+
+func capabilitiesAction(c *cli.Context) error {
+	return writeJSON(os.Stdout, capabilities())
+}
+
+func capabilities() capabilitiesReport {
+	return capabilitiesReport{
+		SchemaVersion:   1,
+		Product:         "bx",
+		Version:         version.String(),
+		SecretsRedacted: true,
+		Commands: []commandCapability{
+			{
+				Command:        "bx capabilities",
+				Category:       "discovery",
+				Summary:        "List stable machine-readable bx commands and their safety properties.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				Outputs:        []string{"json"},
+				SafeNotes:      []string{"Read-only. Use this before choosing another bx command."},
+			},
+			{
+				Command:        "bx doctor --json",
+				Category:       "diagnostics",
+				Summary:        "Diagnose client config, service state, status socket, and optional link probe.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"json"},
+				SafeNotes:      []string{"Read-only.", "Secrets are redacted.", "Pass --skip-probe to avoid network probing."},
+			},
+			{
+				Command:        "sudo bx server doctor --json",
+				Category:       "diagnostics",
+				Summary:        "Diagnose server config, service state, listening port, and share services.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"json"},
+				SafeNotes:      []string{"Read-only.", "Secrets are redacted."},
+			},
+			{
+				Command:        "sudo bx server shares --json",
+				Category:       "inspection",
+				Summary:        "List share names, listen addresses, and service states.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"json"},
+				SafeNotes:      []string{"Read-only.", "Share passwords and links are not included."},
+			},
+			{
+				Command:        "bx probe bx://...",
+				Category:       "diagnostics",
+				Summary:        "Probe a bx link without writing config or changing routes.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"text"},
+				SafeNotes:      []string{"Network probe only.", "Does not install services or change routing."},
+			},
+			{
+				Command:        "sudo bx setup bx://...",
+				Category:       "client",
+				Summary:        "Install bx client service and write client config.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"text"},
+				SafeNotes:      []string{"Does not start traffic routing by itself."},
+			},
+			{
+				Command:        "sudo bx up",
+				Category:       "client",
+				Summary:        "Start bx client service and enable it at boot.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: true,
+				Outputs:        []string{"text"},
+			},
+			{
+				Command:        "sudo bx down",
+				Category:       "client",
+				Summary:        "Stop bx client service and disable it at boot.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: true,
+				Outputs:        []string{"text"},
+			},
+			{
+				Command:        "sudo bx server install --host <host>",
+				Category:       "server",
+				Summary:        "Install bx server service, generate config, and optionally print a bx link.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"text"},
+			},
+			{
+				Command:        "sudo bx server share <name> --host <host>",
+				Category:       "server",
+				Summary:        "Create an independent share service and print a bx link for that user.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"text"},
+				SafeNotes:      []string{"May change firewall only when --open-ufw is passed."},
+			},
+			{
+				Command:        "sudo bx server revoke <name>",
+				Category:       "server",
+				Summary:        "Stop and remove one share service.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: false,
+				Outputs:        []string{"text"},
+			},
+		},
+	}
 }
 
 func collectClientDoctor(configPath, target string, timeout time.Duration, skipProbe bool) doctorReport {

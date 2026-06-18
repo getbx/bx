@@ -121,6 +121,29 @@ func TestClientDoctorJSONReport(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesReport(t *testing.T) {
+	rep := capabilities()
+	if rep.SchemaVersion != 1 || rep.Product != "bx" || !rep.SecretsRedacted {
+		t.Fatalf("unexpected capabilities metadata: %+v", rep)
+	}
+	doctor := findCapability(rep.Commands, "bx doctor --json")
+	if !doctor.Stable || doctor.RequiresRoot || doctor.ChangesSystem || doctor.ChangesNetwork || !doctor.ReadsSecrets {
+		t.Fatalf("unexpected doctor capability: %+v", doctor)
+	}
+	up := findCapability(rep.Commands, "sudo bx up")
+	if !up.RequiresRoot || !up.ChangesSystem || !up.ChangesNetwork {
+		t.Fatalf("unexpected up capability: %+v", up)
+	}
+	var buf bytes.Buffer
+	if err := writeJSON(&buf, rep); err != nil {
+		t.Fatal(err)
+	}
+	var parsed capabilitiesReport
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("capabilities json should be parseable: %v\n%s", err, buf.String())
+	}
+}
+
 func TestServerDoctorJSONReport(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "server.yaml")
@@ -168,6 +191,15 @@ func findCheck(checks []checkReport, name string) checkReport {
 		}
 	}
 	return checkReport{}
+}
+
+func findCapability(commands []commandCapability, command string) commandCapability {
+	for _, item := range commands {
+		if item.Command == command {
+			return item
+		}
+	}
+	return commandCapability{}
 }
 
 func TestIsListening(t *testing.T) {
