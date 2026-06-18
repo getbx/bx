@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -92,6 +94,80 @@ func TestDoctorHelpers(t *testing.T) {
 	if got := shareDoctorStatus("inactive", "listening"); got != "warn" {
 		t.Fatalf("shareDoctorStatus inactive/listening = %q", got)
 	}
+}
+
+func TestClientDoctorJSONReport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.yaml")
+	rep := collectClientDoctor(path, "example.com:443", 0, true)
+	if rep.OK {
+		t.Fatal("missing client config should not be ok")
+	}
+	if rep.Kind != "client" || !rep.SecretsRedacted || rep.ChangesSystem || rep.ChangesNetwork || rep.RequiresRoot {
+		t.Fatalf("unexpected client report metadata: %+v", rep)
+	}
+	if got := findCheck(rep.Checks, "config_readable"); got.Status != "fail" {
+		t.Fatalf("config_readable = %+v, want fail", got)
+	}
+	var buf bytes.Buffer
+	if err := writeJSON(&buf, rep); err != nil {
+		t.Fatal(err)
+	}
+	var parsed doctorReport
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("json should be parseable: %v\n%s", err, buf.String())
+	}
+	if parsed.Kind != "client" {
+		t.Fatalf("parsed kind = %q", parsed.Kind)
+	}
+}
+
+func TestServerDoctorJSONReport(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "server.yaml")
+	sharesDir := filepath.Join(dir, "shares")
+	if err := writeServerConfig(cfgPath, serverConfig{Listen: ":10998", Password: "secret"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sharesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rep := collectServerDoctor(cfgPath, sharesDir)
+	if rep.Kind != "server" || !rep.SecretsRedacted || !rep.RequiresRoot {
+		t.Fatalf("unexpected server report metadata: %+v", rep)
+	}
+	if got := findCheck(rep.Checks, "config_parse"); got.Status != "ok" {
+		t.Fatalf("config_parse = %+v, want ok", got)
+	}
+	if got := findCheck(rep.Checks, "shares"); got.Status != "info" || got.Detail != "none" {
+		t.Fatalf("shares = %+v, want none info", got)
+	}
+}
+
+func TestShareJSONViewsExposeOnlyOperationalFields(t *testing.T) {
+	shares := []shareInfo{{
+		Name:   "alice",
+		Config: serverConfig{Listen: ":10001", Password: "pw"},
+	}}
+	views := shareViews(shares)
+	if len(views) != 1 || views[0].Name != "alice" || views[0].Listen != ":10001" {
+		t.Fatalf("share views = %+v", views)
+	}
+	var buf bytes.Buffer
+	if err := writeJSON(&buf, sharesReport{OK: true, SecretsRedacted: true, Shares: views}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "pw") {
+		t.Fatalf("shares json should not expose password: %s", buf.String())
+	}
+}
+
+func findCheck(checks []checkReport, name string) checkReport {
+	for _, check := range checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	return checkReport{}
 }
 
 func TestIsListening(t *testing.T) {
