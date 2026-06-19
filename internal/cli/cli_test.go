@@ -21,13 +21,21 @@ func TestAppHasVersion(t *testing.T) {
 	if !appHasCommand(app, "logs") {
 		t.Fatal("app should expose bx logs")
 	}
+	if !appHasCommand(app, "dns") {
+		t.Fatal("app should expose bx dns")
+	}
 }
 
 func TestBuildExecStart(t *testing.T) {
-	got := buildExecStart("/usr/local/bin/bx", "/etc/bx/config.yaml")
+	got := buildExecStartForGOOS("linux", "/usr/local/bin/bx", "/etc/bx/config.yaml")
 	want := "/usr/local/bin/bx run -c /etc/bx/config.yaml"
 	if got != want {
 		t.Fatalf("ExecStart 应跑 run, got %q", got)
+	}
+	got = buildExecStartForGOOS("darwin", "/usr/local/bin/bx", "/etc/bx/config.yaml")
+	want = "/usr/local/bin/bx run -c /etc/bx/config.yaml --listen-dns 127.0.0.1:53"
+	if got != want {
+		t.Fatalf("darwin ExecStart 应监听本地 DNS, got %q", got)
 	}
 }
 
@@ -98,6 +106,9 @@ func TestDoctorHelpers(t *testing.T) {
 	if got := shareDoctorStatus("inactive", "listening"); got != "warn" {
 		t.Fatalf("shareDoctorStatus inactive/listening = %q", got)
 	}
+	if got := hintForState("inactive", "sudo bx up", "bx logs"); got != "sudo bx up; bx logs" {
+		t.Fatalf("hintForState inactive = %q", got)
+	}
 }
 
 func TestClientDoctorJSONReport(t *testing.T) {
@@ -134,6 +145,9 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !doctor.Stable || doctor.RequiresRoot || doctor.ChangesSystem || doctor.ChangesNetwork || !doctor.ReadsSecrets {
 		t.Fatalf("unexpected doctor capability: %+v", doctor)
 	}
+	if len(doctor.Arguments) == 0 || len(doctor.Examples) == 0 {
+		t.Fatalf("doctor capability should include arguments/examples: %+v", doctor)
+	}
 	up := findCapability(rep.Commands, "sudo bx up")
 	if !up.RequiresRoot || !up.ChangesSystem || !up.ChangesNetwork {
 		t.Fatalf("unexpected up capability: %+v", up)
@@ -141,6 +155,10 @@ func TestCapabilitiesReport(t *testing.T) {
 	logs := findCapability(rep.Commands, "bx logs")
 	if !logs.Stable || logs.ChangesSystem || logs.ChangesNetwork {
 		t.Fatalf("unexpected logs capability: %+v", logs)
+	}
+	dnsOn := findCapability(rep.Commands, "sudo bx dns on")
+	if !dnsOn.RequiresRoot || !dnsOn.ChangesSystem || !dnsOn.ChangesNetwork {
+		t.Fatalf("unexpected dns on capability: %+v", dnsOn)
 	}
 	var buf bytes.Buffer
 	if err := writeJSON(&buf, rep); err != nil {

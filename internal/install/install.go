@@ -3,6 +3,7 @@ package install
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -23,9 +24,26 @@ const (
 	launchdPlistPath  = "/Library/LaunchDaemons/com.getbx.bx.plist"
 	launchdStdoutPath = "/var/log/bx.log"
 	launchdStderrPath = "/var/log/bx.err.log"
+	dnsStatePath      = "/var/lib/bx/dns-original.json"
 	// BinPath 是 bx 自身安装到 PATH 的规范位置。
 	BinPath = "/usr/local/bin/bx"
 )
+
+type DNSStatus struct {
+	Supported  bool     `json:"supported"`
+	Enabled    bool     `json:"enabled"`
+	Service    string   `json:"service,omitempty"`
+	Servers    []string `json:"servers,omitempty"`
+	StateSaved bool     `json:"state_saved"`
+	StatePath  string   `json:"state_path,omitempty"`
+	Detail     string   `json:"detail,omitempty"`
+}
+
+type dnsState struct {
+	Service string   `json:"service"`
+	Servers []string `json:"servers,omitempty"`
+	Empty   bool     `json:"empty"`
+}
 
 // SelfInstall 把当前运行的 bx 二进制安装到 BinPath(原子覆盖,0755),返回该路径。
 // 若已从 BinPath 运行则直接返回不复制。用于 setup 让用户免去手动 cp/install。
@@ -411,6 +429,83 @@ func ShowLogs(service string, lines int, follow bool) error {
 	return nil
 }
 
+func InspectDNS(service string) (DNSStatus, error) {
+	if runtime.GOOS != "darwin" {
+		return DNSStatus{Supported: false, Detail: "DNS 接管仅支持 macOS"}, nil
+	}
+	resolved, err := resolveDNSService(service)
+	if err != nil {
+		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
+	}
+	servers, err := currentDNSServers(resolved)
+	if err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+	}
+	_, stateErr := os.Stat(dnsStatePath)
+	return DNSStatus{
+		Supported:  true,
+		Enabled:    len(servers) == 1 && servers[0] == "127.0.0.1",
+		Service:    resolved,
+		Servers:    servers,
+		StateSaved: stateErr == nil,
+		StatePath:  dnsStatePath,
+	}, nil
+}
+
+func EnableDNS(service string) (DNSStatus, error) {
+	if runtime.GOOS != "darwin" {
+		return DNSStatus{Supported: false, Detail: "DNS 接管仅支持 macOS"}, fmt.Errorf("DNS 接管仅支持 macOS")
+	}
+	resolved, err := resolveDNSService(service)
+	if err != nil {
+		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
+	}
+	if _, err := os.Stat(dnsStatePath); err != nil {
+		if !os.IsNotExist(err) {
+			return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+		}
+		servers, err := currentDNSServers(resolved)
+		if err != nil {
+			return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+		}
+		state := dnsState{Service: resolved, Servers: servers, Empty: len(servers) == 0}
+		if err := writeDNSState(state); err != nil {
+			return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+		}
+	}
+	if err := runNetworksetup("setdnsservers", resolved, "127.0.0.1"); err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+	}
+	flushDNSCache()
+	return InspectDNS(service)
+}
+
+func DisableDNS(service string) (DNSStatus, error) {
+	if runtime.GOOS != "darwin" {
+		return DNSStatus{Supported: false, Detail: "DNS 接管仅支持 macOS"}, fmt.Errorf("DNS 接管仅支持 macOS")
+	}
+	state, err := readDNSState()
+	if err != nil {
+		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
+	}
+	resolved := strings.TrimSpace(service)
+	if resolved == "" {
+		resolved = state.Service
+	}
+	var args []string
+	if state.Empty || len(state.Servers) == 0 {
+		args = []string{"setdnsservers", resolved, "Empty"}
+	} else {
+		args = append([]string{"setdnsservers", resolved}, state.Servers...)
+	}
+	if err := runNetworksetup(args...); err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+	}
+	_ = os.Remove(dnsStatePath)
+	flushDNSCache()
+	return InspectDNS(resolved)
+}
+
 func existingPaths(paths ...string) []string {
 	out := make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -419,6 +514,126 @@ func existingPaths(paths ...string) []string {
 		}
 	}
 	return out
+}
+
+func resolveDNSService(service string) (string, error) {
+	if strings.TrimSpace(service) != "" {
+		return strings.TrimSpace(service), nil
+	}
+	dev, err := defaultDeviceDarwin()
+	if err != nil {
+		return "", err
+	}
+	return serviceForDeviceDarwin(dev)
+}
+
+func defaultDeviceDarwin() (string, error) {
+	out, err := exec.Command("route", "-n", "get", "default").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("route -n get default: %w", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.TrimSuffix(fields[0], ":") == "interface" {
+			return fields[1], nil
+		}
+	}
+	return "", fmt.Errorf("无法检测默认网络接口")
+}
+
+func serviceForDeviceDarwin(dev string) (string, error) {
+	out, err := exec.Command("networksetup", "-listnetworkserviceorder").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("networksetup -listnetworkserviceorder: %w", err)
+	}
+	service := ""
+	needle := "Device: " + dev + ")"
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if isNetworkServiceLine(line) {
+			if i := strings.Index(line, ") "); i >= 0 {
+				service = line[i+2:]
+			}
+			continue
+		}
+		if strings.Contains(line, needle) && service != "" {
+			return service, nil
+		}
+	}
+	return "", fmt.Errorf("无法从接口 %s 检测 macOS 网络服务名", dev)
+}
+
+func isNetworkServiceLine(line string) bool {
+	return len(line) > 3 && line[0] == '(' && line[1] >= '0' && line[1] <= '9'
+}
+
+func currentDNSServers(service string) ([]string, error) {
+	out, err := exec.Command("networksetup", "-getdnsservers", service).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("networksetup -getdnsservers %s: %w", service, err)
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" || strings.Contains(text, "There aren't any DNS Servers set") {
+		return nil, nil
+	}
+	var servers []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			servers = append(servers, line)
+		}
+	}
+	return servers, nil
+}
+
+func writeDNSState(state dnsState) error {
+	if err := os.MkdirAll(filepath.Dir(dnsStatePath), 0o700); err != nil {
+		return fmt.Errorf("创建 DNS 状态目录: %w", err)
+	}
+	b, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dnsStatePath, b, 0o600); err != nil {
+		return fmt.Errorf("写 DNS 状态 %s: %w", dnsStatePath, err)
+	}
+	return nil
+}
+
+func readDNSState() (dnsState, error) {
+	var state dnsState
+	b, err := os.ReadFile(dnsStatePath)
+	if err != nil {
+		return state, fmt.Errorf("读 DNS 状态 %s: %w", dnsStatePath, err)
+	}
+	if err := json.Unmarshal(b, &state); err != nil {
+		return state, fmt.Errorf("解析 DNS 状态 %s: %w", dnsStatePath, err)
+	}
+	if state.Service == "" {
+		return state, fmt.Errorf("DNS 状态缺少 service")
+	}
+	return state, nil
+}
+
+func runNetworksetup(args ...string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("networksetup: missing arguments")
+	}
+	args = append([]string{}, args...)
+	if !strings.HasPrefix(args[0], "-") {
+		args[0] = "-" + args[0]
+	}
+	cmd := exec.Command("networksetup", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("networksetup %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func flushDNSCache() {
+	_ = exec.Command("dscacheutil", "-flushcache").Run()
+	_ = exec.Command("killall", "-HUP", "mDNSResponder").Run()
 }
 
 // ServiceState 返回服务状态。action 使用 systemctl 风格:is-active/is-enabled。
