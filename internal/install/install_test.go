@@ -75,6 +75,8 @@ func TestLaunchdPlistText(t *testing.T) {
 		"<string>/etc/bx/config.yaml</string>",
 		"<key>RunAtLoad</key>",
 		"<key>KeepAlive</key>",
+		"<string>/var/log/bx.log</string>",
+		"<string>/var/log/bx.err.log</string>",
 	} {
 		if !strings.Contains(plist, want) {
 			t.Errorf("launchd plist 应含 %q,实际:\n%s", want, plist)
@@ -88,6 +90,19 @@ func TestLaunchdExecStartCmd(t *testing.T) {
 	}
 	if got := launchdExecStartCmd(LaunchdPlistText("/usr/local/bin/bx up -c /etc/bx/config.yaml")); got != "up" {
 		t.Fatalf("launchdExecStartCmd = %q, want up", got)
+	}
+}
+
+func TestExistingPaths(t *testing.T) {
+	dir := t.TempDir()
+	one := filepath.Join(dir, "one.log")
+	two := filepath.Join(dir, "two.log")
+	if err := os.WriteFile(one, []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := existingPaths(one, two)
+	if len(got) != 1 || got[0] != one {
+		t.Fatalf("existingPaths = %#v, want [%q]", got, one)
 	}
 }
 

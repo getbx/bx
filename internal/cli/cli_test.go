@@ -10,12 +10,16 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/blink"
+	"github.com/urfave/cli/v2"
 )
 
 func TestAppHasVersion(t *testing.T) {
 	app := New()
 	if strings.TrimSpace(app.Version) == "" {
 		t.Fatal("app version should not be empty")
+	}
+	if !appHasCommand(app, "logs") {
+		t.Fatal("app should expose bx logs")
 	}
 }
 
@@ -134,6 +138,10 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !up.RequiresRoot || !up.ChangesSystem || !up.ChangesNetwork {
 		t.Fatalf("unexpected up capability: %+v", up)
 	}
+	logs := findCapability(rep.Commands, "bx logs")
+	if !logs.Stable || logs.ChangesSystem || logs.ChangesNetwork {
+		t.Fatalf("unexpected logs capability: %+v", logs)
+	}
 	var buf bytes.Buffer
 	if err := writeJSON(&buf, rep); err != nil {
 		t.Fatal(err)
@@ -200,6 +208,15 @@ func findCapability(commands []commandCapability, command string) commandCapabil
 		}
 	}
 	return commandCapability{}
+}
+
+func appHasCommand(app *cli.App, name string) bool {
+	for _, command := range app.Commands {
+		if command.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestIsListening(t *testing.T) {

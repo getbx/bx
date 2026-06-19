@@ -86,6 +86,7 @@ macOS 客户端同样使用这组命令。`setup` 会安装 launchd 服务,`up` 
 ```bash
 bx status
 bx doctor
+bx logs
 sudo bx down
 sudo bx up
 ```
@@ -124,6 +125,7 @@ sudo bx server shares --json
 | `bx capabilities` | 输出机器可读能力清单 |
 | `bx doctor` | 诊断客户端配置、服务状态和链接连通性 |
 | `bx doctor --json` | 输出客户端机器可读诊断 |
+| `bx logs` | 查看客户端日志 |
 | `sudo bx run` | 前台运行,用于调试 |
 | `sudo bx uninstall` | 卸载客户端服务 |
 | `sudo bx server doctor` | 诊断服务端配置、监听端口和服务状态 |
