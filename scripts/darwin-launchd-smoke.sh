@@ -11,13 +11,13 @@ Options:
   --execute          Run the smoke test. Without this, print the plan only.
   --bx PATH          bx binary path. Default: /tmp/bx-mac/bx, built automatically if missing.
   --link LINK        bx:// link. Default: $BX_LINK.
-  --dns              Also test explicit macOS DNS takeover with bx dns on/off.
+  --dns              Also record macOS DNS status before/after up/down.
   --hold SECONDS     Seconds to keep bx up before shutdown. Default: 8.
   --log-dir DIR      Log directory. Default: ./.bx-test-logs/bx-launchd-smoke-YYYYmmdd-HHMMSS
   -h, --help         Show this help.
 
-This script always writes a rollback script before starting bx. It does not
-change system DNS unless --dns is passed.
+This script always writes a rollback script before starting bx. bx up may
+change system DNS on macOS and bx down restores it.
 EOF
 }
 
@@ -82,9 +82,7 @@ fi
   echo '#!/usr/bin/env bash'
   echo 'set +e'
   echo 'date'
-  if [[ "$TEST_DNS" == "1" ]]; then
-    printf '%q dns off\n' "$BX"
-  fi
+  printf '%q dns off\n' "$BX"
   printf '%q down\n' "$BX"
   echo 'date'
 } >"$LOG_DIR/rollback.sh"
@@ -98,10 +96,7 @@ chmod 700 "$LOG_DIR/rollback.sh"
   echo "$BX doctor --json --skip-probe"
   echo "$BX logs -n 120"
   if [[ "$TEST_DNS" == "1" ]]; then
-    echo "$BX dns status"
-    echo "$BX dns on"
-    echo "$BX dns status"
-    echo "$BX dns off"
+    echo "$BX dns status # before/after up/down"
   fi
   echo "sleep $HOLD"
   echo "$BX down"
@@ -127,6 +122,9 @@ cleanup() {
 trap cleanup EXIT
 
 "$BX" setup "$LINK" --force >"$LOG_DIR/setup.log" 2>&1
+if [[ "$TEST_DNS" == "1" ]]; then
+  "$BX" dns status >"$LOG_DIR/dns-before-up.txt" 2>&1 || true
+fi
 "$BX" up >"$LOG_DIR/up.log" 2>&1
 sleep "$HOLD"
 "$BX" status >"$LOG_DIR/status.log" 2>&1 || true
@@ -134,13 +132,13 @@ sleep "$HOLD"
 "$BX" logs -n 120 >"$LOG_DIR/logs.txt" 2>&1 || true
 
 if [[ "$TEST_DNS" == "1" ]]; then
-  "$BX" dns status >"$LOG_DIR/dns-before.txt" 2>&1 || true
-  "$BX" dns on >"$LOG_DIR/dns-on.txt" 2>&1
-  "$BX" dns status >"$LOG_DIR/dns-after-on.txt" 2>&1 || true
-  "$BX" dns off >"$LOG_DIR/dns-off.txt" 2>&1
+  "$BX" dns status >"$LOG_DIR/dns-after-up.txt" 2>&1 || true
 fi
 
 "$BX" down >"$LOG_DIR/down.log" 2>&1 || true
+if [[ "$TEST_DNS" == "1" ]]; then
+  "$BX" dns status >"$LOG_DIR/dns-after-down.txt" 2>&1 || true
+fi
 trap - EXIT
 cleanup
 

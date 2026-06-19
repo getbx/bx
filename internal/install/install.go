@@ -486,6 +486,16 @@ func DisableDNS(service string) (DNSStatus, error) {
 	}
 	state, err := readDNSState()
 	if err != nil {
+		if os.IsNotExist(err) {
+			st, inspectErr := InspectDNS(service)
+			if inspectErr != nil {
+				return st, inspectErr
+			}
+			if st.Enabled {
+				return st, fmt.Errorf("DNS 当前指向 bx,但没有保存的原始 DNS 状态(%s)", dnsStatePath)
+			}
+			return st, nil
+		}
 		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
 	}
 	resolved := strings.TrimSpace(service)

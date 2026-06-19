@@ -79,9 +79,9 @@ sudo ./bx setup bx://...
 sudo bx up
 ```
 
-macOS 客户端同样使用这组命令。`setup` 会安装 launchd 服务,`up` 会启动并设为开机自启,`down` 会停止并取消开机自启。
+macOS 客户端同样使用这组命令。`setup` 会安装 launchd 服务,`up` 会启动并接管系统 DNS,`down` 会恢复 DNS 并停止服务。
 
-macOS 上 `up` 默认不修改系统 DNS。需要让系统 DNS 也交给 bx 时,显式开启:
+macOS DNS 状态可单独查看或手动修复:
 
 ```bash
 bx dns status
@@ -138,7 +138,7 @@ sudo bx server shares --json
 | `sudo bx up` | 启动客户端并设为开机自启 |
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `bx dns status` | 查看 macOS DNS 接管状态 |
-| `sudo bx dns on` | 将 macOS 系统 DNS 切到 bx |
+| `sudo bx dns on` | 手动将 macOS 系统 DNS 切到 bx |
 | `sudo bx dns off` | 恢复 bx 保存的 macOS 原始 DNS |
 | `bx status` | 查看客户端状态面板 |
 | `bx capabilities` | 输出机器可读能力清单 |
