@@ -106,6 +106,15 @@ func TestExistingPaths(t *testing.T) {
 	}
 }
 
+func TestIsNetworkServiceLine(t *testing.T) {
+	if !isNetworkServiceLine("(2) Wi-Fi") {
+		t.Fatal("numbered service line should match")
+	}
+	if isNetworkServiceLine("(Hardware Port: Wi-Fi, Device: en0)") {
+		t.Fatal("hardware detail line should not match")
+	}
+}
+
 func TestUnitInstalledFalseWhenAbsent(t *testing.T) {
 	// 只验证函数可调用且返回 bool(系统服务在测试环境状态不定)
 	_ = UnitInstalled()

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ const defaultConfigPath = "/etc/bx/config.yaml"
 const defaultServerConfigPath = "/etc/bx/server.yaml"
 const defaultShareDir = "/etc/bx/shares"
 const defaultProbeTarget = "github.com:443"
+const darwinDNSListen = "127.0.0.1:53"
 
 // New 返回配置好子命令的 bx App。
 func New() *cli.App {
@@ -48,6 +50,7 @@ func New() *cli.App {
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
+			{Name: "dns", Usage: "管理 macOS 系统 DNS 接管", Subcommands: dnsCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
 			{Name: "status", Usage: "查看状态面板", Action: statusAction},
@@ -112,6 +115,8 @@ type commandCapability struct {
 	ChangesNetwork bool     `json:"changes_network"`
 	ReadsSecrets   bool     `json:"reads_secrets"`
 	Outputs        []string `json:"outputs,omitempty"`
+	Arguments      []string `json:"arguments,omitempty"`
+	Examples       []string `json:"examples,omitempty"`
 	SafeNotes      []string `json:"safe_notes,omitempty"`
 }
 
@@ -130,6 +135,14 @@ func serverCommands() []*cli.Command {
 		{Name: "logs", Usage: "查看 bx server 日志", Flags: serverLogsFlags(), Action: serverLogsAction},
 		{Name: "ui", Usage: "启动本地 Web 管理界面", Flags: serverUIFlags(), Action: serverUIAction},
 		{Name: "uninstall", Usage: "卸载 bx server 服务", Action: serverUninstallAction},
+	}
+}
+
+func dnsCommands() []*cli.Command {
+	return []*cli.Command{
+		{Name: "status", Usage: "查看 macOS 系统 DNS 接管状态", Flags: dnsFlags(), Action: dnsStatusAction},
+		{Name: "on", Usage: "将当前网络服务 DNS 临时切到 bx", Flags: dnsFlags(), Action: dnsOnAction},
+		{Name: "off", Usage: "恢复 bx 保存的原始 DNS", Flags: dnsFlags(), Action: dnsOffAction},
 	}
 }
 
@@ -222,6 +235,12 @@ func serverUIFlags() []cli.Flag {
 		&cli.StringFlag{Name: "listen", Value: "127.0.0.1:8787", Usage: "Web UI 监听地址"},
 		&cli.StringFlag{Name: "host", Usage: "生成链接使用的公网地址或域名"},
 		&cli.StringFlag{Name: "shares-dir", Value: defaultShareDir, Usage: "share 配置目录"},
+	}
+}
+
+func dnsFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "service", Usage: "macOS 网络服务名(默认自动检测当前默认出口)"},
 	}
 }
 
@@ -538,10 +557,16 @@ func doctorAction(c *cli.Context) error {
 		}
 	}
 	doctorLine(boolStatus(install.UnitInstalled()), "service installed", install.ServiceName)
-	doctorLine(serviceStatus("is-active", install.ServiceName), "service active", serviceState("is-active", install.ServiceName))
-	doctorLine(serviceStatus("is-enabled", install.ServiceName), "service enabled", serviceState("is-enabled", install.ServiceName))
+	activeState := serviceState("is-active", install.ServiceName)
+	doctorLine(serviceStatusFromState("is-active", activeState), "service active", activeState)
+	if activeState != "active" {
+		doctorLine("hint", "logs", "bx logs")
+	}
+	enabledState := serviceState("is-enabled", install.ServiceName)
+	doctorLine(serviceStatusFromState("is-enabled", enabledState), "service enabled", enabledState)
 	if err := checkStatusSocket(); err != nil {
 		doctorLine("warn", "status socket", err.Error())
+		doctorLine("hint", "logs", "bx logs")
 	} else {
 		doctorLine("ok", "status socket", "reachable")
 	}
@@ -604,6 +629,7 @@ func capabilities() capabilitiesReport {
 				ChangesSystem:  false,
 				ChangesNetwork: false,
 				Outputs:        []string{"json"},
+				Examples:       []string{"bx capabilities"},
 				SafeNotes:      []string{"Read-only. Use this before choosing another bx command."},
 			},
 			{
@@ -616,6 +642,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"json"},
+				Arguments:      []string{"--json", "--skip-probe", "--config <path>", "--target <host:port>", "--timeout <duration>"},
+				Examples:       []string{"bx doctor --json", "bx doctor --json --skip-probe"},
 				SafeNotes:      []string{"Read-only.", "Secrets are redacted.", "Pass --skip-probe to avoid network probing."},
 			},
 			{
@@ -628,6 +656,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"json"},
+				Arguments:      []string{"--json", "--config <path>", "--shares-dir <dir>"},
+				Examples:       []string{"sudo bx server doctor --json"},
 				SafeNotes:      []string{"Read-only.", "Secrets are redacted."},
 			},
 			{
@@ -640,6 +670,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"json"},
+				Arguments:      []string{"--json", "--dir <dir>"},
+				Examples:       []string{"sudo bx server shares --json"},
 				SafeNotes:      []string{"Read-only.", "Share passwords and links are not included."},
 			},
 			{
@@ -652,6 +684,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
+				Arguments:      []string{"bx://...", "--target <host:port>", "--timeout <duration>"},
+				Examples:       []string{"bx probe bx://..."},
 				SafeNotes:      []string{"Network probe only.", "Does not install services or change routing."},
 			},
 			{
@@ -663,7 +697,48 @@ func capabilities() capabilitiesReport {
 				ChangesSystem:  false,
 				ChangesNetwork: false,
 				Outputs:        []string{"text"},
+				Arguments:      []string{"--lines <n>", "--follow"},
+				Examples:       []string{"bx logs", "bx logs -n 200"},
 				SafeNotes:      []string{"Read-only.", "May require sudo depending on system log permissions."},
+			},
+			{
+				Command:        "bx dns status",
+				Category:       "dns",
+				Summary:        "Inspect macOS system DNS takeover state.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				Outputs:        []string{"text"},
+				Arguments:      []string{"--service <name>"},
+				Examples:       []string{"bx dns status"},
+				SafeNotes:      []string{"Read-only.", "Only supported on macOS."},
+			},
+			{
+				Command:        "sudo bx dns on",
+				Category:       "dns",
+				Summary:        "Set the active macOS network service DNS to bx and save the original DNS for rollback.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: true,
+				Outputs:        []string{"text"},
+				Arguments:      []string{"--service <name>"},
+				Examples:       []string{"sudo bx dns on"},
+				SafeNotes:      []string{"Only supported on macOS.", "Use sudo bx dns off to restore the saved DNS."},
+			},
+			{
+				Command:        "sudo bx dns off",
+				Category:       "dns",
+				Summary:        "Restore the macOS DNS values saved by bx dns on.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: true,
+				Outputs:        []string{"text"},
+				Arguments:      []string{"--service <name>"},
+				Examples:       []string{"sudo bx dns off"},
+				SafeNotes:      []string{"Only supported on macOS.", "Restores the saved DNS state instead of guessing."},
 			},
 			{
 				Command:        "sudo bx setup bx://...",
@@ -675,6 +750,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
+				Arguments:      []string{"bx://...", "--config <path>", "--force", "--strict"},
+				Examples:       []string{"sudo bx setup bx://..."},
 				SafeNotes:      []string{"Does not start traffic routing by itself."},
 			},
 			{
@@ -686,6 +763,7 @@ func capabilities() capabilitiesReport {
 				ChangesSystem:  true,
 				ChangesNetwork: true,
 				Outputs:        []string{"text"},
+				Examples:       []string{"sudo bx up"},
 			},
 			{
 				Command:        "sudo bx down",
@@ -696,6 +774,7 @@ func capabilities() capabilitiesReport {
 				ChangesSystem:  true,
 				ChangesNetwork: true,
 				Outputs:        []string{"text"},
+				Examples:       []string{"sudo bx down"},
 			},
 			{
 				Command:        "sudo bx server install --host <host>",
@@ -707,6 +786,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
+				Arguments:      []string{"--host <host>", "--listen <addr>", "--password <password>", "--force"},
+				Examples:       []string{"sudo bx server install --host <host>"},
 			},
 			{
 				Command:        "sudo bx server share <name> --host <host>",
@@ -718,6 +799,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
+				Arguments:      []string{"<name>", "--host <host>", "--listen <addr>", "--password <password>", "--open-ufw"},
+				Examples:       []string{"sudo bx server share alice --host <host>"},
 				SafeNotes:      []string{"May change firewall only when --open-ufw is passed."},
 			},
 			{
@@ -729,6 +812,8 @@ func capabilities() capabilitiesReport {
 				ChangesSystem:  true,
 				ChangesNetwork: false,
 				Outputs:        []string{"text"},
+				Arguments:      []string{"<name>"},
+				Examples:       []string{"sudo bx server revoke alice"},
 			},
 		},
 	}
@@ -766,10 +851,12 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 		}
 	}
 	rep.addCheck("service_installed", boolStatus(install.UnitInstalled()), install.ServiceName, "sudo bx setup bx://...")
-	rep.addCheck("service_active", serviceStatus("is-active", install.ServiceName), serviceState("is-active", install.ServiceName), "sudo bx up")
-	rep.addCheck("service_enabled", serviceStatus("is-enabled", install.ServiceName), serviceState("is-enabled", install.ServiceName), "sudo bx up")
+	activeState := serviceState("is-active", install.ServiceName)
+	rep.addCheck("service_active", serviceStatusFromState("is-active", activeState), activeState, hintForState(activeState, "sudo bx up", "bx logs"))
+	enabledState := serviceState("is-enabled", install.ServiceName)
+	rep.addCheck("service_enabled", serviceStatusFromState("is-enabled", enabledState), enabledState, "sudo bx up")
 	if err := checkStatusSocket(); err != nil {
-		rep.addCheck("status_socket", "warn", err.Error(), "")
+		rep.addCheck("status_socket", "warn", err.Error(), "bx logs")
 	} else {
 		rep.addCheck("status_socket", "ok", "reachable", "")
 	}
@@ -1135,6 +1222,35 @@ func downAction(c *cli.Context) error {
 	return nil
 }
 
+func dnsStatusAction(c *cli.Context) error {
+	st, err := install.InspectDNS(c.String("service"))
+	if err != nil {
+		return err
+	}
+	printDNSStatus(st)
+	return nil
+}
+
+func dnsOnAction(c *cli.Context) error {
+	st, err := install.EnableDNS(c.String("service"))
+	if err != nil {
+		return err
+	}
+	printDNSStatus(st)
+	fmt.Println("✅ macOS 系统 DNS 已切到 bx。恢复: sudo bx dns off")
+	return nil
+}
+
+func dnsOffAction(c *cli.Context) error {
+	st, err := install.DisableDNS(c.String("service"))
+	if err != nil {
+		return err
+	}
+	printDNSStatus(st)
+	fmt.Println("✅ macOS 系统 DNS 已恢复。")
+	return nil
+}
+
 func linkAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if !strings.HasPrefix(arg, "brook://") {
@@ -1160,6 +1276,21 @@ func statusAction(c *cli.Context) error {
 
 func logsAction(c *cli.Context) error {
 	return install.ShowLogs(install.ServiceName, c.Int("lines"), c.Bool("follow"))
+}
+
+func printDNSStatus(st install.DNSStatus) {
+	fmt.Printf("dns supported: %v\n", st.Supported)
+	if st.Detail != "" {
+		fmt.Printf("detail: %s\n", st.Detail)
+	}
+	if st.Service != "" {
+		fmt.Printf("service: %s\n", st.Service)
+	}
+	if len(st.Servers) > 0 {
+		fmt.Printf("servers: %s\n", strings.Join(st.Servers, ", "))
+	}
+	fmt.Printf("enabled: %v\n", st.Enabled)
+	fmt.Printf("saved original: %v\n", st.StateSaved)
 }
 
 func loadConfig(path string) (*config.Config, error) {
@@ -1405,7 +1536,10 @@ func boolStatus(ok bool) string {
 }
 
 func serviceStatus(action, service string) string {
-	state := serviceState(action, service)
+	return serviceStatusFromState(action, serviceState(action, service))
+}
+
+func serviceStatusFromState(action, state string) string {
 	switch action {
 	case "is-active":
 		if state == "active" {
@@ -1420,6 +1554,16 @@ func serviceStatus(action, service string) string {
 		return "warn"
 	}
 	return "fail"
+}
+
+func hintForState(state, primary, logs string) string {
+	if state == "active" {
+		return primary
+	}
+	if primary == "" {
+		return logs
+	}
+	return primary + "; " + logs
 }
 
 func checkFileMode(path string, want os.FileMode) {
@@ -1483,6 +1627,13 @@ func randomPassword() (string, error) {
 
 // buildExecStart 构造自洽的服务启动命令:只需绝对 bx 与绝对 config,其余走二进制内默认。
 func buildExecStart(bin, configPath string) string {
+	return buildExecStartForGOOS(runtime.GOOS, bin, configPath)
+}
+
+func buildExecStartForGOOS(goos, bin, configPath string) string {
+	if goos == "darwin" {
+		return fmt.Sprintf("%s run -c %s --listen-dns %s", bin, configPath, darwinDNSListen)
+	}
 	return fmt.Sprintf("%s run -c %s", bin, configPath)
 }
 
