@@ -1,6 +1,7 @@
 /bx
 /dist/
 .bx-test-logs/
+.DS_Store
 *.test
 *.out
 .env
