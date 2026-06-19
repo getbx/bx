@@ -129,7 +129,7 @@ func shareViews(shares []shareInfo) []shareView {
 		out = append(out, shareView{
 			Name:   share.Name,
 			Listen: share.Config.Listen,
-			Status: systemctlState("is-active", install.ShareServiceName(share.Name)),
+			Status: serviceState("is-active", install.ShareServiceName(share.Name)),
 		})
 	}
 	return out

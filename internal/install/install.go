@@ -1,12 +1,15 @@
-// Package install 生成并安装 bx 的 systemd 服务(开机自启)。
+// Package install 生成并安装 bx 的系统服务(开机自启)。
 package install
 
 import (
+	"bytes"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -16,6 +19,8 @@ const (
 	unitPath          = "/etc/systemd/system/bx.service"
 	serverUnitPath    = "/etc/systemd/system/bx-server.service"
 	shareUnitPrefix   = "/etc/systemd/system/bx-share-"
+	launchdLabel      = "com.getbx.bx"
+	launchdPlistPath  = "/Library/LaunchDaemons/com.getbx.bx.plist"
 	// BinPath 是 bx 自身安装到 PATH 的规范位置。
 	BinPath = "/usr/local/bin/bx"
 )
@@ -130,6 +135,9 @@ WantedBy=multi-user.target
 
 // WriteUnit 写入 unit 文件并 daemon-reload(不 enable、不 start)。需 root。
 func WriteUnit(execStart string) error {
+	if runtime.GOOS == "darwin" {
+		return writeLaunchdPlist(launchdPlistPath, LaunchdPlistText(execStart))
+	}
 	return writeUnitFile(unitPath, UnitText(execStart))
 }
 
@@ -153,11 +161,36 @@ func writeUnitFile(path, text string) error {
 	return runSystemctl("daemon-reload")
 }
 
+func writeLaunchdPlist(path, text string) error {
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return fmt.Errorf("写 %s(需 root): %w", path, err)
+	}
+	return nil
+}
+
 // Enable 启动并设为开机自启。
-func Enable() error { return runSystemctl("enable", "--now", ServiceName) }
+func Enable() error {
+	if runtime.GOOS == "darwin" {
+		_ = runLaunchctl("bootout", "system", launchdPlistPath)
+		if err := runLaunchctl("bootstrap", "system", launchdPlistPath); err != nil {
+			return err
+		}
+		if err := runLaunchctl("enable", "system/"+launchdLabel); err != nil {
+			return err
+		}
+		return runLaunchctl("kickstart", "-k", "system/"+launchdLabel)
+	}
+	return runSystemctl("enable", "--now", ServiceName)
+}
 
 // Disable 停止并取消开机自启。
-func Disable() error { return runSystemctl("disable", "--now", ServiceName) }
+func Disable() error {
+	if runtime.GOOS == "darwin" {
+		_ = runLaunchctl("disable", "system/"+launchdLabel)
+		return runLaunchctl("bootout", "system", launchdPlistPath)
+	}
+	return runSystemctl("disable", "--now", ServiceName)
+}
 
 // EnableServer 启动 bx server 并设为开机自启。
 func EnableServer() error { return runSystemctl("enable", "--now", ServerServiceName) }
@@ -176,6 +209,10 @@ func DisableShare(name string) error { return runSystemctl("disable", "--now", S
 
 // UnitInstalled 报告 unit 文件是否已就位(用于 up 前置校验)。
 func UnitInstalled() bool {
+	if runtime.GOOS == "darwin" {
+		_, err := os.Stat(launchdPlistPath)
+		return err == nil
+	}
 	_, err := os.Stat(unitPath)
 	return err == nil
 }
@@ -190,6 +227,13 @@ func ServerUnitInstalled() bool {
 // 命令模型重排后 up=systemctl enable;若旧 unit 仍写 `bx up`,新二进制启动 service
 // 会让 up 递归调用自身。up 前用它防呆。unit 不存在或无法读时报错。
 func ExecStartCmd() (string, error) {
+	if runtime.GOOS == "darwin" {
+		b, err := os.ReadFile(launchdPlistPath)
+		if err != nil {
+			return "", fmt.Errorf("读 %s: %w", launchdPlistPath, err)
+		}
+		return launchdExecStartCmd(string(b)), nil
+	}
 	b, err := os.ReadFile(unitPath)
 	if err != nil {
 		return "", fmt.Errorf("读 %s: %w", unitPath, err)
@@ -214,8 +258,82 @@ func execStartCmd(unitText string) string {
 	return ""
 }
 
+// LaunchdPlistText 返回 macOS LaunchDaemon plist。execStart 是完整启动命令。
+func LaunchdPlistText(execStart string) string {
+	args := strings.Fields(execStart)
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>`)
+	writeXMLEscaped(&b, launchdLabel)
+	b.WriteString(`</string>
+  <key>ProgramArguments</key>
+  <array>
+`)
+	for _, arg := range args {
+		b.WriteString("    <string>")
+		writeXMLEscaped(&b, arg)
+		b.WriteString("</string>\n")
+	}
+	b.WriteString(`  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/var/log/bx.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/bx.err.log</string>
+</dict>
+</plist>
+`)
+	return b.String()
+}
+
+func writeXMLEscaped(b *strings.Builder, s string) {
+	_ = xml.EscapeText(b, []byte(s))
+}
+
+func launchdExecStartCmd(plistText string) string {
+	dec := xml.NewDecoder(bytes.NewBufferString(plistText))
+	var values []string
+	inString := false
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			inString = t.Name.Local == "string"
+		case xml.EndElement:
+			if t.Name.Local == "string" {
+				inString = false
+			}
+		case xml.CharData:
+			if inString {
+				values = append(values, string(t))
+			}
+		}
+	}
+	for i, value := range values {
+		if value == BinPath && i+1 < len(values) {
+			return values[i+1]
+		}
+	}
+	return ""
+}
+
 // Uninstall 停用并删除服务。
 func Uninstall() error {
+	if runtime.GOOS == "darwin" {
+		_ = runLaunchctl("bootout", "system", launchdPlistPath)
+		_ = os.Remove(launchdPlistPath)
+		return nil
+	}
 	_ = runSystemctl("disable", "--now", ServiceName)
 	_ = os.Remove(unitPath)
 	return runSystemctl("daemon-reload")
@@ -242,4 +360,50 @@ func runSystemctl(args ...string) error {
 		return fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+func runLaunchctl(args ...string) error {
+	cmd := exec.Command("launchctl", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("launchctl %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+// ServiceState 返回服务状态。action 使用 systemctl 风格:is-active/is-enabled。
+func ServiceState(action, service string) string {
+	if runtime.GOOS == "darwin" && service == ServiceName {
+		return launchdState(action)
+	}
+	return systemctlState(action, service)
+}
+
+func systemctlState(action, service string) string {
+	out, err := exec.Command("systemctl", action, service).CombinedOutput()
+	if err != nil {
+		s := strings.TrimSpace(string(out))
+		if s != "" {
+			return s
+		}
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func launchdState(action string) string {
+	switch action {
+	case "is-active":
+		if err := exec.Command("launchctl", "print", "system/"+launchdLabel).Run(); err == nil {
+			return "active"
+		}
+		return "inactive"
+	case "is-enabled":
+		if _, err := os.Stat(launchdPlistPath); err == nil {
+			return "enabled"
+		}
+		return "disabled"
+	default:
+		return "unknown"
+	}
 }
