@@ -717,7 +717,7 @@ func capabilities() capabilitiesReport {
 			{
 				Command:        "sudo bx dns on",
 				Category:       "dns",
-				Summary:        "Set the active macOS network service DNS to bx and save the original DNS for rollback.",
+				Summary:        "Manually set the active macOS network service DNS to bx and save the original DNS for rollback.",
 				Stable:         true,
 				RequiresRoot:   true,
 				ChangesSystem:  true,
@@ -725,7 +725,7 @@ func capabilities() capabilitiesReport {
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--service <name>"},
 				Examples:       []string{"sudo bx dns on"},
-				SafeNotes:      []string{"Only supported on macOS.", "Use sudo bx dns off to restore the saved DNS."},
+				SafeNotes:      []string{"Only supported on macOS.", "sudo bx up already does this on macOS.", "Use sudo bx dns off to restore the saved DNS."},
 			},
 			{
 				Command:        "sudo bx dns off",
@@ -757,24 +757,26 @@ func capabilities() capabilitiesReport {
 			{
 				Command:        "sudo bx up",
 				Category:       "client",
-				Summary:        "Start bx client service and enable it at boot.",
+				Summary:        "Start bx client service, enable it at boot, and enter runtime traffic takeover.",
 				Stable:         true,
 				RequiresRoot:   true,
 				ChangesSystem:  true,
 				ChangesNetwork: true,
 				Outputs:        []string{"text"},
 				Examples:       []string{"sudo bx up"},
+				SafeNotes:      []string{"On macOS, this also switches system DNS to bx after the service is ready.", "If DNS takeover fails, bx rolls the service start back."},
 			},
 			{
 				Command:        "sudo bx down",
 				Category:       "client",
-				Summary:        "Stop bx client service and disable it at boot.",
+				Summary:        "Leave runtime traffic takeover, restore DNS on macOS, and stop bx client service.",
 				Stable:         true,
 				RequiresRoot:   true,
 				ChangesSystem:  true,
 				ChangesNetwork: true,
 				Outputs:        []string{"text"},
 				Examples:       []string{"sudo bx down"},
+				SafeNotes:      []string{"On macOS, DNS is restored before the service is stopped."},
 			},
 			{
 				Command:        "sudo bx server install --host <host>",
@@ -1210,11 +1212,31 @@ func upAction(c *cli.Context) error {
 	if err := install.Enable(); err != nil {
 		return err
 	}
+	if runtime.GOOS == "darwin" {
+		if err := waitStatusSocket(15 * time.Second); err != nil {
+			_ = install.Disable()
+			return fmt.Errorf("bx 服务已启动但状态 socket 未就绪,已回滚: %w", err)
+		}
+		if _, err := install.EnableDNS(""); err != nil {
+			_ = install.Disable()
+			return fmt.Errorf("macOS DNS 接管失败,已回滚 bx 服务: %w", err)
+		}
+		fmt.Println("✅ macOS 系统 DNS 已切到 bx。")
+	}
 	fmt.Println("✅ bx 已启动并设为开机自启。`bx status` 看面板。")
 	return nil
 }
 
 func downAction(c *cli.Context) error {
+	if runtime.GOOS == "darwin" {
+		st, err := install.DisableDNS("")
+		if err != nil {
+			return fmt.Errorf("恢复 macOS DNS 失败,未停止 bx: %w", err)
+		}
+		if st.Supported {
+			fmt.Println("✅ macOS 系统 DNS 已确认恢复。")
+		}
+	}
 	if err := install.Disable(); err != nil {
 		return err
 	}
@@ -1247,7 +1269,7 @@ func dnsOffAction(c *cli.Context) error {
 		return err
 	}
 	printDNSStatus(st)
-	fmt.Println("✅ macOS 系统 DNS 已恢复。")
+	fmt.Println("✅ macOS 系统 DNS 已确认恢复。")
 	return nil
 }
 
@@ -1591,6 +1613,23 @@ func checkStatusSocket() error {
 		return err
 	}
 	return conn.Close()
+}
+
+func waitStatusSocket(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var last error
+	for time.Now().Before(deadline) {
+		if err := checkStatusSocket(); err != nil {
+			last = err
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
+		return nil
+	}
+	if last != nil {
+		return last
+	}
+	return fmt.Errorf("timeout waiting for %s", supervisor.SockPath)
 }
 
 func redactLink(link string) string {
