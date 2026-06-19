@@ -36,7 +36,7 @@ sudo ./bx server install --host <VPS_IP或域名>
 sudo bx server start
 ```
 
-`server install` 会自动生成密码、写入 `/etc/bx/server.yaml`、安装 systemd 服务,并在传入 `--host` 时打印客户端 `bx://` 链接。
+`server install` 会自动生成密码、写入 `/etc/bx/server.yaml`、安装系统服务,并在传入 `--host` 时打印客户端 `bx://` 链接。
 
 之后也可以随时重新生成链接:
 
@@ -78,6 +78,8 @@ ssh -L 8787:127.0.0.1:8787 <VPS>
 sudo ./bx setup bx://...
 sudo bx up
 ```
+
+macOS 客户端同样使用这组命令。`setup` 会安装 launchd 服务,`up` 会启动并设为开机自启,`down` 会停止并取消开机自启。
 
 日常使用:
 

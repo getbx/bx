@@ -63,8 +63,36 @@ func TestExecStartCmd(t *testing.T) {
 	}
 }
 
+func TestLaunchdPlistText(t *testing.T) {
+	plist := LaunchdPlistText("/usr/local/bin/bx run -c /etc/bx/config.yaml")
+	for _, want := range []string{
+		"<key>Label</key>",
+		"<string>com.getbx.bx</string>",
+		"<key>ProgramArguments</key>",
+		"<string>/usr/local/bin/bx</string>",
+		"<string>run</string>",
+		"<string>-c</string>",
+		"<string>/etc/bx/config.yaml</string>",
+		"<key>RunAtLoad</key>",
+		"<key>KeepAlive</key>",
+	} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("launchd plist 应含 %q,实际:\n%s", want, plist)
+		}
+	}
+}
+
+func TestLaunchdExecStartCmd(t *testing.T) {
+	if got := launchdExecStartCmd(LaunchdPlistText("/usr/local/bin/bx run -c /etc/bx/config.yaml")); got != "run" {
+		t.Fatalf("launchdExecStartCmd = %q, want run", got)
+	}
+	if got := launchdExecStartCmd(LaunchdPlistText("/usr/local/bin/bx up -c /etc/bx/config.yaml")); got != "up" {
+		t.Fatalf("launchdExecStartCmd = %q, want up", got)
+	}
+}
+
 func TestUnitInstalledFalseWhenAbsent(t *testing.T) {
-	// 只验证函数可调用且返回 bool(/etc/systemd/system/bx.service 在测试环境状态不定)
+	// 只验证函数可调用且返回 bool(系统服务在测试环境状态不定)
 	_ = UnitInstalled()
 }
 

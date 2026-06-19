@@ -333,7 +333,7 @@ func serverSharesAction(c *cli.Context) error {
 	}
 	fmt.Println("NAME\tLISTEN\tSTATUS")
 	for _, s := range shares {
-		fmt.Printf("%s\t%s\t%s\n", s.Name, s.Config.Listen, systemctlState("is-active", install.ShareServiceName(s.Name)))
+		fmt.Printf("%s\t%s\t%s\n", s.Name, s.Config.Listen, serviceState("is-active", install.ShareServiceName(s.Name)))
 	}
 	return nil
 }
@@ -416,7 +416,7 @@ func serverRotateAction(c *cli.Context) error {
 	}
 	fmt.Println("✅ bx server 密码已轮换。旧 bx:// 链接将失效。")
 	if !c.Bool("no-restart") {
-		switch state := systemctlState("is-active", install.ServerServiceName); state {
+		switch state := serviceState("is-active", install.ServerServiceName); state {
 		case "active":
 			if err := install.RestartServer(); err != nil {
 				return err
@@ -458,8 +458,8 @@ func serverStopAction(c *cli.Context) error {
 }
 
 func serverStatusAction(c *cli.Context) error {
-	active := systemctlState("is-active", install.ServerServiceName)
-	enabled := systemctlState("is-enabled", install.ServerServiceName)
+	active := serviceState("is-active", install.ServerServiceName)
+	enabled := serviceState("is-enabled", install.ServerServiceName)
 	fmt.Printf("bx server: %s, boot: %s\n", active, enabled)
 	return nil
 }
@@ -474,19 +474,15 @@ func serverLogsAction(c *cli.Context) error {
 	return cmd.Run()
 }
 
-func systemctlState(args ...string) string {
-	out, err := exec.Command("systemctl", args...).Output()
-	if err != nil {
-		return "unknown"
-	}
-	return strings.TrimSpace(string(out))
+func serviceState(action, service string) string {
+	return install.ServiceState(action, service)
 }
 
 func serverUninstallAction(c *cli.Context) error {
 	if err := install.UninstallServer(); err != nil {
 		return err
 	}
-	fmt.Println("已卸载 bx server systemd 服务")
+	fmt.Println("已卸载 bx server 服务")
 	return nil
 }
 
@@ -543,8 +539,8 @@ func doctorAction(c *cli.Context) error {
 		}
 	}
 	doctorLine(boolStatus(install.UnitInstalled()), "service installed", install.ServiceName)
-	doctorLine(systemdStatus("is-active", install.ServiceName), "service active", systemctlState("is-active", install.ServiceName))
-	doctorLine(systemdStatus("is-enabled", install.ServiceName), "service enabled", systemctlState("is-enabled", install.ServiceName))
+	doctorLine(serviceStatus("is-active", install.ServiceName), "service active", serviceState("is-active", install.ServiceName))
+	doctorLine(serviceStatus("is-enabled", install.ServiceName), "service enabled", serviceState("is-enabled", install.ServiceName))
 	if err := checkStatusSocket(); err != nil {
 		doctorLine("warn", "status socket", err.Error())
 	} else {
@@ -583,8 +579,8 @@ func serverDoctorAction(c *cli.Context) error {
 		}
 	}
 	doctorLine(boolStatus(install.ServerUnitInstalled()), "service installed", install.ServerServiceName)
-	doctorLine(systemdStatus("is-active", install.ServerServiceName), "service active", systemctlState("is-active", install.ServerServiceName))
-	doctorLine(systemdStatus("is-enabled", install.ServerServiceName), "service enabled", systemctlState("is-enabled", install.ServerServiceName))
+	doctorLine(serviceStatus("is-active", install.ServerServiceName), "service active", serviceState("is-active", install.ServerServiceName))
+	doctorLine(serviceStatus("is-enabled", install.ServerServiceName), "service enabled", serviceState("is-enabled", install.ServerServiceName))
 	doctorShares(c.String("shares-dir"))
 	return nil
 }
@@ -760,8 +756,8 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 		}
 	}
 	rep.addCheck("service_installed", boolStatus(install.UnitInstalled()), install.ServiceName, "sudo bx setup bx://...")
-	rep.addCheck("service_active", systemdStatus("is-active", install.ServiceName), systemctlState("is-active", install.ServiceName), "sudo bx up")
-	rep.addCheck("service_enabled", systemdStatus("is-enabled", install.ServiceName), systemctlState("is-enabled", install.ServiceName), "sudo bx up")
+	rep.addCheck("service_active", serviceStatus("is-active", install.ServiceName), serviceState("is-active", install.ServiceName), "sudo bx up")
+	rep.addCheck("service_enabled", serviceStatus("is-enabled", install.ServiceName), serviceState("is-enabled", install.ServiceName), "sudo bx up")
 	if err := checkStatusSocket(); err != nil {
 		rep.addCheck("status_socket", "warn", err.Error(), "")
 	} else {
@@ -797,8 +793,8 @@ func collectServerDoctor(configPath, sharesDir string) doctorReport {
 		}
 	}
 	rep.addCheck("service_installed", boolStatus(install.ServerUnitInstalled()), install.ServerServiceName, "sudo bx server install --host <host>")
-	rep.addCheck("service_active", systemdStatus("is-active", install.ServerServiceName), systemctlState("is-active", install.ServerServiceName), "sudo bx server start")
-	rep.addCheck("service_enabled", systemdStatus("is-enabled", install.ServerServiceName), systemctlState("is-enabled", install.ServerServiceName), "sudo bx server start")
+	rep.addCheck("service_active", serviceStatus("is-active", install.ServerServiceName), serviceState("is-active", install.ServerServiceName), "sudo bx server start")
+	rep.addCheck("service_enabled", serviceStatus("is-enabled", install.ServerServiceName), serviceState("is-enabled", install.ServerServiceName), "sudo bx server start")
 	for _, check := range shareChecks(sharesDir) {
 		rep.addReport(check)
 	}
@@ -837,7 +833,7 @@ func doctorShares(dir string) {
 		return
 	}
 	for _, s := range shares {
-		state := systemctlState("is-active", install.ShareServiceName(s.Name))
+		state := serviceState("is-active", install.ShareServiceName(s.Name))
 		port := listenPort(s.Config.Listen)
 		if port == "" {
 			doctorLine("fail", "share "+s.Name, "bad listen "+s.Config.Listen)
@@ -859,7 +855,7 @@ func shareChecks(dir string) []checkReport {
 	}
 	var checks []checkReport
 	for _, s := range shares {
-		state := systemctlState("is-active", install.ShareServiceName(s.Name))
+		state := serviceState("is-active", install.ShareServiceName(s.Name))
 		port := listenPort(s.Config.Listen)
 		if port == "" {
 			checks = append(checks, checkReport{Name: "share." + s.Name, Status: "fail", Detail: "bad listen " + s.Config.Listen})
@@ -1112,7 +1108,7 @@ func upAction(c *cli.Context) error {
 		return err
 	}
 	if cmd != "run" {
-		return fmt.Errorf("检测到旧版 systemd unit(ExecStart 子命令是 %q,应为 run):直接 up 会让服务递归调用自身。请重跑 sudo bx setup bx://... 重写 unit", cmd)
+		return fmt.Errorf("检测到旧版服务配置(启动子命令是 %q,应为 run):直接 up 会让服务递归调用自身。请重跑 sudo bx setup bx://... 重写服务配置", cmd)
 	}
 	if err := install.Enable(); err != nil {
 		return err
@@ -1394,8 +1390,8 @@ func boolStatus(ok bool) string {
 	return "fail"
 }
 
-func systemdStatus(action, service string) string {
-	state := systemctlState(action, service)
+func serviceStatus(action, service string) string {
+	state := serviceState(action, service)
 	switch action {
 	case "is-active":
 		if state == "active" {
@@ -1471,7 +1467,7 @@ func randomPassword() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
-// buildExecStart 构造自洽的 systemd ExecStart:只需绝对 bx 与绝对 config,其余走二进制内默认。
+// buildExecStart 构造自洽的服务启动命令:只需绝对 bx 与绝对 config,其余走二进制内默认。
 func buildExecStart(bin, configPath string) string {
 	return fmt.Sprintf("%s run -c %s", bin, configPath)
 }
@@ -1480,6 +1476,6 @@ func uninstallAction(c *cli.Context) error {
 	if err := install.Uninstall(); err != nil {
 		return err
 	}
-	fmt.Println("已卸载 bx systemd 服务")
+	fmt.Println("已卸载 bx 服务")
 	return nil
 }
