@@ -21,6 +21,8 @@ const (
 	shareUnitPrefix   = "/etc/systemd/system/bx-share-"
 	launchdLabel      = "com.getbx.bx"
 	launchdPlistPath  = "/Library/LaunchDaemons/com.getbx.bx.plist"
+	launchdStdoutPath = "/var/log/bx.log"
+	launchdStderrPath = "/var/log/bx.err.log"
 	// BinPath 是 bx 自身安装到 PATH 的规范位置。
 	BinPath = "/usr/local/bin/bx"
 )
@@ -284,9 +286,13 @@ func LaunchdPlistText(execStart string) string {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/var/log/bx.log</string>
+  <string>`)
+	writeXMLEscaped(&b, launchdStdoutPath)
+	b.WriteString(`</string>
   <key>StandardErrorPath</key>
-  <string>/var/log/bx.err.log</string>
+  <string>`)
+	writeXMLEscaped(&b, launchdStderrPath)
+	b.WriteString(`</string>
 </dict>
 </plist>
 `)
@@ -369,6 +375,50 @@ func runLaunchctl(args ...string) error {
 		return fmt.Errorf("launchctl %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+// ShowLogs streams recent service logs to stdout/stderr.
+func ShowLogs(service string, lines int, follow bool) error {
+	if lines <= 0 {
+		lines = 100
+	}
+	if runtime.GOOS == "darwin" && service == ServiceName {
+		paths := existingPaths(launchdStdoutPath, launchdStderrPath)
+		if len(paths) == 0 {
+			return fmt.Errorf("未找到 bx 日志文件(%s, %s);服务可能尚未启动", launchdStdoutPath, launchdStderrPath)
+		}
+		args := []string{"-n", fmt.Sprint(lines)}
+		if follow {
+			args = append(args, "-f")
+		}
+		args = append(args, paths...)
+		cmd := exec.Command("tail", args...)
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("tail %s: %w", strings.Join(args, " "), err)
+		}
+		return nil
+	}
+	args := []string{"-u", service, "--no-pager", "-n", fmt.Sprint(lines)}
+	if follow {
+		args = append(args, "-f")
+	}
+	cmd := exec.Command("journalctl", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("journalctl %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func existingPaths(paths ...string) []string {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 // ServiceState 返回服务状态。action 使用 systemctl 风格:is-active/is-enabled。

@@ -51,6 +51,7 @@ func New() *cli.App {
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
 			{Name: "status", Usage: "查看状态面板", Action: statusAction},
+			{Name: "logs", Usage: "查看客户端日志", Flags: logsFlags(), Action: logsAction},
 			{Name: "link", Usage: "生成 bx:// 链接", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
 			{Name: "blink", Usage: "兼容旧链接生成命令", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
 			{Name: "darwin-plan", Usage: "打印 macOS 路由 dry-run 计划(不改网络)", Flags: darwinPlanFlags(), Action: darwinPlanAction},
@@ -206,6 +207,10 @@ func serverDoctorFlags() []cli.Flag {
 }
 
 func serverLogsFlags() []cli.Flag {
+	return logsFlags()
+}
+
+func logsFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 100, Usage: "显示最近 N 行日志"},
 		&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "持续跟随日志"},
@@ -465,13 +470,7 @@ func serverStatusAction(c *cli.Context) error {
 }
 
 func serverLogsAction(c *cli.Context) error {
-	args := []string{"-u", install.ServerServiceName, "--no-pager", "-n", fmt.Sprint(c.Int("lines"))}
-	if c.Bool("follow") {
-		args = append(args, "-f")
-	}
-	cmd := exec.Command("journalctl", args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
+	return install.ShowLogs(install.ServerServiceName, c.Int("lines"), c.Bool("follow"))
 }
 
 func serviceState(action, service string) string {
@@ -654,6 +653,17 @@ func capabilities() capabilitiesReport {
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
 				SafeNotes:      []string{"Network probe only.", "Does not install services or change routing."},
+			},
+			{
+				Command:        "bx logs",
+				Category:       "diagnostics",
+				Summary:        "Show recent client service logs.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				Outputs:        []string{"text"},
+				SafeNotes:      []string{"Read-only.", "May require sudo depending on system log permissions."},
 			},
 			{
 				Command:        "sudo bx setup bx://...",
@@ -1146,6 +1156,10 @@ func statusAction(c *cli.Context) error {
 	}
 	fmt.Print(stats.Render(rep))
 	return nil
+}
+
+func logsAction(c *cli.Context) error {
+	return install.ShowLogs(install.ServiceName, c.Int("lines"), c.Bool("follow"))
 }
 
 func loadConfig(path string) (*config.Config, error) {
