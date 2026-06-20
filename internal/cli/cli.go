@@ -862,6 +862,12 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 	} else {
 		rep.addCheck("status_socket", "ok", "reachable", "")
 	}
+	rep.addCheck(
+		"udp_policy",
+		"warn",
+		"non-DNS UDP blocked",
+		"Google Meet/WebRTC may stutter; use sudo bx down on trusted routed networks",
+	)
 	rep.OK = !rep.hasFail()
 	return rep
 }
