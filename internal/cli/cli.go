@@ -51,6 +51,7 @@ func New() *cli.App {
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
 			{Name: "dns", Usage: "管理 macOS 系统 DNS 接管", Subcommands: dnsCommands()},
+			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
 			{Name: "status", Usage: "查看状态面板", Action: statusAction},
@@ -143,6 +144,12 @@ func dnsCommands() []*cli.Command {
 		{Name: "status", Usage: "查看 macOS 系统 DNS 接管状态", Flags: dnsFlags(), Action: dnsStatusAction},
 		{Name: "on", Usage: "将当前网络服务 DNS 临时切到 bx", Flags: dnsFlags(), Action: dnsOnAction},
 		{Name: "off", Usage: "恢复 bx 保存的原始 DNS", Flags: dnsFlags(), Action: dnsOffAction},
+	}
+}
+
+func realtimeCommands() []*cli.Command {
+	return []*cli.Command{
+		{Name: "status", Usage: "查看 UDP / 实时应用策略", Action: realtimeStatusAction},
 	}
 }
 
@@ -700,6 +707,18 @@ func capabilities() capabilitiesReport {
 				Arguments:      []string{"--lines <n>", "--follow"},
 				Examples:       []string{"bx logs", "bx logs -n 200"},
 				SafeNotes:      []string{"Read-only.", "May require sudo depending on system log permissions."},
+			},
+			{
+				Command:        "bx realtime status",
+				Category:       "udp",
+				Summary:        "Inspect UDP/realtime policy. Current builds block non-DNS UDP, which can affect WebRTC.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				Outputs:        []string{"text"},
+				Examples:       []string{"bx realtime status", "bx doctor --json"},
+				SafeNotes:      []string{"Read-only.", "UDP policy is currently visible through bx status and bx doctor --json."},
 			},
 			{
 				Command:        "bx dns status",
@@ -1300,6 +1319,45 @@ func statusAction(c *cli.Context) error {
 	}
 	fmt.Print(stats.Render(rep))
 	return nil
+}
+
+func realtimeStatusAction(c *cli.Context) error {
+	fmt.Print(renderRealtimeStatus(readRealtimeReport()))
+	return nil
+}
+
+func readRealtimeReport() *stats.Report {
+	conn, err := net.Dial("unix", supervisor.SockPath)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	var rep stats.Report
+	if err := json.NewDecoder(conn).Decode(&rep); err != nil {
+		return nil
+	}
+	return &rep
+}
+
+func renderRealtimeStatus(rep *stats.Report) string {
+	mode := "block"
+	note := "non-DNS UDP blocked; WebRTC/Google Meet may stutter"
+	blocked := "unknown"
+	if rep != nil {
+		if rep.UDPMode != "" {
+			mode = rep.UDPMode
+		}
+		if rep.UDPNote != "" {
+			note = rep.UDPNote
+		}
+		blocked = fmt.Sprint(rep.UDPBlocked)
+	}
+	var b strings.Builder
+	fmt.Fprintln(&b, "realtime supported: true")
+	fmt.Fprintf(&b, "udp mode: %s\n", mode)
+	fmt.Fprintf(&b, "udp blocked: %s\n", blocked)
+	fmt.Fprintf(&b, "detail: %s\n", note)
+	return b.String()
 }
 
 func logsAction(c *cli.Context) error {

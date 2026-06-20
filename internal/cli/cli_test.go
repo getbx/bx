@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/blink"
+	"github.com/getbx/bx/internal/stats"
 	"github.com/urfave/cli/v2"
 )
 
@@ -23,6 +24,13 @@ func TestAppHasVersion(t *testing.T) {
 	}
 	if !appHasCommand(app, "dns") {
 		t.Fatal("app should expose bx dns")
+	}
+	if !appHasCommand(app, "realtime") {
+		t.Fatal("app should expose bx realtime")
+	}
+	realtime := findAppCommand(app, "realtime")
+	if len(realtime.Subcommands) != 1 || realtime.Subcommands[0].Name != "status" {
+		t.Fatalf("realtime subcommands = %+v, want only status", realtime.Subcommands)
 	}
 }
 
@@ -159,6 +167,19 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !logs.Stable || logs.ChangesSystem || logs.ChangesNetwork {
 		t.Fatalf("unexpected logs capability: %+v", logs)
 	}
+	udpStatus := findCapability(rep.Commands, "bx realtime status")
+	if !udpStatus.Stable || udpStatus.RequiresRoot || udpStatus.ChangesSystem || udpStatus.ChangesNetwork {
+		t.Fatalf("unexpected realtime status capability: %+v", udpStatus)
+	}
+	if !strings.Contains(strings.Join(udpStatus.SafeNotes, " "), "UDP") {
+		t.Fatalf("realtime status should mention UDP: %+v", udpStatus)
+	}
+	if got := findCapability(rep.Commands, "sudo bx realtime on"); got.Command != "" {
+		t.Fatalf("capabilities should not expose unimplemented realtime on: %+v", got)
+	}
+	if got := findCapability(rep.Commands, "sudo bx realtime off"); got.Command != "" {
+		t.Fatalf("capabilities should not expose unimplemented realtime off: %+v", got)
+	}
 	dnsOn := findCapability(rep.Commands, "sudo bx dns on")
 	if !dnsOn.RequiresRoot || !dnsOn.ChangesSystem || !dnsOn.ChangesNetwork {
 		t.Fatalf("unexpected dns on capability: %+v", dnsOn)
@@ -170,6 +191,37 @@ func TestCapabilitiesReport(t *testing.T) {
 	var parsed capabilitiesReport
 	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
 		t.Fatalf("capabilities json should be parseable: %v\n%s", err, buf.String())
+	}
+}
+
+func TestRenderRealtimeStatusFallback(t *testing.T) {
+	out := renderRealtimeStatus(nil)
+	for _, want := range []string{
+		"realtime supported: true",
+		"udp mode: block",
+		"udp blocked: unknown",
+		"Google Meet",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("realtime fallback missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderRealtimeStatusFromReport(t *testing.T) {
+	out := renderRealtimeStatus(&stats.Report{
+		Snapshot: stats.Snapshot{UDPBlocked: 42},
+		UDPMode:  "block",
+		UDPNote:  "custom udp note",
+	})
+	for _, want := range []string{
+		"udp mode: block",
+		"udp blocked: 42",
+		"custom udp note",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("realtime report missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -232,12 +284,16 @@ func findCapability(commands []commandCapability, command string) commandCapabil
 }
 
 func appHasCommand(app *cli.App, name string) bool {
+	return findAppCommand(app, name) != nil
+}
+
+func findAppCommand(app *cli.App, name string) *cli.Command {
 	for _, command := range app.Commands {
 		if command.Name == name {
-			return true
+			return command
 		}
 	}
-	return false
+	return nil
 }
 
 func TestIsListening(t *testing.T) {
