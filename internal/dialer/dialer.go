@@ -41,6 +41,7 @@ type DecisionCounter interface {
 	Proxy()
 	Direct()
 	Blocked()
+	UDPBlocked()
 }
 
 // Dialer 把 Router 决策落到实际拨号。
@@ -78,6 +79,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 	if m.UDP {
 		if d.Stats != nil {
 			d.Stats.Blocked()
+			d.Stats.UDPBlocked()
 		}
 		debugf("udp blocked: ip=%s domain=%q port=%d", m.IP, m.Domain, m.Port)
 		return nil, ErrBlocked
