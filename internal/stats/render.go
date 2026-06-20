@@ -13,6 +13,8 @@ type Report struct {
 	TunnelHealthy bool   `json:"tunnel_healthy"`
 	LatencyMS     int64  `json:"latency_ms"`
 	Restarts      int    `json:"restarts"`
+	UDPMode       string `json:"udp_mode"`
+	UDPNote       string `json:"udp_note,omitempty"`
 }
 
 // Render 把 Report 渲染成命令行状态面板。
@@ -27,6 +29,15 @@ func Render(r Report) string {
 	fmt.Fprintf(&b, "  节点    %s  (socks %s)\n", r.Server, r.SocksAddr)
 	fmt.Fprintf(&b, "  隧道    %s  延迟 %dms  重连 %d\n", health, r.LatencyMS, r.Restarts)
 	fmt.Fprintf(&b, "  连接    活跃 %d  代理 %d  直连 %d  阻断 %d\n", r.Active, r.Proxy, r.Direct, r.Blocked)
+	udpMode := r.UDPMode
+	if udpMode == "" {
+		udpMode = "block"
+	}
+	fmt.Fprintf(&b, "  UDP     mode %s  阻断 %d", udpMode, r.UDPBlocked)
+	if r.UDPNote != "" {
+		fmt.Fprintf(&b, "  %s", r.UDPNote)
+	}
+	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "  分流    代理 %.1f%% / 直连 %.1f%%\n", ratio, 100-ratio)
 	fmt.Fprintf(&b, "  流量    ↑ %s   ↓ %s\n", humanBytes(r.BytesUp), humanBytes(r.BytesDown))
 	return b.String()

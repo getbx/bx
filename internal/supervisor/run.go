@@ -309,6 +309,8 @@ func serveStats(c *stats.Counters, t *tunnel.Tunnel, server string) (io.Closer, 
 				TunnelHealthy: ts.Up,
 				LatencyMS:     ts.LatencyMS,
 				Restarts:      ts.Restarts,
+				UDPMode:       "block",
+				UDPNote:       "non-DNS UDP blocked; WebRTC/Google Meet may stutter",
 			}
 			_ = json.NewEncoder(conn).Encode(rep)
 			conn.Close()
