@@ -98,6 +98,35 @@ func TestRespondSplitMatchForwardsAndRegisters(t *testing.T) {
 	}
 }
 
+func TestRespondStaticAMatchReturnsPinnedAddress(t *testing.T) {
+	set := splitdns.NewSet()
+	fwd := &fakeForwarder{answer: netip.MustParseAddr("10.0.13.45")}
+	pool, _ := fakeip.New("198.18.0.0/15")
+	s := NewServer(pool, 1)
+	pinned := netip.MustParseAddr("203.0.113.10")
+	s.SetStaticA(map[string][]netip.Addr{
+		"vps.example.com": {pinned},
+	}, set)
+	s.SetSplit([]SplitRoute{{
+		Match:  route.NewDomainSet([]string{"*.example.com"}),
+		Server: "10.0.13.23:53",
+	}}, fwd, set)
+
+	resp, err := s.Respond(buildQuery(t, 1, "vps.example.com.", dnsmessage.TypeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fwd.called {
+		t.Fatal("静态 A 命中不应再转发 DNS")
+	}
+	if firstA(t, resp) != pinned {
+		t.Fatalf("静态 A 应返回启动时旁路 IP, got %v", firstA(t, resp))
+	}
+	if !set.Contains(pinned) {
+		t.Fatal("静态 A 应注册进 splitDirect 集")
+	}
+}
+
 func TestRespondSplitMissDoesNotForward(t *testing.T) {
 	set := splitdns.NewSet()
 	fwd := &fakeForwarder{answer: netip.MustParseAddr("10.0.13.45")}

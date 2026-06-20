@@ -191,16 +191,24 @@ func writeLaunchdPlist(path, text string) error {
 // Enable 启动并设为开机自启。
 func Enable() error {
 	if runtime.GOOS == "darwin" {
-		_ = runLaunchctl("bootout", "system", launchdPlistPath)
-		if err := runLaunchctl("bootstrap", "system", launchdPlistPath); err != nil {
-			return err
+		for i, args := range launchdEnableCommands() {
+			if err := runLaunchctl(args...); err != nil && i != 0 {
+				return err
+			}
 		}
-		if err := runLaunchctl("enable", "system/"+launchdLabel); err != nil {
-			return err
-		}
-		return runLaunchctl("kickstart", "-k", "system/"+launchdLabel)
+		return nil
 	}
 	return runSystemctl("enable", "--now", ServiceName)
+}
+
+func launchdEnableCommands() [][]string {
+	label := "system/" + launchdLabel
+	return [][]string{
+		{"bootout", "system", launchdPlistPath},
+		{"enable", label},
+		{"bootstrap", "system", launchdPlistPath},
+		{"kickstart", "-k", label},
+	}
 }
 
 // Disable 停止并取消开机自启。

@@ -25,11 +25,12 @@ func debugf(format string, args ...any) {
 
 // Server 处理 DNS 查询,A 记录用 fake IP 应答。
 type Server struct {
-	pool   *fakeip.Pool
-	ttl    uint32
-	splits []SplitRoute
-	fwd    Forwarder
-	direct *splitdns.Set
+	pool    *fakeip.Pool
+	ttl     uint32
+	staticA map[string][]netip.Addr
+	splits  []SplitRoute
+	fwd     Forwarder
+	direct  *splitdns.Set
 }
 
 func NewServer(pool *fakeip.Pool, ttl uint32) *Server {
@@ -41,6 +42,28 @@ func (s *Server) SetSplit(splits []SplitRoute, fwd Forwarder, direct *splitdns.S
 	s.splits = splits
 	s.fwd = fwd
 	s.direct = direct
+}
+
+// SetStaticA 配置固定 A 记录。用于保护 bx 自己的上游服务器域名:
+// 运行期系统 DNS 指向 bx 后,这些域名仍返回启动时已加入路由旁路的真实 IP。
+func (s *Server) SetStaticA(records map[string][]netip.Addr, direct *splitdns.Set) {
+	s.staticA = make(map[string][]netip.Addr, len(records))
+	for domain, addrs := range records {
+		key := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+		if key == "" {
+			continue
+		}
+		for _, addr := range addrs {
+			addr = addr.Unmap()
+			if !addr.IsValid() {
+				continue
+			}
+			s.staticA[key] = append(s.staticA[key], addr)
+			if direct != nil {
+				direct.Add(addr)
+			}
+		}
+	}
 }
 
 // matchSplit 返回命中的 split 路由(无则 nil)。
@@ -70,6 +93,10 @@ func (s *Server) Respond(query []byte) ([]byte, error) {
 	}
 
 	domain := strings.ToLower(strings.TrimSuffix(q.Name.String(), "."))
+
+	if addrs := s.staticA[domain]; len(addrs) > 0 && q.Type == dnsmessage.TypeA && q.Class == dnsmessage.ClassINET {
+		return s.staticAResponse(h, q, addrs)
+	}
 
 	// split 命中:A 及 CNAME/SRV 等非 AAAA 类型一律转发到内网 DNS(保内网解析完整),
 	// 注册其中真实 A 记录后原样返回。仅 AAAA 不转发 → 落到下面默认路径成 NODATA(逼 v4)。
@@ -114,6 +141,41 @@ func (s *Server) Respond(query []byte) ([]byte, error) {
 		}
 	}
 
+	return b.Finish()
+}
+
+func (s *Server) staticAResponse(h dnsmessage.Header, q dnsmessage.Question, addrs []netip.Addr) ([]byte, error) {
+	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{
+		ID:                 h.ID,
+		Response:           true,
+		OpCode:             h.OpCode,
+		RecursionDesired:   h.RecursionDesired,
+		RecursionAvailable: true,
+		RCode:              dnsmessage.RCodeSuccess,
+	})
+	if err := b.StartQuestions(); err != nil {
+		return nil, err
+	}
+	if err := b.Question(q); err != nil {
+		return nil, err
+	}
+	if err := b.StartAnswers(); err != nil {
+		return nil, err
+	}
+	for _, addr := range addrs {
+		addr = addr.Unmap()
+		if !addr.Is4() {
+			continue
+		}
+		if err := b.AResource(dnsmessage.ResourceHeader{
+			Name:  q.Name,
+			Type:  dnsmessage.TypeA,
+			Class: dnsmessage.ClassINET,
+			TTL:   s.ttl,
+		}, dnsmessage.AResource{A: addr.As4()}); err != nil {
+			return nil, err
+		}
+	}
 	return b.Finish()
 }
 
