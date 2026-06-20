@@ -133,12 +133,25 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	log.Printf("bx 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)
 
+	serverHost, err := serverHostFromLink(cfg.Server)
+	if err != nil {
+		return fmt.Errorf("取服务器 IP: %w", err)
+	}
+	// 服务器可能是域名:在系统 DNS 尚未交给 bx 前解析一次,同一批 IP 同时用于
+	// 路由旁路和本地 DNS 静态答案,避免运行期把 bx 自己的上游域名 fake 成环。
+	serverAddrs := hostToAddrs(serverHost)
+	if len(serverAddrs) == 0 {
+		return fmt.Errorf("无法解析服务器 %q 为 IP(bypass 必需,否则成环)", serverHost)
+	}
+
 	// 3) fake-IP 池 + DNS 处理器
 	pool, err := fakeip.New(cfg.DNS.FakeipCIDR)
 	if err != nil {
 		return fmt.Errorf("建 fake-IP 池: %w", err)
 	}
 	dnsSrv := bxdns.NewServer(pool, 1)
+	splitDirect := splitdns.NewSet()
+	dnsSrv.SetStaticA(map[string][]netip.Addr{serverHost: serverAddrs}, splitDirect)
 	if opts.DNSListen != "" {
 		dnsListener, err := bxdns.ListenUDP(opts.DNSListen, dnsSrv)
 		if err != nil {
@@ -149,7 +162,6 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 
 	// split-DNS:匹配域名转发到内网 DNS 解析,真实 IP 注册进 splitDirect 强制直连。
-	splitDirect := splitdns.NewSet()
 	if len(cfg.DNS.Split) > 0 {
 		var routes []bxdns.SplitRoute
 		for _, r := range cfg.DNS.Split {
@@ -196,8 +208,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	defer eng.Close()
 
 	// 状态查询 socket + pidfile
-	serverHostForReport, _ := serverHostFromLink(cfg.Server)
-	if closer, err := serveStats(counters, tun0, serverHostForReport); err != nil {
+	if closer, err := serveStats(counters, tun0, serverHost); err != nil {
 		log.Printf("状态 socket 启动失败(忽略): %v", err)
 	} else {
 		defer closer.Close()
@@ -208,15 +219,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 
 	// 6) 劫持默认路由(含 bypass 保 SSH + 服务器防环)
-	serverHost, err := serverHostFromLink(cfg.Server)
-	if err != nil {
-		return fmt.Errorf("取服务器 IP: %w", err)
-	}
-	// 服务器可能是域名:解析成 IP 段再 bypass(避免 brook 到服务器的连接被 tun 捕获成环)。
-	serverBypass := hostToCIDRs(serverHost)
-	if len(serverBypass) == 0 {
-		return fmt.Errorf("无法解析服务器 %q 为 IP(bypass 必需,否则成环)", serverHost)
-	}
+	serverBypass := addrsToCIDRs(serverAddrs)
 	teardown, err := plat.Hijack(tunH, serverBypass, cfg.Bypass)
 	if err != nil {
 		return fmt.Errorf("配置路由: %w", err)

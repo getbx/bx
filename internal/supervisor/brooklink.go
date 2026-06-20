@@ -11,18 +11,31 @@ import (
 // hostToCIDRs 把服务器主机(IP 或域名)转成 bypass 用的 /32、/128 CIDR 列表。
 // 域名会经系统解析(此时 tun 尚未接管,解析正常)。
 func hostToCIDRs(host string) []string {
+	return addrsToCIDRs(hostToAddrs(host))
+}
+
+func hostToAddrs(host string) []netip.Addr {
 	if addr, err := netip.ParseAddr(host); err == nil {
-		return []string{netip.PrefixFrom(addr, addr.BitLen()).String()}
+		return []netip.Addr{addr.Unmap()}
 	}
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return nil
 	}
-	var out []string
+	var out []netip.Addr
 	for _, ip := range ips {
 		if a, ok := netip.AddrFromSlice(ip); ok {
-			a = a.Unmap()
-			out = append(out, netip.PrefixFrom(a, a.BitLen()).String())
+			out = append(out, a.Unmap())
+		}
+	}
+	return out
+}
+
+func addrsToCIDRs(addrs []netip.Addr) []string {
+	var out []string
+	for _, addr := range addrs {
+		if addr.IsValid() {
+			out = append(out, netip.PrefixFrom(addr, addr.BitLen()).String())
 		}
 	}
 	return out

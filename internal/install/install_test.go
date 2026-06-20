@@ -93,6 +93,24 @@ func TestLaunchdExecStartCmd(t *testing.T) {
 	}
 }
 
+func TestLaunchdEnableCommandsEnableBeforeBootstrap(t *testing.T) {
+	cmds := launchdEnableCommands()
+	want := []string{
+		"bootout system /Library/LaunchDaemons/com.getbx.bx.plist",
+		"enable system/com.getbx.bx",
+		"bootstrap system /Library/LaunchDaemons/com.getbx.bx.plist",
+		"kickstart -k system/com.getbx.bx",
+	}
+	if len(cmds) != len(want) {
+		t.Fatalf("launchdEnableCommands len = %d, want %d", len(cmds), len(want))
+	}
+	for i := range want {
+		if got := strings.Join(cmds[i], " "); got != want[i] {
+			t.Fatalf("cmd[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
 func TestExistingPaths(t *testing.T) {
 	dir := t.TempDir()
 	one := filepath.Join(dir, "one.log")
