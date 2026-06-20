@@ -123,6 +123,9 @@ func TestClientDoctorJSONReport(t *testing.T) {
 	if got := findCheck(rep.Checks, "config_readable"); got.Status != "fail" {
 		t.Fatalf("config_readable = %+v, want fail", got)
 	}
+	if got := findCheck(rep.Checks, "udp_policy"); got.Status != "warn" || !strings.Contains(got.Hint, "Google Meet") {
+		t.Fatalf("udp_policy = %+v, want warn with Google Meet hint", got)
+	}
 	var buf bytes.Buffer
 	if err := writeJSON(&buf, rep); err != nil {
 		t.Fatal(err)
