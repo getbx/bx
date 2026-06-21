@@ -28,6 +28,10 @@ func TestAppHasVersion(t *testing.T) {
 	if !appHasCommand(app, "realtime") {
 		t.Fatal("app should expose bx realtime")
 	}
+	status := findAppCommand(app, "status")
+	if !commandHasFlag(status, "json") {
+		t.Fatal("status should expose --json")
+	}
 	realtime := findAppCommand(app, "realtime")
 	if !commandHasSubcommand(realtime, "status") || !commandHasSubcommand(realtime, "on") || !commandHasSubcommand(realtime, "off") {
 		t.Fatalf("realtime subcommands = %+v, want status/on/off", realtime.Subcommands)
@@ -227,6 +231,13 @@ func TestCapabilitiesReport(t *testing.T) {
 	up := findCapability(rep.Commands, "sudo bx up")
 	if !up.RequiresRoot || !up.ChangesSystem || !up.ChangesNetwork {
 		t.Fatalf("unexpected up capability: %+v", up)
+	}
+	status := findCapability(rep.Commands, "bx status --json")
+	if !status.Stable || status.RequiresRoot || status.ChangesSystem || status.ChangesNetwork {
+		t.Fatalf("unexpected status json capability: %+v", status)
+	}
+	if !strings.Contains(strings.Join(status.SafeNotes, " "), "menu bar") {
+		t.Fatalf("status json should mention status surfaces: %+v", status)
 	}
 	logs := findCapability(rep.Commands, "bx logs")
 	if !logs.Stable || logs.ChangesSystem || logs.ChangesNetwork {
@@ -457,6 +468,17 @@ func commandHasSubcommand(command *cli.Command, name string) bool {
 	for _, sub := range command.Subcommands {
 		if sub.Name == name {
 			return true
+		}
+	}
+	return false
+}
+
+func commandHasFlag(command *cli.Command, name string) bool {
+	for _, flag := range command.Flags {
+		for _, flagName := range flag.Names() {
+			if flagName == name {
+				return true
+			}
 		}
 	}
 	return false

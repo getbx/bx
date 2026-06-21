@@ -31,7 +31,7 @@ func Render(r Report) string {
 	fmt.Fprintf(&b, "  连接    活跃 %d  代理 %d  直连 %d  阻断 %d\n", r.Active, r.Proxy, r.Direct, r.Blocked)
 	udpMode := r.UDPMode
 	if udpMode == "" {
-		udpMode = "block"
+		udpMode = "proxy"
 	}
 	fmt.Fprintf(&b, "  UDP     mode %s  阻断 %d", udpMode, r.UDPBlocked)
 	if r.UDPNote != "" {

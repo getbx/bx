@@ -191,10 +191,14 @@ func writeLaunchdPlist(path, text string) error {
 // Enable 启动并设为开机自启。
 func Enable() error {
 	if runtime.GOOS == "darwin" {
-		for i, args := range launchdEnableCommands() {
-			if err := runLaunchctl(args...); err != nil && i != 0 {
-				return err
+		if cmds := launchdEnableCommands(); len(cmds) > 0 {
+			_ = runLaunchctlQuiet(cmds[0]...)
+			for _, args := range cmds[1:] {
+				if err := runLaunchctl(args...); err != nil {
+					return err
+				}
 			}
+			return nil
 		}
 		return nil
 	}
@@ -405,6 +409,14 @@ func runSystemctl(args ...string) error {
 func runLaunchctl(args ...string) error {
 	cmd := exec.Command("launchctl", args...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("launchctl %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func runLaunchctlQuiet(args ...string) error {
+	cmd := exec.Command("launchctl", args...)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("launchctl %s: %w", strings.Join(args, " "), err)
 	}
