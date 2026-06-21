@@ -18,6 +18,24 @@ swift build -c release
 .build/release/BxMenu &
 ```
 
+Package as a menu bar app from the repository root:
+
+```bash
+cd /path/to/bx
+scripts/package-macos-menu.sh
+sudo ditto dist/macos/Bx.app /Applications/Bx.app
+open /Applications/Bx.app
+```
+
+Start at login:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp dist/macos/com.getbx.bx.menu.plist ~/Library/LaunchAgents/
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.getbx.bx.menu.plist
+launchctl kickstart -k "gui/$(id -u)/com.getbx.bx.menu"
+```
+
 BxMenu reads status through:
 
 ```bash
