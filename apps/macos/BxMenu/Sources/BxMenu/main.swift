@@ -199,7 +199,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openLogs() {
-        openTerminal("logs=\"$HOME/Library/Logs/bx\"; mkdir -p \"$logs\"; open \"$logs\"; echo; read -n 1 -s -r -p 'Press any key to close'")
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Logs")
+            .appendingPathComponent("bx")
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(url)
+        } catch {
+            showMessage("Logs Unavailable", error.localizedDescription)
+        }
     }
 
     @objc private func runDoctor() {
