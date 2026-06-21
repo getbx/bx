@@ -13,6 +13,7 @@ It is intentionally not a control panel. It shows whether bx is protected, off, 
 - Turn Off
 
 It does not install, configure, start, or stop the bx network service by itself unless you choose one of the explicit menu actions.
+Starting protection always asks for confirmation before bx takes over system traffic.
 
 When the menu shows `Setup Required`, choose `Set Up bx...`, paste your bx link, and approve the macOS administrator prompt. After setup succeeds, the menu asks whether to start protection now. If setup fails, use `Run Doctor` from the same menu.
 
