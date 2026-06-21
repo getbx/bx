@@ -81,11 +81,28 @@ sudo bx up
 
 macOS 客户端同样使用这组命令。`setup` 会安装 launchd 服务,`up` 会启动并接管系统 DNS,`down` 会恢复 DNS 并停止服务。
 
-#### macOS 菜单栏 App
+#### macOS 安装包
 
-bx 提供一个轻量菜单栏 App,用于显示当前保护状态、延迟、DNS 接管状态和诊断入口。它不是控制面板,也不会自动启动 bx 或修改网络配置。
+macOS release 包会一次装好两件事:
 
-从仓库源码打包并安装到当前用户:
+- `bx` CLI:安装到 `/usr/local/bin/bx`
+- 菜单栏 App:安装到 `~/Applications/Bx.app`
+
+菜单栏 App 用于显示当前保护状态、延迟、DNS 接管状态和诊断入口。它不是控制面板,也不会自动启动 bx 或修改网络配置。真正启动和接管网络仍由 `sudo bx up` 完成。
+
+下载 release 后运行:
+
+```bash
+./install.sh
+```
+
+`install.sh` 会先检查 macOS、CPU 架构和必要文件,避免装错包。它只安装 CLI 和菜单栏 App,不会执行 `bx setup`、不会执行 `bx up`、不会修改 DNS 或路由。
+
+安装后如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即启动 bx。
+
+#### 从源码安装菜单栏 App
+
+开发时也可以从仓库源码打包并安装到当前用户:
 
 ```bash
 cd /path/to/bx
@@ -137,10 +154,6 @@ dist/release/bx-macos-arm64/
 dist/release/bx-macos-arm64.tar.gz
 dist/release/SHA256SUMS
 ```
-
-`install.sh` 只安装 CLI 和菜单栏 App,不会执行 `bx setup`、不会执行 `bx up`、不会修改 DNS 或路由。
-
-安装后如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即启动 bx。
 
 发包前可验证产物:
 
