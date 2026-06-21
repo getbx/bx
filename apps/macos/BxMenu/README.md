@@ -4,6 +4,8 @@ Small macOS menu bar companion for bx.
 
 It is intentionally not a control panel. It shows whether bx is protected, off, not set up, or needs attention, and exposes a few actions:
 
+Hovering the menu bar icon shows the current bx state.
+
 - Open Status
 - View Logs
 - Run Doctor
