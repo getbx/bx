@@ -41,6 +41,9 @@ func TestAppHasVersion(t *testing.T) {
 	if !commandHasSubcommand(realtime, "status") || !commandHasSubcommand(realtime, "on") || !commandHasSubcommand(realtime, "off") {
 		t.Fatalf("realtime subcommands = %+v, want status/on/off", realtime.Subcommands)
 	}
+	if !subcommandHidden(realtime, "on") || !subcommandHidden(realtime, "off") {
+		t.Fatal("realtime on/off should stay hidden from the normal help surface")
+	}
 }
 
 func TestBuildExecStart(t *testing.T) {
@@ -328,6 +331,9 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !logs.Stable || logs.ChangesSystem || logs.ChangesNetwork {
 		t.Fatalf("unexpected logs capability: %+v", logs)
 	}
+	if !strings.Contains(strings.ToLower(strings.Join(logs.SafeNotes, " ")), "automatic diagnostics") {
+		t.Fatalf("logs capability should mention automatic diagnostics archive: %+v", logs)
+	}
 	udpStatus := findCapability(rep.Commands, "bx realtime status")
 	if !udpStatus.Stable || udpStatus.RequiresRoot || udpStatus.ChangesSystem || udpStatus.ChangesNetwork {
 		t.Fatalf("unexpected realtime status capability: %+v", udpStatus)
@@ -561,6 +567,15 @@ func commandHasSubcommand(command *cli.Command, name string) bool {
 	for _, sub := range command.Subcommands {
 		if sub.Name == name {
 			return true
+		}
+	}
+	return false
+}
+
+func subcommandHidden(command *cli.Command, name string) bool {
+	for _, sub := range command.Subcommands {
+		if sub.Name == name {
+			return sub.Hidden
 		}
 	}
 	return false
