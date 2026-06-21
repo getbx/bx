@@ -60,6 +60,7 @@ The installer:
 - packages `Bx.app`
 - installs it to `~/Applications/Bx.app`
 - installs a user LaunchAgent at `~/Library/LaunchAgents/com.getbx.bx.menu.plist`
+- writes menu logs under `~/Library/Logs/bx/`
 - starts the menu bar app
 - does not change bx DNS, routes, service state, or client config
 
@@ -100,6 +101,13 @@ Run Doctor archives diagnostics under:
 
 ```text
 ~/Library/Logs/bx/diagnostics
+```
+
+The menu bar app itself writes raw logs under:
+
+```text
+~/Library/Logs/bx/menu.log
+~/Library/Logs/bx/menu.err.log
 ```
 
 Install bx first with `sudo bx setup <client-link>`.

@@ -195,7 +195,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openLogs() {
-        openTerminal("diag=\"$HOME/Library/Logs/bx/diagnostics\"; if [ -d \"$diag\" ]; then open \"$diag\"; else '\(bxPath)' logs -n 120; fi; echo; read -n 1 -s -r -p 'Press any key to close'")
+        openTerminal("logs=\"$HOME/Library/Logs/bx\"; if [ -d \"$logs\" ]; then open \"$logs\"; else '\(bxPath)' logs -n 120; fi; echo; read -n 1 -s -r -p 'Press any key to close'")
     }
 
     @objc private func runDoctor() {

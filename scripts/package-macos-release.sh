@@ -43,6 +43,7 @@ AGENT_ID="com.getbx.bx.menu"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 AGENT_DST="$AGENT_DIR/$AGENT_ID.plist"
 DOMAIN="gui/$(id -u)"
+LOG_DIR="${BX_LOG_DIR:-$HOME/Library/Logs/bx}"
 
 fail() {
   echo "install failed: $*" >&2
@@ -71,7 +72,7 @@ sudo install -m 0755 "$DIR/bx" "$BX_DST"
 echo "Installing bx menu bar app to $APP_DST..."
 mkdir -p "$(dirname "$APP_DST")"
 ditto "$DIR/Bx.app" "$APP_DST"
-mkdir -p "$AGENT_DIR"
+mkdir -p "$AGENT_DIR" "$LOG_DIR"
 cat > "$AGENT_DST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -86,9 +87,9 @@ cat > "$AGENT_DST" <<PLIST
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/bx-menu.log</string>
+  <string>$LOG_DIR/menu.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/bx-menu.err.log</string>
+  <string>$LOG_DIR/menu.err.log</string>
 </dict>
 </plist>
 PLIST
@@ -144,6 +145,7 @@ After install:
 Menu bar app:
   Installed to ~/Applications/Bx.app
   Login item: ~/Library/LaunchAgents/com.getbx.bx.menu.plist
+  Logs: ~/Library/Logs/bx/menu.log and menu.err.log
 
 Remove menu bar app:
   ./uninstall.sh
