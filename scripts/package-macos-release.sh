@@ -102,8 +102,10 @@ cat <<MSG
 bx installed.
 
 Next:
-  sudo bx setup '<client-link>'
-  sudo bx up
+  Open the bx menu bar icon and choose Set Up bx...
+
+CLI fallback:
+  sudo bx setup '<client-link>' && sudo bx up
 
 The installer did not start bx or change DNS/routes.
 MSG
@@ -139,8 +141,10 @@ Install:
   ./install.sh
 
 After install:
-  sudo bx setup '<client-link>'
-  sudo bx up
+  Open the bx menu bar icon and choose Set Up bx...
+
+CLI fallback:
+  sudo bx setup '<client-link>' && sudo bx up
 
 Menu bar app:
   Installed to ~/Applications/Bx.app
