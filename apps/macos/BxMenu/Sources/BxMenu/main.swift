@@ -23,9 +23,27 @@ struct BxReport: Decodable {
     }
 }
 
+struct DoctorReport: Decodable {
+    let checks: [DoctorCheck]
+}
+
+struct DoctorCheck: Decodable {
+    let name: String
+    let status: String
+    let detail: String?
+    let hint: String?
+}
+
+struct CommandResult {
+    let code: Int32
+    let stdout: String
+    let stderr: String
+}
+
 enum BxState {
-    case connected(BxReport)
-    case warning(String)
+    case connected(BxReport, version: String, dns: String?)
+    case warning(String, version: String?)
+    case setupNeeded(String)
     case missing(String)
     case off
 }
@@ -65,29 +83,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         guard FileManager.default.isExecutableFile(atPath: bxPath) else {
             return .missing("Install bx at /usr/local/bin/bx")
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: bxPath)
-        process.arguments = ["status", "--json"]
-        let output = Pipe()
-        let errors = Pipe()
-        process.standardOutput = output
-        process.standardError = errors
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return .off
+        let version = loadVersion()
+        let status = runBx(["status", "--json"])
+        guard status.code == 0 else {
+            return diagnoseStopped(version: version, fallback: status.stderr)
         }
-        guard process.terminationStatus == 0 else {
-            let data = errors.fileHandleForReading.readDataToEndOfFile()
-            let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return .warning(message?.isEmpty == false ? message! : "Status unavailable")
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let data = Data(status.stdout.utf8)
         guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
-            return .warning("Status unreadable")
+            return .warning("Status unreadable", version: version)
         }
-        return report.tunnelHealthy ? .connected(report) : .warning("Tunnel unhealthy")
+        return report.tunnelHealthy ? .connected(report, version: version ?? "unknown", dns: loadDNSStatus()) : .warning("Tunnel unhealthy", version: version)
     }
 
     private func updateIcon() {
@@ -101,6 +106,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .warning:
             symbol = "exclamationmark.triangle"
             tint = .systemYellow
+        case .setupNeeded:
+            symbol = "wrench.and.screwdriver"
+            tint = .systemOrange
         case .missing:
             symbol = "questionmark.circle"
             tint = .secondaryLabelColor
@@ -116,14 +124,24 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private func rebuildMenu() {
         let menu = NSMenu()
         switch state {
-        case .connected(let report):
+        case .connected(let report, let version, let dns):
             menu.addHeader("bx", subtitle: "Connected")
             menu.addInfo("Status", "Protected")
             menu.addInfo("Tunnel", "\(report.latencyMS) ms")
             menu.addInfo("UDP Relay", report.udpMode == "proxy" ? "On" : "Off")
+            if let dns {
+                menu.addInfo("DNS", dns)
+            }
             menu.addInfo("Active", "\(report.active)")
-        case .warning(let message):
+            menu.addInfo("Version", version)
+        case .warning(let message, let version):
             menu.addHeader("bx", subtitle: "Needs Attention")
+            menu.addInfo("Status", message)
+            if let version {
+                menu.addInfo("Version", version)
+            }
+        case .setupNeeded(let message):
+            menu.addHeader("bx", subtitle: "Setup Needed")
             menu.addInfo("Status", message)
         case .missing(let message):
             menu.addHeader("bx", subtitle: "Not Installed")
@@ -137,8 +155,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
         menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
         menu.addItem(.separator())
-        menu.addAction("Restart bx", symbol: "arrow.clockwise", target: self, action: #selector(restartBx))
-        menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
+        switch state {
+        case .connected:
+            menu.addAction("Restart bx", symbol: "arrow.clockwise", target: self, action: #selector(restartBx))
+            menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
+        case .warning, .off:
+            menu.addAction("Start bx", symbol: "play.fill", target: self, action: #selector(startBx))
+        case .setupNeeded, .missing:
+            break
+        }
         menu.addItem(.separator())
         menu.addAction("Quit", symbol: "xmark.circle", target: self, action: #selector(quit))
         statusItem.menu = menu
@@ -153,7 +178,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func runDoctor() {
-        openTerminal("'\(bxPath)' doctor; echo; read -n 1 -s -r -p 'Press any key to close'")
+        openTerminal("diag=\"$HOME/Library/Logs/bx/diagnostics\"; mkdir -p \"$diag\"; '\(bxPath)' doctor; '\(bxPath)' logs --archive --dir \"$diag\"; latest=$(find \"$diag\" -maxdepth 1 -type d -name 'bx-logs-*' | sort | tail -1); if [ -n \"$latest\" ]; then open \"$latest\"; fi; echo; read -n 1 -s -r -p 'Press any key to close'")
+    }
+
+    @objc private func startBx() {
+        runPrivileged("'\(bxPath)' up")
+        refresh()
     }
 
     @objc private func restartBx() {
@@ -196,6 +226,74 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         var error: NSDictionary?
         NSAppleScript(source: source)?.executeAndReturnError(&error)
         return error == nil
+    }
+
+    private func diagnoseStopped(version: String?, fallback: String) -> BxState {
+        let doctor = runBx(["doctor", "--json", "--skip-probe"])
+        guard doctor.code == 0, let report = try? JSONDecoder().decode(DoctorReport.self, from: Data(doctor.stdout.utf8)) else {
+            let message = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .warning(message.isEmpty ? "Status unavailable" : message, version: version)
+        }
+        if check(report, "service_installed")?.status == "fail" {
+            return .setupNeeded("Run sudo bx setup <client-link>")
+        }
+        if check(report, "service_active")?.status != "ok" {
+            return .off
+        }
+        if let socket = check(report, "status_socket"), socket.status != "ok" {
+            return .warning(socket.detail ?? "Status socket unavailable", version: version)
+        }
+        return .warning("Needs attention", version: version)
+    }
+
+    private func check(_ report: DoctorReport, _ name: String) -> DoctorCheck? {
+        report.checks.first { $0.name == name }
+    }
+
+    private func loadVersion() -> String? {
+        let result = runBx(["--version"])
+        guard result.code == 0 else { return nil }
+        return result.stdout.replacingOccurrences(of: "bx version ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func loadDNSStatus() -> String? {
+        let result = runBx(["dns", "status"])
+        guard result.code == 0 else { return nil }
+        let lines = result.stdout.split(separator: "\n").map(String.init)
+        let enabled = value(in: lines, key: "enabled")
+        let service = value(in: lines, key: "service")
+        if enabled == "true", let service {
+            return "\(service) managed"
+        }
+        if enabled == "true" {
+            return "Managed"
+        }
+        return "Not managed"
+    }
+
+    private func value(in lines: [String], key: String) -> String? {
+        let prefix = key + ":"
+        guard let line = lines.first(where: { $0.hasPrefix(prefix) }) else { return nil }
+        return line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func runBx(_ arguments: [String]) -> CommandResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: bxPath)
+        process.arguments = arguments
+        let output = Pipe()
+        let errors = Pipe()
+        process.standardOutput = output
+        process.standardError = errors
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return CommandResult(code: 127, stdout: "", stderr: error.localizedDescription)
+        }
+        let stdout = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return CommandResult(code: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
 
     private func shellQuoted(_ value: String) -> String {

@@ -77,10 +77,8 @@ echo "Built: $APP_DIR"
 echo "LaunchAgent: $LAUNCH_AGENT"
 echo
 echo "Install app:"
-echo "  sudo ditto '$APP_DIR' '/Applications/$APP_NAME.app'"
+echo "  mkdir -p ~/Applications"
+echo "  ditto '$APP_DIR' ~/Applications/$APP_NAME.app"
 echo
 echo "Start at login:"
-echo "  mkdir -p ~/Library/LaunchAgents"
-echo "  cp '$LAUNCH_AGENT' ~/Library/LaunchAgents/"
-echo "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/$BUNDLE_ID.plist"
-echo "  launchctl kickstart -k gui/$(id -u)/$BUNDLE_ID"
+echo "  scripts/install-macos-menu.sh install"
