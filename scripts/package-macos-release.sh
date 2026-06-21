@@ -36,12 +36,34 @@ cat > "$RELEASE_DIR/install.sh" <<'SCRIPT'
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RELEASE_ARCH="__BX_RELEASE_ARCH__"
 BX_DST="${BX_DST:-/usr/local/bin/bx}"
 APP_DST="${BX_APP_DST:-$HOME/Applications/Bx.app}"
 AGENT_ID="com.getbx.bx.menu"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 AGENT_DST="$AGENT_DIR/$AGENT_ID.plist"
 DOMAIN="gui/$(id -u)"
+
+fail() {
+  echo "install failed: $*" >&2
+  exit 1
+}
+
+preflight() {
+  [[ "$(uname -s)" == "Darwin" ]] || fail "this package is for macOS"
+  local machine_arch
+  machine_arch="$(uname -m)"
+  case "$RELEASE_ARCH:$machine_arch" in
+    arm64:arm64|amd64:x86_64) ;;
+    *) fail "package architecture $RELEASE_ARCH does not match this Mac ($machine_arch)" ;;
+  esac
+  [[ -x "$DIR/bx" ]] || fail "missing bx executable"
+  [[ -x "$DIR/Bx.app/Contents/MacOS/BxMenu" ]] || fail "missing Bx.app"
+  command -v launchctl >/dev/null || fail "missing launchctl"
+  command -v ditto >/dev/null || fail "missing ditto"
+}
+
+preflight
 
 echo "Installing bx CLI to $BX_DST..."
 sudo install -m 0755 "$DIR/bx" "$BX_DST"
@@ -85,6 +107,8 @@ Next:
 The installer did not start bx or change DNS/routes.
 MSG
 SCRIPT
+
+perl -0pi -e "s/__BX_RELEASE_ARCH__/$ARCH/g" "$RELEASE_DIR/install.sh"
 
 cat > "$RELEASE_DIR/uninstall.sh" <<'SCRIPT'
 #!/usr/bin/env bash

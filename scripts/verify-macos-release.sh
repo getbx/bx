@@ -29,6 +29,9 @@ grep -q "does not run bx setup" "$RELEASE_DIR/README.txt" || fail "README missin
 grep -q "does not run bx up" "$RELEASE_DIR/README.txt" || fail "README missing no-up note"
 grep -q "does not change DNS/routes" "$RELEASE_DIR/README.txt" || fail "README missing network safety note"
 grep -q "The installer did not start bx or change DNS/routes." "$RELEASE_DIR/install.sh" || fail "install.sh missing safety note"
+grep -q "package architecture" "$RELEASE_DIR/install.sh" || fail "install.sh missing architecture preflight"
+grep -q "missing bx executable" "$RELEASE_DIR/install.sh" || fail "install.sh missing bx preflight"
+grep -q "missing Bx.app" "$RELEASE_DIR/install.sh" || fail "install.sh missing app preflight"
 
 (
   cd "$DIST_ROOT"
