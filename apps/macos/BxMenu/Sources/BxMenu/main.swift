@@ -183,7 +183,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .setupNeeded:
             menu.addAction("Set Up bx...", symbol: "link", target: self, action: #selector(setUpBx))
         case .missing:
-            break
+            menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
         }
         menu.addItem(.separator())
         menu.addAction("Quit", symbol: "xmark.circle", target: self, action: #selector(quit))
@@ -231,7 +231,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openInstallGuide() {
-        openTerminal("cd \"$HOME/Documents/bx\" 2>/dev/null || true; echo 'Update bx CLI:'; echo 'sudo install -m 0755 ./bx /usr/local/bin/bx'; echo; read -n 1 -s -r -p 'Press any key to close'")
+        let alert = NSAlert()
+        alert.messageText = "Install bx"
+        alert.informativeText = "Install the macOS bx package again, or update the CLI at /usr/local/bin/bx, then restart the menu bar app."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func restartBx() {

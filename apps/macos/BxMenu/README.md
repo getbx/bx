@@ -23,6 +23,8 @@ sudo install -m 0755 ./bx /usr/local/bin/bx
 scripts/install-macos-menu.sh restart
 ```
 
+If the menu shows `Not Installed`, install the macOS bx package again so `/usr/local/bin/bx` and `Bx.app` are installed together.
+
 Build locally:
 
 ```bash
