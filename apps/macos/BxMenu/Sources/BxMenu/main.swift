@@ -150,7 +150,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addHeader("bx", subtitle: "Connected")
             menu.addInfo("Status", "Protected")
             menu.addInfo("Tunnel", "\(report.latencyMS) ms")
-            menu.addInfo("UDP Relay", report.udpMode == "proxy" ? "On" : "Off")
+            menu.addInfo("UDP Relay", udpRelayLabel(report.udpMode))
             if let dns {
                 menu.addInfo("DNS", dns)
             }
@@ -210,6 +210,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addAction("Quit", symbol: "xmark.circle", target: self, action: #selector(quit))
         statusItem.menu = menu
+    }
+
+    private func udpRelayLabel(_ mode: String?) -> String {
+        switch mode {
+        case nil, "", "proxy":
+            return "On"
+        case "direct-realtime":
+            return "Direct"
+        default:
+            return "Blocked"
+        }
     }
 
     @objc private func openStatus() {
