@@ -178,7 +178,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addAction("Start bx", symbol: "play.fill", target: self, action: #selector(startBx))
         case .updateNeeded:
             menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
-        case .setupNeeded, .missing:
+        case .setupNeeded:
+            menu.addAction("Set Up bx...", symbol: "link", target: self, action: #selector(setUpBx))
+        case .missing:
             break
         }
         menu.addItem(.separator())
@@ -199,7 +201,26 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startBx() {
-        runPrivileged("'\(bxPath)' up")
+        _ = runPrivileged("'\(bxPath)' up")
+        refresh()
+    }
+
+    @objc private func setUpBx() {
+        guard let link = promptForClientLink() else { return }
+        let command = "'\(bxPath)' setup \(shellSingleQuoted(link))"
+        guard runPrivileged(command) else {
+            showMessage("Setup Failed", "bx was not configured. Run Doctor for details.")
+            refresh()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "bx is set up"
+        alert.informativeText = "Start bx now?"
+        alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: "Later")
+        if alert.runModal() == .alertFirstButtonReturn {
+            _ = runPrivileged("'\(bxPath)' up")
+        }
         refresh()
     }
 
@@ -208,7 +229,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func restartBx() {
-        runPrivileged("'\(bxPath)' down && '\(bxPath)' up")
+        _ = runPrivileged("'\(bxPath)' down && '\(bxPath)' up")
         refresh()
     }
 
@@ -219,7 +240,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Turn Off")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
-            runPrivileged("'\(bxPath)' down")
+            _ = runPrivileged("'\(bxPath)' down")
             refresh()
         }
     }
@@ -228,9 +249,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
-    private func runPrivileged(_ command: String) {
+    private func runPrivileged(_ command: String) -> Bool {
         let script = "do shell script \(shellQuoted(command)) with administrator privileges"
-        _ = runAppleScript(script)
+        return runAppleScript(script)
     }
 
     private func openTerminal(_ command: String) {
@@ -247,6 +268,34 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         var error: NSDictionary?
         NSAppleScript(source: source)?.executeAndReturnError(&error)
         return error == nil
+    }
+
+    private func promptForClientLink() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Set Up bx"
+        alert.informativeText = "Paste your bx link."
+        alert.addButton(withTitle: "Set Up")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
+        field.placeholderString = "bx://..."
+        alert.accessoryView = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let link = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !link.isEmpty else {
+            showMessage("No Link", "Paste a bx link to continue.")
+            return nil
+        }
+        return link
+    }
+
+    private func showMessage(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func diagnoseStopped(version: String?, fallback: String) -> BxState {
@@ -325,6 +374,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private func shellQuoted(_ value: String) -> String {
         let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
+    }
+
+    private func shellSingleQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
 
