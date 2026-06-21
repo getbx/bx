@@ -7,11 +7,14 @@ It is intentionally not a control panel. It shows whether bx is protected, off, 
 - Open Status
 - View Logs
 - Run Doctor
+- Set Up bx
 - Start bx
 - Restart bx
 - Turn Off
 
 It does not install, configure, start, or stop the bx network service by itself unless you choose one of the explicit menu actions.
+
+When the menu shows `Setup Required`, choose `Set Up bx...`, paste your bx link, and approve the macOS administrator prompt. After setup succeeds, the menu asks whether to start bx now.
 
 If the menu shows `Update Required`, update the CLI used by the menu bar:
 

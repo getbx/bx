@@ -140,6 +140,8 @@ dist/release/SHA256SUMS
 
 `install.sh` 只安装 CLI 和菜单栏 App,不会执行 `bx setup`、不会执行 `bx up`、不会修改 DNS 或路由。
 
+安装后如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即启动 bx。
+
 发包前可验证产物:
 
 ```bash
