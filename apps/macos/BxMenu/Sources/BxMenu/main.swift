@@ -317,7 +317,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             showMessage("No Link", "Paste a bx link to continue.")
             return nil
         }
+        guard looksLikeClientLink(link) else {
+            showMessage("Link Not Recognized", "Paste a bx link to continue.")
+            return nil
+        }
         return link
+    }
+
+    private func looksLikeClientLink(_ link: String) -> Bool {
+        link.hasPrefix("bx://") || link.hasPrefix("blink://") || link.hasPrefix("brook://")
     }
 
     private func showMessage(_ title: String, _ message: String) {
