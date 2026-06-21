@@ -25,11 +25,11 @@ import (
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/route"
+	"github.com/getbx/bx/internal/socks5"
 	"github.com/getbx/bx/internal/splitdns"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tun"
 	"github.com/getbx/bx/internal/tunnel"
-	"golang.org/x/net/proxy"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
@@ -325,23 +325,15 @@ func udpNote(mode string) string {
 	case "direct-realtime":
 		return "non-DNS UDP direct; may expose real network path"
 	case "proxy":
-		return "UDP proxy requested but not implemented; non-DNS UDP remains blocked"
+		return "non-DNS UDP relayed through bx tunnel"
 	default:
 		return "non-DNS UDP blocked; WebRTC/Google Meet may stutter"
 	}
 }
 
 // socksProxy 把 brook 本地 socks5 包成带 context 的拨号器。
-func socksProxy(socksAddr string, base proxy.Dialer) (dialer.ContextDialer, error) {
-	d, err := proxy.SOCKS5("tcp", socksAddr, nil, base)
-	if err != nil {
-		return nil, err
-	}
-	cd, ok := d.(proxy.ContextDialer)
-	if !ok {
-		return nil, fmt.Errorf("socks dialer 不支持 context")
-	}
-	return cd, nil
+func socksProxy(socksAddr string, base *net.Dialer) (dialer.ContextDialer, error) {
+	return socks5.NewDialer(socksAddr, base)
 }
 
 // dnsResolver 用指定 DNS 服务器解析(经防环直连器,绕过 tun)。

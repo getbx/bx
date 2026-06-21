@@ -150,7 +150,7 @@ func dnsCommands() []*cli.Command {
 func realtimeCommands() []*cli.Command {
 	return []*cli.Command{
 		{Name: "status", Usage: "查看 UDP / 实时应用策略", Flags: realtimeFlags(), Action: realtimeStatusAction},
-		{Name: "on", Usage: "开启非 DNS UDP 直连模式(可能暴露真实网络路径)", Flags: realtimeFlags(), Action: realtimeOnAction},
+		{Name: "on", Usage: "开启非 DNS UDP 中继模式", Flags: realtimeFlags(), Action: realtimeOnAction},
 		{Name: "off", Usage: "恢复默认 UDP 阻断模式", Flags: realtimeFlags(), Action: realtimeOffAction},
 	}
 }
@@ -719,7 +719,7 @@ func capabilities() capabilitiesReport {
 			{
 				Command:        "bx realtime status",
 				Category:       "udp",
-				Summary:        "Inspect UDP/realtime policy. Current builds block non-DNS UDP, which can affect WebRTC.",
+				Summary:        "Inspect UDP/realtime policy. Default mode blocks non-DNS UDP, which can affect WebRTC.",
 				Stable:         true,
 				RequiresRoot:   false,
 				ChangesSystem:  false,
@@ -731,7 +731,7 @@ func capabilities() capabilitiesReport {
 			{
 				Command:        "sudo bx realtime on",
 				Category:       "udp",
-				Summary:        "Enable explicit direct-realtime UDP mode in the client config.",
+				Summary:        "Enable non-DNS UDP relay through the bx tunnel in the client config.",
 				Stable:         true,
 				RequiresRoot:   true,
 				ChangesSystem:  true,
@@ -740,7 +740,7 @@ func capabilities() capabilitiesReport {
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--config <path>"},
 				Examples:       []string{"sudo bx realtime on"},
-				SafeNotes:      []string{"Writes client config only; restart bx for runtime effect.", "direct-realtime sends non-DNS UDP directly and may expose the real network path."},
+				SafeNotes:      []string{"Writes client config only; restart bx for runtime effect.", "Relays non-DNS UDP through bx instead of using the local real network path."},
 			},
 			{
 				Command:        "sudo bx realtime off",
@@ -879,6 +879,7 @@ func capabilities() capabilitiesReport {
 func collectClientDoctor(configPath, target string, timeout time.Duration, skipProbe bool) doctorReport {
 	rep := doctorReport{Kind: "client", Version: version.String(), SecretsRedacted: true}
 	cfgPath := resolveConfigPath(configPath)
+	udpMode := "block"
 	rep.addCheck("config", "info", cfgPath, "")
 	b, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -895,6 +896,7 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 			rep.addCheck("config_parse", "fail", err.Error(), "")
 		} else {
 			rep.addCheck("config_parse", "ok", "yes", "")
+			udpMode = cfg.UDP.Mode
 			if cfg.Server == "" {
 				rep.addCheck("server_link", "fail", "empty", "sudo bx setup bx://...")
 			} else if _, err := blink.Decode(cfg.Server); err != nil && !strings.HasPrefix(cfg.Server, "brook://") {
@@ -917,14 +919,21 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 	} else {
 		rep.addCheck("status_socket", "ok", "reachable", "")
 	}
-	rep.addCheck(
-		"udp_policy",
-		"warn",
-		"non-DNS UDP blocked",
-		"Google Meet/WebRTC may stutter; use sudo bx realtime on then restart bx, or sudo bx down on trusted routed networks",
-	)
+	status, detail, hint := udpPolicyDoctor(udpMode)
+	rep.addCheck("udp_policy", status, detail, hint)
 	rep.OK = !rep.hasFail()
 	return rep
+}
+
+func udpPolicyDoctor(mode string) (status, detail, hint string) {
+	switch mode {
+	case "proxy":
+		return "ok", "non-DNS UDP relayed through bx tunnel", ""
+	case "direct-realtime":
+		return "warn", "non-DNS UDP direct; may expose real network path", "Use sudo bx realtime on to relay UDP through bx, or sudo bx realtime off to block it"
+	default:
+		return "warn", "non-DNS UDP blocked", "Google Meet/WebRTC may stutter; use sudo bx realtime on then restart bx"
+	}
 }
 
 func collectServerDoctor(configPath, sharesDir string) doctorReport {
@@ -1367,10 +1376,10 @@ func realtimeStatusAction(c *cli.Context) error {
 }
 
 func realtimeOnAction(c *cli.Context) error {
-	if err := setRealtimeMode(c.String("config"), "direct-realtime"); err != nil {
+	if err := setRealtimeMode(c.String("config"), "proxy"); err != nil {
 		return err
 	}
-	fmt.Println("✅ realtime 已开启: 非 DNS UDP 将直连,可能暴露真实网络路径。重启 bx 生效: sudo bx down && sudo bx up")
+	fmt.Println("✅ realtime 已开启: 非 DNS UDP 将通过 bx 隧道中继。重启 bx 生效: sudo bx down && sudo bx up")
 	return nil
 }
 
@@ -1432,7 +1441,7 @@ func realtimeNote(mode string) string {
 	case "direct-realtime":
 		return "non-DNS UDP direct; may expose real network path"
 	case "proxy":
-		return "UDP proxy requested but not implemented; non-DNS UDP remains blocked"
+		return "non-DNS UDP relayed through bx tunnel"
 	default:
 		return "non-DNS UDP blocked; WebRTC/Google Meet may stutter"
 	}
