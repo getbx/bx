@@ -178,10 +178,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         switch state {
         case .connected:
-            menu.addAction("Restart bx", symbol: "arrow.clockwise", target: self, action: #selector(restartBx))
+            menu.addAction("Restart Protection", symbol: "arrow.clockwise", target: self, action: #selector(restartBx))
             menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
         case .warning, .off:
-            menu.addAction("Start bx", symbol: "play.fill", target: self, action: #selector(startBx))
+            menu.addAction("Start Protection", symbol: "play.fill", target: self, action: #selector(startBx))
         case .updateNeeded:
             menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
         case .setupNeeded:
