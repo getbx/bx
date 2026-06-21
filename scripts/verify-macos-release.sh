@@ -32,6 +32,10 @@ grep -q "The installer did not start bx or change DNS/routes." "$RELEASE_DIR/ins
 grep -q "package architecture" "$RELEASE_DIR/install.sh" || fail "install.sh missing architecture preflight"
 grep -q "missing bx executable" "$RELEASE_DIR/install.sh" || fail "install.sh missing bx preflight"
 grep -q "missing Bx.app" "$RELEASE_DIR/install.sh" || fail "install.sh missing app preflight"
+grep -q "Library/Logs/bx" "$RELEASE_DIR/install.sh" || fail "install.sh missing menu log directory"
+grep -q 'LOG_DIR/menu.log' "$RELEASE_DIR/install.sh" || fail "install.sh missing menu stdout log path"
+grep -q 'LOG_DIR/menu.err.log' "$RELEASE_DIR/install.sh" || fail "install.sh missing menu stderr log path"
+grep -q "Library/Logs/bx/menu.log" "$RELEASE_DIR/README.txt" || fail "README missing menu log path"
 
 (
   cd "$DIST_ROOT"

@@ -10,6 +10,7 @@ AGENT_SRC="${BX_AGENT_SRC:-$ROOT/dist/macos/$BUNDLE_ID.plist}"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 AGENT_DST="$AGENT_DIR/$BUNDLE_ID.plist"
 DOMAIN="gui/$(id -u)"
+LOG_DIR="${BX_LOG_DIR:-$HOME/Library/Logs/bx}"
 
 usage() {
   cat <<USAGE
@@ -41,7 +42,7 @@ install_menu() {
   echo "Installing bx menu bar app..."
   mkdir -p "$(dirname "$APP_DST")"
   ditto "$APP_SRC" "$APP_DST"
-  mkdir -p "$AGENT_DIR"
+  mkdir -p "$AGENT_DIR" "$LOG_DIR"
   write_launch_agent "$AGENT_DST" "$APP_DST"
   bootout_agent
   launchctl bootstrap "$DOMAIN" "$AGENT_DST"
@@ -102,9 +103,9 @@ write_launch_agent() {
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/bx-menu.log</string>
+  <string>$LOG_DIR/menu.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/bx-menu.err.log</string>
+  <string>$LOG_DIR/menu.err.log</string>
 </dict>
 </plist>
 PLIST

@@ -11,6 +11,7 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 LAUNCH_AGENT="$DIST_DIR/$BUNDLE_ID.plist"
+LOG_DIR="${BX_LOG_DIR:-$HOME/Library/Logs/bx}"
 
 cd "$MENU_DIR"
 swift build -c release
@@ -66,9 +67,9 @@ cat > "$LAUNCH_AGENT" <<PLIST
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/bx-menu.log</string>
+  <string>$LOG_DIR/menu.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/bx-menu.err.log</string>
+  <string>$LOG_DIR/menu.err.log</string>
 </dict>
 </plist>
 PLIST

@@ -87,6 +87,7 @@ macOS release 包会一次装好两件事:
 
 - `bx` CLI:安装到 `/usr/local/bin/bx`
 - 菜单栏 App:安装到 `~/Applications/Bx.app`
+- 菜单栏日志:写到 `~/Library/Logs/bx/menu.log` 和 `menu.err.log`
 
 菜单栏 App 用于显示当前保护状态、延迟、DNS 接管状态和诊断入口。它不是控制面板,也不会自动启动 bx 或修改网络配置。真正启动和接管网络仍由 `sudo bx up` 完成。
 
@@ -113,6 +114,7 @@ scripts/install-macos-menu.sh install
 
 - `~/Applications/Bx.app`
 - `~/Library/LaunchAgents/com.getbx.bx.menu.plist`
+- `~/Library/Logs/bx/menu.log` 和 `menu.err.log`
 
 常用维护命令:
 
