@@ -26,6 +26,7 @@ struct BxReport: Decodable {
 enum BxState {
     case connected(BxReport)
     case warning(String)
+    case missing(String)
     case off
 }
 
@@ -61,6 +62,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     private func loadState() -> BxState {
+        guard FileManager.default.isExecutableFile(atPath: bxPath) else {
+            return .missing("Install bx at /usr/local/bin/bx")
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: bxPath)
         process.arguments = ["status", "--json"]
@@ -97,6 +101,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .warning:
             symbol = "exclamationmark.triangle"
             tint = .systemYellow
+        case .missing:
+            symbol = "questionmark.circle"
+            tint = .secondaryLabelColor
         case .off:
             symbol = "shield"
             tint = .secondaryLabelColor
@@ -117,6 +124,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addInfo("Active", "\(report.active)")
         case .warning(let message):
             menu.addHeader("bx", subtitle: "Needs Attention")
+            menu.addInfo("Status", message)
+        case .missing(let message):
+            menu.addHeader("bx", subtitle: "Not Installed")
             menu.addInfo("Status", message)
         case .off:
             menu.addHeader("bx", subtitle: "Off")

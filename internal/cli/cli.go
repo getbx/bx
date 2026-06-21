@@ -152,8 +152,8 @@ func dnsCommands() []*cli.Command {
 func realtimeCommands() []*cli.Command {
 	return []*cli.Command{
 		{Name: "status", Usage: "查看 UDP / 实时应用策略", Flags: realtimeFlags(), Action: realtimeStatusAction},
-		{Name: "on", Usage: "开启非 DNS UDP 中继模式", Flags: realtimeFlags(), Action: realtimeOnAction},
-		{Name: "off", Usage: "恢复默认 UDP 阻断模式", Flags: realtimeFlags(), Action: realtimeOffAction},
+		{Name: "on", Usage: "开启非 DNS UDP 中继模式", Flags: realtimeFlags(), Hidden: true, Action: realtimeOnAction},
+		{Name: "off", Usage: "恢复默认 UDP 阻断模式", Flags: realtimeFlags(), Hidden: true, Action: realtimeOffAction},
 	}
 }
 
@@ -741,7 +741,7 @@ func capabilities() capabilitiesReport {
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--lines <n>", "--follow", "--archive", "--dir <path>"},
 				Examples:       []string{"bx logs", "bx logs -n 200", "bx logs --archive"},
-				SafeNotes:      []string{"Read-only.", "May require sudo depending on system log permissions.", "Use --archive to preserve raw logs and diagnostic snapshots."},
+				SafeNotes:      []string{"Read-only.", "May require sudo depending on system log permissions.", "Use --archive to preserve raw logs and diagnostic snapshots.", "Automatic diagnostics are kept under the platform log directory for bx up/down/doctor."},
 			},
 			{
 				Command:        "bx realtime status",
