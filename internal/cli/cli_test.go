@@ -29,8 +29,8 @@ func TestAppHasVersion(t *testing.T) {
 		t.Fatal("app should expose bx realtime")
 	}
 	realtime := findAppCommand(app, "realtime")
-	if len(realtime.Subcommands) != 1 || realtime.Subcommands[0].Name != "status" {
-		t.Fatalf("realtime subcommands = %+v, want only status", realtime.Subcommands)
+	if !commandHasSubcommand(realtime, "status") || !commandHasSubcommand(realtime, "on") || !commandHasSubcommand(realtime, "off") {
+		t.Fatalf("realtime subcommands = %+v, want status/on/off", realtime.Subcommands)
 	}
 }
 
@@ -134,6 +134,9 @@ func TestClientDoctorJSONReport(t *testing.T) {
 	if got := findCheck(rep.Checks, "udp_policy"); got.Status != "warn" || !strings.Contains(got.Hint, "Google Meet") {
 		t.Fatalf("udp_policy = %+v, want warn with Google Meet hint", got)
 	}
+	if got := findCheck(rep.Checks, "udp_policy"); !strings.Contains(got.Hint, "sudo bx realtime on") {
+		t.Fatalf("udp_policy should mention realtime on now that it exists: %+v", got)
+	}
 	var buf bytes.Buffer
 	if err := writeJSON(&buf, rep); err != nil {
 		t.Fatal(err)
@@ -174,11 +177,16 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(udpStatus.SafeNotes, " "), "UDP") {
 		t.Fatalf("realtime status should mention UDP: %+v", udpStatus)
 	}
-	if got := findCapability(rep.Commands, "sudo bx realtime on"); got.Command != "" {
-		t.Fatalf("capabilities should not expose unimplemented realtime on: %+v", got)
+	realtimeOn := findCapability(rep.Commands, "sudo bx realtime on")
+	if !realtimeOn.Stable || !realtimeOn.RequiresRoot || !realtimeOn.ChangesSystem || realtimeOn.ChangesNetwork || !realtimeOn.ReadsSecrets {
+		t.Fatalf("unexpected realtime on capability: %+v", realtimeOn)
 	}
-	if got := findCapability(rep.Commands, "sudo bx realtime off"); got.Command != "" {
-		t.Fatalf("capabilities should not expose unimplemented realtime off: %+v", got)
+	if !strings.Contains(strings.Join(realtimeOn.SafeNotes, " "), "may expose") {
+		t.Fatalf("realtime on should document UDP direct risk: %+v", realtimeOn)
+	}
+	realtimeOff := findCapability(rep.Commands, "sudo bx realtime off")
+	if !realtimeOff.Stable || !realtimeOff.RequiresRoot || !realtimeOff.ChangesSystem || realtimeOff.ChangesNetwork || !realtimeOff.ReadsSecrets {
+		t.Fatalf("unexpected realtime off capability: %+v", realtimeOff)
 	}
 	dnsOn := findCapability(rep.Commands, "sudo bx dns on")
 	if !dnsOn.RequiresRoot || !dnsOn.ChangesSystem || !dnsOn.ChangesNetwork {
@@ -222,6 +230,69 @@ func TestRenderRealtimeStatusFromReport(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("realtime report missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestSetRealtimeModeUpdatesClientConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server: \"brook://x\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setRealtimeMode(path, "direct-realtime"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UDP.Mode != "direct-realtime" {
+		t.Fatalf("udp mode after on = %q, want direct-realtime", cfg.UDP.Mode)
+	}
+	if err := setRealtimeMode(path, "block"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UDP.Mode != "block" {
+		t.Fatalf("udp mode after off = %q, want block", cfg.UDP.Mode)
+	}
+}
+
+func TestSetRealtimeModePreservesBXLink(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	link := blink.Encode("brook://server?server=example.com%3A443&password=pw")
+	if err := os.WriteFile(path, []byte("server: \""+link+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setRealtimeMode(path, "direct-realtime"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if !strings.Contains(text, link) {
+		t.Fatalf("setRealtimeMode should preserve bx link, got:\n%s", text)
+	}
+	if strings.Contains(text, "brook://server?") {
+		t.Fatalf("setRealtimeMode should not rewrite bx link to internal link:\n%s", text)
+	}
+}
+
+func TestRealtimeReportFromConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server: \"brook://x\"\nudp:\n  mode: direct-realtime\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep := realtimeReportFromConfig(path)
+	if rep == nil {
+		t.Fatal("expected realtime report from config")
+	}
+	if rep.UDPMode != "direct-realtime" || !strings.Contains(rep.UDPNote, "may expose") {
+		t.Fatalf("report = %+v, want direct-realtime with risk note", rep)
 	}
 }
 
@@ -294,6 +365,15 @@ func findAppCommand(app *cli.App, name string) *cli.Command {
 		}
 	}
 	return nil
+}
+
+func commandHasSubcommand(command *cli.Command, name string) bool {
+	for _, sub := range command.Subcommands {
+		if sub.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestIsListening(t *testing.T) {

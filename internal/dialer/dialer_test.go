@@ -86,6 +86,33 @@ func TestDialBlocksUDPBeforeSocks(t *testing.T) {
 	}
 }
 
+func TestDialDirectRealtimeUDPUsesDirect(t *testing.T) {
+	d, px, dr := newTestDialer(nil, fakeResolver{}, true, true)
+	d.UDPMode = "direct-realtime"
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("198.18.0.93"), Port: 3478, UDP: true}); err != nil {
+		t.Fatalf("direct-realtime UDP should direct dial: %v", err)
+	}
+	if dr.lastAddr != "198.18.0.93:3478" {
+		t.Fatalf("UDP direct target = %q, want 198.18.0.93:3478", dr.lastAddr)
+	}
+	if px.lastAddr != "" {
+		t.Fatalf("UDP direct-realtime should not touch proxy, got %q", px.lastAddr)
+	}
+}
+
+func TestDialDirectRealtimeUDPResolvesFakeIP(t *testing.T) {
+	pool, _ := fakeip.New("198.18.0.0/15")
+	fip := pool.Alloc("stun.l.google.com")
+	d, _, dr := newTestDialer(pool, fakeResolver{ip: netip.MustParseAddr("74.125.250.129")}, true, true)
+	d.UDPMode = "direct-realtime"
+	if _, err := d.Dial(context.Background(), route.Meta{IP: fip, Port: 19302, UDP: true}); err != nil {
+		t.Fatalf("direct-realtime fake UDP should resolve and direct dial: %v", err)
+	}
+	if dr.lastAddr != "74.125.250.129:19302" {
+		t.Fatalf("UDP fake-IP direct target = %q, want 74.125.250.129:19302", dr.lastAddr)
+	}
+}
+
 func TestDialNeedResolveForeignGoesProxy(t *testing.T) {
 	res := fakeResolver{ip: netip.MustParseAddr("8.8.8.8")}
 	d, px, _ := newTestDialer(nil, res, true, true)

@@ -35,6 +35,10 @@ type Lists struct {
 	Interval    string `yaml:"interval"`    // 如 "24h";空=默认 24h
 }
 
+type UDP struct {
+	Mode string `yaml:"mode"` // block, direct-realtime, proxy
+}
+
 // AutoUpdateEnabled 报告是否启用列表自动刷新(默认 true)。
 func (l Lists) AutoUpdateEnabled() bool {
 	if l.AutoUpdate == nil {
@@ -57,6 +61,7 @@ type Config struct {
 	DNS        DNS      `yaml:"dns"`
 	Rules      []Rule   `yaml:"rules"`
 	Lists      Lists    `yaml:"lists"`
+	UDP        UDP      `yaml:"udp"`
 	Brook      string   `yaml:"brook"`    // 可选调试入口;空=用内嵌传输
 	DataDir    string   `yaml:"data_dir"` // 运行期数据目录;空=默认 /var/lib/bx
 	Bypass     []string `yaml:"bypass"`   // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
@@ -86,6 +91,14 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.DNS.FakeipCIDR == "" {
 		c.DNS.FakeipCIDR = "198.18.0.0/15"
+	}
+	if c.UDP.Mode == "" {
+		c.UDP.Mode = "block"
+	}
+	switch c.UDP.Mode {
+	case "block", "direct-realtime", "proxy":
+	default:
+		return nil, fmt.Errorf("config: udp.mode 必须是 block/direct-realtime/proxy, got %q", c.UDP.Mode)
 	}
 	for i := range c.DNS.Split {
 		r := &c.DNS.Split[i]

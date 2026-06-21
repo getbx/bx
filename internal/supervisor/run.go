@@ -191,6 +191,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		Healthy:     tun0.Healthy,
 		Killswitch:  cfg.Killswitch,
 		Stats:       counters,
+		UDPMode:     cfg.UDP.Mode,
 		SplitDirect: splitDirect,
 	}
 	d.SetRouter(router)
@@ -208,7 +209,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	defer eng.Close()
 
 	// 状态查询 socket + pidfile
-	if closer, err := serveStats(counters, tun0, serverHost); err != nil {
+	if closer, err := serveStats(counters, tun0, serverHost, cfg.UDP.Mode); err != nil {
 		log.Printf("状态 socket 启动失败(忽略): %v", err)
 	} else {
 		defer closer.Close()
@@ -288,7 +289,7 @@ func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Durat
 }
 
 // serveStats 在 unix socket 上提供状态查询:每个连接回一份 JSON Report。
-func serveStats(c *stats.Counters, t *tunnel.Tunnel, server string) (io.Closer, error) {
+func serveStats(c *stats.Counters, t *tunnel.Tunnel, server, udpMode string) (io.Closer, error) {
 	_ = os.Remove(SockPath)
 	ln, err := net.Listen("unix", SockPath)
 	if err != nil {
@@ -309,14 +310,25 @@ func serveStats(c *stats.Counters, t *tunnel.Tunnel, server string) (io.Closer, 
 				TunnelHealthy: ts.Up,
 				LatencyMS:     ts.LatencyMS,
 				Restarts:      ts.Restarts,
-				UDPMode:       "block",
-				UDPNote:       "non-DNS UDP blocked; WebRTC/Google Meet may stutter",
+				UDPMode:       udpMode,
+				UDPNote:       udpNote(udpMode),
 			}
 			_ = json.NewEncoder(conn).Encode(rep)
 			conn.Close()
 		}
 	}()
 	return ln, nil
+}
+
+func udpNote(mode string) string {
+	switch mode {
+	case "direct-realtime":
+		return "non-DNS UDP direct; may expose real network path"
+	case "proxy":
+		return "UDP proxy requested but not implemented; non-DNS UDP remains blocked"
+	default:
+		return "non-DNS UDP blocked; WebRTC/Google Meet may stutter"
+	}
 }
 
 // socksProxy 把 brook 本地 socks5 包成带 context 的拨号器。

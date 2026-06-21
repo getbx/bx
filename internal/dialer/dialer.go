@@ -54,6 +54,7 @@ type Dialer struct {
 	Healthy    func() bool   // 隧道是否健康(kill-switch 用),可空
 	Killswitch bool
 	Stats      DecisionCounter // 可空:决策计数
+	UDPMode    string          // block(默认), direct-realtime, proxy(预留)
 	// SplitDirect 可空:split-DNS 解析出的内网真实 IP 集,命中即强制直连(绕 Router)。
 	SplitDirect *splitdns.Set
 }
@@ -76,15 +77,6 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 // DialWithInitial 可用 TCP 首包中的 TLS SNI / HTTP Host 为未知 fake-IP 恢复域名。
 func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []byte) (net.Conn, error) {
 	rt := d.router.Load()
-	if m.UDP {
-		if d.Stats != nil {
-			d.Stats.Blocked()
-			d.Stats.UDPBlocked()
-		}
-		debugf("udp blocked: ip=%s domain=%q port=%d", m.IP, m.Domain, m.Port)
-		return nil, ErrBlocked
-	}
-
 	// 1) fake IP 反查域名
 	if m.Domain == "" && d.Fake != nil {
 		if dom, ok := d.Fake.Domain(m.IP); ok {
@@ -95,6 +87,31 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		} else if m.IP.Is4() {
 			debugf("fake-ip miss: ip=%s port=%d udp=%v", m.IP, m.Port, m.UDP)
 		}
+	}
+
+	if m.UDP {
+		if d.UDPMode == "direct-realtime" {
+			if d.Stats != nil {
+				d.Stats.Direct()
+			}
+			ip := m.IP
+			if m.Domain != "" {
+				resolved, err := d.Resolver.Resolve(ctx, m.Domain)
+				if err != nil {
+					return nil, err
+				}
+				ip = resolved
+			}
+			target := net.JoinHostPort(ip.String(), strconv.Itoa(int(m.Port)))
+			debugf("udp direct-realtime: ip=%s target=%s", m.IP, target)
+			return d.Direct.DialContext(ctx, "udp", target)
+		}
+		if d.Stats != nil {
+			d.Stats.Blocked()
+			d.Stats.UDPBlocked()
+		}
+		debugf("udp blocked: ip=%s domain=%q port=%d", m.IP, m.Domain, m.Port)
+		return nil, ErrBlocked
 	}
 
 	var dec route.Decision

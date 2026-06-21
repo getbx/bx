@@ -67,6 +67,25 @@ func TestParseDefaultsForBootstrap(t *testing.T) {
 	if c.Lists.RefreshInterval() != 24*time.Hour {
 		t.Errorf("Interval 默认应为 24h, got %v", c.Lists.RefreshInterval())
 	}
+	if c.UDP.Mode != "block" {
+		t.Errorf("UDP mode 默认应为 block, got %q", c.UDP.Mode)
+	}
+}
+
+func TestParseUDPMode(t *testing.T) {
+	c, err := Parse([]byte("server: \"brook://x\"\nudp:\n  mode: direct-realtime\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.UDP.Mode != "direct-realtime" {
+		t.Fatalf("UDP mode = %q, want direct-realtime", c.UDP.Mode)
+	}
+}
+
+func TestParseRejectsBadUDPMode(t *testing.T) {
+	if _, err := Parse([]byte("server: \"brook://x\"\nudp:\n  mode: leak-everything\n")); err == nil {
+		t.Fatal("expected error for invalid udp mode")
+	}
 }
 
 func TestParseListsOverrides(t *testing.T) {
