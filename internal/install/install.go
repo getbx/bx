@@ -220,6 +220,14 @@ func Disable() error {
 	return runSystemctl("disable", "--now", ServiceName)
 }
 
+// Restart 重启已安装的 bx 客户端服务,不改变开机自启状态。
+func Restart() error {
+	if runtime.GOOS == "darwin" {
+		return runLaunchctl("kickstart", "-k", "system/"+launchdLabel)
+	}
+	return runSystemctl("restart", ServiceName)
+}
+
 // EnableServer 启动 bx server 并设为开机自启。
 func EnableServer() error { return runSystemctl("enable", "--now", ServerServiceName) }
 
