@@ -356,6 +356,17 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !dnsOn.RequiresRoot || !dnsOn.ChangesSystem || !dnsOn.ChangesNetwork {
 		t.Fatalf("unexpected dns on capability: %+v", dnsOn)
 	}
+	menuInstall := findCapability(rep.Commands, "scripts/install-macos-menu.sh install")
+	if menuInstall.Command == "" || menuInstall.RequiresRoot || menuInstall.ChangesNetwork || menuInstall.ChangesSystem {
+		t.Fatalf("unexpected macOS menu install capability: %+v", menuInstall)
+	}
+	if !strings.Contains(strings.Join(menuInstall.SafeNotes, " "), "Does not start bx service") {
+		t.Fatalf("macOS menu install should clarify it does not start bx service: %+v", menuInstall)
+	}
+	menuStatus := findCapability(rep.Commands, "scripts/install-macos-menu.sh status")
+	if menuStatus.Command == "" || !menuStatus.Stable || menuStatus.ChangesSystem || menuStatus.ChangesNetwork {
+		t.Fatalf("unexpected macOS menu status capability: %+v", menuStatus)
+	}
 	var buf bytes.Buffer
 	if err := writeJSON(&buf, rep); err != nil {
 		t.Fatal(err)

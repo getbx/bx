@@ -43,6 +43,7 @@ struct CommandResult {
 enum BxState {
     case connected(BxReport, version: String, dns: String?)
     case warning(String, version: String?)
+    case updateNeeded(String, version: String?)
     case setupNeeded(String)
     case missing(String)
     case off
@@ -84,6 +85,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return .missing("Install bx at /usr/local/bin/bx")
         }
         let version = loadVersion()
+        if !cliSupportsDiagnosticsArchive() {
+            return .updateNeeded("Update bx CLI", version: version)
+        }
         let status = runBx(["status", "--json"])
         guard status.code == 0 else {
             return diagnoseStopped(version: version, fallback: status.stderr)
@@ -103,7 +107,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .connected:
             symbol = "checkmark.shield"
             tint = .controlAccentColor
-        case .warning:
+        case .warning, .updateNeeded:
             symbol = "exclamationmark.triangle"
             tint = .systemYellow
         case .setupNeeded:
@@ -140,8 +144,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             if let version {
                 menu.addInfo("Version", version)
             }
+        case .updateNeeded(let message, let version):
+            menu.addHeader("bx", subtitle: "Update Required")
+            menu.addInfo("Status", message)
+            if let version {
+                menu.addInfo("Version", version)
+            }
         case .setupNeeded(let message):
-            menu.addHeader("bx", subtitle: "Setup Needed")
+            menu.addHeader("bx", subtitle: "Setup Required")
             menu.addInfo("Status", message)
         case .missing(let message):
             menu.addHeader("bx", subtitle: "Not Installed")
@@ -151,9 +161,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addInfo("Status", "Not running")
         }
         menu.addItem(.separator())
-        menu.addAction("Open Status", symbol: "list.bullet.rectangle", target: self, action: #selector(openStatus))
-        menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
-        menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+        switch state {
+        case .setupNeeded, .missing, .updateNeeded:
+            break
+        default:
+            menu.addAction("Open Status", symbol: "list.bullet.rectangle", target: self, action: #selector(openStatus))
+            menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+            menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+        }
         menu.addItem(.separator())
         switch state {
         case .connected:
@@ -161,6 +176,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
         case .warning, .off:
             menu.addAction("Start bx", symbol: "play.fill", target: self, action: #selector(startBx))
+        case .updateNeeded:
+            menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
         case .setupNeeded, .missing:
             break
         }
@@ -174,7 +191,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openLogs() {
-        openTerminal("'\(bxPath)' logs -n 120; echo; read -n 1 -s -r -p 'Press any key to close'")
+        openTerminal("diag=\"$HOME/Library/Logs/bx/diagnostics\"; if [ -d \"$diag\" ]; then open \"$diag\"; else '\(bxPath)' logs -n 120; fi; echo; read -n 1 -s -r -p 'Press any key to close'")
     }
 
     @objc private func runDoctor() {
@@ -184,6 +201,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     @objc private func startBx() {
         runPrivileged("'\(bxPath)' up")
         refresh()
+    }
+
+    @objc private func openInstallGuide() {
+        openTerminal("cd \"$HOME/Documents/bx\" 2>/dev/null || true; echo 'Update bx CLI:'; echo 'sudo install -m 0755 ./bx /usr/local/bin/bx'; echo; read -n 1 -s -r -p 'Press any key to close'")
     }
 
     @objc private func restartBx() {
@@ -254,6 +275,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         let result = runBx(["--version"])
         guard result.code == 0 else { return nil }
         return result.stdout.replacingOccurrences(of: "bx version ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func cliSupportsDiagnosticsArchive() -> Bool {
+        let result = runBx(["logs", "--help"])
+        return result.code == 0 && result.stdout.contains("--archive") && result.stdout.contains("--dir")
     }
 
     private func loadDNSStatus() -> String? {
