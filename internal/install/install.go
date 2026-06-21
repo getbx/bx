@@ -457,6 +457,14 @@ func ShowLogs(service string, lines int, follow bool) error {
 	return nil
 }
 
+// ClientLogPaths returns the raw client log files used by macOS launchd.
+func ClientLogPaths() []string {
+	if runtime.GOOS == "darwin" {
+		return []string{launchdStdoutPath, launchdStderrPath}
+	}
+	return nil
+}
+
 func InspectDNS(service string) (DNSStatus, error) {
 	if runtime.GOOS != "darwin" {
 		return DNSStatus{Supported: false, Detail: "DNS 接管仅支持 macOS"}, nil

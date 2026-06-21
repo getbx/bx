@@ -22,6 +22,10 @@ func TestAppHasVersion(t *testing.T) {
 	if !appHasCommand(app, "logs") {
 		t.Fatal("app should expose bx logs")
 	}
+	logs := findAppCommand(app, "logs")
+	if !commandHasFlag(logs, "archive") || !commandHasFlag(logs, "dir") {
+		t.Fatal("logs should expose --archive and --dir")
+	}
 	if !appHasCommand(app, "dns") {
 		t.Fatal("app should expose bx dns")
 	}
@@ -496,6 +500,28 @@ func TestIsListening(t *testing.T) {
 	}
 	if !isListening(port) {
 		t.Fatalf("port %s should be detected as listening", port)
+	}
+}
+
+func TestCopyIfExists(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.log")
+	dst := filepath.Join(dir, "copy.log")
+	if err := os.WriteFile(src, []byte("raw log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyIfExists(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "raw log\n" {
+		t.Fatalf("copy = %q", b)
+	}
+	if err := copyIfExists(filepath.Join(dir, "missing.log"), filepath.Join(dir, "missing-copy.log")); err != nil {
+		t.Fatalf("missing source should be ignored: %v", err)
 	}
 }
 

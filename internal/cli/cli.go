@@ -243,6 +243,8 @@ func logsFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 100, Usage: "显示最近 N 行日志"},
 		&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "持续跟随日志"},
+		&cli.BoolFlag{Name: "archive", Usage: "保存原始日志和诊断快照到本地目录"},
+		&cli.StringFlag{Name: "dir", Value: ".bx-log-archives", Usage: "日志归档目录"},
 	}
 }
 
@@ -732,9 +734,9 @@ func capabilities() capabilitiesReport {
 				ChangesSystem:  false,
 				ChangesNetwork: false,
 				Outputs:        []string{"text"},
-				Arguments:      []string{"--lines <n>", "--follow"},
-				Examples:       []string{"bx logs", "bx logs -n 200"},
-				SafeNotes:      []string{"Read-only.", "May require sudo depending on system log permissions."},
+				Arguments:      []string{"--lines <n>", "--follow", "--archive", "--dir <path>"},
+				Examples:       []string{"bx logs", "bx logs -n 200", "bx logs --archive"},
+				SafeNotes:      []string{"Read-only.", "May require sudo depending on system log permissions.", "Use --archive to preserve raw logs and diagnostic snapshots."},
 			},
 			{
 				Command:        "bx realtime status",
@@ -1629,7 +1631,81 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 }
 
 func logsAction(c *cli.Context) error {
+	if c.Bool("archive") {
+		if c.Bool("follow") {
+			return fmt.Errorf("--archive 不能和 --follow 同时使用")
+		}
+		dir, err := archiveClientLogs(c.String("dir"))
+		if err != nil {
+			return err
+		}
+		fmt.Println("Logs archived:", dir)
+		return nil
+	}
 	return install.ShowLogs(install.ServiceName, c.Int("lines"), c.Bool("follow"))
+}
+
+func archiveClientLogs(root string) (string, error) {
+	if strings.TrimSpace(root) == "" {
+		root = ".bx-log-archives"
+	}
+	dir := filepath.Join(root, "bx-logs-"+time.Now().Format("20060102-150405"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	meta := []string{
+		"created_at=" + time.Now().Format(time.RFC3339),
+		"version=" + version.String(),
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta.txt"), []byte(strings.Join(meta, "\n")+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	if rep, err := readStatusReport(); err == nil {
+		if err := writeJSONFile(filepath.Join(dir, "status.json"), rep); err != nil {
+			return "", err
+		}
+	} else {
+		_ = os.WriteFile(filepath.Join(dir, "status-error.txt"), []byte(err.Error()+"\n"), 0o600)
+	}
+	doctor := collectClientDoctor(defaultConfigPath, defaultProbeTarget, 0, true)
+	if err := writeJSONFile(filepath.Join(dir, "doctor.json"), doctor); err != nil {
+		return "", err
+	}
+	for _, src := range install.ClientLogPaths() {
+		if err := copyIfExists(src, filepath.Join(dir, filepath.Base(src))); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func writeJSONFile(path string, v any) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return writeJSON(f, v)
+}
+
+func copyIfExists(src, dst string) error {
+	in, err := os.Open(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func printDNSStatus(st install.DNSStatus) {
