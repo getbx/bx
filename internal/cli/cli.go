@@ -54,7 +54,7 @@ func New() *cli.App {
 			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
-			{Name: "status", Usage: "查看状态面板", Action: statusAction},
+			{Name: "status", Usage: "查看状态面板", Flags: statusFlags(), Action: statusAction},
 			{Name: "logs", Usage: "查看客户端日志", Flags: logsFlags(), Action: logsAction},
 			{Name: "link", Usage: "生成 bx:// 链接", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
 			{Name: "blink", Usage: "兼容旧链接生成命令", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
@@ -243,6 +243,12 @@ func logsFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 100, Usage: "显示最近 N 行日志"},
 		&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "持续跟随日志"},
+	}
+}
+
+func statusFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
 	}
 }
 
@@ -703,6 +709,19 @@ func capabilities() capabilitiesReport {
 				Arguments:      []string{"<client-link>", "--target <host:port>", "--timeout <duration>"},
 				Examples:       []string{"bx probe '<client-link>'"},
 				SafeNotes:      []string{"Network probe only.", "Does not install services or change routing."},
+			},
+			{
+				Command:        "bx status --json",
+				Category:       "diagnostics",
+				Summary:        "Show current client status as machine-readable JSON.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				Outputs:        []string{"json"},
+				Arguments:      []string{"--json"},
+				Examples:       []string{"bx status --json"},
+				SafeNotes:      []string{"Read-only.", "Used by lightweight status surfaces such as a menu bar helper."},
 			},
 			{
 				Command:        "bx logs",
@@ -1286,6 +1305,7 @@ func upAction(c *cli.Context) error {
 	if !install.UnitInstalled() {
 		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
 	}
+	stepLine("服务", "启动 bx")
 	// 防呆:命令模型重排后 up=enable service、run=前台。旧 unit 的 ExecStart 仍写
 	// `bx up`,配新二进制会让 service 启动时递归调用 up → 死锁。检测到就报错让用户重装。
 	cmd, err := install.ExecStartCmd()
@@ -1298,18 +1318,26 @@ func upAction(c *cli.Context) error {
 	if err := install.Enable(); err != nil {
 		return err
 	}
+	stepDone("服务", "已启动并设为开机自启")
 	if runtime.GOOS == "darwin" {
+		stepLine("状态", "等待 bx 就绪")
 		if err := waitStatusSocket(15 * time.Second); err != nil {
 			_ = install.Disable()
 			return fmt.Errorf("bx 服务已启动但状态 socket 未就绪,已回滚: %w", err)
 		}
+		stepDone("状态", "bx 已就绪")
+		stepLine("DNS", "接管 macOS 系统 DNS")
 		if _, err := install.EnableDNS(""); err != nil {
 			_ = install.Disable()
 			return fmt.Errorf("macOS DNS 接管失败,已回滚 bx 服务: %w", err)
 		}
-		fmt.Println("✅ macOS 系统 DNS 已切到 bx。")
+		stepDone("DNS", "macOS 系统 DNS 已切到 bx")
 	}
-	fmt.Println("✅ bx 已启动并设为开机自启。`bx status` 看面板。")
+	if rep, err := readStatusReport(); err == nil {
+		printUpSummary(rep)
+		return nil
+	}
+	fmt.Println("✅ bx 已启动。")
 	return nil
 }
 
@@ -1369,17 +1397,55 @@ func linkAction(c *cli.Context) error {
 }
 
 func statusAction(c *cli.Context) error {
+	rep, err := readStatusReport()
+	if err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return writeJSON(os.Stdout, rep)
+	}
+	fmt.Print(stats.Render(rep))
+	return nil
+}
+
+func readStatusReport() (stats.Report, error) {
 	conn, err := net.Dial("unix", supervisor.SockPath)
 	if err != nil {
-		return fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
+		return stats.Report{}, fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
 	}
 	defer conn.Close()
 	var rep stats.Report
 	if err := json.NewDecoder(conn).Decode(&rep); err != nil {
-		return fmt.Errorf("读状态: %w", err)
+		return stats.Report{}, fmt.Errorf("读状态: %w", err)
 	}
-	fmt.Print(stats.Render(rep))
-	return nil
+	return rep, nil
+}
+
+func printUpSummary(rep stats.Report) {
+	state := "Protected"
+	if !rep.TunnelHealthy {
+		state = "Needs Attention"
+	}
+	fmt.Println()
+	fmt.Println("bx is on")
+	fmt.Printf("  Status     %s\n", state)
+	fmt.Printf("  Tunnel     %dms\n", rep.LatencyMS)
+	fmt.Printf("  UDP Relay  %s\n", onOff(rep.UDPMode == "proxy"))
+}
+
+func stepLine(name, detail string) {
+	fmt.Printf("• %-8s %s\n", name, detail)
+}
+
+func stepDone(name, detail string) {
+	fmt.Printf("✓ %-8s %s\n", name, detail)
+}
+
+func onOff(ok bool) string {
+	if ok {
+		return "On"
+	}
+	return "Off"
 }
 
 func realtimeStatusAction(c *cli.Context) error {

@@ -72,3 +72,10 @@ func TestRenderShowsUDPPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderDefaultsUDPPolicyToProxy(t *testing.T) {
+	out := Render(Report{TunnelHealthy: true})
+	if !strings.Contains(out, "mode proxy") {
+		t.Fatalf("status output should default UDP mode to proxy:\n%s", out)
+	}
+}
