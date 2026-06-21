@@ -133,6 +133,28 @@ func TestIsNetworkServiceLine(t *testing.T) {
 	}
 }
 
+func TestShouldRefreshDNSStateWhenServiceChanges(t *testing.T) {
+	if !shouldRefreshDNSState(dnsState{Service: "Wi-Fi", Servers: []string{"1.1.1.1"}}, "USB 10/100/1000 LAN") {
+		t.Fatal("DNS state should refresh when current service differs from saved service")
+	}
+	if shouldRefreshDNSState(dnsState{Service: "Wi-Fi", Servers: []string{"1.1.1.1"}}, "Wi-Fi") {
+		t.Fatal("DNS state should not refresh when current service matches saved service")
+	}
+}
+
+func TestDNSRestoreArgs(t *testing.T) {
+	got := dnsRestoreArgs(dnsState{Service: "Wi-Fi", Servers: []string{"1.1.1.1", "8.8.8.8"}})
+	want := []string{"setdnsservers", "Wi-Fi", "1.1.1.1", "8.8.8.8"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("dnsRestoreArgs = %#v, want %#v", got, want)
+	}
+	got = dnsRestoreArgs(dnsState{Service: "Wi-Fi", Empty: true})
+	want = []string{"setdnsservers", "Wi-Fi", "Empty"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("dnsRestoreArgs empty = %#v, want %#v", got, want)
+	}
+}
+
 func TestUnitInstalledFalseWhenAbsent(t *testing.T) {
 	// 只验证函数可调用且返回 bool(系统服务在测试环境状态不定)
 	_ = UnitInstalled()

@@ -232,6 +232,22 @@ func TestArchiveClientLogsRecordsReason(t *testing.T) {
 	}
 }
 
+func TestDefaultLogArchiveRootIsAbsolute(t *testing.T) {
+	t.Setenv("BX_LOG_ARCHIVE_DIR", "")
+	root := defaultLogArchiveRoot()
+	if root == "" || !filepath.IsAbs(root) {
+		t.Fatalf("default log archive root should be absolute, got %q", root)
+	}
+}
+
+func TestDefaultLogArchiveRootHonorsEnv(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "diagnostics")
+	t.Setenv("BX_LOG_ARCHIVE_DIR", want)
+	if got := defaultLogArchiveRoot(); got != want {
+		t.Fatalf("default log archive root = %q, want env %q", got, want)
+	}
+}
+
 func TestPruneLogArchivesKeepsNewest(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 15; i++ {

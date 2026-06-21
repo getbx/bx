@@ -551,7 +551,9 @@ func serveAction(c *cli.Context) error {
 }
 
 func doctorAction(c *cli.Context) (err error) {
-	defer autoArchiveAfterClientCommand("doctor", &err, !c.Bool("json"))
+	if !c.Bool("json") {
+		defer autoArchiveAfterClientCommand("doctor", &err, true)
+	}
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, collectClientDoctor(c.String("config"), c.String("target"), c.Duration("timeout"), c.Bool("skip-probe")))
 	}
@@ -1691,7 +1693,7 @@ func archiveClientLogsWithReason(root, reason string) (string, error) {
 }
 
 func autoArchiveAfterClientCommand(command string, commandErr *error, announce bool) {
-	dir, err := archiveClientLogsWithReason(filepath.Join(defaultLogArchiveDir, "auto"), command)
+	dir, err := archiveClientLogsWithReason(defaultLogArchiveRoot(), command)
 	if err != nil {
 		if announce || (commandErr != nil && *commandErr != nil) {
 			fmt.Fprintf(os.Stderr, "Diagnostics archive failed: %v\n", err)
@@ -1703,6 +1705,20 @@ func autoArchiveAfterClientCommand(command string, commandErr *error, announce b
 	}
 	if announce || (commandErr != nil && *commandErr != nil) {
 		fmt.Fprintf(os.Stderr, "Diagnostics archived: %s\n", dir)
+	}
+}
+
+func defaultLogArchiveRoot() string {
+	if root := strings.TrimSpace(os.Getenv("BX_LOG_ARCHIVE_DIR")); root != "" {
+		return root
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return "/Library/Logs/bx/diagnostics"
+	case "linux":
+		return "/var/log/bx/diagnostics"
+	default:
+		return filepath.Join(os.TempDir(), "bx-diagnostics")
 	}
 }
 

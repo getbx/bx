@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -496,9 +497,15 @@ func EnableDNS(service string) (DNSStatus, error) {
 	if err != nil {
 		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
 	}
-	if _, err := os.Stat(dnsStatePath); err != nil {
-		if !os.IsNotExist(err) {
-			return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+	state, stateErr := readDNSState()
+	if stateErr != nil || shouldRefreshDNSState(state, resolved) {
+		if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
+			return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, stateErr
+		}
+		if stateErr == nil && shouldRefreshDNSState(state, resolved) {
+			if err := runNetworksetup(dnsRestoreArgs(state)...); err != nil {
+				return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+			}
 		}
 		servers, err := currentDNSServers(resolved)
 		if err != nil {
@@ -514,6 +521,10 @@ func EnableDNS(service string) (DNSStatus, error) {
 	}
 	flushDNSCache()
 	return InspectDNS(service)
+}
+
+func shouldRefreshDNSState(state dnsState, resolvedService string) bool {
+	return strings.TrimSpace(state.Service) != strings.TrimSpace(resolvedService)
 }
 
 func DisableDNS(service string) (DNSStatus, error) {
@@ -538,18 +549,21 @@ func DisableDNS(service string) (DNSStatus, error) {
 	if resolved == "" {
 		resolved = state.Service
 	}
-	var args []string
-	if state.Empty || len(state.Servers) == 0 {
-		args = []string{"setdnsservers", resolved, "Empty"}
-	} else {
-		args = append([]string{"setdnsservers", resolved}, state.Servers...)
-	}
+	state.Service = resolved
+	args := dnsRestoreArgs(state)
 	if err := runNetworksetup(args...); err != nil {
 		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
 	}
 	_ = os.Remove(dnsStatePath)
 	flushDNSCache()
 	return InspectDNS(resolved)
+}
+
+func dnsRestoreArgs(state dnsState) []string {
+	if state.Empty || len(state.Servers) == 0 {
+		return []string{"setdnsservers", state.Service, "Empty"}
+	}
+	return append([]string{"setdnsservers", state.Service}, state.Servers...)
 }
 
 func existingPaths(paths ...string) []string {
