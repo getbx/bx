@@ -199,7 +199,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func runDoctor() {
-        openTerminal("diag=\"$HOME/Library/Logs/bx/diagnostics\"; mkdir -p \"$diag\"; '\(bxPath)' doctor; '\(bxPath)' logs --archive --dir \"$diag\"; latest=$(find \"$diag\" -maxdepth 1 -type d -name 'bx-logs-*' | sort | tail -1); if [ -n \"$latest\" ]; then open \"$latest\"; fi; echo; read -n 1 -s -r -p 'Press any key to close'")
+        openTerminal("diag=\"$HOME/Library/Logs/bx/diagnostics\"; mkdir -p \"$diag\"; BX_LOG_ARCHIVE_DIR=\"$diag\" '\(bxPath)' doctor; latest=$(find \"$diag\" -maxdepth 1 -type d -name 'bx-logs-*' | sort | tail -1); if [ -n \"$latest\" ]; then open \"$latest\"; fi; echo; read -n 1 -s -r -p 'Press any key to close'")
     }
 
     @objc private func startBx() {

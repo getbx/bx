@@ -103,6 +103,8 @@ Run Doctor archives diagnostics under:
 ~/Library/Logs/bx/diagnostics
 ```
 
+The menu sets `BX_LOG_ARCHIVE_DIR` for that action, so diagnostics stay in the user's log folder instead of requiring system log write access.
+
 The menu bar app itself writes raw logs under:
 
 ```text
