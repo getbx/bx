@@ -131,11 +131,8 @@ func TestClientDoctorJSONReport(t *testing.T) {
 	if got := findCheck(rep.Checks, "config_readable"); got.Status != "fail" {
 		t.Fatalf("config_readable = %+v, want fail", got)
 	}
-	if got := findCheck(rep.Checks, "udp_policy"); got.Status != "warn" || !strings.Contains(got.Hint, "Google Meet") {
-		t.Fatalf("udp_policy = %+v, want warn with Google Meet hint", got)
-	}
-	if got := findCheck(rep.Checks, "udp_policy"); !strings.Contains(got.Hint, "sudo bx realtime on") {
-		t.Fatalf("udp_policy should mention realtime on now that it exists: %+v", got)
+	if got := findCheck(rep.Checks, "udp_policy"); got.Status != "ok" || !strings.Contains(got.Detail, "relayed through bx tunnel") {
+		t.Fatalf("udp_policy = %+v, want ok relay by default", got)
 	}
 	var buf bytes.Buffer
 	if err := writeJSON(&buf, rep); err != nil {
@@ -159,6 +156,18 @@ func TestClientDoctorReportsProxyUDPPolicy(t *testing.T) {
 	got := findCheck(rep.Checks, "udp_policy")
 	if got.Status != "ok" || !strings.Contains(got.Detail, "relayed through bx tunnel") || got.Hint != "" {
 		t.Fatalf("udp_policy = %+v, want ok proxy relay", got)
+	}
+}
+
+func TestClientDoctorReportsBlockedUDPPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server: \"brook://x\"\nudp:\n  mode: block\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep := collectClientDoctor(path, "example.com:443", 0, true)
+	got := findCheck(rep.Checks, "udp_policy")
+	if got.Status != "warn" || !strings.Contains(got.Hint, "Google Meet") || !strings.Contains(got.Hint, "sudo bx realtime on") {
+		t.Fatalf("udp_policy = %+v, want block warning with realtime hint", got)
 	}
 }
 
@@ -218,9 +227,9 @@ func TestRenderRealtimeStatusFallback(t *testing.T) {
 	out := renderRealtimeStatus(nil)
 	for _, want := range []string{
 		"realtime supported: true",
-		"udp mode: block",
+		"udp mode: proxy",
 		"udp blocked: unknown",
-		"Google Meet",
+		"relayed through bx tunnel",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("realtime fallback missing %q:\n%s", want, out)

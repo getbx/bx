@@ -720,7 +720,7 @@ func capabilities() capabilitiesReport {
 			{
 				Command:        "bx realtime status",
 				Category:       "udp",
-				Summary:        "Inspect UDP/realtime policy. Default mode blocks non-DNS UDP, which can affect WebRTC.",
+				Summary:        "Inspect the advanced UDP policy. bx up enables UDP relay by default.",
 				Stable:         true,
 				RequiresRoot:   false,
 				ChangesSystem:  false,
@@ -732,7 +732,7 @@ func capabilities() capabilitiesReport {
 			{
 				Command:        "sudo bx realtime on",
 				Category:       "udp",
-				Summary:        "Enable non-DNS UDP relay through the bx tunnel in the client config.",
+				Summary:        "Return the advanced UDP policy to the default relay mode.",
 				Stable:         true,
 				RequiresRoot:   true,
 				ChangesSystem:  true,
@@ -746,7 +746,7 @@ func capabilities() capabilitiesReport {
 			{
 				Command:        "sudo bx realtime off",
 				Category:       "udp",
-				Summary:        "Return UDP policy to the default fail-closed block mode in the client config.",
+				Summary:        "Advanced: block non-DNS UDP explicitly.",
 				Stable:         true,
 				RequiresRoot:   true,
 				ChangesSystem:  true,
@@ -755,7 +755,7 @@ func capabilities() capabilitiesReport {
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--config <path>", "--no-restart"},
 				Examples:       []string{"sudo bx realtime off"},
-				SafeNotes:      []string{"Writes client config and restarts bx automatically when the service is active.", "Use --no-restart to write config only.", "Default mode blocks non-DNS UDP."},
+				SafeNotes:      []string{"Writes client config and restarts bx automatically when the service is active.", "Use --no-restart to write config only.", "Block mode blocks non-DNS UDP."},
 			},
 			{
 				Command:        "bx dns status",
@@ -880,7 +880,7 @@ func capabilities() capabilitiesReport {
 func collectClientDoctor(configPath, target string, timeout time.Duration, skipProbe bool) doctorReport {
 	rep := doctorReport{Kind: "client", Version: version.String(), SecretsRedacted: true}
 	cfgPath := resolveConfigPath(configPath)
-	udpMode := "block"
+	udpMode := "proxy"
 	rep.addCheck("config", "info", cfgPath, "")
 	b, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -933,7 +933,7 @@ func udpPolicyDoctor(mode string) (status, detail, hint string) {
 	case "direct-realtime":
 		return "warn", "non-DNS UDP direct; may expose real network path", "Use sudo bx realtime on to relay UDP through bx, or sudo bx realtime off to block it"
 	default:
-		return "warn", "non-DNS UDP blocked", "Google Meet/WebRTC may stutter; use sudo bx realtime on then restart bx"
+		return "warn", "non-DNS UDP blocked", "Google Meet/WebRTC may stutter; use sudo bx realtime on"
 	}
 }
 
@@ -1445,8 +1445,8 @@ func readRealtimeReport() *stats.Report {
 }
 
 func renderRealtimeStatus(rep *stats.Report) string {
-	mode := "block"
-	note := "non-DNS UDP blocked; WebRTC/Google Meet may stutter"
+	mode := "proxy"
+	note := "non-DNS UDP relayed through bx tunnel"
 	blocked := "unknown"
 	if rep != nil {
 		if rep.UDPMode != "" {

@@ -67,8 +67,8 @@ func TestParseDefaultsForBootstrap(t *testing.T) {
 	if c.Lists.RefreshInterval() != 24*time.Hour {
 		t.Errorf("Interval 默认应为 24h, got %v", c.Lists.RefreshInterval())
 	}
-	if c.UDP.Mode != "block" {
-		t.Errorf("UDP mode 默认应为 block, got %q", c.UDP.Mode)
+	if c.UDP.Mode != "proxy" {
+		t.Errorf("UDP mode 默认应为 proxy, got %q", c.UDP.Mode)
 	}
 }
 
