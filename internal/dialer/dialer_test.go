@@ -11,10 +11,14 @@ import (
 	"github.com/getbx/bx/internal/splitdns"
 )
 
-// recordDialer 记录被请求拨号的地址,返回一个假连接。
-type recordDialer struct{ lastAddr string }
+// recordDialer 记录被请求拨号的网络/地址,返回一个假连接。
+type recordDialer struct {
+	lastNetwork string
+	lastAddr    string
+}
 
-func (r *recordDialer) DialContext(_ context.Context, _, addr string) (net.Conn, error) {
+func (r *recordDialer) DialContext(_ context.Context, network, addr string) (net.Conn, error) {
+	r.lastNetwork = network
 	r.lastAddr = addr
 	c1, _ := net.Pipe()
 	return c1, nil
@@ -110,6 +114,20 @@ func TestDialDirectRealtimeUDPResolvesFakeIP(t *testing.T) {
 	}
 	if dr.lastAddr != "74.125.250.129:19302" {
 		t.Fatalf("UDP fake-IP direct target = %q, want 74.125.250.129:19302", dr.lastAddr)
+	}
+}
+
+func TestDialProxyUDPUsesProxy(t *testing.T) {
+	d, px, dr := newTestDialer(nil, fakeResolver{}, true, true)
+	d.UDPMode = "proxy"
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 3478, UDP: true}); err != nil {
+		t.Fatalf("proxy UDP should dial proxy: %v", err)
+	}
+	if px.lastNetwork != "udp" || px.lastAddr != "8.8.8.8:3478" {
+		t.Fatalf("UDP proxy dial = %s %q, want udp 8.8.8.8:3478", px.lastNetwork, px.lastAddr)
+	}
+	if dr.lastAddr != "" {
+		t.Fatalf("UDP proxy should not touch direct, got %q", dr.lastAddr)
 	}
 }
 

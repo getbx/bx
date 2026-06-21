@@ -106,6 +106,24 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			debugf("udp direct-realtime: ip=%s target=%s", m.IP, target)
 			return d.Direct.DialContext(ctx, "udp", target)
 		}
+		if d.UDPMode == "proxy" {
+			if d.Killswitch && d.Healthy != nil && !d.Healthy() {
+				if d.Stats != nil {
+					d.Stats.Blocked()
+				}
+				return nil, ErrBlocked
+			}
+			if d.Stats != nil {
+				d.Stats.Proxy()
+			}
+			host := m.Domain
+			if host == "" {
+				host = m.IP.String()
+			}
+			target := net.JoinHostPort(host, strconv.Itoa(int(m.Port)))
+			debugf("udp proxy: ip=%s domain=%q target=%s", m.IP, m.Domain, target)
+			return d.Proxy.DialContext(ctx, "udp", target)
+		}
 		if d.Stats != nil {
 			d.Stats.Blocked()
 			d.Stats.UDPBlocked()

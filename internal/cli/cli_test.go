@@ -150,6 +150,18 @@ func TestClientDoctorJSONReport(t *testing.T) {
 	}
 }
 
+func TestClientDoctorReportsProxyUDPPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server: \"brook://x\"\nudp:\n  mode: proxy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep := collectClientDoctor(path, "example.com:443", 0, true)
+	got := findCheck(rep.Checks, "udp_policy")
+	if got.Status != "ok" || !strings.Contains(got.Detail, "relayed through bx tunnel") || got.Hint != "" {
+		t.Fatalf("udp_policy = %+v, want ok proxy relay", got)
+	}
+}
+
 func TestCapabilitiesReport(t *testing.T) {
 	rep := capabilities()
 	if rep.SchemaVersion != 1 || rep.Product != "bx" || !rep.SecretsRedacted {
@@ -181,8 +193,8 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !realtimeOn.Stable || !realtimeOn.RequiresRoot || !realtimeOn.ChangesSystem || realtimeOn.ChangesNetwork || !realtimeOn.ReadsSecrets {
 		t.Fatalf("unexpected realtime on capability: %+v", realtimeOn)
 	}
-	if !strings.Contains(strings.Join(realtimeOn.SafeNotes, " "), "may expose") {
-		t.Fatalf("realtime on should document UDP direct risk: %+v", realtimeOn)
+	if !strings.Contains(strings.Join(realtimeOn.SafeNotes, " "), "Relays non-DNS UDP") {
+		t.Fatalf("realtime on should document UDP relay behavior: %+v", realtimeOn)
 	}
 	realtimeOff := findCapability(rep.Commands, "sudo bx realtime off")
 	if !realtimeOff.Stable || !realtimeOff.RequiresRoot || !realtimeOff.ChangesSystem || realtimeOff.ChangesNetwork || !realtimeOff.ReadsSecrets {
@@ -238,15 +250,15 @@ func TestSetRealtimeModeUpdatesClientConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte("server: \"brook://x\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := setRealtimeMode(path, "direct-realtime"); err != nil {
+	if err := setRealtimeMode(path, "proxy"); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := loadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.UDP.Mode != "direct-realtime" {
-		t.Fatalf("udp mode after on = %q, want direct-realtime", cfg.UDP.Mode)
+	if cfg.UDP.Mode != "proxy" {
+		t.Fatalf("udp mode after on = %q, want proxy", cfg.UDP.Mode)
 	}
 	if err := setRealtimeMode(path, "block"); err != nil {
 		t.Fatal(err)
@@ -284,15 +296,15 @@ func TestSetRealtimeModePreservesBXLink(t *testing.T) {
 
 func TestRealtimeReportFromConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("server: \"brook://x\"\nudp:\n  mode: direct-realtime\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("server: \"brook://x\"\nudp:\n  mode: proxy\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rep := realtimeReportFromConfig(path)
 	if rep == nil {
 		t.Fatal("expected realtime report from config")
 	}
-	if rep.UDPMode != "direct-realtime" || !strings.Contains(rep.UDPNote, "may expose") {
-		t.Fatalf("report = %+v, want direct-realtime with risk note", rep)
+	if rep.UDPMode != "proxy" || !strings.Contains(rep.UDPNote, "relayed through bx tunnel") {
+		t.Fatalf("report = %+v, want proxy relay note", rep)
 	}
 }
 

@@ -37,7 +37,7 @@ sudo bx realtime off
 语义:
 
 - `off`:默认模式。非 DNS UDP 阻断。最安全,不泄漏。
-- `on`:实时模式。允许会议/实时应用使用受控 UDP 策略。初版可用 direct-realtime,后续升级到 proxy。
+- `on`:实时模式。非 DNS UDP 通过 bx 隧道中继,避免走本地真实网络路径。
 - `status`:显示当前 UDP 策略、是否可能泄漏、最近 UDP 阻断/放行统计、建议命令。
 
 配置保持简单:
@@ -47,7 +47,7 @@ udp:
   mode: block # block | direct-realtime | proxy
 ```
 
-`bx realtime on` 修改运行期策略,等价于临时切到 `direct-realtime` 或未来的 `proxy`。如果服务未运行,命令给出明确提示:`sudo bx up`。
+`bx realtime on` 写入 `udp.mode=proxy`,重启服务后生效。`direct-realtime` 仅保留为兼容/应急配置,不作为推荐用户路径。
 
 ## 4. 两阶段架构
 
@@ -84,18 +84,18 @@ allowlist 初版以端口/域名来源组合为主:
 
 ```text
 TUN UDP
-  -> bx client UDP session manager
-  -> bx tunnel transport
-  -> bx server UDP relay
+  -> bx client SOCKS5 UDP ASSOCIATE
+  -> brook/bx tunnel transport
+  -> bx server 内置 brook UDP relay
   -> Internet UDP endpoint
 ```
 
 关键组件:
 
-- `UDPProxy` interface:由 dialer 调用,不绑定具体协议。
-- `UDPSessionManager`:按五元组维护会话、idle timeout、双向转发、统计。
-- `ServerUDPRelay`:服务端收到 UDP frame 后对外发包,并把响应发回 client。
-- framing:包含 session id、目标地址、payload、close/keepalive 控制。
+- `internal/socks5.Dialer`:TCP 继续使用 SOCKS5 CONNECT;UDP 使用 SOCKS5 UDP ASSOCIATE。
+- `dialer.UDPMode=proxy`:非 DNS UDP 进入 Proxy dialer,受 tunnel health/killswitch 保护。
+- 服务端仍由 bx 启动内置 brook server,用户不需要知道 brook。
+- 后续若替换协议,保持 dialer/config/status 语义不变,只替换 tunnel transport。
 
 出口选择:
 
@@ -146,19 +146,13 @@ if m.UDP {
 
 - `block`:统计 blocked,返回 `ErrBlocked`。
 - `direct-realtime`:命中 realtime allowlist 走 `DirectDialer`,否则 block。
-- `proxy`:走 `UDPProxy`,若不可用且 killswitch 开启则 block。
+- `proxy`:走 SOCKS5 UDP ASSOCIATE 进入 bx 隧道;若 tunnel 不健康且 killswitch 开启则 block。
 
 ### 5.4 tun engine
 
 当前 `handleUDP` 已能把 UDP 五元组交给 `handleConn`。阶段一可复用现有 `net.Conn` relay。
 
-阶段二需要更细的 UDP session 管理:
-
-- UDP 是 packet-oriented,不能完全当 TCP stream。
-- 需要保留 datagram 边界。
-- 需要 idle timeout,防止 session map 泄漏。
-
-因此阶段二应在 tun 层或 dialer 层引入 packet relay,而不是继续依赖 `io.Copy` 式 stream relay。
+当前 UDP 通过 `net.Conn` 形式接入,底层 SOCKS5 UDP dialer 保留 datagram 边界。后续如替换为 bx 自有 relay,再在 tunnel/dialer 边界引入显式 packet relay。
 
 ### 5.5 status / doctor
 
@@ -184,9 +178,9 @@ UDP     blocked 14422  realtime 0  proxy 0  mode block
 1. 先补诊断:status/doctor/capabilities 明确 UDP blocked,不改变行为。
 2. 加 config `udp.mode=block` 和测试。
 3. 加 `bx realtime status`。
-4. 加 `direct-realtime` 策略和最小 allowlist,只在用户显式开启时生效。
-5. 实机验证 Google Meet/UDP STUN 行为。
-6. 设计并实现 `UDPProxy` + server relay,把 `realtime on` 的默认策略升级为 `proxy`。
+4. 加 `direct-realtime` 作为应急策略。
+5. 实现 SOCKS5 UDP ASSOCIATE,把 `realtime on` 的默认策略升级为 `proxy`。
+6. 实机验证 Google Meet/WebRTC STUN/TURN 行为。
 
 ## 7. 测试策略
 
@@ -195,17 +189,19 @@ UDP     blocked 14422  realtime 0  proxy 0  mode block
 - config 默认 `udp.mode=block`;
 - 非法 mode 报错;
 - `block` 模式 UDP 仍阻断;
-- `direct-realtime` 未命中 allowlist 仍阻断;
-- `direct-realtime` 命中 allowlist 走 DirectDialer;
+- `direct-realtime` 走 DirectDialer 并明确标注泄漏风险;
+- `proxy` 模式 UDP 走 Proxy dialer;
+- SOCKS5 UDP ASSOCIATE 保留目标地址和 datagram payload;
 - `doctor --json` 在 block 模式给出 UDP/WebRTC hint;
-- `capabilities` 暴露 realtime 命令和风险说明。
+- `doctor --json` 在 proxy 模式报告 UDP relay ok;
+- `capabilities` 暴露 realtime 命令和 relay 说明。
 
 集成/实机测试:
 
 - macOS `bx up` 后 `bx status` 显示 UDP mode;
 - Google Meet 或 WebRTC test 页面在 `block` 与 `realtime on` 下对比;
 - `bx down` 后 DNS/路由仍恢复;
-- 在 compass Wi-Fi 这种已有上游分流网络中,确认 `bx down` 是推荐会议路径。
+- 在 compass Wi-Fi 这种已有上游分流网络中,对比 `bx realtime on` 与 `bx down` 的会议上行质量。
 
 ## 8. 产品原则
 
