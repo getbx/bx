@@ -2,13 +2,16 @@
 
 Small macOS menu bar companion for bx.
 
-It is intentionally not a control panel. It shows whether bx is on, healthy, or needs attention, and exposes a few actions:
+It is intentionally not a control panel. It shows whether bx is protected, off, not set up, or needs attention, and exposes a few actions:
 
 - Open Status
 - View Logs
 - Run Doctor
+- Start bx
 - Restart bx
 - Turn Off
+
+It does not install, configure, start, or stop the bx network service by itself unless you choose one of the explicit menu actions.
 
 Build locally:
 
@@ -33,6 +36,22 @@ Start at login:
 scripts/install-macos-menu.sh install
 ```
 
+The installer:
+
+- packages `Bx.app`
+- installs it to `~/Applications/Bx.app`
+- installs a user LaunchAgent at `~/Library/LaunchAgents/com.getbx.bx.menu.plist`
+- starts the menu bar app
+- does not change bx DNS, routes, service state, or client config
+
+Manage the installed app:
+
+```bash
+scripts/install-macos-menu.sh status
+scripts/install-macos-menu.sh restart
+scripts/install-macos-menu.sh uninstall
+```
+
 Manual LaunchAgent install:
 
 ```bash
@@ -54,6 +73,19 @@ BxMenu reads status through:
 
 ```bash
 /usr/local/bin/bx status --json
+/usr/local/bin/bx doctor --json --skip-probe
+/usr/local/bin/bx dns status
+```
+
+Run Doctor archives diagnostics under:
+
+```text
+~/Library/Logs/bx/diagnostics
 ```
 
 Install bx first with `sudo bx setup <client-link>`.
+When updating from a local build, also update the CLI used by the menu bar:
+
+```bash
+sudo install -m 0755 ./bx /usr/local/bin/bx
+```
