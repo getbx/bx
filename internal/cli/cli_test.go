@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -212,6 +213,70 @@ func TestClientDoctorReportsBlockedUDPPolicy(t *testing.T) {
 	}
 }
 
+func TestArchiveClientLogsRecordsReason(t *testing.T) {
+	dir, err := archiveClientLogsWithReason(t.TempDir(), "doctor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := os.ReadFile(filepath.Join(dir, "meta.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(meta), "reason=doctor") {
+		t.Fatalf("meta should include archive reason:\n%s", meta)
+	}
+	for _, name := range []string{"doctor.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("archive should include %s: %v", name, err)
+		}
+	}
+}
+
+func TestPruneLogArchivesKeepsNewest(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 15; i++ {
+		name := filepath.Join(root, "bx-logs-20260101-1200"+leftPadInt(i, 2))
+		if err := os.MkdirAll(name, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pruneLogArchives(root, 12); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			got = append(got, entry.Name())
+		}
+	}
+	if len(got) != 12 {
+		t.Fatalf("dirs after prune = %d, want 12: %v", len(got), got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "bx-logs-20260101-120000")); !os.IsNotExist(err) {
+		t.Fatalf("oldest archive should be pruned, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "bx-logs-20260101-120014")); err != nil {
+		t.Fatalf("newest archive should be kept: %v", err)
+	}
+}
+
+func TestPruneLogArchivesAllowsFewerThanKeep(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "bx-logs-20260101-120000"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneLogArchives(root, 12); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "bx-logs-20260101-120000")); err != nil {
+		t.Fatalf("single archive should be kept: %v", err)
+	}
+}
+
 func TestCapabilitiesReport(t *testing.T) {
 	rep := capabilities()
 	if rep.SchemaVersion != 1 || rep.Product != "bx" || !rep.SecretsRedacted {
@@ -277,6 +342,14 @@ func TestCapabilitiesReport(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
 		t.Fatalf("capabilities json should be parseable: %v\n%s", err, buf.String())
 	}
+}
+
+func leftPadInt(v, width int) string {
+	s := strconv.Itoa(v)
+	for len(s) < width {
+		s = "0" + s
+	}
+	return s
 }
 
 func TestRenderRealtimeStatusFallback(t *testing.T) {
