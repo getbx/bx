@@ -367,6 +367,10 @@ func TestCapabilitiesReport(t *testing.T) {
 	if menuStatus.Command == "" || !menuStatus.Stable || menuStatus.ChangesSystem || menuStatus.ChangesNetwork {
 		t.Fatalf("unexpected macOS menu status capability: %+v", menuStatus)
 	}
+	macRelease := findCapability(rep.Commands, "scripts/package-macos-release.sh")
+	if macRelease.Command == "" || !macRelease.Stable || macRelease.RequiresRoot || macRelease.ChangesSystem || macRelease.ChangesNetwork {
+		t.Fatalf("unexpected macOS release capability: %+v", macRelease)
+	}
 	var buf bytes.Buffer
 	if err := writeJSON(&buf, rep); err != nil {
 		t.Fatal(err)

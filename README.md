@@ -119,6 +119,26 @@ scripts/package-macos-menu.sh
 open dist/macos/Bx.app
 ```
 
+生成可分发 macOS release 包:
+
+```bash
+scripts/package-macos-release.sh
+```
+
+产物:
+
+```text
+dist/release/bx-macos-arm64/
+  bx
+  Bx.app
+  install.sh
+  uninstall.sh
+  README.txt
+dist/release/bx-macos-arm64.tar.gz
+```
+
+`install.sh` 只安装 CLI 和菜单栏 App,不会执行 `bx setup`、不会执行 `bx up`、不会修改 DNS 或路由。
+
 菜单栏 App 会调用 `/usr/local/bin/bx`,因此本机 CLI 更新后也应同步安装到该路径:
 
 ```bash
@@ -190,6 +210,7 @@ sudo bx server shares --json
 | `bx doctor --json` | 输出客户端机器可读诊断 |
 | `bx logs` | 查看客户端日志 |
 | `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist/macos/Bx.app` |
+| `scripts/package-macos-release.sh` | 生成 macOS release 目录和 `.tar.gz` |
 | `scripts/install-macos-menu.sh install` | 安装并启动 macOS 菜单栏 App,不修改网络配置 |
 | `scripts/install-macos-menu.sh status` | 查看 macOS 菜单栏 App 安装和运行状态 |
 | `scripts/install-macos-menu.sh uninstall` | 移除 macOS 菜单栏 App 和登录项 |
