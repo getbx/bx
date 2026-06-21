@@ -13,6 +13,13 @@ It is intentionally not a control panel. It shows whether bx is protected, off, 
 
 It does not install, configure, start, or stop the bx network service by itself unless you choose one of the explicit menu actions.
 
+If the menu shows `Update Required`, update the CLI used by the menu bar:
+
+```bash
+sudo install -m 0755 ./bx /usr/local/bin/bx
+scripts/install-macos-menu.sh restart
+```
+
 Build locally:
 
 ```bash

@@ -105,6 +105,13 @@ scripts/install-macos-menu.sh restart
 scripts/install-macos-menu.sh uninstall
 ```
 
+如果菜单栏显示 `Update Required`,说明 `/usr/local/bin/bx` 太旧。重新安装当前 CLI 后重启菜单栏:
+
+```bash
+sudo install -m 0755 ./bx /usr/local/bin/bx
+scripts/install-macos-menu.sh restart
+```
+
 如果只想生成 `.app` 包而不安装:
 
 ```bash
