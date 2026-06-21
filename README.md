@@ -89,7 +89,7 @@ macOS release 包会一次装好两件事:
 - 菜单栏 App:安装到 `~/Applications/Bx.app`
 - 菜单栏日志:写到 `~/Library/Logs/bx/menu.log` 和 `menu.err.log`
 
-菜单栏 App 用于显示当前保护状态、延迟、DNS 接管状态和诊断入口。它不是控制面板,也不会自动启动 bx 或修改网络配置。真正启动和接管网络仍由 `sudo bx up` 完成。
+菜单栏 App 用于显示当前保护状态、延迟、DNS 接管状态和诊断入口。它不是控制面板,也不会自动启动 bx 或修改网络配置。真正启动和接管网络需要用户明确确认:可以在菜单栏里启动,也可以运行 `sudo bx up`。
 
 下载 release 后运行:
 
@@ -99,7 +99,7 @@ macOS release 包会一次装好两件事:
 
 `install.sh` 会先检查 macOS、CPU 架构和必要文件,避免装错包。它只安装 CLI 和菜单栏 App,不会执行 `bx setup`、不会执行 `bx up`、不会修改 DNS 或路由。
 
-安装后如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即启动 bx。
+安装后如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即启动 bx。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
 #### 从源码安装菜单栏 App
 
