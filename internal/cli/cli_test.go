@@ -272,6 +272,30 @@ func TestSetRealtimeModeUpdatesClientConfig(t *testing.T) {
 	}
 }
 
+func TestPlanRealtimePostChange(t *testing.T) {
+	tests := []struct {
+		name          string
+		noRestart     bool
+		unitInstalled bool
+		activeState   string
+		wantRestart   bool
+		wantContains  string
+	}{
+		{"active restarts", false, true, "active", true, "已重启"},
+		{"no restart flag", true, true, "active", false, "重启 bx 生效"},
+		{"not installed", false, false, "inactive", false, "sudo bx up"},
+		{"inactive installed", false, true, "inactive", false, "下次 sudo bx up"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := planRealtimePostChange(tt.noRestart, tt.unitInstalled, tt.activeState)
+			if got.Restart != tt.wantRestart || !strings.Contains(got.Message, tt.wantContains) {
+				t.Fatalf("plan = %+v, want restart=%v message containing %q", got, tt.wantRestart, tt.wantContains)
+			}
+		})
+	}
+}
+
 func TestSetRealtimeModePreservesBXLink(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	link := blink.Encode("brook://server?server=example.com%3A443&password=pw")
