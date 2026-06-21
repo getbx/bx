@@ -288,8 +288,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
     @objc private func turnOff() {
         let alert = NSAlert()
-        alert.messageText = "Turn off bx?"
-        alert.informativeText = "This stops bx and restores managed DNS settings."
+        alert.messageText = "Turn off protection?"
+        alert.informativeText = "bx will stop protecting system traffic and restore managed DNS settings."
         alert.addButton(withTitle: "Turn Off")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
