@@ -162,7 +162,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
         switch state {
-        case .setupNeeded, .missing, .updateNeeded:
+        case .setupNeeded:
+            menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+        case .missing, .updateNeeded:
             break
         default:
             menu.addAction("Open Status", symbol: "list.bullet.rectangle", target: self, action: #selector(openStatus))
@@ -201,7 +203,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startBx() {
-        _ = runPrivileged("'\(bxPath)' up")
+        if !runPrivileged("'\(bxPath)' up") {
+            showMessage("Start Failed", "bx did not start. Run Doctor for details.")
+        }
         refresh()
     }
 
@@ -219,7 +223,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Start")
         alert.addButton(withTitle: "Later")
         if alert.runModal() == .alertFirstButtonReturn {
-            _ = runPrivileged("'\(bxPath)' up")
+            if !runPrivileged("'\(bxPath)' up") {
+                showMessage("Start Failed", "bx is configured, but did not start. Run Doctor for details.")
+            }
         }
         refresh()
     }
@@ -229,7 +235,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func restartBx() {
-        _ = runPrivileged("'\(bxPath)' down && '\(bxPath)' up")
+        if !runPrivileged("'\(bxPath)' down && '\(bxPath)' up") {
+            showMessage("Restart Failed", "bx did not restart. Run Doctor for details.")
+        }
         refresh()
     }
 
@@ -240,7 +248,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Turn Off")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
-            _ = runPrivileged("'\(bxPath)' down")
+            if !runPrivileged("'\(bxPath)' down") {
+                showMessage("Turn Off Failed", "bx did not stop. Run Doctor for details.")
+            }
             refresh()
         }
     }
