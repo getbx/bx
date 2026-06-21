@@ -8,8 +8,8 @@ It is intentionally not a control panel. It shows whether bx is protected, off, 
 - View Logs
 - Run Doctor
 - Set Up bx
-- Start bx
-- Restart bx
+- Start Protection
+- Restart Protection
 - Turn Off
 
 It does not install, configure, start, or stop the bx network service by itself unless you choose one of the explicit menu actions.
