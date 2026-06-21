@@ -198,7 +198,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .connected:
             menu.addAction("Restart Protection", symbol: "arrow.clockwise", target: self, action: #selector(restartBx))
             menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
-        case .warning, .off:
+        case .warning:
+            menu.addAction("Restart Protection", symbol: "arrow.clockwise", target: self, action: #selector(restartBx))
+            menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
+        case .off:
             menu.addAction("Start Protection", symbol: "play.fill", target: self, action: #selector(startBx))
         case .updateNeeded:
             menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
