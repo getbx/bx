@@ -216,6 +216,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startBx() {
+        guard confirmStartProtection() else { return }
         if !runPrivileged("'\(bxPath)' up") {
             showMessage("Start Failed", "bx did not start. Run Doctor for details.")
         }
@@ -230,12 +231,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             refresh()
             return
         }
-        let alert = NSAlert()
-        alert.messageText = "bx is set up"
-        alert.informativeText = "Start protection now? bx will take over system traffic until you turn it off."
-        alert.addButton(withTitle: "Start Protection")
-        alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn {
+        if confirmStartProtection(title: "bx is set up", cancelTitle: "Later") {
             if !runPrivileged("'\(bxPath)' up") {
                 showMessage("Start Failed", "bx is configured, but did not start. Run Doctor for details.")
             }
@@ -322,6 +318,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return nil
         }
         return link
+    }
+
+    private func confirmStartProtection(title: String = "Start protection?", cancelTitle: String = "Cancel") -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "bx will take over system traffic until you turn it off."
+        alert.addButton(withTitle: "Start Protection")
+        alert.addButton(withTitle: cancelTitle)
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func looksLikeClientLink(_ link: String) -> Bool {
