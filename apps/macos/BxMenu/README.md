@@ -37,6 +37,14 @@ ditto dist/macos/Bx.app ~/Applications/Bx.app
 open ~/Applications/Bx.app
 ```
 
+Package a full macOS release:
+
+```bash
+scripts/package-macos-release.sh
+```
+
+The release folder includes `bx`, `Bx.app`, `install.sh`, `uninstall.sh`, and `README.txt`.
+
 Start at login:
 
 ```bash
