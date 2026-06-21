@@ -149,7 +149,15 @@ func dnsCommands() []*cli.Command {
 
 func realtimeCommands() []*cli.Command {
 	return []*cli.Command{
-		{Name: "status", Usage: "查看 UDP / 实时应用策略", Action: realtimeStatusAction},
+		{Name: "status", Usage: "查看 UDP / 实时应用策略", Flags: realtimeFlags(), Action: realtimeStatusAction},
+		{Name: "on", Usage: "开启非 DNS UDP 直连模式(可能暴露真实网络路径)", Flags: realtimeFlags(), Action: realtimeOnAction},
+		{Name: "off", Usage: "恢复默认 UDP 阻断模式", Flags: realtimeFlags(), Action: realtimeOffAction},
+	}
+}
+
+func realtimeFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
 	}
 }
 
@@ -721,6 +729,34 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"Read-only.", "UDP policy is currently visible through bx status and bx doctor --json."},
 			},
 			{
+				Command:        "sudo bx realtime on",
+				Category:       "udp",
+				Summary:        "Enable explicit direct-realtime UDP mode in the client config.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"text"},
+				Arguments:      []string{"--config <path>"},
+				Examples:       []string{"sudo bx realtime on"},
+				SafeNotes:      []string{"Writes client config only; restart bx for runtime effect.", "direct-realtime sends non-DNS UDP directly and may expose the real network path."},
+			},
+			{
+				Command:        "sudo bx realtime off",
+				Category:       "udp",
+				Summary:        "Return UDP policy to the default fail-closed block mode in the client config.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"text"},
+				Arguments:      []string{"--config <path>"},
+				Examples:       []string{"sudo bx realtime off"},
+				SafeNotes:      []string{"Writes client config only; restart bx for runtime effect.", "Default mode blocks non-DNS UDP."},
+			},
+			{
 				Command:        "bx dns status",
 				Category:       "dns",
 				Summary:        "Inspect macOS system DNS takeover state.",
@@ -885,7 +921,7 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 		"udp_policy",
 		"warn",
 		"non-DNS UDP blocked",
-		"Google Meet/WebRTC may stutter; use sudo bx down on trusted routed networks",
+		"Google Meet/WebRTC may stutter; use sudo bx realtime on then restart bx, or sudo bx down on trusted routed networks",
 	)
 	rep.OK = !rep.hasFail()
 	return rep
@@ -1322,7 +1358,27 @@ func statusAction(c *cli.Context) error {
 }
 
 func realtimeStatusAction(c *cli.Context) error {
-	fmt.Print(renderRealtimeStatus(readRealtimeReport()))
+	rep := readRealtimeReport()
+	if rep == nil {
+		rep = realtimeReportFromConfig(c.String("config"))
+	}
+	fmt.Print(renderRealtimeStatus(rep))
+	return nil
+}
+
+func realtimeOnAction(c *cli.Context) error {
+	if err := setRealtimeMode(c.String("config"), "direct-realtime"); err != nil {
+		return err
+	}
+	fmt.Println("✅ realtime 已开启: 非 DNS UDP 将直连,可能暴露真实网络路径。重启 bx 生效: sudo bx down && sudo bx up")
+	return nil
+}
+
+func realtimeOffAction(c *cli.Context) error {
+	if err := setRealtimeMode(c.String("config"), "block"); err != nil {
+		return err
+	}
+	fmt.Println("✅ realtime 已关闭: 非 DNS UDP 将恢复阻断。重启 bx 生效: sudo bx down && sudo bx up")
 	return nil
 }
 
@@ -1358,6 +1414,88 @@ func renderRealtimeStatus(rep *stats.Report) string {
 	fmt.Fprintf(&b, "udp blocked: %s\n", blocked)
 	fmt.Fprintf(&b, "detail: %s\n", note)
 	return b.String()
+}
+
+func realtimeReportFromConfig(path string) *stats.Report {
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return nil
+	}
+	return &stats.Report{
+		UDPMode: cfg.UDP.Mode,
+		UDPNote: realtimeNote(cfg.UDP.Mode),
+	}
+}
+
+func realtimeNote(mode string) string {
+	switch mode {
+	case "direct-realtime":
+		return "non-DNS UDP direct; may expose real network path"
+	case "proxy":
+		return "UDP proxy requested but not implemented; non-DNS UDP remains blocked"
+	default:
+		return "non-DNS UDP blocked; WebRTC/Google Meet may stutter"
+	}
+}
+
+func setRealtimeMode(path, mode string) error {
+	path = resolveConfigPath(path)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读配置 %s: %w", path, err)
+	}
+	if _, err := config.Parse(b); err != nil {
+		return err
+	}
+	out := setYAMLScalar(b, "udp", "mode", mode)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		return fmt.Errorf("写配置 %s: %w", path, err)
+	}
+	return os.Chmod(path, 0o600)
+}
+
+func setYAMLScalar(in []byte, section, key, value string) []byte {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(in, &doc); err != nil || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return in
+	}
+	root := doc.Content[0]
+	sec := mappingValue(root, section)
+	if sec == nil {
+		sec = &yaml.Node{Kind: yaml.MappingNode}
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: section}, sec)
+	}
+	if sec.Kind != yaml.MappingNode {
+		sec.Kind = yaml.MappingNode
+		sec.Tag = "!!map"
+		sec.Value = ""
+		sec.Content = nil
+	}
+	val := mappingValue(sec, key)
+	if val == nil {
+		sec.Content = append(sec.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+	} else {
+		val.Kind = yaml.ScalarNode
+		val.Tag = "!!str"
+		val.Value = value
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return in
+	}
+	return out
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }
 
 func logsAction(c *cli.Context) error {
