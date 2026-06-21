@@ -41,9 +41,10 @@ Package a full macOS release:
 
 ```bash
 scripts/package-macos-release.sh
+scripts/verify-macos-release.sh
 ```
 
-The release folder includes `bx`, `Bx.app`, `install.sh`, `uninstall.sh`, and `README.txt`.
+The release folder includes `bx`, `Bx.app`, `install.sh`, `uninstall.sh`, `README.txt`, and a top-level `SHA256SUMS`.
 
 Start at login:
 
