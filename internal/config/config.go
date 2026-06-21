@@ -93,7 +93,7 @@ func Parse(b []byte) (*Config, error) {
 		c.DNS.FakeipCIDR = "198.18.0.0/15"
 	}
 	if c.UDP.Mode == "" {
-		c.UDP.Mode = "block"
+		c.UDP.Mode = "proxy"
 	}
 	switch c.UDP.Mode {
 	case "block", "direct-realtime", "proxy":
