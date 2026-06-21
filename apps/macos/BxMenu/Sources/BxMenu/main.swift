@@ -163,10 +163,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         switch state {
         case .setupNeeded:
+            menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
             menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
         case .missing, .updateNeeded:
-            break
-        default:
+            menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+        case .off:
+            menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+            menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+        case .connected, .warning:
             menu.addAction("Open Status", symbol: "list.bullet.rectangle", target: self, action: #selector(openStatus))
             menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
             menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
@@ -195,7 +199,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openLogs() {
-        openTerminal("logs=\"$HOME/Library/Logs/bx\"; if [ -d \"$logs\" ]; then open \"$logs\"; else '\(bxPath)' logs -n 120; fi; echo; read -n 1 -s -r -p 'Press any key to close'")
+        openTerminal("logs=\"$HOME/Library/Logs/bx\"; mkdir -p \"$logs\"; open \"$logs\"; echo; read -n 1 -s -r -p 'Press any key to close'")
     }
 
     @objc private func runDoctor() {
