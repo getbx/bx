@@ -1115,9 +1115,9 @@ func probeFlags() []cli.Flag {
 func probeAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if arg == "" {
-		return fmt.Errorf("用法: bx probe bx://...")
+		return fmt.Errorf("用法: bx probe <bx://... 或 brook://...>")
 	}
-	link, err := blink.Decode(arg)
+	link, _, err := normalizeClientLink(arg)
 	if err != nil {
 		return err
 	}
@@ -1149,15 +1149,11 @@ func userRuntimeDir() (string, error) {
 func setupAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if arg == "" {
-		return fmt.Errorf("用法: sudo bx setup bx://...")
+		return fmt.Errorf("用法: sudo bx setup <bx://... 或 brook://...>")
 	}
-	link, err := blink.Decode(arg)
+	link, configLink, err := normalizeClientLink(arg)
 	if err != nil {
 		return err
-	}
-	configLink := arg
-	if strings.HasPrefix(arg, "blink://") {
-		configLink = blink.Encode(link)
 	}
 	cfgPath := c.String("config")
 	brookPath, err := provision.EnsureBrook("/var/lib/bx", "", embedded.Brook(), embedded.BrookVersion())
@@ -1189,6 +1185,25 @@ func setupAction(c *cli.Context) error {
 	}
 	fmt.Printf("✅ bx 已装到 %s、写好配置 %s、装好服务。下一步:sudo bx up\n", install.BinPath, cfgPath)
 	return nil
+}
+
+func normalizeClientLink(arg string) (link string, configLink string, err error) {
+	arg = strings.TrimSpace(arg)
+	switch {
+	case strings.HasPrefix(arg, "brook://"):
+		return arg, blink.Encode(arg), nil
+	case strings.HasPrefix(arg, "bx://"), strings.HasPrefix(arg, "blink://"):
+		link, err := blink.Decode(arg)
+		if err != nil {
+			return "", "", err
+		}
+		if strings.HasPrefix(arg, "blink://") {
+			return link, blink.Encode(link), nil
+		}
+		return link, arg, nil
+	default:
+		return "", "", fmt.Errorf("不是支持的客户端链接(应为 bx://... 或 brook://...)")
+	}
 }
 
 func runFlags() []cli.Flag {
