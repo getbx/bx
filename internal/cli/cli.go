@@ -35,6 +35,8 @@ const defaultServerConfigPath = "/etc/bx/server.yaml"
 const defaultShareDir = "/etc/bx/shares"
 const defaultProbeTarget = "github.com:443"
 const darwinDNSListen = "127.0.0.1:53"
+const defaultLogArchiveDir = ".bx-log-archives"
+const defaultAutoArchiveLimit = 12
 
 // New 返回配置好子命令的 bx App。
 func New() *cli.App {
@@ -548,7 +550,8 @@ func serveAction(c *cli.Context) error {
 	return cmd.Wait()
 }
 
-func doctorAction(c *cli.Context) error {
+func doctorAction(c *cli.Context) (err error) {
+	defer autoArchiveAfterClientCommand("doctor", &err, !c.Bool("json"))
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, collectClientDoctor(c.String("config"), c.String("target"), c.Duration("timeout"), c.Bool("skip-probe")))
 	}
@@ -1303,7 +1306,8 @@ func darwinPlanAction(c *cli.Context) error {
 	return nil
 }
 
-func upAction(c *cli.Context) error {
+func upAction(c *cli.Context) (err error) {
+	defer autoArchiveAfterClientCommand("up", &err, true)
 	if !install.UnitInstalled() {
 		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
 	}
@@ -1343,7 +1347,8 @@ func upAction(c *cli.Context) error {
 	return nil
 }
 
-func downAction(c *cli.Context) error {
+func downAction(c *cli.Context) (err error) {
+	defer autoArchiveAfterClientCommand("down", &err, true)
 	if runtime.GOOS == "darwin" {
 		st, err := install.DisableDNS("")
 		if err != nil {
@@ -1646,16 +1651,22 @@ func logsAction(c *cli.Context) error {
 }
 
 func archiveClientLogs(root string) (string, error) {
+	return archiveClientLogsWithReason(root, "manual")
+}
+
+func archiveClientLogsWithReason(root, reason string) (string, error) {
 	if strings.TrimSpace(root) == "" {
-		root = ".bx-log-archives"
+		root = defaultLogArchiveDir
 	}
-	dir := filepath.Join(root, "bx-logs-"+time.Now().Format("20060102-150405"))
+	now := time.Now()
+	dir := filepath.Join(root, "bx-logs-"+now.Format("20060102-150405.000000000"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	meta := []string{
-		"created_at=" + time.Now().Format(time.RFC3339),
+		"created_at=" + now.Format(time.RFC3339Nano),
 		"version=" + version.String(),
+		"reason=" + reason,
 	}
 	if err := os.WriteFile(filepath.Join(dir, "meta.txt"), []byte(strings.Join(meta, "\n")+"\n"), 0o600); err != nil {
 		return "", err
@@ -1677,6 +1688,51 @@ func archiveClientLogs(root string) (string, error) {
 		}
 	}
 	return dir, nil
+}
+
+func autoArchiveAfterClientCommand(command string, commandErr *error, announce bool) {
+	dir, err := archiveClientLogsWithReason(filepath.Join(defaultLogArchiveDir, "auto"), command)
+	if err != nil {
+		if announce || (commandErr != nil && *commandErr != nil) {
+			fmt.Fprintf(os.Stderr, "Diagnostics archive failed: %v\n", err)
+		}
+		return
+	}
+	if err := pruneLogArchives(filepath.Dir(dir), defaultAutoArchiveLimit); err != nil && os.Getenv("BX_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "Diagnostics archive prune failed: %v\n", err)
+	}
+	if announce || (commandErr != nil && *commandErr != nil) {
+		fmt.Fprintf(os.Stderr, "Diagnostics archived: %s\n", dir)
+	}
+}
+
+func pruneLogArchives(root string, keep int) error {
+	if keep < 1 {
+		return nil
+	}
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "bx-logs-") {
+			dirs = append(dirs, filepath.Join(root, entry.Name()))
+		}
+	}
+	if len(dirs) <= keep {
+		return nil
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(dirs)))
+	for _, dir := range dirs[keep:] {
+		if err := os.RemoveAll(dir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeJSONFile(path string, v any) error {
