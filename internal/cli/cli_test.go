@@ -371,6 +371,10 @@ func TestCapabilitiesReport(t *testing.T) {
 	if macRelease.Command == "" || !macRelease.Stable || macRelease.RequiresRoot || macRelease.ChangesSystem || macRelease.ChangesNetwork {
 		t.Fatalf("unexpected macOS release capability: %+v", macRelease)
 	}
+	macReleaseVerify := findCapability(rep.Commands, "scripts/verify-macos-release.sh")
+	if macReleaseVerify.Command == "" || !macReleaseVerify.Stable || macReleaseVerify.RequiresRoot || macReleaseVerify.ChangesSystem || macReleaseVerify.ChangesNetwork {
+		t.Fatalf("unexpected macOS release verify capability: %+v", macReleaseVerify)
+	}
 	var buf bytes.Buffer
 	if err := writeJSON(&buf, rep); err != nil {
 		t.Fatal(err)

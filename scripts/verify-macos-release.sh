@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ARCH="${BX_ARCH:-arm64}"
+RELEASE_NAME="bx-macos-$ARCH"
+DIST_ROOT="${BX_RELEASE_DIR:-$ROOT/dist/release}"
+RELEASE_DIR="$DIST_ROOT/$RELEASE_NAME"
+ARCHIVE="$DIST_ROOT/$RELEASE_NAME.tar.gz"
+SUMS="$DIST_ROOT/SHA256SUMS"
+
+fail() {
+  echo "verify failed: $*" >&2
+  exit 1
+}
+
+[[ -x "$RELEASE_DIR/bx" ]] || fail "missing executable bx"
+[[ -d "$RELEASE_DIR/Bx.app" ]] || fail "missing Bx.app"
+[[ -x "$RELEASE_DIR/install.sh" ]] || fail "missing executable install.sh"
+[[ -x "$RELEASE_DIR/uninstall.sh" ]] || fail "missing executable uninstall.sh"
+[[ -f "$RELEASE_DIR/README.txt" ]] || fail "missing README.txt"
+[[ -f "$ARCHIVE" ]] || fail "missing archive $ARCHIVE"
+[[ -f "$SUMS" ]] || fail "missing SHA256SUMS"
+
+plutil -lint "$RELEASE_DIR/Bx.app/Contents/Info.plist" >/dev/null
+tar -tzf "$ARCHIVE" >/dev/null
+
+grep -q "does not run bx setup" "$RELEASE_DIR/README.txt" || fail "README missing no-setup note"
+grep -q "does not run bx up" "$RELEASE_DIR/README.txt" || fail "README missing no-up note"
+grep -q "does not change DNS/routes" "$RELEASE_DIR/README.txt" || fail "README missing network safety note"
+grep -q "The installer did not start bx or change DNS/routes." "$RELEASE_DIR/install.sh" || fail "install.sh missing safety note"
+
+(
+  cd "$DIST_ROOT"
+  shasum -a 256 -c SHA256SUMS >/dev/null
+)
+
+echo "macOS release verified: $RELEASE_DIR"

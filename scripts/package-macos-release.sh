@@ -135,7 +135,9 @@ chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh" "$RELEASE_DIR/bx"
   cd "$DIST_ROOT"
   rm -f "$RELEASE_NAME.tar.gz"
   tar -czf "$RELEASE_NAME.tar.gz" "$RELEASE_NAME"
+  shasum -a 256 "$RELEASE_NAME.tar.gz" > SHA256SUMS
 )
 
 echo "Built: $RELEASE_DIR"
 echo "Archive: $DIST_ROOT/$RELEASE_NAME.tar.gz"
+echo "Checksums: $DIST_ROOT/SHA256SUMS"
