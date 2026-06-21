@@ -123,6 +123,24 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "bx")
         image?.isTemplate = false
         button.image = image?.tinted(tint)
+        button.toolTip = tooltipText()
+    }
+
+    private func tooltipText() -> String {
+        switch state {
+        case .connected(let report, _, _):
+            return "bx: Protected, \(report.latencyMS) ms"
+        case .warning(let message, _):
+            return "bx: \(message)"
+        case .updateNeeded:
+            return "bx: Update Required"
+        case .setupNeeded:
+            return "bx: Setup Required"
+        case .missing:
+            return "bx: Not Installed"
+        case .off:
+            return "bx: Off"
+        }
     }
 
     private func rebuildMenu() {
