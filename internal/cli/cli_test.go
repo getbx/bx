@@ -216,6 +216,14 @@ func TestCapabilitiesReport(t *testing.T) {
 	if len(doctor.Arguments) == 0 || len(doctor.Examples) == 0 {
 		t.Fatalf("doctor capability should include arguments/examples: %+v", doctor)
 	}
+	setup := findCapability(rep.Commands, "sudo bx setup <client-link>")
+	if setup.Command == "" || !strings.Contains(strings.Join(setup.Arguments, " "), "<client-link>") {
+		t.Fatalf("setup capability should use client-link wording: %+v", setup)
+	}
+	probe := findCapability(rep.Commands, "bx probe <client-link>")
+	if probe.Command == "" || !strings.Contains(strings.Join(probe.Examples, " "), "<client-link>") {
+		t.Fatalf("probe capability should use client-link wording: %+v", probe)
+	}
 	up := findCapability(rep.Commands, "sudo bx up")
 	if !up.RequiresRoot || !up.ChangesSystem || !up.ChangesNetwork {
 		t.Fatalf("unexpected up capability: %+v", up)

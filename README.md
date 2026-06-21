@@ -75,7 +75,7 @@ ssh -L 8787:127.0.0.1:8787 <VPS>
 ### 2. 客户端安装 bx
 
 ```bash
-sudo ./bx setup bx://...
+sudo ./bx setup '<client-link>'
 sudo bx up
 ```
 
@@ -93,7 +93,7 @@ macOS launchd 实机验证可先 dry-run:
 
 ```bash
 scripts/darwin-launchd-smoke.sh
-sudo BX_LINK='bx://...' scripts/darwin-launchd-smoke.sh --execute
+sudo BX_LINK='<client-link>' scripts/darwin-launchd-smoke.sh --execute
 ```
 
 日常使用:
@@ -125,16 +125,16 @@ sudo bx server shares --json
 | `sudo bx server install --host <host>` | VPS 首次安装 bx server |
 | `sudo bx server start` | 启动 bx server 并设为开机自启 |
 | `sudo bx server stop` | 停止 bx server 并取消开机自启 |
-| `sudo bx server link --host <host>` | 生成客户端 `bx://` 链接 |
+| `sudo bx server link --host <host>` | 生成客户端链接 |
 | `sudo bx server share <name> --host <host>` | 创建一个独立分享链接 |
 | `sudo bx server shares` | 查看已分享的链接 |
 | `sudo bx server shares --json` | 以 JSON 查看已分享的链接 |
 | `sudo bx server revoke <name>` | 撤销一个分享 |
-| `sudo bx server rotate --host <host>` | 轮换 server 密码并生成新的 `bx://` 链接 |
+| `sudo bx server rotate --host <host>` | 轮换 server 密码并生成新的客户端链接 |
 | `sudo bx server logs` | 查看服务端日志 |
 | `sudo bx server ui --host <host>` | 启动只监听本机的极简 Web UI |
 | `sudo bx server uninstall` | 卸载 bx server 服务 |
-| `sudo bx setup bx://...` | 客户端首次配置 |
+| `sudo bx setup <client-link>` | 客户端首次配置 |
 | `sudo bx up` | 启动客户端并设为开机自启 |
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `bx dns status` | 查看 macOS DNS 接管状态 |
