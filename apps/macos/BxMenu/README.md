@@ -114,6 +114,8 @@ The menu bar app itself writes raw logs under:
 ~/Library/Logs/bx/menu.err.log
 ```
 
+`View Logs` opens this folder even when bx is off, not set up, or the CLI needs repair.
+
 Install bx first with `sudo bx setup <client-link>`.
 When updating from a local build, also update the CLI used by the menu bar:
 
