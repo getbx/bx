@@ -99,7 +99,7 @@ macOS release 包会一次装好两件事:
 
 `install.sh` 会先检查 macOS、CPU 架构和必要文件,避免装错包。它只安装 CLI 和菜单栏 App,不会执行 `bx setup`、不会执行 `bx up`、不会修改 DNS 或路由。
 
-安装后如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即启动 bx。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
+安装后如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即开始保护。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
 #### 从源码安装菜单栏 App
 

@@ -232,8 +232,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         }
         let alert = NSAlert()
         alert.messageText = "bx is set up"
-        alert.informativeText = "Start bx now?"
-        alert.addButton(withTitle: "Start")
+        alert.informativeText = "Start protection now? bx will take over system traffic until you turn it off."
+        alert.addButton(withTitle: "Start Protection")
         alert.addButton(withTitle: "Later")
         if alert.runModal() == .alertFirstButtonReturn {
             if !runPrivileged("'\(bxPath)' up") {
