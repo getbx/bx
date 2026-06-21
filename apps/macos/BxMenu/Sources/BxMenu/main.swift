@@ -282,13 +282,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     private func openTerminal(_ command: String) {
+        let bashCommand = "/bin/bash -lc \(shellSingleQuoted(command))"
         let script = """
         tell application "Terminal"
           activate
-          do script \(shellQuoted(command))
+          do script \(shellQuoted(bashCommand))
         end tell
         """
-        _ = runAppleScript(script)
+        if !runAppleScript(script) {
+            showMessage("Terminal Unavailable", "Open Terminal and run bx status or bx doctor.")
+        }
     }
 
     private func runAppleScript(_ source: String) -> Bool {
