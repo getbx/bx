@@ -56,6 +56,39 @@ func TestBlinkRoundTripThroughCLI(t *testing.T) {
 	}
 }
 
+func TestNormalizeClientLinkAcceptsRawBrook(t *testing.T) {
+	raw := "brook://wssserver?wssserver=wss%3A%2F%2Fvps.example.com%3A443&username&password=pw"
+	link, configLink, err := normalizeClientLink(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link != raw {
+		t.Fatalf("link = %q, want raw brook link", link)
+	}
+	if !strings.HasPrefix(configLink, "bx://") {
+		t.Fatalf("config link should be normalized to bx://, got %q", configLink)
+	}
+	decoded, err := blink.Decode(configLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded != raw {
+		t.Fatalf("decoded config link = %q, want %q", decoded, raw)
+	}
+}
+
+func TestNormalizeClientLinkAcceptsEncodedBX(t *testing.T) {
+	raw := "brook://server?server=1.2.3.4%3A9999&password=pw"
+	encoded := blink.Encode(raw)
+	link, configLink, err := normalizeClientLink(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link != raw || configLink != encoded {
+		t.Fatalf("link/config = %q/%q, want %q/%q", link, configLink, raw, encoded)
+	}
+}
+
 func TestBXServerLink(t *testing.T) {
 	link, err := bxServerLink("example.com", serverConfig{Listen: ":9999", Password: "pw"})
 	if err != nil {
