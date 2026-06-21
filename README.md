@@ -81,6 +81,43 @@ sudo bx up
 
 macOS 客户端同样使用这组命令。`setup` 会安装 launchd 服务,`up` 会启动并接管系统 DNS,`down` 会恢复 DNS 并停止服务。
 
+#### macOS 菜单栏 App
+
+bx 提供一个轻量菜单栏 App,用于显示当前保护状态、延迟、DNS 接管状态和诊断入口。它不是控制面板,也不会自动启动 bx 或修改网络配置。
+
+从仓库源码打包并安装到当前用户:
+
+```bash
+cd /path/to/bx
+scripts/install-macos-menu.sh install
+```
+
+安装后会生成并安装:
+
+- `~/Applications/Bx.app`
+- `~/Library/LaunchAgents/com.getbx.bx.menu.plist`
+
+常用维护命令:
+
+```bash
+scripts/install-macos-menu.sh status
+scripts/install-macos-menu.sh restart
+scripts/install-macos-menu.sh uninstall
+```
+
+如果只想生成 `.app` 包而不安装:
+
+```bash
+scripts/package-macos-menu.sh
+open dist/macos/Bx.app
+```
+
+菜单栏 App 会调用 `/usr/local/bin/bx`,因此本机 CLI 更新后也应同步安装到该路径:
+
+```bash
+sudo install -m 0755 ./bx /usr/local/bin/bx
+```
+
 macOS DNS 状态可单独查看或手动修复:
 
 ```bash
@@ -145,6 +182,10 @@ sudo bx server shares --json
 | `bx doctor` | 诊断客户端配置、服务状态和链接连通性 |
 | `bx doctor --json` | 输出客户端机器可读诊断 |
 | `bx logs` | 查看客户端日志 |
+| `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist/macos/Bx.app` |
+| `scripts/install-macos-menu.sh install` | 安装并启动 macOS 菜单栏 App,不修改网络配置 |
+| `scripts/install-macos-menu.sh status` | 查看 macOS 菜单栏 App 安装和运行状态 |
+| `scripts/install-macos-menu.sh uninstall` | 移除 macOS 菜单栏 App 和登录项 |
 | `sudo bx run` | 前台运行,用于调试 |
 | `sudo bx uninstall` | 卸载客户端服务 |
 | `sudo bx server doctor` | 诊断服务端配置、监听端口和服务状态 |
