@@ -551,7 +551,7 @@ func doctorAction(c *cli.Context) error {
 	b, err := os.ReadFile(cfgPath)
 	if err != nil {
 		doctorLine("fail", "config readable", err.Error())
-		doctorLine("hint", "setup", "sudo bx setup bx://...")
+		doctorLine("hint", "setup", "sudo bx setup <client-link>")
 	} else {
 		doctorLine("ok", "config readable", "yes")
 		checkFileMode(cfgPath, 0o600)
@@ -691,7 +691,7 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"Read-only.", "Share passwords and links are not included."},
 			},
 			{
-				Command:        "bx probe bx://...",
+				Command:        "bx probe <client-link>",
 				Category:       "diagnostics",
 				Summary:        "Probe a bx link without writing config or changing routes.",
 				Stable:         true,
@@ -700,8 +700,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
-				Arguments:      []string{"bx://...", "--target <host:port>", "--timeout <duration>"},
-				Examples:       []string{"bx probe bx://..."},
+				Arguments:      []string{"<client-link>", "--target <host:port>", "--timeout <duration>"},
+				Examples:       []string{"bx probe '<client-link>'"},
 				SafeNotes:      []string{"Network probe only.", "Does not install services or change routing."},
 			},
 			{
@@ -797,7 +797,7 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"Only supported on macOS.", "Restores the saved DNS state instead of guessing."},
 			},
 			{
-				Command:        "sudo bx setup bx://...",
+				Command:        "sudo bx setup <client-link>",
 				Category:       "client",
 				Summary:        "Install bx client service and write client config.",
 				Stable:         true,
@@ -806,8 +806,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
-				Arguments:      []string{"bx://...", "--config <path>", "--force", "--strict"},
-				Examples:       []string{"sudo bx setup bx://..."},
+				Arguments:      []string{"<client-link>", "--config <path>", "--force", "--strict"},
+				Examples:       []string{"sudo bx setup '<client-link>'"},
 				SafeNotes:      []string{"Does not start traffic routing by itself."},
 			},
 			{
@@ -884,7 +884,7 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 	rep.addCheck("config", "info", cfgPath, "")
 	b, err := os.ReadFile(cfgPath)
 	if err != nil {
-		rep.addCheck("config_readable", "fail", err.Error(), "sudo bx setup bx://...")
+		rep.addCheck("config_readable", "fail", err.Error(), "sudo bx setup <client-link>")
 	} else {
 		rep.addCheck("config_readable", "ok", "yes", "")
 		if modeCheck(cfgPath, 0o600) {
@@ -899,7 +899,7 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 			rep.addCheck("config_parse", "ok", "yes", "")
 			udpMode = cfg.UDP.Mode
 			if cfg.Server == "" {
-				rep.addCheck("server_link", "fail", "empty", "sudo bx setup bx://...")
+				rep.addCheck("server_link", "fail", "empty", "sudo bx setup <client-link>")
 			} else if _, err := blink.Decode(cfg.Server); err != nil && !strings.HasPrefix(cfg.Server, "brook://") {
 				rep.addCheck("server_link", "fail", err.Error(), "")
 			} else {
@@ -910,7 +910,7 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 			}
 		}
 	}
-	rep.addCheck("service_installed", boolStatus(install.UnitInstalled()), install.ServiceName, "sudo bx setup bx://...")
+	rep.addCheck("service_installed", boolStatus(install.UnitInstalled()), install.ServiceName, "sudo bx setup <client-link>")
 	activeState := serviceState("is-active", install.ServiceName)
 	rep.addCheck("service_active", serviceStatusFromState("is-active", activeState), activeState, hintForState(activeState, "sudo bx up", "bx logs"))
 	enabledState := serviceState("is-enabled", install.ServiceName)
@@ -1115,7 +1115,7 @@ func probeFlags() []cli.Flag {
 func probeAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if arg == "" {
-		return fmt.Errorf("用法: bx probe <bx://... 或 brook://...>")
+		return fmt.Errorf("用法: bx probe <客户端链接>")
 	}
 	link, _, err := normalizeClientLink(arg)
 	if err != nil {
@@ -1149,7 +1149,7 @@ func userRuntimeDir() (string, error) {
 func setupAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if arg == "" {
-		return fmt.Errorf("用法: sudo bx setup <bx://... 或 brook://...>")
+		return fmt.Errorf("用法: sudo bx setup <客户端链接>")
 	}
 	link, configLink, err := normalizeClientLink(arg)
 	if err != nil {
@@ -1202,7 +1202,7 @@ func normalizeClientLink(arg string) (link string, configLink string, err error)
 		}
 		return link, arg, nil
 	default:
-		return "", "", fmt.Errorf("不是支持的客户端链接(应为 bx://... 或 brook://...)")
+		return "", "", fmt.Errorf("不是支持的客户端链接")
 	}
 }
 
@@ -1284,7 +1284,7 @@ func darwinPlanAction(c *cli.Context) error {
 
 func upAction(c *cli.Context) error {
 	if !install.UnitInstalled() {
-		return fmt.Errorf("尚未配置。先运行: sudo bx setup bx://...")
+		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
 	}
 	// 防呆:命令模型重排后 up=enable service、run=前台。旧 unit 的 ExecStart 仍写
 	// `bx up`,配新二进制会让 service 启动时递归调用 up → 死锁。检测到就报错让用户重装。
@@ -1293,7 +1293,7 @@ func upAction(c *cli.Context) error {
 		return err
 	}
 	if cmd != "run" {
-		return fmt.Errorf("检测到旧版服务配置(启动子命令是 %q,应为 run):直接 up 会让服务递归调用自身。请重跑 sudo bx setup bx://... 重写服务配置", cmd)
+		return fmt.Errorf("检测到旧版服务配置(启动子命令是 %q,应为 run):直接 up 会让服务递归调用自身。请重跑 sudo bx setup <client-link> 重写服务配置", cmd)
 	}
 	if err := install.Enable(); err != nil {
 		return err
