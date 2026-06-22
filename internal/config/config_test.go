@@ -173,3 +173,62 @@ func TestParseRejectsSplitEmptyDomains(t *testing.T) {
 		t.Fatal("expected error for empty domains list")
 	}
 }
+
+func TestParseRouterMode(t *testing.T) {
+	c, err := Parse([]byte(`
+server: "brook://abc"
+mode: router
+router:
+  lan_cidrs:
+    - 192.168.8.0/24
+    - 10.20.0.0/24
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.Mode != "router" {
+		t.Fatalf("mode = %q, want router", c.Mode)
+	}
+	if len(c.Router.LANCIDRs) != 2 || c.Router.LANCIDRs[0] != "192.168.8.0/24" {
+		t.Fatalf("bad lan_cidrs: %+v", c.Router.LANCIDRs)
+	}
+}
+
+func TestModeDefaultsHost(t *testing.T) {
+	c, err := Parse([]byte(`server: "brook://abc"`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.Mode != "host" {
+		t.Fatalf("default mode = %q, want host", c.Mode)
+	}
+}
+
+func TestParseRejectsBadMode(t *testing.T) {
+	if _, err := Parse([]byte("server: \"brook://abc\"\nmode: bogus\n")); err == nil {
+		t.Fatal("expected error for bad mode")
+	}
+}
+
+func TestParseRejectsBadLANCIDR(t *testing.T) {
+	_, err := Parse([]byte(`
+server: "brook://abc"
+mode: router
+router:
+  lan_cidrs: ["not-a-cidr"]
+`))
+	if err == nil {
+		t.Fatal("expected error for bad lan_cidr")
+	}
+}
+
+func TestRouterModeWithoutCIDRsOK(t *testing.T) {
+	// empty lan_cidrs is allowed (auto-detect at hijack time)
+	c, err := Parse([]byte("server: \"brook://abc\"\nmode: router\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.Mode != "router" || len(c.Router.LANCIDRs) != 0 {
+		t.Fatalf("bad: %+v", c)
+	}
+}
