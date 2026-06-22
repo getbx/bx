@@ -290,6 +290,8 @@ func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Durat
 
 // serveStats 在 unix socket 上提供状态查询:每个连接回一份 JSON Report。
 func serveStats(c *stats.Counters, t *tunnel.Tunnel, server, udpMode string) (io.Closer, error) {
+	// 运行期目录在部分系统(如 OpenWrt)不预先存在,先确保父目录在。
+	_ = os.MkdirAll(filepath.Dir(SockPath), 0o755)
 	_ = os.Remove(SockPath)
 	ln, err := net.Listen("unix", SockPath)
 	if err != nil {
