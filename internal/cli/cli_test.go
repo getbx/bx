@@ -367,6 +367,20 @@ func TestCapabilitiesReport(t *testing.T) {
 	if menuStatus.Command == "" || !menuStatus.Stable || menuStatus.ChangesSystem || menuStatus.ChangesNetwork {
 		t.Fatalf("unexpected macOS menu status capability: %+v", menuStatus)
 	}
+	menuRestart := findCapability(rep.Commands, "scripts/install-macos-menu.sh restart")
+	if menuRestart.Command == "" || menuRestart.RequiresRoot || menuRestart.ChangesSystem || menuRestart.ChangesNetwork {
+		t.Fatalf("unexpected macOS menu restart capability: %+v", menuRestart)
+	}
+	if !strings.Contains(strings.Join(menuRestart.SafeNotes, " "), "not protection") {
+		t.Fatalf("macOS menu restart should clarify it does not restart protection: %+v", menuRestart)
+	}
+	menuUninstall := findCapability(rep.Commands, "scripts/install-macos-menu.sh uninstall")
+	if menuUninstall.Command == "" || menuUninstall.RequiresRoot || menuUninstall.ChangesSystem || menuUninstall.ChangesNetwork {
+		t.Fatalf("unexpected macOS menu uninstall capability: %+v", menuUninstall)
+	}
+	if !strings.Contains(strings.Join(menuUninstall.SafeNotes, " "), "Does not turn off protection") {
+		t.Fatalf("macOS menu uninstall should clarify it does not turn off protection: %+v", menuUninstall)
+	}
 	macRelease := findCapability(rep.Commands, "scripts/package-macos-release.sh")
 	if macRelease.Command == "" || !macRelease.Stable || macRelease.RequiresRoot || macRelease.ChangesSystem || macRelease.ChangesNetwork {
 		t.Fatalf("unexpected macOS release capability: %+v", macRelease)
