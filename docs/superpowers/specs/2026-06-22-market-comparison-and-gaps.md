@@ -35,6 +35,13 @@ Authored 2026-06-22 (autonomous /loop). Purpose: position bx (host mode + new ro
 5. **Per-client / per-CIDR policy** — route some LAN sources direct and others proxied (the source-rule design already supports this; expose in config).
 6. **UDP fakeip + QUIC** — confirm QUIC (UDP/443) over brook UDP-associate behaves under load; consider QUIC-block option if it destabilizes (sing-box offers this).
 
+## Performance (TUN vs TProxy — a real tradeoff)
+bx forwards via a **TUN + gVisor userspace netstack**. On routers this is CPU-bound: community/sing-box data put `auto_route` TUN throughput at ~100–220 Mbit even on strong routers (Redmi AX6000 ~200 Mbit; mid-range ~100–120 Mbit), because routing + userspace TCP termination is expensive. TProxy (sing-box/PassWall default) is lighter on the CPU but has OpenWrt-24.10 quirks; sing-box's `auto_redirect` (TUN + nft redirect hybrid) is the fastest and auto-inserts fw4 rules.
+
+- **Impact on the Mudi now:** likely negligible — the WAN is corp Wi-Fi (`wlan4`, well under the TUN ceiling), so gVisor-TUN throughput is not the bottleneck. Document, don't block.
+- **Backlog item #7 (throughput):** if a faster uplink ever matters, add a **TProxy forward mode** for router mode (kernel-path TCP/UDP, nft tproxy + `kmod-nft-tproxy`/`kmod-nft-socket`) as an alternative to the gVisor-TUN path. The data-plane decision logic (dialer/route/dns) can be reused; only the ingress (TUN → tproxy) changes. Keep TUN as the default (simpler, no extra kmods, works everywhere).
+
 ## Decision recorded
 - Router-mode leak model = market-leading once shipped; keep it the default.
 - Transport stealth is the real remaining differentiator vs Reality-based stacks → its own spec, evaluate brook-wss-behind-443 vs Reality.
+- gVisor-TUN throughput ceiling is a known limit; a TProxy mode is the future high-throughput path, but not needed at corp-Wi-Fi link speeds.
