@@ -1,8 +1,8 @@
 # BxMenu
 
-Small macOS menu bar companion for bx.
+Small macOS menu bar app for bx.
 
-It is intentionally not a control panel. It shows whether bx is protected, off, not set up, or needs attention, and exposes a few actions:
+It is intentionally not a control panel. On macOS it is the default user surface: it shows whether bx is protected, off, not set up, or needs attention, and exposes only the actions a user normally needs.
 
 Hovering the menu bar icon shows the current bx state.
 When protected, `UDP Relay` shows `On`, `Direct`, or `Blocked`.
@@ -89,7 +89,7 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.getbx.bx.menu.plis
 launchctl kickstart -k "gui/$(id -u)/com.getbx.bx.menu"
 ```
 
-Remove the menu bar companion:
+Remove the menu bar app:
 
 ```bash
 scripts/install-macos-menu.sh uninstall
@@ -122,7 +122,13 @@ The menu bar app itself writes raw logs under:
 
 `View Logs` opens this folder in Finder even when bx is off, not set up, or the CLI needs repair.
 
-Install bx first with `sudo bx setup <client-link>`.
+For normal macOS use, install the full release package, then set up and start protection from the menu bar. The CLI path remains available for automation and recovery:
+
+```bash
+sudo bx setup '<client-link>'
+sudo bx up
+```
+
 When updating from a local build, also update the CLI used by the menu bar:
 
 ```bash

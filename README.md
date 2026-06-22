@@ -79,17 +79,19 @@ sudo ./bx setup '<client-link>'
 sudo bx up
 ```
 
-macOS 客户端同样使用这组命令。`setup` 会安装 launchd 服务,`up` 会启动并接管系统 DNS,`down` 会恢复 DNS 并停止服务。
+Linux 客户端直接使用这组命令。`setup` 会安装系统服务,`up` 会启动并接管流量,`down` 会停止保护。
+
+macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Restart、Turn Off、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
 
 #### macOS 安装包
 
-macOS release 包会一次装好两件事:
+macOS release 包会一次装好两件事并启动菜单栏 App:
 
 - `bx` CLI:安装到 `/usr/local/bin/bx`
 - 菜单栏 App:安装到 `~/Applications/Bx.app`
 - 菜单栏日志:写到 `~/Library/Logs/bx/menu.log` 和 `menu.err.log`
 
-菜单栏 App 用于显示当前保护状态、延迟、DNS 接管状态和诊断入口。它不是控制面板,也不会自动启动 bx 或修改网络配置。真正启动和接管网络需要用户明确确认:可以在菜单栏里启动,也可以运行 `sudo bx up`。
+菜单栏 App 是 macOS 的默认体验:它显示当前保护状态、延迟、DNS 接管状态和诊断入口。它保持克制,不是复杂控制面板;安装时也不会自动配置或接管网络。真正启动保护需要用户明确确认:通常在菜单栏里完成,也可以用命令行备用路径。
 
 下载 release 后运行:
 
@@ -97,9 +99,9 @@ macOS release 包会一次装好两件事:
 ./install.sh
 ```
 
-`install.sh` 会先检查 macOS、CPU 架构和必要文件,避免装错包。它只安装 CLI 和菜单栏 App,不会执行 `bx setup`、不会执行 `bx up`、不会修改 DNS 或路由。
+`install.sh` 会先检查 macOS、CPU 架构和必要文件,避免装错包。它只安装 CLI、安装并启动菜单栏 App;不会执行 `bx setup`、不会执行 `bx up`、不会修改 DNS 或路由。
 
-安装后如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即开始保护。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
+安装后看菜单栏图标即可。如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即开始保护。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
 #### 从源码安装菜单栏 App
 
