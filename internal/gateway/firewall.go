@@ -39,10 +39,13 @@ func (p FirewallPlan) InstallRules() [][]string {
 		r6 = append(r6, p.comment()...)
 		rules = append(rules, r6)
 
-		// LAN → tun (new connections) → accept. Return path is covered by
-		// fw4's existing ct state established,related accept.
+		// LAN → tun (new connections) → accept. MUST be IPv4-only: both rules are
+		// inserted at position 0, so this accept ends up ABOVE the IPv6 drop; without
+		// the nfproto-ipv4 guard it would accept IPv6 into the tun and the drop above
+		// becomes dead code (IPv6 leak). Return path is covered by fw4's existing
+		// ct state established,related accept.
 		r := append([]string{"insert", "rule"}, tbl...)
-		r = append(r, p.Chain, "iifname", ifc, "oifname", p.TunDev, "accept")
+		r = append(r, p.Chain, "iifname", ifc, "meta", "nfproto", "ipv4", "oifname", p.TunDev, "accept")
 		r = append(r, p.comment()...)
 		rules = append(rules, r)
 	}

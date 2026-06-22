@@ -100,3 +100,17 @@ func TestFirewallTeardownTargetsComment(t *testing.T) {
 		t.Fatalf("teardown match does not target the comment: %q", td)
 	}
 }
+
+// The LAN→tun accept rule MUST be IPv4-only; otherwise (since both rules are
+// inserted at position 0) the accept sits above the IPv6 drop and accepts v6
+// into the tun, defeating the IPv6 leak prevention.
+func TestFirewallAcceptIsIPv4Only(t *testing.T) {
+	for _, r := range fwplan().InstallRules() {
+		j := strings.Join(r, " ")
+		if strings.Contains(j, "bx0") && has(r, "accept") {
+			if !ruleWith([]([]string){r}, "nfproto", "ipv4") {
+				t.Fatalf("LAN→tun accept rule is not IPv4-guarded — IPv6 can be accepted above the drop: %v", r)
+			}
+		}
+	}
+}
