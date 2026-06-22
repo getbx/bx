@@ -259,3 +259,44 @@ func TestRespondSplitRegistersAllARecords(t *testing.T) {
 		}
 	}
 }
+
+func TestFakeipFilterForwardsLocalDomain(t *testing.T) {
+	set := splitdns.NewSet()
+	fwd := &fakeForwarder{answer: netip.MustParseAddr("192.168.8.50")}
+	pool, _ := fakeip.New("198.18.0.0/15")
+	s := NewServer(pool, 1)
+	s.SetFakeipFilter([]string{"*.lan"}, "223.5.5.5:53", fwd, set)
+
+	resp, err := s.Respond(buildQuery(t, 1, "nas.lan.", dnsmessage.TypeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fwd.called {
+		t.Fatal("filtered domain (*.lan) must forward, not fake-IP")
+	}
+	if firstA(t, resp) != netip.MustParseAddr("192.168.8.50") {
+		t.Fatal("filtered domain should return the real resolved IP")
+	}
+	if !set.Contains(netip.MustParseAddr("192.168.8.50")) {
+		t.Fatal("filtered domain's real IP should be registered direct")
+	}
+}
+
+func TestFakeipFilterFakesNonFilteredDomain(t *testing.T) {
+	set := splitdns.NewSet()
+	fwd := &fakeForwarder{answer: netip.MustParseAddr("192.168.8.50")}
+	pool, _ := fakeip.New("198.18.0.0/15")
+	s := NewServer(pool, 1)
+	s.SetFakeipFilter([]string{"*.lan"}, "223.5.5.5:53", fwd, set)
+
+	resp, err := s.Respond(buildQuery(t, 2, "google.com.", dnsmessage.TypeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fwd.called {
+		t.Fatal("non-filtered domain must NOT forward — it should get a fake-IP")
+	}
+	if got := firstA(t, resp); !netip.MustParsePrefix("198.18.0.0/15").Contains(got) {
+		t.Fatalf("non-filtered domain should get a fake-IP, got %v", got)
+	}
+}

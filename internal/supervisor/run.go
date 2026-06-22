@@ -178,6 +178,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		log.Printf("split-DNS 已启用:%d 条规则", len(routes))
 	}
 
+	// fake-ip-filter:本地/反查域名(*.lan/*.arpa 等)不分配 fake-IP,转发到国内 DNS 真实解析并直连。
+	if len(cfg.DNS.FakeipFilter) > 0 {
+		fdns := cfg.DNS.China
+		if _, _, err := net.SplitHostPort(fdns); err != nil {
+			fdns = net.JoinHostPort(fdns, "53")
+		}
+		dnsSrv.SetFakeipFilter(cfg.DNS.FakeipFilter, fdns, bxdns.NewUDPForwarder(plat.DirectDialer()), splitDirect)
+		log.Printf("fake-ip-filter 已启用:%d 条(本地/反查域名不走 fake-IP)", len(cfg.DNS.FakeipFilter))
+	}
+
 	// 4) Dialer:fake-IP 反查 + 防环直连 + socks 代理 + 国内 DNS resolver
 	counters := &stats.Counters{}
 	direct := plat.DirectDialer()
