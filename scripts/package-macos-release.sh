@@ -157,6 +157,7 @@ Remove menu bar app:
 Notes:
   install.sh installs the bx CLI and menu bar app.
   install.sh does not run bx setup, does not run bx up, and does not change DNS/routes.
+  uninstall.sh removes only the menu bar app and does not turn off protection.
 TXT
 
 chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh" "$RELEASE_DIR/bx"
