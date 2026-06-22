@@ -54,6 +54,10 @@ type tunHandle struct {
 	Name string
 	Addr string
 	MTU  uint32
+
+	// 路由器模式(mode=router):只劫持 LANCIDRs 内的转发流量,路由器自身流量不碰。
+	RouterMode bool
+	LANCIDRs   []string
 }
 
 // platform 抽象 Run 需要的全部 OS 专属能力,每个 OS 一份实现(按构建标签选取)。
@@ -202,6 +206,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return fmt.Errorf("建 TUN: %w", err)
 	}
 	defer closeTUN() // Run 任何提前返回都会关 TUN(停 pump、移除设备),不泄漏
+	// 路由器模式:把网关参数交给 Hijack,只劫持 LAN 转发流量。
+	tunH.RouterMode = cfg.Mode == "router"
+	tunH.LANCIDRs = cfg.Router.LANCIDRs
 	eng, err := tun.New(link, d, opts.MTU, tun.WithDNS(dnsSrv), tun.WithStats(counters))
 	if err != nil {
 		return fmt.Errorf("启动引擎: %w", err)

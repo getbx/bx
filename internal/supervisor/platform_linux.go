@@ -59,7 +59,11 @@ func (linuxPlatform) DirectDialer() *net.Dialer {
 }
 
 // Hijack 探测默认网关,装策略路由把默认流量劫进 tun,bypass 段仍走原网关。
-func (linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (func(), error) {
+// router 模式只劫持 LAN 转发流量(见 hijackRouter),路由器自身流量不碰。
+func (p linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (func(), error) {
+	if t.RouterMode {
+		return p.hijackRouter(t)
+	}
 	gw, gwDev, err := defaultRoute()
 	if err != nil {
 		return nil, fmt.Errorf("探测默认网关: %w", err)
