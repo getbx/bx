@@ -21,6 +21,7 @@ Turning protection off also asks for confirmation and restores managed DNS setti
 When bx needs attention, the primary action is to restart protection.
 
 When the menu shows `Setup Required`, choose `Set Up bx...`, paste your bx link, and approve the macOS administrator prompt. After setup succeeds, the menu asks whether to start protection now. If setup fails, use `Run Doctor` from the same menu.
+If setup, start, restart, or turn off fails, the failure dialog offers `Run Doctor` directly so diagnostics can be archived without hunting through the menu again.
 
 If the menu shows `Update Required`, update the CLI used by the menu bar:
 
