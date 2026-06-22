@@ -126,6 +126,11 @@ AGENT_ID="com.getbx.bx.menu"
 AGENT_DST="$HOME/Library/LaunchAgents/$AGENT_ID.plist"
 DOMAIN="gui/$(id -u)"
 
+if [[ "${EUID:-$(id -u)}" == "0" ]]; then
+  echo "uninstall failed: run ./uninstall.sh as your normal macOS user, not with sudo." >&2
+  exit 1
+fi
+
 launchctl bootout "$DOMAIN" "$AGENT_DST" >/dev/null 2>&1 || true
 rm -f "$AGENT_DST"
 rm -rf "$APP_DST"
@@ -163,6 +168,7 @@ Notes:
   install.sh does not run bx setup, does not run bx up, and does not change DNS/routes.
   Run install.sh as your normal macOS user, not with sudo.
   uninstall.sh removes only the menu bar app and does not turn off protection.
+  Run uninstall.sh as your normal macOS user, not with sudo.
 TXT
 
 chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh" "$RELEASE_DIR/bx"
