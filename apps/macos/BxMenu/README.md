@@ -70,7 +70,7 @@ The installer:
 - installs a user LaunchAgent at `~/Library/LaunchAgents/com.getbx.bx.menu.plist`
 - writes menu logs under `~/Library/Logs/bx/`
 - starts the menu bar app
-- does not change bx DNS, routes, service state, or client config
+- does not start or turn off protection, change DNS, routes, or client config
 
 Manage the installed app:
 
