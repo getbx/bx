@@ -70,8 +70,11 @@ func cleanupRouter(rp gateway.RoutePlan, fp gateway.FirewallPlan, tun string) {
 	for _, s := range rp.TeardownArgs() {
 		_ = runIPQuiet(s...)
 	}
+	tblToks := strings.Fields(fp.Table) // 与 nftHandles 用同一张表,避免删错表导致规则残留
 	for _, h := range nftHandles(fp.Table, fp.Chain, fp.Comment) {
-		_ = runNftQuiet("delete", "rule", "inet", "fw4", fp.Chain, "handle", itoa(h))
+		args := append([]string{"delete", "rule"}, tblToks...)
+		args = append(args, fp.Chain, "handle", itoa(h))
+		_ = runNftQuiet(args...)
 	}
 	_ = runIPQuiet("link", "del", tun)
 }
