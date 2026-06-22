@@ -38,6 +38,7 @@ grep -q "Library/Logs/bx" "$RELEASE_DIR/install.sh" || fail "install.sh missing 
 grep -q 'LOG_DIR/menu.log' "$RELEASE_DIR/install.sh" || fail "install.sh missing menu stdout log path"
 grep -q 'LOG_DIR/menu.err.log' "$RELEASE_DIR/install.sh" || fail "install.sh missing menu stderr log path"
 grep -q "Library/Logs/bx/menu.log" "$RELEASE_DIR/README.txt" || fail "README missing menu log path"
+grep -q "did not turn off protection" "$RELEASE_DIR/uninstall.sh" || fail "uninstall.sh missing protection safety note"
 
 (
   cd "$DIST_ROOT"
