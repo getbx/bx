@@ -250,7 +250,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     @objc private func startBx() {
         guard confirmStartProtection() else { return }
         if !runPrivileged("'\(bxPath)' up") {
-            showMessage("Start Failed", "bx did not start. Run Doctor for details.")
+            showFailure("Start Failed", "bx did not start.")
         }
         refresh()
     }
@@ -259,13 +259,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         guard let link = promptForClientLink() else { return }
         let command = "'\(bxPath)' setup \(shellSingleQuoted(link))"
         guard runPrivileged(command) else {
-            showMessage("Setup Failed", "bx was not configured. Run Doctor for details.")
+            showFailure("Setup Failed", "bx was not configured.")
             refresh()
             return
         }
         if confirmStartProtection(title: "bx is set up", cancelTitle: "Later") {
             if !runPrivileged("'\(bxPath)' up") {
-                showMessage("Start Failed", "bx is configured, but did not start. Run Doctor for details.")
+                showFailure("Start Failed", "bx is configured, but did not start.")
             }
         }
         refresh()
@@ -281,7 +281,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
     @objc private func restartBx() {
         if !runPrivileged("'\(bxPath)' down && '\(bxPath)' up") {
-            showMessage("Restart Failed", "bx did not restart. Run Doctor for details.")
+            showFailure("Restart Failed", "bx did not restart.")
         }
         refresh()
     }
@@ -294,7 +294,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
             if !runPrivileged("'\(bxPath)' down") {
-                showMessage("Turn Off Failed", "bx did not stop. Run Doctor for details.")
+                showFailure("Turn Off Failed", "bx did not stop.")
             }
             refresh()
         }
@@ -371,6 +371,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    private func showFailure(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "\(message) Run Doctor to collect diagnostics."
+        alert.addButton(withTitle: "Run Doctor")
+        alert.addButton(withTitle: "OK")
+        if alert.runModal() == .alertFirstButtonReturn {
+            runDoctor()
+        }
     }
 
     private func diagnoseStopped(version: String?, fallback: String) -> BxState {
