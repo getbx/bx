@@ -236,9 +236,9 @@ sudo bx server shares --json
 | `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist/macos/Bx.app` |
 | `scripts/package-macos-release.sh` | 生成 macOS release 目录和 `.tar.gz` |
 | `scripts/verify-macos-release.sh` | 验证 macOS release 目录、压缩包和 SHA256SUMS |
-| `scripts/install-macos-menu.sh install` | 安装并启动 macOS 菜单栏 App,不修改网络配置 |
+| `scripts/install-macos-menu.sh install` | 安装并启动 macOS 菜单栏 App,不启动 protection、不修改网络配置 |
 | `scripts/install-macos-menu.sh status` | 查看 macOS 菜单栏 App 安装和运行状态 |
-| `scripts/install-macos-menu.sh uninstall` | 移除 macOS 菜单栏 App 和登录项 |
+| `scripts/install-macos-menu.sh uninstall` | 移除 macOS 菜单栏 App 和登录项,不关闭 protection |
 | `sudo bx run` | 前台运行,用于调试 |
 | `sudo bx uninstall` | 卸载客户端服务 |
 | `sudo bx server doctor` | 诊断服务端配置、监听端口和服务状态 |
