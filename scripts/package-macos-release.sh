@@ -52,6 +52,7 @@ fail() {
 
 preflight() {
   [[ "$(uname -s)" == "Darwin" ]] || fail "this package is for macOS"
+  [[ "${EUID:-$(id -u)}" != "0" ]] || fail "run ./install.sh as your normal macOS user; the installer will ask for administrator permission only when installing the bx CLI"
   local machine_arch
   machine_arch="$(uname -m)"
   case "$RELEASE_ARCH:$machine_arch" in
@@ -109,6 +110,7 @@ CLI fallback:
   sudo bx setup '<client-link>' && sudo bx up
 
 The installer did not start bx or change DNS/routes.
+Do not run this installer with sudo; it installs the menu bar app for the current user.
 MSG
 SCRIPT
 
@@ -159,6 +161,7 @@ Remove menu bar app:
 Notes:
   install.sh installs the bx CLI, installs the menu bar app, and starts the menu bar app.
   install.sh does not run bx setup, does not run bx up, and does not change DNS/routes.
+  Run install.sh as your normal macOS user, not with sudo.
   uninstall.sh removes only the menu bar app and does not turn off protection.
 TXT
 
