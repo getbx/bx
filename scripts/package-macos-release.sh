@@ -100,6 +100,7 @@ launchctl kickstart -k "$DOMAIN/$AGENT_ID"
 
 cat <<MSG
 bx installed.
+The menu bar app is installed and running.
 
 Next:
   Open the bx menu bar icon and choose Set Up bx...
@@ -141,6 +142,7 @@ Install:
   ./install.sh
 
 After install:
+  The menu bar app is installed and running.
   Open the bx menu bar icon and choose Set Up bx...
 
 CLI fallback:
@@ -155,7 +157,7 @@ Remove menu bar app:
   ./uninstall.sh
 
 Notes:
-  install.sh installs the bx CLI and menu bar app.
+  install.sh installs the bx CLI, installs the menu bar app, and starts the menu bar app.
   install.sh does not run bx setup, does not run bx up, and does not change DNS/routes.
   uninstall.sh removes only the menu bar app and does not turn off protection.
 TXT
