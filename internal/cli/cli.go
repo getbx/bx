@@ -19,6 +19,7 @@ import (
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/embedded"
+	"github.com/getbx/bx/internal/gateway"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/procredact"
 	"github.com/getbx/bx/internal/provision"
@@ -61,6 +62,7 @@ func New() *cli.App {
 			{Name: "link", Usage: "生成 bx:// 链接", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
 			{Name: "blink", Usage: "兼容旧链接生成命令", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
 			{Name: "darwin-plan", Usage: "打印 macOS 路由 dry-run 计划(不改网络)", Flags: darwinPlanFlags(), Action: darwinPlanAction},
+			{Name: "router-plan", Usage: "打印 router 模式 dry-run 计划(ip + nft,不改网络)", Flags: routerPlanFlags(), Action: routerPlanAction},
 			{Name: "uninstall", Usage: "卸载客户端服务", Action: uninstallAction},
 		},
 	}
@@ -1379,6 +1381,54 @@ func darwinPlanAction(c *cli.Context) error {
 	for _, line := range cleanup {
 		fmt.Println(line)
 	}
+	return nil
+}
+
+func routerPlanFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径(取 router.lan_cidrs)"},
+		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "计划中的 TUN 设备名"},
+		&cli.StringFlag{Name: "lan-ifaces", Value: "br-lan", Usage: "LAN 接口名(逗号分隔;真机由 lan_cidrs 自动探测)"},
+	}
+}
+
+// routerPlanAction 打印 router 模式会下发的 ip + nft 命令(不执行),供部署前审阅。
+func routerPlanAction(c *cli.Context) error {
+	cfg, err := loadConfig(c.String("config"))
+	if err != nil {
+		return err
+	}
+	if cfg.Mode != "router" {
+		fmt.Printf("# 注意: 配置 mode=%q(非 router);以下为「若启用 router」的计划\n", cfg.Mode)
+	}
+	if len(cfg.Router.LANCIDRs) == 0 {
+		return fmt.Errorf("router.lan_cidrs 为空:dry-run 需要显式网段(真机可自动探测)")
+	}
+	tun := c.String("tun")
+	var ifaces []string
+	for _, s := range strings.Split(c.String("lan-ifaces"), ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			ifaces = append(ifaces, s)
+		}
+	}
+	rp := gateway.DefaultRoutePlan(tun, cfg.Router.LANCIDRs)
+	fp := gateway.DefaultFirewallPlan(tun, ifaces)
+
+	fmt.Println("# dry-run only: no commands executed")
+	fmt.Printf("# mode=router lan_cidrs=%v tun=%s lan_ifaces=%v\n", cfg.Router.LANCIDRs, tun, ifaces)
+	fmt.Println("# apply (routing — fail-closed blackhole means a dead bx drops LAN, never leaks):")
+	for _, s := range rp.InstallArgs() {
+		fmt.Println("ip " + strings.Join(s, " "))
+	}
+	fmt.Println("# apply (firewall — LAN→tun accept, LAN IPv6 drop):")
+	for _, r := range fp.InstallRules() {
+		fmt.Println("nft " + strings.Join(r, " "))
+	}
+	fmt.Println("# cleanup (routing):")
+	for _, s := range rp.TeardownArgs() {
+		fmt.Println("ip " + strings.Join(s, " "))
+	}
+	fmt.Println("# cleanup (firewall): delete forward rules whose comment matches", gateway.DefaultComment)
 	return nil
 }
 

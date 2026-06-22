@@ -17,14 +17,6 @@ import (
 	"github.com/getbx/bx/internal/gateway"
 )
 
-const (
-	routerTable    = 441    // mode=router 的 LAN 转发流量专用表(避开 mihomo 1001 / tailscale 52)
-	routerRulePref = 6500   // LAN 源规则优先级
-	fwComment      = "bxr"  // fw4 规则标签,供 handle 卸载定位
-	fw4Table       = "inet fw4"
-	fwChain        = "forward"
-)
-
 // hijackRouter 装路由器模式的策略路由 + 防火墙,返回还原函数。
 func (linuxPlatform) hijackRouter(t tunHandle) (func(), error) {
 	if len(t.LANCIDRs) == 0 {
@@ -33,12 +25,12 @@ func (linuxPlatform) hijackRouter(t tunHandle) (func(), error) {
 	if !nftFw4Present() {
 		return nil, fmt.Errorf("router mode 目前需要 OpenWrt fw4(nft inet fw4 表缺失)")
 	}
-	rp := gateway.RoutePlan{Table: routerTable, TunDev: t.Name, RulePref: routerRulePref, LANCIDRs: t.LANCIDRs}
+	rp := gateway.DefaultRoutePlan(t.Name, t.LANCIDRs)
 	ifaces := lanIfacesFor(t.LANCIDRs)
 	if len(ifaces) == 0 {
 		return nil, fmt.Errorf("router mode 未能从 lan_cidrs 探测到 LAN 接口: %v", t.LANCIDRs)
 	}
-	fp := gateway.FirewallPlan{Table: fw4Table, Chain: fwChain, LANIfaces: ifaces, TunDev: t.Name, Comment: fwComment}
+	fp := gateway.DefaultFirewallPlan(t.Name, ifaces)
 
 	// 接口地址 + up
 	if err := runIP("addr", "add", t.Addr, "dev", t.Name); err != nil {
