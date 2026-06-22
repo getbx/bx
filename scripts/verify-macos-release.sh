@@ -44,6 +44,8 @@ grep -q 'LOG_DIR/menu.err.log' "$RELEASE_DIR/install.sh" || fail "install.sh mis
 grep -q "Library/Logs/bx/menu.log" "$RELEASE_DIR/README.txt" || fail "README missing menu log path"
 grep -q "does not turn off protection" "$RELEASE_DIR/README.txt" || fail "README missing uninstall protection safety note"
 grep -q "did not turn off protection" "$RELEASE_DIR/uninstall.sh" || fail "uninstall.sh missing protection safety note"
+grep -q "normal macOS user" "$RELEASE_DIR/uninstall.sh" || fail "uninstall.sh missing non-root uninstall guard"
+grep -q "Run uninstall.sh as your normal macOS user" "$RELEASE_DIR/README.txt" || fail "README missing non-root uninstall note"
 
 (
   cd "$DIST_ROOT"
