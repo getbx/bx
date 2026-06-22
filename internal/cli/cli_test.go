@@ -360,6 +360,9 @@ func TestCapabilitiesReport(t *testing.T) {
 	if menuInstall.Command == "" || menuInstall.RequiresRoot || menuInstall.ChangesNetwork || menuInstall.ChangesSystem {
 		t.Fatalf("unexpected macOS menu install capability: %+v", menuInstall)
 	}
+	if strings.Contains(strings.ToLower(menuInstall.Summary), "companion") {
+		t.Fatalf("macOS menu install should describe the app as the default menu bar app, not a companion: %+v", menuInstall)
+	}
 	if !strings.Contains(strings.Join(menuInstall.SafeNotes, " "), "Does not start protection") {
 		t.Fatalf("macOS menu install should clarify it does not start protection: %+v", menuInstall)
 	}
@@ -370,6 +373,9 @@ func TestCapabilitiesReport(t *testing.T) {
 	menuRestart := findCapability(rep.Commands, "scripts/install-macos-menu.sh restart")
 	if menuRestart.Command == "" || menuRestart.RequiresRoot || menuRestart.ChangesSystem || menuRestart.ChangesNetwork {
 		t.Fatalf("unexpected macOS menu restart capability: %+v", menuRestart)
+	}
+	if strings.Contains(strings.ToLower(strings.Join([]string{menuRestart.Summary, strings.Join(menuRestart.SafeNotes, " ")}, " ")), "companion") {
+		t.Fatalf("macOS menu restart should describe the menu bar app, not a companion: %+v", menuRestart)
 	}
 	if !strings.Contains(strings.Join(menuRestart.SafeNotes, " "), "not protection") {
 		t.Fatalf("macOS menu restart should clarify it does not restart protection: %+v", menuRestart)

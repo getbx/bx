@@ -16,8 +16,8 @@ usage() {
   cat <<USAGE
 Usage: scripts/install-macos-menu.sh [install|uninstall|restart|status]
 
-Installs the bx macOS menu bar companion. This does not change bx network,
-DNS, route, or service configuration.
+Installs the bx macOS menu bar app. This does not start protection or change
+DNS, routes, client config, or service configuration.
 USAGE
 }
 
