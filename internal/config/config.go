@@ -66,6 +66,14 @@ type Config struct {
 	DataDir    string   `yaml:"data_dir"` // 运行期数据目录;空=默认 /var/lib/bx
 	Bypass     []string `yaml:"bypass"`   // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
 	Global     bool     `yaml:"global"`   // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
+	Mode       string   `yaml:"mode"`     // host(默认,劫持本机出站) | router(只劫持 LAN 转发流量)
+	Router     Router   `yaml:"router"`   // 仅 mode=router 生效
+}
+
+// Router 是网关模式参数:只代理「源在 lan_cidrs 内」的转发流量。
+// 路由器自身流量(源是路由器 IP)永不被劫持 → tailscale/管理流量不受影响。
+type Router struct {
+	LANCIDRs []string `yaml:"lan_cidrs"` // 源网段;空=运行期自动探测 LAN 接口
 }
 
 // Parse 解析并校验配置字节。
@@ -116,6 +124,19 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.DataDir == "" {
 		c.DataDir = "/var/lib/bx"
+	}
+	if c.Mode == "" {
+		c.Mode = "host"
+	}
+	switch c.Mode {
+	case "host", "router":
+	default:
+		return nil, fmt.Errorf("config: mode 必须是 host/router, got %q", c.Mode)
+	}
+	for i, cidr := range c.Router.LANCIDRs {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
+			return nil, fmt.Errorf("config: router.lan_cidrs[%d] 不是合法 CIDR: %q", i, cidr)
+		}
 	}
 	return &c, nil
 }
