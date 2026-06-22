@@ -51,7 +51,7 @@ ssh root@192.168.8.1 '
 ## 4. VERIFY (the step that was skipped before) — from a REAL LAN client (phone/laptop on the Mudi Wi-Fi)
 - Browse a china-blocked site (google/youtube) → loads.
 - `https://www.cloudflare.com/cdn-cgi/trace` → `ip=203.0.113.10` (VPS) for foreign; a CN site shows direct.
-- **Leak test** (browserleaks.com or ipleak.net): public IP = VPS, **no** DNS leak, **no** WebRTC IP, **no** IPv6 address.
+- **Leak test (CLI):** from the LAN client, `scripts/leak-test.sh 203.0.113.10` → IPv4 egress = VPS, no IPv6 egress, google → fake-IP. Then **browserleaks.com** (/ip /dns /webrtc) in a browser: public IP = VPS, no DNS leak, **no WebRTC IP**, no IPv6.
 - On the router: `tailscale status` → gl-e5800 stays **online** (the host-mode failure mode — must NOT recur).
 - Kill-switch: `ssh root@192.168.8.1 '/etc/init.d/bx stop'` → LAN client loses internet (no leak), `bx start` restores. Confirms fail-closed.
 
