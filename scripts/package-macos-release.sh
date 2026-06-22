@@ -131,7 +131,7 @@ echo "Removed bx menu bar app."
 echo "CLI remains at $BX_DST. Remove it manually if desired:"
 echo "  sudo rm -f '$BX_DST'"
 echo
-echo "This did not stop bx service or change DNS/routes."
+echo "This did not turn off protection or change DNS/routes."
 SCRIPT
 
 cat > "$RELEASE_DIR/README.txt" <<TXT

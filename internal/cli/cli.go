@@ -832,7 +832,7 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				Outputs:        []string{"text"},
 				Examples:       []string{"scripts/install-macos-menu.sh install"},
-				SafeNotes:      []string{"macOS only.", "Installs Bx.app under ~/Applications and a user LaunchAgent.", "Does not start bx service, change DNS, routes, or client config."},
+				SafeNotes:      []string{"macOS only.", "Installs Bx.app under ~/Applications and a user LaunchAgent.", "Does not start protection, change DNS, routes, or client config."},
 			},
 			{
 				Command:        "scripts/package-macos-release.sh",
@@ -845,7 +845,7 @@ func capabilities() capabilitiesReport {
 				Outputs:        []string{"files", "tar.gz"},
 				Arguments:      []string{"BX_ARCH=arm64|amd64", "BX_VERSION=<version>", "BX_RELEASE_DIR=<dir>"},
 				Examples:       []string{"scripts/package-macos-release.sh", "BX_ARCH=amd64 scripts/package-macos-release.sh"},
-				SafeNotes:      []string{"macOS only.", "Builds release artifacts under dist/release by default.", "Does not install bx, start bx service, change DNS, routes, or client config."},
+				SafeNotes:      []string{"macOS only.", "Builds release artifacts under dist/release by default.", "Does not install bx, start protection, change DNS, routes, or client config."},
 			},
 			{
 				Command:        "scripts/verify-macos-release.sh",
@@ -858,7 +858,7 @@ func capabilities() capabilitiesReport {
 				Outputs:        []string{"text"},
 				Arguments:      []string{"BX_ARCH=arm64|amd64", "BX_RELEASE_DIR=<dir>"},
 				Examples:       []string{"scripts/verify-macos-release.sh"},
-				SafeNotes:      []string{"Read-only.", "macOS only.", "Does not install bx, start bx service, change DNS, routes, or client config."},
+				SafeNotes:      []string{"Read-only.", "macOS only.", "Does not install bx, start protection, change DNS, routes, or client config."},
 			},
 			{
 				Command:        "scripts/install-macos-menu.sh status",
@@ -882,7 +882,7 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				Outputs:        []string{"text"},
 				Examples:       []string{"scripts/install-macos-menu.sh restart"},
-				SafeNotes:      []string{"macOS only.", "Restarts only the menu bar companion, not the bx service."},
+				SafeNotes:      []string{"macOS only.", "Restarts only the menu bar companion, not protection."},
 			},
 			{
 				Command:        "scripts/install-macos-menu.sh uninstall",
@@ -894,7 +894,7 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				Outputs:        []string{"text"},
 				Examples:       []string{"scripts/install-macos-menu.sh uninstall"},
-				SafeNotes:      []string{"macOS only.", "Does not stop bx service, change DNS, routes, or client config."},
+				SafeNotes:      []string{"macOS only.", "Does not turn off protection, change DNS, routes, or client config."},
 			},
 			{
 				Command:        "sudo bx setup <client-link>",
