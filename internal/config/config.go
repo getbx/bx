@@ -18,9 +18,10 @@ type SplitRule struct {
 }
 
 type DNS struct {
-	China      string      `yaml:"china"`
-	FakeipCIDR string      `yaml:"fakeip_cidr"`
-	Split      []SplitRule `yaml:"split"`
+	China        string      `yaml:"china"`
+	FakeipCIDR   string      `yaml:"fakeip_cidr"`
+	Split        []SplitRule `yaml:"split"`
+	FakeipFilter []string    `yaml:"fakeip_filter"` // 这些域名不分配 fake-IP(本地/反查域名,代理无意义)
 }
 
 type Rule struct {
@@ -99,6 +100,11 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.DNS.FakeipCIDR == "" {
 		c.DNS.FakeipCIDR = "198.18.0.0/15"
+	}
+	if c.DNS.FakeipFilter == nil {
+		// 本地/反查域名永不该走 fake-IP(代理它们无意义,且会破坏本地解析);
+		// 与 mihomo/sing-box 的 fake-ip-filter 默认一致。
+		c.DNS.FakeipFilter = []string{"*.lan", "*.local", "*.localdomain", "*.arpa"}
 	}
 	if c.UDP.Mode == "" {
 		c.UDP.Mode = "proxy"
