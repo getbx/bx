@@ -285,6 +285,24 @@ rules:
 - `bypass`:路由层绕过 bx 的网段,适合管理网、SSH、内网。
 - 私网、Docker、loopback、link-local 默认内建直连,通常无需手动配置。
 
+### 路由器模式(mode: router)
+
+把 bx 装在网关/路由器上,只代理 **LAN 客户端的转发流量**;路由器自身流量一律不碰
+(源地址策略路由),因此 Tailscale、管理流量、上游不受影响。
+
+```yaml
+mode: router
+killswitch: true
+router:
+  lan_cidrs: [192.168.8.0/24]   # 要代理的 LAN 网段;留空则自动探测 br-* 私网桥
+```
+
+- 只有「源在 `lan_cidrs` 内」的转发流量被劫进 bx;路由器发起的流量走正常路由直连。
+- **Fail-closed**:LAN 流量只能经 bx 出去;bx/隧道一挂即丢弃,绝不泄露真实 IP(路由层 blackhole + 防火墙)。
+- 防泄露:强制 LAN DNS 走 bx fake-IP;封 LAN IPv6 转发(防 WebRTC/ICE v6 泄露);UDP(含 STUN)走代理或 block,不直连。
+- 部署前用 `bx router-plan -c /etc/bx/config.yaml` 预览将下发的 `ip` + `nft` 命令(不改系统)。
+- 目前需要 OpenWrt fw4(nftables)。完整上线步骤见 `docs/router-mode-deploy-runbook.md`。
+
 ## 构建
 
 ```bash
