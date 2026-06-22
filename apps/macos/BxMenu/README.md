@@ -15,7 +15,7 @@ When protected, `UDP Relay` shows `On`, `Direct`, or `Blocked`.
 - Restart Protection
 - Turn Off
 
-It does not install, configure, start, or stop the bx network service by itself unless you choose one of the explicit menu actions.
+It does not install, configure, start, restart, or turn off protection by itself unless you choose one of the explicit menu actions.
 Starting protection always asks for confirmation before bx takes over system traffic.
 Turning protection off also asks for confirmation and restores managed DNS settings.
 When bx needs attention, the primary action is to restart protection.

@@ -360,8 +360,8 @@ func TestCapabilitiesReport(t *testing.T) {
 	if menuInstall.Command == "" || menuInstall.RequiresRoot || menuInstall.ChangesNetwork || menuInstall.ChangesSystem {
 		t.Fatalf("unexpected macOS menu install capability: %+v", menuInstall)
 	}
-	if !strings.Contains(strings.Join(menuInstall.SafeNotes, " "), "Does not start bx service") {
-		t.Fatalf("macOS menu install should clarify it does not start bx service: %+v", menuInstall)
+	if !strings.Contains(strings.Join(menuInstall.SafeNotes, " "), "Does not start protection") {
+		t.Fatalf("macOS menu install should clarify it does not start protection: %+v", menuInstall)
 	}
 	menuStatus := findCapability(rep.Commands, "scripts/install-macos-menu.sh status")
 	if menuStatus.Command == "" || !menuStatus.Stable || menuStatus.ChangesSystem || menuStatus.ChangesNetwork {
