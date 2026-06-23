@@ -141,3 +141,27 @@ func has(c []string, tok string) bool {
 	}
 	return false
 }
+
+func TestV6FailClosed(t *testing.T) {
+	p := samplePlan()
+	p.PrivateV6CIDRs = []string{"fe80::/10", "fc00::/7"}
+	cmds := p.InstallArgs()
+	if !argsContain(cmds, "-6", "route", "add", "unreachable", "default", "table", "441") {
+		t.Fatalf("missing v6 unreachable default (router-own v6 must fail → fall back to v4): %v", cmds)
+	}
+	if !argsContain(cmds, "-6", "rule", "add", "pref", "6600", "table", "441") {
+		t.Fatalf("missing v6 catch-all")
+	}
+	if !argsContain(cmds, "-6", "rule", "add", "to", "fe80::/10", "pref", "6590", "table", "main") {
+		t.Fatalf("missing v6 private carve-out")
+	}
+}
+
+func TestNoV6WhenDisabled(t *testing.T) {
+	// empty PrivateV6CIDRs → no v6 args (don't touch v6 if router has none)
+	for _, c := range samplePlan().InstallArgs() {
+		if len(c) > 0 && c[0] == "-6" {
+			t.Fatalf("unexpected v6 args when PrivateV6CIDRs empty: %v", c)
+		}
+	}
+}

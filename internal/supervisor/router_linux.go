@@ -38,7 +38,13 @@ func (linuxPlatform) hijackRouter(t tunHandle, serverBypass, userBypass []string
 	if len(ifaces) == 0 {
 		return nil, fmt.Errorf("router mode 未能从 lan_cidrs 探测到 LAN 接口: %v", cidrs)
 	}
-	rp := gateway.DefaultRoutePlan(t.Name, serverBypass, userBypass, route.DefaultPrivateCIDRs)
+	var v6 []string
+	if ipv6Enabled() {
+		// 路由器自身全局 v6 → unreachable,逼 tailscaled 等回落 v4(其控制面解析成 v6);
+		// 私网 v6 + on-link 全局前缀 carve 直连,保邻居发现。
+		v6 = append(append([]string{}, route.DefaultPrivateV6CIDRs...), onLinkV6Prefixes()...)
+	}
+	rp := gateway.DefaultRoutePlan(t.Name, serverBypass, userBypass, route.DefaultPrivateCIDRs, v6)
 	fp := gateway.DefaultFirewallPlan(t.Name, ifaces)
 
 	// 接口地址 + up

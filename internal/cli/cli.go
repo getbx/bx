@@ -1432,7 +1432,7 @@ func routerPlanAction(c *cli.Context) error {
 	if h := serverHostFromLink(cfg.Server); h != "" {
 		serverBypass = []string{h + "/32"}
 	}
-	rp := gateway.DefaultRoutePlan(tun, serverBypass, cfg.Bypass, route.DefaultPrivateCIDRs)
+	rp := gateway.DefaultRoutePlan(tun, serverBypass, cfg.Bypass, route.DefaultPrivateCIDRs, route.DefaultPrivateV6CIDRs)
 	fp := gateway.DefaultFirewallPlan(tun, ifaces)
 
 	fmt.Println("# dry-run only: no commands executed")
