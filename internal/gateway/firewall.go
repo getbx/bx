@@ -52,6 +52,29 @@ func (p FirewallPlan) InstallRules() [][]string {
 	return rules
 }
 
+// IncludeRules returns the same fail-closed rules as InstallRules, but as bare
+// nft rule bodies (no add/insert verb, no table/chain prefix) for an fw4
+// chain-pre include file. fw4 splices a chain-pre/<chain>/*.nft at the TOP of the
+// chain every time it rebuilds the ruleset, so these survive `fw4 reload` — which
+// flushes the whole inet fw4 table and would otherwise drop the runtime-inserted
+// rules, removing the IPv6 drop (leak) and the LAN→tun accept (LAN offline).
+//
+// Order matters here (a file is read top-to-bottom, unlike the position-0 inserts
+// of InstallRules): the IPv6 drop is emitted before the IPv4 accept. The explicit
+// nfproto guards are kept regardless so the two rules can never cross-match.
+func (p FirewallPlan) IncludeRules() []string {
+	q := func(s string) string { return "\"" + s + "\"" }
+	cmt := strings.Join(p.comment(), " ")
+	var rules []string
+	for _, ifc := range p.LANIfaces {
+		rules = append(rules,
+			"iifname "+q(ifc)+" meta nfproto ipv6 drop "+cmt,
+			"iifname "+q(ifc)+" meta nfproto ipv4 oifname "+q(p.TunDev)+" accept "+cmt,
+		)
+	}
+	return rules
+}
+
 // TeardownMatch is the predicate the platform layer greps for in `nft -a list
 // chain <table> <chain>` output to find the rule handles to delete.
 func (p FirewallPlan) TeardownMatch() []string {

@@ -114,3 +114,53 @@ func TestFirewallAcceptIsIPv4Only(t *testing.T) {
 		}
 	}
 }
+
+// IncludeRules (the fw4 chain-pre persistence) must carry the SAME fail-closed
+// semantics as InstallRules: an IPv6 drop and a tagged LAN→tun IPv4 accept.
+func TestIncludeRulesPreserveFailClosed(t *testing.T) {
+	rules := fwplan().IncludeRules()
+	if len(rules) == 0 {
+		t.Fatal("IncludeRules emitted nothing — fw4 reload would leave LAN unprotected")
+	}
+	var v6drop, v4accept bool
+	for _, r := range rules {
+		if !strings.Contains(r, "bxr") {
+			t.Fatalf("include rule not tagged (un-removable / un-idempotent): %q", r)
+		}
+		if strings.Contains(r, "ipv6") && strings.Contains(r, "drop") {
+			v6drop = true
+		}
+		if strings.Contains(r, "ipv4") && strings.Contains(r, "bx0") && strings.Contains(r, "accept") {
+			v4accept = true
+		}
+		// chain-pre files must be bare rule bodies — fw4 splices them inside the
+		// chain, so an add/insert verb or table prefix would be a syntax error.
+		if strings.HasPrefix(r, "add ") || strings.HasPrefix(r, "insert ") || strings.Contains(r, "fw4") {
+			t.Fatalf("include rule must be a bare body (no verb/table), got: %q", r)
+		}
+	}
+	if !v6drop {
+		t.Error("IncludeRules missing IPv6 drop — fw4 reload would reopen the v6 leak")
+	}
+	if !v4accept {
+		t.Error("IncludeRules missing LAN→tun IPv4 accept — fw4 reload would take LAN offline")
+	}
+}
+
+// In a chain-pre file rules apply top-to-bottom, so the v6 drop must be emitted
+// BEFORE the v4 accept (defensive; the nfproto guards already prevent crossover).
+func TestIncludeRulesDropBeforeAccept(t *testing.T) {
+	rules := fwplan().IncludeRules()
+	dropIdx, acceptIdx := -1, -1
+	for i, r := range rules {
+		if dropIdx < 0 && strings.Contains(r, "ipv6") && strings.Contains(r, "drop") {
+			dropIdx = i
+		}
+		if acceptIdx < 0 && strings.Contains(r, "accept") {
+			acceptIdx = i
+		}
+	}
+	if dropIdx < 0 || acceptIdx < 0 || dropIdx > acceptIdx {
+		t.Fatalf("expected v6 drop before v4 accept, got drop@%d accept@%d in %v", dropIdx, acceptIdx, rules)
+	}
+}
