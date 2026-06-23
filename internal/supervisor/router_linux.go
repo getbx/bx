@@ -48,6 +48,10 @@ func (linuxPlatform) hijackRouter(t tunHandle, serverBypass, userBypass []string
 	rp := gateway.DefaultRoutePlan(t.Name, serverBypass, userBypass, route.DefaultPrivateCIDRs, v6)
 	fp := gateway.DefaultFirewallPlan(t.Name, ifaces)
 
+	// 自愈:清掉外来代理残留的「抢 LAN」源规则(如 mihomo 的 from <LAN> lookup 1001 pref 6500),
+	// 否则它在 catch-all(6600)之前命中,把 LAN 流量导进死表 → 断网/绕过 bx。重启每次都查,幂等。
+	clearShadowingLANRules(cidrs)
+
 	// 接口地址 + up
 	if err := runIP("addr", "add", t.Addr, "dev", t.Name); err != nil {
 		return nil, err
@@ -124,6 +128,19 @@ func writeFw4Include(fp gateway.FirewallPlan) {
 
 // removeFw4Include 删掉 chain-pre include 文件(teardown 时,避免下次 reload 又加回规则)。
 func removeFw4Include(fp gateway.FirewallPlan) { _ = os.Remove(fw4IncludePath(fp.Chain)) }
+
+// clearShadowingLANRules 删掉所有「在 catch-all 之前抢 LAN 流量」的外来源规则(见 gateway.ShadowingLANRules)。
+func clearShadowingLANRules(lanCIDRs []string) {
+	out, err := exec.Command("ip", "rule", "show").Output()
+	if err != nil {
+		return
+	}
+	for _, del := range gateway.ShadowingLANRules(string(out), lanCIDRs) {
+		if runIPQuiet(del...) == nil {
+			log.Printf("router 模式:清掉抢 LAN 的残留路由规则: ip %s", strings.Join(del, " "))
+		}
+	}
+}
 
 // nftFw4Present 报告 nft inet fw4 表是否存在(OpenWrt 标志)。
 func nftFw4Present() bool {

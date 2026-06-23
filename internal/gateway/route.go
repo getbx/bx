@@ -3,7 +3,10 @@
 // while coexisting with Tailscale and the OpenWrt/GL fwmark rules.
 package gateway
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // Rule priorities. The catch-all sits AFTER Tailscale's rules (5210–5270) and
 // GL's fwmark/LAN rules (6000/6500) so Tailscale's 0x80000 transport bypasses to
@@ -122,4 +125,41 @@ func (p RoutePlan) TeardownArgs() [][]string {
 
 func fmtMark(m int) string {
 	return "0x" + strconv.FormatInt(int64(m), 16)
+}
+
+// ShadowingLANRules parses `ip rule show` output and returns `ip` del-arg lists
+// (each minus the leading "ip") for any rule that competes with the router-mode
+// catch-all for LAN traffic: a `from <lan_cidr> ...` selector at a pref BELOW
+// CatchAllPref (i.e. evaluated before the catch-all).
+//
+// This is the self-healing teardown for a foreign proxy's leftover source rule —
+// e.g. mihomo's `from 192.168.8.0/24 lookup 1001 pref 6500`, which would silently
+// divert LAN traffic into a dead table instead of bx's tun. It is safe because bx
+// itself only emits `from all` + `to <cidr>` rules, and Tailscale (5210–5270) and
+// the GL/OpenWrt infra rules are all `from all ...` too — none use a from-<cidr>
+// selector, so only a competing proxy's rule can match.
+func ShadowingLANRules(ruleShow string, lanCIDRs []string) [][]string {
+	lan := make(map[string]bool, len(lanCIDRs))
+	for _, c := range lanCIDRs {
+		lan[strings.TrimSpace(c)] = true
+	}
+	var out [][]string
+	for _, line := range strings.Split(ruleShow, "\n") {
+		line = strings.TrimSpace(line)
+		colon := strings.IndexByte(line, ':')
+		if colon < 0 {
+			continue
+		}
+		pref, err := strconv.Atoi(strings.TrimSpace(line[:colon]))
+		if err != nil || pref >= CatchAllPref {
+			continue // at/after the catch-all → cannot shadow it
+		}
+		sel := strings.Fields(strings.TrimSpace(line[colon+1:]))
+		// must be `from <cidr>` with cidr ∈ our LAN nets (excludes "from all").
+		if len(sel) < 2 || sel[0] != "from" || !lan[sel[1]] {
+			continue
+		}
+		out = append(out, append([]string{"rule", "del", "pref", strconv.Itoa(pref)}, sel...))
+	}
+	return out
 }
