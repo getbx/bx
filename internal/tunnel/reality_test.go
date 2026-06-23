@@ -14,7 +14,7 @@ func TestRealityFactoryWritesConfig(t *testing.T) {
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "sing-box.json")
 	link := "vless://uid@1.2.3.4:443?security=reality&pbk=P&sid=S&sni=www.microsoft.com&flow=xtls-rprx-vision&fp=chrome"
-	f := realityFactory("/bin/true", link, conf) // /bin/true exits 0 immediately
+	f := realityFactory("/bin/true", link, conf, "") // /bin/true exits 0 immediately
 	r, err := f("127.0.0.1:10811")
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -30,7 +30,7 @@ func TestRealityFactoryWritesConfig(t *testing.T) {
 }
 
 func TestRealityFactoryRejectsBadLink(t *testing.T) {
-	f := realityFactory("/bin/true", "brook://x", filepath.Join(t.TempDir(), "c.json"))
+	f := realityFactory("/bin/true", "brook://x", filepath.Join(t.TempDir(), "c.json"), "")
 	if _, err := f("127.0.0.1:1"); err == nil {
 		t.Fatal("expected error for non-vless link")
 	}
