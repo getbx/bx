@@ -263,3 +263,16 @@ dns:
 		t.Fatalf("custom fakeip_filter = %v", c.DNS.FakeipFilter)
 	}
 }
+
+func TestParseSingboxFields(t *testing.T) {
+	y := []byte("server: vless://uid@1.2.3.4:443?security=reality&pbk=p&sid=s&sni=www.microsoft.com\n" +
+		"singbox_url: https://vps.example.com/dl/sing-box-arm64\n" +
+		"singbox_sha256: abcdef\n")
+	c, err := Parse(y)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.SingboxURL != "https://vps.example.com/dl/sing-box-arm64" || c.SingboxSHA256 != "abcdef" {
+		t.Fatalf("singbox fields: url=%q sha=%q", c.SingboxURL, c.SingboxSHA256)
+	}
+}

@@ -35,6 +35,7 @@ import (
 const defaultConfigPath = "/etc/bx/config.yaml"
 const defaultServerConfigPath = "/etc/bx/server.yaml"
 const defaultShareDir = "/etc/bx/shares"
+
 // 健康探测目标:必须是隧道出口能稳定连上的东西。github.com 本身常被黑洞/限速(尤其从代理出口),
 // 用它当探针会把"github 慢"误判成"隧道挂了"导致无谓重连。1.1.1.1:443 是裸 IP(免 DNS)、全球稳定。
 const defaultProbeTarget = "1.1.1.1:443"
@@ -1396,11 +1397,14 @@ func routerPlanFlags() []cli.Flag {
 }
 
 // routerPlanAction 打印 router 模式会下发的 ip + nft 命令(不执行),供部署前审阅。
-// serverHostFromLink 从 brook:// 链接解析出 server 主机(用于 router-plan 显示 server bypass)。
+// serverHostFromLink 从 brook:// 或 vless:// 链接解析出 server 主机(用于 router-plan 显示 server bypass)。
 func serverHostFromLink(link string) string {
 	u, err := url.Parse(link)
 	if err != nil {
 		return ""
+	}
+	if u.Scheme == "vless" { // reality: host is in the authority, not a ?server= param
+		return u.Hostname()
 	}
 	s := u.Query().Get("server")
 	if s == "" {
