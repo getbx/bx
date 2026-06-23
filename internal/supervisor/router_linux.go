@@ -1,8 +1,9 @@
 //go:build linux
 
-// router_linux.go 实现 mode=router 的劫持:只把「源在 LANCIDRs 内」的转发流量
-// 经策略路由导进 tun(fail-closed blackhole 兜底),并装 fw4 转发放行/IPv6 阻断。
-// 路由器自身流量(源是路由器 IP)永不匹配源规则 → 正常路由 → 直连(tailscale 等不受影响)。
+// router_linux.go 实现 mode=router 的劫持:代理「路由器自身 + LAN 转发」的流量,
+// catch-all 优先级(6600)落在 tailscale(5210-5270)与 GL mark 规则(6000/6500)之后,
+// 让 tailscale 的 0x80000 传输先绕过(直连),其余(含 tailscale 控制面)走代理——与 mihomo 一致。
+// 配 fw4 转发放行 + IPv6 阻断 + fail-closed blackhole。
 package supervisor
 
 import (
@@ -15,13 +16,14 @@ import (
 	"strings"
 
 	"github.com/getbx/bx/internal/gateway"
+	"github.com/getbx/bx/internal/route"
 )
 
 // hijackRouter 装路由器模式的策略路由 + 防火墙,返回还原函数。
-func (linuxPlatform) hijackRouter(t tunHandle) (func(), error) {
+func (linuxPlatform) hijackRouter(t tunHandle, serverBypass, userBypass []string) (func(), error) {
 	cidrs := t.LANCIDRs
 	if len(cidrs) == 0 {
-		cidrs = detectLANCIDRs() // 未配 lan_cidrs:从 br-* 私网桥自动探测
+		cidrs = detectLANCIDRs() // 未配 lan_cidrs:从 br-* 私网桥自动探测(仅用于防火墙接口识别)
 		if len(cidrs) > 0 {
 			log.Printf("router mode 自动探测到 LAN 网段: %v", cidrs)
 		}
@@ -32,11 +34,11 @@ func (linuxPlatform) hijackRouter(t tunHandle) (func(), error) {
 	if !nftFw4Present() {
 		return nil, fmt.Errorf("router mode 目前需要 OpenWrt fw4(nft inet fw4 表缺失)")
 	}
-	rp := gateway.DefaultRoutePlan(t.Name, cidrs)
 	ifaces := lanIfacesFor(cidrs)
 	if len(ifaces) == 0 {
 		return nil, fmt.Errorf("router mode 未能从 lan_cidrs 探测到 LAN 接口: %v", cidrs)
 	}
+	rp := gateway.DefaultRoutePlan(t.Name, serverBypass, userBypass, route.DefaultPrivateCIDRs)
 	fp := gateway.DefaultFirewallPlan(t.Name, ifaces)
 
 	// 接口地址 + up
@@ -60,7 +62,7 @@ func (linuxPlatform) hijackRouter(t tunHandle) (func(), error) {
 			return nil, err
 		}
 	}
-	log.Printf("router 模式已接管:LAN=%v → %s(其余直连),fail-closed", t.LANCIDRs, t.Name)
+	log.Printf("router 模式已接管:路由器自身 + LAN(ifaces=%v)→ %s,tailscale 绕过,fail-closed", ifaces, t.Name)
 	down := func() { cleanupRouter(rp, fp, t.Name) }
 	return down, nil
 }

@@ -62,7 +62,7 @@ func (linuxPlatform) DirectDialer() *net.Dialer {
 // router 模式只劫持 LAN 转发流量(见 hijackRouter),路由器自身流量不碰。
 func (p linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (func(), error) {
 	if t.RouterMode {
-		return p.hijackRouter(t)
+		return p.hijackRouter(t, serverBypass, userBypass)
 	}
 	gw, gwDev, err := defaultRoute()
 	if err != nil {

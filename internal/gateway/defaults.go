@@ -4,16 +4,25 @@ package gateway
 // the plans) and the `bx router-plan` dry-run command (which prints them), so
 // the printed plan always matches what would actually be applied.
 const (
-	DefaultTable    = 441        // LAN-forward routing table (avoids mihomo 1001 / tailscale 52)
-	DefaultRulePref = 6500       // ip rule priority for the LAN source rules
-	DefaultComment  = "bxr"      // fw4 rule tag for handle-based teardown
-	DefaultFwTable  = "inet fw4" // OpenWrt nftables table
-	DefaultFwChain  = "forward"  // base forward chain
+	DefaultTable   = 441        // routing table whose default is the tun (+ blackhole)
+	DefaultFwMark  = 0x162      // bx's own-dial fwmark (anti-loop), matches supervisor fwMark
+	DefaultComment = "bxr"      // fw4 rule tag for handle-based teardown
+	DefaultFwTable = "inet fw4" // OpenWrt nftables table
+	DefaultFwChain = "forward"  // base forward chain
 )
 
-// DefaultRoutePlan builds the standard router-mode route plan.
-func DefaultRoutePlan(tunDev string, lanCIDRs []string) RoutePlan {
-	return RoutePlan{Table: DefaultTable, TunDev: tunDev, RulePref: DefaultRulePref, LANCIDRs: lanCIDRs}
+// DefaultRoutePlan builds the standard router-mode route plan. privateCIDRs are
+// the built-in always-direct nets (RFC1918/docker/CGNAT); serverBypass is the
+// brook server IP(s); userBypass is the config's bypass list.
+func DefaultRoutePlan(tunDev string, serverBypass, userBypass, privateCIDRs []string) RoutePlan {
+	return RoutePlan{
+		Table:        DefaultTable,
+		TunDev:       tunDev,
+		FwMark:       DefaultFwMark,
+		ServerBypass: serverBypass,
+		UserBypass:   userBypass,
+		PrivateCIDRs: privateCIDRs,
+	}
 }
 
 // DefaultFirewallPlan builds the standard router-mode firewall plan.
