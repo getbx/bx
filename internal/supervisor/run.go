@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,6 +33,14 @@ import (
 	"github.com/getbx/bx/internal/tunnel"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
+
+// transportKind 由 server link 的 scheme 选传输:vless://→reality,其余→brook。
+func transportKind(server string) string {
+	if strings.HasPrefix(server, "vless://") {
+		return "reality"
+	}
+	return "brook"
+}
 
 // Options 是 bx up 的运行期参数(非配置文件项)。
 type Options struct {
@@ -120,10 +129,24 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	log.Printf("分流脑就绪: 模式=%s china_domain=%d china_cidr=%d", mode, len(chinaDomain), len(chinaCIDR))
 
-	// 2) brook 隧道
-	tun0, err := tunnel.NewBrook(brookPath, cfg.Server, opts.Probe, cfg.HTTPProxy)
-	if err != nil {
-		return fmt.Errorf("构建隧道: %w", err)
+	// 2) 隧道:按 server link 的 scheme 选传输(brook | reality),数据面不变。
+	var tun0 *tunnel.Tunnel
+	switch transportKind(cfg.Server) {
+	case "reality":
+		singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, cfg.SingboxURL, cfg.SingboxSHA256)
+		if err != nil {
+			return fmt.Errorf("准备 sing-box: %w", err)
+		}
+		confPath := filepath.Join(cfg.DataDir, "sing-box.json")
+		tun0, err = tunnel.NewReality(singboxPath, cfg.Server, opts.Probe, confPath)
+		if err != nil {
+			return fmt.Errorf("构建 reality 隧道: %w", err)
+		}
+	default:
+		tun0, err = tunnel.NewBrook(brookPath, cfg.Server, opts.Probe, cfg.HTTPProxy)
+		if err != nil {
+			return fmt.Errorf("构建隧道: %w", err)
+		}
 	}
 	tun0.Start()
 	defer tun0.Stop()
