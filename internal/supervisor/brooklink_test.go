@@ -51,3 +51,20 @@ func TestServerHostFromLink_PlainHostPort(t *testing.T) {
 		t.Fatalf("host = %q, want 1.2.3.4", host)
 	}
 }
+
+func TestServerHostFromLinkVless(t *testing.T) {
+	h, err := serverHostFromLink("vless://uid@203.0.113.10:443?security=reality&pbk=p&sid=s&sni=www.microsoft.com")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if h != "203.0.113.10" {
+		t.Fatalf("host=%q want 203.0.113.10", h)
+	}
+}
+
+func TestServerHostFromLinkBrookStillWorks(t *testing.T) {
+	h, err := serverHostFromLink("brook://server?server=203.0.113.10%3A9999&password=x")
+	if err != nil || h != "203.0.113.10" {
+		t.Fatalf("brook host=%q err=%v", h, err)
+	}
+}
