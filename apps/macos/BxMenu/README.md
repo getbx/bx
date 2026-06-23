@@ -112,7 +112,7 @@ Run Doctor archives diagnostics under:
 ~/Library/Logs/bx/diagnostics
 ```
 
-The menu sets `BX_LOG_ARCHIVE_DIR` for that action, so diagnostics stay in the user's log folder instead of requiring system log write access.
+The menu runs Doctor in Terminal and may ask for the macOS administrator password so it can read the system client config and service logs. It sets `BX_LOG_ARCHIVE_DIR` for that action, so diagnostics stay in the user's log folder and are opened in Finder after collection.
 
 The menu bar app itself writes raw logs under:
 
