@@ -1,6 +1,9 @@
 package tunnel
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestParseVlessLink(t *testing.T) {
 	s := "vless://11111111-2222-3333-4444-555555555555@203.0.113.10:443" +
@@ -37,5 +40,34 @@ func TestParseVlessLinkErrors(t *testing.T) {
 		if _, err := parseVlessLink(s); err == nil {
 			t.Errorf("%s: expected error, got nil", name)
 		}
+	}
+}
+
+func TestSingboxConfig(t *testing.T) {
+	v := vlessLink{
+		UUID: "uid", Host: "203.0.113.10", Port: 443,
+		PublicKey: "PBK", ShortID: "SID", SNI: "www.microsoft.com",
+		Flow: "xtls-rprx-vision", Fingerprint: "chrome",
+	}
+	b, err := v.singboxConfig("127.0.0.1:10800")
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("not valid json: %v", err)
+	}
+	in := cfg["inbounds"].([]any)[0].(map[string]any)
+	if in["type"] != "socks" || in["listen"] != "127.0.0.1" || in["listen_port"].(float64) != 10800 {
+		t.Errorf("inbound wrong: %v", in)
+	}
+	out := cfg["outbounds"].([]any)[0].(map[string]any)
+	if out["type"] != "vless" || out["server"] != "203.0.113.10" || out["server_port"].(float64) != 443 {
+		t.Errorf("outbound wrong: %v", out)
+	}
+	tls := out["tls"].(map[string]any)
+	reality := tls["reality"].(map[string]any)
+	if tls["server_name"] != "www.microsoft.com" || reality["public_key"] != "PBK" || reality["short_id"] != "SID" {
+		t.Errorf("tls/reality wrong: %v", tls)
 	}
 }

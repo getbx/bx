@@ -1,7 +1,9 @@
 package tunnel
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -62,4 +64,41 @@ func parseVlessLink(s string) (vlessLink, error) {
 		v.Fingerprint = "chrome"
 	}
 	return v, nil
+}
+
+// singboxConfig 生成最小 sing-box 客户端配置:本地 socks 入站 + vless-reality 出站。
+// socksAddr 形如 "127.0.0.1:10800"。bx 数据面只连这个 socks,不关心引擎内部。
+func (v vlessLink) singboxConfig(socksAddr string) ([]byte, error) {
+	host, portStr, err := net.SplitHostPort(socksAddr)
+	if err != nil {
+		return nil, fmt.Errorf("拆分 socks 地址 %q: %w", socksAddr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("socks 端口 %q: %w", portStr, err)
+	}
+	cfg := map[string]any{
+		"log": map[string]any{"level": "warn", "timestamp": false},
+		"inbounds": []any{map[string]any{
+			"type":        "socks",
+			"tag":         "socks-in",
+			"listen":      host,
+			"listen_port": port,
+		}},
+		"outbounds": []any{map[string]any{
+			"type":        "vless",
+			"tag":         "reality-out",
+			"server":      v.Host,
+			"server_port": v.Port,
+			"uuid":        v.UUID,
+			"flow":        v.Flow,
+			"tls": map[string]any{
+				"enabled":     true,
+				"server_name": v.SNI,
+				"utls":        map[string]any{"enabled": true, "fingerprint": v.Fingerprint},
+				"reality":     map[string]any{"enabled": true, "public_key": v.PublicKey, "short_id": v.ShortID},
+			},
+		}},
+	}
+	return json.MarshalIndent(cfg, "", "  ")
 }
