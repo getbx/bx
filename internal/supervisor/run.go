@@ -138,7 +138,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			return fmt.Errorf("准备 sing-box: %w", err)
 		}
 		confPath := filepath.Join(cfg.DataDir, "sing-box.json")
-		tun0, err = tunnel.NewReality(singboxPath, cfg.Server, opts.Probe, confPath)
+		tun0, err = tunnel.NewReality(singboxPath, cfg.Server, opts.Probe, confPath, cfg.HTTPProxy)
 		if err != nil {
 			return fmt.Errorf("构建 reality 隧道: %w", err)
 		}

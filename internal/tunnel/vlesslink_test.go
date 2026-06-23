@@ -49,7 +49,7 @@ func TestSingboxConfig(t *testing.T) {
 		PublicKey: "PBK", ShortID: "SID", SNI: "www.microsoft.com",
 		Flow: "xtls-rprx-vision", Fingerprint: "chrome",
 	}
-	b, err := v.singboxConfig("127.0.0.1:10800")
+	b, err := v.singboxConfig("127.0.0.1:10800", "")
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
@@ -57,7 +57,11 @@ func TestSingboxConfig(t *testing.T) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		t.Fatalf("not valid json: %v", err)
 	}
-	in := cfg["inbounds"].([]any)[0].(map[string]any)
+	ins := cfg["inbounds"].([]any)
+	if len(ins) != 1 {
+		t.Fatalf("no httpAddr → expected 1 inbound, got %d", len(ins))
+	}
+	in := ins[0].(map[string]any)
 	if in["type"] != "socks" || in["listen"] != "127.0.0.1" || in["listen_port"].(float64) != 10800 {
 		t.Errorf("inbound wrong: %v", in)
 	}
@@ -69,5 +73,36 @@ func TestSingboxConfig(t *testing.T) {
 	reality := tls["reality"].(map[string]any)
 	if tls["server_name"] != "www.microsoft.com" || reality["public_key"] != "PBK" || reality["short_id"] != "SID" {
 		t.Errorf("tls/reality wrong: %v", tls)
+	}
+}
+
+// A non-empty httpAddr adds a second `http` inbound (for tailscaled's HTTP_PROXY)
+// alongside the socks inbound — both feed the same reality outbound.
+func TestSingboxConfigHTTPInbound(t *testing.T) {
+	v := vlessLink{UUID: "uid", Host: "1.2.3.4", Port: 443, PublicKey: "P", ShortID: "S", SNI: "www.microsoft.com", Flow: "xtls-rprx-vision", Fingerprint: "chrome"}
+	b, err := v.singboxConfig("127.0.0.1:10800", "127.0.0.1:7890")
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("not valid json: %v", err)
+	}
+	ins := cfg["inbounds"].([]any)
+	if len(ins) != 2 {
+		t.Fatalf("httpAddr set → expected 2 inbounds, got %d", len(ins))
+	}
+	var gotHTTP bool
+	for _, raw := range ins {
+		in := raw.(map[string]any)
+		if in["type"] == "http" {
+			gotHTTP = true
+			if in["listen"] != "127.0.0.1" || in["listen_port"].(float64) != 7890 {
+				t.Errorf("http inbound wrong: %v", in)
+			}
+		}
+	}
+	if !gotHTTP {
+		t.Errorf("no http inbound found: %v", ins)
 	}
 }
