@@ -41,9 +41,20 @@ func addrsToCIDRs(addrs []netip.Addr) []string {
 	return out
 }
 
-// serverHostFromLink 从 brook:// link 或裸 host:port 中取出服务器主机(IP/域名)。
-// 用于给路由加 bypass,避免 brook 到服务器的连接被 tun 再次捕获成环。
+// serverHostFromLink 从 vless:// / brook:// link 或裸 host:port 中取出服务器主机(IP/域名)。
+// 用于给路由加 bypass,避免到服务器的连接被 tun 再次捕获成环。
 func serverHostFromLink(server string) (string, error) {
+	if strings.HasPrefix(server, "vless://") {
+		u, err := url.Parse(server)
+		if err != nil {
+			return "", fmt.Errorf("解析 vless link: %w", err)
+		}
+		host := u.Hostname()
+		if host == "" {
+			return "", fmt.Errorf("vless link 缺 host")
+		}
+		return host, nil
+	}
 	if strings.HasPrefix(server, "brook://") {
 		u, err := url.Parse(server)
 		if err != nil {
