@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/getbx/bx/internal/gateway"
@@ -61,31 +62,68 @@ func (linuxPlatform) hijackRouter(t tunHandle, serverBypass, userBypass []string
 			return nil, err
 		}
 	}
-	// fw4 转发放行 + IPv6 阻断
+	// fw4 转发放行 + IPv6 阻断。先清掉同名残留(上次 insert / fw4 reload 把 include 加回的),保证幂等不重复
+	deleteNftByComment(fp)
 	for _, r := range fp.InstallRules() {
 		if err := runNft(r...); err != nil {
 			cleanupRouter(rp, fp, t.Name)
 			return nil, err
 		}
 	}
-	log.Printf("router 模式已接管:路由器自身 + LAN(ifaces=%v)→ %s,tailscale 绕过,fail-closed", ifaces, t.Name)
+	// 把同一组规则落成 fw4 chain-pre include:`fw4 reload` 会 flush inet fw4 把上面 insert 的规则冲掉
+	// (→ IPv6 阻断没了=泄漏,LAN→tun accept 没了=断网),include 让其在每次 reload 重建时自动加回。
+	writeFw4Include(fp)
+	log.Printf("router 模式已接管:路由器自身 + LAN(ifaces=%v)→ %s,tailscale 绕过,fail-closed,抗 fw4 reload", ifaces, t.Name)
 	down := func() { cleanupRouter(rp, fp, t.Name) }
 	return down, nil
 }
 
-// cleanupRouter 尽力还原(忽略单步错误):删源规则 + flush 表 + 按 comment 删 fw4 规则 + 删 tun。
+// cleanupRouter 尽力还原(忽略单步错误):删源规则 + flush 表 + 删 fw4 规则 + 删 include + 删 tun。
 func cleanupRouter(rp gateway.RoutePlan, fp gateway.FirewallPlan, tun string) {
 	for _, s := range rp.TeardownArgs() {
 		_ = runIPQuiet(s...)
 	}
+	deleteNftByComment(fp) // 删运行期 insert 的规则
+	removeFw4Include(fp)   // 删持久 include(否则下次 fw4 reload 又把规则加回)
+	_ = runIPQuiet("link", "del", tun)
+}
+
+// deleteNftByComment 按 comment 删指定链里所有带标记的规则(运行期 insert 或 reload 加回的 include 规则)。
+func deleteNftByComment(fp gateway.FirewallPlan) {
 	tblToks := strings.Fields(fp.Table) // 与 nftHandles 用同一张表,避免删错表导致规则残留
 	for _, h := range nftHandles(fp.Table, fp.Chain, fp.Comment) {
 		args := append([]string{"delete", "rule"}, tblToks...)
 		args = append(args, fp.Chain, "handle", itoa(h))
 		_ = runNftQuiet(args...)
 	}
-	_ = runIPQuiet("link", "del", tun)
 }
+
+// fw4IncludePath 返回 fw4 chain-pre include 的落盘路径:
+// /usr/share/nftables.d/chain-pre/<chain>/10-bxr.nft —— fw4 会把它拼到该链最前面。
+func fw4IncludePath(chain string) string {
+	return filepath.Join("/usr/share/nftables.d/chain-pre", chain, "10-bxr.nft")
+}
+
+// writeFw4Include 把 fail-closed 规则写成 fw4 chain-pre include,使其在 `fw4 reload` 重建 ruleset
+// 时自动重新加入。写失败不致命:运行期 insert 仍生效,只是丢失「抗 fw4 reload」的持久性。
+func writeFw4Include(fp gateway.FirewallPlan) {
+	path := fw4IncludePath(fp.Chain)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.Printf("router 模式:建 fw4 include 目录失败(规则仍由运行期 insert 生效,但不抗 fw4 reload): %v", err)
+		return
+	}
+	body := "# bx router-mode fail-closed rules — auto re-applied at top of " + fp.Chain +
+		" on every fw4 reload. Managed by bx; do not edit.\n" +
+		strings.Join(fp.IncludeRules(), "\n") + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		log.Printf("router 模式:写 fw4 include %s 失败(规则仍由运行期 insert 生效,但不抗 fw4 reload): %v", path, err)
+		return
+	}
+	log.Printf("router 模式:已装 fw4 chain-pre include %s(抗 fw4 reload)", path)
+}
+
+// removeFw4Include 删掉 chain-pre include 文件(teardown 时,避免下次 reload 又加回规则)。
+func removeFw4Include(fp gateway.FirewallPlan) { _ = os.Remove(fw4IncludePath(fp.Chain)) }
 
 // nftFw4Present 报告 nft inet fw4 表是否存在(OpenWrt 标志)。
 func nftFw4Present() bool {
