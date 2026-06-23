@@ -4,101 +4,135 @@ import "testing"
 
 func argsContain(cmds [][]string, want ...string) bool {
 	for _, c := range cmds {
-		if len(c) < len(want) {
-			continue
-		}
-		ok := true
-		for i, w := range want {
-			if c[i] != w {
-				ok = false
-				break
+		for start := 0; start+len(want) <= len(c); start++ {
+			ok := true
+			for i, w := range want {
+				if c[start+i] != w {
+					ok = false
+					break
+				}
 			}
-		}
-		if ok {
-			return true
+			if ok {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func plan() RoutePlan {
+func samplePlan() RoutePlan {
 	return RoutePlan{
-		Table:    447,
-		TunDev:   "bx0",
-		RulePref: 6500,
-		LANCIDRs: []string{"192.168.8.0/24", "10.20.0.0/24"},
+		Table:        441,
+		TunDev:       "bx0",
+		FwMark:       0x162,
+		ServerBypass: []string{"203.0.113.10/32"},
+		UserBypass:   []string{"192.168.50.0/24"},
+		PrivateCIDRs: []string{"10.0.0.0/8", "192.168.0.0/16", "100.64.0.0/10"},
 	}
 }
 
-func TestInstallRulePerLANCIDR(t *testing.T) {
-	cmds := plan().InstallArgs()
-	for _, cidr := range []string{"192.168.8.0/24", "10.20.0.0/24"} {
-		if !argsContain(cmds, "rule", "add", "from", cidr, "lookup", "447") {
-			t.Fatalf("missing source rule for %s in %v", cidr, cmds)
-		}
+// Fail-closed: a blackhole default at a HIGHER metric than the tun default, so a
+// dead tun drops traffic instead of leaking it.
+func TestBlackholeFailClosed(t *testing.T) {
+	cmds := samplePlan().InstallArgs()
+	if !argsContain(cmds, "route", "add", "default", "dev", "bx0", "table", "441") {
+		t.Fatalf("missing tun default: %v", cmds)
+	}
+	if !argsContain(cmds, "route", "add", "blackhole", "default", "table", "441") {
+		t.Fatalf("MISSING fail-closed blackhole — leak risk if tun dies: %v", cmds)
+	}
+	tunM, blackM := metricOf(cmds, "dev", "bx0"), metricOf(cmds, "blackhole", "default")
+	if !(blackM > tunM) || tunM < 0 {
+		t.Fatalf("blackhole metric %d must be > tun metric %d", blackM, tunM)
 	}
 }
 
-func TestInstallDefaultViaTun(t *testing.T) {
-	cmds := plan().InstallArgs()
-	if !argsContain(cmds, "route", "add", "default", "dev", "bx0", "table", "447") {
-		t.Fatalf("missing default-via-tun route in %v", cmds)
+// The catch-all MUST sit after Tailscale's rules (5210–5270) so 0x80000 transport
+// bypasses to direct; otherwise bx swallows Tailscale and breaks it.
+func TestCatchAllAfterTailscale(t *testing.T) {
+	if CatchAllPref <= 5270 {
+		t.Fatalf("CatchAllPref %d must be > 5270 (Tailscale rules) to coexist", CatchAllPref)
+	}
+	if !argsContain(samplePlan().InstallArgs(), "rule", "add", "pref", "6600", "table", "441") {
+		t.Fatalf("missing catch-all into tun at pref 6600")
 	}
 }
 
-// Fail-closed invariant: the table MUST contain a blackhole default so that
-// when bx0 disappears (bx down), LAN traffic is dropped, never leaked to WAN.
-func TestInstallHasBlackholeFailClosed(t *testing.T) {
-	cmds := plan().InstallArgs()
-	if !argsContain(cmds, "route", "add", "blackhole", "default", "table", "447") {
-		t.Fatalf("MISSING fail-closed blackhole default — LAN could leak to WAN if bx0 dies: %v", cmds)
+func TestServerBypassDirect(t *testing.T) {
+	// brook→server must bypass the tun (anti-loop) → main, before the catch-all.
+	if !argsContain(samplePlan().InstallArgs(), "rule", "add", "to", "203.0.113.10/32", "pref", "6580", "table", "main") {
+		t.Fatalf("missing server bypass to main")
+	}
+	if !(ServerBypassPref < CatchAllPref) {
+		t.Fatalf("server bypass pref must be < catch-all")
 	}
 }
 
-// The blackhole must have a HIGHER metric than the tun default, so the tun
-// route wins while up and the blackhole only takes over when the tun is gone.
-func TestBlackholeMetricHigherThanTun(t *testing.T) {
-	tunM, blackM := -1, -1
-	for _, c := range plan().InstallArgs() {
-		s := join(c)
-		if has(c, "default") && has(c, "dev") && has(c, "bx0") {
-			tunM = metric(c)
-		}
-		if has(c, "blackhole") && has(c, "default") {
-			blackM = metric(c)
-		}
-		_ = s
-	}
-	if tunM < 0 || blackM < 0 {
-		t.Fatalf("could not find both routes")
-	}
-	if !(blackM > tunM) {
-		t.Fatalf("blackhole metric %d must be > tun metric %d (else fail-open)", blackM, tunM)
+func TestAntiLoopFwmark(t *testing.T) {
+	if !argsContain(samplePlan().InstallArgs(), "rule", "add", "pref", "100", "fwmark", "0x162", "table", "main") {
+		t.Fatalf("missing anti-loop fwmark bypass")
 	}
 }
 
-func TestTeardownMirrorsInstallWithDel(t *testing.T) {
-	cmds := plan().TeardownArgs()
-	if !argsContain(cmds, "rule", "del", "from", "192.168.8.0/24", "lookup", "447") {
-		t.Fatalf("teardown missing rule del: %v", cmds)
+func TestPrivateAndCGNAT(t *testing.T) {
+	cmds := samplePlan().InstallArgs()
+	if !argsContain(cmds, "rule", "add", "to", "10.0.0.0/8", "pref", "6590", "table", "main") {
+		t.Fatalf("private 10/8 should go direct to main: %v", cmds)
 	}
-	if !argsContain(cmds, "route", "flush", "table", "447") && !argsContain(cmds, "route", "del", "default", "dev", "bx0", "table", "447") {
-		t.Fatalf("teardown does not remove table routes: %v", cmds)
+	if !argsContain(cmds, "rule", "add", "to", "100.64.0.0/10", "pref", "6589", "table", "52") {
+		t.Fatalf("CGNAT should go to tailscale table 52: %v", cmds)
 	}
 }
 
-func TestNoLANCIDRsProducesNoRules(t *testing.T) {
-	p := plan()
-	p.LANCIDRs = nil
-	cmds := p.InstallArgs()
+func TestTeardownMirrors(t *testing.T) {
+	cmds := samplePlan().TeardownArgs()
+	if !argsContain(cmds, "rule", "del", "pref", "6600", "table", "441") {
+		t.Fatalf("teardown missing catch-all del")
+	}
+	if !argsContain(cmds, "route", "flush", "table", "441") {
+		t.Fatalf("teardown missing table flush")
+	}
+	if !argsContain(cmds, "rule", "del", "to", "203.0.113.10/32", "pref", "6580", "table", "main") {
+		t.Fatalf("teardown missing server bypass del")
+	}
+}
+
+// --- helpers ---
+func metricOf(cmds [][]string, mustHave ...string) int {
 	for _, c := range cmds {
-		if has(c, "rule") {
-			t.Fatalf("expected no ip rules with empty LANCIDRs, got %v", cmds)
+		ok := true
+		for _, m := range mustHave {
+			found := false
+			for _, x := range c {
+				if x == m {
+					found = true
+					break
+				}
+			}
+			if !found {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		for i, x := range c {
+			if x == "metric" && i+1 < len(c) {
+				n := 0
+				for _, ch := range c[i+1] {
+					if ch < '0' || ch > '9' {
+						break
+					}
+					n = n*10 + int(ch-'0')
+				}
+				return n
+			}
 		}
 	}
+	return -1
 }
 
-// --- small test helpers ---
 func has(c []string, tok string) bool {
 	for _, x := range c {
 		if x == tok {
@@ -106,23 +140,4 @@ func has(c []string, tok string) bool {
 		}
 	}
 	return false
-}
-func metric(c []string) int {
-	for i, x := range c {
-		if x == "metric" && i+1 < len(c) {
-			n := 0
-			for _, ch := range c[i+1] {
-				n = n*10 + int(ch-'0')
-			}
-			return n
-		}
-	}
-	return -1
-}
-func join(c []string) string {
-	s := ""
-	for _, x := range c {
-		s += x + " "
-	}
-	return s
 }

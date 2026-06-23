@@ -20,6 +20,7 @@ import (
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/gateway"
+	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/procredact"
 	"github.com/getbx/bx/internal/provision"
@@ -1393,6 +1394,22 @@ func routerPlanFlags() []cli.Flag {
 }
 
 // routerPlanAction 打印 router 模式会下发的 ip + nft 命令(不执行),供部署前审阅。
+// serverHostFromLink 从 brook:// 链接解析出 server 主机(用于 router-plan 显示 server bypass)。
+func serverHostFromLink(link string) string {
+	u, err := url.Parse(link)
+	if err != nil {
+		return ""
+	}
+	s := u.Query().Get("server")
+	if s == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		return host
+	}
+	return s
+}
+
 func routerPlanAction(c *cli.Context) error {
 	cfg, err := loadConfig(c.String("config"))
 	if err != nil {
@@ -1411,12 +1428,16 @@ func routerPlanAction(c *cli.Context) error {
 			ifaces = append(ifaces, s)
 		}
 	}
-	rp := gateway.DefaultRoutePlan(tun, cfg.Router.LANCIDRs)
+	var serverBypass []string
+	if h := serverHostFromLink(cfg.Server); h != "" {
+		serverBypass = []string{h + "/32"}
+	}
+	rp := gateway.DefaultRoutePlan(tun, serverBypass, cfg.Bypass, route.DefaultPrivateCIDRs)
 	fp := gateway.DefaultFirewallPlan(tun, ifaces)
 
 	fmt.Println("# dry-run only: no commands executed")
-	fmt.Printf("# mode=router lan_cidrs=%v tun=%s lan_ifaces=%v\n", cfg.Router.LANCIDRs, tun, ifaces)
-	fmt.Println("# apply (routing — fail-closed blackhole means a dead bx drops LAN, never leaks):")
+	fmt.Printf("# mode=router lan_cidrs=%v tun=%s lan_ifaces=%v server_bypass=%v\n", cfg.Router.LANCIDRs, tun, ifaces, serverBypass)
+	fmt.Println("# apply (routing — catch-all pref 6600 after tailscale; fail-closed blackhole; bx/server/private bypass):")
 	for _, s := range rp.InstallArgs() {
 		fmt.Println("ip " + strings.Join(s, " "))
 	}
