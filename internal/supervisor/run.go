@@ -121,7 +121,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	log.Printf("分流脑就绪: 模式=%s china_domain=%d china_cidr=%d", mode, len(chinaDomain), len(chinaCIDR))
 
 	// 2) brook 隧道
-	tun0, err := tunnel.NewBrook(brookPath, cfg.Server, opts.Probe)
+	tun0, err := tunnel.NewBrook(brookPath, cfg.Server, opts.Probe, cfg.HTTPProxy)
 	if err != nil {
 		return fmt.Errorf("构建隧道: %w", err)
 	}

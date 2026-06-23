@@ -40,7 +40,7 @@ func WriteConfig(path, link string, force bool) error {
 
 // ProbeServer 临时起 brook 隧道探测服务器连通,返回延迟 ms;不建 TUN。
 func ProbeServer(brookPath, brookLink, probe string, timeout time.Duration) (int64, error) {
-	t, err := tunnel.NewBrook(brookPath, brookLink, probe)
+	t, err := tunnel.NewBrook(brookPath, brookLink, probe, "") // setup 仅连通性探测,不需 HTTP 代理
 	if err != nil {
 		return 0, err
 	}
