@@ -165,3 +165,65 @@ func TestNoV6WhenDisabled(t *testing.T) {
 		}
 	}
 }
+
+// liveRuleShow is real `ip rule show` output from the Mudi (bx + Tailscale + GL),
+// with a leftover mihomo source rule injected at pref 6500 — the exact thing the
+// self-healing cleanup must remove WITHOUT touching anything else.
+const liveRuleShow = `0:	from all lookup local
+0:	from all to 192.168.8.0/24 lookup main
+50:	from all to 100.100.100.100 lookup 52
+100:	from all fwmark 0x162 lookup main
+5210:	from all fwmark 0x80000/0xff0000 lookup main
+5270:	from all lookup 52
+6000:	from all fwmark 0x1000/0xf000 lookup 1001
+6500:	from 192.168.8.0/24 lookup 1001
+6580:	from all to 203.0.113.10 lookup main
+6590:	from all to 10.0.0.0/8 lookup main
+6600:	from all lookup 441
+9920:	from all iif br-lan blackhole
+32766:	from all lookup main`
+
+func TestShadowingLANRulesTargetsForeignSourceRule(t *testing.T) {
+	dels := ShadowingLANRules(liveRuleShow, []string{"192.168.8.0/24"})
+	if len(dels) != 1 {
+		t.Fatalf("expected exactly 1 shadowing rule (the mihomo 6500), got %d: %v", len(dels), dels)
+	}
+	got := dels[0]
+	if !argsContain([][]string{got}, "rule", "del", "pref", "6500") ||
+		!argsContain([][]string{got}, "from", "192.168.8.0/24", "lookup", "1001") {
+		t.Fatalf("del command does not target the 6500→1001 rule precisely: %v", got)
+	}
+}
+
+// It must NEVER delete bx's own (from all + to <cidr>), Tailscale's (from all
+// fwmark / →52), or GL's (from all ...) rules — only from-<LAN-cidr> selectors.
+func TestShadowingLANRulesSparesEveryoneElse(t *testing.T) {
+	for _, del := range ShadowingLANRules(liveRuleShow, []string{"192.168.8.0/24"}) {
+		j := ""
+		for _, tok := range del {
+			j += tok + " "
+		}
+		for _, forbidden := range []string{"441", "5210", "5270", "6580", "6590", "6600", "fwmark", "br-lan", "from all"} {
+			if contains(j, forbidden) {
+				t.Fatalf("cleanup wrongly targeted a protected rule (%q): %v", forbidden, del)
+			}
+		}
+	}
+}
+
+// A rule AT/AFTER the catch-all pref cannot shadow it, so it must be left alone.
+func TestShadowingLANRulesIgnoresRulesAtOrAfterCatchAll(t *testing.T) {
+	show := "6600:	from 192.168.8.0/24 lookup 1001\n6700:	from 192.168.8.0/24 lookup 1001"
+	if got := ShadowingLANRules(show, []string{"192.168.8.0/24"}); len(got) != 0 {
+		t.Fatalf("rules at/after CatchAllPref must be ignored, got: %v", got)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
