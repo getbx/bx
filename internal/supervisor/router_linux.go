@@ -59,6 +59,11 @@ func (linuxPlatform) hijackRouter(t tunHandle, serverBypass, userBypass []string
 	if err := runIP("link", "set", t.Name, "up"); err != nil {
 		return nil, err
 	}
+	// 预清:删掉上次非正常退出(崩溃 / kill -9,procd 直接拉起,未走 teardown)残留的同组
+	// 策略路由规则,避免 ip rule add 重复累积(iproute2 允许同 pref 重复规则)。幂等,首次启动时全是无害的删空。
+	for _, s := range rp.TeardownArgs() {
+		_ = runIPQuiet(s...)
+	}
 	// 策略路由(含 fail-closed blackhole)
 	for _, s := range rp.InstallArgs() {
 		if err := runIP(s...); err != nil {
