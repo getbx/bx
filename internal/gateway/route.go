@@ -33,6 +33,11 @@ type RoutePlan struct {
 	ServerBypass []string // brook server IP/CIDRs → direct (anti-loop)
 	UserBypass   []string // user-configured direct CIDRs (management/admin nets)
 	PrivateCIDRs []string // built-in private/docker/etc → direct
+	// PrivateV6CIDRs non-empty enables the v6 fail-closed block: the router's own
+	// global IPv6 is sent to an `unreachable` default so apps (e.g. tailscaled,
+	// which resolves controlplane to v6) fail v6 FAST and fall back to v4 (proxied).
+	// These v6 nets (loopback/link-local/ULA/multicast) are carved out to direct.
+	PrivateV6CIDRs []string
 }
 
 // InstallArgs returns argv lists for `ip` (v4). Order: table routes (default via
@@ -63,6 +68,28 @@ func (p RoutePlan) InstallArgs() [][]string {
 	}
 	// catch-all: router-own + LAN-forwarded → tun. After Tailscale/GL rules.
 	c = append(c, []string{"rule", "add", "pref", strconv.Itoa(CatchAllPref), "table", t})
+
+	// v6 fail-closed: global IPv6 → unreachable so apps fall back to v4 (proxied);
+	// private v6 (loopback/link-local/ULA/multicast) carved to main; tailscale's
+	// 0x80000 v6 still bypasses via its own pref-5210 v6 rule (before our 6600).
+	for _, args := range p.installV6() {
+		c = append(c, args)
+	}
+	return c
+}
+
+func (p RoutePlan) installV6() [][]string {
+	if len(p.PrivateV6CIDRs) == 0 {
+		return nil
+	}
+	t := strconv.Itoa(p.Table)
+	var c [][]string
+	c = append(c, []string{"-6", "rule", "add", "pref", strconv.Itoa(AntiLoopPref), "fwmark", fmtMark(p.FwMark), "table", "main"})
+	for _, cidr := range p.PrivateV6CIDRs {
+		c = append(c, []string{"-6", "rule", "add", "to", cidr, "pref", strconv.Itoa(PrivatePref), "table", "main"})
+	}
+	c = append(c, []string{"-6", "route", "add", "unreachable", "default", "table", t})
+	c = append(c, []string{"-6", "rule", "add", "pref", strconv.Itoa(CatchAllPref), "table", t})
 	return c
 }
 
@@ -82,6 +109,14 @@ func (p RoutePlan) TeardownArgs() [][]string {
 	}
 	c = append(c, []string{"rule", "del", "pref", strconv.Itoa(AntiLoopPref), "fwmark", fmtMark(p.FwMark), "table", "main"})
 	c = append(c, []string{"route", "flush", "table", t})
+	if len(p.PrivateV6CIDRs) > 0 {
+		c = append(c, []string{"-6", "rule", "del", "pref", strconv.Itoa(CatchAllPref), "table", t})
+		for _, cidr := range p.PrivateV6CIDRs {
+			c = append(c, []string{"-6", "rule", "del", "to", cidr, "pref", strconv.Itoa(PrivatePref), "table", "main"})
+		}
+		c = append(c, []string{"-6", "rule", "del", "pref", strconv.Itoa(AntiLoopPref), "fwmark", fmtMark(p.FwMark), "table", "main"})
+		c = append(c, []string{"-6", "route", "flush", "table", t})
+	}
 	return c
 }
 

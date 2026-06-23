@@ -14,14 +14,15 @@ const (
 // DefaultRoutePlan builds the standard router-mode route plan. privateCIDRs are
 // the built-in always-direct nets (RFC1918/docker/CGNAT); serverBypass is the
 // brook server IP(s); userBypass is the config's bypass list.
-func DefaultRoutePlan(tunDev string, serverBypass, userBypass, privateCIDRs []string) RoutePlan {
+func DefaultRoutePlan(tunDev string, serverBypass, userBypass, privateCIDRs, privateV6CIDRs []string) RoutePlan {
 	return RoutePlan{
-		Table:        DefaultTable,
-		TunDev:       tunDev,
-		FwMark:       DefaultFwMark,
-		ServerBypass: serverBypass,
-		UserBypass:   userBypass,
-		PrivateCIDRs: privateCIDRs,
+		Table:          DefaultTable,
+		TunDev:         tunDev,
+		FwMark:         DefaultFwMark,
+		ServerBypass:   serverBypass,
+		UserBypass:     userBypass,
+		PrivateCIDRs:   privateCIDRs,
+		PrivateV6CIDRs: privateV6CIDRs,
 	}
 }
 
