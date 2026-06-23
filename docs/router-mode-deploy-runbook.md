@@ -48,8 +48,9 @@ ssh root@192.168.8.1 '
   mv /etc/hotplug.d/iface/99-vpn-mode /etc/hotplug.d/iface/99-vpn-mode.disabled 2>/dev/null
   mv /etc/hotplug.d/net/99-vpn-intent /etc/hotplug.d/net/99-vpn-intent.disabled 2>/dev/null
   /etc/init.d/mihomo stop
-  # clean mihomo stale routing state (else its pref-6500→table-1001 rule shadows bx catch-all 6600)
-  ip rule del from 192.168.8.0/24 lookup 1001 pref 6500 2>/dev/null; ip route flush table 1001 2>/dev/null
+  # mihomo's pref-6500 from-<LAN>→table-1001 rule is now cleared automatically by bx on
+  # every start (self-heal); flushing the dead table here is still tidy:
+  ip route flush table 1001 2>/dev/null
   # DNS → bx (both dnsmasq instances)
   for i in cfg01411c wgclient1; do uci -q delete dhcp.$i.server; uci add_list dhcp.$i.server=127.0.0.1#5354; uci set dhcp.$i.strictorder=1; done
   uci commit dhcp; /etc/init.d/dnsmasq restart
