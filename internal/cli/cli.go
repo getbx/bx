@@ -35,6 +35,7 @@ import (
 const defaultConfigPath = "/etc/bx/config.yaml"
 const defaultServerConfigPath = "/etc/bx/server.yaml"
 const defaultShareDir = "/etc/bx/shares"
+
 // 健康探测目标:必须是隧道出口能稳定连上的东西。github.com 本身常被黑洞/限速(尤其从代理出口),
 // 用它当探针会把"github 慢"误判成"隧道挂了"导致无谓重连。1.1.1.1:443 是裸 IP(免 DNS)、全球稳定。
 const defaultProbeTarget = "1.1.1.1:443"

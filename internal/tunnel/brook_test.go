@@ -52,7 +52,7 @@ func handleSocks5(c net.Conn) {
 		io.ReadFull(c, buf[:16+2])
 	}
 	c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}) // 回成功
-	c.Read(buf[:1])                                            // 读一点点就关
+	c.Read(buf[:1])                                           // 读一点点就关
 }
 
 func TestSocks5HealthAgainstFakeServer(t *testing.T) {
