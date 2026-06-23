@@ -26,6 +26,10 @@ ensure_macos() {
     echo "This installer only supports macOS." >&2
     exit 1
   fi
+  if [[ "${EUID:-$(id -u)}" == "0" ]]; then
+    echo "Run this as your normal macOS user, not with sudo." >&2
+    exit 1
+  fi
 }
 
 build_package() {
