@@ -1397,11 +1397,14 @@ func routerPlanFlags() []cli.Flag {
 }
 
 // routerPlanAction 打印 router 模式会下发的 ip + nft 命令(不执行),供部署前审阅。
-// serverHostFromLink 从 brook:// 链接解析出 server 主机(用于 router-plan 显示 server bypass)。
+// serverHostFromLink 从 brook:// 或 vless:// 链接解析出 server 主机(用于 router-plan 显示 server bypass)。
 func serverHostFromLink(link string) string {
 	u, err := url.Parse(link)
 	if err != nil {
 		return ""
+	}
+	if u.Scheme == "vless" { // reality: host is in the authority, not a ?server= param
+		return u.Hostname()
 	}
 	s := u.Query().Get("server")
 	if s == "" {
