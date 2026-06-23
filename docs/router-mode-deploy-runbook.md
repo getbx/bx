@@ -15,14 +15,21 @@ cat /tmp/bx_arm64 | ssh root@192.168.8.1 'cat >/usr/bin/bx && chmod +x /usr/bin/
 server: brook://server?server=203.0.113.10%3A9999&username&password=<pw>
 mode: router
 killswitch: true
+http_proxy: 127.0.0.1:7890        # REQUIRED: tailscaled tunnels its control plane via
+                                  # HTTP_PROXY=7890 (corp blocks controlplane direct); bx
+                                  # provides it (drop-in for mihomo) so Tailscale stays online
 router:
   lan_cidrs: [192.168.8.0/24]     # explicit; or omit to auto-detect br-* bridges
 dns:
   split:
     - domains: ["*.shanghai-electric.com"]
       server: 10.0.13.23
-bypass: [192.168.8.0/24, 192.168.50.0/24, 100.64.0.0/10, 10.20.0.0/24]
+bypass: [192.168.50.0/24, 10.20.0.0/24]   # admin/WG; LAN+CGNAT are auto-handled by PrivateCIDRs
 ```
+Router mode proxies BOTH the router's own traffic AND LAN clients (catch-all pref 6600, after
+Tailscale's 5210–5270), with v4+v6 fail-closed. The router's own traffic MUST be proxied here
+because corp blocks its direct egress. Tailscale's 0x80000 transport still bypasses to direct.
+Leave `/etc/init.d/tailscale`'s `HTTPS_PROXY=http://127.0.0.1:7890` as-is — bx now serves it.
 
 ## 1. Review the exact plan (no changes yet)
 ```sh
@@ -41,6 +48,8 @@ ssh root@192.168.8.1 '
   mv /etc/hotplug.d/iface/99-vpn-mode /etc/hotplug.d/iface/99-vpn-mode.disabled 2>/dev/null
   mv /etc/hotplug.d/net/99-vpn-intent /etc/hotplug.d/net/99-vpn-intent.disabled 2>/dev/null
   /etc/init.d/mihomo stop
+  # clean mihomo stale routing state (else its pref-6500→table-1001 rule shadows bx catch-all 6600)
+  ip rule del from 192.168.8.0/24 lookup 1001 pref 6500 2>/dev/null; ip route flush table 1001 2>/dev/null
   # DNS → bx (both dnsmasq instances)
   for i in cfg01411c wgclient1; do uci -q delete dhcp.$i.server; uci add_list dhcp.$i.server=127.0.0.1#5354; uci set dhcp.$i.strictorder=1; done
   uci commit dhcp; /etc/init.d/dnsmasq restart
