@@ -74,6 +74,7 @@ Then diagnose offline; do not leave LAN clients degraded.
 Update `provision-mudi.sh` in the `mudi7-smart-gateway` repo to install bx (binary→/usrdata, config, init.d, dnsmasq wiring, hook neutralization) so a firmware OTA rebuilds bx instead of mihomo. Until then, a firmware reset reverts to mihomo provisioning. (bx on `/usr/bin` survives reboot, not firmware.)
 
 ## Notes
+- **fw4-reload durability:** bx writes its forward accept + IPv6-drop rules to `/usr/share/nftables.d/chain-pre/forward/10-bxr.nft` so a `fw4 reload` (GL UI firewall change, `uci commit firewall`, netifd reload) re-applies them atomically instead of leaving LAN offline + the v6 leak open. Verify after deploy: `fw4 reload && nft list chain inet fw4 forward | grep -c bxr` → `2`. (A pre-fix symptom was the `bxr` rules silently vanishing after some unrelated firewall reload, with only stale `mihomo TUN`/`utun` accepts left in `/etc/config/firewall`.)
 - Router mode never hijacks the router's own traffic (source-based rule) → Tailscale/management/GL cloud unaffected by design.
 - `udp.mode: proxy` (default) relays STUN/QUIC via the VPS → no WebRTC real-IP leak; `block` for max stealth.
 - Transport is still brook plain TCP/9999 — see `docs/superpowers/specs/2026-06-22-transport-camouflage-design.md` for anti-DPI (separate, VPS-side).
