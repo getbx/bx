@@ -63,10 +63,10 @@ type Config struct {
 	Rules      []Rule   `yaml:"rules"`
 	Lists      Lists    `yaml:"lists"`
 	UDP        UDP      `yaml:"udp"`
-	Brook      string   `yaml:"brook"`    // 可选调试入口;空=用内嵌传输
-	DataDir    string   `yaml:"data_dir"` // 运行期数据目录;空=默认 /var/lib/bx
-	Bypass     []string `yaml:"bypass"`   // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
-	Global     bool     `yaml:"global"`   // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
+	Brook      string   `yaml:"brook"`      // 可选调试入口;空=用内嵌传输
+	DataDir    string   `yaml:"data_dir"`   // 运行期数据目录;空=默认 /var/lib/bx
+	Bypass     []string `yaml:"bypass"`     // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
+	Global     bool     `yaml:"global"`     // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
 	Mode       string   `yaml:"mode"`       // host(默认,劫持本机出站) | router(只劫持 LAN 转发流量)
 	Router     Router   `yaml:"router"`     // 仅 mode=router 生效
 	HTTPProxy  string   `yaml:"http_proxy"` // 非空:额外开 HTTP 代理(如 127.0.0.1:7890),给只认 HTTP_PROXY 的应用(tailscaled 控制面)
