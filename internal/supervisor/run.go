@@ -54,6 +54,10 @@ type tunHandle struct {
 	Name string
 	Addr string
 	MTU  uint32
+
+	// 路由器模式(mode=router):只劫持 LANCIDRs 内的转发流量,路由器自身流量不碰。
+	RouterMode bool
+	LANCIDRs   []string
 }
 
 // platform 抽象 Run 需要的全部 OS 专属能力,每个 OS 一份实现(按构建标签选取)。
@@ -117,7 +121,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	log.Printf("分流脑就绪: 模式=%s china_domain=%d china_cidr=%d", mode, len(chinaDomain), len(chinaCIDR))
 
 	// 2) brook 隧道
-	tun0, err := tunnel.NewBrook(brookPath, cfg.Server, opts.Probe)
+	tun0, err := tunnel.NewBrook(brookPath, cfg.Server, opts.Probe, cfg.HTTPProxy)
 	if err != nil {
 		return fmt.Errorf("构建隧道: %w", err)
 	}
@@ -174,6 +178,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		log.Printf("split-DNS 已启用:%d 条规则", len(routes))
 	}
 
+	// fake-ip-filter:本地/反查域名(*.lan/*.arpa 等)不分配 fake-IP,转发到国内 DNS 真实解析并直连。
+	if len(cfg.DNS.FakeipFilter) > 0 {
+		fdns := cfg.DNS.China
+		if _, _, err := net.SplitHostPort(fdns); err != nil {
+			fdns = net.JoinHostPort(fdns, "53")
+		}
+		dnsSrv.SetFakeipFilter(cfg.DNS.FakeipFilter, fdns, bxdns.NewUDPForwarder(plat.DirectDialer()), splitDirect)
+		log.Printf("fake-ip-filter 已启用:%d 条(本地/反查域名不走 fake-IP)", len(cfg.DNS.FakeipFilter))
+	}
+
 	// 4) Dialer:fake-IP 反查 + 防环直连 + socks 代理 + 国内 DNS resolver
 	counters := &stats.Counters{}
 	direct := plat.DirectDialer()
@@ -202,6 +216,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return fmt.Errorf("建 TUN: %w", err)
 	}
 	defer closeTUN() // Run 任何提前返回都会关 TUN(停 pump、移除设备),不泄漏
+	// 路由器模式:把网关参数交给 Hijack,只劫持 LAN 转发流量。
+	tunH.RouterMode = cfg.Mode == "router"
+	tunH.LANCIDRs = cfg.Router.LANCIDRs
 	eng, err := tun.New(link, d, opts.MTU, tun.WithDNS(dnsSrv), tun.WithStats(counters))
 	if err != nil {
 		return fmt.Errorf("启动引擎: %w", err)
@@ -290,6 +307,8 @@ func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Durat
 
 // serveStats 在 unix socket 上提供状态查询:每个连接回一份 JSON Report。
 func serveStats(c *stats.Counters, t *tunnel.Tunnel, server, udpMode string) (io.Closer, error) {
+	// 运行期目录在部分系统(如 OpenWrt)不预先存在,先确保父目录在。
+	_ = os.MkdirAll(filepath.Dir(SockPath), 0o755)
 	_ = os.Remove(SockPath)
 	ln, err := net.Listen("unix", SockPath)
 	if err != nil {

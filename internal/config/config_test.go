@@ -173,3 +173,93 @@ func TestParseRejectsSplitEmptyDomains(t *testing.T) {
 		t.Fatal("expected error for empty domains list")
 	}
 }
+
+func TestParseRouterMode(t *testing.T) {
+	c, err := Parse([]byte(`
+server: "brook://abc"
+mode: router
+router:
+  lan_cidrs:
+    - 192.168.8.0/24
+    - 10.20.0.0/24
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.Mode != "router" {
+		t.Fatalf("mode = %q, want router", c.Mode)
+	}
+	if len(c.Router.LANCIDRs) != 2 || c.Router.LANCIDRs[0] != "192.168.8.0/24" {
+		t.Fatalf("bad lan_cidrs: %+v", c.Router.LANCIDRs)
+	}
+}
+
+func TestModeDefaultsHost(t *testing.T) {
+	c, err := Parse([]byte(`server: "brook://abc"`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.Mode != "host" {
+		t.Fatalf("default mode = %q, want host", c.Mode)
+	}
+}
+
+func TestParseRejectsBadMode(t *testing.T) {
+	if _, err := Parse([]byte("server: \"brook://abc\"\nmode: bogus\n")); err == nil {
+		t.Fatal("expected error for bad mode")
+	}
+}
+
+func TestParseRejectsBadLANCIDR(t *testing.T) {
+	_, err := Parse([]byte(`
+server: "brook://abc"
+mode: router
+router:
+  lan_cidrs: ["not-a-cidr"]
+`))
+	if err == nil {
+		t.Fatal("expected error for bad lan_cidr")
+	}
+}
+
+func TestRouterModeWithoutCIDRsOK(t *testing.T) {
+	// empty lan_cidrs is allowed (auto-detect at hijack time)
+	c, err := Parse([]byte("server: \"brook://abc\"\nmode: router\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.Mode != "router" || len(c.Router.LANCIDRs) != 0 {
+		t.Fatalf("bad: %+v", c)
+	}
+}
+
+func TestFakeipFilterDefault(t *testing.T) {
+	c, err := Parse([]byte(`server: "brook://abc"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// sensible defaults: local/reverse domains never get a fake-IP
+	want := map[string]bool{"*.lan": true, "*.local": true, "*.localdomain": true, "*.arpa": true}
+	if len(c.DNS.FakeipFilter) != len(want) {
+		t.Fatalf("default fakeip_filter = %v", c.DNS.FakeipFilter)
+	}
+	for _, d := range c.DNS.FakeipFilter {
+		if !want[d] {
+			t.Fatalf("unexpected default filter entry %q (%v)", d, c.DNS.FakeipFilter)
+		}
+	}
+}
+
+func TestFakeipFilterCustom(t *testing.T) {
+	c, err := Parse([]byte(`
+server: "brook://abc"
+dns:
+  fakeip_filter: ["*.ts.net", "*.corp"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.DNS.FakeipFilter) != 2 || c.DNS.FakeipFilter[0] != "*.ts.net" {
+		t.Fatalf("custom fakeip_filter = %v", c.DNS.FakeipFilter)
+	}
+}

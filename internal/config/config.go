@@ -18,9 +18,10 @@ type SplitRule struct {
 }
 
 type DNS struct {
-	China      string      `yaml:"china"`
-	FakeipCIDR string      `yaml:"fakeip_cidr"`
-	Split      []SplitRule `yaml:"split"`
+	China        string      `yaml:"china"`
+	FakeipCIDR   string      `yaml:"fakeip_cidr"`
+	Split        []SplitRule `yaml:"split"`
+	FakeipFilter []string    `yaml:"fakeip_filter"` // 这些域名不分配 fake-IP(本地/反查域名,代理无意义)
 }
 
 type Rule struct {
@@ -62,10 +63,19 @@ type Config struct {
 	Rules      []Rule   `yaml:"rules"`
 	Lists      Lists    `yaml:"lists"`
 	UDP        UDP      `yaml:"udp"`
-	Brook      string   `yaml:"brook"`    // 可选调试入口;空=用内嵌传输
-	DataDir    string   `yaml:"data_dir"` // 运行期数据目录;空=默认 /var/lib/bx
-	Bypass     []string `yaml:"bypass"`   // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
-	Global     bool     `yaml:"global"`   // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
+	Brook      string   `yaml:"brook"`      // 可选调试入口;空=用内嵌传输
+	DataDir    string   `yaml:"data_dir"`   // 运行期数据目录;空=默认 /var/lib/bx
+	Bypass     []string `yaml:"bypass"`     // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
+	Global     bool     `yaml:"global"`     // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
+	Mode       string   `yaml:"mode"`       // host(默认,劫持本机出站) | router(只劫持 LAN 转发流量)
+	Router     Router   `yaml:"router"`     // 仅 mode=router 生效
+	HTTPProxy  string   `yaml:"http_proxy"` // 非空:额外开 HTTP 代理(如 127.0.0.1:7890),给只认 HTTP_PROXY 的应用(tailscaled 控制面)
+}
+
+// Router 是网关模式参数:只代理「源在 lan_cidrs 内」的转发流量。
+// 路由器自身流量(源是路由器 IP)永不被劫持 → tailscale/管理流量不受影响。
+type Router struct {
+	LANCIDRs []string `yaml:"lan_cidrs"` // 源网段;空=运行期自动探测 LAN 接口
 }
 
 // Parse 解析并校验配置字节。
@@ -92,6 +102,11 @@ func Parse(b []byte) (*Config, error) {
 	if c.DNS.FakeipCIDR == "" {
 		c.DNS.FakeipCIDR = "198.18.0.0/15"
 	}
+	if c.DNS.FakeipFilter == nil {
+		// 本地/反查域名永不该走 fake-IP(代理它们无意义,且会破坏本地解析);
+		// 与 mihomo/sing-box 的 fake-ip-filter 默认一致。
+		c.DNS.FakeipFilter = []string{"*.lan", "*.local", "*.localdomain", "*.arpa"}
+	}
 	if c.UDP.Mode == "" {
 		c.UDP.Mode = "proxy"
 	}
@@ -116,6 +131,19 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.DataDir == "" {
 		c.DataDir = "/var/lib/bx"
+	}
+	if c.Mode == "" {
+		c.Mode = "host"
+	}
+	switch c.Mode {
+	case "host", "router":
+	default:
+		return nil, fmt.Errorf("config: mode 必须是 host/router, got %q", c.Mode)
+	}
+	for i, cidr := range c.Router.LANCIDRs {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
+			return nil, fmt.Errorf("config: router.lan_cidrs[%d] 不是合法 CIDR: %q", i, cidr)
+		}
 	}
 	return &c, nil
 }
