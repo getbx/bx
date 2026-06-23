@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/getbx/bx/internal/fakeip"
+	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/splitdns"
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -31,6 +32,11 @@ type Server struct {
 	splits  []SplitRoute
 	fwd     Forwarder
 	direct  *splitdns.Set
+
+	// fakeip-filter:这些域名不分配 fake-IP,而是转发到 fakeipServer 真实解析并强制直连
+	// (本地/反查域名代理无意义,fake-IP 会破坏本地解析)。与 mihomo/sing-box 的 fake-ip-filter 对齐。
+	fakeipFilter *route.DomainSet
+	fakeipServer string
 }
 
 func NewServer(pool *fakeip.Pool, ttl uint32) *Server {
@@ -42,6 +48,22 @@ func (s *Server) SetSplit(splits []SplitRoute, fwd Forwarder, direct *splitdns.S
 	s.splits = splits
 	s.fwd = fwd
 	s.direct = direct
+}
+
+// SetFakeipFilter 配置不分配 fake-IP 的域名后缀;命中者转发到 server 真实解析并强制直连。
+// 复用 split 的 forwarder/direct(若 SetSplit 未设置则在此补上)。
+func (s *Server) SetFakeipFilter(domains []string, server string, fwd Forwarder, direct *splitdns.Set) {
+	if len(domains) == 0 {
+		return
+	}
+	s.fakeipFilter = route.NewDomainSet(domains)
+	s.fakeipServer = server
+	if s.fwd == nil {
+		s.fwd = fwd
+	}
+	if s.direct == nil {
+		s.direct = direct
+	}
 }
 
 // SetStaticA 配置固定 A 记录。用于保护 bx 自己的上游服务器域名:
@@ -109,6 +131,17 @@ func (s *Server) Respond(query []byte) ([]byte, error) {
 		return resp, nil
 	}
 	// split 命中 AAAA → 落到下面默认路径,因 q.Type!=TypeA 而成 NODATA(逼 v4)。
+
+	// fakeip-filter 命中(A/非 AAAA):不分配 fake-IP,转发真实解析并注册直连。
+	// 本地/反查域名经此返回真实结果(或 NXDOMAIN),不会被错误地代理。
+	if q.Type != dnsmessage.TypeAAAA && s.fakeipFilter != nil && s.fakeipFilter.Match(domain) && s.fwd != nil && s.fakeipServer != "" {
+		resp, err := s.fwd.Forward(context.Background(), s.fakeipServer, query)
+		if err != nil {
+			return s.servfail(query)
+		}
+		s.registerA(resp)
+		return resp, nil
+	}
 
 	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{
 		ID:                 h.ID,
