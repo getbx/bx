@@ -39,6 +39,7 @@ type Tunnel struct {
 	health    HealthCheck
 	interval  time.Duration
 	base, max time.Duration
+	maxFails  int // 连续健康检查失败多少次才判定隧道挂掉并重连(容忍瞬时探测抖动)
 
 	mu       sync.Mutex
 	up       bool
@@ -60,6 +61,7 @@ func New(socksAddr string, f RunnerFactory, h HealthCheck) *Tunnel {
 		interval:  5 * time.Second,
 		base:      1 * time.Second,
 		max:       30 * time.Second,
+		maxFails:  3, // 一次探测抖动(高延迟 wss 上常见)不该拆掉正在工作的隧道;连续 3 次(~15s)才重连
 		done:      make(chan struct{}),
 	}
 }
@@ -187,6 +189,7 @@ func (t *Tunnel) runOnce(ctx context.Context) error {
 	}
 
 monitor:
+	fails := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -197,9 +200,16 @@ monitor:
 		case <-ticker.C:
 			lat, herr := t.health(t.socksAddr)
 			if herr != nil {
-				t.setDown(herr)
-				return errUnhealthy
+				// 容忍瞬时探测失败:高延迟 wss 上单次探测偶尔超时,但隧道(及 tun)仍在工作。
+				// 一次失败就 Kill+重连会拆掉正常连接,造成秒级断流抖动。连续 maxFails 次才重连。
+				fails++
+				if fails >= t.maxFails {
+					t.setDown(herr)
+					return errUnhealthy
+				}
+				continue
 			}
+			fails = 0
 			t.setUp(lat)
 		}
 	}
