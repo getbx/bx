@@ -3,6 +3,7 @@ package tunnel
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,4 +106,32 @@ func TestTunnelUnhealthyTriggersRestart(t *testing.T) {
 	setH(false)
 	waitFor(t, func() bool { return !tn.Healthy() }, "不健康应反映到状态")
 	waitFor(t, func() bool { return tn.Stats().Restarts >= 1 }, "不健康应触发重启")
+}
+
+// 瞬时健康抖动(连续失败 < maxFails)不应拆掉正在工作的隧道(高延迟 wss 上的关键修复)。
+func TestTunnelToleratesTransientHealthBlips(t *testing.T) {
+	var n int32
+	tn := New("127.0.0.1:11080",
+		func(string) (Runner, error) { return newFakeRunner(), nil },
+		func(string) (int64, error) {
+			// 第 1 次(startup)成功进入 monitor;接着第 2、3 次连续失败(2 < maxFails=3),其余成功。
+			switch atomic.AddInt32(&n, 1) {
+			case 2, 3:
+				return 0, errors.New("blip")
+			default:
+				return 5, nil
+			}
+		},
+	)
+	tn.interval = 10 * time.Millisecond
+	tn.base, tn.max = 5*time.Millisecond, 20*time.Millisecond
+	tn.Start()
+	defer tn.Stop()
+	waitFor(t, tn.Healthy, "首次应健康")
+	// 等若干个 tick 走过那两次抖动并恢复
+	waitFor(t, func() bool { return atomic.LoadInt32(&n) >= 5 }, "应继续探测")
+	if r := tn.Stats().Restarts; r != 0 {
+		t.Fatalf("瞬时抖动(<maxFails)不该重连,实际重启 %d 次", r)
+	}
+	waitFor(t, tn.Healthy, "抖动后应恢复健康")
 }
