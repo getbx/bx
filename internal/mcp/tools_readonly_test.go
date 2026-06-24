@@ -8,14 +8,15 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func callTool(t *testing.T, ops Ops, name string, args map[string]any) *mcpsdk.CallToolResult {
+func callToolOn(t *testing.T, srv *mcpsdk.Server, name string, args map[string]any) *mcpsdk.CallToolResult {
 	t.Helper()
 	ctx := context.Background()
-	srv := newServer(ops)
 	st, ct := mcpsdk.NewInMemoryTransports()
-	if _, err := srv.Connect(ctx, st, nil); err != nil {
+	ss, err := srv.Connect(ctx, st, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { ss.Close() })
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "v0"}, nil)
 	cs, err := client.Connect(ctx, ct, nil)
 	if err != nil {
@@ -27,6 +28,11 @@ func callTool(t *testing.T, ops Ops, name string, args map[string]any) *mcpsdk.C
 		t.Fatalf("call %s: %v", name, err)
 	}
 	return res
+}
+
+func callTool(t *testing.T, ops Ops, name string, args map[string]any) *mcpsdk.CallToolResult {
+	t.Helper()
+	return callToolOn(t, newServer(ops), name, args)
 }
 
 func TestCapabilitiesTool(t *testing.T) {

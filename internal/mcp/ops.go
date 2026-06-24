@@ -62,5 +62,9 @@ type VerifyOut struct {
 	KillSwitchOK bool   `json:"killswitch_ok"`
 	Note         string `json:"note,omitempty" jsonschema:"e.g. WebRTC requires a LAN-client browser test, not automated here"`
 }
-type SetupIn struct{ Link string `json:"link"` }
-type SetTransportIn struct{ Link string `json:"link"` }
+type SetupIn struct {
+	Link string `json:"link" jsonschema:"server link: brook:// or vless://"`
+}
+type SetTransportIn struct {
+	Link string `json:"link" jsonschema:"new server link to switch transport to"`
+}
