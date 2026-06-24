@@ -61,27 +61,29 @@ func (g *Guard) Commit() error {
 
 func (g *Guard) Rollback() error {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if g.state != StateArmed {
+		g.mu.Unlock()
 		return ErrNotArmed
 	}
-	err := g.restore()
+	fn := g.restore
 	g.state = StateReverted
 	g.restore = nil
-	return err
+	g.mu.Unlock()
+	return fn()
 }
 
 // Tick 由后台循环周期调用;到期且仍 Armed 时自动 restore。
 func (g *Guard) Tick() (bool, error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if g.state != StateArmed || g.now().Before(g.deadline) {
+		g.mu.Unlock()
 		return false, nil
 	}
-	err := g.restore()
+	fn := g.restore
 	g.state = StateReverted
 	g.restore = nil
-	return true, err
+	g.mu.Unlock()
+	return true, fn()
 }
 
 func (g *Guard) State() State {
