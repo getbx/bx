@@ -51,7 +51,28 @@ func newServerWithGuard(ops Ops, g *confirm.Guard, snap confirm.Snapshotter) *mc
 	return s
 }
 
+// newSystemSnapshotter 返回一个 nopSnapshotter(真实路由/config 快照实现留 Task 9)。
+func newSystemSnapshotter() confirm.Snapshotter { return nopSnapshotter{} }
+
 // Serve 在 stdio 上运行 MCP server,直到客户端断开。
+// 内部持有 Guard 并起后台 tickLoop(每 2s Tick),驱动死手到期自动回滚。
 func Serve(ctx context.Context, ops Ops) error {
-	return newServer(ops).Run(ctx, &mcpsdk.StdioTransport{})
+	g := confirm.New(240*time.Second, time.Now)
+	srv := newServerWithGuard(ops, g, newSystemSnapshotter())
+	go tickLoop(ctx, g)
+	return srv.Run(ctx, &mcpsdk.StdioTransport{})
+}
+
+// tickLoop 每 2s 调用 g.Tick(),驱动死手到期自动回滚。ctx 取消时退出。
+func tickLoop(ctx context.Context, g *confirm.Guard) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_, _ = g.Tick()
+		}
+	}
 }

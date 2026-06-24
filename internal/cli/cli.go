@@ -21,6 +21,7 @@ import (
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/gateway"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/mcp"
 	"github.com/getbx/bx/internal/procredact"
 	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/route"
@@ -61,6 +62,7 @@ func New() *cli.App {
 			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
+			{Name: "mcp", Usage: "启动 agent 控制面 MCP server(stdio)", Hidden: false, Flags: mcpFlags(), Action: mcpAction},
 			{Name: "status", Usage: "查看状态面板", Flags: statusFlags(), Action: statusAction},
 			{Name: "logs", Usage: "查看客户端日志", Flags: logsFlags(), Action: logsAction},
 			{Name: "link", Usage: "生成 bx:// 链接", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
@@ -223,6 +225,17 @@ func serveFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
 	}
+}
+
+func mcpFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
+	}
+}
+
+func mcpAction(c *cli.Context) error {
+	ops := mcp.NewLiveOps(c.String("config"))
+	return mcp.Serve(c.Context, ops)
 }
 
 func doctorFlags() []cli.Flag {

@@ -19,6 +19,7 @@ const (
 	CodeDeadmanReverted   Code = "DEADMAN_REVERTED"
 	CodeAlreadyCommitted  Code = "ALREADY_COMMITTED"
 	CodeNothingToRollback Code = "NOTHING_TO_ROLLBACK"
+	CodeNotImplemented    Code = "NOT_IMPLEMENTED"
 )
 
 // ToolError 是返回给 agent 的结构化错误,带"下一步该干嘛"。
