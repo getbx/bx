@@ -10,9 +10,6 @@ import (
 // version 由构建期注入也可;先硬编码占位。
 const serverVersion = "v0.1.0"
 
-// Ops 是 MCP server 需要调用的控制面操作接口;Task 5 替换为真实接口。
-type Ops interface{}
-
 type pingIn struct{}
 type pingOut struct {
 	OK bool `json:"ok" jsonschema:"always true if the server is alive"`
@@ -28,6 +25,9 @@ func newServer(ops Ops) *mcpsdk.Server {
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ pingIn) (*mcpsdk.CallToolResult, pingOut, error) {
 		return nil, pingOut{OK: true}, nil
 	})
+	if ops != nil {
+		registerReadOnly(s, ops)
+	}
 	return s
 }
 
