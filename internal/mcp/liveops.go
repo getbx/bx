@@ -12,7 +12,7 @@ import (
 	mcpstats "github.com/getbx/bx/internal/stats"
 )
 
-// requireRoot は改动类操作の权限门控(纯函数,便于测试)。
+// requireRoot 是改动类操作的权限门控(纯函数,便于测试)。
 func requireRoot(isRoot bool) error {
 	if !isRoot {
 		return ToolError{
@@ -68,7 +68,7 @@ func (o *liveOps) Status() (StatusOut, error) {
 	return StatusOut{
 		TunnelHealthy: rep.TunnelHealthy,
 		LatencyMS:     rep.LatencyMS,
-		Mode:          "host",
+		Mode:          "", // TODO(task9): stats.Report 未携带 mode,待 socket 暴露后填充
 		UDPMode:       rep.UDPMode,
 	}, nil
 }
