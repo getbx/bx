@@ -60,8 +60,8 @@ func TestDoubleArmRejected(t *testing.T) {
 	c := &clock{t: time.Unix(0, 0)}
 	g := New(240*time.Second, c.now)
 	g.Arm(func() error { return nil })
-	if err := g.Arm(func() error { return nil }); err == nil {
-		t.Fatal("重复 Arm 应报错")
+	if err := g.Arm(func() error { return nil }); !errors.Is(err, ErrAlreadyArmed) {
+		t.Fatalf("重复 Arm 应返回 ErrAlreadyArmed,得到 %v", err)
 	}
 }
 
