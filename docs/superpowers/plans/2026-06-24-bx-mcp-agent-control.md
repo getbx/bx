@@ -1466,6 +1466,14 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ### Task 9(门控/集成,需 root): netns 端到端 + 死手真实还原
 
+> **CARRY-FORWARD(2026-06-24 最终全分支 review,做 Task 9 前必读):**
+> - **(硬性)真实 mutating Ops + 真实 Snapshotter 必须同一个 commit 落地。** Tasks 1-8 的 `newSystemSnapshotter()` 返回 nop;若先接了真实 `Setup`/`Rehijack` 改动、却仍是 nop 回滚,死手"回滚到空"= 可能 brick 真实网关。二者不可分开上。
+> - `bx_diagnose` 须报告 snapshot 能力就绪状态(spec 承诺,Task 8 仍是 stub)。
+> - 给 `stats.Report` 加 `Mode` 字段,让 `liveOps.Status()` 不再返回空 Mode(Task 8 已把硬编码 "host" 改为 "" + TODO)。
+> - `tickLoop` 关停顺序:一旦 `Tick` 做真实 `Restore`,确保 ctx-cancel 不会在拆除中途触发 tick(或保证 Restore 幂等)。
+> - 240s 窗口字面量在 3 处重复(server.go newServer/Serve + armedNote);窗口变可配时收敛成一个 const。
+> - Tasks 1-8 已完成并通过最终 review(commit 697ef2b..f6b69c2),liveOps 中 Diagnose/Logs/Plan/Verify/Setup/SetTransport/RestartTunnel/Rehijack 为 `CodeNotImplemented` 诚实 stub,待本任务接真实实现。
+
 **Files:**
 - Create: `internal/mcp/integration_linux_test.go`(`//go:build integration`)
 - Create: `internal/confirm/systemsnapshot_linux.go`(真实路由/config/unit 快照与还原)
