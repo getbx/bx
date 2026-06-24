@@ -21,9 +21,14 @@ func armThen(g *confirm.Guard, snap confirm.Snapshotter, apply func() error) (*m
 		return errResultTyped[armedOut](ToolError{Code: CodeLockoutRisk, Message: "抓取 last-known-good 失败,已中止改动: " + err.Error()})
 	}
 	if err := apply(); err != nil {
-		_ = g.Rollback() // apply 失败立即回滚,不留半截
-		return errResultTyped[armedOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error(),
-			Remediation: "已自动回滚到改动前;查 bx_diagnose", Next: []string{"bx_diagnose", "bx_logs"}})
+		msg := err.Error()
+		if rerr := g.Rollback(); rerr != nil {
+			msg += "; 回滚也失败: " + rerr.Error()
+		}
+		return errResultTyped[armedOut](ToolError{
+			Code: CodeTunnelUnhealthy, Message: msg,
+			Remediation: "已尝试回滚到改动前;查 bx_diagnose", Next: []string{"bx_diagnose", "bx_logs"},
+		})
 	}
 	return nil, armedOut{Status: "armed", Note: armedNote}, nil
 }

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -61,5 +62,23 @@ func TestRollbackWhenIdle(t *testing.T) {
 	res := callToolOn(t, srv, "bx_rollback", map[string]any{})
 	if !res.IsError {
 		t.Fatal("idle 时 rollback 应返回错误结果(NOTHING_TO_ROLLBACK)")
+	}
+}
+
+func TestSetupApplyFailRollsBack(t *testing.T) {
+	clk := &tclock{t: time.Unix(0, 0)}
+	g := confirm.New(240*time.Second, clk.now)
+	snap := &memSnapper{}
+	ops := &fakeOps{setupErr: errors.New("apply boom")}
+	srv := newServerWithGuard(ops, g, snap)
+	res := callToolOn(t, srv, "bx_setup", map[string]any{"link": "vless://x@h:443"})
+	if !res.IsError {
+		t.Fatal("apply 失败应返回错误结果")
+	}
+	if g.State() != confirm.StateReverted {
+		t.Fatalf("apply 失败后 guard 应已回滚(state=%v)", g.State())
+	}
+	if snap.restored != 1 {
+		t.Fatalf("apply 失败应触发一次 Restore(restored=%d)", snap.restored)
 	}
 }
