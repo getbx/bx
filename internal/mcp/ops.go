@@ -52,7 +52,15 @@ type PlanOut struct {
 	Steps []string `json:"steps" jsonschema:"the route/firewall steps that WOULD run, not applied"`
 }
 
-// 最小占位类型;Task 6/7 扩展字段。
-type VerifyOut struct{ Pass bool `json:"pass"` }
+// Task 6: bx_verify 泄漏审计结果
+type VerifyOut struct {
+	Pass         bool   `json:"pass"`
+	ExitIP       string `json:"exit_ip,omitempty" jsonschema:"observed egress IP; should be the VPS"`
+	DNSLeak      bool   `json:"dns_leak"`
+	IPv6Leak     bool   `json:"ipv6_leak"`
+	SelfReach    bool   `json:"self_reach" jsonschema:"agent control channel (SSH) still reachable"`
+	KillSwitchOK bool   `json:"killswitch_ok"`
+	Note         string `json:"note,omitempty" jsonschema:"e.g. WebRTC requires a LAN-client browser test, not automated here"`
+}
 type SetupIn struct{ Link string `json:"link"` }
 type SetTransportIn struct{ Link string `json:"link"` }

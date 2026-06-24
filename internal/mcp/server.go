@@ -27,6 +27,7 @@ func newServer(ops Ops) *mcpsdk.Server {
 	})
 	if ops != nil {
 		registerReadOnly(s, ops)
+		registerVerify(s, ops)
 	}
 	return s
 }
