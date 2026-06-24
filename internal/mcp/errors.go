@@ -48,3 +48,10 @@ func errResult(e ToolError) (*mcpsdk.CallToolResult, any, error) {
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(b)}},
 	}, nil, nil
 }
+
+// errResultTyped 同 errResult,但适配 AddTool 的 (Out) 返回位:错误走 IsError,Out 用零值。
+func errResultTyped[T any](e ToolError) (*mcpsdk.CallToolResult, T, error) {
+	res, _, _ := errResult(e)
+	var zero T
+	return res, zero, nil
+}
