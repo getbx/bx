@@ -13,9 +13,11 @@ func TestServerPing(t *testing.T) {
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test", Version: "v0"}, nil)
 
 	st, ct := mcpsdk.NewInMemoryTransports()
-	if _, err := srv.Connect(ctx, st, nil); err != nil {
+	ss, err := srv.Connect(ctx, st, nil)
+	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
+	defer ss.Close()
 	cs, err := client.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
