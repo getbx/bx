@@ -115,12 +115,15 @@ func (s *linuxSnapshotter) Restore(snap confirm.Snapshot) error {
 	}
 
 	// 2) table 100:flush + replay(bx 独占)。
-	run("route", "flush", "table", "100")
+	// flush 是"清空再重放"的准备步骤;table 100 不存在(只加了 ip rule 无路由)时
+	// `ip route flush table 100` 返回 exit 2(良性,无可清)——不记为错误。
+	// del/add/replay 仍走 run() 严格记错。
+	_ = runIPQuiet("route", "flush", "table", "100") // 空/不存在的 table 100 flush 返回 exit 2,良性(无可清),不记为错误
 	for _, rt := range ls.v4T100 {
 		run(routeAddArgs(rt)...)
 	}
 	if v6 {
-		run("-6", "route", "flush", "table", "100")
+		_ = runIPQuiet("-6", "route", "flush", "table", "100") // 同上,v6
 		for _, rt := range ls.v6T100 {
 			run(routeAddArgs(rt)...)
 		}
