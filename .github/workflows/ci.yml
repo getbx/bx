@@ -33,3 +33,17 @@ jobs:
 
       - name: Check shell scripts
         run: bash -n scripts/darwin-testkit.sh
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      # 门控的 netns 集成测试需 root(unshare CLONE_NEWNET + ip rule/route)。
+      # 以 sudo 跑 go 的完整路径;普通 test job 仍跑无 root 单测,互不影响。
+      - name: Integration tests (netns, root)
+        run: sudo "$(which go)" test -tags integration ./...
