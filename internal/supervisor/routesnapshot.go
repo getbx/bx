@@ -145,3 +145,43 @@ func diffRules(current, target []ruleSpec) (toDel, toAdd []ruleSpec) {
 	}
 	return toDel, toAdd
 }
+
+// ruleArgs 把 ruleSpec 重建成 `ip [-6] rule <verb> ...` 的参数(verb: "add"|"del")。
+func ruleArgs(verb string, r ruleSpec) []string {
+	var a []string
+	if r.family == familyV6 {
+		a = append(a, "-6")
+	}
+	a = append(a, "rule", verb)
+	switch {
+	case r.toCIDR != "":
+		a = append(a, "to", r.toCIDR, "pref", strconv.Itoa(r.pref))
+	case r.fwmark != "":
+		a = append(a, "pref", strconv.Itoa(r.pref), "fwmark", r.fwmark)
+	default:
+		a = append(a, "pref", strconv.Itoa(r.pref))
+	}
+	a = append(a, "table", r.table)
+	return a
+}
+
+// routeAddArgs 把 table-100 routeSpec 重建成 `ip [-6] route add ... table 100`。
+func routeAddArgs(r routeSpec) []string {
+	var a []string
+	if r.family == familyV6 {
+		a = append(a, "-6")
+	}
+	a = append(a, "route", "add")
+	if r.typ != "" {
+		a = append(a, r.typ)
+	}
+	a = append(a, r.dst)
+	if r.via != "" {
+		a = append(a, "via", r.via)
+	}
+	if r.dev != "" {
+		a = append(a, "dev", r.dev)
+	}
+	a = append(a, "table", "100")
+	return a
+}
