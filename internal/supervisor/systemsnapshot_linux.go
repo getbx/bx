@@ -39,15 +39,23 @@ func ipShow(args ...string) (string, error) {
 	return string(out), nil
 }
 
+// ipShowTolerant 跑 `ip <args...>` 抓 stdout 文本;非零退出(例如 table 100 尚不存在
+// 时 `route show table 100` 返回 exit 2)视为空输出而非错误——这是 pre-bx 正常基线。
+func ipShowTolerant(args ...string) string {
+	out, err := exec.Command("ip", args...).Output()
+	if err != nil {
+		return "" // 表不存在/空 → 无路由(正常基线)
+	}
+	return string(out)
+}
+
 func (s *linuxSnapshotter) Capture() (confirm.Snapshot, error) {
 	v4r, err := ipShow("rule", "list")
 	if err != nil {
 		return nil, err
 	}
-	v4t, err := ipShow("route", "show", "table", "100")
-	if err != nil {
-		return nil, err
-	}
+	// table 100 在 pre-bx 基线可能不存在(ip 返回 exit 2);tolerant 读,空=无路由。
+	v4t := ipShowTolerant("route", "show", "table", "100")
 	snap := &linuxSnapshot{
 		v4Rules: parseRules(v4r, familyV4),
 		v4T100:  parseRoutes(v4t, familyV4),
@@ -57,10 +65,7 @@ func (s *linuxSnapshotter) Capture() (confirm.Snapshot, error) {
 		if err != nil {
 			return nil, err
 		}
-		v6t, err := ipShow("-6", "route", "show", "table", "100")
-		if err != nil {
-			return nil, err
-		}
+		v6t := ipShowTolerant("-6", "route", "show", "table", "100")
 		snap.v6Rules = parseRules(v6r, familyV6)
 		snap.v6T100 = parseRoutes(v6t, familyV6)
 	}
