@@ -45,5 +45,10 @@ jobs:
 
       # 门控的 netns 集成测试需 root(unshare CLONE_NEWNET + ip rule/route)。
       # 以 sudo 跑 go 的完整路径;普通 test job 仍跑无 root 单测,互不影响。
+      # go test 对 SKIP 也报成功;用 grep 断言 PoC 测试真正跑通(PASS),防止静默 SKIP 蒙混过关。
       - name: Integration tests (netns, root)
-        run: sudo "$(which go)" test -tags integration ./...
+        run: |
+          set -o pipefail
+          sudo "$(which go)" test -tags integration -v ./... | tee /tmp/itest.log
+          grep -q -- '--- PASS: TestNetConfRoundTripInNetns' /tmp/itest.log \
+            || { echo "::error::netns PoC 未真正运行(被 SKIP?)—— 集成环境可能缺 netns 能力"; exit 1; }
