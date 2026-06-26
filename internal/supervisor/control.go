@@ -97,9 +97,13 @@ func requireRoot(w http.ResponseWriter, r *http.Request) bool {
 		// 无 unix conn(如 httptest TCP):放行,peer-cred 鉴权由 authorizeMutation 单测覆盖。
 		return true
 	}
-	uid, known := peerCredUID(conn)
-	if !authorizeMutation(uid, known) {
-		writeJSON(w, http.StatusForbidden, controlResponse{Status: "error", Error: "改动类命令需 root"})
+	uid, gotUID := peerCredUID(conn)
+	if !authorizeMutation(uid, gotUID) {
+		msg := "改动类命令需 root"
+		if !peerCredSupported {
+			msg = "此平台暂不支持 peer-cred,改动类已拒绝;macOS daemon 待实现 LOCAL_PEERCRED"
+		}
+		writeJSON(w, http.StatusForbidden, controlResponse{Status: "error", Error: msg})
 		return false
 	}
 	return true

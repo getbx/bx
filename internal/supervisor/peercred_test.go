@@ -4,17 +4,19 @@ import "testing"
 
 func TestAuthorizeMutation(t *testing.T) {
 	cases := []struct {
-		uid   uint32
-		known bool
-		want  bool
+		name   string
+		uid    uint32
+		gotUID bool
+		want   bool
 	}{
-		{0, true, true},    // root 放行
-		{1000, true, false}, // 非 root 拒绝
-		{0, false, true},   // 平台无 peer-cred(darwin 开发态)宽松放行
+		{"linux-root", 0, true, true},              // 提取成功且 root → 放行
+		{"linux-nonroot", 1000, true, false},        // 提取成功但非 root → 拒
+		{"linux-extract-failed", 0, false, false},   // 提取失败(uid 不可信)→ 拒(fail-closed,本次核心)
+		{"no-peercred", 1000, false, false},         // darwin/拿不到 → 拒(uid 被忽略)
 	}
 	for _, c := range cases {
-		if got := authorizeMutation(c.uid, c.known); got != c.want {
-			t.Fatalf("authorizeMutation(%d,%v)=%v want %v", c.uid, c.known, got, c.want)
+		if got := authorizeMutation(c.uid, c.gotUID); got != c.want {
+			t.Errorf("%s: authorizeMutation(%d,%v)=%v want %v", c.name, c.uid, c.gotUID, got, c.want)
 		}
 	}
 }
