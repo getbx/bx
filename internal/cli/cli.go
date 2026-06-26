@@ -1582,14 +1582,9 @@ func statusAction(c *cli.Context) error {
 }
 
 func readStatusReport() (stats.Report, error) {
-	conn, err := net.Dial("unix", supervisor.SockPath)
+	rep, err := supervisor.FetchStatusReport(supervisor.SockPath)
 	if err != nil {
 		return stats.Report{}, fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
-	}
-	defer conn.Close()
-	var rep stats.Report
-	if err := json.NewDecoder(conn).Decode(&rep); err != nil {
-		return stats.Report{}, fmt.Errorf("读状态: %w", err)
 	}
 	return rep, nil
 }
@@ -1686,13 +1681,8 @@ func applyRealtimePostChange(c *cli.Context) error {
 }
 
 func readRealtimeReport() *stats.Report {
-	conn, err := net.Dial("unix", supervisor.SockPath)
+	rep, err := supervisor.FetchStatusReport(supervisor.SockPath)
 	if err != nil {
-		return nil
-	}
-	defer conn.Close()
-	var rep stats.Report
-	if err := json.NewDecoder(conn).Decode(&rep); err != nil {
 		return nil
 	}
 	return &rep
