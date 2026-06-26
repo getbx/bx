@@ -130,7 +130,8 @@ func TestRouteAddArgs(t *testing.T) {
 			[]string{"route", "add", "default", "dev", "bx0", "table", "100"}},
 		{"bypass", routeSpec{familyV4, "", "10.1.2.3", "192.168.1.1", "eth0"},
 			[]string{"route", "add", "10.1.2.3", "via", "192.168.1.1", "dev", "eth0", "table", "100"}},
-		{"v6-unreachable", routeSpec{familyV6, "unreachable", "default", "", ""},
+		// 内核回显带 "dev lo",但 bx 原始命令没有它;routeAddArgs 应丢弃 via/dev。
+		{"v6-unreachable", routeSpec{familyV6, "unreachable", "default", "", "lo"},
 			[]string{"-6", "route", "add", "unreachable", "default", "table", "100"}},
 	}
 	for _, c := range cases {
