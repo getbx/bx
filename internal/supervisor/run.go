@@ -6,9 +6,7 @@ package supervisor
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -248,9 +246,19 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	defer eng.Close()
 
-	// 状态查询 socket + pidfile
-	if closer, err := serveStats(counters, tun0, serverHost, cfg.UDP.Mode); err != nil {
-		log.Printf("状态 socket 启动失败(忽略): %v", err)
+	// commit-confirmed 引擎:挂进守护进程,接 9a 真快照器;onRevert 大声记日志。
+	mutEng := newMutationEngine(NewSystemSnapshotter(), 240*time.Second, time.Now, func(reverted bool, err error) {
+		if err != nil {
+			log.Printf("死手自动回滚失败(系统可能半改动): %v", err)
+		} else if reverted {
+			log.Printf("死手自动回滚:已还原到 last-known-good")
+		}
+	})
+	go mutEng.Run(ctx)
+
+	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
+	if closer, err := serveControl(counters, tun0, serverHost, cfg.UDP.Mode, mutEng); err != nil {
+		log.Printf("控制 socket 启动失败(忽略): %v", err)
 	} else {
 		defer closer.Close()
 		defer os.Remove(SockPath)
@@ -328,39 +336,6 @@ func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Durat
 	}
 }
 
-// serveStats 在 unix socket 上提供状态查询:每个连接回一份 JSON Report。
-func serveStats(c *stats.Counters, t *tunnel.Tunnel, server, udpMode string) (io.Closer, error) {
-	// 运行期目录在部分系统(如 OpenWrt)不预先存在,先确保父目录在。
-	_ = os.MkdirAll(filepath.Dir(SockPath), 0o755)
-	_ = os.Remove(SockPath)
-	ln, err := net.Listen("unix", SockPath)
-	if err != nil {
-		return nil, err
-	}
-	_ = os.Chmod(SockPath, 0o666)
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			ts := t.Stats()
-			rep := stats.Report{
-				Snapshot:      c.Snapshot(),
-				Server:        server,
-				SocksAddr:     t.SocksAddr(),
-				TunnelHealthy: ts.Up,
-				LatencyMS:     ts.LatencyMS,
-				Restarts:      ts.Restarts,
-				UDPMode:       udpMode,
-				UDPNote:       udpNote(udpMode),
-			}
-			_ = json.NewEncoder(conn).Encode(rep)
-			conn.Close()
-		}
-	}()
-	return ln, nil
-}
 
 func udpNote(mode string) string {
 	switch mode {
