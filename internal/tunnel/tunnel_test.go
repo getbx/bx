@@ -135,3 +135,40 @@ func TestTunnelToleratesTransientHealthBlips(t *testing.T) {
 	}
 	waitFor(t, tn.Healthy, "抖动后应恢复健康")
 }
+
+// 退避(reconnect backoff)应反映「连续」失败,而非隧道生命周期累计的重连次数。
+// 一次曾健康的运行结束后退避必须归零 —— 否则长寿命隧道偶发抖动会被退避到 max,
+// 配合 kill-switch 造成最长 max(默认 30s) 的全流量黑洞。
+func TestTunnelBackoffResetsAfterHealthyRun(t *testing.T) {
+	var mu sync.Mutex
+	var starts []time.Time
+	var probe int32
+	tn := New("127.0.0.1:11080",
+		func(string) (Runner, error) {
+			mu.Lock()
+			starts = append(starts, time.Now())
+			mu.Unlock()
+			return newFakeRunner(), nil
+		},
+		func(string) (int64, error) {
+			// 每次运行:第 1 次探测成功(进入 monitor),随后连续 3 次失败(达到 maxFails)触发重连。
+			// 即「健康一阵后死掉」反复循环 —— 每次运行都曾健康过。
+			if (atomic.AddInt32(&probe, 1)-1)%4 == 0 {
+				return 5, nil
+			}
+			return 0, errors.New("die")
+		},
+	)
+	tn.probe = 1 * time.Millisecond
+	tn.interval = 1 * time.Millisecond
+	tn.base, tn.max = 20*time.Millisecond, 5*time.Second
+	tn.Start()
+	defer tn.Stop()
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(starts) >= 7 }, "应多次重连")
+	mu.Lock()
+	defer mu.Unlock()
+	last := starts[len(starts)-1].Sub(starts[len(starts)-2])
+	if last > 200*time.Millisecond {
+		t.Fatalf("健康运行后退避应归零,末次重连间隔=%v 远超 base(20ms),说明 attempt 未重置 → kill-switch 黑洞", last)
+	}
+}

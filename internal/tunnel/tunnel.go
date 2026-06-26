@@ -38,6 +38,7 @@ type Tunnel struct {
 	factory   RunnerFactory
 	health    HealthCheck
 	interval  time.Duration
+	probe     time.Duration // 启动期健康探测间隔(进程刚拉起到首次健康之间)
 	base, max time.Duration
 	maxFails  int // 连续健康检查失败多少次才判定隧道挂掉并重连(容忍瞬时探测抖动)
 
@@ -59,6 +60,7 @@ func New(socksAddr string, f RunnerFactory, h HealthCheck) *Tunnel {
 		factory:   f,
 		health:    h,
 		interval:  5 * time.Second,
+		probe:     200 * time.Millisecond,
 		base:      1 * time.Second,
 		max:       30 * time.Second,
 		maxFails:  3, // 一次探测抖动(高延迟 wss 上常见)不该拆掉正在工作的隧道;连续 3 次(~15s)才重连
@@ -131,12 +133,17 @@ func (t *Tunnel) Stop() {
 func (t *Tunnel) supervise(ctx context.Context) {
 	attempt := 0
 	for ctx.Err() == nil {
-		err := t.runOnce(ctx)
+		healthy, err := t.runOnce(ctx)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
 			t.incRestart()
+		}
+		// 本次运行曾成功带起隧道 → 退避归零。退避只针对「起不来」的连续失败,
+		// 不随隧道生命周期累计,避免长寿命隧道偶发重连被退避到 max 而触发 kill-switch 黑洞。
+		if healthy {
+			attempt = 0
 		}
 		select {
 		case <-ctx.Done():
@@ -148,11 +155,12 @@ func (t *Tunnel) supervise(ctx context.Context) {
 }
 
 // runOnce 启动一次子进程并监控,直到进程退出/不健康/ctx 取消才返回。
-func (t *Tunnel) runOnce(ctx context.Context) error {
+// 返回值 healthy 表示本次运行是否曾进入健康(monitor)状态 —— 供退避归零判定。
+func (t *Tunnel) runOnce(ctx context.Context) (healthy bool, _ error) {
 	r, err := t.factory(t.socksAddr)
 	if err != nil {
 		t.setDown(err)
-		return err
+		return false, err
 	}
 	t.mu.Lock()
 	t.runner = r
@@ -166,18 +174,18 @@ func (t *Tunnel) runOnce(ctx context.Context) error {
 	defer ticker.Stop()
 	startup := time.NewTimer(10 * time.Second)
 	defer startup.Stop()
-	startupTick := time.NewTicker(200 * time.Millisecond)
+	startupTick := time.NewTicker(t.probe)
 	defer startupTick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case <-exitCh:
 			t.setDown(errProcessExited)
-			return errProcessExited
+			return false, errProcessExited
 		case <-startup.C:
 			t.setDown(errUnhealthy)
-			return errUnhealthy
+			return false, errUnhealthy
 		case <-startupTick.C:
 			lat, herr := t.health(t.socksAddr)
 			if herr == nil {
@@ -193,10 +201,10 @@ monitor:
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return true, ctx.Err()
 		case <-exitCh:
 			t.setDown(errProcessExited)
-			return errProcessExited
+			return true, errProcessExited
 		case <-ticker.C:
 			lat, herr := t.health(t.socksAddr)
 			if herr != nil {
@@ -205,7 +213,7 @@ monitor:
 				fails++
 				if fails >= t.maxFails {
 					t.setDown(herr)
-					return errUnhealthy
+					return true, errUnhealthy
 				}
 				continue
 			}
