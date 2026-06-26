@@ -28,6 +28,12 @@ func newMutationEngine(snapper confirm.Snapshotter, window time.Duration, now fu
 // Arm:抓快照 → 武装死手(restore = undo + 快照网)→ apply。
 // capture 失败 → 不武装、不 apply;apply 失败 → 立即 Rollback、返回错误(不留半截)。
 func (e *mutationEngine) Arm(apply, undo func() error) error {
+	if apply == nil {
+		return errors.New("apply 不能为空")
+	}
+	if e.guard.State() == confirm.StateArmed {
+		return confirm.ErrAlreadyArmed
+	}
 	snap, err := e.snapper.Capture()
 	if err != nil {
 		return fmt.Errorf("抓 last-known-good 快照失败,已中止改动: %w", err)
@@ -45,10 +51,12 @@ func (e *mutationEngine) Arm(apply, undo func() error) error {
 		return errors.Join(errs...)
 	}
 	if err := e.guard.Arm(restore); err != nil {
-		return err // ErrAlreadyArmed
+		return err // ErrAlreadyArmed (authoritative check)
 	}
 	if err := apply(); err != nil {
-		_ = e.guard.Rollback() // apply 失败 → revert,不留半截
+		if rerr := e.guard.Rollback(); rerr != nil {
+			return fmt.Errorf("apply 失败,回滚也失败(系统可能半改动): %w", errors.Join(err, rerr))
+		}
 		return fmt.Errorf("apply 失败已回滚: %w", err)
 	}
 	return nil
