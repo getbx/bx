@@ -16,8 +16,8 @@ var darwinDirectCIDRs = []string{
 	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
 }
 
-// routeSpec 是一条 macOS 路由:add 命令与对称的 del 命令(均为 `route` 的参数,不含 "route" 本身)。
-type routeSpec struct {
+// darwinRouteSpec 是一条 macOS 路由:add 命令与对称的 del 命令(均为 `route` 的参数,不含 "route" 本身)。
+type darwinRouteSpec struct {
 	add []string
 	del []string
 }
@@ -40,6 +40,7 @@ func DarwinRoutePlan(opts DarwinRoutePlanOptions) (apply []string, cleanup []str
 	}
 	apply = append(apply, commandString("ifconfig", opts.TunName, "inet", tunIP, tunIP, "up"))
 	specs := darwinRouteSpecs(opts.TunName, opts.Gateway, darwinDirectCIDRs, opts.ServerBypass, opts.UserBypass, opts.BlockV6)
+
 	for _, s := range specs {
 		apply = append(apply, commandString("route", s.add...))
 	}
@@ -62,16 +63,16 @@ func commandString(name string, args ...string) string {
 //     on-link/本地路由,按最长前缀匹配自动抢赢直连,无需显式 carve-out(亦绝不可改写本地路由)。
 //
 // ⚠️ `-reject` 的确切 route 语法(dummy gateway `::1`)与本地 errno 需在真实 macOS 上验证。
-func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass []string, blockV6 bool) []routeSpec {
-	var specs []routeSpec
-	viaGW := func(cidr string) routeSpec {
-		return routeSpec{
+func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass []string, blockV6 bool) []darwinRouteSpec {
+	var specs []darwinRouteSpec
+	viaGW := func(cidr string) darwinRouteSpec {
+		return darwinRouteSpec{
 			add: []string{"-n", "add", "-net", cidr, gw},
 			del: []string{"-n", "delete", "-net", cidr},
 		}
 	}
-	viaTun := func(cidr string) routeSpec {
-		return routeSpec{
+	viaTun := func(cidr string) darwinRouteSpec {
+		return darwinRouteSpec{
 			add: []string{"-n", "add", "-net", cidr, "-interface", tunName},
 			del: []string{"-n", "delete", "-net", cidr},
 		}
@@ -90,7 +91,7 @@ func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass 
 	}
 	if blockV6 {
 		for _, c := range []string{"::/1", "8000::/1"} {
-			specs = append(specs, routeSpec{
+			specs = append(specs, darwinRouteSpec{
 				add: []string{"-n", "add", "-inet6", "-net", c, "::1", "-reject"},
 				del: []string{"-n", "delete", "-inet6", "-net", c},
 			})
