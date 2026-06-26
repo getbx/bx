@@ -117,6 +117,19 @@ func TestDialDirectRealtimeUDPResolvesFakeIP(t *testing.T) {
 	}
 }
 
+// 安全不变量:direct-realtime 的境外 UDP 直连(牺牲匿名换低延迟)只在代理正常工作时被接受。
+// 隧道挂 + kill-switch 时,不再直连泄漏真实 IP,而是 fail-closed 阻断。
+func TestDialDirectRealtimeUDPKillswitchBlocksWhenDown(t *testing.T) {
+	d, px, dr := newTestDialer(nil, fakeResolver{}, false, true) // healthy=false, killswitch=true
+	d.UDPMode = "direct-realtime"
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("198.18.0.93"), Port: 3478, UDP: true}); err != ErrBlocked {
+		t.Fatalf("隧道挂+kill-switch 时 direct-realtime 应 fail-closed,got %v", err)
+	}
+	if dr.lastAddr != "" || px.lastAddr != "" {
+		t.Fatalf("阻断时不应触达 direct/proxy,direct=%q proxy=%q", dr.lastAddr, px.lastAddr)
+	}
+}
+
 func TestDialProxyUDPUsesProxy(t *testing.T) {
 	d, px, dr := newTestDialer(nil, fakeResolver{}, true, true)
 	d.UDPMode = "proxy"

@@ -57,6 +57,8 @@ type Dialer struct {
 	UDPMode    string          // block(默认), direct-realtime, proxy(预留)
 	// SplitDirect 可空:split-DNS 解析出的内网真实 IP 集,命中即强制直连(绕 Router)。
 	SplitDirect *splitdns.Set
+
+	leakWarned atomic.Bool // direct-realtime 真实 IP 外泄告警只打一次
 }
 
 // SetRouter 原子替换当前分流脑(用于列表刷新后的热重载)。
@@ -91,6 +93,16 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 
 	if m.UDP {
 		if d.UDPMode == "direct-realtime" {
+			// 隧道挂 + kill-switch:直连 UDP 的「牺牲匿名换低延迟」只在代理正常工作时被接受。
+			// 隧道不健康时整体隐私态已降级,宁可 fail-closed 断 UDP,也不暴露真实 IP。
+			if d.Killswitch && d.Healthy != nil && !d.Healthy() {
+				if d.Stats != nil {
+					d.Stats.Blocked()
+					d.Stats.UDPBlocked()
+				}
+				debugf("udp direct-realtime blocked (killswitch, tunnel down): ip=%s port=%d", m.IP, m.Port)
+				return nil, ErrBlocked
+			}
 			if d.Stats != nil {
 				d.Stats.Direct()
 			}
@@ -101,6 +113,11 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 					return nil, err
 				}
 				ip = resolved
+			}
+			// 首次直连打一次显著告警:此模式以真实 IP 直连所有 UDP(含境外 QUIC/HTTP3),
+			// 牺牲匿名换低延迟 —— 让真实 IP 外泄可见可审计,而非静默发生。
+			if d.leakWarned.CompareAndSwap(false, true) {
+				log.Printf("⚠ direct-realtime: 所有 UDP(含境外 QUIC/HTTP3)以真实 IP 直连,牺牲匿名换低延迟")
 			}
 			target := net.JoinHostPort(ip.String(), strconv.Itoa(int(m.Port)))
 			debugf("udp direct-realtime: ip=%s target=%s", m.IP, target)
