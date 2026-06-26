@@ -1,17 +1,10 @@
 package mcp
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"runtime"
-	"time"
 
 	"github.com/getbx/bx/internal/supervisor"
-	mcpstats "github.com/getbx/bx/internal/stats"
 )
 
 // requireRoot 是改动类操作的权限门控(纯函数,便于测试)。
@@ -47,36 +40,10 @@ func (o *liveOps) Capabilities() (CapabilitiesOut, error) {
 	}, nil
 }
 
-// statusOverSocket 通过 unix socket 上的 HTTP 客户端向控制面 GET /v0/status,
-// 解码并返回 stats.Report。供 Status() 调用,也便于测试注入临时 socket。
-func statusOverSocket(sockPath string) (mcpstats.Report, error) {
-	client := &http.Client{
-		Timeout: 3 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{Timeout: 1 * time.Second}).DialContext(ctx, "unix", sockPath)
-			},
-		},
-	}
-	resp, err := client.Get("http://local/v0/status")
-	if err != nil {
-		return mcpstats.Report{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return mcpstats.Report{}, fmt.Errorf("控制面 /v0/status 返回 %d", resp.StatusCode)
-	}
-	var rep mcpstats.Report
-	if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
-		return mcpstats.Report{}, err
-	}
-	return rep, nil
-}
-
 // Status 读 supervisor 控制 socket 并映射到 StatusOut。
 // 若 socket 不可达(bx 未运行),返回 ToolError{CodeTunnelUnhealthy}。
 func (o *liveOps) Status() (StatusOut, error) {
-	rep, err := statusOverSocket(supervisor.SockPath)
+	rep, err := supervisor.FetchStatusReport(supervisor.SockPath)
 	if err != nil {
 		return StatusOut{}, ToolError{
 			Code:        CodeTunnelUnhealthy,

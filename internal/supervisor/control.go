@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/getbx/bx/internal/confirm"
 	"github.com/getbx/bx/internal/stats"
@@ -79,19 +80,16 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func (cs *controlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
 		return
 	}
-	cs.mu.Lock()
-	rep := cs.report()
-	cs.mu.Unlock()
-	writeJSON(w, http.StatusOK, rep)
+	writeJSON(w, http.StatusOK, cs.report())
 }
 
 // requireRoot 对 mutation 路由做 peer-cred 鉴权(unix 连接时);非 unix(如 httptest TCP)放行。
 func requireRoot(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
 		return false
 	}
 	conn, _ := r.Context().Value(ctxConnKey{}).(net.Conn)
@@ -167,9 +165,12 @@ func serveControl(c *stats.Counters, t tunnelStatser, server, udpMode string, en
 	if err != nil {
 		return nil, err
 	}
-	_ = os.Chmod(SockPath, 0o660)
+	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
+	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler: newControlMux(eng, report),
+		Handler:           newControlMux(eng, report),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
 			return context.WithValue(ctx, ctxConnKey{}, conn)
 		},

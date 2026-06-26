@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/getbx/bx/internal/supervisor"
 	mcpstats "github.com/getbx/bx/internal/stats"
 )
 
@@ -22,9 +23,9 @@ func TestStatusOverSocket(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(mcpstats.Report{TunnelHealthy: true, LatencyMS: 42})
 	})
 	go http.Serve(ln, mux) //nolint:errcheck
-	rep, err := statusOverSocket(sock)
+	rep, err := supervisor.FetchStatusReport(sock)
 	if err != nil {
-		t.Fatalf("statusOverSocket: %v", err)
+		t.Fatalf("FetchStatusReport: %v", err)
 	}
 	if !rep.TunnelHealthy || rep.LatencyMS != 42 {
 		t.Fatalf("got %+v", rep)
