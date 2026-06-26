@@ -10,15 +10,30 @@ brew install colima docker   # 若未装
 colima start                 # 起一个 Linux VM(独立网络,不劫持你的默认路由/VPN)
 ```
 
+### VM 内安装 Go(一次性)
+Colima 的 Ubuntu VM **没有预装 Go**,且 macOS 的 `go` 二进制无法在 Linux 内运行。
+apt 的 `golang-go` 版本过旧(不支持 Go 1.26),需用官方 tarball:
+
+```sh
+colima ssh
+# 在 VM 内装 Go 1.26(apt 的太旧;用官方 tarball;按 VM 架构选 amd64/arm64,
+# Apple Silicon 上 Colima 默认 arm64)
+ARCH=$(dpkg --print-architecture)   # amd64 或 arm64
+curl -sL "https://go.dev/dl/go1.26.3.linux-${ARCH}.tar.gz" | sudo tar -C /usr/local -xz
+export PATH=$PATH:/usr/local/go/bin   # 建议加进 ~/.profile
+go version   # 确认 go1.26.x
+exit
+```
+
 ## 跑集成测试
 ```sh
-# 在仓库根目录;Colima 默认把当前目录挂进 VM
-colima ssh -- 'cd /Users/<你>/path/to/bx && sudo "$(which go)" test -tags integration ./... -v'
+# Colima 默认把宿主 $HOME 挂进 VM,因此 ~/Documents/bx 可在 VM 内以相同路径访问
+colima ssh -- 'cd /Users/<你>/Documents/bx && sudo "$(which go)" test -tags integration ./... -v'
 ```
 或进 VM 手动跑:
 ```sh
 colima ssh
-cd <repo>
+cd ~/Documents/bx   # $HOME 已挂载,路径与宿主相同
 sudo "$(which go)" test -tags integration ./internal/supervisor/ -run NetConfRoundTrip -v
 ```
 
