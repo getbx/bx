@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ type engClock struct{ t time.Time }
 func (c *engClock) now() time.Time { return c.t }
 
 func newTestEngine(snapper confirm.Snapshotter, clk *engClock) *mutationEngine {
-	return newMutationEngine(snapper, 240*time.Second, clk.now)
+	return newMutationEngine(snapper, 240*time.Second, clk.now, nil)
 }
 
 func TestEngineArmCaptureFailDoesNotApply(t *testing.T) {
@@ -182,6 +183,53 @@ func TestEngineArmAlreadyArmedSkipsCapture(t *testing.T) {
 	}
 	if snapper.captures != 1 {
 		t.Fatalf("二次 Arm 不应再 Capture(应仍为 1),得 %d", snapper.captures)
+	}
+}
+
+func TestEngineTickOnceFiresOnRevert(t *testing.T) {
+	snapper := &engFakeSnapper{}
+	clk := &engClock{t: time.Unix(0, 0)}
+	var gotRev bool
+	var gotErr error
+	called := 0
+	e := newMutationEngine(snapper, 240*time.Second, clk.now, func(rev bool, err error) {
+		called++
+		gotRev, gotErr = rev, err
+	})
+	if err := e.Arm(func() error { return nil }, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	clk.t = clk.t.Add(241 * time.Second)
+	e.tickOnce()
+	if called != 1 || !gotRev || gotErr != nil {
+		t.Fatalf("到点 tickOnce 应调 onRevert(reverted=true,err=nil);called=%d rev=%v err=%v", called, gotRev, gotErr)
+	}
+}
+
+func TestEngineTickOnceNoFireBeforeDeadline(t *testing.T) {
+	clk := &engClock{t: time.Unix(0, 0)}
+	called := 0
+	e := newMutationEngine(&engFakeSnapper{}, 240*time.Second, clk.now, func(bool, error) { called++ })
+	if err := e.Arm(func() error { return nil }, nil); err != nil {
+		t.Fatal(err)
+	}
+	clk.t = clk.t.Add(100 * time.Second)
+	e.tickOnce()
+	if called != 0 {
+		t.Fatalf("未到点不应调 onRevert,called=%d", called)
+	}
+}
+
+func TestEngineRunExitsOnCtxCancel(t *testing.T) {
+	e := newMutationEngine(&engFakeSnapper{}, 240*time.Second, (&engClock{t: time.Unix(0, 0)}).now, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.Run(ctx); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run 未在 ctx 取消后退出")
 	}
 }
 
