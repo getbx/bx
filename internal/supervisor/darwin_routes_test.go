@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func specAdds(specs []routeSpec) map[string]bool {
+func specAdds(specs []darwinRouteSpec) map[string]bool {
 	m := map[string]bool{}
 	for _, s := range specs {
 		m[strings.Join(s.add, " ")] = true
@@ -13,7 +13,7 @@ func specAdds(specs []routeSpec) map[string]bool {
 	return m
 }
 
-func specDels(specs []routeSpec) map[string]bool {
+func specDels(specs []darwinRouteSpec) map[string]bool {
 	m := map[string]bool{}
 	for _, s := range specs {
 		m[strings.Join(s.del, " ")] = true

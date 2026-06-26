@@ -110,7 +110,7 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 	blockV6 := ipv6EnabledDarwin()
 	specs := darwinRouteSpecs(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, blockV6)
 
-	var done []routeSpec // 已加路由,用于对称还原(只管路由;TUN 关闭归 Run 的 closeTUN)
+	var done []darwinRouteSpec // 已加路由,用于对称还原(只管路由;TUN 关闭归 Run 的 closeTUN)
 	cleanup := func() {
 		for i := len(done) - 1; i >= 0; i-- {
 			_ = runCmdQuiet("route", done[i].del...)
