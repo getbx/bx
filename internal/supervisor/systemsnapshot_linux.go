@@ -84,12 +84,22 @@ func (s *linuxSnapshotter) Restore(snap confirm.Snapshot) error {
 		}
 	}
 
+	// M3: 只查一次 ipv6Enabled(),避免多次 syscall/文件探测。
+	v6 := ipv6Enabled()
+
 	// 1) rules:重抓当前 → diff → 删多余(此步)。
-	curV4 := parseCurrentRules(familyV4)
+	// I2: parseCurrentRules 失败时上浮错误(toDel=∅ → 坏规则留在内核,回滚不完整)。
+	curV4, err := parseCurrentRules(familyV4)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("读当前 v4 规则失败(无法计算待删,回滚不完整): %w", err))
+	}
 	delV4, addV4 := diffRules(curV4, ls.v4Rules)
 	var delV6, addV6 []ruleSpec
-	if ipv6Enabled() {
-		curV6 := parseCurrentRules(familyV6)
+	if v6 {
+		curV6, err6 := parseCurrentRules(familyV6)
+		if err6 != nil {
+			errs = append(errs, fmt.Errorf("读当前 v6 规则失败(无法计算待删,回滚不完整): %w", err6))
+		}
 		delV6, addV6 = diffRules(curV6, ls.v6Rules)
 	}
 	for _, r := range delV4 {
@@ -104,7 +114,7 @@ func (s *linuxSnapshotter) Restore(snap confirm.Snapshot) error {
 	for _, rt := range ls.v4T100 {
 		run(routeAddArgs(rt)...)
 	}
-	if ipv6Enabled() {
+	if v6 {
 		run("-6", "route", "flush", "table", "100")
 		for _, rt := range ls.v6T100 {
 			run(routeAddArgs(rt)...)
@@ -121,15 +131,16 @@ func (s *linuxSnapshotter) Restore(snap confirm.Snapshot) error {
 	return errors.Join(errs...)
 }
 
-// parseCurrentRules 抓当前 `ip [-6] rule list` 并解析(抓失败返回 nil,让 diff 退化为"全加")。
-func parseCurrentRules(fam ipFamily) []ruleSpec {
+// parseCurrentRules 抓当前 `ip [-6] rule list` 并解析。
+// 出错时返回 (nil, err):调用方必须把错误上浮——静默降级会让 diff 退化为"全加"(不删坏规则)。
+func parseCurrentRules(fam ipFamily) ([]ruleSpec, error) {
 	args := []string{"rule", "list"}
 	if fam == familyV6 {
 		args = append([]string{"-6"}, args...)
 	}
 	out, err := ipShow(args...)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return parseRules(out, fam)
+	return parseRules(out, fam), nil
 }

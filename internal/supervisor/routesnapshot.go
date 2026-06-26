@@ -166,6 +166,8 @@ func ruleArgs(verb string, r ruleSpec) []string {
 }
 
 // routeAddArgs 把 table-100 routeSpec 重建成 `ip [-6] route add ... table 100`。
+// typed 路由(unreachable/blackhole/prohibit)不带 via/dev:内核回显的 "dev lo" 是内部
+// 注解,bx 原始命令里没有,重放时加上会被内核拒绝。
 func routeAddArgs(r routeSpec) []string {
 	var a []string
 	if r.family == familyV6 {
@@ -173,7 +175,9 @@ func routeAddArgs(r routeSpec) []string {
 	}
 	a = append(a, "route", "add")
 	if r.typ != "" {
-		a = append(a, r.typ)
+		// typed 路由:仅 <typ> <dst> table 100,不带 via/dev
+		a = append(a, r.typ, r.dst, "table", "100")
+		return a
 	}
 	a = append(a, r.dst)
 	if r.via != "" {
