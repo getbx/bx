@@ -16,13 +16,15 @@ import (
 )
 
 type mutationEngine struct {
-	guard   *confirm.Guard
-	snapper confirm.Snapshotter
+	guard    *confirm.Guard
+	snapper  confirm.Snapshotter
+	onRevert func(reverted bool, err error)
 }
 
 // newMutationEngine 构造引擎。生产用 NewSystemSnapshotter()+240s+time.Now;测试注入 fake。
-func newMutationEngine(snapper confirm.Snapshotter, window time.Duration, now func() time.Time) *mutationEngine {
-	return &mutationEngine{guard: confirm.New(window, now), snapper: snapper}
+// onRevert 可为 nil;非 nil 时在 tickOnce 检测到自动回滚(reverted=true 或 err≠nil)时回调。
+func newMutationEngine(snapper confirm.Snapshotter, window time.Duration, now func() time.Time, onRevert func(reverted bool, err error)) *mutationEngine {
+	return &mutationEngine{guard: confirm.New(window, now), snapper: snapper, onRevert: onRevert}
 }
 
 // Arm:抓快照 → 武装死手(restore = undo + 快照网)→ apply。
@@ -67,7 +69,15 @@ func (e *mutationEngine) Rollback() error      { return e.guard.Rollback() }
 func (e *mutationEngine) State() confirm.State { return e.guard.State() }
 func (e *mutationEngine) tick() (bool, error)  { return e.guard.Tick() }
 
-// Run 跑 tickLoop:每 2s Tick,未 commit 到点自动 revert,直到 ctx 取消。
+// tickOnce:tick 一次;到点自动 revert(reverted=true 或 err≠nil)时通知 onRevert。
+func (e *mutationEngine) tickOnce() {
+	rev, err := e.tick()
+	if (rev || err != nil) && e.onRevert != nil {
+		e.onRevert(rev, err)
+	}
+}
+
+// Run 跑 tickLoop:每 2s tickOnce,未 commit 到点自动 revert(并回调 onRevert 记日志),直到 ctx 取消。
 func (e *mutationEngine) Run(ctx context.Context) {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
@@ -76,7 +86,7 @@ func (e *mutationEngine) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_, _ = e.tick()
+			e.tickOnce()
 		}
 	}
 }

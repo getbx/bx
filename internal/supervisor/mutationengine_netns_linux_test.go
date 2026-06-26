@@ -41,7 +41,7 @@ func TestMutationEngineNetnsAutoRevert(t *testing.T) {
 	must("link", "set", "lo", "up")
 
 	clk := &engClock{t: time.Unix(0, 0)}
-	e := newMutationEngine(NewSystemSnapshotter(), 240*time.Second, clk.now)
+	e := newMutationEngine(NewSystemSnapshotter(), 240*time.Second, clk.now, nil)
 
 	base := ruleList()
 	// 合成 mutation:加一条独特的 ip rule;undo 为 nil(靠快照网删掉)。
