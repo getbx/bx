@@ -121,3 +121,27 @@ func parseRoutes(out string, fam ipFamily) []routeSpec {
 	}
 	return specs
 }
+
+// diffRules 算集合差:toDel = current 中不在 target 的(需删除),
+// toAdd = target 中不在 current 的(需补回)。ruleSpec 全字段可比较,用作 map key。
+func diffRules(current, target []ruleSpec) (toDel, toAdd []ruleSpec) {
+	inTarget := make(map[ruleSpec]bool, len(target))
+	for _, r := range target {
+		inTarget[r] = true
+	}
+	inCurrent := make(map[ruleSpec]bool, len(current))
+	for _, r := range current {
+		inCurrent[r] = true
+	}
+	for _, r := range current {
+		if !inTarget[r] {
+			toDel = append(toDel, r)
+		}
+	}
+	for _, r := range target {
+		if !inCurrent[r] {
+			toAdd = append(toAdd, r)
+		}
+	}
+	return toDel, toAdd
+}
