@@ -108,3 +108,25 @@ func TestSetupApplyFailRollsBack(t *testing.T) {
 		t.Fatalf("apply 失败应触发一次 Restore(restored=%d)", snap.restored)
 	}
 }
+
+func TestSetTransportToolForwardsToOps(t *testing.T) {
+	ops := &fakeOps{}
+	res := callTool(t, ops, "bx_set_transport", map[string]any{"link": "vless://x@h:443"})
+	if res.IsError {
+		t.Fatalf("不应错误")
+	}
+	if ops.lastSetTransportLink != "vless://x@h:443" {
+		t.Fatalf("应转发 link 给 ops.SetTransport,得 %q", ops.lastSetTransportLink)
+	}
+}
+
+func TestRehijackToolForwardsToOps(t *testing.T) {
+	ops := &fakeOps{}
+	res := callTool(t, ops, "bx_rehijack", map[string]any{})
+	if res.IsError {
+		t.Fatalf("不应错误")
+	}
+	if !ops.rehijackCalled {
+		t.Fatal("应调用 ops.Rehijack")
+	}
+}

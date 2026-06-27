@@ -111,11 +111,14 @@ func (o *liveOps) SetTransport(in SetTransportIn) error {
 	if err := requireRoot(isRoot()); err != nil {
 		return err
 	}
-	return ToolError{
-		Code:        CodeNotImplemented,
-		Message:     "SetTransport 尚未接线(待 Task 9 集成真实快照/supervisor 机器)",
-		Remediation: "待 Task 9 实现",
+	if _, err := supervisor.SetTransportControl(supervisor.SockPath, in.Link); err != nil {
+		return ToolError{
+			Code:        CodeTunnelUnhealthy,
+			Message:     "set_transport 失败: " + err.Error(),
+			Remediation: "确认 bx 守护进程在跑(bx up)且本机有权限",
+		}
 	}
+	return nil
 }
 
 func (o *liveOps) RestartTunnel() error {
@@ -133,11 +136,14 @@ func (o *liveOps) Rehijack() error {
 	if err := requireRoot(isRoot()); err != nil {
 		return err
 	}
-	return ToolError{
-		Code:        CodeNotImplemented,
-		Message:     "Rehijack 尚未接线(待 Task 9 集成真实快照/supervisor 机器)",
-		Remediation: "用 `sudo bx down && sudo bx up` 替代",
+	if _, err := supervisor.RehijackControl(supervisor.SockPath); err != nil {
+		return ToolError{
+			Code:        CodeTunnelUnhealthy,
+			Message:     "rehijack 失败: " + err.Error(),
+			Remediation: "确认 bx 守护进程在跑(bx up)",
+		}
 	}
+	return nil
 }
 
 func (o *liveOps) Commit() error {
