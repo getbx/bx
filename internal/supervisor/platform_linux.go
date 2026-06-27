@@ -88,6 +88,35 @@ func (p linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 	return nc.down, nil
 }
 
+// RehijackRoutes 在存活 TUN 设备上重落实劫持「路由」:重探网关 → 拆旧路由 → 装新路由。
+// 绝不删设备(故 bx0 始终在,快照网可兜底还原,不漏 IP)。外部事件(DHCP/NM/清规则)
+// 破坏路由时由 commit-confirmed 的 Rehijack mutation 调用。
+func (p linuxPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
+	if t.RouterMode {
+		return fmt.Errorf("router 模式暂不支持 rehijack")
+	}
+	gw, gwDev, err := defaultRoute() // 重探:网关常是「为何要 rehijack」的根源
+	if err != nil {
+		return fmt.Errorf("探测默认网关: %w", err)
+	}
+	bypass := append(append([]string{}, serverBypass...), userBypass...)
+	nc := &netConf{
+		tunName: t.Name, tunAddr: t.Addr,
+		gw: gw, gwDev: gwDev, bypass: bypass,
+		mainLookup: route.DefaultPrivateCIDRs,
+	}
+	if ipv6Enabled() {
+		nc.blockV6 = true
+		nc.mainLookupV6 = append(append([]string{}, route.DefaultPrivateV6CIDRs...), onLinkV6Prefixes()...)
+	}
+	nc.routeDown() // 清旧路由(幂等容错,保住设备)
+	if err := nc.routeUp(); err != nil {
+		return err // 引擎据此 Rollback(经 9a 快照网);设备在 → 快照可重建,无泄漏
+	}
+	log.Printf("rehijack:路由已在 %s 重落实 via %s dev %s", t.Name, gw, gwDev)
+	return nil
+}
+
 // markedBoundDialer 返回 bx 自身出站的直连器:始终打 SO_MARK(让直连经 pref 100 fwmark 规则
 // 走主表绕过 tun,防自环),并对公网目的地额外 SO_BINDTODEVICE 绑物理出口网卡 dev。
 //
@@ -133,12 +162,18 @@ type netConf struct {
 	mainLookupV6 []string // v6 私网/链路本地段:-6 rule 送主表(pref 150),carve-out 出阻断
 }
 
-// upSteps 是 up() 要执行的 ip 命令序列(纯构造,无副作用,便于测试)。
-func (n *netConf) upSteps() [][]string {
-	steps := [][]string{
+// deviceUpSteps:建链路的设备步骤(配地址 + 置 up)。仅 Hijack 首次建链路做;
+// Rehijack 路由重落实不碰设备。
+func (n *netConf) deviceUpSteps() [][]string {
+	return [][]string{
 		{"addr", "add", n.tunAddr, "dev", n.tunName},
 		{"link", "set", n.tunName, "up"},
 	}
+}
+
+// routeUpSteps:只装策略路由(bypass / default dev tun / fwmark / 私网 carve / 全量 / v6 阻断)。
+func (n *netConf) routeUpSteps() [][]string {
+	steps := [][]string{}
 	for _, b := range n.bypass {
 		steps = append(steps, []string{"route", "add", b, "via", n.gw, "dev", n.gwDev, "table", itoa(routeTable)})
 	}
@@ -175,6 +210,11 @@ func (n *netConf) upSteps() [][]string {
 	return steps
 }
 
+// upSteps = 设备步骤 + 路由步骤(行为同旧)。
+func (n *netConf) upSteps() [][]string {
+	return append(n.deviceUpSteps(), n.routeUpSteps()...)
+}
+
 func (n *netConf) up() error {
 	for _, s := range n.upSteps() {
 		if err := runIP(s...); err != nil {
@@ -184,8 +224,8 @@ func (n *netConf) up() error {
 	return nil
 }
 
-// downSteps 是 down() 要执行的还原命令序列(与 upSteps 对称)。
-func (n *netConf) downSteps() [][]string {
+// routeDownSteps:只拆策略路由(与 routeUpSteps 对称);不删设备。
+func (n *netConf) routeDownSteps() [][]string {
 	steps := [][]string{
 		{"rule", "del", "pref", "200", "table", itoa(routeTable)},
 	}
@@ -198,9 +238,7 @@ func (n *netConf) downSteps() [][]string {
 	steps = append(steps,
 		[]string{"rule", "del", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"},
 		[]string{"route", "flush", "table", itoa(routeTable)},
-		[]string{"link", "del", n.tunName},
 	)
-
 	// 对称清理 v6 阻断(仅 blockV6 时装过)。
 	if n.blockV6 {
 		v6 := [][]string{
@@ -218,9 +256,31 @@ func (n *netConf) downSteps() [][]string {
 	return steps
 }
 
+// downSteps = 路由拆除 + 删设备(link del 末尾;与旧版步骤集合一致)。
+func (n *netConf) downSteps() [][]string {
+	return append(n.routeDownSteps(), []string{"link", "del", n.tunName})
+}
+
 // down 尽力还原(忽略单步错误)。
 func (n *netConf) down() {
 	for _, s := range n.downSteps() {
+		_ = runIPQuiet(s...)
+	}
+}
+
+// routeUp 只装路由(在存活设备上),任一步失败即返错。
+func (n *netConf) routeUp() error {
+	for _, s := range n.routeUpSteps() {
+		if err := runIP(s...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// routeDown 尽力拆路由(忽略单步错误),不碰设备。
+func (n *netConf) routeDown() {
+	for _, s := range n.routeDownSteps() {
 		_ = runIPQuiet(s...)
 	}
 }

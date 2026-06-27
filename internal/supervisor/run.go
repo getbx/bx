@@ -81,6 +81,9 @@ type platform interface {
 	// Hijack 把默认流量劫进 TUN,但 serverBypass(brook 服务器)与 userBypass
 	//(管理网/SSH)仍走原网关;私网/docker 段由平台各自处理。返回还原闭包。
 	Hijack(tun tunHandle, serverBypass, userBypass []string) (teardown func(), err error)
+	// RehijackRoutes 在存活 TUN 设备上重落实劫持「路由」(重探网关 + 拆旧路由 + 装新路由),
+	// 绝不删设备。供 commit-confirmed 的 Rehijack mutation 用。
+	RehijackRoutes(tun tunHandle, serverBypass, userBypass []string) error
 }
 
 // Run 启动全局透明代理:建隧道→建 TUN→接线引擎→劫持默认路由,

@@ -127,6 +127,29 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 	return cleanup, nil
 }
 
+// RehijackRoutes 路由-only 重落实(darwin):重探网关 + 幂等配地址 + 重装路由。
+// darwin 的 Hijack teardown 本就只删路由(设备归 Run 的 closeTUN),故无删设备风险。
+// 未真机验证(compile-only),与 Hijack 的真机待办一并验。
+func (darwinPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
+	gw, _, err := defaultRouteDarwin()
+	if err != nil {
+		return fmt.Errorf("探测默认网关: %w", err)
+	}
+	ip := t.Addr
+	if i := strings.IndexByte(ip, '/'); i >= 0 {
+		ip = ip[:i]
+	}
+	_ = runCmdQuiet("ifconfig", t.Name, "inet", ip, ip, "up") // 幂等
+	specs := darwinRouteSpecs(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, ipv6EnabledDarwin())
+	for _, s := range specs {
+		_ = runCmdQuiet("route", s.del...) // 尽力清旧
+		if err := runCmd("route", s.add...); err != nil {
+			return fmt.Errorf("route %s: %w", strings.Join(s.add, " "), err)
+		}
+	}
+	return nil
+}
+
 // ipv6EnabledDarwin 判断宿主是否有可用 IPv6(任一非 loopback 接口带 v6 地址 ⇒ v6 栈活跃)。
 // 缺席即无 v6 可漏,跳过 v6 阻断步骤,避免在禁用 v6 的机器上 `route -inet6` 失败连累启动。
 func ipv6EnabledDarwin() bool {
