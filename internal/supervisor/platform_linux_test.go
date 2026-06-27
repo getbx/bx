@@ -179,8 +179,9 @@ func TestRouteStepsExcludeDeviceSteps(t *testing.T) {
 		}
 	}
 	for _, s := range nc.routeDownSteps() {
-		if strings.Join(s, " ") == "link del bx0" {
-			t.Error("routeDownSteps 不应含 link del")
+		j := strings.Join(s, " ")
+		if strings.HasPrefix(j, "link del") || strings.HasPrefix(j, "link set") || strings.HasPrefix(j, "addr") {
+			t.Errorf("routeDownSteps 不应含设备步骤: %q", j)
 		}
 	}
 	if !stepSet(nc.routeUpSteps())["route add default dev bx0 table "+itoa(routeTable)] {
