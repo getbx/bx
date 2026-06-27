@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -32,6 +33,8 @@ type tunnelStatser interface {
 	Stats() tunnel.Stats
 	SocksAddr() string
 }
+
+type controlStarter func() (io.Closer, error)
 
 type controlResponse struct {
 	Status string `json:"status"`
@@ -145,6 +148,14 @@ func (cs *controlServer) handleRollback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, controlResponse{Status: "reverted", State: state})
+}
+
+func requireControlSocket(start controlStarter) (io.Closer, error) {
+	closer, err := start()
+	if err != nil {
+		return nil, fmt.Errorf("控制 socket 启动失败: %w", err)
+	}
+	return closer, nil
 }
 
 // serveControl 在 SockPath 上跑控制面 HTTP server,替换旧的 serveStats。
