@@ -109,6 +109,9 @@ func (p linuxPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []st
 		nc.blockV6 = true
 		nc.mainLookupV6 = append(append([]string{}, route.DefaultPrivateV6CIDRs...), onLinkV6Prefixes()...)
 	}
+	// 先拆后装:routeDown 删 pref-200 catch-all 到 routeUp 重装之间有 ~ms 直连窗口(catch-all 暂缺,
+	// 流量回落主表直连)。仅在 agent/运维主动 rehijack 时发生、隧道健康,影响可忽略;先拆保证旧网关
+	// 的残留 bypass 路由不与新网关冲突(rehijack 常因网关变更触发)。
 	nc.routeDown() // 清旧路由(幂等容错,保住设备)
 	if err := nc.routeUp(); err != nil {
 		return err // 引擎据此 Rollback(经 9a 快照网);设备在 → 快照可重建,无泄漏
