@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/getbx/bx/internal/confirm"
@@ -15,15 +16,53 @@ import (
 type fakeControlEngine struct {
 	commitErr   error
 	rollbackErr error
+	armErr      error
 	state       confirm.State
+	armed       bool
+	applied     bool
 }
 
 func (f *fakeControlEngine) Commit() error        { return f.commitErr }
 func (f *fakeControlEngine) Rollback() error      { return f.rollbackErr }
 func (f *fakeControlEngine) State() confirm.State { return f.state }
+func (f *fakeControlEngine) Arm(apply, undo func() error) error {
+	if f.armErr != nil {
+		return f.armErr
+	}
+	if apply != nil {
+		_ = apply()
+		f.applied = true
+	}
+	f.armed = true
+	return nil
+}
 
 func testMux(eng controlEngine) http.Handler {
-	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} })
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{})
+}
+
+type fakeMutator struct {
+	gotLink   string
+	setErr    error
+	setCalled bool
+	rehCalled bool
+}
+
+func (f *fakeMutator) SetTransport(link string) (func() error, func() error, error) {
+	f.setCalled = true
+	f.gotLink = link
+	if f.setErr != nil {
+		return nil, nil, f.setErr
+	}
+	return func() error { return nil }, func() error { return nil }, nil
+}
+func (f *fakeMutator) Rehijack() (func() error, func() error, error) {
+	f.rehCalled = true
+	return func() error { return nil }, func() error { return nil }, nil
+}
+
+func testMuxMut(eng controlEngine, mut mutator) http.Handler {
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, mut)
 }
 
 func mustPost(t *testing.T, url string) *http.Response {
@@ -115,5 +154,70 @@ func TestRequireControlSocketPropagatesStartError(t *testing.T) {
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("want wrapped start error %v, got %v", want, err)
+	}
+}
+
+func TestControlSetTransportArmed(t *testing.T) {
+	mut := &fakeMutator{}
+	eng := &fakeControlEngine{state: confirm.StateArmed}
+	srv := httptest.NewServer(testMuxMut(eng, mut))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v0/transport", "application/json",
+		strings.NewReader(`{"link":"vless://x@h:443"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("armed 应 200,得 %d", resp.StatusCode)
+	}
+	if !mut.setCalled || mut.gotLink != "vless://x@h:443" || !eng.armed {
+		t.Fatalf("应调 mut.SetTransport(link) 且 engine.Arm;mut=%+v armed=%v", mut, eng.armed)
+	}
+}
+
+func TestControlSetTransportEmptyLink(t *testing.T) {
+	mut := &fakeMutator{}
+	srv := httptest.NewServer(testMuxMut(&fakeControlEngine{}, mut))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v0/transport", "application/json", strings.NewReader(`{"link":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("空 link 应 400,得 %d", resp.StatusCode)
+	}
+	if mut.setCalled {
+		t.Fatal("空 link 不应调 mut")
+	}
+}
+
+func TestControlSetTransportAlreadyArmed(t *testing.T) {
+	eng := &fakeControlEngine{armErr: confirm.ErrAlreadyArmed}
+	srv := httptest.NewServer(testMuxMut(eng, &fakeMutator{}))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v0/transport", "application/json", strings.NewReader(`{"link":"vless://x@h:443"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("已 armed 应 409,得 %d", resp.StatusCode)
+	}
+}
+
+func TestControlRehijackArmed(t *testing.T) {
+	mut := &fakeMutator{}
+	eng := &fakeControlEngine{state: confirm.StateArmed}
+	srv := httptest.NewServer(testMuxMut(eng, mut))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v0/rehijack", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || !mut.rehCalled || !eng.armed {
+		t.Fatalf("rehijack 应 200 + mut.Rehijack + Arm;code=%d mut=%+v armed=%v", resp.StatusCode, mut, eng.armed)
 	}
 }

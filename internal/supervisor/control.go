@@ -23,6 +23,7 @@ import (
 
 // controlEngine 是 commit-confirmed 引擎的接口,由 *mutationEngine (Task 9b-1) 满足。
 type controlEngine interface {
+	Arm(apply func() error, undo func() error) error
 	Commit() error
 	Rollback() error
 	State() confirm.State
@@ -50,6 +51,7 @@ type controlServer struct {
 	mu     sync.Mutex // 串行化命令(满足并发契约)
 	eng    controlEngine
 	report func() stats.Report
+	mut    mutator
 }
 
 func stateName(s confirm.State) string {
@@ -66,12 +68,14 @@ func stateName(s confirm.State) string {
 }
 
 // newControlMux 构建控制面 HTTP mux。
-func newControlMux(eng controlEngine, report func() stats.Report) http.Handler {
-	cs := &controlServer{eng: eng, report: report}
+func newControlMux(eng controlEngine, report func() stats.Report, mut mutator) http.Handler {
+	cs := &controlServer{eng: eng, report: report, mut: mut}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/status", cs.handleStatus)
 	mux.HandleFunc("/v0/commit", cs.handleCommit)
 	mux.HandleFunc("/v0/rollback", cs.handleRollback)
+	mux.HandleFunc("/v0/transport", cs.handleSetTransport)
+	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
 	return mux
 }
 
@@ -152,6 +156,58 @@ func (cs *controlServer) handleRollback(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, controlResponse{Status: "reverted", State: state})
 }
 
+type setTransportReq struct {
+	Link string `json:"link"`
+}
+
+func (cs *controlServer) handleSetTransport(w http.ResponseWriter, r *http.Request) {
+	if !requireRoot(w, r) {
+		return
+	}
+	var req setTransportReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Link == "" {
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: "缺 link"})
+		return
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	apply, undo, err := cs.mut.SetTransport(req.Link)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: err.Error()})
+		return
+	}
+	cs.armAndRespond(w, apply, undo)
+}
+
+func (cs *controlServer) handleRehijack(w http.ResponseWriter, r *http.Request) {
+	if !requireRoot(w, r) {
+		return
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	apply, undo, err := cs.mut.Rehijack()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: err.Error()})
+		return
+	}
+	cs.armAndRespond(w, apply, undo)
+}
+
+// armAndRespond 调 engine.Arm 并映射状态码(调用方须持 cs.mu)。
+func (cs *controlServer) armAndRespond(w http.ResponseWriter, apply, undo func() error) {
+	err := cs.eng.Arm(apply, undo)
+	state := stateName(cs.eng.State())
+	if err != nil {
+		if errors.Is(err, confirm.ErrAlreadyArmed) {
+			writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, controlResponse{Status: "error", Error: err.Error(), State: state})
+		return
+	}
+	writeJSON(w, http.StatusOK, controlResponse{Status: "armed", State: state})
+}
+
 func requireControlSocket(start controlStarter) (io.Closer, error) {
 	closer, err := start()
 	if err != nil {
@@ -161,8 +217,8 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 }
 
 // serveControl 在 SockPath 上跑控制面 HTTP server,替换旧的 serveStats。
-// c: 统计计数器;t: 隧道(满足 tunnelStatser);server/udpMode: 配置字符串;eng: 引擎。
-func serveControl(c *stats.Counters, t tunnelStatser, server, udpMode string, eng controlEngine) (io.Closer, error) {
+// c: 统计计数器;t: 隧道(满足 tunnelStatser);server/udpMode: 配置字符串;eng: 引擎;mut: 改动执行器。
+func serveControl(c *stats.Counters, t tunnelStatser, server, udpMode string, eng controlEngine, mut mutator) (io.Closer, error) {
 	report := func() stats.Report {
 		ts := t.Stats()
 		return stats.Report{
@@ -185,7 +241,7 @@ func serveControl(c *stats.Counters, t tunnelStatser, server, udpMode string, en
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler:           newControlMux(eng, report),
+		Handler:           newControlMux(eng, report, mut),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
