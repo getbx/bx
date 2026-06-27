@@ -49,7 +49,14 @@ func registerMutating(s *mcpsdk.Server, ops Ops, g *confirm.Guard, snap confirm.
 			if in.Link == "" {
 				return errResultTyped[armedOut](ToolError{Code: CodeLinkInvalid, Message: "link 不能为空"})
 			}
-			return armThen(g, snap, func() error { return ops.SetTransport(in) })
+			if err := ops.SetTransport(in); err != nil {
+				var te ToolError
+				if errors.As(err, &te) {
+					return errResultTyped[armedOut](te)
+				}
+				return errResultTyped[armedOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
+			}
+			return nil, armedOut{Status: "armed", Note: armedNote}, nil
 		})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_restart_tunnel", Description: "restart the transport subprocess; armed under commit-confirmed", Annotations: dx},
@@ -59,7 +66,14 @@ func registerMutating(s *mcpsdk.Server, ops Ops, g *confirm.Guard, snap confirm.
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_rehijack", Description: "reinstall route hijack; armed under commit-confirmed", Annotations: dx},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ emptyIn) (*mcpsdk.CallToolResult, armedOut, error) {
-			return armThen(g, snap, ops.Rehijack)
+			if err := ops.Rehijack(); err != nil {
+				var te ToolError
+				if errors.As(err, &te) {
+					return errResultTyped[armedOut](te)
+				}
+				return errResultTyped[armedOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
+			}
+			return nil, armedOut{Status: "armed", Note: armedNote}, nil
 		})
 
 	// 控制类
