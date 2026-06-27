@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -72,4 +73,40 @@ func CommitControl(sockPath string) (string, error) {
 
 func RollbackControl(sockPath string) (string, error) {
 	return postControl(sockPath, "/v0/rollback")
+}
+
+// postControlBody POST path,带可选 JSON body;返回 controlResponse.State,非 2xx → error(含 Error)。
+func postControlBody(sockPath, path string, body any) (string, error) {
+	client := controlHTTPClient(sockPath)
+	defer client.CloseIdleConnections()
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return "", err
+		}
+		rd = bytes.NewReader(b)
+	}
+	resp, err := client.Post("http://local"+path, "application/json", rd)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out controlResponse
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if resp.StatusCode != http.StatusOK {
+		if out.Error != "" {
+			return "", fmt.Errorf("控制面 %s 返回 %d: %s", path, resp.StatusCode, out.Error)
+		}
+		return "", fmt.Errorf("控制面 %s 返回 %d", path, resp.StatusCode)
+	}
+	return out.State, nil
+}
+
+func SetTransportControl(sockPath, link string) (string, error) {
+	return postControlBody(sockPath, "/v0/transport", map[string]string{"link": link})
+}
+
+func RehijackControl(sockPath string) (string, error) {
+	return postControlBody(sockPath, "/v0/rehijack", nil)
 }
