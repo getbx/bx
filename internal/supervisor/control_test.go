@@ -159,7 +159,7 @@ func TestRequireControlSocketPropagatesStartError(t *testing.T) {
 
 func TestControlSetTransportArmed(t *testing.T) {
 	mut := &fakeMutator{}
-	eng := &fakeControlEngine{state: confirm.StateArmed}
+	eng := &fakeControlEngine{}
 	srv := httptest.NewServer(testMuxMut(eng, mut))
 	defer srv.Close()
 	resp, err := http.Post(srv.URL+"/v0/transport", "application/json",
@@ -194,8 +194,8 @@ func TestControlSetTransportEmptyLink(t *testing.T) {
 }
 
 func TestControlSetTransportAlreadyArmed(t *testing.T) {
-	eng := &fakeControlEngine{armErr: confirm.ErrAlreadyArmed}
-	srv := httptest.NewServer(testMuxMut(eng, &fakeMutator{}))
+	mut := &fakeMutator{}
+	srv := httptest.NewServer(testMuxMut(&fakeControlEngine{state: confirm.StateArmed}, mut))
 	defer srv.Close()
 	resp, err := http.Post(srv.URL+"/v0/transport", "application/json", strings.NewReader(`{"link":"vless://x@h:443"}`))
 	if err != nil {
@@ -205,11 +205,14 @@ func TestControlSetTransportAlreadyArmed(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("已 armed 应 409,得 %d", resp.StatusCode)
 	}
+	if mut.setCalled {
+		t.Fatal("已 armed 不应调用 mutator")
+	}
 }
 
 func TestControlRehijackArmed(t *testing.T) {
 	mut := &fakeMutator{}
-	eng := &fakeControlEngine{state: confirm.StateArmed}
+	eng := &fakeControlEngine{}
 	srv := httptest.NewServer(testMuxMut(eng, mut))
 	defer srv.Close()
 	resp, err := http.Post(srv.URL+"/v0/rehijack", "", nil)

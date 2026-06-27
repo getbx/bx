@@ -170,13 +170,22 @@ func (cs *controlServer) handleSetTransport(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	apply, undo, err := cs.mut.SetTransport(req.Link)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: err.Error()})
+	if cs.eng.State() == confirm.StateArmed {
+		state := stateName(cs.eng.State())
+		cs.mu.Unlock()
+		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
 		return
 	}
-	cs.armAndRespond(w, apply, undo)
+	apply, undo, merr := cs.mut.SetTransport(req.Link)
+	if merr != nil {
+		cs.mu.Unlock()
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: merr.Error()})
+		return
+	}
+	armErr := cs.eng.Arm(apply, undo)
+	state := stateName(cs.eng.State())
+	cs.mu.Unlock()
+	respondArm(w, armErr, state)
 }
 
 func (cs *controlServer) handleRehijack(w http.ResponseWriter, r *http.Request) {
@@ -184,25 +193,32 @@ func (cs *controlServer) handleRehijack(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	apply, undo, err := cs.mut.Rehijack()
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: err.Error()})
+	if cs.eng.State() == confirm.StateArmed {
+		state := stateName(cs.eng.State())
+		cs.mu.Unlock()
+		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
 		return
 	}
-	cs.armAndRespond(w, apply, undo)
+	apply, undo, merr := cs.mut.Rehijack()
+	if merr != nil {
+		cs.mu.Unlock()
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: merr.Error()})
+		return
+	}
+	armErr := cs.eng.Arm(apply, undo)
+	state := stateName(cs.eng.State())
+	cs.mu.Unlock()
+	respondArm(w, armErr, state)
 }
 
-// armAndRespond 调 engine.Arm 并映射状态码(调用方须持 cs.mu)。
-func (cs *controlServer) armAndRespond(w http.ResponseWriter, apply, undo func() error) {
-	err := cs.eng.Arm(apply, undo)
-	state := stateName(cs.eng.State())
-	if err != nil {
-		if errors.Is(err, confirm.ErrAlreadyArmed) {
+// respondArm 映射 engine.Arm 的结果(无锁,调用方已释放 cs.mu)。
+func respondArm(w http.ResponseWriter, armErr error, state string) {
+	if armErr != nil {
+		if errors.Is(armErr, confirm.ErrAlreadyArmed) {
 			writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, controlResponse{Status: "error", Error: err.Error(), State: state})
+		writeJSON(w, http.StatusInternalServerError, controlResponse{Status: "error", Error: armErr.Error(), State: state})
 		return
 	}
 	writeJSON(w, http.StatusOK, controlResponse{Status: "armed", State: state})
