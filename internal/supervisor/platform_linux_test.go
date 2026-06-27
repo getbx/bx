@@ -167,6 +167,50 @@ func TestDefaultPrivateV6CIDRsWiredIn(t *testing.T) {
 	}
 }
 
+func TestRouteStepsExcludeDeviceSteps(t *testing.T) {
+	nc := &netConf{
+		tunName: "bx0", tunAddr: "198.51.100.1/30", gw: "192.168.1.1", gwDev: "eth0",
+		bypass: []string{"1.2.3.4/32"}, mainLookup: route.DefaultPrivateCIDRs,
+	}
+	for _, s := range nc.routeUpSteps() {
+		j := strings.Join(s, " ")
+		if strings.HasPrefix(j, "addr add") || strings.HasPrefix(j, "link set") || strings.HasPrefix(j, "link del") {
+			t.Errorf("routeUpSteps 不应含设备步骤: %q", j)
+		}
+	}
+	for _, s := range nc.routeDownSteps() {
+		if strings.Join(s, " ") == "link del bx0" {
+			t.Error("routeDownSteps 不应含 link del")
+		}
+	}
+	if !stepSet(nc.routeUpSteps())["route add default dev bx0 table "+itoa(routeTable)] {
+		t.Error("routeUpSteps 缺 default dev bx0")
+	}
+	if !stepSet(nc.routeUpSteps())["rule add pref 200 table "+itoa(routeTable)] {
+		t.Error("routeUpSteps 缺 pref 200")
+	}
+}
+
+func TestUpDownStepsStillCompose(t *testing.T) {
+	nc := &netConf{
+		tunName: "bx0", tunAddr: "198.51.100.1/30", gw: "192.168.1.1", gwDev: "eth0",
+		mainLookup: route.DefaultPrivateCIDRs,
+	}
+	up := nc.upSteps()
+	if strings.Join(up[0], " ") != "addr add 198.51.100.1/30 dev bx0" || strings.Join(up[1], " ") != "link set bx0 up" {
+		t.Fatalf("upSteps 前两步应为设备步骤, got %v / %v", up[0], up[1])
+	}
+	if len(up) != len(nc.deviceUpSteps())+len(nc.routeUpSteps()) {
+		t.Error("upSteps 应 = deviceUpSteps + routeUpSteps 步数之和")
+	}
+	if !stepSet(nc.downSteps())["link del bx0"] {
+		t.Error("downSteps 应含 link del bx0")
+	}
+	if stepSet(nc.routeDownSteps())["link del bx0"] {
+		t.Error("routeDownSteps 不应含 link del bx0")
+	}
+}
+
 // CGNAT 段(100.64.0.0/10)是 tailscale overlay 网段,其 peer 路由在 tailscale 的 table 52,
 // 不在 main。若只 carve 到 main(pref 150),从 bx 主机主动连 tailscale peer 的 TCP 会因 main
 // 无路由而漏到物理网卡被丢(ping 走用户态故不暴露)。故 CGNAT 需在 pref 149(< 150)额外送
