@@ -258,8 +258,19 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	go mutEng.Run(ctx)
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
+	// 惰性指针捕获:teardown/serverBypass 在 serveControl 启动时尚未赋值,
+	// liveMutator.apply 仅在 commit 路径执行,届时 plat.Hijack 已完成,指针有效。
+	var teardown func()
+	serverBypass := addrsToCIDRs(serverAddrs)
+	mut := &liveMutator{
+		plat:         plat,
+		tunH:         tunH,
+		serverBypass: serverBypass,
+		userBypass:   cfg.Bypass,
+		teardown:     &teardown,
+	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(counters, tun0, serverHost, cfg.UDP.Mode, mutEng, nopMutator{})
+		return serveControl(counters, tun0, serverHost, cfg.UDP.Mode, mutEng, mut)
 	})
 	if err != nil {
 		return err
@@ -271,12 +282,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 
 	// 6) 劫持默认路由(含 bypass 保 SSH + 服务器防环)
-	serverBypass := addrsToCIDRs(serverAddrs)
-	teardown, err := plat.Hijack(tunH, serverBypass, cfg.Bypass)
+	teardown, err = plat.Hijack(tunH, serverBypass, cfg.Bypass)
 	if err != nil {
 		return fmt.Errorf("配置路由: %w", err)
 	}
-	defer teardown()
+	defer func() { teardown() }()
 	log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。")
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
