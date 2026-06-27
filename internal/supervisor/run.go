@@ -259,7 +259,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(counters, tun0, serverHost, cfg.UDP.Mode, mutEng)
+		return serveControl(counters, tun0, serverHost, cfg.UDP.Mode, mutEng, nopMutator{})
 	})
 	if err != nil {
 		return err
