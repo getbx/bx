@@ -325,6 +325,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	case <-ctx.Done():
 		log.Printf("ctx 取消,还原中…")
 	}
+	// 关机 watchdog:还原已触发,下面的 defer 链若卡住超过 shutdownGrace(已知罕见 timing 竞态:
+	// 疑 eng.Close/tun0.Stop),dump goroutine + 强制退出 —— 保证死手/信号一定终止进程,并捕获卡点根因。
+	// 正常关机远快于 grace,watchdog 随进程退出自然作废、不触发。
+	armShutdownWatchdog(shutdownGrace, dumpAndExit)
 	return nil
 }
 
