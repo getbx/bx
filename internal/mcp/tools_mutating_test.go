@@ -34,13 +34,12 @@ func TestSetupArmsThenCommit(t *testing.T) {
 	if g.State() != confirm.StateArmed {
 		t.Fatal("setup 后应 Armed")
 	}
-	// 提交转正
 	res = callToolOn(t, srv, "bx_commit", map[string]any{})
 	if res.IsError {
 		t.Fatal("commit 不应错误")
 	}
-	if g.State() != confirm.StateCommitted {
-		t.Fatalf("state=%v want Committed", g.State())
+	if len(ops.calls) != 2 || ops.calls[1] != "commit" {
+		t.Fatalf("calls=%v want setup then commit", ops.calls)
 	}
 }
 
@@ -58,10 +57,37 @@ func TestSetupNoCommitWouldRevert(t *testing.T) {
 
 func TestRollbackWhenIdle(t *testing.T) {
 	g := confirm.New(240*time.Second, (&tclock{t: time.Unix(0, 0)}).now)
-	srv := newServerWithGuard(&fakeOps{}, g, &memSnapper{})
+	ops := &fakeOps{rollbackErr: ToolError{Code: CodeNothingToRollback, Message: "没有可回滚的改动"}}
+	srv := newServerWithGuard(ops, g, &memSnapper{})
 	res := callToolOn(t, srv, "bx_rollback", map[string]any{})
 	if !res.IsError {
 		t.Fatal("idle 时 rollback 应返回错误结果(NOTHING_TO_ROLLBACK)")
+	}
+}
+
+func TestCommitUsesOps(t *testing.T) {
+	ops := &fakeOps{}
+	g := confirm.New(240*time.Second, (&tclock{t: time.Unix(0, 0)}).now)
+	srv := newServerWithGuard(ops, g, &memSnapper{})
+	res := callToolOn(t, srv, "bx_commit", map[string]any{})
+	if res.IsError {
+		t.Fatal("commit 不应错误")
+	}
+	if len(ops.calls) != 1 || ops.calls[0] != "commit" {
+		t.Fatalf("calls=%v want [commit]", ops.calls)
+	}
+}
+
+func TestRollbackUsesOps(t *testing.T) {
+	ops := &fakeOps{}
+	g := confirm.New(240*time.Second, (&tclock{t: time.Unix(0, 0)}).now)
+	srv := newServerWithGuard(ops, g, &memSnapper{})
+	res := callToolOn(t, srv, "bx_rollback", map[string]any{})
+	if res.IsError {
+		t.Fatal("rollback 不应错误")
+	}
+	if len(ops.calls) != 1 || ops.calls[0] != "rollback" {
+		t.Fatalf("calls=%v want [rollback]", ops.calls)
 	}
 }
 

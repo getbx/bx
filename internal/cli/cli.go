@@ -55,6 +55,7 @@ func New() *cli.App {
 			{Name: "probe", Usage: "检测 bx:// 链接连通性(不写配置/不改路由)", ArgsUsage: "bx://...", Flags: probeFlags(), Action: probeAction},
 			{Name: "server", Usage: "管理 bx server", Subcommands: serverCommands()},
 			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
+			{Name: "inspect", Usage: "输出 agent 可读诊断包", Flags: inspectFlags(), Action: inspectAction},
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
@@ -106,6 +107,20 @@ type doctorReport struct {
 	ChangesNetwork  bool          `json:"changes_network"`
 	RequiresRoot    bool          `json:"requires_root"`
 	Checks          []checkReport `json:"checks"`
+}
+
+type inspectReport struct {
+	OK              bool               `json:"ok"`
+	Kind            string             `json:"kind"`
+	Version         string             `json:"version"`
+	SecretsRedacted bool               `json:"secrets_redacted"`
+	ChangesSystem   bool               `json:"changes_system"`
+	ChangesNetwork  bool               `json:"changes_network"`
+	Capabilities    capabilitiesReport `json:"capabilities"`
+	Status          *stats.Report      `json:"status,omitempty"`
+	StatusError     string             `json:"status_error,omitempty"`
+	Doctor          doctorReport       `json:"doctor"`
+	NextActions     []string           `json:"next_actions,omitempty"`
 }
 
 type capabilitiesReport struct {
@@ -246,6 +261,10 @@ func doctorFlags() []cli.Flag {
 		&cli.BoolFlag{Name: "skip-probe", Usage: "跳过 bx:// 链接探测"},
 		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
 	}
+}
+
+func inspectFlags() []cli.Flag {
+	return doctorFlags()
 }
 
 func serverDoctorFlags() []cli.Flag {
@@ -621,6 +640,10 @@ func doctorAction(c *cli.Context) (err error) {
 	return nil
 }
 
+func inspectAction(c *cli.Context) error {
+	return writeJSON(os.Stdout, collectClientInspect(c.String("config"), c.String("target"), c.Duration("timeout"), c.Bool("skip-probe")))
+}
+
 func serverDoctorAction(c *cli.Context) error {
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, collectServerDoctor(c.String("config"), c.String("shares-dir")))
@@ -693,6 +716,20 @@ func capabilities() capabilitiesReport {
 				Arguments:      []string{"--json", "--skip-probe", "--config <path>", "--target <host:port>", "--timeout <duration>"},
 				Examples:       []string{"bx doctor --json", "bx doctor --json --skip-probe"},
 				SafeNotes:      []string{"Read-only.", "Secrets are redacted.", "Pass --skip-probe to avoid network probing."},
+			},
+			{
+				Command:        "bx inspect --json",
+				Category:       "diagnostics",
+				Summary:        "Bundle capabilities, status, doctor checks, and next actions for an agent.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"json"},
+				Arguments:      []string{"--json", "--skip-probe", "--config <path>", "--target <host:port>", "--timeout <duration>"},
+				Examples:       []string{"bx inspect --json", "bx inspect --json --skip-probe"},
+				SafeNotes:      []string{"Read-only.", "Secrets are redacted.", "Status socket failures are reported as data."},
 			},
 			{
 				Command:        "sudo bx server doctor --json",
@@ -1043,6 +1080,56 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 	rep.addCheck("udp_policy", status, detail, hint)
 	rep.OK = !rep.hasFail()
 	return rep
+}
+
+func collectClientInspect(configPath, target string, timeout time.Duration, skipProbe bool) inspectReport {
+	doctor := collectClientDoctor(configPath, target, timeout, skipProbe)
+	rep := inspectReport{
+		Kind:            "client",
+		Version:         version.String(),
+		SecretsRedacted: true,
+		Capabilities:    capabilities(),
+		Doctor:          doctor,
+	}
+	if status, err := readStatusReport(); err == nil {
+		rep.Status = &status
+	} else {
+		rep.StatusError = err.Error()
+		rep.NextActions = append(rep.NextActions, "sudo bx up")
+	}
+	rep.NextActions = appendUnique(rep.NextActions, doctorNextActions(doctor)...)
+	rep.OK = doctor.OK && rep.StatusError == ""
+	return rep
+}
+
+func doctorNextActions(rep doctorReport) []string {
+	var out []string
+	for _, check := range rep.Checks {
+		if check.Hint == "" || check.Status == "ok" || check.Status == "info" {
+			continue
+		}
+		for _, part := range strings.Split(check.Hint, ";") {
+			if a := strings.TrimSpace(part); a != "" {
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
+func appendUnique(base []string, add ...string) []string {
+	seen := map[string]bool{}
+	for _, v := range base {
+		seen[v] = true
+	}
+	for _, v := range add {
+		if seen[v] {
+			continue
+		}
+		base = append(base, v)
+		seen[v] = true
+	}
+	return base
 }
 
 func udpPolicyDoctor(mode string) (status, detail, hint string) {

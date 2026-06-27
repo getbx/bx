@@ -3,6 +3,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,10 +14,8 @@ import (
 	"github.com/getbx/bx/internal/stats"
 )
 
-// FetchStatusReport 经控制面 GET /v0/status(HTTP over unix socket)取一份 Report。
-// sockPath 通常为 SockPath;测试时可传临时 socket 路径。
-func FetchStatusReport(sockPath string) (stats.Report, error) {
-	client := &http.Client{
+func controlHTTPClient(sockPath string) *http.Client {
+	return &http.Client{
 		Timeout: 3 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -24,6 +23,12 @@ func FetchStatusReport(sockPath string) (stats.Report, error) {
 			},
 		},
 	}
+}
+
+// FetchStatusReport 经控制面 GET /v0/status(HTTP over unix socket)取一份 Report。
+// sockPath 通常为 SockPath;测试时可传临时 socket 路径。
+func FetchStatusReport(sockPath string) (stats.Report, error) {
+	client := controlHTTPClient(sockPath)
 	defer client.CloseIdleConnections()
 	resp, err := client.Get("http://local/v0/status")
 	if err != nil {
@@ -38,4 +43,33 @@ func FetchStatusReport(sockPath string) (stats.Report, error) {
 		return stats.Report{}, err
 	}
 	return rep, nil
+}
+
+func postControl(sockPath, path string) (string, error) {
+	client := controlHTTPClient(sockPath)
+	defer client.CloseIdleConnections()
+	resp, err := client.Post("http://local"+path, "application/json", bytes.NewReader(nil))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out controlResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		if out.Error != "" {
+			return "", fmt.Errorf("控制面 %s 返回 %d: %s", path, resp.StatusCode, out.Error)
+		}
+		return "", fmt.Errorf("控制面 %s 返回 %d", path, resp.StatusCode)
+	}
+	return out.State, nil
+}
+
+func CommitControl(sockPath string) (string, error) {
+	return postControl(sockPath, "/v0/commit")
+}
+
+func RollbackControl(sockPath string) (string, error) {
+	return postControl(sockPath, "/v0/rollback")
 }

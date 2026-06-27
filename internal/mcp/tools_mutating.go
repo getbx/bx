@@ -68,9 +68,10 @@ func registerMutating(s *mcpsdk.Server, ops Ops, g *confirm.Guard, snap confirm.
 	}
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_commit", Description: "confirm the armed change; disarms the deadman"},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ emptyIn) (*mcpsdk.CallToolResult, ctlOut, error) {
-			if err := g.Commit(); err != nil {
-				if errors.Is(err, confirm.ErrNotArmed) {
-					return errResultTyped[ctlOut](ToolError{Code: CodeAlreadyCommitted, Message: "没有待确认的改动"})
+			if err := ops.Commit(); err != nil {
+				var te ToolError
+				if errors.As(err, &te) {
+					return errResultTyped[ctlOut](te)
 				}
 				return errResultTyped[ctlOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
 			}
@@ -79,9 +80,10 @@ func registerMutating(s *mcpsdk.Server, ops Ops, g *confirm.Guard, snap confirm.
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_rollback", Description: "immediately revert to last-known-good"},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ emptyIn) (*mcpsdk.CallToolResult, ctlOut, error) {
-			if err := g.Rollback(); err != nil {
-				if errors.Is(err, confirm.ErrNotArmed) {
-					return errResultTyped[ctlOut](ToolError{Code: CodeNothingToRollback, Message: "没有可回滚的改动"})
+			if err := ops.Rollback(); err != nil {
+				var te ToolError
+				if errors.As(err, &te) {
+					return errResultTyped[ctlOut](te)
 				}
 				return errResultTyped[ctlOut](ToolError{Code: CodeTunnelUnhealthy, Message: "回滚出错: " + err.Error()})
 			}
