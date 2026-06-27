@@ -28,6 +28,7 @@ type StatusOut struct {
 	LatencyMS     int64  `json:"latency_ms"`
 	Mode          string `json:"mode" jsonschema:"host or router"`
 	UDPMode       string `json:"udp_mode"`
+	MutationState string `json:"mutation_state,omitempty" jsonschema:"idle, armed, committed, or reverted"`
 }
 
 type Finding struct {

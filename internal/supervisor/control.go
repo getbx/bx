@@ -86,7 +86,9 @@ func (cs *controlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, cs.report())
+	rep := cs.report()
+	rep.MutationState = stateName(cs.eng.State())
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // requireRoot 对 mutation 路由做 peer-cred 鉴权(unix 连接时);非 unix(如 httptest TCP)放行。

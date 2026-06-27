@@ -36,7 +36,7 @@ func mustPost(t *testing.T, url string) *http.Response {
 }
 
 func TestControlStatus(t *testing.T) {
-	srv := httptest.NewServer(testMux(&fakeControlEngine{}))
+	srv := httptest.NewServer(testMux(&fakeControlEngine{state: confirm.StateArmed}))
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/v0/status")
 	if err != nil {
@@ -52,6 +52,9 @@ func TestControlStatus(t *testing.T) {
 	}
 	if rep.Server != "test-node" {
 		t.Fatalf("got %+v", rep)
+	}
+	if rep.MutationState != "armed" {
+		t.Fatalf("mutation_state=%q want armed", rep.MutationState)
 	}
 }
 
