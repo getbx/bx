@@ -57,3 +57,18 @@ func TestDiagnoseTool(t *testing.T) {
 		t.Fatal("不应错误")
 	}
 }
+
+func TestStatusToolIncludesMutationState(t *testing.T) {
+	ops := &fakeOps{status: StatusOut{TunnelHealthy: true, MutationState: "armed"}}
+	res := callTool(t, ops, "bx_status", map[string]any{})
+	if res.IsError {
+		t.Fatal("不应错误")
+	}
+	var out StatusOut
+	if err := json.Unmarshal([]byte(res.Content[0].(*mcpsdk.TextContent).Text), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.MutationState != "armed" {
+		t.Fatalf("mutation_state=%q want armed", out.MutationState)
+	}
+}

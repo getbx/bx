@@ -56,6 +56,7 @@ func (o *liveOps) Status() (StatusOut, error) {
 		LatencyMS:     rep.LatencyMS,
 		Mode:          "", // TODO(task9): stats.Report 未携带 mode,待 socket 暴露后填充
 		UDPMode:       rep.UDPMode,
+		MutationState: rep.MutationState,
 	}, nil
 }
 

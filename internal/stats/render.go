@@ -15,6 +15,7 @@ type Report struct {
 	Restarts      int    `json:"restarts"`
 	UDPMode       string `json:"udp_mode"`
 	UDPNote       string `json:"udp_note,omitempty"`
+	MutationState string `json:"mutation_state,omitempty"`
 }
 
 // Render 把 Report 渲染成命令行状态面板。
