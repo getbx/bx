@@ -3,6 +3,7 @@ package supervisor
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -101,5 +102,15 @@ func TestControlStatusRejectsPost(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("status POST 应 405,得 %d", resp.StatusCode)
+	}
+}
+
+func TestRequireControlSocketPropagatesStartError(t *testing.T) {
+	want := errors.New("bind failed")
+	_, err := requireControlSocket(func() (io.Closer, error) {
+		return nil, want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("want wrapped start error %v, got %v", want, err)
 	}
 }

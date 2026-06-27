@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -257,12 +258,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	go mutEng.Run(ctx)
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
-	if closer, err := serveControl(counters, tun0, serverHost, cfg.UDP.Mode, mutEng); err != nil {
-		log.Printf("控制 socket 启动失败(忽略): %v", err)
-	} else {
-		defer closer.Close()
-		defer os.Remove(SockPath)
+	closer, err := requireControlSocket(func() (io.Closer, error) {
+		return serveControl(counters, tun0, serverHost, cfg.UDP.Mode, mutEng)
+	})
+	if err != nil {
+		return err
 	}
+	defer closer.Close()
+	defer os.Remove(SockPath)
 	if err := os.WriteFile(PidPath, []byte(itoa(os.Getpid())), 0o644); err == nil {
 		defer os.Remove(PidPath)
 	}
@@ -335,7 +338,6 @@ func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Durat
 		}
 	}
 }
-
 
 func udpNote(mode string) string {
 	switch mode {

@@ -2,10 +2,20 @@ package tunnel
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func truePath(t *testing.T) string {
+	t.Helper()
+	p, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatalf("找不到 true 可执行文件: %v", err)
+	}
+	return p
+}
 
 // The factory must (a) write a valid sing-box config to confPath derived from the
 // link, and (b) build a command pointing sing-box at that config. We use a fake
@@ -14,7 +24,7 @@ func TestRealityFactoryWritesConfig(t *testing.T) {
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "sing-box.json")
 	link := "vless://uid@1.2.3.4:443?security=reality&pbk=P&sid=S&sni=www.microsoft.com&flow=xtls-rprx-vision&fp=chrome"
-	f := realityFactory("/bin/true", link, conf, "") // /bin/true exits 0 immediately
+	f := realityFactory(truePath(t), link, conf, "") // true exits 0 immediately
 	r, err := f("127.0.0.1:10811")
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -30,7 +40,7 @@ func TestRealityFactoryWritesConfig(t *testing.T) {
 }
 
 func TestRealityFactoryRejectsBadLink(t *testing.T) {
-	f := realityFactory("/bin/true", "brook://x", filepath.Join(t.TempDir(), "c.json"), "")
+	f := realityFactory(truePath(t), "brook://x", filepath.Join(t.TempDir(), "c.json"), "")
 	if _, err := f("127.0.0.1:1"); err == nil {
 		t.Fatal("expected error for non-vless link")
 	}
