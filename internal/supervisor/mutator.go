@@ -21,16 +21,15 @@ func nop() error { return nil }
 func (nopMutator) SetTransport(string) (func() error, func() error, error) { return nop, nop, nil }
 func (nopMutator) Rehijack() (func() error, func() error, error)           { return nop, nop, nil }
 
-// rehijacker 是 liveMutator 对 platform 的窄依赖(只需 Hijack)。
+// rehijacker 是 liveMutator 对 platform 的窄依赖(只需路由-only 重落实)。
 // platform 接口的方法集 ⊇ rehijacker,故 run.go 的 plat 可直接赋值;
-// 单测的 fakePlatform 也只需实现这一个方法(免 gVisor 依赖)。
+// 单测的 fakePlatform 也只需实现这一个方法。
 type rehijacker interface {
-	Hijack(tun tunHandle, serverBypass, userBypass []string) (teardown func(), err error)
+	RehijackRoutes(tun tunHandle, serverBypass, userBypass []string) error
 }
 
-// liveMutator:生产 mutator。真 Rehijack apply;SetTransport 仍 nop(嵌 nopMutator,下一刀替换)。
-// teardown 指向 run.go 的劫持 teardown 变量(惰性捕获):构造时该变量尚未赋值,
-// apply 仅在 commit 路径运行,那时 plat.Hijack 已赋值,指针读到有效值。
+// liveMutator:生产 mutator。真 Rehijack apply = 路由-only 重落实(保 TUN 设备);
+// SetTransport 仍 nop(嵌 nopMutator,下一刀替换)。
 // 注意:真 Rehijack 是指针接收者方法,必须以 &liveMutator{} 使用,
 // 否则值方法集只含嵌入的 nop Rehijack,会静默退化成 nop。
 type liveMutator struct {
@@ -39,22 +38,13 @@ type liveMutator struct {
 	tunH         tunHandle
 	serverBypass []string
 	userBypass   []string
-	teardown     *func()
 }
 
-// Rehijack 返回真 apply:拆当前劫持 + 重装劫持 + 收养新 teardown。
+// Rehijack 返回真 apply:在存活设备上重落实劫持路由(重探网关 + 拆旧路由 + 装新路由)。
 // 方法体无副作用(A2 契约):只构造闭包。undo 为 nop —— 路由还原靠
-// engine.Arm 的 snapshotter.Restore(9a 快照网)。
+// engine.Arm 的 snapshotter.Restore(9a 快照网);设备始终在,故快照可兜底。
 func (m *liveMutator) Rehijack() (apply, undo func() error, err error) {
-	apply = func() error {
-		(*m.teardown)() // 拆当前劫持
-		td, err := m.plat.Hijack(m.tunH, m.serverBypass, m.userBypass)
-		if err != nil {
-			return err // 引擎据此 Rollback(经快照还原);保持旧 teardown 不覆盖
-		}
-		*m.teardown = td // 收养新 teardown
-		return nil
-	}
+	apply = func() error { return m.plat.RehijackRoutes(m.tunH, m.serverBypass, m.userBypass) }
 	undo = func() error { return nil }
 	return apply, undo, nil
 }
