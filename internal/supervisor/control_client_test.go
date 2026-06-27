@@ -131,3 +131,70 @@ func TestRollbackControlPostsRollback(t *testing.T) {
 		t.Fatalf("state=%q want reverted", state)
 	}
 }
+
+func TestSetTransportControl(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "bx.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/transport", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Link string `json:"link"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Link == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(controlResponse{Status: "error", Error: "缺 link"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(controlResponse{Status: "armed", State: "armed"})
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln) //nolint:errcheck
+	defer srv.Close()
+
+	state, err := SetTransportControl(sock, "vless://x@h:443")
+	if err != nil || state != "armed" {
+		t.Fatalf("SetTransportControl state=%q err=%v", state, err)
+	}
+	if _, err := SetTransportControl(sock, ""); err == nil {
+		t.Fatal("空 link 服务端 400,客户端应返回错误")
+	}
+}
+
+func TestRehijackControl(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "bx.sock")
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var gotMethod, gotPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/rehijack", func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(controlResponse{Status: "hijacked", State: "hijacked"})
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln) //nolint:errcheck
+	defer srv.Close()
+
+	state, err := RehijackControl(sockPath)
+	if err != nil {
+		t.Fatalf("RehijackControl: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v0/rehijack" {
+		t.Fatalf("got %s %s, want POST /v0/rehijack", gotMethod, gotPath)
+	}
+	if state != "hijacked" {
+		t.Fatalf("state=%q want hijacked", state)
+	}
+}
