@@ -93,7 +93,9 @@ func postControlBody(sockPath, path string, body any) (string, error) {
 	}
 	defer resp.Body.Close()
 	var out controlResponse
-	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil && resp.StatusCode == http.StatusOK {
+		return "", err
+	}
 	if resp.StatusCode != http.StatusOK {
 		if out.Error != "" {
 			return "", fmt.Errorf("控制面 %s 返回 %d: %s", path, resp.StatusCode, out.Error)

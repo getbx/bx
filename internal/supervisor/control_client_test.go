@@ -198,3 +198,26 @@ func TestRehijackControl(t *testing.T) {
 		t.Fatalf("state=%q want hijacked", state)
 	}
 }
+
+func TestSetTransportControlBadJSON(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "bx.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/transport", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not json"))
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln) //nolint:errcheck
+	defer srv.Close()
+
+	_, err = SetTransportControl(sock, "vless://x@h:443")
+	if err == nil {
+		t.Fatal("200 OK + 非 JSON 回包,应返回 decode 错误,而非沉默成功")
+	}
+}
