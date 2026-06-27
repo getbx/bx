@@ -65,3 +65,69 @@ func TestFetchStatusReportNonOK(t *testing.T) {
 		t.Fatal("期望 non-200 返回 error")
 	}
 }
+
+func TestCommitControlPostsCommit(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "bx.sock")
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var gotMethod, gotPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/commit", func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(controlResponse{Status: "committed", State: "committed"})
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln) //nolint:errcheck
+	defer srv.Close()
+
+	state, err := CommitControl(sockPath)
+	if err != nil {
+		t.Fatalf("CommitControl: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v0/commit" {
+		t.Fatalf("got %s %s, want POST /v0/commit", gotMethod, gotPath)
+	}
+	if state != "committed" {
+		t.Fatalf("state=%q want committed", state)
+	}
+}
+
+func TestRollbackControlPostsRollback(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "bx.sock")
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var gotMethod, gotPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/rollback", func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(controlResponse{Status: "reverted", State: "reverted"})
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln) //nolint:errcheck
+	defer srv.Close()
+
+	state, err := RollbackControl(sockPath)
+	if err != nil {
+		t.Fatalf("RollbackControl: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v0/rollback" {
+		t.Fatalf("got %s %s, want POST /v0/rollback", gotMethod, gotPath)
+	}
+	if state != "reverted" {
+		t.Fatalf("state=%q want reverted", state)
+	}
+}

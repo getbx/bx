@@ -138,3 +138,25 @@ func (o *liveOps) Rehijack() error {
 		Remediation: "用 `sudo bx down && sudo bx up` 替代",
 	}
 }
+
+func (o *liveOps) Commit() error {
+	if _, err := supervisor.CommitControl(supervisor.SockPath); err != nil {
+		return ToolError{
+			Code:        CodeTunnelUnhealthy,
+			Message:     "commit 控制 socket 调用失败: " + err.Error(),
+			Remediation: "确认 bx 正在运行;必要时查 bx status / bx logs",
+		}
+	}
+	return nil
+}
+
+func (o *liveOps) Rollback() error {
+	if _, err := supervisor.RollbackControl(supervisor.SockPath); err != nil {
+		return ToolError{
+			Code:        CodeTunnelUnhealthy,
+			Message:     "rollback 控制 socket 调用失败: " + err.Error(),
+			Remediation: "确认 bx 正在运行;必要时查 bx status / bx logs",
+		}
+	}
+	return nil
+}

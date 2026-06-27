@@ -13,6 +13,8 @@ type Ops interface {
 	SetTransport(SetTransportIn) error
 	RestartTunnel() error
 	Rehijack() error
+	Commit() error
+	Rollback() error
 }
 
 type CapabilitiesOut struct {

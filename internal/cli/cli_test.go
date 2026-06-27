@@ -37,6 +37,10 @@ func TestAppHasVersion(t *testing.T) {
 	if !commandHasFlag(status, "json") {
 		t.Fatal("status should expose --json")
 	}
+	inspect := findAppCommand(app, "inspect")
+	if inspect == nil || !commandHasFlag(inspect, "json") {
+		t.Fatal("inspect should expose --json")
+	}
 	realtime := findAppCommand(app, "realtime")
 	if !commandHasSubcommand(realtime, "status") || !commandHasSubcommand(realtime, "on") || !commandHasSubcommand(realtime, "off") {
 		t.Fatalf("realtime subcommands = %+v, want status/on/off", realtime.Subcommands)
@@ -216,6 +220,37 @@ func TestClientDoctorReportsBlockedUDPPolicy(t *testing.T) {
 	}
 }
 
+func TestClientInspectIncludesDoctorAndStatusError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.yaml")
+	rep := collectClientInspect(path, "example.com:443", 0, true)
+	if rep.OK {
+		t.Fatal("missing config and missing status socket should not be ok")
+	}
+	if !rep.SecretsRedacted || rep.ChangesSystem || rep.ChangesNetwork {
+		t.Fatalf("unexpected inspect metadata: %+v", rep)
+	}
+	if rep.Capabilities.Product != "bx" {
+		t.Fatalf("capabilities product = %q", rep.Capabilities.Product)
+	}
+	if rep.Doctor.Kind != "client" {
+		t.Fatalf("doctor kind = %q", rep.Doctor.Kind)
+	}
+	if rep.StatusError == "" {
+		t.Fatal("inspect should keep status socket failure as data")
+	}
+	if len(rep.NextActions) == 0 {
+		t.Fatal("inspect should include next actions")
+	}
+	var buf bytes.Buffer
+	if err := writeJSON(&buf, rep); err != nil {
+		t.Fatal(err)
+	}
+	var parsed inspectReport
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("json should be parseable: %v\n%s", err, buf.String())
+	}
+}
+
 func TestArchiveClientLogsRecordsReason(t *testing.T) {
 	dir, err := archiveClientLogsWithReason(t.TempDir(), "doctor")
 	if err != nil {
@@ -307,6 +342,10 @@ func TestCapabilitiesReport(t *testing.T) {
 	}
 	if len(doctor.Arguments) == 0 || len(doctor.Examples) == 0 {
 		t.Fatalf("doctor capability should include arguments/examples: %+v", doctor)
+	}
+	inspect := findCapability(rep.Commands, "bx inspect --json")
+	if !inspect.Stable || inspect.RequiresRoot || inspect.ChangesSystem || inspect.ChangesNetwork || !inspect.ReadsSecrets {
+		t.Fatalf("unexpected inspect capability: %+v", inspect)
 	}
 	setup := findCapability(rep.Commands, "sudo bx setup <client-link>")
 	if setup.Command == "" || !strings.Contains(strings.Join(setup.Arguments, " "), "<client-link>") {
