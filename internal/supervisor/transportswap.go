@@ -54,4 +54,12 @@ func (s *transportSwapper) swapTo(link string) error {
 	return nil
 }
 
+// stop 在 s.mu 下停掉当前隧道,供 Run 退出清理。经锁与 swapTo 串行:任何在飞的
+// (死手自动回滚触发的)swapTo 先完成再停,故停的是最终 current,不会漏停换进来的新隧道(修 M3)。
+func (s *transportSwapper) stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lt.get().Stop()
+}
+
 var _ linkSwapper = (*transportSwapper)(nil)
