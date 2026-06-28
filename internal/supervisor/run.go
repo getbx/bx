@@ -225,14 +225,13 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	d := &dialer.Dialer{
 		Fake:        pool, // 连接回到 TUN 时,用 fake IP 反查域名做精确分流
 		Resolver:    newResolver(cfg.DNS.China, direct),
-		Proxy:       proxyDialer,
 		Direct:      direct,
-		Healthy:     tun0.Healthy,
 		Killswitch:  cfg.Killswitch,
 		Stats:       counters,
 		UDPMode:     cfg.UDP.Mode,
 		SplitDirect: splitDirect,
 	}
+	d.SetTransport(&dialer.Transport{Proxy: proxyDialer, Healthy: tun0.Healthy})
 	d.SetRouter(router)
 
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
