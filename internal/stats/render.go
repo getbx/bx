@@ -41,7 +41,29 @@ func Render(r Report) string {
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "  分流    代理 %.1f%% / 直连 %.1f%%\n", ratio, 100-ratio)
 	fmt.Fprintf(&b, "  流量    ↑ %s   ↓ %s\n", humanBytes(r.BytesUp), humanBytes(r.BytesDown))
+	fmt.Fprint(&b, recoveryHint(r))
 	return b.String()
+}
+
+// recoveryHint:隧道不健康时返回大白话恢复块(怎么了 + kill-switch 保护说明 + 下一步);
+// 健康返回 ""(面板不加噪音)。纯函数,人面专用。
+func recoveryHint(r Report) string {
+	if r.TunnelHealthy {
+		return ""
+	}
+	return fmt.Sprintf(`
+  ⚠ 隧道不健康:可能是服务器被封或网络波动。
+    你的真实 IP 已被 kill-switch 保护(外网暂时不通是「保护」,不是故障)。
+    可以试:
+      · 稍等十几秒看是否自动重连(已重连 %d 次)
+      · bx doctor                体检找原因
+      · 让你的 agent 换隐写传输(brook→REALITY)绕过封锁,或 sudo bx setup 换新链接
+`, r.Restarts)
+}
+
+// RenderNotRunning:bx status 连不上守护进程时的人面提示(daemon 未起)。
+func RenderNotRunning() string {
+	return "bx 未运行。\n  启动:sudo bx up        体检:bx doctor\n"
 }
 
 // humanBytes 把字节数转成人类可读单位。

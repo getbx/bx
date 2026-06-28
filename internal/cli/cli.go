@@ -1699,7 +1699,11 @@ func linkAction(c *cli.Context) error {
 func statusAction(c *cli.Context) error {
 	rep, err := readStatusReport()
 	if err != nil {
-		return err
+		if c.Bool("json") {
+			return err // 机器面:不变(返回错误)
+		}
+		fmt.Print(stats.RenderNotRunning()) // 人面:友好 + exit 0
+		return nil
 	}
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, rep)

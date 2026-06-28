@@ -52,3 +52,34 @@ func TestRender_Unhealthy(t *testing.T) {
 		t.Errorf("隧道挂时应显示「不健康」,实际:\n%s", out)
 	}
 }
+
+func TestRecoveryHint(t *testing.T) {
+	if got := recoveryHint(Report{TunnelHealthy: true}); got != "" {
+		t.Errorf("健康时 recoveryHint 应为空,实际:%q", got)
+	}
+	out := recoveryHint(Report{TunnelHealthy: false, Restarts: 3})
+	for _, want := range []string{"kill-switch", "bx doctor", "重连 3", "换"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("不健康 recoveryHint 应含 %q,实际:\n%s", want, out)
+		}
+	}
+}
+
+func TestRender_UnhealthyHasRecovery(t *testing.T) {
+	out := Render(Report{TunnelHealthy: false, Restarts: 2})
+	if !strings.Contains(out, "kill-switch") || !strings.Contains(out, "bx doctor") {
+		t.Errorf("不健康面板应含恢复指引,实际:\n%s", out)
+	}
+	if strings.Contains(Render(Report{TunnelHealthy: true}), "kill-switch") {
+		t.Error("健康面板不应含恢复块")
+	}
+}
+
+func TestRenderNotRunning(t *testing.T) {
+	out := RenderNotRunning()
+	for _, want := range []string{"未运行", "sudo bx up"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("RenderNotRunning 应含 %q,实际:%q", want, out)
+		}
+	}
+}
