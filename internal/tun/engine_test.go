@@ -67,6 +67,42 @@ func TestCopyOneWay_ReportsBytesAsWritten(t *testing.T) {
 	}
 }
 
+// TestCopyOneWay_StreamsIncrementally 钉死 AI 流式依赖的关键性质:中继把带间隔的多 chunk
+// 增量透传(逐 chunk 读即写、不缓冲/不合并),且间隔内的 chunk 全部存活(逐字节空闲刷新成立)。
+// net.Pipe 同步无缓冲:一次 Write 配一次 Read 且 Write 阻塞到读完,故每个 chunk 1:1 映射到
+// dst 的一次 Read;若中继缓冲/合并则此测失败。
+func TestCopyOneWay_StreamsIncrementally(t *testing.T) {
+	srcReader, srcWriter := net.Pipe()
+	dstReader, dstWriter := net.Pipe()
+	defer srcReader.Close()
+	defer srcWriter.Close()
+	defer dstReader.Close()
+	defer dstWriter.Close()
+
+	go copyOneWay(dstWriter, srcReader, 5*time.Second, nil)
+
+	chunks := []string{"data: tok1\n\n", "data: tok2\n\n", "data: tok3\n\n"}
+	go func() {
+		for _, c := range chunks {
+			_, _ = srcWriter.Write([]byte(c))
+			time.Sleep(20 * time.Millisecond) // “token”之间的间隔
+		}
+		_ = srcWriter.Close()
+	}()
+
+	buf := make([]byte, 4096)
+	for i, want := range chunks {
+		_ = dstReader.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := dstReader.Read(buf)
+		if err != nil {
+			t.Fatalf("chunk %d 读失败 err=%v(未增量透传?)", i, err)
+		}
+		if got := string(buf[:n]); got != want {
+			t.Fatalf("chunk %d got %q want %q(被缓冲/合并?)", i, got, want)
+		}
+	}
+}
+
 // metaFromID 把 netstack 的连接 ID 转成分流脑要的 Meta:
 // TUN 入站连接里,LocalAddress/LocalPort 就是程序要连的目标。
 func TestMetaFromID_TCP(t *testing.T) {
