@@ -63,7 +63,9 @@ func New() *cli.App {
 			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
-			{Name: "mcp", Usage: "启动 agent 控制面 MCP server(stdio)", Hidden: false, Flags: mcpFlags(), Action: mcpAction},
+			{Name: "mcp", Usage: "启动 agent 控制面 MCP server(stdio)", Hidden: false, Flags: mcpFlags(), Action: mcpAction, Subcommands: []*cli.Command{
+				{Name: "install", Usage: "打印把 bx 接入你的 agent 的 MCP 配对指令(只打印,不自跑)", Action: mcpInstallAction},
+			}},
 			{Name: "status", Usage: "查看状态面板", Flags: statusFlags(), Action: statusAction},
 			{Name: "logs", Usage: "查看客户端日志", Flags: logsFlags(), Action: logsAction},
 			{Name: "link", Usage: "生成 bx:// 链接", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
@@ -251,6 +253,32 @@ func mcpFlags() []cli.Flag {
 func mcpAction(c *cli.Context) error {
 	ops := mcp.NewLiveOps(c.String("config"))
 	return mcp.Serve(c.Context, ops)
+}
+
+// mcpInstallText 构建把 bx 接入 agent 的 MCP 配对指令(纯函数,无副作用)。
+// bxPath 由调用方用 os.Executable() 解析为绝对路径(robust)。
+func mcpInstallText(bxPath string) string {
+	return fmt.Sprintf(`把 bx 接入你的 agent(MCP 控制面)——下面指令只需运行一次:
+
+Claude Code:
+  claude mcp add --scope user bx -- %s mcp
+
+其他 MCP 客户端(如 Claude Desktop)在 mcpServers 加:
+  {"mcpServers": {"bx": {"command": "%s", "args": ["mcp"]}}}
+
+若你是 AI agent:运行上面 Claude Code 命令即可获得 bx 控制面(状态/换传输/重劫持,
+commit-confirmed 死手兜底),以业主身份授权、无需 sudo(业主 = 运行 sudo bx setup 的用户)。
+`, bxPath, bxPath)
+}
+
+// mcpInstallAction 打印配对指令(只打印,不自跑)。
+func mcpInstallAction(c *cli.Context) error {
+	bxPath, err := os.Executable()
+	if err != nil || bxPath == "" {
+		bxPath = "bx" // 退化:取不到自身路径时用裸名(假定在 PATH)
+	}
+	fmt.Fprint(os.Stdout, mcpInstallText(bxPath))
+	return nil
 }
 
 func doctorFlags() []cli.Flag {
@@ -1028,6 +1056,18 @@ func capabilities() capabilitiesReport {
 				Outputs:        []string{"text"},
 				Arguments:      []string{"<name>"},
 				Examples:       []string{"sudo bx server revoke alice"},
+			},
+			{
+				Command:        "bx mcp install",
+				Category:       "onboarding",
+				Summary:        "Print the MCP pairing instruction so an agent can register bx's control plane with itself.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				Outputs:        []string{"text"},
+				Examples:       []string{"bx mcp install"},
+				SafeNotes:      []string{"Print-only; runs nothing. An AI agent reading the output can run the printed `claude mcp add` to gain bx's control plane, authorized as the machine owner (no sudo)."},
 			},
 		},
 	}

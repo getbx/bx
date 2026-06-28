@@ -79,7 +79,19 @@ sudo ./bx setup '<client-link>'
 sudo bx up
 ```
 
-Linux 客户端直接使用这组命令。`setup` 会安装系统服务,`up` 会启动并接管流量,`down` 会停止保护。
+Linux 客户端直接使用这组命令。
+
+#### 让你的 agent 操作 bx(AI-native,可选)
+
+`bx setup` / `bx up` 跑通后,把控制面接给你的 agent:让你的 agent 运行
+
+    bx mcp install
+
+并照打印的 `claude mcp add` 指令做(**只打印、不自跑**)。之后 agent 就能查状态、
+换传输(brook↔REALITY 防封)、重劫持等——以**业主**身份授权、**无需 sudo**
+(业主 = 运行 `sudo bx setup` 的用户)。
+
+`setup` 会安装系统服务,`up` 会启动并接管流量,`down` 会停止保护。
 
 macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Restart、Turn Off、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
 
