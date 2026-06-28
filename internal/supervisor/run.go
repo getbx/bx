@@ -150,8 +150,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("构建隧道: %w", err)
 	}
+	lt := &liveTunnel{}
+	lt.set(tun0)
 	tun0.Start()
-	defer tun0.Stop()
+	defer func() { lt.get().Stop() }() // 停"当前"隧道:Slice 2b swap 后 lt 指向新隧道(Stop 幂等,双停安全)
 	log.Printf("bx 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
 	healthTimeout := opts.HealthTimeout
 	if healthTimeout <= 0 {
@@ -161,9 +163,6 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return err
 	}
 	log.Printf("bx 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)
-
-	lt := &liveTunnel{}
-	lt.set(tun0)
 
 	serverHost, err := serverHostFromLink(cfg.Server)
 	if err != nil {
@@ -264,8 +263,17 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
 	serverBypass := addrsToCIDRs(serverAddrs)
+	swapper := &transportSwapper{
+		lt:            lt,
+		d:             d,
+		build:         buildTunnel,
+		healthTimeout: healthTimeout,
+		ctx:           ctx,
+		curLink:       cfg.Server,
+	}
 	mut := &liveMutator{
 		plat:         plat,
+		swap:         swapper,
 		tunH:         tunH,
 		serverBypass: serverBypass,
 		userBypass:   cfg.Bypass,
