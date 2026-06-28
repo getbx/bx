@@ -93,6 +93,11 @@ func Parse(b []byte) (*Config, error) {
 	if c.Server == "" {
 		return nil, fmt.Errorf("config: server 不能为空")
 	}
+	if c.OwnerUID < 0 {
+		// 负数 owner_uid 是手改配置的错误:转 uint32 会成巨值、授权不到任何真实用户。
+		// 显式拒绝(防 int→uint32 脚枪),正常由 bx setup 写正整数或省略(0=root-only)。
+		return nil, fmt.Errorf("config: owner_uid 不能为负: %d", c.OwnerUID)
+	}
 	if strings.HasPrefix(c.Server, "bx://") || strings.HasPrefix(c.Server, "blink://") {
 		link, err := blink.Decode(c.Server)
 		if err != nil {
