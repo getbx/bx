@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 
 	"github.com/getbx/bx/internal/fakeip"
@@ -39,10 +40,8 @@ func newTestDialer(fake *fakeip.Pool, res Resolver, healthy bool, ks bool) (*Dia
 		ChinaCIDR:   cn,
 	}
 	px, dr := &recordDialer{}, &recordDialer{}
-	d := &Dialer{
-		Fake: fake, Resolver: res, Proxy: px, Direct: dr,
-		Healthy: func() bool { return healthy }, Killswitch: ks,
-	}
+	d := &Dialer{Fake: fake, Resolver: res, Direct: dr, Killswitch: ks}
+	d.SetTransport(&Transport{Proxy: px, Healthy: func() bool { return healthy }})
 	d.SetRouter(r)
 	return d, px, dr
 }
@@ -199,7 +198,8 @@ func TestDialKillswitchRawChinaIPDirectWhenDown(t *testing.T) {
 func TestDialerHotSwapRouter(t *testing.T) {
 	cn, _ := route.NewCIDRSet([]string{"1.2.0.0/16"})
 	px, dr := &recordDialer{}, &recordDialer{}
-	d := &Dialer{Proxy: px, Direct: dr, Healthy: func() bool { return true }}
+	d := &Dialer{Direct: dr}
+	d.SetTransport(&Transport{Proxy: px, Healthy: func() bool { return true }})
 
 	// 路由 A:8.8.8.8 非中国 → 代理
 	d.SetRouter(&route.Router{ChinaCIDR: cn})
@@ -227,7 +227,8 @@ func TestDialSplitDirectForcesDirect(t *testing.T) {
 	set.Add(ip)
 
 	direct, proxy := &recordDialer{}, &recordDialer{}
-	d := &Dialer{Proxy: proxy, Direct: direct, SplitDirect: set}
+	d := &Dialer{Direct: direct, SplitDirect: set}
+	d.SetTransport(&Transport{Proxy: proxy})
 	d.SetRouter(&route.Router{GlobalProxy: true}) // global:默认本会判 Proxy
 
 	conn, err := d.Dial(context.Background(), route.Meta{IP: ip, Port: 443})
@@ -244,7 +245,8 @@ func TestDialSplitDirectForcesDirect(t *testing.T) {
 
 func TestDialNonSplitPublicGoesProxy(t *testing.T) {
 	direct, proxy := &recordDialer{}, &recordDialer{}
-	d := &Dialer{Proxy: proxy, Direct: direct, SplitDirect: splitdns.NewSet()}
+	d := &Dialer{Direct: direct, SplitDirect: splitdns.NewSet()}
+	d.SetTransport(&Transport{Proxy: proxy})
 	d.SetRouter(&route.Router{GlobalProxy: true})
 
 	conn, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("1.1.1.1"), Port: 443})
@@ -257,4 +259,57 @@ func TestDialNonSplitPublicGoesProxy(t *testing.T) {
 	if !proxyUsed || directUsed {
 		t.Fatalf("未命中 split 的公网 IP 应走 Proxy(direct.used=%v proxy.used=%v)", directUsed, proxyUsed)
 	}
+}
+
+func TestSetTransportSwaps(t *testing.T) {
+	pxA, pxB, dr := &recordDialer{}, &recordDialer{}, &recordDialer{}
+	d := &Dialer{Direct: dr}
+	d.SetTransport(&Transport{Proxy: pxA, Healthy: func() bool { return true }})
+	d.SetRouter(&route.Router{GlobalProxy: true}) // 公网默认走 proxy
+
+	m := route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 443}
+	if _, err := d.Dial(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	if pxA.lastAddr != "8.8.8.8:443" || pxB.lastAddr != "" {
+		t.Fatalf("换前应命中 pxA: A=%q B=%q", pxA.lastAddr, pxB.lastAddr)
+	}
+
+	d.SetTransport(&Transport{Proxy: pxB, Healthy: func() bool { return true }})
+	if _, err := d.Dial(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	if pxB.lastAddr != "8.8.8.8:443" {
+		t.Fatalf("换后应命中 pxB, got %q", pxB.lastAddr)
+	}
+}
+
+func TestDialSetTransportRace(t *testing.T) {
+	dr := &recordDialer{}
+	d := &Dialer{Direct: dr}
+	d.SetTransport(&Transport{Proxy: &recordDialer{}, Healthy: func() bool { return true }})
+	d.SetRouter(&route.Router{GlobalProxy: true})
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				d.SetTransport(&Transport{Proxy: &recordDialer{}, Healthy: func() bool { return true }})
+			}
+		}
+	}()
+	m := route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 443}
+	for i := 0; i < 200; i++ {
+		if c, err := d.Dial(context.Background(), m); err == nil {
+			c.Close()
+		}
+	}
+	close(stop)
+	wg.Wait()
 }

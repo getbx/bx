@@ -46,12 +46,11 @@ type DecisionCounter interface {
 
 // Dialer 把 Router 决策落到实际拨号。
 type Dialer struct {
-	router     atomic.Pointer[route.Router]
-	Fake       *fakeip.Pool // 可空:无 fake-IP 时按 IP 直判
-	Resolver   Resolver
-	Proxy      ContextDialer // 经 brook socks5
-	Direct     ContextDialer // 直连
-	Healthy    func() bool   // 隧道是否健康(kill-switch 用),可空
+	router    atomic.Pointer[route.Router]
+	transport atomic.Pointer[Transport] // 取代裸 Proxy/Healthy:运行期可原子换隧道
+	Fake      *fakeip.Pool              // 可空:无 fake-IP 时按 IP 直判
+	Resolver  Resolver
+	Direct    ContextDialer // 直连
 	Killswitch bool
 	Stats      DecisionCounter // 可空:决策计数
 	UDPMode    string          // block(默认), direct-realtime, proxy(预留)
@@ -60,6 +59,15 @@ type Dialer struct {
 
 	leakWarned atomic.Bool // direct-realtime 真实 IP 外泄告警只打一次
 }
+
+// Transport 是一次可原子替换的传输(socks 代理 + 健康判定),供运行期换隧道。
+type Transport struct {
+	Proxy   ContextDialer // 经隧道 socks5
+	Healthy func() bool   // 隧道健康(kill-switch 用);可空
+}
+
+// SetTransport 原子替换当前传输(proxy + healthy 一并换,绝不半换)。
+func (d *Dialer) SetTransport(t *Transport) { d.transport.Store(t) }
 
 // SetRouter 原子替换当前分流脑(用于列表刷新后的热重载)。
 func (d *Dialer) SetRouter(r *route.Router) { d.router.Store(r) }
@@ -79,6 +87,10 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 // DialWithInitial 可用 TCP 首包中的 TLS SNI / HTTP Host 为未知 fake-IP 恢复域名。
 func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []byte) (net.Conn, error) {
 	rt := d.router.Load()
+	tr := d.transport.Load()
+	if tr == nil {
+		tr = &Transport{} // 未 SetTransport(理论不发生):Healthy nil → kill-switch 视作不健康
+	}
 	// 1) fake IP 反查域名
 	if m.Domain == "" && d.Fake != nil {
 		if dom, ok := d.Fake.Domain(m.IP); ok {
@@ -95,7 +107,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		if d.UDPMode == "direct-realtime" {
 			// 隧道挂 + kill-switch:直连 UDP 的「牺牲匿名换低延迟」只在代理正常工作时被接受。
 			// 隧道不健康时整体隐私态已降级,宁可 fail-closed 断 UDP,也不暴露真实 IP。
-			if d.Killswitch && d.Healthy != nil && !d.Healthy() {
+			if d.Killswitch && tr.Healthy != nil && !tr.Healthy() {
 				if d.Stats != nil {
 					d.Stats.Blocked()
 					d.Stats.UDPBlocked()
@@ -124,7 +136,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			return d.Direct.DialContext(ctx, "udp", target)
 		}
 		if d.UDPMode == "proxy" {
-			if d.Killswitch && d.Healthy != nil && !d.Healthy() {
+			if d.Killswitch && tr.Healthy != nil && !tr.Healthy() {
 				if d.Stats != nil {
 					d.Stats.Blocked()
 				}
@@ -139,7 +151,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			}
 			target := net.JoinHostPort(host, strconv.Itoa(int(m.Port)))
 			debugf("udp proxy: ip=%s domain=%q target=%s", m.IP, m.Domain, target)
-			return d.Proxy.DialContext(ctx, "udp", target)
+			return tr.Proxy.DialContext(ctx, "udp", target)
 		}
 		if d.Stats != nil {
 			d.Stats.Blocked()
@@ -196,7 +208,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		return conn, err
 
 	case route.Proxy:
-		if d.Killswitch && d.Healthy != nil && !d.Healthy() {
+		if d.Killswitch && tr.Healthy != nil && !tr.Healthy() {
 			if d.Stats != nil {
 				d.Stats.Blocked()
 			}
@@ -211,7 +223,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		}
 		target := net.JoinHostPort(host, port)
 		debugf("dial proxy: domain=%q ip=%s target=%s udp=%v", m.Domain, m.IP, target, m.UDP)
-		conn, err := d.Proxy.DialContext(ctx, network(m.UDP), target)
+		conn, err := tr.Proxy.DialContext(ctx, network(m.UDP), target)
 		if err != nil {
 			debugf("dial proxy failed: target=%s err=%v", target, err)
 		}
