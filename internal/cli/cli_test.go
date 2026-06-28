@@ -838,3 +838,17 @@ func TestResolveConfigPathKeepsExplicitMissingPath(t *testing.T) {
 		t.Fatalf("显式缺失路径应原样返回, got %q", got)
 	}
 }
+
+func TestMCPInstallText(t *testing.T) {
+	out := mcpInstallText("/usr/local/bin/bx")
+	for _, want := range []string{
+		"claude mcp add --scope user bx -- /usr/local/bin/bx mcp",
+		`"command": "/usr/local/bin/bx"`,
+		`"args": ["mcp"]`,
+		"AI agent",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("mcpInstallText 缺 %q\n--- got ---\n%s", want, out)
+		}
+	}
+}
