@@ -288,7 +288,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		userBypass:   cfg.Bypass,
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(counters, lt, serverHost, cfg.UDP.Mode, mutEng, mut)
+		return serveControl(counters, lt, serverHost, cfg.UDP.Mode, mutEng, mut, uint32(cfg.OwnerUID))
 	})
 	if err != nil {
 		return err

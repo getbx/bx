@@ -7,16 +7,19 @@ func TestAuthorizeMutation(t *testing.T) {
 		name   string
 		uid    uint32
 		gotUID bool
+		owner  uint32
 		want   bool
 	}{
-		{"linux-root", 0, true, true},              // 提取成功且 root → 放行
-		{"linux-nonroot", 1000, true, false},        // 提取成功但非 root → 拒
-		{"linux-extract-failed", 0, false, false},   // 提取失败(uid 不可信)→ 拒(fail-closed,本次核心)
-		{"no-peercred", 1000, false, false},         // darwin/拿不到 → 拒(uid 被忽略)
+		{"root-with-owner", 0, true, 1000, true},   // root 永远放行
+		{"root-no-owner", 0, true, 0, true},        // 无业主时 root 仍放行
+		{"owner", 1000, true, 1000, true},          // 业主放行(本片核心)
+		{"nonroot-no-owner", 1000, true, 0, false}, // 无业主 → 退回 root-only(核心)
+		{"other-user", 1001, true, 1000, false},    // 非 root 非业主 → 拒
+		{"extract-failed", 0, false, 1000, false},  // 取 uid 失败 → fail-closed
 	}
 	for _, c := range cases {
-		if got := authorizeMutation(c.uid, c.gotUID); got != c.want {
-			t.Errorf("%s: authorizeMutation(%d,%v)=%v want %v", c.name, c.uid, c.gotUID, got, c.want)
+		if got := authorizeMutation(c.uid, c.gotUID, c.owner); got != c.want {
+			t.Errorf("%s: authorizeMutation(%d,%v,%d)=%v want %v", c.name, c.uid, c.gotUID, c.owner, got, c.want)
 		}
 	}
 }

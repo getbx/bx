@@ -48,10 +48,11 @@ type controlResponse struct {
 type ctxConnKey struct{}
 
 type controlServer struct {
-	mu     sync.Mutex // 串行化命令(满足并发契约)
-	eng    controlEngine
-	report func() stats.Report
-	mut    mutator
+	mu       sync.Mutex // 串行化命令(满足并发契约)
+	eng      controlEngine
+	report   func() stats.Report
+	mut      mutator
+	ownerUID uint32
 }
 
 func stateName(s confirm.State) string {
@@ -68,8 +69,8 @@ func stateName(s confirm.State) string {
 }
 
 // newControlMux 构建控制面 HTTP mux。
-func newControlMux(eng controlEngine, report func() stats.Report, mut mutator) http.Handler {
-	cs := &controlServer{eng: eng, report: report, mut: mut}
+func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, ownerUID uint32) http.Handler {
+	cs := &controlServer{eng: eng, report: report, mut: mut, ownerUID: ownerUID}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/status", cs.handleStatus)
 	mux.HandleFunc("/v0/commit", cs.handleCommit)
@@ -96,7 +97,7 @@ func (cs *controlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireRoot 对 mutation 路由做 peer-cred 鉴权(unix 连接时);非 unix(如 httptest TCP)放行。
-func requireRoot(w http.ResponseWriter, r *http.Request) bool {
+func (cs *controlServer) requireRoot(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
 		return false
@@ -107,8 +108,8 @@ func requireRoot(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	uid, gotUID := peerCredUID(conn)
-	if !authorizeMutation(uid, gotUID) {
-		msg := "改动类命令需 root"
+	if !authorizeMutation(uid, gotUID, cs.ownerUID) {
+		msg := "改动类命令需 root 或业主"
 		if !peerCredSupported {
 			msg = "此平台暂不支持 peer-cred,改动类已拒绝;macOS daemon 待实现 LOCAL_PEERCRED"
 		}
@@ -119,7 +120,7 @@ func requireRoot(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (cs *controlServer) handleCommit(w http.ResponseWriter, r *http.Request) {
-	if !requireRoot(w, r) {
+	if !cs.requireRoot(w, r) {
 		return
 	}
 	cs.mu.Lock()
@@ -138,7 +139,7 @@ func (cs *controlServer) handleCommit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cs *controlServer) handleRollback(w http.ResponseWriter, r *http.Request) {
-	if !requireRoot(w, r) {
+	if !cs.requireRoot(w, r) {
 		return
 	}
 	cs.mu.Lock()
@@ -161,7 +162,7 @@ type setTransportReq struct {
 }
 
 func (cs *controlServer) handleSetTransport(w http.ResponseWriter, r *http.Request) {
-	if !requireRoot(w, r) {
+	if !cs.requireRoot(w, r) {
 		return
 	}
 	var req setTransportReq
@@ -189,7 +190,7 @@ func (cs *controlServer) handleSetTransport(w http.ResponseWriter, r *http.Reque
 }
 
 func (cs *controlServer) handleRehijack(w http.ResponseWriter, r *http.Request) {
-	if !requireRoot(w, r) {
+	if !cs.requireRoot(w, r) {
 		return
 	}
 	cs.mu.Lock()
@@ -234,7 +235,7 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 
 // serveControl 在 SockPath 上跑控制面 HTTP server,替换旧的 serveStats。
 // c: 统计计数器;t: 隧道(满足 tunnelStatser);server/udpMode: 配置字符串;eng: 引擎;mut: 改动执行器。
-func serveControl(c *stats.Counters, t tunnelStatser, server, udpMode string, eng controlEngine, mut mutator) (io.Closer, error) {
+func serveControl(c *stats.Counters, t tunnelStatser, server, udpMode string, eng controlEngine, mut mutator, ownerUID uint32) (io.Closer, error) {
 	report := func() stats.Report {
 		ts := t.Stats()
 		return stats.Report{
@@ -257,7 +258,7 @@ func serveControl(c *stats.Counters, t tunnelStatser, server, udpMode string, en
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler:           newControlMux(eng, report, mut),
+		Handler:           newControlMux(eng, report, mut, ownerUID),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {

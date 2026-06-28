@@ -59,6 +59,7 @@ func (l Lists) RefreshInterval() time.Duration {
 type Config struct {
 	Server        string   `yaml:"server"` // bx:// 链接或内部传输链接(自带凭据;故无独立 password 字段)
 	Killswitch    bool     `yaml:"killswitch"`
+	OwnerUID      int      `yaml:"owner_uid"` // 业主 uid(sudo bx setup 捕获);0=无业主,控制面退回 root-only
 	DNS           DNS      `yaml:"dns"`
 	Rules         []Rule   `yaml:"rules"`
 	Lists         Lists    `yaml:"lists"`
