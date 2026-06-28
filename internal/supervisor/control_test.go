@@ -38,7 +38,7 @@ func (f *fakeControlEngine) Arm(apply, undo func() error) error {
 }
 
 func testMux(eng controlEngine) http.Handler {
-	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{})
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{}, 0)
 }
 
 type fakeMutator struct {
@@ -62,7 +62,7 @@ func (f *fakeMutator) Rehijack() (func() error, func() error, error) {
 }
 
 func testMuxMut(eng controlEngine, mut mutator) http.Handler {
-	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, mut)
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, mut, 0)
 }
 
 func mustPost(t *testing.T, url string) *http.Response {
