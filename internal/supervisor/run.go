@@ -132,23 +132,23 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	log.Printf("分流脑就绪: 模式=%s china_domain=%d china_cidr=%d", mode, len(chinaDomain), len(chinaCIDR))
 
 	// 2) 隧道:按 server link 的 scheme 选传输(brook | reality),数据面不变。
-	var tun0 *tunnel.Tunnel
-	switch transportKind(cfg.Server) {
-	case "reality":
-		singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, cfg.SingboxURL, cfg.SingboxSHA256)
-		if err != nil {
-			return fmt.Errorf("准备 sing-box: %w", err)
+	// buildTunnel 由 link 建隧道(含按需 sing-box 准备),供启动与 Slice 2b 运行期换隧道复用。
+	buildTunnel := func(link string) (*tunnel.Tunnel, error) {
+		switch transportKind(link) {
+		case "reality":
+			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, cfg.SingboxURL, cfg.SingboxSHA256)
+			if err != nil {
+				return nil, fmt.Errorf("准备 sing-box: %w", err)
+			}
+			confPath := filepath.Join(cfg.DataDir, "sing-box.json")
+			return tunnel.NewReality(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
+		default:
+			return tunnel.NewBrook(brookPath, link, opts.Probe, cfg.HTTPProxy)
 		}
-		confPath := filepath.Join(cfg.DataDir, "sing-box.json")
-		tun0, err = tunnel.NewReality(singboxPath, cfg.Server, opts.Probe, confPath, cfg.HTTPProxy)
-		if err != nil {
-			return fmt.Errorf("构建 reality 隧道: %w", err)
-		}
-	default:
-		tun0, err = tunnel.NewBrook(brookPath, cfg.Server, opts.Probe, cfg.HTTPProxy)
-		if err != nil {
-			return fmt.Errorf("构建隧道: %w", err)
-		}
+	}
+	tun0, err := buildTunnel(cfg.Server)
+	if err != nil {
+		return fmt.Errorf("构建隧道: %w", err)
 	}
 	tun0.Start()
 	defer tun0.Stop()
@@ -161,6 +161,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return err
 	}
 	log.Printf("bx 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)
+
+	lt := &liveTunnel{}
+	lt.set(tun0)
 
 	serverHost, err := serverHostFromLink(cfg.Server)
 	if err != nil {
@@ -231,7 +234,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		UDPMode:     cfg.UDP.Mode,
 		SplitDirect: splitDirect,
 	}
-	d.SetTransport(&dialer.Transport{Proxy: proxyDialer, Healthy: tun0.Healthy})
+	d.SetTransport(&dialer.Transport{Proxy: proxyDialer, Healthy: lt.Healthy})
 	d.SetRouter(router)
 
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
@@ -268,7 +271,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		userBypass:   cfg.Bypass,
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(counters, tun0, serverHost, cfg.UDP.Mode, mutEng, mut)
+		return serveControl(counters, lt, serverHost, cfg.UDP.Mode, mutEng, mut)
 	})
 	if err != nil {
 		return err
@@ -289,9 +292,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
 	if !global && cfg.Lists.AutoUpdateEnabled() && !listsOverridden {
-		client := proxyHTTPClient(proxyDialer) // 单个客户端复用连接池,跨刷新周期不重建
-		go refreshLoop(ctx, cfg.Lists.RefreshInterval(), tun0.Healthy, func() error {
-			if err := fetchLists(ctx, client, cfg.DataDir); err != nil {
+		go refreshLoop(ctx, cfg.Lists.RefreshInterval(), lt.Healthy, func() error {
+			px, err := socksProxy(lt.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
+			if err != nil {
+				return err
+			}
+			if err := fetchLists(ctx, proxyHTTPClient(px), cfg.DataDir); err != nil {
 				return err
 			}
 			nr, err := rebuildRouterFromFiles(cfg,
