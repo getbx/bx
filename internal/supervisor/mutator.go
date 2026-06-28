@@ -28,16 +28,35 @@ type rehijacker interface {
 	RehijackRoutes(tun tunHandle, serverBypass, userBypass []string) error
 }
 
-// liveMutator:生产 mutator。真 Rehijack apply = 路由-only 重落实(保 TUN 设备);
-// SetTransport 仍 nop(嵌 nopMutator,下一刀替换)。
-// 注意:真 Rehijack 是指针接收者方法,必须以 &liveMutator{} 使用,
-// 否则值方法集只含嵌入的 nop Rehijack,会静默退化成 nop。
+// linkSwapper:把"换到某 link"抽象出来,使 liveMutator 的 commit-confirmed 逻辑可 fake 测;
+// 真隧道操作(建/起/等健康/原子换/停旧)由 transportSwapper 实现、真机验。
+type linkSwapper interface {
+	currentLink() string
+	swapTo(link string) error
+}
+
+// liveMutator:生产 mutator。Rehijack=路由-only 重落实(plat);SetTransport=换隧道(swap)。
+// 两方法均指针接收者,必须以 &liveMutator{} 使用。
 type liveMutator struct {
-	nopMutator   // 提供 nop SetTransport(方法提升)
 	plat         rehijacker
+	swap         linkSwapper
 	tunH         tunHandle
 	serverBypass []string
 	userBypass   []string
+}
+
+// SetTransport 返回真 apply:换到 newLink(建新+等健康+原子换+停旧)。
+// 方法体无副作用(A2 契约):只读当前 link、构造闭包。undo 仅在确实换过时换回旧 link。
+func (m *liveMutator) SetTransport(newLink string) (apply, undo func() error, err error) {
+	oldLink := m.swap.currentLink()
+	apply = func() error { return m.swap.swapTo(newLink) }
+	undo = func() error {
+		if m.swap.currentLink() == oldLink {
+			return nil // apply 未换成(健康失败)→ 无需 undo
+		}
+		return m.swap.swapTo(oldLink)
+	}
+	return apply, undo, nil
 }
 
 // Rehijack 返回真 apply:在存活设备上重落实劫持路由(重探网关 + 拆旧路由 + 装新路由)。

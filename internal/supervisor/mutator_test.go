@@ -79,13 +79,61 @@ func TestLiveMutatorRehijackError(t *testing.T) {
 	}
 }
 
-func TestLiveMutatorSetTransportNop(t *testing.T) {
-	m := &liveMutator{}
-	apply, undo, err := m.SetTransport("vless://x@h:443")
+type fakeSwapper struct {
+	cur       string
+	swapCalls []string
+	swapErr   error
+}
+
+func (f *fakeSwapper) currentLink() string { return f.cur }
+func (f *fakeSwapper) swapTo(link string) error {
+	f.swapCalls = append(f.swapCalls, link)
+	if f.swapErr != nil {
+		return f.swapErr
+	}
+	f.cur = link // 仅成功才更新当前 link
+	return nil
+}
+
+func TestLiveMutatorSetTransport(t *testing.T) {
+	fs := &fakeSwapper{cur: "brook://old"}
+	m := &liveMutator{swap: fs}
+
+	apply, undo, err := m.SetTransport("brook://new")
 	if err != nil {
 		t.Fatalf("SetTransport err: %v", err)
 	}
-	if apply() != nil || undo() != nil {
-		t.Fatal("liveMutator.SetTransport 应为 nop(经嵌入 nopMutator)")
+	if len(fs.swapCalls) != 0 {
+		t.Fatalf("方法体应无副作用: swapCalls=%v", fs.swapCalls)
+	}
+	if err := apply(); err != nil {
+		t.Fatalf("apply err: %v", err)
+	}
+	if len(fs.swapCalls) != 1 || fs.swapCalls[0] != "brook://new" {
+		t.Fatalf("apply 应 swapTo(new) 一次, got %v", fs.swapCalls)
+	}
+	if err := undo(); err != nil {
+		t.Fatalf("undo err: %v", err)
+	}
+	if len(fs.swapCalls) != 2 || fs.swapCalls[1] != "brook://old" {
+		t.Fatalf("换过后 undo 应 swapTo(old), got %v", fs.swapCalls)
+	}
+}
+
+func TestLiveMutatorSetTransportApplyFailUndoNop(t *testing.T) {
+	wantErr := errors.New("unhealthy")
+	fs := &fakeSwapper{cur: "brook://old", swapErr: wantErr}
+	m := &liveMutator{swap: fs}
+
+	apply, undo, _ := m.SetTransport("brook://new")
+	if err := apply(); !errors.Is(err, wantErr) {
+		t.Fatalf("apply 应透传 swapTo 错误, got %v", err)
+	}
+	before := len(fs.swapCalls)
+	if err := undo(); err != nil {
+		t.Fatalf("undo 应 nil: %v", err)
+	}
+	if len(fs.swapCalls) != before {
+		t.Fatalf("apply 未换成时 undo 应 nop, swapCalls 多了: %v", fs.swapCalls)
 	}
 }
