@@ -153,7 +153,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	lt := &liveTunnel{}
 	lt.set(tun0)
 	tun0.Start()
-	defer func() { lt.get().Stop() }() // 停"当前"隧道:Slice 2b swap 后 lt 指向新隧道(Stop 幂等,双停安全)
+	// 停"当前"隧道:swap 后 lt 指向新隧道。swapper 就绪后经其锁停(与在飞 swapTo 串行,修 M3);
+	// 未就绪(健康前提前返回)则直接停 lt(Stop 幂等,双停安全)。
+	var swapper *transportSwapper
+	defer func() {
+		if swapper != nil {
+			swapper.stop()
+		} else {
+			lt.get().Stop()
+		}
+	}()
 	log.Printf("bx 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
 	healthTimeout := opts.HealthTimeout
 	if healthTimeout <= 0 {
@@ -263,7 +272,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
 	serverBypass := addrsToCIDRs(serverAddrs)
-	swapper := &transportSwapper{
+	swapper = &transportSwapper{
 		lt:            lt,
 		d:             d,
 		build:         buildTunnel,
