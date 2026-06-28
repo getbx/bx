@@ -44,7 +44,7 @@ type controlResponse struct {
 }
 
 // ctxConnKey 用于在 http.Server.ConnContext 中把 net.Conn 塞入 request context,
-// 供 requireRoot 做 peer-cred 鉴权。
+// 供 requireOwnerOrRoot 做 peer-cred 鉴权。
 type ctxConnKey struct{}
 
 type controlServer struct {
@@ -96,8 +96,9 @@ func (cs *controlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rep)
 }
 
-// requireRoot 对 mutation 路由做 peer-cred 鉴权(unix 连接时);非 unix(如 httptest TCP)放行。
-func (cs *controlServer) requireRoot(w http.ResponseWriter, r *http.Request) bool {
+// requireOwnerOrRoot 对 mutation 路由做 peer-cred 鉴权:授权 root 或配置的业主 uid(③-1);
+// unix 连接时检查;非 unix(如 httptest TCP)放行。
+func (cs *controlServer) requireOwnerOrRoot(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
 		return false
@@ -120,7 +121,7 @@ func (cs *controlServer) requireRoot(w http.ResponseWriter, r *http.Request) boo
 }
 
 func (cs *controlServer) handleCommit(w http.ResponseWriter, r *http.Request) {
-	if !cs.requireRoot(w, r) {
+	if !cs.requireOwnerOrRoot(w, r) {
 		return
 	}
 	cs.mu.Lock()
@@ -139,7 +140,7 @@ func (cs *controlServer) handleCommit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cs *controlServer) handleRollback(w http.ResponseWriter, r *http.Request) {
-	if !cs.requireRoot(w, r) {
+	if !cs.requireOwnerOrRoot(w, r) {
 		return
 	}
 	cs.mu.Lock()
@@ -162,7 +163,7 @@ type setTransportReq struct {
 }
 
 func (cs *controlServer) handleSetTransport(w http.ResponseWriter, r *http.Request) {
-	if !cs.requireRoot(w, r) {
+	if !cs.requireOwnerOrRoot(w, r) {
 		return
 	}
 	var req setTransportReq
@@ -190,7 +191,7 @@ func (cs *controlServer) handleSetTransport(w http.ResponseWriter, r *http.Reque
 }
 
 func (cs *controlServer) handleRehijack(w http.ResponseWriter, r *http.Request) {
-	if !cs.requireRoot(w, r) {
+	if !cs.requireOwnerOrRoot(w, r) {
 		return
 	}
 	cs.mu.Lock()
