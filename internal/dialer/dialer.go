@@ -89,7 +89,11 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 	rt := d.router.Load()
 	tr := d.transport.Load()
 	if tr == nil {
-		tr = &Transport{} // 未 SetTransport(理论不发生):Healthy nil → kill-switch 视作不健康
+		// 未 SetTransport(理论不发生:run.go 启动即设、且早于开始服务)。仅防 nil 解引用 panic。
+		// 注意:此 fallback 非 fail-closed —— Healthy nil 会让 kill-switch 判定短路跳过;
+		// Direct/Block 决策仍安全,但 Proxy 决策会走到 nil Proxy.DialContext 而 panic。
+		// 生产/Slice 2 均保证 SetTransport 先于服务且 Proxy 非 nil,故不可达;勿当作「安全空传输」。
+		tr = &Transport{}
 	}
 	// 1) fake IP 反查域名
 	if m.Domain == "" && d.Fake != nil {
