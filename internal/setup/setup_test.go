@@ -82,3 +82,23 @@ func TestWriteConfigRefusesExistingWithoutForce(t *testing.T) {
 		t.Error("force 应写入新链接")
 	}
 }
+
+func TestOwnerUIDFromEnv(t *testing.T) {
+	mk := func(v string) func(string) string { return func(string) string { return v } }
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"1000", 1000},
+		{"", 0},
+		{"abc", 0},
+		{"0", 0},
+		{" 1001 ", 1001},
+		{"-5", 0},
+	}
+	for _, c := range cases {
+		if got := ownerUIDFromEnv(mk(c.in)); got != c.want {
+			t.Errorf("ownerUIDFromEnv(%q)=%d want %d", c.in, got, c.want)
+		}
+	}
+}

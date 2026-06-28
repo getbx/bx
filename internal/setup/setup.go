@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/getbx/bx/internal/tunnel"
@@ -16,6 +18,17 @@ type minimalConfig struct {
 	Server     string `yaml:"server"`
 	Global     bool   `yaml:"global"`
 	Killswitch bool   `yaml:"killswitch"`
+	OwnerUID   int    `yaml:"owner_uid,omitempty"` // sudo bx setup 的真实用户;0 省略(root-only)
+}
+
+// ownerUIDFromEnv 从 SUDO_UID 取业主 uid(sudo bx setup 的真实用户)。
+// 非数字/空/<=0 → 0(无业主,控制面退回 root-only)。注入 getenv 便于免环境单测。
+func ownerUIDFromEnv(getenv func(string) string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(getenv("SUDO_UID")))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // WriteConfig 写最小配置(global+killswitch 默认开)。文件已存在且 !force 则报错。
@@ -25,7 +38,7 @@ func WriteConfig(path, link string, force bool) error {
 			return fmt.Errorf("配置已存在 %s(加 --force 覆盖)", path)
 		}
 	}
-	b, err := yaml.Marshal(minimalConfig{Server: link, Global: true, Killswitch: true})
+	b, err := yaml.Marshal(minimalConfig{Server: link, Global: true, Killswitch: true, OwnerUID: ownerUIDFromEnv(os.Getenv)})
 	if err != nil {
 		return err
 	}
