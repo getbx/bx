@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getbx/bx/internal/dialer"
@@ -12,7 +13,7 @@ import (
 
 // transportSwapper 是 linkSwapper 的真实现:运行期把隧道换到某 link(同服务器)。
 // build 复用 run.go 的 buildTunnel(含按需 sing-box)。硬换:换成后立即停旧隧道
-//(既有 TCP 连接重置)。健康失败则停新、不换,旧隧道无损。
+// (既有 TCP 连接重置)。健康失败则停新、不换,旧隧道无损。
 type transportSwapper struct {
 	mu            sync.Mutex
 	lt            *liveTunnel
@@ -20,13 +21,17 @@ type transportSwapper struct {
 	build         func(link string) (*tunnel.Tunnel, error)
 	healthTimeout time.Duration
 	ctx           context.Context
-	curLink       string
+	curLink       atomic.Pointer[string] // 无锁读:swapTo 持 mu 跨健康等待(可达 healthTimeout)时,status 读不被卡
 }
 
+// setLink 原子记录当前活跃传输链接(link 形参是新副本,存其地址安全)。
+func (s *transportSwapper) setLink(link string) { s.curLink.Store(&link) }
+
 func (s *transportSwapper) currentLink() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.curLink
+	if p := s.curLink.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 func (s *transportSwapper) swapTo(link string) error {
@@ -49,7 +54,7 @@ func (s *transportSwapper) swapTo(link string) error {
 	old := s.lt.get()
 	s.lt.set(newTun)                                                        // serveControl/refreshLoop 跟随
 	s.d.SetTransport(&dialer.Transport{Proxy: px, Healthy: newTun.Healthy}) // 新连接走新隧道
-	s.curLink = link
+	s.setLink(link)
 	old.Stop() // 停旧 brook(既有连接重置)
 	return nil
 }
