@@ -18,7 +18,7 @@
 
 **传输层(可插拔,2026-06 加)**:`tunnel.Tunnel/Runner/socks5Health` 抽象同构容纳两种引擎——`NewBrook`(内嵌 brook 子进程)与 `NewReality`(sing-box 子进程,`reality.go`+`vlesslink.go` 解析 `vless://` 生成 sing-box 配置)。**关键不变量自动继承**:reality 不碰数据面,故 kill-switch/fail-closed/fakeip 分流零成本沿用;防环靠 `serverHostFromLink` 认 `vless://` 取 host 做 server bypass。sing-box **已内嵌**(同 brook,linux amd64/arm64),`provision.EnsureSingbox` 优先级 `override > 内嵌字节 > 下载兜底`——内嵌即跑、零外部依赖,根除「墙内首次 `bx up` 要先翻墙下 sing-box」的自举悖论。
 
-**包速查**:`cli`(命令)·`config`(yaml schema)·`blink`(base64url 换壳 brook link)·`setup`/`install`(开箱+systemd+自装 PATH)·`provision`(内嵌 brook/sing-box+china 释放,sing-box 兜底下载)/`embedded`(内嵌资产)·`supervisor`(编排+路由+传输派发)·`tunnel`(brook/reality 子进程隧道)·`tun`(gVisor 引擎)·`dialer`/`route`/`dns`/`fakeip`(分流)·`stats`(面板)。
+**包速查**:`cli`(命令)·`config`(yaml schema)·`blink`(base64url 换壳 brook/vless link)·`setup`/`install`(开箱+systemd+自装 PATH)·`provision`(内嵌 brook/sing-box+china 释放,sing-box 兜底下载)/`embedded`(内嵌资产)·`supervisor`(编排+路由+传输派发)·`tunnel`(brook/reality 子进程隧道)·`tun`(gVisor 引擎)·`dialer`/`route`/`dns`/`fakeip`(分流)·`stats`(面板)。
 
 ## 平台抽象(重要:跨平台的接缝)
 

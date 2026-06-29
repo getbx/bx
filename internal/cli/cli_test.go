@@ -105,6 +105,27 @@ func TestNormalizeClientLinkAcceptsEncodedBX(t *testing.T) {
 	}
 }
 
+func TestNormalizeClientLinkAcceptsVless(t *testing.T) {
+	raw := "vless://be625ca6@1.2.3.4:9998?security=reality&pbk=PUB&sid=ab12&sni=www.apple.com&flow=xtls-rprx-vision&fp=chrome"
+	link, configLink, err := normalizeClientLink(raw)
+	if err != nil {
+		t.Fatalf("vless 链接应被接受: %v", err)
+	}
+	if link != raw {
+		t.Fatalf("link = %q, want raw vless link", link)
+	}
+	if !strings.HasPrefix(configLink, "bx://") {
+		t.Fatalf("config link 应换壳成 bx://, got %q", configLink)
+	}
+	decoded, err := blink.Decode(configLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded != raw {
+		t.Fatalf("decoded config link = %q, want %q", decoded, raw)
+	}
+}
+
 func TestBXServerLink(t *testing.T) {
 	link, err := bxServerLink("example.com", serverConfig{Listen: ":9999", Password: "pw"})
 	if err != nil {

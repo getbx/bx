@@ -70,3 +70,18 @@ func TestDecodeRejectsUnsupportedTransport(t *testing.T) {
 		t.Fatal("unsupported transport should fail")
 	}
 }
+
+func TestEncodeDecodeVlessRoundTrip(t *testing.T) {
+	link := "vless://be625ca6@1.2.3.4:9998?security=reality&pbk=PUB&sid=ab12&sni=www.apple.com&flow=xtls-rprx-vision&fp=chrome"
+	enc := Encode(link)
+	if enc[:5] != "bx://" {
+		t.Fatalf("应以 bx:// 开头, got %q", enc)
+	}
+	dec, err := Decode(enc)
+	if err != nil {
+		t.Fatalf("vless 换壳 round-trip 应成功: %v", err)
+	}
+	if dec != link {
+		t.Fatalf("round-trip 不一致: %q != %q", dec, link)
+	}
+}

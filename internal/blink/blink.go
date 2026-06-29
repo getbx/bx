@@ -20,9 +20,22 @@ type envelope struct {
 	Link      string `json:"link"`
 }
 
-// Encode 把内部传输链接包成 bx://。
+// transportOf 由链接 scheme 推传输标识:vless://→reality,其余→brook(与 supervisor.transportKind 一致)。
+func transportOf(link string) string {
+	if strings.HasPrefix(link, "vless://") {
+		return "reality"
+	}
+	return "brook"
+}
+
+// supportedLink 报告链接内容是否为受支持的传输链接(brook 或 vless-reality)。
+func supportedLink(link string) bool {
+	return strings.HasPrefix(link, "brook://") || strings.HasPrefix(link, "vless://")
+}
+
+// Encode 把内部传输链接(brook:// 或 vless://)包成 bx://。
 func Encode(link string) string {
-	e := envelope{Version: 1, Transport: "brook", Link: link}
+	e := envelope{Version: 1, Transport: transportOf(link), Link: link}
 	b, _ := json.Marshal(e)
 	return scheme + base64.RawURLEncoding.EncodeToString(b)
 }
@@ -48,12 +61,12 @@ func Decode(s string) (string, error) {
 		if e.Version != 1 {
 			return "", fmt.Errorf("不支持的 bx 链接版本: %d", e.Version)
 		}
-		if e.Transport != "brook" {
+		if e.Transport != "brook" && e.Transport != "reality" {
 			return "", fmt.Errorf("不支持的 bx transport: %s", e.Transport)
 		}
 		link = e.Link
 	}
-	if !strings.HasPrefix(link, "brook://") {
+	if !supportedLink(link) {
 		return "", fmt.Errorf("bx 链接内容不受支持")
 	}
 	return link, nil
