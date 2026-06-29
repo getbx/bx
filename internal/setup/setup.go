@@ -17,10 +17,11 @@ import (
 
 // minimalConfig 是 setup 写出的最小可用配置(能被 config.Parse 读回)。
 type minimalConfig struct {
-	Server     string `yaml:"server"`
-	Global     bool   `yaml:"global"`
-	Killswitch bool   `yaml:"killswitch"`
-	OwnerUID   int    `yaml:"owner_uid,omitempty"` // sudo bx setup 的真实用户;0 省略(root-only)
+	Server     string   `yaml:"server,omitempty"`     // 单传输
+	Transports []string `yaml:"transports,omitempty"` // 多传输 bundle(>1 时写这个,接 S1 容灾)
+	Global     bool     `yaml:"global"`
+	Killswitch bool     `yaml:"killswitch"`
+	OwnerUID   int      `yaml:"owner_uid,omitempty"` // sudo bx setup 的真实用户;0 省略(root-only)
 }
 
 // ownerUIDFromEnv 从 SUDO_UID 取业主 uid(sudo bx setup 的真实用户)。
@@ -33,14 +34,24 @@ func ownerUIDFromEnv(getenv func(string) string) int {
 	return n
 }
 
-// WriteConfig 写最小配置(global+killswitch 默认开)。文件已存在且 !force 则报错。
-func WriteConfig(path, link string, force bool) error {
+// WriteConfig 写最小配置(global+killswitch 默认开)。links 单条→server:,多条→transports:
+// (有序优先级,接 S1 自动容灾)。文件已存在且 !force 则报错。
+func WriteConfig(path string, links []string, force bool) error {
+	if len(links) == 0 {
+		return fmt.Errorf("setup: 无传输链接")
+	}
 	if !force {
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("配置已存在 %s(加 --force 覆盖)", path)
 		}
 	}
-	b, err := yaml.Marshal(minimalConfig{Server: link, Global: true, Killswitch: true, OwnerUID: ownerUIDFromEnv(os.Getenv)})
+	cfg := minimalConfig{Global: true, Killswitch: true, OwnerUID: ownerUIDFromEnv(os.Getenv)}
+	if len(links) == 1 {
+		cfg.Server = links[0]
+	} else {
+		cfg.Transports = links
+	}
+	b, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
 	}

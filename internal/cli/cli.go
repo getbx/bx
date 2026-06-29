@@ -69,7 +69,7 @@ func New() *cli.App {
 			{Name: "status", Usage: "查看状态面板", Flags: statusFlags(), Action: statusAction},
 			{Name: "logs", Usage: "查看客户端日志", Flags: logsFlags(), Action: logsAction},
 			{Name: "link", Usage: "生成 bx:// 链接", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
-			{Name: "blink", Usage: "兼容旧链接生成命令", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
+			{Name: "blink", Usage: "把 brook/vless 链接换壳成 bx://(多个=容灾 bundle),避免裸凭据外泄", ArgsUsage: "<link> [link2 ...]", Action: linkAction},
 			{Name: "darwin-plan", Usage: "打印 macOS 路由 dry-run 计划(不改网络)", Flags: darwinPlanFlags(), Action: darwinPlanAction},
 			{Name: "router-plan", Usage: "打印 router 模式 dry-run 计划(ip + nft,不改网络)", Flags: routerPlanFlags(), Action: routerPlanAction},
 			{Name: "uninstall", Usage: "卸载客户端服务", Action: uninstallAction},
@@ -1387,7 +1387,7 @@ func setupAction(c *cli.Context) error {
 	if arg == "" {
 		return fmt.Errorf("用法: sudo bx setup <客户端链接>")
 	}
-	link, configLink, err := normalizeClientLink(arg)
+	link, configLinks, err := resolveConfigLinks(arg)
 	if err != nil {
 		return err
 	}
@@ -1395,6 +1395,9 @@ func setupAction(c *cli.Context) error {
 		fmt.Fprintln(os.Stderr, w)
 	}
 	cfgPath := c.String("config")
+	if len(configLinks) > 1 {
+		fmt.Printf("🔀 多传输:%d 个,自动容灾(主传输优先)\n", len(configLinks))
+	}
 	fmt.Println("⏳ 连通检测中…")
 	if lat, perr := setup.ProbeServer("/var/lib/bx", link, c.String("probe"), 15*time.Second); perr != nil {
 		if c.Bool("strict") {
@@ -1404,7 +1407,7 @@ func setupAction(c *cli.Context) error {
 	} else {
 		fmt.Printf("✅ 服务器连通,延迟 %dms\n", lat)
 	}
-	if err := setup.WriteConfig(cfgPath, configLink, c.Bool("force")); err != nil {
+	if err := setup.WriteConfig(cfgPath, configLinks, c.Bool("force")); err != nil {
 		return err
 	}
 	bin, err := install.SelfInstall()
@@ -1431,6 +1434,29 @@ func rawLinkRisk(arg string) string {
 		return "⚠ 这是含明文凭据的裸链接,已留进 shell 历史;分享/留存前建议先用 `bx blink <link>` 换壳成 bx://"
 	}
 	return ""
+}
+
+// resolveConfigLinks 把 setup 的输入解析为「主传输(供连通探测)+ 各传输的 bx:// 换壳(供写配置)」。
+// 支持裸 brook/vless(单)、bx://blink:// 单格式、bx:// 多传输 bundle(→ transports 列表,接 S1 容灾)。
+func resolveConfigLinks(arg string) (probe string, configLinks []string, err error) {
+	arg = strings.TrimSpace(arg)
+	var internal []string
+	switch {
+	case strings.HasPrefix(arg, "bx://"), strings.HasPrefix(arg, "blink://"):
+		internal, err = blink.DecodeAll(arg)
+		if err != nil {
+			return "", nil, err
+		}
+	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"):
+		internal = []string{arg}
+	default:
+		return "", nil, fmt.Errorf("不是支持的客户端链接")
+	}
+	configLinks = make([]string, len(internal))
+	for i, l := range internal {
+		configLinks[i] = blink.Encode(l) // 各自换壳存配置(0600 + 混淆)
+	}
+	return internal[0], configLinks, nil
 }
 
 func normalizeClientLink(arg string) (link string, configLink string, err error) {
@@ -1688,11 +1714,17 @@ func dnsOffAction(c *cli.Context) error {
 }
 
 func linkAction(c *cli.Context) error {
-	arg := c.Args().First()
-	if !strings.HasPrefix(arg, "brook://") {
-		return fmt.Errorf("用法: bx link <internal-link>")
+	args := c.Args().Slice()
+	if len(args) == 0 {
+		return fmt.Errorf("用法: bx blink <link> [link2 ...](brook:// 或 vless://;多个=容灾 bundle)")
 	}
-	fmt.Println(blink.Encode(arg))
+	for _, a := range args {
+		if !strings.HasPrefix(a, "brook://") && !strings.HasPrefix(a, "vless://") {
+			return fmt.Errorf("不支持的链接(仅 brook:// / vless://): %s", a)
+		}
+	}
+	// 多个 link → 一条容灾 bundle bx://;单个 → legacy 单格式。
+	fmt.Println(blink.EncodeMulti(args))
 	return nil
 }
 
