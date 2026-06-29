@@ -24,10 +24,10 @@ jobs:
         if: steps.v.outputs.changed == 'yes'
         with:
           go-version: '1.26'
-      - name: 自建静态最小 sing-box(CGO_ENABLED=0 + with_utls,linux amd64+arm64)
+      - name: 自建静态最小 sing-box(CGO_ENABLED=0 + with_utls,with_quic,linux amd64+arm64)
         if: steps.v.outputs.changed == 'yes'
         # 不下载上游预编译包(那是 glibc 动态、56MB 全家桶)。从同一 release tag 的源码自建:
-        # 静态(零依赖、同 brook,Alpine/musl 也跑)、最小(REALITY 只需 with_utls)、约半体积。
+        # 静态(零依赖、同 brook,Alpine/musl 也跑)、最小(REALITY 需 with_utls;hysteria2 需 with_quic)、约半体积。
         run: |
           tag='${{ steps.v.outputs.tag }}'
           ver='${{ steps.v.outputs.ver }}'
@@ -35,7 +35,7 @@ jobs:
           LD="-X 'github.com/sagernet/sing-box/constant.Version=${ver}' -s -w -buildid="
           for arch in amd64 arm64; do
             ( cd /tmp/sing-box-src && \
-              CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -tags with_utls -trimpath \
+              CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -tags with_utls,with_quic -trimpath \
                 -ldflags "$LD" -o "$GITHUB_WORKSPACE/internal/embedded/assets/singbox_linux_${arch}" ./cmd/sing-box )
             chmod +x "internal/embedded/assets/singbox_linux_${arch}"
           done
