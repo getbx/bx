@@ -149,6 +149,9 @@ func Parse(b []byte) (*Config, error) {
 		return nil, fmt.Errorf("config: udp.mode 必须是 block/direct-realtime/proxy, got %q", c.UDP.Mode)
 	}
 	if c.UDP.Transport != "" {
+		if c.UDP.Mode != "proxy" {
+			return nil, fmt.Errorf("config: udp.transport 仅 udp.mode=proxy 生效,当前 mode=%q", c.UDP.Mode)
+		}
 		decoded, err := decodeServerLink(c.UDP.Transport)
 		if err != nil {
 			return nil, fmt.Errorf("config: udp.transport: %w", err)

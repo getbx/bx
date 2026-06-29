@@ -318,3 +318,11 @@ func TestParseUDPTransportDecodes(t *testing.T) {
 		t.Fatalf("udp.transport = %q", c.UDP.Transport)
 	}
 }
+
+func TestParseUDPTransportRequiresProxyMode(t *testing.T) {
+	// udp.transport 配了但 mode=block → 报错(不静默失效)
+	_, err := Parse([]byte("server: brook://x\nudp:\n  mode: block\n  transport: hysteria2://pw@h:443\n"))
+	if err == nil {
+		t.Fatal("udp.transport + mode!=proxy 应报错")
+	}
+}

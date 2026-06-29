@@ -65,3 +65,13 @@ func TestFailoverSingleTransportNeverSwitches(t *testing.T) {
 		t.Fatalf("单传输不该切, got=%d", got)
 	}
 }
+
+func TestIndexOfLink(t *testing.T) {
+	ts := []string{"vless://a", "brook://b", "hysteria2://c"}
+	if indexOfLink(ts, "brook://b") != 1 {
+		t.Error("应找到下标 1")
+	}
+	if indexOfLink(ts, "不在列表") != -1 {
+		t.Error("不存在应返回 -1")
+	}
+}
