@@ -93,6 +93,10 @@ Linux 客户端直接使用这组命令。
 
 `setup` 会安装系统服务,`up` 会启动并接管流量,`down` 会停止保护。
 
+> **多传输(容灾 + 加速)**:bx 支持 brook / REALITY / hysteria2 三引擎平级——可单用、组成自动容灾池
+> (`bx blink link1 link2` 一贴配好,主挂自动切备)、或按类分流(UDP/QUIC 走 hysteria 加速、TCP 走
+> REALITY 隐蔽)。全程 fail-closed 不泄漏。配置见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
+
 macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Restart、Turn Off、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
 
 #### macOS 安装包
