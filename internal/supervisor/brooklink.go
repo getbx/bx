@@ -45,7 +45,7 @@ func addrsToCIDRs(addrs []netip.Addr) []string {
 // 用于给路由加 bypass,避免到服务器的连接被 tun 再次捕获成环。
 func serverHostFromLink(server string) (string, error) {
 	// authority 里带 host 的 scheme(vless / hysteria2 / hy2):直接取 url host。
-	if strings.HasPrefix(server, "vless://") || strings.HasPrefix(server, "hysteria2://") || strings.HasPrefix(server, "hy2://") {
+	if strings.HasPrefix(server, "vless://") || strings.HasPrefix(server, "hysteria2://") || strings.HasPrefix(server, "hy2://") || strings.HasPrefix(server, "trojan://") {
 		u, err := url.Parse(server)
 		if err != nil {
 			return "", fmt.Errorf("解析 link: %w", err)

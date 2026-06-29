@@ -18,4 +18,7 @@ func TestTransportKind(t *testing.T) {
 	if transportKind("hy2://pw@h:443") != "hysteria2" {
 		t.Error("hy2 alias should be hysteria2")
 	}
+	if transportKind("trojan://pw@1.2.3.4:443?sni=bing.com") != "trojan" {
+		t.Error("trojan should be trojan")
+	}
 }
