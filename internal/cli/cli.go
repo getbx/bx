@@ -1430,7 +1430,7 @@ func setupAction(c *cli.Context) error {
 // 但命令行/分享面是裸的——建议先 bx blink 换壳成 bx:// 再用。bx://blink:// 已换壳不提示。
 func rawLinkRisk(arg string) string {
 	arg = strings.TrimSpace(arg)
-	if strings.HasPrefix(arg, "vless://") || strings.HasPrefix(arg, "brook://") {
+	if strings.HasPrefix(arg, "vless://") || strings.HasPrefix(arg, "brook://") || strings.HasPrefix(arg, "hysteria2://") || strings.HasPrefix(arg, "hy2://") {
 		return "⚠ 这是含明文凭据的裸链接,已留进 shell 历史;分享/留存前建议先用 `bx blink <link>` 换壳成 bx://"
 	}
 	return ""
@@ -1447,7 +1447,7 @@ func resolveConfigLinks(arg string) (probe string, configLinks []string, err err
 		if err != nil {
 			return "", nil, err
 		}
-	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"):
+	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"), strings.HasPrefix(arg, "hysteria2://"), strings.HasPrefix(arg, "hy2://"):
 		internal = []string{arg}
 	default:
 		return "", nil, fmt.Errorf("不是支持的客户端链接")
@@ -1462,7 +1462,7 @@ func resolveConfigLinks(arg string) (probe string, configLinks []string, err err
 func normalizeClientLink(arg string) (link string, configLink string, err error) {
 	arg = strings.TrimSpace(arg)
 	switch {
-	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"):
+	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"), strings.HasPrefix(arg, "hysteria2://"), strings.HasPrefix(arg, "hy2://"):
 		return arg, blink.Encode(arg), nil
 	case strings.HasPrefix(arg, "bx://"), strings.HasPrefix(arg, "blink://"):
 		link, err := blink.Decode(arg)
@@ -1719,8 +1719,8 @@ func linkAction(c *cli.Context) error {
 		return fmt.Errorf("用法: bx blink <link> [link2 ...](brook:// 或 vless://;多个=容灾 bundle)")
 	}
 	for _, a := range args {
-		if !strings.HasPrefix(a, "brook://") && !strings.HasPrefix(a, "vless://") {
-			return fmt.Errorf("不支持的链接(仅 brook:// / vless://): %s", a)
+		if !strings.HasPrefix(a, "brook://") && !strings.HasPrefix(a, "vless://") && !strings.HasPrefix(a, "hysteria2://") && !strings.HasPrefix(a, "hy2://") {
+			return fmt.Errorf("不支持的链接(仅 brook/vless/hysteria2): %s", a)
 		}
 	}
 	// 多个 link → 一条容灾 bundle bx://;单个 → legacy 单格式。
