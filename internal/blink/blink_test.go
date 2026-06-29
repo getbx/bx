@@ -85,3 +85,59 @@ func TestEncodeDecodeVlessRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip 不一致: %q != %q", dec, link)
 	}
 }
+
+func TestEncodeMultiRoundTrip(t *testing.T) {
+	links := []string{
+		"vless://u@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com",
+		"brook://server?server=1.2.3.4%3A9999&password=pw",
+	}
+	enc := EncodeMulti(links)
+	if enc[:5] != "bx://" {
+		t.Fatalf("应以 bx:// 开头: %q", enc)
+	}
+	got, err := DecodeAll(enc)
+	if err != nil {
+		t.Fatalf("DecodeAll: %v", err)
+	}
+	if len(got) != 2 || got[0] != links[0] || got[1] != links[1] {
+		t.Fatalf("round-trip 不一致: %v", got)
+	}
+}
+
+// 单元素 bundle 退化为 legacy 单格式(向后兼容:旧 Decode 也能读)。
+func TestEncodeMultiSingleIsCompat(t *testing.T) {
+	link := "brook://server?server=1.2.3.4%3A9999&password=pw"
+	enc := EncodeMulti([]string{link})
+	dec, err := Decode(enc) // 旧单链接 Decode 仍能读
+	if err != nil || dec != link {
+		t.Fatalf("单元素应兼容旧 Decode: %q err=%v", dec, err)
+	}
+}
+
+// Decode(bundle) 返回首条(主传输);DecodeAll 返回全部。
+func TestDecodeReturnsFirstOfBundle(t *testing.T) {
+	links := []string{
+		"vless://u@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com",
+		"brook://server?server=1.2.3.4%3A9999&password=pw",
+	}
+	first, err := Decode(EncodeMulti(links))
+	if err != nil || first != links[0] {
+		t.Fatalf("Decode 应返回首条: %q err=%v", first, err)
+	}
+}
+
+// DecodeAll 对单格式/legacy 也返回 1 元素列表。
+func TestDecodeAllSingleEnvelope(t *testing.T) {
+	link := "vless://u@h:1?security=reality&pbk=K&sid=a&sni=s"
+	got, err := DecodeAll(Encode(link))
+	if err != nil || len(got) != 1 || got[0] != link {
+		t.Fatalf("单 envelope DecodeAll = %v err=%v", got, err)
+	}
+}
+
+// bundle 里夹带不受支持内容 → 拒绝(内容闸不放松)。
+func TestDecodeAllRejectsBadLinkInBundle(t *testing.T) {
+	if _, err := DecodeAll(EncodeMulti([]string{"brook://ok", "http://evil"})); err == nil {
+		t.Fatal("bundle 含不支持链接应报错")
+	}
+}
