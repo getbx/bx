@@ -313,3 +313,47 @@ func TestDialSetTransportRace(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// 设了 UDP 专用传输(如 hysteria)→ UDP proxy 走它,不走主传输。
+func TestDialProxyUDPUsesUDPTransport(t *testing.T) {
+	d, px, _ := newTestDialer(nil, fakeResolver{}, true, true)
+	d.UDPMode = "proxy"
+	udpPx := &recordDialer{}
+	d.SetUDPTransport(&Transport{Proxy: udpPx, Healthy: func() bool { return true }})
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 3478, UDP: true}); err != nil {
+		t.Fatalf("UDP dial: %v", err)
+	}
+	if udpPx.lastNetwork != "udp" || udpPx.lastAddr != "8.8.8.8:3478" {
+		t.Fatalf("UDP 应走专用传输, got %s %q", udpPx.lastNetwork, udpPx.lastAddr)
+	}
+	if px.lastAddr != "" {
+		t.Fatalf("主传输不该被 UDP 用, got %q", px.lastAddr)
+	}
+}
+
+// UDP 专用传输不健康 + killswitch → UDP Block(fail-closed),即便主传输健康也不回落。
+func TestDialUDPTransportKillswitchBlocksWhenUDPDown(t *testing.T) {
+	d, px, dr := newTestDialer(nil, fakeResolver{}, true, true) // 主传输 healthy=true
+	d.UDPMode = "proxy"
+	udpPx := &recordDialer{}
+	d.SetUDPTransport(&Transport{Proxy: udpPx, Healthy: func() bool { return false }}) // UDP 传输挂
+	_, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 3478, UDP: true})
+	if err != ErrBlocked {
+		t.Fatalf("UDP 传输挂应 Block, got err=%v", err)
+	}
+	if udpPx.lastAddr != "" || px.lastAddr != "" || dr.lastAddr != "" {
+		t.Fatal("Block 时不该拨任何传输(绝不回落直连/主传输)")
+	}
+}
+
+// 没设 UDP 专用传输 → UDP proxy 回退用主传输(向后兼容)。
+func TestDialProxyUDPNoUDPTransportUsesPrimary(t *testing.T) {
+	d, px, _ := newTestDialer(nil, fakeResolver{}, true, true)
+	d.UDPMode = "proxy"
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 3478, UDP: true}); err != nil {
+		t.Fatalf("UDP dial: %v", err)
+	}
+	if px.lastNetwork != "udp" {
+		t.Fatalf("无专用 UDP 传输应走主传输, got %q", px.lastNetwork)
+	}
+}

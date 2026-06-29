@@ -46,14 +46,15 @@ type DecisionCounter interface {
 
 // Dialer 把 Router 决策落到实际拨号。
 type Dialer struct {
-	router    atomic.Pointer[route.Router]
-	transport atomic.Pointer[Transport] // 取代裸 Proxy/Healthy:运行期可原子换隧道
-	Fake      *fakeip.Pool              // 可空:无 fake-IP 时按 IP 直判
-	Resolver  Resolver
-	Direct    ContextDialer // 直连
-	Killswitch bool
-	Stats      DecisionCounter // 可空:决策计数
-	UDPMode    string          // block(默认), direct-realtime, proxy(预留)
+	router       atomic.Pointer[route.Router]
+	transport    atomic.Pointer[Transport] // 取代裸 Proxy/Healthy:运行期可原子换隧道
+	udpTransport atomic.Pointer[Transport] // 可空:UDP 专用传输(如 hysteria);nil=UDP 用主传输。按类分流的速度档
+	Fake         *fakeip.Pool              // 可空:无 fake-IP 时按 IP 直判
+	Resolver     Resolver
+	Direct       ContextDialer // 直连
+	Killswitch   bool
+	Stats        DecisionCounter // 可空:决策计数
+	UDPMode      string          // block(默认), direct-realtime, proxy(预留)
 	// SplitDirect 可空:split-DNS 解析出的内网真实 IP 集,命中即强制直连(绕 Router)。
 	SplitDirect *splitdns.Set
 
@@ -68,6 +69,10 @@ type Transport struct {
 
 // SetTransport 原子替换当前传输(proxy + healthy 一并换,绝不半换)。
 func (d *Dialer) SetTransport(t *Transport) { d.transport.Store(t) }
+
+// SetUDPTransport 设 UDP 专用传输(按类分流的速度档,如 hysteria2);nil 则 UDP 走主传输。
+// 不变量:该传输不健康时 UDP proxy 仍 fail-closed Block,绝不回落直连/主传输。
+func (d *Dialer) SetUDPTransport(t *Transport) { d.udpTransport.Store(t) }
 
 // SetRouter 原子替换当前分流脑(用于列表刷新后的热重载)。
 func (d *Dialer) SetRouter(r *route.Router) { d.router.Store(r) }
@@ -140,11 +145,16 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			return d.Direct.DialContext(ctx, "udp", target)
 		}
 		if d.UDPMode == "proxy" {
-			if d.Killswitch && tr.Healthy != nil && !tr.Healthy() {
+			// 按类分流:UDP 优先走 UDP 专用传输(hysteria);未设则用主传输。
+			utr := d.udpTransport.Load()
+			if utr == nil {
+				utr = tr
+			}
+			if d.Killswitch && utr.Healthy != nil && !utr.Healthy() {
 				if d.Stats != nil {
 					d.Stats.Blocked()
 				}
-				return nil, ErrBlocked
+				return nil, ErrBlocked // UDP 传输挂 → fail-closed,绝不回落
 			}
 			if d.Stats != nil {
 				d.Stats.Proxy()
@@ -155,7 +165,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			}
 			target := net.JoinHostPort(host, strconv.Itoa(int(m.Port)))
 			debugf("udp proxy: ip=%s domain=%q target=%s", m.IP, m.Domain, target)
-			return tr.Proxy.DialContext(ctx, "udp", target)
+			return utr.Proxy.DialContext(ctx, "udp", target)
 		}
 		if d.Stats != nil {
 			d.Stats.Blocked()
