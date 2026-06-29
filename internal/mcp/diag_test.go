@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -32,5 +33,17 @@ func TestDiagnoseFindings(t *testing.T) {
 	}
 	if got := diagnoseFindings(StatusOut{TunnelHealthy: false, MutationState: "armed"}, true); len(got) != 2 {
 		t.Errorf("不健康+armed 应 2 条, got %d: %+v", len(got), got)
+	}
+}
+
+func TestLogsResultText(t *testing.T) {
+	if got := logsResultText("", errors.New("denied")); !strings.Contains(got, "sudo bx logs") {
+		t.Errorf("err 应提示 sudo bx logs, got %q", got)
+	}
+	if got := logsResultText("   ", nil); !strings.Contains(got, "无日志") {
+		t.Errorf("空应提示无日志, got %q", got)
+	}
+	if got := logsResultText("line1\nline2", nil); got != "line1\nline2" {
+		t.Errorf("正常应原样返回, got %q", got)
 	}
 }
