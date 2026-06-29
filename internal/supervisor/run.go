@@ -280,6 +280,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		ctx:           ctx,
 		curLink:       cfg.Server,
 	}
+	// 多传输自动容灾(reality 主 / brook 备…):后台监健康,持续不健康→按优先级 swapTo 备选,
+	// 全程 fail-closed;防抖(滞回+冷静期+全挂不切)。单传输跳过(由 kill-switch 接管)。
+	if len(cfg.Transports) > 1 {
+		go swapper.runFailover(ctx, cfg.Transports,
+			failoverPolicy{failoverAfter: 25 * time.Second, cooldown: 60 * time.Second},
+			5*time.Second)
+		log.Printf("多传输容灾已启用:%d 个传输,主=%s", len(cfg.Transports), transportLabel(cfg.Transports[0]))
+	}
 	mut := &liveMutator{
 		plat:         plat,
 		swap:         swapper,
