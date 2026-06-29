@@ -75,3 +75,21 @@ func TestIndexOfLink(t *testing.T) {
 		t.Error("不存在应返回 -1")
 	}
 }
+
+// status 呈现「scheme@host」(无凭据)。锁定全部六种传输——尤其 ss/vmess 的
+// base64 authority 必须解出真实 host(否则 status「传输」行会显示乱码 base64)。
+func TestTransportLabelAllSchemes(t *testing.T) {
+	cases := map[string]string{
+		"vless://uid@1.2.3.4:443?security=reality":                                     "reality@1.2.3.4",
+		"hysteria2://pw@5.6.7.8:8443?sni=x":                                            "hysteria2@5.6.7.8",
+		"trojan://pw@9.9.9.9:443":                                                      "trojan@9.9.9.9",
+		"ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#hk":                                     "shadowsocks@1.2.3.4",
+		"vmess://eyJhZGQiOiIyLjIuMi4yIiwicG9ydCI6IjQ0MyIsImlkIjoieCIsIm5ldCI6InRjcCJ9": "vmess@2.2.2.2",
+		"brook://server?server=3.3.3.3%3A9999&password=pw":                             "brook@3.3.3.3",
+	}
+	for link, want := range cases {
+		if got := transportLabel(link); got != want {
+			t.Errorf("transportLabel(%q)=%q want %q", link, got, want)
+		}
+	}
+}
