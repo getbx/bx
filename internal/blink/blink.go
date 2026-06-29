@@ -21,17 +21,23 @@ type envelope struct {
 	Links     []string `json:"links,omitempty"`     // 多传输 bundle(有序优先级)
 }
 
-// transportOf 由链接 scheme 推传输标识:vless://→reality,其余→brook(与 supervisor.transportKind 一致)。
+// transportOf 由链接 scheme 推传输标识(与 supervisor.transportKind 一致):
+// vless://→reality,hysteria2:///hy2://→hysteria2,其余→brook。
 func transportOf(link string) string {
-	if strings.HasPrefix(link, "vless://") {
+	switch {
+	case strings.HasPrefix(link, "vless://"):
 		return "reality"
+	case strings.HasPrefix(link, "hysteria2://"), strings.HasPrefix(link, "hy2://"):
+		return "hysteria2"
+	default:
+		return "brook"
 	}
-	return "brook"
 }
 
-// supportedLink 报告链接内容是否为受支持的传输链接(brook 或 vless-reality)。
+// supportedLink 报告链接内容是否为受支持的传输链接(brook / vless-reality / hysteria2)。
 func supportedLink(link string) bool {
-	return strings.HasPrefix(link, "brook://") || strings.HasPrefix(link, "vless://")
+	return strings.HasPrefix(link, "brook://") || strings.HasPrefix(link, "vless://") ||
+		strings.HasPrefix(link, "hysteria2://") || strings.HasPrefix(link, "hy2://")
 }
 
 // Encode 把单个内部传输链接(brook:// 或 vless://)包成 bx://(legacy 单格式)。
@@ -89,7 +95,7 @@ func DecodeAll(s string) ([]string, error) {
 		if len(e.Links) > 0 {
 			links = e.Links // 多传输 bundle
 		} else {
-			if e.Transport != "" && e.Transport != "brook" && e.Transport != "reality" {
+			if e.Transport != "" && e.Transport != "brook" && e.Transport != "reality" && e.Transport != "hysteria2" {
 				return nil, fmt.Errorf("不支持的 bx transport: %s", e.Transport)
 			}
 			links = []string{e.Link} // legacy 单格式

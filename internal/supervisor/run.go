@@ -35,10 +35,14 @@ import (
 
 // transportKind 由 server link 的 scheme 选传输:vless://→reality,其余→brook。
 func transportKind(server string) string {
-	if strings.HasPrefix(server, "vless://") {
+	switch {
+	case strings.HasPrefix(server, "vless://"):
 		return "reality"
+	case strings.HasPrefix(server, "hysteria2://"), strings.HasPrefix(server, "hy2://"):
+		return "hysteria2"
+	default:
+		return "brook"
 	}
-	return "brook"
 }
 
 // Options 是 bx up 的运行期参数(非配置文件项)。
@@ -142,6 +146,13 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			}
 			confPath := filepath.Join(cfg.DataDir, "sing-box.json")
 			return tunnel.NewReality(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
+		case "hysteria2":
+			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
+			if err != nil {
+				return nil, fmt.Errorf("准备 sing-box: %w", err)
+			}
+			confPath := filepath.Join(cfg.DataDir, "sing-box-hy2.json")
+			return tunnel.NewHysteria2(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
 		default:
 			return tunnel.NewBrook(brookPath, link, opts.Probe, cfg.HTTPProxy)
 		}
