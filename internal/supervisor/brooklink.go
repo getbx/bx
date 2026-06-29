@@ -62,6 +62,10 @@ func serverHostFromLink(server string) (string, error) {
 	if strings.HasPrefix(server, "ss://") {
 		return tunnel.SSHost(server)
 	}
+	// vmess:// 是 base64-JSON,同理走专用解析。
+	if strings.HasPrefix(server, "vmess://") {
+		return tunnel.VmessHost(server)
+	}
 	if strings.HasPrefix(server, "brook://") {
 		u, err := url.Parse(server)
 		if err != nil {

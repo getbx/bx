@@ -28,6 +28,7 @@ import (
 	"github.com/getbx/bx/internal/setup"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
+	"github.com/getbx/bx/internal/tunnel"
 	"github.com/getbx/bx/internal/version"
 	"github.com/urfave/cli/v2"
 	"gopkg.in/yaml.v3"
@@ -1441,7 +1442,7 @@ func setupAction(c *cli.Context) error {
 // 但命令行/分享面是裸的——建议先 bx blink 换壳成 bx:// 再用。bx://blink:// 已换壳不提示。
 func rawLinkRisk(arg string) string {
 	arg = strings.TrimSpace(arg)
-	if strings.HasPrefix(arg, "vless://") || strings.HasPrefix(arg, "brook://") || strings.HasPrefix(arg, "hysteria2://") || strings.HasPrefix(arg, "hy2://") || strings.HasPrefix(arg, "trojan://") || strings.HasPrefix(arg, "ss://") {
+	if strings.HasPrefix(arg, "vless://") || strings.HasPrefix(arg, "brook://") || strings.HasPrefix(arg, "hysteria2://") || strings.HasPrefix(arg, "hy2://") || strings.HasPrefix(arg, "trojan://") || strings.HasPrefix(arg, "ss://") || strings.HasPrefix(arg, "vmess://") {
 		return "⚠ 这是含明文凭据的裸链接,已留进 shell 历史;分享/留存前建议先用 `bx blink <link>` 换壳成 bx://"
 	}
 	return ""
@@ -1458,7 +1459,7 @@ func resolveConfigLinks(arg string) (probe string, configLinks []string, err err
 		if err != nil {
 			return "", nil, err
 		}
-	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"), strings.HasPrefix(arg, "hysteria2://"), strings.HasPrefix(arg, "hy2://"), strings.HasPrefix(arg, "trojan://"), strings.HasPrefix(arg, "ss://"):
+	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"), strings.HasPrefix(arg, "hysteria2://"), strings.HasPrefix(arg, "hy2://"), strings.HasPrefix(arg, "trojan://"), strings.HasPrefix(arg, "ss://"), strings.HasPrefix(arg, "vmess://"):
 		internal = []string{arg}
 	default:
 		return "", nil, fmt.Errorf("不是支持的客户端链接")
@@ -1473,7 +1474,7 @@ func resolveConfigLinks(arg string) (probe string, configLinks []string, err err
 func normalizeClientLink(arg string) (link string, configLink string, err error) {
 	arg = strings.TrimSpace(arg)
 	switch {
-	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"), strings.HasPrefix(arg, "hysteria2://"), strings.HasPrefix(arg, "hy2://"), strings.HasPrefix(arg, "trojan://"), strings.HasPrefix(arg, "ss://"):
+	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"), strings.HasPrefix(arg, "hysteria2://"), strings.HasPrefix(arg, "hy2://"), strings.HasPrefix(arg, "trojan://"), strings.HasPrefix(arg, "ss://"), strings.HasPrefix(arg, "vmess://"):
 		return arg, blink.Encode(arg), nil
 	case strings.HasPrefix(arg, "bx://"), strings.HasPrefix(arg, "blink://"):
 		link, err := blink.Decode(arg)
@@ -1574,14 +1575,27 @@ func routerPlanFlags() []cli.Flag {
 }
 
 // routerPlanAction 打印 router 模式会下发的 ip + nft 命令(不执行),供部署前审阅。
-// serverHostFromLink 从 brook:// 或 vless:// 链接解析出 server 主机(用于 router-plan 显示 server bypass)。
+// serverHostFromLink 从各传输链接解析出 server 主机(用于 router-plan 显示 server bypass)。
 func serverHostFromLink(link string) string {
+	// ss:// / vmess:// 的 authority 是 base64,url.Parse 取不到 host,走专用解析。
+	if strings.HasPrefix(link, "ss://") {
+		if h, err := tunnel.SSHost(link); err == nil {
+			return h
+		}
+		return ""
+	}
+	if strings.HasPrefix(link, "vmess://") {
+		if h, err := tunnel.VmessHost(link); err == nil {
+			return h
+		}
+		return ""
+	}
 	u, err := url.Parse(link)
 	if err != nil {
 		return ""
 	}
-	switch u.Scheme { // host 在 authority(非 ?server=):reality/trojan/hysteria2/hy2/ss
-	case "vless", "trojan", "hysteria2", "hy2", "ss":
+	switch u.Scheme { // host 在 authority(非 ?server=):reality/trojan/hysteria2/hy2
+	case "vless", "trojan", "hysteria2", "hy2":
 		return u.Hostname()
 	}
 	s := u.Query().Get("server")
@@ -1731,8 +1745,8 @@ func linkAction(c *cli.Context) error {
 		return fmt.Errorf("用法: bx blink <link> [link2 ...](brook:// 或 vless://;多个=容灾 bundle)")
 	}
 	for _, a := range args {
-		if !strings.HasPrefix(a, "brook://") && !strings.HasPrefix(a, "vless://") && !strings.HasPrefix(a, "hysteria2://") && !strings.HasPrefix(a, "hy2://") && !strings.HasPrefix(a, "trojan://") && !strings.HasPrefix(a, "ss://") {
-			return fmt.Errorf("不支持的链接(仅 brook/vless/hysteria2/trojan/ss): %s", a)
+		if !strings.HasPrefix(a, "brook://") && !strings.HasPrefix(a, "vless://") && !strings.HasPrefix(a, "hysteria2://") && !strings.HasPrefix(a, "hy2://") && !strings.HasPrefix(a, "trojan://") && !strings.HasPrefix(a, "ss://") && !strings.HasPrefix(a, "vmess://") {
+			return fmt.Errorf("不支持的链接(仅 brook/vless/hysteria2/trojan/ss/vmess): %s", a)
 		}
 	}
 	// 多个 link → 一条容灾 bundle bx://;单个 → legacy 单格式。

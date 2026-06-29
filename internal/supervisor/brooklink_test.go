@@ -73,6 +73,18 @@ func TestServerHostFromLinkSS(t *testing.T) {
 	}
 }
 
+func TestServerHostFromLinkVmess(t *testing.T) {
+	// vmess:// authority 是 base64-JSON,须经 tunnel.VmessHost 解出 add。
+	link := "vmess://eyJhZGQiOiIyMy4yNy4xMzQuNzciLCJwb3J0IjoiNDQzIiwiaWQiOiJ1dWlkLXgiLCJuZXQiOiJ0Y3AifQ"
+	h, err := serverHostFromLink(link)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if h != "203.0.113.10" {
+		t.Fatalf("vmess host=%q want 203.0.113.10", h)
+	}
+}
+
 func TestServerHostFromLinkBrookStillWorks(t *testing.T) {
 	h, err := serverHostFromLink("brook://server?server=203.0.113.10%3A9999&password=x")
 	if err != nil || h != "203.0.113.10" {
