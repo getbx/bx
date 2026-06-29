@@ -308,3 +308,13 @@ func TestParseNeitherServerNorTransports(t *testing.T) {
 		t.Fatal("server 和 transports 都空应报错")
 	}
 }
+
+func TestParseUDPTransportDecodes(t *testing.T) {
+	c, err := Parse([]byte("server: brook://x\nudp:\n  mode: proxy\n  transport: hysteria2://pw@1.2.3.4:8443?sni=bing.com\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.UDP.Transport != "hysteria2://pw@1.2.3.4:8443?sni=bing.com" {
+		t.Fatalf("udp.transport = %q", c.UDP.Transport)
+	}
+}

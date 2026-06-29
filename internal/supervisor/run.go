@@ -194,6 +194,21 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if len(serverAddrs) == 0 {
 		return fmt.Errorf("无法解析服务器 %q 为 IP(bypass 必需,否则成环)", serverHost)
 	}
+	staticA := map[string][]netip.Addr{serverHost: serverAddrs}
+	// 按类分流:UDP 专用传输(如 hysteria)的服务器也要进 bypass + 静态 DNS,同主传输防环。
+	udpEnabled := cfg.UDP.Transport != "" && cfg.UDP.Mode == "proxy"
+	if udpEnabled {
+		uh, err := serverHostFromLink(cfg.UDP.Transport)
+		if err != nil {
+			return fmt.Errorf("取 UDP 传输服务器: %w", err)
+		}
+		ua := hostToAddrs(uh)
+		if len(ua) == 0 {
+			return fmt.Errorf("无法解析 UDP 传输服务器 %q 为 IP", uh)
+		}
+		serverAddrs = append(serverAddrs, ua...)
+		staticA[uh] = ua
+	}
 
 	// 3) fake-IP 池 + DNS 处理器
 	pool, err := fakeip.New(cfg.DNS.FakeipCIDR)
@@ -202,7 +217,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	dnsSrv := bxdns.NewServer(pool, 1)
 	splitDirect := splitdns.NewSet()
-	dnsSrv.SetStaticA(map[string][]netip.Addr{serverHost: serverAddrs}, splitDirect)
+	dnsSrv.SetStaticA(staticA, splitDirect)
 	if opts.DNSListen != "" {
 		dnsListener, err := bxdns.ListenUDP(opts.DNSListen, dnsSrv)
 		if err != nil {
@@ -255,6 +270,26 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	d.SetTransport(&dialer.Transport{Proxy: proxyDialer, Healthy: lt.Healthy})
 	d.SetRouter(router)
+
+	// 按类分流:UDP 专用传输(如 hysteria,QUIC 对丢包/高 RTT 更快)与主传输并行。
+	// UDP proxy 走它;不变量保住——它挂时 UDP fail-closed Block(dialer.SetUDPTransport),绝不回落。
+	if udpEnabled {
+		udpTun, err := buildTunnel(cfg.UDP.Transport)
+		if err != nil {
+			return fmt.Errorf("构建 UDP 传输: %w", err)
+		}
+		udpTun.Start()
+		defer udpTun.Stop()
+		if err := waitTunnelHealthy(ctx, udpTun, healthTimeout); err != nil {
+			return fmt.Errorf("UDP 传输未健康: %w", err)
+		}
+		udpProxy, err := socksProxy(udpTun.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
+		if err != nil {
+			return fmt.Errorf("构建 UDP socks 代理: %w", err)
+		}
+		d.SetUDPTransport(&dialer.Transport{Proxy: udpProxy, Healthy: udpTun.Healthy})
+		log.Printf("UDP 专用传输已启用:%s(UDP/QUIC 走它,TCP 走主传输)", transportLabel(cfg.UDP.Transport))
+	}
 
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
 	link, tunH, closeTUN, err := plat.OpenTUN(opts.TunName, opts.TunAddr, opts.MTU)
