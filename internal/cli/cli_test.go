@@ -873,3 +873,27 @@ func TestMCPInstallText(t *testing.T) {
 		}
 	}
 }
+
+func TestRawLinkRisk(t *testing.T) {
+	// 裸凭据链接 → 提示
+	for _, raw := range []string{
+		"vless://uuid@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com",
+		"brook://server?server=1.2.3.4%3A9999&password=pw",
+		"  vless://x@h:1 ", // 带空白也认
+	} {
+		if rawLinkRisk(raw) == "" {
+			t.Errorf("裸链接应提示风险: %q", raw)
+		}
+	}
+	// 已换壳 / 非链接 → 不提示
+	for _, wrapped := range []string{
+		"bx://eyJ2IjoxfQ",
+		"blink://abc",
+		"",
+		"garbage",
+	} {
+		if rawLinkRisk(wrapped) != "" {
+			t.Errorf("已换壳/非裸链接不该提示: %q", wrapped)
+		}
+	}
+}

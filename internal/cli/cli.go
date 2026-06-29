@@ -1358,6 +1358,9 @@ func probeAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	if w := rawLinkRisk(arg); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	dir, err := userRuntimeDir()
 	if err != nil {
 		return err
@@ -1388,6 +1391,9 @@ func setupAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	if w := rawLinkRisk(arg); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	cfgPath := c.String("config")
 	fmt.Println("⏳ 连通检测中…")
 	if lat, perr := setup.ProbeServer("/var/lib/bx", link, c.String("probe"), 15*time.Second); perr != nil {
@@ -1414,6 +1420,17 @@ func setupAction(c *cli.Context) error {
 	}
 	fmt.Printf("✅ bx 已装到 %s、写好配置 %s、装好服务。下一步:sudo bx up\n", install.BinPath, cfgPath)
 	return nil
+}
+
+// rawLinkRisk 返回裸凭据链接的风险提示(空=无需提示)。裸 vless/brook 含明文凭据,
+// 一旦敲在命令行就会留进 shell 历史、转发时也是明文;配置本身已 0600+blink 换壳,
+// 但命令行/分享面是裸的——建议先 bx blink 换壳成 bx:// 再用。bx://blink:// 已换壳不提示。
+func rawLinkRisk(arg string) string {
+	arg = strings.TrimSpace(arg)
+	if strings.HasPrefix(arg, "vless://") || strings.HasPrefix(arg, "brook://") {
+		return "⚠ 这是含明文凭据的裸链接,已留进 shell 历史;分享/留存前建议先用 `bx blink <link>` 换壳成 bx://"
+	}
+	return ""
 }
 
 func normalizeClientLink(arg string) (link string, configLink string, err error) {
