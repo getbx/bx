@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -33,23 +32,9 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-// transportKind 由 server link 的 scheme 选传输:vless://→reality,其余→brook。
-func transportKind(server string) string {
-	switch {
-	case strings.HasPrefix(server, "vless://"):
-		return "reality"
-	case strings.HasPrefix(server, "hysteria2://"), strings.HasPrefix(server, "hy2://"):
-		return "hysteria2"
-	case strings.HasPrefix(server, "trojan://"):
-		return "trojan"
-	case strings.HasPrefix(server, "ss://"):
-		return "shadowsocks"
-	case strings.HasPrefix(server, "vmess://"):
-		return "vmess"
-	default:
-		return "brook"
-	}
-}
+// transportKind 由 server link 的 scheme 选传输。委托 tunnel.Kind(唯一真相源),
+// 与 setup 探测派发同源,杜绝发散。
+func transportKind(server string) string { return tunnel.Kind(server) }
 
 // Options 是 bx up 的运行期参数(非配置文件项)。
 type Options struct {
