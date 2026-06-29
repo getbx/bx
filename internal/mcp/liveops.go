@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"os"
 	"runtime"
 
@@ -54,6 +55,7 @@ func (o *liveOps) Status() (StatusOut, error) {
 	return StatusOut{
 		TunnelHealthy: rep.TunnelHealthy,
 		LatencyMS:     rep.LatencyMS,
+		Restarts:      rep.Restarts,
 		Mode:          "", // TODO(task9): stats.Report 未携带 mode,待 socket 暴露后填充
 		UDPMode:       rep.UDPMode,
 		MutationState: rep.MutationState,
@@ -62,12 +64,37 @@ func (o *liveOps) Status() (StatusOut, error) {
 
 // --- 以下为 honest stubs,待 Task 9 集成真实快照/supervisor 机器 ---
 
-func (o *liveOps) Diagnose() (DiagnoseOut, error) {
-	return DiagnoseOut{}, ToolError{
-		Code:        CodeNotImplemented,
-		Message:     "Diagnose 尚未接线(待 Task 9 集成真实快照/supervisor 机器)",
-		Remediation: "用 `bx doctor --json` 替代",
+// diagnoseFindings 从守护进程 status 推导结构化诊断(④ 人面恢复指引的机器版)。纯函数。
+// reachable=false:守护进程连不上(rep 忽略)。
+func diagnoseFindings(rep StatusOut, reachable bool) []Finding {
+	if !reachable {
+		return []Finding{{Severity: "error", Title: "bx 未运行(连不上守护进程)", Remediation: "sudo bx up"}}
 	}
+	var fs []Finding
+	if !rep.TunnelHealthy {
+		fs = append(fs, Finding{Severity: "error",
+			Title:       "隧道不健康:可能服务器被封或网络波动;真实 IP 已被 kill-switch 保护",
+			Remediation: "等十几秒看自动重连;不行用 bx_set_transport 换隐写传输(brook→REALITY),或 sudo bx setup 换新链接"})
+	}
+	if rep.Restarts > 3 {
+		fs = append(fs, Finding{Severity: "warn",
+			Title:       fmt.Sprintf("隧道频繁重连(%d 次,可能不稳定)", rep.Restarts),
+			Remediation: "查 bx_logs / 检查服务器与网络"})
+	}
+	if rep.MutationState == "armed" {
+		fs = append(fs, Finding{Severity: "warn",
+			Title:       "有待确认的改动(armed),未 commit 将自动回滚",
+			Remediation: "bx_verify 通过后 bx_commit;或 bx_rollback 立即还原"})
+	}
+	if len(fs) == 0 {
+		fs = append(fs, Finding{Severity: "info", Title: "隧道健康,无异常"})
+	}
+	return fs
+}
+
+func (o *liveOps) Diagnose() (DiagnoseOut, error) {
+	rep, err := o.Status()
+	return DiagnoseOut{Findings: diagnoseFindings(rep, err == nil)}, nil
 }
 
 func (o *liveOps) Logs(in LogsIn) (LogsOut, error) {
