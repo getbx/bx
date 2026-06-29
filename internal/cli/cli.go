@@ -1419,7 +1419,7 @@ func setupAction(c *cli.Context) error {
 func normalizeClientLink(arg string) (link string, configLink string, err error) {
 	arg = strings.TrimSpace(arg)
 	switch {
-	case strings.HasPrefix(arg, "brook://"):
+	case strings.HasPrefix(arg, "brook://"), strings.HasPrefix(arg, "vless://"):
 		return arg, blink.Encode(arg), nil
 	case strings.HasPrefix(arg, "bx://"), strings.HasPrefix(arg, "blink://"):
 		link, err := blink.Decode(arg)
