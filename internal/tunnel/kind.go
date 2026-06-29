@@ -21,3 +21,14 @@ func Kind(link string) string {
 		return "brook"
 	}
 }
+
+// IsClientLink 报告 link 是否是受支持的「裸」客户端传输链接(六种 scheme 之一)。
+// 不含 bx:// / blink:// 换壳链接(那些由 blink 包解壳)。识别口径单一化,
+// 供 cli/blink 各处复用,防 prefix 列表各自发散漏登记新传输。
+func IsClientLink(link string) bool {
+	// Kind 对 brook:// 与任意乱串都回 "brook";用显式前缀把乱串排除掉。
+	if Kind(link) != "brook" {
+		return true
+	}
+	return strings.HasPrefix(link, "brook://")
+}

@@ -21,3 +21,29 @@ func TestKind(t *testing.T) {
 		}
 	}
 }
+
+// TestIsClientLink 锁定「裸客户端链接」识别口径(六种 scheme),供 cli/blink 各处单一化。
+// bx:// / blink:// 是换壳链接(由 blink 解壳),非裸链接;乱串也不是。
+func TestIsClientLink(t *testing.T) {
+	yes := []string{
+		"vless://uid@1.2.3.4:443?security=reality",
+		"hysteria2://pw@h:443", "hy2://pw@h:443",
+		"trojan://pw@1.2.3.4:443",
+		"ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388",
+		"vmess://eyJhZGQiOiIxLjIuMy40In0",
+		"brook://server?server=1.2.3.4%3A9999",
+	}
+	no := []string{
+		"bx://abc", "blink://abc", "anything-else", "", "http://x",
+	}
+	for _, l := range yes {
+		if !IsClientLink(l) {
+			t.Errorf("IsClientLink(%q)=false want true", l)
+		}
+	}
+	for _, l := range no {
+		if IsClientLink(l) {
+			t.Errorf("IsClientLink(%q)=true want false", l)
+		}
+	}
+}
