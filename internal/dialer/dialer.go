@@ -84,6 +84,17 @@ func network(udp bool) string {
 	return "tcp"
 }
 
+// killswitchBlocks 报告 kill-switch 是否应拦截经传输 t 的代理连接。
+// fail-closed:killswitch 开,且(无健康信号 Healthy==nil 或 明确不健康)→ 拦截。
+// 无健康信号视为「不可证明隧道在」——宁断不漏真实 IP(防御纵深:未接健康检查的新传输
+// 在 killswitch 下也不会静默泄漏)。killswitch 关时永不拦(用户已显式接受可能泄漏)。
+func (d *Dialer) killswitchBlocks(t *Transport) bool {
+	if !d.Killswitch {
+		return false
+	}
+	return t.Healthy == nil || !t.Healthy()
+}
+
 // Dial 处理一条来自 TUN 的连接,返回到出口的 net.Conn。
 func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 	return d.DialWithInitial(ctx, m, nil)
@@ -95,9 +106,8 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 	tr := d.transport.Load()
 	if tr == nil {
 		// 未 SetTransport(理论不发生:run.go 启动即设、且早于开始服务)。仅防 nil 解引用 panic。
-		// 注意:此 fallback 非 fail-closed —— Healthy nil 会让 kill-switch 判定短路跳过;
-		// Direct/Block 决策仍安全,但 Proxy 决策会走到 nil Proxy.DialContext 而 panic。
-		// 生产/Slice 2 均保证 SetTransport 先于服务且 Proxy 非 nil,故不可达;勿当作「安全空传输」。
+		// 此空传输 Healthy==nil:killswitch 开时 killswitchBlocks 视作 fail-closed → Proxy 决策
+		// 阻断(不再走 nil Proxy.DialContext 而 panic),Direct/Block 决策仍安全。
 		tr = &Transport{}
 	}
 	// 1) fake IP 反查域名
@@ -116,7 +126,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		if d.UDPMode == "direct-realtime" {
 			// 隧道挂 + kill-switch:直连 UDP 的「牺牲匿名换低延迟」只在代理正常工作时被接受。
 			// 隧道不健康时整体隐私态已降级,宁可 fail-closed 断 UDP,也不暴露真实 IP。
-			if d.Killswitch && tr.Healthy != nil && !tr.Healthy() {
+			if d.killswitchBlocks(tr) {
 				if d.Stats != nil {
 					d.Stats.Blocked()
 					d.Stats.UDPBlocked()
@@ -150,7 +160,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			if utr == nil {
 				utr = tr
 			}
-			if d.Killswitch && utr.Healthy != nil && !utr.Healthy() {
+			if d.killswitchBlocks(utr) {
 				if d.Stats != nil {
 					d.Stats.Blocked()
 					d.Stats.UDPBlocked()
@@ -223,7 +233,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		return conn, err
 
 	case route.Proxy:
-		if d.Killswitch && tr.Healthy != nil && !tr.Healthy() {
+		if d.killswitchBlocks(tr) {
 			if d.Stats != nil {
 				d.Stats.Blocked()
 			}

@@ -171,6 +171,46 @@ func TestDialKillswitchBlocksWhenDown(t *testing.T) {
 	}
 }
 
+// 防御纵深:kill-switch 开但传输无健康信号(Healthy==nil)时,Proxy 决策必须 fail-closed
+// 阻断 —— 不可证明隧道在,宁断不漏真实 IP。否则一个未接健康检查的新传输会静默泄漏。
+func TestDialKillswitchFailsClosedOnNilHealthyTCP(t *testing.T) {
+	d, _, _ := newTestDialer(nil, fakeResolver{}, true, true)
+	d.SetTransport(&Transport{Proxy: &recordDialer{}}) // Healthy 故意 nil
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "api.openai.com", Port: 443}); err != ErrBlocked {
+		t.Fatalf("killswitch+nil Healthy 的 Proxy 应 fail-closed 阻断, got %v", err)
+	}
+}
+
+func TestDialKillswitchFailsClosedOnNilHealthyUDPProxy(t *testing.T) {
+	d, _, _ := newTestDialer(nil, fakeResolver{}, true, true)
+	d.UDPMode = "proxy"
+	d.SetTransport(&Transport{Proxy: &recordDialer{}}) // 主传输 Healthy nil(UDP 未设专用传输→回落主)
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "api.openai.com", Port: 443, UDP: true}); err != ErrBlocked {
+		t.Fatalf("killswitch+nil Healthy 的 UDP proxy 应 fail-closed 阻断, got %v", err)
+	}
+}
+
+func TestDialKillswitchFailsClosedOnNilHealthyDirectRealtime(t *testing.T) {
+	d, _, _ := newTestDialer(nil, fakeResolver{}, true, true)
+	d.UDPMode = "direct-realtime"
+	d.SetTransport(&Transport{Proxy: &recordDialer{}}) // Healthy nil:不可证明隧道在
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "api.openai.com", Port: 443, UDP: true}); err != ErrBlocked {
+		t.Fatalf("killswitch+nil Healthy 的 direct-realtime UDP 应 fail-closed 阻断, got %v", err)
+	}
+}
+
+// killswitch 关时,nil Healthy 不应阻断(用户已显式接受可能泄漏)。
+func TestDialNilHealthyNotBlockedWhenKillswitchOff(t *testing.T) {
+	d, px, _ := newTestDialer(nil, fakeResolver{}, true, false) // ks=false
+	d.SetTransport(&Transport{Proxy: px})
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "api.openai.com", Port: 443}); err != nil {
+		t.Fatalf("killswitch 关时 nil Healthy 不应阻断: %v", err)
+	}
+	if px.lastAddr != "api.openai.com:443" {
+		t.Fatalf("应正常走代理, got %q", px.lastAddr)
+	}
+}
+
 // 安全不变量:kill-switch 只阻断「代理」决策,直连域名在隧道挂时仍正常,
 // 保证隧道故障期间国内服务不中断。
 func TestDialKillswitchDirectDomainUnaffectedWhenDown(t *testing.T) {
