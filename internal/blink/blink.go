@@ -29,6 +29,8 @@ func transportOf(link string) string {
 		return "reality"
 	case strings.HasPrefix(link, "hysteria2://"), strings.HasPrefix(link, "hy2://"):
 		return "hysteria2"
+	case strings.HasPrefix(link, "trojan://"):
+		return "trojan"
 	default:
 		return "brook"
 	}
@@ -95,7 +97,7 @@ func DecodeAll(s string) ([]string, error) {
 		if len(e.Links) > 0 {
 			links = e.Links // 多传输 bundle
 		} else {
-			if e.Transport != "" && e.Transport != "brook" && e.Transport != "reality" && e.Transport != "hysteria2" {
+			if e.Transport != "" && e.Transport != "brook" && e.Transport != "reality" && e.Transport != "hysteria2" && e.Transport != "trojan" {
 				return nil, fmt.Errorf("不支持的 bx transport: %s", e.Transport)
 			}
 			links = []string{e.Link} // legacy 单格式
