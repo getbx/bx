@@ -42,6 +42,8 @@ func transportKind(server string) string {
 		return "hysteria2"
 	case strings.HasPrefix(server, "trojan://"):
 		return "trojan"
+	case strings.HasPrefix(server, "ss://"):
+		return "shadowsocks"
 	default:
 		return "brook"
 	}
@@ -167,6 +169,13 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			}
 			confPath := filepath.Join(cfg.DataDir, "sing-box-trojan.json")
 			return tunnel.NewTrojan(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
+		case "shadowsocks":
+			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
+			if err != nil {
+				return nil, fmt.Errorf("准备 sing-box: %w", err)
+			}
+			confPath := filepath.Join(cfg.DataDir, "sing-box-ss.json")
+			return tunnel.NewShadowsocks(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
 		default:
 			return tunnel.NewBrook(brookPath, link, opts.Probe, cfg.HTTPProxy)
 		}

@@ -21,4 +21,7 @@ func TestTransportKind(t *testing.T) {
 	if transportKind("trojan://pw@1.2.3.4:443?sni=bing.com") != "trojan" {
 		t.Error("trojan should be trojan")
 	}
+	if transportKind("ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#hk") != "shadowsocks" {
+		t.Error("ss should be shadowsocks")
+	}
 }

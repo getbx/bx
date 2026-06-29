@@ -62,6 +62,17 @@ func TestServerHostFromLinkVless(t *testing.T) {
 	}
 }
 
+func TestServerHostFromLinkSS(t *testing.T) {
+	// ss:// authority 是 base64,须经 tunnel.SSHost 解出 host(SIP002:base64@host:port)。
+	h, err := serverHostFromLink("ss://YWVzLTI1Ni1nY206cHcxMjM@203.0.113.10:8388#hk")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if h != "203.0.113.10" {
+		t.Fatalf("ss host=%q want 203.0.113.10", h)
+	}
+}
+
 func TestServerHostFromLinkBrookStillWorks(t *testing.T) {
 	h, err := serverHostFromLink("brook://server?server=203.0.113.10%3A9999&password=x")
 	if err != nil || h != "203.0.113.10" {
