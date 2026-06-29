@@ -1,6 +1,7 @@
 # 多传输架构(自动容灾 + 按类分流 + 兼容现有协议)设计
 
-Status: DRAFT — 自主拟定(2026-06-29,12h 自驱开发循环;无法交互 brainstorm,判断由我做,贯彻用户产品理念)。
+Status: IMPLEMENTED(2026-06-29)——S1-S5 全部落地(failover.go、config transports/udp.transport、blink bundle、rawLinkRisk、hysteria2 runner+with_quic),TDD + 全绿 + 已推送。真机 e2e 容灾/按类分流待验。
+原始 Status: DRAFT — 自主拟定(2026-06-29,12h 自驱开发循环;无法交互 brainstorm,判断由我做,贯彻用户产品理念)。
 
 ## 背景与定位
 
