@@ -3,7 +3,6 @@ package tunnel
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -60,35 +59,9 @@ func parseHysteria2Link(s string) (hysteria2Link, error) {
 // singboxConfig 生成最小 sing-box 客户端配置:本地 socks 入站 + hysteria2 出站。
 // 与 vless/brook 同构:bx 数据面只连本地 socks。httpAddr 非空时额外开 HTTP 代理。
 func (h hysteria2Link) singboxConfig(socksAddr, httpAddr string) ([]byte, error) {
-	host, portStr, err := net.SplitHostPort(socksAddr)
+	inbounds, err := socksInbounds(socksAddr, httpAddr)
 	if err != nil {
-		return nil, fmt.Errorf("拆分 socks 地址 %q: %w", socksAddr, err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return nil, fmt.Errorf("socks 端口 %q: %w", portStr, err)
-	}
-	inbounds := []any{map[string]any{
-		"type":        "socks",
-		"tag":         "socks-in",
-		"listen":      host,
-		"listen_port": port,
-	}}
-	if httpAddr != "" {
-		hHost, hPortStr, err := net.SplitHostPort(httpAddr)
-		if err != nil {
-			return nil, fmt.Errorf("拆分 http 地址 %q: %w", httpAddr, err)
-		}
-		hPort, err := strconv.Atoi(hPortStr)
-		if err != nil {
-			return nil, fmt.Errorf("http 端口 %q: %w", hPortStr, err)
-		}
-		inbounds = append(inbounds, map[string]any{
-			"type":        "http",
-			"tag":         "http-in",
-			"listen":      hHost,
-			"listen_port": hPort,
-		})
+		return nil, err
 	}
 	out := map[string]any{
 		"type":        "hysteria2",

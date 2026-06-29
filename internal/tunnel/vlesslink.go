@@ -3,7 +3,6 @@ package tunnel
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -71,35 +70,9 @@ func parseVlessLink(s string) (vlessLink, error) {
 // httpAddr 非空时额外开一个 HTTP 代理入站(给只认 HTTP_PROXY 的应用,如 tailscaled
 // 控制面;等价于 brook 的 --http,保证切到 reality 后 tailscale 控制面仍走代理)。
 func (v vlessLink) singboxConfig(socksAddr, httpAddr string) ([]byte, error) {
-	host, portStr, err := net.SplitHostPort(socksAddr)
+	inbounds, err := socksInbounds(socksAddr, httpAddr)
 	if err != nil {
-		return nil, fmt.Errorf("拆分 socks 地址 %q: %w", socksAddr, err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return nil, fmt.Errorf("socks 端口 %q: %w", portStr, err)
-	}
-	inbounds := []any{map[string]any{
-		"type":        "socks",
-		"tag":         "socks-in",
-		"listen":      host,
-		"listen_port": port,
-	}}
-	if httpAddr != "" {
-		hHost, hPortStr, err := net.SplitHostPort(httpAddr)
-		if err != nil {
-			return nil, fmt.Errorf("拆分 http 地址 %q: %w", httpAddr, err)
-		}
-		hPort, err := strconv.Atoi(hPortStr)
-		if err != nil {
-			return nil, fmt.Errorf("http 端口 %q: %w", hPortStr, err)
-		}
-		inbounds = append(inbounds, map[string]any{
-			"type":        "http",
-			"tag":         "http-in",
-			"listen":      hHost,
-			"listen_port": hPort,
-		})
+		return nil, err
 	}
 	cfg := map[string]any{
 		"log":      map[string]any{"level": "warn", "timestamp": false},
