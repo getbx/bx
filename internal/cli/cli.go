@@ -1227,11 +1227,7 @@ func probeCheck(link, target string, timeout time.Duration) checkReport {
 	if err != nil {
 		return checkReport{Name: "probe", Status: "warn", Detail: err.Error()}
 	}
-	brookPath, err := provision.EnsureBrook(dir, "", embedded.Brook(), embedded.BrookVersion())
-	if err != nil {
-		return checkReport{Name: "probe", Status: "warn", Detail: err.Error()}
-	}
-	lat, err := setup.ProbeServer(brookPath, raw, target, timeout)
+	lat, err := setup.ProbeServer(dir, raw, target, timeout)
 	if err != nil {
 		return checkReport{Name: "probe", Status: "fail", Detail: err.Error()}
 	}
@@ -1329,12 +1325,7 @@ func doctorProbe(link, target string, timeout time.Duration) {
 		doctorLine("warn", "probe", err.Error())
 		return
 	}
-	brookPath, err := provision.EnsureBrook(dir, "", embedded.Brook(), embedded.BrookVersion())
-	if err != nil {
-		doctorLine("warn", "probe", err.Error())
-		return
-	}
-	lat, err := setup.ProbeServer(brookPath, raw, target, timeout)
+	lat, err := setup.ProbeServer(dir, raw, target, timeout)
 	if err != nil {
 		doctorLine("fail", "probe", err.Error())
 		return
@@ -1371,12 +1362,8 @@ func probeAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	brookPath, err := provision.EnsureBrook(dir, "", embedded.Brook(), embedded.BrookVersion())
-	if err != nil {
-		return fmt.Errorf("准备运行环境: %w", err)
-	}
 	fmt.Println("⏳ 连通检测中…")
-	lat, err := setup.ProbeServer(brookPath, link, c.String("target"), c.Duration("timeout"))
+	lat, err := setup.ProbeServer(dir, link, c.String("target"), c.Duration("timeout"))
 	if err != nil {
 		return fmt.Errorf("连通检测失败: %w", err)
 	}
@@ -1402,12 +1389,8 @@ func setupAction(c *cli.Context) error {
 		return err
 	}
 	cfgPath := c.String("config")
-	brookPath, err := provision.EnsureBrook("/var/lib/bx", "", embedded.Brook(), embedded.BrookVersion())
-	if err != nil {
-		return fmt.Errorf("准备运行环境: %w", err)
-	}
 	fmt.Println("⏳ 连通检测中…")
-	if lat, perr := setup.ProbeServer(brookPath, link, c.String("probe"), 15*time.Second); perr != nil {
+	if lat, perr := setup.ProbeServer("/var/lib/bx", link, c.String("probe"), 15*time.Second); perr != nil {
 		if c.Bool("strict") {
 			return fmt.Errorf("连通检测失败: %w", perr)
 		}
