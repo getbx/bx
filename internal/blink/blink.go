@@ -31,15 +31,19 @@ func transportOf(link string) string {
 		return "hysteria2"
 	case strings.HasPrefix(link, "trojan://"):
 		return "trojan"
+	case strings.HasPrefix(link, "ss://"):
+		return "shadowsocks"
 	default:
 		return "brook"
 	}
 }
 
-// supportedLink 报告链接内容是否为受支持的传输链接(brook / vless-reality / hysteria2)。
+// supportedLink 报告链接内容是否为受支持的传输链接
+// (brook / vless-reality / hysteria2 / trojan / shadowsocks)。
 func supportedLink(link string) bool {
 	return strings.HasPrefix(link, "brook://") || strings.HasPrefix(link, "vless://") ||
-		strings.HasPrefix(link, "hysteria2://") || strings.HasPrefix(link, "hy2://")
+		strings.HasPrefix(link, "hysteria2://") || strings.HasPrefix(link, "hy2://") ||
+		strings.HasPrefix(link, "trojan://") || strings.HasPrefix(link, "ss://")
 }
 
 // Encode 把单个内部传输链接(brook:// 或 vless://)包成 bx://(legacy 单格式)。
@@ -97,7 +101,7 @@ func DecodeAll(s string) ([]string, error) {
 		if len(e.Links) > 0 {
 			links = e.Links // 多传输 bundle
 		} else {
-			if e.Transport != "" && e.Transport != "brook" && e.Transport != "reality" && e.Transport != "hysteria2" && e.Transport != "trojan" {
+			if e.Transport != "" && e.Transport != "brook" && e.Transport != "reality" && e.Transport != "hysteria2" && e.Transport != "trojan" && e.Transport != "shadowsocks" {
 				return nil, fmt.Errorf("不支持的 bx transport: %s", e.Transport)
 			}
 			links = []string{e.Link} // legacy 单格式

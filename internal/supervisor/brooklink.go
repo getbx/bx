@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+
+	"github.com/getbx/bx/internal/tunnel"
 )
 
 // hostToCIDRs 把服务器主机(IP 或域名)转成 bypass 用的 /32、/128 CIDR 列表。
@@ -55,6 +57,10 @@ func serverHostFromLink(server string) (string, error) {
 			return "", fmt.Errorf("link 缺 host")
 		}
 		return host, nil
+	}
+	// ss:// 的 authority 是 base64(method:password),url.Parse 取不到 host,走专用解析。
+	if strings.HasPrefix(server, "ss://") {
+		return tunnel.SSHost(server)
 	}
 	if strings.HasPrefix(server, "brook://") {
 		u, err := url.Parse(server)
