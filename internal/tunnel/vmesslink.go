@@ -90,6 +90,13 @@ func parseVmessLink(s string) (vmessLink, error) {
 	if v.Net == "" {
 		v.Net = "tcp"
 	}
+	// 早拒不支持的传输,给清晰错误。否则 singboxConfig 会生成一个没有对应 transport 块
+	// 的配置,sing-box 当 tcp 跑或直接拒收,用户只看到难懂的子进程错误(违背「能直接用」)。
+	switch v.Net {
+	case "tcp", "ws", "grpc", "h2", "http":
+	default:
+		return v, fmt.Errorf("vmess net=%q 暂不支持(支持 tcp/ws/grpc/h2)", v.Net)
+	}
 	v.Host = vmessJSONStr(m["host"])
 	v.Path = vmessJSONStr(m["path"])
 	if tls := vmessJSONStr(m["tls"]); tls == "tls" || tls == "true" || tls == "1" {

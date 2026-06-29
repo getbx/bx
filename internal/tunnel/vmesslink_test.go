@@ -46,15 +46,27 @@ func TestParseVmessLinkNumericFields(t *testing.T) {
 
 func TestParseVmessLinkErrors(t *testing.T) {
 	for _, bad := range []string{
-		"trojan://x@h:1",                                 // 错 scheme
-		"vmess://!!!notbase64!!!",                        // 非 base64
-		vmessURL(`{"add":"h","id":"x"}`),                 // 缺 port
-		vmessURL(`{"port":"443","id":"x"}`),              // 缺 add
-		vmessURL(`{"add":"h","port":"443"}`),             // 缺 id
-		vmessURL(`{"add":"h","port":"notnum","id":"x"}`), // port 非数
+		"trojan://x@h:1",                                           // 错 scheme
+		"vmess://!!!notbase64!!!",                                  // 非 base64
+		vmessURL(`{"add":"h","id":"x"}`),                           // 缺 port
+		vmessURL(`{"port":"443","id":"x"}`),                        // 缺 add
+		vmessURL(`{"add":"h","port":"443"}`),                       // 缺 id
+		vmessURL(`{"add":"h","port":"notnum","id":"x"}`),           // port 非数
+		vmessURL(`{"add":"h","port":"443","id":"x","net":"kcp"}`),  // 不支持的 net(会生成 sing-box 拒收的配置)
+		vmessURL(`{"add":"h","port":"443","id":"x","net":"quic"}`), // 同上
 	} {
 		if _, err := parseVmessLink(bad); err == nil {
 			t.Errorf("应报错: %q", bad)
+		}
+	}
+}
+
+// 支持的 net(tcp/ws/grpc/h2/http + 空缺省)都应解析通过。
+func TestParseVmessLinkSupportedNets(t *testing.T) {
+	for _, net := range []string{"", "tcp", "ws", "grpc", "h2", "http"} {
+		link := vmessURL(`{"add":"1.2.3.4","port":"443","id":"x","net":"` + net + `"}`)
+		if _, err := parseVmessLink(link); err != nil {
+			t.Errorf("net=%q 应支持: %v", net, err)
 		}
 	}
 }
