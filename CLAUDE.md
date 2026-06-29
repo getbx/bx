@@ -58,7 +58,7 @@ type platform interface {
 - **TDD**:先写失败测试→跑红→最小实现→跑绿→提交。纯逻辑测试免 root(用 `t.TempDir()`,不碰真实路由/设备)。
 - **验证命令**:`go build ./... && go vet ./... && go test ./...`;跨平台 `GOOS=darwin/GOARCH=arm64 go build -o /dev/null ./...`。
 - **提交信息**:中文 conventional commits,结尾带 `Co-Authored-By: Claude …`。在默认分支直接提交(单人项目)。
-- **内嵌资产**:`internal/embedded/assets/brook_linux_{amd64,arm64}`(~30MB)+ `singbox_linux_{amd64,arm64}`(~25MB)是提交进仓库的真二进制,按 GOARCH 条件 embed(每构建只嵌匹配 arch 的那一个;singbox 经 `embedded_singbox_{amd64,arm64,other}.go`,非 linux 走 nil 兜底)。CI `embed-brook.yml`/`embed-singbox.yml` 跟上游 release 自动重嵌。换 arch 要补对应二进制。
+- **内嵌资产**:`internal/embedded/assets/brook_linux_{amd64,arm64}`(~30MB)+ `singbox_linux_{amd64,arm64}`(~25MB)是提交进仓库的真二进制,按 GOARCH 条件 embed(每构建只嵌匹配 arch 的那一个;singbox 经 `embedded_singbox_{amd64,arm64,other}.go`,非 linux 走 nil 兜底)。CI `embed-brook.yml`/`embed-singbox.yml` 跟上游 release 自动重嵌。换 arch 要补对应二进制。**未来加固(TODO)**:provision 的缓存键现按版本 tag(`.brook-version`/`.singbox-version`),同 tag 重嵌不同字节不会刷新落盘二进制——将来给 brook+sing-box 两边的版本键都掺入内容 hash,保证同 tag 重嵌也能失效旧缓存(改一处要两边一致)。
   - **sing-box 是「自建静态最小构建」不是官方 release 二进制**:官方 linux 包是 glibc **动态链接 + 56MB 全家桶**(含 tailscale/acme/clash/dhcp,reality 全用不上),违背 bx「静态单文件、零依赖」。故从同一 release tag 源码用 `CGO_ENABLED=0 go build -tags with_utls`(REALITY 只需 utls)自建:**静态**(Alpine/musl 也跑,同 brook)、**~25MB**(半体积)、同 revision。CI `embed-singbox.yml` 复刻此构建;改时务必保持 `with_utls` 与 `CGO_ENABLED=0`。
 - **绝不擅自启动 bx / 改路由**:启动是用户的事(需 root、动真实网络)。改完让用户自己 `bx up`。
 - gVisor/wireguard 等库的 API 易随版本变——查 `$(go list -m -f '{{.Dir}}' <module>)` 的真实源码,别凭记忆。
