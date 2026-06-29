@@ -16,6 +16,10 @@ type Report struct {
 	UDPMode       string `json:"udp_mode"`
 	UDPNote       string `json:"udp_note,omitempty"`
 	MutationState string `json:"mutation_state,omitempty"`
+
+	Transport    string   `json:"transport,omitempty"`     // 当前活跃传输 scheme@host(容灾后反映实际)
+	Transports   []string `json:"transports,omitempty"`    // 多传输容灾列表(>1 时,有序优先级)
+	UDPTransport string   `json:"udp_transport,omitempty"` // UDP 专用传输(按类分流)
 }
 
 // Render 把 Report 渲染成命令行状态面板。
@@ -29,6 +33,16 @@ func Render(r Report) string {
 	fmt.Fprintln(&b, "bx 状态")
 	fmt.Fprintf(&b, "  节点    %s  (socks %s)\n", r.Server, r.SocksAddr)
 	fmt.Fprintf(&b, "  隧道    %s  延迟 %dms  重连 %d\n", health, r.LatencyMS, r.Restarts)
+	if r.Transport != "" {
+		fmt.Fprintf(&b, "  传输    %s", r.Transport)
+		if len(r.Transports) > 1 {
+			fmt.Fprintf(&b, "  (容灾 %s)", strings.Join(r.Transports, " › "))
+		}
+		if r.UDPTransport != "" {
+			fmt.Fprintf(&b, "  UDP→%s", r.UDPTransport)
+		}
+		fmt.Fprintln(&b)
+	}
 	fmt.Fprintf(&b, "  连接    活跃 %d  代理 %d  直连 %d  阻断 %d\n", r.Active, r.Proxy, r.Direct, r.Blocked)
 	udpMode := r.UDPMode
 	if udpMode == "" {

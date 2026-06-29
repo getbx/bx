@@ -360,8 +360,22 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		serverBypass: serverBypass,
 		userBypass:   cfg.Bypass,
 	}
+	// status 用的传输信息:active 动态(从 swapper 当前链接,容灾后反映实际),容灾列表/UDP 静态。
+	var transportLabels []string
+	if len(cfg.Transports) > 1 {
+		for _, l := range cfg.Transports {
+			transportLabels = append(transportLabels, transportLabel(l))
+		}
+	}
+	udpLabel := ""
+	if udpEnabled {
+		udpLabel = transportLabel(cfg.UDP.Transport)
+	}
+	transportInfo := func() (string, []string, string) {
+		return transportLabel(swapper.currentLink()), transportLabels, udpLabel
+	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(counters, lt, serverHost, cfg.UDP.Mode, mutEng, mut, uint32(cfg.OwnerUID))
+		return serveControl(counters, lt, serverHost, cfg.UDP.Mode, transportInfo, mutEng, mut, uint32(cfg.OwnerUID))
 	})
 	if err != nil {
 		return err

@@ -83,3 +83,28 @@ func TestRenderNotRunning(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderShowsMultiTransport(t *testing.T) {
+	out := Render(Report{
+		TunnelHealthy: true,
+		Transport:     "reality@1.2.3.4",
+		Transports:    []string{"reality@1.2.3.4", "brook@1.2.3.4"},
+		UDPTransport:  "hysteria2@1.2.3.4",
+	})
+	for _, want := range []string{"传输", "reality@1.2.3.4", "容灾", "brook@1.2.3.4", "UDP→hysteria2@1.2.3.4"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status 面板缺 %q:\n%s", want, out)
+		}
+	}
+}
+
+// 单传输(无容灾/UDP)只显当前传输,不显容灾块。
+func TestRenderSingleTransportNoFailoverBlock(t *testing.T) {
+	out := Render(Report{TunnelHealthy: true, Transport: "brook@1.2.3.4"})
+	if strings.Contains(out, "容灾") {
+		t.Errorf("单传输不该显容灾:\n%s", out)
+	}
+	if !strings.Contains(out, "brook@1.2.3.4") {
+		t.Errorf("应显当前传输:\n%s", out)
+	}
+}
