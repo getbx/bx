@@ -343,8 +343,8 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		build:         buildTunnel,
 		healthTimeout: healthTimeout,
 		ctx:           ctx,
-		curLink:       cfg.Server,
 	}
+	swapper.setLink(cfg.Server)
 	// 多传输自动容灾(reality 主 / brook 备…):后台监健康,持续不健康→按优先级 swapTo 备选,
 	// 全程 fail-closed;防抖(滞回+冷静期+全挂不切)。单传输跳过(由 kill-switch 接管)。
 	if len(cfg.Transports) > 1 {
