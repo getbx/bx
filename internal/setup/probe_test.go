@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,6 +39,35 @@ func TestBuildProbeTunnelBrookSelectsBrook(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "sing-box")); err == nil {
 		t.Error("brook 分支不该落盘 sing-box")
+	}
+}
+
+// 回归守卫:hysteria2/trojan/ss/vmess 链接都必须走内嵌 sing-box,绝不误回落 brook
+// (修的正是这个 bug —— 这四种此前在 setup 探测里被当成 brook,导致 bx setup 误报连不通)。
+func TestBuildProbeTunnelNonBrookSelectsSingbox(t *testing.T) {
+	ssUserinfo := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:pw123"))
+	vmessJSON := base64.StdEncoding.EncodeToString([]byte(`{"add":"1.2.3.4","port":"443","id":"uuid-x","net":"tcp"}`))
+	cases := map[string]string{
+		"hysteria2": "hysteria2://pw@1.2.3.4:8443?sni=bing.com",
+		"trojan":    "trojan://pw@1.2.3.4:443?sni=bing.com",
+		"ss":        "ss://" + ssUserinfo + "@1.2.3.4:8388#hk",
+		"vmess":     "vmess://" + vmessJSON,
+	}
+	for name, link := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			_, cleanup, err := buildProbeTunnel(dir, link, "1.1.1.1:443")
+			if err != nil {
+				t.Fatalf("buildProbeTunnel %s: %v", name, err)
+			}
+			defer cleanup()
+			if _, err := os.Stat(filepath.Join(dir, "sing-box")); err != nil {
+				t.Errorf("%s 应落盘内嵌 sing-box: %v", name, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "brook")); err == nil {
+				t.Errorf("%s 不该落盘 brook(误用 brook 引擎=误报连不通)", name)
+			}
+		})
 	}
 }
 

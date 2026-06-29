@@ -64,30 +64,49 @@ func WriteConfig(path string, links []string, force bool) error {
 	return os.Chmod(path, 0o600)
 }
 
-// buildProbeTunnel 按 server link scheme 选引擎建探测隧道:vless://→reality(内嵌 sing-box),
-// 其余→brook(内嵌)。返回隧道、清理闭包(删 reality 的临时配置)与错误。仅构造不启动。
+// buildProbeTunnel 按 server link scheme 选引擎建探测隧道,引擎派发经 tunnel.Kind(唯一真相源,
+// 与 supervisor 起隧道同源)。brook 走内嵌 brook,其余(reality/hysteria2/trojan/ss/vmess)
+// 走内嵌 sing-box。返回隧道、清理闭包(删 sing-box 临时配置)与错误。仅构造不启动。
 func buildProbeTunnel(dataDir, link, probe string) (*tunnel.Tunnel, func(), error) {
-	if strings.HasPrefix(link, "vless://") {
-		sbPath, err := provision.EnsureSingbox(dataDir, "", embedded.Singbox(), embedded.SingboxVersion(), "", "")
+	kind := tunnel.Kind(link)
+	if kind == "brook" {
+		brookPath, err := provision.EnsureBrook(dataDir, "", embedded.Brook(), embedded.BrookVersion())
 		if err != nil {
 			return nil, nil, err
 		}
-		confPath := filepath.Join(dataDir, "sing-box-probe.json")
-		t, err := tunnel.NewReality(sbPath, link, probe, confPath, "") // 探测不需 HTTP 代理
+		t, err := tunnel.NewBrook(brookPath, link, probe, "") // setup 仅连通性探测,不需 HTTP 代理
 		if err != nil {
 			return nil, nil, err
 		}
-		return t, func() { os.Remove(confPath) }, nil
+		return t, func() {}, nil
 	}
-	brookPath, err := provision.EnsureBrook(dataDir, "", embedded.Brook(), embedded.BrookVersion())
+	// 其余引擎都基于内嵌 sing-box。
+	sbPath, err := provision.EnsureSingbox(dataDir, "", embedded.Singbox(), embedded.SingboxVersion(), "", "")
 	if err != nil {
 		return nil, nil, err
 	}
-	t, err := tunnel.NewBrook(brookPath, link, probe, "") // setup 仅连通性探测,不需 HTTP 代理
+	confPath := filepath.Join(dataDir, "sing-box-probe.json")
+	cleanup := func() { os.Remove(confPath) }
+	var t *tunnel.Tunnel
+	switch kind { // 探测不需 HTTP 代理,httpAddr 传 ""
+	case "reality":
+		t, err = tunnel.NewReality(sbPath, link, probe, confPath, "")
+	case "hysteria2":
+		t, err = tunnel.NewHysteria2(sbPath, link, probe, confPath, "")
+	case "trojan":
+		t, err = tunnel.NewTrojan(sbPath, link, probe, confPath, "")
+	case "shadowsocks":
+		t, err = tunnel.NewShadowsocks(sbPath, link, probe, confPath, "")
+	case "vmess":
+		t, err = tunnel.NewVmess(sbPath, link, probe, confPath, "")
+	default:
+		// Kind 新增了引擎但这里没跟上:响亮报错,绝不静默回落 brook 误判连通。
+		return nil, nil, fmt.Errorf("setup 探测不支持的传输引擎: %s", kind)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	return t, func() {}, nil
+	return t, cleanup, nil
 }
 
 // ProbeServer 临时起隧道探测服务器连通,返回延迟 ms;不建 TUN。
