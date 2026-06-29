@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/embedded"
+	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/tunnel"
 	"gopkg.in/yaml.v3"
 )
@@ -51,12 +53,40 @@ func WriteConfig(path, link string, force bool) error {
 	return os.Chmod(path, 0o600)
 }
 
-// ProbeServer 临时起 brook 隧道探测服务器连通,返回延迟 ms;不建 TUN。
-func ProbeServer(brookPath, brookLink, probe string, timeout time.Duration) (int64, error) {
-	t, err := tunnel.NewBrook(brookPath, brookLink, probe, "") // setup 仅连通性探测,不需 HTTP 代理
+// buildProbeTunnel 按 server link scheme 选引擎建探测隧道:vless://→reality(内嵌 sing-box),
+// 其余→brook(内嵌)。返回隧道、清理闭包(删 reality 的临时配置)与错误。仅构造不启动。
+func buildProbeTunnel(dataDir, link, probe string) (*tunnel.Tunnel, func(), error) {
+	if strings.HasPrefix(link, "vless://") {
+		sbPath, err := provision.EnsureSingbox(dataDir, "", embedded.Singbox(), embedded.SingboxVersion(), "", "")
+		if err != nil {
+			return nil, nil, err
+		}
+		confPath := filepath.Join(dataDir, "sing-box-probe.json")
+		t, err := tunnel.NewReality(sbPath, link, probe, confPath, "") // 探测不需 HTTP 代理
+		if err != nil {
+			return nil, nil, err
+		}
+		return t, func() { os.Remove(confPath) }, nil
+	}
+	brookPath, err := provision.EnsureBrook(dataDir, "", embedded.Brook(), embedded.BrookVersion())
+	if err != nil {
+		return nil, nil, err
+	}
+	t, err := tunnel.NewBrook(brookPath, link, probe, "") // setup 仅连通性探测,不需 HTTP 代理
+	if err != nil {
+		return nil, nil, err
+	}
+	return t, func() {}, nil
+}
+
+// ProbeServer 临时起隧道探测服务器连通,返回延迟 ms;不建 TUN。
+// 按 server link scheme 选引擎(vless→reality / 其余→brook),内嵌引擎落盘到 dataDir。
+func ProbeServer(dataDir, link, probe string, timeout time.Duration) (int64, error) {
+	t, cleanup, err := buildProbeTunnel(dataDir, link, probe)
 	if err != nil {
 		return 0, err
 	}
+	defer cleanup()
 	t.Start()
 	defer t.Stop()
 	deadline := time.NewTimer(timeout)
