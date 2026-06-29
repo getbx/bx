@@ -273,3 +273,53 @@ default via fe80::1 dev eno1 proto ra metric 1024 pref medium
 		}
 	}
 }
+
+// 多 WAN(路由器/双网卡)有多条 default,必须选 metric 最低的内核首选,
+// 而非输出里最后一条 —— 否则把隧道走上高 metric 的烂链路(SIM/备份口)。
+func TestParseDefaultRouteLowestMetric(t *testing.T) {
+	// Mudi 真实输出:wlan4(metric 20,首选) + SIM rmnet_data0(metric 40)
+	out := "default via 10.0.6.1 dev wlan4 proto static src 10.0.6.176 metric 20 \n" +
+		"default via 10.99.118.45 dev rmnet_data0 proto static src 10.99.118.44 metric 40 mtu 1500 \n"
+	gw, dev, err := parseDefaultRoute(out)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if gw != "10.0.6.1" || dev != "wlan4" {
+		t.Fatalf("应选 metric 最低的 wlan4,实得 gw=%s dev=%s", gw, dev)
+	}
+}
+
+// metric 最低的在后面也要选对(证明是按 metric 不是按顺序)。
+func TestParseDefaultRouteLowestMetricReversed(t *testing.T) {
+	out := "default via 10.99.118.45 dev rmnet_data0 metric 40 \n" +
+		"default via 10.0.6.1 dev wlan4 metric 20 \n"
+	gw, dev, _ := parseDefaultRoute(out)
+	if gw != "10.0.6.1" || dev != "wlan4" {
+		t.Fatalf("逆序下仍应选 metric 20 的 wlan4,实得 gw=%s dev=%s", gw, dev)
+	}
+}
+
+// 无 metric 字段 = metric 0(内核最优),应压过有 metric 的。
+func TestParseDefaultRouteNoMetricIsZero(t *testing.T) {
+	out := "default via 10.0.0.1 dev eth0 \n" +
+		"default via 10.0.0.2 dev eth1 metric 100 \n"
+	gw, dev, _ := parseDefaultRoute(out)
+	if gw != "10.0.0.1" || dev != "eth0" {
+		t.Fatalf("无 metric(=0)应最优,实得 gw=%s dev=%s", gw, dev)
+	}
+}
+
+// 单 default(笔记本常态)照常选中。
+func TestParseDefaultRouteSingle(t *testing.T) {
+	gw, dev, err := parseDefaultRoute("default via 192.168.1.1 dev eno1 proto dhcp metric 100 \n")
+	if err != nil || gw != "192.168.1.1" || dev != "eno1" {
+		t.Fatalf("单 default 应选中: gw=%s dev=%s err=%v", gw, dev, err)
+	}
+}
+
+// 无 default → 报错。
+func TestParseDefaultRouteNone(t *testing.T) {
+	if _, _, err := parseDefaultRoute("10.0.0.0/24 dev eth0 scope link\n"); err == nil {
+		t.Fatal("无 default 路由应报错")
+	}
+}
