@@ -136,7 +136,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	buildTunnel := func(link string) (*tunnel.Tunnel, error) {
 		switch transportKind(link) {
 		case "reality":
-			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, cfg.SingboxURL, cfg.SingboxSHA256)
+			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}

@@ -1,6 +1,6 @@
 # CLAUDE.md — bx
 
-基于 brook 的 **Linux 透明全局代理**(自研「类 ipio」,单一 Go 静态二进制)。整机 TCP/UDP 经 TUN 自动分流:中国直连、其余走 brook 加密隧道,对应用零配置。brook 仅作加密隧道黑盒子进程,其余全自有代码。
+基于 brook 的 **Linux 透明全局代理**(自研「类 ipio」,单一 Go 静态二进制)。整机 TCP/UDP 经 TUN 自动分流:中国直连、其余走加密隧道,对应用零配置。隧道是**可插拔黑盒子进程**:`brook://` 链接→内嵌 brook(默认),`vless://` 链接→sing-box 的 **VLESS-REALITY**(抗 DPI 伪装);两者其余全自有代码。
 
 - 用户文档见 `README.md`;设计/计划见 `docs/superpowers/specs/` 与 `docs/superpowers/plans/`。
 - 模块:`github.com/getbx/bx`,Go 1.26,GitHub `getbx/bx`。
@@ -14,9 +14,11 @@
 - **kill-switch**:隧道不健康时 Proxy 连接直接 Block(fail-closed,不漏真实 IP)
 - Router 用 `atomic.Pointer` 热重载(换 china 列表不断流)
 
-**控制面**:`supervisor.Run()`(`run.go`)串起 provision 释放内嵌 brook → 建 Router → 起 brook 隧道(`tunnel`,socks5 健康检查 + 指数退避重连)→ 开 TUN → 劫持默认路由 → stats unix socket → china 列表自动刷新(经隧道拉)→ 阻塞等信号/死手 → defer 全量还原。
+**控制面**:`supervisor.Run()`(`run.go`)串起 provision 释放内嵌 brook → 建 Router → **按 server link scheme 选传输**(`transportKind`:`vless://`→reality,其余→brook)起隧道(`tunnel`,socks5 健康检查 + 指数退避重连,**数据面对引擎无感**)→ 开 TUN → 劫持默认路由 → stats unix socket → china 列表自动刷新(经隧道拉)→ 阻塞等信号/死手 → defer 全量还原。
 
-**包速查**:`cli`(命令)·`config`(yaml schema)·`blink`(base64url 换壳 brook link)·`setup`/`install`(开箱+systemd+自装 PATH)·`provision`/`embedded`(内嵌 brook+china 释放)·`supervisor`(编排+路由)·`tunnel`(brook 子进程)·`tun`(gVisor 引擎)·`dialer`/`route`/`dns`/`fakeip`(分流)·`stats`(面板)。
+**传输层(可插拔,2026-06 加)**:`tunnel.Tunnel/Runner/socks5Health` 抽象同构容纳两种引擎——`NewBrook`(内嵌 brook 子进程)与 `NewReality`(sing-box 子进程,`reality.go`+`vlesslink.go` 解析 `vless://` 生成 sing-box 配置)。**关键不变量自动继承**:reality 不碰数据面,故 kill-switch/fail-closed/fakeip 分流零成本沿用;防环靠 `serverHostFromLink` 认 `vless://` 取 host 做 server bypass。sing-box **已内嵌**(同 brook,linux amd64/arm64),`provision.EnsureSingbox` 优先级 `override > 内嵌字节 > 下载兜底`——内嵌即跑、零外部依赖,根除「墙内首次 `bx up` 要先翻墙下 sing-box」的自举悖论。
+
+**包速查**:`cli`(命令)·`config`(yaml schema)·`blink`(base64url 换壳 brook link)·`setup`/`install`(开箱+systemd+自装 PATH)·`provision`(内嵌 brook/sing-box+china 释放,sing-box 兜底下载)/`embedded`(内嵌资产)·`supervisor`(编排+路由+传输派发)·`tunnel`(brook/reality 子进程隧道)·`tun`(gVisor 引擎)·`dialer`/`route`/`dns`/`fakeip`(分流)·`stats`(面板)。
 
 ## 平台抽象(重要:跨平台的接缝)
 
@@ -56,7 +58,8 @@ type platform interface {
 - **TDD**:先写失败测试→跑红→最小实现→跑绿→提交。纯逻辑测试免 root(用 `t.TempDir()`,不碰真实路由/设备)。
 - **验证命令**:`go build ./... && go vet ./... && go test ./...`;跨平台 `GOOS=darwin/GOARCH=arm64 go build -o /dev/null ./...`。
 - **提交信息**:中文 conventional commits,结尾带 `Co-Authored-By: Claude …`。在默认分支直接提交(单人项目)。
-- **内嵌资产**:`internal/embedded/assets/brook_linux_{amd64,arm64}` 是提交进仓库的真二进制(~30MB),按 GOARCH 用 `embedded_<arch>.go` 条件 embed;CI `.github/workflows/embed-brook.yml` 跟上游 brook release 自动重嵌。换 arch 要补对应 brook。
+- **内嵌资产**:`internal/embedded/assets/brook_linux_{amd64,arm64}`(~30MB)+ `singbox_linux_{amd64,arm64}`(~25MB)是提交进仓库的真二进制,按 GOARCH 条件 embed(每构建只嵌匹配 arch 的那一个;singbox 经 `embedded_singbox_{amd64,arm64,other}.go`,非 linux 走 nil 兜底)。CI `embed-brook.yml`/`embed-singbox.yml` 跟上游 release 自动重嵌。换 arch 要补对应二进制。
+  - **sing-box 是「自建静态最小构建」不是官方 release 二进制**:官方 linux 包是 glibc **动态链接 + 56MB 全家桶**(含 tailscale/acme/clash/dhcp,reality 全用不上),违背 bx「静态单文件、零依赖」。故从同一 release tag 源码用 `CGO_ENABLED=0 go build -tags with_utls`(REALITY 只需 utls)自建:**静态**(Alpine/musl 也跑,同 brook)、**~25MB**(半体积)、同 revision。CI `embed-singbox.yml` 复刻此构建;改时务必保持 `with_utls` 与 `CGO_ENABLED=0`。
 - **绝不擅自启动 bx / 改路由**:启动是用户的事(需 root、动真实网络)。改完让用户自己 `bx up`。
 - gVisor/wireguard 等库的 API 易随版本变——查 `$(go list -m -f '{{.Dir}}' <module>)` 的真实源码,别凭记忆。
 
@@ -65,3 +68,4 @@ type platform interface {
 - **IPv6**:决策已定 = **fail-closed 阻断**(不走隧道),设计见 `docs/superpowers/specs/2026-06-11-bx-ipv6-blackhole-design.md`。**Linux 已实现**:`Hijack` 探测 `/proc/net/if_inet6`,v6 内核启用时装 `-6 unreachable` 默认路由(table 100 + pref 200)把全局 v6 堵死,`route.DefaultPrivateV6CIDRs`(`::1`/`fe80::`/`fc00::`/`ff00::`)走主表 carve-out;v6 禁用则零 `-6` 步骤、不连累 v4。on-link GUA 邻居也已 carve:`Hijack` 动态读 `ip -6 route show` 提取 on-link 全局前缀(2000::/3、有 dev 无 via)补进 pref-150,与私网段一并直连(纯解析 `parseOnLinkV6Prefixes` 免 root 可测)。**darwin 已实现(编译过、待真机)**:`Hijack` 用 `ipv6EnabledDarwin()`(扫 `net.InterfaceAddrs` 有无非 loopback v6)门控,装两个 `/1` 的 `-reject`(`::/1`+`8000::/1`)盖全量全局 v6;靠主表最长前缀让 link-local/ULA/组播/on-link(含 GUA)自动直连,无需显式 carve-out(故 mac 无 Linux 的 GUA 局限)。纯构造 `darwinRouteSpecs` 免 root 单测。**真机待验**:① `-reject` 确切语法(dummy gw `::1`);② 本地 errno 是否 EHOSTUNREACH(决定 v4 回落);③ `IPV6_BOUND_IF` 与 reject 的交互(今无 v6 出站,moot)。
 - **macOS**:代码能编译、review 过(桥接引用计数/生命周期已验证)。**待真机 sudo 验证**:① `Hijack` 的 `route`/`ifconfig` 语义(含 IPv6 `-reject`,见上);② launchd 服务层(`bx up`/`down` 在 mac 的自启)未做。
 - **Windows**:未做。需 wintun.dll 分发 + 路由(route/WFP)+ `IP_UNICAST_IF` + Windows Service。最重的一档,留到 macOS 跑通后再做。
+- **REALITY 传输收尾**:① **自举悖论已解**——sing-box 改为内嵌(自建静态最小构建,见「约定/内嵌资产」),`bx up` 真零外部依赖,download 仅作无内嵌 arch / 自定义兜底。② **端到端仍待验**:单测只覆盖 vless 解析/sing-box 配置生成/工厂装配 + `sing-box check` 通过,**无真机跟真实 REALITY 服务器握手**——vless 字段错或 sing-box schema 漂移单测照绿,需补容器/真机 e2e checklist(拉一个真 reality 服务端,`bx up` 后验证经隧道出口 IP 变更 + kill-switch 生效)。

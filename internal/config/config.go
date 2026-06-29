@@ -71,9 +71,9 @@ type Config struct {
 	Mode          string   `yaml:"mode"`           // host(默认,劫持本机出站) | router(只劫持 LAN 转发流量)
 	Router        Router   `yaml:"router"`         // 仅 mode=router 生效
 	HTTPProxy     string   `yaml:"http_proxy"`     // 非空:额外开 HTTP 代理(如 127.0.0.1:7890),给只认 HTTP_PROXY 的应用(tailscaled 控制面)
-	SingboxURL    string   `yaml:"singbox_url"`    // reality 传输:按需下载 sing-box 的地址(托管在自己 VPS)
-	SingboxSHA256 string   `yaml:"singbox_sha256"` // 下载校验(强烈建议设置)
-	SingboxBin    string   `yaml:"singbox_bin"`    // 可选:直接指定本地 sing-box 路径(免下载)
+	SingboxURL    string   `yaml:"singbox_url"`    // reality 传输:仅无内嵌 arch 兜底用,下载 sing-box 的地址(linux amd64/arm64 已内嵌,无需设)
+	SingboxSHA256 string   `yaml:"singbox_sha256"` // 下载兜底时的校验(设了 singbox_url 才用,强烈建议)
+	SingboxBin    string   `yaml:"singbox_bin"`    // 可选:直接指定本地 sing-box 路径(优先级最高,压过内嵌)
 }
 
 // Router 是网关模式参数:只代理「源在 lan_cidrs 内」的转发流量。
