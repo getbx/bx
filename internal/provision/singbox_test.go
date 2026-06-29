@@ -24,21 +24,35 @@ func TestEnsureSingboxPrefersEmbedded(t *testing.T) {
 	}
 }
 
-// 内嵌版本未变时:第二次调用复用落盘文件,不重写(版本文件缓存)。
-func TestEnsureSingboxEmbeddedVersionCache(t *testing.T) {
+// 同版本同字节:第二次复用落盘文件(命中缓存)。
+func TestEnsureSingboxEmbeddedSameBytesCached(t *testing.T) {
 	embedded := []byte("embedded-v1\n")
 	dir := t.TempDir()
 	if _, err := EnsureSingbox(dir, "", embedded, "v1.13.14", "", ""); err != nil {
 		t.Fatalf("first ensure: %v", err)
 	}
-	// 第二次传同版本但不同字节:命中缓存就不会改写文件内容。
-	p, err := EnsureSingbox(dir, "", []byte("DIFFERENT\n"), "v1.13.14", "", "")
+	p, err := EnsureSingbox(dir, "", embedded, "v1.13.14", "", "")
 	if err != nil {
 		t.Fatalf("second ensure: %v", err)
 	}
-	got, _ := os.ReadFile(p)
-	if string(got) != string(embedded) {
-		t.Fatalf("cache miss: want original embedded bytes, got %q", got)
+	if got, _ := os.ReadFile(p); string(got) != string(embedded) {
+		t.Fatalf("同字节应仍是原内容: %q", got)
+	}
+}
+
+// 同版本【不同字节】(如重嵌换 build tag):content-hash 缓存键应失效旧缓存、刷新成新字节。
+func TestEnsureSingboxSameVersionDifferentBytesRefreshes(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := EnsureSingbox(dir, "", []byte("OLD-utls-only\n"), "v1.13.14", "", ""); err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+	newBytes := []byte("NEW-with-quic\n")
+	p, err := EnsureSingbox(dir, "", newBytes, "v1.13.14", "", "") // 同版本,不同字节
+	if err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != string(newBytes) {
+		t.Fatalf("同版本不同字节应刷新成新内容,got %q", got)
 	}
 }
 

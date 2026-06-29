@@ -29,7 +29,8 @@ func EnsureSingbox(dataDir, override string, embedded []byte, embeddedVersion, u
 			return "", err
 		}
 		verFile := filepath.Join(dataDir, ".singbox-version")
-		if cur, err := os.ReadFile(verFile); err == nil && string(cur) == embeddedVersion {
+		key := embedCacheKey(embeddedVersion, embedded)
+		if cur, err := os.ReadFile(verFile); err == nil && string(cur) == key {
 			if _, err := os.Stat(target); err == nil {
 				return target, nil
 			}
@@ -37,7 +38,7 @@ func EnsureSingbox(dataDir, override string, embedded []byte, embeddedVersion, u
 		if err := atomicWrite(target, embedded, 0o755); err != nil {
 			return "", err
 		}
-		_ = os.WriteFile(verFile, []byte(embeddedVersion), 0o644)
+		_ = os.WriteFile(verFile, []byte(key), 0o644)
 		return target, nil
 	}
 	if url == "" {

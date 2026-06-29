@@ -2,10 +2,20 @@
 package provision
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+// embedCacheKey 把版本 tag 与内嵌字节的内容 hash 拼成缓存键。同 tag 不同字节(如重嵌换了
+// 构建 tag,比如 sing-box 从 with_utls 加到 with_utls,with_quic)也会失效旧缓存、强制重释放,
+// 避免「同版本不同内容」用到已落盘的陈旧二进制。
+func embedCacheKey(version string, b []byte) string {
+	sum := sha256.Sum256(b)
+	return version + ":" + hex.EncodeToString(sum[:])[:12]
+}
 
 // EnsureBrook 确保 brook 可执行存在并返回其路径。
 // override 非空时直接用该路径(用户显式指定,需存在);否则把 brookBytes 解压到
@@ -22,7 +32,8 @@ func EnsureBrook(dataDir, override string, brookBytes []byte, version string) (s
 	}
 	target := filepath.Join(dataDir, "brook")
 	verFile := filepath.Join(dataDir, ".brook-version")
-	if cur, err := os.ReadFile(verFile); err == nil && string(cur) == version {
+	key := embedCacheKey(version, brookBytes)
+	if cur, err := os.ReadFile(verFile); err == nil && string(cur) == key {
 		if _, err := os.Stat(target); err == nil {
 			return target, nil
 		}
@@ -30,7 +41,7 @@ func EnsureBrook(dataDir, override string, brookBytes []byte, version string) (s
 	if err := atomicWrite(target, brookBytes, 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(verFile, []byte(version), 0o644); err != nil {
+	if err := os.WriteFile(verFile, []byte(key), 0o644); err != nil {
 		return "", err
 	}
 	return target, nil
