@@ -37,7 +37,8 @@ type Lists struct {
 }
 
 type UDP struct {
-	Mode string `yaml:"mode"` // block, direct-realtime, proxy
+	Mode      string `yaml:"mode"`      // block, direct-realtime, proxy
+	Transport string `yaml:"transport"` // 可选:UDP 专用传输链接(如 hysteria2://),仅 mode=proxy 生效。空=UDP 走主传输
 }
 
 // AutoUpdateEnabled 报告是否启用列表自动刷新(默认 true)。
@@ -146,6 +147,13 @@ func Parse(b []byte) (*Config, error) {
 	case "block", "direct-realtime", "proxy":
 	default:
 		return nil, fmt.Errorf("config: udp.mode 必须是 block/direct-realtime/proxy, got %q", c.UDP.Mode)
+	}
+	if c.UDP.Transport != "" {
+		decoded, err := decodeServerLink(c.UDP.Transport)
+		if err != nil {
+			return nil, fmt.Errorf("config: udp.transport: %w", err)
+		}
+		c.UDP.Transport = decoded
 	}
 	for i := range c.DNS.Split {
 		r := &c.DNS.Split[i]
