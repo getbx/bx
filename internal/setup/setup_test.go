@@ -13,7 +13,7 @@ import (
 func TestWriteConfigRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	link := "brook://server?server=1.2.3.4%3A9999&password=pw"
-	if err := WriteConfig(p, link, false); err != nil {
+	if err := WriteConfig(p, []string{link}, false); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
@@ -43,7 +43,7 @@ func TestWriteConfigPreservesBXLink(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	raw := "brook://server?server=1.2.3.4%3A9999&password=pw"
 	link := blink.Encode(raw)
-	if err := WriteConfig(p, link, false); err != nil {
+	if err := WriteConfig(p, []string{link}, false); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
@@ -64,10 +64,10 @@ func TestWriteConfigRefusesExistingWithoutForce(t *testing.T) {
 	if err := os.WriteFile(p, []byte("server: old\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteConfig(p, "brook://new", false); err == nil {
+	if err := WriteConfig(p, []string{"brook://new"}, false); err == nil {
 		t.Fatal("已存在且无 force 应报错")
 	}
-	if err := WriteConfig(p, "brook://new", true); err != nil {
+	if err := WriteConfig(p, []string{"brook://new"}, true); err != nil {
 		t.Fatalf("force 应覆盖: %v", err)
 	}
 	fi, err := os.Stat(p)
@@ -100,5 +100,36 @@ func TestOwnerUIDFromEnv(t *testing.T) {
 		if got := ownerUIDFromEnv(mk(c.in)); got != c.want {
 			t.Errorf("ownerUIDFromEnv(%q)=%d want %d", c.in, got, c.want)
 		}
+	}
+}
+
+func TestWriteConfigMultiTransports(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	links := []string{
+		blink.Encode("vless://u@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com"),
+		blink.Encode("brook://server?server=1.2.3.4%3A9999&password=pw"),
+	}
+	if err := WriteConfig(p, links, false); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if strings.Contains(string(b), "\nserver:") {
+		t.Fatalf("多传输不该写 server:, got:\n%s", b)
+	}
+	cfg, err := config.Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Transports) != 2 {
+		t.Fatalf("应解析出 2 个传输, got %d", len(cfg.Transports))
+	}
+	if cfg.Transports[0][:8] != "vless://" || cfg.Transports[1][:8] != "brook://" {
+		t.Fatalf("传输顺序不对: %v", cfg.Transports)
+	}
+}
+
+func TestWriteConfigEmpty(t *testing.T) {
+	if err := WriteConfig(filepath.Join(t.TempDir(), "c.yaml"), nil, false); err == nil {
+		t.Fatal("空链接列表应报错")
 	}
 }

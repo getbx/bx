@@ -897,3 +897,34 @@ func TestRawLinkRisk(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveConfigLinksBundle(t *testing.T) {
+	l1 := "vless://u@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com"
+	l2 := "brook://server?server=1.2.3.4%3A9999&password=pw"
+	bundle := blink.EncodeMulti([]string{l1, l2})
+	probe, configLinks, err := resolveConfigLinks(bundle)
+	if err != nil {
+		t.Fatalf("resolve bundle: %v", err)
+	}
+	if probe != l1 {
+		t.Fatalf("probe 应=主传输 %q, got %q", l1, probe)
+	}
+	if len(configLinks) != 2 {
+		t.Fatalf("应 2 个 configLink, got %d", len(configLinks))
+	}
+	// 各自换壳,解回应等于原 link
+	for i, want := range []string{l1, l2} {
+		got, err := blink.Decode(configLinks[i])
+		if err != nil || got != want {
+			t.Fatalf("configLink[%d] 解回=%q want=%q err=%v", i, got, want, err)
+		}
+	}
+}
+
+func TestResolveConfigLinksRawSingle(t *testing.T) {
+	raw := "vless://u@h:1?security=reality&pbk=K&sid=a&sni=s"
+	probe, configLinks, err := resolveConfigLinks(raw)
+	if err != nil || probe != raw || len(configLinks) != 1 {
+		t.Fatalf("裸单链接: probe=%q n=%d err=%v", probe, len(configLinks), err)
+	}
+}
