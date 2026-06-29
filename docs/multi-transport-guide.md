@@ -3,13 +3,18 @@
 bx 支持**三种传输引擎平级共存**,可单用、可组成容灾池、可按流量类别分流。核心原则贯穿始终:
 **不泄漏是本质**——任何传输/容灾/分流,隧道不健康一律 fail-closed Block,绝不回落直连暴露真实 IP。
 
-## 三种传输,各有所长
+## 五种传输,各有所长
 
 | 传输 | scheme | 特点 | 适合 |
 | --- | --- | --- | --- |
 | **brook** | `brook://` | 内嵌、最老牌、明文 9999 易被运营商 SYN 黑洞(wss/443 可伪装) | 默认/兜底 |
 | **REALITY** | `vless://…security=reality` | 伪装成访问真站(如 apple.com)的 TLS,抗 DPI,TCP | 主力抗封锁 |
 | **hysteria2** | `hysteria2://` / `hy2://` | 基于 QUIC/UDP,丢包高 RTT 链路(蜂窝)更快 | UDP/速度档 |
+| **trojan** | `trojan://` | 标准 TLS-in-TLS,生态广、服务端常见 | 复用现有节点 |
+| **shadowsocks** | `ss://` | 老牌轻量 AEAD,几乎所有面板都给 ss:// | 复用现有节点 |
+
+> 直接甩别处的 `vless://` / `hysteria2://` / `trojan://` / `ss://` 分享链接,bx 都能直接吃。
+> 但裸链接含明文凭据(会留进 shell 历史/分享面),**建议先 `bx blink <link>` 换壳成 `bx://` 再用**。
 
 服务端搭建见 [reality-server-setup.md](reality-server-setup.md)(reality);hysteria2 服务端用 sing-box
 hysteria2 入站(需 TLS 证书或自签 + `insecure`)。
