@@ -928,3 +928,13 @@ func TestResolveConfigLinksRawSingle(t *testing.T) {
 		t.Fatalf("裸单链接: probe=%q n=%d err=%v", probe, len(configLinks), err)
 	}
 }
+
+func TestClientDoctorVlessServerLinkOK(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(path, []byte("server: \"vless://u@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com\"\n"), 0o600)
+	rep := collectClientDoctor(path, "x:443", 0, true)
+	got := findCheck(rep.Checks, "server_link")
+	if got.Status != "ok" {
+		t.Fatalf("vless server_link 应 ok,实得 %+v", got)
+	}
+}

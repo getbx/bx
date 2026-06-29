@@ -11,7 +11,8 @@ import (
 	"github.com/getbx/bx/internal/tunnel"
 )
 
-// transportSwapper 是 linkSwapper 的真实现:运行期把隧道换到某 link(同服务器)。
+// transportSwapper 是 linkSwapper 的真实现:运行期把隧道换到某 link(同/不同服务器均可——
+// 各传输 server 已统一进 serverBypass+静态 DNS,见 run.go)。
 // build 复用 run.go 的 buildTunnel(含按需 sing-box)。硬换:换成后立即停旧隧道
 // (既有 TCP 连接重置)。健康失败则停新、不换,旧隧道无损。
 type transportSwapper struct {

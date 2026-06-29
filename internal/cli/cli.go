@@ -641,10 +641,15 @@ func doctorAction(c *cli.Context) (err error) {
 			doctorLine("ok", "config parse", "yes")
 			if cfg.Server == "" {
 				doctorLine("fail", "server link", "empty")
-			} else if _, err := blink.Decode(cfg.Server); err != nil && !strings.HasPrefix(cfg.Server, "brook://") {
-				doctorLine("fail", "server link", err.Error())
 			} else {
+				// cfg.Server 经 Parse 已校验解码;不再 blink.Decode 重校验(裸 vless/hysteria2 会误报)。
 				doctorLine("ok", "server link", redactLink(cfg.Server))
+				if len(cfg.Transports) > 1 {
+					doctorLine("ok", "transports", fmt.Sprintf("%d 个(自动容灾)", len(cfg.Transports)))
+				}
+				if cfg.UDP.Transport != "" {
+					doctorLine("ok", "udp transport", redactLink(cfg.UDP.Transport))
+				}
 				if !c.Bool("skip-probe") {
 					doctorProbe(cfg.Server, c.String("target"), c.Duration("timeout"))
 				}
@@ -1096,10 +1101,16 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 			udpMode = cfg.UDP.Mode
 			if cfg.Server == "" {
 				rep.addCheck("server_link", "fail", "empty", "sudo bx setup <client-link>")
-			} else if _, err := blink.Decode(cfg.Server); err != nil && !strings.HasPrefix(cfg.Server, "brook://") {
-				rep.addCheck("server_link", "fail", err.Error(), "")
 			} else {
+				// cfg.Server 经 config.Parse 已校验并解码成裸内部链接(brook/vless/hysteria2);
+				// 不再 blink.Decode 重校验(对非 bx:// 的裸 vless/hysteria2 会误报 fail)。
 				rep.addCheck("server_link", "ok", redactLink(cfg.Server), "")
+				if len(cfg.Transports) > 1 {
+					rep.addCheck("transports", "ok", fmt.Sprintf("%d 个传输(自动容灾)", len(cfg.Transports)), "")
+				}
+				if cfg.UDP.Transport != "" {
+					rep.addCheck("udp_transport", "ok", redactLink(cfg.UDP.Transport), "")
+				}
 				if !skipProbe {
 					rep.addReport(probeCheck(cfg.Server, target, timeout))
 				}
