@@ -9,6 +9,7 @@
 - `bypass` 必须含**管理网 / SSH 源网段**(reality 服务器自身的 bypass 由 bx 自动加,不用管)。
 
 ## 0. 服务端(一次性)
+> 完整步骤见 [reality-server-setup.md](reality-server-setup.md);下面是速记。
 ```bash
 # 在 VPS 上,sing-box REALITY 服务端落 ufw / 安全组放行的【高端口】(别用 443!见末尾坑①)
 sing-box generate reality-keypair   # 记 PrivateKey / PublicKey
