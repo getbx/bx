@@ -276,3 +276,35 @@ func TestParseSingboxFields(t *testing.T) {
 		t.Fatalf("singbox fields: url=%q sha=%q", c.SingboxURL, c.SingboxSHA256)
 	}
 }
+
+func TestParseTransportsMulti(t *testing.T) {
+	c, err := Parse([]byte("transports:\n  - brook://server?server=1.2.3.4%3A9999&password=pw\n  - vless://uuid@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(c.Transports) != 2 {
+		t.Fatalf("应有 2 个传输, got %d", len(c.Transports))
+	}
+	if c.Server != c.Transports[0] {
+		t.Fatalf("Server 应=首条传输, server=%q t0=%q", c.Server, c.Transports[0])
+	}
+	if c.Transports[0][:8] != "brook://" || c.Transports[1][:8] != "vless://" {
+		t.Fatalf("传输顺序/内容不对: %v", c.Transports)
+	}
+}
+
+func TestParseSingleServerBecomesTransports(t *testing.T) {
+	c, err := Parse([]byte("server: brook://server?server=1.2.3.4%3A9999&password=pw\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(c.Transports) != 1 || c.Transports[0] != c.Server {
+		t.Fatalf("单 server 应成 1 元素 transports: %v server=%q", c.Transports, c.Server)
+	}
+}
+
+func TestParseNeitherServerNorTransports(t *testing.T) {
+	if _, err := Parse([]byte("killswitch: true\n")); err == nil {
+		t.Fatal("server 和 transports 都空应报错")
+	}
+}

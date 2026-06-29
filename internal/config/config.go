@@ -57,7 +57,8 @@ func (l Lists) RefreshInterval() time.Duration {
 }
 
 type Config struct {
-	Server        string   `yaml:"server"` // bx:// 链接或内部传输链接(自带凭据;故无独立 password 字段)
+	Server        string   `yaml:"server"`     // bx:// 链接或内部传输链接(自带凭据;故无独立 password 字段)。= transports 的首条
+	Transports    []string `yaml:"transports"` // 可选:有序多传输(优先级,reality 主在前),自动容灾。空=单 [server]
 	Killswitch    bool     `yaml:"killswitch"`
 	OwnerUID      int      `yaml:"owner_uid"` // 业主 uid(sudo bx setup 捕获);0=无业主,控制面退回 root-only
 	DNS           DNS      `yaml:"dns"`
@@ -82,6 +83,14 @@ type Router struct {
 	LANCIDRs []string `yaml:"lan_cidrs"` // 源网段;空=运行期自动探测 LAN 接口
 }
 
+// decodeServerLink 把 bx://blink:// 换壳链接还原为内部传输链接;裸链接(brook/vless 等)原样返回。
+func decodeServerLink(link string) (string, error) {
+	if strings.HasPrefix(link, "bx://") || strings.HasPrefix(link, "blink://") {
+		return blink.Decode(link)
+	}
+	return link, nil
+}
+
 // Parse 解析并校验配置字节。
 func Parse(b []byte) (*Config, error) {
 	var c Config
@@ -90,20 +99,34 @@ func Parse(b []byte) (*Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("yaml: %w", err)
 	}
-	if c.Server == "" {
-		return nil, fmt.Errorf("config: server 不能为空")
-	}
 	if c.OwnerUID < 0 {
 		// 负数 owner_uid 是手改配置的错误:转 uint32 会成巨值、授权不到任何真实用户。
 		// 显式拒绝(防 int→uint32 脚枪),正常由 bx setup 写正整数或省略(0=root-only)。
 		return nil, fmt.Errorf("config: owner_uid 不能为负: %d", c.OwnerUID)
 	}
-	if strings.HasPrefix(c.Server, "bx://") || strings.HasPrefix(c.Server, "blink://") {
-		link, err := blink.Decode(c.Server)
+	// 传输解析:优先 transports(有序多传输 + 自动容灾),否则单 server。
+	// 各链接 bx://blink:// 换壳的还原为内部链接;Server 取首条(向后兼容读 cfg.Server 的代码)。
+	if len(c.Transports) > 0 {
+		for i, link := range c.Transports {
+			if strings.TrimSpace(link) == "" {
+				return nil, fmt.Errorf("config: transports[%d] 不能为空", i)
+			}
+			decoded, err := decodeServerLink(link)
+			if err != nil {
+				return nil, err
+			}
+			c.Transports[i] = decoded
+		}
+		c.Server = c.Transports[0]
+	} else if c.Server != "" {
+		decoded, err := decodeServerLink(c.Server)
 		if err != nil {
 			return nil, err
 		}
-		c.Server = link
+		c.Server = decoded
+		c.Transports = []string{c.Server}
+	} else {
+		return nil, fmt.Errorf("config: server 或 transports 至少配一个")
 	}
 	if c.DNS.China == "" {
 		c.DNS.China = "223.5.5.5"
