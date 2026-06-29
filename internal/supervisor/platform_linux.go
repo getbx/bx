@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -294,17 +295,42 @@ func defaultRoute() (gw, dev string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	f := strings.Fields(string(out))
-	for i := 0; i+1 < len(f); i++ {
-		switch f[i] {
-		case "via":
-			gw = f[i+1]
-		case "dev":
-			dev = f[i+1]
+	return parseDefaultRoute(string(out))
+}
+
+// parseDefaultRoute 从 `ip -4 route show default` 输出里选 metric 最低的 default(内核首选出口)。
+// 多 WAN(路由器双口/SIM+wifi)会有多条 default,绝不能取「最后一条」——那可能是高 metric 的
+// 备份/蜂窝链路,会把隧道走上烂路。无 metric 字段视作 0(内核默认,最优)。纯解析,免 root 可测。
+func parseDefaultRoute(out string) (gw, dev string, err error) {
+	bestMetric := -1
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || f[0] != "default" {
+			continue
+		}
+		var lgw, ldev string
+		metric := 0 // 未写 metric = 0(内核最优)
+		for i := 0; i+1 < len(f); i++ {
+			switch f[i] {
+			case "via":
+				lgw = f[i+1]
+			case "dev":
+				ldev = f[i+1]
+			case "metric":
+				if m, e := strconv.Atoi(f[i+1]); e == nil {
+					metric = m
+				}
+			}
+		}
+		if lgw == "" || ldev == "" {
+			continue
+		}
+		if bestMetric == -1 || metric < bestMetric {
+			bestMetric, gw, dev = metric, lgw, ldev
 		}
 	}
 	if gw == "" || dev == "" {
-		return "", "", fmt.Errorf("解析默认路由失败: %q", strings.TrimSpace(string(out)))
+		return "", "", fmt.Errorf("解析默认路由失败: %q", strings.TrimSpace(out))
 	}
 	return gw, dev, nil
 }
