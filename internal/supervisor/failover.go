@@ -67,7 +67,6 @@ func (s *transportSwapper) runFailover(ctx context.Context, transports []string,
 	}
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
-	curIdx := 0 // cfg.Server = transports[0]
 	var unhealthySince, lastSwitch time.Time
 	for {
 		select {
@@ -83,6 +82,11 @@ func (s *transportSwapper) runFailover(ctx context.Context, transports []string,
 		if unhealthySince.IsZero() {
 			unhealthySince = now
 		}
+		// curIdx 从 swapper 的「当前链接」推导(单一真相来源),与控制面手动 swapTo 不脱节。
+		curIdx := indexOfLink(transports, s.currentLink())
+		if curIdx < 0 {
+			continue // 当前传输不在受管列表(operator 手动换到外部链接)→ 不自动容灾
+		}
 		// 备选乐观假设健康(只有当前已知不健康);先过一次门控,未过(滞回/冷静期)就别动 lastSwitch。
 		healthy := make([]bool, len(transports))
 		for i := range healthy {
@@ -97,7 +101,6 @@ func (s *transportSwapper) runFailover(ctx context.Context, transports []string,
 		for target >= 0 {
 			if err := s.swapTo(transports[target]); err == nil {
 				log.Printf("failover: 当前传输持续不健康,已切到 %s", transportLabel(transports[target]))
-				curIdx = target
 				unhealthySince = time.Time{}
 				break
 			}
@@ -109,4 +112,14 @@ func (s *transportSwapper) runFailover(ctx context.Context, transports []string,
 		}
 		lastSwitch = now // 切成功→冷静期;全挂→节流重试,都避免每 tick 风暴
 	}
+}
+
+// indexOfLink 返回 link 在 transports 中的下标,不存在返回 -1。
+func indexOfLink(transports []string, link string) int {
+	for i, l := range transports {
+		if l == link {
+			return i
+		}
+	}
+	return -1
 }

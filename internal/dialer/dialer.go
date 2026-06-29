@@ -153,6 +153,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			if d.Killswitch && utr.Healthy != nil && !utr.Healthy() {
 				if d.Stats != nil {
 					d.Stats.Blocked()
+					d.Stats.UDPBlocked()
 				}
 				return nil, ErrBlocked // UDP 传输挂 → fail-closed,绝不回落
 			}

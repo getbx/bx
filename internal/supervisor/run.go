@@ -93,6 +93,11 @@ type platform interface {
 // Run 启动全局透明代理:建隧道→建 TUN→接线引擎→劫持默认路由,
 // 阻塞到收到信号(或 deadman 到点),然后还原一切。
 func Run(ctx context.Context, cfg *config.Config, opts Options) error {
+	// 派生可取消 ctx:Run 任何返回(含信号退出)即 cancel,让 runFailover/refreshLoop/
+	// mutEng 等后台 goroutine 确定性退出(不再靠进程退出兜底),并避免慢 teardown 期间
+	// 后台 swapTo 复活已停隧道。
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	plat := newPlatform()
 
 	// 0) 物料:内嵌 brook/列表落盘(零外部依赖)
@@ -188,26 +193,40 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("取服务器 IP: %w", err)
 	}
-	// 服务器可能是域名:在系统 DNS 尚未交给 bx 前解析一次,同一批 IP 同时用于
-	// 路由旁路和本地 DNS 静态答案,避免运行期把 bx 自己的上游域名 fake 成环。
-	serverAddrs := hostToAddrs(serverHost)
-	if len(serverAddrs) == 0 {
-		return fmt.Errorf("无法解析服务器 %q 为 IP(bypass 必需,否则成环)", serverHost)
+	// 多传输防环:每个传输(主 + 容灾备选 + UDP 专用)的 server 都要进 serverBypass + 静态 DNS,
+	// 否则切到「不同 server」的备选时,其子进程连自己 server 的连接会落进 TUN(成环/被 Block),
+	// 容灾静默失效。在系统 DNS 交给 bx 前解析一次,同一批 IP 既做路由旁路又做本地 DNS 静态答案。
+	staticA := map[string][]netip.Addr{}
+	var serverAddrs []netip.Addr
+	addServer := func(link string) error {
+		h, err := serverHostFromLink(link)
+		if err != nil {
+			return fmt.Errorf("取传输服务器: %w", err)
+		}
+		if _, ok := staticA[h]; ok {
+			return nil // 去重(多传输同 server)
+		}
+		a := hostToAddrs(h)
+		if len(a) == 0 {
+			return fmt.Errorf("无法解析传输服务器 %q 为 IP(bypass 必需,否则成环)", h)
+		}
+		staticA[h] = a
+		serverAddrs = append(serverAddrs, a...)
+		return nil
 	}
-	staticA := map[string][]netip.Addr{serverHost: serverAddrs}
-	// 按类分流:UDP 专用传输(如 hysteria)的服务器也要进 bypass + 静态 DNS,同主传输防环。
+	for _, link := range cfg.Transports { // 含主传输(transports[0]=cfg.Server)+ 容灾备选
+		if err := addServer(link); err != nil {
+			return err
+		}
+	}
 	udpEnabled := cfg.UDP.Transport != "" && cfg.UDP.Mode == "proxy"
 	if udpEnabled {
-		uh, err := serverHostFromLink(cfg.UDP.Transport)
-		if err != nil {
-			return fmt.Errorf("取 UDP 传输服务器: %w", err)
+		if err := addServer(cfg.UDP.Transport); err != nil {
+			return err
 		}
-		ua := hostToAddrs(uh)
-		if len(ua) == 0 {
-			return fmt.Errorf("无法解析 UDP 传输服务器 %q 为 IP", uh)
-		}
-		serverAddrs = append(serverAddrs, ua...)
-		staticA[uh] = ua
+	}
+	if len(serverAddrs) == 0 {
+		return fmt.Errorf("无法解析任何传输服务器 IP(bypass 必需)")
 	}
 
 	// 3) fake-IP 池 + DNS 处理器
