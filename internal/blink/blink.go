@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/getbx/bx/internal/tunnel"
 )
 
 const (
@@ -21,33 +23,11 @@ type envelope struct {
 	Links     []string `json:"links,omitempty"`     // 多传输 bundle(有序优先级)
 }
 
-// transportOf 由链接 scheme 推传输标识(与 supervisor.transportKind 一致):
-// vless://→reality,hysteria2:///hy2://→hysteria2,其余→brook。
-func transportOf(link string) string {
-	switch {
-	case strings.HasPrefix(link, "vless://"):
-		return "reality"
-	case strings.HasPrefix(link, "hysteria2://"), strings.HasPrefix(link, "hy2://"):
-		return "hysteria2"
-	case strings.HasPrefix(link, "trojan://"):
-		return "trojan"
-	case strings.HasPrefix(link, "ss://"):
-		return "shadowsocks"
-	case strings.HasPrefix(link, "vmess://"):
-		return "vmess"
-	default:
-		return "brook"
-	}
-}
+// transportOf 由链接 scheme 推传输标识。委托 tunnel.Kind(唯一真相源,与 supervisor/setup 同源)。
+func transportOf(link string) string { return tunnel.Kind(link) }
 
-// supportedLink 报告链接内容是否为受支持的传输链接
-// (brook / vless-reality / hysteria2 / trojan / shadowsocks / vmess)。
-func supportedLink(link string) bool {
-	return strings.HasPrefix(link, "brook://") || strings.HasPrefix(link, "vless://") ||
-		strings.HasPrefix(link, "hysteria2://") || strings.HasPrefix(link, "hy2://") ||
-		strings.HasPrefix(link, "trojan://") || strings.HasPrefix(link, "ss://") ||
-		strings.HasPrefix(link, "vmess://")
-}
+// supportedLink 报告链接内容是否为受支持的裸传输链接。委托 tunnel.IsClientLink(单一识别口径)。
+func supportedLink(link string) bool { return tunnel.IsClientLink(link) }
 
 // Encode 把单个内部传输链接(brook:// 或 vless://)包成 bx://(legacy 单格式)。
 func Encode(link string) string {
