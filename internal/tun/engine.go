@@ -27,6 +27,20 @@ const (
 	tcpMaxInFlight = 2048
 )
 
+// 这些选项接口由指针接收者实现,故需取址;封成 helper 让 New 里一行登记。
+func ptrSACK(b bool) *tcpip.TCPSACKEnabled {
+	v := tcpip.TCPSACKEnabled(b)
+	return &v
+}
+func ptrModerateRecvBuf(b bool) *tcpip.TCPModerateReceiveBufferOption {
+	v := tcpip.TCPModerateReceiveBufferOption(b)
+	return &v
+}
+func ptrTCPDelay(b bool) *tcpip.TCPDelayEnabled {
+	v := tcpip.TCPDelayEnabled(b)
+	return &v
+}
+
 // Dialer 把一条连接的目标(Meta)落到实际出口,返回到出口的 net.Conn。
 // 由上层 *dialer.Dialer 实现。
 type Dialer interface {
@@ -75,6 +89,19 @@ func New(link stack.LinkEndpoint, d Dialer, mtu uint32, opts ...Option) (*Engine
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
+	// TCP 吞吐调优:只影响 gVisor 协议栈的性能特性,不碰路由/killswitch/分流(零安全影响),
+	// 与成熟用户态 TUN 代理(tun2socks/sing-box)一致。gVisor 这几项默认值偏保守:
+	// - SACK 默认关 → 开启:丢包链路(蜂窝/跨境)选择性重传,吞吐大增、卡顿少。
+	// - 接收缓冲自适应默认关 → 开启:接收窗口随 BDP 动态长到 4MB(MaxBufferSize),
+	//   高带宽时延链路不被固定小窗口卡死(收发缓冲范围已是 1MB/4MB,无需再调)。
+	// - Nagle 默认即关,显式设 false 防 gVisor 版本漂移:小包交互低延迟。
+	for _, opt := range []tcpip.SettableTransportProtocolOption{
+		ptrSACK(true), ptrModerateRecvBuf(true), ptrTCPDelay(false),
+	} {
+		if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, opt); err != nil {
+			return nil, fmt.Errorf("tcp 调优 %T: %v", opt, err)
+		}
+	}
 	e := &Engine{stack: s, dialer: d}
 	for _, o := range opts {
 		o(e)

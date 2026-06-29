@@ -259,3 +259,37 @@ func TestEngine_TCP_SplicesBytesBothWays(t *testing.T) {
 		t.Fatalf("client 收到 %q, want %q", rbuf, "pong")
 	}
 }
+
+// TCP 调优必须真落到协议栈:SACK + 接收缓冲自适应启用、Nagle 关。
+// 锁定它,防 gVisor 版本升级把默认/接口改了而我们悄悄退回保守默认(吞吐回归)。
+func TestEngineTCPTuningApplied(t *testing.T) {
+	const mtu = 1500
+	engineLink, _ := pipe.New("", "", mtu)
+	eng, err := New(engineLink, newCaptureDialer(), mtu)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer eng.Close()
+
+	var sack tcpip.TCPSACKEnabled
+	if err := eng.stack.TransportProtocolOption(tcp.ProtocolNumber, &sack); err != nil {
+		t.Fatalf("读 SACK: %v", err)
+	}
+	if !bool(sack) {
+		t.Error("SACK 应启用(丢包链路吞吐)")
+	}
+	var mod tcpip.TCPModerateReceiveBufferOption
+	if err := eng.stack.TransportProtocolOption(tcp.ProtocolNumber, &mod); err != nil {
+		t.Fatalf("读 moderate recv buffer: %v", err)
+	}
+	if !bool(mod) {
+		t.Error("接收缓冲自适应应启用(高 BDP 吞吐)")
+	}
+	var delay tcpip.TCPDelayEnabled
+	if err := eng.stack.TransportProtocolOption(tcp.ProtocolNumber, &delay); err != nil {
+		t.Fatalf("读 delay: %v", err)
+	}
+	if bool(delay) {
+		t.Error("Nagle 应关(交互低延迟)")
+	}
+}
