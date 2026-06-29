@@ -458,6 +458,31 @@ func ShowLogs(service string, lines int, follow bool) error {
 	return nil
 }
 
+// TailLogs 返回服务末 lines 行日志(非 follow,供 mcp bx_logs 返回文本)。
+// 与 ShowLogs 同源选择:darwin launchd 日志文件 tail、linux journalctl;返回合并输出。
+func TailLogs(service string, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 100
+	}
+	if runtime.GOOS == "darwin" && service == ServiceName {
+		paths := existingPaths(launchdStdoutPath, launchdStderrPath)
+		if len(paths) == 0 {
+			return "", fmt.Errorf("未找到 bx 日志文件(服务可能尚未启动)")
+		}
+		args := append([]string{"-n", fmt.Sprint(lines)}, paths...)
+		out, err := exec.Command("tail", args...).CombinedOutput()
+		if err != nil {
+			return string(out), fmt.Errorf("tail: %w", err)
+		}
+		return string(out), nil
+	}
+	out, err := exec.Command("journalctl", "-u", service, "--no-pager", "-n", fmt.Sprint(lines)).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("journalctl: %w", err)
+	}
+	return string(out), nil
+}
+
 // ClientLogPaths returns the raw client log files used by macOS launchd.
 func ClientLogPaths() []string {
 	if runtime.GOOS == "darwin" {

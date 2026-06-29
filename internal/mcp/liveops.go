@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 
+	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
@@ -97,12 +99,24 @@ func (o *liveOps) Diagnose() (DiagnoseOut, error) {
 	return DiagnoseOut{Findings: diagnoseFindings(rep, err == nil)}, nil
 }
 
-func (o *liveOps) Logs(in LogsIn) (LogsOut, error) {
-	return LogsOut{}, ToolError{
-		Code:        CodeNotImplemented,
-		Message:     "Logs 尚未接线(待 Task 9 集成真实快照/supervisor 机器)",
-		Remediation: "用 `bx logs` 替代",
+// logsResultText 把 TailLogs 结果转成给 agent 的文本(优雅降级)。纯函数。
+func logsResultText(raw string, err error) string {
+	if err != nil {
+		return "取日志失败(可能无权限):" + err.Error() + "\n试 sudo bx logs"
 	}
+	if strings.TrimSpace(raw) == "" {
+		return "无日志(或本用户无权限读 journal)。试 sudo bx logs"
+	}
+	return raw
+}
+
+func (o *liveOps) Logs(in LogsIn) (LogsOut, error) {
+	lines := in.Lines
+	if lines <= 0 {
+		lines = 100
+	}
+	raw, err := install.TailLogs(install.ServiceName, lines)
+	return LogsOut{Text: logsResultText(raw, err)}, nil
 }
 
 func (o *liveOps) Plan(in PlanIn) (PlanOut, error) {
