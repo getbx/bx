@@ -1,0 +1,59 @@
+name: embed-singbox
+on:
+  schedule:
+    - cron: '30 6 * * *'   # 每日 UTC 06:30(错开 embed-brook)
+  workflow_dispatch:
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: 取上游最新 sing-box tag 与当前内嵌版本
+        id: v
+        run: |
+          tag=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
+          ver=${tag#v}
+          cur=$(cat internal/embedded/assets/SINGBOX_VERSION 2>/dev/null || echo none)
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "ver=$ver" >>"$GITHUB_OUTPUT"
+          echo "cur=$cur" >>"$GITHUB_OUTPUT"
+          echo "changed=$([ "$ver" != "$cur" ] && echo yes || echo no)" >>"$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v6
+        if: steps.v.outputs.changed == 'yes'
+        with:
+          go-version: '1.26'
+      - name: 自建静态最小 sing-box(CGO_ENABLED=0 + with_utls,linux amd64+arm64)
+        if: steps.v.outputs.changed == 'yes'
+        # 不下载上游预编译包(那是 glibc 动态、56MB 全家桶)。从同一 release tag 的源码自建:
+        # 静态(零依赖、同 brook,Alpine/musl 也跑)、最小(REALITY 只需 with_utls)、约半体积。
+        run: |
+          tag='${{ steps.v.outputs.tag }}'
+          ver='${{ steps.v.outputs.ver }}'
+          git clone --depth 1 --branch "$tag" https://github.com/SagerNet/sing-box.git /tmp/sing-box-src
+          LD="-X 'github.com/sagernet/sing-box/constant.Version=${ver}' -s -w -buildid="
+          for arch in amd64 arm64; do
+            ( cd /tmp/sing-box-src && \
+              CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -tags with_utls -trimpath \
+                -ldflags "$LD" -o "$GITHUB_WORKSPACE/internal/embedded/assets/singbox_linux_${arch}" ./cmd/sing-box )
+            chmod +x "internal/embedded/assets/singbox_linux_${arch}"
+          done
+          printf '%s' "$ver" > internal/embedded/assets/SINGBOX_VERSION
+          file internal/embedded/assets/singbox_linux_amd64 | grep -q 'statically linked' || { echo "非静态二进制,中止"; exit 1; }
+          internal/embedded/assets/singbox_linux_amd64 version | head -1
+      - name: 验证可编译可过测(linux/darwin amd64+arm64)
+        if: steps.v.outputs.changed == 'yes'
+        run: |
+          go build ./... && go test ./...
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /dev/null ./...
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o /dev/null ./...
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /dev/null ./...
+      - name: 提交
+        if: steps.v.outputs.changed == 'yes'
+        run: |
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git add internal/embedded/assets
+          git commit -m "chore(embed): sing-box 升级到 ${{ steps.v.outputs.ver }}(自建静态最小,自动)"
+          git push
