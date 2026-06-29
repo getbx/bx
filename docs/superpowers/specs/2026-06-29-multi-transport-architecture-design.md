@@ -1,6 +1,6 @@
 # 多传输架构(自动容灾 + 按类分流 + 兼容现有协议)设计
 
-Status: IMPLEMENTED + 容灾真机已验(2026-06-29)——S1-S5 全部落地(failover.go、config transports/udp.transport、blink bundle、rawLinkRisk、hysteria2 runner+with_quic),TDD + 全绿 + code review 闭环(修了多 server bypass 等)。**容灾 e2e 真机坐实**:VPS reality@9998 主 + brook@9999 备,杀 reality → runFailover 自动切 brook、出口仍=VPS(35.9s)。按类分流(UDP→hysteria)真机待验(需 hysteria 服务端)。
+Status: IMPLEMENTED + 容灾真机已验(2026-06-29)——S1-S5 全部落地(failover.go、config transports/udp.transport、blink bundle、rawLinkRisk、hysteria2 runner+with_quic),TDD + 全绿 + code review 闭环(修了多 server bypass 等)。**容灾 e2e 真机坐实**:VPS reality@9998 主 + brook@9999 备,杀 reality → runFailover 自动切 brook、出口仍=VPS(35.9s)。按类分流(UDP→hysteria)真机 e2e **尝试但被环境挡**:VPS 起了 hysteria2 服务端,但笔记本→VPS:9998/udp 的 UDP 包 0 到达(云安全组/corporate 网络挡 UDP,tcpdump 实测,非 bx 问题)。bx 侧已验:dialer UDP 选传输单测、socks5 UDP ASSOCIATE 代码支持、hysteria2 配置 `sing-box check` 通过——独缺实时 QUIC 握手(环境 UDP 防火墙)。换个放行 UDP 的网络/VPS 即可补验。
 原始 Status: DRAFT — 自主拟定(2026-06-29,12h 自驱开发循环;无法交互 brainstorm,判断由我做,贯彻用户产品理念)。
 
 ## 背景与定位
