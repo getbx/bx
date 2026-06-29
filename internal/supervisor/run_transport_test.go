@@ -24,4 +24,7 @@ func TestTransportKind(t *testing.T) {
 	if transportKind("ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#hk") != "shadowsocks" {
 		t.Error("ss should be shadowsocks")
 	}
+	if transportKind("vmess://eyJhZGQiOiIxLjIuMy40In0") != "vmess" {
+		t.Error("vmess should be vmess")
+	}
 }
