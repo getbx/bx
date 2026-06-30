@@ -32,7 +32,7 @@ func TestServerConfigComplete(t *testing.T) {
 }
 
 func TestGenerateServerConfigReality(t *testing.T) {
-	cfg, sb, err := generateServerConfig("reality", "1.2.3.4", "www.apple.com", "", "")
+	cfg, sb, err := generateServerConfig("reality", "1.2.3.4", "www.apple.com", "", "", 0)
 	if err != nil {
 		t.Fatalf("gen: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestGenerateServerConfigReality(t *testing.T) {
 }
 
 func TestGenerateServerConfigHysteria2(t *testing.T) {
-	cfg, sb, err := generateServerConfig("hysteria2", "1.2.3.4", "", "", "")
+	cfg, sb, err := generateServerConfig("hysteria2", "1.2.3.4", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("gen: %v", err)
 	}
@@ -61,13 +61,13 @@ func TestGenerateServerConfigHysteria2(t *testing.T) {
 }
 
 func TestGenerateServerConfigRealityNeedsHost(t *testing.T) {
-	if _, _, err := generateServerConfig("reality", "", "", "", ""); err == nil {
+	if _, _, err := generateServerConfig("reality", "", "", "", "", 0); err == nil {
 		t.Error("reality 缺 host 应报错")
 	}
 }
 
 func TestGenerateServerConfigBrook(t *testing.T) {
-	cfg, sb, err := generateServerConfig("brook", "", "", ":9999", "mypw")
+	cfg, sb, err := generateServerConfig("brook", "", "", ":9999", "mypw", 0)
 	if err != nil || cfg.Type != "brook" || cfg.Password != "mypw" || sb != nil {
 		t.Errorf("brook gen 不对: %+v sb=%v err=%v", cfg, sb != nil, err)
 	}

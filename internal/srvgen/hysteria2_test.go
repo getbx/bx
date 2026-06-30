@@ -9,7 +9,7 @@ import (
 )
 
 func TestGenerateHysteria2Defaults(t *testing.T) {
-	p, err := GenerateHysteria2("vps.example.com", "")
+	p, err := GenerateHysteria2("vps.example.com", "", 0)
 	if err != nil {
 		t.Fatalf("gen: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestGenerateHysteria2Defaults(t *testing.T) {
 }
 
 func TestHysteria2ServerConfigShape(t *testing.T) {
-	p, _ := GenerateHysteria2("h", "www.cloudflare.com")
+	p, _ := GenerateHysteria2("h", "www.cloudflare.com", 0)
 	b, err := p.ServerConfig()
 	if err != nil {
 		t.Fatalf("server cfg: %v", err)
@@ -57,7 +57,7 @@ func TestHysteria2ServerConfigShape(t *testing.T) {
 }
 
 func TestHysteria2ClientLinkShape(t *testing.T) {
-	p, _ := GenerateHysteria2("1.2.3.4", "www.cloudflare.com")
+	p, _ := GenerateHysteria2("1.2.3.4", "www.cloudflare.com", 0)
 	link := p.ClientLink()
 	if !strings.HasPrefix(link, "hysteria2://"+p.Password+"@1.2.3.4:443?") {
 		t.Errorf("link 前缀不对: %q", link)

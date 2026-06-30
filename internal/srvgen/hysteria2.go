@@ -70,14 +70,20 @@ func selfSignedCert(sni string) (certPEM, keyPEM string, err error) {
 	return certPEM, keyPEM, nil
 }
 
-// GenerateHysteria2 生成一套完整 hysteria2 参数(端口默认 443,SNI 默认 DefaultRealitySNI,
-// salamander 混淆默认开,自签证书)。
-func GenerateHysteria2(host, sni string) (HysteriaParams, error) {
+// GenerateHysteria2 生成一套完整 hysteria2 参数(SNI 默认 DefaultRealitySNI,
+// salamander 混淆默认开,自签证书;port<=0 → 443/UDP)。
+func GenerateHysteria2(host, sni string, port int) (HysteriaParams, error) {
 	if host == "" {
 		return HysteriaParams{}, fmt.Errorf("host 不能为空")
 	}
 	if sni == "" {
 		sni = DefaultRealitySNI
+	}
+	if port <= 0 {
+		port = 443
+	}
+	if port > 65535 {
+		return HysteriaParams{}, fmt.Errorf("端口非法: %d", port)
 	}
 	pw, err := randB64(16)
 	if err != nil {
@@ -93,7 +99,7 @@ func GenerateHysteria2(host, sni string) (HysteriaParams, error) {
 	}
 	return HysteriaParams{
 		Host:         host,
-		Port:         443,
+		Port:         port,
 		SNI:          sni,
 		Password:     pw,
 		ObfsPassword: obfsPw,
