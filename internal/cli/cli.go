@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -544,9 +545,13 @@ func serverInstallAction(c *cli.Context) error {
 	return nil
 }
 
-// detectPublicIP best-effort 探测本机公网 IPv4(短超时,失败返回 "")。仅作 --host 建议,不擅自用。
+// detectPublicIP best-effort 探测本机公网 IPv4(短超时,失败返回 "")。
+// 强制 tcp4 拨号:很多 VPS 偏好 IPv6 出站,不强制会探到 v6 地址,而客户端链接通常要 v4 host。
 func detectPublicIP() string {
-	cl := &http.Client{Timeout: 5 * time.Second}
+	tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp4", addr)
+	}}
+	cl := &http.Client{Timeout: 5 * time.Second, Transport: tr}
 	for _, u := range []string{"https://api.ipify.org", "https://icanhazip.com"} {
 		resp, err := cl.Get(u)
 		if err != nil {
