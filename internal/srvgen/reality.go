@@ -54,13 +54,20 @@ func uuidV4() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
-// GenerateReality 生成一套完整 reality 参数(端口默认 443,SNI 默认 DefaultRealitySNI)。
-func GenerateReality(host, sni string) (RealityParams, error) {
+// GenerateReality 生成一套完整 reality 参数(SNI 默认 DefaultRealitySNI;
+// port<=0 → 443:reality 用 443 最自然,只在 443 被占/防火墙受限时才换)。
+func GenerateReality(host, sni string, port int) (RealityParams, error) {
 	if host == "" {
 		return RealityParams{}, fmt.Errorf("host 不能为空")
 	}
 	if sni == "" {
 		sni = DefaultRealitySNI
+	}
+	if port <= 0 {
+		port = 443
+	}
+	if port > 65535 {
+		return RealityParams{}, fmt.Errorf("端口非法: %d", port)
 	}
 	uuid, err := uuidV4()
 	if err != nil {
@@ -76,7 +83,7 @@ func GenerateReality(host, sni string) (RealityParams, error) {
 	}
 	return RealityParams{
 		Host:       host,
-		Port:       443,
+		Port:       port,
 		SNI:        sni,
 		UUID:       uuid,
 		ShortID:    hex.EncodeToString(sid[:]),

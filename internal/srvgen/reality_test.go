@@ -32,7 +32,7 @@ func TestRealityKeypairInterop(t *testing.T) {
 var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 func TestGenerateRealityDefaults(t *testing.T) {
-	p, err := GenerateReality("vps.example.com", "")
+	p, err := GenerateReality("vps.example.com", "", 0)
 	if err != nil {
 		t.Fatalf("gen: %v", err)
 	}
@@ -68,14 +68,31 @@ func TestDefaultRealitySNINotMicrosoft(t *testing.T) {
 }
 
 func TestGenerateRealityCustomSNI(t *testing.T) {
-	p, _ := GenerateReality("h", "www.apple.com")
+	p, _ := GenerateReality("h", "www.apple.com", 0)
 	if p.SNI != "www.apple.com" {
 		t.Errorf("SNI 应用自定义, got %q", p.SNI)
 	}
 }
 
+func TestGenerateRealityCustomPort(t *testing.T) {
+	p, err := GenerateReality("1.2.3.4", "", 9998)
+	if err != nil || p.Port != 9998 {
+		t.Fatalf("自定义端口 9998: port=%d err=%v", p.Port, err)
+	}
+	if !strings.Contains(p.ClientLink(), "@1.2.3.4:9998?") {
+		t.Errorf("链接应带自定义端口: %s", p.ClientLink())
+	}
+	b, _ := p.ServerConfig()
+	if !strings.Contains(string(b), `"listen_port": 9998`) {
+		t.Error("服务端配置应监听自定义端口")
+	}
+	if _, err := GenerateReality("h", "", 99999); err == nil {
+		t.Error("非法端口应报错")
+	}
+}
+
 func TestRealityServerConfigShape(t *testing.T) {
-	p, _ := GenerateReality("h", "www.cloudflare.com")
+	p, _ := GenerateReality("h", "www.cloudflare.com", 0)
 	b, err := p.ServerConfig()
 	if err != nil {
 		t.Fatalf("server cfg: %v", err)
@@ -100,7 +117,7 @@ func TestRealityServerConfigShape(t *testing.T) {
 }
 
 func TestRealityClientLinkShape(t *testing.T) {
-	p, _ := GenerateReality("1.2.3.4", "www.cloudflare.com")
+	p, _ := GenerateReality("1.2.3.4", "www.cloudflare.com", 0)
 	link := p.ClientLink()
 	if !strings.HasPrefix(link, "vless://"+p.UUID+"@1.2.3.4:443?") {
 		t.Errorf("link 前缀不对: %q", link)

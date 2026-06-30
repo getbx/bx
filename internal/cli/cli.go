@@ -84,6 +84,7 @@ type serverConfig struct {
 	Listen   string `yaml:"listen,omitempty"`   // brook:监听地址
 	Password string `yaml:"password,omitempty"` // brook:连接密码
 	SNI      string `yaml:"sni,omitempty"`      // reality/hysteria2:借用的真站
+	Port     int    `yaml:"port,omitempty"`     // reality/hysteria2:监听端口(默认 443)
 	Link     string `yaml:"link,omitempty"`     // reality/hysteria2:生成的客户端裸链接(host 已填)
 }
 
@@ -230,6 +231,7 @@ func serverInstallFlags() []cli.Flag {
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置写入路径"},
 		&cli.StringFlag{Name: "protocol", Value: "brook", Usage: "协议:brook | reality(强封锁首选) | hysteria2(速度档)"},
 		&cli.StringFlag{Name: "sni", Usage: "reality/hysteria2 借用的真站(默认 www.cloudflare.com;别用 microsoft 证书过大)"},
+		&cli.IntFlag{Name: "port", Usage: "reality/hysteria2 监听端口(默认 443,最自然;被占/受限才换)"},
 		&cli.StringFlag{Name: "listen", Value: ":9999", Usage: "brook 监听地址"},
 		&cli.StringFlag{Name: "password", Usage: "brook 连接密码(留空自动生成)"},
 		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(reality/hysteria2 必填,brook 用于生成链接)"},
@@ -376,7 +378,8 @@ func dnsFlags() []cli.Flag {
 
 // generateServerConfig 是 buildServerConfig 的纯核心(不依赖 cli.Context、不碰文件):
 // 按协议产出 serverConfig + (reality/hysteria2 的)sing-box 服务端配置字节。便于单测。
-func generateServerConfig(proto, host, sni, listen, password string) (serverConfig, []byte, error) {
+// port<=0 → reality/hysteria2 用 443。
+func generateServerConfig(proto, host, sni, listen, password string, port int) (serverConfig, []byte, error) {
 	p, err := normalizeServerProtocol(proto)
 	if err != nil {
 		return serverConfig{}, nil, err
@@ -387,7 +390,7 @@ func generateServerConfig(proto, host, sni, listen, password string) (serverConf
 		if host == "" {
 			return serverConfig{}, nil, fmt.Errorf("reality 需要 --host <公网IP或域名>(链接生成时要用)")
 		}
-		rp, err := srvgen.GenerateReality(host, sni)
+		rp, err := srvgen.GenerateReality(host, sni, port)
 		if err != nil {
 			return serverConfig{}, nil, err
 		}
@@ -395,12 +398,12 @@ func generateServerConfig(proto, host, sni, listen, password string) (serverConf
 		if err != nil {
 			return serverConfig{}, nil, err
 		}
-		return serverConfig{Type: "reality", SNI: rp.SNI, Link: rp.ClientLink()}, sb, nil
+		return serverConfig{Type: "reality", SNI: rp.SNI, Port: rp.Port, Link: rp.ClientLink()}, sb, nil
 	case "hysteria2":
 		if host == "" {
 			return serverConfig{}, nil, fmt.Errorf("hysteria2 需要 --host <公网IP或域名>(链接生成时要用)")
 		}
-		hp, err := srvgen.GenerateHysteria2(host, sni)
+		hp, err := srvgen.GenerateHysteria2(host, sni, port)
 		if err != nil {
 			return serverConfig{}, nil, err
 		}
@@ -408,7 +411,7 @@ func generateServerConfig(proto, host, sni, listen, password string) (serverConf
 		if err != nil {
 			return serverConfig{}, nil, err
 		}
-		return serverConfig{Type: "hysteria2", SNI: hp.SNI, Link: hp.ClientLink()}, sb, nil
+		return serverConfig{Type: "hysteria2", SNI: hp.SNI, Port: hp.Port, Link: hp.ClientLink()}, sb, nil
 	default: // brook
 		if password == "" {
 			if password, err = randomPassword(); err != nil {
@@ -422,7 +425,7 @@ func generateServerConfig(proto, host, sni, listen, password string) (serverConf
 // buildServerConfig 按 --protocol 生成 serverConfig;reality/hysteria2 还会把含私钥/证书的
 // sing-box 服务端配置落盘到 serverSingboxPath(0600)。返回的 cfg 写进 server.yaml。
 func buildServerConfig(c *cli.Context) (serverConfig, error) {
-	cfg, sb, err := generateServerConfig(c.String("protocol"), c.String("host"), c.String("sni"), c.String("listen"), c.String("password"))
+	cfg, sb, err := generateServerConfig(c.String("protocol"), c.String("host"), c.String("sni"), c.String("listen"), c.String("password"), c.Int("port"))
 	if err != nil {
 		return serverConfig{}, err
 	}
@@ -717,6 +720,10 @@ func serviceState(action, service string) string {
 func serverUninstallAction(c *cli.Context) error {
 	if err := install.UninstallServer(); err != nil {
 		return err
+	}
+	// reality/hysteria2 的 sing-box 服务端配置含私钥/证书,卸载时一并删,秘密不残留。
+	if err := os.Remove(serverSingboxPath); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "warning: 删除 %s 失败: %v\n", serverSingboxPath, err)
 	}
 	fmt.Println("已卸载 bx server 服务")
 	return nil
@@ -2440,13 +2447,18 @@ func serverFirewallHint(listen string) string {
 	return fmt.Sprintf("如果 VPS 启用了防火墙,请确认已放行 TCP %s; ufw 可用: sudo ufw allow %s/tcp", port, port)
 }
 
-// serverFirewallHintFor 按协议给防火墙放行提示:reality=TCP 443、hysteria2=UDP 443、brook=其 listen 端口。
+// serverFirewallHintFor 按协议给防火墙放行提示:reality=TCP、hysteria2=UDP、brook=其 listen 端口。
+// 端口取 cfg.Port(默认 443);务必 ufw + 云安全组都放行。
 func serverFirewallHintFor(cfg serverConfig) string {
+	port := cfg.Port
+	if port <= 0 {
+		port = 443
+	}
 	switch cfg.Type {
 	case "reality":
-		return "如果 VPS 启用了防火墙,请放行 TCP 443; ufw: sudo ufw allow 443/tcp"
+		return fmt.Sprintf("如果 VPS 启用了防火墙,请放行 TCP %d(ufw + 云安全组都要); ufw: sudo ufw allow %d/tcp", port, port)
 	case "hysteria2":
-		return "如果 VPS 启用了防火墙,请放行 UDP 443(hysteria2 走 QUIC/UDP); ufw: sudo ufw allow 443/udp"
+		return fmt.Sprintf("如果 VPS 启用了防火墙,请放行 UDP %d(hysteria2 走 QUIC/UDP;ufw + 云安全组都要); ufw: sudo ufw allow %d/udp", port, port)
 	default:
 		return serverFirewallHint(cfg.Listen)
 	}

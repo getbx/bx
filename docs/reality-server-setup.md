@@ -21,10 +21,12 @@
 
 ## 0. 选端口和 SNI(先定,踩过的坑)
 
-- **端口:别用 443。** 两个真实约束(实测):
-  - 服务端 **ufw / 云安全组**必须放行该端口;
-  - 路径上对 **443 有 DPI 干扰**,以及部分运营商对非标端口 SYN 黑洞(TCP 能连但 TLS 载荷被丢)。
-  - → 落一个**已放行的高端口**(如 `9998`、`8388` 之类),和现网 brook 的 `9999` 同类。下面用 `9998` 举例。
+- **端口:reality 就该用 443(默认)。** 更正旧版"别用 443"的 folklore——那是 brook 明文时代的话。
+  reality 伪装成访问真站的 **HTTPS**,真 HTTPS 就在 443;落到 9998 这种怪端口**反而更可疑**。
+  **2026-06-30 真机坐实**:reality@443+`www.cloudflare.com`,Mudi 跨主机过 GFW,出口==VPS,正常。
+  (之前疑似"443 挂"实为 **SNI=microsoft 证书过大**所致,与端口无关。)
+  - 唯一真实约束是**防火墙**:服务端 **ufw / 云安全组**必须放行 443;若 VPS 上已有真 web 服务占着 443,
+    才换一个**已放行的高端口**(如 `9998`,`bx server install --port 9998`)。下面手搭示例用 443。
 - **借用 SNI(`server_name`/`handshake.server`):挑稳定 TLS1.3 + X25519、且证书链够小的站。**
   - **别用 `www.microsoft.com`**——根因坐实(2026-06-30 真机):**它证书链过大(完整链 ~5879B),
     超出 REALITY 借壳中继证书的承受 → 握手必失败**(服务端报 `processed invalid connection`)。
@@ -127,7 +129,7 @@ journalctl -u sing-box -f          # 客户端连上后应见 inbound connection
 客户端(整机起来前可先单测协议层,见 e2e checklist 的 socks 法):出口 IP 应变成 VPS_IP。
 
 ## 踩坑速查
-- **服务端日志零连接、客户端超时** → 多半是端口被 ufw/安全组挡或被路径 DPI/运营商黑洞:换已放行高端口,别用 443。
+- **服务端日志零连接、客户端超时** → 端口没被防火墙放行:确认 **ufw + 云安全组**都放行了该端口(443 完全可用,放行即可;reality 用 443 最自然)。
 - **握手失败但端口通**(服务端 `processed invalid connection` / 客户端 EOF)→ **头号嫌疑是借用 SNI 证书过大**
   (`www.microsoft.com` ~5879B 必挂),不是密钥/网络。换证书链 <4.5KB 的站(`www.cloudflare.com` 等);
   别误归因 sing-box #4023 同机问题或网络 MITM(本项目两个都误判过——reality 同机 loopback 用好 SNI 照样通)。
