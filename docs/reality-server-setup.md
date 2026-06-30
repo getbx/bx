@@ -12,8 +12,7 @@
 >
 > ```bash
 > sudo bx server up   # 默认 reality+hys2、自动探测公网IP、装好即启动(高级:--protocol/--sni/--port/--host/--tcp-only)
-> sudo bx server start
-> # 末尾打印的 bx:// 链接 → 客户端 sudo bx setup <bx://…>
+> # 末尾打印一键命令 → 客户端 sudo bx setup <reality bx://…> --udp <hys2 bx://…>
 > ```
 >
 > 装机时还会**实连所选 SNI 体检**(TLS1.3 + X25519 + 证书链不过大),坏 SNI 当场警告。
