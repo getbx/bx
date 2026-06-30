@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -471,6 +472,19 @@ func writeServerSingbox(b []byte, force bool) error {
 }
 
 func serverInstallAction(c *cli.Context) error {
+	proto, _ := normalizeServerProtocol(c.String("protocol"))
+	// 重装防呆:reality/hys2 重装(--force)会重生成密钥/UUID,已发出的客户端链接全失效。
+	if (proto == "reality" || proto == "hysteria2") && c.Bool("force") {
+		if _, e := os.Stat(serverSingboxPath); e == nil {
+			fmt.Fprintln(os.Stderr, "⚠ 重装(--force)会重新生成密钥/UUID——所有已发出的客户端链接将失效;\n   装完用 `bx server link`(或 `bx server share`)重新分发。")
+		}
+	}
+	// 缺 --host 时,best-effort 探测本机公网 IP 给个建议(不擅自用,避免探到错 IP)。
+	if (proto == "reality" || proto == "hysteria2") && strings.TrimSpace(c.String("host")) == "" {
+		if ip := detectPublicIP(); ip != "" {
+			fmt.Fprintf(os.Stderr, "提示:本机公网 IP 可能是 %s,若正确请: --host %s\n", ip, ip)
+		}
+	}
 	cfg, err := buildServerConfig(c)
 	if err != nil {
 		return err
@@ -515,6 +529,24 @@ func serverInstallAction(c *cli.Context) error {
 		fmt.Println("需要客户端链接时运行: sudo bx server link --host <VPS_IP或域名>")
 	}
 	return nil
+}
+
+// detectPublicIP best-effort 探测本机公网 IPv4(短超时,失败返回 "")。仅作 --host 建议,不擅自用。
+func detectPublicIP() string {
+	cl := &http.Client{Timeout: 5 * time.Second}
+	for _, u := range []string{"https://api.ipify.org", "https://icanhazip.com"} {
+		resp, err := cl.Get(u)
+		if err != nil {
+			continue
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+		resp.Body.Close()
+		ip := strings.TrimSpace(string(b))
+		if net.ParseIP(ip) != nil {
+			return ip
+		}
+	}
+	return ""
 }
 
 // printClientSetup 打印 reality/hysteria2(及 reality+hys2 合体)的客户端接入信息。
