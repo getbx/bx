@@ -13,7 +13,7 @@ import (
 func TestWriteConfigRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	link := "brook://server?server=1.2.3.4%3A9999&password=pw"
-	if err := WriteConfig(p, []string{link}, false); err != nil {
+	if err := WriteConfig(p, []string{link}, "", false); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
@@ -43,7 +43,7 @@ func TestWriteConfigPreservesBXLink(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	raw := "brook://server?server=1.2.3.4%3A9999&password=pw"
 	link := blink.Encode(raw)
-	if err := WriteConfig(p, []string{link}, false); err != nil {
+	if err := WriteConfig(p, []string{link}, "", false); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
@@ -64,10 +64,10 @@ func TestWriteConfigRefusesExistingWithoutForce(t *testing.T) {
 	if err := os.WriteFile(p, []byte("server: old\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteConfig(p, []string{"brook://new"}, false); err == nil {
+	if err := WriteConfig(p, []string{"brook://new"}, "", false); err == nil {
 		t.Fatal("已存在且无 force 应报错")
 	}
-	if err := WriteConfig(p, []string{"brook://new"}, true); err != nil {
+	if err := WriteConfig(p, []string{"brook://new"}, "", true); err != nil {
 		t.Fatalf("force 应覆盖: %v", err)
 	}
 	fi, err := os.Stat(p)
@@ -109,7 +109,7 @@ func TestWriteConfigMultiTransports(t *testing.T) {
 		blink.Encode("vless://u@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com"),
 		blink.Encode("brook://server?server=1.2.3.4%3A9999&password=pw"),
 	}
-	if err := WriteConfig(p, links, false); err != nil {
+	if err := WriteConfig(p, links, "", false); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
@@ -129,7 +129,20 @@ func TestWriteConfigMultiTransports(t *testing.T) {
 }
 
 func TestWriteConfigEmpty(t *testing.T) {
-	if err := WriteConfig(filepath.Join(t.TempDir(), "c.yaml"), nil, false); err == nil {
+	if err := WriteConfig(filepath.Join(t.TempDir(), "c.yaml"), nil, "", false); err == nil {
 		t.Fatal("空链接列表应报错")
+	}
+}
+
+func TestWriteConfigWithUDPTransport(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.yaml")
+	main := "bx://" + "eyJ2IjoxLCJ0cmFuc3BvcnQiOiJyZWFsaXR5IiwibGluayI6InZsZXNzOi8vdWlkQDEuMi4zLjQ6NDQzP3NlY3VyaXR5PXJlYWxpdHkmcGJrPVAmc2lkPWFiJnNuaT13d3cuY2xvdWRmbGFyZS5jb20ifQ"
+	udp := "hysteria2://pw@1.2.3.4:443?obfs=salamander&obfs-password=x"
+	if err := WriteConfig(p, []string{main}, udp, false); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "udp:") || !strings.Contains(string(b), "transport:") {
+		t.Errorf("配置应含 udp.transport:\n%s", b)
 	}
 }

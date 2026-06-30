@@ -17,11 +17,16 @@ import (
 
 // minimalConfig 是 setup 写出的最小可用配置(能被 config.Parse 读回)。
 type minimalConfig struct {
-	Server     string   `yaml:"server,omitempty"`     // 单传输
-	Transports []string `yaml:"transports,omitempty"` // 多传输 bundle(>1 时写这个,接 S1 容灾)
-	Global     bool     `yaml:"global"`
-	Killswitch bool     `yaml:"killswitch"`
-	OwnerUID   int      `yaml:"owner_uid,omitempty"` // sudo bx setup 的真实用户;0 省略(root-only)
+	Server     string      `yaml:"server,omitempty"`     // 单传输
+	Transports []string    `yaml:"transports,omitempty"` // 多传输 bundle(>1 时写这个,接 S1 容灾)
+	Global     bool        `yaml:"global"`
+	Killswitch bool        `yaml:"killswitch"`
+	OwnerUID   int         `yaml:"owner_uid,omitempty"` // sudo bx setup 的真实用户;0 省略(root-only)
+	UDP        *minimalUDP `yaml:"udp,omitempty"`       // 按类分流:UDP 走专用传输(如 hysteria2)
+}
+
+type minimalUDP struct {
+	Transport string `yaml:"transport,omitempty"`
 }
 
 // ownerUIDFromEnv 从 SUDO_UID 取业主 uid(sudo bx setup 的真实用户)。
@@ -35,8 +40,9 @@ func ownerUIDFromEnv(getenv func(string) string) int {
 }
 
 // WriteConfig 写最小配置(global+killswitch 默认开)。links 单条→server:,多条→transports:
-// (有序优先级,接 S1 自动容灾)。文件已存在且 !force 则报错。
-func WriteConfig(path string, links []string, force bool) error {
+// (有序优先级,接 S1 自动容灾)。udpTransport 非空→写 udp.transport(按类分流,UDP 走它加速)。
+// 文件已存在且 !force 则报错。
+func WriteConfig(path string, links []string, udpTransport string, force bool) error {
 	if len(links) == 0 {
 		return fmt.Errorf("setup: 无传输链接")
 	}
@@ -50,6 +56,9 @@ func WriteConfig(path string, links []string, force bool) error {
 		cfg.Server = links[0]
 	} else {
 		cfg.Transports = links
+	}
+	if udpTransport != "" {
+		cfg.UDP = &minimalUDP{Transport: udpTransport}
 	}
 	b, err := yaml.Marshal(cfg)
 	if err != nil {
