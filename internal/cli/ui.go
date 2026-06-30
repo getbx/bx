@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/install"
 	"github.com/urfave/cli/v2"
 )
@@ -81,6 +82,22 @@ func (s uiServer) handleShare(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	// 主 server 是 reality → 多用户加 uuid;hys2 暂不支持;其余(brook)走多端口 share。
+	if mainCfg, merr := readServerConfig(defaultServerConfigPath); merr == nil {
+		switch mainCfg.Type {
+		case "reality":
+			rec, err := realityShare(name, s.sharesDir, mainCfg)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeHTTPJSON(w, map[string]string{"name": name, "type": "reality", "link": blink.Encode(rec.Link)})
+			return
+		case "hysteria2":
+			http.Error(w, "hysteria2 主 server 暂不支持多用户 share", http.StatusBadRequest)
+			return
+		}
 	}
 	host := strings.TrimSpace(r.FormValue("host"))
 	if host == "" {
