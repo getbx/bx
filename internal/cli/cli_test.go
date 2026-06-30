@@ -898,6 +898,37 @@ func TestRawLinkRisk(t *testing.T) {
 	}
 }
 
+func TestProtocolAdvisory(t *testing.T) {
+	// 弱协议(对当今强 DPI/探测易识别)→ 建议换 REALITY
+	for _, weak := range []string{
+		"trojan://pw@1.2.3.4:443?sni=x.com",
+		"ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388",
+		"vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6IjQ0MyIsImlkIjoieCIsIm5ldCI6InRjcCJ9",
+	} {
+		a := protocolAdvisory(weak)
+		if a == "" || !strings.Contains(a, "REALITY") {
+			t.Errorf("弱协议应提示换 REALITY: %q → %q", weak, a)
+		}
+	}
+	// hysteria2 缺 obfs → 提示加 salamander
+	if a := protocolAdvisory("hysteria2://pw@1.2.3.4:8443?sni=x.com"); !strings.Contains(a, "obfs") {
+		t.Errorf("裸 hysteria2 应提示加 obfs: %q", a)
+	}
+	// hysteria2 已带 obfs → 不提示
+	if a := protocolAdvisory("hysteria2://pw@1.2.3.4:8443?sni=x.com&obfs=salamander&obfs-password=p"); a != "" {
+		t.Errorf("带 obfs 的 hysteria2 不该提示: %q", a)
+	}
+	// reality / brook(一等公民/默认)→ 不提示
+	for _, ok := range []string{
+		"vless://uuid@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com",
+		"brook://server?server=1.2.3.4%3A9999&password=pw",
+	} {
+		if a := protocolAdvisory(ok); a != "" {
+			t.Errorf("reality/brook 不该提示: %q → %q", ok, a)
+		}
+	}
+}
+
 func TestResolveConfigLinksBundle(t *testing.T) {
 	l1 := "vless://u@1.2.3.4:9998?security=reality&pbk=K&sid=ab&sni=www.apple.com"
 	l2 := "brook://server?server=1.2.3.4%3A9999&password=pw"
