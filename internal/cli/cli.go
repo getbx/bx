@@ -611,33 +611,31 @@ func serverLinkAction(c *cli.Context) error {
 
 // realityShare 给 reality 主 server 加一个用户(uuid),重启生效,出新用户链接 + 记录到 share 文件。
 // reality 多用户 = 一个 inbound 多 uuid(不同于 brook 的每用户一端口一服务)。
-func realityShare(name, dir string, mainCfg serverConfig) error {
+func realityShare(name, dir string, mainCfg serverConfig) (serverConfig, error) {
 	newUUID, err := srvgen.NewUUID()
 	if err != nil {
-		return err
+		return serverConfig{}, err
 	}
 	sb, err := os.ReadFile(serverSingboxPath)
 	if err != nil {
-		return fmt.Errorf("读 server sing-box 配置: %w", err)
+		return serverConfig{}, fmt.Errorf("读 server sing-box 配置: %w", err)
 	}
 	sb2, err := srvgen.AddRealityUser(sb, newUUID)
 	if err != nil {
-		return err
+		return serverConfig{}, err
 	}
 	if err := os.WriteFile(serverSingboxPath, sb2, 0o600); err != nil {
-		return err
-	}
-	if err := install.RestartServer(); err != nil {
-		return fmt.Errorf("重启 server 使新用户生效: %w", err)
+		return serverConfig{}, err
 	}
 	rec := serverConfig{Type: "reality", SNI: mainCfg.SNI, Port: mainCfg.Port,
 		Link: swapVlessUUID(mainCfg.Link, newUUID), UDPLink: mainCfg.UDPLink}
 	if err := writeServerConfig(shareConfigPath(dir, name), rec, true); err != nil {
-		return err
+		return serverConfig{}, err
 	}
-	fmt.Printf("✅ reality share %s 已创建(主 server 加了一个用户并重启生效)。\n", name)
-	printClientSetup(rec)
-	return nil
+	if err := install.RestartServer(); err != nil {
+		return rec, fmt.Errorf("用户已加并落盘,但重启 server 失败(下次启动生效): %w", err)
+	}
+	return rec, nil
 }
 
 func serverShareAction(c *cli.Context) error {
@@ -650,7 +648,13 @@ func serverShareAction(c *cli.Context) error {
 	if mainCfg, merr := readServerConfig(defaultServerConfigPath); merr == nil {
 		switch mainCfg.Type {
 		case "reality":
-			return realityShare(name, dir, mainCfg)
+			rec, err := realityShare(name, dir, mainCfg)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✅ reality share %s 已创建(主 server 加了一个用户并重启生效)。\n", name)
+			printClientSetup(rec)
+			return nil
 		case "hysteria2":
 			return fmt.Errorf("hysteria2 主 server 暂不支持多用户 share;reality(可 --with-hysteria2)支持")
 		}
@@ -785,11 +789,13 @@ func revokeShare(name, dir string) error {
 		if err := os.WriteFile(serverSingboxPath, sb2, 0o600); err != nil {
 			return err
 		}
-		if err := install.RestartServer(); err != nil {
-			return fmt.Errorf("重启 server 使撤销生效: %w", err)
-		}
+		// 先删 share 记录(配置已落盘),再重启——这样即便重启失败,记录与配置仍一致、可重试,
+		// 不会留下一条「config 已删 uuid 但记录还在」的不可撤销僵尸。
 		if err := os.Remove(shareConfigPath(dir, name)); err != nil && !os.IsNotExist(err) {
 			return err
+		}
+		if err := install.RestartServer(); err != nil {
+			return fmt.Errorf("撤销已落盘,但重启 server 失败(下次启动生效): %w", err)
 		}
 		return nil
 	}
@@ -887,11 +893,23 @@ func serverUninstallAction(c *cli.Context) error {
 	if err := install.UninstallServer(); err != nil {
 		return err
 	}
-	// reality/hysteria2 的 sing-box 服务端配置含私钥/证书,卸载时一并删,秘密不残留。
-	if err := os.Remove(serverSingboxPath); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "warning: 删除 %s 失败: %v\n", serverSingboxPath, err)
+	// 卸载即清秘密:sbserver.json(reality 私钥/hys2 自签证书)、server.yaml(hys2 密码/obfs 密码
+	// 在 link 里)、shares 下每份(brook 密码 / reality 用户链接)。
+	rm := func(p string) {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "warning: 删除 %s 失败: %v\n", p, err)
+		}
 	}
-	fmt.Println("已卸载 bx server 服务")
+	rm(serverSingboxPath)
+	rm(defaultServerConfigPath)
+	if entries, err := os.ReadDir(defaultShareDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".yaml") {
+				rm(filepath.Join(defaultShareDir, e.Name()))
+			}
+		}
+	}
+	fmt.Println("已卸载 bx server 服务(配置与秘密已清除)")
 	return nil
 }
 
@@ -1601,6 +1619,10 @@ func doctorShares(dir string) {
 		return
 	}
 	for _, s := range shares {
+		if s.Config.Type == "reality" { // reality share = 主 server 内一 uuid,无独立服务/端口
+			doctorLine("ok", "share "+s.Name, "reality（主 server 内一用户）")
+			continue
+		}
 		state := serviceState("is-active", install.ShareServiceName(s.Name))
 		port := listenPort(s.Config.Listen)
 		if port == "" {
@@ -1623,6 +1645,10 @@ func shareChecks(dir string) []checkReport {
 	}
 	var checks []checkReport
 	for _, s := range shares {
+		if s.Config.Type == "reality" { // reality share = 主 server 内一 uuid,无独立服务/端口
+			checks = append(checks, checkReport{Name: "share." + s.Name, Status: "ok", Detail: "reality user in main server"})
+			continue
+		}
 		state := serviceState("is-active", install.ShareServiceName(s.Name))
 		port := listenPort(s.Config.Listen)
 		if port == "" {

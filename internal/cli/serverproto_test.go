@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -91,5 +92,27 @@ func TestGenerateServerConfigRealityWithHysteria2(t *testing.T) {
 	// --with-hysteria2 只能配 reality
 	if _, _, err := generateServerConfig("brook", "h", "", ":9999", "p", 0, true); err == nil {
 		t.Error("--with-hysteria2 配非 reality 应报错")
+	}
+}
+
+func TestShareChecksRealityNotFail(t *testing.T) {
+	dir := t.TempDir()
+	// 写一份 reality share 记录(无 Listen)
+	rec := serverConfig{Type: "reality", SNI: "www.cloudflare.com", Link: "vless://u@1.2.3.4:443?security=reality&pbk=P&sid=ab&sni=www.cloudflare.com"}
+	if err := writeServerConfig(filepath.Join(dir, "alice.yaml"), rec, true); err != nil {
+		t.Fatal(err)
+	}
+	checks := shareChecks(dir)
+	var found bool
+	for _, c := range checks {
+		if c.Name == "share.alice" {
+			found = true
+			if c.Status == "fail" {
+				t.Errorf("reality share 不该报 fail: %+v", c)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("没找到 share.alice 检查项")
 	}
 }
