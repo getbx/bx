@@ -13,6 +13,7 @@ type Report struct {
 	TunnelHealthy bool   `json:"tunnel_healthy"`
 	LatencyMS     int64  `json:"latency_ms"`
 	Restarts      int    `json:"restarts"`
+	Mode          string `json:"mode,omitempty"` // 分流模式:split | global | router
 	UDPMode       string `json:"udp_mode"`
 	UDPNote       string `json:"udp_note,omitempty"`
 	MutationState string `json:"mutation_state,omitempty"`
@@ -20,6 +21,20 @@ type Report struct {
 	Transport    string   `json:"transport,omitempty"`     // 当前活跃传输 scheme@host(容灾后反映实际)
 	Transports   []string `json:"transports,omitempty"`    // 多传输容灾列表(>1 时,有序优先级)
 	UDPTransport string   `json:"udp_transport,omitempty"` // UDP 专用传输(按类分流)
+}
+
+// modeLabel 给分流模式配中文说明,让 status 一眼看懂当前流量策略。
+func modeLabel(mode string) string {
+	switch mode {
+	case "global":
+		return "global(含国内全走隧道)"
+	case "router":
+		return "router(只劫持 LAN 转发)"
+	case "split":
+		return "split(国内直连 / 境外走隧道)"
+	default:
+		return mode
+	}
 }
 
 // Render 把 Report 渲染成命令行状态面板。
@@ -33,6 +48,9 @@ func Render(r Report) string {
 	fmt.Fprintln(&b, "bx 状态")
 	fmt.Fprintf(&b, "  节点    %s  (socks %s)\n", r.Server, r.SocksAddr)
 	fmt.Fprintf(&b, "  隧道    %s  延迟 %dms  重连 %d\n", health, r.LatencyMS, r.Restarts)
+	if r.Mode != "" {
+		fmt.Fprintf(&b, "  模式    %s\n", modeLabel(r.Mode))
+	}
 	if r.Transport != "" {
 		fmt.Fprintf(&b, "  传输    %s", r.Transport)
 		if len(r.Transports) > 1 {

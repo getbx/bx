@@ -36,6 +36,18 @@ import (
 // 与 setup 探测派发同源,杜绝发散。
 func transportKind(server string) string { return tunnel.Kind(server) }
 
+// proxyMode 把生效的 global 标志 + cfg.Mode 归一成 status 呈现的分流模式标签:
+// router(只劫持 LAN 转发)> global(含国内全走隧道)> split(国内直连、境外走隧道)。
+func proxyMode(global bool, mode string) string {
+	if mode == "router" {
+		return "router"
+	}
+	if global {
+		return "global"
+	}
+	return "split"
+}
+
 // Options 是 bx up 的运行期参数(非配置文件项)。
 type Options struct {
 	TunName         string
@@ -387,7 +399,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return transportLabel(swapper.currentLink()), transportLabels, udpLabel
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(counters, lt, serverHost, cfg.UDP.Mode, transportInfo, mutEng, mut, uint32(cfg.OwnerUID))
+		return serveControl(counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, mutEng, mut, uint32(cfg.OwnerUID))
 	})
 	if err != nil {
 		return err

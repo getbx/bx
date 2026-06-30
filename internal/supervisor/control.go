@@ -238,7 +238,7 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // c: 统计计数器;t: 隧道(满足 tunnelStatser);server/udpMode: 配置字符串;eng: 引擎;mut: 改动执行器。
 // transportInfo(可空)返回当前活跃传输标签、容灾列表、UDP 专用传输标签,供 status 呈现;
 // active 动态(容灾后反映实际),list/udp 多为静态配置。
-func serveControl(c *stats.Counters, t tunnelStatser, server, udpMode string, transportInfo func() (string, []string, string), eng controlEngine, mut mutator, ownerUID uint32) (io.Closer, error) {
+func serveControl(c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), eng controlEngine, mut mutator, ownerUID uint32) (io.Closer, error) {
 	report := func() stats.Report {
 		ts := t.Stats()
 		var active, udp string
@@ -253,6 +253,7 @@ func serveControl(c *stats.Counters, t tunnelStatser, server, udpMode string, tr
 			TunnelHealthy: ts.Up,
 			LatencyMS:     ts.LatencyMS,
 			Restarts:      ts.Restarts,
+			Mode:          mode,
 			UDPMode:       udpMode,
 			UDPNote:       udpNote(udpMode),
 			Transport:     active,
