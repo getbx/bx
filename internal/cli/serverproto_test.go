@@ -32,7 +32,7 @@ func TestServerConfigComplete(t *testing.T) {
 }
 
 func TestGenerateServerConfigReality(t *testing.T) {
-	cfg, sb, err := generateServerConfig("reality", "1.2.3.4", "www.apple.com", "", "", 0)
+	cfg, sb, err := generateServerConfig("reality", "1.2.3.4", "www.apple.com", "", "", 0, false)
 	if err != nil {
 		t.Fatalf("gen: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestGenerateServerConfigReality(t *testing.T) {
 }
 
 func TestGenerateServerConfigHysteria2(t *testing.T) {
-	cfg, sb, err := generateServerConfig("hysteria2", "1.2.3.4", "", "", "", 0)
+	cfg, sb, err := generateServerConfig("hysteria2", "1.2.3.4", "", "", "", 0, false)
 	if err != nil {
 		t.Fatalf("gen: %v", err)
 	}
@@ -61,14 +61,35 @@ func TestGenerateServerConfigHysteria2(t *testing.T) {
 }
 
 func TestGenerateServerConfigRealityNeedsHost(t *testing.T) {
-	if _, _, err := generateServerConfig("reality", "", "", "", "", 0); err == nil {
+	if _, _, err := generateServerConfig("reality", "", "", "", "", 0, false); err == nil {
 		t.Error("reality 缺 host 应报错")
 	}
 }
 
 func TestGenerateServerConfigBrook(t *testing.T) {
-	cfg, sb, err := generateServerConfig("brook", "", "", ":9999", "mypw", 0)
+	cfg, sb, err := generateServerConfig("brook", "", "", ":9999", "mypw", 0, false)
 	if err != nil || cfg.Type != "brook" || cfg.Password != "mypw" || sb != nil {
 		t.Errorf("brook gen 不对: %+v sb=%v err=%v", cfg, sb != nil, err)
+	}
+}
+
+func TestGenerateServerConfigRealityWithHysteria2(t *testing.T) {
+	cfg, sb, err := generateServerConfig("reality", "1.2.3.4", "", "", "", 0, true)
+	if err != nil {
+		t.Fatalf("gen combo: %v", err)
+	}
+	if cfg.Type != "reality" || !strings.HasPrefix(cfg.Link, "vless://") {
+		t.Errorf("主传输应 reality: %+v", cfg)
+	}
+	if !strings.HasPrefix(cfg.UDPLink, "hysteria2://") {
+		t.Errorf("UDPLink 应 hysteria2: %q", cfg.UDPLink)
+	}
+	s := string(sb)
+	if !strings.Contains(s, `"reality"`) || !strings.Contains(s, `"hysteria2"`) {
+		t.Error("合体 sing-box 配置应同含 reality + hysteria2 入站")
+	}
+	// --with-hysteria2 只能配 reality
+	if _, _, err := generateServerConfig("brook", "h", "", ":9999", "p", 0, true); err == nil {
+		t.Error("--with-hysteria2 配非 reality 应报错")
 	}
 }

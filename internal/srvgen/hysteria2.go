@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -108,27 +107,27 @@ func GenerateHysteria2(host, sni string, port int) (HysteriaParams, error) {
 	}, nil
 }
 
+// inbound 返回 hysteria2 入站 map(供 ServerConfig 与 CombinedServerConfig 复用)。
+func (p HysteriaParams) inbound() map[string]any {
+	return map[string]any{
+		"type":        "hysteria2",
+		"tag":         "hy2-in",
+		"listen":      "::",
+		"listen_port": p.Port,
+		"users":       []any{map[string]any{"password": p.Password}},
+		"obfs":        map[string]any{"type": "salamander", "password": p.ObfsPassword},
+		"tls": map[string]any{
+			"enabled":     true,
+			"server_name": p.SNI,
+			"certificate": p.CertPEM,
+			"key":         p.KeyPEM,
+		},
+	}
+}
+
 // ServerConfig 生成 sing-box hysteria2 服务端配置(内联自签证书 + salamander obfs + direct 出站)。
 func (p HysteriaParams) ServerConfig() ([]byte, error) {
-	cfg := map[string]any{
-		"log": map[string]any{"level": "warn", "timestamp": false},
-		"inbounds": []any{map[string]any{
-			"type":        "hysteria2",
-			"tag":         "hy2-in",
-			"listen":      "::",
-			"listen_port": p.Port,
-			"users":       []any{map[string]any{"password": p.Password}},
-			"obfs":        map[string]any{"type": "salamander", "password": p.ObfsPassword},
-			"tls": map[string]any{
-				"enabled":     true,
-				"server_name": p.SNI,
-				"certificate": p.CertPEM,
-				"key":         p.KeyPEM,
-			},
-		}},
-		"outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}},
-	}
-	return json.MarshalIndent(cfg, "", "  ")
+	return marshalServer([]any{p.inbound()})
 }
 
 // ClientLink 生成对应客户端 hysteria2://… 链接(salamander obfs + insecure=1 对应自签证书)。

@@ -93,32 +93,47 @@ func GenerateReality(host, sni string, port int) (RealityParams, error) {
 }
 
 // ServerConfig 生成 sing-box reality 服务端配置(vless 入站 + reality + direct 出站)。
-func (p RealityParams) ServerConfig() ([]byte, error) {
-	cfg := map[string]any{
-		"log": map[string]any{"level": "warn", "timestamp": false},
-		"inbounds": []any{map[string]any{
-			"type":        "vless",
-			"tag":         "reality-in",
-			"listen":      "::",
-			"listen_port": p.Port,
-			"users":       []any{map[string]any{"uuid": p.UUID, "flow": "xtls-rprx-vision"}},
-			"tls": map[string]any{
-				"enabled":     true,
-				"server_name": p.SNI,
-				"reality": map[string]any{
-					"enabled": true,
-					"handshake": map[string]any{
-						"server":      p.SNI, // 探测转发到真站
-						"server_port": 443,
-					},
-					"private_key": p.PrivateKey,
-					"short_id":    []any{p.ShortID},
+// inbound 返回 reality vless 入站 map(供 ServerConfig 与 CombinedServerConfig 复用)。
+func (p RealityParams) inbound() map[string]any {
+	return map[string]any{
+		"type":        "vless",
+		"tag":         "reality-in",
+		"listen":      "::",
+		"listen_port": p.Port,
+		"users":       []any{map[string]any{"uuid": p.UUID, "flow": "xtls-rprx-vision"}},
+		"tls": map[string]any{
+			"enabled":     true,
+			"server_name": p.SNI,
+			"reality": map[string]any{
+				"enabled": true,
+				"handshake": map[string]any{
+					"server":      p.SNI, // 探测转发到真站
+					"server_port": 443,
 				},
+				"private_key": p.PrivateKey,
+				"short_id":    []any{p.ShortID},
 			},
-		}},
-		"outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}},
+		},
 	}
-	return json.MarshalIndent(cfg, "", "  ")
+}
+
+func (p RealityParams) ServerConfig() ([]byte, error) {
+	return marshalServer([]any{p.inbound()})
+}
+
+// marshalServer 把若干入站包成一份完整 sing-box 服务端配置(共享 direct 出站)。
+func marshalServer(inbounds []any) ([]byte, error) {
+	return json.MarshalIndent(map[string]any{
+		"log":       map[string]any{"level": "warn", "timestamp": false},
+		"inbounds":  inbounds,
+		"outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}},
+	}, "", "  ")
+}
+
+// CombinedServerConfig 把 reality(TCP)+ hysteria2(UDP)合成一份 sing-box 服务端配置
+// (两个入站 + 共享 direct 出站)——一台 server 同时供「隐蔽 TCP + 加速 UDP」。
+func CombinedServerConfig(rp RealityParams, hp HysteriaParams) ([]byte, error) {
+	return marshalServer([]any{rp.inbound(), hp.inbound()})
 }
 
 // ClientLink 生成对应的客户端 vless://…reality 链接(带 bx 推荐默认 flow/fp)。

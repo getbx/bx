@@ -135,3 +135,22 @@ func TestRealityClientLinkShape(t *testing.T) {
 		t.Fatal("客户端 link 泄漏了服务端私钥!")
 	}
 }
+
+func TestCombinedServerConfig(t *testing.T) {
+	rp, _ := GenerateReality("1.2.3.4", "www.cloudflare.com", 443)
+	hp, _ := GenerateHysteria2("1.2.3.4", "www.cloudflare.com", 443)
+	b, err := CombinedServerConfig(rp, hp)
+	if err != nil {
+		t.Fatalf("combined: %v", err)
+	}
+	s := string(b)
+	// 两个入站都在,reality 的私钥 + hys2 的 salamander 都在,共享一个 direct 出站
+	for _, want := range []string{`"vless"`, `"reality"`, rp.PrivateKey, `"hysteria2"`, `"salamander"`, hp.Password} {
+		if !strings.Contains(s, want) {
+			t.Errorf("combined 配置缺 %q", want)
+		}
+	}
+	if strings.Count(s, `"reality-in"`) != 1 || strings.Count(s, `"hy2-in"`) != 1 {
+		t.Error("应恰好各一个 reality/hys2 入站")
+	}
+}

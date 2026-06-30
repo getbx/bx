@@ -86,6 +86,7 @@ type serverConfig struct {
 	SNI      string `yaml:"sni,omitempty"`      // reality/hysteria2:借用的真站
 	Port     int    `yaml:"port,omitempty"`     // reality/hysteria2:监听端口(默认 443)
 	Link     string `yaml:"link,omitempty"`     // reality/hysteria2:生成的客户端裸链接(host 已填)
+	UDPLink  string `yaml:"udp_link,omitempty"` // reality+hysteria2 合体:hys2 链接(客户端作 udp.transport 按类分流)
 }
 
 // serverSingboxPath 是 reality/hysteria2 服务端的 sing-box 配置落盘路径(含私钥/证书,0600)。
@@ -232,6 +233,7 @@ func serverInstallFlags() []cli.Flag {
 		&cli.StringFlag{Name: "protocol", Value: "brook", Usage: "协议:brook | reality(强封锁首选) | hysteria2(速度档)"},
 		&cli.StringFlag{Name: "sni", Usage: "reality/hysteria2 借用的真站(默认 www.cloudflare.com;别用 microsoft 证书过大)"},
 		&cli.IntFlag{Name: "port", Usage: "reality/hysteria2 监听端口(默认 443,最自然;被占/受限才换)"},
+		&cli.BoolFlag{Name: "with-hysteria2", Usage: "reality 同时开 hysteria2(UDP 加速),客户端按类分流(既安全又有速度)"},
 		&cli.StringFlag{Name: "listen", Value: ":9999", Usage: "brook 监听地址"},
 		&cli.StringFlag{Name: "password", Usage: "brook 连接密码(留空自动生成)"},
 		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(reality/hysteria2 必填,brook 用于生成链接)"},
@@ -379,10 +381,13 @@ func dnsFlags() []cli.Flag {
 // generateServerConfig 是 buildServerConfig 的纯核心(不依赖 cli.Context、不碰文件):
 // 按协议产出 serverConfig + (reality/hysteria2 的)sing-box 服务端配置字节。便于单测。
 // port<=0 → reality/hysteria2 用 443。
-func generateServerConfig(proto, host, sni, listen, password string, port int) (serverConfig, []byte, error) {
+func generateServerConfig(proto, host, sni, listen, password string, port int, withHysteria2 bool) (serverConfig, []byte, error) {
 	p, err := normalizeServerProtocol(proto)
 	if err != nil {
 		return serverConfig{}, nil, err
+	}
+	if withHysteria2 && p != "reality" {
+		return serverConfig{}, nil, fmt.Errorf("--with-hysteria2 只能配 --protocol reality(主 TCP)用")
 	}
 	host = strings.TrimSpace(host)
 	switch p {
@@ -393,6 +398,18 @@ func generateServerConfig(proto, host, sni, listen, password string, port int) (
 		rp, err := srvgen.GenerateReality(host, sni, port)
 		if err != nil {
 			return serverConfig{}, nil, err
+		}
+		// reality + hysteria2 合体:一台 server 同供隐蔽 TCP + 加速 UDP,客户端按类分流。
+		if withHysteria2 {
+			hp, err := srvgen.GenerateHysteria2(host, sni, port)
+			if err != nil {
+				return serverConfig{}, nil, err
+			}
+			sb, err := srvgen.CombinedServerConfig(rp, hp)
+			if err != nil {
+				return serverConfig{}, nil, err
+			}
+			return serverConfig{Type: "reality", SNI: rp.SNI, Port: rp.Port, Link: rp.ClientLink(), UDPLink: hp.ClientLink()}, sb, nil
 		}
 		sb, err := rp.ServerConfig()
 		if err != nil {
@@ -425,7 +442,7 @@ func generateServerConfig(proto, host, sni, listen, password string, port int) (
 // buildServerConfig 按 --protocol 生成 serverConfig;reality/hysteria2 还会把含私钥/证书的
 // sing-box 服务端配置落盘到 serverSingboxPath(0600)。返回的 cfg 写进 server.yaml。
 func buildServerConfig(c *cli.Context) (serverConfig, error) {
-	cfg, sb, err := generateServerConfig(c.String("protocol"), c.String("host"), c.String("sni"), c.String("listen"), c.String("password"), c.Int("port"))
+	cfg, sb, err := generateServerConfig(c.String("protocol"), c.String("host"), c.String("sni"), c.String("listen"), c.String("password"), c.Int("port"), c.Bool("with-hysteria2"))
 	if err != nil {
 		return serverConfig{}, err
 	}
@@ -485,7 +502,7 @@ func serverInstallAction(c *cli.Context) error {
 	}
 	// reality/hysteria2:链接已在生成时含 host,直接给(换壳成 bx://)。
 	if cfg.Type == "reality" || cfg.Type == "hysteria2" {
-		fmt.Println(blink.Encode(cfg.Link))
+		printClientSetup(cfg)
 		return nil
 	}
 	if host := c.String("host"); host != "" {
@@ -500,6 +517,18 @@ func serverInstallAction(c *cli.Context) error {
 	return nil
 }
 
+// printClientSetup 打印 reality/hysteria2(及 reality+hys2 合体)的客户端接入信息。
+// 合体时给一条「按类分流」的 bx setup 命令(主 reality TCP + udp.transport 走 hys2)。
+func printClientSetup(cfg serverConfig) {
+	main := blink.Encode(cfg.Link)
+	if cfg.UDPLink != "" {
+		fmt.Println("🔀 reality(TCP/隐蔽)+ hysteria2(UDP/加速)就绪。客户端一条命令配齐(按类分流,既安全又有速度):")
+		fmt.Printf("  sudo bx setup %s --udp %s\n", main, blink.Encode(cfg.UDPLink))
+		return
+	}
+	fmt.Println(main)
+}
+
 func serverLinkAction(c *cli.Context) error {
 	cfg, err := readServerConfig(c.String("config"))
 	if err != nil {
@@ -507,7 +536,7 @@ func serverLinkAction(c *cli.Context) error {
 	}
 	// reality/hysteria2:链接已在安装时生成(含 host),直接换壳输出,无需 --host。
 	if cfg.Type == "reality" || cfg.Type == "hysteria2" {
-		fmt.Println(blink.Encode(cfg.Link))
+		printClientSetup(cfg)
 		return nil
 	}
 	host := c.String("host")
@@ -1514,6 +1543,7 @@ func setupFlags() []cli.Flag {
 		&cli.StringFlag{Name: "probe", Value: defaultProbeTarget, Usage: "连通检测目标"},
 		&cli.BoolFlag{Name: "force", Usage: "覆盖已存在的配置"},
 		&cli.BoolFlag{Name: "strict", Usage: "连通检测失败则中止(默认仅警告)"},
+		&cli.StringFlag{Name: "udp", Usage: "按类分流:UDP 走的专用传输链接(如 hysteria2,bx server install --with-hysteria2 给)"},
 	}
 }
 
@@ -1579,6 +1609,16 @@ func setupAction(c *cli.Context) error {
 	if len(configLinks) > 1 {
 		fmt.Printf("🔀 多传输:%d 个,自动容灾(主传输优先)\n", len(configLinks))
 	}
+	// 按类分流:--udp <link> → udp.transport(UDP/QUIC 走它加速,TCP 走主传输)。
+	var udpTransport string
+	if u := strings.TrimSpace(c.String("udp")); u != "" {
+		_, udpLinks, uerr := resolveConfigLinks(u)
+		if uerr != nil {
+			return fmt.Errorf("--udp 链接无效: %w", uerr)
+		}
+		udpTransport = udpLinks[0]
+		fmt.Printf("⚡ 按类分流:UDP 走专用传输(%s)\n", redactLink(udpTransport))
+	}
 	fmt.Println("⏳ 连通检测中…")
 	if lat, perr := setup.ProbeServer("/var/lib/bx", link, c.String("probe"), 15*time.Second); perr != nil {
 		if c.Bool("strict") {
@@ -1588,7 +1628,7 @@ func setupAction(c *cli.Context) error {
 	} else {
 		fmt.Printf("✅ 服务器连通,延迟 %dms\n", lat)
 	}
-	if err := setup.WriteConfig(cfgPath, configLinks, c.Bool("force")); err != nil {
+	if err := setup.WriteConfig(cfgPath, configLinks, udpTransport, c.Bool("force")); err != nil {
 		return err
 	}
 	bin, err := install.SelfInstall()
