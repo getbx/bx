@@ -1,0 +1,109 @@
+package srvgen
+
+import (
+	"crypto/ecdh"
+	"encoding/base64"
+	"encoding/json"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+func TestRealityKeypairInterop(t *testing.T) {
+	priv, pub, err := realityKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	// 两者都是 32 字节 base64url;pub 必须能从 priv 推导(与 sing-box 同法,已实测兼容)。
+	pb, err := base64.RawURLEncoding.DecodeString(priv)
+	if err != nil || len(pb) != 32 {
+		t.Fatalf("priv 非 32 字节 base64url: %v len=%d", err, len(pb))
+	}
+	k, err := ecdh.X25519().NewPrivateKey(pb)
+	if err != nil {
+		t.Fatalf("priv 不是合法 x25519: %v", err)
+	}
+	wantPub := base64.RawURLEncoding.EncodeToString(k.PublicKey().Bytes())
+	if wantPub != pub {
+		t.Fatalf("pub 与 priv 不匹配: got %q derive %q", pub, wantPub)
+	}
+}
+
+var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func TestGenerateRealityDefaults(t *testing.T) {
+	p, err := GenerateReality("vps.example.com", "")
+	if err != nil {
+		t.Fatalf("gen: %v", err)
+	}
+	if p.Host != "vps.example.com" {
+		t.Errorf("host=%q", p.Host)
+	}
+	if p.Port != 443 {
+		t.Errorf("默认端口应 443, got %d", p.Port)
+	}
+	if p.SNI == "" {
+		t.Error("SNI 应有默认值")
+	}
+	if !uuidRe.MatchString(p.UUID) {
+		t.Errorf("UUID 非合法 v4: %q", p.UUID)
+	}
+	if m, _ := regexp.MatchString(`^[0-9a-f]{2,16}$`, p.ShortID); !m || len(p.ShortID)%2 != 0 {
+		t.Errorf("ShortID 应为偶数长 hex: %q", p.ShortID)
+	}
+	if p.PrivateKey == "" || p.PublicKey == "" {
+		t.Error("应生成 keypair")
+	}
+}
+
+func TestGenerateRealityCustomSNI(t *testing.T) {
+	p, _ := GenerateReality("h", "www.apple.com")
+	if p.SNI != "www.apple.com" {
+		t.Errorf("SNI 应用自定义, got %q", p.SNI)
+	}
+}
+
+func TestRealityServerConfigShape(t *testing.T) {
+	p, _ := GenerateReality("h", "www.microsoft.com")
+	b, err := p.ServerConfig()
+	if err != nil {
+		t.Fatalf("server cfg: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("非合法 JSON: %v", err)
+	}
+	s := string(b)
+	for _, want := range []string{
+		`"vless"`, `"reality"`, `"xtls-rprx-vision"`, p.PrivateKey, p.ShortID, p.UUID,
+		`"server_name": "www.microsoft.com"`, `"handshake"`, `"server_port": 443`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("server 配置缺 %q:\n%s", want, s)
+		}
+	}
+	// 服务端配置绝不能含公钥派生外的客户端私密之外的东西——但必须含 private_key(服务端持私钥)。
+	if strings.Contains(s, p.PublicKey) {
+		t.Error("server 配置不该出现 public key(那是给客户端的 pbk)")
+	}
+}
+
+func TestRealityClientLinkShape(t *testing.T) {
+	p, _ := GenerateReality("1.2.3.4", "www.microsoft.com")
+	link := p.ClientLink()
+	if !strings.HasPrefix(link, "vless://"+p.UUID+"@1.2.3.4:443?") {
+		t.Errorf("link 前缀不对: %q", link)
+	}
+	for _, want := range []string{
+		"security=reality", "pbk=" + p.PublicKey, "sid=" + p.ShortID,
+		"sni=www.microsoft.com", "flow=xtls-rprx-vision", "fp=chrome",
+	} {
+		if !strings.Contains(link, want) {
+			t.Errorf("client link 缺 %q: %s", want, link)
+		}
+	}
+	// 客户端 link 必须用公钥(pbk),绝不能漏服务端私钥。
+	if strings.Contains(link, p.PrivateKey) {
+		t.Fatal("客户端 link 泄漏了服务端私钥!")
+	}
+}
