@@ -867,12 +867,27 @@ func serverDoctorAction(c *cli.Context) error {
 		proto, _ := normalizeServerProtocol(cfg.Type)
 		doctorLine("ok", "protocol", proto)
 		if proto == "reality" || proto == "hysteria2" {
-			// reality/hysteria2:监听在 sing-box 配置里(443),检查配置落盘。
+			// reality/hysteria2:监听在 sing-box 配置里,检查配置落盘 + 端口真在听 + SNI 适配。
 			if _, serr := os.Stat(serverSingboxPath); serr != nil {
 				doctorLine("fail", "singbox config", serr.Error())
 			} else {
 				doctorLine("ok", "singbox config", serverSingboxPath)
 				checkFileMode(serverSingboxPath, 0o600)
+			}
+			sport := cfg.Port
+			if sport <= 0 {
+				sport = 443
+			}
+			portStr := fmt.Sprintf("%d", sport)
+			if proto == "reality" { // reality=TCP,可探;hys2=UDP,isListening 探不到 → 跳过
+				if isListening(portStr) {
+					doctorLine("ok", "port listening", "tcp/"+portStr)
+				} else {
+					doctorLine("warn", "port listening", "tcp/"+portStr+" 未在听(server 没起?bx server start)")
+				}
+				for _, w := range srvgen.CheckRealitySNI(cfg.SNI) {
+					doctorLine("warn", "reality sni", w)
+				}
 			}
 			if hint := serverFirewallHintFor(cfg); hint != "" {
 				doctorLine("hint", "firewall", hint)
