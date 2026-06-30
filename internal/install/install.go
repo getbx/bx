@@ -145,8 +145,13 @@ ProtectSystem=strict
 ProtectHome=true
 ReadOnlyPaths=/etc/bx
 ReadWritePaths=/var/lib/bx
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-CapabilityBoundingSet=
+# AF_NETLINK:reality/hysteria2 用的内嵌 sing-box 要订阅路由/接口更新,缺它启动即
+# FATAL("subscribe route updates: address family not supported")。brook 用不到但无害。
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# CAP_NET_BIND_SERVICE:reality 默认监听 443(特权端口),空 CapabilityBoundingSet 会把它
+# 从 root 也剥掉,导致 bind 443 permission denied。给最小绑定特权(高端口的 brook 用不到但无害)。
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 LockPersonality=true
 
 [Install]
