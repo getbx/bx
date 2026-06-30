@@ -93,11 +93,15 @@ Linux 客户端直接使用这组命令。
 
 `setup` 会安装系统服务,`up` 会启动并接管流量,`down` 会停止保护。
 
-> **多传输(容灾 + 加速)**:bx 支持 **brook / REALITY / hysteria2 / trojan / shadowsocks / vmess 六种引擎**平级——
-> 直接甩别处的 `vless://`(reality)、`hysteria2://`、`trojan://`、`ss://`、`vmess://` 分享链接即可用
-> (裸链接含明文凭据,建议先 `bx blink <link>` 换壳成 `bx://` 再贴)。可单用、组成自动容灾池
-> (`bx blink link1 link2` 一贴配好,主挂自动切备)、或**按类分流**(UDP/QUIC 走 hysteria 加速、TCP 走
-> REALITY 隐蔽——既安全又有速度)。全程 fail-closed 不泄漏。配置见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
+> **多传输(容灾 + 加速)**:bx 支持 **brook / REALITY / hysteria2 / trojan / shadowsocks / vmess 六种引擎**平级,
+> 直接甩别处的分享链接即可用(裸链接建议先 `bx blink <link>` 换壳)。但**六种不是一个层次**——按当今封锁/检测态势分档:
+>
+> - 🟢 **主力**:**REALITY**(TCP,最隐蔽,2026 实测 98-99% 突破)+ **hysteria2**(UDP/QUIC 速度档,建议配 salamander 混淆)。
+> - 🟡 **兼容**:trojan / vmess / shadowsocks / brook——接住已有节点,但 2025 起强 DPI 下 trojan/vmess/ss 检出 80-95%,慎用于强封锁。
+>
+> 推荐组合 = **REALITY(TCP)+ hysteria2(UDP)+ brook 兜底**,即"按类分流 + 容灾",既安全又有速度。
+> `bx setup` 贴兼容档链接会提示弱点并建议 server 端换 REALITY(不止 GFW——Claude/OpenAI/Google 等也对弱协议出口 IP 做风控)。
+> 全程 fail-closed 不泄漏。详见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
 
 macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Restart、Turn Off、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
 

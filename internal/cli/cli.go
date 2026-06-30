@@ -1373,6 +1373,9 @@ func probeAction(c *cli.Context) error {
 	if w := rawLinkRisk(arg); w != "" {
 		fmt.Fprintln(os.Stderr, w)
 	}
+	if a := protocolAdvisory(link); a != "" {
+		fmt.Fprintln(os.Stderr, a)
+	}
 	dir, err := userRuntimeDir()
 	if err != nil {
 		return err
@@ -1405,6 +1408,9 @@ func setupAction(c *cli.Context) error {
 	}
 	if w := rawLinkRisk(arg); w != "" {
 		fmt.Fprintln(os.Stderr, w)
+	}
+	if a := protocolAdvisory(link); a != "" {
+		fmt.Fprintln(os.Stderr, a)
 	}
 	cfgPath := c.String("config")
 	if len(configLinks) > 1 {
@@ -1446,6 +1452,29 @@ func rawLinkRisk(arg string) string {
 		return "⚠ 这是含明文凭据的裸链接,已留进 shell 历史;分享/留存前建议先用 `bx blink <link>` 换壳成 bx://"
 	}
 	return ""
+}
+
+// protocolAdvisory 按协议在「当今强 DPI + 主动探测 + 服务端风控」下的强弱给建议(空=无需)。
+// 不阻断——bx 照样直接用用户的链接;只提示并建议改 server 端,帮用户在强对抗下做对选择。
+// 依据(2025-2026 实测):GFW 对 trojan/vmess/ss 主动探测检出 80-95%;弱协议还更易让 server IP
+// 被各类服务(含 Claude/OpenAI/Google 等)风控封禁。reality 是当前最隐蔽(98-99% 突破),
+// hysteria2 是速度档但裸 QUIC 会被 SNI 识别/限速,需 salamander 混淆。
+func protocolAdvisory(link string) string {
+	switch tunnel.Kind(strings.TrimSpace(link)) {
+	case "trojan", "shadowsocks", "vmess":
+		return "⚠ " + tunnel.Kind(link) + " 协议对当今强 DPI/主动探测较弱(2025 起 GFW 检出 80-95%),\n" +
+			"   也更易让 server IP 被各类服务(含 Claude/OpenAI/Google 等)风控封禁。\n" +
+			"   作 client 能直接用;但强封锁或需稳定访问 AI 服务时,建议 server 端改用 VLESS-REALITY\n" +
+			"   (隐蔽性最强),速度档再叠 hysteria2(UDP,见 docs/multi-transport-guide.md)。"
+	case "hysteria2":
+		if !strings.Contains(link, "obfs=") {
+			return "💡 hysteria2 是速度档(UDP/QUIC)。裸 QUIC 在部分网络(如中国电信)会被 SNI 识别/限速;\n" +
+				"   建议 server 端开 salamander 混淆,链接加 ?obfs=salamander&obfs-password=<pw>。"
+		}
+		return ""
+	default: // reality(最隐蔽)、brook(bx 默认)无需提示
+		return ""
+	}
 }
 
 // resolveConfigLinks 把 setup 的输入解析为「主传输(供连通探测)+ 各传输的 bx:// 换壳(供写配置)」。

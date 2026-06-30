@@ -1,24 +1,62 @@
 # 多传输使用指南(容灾 + 按类分流)
 
-bx 支持**三种传输引擎平级共存**,可单用、可组成容灾池、可按流量类别分流。核心原则贯穿始终:
+bx 支持**六种传输引擎平级共存**,可单用、可组成容灾池、可按流量类别分流。核心原则贯穿始终:
 **不泄漏是本质**——任何传输/容灾/分流,隧道不健康一律 fail-closed Block,绝不回落直连暴露真实 IP。
 
-## 六种传输,各有所长
+## 六种传输不是一个层次——按当今封锁/检测态势分三档
 
-| 传输 | scheme | 特点 | 适合 |
+> ⚠ **重要**:协议越多 ≠ 越好。当今 GFW(2025-2026)主动探测 + AI DPI 升级后,各协议存活率差距巨大。
+> 下表按**实际有效性**分档(数据:GFW 2025-2026 实测,见文末来源),帮你选对、而不是随便用。
+
+### 🟢 主力档(强对抗下仍有效——优先用这两个)
+
+| 传输 | scheme | 为什么强 | 定位 |
 | --- | --- | --- | --- |
-| **brook** | `brook://` | 内嵌、最老牌、明文 9999 易被运营商 SYN 黑洞(wss/443 可伪装) | 默认/兜底 |
-| **REALITY** | `vless://…security=reality` | 伪装成访问真站(如 apple.com)的 TLS,抗 DPI,TCP | 主力抗封锁 |
-| **hysteria2** | `hysteria2://` / `hy2://` | 基于 QUIC/UDP,丢包高 RTT 链路(蜂窝)更快 | UDP/速度档 |
-| **trojan** | `trojan://` | 标准 TLS-in-TLS,生态广、服务端常见 | 复用现有节点 |
-| **shadowsocks** | `ss://` | 老牌轻量 AEAD,几乎所有面板都给 ss:// | 复用现有节点 |
-| **vmess** | `vmess://` | v2rayN 老牌,tcp/ws/grpc/h2 + 可选 TLS,机场常发 | 复用现有节点 |
+| **REALITY** | `vless://…security=reality` | 偷真实站点(如 apple.com)的 TLS 握手,主动探测去连=被转发到真站、回正常响应;**早 2026 实测 98-99% 突破率**,目前最隐蔽 | **强封锁首选(TCP 隐蔽)** |
+| **hysteria2** | `hysteria2://` `hy2://` | QUIC/UDP,丢包高 RTT 链路(蜂窝/跨境)更快;**裸 QUIC 会被 SNI 识别/限速,务必配 salamander 混淆** | **速度档(UDP)** |
 
-> 直接甩别处的 `vless://` / `hysteria2://` / `trojan://` / `ss://` / `vmess://` 分享链接,bx 都能直接吃。
-> 但裸链接含明文凭据(会留进 shell 历史/分享面),**建议先 `bx blink <link>` 换壳成 `bx://` 再用**。
+### 🟡 兼容档(接住你已有的节点;**强 DPI 下 2025 起基本被秒,慎用**)
+
+| 传输 | scheme | 当今状态 |
+| --- | --- | --- |
+| **trojan** | `trojan://` | 2025-08 GFW 升级后 ~90% 检出(主动探测 + TLS-in-TLS 指纹) |
+| **vmess** | `vmess://` | 2025-09 起 ~80% 检出 |
+| **shadowsocks** | `ss://` | ~95% 检出(熵指纹 + ML),且**易被 ban server IP** |
+| **brook** | `brook://` | 内嵌默认、最简;明文易被封,wss/443 可伪装 |
+
+> 直接甩别处的 `vless://` / `hysteria2://` / `trojan://` / `ss://` / `vmess://` 分享链接,bx 都能直接吃
+> (裸链接含明文凭据,建议先 `bx blink <link>` 换壳)。但 `bx setup` 贴**兼容档**链接时会提示:
+> 这类协议对当今强 DPI/服务端风控(含 Claude/OpenAI/Google)较弱,**建议 server 端改用 REALITY**。
+
+### 推荐组合:REALITY(TCP)+ hysteria2(UDP)+ brook(兜底)
+
+这正是 bx 的**按类分流 + 容灾**要落地的形态,也是 2026 主流推荐解——既安全又有速度:
+
+- **TCP/隐蔽** 走 REALITY(主传输),**UDP/QUIC/加速** 走 hysteria2(`udp.transport`)。
+- **brook 作 fallback**:它内嵌、零额外 server 依赖,主传输健康抖动/进程挂时兜一手。
+  注意 brook 抗封锁弱——若是**审查升级**导致 REALITY 被封,brook 多半也救不了;真正的抗封锁冗余应是
+  **第二个 REALITY**(不同 server IP / SNI / 端口)。所以最稳的 `transports:` 顺序是
+  `reality(主) › reality2(备) › brook(兜底)`。
+
+## REALITY / hysteria2 最佳配置(bx 客户端默认已对齐 2026 实践)
+
+**REALITY**:bx 解析 `vless://…reality` 时默认 `flow=xtls-rprx-vision`(消除长度指纹、降内层 TLS 开销)、
+`fp=chrome`(uTLS 模拟 Chrome 指纹)、TCP 传输——**这三项正是 2026 推荐生产配置**,无需你手动加。
+server 端要点:SNI 借一个支持 TLS1.3+H2、你又控不了的高流量真站(如 `www.apple.com`/`www.microsoft.com`),
+端口落 443 或服务端已放行的高端口。
+
+**hysteria2**:bx 默认不设 `up/down` 带宽 → sing-box 用 **BBR**(自适应,安全默认);
+Hysteria 的 Brutal 定速算法虽猛,但**必须准确填链路真实带宽**,填错反而更差,故不默认开。
+**强烈建议加 salamander 混淆**对抗 QUIC SNI 检测:链接加 `?obfs=salamander&obfs-password=<pw>`
+(server 端 hysteria2 入站也配同 obfs)。UDP 被运营商限速时,优先级:中国联通(AS4837)>电信。
 
 服务端搭建见 [reality-server-setup.md](reality-server-setup.md)(reality);hysteria2 服务端用 sing-box
-hysteria2 入站(需 TLS 证书或自签 + `insecure`)。
+hysteria2 入站(需 TLS 证书或自签 + `insecure`;建议配 salamander obfs)。
+
+**来源(GFW 2025-2026 实测)**:[gfw.report SS 检测](https://gfw.report/blog/modified_shadowsocks/en/) ·
+[USENIX'25 QUIC SNI 审查](https://gfw.report/publications/usenixsecurity25/en/) ·
+[2026 协议对比](https://lilting.ch/en/articles/china-vpn-protocol-comparison) ·
+[Hysteria2 抗 QUIC 限速](https://greatfirewallguide.com/lab/hysteria2)。
 
 ## 1. 单传输(最简)
 
