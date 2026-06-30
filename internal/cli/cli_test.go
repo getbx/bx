@@ -969,3 +969,22 @@ func TestClientDoctorVlessServerLinkOK(t *testing.T) {
 		t.Fatalf("vless server_link 应 ok,实得 %+v", got)
 	}
 }
+
+func TestVlessUUIDHelpers(t *testing.T) {
+	link := "vless://old-uuid-1234@1.2.3.4:443?security=reality&pbk=P&sid=ab&sni=www.cloudflare.com"
+	if got := uuidFromVlessLink(link); got != "old-uuid-1234" {
+		t.Errorf("extract uuid: got %q", got)
+	}
+	swapped := swapVlessUUID(link, "new-uuid-5678")
+	if uuidFromVlessLink(swapped) != "new-uuid-5678" {
+		t.Errorf("swap uuid 失败: %q", swapped)
+	}
+	// 其余部分(host/port/query)不变
+	if !strings.Contains(swapped, "@1.2.3.4:443?security=reality&pbk=P&sid=ab&sni=www.cloudflare.com") {
+		t.Errorf("swap 不该动其余部分: %q", swapped)
+	}
+	// 非 vless 链接
+	if uuidFromVlessLink("brook://x") != "" {
+		t.Error("非 vless 应返回空")
+	}
+}

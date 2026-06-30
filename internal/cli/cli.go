@@ -549,6 +549,32 @@ func detectPublicIP() string {
 	return ""
 }
 
+// uuidFromVlessLink 取 vless://<uuid>@… 里的 uuid(非 vless 返回 "")。
+func uuidFromVlessLink(link string) string {
+	const p = "vless://"
+	if !strings.HasPrefix(link, p) {
+		return ""
+	}
+	rest := link[len(p):]
+	if at := strings.IndexByte(rest, '@'); at >= 0 {
+		return rest[:at]
+	}
+	return ""
+}
+
+// swapVlessUUID 把 vless 链接里的 uuid 换成 newUUID(其余部分不动)。用于给多用户 share 派新链接。
+func swapVlessUUID(link, newUUID string) string {
+	const p = "vless://"
+	if !strings.HasPrefix(link, p) {
+		return link
+	}
+	rest := link[len(p):]
+	if at := strings.IndexByte(rest, '@'); at >= 0 {
+		return p + newUUID + rest[at:]
+	}
+	return link
+}
+
 // printClientSetup 打印 reality/hysteria2(及 reality+hys2 合体)的客户端接入信息。
 // 合体时给一条「按类分流」的 bx setup 命令(主 reality TCP + udp.transport 走 hys2)。
 func printClientSetup(cfg serverConfig) {
@@ -583,12 +609,52 @@ func serverLinkAction(c *cli.Context) error {
 	return nil
 }
 
+// realityShare 给 reality 主 server 加一个用户(uuid),重启生效,出新用户链接 + 记录到 share 文件。
+// reality 多用户 = 一个 inbound 多 uuid(不同于 brook 的每用户一端口一服务)。
+func realityShare(name, dir string, mainCfg serverConfig) error {
+	newUUID, err := srvgen.NewUUID()
+	if err != nil {
+		return err
+	}
+	sb, err := os.ReadFile(serverSingboxPath)
+	if err != nil {
+		return fmt.Errorf("读 server sing-box 配置: %w", err)
+	}
+	sb2, err := srvgen.AddRealityUser(sb, newUUID)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(serverSingboxPath, sb2, 0o600); err != nil {
+		return err
+	}
+	if err := install.RestartServer(); err != nil {
+		return fmt.Errorf("重启 server 使新用户生效: %w", err)
+	}
+	rec := serverConfig{Type: "reality", SNI: mainCfg.SNI, Port: mainCfg.Port,
+		Link: swapVlessUUID(mainCfg.Link, newUUID), UDPLink: mainCfg.UDPLink}
+	if err := writeServerConfig(shareConfigPath(dir, name), rec, true); err != nil {
+		return err
+	}
+	fmt.Printf("✅ reality share %s 已创建(主 server 加了一个用户并重启生效)。\n", name)
+	printClientSetup(rec)
+	return nil
+}
+
 func serverShareAction(c *cli.Context) error {
 	name, err := cleanShareName(c.Args().First())
 	if err != nil {
 		return err
 	}
 	dir := stringFlag(c, "dir")
+	// 主 server 是 reality → 多用户走「加 uuid」;hys2 暂不支持多用户;其余(brook)走多端口 share。
+	if mainCfg, merr := readServerConfig(defaultServerConfigPath); merr == nil {
+		switch mainCfg.Type {
+		case "reality":
+			return realityShare(name, dir, mainCfg)
+		case "hysteria2":
+			return fmt.Errorf("hysteria2 主 server 暂不支持多用户 share;reality(可 --with-hysteria2)支持")
+		}
+	}
 	password := stringFlag(c, "password")
 	if password == "" {
 		password, err = randomPassword()
@@ -637,8 +703,12 @@ func serverSharesAction(c *cli.Context) error {
 		fmt.Println("No shares.")
 		return nil
 	}
-	fmt.Println("NAME\tLISTEN\tSTATUS")
+	fmt.Println("NAME\tLISTEN/类型\tSTATUS")
 	for _, s := range shares {
+		if s.Config.Type == "reality" {
+			fmt.Printf("%s\treality\t主 server 内一用户\n", s.Name)
+			continue
+		}
 		fmt.Printf("%s\t%s\t%s\n", s.Name, s.Config.Listen, serviceState("is-active", install.ShareServiceName(s.Name)))
 	}
 	return nil
@@ -698,6 +768,32 @@ func createShare(name, host, dir, listen, password string) (link string, effecti
 }
 
 func revokeShare(name, dir string) error {
+	// reality share:从主 server 删该用户 uuid、重启、删记录(不是独立服务)。
+	if shareCfg, err := readServerConfig(shareConfigPath(dir, name)); err == nil && shareCfg.Type == "reality" {
+		uuid := uuidFromVlessLink(shareCfg.Link)
+		if uuid == "" {
+			return fmt.Errorf("share 记录里没有有效 uuid")
+		}
+		sb, err := os.ReadFile(serverSingboxPath)
+		if err != nil {
+			return fmt.Errorf("读 server sing-box 配置: %w", err)
+		}
+		sb2, err := srvgen.RemoveRealityUser(sb, uuid)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(serverSingboxPath, sb2, 0o600); err != nil {
+			return err
+		}
+		if err := install.RestartServer(); err != nil {
+			return fmt.Errorf("重启 server 使撤销生效: %w", err)
+		}
+		if err := os.Remove(shareConfigPath(dir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	// brook share:每用户独立服务,卸单元 + 删配置。
 	if err := install.UninstallShare(name); err != nil {
 		return err
 	}
