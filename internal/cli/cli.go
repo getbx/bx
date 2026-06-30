@@ -195,6 +195,8 @@ func serverCommands() []*cli.Command {
 		{Name: "shares", Usage: "查看已分享的链接", Flags: serverSharesFlags(), Action: serverSharesAction},
 		{Name: "revoke", Usage: "撤销一个分享", ArgsUsage: "<name>", Flags: serverRevokeFlags(), Action: serverRevokeAction},
 		{Name: "rotate", Usage: "轮换 server 密码并生成新链接", Flags: serverRotateFlags(), Action: serverRotateAction},
+		{Name: "up", Usage: "一键装好(默认 reality+hys2、自动探测公网IP)并启动", Flags: serverInstallFlags(), Action: serverUpAction},
+		{Name: "down", Usage: "停止并取消开机自启", Action: serverDownAction},
 		{Name: "start", Usage: "启动并设为开机自启", Action: serverStartAction},
 		{Name: "stop", Usage: "停止并取消开机自启", Action: serverStopAction},
 		{Name: "status", Usage: "查看服务状态", Action: serverStatusAction},
@@ -231,13 +233,13 @@ func realtimeFlags() []cli.Flag {
 func serverInstallFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置写入路径"},
-		&cli.StringFlag{Name: "protocol", Value: "brook", Usage: "协议:brook | reality(强封锁首选) | hysteria2(速度档)"},
+		&cli.StringFlag{Name: "protocol", Value: "reality", Usage: "协议:reality(默认,强封锁首选)| hysteria2(速度档)| brook(简单兜底)"},
 		&cli.StringFlag{Name: "sni", Usage: "reality/hysteria2 借用的真站(默认 www.cloudflare.com;别用 microsoft 证书过大)"},
 		&cli.IntFlag{Name: "port", Usage: "reality/hysteria2 监听端口(默认 443,最自然;被占/受限才换)"},
-		&cli.BoolFlag{Name: "with-hysteria2", Usage: "reality 同时开 hysteria2(UDP 加速),客户端按类分流(既安全又有速度)"},
+		&cli.BoolFlag{Name: "tcp-only", Usage: "reality 只开 TCP,不附带 hysteria2 UDP 加速(默认附带,既安全又有速度)"},
 		&cli.StringFlag{Name: "listen", Value: ":9999", Usage: "brook 监听地址"},
 		&cli.StringFlag{Name: "password", Usage: "brook 连接密码(留空自动生成)"},
-		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(reality/hysteria2 必填,brook 用于生成链接)"},
+		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(留空自动探测公网 IP)"},
 		&cli.BoolFlag{Name: "force", Usage: "覆盖已存在的 server 配置"},
 	}
 }
@@ -443,7 +445,18 @@ func generateServerConfig(proto, host, sni, listen, password string, port int, w
 // buildServerConfig 按 --protocol 生成 serverConfig;reality/hysteria2 还会把含私钥/证书的
 // sing-box 服务端配置落盘到 serverSingboxPath(0600)。返回的 cfg 写进 server.yaml。
 func buildServerConfig(c *cli.Context) (serverConfig, error) {
-	cfg, sb, err := generateServerConfig(c.String("protocol"), c.String("host"), c.String("sni"), c.String("listen"), c.String("password"), c.Int("port"), c.Bool("with-hysteria2"))
+	proto, _ := normalizeServerProtocol(c.String("protocol"))
+	host := strings.TrimSpace(c.String("host"))
+	// 缺 --host 自动探测公网 IP(reality/hys2 需要它生成链接)——让 server 端也"零配置"。
+	if host == "" && (proto == "reality" || proto == "hysteria2") {
+		if ip := detectPublicIP(); ip != "" {
+			host = ip
+			fmt.Fprintf(os.Stderr, "自动用探测到的公网 IP:%s(不对请 --host 指定)\n", ip)
+		}
+	}
+	// reality 默认附带 hysteria2(UDP 加速),--tcp-only 关掉。
+	withHys2 := proto == "reality" && !c.Bool("tcp-only")
+	cfg, sb, err := generateServerConfig(c.String("protocol"), host, c.String("sni"), c.String("listen"), c.String("password"), c.Int("port"), withHys2)
 	if err != nil {
 		return serverConfig{}, err
 	}
@@ -656,7 +669,7 @@ func serverShareAction(c *cli.Context) error {
 			printClientSetup(rec)
 			return nil
 		case "hysteria2":
-			return fmt.Errorf("hysteria2 主 server 暂不支持多用户 share;reality(可 --with-hysteria2)支持")
+			return fmt.Errorf("hysteria2 主 server 暂不支持多用户 share;reality(默认附带 hys2)支持")
 		}
 	}
 	password := stringFlag(c, "password")
@@ -873,6 +886,24 @@ func serverStopAction(c *cli.Context) error {
 	fmt.Println("✅ bx server 已停止并取消开机自启。")
 	return nil
 }
+
+// serverUpAction 一键:没装过就用好默认装一遍(reality+hys2、自动探测公网 IP),然后启动。
+// 让 server 端像客户端 bx up/down/status 一样简单。
+func serverUpAction(c *cli.Context) error {
+	if install.ServerUnitInstalled() {
+		fmt.Println("bx server 已安装,直接启动(要换协议/重生成密钥:sudo bx server install --force)。")
+	} else if err := serverInstallAction(c); err != nil {
+		return err
+	}
+	if err := install.EnableServer(); err != nil {
+		return err
+	}
+	fmt.Println("✅ bx server 已启动并开机自启。看状态:bx server status;停:sudo bx server down")
+	return nil
+}
+
+// serverDownAction = 停止(与 client 的 bx down 对称)。
+func serverDownAction(c *cli.Context) error { return serverStopAction(c) }
 
 func serverStatusAction(c *cli.Context) error {
 	active := serviceState("is-active", install.ServerServiceName)
@@ -1721,7 +1752,7 @@ func setupFlags() []cli.Flag {
 		&cli.StringFlag{Name: "probe", Value: defaultProbeTarget, Usage: "连通检测目标"},
 		&cli.BoolFlag{Name: "force", Usage: "覆盖已存在的配置"},
 		&cli.BoolFlag{Name: "strict", Usage: "连通检测失败则中止(默认仅警告)"},
-		&cli.StringFlag{Name: "udp", Usage: "按类分流:UDP 走的专用传输链接(如 hysteria2,bx server install --with-hysteria2 给)"},
+		&cli.StringFlag{Name: "udp", Usage: "按类分流:UDP 走的专用传输链接(如 hysteria2,bx server install 默认就给)"},
 	}
 }
 

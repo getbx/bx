@@ -31,20 +31,22 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 ### 1. VPS 安装 bx server
 
+和客户端一样简单——**一条命令**:
+
 ```bash
-# 默认 brook(简单);强封锁建议 REALITY,速度档建议 hysteria2:
-sudo ./bx server install --protocol reality --host <VPS_IP或域名>      # 强封锁首选(TCP/443)
-sudo ./bx server install --protocol hysteria2 --host <VPS_IP或域名>    # 速度档(UDP/443,自带 salamander 混淆)
-sudo ./bx server install --host <VPS_IP或域名>                          # 默认 brook
-sudo bx server start
+sudo ./bx server up        # 装好(默认 REALITY+hysteria2、自动探测公网IP)并启动
+bx server status           # 看状态
+sudo bx server down        # 停
 ```
 
-`server install` 自动生成所需密钥/密码、写入 `/etc/bx/server.yaml`、安装系统服务,并打印客户端 `bx://` 链接。
-**`--protocol reality`**:bx 原生生成 x25519 密钥对(与 sing-box 互通)、UUID、shortID,SNI 默认借
-`www.cloudflare.com`(可 `--sni` 改;**别用 microsoft——证书过大会让 reality 握手失败**),内置 `flow=xtls-rprx-vision`/`fp=chrome` 等 2026 推荐默认——
-**无需手搭 sing-box,零配置即得强封锁服务端**。**`--protocol hysteria2`**:自签证书 + salamander 混淆,
-客户端链接自带 `insecure=1`。两者都跑内嵌静态 sing-box(零依赖)。协议怎么选见
-[docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
+`bx server up` 自动:生成 x25519 密钥/UUID/证书、探测公网 IP、写配置、装系统服务、**启动**,
+并打印客户端**一键命令**(`sudo bx setup <reality> --udp <hys2>`,主 reality 隐蔽 TCP + hysteria2 加速 UDP,按类分流)。
+全程内嵌静态 sing-box,**无需手搭、零配置**。SNI 默认借 `www.cloudflare.com`(装机时自动体检证书大小;
+别用 microsoft——证书过大会让 reality 握手失败),内置 `flow=xtls-rprx-vision`/`fp=chrome` 等 2026 推荐默认。
+
+需要别的:`--protocol hysteria2`(纯速度档)、`--protocol brook`(简单兜底)、`--tcp-only`(reality 不带 hys2)、
+`--host <域名>`(自定义)、`--port`、`--sni`。协议怎么选见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
+多用户:`sudo bx server share <name>` / `revoke <name>`。
 
 之后也可以随时重新生成链接:
 

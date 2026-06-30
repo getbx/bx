@@ -11,7 +11,7 @@
 > `fp=chrome`、SNI 默认 `www.cloudflare.com`):
 >
 > ```bash
-> sudo bx server install --protocol reality --host <VPS_IP或域名> [--sni www.apple.com]
+> sudo bx server up   # 默认 reality+hys2、自动探测公网IP、装好即启动(高级:--protocol/--sni/--port/--host/--tcp-only)
 > sudo bx server start
 > # 末尾打印的 bx:// 链接 → 客户端 sudo bx setup <bx://…>
 > ```
@@ -41,7 +41,7 @@
     # 证书链字节(粗估,越小越稳):
     openssl s_client -connect www.cloudflare.com:443 -servername www.cloudflare.com -tls1_3 -showcerts </dev/null 2>/dev/null | awk '/BEGIN CERT/,/END CERT/' | wc -c
     ```
-  - `bx server install --protocol reality` 会**自动**做这套体检(`srvgen.CheckRealitySNI`),坏 SNI 当场警告。
+  - `bx server up`/`install` 会**自动**做这套体检(`srvgen.CheckRealitySNI`),坏 SNI 当场警告。
 
 ## 1. 装 sing-box(服务端,glibc VPS 直接用官方包)
 
