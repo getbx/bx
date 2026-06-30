@@ -116,3 +116,28 @@ func TestShareChecksRealityNotFail(t *testing.T) {
 		t.Fatal("没找到 share.alice 检查项")
 	}
 }
+
+func TestServerStatusSummary(t *testing.T) {
+	// reality + 合体 + 多用户
+	combo := serverConfig{Type: "reality", SNI: "www.cloudflare.com", Port: 443, Link: "vless://x", UDPLink: "hysteria2://y"}
+	s := serverStatusSummary(combo, 3)
+	for _, want := range []string{"reality", "hysteria2", "443", "www.cloudflare.com", "用户/分享: 3"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("combo 摘要缺 %q:\n%s", want, s)
+		}
+	}
+	// reality 纯 TCP,无用户
+	tcp := serverConfig{Type: "reality", SNI: "www.apple.com", Port: 9443, Link: "vless://x"}
+	s = serverStatusSummary(tcp, 0)
+	if strings.Contains(s, "hysteria2") || strings.Contains(s, "用户/分享") {
+		t.Errorf("纯 reality 不该显 hys2/用户: %s", s)
+	}
+	if !strings.Contains(s, "9443") {
+		t.Errorf("应显自定义端口: %s", s)
+	}
+	// brook
+	s = serverStatusSummary(serverConfig{Type: "brook", Listen: ":9999", Password: "p"}, 0)
+	if !strings.Contains(s, "brook") || !strings.Contains(s, ":9999") {
+		t.Errorf("brook 摘要不对: %s", s)
+	}
+}

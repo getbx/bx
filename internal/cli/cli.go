@@ -910,10 +910,41 @@ func serverUpAction(c *cli.Context) error {
 // serverDownAction = 停止(与 client 的 bx down 对称)。
 func serverDownAction(c *cli.Context) error { return serverStopAction(c) }
 
+// serverStatusSummary 给协议/端口/SNI/用户数的可读摘要(纯函数,可测)。
+func serverStatusSummary(cfg serverConfig, shareCount int) string {
+	proto, _ := normalizeServerProtocol(cfg.Type)
+	var b strings.Builder
+	switch proto {
+	case "reality", "hysteria2":
+		port := cfg.Port
+		if port <= 0 {
+			port = 443
+		}
+		fmt.Fprintf(&b, "协议: %s", proto)
+		if cfg.UDPLink != "" {
+			b.WriteString(" + hysteria2(UDP 加速,按类分流)")
+		}
+		fmt.Fprintf(&b, "\n端口: %d  借用 SNI: %s", port, cfg.SNI)
+	default:
+		fmt.Fprintf(&b, "协议: brook  监听: %s", cfg.Listen)
+	}
+	if shareCount > 0 {
+		fmt.Fprintf(&b, "\n用户/分享: %d", shareCount)
+	}
+	return b.String()
+}
+
 func serverStatusAction(c *cli.Context) error {
 	active := serviceState("is-active", install.ServerServiceName)
 	enabled := serviceState("is-enabled", install.ServerServiceName)
 	fmt.Printf("bx server: %s, boot: %s\n", active, enabled)
+	if cfg, err := readServerConfig(defaultServerConfigPath); err == nil {
+		shareCount := 0
+		if shares, serr := readShares(defaultShareDir); serr == nil {
+			shareCount = len(shares)
+		}
+		fmt.Println(serverStatusSummary(cfg, shareCount))
+	}
 	return nil
 }
 
