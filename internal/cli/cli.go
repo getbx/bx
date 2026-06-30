@@ -804,6 +804,15 @@ func revokeShare(name, dir string) error {
 }
 
 func serverRotateAction(c *cli.Context) error {
+	// reality/hys2 没有"换密码"语义——轮换=重生成密钥,等价于带 --force 重装。导到正确命令,
+	// 避免给它们套 brook 的密码轮换(无意义且会在生成 brook 链接时出错)。
+	if cfg, err := readServerConfig(c.String("config")); err == nil && (cfg.Type == "reality" || cfg.Type == "hysteria2") {
+		host := "<VPS_IP或域名>"
+		if h := serverHostFromLink(cfg.Link); h != "" {
+			host = h
+		}
+		return fmt.Errorf("%s 轮换密钥请用:sudo bx server install --protocol %s --host %s --force\n(会重生成密钥/UUID,主链接 + 所有 share 链接全失效,需重新分发)", cfg.Type, cfg.Type, host)
+	}
 	password := c.String("password")
 	if password == "" {
 		var err error
