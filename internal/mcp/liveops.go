@@ -58,7 +58,7 @@ func (o *liveOps) Status() (StatusOut, error) {
 		TunnelHealthy: rep.TunnelHealthy,
 		LatencyMS:     rep.LatencyMS,
 		Restarts:      rep.Restarts,
-		Mode:          "", // TODO(task9): stats.Report 未携带 mode,待 socket 暴露后填充
+		Mode:          rep.Mode, // 分流模式 split/global/router(经 control socket 上报)
 		UDPMode:       rep.UDPMode,
 		MutationState: rep.MutationState,
 	}, nil

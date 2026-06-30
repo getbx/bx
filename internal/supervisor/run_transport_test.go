@@ -28,3 +28,23 @@ func TestTransportKind(t *testing.T) {
 		t.Error("vmess should be vmess")
 	}
 }
+
+func TestProxyMode(t *testing.T) {
+	// router 模式优先(无视 global):只劫持 LAN 转发。
+	if got := proxyMode(true, "router"); got != "router" {
+		t.Errorf("router 应为 router, got %q", got)
+	}
+	if got := proxyMode(false, "router"); got != "router" {
+		t.Errorf("router(非global)应为 router, got %q", got)
+	}
+	// host 模式:global→global,否则 split(china 直连)。
+	if got := proxyMode(true, "host"); got != "global" {
+		t.Errorf("global 应为 global, got %q", got)
+	}
+	if got := proxyMode(false, "host"); got != "split" {
+		t.Errorf("非 global 应为 split, got %q", got)
+	}
+	if got := proxyMode(false, ""); got != "split" {
+		t.Errorf("空 mode 非 global 应为 split, got %q", got)
+	}
+}

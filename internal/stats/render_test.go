@@ -98,6 +98,23 @@ func TestRenderShowsMultiTransport(t *testing.T) {
 	}
 }
 
+func TestRenderShowsMode(t *testing.T) {
+	for mode, want := range map[string]string{
+		"split":  "split(国内直连",
+		"global": "global(含国内全走隧道)",
+		"router": "router(只劫持 LAN 转发)",
+	} {
+		out := Render(Report{TunnelHealthy: true, Mode: mode})
+		if !strings.Contains(out, "模式") || !strings.Contains(out, want) {
+			t.Errorf("mode=%q 面板缺 %q:\n%s", mode, want, out)
+		}
+	}
+	// 空 mode 不显模式行(向后兼容,旧 socket 不带 mode)。
+	if strings.Contains(Render(Report{TunnelHealthy: true}), "模式") {
+		t.Error("空 mode 不应显模式行")
+	}
+}
+
 // 单传输(无容灾/UDP)只显当前传输,不显容灾块。
 func TestRenderSingleTransportNoFailoverBlock(t *testing.T) {
 	out := Render(Report{TunnelHealthy: true, Transport: "brook@1.2.3.4"})
