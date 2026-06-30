@@ -455,6 +455,13 @@ func serverInstallAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	// reality 借壳 SNI 适配性检查(TLS1.3+X25519 + 证书链不过大):过大会静默挂握手,
+	// 装机时就当场警告(best-effort,网络问题也不阻断),省得用户事后踩坑。
+	if cfg.Type == "reality" {
+		for _, w := range srvgen.CheckRealitySNI(cfg.SNI) {
+			fmt.Fprintln(os.Stderr, w)
+		}
+	}
 	if err := writeServerConfig(c.String("config"), cfg, c.Bool("force")); err != nil {
 		return err
 	}
