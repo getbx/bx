@@ -13,9 +13,13 @@ import (
 	"net/url"
 )
 
-// DefaultRealitySNI 是 reality「偷握手」借用的真站默认值:高流量、支持 TLS1.3+H2、
-// 我们控不了——www.microsoft.com 是社区事实标准。可被 GenerateReality 的 sni 参数覆盖。
-const DefaultRealitySNI = "www.microsoft.com"
+// DefaultRealitySNI 是 reality「偷握手」借用的真站默认值:需高流量、支持 TLS1.3+X25519、
+// 我们控不了、且**证书链够小**(reality 要中继真站证书,过大会握手失败)。
+// **绝不用 www.microsoft.com**——它证书过大(实测 ~3410B 叶证书),reality 借壳握手失败
+// (真机 e2e 坐实:microsoft 全挂、换 cloudflare 即通,含跨 GFW 出口)。www.cloudflare.com
+// 证书最小(~1322B)且已端到端验过,故选它;可被 GenerateReality 的 sni 参数(--sni)覆盖
+// (备选 www.apple.com / addons.mozilla.org,见 docs/reality-server-setup.md)。
+const DefaultRealitySNI = "www.cloudflare.com"
 
 // RealityParams 是一套 reality 服务端 + 对应客户端链接所需的全部参数。
 type RealityParams struct {
