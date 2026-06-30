@@ -26,6 +26,7 @@ import (
 	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/setup"
+	"github.com/getbx/bx/internal/srvgen"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/getbx/bx/internal/tunnel"
@@ -79,8 +80,42 @@ func New() *cli.App {
 }
 
 type serverConfig struct {
-	Listen   string `yaml:"listen"`
-	Password string `yaml:"password"`
+	Type     string `yaml:"type,omitempty"`     // brook(默认/空) | reality | hysteria2
+	Listen   string `yaml:"listen,omitempty"`   // brook:监听地址
+	Password string `yaml:"password,omitempty"` // brook:连接密码
+	SNI      string `yaml:"sni,omitempty"`      // reality/hysteria2:借用的真站
+	Link     string `yaml:"link,omitempty"`     // reality/hysteria2:生成的客户端裸链接(host 已填)
+}
+
+// serverSingboxPath 是 reality/hysteria2 服务端的 sing-box 配置落盘路径(含私钥/证书,0600)。
+// var(非 const)便于测试覆盖到 t.TempDir()。
+var serverSingboxPath = "/var/lib/bx/sbserver.json"
+
+// normalizeServerProtocol 校验并归一服务端协议(空→brook)。
+func normalizeServerProtocol(p string) (string, error) {
+	switch p {
+	case "", "brook":
+		return "brook", nil
+	case "reality", "hysteria2":
+		return p, nil
+	default:
+		return "", fmt.Errorf("不支持的 server 协议 %q(支持 brook/reality/hysteria2)", p)
+	}
+}
+
+// serverConfigComplete 报告配置是否自洽(brook 需 listen+password;reality/hys2 需 link)。
+func serverConfigComplete(cfg serverConfig) error {
+	switch t, _ := normalizeServerProtocol(cfg.Type); t {
+	case "reality", "hysteria2":
+		if cfg.Link == "" {
+			return fmt.Errorf("%s server 配置缺 link", t)
+		}
+	default: // brook
+		if cfg.Listen == "" || cfg.Password == "" {
+			return fmt.Errorf("brook server 配置缺 listen/password")
+		}
+	}
+	return nil
 }
 
 type shareInfo struct {
@@ -193,9 +228,11 @@ func realtimeFlags() []cli.Flag {
 func serverInstallFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置写入路径"},
-		&cli.StringFlag{Name: "listen", Value: ":9999", Usage: "监听地址"},
-		&cli.StringFlag{Name: "password", Usage: "连接密码(留空自动生成)"},
-		&cli.StringFlag{Name: "host", Usage: "生成链接使用的公网地址或域名"},
+		&cli.StringFlag{Name: "protocol", Value: "brook", Usage: "协议:brook | reality(强封锁首选) | hysteria2(速度档)"},
+		&cli.StringFlag{Name: "sni", Usage: "reality/hysteria2 借用的真站(默认 www.microsoft.com)"},
+		&cli.StringFlag{Name: "listen", Value: ":9999", Usage: "brook 监听地址"},
+		&cli.StringFlag{Name: "password", Usage: "brook 连接密码(留空自动生成)"},
+		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(reality/hysteria2 必填,brook 用于生成链接)"},
 		&cli.BoolFlag{Name: "force", Usage: "覆盖已存在的 server 配置"},
 	}
 }
@@ -337,16 +374,87 @@ func dnsFlags() []cli.Flag {
 	}
 }
 
-func serverInstallAction(c *cli.Context) error {
-	password := c.String("password")
-	if password == "" {
-		var err error
-		password, err = randomPassword()
+// generateServerConfig 是 buildServerConfig 的纯核心(不依赖 cli.Context、不碰文件):
+// 按协议产出 serverConfig + (reality/hysteria2 的)sing-box 服务端配置字节。便于单测。
+func generateServerConfig(proto, host, sni, listen, password string) (serverConfig, []byte, error) {
+	p, err := normalizeServerProtocol(proto)
+	if err != nil {
+		return serverConfig{}, nil, err
+	}
+	host = strings.TrimSpace(host)
+	switch p {
+	case "reality":
+		if host == "" {
+			return serverConfig{}, nil, fmt.Errorf("reality 需要 --host <公网IP或域名>(链接生成时要用)")
+		}
+		rp, err := srvgen.GenerateReality(host, sni)
 		if err != nil {
-			return err
+			return serverConfig{}, nil, err
+		}
+		sb, err := rp.ServerConfig()
+		if err != nil {
+			return serverConfig{}, nil, err
+		}
+		return serverConfig{Type: "reality", SNI: rp.SNI, Link: rp.ClientLink()}, sb, nil
+	case "hysteria2":
+		if host == "" {
+			return serverConfig{}, nil, fmt.Errorf("hysteria2 需要 --host <公网IP或域名>(链接生成时要用)")
+		}
+		hp, err := srvgen.GenerateHysteria2(host, sni)
+		if err != nil {
+			return serverConfig{}, nil, err
+		}
+		sb, err := hp.ServerConfig()
+		if err != nil {
+			return serverConfig{}, nil, err
+		}
+		return serverConfig{Type: "hysteria2", SNI: hp.SNI, Link: hp.ClientLink()}, sb, nil
+	default: // brook
+		if password == "" {
+			if password, err = randomPassword(); err != nil {
+				return serverConfig{}, nil, err
+			}
+		}
+		return serverConfig{Type: "brook", Listen: listen, Password: password}, nil, nil
+	}
+}
+
+// buildServerConfig 按 --protocol 生成 serverConfig;reality/hysteria2 还会把含私钥/证书的
+// sing-box 服务端配置落盘到 serverSingboxPath(0600)。返回的 cfg 写进 server.yaml。
+func buildServerConfig(c *cli.Context) (serverConfig, error) {
+	cfg, sb, err := generateServerConfig(c.String("protocol"), c.String("host"), c.String("sni"), c.String("listen"), c.String("password"))
+	if err != nil {
+		return serverConfig{}, err
+	}
+	if sb != nil {
+		if err := writeServerSingbox(sb, c.Bool("force")); err != nil {
+			return serverConfig{}, err
 		}
 	}
-	cfg := serverConfig{Listen: c.String("listen"), Password: password}
+	return cfg, nil
+}
+
+// writeServerSingbox 把 reality/hysteria2 的 sing-box 服务端配置落盘(含私钥/证书,0600)。
+func writeServerSingbox(b []byte, force bool) error {
+	if !force {
+		if _, err := os.Stat(serverSingboxPath); err == nil {
+			return fmt.Errorf("%s 已存在(加 --force 覆盖)", serverSingboxPath)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(serverSingboxPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(serverSingboxPath, b, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(serverSingboxPath, 0o600)
+}
+
+func serverInstallAction(c *cli.Context) error {
+	cfg, err := buildServerConfig(c)
+	if err != nil {
+		return err
+	}
 	if err := writeServerConfig(c.String("config"), cfg, c.Bool("force")); err != nil {
 		return err
 	}
@@ -361,9 +469,14 @@ func serverInstallAction(c *cli.Context) error {
 	if err := install.WriteServerUnit(fmt.Sprintf("%s serve -c %s", bin, abs)); err != nil {
 		return err
 	}
-	fmt.Printf("✅ bx server 已安装。下一步:sudo bx server start\n")
-	if hint := serverFirewallHint(cfg.Listen); hint != "" {
+	fmt.Printf("✅ bx server 已安装(协议 %s)。下一步:sudo bx server start\n", cfg.Type)
+	if hint := serverFirewallHintFor(cfg); hint != "" {
 		fmt.Println(hint)
+	}
+	// reality/hysteria2:链接已在生成时含 host,直接给(换壳成 bx://)。
+	if cfg.Type == "reality" || cfg.Type == "hysteria2" {
+		fmt.Println(blink.Encode(cfg.Link))
+		return nil
 	}
 	if host := c.String("host"); host != "" {
 		link, err := bxServerLink(host, cfg)
@@ -378,13 +491,18 @@ func serverInstallAction(c *cli.Context) error {
 }
 
 func serverLinkAction(c *cli.Context) error {
-	host := c.String("host")
-	if host == "" {
-		return fmt.Errorf("用法: sudo bx server link --host <VPS_IP或域名>")
-	}
 	cfg, err := readServerConfig(c.String("config"))
 	if err != nil {
 		return err
+	}
+	// reality/hysteria2:链接已在安装时生成(含 host),直接换壳输出,无需 --host。
+	if cfg.Type == "reality" || cfg.Type == "hysteria2" {
+		fmt.Println(blink.Encode(cfg.Link))
+		return nil
+	}
+	host := c.String("host")
+	if host == "" {
+		return fmt.Errorf("用法: sudo bx server link --host <VPS_IP或域名>")
 	}
 	link, err := bxServerLink(host, cfg)
 	if err != nil {
@@ -602,6 +720,16 @@ func serveAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	// reality/hysteria2:跑内嵌 sing-box(配置含私钥/证书,安装时已落盘 serverSingboxPath)。
+	if cfg.Type == "reality" || cfg.Type == "hysteria2" {
+		sbPath, err := provision.EnsureSingbox("/var/lib/bx", "", embedded.Singbox(), embedded.SingboxVersion(), "", "")
+		if err != nil {
+			return fmt.Errorf("准备 sing-box: %w", err)
+		}
+		cmd := exec.CommandContext(c.Context, sbPath, "run", "-c", serverSingboxPath)
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		return cmd.Run()
+	}
 	path, err := provision.EnsureBrook("/var/lib/bx", "", embedded.Brook(), embedded.BrookVersion())
 	if err != nil {
 		return fmt.Errorf("准备运行环境: %w", err)
@@ -693,7 +821,20 @@ func serverDoctorAction(c *cli.Context) error {
 	} else {
 		doctorLine("ok", "config parse", "yes")
 		checkFileMode(cfgPath, 0o600)
-		if port := listenPort(cfg.Listen); port == "" {
+		proto, _ := normalizeServerProtocol(cfg.Type)
+		doctorLine("ok", "protocol", proto)
+		if proto == "reality" || proto == "hysteria2" {
+			// reality/hysteria2:监听在 sing-box 配置里(443),检查配置落盘。
+			if _, serr := os.Stat(serverSingboxPath); serr != nil {
+				doctorLine("fail", "singbox config", serr.Error())
+			} else {
+				doctorLine("ok", "singbox config", serverSingboxPath)
+				checkFileMode(serverSingboxPath, 0o600)
+			}
+			if hint := serverFirewallHintFor(cfg); hint != "" {
+				doctorLine("hint", "firewall", hint)
+			}
+		} else if port := listenPort(cfg.Listen); port == "" {
 			doctorLine("fail", "listen", cfg.Listen)
 		} else {
 			doctorLine("ok", "listen", cfg.Listen)
@@ -1207,7 +1348,15 @@ func collectServerDoctor(configPath, sharesDir string) doctorReport {
 		} else {
 			rep.addCheck("config_permissions", "warn", "not 0600", "chmod 600 "+configPath)
 		}
-		if port := listenPort(cfg.Listen); port == "" {
+		proto, _ := normalizeServerProtocol(cfg.Type)
+		rep.addCheck("protocol", "ok", proto, "")
+		if proto == "reality" || proto == "hysteria2" {
+			if _, serr := os.Stat(serverSingboxPath); serr != nil {
+				rep.addCheck("singbox_config", "fail", serr.Error(), "sudo bx server install --protocol "+proto+" --host <host>")
+			} else {
+				rep.addCheck("singbox_config", "ok", serverSingboxPath, serverFirewallHintFor(cfg))
+			}
+		} else if port := listenPort(cfg.Listen); port == "" {
 			rep.addCheck("listen", "fail", cfg.Listen, "")
 		} else {
 			rep.addCheck("listen", "ok", cfg.Listen, "")
@@ -2193,11 +2342,8 @@ func resolveConfigPath(path string) string {
 }
 
 func writeServerConfig(path string, cfg serverConfig, force bool) error {
-	if cfg.Listen == "" {
-		return fmt.Errorf("listen 不能为空")
-	}
-	if cfg.Password == "" {
-		return fmt.Errorf("password 不能为空")
+	if err := serverConfigComplete(cfg); err != nil {
+		return err
 	}
 	if !force {
 		if _, err := os.Stat(path); err == nil {
@@ -2228,8 +2374,8 @@ func readServerConfig(path string) (serverConfig, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return cfg, fmt.Errorf("解析 server 配置: %w", err)
 	}
-	if cfg.Listen == "" || cfg.Password == "" {
-		return cfg, fmt.Errorf("server 配置不完整")
+	if err := serverConfigComplete(cfg); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }
@@ -2285,6 +2431,18 @@ func serverFirewallHint(listen string) string {
 		return ""
 	}
 	return fmt.Sprintf("如果 VPS 启用了防火墙,请确认已放行 TCP %s; ufw 可用: sudo ufw allow %s/tcp", port, port)
+}
+
+// serverFirewallHintFor 按协议给防火墙放行提示:reality=TCP 443、hysteria2=UDP 443、brook=其 listen 端口。
+func serverFirewallHintFor(cfg serverConfig) string {
+	switch cfg.Type {
+	case "reality":
+		return "如果 VPS 启用了防火墙,请放行 TCP 443; ufw: sudo ufw allow 443/tcp"
+	case "hysteria2":
+		return "如果 VPS 启用了防火墙,请放行 UDP 443(hysteria2 走 QUIC/UDP); ufw: sudo ufw allow 443/udp"
+	default:
+		return serverFirewallHint(cfg.Listen)
+	}
 }
 
 func writeJSON(w io.Writer, v any) error {

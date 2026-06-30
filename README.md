@@ -32,11 +32,19 @@ sha256sum -c SHA256SUMS --ignore-missing
 ### 1. VPS 安装 bx server
 
 ```bash
-sudo ./bx server install --host <VPS_IP或域名>
+# 默认 brook(简单);强封锁建议 REALITY,速度档建议 hysteria2:
+sudo ./bx server install --protocol reality --host <VPS_IP或域名>      # 强封锁首选(TCP/443)
+sudo ./bx server install --protocol hysteria2 --host <VPS_IP或域名>    # 速度档(UDP/443,自带 salamander 混淆)
+sudo ./bx server install --host <VPS_IP或域名>                          # 默认 brook
 sudo bx server start
 ```
 
-`server install` 会自动生成密码、写入 `/etc/bx/server.yaml`、安装系统服务,并在传入 `--host` 时打印客户端 `bx://` 链接。
+`server install` 自动生成所需密钥/密码、写入 `/etc/bx/server.yaml`、安装系统服务,并打印客户端 `bx://` 链接。
+**`--protocol reality`**:bx 原生生成 x25519 密钥对(与 sing-box 互通)、UUID、shortID,SNI 默认借
+`www.microsoft.com`(可 `--sni` 改),内置 `flow=xtls-rprx-vision`/`fp=chrome` 等 2026 推荐默认——
+**无需手搭 sing-box,零配置即得强封锁服务端**。**`--protocol hysteria2`**:自签证书 + salamander 混淆,
+客户端链接自带 `insecure=1`。两者都跑内嵌静态 sing-box(零依赖)。协议怎么选见
+[docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
 
 之后也可以随时重新生成链接:
 
