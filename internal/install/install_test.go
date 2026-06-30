@@ -34,8 +34,11 @@ func TestServerUnitTextIsHardened(t *testing.T) {
 		"ProtectHome=true",
 		"ReadOnlyPaths=/etc/bx",
 		"ReadWritePaths=/var/lib/bx",
-		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
-		"CapabilityBoundingSet=",
+		// reality/hys2(内嵌 sing-box)需 AF_NETLINK(订阅路由)+ CAP_NET_BIND_SERVICE(绑 443),
+		// 真机实测缺这俩 server 启动即 FATAL/bind 拒绝。锁住,别再退回会崩。
+		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK",
+		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("server unit 应含 %q,实际:\n%s", want, u)
