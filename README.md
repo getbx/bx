@@ -41,7 +41,7 @@ sudo bx server start
 
 `server install` 自动生成所需密钥/密码、写入 `/etc/bx/server.yaml`、安装系统服务,并打印客户端 `bx://` 链接。
 **`--protocol reality`**:bx 原生生成 x25519 密钥对(与 sing-box 互通)、UUID、shortID,SNI 默认借
-`www.microsoft.com`(可 `--sni` 改),内置 `flow=xtls-rprx-vision`/`fp=chrome` 等 2026 推荐默认——
+`www.cloudflare.com`(可 `--sni` 改;**别用 microsoft——证书过大会让 reality 握手失败**),内置 `flow=xtls-rprx-vision`/`fp=chrome` 等 2026 推荐默认——
 **无需手搭 sing-box,零配置即得强封锁服务端**。**`--protocol hysteria2`**:自签证书 + salamander 混淆,
 客户端链接自带 `insecure=1`。两者都跑内嵌静态 sing-box(零依赖)。协议怎么选见
 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。

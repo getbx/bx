@@ -229,7 +229,7 @@ func serverInstallFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置写入路径"},
 		&cli.StringFlag{Name: "protocol", Value: "brook", Usage: "协议:brook | reality(强封锁首选) | hysteria2(速度档)"},
-		&cli.StringFlag{Name: "sni", Usage: "reality/hysteria2 借用的真站(默认 www.microsoft.com)"},
+		&cli.StringFlag{Name: "sni", Usage: "reality/hysteria2 借用的真站(默认 www.cloudflare.com;别用 microsoft 证书过大)"},
 		&cli.StringFlag{Name: "listen", Value: ":9999", Usage: "brook 监听地址"},
 		&cli.StringFlag{Name: "password", Usage: "brook 连接密码(留空自动生成)"},
 		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(reality/hysteria2 必填,brook 用于生成链接)"},

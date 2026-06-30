@@ -42,7 +42,7 @@ bx 支持**六种传输引擎平级共存**,可单用、可组成容灾池、可
 
 **REALITY**:bx 解析 `vless://…reality` 时默认 `flow=xtls-rprx-vision`(消除长度指纹、降内层 TLS 开销)、
 `fp=chrome`(uTLS 模拟 Chrome 指纹)、TCP 传输——**这三项正是 2026 推荐生产配置**,无需你手动加。
-server 端要点:SNI 借一个支持 TLS1.3+H2、你又控不了的高流量真站(如 `www.apple.com`/`www.microsoft.com`),
+server 端要点:SNI 借一个支持 TLS1.3+H2、你又控不了、**且证书链够小**的高流量真站(如 `www.cloudflare.com`/`www.apple.com`;**别用 `www.microsoft.com`——证书过大,reality 借壳握手会失败,真机 e2e 坐实**),
 端口落 443 或服务端已放行的高端口。
 
 **hysteria2**:bx 默认不设 `up/down` 带宽 → sing-box 用 **BBR**(自适应,安全默认);

@@ -36,7 +36,7 @@ func TestGenerateHysteria2Defaults(t *testing.T) {
 }
 
 func TestHysteria2ServerConfigShape(t *testing.T) {
-	p, _ := GenerateHysteria2("h", "www.microsoft.com")
+	p, _ := GenerateHysteria2("h", "www.cloudflare.com")
 	b, err := p.ServerConfig()
 	if err != nil {
 		t.Fatalf("server cfg: %v", err)
@@ -48,7 +48,7 @@ func TestHysteria2ServerConfigShape(t *testing.T) {
 	s := string(b)
 	for _, want := range []string{
 		`"hysteria2"`, p.Password, `"salamander"`, p.ObfsPassword,
-		`"server_name": "www.microsoft.com"`, "BEGIN CERTIFICATE",
+		`"server_name": "www.cloudflare.com"`, "BEGIN CERTIFICATE",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("server 配置缺 %q", want)
@@ -57,13 +57,13 @@ func TestHysteria2ServerConfigShape(t *testing.T) {
 }
 
 func TestHysteria2ClientLinkShape(t *testing.T) {
-	p, _ := GenerateHysteria2("1.2.3.4", "www.microsoft.com")
+	p, _ := GenerateHysteria2("1.2.3.4", "www.cloudflare.com")
 	link := p.ClientLink()
 	if !strings.HasPrefix(link, "hysteria2://"+p.Password+"@1.2.3.4:443?") {
 		t.Errorf("link 前缀不对: %q", link)
 	}
 	for _, want := range []string{
-		"sni=www.microsoft.com", "obfs=salamander", "obfs-password=" + p.ObfsPassword, "insecure=1",
+		"sni=www.cloudflare.com", "obfs=salamander", "obfs-password=" + p.ObfsPassword, "insecure=1",
 	} {
 		if !strings.Contains(link, want) {
 			t.Errorf("client link 缺 %q: %s", want, link)

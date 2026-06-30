@@ -56,6 +56,17 @@ func TestGenerateRealityDefaults(t *testing.T) {
 	}
 }
 
+// 回归守卫:默认 SNI 绝不能是 www.microsoft.com——其证书过大、reality 借壳握手必失败
+// (真机 e2e 坐实:microsoft 全挂,换 cloudflare 即通)。换任何默认前须确认证书够小且端到端验过。
+func TestDefaultRealitySNINotMicrosoft(t *testing.T) {
+	if DefaultRealitySNI == "www.microsoft.com" {
+		t.Fatal("默认 SNI 不能用 www.microsoft.com(证书过大,reality 握手失败)")
+	}
+	if DefaultRealitySNI == "" {
+		t.Fatal("默认 SNI 不能为空")
+	}
+}
+
 func TestGenerateRealityCustomSNI(t *testing.T) {
 	p, _ := GenerateReality("h", "www.apple.com")
 	if p.SNI != "www.apple.com" {
@@ -64,7 +75,7 @@ func TestGenerateRealityCustomSNI(t *testing.T) {
 }
 
 func TestRealityServerConfigShape(t *testing.T) {
-	p, _ := GenerateReality("h", "www.microsoft.com")
+	p, _ := GenerateReality("h", "www.cloudflare.com")
 	b, err := p.ServerConfig()
 	if err != nil {
 		t.Fatalf("server cfg: %v", err)
@@ -76,7 +87,7 @@ func TestRealityServerConfigShape(t *testing.T) {
 	s := string(b)
 	for _, want := range []string{
 		`"vless"`, `"reality"`, `"xtls-rprx-vision"`, p.PrivateKey, p.ShortID, p.UUID,
-		`"server_name": "www.microsoft.com"`, `"handshake"`, `"server_port": 443`,
+		`"server_name": "www.cloudflare.com"`, `"handshake"`, `"server_port": 443`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("server 配置缺 %q:\n%s", want, s)
@@ -89,14 +100,14 @@ func TestRealityServerConfigShape(t *testing.T) {
 }
 
 func TestRealityClientLinkShape(t *testing.T) {
-	p, _ := GenerateReality("1.2.3.4", "www.microsoft.com")
+	p, _ := GenerateReality("1.2.3.4", "www.cloudflare.com")
 	link := p.ClientLink()
 	if !strings.HasPrefix(link, "vless://"+p.UUID+"@1.2.3.4:443?") {
 		t.Errorf("link 前缀不对: %q", link)
 	}
 	for _, want := range []string{
 		"security=reality", "pbk=" + p.PublicKey, "sid=" + p.ShortID,
-		"sni=www.microsoft.com", "flow=xtls-rprx-vision", "fp=chrome",
+		"sni=www.cloudflare.com", "flow=xtls-rprx-vision", "fp=chrome",
 	} {
 		if !strings.Contains(link, want) {
 			t.Errorf("client link 缺 %q: %s", want, link)
