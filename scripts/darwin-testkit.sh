@@ -12,6 +12,7 @@ Options:
   --bx PATH                 bx binary path. Default: /tmp/bx-mac/bx, built automatically if missing.
   --brook PATH              Internal transport binary override for debugging.
   --link LINK               bx:// link. Default: $BX_LINK; old $BX_BROOK_LINK still works.
+  --udp-link LINK           Optional UDP transport link. Default: $BX_UDP_LINK.
   --server-bypass CIDR      Server IP/CIDR that must bypass utun. Required; may be repeated.
   --bypass CIDR             Extra user bypass CIDR. May be repeated.
   --gateway IP              Physical default gateway. Default: detected from route -n get default.
@@ -116,6 +117,7 @@ BX="/tmp/bx-mac/bx"
 BX_PROVIDED=0
 BROOK=""
 LINK="${BX_LINK:-${BX_BROOK_LINK:-}}"
+UDP_LINK="${BX_UDP_LINK:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GATEWAY=""
@@ -138,6 +140,7 @@ while [[ $# -gt 0 ]]; do
     --bx) BX="${2:-}"; BX_PROVIDED=1; shift 2 ;;
     --brook) BROOK="${2:-}"; shift 2 ;;
     --link) LINK="${2:-}"; shift 2 ;;
+    --udp-link) UDP_LINK="${2:-}"; shift 2 ;;
     --server-bypass) SERVER_BYPASS+=("${2:-}"); shift 2 ;;
     --bypass) USER_BYPASS+=("${2:-}"); shift 2 ;;
     --gateway) GATEWAY="${2:-}"; shift 2 ;;
@@ -197,6 +200,7 @@ fi
   echo "log_dir=$LOG_DIR"
   echo "bx=$BX"
   echo "transport_override=$BROOK"
+  echo "udp_transport_configured=$([[ -n "$UDP_LINK" ]] && echo 1 || echo 0)"
   echo "gateway=$GATEWAY"
   echo "tun=$TUN"
   echo "duration=$DURATION"
@@ -259,7 +263,11 @@ if [[ "$EXECUTE" != "1" ]]; then
   echo
   echo "Dry-run complete. Logs: $LOG_DIR"
   echo "No network changes were made."
-  execute_hint=(sudo env 'BX_LINK=bx://...' "$0" --execute --bx "$BX" --gateway "$GATEWAY" --duration "$DURATION" --health-timeout "$HEALTH_TIMEOUT" --rollback-after "$ROLLBACK_AFTER")
+  execute_hint=(sudo env 'BX_LINK=bx://...')
+  if [[ -n "$UDP_LINK" ]]; then
+    execute_hint+=('BX_UDP_LINK=bx://...')
+  fi
+  execute_hint+=("$0" --execute --bx "$BX" --gateway "$GATEWAY" --duration "$DURATION" --health-timeout "$HEALTH_TIMEOUT" --rollback-after "$ROLLBACK_AFTER")
   for cidr in "${SERVER_BYPASS[@]}"; do
     execute_hint+=(--server-bypass "$cidr")
   done
@@ -294,8 +302,17 @@ DATA_DIR="$LOG_DIR/data"
 mkdir -p "$DATA_DIR"
 CONFIG_LINK="$(normalize_link_for_config "$LINK")" || die "could not normalize link for config"
 ESCAPED_LINK="${CONFIG_LINK//\'/\'\'}"
+ESCAPED_UDP_LINK=""
+if [[ -n "$UDP_LINK" ]]; then
+  CONFIG_UDP_LINK="$(normalize_link_for_config "$UDP_LINK")" || die "could not normalize UDP link for config"
+  ESCAPED_UDP_LINK="${CONFIG_UDP_LINK//\'/\'\'}"
+fi
 {
   echo "server: '$ESCAPED_LINK'"
+  if [[ -n "$ESCAPED_UDP_LINK" ]]; then
+    echo "udp:"
+    echo "  transport: '$ESCAPED_UDP_LINK'"
+  fi
   echo "global: true"
   echo "killswitch: true"
   echo "data_dir: '$DATA_DIR'"
@@ -303,6 +320,10 @@ ESCAPED_LINK="${CONFIG_LINK//\'/\'\'}"
 chmod 600 "$CONFIG"
 {
   echo "server: '<redacted>'"
+  if [[ -n "$ESCAPED_UDP_LINK" ]]; then
+    echo "udp:"
+    echo "  transport: '<redacted>'"
+  fi
   echo "global: true"
   echo "killswitch: true"
   echo "data_dir: '$DATA_DIR'"
