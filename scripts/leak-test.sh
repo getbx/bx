@@ -10,8 +10,8 @@
 #   1. IPv4 egress IP  → must equal the VPS exit IP (not your real/corp IP)
 #   2. IPv6 egress     → must FAIL (no v6 path; globally-unique v6 would leak via ICE)
 #   3. DNS answer      → fake-IP (198.18/15) means resolution goes through bx
-# WebRTC/STUN cannot be tested from a shell — use https://browserleaks.com/webrtc
-# in a real browser on the client and confirm NO public IP is shown.
+# WebRTC/STUN needs a real browser. Use:
+#   bx webrtc-check --browser --json --expected-ip <EXPECTED_EXIT_IP>
 
 set -u
 EXPECT="${1:-}"
@@ -28,7 +28,7 @@ if [ -z "$ip4" ]; then
 elif [ -n "$EXPECT" ] && [ "$ip4" = "$EXPECT" ]; then
 	ok "egress IPv4 = $ip4 (matches expected exit)"
 elif [ -n "$EXPECT" ]; then
-	bad "egress IPv4 = $ip4, expected $EXPECT — REAL IP MAY BE LEAKING (foreign traffic not proxied)"
+	bad "egress IPv4 = $ip4, expected $EXPECT — unexpected exit path"
 else
 	echo "  INFO: egress IPv4 = $ip4 (pass an expected exit IP to assert)"
 fi
@@ -53,5 +53,5 @@ case "$fip" in
 esac
 
 echo "== summary: $pass pass, $fail fail =="
-echo "Reminder: also run https://browserleaks.com/ip + /webrtc + /dns in a browser on the client."
+echo "Reminder: run 'bx webrtc-check --browser --json --expected-ip <EXPECTED_EXIT_IP>' for browser WebRTC, or scripts/open-privacy-checks.sh --yes for third-party reference pages."
 [ "$fail" -eq 0 ]

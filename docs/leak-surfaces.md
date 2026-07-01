@@ -57,6 +57,15 @@ These do not usually expose the local public IP, but they can correlate identity
 
 bx should not pretend to solve browser fingerprinting. It can report network-path evidence and keep its JSON honest for agents.
 
+If you want to inspect browser fingerprinting separately, bx provides a helper that only opens reference pages:
+
+```bash
+scripts/open-privacy-checks.sh
+scripts/open-privacy-checks.sh --yes
+```
+
+The default run is a dry-run. With `--yes`, it opens third-party pages such as BrowserLeaks, EFF Cover Your Tracks, and CreepJS. bx does not collect, parse, upload, or judge those results.
+
 ## Testkit
 
 For macOS real-machine testing:
