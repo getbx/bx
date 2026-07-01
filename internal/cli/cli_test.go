@@ -38,6 +38,10 @@ func TestAppHasVersion(t *testing.T) {
 	if !appHasCommand(app, "webrtc-check") {
 		t.Fatal("app should expose bx webrtc-check")
 	}
+	webrtc := findAppCommand(app, "webrtc-check")
+	if !commandHasFlag(webrtc, "browser") || !commandHasFlag(webrtc, "expected-ip") {
+		t.Fatal("webrtc-check should expose --browser and --expected-ip")
+	}
 	status := findAppCommand(app, "status")
 	if !commandHasFlag(status, "json") {
 		t.Fatal("status should expose --json")
@@ -309,6 +313,57 @@ func TestWebRTCCheckHighRiskForDirectUDP(t *testing.T) {
 	}
 }
 
+func TestApplyBrowserICECandidatesDetectsPublicLeak(t *testing.T) {
+	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
+	applyBrowserICECandidates(&rep, browserICEResult{
+		Candidates: []string{
+			"candidate:1 1 udp 2122260223 203.0.113.10 55000 typ srflx raddr 192.168.1.5 rport 55000",
+		},
+	}, []string{"203.0.113.20"})
+	if rep.OK || rep.Risk != "high" || rep.LeakProof != "leaked" {
+		t.Fatalf("browser candidates should detect public leak: %+v", rep)
+	}
+	if got := findCheck(rep.Checks, "browser_public_ip"); got.Status != "fail" || !strings.Contains(got.Detail, "203.0.113.10") {
+		t.Fatalf("browser_public_ip = %+v, want leaked public IP", got)
+	}
+}
+
+func TestApplyBrowserICECandidatesAllowsExpectedProxyIP(t *testing.T) {
+	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
+	applyBrowserICECandidates(&rep, browserICEResult{
+		Candidates: []string{
+			"candidate:1 1 udp 2122260223 203.0.113.20 55000 typ srflx",
+		},
+	}, []string{"203.0.113.20"})
+	if !rep.OK || rep.Risk != "low" || rep.LeakProof != "no_public_leak_detected" {
+		t.Fatalf("expected proxy IP should be accepted: %+v", rep)
+	}
+}
+
+func TestApplyBrowserICECandidatesFlagsLANAddress(t *testing.T) {
+	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
+	applyBrowserICECandidates(&rep, browserICEResult{
+		Candidates: []string{
+			"candidate:1 1 udp 2122260223 192.168.50.18 55000 typ host",
+		},
+	}, nil)
+	if rep.OK || rep.Risk != "medium" || rep.LeakProof != "local_network_candidate_detected" {
+		t.Fatalf("LAN candidate should be medium risk: %+v", rep)
+	}
+}
+
+func TestApplyBrowserICECandidatesIgnoresUnspecifiedAddress(t *testing.T) {
+	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
+	applyBrowserICECandidates(&rep, browserICEResult{
+		Candidates: []string{
+			"candidate:1 1 udp 2122260223 0.0.0.0 9 typ host",
+		},
+	}, nil)
+	if !rep.OK || rep.Risk != "low" || rep.LeakProof != "no_public_leak_detected" {
+		t.Fatalf("0.0.0.0 should not count as leak: %+v", rep)
+	}
+}
+
 func TestArchiveClientLogsRecordsReason(t *testing.T) {
 	dir, err := archiveClientLogsWithReason(t.TempDir(), "doctor")
 	if err != nil {
@@ -409,8 +464,9 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !webrtc.Stable || webrtc.RequiresRoot || webrtc.ChangesSystem || webrtc.ChangesNetwork || !webrtc.ReadsSecrets {
 		t.Fatalf("unexpected webrtc-check capability: %+v", webrtc)
 	}
-	if !strings.Contains(strings.Join(webrtc.SafeNotes, " "), "ICE candidates") {
-		t.Fatalf("webrtc-check should state browser verification boundary: %+v", webrtc)
+	notes := strings.Join(webrtc.SafeNotes, " ")
+	if !strings.Contains(notes, "ICE candidates") || !strings.Contains(notes, "prove a WebRTC public-IP leak") {
+		t.Fatalf("webrtc-check should describe browser ICE proof capability: %+v", webrtc)
 	}
 	setup := findCapability(rep.Commands, "sudo bx setup <client-link>")
 	if setup.Command == "" || !strings.Contains(strings.Join(setup.Arguments, " "), "<client-link>") {
