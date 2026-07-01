@@ -113,6 +113,8 @@ Linux 客户端直接使用这组命令。
 > `bx setup` 贴兼容档链接会提示弱点并建议 server 端换 REALITY(不止 GFW——Claude/OpenAI/Google 等也对弱协议出口 IP 做风控)。
 > 全程 fail-closed 不泄漏。详见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
 
+WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md](docs/leak-surfaces.md)。真实 WebRTC 检测可用 `bx webrtc-check --browser --json --expected-ip <proxy-ip>`。
+
 macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Restart、Turn Off、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
 
 #### macOS 安装包
@@ -266,6 +268,8 @@ sudo bx server shares --json
 | `bx capabilities` | 输出机器可读能力清单 |
 | `bx doctor` | 诊断客户端配置、服务状态和链接连通性 |
 | `bx doctor --json` | 输出客户端机器可读诊断 |
+| `bx webrtc-check --json` | 输出 WebRTC 泄漏风险诊断 |
+| `bx webrtc-check --browser --json --expected-ip <ip>` | 打开本地测试页,真实收集浏览器 ICE candidates 并判断公网 IP 是否符合预期 |
 | `bx logs` | 查看客户端日志 |
 | `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist/macos/Bx.app` |
 | `scripts/package-macos-release.sh` | 生成 macOS release 目录和 `.tar.gz` |
