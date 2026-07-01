@@ -42,6 +42,13 @@ func TestAppHasVersion(t *testing.T) {
 	if !commandHasFlag(webrtc, "browser") || !commandHasFlag(webrtc, "expected-ip") {
 		t.Fatal("webrtc-check should expose --browser and --expected-ip")
 	}
+	if !appHasCommand(app, "leak-check") {
+		t.Fatal("app should expose bx leak-check")
+	}
+	leak := findAppCommand(app, "leak-check")
+	if !commandHasFlag(leak, "json") || !commandHasFlag(leak, "browser") || !commandHasFlag(leak, "expected-ip") {
+		t.Fatal("leak-check should expose --json, --browser and --expected-ip")
+	}
 	status := findAppCommand(app, "status")
 	if !commandHasFlag(status, "json") {
 		t.Fatal("status should expose --json")
@@ -379,6 +386,51 @@ func TestApplyBrowserICECandidatesIgnoresUnspecifiedAddress(t *testing.T) {
 	}
 }
 
+func TestAssembleLeakCheckReportAggregatesNetworkRisks(t *testing.T) {
+	doctor := doctorReport{Kind: "client", Version: "test", SecretsRedacted: true}
+	doctor.addCheck("service_active", "ok", "active", "")
+	webrtc := webrtcCheckReport{
+		OK:              true,
+		Kind:            "webrtc",
+		Version:         "test",
+		SecretsRedacted: true,
+		Risk:            "low",
+		LeakProof:       "no_public_leak_detected",
+		Checks: []checkReport{
+			{Name: "dns", Status: "ok", Detail: "system DNS -> 127.0.0.1"},
+			{Name: "udp_path", Status: "ok", Detail: "non-DNS UDP relayed through bx tunnel"},
+			{Name: "browser_public_ip", Status: "ok", Detail: "no unexpected public IP"},
+		},
+	}
+	rep := assembleLeakCheckReport(doctor, webrtc)
+	if !rep.OK || rep.Risk != "low" {
+		t.Fatalf("leak report = %+v, want ok low", rep)
+	}
+	for _, name := range []string{"service", "dns", "udp", "webrtc", "ipv6", "quic"} {
+		if got := findCheck(rep.Checks, name); got.Name == "" {
+			t.Fatalf("leak report missing %s: %+v", name, rep.Checks)
+		}
+	}
+}
+
+func TestAssembleLeakCheckReportRaisesRiskForWebRTC(t *testing.T) {
+	doctor := doctorReport{Kind: "client", Version: "test", SecretsRedacted: true}
+	webrtc := webrtcCheckReport{
+		Risk:      "high",
+		LeakProof: "unexpected_public_ip_detected",
+		Checks: []checkReport{
+			{Name: "browser_unexpected_public_ip", Status: "fail", Detail: "203.0.113.10"},
+		},
+	}
+	rep := assembleLeakCheckReport(doctor, webrtc)
+	if rep.OK || rep.Risk != "high" {
+		t.Fatalf("leak report = %+v, want high", rep)
+	}
+	if got := findCheck(rep.Checks, "webrtc"); got.Status != "fail" || !strings.Contains(got.Detail, "unexpected_public_ip_detected") {
+		t.Fatalf("webrtc aggregate = %+v, want fail proof", got)
+	}
+}
+
 func TestArchiveClientLogsRecordsReason(t *testing.T) {
 	dir, err := archiveClientLogsWithReason(t.TempDir(), "doctor")
 	if err != nil {
@@ -482,6 +534,13 @@ func TestCapabilitiesReport(t *testing.T) {
 	notes := strings.Join(webrtc.SafeNotes, " ")
 	if !strings.Contains(notes, "ICE candidates") || !strings.Contains(notes, "prove a WebRTC public-IP leak") {
 		t.Fatalf("webrtc-check should describe browser ICE proof capability: %+v", webrtc)
+	}
+	leak := findCapability(rep.Commands, "bx leak-check --json")
+	if !leak.Stable || leak.RequiresRoot || leak.ChangesSystem || leak.ChangesNetwork || !leak.ReadsSecrets {
+		t.Fatalf("unexpected leak-check capability: %+v", leak)
+	}
+	if !strings.Contains(strings.Join(leak.SafeNotes, " "), "network-path") {
+		t.Fatalf("leak-check should state network-path scope: %+v", leak)
 	}
 	setup := findCapability(rep.Commands, "sudo bx setup <client-link>")
 	if setup.Command == "" || !strings.Contains(strings.Join(setup.Arguments, " "), "<client-link>") {

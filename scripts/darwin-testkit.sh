@@ -586,6 +586,19 @@ fi
     done
   fi
   "$BX" "${WEBRTC_ARGS[@]}" || true
+  echo "probe: leak-check"
+  LEAK_ARGS=(leak-check --json --config "$CONFIG")
+  if [[ -n "$DNS_SERVICE" ]]; then
+    LEAK_ARGS+=(--dns-service "$DNS_SERVICE")
+  fi
+  if [[ "$WEBRTC_BROWSER" == "1" ]]; then
+    LEAK_ARGS+=(--browser)
+    for cidr in "${SERVER_BYPASS[@]}"; do
+      expected_ip="$(cidr_host_ip "$cidr")"
+      [[ -n "$expected_ip" ]] && LEAK_ARGS+=(--expected-ip "$expected_ip")
+    done
+  fi
+  "$BX" "${LEAK_ARGS[@]}" || true
   echo "probe: bx log markers"
   grep -E "domain sniffed:.*github.com|udp proxy|udp blocked|socks connect udp|network not implemented" "$LOG_DIR/bx-run.log" || true
   echo "status: after probes"
