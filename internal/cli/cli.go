@@ -63,6 +63,7 @@ func New() *cli.App {
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
+			{Name: "kick", Usage: "强制立即重连隧道(不碰 TUN/路由,比 down+up 轻)", Action: kickAction},
 			{Name: "dns", Usage: "管理 macOS 系统 DNS 接管", Subcommands: dnsCommands()},
 			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
@@ -2184,6 +2185,14 @@ func downAction(c *cli.Context) (err error) {
 		return err
 	}
 	fmt.Println("✅ bx 已停止并取消开机自启。")
+	return nil
+}
+
+func kickAction(c *cli.Context) error {
+	if _, err := supervisor.KickControl(supervisor.SockPath); err != nil {
+		return fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
+	}
+	fmt.Println("✅ 已触发强制重连(重建当前隧道,不碰 TUN/路由)。几秒后 bx status 查看效果。")
 	return nil
 }
 

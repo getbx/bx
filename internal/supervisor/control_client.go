@@ -75,6 +75,12 @@ func RollbackControl(sockPath string) (string, error) {
 	return postControl(sockPath, "/v0/rollback")
 }
 
+// KickControl 触发一次强制重连(bx kick):控制面后台重建当前传输、不碰 TUN/路由。
+// 立即返回(不等隧道健康);效果查 bx status。
+func KickControl(sockPath string) (string, error) {
+	return postControl(sockPath, "/v0/kick")
+}
+
 // postControlBody POST path,带可选 JSON body;返回 controlResponse.State,非 2xx → error(含 Error)。
 func postControlBody(sockPath, path string, body any) (string, error) {
 	client := controlHTTPClient(sockPath)
