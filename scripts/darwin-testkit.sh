@@ -26,6 +26,7 @@ Options:
   --log-dir DIR             Log directory. Default: ./.bx-test-logs/bx-mac-test-YYYYmmdd-HHMMSS
   --set-system-dns          Temporarily set the active macOS network service DNS to 127.0.0.1.
   --dns-service NAME        Network service to change with --set-system-dns. Default: detected from default route.
+  --webrtc-browser          Run bx webrtc-check with a real browser ICE candidate test.
   --block-v6                Include IPv6 reject route plan. Default: enabled.
   --no-block-v6             Do not include IPv6 reject route plan.
   -h, --help                Show this help.
@@ -219,6 +220,7 @@ EXECUTE=0
 BLOCK_V6=1
 SET_SYSTEM_DNS=0
 DNS_SERVICE=""
+WEBRTC_BROWSER=0
 SERVER_BYPASS=()
 USER_BYPASS=()
 
@@ -242,6 +244,7 @@ while [[ $# -gt 0 ]]; do
     --log-dir) LOG_DIR="${2:-}"; shift 2 ;;
     --set-system-dns) SET_SYSTEM_DNS=1; shift ;;
     --dns-service) DNS_SERVICE="${2:-}"; shift 2 ;;
+    --webrtc-browser) WEBRTC_BROWSER=1; shift ;;
     --block-v6) BLOCK_V6=1; shift ;;
     --no-block-v6) BLOCK_V6=0; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -301,6 +304,7 @@ fi
   echo "execute=$EXECUTE"
   echo "set_system_dns=$SET_SYSTEM_DNS"
   echo "dns_service=$DNS_SERVICE"
+  echo "webrtc_browser=$WEBRTC_BROWSER"
   echo "server_bypass=${SERVER_BYPASS[*]}"
   echo "user_bypass=${USER_BYPASS[*]}"
   sw_vers 2>/dev/null || true
@@ -369,6 +373,9 @@ if [[ "$EXECUTE" != "1" ]]; then
   if [[ "$SET_SYSTEM_DNS" == "1" ]]; then
     execute_hint+=(--set-system-dns)
     [[ -n "$DNS_SERVICE" ]] && execute_hint+=(--dns-service "$DNS_SERVICE")
+  fi
+  if [[ "$WEBRTC_BROWSER" == "1" ]]; then
+    execute_hint+=(--webrtc-browser)
   fi
   printf 'To execute:'
   printf ' %q' "${execute_hint[@]}"
@@ -562,6 +569,9 @@ fi
   WEBRTC_ARGS=(webrtc-check --json --config "$CONFIG")
   if [[ -n "$DNS_SERVICE" ]]; then
     WEBRTC_ARGS+=(--dns-service "$DNS_SERVICE")
+  fi
+  if [[ "$WEBRTC_BROWSER" == "1" ]]; then
+    WEBRTC_ARGS+=(--browser)
   fi
   "$BX" "${WEBRTC_ARGS[@]}" || true
   echo "probe: bx log markers"
