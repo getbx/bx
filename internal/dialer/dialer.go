@@ -54,7 +54,7 @@ type Dialer struct {
 	Direct       ContextDialer // 直连
 	Killswitch   bool
 	Stats        DecisionCounter // 可空:决策计数
-	UDPMode      string          // block(默认), direct-realtime, proxy(预留)
+	UDPMode      string          // proxy(默认,走隧道), direct-realtime(直连真实 IP), block
 	// SplitDirect 可空:split-DNS 解析出的内网真实 IP 集,命中即强制直连(绕 Router)。
 	SplitDirect *splitdns.Set
 

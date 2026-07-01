@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/confirm"
 	"github.com/getbx/bx/internal/stats"
@@ -38,7 +39,7 @@ func (f *fakeControlEngine) Arm(apply, undo func() error) error {
 }
 
 func testMux(eng controlEngine) http.Handler {
-	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{}, 0)
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{}, nil, 0)
 }
 
 type fakeMutator struct {
@@ -62,7 +63,11 @@ func (f *fakeMutator) Rehijack() (func() error, func() error, error) {
 }
 
 func testMuxMut(eng controlEngine, mut mutator) http.Handler {
-	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, mut, 0)
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, mut, nil, 0)
+}
+
+func testMuxKick(eng controlEngine, kick func() error) http.Handler {
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{}, kick, 0)
 }
 
 func mustPost(t *testing.T, url string) *http.Response {
@@ -144,6 +149,46 @@ func TestControlStatusRejectsPost(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("status POST 应 405,得 %d", resp.StatusCode)
+	}
+}
+
+func TestControlKickInvokesKick(t *testing.T) {
+	called := make(chan struct{}, 1)
+	kick := func() error { called <- struct{}{}; return nil }
+	srv := httptest.NewServer(testMuxKick(&fakeControlEngine{}, kick))
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v0/kick")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("kick 应 200,得 %d", resp.StatusCode)
+	}
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("kick 未被调用")
+	}
+}
+
+func TestControlKickNotImplementedWhenNil(t *testing.T) {
+	srv := httptest.NewServer(testMuxKick(&fakeControlEngine{}, nil))
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v0/kick")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("kick=nil 应 501,得 %d", resp.StatusCode)
+	}
+}
+
+func TestControlKickRejectsGet(t *testing.T) {
+	srv := httptest.NewServer(testMuxKick(&fakeControlEngine{}, func() error { return nil }))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/v0/kick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("kick GET 应 405,得 %d", resp.StatusCode)
 	}
 }
 
