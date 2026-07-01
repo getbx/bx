@@ -101,6 +101,17 @@ fix_log_permissions() {
   fi
 }
 
+normalize_link_for_config() {
+  local link="$1"
+  # Older local test commands sometimes used bx://wssserver?... as a product
+  # alias. Current bx:// links are encoded envelopes; convert that legacy test
+  # spelling back to the internal transport link before asking bx to wrap it.
+  if [[ "$link" == bx://* && "$link" == *"wssserver="* ]]; then
+    link="brook://${link#bx://}"
+  fi
+  "$BX" blink "$link"
+}
+
 BX="/tmp/bx-mac/bx"
 BX_PROVIDED=0
 BROOK=""
@@ -248,9 +259,12 @@ if [[ "$EXECUTE" != "1" ]]; then
   echo
   echo "Dry-run complete. Logs: $LOG_DIR"
   echo "No network changes were made."
-  execute_hint=(sudo BX_LINK='bx://...' "$0" --execute)
+  execute_hint=(sudo env 'BX_LINK=bx://...' "$0" --execute --bx "$BX" --gateway "$GATEWAY" --duration "$DURATION" --health-timeout "$HEALTH_TIMEOUT" --rollback-after "$ROLLBACK_AFTER")
   for cidr in "${SERVER_BYPASS[@]}"; do
     execute_hint+=(--server-bypass "$cidr")
+  done
+  for cidr in "${USER_BYPASS[@]}"; do
+    execute_hint+=(--bypass "$cidr")
   done
   if [[ "$SET_SYSTEM_DNS" == "1" ]]; then
     execute_hint+=(--set-system-dns)
@@ -278,7 +292,8 @@ fi
 CONFIG="$LOG_DIR/config.yaml"
 DATA_DIR="$LOG_DIR/data"
 mkdir -p "$DATA_DIR"
-ESCAPED_LINK="${LINK//\'/\'\'}"
+CONFIG_LINK="$(normalize_link_for_config "$LINK")" || die "could not normalize link for config"
+ESCAPED_LINK="${CONFIG_LINK//\'/\'\'}"
 {
   echo "server: '$ESCAPED_LINK'"
   echo "global: true"
