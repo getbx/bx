@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/blink"
+	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/urfave/cli/v2"
 )
@@ -32,6 +34,9 @@ func TestAppHasVersion(t *testing.T) {
 	}
 	if !appHasCommand(app, "realtime") {
 		t.Fatal("app should expose bx realtime")
+	}
+	if !appHasCommand(app, "webrtc-check") {
+		t.Fatal("app should expose bx webrtc-check")
 	}
 	status := findAppCommand(app, "status")
 	if !commandHasFlag(status, "json") {
@@ -272,6 +277,38 @@ func TestClientInspectIncludesDoctorAndStatusError(t *testing.T) {
 	}
 }
 
+func TestWebRTCCheckLowRiskWhenUDPRelayed(t *testing.T) {
+	cfg := &config.Config{UDP: config.UDP{Mode: "proxy", Transport: "hysteria2://x"}}
+	rep := assessWebRTCCheck(cfg, &stats.Report{
+		TunnelHealthy: true,
+		UDPMode:       "proxy",
+		UDPTransport:  "hysteria2@example.com",
+	}, nil, install.DNSStatus{Supported: true, Enabled: true, Service: "Wi-Fi"}, nil)
+	if !rep.OK || rep.Risk != "low" {
+		t.Fatalf("webrtc report = %+v, want ok low", rep)
+	}
+	if !rep.BrowserVerificationRequired || rep.LeakProof != "not_proven" {
+		t.Fatalf("webrtc report should keep browser verification boundary: %+v", rep)
+	}
+	if got := findCheck(rep.Checks, "udp_path"); got.Status != "ok" || !strings.Contains(got.Detail, "relayed") {
+		t.Fatalf("udp_path = %+v, want relayed ok", got)
+	}
+}
+
+func TestWebRTCCheckHighRiskForDirectUDP(t *testing.T) {
+	cfg := &config.Config{UDP: config.UDP{Mode: "direct-realtime"}}
+	rep := assessWebRTCCheck(cfg, &stats.Report{
+		TunnelHealthy: true,
+		UDPMode:       "direct-realtime",
+	}, nil, install.DNSStatus{Supported: true, Enabled: true, Service: "Wi-Fi"}, nil)
+	if rep.OK || rep.Risk != "high" {
+		t.Fatalf("webrtc report = %+v, want high risk", rep)
+	}
+	if got := findCheck(rep.Checks, "udp_path"); got.Status != "fail" || !strings.Contains(got.Detail, "real network") {
+		t.Fatalf("udp_path = %+v, want direct UDP fail", got)
+	}
+}
+
 func TestArchiveClientLogsRecordsReason(t *testing.T) {
 	dir, err := archiveClientLogsWithReason(t.TempDir(), "doctor")
 	if err != nil {
@@ -367,6 +404,13 @@ func TestCapabilitiesReport(t *testing.T) {
 	inspect := findCapability(rep.Commands, "bx inspect --json")
 	if !inspect.Stable || inspect.RequiresRoot || inspect.ChangesSystem || inspect.ChangesNetwork || !inspect.ReadsSecrets {
 		t.Fatalf("unexpected inspect capability: %+v", inspect)
+	}
+	webrtc := findCapability(rep.Commands, "bx webrtc-check --json")
+	if !webrtc.Stable || webrtc.RequiresRoot || webrtc.ChangesSystem || webrtc.ChangesNetwork || !webrtc.ReadsSecrets {
+		t.Fatalf("unexpected webrtc-check capability: %+v", webrtc)
+	}
+	if !strings.Contains(strings.Join(webrtc.SafeNotes, " "), "ICE candidates") {
+		t.Fatalf("webrtc-check should state browser verification boundary: %+v", webrtc)
 	}
 	setup := findCapability(rep.Commands, "sudo bx setup <client-link>")
 	if setup.Command == "" || !strings.Contains(strings.Join(setup.Arguments, " "), "<client-link>") {

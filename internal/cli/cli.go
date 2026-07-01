@@ -60,6 +60,7 @@ func New() *cli.App {
 			{Name: "server", Usage: "管理 bx server", Subcommands: serverCommands()},
 			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
 			{Name: "inspect", Usage: "输出 agent 可读诊断包", Flags: inspectFlags(), Action: inspectAction},
+			{Name: "webrtc-check", Usage: "检查 WebRTC 泄漏风险(只读)", Flags: webrtcCheckFlags(), Action: webrtcCheckAction},
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
@@ -166,6 +167,22 @@ type inspectReport struct {
 	NextActions     []string           `json:"next_actions,omitempty"`
 }
 
+type webrtcCheckReport struct {
+	OK                          bool          `json:"ok"`
+	Kind                        string        `json:"kind"`
+	Version                     string        `json:"version"`
+	SecretsRedacted             bool          `json:"secrets_redacted"`
+	ChangesSystem               bool          `json:"changes_system"`
+	ChangesNetwork              bool          `json:"changes_network"`
+	RequiresRoot                bool          `json:"requires_root"`
+	Risk                        string        `json:"risk"`
+	LeakProof                   string        `json:"leak_proof"`
+	BrowserVerificationRequired bool          `json:"browser_verification_required"`
+	Checks                      []checkReport `json:"checks"`
+	Evidence                    []string      `json:"evidence,omitempty"`
+	NextActions                 []string      `json:"next_actions,omitempty"`
+}
+
 type capabilitiesReport struct {
 	SchemaVersion   int                 `json:"schema_version"`
 	Product         string              `json:"product"`
@@ -229,6 +246,14 @@ func realtimeFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
 		&cli.BoolFlag{Name: "no-restart", Usage: "只写配置,不自动重启正在运行的 bx"},
+	}
+}
+
+func webrtcCheckFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
+		&cli.StringFlag{Name: "dns-service", Usage: "macOS 网络服务名(留空自动探测)"},
 	}
 }
 
@@ -1072,6 +1097,28 @@ func inspectAction(c *cli.Context) error {
 	return writeJSON(os.Stdout, collectClientInspect(c.String("config"), c.String("target"), c.Duration("timeout"), c.Bool("skip-probe")))
 }
 
+func webrtcCheckAction(c *cli.Context) error {
+	rep := collectWebRTCCheck(c.String("config"), c.String("dns-service"))
+	if c.Bool("json") {
+		return writeJSON(os.Stdout, rep)
+	}
+	fmt.Println("WebRTC 检查")
+	fmt.Printf("  风险    %s\n", rep.Risk)
+	for _, check := range rep.Checks {
+		if check.Name == "udp_path" || check.Name == "dns" || check.Name == "service" {
+			doctorLine(check.Status, check.Name, check.Detail)
+		}
+	}
+	fmt.Printf("  结论    %s\n", rep.LeakProof)
+	if rep.BrowserVerificationRequired {
+		fmt.Println("  限制    需要浏览器 ICE candidate 才能证明是否真实泄漏")
+	}
+	for _, action := range rep.NextActions {
+		fmt.Printf("  下一步  %s\n", action)
+	}
+	return nil
+}
+
 func serverDoctorAction(c *cli.Context) error {
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, collectServerDoctor(c.String("config"), c.String("shares-dir")))
@@ -1186,6 +1233,20 @@ func capabilities() capabilitiesReport {
 				Arguments:      []string{"--json", "--skip-probe", "--config <path>", "--target <host:port>", "--timeout <duration>"},
 				Examples:       []string{"bx inspect --json", "bx inspect --json --skip-probe"},
 				SafeNotes:      []string{"Read-only.", "Secrets are redacted.", "Status socket failures are reported as data."},
+			},
+			{
+				Command:        "bx webrtc-check --json",
+				Category:       "diagnostics",
+				Summary:        "Assess WebRTC leak risk from bx config, service status, DNS state, and UDP policy.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"json"},
+				Arguments:      []string{"--json", "--config <path>", "--dns-service <name>"},
+				Examples:       []string{"bx webrtc-check --json"},
+				SafeNotes:      []string{"Read-only.", "Secrets are redacted.", "Does not open a browser; browser ICE candidates are required to prove a leak."},
 			},
 			{
 				Command:        "sudo bx server doctor --json",
@@ -1604,6 +1665,161 @@ func appendUnique(base []string, add ...string) []string {
 		seen[v] = true
 	}
 	return base
+}
+
+func collectWebRTCCheck(configPath, dnsService string) webrtcCheckReport {
+	cfg, cfgErr := loadConfig(configPath)
+	status, statusErr := readStatusReport()
+	dnsStatus, dnsErr := install.InspectDNS(dnsService)
+	if runtime.GOOS != "darwin" {
+		dnsErr = nil
+	}
+	rep := assessWebRTCCheck(cfg, statusPtr(status, statusErr), statusErr, dnsStatus, dnsErr)
+	if cfgErr != nil {
+		updateCheck(&rep, "config", "fail", cfgErr.Error(), "sudo bx setup <client-link>")
+		rep.Risk = maxRisk(rep.Risk, "high")
+		rep.NextActions = appendUnique(rep.NextActions, "sudo bx setup <client-link>")
+		rep.OK = false
+	}
+	return rep
+}
+
+func statusPtr(rep stats.Report, err error) *stats.Report {
+	if err != nil {
+		return nil
+	}
+	return &rep
+}
+
+func assessWebRTCCheck(cfg *config.Config, status *stats.Report, statusErr error, dnsStatus install.DNSStatus, dnsErr error) webrtcCheckReport {
+	rep := webrtcCheckReport{
+		Kind:                        "webrtc",
+		Version:                     version.String(),
+		SecretsRedacted:             true,
+		Risk:                        "low",
+		LeakProof:                   "not_proven",
+		BrowserVerificationRequired: true,
+	}
+	if cfg == nil {
+		rep.addCheck("config", "fail", "missing or unreadable", "sudo bx setup <client-link>")
+		rep.Risk = "high"
+		rep.NextActions = appendUnique(rep.NextActions, "sudo bx setup <client-link>")
+	} else {
+		rep.addCheck("config", "ok", "readable", "")
+	}
+
+	if statusErr != nil {
+		rep.addCheck("service", "fail", statusErr.Error(), "sudo bx up")
+		rep.Risk = maxRisk(rep.Risk, "high")
+		rep.NextActions = appendUnique(rep.NextActions, "sudo bx up", "bx logs")
+	} else if status == nil {
+		rep.addCheck("service", "fail", "status unavailable", "sudo bx up")
+		rep.Risk = maxRisk(rep.Risk, "high")
+		rep.NextActions = appendUnique(rep.NextActions, "sudo bx up")
+	} else if !status.TunnelHealthy {
+		rep.addCheck("service", "fail", "tunnel unhealthy", "bx logs")
+		rep.Risk = maxRisk(rep.Risk, "high")
+		rep.NextActions = appendUnique(rep.NextActions, "bx logs")
+	} else {
+		rep.addCheck("service", "ok", fmt.Sprintf("active %dms", status.LatencyMS), "")
+		rep.Evidence = append(rep.Evidence, "status_socket: tunnel healthy")
+	}
+
+	mode := ""
+	transport := ""
+	if cfg != nil {
+		mode = cfg.UDP.Mode
+		transport = cfg.UDP.Transport
+	}
+	if status != nil && status.UDPMode != "" {
+		mode = status.UDPMode
+	}
+	if status != nil && status.UDPTransport != "" {
+		transport = status.UDPTransport
+	}
+	switch mode {
+	case "proxy":
+		detail := "non-DNS UDP relayed through bx tunnel"
+		statusName := "ok"
+		if status == nil {
+			detail = "configured for UDP relay, but runtime status is unavailable"
+			statusName = "warn"
+			rep.Risk = maxRisk(rep.Risk, "high")
+		}
+		if transport != "" {
+			detail += " via " + redactLink(transport)
+		}
+		rep.addCheck("udp_path", statusName, detail, "")
+		rep.Evidence = append(rep.Evidence, "udp_mode: proxy")
+	case "direct-realtime":
+		rep.addCheck("udp_path", "fail", "non-DNS UDP uses local real network path", "sudo bx realtime on")
+		rep.Risk = maxRisk(rep.Risk, "high")
+		rep.NextActions = appendUnique(rep.NextActions, "sudo bx realtime on")
+	case "":
+		rep.addCheck("udp_path", "warn", "UDP policy unknown; config and runtime status are unavailable", "sudo bx up")
+		rep.Risk = maxRisk(rep.Risk, "high")
+		rep.NextActions = appendUnique(rep.NextActions, "sudo bx up")
+	default:
+		rep.addCheck("udp_path", "warn", "non-DNS UDP blocked; WebRTC may fail but should not leak by UDP", "sudo bx realtime on")
+		rep.Risk = maxRisk(rep.Risk, "medium")
+		rep.NextActions = appendUnique(rep.NextActions, "sudo bx realtime on")
+	}
+
+	if dnsErr != nil {
+		rep.addCheck("dns", "warn", dnsErr.Error(), "sudo bx dns on")
+		rep.Risk = maxRisk(rep.Risk, "medium")
+		rep.NextActions = appendUnique(rep.NextActions, "sudo bx dns on")
+	} else if !dnsStatus.Supported {
+		rep.addCheck("dns", "info", dnsStatus.Detail, "")
+	} else if dnsStatus.Enabled {
+		rep.addCheck("dns", "ok", "system DNS -> 127.0.0.1", "")
+		rep.Evidence = append(rep.Evidence, "dns: system DNS uses bx")
+	} else {
+		rep.addCheck("dns", "warn", "system DNS is not using bx", "sudo bx dns on")
+		rep.Risk = maxRisk(rep.Risk, "medium")
+		rep.NextActions = appendUnique(rep.NextActions, "sudo bx dns on")
+	}
+
+	if status != nil {
+		if status.UDPBlocked > 0 {
+			rep.addCheck("udp_recent_blocks", "warn", fmt.Sprintf("%d blocked", status.UDPBlocked), "bx logs")
+			if mode == "proxy" {
+				rep.Risk = maxRisk(rep.Risk, "medium")
+			}
+			rep.NextActions = appendUnique(rep.NextActions, "bx logs")
+		} else {
+			rep.addCheck("udp_recent_blocks", "ok", "0 blocked", "")
+		}
+	}
+	rep.addCheck("browser_candidates", "info", "not inspected by this command", "open a WebRTC leak page and compare ICE candidates with this JSON")
+	rep.NextActions = appendUnique(rep.NextActions, "bx webrtc-check --json")
+	rep.OK = rep.Risk == "low"
+	return rep
+}
+
+func (r *webrtcCheckReport) addCheck(name, status, detail, hint string) {
+	r.Checks = append(r.Checks, checkReport{Name: name, Status: status, Detail: detail, Hint: hint})
+}
+
+func updateCheck(r *webrtcCheckReport, name, status, detail, hint string) {
+	for i := range r.Checks {
+		if r.Checks[i].Name == name {
+			r.Checks[i] = checkReport{Name: name, Status: status, Detail: detail, Hint: hint}
+			return
+		}
+	}
+	r.addCheck(name, status, detail, hint)
+}
+
+func maxRisk(a, b string) string {
+	rank := map[string]int{"low": 0, "medium": 1, "high": 2}
+	if rank[b] > rank[a] {
+		return b
+	}
+	if _, ok := rank[a]; !ok {
+		return b
+	}
+	return a
 }
 
 func udpPolicyDoctor(mode string) (status, detail, hint string) {
