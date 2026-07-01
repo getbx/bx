@@ -61,6 +61,7 @@ func New() *cli.App {
 			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
 			{Name: "inspect", Usage: "输出 agent 可读诊断包", Flags: inspectFlags(), Action: inspectAction},
 			{Name: "webrtc-check", Usage: "检查 WebRTC 泄漏风险(只读)", Flags: webrtcCheckFlags(), Action: webrtcCheckAction},
+			{Name: "leak-check", Usage: "聚合网络路径泄漏风险(只读)", Flags: leakCheckFlags(), Action: leakCheckAction},
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
@@ -183,6 +184,22 @@ type webrtcCheckReport struct {
 	NextActions                 []string      `json:"next_actions,omitempty"`
 }
 
+type leakCheckReport struct {
+	OK              bool              `json:"ok"`
+	Kind            string            `json:"kind"`
+	Version         string            `json:"version"`
+	SecretsRedacted bool              `json:"secrets_redacted"`
+	ChangesSystem   bool              `json:"changes_system"`
+	ChangesNetwork  bool              `json:"changes_network"`
+	RequiresRoot    bool              `json:"requires_root"`
+	Risk            string            `json:"risk"`
+	Checks          []checkReport     `json:"checks"`
+	WebRTC          webrtcCheckReport `json:"webrtc"`
+	Doctor          doctorReport      `json:"doctor"`
+	Evidence        []string          `json:"evidence,omitempty"`
+	NextActions     []string          `json:"next_actions,omitempty"`
+}
+
 type browserICEResult struct {
 	UserAgent  string   `json:"user_agent,omitempty"`
 	Candidates []string `json:"candidates,omitempty"`
@@ -260,6 +277,17 @@ func webrtcCheckFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
 		&cli.BoolFlag{Name: "browser", Usage: "打开本地浏览器页面,实际收集 WebRTC ICE candidates"},
+		&cli.DurationFlag{Name: "browser-timeout", Value: 20 * time.Second, Usage: "等待浏览器 ICE 结果的最长时间"},
+		&cli.StringSliceFlag{Name: "expected-ip", Usage: "允许出现的代理/VPS 公网 IP(可重复)"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
+		&cli.StringFlag{Name: "dns-service", Usage: "macOS 网络服务名(留空自动探测)"},
+	}
+}
+
+func leakCheckFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
+		&cli.BoolFlag{Name: "browser", Usage: "包含真实浏览器 WebRTC ICE candidate 检测"},
 		&cli.DurationFlag{Name: "browser-timeout", Value: 20 * time.Second, Usage: "等待浏览器 ICE 结果的最长时间"},
 		&cli.StringSliceFlag{Name: "expected-ip", Usage: "允许出现的代理/VPS 公网 IP(可重复)"},
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
@@ -1141,6 +1169,22 @@ func webrtcCheckAction(c *cli.Context) error {
 	return nil
 }
 
+func leakCheckAction(c *cli.Context) error {
+	rep := collectLeakCheck(c.String("config"), c.String("dns-service"), c.Bool("browser"), c.Duration("browser-timeout"), c.StringSlice("expected-ip"))
+	if c.Bool("json") {
+		return writeJSON(os.Stdout, rep)
+	}
+	fmt.Println("bx leak-check")
+	fmt.Printf("  风险    %s\n", rep.Risk)
+	for _, check := range rep.Checks {
+		doctorLine(check.Status, check.Name, check.Detail)
+	}
+	for _, action := range rep.NextActions {
+		fmt.Printf("  下一步  %s\n", action)
+	}
+	return nil
+}
+
 func serverDoctorAction(c *cli.Context) error {
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, collectServerDoctor(c.String("config"), c.String("shares-dir")))
@@ -1269,6 +1313,20 @@ func capabilities() capabilitiesReport {
 				Arguments:      []string{"--json", "--browser", "--browser-timeout <duration>", "--expected-ip <ip>", "--config <path>", "--dns-service <name>"},
 				Examples:       []string{"bx webrtc-check --json", "bx webrtc-check --browser --json --expected-ip <proxy-ip>"},
 				SafeNotes:      []string{"Read-only for system settings.", "Secrets are redacted.", "--browser opens a local 127.0.0.1 test page and collects browser ICE candidates; this is the command that can prove a WebRTC public-IP leak."},
+			},
+			{
+				Command:        "bx leak-check --json",
+				Category:       "diagnostics",
+				Summary:        "Aggregate network-path leak risk from doctor, DNS/UDP state, WebRTC, IPv6, and QUIC posture.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"json"},
+				Arguments:      []string{"--json", "--browser", "--browser-timeout <duration>", "--expected-ip <ip>", "--config <path>", "--dns-service <name>"},
+				Examples:       []string{"bx leak-check --json", "bx leak-check --browser --json --expected-ip <proxy-ip>"},
+				SafeNotes:      []string{"Read-only for system settings.", "Secrets are redacted.", "Scope is network-path leakage only; browser fingerprinting is intentionally out of scope."},
 			},
 			{
 				Command:        "sudo bx server doctor --json",
@@ -1704,6 +1762,120 @@ func collectWebRTCCheck(configPath, dnsService string) webrtcCheckReport {
 		rep.OK = false
 	}
 	return rep
+}
+
+func collectLeakCheck(configPath, dnsService string, browser bool, browserTimeout time.Duration, expectedIPs []string) leakCheckReport {
+	doctor := collectClientDoctor(configPath, defaultProbeTarget, 0, true)
+	webrtc := collectWebRTCCheck(configPath, dnsService)
+	if browser {
+		expected := append([]string{}, expectedIPs...)
+		expected = appendUnique(expected, expectedWebRTCIPs(configPath)...)
+		ice, err := runBrowserICECheck(context.Background(), browserTimeout)
+		if err != nil {
+			webrtc.addCheck("browser_ice", "fail", err.Error(), "")
+			webrtc.Risk = maxRisk(webrtc.Risk, "high")
+			webrtc.OK = false
+		} else {
+			applyBrowserICECandidates(&webrtc, ice, expected)
+		}
+	}
+	return assembleLeakCheckReport(doctor, webrtc)
+}
+
+func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport) leakCheckReport {
+	rep := leakCheckReport{
+		Kind:            "leak",
+		Version:         version.String(),
+		SecretsRedacted: true,
+		Risk:            "low",
+		Doctor:          doctor,
+		WebRTC:          webrtc,
+	}
+	if webrtc.Risk != "" {
+		rep.Risk = maxRisk(rep.Risk, webrtc.Risk)
+	}
+	if doctor.hasFail() {
+		rep.Risk = maxRisk(rep.Risk, "high")
+	}
+	rep.addCheck(aggregateDoctorServiceCheck(doctor))
+	rep.addCheck(aggregateNamedCheck("dns", webrtc.Checks, "dns"))
+	rep.addCheck(aggregateNamedCheck("udp", webrtc.Checks, "udp_path"))
+	rep.addCheck(aggregateWebRTCCheck(webrtc))
+	rep.addCheck(checkReport{
+		Name:   "ipv6",
+		Status: "info",
+		Detail: "local route/config risk only; verify on an IPv6-capable network with curl -6 or browser leak tests",
+	})
+	rep.addCheck(checkReport{
+		Name:   "quic",
+		Status: "info",
+		Detail: "QUIC/HTTP3 follows UDP policy; use udp=proxy or block to avoid direct local path",
+	})
+	rep.NextActions = appendUnique(rep.NextActions, doctorNextActions(doctor)...)
+	rep.NextActions = appendUnique(rep.NextActions, webrtc.NextActions...)
+	rep.NextActions = appendUnique(rep.NextActions, "bx webrtc-check --browser --json --expected-ip <proxy-ip>")
+	rep.Evidence = append(rep.Evidence, webrtc.Evidence...)
+	rep.OK = rep.Risk == "low"
+	return rep
+}
+
+func (r *leakCheckReport) addCheck(check checkReport) {
+	if check.Name == "" {
+		return
+	}
+	r.Checks = append(r.Checks, check)
+}
+
+func aggregateDoctorServiceCheck(doctor doctorReport) checkReport {
+	for _, name := range []string{"service_active", "status_socket", "config_readable"} {
+		if check := findReportCheck(doctor.Checks, name); check.Name != "" && check.Status != "ok" && check.Status != "info" {
+			return checkReport{Name: "service", Status: check.Status, Detail: check.Detail, Hint: check.Hint}
+		}
+	}
+	if check := findReportCheck(doctor.Checks, "service_active"); check.Name != "" {
+		return checkReport{Name: "service", Status: check.Status, Detail: check.Detail, Hint: check.Hint}
+	}
+	return checkReport{Name: "service", Status: "info", Detail: "not checked"}
+}
+
+func aggregateNamedCheck(name string, checks []checkReport, source string) checkReport {
+	check := findReportCheck(checks, source)
+	if check.Name == "" {
+		return checkReport{Name: name, Status: "info", Detail: "not checked"}
+	}
+	return checkReport{Name: name, Status: check.Status, Detail: check.Detail, Hint: check.Hint}
+}
+
+func aggregateWebRTCCheck(webrtc webrtcCheckReport) checkReport {
+	for _, name := range []string{"browser_unexpected_public_ip", "browser_local_ip", "browser_public_ip"} {
+		check := findReportCheck(webrtc.Checks, name)
+		if check.Name == "" {
+			continue
+		}
+		status := check.Status
+		if webrtc.Risk == "high" && status != "fail" {
+			status = "fail"
+		}
+		detail := check.Detail
+		if webrtc.LeakProof != "" {
+			detail = strings.TrimSpace(webrtc.LeakProof + " " + detail)
+		}
+		return checkReport{Name: "webrtc", Status: status, Detail: detail, Hint: check.Hint}
+	}
+	if check := findReportCheck(webrtc.Checks, "browser_candidates"); check.Name != "" {
+		detail := strings.TrimSpace(webrtc.LeakProof + " " + check.Detail)
+		return checkReport{Name: "webrtc", Status: check.Status, Detail: detail, Hint: check.Hint}
+	}
+	return checkReport{Name: "webrtc", Status: "info", Detail: "not checked"}
+}
+
+func findReportCheck(checks []checkReport, name string) checkReport {
+	for _, check := range checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	return checkReport{}
 }
 
 func statusPtr(rep stats.Report, err error) *stats.Report {
