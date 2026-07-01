@@ -1843,6 +1843,7 @@ func applyBrowserICECandidates(rep *webrtcCheckReport, result browserICEResult, 
 	}
 	rep.addCheck("browser_ice", "ok", fmt.Sprintf("%d candidates, %d IPs", len(result.Candidates), len(ips)), "")
 	expectedSet := stringSet(expected)
+	hasExpectedPublic := len(expectedSet) > 0
 	var publicLeaks, expectedPublic, privateIPs []string
 	for _, ip := range ips {
 		parsed := net.ParseIP(ip)
@@ -1863,9 +1864,15 @@ func applyBrowserICECandidates(rep *webrtcCheckReport, result browserICEResult, 
 		}
 	}
 	if len(publicLeaks) > 0 {
-		rep.addCheck("browser_public_ip", "fail", strings.Join(publicLeaks, ", "), "real public IP exposed in WebRTC ICE candidates")
+		proof := "unexpected_public_ip_detected"
+		hint := "public IP is not in expected proxy/VPS IPs; may be another proxy exit or the real network path"
+		if !hasExpectedPublic {
+			proof = "public_ip_detected_without_expected"
+			hint = "public IP appeared in WebRTC ICE candidates; pass --expected-ip <proxy-ip> to classify it"
+		}
+		rep.addCheck("browser_unexpected_public_ip", "fail", strings.Join(publicLeaks, ", "), hint)
 		rep.Risk = maxRisk(rep.Risk, "high")
-		rep.LeakProof = "leaked"
+		rep.LeakProof = proof
 		rep.OK = false
 		return
 	}
@@ -1879,6 +1886,7 @@ func applyBrowserICECandidates(rep *webrtcCheckReport, result browserICEResult, 
 	detail := "no unexpected public IP in browser ICE candidates"
 	if len(expectedPublic) > 0 {
 		detail += "; expected public IP: " + strings.Join(expectedPublic, ", ")
+		rep.addCheck("browser_expected_public_ip", "ok", strings.Join(expectedPublic, ", "), "")
 	}
 	rep.addCheck("browser_public_ip", "ok", detail, "")
 	rep.LeakProof = "no_public_leak_detected"

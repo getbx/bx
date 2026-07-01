@@ -313,18 +313,18 @@ func TestWebRTCCheckHighRiskForDirectUDP(t *testing.T) {
 	}
 }
 
-func TestApplyBrowserICECandidatesDetectsPublicLeak(t *testing.T) {
+func TestApplyBrowserICECandidatesDetectsUnexpectedPublicIP(t *testing.T) {
 	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
 	applyBrowserICECandidates(&rep, browserICEResult{
 		Candidates: []string{
 			"candidate:1 1 udp 2122260223 203.0.113.10 55000 typ srflx raddr 192.168.1.5 rport 55000",
 		},
 	}, []string{"203.0.113.20"})
-	if rep.OK || rep.Risk != "high" || rep.LeakProof != "leaked" {
-		t.Fatalf("browser candidates should detect public leak: %+v", rep)
+	if rep.OK || rep.Risk != "high" || rep.LeakProof != "unexpected_public_ip_detected" {
+		t.Fatalf("browser candidates should detect unexpected public IP: %+v", rep)
 	}
-	if got := findCheck(rep.Checks, "browser_public_ip"); got.Status != "fail" || !strings.Contains(got.Detail, "203.0.113.10") {
-		t.Fatalf("browser_public_ip = %+v, want leaked public IP", got)
+	if got := findCheck(rep.Checks, "browser_unexpected_public_ip"); got.Status != "fail" || !strings.Contains(got.Detail, "203.0.113.10") || strings.Contains(got.Hint, "real public IP") {
+		t.Fatalf("browser_unexpected_public_ip = %+v, want unexpected public IP without real-IP overclaim", got)
 	}
 }
 
@@ -337,6 +337,21 @@ func TestApplyBrowserICECandidatesAllowsExpectedProxyIP(t *testing.T) {
 	}, []string{"203.0.113.20"})
 	if !rep.OK || rep.Risk != "low" || rep.LeakProof != "no_public_leak_detected" {
 		t.Fatalf("expected proxy IP should be accepted: %+v", rep)
+	}
+	if got := findCheck(rep.Checks, "browser_expected_public_ip"); got.Status != "ok" || !strings.Contains(got.Detail, "203.0.113.20") {
+		t.Fatalf("browser_expected_public_ip = %+v, want expected proxy IP", got)
+	}
+}
+
+func TestApplyBrowserICECandidatesWithoutExpectedIPCannotProveSafety(t *testing.T) {
+	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
+	applyBrowserICECandidates(&rep, browserICEResult{
+		Candidates: []string{
+			"candidate:1 1 udp 2122260223 203.0.113.10 55000 typ srflx",
+		},
+	}, nil)
+	if rep.OK || rep.Risk != "high" || rep.LeakProof != "public_ip_detected_without_expected" {
+		t.Fatalf("public IP without expectation should be inconclusive/high: %+v", rep)
 	}
 }
 

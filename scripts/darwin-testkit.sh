@@ -114,6 +114,14 @@ finally:
 PY
 }
 
+cidr_host_ip() {
+  local cidr="$1"
+  local host="${cidr%%/*}"
+  if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$host"
+  fi
+}
+
 save_dns_state() {
   local service="$1"
   networksetup -getdnsservers "$service" >"$LOG_DIR/dns-original.txt" 2>&1 || true
@@ -572,6 +580,10 @@ fi
   fi
   if [[ "$WEBRTC_BROWSER" == "1" ]]; then
     WEBRTC_ARGS+=(--browser)
+    for cidr in "${SERVER_BYPASS[@]}"; do
+      expected_ip="$(cidr_host_ip "$cidr")"
+      [[ -n "$expected_ip" ]] && WEBRTC_ARGS+=(--expected-ip "$expected_ip")
+    done
   fi
   "$BX" "${WEBRTC_ARGS[@]}" || true
   echo "probe: bx log markers"
