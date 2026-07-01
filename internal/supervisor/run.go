@@ -316,22 +316,18 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	// 按类分流:UDP 专用传输(如 hysteria,QUIC 对丢包/高 RTT 更快)与主传输并行。
 	// UDP proxy 走它;不变量保住——它挂时 UDP fail-closed Block(dialer.SetUDPTransport),绝不回落。
+	// best-effort:UDP companion 是"锦上添花"的速度档,绝不阻塞主隧道(reality)把 TUN 拉起
+	// (见 attachUDPCompanion)——否则 flaky UDP 上行(运营商丢包)会把秒健康的 reality 一起
+	// 拖进重启循环。未健康时由上面的 fail-closed 不变量兜住,连上后自动接管 UDP/QUIC。
 	if udpEnabled {
 		udpTun, err := buildTunnel(cfg.UDP.Transport)
 		if err != nil {
 			return fmt.Errorf("构建 UDP 传输: %w", err)
 		}
-		udpTun.Start()
 		defer udpTun.Stop()
-		if err := waitTunnelHealthy(ctx, udpTun, healthTimeout); err != nil {
-			return fmt.Errorf("UDP 传输未健康: %w", err)
+		if err := attachUDPCompanion(d, udpTun, transportLabel(cfg.UDP.Transport)); err != nil {
+			return fmt.Errorf("挂载 UDP 传输: %w", err)
 		}
-		udpProxy, err := socksProxy(udpTun.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
-		if err != nil {
-			return fmt.Errorf("构建 UDP socks 代理: %w", err)
-		}
-		d.SetUDPTransport(&dialer.Transport{Proxy: udpProxy, Healthy: udpTun.Healthy})
-		log.Printf("UDP 专用传输已启用:%s(UDP/QUIC 走它,TCP 走主传输)", transportLabel(cfg.UDP.Transport))
 	}
 
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
@@ -504,6 +500,22 @@ func udpNote(mode string) string {
 // socksProxy 把 brook 本地 socks5 包成带 context 的拨号器。
 func socksProxy(socksAddr string, base *net.Dialer) (dialer.ContextDialer, error) {
 	return socks5.NewDialer(socksAddr, base)
+}
+
+// attachUDPCompanion 启动 UDP 专用传输(如 hysteria2)并挂到 dialer——best-effort,不阻塞等待健康。
+// UDP companion 只是按类分流的速度档;reality(TCP)才是抗封锁主干。启动期硬等 UDP 健康会让 flaky
+// UDP 上行(运营商对 QUIC 丢包/限速)把秒健康的主隧道也一起拖进 procd 重启循环,TUN 永远起不来。
+// 故此处只 Start + 挂载:未健康时 dialer 按 killswitch fail-closed 阻断 UDP(绝不回落主传输,既有
+// dialer 测试保证),隧道连上后自动接管 UDP/QUIC。socksAddr 在 New 时即固定分配,不依赖健康。
+func attachUDPCompanion(d *dialer.Dialer, udpTun *tunnel.Tunnel, label string) error {
+	udpTun.Start()
+	udpProxy, err := socksProxy(udpTun.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
+	if err != nil {
+		return fmt.Errorf("构建 UDP socks 代理: %w", err)
+	}
+	d.SetUDPTransport(&dialer.Transport{Proxy: udpProxy, Healthy: udpTun.Healthy})
+	log.Printf("UDP 专用传输已挂载:%s(UDP/QUIC 走它,TCP 走主传输;未健康则 UDP fail-closed,不拖住主隧道)", label)
+	return nil
 }
 
 // dnsResolver 用指定 DNS 服务器解析(经防环直连器,绕过 tun)。
