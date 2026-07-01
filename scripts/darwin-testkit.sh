@@ -558,6 +558,12 @@ fi
     done
     sleep 1
   fi
+  echo "probe: webrtc-check"
+  WEBRTC_ARGS=(webrtc-check --json --config "$CONFIG")
+  if [[ -n "$DNS_SERVICE" ]]; then
+    WEBRTC_ARGS+=(--dns-service "$DNS_SERVICE")
+  fi
+  "$BX" "${WEBRTC_ARGS[@]}" || true
   echo "probe: bx log markers"
   grep -E "domain sniffed:.*github.com|udp proxy|udp blocked|socks connect udp|network not implemented" "$LOG_DIR/bx-run.log" || true
   echo "status: after probes"
