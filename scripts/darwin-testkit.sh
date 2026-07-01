@@ -102,13 +102,47 @@ fix_log_permissions() {
   fi
 }
 
-normalize_link_for_config() {
+decode_bx_links() {
   local link="$1"
-  # Older local test commands sometimes used bx://wssserver?... as a product
-  # alias. Current bx:// links are encoded envelopes; convert that legacy test
-  # spelling back to the internal transport link before asking bx to wrap it.
+  local py
+  py="$(command -v python3 || true)"
+  [[ -n "$py" ]] || die "python3 is required to expand bx:// bundles in the testkit"
+  "$py" - "$link" <<'PY'
+import base64
+import json
+import sys
+
+link = sys.argv[1].strip()
+prefix = "bx://"
+if link.startswith("blink://"):
+    prefix = "blink://"
+if not link.startswith(prefix):
+    raise SystemExit("not a bx/blink link")
+raw = link[len(prefix):]
+raw += "=" * (-len(raw) % 4)
+payload = base64.urlsafe_b64decode(raw.encode())
+text = payload.decode()
+if text.lstrip().startswith("{"):
+    data = json.loads(text)
+    links = data.get("links") or [data.get("link", "")]
+else:
+    links = [text]
+for item in links:
+    if item:
+        print(item)
+PY
+}
+
+normalize_links_for_config() {
+  local link="$1"
   if [[ "$link" == bx://* && "$link" == *"wssserver="* ]]; then
     link="brook://${link#bx://}"
+  fi
+  if [[ "$link" == bx://* || "$link" == blink://* ]]; then
+    while IFS= read -r internal; do
+      [[ -n "$internal" ]] && "$BX" blink "$internal"
+    done < <(decode_bx_links "$link")
+    return
   fi
   "$BX" blink "$link"
 }
@@ -300,15 +334,28 @@ fi
 CONFIG="$LOG_DIR/config.yaml"
 DATA_DIR="$LOG_DIR/data"
 mkdir -p "$DATA_DIR"
-CONFIG_LINK="$(normalize_link_for_config "$LINK")" || die "could not normalize link for config"
-ESCAPED_LINK="${CONFIG_LINK//\'/\'\'}"
+CONFIG_LINKS=()
+while IFS= read -r config_link; do
+  [[ -n "$config_link" ]] && CONFIG_LINKS+=("$config_link")
+done < <(normalize_links_for_config "$LINK") || die "could not normalize link for config"
+[[ ${#CONFIG_LINKS[@]} -gt 0 ]] || die "could not normalize link for config"
 ESCAPED_UDP_LINK=""
 if [[ -n "$UDP_LINK" ]]; then
-  CONFIG_UDP_LINK="$(normalize_link_for_config "$UDP_LINK")" || die "could not normalize UDP link for config"
+  CONFIG_UDP_LINK="$(normalize_links_for_config "$UDP_LINK" | head -n 1)" || die "could not normalize UDP link for config"
+  [[ -n "$CONFIG_UDP_LINK" ]] || die "could not normalize UDP link for config"
   ESCAPED_UDP_LINK="${CONFIG_UDP_LINK//\'/\'\'}"
 fi
 {
-  echo "server: '$ESCAPED_LINK'"
+  if [[ ${#CONFIG_LINKS[@]} -eq 1 ]]; then
+    ESCAPED_LINK="${CONFIG_LINKS[0]//\'/\'\'}"
+    echo "server: '$ESCAPED_LINK'"
+  else
+    echo "transports:"
+    for config_link in "${CONFIG_LINKS[@]}"; do
+      ESCAPED_LINK="${config_link//\'/\'\'}"
+      echo "  - '$ESCAPED_LINK'"
+    done
+  fi
   if [[ -n "$ESCAPED_UDP_LINK" ]]; then
     echo "udp:"
     echo "  transport: '$ESCAPED_UDP_LINK'"
@@ -319,7 +366,14 @@ fi
 } >"$CONFIG"
 chmod 600 "$CONFIG"
 {
-  echo "server: '<redacted>'"
+  if [[ ${#CONFIG_LINKS[@]} -eq 1 ]]; then
+    echo "server: '<redacted>'"
+  else
+    echo "transports:"
+    for _ in "${CONFIG_LINKS[@]}"; do
+      echo "  - '<redacted>'"
+    done
+  fi
   if [[ -n "$ESCAPED_UDP_LINK" ]]; then
     echo "udp:"
     echo "  transport: '<redacted>'"
