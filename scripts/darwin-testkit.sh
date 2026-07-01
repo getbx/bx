@@ -19,6 +19,8 @@ Options:
   --tun NAME                Requested utun name. Default: utun
   --duration SECONDS        bx --test-timeout duration. Default: 45
   --probe HOST:PORT         bx health probe target. Default: github.com:443
+  --udp-probe HOST:PORT     UDP smoke probe target. May be repeated. Default: 1.1.1.1:443 and stun.l.google.com:19302
+  --no-udp-probe            Skip UDP smoke probes.
   --health-timeout SECONDS  bx tunnel health startup timeout. Default: 45
   --rollback-after SECONDS  External rollback delay. Default: 75
   --log-dir DIR             Log directory. Default: ./.bx-test-logs/bx-mac-test-YYYYmmdd-HHMMSS
@@ -59,6 +61,56 @@ detect_service_for_device() {
       exit
     }
   '
+}
+
+udp_probe_once() {
+  local target="$1"
+  local py
+  py="$(command -v python3 || true)"
+  if [[ -z "$py" ]]; then
+    echo "udp probe $target: skipped: python3 not found"
+    return 0
+  fi
+  "$py" - "$target" <<'PY'
+import os
+import socket
+import struct
+import sys
+import time
+
+target = sys.argv[1]
+if ":" not in target:
+    print(f"udp probe {target}: skipped: expected HOST:PORT")
+    raise SystemExit(0)
+host, port_text = target.rsplit(":", 1)
+try:
+    port = int(port_text)
+except ValueError:
+    print(f"udp probe {target}: skipped: bad port")
+    raise SystemExit(0)
+
+payload = b"bx-udp-probe"
+if port == 19302 or "stun" in host.lower():
+    txid = os.urandom(12)
+    payload = struct.pack("!HHI12s", 0x0001, 0, 0x2112A442, txid)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.settimeout(3)
+started = time.time()
+try:
+    sent = sock.sendto(payload, (host, port))
+    print(f"udp probe {target}: sent {sent} bytes")
+    try:
+        data, peer = sock.recvfrom(1500)
+        elapsed = int((time.time() - started) * 1000)
+        print(f"udp probe {target}: response {len(data)} bytes from {peer[0]}:{peer[1]} in {elapsed}ms")
+    except socket.timeout:
+        print(f"udp probe {target}: no response within 3s")
+except Exception as exc:
+    print(f"udp probe {target}: error: {exc}")
+finally:
+    sock.close()
+PY
 }
 
 save_dns_state() {
@@ -158,6 +210,8 @@ GATEWAY=""
 TUN="utun"
 DURATION="45"
 PROBE="github.com:443"
+UDP_PROBES=("1.1.1.1:443" "stun.l.google.com:19302")
+UDP_PROBE_ARGS=()
 HEALTH_TIMEOUT="45"
 ROLLBACK_AFTER="75"
 LOG_DIR=""
@@ -181,6 +235,8 @@ while [[ $# -gt 0 ]]; do
     --tun) TUN="${2:-}"; shift 2 ;;
     --duration) DURATION="${2:-}"; shift 2 ;;
     --probe) PROBE="${2:-}"; shift 2 ;;
+    --udp-probe) UDP_PROBES+=("${2:-}"); UDP_PROBE_ARGS+=(--udp-probe "${2:-}"); shift 2 ;;
+    --no-udp-probe) UDP_PROBES=(); UDP_PROBE_ARGS+=(--no-udp-probe); shift ;;
     --health-timeout) HEALTH_TIMEOUT="${2:-}"; shift 2 ;;
     --rollback-after) ROLLBACK_AFTER="${2:-}"; shift 2 ;;
     --log-dir) LOG_DIR="${2:-}"; shift 2 ;;
@@ -239,6 +295,7 @@ fi
   echo "tun=$TUN"
   echo "duration=$DURATION"
   echo "probe=$PROBE"
+  echo "udp_probes=${UDP_PROBES[*]}"
   echo "health_timeout=$HEALTH_TIMEOUT"
   echo "rollback_after=$ROLLBACK_AFTER"
   echo "execute=$EXECUTE"
@@ -302,6 +359,7 @@ if [[ "$EXECUTE" != "1" ]]; then
     execute_hint+=('BX_UDP_LINK=bx://...')
   fi
   execute_hint+=("$0" --execute --bx "$BX" --gateway "$GATEWAY" --duration "$DURATION" --health-timeout "$HEALTH_TIMEOUT" --rollback-after "$ROLLBACK_AFTER")
+  execute_hint+=("${UDP_PROBE_ARGS[@]}")
   for cidr in "${SERVER_BYPASS[@]}"; do
     execute_hint+=(--server-bypass "$cidr")
   done
@@ -491,8 +549,17 @@ fi
   curl -4 -I --max-time 8 https://www.baidu.com/ || true
   echo "probe: github"
   curl -4 -I --max-time 8 https://github.com/ || true
+  echo "probe: udp smoke"
+  if [[ ${#UDP_PROBES[@]} -eq 0 ]]; then
+    echo "udp probe: skipped"
+  else
+    for udp_target in "${UDP_PROBES[@]}"; do
+      udp_probe_once "$udp_target" || true
+    done
+    sleep 1
+  fi
   echo "probe: bx log markers"
-  grep -E "domain sniffed:.*github.com|udp blocked|socks connect udp|network not implemented" "$LOG_DIR/bx-run.log" || true
+  grep -E "domain sniffed:.*github.com|udp proxy|udp blocked|socks connect udp|network not implemented" "$LOG_DIR/bx-run.log" || true
   echo "status: after probes"
   "$BX" status || true
 ) >"$LOG_DIR/probes.log" 2>&1 &
