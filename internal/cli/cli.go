@@ -185,19 +185,45 @@ type webrtcCheckReport struct {
 }
 
 type leakCheckReport struct {
-	OK              bool              `json:"ok"`
-	Kind            string            `json:"kind"`
-	Version         string            `json:"version"`
-	SecretsRedacted bool              `json:"secrets_redacted"`
-	ChangesSystem   bool              `json:"changes_system"`
-	ChangesNetwork  bool              `json:"changes_network"`
-	RequiresRoot    bool              `json:"requires_root"`
-	Risk            string            `json:"risk"`
-	Checks          []checkReport     `json:"checks"`
-	WebRTC          webrtcCheckReport `json:"webrtc"`
-	Doctor          doctorReport      `json:"doctor"`
-	Evidence        []string          `json:"evidence,omitempty"`
-	NextActions     []string          `json:"next_actions,omitempty"`
+	OK              bool                `json:"ok"`
+	Kind            string              `json:"kind"`
+	Version         string              `json:"version"`
+	SecretsRedacted bool                `json:"secrets_redacted"`
+	ChangesSystem   bool                `json:"changes_system"`
+	ChangesNetwork  bool                `json:"changes_network"`
+	RequiresRoot    bool                `json:"requires_root"`
+	Risk            string              `json:"risk"`
+	Checks          []checkReport       `json:"checks"`
+	Network         *networkProbeReport `json:"network,omitempty"`
+	WebRTC          webrtcCheckReport   `json:"webrtc"`
+	Doctor          doctorReport        `json:"doctor"`
+	Evidence        []string            `json:"evidence,omitempty"`
+	NextActions     []string            `json:"next_actions,omitempty"`
+}
+
+type networkProbeResult struct {
+	IPv4    string   `json:"ipv4,omitempty"`
+	IPv4Err string   `json:"ipv4_error,omitempty"`
+	IPv6    string   `json:"ipv6,omitempty"`
+	IPv6Err string   `json:"ipv6_error,omitempty"`
+	DNSName string   `json:"dns_name,omitempty"`
+	DNSIPs  []string `json:"dns_ips,omitempty"`
+	DNSErr  string   `json:"dns_error,omitempty"`
+}
+
+type networkProbeReport struct {
+	OK              bool               `json:"ok"`
+	Kind            string             `json:"kind"`
+	Version         string             `json:"version"`
+	SecretsRedacted bool               `json:"secrets_redacted"`
+	ChangesSystem   bool               `json:"changes_system"`
+	ChangesNetwork  bool               `json:"changes_network"`
+	RequiresRoot    bool               `json:"requires_root"`
+	Risk            string             `json:"risk"`
+	Result          networkProbeResult `json:"result"`
+	Checks          []checkReport      `json:"checks"`
+	Evidence        []string           `json:"evidence,omitempty"`
+	NextActions     []string           `json:"next_actions,omitempty"`
 }
 
 type browserICEResult struct {
@@ -289,6 +315,8 @@ func leakCheckFlags() []cli.Flag {
 		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
 		&cli.BoolFlag{Name: "browser", Usage: "包含真实浏览器 WebRTC ICE candidate 检测"},
 		&cli.DurationFlag{Name: "browser-timeout", Value: 20 * time.Second, Usage: "等待浏览器 ICE 结果的最长时间"},
+		&cli.BoolFlag{Name: "network", Usage: "发起只读外网出口/DNS 探测"},
+		&cli.DurationFlag{Name: "network-timeout", Value: 8 * time.Second, Usage: "等待外网出口/DNS 探测的最长时间"},
 		&cli.StringSliceFlag{Name: "expected-ip", Usage: "允许出现的代理/VPS 公网 IP(可重复)"},
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
 		&cli.StringFlag{Name: "dns-service", Usage: "macOS 网络服务名(留空自动探测)"},
@@ -1170,7 +1198,7 @@ func webrtcCheckAction(c *cli.Context) error {
 }
 
 func leakCheckAction(c *cli.Context) error {
-	rep := collectLeakCheck(c.String("config"), c.String("dns-service"), c.Bool("browser"), c.Duration("browser-timeout"), c.StringSlice("expected-ip"))
+	rep := collectLeakCheck(c.Context, c.String("config"), c.String("dns-service"), c.Bool("browser"), c.Duration("browser-timeout"), c.Bool("network"), c.Duration("network-timeout"), c.StringSlice("expected-ip"))
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, rep)
 	}
@@ -1324,9 +1352,9 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"json"},
-				Arguments:      []string{"--json", "--browser", "--browser-timeout <duration>", "--expected-ip <ip>", "--config <path>", "--dns-service <name>"},
-				Examples:       []string{"bx leak-check --json", "bx leak-check --browser --json --expected-ip <proxy-ip>"},
-				SafeNotes:      []string{"Read-only for system settings.", "Secrets are redacted.", "Scope is network-path leakage only; browser fingerprinting is intentionally out of scope."},
+				Arguments:      []string{"--json", "--network", "--network-timeout <duration>", "--browser", "--browser-timeout <duration>", "--expected-ip <ip>", "--config <path>", "--dns-service <name>"},
+				Examples:       []string{"bx leak-check --json", "bx leak-check --network --json --expected-ip <proxy-ip>", "bx leak-check --browser --json --expected-ip <proxy-ip>"},
+				SafeNotes:      []string{"Read-only for system settings.", "Default mode does not send outbound probes.", "--network sends outbound IPv4/IPv6/DNS requests to classify the current exit path.", "Scope is network-path leakage only; browser fingerprinting is intentionally out of scope."},
 			},
 			{
 				Command:        "sudo bx server doctor --json",
@@ -1764,7 +1792,7 @@ func collectWebRTCCheck(configPath, dnsService string) webrtcCheckReport {
 	return rep
 }
 
-func collectLeakCheck(configPath, dnsService string, browser bool, browserTimeout time.Duration, expectedIPs []string) leakCheckReport {
+func collectLeakCheck(ctx context.Context, configPath, dnsService string, browser bool, browserTimeout time.Duration, network bool, networkTimeout time.Duration, expectedIPs []string) leakCheckReport {
 	doctor := collectClientDoctor(configPath, defaultProbeTarget, 0, true)
 	webrtc := collectWebRTCCheck(configPath, dnsService)
 	if browser {
@@ -1779,10 +1807,17 @@ func collectLeakCheck(configPath, dnsService string, browser bool, browserTimeou
 			applyBrowserICECandidates(&webrtc, ice, expected)
 		}
 	}
-	return assembleLeakCheckReport(doctor, webrtc)
+	var networkReport *networkProbeReport
+	if network {
+		probeCtx, cancel := context.WithTimeout(ctx, networkTimeout)
+		defer cancel()
+		result := collectNetworkProbe(probeCtx)
+		networkReport = assessNetworkProbe(result, expectedIPs)
+	}
+	return assembleLeakCheckReport(doctor, webrtc, networkReport)
 }
 
-func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport) leakCheckReport {
+func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport, network *networkProbeReport) leakCheckReport {
 	rep := leakCheckReport{
 		Kind:            "leak",
 		Version:         version.String(),
@@ -1790,9 +1825,13 @@ func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport) leak
 		Risk:            "low",
 		Doctor:          doctor,
 		WebRTC:          webrtc,
+		Network:         network,
 	}
 	if webrtc.Risk != "" {
 		rep.Risk = maxRisk(rep.Risk, webrtc.Risk)
+	}
+	if network != nil && network.Risk != "" {
+		rep.Risk = maxRisk(rep.Risk, network.Risk)
 	}
 	if doctor.hasFail() {
 		rep.Risk = maxRisk(rep.Risk, "high")
@@ -1801,6 +1840,17 @@ func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport) leak
 	rep.addCheck(aggregateNamedCheck("dns", webrtc.Checks, "dns"))
 	rep.addCheck(aggregateNamedCheck("udp", webrtc.Checks, "udp_path"))
 	rep.addCheck(aggregateWebRTCCheck(webrtc))
+	if network != nil {
+		rep.addCheck(aggregateNamedCheck("egress_ipv4", network.Checks, "egress_ipv4"))
+		rep.addCheck(aggregateNamedCheck("egress_ipv6", network.Checks, "egress_ipv6"))
+		rep.addCheck(aggregateNamedCheck("dns_resolution", network.Checks, "dns_resolution"))
+	} else {
+		rep.addCheck(checkReport{
+			Name:   "egress_ipv4",
+			Status: "info",
+			Detail: "not probed; pass --network --expected-ip <proxy-ip> to verify current exit path",
+		})
+	}
 	rep.addCheck(checkReport{
 		Name:   "ipv6",
 		Status: "info",
@@ -1814,9 +1864,167 @@ func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport) leak
 	rep.NextActions = appendUnique(rep.NextActions, doctorNextActions(doctor)...)
 	rep.NextActions = appendUnique(rep.NextActions, webrtc.NextActions...)
 	rep.NextActions = appendUnique(rep.NextActions, "bx webrtc-check --browser --json --expected-ip <proxy-ip>")
+	if network != nil {
+		rep.NextActions = appendUnique(rep.NextActions, network.NextActions...)
+	} else {
+		rep.NextActions = appendUnique(rep.NextActions, "bx leak-check --network --json --expected-ip <proxy-ip>")
+	}
 	rep.Evidence = append(rep.Evidence, webrtc.Evidence...)
+	if network != nil {
+		rep.Evidence = append(rep.Evidence, network.Evidence...)
+	}
 	rep.OK = rep.Risk == "low"
 	return rep
+}
+
+func collectNetworkProbe(ctx context.Context) networkProbeResult {
+	result := networkProbeResult{DNSName: "www.google.com"}
+	updates := make(chan func(*networkProbeResult), 3)
+	go func() {
+		ip, err := fetchPublicIP(ctx, "tcp4", "https://api.ipify.org")
+		updates <- func(r *networkProbeResult) {
+			if err != nil {
+				r.IPv4Err = err.Error()
+			} else {
+				r.IPv4 = ip
+			}
+		}
+	}()
+	go func() {
+		ip, err := fetchPublicIP(ctx, "tcp6", "https://api64.ipify.org")
+		updates <- func(r *networkProbeResult) {
+			if err != nil {
+				r.IPv6Err = err.Error()
+			} else {
+				r.IPv6 = ip
+			}
+		}
+	}()
+	go func() {
+		ips, err := net.DefaultResolver.LookupHost(ctx, result.DNSName)
+		updates <- func(r *networkProbeResult) {
+			if err != nil {
+				r.DNSErr = err.Error()
+			} else {
+				r.DNSIPs = uniqueStrings(ips)
+			}
+		}
+	}()
+	for i := 0; i < 3; i++ {
+		update := <-updates
+		update(&result)
+	}
+	return result
+}
+
+func fetchPublicIP(ctx context.Context, network, target string) (string, error) {
+	dialer := &net.Dialer{}
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, address string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, address)
+			},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("http status %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 128))
+	if err != nil {
+		return "", err
+	}
+	ip := strings.TrimSpace(string(body))
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("response is not an IP address: %q", ip)
+	}
+	return ip, nil
+}
+
+func assessNetworkProbe(result networkProbeResult, expectedIPs []string) *networkProbeReport {
+	report := &networkProbeReport{
+		Kind:            "network",
+		Version:         version.String(),
+		SecretsRedacted: true,
+		Risk:            "low",
+		Result:          result,
+	}
+	expected := stringSet(expectedIPs)
+	if result.IPv4 != "" {
+		switch {
+		case len(expected) == 0:
+			report.addCheck("egress_ipv4", "warn", result.IPv4+" observed, but no expected proxy/VPS IP was provided", "pass --expected-ip <proxy-ip>")
+			report.Risk = maxRisk(report.Risk, "medium")
+			report.NextActions = appendUnique(report.NextActions, "bx leak-check --network --json --expected-ip <proxy-ip>")
+		case expected[result.IPv4]:
+			report.addCheck("egress_ipv4", "ok", result.IPv4+" matches expected proxy/VPS IP", "")
+			report.Evidence = append(report.Evidence, "egress_ipv4: "+result.IPv4)
+		default:
+			report.addCheck("egress_ipv4", "fail", result.IPv4+" is not in expected proxy/VPS IPs", "check bx status, upstream proxy, and active VPN/network extensions")
+			report.Risk = maxRisk(report.Risk, "high")
+			report.NextActions = appendUnique(report.NextActions, "bx status --json", "bx logs")
+		}
+	} else if result.IPv4Err != "" {
+		report.addCheck("egress_ipv4", "warn", result.IPv4Err, "retry with network access, or inspect bx logs")
+		report.Risk = maxRisk(report.Risk, "medium")
+	} else {
+		report.addCheck("egress_ipv4", "info", "not observed", "")
+	}
+
+	if result.IPv6 != "" {
+		ip := net.ParseIP(result.IPv6)
+		if ip != nil && ip.To4() == nil {
+			report.addCheck("egress_ipv6", "fail", result.IPv6+" public IPv6 egress observed", "disable IPv6 bypass or verify bx IPv6 capture")
+			report.Risk = maxRisk(report.Risk, "high")
+			report.NextActions = appendUnique(report.NextActions, "bx logs")
+			report.Evidence = append(report.Evidence, "egress_ipv6: "+result.IPv6)
+		} else {
+			report.addCheck("egress_ipv6", "info", result.IPv6+" is an IPv4 address returned by the IPv6 probe; no public IPv6 address observed", "")
+		}
+	} else if result.IPv6Err != "" {
+		report.addCheck("egress_ipv6", "ok", "no IPv6 egress observed: "+result.IPv6Err, "")
+	} else {
+		report.addCheck("egress_ipv6", "ok", "no IPv6 egress observed", "")
+	}
+
+	if len(result.DNSIPs) > 0 {
+		if containsFakeIP(result.DNSIPs) {
+			report.addCheck("dns_resolution", "ok", "fake-IP DNS response observed: "+strings.Join(result.DNSIPs, ", "), "")
+			report.Evidence = append(report.Evidence, "dns_resolution: fake-IP")
+		} else {
+			report.addCheck("dns_resolution", "info", "resolver returned "+strings.Join(result.DNSIPs, ", "), "")
+		}
+	} else if result.DNSErr != "" {
+		report.addCheck("dns_resolution", "warn", result.DNSErr, "bx dns status")
+		report.Risk = maxRisk(report.Risk, "medium")
+	} else {
+		report.addCheck("dns_resolution", "info", "not observed", "")
+	}
+	report.OK = report.Risk == "low"
+	return report
+}
+
+func (r *networkProbeReport) addCheck(name, status, detail, hint string) {
+	r.Checks = append(r.Checks, checkReport{Name: name, Status: status, Detail: detail, Hint: hint})
+}
+
+func containsFakeIP(ips []string) bool {
+	_, fakeNet, _ := net.ParseCIDR("198.18.0.0/15")
+	for _, value := range ips {
+		ip := net.ParseIP(value)
+		if ip != nil && fakeNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *leakCheckReport) addCheck(check checkReport) {

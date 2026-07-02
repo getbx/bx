@@ -46,8 +46,8 @@ func TestAppHasVersion(t *testing.T) {
 		t.Fatal("app should expose bx leak-check")
 	}
 	leak := findAppCommand(app, "leak-check")
-	if !commandHasFlag(leak, "json") || !commandHasFlag(leak, "browser") || !commandHasFlag(leak, "expected-ip") {
-		t.Fatal("leak-check should expose --json, --browser and --expected-ip")
+	if !commandHasFlag(leak, "json") || !commandHasFlag(leak, "browser") || !commandHasFlag(leak, "expected-ip") || !commandHasFlag(leak, "network") || !commandHasFlag(leak, "network-timeout") {
+		t.Fatal("leak-check should expose --json, --browser, --expected-ip, --network and --network-timeout")
 	}
 	status := findAppCommand(app, "status")
 	if !commandHasFlag(status, "json") {
@@ -402,7 +402,7 @@ func TestAssembleLeakCheckReportAggregatesNetworkRisks(t *testing.T) {
 			{Name: "browser_public_ip", Status: "ok", Detail: "no unexpected public IP"},
 		},
 	}
-	rep := assembleLeakCheckReport(doctor, webrtc)
+	rep := assembleLeakCheckReport(doctor, webrtc, nil)
 	if !rep.OK || rep.Risk != "low" {
 		t.Fatalf("leak report = %+v, want ok low", rep)
 	}
@@ -422,12 +422,79 @@ func TestAssembleLeakCheckReportRaisesRiskForWebRTC(t *testing.T) {
 			{Name: "browser_unexpected_public_ip", Status: "fail", Detail: "203.0.113.10"},
 		},
 	}
-	rep := assembleLeakCheckReport(doctor, webrtc)
+	rep := assembleLeakCheckReport(doctor, webrtc, nil)
 	if rep.OK || rep.Risk != "high" {
 		t.Fatalf("leak report = %+v, want high", rep)
 	}
 	if got := findCheck(rep.Checks, "webrtc"); got.Status != "fail" || !strings.Contains(got.Detail, "unexpected_public_ip_detected") {
 		t.Fatalf("webrtc aggregate = %+v, want fail proof", got)
+	}
+}
+
+func TestAssessNetworkProbeAcceptsExpectedIPv4Exit(t *testing.T) {
+	report := assessNetworkProbe(networkProbeResult{
+		IPv4:   "203.0.113.20",
+		DNSIPs: []string{"198.18.0.42"},
+	}, []string{"203.0.113.20"})
+	if !report.OK || report.Risk != "low" {
+		t.Fatalf("network probe report = %+v, want ok low", report)
+	}
+	if got := findCheck(report.Checks, "egress_ipv4"); got.Status != "ok" || !strings.Contains(got.Detail, "203.0.113.20") {
+		t.Fatalf("egress_ipv4 = %+v, want expected ok", got)
+	}
+	if got := findCheck(report.Checks, "dns_resolution"); got.Status != "ok" || !strings.Contains(got.Detail, "fake-IP") {
+		t.Fatalf("dns_resolution = %+v, want fake-IP ok", got)
+	}
+}
+
+func TestAssessNetworkProbeFlagsUnexpectedIPv4Exit(t *testing.T) {
+	report := assessNetworkProbe(networkProbeResult{IPv4: "203.0.113.10"}, []string{"203.0.113.20"})
+	if report.OK || report.Risk != "high" {
+		t.Fatalf("network probe report = %+v, want high risk", report)
+	}
+	if got := findCheck(report.Checks, "egress_ipv4"); got.Status != "fail" || !strings.Contains(got.Detail, "203.0.113.10") {
+		t.Fatalf("egress_ipv4 = %+v, want unexpected fail", got)
+	}
+}
+
+func TestAssessNetworkProbeFlagsPublicIPv6Egress(t *testing.T) {
+	report := assessNetworkProbe(networkProbeResult{IPv6: "2001:db8::1"}, nil)
+	if report.OK || report.Risk != "high" {
+		t.Fatalf("network probe report = %+v, want high risk", report)
+	}
+	if got := findCheck(report.Checks, "egress_ipv6"); got.Status != "fail" || !strings.Contains(got.Detail, "2001:db8::1") {
+		t.Fatalf("egress_ipv6 = %+v, want public IPv6 fail", got)
+	}
+}
+
+func TestAssessNetworkProbeDoesNotTreatIPv4BodyAsIPv6Leak(t *testing.T) {
+	report := assessNetworkProbe(networkProbeResult{IPv4: "203.0.113.10", IPv6: "203.0.113.10"}, []string{"203.0.113.10"})
+	if !report.OK || report.Risk != "low" {
+		t.Fatalf("network probe report = %+v, want low risk", report)
+	}
+	if got := findCheck(report.Checks, "egress_ipv6"); got.Status != "info" || !strings.Contains(got.Detail, "IPv4 address") {
+		t.Fatalf("egress_ipv6 = %+v, want IPv4 body info", got)
+	}
+}
+
+func TestAssembleLeakCheckReportIncludesNetworkProbe(t *testing.T) {
+	doctor := doctorReport{Kind: "client", Version: "test", SecretsRedacted: true}
+	doctor.addCheck("service_active", "ok", "active", "")
+	webrtc := webrtcCheckReport{OK: true, Risk: "low"}
+	network := &networkProbeReport{
+		OK:   true,
+		Risk: "low",
+		Checks: []checkReport{
+			{Name: "egress_ipv4", Status: "ok", Detail: "203.0.113.20"},
+			{Name: "egress_ipv6", Status: "ok", Detail: "no IPv6 egress observed"},
+		},
+	}
+	rep := assembleLeakCheckReport(doctor, webrtc, network)
+	if !rep.OK || rep.Network == nil {
+		t.Fatalf("leak report = %+v, want ok with network probe", rep)
+	}
+	if got := findCheck(rep.Checks, "egress_ipv4"); got.Status != "ok" {
+		t.Fatalf("egress_ipv4 aggregate = %+v, want ok", got)
 	}
 }
 
