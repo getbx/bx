@@ -1,10 +1,14 @@
 package mcp
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/supervisor"
@@ -97,6 +101,75 @@ func diagnoseFindings(rep StatusOut, reachable bool) []Finding {
 func (o *liveOps) Diagnose() (DiagnoseOut, error) {
 	rep, err := o.Status()
 	return DiagnoseOut{Findings: diagnoseFindings(rep, err == nil)}, nil
+}
+
+func (o *liveOps) Inspect(in InspectIn) (JSONCommandOut, error) {
+	args := []string{"inspect", "--json", "--config", o.configPath}
+	if in.SkipProbe {
+		args = append(args, "--skip-probe")
+	}
+	if strings.TrimSpace(in.Target) != "" {
+		args = append(args, "--target", in.Target)
+	}
+	if strings.TrimSpace(in.Timeout) != "" {
+		args = append(args, "--timeout", in.Timeout)
+	}
+	return runBXJSONCommand(args)
+}
+
+func (o *liveOps) LeakCheck(in LeakCheckIn) (JSONCommandOut, error) {
+	args := []string{"leak-check", "--json", "--config", o.configPath}
+	if in.Network {
+		args = append(args, "--network")
+	}
+	if strings.TrimSpace(in.NetworkTimeout) != "" {
+		args = append(args, "--network-timeout", in.NetworkTimeout)
+	}
+	if in.Browser {
+		args = append(args, "--browser")
+	}
+	if strings.TrimSpace(in.BrowserTimeout) != "" {
+		args = append(args, "--browser-timeout", in.BrowserTimeout)
+	}
+	for _, ip := range in.ExpectedIPs {
+		if strings.TrimSpace(ip) != "" {
+			args = append(args, "--expected-ip", ip)
+		}
+	}
+	return runBXJSONCommand(args)
+}
+
+func runBXJSONCommand(args []string) (JSONCommandOut, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return JSONCommandOut{OK: false, Command: append([]string{"bx"}, args...), Error: err.Error(), Hint: "run bx from an installed binary"}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, args...)
+	out, err := cmd.CombinedOutput()
+	command := append([]string{exe}, args...)
+	if !json.Valid(out) {
+		result := JSONCommandOut{OK: false, Command: command, Error: strings.TrimSpace(string(out))}
+		if err != nil {
+			result.Error = strings.TrimSpace(result.Error + "\n" + err.Error())
+		}
+		result.Hint = "run the matching bx CLI command directly for more detail"
+		return result, nil
+	}
+	var report map[string]any
+	if err := json.Unmarshal(out, &report); err != nil {
+		return JSONCommandOut{OK: false, Command: command, Error: err.Error(), Hint: "run the matching bx CLI command directly for more detail"}, nil
+	}
+	result := JSONCommandOut{OK: true, Command: command, JSON: report}
+	if okValue, ok := report["ok"].(bool); ok {
+		result.OK = okValue
+	}
+	if err != nil {
+		result.OK = false
+		result.Error = err.Error()
+	}
+	return result, nil
 }
 
 // logsResultText 把 TailLogs 结果转成给 agent 的文本(优雅降级)。纯函数。

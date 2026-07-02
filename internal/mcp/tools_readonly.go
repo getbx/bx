@@ -38,6 +38,24 @@ func registerReadOnly(s *mcpsdk.Server, ops Ops) {
 			return nil, out, nil
 		})
 
+	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_inspect", Description: "agent-readable bx inspection bundle from the CLI JSON surface", Annotations: ro},
+		func(_ context.Context, _ *mcpsdk.CallToolRequest, in InspectIn) (*mcpsdk.CallToolResult, JSONCommandOut, error) {
+			out, err := ops.Inspect(in)
+			if err != nil {
+				return errResultTyped[JSONCommandOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
+			}
+			return nil, out, nil
+		})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_leak_check", Description: "network-path leak check from the CLI JSON surface; outbound probes only when requested", Annotations: ro},
+		func(_ context.Context, _ *mcpsdk.CallToolRequest, in LeakCheckIn) (*mcpsdk.CallToolResult, JSONCommandOut, error) {
+			out, err := ops.LeakCheck(in)
+			if err != nil {
+				return errResultTyped[JSONCommandOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
+			}
+			return nil, out, nil
+		})
+
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_logs", Description: "tail client logs for self-diagnosis", Annotations: ro},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, in LogsIn) (*mcpsdk.CallToolResult, LogsOut, error) {
 			out, err := ops.Logs(in)

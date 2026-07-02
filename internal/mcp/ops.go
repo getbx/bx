@@ -6,6 +6,8 @@ type Ops interface {
 	Capabilities() (CapabilitiesOut, error)
 	Status() (StatusOut, error)
 	Diagnose() (DiagnoseOut, error)
+	Inspect(InspectIn) (JSONCommandOut, error)
+	LeakCheck(LeakCheckIn) (JSONCommandOut, error)
 	Logs(LogsIn) (LogsOut, error)
 	Plan(PlanIn) (PlanOut, error)
 	Verify() (VerifyOut, error)
@@ -39,6 +41,28 @@ type Finding struct {
 }
 type DiagnoseOut struct {
 	Findings []Finding `json:"findings"`
+}
+
+type InspectIn struct {
+	SkipProbe bool   `json:"skip_probe,omitempty" jsonschema:"avoid outbound link probe"`
+	Target    string `json:"target,omitempty" jsonschema:"optional probe target host:port"`
+	Timeout   string `json:"timeout,omitempty" jsonschema:"optional probe timeout, e.g. 8s"`
+}
+
+type LeakCheckIn struct {
+	Network        bool     `json:"network,omitempty" jsonschema:"send outbound IPv4/IPv6/DNS probes"`
+	Browser        bool     `json:"browser,omitempty" jsonschema:"open local browser page for WebRTC ICE candidates"`
+	ExpectedIPs    []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs"`
+	NetworkTimeout string   `json:"network_timeout,omitempty" jsonschema:"optional network probe timeout, e.g. 8s"`
+	BrowserTimeout string   `json:"browser_timeout,omitempty" jsonschema:"optional browser ICE timeout, e.g. 20s"`
+}
+
+type JSONCommandOut struct {
+	OK      bool           `json:"ok"`
+	Command []string       `json:"command"`
+	JSON    map[string]any `json:"json,omitempty"`
+	Error   string         `json:"error,omitempty"`
+	Hint    string         `json:"hint,omitempty"`
 }
 
 type LogsIn struct {

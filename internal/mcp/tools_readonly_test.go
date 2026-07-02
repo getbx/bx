@@ -87,3 +87,41 @@ func TestLogsToolReturnsStructuredReport(t *testing.T) {
 		t.Fatalf("logs out = %+v, want structured error report", out)
 	}
 }
+
+func TestInspectToolReturnsCLIJSONEnvelope(t *testing.T) {
+	ops := &fakeOps{inspect: JSONCommandOut{
+		OK:      true,
+		Command: []string{"bx", "inspect", "--json", "--skip-probe"},
+		JSON:    map[string]any{"ok": true, "kind": "inspect"},
+	}}
+	res := callTool(t, ops, "bx_inspect", map[string]any{"skip_probe": true})
+	if res.IsError {
+		t.Fatal("inspect tool should be read-only and successful")
+	}
+	var out JSONCommandOut
+	if err := json.Unmarshal([]byte(res.Content[0].(*mcpsdk.TextContent).Text), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK || out.JSON["kind"] != "inspect" || out.Command[1] != "inspect" {
+		t.Fatalf("inspect out = %+v, want CLI JSON envelope", out)
+	}
+}
+
+func TestLeakCheckToolReturnsCLIJSONEnvelope(t *testing.T) {
+	ops := &fakeOps{leakCheck: JSONCommandOut{
+		OK:      true,
+		Command: []string{"bx", "leak-check", "--json", "--network"},
+		JSON:    map[string]any{"ok": true, "kind": "leak"},
+	}}
+	res := callTool(t, ops, "bx_leak_check", map[string]any{"network": true, "expected_ips": []string{"203.0.113.10"}})
+	if res.IsError {
+		t.Fatal("leak_check tool should be read-only and successful")
+	}
+	var out JSONCommandOut
+	if err := json.Unmarshal([]byte(res.Content[0].(*mcpsdk.TextContent).Text), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK || out.JSON["kind"] != "leak" || out.Command[1] != "leak-check" {
+		t.Fatalf("leak_check out = %+v, want CLI JSON envelope", out)
+	}
+}

@@ -60,7 +60,7 @@ func TestToolAnnotations(t *testing.T) {
 	}
 
 	// 只读工具:必须有 ReadOnlyHint == true。
-	readonly := []string{"bx_capabilities", "bx_status", "bx_diagnose", "bx_logs", "bx_plan", "bx_verify"}
+	readonly := []string{"bx_capabilities", "bx_status", "bx_diagnose", "bx_inspect", "bx_leak_check", "bx_logs", "bx_plan", "bx_verify"}
 	for _, name := range readonly {
 		tool, ok := byName[name]
 		if !ok {
