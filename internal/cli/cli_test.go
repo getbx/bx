@@ -530,6 +530,21 @@ func TestAssessObserveWindowSuggestsReproducingWhenNoActivity(t *testing.T) {
 	}
 }
 
+func TestAssessObserveWindowVideoScenarioAddsTestSteps(t *testing.T) {
+	start := stats.Report{Snapshot: stats.Snapshot{Proxy: 10, Direct: 0}}
+	end := stats.Report{Snapshot: stats.Snapshot{Proxy: 20, Direct: 0, BytesDown: 20000}, TunnelHealthy: true, UDPMode: "proxy"}
+	rep := assessObserveWindow([]stats.Report{start, end}, 30*time.Second, "video")
+	if len(rep.TestSteps) == 0 {
+		t.Fatalf("video observe should include test steps: %+v", rep)
+	}
+	if got := findCheck(rep.Checks, "split_shape"); got.Status != "info" || !strings.Contains(got.Detail, "proxy") {
+		t.Fatalf("split_shape = %+v, want proxy info", got)
+	}
+	if !containsText(rep.Recommendations, "CDN") {
+		t.Fatalf("video recommendations should mention CDN: %+v", rep.Recommendations)
+	}
+}
+
 func TestArchiveClientLogsRecordsReason(t *testing.T) {
 	dir, err := archiveClientLogsWithReason(t.TempDir(), "doctor")
 	if err != nil {
@@ -932,6 +947,15 @@ func findCheck(checks []checkReport, name string) checkReport {
 		}
 	}
 	return checkReport{}
+}
+
+func containsText(values []string, pattern string) bool {
+	for _, value := range values {
+		if strings.Contains(value, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func findCapability(commands []commandCapability, command string) commandCapability {
