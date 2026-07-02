@@ -168,6 +168,22 @@ type inspectReport struct {
 	NextActions     []string           `json:"next_actions,omitempty"`
 }
 
+type logsReport struct {
+	OK              bool     `json:"ok"`
+	Kind            string   `json:"kind"`
+	Version         string   `json:"version"`
+	SecretsRedacted bool     `json:"secrets_redacted"`
+	ChangesSystem   bool     `json:"changes_system"`
+	ChangesNetwork  bool     `json:"changes_network"`
+	RequiresRoot    bool     `json:"requires_root"`
+	Service         string   `json:"service"`
+	Lines           int      `json:"lines"`
+	Text            string   `json:"text,omitempty"`
+	Error           string   `json:"error,omitempty"`
+	Hint            string   `json:"hint,omitempty"`
+	Paths           []string `json:"paths,omitempty"`
+}
+
 type webrtcCheckReport struct {
 	OK                          bool          `json:"ok"`
 	Kind                        string        `json:"kind"`
@@ -448,6 +464,7 @@ func serverLogsFlags() []cli.Flag {
 func logsFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 100, Usage: "显示最近 N 行日志"},
+		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
 		&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "持续跟随日志"},
 		&cli.BoolFlag{Name: "archive", Usage: "保存原始日志和诊断快照到本地目录"},
 		&cli.StringFlag{Name: "dir", Value: ".bx-log-archives", Usage: "日志归档目录"},
@@ -1041,6 +1058,13 @@ func serverStatusAction(c *cli.Context) error {
 }
 
 func serverLogsAction(c *cli.Context) error {
+	if c.Bool("json") {
+		if c.Bool("follow") {
+			return fmt.Errorf("--json 不能和 --follow 同时使用")
+		}
+		raw, err := install.TailLogs(install.ServerServiceName, c.Int("lines"))
+		return writeJSON(os.Stdout, logsReportFromTail("server", c.Int("lines"), raw, err))
+	}
 	return install.ShowLogs(install.ServerServiceName, c.Int("lines"), c.Bool("follow"))
 }
 
@@ -1419,10 +1443,10 @@ func capabilities() capabilitiesReport {
 				RequiresRoot:   false,
 				ChangesSystem:  false,
 				ChangesNetwork: false,
-				Outputs:        []string{"text"},
-				Arguments:      []string{"--lines <n>", "--follow", "--archive", "--dir <path>"},
-				Examples:       []string{"bx logs", "bx logs -n 200", "bx logs --archive"},
-				SafeNotes:      []string{"Read-only.", "May require sudo depending on system log permissions.", "Use --archive to preserve raw logs and diagnostic snapshots.", "Automatic diagnostics are kept under the platform log directory for bx up/down/doctor."},
+				Outputs:        []string{"text", "json"},
+				Arguments:      []string{"--json", "--lines <n>", "--follow", "--archive", "--dir <path>"},
+				Examples:       []string{"bx logs --json", "bx logs", "bx logs -n 200", "bx logs --archive"},
+				SafeNotes:      []string{"Read-only.", "--json returns structured text/error/hint fields for agents.", "May require sudo depending on system log permissions.", "Use --archive to preserve raw logs and diagnostic snapshots.", "Automatic diagnostics are kept under the platform log directory for bx up/down/doctor."},
 			},
 			{
 				Command:        "bx realtime status",
@@ -3362,6 +3386,18 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 }
 
 func logsAction(c *cli.Context) error {
+	if c.Bool("json") {
+		if c.Bool("follow") {
+			return fmt.Errorf("--json 不能和 --follow 同时使用")
+		}
+		if c.Bool("archive") {
+			return fmt.Errorf("--json 不能和 --archive 同时使用")
+		}
+		raw, err := install.TailLogs(install.ServiceName, c.Int("lines"))
+		rep := logsReportFromTail("client", c.Int("lines"), raw, err)
+		rep.Paths = install.ClientLogPaths()
+		return writeJSON(os.Stdout, rep)
+	}
 	if c.Bool("archive") {
 		if c.Bool("follow") {
 			return fmt.Errorf("--archive 不能和 --follow 同时使用")
@@ -3374,6 +3410,26 @@ func logsAction(c *cli.Context) error {
 		return nil
 	}
 	return install.ShowLogs(install.ServiceName, c.Int("lines"), c.Bool("follow"))
+}
+
+func logsReportFromTail(service string, lines int, raw string, err error) logsReport {
+	if lines <= 0 {
+		lines = 100
+	}
+	rep := logsReport{
+		OK:              err == nil,
+		Kind:            "logs",
+		Version:         version.String(),
+		SecretsRedacted: true,
+		Service:         service,
+		Lines:           lines,
+		Text:            raw,
+	}
+	if err != nil {
+		rep.Error = err.Error()
+		rep.Hint = "try sudo bx logs"
+	}
+	return rep
 }
 
 func archiveClientLogs(root string) (string, error) {

@@ -274,6 +274,7 @@ sudo bx server shares --json
 | `bx webrtc-check --json` | 输出 WebRTC 泄漏风险诊断 |
 | `bx webrtc-check --browser --json --expected-ip <ip>` | 打开本地测试页,真实收集浏览器 ICE candidates 并判断公网 IP 是否符合预期 |
 | `bx logs` | 查看客户端日志 |
+| `bx logs --json` | 输出 agent 可读的客户端日志文本、错误和提示 |
 | `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist/macos/Bx.app` |
 | `scripts/package-macos-release.sh` | 生成 macOS release 目录和 `.tar.gz` |
 | `scripts/verify-macos-release.sh` | 验证 macOS release 目录、压缩包和 SHA256SUMS |

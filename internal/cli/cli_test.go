@@ -26,8 +26,8 @@ func TestAppHasVersion(t *testing.T) {
 		t.Fatal("app should expose bx logs")
 	}
 	logs := findAppCommand(app, "logs")
-	if !commandHasFlag(logs, "archive") || !commandHasFlag(logs, "dir") {
-		t.Fatal("logs should expose --archive and --dir")
+	if !commandHasFlag(logs, "archive") || !commandHasFlag(logs, "dir") || !commandHasFlag(logs, "json") {
+		t.Fatal("logs should expose --archive, --dir and --json")
 	}
 	if !appHasCommand(app, "dns") {
 		t.Fatal("app should expose bx dns")
@@ -514,6 +514,20 @@ func TestArchiveClientLogsRecordsReason(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("archive should include %s: %v", name, err)
 		}
+	}
+}
+
+func TestLogsReportFromTailSuccess(t *testing.T) {
+	rep := logsReportFromTail("client", 25, "line1\nline2\n", nil)
+	if !rep.OK || rep.Kind != "logs" || rep.Service != "client" || rep.Lines != 25 || rep.Text != "line1\nline2\n" || rep.Error != "" {
+		t.Fatalf("logs report = %+v, want successful report", rep)
+	}
+}
+
+func TestLogsReportFromTailErrorKeepsTextAndHint(t *testing.T) {
+	rep := logsReportFromTail("client", 0, "partial\n", os.ErrPermission)
+	if rep.OK || rep.Lines != 100 || rep.Text != "partial\n" || rep.Error == "" || !strings.Contains(rep.Hint, "sudo bx logs") {
+		t.Fatalf("logs report = %+v, want error report with partial text and hint", rep)
 	}
 }
 
