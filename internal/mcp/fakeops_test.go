@@ -6,6 +6,7 @@ type fakeOps struct {
 	diagnose             DiagnoseOut
 	inspect              JSONCommandOut
 	leakCheck            JSONCommandOut
+	observe              JSONCommandOut
 	logs                 LogsOut
 	plan                 PlanOut
 	verify               VerifyOut
@@ -26,6 +27,9 @@ func (f *fakeOps) Inspect(InspectIn) (JSONCommandOut, error) {
 }
 func (f *fakeOps) LeakCheck(LeakCheckIn) (JSONCommandOut, error) {
 	return f.leakCheck, nil
+}
+func (f *fakeOps) Observe(ObserveIn) (JSONCommandOut, error) {
+	return f.observe, nil
 }
 func (f *fakeOps) Logs(LogsIn) (LogsOut, error) { return f.logs, nil }
 func (f *fakeOps) Plan(PlanIn) (PlanOut, error) { return f.plan, nil }

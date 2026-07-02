@@ -127,6 +127,34 @@ func TestLeakCheckToolReturnsCLIJSONEnvelope(t *testing.T) {
 	}
 }
 
+func TestObserveToolReturnsCLIJSONEnvelope(t *testing.T) {
+	ops := &fakeOps{observe: JSONCommandOut{
+		OK:      true,
+		Command: []string{"bx", "observe", "--json", "--duration", "30s"},
+		JSON:    map[string]any{"ok": true, "kind": "observe"},
+	}}
+	res := callTool(t, ops, "bx_observe", map[string]any{"duration": "30s"})
+	if res.IsError {
+		t.Fatal("observe tool should be read-only and successful")
+	}
+	var out JSONCommandOut
+	if err := json.Unmarshal([]byte(res.Content[0].(*mcpsdk.TextContent).Text), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK || out.JSON["kind"] != "observe" || out.Command[1] != "observe" {
+		t.Fatalf("observe out = %+v, want CLI JSON envelope", out)
+	}
+}
+
+func TestObserveArgs(t *testing.T) {
+	got := observeArgs(ObserveIn{Duration: "30s", Interval: "1s"})
+	for _, want := range []string{"observe", "--json", "--duration", "30s", "--interval", "1s"} {
+		if !stringSliceContains(got, want) {
+			t.Fatalf("observe args = %v, missing %s", got, want)
+		}
+	}
+}
+
 func TestInspectArgsDefaultToNoOutboundProbe(t *testing.T) {
 	got := inspectArgs("/etc/bx/config.yaml", InspectIn{})
 	if !stringSliceContains(got, "--skip-probe") {

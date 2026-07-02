@@ -273,6 +273,7 @@ sudo bx server shares --json
 | `bx leak-check --json` | 聚合网络路径泄漏风险诊断 |
 | `bx leak-check --network --json --expected-ip <ip>` | 主动探测 IPv4/IPv6/DNS 出口并判断是否符合预期 |
 | `bx leak-check --browser --json --expected-ip <ip>` | 包含浏览器 WebRTC 真测的泄漏风险诊断 |
+| `bx observe --json --duration 30s` | 观察短窗口内连接、分流、UDP 阻断和流量变化 |
 | `bx webrtc-check --json` | 输出 WebRTC 泄漏风险诊断 |
 | `bx webrtc-check --browser --json --expected-ip <ip>` | 打开本地测试页,真实收集浏览器 ICE candidates 并判断公网 IP 是否符合预期 |
 | `bx logs` | 查看客户端日志 |

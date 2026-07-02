@@ -8,6 +8,7 @@ type Ops interface {
 	Diagnose() (DiagnoseOut, error)
 	Inspect(InspectIn) (JSONCommandOut, error)
 	LeakCheck(LeakCheckIn) (JSONCommandOut, error)
+	Observe(ObserveIn) (JSONCommandOut, error)
 	Logs(LogsIn) (LogsOut, error)
 	Plan(PlanIn) (PlanOut, error)
 	Verify() (VerifyOut, error)
@@ -67,6 +68,11 @@ type JSONCommandOut struct {
 	Hint            string         `json:"hint,omitempty"`
 	TestSteps       []string       `json:"test_steps,omitempty"`
 	Recommendations []string       `json:"recommendations,omitempty"`
+}
+
+type ObserveIn struct {
+	Duration string `json:"duration,omitempty" jsonschema:"observation window, e.g. 30s"`
+	Interval string `json:"interval,omitempty" jsonschema:"status sampling interval, e.g. 2s"`
 }
 
 type LogsIn struct {
