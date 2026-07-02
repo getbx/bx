@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -124,4 +125,39 @@ func TestLeakCheckToolReturnsCLIJSONEnvelope(t *testing.T) {
 	if !out.OK || out.JSON["kind"] != "leak" || out.Command[1] != "leak-check" {
 		t.Fatalf("leak_check out = %+v, want CLI JSON envelope", out)
 	}
+}
+
+func TestInspectArgsDefaultToNoOutboundProbe(t *testing.T) {
+	got := inspectArgs("/etc/bx/config.yaml", InspectIn{})
+	if !stringSliceContains(got, "--skip-probe") {
+		t.Fatalf("inspect args = %v, want --skip-probe by default", got)
+	}
+	got = inspectArgs("/etc/bx/config.yaml", InspectIn{Probe: true})
+	if stringSliceContains(got, "--skip-probe") {
+		t.Fatalf("inspect args = %v, did not expect --skip-probe when probe=true", got)
+	}
+}
+
+func TestLeakCheckBrowserRequiresConfirmation(t *testing.T) {
+	out, blocked := browserConfirmationRequired(LeakCheckIn{Browser: true})
+	if !blocked || out.OK || !strings.Contains(out.Hint, "browser_confirmed") || len(out.TestSteps) == 0 || len(out.Recommendations) == 0 {
+		t.Fatalf("confirmation result = %+v blocked=%v, want blocked guidance", out, blocked)
+	}
+	_, blocked = browserConfirmationRequired(LeakCheckIn{Browser: true, BrowserConfirmed: true})
+	if blocked {
+		t.Fatal("browser_confirmed=true should allow browser leak check")
+	}
+	args := leakCheckArgs("/etc/bx/config.yaml", LeakCheckIn{Browser: true, BrowserConfirmed: true})
+	if !stringSliceContains(args, "--browser") {
+		t.Fatalf("leak check args = %v, want --browser after confirmation", args)
+	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

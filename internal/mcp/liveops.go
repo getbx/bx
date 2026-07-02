@@ -104,8 +104,19 @@ func (o *liveOps) Diagnose() (DiagnoseOut, error) {
 }
 
 func (o *liveOps) Inspect(in InspectIn) (JSONCommandOut, error) {
-	args := []string{"inspect", "--json", "--config", o.configPath}
-	if in.SkipProbe {
+	return runBXJSONCommand(inspectArgs(o.configPath, in))
+}
+
+func (o *liveOps) LeakCheck(in LeakCheckIn) (JSONCommandOut, error) {
+	if out, blocked := browserConfirmationRequired(in); blocked {
+		return out, nil
+	}
+	return runBXJSONCommand(leakCheckArgs(o.configPath, in))
+}
+
+func inspectArgs(configPath string, in InspectIn) []string {
+	args := []string{"inspect", "--json", "--config", configPath}
+	if !in.Probe || in.SkipProbe {
 		args = append(args, "--skip-probe")
 	}
 	if strings.TrimSpace(in.Target) != "" {
@@ -114,11 +125,11 @@ func (o *liveOps) Inspect(in InspectIn) (JSONCommandOut, error) {
 	if strings.TrimSpace(in.Timeout) != "" {
 		args = append(args, "--timeout", in.Timeout)
 	}
-	return runBXJSONCommand(args)
+	return args
 }
 
-func (o *liveOps) LeakCheck(in LeakCheckIn) (JSONCommandOut, error) {
-	args := []string{"leak-check", "--json", "--config", o.configPath}
+func leakCheckArgs(configPath string, in LeakCheckIn) []string {
+	args := []string{"leak-check", "--json", "--config", configPath}
 	if in.Network {
 		args = append(args, "--network")
 	}
@@ -136,7 +147,29 @@ func (o *liveOps) LeakCheck(in LeakCheckIn) (JSONCommandOut, error) {
 			args = append(args, "--expected-ip", ip)
 		}
 	}
-	return runBXJSONCommand(args)
+	return args
+}
+
+func browserConfirmationRequired(in LeakCheckIn) (JSONCommandOut, bool) {
+	if !in.Browser || in.BrowserConfirmed {
+		return JSONCommandOut{}, false
+	}
+	return JSONCommandOut{
+		OK:    false,
+		Error: "browser WebRTC leak check requires user confirmation before opening a local browser page",
+		Hint:  "ask the user to confirm, then call bx_leak_check with browser=true and browser_confirmed=true",
+		TestSteps: []string{
+			"Tell the user bx will open a local 127.0.0.1 WebRTC test page.",
+			"Ask the user to confirm this visible browser action.",
+			"Call bx_leak_check with browser=true, browser_confirmed=true, and expected_ips set to acceptable proxy/VPS exits.",
+			"Compare json.webrtc.leak_proof and json.checks against the expected exit IPs.",
+		},
+		Recommendations: []string{
+			"Use network=true first for a non-browser exit-path check.",
+			"Pass every acceptable proxy/VPS public IP in expected_ips to avoid false positives.",
+			"If WebRTC reports unexpected_public_ip_detected, inspect bx_logs and active VPN/network-extension paths before changing routes.",
+		},
+	}, true
 }
 
 func runBXJSONCommand(args []string) (JSONCommandOut, error) {
