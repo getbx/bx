@@ -62,6 +62,7 @@ func New() *cli.App {
 			{Name: "inspect", Usage: "输出 agent 可读诊断包", Flags: inspectFlags(), Action: inspectAction},
 			{Name: "webrtc-check", Usage: "检查 WebRTC 泄漏风险(只读)", Flags: webrtcCheckFlags(), Action: webrtcCheckAction},
 			{Name: "leak-check", Usage: "聚合网络路径泄漏风险(只读)", Flags: leakCheckFlags(), Action: leakCheckAction},
+			{Name: "observe", Usage: "观察一小段运行期状态变化(只读)", Flags: observeFlags(), Action: observeAction},
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
@@ -182,6 +183,27 @@ type logsReport struct {
 	Error           string   `json:"error,omitempty"`
 	Hint            string   `json:"hint,omitempty"`
 	Paths           []string `json:"paths,omitempty"`
+}
+
+type observeReport struct {
+	OK              bool           `json:"ok"`
+	Kind            string         `json:"kind"`
+	Version         string         `json:"version"`
+	SecretsRedacted bool           `json:"secrets_redacted"`
+	ChangesSystem   bool           `json:"changes_system"`
+	ChangesNetwork  bool           `json:"changes_network"`
+	RequiresRoot    bool           `json:"requires_root"`
+	Risk            string         `json:"risk"`
+	DurationMS      int64          `json:"duration_ms"`
+	Samples         int            `json:"samples"`
+	Start           *stats.Report  `json:"start,omitempty"`
+	End             *stats.Report  `json:"end,omitempty"`
+	Delta           stats.Snapshot `json:"delta"`
+	Checks          []checkReport  `json:"checks"`
+	Evidence        []string       `json:"evidence,omitempty"`
+	Recommendations []string       `json:"recommendations,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	Hint            string         `json:"hint,omitempty"`
 }
 
 type webrtcCheckReport struct {
@@ -336,6 +358,14 @@ func leakCheckFlags() []cli.Flag {
 		&cli.StringSliceFlag{Name: "expected-ip", Usage: "允许出现的代理/VPS 公网 IP(可重复)"},
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
 		&cli.StringFlag{Name: "dns-service", Usage: "macOS 网络服务名(留空自动探测)"},
+	}
+}
+
+func observeFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
+		&cli.DurationFlag{Name: "duration", Value: 30 * time.Second, Usage: "观察窗口"},
+		&cli.DurationFlag{Name: "interval", Value: 2 * time.Second, Usage: "采样间隔"},
 	}
 }
 
@@ -1237,6 +1267,25 @@ func leakCheckAction(c *cli.Context) error {
 	return nil
 }
 
+func observeAction(c *cli.Context) error {
+	rep := collectObserve(c.Context, c.Duration("duration"), c.Duration("interval"))
+	if c.Bool("json") {
+		return writeJSON(os.Stdout, rep)
+	}
+	fmt.Println("bx observe")
+	fmt.Printf("  风险    %s\n", rep.Risk)
+	for _, check := range rep.Checks {
+		doctorLine(check.Status, check.Name, check.Detail)
+	}
+	for _, rec := range rep.Recommendations {
+		fmt.Printf("  建议    %s\n", rec)
+	}
+	if rep.Error != "" {
+		fmt.Printf("  错误    %s\n", rep.Error)
+	}
+	return nil
+}
+
 func serverDoctorAction(c *cli.Context) error {
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, collectServerDoctor(c.String("config"), c.String("shares-dir")))
@@ -1379,6 +1428,19 @@ func capabilities() capabilitiesReport {
 				Arguments:      []string{"--json", "--network", "--network-timeout <duration>", "--browser", "--browser-timeout <duration>", "--expected-ip <ip>", "--config <path>", "--dns-service <name>"},
 				Examples:       []string{"bx leak-check --json", "bx leak-check --network --json --expected-ip <proxy-ip>", "bx leak-check --browser --json --expected-ip <proxy-ip>"},
 				SafeNotes:      []string{"Read-only for system settings.", "Default mode does not send outbound probes.", "--network sends outbound IPv4/IPv6/DNS requests to classify the current exit path.", "Scope is network-path leakage only; browser fingerprinting is intentionally out of scope."},
+			},
+			{
+				Command:        "bx observe --json",
+				Category:       "diagnostics",
+				Summary:        "Sample bx runtime counters over a short window to explain app/video failures.",
+				Stable:         true,
+				RequiresRoot:   false,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				Outputs:        []string{"json"},
+				Arguments:      []string{"--json", "--duration <duration>", "--interval <duration>"},
+				Examples:       []string{"bx observe --json", "bx observe --json --duration 30s"},
+				SafeNotes:      []string{"Read-only.", "Uses the local status socket only.", "Does not send outbound probes, open browsers, or change routing/DNS."},
 			},
 			{
 				Command:        "sudo bx server doctor --json",
@@ -2108,6 +2170,167 @@ func findReportCheck(checks []checkReport, name string) checkReport {
 		}
 	}
 	return checkReport{}
+}
+
+func collectObserve(ctx context.Context, duration, interval time.Duration) observeReport {
+	if duration <= 0 {
+		duration = 30 * time.Second
+	}
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	if interval > duration {
+		interval = duration
+	}
+	var samples []stats.Report
+	deadline := time.NewTimer(duration)
+	defer deadline.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	if rep, err := readStatusReport(); err == nil {
+		samples = append(samples, rep)
+	} else {
+		return observeErrorReport(duration, err)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			rep := assessObserveWindow(samples, duration)
+			rep.Error = ctx.Err().Error()
+			rep.Hint = "retry bx observe with a shorter duration"
+			rep.OK = false
+			rep.Risk = maxRisk(rep.Risk, "medium")
+			return rep
+		case <-deadline.C:
+			if rep, err := readStatusReport(); err == nil {
+				samples = append(samples, rep)
+			}
+			return assessObserveWindow(samples, duration)
+		case <-ticker.C:
+			if rep, err := readStatusReport(); err == nil {
+				samples = append(samples, rep)
+			}
+		}
+	}
+}
+
+func observeErrorReport(duration time.Duration, err error) observeReport {
+	rep := observeReport{
+		Kind:            "observe",
+		Version:         version.String(),
+		SecretsRedacted: true,
+		Risk:            "high",
+		DurationMS:      duration.Milliseconds(),
+		Error:           err.Error(),
+		Hint:            "sudo bx up; bx logs --json",
+	}
+	rep.addCheck("status_socket", "fail", err.Error(), "sudo bx up")
+	rep.Recommendations = append(rep.Recommendations, "Start bx, then reproduce the app issue while bx observe is running.")
+	return rep
+}
+
+func assessObserveWindow(samples []stats.Report, duration time.Duration) observeReport {
+	rep := observeReport{
+		Kind:            "observe",
+		Version:         version.String(),
+		SecretsRedacted: true,
+		Risk:            "low",
+		DurationMS:      duration.Milliseconds(),
+		Samples:         len(samples),
+	}
+	if len(samples) == 0 {
+		rep.Risk = "high"
+		rep.addCheck("samples", "fail", "no status samples", "sudo bx up")
+		rep.Recommendations = append(rep.Recommendations, "Start bx and run observe while reproducing the problem.")
+		return rep
+	}
+	start := samples[0]
+	end := samples[len(samples)-1]
+	rep.Start = &start
+	rep.End = &end
+	rep.Delta = snapshotDelta(start.Snapshot, end.Snapshot)
+	if !end.TunnelHealthy {
+		rep.Risk = maxRisk(rep.Risk, "high")
+		rep.addCheck("tunnel", "fail", "tunnel unhealthy", "bx logs --json")
+		rep.Recommendations = append(rep.Recommendations, "Inspect bx logs before changing routing or app rules.")
+	} else {
+		rep.addCheck("tunnel", "ok", fmt.Sprintf("healthy latency %dms", end.LatencyMS), "")
+	}
+	newConns := rep.Delta.Proxy + rep.Delta.Direct + rep.Delta.Blocked
+	if newConns == 0 && rep.Delta.BytesUp == 0 && rep.Delta.BytesDown == 0 {
+		rep.Risk = maxRisk(rep.Risk, "medium")
+		rep.addCheck("activity", "warn", "no new connections or traffic observed", "reproduce the app issue while observe is running")
+		rep.Recommendations = append(rep.Recommendations, "Start the video/app action first, then run bx observe for 30 seconds during the failure.")
+	} else {
+		rep.addCheck("activity", "ok", fmt.Sprintf("connections +%d, traffic up +%s down +%s", newConns, observeBytes(rep.Delta.BytesUp), observeBytes(rep.Delta.BytesDown)), "")
+		rep.Evidence = append(rep.Evidence, fmt.Sprintf("delta proxy=%d direct=%d blocked=%d udp_blocked=%d", rep.Delta.Proxy, rep.Delta.Direct, rep.Delta.Blocked, rep.Delta.UDPBlocked))
+	}
+	if rep.Delta.UDPBlocked > 0 {
+		rep.Risk = maxRisk(rep.Risk, "medium")
+		rep.addCheck("udp_blocks", "warn", fmt.Sprintf("%d UDP packets/connections blocked", rep.Delta.UDPBlocked), "bx realtime status; bx logs --json")
+		rep.Recommendations = append(rep.Recommendations, "If video or meeting media is affected, check UDP relay health and bx logs before changing split rules.")
+	} else {
+		rep.addCheck("udp_blocks", "ok", "0 new UDP blocks", "")
+	}
+	if rep.Delta.Blocked > 0 {
+		rep.Risk = maxRisk(rep.Risk, "medium")
+		rep.addCheck("blocked", "warn", fmt.Sprintf("%d new blocked connections", rep.Delta.Blocked), "bx logs --json")
+		rep.Recommendations = append(rep.Recommendations, "Blocked connections during reproduction usually mean fail-closed protection or an unsupported path; inspect logs.")
+	} else {
+		rep.addCheck("blocked", "ok", "0 new blocked connections", "")
+	}
+	totalRouted := rep.Delta.Proxy + rep.Delta.Direct
+	if totalRouted > 0 {
+		proxyRatio := float64(rep.Delta.Proxy) / float64(totalRouted)
+		if proxyRatio > 0.9 && rep.Delta.Direct == 0 {
+			rep.addCheck("split_shape", "info", "all observed routed connections went through proxy", "")
+			rep.Recommendations = append(rep.Recommendations, "For China-only apps or CDN video, verify whether their domains should be direct in router/client rules.")
+		} else {
+			rep.addCheck("split_shape", "ok", fmt.Sprintf("proxy %d direct %d", rep.Delta.Proxy, rep.Delta.Direct), "")
+		}
+	} else {
+		rep.addCheck("split_shape", "info", "no routed proxy/direct decisions observed", "")
+	}
+	rep.OK = rep.Risk == "low"
+	return rep
+}
+
+func (r *observeReport) addCheck(name, status, detail, hint string) {
+	r.Checks = append(r.Checks, checkReport{Name: name, Status: status, Detail: detail, Hint: hint})
+}
+
+func snapshotDelta(start, end stats.Snapshot) stats.Snapshot {
+	return stats.Snapshot{
+		Active:     end.Active,
+		Proxy:      nonNegativeDelta(start.Proxy, end.Proxy),
+		Direct:     nonNegativeDelta(start.Direct, end.Direct),
+		Blocked:    nonNegativeDelta(start.Blocked, end.Blocked),
+		UDPBlocked: nonNegativeDelta(start.UDPBlocked, end.UDPBlocked),
+		BytesUp:    nonNegativeDelta(start.BytesUp, end.BytesUp),
+		BytesDown:  nonNegativeDelta(start.BytesDown, end.BytesDown),
+	}
+}
+
+func nonNegativeDelta(start, end int64) int64 {
+	if end < start {
+		return 0
+	}
+	return end - start
+}
+
+func observeBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	value := float64(n)
+	for _, suffix := range []string{"KB", "MB", "GB", "TB"} {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1f PB", value/unit)
 }
 
 func statusPtr(rep stats.Report, err error) *stats.Report {

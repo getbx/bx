@@ -114,6 +114,10 @@ func (o *liveOps) LeakCheck(in LeakCheckIn) (JSONCommandOut, error) {
 	return runBXJSONCommand(leakCheckArgs(o.configPath, in))
 }
 
+func (o *liveOps) Observe(in ObserveIn) (JSONCommandOut, error) {
+	return runBXJSONCommand(observeArgs(in))
+}
+
 func inspectArgs(configPath string, in InspectIn) []string {
 	args := []string{"inspect", "--json", "--config", configPath}
 	if !in.Probe || in.SkipProbe {
@@ -146,6 +150,17 @@ func leakCheckArgs(configPath string, in LeakCheckIn) []string {
 		if strings.TrimSpace(ip) != "" {
 			args = append(args, "--expected-ip", ip)
 		}
+	}
+	return args
+}
+
+func observeArgs(in ObserveIn) []string {
+	args := []string{"observe", "--json"}
+	if strings.TrimSpace(in.Duration) != "" {
+		args = append(args, "--duration", in.Duration)
+	}
+	if strings.TrimSpace(in.Interval) != "" {
+		args = append(args, "--interval", in.Interval)
 	}
 	return args
 }

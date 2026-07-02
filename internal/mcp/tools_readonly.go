@@ -56,6 +56,15 @@ func registerReadOnly(s *mcpsdk.Server, ops Ops) {
 			return nil, out, nil
 		})
 
+	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_observe", Description: "sample local bx runtime counters over a short window; no outbound probes or network changes", Annotations: ro},
+		func(_ context.Context, _ *mcpsdk.CallToolRequest, in ObserveIn) (*mcpsdk.CallToolResult, JSONCommandOut, error) {
+			out, err := ops.Observe(in)
+			if err != nil {
+				return errResultTyped[JSONCommandOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
+			}
+			return nil, out, nil
+		})
+
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_logs", Description: "tail client logs for self-diagnosis", Annotations: ro},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, in LogsIn) (*mcpsdk.CallToolResult, LogsOut, error) {
 			out, err := ops.Logs(in)

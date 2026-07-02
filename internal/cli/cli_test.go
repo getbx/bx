@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/config"
@@ -48,6 +49,10 @@ func TestAppHasVersion(t *testing.T) {
 	leak := findAppCommand(app, "leak-check")
 	if !commandHasFlag(leak, "json") || !commandHasFlag(leak, "browser") || !commandHasFlag(leak, "expected-ip") || !commandHasFlag(leak, "network") || !commandHasFlag(leak, "network-timeout") {
 		t.Fatal("leak-check should expose --json, --browser, --expected-ip, --network and --network-timeout")
+	}
+	observe := findAppCommand(app, "observe")
+	if observe == nil || !commandHasFlag(observe, "json") || !commandHasFlag(observe, "duration") || !commandHasFlag(observe, "interval") {
+		t.Fatal("observe should expose --json, --duration and --interval")
 	}
 	status := findAppCommand(app, "status")
 	if !commandHasFlag(status, "json") {
@@ -498,6 +503,33 @@ func TestAssembleLeakCheckReportIncludesNetworkProbe(t *testing.T) {
 	}
 }
 
+func TestAssessObserveWindowWarnsOnUDPBlocks(t *testing.T) {
+	start := stats.Report{Snapshot: stats.Snapshot{Proxy: 10, Direct: 2, Blocked: 0, UDPBlocked: 1, BytesDown: 1000}}
+	end := stats.Report{Snapshot: stats.Snapshot{Proxy: 15, Direct: 3, Blocked: 0, UDPBlocked: 4, BytesDown: 9000}, TunnelHealthy: true, UDPMode: "proxy"}
+	rep := assessObserveWindow([]stats.Report{start, end}, 30*time.Second)
+	if rep.OK || rep.Risk != "medium" {
+		t.Fatalf("observe report = %+v, want medium risk", rep)
+	}
+	if got := findCheck(rep.Checks, "udp_blocks"); got.Status != "warn" || !strings.Contains(got.Detail, "3") {
+		t.Fatalf("udp_blocks = %+v, want warn with delta", got)
+	}
+	if len(rep.Recommendations) == 0 {
+		t.Fatalf("observe report should include recommendations: %+v", rep)
+	}
+}
+
+func TestAssessObserveWindowSuggestsReproducingWhenNoActivity(t *testing.T) {
+	start := stats.Report{Snapshot: stats.Snapshot{Proxy: 10, Direct: 2}}
+	end := stats.Report{Snapshot: stats.Snapshot{Proxy: 10, Direct: 2}, TunnelHealthy: true}
+	rep := assessObserveWindow([]stats.Report{start, end}, 30*time.Second)
+	if rep.OK || rep.Risk != "medium" {
+		t.Fatalf("observe report = %+v, want medium risk", rep)
+	}
+	if got := findCheck(rep.Checks, "activity"); got.Status != "warn" || !strings.Contains(got.Hint, "reproduce") {
+		t.Fatalf("activity = %+v, want reproduce hint", got)
+	}
+}
+
 func TestArchiveClientLogsRecordsReason(t *testing.T) {
 	dir, err := archiveClientLogsWithReason(t.TempDir(), "doctor")
 	if err != nil {
@@ -622,6 +654,13 @@ func TestCapabilitiesReport(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(leak.SafeNotes, " "), "network-path") {
 		t.Fatalf("leak-check should state network-path scope: %+v", leak)
+	}
+	observe := findCapability(rep.Commands, "bx observe --json")
+	if !observe.Stable || observe.RequiresRoot || observe.ChangesSystem || observe.ChangesNetwork {
+		t.Fatalf("unexpected observe capability: %+v", observe)
+	}
+	if !strings.Contains(strings.Join(observe.SafeNotes, " "), "status socket") {
+		t.Fatalf("observe should document local-only status socket sampling: %+v", observe)
 	}
 	setup := findCapability(rep.Commands, "sudo bx setup <client-link>")
 	if setup.Command == "" || !strings.Contains(strings.Join(setup.Arguments, " "), "<client-link>") {
