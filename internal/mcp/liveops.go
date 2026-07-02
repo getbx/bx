@@ -110,13 +110,30 @@ func logsResultText(raw string, err error) string {
 	return raw
 }
 
+func logsResultReport(raw string, err error) LogsOut {
+	out := LogsOut{OK: err == nil, Text: raw}
+	if err != nil {
+		out.Error = err.Error()
+		out.Hint = "try sudo bx logs"
+	}
+	if err == nil && strings.TrimSpace(raw) == "" {
+		out.OK = false
+		out.Hint = "try sudo bx logs"
+	}
+	return out
+}
+
 func (o *liveOps) Logs(in LogsIn) (LogsOut, error) {
 	lines := in.Lines
 	if lines <= 0 {
 		lines = 100
 	}
 	raw, err := install.TailLogs(install.ServiceName, lines)
-	return LogsOut{Text: logsResultText(raw, err)}, nil
+	out := logsResultReport(raw, err)
+	if out.Text == "" {
+		out.Text = logsResultText(raw, err)
+	}
+	return out, nil
 }
 
 func (o *liveOps) Plan(in PlanIn) (PlanOut, error) {

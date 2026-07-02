@@ -47,3 +47,14 @@ func TestLogsResultText(t *testing.T) {
 		t.Errorf("正常应原样返回, got %q", got)
 	}
 }
+
+func TestLogsResultReport(t *testing.T) {
+	got := logsResultReport("partial\n", errors.New("denied"))
+	if got.OK || got.Text != "partial\n" || got.Error == "" || !strings.Contains(got.Hint, "sudo bx logs") {
+		t.Fatalf("error report = %+v, want partial text, error, and hint", got)
+	}
+	got = logsResultReport("line1\n", nil)
+	if !got.OK || got.Text != "line1\n" || got.Error != "" || got.Hint != "" {
+		t.Fatalf("success report = %+v, want ok text only", got)
+	}
+}
