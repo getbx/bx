@@ -194,12 +194,14 @@ type observeReport struct {
 	ChangesNetwork  bool           `json:"changes_network"`
 	RequiresRoot    bool           `json:"requires_root"`
 	Risk            string         `json:"risk"`
+	Scenario        string         `json:"scenario,omitempty"`
 	DurationMS      int64          `json:"duration_ms"`
 	Samples         int            `json:"samples"`
 	Start           *stats.Report  `json:"start,omitempty"`
 	End             *stats.Report  `json:"end,omitempty"`
 	Delta           stats.Snapshot `json:"delta"`
 	Checks          []checkReport  `json:"checks"`
+	TestSteps       []string       `json:"test_steps,omitempty"`
 	Evidence        []string       `json:"evidence,omitempty"`
 	Recommendations []string       `json:"recommendations,omitempty"`
 	Error           string         `json:"error,omitempty"`
@@ -366,6 +368,7 @@ func observeFlags() []cli.Flag {
 		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
 		&cli.DurationFlag{Name: "duration", Value: 30 * time.Second, Usage: "观察窗口"},
 		&cli.DurationFlag{Name: "interval", Value: 2 * time.Second, Usage: "采样间隔"},
+		&cli.StringFlag{Name: "scenario", Value: "general", Usage: "观察场景: general|video|realtime"},
 	}
 }
 
@@ -1268,7 +1271,7 @@ func leakCheckAction(c *cli.Context) error {
 }
 
 func observeAction(c *cli.Context) error {
-	rep := collectObserve(c.Context, c.Duration("duration"), c.Duration("interval"))
+	rep := collectObserve(c.Context, c.Duration("duration"), c.Duration("interval"), c.String("scenario"))
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, rep)
 	}
@@ -2172,7 +2175,7 @@ func findReportCheck(checks []checkReport, name string) checkReport {
 	return checkReport{}
 }
 
-func collectObserve(ctx context.Context, duration, interval time.Duration) observeReport {
+func collectObserve(ctx context.Context, duration, interval time.Duration, scenario string) observeReport {
 	if duration <= 0 {
 		duration = 30 * time.Second
 	}
@@ -2190,12 +2193,12 @@ func collectObserve(ctx context.Context, duration, interval time.Duration) obser
 	if rep, err := readStatusReport(); err == nil {
 		samples = append(samples, rep)
 	} else {
-		return observeErrorReport(duration, err)
+		return observeErrorReport(duration, scenario, err)
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			rep := assessObserveWindow(samples, duration)
+			rep := assessObserveWindow(samples, duration, scenario)
 			rep.Error = ctx.Err().Error()
 			rep.Hint = "retry bx observe with a shorter duration"
 			rep.OK = false
@@ -2205,7 +2208,7 @@ func collectObserve(ctx context.Context, duration, interval time.Duration) obser
 			if rep, err := readStatusReport(); err == nil {
 				samples = append(samples, rep)
 			}
-			return assessObserveWindow(samples, duration)
+			return assessObserveWindow(samples, duration, scenario)
 		case <-ticker.C:
 			if rep, err := readStatusReport(); err == nil {
 				samples = append(samples, rep)
@@ -2214,30 +2217,38 @@ func collectObserve(ctx context.Context, duration, interval time.Duration) obser
 	}
 }
 
-func observeErrorReport(duration time.Duration, err error) observeReport {
+func observeErrorReport(duration time.Duration, scenario string, err error) observeReport {
 	rep := observeReport{
 		Kind:            "observe",
 		Version:         version.String(),
 		SecretsRedacted: true,
 		Risk:            "high",
+		Scenario:        normalizeObserveScenario(scenario),
 		DurationMS:      duration.Milliseconds(),
 		Error:           err.Error(),
 		Hint:            "sudo bx up; bx logs --json",
 	}
+	rep.TestSteps = observeTestSteps(rep.Scenario, duration)
 	rep.addCheck("status_socket", "fail", err.Error(), "sudo bx up")
 	rep.Recommendations = append(rep.Recommendations, "Start bx, then reproduce the app issue while bx observe is running.")
 	return rep
 }
 
-func assessObserveWindow(samples []stats.Report, duration time.Duration) observeReport {
+func assessObserveWindow(samples []stats.Report, duration time.Duration, scenarioValue ...string) observeReport {
+	scenario := normalizeObserveScenario("")
+	if len(scenarioValue) > 0 {
+		scenario = normalizeObserveScenario(scenarioValue[0])
+	}
 	rep := observeReport{
 		Kind:            "observe",
 		Version:         version.String(),
 		SecretsRedacted: true,
 		Risk:            "low",
+		Scenario:        scenario,
 		DurationMS:      duration.Milliseconds(),
 		Samples:         len(samples),
 	}
+	rep.TestSteps = observeTestSteps(scenario, duration)
 	if len(samples) == 0 {
 		rep.Risk = "high"
 		rep.addCheck("samples", "fail", "no status samples", "sudo bx up")
@@ -2284,7 +2295,7 @@ func assessObserveWindow(samples []stats.Report, duration time.Duration) observe
 		proxyRatio := float64(rep.Delta.Proxy) / float64(totalRouted)
 		if proxyRatio > 0.9 && rep.Delta.Direct == 0 {
 			rep.addCheck("split_shape", "info", "all observed routed connections went through proxy", "")
-			rep.Recommendations = append(rep.Recommendations, "For China-only apps or CDN video, verify whether their domains should be direct in router/client rules.")
+			rep.Recommendations = append(rep.Recommendations, scenarioProxyRecommendation(scenario))
 		} else {
 			rep.addCheck("split_shape", "ok", fmt.Sprintf("proxy %d direct %d", rep.Delta.Proxy, rep.Delta.Direct), "")
 		}
@@ -2293,6 +2304,55 @@ func assessObserveWindow(samples []stats.Report, duration time.Duration) observe
 	}
 	rep.OK = rep.Risk == "low"
 	return rep
+}
+
+func normalizeObserveScenario(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "video", "realtime":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "general"
+	}
+}
+
+func observeTestSteps(scenario string, duration time.Duration) []string {
+	seconds := int(duration.Seconds())
+	if seconds <= 0 {
+		seconds = 30
+	}
+	switch scenario {
+	case "video":
+		return []string{
+			"Start bx observe before reproducing the video issue.",
+			fmt.Sprintf("Within the next %d seconds, open the affected app and try to play the problematic video.", seconds),
+			"Keep the app on the failing screen until observe finishes.",
+			"Review activity, udp_blocks, blocked, and split_shape checks.",
+		}
+	case "realtime":
+		return []string{
+			"Start bx observe before joining or testing the call.",
+			fmt.Sprintf("Within the next %d seconds, speak or send realtime media so UDP/QUIC paths are exercised.", seconds),
+			"Keep the call active until observe finishes.",
+			"Review udp_blocks, blocked, and traffic deltas.",
+		}
+	default:
+		return []string{
+			"Start bx observe, then reproduce the problem during the observation window.",
+			"Keep the affected app active until observe finishes.",
+			"Review activity, blocked, udp_blocks, and split_shape checks.",
+		}
+	}
+}
+
+func scenarioProxyRecommendation(scenario string) string {
+	switch scenario {
+	case "video":
+		return "For China app/CDN video, all-proxy traffic often means the CDN may be exiting overseas; verify whether those domains should be direct in router/client rules."
+	case "realtime":
+		return "For realtime apps, all-proxy traffic is expected only when UDP relay is healthy; if media stutters, inspect UDP transport health and logs."
+	default:
+		return "For China-only apps or CDN video, verify whether their domains should be direct in router/client rules."
+	}
 }
 
 func (r *observeReport) addCheck(name, status, detail, hint string) {

@@ -162,6 +162,9 @@ func observeArgs(in ObserveIn) []string {
 	if strings.TrimSpace(in.Interval) != "" {
 		args = append(args, "--interval", in.Interval)
 	}
+	if strings.TrimSpace(in.Scenario) != "" {
+		args = append(args, "--scenario", in.Scenario)
+	}
 	return args
 }
 

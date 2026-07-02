@@ -147,8 +147,8 @@ func TestObserveToolReturnsCLIJSONEnvelope(t *testing.T) {
 }
 
 func TestObserveArgs(t *testing.T) {
-	got := observeArgs(ObserveIn{Duration: "30s", Interval: "1s"})
-	for _, want := range []string{"observe", "--json", "--duration", "30s", "--interval", "1s"} {
+	got := observeArgs(ObserveIn{Duration: "30s", Interval: "1s", Scenario: "video"})
+	for _, want := range []string{"observe", "--json", "--duration", "30s", "--interval", "1s", "--scenario", "video"} {
 		if !stringSliceContains(got, want) {
 			t.Fatalf("observe args = %v, missing %s", got, want)
 		}

@@ -73,6 +73,7 @@ type JSONCommandOut struct {
 type ObserveIn struct {
 	Duration string `json:"duration,omitempty" jsonschema:"observation window, e.g. 30s"`
 	Interval string `json:"interval,omitempty" jsonschema:"status sampling interval, e.g. 2s"`
+	Scenario string `json:"scenario,omitempty" jsonschema:"general, video, or realtime"`
 }
 
 type LogsIn struct {
