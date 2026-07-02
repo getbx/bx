@@ -27,6 +27,7 @@ Options:
   --set-system-dns          Temporarily set the active macOS network service DNS to 127.0.0.1.
   --dns-service NAME        Network service to change with --set-system-dns. Default: detected from default route.
   --webrtc-browser          Run bx webrtc-check with a real browser ICE candidate test.
+  --leak-network            Run bx leak-check with explicit outbound IPv4/IPv6/DNS probes.
   --block-v6                Include IPv6 reject route plan. Default: enabled.
   --no-block-v6             Do not include IPv6 reject route plan.
   -h, --help                Show this help.
@@ -229,6 +230,7 @@ BLOCK_V6=1
 SET_SYSTEM_DNS=0
 DNS_SERVICE=""
 WEBRTC_BROWSER=0
+LEAK_NETWORK=0
 SERVER_BYPASS=()
 USER_BYPASS=()
 
@@ -253,6 +255,7 @@ while [[ $# -gt 0 ]]; do
     --set-system-dns) SET_SYSTEM_DNS=1; shift ;;
     --dns-service) DNS_SERVICE="${2:-}"; shift 2 ;;
     --webrtc-browser) WEBRTC_BROWSER=1; shift ;;
+    --leak-network) LEAK_NETWORK=1; shift ;;
     --block-v6) BLOCK_V6=1; shift ;;
     --no-block-v6) BLOCK_V6=0; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -313,6 +316,7 @@ fi
   echo "set_system_dns=$SET_SYSTEM_DNS"
   echo "dns_service=$DNS_SERVICE"
   echo "webrtc_browser=$WEBRTC_BROWSER"
+  echo "leak_network=$LEAK_NETWORK"
   echo "server_bypass=${SERVER_BYPASS[*]}"
   echo "user_bypass=${USER_BYPASS[*]}"
   sw_vers 2>/dev/null || true
@@ -593,6 +597,13 @@ fi
   fi
   if [[ "$WEBRTC_BROWSER" == "1" ]]; then
     LEAK_ARGS+=(--browser)
+    for cidr in "${SERVER_BYPASS[@]}"; do
+      expected_ip="$(cidr_host_ip "$cidr")"
+      [[ -n "$expected_ip" ]] && LEAK_ARGS+=(--expected-ip "$expected_ip")
+    done
+  fi
+  if [[ "$LEAK_NETWORK" == "1" ]]; then
+    LEAK_ARGS+=(--network)
     for cidr in "${SERVER_BYPASS[@]}"; do
       expected_ip="$(cidr_host_ip "$cidr")"
       [[ -n "$expected_ip" ]] && LEAK_ARGS+=(--expected-ip "$expected_ip")

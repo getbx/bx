@@ -10,10 +10,17 @@ Command:
 
 ```bash
 bx leak-check --json
+bx leak-check --network --json --expected-ip <proxy-or-vps-ip>
 bx leak-check --browser --json --expected-ip <proxy-or-vps-ip>
 ```
 
-`leak-check` is the agent-friendly summary. It aggregates client service state, DNS takeover, UDP policy, WebRTC posture, and IPv6/QUIC risk notes. It stays scoped to network-path leakage; browser fingerprinting is intentionally outside bx.
+`leak-check` is the agent-friendly summary. It aggregates client service state, DNS takeover, UDP policy, WebRTC posture, and IPv6/QUIC risk notes. By default it only reads local state. With `--network`, it also sends outbound IPv4/IPv6/DNS probes and compares the observed IPv4 exit with `--expected-ip`. It stays scoped to network-path leakage; browser fingerprinting is intentionally outside bx.
+
+`--network` classifies:
+
+- `egress_ipv4`: the current HTTP IPv4 exit. It is `ok` only when it matches an expected proxy/VPS IP.
+- `egress_ipv6`: public IPv6 egress. Any observed IPv6 public exit is high risk until bx IPv6 capture is verified.
+- `dns_resolution`: whether system resolution looks like bx fake-IP DNS or ordinary resolver output.
 
 ### WebRTC public IP
 
@@ -48,11 +55,11 @@ Important: an unexpected public IP is not automatically the machine's real ISP I
 
 ### IPv6
 
-bx blocks global IPv6 paths in host-mode test plans so IPv6 cannot silently bypass the IPv4 tunnel. This is a risk assessment unless verified with a real IPv6-capable network and `curl -6` / browser leak tests.
+bx blocks global IPv6 paths in host-mode test plans so IPv6 cannot silently bypass the IPv4 tunnel. `bx leak-check --network --json` can also attempt an IPv6 egress probe; if it sees a public IPv6 exit, treat it as high risk.
 
 ### QUIC and HTTP/3
 
-QUIC uses UDP. With `udp.mode: proxy`, bx should relay it; with `block`, it is stopped; with direct mode, it can expose the local path. A future `bx leak-check` can include a QUIC smoke probe.
+QUIC uses UDP. With `udp.mode: proxy`, bx should relay it; with `block`, it is stopped; with direct mode, it can expose the local path. `leak-check` reports the UDP policy; protocol-specific QUIC smoke tests can stay outside the default path unless needed.
 
 ### System proxy bypass
 
@@ -83,6 +90,9 @@ For macOS real-machine testing:
 
 ```bash
 scripts/darwin-testkit.sh ... --webrtc-browser
+scripts/darwin-testkit.sh ... --leak-network
 ```
 
 When `--webrtc-browser` is used, the testkit passes `--server-bypass` IPs as expected WebRTC public IPs, so the browser result is compared against the intended bx exit.
+
+When `--leak-network` is used, the testkit passes `--server-bypass` IPs as expected IPv4 exits for `bx leak-check --network`.

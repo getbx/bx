@@ -10,6 +10,8 @@
 #   1. IPv4 egress IP  → must equal the VPS exit IP (not your real/corp IP)
 #   2. IPv6 egress     → must FAIL (no v6 path; globally-unique v6 would leak via ICE)
 #   3. DNS answer      → fake-IP (198.18/15) means resolution goes through bx
+# Machine-readable bx summary:
+#   bx leak-check --network --json --expected-ip <EXPECTED_EXIT_IP>
 # WebRTC/STUN needs a real browser. Use:
 #   bx webrtc-check --browser --json --expected-ip <EXPECTED_EXIT_IP>
 
@@ -53,5 +55,5 @@ case "$fip" in
 esac
 
 echo "== summary: $pass pass, $fail fail =="
-echo "Reminder: run 'bx webrtc-check --browser --json --expected-ip <EXPECTED_EXIT_IP>' for browser WebRTC, or scripts/open-privacy-checks.sh --yes for third-party reference pages."
+echo "Reminder: run 'bx leak-check --network --json --expected-ip <EXPECTED_EXIT_IP>' for machine-readable exit checks, 'bx webrtc-check --browser --json --expected-ip <EXPECTED_EXIT_IP>' for browser WebRTC, or scripts/open-privacy-checks.sh --yes for third-party reference pages."
 [ "$fail" -eq 0 ]
