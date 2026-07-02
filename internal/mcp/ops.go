@@ -44,25 +44,29 @@ type DiagnoseOut struct {
 }
 
 type InspectIn struct {
+	Probe     bool   `json:"probe,omitempty" jsonschema:"allow outbound link probe; default false"`
 	SkipProbe bool   `json:"skip_probe,omitempty" jsonschema:"avoid outbound link probe"`
 	Target    string `json:"target,omitempty" jsonschema:"optional probe target host:port"`
 	Timeout   string `json:"timeout,omitempty" jsonschema:"optional probe timeout, e.g. 8s"`
 }
 
 type LeakCheckIn struct {
-	Network        bool     `json:"network,omitempty" jsonschema:"send outbound IPv4/IPv6/DNS probes"`
-	Browser        bool     `json:"browser,omitempty" jsonschema:"open local browser page for WebRTC ICE candidates"`
-	ExpectedIPs    []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs"`
-	NetworkTimeout string   `json:"network_timeout,omitempty" jsonschema:"optional network probe timeout, e.g. 8s"`
-	BrowserTimeout string   `json:"browser_timeout,omitempty" jsonschema:"optional browser ICE timeout, e.g. 20s"`
+	Network          bool     `json:"network,omitempty" jsonschema:"send outbound IPv4/IPv6/DNS probes"`
+	Browser          bool     `json:"browser,omitempty" jsonschema:"open local browser page for WebRTC ICE candidates"`
+	BrowserConfirmed bool     `json:"browser_confirmed,omitempty" jsonschema:"must be true after user confirms opening a local browser page"`
+	ExpectedIPs      []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs"`
+	NetworkTimeout   string   `json:"network_timeout,omitempty" jsonschema:"optional network probe timeout, e.g. 8s"`
+	BrowserTimeout   string   `json:"browser_timeout,omitempty" jsonschema:"optional browser ICE timeout, e.g. 20s"`
 }
 
 type JSONCommandOut struct {
-	OK      bool           `json:"ok"`
-	Command []string       `json:"command"`
-	JSON    map[string]any `json:"json,omitempty"`
-	Error   string         `json:"error,omitempty"`
-	Hint    string         `json:"hint,omitempty"`
+	OK              bool           `json:"ok"`
+	Command         []string       `json:"command"`
+	JSON            map[string]any `json:"json,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	Hint            string         `json:"hint,omitempty"`
+	TestSteps       []string       `json:"test_steps,omitempty"`
+	Recommendations []string       `json:"recommendations,omitempty"`
 }
 
 type LogsIn struct {
