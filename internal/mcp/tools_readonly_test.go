@@ -72,3 +72,18 @@ func TestStatusToolIncludesMutationState(t *testing.T) {
 		t.Fatalf("mutation_state=%q want armed", out.MutationState)
 	}
 }
+
+func TestLogsToolReturnsStructuredReport(t *testing.T) {
+	ops := &fakeOps{logs: LogsOut{OK: false, Text: "partial\n", Error: "denied", Hint: "sudo bx logs"}}
+	res := callTool(t, ops, "bx_logs", map[string]any{"lines": 5})
+	if res.IsError {
+		t.Fatal("logs tool should return structured log report, not tool error")
+	}
+	var out LogsOut
+	if err := json.Unmarshal([]byte(res.Content[0].(*mcpsdk.TextContent).Text), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.OK || out.Text != "partial\n" || out.Error != "denied" || out.Hint == "" {
+		t.Fatalf("logs out = %+v, want structured error report", out)
+	}
+}

@@ -46,7 +46,10 @@ type LogsIn struct {
 	Since string `json:"since,omitempty" jsonschema:"optional time filter, e.g. 10m"`
 }
 type LogsOut struct {
-	Text string `json:"text"`
+	OK    bool   `json:"ok"`
+	Text  string `json:"text"`
+	Error string `json:"error,omitempty"`
+	Hint  string `json:"hint,omitempty"`
 }
 
 type PlanIn struct {
