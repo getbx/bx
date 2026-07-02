@@ -240,6 +240,8 @@ sudo bx server doctor --json
 sudo bx server shares --json
 ```
 
+接入 MCP 后,agent 可优先调用 `bx_inspect`、`bx_leak_check`、`bx_logs` 这些只读工具拿结构化诊断,再决定是否需要改动类操作。
+
 `bx capabilities` 会输出稳定的机器可读能力清单,标明每个入口是否需要 root、是否会修改系统或网络、是否读取敏感配置。上面的 JSON 诊断命令只读取状态并输出机器可解析结果,不会修改系统或网络配置。
 
 ## 命令

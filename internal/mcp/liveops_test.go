@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/getbx/bx/internal/supervisor"
 	mcpstats "github.com/getbx/bx/internal/stats"
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 func TestStatusOverSocket(t *testing.T) {
