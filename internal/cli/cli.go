@@ -3210,7 +3210,9 @@ func optsFromFlags(c *cli.Context) supervisor.Options {
 		Deadman:         c.Duration("test-timeout"),
 		Global:          c.Bool("global"),
 		DNSListen:       c.String("listen-dns"),
-		ConfigPath:      c.String("config"),
+		// resolveConfigPath 与 bx direct/proxy 写配置走同一解析(含 /etc 缺失时的 ~/.config 兜底),
+		// 否则热重载会去重读一个和 CLI 写入不同的文件,rule 永远热生效不了。
+		ConfigPath: resolveConfigPath(c.String("config")),
 	}
 }
 
