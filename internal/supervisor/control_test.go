@@ -39,7 +39,7 @@ func (f *fakeControlEngine) Arm(apply, undo func() error) error {
 }
 
 func testMux(eng controlEngine) http.Handler {
-	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{}, nil, 0)
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{}, nil, nil, 0)
 }
 
 type fakeMutator struct {
@@ -63,11 +63,15 @@ func (f *fakeMutator) Rehijack() (func() error, func() error, error) {
 }
 
 func testMuxMut(eng controlEngine, mut mutator) http.Handler {
-	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, mut, nil, 0)
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, mut, nil, nil, 0)
 }
 
 func testMuxKick(eng controlEngine, kick func() error) http.Handler {
-	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{}, kick, 0)
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{}, kick, nil, 0)
+}
+
+func testMuxReload(eng controlEngine, reload func() error) http.Handler {
+	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, nopMutator{}, nil, reload, 0)
 }
 
 func mustPost(t *testing.T, url string) *http.Response {
@@ -189,6 +193,40 @@ func TestControlKickRejectsGet(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("kick GET 应 405,得 %d", resp.StatusCode)
+	}
+}
+
+func TestControlReloadInvokesReload(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(testMuxReload(&fakeControlEngine{}, func() error { called = true; return nil }))
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v0/reload")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reload 应 200,得 %d", resp.StatusCode)
+	}
+	if !called {
+		t.Fatal("reload 未被调用")
+	}
+}
+
+func TestControlReloadPropagatesError(t *testing.T) {
+	srv := httptest.NewServer(testMuxReload(&fakeControlEngine{}, func() error { return errors.New("解析失败") }))
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v0/reload")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("reload 出错应 500,得 %d", resp.StatusCode)
+	}
+}
+
+func TestControlReloadNotImplementedWhenNil(t *testing.T) {
+	srv := httptest.NewServer(testMuxReload(&fakeControlEngine{}, nil))
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v0/reload")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("reload=nil 应 501,得 %d", resp.StatusCode)
 	}
 }
 

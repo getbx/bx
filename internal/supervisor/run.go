@@ -61,6 +61,7 @@ type Options struct {
 	Deadman         time.Duration // >0:到点自动还原(远程实测保命)
 	Global          bool          // 全局模式:除 bypass/用户 direct 规则外一切走代理
 	DNSListen       string        // 可选:本地 DNS 监听地址,如 127.0.0.1:53(macOS 系统 DNS 接入)
+	ConfigPath      string        // 可选:配置文件路径;非空则 /v0/reload 重读它热重建 router(bx direct/proxy 用)
 }
 
 // tunHandle 是 OpenTUN 返回的设备句柄,交给 Hijack 配路由。
@@ -399,8 +400,33 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	kick := func() error {
 		return swapper.swapTo(swapper.currentLink())
 	}
+	// reloadRouter(bx direct/proxy → /v0/reload):重读配置 rules、重建 router 原子换入,
+	// 复用 china 列表刷新的同一 SetRouter 热路径——不断隧道、不碰 TUN/路由。global 用启动值
+	//(改 mode/global 需重劫持,不在此列;这里只热更用户分流规则)。
+	reloadRouter := func() error {
+		if opts.ConfigPath == "" {
+			return fmt.Errorf("未知配置路径,无法热重载(请重启生效)")
+		}
+		nb, err := os.ReadFile(opts.ConfigPath)
+		if err != nil {
+			return err
+		}
+		ncfg, err := config.Parse(nb)
+		if err != nil {
+			return err
+		}
+		nr, err := rebuildRouterFromFiles(ncfg,
+			filepath.Join(cfg.DataDir, "china_domain.txt"),
+			filepath.Join(cfg.DataDir, "china_cidr4.txt"),
+			global)
+		if err != nil {
+			return err
+		}
+		d.SetRouter(nr)
+		return nil
+	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, mutEng, mut, kick, uint32(cfg.OwnerUID))
+		return serveControl(counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, mutEng, mut, kick, reloadRouter, uint32(cfg.OwnerUID))
 	})
 	if err != nil {
 		return err
