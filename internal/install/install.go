@@ -100,6 +100,40 @@ func copyExecutable(src, dst string) error {
 	return nil
 }
 
+// ReplaceBinary 用 data 原子替换 dst 处的二进制(同目录临时文件 + chmod 0755 + rename)。
+// 即便 dst 正是当前运行的二进制也安全(rename 换的是目录项而非 inode,避开 ETXTBSY)。
+// 供 bx update 校验通过后落盘新版用。
+func ReplaceBinary(dst string, data []byte) error {
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("建目录 %s(需 root?): %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".bx-*")
+	if err != nil {
+		return fmt.Errorf("建临时文件于 %s(需 root?): %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("写新二进制: %w", err)
+	}
+	if err := tmp.Chmod(0o755); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("chmod: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("刷写临时文件: %w", err)
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("替换 %s(需 root?): %w", dst, err)
+	}
+	return nil
+}
+
 // UnitText 返回 systemd unit 文件内容。execStart 是完整启动命令。
 func UnitText(execStart string) string {
 	return UnitTextWithDescription("bx 透明全局代理", execStart)

@@ -67,6 +67,7 @@ func New() *cli.App {
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
 			{Name: "kick", Usage: "强制立即重连隧道(不碰 TUN/路由,比 down+up 轻)", Action: kickAction},
+			{Name: "update", Usage: "更新 bx 到最新 release(SHA256 校验 + 原子替换 + 重启)", Flags: updateFlags(), Action: updateAction},
 			{Name: "direct", Usage: "管理直连白名单(global 下只有白名单域名直连,其余走隧道)", Subcommands: directCommands()},
 			{Name: "proxy", Usage: "管理强制走隧道的域名", Subcommands: proxyCommands()},
 			{Name: "dns", Usage: "管理 macOS 系统 DNS 接管", Subcommands: dnsCommands()},
