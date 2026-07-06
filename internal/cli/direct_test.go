@@ -45,37 +45,69 @@ func TestDirectRuleRiskSilentOnBrandDomains(t *testing.T) {
 
 func TestEditYAMLRuleListAddCreatesBlock(t *testing.T) {
 	in := "server: vless://x@h:443?security=reality\nkillswitch: true\n"
-	out := string(editYAMLRuleList([]byte(in), "direct", []string{"taobao.com"}, nil))
-	if !strings.Contains(out, "taobao.com") {
+	out, changed := editYAMLRuleList([]byte(in), "direct", []string{"taobao.com"}, nil)
+	if !changed {
+		t.Fatal("新增域名应 changed=true")
+	}
+	if !strings.Contains(string(out), "taobao.com") {
 		t.Fatalf("add 后应含 taobao.com:\n%s", out)
 	}
-	if !strings.Contains(out, "server:") || !strings.Contains(out, "killswitch") {
+	if !strings.Contains(string(out), "server:") || !strings.Contains(string(out), "killswitch") {
 		t.Fatalf("其它段应保留:\n%s", out)
 	}
 }
 
 func TestEditYAMLRuleListAddIsIdempotent(t *testing.T) {
 	in := "rules:\n  - direct:\n      - taobao.com\n"
-	out := string(editYAMLRuleList([]byte(in), "direct", []string{"taobao.com"}, nil))
-	if n := strings.Count(out, "taobao.com"); n != 1 {
+	out, changed := editYAMLRuleList([]byte(in), "direct", []string{"taobao.com"}, nil)
+	if changed {
+		t.Fatal("已存在域名再 add 应 changed=false(无改动)")
+	}
+	if n := strings.Count(string(out), "taobao.com"); n != 1 {
 		t.Fatalf("重复 add 应幂等,taobao.com 出现 %d 次:\n%s", n, out)
 	}
 }
 
 func TestEditYAMLRuleListRemove(t *testing.T) {
 	in := "rules:\n  - direct:\n      - taobao.com\n      - jd.com\n"
-	out := string(editYAMLRuleList([]byte(in), "direct", nil, []string{"taobao.com"}))
-	if strings.Contains(out, "taobao.com") {
+	out, changed := editYAMLRuleList([]byte(in), "direct", nil, []string{"taobao.com"})
+	if !changed {
+		t.Fatal("删除存在的域名应 changed=true")
+	}
+	if strings.Contains(string(out), "taobao.com") {
 		t.Fatalf("remove 后不应含 taobao.com:\n%s", out)
 	}
-	if !strings.Contains(out, "jd.com") {
+	if !strings.Contains(string(out), "jd.com") {
 		t.Fatalf("remove 只删指定项,jd.com 应保留:\n%s", out)
 	}
 }
 
+// 回归:域名在 rules[1](多 rule 块布局)时,rm 必须跨所有元素删,否则报删了其实还在直连(泄漏)。
+func TestEditYAMLRuleListRemoveAcrossAllRules(t *testing.T) {
+	in := "rules:\n  - proxy:\n      - ads.cn\n  - direct:\n      - leak.aliyuncs.com\n"
+	out, changed := editYAMLRuleList([]byte(in), "direct", nil, []string{"leak.aliyuncs.com"})
+	if !changed {
+		t.Fatal("rules[1] 里的域名也应被删到(changed=true)")
+	}
+	if strings.Contains(string(out), "leak.aliyuncs.com") {
+		t.Fatalf("rules[1].direct 的域名应被删除:\n%s", out)
+	}
+}
+
+func TestEditYAMLRuleListRemoveAbsentIsNoChange(t *testing.T) {
+	in := "rules:\n  - direct:\n      - taobao.com\n"
+	_, changed := editYAMLRuleList([]byte(in), "direct", nil, []string{"notthere.com"})
+	if changed {
+		t.Fatal("删不存在的域名应 changed=false(不误报成功)")
+	}
+}
+
 func TestEditYAMLRuleListProxyField(t *testing.T) {
-	out := string(editYAMLRuleList([]byte("server: x\n"), "proxy", []string{"ads.cn"}, nil))
-	if !strings.Contains(out, "proxy") || !strings.Contains(out, "ads.cn") {
+	out, changed := editYAMLRuleList([]byte("server: x\n"), "proxy", []string{"ads.cn"}, nil)
+	if !changed {
+		t.Fatal("proxy 字段 add 应 changed=true")
+	}
+	if !strings.Contains(string(out), "proxy") || !strings.Contains(string(out), "ads.cn") {
 		t.Fatalf("proxy 字段 add 应生效:\n%s", out)
 	}
 }

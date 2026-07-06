@@ -400,25 +400,32 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	kick := func() error {
 		return swapper.swapTo(swapper.currentLink())
 	}
-	// reloadRouter(bx direct/proxy → /v0/reload):重读配置 rules、重建 router 原子换入,
-	// 复用 china 列表刷新的同一 SetRouter 热路径——不断隧道、不碰 TUN/路由。global 用启动值
-	//(改 mode/global 需重劫持,不在此列;这里只热更用户分流规则)。
-	reloadRouter := func() error {
-		if opts.ConfigPath == "" {
-			return fmt.Errorf("未知配置路径,无法热重载(请重启生效)")
+	// rebuildRouter 从「当前」配置重建 router:ConfigPath 非空则重读配置文件拿最新 rules
+	// (含 bx direct/proxy 的运行期改动),否则回退启动快照 cfg;china 列表用落盘最新。
+	// reloadRouter 与 china 列表刷新共用它——否则刷新会拿启动时的陈旧 rules 覆盖掉热加的白名单
+	//(split 模式下悄悄回退用户 bx direct 的改动)。
+	rebuildRouter := func() (*route.Router, error) {
+		rcfg := cfg
+		if opts.ConfigPath != "" {
+			nb, err := os.ReadFile(opts.ConfigPath)
+			if err != nil {
+				return nil, err
+			}
+			ncfg, err := config.Parse(nb)
+			if err != nil {
+				return nil, err
+			}
+			rcfg = ncfg
 		}
-		nb, err := os.ReadFile(opts.ConfigPath)
-		if err != nil {
-			return err
-		}
-		ncfg, err := config.Parse(nb)
-		if err != nil {
-			return err
-		}
-		nr, err := rebuildRouterFromFiles(ncfg,
+		return rebuildRouterFromFiles(rcfg,
 			filepath.Join(cfg.DataDir, "china_domain.txt"),
 			filepath.Join(cfg.DataDir, "china_cidr4.txt"),
 			global)
+	}
+	// reloadRouter(bx direct/proxy → /v0/reload):重建 router 原子换入,不断隧道、不碰 TUN/路由。
+	// global 用启动值(改 mode/global 需重劫持,不在此列;这里只热更用户分流规则)。
+	reloadRouter := func() error {
+		nr, err := rebuildRouter()
 		if err != nil {
 			return err
 		}
@@ -455,10 +462,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			if err := fetchLists(ctx, proxyHTTPClient(px), cfg.DataDir); err != nil {
 				return err
 			}
-			nr, err := rebuildRouterFromFiles(cfg,
-				filepath.Join(cfg.DataDir, "china_domain.txt"),
-				filepath.Join(cfg.DataDir, "china_cidr4.txt"),
-				global)
+			// 经 rebuildRouter 重读配置(而非启动快照 cfg):否则刷新会用陈旧 rules
+			// 覆盖掉 bx direct/proxy 热加的白名单,悄悄回退用户改动。
+			nr, err := rebuildRouter()
 			if err != nil {
 				return err
 			}
