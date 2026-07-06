@@ -61,6 +61,21 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+func TestUserProxyWinsWhenRulesConflict(t *testing.T) {
+	r := &Router{
+		UserDirect:   NewDomainSet([]string{"conflict.example"}),
+		UserProxy:    NewDomainSet([]string{"conflict.example"}),
+		UserDirectIP: mustSet([]string{"203.0.113.0/24"}),
+		UserProxyIP:  mustSet([]string{"203.0.113.0/24"}),
+	}
+	if got := r.Decide(Meta{Domain: "conflict.example"}); got != Proxy {
+		t.Fatalf("域名同时在 direct/proxy 时应保守走 Proxy, got %v", got)
+	}
+	if got := r.DecideIP(netip.MustParseAddr("203.0.113.9")); got != Proxy {
+		t.Fatalf("IP 同时在 direct/proxy 时应保守走 Proxy, got %v", got)
+	}
+}
+
 func TestDecideUnmatchedDomainProxy(t *testing.T) {
 	// 未命中任何列表的域名默认走代理(避免被污染/CDN 误判直连泄漏真实 IP)。
 	r := newTestRouter()

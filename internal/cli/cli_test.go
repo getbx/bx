@@ -696,6 +696,27 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(status.SafeNotes, " "), "menu bar") {
 		t.Fatalf("status json should mention status surfaces: %+v", status)
 	}
+	kick := findCapability(rep.Commands, "sudo bx kick")
+	if !kick.Stable || !kick.RequiresRoot || kick.ChangesSystem || kick.ChangesNetwork {
+		t.Fatalf("unexpected kick capability: %+v", kick)
+	}
+	if !strings.Contains(strings.Join(kick.SafeNotes, " "), "does not change TUN, routes, or DNS") {
+		t.Fatalf("kick should document lightweight reconnect scope: %+v", kick)
+	}
+	direct := findCapability(rep.Commands, "sudo bx direct add <domain>")
+	if !direct.Stable || !direct.RequiresRoot || !direct.ChangesSystem || direct.ChangesNetwork || !direct.ReadsSecrets {
+		t.Fatalf("unexpected direct add capability: %+v", direct)
+	}
+	if !strings.Contains(strings.Join(direct.SafeNotes, " "), "mutually exclusive") {
+		t.Fatalf("direct add should document direct/proxy mutual exclusion: %+v", direct)
+	}
+	proxy := findCapability(rep.Commands, "sudo bx proxy add <domain>")
+	if !proxy.Stable || !proxy.RequiresRoot || !proxy.ChangesSystem || proxy.ChangesNetwork || !proxy.ReadsSecrets {
+		t.Fatalf("unexpected proxy add capability: %+v", proxy)
+	}
+	if !strings.Contains(strings.Join(proxy.SafeNotes, " "), "force tunnel") {
+		t.Fatalf("proxy add should document force tunnel behavior: %+v", proxy)
+	}
 	logs := findCapability(rep.Commands, "bx logs")
 	if !logs.Stable || logs.ChangesSystem || logs.ChangesNetwork {
 		t.Fatalf("unexpected logs capability: %+v", logs)

@@ -43,10 +43,10 @@ type Router struct {
 func (r *Router) Decide(m Meta) Decision {
 	if m.Domain != "" {
 		switch {
-		case r.UserDirect != nil && r.UserDirect.Match(m.Domain):
-			return Direct
 		case r.UserProxy != nil && r.UserProxy.Match(m.Domain):
 			return Proxy
+		case r.UserDirect != nil && r.UserDirect.Match(m.Domain):
+			return Direct
 		case !r.GlobalProxy && r.ChinaDomain != nil && r.ChinaDomain.Match(m.Domain):
 			return Direct
 		default:
@@ -62,13 +62,13 @@ func (r *Router) Decide(m Meta) Decision {
 	return Proxy // 信息不足时保守走代理
 }
 
-// DecideIP 仅按 IP 判定:用户网段 > geoip-cn > 默认代理。
+// DecideIP 仅按 IP 判定:用户 proxy 网段 > 用户 direct 网段 > 私网 > geoip-cn > 默认代理。
 func (r *Router) DecideIP(ip netip.Addr) Decision {
-	if r.UserDirectIP != nil && r.UserDirectIP.Contains(ip) {
-		return Direct
-	}
 	if r.UserProxyIP != nil && r.UserProxyIP.Contains(ip) {
 		return Proxy
+	}
+	if r.UserDirectIP != nil && r.UserDirectIP.Contains(ip) {
+		return Direct
 	}
 	// 私网/docker/link-local:用户未显式覆盖时一律直连(不受 global 影响)。
 	if r.PrivateDirect != nil && r.PrivateDirect.Contains(ip) {
