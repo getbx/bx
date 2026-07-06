@@ -75,7 +75,7 @@ func TestServerHostFromLinkSS(t *testing.T) {
 
 func TestServerHostFromLinkVmess(t *testing.T) {
 	// vmess:// authority 是 base64-JSON,须经 tunnel.VmessHost 解出 add。
-	link := "vmess://eyJhZGQiOiIyMy4yNy4xMzQuNzciLCJwb3J0IjoiNDQzIiwiaWQiOiJ1dWlkLXgiLCJuZXQiOiJ0Y3AifQ"
+	link := "vmess://eyJhZGQiOiIyMDMuMC4xMTMuMTAiLCJwb3J0IjoiNDQzIiwiaWQiOiJ1dWlkLXgiLCJuZXQiOiJ0Y3AifQ"
 	h, err := serverHostFromLink(link)
 	if err != nil {
 		t.Fatalf("err: %v", err)
