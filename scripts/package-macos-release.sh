@@ -38,6 +38,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RELEASE_ARCH="__BX_RELEASE_ARCH__"
 BX_DST="${BX_DST:-/usr/local/bin/bx}"
+CONFIG_PATH="${BX_CONFIG_PATH:-/etc/bx/config.yaml}"
 APP_DST="${BX_APP_DST:-$HOME/Applications/Bx.app}"
 AGENT_ID="com.getbx.bx.menu"
 AGENT_DIR="$HOME/Library/LaunchAgents"
@@ -66,6 +67,15 @@ preflight() {
 }
 
 preflight
+
+if [[ -x "$BX_DST" ]]; then
+  echo "Existing bx CLI found at $BX_DST; this install will upgrade it."
+else
+  echo "No existing bx CLI found at $BX_DST; this install will add it."
+fi
+if [[ -f "$CONFIG_PATH" ]]; then
+  echo "Existing client config will be preserved: $CONFIG_PATH"
+fi
 
 echo "Installing bx CLI to $BX_DST..."
 sudo install -m 0755 "$DIR/bx" "$BX_DST"
@@ -105,6 +115,13 @@ The menu bar app is installed and running.
 
 Next:
   Open the bx menu bar icon and choose Set Up bx...
+
+Upgrade notes:
+  Existing client config is preserved. This installer only replaces the CLI,
+  menu bar app, and menu LaunchAgent.
+  If protection was already running, restart it from the menu bar with
+  Restart Protection, or run:
+    sudo bx down && sudo bx up
 
 CLI fallback:
   sudo bx setup '<client-link>' && sudo bx up
@@ -152,6 +169,13 @@ After install:
   The menu bar app is installed and running.
   Open the bx menu bar icon and choose Set Up bx...
 
+Upgrade:
+  Re-running install.sh is safe. It preserves /etc/bx/config.yaml and replaces
+  only the bx CLI, menu bar app, and menu LaunchAgent.
+  If protection was already running, restart it from the menu bar with
+  Restart Protection, or run:
+    sudo bx down && sudo bx up
+
 CLI fallback:
   sudo bx setup '<client-link>' && sudo bx up
 
@@ -165,6 +189,7 @@ Remove menu bar app:
 
 Notes:
   install.sh installs the bx CLI, installs the menu bar app, and starts the menu bar app.
+  install.sh preserves existing client config at /etc/bx/config.yaml.
   install.sh does not run bx setup, does not run bx up, and does not change DNS/routes.
   Run install.sh as your normal macOS user, not with sudo.
   uninstall.sh removes only the menu bar app and does not turn off protection.
