@@ -81,6 +81,12 @@ func KickControl(sockPath string) (string, error) {
 	return postControl(sockPath, "/v0/kick")
 }
 
+// ReloadControl 触发路由规则热重载(bx direct/proxy 改配置后):控制面重读配置、
+// 重建 router 原子换入,不断隧道。同步返回成败。
+func ReloadControl(sockPath string) (string, error) {
+	return postControl(sockPath, "/v0/reload")
+}
+
 // postControlBody POST path,带可选 JSON body;返回 controlResponse.State,非 2xx → error(含 Error)。
 func postControlBody(sockPath, path string, body any) (string, error) {
 	client := controlHTTPClient(sockPath)

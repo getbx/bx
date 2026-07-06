@@ -53,6 +53,7 @@ type controlServer struct {
 	report   func() stats.Report
 	mut      mutator
 	kick     func() error // 强制重连当前传输(不碰 TUN/路由);可空
+	reload   func() error // 重读配置 rules 并热重建 router(不断隧道);可空
 	ownerUID uint32
 }
 
@@ -70,8 +71,8 @@ func stateName(s confirm.State) string {
 }
 
 // newControlMux 构建控制面 HTTP mux。
-func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, kick func() error, ownerUID uint32) http.Handler {
-	cs := &controlServer{eng: eng, report: report, mut: mut, kick: kick, ownerUID: ownerUID}
+func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, kick, reload func() error, ownerUID uint32) http.Handler {
+	cs := &controlServer{eng: eng, report: report, mut: mut, kick: kick, reload: reload, ownerUID: ownerUID}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/status", cs.handleStatus)
 	mux.HandleFunc("/v0/commit", cs.handleCommit)
@@ -79,7 +80,30 @@ func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, k
 	mux.HandleFunc("/v0/transport", cs.handleSetTransport)
 	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
 	mux.HandleFunc("/v0/kick", cs.handleKick)
+	mux.HandleFunc("/v0/reload", cs.handleReload)
 	return mux
+}
+
+// handleReload 热重载路由规则(bx direct/proxy 改配置后触发):重读配置 rules、
+// 重建 router 原子换入(与 china 列表刷新同一路径),不断隧道、不碰 TUN/路由。
+// 同步执行并回报成败(重建很快,不像 kick 要等健康)。
+func (cs *controlServer) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
+		return
+	}
+	if !cs.requireOwnerOrRoot(w, r) {
+		return
+	}
+	if cs.reload == nil {
+		writeJSON(w, http.StatusNotImplemented, controlResponse{Status: "error", Error: "reload 不可用"})
+		return
+	}
+	if err := cs.reload(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, controlResponse{Status: "error", Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, controlResponse{Status: "ok", State: "reloaded"})
 }
 
 // handleKick 强制立即重连当前传输(bx kick):后台触发 swapTo(currentLink),
@@ -259,7 +283,7 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // c: 统计计数器;t: 隧道(满足 tunnelStatser);server/udpMode: 配置字符串;eng: 引擎;mut: 改动执行器。
 // transportInfo(可空)返回当前活跃传输标签、容灾列表、UDP 专用传输标签,供 status 呈现;
 // active 动态(容灾后反映实际),list/udp 多为静态配置。
-func serveControl(c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), eng controlEngine, mut mutator, kick func() error, ownerUID uint32) (io.Closer, error) {
+func serveControl(c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), eng controlEngine, mut mutator, kick, reload func() error, ownerUID uint32) (io.Closer, error) {
 	report := func() stats.Report {
 		ts := t.Stats()
 		var active, udp string
@@ -291,7 +315,7 @@ func serveControl(c *stats.Counters, t tunnelStatser, server, mode, udpMode stri
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler:           newControlMux(eng, report, mut, kick, ownerUID),
+		Handler:           newControlMux(eng, report, mut, kick, reload, ownerUID),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
