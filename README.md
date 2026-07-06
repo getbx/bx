@@ -137,6 +137,18 @@ macOS release 包会一次装好两件事并启动菜单栏 App:
 
 安装后看菜单栏图标即可。如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即开始保护。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
+升级旧版 bx 时,直接下载新版 release 后再次运行:
+
+```bash
+./install.sh
+```
+
+安装器会保留 `/etc/bx/config.yaml`,只替换 `/usr/local/bin/bx`、菜单栏 App 和菜单栏 LaunchAgent。若保护已经在运行,替换二进制后需要重启保护进程才会使用新版:优先在菜单栏选择 `Restart Protection`;命令行备用路径是:
+
+```bash
+sudo bx down && sudo bx up
+```
+
 #### 从源码安装菜单栏 App
 
 开发时也可以从仓库源码打包并安装到当前用户:
