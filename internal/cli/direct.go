@@ -51,12 +51,48 @@ func editYAMLRuleList(in []byte, field string, add, remove []string) (out []byte
 	}
 	root := doc.Content[0]
 	rules := mappingValue(root, "rules")
+	oppositeField := "proxy"
+	if field == "proxy" {
+		oppositeField = "direct"
+	}
 
-	fieldSeq := func(elem *yaml.Node) *yaml.Node {
+	fieldSeq := func(elem *yaml.Node, name string) *yaml.Node {
 		if elem == nil || elem.Kind != yaml.MappingNode {
 			return nil
 		}
-		return mappingValue(elem, field)
+		return mappingValue(elem, name)
+	}
+
+	removeFromSeq := func(seq *yaml.Node, rm map[string]bool) bool {
+		if seq == nil || seq.Kind != yaml.SequenceNode {
+			return false
+		}
+		localChanged := false
+		kept := seq.Content[:0]
+		for _, n := range seq.Content {
+			if rm[normDomain(n.Value)] {
+				localChanged = true
+				continue
+			}
+			kept = append(kept, n)
+		}
+		seq.Content = kept
+		return localChanged
+	}
+	removeFromField := func(elem *yaml.Node, name string, rm map[string]bool) bool {
+		seq := fieldSeq(elem, name)
+		if !removeFromSeq(seq, rm) {
+			return false
+		}
+		if seq.Kind == yaml.SequenceNode && len(seq.Content) == 0 {
+			for i := 0; i+1 < len(elem.Content); i += 2 {
+				if elem.Content[i].Value == name {
+					elem.Content = append(elem.Content[:i], elem.Content[i+2:]...)
+					break
+				}
+			}
+		}
+		return true
 	}
 
 	// REMOVE:扫所有 rule 元素的 field 序列
@@ -66,19 +102,7 @@ func editYAMLRuleList(in []byte, field string, add, remove []string) (out []byte
 			rm[normDomain(d)] = true
 		}
 		for _, elem := range rules.Content {
-			seq := fieldSeq(elem)
-			if seq == nil || seq.Kind != yaml.SequenceNode {
-				continue
-			}
-			kept := seq.Content[:0]
-			for _, n := range seq.Content {
-				if rm[normDomain(n.Value)] {
-					changed = true
-					continue
-				}
-				kept = append(kept, n)
-			}
-			seq.Content = kept
+			changed = removeFromField(elem, field, rm) || changed
 		}
 	}
 
@@ -87,7 +111,7 @@ func editYAMLRuleList(in []byte, field string, add, remove []string) (out []byte
 		existing := map[string]bool{}
 		if rules != nil && rules.Kind == yaml.SequenceNode {
 			for _, elem := range rules.Content {
-				if seq := fieldSeq(elem); seq != nil {
+				if seq := fieldSeq(elem, field); seq != nil {
 					for _, n := range seq.Content {
 						existing[normDomain(n.Value)] = true
 					}
@@ -95,13 +119,26 @@ func editYAMLRuleList(in []byte, field string, add, remove []string) (out []byte
 			}
 		}
 		var toAdd []string
+		conflicts := map[string]bool{}
 		for _, d := range add {
 			d = strings.TrimSpace(d)
-			if d == "" || existing[normDomain(d)] {
+			if d == "" {
+				continue
+			}
+			conflicts[normDomain(d)] = true
+			if existing[normDomain(d)] {
 				continue
 			}
 			existing[normDomain(d)] = true
 			toAdd = append(toAdd, d)
+		}
+		// direct/proxy 是互斥意图。加入一侧前,先从另一侧跨所有 rule 块移除同名项,
+		// 避免写出「显示已强制代理但 router 仍因 direct 优先而直连」的配置。
+		// 即使目标字段已存在,也要修复 opposite 里的旧冲突项。
+		if len(conflicts) > 0 && rules != nil && rules.Kind == yaml.SequenceNode {
+			for _, elem := range rules.Content {
+				changed = removeFromField(elem, oppositeField, conflicts) || changed
+			}
 		}
 		if len(toAdd) > 0 {
 			if rules == nil {
@@ -135,6 +172,16 @@ func editYAMLRuleList(in []byte, field string, add, remove []string) (out []byte
 
 	if !changed {
 		return in, false
+	}
+	if rules != nil && rules.Kind == yaml.SequenceNode {
+		kept := rules.Content[:0]
+		for _, elem := range rules.Content {
+			if elem != nil && elem.Kind == yaml.MappingNode && len(elem.Content) == 0 {
+				continue
+			}
+			kept = append(kept, elem)
+		}
+		rules.Content = kept
 	}
 	m, err := yaml.Marshal(&doc)
 	if err != nil {

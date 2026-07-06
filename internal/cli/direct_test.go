@@ -111,3 +111,64 @@ func TestEditYAMLRuleListProxyField(t *testing.T) {
 		t.Fatalf("proxy 字段 add 应生效:\n%s", out)
 	}
 }
+
+func TestEditYAMLRuleListProxyAddRemovesConflictingDirect(t *testing.T) {
+	in := "rules:\n  - direct:\n      - taobao.com\n      - jd.com\n"
+	out, changed := editYAMLRuleList([]byte(in), "proxy", []string{"taobao.com"}, nil)
+	if !changed {
+		t.Fatal("proxy add 应 changed=true")
+	}
+	if strings.Contains(string(out), "direct:\n        - taobao.com") ||
+		strings.Contains(string(out), "direct:\n      - taobao.com") {
+		t.Fatalf("proxy add 应从 direct 移除冲突域名:\n%s", out)
+	}
+	if !strings.Contains(string(out), "jd.com") || !strings.Contains(string(out), "proxy:") || !strings.Contains(string(out), "taobao.com") {
+		t.Fatalf("proxy add 应保留其它 direct 并加入 proxy:\n%s", out)
+	}
+}
+
+func TestEditYAMLRuleListDirectAddRemovesConflictingProxyAcrossRules(t *testing.T) {
+	in := "rules:\n  - proxy:\n      - taobao.com\n      - ads.cn\n  - direct:\n      - bilibili.com\n"
+	out, changed := editYAMLRuleList([]byte(in), "direct", []string{"taobao.com"}, nil)
+	if !changed {
+		t.Fatal("direct add 应 changed=true")
+	}
+	if strings.Contains(string(out), "proxy:\n        - taobao.com") ||
+		strings.Contains(string(out), "proxy:\n      - taobao.com") {
+		t.Fatalf("direct add 应从 proxy 移除冲突域名:\n%s", out)
+	}
+	if !strings.Contains(string(out), "ads.cn") || !strings.Contains(string(out), "direct:") || !strings.Contains(string(out), "taobao.com") {
+		t.Fatalf("direct add 应保留其它 proxy 并加入 direct:\n%s", out)
+	}
+	if strings.Contains(string(out), "proxy: []") {
+		t.Fatalf("冲突项移除后不应留下空 proxy 字段:\n%s", out)
+	}
+}
+
+func TestEditYAMLRuleListConflictRemovalDropsEmptyOppositeField(t *testing.T) {
+	in := "rules:\n  - direct:\n      - taobao.com\n  - proxy:\n      - ads.cn\n"
+	out, changed := editYAMLRuleList([]byte(in), "direct", []string{"ads.cn"}, nil)
+	if !changed {
+		t.Fatal("direct add 移除唯一 proxy 冲突项应 changed=true")
+	}
+	if strings.Contains(string(out), "proxy: []") || strings.Contains(string(out), "proxy:\n") {
+		t.Fatalf("冲突项移除后不应留下空 proxy 字段:\n%s", out)
+	}
+	if strings.Contains(string(out), "- {}") {
+		t.Fatalf("冲突项移除后不应留下空 rule 块:\n%s", out)
+	}
+}
+
+func TestEditYAMLRuleListAddRepairsExistingConflictWhenTargetAlreadyExists(t *testing.T) {
+	in := "rules:\n  - direct:\n      - taobao.com\n  - proxy:\n      - taobao.com\n"
+	out, changed := editYAMLRuleList([]byte(in), "proxy", []string{"taobao.com"}, nil)
+	if !changed {
+		t.Fatal("目标字段已存在但 opposite 有冲突时,add 应修复冲突并 changed=true")
+	}
+	if strings.Contains(string(out), "direct:") {
+		t.Fatalf("proxy add 应清理已存在的 direct 冲突:\n%s", out)
+	}
+	if !strings.Contains(string(out), "proxy:") || !strings.Contains(string(out), "taobao.com") {
+		t.Fatalf("proxy 目标规则应保留:\n%s", out)
+	}
+}
