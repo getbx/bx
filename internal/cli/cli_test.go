@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -1077,7 +1078,7 @@ func TestWriteReadServerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("server config perm = %o, want 0600", fi.Mode().Perm())
 	}
 	got, err := readServerConfig(path)
@@ -1101,7 +1102,7 @@ func TestWriteServerConfigForceResetsPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("server config perm = %o, want 0600", fi.Mode().Perm())
 	}
 }
@@ -1125,7 +1126,7 @@ func TestRotateServerConfigPreservesListenAndResetsPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("server config perm = %o, want 0600", fi.Mode().Perm())
 	}
 }

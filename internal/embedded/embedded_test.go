@@ -1,9 +1,13 @@
 package embedded
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestAssetsPresent(t *testing.T) {
-	if len(Brook()) == 0 {
+	// brook 只在 linux/darwin(amd64/arm64)内嵌;windows/其他平台为 nil、走下载兜底。
+	if runtime.GOOS != "windows" && len(Brook()) == 0 {
 		t.Error("brook 资产为空")
 	}
 	if len(ChinaDomain()) == 0 {

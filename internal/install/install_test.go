@@ -3,6 +3,7 @@ package install
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -185,7 +186,7 @@ func TestCopyExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o755 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o755 {
 		t.Fatalf("权限: %o != 0755", fi.Mode().Perm())
 	}
 }
