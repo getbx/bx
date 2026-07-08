@@ -68,6 +68,7 @@ type Options struct {
 	Global          bool          // 全局模式:除 bypass/用户 direct 规则外一切走代理
 	DNSListen       string        // 可选:本地 DNS 监听地址,如 127.0.0.1:53(macOS 系统 DNS 接入)
 	ConfigPath      string        // 可选:配置文件路径;非空则 /v0/reload 重读它热重建 router(bx direct/proxy 用)
+	NoHijack        bool          // 分步验证:起隧道+TUN+引擎但跳过 Hijack(不劫路由/不设 DNS/不装 WFP),系统网络零改动
 }
 
 // tunHandle 是 OpenTUN 返回的设备句柄,交给 Hijack 配路由。
@@ -454,13 +455,19 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		defer os.Remove(PidPath)
 	}
 
-	// 6) 劫持默认路由(含 bypass 保 SSH + 服务器防环)
-	teardown, err := plat.Hijack(tunH, serverBypass, cfg.Bypass)
-	if err != nil {
-		return fmt.Errorf("配置路由: %w", err)
+	// 6) 劫持默认路由(含 bypass 保 SSH + 服务器防环)。
+	// --no-hijack:分步验证专用——隧道/TUN/引擎都已起,但**不劫持路由、不设 DNS、不装 WFP**,
+	// 系统网络零改动。用于真机隔离验证「隧道能否健康 + TUN 能否起」而不冒断网/断 SSH 的风险。
+	if opts.NoHijack {
+		log.Printf("⚠️ --no-hijack:隧道+TUN+引擎已起,但未劫持路由/未设 DNS/未装 WFP(系统网络零改动)")
+	} else {
+		teardown, err := plat.Hijack(tunH, serverBypass, cfg.Bypass)
+		if err != nil {
+			return fmt.Errorf("配置路由: %w", err)
+		}
+		defer teardown()
+		log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。")
 	}
-	defer teardown()
-	log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。")
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
 	if !global && cfg.Lists.AutoUpdateEnabled() && !listsOverridden {

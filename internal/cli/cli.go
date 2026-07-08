@@ -12,10 +12,12 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/getbx/bx/internal/blink"
@@ -78,6 +80,7 @@ func New() *cli.App {
 			{Name: "dns", Usage: "管理 macOS 系统 DNS 接管", Subcommands: dnsCommands()},
 			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
+			{Name: "debug-tun", Usage: "仅创建 TUN 适配器(不起隧道/不碰路由),真机验证 wintun+wgbridge", Flags: debugTunFlags(), Action: debugTunAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
 			{Name: "mcp", Usage: "启动 agent 控制面 MCP server(stdio)", Hidden: false, Flags: mcpFlags(), Action: mcpAction, Subcommands: []*cli.Command{
 				{Name: "install", Usage: "打印把 bx 接入你的 agent 的 MCP 配对指令(只打印,不自跑)", Action: mcpInstallAction},
@@ -3234,6 +3237,7 @@ func runFlags() []cli.Flag {
 		&cli.DurationFlag{Name: "test-timeout", Usage: "死手定时器:到点自动还原(远程实测保命)"},
 		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "全局模式:除内网(bypass)/用户 direct 规则外,一切(含中国)走代理"},
 		&cli.StringFlag{Name: "listen-dns", Value: "", Usage: "本地 DNS 监听地址(默认关闭;macOS 测试可用 127.0.0.1:53)"},
+		&cli.BoolFlag{Name: "no-hijack", Usage: "分步验证:起隧道+TUN+引擎但不劫持路由/不设 DNS/不装 WFP(系统网络零改动,真机 bring-up 用)"},
 	}
 }
 
@@ -3253,6 +3257,30 @@ func runAction(c *cli.Context) error {
 	return supervisor.Run(c.Context, cfg, opts)
 }
 
+func debugTunFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "TUN 设备名"},
+		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "TUN 接口地址(仅记录;debug-tun 不配地址)"},
+		&cli.UintFlag{Name: "mtu", Value: 1500},
+		&cli.DurationFlag{Name: "test-timeout", Usage: "死手:到点自动退出并移除 TUN(可选;debug-tun 不改路由,风险低)"},
+	}
+}
+
+// debugTunAction 只建 TUN 适配器 hold 到 Ctrl+C(不起隧道/不碰路由),真机隔离验证 wintun+wgbridge。
+func debugTunAction(c *cli.Context) error {
+	ctx, cancel := context.WithCancel(c.Context)
+	defer cancel()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	go func() { <-sig; cancel() }()
+	if d := c.Duration("test-timeout"); d > 0 {
+		t := time.AfterFunc(d, cancel)
+		defer t.Stop()
+	}
+	return supervisor.DebugTUN(ctx, c.String("tun"), c.String("tun-addr"), uint32(c.Uint("mtu")))
+}
+
 func optsFromFlags(c *cli.Context) supervisor.Options {
 	return supervisor.Options{
 		TunName:         c.String("tun"),
@@ -3266,6 +3294,7 @@ func optsFromFlags(c *cli.Context) supervisor.Options {
 		Deadman:         c.Duration("test-timeout"),
 		Global:          c.Bool("global"),
 		DNSListen:       c.String("listen-dns"),
+		NoHijack:        c.Bool("no-hijack"),
 		// resolveConfigPath 与 bx direct/proxy 写配置走同一解析(含 /etc 缺失时的 ~/.config 兜底),
 		// 否则热重载会去重读一个和 CLI 写入不同的文件,rule 永远热生效不了。
 		ConfigPath: resolveConfigPath(c.String("config")),
