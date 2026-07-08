@@ -100,9 +100,10 @@ func TestRenderShowsMultiTransport(t *testing.T) {
 
 func TestRenderShowsMode(t *testing.T) {
 	for mode, want := range map[string]string{
-		"split":  "split(国内直连",
-		"global": "global(含国内全走隧道)",
-		"router": "router(只劫持 LAN 转发)",
+		"split":         "split(国内直连",
+		"global":        "global(含国内全走隧道)",
+		"router":        "router(只劫持 LAN 转发)",
+		"router-global": "白名单",
 	} {
 		out := Render(Report{TunnelHealthy: true, Mode: mode})
 		if !strings.Contains(out, "模式") || !strings.Contains(out, want) {

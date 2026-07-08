@@ -30,6 +30,8 @@ func modeLabel(mode string) string {
 		return "global(含国内全走隧道)"
 	case "router":
 		return "router(只劫持 LAN 转发)"
+	case "router-global":
+		return "router · 白名单(LAN 转发全走隧道,仅白名单直连)"
 	case "split":
 		return "split(国内直连 / 境外走隧道)"
 	default:
