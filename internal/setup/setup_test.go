@@ -3,6 +3,7 @@ package setup
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestWriteConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("配置权限 = %o, want 0600", fi.Mode().Perm())
 	}
 	if !cfg.Global {
@@ -74,7 +75,7 @@ func TestWriteConfigRefusesExistingWithoutForce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("force 覆盖后权限 = %o, want 0600", fi.Mode().Perm())
 	}
 	b, _ := os.ReadFile(p)

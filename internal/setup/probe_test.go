@@ -5,10 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/getbx/bx/internal/embedded"
 )
 
 // vless:// 链接必须走 reality 分支(内嵌 sing-box),不能误用 brook —— 修的就是这个 bug。
 func TestBuildProbeTunnelRealitySelectsSingbox(t *testing.T) {
+	if embedded.Singbox() == nil {
+		t.Skip("无内嵌 sing-box(windows/其他 arch),走下载兜底")
+	}
 	dir := t.TempDir()
 	link := "vless://be625ca6-947d-46f4-8567-4bdcc5fd530d@1.2.3.4:9998?security=reality&pbk=PUB&sid=ab12&sni=www.apple.com"
 	// 仅构造不 Start:Stop() 会阻塞在未关闭的 done(无 goroutine 关它),故直接丢弃隧道。
@@ -27,6 +32,9 @@ func TestBuildProbeTunnelRealitySelectsSingbox(t *testing.T) {
 
 // brook:// 链接仍走 brook 分支,不碰 sing-box。
 func TestBuildProbeTunnelBrookSelectsBrook(t *testing.T) {
+	if embedded.Brook() == nil {
+		t.Skip("无内嵌 brook(windows/其他 arch),走下载兜底")
+	}
 	dir := t.TempDir()
 	link := "brook://server?server=1.2.3.4%3A9999&password=pw"
 	_, cleanup, err := buildProbeTunnel(dir, link, "1.1.1.1:443")
@@ -45,6 +53,9 @@ func TestBuildProbeTunnelBrookSelectsBrook(t *testing.T) {
 // 回归守卫:hysteria2/trojan/ss/vmess 链接都必须走内嵌 sing-box,绝不误回落 brook
 // (修的正是这个 bug —— 这四种此前在 setup 探测里被当成 brook,导致 bx setup 误报连不通)。
 func TestBuildProbeTunnelNonBrookSelectsSingbox(t *testing.T) {
+	if embedded.Singbox() == nil {
+		t.Skip("无内嵌 sing-box(windows/其他 arch),走下载兜底")
+	}
 	ssUserinfo := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:pw123"))
 	vmessJSON := base64.StdEncoding.EncodeToString([]byte(`{"add":"1.2.3.4","port":"443","id":"uuid-x","net":"tcp"}`))
 	cases := map[string]string{
