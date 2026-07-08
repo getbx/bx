@@ -201,6 +201,7 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 		if wfpOn {
 			winfw.DisableDNSLeak() // 先撤 WFP(动态会话,进程退出本也自动清)
 		}
+		_ = tunLUID.FlushDNS(windows.AF_INET) // 撤 TUN DNS(best-effort;适配器随 closeTUN 销毁本也消失)
 		for i := len(added) - 1; i >= 0; i-- {
 			_ = added[i].luid.DeleteRoute(added[i].dest, added[i].nh)
 		}
@@ -217,8 +218,16 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 	} else {
 		wfpOn = true
 	}
-	log.Printf("windows: 默认路由已劫进 %s(LUID=%#x);bypass via %s;server=%v user=%v v6阻断=%v WFP-DNS=%v",
-		t.Name, uint64(tunLUID), gw, serverBypass, userBypass, blockV6, wfpOn)
+	// 7) DNS-into-TUN:给 TUN 设进-TUN 的哨兵 DNS(见 windns.go)。否则 Windows 系统 DNS 常指
+	//    LAN 路由器(私网 bypass + 被 WFP 封)→ DNS 断。设成路由进 TUN 的公网地址,查询进 TUN
+	//    由 fake-IP handler 应答;TUN 接口 metric 已 0(最优),系统优先用它。best-effort。
+	if sentinel, perr := netip.ParseAddr(tunDNSSentinel); perr == nil {
+		if err := tunLUID.SetDNS(windows.AF_INET, []netip.Addr{sentinel}, nil); err != nil {
+			log.Printf("windows: 设 TUN DNS=%s 失败(DNS 可能走物理网卡漏/被 WFP 封): %v", tunDNSSentinel, err)
+		}
+	}
+	log.Printf("windows: 默认路由已劫进 %s(LUID=%#x);bypass via %s;server=%v user=%v v6阻断=%v WFP-DNS=%v TUN-DNS=%s",
+		t.Name, uint64(tunLUID), gw, serverBypass, userBypass, blockV6, wfpOn, tunDNSSentinel)
 	return cleanup, nil
 }
 
