@@ -79,7 +79,7 @@ func WriteConfig(path string, links []string, udpTransport string, force bool) e
 func buildProbeTunnel(dataDir, link, probe string) (*tunnel.Tunnel, func(), error) {
 	kind := tunnel.Kind(link)
 	if kind == "brook" {
-		brookPath, err := provision.EnsureBrook(dataDir, "", embedded.Brook(), embedded.BrookVersion())
+		brookPath, err := provision.EnsureBrook(dataDir, "", embedded.Brook(), embedded.BrookVersion(), "", "")
 		if err != nil {
 			return nil, nil, err
 		}

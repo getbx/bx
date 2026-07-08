@@ -1,14 +1,9 @@
 package provision
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // EnsureSingbox 确保 sing-box 可执行存在并返回路径(REALITY 传输用)。
@@ -55,24 +50,9 @@ func EnsureSingbox(dataDir, override string, embedded []byte, embeddedVersion, u
 			}
 		}
 	}
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Get(url)
+	data, err := downloadBinary(url, sha256hex, "sing-box")
 	if err != nil {
-		return "", fmt.Errorf("下载 sing-box: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载 sing-box: HTTP %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("读 sing-box 响应: %w", err)
-	}
-	if sha256hex != "" {
-		sum := sha256.Sum256(data)
-		if got := hex.EncodeToString(sum[:]); got != sha256hex {
-			return "", fmt.Errorf("sing-box SHA256 不匹配: 期望 %s 实得 %s", sha256hex, got)
-		}
+		return "", err
 	}
 	if err := atomicWrite(target, data, 0o755); err != nil {
 		return "", err

@@ -115,7 +115,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	plat := newPlatform()
 
 	// 0) 物料:内嵌 brook/列表落盘(零外部依赖)
-	brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion())
+	brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion(), cfg.BrookURL, cfg.BrookSHA256)
 	if err != nil {
 		return fmt.Errorf("准备运行环境: %w", err)
 	}
