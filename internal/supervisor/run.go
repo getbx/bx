@@ -77,6 +77,10 @@ type tunHandle struct {
 	Addr string
 	MTU  uint32
 
+	// LUID 是 Windows wintun 适配器的接口 LUID,供 platform_windows 的 Hijack 用 winipcfg
+	// 编程地址/路由。其他平台不用,恒为 0(Hijack 靠 Name 走 route/ip 命令)。
+	LUID uint64
+
 	// 路由器模式(mode=router):只劫持 LANCIDRs 内的转发流量,路由器自身流量不碰。
 	RouterMode bool
 	LANCIDRs   []string
