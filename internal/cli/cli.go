@@ -37,16 +37,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultConfigPath = "/etc/bx/config.yaml"
-const defaultServerConfigPath = "/etc/bx/server.yaml"
-const defaultShareDir = "/etc/bx/shares"
+const (
+	defaultConfigPath       = "/etc/bx/config.yaml"
+	defaultServerConfigPath = "/etc/bx/server.yaml"
+	defaultShareDir         = "/etc/bx/shares"
+)
 
 // 健康探测目标:必须是隧道出口能稳定连上的东西。github.com 本身常被黑洞/限速(尤其从代理出口),
 // 用它当探针会把"github 慢"误判成"隧道挂了"导致无谓重连。1.1.1.1:443 是裸 IP(免 DNS)、全球稳定。
-const defaultProbeTarget = "1.1.1.1:443"
-const darwinDNSListen = "127.0.0.1:53"
-const defaultLogArchiveDir = ".bx-log-archives"
-const defaultAutoArchiveLimit = 12
+const (
+	defaultProbeTarget      = "1.1.1.1:443"
+	darwinDNSListen         = "127.0.0.1:53"
+	defaultLogArchiveDir    = ".bx-log-archives"
+	defaultAutoArchiveLimit = 12
+)
 
 // New 返回配置好子命令的 bx App。
 func New() *cli.App {
@@ -790,8 +794,10 @@ func realityShare(name, dir string, mainCfg serverConfig) (serverConfig, error) 
 	if err := os.WriteFile(serverSingboxPath, sb2, 0o600); err != nil {
 		return serverConfig{}, err
 	}
-	rec := serverConfig{Type: "reality", SNI: mainCfg.SNI, Port: mainCfg.Port,
-		Link: swapVlessUUID(mainCfg.Link, newUUID), UDPLink: mainCfg.UDPLink}
+	rec := serverConfig{
+		Type: "reality", SNI: mainCfg.SNI, Port: mainCfg.Port,
+		Link: swapVlessUUID(mainCfg.Link, newUUID), UDPLink: mainCfg.UDPLink,
+	}
 	if err := writeServerConfig(shareConfigPath(dir, name), rec, true); err != nil {
 		return serverConfig{}, err
 	}

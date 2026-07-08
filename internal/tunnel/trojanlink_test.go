@@ -33,10 +33,10 @@ func TestParseTrojanLinkDefaults(t *testing.T) {
 
 func TestParseTrojanLinkErrors(t *testing.T) {
 	for _, bad := range []string{
-		"vless://x@h:1",          // 错 scheme
-		"trojan://1.2.3.4:443",   // 缺 password
-		"trojan://pw@host",       // 缺端口
-		"trojan://pw@h:notanum",  // 端口非数
+		"vless://x@h:1",         // 错 scheme
+		"trojan://1.2.3.4:443",  // 缺 password
+		"trojan://pw@host",      // 缺端口
+		"trojan://pw@h:notanum", // 端口非数
 	} {
 		if _, err := parseTrojanLink(bad); err == nil {
 			t.Errorf("应报错: %q", bad)

@@ -57,6 +57,7 @@ func (f *fakeMutator) SetTransport(link string) (func() error, func() error, err
 	}
 	return func() error { return nil }, func() error { return nil }, nil
 }
+
 func (f *fakeMutator) Rehijack() (func() error, func() error, error) {
 	f.rehCalled = true
 	return func() error { return nil }, func() error { return nil }, nil

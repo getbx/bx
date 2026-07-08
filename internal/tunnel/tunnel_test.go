@@ -20,6 +20,7 @@ func (f *fakeRunner) Wait() error {
 	<-f.exitCh
 	return nil
 }
+
 func (f *fakeRunner) Kill() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -44,7 +45,8 @@ func waitFor(t *testing.T, cond func() bool, msg string) {
 
 func TestTunnelBecomesHealthy(t *testing.T) {
 	r := newFakeRunner()
-	tn := New("127.0.0.1:11080",
+	tn := New(
+		"127.0.0.1:11080",
 		func(string) (Runner, error) { return r, nil },
 		func(string) (int64, error) { return 12, nil }, // 永远健康
 	)
@@ -61,7 +63,8 @@ func TestTunnelRestartsOnProcessExit(t *testing.T) {
 	var n int
 	var mu sync.Mutex
 	first := newFakeRunner()
-	tn := New("127.0.0.1:11080",
+	tn := New(
+		"127.0.0.1:11080",
 		func(string) (Runner, error) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -84,10 +87,11 @@ func TestTunnelRestartsOnProcessExit(t *testing.T) {
 }
 
 func TestTunnelUnhealthyTriggersRestart(t *testing.T) {
-	var healthy = true
+	healthy := true
 	var hmu sync.Mutex
 	setH := func(v bool) { hmu.Lock(); healthy = v; hmu.Unlock() }
-	tn := New("127.0.0.1:11080",
+	tn := New(
+		"127.0.0.1:11080",
 		func(string) (Runner, error) { return newFakeRunner(), nil },
 		func(string) (int64, error) {
 			hmu.Lock()
@@ -111,7 +115,8 @@ func TestTunnelUnhealthyTriggersRestart(t *testing.T) {
 // 瞬时健康抖动(连续失败 < maxFails)不应拆掉正在工作的隧道(高延迟 wss 上的关键修复)。
 func TestTunnelToleratesTransientHealthBlips(t *testing.T) {
 	var n int32
-	tn := New("127.0.0.1:11080",
+	tn := New(
+		"127.0.0.1:11080",
 		func(string) (Runner, error) { return newFakeRunner(), nil },
 		func(string) (int64, error) {
 			// 第 1 次(startup)成功进入 monitor;接着第 2、3 次连续失败(2 < maxFails=3),其余成功。
@@ -143,7 +148,8 @@ func TestTunnelBackoffResetsAfterHealthyRun(t *testing.T) {
 	var mu sync.Mutex
 	var starts []time.Time
 	var probe int32
-	tn := New("127.0.0.1:11080",
+	tn := New(
+		"127.0.0.1:11080",
 		func(string) (Runner, error) {
 			mu.Lock()
 			starts = append(starts, time.Now())

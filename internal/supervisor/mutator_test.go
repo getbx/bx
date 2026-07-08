@@ -44,8 +44,10 @@ func (f *fakePlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []st
 
 func TestLiveMutatorRehijack(t *testing.T) {
 	fp := &fakePlatform{}
-	m := &liveMutator{plat: fp, tunH: tunHandle{Name: "bx0"},
-		serverBypass: []string{"1.1.1.1/32"}, userBypass: []string{"2.2.2.2/32"}}
+	m := &liveMutator{
+		plat: fp, tunH: tunHandle{Name: "bx0"},
+		serverBypass: []string{"1.1.1.1/32"}, userBypass: []string{"2.2.2.2/32"},
+	}
 
 	apply, undo, err := m.Rehijack()
 	if err != nil {

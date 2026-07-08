@@ -64,7 +64,7 @@ func (e *mutationEngine) Arm(apply, undo func() error) error {
 	return nil
 }
 
-func (e *mutationEngine) Commit() error       { return e.guard.Commit() }
+func (e *mutationEngine) Commit() error        { return e.guard.Commit() }
 func (e *mutationEngine) Rollback() error      { return e.guard.Rollback() }
 func (e *mutationEngine) State() confirm.State { return e.guard.State() }
 func (e *mutationEngine) tick() (bool, error)  { return e.guard.Tick() }

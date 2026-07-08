@@ -64,7 +64,8 @@ func TestDiffRules(t *testing.T) {
 		{familyV4, 32766, "", "", "main"},
 	}
 	// 当前 = 基线 + bx 装的 3 条(pref 100/150/200)
-	current := append(append([]ruleSpec{}, base...),
+	current := append(
+		append([]ruleSpec{}, base...),
 		ruleSpec{familyV4, 100, "0x162", "", "main"},
 		ruleSpec{familyV4, 150, "", "10.0.0.0/8", "main"},
 		ruleSpec{familyV4, 200, "", "", "100"},
@@ -102,16 +103,31 @@ func TestRuleArgs(t *testing.T) {
 		r    ruleSpec
 		want []string
 	}{
-		{"fwmark-add", "add", ruleSpec{familyV4, 100, "0x162", "", "main"},
-			[]string{"rule", "add", "pref", "100", "fwmark", "0x162", "table", "main"}},
-		{"to-add", "add", ruleSpec{familyV4, 150, "", "10.0.0.0/8", "main"},
-			[]string{"rule", "add", "to", "10.0.0.0/8", "pref", "150", "table", "main"}},
-		{"to-tailscale-add", "add", ruleSpec{familyV4, 149, "", "100.64.0.0/10", "52"},
-			[]string{"rule", "add", "to", "100.64.0.0/10", "pref", "149", "table", "52"}},
-		{"plain-del", "del", ruleSpec{familyV4, 200, "", "", "100"},
-			[]string{"rule", "del", "pref", "200", "table", "100"}},
-		{"v6-add", "add", ruleSpec{familyV6, 200, "", "", "100"},
-			[]string{"-6", "rule", "add", "pref", "200", "table", "100"}},
+		{
+			"fwmark-add", "add",
+			ruleSpec{familyV4, 100, "0x162", "", "main"},
+			[]string{"rule", "add", "pref", "100", "fwmark", "0x162", "table", "main"},
+		},
+		{
+			"to-add", "add",
+			ruleSpec{familyV4, 150, "", "10.0.0.0/8", "main"},
+			[]string{"rule", "add", "to", "10.0.0.0/8", "pref", "150", "table", "main"},
+		},
+		{
+			"to-tailscale-add", "add",
+			ruleSpec{familyV4, 149, "", "100.64.0.0/10", "52"},
+			[]string{"rule", "add", "to", "100.64.0.0/10", "pref", "149", "table", "52"},
+		},
+		{
+			"plain-del", "del",
+			ruleSpec{familyV4, 200, "", "", "100"},
+			[]string{"rule", "del", "pref", "200", "table", "100"},
+		},
+		{
+			"v6-add", "add",
+			ruleSpec{familyV6, 200, "", "", "100"},
+			[]string{"-6", "rule", "add", "pref", "200", "table", "100"},
+		},
 	}
 	for _, c := range cases {
 		if got := ruleArgs(c.verb, c.r); !reflect.DeepEqual(got, c.want) {
@@ -126,13 +142,22 @@ func TestRouteAddArgs(t *testing.T) {
 		r    routeSpec
 		want []string
 	}{
-		{"default-dev", routeSpec{familyV4, "", "default", "", "bx0"},
-			[]string{"route", "add", "default", "dev", "bx0", "table", "100"}},
-		{"bypass", routeSpec{familyV4, "", "10.1.2.3", "192.168.1.1", "eth0"},
-			[]string{"route", "add", "10.1.2.3", "via", "192.168.1.1", "dev", "eth0", "table", "100"}},
+		{
+			"default-dev",
+			routeSpec{familyV4, "", "default", "", "bx0"},
+			[]string{"route", "add", "default", "dev", "bx0", "table", "100"},
+		},
+		{
+			"bypass",
+			routeSpec{familyV4, "", "10.1.2.3", "192.168.1.1", "eth0"},
+			[]string{"route", "add", "10.1.2.3", "via", "192.168.1.1", "dev", "eth0", "table", "100"},
+		},
 		// 内核回显带 "dev lo",但 bx 原始命令没有它;routeAddArgs 应丢弃 via/dev。
-		{"v6-unreachable", routeSpec{familyV6, "unreachable", "default", "", "lo"},
-			[]string{"-6", "route", "add", "unreachable", "default", "table", "100"}},
+		{
+			"v6-unreachable",
+			routeSpec{familyV6, "unreachable", "default", "", "lo"},
+			[]string{"-6", "route", "add", "unreachable", "default", "table", "100"},
+		},
 	}
 	for _, c := range cases {
 		if got := routeAddArgs(c.r); !reflect.DeepEqual(got, c.want) {

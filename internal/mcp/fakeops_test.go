@@ -25,9 +25,11 @@ func (f *fakeOps) Diagnose() (DiagnoseOut, error)         { return f.diagnose, n
 func (f *fakeOps) Inspect(InspectIn) (JSONCommandOut, error) {
 	return f.inspect, nil
 }
+
 func (f *fakeOps) LeakCheck(LeakCheckIn) (JSONCommandOut, error) {
 	return f.leakCheck, nil
 }
+
 func (f *fakeOps) Observe(ObserveIn) (JSONCommandOut, error) {
 	return f.observe, nil
 }
@@ -35,15 +37,18 @@ func (f *fakeOps) Logs(LogsIn) (LogsOut, error) { return f.logs, nil }
 func (f *fakeOps) Plan(PlanIn) (PlanOut, error) { return f.plan, nil }
 func (f *fakeOps) Verify() (VerifyOut, error)   { return f.verify, nil }
 func (f *fakeOps) Setup(SetupIn) error          { f.calls = append(f.calls, "setup"); return f.setupErr }
+
 func (f *fakeOps) SetTransport(in SetTransportIn) error {
 	f.calls = append(f.calls, "set_transport")
 	f.lastSetTransportLink = in.Link
 	return f.setTransportErr
 }
+
 func (f *fakeOps) RestartTunnel() error {
 	f.calls = append(f.calls, "restart")
 	return nil
 }
+
 func (f *fakeOps) Rehijack() error {
 	f.calls = append(f.calls, "rehijack")
 	f.rehijackCalled = true

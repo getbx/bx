@@ -13,14 +13,18 @@ import (
 // version 由构建期注入也可;先硬编码占位。
 const serverVersion = "v0.1.0"
 
-type pingIn struct{}
-type pingOut struct {
-	OK bool `json:"ok" jsonschema:"always true if the server is alive"`
-}
+type (
+	pingIn  struct{}
+	pingOut struct {
+		OK bool `json:"ok" jsonschema:"always true if the server is alive"`
+	}
+)
 
 // nopSnapshotter 用于只读/单元场景:不抓真实状态。
-type nopSnapshotter struct{}
-type nopSnap struct{}
+type (
+	nopSnapshotter struct{}
+	nopSnap        struct{}
+)
 
 func (nopSnap) ID() string                                { return "nop" }
 func (nopSnapshotter) Capture() (confirm.Snapshot, error) { return nopSnap{}, nil }
