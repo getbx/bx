@@ -32,10 +32,12 @@ func ptrSACK(b bool) *tcpip.TCPSACKEnabled {
 	v := tcpip.TCPSACKEnabled(b)
 	return &v
 }
+
 func ptrModerateRecvBuf(b bool) *tcpip.TCPModerateReceiveBufferOption {
 	v := tcpip.TCPModerateReceiveBufferOption(b)
 	return &v
 }
+
 func ptrTCPDelay(b bool) *tcpip.TCPDelayEnabled {
 	v := tcpip.TCPDelayEnabled(b)
 	return &v

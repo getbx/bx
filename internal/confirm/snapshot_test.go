@@ -21,6 +21,7 @@ func (f *fakeSnapper) Capture() (Snapshot, error) {
 	}
 	return fakeSnap{id: "good-1"}, nil
 }
+
 func (f *fakeSnapper) Restore(s Snapshot) error { f.restored = append(f.restored, s.ID()); return nil }
 
 func TestArmWithSnapshotCapturesThenArms(t *testing.T) {

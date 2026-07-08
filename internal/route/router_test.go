@@ -102,7 +102,7 @@ func TestPrivateRangesDirect(t *testing.T) {
 		"172.17.0.2",   // docker0 默认网桥
 		"172.19.0.5",   // compose 网络(也是默认 tun-addr 所在段)
 		"172.31.255.1", // docker 默认地址池上界
-		"10.0.10.25",  // 内网(sandbox reward)
+		"10.0.10.25",   // 内网(sandbox reward)
 		"192.168.1.1",  // 家用 LAN
 		"169.254.0.1",  // link-local
 		"100.64.0.1",   // CGNAT

@@ -30,7 +30,7 @@ func CheckRealitySNI(sni string) []string {
 	d := &net.Dialer{Timeout: 8 * time.Second}
 	conn, err := tls.DialWithDialer(d, "tcp", net.JoinHostPort(sni, "443"), &tls.Config{
 		ServerName:       sni,
-		MinVersion:       tls.VersionTLS13, // 成功即证明 TLS1.3
+		MinVersion:       tls.VersionTLS13,          // 成功即证明 TLS1.3
 		CurvePreferences: []tls.CurveID{tls.X25519}, // 只提 X25519,成功即证明它支持
 	})
 	if err != nil {

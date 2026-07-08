@@ -28,7 +28,8 @@ func (b *blockRunner) Kill() error {
 // 未健康时由 dialer 的 killswitch fail-closed 兜住 UDP(既有 dialer 测试保证不回落)。
 func TestAttachUDPCompanionDoesNotBlockOnHealth(t *testing.T) {
 	// 假 UDP 隧道:进程永不退出、健康检查永远失败 → Healthy() 恒 false。
-	udpTun := tunnel.New("127.0.0.1:1",
+	udpTun := tunnel.New(
+		"127.0.0.1:1",
 		func(string) (tunnel.Runner, error) { return &blockRunner{done: make(chan struct{})}, nil },
 		func(string) (int64, error) { return 0, errors.New("unhealthy") },
 	)

@@ -8,8 +8,10 @@ import (
 )
 
 func TestVerifyToolPass(t *testing.T) {
-	ops := &fakeOps{verify: VerifyOut{Pass: true, ExitIP: "203.0.113.9", SelfReach: true, KillSwitchOK: true,
-		Note: "WebRTC 需 LAN 客户端浏览器测,未自动化"}}
+	ops := &fakeOps{verify: VerifyOut{
+		Pass: true, ExitIP: "203.0.113.9", SelfReach: true, KillSwitchOK: true,
+		Note: "WebRTC 需 LAN 客户端浏览器测,未自动化",
+	}}
 	res := callTool(t, ops, "bx_verify", map[string]any{})
 	if res.IsError {
 		t.Fatal("不应错误")

@@ -181,7 +181,8 @@ func (n *netConf) routeUpSteps() [][]string {
 	for _, b := range n.bypass {
 		steps = append(steps, []string{"route", "add", b, "via", n.gw, "dev", n.gwDev, "table", itoa(routeTable)})
 	}
-	steps = append(steps,
+	steps = append(
+		steps,
 		[]string{"route", "add", "default", "dev", n.tunName, "table", itoa(routeTable)},
 		[]string{"rule", "add", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"},
 	)
@@ -206,7 +207,8 @@ func (n *netConf) routeUpSteps() [][]string {
 		for _, c := range n.mainLookupV6 {
 			steps = append(steps, []string{"-6", "rule", "add", "to", c, "pref", "150", "table", "main"})
 		}
-		steps = append(steps,
+		steps = append(
+			steps,
 			[]string{"-6", "route", "add", "unreachable", "default", "table", itoa(routeTable)},
 			[]string{"-6", "rule", "add", "pref", "200", "table", itoa(routeTable)},
 		)
@@ -239,7 +241,8 @@ func (n *netConf) routeDownSteps() [][]string {
 		}
 		steps = append(steps, []string{"rule", "del", "to", c, "pref", "150", "table", "main"})
 	}
-	steps = append(steps,
+	steps = append(
+		steps,
 		[]string{"rule", "del", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"},
 		[]string{"route", "flush", "table", itoa(routeTable)},
 	)
@@ -251,7 +254,8 @@ func (n *netConf) routeDownSteps() [][]string {
 		for _, c := range n.mainLookupV6 {
 			v6 = append(v6, []string{"-6", "rule", "del", "to", c, "pref", "150", "table", "main"})
 		}
-		v6 = append(v6,
+		v6 = append(
+			v6,
 			[]string{"-6", "rule", "del", "pref", "100", "fwmark", fmtMark(fwMark), "table", "main"},
 			[]string{"-6", "route", "flush", "table", itoa(routeTable)},
 		)

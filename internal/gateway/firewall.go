@@ -67,7 +67,8 @@ func (p FirewallPlan) IncludeRules() []string {
 	cmt := strings.Join(p.comment(), " ")
 	var rules []string
 	for _, ifc := range p.LANIfaces {
-		rules = append(rules,
+		rules = append(
+			rules,
 			"iifname "+q(ifc)+" meta nfproto ipv6 drop "+cmt,
 			"iifname "+q(ifc)+" meta nfproto ipv4 oifname "+q(p.TunDev)+" accept "+cmt,
 		)

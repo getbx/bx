@@ -11,10 +11,10 @@ func TestCIDRSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string]bool{
-		"1.2.3.4":   true,
-		"1.3.0.1":   false,
+		"1.2.3.4":  true,
+		"1.3.0.1":  false,
 		"10.0.1.1": true,
-		"8.8.8.8":   false,
+		"8.8.8.8":  false,
 	}
 	for ip, want := range cases {
 		got := s.Contains(netip.MustParseAddr(ip))

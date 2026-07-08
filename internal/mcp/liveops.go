@@ -78,19 +78,25 @@ func diagnoseFindings(rep StatusOut, reachable bool) []Finding {
 	}
 	var fs []Finding
 	if !rep.TunnelHealthy {
-		fs = append(fs, Finding{Severity: "error",
+		fs = append(fs, Finding{
+			Severity:    "error",
 			Title:       "隧道不健康:可能服务器被封或网络波动;真实 IP 已被 kill-switch 保护",
-			Remediation: "等十几秒看自动重连;不行用 bx_set_transport 换隐写传输(brook→REALITY),或 sudo bx setup 换新链接"})
+			Remediation: "等十几秒看自动重连;不行用 bx_set_transport 换隐写传输(brook→REALITY),或 sudo bx setup 换新链接",
+		})
 	}
 	if rep.Restarts > 3 {
-		fs = append(fs, Finding{Severity: "warn",
+		fs = append(fs, Finding{
+			Severity:    "warn",
 			Title:       fmt.Sprintf("隧道频繁重连(%d 次,可能不稳定)", rep.Restarts),
-			Remediation: "查 bx_logs / 检查服务器与网络"})
+			Remediation: "查 bx_logs / 检查服务器与网络",
+		})
 	}
 	if rep.MutationState == "armed" {
-		fs = append(fs, Finding{Severity: "warn",
+		fs = append(fs, Finding{
+			Severity:    "warn",
 			Title:       "有待确认的改动(armed),未 commit 将自动回滚",
-			Remediation: "bx_verify 通过后 bx_commit;或 bx_rollback 立即还原"})
+			Remediation: "bx_verify 通过后 bx_commit;或 bx_rollback 立即还原",
+		})
 	}
 	if len(fs) == 0 {
 		fs = append(fs, Finding{Severity: "info", Title: "隧道健康,无异常"})

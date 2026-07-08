@@ -16,6 +16,19 @@ jobs:
         with:
           go-version: '1.26'
 
+      - name: Vet
+        run: go vet ./...
+
+      - name: Format (gofumpt)
+        run: |
+          set -euo pipefail
+          go install mvdan.cc/gofumpt@v0.10.0
+          # 排除内嵌二进制资产;有漂移即失败(附文件名),防格式腐化。
+          drift=$("$(go env GOPATH)/bin/gofumpt" -l $(git ls-files '*.go' | grep -v '^internal/embedded/assets/'))
+          if [ -n "$drift" ]; then
+            echo "::error::以下文件未按 gofumpt 格式化,请跑 gofumpt -w:"; echo "$drift"; exit 1
+          fi
+
       - name: Test
         run: go test ./...
 
