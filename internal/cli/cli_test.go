@@ -83,6 +83,12 @@ func TestBuildExecStart(t *testing.T) {
 	if got != want {
 		t.Fatalf("darwin ExecStart 应监听本地 DNS, got %q", got)
 	}
+	// Windows:含空格路径必须加引号,否则服务 BinaryPathName 拆分会崩。
+	got = buildExecStartForGOOS("windows", `C:\Program Files\bx\bx.exe`, `C:\ProgramData\bx\config.yaml`)
+	want = `"C:\Program Files\bx\bx.exe" run -c "C:\ProgramData\bx\config.yaml"`
+	if got != want {
+		t.Fatalf("windows ExecStart 应对含空格路径加引号, got %q", got)
+	}
 }
 
 func TestBlinkRoundTripThroughCLI(t *testing.T) {

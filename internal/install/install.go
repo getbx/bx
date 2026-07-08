@@ -26,9 +26,9 @@ const (
 	launchdStdoutPath = "/var/log/bx.log"
 	launchdStderrPath = "/var/log/bx.err.log"
 	dnsStatePath      = "/var/lib/bx/dns-original.json"
-	// BinPath 是 bx 自身安装到 PATH 的规范位置。
-	BinPath = "/usr/local/bin/bx"
 )
+
+// BinPath 是 bx 自身安装到 PATH 的规范位置(OS-aware,见 paths_{windows,other}.go)。
 
 type DNSStatus struct {
 	Supported  bool     `json:"supported"`
@@ -193,12 +193,17 @@ WantedBy=multi-user.target
 `
 }
 
-// WriteUnit 写入 unit 文件并 daemon-reload(不 enable、不 start)。需 root。
+// WriteUnit 写入 unit 文件并 daemon-reload(不 enable、不 start)。需 root/管理员。
+// Windows:创建服务(手动启动、不启动),对齐 setup「只装不启」。
 func WriteUnit(execStart string) error {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return writeLaunchdPlist(launchdPlistPath, LaunchdPlistText(execStart))
+	case "windows":
+		return windowsInstallService(execStart)
+	default:
+		return writeUnitFile(unitPath, UnitText(execStart))
 	}
-	return writeUnitFile(unitPath, UnitText(execStart))
 }
 
 // WriteServerUnit 写入 bx server unit 文件并 daemon-reload(不 enable、不 start)。需 root。
@@ -230,7 +235,8 @@ func writeLaunchdPlist(path, text string) error {
 
 // Enable 启动并设为开机自启。
 func Enable() error {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		if cmds := launchdEnableCommands(); len(cmds) > 0 {
 			_ = runLaunchctlQuiet(cmds[0]...)
 			for _, args := range cmds[1:] {
@@ -238,11 +244,13 @@ func Enable() error {
 					return err
 				}
 			}
-			return nil
 		}
 		return nil
+	case "windows":
+		return windowsEnableService()
+	default:
+		return runSystemctl("enable", "--now", ServiceName)
 	}
-	return runSystemctl("enable", "--now", ServiceName)
 }
 
 func launchdEnableCommands() [][]string {
@@ -257,19 +265,27 @@ func launchdEnableCommands() [][]string {
 
 // Disable 停止并取消开机自启。
 func Disable() error {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		_ = runLaunchctl("disable", "system/"+launchdLabel)
 		return runLaunchctl("bootout", "system", launchdPlistPath)
+	case "windows":
+		return windowsDisableService()
+	default:
+		return runSystemctl("disable", "--now", ServiceName)
 	}
-	return runSystemctl("disable", "--now", ServiceName)
 }
 
 // Restart 重启已安装的 bx 客户端服务,不改变开机自启状态。
 func Restart() error {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return runLaunchctl("kickstart", "-k", "system/"+launchdLabel)
+	case "windows":
+		return windowsRestartService()
+	default:
+		return runSystemctl("restart", ServiceName)
 	}
-	return runSystemctl("restart", ServiceName)
 }
 
 // EnableServer 启动 bx server 并设为开机自启。
@@ -289,12 +305,16 @@ func DisableShare(name string) error { return runSystemctl("disable", "--now", S
 
 // UnitInstalled 报告 unit 文件是否已就位(用于 up 前置校验)。
 func UnitInstalled() bool {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		_, err := os.Stat(launchdPlistPath)
 		return err == nil
+	case "windows":
+		return windowsServiceInstalled()
+	default:
+		_, err := os.Stat(unitPath)
+		return err == nil
 	}
-	_, err := os.Stat(unitPath)
-	return err == nil
 }
 
 // ServerUnitInstalled 报告 bx server unit 是否已就位。
@@ -307,18 +327,22 @@ func ServerUnitInstalled() bool {
 // 命令模型重排后 up=systemctl enable;若旧 unit 仍写 `bx up`,新二进制启动 service
 // 会让 up 递归调用自身。up 前用它防呆。unit 不存在或无法读时报错。
 func ExecStartCmd() (string, error) {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		b, err := os.ReadFile(launchdPlistPath)
 		if err != nil {
 			return "", fmt.Errorf("读 %s: %w", launchdPlistPath, err)
 		}
 		return launchdExecStartCmd(string(b)), nil
+	case "windows":
+		return windowsServiceExecCmd()
+	default:
+		b, err := os.ReadFile(unitPath)
+		if err != nil {
+			return "", fmt.Errorf("读 %s: %w", unitPath, err)
+		}
+		return execStartCmd(string(b)), nil
 	}
-	b, err := os.ReadFile(unitPath)
-	if err != nil {
-		return "", fmt.Errorf("读 %s: %w", unitPath, err)
-	}
-	return execStartCmd(string(b)), nil
 }
 
 // execStartCmd 从 unit 文本里取出 ExecStart 的子命令(二进制路径后的第一个参数)。
@@ -413,14 +437,18 @@ func launchdExecStartCmd(plistText string) string {
 
 // Uninstall 停用并删除服务。
 func Uninstall() error {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		_ = runLaunchctl("bootout", "system", launchdPlistPath)
 		_ = os.Remove(launchdPlistPath)
 		return nil
+	case "windows":
+		return windowsUninstallService()
+	default:
+		_ = runSystemctl("disable", "--now", ServiceName)
+		_ = os.Remove(unitPath)
+		return runSystemctl("daemon-reload")
 	}
-	_ = runSystemctl("disable", "--now", ServiceName)
-	_ = os.Remove(unitPath)
-	return runSystemctl("daemon-reload")
 }
 
 // UninstallServer 停用并删除 bx server 服务。
@@ -764,6 +792,9 @@ func flushDNSCache() {
 func ServiceState(action, service string) string {
 	if runtime.GOOS == "darwin" && service == ServiceName {
 		return launchdState(action)
+	}
+	if runtime.GOOS == "windows" {
+		return windowsServiceState(action)
 	}
 	return systemctlState(action, service)
 }
