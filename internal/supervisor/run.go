@@ -371,7 +371,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	go mutEng.Run(ctx)
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
-	serverBypass := addrsToCIDRs(serverAddrs)
+	serverBypass := mergeBypassCIDRs(addrsToCIDRs(serverAddrs), tailscaleBootstrapBypassCIDRs(ctx, direct))
 	swapper = &transportSwapper{
 		lt:            lt,
 		d:             d,

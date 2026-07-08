@@ -238,8 +238,12 @@ func TestFakeipFilterDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// sensible defaults: local/reverse domains never get a fake-IP
-	want := map[string]bool{"*.lan": true, "*.local": true, "*.localdomain": true, "*.arpa": true}
+	// sensible defaults: local/reverse domains and Tailscale control/MagicDNS
+	// domains never get a fake-IP.
+	want := map[string]bool{
+		"*.lan": true, "*.local": true, "*.localdomain": true, "*.arpa": true,
+		"tailscale.com": true, "ts.net": true,
+	}
 	if len(c.DNS.FakeipFilter) != len(want) {
 		t.Fatalf("default fakeip_filter = %v", c.DNS.FakeipFilter)
 	}

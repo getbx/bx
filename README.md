@@ -134,7 +134,7 @@ Windows 用 `bx.exe`,并**必须让 `wintun.dll` 与 `bx.exe` 处在同一目录
 > `bx setup` 贴兼容档链接会提示弱点并建议 server 端换 REALITY(不止 GFW——Claude/OpenAI/Google 等也对弱协议出口 IP 做风控)。
 > 全程 fail-closed 不泄漏。详见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
 
-WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md](docs/leak-surfaces.md)。出口路径检测可用 `bx leak-check --network --json --expected-ip <proxy-ip>`；真实 WebRTC 检测可用 `bx webrtc-check --browser --json --expected-ip <proxy-ip>`。
+WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md](docs/leak-surfaces.md)。出口路径检测可用 `bx leak-check --network --json --expected-ip <proxy-ip>`；真实 WebRTC 检测可用 `bx webrtc-check --browser --json --expected-ip <proxy-ip>`。macOS 上,`bx leak-check` 也会只读检查 Tailscale 这类网络扩展是否已经拿到自己的 overlay 路由。
 
 macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Restart、Turn Off、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
 

@@ -21,7 +21,7 @@ type DNS struct {
 	China        string      `yaml:"china"`
 	FakeipCIDR   string      `yaml:"fakeip_cidr"`
 	Split        []SplitRule `yaml:"split"`
-	FakeipFilter []string    `yaml:"fakeip_filter"` // 这些域名不分配 fake-IP(本地/反查域名,代理无意义)
+	FakeipFilter []string    `yaml:"fakeip_filter"` // 这些域名不分配 fake-IP(本地/反查/其它网络扩展控制域名)
 }
 
 type Rule struct {
@@ -86,6 +86,17 @@ type Router struct {
 	LANCIDRs []string `yaml:"lan_cidrs"` // 源网段;空=运行期自动探测 LAN 接口
 }
 
+var defaultFakeipFilter = []string{
+	"*.lan",
+	"*.local",
+	"*.localdomain",
+	"*.arpa",
+	// Tailscale 控制面与 MagicDNS 必须拿真实解析结果,否则 bx 先接管 DNS/默认路由时,
+	// Tailscale 可能无法建立自己的 100.64/10 overlay 路由。
+	"tailscale.com",
+	"ts.net",
+}
+
 // decodeServerLink 把 bx://blink:// 换壳链接还原为内部传输链接;裸链接(brook/vless 等)原样返回。
 func decodeServerLink(link string) (string, error) {
 	if strings.HasPrefix(link, "bx://") || strings.HasPrefix(link, "blink://") {
@@ -139,8 +150,8 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.DNS.FakeipFilter == nil {
 		// 本地/反查域名永不该走 fake-IP(代理它们无意义,且会破坏本地解析);
-		// 与 mihomo/sing-box 的 fake-ip-filter 默认一致。
-		c.DNS.FakeipFilter = []string{"*.lan", "*.local", "*.localdomain", "*.arpa"}
+		// Tailscale 域名也保留真实解析,让它能自建 overlay 路由并自行监管 100.x 流量。
+		c.DNS.FakeipFilter = append([]string{}, defaultFakeipFilter...)
 	}
 	if c.UDP.Mode == "" {
 		c.UDP.Mode = "proxy"
