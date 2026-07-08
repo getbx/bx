@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -558,7 +559,16 @@ func attachUDPCompanion(d *dialer.Dialer, udpTun *tunnel.Tunnel, label string) e
 // dnsResolver 用指定 DNS 服务器解析(经防环直连器,绕过 tun)。
 type dnsResolver struct{ r *net.Resolver }
 
-func newResolver(server string, base *net.Dialer) *dnsResolver {
+// newResolver 按 dns.china 方案派发:https:// → DoH(TLS 校验、抗投毒,见 dohResolver);
+// 否则明文 UDP:53(向后兼容,默认)。返回接口,供 Dialer.Resolver 用。
+func newResolver(server string, base *net.Dialer) dialer.Resolver {
+	if strings.HasPrefix(strings.ToLower(server), "https://") {
+		return newDoHResolver(server, base)
+	}
+	return newUDPResolver(server, base)
+}
+
+func newUDPResolver(server string, base *net.Dialer) *dnsResolver {
 	return &dnsResolver{r: &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
