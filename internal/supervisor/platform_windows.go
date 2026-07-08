@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/tun"
+	"github.com/getbx/bx/internal/winfw"
 	"golang.org/x/sys/windows"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
@@ -195,7 +196,11 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 	// 5) 应用路由计划,逐条记录以对称还原。
 	plan := windowsRoutes(windowsDirectCIDRs, serverBypass, userBypass, blockV6)
 	added, err := addPlannedRoutes(tunLUID, physLUID, gw, plan, false)
+	wfpOn := false
 	cleanup := func() {
+		if wfpOn {
+			winfw.DisableDNSLeak() // 先撤 WFP(动态会话,进程退出本也自动清)
+		}
 		for i := len(added) - 1; i >= 0; i-- {
 			_ = added[i].luid.DeleteRoute(added[i].dest, added[i].nh)
 		}
@@ -204,8 +209,16 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 		cleanup()
 		return nil, err
 	}
-	log.Printf("windows: 默认路由已劫进 %s(LUID=%#x);bypass via %s;server=%v user=%v v6阻断=%v",
-		t.Name, uint64(tunLUID), gw, serverBypass, userBypass, blockV6)
+	// 6) WFP 封 off-TUN :53,堵 Windows smart-multihomed DNS 泄漏。best-effort:失败不撤路由劫持
+	//    (路由已把大部分 :53 导进 TUN;WFP 是纵深防御,真机验证前不让它一票否决整个 Hijack)。
+	//    permitDNSServers 传 nil = 封尽所有非本进程/off-TUN :53(bx 自身 resolver 靠 permitSelf 放行)。
+	if err := winfw.BlockDNSLeak(t.LUID, nil); err != nil {
+		log.Printf("windows: 启用 WFP DNS 泄漏防护失败(路由劫持仍生效): %v", err)
+	} else {
+		wfpOn = true
+	}
+	log.Printf("windows: 默认路由已劫进 %s(LUID=%#x);bypass via %s;server=%v user=%v v6阻断=%v WFP-DNS=%v",
+		t.Name, uint64(tunLUID), gw, serverBypass, userBypass, blockV6, wfpOn)
 	return cleanup, nil
 }
 
