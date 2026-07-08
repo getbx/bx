@@ -37,8 +37,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// defaultConfigPath(客户端配置默认路径)是 OS-aware 的,见 paths_{windows,other}.go。
+// server 相关路径仅 Linux 用,留在此处。
 const (
-	defaultConfigPath       = "/etc/bx/config.yaml"
 	defaultServerConfigPath = "/etc/bx/server.yaml"
 	defaultShareDir         = "/etc/bx/shares"
 )
@@ -3241,7 +3242,15 @@ func runAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	return supervisor.Run(c.Context, cfg, optsFromFlags(c))
+	opts := optsFromFlags(c)
+	// Windows:若由 SCM 作为服务拉起,须走 svc.Run 上报状态;Stop 时 cancel ctx 触发 Run 的
+	// defer 全量还原。控制台调试(bx run 手敲)则 isWindowsService()=false,照常前台跑。
+	if isWindowsService() {
+		return runAsWindowsService(func(ctx context.Context) error {
+			return supervisor.Run(ctx, cfg, opts)
+		})
+	}
+	return supervisor.Run(c.Context, cfg, opts)
 }
 
 func optsFromFlags(c *cli.Context) supervisor.Options {
@@ -4279,10 +4288,16 @@ func buildExecStart(bin, configPath string) string {
 }
 
 func buildExecStartForGOOS(goos, bin, configPath string) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return fmt.Sprintf("%s run -c %s --listen-dns %s", bin, configPath, darwinDNSListen)
+	case "windows":
+		// Windows 服务 BinaryPathName:bin/config 路径含空格(Program Files / ProgramData),
+		// 必须加引号,交 install.commandLineFields 按引号拆回 exepath+args。
+		return fmt.Sprintf(`"%s" run -c "%s"`, bin, configPath)
+	default:
+		return fmt.Sprintf("%s run -c %s", bin, configPath)
 	}
-	return fmt.Sprintf("%s run -c %s", bin, configPath)
 }
 
 func uninstallAction(c *cli.Context) error {
