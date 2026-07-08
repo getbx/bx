@@ -270,6 +270,7 @@ func TestClientDoctorReportsBlockedUDPPolicy(t *testing.T) {
 }
 
 func TestClientInspectIncludesDoctorAndStatusError(t *testing.T) {
+	t.Setenv("BX_STATUS_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
 	path := filepath.Join(t.TempDir(), "missing.yaml")
 	rep := collectClientInspect(path, "example.com:443", 0, true)
 	if rep.OK {
@@ -598,6 +599,19 @@ func TestDefaultLogArchiveRootHonorsEnv(t *testing.T) {
 	t.Setenv("BX_LOG_ARCHIVE_DIR", want)
 	if got := defaultLogArchiveRoot(); got != want {
 		t.Fatalf("default log archive root = %q, want env %q", got, want)
+	}
+}
+
+func TestApplyPlatformRiskRaisesRiskForTailscaleWarn(t *testing.T) {
+	rep := leakCheckReport{
+		Risk: "low",
+		Checks: []checkReport{
+			{Name: "tailscale", Status: "warn", Detail: "overlay route absent"},
+		},
+	}
+	applyPlatformRisk(&rep)
+	if rep.OK || rep.Risk != "medium" {
+		t.Fatalf("tailscale warning should make leak report medium risk: %+v", rep)
 	}
 }
 

@@ -65,6 +65,8 @@ QUIC uses UDP. With `udp.mode: proxy`, bx should relay it; with `block`, it is s
 
 Apps that ignore system proxy settings are why bx uses TUN/DNS capture instead of only configuring a proxy. Still, browser extensions, app-level VPNs, or another network extension can create a different path. `bx webrtc-check --browser` helps catch this for browser UDP.
 
+On macOS, Tailscale is treated as a coexisting network extension, not as traffic bx should own. bx keeps Tailscale control/MagicDNS domains out of fake-IP by default and routes Tailscale bootstrap/controlplane IPv4 addresses outside the bx tunnel, so Tailscale can build its own `100.64/10` overlay route. `bx leak-check` reports when Tailscale appears installed but that overlay route is missing, because in that state bx's split-default route can catch `100.x` traffic before Tailscale has recovered.
+
 ## Not IP leaks, but identity signals
 
 These do not usually expose the local public IP, but they can correlate identity:

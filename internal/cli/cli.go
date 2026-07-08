@@ -1956,7 +1956,12 @@ func collectLeakCheck(ctx context.Context, configPath, dnsService string, browse
 		result := collectNetworkProbe(probeCtx)
 		networkReport = assessNetworkProbe(result, expectedIPs)
 	}
-	return assembleLeakCheckReport(doctor, webrtc, networkReport)
+	rep := assembleLeakCheckReport(doctor, webrtc, networkReport)
+	for _, check := range collectPlatformChecks(ctx) {
+		rep.addCheck(check)
+	}
+	applyPlatformRisk(&rep)
+	return rep
 }
 
 func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport, network *networkProbeReport) leakCheckReport {
@@ -2017,6 +2022,18 @@ func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport, netw
 	}
 	rep.OK = rep.Risk == "low"
 	return rep
+}
+
+func applyPlatformRisk(rep *leakCheckReport) {
+	for _, check := range rep.Checks {
+		if check.Status == "warn" || check.Status == "fail" {
+			switch check.Name {
+			case "tailscale":
+				rep.Risk = maxRisk(rep.Risk, "medium")
+			}
+		}
+	}
+	rep.OK = rep.Risk == "low"
 }
 
 func collectNetworkProbe(ctx context.Context) networkProbeResult {
@@ -3562,7 +3579,7 @@ func statusAction(c *cli.Context) error {
 }
 
 func readStatusReport() (stats.Report, error) {
-	rep, err := supervisor.FetchStatusReport(supervisor.SockPath)
+	rep, err := supervisor.FetchStatusReport(statusSocketPath())
 	if err != nil {
 		return stats.Report{}, fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
 	}
@@ -4268,11 +4285,18 @@ func modeCheck(path string, want os.FileMode) bool {
 }
 
 func checkStatusSocket() error {
-	conn, err := net.DialTimeout("unix", supervisor.SockPath, 500*time.Millisecond)
+	conn, err := net.DialTimeout("unix", statusSocketPath(), 500*time.Millisecond)
 	if err != nil {
 		return err
 	}
 	return conn.Close()
+}
+
+func statusSocketPath() string {
+	if path := strings.TrimSpace(os.Getenv("BX_STATUS_SOCKET")); path != "" {
+		return path
+	}
+	return supervisor.SockPath
 }
 
 func waitStatusSocket(timeout time.Duration) error {
@@ -4289,7 +4313,7 @@ func waitStatusSocket(timeout time.Duration) error {
 	if last != nil {
 		return last
 	}
-	return fmt.Errorf("timeout waiting for %s", supervisor.SockPath)
+	return fmt.Errorf("timeout waiting for %s", statusSocketPath())
 }
 
 func redactLink(link string) string {
