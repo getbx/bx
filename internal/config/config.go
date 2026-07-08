@@ -67,7 +67,9 @@ type Config struct {
 	Lists         Lists    `yaml:"lists"`
 	UDP           UDP      `yaml:"udp"`
 	Brook         string   `yaml:"brook"`          // 可选调试入口;空=用内嵌传输
-	DataDir       string   `yaml:"data_dir"`       // 运行期数据目录;空=默认 /var/lib/bx
+	BrookURL      string   `yaml:"brook_url"`      // brook 传输:仅无内嵌 arch(windows/其他)兜底,下载 brook 的地址;空=按版本派生官方 release
+	BrookSHA256   string   `yaml:"brook_sha256"`   // 下载兜底时的校验(设了 brook_url 才用,强烈建议)
+	DataDir       string   `yaml:"data_dir"`       // 运行期数据目录;空=默认(linux/darwin /var/lib/bx、windows C:\ProgramData\bx)
 	Bypass        []string `yaml:"bypass"`         // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
 	Global        bool     `yaml:"global"`         // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
 	Mode          string   `yaml:"mode"`           // host(默认,劫持本机出站) | router(只劫持 LAN 转发流量)
@@ -173,7 +175,7 @@ func Parse(b []byte) (*Config, error) {
 		}
 	}
 	if c.DataDir == "" {
-		c.DataDir = "/var/lib/bx"
+		c.DataDir = DefaultDataDir
 	}
 	if c.Mode == "" {
 		c.Mode = "host"

@@ -8,7 +8,7 @@ import (
 
 func TestEnsureBrookExtractsAndPins(t *testing.T) {
 	dir := t.TempDir()
-	p, err := EnsureBrook(dir, "", []byte("BROOKv1"), "v1")
+	p, err := EnsureBrook(dir, "", []byte("BROOKv1"), "v1", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,11 +23,11 @@ func TestEnsureBrookExtractsAndPins(t *testing.T) {
 
 func TestEnsureBrookSkipsWhenVersionMatches(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := EnsureBrook(dir, "", []byte("BROOKv1"), "v1"); err != nil {
+	if _, err := EnsureBrook(dir, "", []byte("BROOKv1"), "v1", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	_ = os.WriteFile(filepath.Join(dir, "brook"), []byte("SENTINEL"), 0o755)
-	if _, err := EnsureBrook(dir, "", []byte("BROOKv1"), "v1"); err != nil {
+	if _, err := EnsureBrook(dir, "", []byte("BROOKv1"), "v1", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "brook"))
@@ -38,10 +38,10 @@ func TestEnsureBrookSkipsWhenVersionMatches(t *testing.T) {
 
 func TestEnsureBrookReExtractsOnVersionChange(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := EnsureBrook(dir, "", []byte("BROOKv1"), "v1"); err != nil {
+	if _, err := EnsureBrook(dir, "", []byte("BROOKv1"), "v1", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EnsureBrook(dir, "", []byte("BROOKv2"), "v2"); err != nil {
+	if _, err := EnsureBrook(dir, "", []byte("BROOKv2"), "v2", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "brook"))
@@ -54,15 +54,27 @@ func TestEnsureBrookOverride(t *testing.T) {
 	dir := t.TempDir()
 	ov := filepath.Join(dir, "mybrook")
 	_ = os.WriteFile(ov, []byte("x"), 0o755)
-	p, err := EnsureBrook(dir, ov, []byte("EMBED"), "v1")
+	p, err := EnsureBrook(dir, ov, []byte("EMBED"), "v1", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if p != ov {
 		t.Fatalf("应返回 override 路径, got %q", p)
 	}
-	if _, err := EnsureBrook(dir, filepath.Join(dir, "nope"), nil, "v1"); err == nil {
+	if _, err := EnsureBrook(dir, filepath.Join(dir, "nope"), nil, "v1", "", ""); err == nil {
 		t.Fatal("override 不存在应报错")
+	}
+}
+
+// 回归:无内嵌 brook(windows/其他 arch)+ 无 url + 版本未知 → 清晰报错,
+// 而非旧版把 nil 当内容 atomicWrite 出一个空文件冒充 brook(隧道会莫名崩)。
+func TestEnsureBrookNoEmbedNoURLErrors(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := EnsureBrook(dir, "", nil, "", "", ""); err == nil {
+		t.Fatal("无内嵌 brook 且无下载地址应报错,而非写空文件")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "brook")); err == nil {
+		t.Fatal("失败时不应留下空 brook 文件冒充二进制")
 	}
 }
 

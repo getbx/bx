@@ -1154,7 +1154,7 @@ func serveAction(c *cli.Context) error {
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		return cmd.Run()
 	}
-	path, err := provision.EnsureBrook("/var/lib/bx", "", embedded.Brook(), embedded.BrookVersion())
+	path, err := provision.EnsureBrook("/var/lib/bx", "", embedded.Brook(), embedded.BrookVersion(), "", "")
 	if err != nil {
 		return fmt.Errorf("准备运行环境: %w", err)
 	}
@@ -3118,7 +3118,7 @@ func setupAction(c *cli.Context) error {
 		fmt.Printf("⚡ 按类分流:UDP 走专用传输(%s)\n", redactLink(udpTransport))
 	}
 	fmt.Println("⏳ 连通检测中…")
-	if lat, perr := setup.ProbeServer("/var/lib/bx", link, c.String("probe"), 15*time.Second); perr != nil {
+	if lat, perr := setup.ProbeServer(config.DefaultDataDir, link, c.String("probe"), 15*time.Second); perr != nil {
 		if c.Bool("strict") {
 			return fmt.Errorf("连通检测失败: %w", perr)
 		}
