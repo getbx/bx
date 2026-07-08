@@ -385,3 +385,9 @@ go test ./...
 ```
 
 端到端测试需要在真实机器上以 root 运行。
+
+## 安全
+
+bx 的安全属性(kill-switch/fail-closed、私网恒直连、IPv6 黑洞、WebRTC 无泄漏)、信任边界、以及残留风险(白名单去匿名化、直连 DNS 信任等)见 [SECURITY.md](SECURITY.md)。
+
+发现漏洞请**私密**报告:仓库 **Security → Report a vulnerability**(勿开公开 issue)。

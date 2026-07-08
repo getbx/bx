@@ -40,6 +40,11 @@ func transportKind(server string) string { return tunnel.Kind(server) }
 // router(只劫持 LAN 转发)> global(含国内全走隧道)> split(国内直连、境外走隧道)。
 func proxyMode(global bool, mode string) string {
 	if mode == "router" {
+		// router 是「劫持谁」(LAN 转发),global/split 是「怎么分流」——两轴正交,
+		// 都要呈现,否则 status 看不出白名单(global)是否在 router 下生效。
+		if global {
+			return "router-global"
+		}
 		return "router"
 	}
 	if global {

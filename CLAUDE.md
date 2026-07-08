@@ -4,7 +4,7 @@
 
 - 用户文档见 `README.md`;设计/计划见 `docs/superpowers/specs/` 与 `docs/superpowers/plans/`。
 - 模块:`github.com/getbx/bx`,Go 1.26,GitHub `getbx/bx`。
-- 平台:**linux/amd64 + linux/arm64**(开箱即用)。macOS 已能编译、待真机验证;Windows 未做。
+- 平台:**linux/amd64 + linux/arm64**(开箱即用)+ **macOS 真机已跑通**;Windows 未做。
 
 ## 架构(数据面 vs 控制面)
 

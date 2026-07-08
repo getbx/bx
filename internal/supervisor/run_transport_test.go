@@ -30,9 +30,10 @@ func TestTransportKind(t *testing.T) {
 }
 
 func TestProxyMode(t *testing.T) {
-	// router 模式优先(无视 global):只劫持 LAN 转发。
-	if got := proxyMode(true, "router"); got != "router" {
-		t.Errorf("router 应为 router, got %q", got)
+	// router 模式:仍要区分内部分流是 global(白名单)还是 split(china 直连),
+	// 否则 status 只显 "router" 看不出白名单是否生效(真机踩过的观测性坑)。
+	if got := proxyMode(true, "router"); got != "router-global" {
+		t.Errorf("router+global 应为 router-global, got %q", got)
 	}
 	if got := proxyMode(false, "router"); got != "router" {
 		t.Errorf("router(非global)应为 router, got %q", got)
