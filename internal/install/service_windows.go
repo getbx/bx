@@ -103,13 +103,21 @@ func windowsRestartService() error {
 	return nil
 }
 
-// windowsUninstallService 停止并删除服务(不存在即视为已卸)。
+// windowsUninstallService 停止并删除服务。区分「连不上 SCM(如非管理员)」= 真错误(不谎报成功)
+// 与「服务本就没注册」= 已卸(nil)。
 func windowsUninstallService() error {
-	m, s, err := openService()
+	m, err := mgr.Connect()
 	if err != nil {
-		return nil
+		return fmt.Errorf("连接服务管理器(需管理员): %w", err)
 	}
 	defer m.Disconnect()
+	s, err := m.OpenService(windowsServiceName)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+			return nil // 本就没装 = 已卸
+		}
+		return fmt.Errorf("打开服务 %s: %w", windowsServiceName, err)
+	}
 	defer s.Close()
 	_ = stopAndWait(s)
 	if err := s.Delete(); err != nil {
@@ -118,9 +126,9 @@ func windowsUninstallService() error {
 	return nil
 }
 
-// windowsServiceInstalled 报告服务是否已注册。
+// windowsServiceInstalled 报告服务是否已注册(只读,免管理员)。
 func windowsServiceInstalled() bool {
-	m, s, err := openService()
+	m, s, err := openServiceRead()
 	if err != nil {
 		return false
 	}
@@ -129,9 +137,9 @@ func windowsServiceInstalled() bool {
 	return true
 }
 
-// windowsServiceExecCmd 读服务 BinaryPathName 取子命令(up 防呆:须为 "run")。
+// windowsServiceExecCmd 读服务 BinaryPathName 取子命令(up 防呆:须为 "run";只读)。
 func windowsServiceExecCmd() (string, error) {
-	m, s, err := openService()
+	m, s, err := openServiceRead()
 	if err != nil {
 		return "", err
 	}
@@ -144,9 +152,9 @@ func windowsServiceExecCmd() (string, error) {
 	return serviceSubcommand(cfg.BinaryPathName), nil
 }
 
-// windowsServiceState 返回 is-active/is-enabled 风格状态(供 status 呈现)。
+// windowsServiceState 返回 is-active/is-enabled 风格状态(供 status 呈现;只读,免管理员)。
 func windowsServiceState(action string) string {
-	m, s, err := openService()
+	m, s, err := openServiceRead()
 	if err != nil {
 		if action == "is-enabled" {
 			return "disabled"
@@ -170,6 +178,7 @@ func windowsServiceState(action string) string {
 	return "unknown"
 }
 
+// openService 以全权限打开 SCM + 服务(需管理员),供改动(建/起/停/删/改配置)用。
 func openService() (*mgr.Mgr, *mgr.Service, error) {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -181,6 +190,27 @@ func openService() (*mgr.Mgr, *mgr.Service, error) {
 		return nil, nil, fmt.Errorf("打开服务 %s(未安装?): %w", windowsServiceName, err)
 	}
 	return m, s, nil
+}
+
+// openServiceRead 以**只读**权限打开 SCM(SC_MANAGER_CONNECT)+ 服务(QUERY_STATUS/CONFIG),
+// 不需要管理员——供 status/installed/exec-cmd 等查询用。mgr.Connect/OpenService 恒用 ALL_ACCESS,
+// 非管理员会连 SCM 失败被误判成「未安装/已停」,故此处直接走 windows 原生只读打开。
+func openServiceRead() (*mgr.Mgr, *mgr.Service, error) {
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return nil, nil, fmt.Errorf("连接服务管理器: %w", err)
+	}
+	namePtr, err := windows.UTF16PtrFromString(windowsServiceName)
+	if err != nil {
+		windows.CloseServiceHandle(scm)
+		return nil, nil, err
+	}
+	h, err := windows.OpenService(scm, namePtr, windows.SERVICE_QUERY_STATUS|windows.SERVICE_QUERY_CONFIG)
+	if err != nil {
+		windows.CloseServiceHandle(scm)
+		return nil, nil, err
+	}
+	return &mgr.Mgr{Handle: scm}, &mgr.Service{Name: windowsServiceName, Handle: h}, nil
 }
 
 // stopAndWait 发 Stop 并轮询到 Stopped(最多 ~10s)。未在运行时 Control 返回错误,视为已停。

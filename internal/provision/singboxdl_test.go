@@ -22,6 +22,17 @@ func TestDefaultSingboxURLWindowsArm64(t *testing.T) {
 	}
 }
 
+// 容忍版本文件带不带 v 前缀:tag 恒需 v、文件名恒不带,故 "v1.13.14" 与 "1.13.14" 应同结果,
+// 绝不能拼出 vv1.13.14(将来 CI 若把 SINGBOX_VERSION 写成带 v 就会 404)。
+func TestDefaultSingboxURLToleratesVPrefix(t *testing.T) {
+	want := "https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-windows-amd64.zip"
+	for _, ver := range []string{"1.13.14", "v1.13.14"} {
+		if got := defaultSingboxURL(ver, "windows", "amd64"); got != want {
+			t.Errorf("ver=%q 应产出规范 URL(不重复 v):\n got=%q\nwant=%q", ver, got, want)
+		}
+	}
+}
+
 // 仅 windows 需下载兜底;linux/darwin 已内嵌 → 空(逼走内嵌/报错,不拼 .tar.gz 半支持)。
 func TestDefaultSingboxURLNonWindowsEmpty(t *testing.T) {
 	if got := defaultSingboxURL("1.13.14", "linux", "amd64"); got != "" {

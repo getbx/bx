@@ -107,7 +107,7 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 
 	// 2) 组装路由:v4 私网/bypass 经物理网关、split-default 劫进 utun;
 	//    v6(内核启用时)fail-closed reject 全局 v6(纯构造见 darwinRouteSpecs)。
-	blockV6 := ipv6EnabledDarwin()
+	blockV6 := ipv6HostEnabled()
 	specs := darwinRouteSpecs(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, blockV6)
 
 	var done []darwinRouteSpec // 已加路由,用于对称还原(只管路由;TUN 关闭归 Run 的 closeTUN)
@@ -140,7 +140,7 @@ func (darwinPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []str
 		ip = ip[:i]
 	}
 	_ = runCmdQuiet("ifconfig", t.Name, "inet", ip, ip, "up") // 幂等
-	specs := darwinRouteSpecs(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, ipv6EnabledDarwin())
+	specs := darwinRouteSpecs(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, ipv6HostEnabled())
 	for _, s := range specs {
 		_ = runCmdQuiet("route", s.del...) // 尽力清旧
 		if err := runCmd("route", s.add...); err != nil {
@@ -148,25 +148,6 @@ func (darwinPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []str
 		}
 	}
 	return nil
-}
-
-// ipv6EnabledDarwin 判断宿主是否有可用 IPv6(任一非 loopback 接口带 v6 地址 ⇒ v6 栈活跃)。
-// 缺席即无 v6 可漏,跳过 v6 阻断步骤,避免在禁用 v6 的机器上 `route -inet6` 失败连累启动。
-func ipv6EnabledDarwin() bool {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return false
-	}
-	for _, a := range addrs {
-		ipn, ok := a.(*net.IPNet)
-		if !ok {
-			continue
-		}
-		if ip := ipn.IP; ip.To4() == nil && ip.To16() != nil && !ip.IsLoopback() {
-			return true
-		}
-	}
-	return false
 }
 
 // defaultRouteDarwin 解析 `route -n get default` 的网关与出口网卡。
