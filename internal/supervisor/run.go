@@ -115,11 +115,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	defer cancel()
 	plat := newPlatform()
 
-	// 0) 物料:内嵌 brook/列表落盘(零外部依赖)
-	brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion(), cfg.BrookURL, cfg.BrookSHA256)
-	if err != nil {
-		return fmt.Errorf("准备运行环境: %w", err)
-	}
+	// 0) 物料:brook 改为**惰性准备**——只在真用 brook 传输时才 EnsureBrook(见 buildTunnel default)。
+	// 否则 windows 上跑 reality/hysteria2 等也会无谓下载 brook(无内嵌),甚至在 github 慢/被挡时
+	// 卡在与本次传输无关的 brook 下载上。china 列表仍按需在下面 EnsureLists。
 	global := cfg.Global || opts.Global
 
 	// 1) 分流脑(global 模式不需要 china 列表)
@@ -127,10 +125,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	var domainPath, cidrPath string
 	var listsOverridden bool
 	if !global {
-		domainPath, cidrPath, err = provision.EnsureLists(cfg.DataDir, embedded.ChinaDomain(), embedded.ChinaCIDR())
+		dp, cp, err := provision.EnsureLists(cfg.DataDir, embedded.ChinaDomain(), embedded.ChinaCIDR())
 		if err != nil {
 			log.Printf("准备 china 列表失败(降级空列表,等刷新补): %v", err)
 		}
+		domainPath, cidrPath = dp, cp
 		// 列表路径覆盖优先级:CLI flag > config lists.* > 内嵌/刷新快照
 		domainOverride := firstNonEmpty(opts.ChinaDomainPath, cfg.Lists.ChinaDomain)
 		cidrOverride := firstNonEmpty(opts.ChinaCIDRPath, cfg.Lists.ChinaCIDR)
@@ -195,6 +194,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			confPath := filepath.Join(cfg.DataDir, "sing-box-vmess.json")
 			return tunnel.NewVmess(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
 		default:
+			brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion(), cfg.BrookURL, cfg.BrookSHA256)
+			if err != nil {
+				return nil, fmt.Errorf("准备 brook: %w", err)
+			}
 			return tunnel.NewBrook(brookPath, link, opts.Probe, cfg.HTTPProxy)
 		}
 	}
