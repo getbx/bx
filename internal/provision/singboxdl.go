@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strings"
 )
 
 // singboxdl.go:sing-box 无内嵌(windows)时的下载兜底纯逻辑——URL 派生 + zip 解压。
@@ -18,8 +19,10 @@ func defaultSingboxURL(version, goos, goarch string) string {
 	if version == "" || goos != "windows" {
 		return ""
 	}
-	asset := fmt.Sprintf("sing-box-%s-%s-%s", version, goos, goarch)
-	return fmt.Sprintf("https://github.com/SagerNet/sing-box/releases/download/v%s/%s.zip", version, asset)
+	// tag 恒带 v 前缀、资产文件名恒不带;先剥掉版本可能自带的 v 再统一拼,容忍版本文件带不带 v。
+	v := strings.TrimPrefix(version, "v")
+	asset := fmt.Sprintf("sing-box-%s-%s-%s", v, goos, goarch)
+	return fmt.Sprintf("https://github.com/SagerNet/sing-box/releases/download/v%s/%s.zip", v, asset)
 }
 
 // extractSingbox 从下载的 zip 字节里取出 sing-box 可执行(windows 找 sing-box.exe、其余 sing-box),

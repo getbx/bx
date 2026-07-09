@@ -6,13 +6,9 @@ package supervisor
 // 编程 API 无关——applier 再把 winViaGateway 解析成物理网关 nextHop、winViaTUN/winV6Blackhole
 // 解析成 on-link 的未指定地址 nextHop。
 
-// windowsDirectCIDRs:Windows 下保持原生直连(经物理网关旁路)的私网段——RFC1918 + docker。
-// 与 darwin 同:单路由表下刻意不认领 CGNAT(100.64.0.0/10)——tailscale 的同前缀 overlay 路由
-// 更具体,按最长前缀自然抢赢;无 tailscale 时本地 CGNAT 子网亦有更具体的 connected 路由直连。
-// 也不含 loopback/link-local:它们有正确的本地/on-link 路由,绝不可改写。
-var windowsDirectCIDRs = []string{
-	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-}
+// windowsDirectCIDRs:Windows 下经物理网关旁路直连的私网段。单表平台与 darwin 同源,
+// 详见 singleTableDirectCIDRs(directcidrs.go)。
+var windowsDirectCIDRs = singleTableDirectCIDRs
 
 // winRouteVia 表示一条计划路由的走向。
 type winRouteVia int

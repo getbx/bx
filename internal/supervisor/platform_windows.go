@@ -182,7 +182,7 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 	}
 	// 4) v6 fail-closed(仅宿主有 v6 时):给 TUN 开 v6,把 ::/1+8000::/1 劫进 TUN。best-effort:
 	//    开 v6 失败不连累 v4 劫持(域名维度 v6 已由 DNS NODATA 堵死,此为字面量 v6 纵深防御)。
-	blockV6 := ipv6EnabledWindows()
+	blockV6 := ipv6HostEnabled()
 	if blockV6 {
 		if err := tunLUID.SetIPAddressesForFamily(windows.AF_INET6, []netip.Prefix{netip.MustParsePrefix(tunV6ULA)}); err != nil {
 			log.Printf("windows: 开 TUN v6 失败,跳过 v6 阻断(v4 劫持不受影响): %v", err)
@@ -242,7 +242,7 @@ func (windowsPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []st
 	if err != nil {
 		return fmt.Errorf("探测物理默认路由: %w", err)
 	}
-	plan := windowsRoutes(windowsDirectCIDRs, serverBypass, userBypass, ipv6EnabledWindows())
+	plan := windowsRoutes(windowsDirectCIDRs, serverBypass, userBypass, ipv6HostEnabled())
 	_, err = addPlannedRoutes(tunLUID, physLUID, gw, plan, true) // 幂等:忽略已存在
 	return err
 }
@@ -286,7 +286,17 @@ func physicalDefaultRoute() (netip.Addr, winipcfg.LUID, error) {
 	if err != nil {
 		return netip.Addr{}, 0, err
 	}
-	var best *winipcfg.MibIPforwardRow2
+	// Windows 有效路由 metric = 路由 metric + **接口 metric**。多网卡(笔记本 Ethernet+WiFi、
+	// 或已装 VPN)上多条 default 的路由 metric 常都是 0、只靠接口 metric 区分——只比 r.Metric
+	// 会错选非首选网卡,把 bypass(服务器防环/私网/SSH)挂到错的 LUID → 隧道走烂路 → 健康失败
+	// → kill-switch 全 Block → bx up 后断网(同 Linux Mudi 双 WAN 的老坑)。故必须相加取最小。
+	ifMetric := map[winipcfg.LUID]uint32{} // 同 LUID 多条 default 不重复查
+	var (
+		bestGW     netip.Addr
+		bestLUID   winipcfg.LUID
+		bestMetric uint32
+		found      bool
+	)
 	for i := range rows {
 		r := &rows[i]
 		p := r.DestinationPrefix.Prefix()
@@ -297,31 +307,20 @@ func physicalDefaultRoute() (netip.Addr, winipcfg.LUID, error) {
 		if !nh.IsValid() || nh.IsUnspecified() { // 需真实网关(排除 on-link 无网关的 /0)
 			continue
 		}
-		if best == nil || r.Metric < best.Metric {
-			best = r
+		im, ok := ifMetric[r.InterfaceLUID]
+		if !ok {
+			if ipif, e := r.InterfaceLUID.IPInterface(windows.AF_INET); e == nil {
+				im = ipif.Metric
+			}
+			ifMetric[r.InterfaceLUID] = im
+		}
+		eff := r.Metric + im
+		if !found || eff < bestMetric {
+			found, bestMetric, bestGW, bestLUID = true, eff, nh, r.InterfaceLUID
 		}
 	}
-	if best == nil {
+	if !found {
 		return netip.Addr{}, 0, errors.New("未找到物理默认路由(0.0.0.0/0)")
 	}
-	return best.NextHop.Addr(), best.InterfaceLUID, nil
-}
-
-// ipv6EnabledWindows 判断宿主是否有可用 IPv6(任一非 loopback 接口带 v6 地址 ⇒ v6 栈活跃)。
-// 缺席即无 v6 可漏,跳过 v6 阻断,避免在禁用 v6 的机器上做无谓的 v6 配置。
-func ipv6EnabledWindows() bool {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return false
-	}
-	for _, a := range addrs {
-		ipn, ok := a.(*net.IPNet)
-		if !ok {
-			continue
-		}
-		if ip := ipn.IP; ip.To4() == nil && ip.To16() != nil && !ip.IsLoopback() {
-			return true
-		}
-	}
-	return false
+	return bestGW, bestLUID, nil
 }
