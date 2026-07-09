@@ -15,6 +15,9 @@ package winfw
 import (
 	"errors"
 	"net/netip"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // BlockDNSLeak 装 WFP 动态过滤器,封堵 Windows「smart multi-homed name resolution」DNS 泄漏
@@ -48,7 +51,7 @@ func BlockDNSLeak(tunLUID uint64, permitDNSServers []netip.Addr) error {
 		if err != nil {
 			return wrapErr(err)
 		}
-		if err := permitWireGuardService(session, bo, 15); err != nil { // 放行 bx 自身进程 :53
+		if err := permitAppID(session, bo, 15, ""); err != nil { // 放行 bx 自身进程(app-id)
 			return wrapErr(err)
 		}
 		if err := permitTunInterface(session, bo, 14, tunLUID); err != nil { // 进 TUN 的 :53 必须通(> deny)
@@ -69,3 +72,72 @@ func BlockDNSLeak(tunLUID uint64, permitDNSServers []netip.Addr) error {
 
 // DisableDNSLeak 主动移除 WFP 过滤器(关动态会话)。幂等;进程退出时会话本就自动清。
 func DisableDNSLeak() { DisableFirewall() }
+
+// permitAppID 装一条按 app-id(exe 路径)放行的 WFP 过滤器,覆盖 CONNECT/RECV × v4/v6 四层。
+// appIDFile 为空 = 当前进程(bx.exe);非空 = 指定 exe(如隧道子进程 sing-box.exe/brook.exe)。
+//
+// 刻意**不带**上游 permitWireGuardService 的第二个「安全描述符(服务 SID)」条件:那条要求进程
+// 有 NT SERVICE SID(WireGuard 作为服务跑才有),而 bx 用 `bx run` 跑(哪怕作为服务,默认无
+// per-service SID)→ 会 ERROR_NO_SUCH_GROUP 使整个 WFP 建不起来。按纯 app-id 放行对 bx 足够且正确。
+func permitAppID(session uintptr, baseObjects *baseObjects, weight uint8, appIDFile string) error {
+	var appID *wtFwpByteBlob
+	var err error
+	if appIDFile == "" {
+		appID, err = getCurrentProcessAppID()
+	} else {
+		appID, err = getAppIDFromFile(appIDFile)
+	}
+	if err != nil {
+		return wrapErr(err)
+	}
+	defer fwpmFreeMemory0(unsafe.Pointer(&appID))
+
+	condition := wtFwpmFilterCondition0{
+		fieldKey:  cFWPM_CONDITION_ALE_APP_ID,
+		matchType: cFWP_MATCH_EQUAL,
+		conditionValue: wtFwpConditionValue0{
+			_type: cFWP_BYTE_BLOB_TYPE,
+			value: uintptr(unsafe.Pointer(appID)),
+		},
+	}
+	filter := wtFwpmFilter0{
+		providerKey:         &baseObjects.provider,
+		subLayerKey:         baseObjects.filters,
+		weight:              filterWeight(weight),
+		flags:               cFWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT,
+		numFilterConditions: 1,
+		filterCondition:     &condition,
+		action:              wtFwpmAction0{_type: cFWP_ACTION_PERMIT},
+	}
+	filterID := uint64(0)
+	for _, layer := range []windows.GUID{
+		cFWPM_LAYER_ALE_AUTH_CONNECT_V4,
+		cFWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+		cFWPM_LAYER_ALE_AUTH_CONNECT_V6,
+		cFWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
+	} {
+		dd, err := createWtFwpmDisplayData0("bx: permit app by app-id", "")
+		if err != nil {
+			return wrapErr(err)
+		}
+		filter.displayData = *dd
+		filter.layerKey = layer
+		if err := fwpmFilterAdd0(session, &filter, 0, &filterID); err != nil {
+			return wrapErr(err)
+		}
+	}
+	return nil
+}
+
+// getAppIDFromFile 取指定 exe 的 WFP app-id(供放行隧道子进程)。
+func getAppIDFromFile(file string) (*wtFwpByteBlob, error) {
+	p, err := windows.UTF16PtrFromString(file)
+	if err != nil {
+		return nil, wrapErr(err)
+	}
+	var appID *wtFwpByteBlob
+	if err := fwpmGetAppIdFromFileName0(p, unsafe.Pointer(&appID)); err != nil {
+		return nil, wrapErr(err)
+	}
+	return appID, nil
+}
