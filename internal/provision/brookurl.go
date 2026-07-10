@@ -1,7 +1,8 @@
 package provision
 
 // brookurl.go 派生 brook 官方 release 的下载 URL(纯逻辑,可跨平台单测)。
-// 无内嵌 brook 的平台(windows/其他 arch)靠它兜底下载,让 bx up 起 brook 隧道不空转。
+// 无内嵌 brook 的 arch(如 windows/386、其他非 amd64/arm64)靠它兜底下载,让 bx up 起 brook 隧道不空转。
+// (windows/darwin/linux 的 amd64/arm64 已内嵌 brook,不走这里。)
 
 // defaultBrookURL 按 txthinking/brook 的 release 资产命名约定拼下载地址:
 //   - windows:brook_<goarch>.exe(裸 exe)
