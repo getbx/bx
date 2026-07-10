@@ -7,12 +7,17 @@ package cli
 
 import (
 	"context"
+	"log"
+	"os"
 
 	"golang.org/x/sys/windows/svc"
 )
 
 // bxServiceName 须与 install.windowsServiceName 一致(SCM 里的服务名)。
 const bxServiceName = "bx"
+
+// serviceLogPath:服务无控制台,stderr 丢弃 → 日志重定向到此文件,便于诊断/审计。
+const serviceLogPath = `C:\ProgramData\bx\service.log`
 
 // isWindowsService 报告当前进程是否由 SCM 作为服务拉起(而非用户在控制台跑 bx run 调试)。
 func isWindowsService() bool {
@@ -24,6 +29,12 @@ func isWindowsService() bool {
 // 时 cancel ctx,让 supervisor.Run 经 ctx.Done 走 defer **全量还原**(拆路由劫持、关 TUN、撤 WFP),
 // 还原跑完再上报 Stopped——与 SIGINT/SIGTERM 的关机路径同源,不漏还原。
 func runAsWindowsService(run func(context.Context) error) error {
+	// 服务无控制台、stderr 无处可去 → 把日志重定向到文件(否则服务失败时无从诊断)。
+	if f, err := os.OpenFile(serviceLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		log.SetOutput(f)
+		defer f.Close()
+	}
+	log.Printf("bx service: 由 SCM 拉起,开始运行")
 	return svc.Run(bxServiceName, &bxService{run: run})
 }
 
@@ -56,10 +67,14 @@ func (h *bxService) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- 
 			}
 		case err := <-errCh:
 			// run 自行退出(隧道致命错误 / 死手到点):停服务并透出退出码。
-			s <- svc.Status{State: svc.Stopped}
+			// 服务无控制台,CLI 的 stderr 报错会丢失 → 在此显式记进 service.log,否则失败无从查。
 			if err != nil {
+				log.Printf("bx service: run 退出错误: %v", err)
+				s <- svc.Status{State: svc.Stopped}
 				return false, 1
 			}
+			log.Printf("bx service: run 正常退出")
+			s <- svc.Status{State: svc.Stopped}
 			return false, 0
 		}
 	}
