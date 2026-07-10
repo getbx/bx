@@ -371,18 +371,39 @@ func TestDialProxyUDPUsesUDPTransport(t *testing.T) {
 	}
 }
 
-// UDP 专用传输不健康 + killswitch → UDP Block(fail-closed),即便主传输健康也不回落。
-func TestDialUDPTransportKillswitchBlocksWhenUDPDown(t *testing.T) {
+// UDP 专用传输(hys2)不健康 → 自动回落主传输(reality:同一条隧道,非直连,不泄漏),保通路。
+// hys2 是纯加速档:健康时走它,挂了退到主传输,绝不黑洞 UDP。回落 reality ≠ 回落直连。
+func TestDialProxyUDPFallsBackToMainWhenCompanionDown(t *testing.T) {
 	d, px, dr := newTestDialer(nil, fakeResolver{}, true, true) // 主传输 healthy=true
 	d.UDPMode = "proxy"
 	udpPx := &recordDialer{}
-	d.SetUDPTransport(&Transport{Proxy: udpPx, Healthy: func() bool { return false }}) // UDP 传输挂
+	d.SetUDPTransport(&Transport{Proxy: udpPx, Healthy: func() bool { return false }}) // hys2 挂
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 3478, UDP: true}); err != nil {
+		t.Fatalf("hys2 挂应回落主传输而非 Block, got err=%v", err)
+	}
+	if px.lastNetwork != "udp" || px.lastAddr != "8.8.8.8:3478" {
+		t.Fatalf("UDP 应回落主传输, got %s %q", px.lastNetwork, px.lastAddr)
+	}
+	if udpPx.lastAddr != "" {
+		t.Fatalf("不健康的 hys2 不该被拨, got %q", udpPx.lastAddr)
+	}
+	if dr.lastAddr != "" {
+		t.Fatal("绝不回落直连(那才是泄漏)")
+	}
+}
+
+// hys2 挂 + 主传输也挂 + killswitch → 才真 Block(fail-closed,且绝不回落直连)。
+func TestDialProxyUDPBlocksWhenCompanionAndMainDown(t *testing.T) {
+	d, px, dr := newTestDialer(nil, fakeResolver{}, false, true) // 主传输 healthy=false
+	d.UDPMode = "proxy"
+	udpPx := &recordDialer{}
+	d.SetUDPTransport(&Transport{Proxy: udpPx, Healthy: func() bool { return false }}) // hys2 也挂
 	_, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("8.8.8.8"), Port: 3478, UDP: true})
 	if err != ErrBlocked {
-		t.Fatalf("UDP 传输挂应 Block, got err=%v", err)
+		t.Fatalf("companion+主传输双挂应 Block, got err=%v", err)
 	}
 	if udpPx.lastAddr != "" || px.lastAddr != "" || dr.lastAddr != "" {
-		t.Fatal("Block 时不该拨任何传输(绝不回落直连/主传输)")
+		t.Fatal("Block 时不该拨任何传输(绝不回落直连)")
 	}
 }
 

@@ -155,9 +155,12 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			return d.Direct.DialContext(ctx, "udp", target)
 		}
 		if d.UDPMode == "proxy" {
-			// 按类分流:UDP 优先走 UDP 专用传输(hysteria);未设则用主传输。
+			// 按类分流:UDP 优先走专用传输(hysteria);它未设或不健康 → 回落主传输(reality)。
+			// hys2 与主传输去的是同一台 VPS、同一条加密隧道,故回落它 ≠ 回落直连、不泄漏——
+			// killswitch 真正要防的是回落直连暴露真实 IP。hys2 是纯加速档:好用时走它、挂了
+			// 自动退到 reality 保通路,绝不黑洞 UDP。只有主传输也挂,下面的 killswitch 才 Block。
 			utr := d.udpTransport.Load()
-			if utr == nil {
+			if utr == nil || utr.Healthy == nil || !utr.Healthy() {
 				utr = tr
 			}
 			if d.killswitchBlocks(utr) {
@@ -165,7 +168,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 					d.Stats.Blocked()
 					d.Stats.UDPBlocked()
 				}
-				return nil, ErrBlocked // UDP 传输挂 → fail-closed,绝不回落
+				return nil, ErrBlocked // 主传输也挂 → fail-closed(仍绝不回落直连)
 			}
 			if d.Stats != nil {
 				d.Stats.Proxy()
