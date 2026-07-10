@@ -18,8 +18,10 @@ jobs:
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
           echo "cur=$cur" >>"$GITHUB_OUTPUT"
           echo "changed=$([ "$tag" != "$cur" ] && echo yes || echo no)" >>"$GITHUB_OUTPUT"
-      - name: 下载并重新内嵌 brook(linux+darwin amd64+arm64)+ 列表
+      - name: 下载并重新内嵌 brook(linux+darwin+windows amd64+arm64)+ 列表
         if: steps.v.outputs.changed == 'yes'
+        # windows 上游资产带 .exe 后缀,内嵌资产名不带(同 linux/darwin 无后缀风格)。
+        # windows wintun.dll 版本由 assets/WINTUN_VERSION 固定,升级手动跑(wintun 无 CI 自动 release 跟随)。
         run: |
           for os in linux darwin; do
             for arch in amd64 arm64; do
@@ -27,6 +29,11 @@ jobs:
                    -o "internal/embedded/assets/brook_${os}_${arch}"
               chmod +x "internal/embedded/assets/brook_${os}_${arch}"
             done
+          done
+          for arch in amd64 arm64; do
+            curl -fsSL "https://github.com/txthinking/brook/releases/download/${{ steps.v.outputs.tag }}/brook_windows_${arch}.exe" \
+                 -o "internal/embedded/assets/brook_windows_${arch}"
+            chmod +x "internal/embedded/assets/brook_windows_${arch}"
           done
           curl -fsSL https://txthinking.github.io/bypass/china_domain.txt -o internal/embedded/assets/china_domain.txt
           curl -fsSL https://txthinking.github.io/bypass/china_cidr4.txt  -o internal/embedded/assets/china_cidr4.txt
