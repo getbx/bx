@@ -91,6 +91,27 @@ sudo bx up
 
 Linux 客户端直接使用这组命令。
 
+#### Windows
+
+Windows 用 `bx.exe`,并**必须让 `wintun.dll` 与 `bx.exe` 处在同一目录**——bx 靠 [wintun](https://www.wintun.net/) 建 TUN 适配器,DLL 不在 exe 同目录会报 `Error loading wintun.dll: The specified module could not be found`。release 包内已带 `wintun.dll`(与 `bx.exe` 同放);手动部署时从 [wintun.net](https://www.wintun.net/) 下对应架构(amd64/arm64)的 `wintun.dll` 放到 `bx.exe` 旁即可。
+
+以**管理员** PowerShell 运行(建 TUN / 改路由需要):
+
+```powershell
+.\bx.exe setup "<client-link>"   # 写配置 + 装到 C:\Program Files\bx(自动随行 wintun.dll)+ 建 Windows 服务
+.\bx.exe up                       # 启动服务并设为开机自启(整机接管)
+.\bx.exe status                   # 看状态
+.\bx.exe down                     # 停并取消自启
+```
+
+`setup` 会把 `bx.exe` **和 `wintun.dll` 一并**装到 `C:\Program Files\bx`(服务以 System32 为工作目录运行,DLL 必须随行),配置写到 `C:\ProgramData\bx\config.yaml`。首次真机联调建议先 `bx run --test-timeout 2m`(前台 + 死手,到点自动还原,防路由改错断网)。
+
+> **受限网络 / 企业 TLS 拦截(MITM)**:REALITY/vless 等传输需 sing-box,bx 首次运行会从 GitHub 下载对应平台的 sing-box(brook 传输同理)。若所在网络对 HTTPS 做 TLS 拦截(企业代理自签根 CA),下载会因证书不受信而失败(`x509: certificate signed by unknown authority`)——这是 bx 供应链校验在**正确拒绝** MITM 证书,不是 bug。此时手动准备一份本地 sing-box 可执行(与 bx 版本匹配),在配置里用绝对路径指过去即可绕开下载:
+>
+> ```yaml
+> singbox_bin: C:\path\to\sing-box.exe   # 直接用本地 sing-box,不联网下载(brook 传输对应 brook: <path>)
+> ```
+
 #### 让你的 agent 操作 bx(AI-native,可选)
 
 `bx setup` / `bx up` 跑通后,把控制面接给你的 agent:让你的 agent 运行
