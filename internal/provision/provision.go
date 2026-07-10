@@ -33,7 +33,7 @@ func EnsureBrook(dataDir, override string, brookBytes []byte, version, url, sha2
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return "", err
 	}
-	target := filepath.Join(dataDir, "brook")
+	target := filepath.Join(dataDir, execName("brook"))
 	// 有内嵌(linux/darwin amd64/arm64):落盘,按版本缓存,零联网。
 	if len(brookBytes) > 0 {
 		verFile := filepath.Join(dataDir, ".brook-version")

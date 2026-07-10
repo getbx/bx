@@ -22,7 +22,7 @@ func EnsureSingbox(dataDir, override string, embedded []byte, embeddedVersion, u
 		}
 		return override, nil
 	}
-	target := filepath.Join(dataDir, "sing-box")
+	target := filepath.Join(dataDir, execName("sing-box"))
 	if len(embedded) > 0 {
 		if err := os.MkdirAll(dataDir, 0o755); err != nil {
 			return "", err
