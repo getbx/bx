@@ -22,8 +22,13 @@ var brookVersion string
 //go:embed assets/SINGBOX_VERSION
 var singboxVersion string
 
+//go:embed assets/WINTUN_VERSION
+var wintunVersion string
+
 // singbox 由 GOOS/GOARCH 专属文件按需内嵌:linux amd64/arm64 嵌真二进制(自建静态最小构建,
 // 见 embedded_singbox_<arch>.go),其余平台为 nil(reality 回落到下载/override,见 provision.EnsureSingbox)。
+// wintun 由 GOOS/GOARCH 专属文件按需内嵌:windows amd64/arm64 嵌真 dll(见 embedded_wintun_<arch>.go),
+// 其余平台为 nil(仅 windows 用,见 provision.EnsureWintun)。
 
 // Brook 返回内嵌的、与当前架构匹配的 brook 二进制字节(只读,调用方不得修改返回的切片)。
 func Brook() []byte { return brook }
@@ -34,6 +39,13 @@ func Singbox() []byte { return singbox }
 
 // SingboxVersion 返回内嵌 sing-box 的版本(上游 release tag)。
 func SingboxVersion() string { return strings.TrimSpace(singboxVersion) }
+
+// Wintun 返回内嵌的、与当前架构匹配的 wintun.dll 字节(仅 windows amd64/arm64 非空;
+// 其他平台为 nil,调用方靠系统已安装的 wintun.dll)。只读,不得修改返回的切片。
+func Wintun() []byte { return wintun }
+
+// WintunVersion 返回内嵌 wintun 的版本。
+func WintunVersion() string { return strings.TrimSpace(wintunVersion) }
 
 // ChinaDomain 返回内嵌的 china 域名列表快照(只读,调用方不得修改返回的切片)。
 func ChinaDomain() []byte { return chinaDomain }

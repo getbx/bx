@@ -18,9 +18,13 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/getbx/bx/internal/embedded"
+	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/tun"
 	"github.com/getbx/bx/internal/winfw"
 	"golang.org/x/sys/windows"
@@ -52,6 +56,11 @@ const tunV6ULA = "fd0b:a78e:9c1d::1/128"
 // 适配器 LUID 供 Hijack 用 winipcfg 编程。wintun 允许任意适配器名(不像 macOS utun 须 utunN),
 // 故 bx 默认的 "bx0" 直接可用。运行时需签名的 wintun.dll 与 bx.exe 同目录。
 func (windowsPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint, tunHandle, func(), error) {
+	if exe, err := os.Executable(); err == nil {
+		if _, werr := provision.EnsureWintun(filepath.Dir(exe), embedded.Wintun(), embedded.WintunVersion()); werr != nil {
+			return nil, tunHandle{}, nil, fmt.Errorf("释放内嵌 wintun.dll 到 exe 目录: %w", werr)
+		}
+	}
 	if name == "" {
 		name = "bx0"
 	}

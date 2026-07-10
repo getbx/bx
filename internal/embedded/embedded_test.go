@@ -20,3 +20,12 @@ func TestAssetsPresent(t *testing.T) {
 		t.Error("BROOK_VERSION 为空")
 	}
 }
+
+func TestWintunEmbeddedOnWindows(t *testing.T) {
+	if runtime.GOOS == "windows" && len(Wintun()) == 0 {
+		t.Fatal("windows 构建应内嵌 wintun.dll")
+	}
+	if runtime.GOOS != "windows" && len(Wintun()) != 0 {
+		t.Fatal("非 windows 不应有内嵌 wintun")
+	}
+}
