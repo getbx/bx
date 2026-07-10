@@ -59,11 +59,6 @@ func SelfInstall() (string, error) {
 	if err := copyExecutable(self, BinPath); err != nil {
 		return "", err
 	}
-	// 平台随行文件:Windows 需把 wintun.dll 一并装到 BinPath 同目录——服务以 System32 为 CWD
-	// 跑 Program Files 下的 bx.exe,DLL 只在源目录会导致「wintun.dll 加载失败」(真机 e2e 暴露)。
-	if err := installPlatformSideFiles(self, BinPath); err != nil {
-		return "", err
-	}
 	return BinPath, nil
 }
 

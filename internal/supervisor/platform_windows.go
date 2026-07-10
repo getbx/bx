@@ -66,7 +66,7 @@ func (windowsPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoin
 	}
 	dev, err := wgtun.CreateTUN(name, int(mtu))
 	if err != nil {
-		return nil, tunHandle{}, nil, fmt.Errorf("创建 wintun 适配器(需管理员 + wintun.dll 同目录): %w", err)
+		return nil, tunHandle{}, nil, fmt.Errorf("创建 wintun 适配器(需管理员;wintun.dll 由 bx 自动释放到 exe 目录,若失败见该目录是否可写): %w", err)
 	}
 	real, err := dev.Name()
 	if err != nil {
