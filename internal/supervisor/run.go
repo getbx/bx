@@ -409,11 +409,6 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	transportInfo := func() (string, []string, string) {
 		return transportLabel(swapper.currentLink()), transportLabels, udpLabel
 	}
-	// kick(bx kick):强制重连当前传输——重建同一条 link 的隧道、等健康后热切,不碰 TUN/路由。
-	// 复用容灾同一原语,失败保持旧隧道(fail-closed 语义不变),比 down+up 轻得多。
-	kick := func() error {
-		return swapper.swapTo(swapper.currentLink())
-	}
 	// rebuildRouter 从「当前」配置重建 router:ConfigPath 非空则重读配置文件拿最新 rules
 	// (含 bx direct/proxy 的运行期改动),否则回退启动快照 cfg;china 列表用落盘最新。
 	// reloadRouter 与 china 列表刷新共用它——否则刷新会拿启动时的陈旧 rules 覆盖掉热加的白名单
@@ -447,7 +442,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return nil
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, mutEng, mut, kick, reloadRouter, uint32(cfg.OwnerUID))
+		return serveControl(counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, mutEng, mut, reloadRouter, uint32(cfg.OwnerUID))
 	})
 	if err != nil {
 		return err

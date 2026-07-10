@@ -296,7 +296,7 @@ sudo bx server shares --json
 | `sudo bx setup <client-link>` | 客户端首次配置 |
 | `sudo bx up` | 启动客户端并设为开机自启 |
 | `sudo bx down` | 停止客户端并取消开机自启 |
-| `sudo bx kick` | 轻量重连当前隧道,不改 TUN/路由/DNS |
+| `sudo bx restart` | 全量重启保护(隧道卡住/连不上时用),保留开机自启 |
 | `sudo bx direct add <domain>` | 将域名加入直连白名单,会与 proxy 规则互斥清理 |
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |
 | `sudo bx proxy add <domain>` | 强制域名走隧道,会与 direct 规则互斥清理 |

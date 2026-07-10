@@ -703,12 +703,12 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(status.SafeNotes, " "), "menu bar") {
 		t.Fatalf("status json should mention status surfaces: %+v", status)
 	}
-	kick := findCapability(rep.Commands, "sudo bx kick")
-	if !kick.Stable || !kick.RequiresRoot || kick.ChangesSystem || kick.ChangesNetwork {
-		t.Fatalf("unexpected kick capability: %+v", kick)
+	restart := findCapability(rep.Commands, "sudo bx restart")
+	if !restart.Stable || !restart.RequiresRoot || restart.ChangesSystem || !restart.ChangesNetwork {
+		t.Fatalf("unexpected restart capability: %+v", restart)
 	}
-	if !strings.Contains(strings.Join(kick.SafeNotes, " "), "does not change TUN, routes, or DNS") {
-		t.Fatalf("kick should document lightweight reconnect scope: %+v", kick)
+	if !strings.Contains(strings.Join(restart.SafeNotes, " "), "brief connectivity blip") {
+		t.Fatalf("restart should document full-restart scope: %+v", restart)
 	}
 	direct := findCapability(rep.Commands, "sudo bx direct add <domain>")
 	if !direct.Stable || !direct.RequiresRoot || !direct.ChangesSystem || direct.ChangesNetwork || !direct.ReadsSecrets {
