@@ -29,3 +29,19 @@ func TestWintunEmbeddedOnWindows(t *testing.T) {
 		t.Fatal("非 windows 不应有内嵌 wintun")
 	}
 }
+
+func TestSingboxEmbeddedOnWindows(t *testing.T) {
+	// windows amd64/arm64 自建静态 sing-box 已内嵌(with_utls,with_quic),reality/hysteria2 免下载。
+	if runtime.GOOS == "windows" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64") {
+		b := Singbox()
+		if len(b) == 0 {
+			t.Fatal("windows amd64/arm64 构建应内嵌 sing-box")
+		}
+		if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
+			t.Fatalf("singbox 资产非 windows PE,前 2 字节=%x", b[:min(2, len(b))])
+		}
+		if SingboxVersion() == "" {
+			t.Error("SINGBOX_VERSION 为空")
+		}
+	}
+}
