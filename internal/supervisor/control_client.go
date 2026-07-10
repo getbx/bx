@@ -75,12 +75,6 @@ func RollbackControl(sockPath string) (string, error) {
 	return postControl(sockPath, "/v0/rollback")
 }
 
-// KickControl 触发一次强制重连(bx kick):控制面后台重建当前传输、不碰 TUN/路由。
-// 立即返回(不等隧道健康);效果查 bx status。
-func KickControl(sockPath string) (string, error) {
-	return postControl(sockPath, "/v0/kick")
-}
-
 // ReloadControl 触发路由规则热重载(bx direct/proxy 改配置后):控制面重读配置、
 // 重建 router 原子换入,不断隧道。同步返回成败。
 func ReloadControl(sockPath string) (string, error) {

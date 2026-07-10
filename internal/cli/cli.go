@@ -73,7 +73,7 @@ func New() *cli.App {
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
-			{Name: "kick", Usage: "强制立即重连隧道(不碰 TUN/路由,比 down+up 轻)", Action: kickAction},
+			{Name: "restart", Usage: "重启保护(全量重启,保留开机自启)", Action: restartAction},
 			{Name: "update", Usage: "更新 bx 到最新 release(SHA256 校验 + 原子替换 + 重启)", Flags: updateFlags(), Action: updateAction},
 			{Name: "direct", Usage: "管理直连白名单(global 下只有白名单域名直连,其余走隧道)", Subcommands: directCommands()},
 			{Name: "proxy", Usage: "管理强制走隧道的域名", Subcommands: proxyCommands()},
@@ -1514,16 +1514,16 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"Read-only.", "Used by lightweight status surfaces such as a menu bar helper."},
 			},
 			{
-				Command:        "sudo bx kick",
+				Command:        "sudo bx restart",
 				Category:       "control",
-				Summary:        "Reconnect the active tunnel without restarting protection.",
+				Summary:        "Fully restart protection (stop + start), keeping auto-start enabled.",
 				Stable:         true,
 				RequiresRoot:   true,
 				ChangesSystem:  false,
-				ChangesNetwork: false,
+				ChangesNetwork: true,
 				Outputs:        []string{"text"},
-				Examples:       []string{"sudo bx kick"},
-				SafeNotes:      []string{"Requires a running bx service.", "Reconnects the current transport only; does not change TUN, routes, or DNS."},
+				Examples:       []string{"sudo bx restart"},
+				SafeNotes:      []string{"Requires a configured bx service.", "Restarts the whole engine (tunnel + TUN + routes); brief connectivity blip during restart."},
 			},
 			{
 				Command:        "sudo bx direct add <domain>",
@@ -3480,11 +3480,24 @@ func downAction(c *cli.Context) (err error) {
 	return nil
 }
 
-func kickAction(c *cli.Context) error {
-	if _, err := supervisor.KickControl(supervisor.SockPath); err != nil {
-		return fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
+// restartAction 全量重启保护(经服务管理器:停旧+起新),保留开机自启。取代旧的 bx kick——
+// kick 仅热切隧道(不碰 TUN/路由/引擎),数据面卡住时修不了、且非 Linux 平台无 peer-cred 恒被拒;
+// 一条 restart 更简单可靠,是"偶尔要 down+up"的正解。
+func restartAction(c *cli.Context) (err error) {
+	defer autoArchiveAfterClientCommand("restart", &err, true)
+	if !install.UnitInstalled() {
+		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
 	}
-	fmt.Println("✅ 已触发强制重连(重建当前隧道,不碰 TUN/路由)。几秒后 bx status 查看效果。")
+	stepLine("服务", "重启 bx")
+	if err := install.Restart(); err != nil {
+		return err
+	}
+	stepDone("服务", "已重启")
+	if rep, rerr := readStatusReport(); rerr == nil {
+		printUpSummary(rep)
+		return nil
+	}
+	fmt.Println("✅ bx 已重启。")
 	return nil
 }
 
