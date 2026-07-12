@@ -71,6 +71,8 @@ ZeroTier and similar overlays do not have one universal control-plane/route shap
 
 Other VPN/tunnel/proxy apps are treated the same way. On macOS, `bx check`/`bx leak-check` can surface common competing paths such as Cloudflare WARP, WireGuard, OpenVPN, Clash, Surge, mihomo, system proxy, and connected macOS VPN services. Process-only evidence is reported as `info`; active system proxy or connected VPN evidence is reported as `warn` because it may create a path outside bx. bx intentionally avoids flagging raw helper engine names that bx itself may run internally.
 
+`bx status` is the runtime view. The macOS daemon refreshes a lightweight Network Guard snapshot in the background and exposes it as `warnings` in `/v0/status`. This catches changes that happen after `bx up`, such as a VPN service connecting or system proxy becoming enabled. The guard is read-only; it warns instead of disabling or reordering other software.
+
 ## Not IP leaks, but identity signals
 
 These do not usually expose the local public IP, but they can correlate identity:

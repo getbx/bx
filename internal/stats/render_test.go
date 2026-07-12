@@ -116,6 +116,23 @@ func TestRenderShowsMode(t *testing.T) {
 	}
 }
 
+func TestRenderShowsWarnings(t *testing.T) {
+	out := Render(Report{
+		TunnelHealthy: true,
+		Warnings: []Warning{{
+			Name:     "packet_tunnel",
+			Severity: "warn",
+			Detail:   "macOS VPN service active: Work VPN",
+			Hint:     "another VPN may own part of the network path",
+		}},
+	})
+	for _, want := range []string{"提醒", "Work VPN", "another VPN"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("warning panel missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // 单传输(无容灾/UDP)只显当前传输,不显容灾块。
 func TestRenderSingleTransportNoFailoverBlock(t *testing.T) {
 	out := Render(Report{TunnelHealthy: true, Transport: "brook@1.2.3.4"})

@@ -18,9 +18,18 @@ type Report struct {
 	UDPNote       string `json:"udp_note,omitempty"`
 	MutationState string `json:"mutation_state,omitempty"`
 
-	Transport    string   `json:"transport,omitempty"`     // 当前活跃传输 scheme@host(容灾后反映实际)
-	Transports   []string `json:"transports,omitempty"`    // 多传输容灾列表(>1 时,有序优先级)
-	UDPTransport string   `json:"udp_transport,omitempty"` // UDP 专用传输(按类分流)
+	Transport    string    `json:"transport,omitempty"`     // 当前活跃传输 scheme@host(容灾后反映实际)
+	Transports   []string  `json:"transports,omitempty"`    // 多传输容灾列表(>1 时,有序优先级)
+	UDPTransport string    `json:"udp_transport,omitempty"` // UDP 专用传输(按类分流)
+	Warnings     []Warning `json:"warnings,omitempty"`      // 运行期网络共存告警(只读检测)
+}
+
+// Warning 是 bx status 的轻量运行期告警,用于提示其他通道/系统代理等共存风险。
+type Warning struct {
+	Name     string `json:"name"`
+	Severity string `json:"severity"`
+	Detail   string `json:"detail"`
+	Hint     string `json:"hint,omitempty"`
 }
 
 // modeLabel 给分流模式配中文说明,让 status 一眼看懂当前流量策略。
@@ -75,8 +84,26 @@ func Render(r Report) string {
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "  分流    代理 %.1f%% / 直连 %.1f%%\n", ratio, 100-ratio)
 	fmt.Fprintf(&b, "  流量    ↑ %s   ↓ %s\n", humanBytes(r.BytesUp), humanBytes(r.BytesDown))
+	for i, w := range r.Warnings {
+		label := "提醒"
+		if i > 0 {
+			label = ""
+		}
+		fmt.Fprintf(&b, "  %-6s %s\n", label, warningText(w))
+	}
 	fmt.Fprint(&b, recoveryHint(r))
 	return b.String()
+}
+
+func warningText(w Warning) string {
+	detail := strings.TrimSpace(w.Detail)
+	if detail == "" {
+		detail = w.Name
+	}
+	if w.Hint != "" {
+		return detail + " (" + w.Hint + ")"
+	}
+	return detail
 }
 
 // recoveryHint:隧道不健康时返回大白话恢复块(怎么了 + kill-switch 保护说明 + 下一步);
