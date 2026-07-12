@@ -2028,7 +2028,7 @@ func applyPlatformRisk(rep *leakCheckReport) {
 	for _, check := range rep.Checks {
 		if check.Status == "warn" || check.Status == "fail" {
 			switch check.Name {
-			case "tailscale", "zerotier":
+			case "tailscale", "zerotier", "warp", "wireguard", "openvpn", "local_proxy", "packet_tunnel":
 				rep.Risk = maxRisk(rep.Risk, "medium")
 			}
 		}

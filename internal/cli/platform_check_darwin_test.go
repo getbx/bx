@@ -57,3 +57,60 @@ feth1234: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 2800
 		t.Fatal("expected ZeroTier description to be detected")
 	}
 }
+
+func TestDarwinSystemProxyEnabled(t *testing.T) {
+	out := `
+<dictionary> {
+  HTTPEnable : 1
+  HTTPPort : 7890
+  HTTPProxy : 127.0.0.1
+  SOCKSEnable : 0
+}
+`
+	if !darwinSystemProxyEnabled(out) {
+		t.Fatal("expected enabled HTTP proxy to be detected")
+	}
+}
+
+func TestDarwinSystemProxyEnabledAbsent(t *testing.T) {
+	out := `
+<dictionary> {
+  HTTPEnable : 0
+  SOCKSEnable : 0
+}
+`
+	if darwinSystemProxyEnabled(out) {
+		t.Fatal("disabled proxy should not be detected as enabled")
+	}
+}
+
+func TestDarwinConnectedNetworkService(t *testing.T) {
+	out := `
+Available network connection services in the current set (*=enabled):
+* (Disconnected) Personal VPN
+* (Connected) Work VPN [VPN:com.example.vpn]
+`
+	if got := darwinConnectedNetworkService(out); got != "Work VPN [VPN:com.example.vpn]" {
+		t.Fatalf("connected service = %q", got)
+	}
+}
+
+func TestDarwinConnectedNetworkServiceConnecting(t *testing.T) {
+	out := `
+Available network connection services in the current set (*=enabled):
+* (Connecting) Cloudflare WARP [VPN:com.cloudflare.warp]
+`
+	if got := darwinConnectedNetworkService(out); got != "Cloudflare WARP [VPN:com.cloudflare.warp]" {
+		t.Fatalf("connecting service = %q", got)
+	}
+}
+
+func TestDarwinConnectedNetworkServiceAbsent(t *testing.T) {
+	out := `
+Available network connection services in the current set (*=enabled):
+* (Disconnected) Work VPN
+`
+	if got := darwinConnectedNetworkService(out); got != "" {
+		t.Fatalf("connected service = %q, want empty", got)
+	}
+}
