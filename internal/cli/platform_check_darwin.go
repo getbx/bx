@@ -15,6 +15,9 @@ func collectPlatformChecks(ctx context.Context) []checkReport {
 	if check := darwinTailscaleCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
+	if check := darwinZeroTierCheck(ctx); check.Name != "" {
+		checks = append(checks, check)
+	}
 	return checks
 }
 
@@ -48,12 +51,7 @@ func darwinTailscaleCheck(parent context.Context) checkReport {
 }
 
 func darwinTailscaleProcessDetected(ctx context.Context) bool {
-	for _, pattern := range []string{"Tailscale", "tailscaled"} {
-		if out, err := darwinCommand(ctx, "pgrep", "-fl", pattern); err == nil && strings.TrimSpace(out) != "" {
-			return true
-		}
-	}
-	return false
+	return darwinAnyProcessDetected(ctx, []string{"Tailscale", "tailscaled"})
 }
 
 var darwinTailscaleRouteRe = regexp.MustCompile(`(?m)^\s*(100\.64(?:\.0\.0)?/10|100\.100\.100\.100)\s+`)
@@ -70,6 +68,47 @@ func darwinRouteGetInterface(out string) string {
 		}
 	}
 	return ""
+}
+
+func darwinZeroTierCheck(parent context.Context) checkReport {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+
+	if !darwinAnyProcessDetected(ctx, []string{"ZeroTier", "zerotier-one"}) {
+		return checkReport{}
+	}
+	ifaces, err := darwinCommand(ctx, "ifconfig")
+	if err != nil {
+		return checkReport{
+			Name:   "zerotier",
+			Status: "info",
+			Detail: "detected, but interface state was not inspected: " + err.Error(),
+		}
+	}
+	if darwinHasZeroTierInterface(ifaces) {
+		return checkReport{Name: "zerotier", Status: "ok", Detail: "overlay interface present"}
+	}
+	return checkReport{
+		Name:   "zerotier",
+		Status: "info",
+		Detail: "detected; managed routes are app/network specific and not owned by bx",
+		Hint:   "if ZeroTier cannot connect, restart it after bx is on",
+	}
+}
+
+var darwinZeroTierInterfaceRe = regexp.MustCompile(`(?mi)^(zt[a-z0-9]+|feth[0-9]+):\s+flags=`)
+
+func darwinHasZeroTierInterface(ifconfigOut string) bool {
+	return darwinZeroTierInterfaceRe.MatchString(ifconfigOut) || strings.Contains(strings.ToLower(ifconfigOut), "zerotier")
+}
+
+func darwinAnyProcessDetected(ctx context.Context, patterns []string) bool {
+	for _, pattern := range patterns {
+		if out, err := darwinCommand(ctx, "pgrep", "-fl", pattern); err == nil && strings.TrimSpace(out) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func darwinCommand(parent context.Context, name string, args ...string) (string, error) {

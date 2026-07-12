@@ -36,3 +36,24 @@ destination: default
 		t.Fatalf("interface = %q, want utun5", got)
 	}
 }
+
+func TestDarwinHasZeroTierInterface(t *testing.T) {
+	out := `
+zt3jnm2k4a: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 2800
+	inet 10.147.17.21 netmask 0xffffff00 broadcast 10.147.17.255
+`
+	if !darwinHasZeroTierInterface(out) {
+		t.Fatal("expected zt* interface to be detected as ZeroTier")
+	}
+}
+
+func TestDarwinHasZeroTierInterfaceByDescription(t *testing.T) {
+	out := `
+feth1234: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 2800
+	status: active
+	description: ZeroTier virtual interface
+`
+	if !darwinHasZeroTierInterface(out) {
+		t.Fatal("expected ZeroTier description to be detected")
+	}
+}
