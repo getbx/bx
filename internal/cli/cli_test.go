@@ -702,6 +702,13 @@ func TestCapabilitiesReport(t *testing.T) {
 	if setup.Command == "" || !strings.Contains(strings.Join(setup.Arguments, " "), "<client-link>") {
 		t.Fatalf("setup capability should use client-link wording: %+v", setup)
 	}
+	invite := findCapability(rep.Commands, "sudo bx invite [name]")
+	if invite.Command == "" || !invite.RequiresRoot || !invite.ChangesSystem || invite.ChangesNetwork {
+		t.Fatalf("unexpected invite capability: %+v", invite)
+	}
+	if !strings.Contains(strings.Join(invite.SafeNotes, " "), "preferred human-facing") {
+		t.Fatalf("invite capability should guide agents toward human sharing: %+v", invite)
+	}
 	probe := findCapability(rep.Commands, "bx probe <client-link>")
 	if probe.Command == "" || !strings.Contains(strings.Join(probe.Examples, " "), "<client-link>") {
 		t.Fatalf("probe capability should use client-link wording: %+v", probe)
@@ -1209,6 +1216,40 @@ func TestNextShareListenSkipsExistingShares(t *testing.T) {
 	}
 	if got != ":10001" {
 		t.Fatalf("nextShareListen = %q, want :10001", got)
+	}
+}
+
+func TestSetupCommandQuotesLinks(t *testing.T) {
+	main := "bx://main"
+	udp := "bx://udp"
+	if got := setupCommand(main, ""); got != "sudo bx setup 'bx://main'" {
+		t.Fatalf("setupCommand main = %q", got)
+	}
+	if got := setupCommand(main, udp); got != "sudo bx setup 'bx://main' --udp 'bx://udp'" {
+		t.Fatalf("setupCommand udp = %q", got)
+	}
+}
+
+func TestInviteTextIsUserFriendly(t *testing.T) {
+	out := inviteText("alice", "bx://main", "bx://udp")
+	for _, want := range []string{"bx invite: alice", "给用户", "菜单栏 App", "bx://main", "UDP: bx://udp", "sudo bx setup 'bx://main' --udp 'bx://udp'", "sudo bx up"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("invite text missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestInviteShareConfigShowsExistingBrookShare(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeServerConfig(shareConfigPath(dir, "alice"), serverConfig{Listen: ":10000", Password: "pw"}, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := inviteShareConfig("alice", filepath.Join(t.TempDir(), "server.yaml"), dir, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Link == "" || !strings.Contains(cfg.Link, "brook://") || !strings.Contains(cfg.Link, "example.com") {
+		t.Fatalf("invite share cfg link = %q", cfg.Link)
 	}
 }
 
