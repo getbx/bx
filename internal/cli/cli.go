@@ -65,6 +65,7 @@ func New() *cli.App {
 			{Name: "setup", Usage: "首次配置:写配置+装服务+连通检测(不启动)", ArgsUsage: "bx://...", Flags: setupFlags(), Action: setupAction},
 			{Name: "probe", Usage: "检测 bx:// 链接连通性(不写配置/不改路由)", ArgsUsage: "bx://...", Flags: probeFlags(), Action: probeAction},
 			{Name: "server", Usage: "管理 bx server", Subcommands: serverCommands()},
+			{Name: "invite", Usage: "生成给普通用户的 bx 邀请", ArgsUsage: "[name]", Flags: inviteFlags(), Action: inviteAction},
 			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
 			{Name: "inspect", Usage: "输出 agent 可读诊断包", Flags: inspectFlags(), Action: inspectAction},
 			{Name: "webrtc-check", Usage: "检查 WebRTC 泄漏风险(只读)", Flags: webrtcCheckFlags(), Action: webrtcCheckAction},
@@ -430,6 +431,15 @@ func serverSharesFlags() []cli.Flag {
 	}
 }
 
+func inviteFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
+		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(brook server 需要;reality 链接通常已内含)"},
+		&cli.BoolFlag{Name: "open-ufw", Usage: "brook share 创建后自动执行 ufw allow <port>/tcp"},
+	}
+}
+
 func serverRevokeFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
@@ -749,13 +759,153 @@ func swapVlessUUID(link, newUUID string) string {
 // printClientSetup 打印 reality/hysteria2(及 reality+hys2 合体)的客户端接入信息。
 // 合体时给一条「按类分流」的 bx setup 命令(主 reality TCP + udp.transport 走 hys2)。
 func printClientSetup(cfg serverConfig) {
-	main := blink.Encode(cfg.Link)
-	if cfg.UDPLink != "" {
+	main, udp := encodedClientLinks(cfg)
+	if udp != "" {
 		fmt.Println("🔀 reality(TCP/隐蔽)+ hysteria2(UDP/加速)就绪。客户端一条命令配齐(按类分流,既安全又有速度):")
-		fmt.Printf("  sudo bx setup %s --udp %s\n", main, blink.Encode(cfg.UDPLink))
+		fmt.Printf("  %s\n", setupCommand(main, udp))
 		return
 	}
 	fmt.Println(main)
+}
+
+func encodedClientLinks(cfg serverConfig) (main string, udp string) {
+	if cfg.Link != "" {
+		main = blink.Encode(cfg.Link)
+	}
+	if cfg.UDPLink != "" {
+		udp = blink.Encode(cfg.UDPLink)
+	}
+	return main, udp
+}
+
+func setupCommand(main, udp string) string {
+	if udp != "" {
+		return fmt.Sprintf("sudo bx setup '%s' --udp '%s'", main, udp)
+	}
+	return fmt.Sprintf("sudo bx setup '%s'", main)
+}
+
+func inviteText(name, main, udp string) string {
+	title := "bx invite"
+	if name != "" {
+		title += ": " + name
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", title)
+	fmt.Fprintln(&b, "给用户:")
+	fmt.Fprintln(&b, "  1. 安装 bx")
+	fmt.Fprintln(&b, "  2. 打开 bx 菜单栏 App,粘贴下面的 bx:// 链接")
+	fmt.Fprintln(&b, "  3. 点击 Start Protection")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "bx:// 链接:")
+	fmt.Fprintf(&b, "  %s\n", main)
+	if udp != "" {
+		fmt.Fprintf(&b, "  UDP: %s\n", udp)
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "命令行备用:")
+	fmt.Fprintf(&b, "  %s\n", setupCommand(main, udp))
+	fmt.Fprintln(&b, "  sudo bx up")
+	return b.String()
+}
+
+func inviteAction(c *cli.Context) error {
+	name := strings.TrimSpace(c.Args().First())
+	if name == "" {
+		cfg, err := readServerConfig(c.String("config"))
+		if err != nil {
+			return err
+		}
+		if cfg.Link == "" {
+			host := c.String("host")
+			if host == "" {
+				return fmt.Errorf("brook server 生成邀请需要 --host <VPS_IP或域名>")
+			}
+			link, err := bxServerLink(host, cfg)
+			if err != nil {
+				return err
+			}
+			cfg.Link = mustDecodeBXLink(link)
+		}
+		main, udp := encodedClientLinks(cfg)
+		if main == "" {
+			return fmt.Errorf("server 配置没有可分享链接")
+		}
+		fmt.Print(inviteText("", main, udp))
+		return nil
+	}
+
+	name, err := cleanShareName(name)
+	if err != nil {
+		return err
+	}
+	cfg, err := inviteShareConfig(name, c.String("config"), c.String("dir"), c.String("host"))
+	if err != nil {
+		return err
+	}
+	main, udp := encodedClientLinks(cfg)
+	if main == "" {
+		return fmt.Errorf("share %s 没有可分享链接", name)
+	}
+	if c.Bool("open-ufw") && cfg.Listen != "" {
+		if err := openUFW(cfg.Listen); err != nil {
+			return err
+		}
+	}
+	fmt.Print(inviteText(name, main, udp))
+	return nil
+}
+
+func inviteShareConfig(name, configPath, dir, host string) (serverConfig, error) {
+	if cfg, err := readServerConfig(shareConfigPath(dir, name)); err == nil {
+		if cfg.Link == "" {
+			if host == "" {
+				return serverConfig{}, fmt.Errorf("brook share %s 显示邀请需要 --host <VPS_IP或域名>", name)
+			}
+			link, err := bxServerLink(host, cfg)
+			if err != nil {
+				return serverConfig{}, err
+			}
+			cfg.Link = mustDecodeBXLink(link)
+		}
+		return cfg, nil
+	}
+	mainCfg, err := readServerConfig(configPath)
+	if err != nil {
+		return serverConfig{}, err
+	}
+	switch mainCfg.Type {
+	case "reality":
+		return realityShare(name, dir, mainCfg)
+	case "hysteria2":
+		return serverConfig{}, fmt.Errorf("hysteria2 主 server 暂不支持多用户邀请;请使用默认 reality+hysteria2 server")
+	default:
+		if host == "" {
+			return serverConfig{}, fmt.Errorf("brook server 创建邀请需要 --host <VPS_IP或域名>")
+		}
+		link, _, err := createShare(name, host, dir, "", "")
+		if err != nil {
+			return serverConfig{}, err
+		}
+		raw, err := blink.Decode(link)
+		if err != nil {
+			return serverConfig{}, err
+		}
+		cfg, err := readServerConfig(shareConfigPath(dir, name))
+		if err != nil {
+			return serverConfig{}, err
+		}
+		cfg.Link = raw
+		return cfg, nil
+	}
+}
+
+func mustDecodeBXLink(link string) string {
+	raw, err := blink.Decode(link)
+	if err != nil {
+		return link
+	}
+	return raw
 }
 
 func serverLinkAction(c *cli.Context) error {
@@ -1783,6 +1933,20 @@ func capabilities() capabilitiesReport {
 				Arguments:      []string{"<name>", "--host <host>", "--listen <addr>", "--password <password>", "--open-ufw"},
 				Examples:       []string{"sudo bx server share alice --host <host>"},
 				SafeNotes:      []string{"May change firewall only when --open-ufw is passed."},
+			},
+			{
+				Command:        "sudo bx invite [name]",
+				Category:       "server",
+				Summary:        "Print a user-friendly bx invite with install steps and client link.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"text"},
+				Arguments:      []string{"[name]", "--host <host>", "--config <path>", "--dir <dir>", "--open-ufw"},
+				Examples:       []string{"sudo bx invite", "sudo bx invite alice", "sudo bx invite alice --host <host>"},
+				SafeNotes:      []string{"With a name, creates or reuses a per-user share.", "May change firewall only when --open-ufw is passed.", "Use this as the preferred human-facing sharing command."},
 			},
 			{
 				Command:        "sudo bx server revoke <name>",
