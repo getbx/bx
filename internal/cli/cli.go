@@ -3590,12 +3590,17 @@ func printUpSummary(rep stats.Report) {
 	state := "Protected"
 	if !rep.TunnelHealthy {
 		state = "Needs Attention"
+	} else if len(rep.Warnings) > 0 {
+		state = "Needs Attention"
 	}
 	fmt.Println()
 	fmt.Println("bx is on")
 	fmt.Printf("  Status     %s\n", state)
 	fmt.Printf("  Tunnel     %dms\n", rep.LatencyMS)
 	fmt.Printf("  UDP Relay  %s\n", onOff(rep.UDPMode == "proxy"))
+	if len(rep.Warnings) > 0 {
+		fmt.Printf("  Warning    %s\n", rep.Warnings[0].Detail)
+	}
 }
 
 func stepLine(name, detail string) {
