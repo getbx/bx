@@ -69,6 +69,8 @@ On macOS, overlay networks such as Tailscale and ZeroTier are treated as coexist
 
 ZeroTier and similar overlays do not have one universal control-plane/route shape that bx can safely infer for every user. bx therefore starts with read-only coexistence checks: it can report that ZeroTier is running and whether a likely overlay interface is present, while leaving membership, ACLs, and managed routes to ZeroTier itself.
 
+Other VPN/tunnel/proxy apps are treated the same way. On macOS, `bx check`/`bx leak-check` can surface common competing paths such as Cloudflare WARP, WireGuard, OpenVPN, Clash, Surge, mihomo, system proxy, and connected macOS VPN services. Process-only evidence is reported as `info`; active system proxy or connected VPN evidence is reported as `warn` because it may create a path outside bx. bx intentionally avoids flagging raw helper engine names that bx itself may run internally.
+
 ## Not IP leaks, but identity signals
 
 These do not usually expose the local public IP, but they can correlate identity:
