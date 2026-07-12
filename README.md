@@ -46,7 +46,7 @@ sudo bx server down        # 停
 
 需要别的:`--protocol hysteria2`(纯速度档)、`--protocol brook`(简单兜底)、`--tcp-only`(reality 不带 hys2)、
 `--host <域名>`(自定义)、`--port`、`--sni`。协议怎么选见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
-分享给普通用户优先用 invite:`sudo bx invite <name>` / `sudo bx server revoke <name>`。
+分享给普通用户优先用用户管理层:`sudo bx user invite <name>` / `sudo bx user list` / `sudo bx user revoke <name>`。
 
 之后也可以随时重新生成链接:
 
@@ -57,15 +57,15 @@ sudo bx server link --host <VPS_IP或域名>
 分享给其他人:
 
 ```bash
-sudo bx invite alice
-sudo bx server shares
-sudo bx server revoke alice
+sudo bx user invite alice
+sudo bx user list
+sudo bx user revoke alice
 ```
 
 如果 VPS 使用 ufw,创建分享时可显式放行端口:
 
 ```bash
-sudo bx invite alice --open-ufw
+sudo bx user invite alice --open-ufw
 ```
 
 也可以启动一个只监听本机的极简 Web UI:
@@ -288,6 +288,10 @@ sudo bx server shares --json
 | `sudo bx server stop` | 停止 bx server 并取消开机自启 |
 | `sudo bx server link --host <host>` | 生成客户端链接 |
 | `sudo bx invite [name]` | 生成给普通用户的安装/配置邀请 |
+| `sudo bx user list` | 查看用户 |
+| `sudo bx user show <name>` | 查看一个用户 |
+| `sudo bx user invite <name>` | 生成或复显用户邀请 |
+| `sudo bx user revoke <name>` | 撤销用户 |
 | `sudo bx server share <name> --host <host>` | 创建一个独立分享链接 |
 | `sudo bx server shares` | 查看已分享的链接 |
 | `sudo bx server shares --json` | 以 JSON 查看已分享的链接 |
