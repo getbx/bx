@@ -24,6 +24,14 @@ type shareView struct {
 	Status string `json:"status"`
 }
 
+type userView struct {
+	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Listen string `json:"listen,omitempty"`
+	Status string `json:"status"`
+	Plan   string `json:"plan"`
+}
+
 func serverUIAction(c *cli.Context) error {
 	if !isLoopbackListen(c.String("listen")) {
 		return fmt.Errorf("server ui 只允许监听本机地址,例如 127.0.0.1:8787")
@@ -143,13 +151,33 @@ func (s uiServer) shareViews() ([]shareView, error) {
 func shareViews(shares []shareInfo) []shareView {
 	out := make([]shareView, 0, len(shares))
 	for _, share := range shares {
-		out = append(out, shareView{
-			Name:   share.Name,
-			Listen: share.Config.Listen,
-			Status: serviceState("is-active", install.ShareServiceName(share.Name)),
-		})
+		u := userViewFromShare(share)
+		out = append(out, shareView{Name: u.Name, Listen: u.Listen, Status: u.Status})
 	}
 	return out
+}
+
+func userViews(shares []shareInfo) []userView {
+	out := make([]userView, 0, len(shares))
+	for _, share := range shares {
+		out = append(out, userViewFromShare(share))
+	}
+	return out
+}
+
+func userViewFromShare(share shareInfo) userView {
+	proto, _ := normalizeServerProtocol(share.Config.Type)
+	status := "active"
+	if proto == "brook" {
+		status = serviceState("is-active", install.ShareServiceName(share.Name))
+	}
+	return userView{
+		Name:   share.Name,
+		Type:   proto,
+		Listen: share.Config.Listen,
+		Status: status,
+		Plan:   "default",
+	}
 }
 
 func writeHTTPJSON(w http.ResponseWriter, v any) {

@@ -66,6 +66,7 @@ func New() *cli.App {
 			{Name: "probe", Usage: "检测 bx:// 链接连通性(不写配置/不改路由)", ArgsUsage: "bx://...", Flags: probeFlags(), Action: probeAction},
 			{Name: "server", Usage: "管理 bx server", Subcommands: serverCommands()},
 			{Name: "invite", Usage: "生成给普通用户的 bx 邀请", ArgsUsage: "[name]", Flags: inviteFlags(), Action: inviteAction},
+			{Name: "user", Usage: "管理 bx 用户", Subcommands: userCommands()},
 			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
 			{Name: "inspect", Usage: "输出 agent 可读诊断包", Flags: inspectFlags(), Action: inspectAction},
 			{Name: "webrtc-check", Usage: "检查 WebRTC 泄漏风险(只读)", Flags: webrtcCheckFlags(), Action: webrtcCheckAction},
@@ -147,6 +148,18 @@ type sharesReport struct {
 	OK              bool        `json:"ok"`
 	SecretsRedacted bool        `json:"secrets_redacted"`
 	Shares          []shareView `json:"shares"`
+}
+
+type usersReport struct {
+	OK              bool       `json:"ok"`
+	SecretsRedacted bool       `json:"secrets_redacted"`
+	Users           []userView `json:"users"`
+}
+
+type userReport struct {
+	OK              bool     `json:"ok"`
+	SecretsRedacted bool     `json:"secrets_redacted"`
+	User            userView `json:"user"`
 }
 
 type checkReport struct {
@@ -328,6 +341,15 @@ func serverCommands() []*cli.Command {
 	}
 }
 
+func userCommands() []*cli.Command {
+	return []*cli.Command{
+		{Name: "list", Usage: "列出 bx 用户", Flags: userListFlags(), Action: userListAction},
+		{Name: "show", Usage: "查看一个用户", ArgsUsage: "<name>", Flags: userShowFlags(), Action: userShowAction},
+		{Name: "invite", Usage: "生成或复显用户邀请", ArgsUsage: "<name>", Flags: inviteFlags(), Action: inviteAction},
+		{Name: "revoke", Usage: "撤销一个用户", ArgsUsage: "<name>", Flags: userRevokeFlags(), Action: userRevokeAction},
+	}
+}
+
 func dnsCommands() []*cli.Command {
 	return []*cli.Command{
 		{Name: "status", Usage: "查看 macOS 系统 DNS 接管状态", Flags: dnsFlags(), Action: dnsStatusAction},
@@ -437,6 +459,26 @@ func inviteFlags() []cli.Flag {
 		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
 		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(brook server 需要;reality 链接通常已内含)"},
 		&cli.BoolFlag{Name: "open-ufw", Usage: "brook share 创建后自动执行 ufw allow <port>/tcp"},
+	}
+}
+
+func userListFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "用户/share 配置目录"},
+		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
+	}
+}
+
+func userShowFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "用户/share 配置目录"},
+		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
+	}
+}
+
+func userRevokeFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "用户/share 配置目录"},
 	}
 }
 
@@ -1038,6 +1080,62 @@ func serverSharesAction(c *cli.Context) error {
 		}
 		fmt.Printf("%s\t%s\t%s\n", s.Name, s.Config.Listen, serviceState("is-active", install.ShareServiceName(s.Name)))
 	}
+	return nil
+}
+
+func userListAction(c *cli.Context) error {
+	shares, err := readShares(c.String("dir"))
+	if err != nil {
+		return err
+	}
+	users := userViews(shares)
+	if c.Bool("json") {
+		return writeJSON(os.Stdout, usersReport{OK: true, SecretsRedacted: true, Users: users})
+	}
+	if len(users) == 0 {
+		fmt.Println("No users.")
+		return nil
+	}
+	fmt.Println("NAME\tTYPE\tSTATUS\tPLAN")
+	for _, u := range users {
+		fmt.Printf("%s\t%s\t%s\t%s\n", u.Name, u.Type, u.Status, u.Plan)
+	}
+	return nil
+}
+
+func userShowAction(c *cli.Context) error {
+	name, err := cleanShareName(c.Args().First())
+	if err != nil {
+		return err
+	}
+	share, err := readShare(c.String("dir"), name)
+	if err != nil {
+		return err
+	}
+	user := userViewFromShare(share)
+	if c.Bool("json") {
+		return writeJSON(os.Stdout, userReport{OK: true, SecretsRedacted: true, User: user})
+	}
+	fmt.Printf("bx user: %s\n", user.Name)
+	fmt.Printf("  Type    %s\n", user.Type)
+	fmt.Printf("  Status  %s\n", user.Status)
+	fmt.Printf("  Plan    %s\n", user.Plan)
+	if user.Listen != "" {
+		fmt.Printf("  Listen  %s\n", user.Listen)
+	}
+	fmt.Printf("  Invite  sudo bx user invite %s\n", user.Name)
+	return nil
+}
+
+func userRevokeAction(c *cli.Context) error {
+	name, err := cleanShareName(c.Args().First())
+	if err != nil {
+		return err
+	}
+	if err := revokeShare(name, c.String("dir")); err != nil {
+		return err
+	}
+	fmt.Printf("✅ user %s 已撤销。\n", name)
 	return nil
 }
 
@@ -1947,6 +2045,47 @@ func capabilities() capabilitiesReport {
 				Arguments:      []string{"[name]", "--host <host>", "--config <path>", "--dir <dir>", "--open-ufw"},
 				Examples:       []string{"sudo bx invite", "sudo bx invite alice", "sudo bx invite alice --host <host>"},
 				SafeNotes:      []string{"With a name, creates or reuses a per-user share.", "May change firewall only when --open-ufw is passed.", "Use this as the preferred human-facing sharing command."},
+			},
+			{
+				Command:        "sudo bx user list --json",
+				Category:       "server",
+				Summary:        "List bx users in the management layer.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"json"},
+				Arguments:      []string{"--json", "--dir <dir>"},
+				Examples:       []string{"sudo bx user list --json", "sudo bx user show alice --json"},
+				SafeNotes:      []string{"Read-only.", "Secrets are redacted.", "Users are backed by existing share records in this phase."},
+			},
+			{
+				Command:        "sudo bx user invite <name>",
+				Category:       "server",
+				Summary:        "Create or reprint a user's invite.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: false,
+				ReadsSecrets:   true,
+				Outputs:        []string{"text"},
+				Arguments:      []string{"<name>", "--host <host>", "--config <path>", "--dir <dir>", "--open-ufw"},
+				Examples:       []string{"sudo bx user invite alice"},
+				SafeNotes:      []string{"Alias of the invite flow under the user management namespace.", "May change firewall only when --open-ufw is passed."},
+			},
+			{
+				Command:        "sudo bx user revoke <name>",
+				Category:       "server",
+				Summary:        "Revoke one bx user.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  true,
+				ChangesNetwork: false,
+				Outputs:        []string{"text"},
+				Arguments:      []string{"<name>", "--dir <dir>"},
+				Examples:       []string{"sudo bx user revoke alice"},
+				SafeNotes:      []string{"Uses the same revocation path as server share revoke."},
 			},
 			{
 				Command:        "sudo bx server revoke <name>",
@@ -4364,6 +4503,14 @@ func readShares(dir string) ([]shareInfo, error) {
 	}
 	sort.Slice(shares, func(i, j int) bool { return shares[i].Name < shares[j].Name })
 	return shares, nil
+}
+
+func readShare(dir, name string) (shareInfo, error) {
+	cfg, err := readServerConfig(shareConfigPath(dir, name))
+	if err != nil {
+		return shareInfo{}, err
+	}
+	return shareInfo{Name: name, Config: cfg}, nil
 }
 
 func nextShareListen(dir string) (string, error) {

@@ -709,6 +709,14 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(invite.SafeNotes, " "), "preferred human-facing") {
 		t.Fatalf("invite capability should guide agents toward human sharing: %+v", invite)
 	}
+	userList := findCapability(rep.Commands, "sudo bx user list --json")
+	if userList.Command == "" || !userList.RequiresRoot || userList.ChangesSystem || userList.ChangesNetwork {
+		t.Fatalf("unexpected user list capability: %+v", userList)
+	}
+	userInvite := findCapability(rep.Commands, "sudo bx user invite <name>")
+	if userInvite.Command == "" || !userInvite.RequiresRoot || !userInvite.ChangesSystem || userInvite.ChangesNetwork {
+		t.Fatalf("unexpected user invite capability: %+v", userInvite)
+	}
 	probe := findCapability(rep.Commands, "bx probe <client-link>")
 	if probe.Command == "" || !strings.Contains(strings.Join(probe.Examples, " "), "<client-link>") {
 		t.Fatalf("probe capability should use client-link wording: %+v", probe)
@@ -1202,6 +1210,36 @@ func TestReadSharesSorted(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].Name != "alice" || got[1].Name != "bob" {
 		t.Fatalf("shares = %+v", got)
+	}
+}
+
+func TestUserViewsFromShares(t *testing.T) {
+	users := userViews([]shareInfo{
+		{Name: "alice", Config: serverConfig{Type: "reality", Link: "vless://id@example.com:443"}},
+		{Name: "bob", Config: serverConfig{Listen: ":10000", Password: "pw"}},
+	})
+	if len(users) != 2 {
+		t.Fatalf("users = %+v", users)
+	}
+	if users[0].Name != "alice" || users[0].Type != "reality" || users[0].Status != "active" || users[0].Plan != "default" {
+		t.Fatalf("reality user view = %+v", users[0])
+	}
+	if users[1].Name != "bob" || users[1].Type != "brook" || users[1].Listen != ":10000" || users[1].Plan != "default" {
+		t.Fatalf("brook user view = %+v", users[1])
+	}
+}
+
+func TestReadShare(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeServerConfig(shareConfigPath(dir, "alice"), serverConfig{Type: "reality", Link: "vless://id@example.com:443"}, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readShare(dir, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "alice" || got.Config.Type != "reality" {
+		t.Fatalf("readShare = %+v", got)
 	}
 }
 
