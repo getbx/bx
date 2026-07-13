@@ -270,6 +270,13 @@ scripts/darwin-launchd-smoke.sh
 sudo BX_LINK='<client-link>' scripts/darwin-launchd-smoke.sh --execute
 ```
 
+已运行 bx 的安全重连也可先单独 dry-run。它不启动或停止服务，不改 DNS、路由或配置；明确加 `--execute` 后才会发起一次 `bx reconnect`，并验证 split-default 路由、DNS 接管和隧道健康均保留：
+
+```bash
+scripts/darwin-testkit.sh --reconnect-check
+sudo scripts/darwin-testkit.sh --reconnect-check --execute
+```
+
 日常使用:
 
 ```bash

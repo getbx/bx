@@ -99,8 +99,11 @@ For macOS real-machine testing:
 ```bash
 scripts/darwin-testkit.sh ... --webrtc-browser
 scripts/darwin-testkit.sh ... --leak-network
+scripts/darwin-testkit.sh --reconnect-check
 ```
 
 When `--webrtc-browser` is used, the testkit passes `--server-bypass` IPs as expected WebRTC public IPs, so the browser result is compared against the intended bx exit.
 
 When `--leak-network` is used, the testkit passes `--server-bypass` IPs as expected IPv4 exits for `bx leak-check --network`.
+
+`--reconnect-check` is a separate dry-run-first smoke test for an already running bx service. With `--execute`, it performs only `bx reconnect`, then verifies that macOS split-default routes and bx-managed DNS remain in place and the replacement tunnel is healthy. It does not run `bx up` or `bx down`.
