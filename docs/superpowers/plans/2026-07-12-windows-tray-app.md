@@ -243,8 +243,8 @@ package tray
 import "testing"
 
 func TestParseStatusJSON(t *testing.T) {
-	// bx status --json 的关键字段(对齐 stats.Report 的 json tag:tunnel_healthy/latency_ms/server)
-	b := []byte(`{"server":"1.2.3.4","tunnel_healthy":true,"latency_ms":401,"transport_active":"reality@1.2.3.4"}`)
+	// bx status --json 的关键字段(对齐 internal/stats/render.go 的 json tag:server/tunnel_healthy/latency_ms/transport)
+	b := []byte(`{"server":"1.2.3.4","tunnel_healthy":true,"latency_ms":401,"transport":"reality@1.2.3.4"}`)
 	d, ok := parseStatusJSON(b)
 	if !ok {
 		t.Fatal("应解析成功")
@@ -261,7 +261,7 @@ func TestParseStatusJSONBad(t *testing.T) {
 }
 ```
 
-> 注:实现前先 `grep -n 'json:"' internal/stats/*.go` 确认字段真实名(`tunnel_healthy`/`latency_ms`/`server`/`transport_active` 等),测试与实现都用真实字段名。
+> 注:字段名已核实(`internal/stats/render.go`):`server`/`tunnel_healthy`/`latency_ms`/`transport`。
 
 - [ ] **Step 2: 跑测试看红**
 
@@ -289,14 +289,13 @@ type StatusDetail struct {
 	Transport string
 }
 
-// parseStatusJSON 解析 `bx status --json` 输出。字段名须与 internal/stats 的 json tag 一致
-//(实现时以 `grep json:" internal/stats/*.go` 为准)。
+// parseStatusJSON 解析 `bx status --json` 输出。字段名与 internal/stats/render.go 的 json tag 一致。
 func parseStatusJSON(b []byte) (StatusDetail, bool) {
 	var raw struct {
 		Server        string `json:"server"`
 		TunnelHealthy bool   `json:"tunnel_healthy"`
 		LatencyMS     int64  `json:"latency_ms"`
-		Transport     string `json:"transport_active"`
+		Transport     string `json:"transport"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return StatusDetail{}, false
