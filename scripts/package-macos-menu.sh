@@ -49,6 +49,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>bx opens Terminal only when you choose Run Doctor from the menu.</string>
 </dict>
 </plist>
 PLIST
