@@ -9,6 +9,7 @@ Usage:
 
 Options:
   --execute                 Actually run the short macOS test. Without this, only logs a dry-run plan.
+  --reconnect-check         Verify an already running bx reconnect without changing routes or DNS.
   --bx PATH                 bx binary path. Default: /tmp/bx-mac/bx, built automatically if missing.
   --brook PATH              Internal transport binary override for debugging.
   --link LINK               bx:// link. Default: $BX_LINK; old $BX_BROOK_LINK still works.
@@ -34,6 +35,10 @@ Options:
 
 This script writes logs and a rollback script before touching routes. It never
 executes route/ifconfig unless --execute is set.
+
+Reconnect-check is separate from the route test: it requires an already running
+bx service, records its route/DNS state, and invokes only `bx reconnect` when
+--execute is present. It does not need a link, gateway, or server bypass.
 EOF
 }
 
@@ -158,6 +163,83 @@ capture_state() {
   scutil --dns >"$LOG_DIR/${phase}-dns.txt" 2>&1 || true
 }
 
+capture_reconnect_state() {
+  local phase="$1"
+  capture_state "$phase"
+  netstat -rn -f inet | awk '$1 == "0/1" || $1 == "128/1" { print }' >"$LOG_DIR/${phase}-split-routes.txt" 2>&1 || true
+  "$BX" status --json >"$LOG_DIR/${phase}-status.json" 2>&1 || true
+  "$BX" dns status >"$LOG_DIR/${phase}-dns-status.txt" 2>&1 || true
+}
+
+verify_reconnect_state() {
+  local before="$LOG_DIR/before-split-routes.txt"
+  local after="$LOG_DIR/after-split-routes.txt"
+  if [[ ! -s "$before" || ! -s "$after" ]]; then
+    echo "FAIL: split-default routes missing before or after reconnect" | tee "$LOG_DIR/reconnect-assertions.txt"
+    return 1
+  fi
+  if ! cmp -s "$before" "$after"; then
+    {
+      echo "FAIL: split-default routes changed during reconnect"
+      echo "before:"
+      cat "$before"
+      echo "after:"
+      cat "$after"
+    } | tee "$LOG_DIR/reconnect-assertions.txt"
+    return 1
+  fi
+  if ! grep -Eq '"tunnel_healthy"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/after-status.json"; then
+    echo "FAIL: bx is not healthy after reconnect" | tee "$LOG_DIR/reconnect-assertions.txt"
+    return 1
+  fi
+  if ! grep -q '127.0.0.1' "$LOG_DIR/after-dns-status.txt"; then
+    echo "FAIL: bx DNS is not managed by 127.0.0.1 after reconnect" | tee "$LOG_DIR/reconnect-assertions.txt"
+    return 1
+  fi
+  echo "OK: split-default routes, bx DNS, and tunnel health were retained" | tee "$LOG_DIR/reconnect-assertions.txt"
+}
+
+run_reconnect_check() {
+  capture_reconnect_state before
+  {
+    echo "# reconnect-only check: read-only snapshots plus one in-daemon reconnect"
+    echo "$BX status --json"
+    echo "$BX dns status"
+    echo "$BX reconnect"
+    echo "# assertions: 0/1 and 128/1 routes unchanged; DNS remains 127.0.0.1; tunnel healthy"
+  } | tee "$LOG_DIR/plan.txt"
+
+  if [[ "$EXECUTE" != "1" ]]; then
+    echo
+    echo "Dry-run complete. Logs: $LOG_DIR"
+    echo "No network changes were made."
+    echo "To execute: sudo $0 --reconnect-check --execute --bx $BX"
+    fix_log_permissions
+    exit 0
+  fi
+
+  [[ "$(id -u)" == "0" ]] || die "--reconnect-check --execute must run as root via sudo"
+  if ! grep -Eq '"tunnel_healthy"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/before-status.json"; then
+    die "bx is not healthy before reconnect; inspect $LOG_DIR/before-status.json"
+  fi
+  if [[ ! -s "$LOG_DIR/before-split-routes.txt" ]]; then
+    die "split-default routes are absent before reconnect; refusing to test"
+  fi
+
+  set +e
+  "$BX" reconnect >"$LOG_DIR/reconnect.log" 2>&1
+  reconnect_status=$?
+  set -e
+  capture_reconnect_state after
+  if [[ "$reconnect_status" != "0" ]]; then
+    cat "$LOG_DIR/reconnect.log" >&2
+    die "bx reconnect failed (exit $reconnect_status)"
+  fi
+  verify_reconnect_state
+  fix_log_permissions
+  echo "Reconnect check complete. Logs: $LOG_DIR"
+}
+
 fix_log_permissions() {
   if [[ -n "${SUDO_USER:-}" && "${SUDO_USER:-}" != "root" && -d "${LOG_DIR:-}" ]]; then
     chown -R "$SUDO_USER":staff "$LOG_DIR" 2>/dev/null || true
@@ -231,12 +313,14 @@ SET_SYSTEM_DNS=0
 DNS_SERVICE=""
 WEBRTC_BROWSER=0
 LEAK_NETWORK=0
+RECONNECT_CHECK=0
 SERVER_BYPASS=()
 USER_BYPASS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --execute) EXECUTE=1; shift ;;
+    --reconnect-check) RECONNECT_CHECK=1; shift ;;
     --bx) BX="${2:-}"; BX_PROVIDED=1; shift 2 ;;
     --brook) BROOK="${2:-}"; shift 2 ;;
     --link) LINK="${2:-}"; shift 2 ;;
@@ -263,18 +347,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ ${#SERVER_BYPASS[@]} -gt 0 ]] || die "--server-bypass A.B.C.D/32 is required"
+if [[ "$RECONNECT_CHECK" != "1" ]]; then
+  [[ ${#SERVER_BYPASS[@]} -gt 0 ]] || die "--server-bypass A.B.C.D/32 is required"
+fi
 
-if [[ "$BX_PROVIDED" != "1" || ! -x "$BX" ]]; then
+if [[ "$RECONNECT_CHECK" == "1" && "$BX_PROVIDED" != "1" ]]; then
+  BX="/usr/local/bin/bx"
+fi
+
+if [[ "$RECONNECT_CHECK" != "1" && ( "$BX_PROVIDED" != "1" || ! -x "$BX" ) ]]; then
   mkdir -p "$(dirname "$BX")"
   go build -o "$BX" .
 fi
 [[ -x "$BX" ]] || die "bx binary not executable: $BX"
 
-if [[ -z "$GATEWAY" ]]; then
+if [[ "$RECONNECT_CHECK" != "1" && -z "$GATEWAY" ]]; then
   GATEWAY="$(detect_gateway)"
 fi
-[[ -n "$GATEWAY" ]] || die "could not detect gateway; pass --gateway"
+if [[ "$RECONNECT_CHECK" != "1" ]]; then
+  [[ -n "$GATEWAY" ]] || die "could not detect gateway; pass --gateway"
+fi
 
 if [[ "$SET_SYSTEM_DNS" == "1" && -z "$DNS_SERVICE" ]]; then
   DEFAULT_DEVICE="$(detect_default_device)"
@@ -288,6 +380,10 @@ if [[ -z "$LOG_DIR" ]]; then
 fi
 mkdir -p "$LOG_DIR"
 chmod 700 "$LOG_DIR"
+
+if [[ "$RECONNECT_CHECK" == "1" ]]; then
+  run_reconnect_check
+fi
 
 PLAN_ARGS=(darwin-plan --tun "$TUN" --gateway "$GATEWAY")
 for cidr in "${SERVER_BYPASS[@]}"; do
