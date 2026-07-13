@@ -44,6 +44,21 @@ func TestParseSetupLinkRejects(t *testing.T) {
 	}
 }
 
+// 恶意剪贴板值:合法 scheme 前缀但内嵌引号/空白,可能注入额外参数到提权的 `bx setup "<link>"`。
+// 真实 bx/vless/… 链接是 URL-safe base64,绝不含引号或空白,故一律拒绝(纵深防御)。
+func TestParseSetupLinkRejectsInjection(t *testing.T) {
+	for _, in := range []string{
+		`bx://x" --evil-flag "y`, // 内嵌引号:拆 args
+		"bx://x y",               // 内嵌空格:拆 args
+		"bx://x\ty",              // 制表符
+		"vless://a\"b",           // 引号(vless)
+	} {
+		if _, ok := parseSetupLink(in); ok {
+			t.Errorf("应拒绝注入型输入 %q", in)
+		}
+	}
+}
+
 func TestMenuItemsFor(t *testing.T) {
 	// 保护中:显示"断开",不显示"连接";显示状态/日志/退出
 	m := menuItemsFor(StateProtected)
