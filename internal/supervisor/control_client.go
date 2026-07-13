@@ -115,6 +115,11 @@ func SetTransportControl(sockPath, link string) (string, error) {
 	return postControlBody(sockPath, "/v0/transport", map[string]string{"link": link})
 }
 
+// ReconnectControl 让守护进程安全重建当前传输。TUN、路由和 DNS 保持不变。
+func ReconnectControl(sockPath string) (string, error) {
+	return postControl(sockPath, "/v0/reconnect")
+}
+
 func RehijackControl(sockPath string) (string, error) {
 	return postControlBody(sockPath, "/v0/rehijack", nil)
 }

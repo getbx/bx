@@ -46,6 +46,8 @@ type fakeMutator struct {
 	setErr    error
 	setCalled bool
 	rehCalled bool
+	reconnectCalled bool
+	reconnectErr error
 }
 
 func (f *fakeMutator) SetTransport(link string) (func() error, func() error, error) {
@@ -60,6 +62,11 @@ func (f *fakeMutator) SetTransport(link string) (func() error, func() error, err
 func (f *fakeMutator) Rehijack() (func() error, func() error, error) {
 	f.rehCalled = true
 	return func() error { return nil }, func() error { return nil }, nil
+}
+
+func (f *fakeMutator) Reconnect() error {
+	f.reconnectCalled = true
+	return f.reconnectErr
 }
 
 func testMuxMut(eng controlEngine, mut mutator) http.Handler {
@@ -99,6 +106,38 @@ func TestControlStatus(t *testing.T) {
 	}
 	if rep.MutationState != "armed" {
 		t.Fatalf("mutation_state=%q want armed", rep.MutationState)
+	}
+}
+
+func TestControlReconnect(t *testing.T) {
+	mut := &fakeMutator{}
+	srv := httptest.NewServer(testMuxMut(&fakeControlEngine{}, mut))
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v0/reconnect")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if !mut.reconnectCalled {
+		t.Fatal("Reconnect was not called")
+	}
+	var out controlResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "reconnected" {
+		t.Fatalf("state=%q", out.State)
+	}
+}
+
+func TestControlReconnectPropagatesFailure(t *testing.T) {
+	mut := &fakeMutator{reconnectErr: errors.New("unhealthy")}
+	srv := httptest.NewServer(testMuxMut(&fakeControlEngine{}, mut))
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v0/reconnect")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }
 

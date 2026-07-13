@@ -122,6 +122,28 @@ func TestLiveMutatorSetTransport(t *testing.T) {
 	}
 }
 
+func TestLiveMutatorReconnectUsesCurrentLink(t *testing.T) {
+	fs := &fakeSwapper{cur: "reality://current"}
+	if err := (&liveMutator{swap: fs}).Reconnect(); err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+	if len(fs.swapCalls) != 1 || fs.swapCalls[0] != "reality://current" {
+		t.Fatalf("swap calls=%v", fs.swapCalls)
+	}
+}
+
+func TestLiveMutatorReconnectFailureKeepsCurrentLink(t *testing.T) {
+	wantErr := errors.New("unhealthy")
+	fs := &fakeSwapper{cur: "reality://current", swapErr: wantErr}
+	err := (&liveMutator{swap: fs}).Reconnect()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Reconnect err=%v want %v", err, wantErr)
+	}
+	if fs.cur != "reality://current" {
+		t.Fatalf("current link changed to %q", fs.cur)
+	}
+}
+
 func TestLiveMutatorSetTransportApplyFailUndoNop(t *testing.T) {
 	wantErr := errors.New("unhealthy")
 	fs := &fakeSwapper{cur: "brook://old", swapErr: wantErr}

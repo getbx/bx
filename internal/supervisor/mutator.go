@@ -10,6 +10,7 @@ package supervisor
 type mutator interface {
 	SetTransport(link string) (apply func() error, undo func() error, err error)
 	Rehijack() (apply func() error, undo func() error, err error)
+	Reconnect() error
 }
 
 // nopMutator:不做任何真实改动(A2 生产挂载)。full commit-confirmed 回路仍真实跑,
@@ -20,6 +21,7 @@ func nop() error { return nil }
 
 func (nopMutator) SetTransport(string) (func() error, func() error, error) { return nop, nop, nil }
 func (nopMutator) Rehijack() (func() error, func() error, error)           { return nop, nop, nil }
+func (nopMutator) Reconnect() error                                         { return nil }
 
 // rehijacker 是 liveMutator 对 platform 的窄依赖(只需路由-only 重落实)。
 // platform 接口的方法集 ⊇ rehijacker,故 run.go 的 plat 可直接赋值;
@@ -57,6 +59,12 @@ func (m *liveMutator) SetTransport(newLink string) (apply, undo func() error, er
 		return m.swap.swapTo(oldLink)
 	}
 	return apply, undo, nil
+}
+
+// Reconnect 安全重建当前传输:swapTo 先让替代传输健康,再原子切换 dialer,
+// 因而不碰 TUN、路由或 DNS,失败时旧传输保持原样。
+func (m *liveMutator) Reconnect() error {
+	return m.swap.swapTo(m.swap.currentLink())
 }
 
 // Rehijack 返回真 apply:在存活设备上重落实劫持路由(重探网关 + 拆旧路由 + 装新路由)。
