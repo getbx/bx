@@ -66,6 +66,9 @@ func TestAppHasVersion(t *testing.T) {
 	if !commandHasFlag(status, "json") {
 		t.Fatal("status should expose --json")
 	}
+	if !appHasCommand(app, "reconnect") {
+		t.Fatal("app should expose bx reconnect")
+	}
 	inspect := findAppCommand(app, "inspect")
 	if inspect == nil || !commandHasFlag(inspect, "json") {
 		t.Fatal("inspect should expose --json")
@@ -76,6 +79,26 @@ func TestAppHasVersion(t *testing.T) {
 	}
 	if !subcommandHidden(realtime, "on") || !subcommandHidden(realtime, "off") {
 		t.Fatal("realtime on/off should stay hidden from the normal help surface")
+	}
+}
+
+func TestMacMenuReconnectDoesNotCycleProtection(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "menu.addAction(\"Reconnect\"") {
+		t.Fatal("macOS menu should expose Reconnect")
+	}
+	if !strings.Contains(text, "func reconnectBx()") {
+		t.Fatal("macOS menu should implement reconnect action")
+	}
+	if !strings.Contains(text, "'\\(bxPath)' reconnect") {
+		t.Fatal("macOS reconnect should use bx reconnect")
+	}
+	if strings.Contains(text, "'\\(bxPath)' down &&") {
+		t.Fatal("macOS reconnect must not cycle bx down && bx up")
 	}
 }
 
@@ -739,12 +762,19 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(status.SafeNotes, " "), "menu bar") {
 		t.Fatalf("status json should mention status surfaces: %+v", status)
 	}
-	restart := findCapability(rep.Commands, "sudo bx restart")
-	if !restart.Stable || !restart.RequiresRoot || restart.ChangesSystem || !restart.ChangesNetwork {
-		t.Fatalf("unexpected restart capability: %+v", restart)
+	reconnect := findCapability(rep.Commands, "sudo bx reconnect")
+	if !reconnect.Stable || !reconnect.RequiresRoot || reconnect.ChangesSystem || reconnect.ChangesNetwork {
+		t.Fatalf("unexpected reconnect capability: %+v", reconnect)
 	}
-	if !strings.Contains(strings.Join(restart.SafeNotes, " "), "brief connectivity blip") {
-		t.Fatalf("restart should document full-restart scope: %+v", restart)
+	if !strings.Contains(strings.Join(reconnect.SafeNotes, " "), "Does not release") {
+		t.Fatalf("reconnect should document its fail-closed scope: %+v", reconnect)
+	}
+	restart := findCapability(rep.Commands, "sudo bx restart")
+	if !restart.Stable || !restart.RequiresRoot || restart.ChangesSystem || restart.ChangesNetwork {
+		t.Fatalf("unexpected restart compatibility capability: %+v", restart)
+	}
+	if !strings.Contains(strings.Join(restart.SafeNotes, " "), "alias") {
+		t.Fatalf("restart should be documented as reconnect alias: %+v", restart)
 	}
 	direct := findCapability(rep.Commands, "sudo bx direct add <domain>")
 	if !direct.Stable || !direct.RequiresRoot || !direct.ChangesSystem || direct.ChangesNetwork || !direct.ReadsSecrets {

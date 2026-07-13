@@ -212,10 +212,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         switch state {
         case .connected:
-            menu.addAction("Restart Protection", symbol: "arrow.clockwise", target: self, action: #selector(restartBx))
+            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
         case .warning:
-            menu.addAction("Restart Protection", symbol: "arrow.clockwise", target: self, action: #selector(restartBx))
+            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
         case .off:
             menu.addAction("Start Protection", symbol: "play.fill", target: self, action: #selector(startBx))
@@ -326,9 +326,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    @objc private func restartBx() {
-        if !runPrivileged("'\(bxPath)' down && '\(bxPath)' up") {
-            showFailure("Restart Failed", "bx did not restart.")
+    @objc private func reconnectBx() {
+        if !runPrivileged("'\(bxPath)' reconnect") {
+            showFailure("Reconnect Failed", "bx could not establish a replacement protected transport.")
         }
         refresh()
     }

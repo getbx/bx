@@ -173,11 +173,7 @@ macOS release 包会一次装好两件事并启动菜单栏 App:
 ./install.sh
 ```
 
-安装器会保留 `/etc/bx/config.yaml`,只替换 `/usr/local/bin/bx`、菜单栏 App 和菜单栏 LaunchAgent。若保护已经在运行,替换二进制后需要重启保护进程才会使用新版:优先在菜单栏选择 `Restart Protection`;命令行备用路径是:
-
-```bash
-sudo bx down && sudo bx up
-```
+安装器会保留 `/etc/bx/config.yaml`,只替换 `/usr/local/bin/bx`、菜单栏 App 和菜单栏 LaunchAgent,不会中断正在运行的保护。菜单栏的 `Reconnect` 只安全更换传输,不会为了加载新二进制而释放保护路径。运行中的守护进程会继续使用已加载的版本;进程级升级是单独的维护操作,不由安装器自动触发。
 
 #### 从源码安装菜单栏 App
 
@@ -322,7 +318,8 @@ sudo bx server shares --json
 | `sudo bx setup <client-link>` | 客户端首次配置 |
 | `sudo bx up` | 启动客户端并设为开机自启 |
 | `sudo bx down` | 停止客户端并取消开机自启 |
-| `sudo bx restart` | 全量重启保护(隧道卡住/连不上时用),保留开机自启 |
+| `sudo bx reconnect` | 安全重连传输:替代传输健康后切换,不中断 TUN、路由或 DNS |
+| `sudo bx restart` | `reconnect` 的兼容别名 |
 | `sudo bx direct add <domain>` | 将域名加入直连白名单,会与 proxy 规则互斥清理 |
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |
 | `sudo bx proxy add <domain>` | 强制域名走隧道,会与 direct 规则互斥清理 |

@@ -313,11 +313,14 @@ func (o *liveOps) RestartTunnel() error {
 	if err := requireRoot(isRoot()); err != nil {
 		return err
 	}
-	return ToolError{
-		Code:        CodeNotImplemented,
-		Message:     "RestartTunnel 尚未接线(待 Task 9 集成真实快照/supervisor 机器)",
-		Remediation: "用 `sudo bx down && sudo bx up` 替代",
+	if _, err := supervisor.ReconnectControl(supervisor.SockPath); err != nil {
+		return ToolError{
+			Code:        CodeTunnelUnhealthy,
+			Message:     "safe reconnect 失败: " + err.Error(),
+			Remediation: "确认 bx 守护进程在跑(bx up),然后查 bx_logs",
+		}
 	}
+	return nil
 }
 
 func (o *liveOps) Rehijack() error {

@@ -130,3 +130,20 @@ func TestRehijackToolForwardsToOps(t *testing.T) {
 		t.Fatal("应调用 ops.Rehijack")
 	}
 }
+
+func TestRestartTunnelSafelyReconnectsWithoutArming(t *testing.T) {
+	clk := &tclock{t: time.Unix(0, 0)}
+	g := confirm.New(240*time.Second, clk.now)
+	ops := &fakeOps{}
+	srv := newServerWithGuard(ops, g, &memSnapper{})
+	res := callToolOn(t, srv, "bx_restart_tunnel", map[string]any{})
+	if res.IsError {
+		t.Fatal("safe reconnect should not return an error")
+	}
+	if len(ops.calls) != 1 || ops.calls[0] != "restart" {
+		t.Fatalf("calls=%v, want [restart]", ops.calls)
+	}
+	if g.State() != confirm.StateIdle {
+		t.Fatalf("safe reconnect must not arm commit-confirmed guard, state=%v", g.State())
+	}
+}

@@ -77,7 +77,8 @@ func New() *cli.App {
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
-			{Name: "restart", Usage: "重启保护(全量重启,保留开机自启)", Action: restartAction},
+			{Name: "reconnect", Usage: "安全重连传输(不中断 TUN、路由或 DNS)", Action: reconnectAction},
+			{Name: "restart", Usage: "安全重连保护(reconnect 的兼容别名)", Action: restartAction},
 			{Name: "update", Usage: "更新 bx 到最新 release(SHA256 校验 + 原子替换 + 重启)", Flags: updateFlags(), Action: updateAction},
 			{Name: "direct", Usage: "管理直连白名单(global 下只有白名单域名直连,其余走隧道)", Subcommands: directCommands()},
 			{Name: "proxy", Usage: "管理强制走隧道的域名", Subcommands: proxyCommands()},
@@ -1765,16 +1766,28 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"Read-only.", "Used by lightweight status surfaces such as a menu bar helper."},
 			},
 			{
-				Command:        "sudo bx restart",
+				Command:        "sudo bx reconnect",
 				Category:       "control",
-				Summary:        "Fully restart protection (stop + start), keeping auto-start enabled.",
+				Summary:        "Reconnect transport without releasing protection.",
 				Stable:         true,
 				RequiresRoot:   true,
 				ChangesSystem:  false,
-				ChangesNetwork: true,
+				ChangesNetwork: false,
+				Outputs:        []string{"text"},
+				Examples:       []string{"sudo bx reconnect"},
+				SafeNotes:      []string{"Requires a running bx service.", "Builds and verifies a replacement transport before switching.", "Does not release TUN, routes, or managed DNS; a failed replacement leaves the current protected path in place."},
+			},
+			{
+				Command:        "sudo bx restart",
+				Category:       "control",
+				Summary:        "Compatibility alias for safe transport reconnect.",
+				Stable:         true,
+				RequiresRoot:   true,
+				ChangesSystem:  false,
+				ChangesNetwork: false,
 				Outputs:        []string{"text"},
 				Examples:       []string{"sudo bx restart"},
-				SafeNotes:      []string{"Requires a configured bx service.", "Restarts the whole engine (tunnel + TUN + routes); brief connectivity blip during restart."},
+				SafeNotes:      []string{"Compatibility alias for sudo bx reconnect.", "Does not release TUN, routes, or managed DNS."},
 			},
 			{
 				Command:        "sudo bx direct add <domain>",
@@ -3820,25 +3833,29 @@ func downAction(c *cli.Context) (err error) {
 	return nil
 }
 
-// restartAction 全量重启保护(经服务管理器:停旧+起新),保留开机自启。取代旧的 bx kick——
-// kick 仅热切隧道(不碰 TUN/路由/引擎),数据面卡住时修不了、且非 Linux 平台无 peer-cred 恒被拒;
-// 一条 restart 更简单可靠,是"偶尔要 down+up"的正解。
-func restartAction(c *cli.Context) (err error) {
-	defer autoArchiveAfterClientCommand("restart", &err, true)
+// reconnectAction 在守护进程内安全更换传输。替代传输健康前,旧路径仍负责数据面;
+// 因而不会释放 TUN、路由或 DNS,失败时也不会形成直连窗口。
+func reconnectAction(c *cli.Context) (err error) {
+	defer autoArchiveAfterClientCommand("reconnect", &err, true)
 	if !install.UnitInstalled() {
 		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
 	}
-	stepLine("服务", "重启 bx")
-	if err := install.Restart(); err != nil {
+	stepLine("保护", "安全重连传输")
+	if _, err := supervisor.ReconnectControl(statusSocketPath()); err != nil {
 		return err
 	}
-	stepDone("服务", "已重启")
+	stepDone("保护", "已安全重连")
 	if rep, rerr := readStatusReport(); rerr == nil {
 		printUpSummary(rep)
 		return nil
 	}
-	fmt.Println("✅ bx 已重启。")
+	fmt.Println("✅ bx 已安全重连。")
 	return nil
+}
+
+// restartAction 保留旧命令,但语义与 reconnect 完全一致。
+func restartAction(c *cli.Context) error {
+	return reconnectAction(c)
 }
 
 func dnsStatusAction(c *cli.Context) error {

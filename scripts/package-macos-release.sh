@@ -119,9 +119,8 @@ Next:
 Upgrade notes:
   Existing client config is preserved. This installer only replaces the CLI,
   menu bar app, and menu LaunchAgent.
-  If protection was already running, restart it from the menu bar with
-  Restart Protection, or run:
-    sudo bx down && sudo bx up
+  Protection stays running. Reconnect only replaces the transport safely;
+  it does not restart the protection process to load a new CLI binary.
 
 CLI fallback:
   sudo bx setup '<client-link>' && sudo bx up
@@ -172,9 +171,8 @@ After install:
 Upgrade:
   Re-running install.sh is safe. It preserves /etc/bx/config.yaml and replaces
   only the bx CLI, menu bar app, and menu LaunchAgent.
-  If protection was already running, restart it from the menu bar with
-  Restart Protection, or run:
-    sudo bx down && sudo bx up
+  Protection stays running. Reconnect only replaces the transport safely;
+  it does not restart the protection process to load a new CLI binary.
 
 CLI fallback:
   sudo bx setup '<client-link>' && sudo bx up
