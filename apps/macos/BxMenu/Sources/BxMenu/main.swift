@@ -99,20 +99,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
     private func updateIcon() {
         guard let button = statusItem.button else { return }
-        let symbol: String
-        switch state {
-        case .connected:
-            symbol = "checkmark.shield"
-        case .warning, .updateNeeded:
-            symbol = "exclamationmark.triangle"
-        case .setupNeeded:
-            symbol = "wrench.and.screwdriver"
-        case .missing:
-            symbol = "questionmark.circle"
-        case .off:
-            symbol = "shield"
-        }
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "bx")
+        let image = NSImage(systemSymbolName: "shield", accessibilityDescription: "bx")
         image?.isTemplate = true
         button.image = image
         button.imagePosition = .imageLeading
@@ -256,7 +243,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openStatus() {
-        refresh()
         statusPanel.present(statusSnapshot())
     }
 
