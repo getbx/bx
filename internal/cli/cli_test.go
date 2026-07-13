@@ -37,6 +37,13 @@ func TestAppHasVersion(t *testing.T) {
 	if !appHasCommand(app, "realtime") {
 		t.Fatal("app should expose bx realtime")
 	}
+	if !appHasCommand(app, "preset") {
+		t.Fatal("app should expose bx preset")
+	}
+	preset := findAppCommand(app, "preset")
+	if !commandHasSubcommand(preset, "ls") || !commandHasSubcommand(preset, "show") || !commandHasSubcommand(preset, "apply") {
+		t.Fatalf("preset subcommands = %+v, want ls/show/apply", preset.Subcommands)
+	}
 	if !appHasCommand(app, "webrtc-check") {
 		t.Fatal("app should expose bx webrtc-check")
 	}
@@ -752,6 +759,14 @@ func TestCapabilitiesReport(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(proxy.SafeNotes, " "), "force tunnel") {
 		t.Fatalf("proxy add should document force tunnel behavior: %+v", proxy)
+	}
+	presetApply := findCapability(rep.Commands, "sudo bx preset apply <name>")
+	if !presetApply.Stable || !presetApply.RequiresRoot || !presetApply.ChangesSystem || presetApply.ChangesNetwork || !presetApply.ReadsSecrets {
+		t.Fatalf("unexpected preset apply capability: %+v", presetApply)
+	}
+	presetNotes := strings.ToLower(strings.Join(presetApply.SafeNotes, " "))
+	if !strings.Contains(presetNotes, "explicit opt-in") || !strings.Contains(presetNotes, "direct") || !strings.Contains(presetNotes, "dns") {
+		t.Fatalf("preset apply should document opt-in config-only behavior: %+v", presetApply)
 	}
 	logs := findCapability(rep.Commands, "bx logs")
 	if !logs.Stable || logs.ChangesSystem || logs.ChangesNetwork {
