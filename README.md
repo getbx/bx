@@ -327,6 +327,7 @@ sudo bx server shares --json
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `sudo bx reconnect` | 安全重连传输:替代传输健康后切换,不中断 TUN、路由或 DNS |
 | `sudo bx restart` | `reconnect` 的兼容别名 |
+| `sudo bx update` | SHA256 校验并原子替换二进制,不打断当前保护会话 |
 | `sudo bx direct add <domain>` | 将域名加入直连白名单,会与 proxy 规则互斥清理 |
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |
 | `sudo bx proxy add <domain>` | 强制域名走隧道,会与 direct 规则互斥清理 |

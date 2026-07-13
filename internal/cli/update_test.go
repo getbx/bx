@@ -6,6 +6,9 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +18,20 @@ func TestAssetName(t *testing.T) {
 	}
 	if got := assetName("darwin", "arm64"); got != "bx_darwin_arm64.tar.gz" {
 		t.Fatalf("assetName = %q", got)
+	}
+}
+
+func TestUpdateDoesNotRestartProtection(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("update.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if strings.Contains(text, "install.Restart(") {
+		t.Fatal("update must not restart the protection service: process restart can release the protection path")
+	}
+	if strings.Contains(text, "sudo bx down && sudo bx up") {
+		t.Fatal("update must not recommend a down/up cycle")
 	}
 }
 
