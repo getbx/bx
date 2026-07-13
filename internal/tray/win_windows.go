@@ -56,7 +56,10 @@ func elevateRun(subcmd string) error {
 	if err != nil {
 		return fmt.Errorf("args: %w", err)
 	}
-	if err := windows.ShellExecute(0, verb, file, args, nil, windows.SW_SHOWNORMAL); err != nil {
+	// SW_HIDE:提权子进程(bx up/down/restart/setup)是 console 程序,隐藏其窗口——
+	// 否则每次动作都闪一个黑框(与 freeConsole 隐藏托盘自身黑框的意图一致)。
+	// 反馈靠托盘状态轮询(图标变色)+「打开状态」菜单,不靠这个一闪而过的控制台。
+	if err := windows.ShellExecute(0, verb, file, args, nil, windows.SW_HIDE); err != nil {
 		return fmt.Errorf("ShellExecute runas: %w", err)
 	}
 	return nil
