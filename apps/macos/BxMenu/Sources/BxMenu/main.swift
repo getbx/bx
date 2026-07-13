@@ -1,8 +1,6 @@
 import AppKit
 import Foundation
 
-private let bxPath = "/usr/local/bin/bx"
-
 struct BxReport: Decodable {
     let tunnelHealthy: Bool
     let latencyMS: Int64
@@ -49,14 +47,14 @@ enum BxState {
     case off
 }
 
-@main
 final class BxMenuApp: NSObject, NSApplicationDelegate {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private let bxPath = "/usr/local/bin/bx"
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let statusPanel = StatusPanelController()
     private var timer: Timer?
     private var state: BxState = .off
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
         configureMenu()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -102,28 +100,59 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private func updateIcon() {
         guard let button = statusItem.button else { return }
         let symbol: String
-        let tint: NSColor
         switch state {
         case .connected:
             symbol = "checkmark.shield"
-            tint = .controlAccentColor
         case .warning, .updateNeeded:
             symbol = "exclamationmark.triangle"
-            tint = .systemYellow
         case .setupNeeded:
             symbol = "wrench.and.screwdriver"
-            tint = .systemOrange
         case .missing:
             symbol = "questionmark.circle"
-            tint = .secondaryLabelColor
         case .off:
             symbol = "shield"
-            tint = .secondaryLabelColor
         }
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "bx")
-        image?.isTemplate = false
-        button.image = image?.tinted(tint)
+        image?.isTemplate = true
+        button.image = image
+        button.imagePosition = .imageLeading
+        button.attributedTitle = statusDotTitle(for: statusIndicator(for: statusIndicatorState()))
         button.toolTip = tooltipText()
+    }
+
+    private func statusIndicatorState() -> StatusIndicatorState {
+        switch state {
+        case .connected:
+            return .connected
+        case .warning:
+            return .warning
+        case .updateNeeded:
+            return .updateNeeded
+        case .setupNeeded:
+            return .setupNeeded
+        case .missing:
+            return .missing
+        case .off:
+            return .off
+        }
+    }
+
+    private func statusDotTitle(for indicator: StatusIndicator) -> NSAttributedString {
+        let color: NSColor
+        switch indicator {
+        case .green:
+            color = .systemGreen
+        case .yellow:
+            color = .systemYellow
+        case .red:
+            color = .systemRed
+        case .gray:
+            color = .secondaryLabelColor
+        }
+        return NSAttributedString(string: "●", attributes: [
+            .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+            .foregroundColor: color,
+        ])
     }
 
     private func tooltipText() -> String {
@@ -227,7 +256,39 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openStatus() {
-        openTerminal("'\(bxPath)' status; echo; read -n 1 -s -r -p 'Press any key to close'")
+        refresh()
+        statusPanel.present(statusSnapshot())
+    }
+
+    private func statusSnapshot() -> StatusSnapshot {
+        switch state {
+        case .connected(let report, let version, let dns):
+            return .protected(
+                latency: "\(report.latencyMS) ms",
+                udpRelay: udpRelayLabel(report.udpMode),
+                dns: dns,
+                active: "\(report.active)",
+                version: version
+            )
+        case .warning(let message, let version):
+            var rows = [StatusRow(label: "Status", value: message)]
+            if let version {
+                rows.append(StatusRow(label: "Version", value: version))
+            }
+            return StatusSnapshot(title: "Needs Attention", rows: rows)
+        case .updateNeeded(let message, let version):
+            var rows = [StatusRow(label: "Status", value: message)]
+            if let version {
+                rows.append(StatusRow(label: "Version", value: version))
+            }
+            return StatusSnapshot(title: "Update Required", rows: rows)
+        case .setupNeeded(let message):
+            return StatusSnapshot(title: "Setup Required", rows: [StatusRow(label: "Status", value: message)])
+        case .missing(let message):
+            return StatusSnapshot(title: "Not Installed", rows: [StatusRow(label: "Status", value: message)])
+        case .off:
+            return .off()
+        }
     }
 
     @objc private func openLogs() {
@@ -318,7 +379,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         end tell
         """
         if !runAppleScript(script) {
-            showMessage("Terminal Unavailable", "Open Terminal and run bx status or bx doctor.")
+            showMessage("Terminal Permission Needed", "Allow bx to control Terminal when macOS asks, then try again. You can review this in System Settings > Privacy & Security > Automation.")
         }
     }
 
@@ -493,13 +554,8 @@ private extension NSMenu {
     }
 }
 
-private extension NSImage {
-    func tinted(_ color: NSColor) -> NSImage {
-        let copy = self.copy() as! NSImage
-        copy.lockFocus()
-        color.set()
-        NSRect(origin: .zero, size: copy.size).fill(using: .sourceAtop)
-        copy.unlockFocus()
-        return copy
-    }
-}
+private let bxMenuDelegate = BxMenuApp()
+let bxApplication = NSApplication.shared
+bxApplication.delegate = bxMenuDelegate
+bxApplication.setActivationPolicy(.accessory)
+bxApplication.run()

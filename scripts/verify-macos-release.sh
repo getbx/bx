@@ -23,6 +23,7 @@ fail() {
 [[ -f "$SUMS" ]] || fail "missing SHA256SUMS"
 
 plutil -lint "$RELEASE_DIR/Bx.app/Contents/Info.plist" >/dev/null
+plutil -extract NSAppleEventsUsageDescription raw "$RELEASE_DIR/Bx.app/Contents/Info.plist" >/dev/null || fail "Info.plist missing Apple Events usage description"
 tar -tzf "$ARCHIVE" >/dev/null
 
 grep -q "does not run bx setup" "$RELEASE_DIR/README.txt" || fail "README missing no-setup note"
