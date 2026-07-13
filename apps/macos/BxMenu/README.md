@@ -15,16 +15,16 @@ failure, and gray means bx is off or not configured.
 - Run Doctor
 - Set Up bx
 - Start Protection
-- Restart Protection
+- Reconnect
 - Turn Off
 
-It does not install, configure, start, restart, or turn off protection by itself unless you choose one of the explicit menu actions.
+It does not install, configure, start, reconnect, or turn off protection by itself unless you choose one of the explicit menu actions.
 Starting protection always asks for confirmation before bx takes over system traffic.
 Turning protection off also asks for confirmation and restores managed DNS settings.
-When bx needs attention, the primary action is to restart protection.
+When bx needs attention, the primary action is to reconnect. bx keeps TUN, routes, and managed DNS in place while it verifies a replacement transport, so a failed reconnect does not create a direct-traffic window.
 
 When the menu shows `Setup Required`, choose `Set Up bx...`, paste your bx link, and approve the macOS administrator prompt. After setup succeeds, the menu asks whether to start protection now. If setup fails, use `Run Doctor` from the same menu.
-If setup, start, restart, or turn off fails, the failure dialog offers `Run Doctor` directly so diagnostics can be archived without hunting through the menu again.
+If setup, start, reconnect, or turn off fails, the failure dialog offers `Run Doctor` directly so diagnostics can be archived without hunting through the menu again.
 
 `Open Status` stays inside the bx app. The first action that needs Terminal, currently `Run Doctor`, may ask for permission to control Terminal. bx uses this only for the action you selected. Approve the macOS prompt to continue.
 
