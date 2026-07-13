@@ -202,6 +202,18 @@ sudo install -m 0755 ./bx /usr/local/bin/bx
 scripts/install-macos-menu.sh restart
 ```
 
+### 应用可用性预设
+
+默认不为任何 App 放宽直连规则。遇到 Steam 下载、Apple 服务或常见国内 CDN 的可用性问题时,可明确查看并启用对应预设:
+
+```bash
+bx preset ls
+bx preset show gaming
+sudo bx preset apply gaming
+```
+
+当前内置 `gaming`、`apple`、`china-cdn`。预设只向客户端配置加入经过筛选的 `direct` 域名规则,并清理同名 `proxy` 规则;运行中的 bx 会热加载,不会直接修改 TUN、路由或 DNS。要撤销某一项,用 `sudo bx direct rm <domain>`。
+
 如果只想生成 `.app` 包而不安装:
 
 ```bash
@@ -308,6 +320,9 @@ sudo bx server shares --json
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |
 | `sudo bx proxy add <domain>` | 强制域名走隧道,会与 direct 规则互斥清理 |
 | `sudo bx proxy rm <domain>` | 从强制隧道列表移除域名 |
+| `bx preset ls` | 列出内置应用可用性预设 |
+| `bx preset show <name>` | 查看预设将加入的直连域名 |
+| `sudo bx preset apply <name>` | 显式应用预设并在运行时热加载 |
 | `bx dns status` | 查看 macOS DNS 接管状态 |
 | `sudo bx dns on` | 手动将 macOS 系统 DNS 切到 bx |
 | `sudo bx dns off` | 恢复 bx 保存的 macOS 原始 DNS |
