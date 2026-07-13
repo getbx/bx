@@ -33,6 +33,7 @@ import (
 	"github.com/getbx/bx/internal/srvgen"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
+	"github.com/getbx/bx/internal/tray"
 	"github.com/getbx/bx/internal/tunnel"
 	"github.com/getbx/bx/internal/version"
 	"github.com/urfave/cli/v2"
@@ -83,6 +84,7 @@ func New() *cli.App {
 			{Name: "dns", Usage: "管理 macOS 系统 DNS 接管", Subcommands: dnsCommands()},
 			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Flags: runFlags(), Action: runAction},
+			{Name: "tray", Usage: "启动系统托盘(Windows;点图标连/断/设置/看状态)", Action: trayAction},
 			{Name: "debug-tun", Usage: "仅创建 TUN 适配器(不起隧道/不碰路由),真机验证 wintun+wgbridge", Flags: debugTunFlags(), Action: debugTunAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
 			{Name: "mcp", Usage: "启动 agent 控制面 MCP server(stdio)", Hidden: false, Flags: mcpFlags(), Action: mcpAction, Subcommands: []*cli.Command{
@@ -3591,6 +3593,9 @@ func runAction(c *cli.Context) error {
 	}
 	return supervisor.Run(c.Context, cfg, opts)
 }
+
+// trayAction 启动系统托盘(仅 Windows 有实现;其它平台返回清晰错误,见 tray_other.go)。
+func trayAction(c *cli.Context) error { return tray.Run() }
 
 func debugTunFlags() []cli.Flag {
 	return []cli.Flag{
