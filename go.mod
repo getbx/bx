@@ -3,6 +3,7 @@ module github.com/getbx/bx
 go 1.26.3
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/urfave/cli/v2 v2.27.7
 	golang.org/x/net v0.55.0
@@ -14,7 +15,6 @@ require (
 )
 
 require (
-	fyne.io/systray v1.12.2 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/btree v1.1.2 // indirect
