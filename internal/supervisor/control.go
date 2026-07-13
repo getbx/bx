@@ -77,9 +77,21 @@ func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, r
 	mux.HandleFunc("/v0/commit", cs.handleCommit)
 	mux.HandleFunc("/v0/rollback", cs.handleRollback)
 	mux.HandleFunc("/v0/transport", cs.handleSetTransport)
+	mux.HandleFunc("/v0/reconnect", cs.handleReconnect)
 	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
 	mux.HandleFunc("/v0/reload", cs.handleReload)
 	return mux
+}
+
+func (cs *controlServer) handleReconnect(w http.ResponseWriter, r *http.Request) {
+	if !cs.requireOwnerOrRoot(w, r) {
+		return
+	}
+	if err := cs.mut.Reconnect(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, controlResponse{Status: "error", Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, controlResponse{Status: "ok", State: "reconnected"})
 }
 
 // handleReload 热重载路由规则(bx direct/proxy 改配置后触发):重读配置 rules、

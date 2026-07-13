@@ -166,6 +166,33 @@ func TestSetTransportControl(t *testing.T) {
 	}
 }
 
+func TestReconnectControl(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "bx.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var gotMethod, gotPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/reconnect", func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_ = json.NewEncoder(w).Encode(controlResponse{Status: "ok", State: "reconnected"})
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln) //nolint:errcheck
+	defer srv.Close()
+
+	state, err := ReconnectControl(sock)
+	if err != nil || state != "reconnected" {
+		t.Fatalf("state=%q err=%v", state, err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v0/reconnect" {
+		t.Fatalf("got %s %s", gotMethod, gotPath)
+	}
+}
+
 func TestRehijackControl(t *testing.T) {
 	dir := t.TempDir()
 	sockPath := filepath.Join(dir, "bx.sock")
