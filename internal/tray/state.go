@@ -30,8 +30,13 @@ func trayStateFrom(svcRunning, configExists, tunnelHealthy bool) TrayState {
 var setupLinkPrefixes = []string{"bx://", "blink://", "vless://", "hysteria2://", "hy2://", "trojan://", "ss://", "vmess://", "brook://"}
 
 // parseSetupLink 从剪贴板文本取一条受支持的 setup 链接(trim;校验前缀)。ok=false 表示不是链接。
+// 链接会被拼进提权子进程的 `bx setup "<link>"` 参数串,故拒绝内嵌引号/空白的值:
+// 真实 bx/vless/… 链接是 URL-safe base64,绝不含引号或空白,借此挡住参数注入(纵深防御)。
 func parseSetupLink(clipboard string) (string, bool) {
 	s := strings.TrimSpace(clipboard)
+	if strings.ContainsAny(s, "\" \t\r\n") {
+		return "", false
+	}
 	for _, p := range setupLinkPrefixes {
 		if strings.HasPrefix(strings.ToLower(s), p) {
 			return s, true
