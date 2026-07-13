@@ -112,7 +112,7 @@ func updateFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "check", Usage: "只检查有无新版,不下载安装"},
 		&cli.BoolFlag{Name: "force", Usage: "即便已是最新(或 dev 构建)也强制下载安装最新版"},
-		&cli.BoolFlag{Name: "no-restart", Usage: "只替换二进制,不自动重启正在运行的 bx"},
+		&cli.BoolFlag{Name: "no-restart", Usage: "已废弃:更新始终保留当前保护会话", Hidden: true},
 	}
 }
 
@@ -205,16 +205,11 @@ func updateAction(c *cli.Context) error {
 	}
 	fmt.Printf("✅ 已更新到 %s(%s)\n", latest, dst)
 
-	// 服务在跑则重启到新版(换二进制必须重启进程才生效);--no-restart 跳过。
-	if c.Bool("no-restart") {
-		fmt.Println("  (--no-restart:请手动 sudo bx down && sudo bx up 使新版生效)")
-		return nil
-	}
+	// 绝不为了加载新二进制而重启服务。守护进程退出会撤销路由/TUN,在真正
+	// 的进程交接实现前,保留当前受保护会话比"立刻生效"更重要。
 	if install.UnitInstalled() && serviceState("is-active", install.ServiceName) == "active" {
-		if err := install.Restart(); err != nil {
-			return fmt.Errorf("已更新二进制,但重启失败,请手动 sudo bx down && sudo bx up: %w", err)
-		}
-		fmt.Println("  已重启 bx,新版已生效。")
+		fmt.Println("  当前保护会话保持运行;新版会在下次启动保护时生效。")
+		fmt.Println("  Reconnect 只安全更换传输,不会为了加载二进制而结束保护。")
 	} else {
 		fmt.Println("  (bx 未在运行,下次 sudo bx up 用新版)")
 	}

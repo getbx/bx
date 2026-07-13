@@ -776,6 +776,13 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(restart.SafeNotes, " "), "alias") {
 		t.Fatalf("restart should be documented as reconnect alias: %+v", restart)
 	}
+	update := findCapability(rep.Commands, "sudo bx update")
+	if !update.Stable || !update.RequiresRoot || !update.ChangesSystem || update.ChangesNetwork {
+		t.Fatalf("unexpected update capability: %+v", update)
+	}
+	if !strings.Contains(strings.Join(update.SafeNotes, " "), "Does not restart") {
+		t.Fatalf("update should document preserved protection: %+v", update)
+	}
 	direct := findCapability(rep.Commands, "sudo bx direct add <domain>")
 	if !direct.Stable || !direct.RequiresRoot || !direct.ChangesSystem || direct.ChangesNetwork || !direct.ReadsSecrets {
 		t.Fatalf("unexpected direct add capability: %+v", direct)
