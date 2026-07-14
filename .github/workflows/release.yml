@@ -42,8 +42,24 @@ jobs:
               rm -rf "dist/$name"
             done
           done
+          # Windows:PE VersionInfo 覆盖成 tag 版本(与 ldflags 一致),重生成 .syso 后再编;
+          # 出 zip(内含 bx.exe,已全内嵌 wintun/sing-box/brook)。
+          go run github.com/tc-hib/go-winres@v0.3.3 make --in winres/winres.json --arch amd64,arm64 --out rsrc \
+            --product-version "$version" --file-version "$version"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go build -trimpath -ldflags="$ldflags" -o "dist/bx.exe" .
+            (cd dist && zip -q "bx_windows_${arch}.zip" bx.exe && rm bx.exe)
+          done
+          # 给下游 installer job 留一份 amd64 exe(不进 release、不进 SHA256SUMS)
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o "dist/bx-amd64.exe" .
           cd dist
-          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+
+      - name: Upload windows exe for installer job
+        uses: actions/upload-artifact@v4
+        with:
+          name: bx-windows-amd64-exe
+          path: dist/bx-amd64.exe
 
       - name: Upload release
         uses: softprops/action-gh-release@v2
@@ -51,4 +67,36 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: |
             dist/*.tar.gz
+            dist/*.zip
             dist/SHA256SUMS
+
+  installer:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download windows exe
+        uses: actions/download-artifact@v4
+        with:
+          name: bx-windows-amd64-exe
+          path: dist
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $v = $version.TrimStart("v")
+          & iscc "/DMyAppVersion=$v" "/DSourceExe=dist\bx-amd64.exe" "packaging\windows\bx-setup.iss"
+          Get-ChildItem Output
+
+      - name: Upload installer to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: Output/bx-setup.exe
