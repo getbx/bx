@@ -373,7 +373,6 @@ func realtimeCommands() []*cli.Command {
 func realtimeFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
-		&cli.BoolFlag{Name: "no-restart", Usage: "只写配置,不自动重启正在运行的 bx"},
 	}
 }
 
@@ -1879,9 +1878,9 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
-				Arguments:      []string{"--config <path>", "--no-restart"},
+				Arguments:      []string{"--config <path>"},
 				Examples:       []string{"sudo bx realtime on"},
-				SafeNotes:      []string{"Writes client config and restarts bx automatically when the service is active.", "Use --no-restart to write config only.", "Relays non-DNS UDP through bx instead of using the local real network path."},
+				SafeNotes:      []string{"Writes client config without restarting the active protection service.", "The changed UDP policy is used the next time protection starts.", "Relays non-DNS UDP through bx instead of using the local real network path."},
 			},
 			{
 				Command:        "sudo bx realtime off",
@@ -1893,9 +1892,9 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
-				Arguments:      []string{"--config <path>", "--no-restart"},
+				Arguments:      []string{"--config <path>"},
 				Examples:       []string{"sudo bx realtime off"},
-				SafeNotes:      []string{"Writes client config and restarts bx automatically when the service is active.", "Use --no-restart to write config only.", "Block mode blocks non-DNS UDP."},
+				SafeNotes:      []string{"Writes client config without restarting the active protection service.", "The changed UDP policy is used the next time protection starts.", "Block mode blocks non-DNS UDP."},
 			},
 			{
 				Command:        "bx dns status",
@@ -3996,41 +3995,25 @@ func realtimeOffAction(c *cli.Context) error {
 	return applyRealtimePostChange(c)
 }
 
-type realtimePostChangePlan struct {
-	Restart bool
-	Message string
-}
+type realtimePostChangePlan struct{ Message string }
 
-func planRealtimePostChange(noRestart, unitInstalled bool, activeState string) realtimePostChangePlan {
-	if noRestart {
-		return realtimePostChangePlan{Message: "重启 bx 生效: sudo bx down && sudo bx up"}
-	}
+func planRealtimePostChange(unitInstalled bool, activeState string) realtimePostChangePlan {
 	if !unitInstalled {
 		return realtimePostChangePlan{Message: "尚未安装服务。下次运行 sudo bx up 时生效。"}
 	}
 	if activeState == "active" {
-		return realtimePostChangePlan{Restart: true, Message: "已重启 bx,配置已生效。"}
+		return realtimePostChangePlan{Message: "当前保护会话保持运行;新的 UDP 策略将在下次 sudo bx up 时生效。"}
 	}
 	return realtimePostChangePlan{Message: "bx 当前未运行。下次 sudo bx up 时生效。"}
 }
 
-func applyRealtimePostChange(c *cli.Context) error {
+func applyRealtimePostChange(_ *cli.Context) error {
 	installed := install.UnitInstalled()
 	active := "inactive"
 	if installed {
 		active = serviceState("is-active", install.ServiceName)
 	}
-	plan := planRealtimePostChange(c.Bool("no-restart"), installed, active)
-	if plan.Restart {
-		if err := install.Restart(); err != nil {
-			return fmt.Errorf("重启 bx 失败,配置已写入;可手动执行 sudo bx down && sudo bx up: %w", err)
-		}
-		if runtime.GOOS == "darwin" {
-			if err := waitStatusSocket(15 * time.Second); err != nil {
-				return fmt.Errorf("bx 已重启但状态 socket 未就绪: %w", err)
-			}
-		}
-	}
+	plan := planRealtimePostChange(installed, active)
 	fmt.Println("✅ " + plan.Message)
 	return nil
 }
