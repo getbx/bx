@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	mcpstats "github.com/getbx/bx/internal/stats"
@@ -43,5 +45,26 @@ func TestMutatingRequiresRoot(t *testing.T) {
 	}
 	if err := requireRoot(true); err != nil {
 		t.Fatalf("root 时不应报错,得到 %v", err)
+	}
+}
+
+func TestAtomicWriteConfigReplacesContentsWithPrivateMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteConfig(path, []byte("new\n")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "new\n" {
+		t.Fatalf("contents=%q err=%v", got, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode=%#o, want 0600", info.Mode().Perm())
 	}
 }

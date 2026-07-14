@@ -22,6 +22,19 @@ const armedNote = "改动已由 bx 守护进程武装 240s 死手;请用 bx_insp
 func registerMutating(s *mcpsdk.Server, ops Ops) {
 	dx := &mcpsdk.ToolAnnotations{DestructiveHint: ptrue()}
 
+	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_policy_apply", Description: "apply a bounded direct/proxy domain policy and reload it without restarting protection", Annotations: dx},
+		func(_ context.Context, _ *mcpsdk.CallToolRequest, in PolicyApplyIn) (*mcpsdk.CallToolResult, PolicyApplyOut, error) {
+			out, err := ops.ApplyPolicy(in)
+			if err != nil {
+				var te ToolError
+				if errors.As(err, &te) {
+					return errResultTyped[PolicyApplyOut](te)
+				}
+				return errResultTyped[PolicyApplyOut](ToolError{Code: CodePolicyRisk, Message: err.Error(), Remediation: "use a controlled brand domain, or explicitly set allow_risk after user approval"})
+			}
+			return nil, out, nil
+		})
+
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_set_transport", Description: "switch transport to a new link; armed under commit-confirmed", Annotations: dx},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, in SetTransportIn) (*mcpsdk.CallToolResult, armedOut, error) {
 			if in.Link == "" {

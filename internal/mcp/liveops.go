@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/policy"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
@@ -264,6 +266,84 @@ func (o *liveOps) Logs(in LogsIn) (LogsOut, error) {
 		out.Text = logsResultText(raw, err)
 	}
 	return out, nil
+}
+
+// ApplyPolicy only changes the direct/proxy domain lists. It never starts,
+// stops, or reconnects protection. A running daemon reloads the rules
+// atomically; otherwise the policy is saved for the next normal start.
+func (o *liveOps) ApplyPolicy(in PolicyApplyIn) (PolicyApplyOut, error) {
+	if err := requireRoot(isRoot()); err != nil {
+		return PolicyApplyOut{}, err
+	}
+
+	before, err := os.ReadFile(o.configPath)
+	if err != nil {
+		return PolicyApplyOut{}, ToolError{
+			Code:        CodeTunnelUnhealthy,
+			Message:     "read bx config: " + err.Error(),
+			Remediation: "run sudo bx setup with a valid link first",
+		}
+	}
+	after, changed, err := policy.Apply(before, policy.Request{
+		Mode:      in.Mode,
+		Add:       in.Add,
+		Remove:    in.Remove,
+		AllowRisk: in.AllowRisk,
+	})
+	if err != nil {
+		code := CodePolicyRisk
+		if !strings.Contains(err.Error(), "allow_risk") {
+			code = CodePolicyInvalid
+		}
+		return PolicyApplyOut{}, ToolError{Code: code, Message: err.Error(), Remediation: "use direct or proxy with a non-empty add/remove list"}
+	}
+	if !changed {
+		return PolicyApplyOut{Changed: false, State: "unchanged"}, nil
+	}
+	if err := atomicWriteConfig(o.configPath, after); err != nil {
+		return PolicyApplyOut{}, ToolError{Code: CodeTunnelUnhealthy, Message: "write bx config: " + err.Error(), Remediation: "check config directory permissions and bx logs"}
+	}
+	if _, err := supervisor.FetchStatusReport(supervisor.SockPath); err != nil {
+		return PolicyApplyOut{
+			Changed:  true,
+			State:    "pending_start",
+			Warnings: []string{"policy saved; bx is not running, so it will apply at the next normal start"},
+		}, nil
+	}
+	if _, err := supervisor.ReloadControl(supervisor.SockPath); err != nil {
+		return PolicyApplyOut{
+			Changed:  true,
+			State:    "pending_start",
+			Warnings: []string{"policy saved, but the active daemon did not reload it; the previous policy remains active until the next normal start", "inspect bx_logs before restarting protection"},
+		}, nil
+	}
+	return PolicyApplyOut{Changed: true, State: "reloaded"}, nil
+}
+
+func atomicWriteConfig(path string, contents []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".bx-config-")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(contents); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func (o *liveOps) Plan(in PlanIn) (PlanOut, error) {

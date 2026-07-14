@@ -21,6 +21,12 @@ than compose shell commands or call `bx down && bx up`.
   otherwise call `bx_rollback` or let the deadman revert it.
 - `bx_rehijack`: re-applies route capture under the same commit-confirmed
   guard. It is for a diagnosed routing problem, not routine recovery.
+- `bx_policy_apply`: makes a bounded, explicit domain-policy change. It only
+  accepts `direct` or `proxy` plus add/remove lists, keeps the two modes
+  exclusive, writes the config atomically, then reloads a running daemon. It
+  never starts, stops, reconnects, or releases protection. A risky public
+  cloud domain cannot become direct unless the caller explicitly sets
+  `allow_risk` after user approval.
 
 All controlled changes are marked destructive so the agent asks for user
 approval before it runs them. `bx_commit` and `bx_rollback` only operate on a

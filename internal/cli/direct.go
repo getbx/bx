@@ -6,188 +6,34 @@ import (
 	"strings"
 
 	"github.com/getbx/bx/internal/config"
-	"github.com/getbx/bx/internal/route"
+	"github.com/getbx/bx/internal/policy"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/urfave/cli/v2"
-	"gopkg.in/yaml.v3"
 )
 
 // openCloudDenylist 是「任何人都能注册子域」的公有云存储/CDN/托管平台顶级域。
 // 把它们加进直连白名单会重新打开去匿名化洞:攻击者开一个桶/子域(如
 // evil.oss-cn-xx.aliyuncs.com)即命中白名单 → 直连 → 泄漏真实 IP。
 // 只应白名单「品牌自控 DNS 区」的顶级域(taobao.com 等,攻击者拿不到其子域)。
-var openCloudDenylist = []string{
-	// 国内公有云对象存储/CDN
-	"aliyuncs.com", "myqcloud.com", "bcebos.com",
-	"qiniucdn.com", "qbox.me", "clouddn.com", "upaiyun.com",
-	"myhuaweicloud.com",
-	// 全球公有云/开放子域托管
-	"amazonaws.com", "cloudfront.net", "core.windows.net", "googleapis.com",
-	"r2.dev", "workers.dev", "pages.dev", "github.io",
-	"vercel.app", "netlify.app", "b-cdn.net",
-}
-
-var openCloudSet = route.NewDomainSet(openCloudDenylist)
-
 // directRuleRisk 返回把 domain 加入直连白名单的风险提示(空=品牌自控域,无需提示)。
 func directRuleRisk(domain string) string {
-	if openCloudSet.Match(strings.ToLower(strings.TrimSpace(domain))) {
+	if policy.DirectRisk(domain) {
 		return "⚠ 公有云存储/CDN/开放子域平台——任何人都能注册它的子域;加进直连白名单 = " +
 			"攻击者能用一个子域让你的真实 IP 暴露(去匿名化)。建议只白名单品牌自控顶级域。"
 	}
 	return ""
 }
 
-func normDomain(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
-
 // editYAMLRuleList 在 config 的 rules[].<field>(direct/proxy)上增删域名,返回改后字节与
 // 是否真的发生了变化。走 yaml.Node round-trip 保留其它段注释。语义与 ruleField 读取对齐:
 // remove 扫「所有」rule 元素(域名可能在 rules[1]+,别漏删导致以为删了其实还在直连/泄漏);
 // add 跨所有元素去重后追加到 rules[0]。无有效变化时 changed=false(调用方据此避免误报成功)。
 func editYAMLRuleList(in []byte, field string, add, remove []string) (out []byte, changed bool) {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(in, &doc); err != nil || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return in, false
-	}
-	root := doc.Content[0]
-	rules := mappingValue(root, "rules")
-	oppositeField := "proxy"
-	if field == "proxy" {
-		oppositeField = "direct"
-	}
-
-	fieldSeq := func(elem *yaml.Node, name string) *yaml.Node {
-		if elem == nil || elem.Kind != yaml.MappingNode {
-			return nil
-		}
-		return mappingValue(elem, name)
-	}
-
-	removeFromSeq := func(seq *yaml.Node, rm map[string]bool) bool {
-		if seq == nil || seq.Kind != yaml.SequenceNode {
-			return false
-		}
-		localChanged := false
-		kept := seq.Content[:0]
-		for _, n := range seq.Content {
-			if rm[normDomain(n.Value)] {
-				localChanged = true
-				continue
-			}
-			kept = append(kept, n)
-		}
-		seq.Content = kept
-		return localChanged
-	}
-	removeFromField := func(elem *yaml.Node, name string, rm map[string]bool) bool {
-		seq := fieldSeq(elem, name)
-		if !removeFromSeq(seq, rm) {
-			return false
-		}
-		if seq.Kind == yaml.SequenceNode && len(seq.Content) == 0 {
-			for i := 0; i+1 < len(elem.Content); i += 2 {
-				if elem.Content[i].Value == name {
-					elem.Content = append(elem.Content[:i], elem.Content[i+2:]...)
-					break
-				}
-			}
-		}
-		return true
-	}
-
-	// REMOVE:扫所有 rule 元素的 field 序列
-	if len(remove) > 0 && rules != nil && rules.Kind == yaml.SequenceNode {
-		rm := map[string]bool{}
-		for _, d := range remove {
-			rm[normDomain(d)] = true
-		}
-		for _, elem := range rules.Content {
-			changed = removeFromField(elem, field, rm) || changed
-		}
-	}
-
-	// ADD:跨所有元素去重,追加到 rules[0]
-	if len(add) > 0 {
-		existing := map[string]bool{}
-		if rules != nil && rules.Kind == yaml.SequenceNode {
-			for _, elem := range rules.Content {
-				if seq := fieldSeq(elem, field); seq != nil {
-					for _, n := range seq.Content {
-						existing[normDomain(n.Value)] = true
-					}
-				}
-			}
-		}
-		var toAdd []string
-		conflicts := map[string]bool{}
-		for _, d := range add {
-			d = strings.TrimSpace(d)
-			if d == "" {
-				continue
-			}
-			conflicts[normDomain(d)] = true
-			if existing[normDomain(d)] {
-				continue
-			}
-			existing[normDomain(d)] = true
-			toAdd = append(toAdd, d)
-		}
-		// direct/proxy 是互斥意图。加入一侧前,先从另一侧跨所有 rule 块移除同名项,
-		// 避免写出「显示已强制代理但 router 仍因 direct 优先而直连」的配置。
-		// 即使目标字段已存在,也要修复 opposite 里的旧冲突项。
-		if len(conflicts) > 0 && rules != nil && rules.Kind == yaml.SequenceNode {
-			for _, elem := range rules.Content {
-				changed = removeFromField(elem, oppositeField, conflicts) || changed
-			}
-		}
-		if len(toAdd) > 0 {
-			if rules == nil {
-				rules = &yaml.Node{Kind: yaml.SequenceNode}
-				root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "rules"}, rules)
-			}
-			if rules.Kind != yaml.SequenceNode {
-				rules.Kind, rules.Tag, rules.Value, rules.Content = yaml.SequenceNode, "!!seq", "", nil
-			}
-			if len(rules.Content) == 0 {
-				rules.Content = append(rules.Content, &yaml.Node{Kind: yaml.MappingNode})
-			}
-			elem := rules.Content[0]
-			if elem.Kind != yaml.MappingNode {
-				elem.Kind, elem.Tag, elem.Value, elem.Content = yaml.MappingNode, "!!map", "", nil
-			}
-			seq := mappingValue(elem, field)
-			if seq == nil {
-				seq = &yaml.Node{Kind: yaml.SequenceNode}
-				elem.Content = append(elem.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: field}, seq)
-			}
-			if seq.Kind != yaml.SequenceNode {
-				seq.Kind, seq.Tag, seq.Value, seq.Content = yaml.SequenceNode, "!!seq", "", nil
-			}
-			for _, d := range toAdd {
-				seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: d})
-			}
-			changed = true
-		}
-	}
-
-	if !changed {
-		return in, false
-	}
-	if rules != nil && rules.Kind == yaml.SequenceNode {
-		kept := rules.Content[:0]
-		for _, elem := range rules.Content {
-			if elem != nil && elem.Kind == yaml.MappingNode && len(elem.Content) == 0 {
-				continue
-			}
-			kept = append(kept, elem)
-		}
-		rules.Content = kept
-	}
-	m, err := yaml.Marshal(&doc)
+	out, changed, err := policy.Edit(in, policy.Request{Mode: field, Add: add, Remove: remove, AllowRisk: true})
 	if err != nil {
 		return in, false
 	}
-	return m, true
+	return out, changed
 }
 
 // ruleBaseFlags 只有 config;ls/rm 和 proxy 各子命令无风险门,故不挂 --force(避免死 UX)。
