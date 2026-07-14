@@ -39,7 +39,7 @@ func TestToolAnnotations(t *testing.T) {
 	}
 
 	// 改动类工具:必须有 DestructiveHint == true。
-	destructive := []string{"bx_set_transport", "bx_reconnect", "bx_rehijack"}
+	destructive := []string{"bx_set_transport", "bx_reconnect", "bx_rehijack", "bx_policy_apply"}
 	for _, name := range destructive {
 		tool, ok := byName[name]
 		if !ok {

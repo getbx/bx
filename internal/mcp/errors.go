@@ -16,6 +16,8 @@ const (
 	CodeTunnelUnhealthy   Code = "TUNNEL_UNHEALTHY"
 	CodeLeakDetected      Code = "LEAK_DETECTED"
 	CodeLockoutRisk       Code = "LOCKOUT_RISK"
+	CodePolicyRisk        Code = "POLICY_RISK"
+	CodePolicyInvalid     Code = "POLICY_INVALID"
 	CodeDeadmanReverted   Code = "DEADMAN_REVERTED"
 	CodeAlreadyCommitted  Code = "ALREADY_COMMITTED"
 	CodeNothingToRollback Code = "NOTHING_TO_ROLLBACK"

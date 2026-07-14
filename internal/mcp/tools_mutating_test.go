@@ -70,3 +70,17 @@ func TestReconnectSafelyWithoutArming(t *testing.T) {
 		t.Fatalf("calls=%v, want [reconnect]", ops.calls)
 	}
 }
+
+func TestPolicyApplyIsRegisteredAsDestructive(t *testing.T) {
+	ops := &fakeOps{policyApplyOut: PolicyApplyOut{Changed: true, State: "reloaded"}}
+	res := callTool(t, ops, "bx_policy_apply", map[string]any{
+		"mode": "proxy",
+		"add":  []string{"example.com"},
+	})
+	if res.IsError {
+		t.Fatal("policy apply should be available to an approved agent")
+	}
+	if len(ops.calls) != 1 || ops.calls[0] != "policy_apply" || ops.policyApply.Mode != "proxy" {
+		t.Fatalf("policy apply was not forwarded: calls=%v input=%+v", ops.calls, ops.policyApply)
+	}
+}

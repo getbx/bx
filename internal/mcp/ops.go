@@ -10,6 +10,7 @@ type Ops interface {
 	LeakCheck(LeakCheckIn) (JSONCommandOut, error)
 	Observe(ObserveIn) (JSONCommandOut, error)
 	Logs(LogsIn) (LogsOut, error)
+	ApplyPolicy(PolicyApplyIn) (PolicyApplyOut, error)
 	SetTransport(SetTransportIn) error
 	Reconnect() error
 	Rehijack() error
@@ -86,6 +87,19 @@ type LogsOut struct {
 
 type SetTransportIn struct {
 	Link string `json:"link" jsonschema:"new server link to switch transport to"`
+}
+
+type PolicyApplyIn struct {
+	Mode      string   `json:"mode" jsonschema:"direct or proxy"`
+	Add       []string `json:"add,omitempty" jsonschema:"domains to add to the selected mode"`
+	Remove    []string `json:"remove,omitempty" jsonschema:"domains to remove from the selected mode"`
+	AllowRisk bool     `json:"allow_risk,omitempty" jsonschema:"explicitly permit a risky direct domain"`
+}
+
+type PolicyApplyOut struct {
+	Changed  bool     `json:"changed"`
+	State    string   `json:"state" jsonschema:"unchanged, reloaded, or pending_start"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Legacy internal request/result types are retained while liveOps still owns
