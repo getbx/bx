@@ -146,6 +146,20 @@ func TestObserveToolReturnsCLIJSONEnvelope(t *testing.T) {
 	}
 }
 
+func TestCheckToolRunsTheSafeDefaultBundle(t *testing.T) {
+	ops := &fakeOps{check: CheckOut{OK: true, Risk: "low"}}
+	res := callTool(t, ops, "bx_check", map[string]any{})
+	if res.IsError {
+		t.Fatal("safe check should be available without a mutation approval")
+	}
+	if len(ops.calls) != 1 || ops.calls[0] != "check" {
+		t.Fatalf("calls=%v want [check]", ops.calls)
+	}
+	if ops.checkIn.Network || ops.checkIn.Browser || ops.checkIn.Duration != "" {
+		t.Fatalf("zero-value check must not opt in to external probes: %+v", ops.checkIn)
+	}
+}
+
 func TestObserveArgs(t *testing.T) {
 	got := observeArgs(ObserveIn{Duration: "30s", Interval: "1s", Scenario: "video"})
 	for _, want := range []string{"observe", "--json", "--duration", "30s", "--interval", "1s", "--scenario", "video"} {

@@ -11,17 +11,18 @@ import (
 type Code string
 
 const (
-	CodeLinkInvalid       Code = "LINK_INVALID"
-	CodePrivilegeRequired Code = "PRIVILEGE_REQUIRED"
-	CodeTunnelUnhealthy   Code = "TUNNEL_UNHEALTHY"
-	CodeLeakDetected      Code = "LEAK_DETECTED"
-	CodeLockoutRisk       Code = "LOCKOUT_RISK"
-	CodePolicyRisk        Code = "POLICY_RISK"
-	CodePolicyInvalid     Code = "POLICY_INVALID"
-	CodeDeadmanReverted   Code = "DEADMAN_REVERTED"
-	CodeAlreadyCommitted  Code = "ALREADY_COMMITTED"
-	CodeNothingToRollback Code = "NOTHING_TO_ROLLBACK"
-	CodeNotImplemented    Code = "NOT_IMPLEMENTED"
+	CodeLinkInvalid          Code = "LINK_INVALID"
+	CodePrivilegeRequired    Code = "PRIVILEGE_REQUIRED"
+	CodeTunnelUnhealthy      Code = "TUNNEL_UNHEALTHY"
+	CodeLeakDetected         Code = "LEAK_DETECTED"
+	CodeLockoutRisk          Code = "LOCKOUT_RISK"
+	CodePolicyRisk           Code = "POLICY_RISK"
+	CodePolicyInvalid        Code = "POLICY_INVALID"
+	CodeConfirmationRequired Code = "CONFIRMATION_REQUIRED"
+	CodeDeadmanReverted      Code = "DEADMAN_REVERTED"
+	CodeAlreadyCommitted     Code = "ALREADY_COMMITTED"
+	CodeNothingToRollback    Code = "NOTHING_TO_ROLLBACK"
+	CodeNotImplemented       Code = "NOT_IMPLEMENTED"
 )
 
 // ToolError 是返回给 agent 的结构化错误,带"下一步该干嘛"。
