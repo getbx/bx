@@ -105,6 +105,16 @@ func TestMacMenuReconnectDoesNotCycleProtection(t *testing.T) {
 	}
 }
 
+func TestAppHidesLegacyAndDeveloperCommands(t *testing.T) {
+	app := New()
+	for _, name := range []string{"restart", "blink", "run", "debug-tun", "darwin-plan", "router-plan"} {
+		command := findAppCommand(app, name)
+		if command == nil || !command.Hidden {
+			t.Fatalf("%s should stay available but hidden from normal help: %+v", name, command)
+		}
+	}
+}
+
 func TestBuildExecStart(t *testing.T) {
 	got := buildExecStartForGOOS("linux", "/usr/local/bin/bx", "/etc/bx/config.yaml")
 	want := "/usr/local/bin/bx run -c /etc/bx/config.yaml"
@@ -772,12 +782,8 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(reconnect.SafeNotes, " "), "Does not release") {
 		t.Fatalf("reconnect should document its fail-closed scope: %+v", reconnect)
 	}
-	restart := findCapability(rep.Commands, "sudo bx restart")
-	if !restart.Stable || !restart.RequiresRoot || restart.ChangesSystem || restart.ChangesNetwork {
-		t.Fatalf("unexpected restart compatibility capability: %+v", restart)
-	}
-	if !strings.Contains(strings.Join(restart.SafeNotes, " "), "alias") {
-		t.Fatalf("restart should be documented as reconnect alias: %+v", restart)
+	if restart := findCapability(rep.Commands, "sudo bx restart"); restart.Command != "" {
+		t.Fatalf("legacy restart must not be advertised to agents: %+v", restart)
 	}
 	update := findCapability(rep.Commands, "sudo bx update")
 	if !update.Stable || !update.RequiresRoot || !update.ChangesSystem || update.ChangesNetwork {

@@ -126,8 +126,8 @@ Windows 的 `bx.exe` 是**自包含单文件**——wintun.dll、sing-box、broo
     bx mcp install
 
 并照打印的 `claude mcp add` 指令做(**只打印、不自跑**)。之后 agent 就能查状态、
-换传输(brook↔REALITY 防封)、重劫持等——以**业主**身份授权、**无需 sudo**
-(业主 = 运行 `sudo bx setup` 的用户)。
+安全重连、换传输和重劫持——以**业主**身份授权、**无需 sudo**
+(业主 = 运行 `sudo bx setup` 的用户)。工具权限与安全流程见[Agent Tools](docs/agent-tools.md)。
 
 `setup` 会安装系统服务,`up` 会启动并接管流量,`down` 会停止保护。
 
@@ -297,7 +297,7 @@ sudo bx server doctor --json
 sudo bx server shares --json
 ```
 
-接入 MCP 后,agent 可优先调用 `bx_inspect`、`bx_leak_check`、`bx_logs` 这些只读工具拿结构化诊断,再决定是否需要改动类操作。
+接入 MCP 后,agent 可优先调用 `bx_inspect`、`bx_leak_check`、`bx_logs` 这些只读工具拿结构化诊断,再决定是否需要改动类操作；`bx_reconnect` 是唯一的常规安全恢复动作。
 
 `bx capabilities` 会输出稳定的机器可读能力清单,标明每个入口是否需要 root、是否会修改系统或网络、是否读取敏感配置。上面的 JSON 诊断命令只读取状态并输出机器可解析结果,不会修改系统或网络配置。
 
@@ -326,7 +326,6 @@ sudo bx server shares --json
 | `sudo bx up` | 启动客户端并设为开机自启 |
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `sudo bx reconnect` | 安全重连传输:替代传输健康后切换,不中断 TUN、路由或 DNS |
-| `sudo bx restart` | `reconnect` 的兼容别名 |
 | `sudo bx update` | SHA256 校验并原子替换二进制,不打断当前保护会话 |
 | `sudo bx direct add <domain>` | 将域名加入直连白名单,会与 proxy 规则互斥清理 |
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |

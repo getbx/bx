@@ -39,7 +39,7 @@ func TestToolAnnotations(t *testing.T) {
 	}
 
 	// 改动类工具:必须有 DestructiveHint == true。
-	destructive := []string{"bx_setup", "bx_set_transport", "bx_restart_tunnel", "bx_rehijack"}
+	destructive := []string{"bx_set_transport", "bx_reconnect", "bx_rehijack"}
 	for _, name := range destructive {
 		tool, ok := byName[name]
 		if !ok {
@@ -60,7 +60,7 @@ func TestToolAnnotations(t *testing.T) {
 	}
 
 	// 只读工具:必须有 ReadOnlyHint == true。
-	readonly := []string{"bx_capabilities", "bx_status", "bx_diagnose", "bx_inspect", "bx_leak_check", "bx_observe", "bx_logs", "bx_plan", "bx_verify"}
+	readonly := []string{"bx_capabilities", "bx_status", "bx_diagnose", "bx_inspect", "bx_leak_check", "bx_observe", "bx_logs"}
 	for _, name := range readonly {
 		tool, ok := byName[name]
 		if !ok {
@@ -73,6 +73,13 @@ func TestToolAnnotations(t *testing.T) {
 		}
 		if !tool.Annotations.ReadOnlyHint {
 			t.Errorf("%s: ReadOnlyHint = false,期望 true", name)
+		}
+	}
+
+	// 不注册尚未接线的占位工具。agent 只能看到真实可执行的能力。
+	for _, name := range []string{"bx_setup", "bx_plan", "bx_verify", "bx_restart_tunnel"} {
+		if _, ok := byName[name]; ok {
+			t.Errorf("占位或旧工具 %s 不应暴露给 agent", name)
 		}
 	}
 }

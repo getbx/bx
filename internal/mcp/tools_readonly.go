@@ -74,12 +74,4 @@ func registerReadOnly(s *mcpsdk.Server, ops Ops) {
 			return nil, out, nil
 		})
 
-	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_plan", Description: "dry-run the route/firewall steps for a change", Annotations: ro},
-		func(_ context.Context, _ *mcpsdk.CallToolRequest, in PlanIn) (*mcpsdk.CallToolResult, PlanOut, error) {
-			out, err := ops.Plan(in)
-			if err != nil {
-				return errResultTyped[PlanOut](ToolError{Code: CodeLinkInvalid, Message: err.Error()})
-			}
-			return nil, out, nil
-		})
 }

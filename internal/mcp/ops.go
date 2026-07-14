@@ -10,11 +10,8 @@ type Ops interface {
 	LeakCheck(LeakCheckIn) (JSONCommandOut, error)
 	Observe(ObserveIn) (JSONCommandOut, error)
 	Logs(LogsIn) (LogsOut, error)
-	Plan(PlanIn) (PlanOut, error)
-	Verify() (VerifyOut, error)
-	Setup(SetupIn) error
 	SetTransport(SetTransportIn) error
-	RestartTunnel() error
+	Reconnect() error
 	Rehijack() error
 	Commit() error
 	Rollback() error
@@ -87,26 +84,22 @@ type LogsOut struct {
 	Hint  string `json:"hint,omitempty"`
 }
 
-type PlanIn struct {
-	Link string `json:"link,omitempty" jsonschema:"optional server link to plan a setup/transport change for"`
-}
-type PlanOut struct {
-	Steps []string `json:"steps" jsonschema:"the route/firewall steps that WOULD run, not applied"`
-}
-
-// Task 6: bx_verify 泄漏审计结果
-type VerifyOut struct {
-	Pass         bool   `json:"pass"`
-	ExitIP       string `json:"exit_ip,omitempty" jsonschema:"observed egress IP; should be the VPS"`
-	DNSLeak      bool   `json:"dns_leak"`
-	IPv6Leak     bool   `json:"ipv6_leak"`
-	SelfReach    bool   `json:"self_reach" jsonschema:"agent control channel (SSH) still reachable"`
-	KillSwitchOK bool   `json:"killswitch_ok"`
-	Note         string `json:"note,omitempty" jsonschema:"e.g. WebRTC requires a LAN-client browser test, not automated here"`
-}
-type SetupIn struct {
-	Link string `json:"link" jsonschema:"server link: brook:// or vless://"`
-}
 type SetTransportIn struct {
 	Link string `json:"link" jsonschema:"new server link to switch transport to"`
+}
+
+// Legacy internal request/result types are retained while liveOps still owns
+// their former implementation. They are intentionally absent from Ops and no
+// longer registered as MCP tools.
+type PlanIn struct {
+	Link string `json:"link,omitempty"`
+}
+type PlanOut struct {
+	Steps []string `json:"steps"`
+}
+type VerifyOut struct {
+	Pass bool `json:"pass"`
+}
+type SetupIn struct {
+	Link string `json:"link"`
 }
