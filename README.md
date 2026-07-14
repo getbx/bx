@@ -93,20 +93,27 @@ Linux 客户端直接使用这组命令。
 
 #### Windows
 
-Windows 用 `bx.exe`,并**必须让 `wintun.dll` 与 `bx.exe` 处在同一目录**——bx 靠 [wintun](https://www.wintun.net/) 建 TUN 适配器,DLL 不在 exe 同目录会报 `Error loading wintun.dll: The specified module could not be found`。release 包内已带 `wintun.dll`(与 `bx.exe` 同放);手动部署时从 [wintun.net](https://www.wintun.net/) 下对应架构(amd64/arm64)的 `wintun.dll` 放到 `bx.exe` 旁即可。
+Windows 的 `bx.exe` 是**自包含单文件**——wintun.dll、sing-box、brook 全部内嵌,首次运行自动释放,不需要任何随行文件、不联网下载。从 [Releases](https://github.com/getbx/bx/releases) 有两种拿法:
 
-以**管理员** PowerShell 运行(建 TUN / 改路由需要):
+- **安装包(推荐,小白)**:`bx-setup.exe` —— 双击装到 `C:\Program Files\bx`、进开始菜单、可从「添加/删除程序」卸载,装完自动起托盘。
+- **便携版**:`bx_windows_amd64.zip` / `bx_windows_arm64.zip` —— 解压即用的单个 `bx.exe`(CLI + Windows 服务 + 托盘,全内嵌)。
+
+> ⚠️ **首次运行 SmartScreen 提示**:产物暂未做代码签名,Windows 会弹「Windows 已保护你的电脑 / 未知发行者」。点 **更多信息 → 仍要运行** 即可。(有证书后会补签名,提示消失。)
+
+**图形用法(推荐)**:双击托盘图标(安装包已自动启动;便携版双击 `bx.exe` 或 `bx.exe tray`)→ 复制你的 `bx://` 链接 → 托盘「从剪贴板设置」(此时弹 UAC 提权)→「连接」→ 整机接管。托盘常驻非提权、只在改动系统的动作时逐次提权;状态、日志、断开、重启都在托盘里。
+
+**命令行用法(高级 / 自动化)**,以**管理员** PowerShell 运行:
 
 ```powershell
-.\bx.exe setup "<client-link>"   # 写配置 + 装到 C:\Program Files\bx(自动随行 wintun.dll)+ 建 Windows 服务
+.\bx.exe setup "<client-link>"   # 写配置 + 装到 C:\Program Files\bx + 建 Windows 服务
 .\bx.exe up                       # 启动服务并设为开机自启(整机接管)
 .\bx.exe status                   # 看状态
 .\bx.exe down                     # 停并取消自启
 ```
 
-`setup` 会把 `bx.exe` **和 `wintun.dll` 一并**装到 `C:\Program Files\bx`(服务以 System32 为工作目录运行,DLL 必须随行),配置写到 `C:\ProgramData\bx\config.yaml`。首次真机联调建议先 `bx run --test-timeout 2m`(前台 + 死手,到点自动还原,防路由改错断网)。
+配置写到 `C:\ProgramData\bx\config.yaml`。首次真机联调建议先 `bx run --test-timeout 2m`(前台 + 死手,到点自动还原,防路由改错断网)。
 
-> **受限网络 / 企业 TLS 拦截(MITM)**:REALITY/vless 等传输需 sing-box,bx 首次运行会从 GitHub 下载对应平台的 sing-box(brook 传输同理)。若所在网络对 HTTPS 做 TLS 拦截(企业代理自签根 CA),下载会因证书不受信而失败(`x509: certificate signed by unknown authority`)——这是 bx 供应链校验在**正确拒绝** MITM 证书,不是 bug。此时手动准备一份本地 sing-box 可执行(与 bx 版本匹配),在配置里用绝对路径指过去即可绕开下载:
+> **受限网络 / 企业 TLS 拦截(MITM)**:release 版已内嵌 sing-box/brook,正常**不触发任何下载**。仅当你从源码自建、或用了没有内嵌二进制的架构时,bx 才会从 GitHub 下载 sing-box/brook;若所在网络对 HTTPS 做 TLS 拦截(企业代理自签根 CA),下载会因证书不受信而失败(`x509: certificate signed by unknown authority`)——这是 bx 供应链校验在**正确拒绝** MITM 证书,不是 bug。此时手动准备一份本地 sing-box 可执行(与 bx 版本匹配),在配置里用绝对路径指过去即可绕开下载:
 >
 > ```yaml
 > singbox_bin: C:\path\to\sing-box.exe   # 直接用本地 sing-box,不联网下载(brook 传输对应 brook: <path>)
