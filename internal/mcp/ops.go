@@ -9,6 +9,7 @@ type Ops interface {
 	Inspect(InspectIn) (JSONCommandOut, error)
 	LeakCheck(LeakCheckIn) (JSONCommandOut, error)
 	Observe(ObserveIn) (JSONCommandOut, error)
+	Check(CheckIn) (CheckOut, error)
 	Logs(LogsIn) (LogsOut, error)
 	ApplyPolicy(PolicyApplyIn) (PolicyApplyOut, error)
 	SetTransport(SetTransportIn) error
@@ -72,6 +73,27 @@ type ObserveIn struct {
 	Duration string `json:"duration,omitempty" jsonschema:"observation window, e.g. 30s"`
 	Interval string `json:"interval,omitempty" jsonschema:"status sampling interval, e.g. 2s"`
 	Scenario string `json:"scenario,omitempty" jsonschema:"general, video, or realtime"`
+}
+
+// CheckIn controls the optional verification portions of the safe check
+// bundle. With zero values it only inspects bx and samples its local counters.
+type CheckIn struct {
+	Network          bool     `json:"network,omitempty" jsonschema:"perform opt-in outbound egress and DNS probes"`
+	Browser          bool     `json:"browser,omitempty" jsonschema:"perform opt-in browser WebRTC ICE check"`
+	BrowserConfirmed bool     `json:"browser_confirmed,omitempty" jsonschema:"must be true after user confirms opening the local browser page"`
+	ExpectedIPs      []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs for optional network checks"`
+	Duration         string   `json:"duration,omitempty" jsonschema:"local observation window, default 15s"`
+	Interval         string   `json:"interval,omitempty" jsonschema:"local observation sample interval"`
+	Scenario         string   `json:"scenario,omitempty" jsonschema:"general, video, or realtime"`
+}
+
+type CheckOut struct {
+	OK          bool            `json:"ok"`
+	Risk        string          `json:"risk" jsonschema:"low, medium, or high"`
+	Inspect     JSONCommandOut  `json:"inspect"`
+	Observe     JSONCommandOut  `json:"observe"`
+	Leak        *JSONCommandOut `json:"leak,omitempty"`
+	NextActions []string        `json:"next_actions,omitempty"`
 }
 
 type LogsIn struct {

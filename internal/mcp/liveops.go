@@ -126,6 +126,81 @@ func (o *liveOps) Observe(in ObserveIn) (JSONCommandOut, error) {
 	return runBXJSONCommand(observeArgs(in))
 }
 
+// Check composes the existing read-only inspection and local observation
+// surfaces. It neither changes bx nor probes externally unless explicitly
+// requested through CheckIn.Network or CheckIn.Browser.
+func (o *liveOps) Check(in CheckIn) (CheckOut, error) {
+	if in.Browser && !in.BrowserConfirmed {
+		return CheckOut{}, ToolError{
+			Code:        CodeConfirmationRequired,
+			Message:     "browser WebRTC check requires user confirmation",
+			Remediation: "ask the user to confirm opening the local browser page, then call bx_check with browser_confirmed=true",
+		}
+	}
+	inspect, err := o.Inspect(InspectIn{SkipProbe: true})
+	if err != nil {
+		return CheckOut{}, err
+	}
+	duration := strings.TrimSpace(in.Duration)
+	if duration == "" {
+		duration = "15s"
+	}
+	observe, err := o.Observe(ObserveIn{Duration: duration, Interval: in.Interval, Scenario: in.Scenario})
+	if err != nil {
+		return CheckOut{}, err
+	}
+	out := CheckOut{Inspect: inspect, Observe: observe, Risk: "low"}
+	if in.Network || in.Browser {
+		leak, err := o.LeakCheck(LeakCheckIn{
+			Network:          in.Network,
+			Browser:          in.Browser,
+			BrowserConfirmed: in.BrowserConfirmed,
+			ExpectedIPs:      in.ExpectedIPs,
+		})
+		if err != nil {
+			return CheckOut{}, err
+		}
+		out.Leak = &leak
+	}
+	out.Risk = maxCheckRisk(out.Risk, commandRisk(inspect))
+	out.Risk = maxCheckRisk(out.Risk, commandRisk(observe))
+	if out.Leak != nil {
+		out.Risk = maxCheckRisk(out.Risk, commandRisk(*out.Leak))
+	}
+	out.OK = inspect.OK && observe.OK && (out.Leak == nil || out.Leak.OK)
+	if !out.OK && out.Risk == "low" {
+		out.Risk = "high"
+	}
+	if !inspect.OK {
+		out.NextActions = append(out.NextActions, "inspect bx_status and bx_logs before changing protection")
+	}
+	if !observe.OK {
+		out.NextActions = append(out.NextActions, "repeat bx_check while reproducing the affected app or connection")
+	}
+	if out.Leak == nil {
+		out.NextActions = append(out.NextActions, "add network=true with expected_ips for an opt-in egress check")
+	}
+	return out, nil
+}
+
+func commandRisk(out JSONCommandOut) string {
+	if risk, ok := out.JSON["risk"].(string); ok {
+		return risk
+	}
+	if out.OK {
+		return "low"
+	}
+	return "high"
+}
+
+func maxCheckRisk(a, b string) string {
+	level := map[string]int{"low": 0, "medium": 1, "high": 2}
+	if level[b] > level[a] {
+		return b
+	}
+	return a
+}
+
 func inspectArgs(configPath string, in InspectIn) []string {
 	args := []string{"inspect", "--json", "--config", configPath}
 	if !in.Probe || in.SkipProbe {

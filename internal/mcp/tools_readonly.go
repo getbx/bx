@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -61,6 +62,19 @@ func registerReadOnly(s *mcpsdk.Server, ops Ops) {
 			out, err := ops.Observe(in)
 			if err != nil {
 				return errResultTyped[JSONCommandOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
+			}
+			return nil, out, nil
+		})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_check", Description: "run the safe bx verification bundle; outbound and browser probes are opt-in", Annotations: ro},
+		func(_ context.Context, _ *mcpsdk.CallToolRequest, in CheckIn) (*mcpsdk.CallToolResult, CheckOut, error) {
+			out, err := ops.Check(in)
+			if err != nil {
+				var te ToolError
+				if errors.As(err, &te) {
+					return errResultTyped[CheckOut](te)
+				}
+				return errResultTyped[CheckOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
 			}
 			return nil, out, nil
 		})

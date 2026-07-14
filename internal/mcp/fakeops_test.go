@@ -7,6 +7,8 @@ type fakeOps struct {
 	inspect              JSONCommandOut
 	leakCheck            JSONCommandOut
 	observe              JSONCommandOut
+	check                CheckOut
+	checkIn              CheckIn
 	logs                 LogsOut
 	calls                []string
 	commitErr            error
@@ -32,6 +34,11 @@ func (f *fakeOps) LeakCheck(LeakCheckIn) (JSONCommandOut, error) {
 
 func (f *fakeOps) Observe(ObserveIn) (JSONCommandOut, error) {
 	return f.observe, nil
+}
+func (f *fakeOps) Check(in CheckIn) (CheckOut, error) {
+	f.calls = append(f.calls, "check")
+	f.checkIn = in
+	return f.check, nil
 }
 func (f *fakeOps) Logs(LogsIn) (LogsOut, error) { return f.logs, nil }
 func (f *fakeOps) ApplyPolicy(in PolicyApplyIn) (PolicyApplyOut, error) {

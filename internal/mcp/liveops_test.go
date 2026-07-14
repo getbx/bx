@@ -68,3 +68,15 @@ func TestAtomicWriteConfigReplacesContentsWithPrivateMode(t *testing.T) {
 		t.Fatalf("mode=%#o, want 0600", info.Mode().Perm())
 	}
 }
+
+func TestCheckRiskNeverDowngradesAnUnsafeReport(t *testing.T) {
+	if got := maxCheckRisk("medium", "high"); got != "high" {
+		t.Fatalf("risk=%q want high", got)
+	}
+	if got := commandRisk(JSONCommandOut{OK: false}); got != "high" {
+		t.Fatalf("failed command risk=%q want high", got)
+	}
+	if got := commandRisk(JSONCommandOut{OK: true, JSON: map[string]any{"risk": "medium"}}); got != "medium" {
+		t.Fatalf("reported risk=%q want medium", got)
+	}
+}

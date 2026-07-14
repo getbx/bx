@@ -6,6 +6,10 @@ than compose shell commands or call `bx down && bx up`.
 ## Read First
 
 - `bx_capabilities`: discover this host and the available bx surface.
+- `bx_check`: the default verification bundle. It inspects bx and samples
+  local runtime counters for a short window without changing protection or
+  issuing outbound probes. Egress/DNS probes and browser WebRTC verification
+  are opt-in; browser use requires explicit user confirmation.
 - `bx_inspect`: the default structured diagnosis.
 - `bx_status`, `bx_diagnose`, `bx_logs`, `bx_observe`: focused read-only
   follow-ups.
