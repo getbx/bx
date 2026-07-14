@@ -1,0 +1,50 @@
+{
+  "RT_GROUP_ICON": {
+    "APP": {
+      "0000": [
+        "icon.png",
+        "icon16.png"
+      ]
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "identity": {
+          "name": "getbx.bx",
+          "version": "0.0.0.0"
+        },
+        "description": "bx transparent proxy",
+        "minimum-os": "win7",
+        "execution-level": "as invoker",
+        "ui-access": false,
+        "auto-elevate": false,
+        "dpi-awareness": "per monitor v2",
+        "long-path-aware": true,
+        "use-common-controls-v6": true
+      }
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "0.0.0.0",
+          "product_version": "0.0.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "getbx",
+            "FileDescription": "bx transparent proxy",
+            "InternalName": "bx",
+            "OriginalFilename": "bx.exe",
+            "ProductName": "bx",
+            "ProductVersion": "0.0.0.0",
+            "FileVersion": "0.0.0.0",
+            "LegalCopyright": ""
+          }
+        }
+      }
+    }
+  }
+}
