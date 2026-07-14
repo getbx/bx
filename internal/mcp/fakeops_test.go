@@ -8,10 +8,7 @@ type fakeOps struct {
 	leakCheck            JSONCommandOut
 	observe              JSONCommandOut
 	logs                 LogsOut
-	plan                 PlanOut
-	verify               VerifyOut
 	calls                []string
-	setupErr             error
 	commitErr            error
 	rollbackErr          error
 	lastSetTransportLink string
@@ -34,18 +31,14 @@ func (f *fakeOps) Observe(ObserveIn) (JSONCommandOut, error) {
 	return f.observe, nil
 }
 func (f *fakeOps) Logs(LogsIn) (LogsOut, error) { return f.logs, nil }
-func (f *fakeOps) Plan(PlanIn) (PlanOut, error) { return f.plan, nil }
-func (f *fakeOps) Verify() (VerifyOut, error)   { return f.verify, nil }
-func (f *fakeOps) Setup(SetupIn) error          { f.calls = append(f.calls, "setup"); return f.setupErr }
-
 func (f *fakeOps) SetTransport(in SetTransportIn) error {
 	f.calls = append(f.calls, "set_transport")
 	f.lastSetTransportLink = in.Link
 	return f.setTransportErr
 }
 
-func (f *fakeOps) RestartTunnel() error {
-	f.calls = append(f.calls, "restart")
+func (f *fakeOps) Reconnect() error {
+	f.calls = append(f.calls, "reconnect")
 	return nil
 }
 

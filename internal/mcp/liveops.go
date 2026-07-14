@@ -95,7 +95,7 @@ func diagnoseFindings(rep StatusOut, reachable bool) []Finding {
 		fs = append(fs, Finding{
 			Severity:    "warn",
 			Title:       "有待确认的改动(armed),未 commit 将自动回滚",
-			Remediation: "bx_verify 通过后 bx_commit;或 bx_rollback 立即还原",
+			Remediation: "用 bx_inspect / bx_leak_check 验证后 bx_commit;或 bx_rollback 立即还原",
 		})
 	}
 	if len(fs) == 0 {
@@ -309,7 +309,7 @@ func (o *liveOps) SetTransport(in SetTransportIn) error {
 	return nil
 }
 
-func (o *liveOps) RestartTunnel() error {
+func (o *liveOps) Reconnect() error {
 	if err := requireRoot(isRoot()); err != nil {
 		return err
 	}
