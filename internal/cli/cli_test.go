@@ -77,6 +77,9 @@ func TestAppHasVersion(t *testing.T) {
 	if !commandHasSubcommand(realtime, "status") || !commandHasSubcommand(realtime, "on") || !commandHasSubcommand(realtime, "off") {
 		t.Fatalf("realtime subcommands = %+v, want status/on/off", realtime.Subcommands)
 	}
+	if commandHasFlag(realtime, "no-restart") {
+		t.Fatal("realtime must not offer a service-restart path")
+	}
 	if !subcommandHidden(realtime, "on") || !subcommandHidden(realtime, "off") {
 		t.Fatal("realtime on/off should stay hidden from the normal help surface")
 	}
@@ -826,6 +829,9 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(realtimeOn.SafeNotes, " "), "Relays non-DNS UDP") {
 		t.Fatalf("realtime on should document UDP relay behavior: %+v", realtimeOn)
 	}
+	if !strings.Contains(strings.Join(realtimeOn.SafeNotes, " "), "without restarting") {
+		t.Fatalf("realtime on should document preserved protection: %+v", realtimeOn)
+	}
 	realtimeOff := findCapability(rep.Commands, "sudo bx realtime off")
 	if !realtimeOff.Stable || !realtimeOff.RequiresRoot || !realtimeOff.ChangesSystem || realtimeOff.ChangesNetwork || !realtimeOff.ReadsSecrets {
 		t.Fatalf("unexpected realtime off capability: %+v", realtimeOff)
@@ -952,22 +958,19 @@ func TestSetRealtimeModeUpdatesClientConfig(t *testing.T) {
 func TestPlanRealtimePostChange(t *testing.T) {
 	tests := []struct {
 		name          string
-		noRestart     bool
 		unitInstalled bool
 		activeState   string
-		wantRestart   bool
 		wantContains  string
 	}{
-		{"active restarts", false, true, "active", true, "已重启"},
-		{"no restart flag", true, true, "active", false, "重启 bx 生效"},
-		{"not installed", false, false, "inactive", false, "sudo bx up"},
-		{"inactive installed", false, true, "inactive", false, "下次 sudo bx up"},
+		{"active stays protected", true, "active", "保持运行"},
+		{"not installed", false, "inactive", "sudo bx up"},
+		{"inactive installed", true, "inactive", "下次 sudo bx up"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := planRealtimePostChange(tt.noRestart, tt.unitInstalled, tt.activeState)
-			if got.Restart != tt.wantRestart || !strings.Contains(got.Message, tt.wantContains) {
-				t.Fatalf("plan = %+v, want restart=%v message containing %q", got, tt.wantRestart, tt.wantContains)
+			got := planRealtimePostChange(tt.unitInstalled, tt.activeState)
+			if !strings.Contains(got.Message, tt.wantContains) {
+				t.Fatalf("plan = %+v, want message containing %q", got, tt.wantContains)
 			}
 		})
 	}

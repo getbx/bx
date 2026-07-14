@@ -319,7 +319,7 @@ func editRuleAction(c *cli.Context, field string, isAdd bool) error {
 	if _, err := supervisor.FetchStatusReport(supervisor.SockPath); err != nil {
 		fmt.Println("  (bx 未在运行,下次 sudo bx up 时生效)")
 	} else if _, err := supervisor.ReloadControl(supervisor.SockPath); err != nil {
-		fmt.Printf("  ⚠ 配置已写入,但热生效失败——旧规则仍在运行,请重启 bx(sudo bx down && sudo bx up):%v\n", err)
+		fmt.Printf("  ⚠ 配置已写入,但热生效失败——旧规则仍在运行;请查看 bx logs,新规则将在下次启动保护时生效:%v\n", err)
 	} else {
 		fmt.Println("  已热生效(未断隧道)。")
 	}
