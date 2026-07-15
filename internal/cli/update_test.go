@@ -35,6 +35,14 @@ func TestUpdateDoesNotRestartProtection(t *testing.T) {
 	}
 }
 
+func TestUpdateCheckJSONIsAvailableForMenu(t *testing.T) {
+	app := New()
+	command := findAppCommand(app, "update")
+	if command == nil || !commandHasFlag(command, "json") {
+		t.Fatal("update should expose --json for the macOS menu")
+	}
+}
+
 func TestParseReleaseTag(t *testing.T) {
 	cases := map[string]string{
 		"https://github.com/getbx/bx/releases/tag/v0.2.0":     "v0.2.0",

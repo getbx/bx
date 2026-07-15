@@ -111,6 +111,7 @@ func extractBxFromTarGz(gzData []byte) ([]byte, error) {
 func updateFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "check", Usage: "只检查有无新版,不下载安装"},
+		&cli.BoolFlag{Name: "json", Usage: "输出机器可读更新状态"},
 		&cli.BoolFlag{Name: "force", Usage: "即便已是最新(或 dev 构建)也强制下载安装最新版"},
 		&cli.BoolFlag{Name: "no-restart", Usage: "已废弃:更新始终保留当前保护会话", Hidden: true},
 	}
