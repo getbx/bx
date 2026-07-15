@@ -83,7 +83,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return .missing("Install bx at /usr/local/bin/bx")
         }
         let version = loadVersion()
-        if !cliSupportsDiagnosticsArchive() {
+        if !cliSupportsDiagnosticsArchive() || !cliSupportsSafeReconnect() {
             return .updateNeeded("Update bx CLI", version: version)
         }
         let status = runBx(["status", "--json"])
@@ -462,6 +462,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private func cliSupportsDiagnosticsArchive() -> Bool {
         let result = runBx(["logs", "--help"])
         return result.code == 0 && result.stdout.contains("--archive") && result.stdout.contains("--dir")
+    }
+
+    private func cliSupportsSafeReconnect() -> Bool {
+        let result = runBx(["reconnect", "--help"])
+        return result.code == 0
     }
 
     private func loadDNSStatus() -> String? {
