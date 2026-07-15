@@ -119,6 +119,20 @@ func TestMacMenuRequiresCLIReconnectSupport(t *testing.T) {
 	}
 }
 
+func TestMacMenuUsesSingleCompactStatusIcon(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "compactStatusImage(for:") {
+		t.Fatal("macOS menu should render its shield and state indicator as one compact icon")
+	}
+	if strings.Contains(text, "button.attributedTitle = statusDotTitle") {
+		t.Fatal("macOS menu should not consume menu-bar space with a separate status-dot title")
+	}
+}
+
 func TestAppHidesLegacyAndDeveloperCommands(t *testing.T) {
 	app := New()
 	for _, name := range []string{"restart", "blink", "run", "debug-tun", "darwin-plan", "router-plan"} {
