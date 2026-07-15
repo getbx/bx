@@ -99,11 +99,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
     private func updateIcon() {
         guard let button = statusItem.button else { return }
-        let image = NSImage(systemSymbolName: "shield", accessibilityDescription: "bx")
-        image?.isTemplate = true
-        button.image = image
-        button.imagePosition = .imageLeading
-        button.attributedTitle = statusDotTitle(for: statusIndicator(for: statusIndicatorState()))
+        button.image = compactStatusImage(for: statusIndicator(for: statusIndicatorState()))
+        button.imagePosition = .imageOnly
+        button.title = ""
         button.toolTip = tooltipText()
     }
 
@@ -124,7 +122,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func statusDotTitle(for indicator: StatusIndicator) -> NSAttributedString {
+    private func compactStatusImage(for indicator: StatusIndicator) -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        let shield = NSImage(systemSymbolName: "shield", accessibilityDescription: "bx")!
+            .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))!
+        shield.draw(in: NSRect(x: 0, y: 1, width: 16, height: 16))
+
         let color: NSColor
         switch indicator {
         case .green:
@@ -136,10 +143,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .gray:
             color = .secondaryLabelColor
         }
-        return NSAttributedString(string: "●", attributes: [
-            .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-            .foregroundColor: color,
-        ])
+        color.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 12, y: 0, width: 6, height: 6)).fill()
+        image.isTemplate = false
+        return image
     }
 
     private func tooltipText() -> String {
