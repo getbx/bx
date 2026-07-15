@@ -105,6 +105,20 @@ func TestMacMenuReconnectDoesNotCycleProtection(t *testing.T) {
 	}
 }
 
+func TestMacMenuRequiresCLIReconnectSupport(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "func cliSupportsSafeReconnect()") {
+		t.Fatal("macOS menu should detect whether the installed CLI supports safe reconnect")
+	}
+	if !strings.Contains(text, "!cliSupportsDiagnosticsArchive() || !cliSupportsSafeReconnect()") {
+		t.Fatal("macOS menu should require safe reconnect support before presenting a healthy state")
+	}
+}
+
 func TestAppHidesLegacyAndDeveloperCommands(t *testing.T) {
 	app := New()
 	for _, name := range []string{"restart", "blink", "run", "debug-tun", "darwin-plan", "router-plan"} {
