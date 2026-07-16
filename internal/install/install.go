@@ -630,10 +630,7 @@ func DisableDNS(service string) (DNSStatus, error) {
 			if inspectErr != nil {
 				return st, inspectErr
 			}
-			if st.Enabled {
-				return st, fmt.Errorf("DNS 当前指向 bx,但没有保存的原始 DNS 状态(%s)", dnsStatePath)
-			}
-			return st, nil
+			return st, dnsStateMissingRecoveryError(st)
 		}
 		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
 	}
@@ -649,6 +646,15 @@ func DisableDNS(service string) (DNSStatus, error) {
 	_ = os.Remove(dnsStatePath)
 	flushDNSCache()
 	return InspectDNS(resolved)
+}
+
+// dnsStateMissingRecoveryError keeps shutdown safe when a prior DNS rollback
+// removed its state file. A still-managed resolver must never be left behind.
+func dnsStateMissingRecoveryError(st DNSStatus) error {
+	if st.Enabled {
+		return fmt.Errorf("DNS 当前指向 bx,但没有保存的原始 DNS 状态(%s)", dnsStatePath)
+	}
+	return nil
 }
 
 func dnsRestoreArgs(state dnsState) []string {

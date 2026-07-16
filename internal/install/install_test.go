@@ -159,6 +159,15 @@ func TestDNSRestoreArgs(t *testing.T) {
 	}
 }
 
+func TestDNSStateMissingRecoveryError(t *testing.T) {
+	if err := dnsStateMissingRecoveryError(DNSStatus{Enabled: false}); err != nil {
+		t.Fatalf("already-restored DNS should allow shutdown: %v", err)
+	}
+	if err := dnsStateMissingRecoveryError(DNSStatus{Enabled: true}); err == nil {
+		t.Fatal("bx-managed DNS without saved state must refuse shutdown")
+	}
+}
+
 func TestUnitInstalledFalseWhenAbsent(t *testing.T) {
 	// 只验证函数可调用且返回 bool(系统服务在测试环境状态不定)
 	_ = UnitInstalled()
