@@ -93,14 +93,15 @@ jobs:
         run: |
           $version = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
           $v = $version.TrimStart("v")
-          & iscc "/DMyAppVersion=$v" "/DSourceExe=dist\bx-amd64.exe" "packaging\windows\bx-setup.iss"
-          Get-ChildItem Output
+          $source = (Resolve-Path "dist\bx-amd64.exe").Path
+          & iscc "/DMyAppVersion=$v" "/DSourceExe=$source" "packaging\windows\bx-setup.iss"
+          Get-ChildItem packaging\windows\Output
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: bx-windows-installer
-          path: Output/bx-setup.exe
+          path: packaging/windows/Output/bx-setup.exe
 
   macos-package:
     needs: build
