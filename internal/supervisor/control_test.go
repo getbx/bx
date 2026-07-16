@@ -42,12 +42,12 @@ func testMux(eng controlEngine) http.Handler {
 }
 
 type fakeMutator struct {
-	gotLink   string
-	setErr    error
-	setCalled bool
-	rehCalled bool
+	gotLink         string
+	setErr          error
+	setCalled       bool
+	rehCalled       bool
 	reconnectCalled bool
-	reconnectErr error
+	reconnectErr    error
 }
 
 func (f *fakeMutator) SetTransport(link string) (func() error, func() error, error) {
@@ -127,6 +127,22 @@ func TestControlReconnect(t *testing.T) {
 	}
 	if out.State != "reconnected" {
 		t.Fatalf("state=%q", out.State)
+	}
+}
+
+func TestControlCapabilitiesAdvertisesSafeReconnect(t *testing.T) {
+	h := newControlMux(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, &fakeMutator{}, nil, 0)
+	r := httptest.NewRequest(http.MethodGet, "/v0/capabilities", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		SafeReconnect bool `json:"safe_reconnect"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil || !out.SafeReconnect {
+		t.Fatalf("out=%+v err=%v", out, err)
 	}
 }
 
