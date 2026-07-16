@@ -148,6 +148,17 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: bx-generic-release
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bx-windows-installer
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bx-macos-*
           path: dist
           merge-multiple: true
 
