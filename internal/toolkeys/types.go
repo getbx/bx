@@ -70,6 +70,13 @@ type PendingRequest struct {
 	CreatedAt, ExpiresAt        time.Time
 }
 
+type PendingRequestInput struct {
+	Origin   string   `json:"origin"`
+	AuthHint AuthHint `json:"auth_hint"`
+	Reason   string   `json:"reason"`
+	DocsURL  string   `json:"docs_url,omitempty"`
+}
+
 type APIRequest struct {
 	CredentialID string
 	Method, Path string
