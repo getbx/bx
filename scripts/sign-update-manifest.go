@@ -23,9 +23,11 @@ func (a *assetsFlag) Set(value string) error { *a = append(*a, value); return ni
 func main() {
 	var version, out string
 	var assets assetsFlag
+	var packages assetsFlag
 	flag.StringVar(&version, "version", "", "release version")
 	flag.StringVar(&out, "out", "", "manifest output path")
 	flag.Var(&assets, "asset", "platform:path, repeat for each asset")
+	flag.Var(&packages, "package", "platform:path, repeat for each full application package")
 	flag.Parse()
 	if version == "" || out == "" || len(assets) == 0 {
 		fail("usage: --version <tag> --out <path> --asset <platform:path>")
@@ -33,15 +35,10 @@ func main() {
 	key := loadKey(os.Getenv("BX_UPDATE_PRIVATE_KEY"))
 	manifest := update.Manifest{Version: version}
 	for _, raw := range assets {
-		platform, path, ok := strings.Cut(raw, ":")
-		if !ok || platform == "" || path == "" {
-			fail("invalid --asset %q", raw)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			fail("read asset %s: %v", path, err)
-		}
-		manifest.Assets = append(manifest.Assets, update.Asset{Platform: platform, Name: filepath.Base(path), SHA256: fmt.Sprintf("%x", sha256.Sum256(data)), Size: int64(len(data))})
+		manifest.Assets = append(manifest.Assets, readAsset(raw, "asset"))
+	}
+	for _, raw := range packages {
+		manifest.Packages = append(manifest.Packages, readAsset(raw, "package"))
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {
@@ -53,6 +50,18 @@ func main() {
 	if err := os.WriteFile(out+".sig", ed25519.Sign(key, data), 0o644); err != nil {
 		fail("write signature: %v", err)
 	}
+}
+
+func readAsset(raw, kind string) update.Asset {
+	platform, path, ok := strings.Cut(raw, ":")
+	if !ok || platform == "" || path == "" {
+		fail("invalid --%s %q", kind, raw)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fail("read %s %s: %v", kind, path, err)
+	}
+	return update.Asset{Platform: platform, Name: filepath.Base(path), SHA256: fmt.Sprintf("%x", sha256.Sum256(data)), Size: int64(len(data))}
 }
 
 func loadKey(raw string) ed25519.PrivateKey {

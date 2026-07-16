@@ -11,8 +11,9 @@ import (
 )
 
 type Manifest struct {
-	Version string  `json:"version"`
-	Assets  []Asset `json:"assets"`
+	Version  string  `json:"version"`
+	Assets   []Asset `json:"assets"`
+	Packages []Asset `json:"packages,omitempty"`
 }
 
 type Asset struct {
@@ -49,26 +50,45 @@ func ParseAndVerify(data, signature []byte, publicKeyBase64 string) (Manifest, e
 	if len(manifest.Assets) == 0 {
 		return Manifest{}, fmt.Errorf("update manifest has no assets")
 	}
-	seen := make(map[string]struct{}, len(manifest.Assets))
-	for _, asset := range manifest.Assets {
+	if err := validateAssets(manifest.Assets); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateAssets(manifest.Packages); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+func validateAssets(assets []Asset) error {
+	seen := make(map[string]struct{}, len(assets))
+	for _, asset := range assets {
 		if strings.TrimSpace(asset.Platform) == "" || strings.TrimSpace(asset.Name) == "" {
-			return Manifest{}, fmt.Errorf("update manifest asset missing platform or name")
+			return fmt.Errorf("update manifest asset missing platform or name")
 		}
 		if _, ok := seen[asset.Platform]; ok {
-			return Manifest{}, fmt.Errorf("update manifest has duplicate platform %q", asset.Platform)
+			return fmt.Errorf("update manifest has duplicate platform %q", asset.Platform)
 		}
 		seen[asset.Platform] = struct{}{}
 		if len(asset.SHA256) != 64 {
-			return Manifest{}, fmt.Errorf("update manifest asset %q has invalid SHA256", asset.Name)
+			return fmt.Errorf("update manifest asset %q has invalid SHA256", asset.Name)
 		}
 		if _, err := hex.DecodeString(asset.SHA256); err != nil {
-			return Manifest{}, fmt.Errorf("update manifest asset %q has invalid SHA256: %w", asset.Name, err)
+			return fmt.Errorf("update manifest asset %q has invalid SHA256: %w", asset.Name, err)
 		}
 		if asset.Size <= 0 {
-			return Manifest{}, fmt.Errorf("update manifest asset %q has invalid size", asset.Name)
+			return fmt.Errorf("update manifest asset %q has invalid size", asset.Name)
 		}
 	}
-	return manifest, nil
+	return nil
+}
+
+func FindPackage(manifest Manifest, platform string) (Asset, error) {
+	for _, asset := range manifest.Packages {
+		if asset.Platform == platform {
+			return asset, nil
+		}
+	}
+	return Asset{}, fmt.Errorf("update manifest has no package for %q", platform)
 }
 
 func FindAsset(manifest Manifest, platform string) (Asset, error) {
