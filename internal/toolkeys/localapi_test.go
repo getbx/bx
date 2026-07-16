@@ -25,6 +25,9 @@ func TestLocalAPIListNeverReturnsSecret(t *testing.T) {
 	if bytes.Contains(w.Body.Bytes(), []byte("localapi-secret")) {
 		t.Fatalf("secret leaked: %s", w.Body.String())
 	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"id":"cred"`)) {
+		t.Fatalf("catalog does not use stable JSON fields: %s", w.Body.String())
+	}
 }
 
 func TestLocalAPICreatesSecretFreePendingRequest(t *testing.T) {
