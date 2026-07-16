@@ -43,6 +43,14 @@ func TestUpdateCheckJSONIsAvailableForMenu(t *testing.T) {
 	}
 }
 
+func TestUpdateExposesFullMacOSPackageOption(t *testing.T) {
+	app := New()
+	command := findAppCommand(app, "update")
+	if command == nil || !commandHasFlag(command, "package") {
+		t.Fatal("update should expose --package for the macOS menu app")
+	}
+}
+
 func TestParseReleaseTag(t *testing.T) {
 	cases := map[string]string{
 		"https://github.com/getbx/bx/releases/tag/v0.2.0":     "v0.2.0",

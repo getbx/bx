@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 struct BxReport: Decodable {
@@ -52,13 +53,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let statusPanel = StatusPanelController()
     private var timer: Timer?
+    private var updateTimer: Timer?
     private var state: BxState = .off
+    private var updateCheck: UpdateCheck?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMenu()
         refresh()
+        refreshUpdateCheck()
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.refresh()
+        }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { [weak self] _ in
+            self?.refreshUpdateCheck()
         }
     }
 
@@ -205,6 +212,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addInfo("Status", "Not running")
         }
         menu.addItem(.separator())
+        if let title = updateActionTitle(for: updateCheck) {
+            menu.addAction(title, symbol: "arrow.down.circle", target: self, action: #selector(updateBx))
+            menu.addItem(.separator())
+        }
         switch state {
         case .setupNeeded:
             menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
@@ -341,6 +352,35 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             showFailure("Reconnect Failed", "bx could not establish a replacement protected transport.")
         }
         refresh()
+    }
+
+    @objc private func updateBx() {
+        guard let check = updateCheck, check.available, check.verified else { return }
+        let alert = NSAlert()
+        alert.messageText = "Update bx?"
+        alert.informativeText = "bx will verify and install \(check.latest). Protection stays on; only the menu bar app restarts."
+        alert.addButton(withTitle: "Update")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let appPath = Bundle.main.bundleURL.path
+        let owner = "\(getuid()):\(getgid())"
+        let logDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/bx")
+        let logPath = logDir.appendingPathComponent("menu-update.log").path
+        do {
+            try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: logPath) {
+                FileManager.default.createFile(atPath: logPath, contents: nil)
+            }
+        } catch {
+            showFailure("Update Failed", "bx could not prepare its update log.")
+            return
+        }
+        let command = "'\(bxPath)' update --package --app-path \(shellSingleQuoted(appPath)) --app-owner \(shellSingleQuoted(owner)) > \(shellSingleQuoted(logPath)) 2>&1"
+        if !runPrivileged(command) {
+            showFailure("Update Failed", "bx could not install the verified update.")
+        }
     }
 
     @objc private func turnOff() {
@@ -496,6 +536,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return "Managed"
         }
         return "Not managed"
+    }
+
+    private func refreshUpdateCheck() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let result = self.runBx(["update", "--check", "--json"])
+            let check = result.code == 0
+                ? try? JSONDecoder().decode(UpdateCheck.self, from: Data(result.stdout.utf8))
+                : nil
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.updateCheck = check
+                self.rebuildMenu()
+            }
+        }
     }
 
     private func value(in lines: [String], key: String) -> String? {

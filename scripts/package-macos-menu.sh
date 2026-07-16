@@ -14,6 +14,8 @@ LAUNCH_AGENT="$DIST_DIR/$BUNDLE_ID.plist"
 LOG_DIR="${BX_LOG_DIR:-$HOME/Library/Logs/bx}"
 VERSION="${BX_VERSION:-dev}"
 
+"$ROOT/scripts/test-macos-menu.sh"
+
 cd "$MENU_DIR"
 swift build -c release
 

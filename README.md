@@ -145,7 +145,7 @@ WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md
 
 `bx status` 是运行期面板。macOS 上 daemon 会轻量只读监测 Tailscale 路由、系统代理和已连接的 VPN 服务；如果 bx 启动后又出现其他通道,status 会显示 `提醒`,菜单栏也可用同一份 JSON 变成需要注意的状态。
 
-macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Restart、Turn Off、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
+macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Reconnect、Update、Turn Off、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
 
 #### macOS 安装包
 
@@ -167,7 +167,9 @@ macOS release 包会一次装好两件事并启动菜单栏 App:
 
 安装后看菜单栏图标即可。如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即开始保护。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
-升级旧版 bx 时,直接下载新版 release 后再次运行:
+菜单栏会在启动时、以及之后每天只读检查一次已签名的 release。有新版时会显示 `Update bx…`。确认后,它会校验完整 macOS 包、一起替换 CLI 与菜单栏 App,再只重启菜单栏自身;运行中的保护会话、TUN、路由和 DNS 保持不变。更新记录在 `~/Library/Logs/bx/menu-update.log`。
+
+无法使用菜单栏时,可下载新版 release 后再次运行:
 
 ```bash
 ./install.sh
@@ -326,7 +328,8 @@ sudo bx server shares --json
 | `sudo bx up` | 启动客户端并设为开机自启 |
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `sudo bx reconnect` | 安全重连传输:替代传输健康后切换,不中断 TUN、路由或 DNS |
-| `sudo bx update` | SHA256 校验并原子替换二进制,不打断当前保护会话 |
+| `bx update --check --json` | 只读检查已签名 release,供菜单栏或自动化读取 |
+| `sudo bx update` | 校验已签名 release 并原子替换 CLI,不打断当前保护会话 |
 | `sudo bx direct add <domain>` | 将域名加入直连白名单,会与 proxy 规则互斥清理 |
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |
 | `sudo bx proxy add <domain>` | 强制域名走隧道,会与 direct 规则互斥清理 |
