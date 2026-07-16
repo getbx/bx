@@ -12,6 +12,7 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 LAUNCH_AGENT="$DIST_DIR/$BUNDLE_ID.plist"
 LOG_DIR="${BX_LOG_DIR:-$HOME/Library/Logs/bx}"
+VERSION="${BX_VERSION:-dev}"
 
 cd "$MENU_DIR"
 swift build -c release
@@ -40,9 +41,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>$VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$VERSION</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>LSUIElement</key>
