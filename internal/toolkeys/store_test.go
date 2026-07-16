@@ -28,6 +28,30 @@ func TestStoreNeverExposesSecretInMeta(t *testing.T) {
 	}
 }
 
+func TestStorePersistsSecretOnlyInPrivateDiskRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Credential{ID: "cred", Origin: "https://api.example.com", Secret: "disk-only-secret", AuthHint: AuthHint{Type: AuthBearer}, Enabled: true}
+	if err := s.Put(c); err != nil {
+		t.Fatal(err)
+	}
+	public, _ := json.Marshal(c)
+	if bytes.Contains(public, []byte(c.Secret)) {
+		t.Fatalf("credential JSON leaked secret: %s", public)
+	}
+	reopened, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reopened.Resolve(c.ID)
+	if err != nil || got.Secret != c.Secret {
+		t.Fatalf("reopened = %+v, %v", got, err)
+	}
+}
+
 func TestStoreFileModeAndAtomicRotation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credentials.json")
 	s, err := OpenStore(path)

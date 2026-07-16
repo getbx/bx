@@ -12,8 +12,12 @@ import (
 )
 
 type storeState struct {
-	Credentials map[string]Credential
+	Credentials map[string]diskCredential
 	Pending     map[string]PendingRequest
+}
+type diskCredential struct {
+	Credential
+	Secret string `json:"secret"`
 }
 type Store struct {
 	mu    sync.Mutex
@@ -23,14 +27,14 @@ type Store struct {
 }
 
 func OpenStore(path string) (*Store, error) {
-	s := &Store{path: path, state: storeState{Credentials: map[string]Credential{}, Pending: map[string]PendingRequest{}}, now: time.Now}
+	s := &Store{path: path, state: storeState{Credentials: map[string]diskCredential{}, Pending: map[string]PendingRequest{}}, now: time.Now}
 	data, err := os.ReadFile(path)
 	if err == nil {
 		if err := json.Unmarshal(data, &s.state); err != nil {
 			return nil, fmt.Errorf("read credential store: %w", err)
 		}
 		if s.state.Credentials == nil {
-			s.state.Credentials = map[string]Credential{}
+			s.state.Credentials = map[string]diskCredential{}
 		}
 		if s.state.Pending == nil {
 			s.state.Pending = map[string]PendingRequest{}
@@ -79,23 +83,26 @@ func (s *Store) Put(c Credential) error {
 	if err := c.AuthHint.Validate(); err != nil {
 		return err
 	}
-	s.state.Credentials[c.ID] = c
+	s.state.Credentials[c.ID] = diskCredential{Credential: c, Secret: c.Secret}
 	return s.save()
 }
 func (s *Store) Resolve(id string) (Credential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c, ok := s.state.Credentials[id]
+	disk, ok := s.state.Credentials[id]
 	if !ok {
 		return Credential{}, fmt.Errorf("credential not found")
 	}
+	c := disk.Credential
+	c.Secret = disk.Secret
 	return c, nil
 }
 func (s *Store) List() []CredentialMeta {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]CredentialMeta, 0, len(s.state.Credentials))
-	for _, c := range s.state.Credentials {
+	for _, disk := range s.state.Credentials {
+		c := disk.Credential
 		out = append(out, CredentialMeta{ID: c.ID, Label: c.Label, Origin: c.Origin, AuthHint: c.AuthHint, Enabled: c.Enabled, CreatedAt: c.CreatedAt, RotatedAt: c.RotatedAt, LastUsedAt: c.LastUsedAt})
 	}
 	return out
@@ -103,13 +110,13 @@ func (s *Store) List() []CredentialMeta {
 func (s *Store) ReplaceSecret(id, secret string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c, ok := s.state.Credentials[id]
+	disk, ok := s.state.Credentials[id]
 	if !ok {
 		return fmt.Errorf("credential not found")
 	}
-	c.Secret = secret
-	c.RotatedAt = s.now()
-	s.state.Credentials[id] = c
+	disk.Secret = secret
+	disk.RotatedAt = s.now()
+	s.state.Credentials[id] = disk
 	return s.save()
 }
 
@@ -147,7 +154,7 @@ func (s *Store) CompletePending(id, secret string) (Credential, error) {
 		return Credential{}, err
 	}
 	c := Credential{ID: cid, Label: p.Origin, Origin: p.Origin, Secret: secret, AuthHint: p.AuthHint, Enabled: true, CreatedAt: s.now()}
-	s.state.Credentials[cid] = c
+	s.state.Credentials[cid] = diskCredential{Credential: c, Secret: c.Secret}
 	delete(s.state.Pending, id)
 	if err := s.save(); err != nil {
 		return Credential{}, err
