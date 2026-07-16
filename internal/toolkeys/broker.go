@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const maxBodyBytes = 8 << 20
@@ -25,6 +26,7 @@ func NewBroker(store *Store, audit *Audit, client *http.Client) *Broker {
 	return &Broker{store: store, audit: audit, client: &clone}
 }
 func (b *Broker) Do(ctx context.Context, in APIRequest, surface string) (APIResponse, error) {
+	started := time.Now()
 	c, err := b.store.Resolve(in.CredentialID)
 	if err != nil {
 		return APIResponse{}, &Error{Code: CodeCredentialRequired, Message: err.Error()}
@@ -81,6 +83,10 @@ func (b *Broker) Do(ctx context.Context, in APIRequest, surface string) (APIResp
 	if len(body) > maxBodyBytes {
 		return APIResponse{}, &Error{Code: CodeBodyTooLarge, Message: "response too large"}
 	}
+	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+		_ = b.audit.Record(AuditEntry{Time: started, CredentialID: c.ID, Label: c.Label, Origin: c.Origin, Method: in.Method, Path: in.Path, Status: resp.StatusCode, DurationMS: time.Since(started).Milliseconds(), Surface: surface})
+		return APIResponse{}, &Error{Code: CodeRedirectNotFollowed, Message: string(CodeRedirectNotFollowed)}
+	}
 	body, _ = RedactResponse(body, resp.Header.Get("Content-Type"), []string{c.Secret})
 	out := APIResponse{Status: resp.StatusCode, Headers: map[string]string{}, ContentType: resp.Header.Get("Content-Type")}
 	if strings.Contains(strings.ToLower(out.ContentType), "json") {
@@ -89,5 +95,6 @@ func (b *Broker) Do(ctx context.Context, in APIRequest, surface string) (APIResp
 		s := string(body)
 		out.TextBody = &s
 	}
+	_ = b.audit.Record(AuditEntry{Time: started, CredentialID: c.ID, Label: c.Label, Origin: c.Origin, Method: in.Method, Path: in.Path, Status: resp.StatusCode, DurationMS: time.Since(started).Milliseconds(), Surface: surface})
 	return out, nil
 }
