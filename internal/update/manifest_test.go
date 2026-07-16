@@ -57,3 +57,16 @@ func TestFindAssetRejectsWrongPlatform(t *testing.T) {
 		t.Fatal("missing platform was accepted")
 	}
 }
+
+func TestFindPackageSelectsFullMacOSBundle(t *testing.T) {
+	manifest := Manifest{Version: "v1.2.3", Packages: []Asset{{
+		Platform: "darwin/arm64",
+		Name:     "bx-macos-arm64.tar.gz",
+		SHA256:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Size:     42,
+	}}}
+	asset, err := FindPackage(manifest, "darwin/arm64")
+	if err != nil || asset.Name != "bx-macos-arm64.tar.gz" {
+		t.Fatalf("package=%+v err=%v", asset, err)
+	}
+}
