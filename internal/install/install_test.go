@@ -1,6 +1,7 @@
 package install
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -165,6 +166,16 @@ func TestDNSStateMissingRecoveryError(t *testing.T) {
 	}
 	if err := dnsStateMissingRecoveryError(DNSStatus{Enabled: true}); err == nil {
 		t.Fatal("bx-managed DNS without saved state must refuse shutdown")
+	}
+}
+
+func TestDNSStateMissingRecognizesWrappedNotExist(t *testing.T) {
+	err := fmt.Errorf("读 DNS 状态: %w", os.ErrNotExist)
+	if !dnsStateMissing(err) {
+		t.Fatal("wrapped missing DNS state should be recognized")
+	}
+	if dnsStateMissing(fmt.Errorf("读 DNS 状态: %w", os.ErrPermission)) {
+		t.Fatal("permission error must not be treated as missing DNS state")
 	}
 }
 
