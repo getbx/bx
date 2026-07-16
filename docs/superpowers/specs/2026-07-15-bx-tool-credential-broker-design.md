@@ -51,6 +51,39 @@ keyd 停止、升级失败或数据损坏时，bx 网络保护必须继续正常
 V1 面向个人 macOS + BxMenu。keyd 核心保持 Go 平台无关边界，但 Windows/Linux UI、
 安装和凭据存储不在 V1 范围。
 
+### 仓库与依赖边界
+
+V1 放在现有 `github.com/getbx/bx` 仓库和 Go module 中，不新建仓库、子 module 或通用
+插件加载器。同仓库复用 BxMenu、`bx mcp install`、签名、打包、升级和 launchd 流程；
+运行时隔离由独立进程、service label、socket、数据目录和单向依赖保证。
+
+```text
+bx/
+├── internal/toolkeys/                 Credential、存储、broker、redaction、audit、LocalAPI
+├── internal/mcp/tools_toolkeys.go     只通过 toolkeys LocalAPI client 适配 MCP
+├── internal/cli/toolkeys.go           enable/status/disable/keyd 命令线接线
+└── apps/macos/BxMenu/Sources/BxMenu/ToolKeys/
+                                         安全录入、pending prompt 与管理 UI
+```
+
+依赖方向必须是：
+
+```text
+BxMenu  ──────→ toolkeys LocalAPI
+bx mcp  ──────→ toolkeys LocalAPI
+
+bx supervisor/core ─X→ toolkeys
+toolkeys           ─X→ bx supervisor/core
+```
+
+`internal/toolkeys` 不 import `internal/supervisor`、`internal/tun`、`internal/dns`、`internal/route`、
+`internal/dialer` 或 `internal/tunnel`。`internal/supervisor` 及数据面包不 import
+`internal/toolkeys`。所有跨边界交互通过独立 Unix LocalAPI，不共享 Go 对象或进程内状态。
+
+`api-key-broker` 目录保留为早期研究/交接材料，不承载生产代码。只有当 Tool Keys 需要
+脱离 bx 独立安装、形成独立跨平台发布节奏或出现多个第三方扩展时，才另行设计
+独立仓库/插件协议。
+
 ## 数据模型
 
 一条凭据记录只包含安全边界和管理所需的最小信息：
