@@ -74,6 +74,7 @@ func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, r
 	cs := &controlServer{eng: eng, report: report, mut: mut, reload: reload, ownerUID: ownerUID}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/status", cs.handleStatus)
+	mux.HandleFunc("/v0/capabilities", cs.handleCapabilities)
 	mux.HandleFunc("/v0/commit", cs.handleCommit)
 	mux.HandleFunc("/v0/rollback", cs.handleRollback)
 	mux.HandleFunc("/v0/transport", cs.handleSetTransport)
@@ -81,6 +82,16 @@ func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, r
 	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
 	mux.HandleFunc("/v0/reload", cs.handleReload)
 	return mux
+}
+
+func (cs *controlServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		SafeReconnect bool `json:"safe_reconnect"`
+	}{SafeReconnect: true})
 }
 
 func (cs *controlServer) handleReconnect(w http.ResponseWriter, r *http.Request) {

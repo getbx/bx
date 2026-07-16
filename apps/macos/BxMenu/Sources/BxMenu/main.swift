@@ -94,6 +94,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
             return .warning("Status unreadable", version: version)
         }
+        if report.tunnelHealthy && !runtimeSupportsSafeReconnect() {
+            return .updateNeeded("Runtime update pending", version: version)
+        }
         return report.tunnelHealthy ? .connected(report, version: version ?? "unknown", dns: loadDNSStatus()) : .warning("Tunnel unhealthy", version: version)
     }
 
@@ -474,6 +477,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private func cliSupportsSafeReconnect() -> Bool {
         let result = runBx(["reconnect", "--help"])
         return result.code == 0
+    }
+
+    private func runtimeSupportsSafeReconnect() -> Bool {
+        runBx(["reconnect", "--check"]).code == 0
     }
 
     private func loadDNSStatus() -> String? {

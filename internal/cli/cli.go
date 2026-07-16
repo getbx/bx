@@ -77,7 +77,7 @@ func New() *cli.App {
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
-			{Name: "reconnect", Usage: "安全重连传输(不中断 TUN、路由或 DNS)", Action: reconnectAction},
+			{Name: "reconnect", Usage: "安全重连传输(不中断 TUN、路由或 DNS)", Flags: reconnectFlags(), Action: reconnectAction},
 			{Name: "restart", Usage: "安全重连保护(reconnect 的兼容别名)", Hidden: true, Action: restartAction},
 			{Name: "update", Usage: "更新 bx 到最新 release(SHA256 校验 + 原子替换,不打断保护)", Flags: updateFlags(), Action: updateAction},
 			{Name: "direct", Usage: "管理直连白名单(global 下只有白名单域名直连,其余走隧道)", Subcommands: directCommands()},
@@ -374,6 +374,10 @@ func realtimeFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
 	}
+}
+
+func reconnectFlags() []cli.Flag {
+	return []cli.Flag{&cli.BoolFlag{Name: "check", Usage: "只检查运行中的 bx 是否支持安全重连"}}
 }
 
 func webrtcCheckFlags() []cli.Flag {
@@ -3836,6 +3840,16 @@ func downAction(c *cli.Context) (err error) {
 // reconnectAction 在守护进程内安全更换传输。替代传输健康前,旧路径仍负责数据面;
 // 因而不会释放 TUN、路由或 DNS,失败时也不会形成直连窗口。
 func reconnectAction(c *cli.Context) (err error) {
+	if c.Bool("check") {
+		ok, err := supervisor.SupportsSafeReconnect(statusSocketPath())
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("运行中的 bx 不支持安全重连")
+		}
+		return nil
+	}
 	defer autoArchiveAfterClientCommand("reconnect", &err, true)
 	if !install.UnitInstalled() {
 		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")

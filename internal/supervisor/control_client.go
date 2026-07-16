@@ -46,6 +46,26 @@ func FetchStatusReport(sockPath string) (stats.Report, error) {
 	return rep, nil
 }
 
+func SupportsSafeReconnect(sockPath string) (bool, error) {
+	client := controlHTTPClient(sockPath)
+	defer client.CloseIdleConnections()
+	resp, err := client.Get("http://local/v0/capabilities")
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("控制面 /v0/capabilities 返回 %d", resp.StatusCode)
+	}
+	var out struct {
+		SafeReconnect bool `json:"safe_reconnect"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return false, err
+	}
+	return out.SafeReconnect, nil
+}
+
 func postControl(sockPath, path string) (string, error) {
 	client := controlHTTPClient(sockPath)
 	defer client.CloseIdleConnections()
