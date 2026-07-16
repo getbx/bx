@@ -58,16 +58,24 @@ type Credential struct {
 }
 
 type CredentialMeta struct {
-	ID, Label, Origin                string
-	AuthHint                         AuthHint
-	Enabled                          bool
-	CreatedAt, RotatedAt, LastUsedAt time.Time
+	ID         string    `json:"id"`
+	Label      string    `json:"label"`
+	Origin     string    `json:"origin"`
+	AuthHint   AuthHint  `json:"auth_hint"`
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"created_at"`
+	RotatedAt  time.Time `json:"rotated_at,omitempty"`
+	LastUsedAt time.Time `json:"last_used_at,omitempty"`
 }
 
 type PendingRequest struct {
-	ID, Origin, Reason, DocsURL string
-	AuthHint                    AuthHint
-	CreatedAt, ExpiresAt        time.Time
+	ID        string    `json:"id"`
+	Origin    string    `json:"origin"`
+	AuthHint  AuthHint  `json:"auth_hint"`
+	Reason    string    `json:"reason"`
+	DocsURL   string    `json:"docs_url,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type PendingRequestInput struct {
@@ -78,21 +86,22 @@ type PendingRequestInput struct {
 }
 
 type APIRequest struct {
-	CredentialID string
-	Method, Path string
-	Query        url.Values
-	Headers      map[string]string
-	JSONBody     []byte
-	TextBody     *string
-	AuthHint     *AuthHint
+	CredentialID string            `json:"credential_id"`
+	Method       string            `json:"method"`
+	Path         string            `json:"path"`
+	Query        url.Values        `json:"query,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	JSONBody     []byte            `json:"json_body,omitempty"`
+	TextBody     *string           `json:"text_body,omitempty"`
+	AuthHint     *AuthHint         `json:"auth_hint,omitempty"`
 }
 
 type APIResponse struct {
-	Status      int
-	Headers     map[string]string
-	ContentType string
-	JSONBody    []byte
-	TextBody    *string
+	Status      int               `json:"status"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	ContentType string            `json:"content_type,omitempty"`
+	JSONBody    []byte            `json:"json_body,omitempty"`
+	TextBody    *string           `json:"text_body,omitempty"`
 }
 
 type Code string
