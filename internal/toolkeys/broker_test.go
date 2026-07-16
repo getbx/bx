@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +32,25 @@ func TestBrokerInjectsSecretAndStripsCallerAuth(t *testing.T) {
 	}
 	if string(out.JSONBody) == "" || out.Headers["Set-Cookie"] != "" {
 		t.Fatalf("response=%+v", out)
+	}
+}
+
+func TestBrokerDoesNotFollowRedirect(t *testing.T) {
+	var followed bool
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/next" {
+			followed = true
+		}
+		w.Header().Set("Location", "/next")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer ts.Close()
+	_, err := testBroker(t, "secret", testHTTPClient(ts)).Do(context.Background(), APIRequest{CredentialID: "cred", Method: http.MethodGet, Path: "/start"}, "mcp")
+	if err == nil || !strings.Contains(err.Error(), string(CodeRedirectNotFollowed)) {
+		t.Fatalf("err = %v", err)
+	}
+	if followed {
+		t.Fatal("redirect target was requested")
 	}
 }
 
