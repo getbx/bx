@@ -50,10 +50,18 @@ jobs:
             CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go build -trimpath -ldflags="$ldflags" -o "dist/bx.exe" .
             (cd dist && zip -q "bx_windows_${arch}.zip" bx.exe && rm bx.exe)
           done
+          test -n "${BX_UPDATE_PRIVATE_KEY:-}" || { echo "BX_UPDATE_PRIVATE_KEY is required to publish updates" >&2; exit 1; }
+          go run ./scripts/sign-update-manifest.go --version "$version" --out dist/bx-update.json \
+            --asset linux/amd64:dist/bx_linux_amd64.tar.gz \
+            --asset linux/arm64:dist/bx_linux_arm64.tar.gz \
+            --asset darwin/amd64:dist/bx_darwin_amd64.tar.gz \
+            --asset darwin/arm64:dist/bx_darwin_arm64.tar.gz
           # 给下游 installer job 留一份 amd64 exe(不进 release、不进 SHA256SUMS)
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o "dist/bx-amd64.exe" .
           cd dist
-          sha256sum *.tar.gz *.zip > SHA256SUMS
+          sha256sum *.tar.gz *.zip bx-update.json bx-update.json.sig > SHA256SUMS
+        env:
+          BX_UPDATE_PRIVATE_KEY: ${{ secrets.BX_UPDATE_PRIVATE_KEY }}
 
       - name: Upload windows exe for installer job
         uses: actions/upload-artifact@v4
@@ -68,6 +76,8 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/bx-update.json
+            dist/bx-update.json.sig
             dist/SHA256SUMS
 
   installer:
