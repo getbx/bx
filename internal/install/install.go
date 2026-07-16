@@ -625,7 +625,7 @@ func DisableDNS(service string) (DNSStatus, error) {
 	}
 	state, err := readDNSState()
 	if err != nil {
-		if os.IsNotExist(err) {
+		if dnsStateMissing(err) {
 			st, inspectErr := InspectDNS(service)
 			if inspectErr != nil {
 				return st, inspectErr
@@ -646,6 +646,10 @@ func DisableDNS(service string) (DNSStatus, error) {
 	_ = os.Remove(dnsStatePath)
 	flushDNSCache()
 	return InspectDNS(resolved)
+}
+
+func dnsStateMissing(err error) bool {
+	return errors.Is(err, os.ErrNotExist)
 }
 
 // dnsStateMissingRecoveryError keeps shutdown safe when a prior DNS rollback
