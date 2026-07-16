@@ -46,10 +46,15 @@ func (h AuthHint) Validate() error {
 }
 
 type Credential struct {
-	ID, Label, Origin, Secret        string
-	AuthHint                         AuthHint
-	Enabled                          bool
-	CreatedAt, RotatedAt, LastUsedAt time.Time
+	ID         string    `json:"id"`
+	Label      string    `json:"label"`
+	Origin     string    `json:"origin"`
+	Secret     string    `json:"-"`
+	AuthHint   AuthHint  `json:"auth_hint"`
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"created_at"`
+	RotatedAt  time.Time `json:"rotated_at,omitempty"`
+	LastUsedAt time.Time `json:"last_used_at,omitempty"`
 }
 
 type CredentialMeta struct {
