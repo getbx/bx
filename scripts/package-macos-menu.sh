@@ -13,15 +13,26 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 LAUNCH_AGENT="$DIST_DIR/$BUNDLE_ID.plist"
 LOG_DIR="${BX_LOG_DIR:-$HOME/Library/Logs/bx}"
 VERSION="${BX_VERSION:-dev}"
+ARCH="${BX_ARCH:-$(uname -m)}"
+
+case "$ARCH" in
+  arm64) SWIFT_ARCH="arm64" ;;
+  amd64|x86_64) SWIFT_ARCH="x86_64" ;;
+  *)
+    echo "Unsupported BX_ARCH=$ARCH; use arm64 or amd64." >&2
+    exit 2
+    ;;
+esac
+MENU_BINARY="$MENU_DIR/.build/$SWIFT_ARCH-apple-macosx/release/BxMenu"
 
 "$ROOT/scripts/test-macos-menu.sh"
 
 cd "$MENU_DIR"
-swift build -c release
+swift build -c release --arch "$SWIFT_ARCH" -Xswiftc -target -Xswiftc "$SWIFT_ARCH-apple-macosx13.0"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
-install -m 0755 "$MENU_DIR/.build/release/BxMenu" "$MACOS_DIR/BxMenu"
+install -m 0755 "$MENU_BINARY" "$MACOS_DIR/BxMenu"
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
