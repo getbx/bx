@@ -93,3 +93,26 @@ func TestPendingExpiresAndCompletionConsumesIt(t *testing.T) {
 		t.Fatal("pending reused")
 	}
 }
+
+func TestStoreCanPauseAndDeleteCredential(t *testing.T) {
+	s, err := OpenStore(filepath.Join(t.TempDir(), "credentials.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(Credential{ID: "cred", Origin: "https://api.example.com", Secret: "secret", AuthHint: AuthHint{Type: AuthBearer}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetEnabled("cred", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Resolve("cred")
+	if err != nil || got.Enabled {
+		t.Fatalf("credential = %+v, %v", got, err)
+	}
+	if err := s.Delete("cred"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve("cred"); err == nil {
+		t.Fatal("deleted credential resolved")
+	}
+}
