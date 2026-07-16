@@ -16,6 +16,7 @@ failure, and gray means bx is off or not configured.
 - Set Up bx
 - Start Protection
 - Reconnect
+- Update bx
 - Turn Off
 
 It does not install, configure, start, reconnect, or turn off protection by itself unless you choose one of the explicit menu actions.
@@ -28,11 +29,21 @@ If setup, start, reconnect, or turn off fails, the failure dialog offers `Run Do
 
 `Open Status` stays inside the bx app. The first action that needs Terminal, currently `Run Doctor`, may ask for permission to control Terminal. bx uses this only for the action you selected. Approve the macOS prompt to continue.
 
-If the menu shows `Update Required`, update the CLI used by the menu bar:
+At launch and then every 24 hours, the menu checks for a signed bx release in
+the background. If an update is available, choose `Update bx…` and approve the
+macOS administrator prompt. The verified package replaces both the CLI and the
+installed app, then restarts only the menu bar app. Active protection is not
+stopped, and no DNS or route settings are changed. Update output is written to:
+
+```text
+~/Library/Logs/bx/menu-update.log
+```
+
+If the menu shows `Update Required`, the installed CLI is too old to safely
+coordinate a full App update. Install the current macOS bx package again:
 
 ```bash
-sudo install -m 0755 ./bx /usr/local/bin/bx
-scripts/install-macos-menu.sh restart
+./install.sh
 ```
 
 If the menu shows `Not Installed`, install the macOS bx package again so `/usr/local/bin/bx` and `Bx.app` are installed together.

@@ -36,6 +36,14 @@ All controlled changes are marked destructive so the agent asks for user
 approval before it runs them. `bx_commit` and `bx_rollback` only operate on a
 currently armed daemon change.
 
+## Updates
+
+`bx update --check --json` is read-only and may be used to report a verified
+release. Installing an update is maintenance, not autonomous recovery: an
+agent must obtain explicit user approval first. On macOS, the normal install
+path is the menu bar's `Update bx…` action; it updates the CLI and menu app
+together while leaving the protection service, TUN, routes, and DNS untouched.
+
 ## Deliberate Omissions
 
 The MCP server does not expose stop/start protection, arbitrary shell access,

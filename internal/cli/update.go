@@ -6,23 +6,35 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/getbx/bx/internal/install"
+	updatepkg "github.com/getbx/bx/internal/update"
 	"github.com/getbx/bx/internal/version"
 	"github.com/urfave/cli/v2"
 )
 
 const (
-	repoReleasesLatest = "https://github.com/getbx/bx/releases/latest"
-	repoReleaseDL      = "https://github.com/getbx/bx/releases/download" // /<tag>/<asset>
+	repoReleasesLatest  = "https://github.com/getbx/bx/releases/latest"
+	repoReleaseDL       = "https://github.com/getbx/bx/releases/download" // /<tag>/<asset>
+	updateManifestName  = "bx-update.json"
+	updateSignatureName = "bx-update.json.sig"
 )
+
+type updateCheckReport struct {
+	Current   string `json:"current"`
+	Latest    string `json:"latest"`
+	Available bool   `json:"available"`
+	Verified  bool   `json:"verified"`
+}
 
 // assetName 是某平台的 release 资产名,与 release.yml 的命名一致。
 func assetName(goos, goarch string) string {
@@ -112,6 +124,9 @@ func updateFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "check", Usage: "只检查有无新版,不下载安装"},
 		&cli.BoolFlag{Name: "json", Usage: "输出机器可读更新状态"},
+		&cli.BoolFlag{Name: "package", Usage: "macOS:更新 CLI 和菜单栏 App"},
+		&cli.StringFlag{Name: "app-path", Hidden: true},
+		&cli.StringFlag{Name: "app-owner", Hidden: true},
 		&cli.BoolFlag{Name: "force", Usage: "即便已是最新(或 dev 构建)也强制下载安装最新版"},
 		&cli.BoolFlag{Name: "no-restart", Usage: "已废弃:更新始终保留当前保护会话", Hidden: true},
 	}
@@ -153,11 +168,30 @@ func downloadBytes(client *http.Client, url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+func verifiedReleaseManifest(client *http.Client, tag string) (updatepkg.Manifest, error) {
+	base := fmt.Sprintf("%s/%s", repoReleaseDL, tag)
+	data, err := downloadBytes(client, base+"/"+updateManifestName)
+	if err != nil {
+		return updatepkg.Manifest{}, fmt.Errorf("download update manifest: %w", err)
+	}
+	signature, err := downloadBytes(client, base+"/"+updateSignatureName)
+	if err != nil {
+		return updatepkg.Manifest{}, fmt.Errorf("download update manifest signature: %w", err)
+	}
+	manifest, err := updatepkg.ParseAndVerify(data, signature, version.UpdatePublicKey)
+	if err != nil {
+		return updatepkg.Manifest{}, fmt.Errorf("verify update manifest: %w", err)
+	}
+	return manifest, nil
+}
+
 func updateAction(c *cli.Context) error {
 	client := &http.Client{Timeout: 90 * time.Second}
 	cur := version.Version
 
-	fmt.Printf("当前版本:%s\n⏳ 查询最新 release…\n", version.String())
+	if !c.Bool("json") {
+		fmt.Printf("当前版本:%s\n⏳ 查询最新 release…\n", version.String())
+	}
 	latest, err := latestReleaseTag(client)
 	if err != nil {
 		return err
@@ -165,9 +199,19 @@ func updateAction(c *cli.Context) error {
 	if latest == "" {
 		return fmt.Errorf("解析最新版本失败(仓库可能尚无 release)")
 	}
-	fmt.Printf("最新版本:%s\n", latest)
+	releaseTag := latest
+	manifest, err := verifiedReleaseManifest(client, releaseTag)
+	if err != nil {
+		return err
+	}
+	latest = manifest.Version
+	available := newerAvailable(cur, latest)
+	if c.Bool("json") {
+		return json.NewEncoder(os.Stdout).Encode(updateCheckReport{Current: cur, Latest: latest, Available: available, Verified: true})
+	}
+	fmt.Printf("最新版本:%s (已验证)\n", latest)
 
-	if !c.Bool("force") && !newerAvailable(cur, latest) {
+	if !c.Bool("force") && !available {
 		fmt.Println("✅ 已是最新,无需更新。")
 		return nil
 	}
@@ -175,18 +219,23 @@ func updateAction(c *cli.Context) error {
 		fmt.Printf("🆕 有新版可用:%s → 运行 sudo bx update 安装。\n", latest)
 		return nil
 	}
+	if c.Bool("package") {
+		return updateMacOSPackage(c, client, releaseTag, manifest, latest)
+	}
 
-	asset := assetName(runtime.GOOS, runtime.GOARCH)
-	fmt.Printf("⏳ 下载 %s…\n", asset)
-	tgz, err := downloadBytes(client, fmt.Sprintf("%s/%s/%s", repoReleaseDL, latest, asset))
+	asset, err := updatepkg.FindAsset(manifest, runtime.GOOS+"/"+runtime.GOARCH)
 	if err != nil {
 		return err
 	}
-	sums, err := downloadBytes(client, fmt.Sprintf("%s/%s/SHA256SUMS", repoReleaseDL, latest))
+	fmt.Printf("⏳ 下载 %s…\n", asset.Name)
+	tgz, err := downloadBytes(client, fmt.Sprintf("%s/%s/%s", repoReleaseDL, releaseTag, asset.Name))
 	if err != nil {
-		return fmt.Errorf("下载校验和: %w", err)
+		return err
 	}
-	if err := verifyChecksum(tgz, expectedSum(string(sums), asset)); err != nil {
+	if int64(len(tgz)) != asset.Size {
+		return fmt.Errorf("下载大小不符:期望 %d,实得 %d", asset.Size, len(tgz))
+	}
+	if err := verifyChecksum(tgz, asset.SHA256); err != nil {
 		return fmt.Errorf("校验失败(已中止,未替换): %w", err)
 	}
 	fmt.Println("✅ SHA256 校验通过")
@@ -213,6 +262,54 @@ func updateAction(c *cli.Context) error {
 		fmt.Println("  Reconnect 只安全更换传输,不会为了加载二进制而结束保护。")
 	} else {
 		fmt.Println("  (bx 未在运行,下次 sudo bx up 用新版)")
+	}
+	return nil
+}
+
+func updateMacOSPackage(c *cli.Context, client *http.Client, releaseTag string, manifest updatepkg.Manifest, latest string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("完整 App 更新仅支持 macOS")
+	}
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("完整 App 更新需要管理员权限;从菜单栏选择 Update bx 即可")
+	}
+	appPath := c.String("app-path")
+	if !filepath.IsAbs(appPath) || filepath.Base(appPath) != "Bx.app" {
+		return fmt.Errorf("完整 App 更新需要有效的菜单栏 App 路径")
+	}
+	owner, err := parseMacOSAppOwner(c.String("app-owner"))
+	if err != nil {
+		return fmt.Errorf("完整 App 更新需要菜单栏用户信息: %w", err)
+	}
+	asset, err := updatepkg.FindPackage(manifest, runtime.GOOS+"/"+runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("⏳ 下载完整 macOS 包 %s…\n", asset.Name)
+	packageData, err := downloadBytes(client, fmt.Sprintf("%s/%s/%s", repoReleaseDL, releaseTag, asset.Name))
+	if err != nil {
+		return err
+	}
+	if int64(len(packageData)) != asset.Size {
+		return fmt.Errorf("下载大小不符:期望 %d,实得 %d", asset.Size, len(packageData))
+	}
+	if err := verifyChecksum(packageData, asset.SHA256); err != nil {
+		return fmt.Errorf("完整 macOS 包校验失败(已中止,未替换): %w", err)
+	}
+	payload, err := extractMacOSPackage(packageData, runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	destination := install.BinPath
+	if self, err := os.Executable(); err == nil && self != "" {
+		destination = self
+	}
+	if err := applyMacOSPackage(destination, appPath, payload, &owner); err != nil {
+		return err
+	}
+	fmt.Printf("✅ 已更新 CLI 与菜单栏 App 到 %s。保护会话保持运行。\n", latest)
+	if err := restartMacOSMenu(owner); err != nil {
+		fmt.Printf("  菜单栏会在下次登录时加载新版(立即重启失败:%v)。\n", err)
 	}
 	return nil
 }
