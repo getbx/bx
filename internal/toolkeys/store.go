@@ -120,6 +120,43 @@ func (s *Store) ReplaceSecret(id, secret string) error {
 	return s.save()
 }
 
+func (s *Store) SetEnabled(id string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	disk, ok := s.state.Credentials[id]
+	if !ok {
+		return fmt.Errorf("credential not found")
+	}
+	disk.Enabled = enabled
+	s.state.Credentials[id] = disk
+	return s.save()
+}
+
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.state.Credentials[id]; !ok {
+		return fmt.Errorf("credential not found")
+	}
+	delete(s.state.Credentials, id)
+	return s.save()
+}
+
+func (s *Store) ListPending() []PendingRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	out := make([]PendingRequest, 0, len(s.state.Pending))
+	for id, pending := range s.state.Pending {
+		if !pending.ExpiresAt.After(now) {
+			delete(s.state.Pending, id)
+			continue
+		}
+		out = append(out, pending)
+	}
+	return out
+}
+
 func randomID() (string, error) {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
