@@ -22,6 +22,14 @@ fail() {
 [[ -f "$ARCHIVE" ]] || fail "missing archive $ARCHIVE"
 [[ -f "$SUMS" ]] || fail "missing SHA256SUMS"
 
+case "$ARCH" in
+  arm64) MACH_ARCH="arm64" ;;
+  amd64) MACH_ARCH="x86_64" ;;
+  *) fail "unsupported architecture $ARCH" ;;
+esac
+file "$RELEASE_DIR/bx" | grep -q "Mach-O.*$MACH_ARCH" || fail "bx is not $MACH_ARCH"
+file "$RELEASE_DIR/Bx.app/Contents/MacOS/BxMenu" | grep -q "Mach-O.*$MACH_ARCH" || fail "BxMenu is not $MACH_ARCH"
+
 plutil -lint "$RELEASE_DIR/Bx.app/Contents/Info.plist" >/dev/null
 plutil -extract NSAppleEventsUsageDescription raw "$RELEASE_DIR/Bx.app/Contents/Info.plist" >/dev/null || fail "Info.plist missing Apple Events usage description"
 tar -tzf "$ARCHIVE" >/dev/null
