@@ -43,7 +43,9 @@ bx 不保证：
 - `bx keyd`：使用同一 bx 二进制的独立守护进程模式，持有 token、校验 origin、
   注入认证并代理 HTTP 请求。
 - `BxMenu`：提供安全粘贴、暂停、替换、删除和最近使用界面。
-- `bx mcp`：保留现有 agent surface，当 keyd 可用时增加凭据请求和 API 调用工具。
+- `bx mcp`：保留现有 agent surface，始终注册窄的 Tool Keys 目录/凭据请求/API
+  调用工具；keyd 未启用时只返回结构化 `credential_broker_unavailable` 和启用指引，
+  不要求用户在对话里粘贴 token。
 
 Tool Keys 默认不启用。它的安装、运行、状态、数据目录和日志与 bx core 独立。
 keyd 停止、升级失败或数据损坏时，bx 网络保护必须继续正常运行。
