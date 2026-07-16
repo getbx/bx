@@ -25,10 +25,10 @@ rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
 
 echo "Building bx for darwin/$ARCH..."
-GOOS=darwin GOARCH="$ARCH" go build -trimpath -o "$RELEASE_DIR/bx" "$ROOT"
+GOOS=darwin GOARCH="$ARCH" go build -trimpath -ldflags "-X github.com/getbx/bx/internal/version.Version=$VERSION" -o "$RELEASE_DIR/bx" "$ROOT"
 
 echo "Packaging menu bar app..."
-BX_DIST_DIR="$ROOT/dist/macos-$ARCH" "$ROOT/scripts/package-macos-menu.sh" >/dev/null
+BX_VERSION="$VERSION" BX_DIST_DIR="$ROOT/dist/macos-$ARCH" "$ROOT/scripts/package-macos-menu.sh" >/dev/null
 ditto "$ROOT/dist/macos-$ARCH/Bx.app" "$RELEASE_DIR/Bx.app"
 
 cat > "$RELEASE_DIR/install.sh" <<'SCRIPT'
