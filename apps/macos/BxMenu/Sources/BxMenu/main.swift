@@ -248,7 +248,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
         }
         menu.addItem(.separator())
-        menu.addAction("Quit", symbol: "xmark.circle", target: self, action: #selector(quit))
+        menu.addAction(quitMenuActionTitle, symbol: "xmark.circle", target: self, action: #selector(quit))
         statusItem.menu = menu
     }
 

@@ -167,6 +167,8 @@ macOS release 包会一次装好两件事并启动菜单栏 App:
 
 安装后看菜单栏图标即可。如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即开始保护。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
+菜单栏的 `Quit Menu` 只退出图标,不会关闭保护。要关闭并恢复 bx 管理的 DNS,请在菜单里选择 `Turn Off`,或运行 `sudo bx down`。
+
 菜单栏会在启动时、以及之后每天只读检查一次已签名的 release。有新版时会显示 `Update bx…`。确认后,它会校验完整 macOS 包、一起替换 CLI 与菜单栏 App,再只重启菜单栏自身;运行中的保护会话、TUN、路由和 DNS 保持不变。更新记录在 `~/Library/Logs/bx/menu-update.log`。
 
 无法使用菜单栏时,可下载新版 release 后再次运行:

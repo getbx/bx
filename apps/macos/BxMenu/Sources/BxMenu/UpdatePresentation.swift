@@ -11,3 +11,5 @@ func updateActionTitle(for check: UpdateCheck?) -> String? {
     guard let check, check.available, check.verified else { return nil }
     return "Update bx…"
 }
+
+let quitMenuActionTitle = "Quit Menu"
