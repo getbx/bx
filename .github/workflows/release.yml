@@ -110,3 +110,35 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: Output/bx-setup.exe
+
+  macos-package:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13
+            arch: amd64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Package macOS release
+        run: |
+          set -euo pipefail
+          version="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          BX_ARCH="${{ matrix.arch }}" BX_VERSION="$version" scripts/package-macos-release.sh
+          BX_ARCH="${{ matrix.arch }}" scripts/verify-macos-release.sh
+
+      - name: Upload macOS package to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: dist/release/bx-macos-${{ matrix.arch }}.tar.gz
