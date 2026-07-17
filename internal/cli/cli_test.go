@@ -150,6 +150,32 @@ func TestMacMenuUsesSingleCompactStatusIcon(t *testing.T) {
 	}
 }
 
+func TestMacOSMenuInstallerUsesSingularLaunchdLabels(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install-macos-menu.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, want := range []string{
+		`launchctl bootout "$DOMAIN/$LEGACY_BUNDLE_ID"`,
+		`rm -f "$LEGACY_AGENT_DST"`,
+		`launchctl bootstrap "$DOMAIN" "$AGENT_DST"`,
+		`launchctl kickstart -k "$DOMAIN/$BUNDLE_ID"`,
+		`verify_single_agent`,
+		`launchctl print "$DOMAIN/$BUNDLE_ID"`,
+		`launchctl print "$DOMAIN/$LEGACY_BUNDLE_ID"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("macOS menu installer missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"pgrep", `launchctl bootout "$DOMAIN" "$LEGACY_AGENT_DST"`} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("macOS menu installer contains non-singular check %q", forbidden)
+		}
+	}
+}
+
 func TestAppHidesLegacyAndDeveloperCommands(t *testing.T) {
 	app := New()
 	for _, name := range []string{"restart", "blink", "run", "debug-tun", "darwin-plan", "router-plan"} {
@@ -167,9 +193,9 @@ func TestBuildExecStart(t *testing.T) {
 		t.Fatalf("ExecStart 应跑 run, got %q", got)
 	}
 	got = buildExecStartForGOOS("darwin", "/usr/local/bin/bx", "/etc/bx/config.yaml")
-	want = "/usr/local/bin/bx run -c /etc/bx/config.yaml --listen-dns 127.0.0.1:53"
+	want = "/usr/local/bin/bx guardian --config /etc/bx/config.yaml --listen-dns 127.0.0.1:53"
 	if got != want {
-		t.Fatalf("darwin ExecStart 应监听本地 DNS, got %q", got)
+		t.Fatalf("darwin ExecStart should install Guardian, got %q", got)
 	}
 	// Windows:含空格路径必须加引号,否则服务 BinaryPathName 拆分会崩。
 	got = buildExecStartForGOOS("windows", `C:\Program Files\bx\bx.exe`, `C:\ProgramData\bx\config.yaml`)

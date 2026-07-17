@@ -218,12 +218,28 @@ WantedBy=multi-user.target
 func WriteUnit(execStart string) error {
 	switch runtime.GOOS {
 	case "darwin":
-		return writeLaunchdPlist(launchdPlistPath, LaunchdPlistText(execStart))
+		configPath, err := guardianConfigPathFromExecStart(execStart)
+		if err != nil {
+			return err
+		}
+		return WriteGuardianUnit(configPath)
 	case "windows":
 		return windowsInstallService(execStart)
 	default:
 		return writeUnitFile(unitPath, UnitText(execStart))
 	}
+}
+
+func guardianConfigPathFromExecStart(execStart string) (string, error) {
+	fields := strings.Fields(execStart)
+	if len(fields) != 6 || fields[0] != BinPath || fields[1] != "guardian" ||
+		fields[2] != "--config" || fields[4] != "--listen-dns" || fields[5] != "127.0.0.1:53" {
+		return "", fmt.Errorf("refusing non-Guardian macOS service command")
+	}
+	if !filepath.IsAbs(fields[3]) {
+		return "", fmt.Errorf("Guardian config path must be absolute: %q", fields[3])
+	}
+	return fields[3], nil
 }
 
 // WriteServerUnit 写入 bx server unit 文件并 daemon-reload(不 enable、不 start)。需 root。

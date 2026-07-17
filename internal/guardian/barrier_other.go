@@ -13,6 +13,10 @@ func NewBarrier(CommandRunner) Barrier {
 	return unsupportedBarrier{}
 }
 
+func DiscoverDefaultGateway(context.Context) (string, error) {
+	return "", fmt.Errorf("discover default gateway: %w", ErrUnsupported)
+}
+
 func (unsupportedBarrier) Install(context.Context, BarrierContext) error {
 	return fmt.Errorf("install barrier: %w", ErrUnsupported)
 }
