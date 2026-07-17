@@ -178,5 +178,10 @@ func writeJSONAtomically(path string, value any) error {
 	if err := os.Rename(name, path); err != nil {
 		return err
 	}
-	return nil
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

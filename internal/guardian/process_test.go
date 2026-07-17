@@ -137,6 +137,57 @@ func TestExecCoreRunnerStartAmbiguousGenerationTerminatesDirectChild(t *testing.
 	}
 }
 
+func TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := newUncertainStartTestProcess(52)
+	operations := &startTestProcessOperations{
+		started: started,
+		process: Process{PID: 52, Executable: executable, UID: 0, Generation: "darwin:123:456"},
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.Operations = operations
+	runner.LaunchCleanupTimeout = 10 * time.Millisecond
+	runner.SaveProcessRecord = func(path string, record processRecord) error {
+		if record.State == processRecordLaunching {
+			return saveProcessRecord(path, record)
+		}
+		return errors.New("normal process record write failed")
+	}
+
+	if _, err := runner.Start(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Start error = %v, want uncertain ownership", err)
+	}
+	if got := started.terminationCount(); got != 1 {
+		t.Fatalf("Terminate calls = %d, want 1", got)
+	}
+	record, err := loadProcessRecord(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != processRecordLaunching {
+		t.Fatalf("marker state = %q, want %q", record.State, processRecordLaunching)
+	}
+	if _, err := runner.Existing(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("same-runner Existing error = %v, want uncertain ownership", err)
+	}
+
+	reconstructed := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	reconstructed.StatePath = statePath
+	reconstructed.Operations = operations
+	if _, err := reconstructed.Existing(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("reconstructed Existing error = %v, want uncertain ownership", err)
+	}
+	if got := operations.startCount(); got != 1 {
+		t.Fatalf("starts after retry/reconstruction = %d, want 1", got)
+	}
+}
+
 func TestExecCoreRunnerAdoptedWatcherOutlivesInspectionContext(t *testing.T) {
 	dir := t.TempDir()
 	executable := filepath.Join(dir, "bx")
@@ -536,13 +587,17 @@ func (p *startTestProcess) terminationCount() int {
 }
 
 type startTestProcessOperations struct {
-	started *startTestProcess
+	started StartedProcess
 	process Process
 	mu      sync.Mutex
 	signals int
+	starts  int
 }
 
 func (o *startTestProcessOperations) Start(string, []string) (StartedProcess, error) {
+	o.mu.Lock()
+	o.starts++
+	o.mu.Unlock()
 	return o.started, nil
 }
 
@@ -561,6 +616,27 @@ func (o *startTestProcessOperations) signalCount() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.signals
+}
+
+func (o *startTestProcessOperations) startCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.starts
+}
+
+type uncertainStartTestProcess struct {
+	*startTestProcess
+}
+
+func newUncertainStartTestProcess(pid int) *uncertainStartTestProcess {
+	return &uncertainStartTestProcess{startTestProcess: newStartTestProcess(pid)}
+}
+
+func (p *uncertainStartTestProcess) Terminate() error {
+	p.mu.Lock()
+	p.terminations++
+	p.mu.Unlock()
+	return errors.New("terminate failed")
 }
 
 func (*watchTestProcessOperations) Start(string, []string) (StartedProcess, error) {

@@ -33,6 +33,7 @@ type Daemon struct {
 	server       *http.Server
 	socketInfo   os.FileInfo
 	mutations    mutationLifecycle
+	recoveries   recoveryLifecycle
 	shutdownOnce sync.Once
 	shutdownDone chan struct{}
 	shutdownErr  error
@@ -96,9 +97,11 @@ func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 		},
 	}
 	mutations, _ := options.Handler.(mutationLifecycle)
+	recoveries, _ := options.Handler.(recoveryLifecycle)
 	daemon := &Daemon{
 		path: path, listener: listener, server: server, socketInfo: info,
 		mutations: mutations, shutdownDone: make(chan struct{}),
+		recoveries: recoveries,
 	}
 	go func() { _ = server.Serve(listener) }()
 	go func() {
@@ -116,6 +119,9 @@ func (d *Daemon) Close() error {
 
 func (d *Daemon) Shutdown(ctx context.Context) error {
 	d.shutdownOnce.Do(func() {
+		if d.recoveries != nil {
+			d.recoveries.beginRecoveryShutdown()
+		}
 		if d.mutations != nil {
 			d.mutations.beginShutdown()
 		}
@@ -124,7 +130,11 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		if d.mutations != nil {
 			mutationErr = d.mutations.waitForMutations(ctx)
 		}
-		if shutdownErr != nil || mutationErr != nil {
+		var recoveryErr error
+		if d.recoveries != nil {
+			recoveryErr = d.recoveries.waitForRecoveries(ctx)
+		}
+		if shutdownErr != nil || mutationErr != nil || recoveryErr != nil {
 			_ = d.server.Close()
 		}
 		listenerErr := d.listener.Close()
@@ -137,7 +147,7 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 			removeErr = statErr
 		}
-		d.shutdownErr = errors.Join(shutdownErr, mutationErr, listenerErr, removeErr)
+		d.shutdownErr = errors.Join(shutdownErr, mutationErr, recoveryErr, listenerErr, removeErr)
 		close(d.shutdownDone)
 	})
 	<-d.shutdownDone
@@ -237,7 +247,7 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 		return err
 	}
 	defer daemon.Close()
-	recoveryCtx, cancelRecovery := context.WithTimeout(context.WithoutCancel(ctx), guardianMutationTimeout)
+	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, guardianMutationTimeout)
 	_ = manager.Recover(recoveryCtx)
 	cancelRecovery()
 	<-ctx.Done()

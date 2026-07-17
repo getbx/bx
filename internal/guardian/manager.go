@@ -48,23 +48,32 @@ type ManagerOptions struct {
 	BarrierContext BarrierContext
 	CoreVersion    string
 	RestartTimeout time.Duration
+	CleanupTimeout time.Duration
 }
 
 type Manager struct {
-	mutation       chan struct{}
-	statusMu       sync.RWMutex
-	store          DesiredStore
-	runner         CoreRunner
-	health         HealthGate
-	barrier        Barrier
-	restorer       NetworkRestorer
-	barrierContext BarrierContext
-	coreVersion    string
-	restartTimeout time.Duration
-	current        Process
-	runtime        supervisor.RuntimeState
-	status         Status
-	barrierHeld    bool
+	mutation          chan struct{}
+	statusMu          sync.RWMutex
+	store             DesiredStore
+	runner            CoreRunner
+	health            HealthGate
+	barrier           Barrier
+	restorer          NetworkRestorer
+	barrierContext    BarrierContext
+	coreVersion       string
+	restartTimeout    time.Duration
+	cleanupTimeout    time.Duration
+	current           Process
+	runtime           supervisor.RuntimeState
+	status            Status
+	barrierHeld       bool
+	recoveryMu        sync.Mutex
+	recoveryContext   context.Context
+	cancelRecovery    context.CancelFunc
+	recoveryAccepting bool
+	recoveryActive    int
+	recoveryDrained   chan struct{}
+	recoveryClosed    bool
 }
 
 func NewManager(options ManagerOptions) (*Manager, error) {
@@ -86,16 +95,26 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	if restartTimeout <= 0 {
 		restartTimeout = defaultHealthTimeout + 5*time.Second
 	}
+	cleanupTimeout := options.CleanupTimeout
+	if cleanupTimeout <= 0 {
+		cleanupTimeout = 15 * time.Second
+	}
+	recoveryContext, cancelRecovery := context.WithCancel(context.Background())
 	m := &Manager{
-		mutation:       make(chan struct{}, 1),
-		store:          options.Store,
-		runner:         options.Runner,
-		health:         options.Health,
-		barrier:        options.Barrier,
-		restorer:       options.Restorer,
-		barrierContext: cloneBarrierContext(options.BarrierContext),
-		coreVersion:    options.CoreVersion,
-		restartTimeout: restartTimeout,
+		mutation:          make(chan struct{}, 1),
+		store:             options.Store,
+		runner:            options.Runner,
+		health:            options.Health,
+		barrier:           options.Barrier,
+		restorer:          options.Restorer,
+		barrierContext:    cloneBarrierContext(options.BarrierContext),
+		coreVersion:       options.CoreVersion,
+		restartTimeout:    restartTimeout,
+		cleanupTimeout:    cleanupTimeout,
+		recoveryContext:   recoveryContext,
+		cancelRecovery:    cancelRecovery,
+		recoveryAccepting: true,
+		recoveryDrained:   make(chan struct{}),
 		status: Status{
 			SchemaVersion: 1,
 			Desired:       DesiredOff,
@@ -122,6 +141,10 @@ func (m *Manager) Up(ctx context.Context) error {
 }
 
 func (m *Manager) upLocked(ctx context.Context) error {
+	if m.current.Uncertain {
+		m.needsAttention(DesiredOn, "core_ownership_uncertain")
+		return uncertainOwnership(m.current, nil)
+	}
 	if m.current.PID != 0 && m.Status().Protection == ProtectionProtected {
 		return nil
 	}
@@ -140,6 +163,13 @@ func (m *Manager) upLocked(ctx context.Context) error {
 
 	existing, err := m.runner.Existing(ctx)
 	if err != nil {
+		if errors.Is(err, ErrProcessOwnershipUncertain) {
+			if process, ok := uncertainProcess(err); ok {
+				m.current = process
+			}
+			m.needsAttention(DesiredOn, "core_ownership_uncertain")
+			return err
+		}
 		m.needsAttention(DesiredOn, "core_state_read_failed")
 		return fmt.Errorf("inspect existing Core: %w", err)
 	}
@@ -271,17 +301,32 @@ func (m *Manager) Recover(ctx context.Context) error {
 func (m *Manager) startCoreLocked(ctx context.Context) (supervisor.RuntimeState, error) {
 	process, err := m.runner.Start(ctx)
 	if err != nil {
+		if errors.Is(err, ErrProcessOwnershipUncertain) {
+			if uncertain, ok := uncertainProcess(err); ok {
+				m.current = uncertain
+			}
+			m.needsAttention(DesiredOn, "core_ownership_uncertain")
+			return supervisor.RuntimeState{}, fmt.Errorf("start Core: %w", err)
+		}
 		m.needsAttention(DesiredOn, "core_start_failed")
 		return supervisor.RuntimeState{}, fmt.Errorf("start Core: %w", err)
 	}
 	if err := m.runner.Verify(process); err != nil {
-		_ = m.runner.Stop(ctx, process)
+		if cleanupErr := m.cleanupStartedCore(ctx, process); cleanupErr != nil {
+			m.current = Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Uncertain: true}
+			m.needsAttention(DesiredOn, "core_ownership_uncertain")
+			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("verify started Core: %w", err), uncertainOwnership(m.current, cleanupErr))
+		}
 		m.needsAttention(DesiredOn, "core_identity_unverified")
 		return supervisor.RuntimeState{}, fmt.Errorf("verify started Core: %w", err)
 	}
 	state, err := m.waitHealthy(ctx, process)
 	if err != nil {
-		_ = m.runner.Stop(ctx, process)
+		if cleanupErr := m.cleanupStartedCore(ctx, process); cleanupErr != nil {
+			m.current = Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Uncertain: true}
+			m.needsAttention(DesiredOn, "core_ownership_uncertain")
+			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("wait for Core health: %w", err), uncertainOwnership(m.current, cleanupErr))
+		}
 		m.needsAttention(DesiredOn, "core_health_failed")
 		return supervisor.RuntimeState{}, fmt.Errorf("wait for Core health: %w", err)
 	}
@@ -357,7 +402,12 @@ func (m *Manager) monitor(process Process) {
 }
 
 func (m *Manager) handleUnexpectedExit(process Process, _ error) {
-	if err := m.acquireMutation(context.Background()); err != nil {
+	recoveryCtx, done, ok := m.admitRecovery()
+	if !ok {
+		return
+	}
+	defer done()
+	if err := m.acquireMutation(recoveryCtx); err != nil {
 		return
 	}
 	defer m.releaseMutation()
@@ -368,7 +418,7 @@ func (m *Manager) handleUnexpectedExit(process Process, _ error) {
 	if err != nil {
 		barrierContext := m.contextForRuntime(m.runtime)
 		if !m.barrierHeld {
-			if barrierErr := m.barrier.Install(context.Background(), barrierContext); barrierErr == nil {
+			if barrierErr := m.barrier.Install(recoveryCtx, barrierContext); barrierErr == nil {
 				m.barrierHeld = true
 			}
 		}
@@ -383,11 +433,11 @@ func (m *Manager) handleUnexpectedExit(process Process, _ error) {
 	barrierContext := m.contextForRuntime(m.runtime)
 	m.current = Process{}
 	m.needsAttention(DesiredOn, "core_unexpected_exit")
-	if err := m.barrier.Install(context.Background(), barrierContext); err == nil {
+	if err := m.barrier.Install(recoveryCtx, barrierContext); err == nil {
 		m.barrierHeld = true
 	}
 
-	restartCtx, cancel := context.WithTimeout(context.Background(), m.restartTimeout)
+	restartCtx, cancel := context.WithTimeout(recoveryCtx, m.restartTimeout)
 	defer cancel()
 	if _, err := m.startCoreLocked(restartCtx); err != nil {
 		m.needsAttention(DesiredOn, "core_restart_failed")
@@ -397,6 +447,63 @@ func (m *Manager) handleUnexpectedExit(process Process, _ error) {
 		if err := m.removeBarrier(restartCtx, barrierContext); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 		}
+	}
+}
+
+func (m *Manager) cleanupStartedCore(ctx context.Context, process Process) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cleanupTimeout)
+	defer cancel()
+	return m.runner.Stop(cleanupCtx, process)
+}
+
+func (m *Manager) admitRecovery() (context.Context, func(), bool) {
+	m.recoveryMu.Lock()
+	defer m.recoveryMu.Unlock()
+	if !m.recoveryAccepting {
+		return nil, nil, false
+	}
+	m.recoveryActive++
+	ctx, cancel := context.WithTimeout(m.recoveryContext, m.restartTimeout)
+	return ctx, func() {
+		cancel()
+		m.finishRecovery()
+	}, true
+}
+
+func (m *Manager) finishRecovery() {
+	m.recoveryMu.Lock()
+	defer m.recoveryMu.Unlock()
+	m.recoveryActive--
+	m.closeRecoveryDrainedLocked()
+}
+
+func (m *Manager) beginRecoveryShutdown() {
+	m.recoveryMu.Lock()
+	defer m.recoveryMu.Unlock()
+	m.recoveryAccepting = false
+	m.cancelRecovery()
+	m.closeRecoveryDrainedLocked()
+}
+
+func (m *Manager) waitForRecoveries(ctx context.Context) error {
+	select {
+	case <-m.recoveryDrained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) recoveryActiveCount() int {
+	m.recoveryMu.Lock()
+	defer m.recoveryMu.Unlock()
+	return m.recoveryActive
+}
+
+func (m *Manager) closeRecoveryDrainedLocked() {
+	if !m.recoveryAccepting && m.recoveryActive == 0 && !m.recoveryClosed {
+		close(m.recoveryDrained)
+		m.recoveryClosed = true
 	}
 }
 

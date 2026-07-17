@@ -24,8 +24,14 @@ type peerCredentials struct {
 }
 
 type localAPI struct {
-	handler   http.Handler
-	mutations *acceptedMutations
+	handler    http.Handler
+	mutations  *acceptedMutations
+	recoveries recoveryLifecycle
+}
+
+type recoveryLifecycle interface {
+	beginRecoveryShutdown()
+	waitForRecoveries(context.Context) error
 }
 
 type acceptedMutations struct {
@@ -52,7 +58,8 @@ func NewLocalAPI(controller Controller) http.Handler {
 	})
 	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations))
 	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down, mutations))
-	return &localAPI{handler: mux, mutations: mutations}
+	recoveries, _ := controller.(recoveryLifecycle)
+	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries}
 }
 
 func (a *localAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +72,19 @@ func (a *localAPI) beginShutdown() {
 
 func (a *localAPI) waitForMutations(ctx context.Context) error {
 	return a.mutations.wait(ctx)
+}
+
+func (a *localAPI) beginRecoveryShutdown() {
+	if a.recoveries != nil {
+		a.recoveries.beginRecoveryShutdown()
+	}
+}
+
+func (a *localAPI) waitForRecoveries(ctx context.Context) error {
+	if a.recoveries == nil {
+		return nil
+	}
+	return a.recoveries.waitForRecoveries(ctx)
 }
 
 func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations) http.HandlerFunc {
