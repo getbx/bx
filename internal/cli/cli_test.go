@@ -105,6 +105,23 @@ func TestMacMenuReconnectDoesNotCycleProtection(t *testing.T) {
 	}
 }
 
+func TestMacMenuQuitBxStopsProtectionThenQuitsMenu(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "menu.addAction(quitBxActionTitle") {
+		t.Fatal("macOS menu should expose an explicit Quit bx action")
+	}
+	if !strings.Contains(text, "func quitBx()") || !strings.Contains(text, "'\\(bxPath)' down") {
+		t.Fatal("Quit bx should use the safe bx down path")
+	}
+	if !strings.Contains(text, "NSApp.terminate(nil)") {
+		t.Fatal("Quit bx should close the menu only after bx stops")
+	}
+}
+
 func TestMacMenuRequiresCLIReconnectSupport(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {

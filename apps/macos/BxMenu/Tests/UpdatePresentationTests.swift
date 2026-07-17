@@ -12,6 +12,7 @@ struct UpdatePresentationTests {
         let current = UpdateCheck(current: "v0.2.0", latest: "v0.2.0", available: false, verified: true)
         expect(updateActionTitle(for: current) == nil, "current release has no action")
 
+        expect(quitBxActionTitle == "Quit bx…", "protection shutdown action is explicit")
         expect(quitMenuActionTitle == "Quit Menu", "quit action names the menu only")
     }
 

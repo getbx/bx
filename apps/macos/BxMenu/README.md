@@ -17,13 +17,13 @@ failure, and gray means bx is off or not configured.
 - Start Protection
 - Reconnect
 - Update bx
-- Turn Off
+- Quit bx
 
 It does not install, configure, start, reconnect, or turn off protection by itself unless you choose one of the explicit menu actions.
 Starting protection always asks for confirmation before bx takes over system traffic.
 Turning protection off also asks for confirmation and restores managed DNS settings.
-`Quit Menu` closes only the menu bar UI; it deliberately leaves protection running.
-Use `Turn Off` when you want to stop protection and restore managed DNS.
+`Quit bx…` stops protection through `bx down`, restores bx-managed DNS, then closes the menu. `Quit Menu` closes only the menu bar UI; it deliberately leaves protection running.
+Use `Quit bx…` when you want to stop protection, restore managed DNS, and close the menu.
 When bx needs attention, the primary action is to reconnect. bx keeps TUN, routes, and managed DNS in place while it verifies a replacement transport, so a failed reconnect does not create a direct-traffic window.
 
 When the menu shows `Setup Required`, choose `Set Up bx...`, paste your bx link, and approve the macOS administrator prompt. After setup succeeds, the menu asks whether to start protection now. If setup fails, use `Run Doctor` from the same menu.

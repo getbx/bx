@@ -234,10 +234,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         switch state {
         case .connected:
             menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
-            menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
+            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         case .warning:
             menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
-            menu.addAction("Turn Off", symbol: "power", target: self, action: #selector(turnOff))
+            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         case .off:
             menu.addAction("Start Protection", symbol: "play.fill", target: self, action: #selector(startBx))
         case .updateNeeded:
@@ -383,17 +383,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func turnOff() {
+    @objc private func quitBx() {
         let alert = NSAlert()
-        alert.messageText = "Turn off protection?"
-        alert.informativeText = "bx will stop protecting system traffic and restore managed DNS settings."
-        alert.addButton(withTitle: "Turn Off")
+        alert.messageText = "Quit bx?"
+        alert.informativeText = "bx will stop protecting system traffic, restore managed DNS settings, and close this menu."
+        alert.addButton(withTitle: "Quit bx")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
             if !runPrivileged("'\(bxPath)' down") {
-                showFailure("Turn Off Failed", "bx did not stop.")
+                showFailure("Quit bx Failed", "bx did not stop.")
+                refresh()
+                return
             }
-            refresh()
+            NSApp.terminate(nil)
         }
     }
 
