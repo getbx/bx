@@ -6,6 +6,7 @@ import (
 )
 
 // Report 是 bx status 的线材格式:计数快照 + 隧道信息。
+// Guardian 的非秘密交接状态由 supervisor.RuntimeState 单独承载,避免改变 /v0/status 契约。
 type Report struct {
 	Snapshot
 	Server        string `json:"server"`

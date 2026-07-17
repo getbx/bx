@@ -1,4 +1,5 @@
-// Package stats 是线程安全的运行期计数器,被引擎/Dialer 写、被 bx status 读。
+// Package stats 是线程安全的流量计数器,被引擎/Dialer 写、被 bx status 读。
+// 生命周期 readiness 不存放在这里,由 supervisor 的独立 runtime handoff 负责。
 package stats
 
 import "sync/atomic"

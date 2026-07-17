@@ -46,6 +46,33 @@ func FetchStatusReport(sockPath string) (stats.Report, error) {
 	return rep, nil
 }
 
+// FetchRuntimeState reads the non-secret Core handoff state over its unix socket.
+func FetchRuntimeState(sockPath string) (RuntimeState, error) {
+	return fetchRuntimeState(context.Background(), sockPath)
+}
+
+func fetchRuntimeState(ctx context.Context, sockPath string) (RuntimeState, error) {
+	client := controlHTTPClient(sockPath)
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://local/v0/runtime", nil)
+	if err != nil {
+		return RuntimeState{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return RuntimeState{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return RuntimeState{}, fmt.Errorf("控制面 /v0/runtime 返回 %d", resp.StatusCode)
+	}
+	var state RuntimeState
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		return RuntimeState{}, err
+	}
+	return state, nil
+}
+
 func SupportsSafeReconnect(sockPath string) (bool, error) {
 	client := controlHTTPClient(sockPath)
 	defer client.CloseIdleConnections()
