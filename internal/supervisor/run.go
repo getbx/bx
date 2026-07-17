@@ -15,7 +15,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -394,15 +393,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			5*time.Second)
 		log.Printf("多传输容灾已启用:%d 个传输,主=%s", len(cfg.Transports), transportLabel(cfg.Transports[0]))
 	}
+	routes := &routeReadiness{}
 	mut := &liveMutator{
 		plat:         plat,
 		swap:         swapper,
 		tunH:         tunH,
 		serverBypass: serverBypass,
 		userBypass:   cfg.Bypass,
+		routes:       routes,
 	}
 	runtimeBypass := runtimeIPv4Bypass(serverAddrs)
-	var routesInstalled atomic.Bool
 	runtimeState := func() RuntimeState {
 		udpRequired, udpReady := udpRuntimeReadiness(cfg.UDP.Mode, lt.Healthy, udpHealthy)
 		return RuntimeState{
@@ -413,7 +413,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			ServerBypass:    append([]string(nil), runtimeBypass...),
 			TunnelHealthy:   lt.Healthy(),
 			DNSListening:    dnsListening,
-			RoutesInstalled: routesInstalled.Load(),
+			RoutesInstalled: routes.ready(),
 			UDPRequired:     udpRequired,
 			UDPReady:        udpReady,
 		}
@@ -486,9 +486,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		if err != nil {
 			return fmt.Errorf("配置路由: %w", err)
 		}
-		routesInstalled.Store(true)
+		routes.set(true)
 		defer func() {
-			routesInstalled.Store(false)
+			routes.set(false)
 			teardown()
 		}()
 		log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。")

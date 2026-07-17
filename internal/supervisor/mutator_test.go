@@ -81,6 +81,70 @@ func TestLiveMutatorRehijackError(t *testing.T) {
 	}
 }
 
+type blockingRehijacker struct {
+	started chan struct{}
+	release chan error
+}
+
+func (f blockingRehijacker) RehijackRoutes(tunHandle, []string, []string) error {
+	close(f.started)
+	return <-f.release
+}
+
+func TestLiveMutatorRehijackMarksRoutesNotReadyDuringMutation(t *testing.T) {
+	routes := &routeReadiness{}
+	routes.set(true)
+	fp := blockingRehijacker{started: make(chan struct{}), release: make(chan error)}
+	m := &liveMutator{plat: fp, routes: routes}
+	apply, _, err := m.Rehijack()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- apply() }()
+	<-fp.started
+	if routes.ready() {
+		t.Fatal("routes remained ready while rehijack was mutating them")
+	}
+	fp.release <- nil
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLiveMutatorRehijackMarksRoutesReadyAfterSuccess(t *testing.T) {
+	routes := &routeReadiness{}
+	m := &liveMutator{plat: &fakePlatform{}, routes: routes}
+	apply, _, err := m.Rehijack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply(); err != nil {
+		t.Fatal(err)
+	}
+	if !routes.ready() {
+		t.Fatal("routes were not ready after successful rehijack")
+	}
+}
+
+func TestLiveMutatorRehijackLeavesRoutesNotReadyAfterFailure(t *testing.T) {
+	wantErr := errors.New("partial route install")
+	routes := &routeReadiness{}
+	routes.set(true)
+	m := &liveMutator{plat: &fakePlatform{rehijackErr: wantErr}, routes: routes}
+	apply, _, err := m.Rehijack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply(); !errors.Is(err, wantErr) {
+		t.Fatalf("apply error = %v, want %v", err, wantErr)
+	}
+	if routes.ready() {
+		t.Fatal("routes were ready after failed rehijack")
+	}
+}
+
 type fakeSwapper struct {
 	cur       string
 	swapCalls []string

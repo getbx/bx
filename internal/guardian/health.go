@@ -80,7 +80,9 @@ func (h HealthChecker) Wait(ctx context.Context, target HealthTarget) (superviso
 		if err == nil {
 			return state, nil
 		}
-		lastErr = err
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			lastErr = err
+		}
 
 		select {
 		case <-ctx.Done():
