@@ -32,6 +32,7 @@ type Process struct {
 	Generation string
 	Exit       <-chan error
 	Uncertain  bool
+	Resolution <-chan error
 }
 
 type processRecord struct {
@@ -83,6 +84,7 @@ type ExecCoreRunner struct {
 	ShutdownCore         func(context.Context, string, int) error
 	LaunchCleanupTimeout time.Duration
 	SaveProcessRecord    func(string, processRecord) error
+	RemoveProcessRecord  func(string) error
 
 	mu sync.Mutex
 }
@@ -118,6 +120,9 @@ func (r *ExecCoreRunner) Start(ctx context.Context) (Process, error) {
 	operations := r.operations()
 	started, err := operations.Start(r.Executable, coreArgs(r.ConfigPath, r.DNSListen))
 	if err != nil {
+		if clearErr := r.clearLaunchMarker(); clearErr != nil {
+			return Process{}, uncertainOwnership(Process{Uncertain: true}, errors.Join(fmt.Errorf("start installed Core: %w", err), clearErr))
+		}
 		return Process{}, fmt.Errorf("start installed Core: %w", err)
 	}
 	process, err := operations.Inspect(started.PID())
@@ -139,9 +144,12 @@ func (r *ExecCoreRunner) Start(ctx context.Context) (Process, error) {
 	}
 	exit := make(chan error, 1)
 	go func() {
-		exit <- started.Wait()
+		waitErr := started.Wait()
+		if err := r.removeRecordIfGeneration(process.PID, process.Generation); err != nil {
+			waitErr = errors.Join(waitErr, uncertainOwnership(process, fmt.Errorf("clear owned Core record after exit: %w", err)))
+		}
+		exit <- waitErr
 		close(exit)
-		r.removeRecordIfGeneration(process.PID, process.Generation)
 	}()
 	process.Exit = exit
 	return process, nil
@@ -167,7 +175,9 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 	process, err := r.operations().Inspect(record.PID)
 	if err != nil {
 		if errors.Is(err, ErrProcessNotRunning) {
-			r.removeRecordIfGeneration(record.PID, record.Generation)
+			if clearErr := r.removeRecordIfGeneration(record.PID, record.Generation); clearErr != nil {
+				return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, fmt.Errorf("clear exited Core record: %w", clearErr))
+			}
 			return Process{}, nil
 		}
 		return Process{}, fmt.Errorf("inspect recorded Core PID %d: %w", record.PID, err)
@@ -178,7 +188,9 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 		return Process{}, fmt.Errorf("compare recorded Core PID %d identity: %w", record.PID, err)
 	}
 	if !same {
-		r.removeRecordIfGeneration(record.PID, record.Generation)
+		if clearErr := r.removeRecordIfGeneration(record.PID, record.Generation); clearErr != nil {
+			return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, fmt.Errorf("clear replaced Core record: %w", clearErr))
+		}
 		return Process{}, nil
 	}
 	return process, nil
@@ -210,7 +222,9 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 	}
 	current, err := r.operations().Inspect(process.PID)
 	if errors.Is(err, ErrProcessNotRunning) {
-		r.removeRecordIfGeneration(process.PID, process.Generation)
+		if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
+			return uncertainOwnership(process, fmt.Errorf("clear exited Core record: %w", clearErr))
+		}
 		return nil
 	}
 	if err != nil {
@@ -221,7 +235,9 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 		return fmt.Errorf("compare Core PID %d identity before shutdown request: %w", process.PID, err)
 	}
 	if !same {
-		r.removeRecordIfGeneration(process.PID, process.Generation)
+		if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
+			return uncertainOwnership(process, fmt.Errorf("clear replaced Core record: %w", clearErr))
+		}
 		return nil
 	}
 	shutdown := r.ShutdownCore
@@ -246,7 +262,9 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 	for {
 		current, err := r.operations().Inspect(process.PID)
 		if errors.Is(err, ErrProcessNotRunning) {
-			r.removeRecordIfGeneration(process.PID, process.Generation)
+			if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
+				return uncertainOwnership(process, fmt.Errorf("clear exited Core record: %w", clearErr))
+			}
 			return nil
 		}
 		if err != nil {
@@ -257,7 +275,9 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 			return fmt.Errorf("compare Core PID %d identity after shutdown request: %w", process.PID, err)
 		}
 		if !same {
-			r.removeRecordIfGeneration(process.PID, process.Generation)
+			if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
+				return uncertainOwnership(process, fmt.Errorf("clear replaced Core record: %w", clearErr))
+			}
 			return nil
 		}
 		select {
@@ -292,7 +312,9 @@ func (r *ExecCoreRunner) watchExisting(process Process, exit chan<- error) {
 }
 
 func (r *ExecCoreRunner) finishExistingWatch(process Process, exit chan<- error, err error) {
-	r.removeRecordIfGeneration(process.PID, process.Generation)
+	if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
+		err = errors.Join(err, uncertainOwnership(process, fmt.Errorf("clear owned Core record after exit: %w", clearErr)))
+	}
 	exit <- err
 	close(exit)
 }
@@ -339,28 +361,32 @@ func (r *ExecCoreRunner) saveRecord(path string, record processRecord) error {
 }
 
 func (r *ExecCoreRunner) cleanupFailedStart(started StartedProcess, process Process, cause error) error {
-	if r.cleanupStartedProcess(started) {
-		r.removeLaunchMarker()
+	proved, cleanupErr, late := r.cleanupStartedProcess(started)
+	if proved && cleanupErr == nil {
 		return cause
 	}
 	process.Uncertain = true
-	return uncertainOwnership(process, cause)
+	if late != nil {
+		process.Resolution = late
+	}
+	return uncertainOwnership(process, errors.Join(cause, cleanupErr))
 }
 
-func (r *ExecCoreRunner) cleanupStartedProcess(process StartedProcess) bool {
+func (r *ExecCoreRunner) cleanupStartedProcess(process StartedProcess) (bool, error, <-chan error) {
 	_ = process.Terminate()
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
 		_ = process.Wait()
+		done <- r.clearLaunchMarker()
 		close(done)
 	}()
 	timer := time.NewTimer(r.launchCleanupTimeout())
 	defer timer.Stop()
 	select {
-	case <-done:
-		return true
+	case err := <-done:
+		return true, err, nil
 	case <-timer.C:
-		return false
+		return false, nil, done
 	}
 }
 
@@ -371,24 +397,55 @@ func (r *ExecCoreRunner) launchCleanupTimeout() time.Duration {
 	return 5 * time.Second
 }
 
-func (r *ExecCoreRunner) removeLaunchMarker() {
+func (r *ExecCoreRunner) clearLaunchMarker() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	record, err := loadProcessRecord(r.statePath())
-	if err != nil || record.state() != processRecordLaunching {
-		return
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	_ = os.Remove(r.statePath())
+	if err != nil {
+		return err
+	}
+	if record.state() != processRecordLaunching {
+		return nil
+	}
+	return r.removeProcessRecord(r.statePath())
 }
 
-func (r *ExecCoreRunner) removeRecordIfGeneration(pid int, generation string) {
+func (r *ExecCoreRunner) removeRecordIfGeneration(pid int, generation string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	record, err := loadProcessRecord(r.statePath())
-	if err != nil || record.state() != processRecordOwned || record.PID != pid || record.Generation != generation {
-		return
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	_ = os.Remove(r.statePath())
+	if err != nil {
+		return err
+	}
+	if record.state() != processRecordOwned || record.PID != pid || record.Generation != generation {
+		return nil
+	}
+	return r.removeProcessRecord(r.statePath())
+}
+
+func (r *ExecCoreRunner) removeProcessRecord(path string) error {
+	if r.RemoveProcessRecord != nil {
+		return r.RemoveProcessRecord(path)
+	}
+	return removeProcessRecordFile(path)
+}
+
+func removeProcessRecordFile(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func verifyInstalledProcess(process Process, installedPath string) error {

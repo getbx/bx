@@ -165,7 +165,7 @@ func (m *Manager) upLocked(ctx context.Context) error {
 	if err != nil {
 		if errors.Is(err, ErrProcessOwnershipUncertain) {
 			if process, ok := uncertainProcess(err); ok {
-				m.current = process
+				m.retainUncertain(process)
 			}
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return err
@@ -299,11 +299,17 @@ func (m *Manager) Recover(ctx context.Context) error {
 }
 
 func (m *Manager) startCoreLocked(ctx context.Context) (supervisor.RuntimeState, error) {
-	process, err := m.runner.Start(ctx)
+	operationCtx, cancelOperation, err := m.reserveCleanup(ctx)
+	if err != nil {
+		m.needsAttention(DesiredOn, "core_start_failed")
+		return supervisor.RuntimeState{}, err
+	}
+	defer cancelOperation()
+	process, err := m.runner.Start(operationCtx)
 	if err != nil {
 		if errors.Is(err, ErrProcessOwnershipUncertain) {
 			if uncertain, ok := uncertainProcess(err); ok {
-				m.current = uncertain
+				m.retainUncertain(uncertain)
 			}
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, fmt.Errorf("start Core: %w", err)
@@ -313,17 +319,17 @@ func (m *Manager) startCoreLocked(ctx context.Context) (supervisor.RuntimeState,
 	}
 	if err := m.runner.Verify(process); err != nil {
 		if cleanupErr := m.cleanupStartedCore(ctx, process); cleanupErr != nil {
-			m.current = Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Uncertain: true}
+			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true})
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("verify started Core: %w", err), uncertainOwnership(m.current, cleanupErr))
 		}
 		m.needsAttention(DesiredOn, "core_identity_unverified")
 		return supervisor.RuntimeState{}, fmt.Errorf("verify started Core: %w", err)
 	}
-	state, err := m.waitHealthy(ctx, process)
+	state, err := m.waitHealthy(operationCtx, process)
 	if err != nil {
 		if cleanupErr := m.cleanupStartedCore(ctx, process); cleanupErr != nil {
-			m.current = Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Uncertain: true}
+			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true})
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("wait for Core health: %w", err), uncertainOwnership(m.current, cleanupErr))
 		}
@@ -401,7 +407,7 @@ func (m *Manager) monitor(process Process) {
 	m.handleUnexpectedExit(process, err)
 }
 
-func (m *Manager) handleUnexpectedExit(process Process, _ error) {
+func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 	recoveryCtx, done, ok := m.admitRecovery()
 	if !ok {
 		return
@@ -412,6 +418,18 @@ func (m *Manager) handleUnexpectedExit(process Process, _ error) {
 	}
 	defer m.releaseMutation()
 	if !sameProcessGeneration(m.current, process) {
+		return
+	}
+	if errors.Is(exitErr, ErrProcessOwnershipUncertain) {
+		barrierContext := m.contextForRuntime(m.runtime)
+		if !m.barrierHeld {
+			if barrierErr := m.barrier.Install(recoveryCtx, barrierContext); barrierErr == nil {
+				m.barrierHeld = true
+			}
+		}
+		process.Uncertain = true
+		m.current = process
+		m.needsAttention(DesiredOn, "core_ownership_uncertain")
 		return
 	}
 	desired, err := m.store.LoadDesired()
@@ -451,9 +469,70 @@ func (m *Manager) handleUnexpectedExit(process Process, _ error) {
 }
 
 func (m *Manager) cleanupStartedCore(ctx context.Context, process Process) error {
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cleanupTimeout)
+	cleanupCtx, cancel := context.WithTimeout(ctx, m.cleanupTimeout)
 	defer cancel()
 	return m.runner.Stop(cleanupCtx, process)
+}
+
+func (m *Manager) reserveCleanup(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		operationCtx, cancel := context.WithCancel(ctx)
+		return operationCtx, cancel, nil
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, nil, fmt.Errorf("accepted mutation deadline leaves no Core cleanup budget: %w", context.DeadlineExceeded)
+	}
+	cleanupBudget := m.cleanupTimeout
+	if half := remaining / 2; cleanupBudget > half {
+		cleanupBudget = half
+	}
+	operationDeadline := deadline.Add(-cleanupBudget)
+	operationCtx, cancel := context.WithDeadline(ctx, operationDeadline)
+	return operationCtx, cancel, nil
+}
+
+func (m *Manager) retainUncertain(process Process) {
+	process.Uncertain = true
+	m.current = process
+	if process.Resolution != nil {
+		go func() {
+			if err, ok := <-process.Resolution; ok && err == nil {
+				m.clearUncertaintyAfterProof(process)
+			}
+		}()
+	}
+	if process.Exit != nil {
+		go func() {
+			if err, ok := <-process.Exit; ok && !errors.Is(err, ErrProcessOwnershipUncertain) {
+				m.clearUncertaintyAfterProof(process)
+			}
+		}()
+	}
+}
+
+func (m *Manager) clearUncertaintyAfterProof(process Process) {
+	<-m.mutation
+	defer m.releaseMutation()
+	if !m.current.Uncertain || !sameUncertainProcess(m.current, process) {
+		return
+	}
+	m.current = Process{}
+	status := m.Status()
+	if status.LastError == "core_ownership_uncertain" {
+		status.CorePID = 0
+		status.CoreVersion = ""
+		status.LastError = ""
+		m.setStatus(status)
+	}
+}
+
+func sameUncertainProcess(current, resolved Process) bool {
+	if current.Resolution != nil && current.Resolution == resolved.Resolution {
+		return true
+	}
+	return current.Exit != nil && current.Exit == resolved.Exit
 }
 
 func (m *Manager) admitRecovery() (context.Context, func(), bool) {
