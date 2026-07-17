@@ -267,12 +267,21 @@ func launchdEnableCommands() [][]string {
 func Disable() error {
 	switch runtime.GOOS {
 	case "darwin":
-		_ = runLaunchctl("disable", "system/"+launchdLabel)
-		return runLaunchctl("bootout", "system", launchdPlistPath)
+		cmds := launchdDisableCommands()
+		_ = runLaunchctl(cmds[0]...)
+		return runLaunchctl(cmds[1]...)
 	case "windows":
 		return windowsDisableService()
 	default:
 		return runSystemctl("disable", "--now", ServiceName)
+	}
+}
+
+func launchdDisableCommands() [][]string {
+	label := "system/" + launchdLabel
+	return [][]string{
+		{"disable", label},
+		{"bootout", label},
 	}
 }
 
@@ -439,7 +448,7 @@ func launchdExecStartCmd(plistText string) string {
 func Uninstall() error {
 	switch runtime.GOOS {
 	case "darwin":
-		_ = runLaunchctl("bootout", "system", launchdPlistPath)
+		_ = runLaunchctl("bootout", "system/"+launchdLabel)
 		_ = os.Remove(launchdPlistPath)
 		return nil
 	case "windows":
