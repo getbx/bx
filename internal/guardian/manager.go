@@ -40,6 +40,7 @@ type NetworkRestorer interface {
 }
 
 type LegacyCoreLifecycle interface {
+	Present(context.Context) (bool, error)
 	Stop(context.Context) error
 	Remove() error
 }
@@ -166,7 +167,11 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 		return uncertainOwnership(m.current, nil)
 	}
 	if m.current.PID != 0 && m.Status().Protection == ProtectionProtected {
-		return m.removeMigratedUnit()
+		if err := m.legacy.Remove(); err != nil {
+			m.needsAttention(DesiredOn, "legacy_unit_remove_failed")
+			return fmt.Errorf("remove migrated Core unit: %w", err)
+		}
+		return nil
 	}
 
 	desired, err := m.store.LoadDesired()
@@ -180,7 +185,6 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 			return err
 		}
 	}
-
 	barrierContext := migrationBarrierContext(normalized)
 	m.barrierContext = cloneBarrierContext(barrierContext)
 	if err := m.barrier.Install(ctx, barrierContext); err != nil {
@@ -201,18 +205,40 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 		m.needsAttention(DesiredOn, "barrier_reassert_failed")
 		return fmt.Errorf("reassert migration bypass: %w", err)
 	}
-	if _, err := m.startCoreLocked(ctx); err != nil {
+	state, err := m.startCoreLockedWithBarrierRelease(ctx, false)
+	if err != nil {
 		return err
 	}
-	return m.removeMigratedUnit()
+	barrierContext = m.contextForRuntime(state)
+	if err := m.removeBarrier(ctx, barrierContext); err != nil {
+		m.needsAttention(DesiredOn, "barrier_remove_failed")
+		return err
+	}
+	if err := m.legacy.Remove(); err != nil {
+		reinstallErr := m.retainMigrationBarrier(ctx, barrierContext)
+		m.needsAttention(DesiredOn, "legacy_unit_remove_failed")
+		return errors.Join(fmt.Errorf("remove migrated Core unit: %w", err), reinstallErr)
+	}
+	m.setStatus(Status{
+		SchemaVersion: 1,
+		Desired:       DesiredOn,
+		Phase:         PhaseCommitted,
+		CorePID:       m.current.PID,
+		CoreVersion:   state.Version,
+		Protection:    ProtectionProtected,
+	})
+	return nil
 }
 
-func (m *Manager) removeMigratedUnit() error {
-	if err := m.legacy.Remove(); err != nil {
-		status := m.Status()
-		status.LastError = "legacy_unit_remove_failed"
-		m.setStatus(status)
-		return fmt.Errorf("remove migrated Core unit: %w", err)
+func (m *Manager) retainMigrationBarrier(ctx context.Context, barrierContext BarrierContext) error {
+	reinstallCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cleanupTimeout)
+	defer cancel()
+	err := m.barrier.Install(reinstallCtx, barrierContext)
+	// Install can fail after applying a strict subset. Treat the attempted
+	// barrier as held until an explicit recovery reconciles it.
+	m.barrierHeld = true
+	if err != nil {
+		return fmt.Errorf("restore migration barrier after legacy cleanup failure: %w", err)
 	}
 	return nil
 }
@@ -224,6 +250,9 @@ func (m *Manager) upLocked(ctx context.Context) error {
 	}
 	if m.current.PID != 0 && m.Status().Protection == ProtectionProtected {
 		return nil
+	}
+	if err := m.requireLegacyReleased(ctx); err != nil {
+		return err
 	}
 	desired, err := m.store.LoadDesired()
 	if err != nil {
@@ -260,7 +289,7 @@ func (m *Manager) upLocked(ctx context.Context) error {
 			m.needsAttention(DesiredOn, "core_adoption_health_failed")
 			return fmt.Errorf("adopt existing Core: %w", err)
 		}
-		if err := m.acceptHealthy(ctx, existing, state); err != nil {
+		if err := m.acceptHealthy(ctx, existing, state, true); err != nil {
 			return fmt.Errorf("release held barrier after adopting Core: %w", err)
 		}
 		return nil
@@ -376,6 +405,10 @@ func (m *Manager) Recover(ctx context.Context) error {
 }
 
 func (m *Manager) startCoreLocked(ctx context.Context) (supervisor.RuntimeState, error) {
+	return m.startCoreLockedWithBarrierRelease(ctx, true)
+}
+
+func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, releaseBarrier bool) (supervisor.RuntimeState, error) {
 	operationCtx, cancelOperation, err := m.reserveCleanup(ctx)
 	if err != nil {
 		m.needsAttention(DesiredOn, "core_start_failed")
@@ -413,7 +446,7 @@ func (m *Manager) startCoreLocked(ctx context.Context) (supervisor.RuntimeState,
 		m.needsAttention(DesiredOn, "core_health_failed")
 		return supervisor.RuntimeState{}, fmt.Errorf("wait for Core health: %w", err)
 	}
-	if err := m.acceptHealthy(ctx, process, state); err != nil {
+	if err := m.acceptHealthy(ctx, process, state, releaseBarrier); err != nil {
 		return state, fmt.Errorf("complete healthy Core activation: %w", err)
 	}
 	return state, nil
@@ -433,7 +466,7 @@ func (m *Manager) waitHealthy(ctx context.Context, process Process) (supervisor.
 	return state, nil
 }
 
-func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supervisor.RuntimeState) error {
+func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supervisor.RuntimeState, releaseBarrier bool) error {
 	if sameProcessGeneration(m.current, process) && m.current.Exit != nil {
 		process.Exit = m.current.Exit
 	} else {
@@ -453,6 +486,9 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 			CoreVersion:   state.Version,
 			Protection:    ProtectionBlocked,
 		})
+		if !releaseBarrier {
+			return nil
+		}
 		if err := m.removeBarrier(ctx, m.contextForRuntime(state)); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 			return err
@@ -466,6 +502,22 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 		CoreVersion:   state.Version,
 		Protection:    ProtectionProtected,
 	})
+	return nil
+}
+
+func (m *Manager) requireLegacyReleased(ctx context.Context) error {
+	if m.legacy == nil {
+		return nil
+	}
+	present, err := m.legacy.Present(ctx)
+	if err != nil {
+		m.needsAttention(DesiredOn, "legacy_core_state_failed")
+		return fmt.Errorf("inspect legacy Core ownership: %w", err)
+	}
+	if present {
+		m.needsAttention(DesiredOn, "legacy_core_migration_pending")
+		return errors.New("legacy Core ownership requires migration")
+	}
 	return nil
 }
 
