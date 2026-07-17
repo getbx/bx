@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -288,6 +289,120 @@ func TestRunNetworksetupContextWithRunnerHonorsCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("networksetup did not stop after context cancellation")
 	}
+}
+
+func TestDisableDNSDarwinContextRetainsStateWhenCacheFlushCanceled(t *testing.T) {
+	statePath := writeTestDNSState(t, dnsState{Service: "Wi-Fi", Servers: []string{"1.1.1.1"}})
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &scriptedDNSCommandRunner{
+		combinedOutput: func(ctx context.Context, name string, _ ...string) ([]byte, error) {
+			if name != "dscacheutil" {
+				return nil, fmt.Errorf("unexpected command %s", name)
+			}
+			cancel()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	_, err := disableDNSDarwinContextWithRunner(ctx, runner, statePath, "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("DisableDNS error = %v, want context canceled", err)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("DNS retry state removed after cache cancellation: %v", err)
+	}
+}
+
+func TestDisableDNSDarwinContextRetainsStateWhenFinalInspectionFails(t *testing.T) {
+	statePath := writeTestDNSState(t, dnsState{Service: "Wi-Fi", Servers: []string{"1.1.1.1"}})
+	inspectErr := errors.New("networksetup inspection failed")
+	runner := &scriptedDNSCommandRunner{
+		combinedOutput: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "networksetup" {
+				return nil, inspectErr
+			}
+			return nil, nil
+		},
+	}
+
+	_, err := disableDNSDarwinContextWithRunner(context.Background(), runner, statePath, "")
+	if !errors.Is(err, inspectErr) {
+		t.Fatalf("DisableDNS error = %v, want inspection failure", err)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("DNS retry state removed after inspection failure: %v", err)
+	}
+}
+
+func TestDisableDNSDarwinContextRetainsStateWhenRestoredServersMismatch(t *testing.T) {
+	statePath := writeTestDNSState(t, dnsState{Service: "Wi-Fi", Servers: []string{"1.1.1.1"}})
+	runner := &scriptedDNSCommandRunner{
+		combinedOutput: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "networksetup" && strings.Join(args, " ") == "-getdnsservers Wi-Fi" {
+				return []byte("8.8.8.8\n"), nil
+			}
+			return nil, nil
+		},
+	}
+
+	if _, err := disableDNSDarwinContextWithRunner(context.Background(), runner, statePath, ""); err == nil {
+		t.Fatal("DisableDNS accepted restored servers that do not match durable state")
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("DNS retry state removed after verification mismatch: %v", err)
+	}
+}
+
+func TestDisableDNSDarwinContextRemovesStateOnlyAfterVerifiedSuccess(t *testing.T) {
+	statePath := writeTestDNSState(t, dnsState{Service: "Wi-Fi", Servers: []string{"1.1.1.1"}})
+	runner := &scriptedDNSCommandRunner{
+		combinedOutput: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "networksetup" && strings.Join(args, " ") == "-getdnsservers Wi-Fi" {
+				return []byte("1.1.1.1\n"), nil
+			}
+			return nil, nil
+		},
+	}
+
+	status, err := disableDNSDarwinContextWithRunner(context.Background(), runner, statePath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Enabled || status.StateSaved {
+		t.Fatalf("restored DNS status = %+v, want disabled with no saved state", status)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("DNS retry state error = %v, want removed after verification", err)
+	}
+}
+
+func writeTestDNSState(t *testing.T, state dnsState) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dns-original.json")
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+type scriptedDNSCommandRunner struct {
+	combinedOutput func(context.Context, string, ...string) ([]byte, error)
+}
+
+func (r *scriptedDNSCommandRunner) CombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if r.combinedOutput == nil {
+		return nil, nil
+	}
+	return r.combinedOutput(ctx, name, args...)
+}
+
+func (*scriptedDNSCommandRunner) Run(context.Context, string, ...string) error {
+	return nil
 }
 
 type blockingDNSCommandRunner struct {
