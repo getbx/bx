@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,31 +23,25 @@ type Process struct {
 	PID        int
 	Executable string
 	UID        int
+	Generation string
 	Exit       <-chan error
-	identity   executableIdentity
 }
 
 type processRecord struct {
 	PID        int    `json:"pid"`
 	Executable string `json:"executable"`
-	Device     uint64 `json:"device"`
-	Inode      uint64 `json:"inode"`
-}
-
-type executableIdentity struct {
-	device uint64
-	inode  uint64
+	Generation string `json:"generation"`
 }
 
 type StartedProcess interface {
 	PID() int
 	Wait() error
+	Terminate() error
 }
 
 type ProcessOperations interface {
 	Start(executable string, args []string) (StartedProcess, error)
 	Inspect(pid int) (Process, error)
-	Signal(pid int, signal os.Signal) error
 }
 
 type ExecCoreRunner struct {
@@ -88,23 +83,36 @@ func (r *ExecCoreRunner) Start(ctx context.Context) (Process, error) {
 	if err != nil {
 		return Process{}, fmt.Errorf("start installed Core: %w", err)
 	}
-	identity, err := statExecutableIdentity(r.Executable)
+	process, err := operations.Inspect(started.PID())
 	if err != nil {
-		_ = operations.Signal(started.PID(), os.Kill)
-		return Process{}, fmt.Errorf("identify installed Core: %w", err)
+		terminateStartedProcess(started)
+		return Process{}, fmt.Errorf("inspect started Core PID %d: %w", started.PID(), err)
 	}
-	record := processRecord{PID: started.PID(), Executable: r.Executable, Device: identity.device, Inode: identity.inode}
+	if process.PID != started.PID() {
+		terminateStartedProcess(started)
+		return Process{}, fmt.Errorf("started Core PID %d inspected as PID %d", started.PID(), process.PID)
+	}
+	if err := verifyInstalledProcess(process, r.Executable); err != nil {
+		terminateStartedProcess(started)
+		return Process{}, fmt.Errorf("verify started Core PID %d: %w", started.PID(), err)
+	}
+	if err := ctx.Err(); err != nil {
+		terminateStartedProcess(started)
+		return Process{}, err
+	}
+	record := processRecord{PID: process.PID, Executable: process.Executable, Generation: process.Generation}
 	if err := saveProcessRecord(r.statePath(), record); err != nil {
-		_ = operations.Signal(started.PID(), os.Kill)
+		terminateStartedProcess(started)
 		return Process{}, fmt.Errorf("persist Core process: %w", err)
 	}
 	exit := make(chan error, 1)
 	go func() {
 		exit <- started.Wait()
 		close(exit)
-		r.removeRecordIfPID(started.PID())
+		r.removeRecordIfGeneration(process.PID, process.Generation)
 	}()
-	return Process{PID: started.PID(), Executable: r.Executable, UID: os.Geteuid(), Exit: exit, identity: identity}, nil
+	process.Exit = exit
+	return process, nil
 }
 
 func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
@@ -124,12 +132,20 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 	process, err := r.operations().Inspect(record.PID)
 	if err != nil {
 		if errors.Is(err, ErrProcessNotRunning) {
-			r.removeRecordIfPID(record.PID)
+			r.removeRecordIfGeneration(record.PID, record.Generation)
 			return Process{}, nil
 		}
 		return Process{}, fmt.Errorf("inspect recorded Core PID %d: %w", record.PID, err)
 	}
-	process.identity = executableIdentity{device: record.Device, inode: record.Inode}
+	expected := Process{PID: record.PID, Executable: record.Executable, UID: 0, Generation: record.Generation}
+	same, err := sameProcessIdentity(expected, process)
+	if err != nil {
+		return Process{}, fmt.Errorf("compare recorded Core PID %d identity: %w", record.PID, err)
+	}
+	if !same {
+		r.removeRecordIfGeneration(record.PID, record.Generation)
+		return Process{}, nil
+	}
 	exit := make(chan error, 1)
 	process.Exit = exit
 	go r.watchExisting(process, exit)
@@ -137,19 +153,7 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 }
 
 func (r *ExecCoreRunner) Verify(process Process) error {
-	if err := verifyInstalledProcess(process, r.Executable); err != nil {
-		return err
-	}
-	if process.identity != (executableIdentity{}) {
-		installed, err := statExecutableIdentity(r.Executable)
-		if err != nil {
-			return err
-		}
-		if process.identity != installed {
-			return errors.New("recorded Core executable no longer matches installed inode")
-		}
-	}
-	return nil
+	return verifyInstalledProcess(process, r.Executable)
 }
 
 func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
@@ -158,6 +162,25 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if err := verifyInstalledProcess(process, r.Executable); err != nil {
+		return fmt.Errorf("verify recorded Core PID %d before shutdown: %w", process.PID, err)
+	}
+	current, err := r.operations().Inspect(process.PID)
+	if errors.Is(err, ErrProcessNotRunning) {
+		r.removeRecordIfGeneration(process.PID, process.Generation)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Core PID %d before shutdown request: %w", process.PID, err)
+	}
+	same, err := sameProcessIdentity(process, current)
+	if err != nil {
+		return fmt.Errorf("compare Core PID %d identity before shutdown request: %w", process.PID, err)
+	}
+	if !same {
+		r.removeRecordIfGeneration(process.PID, process.Generation)
+		return nil
 	}
 	shutdown := r.ShutdownCore
 	if shutdown == nil {
@@ -181,7 +204,7 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 	for {
 		current, err := r.operations().Inspect(process.PID)
 		if errors.Is(err, ErrProcessNotRunning) {
-			r.removeRecordIfPID(process.PID)
+			r.removeRecordIfGeneration(process.PID, process.Generation)
 			return nil
 		}
 		if err != nil {
@@ -192,7 +215,7 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 			return fmt.Errorf("compare Core PID %d identity after shutdown request: %w", process.PID, err)
 		}
 		if !same {
-			r.removeRecordIfPID(process.PID)
+			r.removeRecordIfGeneration(process.PID, process.Generation)
 			return nil
 		}
 		select {
@@ -210,7 +233,7 @@ func (r *ExecCoreRunner) watchExisting(process Process, exit chan<- error) {
 		current, err := r.operations().Inspect(process.PID)
 		if err != nil {
 			if errors.Is(err, ErrProcessNotRunning) {
-				r.finishExistingWatch(process.PID, exit, err)
+				r.finishExistingWatch(process, exit, err)
 				return
 			}
 			continue
@@ -220,14 +243,14 @@ func (r *ExecCoreRunner) watchExisting(process Process, exit chan<- error) {
 			continue
 		}
 		if !same {
-			r.finishExistingWatch(process.PID, exit, fmt.Errorf("%w: recorded Core identity disappeared", ErrProcessNotRunning))
+			r.finishExistingWatch(process, exit, fmt.Errorf("%w: recorded Core identity disappeared", ErrProcessNotRunning))
 			return
 		}
 	}
 }
 
-func (r *ExecCoreRunner) finishExistingWatch(pid int, exit chan<- error, err error) {
-	r.removeRecordIfPID(pid)
+func (r *ExecCoreRunner) finishExistingWatch(process Process, exit chan<- error, err error) {
+	r.removeRecordIfGeneration(process.PID, process.Generation)
 	exit <- err
 	close(exit)
 }
@@ -266,11 +289,11 @@ func (r *ExecCoreRunner) statePath() string {
 	return defaultProcessStatePath
 }
 
-func (r *ExecCoreRunner) removeRecordIfPID(pid int) {
+func (r *ExecCoreRunner) removeRecordIfGeneration(pid int, generation string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	record, err := loadProcessRecord(r.statePath())
-	if err != nil || record.PID != pid {
+	if err != nil || record.PID != pid || record.Generation != generation {
 		return
 	}
 	_ = os.Remove(r.statePath())
@@ -283,44 +306,33 @@ func verifyInstalledProcess(process Process, installedPath string) error {
 	if process.UID != 0 {
 		return fmt.Errorf("Core effective UID %d is not root", process.UID)
 	}
-	actual, err := os.Stat(process.Executable)
-	if err != nil {
-		return fmt.Errorf("stat running Core executable: %w", err)
+	if strings.TrimSpace(process.Generation) == "" {
+		return errors.New("Core process generation is unavailable")
 	}
-	installed, err := os.Stat(installedPath)
-	if err != nil {
-		return fmt.Errorf("stat installed Core executable: %w", err)
+	if !filepath.IsAbs(process.Executable) || !filepath.IsAbs(installedPath) {
+		return errors.New("Core executable paths must be absolute")
 	}
-	if !os.SameFile(actual, installed) {
-		return errors.New("running Core executable does not match installed inode")
+	if filepath.Clean(process.Executable) != filepath.Clean(installedPath) {
+		return errors.New("running Core executable path does not match installed path")
 	}
 	return nil
 }
 
 func sameProcessIdentity(expected, current Process) (bool, error) {
-	if current.PID != expected.PID || current.UID != expected.UID {
-		return false, nil
+	if strings.TrimSpace(expected.Generation) == "" || strings.TrimSpace(current.Generation) == "" {
+		return false, errors.New("process generation is unavailable")
 	}
-	if expected.identity != (executableIdentity{}) {
-		identity, err := statExecutableIdentity(current.Executable)
-		if err != nil {
-			return false, err
-		}
-		return identity == expected.identity, nil
+	if !filepath.IsAbs(expected.Executable) || !filepath.IsAbs(current.Executable) {
+		return false, errors.New("process executable path is unavailable")
 	}
-	expectedInfo, err := os.Stat(expected.Executable)
-	if err != nil {
-		return false, err
-	}
-	currentInfo, err := os.Stat(current.Executable)
-	if err != nil {
-		return false, err
-	}
-	return os.SameFile(expectedInfo, currentInfo), nil
+	return current.PID == expected.PID &&
+		current.UID == expected.UID &&
+		current.Generation == expected.Generation &&
+		filepath.Clean(current.Executable) == filepath.Clean(expected.Executable), nil
 }
 
 func saveProcessRecord(path string, record processRecord) error {
-	if record.PID <= 0 || !filepath.IsAbs(record.Executable) {
+	if record.PID <= 0 || !filepath.IsAbs(record.Executable) || strings.TrimSpace(record.Generation) == "" {
 		return errors.New("invalid Core process record")
 	}
 	dir := filepath.Dir(path)
@@ -342,7 +354,7 @@ func loadProcessRecord(path string) (processRecord, error) {
 	if err := json.Unmarshal(b, &record); err != nil {
 		return record, fmt.Errorf("decode Core process record: %w", err)
 	}
-	if record.PID <= 0 || !filepath.IsAbs(record.Executable) {
+	if record.PID <= 0 || !filepath.IsAbs(record.Executable) || strings.TrimSpace(record.Generation) == "" {
 		return processRecord{}, errors.New("invalid Core process record")
 	}
 	return record, nil
@@ -364,15 +376,13 @@ func (osProcessOperations) Inspect(pid int) (Process, error) {
 	return inspectProcess(pid)
 }
 
-func (osProcessOperations) Signal(pid int, signal os.Signal) error {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	return process.Signal(signal)
-}
-
 type execStartedProcess struct{ cmd *exec.Cmd }
 
-func (p execStartedProcess) PID() int    { return p.cmd.Process.Pid }
-func (p execStartedProcess) Wait() error { return p.cmd.Wait() }
+func (p execStartedProcess) PID() int         { return p.cmd.Process.Pid }
+func (p execStartedProcess) Wait() error      { return p.cmd.Wait() }
+func (p execStartedProcess) Terminate() error { return p.cmd.Process.Kill() }
+
+func terminateStartedProcess(process StartedProcess) {
+	_ = process.Terminate()
+	go func() { _ = process.Wait() }()
+}

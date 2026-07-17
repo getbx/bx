@@ -269,6 +269,103 @@ func TestManagerUnexpectedExitDesiredReadFailureFailsClosed(t *testing.T) {
 	}
 }
 
+func TestManagerHealthyRecoveryReleasesHeldBarrierBeforeProtected(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Manager, context.Context) error
+	}{
+		{name: "Up", run: (*Manager).Up},
+		{name: "Recover", run: (*Manager).Recover},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			retainBarrierAfterDesiredReadFailure(t, env)
+			env.store.setLoadError(nil)
+			env.events.reset()
+
+			healthPassed := false
+			env.health.onSuccess = func() { healthPassed = true }
+			env.barrier.onRemove = func() {
+				if !healthPassed {
+					t.Error("held barrier removal started before health passed")
+				}
+				if status := env.manager.Status(); status.Protection == ProtectionProtected {
+					t.Errorf("status was Protected before held barrier removal: %+v", status)
+				}
+			}
+
+			if err := tt.run(env.manager, context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "barrier.remove"}) {
+				t.Fatalf("events = %#v, want health-gated barrier release", got)
+			}
+			if env.manager.barrierHeld {
+				t.Fatal("barrier remains held after healthy recovery")
+			}
+			if got := env.manager.Status(); got.Protection != ProtectionProtected || got.Phase != PhaseCommitted {
+				t.Fatalf("status = %+v, want Protected only after barrier removal", got)
+			}
+		})
+	}
+}
+
+func TestManagerHeldBarrierRemainsWhenRecoveryHealthFails(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	retainBarrierAfterDesiredReadFailure(t, env)
+	env.store.setLoadError(nil)
+	env.health.err = errors.New("Core unhealthy")
+	env.events.reset()
+
+	if err := env.manager.Up(context.Background()); err == nil {
+		t.Fatal("Up succeeded despite recovery health failure")
+	}
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "core.stop"}) {
+		t.Fatalf("events = %#v, want no barrier removal before health", got)
+	}
+	if !env.manager.barrierHeld {
+		t.Fatal("barrier released after recovery health failure")
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionBlocked || got.Phase != PhaseNeedsAttention || got.LastError != "core_health_failed" {
+		t.Fatalf("status = %+v, want blocked core_health_failed", got)
+	}
+}
+
+func TestManagerHeldBarrierRemovalFailureDoesNotClaimProtected(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	retainBarrierAfterDesiredReadFailure(t, env)
+	env.store.setLoadError(nil)
+	env.barrier.removeErr = errors.New("barrier remove failed")
+	env.events.reset()
+
+	if err := env.manager.Up(context.Background()); err == nil {
+		t.Fatal("Up succeeded despite held barrier removal failure")
+	}
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "barrier.remove"}) {
+		t.Fatalf("events = %#v, want attempted post-health barrier removal", got)
+	}
+	if !env.manager.barrierHeld {
+		t.Fatal("barrier state cleared after removal failure")
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionBlocked || got.Phase != PhaseNeedsAttention || got.LastError != "barrier_remove_failed" {
+		t.Fatalf("status = %+v, want blocked barrier_remove_failed", got)
+	}
+}
+
+func retainBarrierAfterDesiredReadFailure(t *testing.T, env *managerTestEnv) {
+	t.Helper()
+	process := env.runner.currentProcess()
+	env.store.setLoadError(errors.New("desired state unreadable"))
+	env.runner.exit(process.PID, errors.New("unexpected exit"))
+	eventually(t, func() bool {
+		return env.manager.Status().LastError == "desired_state_read_failed"
+	})
+	if !env.manager.barrierHeld {
+		t.Fatal("fail-closed setup did not retain barrier")
+	}
+}
+
 func TestManagerPlannedDownDoesNotRestartExitedCore(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	env.runner.exitOnStop = true
@@ -493,10 +590,11 @@ func (r *fakeCoreRunner) exit(pid int, err error) {
 }
 
 type fakeHealthGate struct {
-	mu      sync.Mutex
-	runtime supervisor.RuntimeState
-	err     error
-	last    HealthTarget
+	mu        sync.Mutex
+	runtime   supervisor.RuntimeState
+	err       error
+	last      HealthTarget
+	onSuccess func()
 }
 
 func (h *fakeHealthGate) Wait(_ context.Context, target HealthTarget) (supervisor.RuntimeState, error) {
@@ -509,6 +607,9 @@ func (h *fakeHealthGate) Wait(_ context.Context, target HealthTarget) (superviso
 	state := h.runtime
 	if state.PID == 0 {
 		state = healthyRuntime(target.PID)
+	}
+	if h.onSuccess != nil {
+		h.onSuccess()
 	}
 	return state, nil
 }
@@ -524,6 +625,7 @@ type fakeBarrier struct {
 	events     *eventLog
 	installErr error
 	removeErr  error
+	onRemove   func()
 }
 
 func (b *fakeBarrier) Install(context.Context, BarrierContext) error {
@@ -535,6 +637,9 @@ func (b *fakeBarrier) ReassertBypass(context.Context, BarrierContext) error { re
 
 func (b *fakeBarrier) Remove(context.Context, BarrierContext) error {
 	b.events.add("barrier.remove")
+	if b.onRemove != nil {
+		b.onRemove()
+	}
 	return b.removeErr
 }
 

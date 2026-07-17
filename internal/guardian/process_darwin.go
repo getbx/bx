@@ -38,5 +38,21 @@ func inspectProcess(pid int) (Process, error) {
 	if len(pathBytes) == 0 {
 		return Process{}, errors.New("process executable path missing")
 	}
-	return Process{PID: pid, Executable: string(pathBytes), UID: int(info.Eproc.Ucred.Uid)}, nil
+	generation, err := darwinProcessGeneration(info.Proc.P_starttime)
+	if err != nil {
+		return Process{}, err
+	}
+	return Process{
+		PID:        pid,
+		Executable: string(pathBytes),
+		UID:        int(info.Eproc.Ucred.Uid),
+		Generation: generation,
+	}, nil
+}
+
+func darwinProcessGeneration(start unix.Timeval) (string, error) {
+	if start.Sec == 0 && start.Usec == 0 {
+		return "", errors.New("process start time unavailable")
+	}
+	return fmt.Sprintf("darwin:%d:%d", start.Sec, start.Usec), nil
 }

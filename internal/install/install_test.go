@@ -1,12 +1,15 @@
 package install
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUnitText(t *testing.T) {
@@ -262,6 +265,43 @@ func TestDNSStateMissingRecognizesWrappedNotExist(t *testing.T) {
 	if dnsStateMissing(fmt.Errorf("读 DNS 状态: %w", os.ErrPermission)) {
 		t.Fatal("permission error must not be treated as missing DNS state")
 	}
+}
+
+func TestRunNetworksetupContextWithRunnerHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &blockingDNSCommandRunner{entered: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- runNetworksetupContextWithRunner(ctx, runner, "setdnsservers", "Wi-Fi", "Empty")
+	}()
+	select {
+	case <-runner.entered:
+	case <-time.After(time.Second):
+		t.Fatal("networksetup runner was not entered")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runNetworksetup error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("networksetup did not stop after context cancellation")
+	}
+}
+
+type blockingDNSCommandRunner struct {
+	entered chan struct{}
+}
+
+func (*blockingDNSCommandRunner) CombinedOutput(context.Context, string, ...string) ([]byte, error) {
+	return nil, errors.New("unexpected CombinedOutput")
+}
+
+func (r *blockingDNSCommandRunner) Run(ctx context.Context, _ string, _ ...string) error {
+	close(r.entered)
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func TestUnitInstalledFalseWhenAbsent(t *testing.T) {
