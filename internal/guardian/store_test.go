@@ -71,6 +71,107 @@ func TestStoreRestrictsStateDirectories(t *testing.T) {
 	}
 }
 
+func TestOpenDefaultStoreUsesProductionStatePaths(t *testing.T) {
+	s := OpenDefaultStore()
+	if s.paths.Desired != "/var/lib/bx/guardian-state.json" {
+		t.Errorf("desired path = %q", s.paths.Desired)
+	}
+	if s.paths.Transaction != "/var/lib/bx/update/transaction.json" {
+		t.Errorf("transaction path = %q", s.paths.Transaction)
+	}
+	if s.paths.Receipt != "/var/lib/bx/update/receipt.json" {
+		t.Errorf("receipt path = %q", s.paths.Receipt)
+	}
+	if s.paths.Staging != "/var/lib/bx/update/staging" {
+		t.Errorf("staging path = %q", s.paths.Staging)
+	}
+	if s.paths.Snapshots != "/var/lib/bx/update/snapshots" {
+		t.Errorf("snapshots path = %q", s.paths.Snapshots)
+	}
+}
+
+func TestStoreRejectsInvalidAndNonTerminalReceiptOutcomes(t *testing.T) {
+	s := OpenStore(testPaths(t.TempDir()))
+	for _, outcome := range []Phase{Phase("unknown"), PhaseIdle, PhasePrepared, PhaseBarrierActive, PhaseActivating, PhaseRollingBack} {
+		t.Run(string(outcome), func(t *testing.T) {
+			err := s.SaveReceipt(Receipt{TransactionID: "tx-1", Outcome: outcome})
+			if err == nil {
+				t.Fatalf("receipt outcome %q accepted", outcome)
+			}
+		})
+	}
+}
+
+func TestStoreAcceptsTerminalReceiptOutcomes(t *testing.T) {
+	s := OpenStore(testPaths(t.TempDir()))
+	for _, outcome := range []Phase{PhaseCommitted, PhaseRolledBack, PhaseNeedsAttention} {
+		t.Run(string(outcome), func(t *testing.T) {
+			if err := s.SaveReceipt(Receipt{TransactionID: "tx-1", Outcome: outcome}); err != nil {
+				t.Fatalf("save receipt: %v", err)
+			}
+		})
+	}
+}
+
+func TestStoreSanitizesTransactionLastError(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		lastError string
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "bx link",
+			lastError: "connect bx://client.example/config?token=secret failed",
+			want:      "connect [redacted client link] failed",
+			forbidden: []string{"bx://", "secret"},
+		},
+		{
+			name:      "vless link",
+			lastError: "connect vless://uuid@client.example:443?security=reality failed",
+			want:      "connect [redacted client link] failed",
+			forbidden: []string{"vless://", "uuid"},
+		},
+		{
+			name:      "hysteria2 link",
+			lastError: "connect hysteria2://user:password@client.example:443 failed",
+			want:      "connect [redacted client link] failed",
+			forbidden: []string{"hysteria2://", "password"},
+		},
+		{
+			name:      "password and token values",
+			lastError: "authentication failed password=hunter2 token: abc123",
+			want:      "authentication failed password=[redacted] token=[redacted]",
+			forbidden: []string{"hunter2", "abc123"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			paths := testPaths(t.TempDir())
+			if err := OpenStore(paths).SaveTransaction(Transaction{ID: "tx-1", Phase: PhasePrepared, LastError: test.lastError}); err != nil {
+				t.Fatal(err)
+			}
+
+			b, err := os.ReadFile(paths.Transaction)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, value := range test.forbidden {
+				if bytes.Contains(bytes.ToLower(b), []byte(value)) {
+					t.Fatalf("persisted transaction contains %q: %s", value, b)
+				}
+			}
+
+			transaction, err := OpenStore(paths).LoadTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if transaction.LastError != test.want {
+				t.Errorf("last error = %q, want %q", transaction.LastError, test.want)
+			}
+		})
+	}
+}
+
 func TestTransactionJSONContainsNoClientSecrets(t *testing.T) {
 	tx := Transaction{ID: "tx-1", FromVersion: "v1", ToVersion: "v2", Phase: PhasePrepared}
 	b, err := json.Marshal(tx)

@@ -78,3 +78,7 @@ func (p Phase) valid() bool {
 		return false
 	}
 }
+
+func (p Phase) terminal() bool {
+	return p == PhaseCommitted || p == PhaseRolledBack || p == PhaseNeedsAttention
+}

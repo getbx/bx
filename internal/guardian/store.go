@@ -5,12 +5,34 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 )
 
 type Store struct {
 	mu    sync.Mutex
 	paths Paths
+}
+
+const (
+	guardianStateDirectory  = "/var/lib/bx"
+	guardianUpdateDirectory = guardianStateDirectory + "/update"
+)
+
+var (
+	clientLinkPattern      = regexp.MustCompile(`(?i)\b(?:bx|vless|hysteria2)://[^\s]+`)
+	credentialValuePattern = regexp.MustCompile(`(?i)\b(password|token)\s*(?:=|:)\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)`)
+)
+
+func OpenDefaultStore() *Store {
+	return OpenStore(Paths{
+		Desired:     guardianStateDirectory + "/guardian-state.json",
+		Transaction: guardianUpdateDirectory + "/transaction.json",
+		Receipt:     guardianUpdateDirectory + "/receipt.json",
+		Staging:     guardianUpdateDirectory + "/staging",
+		Snapshots:   guardianUpdateDirectory + "/snapshots",
+	})
 }
 
 func OpenStore(paths Paths) *Store {
@@ -75,6 +97,7 @@ func (s *Store) SaveTransaction(transaction Transaction) error {
 	if !transaction.Phase.valid() {
 		return fmt.Errorf("invalid transaction phase %q", transaction.Phase)
 	}
+	transaction.LastError = sanitizeLastError(transaction.LastError)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureDirectories(); err != nil {
@@ -96,12 +119,23 @@ func (s *Store) ClearTransaction() error {
 }
 
 func (s *Store) SaveReceipt(receipt Receipt) error {
+	if !receipt.Outcome.terminal() {
+		return fmt.Errorf("invalid receipt outcome %q", receipt.Outcome)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureDirectories(); err != nil {
 		return err
 	}
 	return writeJSONAtomically(s.paths.Receipt, receipt)
+}
+
+func sanitizeLastError(lastError string) string {
+	lastError = clientLinkPattern.ReplaceAllString(lastError, "[redacted client link]")
+	return credentialValuePattern.ReplaceAllStringFunc(lastError, func(value string) string {
+		key := credentialValuePattern.FindStringSubmatch(value)[1]
+		return strings.ToLower(key) + "=[redacted]"
+	})
 }
 
 func (s *Store) ensureDirectories() error {
