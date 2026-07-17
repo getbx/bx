@@ -116,11 +116,12 @@ func TestLaunchdEnableCommandsEnableBeforeBootstrap(t *testing.T) {
 	}
 }
 
-func TestLaunchdDisableCommandsUseServiceTarget(t *testing.T) {
-	cmds := launchdDisableCommands()
+func TestLaunchdDisableCommandsStopLoadedLegacyService(t *testing.T) {
+	cmds := launchdDisableCommands(map[string]bool{legacyLaunchdLabel: true})
 	want := []string{
 		"disable system/com.getbx.bx",
-		"bootout system/com.getbx.bx",
+		"disable system/com.ggshr9.bx",
+		"bootout system/com.ggshr9.bx",
 	}
 	if len(cmds) != len(want) {
 		t.Fatalf("launchdDisableCommands len = %d, want %d", len(cmds), len(want))
@@ -128,6 +129,74 @@ func TestLaunchdDisableCommandsUseServiceTarget(t *testing.T) {
 	for i := range want {
 		if got := strings.Join(cmds[i], " "); got != want[i] {
 			t.Fatalf("cmd[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+func TestLaunchdClientLabelsIncludeCurrentAndLegacy(t *testing.T) {
+	got := launchdClientLabels()
+	want := []string{launchdLabel, legacyLaunchdLabel}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("launchdClientLabels = %#v, want %#v", got, want)
+	}
+}
+
+func TestAnyLaunchdClientServiceLoadedRecognizesLegacy(t *testing.T) {
+	if !anyLaunchdClientServiceLoaded(map[string]bool{legacyLaunchdLabel: true}) {
+		t.Fatal("legacy launchd service should count as active")
+	}
+	if anyLaunchdClientServiceLoaded(nil) {
+		t.Fatal("empty launchd state should be inactive")
+	}
+}
+
+func TestLaunchdBootoutErrorIgnoredAfterServiceStops(t *testing.T) {
+	err := fmt.Errorf("launchctl bootout: exit status 3")
+	if got := launchdBootoutResult(err, false); got != nil {
+		t.Fatalf("stopped service should make bootout idempotent: %v", got)
+	}
+	if got := launchdBootoutResult(err, true); got == nil {
+		t.Fatal("loaded service must preserve bootout failure")
+	}
+}
+
+func TestLaunchdDisableCommandsAreIdempotentWhenNothingLoaded(t *testing.T) {
+	cmds := launchdDisableCommands(nil)
+	want := []string{
+		"disable system/com.getbx.bx",
+		"disable system/com.ggshr9.bx",
+	}
+	if len(cmds) != len(want) {
+		t.Fatalf("launchdDisableCommands len = %d, want %d", len(cmds), len(want))
+	}
+	for i := range want {
+		if got := strings.Join(cmds[i], " "); got != want[i] {
+			t.Fatalf("cmd[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+func TestMigrateLegacyLaunchdPlistText(t *testing.T) {
+	legacy := strings.Replace(
+		LaunchdPlistText("/usr/local/bin/bx run -c /etc/bx/config.yaml --listen-dns 127.0.0.1:53"),
+		launchdLabel,
+		legacyLaunchdLabel,
+		1,
+	)
+	got, err := migrateLegacyLaunchdPlistText(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "<string>"+legacyLaunchdLabel+"</string>") {
+		t.Fatal("migrated plist should not retain legacy label")
+	}
+	for _, want := range []string{
+		"<string>" + launchdLabel + "</string>",
+		"<string>--listen-dns</string>",
+		"<string>127.0.0.1:53</string>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("migrated plist missing %q", want)
 		}
 	}
 }

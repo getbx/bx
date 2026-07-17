@@ -16,16 +16,18 @@ import (
 )
 
 const (
-	ServiceName       = "bx.service"
-	ServerServiceName = "bx-server.service"
-	unitPath          = "/etc/systemd/system/bx.service"
-	serverUnitPath    = "/etc/systemd/system/bx-server.service"
-	shareUnitPrefix   = "/etc/systemd/system/bx-share-"
-	launchdLabel      = "com.getbx.bx"
-	launchdPlistPath  = "/Library/LaunchDaemons/com.getbx.bx.plist"
-	launchdStdoutPath = "/var/log/bx.log"
-	launchdStderrPath = "/var/log/bx.err.log"
-	dnsStatePath      = "/var/lib/bx/dns-original.json"
+	ServiceName            = "bx.service"
+	ServerServiceName      = "bx-server.service"
+	unitPath               = "/etc/systemd/system/bx.service"
+	serverUnitPath         = "/etc/systemd/system/bx-server.service"
+	shareUnitPrefix        = "/etc/systemd/system/bx-share-"
+	launchdLabel           = "com.getbx.bx"
+	launchdPlistPath       = "/Library/LaunchDaemons/com.getbx.bx.plist"
+	legacyLaunchdLabel     = "com.ggshr9.bx"
+	legacyLaunchdPlistPath = "/Library/LaunchDaemons/com.ggshr9.bx.plist"
+	launchdStdoutPath      = "/var/log/bx.log"
+	launchdStderrPath      = "/var/log/bx.err.log"
+	dnsStatePath           = "/var/lib/bx/dns-original.json"
 )
 
 // BinPath 是 bx 自身安装到 PATH 的规范位置(OS-aware,见 paths_{windows,other}.go)。
@@ -237,6 +239,12 @@ func writeLaunchdPlist(path, text string) error {
 func Enable() error {
 	switch runtime.GOOS {
 	case "darwin":
+		if anyLaunchdClientServiceLoaded(loadedLaunchdClientServices()) {
+			return nil
+		}
+		if err := migrateLegacyLaunchdPlist(); err != nil {
+			return err
+		}
 		if cmds := launchdEnableCommands(); len(cmds) > 0 {
 			_ = runLaunchctlQuiet(cmds[0]...)
 			for _, args := range cmds[1:] {
@@ -267,9 +275,20 @@ func launchdEnableCommands() [][]string {
 func Disable() error {
 	switch runtime.GOOS {
 	case "darwin":
-		cmds := launchdDisableCommands()
-		_ = runLaunchctl(cmds[0]...)
-		return runLaunchctl(cmds[1]...)
+		cmds := launchdDisableCommands(loadedLaunchdClientServices())
+		for _, args := range cmds {
+			if args[0] == "disable" {
+				_ = runLaunchctl(args...)
+				continue
+			}
+			if err := runLaunchctl(args...); err != nil {
+				label := strings.TrimPrefix(args[1], "system/")
+				if result := launchdBootoutResult(err, launchdServiceLoaded(label)); result != nil {
+					return result
+				}
+			}
+		}
+		return migrateLegacyLaunchdPlist()
 	case "windows":
 		return windowsDisableService()
 	default:
@@ -277,12 +296,94 @@ func Disable() error {
 	}
 }
 
-func launchdDisableCommands() [][]string {
-	label := "system/" + launchdLabel
-	return [][]string{
-		{"disable", label},
-		{"bootout", label},
+func launchdBootoutResult(err error, stillLoaded bool) error {
+	if err != nil && stillLoaded {
+		return err
 	}
+	return nil
+}
+
+func launchdDisableCommands(loaded map[string]bool) [][]string {
+	var cmds [][]string
+	for _, label := range launchdClientLabels() {
+		cmds = append(cmds, []string{"disable", "system/" + label})
+	}
+	for _, label := range launchdClientLabels() {
+		if loaded[label] {
+			cmds = append(cmds, []string{"bootout", "system/" + label})
+		}
+	}
+	return cmds
+}
+
+func loadedLaunchdClientServices() map[string]bool {
+	loaded := make(map[string]bool)
+	for _, label := range launchdClientLabels() {
+		loaded[label] = launchdServiceLoaded(label)
+	}
+	return loaded
+}
+
+func anyLaunchdClientServiceLoaded(loaded map[string]bool) bool {
+	for _, label := range launchdClientLabels() {
+		if loaded[label] {
+			return true
+		}
+	}
+	return false
+}
+
+func launchdClientLabels() []string {
+	return []string{launchdLabel, legacyLaunchdLabel}
+}
+
+func launchdServiceLoaded(label string) bool {
+	return exec.Command("launchctl", "print", "system/"+label).Run() == nil
+}
+
+func migrateLegacyLaunchdPlist() error {
+	if _, err := os.Stat(legacyLaunchdPlistPath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("检查旧版 launchd 服务 %s: %w", legacyLaunchdPlistPath, err)
+	}
+	if _, err := os.Stat(launchdPlistPath); err == nil {
+		return os.Remove(legacyLaunchdPlistPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("检查 launchd 服务 %s: %w", launchdPlistPath, err)
+	}
+	b, err := os.ReadFile(legacyLaunchdPlistPath)
+	if err != nil {
+		return fmt.Errorf("读旧版 launchd 服务 %s: %w", legacyLaunchdPlistPath, err)
+	}
+	text, err := migrateLegacyLaunchdPlistText(string(b))
+	if err != nil {
+		return err
+	}
+	if err := writeLaunchdPlist(launchdPlistPath, text); err != nil {
+		return err
+	}
+	if err := os.Remove(legacyLaunchdPlistPath); err != nil {
+		return fmt.Errorf("移除旧版 launchd 服务 %s: %w", legacyLaunchdPlistPath, err)
+	}
+	return nil
+}
+
+func migrateLegacyLaunchdPlistText(text string) (string, error) {
+	oldLabel := "<string>" + legacyLaunchdLabel + "</string>"
+	if !strings.Contains(text, oldLabel) {
+		return "", fmt.Errorf("旧版 launchd 服务缺少标签 %s", legacyLaunchdLabel)
+	}
+	return strings.Replace(text, oldLabel, "<string>"+launchdLabel+"</string>", 1), nil
+}
+
+func firstExistingPath(paths ...string) string {
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
 }
 
 // Restart 重启已安装的 bx 客户端服务,不改变开机自启状态。
@@ -316,8 +417,7 @@ func DisableShare(name string) error { return runSystemctl("disable", "--now", S
 func UnitInstalled() bool {
 	switch runtime.GOOS {
 	case "darwin":
-		_, err := os.Stat(launchdPlistPath)
-		return err == nil
+		return firstExistingPath(launchdPlistPath, legacyLaunchdPlistPath) != ""
 	case "windows":
 		return windowsServiceInstalled()
 	default:
@@ -338,9 +438,13 @@ func ServerUnitInstalled() bool {
 func ExecStartCmd() (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
-		b, err := os.ReadFile(launchdPlistPath)
+		path := firstExistingPath(launchdPlistPath, legacyLaunchdPlistPath)
+		if path == "" {
+			return "", fmt.Errorf("launchd 服务未安装")
+		}
+		b, err := os.ReadFile(path)
 		if err != nil {
-			return "", fmt.Errorf("读 %s: %w", launchdPlistPath, err)
+			return "", fmt.Errorf("读 %s: %w", path, err)
 		}
 		return launchdExecStartCmd(string(b)), nil
 	case "windows":
@@ -448,8 +552,13 @@ func launchdExecStartCmd(plistText string) string {
 func Uninstall() error {
 	switch runtime.GOOS {
 	case "darwin":
-		_ = runLaunchctl("bootout", "system/"+launchdLabel)
+		for _, label := range launchdClientLabels() {
+			if launchdServiceLoaded(label) {
+				_ = runLaunchctl("bootout", "system/"+label)
+			}
+		}
 		_ = os.Remove(launchdPlistPath)
+		_ = os.Remove(legacyLaunchdPlistPath)
 		return nil
 	case "windows":
 		return windowsUninstallService()
@@ -833,12 +942,14 @@ func systemctlState(action, service string) string {
 func launchdState(action string) string {
 	switch action {
 	case "is-active":
-		if err := exec.Command("launchctl", "print", "system/"+launchdLabel).Run(); err == nil {
-			return "active"
+		for _, label := range launchdClientLabels() {
+			if launchdServiceLoaded(label) {
+				return "active"
+			}
 		}
 		return "inactive"
 	case "is-enabled":
-		if _, err := os.Stat(launchdPlistPath); err == nil {
+		if firstExistingPath(launchdPlistPath, legacyLaunchdPlistPath) != "" {
 			return "enabled"
 		}
 		return "disabled"
