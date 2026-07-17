@@ -11,9 +11,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 const defaultProcessStatePath = "/var/lib/bx/core-process.json"
+
+var ErrProcessNotRunning = errors.New("process is not running")
 
 type Process struct {
 	PID        int
@@ -47,12 +51,15 @@ type ProcessOperations interface {
 }
 
 type ExecCoreRunner struct {
-	Executable  string
-	ConfigPath  string
-	DNSListen   string
-	StatePath   string
-	StopTimeout time.Duration
-	Operations  ProcessOperations
+	Executable      string
+	ConfigPath      string
+	DNSListen       string
+	StatePath       string
+	ControlSocket   string
+	StopTimeout     time.Duration
+	InspectInterval time.Duration
+	Operations      ProcessOperations
+	ShutdownCore    func(context.Context, string, int) error
 
 	mu sync.Mutex
 }
@@ -117,13 +124,16 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 	}
 	process, err := r.operations().Inspect(record.PID)
 	if err != nil {
-		r.removeRecordIfPID(record.PID)
-		return Process{}, nil
+		if errors.Is(err, ErrProcessNotRunning) {
+			r.removeRecordIfPID(record.PID)
+			return Process{}, nil
+		}
+		return Process{}, fmt.Errorf("inspect recorded Core PID %d: %w", record.PID, err)
 	}
 	process.identity = executableIdentity{device: record.Device, inode: record.Inode}
 	exit := make(chan error, 1)
 	process.Exit = exit
-	go r.watchExisting(process.PID, exit)
+	go r.watchExisting(process, exit)
 	return process, nil
 }
 
@@ -147,17 +157,19 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 	if process.PID <= 0 {
 		return nil
 	}
-	current, err := r.operations().Inspect(process.PID)
-	if err != nil {
-		r.removeRecordIfPID(process.PID)
-		return nil
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	current.identity = process.identity
-	if err := r.Verify(current); err != nil {
-		return fmt.Errorf("refuse to signal unverified PID %d: %w", process.PID, err)
+	shutdown := r.ShutdownCore
+	if shutdown == nil {
+		shutdown = supervisor.ShutdownControl
 	}
-	if err := r.operations().Signal(process.PID, syscall.SIGTERM); err != nil {
-		return fmt.Errorf("signal Core PID %d: %w", process.PID, err)
+	controlSocket := r.ControlSocket
+	if controlSocket == "" {
+		controlSocket = supervisor.SockPath
+	}
+	if err := shutdown(ctx, controlSocket, process.PID); err != nil {
+		return fmt.Errorf("request cooperative shutdown for Core PID %d: %w", process.PID, err)
 	}
 	timeout := r.StopTimeout
 	if timeout <= 0 {
@@ -165,10 +177,22 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ticker := time.NewTicker(r.inspectInterval(50 * time.Millisecond))
 	defer ticker.Stop()
 	for {
-		if _, err := r.operations().Inspect(process.PID); err != nil {
+		current, err := r.operations().Inspect(process.PID)
+		if errors.Is(err, ErrProcessNotRunning) {
+			r.removeRecordIfPID(process.PID)
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect Core PID %d after shutdown request: %w", process.PID, err)
+		}
+		same, err := sameProcessIdentity(process, current)
+		if err != nil {
+			return fmt.Errorf("compare Core PID %d identity after shutdown request: %w", process.PID, err)
+		}
+		if !same {
 			r.removeRecordIfPID(process.PID)
 			return nil
 		}
@@ -180,17 +204,40 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 	}
 }
 
-func (r *ExecCoreRunner) watchExisting(pid int, exit chan<- error) {
-	ticker := time.NewTicker(250 * time.Millisecond)
+func (r *ExecCoreRunner) watchExisting(process Process, exit chan<- error) {
+	ticker := time.NewTicker(r.inspectInterval(250 * time.Millisecond))
 	defer ticker.Stop()
 	for range ticker.C {
-		if _, err := r.operations().Inspect(pid); err != nil {
-			exit <- err
-			close(exit)
-			r.removeRecordIfPID(pid)
+		current, err := r.operations().Inspect(process.PID)
+		if err != nil {
+			if errors.Is(err, ErrProcessNotRunning) {
+				r.finishExistingWatch(process.PID, exit, err)
+				return
+			}
+			continue
+		}
+		same, err := sameProcessIdentity(process, current)
+		if err != nil {
+			continue
+		}
+		if !same {
+			r.finishExistingWatch(process.PID, exit, fmt.Errorf("%w: recorded Core identity disappeared", ErrProcessNotRunning))
 			return
 		}
 	}
+}
+
+func (r *ExecCoreRunner) finishExistingWatch(pid int, exit chan<- error, err error) {
+	r.removeRecordIfPID(pid)
+	exit <- err
+	close(exit)
+}
+
+func (r *ExecCoreRunner) inspectInterval(fallback time.Duration) time.Duration {
+	if r.InspectInterval > 0 {
+		return r.InspectInterval
+	}
+	return fallback
 }
 
 func (r *ExecCoreRunner) validate() error {
@@ -249,6 +296,28 @@ func verifyInstalledProcess(process Process, installedPath string) error {
 		return errors.New("running Core executable does not match installed inode")
 	}
 	return nil
+}
+
+func sameProcessIdentity(expected, current Process) (bool, error) {
+	if current.PID != expected.PID || current.UID != expected.UID {
+		return false, nil
+	}
+	if expected.identity != (executableIdentity{}) {
+		identity, err := statExecutableIdentity(current.Executable)
+		if err != nil {
+			return false, err
+		}
+		return identity == expected.identity, nil
+	}
+	expectedInfo, err := os.Stat(expected.Executable)
+	if err != nil {
+		return false, err
+	}
+	currentInfo, err := os.Stat(current.Executable)
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(expectedInfo, currentInfo), nil
 }
 
 func statExecutableIdentity(path string) (executableIdentity, error) {

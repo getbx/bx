@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -22,11 +23,25 @@ type peerCredentials struct {
 	got bool
 }
 
+type localAPI struct {
+	handler   http.Handler
+	mutations *acceptedMutations
+}
+
+type acceptedMutations struct {
+	mu        sync.Mutex
+	accepting bool
+	active    int
+	drained   chan struct{}
+	closed    bool
+}
+
 func withPeerCredentials(ctx context.Context, uid uint32, got bool) context.Context {
 	return context.WithValue(ctx, peerCredentialsKey{}, peerCredentials{uid: uid, got: got})
 }
 
 func NewLocalAPI(controller Controller) http.Handler {
+	mutations := &acceptedMutations{accepting: true, drained: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -35,12 +50,24 @@ func NewLocalAPI(controller Controller) http.Handler {
 		}
 		writeGuardianJSON(w, http.StatusOK, controller.Status())
 	})
-	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up))
-	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down))
-	return mux
+	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations))
+	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down, mutations))
+	return &localAPI{handler: mux, mutations: mutations}
 }
 
-func mutationHandler(controller Controller, mutate func(context.Context) error) http.HandlerFunc {
+func (a *localAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.handler.ServeHTTP(w, r)
+}
+
+func (a *localAPI) beginShutdown() {
+	a.mutations.stopAccepting()
+}
+
+func (a *localAPI) waitForMutations(ctx context.Context) error {
+	return a.mutations.wait(ctx)
+}
+
+func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -51,6 +78,11 @@ func mutationHandler(controller Controller, mutate func(context.Context) error) 
 			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "mutation requires root peer"})
 			return
 		}
+		if !mutations.accept() {
+			writeGuardianJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "guardian is shutting down"})
+			return
+		}
+		defer mutations.done()
 		mutationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), guardianMutationTimeout)
 		defer cancel()
 		if err := mutate(mutationCtx); err != nil {
@@ -58,6 +90,46 @@ func mutationHandler(controller Controller, mutate func(context.Context) error) 
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, controller.Status())
+	}
+}
+
+func (m *acceptedMutations) accept() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.accepting {
+		return false
+	}
+	m.active++
+	return true
+}
+
+func (m *acceptedMutations) done() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.active--
+	m.closeDrainedLocked()
+}
+
+func (m *acceptedMutations) stopAccepting() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.accepting = false
+	m.closeDrainedLocked()
+}
+
+func (m *acceptedMutations) closeDrainedLocked() {
+	if !m.accepting && m.active == 0 && !m.closed {
+		close(m.drained)
+		m.closed = true
+	}
+}
+
+func (m *acceptedMutations) wait(ctx context.Context) error {
+	select {
+	case <-m.drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

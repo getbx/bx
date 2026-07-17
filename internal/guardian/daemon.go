@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/getbx/bx/internal/install"
@@ -27,10 +29,19 @@ type DaemonOptions struct {
 }
 
 type Daemon struct {
-	path       string
-	listener   net.Listener
-	server     *http.Server
-	socketInfo os.FileInfo
+	path         string
+	listener     net.Listener
+	server       *http.Server
+	socketInfo   os.FileInfo
+	mutations    mutationLifecycle
+	shutdownOnce sync.Once
+	shutdownDone chan struct{}
+	shutdownErr  error
+}
+
+type mutationLifecycle interface {
+	beginShutdown()
+	waitForMutations(context.Context) error
 }
 
 func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
@@ -85,7 +96,11 @@ func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 			return withPeerCredentials(ctx, uid, got)
 		},
 	}
-	daemon := &Daemon{path: path, listener: listener, server: server, socketInfo: info}
+	mutations, _ := options.Handler.(mutationLifecycle)
+	daemon := &Daemon{
+		path: path, listener: listener, server: server, socketInfo: info,
+		mutations: mutations, shutdownDone: make(chan struct{}),
+	}
 	go func() { _ = server.Serve(listener) }()
 	go func() {
 		<-ctx.Done()
@@ -95,12 +110,39 @@ func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 }
 
 func (d *Daemon) Close() error {
-	_ = d.server.Close()
-	err := d.listener.Close()
-	if current, statErr := os.Lstat(d.path); statErr == nil && os.SameFile(current, d.socketInfo) {
-		_ = os.Remove(d.path)
-	}
-	return err
+	ctx, cancel := context.WithTimeout(context.Background(), guardianMutationTimeout)
+	defer cancel()
+	return d.Shutdown(ctx)
+}
+
+func (d *Daemon) Shutdown(ctx context.Context) error {
+	d.shutdownOnce.Do(func() {
+		if d.mutations != nil {
+			d.mutations.beginShutdown()
+		}
+		shutdownErr := d.server.Shutdown(ctx)
+		var mutationErr error
+		if d.mutations != nil {
+			mutationErr = d.mutations.waitForMutations(ctx)
+		}
+		if shutdownErr != nil || mutationErr != nil {
+			_ = d.server.Close()
+		}
+		listenerErr := d.listener.Close()
+		if errors.Is(listenerErr, net.ErrClosed) {
+			listenerErr = nil
+		}
+		var removeErr error
+		if current, statErr := os.Lstat(d.path); statErr == nil && os.SameFile(current, d.socketInfo) {
+			removeErr = os.Remove(d.path)
+		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			removeErr = statErr
+		}
+		d.shutdownErr = errors.Join(shutdownErr, mutationErr, listenerErr, removeErr)
+		close(d.shutdownDone)
+	})
+	<-d.shutdownDone
+	return d.shutdownErr
 }
 
 func prepareSocketDirectory(path string, ownerUID uint32) error {
@@ -125,6 +167,12 @@ func prepareSocketDirectory(path string, ownerUID uint32) error {
 }
 
 func removeStaleSocket(path string, ownerUID uint32) error {
+	return removeStaleSocketWithDial(path, ownerUID, func(ctx context.Context, path string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", path)
+	})
+}
+
+func removeStaleSocketWithDial(path string, ownerUID uint32, dial func(context.Context, string) (net.Conn, error)) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -139,10 +187,22 @@ func removeStaleSocket(path string, ownerUID uint32) error {
 	if !gotUID || uid != ownerUID {
 		return fmt.Errorf("refusing to replace socket owned by UID %d", uid)
 	}
-	connection, dialErr := net.DialTimeout("unix", path, 100*time.Millisecond)
+	dialCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	connection, dialErr := dial(dialCtx, path)
 	if dialErr == nil {
 		_ = connection.Close()
 		return fmt.Errorf("Guardian socket %s is active", path)
+	}
+	if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+		return fmt.Errorf("cannot prove Guardian socket %s is stale: %w", path, dialErr)
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("recheck stale Guardian socket %s: %w", path, err)
+	}
+	if !os.SameFile(info, current) {
+		return fmt.Errorf("Guardian socket %s changed during stale check", path)
 	}
 	return os.Remove(path)
 }
@@ -182,7 +242,7 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	_ = manager.Recover(recoveryCtx)
 	cancelRecovery()
 	<-ctx.Done()
-	return nil
+	return daemon.Close()
 }
 
 type systemNetworkRestorer struct{}

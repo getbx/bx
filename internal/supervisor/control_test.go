@@ -1,9 +1,11 @@
 package supervisor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,6 +240,61 @@ func TestControlReloadNotImplementedWhenNil(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("reload=nil 应 501,得 %d", resp.StatusCode)
+	}
+}
+
+func TestControlShutdownRejectsExpectedPIDMismatch(t *testing.T) {
+	shutdownCalls := 0
+	h := newControlMuxWithRuntimeAndShutdown(
+		&fakeControlEngine{},
+		func() stats.Report { return stats.Report{} },
+		func() RuntimeState { return RuntimeState{PID: 42} },
+		nopMutator{}, nil, 0, 42,
+		func() { shutdownCalls++ },
+	)
+
+	mismatch := httptest.NewRequest(http.MethodPost, "/v0/shutdown", strings.NewReader(`{"expected_pid":43}`))
+	mismatchResponse := httptest.NewRecorder()
+	h.ServeHTTP(mismatchResponse, mismatch)
+	if mismatchResponse.Code != http.StatusConflict {
+		t.Fatalf("PID mismatch status = %d, want %d; body=%s", mismatchResponse.Code, http.StatusConflict, mismatchResponse.Body.String())
+	}
+	if shutdownCalls != 0 {
+		t.Fatalf("PID mismatch triggered shutdown %d times", shutdownCalls)
+	}
+
+	matching := httptest.NewRequest(http.MethodPost, "/v0/shutdown", strings.NewReader(`{"expected_pid":42}`))
+	matchingResponse := httptest.NewRecorder()
+	h.ServeHTTP(matchingResponse, matching)
+	if matchingResponse.Code != http.StatusOK {
+		t.Fatalf("matching PID status = %d, body=%s", matchingResponse.Code, matchingResponse.Body.String())
+	}
+	if shutdownCalls != 1 {
+		t.Fatalf("matching PID shutdown calls = %d, want 1", shutdownCalls)
+	}
+}
+
+func TestControlShutdownUsesMutationPeerAuthorization(t *testing.T) {
+	shutdownCalls := 0
+	h := newControlMuxWithRuntimeAndShutdown(
+		&fakeControlEngine{},
+		func() stats.Report { return stats.Report{} },
+		func() RuntimeState { return RuntimeState{PID: 42} },
+		nopMutator{}, nil, 501, 42,
+		func() { shutdownCalls++ },
+	)
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	request := httptest.NewRequest(http.MethodPost, "/v0/shutdown", strings.NewReader(`{"expected_pid":42}`))
+	request = request.WithContext(context.WithValue(request.Context(), ctxConnKey{}, serverConn))
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unverifiable peer status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+	if shutdownCalls != 0 {
+		t.Fatalf("unauthorized peer triggered shutdown %d times", shutdownCalls)
 	}
 }
 

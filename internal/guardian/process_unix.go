@@ -3,6 +3,7 @@
 package guardian
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,10 +14,16 @@ func inspectProcess(pid int) (Process, error) {
 	procPath := filepath.Join("/proc", fmt.Sprint(pid))
 	executable, err := os.Readlink(filepath.Join(procPath, "exe"))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Process{}, fmt.Errorf("%w: PID %d", ErrProcessNotRunning, pid)
+		}
 		return Process{}, err
 	}
 	info, err := os.Stat(procPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Process{}, fmt.Errorf("%w: PID %d", ErrProcessNotRunning, pid)
+		}
 		return Process{}, err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
