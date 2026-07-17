@@ -1,5 +1,6 @@
 // control.go 是 bx 守护进程的本地控制面:HTTP/1.1 over unix socket(Tailscale LocalAPI 范式)。
-// GET /v0/status 返回 Report;POST /v0/commit|rollback 驱动 commit-confirmed 引擎(peer-cred 仅 root)。
+// GET /v0/status 返回 Report;GET /v0/runtime 返回非秘密交接状态;
+// POST /v0/commit|rollback 驱动 commit-confirmed 引擎(peer-cred 仅 root)。
 // 取代旧的"连上就推 Report"私有协议。真实 mutation 路由(/v0/transport、/v0/rehijack)留 9b-2b/9b-3。
 package supervisor
 
@@ -51,6 +52,7 @@ type controlServer struct {
 	mu       sync.Mutex // 串行化命令(满足并发契约)
 	eng      controlEngine
 	report   func() stats.Report
+	runtime  func() RuntimeState
 	mut      mutator
 	reload   func() error // 重读配置 rules 并热重建 router(不断隧道);可空
 	ownerUID uint32
@@ -71,9 +73,14 @@ func stateName(s confirm.State) string {
 
 // newControlMux 构建控制面 HTTP mux。
 func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, reload func() error, ownerUID uint32) http.Handler {
-	cs := &controlServer{eng: eng, report: report, mut: mut, reload: reload, ownerUID: ownerUID}
+	return newControlMuxWithRuntime(eng, report, nil, mut, reload, ownerUID)
+}
+
+func newControlMuxWithRuntime(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, ownerUID uint32) http.Handler {
+	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, ownerUID: ownerUID}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/status", cs.handleStatus)
+	mux.HandleFunc("/v0/runtime", cs.handleRuntime)
 	mux.HandleFunc("/v0/capabilities", cs.handleCapabilities)
 	mux.HandleFunc("/v0/commit", cs.handleCommit)
 	mux.HandleFunc("/v0/rollback", cs.handleRollback)
@@ -82,6 +89,18 @@ func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, r
 	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
 	mux.HandleFunc("/v0/reload", cs.handleReload)
 	return mux
+}
+
+func (cs *controlServer) handleRuntime(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
+		return
+	}
+	var state RuntimeState
+	if cs.runtime != nil {
+		state = cs.runtime()
+	}
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (cs *controlServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -285,7 +304,7 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // c: 统计计数器;t: 隧道(满足 tunnelStatser);server/udpMode: 配置字符串;eng: 引擎;mut: 改动执行器。
 // transportInfo(可空)返回当前活跃传输标签、容灾列表、UDP 专用传输标签,供 status 呈现;
 // active 动态(容灾后反映实际),list/udp 多为静态配置。
-func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), eng controlEngine, mut mutator, reload func() error, ownerUID uint32) (io.Closer, error) {
+func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, ownerUID uint32) (io.Closer, error) {
 	guard := startNetworkGuard(ctx)
 	report := func() stats.Report {
 		ts := t.Stats()
@@ -319,7 +338,7 @@ func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, serve
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler:           newControlMux(eng, report, mut, reload, ownerUID),
+		Handler:           newControlMuxWithRuntime(eng, report, runtime, mut, reload, ownerUID),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {

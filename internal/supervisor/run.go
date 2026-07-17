@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tun"
 	"github.com/getbx/bx/internal/tunnel"
+	"github.com/getbx/bx/internal/version"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
@@ -276,12 +278,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	dnsSrv := bxdns.NewServer(pool, 1)
 	splitDirect := splitdns.NewSet()
 	dnsSrv.SetStaticA(staticA, splitDirect)
+	dnsListening := false
 	if opts.DNSListen != "" {
 		dnsListener, err := bxdns.ListenUDP(opts.DNSListen, dnsSrv)
 		if err != nil {
 			return err
 		}
 		defer dnsListener.Close()
+		dnsListening = true
 		log.Printf("本地 DNS 已监听: udp://%s", dnsListener.LocalAddr())
 	}
 
@@ -334,6 +338,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// best-effort:UDP companion 是"锦上添花"的速度档,绝不阻塞主隧道(reality)把 TUN 拉起
 	// (见 attachUDPCompanion)——否则 flaky UDP 上行(运营商丢包)会把秒健康的 reality 一起
 	// 拖进重启循环。未健康时由上面的 fail-closed 不变量兜住,连上后自动接管 UDP/QUIC。
+	var udpHealthy func() bool
 	if udpEnabled {
 		udpTun, err := buildTunnel(cfg.UDP.Transport)
 		if err != nil {
@@ -343,6 +348,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		if err := attachUDPCompanion(d, udpTun, transportLabel(cfg.UDP.Transport)); err != nil {
 			return fmt.Errorf("挂载 UDP 传输: %w", err)
 		}
+		udpHealthy = udpTun.Healthy
 	}
 
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
@@ -395,6 +401,23 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		serverBypass: serverBypass,
 		userBypass:   cfg.Bypass,
 	}
+	runtimeBypass := runtimeIPv4Bypass(serverAddrs)
+	var routesInstalled atomic.Bool
+	runtimeState := func() RuntimeState {
+		udpRequired, udpReady := udpRuntimeReadiness(cfg.UDP.Mode, lt.Healthy, udpHealthy)
+		return RuntimeState{
+			Version:         version.Version,
+			PID:             os.Getpid(),
+			TunName:         tunH.Name,
+			SocksAddr:       lt.SocksAddr(),
+			ServerBypass:    append([]string(nil), runtimeBypass...),
+			TunnelHealthy:   lt.Healthy(),
+			DNSListening:    dnsListening,
+			RoutesInstalled: routesInstalled.Load(),
+			UDPRequired:     udpRequired,
+			UDPReady:        udpReady,
+		}
+	}
 	// status 用的传输信息:active 动态(从 swapper 当前链接,容灾后反映实际),容灾列表/UDP 静态。
 	var transportLabels []string
 	if len(cfg.Transports) > 1 {
@@ -442,7 +465,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return nil
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, mutEng, mut, reloadRouter, uint32(cfg.OwnerUID))
+		return serveControl(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, uint32(cfg.OwnerUID))
 	})
 	if err != nil {
 		return err
@@ -463,7 +486,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		if err != nil {
 			return fmt.Errorf("配置路由: %w", err)
 		}
-		defer teardown()
+		routesInstalled.Store(true)
+		defer func() {
+			routesInstalled.Store(false)
+			teardown()
+		}()
 		log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。")
 	}
 
