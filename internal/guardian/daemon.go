@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -208,13 +207,13 @@ func removeStaleSocketWithDial(path string, ownerUID uint32, dial func(context.C
 }
 
 func RunDaemon(ctx context.Context, options DaemonOptions) error {
+	if err := requireDaemonPlatform(); err != nil {
+		return err
+	}
 	if os.Geteuid() != 0 {
 		return errors.New("Guardian daemon requires root")
 	}
-	if runtime.GOOS != "darwin" {
-		return errors.New("Guardian daemon is supported only on macOS")
-	}
-	gateway, err := DiscoverDefaultGateway(ctx)
+	gateway, err := discoverDaemonGateway(ctx)
 	if err != nil {
 		return err
 	}
