@@ -54,6 +54,8 @@ grep -q "not with sudo" "$RELEASE_DIR/README.txt" || fail "README missing non-ro
 grep -q "Library/Logs/bx" "$RELEASE_DIR/install.sh" || fail "install.sh missing menu log directory"
 grep -q 'LOG_DIR/menu.log' "$RELEASE_DIR/install.sh" || fail "install.sh missing menu stdout log path"
 grep -q 'LOG_DIR/menu.err.log' "$RELEASE_DIR/install.sh" || fail "install.sh missing menu stderr log path"
+grep -q 'LEGACY_AGENT_ID="com.ggshr9.bx.menu"' "$RELEASE_DIR/install.sh" || fail "install.sh missing legacy menu migration"
+grep -q 'rm -f "$LEGACY_AGENT_DST"' "$RELEASE_DIR/install.sh" || fail "install.sh missing legacy menu cleanup"
 grep -q "Library/Logs/bx/menu.log" "$RELEASE_DIR/README.txt" || fail "README missing menu log path"
 grep -q "does not turn off protection" "$RELEASE_DIR/README.txt" || fail "README missing uninstall protection safety note"
 grep -q "did not turn off protection" "$RELEASE_DIR/uninstall.sh" || fail "uninstall.sh missing protection safety note"

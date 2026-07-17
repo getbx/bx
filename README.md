@@ -145,7 +145,7 @@ WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md
 
 `bx status` 是运行期面板。macOS 上 daemon 会轻量只读监测 Tailscale 路由、系统代理和已连接的 VPN 服务；如果 bx 启动后又出现其他通道,status 会显示 `提醒`,菜单栏也可用同一份 JSON 变成需要注意的状态。
 
-macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Reconnect、Update、Turn Off、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
+macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Reconnect、Update、Quit bx、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
 
 #### macOS 安装包
 
@@ -167,7 +167,7 @@ macOS release 包会一次装好两件事并启动菜单栏 App:
 
 安装后看菜单栏图标即可。如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即开始保护。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
-菜单栏的 `Quit Menu` 只退出图标,不会关闭保护。要关闭并恢复 bx 管理的 DNS,请在菜单里选择 `Turn Off`,或运行 `sudo bx down`。
+菜单栏的 `Quit bx…` 会确认后停止保护、恢复 bx 管理的 DNS 并关闭菜单。`Quit Menu` 只退出图标,不会关闭保护。也可运行 `sudo bx down`。
 
 菜单栏会在启动时、以及之后每天只读检查一次已签名的 release。有新版时会显示 `Update bx…`。确认后,它会校验完整 macOS 包、一起替换 CLI 与菜单栏 App,再只重启菜单栏自身;运行中的保护会话、TUN、路由和 DNS 保持不变。更新记录在 `~/Library/Logs/bx/menu-update.log`。
 

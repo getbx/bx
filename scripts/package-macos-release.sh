@@ -41,8 +41,10 @@ BX_DST="${BX_DST:-/usr/local/bin/bx}"
 CONFIG_PATH="${BX_CONFIG_PATH:-/etc/bx/config.yaml}"
 APP_DST="${BX_APP_DST:-$HOME/Applications/Bx.app}"
 AGENT_ID="com.getbx.bx.menu"
+LEGACY_AGENT_ID="com.ggshr9.bx.menu"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 AGENT_DST="$AGENT_DIR/$AGENT_ID.plist"
+LEGACY_AGENT_DST="$AGENT_DIR/$LEGACY_AGENT_ID.plist"
 DOMAIN="gui/$(id -u)"
 LOG_DIR="${BX_LOG_DIR:-$HOME/Library/Logs/bx}"
 
@@ -84,6 +86,8 @@ echo "Installing bx menu bar app to $APP_DST..."
 mkdir -p "$(dirname "$APP_DST")"
 ditto "$DIR/Bx.app" "$APP_DST"
 mkdir -p "$AGENT_DIR" "$LOG_DIR"
+launchctl bootout "$DOMAIN" "$LEGACY_AGENT_DST" >/dev/null 2>&1 || true
+rm -f "$LEGACY_AGENT_DST"
 cat > "$AGENT_DST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

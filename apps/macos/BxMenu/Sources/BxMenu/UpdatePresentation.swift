@@ -12,4 +12,5 @@ func updateActionTitle(for check: UpdateCheck?) -> String? {
     return "Update bx…"
 }
 
+let quitBxActionTitle = "Quit bx…"
 let quitMenuActionTitle = "Quit Menu"

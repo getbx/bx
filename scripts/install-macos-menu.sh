@@ -4,11 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Bx"
 BUNDLE_ID="com.getbx.bx.menu"
+LEGACY_BUNDLE_ID="com.ggshr9.bx.menu"
 APP_SRC="${BX_APP_SRC:-$ROOT/dist/macos/$APP_NAME.app}"
 APP_DST="${BX_APP_DST:-$HOME/Applications/$APP_NAME.app}"
 AGENT_SRC="${BX_AGENT_SRC:-$ROOT/dist/macos/$BUNDLE_ID.plist}"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 AGENT_DST="$AGENT_DIR/$BUNDLE_ID.plist"
+LEGACY_AGENT_DST="$AGENT_DIR/$LEGACY_BUNDLE_ID.plist"
 DOMAIN="gui/$(id -u)"
 LOG_DIR="${BX_LOG_DIR:-$HOME/Library/Logs/bx}"
 
@@ -40,6 +42,11 @@ bootout_agent() {
   launchctl bootout "$DOMAIN" "$AGENT_DST" >/dev/null 2>&1 || true
 }
 
+remove_legacy_agent() {
+  launchctl bootout "$DOMAIN" "$LEGACY_AGENT_DST" >/dev/null 2>&1 || true
+  rm -f "$LEGACY_AGENT_DST"
+}
+
 install_menu() {
   ensure_macos
   build_package
@@ -47,6 +54,7 @@ install_menu() {
   mkdir -p "$(dirname "$APP_DST")"
   ditto "$APP_SRC" "$APP_DST"
   mkdir -p "$AGENT_DIR" "$LOG_DIR"
+  remove_legacy_agent
   write_launch_agent "$AGENT_DST" "$APP_DST"
   bootout_agent
   launchctl bootstrap "$DOMAIN" "$AGENT_DST"
