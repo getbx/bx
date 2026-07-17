@@ -260,8 +260,21 @@ type systemNetworkRestorer struct {
 }
 
 type systemLegacyCoreLifecycle struct {
-	stop   func(context.Context) error
-	remove func() error
+	present func(context.Context) (bool, error)
+	stop    func(context.Context) error
+	remove  func() error
+}
+
+func (l systemLegacyCoreLifecycle) Present(ctx context.Context) (bool, error) {
+	present := l.present
+	if present != nil {
+		return present(ctx)
+	}
+	loaded, err := install.LegacyCoreLoaded()
+	if err != nil {
+		return false, err
+	}
+	return install.LegacyCoreInstalled() || loaded, nil
 }
 
 func (l systemLegacyCoreLifecycle) Stop(ctx context.Context) error {

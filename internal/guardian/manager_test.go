@@ -120,6 +120,9 @@ func TestManagerMigrateBarrierFailureLeavesLegacyCoreUntouchedAndFailsClosed(t *
 	if got, want := env.events.snapshot(), []string{"desired.on", "barrier.install"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("migration events = %#v, want %#v", got, want)
 	}
+	if desired, err := env.store.LoadDesired(); err != nil || desired != DesiredOn {
+		t.Fatalf("desired after pre-barrier failure = %q, %v; want on for gated recovery", desired, err)
+	}
 	if env.legacy.stopCount != 0 || env.runner.startCount() != 0 {
 		t.Fatal("barrier failure stopped old Core or started a second Core")
 	}
@@ -128,6 +131,60 @@ func TestManagerMigrateBarrierFailureLeavesLegacyCoreUntouchedAndFailsClosed(t *
 	}
 	if got := env.manager.Status(); got.Protection != ProtectionBlocked || got.LastError != "barrier_install_failed" {
 		t.Fatalf("migration status = %+v, want blocked barrier_install_failed", got)
+	}
+}
+
+func TestManagerMigrateLegacyRemovalFailureRetainsBarrier(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.legacy.removeErr = errors.New("read-only filesystem")
+	err := env.manager.Migrate(context.Background(), MigrationRequest{
+		Gateway:      "192.0.2.1",
+		ServerBypass: []string{"198.51.100.10/32"},
+	})
+	if err == nil {
+		t.Fatal("legacy plist removal failure accepted")
+	}
+	want := []string{"desired.on", "barrier.install", "legacy.stop", "barrier.reassert", "core.start", "barrier.remove", "legacy.remove", "barrier.install"}
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("migration events = %#v, want %#v", got, want)
+	}
+	if !env.manager.barrierHeld {
+		t.Fatal("migration barrier released before legacy ownership was removed")
+	}
+	status := env.manager.Status()
+	if status.Protection != ProtectionBlocked || status.Phase != PhaseNeedsAttention || status.LastError != "legacy_unit_remove_failed" {
+		t.Fatalf("migration status = %+v, want blocked legacy_unit_remove_failed", status)
+	}
+}
+
+func TestManagerUpAndRecoverRefuseLegacyOwnership(t *testing.T) {
+	for _, operation := range []struct {
+		name string
+		run  func(*Manager) error
+	}{
+		{name: "up", run: func(manager *Manager) error { return manager.Up(context.Background()) }},
+		{name: "recover", run: func(manager *Manager) error { return manager.Recover(context.Background()) }},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			env := newManagerTestEnv(t)
+			env.legacy.present = true
+			if operation.name == "recover" {
+				if err := env.store.SaveDesired(DesiredOn); err != nil {
+					t.Fatal(err)
+				}
+				env.events.reset()
+			}
+			if err := operation.run(env.manager); err == nil {
+				t.Fatal("legacy ownership was accepted")
+			}
+			if env.runner.startCount() != 0 {
+				t.Fatal("Guardian started a second Core while legacy ownership remained")
+			}
+			status := env.manager.Status()
+			if status.Protection != ProtectionNeedsAttention || status.LastError != "legacy_core_migration_pending" {
+				t.Fatalf("status = %+v", status)
+			}
+		})
 	}
 }
 
@@ -1314,10 +1371,16 @@ func (b *fakeBarrier) lastInstallContext() BarrierContext {
 
 type fakeLegacyCore struct {
 	events      *eventLog
+	present     bool
+	presentErr  error
 	stopErr     error
 	removeErr   error
 	stopCount   int
 	removeCount int
+}
+
+func (l *fakeLegacyCore) Present(context.Context) (bool, error) {
+	return l.present, l.presentErr
 }
 
 func (l *fakeLegacyCore) Stop(context.Context) error {

@@ -31,8 +31,12 @@ func TestSystemNetworkRestorerPropagatesCancellationToDNSRestore(t *testing.T) {
 
 func TestSystemLegacyCoreLifecycleForwardsStopAndRemove(t *testing.T) {
 	ctx := context.Background()
-	var stopped, removed bool
+	var inspected, stopped, removed bool
 	lifecycle := systemLegacyCoreLifecycle{
+		present: func(got context.Context) (bool, error) {
+			inspected = got == ctx
+			return true, nil
+		},
 		stop: func(got context.Context) error {
 			stopped = got == ctx
 			return nil
@@ -42,13 +46,17 @@ func TestSystemLegacyCoreLifecycleForwardsStopAndRemove(t *testing.T) {
 			return nil
 		},
 	}
+	present, err := lifecycle.Present(ctx)
+	if err != nil || !present {
+		t.Fatalf("Present = %v, %v", present, err)
+	}
 	if err := lifecycle.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if err := lifecycle.Remove(); err != nil {
 		t.Fatal(err)
 	}
-	if !stopped || !removed {
-		t.Fatalf("legacy lifecycle calls = stop:%v remove:%v", stopped, removed)
+	if !inspected || !stopped || !removed {
+		t.Fatalf("legacy lifecycle calls = present:%v stop:%v remove:%v", inspected, stopped, removed)
 	}
 }
