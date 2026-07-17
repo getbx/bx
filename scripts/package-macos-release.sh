@@ -23,6 +23,7 @@ esac
 
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
+touch "$RELEASE_DIR/.metadata_never_index"
 
 echo "Building bx for darwin/$ARCH..."
 GOOS=darwin GOARCH="$ARCH" go build -trimpath -ldflags "-X github.com/getbx/bx/internal/version.Version=$VERSION" -o "$RELEASE_DIR/bx" "$ROOT"

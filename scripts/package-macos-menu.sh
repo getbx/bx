@@ -27,6 +27,9 @@ MENU_BINARY="$MENU_DIR/.build/$SWIFT_ARCH-apple-macosx/release/BxMenu"
 
 "$ROOT/scripts/test-macos-menu.sh"
 
+mkdir -p "$DIST_DIR"
+touch "$DIST_DIR/.metadata_never_index"
+
 cd "$MENU_DIR"
 swift build -c release --arch "$SWIFT_ARCH" -Xswiftc -target -Xswiftc "$SWIFT_ARCH-apple-macosx13.0"
 
