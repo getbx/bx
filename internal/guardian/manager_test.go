@@ -245,11 +245,10 @@ func TestManagerUpBlocksSameAndReconstructedDaemonAfterUncertainLaunch(t *testin
 func TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnproven(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.manager.cleanupTimeout = 20 * time.Millisecond
-	env.health.waitForContext = true
+	env.health.err = errors.New("Core unhealthy")
 	env.runner.stopErr = errors.New("cooperative shutdown could not prove exit")
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	env.health.onWait = cancel
 
 	if err := env.manager.Up(ctx); !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("Up error = %v, want uncertain ownership", err)
@@ -262,6 +261,91 @@ func TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnprove
 	}
 	if got := env.runner.startCount(); got != 1 {
 		t.Fatalf("retry started duplicate Core: starts=%d", got)
+	}
+}
+
+func TestManagerReservesCleanupWithinAcceptedMutationDeadline(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.cleanupTimeout = 30 * time.Millisecond
+	env.health.waitForContext = true
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+
+	if err := env.manager.Up(ctx); err == nil {
+		t.Fatal("Up succeeded despite health deadline")
+	}
+	healthDeadline := env.health.lastContextDeadline()
+	if healthDeadline.IsZero() || healthDeadline.After(deadline.Add(-20*time.Millisecond)) {
+		t.Fatalf("health deadline = %s, want cleanup reserved before %s", healthDeadline, deadline)
+	}
+	if got := env.runner.stopEntryContextError(); got != nil {
+		t.Fatalf("cleanup inherited expired operation context: %v", got)
+	}
+	cleanupDeadline := env.runner.stopEntryDeadline()
+	if cleanupDeadline.IsZero() || cleanupDeadline.After(deadline) {
+		t.Fatalf("cleanup deadline = %s, want no later than accepted deadline %s", cleanupDeadline, deadline)
+	}
+}
+
+func TestManagerUncertainExitDoesNotRestartCore(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	process := env.runner.currentProcess()
+	env.events.reset()
+	env.runner.exit(process.PID, uncertainOwnership(process, errors.New("owned record removal failed")))
+	eventually(t, func() bool { return env.manager.Status().LastError == "core_ownership_uncertain" })
+	if got := env.runner.startCount(); got != 1 {
+		t.Fatalf("uncertain exit restarted Core: starts=%d", got)
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("uncertain exit did not retain blocking ownership state")
+	}
+}
+
+func TestManagerLateLaunchCleanupProofClearsUncertaintyForRetry(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := newUncertainStartTestProcess(57)
+	operations := &startTestProcessOperations{
+		started: first,
+		process: Process{PID: 57, Executable: executable, UID: 0, Generation: "darwin:123:461"},
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.Operations = operations
+	runner.LaunchCleanupTimeout = 10 * time.Millisecond
+	runner.SaveProcessRecord = func(path string, record processRecord) error {
+		if record.State == processRecordLaunching {
+			return saveProcessRecord(path, record)
+		}
+		return errors.New("normal process record write failed")
+	}
+	env := newManagerTestEnv(t)
+	env.manager.runner = runner
+	if err := env.manager.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("initial Up error = %v, want uncertain ownership", err)
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("initial failed launch did not retain uncertainty")
+	}
+
+	first.release()
+	eventually(t, func() bool { return env.manager.Status().LastError != "core_ownership_uncertain" })
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker after late proof = %v, want removed", err)
+	}
+	second := newStartTestProcess(58)
+	operations.setStarted(second, Process{PID: 58, Executable: executable, UID: 0, Generation: "darwin:123:462"})
+	runner.SaveProcessRecord = nil
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatalf("same-daemon retry after durable proof: %v", err)
+	}
+	if got := operations.startCount(); got != 2 {
+		t.Fatalf("starts = %d, want late-proven retry", got)
 	}
 }
 
@@ -847,6 +931,7 @@ type fakeCoreRunner struct {
 	watchExit              chan error
 	watches                int
 	stopContextErr         error
+	stopDeadline           time.Time
 }
 
 func newFakeCoreRunner(events *eventLog) *fakeCoreRunner {
@@ -930,6 +1015,7 @@ func (r *fakeCoreRunner) Stop(ctx context.Context, process Process) error {
 	r.mu.Lock()
 	r.signals++
 	r.stopContextErr = ctx.Err()
+	r.stopDeadline, _ = ctx.Deadline()
 	err := r.stopErr
 	exitOnStop := r.exitOnStop
 	exit := r.exits[process.PID]
@@ -947,6 +1033,12 @@ func (r *fakeCoreRunner) stopEntryContextError() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.stopContextErr
+}
+
+func (r *fakeCoreRunner) stopEntryDeadline() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopDeadline
 }
 
 func (r *fakeCoreRunner) startCount() int {
@@ -1015,6 +1107,7 @@ type fakeHealthGate struct {
 	onSuccess      func()
 	onWait         func()
 	waitForContext bool
+	deadline       time.Time
 }
 
 func (h *fakeHealthGate) Wait(ctx context.Context, target HealthTarget) (supervisor.RuntimeState, error) {
@@ -1022,6 +1115,7 @@ func (h *fakeHealthGate) Wait(ctx context.Context, target HealthTarget) (supervi
 	waitForContext := h.waitForContext
 	defer h.mu.Unlock()
 	h.last = target
+	h.deadline, _ = ctx.Deadline()
 	if h.onWait != nil {
 		h.onWait()
 	}
@@ -1040,6 +1134,12 @@ func (h *fakeHealthGate) Wait(ctx context.Context, target HealthTarget) (supervi
 		h.onSuccess()
 	}
 	return state, nil
+}
+
+func (h *fakeHealthGate) lastContextDeadline() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.deadline
 }
 
 func healthyRuntime(pid int) supervisor.RuntimeState {

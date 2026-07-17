@@ -137,6 +137,125 @@ func TestExecCoreRunnerStartAmbiguousGenerationTerminatesDirectChild(t *testing.
 	}
 }
 
+func TestExecCoreRunnerStartErrorClearsLaunchMarkerForRetry(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := newStartTestProcess(53)
+	t.Cleanup(started.release)
+	operations := &startTestProcessOperations{
+		started:  started,
+		startErr: errors.New("exec failed before child creation"),
+		process:  Process{PID: 53, Executable: executable, UID: 0, Generation: "darwin:123:457"},
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.Operations = operations
+
+	if _, err := runner.Start(context.Background()); err == nil {
+		t.Fatal("Start succeeded despite definitive pre-child error")
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("launch marker after definitive pre-child error = %v, want removed", err)
+	}
+	if existing, err := runner.Existing(context.Background()); err != nil || existing.PID != 0 {
+		t.Fatalf("same-runner Existing = %+v, %v; want no owned process", existing, err)
+	}
+
+	operations.setStartError(nil)
+	reconstructed := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	reconstructed.StatePath = statePath
+	reconstructed.Operations = operations
+	if _, err := reconstructed.Start(context.Background()); err != nil {
+		t.Fatalf("reconstructed retry after definitive pre-child error: %v", err)
+	}
+	if got := operations.startCount(); got != 2 {
+		t.Fatalf("starts = %d, want failed initial call plus reconstructed retry", got)
+	}
+}
+
+func TestExecCoreRunnerWaitClearsOwnedRecordBeforePublishingExit(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := newStartTestProcess(54)
+	operations := &startTestProcessOperations{
+		started: started,
+		process: Process{PID: 54, Executable: executable, UID: 0, Generation: "darwin:123:458"},
+	}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = filepath.Join(dir, "core-process.json")
+	runner.Operations = operations
+	removeStarted := make(chan struct{})
+	allowRemove := make(chan struct{})
+	runner.RemoveProcessRecord = func(path string) error {
+		close(removeStarted)
+		<-allowRemove
+		return removeProcessRecordFile(path)
+	}
+
+	process, err := runner.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started.release()
+	select {
+	case <-removeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not begin owned-record reconciliation")
+	}
+	select {
+	case err := <-process.Exit:
+		t.Fatalf("exit published before owned-record reconciliation: %v", err)
+	default:
+	}
+	close(allowRemove)
+	if err := <-process.Exit; err != nil {
+		t.Fatalf("exit error = %v", err)
+	}
+	if _, err := os.Stat(runner.StatePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned record after published exit = %v, want removed", err)
+	}
+}
+
+func TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := newStartTestProcess(55)
+	operations := &startTestProcessOperations{
+		started: started,
+		process: Process{PID: 55, Executable: executable, UID: 0, Generation: "darwin:123:459"},
+	}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = filepath.Join(dir, "core-process.json")
+	runner.Operations = operations
+	runner.RemoveProcessRecord = func(string) error { return errors.New("record removal failed") }
+
+	process, err := runner.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started.release()
+	if err := <-process.Exit; !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("exit error = %v, want uncertain ownership", err)
+	}
+	if _, err := os.Stat(runner.StatePath); err != nil {
+		t.Fatalf("owned record removed after failed reconciliation: %v", err)
+	}
+	operations.setInspectError(ErrProcessNotRunning)
+	if _, err := runner.Existing(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Existing after failed reconciliation = %v, want uncertain ownership", err)
+	}
+}
+
 func TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker(t *testing.T) {
 	dir := t.TempDir()
 	executable := filepath.Join(dir, "bx")
@@ -185,6 +304,51 @@ func TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker(t *t
 	}
 	if got := operations.startCount(); got != 1 {
 		t.Fatalf("starts after retry/reconstruction = %d, want 1", got)
+	}
+}
+
+func TestExecCoreRunnerLateCleanupProofClearsMarkerForSameAndReconstructedRetry(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := newUncertainStartTestProcess(56)
+	operations := &startTestProcessOperations{
+		started: first,
+		process: Process{PID: 56, Executable: executable, UID: 0, Generation: "darwin:123:460"},
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.Operations = operations
+	runner.LaunchCleanupTimeout = 10 * time.Millisecond
+	runner.SaveProcessRecord = func(path string, record processRecord) error {
+		if record.State == processRecordLaunching {
+			return saveProcessRecord(path, record)
+		}
+		return errors.New("normal process record write failed")
+	}
+
+	if _, err := runner.Start(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("timed-out cleanup Start error = %v, want uncertain ownership", err)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("launch marker disappeared before Wait proved exit: %v", err)
+	}
+	first.release()
+	eventually(t, func() bool {
+		_, err := os.Stat(statePath)
+		return errors.Is(err, os.ErrNotExist)
+	})
+	if existing, err := runner.Existing(context.Background()); err != nil || existing.PID != 0 {
+		t.Fatalf("same-runner Existing after late proof = %+v, %v; want no process", existing, err)
+	}
+	reconstructed := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	reconstructed.StatePath = statePath
+	reconstructed.Operations = operations
+	if existing, err := reconstructed.Existing(context.Background()); err != nil || existing.PID != 0 {
+		t.Fatalf("reconstructed Existing after late proof = %+v, %v; want no process", existing, err)
 	}
 }
 
@@ -587,21 +751,31 @@ func (p *startTestProcess) terminationCount() int {
 }
 
 type startTestProcessOperations struct {
-	started StartedProcess
-	process Process
-	mu      sync.Mutex
-	signals int
-	starts  int
+	started    StartedProcess
+	process    Process
+	mu         sync.Mutex
+	signals    int
+	starts     int
+	startErr   error
+	inspectErr error
 }
 
 func (o *startTestProcessOperations) Start(string, []string) (StartedProcess, error) {
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.starts++
-	o.mu.Unlock()
+	if o.startErr != nil {
+		return nil, o.startErr
+	}
 	return o.started, nil
 }
 
 func (o *startTestProcessOperations) Inspect(int) (Process, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.inspectErr != nil {
+		return Process{}, o.inspectErr
+	}
 	return o.process, nil
 }
 
@@ -622,6 +796,25 @@ func (o *startTestProcessOperations) startCount() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.starts
+}
+
+func (o *startTestProcessOperations) setStartError(err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.startErr = err
+}
+
+func (o *startTestProcessOperations) setInspectError(err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.inspectErr = err
+}
+
+func (o *startTestProcessOperations) setStarted(process StartedProcess, inspected Process) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.started = process
+	o.process = inspected
 }
 
 type uncertainStartTestProcess struct {
