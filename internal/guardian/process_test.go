@@ -88,6 +88,7 @@ func TestExecCoreRunnerAdoptedWatcherOutlivesInspectionContext(t *testing.T) {
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.StatePath = statePath
 	runner.Operations = operations
+	runner.InspectInterval = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	process, err := runner.Existing(ctx)
 	if err != nil {
@@ -103,10 +104,175 @@ func TestExecCoreRunnerAdoptedWatcherOutlivesInspectionContext(t *testing.T) {
 	}
 }
 
+func TestExecCoreRunnerExistingInspectionFailureRetainsRecord(t *testing.T) {
+	runner, _, operations := newRecordedProcessRunner(t)
+	operations.setInspectError(errors.New("inspect permission denied"))
+
+	if _, err := runner.Existing(context.Background()); err == nil {
+		t.Fatal("Existing succeeded despite ambiguous inspection")
+	}
+	if _, err := os.Stat(runner.StatePath); err != nil {
+		t.Fatalf("process record removed after inspection failure: %v", err)
+	}
+	if got := operations.signalCount(); got != 0 {
+		t.Fatalf("inspection failure signalled PID %d times", got)
+	}
+}
+
+func TestExecCoreRunnerExistingDefinitiveExitRemovesRecord(t *testing.T) {
+	runner, _, operations := newRecordedProcessRunner(t)
+	operations.setAlive(false)
+
+	process, err := runner.Existing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process.PID != 0 {
+		t.Fatalf("Existing returned process %+v after definitive exit", process)
+	}
+	if _, err := os.Stat(runner.StatePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("process record error = %v, want removed", err)
+	}
+}
+
+func TestExecCoreRunnerAdoptedWatcherIgnoresInspectionFailure(t *testing.T) {
+	runner, _, operations := newRecordedProcessRunner(t)
+	process, err := runner.Existing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations.setInspectError(errors.New("transient sysctl failure"))
+	time.Sleep(4 * runner.InspectInterval)
+	select {
+	case err := <-process.Exit:
+		t.Fatalf("watcher ended on ambiguous inspection: %v", err)
+	default:
+	}
+	if _, err := os.Stat(runner.StatePath); err != nil {
+		t.Fatalf("watcher removed process record after transient error: %v", err)
+	}
+
+	operations.setInspectError(nil)
+	operations.setAlive(false)
+	select {
+	case <-process.Exit:
+	case <-time.After(time.Second):
+		t.Fatal("watcher did not report definitive Core exit")
+	}
+}
+
+func TestExecCoreRunnerStopUsesCooperativeShutdownWithoutSignal(t *testing.T) {
+	runner, process, operations := newRecordedProcessRunner(t)
+	shutdownCalls := 0
+	runner.ShutdownCore = func(_ context.Context, socketPath string, expectedPID int) error {
+		shutdownCalls++
+		if socketPath != runner.ControlSocket || expectedPID != process.PID {
+			t.Fatalf("shutdown request = (%q, %d), want (%q, %d)", socketPath, expectedPID, runner.ControlSocket, process.PID)
+		}
+		operations.setAlive(false)
+		return nil
+	}
+
+	if err := runner.Stop(context.Background(), process); err != nil {
+		t.Fatal(err)
+	}
+	if shutdownCalls != 1 {
+		t.Fatalf("cooperative shutdown calls = %d, want 1", shutdownCalls)
+	}
+	if got := operations.signalCount(); got != 0 {
+		t.Fatalf("cooperative stop invoked legacy signal seam %d times", got)
+	}
+	if _, err := os.Stat(runner.StatePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("process record error = %v, want removed", err)
+	}
+}
+
+func TestExecCoreRunnerStopLegacyCoreFailsClosedWithoutSignal(t *testing.T) {
+	runner, process, operations := newRecordedProcessRunner(t)
+	runner.ShutdownCore = func(context.Context, string, int) error {
+		return errors.New("shutdown endpoint returned 404")
+	}
+
+	if err := runner.Stop(context.Background(), process); err == nil {
+		t.Fatal("legacy Core without shutdown endpoint was treated as stopped")
+	}
+	if got := operations.signalCount(); got != 0 {
+		t.Fatalf("legacy Core invoked signal seam %d times", got)
+	}
+	if _, err := os.Stat(runner.StatePath); err != nil {
+		t.Fatalf("legacy Core process record removed: %v", err)
+	}
+}
+
+func TestExecCoreRunnerStopAmbiguousInspectionFailsClosedWithoutSignal(t *testing.T) {
+	runner, process, operations := newRecordedProcessRunner(t)
+	runner.ShutdownCore = func(context.Context, string, int) error {
+		operations.setInspectError(errors.New("inspect resource exhausted"))
+		return nil
+	}
+
+	if err := runner.Stop(context.Background(), process); err == nil {
+		t.Fatal("Stop succeeded on ambiguous post-shutdown inspection")
+	}
+	if got := operations.signalCount(); got != 0 {
+		t.Fatalf("ambiguous identity invoked signal seam %d times", got)
+	}
+	if _, err := os.Stat(runner.StatePath); err != nil {
+		t.Fatalf("ambiguous process record removed: %v", err)
+	}
+}
+
+func TestExecCoreRunnerStopWaitsForRecordedIdentityToDisappear(t *testing.T) {
+	runner, process, operations := newRecordedProcessRunner(t)
+	otherExecutable := filepath.Join(t.TempDir(), "other")
+	if err := os.WriteFile(otherExecutable, []byte("other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner.ShutdownCore = func(context.Context, string, int) error {
+		operations.setProcess(Process{PID: process.PID, Executable: otherExecutable, UID: 501})
+		return nil
+	}
+
+	if err := runner.Stop(context.Background(), process); err != nil {
+		t.Fatal(err)
+	}
+	if got := operations.signalCount(); got != 0 {
+		t.Fatalf("reused PID invoked signal seam %d times", got)
+	}
+}
+
+func newRecordedProcessRunner(t *testing.T) (*ExecCoreRunner, Process, *watchTestProcessOperations) {
+	t.Helper()
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := statExecutableIdentity(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := Process{PID: 42, Executable: executable, UID: 0, identity: identity}
+	statePath := filepath.Join(dir, "core-process.json")
+	if err := saveProcessRecord(statePath, processRecord{PID: process.PID, Executable: executable, Device: identity.device, Inode: identity.inode}); err != nil {
+		t.Fatal(err)
+	}
+	operations := &watchTestProcessOperations{process: process, alive: true}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.ControlSocket = filepath.Join(dir, "bx.sock")
+	runner.InspectInterval = 5 * time.Millisecond
+	runner.StopTimeout = 100 * time.Millisecond
+	runner.Operations = operations
+	return runner, process, operations
+}
+
 type watchTestProcessOperations struct {
-	mu      sync.Mutex
-	process Process
-	alive   bool
+	mu         sync.Mutex
+	process    Process
+	alive      bool
+	inspectErr error
+	signals    int
 }
 
 func (*watchTestProcessOperations) Start(string, []string) (StartedProcess, error) {
@@ -116,13 +282,19 @@ func (*watchTestProcessOperations) Start(string, []string) (StartedProcess, erro
 func (o *watchTestProcessOperations) Inspect(int) (Process, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.inspectErr != nil {
+		return Process{}, o.inspectErr
+	}
 	if !o.alive {
-		return Process{}, errors.New("process exited")
+		return Process{}, ErrProcessNotRunning
 	}
 	return o.process, nil
 }
 
-func (*watchTestProcessOperations) Signal(int, os.Signal) error {
+func (o *watchTestProcessOperations) Signal(int, os.Signal) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.signals++
 	return errors.New("unexpected signal")
 }
 
@@ -130,4 +302,22 @@ func (o *watchTestProcessOperations) setAlive(alive bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.alive = alive
+}
+
+func (o *watchTestProcessOperations) setInspectError(err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.inspectErr = err
+}
+
+func (o *watchTestProcessOperations) setProcess(process Process) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.process = process
+}
+
+func (o *watchTestProcessOperations) signalCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.signals
 }

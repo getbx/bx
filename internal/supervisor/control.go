@@ -49,13 +49,16 @@ type controlResponse struct {
 type ctxConnKey struct{}
 
 type controlServer struct {
-	mu       sync.Mutex // 串行化命令(满足并发契约)
-	eng      controlEngine
-	report   func() stats.Report
-	runtime  func() RuntimeState
-	mut      mutator
-	reload   func() error // 重读配置 rules 并热重建 router(不断隧道);可空
-	ownerUID uint32
+	mu           sync.Mutex // 串行化命令(满足并发契约)
+	shutdownOnce sync.Once
+	eng          controlEngine
+	report       func() stats.Report
+	runtime      func() RuntimeState
+	mut          mutator
+	reload       func() error // 重读配置 rules 并热重建 router(不断隧道);可空
+	ownerUID     uint32
+	processPID   int
+	shutdown     func()
 }
 
 func stateName(s confirm.State) string {
@@ -77,7 +80,11 @@ func newControlMux(eng controlEngine, report func() stats.Report, mut mutator, r
 }
 
 func newControlMuxWithRuntime(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, ownerUID uint32) http.Handler {
-	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, ownerUID: ownerUID}
+	return newControlMuxWithRuntimeAndShutdown(eng, report, runtime, mut, reload, ownerUID, 0, nil)
+}
+
+func newControlMuxWithRuntimeAndShutdown(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, ownerUID uint32, processPID int, shutdown func()) http.Handler {
+	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, ownerUID: ownerUID, processPID: processPID, shutdown: shutdown}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/status", cs.handleStatus)
 	mux.HandleFunc("/v0/runtime", cs.handleRuntime)
@@ -88,6 +95,7 @@ func newControlMuxWithRuntime(eng controlEngine, report func() stats.Report, run
 	mux.HandleFunc("/v0/reconnect", cs.handleReconnect)
 	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
 	mux.HandleFunc("/v0/reload", cs.handleReload)
+	mux.HandleFunc("/v0/shutdown", cs.handleShutdown)
 	return mux
 }
 
@@ -144,6 +152,34 @@ func (cs *controlServer) handleReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, controlResponse{Status: "ok", State: "reloaded"})
+}
+
+type shutdownRequest struct {
+	ExpectedPID int `json:"expected_pid"`
+}
+
+func (cs *controlServer) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if !cs.requireOwnerOrRoot(w, r) {
+		return
+	}
+	var request shutdownRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.ExpectedPID <= 0 {
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: "expected_pid is required"})
+		return
+	}
+	if request.ExpectedPID != cs.processPID {
+		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: fmt.Sprintf("expected PID %d does not match Core PID %d", request.ExpectedPID, cs.processPID)})
+		return
+	}
+	if cs.shutdown == nil {
+		writeJSON(w, http.StatusNotImplemented, controlResponse{Status: "error", Error: "cooperative shutdown unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, controlResponse{Status: "ok", State: "shutting_down"})
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	cs.shutdownOnce.Do(cs.shutdown)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -304,7 +340,7 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // c: 统计计数器;t: 隧道(满足 tunnelStatser);server/udpMode: 配置字符串;eng: 引擎;mut: 改动执行器。
 // transportInfo(可空)返回当前活跃传输标签、容灾列表、UDP 专用传输标签,供 status 呈现;
 // active 动态(容灾后反映实际),list/udp 多为静态配置。
-func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, ownerUID uint32) (io.Closer, error) {
+func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, shutdown func(), ownerUID uint32) (io.Closer, error) {
 	guard := startNetworkGuard(ctx)
 	report := func() stats.Report {
 		ts := t.Stats()
@@ -338,7 +374,7 @@ func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, serve
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler:           newControlMuxWithRuntime(eng, report, runtime, mut, reload, ownerUID),
+		Handler:           newControlMuxWithRuntimeAndShutdown(eng, report, runtime, mut, reload, ownerUID, os.Getpid(), shutdown),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {

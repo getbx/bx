@@ -1,9 +1,11 @@
 package supervisor
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -129,6 +131,43 @@ func TestRollbackControlPostsRollback(t *testing.T) {
 	}
 	if state != "reverted" {
 		t.Fatalf("state=%q want reverted", state)
+	}
+}
+
+func TestShutdownControlPostsExpectedPID(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "bxs-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sockPath := filepath.Join(dir, "bx.sock")
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	var gotMethod, gotPath string
+	var gotExpectedPID int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		var request struct {
+			ExpectedPID int `json:"expected_pid"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		gotExpectedPID = request.ExpectedPID
+		_ = json.NewEncoder(w).Encode(controlResponse{Status: "ok", State: "shutting_down"})
+	})
+	server := &http.Server{Handler: mux}
+	go server.Serve(listener) //nolint:errcheck
+	defer server.Close()
+
+	if err := ShutdownControl(context.Background(), sockPath, 42); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v0/shutdown" || gotExpectedPID != 42 {
+		t.Fatalf("shutdown request = %s %s expected_pid=%d", gotMethod, gotPath, gotExpectedPID)
 	}
 }
 

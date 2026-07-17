@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestLocalAPIStatusIsReadableWithoutPeerCredentials(t *testing.T) {
@@ -141,6 +143,133 @@ func TestDaemonRefusesToReplaceNonSocket(t *testing.T) {
 	}
 }
 
+func TestDaemonShutdownDrainsAcceptedDetachedMutation(t *testing.T) {
+	controller := &blockingController{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		status:  Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, Protection: ProtectionProtected},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	socketPath := filepath.Join(shortSocketDir(t), "guard.sock")
+	daemon, err := StartDaemon(ctx, DaemonOptions{
+		SocketPath: socketPath,
+		Handler:    NewLocalAPI(controller),
+		OwnerUID:   uint32(os.Geteuid()),
+		PeerCredentials: func(net.Conn) (uint32, bool) {
+			return 0, true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestDone := make(chan error, 1)
+	go func() {
+		_, err := NewClient(socketPath).Up(context.Background())
+		requestDone <- err
+	}()
+	select {
+	case <-controller.entered:
+	case <-time.After(time.Second):
+		t.Fatal("mutation was not accepted")
+	}
+
+	cancel()
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- daemon.Close() }()
+	select {
+	case err := <-closeDone:
+		close(controller.release)
+		<-requestDone
+		t.Fatalf("daemon returned before accepted mutation drained: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer probeCancel()
+	if _, err := NewClient(socketPath).Status(probeCtx); err == nil {
+		close(controller.release)
+		<-requestDone
+		t.Fatal("daemon accepted a new request after shutdown began")
+	}
+
+	close(controller.release)
+	if err := <-requestDone; err != nil {
+		t.Fatalf("accepted mutation response failed during drain: %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("graceful daemon shutdown: %v", err)
+	}
+}
+
+func TestRemoveStaleSocketOnlyUnlinksOnConnectionRefused(t *testing.T) {
+	path := makeOrphanedUnixSocket(t)
+	err := removeStaleSocketWithDial(path, uint32(os.Geteuid()), func(context.Context, string) (net.Conn, error) {
+		return nil, syscall.ECONNREFUSED
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale socket still exists: %v", err)
+	}
+}
+
+func TestRemoveStaleSocketRetainsSocketOnAmbiguousDialErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "timeout", err: context.DeadlineExceeded},
+		{name: "resource exhaustion", err: syscall.EMFILE},
+		{name: "permission", err: syscall.EACCES},
+		{name: "unknown", err: errors.New("unclassified dial failure")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := makeOrphanedUnixSocket(t)
+			err := removeStaleSocketWithDial(path, uint32(os.Geteuid()), func(context.Context, string) (net.Conn, error) {
+				return nil, tt.err
+			})
+			if err == nil {
+				t.Fatalf("ambiguous dial error %v treated as stale", tt.err)
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatalf("socket removed after ambiguous dial error: %v", err)
+			}
+		})
+	}
+}
+
+func makeOrphanedUnixSocket(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(shortSocketDir(t), "stale.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unixListener, ok := listener.(*net.UnixListener)
+	if !ok {
+		listener.Close()
+		t.Fatal("unix listener type unavailable")
+	}
+	unixListener.SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+	return path
+}
+
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "bxg-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 type fakeController struct {
 	status       Status
 	upCalls      int
@@ -149,6 +278,26 @@ type fakeController struct {
 	downErr      error
 	upContextErr error
 }
+
+type blockingController struct {
+	status  Status
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingController) Status() Status { return c.status }
+
+func (c *blockingController) Up(ctx context.Context) error {
+	close(c.entered)
+	select {
+	case <-c.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (*blockingController) Down(context.Context) error { return nil }
 
 func (c *fakeController) Status() Status { return c.status }
 

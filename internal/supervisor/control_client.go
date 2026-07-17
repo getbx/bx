@@ -73,6 +73,41 @@ func fetchRuntimeState(ctx context.Context, sockPath string) (RuntimeState, erro
 	return state, nil
 }
 
+// ShutdownControl asks the matching Core process to cancel its own Run context.
+func ShutdownControl(ctx context.Context, sockPath string, expectedPID int) error {
+	if expectedPID <= 0 {
+		return fmt.Errorf("expected Core PID must be positive")
+	}
+	body, err := json.Marshal(shutdownRequest{ExpectedPID: expectedPID})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://local/v0/shutdown", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	client := controlHTTPClient(sockPath)
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	var result controlResponse
+	decodeErr := json.NewDecoder(response.Body).Decode(&result)
+	if response.StatusCode != http.StatusOK {
+		if result.Error != "" {
+			return fmt.Errorf("控制面 /v0/shutdown 返回 %d: %s", response.StatusCode, result.Error)
+		}
+		return fmt.Errorf("控制面 /v0/shutdown 返回 %d", response.StatusCode)
+	}
+	if decodeErr != nil {
+		return decodeErr
+	}
+	return nil
+}
+
 func SupportsSafeReconnect(sockPath string) (bool, error) {
 	client := controlHTTPClient(sockPath)
 	defer client.CloseIdleConnections()

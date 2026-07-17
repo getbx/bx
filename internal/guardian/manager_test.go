@@ -96,6 +96,20 @@ func TestManagerRejectsRuntimePIDMismatchWithoutSignalling(t *testing.T) {
 	}
 }
 
+func TestManagerUpInspectionFailureDoesNotStartSecondCore(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.existingErr = errors.New("inspect permission denied")
+	if err := env.manager.Up(context.Background()); err == nil {
+		t.Fatal("Up succeeded despite ambiguous process inspection")
+	}
+	if got := env.runner.startCount(); got != 0 {
+		t.Fatalf("second Core started after inspection failure: starts=%d", got)
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionNeedsAttention {
+		t.Fatalf("status = %+v, want needs_attention", got)
+	}
+}
+
 func TestManagerUpFailureDoesNotClaimBarrierProtection(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.runner.startErr = errors.New("start failed")
@@ -130,6 +144,40 @@ func TestManagerSerializesMutations(t *testing.T) {
 	}
 	if err := <-secondDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestManagerQueuedExpiredMutationPerformsNoWrites(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.blockStart = make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- env.manager.Up(context.Background()) }()
+	select {
+	case <-env.runner.startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Up did not enter Core start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- env.manager.Down(ctx) }()
+	<-ctx.Done()
+	close(env.runner.blockStart)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired queued Down error = %v, want deadline exceeded", err)
+	}
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"desired.on", "core.start"}) {
+		t.Fatalf("expired queued Down mutated state: events=%#v", got)
+	}
+	if got, err := env.store.LoadDesired(); err != nil || got != DesiredOn {
+		t.Fatalf("desired after expired Down = %q, %v; want on", got, err)
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionProtected {
+		t.Fatalf("status after expired Down = %+v, want protected", got)
 	}
 }
 
@@ -180,6 +228,44 @@ func TestManagerUnexpectedExitInstallsBarrierAndRestartsOnce(t *testing.T) {
 	want := []string{"barrier.install", "core.start", "barrier.remove"}
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+}
+
+func TestManagerUnexpectedExitDesiredReadFailureFailsClosed(t *testing.T) {
+	tests := []struct {
+		name           string
+		barrierErr     error
+		wantProtection string
+	}{
+		{name: "barrier retained", wantProtection: ProtectionBlocked},
+		{name: "barrier install fails", barrierErr: errors.New("barrier unavailable"), wantProtection: ProtectionNeedsAttention},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			process := env.runner.currentProcess()
+			env.events.reset()
+			env.store.setLoadError(errors.New("desired state unreadable"))
+			env.barrier.installErr = tt.barrierErr
+
+			env.runner.exit(process.PID, errors.New("unexpected exit"))
+			eventually(t, func() bool {
+				return env.manager.Status().LastError == "desired_state_read_failed"
+			})
+
+			if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"barrier.install"}) {
+				t.Fatalf("events = %#v, want fail-closed barrier attempt", got)
+			}
+			if got := env.runner.startCount(); got != 1 {
+				t.Fatalf("Core restarted without readable desired state: starts=%d", got)
+			}
+			if got := env.manager.Status(); got.Desired != DesiredOn || got.Phase != PhaseNeedsAttention || got.Protection != tt.wantProtection {
+				t.Fatalf("status = %+v, want desired on needs_attention protection %q", got, tt.wantProtection)
+			}
+			if got := env.manager.current.PID; got != process.PID {
+				t.Fatalf("current PID cleared after ambiguous desired state: got %d, want %d", got, process.PID)
+			}
+		})
 	}
 }
 
@@ -269,7 +355,25 @@ func (l *eventLog) reset() {
 
 type recordingDesiredStore struct {
 	*Store
-	events *eventLog
+	events  *eventLog
+	mu      sync.Mutex
+	loadErr error
+}
+
+func (s *recordingDesiredStore) LoadDesired() (DesiredState, error) {
+	s.mu.Lock()
+	err := s.loadErr
+	s.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	return s.Store.LoadDesired()
+}
+
+func (s *recordingDesiredStore) setLoadError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadErr = err
 }
 
 func (s *recordingDesiredStore) SaveDesired(desired DesiredState) error {
@@ -284,6 +388,7 @@ type fakeCoreRunner struct {
 	mu           sync.Mutex
 	events       *eventLog
 	existing     Process
+	existingErr  error
 	current      Process
 	exits        map[int]chan error
 	nextPID      int
@@ -304,7 +409,7 @@ func newFakeCoreRunner(events *eventLog) *fakeCoreRunner {
 func (r *fakeCoreRunner) Existing(context.Context) (Process, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.existing, nil
+	return r.existing, r.existingErr
 }
 
 func (r *fakeCoreRunner) Verify(process Process) error {

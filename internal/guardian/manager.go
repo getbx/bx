@@ -50,7 +50,7 @@ type ManagerOptions struct {
 }
 
 type Manager struct {
-	mutation       sync.Mutex
+	mutation       chan struct{}
 	statusMu       sync.RWMutex
 	store          DesiredStore
 	runner         CoreRunner
@@ -86,6 +86,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		restartTimeout = defaultHealthTimeout + 5*time.Second
 	}
 	m := &Manager{
+		mutation:       make(chan struct{}, 1),
 		store:          options.Store,
 		runner:         options.Runner,
 		health:         options.Health,
@@ -101,6 +102,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 			Protection:    ProtectionOff,
 		},
 	}
+	m.mutation <- struct{}{}
 	return m, nil
 }
 
@@ -111,8 +113,10 @@ func (m *Manager) Status() Status {
 }
 
 func (m *Manager) Up(ctx context.Context) error {
-	m.mutation.Lock()
-	defer m.mutation.Unlock()
+	if err := m.acquireMutation(ctx); err != nil {
+		return err
+	}
+	defer m.releaseMutation()
 	return m.upLocked(ctx)
 }
 
@@ -157,8 +161,10 @@ func (m *Manager) upLocked(ctx context.Context) error {
 }
 
 func (m *Manager) Down(ctx context.Context) error {
-	m.mutation.Lock()
-	defer m.mutation.Unlock()
+	if err := m.acquireMutation(ctx); err != nil {
+		return err
+	}
+	defer m.releaseMutation()
 
 	desired, err := m.store.LoadDesired()
 	if err != nil {
@@ -238,8 +244,10 @@ func (m *Manager) Down(ctx context.Context) error {
 // Recover restores the persisted desired state without treating daemon shutdown
 // as an instruction to stop Core or restore direct networking.
 func (m *Manager) Recover(ctx context.Context) error {
-	m.mutation.Lock()
-	defer m.mutation.Unlock()
+	if err := m.acquireMutation(ctx); err != nil {
+		return err
+	}
+	defer m.releaseMutation()
 	desired, err := m.store.LoadDesired()
 	if err != nil {
 		m.needsAttention(DesiredOn, "desired_state_read_failed")
@@ -312,13 +320,25 @@ func (m *Manager) monitor(process Process) {
 }
 
 func (m *Manager) handleUnexpectedExit(process Process, _ error) {
-	m.mutation.Lock()
-	defer m.mutation.Unlock()
+	if err := m.acquireMutation(context.Background()); err != nil {
+		return
+	}
+	defer m.releaseMutation()
 	if m.current.PID != process.PID {
 		return
 	}
 	desired, err := m.store.LoadDesired()
-	if err != nil || desired != DesiredOn {
+	if err != nil {
+		barrierContext := m.contextForRuntime(m.runtime)
+		if !m.barrierHeld {
+			if barrierErr := m.barrier.Install(context.Background(), barrierContext); barrierErr == nil {
+				m.barrierHeld = true
+			}
+		}
+		m.needsAttention(DesiredOn, "desired_state_read_failed")
+		return
+	}
+	if desired != DesiredOn {
 		m.current = Process{}
 		return
 	}
@@ -341,6 +361,23 @@ func (m *Manager) handleUnexpectedExit(process Process, _ error) {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 		}
 	}
+}
+
+func (m *Manager) acquireMutation(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.mutation:
+	}
+	if err := ctx.Err(); err != nil {
+		m.releaseMutation()
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) releaseMutation() {
+	m.mutation <- struct{}{}
 }
 
 func (m *Manager) removeBarrier(ctx context.Context, barrierContext BarrierContext) error {

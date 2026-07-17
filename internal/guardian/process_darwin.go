@@ -16,10 +16,13 @@ func inspectProcess(pid int) (Process, error) {
 	}
 	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
-		return Process{}, err
+		if errors.Is(err, unix.ESRCH) || errors.Is(err, unix.ENOENT) {
+			return Process{}, fmt.Errorf("%w: PID %d", ErrProcessNotRunning, pid)
+		}
+		return Process{}, fmt.Errorf("inspect process PID %d: %w", pid, err)
 	}
 	if int(info.Proc.P_pid) != pid {
-		return Process{}, errors.New("process is not alive")
+		return Process{}, fmt.Errorf("%w: PID %d", ErrProcessNotRunning, pid)
 	}
 	raw, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
