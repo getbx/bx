@@ -1,11 +1,7 @@
 package cli
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -15,14 +11,10 @@ import (
 	"strings"
 
 	"github.com/getbx/bx/internal/install"
+	updatepkg "github.com/getbx/bx/internal/update"
 )
 
-const maxMacOSPackageBytes int64 = 128 << 20
-
-type macOSPackagePayload struct {
-	CLI  []byte
-	Menu map[string][]byte
-}
+type macOSPackagePayload = updatepkg.MacOSPayload
 
 type macOSAppOwner struct {
 	uid int
@@ -45,74 +37,8 @@ func parseMacOSAppOwner(raw string) (macOSAppOwner, error) {
 	return macOSAppOwner{uid: uid, gid: gid}, nil
 }
 
-// extractMacOSPackage accepts only the files bx needs to replace the CLI and
-// installed menu app. Archive paths are deliberately fixed so a signed package
-// cannot write outside those two destinations during a later install step.
 func extractMacOSPackage(data []byte, arch string) (macOSPackagePayload, error) {
-	reader, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return macOSPackagePayload{}, fmt.Errorf("read macOS package gzip: %w", err)
-	}
-	defer reader.Close()
-
-	root := "bx-macos-" + arch
-	appPrefix := root + "/Bx.app/"
-	payload := macOSPackagePayload{Menu: make(map[string][]byte)}
-	seen := make(map[string]struct{})
-	var total int64
-	tarReader := tar.NewReader(reader)
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return macOSPackagePayload{}, fmt.Errorf("read macOS package tar: %w", err)
-		}
-		if err := validateMacOSPackagePath(header.Name); err != nil {
-			return macOSPackagePayload{}, err
-		}
-		if header.Typeflag == tar.TypeDir {
-			continue
-		}
-		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
-			return macOSPackagePayload{}, fmt.Errorf("macOS package contains non-regular file %q", header.Name)
-		}
-		if header.Size < 0 || header.Size > maxMacOSPackageBytes-total {
-			return macOSPackagePayload{}, fmt.Errorf("macOS package is too large")
-		}
-		if header.Name != root+"/bx" && !strings.HasPrefix(header.Name, appPrefix) {
-			continue
-		}
-		if _, duplicate := seen[header.Name]; duplicate {
-			return macOSPackagePayload{}, fmt.Errorf("macOS package has duplicate file %q", header.Name)
-		}
-		seen[header.Name] = struct{}{}
-		content, err := io.ReadAll(io.LimitReader(tarReader, header.Size+1))
-		if err != nil {
-			return macOSPackagePayload{}, fmt.Errorf("read macOS package file %q: %w", header.Name, err)
-		}
-		if int64(len(content)) != header.Size {
-			return macOSPackagePayload{}, fmt.Errorf("macOS package file %q is truncated", header.Name)
-		}
-		total += header.Size
-		if header.Name == root+"/bx" {
-			payload.CLI = content
-			continue
-		}
-		payload.Menu[strings.TrimPrefix(header.Name, appPrefix)] = content
-	}
-
-	if len(payload.CLI) == 0 {
-		return macOSPackagePayload{}, fmt.Errorf("macOS package missing bx executable")
-	}
-	if len(payload.Menu["Contents/MacOS/BxMenu"]) == 0 {
-		return macOSPackagePayload{}, fmt.Errorf("macOS package missing BxMenu executable")
-	}
-	if len(payload.Menu["Contents/Info.plist"]) == 0 {
-		return macOSPackagePayload{}, fmt.Errorf("macOS package missing Info.plist")
-	}
-	return payload, nil
+	return updatepkg.ExtractMacOSPackage(data, arch)
 }
 
 func validateMacOSPackagePath(name string) error {
