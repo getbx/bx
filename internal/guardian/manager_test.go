@@ -349,6 +349,55 @@ func TestManagerLateLaunchCleanupProofClearsUncertaintyForRetry(t *testing.T) {
 	}
 }
 
+func TestManagerPostForkCleanupHonorsAcceptedDeadlineAndLateProofClearsUncertainty(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := newUncertainStartTestProcess(59)
+	operations := &startTestProcessOperations{
+		started: first,
+		process: Process{PID: 59, Executable: executable, UID: 0, Generation: "darwin:123:463"},
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.Operations = operations
+	runner.LaunchCleanupTimeout = 200 * time.Millisecond
+	runner.SaveProcessRecord = func(path string, record processRecord) error {
+		if record.State == processRecordLaunching {
+			return saveProcessRecord(path, record)
+		}
+		return errors.New("normal process record write failed")
+	}
+	env := newManagerTestEnv(t)
+	env.manager.runner = runner
+	env.manager.cleanupTimeout = 10 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	if err := env.manager.Up(ctx); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Up error = %v, want uncertain ownership", err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("post-fork cleanup exceeded accepted deadline: elapsed=%s", elapsed)
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("accepted context error = %v, want deadline exceeded", ctx.Err())
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("marker disappeared before delayed Wait proof: %v", err)
+	}
+
+	first.release()
+	eventually(t, func() bool {
+		_, err := os.Stat(statePath)
+		return errors.Is(err, os.ErrNotExist) && env.manager.Status().LastError != "core_ownership_uncertain"
+	})
+}
+
 func TestManagerUpFailureDoesNotClaimBarrierProtection(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.runner.startErr = errors.New("start failed")

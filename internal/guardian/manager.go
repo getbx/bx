@@ -477,7 +477,7 @@ func (m *Manager) cleanupStartedCore(ctx context.Context, process Process) error
 func (m *Manager) reserveCleanup(ctx context.Context) (context.Context, context.CancelFunc, error) {
 	deadline, hasDeadline := ctx.Deadline()
 	if !hasDeadline {
-		operationCtx, cancel := context.WithCancel(ctx)
+		operationCtx, cancel := context.WithCancel(withPostForkCleanupContext(ctx, ctx))
 		return operationCtx, cancel, nil
 	}
 	remaining := time.Until(deadline)
@@ -489,7 +489,7 @@ func (m *Manager) reserveCleanup(ctx context.Context) (context.Context, context.
 		cleanupBudget = half
 	}
 	operationDeadline := deadline.Add(-cleanupBudget)
-	operationCtx, cancel := context.WithDeadline(ctx, operationDeadline)
+	operationCtx, cancel := context.WithDeadline(withPostForkCleanupContext(ctx, ctx), operationDeadline)
 	return operationCtx, cancel, nil
 }
 

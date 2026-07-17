@@ -47,6 +47,20 @@ type ownershipUncertainError struct {
 	cause   error
 }
 
+type postForkCleanupContextKey struct{}
+
+func withPostForkCleanupContext(operationCtx, cleanupCtx context.Context) context.Context {
+	return context.WithValue(operationCtx, postForkCleanupContextKey{}, cleanupCtx)
+}
+
+func postForkCleanupContext(ctx context.Context) context.Context {
+	cleanupCtx, _ := ctx.Value(postForkCleanupContextKey{}).(context.Context)
+	if cleanupCtx == nil {
+		return ctx
+	}
+	return cleanupCtx
+}
+
 func (e *ownershipUncertainError) Error() string {
 	if e.cause == nil {
 		return ErrProcessOwnershipUncertain.Error()
@@ -127,20 +141,20 @@ func (r *ExecCoreRunner) Start(ctx context.Context) (Process, error) {
 	}
 	process, err := operations.Inspect(started.PID())
 	if err != nil {
-		return Process{}, r.cleanupFailedStart(started, Process{}, fmt.Errorf("inspect started Core PID %d: %w", started.PID(), err))
+		return Process{}, r.cleanupFailedStart(ctx, started, Process{}, fmt.Errorf("inspect started Core PID %d: %w", started.PID(), err))
 	}
 	if process.PID != started.PID() {
-		return Process{}, r.cleanupFailedStart(started, process, fmt.Errorf("started Core PID %d inspected as PID %d", started.PID(), process.PID))
+		return Process{}, r.cleanupFailedStart(ctx, started, process, fmt.Errorf("started Core PID %d inspected as PID %d", started.PID(), process.PID))
 	}
 	if err := verifyInstalledProcess(process, r.Executable); err != nil {
-		return Process{}, r.cleanupFailedStart(started, process, fmt.Errorf("verify started Core PID %d: %w", started.PID(), err))
+		return Process{}, r.cleanupFailedStart(ctx, started, process, fmt.Errorf("verify started Core PID %d: %w", started.PID(), err))
 	}
 	if err := ctx.Err(); err != nil {
-		return Process{}, r.cleanupFailedStart(started, process, err)
+		return Process{}, r.cleanupFailedStart(ctx, started, process, err)
 	}
 	record := processRecord{PID: process.PID, Executable: process.Executable, Generation: process.Generation, State: processRecordOwned}
 	if err := r.saveRecord(r.statePath(), record); err != nil {
-		return Process{}, r.cleanupFailedStart(started, process, fmt.Errorf("persist Core process: %w", err))
+		return Process{}, r.cleanupFailedStart(ctx, started, process, fmt.Errorf("persist Core process: %w", err))
 	}
 	exit := make(chan error, 1)
 	go func() {
@@ -360,8 +374,8 @@ func (r *ExecCoreRunner) saveRecord(path string, record processRecord) error {
 	return saveProcessRecord(path, record)
 }
 
-func (r *ExecCoreRunner) cleanupFailedStart(started StartedProcess, process Process, cause error) error {
-	proved, cleanupErr, late := r.cleanupStartedProcess(started)
+func (r *ExecCoreRunner) cleanupFailedStart(ctx context.Context, started StartedProcess, process Process, cause error) error {
+	proved, cleanupErr, late := r.cleanupStartedProcess(postForkCleanupContext(ctx), started)
 	if proved && cleanupErr == nil {
 		return cause
 	}
@@ -372,7 +386,7 @@ func (r *ExecCoreRunner) cleanupFailedStart(started StartedProcess, process Proc
 	return uncertainOwnership(process, errors.Join(cause, cleanupErr))
 }
 
-func (r *ExecCoreRunner) cleanupStartedProcess(process StartedProcess) (bool, error, <-chan error) {
+func (r *ExecCoreRunner) cleanupStartedProcess(ctx context.Context, process StartedProcess) (bool, error, <-chan error) {
 	_ = process.Terminate()
 	done := make(chan error, 1)
 	go func() {
@@ -385,6 +399,8 @@ func (r *ExecCoreRunner) cleanupStartedProcess(process StartedProcess) (bool, er
 	select {
 	case err := <-done:
 		return true, err, nil
+	case <-ctx.Done():
+		return false, nil, done
 	case <-timer.C:
 		return false, nil, done
 	}
