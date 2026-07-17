@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -113,60 +114,55 @@ func TestStoreAcceptsTerminalReceiptOutcomes(t *testing.T) {
 	}
 }
 
-func TestStoreSanitizesTransactionLastError(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		lastError string
-		want      string
-		forbidden []string
-	}{
-		{
-			name:      "bx link",
-			lastError: "connect bx://client.example/config?token=secret failed",
-			want:      "connect [redacted client link] failed",
-			forbidden: []string{"bx://", "secret"},
-		},
-		{
-			name:      "vless link",
-			lastError: "connect vless://uuid@client.example:443?security=reality failed",
-			want:      "connect [redacted client link] failed",
-			forbidden: []string{"vless://", "uuid"},
-		},
-		{
-			name:      "hysteria2 link",
-			lastError: "connect hysteria2://user:password@client.example:443 failed",
-			want:      "connect [redacted client link] failed",
-			forbidden: []string{"hysteria2://", "password"},
-		},
-		{
-			name:      "password and token values",
-			lastError: "authentication failed password=hunter2 token: abc123",
-			want:      "authentication failed password=[redacted] token=[redacted]",
-			forbidden: []string{"hunter2", "abc123"},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
+func TestStoreAcceptsBoundedSafeTransactionLastErrorCodes(t *testing.T) {
+	for _, lastError := range []string{"", "new_core_unhealthy", "update.rollback_failed"} {
+		t.Run(lastError, func(t *testing.T) {
 			paths := testPaths(t.TempDir())
-			if err := OpenStore(paths).SaveTransaction(Transaction{ID: "tx-1", Phase: PhasePrepared, LastError: test.lastError}); err != nil {
+			if err := OpenStore(paths).SaveTransaction(Transaction{ID: "tx-1", Phase: PhasePrepared, LastError: lastError}); err != nil {
 				t.Fatal(err)
 			}
-
-			b, err := os.ReadFile(paths.Transaction)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, value := range test.forbidden {
-				if bytes.Contains(bytes.ToLower(b), []byte(value)) {
-					t.Fatalf("persisted transaction contains %q: %s", value, b)
-				}
-			}
-
 			transaction, err := OpenStore(paths).LoadTransaction()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if transaction.LastError != test.want {
-				t.Errorf("last error = %q, want %q", transaction.LastError, test.want)
+			if transaction.LastError != lastError {
+				t.Errorf("last error = %q, want %q", transaction.LastError, lastError)
+			}
+		})
+	}
+}
+
+func TestStoreRejectsUnsafeTransactionLastErrorsWithoutRewriting(t *testing.T) {
+	for _, lastError := range []string{
+		"bx://client.example/config?token=secret",
+		"vless://uuid@client.example:443",
+		"hysteria2://user:password@client.example:443",
+		"trojan://password@client.example:443",
+		"vmess://encoded-client-link",
+		"password=hunter2",
+		"token: abc123",
+		"has spaces",
+		"New_Core_Unhealthy",
+		"_invalid",
+		".invalid",
+		"-invalid",
+		strings.Repeat("a", 129),
+	} {
+		t.Run(lastError, func(t *testing.T) {
+			paths := testPaths(t.TempDir())
+			store := OpenStore(paths)
+			if err := store.SaveTransaction(Transaction{ID: "tx-1", Phase: PhasePrepared, LastError: "existing_safe_error"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SaveTransaction(Transaction{ID: "tx-2", Phase: PhasePrepared, LastError: lastError}); err == nil {
+				t.Fatalf("unsafe last error %q accepted", lastError)
+			}
+			transaction, err := store.LoadTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if transaction.ID != "tx-1" || transaction.LastError != "existing_safe_error" {
+				t.Fatalf("transaction rewritten: %#v", transaction)
 			}
 		})
 	}

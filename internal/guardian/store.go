@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"sync"
 )
 
@@ -20,10 +19,7 @@ const (
 	guardianUpdateDirectory = guardianStateDirectory + "/update"
 )
 
-var (
-	clientLinkPattern      = regexp.MustCompile(`(?i)\b(?:bx|vless|hysteria2)://[^\s]+`)
-	credentialValuePattern = regexp.MustCompile(`(?i)\b(password|token)\s*(?:=|:)\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)`)
-)
+var safeLastErrorPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
 
 func OpenDefaultStore() *Store {
 	return OpenStore(Paths{
@@ -97,7 +93,9 @@ func (s *Store) SaveTransaction(transaction Transaction) error {
 	if !transaction.Phase.valid() {
 		return fmt.Errorf("invalid transaction phase %q", transaction.Phase)
 	}
-	transaction.LastError = sanitizeLastError(transaction.LastError)
+	if transaction.LastError != "" && !safeLastErrorPattern.MatchString(transaction.LastError) {
+		return fmt.Errorf("invalid transaction last error")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureDirectories(); err != nil {
@@ -128,14 +126,6 @@ func (s *Store) SaveReceipt(receipt Receipt) error {
 		return err
 	}
 	return writeJSONAtomically(s.paths.Receipt, receipt)
-}
-
-func sanitizeLastError(lastError string) string {
-	lastError = clientLinkPattern.ReplaceAllString(lastError, "[redacted client link]")
-	return credentialValuePattern.ReplaceAllStringFunc(lastError, func(value string) string {
-		key := credentialValuePattern.FindStringSubmatch(value)[1]
-		return strings.ToLower(key) + "=[redacted]"
-	})
 }
 
 func (s *Store) ensureDirectories() error {
