@@ -758,7 +758,9 @@ func EnableDNS(service string) (DNSStatus, error) {
 	if err := runNetworksetup("setdnsservers", resolved, "127.0.0.1"); err != nil {
 		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
 	}
-	flushDNSCache()
+	if err := flushDNSCache(); err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+	}
 	return InspectDNS(service)
 }
 
@@ -1016,19 +1018,31 @@ func runNetworksetupContextWithRunner(ctx context.Context, runner dnsCommandRunn
 	return nil
 }
 
-func flushDNSCache() {
-	_ = flushDNSCacheContextWithRunner(context.Background(), execDNSCommandRunner{})
+func flushDNSCache() error {
+	return flushDNSCacheContextWithRunner(context.Background(), execDNSCommandRunner{})
 }
 
 func flushDNSCacheContextWithRunner(ctx context.Context, runner dnsCommandRunner) error {
+	var unavailable []string
+	flushed := false
 	for _, command := range [][]string{
 		{"dscacheutil", "-flushcache"},
 		{"killall", "-HUP", "mDNSResponder"},
 	} {
-		_, _ = runner.CombinedOutput(ctx, command[0], command[1:]...)
+		if _, err := runner.CombinedOutput(ctx, command[0], command[1:]...); err != nil {
+			if errors.Is(err, exec.ErrNotFound) {
+				unavailable = append(unavailable, command[0])
+				continue
+			}
+			return fmt.Errorf("%s %s: %w", command[0], strings.Join(command[1:], " "), err)
+		}
+		flushed = true
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+	}
+	if !flushed {
+		return fmt.Errorf("DNS cache flush commands unavailable (%s): %w", strings.Join(unavailable, ", "), exec.ErrNotFound)
 	}
 	return nil
 }
