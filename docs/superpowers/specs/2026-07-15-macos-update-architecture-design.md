@@ -1,5 +1,10 @@
 # macOS Update Architecture
 
+> Superseded on 2026-07-16 by
+> `2026-07-16-macos-guardian-lifecycle-update-design.md`. This document records
+> the original staged-update design; the newer specification adds a root-owned
+> guardian and a fail-closed runtime activation transaction.
+
 ## Goal
 
 Make bx updates discoverable and one-click on macOS without changing the active
