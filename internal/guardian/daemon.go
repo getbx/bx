@@ -244,9 +244,15 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	return daemon.Close()
 }
 
-type systemNetworkRestorer struct{}
+type systemNetworkRestorer struct {
+	disableDNS func(context.Context, string) (install.DNSStatus, error)
+}
 
-func (systemNetworkRestorer) Restore(context.Context) error {
-	_, err := install.DisableDNS("")
+func (r systemNetworkRestorer) Restore(ctx context.Context) error {
+	disableDNS := r.disableDNS
+	if disableDNS == nil {
+		disableDNS = install.DisableDNSContext
+	}
+	_, err := disableDNS(ctx, "")
 	return err
 }

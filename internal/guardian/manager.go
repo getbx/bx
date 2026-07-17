@@ -152,7 +152,9 @@ func (m *Manager) upLocked(ctx context.Context) error {
 			m.needsAttention(DesiredOn, "core_adoption_health_failed")
 			return fmt.Errorf("adopt existing Core: %w", err)
 		}
-		m.acceptHealthy(existing, state)
+		if err := m.acceptHealthy(ctx, existing, state); err != nil {
+			return fmt.Errorf("release held barrier after adopting Core: %w", err)
+		}
 		return nil
 	}
 
@@ -277,7 +279,9 @@ func (m *Manager) startCoreLocked(ctx context.Context) (supervisor.RuntimeState,
 		m.needsAttention(DesiredOn, "core_health_failed")
 		return supervisor.RuntimeState{}, fmt.Errorf("wait for Core health: %w", err)
 	}
-	m.acceptHealthy(process, state)
+	if err := m.acceptHealthy(ctx, process, state); err != nil {
+		return state, fmt.Errorf("complete healthy Core activation: %w", err)
+	}
 	return state, nil
 }
 
@@ -295,9 +299,26 @@ func (m *Manager) waitHealthy(ctx context.Context, process Process) (supervisor.
 	return state, nil
 }
 
-func (m *Manager) acceptHealthy(process Process, state supervisor.RuntimeState) {
+func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supervisor.RuntimeState) error {
 	m.current = process
 	m.runtime = state
+	if process.Exit != nil {
+		go m.monitor(process)
+	}
+	if m.barrierHeld {
+		m.setStatus(Status{
+			SchemaVersion: 1,
+			Desired:       DesiredOn,
+			Phase:         PhaseBarrierActive,
+			CorePID:       process.PID,
+			CoreVersion:   state.Version,
+			Protection:    ProtectionBlocked,
+		})
+		if err := m.removeBarrier(ctx, m.contextForRuntime(state)); err != nil {
+			m.needsAttention(DesiredOn, "barrier_remove_failed")
+			return err
+		}
+	}
 	m.setStatus(Status{
 		SchemaVersion: 1,
 		Desired:       DesiredOn,
@@ -306,9 +327,7 @@ func (m *Manager) acceptHealthy(process Process, state supervisor.RuntimeState) 
 		CoreVersion:   state.Version,
 		Protection:    ProtectionProtected,
 	})
-	if process.Exit != nil {
-		go m.monitor(process)
-	}
+	return nil
 }
 
 func (m *Manager) monitor(process Process) {

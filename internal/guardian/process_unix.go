@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -30,5 +31,29 @@ func inspectProcess(pid int) (Process, error) {
 	if !ok {
 		return Process{}, fmt.Errorf("process credentials unavailable")
 	}
-	return Process{PID: pid, Executable: executable, UID: int(stat.Uid)}, nil
+	generation, err := linuxProcessGeneration(procPath)
+	if err != nil {
+		return Process{}, err
+	}
+	return Process{PID: pid, Executable: executable, UID: int(stat.Uid), Generation: generation}, nil
+}
+
+func linuxProcessGeneration(procPath string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(procPath, "stat"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: %s", ErrProcessNotRunning, procPath)
+		}
+		return "", fmt.Errorf("read process generation: %w", err)
+	}
+	closing := strings.LastIndex(string(b), ") ")
+	if closing < 0 {
+		return "", errors.New("parse process generation: malformed stat")
+	}
+	fields := strings.Fields(string(b[closing+2:]))
+	const startTimeIndex = 19 // field 22 after removing PID and parenthesized comm
+	if len(fields) <= startTimeIndex || fields[startTimeIndex] == "" {
+		return "", errors.New("parse process generation: start time missing")
+	}
+	return "linux:" + fields[startTimeIndex], nil
 }

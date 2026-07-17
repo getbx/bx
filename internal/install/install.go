@@ -3,6 +3,7 @@ package install
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -46,6 +47,23 @@ type dnsState struct {
 	Service string   `json:"service"`
 	Servers []string `json:"servers,omitempty"`
 	Empty   bool     `json:"empty"`
+}
+
+type dnsCommandRunner interface {
+	CombinedOutput(context.Context, string, ...string) ([]byte, error)
+	Run(context.Context, string, ...string) error
+}
+
+type execDNSCommandRunner struct{}
+
+func (execDNSCommandRunner) CombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func (execDNSCommandRunner) Run(ctx context.Context, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
 }
 
 // SelfInstall 把当前运行的 bx 二进制安装到 BinPath(原子覆盖,0755),返回该路径。
@@ -677,14 +695,21 @@ func ClientLogPaths() []string {
 }
 
 func InspectDNS(service string) (DNSStatus, error) {
+	return inspectDNSContextWithRunner(context.Background(), execDNSCommandRunner{}, service)
+}
+
+func inspectDNSContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) (DNSStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return DNSStatus{}, err
+	}
 	if runtime.GOOS != "darwin" {
 		return DNSStatus{Supported: false, Detail: "DNS 接管仅支持 macOS"}, nil
 	}
-	resolved, err := resolveDNSService(service)
+	resolved, err := resolveDNSServiceContextWithRunner(ctx, runner, service)
 	if err != nil {
 		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
 	}
-	servers, err := currentDNSServers(resolved)
+	servers, err := currentDNSServersContextWithRunner(ctx, runner, resolved)
 	if err != nil {
 		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
 	}
@@ -738,13 +763,26 @@ func shouldRefreshDNSState(state dnsState, resolvedService string) bool {
 }
 
 func DisableDNS(service string) (DNSStatus, error) {
+	return DisableDNSContext(context.Background(), service)
+}
+
+// DisableDNSContext restores the saved macOS DNS configuration while honoring
+// cancellation across every external command in the restore path.
+func DisableDNSContext(ctx context.Context, service string) (DNSStatus, error) {
+	return disableDNSContextWithRunner(ctx, execDNSCommandRunner{}, service)
+}
+
+func disableDNSContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) (DNSStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return DNSStatus{}, err
+	}
 	if runtime.GOOS != "darwin" {
 		return DNSStatus{Supported: false, Detail: "DNS 接管仅支持 macOS"}, fmt.Errorf("DNS 接管仅支持 macOS")
 	}
 	state, err := readDNSState()
 	if err != nil {
 		if dnsStateMissing(err) {
-			st, inspectErr := InspectDNS(service)
+			st, inspectErr := inspectDNSContextWithRunner(ctx, runner, service)
 			if inspectErr != nil {
 				return st, inspectErr
 			}
@@ -758,12 +796,17 @@ func DisableDNS(service string) (DNSStatus, error) {
 	}
 	state.Service = resolved
 	args := dnsRestoreArgs(state)
-	if err := runNetworksetup(args...); err != nil {
+	if err := runNetworksetupContextWithRunner(ctx, runner, args...); err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
 	}
 	_ = os.Remove(dnsStatePath)
-	flushDNSCache()
-	return InspectDNS(resolved)
+	if err := flushDNSCacheContextWithRunner(ctx, runner); err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+	}
+	return inspectDNSContextWithRunner(ctx, runner, resolved)
 }
 
 func dnsStateMissing(err error) bool {
@@ -797,18 +840,26 @@ func existingPaths(paths ...string) []string {
 }
 
 func resolveDNSService(service string) (string, error) {
+	return resolveDNSServiceContextWithRunner(context.Background(), execDNSCommandRunner{}, service)
+}
+
+func resolveDNSServiceContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) (string, error) {
 	if strings.TrimSpace(service) != "" {
 		return strings.TrimSpace(service), nil
 	}
-	dev, err := defaultDeviceDarwin()
+	dev, err := defaultDeviceDarwinContextWithRunner(ctx, runner)
 	if err != nil {
 		return "", err
 	}
-	return serviceForDeviceDarwin(dev)
+	return serviceForDeviceDarwinContextWithRunner(ctx, runner, dev)
 }
 
 func defaultDeviceDarwin() (string, error) {
-	out, err := exec.Command("route", "-n", "get", "default").CombinedOutput()
+	return defaultDeviceDarwinContextWithRunner(context.Background(), execDNSCommandRunner{})
+}
+
+func defaultDeviceDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner) (string, error) {
+	out, err := runner.CombinedOutput(ctx, "route", "-n", "get", "default")
 	if err != nil {
 		return "", fmt.Errorf("route -n get default: %w", err)
 	}
@@ -822,7 +873,11 @@ func defaultDeviceDarwin() (string, error) {
 }
 
 func serviceForDeviceDarwin(dev string) (string, error) {
-	out, err := exec.Command("networksetup", "-listnetworkserviceorder").CombinedOutput()
+	return serviceForDeviceDarwinContextWithRunner(context.Background(), execDNSCommandRunner{}, dev)
+}
+
+func serviceForDeviceDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner, dev string) (string, error) {
+	out, err := runner.CombinedOutput(ctx, "networksetup", "-listnetworkserviceorder")
 	if err != nil {
 		return "", fmt.Errorf("networksetup -listnetworkserviceorder: %w", err)
 	}
@@ -848,7 +903,11 @@ func isNetworkServiceLine(line string) bool {
 }
 
 func currentDNSServers(service string) ([]string, error) {
-	out, err := exec.Command("networksetup", "-getdnsservers", service).CombinedOutput()
+	return currentDNSServersContextWithRunner(context.Background(), execDNSCommandRunner{}, service)
+}
+
+func currentDNSServersContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) ([]string, error) {
+	out, err := runner.CombinedOutput(ctx, "networksetup", "-getdnsservers", service)
 	if err != nil {
 		return nil, fmt.Errorf("networksetup -getdnsservers %s: %w", service, err)
 	}
@@ -896,6 +955,10 @@ func readDNSState() (dnsState, error) {
 }
 
 func runNetworksetup(args ...string) error {
+	return runNetworksetupContextWithRunner(context.Background(), execDNSCommandRunner{}, args...)
+}
+
+func runNetworksetupContextWithRunner(ctx context.Context, runner dnsCommandRunner, args ...string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("networksetup: missing arguments")
 	}
@@ -903,17 +966,27 @@ func runNetworksetup(args ...string) error {
 	if !strings.HasPrefix(args[0], "-") {
 		args[0] = "-" + args[0]
 	}
-	cmd := exec.Command("networksetup", args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := runner.Run(ctx, "networksetup", args...); err != nil {
 		return fmt.Errorf("networksetup %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
 }
 
 func flushDNSCache() {
-	_ = exec.Command("dscacheutil", "-flushcache").Run()
-	_ = exec.Command("killall", "-HUP", "mDNSResponder").Run()
+	_ = flushDNSCacheContextWithRunner(context.Background(), execDNSCommandRunner{})
+}
+
+func flushDNSCacheContextWithRunner(ctx context.Context, runner dnsCommandRunner) error {
+	for _, command := range [][]string{
+		{"dscacheutil", "-flushcache"},
+		{"killall", "-HUP", "mDNSResponder"},
+	} {
+		_, _ = runner.CombinedOutput(ctx, command[0], command[1:]...)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ServiceState 返回服务状态。action 使用 systemctl 风格:is-active/is-enabled。
