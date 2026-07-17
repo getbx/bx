@@ -116,6 +116,22 @@ func TestLaunchdEnableCommandsEnableBeforeBootstrap(t *testing.T) {
 	}
 }
 
+func TestLaunchdDisableCommandsUseServiceTarget(t *testing.T) {
+	cmds := launchdDisableCommands()
+	want := []string{
+		"disable system/com.getbx.bx",
+		"bootout system/com.getbx.bx",
+	}
+	if len(cmds) != len(want) {
+		t.Fatalf("launchdDisableCommands len = %d, want %d", len(cmds), len(want))
+	}
+	for i := range want {
+		if got := strings.Join(cmds[i], " "); got != want[i] {
+			t.Fatalf("cmd[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
 func TestExistingPaths(t *testing.T) {
 	dir := t.TempDir()
 	one := filepath.Join(dir, "one.log")
