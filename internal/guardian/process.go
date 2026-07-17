@@ -18,6 +18,12 @@ import (
 const defaultProcessStatePath = "/var/lib/bx/core-process.json"
 
 var ErrProcessNotRunning = errors.New("process is not running")
+var ErrProcessOwnershipUncertain = errors.New("Core process ownership is uncertain")
+
+const (
+	processRecordLaunching = "launching"
+	processRecordOwned     = "owned"
+)
 
 type Process struct {
 	PID        int
@@ -25,12 +31,33 @@ type Process struct {
 	UID        int
 	Generation string
 	Exit       <-chan error
+	Uncertain  bool
 }
 
 type processRecord struct {
 	PID        int    `json:"pid"`
 	Executable string `json:"executable"`
 	Generation string `json:"generation"`
+	State      string `json:"state,omitempty"`
+}
+
+type ownershipUncertainError struct {
+	process Process
+	cause   error
+}
+
+func (e *ownershipUncertainError) Error() string {
+	if e.cause == nil {
+		return ErrProcessOwnershipUncertain.Error()
+	}
+	return fmt.Sprintf("%s: %v", ErrProcessOwnershipUncertain, e.cause)
+}
+
+func (e *ownershipUncertainError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrProcessOwnershipUncertain}
+	}
+	return []error{ErrProcessOwnershipUncertain, e.cause}
 }
 
 type StartedProcess interface {
@@ -45,15 +72,17 @@ type ProcessOperations interface {
 }
 
 type ExecCoreRunner struct {
-	Executable      string
-	ConfigPath      string
-	DNSListen       string
-	StatePath       string
-	ControlSocket   string
-	StopTimeout     time.Duration
-	InspectInterval time.Duration
-	Operations      ProcessOperations
-	ShutdownCore    func(context.Context, string, int) error
+	Executable           string
+	ConfigPath           string
+	DNSListen            string
+	StatePath            string
+	ControlSocket        string
+	StopTimeout          time.Duration
+	InspectInterval      time.Duration
+	Operations           ProcessOperations
+	ShutdownCore         func(context.Context, string, int) error
+	LaunchCleanupTimeout time.Duration
+	SaveProcessRecord    func(string, processRecord) error
 
 	mu sync.Mutex
 }
@@ -78,6 +107,14 @@ func (r *ExecCoreRunner) Start(ctx context.Context) (Process, error) {
 	if err := r.validate(); err != nil {
 		return Process{}, err
 	}
+	if record, err := loadProcessRecord(r.statePath()); err == nil {
+		return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, errors.New("durable launch marker already exists"))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Process{}, uncertainOwnership(Process{Uncertain: true}, fmt.Errorf("read durable launch marker: %w", err))
+	}
+	if err := r.saveRecord(r.statePath(), processRecord{State: processRecordLaunching}); err != nil {
+		return Process{}, fmt.Errorf("persist launch marker before starting Core: %w", err)
+	}
 	operations := r.operations()
 	started, err := operations.Start(r.Executable, coreArgs(r.ConfigPath, r.DNSListen))
 	if err != nil {
@@ -85,25 +122,20 @@ func (r *ExecCoreRunner) Start(ctx context.Context) (Process, error) {
 	}
 	process, err := operations.Inspect(started.PID())
 	if err != nil {
-		terminateStartedProcess(started)
-		return Process{}, fmt.Errorf("inspect started Core PID %d: %w", started.PID(), err)
+		return Process{}, r.cleanupFailedStart(started, Process{}, fmt.Errorf("inspect started Core PID %d: %w", started.PID(), err))
 	}
 	if process.PID != started.PID() {
-		terminateStartedProcess(started)
-		return Process{}, fmt.Errorf("started Core PID %d inspected as PID %d", started.PID(), process.PID)
+		return Process{}, r.cleanupFailedStart(started, process, fmt.Errorf("started Core PID %d inspected as PID %d", started.PID(), process.PID))
 	}
 	if err := verifyInstalledProcess(process, r.Executable); err != nil {
-		terminateStartedProcess(started)
-		return Process{}, fmt.Errorf("verify started Core PID %d: %w", started.PID(), err)
+		return Process{}, r.cleanupFailedStart(started, process, fmt.Errorf("verify started Core PID %d: %w", started.PID(), err))
 	}
 	if err := ctx.Err(); err != nil {
-		terminateStartedProcess(started)
-		return Process{}, err
+		return Process{}, r.cleanupFailedStart(started, process, err)
 	}
-	record := processRecord{PID: process.PID, Executable: process.Executable, Generation: process.Generation}
-	if err := saveProcessRecord(r.statePath(), record); err != nil {
-		terminateStartedProcess(started)
-		return Process{}, fmt.Errorf("persist Core process: %w", err)
+	record := processRecord{PID: process.PID, Executable: process.Executable, Generation: process.Generation, State: processRecordOwned}
+	if err := r.saveRecord(r.statePath(), record); err != nil {
+		return Process{}, r.cleanupFailedStart(started, process, fmt.Errorf("persist Core process: %w", err))
 	}
 	exit := make(chan error, 1)
 	go func() {
@@ -128,6 +160,9 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 	}
 	if err != nil {
 		return Process{}, err
+	}
+	if record.state() != processRecordOwned {
+		return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, errors.New("durable launch marker has no accepted process record"))
 	}
 	process, err := r.operations().Inspect(record.PID)
 	if err != nil {
@@ -296,11 +331,61 @@ func (r *ExecCoreRunner) statePath() string {
 	return defaultProcessStatePath
 }
 
+func (r *ExecCoreRunner) saveRecord(path string, record processRecord) error {
+	if r.SaveProcessRecord != nil {
+		return r.SaveProcessRecord(path, record)
+	}
+	return saveProcessRecord(path, record)
+}
+
+func (r *ExecCoreRunner) cleanupFailedStart(started StartedProcess, process Process, cause error) error {
+	if r.cleanupStartedProcess(started) {
+		r.removeLaunchMarker()
+		return cause
+	}
+	process.Uncertain = true
+	return uncertainOwnership(process, cause)
+}
+
+func (r *ExecCoreRunner) cleanupStartedProcess(process StartedProcess) bool {
+	_ = process.Terminate()
+	done := make(chan struct{})
+	go func() {
+		_ = process.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(r.launchCleanupTimeout())
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (r *ExecCoreRunner) launchCleanupTimeout() time.Duration {
+	if r.LaunchCleanupTimeout > 0 {
+		return r.LaunchCleanupTimeout
+	}
+	return 5 * time.Second
+}
+
+func (r *ExecCoreRunner) removeLaunchMarker() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, err := loadProcessRecord(r.statePath())
+	if err != nil || record.state() != processRecordLaunching {
+		return
+	}
+	_ = os.Remove(r.statePath())
+}
+
 func (r *ExecCoreRunner) removeRecordIfGeneration(pid int, generation string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	record, err := loadProcessRecord(r.statePath())
-	if err != nil || record.PID != pid || record.Generation != generation {
+	if err != nil || record.state() != processRecordOwned || record.PID != pid || record.Generation != generation {
 		return
 	}
 	_ = os.Remove(r.statePath())
@@ -339,7 +424,7 @@ func sameProcessIdentity(expected, current Process) (bool, error) {
 }
 
 func saveProcessRecord(path string, record processRecord) error {
-	if record.PID <= 0 || !filepath.IsAbs(record.Executable) || strings.TrimSpace(record.Generation) == "" {
+	if !record.valid() {
 		return errors.New("invalid Core process record")
 	}
 	dir := filepath.Dir(path)
@@ -361,10 +446,41 @@ func loadProcessRecord(path string) (processRecord, error) {
 	if err := json.Unmarshal(b, &record); err != nil {
 		return record, fmt.Errorf("decode Core process record: %w", err)
 	}
-	if record.PID <= 0 || !filepath.IsAbs(record.Executable) || strings.TrimSpace(record.Generation) == "" {
+	if !record.valid() {
 		return processRecord{}, errors.New("invalid Core process record")
 	}
 	return record, nil
+}
+
+func (r processRecord) state() string {
+	if r.State == "" {
+		return processRecordOwned
+	}
+	return r.State
+}
+
+func (r processRecord) valid() bool {
+	switch r.state() {
+	case processRecordLaunching:
+		return r.PID == 0 && r.Executable == "" && r.Generation == ""
+	case processRecordOwned:
+		return r.PID > 0 && filepath.IsAbs(r.Executable) && strings.TrimSpace(r.Generation) != ""
+	default:
+		return false
+	}
+}
+
+func uncertainOwnership(process Process, cause error) error {
+	process.Uncertain = true
+	return &ownershipUncertainError{process: process, cause: cause}
+}
+
+func uncertainProcess(err error) (Process, bool) {
+	var ownershipErr *ownershipUncertainError
+	if errors.As(err, &ownershipErr) {
+		return ownershipErr.process, true
+	}
+	return Process{}, false
 }
 
 type osProcessOperations struct{}
@@ -388,8 +504,3 @@ type execStartedProcess struct{ cmd *exec.Cmd }
 func (p execStartedProcess) PID() int         { return p.cmd.Process.Pid }
 func (p execStartedProcess) Wait() error      { return p.cmd.Wait() }
 func (p execStartedProcess) Terminate() error { return p.cmd.Process.Kill() }
-
-func terminateStartedProcess(process StartedProcess) {
-	_ = process.Terminate()
-	go func() { _ = process.Wait() }()
-}

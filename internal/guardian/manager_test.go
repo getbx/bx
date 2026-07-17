@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -188,6 +190,78 @@ func TestManagerUpInspectionFailureDoesNotStartSecondCore(t *testing.T) {
 	}
 	if got := env.manager.Status(); got.Protection != ProtectionNeedsAttention {
 		t.Fatalf("status = %+v, want needs_attention", got)
+	}
+}
+
+func TestManagerUpBlocksSameAndReconstructedDaemonAfterUncertainLaunch(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := newUncertainStartTestProcess(52)
+	operations := &startTestProcessOperations{
+		started: started,
+		process: Process{PID: 52, Executable: executable, UID: 0, Generation: "darwin:123:456"},
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	newRunner := func() *ExecCoreRunner {
+		runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+		runner.StatePath = statePath
+		runner.Operations = operations
+		runner.LaunchCleanupTimeout = 10 * time.Millisecond
+		runner.SaveProcessRecord = func(path string, record processRecord) error {
+			if record.State == processRecordLaunching {
+				return saveProcessRecord(path, record)
+			}
+			return errors.New("normal process record write failed")
+		}
+		return runner
+	}
+	env := newManagerTestEnv(t)
+	env.manager.runner = newRunner()
+	if err := env.manager.Up(context.Background()); err == nil {
+		t.Fatal("initial Up succeeded despite unproven launch cleanup")
+	}
+	if err := env.manager.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("same-daemon retry error = %v, want uncertain ownership", err)
+	}
+
+	reconstructed, err := NewManager(ManagerOptions{
+		Store: env.store, Runner: newRunner(), Health: env.health, Barrier: env.barrier, Restorer: env.restorer,
+		BarrierContext: env.manager.barrierContext, CoreVersion: version.Version,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconstructed.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("reconstructed Up error = %v, want uncertain ownership", err)
+	}
+	if got := operations.startCount(); got != 1 {
+		t.Fatalf("duplicate starts = %d, want 1", got)
+	}
+}
+
+func TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnproven(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.cleanupTimeout = 20 * time.Millisecond
+	env.health.waitForContext = true
+	env.runner.stopErr = errors.New("cooperative shutdown could not prove exit")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	env.health.onWait = cancel
+
+	if err := env.manager.Up(ctx); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Up error = %v, want uncertain ownership", err)
+	}
+	if got := env.runner.stopEntryContextError(); got != nil {
+		t.Fatalf("cleanup inherited expired health context: %v", got)
+	}
+	if err := env.manager.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("retry error = %v, want uncertain ownership", err)
+	}
+	if got := env.runner.startCount(); got != 1 {
+		t.Fatalf("retry started duplicate Core: starts=%d", got)
 	}
 }
 
@@ -376,6 +450,73 @@ func TestManagerUnexpectedExitInstallsBarrierAndRestartsOnce(t *testing.T) {
 	want := []string{"barrier.install", "core.start", "barrier.remove"}
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+}
+
+func TestDaemonShutdownCancelsQueuedRecoveryBeforeStart(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	process := env.runner.currentProcess()
+	daemon, err := StartDaemon(context.Background(), DaemonOptions{
+		SocketPath: filepath.Join(shortSocketDir(t), "guard.sock"),
+		Handler:    NewLocalAPI(env.manager),
+		OwnerUID:   uint32(os.Geteuid()),
+		PeerCredentials: func(net.Conn) (uint32, bool) {
+			return 0, true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.manager.acquireMutation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		env.manager.handleUnexpectedExit(process, errors.New("Core exited"))
+		close(done)
+	}()
+	eventually(t, func() bool { return env.manager.recoveryActiveCount() == 1 })
+	if err := daemon.Close(); err != nil {
+		t.Fatal(err)
+	}
+	env.manager.releaseMutation()
+	<-done
+	if got := env.runner.startCount(); got != 1 {
+		t.Fatalf("queued recovery starts = %d, want original Core only", got)
+	}
+}
+
+func TestDaemonShutdownDrainsInFlightRecoveryBeforeReturning(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	env.runner.blockStartUntilContext = true
+	socketPath := filepath.Join(shortSocketDir(t), "guard.sock")
+	daemon, err := StartDaemon(context.Background(), DaemonOptions{
+		SocketPath:      socketPath,
+		Handler:         NewLocalAPI(env.manager),
+		OwnerUID:        uint32(os.Geteuid()),
+		PeerCredentials: func(net.Conn) (uint32, bool) { return 0, true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer daemon.Close()
+
+	env.runner.exit(env.runner.currentProcess().PID, errors.New("Core exited"))
+	eventually(t, func() bool { return env.runner.startCount() == 2 })
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- daemon.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not cancel and drain in-flight recovery")
+	}
+	starts := env.runner.startCount()
+	time.Sleep(30 * time.Millisecond)
+	if got := env.runner.startCount(); got != starts {
+		t.Fatalf("Core started after daemon returned: before=%d after=%d", starts, got)
 	}
 }
 
@@ -705,6 +846,7 @@ type fakeCoreRunner struct {
 	startDeadlines         []time.Time
 	watchExit              chan error
 	watches                int
+	stopContextErr         error
 }
 
 func newFakeCoreRunner(events *eventLog) *fakeCoreRunner {
@@ -783,10 +925,11 @@ func (r *fakeCoreRunner) Start(ctx context.Context) (Process, error) {
 	return process, nil
 }
 
-func (r *fakeCoreRunner) Stop(_ context.Context, process Process) error {
+func (r *fakeCoreRunner) Stop(ctx context.Context, process Process) error {
 	r.events.add("core.stop")
 	r.mu.Lock()
 	r.signals++
+	r.stopContextErr = ctx.Err()
 	err := r.stopErr
 	exitOnStop := r.exitOnStop
 	exit := r.exits[process.PID]
@@ -798,6 +941,12 @@ func (r *fakeCoreRunner) Stop(_ context.Context, process Process) error {
 		}
 	}
 	return err
+}
+
+func (r *fakeCoreRunner) stopEntryContextError() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopContextErr
 }
 
 func (r *fakeCoreRunner) startCount() int {
@@ -859,17 +1008,27 @@ func (r *fakeCoreRunner) exit(pid int, err error) {
 }
 
 type fakeHealthGate struct {
-	mu        sync.Mutex
-	runtime   supervisor.RuntimeState
-	err       error
-	last      HealthTarget
-	onSuccess func()
+	mu             sync.Mutex
+	runtime        supervisor.RuntimeState
+	err            error
+	last           HealthTarget
+	onSuccess      func()
+	onWait         func()
+	waitForContext bool
 }
 
-func (h *fakeHealthGate) Wait(_ context.Context, target HealthTarget) (supervisor.RuntimeState, error) {
+func (h *fakeHealthGate) Wait(ctx context.Context, target HealthTarget) (supervisor.RuntimeState, error) {
 	h.mu.Lock()
+	waitForContext := h.waitForContext
 	defer h.mu.Unlock()
 	h.last = target
+	if h.onWait != nil {
+		h.onWait()
+	}
+	if waitForContext {
+		<-ctx.Done()
+		return supervisor.RuntimeState{}, ctx.Err()
+	}
 	if h.err != nil {
 		return supervisor.RuntimeState{}, h.err
 	}
