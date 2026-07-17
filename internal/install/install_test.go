@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -311,6 +312,81 @@ func TestDisableDNSDarwinContextRetainsStateWhenCacheFlushCanceled(t *testing.T)
 	}
 	if _, err := os.Stat(statePath); err != nil {
 		t.Fatalf("DNS retry state removed after cache cancellation: %v", err)
+	}
+}
+
+func TestDisableDNSDarwinContextRetainsStateWhenCacheFlushFails(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command string
+	}{
+		{name: "dscacheutil", command: "dscacheutil"},
+		{name: "mDNSResponder", command: "killall"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statePath := writeTestDNSState(t, dnsState{Service: "Wi-Fi", Servers: []string{"1.1.1.1"}})
+			flushErr := errors.New(tc.name + " failed")
+			runner := &scriptedDNSCommandRunner{
+				combinedOutput: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+					if name == tc.command {
+						return nil, flushErr
+					}
+					return nil, nil
+				},
+			}
+
+			_, err := disableDNSDarwinContextWithRunner(context.Background(), runner, statePath, "")
+			if !errors.Is(err, flushErr) {
+				t.Fatalf("DisableDNS error = %v, want %v", err, flushErr)
+			}
+			if _, err := os.Stat(statePath); err != nil {
+				t.Fatalf("DNS retry state removed after %s failure: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestFlushDNSCacheContextWithRunnerSkipsUnavailableCommandOnlyWhenAlternativeSucceeds(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		unavailable map[string]bool
+		wantErr     bool
+	}{
+		{
+			name:        "dscacheutil unavailable",
+			unavailable: map[string]bool{"dscacheutil": true},
+		},
+		{
+			name:        "killall unavailable",
+			unavailable: map[string]bool{"killall": true},
+		},
+		{
+			name: "all unavailable",
+			unavailable: map[string]bool{
+				"dscacheutil": true,
+				"killall":     true,
+			},
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &scriptedDNSCommandRunner{
+				combinedOutput: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+					if tc.unavailable[name] {
+						return nil, exec.ErrNotFound
+					}
+					return nil, nil
+				},
+			}
+
+			err := flushDNSCacheContextWithRunner(context.Background(), runner)
+			if tc.wantErr && err == nil {
+				t.Fatal("flushDNSCache accepted no available cache flush command")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("flushDNSCache error = %v, want nil", err)
+			}
+		})
 	}
 }
 
