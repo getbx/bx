@@ -705,22 +705,26 @@ func inspectDNSContextWithRunner(ctx context.Context, runner dnsCommandRunner, s
 	if runtime.GOOS != "darwin" {
 		return DNSStatus{Supported: false, Detail: "DNS 接管仅支持 macOS"}, nil
 	}
+	return inspectDNSDarwinContextWithRunner(ctx, runner, dnsStatePath, service)
+}
+
+func inspectDNSDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner, statePath, service string) (DNSStatus, error) {
 	resolved, err := resolveDNSServiceContextWithRunner(ctx, runner, service)
 	if err != nil {
-		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
+		return DNSStatus{Supported: true, StatePath: statePath}, err
 	}
 	servers, err := currentDNSServersContextWithRunner(ctx, runner, resolved)
 	if err != nil {
-		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+		return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
 	}
-	_, stateErr := os.Stat(dnsStatePath)
+	_, stateErr := os.Stat(statePath)
 	return DNSStatus{
 		Supported:  true,
 		Enabled:    len(servers) == 1 && servers[0] == "127.0.0.1",
 		Service:    resolved,
 		Servers:    servers,
 		StateSaved: stateErr == nil,
-		StatePath:  dnsStatePath,
+		StatePath:  statePath,
 	}, nil
 }
 
@@ -779,16 +783,20 @@ func disableDNSContextWithRunner(ctx context.Context, runner dnsCommandRunner, s
 	if runtime.GOOS != "darwin" {
 		return DNSStatus{Supported: false, Detail: "DNS 接管仅支持 macOS"}, fmt.Errorf("DNS 接管仅支持 macOS")
 	}
-	state, err := readDNSState()
+	return disableDNSDarwinContextWithRunner(ctx, runner, dnsStatePath, service)
+}
+
+func disableDNSDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner, statePath, service string) (DNSStatus, error) {
+	state, err := readDNSStateAtPath(statePath)
 	if err != nil {
 		if dnsStateMissing(err) {
-			st, inspectErr := inspectDNSContextWithRunner(ctx, runner, service)
+			st, inspectErr := inspectDNSDarwinContextWithRunner(ctx, runner, statePath, service)
 			if inspectErr != nil {
 				return st, inspectErr
 			}
 			return st, dnsStateMissingRecoveryError(st)
 		}
-		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
+		return DNSStatus{Supported: true, StatePath: statePath}, err
 	}
 	resolved := strings.TrimSpace(service)
 	if resolved == "" {
@@ -797,16 +805,29 @@ func disableDNSContextWithRunner(ctx context.Context, runner dnsCommandRunner, s
 	state.Service = resolved
 	args := dnsRestoreArgs(state)
 	if err := runNetworksetupContextWithRunner(ctx, runner, args...); err != nil {
-		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+		return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+		return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
 	}
-	_ = os.Remove(dnsStatePath)
 	if err := flushDNSCacheContextWithRunner(ctx, runner); err != nil {
-		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+		return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
 	}
-	return inspectDNSContextWithRunner(ctx, runner, resolved)
+	status, err := inspectDNSDarwinContextWithRunner(ctx, runner, statePath, resolved)
+	if err != nil {
+		return status, err
+	}
+	if !dnsServersMatchState(state, status.Servers) {
+		return status, fmt.Errorf("DNS restoration verification failed for service %s", resolved)
+	}
+	if err := ctx.Err(); err != nil {
+		return status, err
+	}
+	if err := os.Remove(statePath); err != nil {
+		return status, fmt.Errorf("删除 DNS 状态 %s: %w", statePath, err)
+	}
+	status.StateSaved = false
+	return status, nil
 }
 
 func dnsStateMissing(err error) bool {
@@ -827,6 +848,21 @@ func dnsRestoreArgs(state dnsState) []string {
 		return []string{"setdnsservers", state.Service, "Empty"}
 	}
 	return append([]string{"setdnsservers", state.Service}, state.Servers...)
+}
+
+func dnsServersMatchState(state dnsState, servers []string) bool {
+	if state.Empty || len(state.Servers) == 0 {
+		return len(servers) == 0
+	}
+	if len(state.Servers) != len(servers) {
+		return false
+	}
+	for i := range state.Servers {
+		if strings.TrimSpace(state.Servers[i]) != strings.TrimSpace(servers[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func existingPaths(paths ...string) []string {
@@ -926,27 +962,35 @@ func currentDNSServersContextWithRunner(ctx context.Context, runner dnsCommandRu
 }
 
 func writeDNSState(state dnsState) error {
-	if err := os.MkdirAll(filepath.Dir(dnsStatePath), 0o700); err != nil {
+	return writeDNSStateAtPath(dnsStatePath, state)
+}
+
+func writeDNSStateAtPath(statePath string, state dnsState) error {
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
 		return fmt.Errorf("创建 DNS 状态目录: %w", err)
 	}
 	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dnsStatePath, b, 0o600); err != nil {
-		return fmt.Errorf("写 DNS 状态 %s: %w", dnsStatePath, err)
+	if err := os.WriteFile(statePath, b, 0o600); err != nil {
+		return fmt.Errorf("写 DNS 状态 %s: %w", statePath, err)
 	}
 	return nil
 }
 
 func readDNSState() (dnsState, error) {
+	return readDNSStateAtPath(dnsStatePath)
+}
+
+func readDNSStateAtPath(statePath string) (dnsState, error) {
 	var state dnsState
-	b, err := os.ReadFile(dnsStatePath)
+	b, err := os.ReadFile(statePath)
 	if err != nil {
-		return state, fmt.Errorf("读 DNS 状态 %s: %w", dnsStatePath, err)
+		return state, fmt.Errorf("读 DNS 状态 %s: %w", statePath, err)
 	}
 	if err := json.Unmarshal(b, &state); err != nil {
-		return state, fmt.Errorf("解析 DNS 状态 %s: %w", dnsStatePath, err)
+		return state, fmt.Errorf("解析 DNS 状态 %s: %w", statePath, err)
 	}
 	if state.Service == "" {
 		return state, fmt.Errorf("DNS 状态缺少 service")

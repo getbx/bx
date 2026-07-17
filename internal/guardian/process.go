@@ -146,10 +146,17 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 		r.removeRecordIfGeneration(record.PID, record.Generation)
 		return Process{}, nil
 	}
+	return process, nil
+}
+
+func (r *ExecCoreRunner) Watch(process Process) Process {
+	if process.PID <= 0 || process.Exit != nil {
+		return process
+	}
 	exit := make(chan error, 1)
 	process.Exit = exit
 	go r.watchExisting(process, exit)
-	return process, nil
+	return process
 }
 
 func (r *ExecCoreRunner) Verify(process Process) error {

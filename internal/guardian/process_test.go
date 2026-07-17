@@ -158,6 +158,7 @@ func TestExecCoreRunnerAdoptedWatcherOutlivesInspectionContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	process = runner.Watch(process)
 	cancel()
 	time.Sleep(20 * time.Millisecond)
 	operations.setAlive(false)
@@ -168,12 +169,33 @@ func TestExecCoreRunnerAdoptedWatcherOutlivesInspectionContext(t *testing.T) {
 	}
 }
 
+func TestExecCoreRunnerExistingDoesNotStartWatcherBeforeAcceptance(t *testing.T) {
+	runner, _, operations := newRecordedProcessRunner(t)
+	t.Cleanup(func() {
+		operations.setAlive(false)
+		time.Sleep(3 * runner.InspectInterval)
+	})
+
+	process, err := runner.Existing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process.Exit != nil {
+		t.Fatal("Existing started an exit watcher before manager acceptance")
+	}
+	time.Sleep(4 * runner.InspectInterval)
+	if got := operations.inspectCount(); got != 1 {
+		t.Fatalf("pre-acceptance inspections = %d, want only the Existing inspection", got)
+	}
+}
+
 func TestExecCoreRunnerAdoptedWatcherSurvivesAtomicExecutableReplacement(t *testing.T) {
 	runner, _, operations := newRecordedProcessRunner(t)
 	process, err := runner.Existing(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	process = runner.Watch(process)
 	replaceExecutableAtomically(t, runner.Executable)
 	time.Sleep(4 * runner.InspectInterval)
 	select {
@@ -226,6 +248,7 @@ func TestExecCoreRunnerAdoptedWatcherIgnoresInspectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	process = runner.Watch(process)
 	operations.setInspectError(errors.New("transient sysctl failure"))
 	time.Sleep(4 * runner.InspectInterval)
 	select {
@@ -467,11 +490,12 @@ func replaceExecutableAtomically(t *testing.T, path string) {
 }
 
 type watchTestProcessOperations struct {
-	mu         sync.Mutex
-	process    Process
-	alive      bool
-	inspectErr error
-	signals    int
+	mu          sync.Mutex
+	process     Process
+	alive       bool
+	inspectErr  error
+	signals     int
+	inspections int
 }
 
 type startTestProcess struct {
@@ -546,6 +570,7 @@ func (*watchTestProcessOperations) Start(string, []string) (StartedProcess, erro
 func (o *watchTestProcessOperations) Inspect(int) (Process, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.inspections++
 	if o.inspectErr != nil {
 		return Process{}, o.inspectErr
 	}
@@ -553,6 +578,12 @@ func (o *watchTestProcessOperations) Inspect(int) (Process, error) {
 		return Process{}, ErrProcessNotRunning
 	}
 	return o.process, nil
+}
+
+func (o *watchTestProcessOperations) inspectCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.inspections
 }
 
 func (o *watchTestProcessOperations) Signal(int, os.Signal) error {

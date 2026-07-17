@@ -25,6 +25,7 @@ type DesiredStore interface {
 
 type CoreRunner interface {
 	Existing(context.Context) (Process, error)
+	Watch(Process) Process
 	Verify(Process) error
 	Start(context.Context) (Process, error)
 	Stop(context.Context, Process) error
@@ -218,13 +219,18 @@ func (m *Manager) Down(ctx context.Context) error {
 	m.current = Process{}
 	m.runtime = supervisor.RuntimeState{}
 
-	if err := m.restorer.Restore(ctx); err != nil {
-		restoreErr := fmt.Errorf("restore managed network: %w", err)
-		if _, recoveryErr := m.startCoreLocked(ctx); recoveryErr != nil {
+	restoreCtx, cancelRestore := m.downRestoreContext(ctx)
+	restoreErr := m.restorer.Restore(restoreCtx)
+	cancelRestore()
+	if restoreErr != nil {
+		restoreErr := fmt.Errorf("restore managed network: %w", restoreErr)
+		recoveryCtx, cancelRecovery := context.WithTimeout(ctx, m.restartTimeout)
+		defer cancelRecovery()
+		if _, recoveryErr := m.startCoreLocked(recoveryCtx); recoveryErr != nil {
 			m.needsAttention(DesiredOn, "down_restore_recovery_failed")
 			return errors.Join(restoreErr, recoveryErr)
 		}
-		if err := m.removeBarrier(ctx, barrierContext); err != nil {
+		if err := m.removeBarrier(recoveryCtx, barrierContext); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 			return errors.Join(restoreErr, err)
 		}
@@ -269,13 +275,13 @@ func (m *Manager) startCoreLocked(ctx context.Context) (supervisor.RuntimeState,
 		return supervisor.RuntimeState{}, fmt.Errorf("start Core: %w", err)
 	}
 	if err := m.runner.Verify(process); err != nil {
-		_ = m.runner.Stop(context.Background(), process)
+		_ = m.runner.Stop(ctx, process)
 		m.needsAttention(DesiredOn, "core_identity_unverified")
 		return supervisor.RuntimeState{}, fmt.Errorf("verify started Core: %w", err)
 	}
 	state, err := m.waitHealthy(ctx, process)
 	if err != nil {
-		_ = m.runner.Stop(context.Background(), process)
+		_ = m.runner.Stop(ctx, process)
 		m.needsAttention(DesiredOn, "core_health_failed")
 		return supervisor.RuntimeState{}, fmt.Errorf("wait for Core health: %w", err)
 	}
@@ -300,11 +306,16 @@ func (m *Manager) waitHealthy(ctx context.Context, process Process) (supervisor.
 }
 
 func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supervisor.RuntimeState) error {
+	if sameProcessGeneration(m.current, process) && m.current.Exit != nil {
+		process.Exit = m.current.Exit
+	} else {
+		process = m.runner.Watch(process)
+		if process.Exit != nil {
+			go m.monitor(process)
+		}
+	}
 	m.current = process
 	m.runtime = state
-	if process.Exit != nil {
-		go m.monitor(process)
-	}
 	if m.barrierHeld {
 		m.setStatus(Status{
 			SchemaVersion: 1,
@@ -330,6 +341,13 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 	return nil
 }
 
+func sameProcessGeneration(a, b Process) bool {
+	return a.PID > 0 &&
+		a.PID == b.PID &&
+		a.Generation != "" &&
+		a.Generation == b.Generation
+}
+
 func (m *Manager) monitor(process Process) {
 	err, ok := <-process.Exit
 	if !ok {
@@ -343,7 +361,7 @@ func (m *Manager) handleUnexpectedExit(process Process, _ error) {
 		return
 	}
 	defer m.releaseMutation()
-	if m.current.PID != process.PID {
+	if !sameProcessGeneration(m.current, process) {
 		return
 	}
 	desired, err := m.store.LoadDesired()
@@ -408,6 +426,21 @@ func (m *Manager) removeBarrier(ctx context.Context, barrierContext BarrierConte
 	}
 	m.barrierHeld = false
 	return nil
+}
+
+func (m *Manager) downRestoreContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := m.restartTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		reserve := m.restartTimeout
+		if half := remaining / 2; reserve > half {
+			reserve = half
+		}
+		if available := remaining - reserve; timeout > available {
+			timeout = available
+		}
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (m *Manager) contextForRuntime(state supervisor.RuntimeState) BarrierContext {

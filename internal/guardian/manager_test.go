@@ -70,6 +70,87 @@ func TestManagerAdoptsMatchingHealthyCore(t *testing.T) {
 	}
 }
 
+func TestManagerRepeatedAdoptionHealthFailureDoesNotStartWatchers(t *testing.T) {
+	runner, _, operations := newRecordedProcessRunner(t)
+	env := newManagerTestEnv(t)
+	env.manager.runner = runner
+	env.health.err = errors.New("adopted Core unhealthy")
+	t.Cleanup(func() {
+		operations.setAlive(false)
+		time.Sleep(3 * runner.InspectInterval)
+	})
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := env.manager.Up(context.Background()); err == nil {
+			t.Fatalf("Up attempt %d succeeded despite adoption health failure", attempt+1)
+		}
+	}
+	time.Sleep(4 * runner.InspectInterval)
+	if got := operations.inspectCount(); got != 2 {
+		t.Fatalf("repeated failed adoption accumulated watchers: inspections=%d, want 2", got)
+	}
+}
+
+func TestManagerBarrierRemovalRetryReusesAcceptedWatcher(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.Store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	existing := Process{PID: 42, Executable: install.BinPath, UID: 0, Generation: "adopted:1"}
+	env.runner.existing = existing
+	env.runner.watchExit = make(chan error, 1)
+	env.manager.barrierHeld = true
+	env.manager.setStatus(Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseNeedsAttention, Protection: ProtectionBlocked})
+	env.barrier.removeErr = errors.New("barrier remove failed")
+	t.Cleanup(func() { cleanupManagerWatchers(env) })
+
+	if err := env.manager.Up(context.Background()); err == nil {
+		t.Fatal("first Up succeeded despite barrier removal failure")
+	}
+	if got := env.runner.watchCount(); got != 1 {
+		t.Fatalf("accepted watcher starts after first Up = %d, want 1", got)
+	}
+	env.barrier.removeErr = nil
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.runner.watchCount(); got != 1 {
+		t.Fatalf("barrier retry accumulated watchers: starts=%d", got)
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionProtected {
+		t.Fatalf("status = %+v, want Protected after successful retry", got)
+	}
+}
+
+func TestManagerAcceptedAdoptionObservesExit(t *testing.T) {
+	env := newManagerTestEnv(t)
+	existing := Process{PID: 42, Executable: install.BinPath, UID: 0, Generation: "adopted:1"}
+	env.runner.existing = existing
+	env.runner.watchExit = make(chan error, 1)
+	t.Cleanup(func() { cleanupManagerWatchers(env) })
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.runner.watchCount(); got != 1 {
+		t.Fatalf("accepted watcher starts = %d, want 1", got)
+	}
+
+	env.runner.exitWatched(errors.New("adopted Core exited"))
+	eventually(t, func() bool { return env.runner.startCount() == 1 })
+	eventually(t, func() bool { return env.manager.Status().Protection == ProtectionProtected })
+
+}
+
+func cleanupManagerWatchers(env *managerTestEnv) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	_ = env.manager.Down(ctx)
+	cancel()
+	env.runner.exitWatched(errors.New("test cleanup"))
+	current := env.runner.currentProcess()
+	env.runner.exit(current.PID, errors.New("test cleanup"))
+	time.Sleep(10 * time.Millisecond)
+}
+
 func TestManagerRejectsUnverifiableExistingPID(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.runner.existing = Process{PID: 42, Executable: "/tmp/not-bx", UID: 501}
@@ -199,6 +280,73 @@ func TestManagerDownRestoreFailureRecoversProtectedCore(t *testing.T) {
 	}
 }
 
+func TestManagerDownRestoreTimeoutUsesReservedRecoveryBudget(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	env.manager.restartTimeout = 40 * time.Millisecond
+	env.restorer.waitForContext = true
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	if err := env.manager.Down(ctx); err == nil {
+		t.Fatal("Down succeeded despite restore timeout")
+	}
+	if err := env.restorer.lastContextError(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("restore context error = %v, want deadline exceeded", err)
+	}
+	if got := env.runner.startCount(); got != 2 {
+		t.Fatalf("restore timeout did not attempt protected recovery: starts=%d", got)
+	}
+	startErrs := env.runner.startEntryContextErrors()
+	if len(startErrs) != 2 || startErrs[1] != nil {
+		t.Fatalf("recovery start context errors = %#v, want live second context", startErrs)
+	}
+	want := []string{"barrier.install", "core.stop", "network.restore", "core.start", "barrier.remove"}
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionProtected {
+		t.Fatalf("status = %+v, want recovered Protected Core", got)
+	}
+}
+
+func TestManagerDownRestoreAndRecoveryStayWithinOverallDeadline(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	env.manager.restartTimeout = 30 * time.Millisecond
+	env.restorer.waitForContext = true
+	env.runner.blockStartUntilContext = true
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	overallDeadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("overall mutation context has no deadline")
+	}
+
+	started := time.Now()
+	if err := env.manager.Down(ctx); err == nil {
+		t.Fatal("Down succeeded despite restore and recovery timeouts")
+	}
+	if elapsed := time.Since(started); elapsed >= 250*time.Millisecond {
+		t.Fatalf("Down exceeded bounded restore/recovery phases: elapsed=%s", elapsed)
+	}
+	if got := env.runner.startCount(); got != 2 {
+		t.Fatalf("recovery attempts = %d, want initial start plus one recovery", got)
+	}
+	startErrs := env.runner.startEntryContextErrors()
+	if len(startErrs) != 2 || startErrs[1] != nil {
+		t.Fatalf("recovery start context errors = %#v, want live bounded context", startErrs)
+	}
+	deadlines := env.runner.startDeadlinesSnapshot()
+	if len(deadlines) != 2 || deadlines[1].IsZero() || deadlines[1].After(overallDeadline) {
+		t.Fatalf("recovery deadlines = %#v, want child deadline no later than %s", deadlines, overallDeadline)
+	}
+	if !env.manager.barrierHeld {
+		t.Fatal("barrier released after bounded recovery failure")
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionBlocked || got.Phase != PhaseNeedsAttention {
+		t.Fatalf("status = %+v, want blocked needs_attention", got)
+	}
+}
+
 func TestManagerDownDoubleFailureKeepsBarrierAndNeedsAttention(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	env.restorer.err = errors.New("dns restore failed")
@@ -228,6 +376,60 @@ func TestManagerUnexpectedExitInstallsBarrierAndRestartsOnce(t *testing.T) {
 	want := []string{"barrier.install", "core.start", "barrier.remove"}
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+}
+
+func TestManagerIgnoresStaleExitForReusedPIDWithDifferentGeneration(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	exited := env.runner.currentProcess()
+	if exited.Generation == "" {
+		t.Fatal("test Core generation is empty")
+	}
+	if err := env.manager.acquireMutation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(entered)
+		env.manager.handleUnexpectedExit(exited, errors.New("Core A exited"))
+		close(done)
+	}()
+	<-entered
+
+	replacement := exited
+	replacement.Generation = exited.Generation + ":reused"
+	replacement.Exit = nil
+	env.manager.current = replacement
+	env.manager.runtime = healthyRuntime(replacement.PID)
+	env.manager.setStatus(Status{
+		SchemaVersion: 1,
+		Desired:       DesiredOn,
+		Phase:         PhaseCommitted,
+		CorePID:       replacement.PID,
+		CoreVersion:   version.Version,
+		Protection:    ProtectionProtected,
+	})
+	env.events.reset()
+	env.manager.releaseMutation()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stale exit handler did not finish")
+	}
+	if got := env.manager.current; got.PID != replacement.PID || got.Generation != replacement.Generation {
+		t.Fatalf("stale exit replaced current Core: got %+v, want %+v", got, replacement)
+	}
+	if got := env.runner.startCount(); got != 1 {
+		t.Fatalf("stale exit started another Core: starts=%d", got)
+	}
+	if got := env.events.snapshot(); len(got) != 0 {
+		t.Fatalf("stale exit mutated lifecycle state: events=%#v", got)
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionProtected || got.CorePID != replacement.PID {
+		t.Fatalf("status after stale exit = %+v, want replacement Protected", got)
 	}
 }
 
@@ -497,6 +699,12 @@ type fakeCoreRunner struct {
 	blockStart   chan struct{}
 	startEntered chan struct{}
 	exitOnStop   bool
+
+	blockStartUntilContext bool
+	startEntryErrors       []error
+	startDeadlines         []time.Time
+	watchExit              chan error
+	watches                int
 }
 
 func newFakeCoreRunner(events *eventLog) *fakeCoreRunner {
@@ -519,12 +727,27 @@ func (r *fakeCoreRunner) Verify(process Process) error {
 	return nil
 }
 
-func (r *fakeCoreRunner) Start(context.Context) (Process, error) {
+func (r *fakeCoreRunner) Watch(process Process) Process {
+	if process.Exit != nil {
+		return process
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.watches++
+	process.Exit = r.watchExit
+	return process
+}
+
+func (r *fakeCoreRunner) Start(ctx context.Context) (Process, error) {
 	r.events.add("core.start")
 	r.mu.Lock()
 	r.starts++
 	startErr := r.startErr
 	block := r.blockStart
+	blockUntilContext := r.blockStartUntilContext
+	r.startEntryErrors = append(r.startEntryErrors, ctx.Err())
+	deadline, _ := ctx.Deadline()
+	r.startDeadlines = append(r.startDeadlines, deadline)
 	select {
 	case r.startEntered <- struct{}{}:
 	default:
@@ -533,9 +756,24 @@ func (r *fakeCoreRunner) Start(context.Context) (Process, error) {
 		r.mu.Unlock()
 		return Process{}, startErr
 	}
+	if err := ctx.Err(); err != nil {
+		r.mu.Unlock()
+		return Process{}, err
+	}
+	if blockUntilContext {
+		r.mu.Unlock()
+		<-ctx.Done()
+		return Process{}, ctx.Err()
+	}
 	r.nextPID++
 	exit := make(chan error, 1)
-	process := Process{PID: r.nextPID, Executable: install.BinPath, UID: 0, Exit: exit}
+	process := Process{
+		PID:        r.nextPID,
+		Executable: install.BinPath,
+		UID:        0,
+		Generation: fmt.Sprintf("fake:%d", r.starts),
+		Exit:       exit,
+	}
 	r.current = process
 	r.exits[process.PID] = exit
 	r.mu.Unlock()
@@ -566,6 +804,37 @@ func (r *fakeCoreRunner) startCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.starts
+}
+
+func (r *fakeCoreRunner) startEntryContextErrors() []error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]error(nil), r.startEntryErrors...)
+}
+
+func (r *fakeCoreRunner) startDeadlinesSnapshot() []time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]time.Time(nil), r.startDeadlines...)
+}
+
+func (r *fakeCoreRunner) watchCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.watches
+}
+
+func (r *fakeCoreRunner) exitWatched(err error) {
+	r.mu.Lock()
+	exit := r.watchExit
+	r.mu.Unlock()
+	if exit == nil {
+		return
+	}
+	select {
+	case exit <- err:
+	default:
+	}
 }
 
 func (r *fakeCoreRunner) signalCount() int {
@@ -644,13 +913,29 @@ func (b *fakeBarrier) Remove(context.Context, BarrierContext) error {
 }
 
 type fakeNetworkRestorer struct {
-	events *eventLog
-	err    error
+	events         *eventLog
+	err            error
+	waitForContext bool
+	mu             sync.Mutex
+	contextErr     error
 }
 
-func (r *fakeNetworkRestorer) Restore(context.Context) error {
+func (r *fakeNetworkRestorer) Restore(ctx context.Context) error {
 	r.events.add("network.restore")
+	if r.waitForContext {
+		<-ctx.Done()
+		r.mu.Lock()
+		r.contextErr = ctx.Err()
+		r.mu.Unlock()
+		return ctx.Err()
+	}
 	return r.err
+}
+
+func (r *fakeNetworkRestorer) lastContextError() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.contextErr
 }
 
 func eventually(t *testing.T, condition func() bool) {
