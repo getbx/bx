@@ -234,6 +234,7 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 		Health:         HealthChecker{},
 		Barrier:        NewBarrier(nil),
 		Restorer:       systemNetworkRestorer{},
+		Legacy:         systemLegacyCoreLifecycle{},
 		BarrierContext: BarrierContext{Gateway: gateway, BlockIPv6: true},
 		CoreVersion:    version.Version,
 	})
@@ -256,6 +257,27 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 
 type systemNetworkRestorer struct {
 	disableDNS func(context.Context, string) (install.DNSStatus, error)
+}
+
+type systemLegacyCoreLifecycle struct {
+	stop   func(context.Context) error
+	remove func() error
+}
+
+func (l systemLegacyCoreLifecycle) Stop(ctx context.Context) error {
+	stop := l.stop
+	if stop == nil {
+		stop = install.BootoutLegacyCoreUnit
+	}
+	return stop(ctx)
+}
+
+func (l systemLegacyCoreLifecycle) Remove() error {
+	remove := l.remove
+	if remove == nil {
+		remove = install.RemoveLegacyCoreUnit
+	}
+	return remove()
 }
 
 func (r systemNetworkRestorer) Restore(ctx context.Context) error {

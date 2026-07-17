@@ -3781,6 +3781,9 @@ func routerPlanAction(c *cli.Context) error {
 
 func upAction(c *cli.Context) (err error) {
 	defer autoArchiveAfterClientCommand("up", &err, true)
+	if runtime.GOOS == "darwin" {
+		return macOSUpAction(c)
+	}
 	if !install.UnitInstalled() {
 		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
 	}
@@ -3798,20 +3801,6 @@ func upAction(c *cli.Context) (err error) {
 		return err
 	}
 	stepDone("服务", "已启动并设为开机自启")
-	if runtime.GOOS == "darwin" {
-		stepLine("状态", "等待 bx 就绪")
-		if err := waitStatusSocket(15 * time.Second); err != nil {
-			_ = install.Disable()
-			return fmt.Errorf("bx 服务已启动但状态 socket 未就绪,已回滚: %w", err)
-		}
-		stepDone("状态", "bx 已就绪")
-		stepLine("DNS", "接管 macOS 系统 DNS")
-		if _, err := install.EnableDNS(""); err != nil {
-			_ = install.Disable()
-			return fmt.Errorf("macOS DNS 接管失败,已回滚 bx 服务: %w", err)
-		}
-		stepDone("DNS", "macOS 系统 DNS 已切到 bx")
-	}
 	if rep, err := readStatusReport(); err == nil {
 		printUpSummary(rep)
 		return nil
@@ -3823,13 +3812,7 @@ func upAction(c *cli.Context) (err error) {
 func downAction(c *cli.Context) (err error) {
 	defer autoArchiveAfterClientCommand("down", &err, true)
 	if runtime.GOOS == "darwin" {
-		st, err := install.DisableDNS("")
-		if err != nil {
-			return fmt.Errorf("恢复 macOS DNS 失败,未停止 bx: %w", err)
-		}
-		if st.Supported {
-			fmt.Println("✅ macOS 系统 DNS 已确认恢复。")
-		}
+		return macOSDownAction(c)
 	}
 	if err := install.Disable(); err != nil {
 		return err
@@ -4708,7 +4691,7 @@ func buildExecStart(bin, configPath string) string {
 func buildExecStartForGOOS(goos, bin, configPath string) string {
 	switch goos {
 	case "darwin":
-		return fmt.Sprintf("%s run -c %s --listen-dns %s", bin, configPath, darwinDNSListen)
+		return fmt.Sprintf("%s guardian --config %s --listen-dns %s", bin, configPath, darwinDNSListen)
 	case "windows":
 		// Windows 服务 BinaryPathName:bin/config 路径含空格(Program Files / ProgramData),
 		// 必须加引号,交 install.commandLineFields 按引号拆回 exepath+args。

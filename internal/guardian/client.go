@@ -1,9 +1,11 @@
 package guardian
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -19,18 +21,30 @@ func NewClient(socketPath string) *Client {
 }
 
 func (c *Client) Status(ctx context.Context) (Status, error) {
-	return c.request(ctx, http.MethodGet, "/v1/status")
+	return c.request(ctx, http.MethodGet, "/v1/status", nil)
 }
 
 func (c *Client) Up(ctx context.Context) (Status, error) {
-	return c.request(ctx, http.MethodPost, "/v1/up")
+	return c.request(ctx, http.MethodPost, "/v1/up", nil)
 }
 
 func (c *Client) Down(ctx context.Context) (Status, error) {
-	return c.request(ctx, http.MethodPost, "/v1/down")
+	return c.request(ctx, http.MethodPost, "/v1/down", nil)
 }
 
-func (c *Client) request(ctx context.Context, method, path string) (Status, error) {
+func (c *Client) Migrate(ctx context.Context, request MigrationRequest) (Status, error) {
+	normalized, err := ValidateMigrationRequest(request)
+	if err != nil {
+		return Status{}, err
+	}
+	body, err := json.Marshal(normalized)
+	if err != nil {
+		return Status{}, err
+	}
+	return c.request(ctx, http.MethodPost, "/v1/migrate", bytes.NewReader(body))
+}
+
+func (c *Client) request(ctx context.Context, method, path string, body io.Reader) (Status, error) {
 	client := c.HTTPClient
 	if client == nil {
 		client = guardianHTTPClient(c.SocketPath)
@@ -38,9 +52,12 @@ func (c *Client) request(ctx context.Context, method, path string) (Status, erro
 	if transport, ok := client.Transport.(*http.Transport); ok {
 		defer transport.CloseIdleConnections()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, "http://local"+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, "http://local"+path, body)
 	if err != nil {
 		return Status{}, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	response, err := client.Do(req)
 	if err != nil {

@@ -39,12 +39,18 @@ type NetworkRestorer interface {
 	Restore(context.Context) error
 }
 
+type LegacyCoreLifecycle interface {
+	Stop(context.Context) error
+	Remove() error
+}
+
 type ManagerOptions struct {
 	Store          DesiredStore
 	Runner         CoreRunner
 	Health         HealthGate
 	Barrier        Barrier
 	Restorer       NetworkRestorer
+	Legacy         LegacyCoreLifecycle
 	BarrierContext BarrierContext
 	CoreVersion    string
 	RestartTimeout time.Duration
@@ -59,6 +65,7 @@ type Manager struct {
 	health            HealthGate
 	barrier           Barrier
 	restorer          NetworkRestorer
+	legacy            LegacyCoreLifecycle
 	barrierContext    BarrierContext
 	coreVersion       string
 	restartTimeout    time.Duration
@@ -107,6 +114,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		health:            options.Health,
 		barrier:           options.Barrier,
 		restorer:          options.Restorer,
+		legacy:            options.Legacy,
 		barrierContext:    cloneBarrierContext(options.BarrierContext),
 		coreVersion:       options.CoreVersion,
 		restartTimeout:    restartTimeout,
@@ -138,6 +146,75 @@ func (m *Manager) Up(ctx context.Context) error {
 	}
 	defer m.releaseMutation()
 	return m.upLocked(ctx)
+}
+
+func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
+	normalized, err := ValidateMigrationRequest(request)
+	if err != nil {
+		return err
+	}
+	if m.legacy == nil {
+		return errors.New("legacy Core lifecycle unavailable")
+	}
+	if err := m.acquireMutation(ctx); err != nil {
+		return err
+	}
+	defer m.releaseMutation()
+
+	if m.current.Uncertain {
+		m.needsAttention(DesiredOn, "core_ownership_uncertain")
+		return uncertainOwnership(m.current, nil)
+	}
+	if m.current.PID != 0 && m.Status().Protection == ProtectionProtected {
+		return m.removeMigratedUnit()
+	}
+
+	desired, err := m.store.LoadDesired()
+	if err != nil {
+		m.needsAttention(DesiredOn, "desired_state_read_failed")
+		return err
+	}
+	if desired != DesiredOn {
+		if err := m.store.SaveDesired(DesiredOn); err != nil {
+			m.needsAttention(desired, "desired_state_write_failed")
+			return err
+		}
+	}
+
+	barrierContext := migrationBarrierContext(normalized)
+	m.barrierContext = cloneBarrierContext(barrierContext)
+	if err := m.barrier.Install(ctx, barrierContext); err != nil {
+		// Install may have applied a strict subset before returning. Retaining
+		// ownership of the attempted barrier is the only fail-closed choice.
+		m.barrierHeld = true
+		m.needsAttention(DesiredOn, "barrier_install_failed")
+		return fmt.Errorf("install migration barrier: %w", err)
+	}
+	m.barrierHeld = true
+	m.setStatus(Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseBarrierActive, Protection: ProtectionBlocked})
+
+	if err := m.legacy.Stop(ctx); err != nil {
+		m.needsAttention(DesiredOn, "legacy_core_stop_failed")
+		return fmt.Errorf("stop legacy Core behind barrier: %w", err)
+	}
+	if err := m.barrier.ReassertBypass(ctx, barrierContext); err != nil {
+		m.needsAttention(DesiredOn, "barrier_reassert_failed")
+		return fmt.Errorf("reassert migration bypass: %w", err)
+	}
+	if _, err := m.startCoreLocked(ctx); err != nil {
+		return err
+	}
+	return m.removeMigratedUnit()
+}
+
+func (m *Manager) removeMigratedUnit() error {
+	if err := m.legacy.Remove(); err != nil {
+		status := m.Status()
+		status.LastError = "legacy_unit_remove_failed"
+		m.setStatus(status)
+		return fmt.Errorf("remove migrated Core unit: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) upLocked(ctx context.Context) error {

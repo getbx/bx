@@ -57,6 +57,80 @@ func TestManagerDownTransitionsBehindBarrier(t *testing.T) {
 	}
 }
 
+func TestManagerMigrateTransitionsLegacyCoreBehindValidatedBarrier(t *testing.T) {
+	env := newManagerTestEnv(t)
+	request := MigrationRequest{
+		Gateway:      "192.0.2.1",
+		ServerBypass: []string{"198.51.100.10/32", "2001:db8::10/128"},
+	}
+	if err := env.manager.Migrate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"desired.on",
+		"barrier.install",
+		"legacy.stop",
+		"barrier.reassert",
+		"core.start",
+		"barrier.remove",
+		"legacy.remove",
+	}
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("migration events = %#v, want %#v", got, want)
+	}
+	barrierContext := env.barrier.lastInstallContext()
+	if barrierContext.Gateway != request.Gateway || !barrierContext.BlockIPv6 {
+		t.Fatalf("migration barrier context = %+v", barrierContext)
+	}
+	if !reflect.DeepEqual(barrierContext.ServerBypass, []string{"198.51.100.10/32"}) {
+		t.Fatalf("migration IPv4 barrier bypass = %#v", barrierContext.ServerBypass)
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionProtected || got.Desired != DesiredOn {
+		t.Fatalf("migration status = %+v, want protected/on", got)
+	}
+}
+
+func TestManagerMigrateRejectsUnsafeMetadataBeforeMutation(t *testing.T) {
+	env := newManagerTestEnv(t)
+	err := env.manager.Migrate(context.Background(), MigrationRequest{
+		Gateway:      "192.0.2.1",
+		ServerBypass: []string{"198.51.100.0/24"},
+	})
+	if err == nil {
+		t.Fatal("unsafe migration bypass accepted")
+	}
+	if got := env.events.snapshot(); len(got) != 0 {
+		t.Fatalf("unsafe metadata caused mutation: %#v", got)
+	}
+	if env.legacy.stopCount != 0 || env.runner.startCount() != 0 {
+		t.Fatal("unsafe metadata stopped old Core or started a second Core")
+	}
+}
+
+func TestManagerMigrateBarrierFailureLeavesLegacyCoreUntouchedAndFailsClosed(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.barrier.installErr = errors.New("partial barrier install failed")
+	err := env.manager.Migrate(context.Background(), MigrationRequest{
+		Gateway:      "192.0.2.1",
+		ServerBypass: []string{"198.51.100.10/32"},
+	})
+	if err == nil {
+		t.Fatal("barrier failure accepted")
+	}
+	if got, want := env.events.snapshot(), []string{"desired.on", "barrier.install"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("migration events = %#v, want %#v", got, want)
+	}
+	if env.legacy.stopCount != 0 || env.runner.startCount() != 0 {
+		t.Fatal("barrier failure stopped old Core or started a second Core")
+	}
+	if !env.manager.barrierHeld {
+		t.Fatal("ambiguous partial barrier was not retained fail closed")
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionBlocked || got.LastError != "barrier_install_failed" {
+		t.Fatalf("migration status = %+v, want blocked barrier_install_failed", got)
+	}
+}
+
 func TestManagerAdoptsMatchingHealthyCore(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.runner.existing = Process{PID: 42, Executable: install.BinPath, UID: 0}
@@ -861,6 +935,7 @@ type managerTestEnv struct {
 	health   *fakeHealthGate
 	barrier  *fakeBarrier
 	restorer *fakeNetworkRestorer
+	legacy   *fakeLegacyCore
 	events   *eventLog
 }
 
@@ -878,19 +953,21 @@ func newManagerTestEnv(t *testing.T) *managerTestEnv {
 	health := &fakeHealthGate{}
 	barrier := &fakeBarrier{events: events}
 	restorer := &fakeNetworkRestorer{events: events}
+	legacy := &fakeLegacyCore{events: events}
 	manager, err := NewManager(ManagerOptions{
 		Store:          store,
 		Runner:         runner,
 		Health:         health,
 		Barrier:        barrier,
 		Restorer:       restorer,
+		Legacy:         legacy,
 		BarrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}, BlockIPv6: true},
 		CoreVersion:    version.Version,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &managerTestEnv{manager: manager, store: store, runner: runner, health: health, barrier: barrier, restorer: restorer, events: events}
+	return &managerTestEnv{manager: manager, store: store, runner: runner, health: health, barrier: barrier, restorer: restorer, legacy: legacy, events: events}
 }
 
 func newProtectedManagerTestEnv(t *testing.T) *managerTestEnv {
@@ -1199,18 +1276,27 @@ func healthyRuntime(pid int) supervisor.RuntimeState {
 }
 
 type fakeBarrier struct {
-	events     *eventLog
-	installErr error
-	removeErr  error
-	onRemove   func()
+	events         *eventLog
+	installErr     error
+	reassertErr    error
+	removeErr      error
+	onRemove       func()
+	mu             sync.Mutex
+	installContext BarrierContext
 }
 
-func (b *fakeBarrier) Install(context.Context, BarrierContext) error {
+func (b *fakeBarrier) Install(_ context.Context, barrierContext BarrierContext) error {
 	b.events.add("barrier.install")
+	b.mu.Lock()
+	b.installContext = cloneBarrierContext(barrierContext)
+	b.mu.Unlock()
 	return b.installErr
 }
 
-func (b *fakeBarrier) ReassertBypass(context.Context, BarrierContext) error { return nil }
+func (b *fakeBarrier) ReassertBypass(context.Context, BarrierContext) error {
+	b.events.add("barrier.reassert")
+	return b.reassertErr
+}
 
 func (b *fakeBarrier) Remove(context.Context, BarrierContext) error {
 	b.events.add("barrier.remove")
@@ -1218,6 +1304,32 @@ func (b *fakeBarrier) Remove(context.Context, BarrierContext) error {
 		b.onRemove()
 	}
 	return b.removeErr
+}
+
+func (b *fakeBarrier) lastInstallContext() BarrierContext {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return cloneBarrierContext(b.installContext)
+}
+
+type fakeLegacyCore struct {
+	events      *eventLog
+	stopErr     error
+	removeErr   error
+	stopCount   int
+	removeCount int
+}
+
+func (l *fakeLegacyCore) Stop(context.Context) error {
+	l.stopCount++
+	l.events.add("legacy.stop")
+	return l.stopErr
+}
+
+func (l *fakeLegacyCore) Remove() error {
+	l.removeCount++
+	l.events.add("legacy.remove")
+	return l.removeErr
 }
 
 type fakeNetworkRestorer struct {

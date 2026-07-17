@@ -39,12 +39,23 @@ build_package() {
 }
 
 bootout_agent() {
-  launchctl bootout "$DOMAIN" "$AGENT_DST" >/dev/null 2>&1 || true
+  launchctl bootout "$DOMAIN/$BUNDLE_ID" >/dev/null 2>&1 || true
 }
 
 remove_legacy_agent() {
-  launchctl bootout "$DOMAIN" "$LEGACY_AGENT_DST" >/dev/null 2>&1 || true
+  launchctl bootout "$DOMAIN/$LEGACY_BUNDLE_ID" >/dev/null 2>&1 || true
   rm -f "$LEGACY_AGENT_DST"
+}
+
+verify_single_agent() {
+  if ! launchctl print "$DOMAIN/$BUNDLE_ID" >/dev/null 2>&1; then
+    echo "Canonical bx menu LaunchAgent is not running." >&2
+    return 1
+  fi
+  if launchctl print "$DOMAIN/$LEGACY_BUNDLE_ID" >/dev/null 2>&1; then
+    echo "Legacy bx menu LaunchAgent is still running." >&2
+    return 1
+  fi
 }
 
 install_menu() {
@@ -59,6 +70,7 @@ install_menu() {
   bootout_agent
   launchctl bootstrap "$DOMAIN" "$AGENT_DST"
   launchctl kickstart -k "$DOMAIN/$BUNDLE_ID"
+  verify_single_agent
   echo "bx menu bar app is installed and running."
 }
 
@@ -66,6 +78,7 @@ uninstall_menu() {
   ensure_macos
   echo "Removing bx menu bar app..."
   bootout_agent
+  remove_legacy_agent
   rm -f "$AGENT_DST"
   rm -rf "$APP_DST"
   echo "bx menu bar app removed."
@@ -80,6 +93,7 @@ restart_menu() {
   bootout_agent
   launchctl bootstrap "$DOMAIN" "$AGENT_DST"
   launchctl kickstart -k "$DOMAIN/$BUNDLE_ID"
+  verify_single_agent
   echo "bx menu bar app restarted."
 }
 
@@ -96,6 +110,7 @@ status_menu() {
     echo "login item: not installed"
   fi
   launchctl print "$DOMAIN/$BUNDLE_ID" >/dev/null 2>&1 && echo "state: running" || echo "state: not running"
+  launchctl print "$DOMAIN/$LEGACY_BUNDLE_ID" >/dev/null 2>&1 && echo "legacy state: running (unexpected)" || echo "legacy state: not running"
 }
 
 write_launch_agent() {

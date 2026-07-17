@@ -1,6 +1,7 @@
 package guardian
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"syscall"
 	"testing"
 	"time"
@@ -74,6 +76,59 @@ func TestLocalAPIDownReturnsControllerFailure(t *testing.T) {
 	}
 }
 
+func TestLocalAPIMigrateRequiresRootAndStrictMetadata(t *testing.T) {
+	validBody := []byte(`{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"]}`)
+	tests := []struct {
+		name      string
+		uid       uint32
+		gotUID    bool
+		body      []byte
+		wantCode  int
+		wantCalls int
+	}{
+		{name: "logged-in user", uid: 501, gotUID: true, body: validBody, wantCode: http.StatusForbidden},
+		{name: "unknown secret field", uid: 0, gotUID: true, body: []byte(`{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"],"server_link":"vless://secret"}`), wantCode: http.StatusBadRequest},
+		{name: "root metadata", uid: 0, gotUID: true, body: validBody, wantCode: http.StatusOK, wantCalls: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			controller := &fakeController{status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, Protection: ProtectionProtected}}
+			request := httptest.NewRequest(http.MethodPost, "/v1/migrate", bytes.NewReader(tt.body))
+			request = request.WithContext(withPeerCredentials(request.Context(), tt.uid, tt.gotUID))
+			recorder := httptest.NewRecorder()
+			NewLocalAPI(controller).ServeHTTP(recorder, request)
+			if recorder.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d, body=%s", recorder.Code, tt.wantCode, recorder.Body.String())
+			}
+			if controller.migrateCalls != tt.wantCalls {
+				t.Fatalf("Migrate calls = %d, want %d", controller.migrateCalls, tt.wantCalls)
+			}
+			if tt.wantCalls == 1 && !reflect.DeepEqual(controller.migration, MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}}) {
+				t.Fatalf("migration request = %+v", controller.migration)
+			}
+		})
+	}
+}
+
+func TestLocalAPIMigrateRejectsDataBeyondBodyLimit(t *testing.T) {
+	controller := &fakeController{}
+	body := []byte(`{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"]}`)
+	body = append(body, bytes.Repeat([]byte(" "), (64<<10)-len(body))...)
+	body = append(body, []byte(`{"server_link":"vless://secret"}`)...)
+	request := httptest.NewRequest(http.MethodPost, "/v1/migrate", bytes.NewReader(body))
+	request = request.WithContext(withPeerCredentials(request.Context(), 0, true))
+	recorder := httptest.NewRecorder()
+
+	NewLocalAPI(controller).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if controller.migrateCalls != 0 {
+		t.Fatal("oversized migration metadata reached controller")
+	}
+}
+
 func TestLocalAPIMutationOutlivesClientCancellation(t *testing.T) {
 	controller := &fakeController{}
 	request := httptest.NewRequest(http.MethodPost, "/v1/up", nil)
@@ -120,12 +175,15 @@ func TestClientUsesGuardianUnixAPI(t *testing.T) {
 	if _, err := client.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}}); err != nil {
+		t.Fatal(err)
+	}
 	status, err := client.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if controller.upCalls != 1 || controller.downCalls != 1 || status.SchemaVersion != 1 {
-		t.Fatalf("calls/status = %d/%d %+v", controller.upCalls, controller.downCalls, status)
+	if controller.upCalls != 1 || controller.downCalls != 1 || controller.migrateCalls != 1 || status.SchemaVersion != 1 {
+		t.Fatalf("calls/status = %d/%d/%d %+v", controller.upCalls, controller.downCalls, controller.migrateCalls, status)
 	}
 }
 
@@ -274,8 +332,11 @@ type fakeController struct {
 	status       Status
 	upCalls      int
 	downCalls    int
+	migrateCalls int
+	migration    MigrationRequest
 	upErr        error
 	downErr      error
+	migrateErr   error
 	upContextErr error
 }
 
@@ -310,4 +371,10 @@ func (c *fakeController) Up(ctx context.Context) error {
 func (c *fakeController) Down(context.Context) error {
 	c.downCalls++
 	return c.downErr
+}
+
+func (c *fakeController) Migrate(_ context.Context, request MigrationRequest) error {
+	c.migrateCalls++
+	c.migration = request
+	return c.migrateErr
 }
