@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/getbx/bx/internal/supervisor"
@@ -318,18 +317,6 @@ func sameProcessIdentity(expected, current Process) (bool, error) {
 		return false, err
 	}
 	return os.SameFile(expectedInfo, currentInfo), nil
-}
-
-func statExecutableIdentity(path string) (executableIdentity, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return executableIdentity{}, err
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return executableIdentity{}, errors.New("executable inode identity unavailable")
-	}
-	return executableIdentity{device: uint64(stat.Dev), inode: stat.Ino}, nil
 }
 
 func saveProcessRecord(path string, record processRecord) error {
