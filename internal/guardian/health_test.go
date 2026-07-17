@@ -152,6 +152,37 @@ func TestHealthCheckerTimeoutCancelsRuntimeFetch(t *testing.T) {
 	}
 }
 
+func TestHealthCheckerTimeoutPreservesLastConcreteFailure(t *testing.T) {
+	calls := 0
+	checker := HealthChecker{
+		PollInterval: time.Millisecond,
+		fetchRuntime: func(ctx context.Context, _ string) (supervisor.RuntimeState, error) {
+			calls++
+			if calls == 1 {
+				return supervisor.RuntimeState{
+					Version: "v0.3.0", PID: 42, TunName: "utun7", SocksAddr: "127.0.0.1:43210",
+					ServerBypass: []string{"23.27.134.77/32"}, TunnelHealthy: true,
+					DNSListening: true, RoutesInstalled: false,
+				}, nil
+			}
+			<-ctx.Done()
+			return supervisor.RuntimeState{}, ctx.Err()
+		},
+	}
+
+	_, err := checker.Wait(context.Background(), HealthTarget{
+		Version: "v0.3.0",
+		PID:     42,
+		Timeout: 10 * time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "routes are not installed") {
+		t.Fatalf("Wait() error = %v, want last concrete routes failure", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait() returned terminal context error instead of concrete failure: %v", err)
+	}
+}
+
 func startHealthSOCKSServer(t *testing.T) (string, <-chan string) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

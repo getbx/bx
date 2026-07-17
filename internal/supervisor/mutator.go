@@ -21,7 +21,7 @@ func nop() error { return nil }
 
 func (nopMutator) SetTransport(string) (func() error, func() error, error) { return nop, nop, nil }
 func (nopMutator) Rehijack() (func() error, func() error, error)           { return nop, nop, nil }
-func (nopMutator) Reconnect() error                                         { return nil }
+func (nopMutator) Reconnect() error                                        { return nil }
 
 // rehijacker 是 liveMutator 对 platform 的窄依赖(只需路由-only 重落实)。
 // platform 接口的方法集 ⊇ rehijacker,故 run.go 的 plat 可直接赋值;
@@ -45,6 +45,7 @@ type liveMutator struct {
 	tunH         tunHandle
 	serverBypass []string
 	userBypass   []string
+	routes       *routeReadiness
 }
 
 // SetTransport 返回真 apply:换到 newLink(建新+等健康+原子换+停旧)。
@@ -68,10 +69,26 @@ func (m *liveMutator) Reconnect() error {
 }
 
 // Rehijack 返回真 apply:在存活设备上重落实劫持路由(重探网关 + 拆旧路由 + 装新路由)。
-// 方法体无副作用(A2 契约):只构造闭包。undo 为 nop —— 路由还原靠
-// engine.Arm 的 snapshotter.Restore(9a 快照网);设备始终在,故快照可兜底。
+// 方法体无副作用(A2 契约):只构造闭包。undo 先悲观清 readiness;路由还原仍靠
+// engine.Arm 的 snapshotter.Restore(9a 快照网),未验证的还原不会重新宣称路由就绪。
 func (m *liveMutator) Rehijack() (apply, undo func() error, err error) {
-	apply = func() error { return m.plat.RehijackRoutes(m.tunH, m.serverBypass, m.userBypass) }
-	undo = func() error { return nil }
+	apply = func() error {
+		m.setRoutesInstalled(false)
+		if err := m.plat.RehijackRoutes(m.tunH, m.serverBypass, m.userBypass); err != nil {
+			return err
+		}
+		m.setRoutesInstalled(true)
+		return nil
+	}
+	undo = func() error {
+		m.setRoutesInstalled(false)
+		return nil
+	}
 	return apply, undo, nil
+}
+
+func (m *liveMutator) setRoutesInstalled(installed bool) {
+	if m.routes != nil {
+		m.routes.set(installed)
+	}
 }

@@ -1,6 +1,9 @@
 package supervisor
 
-import "net/netip"
+import (
+	"net/netip"
+	"sync/atomic"
+)
 
 // RuntimeState is the non-secret handoff contract consumed by Guardian.
 type RuntimeState struct {
@@ -14,6 +17,18 @@ type RuntimeState struct {
 	RoutesInstalled bool     `json:"routes_installed"`
 	UDPRequired     bool     `json:"udp_required"`
 	UDPReady        bool     `json:"udp_ready"`
+}
+
+type routeReadiness struct {
+	installed atomic.Bool
+}
+
+func (r *routeReadiness) set(installed bool) {
+	r.installed.Store(installed)
+}
+
+func (r *routeReadiness) ready() bool {
+	return r.installed.Load()
 }
 
 func runtimeIPv4Bypass(addrs []netip.Addr) []string {
