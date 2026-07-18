@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -129,6 +130,113 @@ func TestLocalAPIMigrateRejectsDataBeyondBodyLimit(t *testing.T) {
 	}
 }
 
+func TestLocalAPIUpdateRequiresRootAndStrictMetadata(t *testing.T) {
+	validBody := []byte(`{"transaction_id":"tx-1","from_version":"v1","to_version":"v2","asset_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","package_path":"/var/lib/bx/update/staging/tx-1/package.tar.gz","app_path":"/Applications/Bx.app","app_uid":0,"app_gid":0}`)
+	tests := []struct {
+		name      string
+		uid       uint32
+		gotUID    bool
+		body      []byte
+		wantCode  int
+		wantCalls int
+	}{
+		{name: "missing credentials", body: validBody, wantCode: http.StatusForbidden},
+		{name: "non-root", uid: 501, gotUID: true, body: validBody, wantCode: http.StatusForbidden},
+		{name: "unknown bypass field", uid: 0, gotUID: true, body: append(bytes.TrimSuffix(validBody, []byte("}")), []byte(`,"gateway":"192.0.2.1"}`)...), wantCode: http.StatusBadRequest},
+		{name: "unknown secret field", uid: 0, gotUID: true, body: append(bytes.TrimSuffix(validBody, []byte("}")), []byte(`,"client_link":"vless://secret"}`)...), wantCode: http.StatusBadRequest},
+		{name: "trailing JSON", uid: 0, gotUID: true, body: append(validBody, []byte(` {}`)...), wantCode: http.StatusBadRequest},
+		{name: "root metadata", uid: 0, gotUID: true, body: validBody, wantCode: http.StatusOK, wantCalls: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			controller := &fakeController{
+				status:       Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, Protection: ProtectionProtected},
+				updateResult: UpdateResult{FromVersion: "v1", ToVersion: "v2", Phase: PhaseCommitted, CoreActivated: true, ProtectionState: ProtectionProtected},
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/update", bytes.NewReader(tt.body))
+			request = request.WithContext(withPeerCredentials(request.Context(), tt.uid, tt.gotUID))
+			recorder := httptest.NewRecorder()
+
+			NewLocalAPI(controller).ServeHTTP(recorder, request)
+
+			if recorder.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d, body=%s", recorder.Code, tt.wantCode, recorder.Body.String())
+			}
+			if controller.updateCalls != tt.wantCalls {
+				t.Fatalf("Update calls = %d, want %d", controller.updateCalls, tt.wantCalls)
+			}
+			if strings.Contains(strings.ToLower(recorder.Body.String()), "vless://") {
+				t.Fatalf("response reflected secret metadata: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestLocalAPIUpdateReturnsResultAndHidesControllerFailure(t *testing.T) {
+	body := []byte(`{"transaction_id":"tx-1","from_version":"v1","to_version":"v2","asset_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","package_path":"/var/lib/bx/update/staging/tx-1/package.tar.gz"}`)
+	for _, tt := range []struct {
+		name       string
+		controller *fakeController
+		wantCode   int
+	}{
+		{
+			name: "result",
+			controller: &fakeController{updateResult: UpdateResult{
+				FromVersion: "v1", ToVersion: "v2", Phase: PhaseCommitted,
+				CoreActivated: true, ProtectionState: ProtectionProtected,
+			}},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:       "failure redacted",
+			controller: &fakeController{updateErr: errors.New("vless://user:password@example.test?token=secret")},
+			wantCode:   http.StatusInternalServerError,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/update", bytes.NewReader(body))
+			request = request.WithContext(withPeerCredentials(request.Context(), 0, true))
+			recorder := httptest.NewRecorder()
+			NewLocalAPI(tt.controller).ServeHTTP(recorder, request)
+			if recorder.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d, body=%s", recorder.Code, tt.wantCode, recorder.Body.String())
+			}
+			if strings.Contains(strings.ToLower(recorder.Body.String()), "password") || strings.Contains(strings.ToLower(recorder.Body.String()), "token=") {
+				t.Fatalf("response leaked controller error: %s", recorder.Body.String())
+			}
+			if tt.wantCode == http.StatusOK {
+				var got UpdateResult
+				if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got, tt.controller.updateResult) {
+					t.Fatalf("result = %+v, want %+v", got, tt.controller.updateResult)
+				}
+			}
+		})
+	}
+}
+
+func TestLocalAPIUpdateRejectsDataBeyondBodyLimit(t *testing.T) {
+	controller := &fakeController{}
+	body := []byte(`{"transaction_id":"tx-1","from_version":"v1","to_version":"v2","asset_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","package_path":"/var/lib/bx/update/staging/tx-1/package.tar.gz"}`)
+	body = append(body, bytes.Repeat([]byte(" "), (64<<10)-len(body))...)
+	body = append(body, []byte(`{"client_link":"vless://secret"}`)...)
+	request := httptest.NewRequest(http.MethodPost, "/v1/update", bytes.NewReader(body))
+	request = request.WithContext(withPeerCredentials(request.Context(), 0, true))
+	recorder := httptest.NewRecorder()
+
+	NewLocalAPI(controller).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if controller.updateCalls != 0 {
+		t.Fatal("oversized update metadata reached controller")
+	}
+}
+
 func TestLocalAPIMutationOutlivesClientCancellation(t *testing.T) {
 	controller := &fakeController{}
 	request := httptest.NewRequest(http.MethodPost, "/v1/up", nil)
@@ -178,12 +286,19 @@ func TestClientUsesGuardianUnixAPI(t *testing.T) {
 	if _, err := client.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}}); err != nil {
 		t.Fatal(err)
 	}
+	updateRequest := UpdateRequest{
+		TransactionID: "tx-1", FromVersion: "v1", ToVersion: "v2",
+		AssetSHA256: strings.Repeat("a", 64), PackagePath: "/var/lib/bx/update/staging/tx-1/package.tar.gz",
+	}
+	if _, err := client.Update(context.Background(), updateRequest); err != nil {
+		t.Fatal(err)
+	}
 	status, err := client.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if controller.upCalls != 1 || controller.downCalls != 1 || controller.migrateCalls != 1 || status.SchemaVersion != 1 {
-		t.Fatalf("calls/status = %d/%d/%d %+v", controller.upCalls, controller.downCalls, controller.migrateCalls, status)
+	if controller.upCalls != 1 || controller.downCalls != 1 || controller.migrateCalls != 1 || controller.updateCalls != 1 || status.SchemaVersion != 1 {
+		t.Fatalf("calls/status = %d/%d/%d/%d %+v", controller.upCalls, controller.downCalls, controller.migrateCalls, controller.updateCalls, status)
 	}
 }
 
@@ -333,10 +448,14 @@ type fakeController struct {
 	upCalls      int
 	downCalls    int
 	migrateCalls int
+	updateCalls  int
 	migration    MigrationRequest
+	update       UpdateRequest
+	updateResult UpdateResult
 	upErr        error
 	downErr      error
 	migrateErr   error
+	updateErr    error
 	upContextErr error
 }
 
@@ -377,4 +496,10 @@ func (c *fakeController) Migrate(_ context.Context, request MigrationRequest) er
 	c.migrateCalls++
 	c.migration = request
 	return c.migrateErr
+}
+
+func (c *fakeController) Update(_ context.Context, request UpdateRequest) (UpdateResult, error) {
+	c.updateCalls++
+	c.update = request
+	return c.updateResult, c.updateErr
 }

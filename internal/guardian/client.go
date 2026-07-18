@@ -44,6 +44,49 @@ func (c *Client) Migrate(ctx context.Context, request MigrationRequest) (Status,
 	return c.request(ctx, http.MethodPost, "/v1/migrate", bytes.NewReader(body))
 }
 
+func (c *Client) Update(ctx context.Context, request UpdateRequest) (UpdateResult, error) {
+	normalized, err := ValidateUpdateRequest(request)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	body, err := json.Marshal(normalized)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	client := c.HTTPClient
+	if client == nil {
+		client = guardianHTTPClient(c.SocketPath)
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		defer transport.CloseIdleConnections()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://local/v1/update", bytes.NewReader(body))
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(req)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(response.Body).Decode(&failure)
+		if failure.Error != "" {
+			return UpdateResult{}, fmt.Errorf("Guardian /v1/update returned %d: %s", response.StatusCode, failure.Error)
+		}
+		return UpdateResult{}, fmt.Errorf("Guardian /v1/update returned %d", response.StatusCode)
+	}
+	var result UpdateResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return UpdateResult{}, err
+	}
+	return result, nil
+}
+
 func (c *Client) request(ctx context.Context, method, path string, body io.Reader) (Status, error) {
 	client := c.HTTPClient
 	if client == nil {

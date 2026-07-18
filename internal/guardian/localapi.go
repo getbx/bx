@@ -21,6 +21,10 @@ type MigrationController interface {
 	Migrate(context.Context, MigrationRequest) error
 }
 
+type UpdateController interface {
+	Update(context.Context, UpdateRequest) (UpdateResult, error)
+}
+
 type peerCredentialsKey struct{}
 
 type peerCredentials struct {
@@ -65,8 +69,58 @@ func NewLocalAPI(controller Controller) http.Handler {
 	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down, mutations))
 	migrationController, _ := controller.(MigrationController)
 	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations))
+	updateController, _ := controller.(UpdateController)
+	mux.HandleFunc("/v1/update", updateHandler(updateController, mutations))
 	recoveries, _ := controller.(recoveryLifecycle)
 	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries}
+}
+
+func updateHandler(updater UpdateController, mutations *acceptedMutations) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		credentials, _ := r.Context().Value(peerCredentialsKey{}).(peerCredentials)
+		if !credentials.got || credentials.uid != 0 {
+			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "mutation requires root peer"})
+			return
+		}
+		if updater == nil {
+			writeGuardianJSON(w, http.StatusNotImplemented, map[string]string{"error": "update unavailable"})
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		var request UpdateRequest
+		if err := decoder.Decode(&request); err != nil {
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid update metadata"})
+			return
+		}
+		if err := ensureJSONEOF(decoder); err != nil {
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid update metadata"})
+			return
+		}
+		normalized, err := ValidateUpdateRequest(request)
+		if err != nil {
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid update metadata"})
+			return
+		}
+		if !mutations.accept() {
+			writeGuardianJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "guardian is shutting down"})
+			return
+		}
+		defer mutations.done()
+		mutationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), guardianMutationTimeout)
+		defer cancel()
+		result, err := updater.Update(mutationCtx, normalized)
+		if err != nil {
+			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"error": "guardian operation failed"})
+			return
+		}
+		writeGuardianJSON(w, http.StatusOK, result)
+	}
 }
 
 func migrationHandler(controller Controller, migration MigrationController, mutations *acceptedMutations) http.HandlerFunc {
