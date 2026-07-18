@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -91,7 +92,7 @@ func TestExecCoreRunnerStartPersistsInspectedGeneration(t *testing.T) {
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.Operations = operations
 
-	process, err := runner.Start(context.Background())
+	process, err := runner.Start(context.Background(), CoreStartOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +108,62 @@ func TestExecCoreRunnerStartPersistsInspectedGeneration(t *testing.T) {
 	}
 	if started.terminationCount() != 0 {
 		t.Fatal("healthy started child was terminated")
+	}
+}
+
+func TestExecCoreRunnerScopesBypassHandoffToAuthorizedStart(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(guardianBypassHandoffEnv, "203.0.113.99/32")
+
+	for _, tt := range []struct {
+		name    string
+		options CoreStartOptions
+		want    string
+	}{
+		{name: "authorized", options: CoreStartOptions{GuardianBypassHandoff: []string{"198.51.100.10/32"}}, want: guardianBypassHandoffEnv + "=198.51.100.10/32"},
+		{name: "ordinary start strips ambient authorization"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			started := newStartTestProcess(52)
+			t.Cleanup(started.release)
+			operations := &startTestProcessOperations{
+				started: started,
+				process: Process{PID: 52, Executable: executable, UID: 0, Generation: "darwin:123:456"},
+			}
+			runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+			runner.StatePath = filepath.Join(dir, strings.ReplaceAll(tt.name, " ", "-")+".json")
+			runner.Operations = operations
+
+			if _, err := runner.Start(context.Background(), tt.options); err != nil {
+				t.Fatal(err)
+			}
+			got := operations.startEnvironment()
+			for _, entry := range got {
+				if strings.HasPrefix(entry, guardianBypassHandoffEnv+"=") && entry != tt.want {
+					t.Fatalf("handoff environment = %q, want %q", entry, tt.want)
+				}
+			}
+			if tt.want != "" {
+				found := false
+				for _, entry := range got {
+					found = found || entry == tt.want
+				}
+				if !found {
+					t.Fatalf("authorized handoff missing from environment: %#v", got)
+				}
+			}
+			if tt.want == "" {
+				for _, entry := range got {
+					if strings.HasPrefix(entry, guardianBypassHandoffEnv+"=") {
+						t.Fatalf("ordinary start inherited handoff authorization: %#v", got)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -126,7 +183,7 @@ func TestExecCoreRunnerStartAmbiguousGenerationTerminatesDirectChild(t *testing.
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.Operations = operations
 
-	if _, err := runner.Start(context.Background()); err == nil {
+	if _, err := runner.Start(context.Background(), CoreStartOptions{}); err == nil {
 		t.Fatal("Start accepted a child without immutable generation")
 	}
 	if got := started.terminationCount(); got != 1 {
@@ -155,7 +212,7 @@ func TestExecCoreRunnerStartErrorClearsLaunchMarkerForRetry(t *testing.T) {
 	runner.StatePath = statePath
 	runner.Operations = operations
 
-	if _, err := runner.Start(context.Background()); err == nil {
+	if _, err := runner.Start(context.Background(), CoreStartOptions{}); err == nil {
 		t.Fatal("Start succeeded despite definitive pre-child error")
 	}
 	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
@@ -169,7 +226,7 @@ func TestExecCoreRunnerStartErrorClearsLaunchMarkerForRetry(t *testing.T) {
 	reconstructed := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	reconstructed.StatePath = statePath
 	reconstructed.Operations = operations
-	if _, err := reconstructed.Start(context.Background()); err != nil {
+	if _, err := reconstructed.Start(context.Background(), CoreStartOptions{}); err != nil {
 		t.Fatalf("reconstructed retry after definitive pre-child error: %v", err)
 	}
 	if got := operations.startCount(); got != 2 {
@@ -199,7 +256,7 @@ func TestExecCoreRunnerWaitClearsOwnedRecordBeforePublishingExit(t *testing.T) {
 		return removeProcessRecordFile(path)
 	}
 
-	process, err := runner.Start(context.Background())
+	process, err := runner.Start(context.Background(), CoreStartOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +296,7 @@ func TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit(t *testing.T) 
 	runner.Operations = operations
 	runner.RemoveProcessRecord = func(string) error { return errors.New("record removal failed") }
 
-	process, err := runner.Start(context.Background())
+	process, err := runner.Start(context.Background(), CoreStartOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +336,7 @@ func TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker(t *t
 		return errors.New("normal process record write failed")
 	}
 
-	if _, err := runner.Start(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+	if _, err := runner.Start(context.Background(), CoreStartOptions{}); !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("Start error = %v, want uncertain ownership", err)
 	}
 	if got := started.terminationCount(); got != 1 {
@@ -330,7 +387,7 @@ func TestExecCoreRunnerLateCleanupProofClearsMarkerForSameAndReconstructedRetry(
 		return errors.New("normal process record write failed")
 	}
 
-	if _, err := runner.Start(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+	if _, err := runner.Start(context.Background(), CoreStartOptions{}); !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("timed-out cleanup Start error = %v, want uncertain ownership", err)
 	}
 	if _, err := os.Stat(statePath); err != nil {
@@ -751,23 +808,31 @@ func (p *startTestProcess) terminationCount() int {
 }
 
 type startTestProcessOperations struct {
-	started    StartedProcess
-	process    Process
-	mu         sync.Mutex
-	signals    int
-	starts     int
-	startErr   error
-	inspectErr error
+	started     StartedProcess
+	process     Process
+	mu          sync.Mutex
+	signals     int
+	starts      int
+	startErr    error
+	inspectErr  error
+	environment []string
 }
 
-func (o *startTestProcessOperations) Start(string, []string) (StartedProcess, error) {
+func (o *startTestProcessOperations) Start(_ string, _ []string, environment []string) (StartedProcess, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.starts++
+	o.environment = append([]string(nil), environment...)
 	if o.startErr != nil {
 		return nil, o.startErr
 	}
 	return o.started, nil
+}
+
+func (o *startTestProcessOperations) startEnvironment() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.environment...)
 }
 
 func (o *startTestProcessOperations) Inspect(int) (Process, error) {
@@ -832,7 +897,7 @@ func (p *uncertainStartTestProcess) Terminate() error {
 	return errors.New("terminate failed")
 }
 
-func (*watchTestProcessOperations) Start(string, []string) (StartedProcess, error) {
+func (*watchTestProcessOperations) Start(string, []string, []string) (StartedProcess, error) {
 	return nil, errors.New("unexpected start")
 }
 

@@ -51,6 +51,7 @@ type FileOps interface {
 	Chown(string, int, int) error
 	Rename(string, string) error
 	RemoveAll(string) error
+	SyncDir(string) error
 }
 
 type PreparedInstall struct {
@@ -296,22 +297,34 @@ func (p *PreparedInstall) restoreApp() error {
 }
 
 func (p *PreparedInstall) removeAppTransactionPaths() error {
-	return errors.Join(
-		p.ops.RemoveAll(p.appStage),
-		p.ops.RemoveAll(p.appPrevious),
-		p.ops.RemoveAll(p.appRestore),
-		p.ops.RemoveAll(p.appDiscard),
-	)
+	for _, path := range []string{p.appStage, p.appPrevious, p.appRestore, p.appDiscard} {
+		if err := p.removeDurably(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *PreparedInstall) cleanup() error {
-	return errors.Join(
-		p.ops.RemoveAll(p.cliStage),
-		p.ops.RemoveAll(p.cliStage+".restore"),
-		p.removeAppTransactionPaths(),
-		p.ops.RemoveAll(p.options.SnapshotDir),
-		p.ops.RemoveAll(p.options.StagingDir),
-	)
+	for _, path := range []string{p.cliStage, p.cliStage + ".restore"} {
+		if err := p.removeDurably(path); err != nil {
+			return err
+		}
+	}
+	if err := p.removeAppTransactionPaths(); err != nil {
+		return err
+	}
+	if err := p.removeDurably(p.options.SnapshotDir); err != nil {
+		return err
+	}
+	return p.removeDurably(p.options.StagingDir)
+}
+
+func (p *PreparedInstall) removeDurably(path string) error {
+	if err := p.ops.RemoveAll(path); err != nil {
+		return err
+	}
+	return p.ops.SyncDir(filepath.Dir(path))
 }
 
 func validateInstallOptions(options InstallOptions) error {
@@ -593,3 +606,11 @@ func (osFileOps) Chmod(path string, mode fs.FileMode) error { return os.Chmod(pa
 func (osFileOps) Chown(path string, uid, gid int) error     { return os.Chown(path, uid, gid) }
 func (osFileOps) Rename(oldPath, newPath string) error      { return os.Rename(oldPath, newPath) }
 func (osFileOps) RemoveAll(path string) error               { return os.RemoveAll(path) }
+func (osFileOps) SyncDir(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}

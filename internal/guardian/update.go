@@ -35,6 +35,15 @@ const (
 var (
 	updateTransactionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	updateVersionPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+\-]{0,127}$`)
+	syncRecoveryRoot           = func(root *os.Root) error {
+		directory, err := root.Open(".")
+		if err != nil {
+			return err
+		}
+		syncErr := directory.Sync()
+		closeErr := directory.Close()
+		return errors.Join(syncErr, closeErr)
+	}
 )
 
 type UpdateRequest struct {
@@ -257,11 +266,17 @@ func (m *Manager) recoverUpdateLocked(ctx context.Context) error {
 		switch {
 		case recoverErr == nil:
 			if err := prepared.Commit(); err != nil {
-				return newUpdateError("update_cleanup_failed")
+				return m.failCleanupOnlyRecovery(ctx, barrierContext, "update_cleanup_failed")
 			}
-			return m.clearReceiptBackedTransaction(transaction)
+			if err := m.clearReceiptBackedTransaction(transaction); err != nil {
+				return m.failCleanupOnlyRecovery(ctx, barrierContext, "update_journal_cleanup_failed")
+			}
+			return nil
 		case updateTransactionStagingGone(*transaction, m.updatePaths):
-			return m.clearReceiptBackedTransaction(transaction)
+			if err := m.clearReceiptBackedTransaction(transaction); err != nil {
+				return m.failCleanupOnlyRecovery(ctx, barrierContext, "update_journal_cleanup_failed")
+			}
+			return nil
 		}
 	}
 	if recoverErr != nil {
@@ -282,19 +297,19 @@ func (m *Manager) recoverUpdateLocked(ctx context.Context) error {
 		}
 		if prepared.RequiredGuardianProtocol() > m.guardianProtocol {
 			if err := prepared.Commit(); err != nil {
-				return newUpdateError("update_cleanup_failed")
+				return m.failCleanupOnlyRecovery(ctx, barrierContext, "update_cleanup_failed")
 			}
 			if err := m.updates.ClearTransaction(); err != nil {
-				return newUpdateError("update_journal_cleanup_failed")
+				return m.failCleanupOnlyRecovery(ctx, barrierContext, "update_journal_cleanup_failed")
 			}
 			m.coreVersion = transaction.FromVersion
 			return nil
 		}
 		if err := prepared.Commit(); err != nil {
-			return newUpdateError("update_cleanup_failed")
+			return m.failCleanupOnlyRecovery(ctx, barrierContext, "update_cleanup_failed")
 		}
 		if err := m.updates.ClearTransaction(); err != nil {
-			return newUpdateError("update_journal_cleanup_failed")
+			return m.failCleanupOnlyRecovery(ctx, barrierContext, "update_journal_cleanup_failed")
 		}
 		m.coreVersion = transaction.FromVersion
 		return nil
@@ -342,6 +357,14 @@ func (m *Manager) recoverUpdateLocked(ctx context.Context) error {
 	default:
 		return m.failMalformedUpdateRecovery(ctx, barrierContext)
 	}
+}
+
+func (m *Manager) failCleanupOnlyRecovery(ctx context.Context, barrierContext BarrierContext, code string) error {
+	if err := m.installRecoveryBarrier(ctx, barrierContext); err != nil {
+		return err
+	}
+	m.needsAttention(DesiredOn, code)
+	return newUpdateError(code)
 }
 
 func (m *Manager) recoverPreparedBarrierIntent(ctx context.Context, transaction *Transaction, prepared PreparedUpdate, barrierContext BarrierContext) error {
@@ -434,12 +457,10 @@ func (m *Manager) failMalformedUpdateRecovery(ctx context.Context, barrierContex
 	if _, _, _, err := PlanBarrier(barrierContext); err != nil {
 		barrierContext = blockOnlyRecoveryContext(barrierContext)
 	}
-	if err := m.barrier.Install(ctx, barrierContext); err != nil {
-		m.barrierHeld = false
+	if err := m.installBarrier(ctx, barrierContext); err != nil {
 		m.needsAttention(DesiredOn, "update_journal_malformed")
 		return newUpdateError("update_journal_malformed")
 	}
-	m.barrierHeld = true
 	m.needsAttention(DesiredOn, "update_journal_malformed")
 	return newUpdateError("update_journal_malformed")
 }
@@ -448,12 +469,10 @@ func (m *Manager) installRecoveryBarrier(ctx context.Context, barrierContext Bar
 	if _, _, _, err := PlanBarrier(barrierContext); err != nil {
 		barrierContext = blockOnlyRecoveryContext(barrierContext)
 	}
-	if err := m.barrier.Install(ctx, barrierContext); err != nil {
-		m.barrierHeld = false
+	if err := m.installBarrier(ctx, barrierContext); err != nil {
 		m.needsAttention(DesiredOn, "barrier_install_failed")
 		return newUpdateError("barrier_install_failed")
 	}
-	m.barrierHeld = true
 	m.setStatus(Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseBarrierActive, Protection: ProtectionBlocked})
 	return nil
 }
@@ -579,11 +598,9 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 		_ = prepared.Commit()
 		return m.updateResult(request, m.Status().Phase, false, false), newUpdateError("update_journal_failed")
 	}
-	if err := m.barrier.Install(ctx, barrierContext); err != nil {
-		m.barrierHeld = true
+	if err := m.installBarrier(ctx, barrierContext); err != nil {
 		return m.failUpdate(transaction, request, "barrier_install_failed", false, false)
 	}
-	m.barrierHeld = true
 	transaction.BarrierInstallIntent = false
 	if err := m.saveUpdatePhase(&transaction, PhaseBarrierActive, ""); err != nil {
 		m.needsAttention(DesiredOn, "update_journal_failed")
@@ -646,7 +663,7 @@ func (m *Manager) startUpdateCore(ctx context.Context, version string) (Process,
 		return Process{}, supervisor.RuntimeState{}, newUpdateError("new_core_start_failed")
 	}
 	defer cancelOperation()
-	process, err := m.runner.Start(operationCtx)
+	process, err := m.runner.Start(operationCtx, m.coreStartOptions())
 	if err != nil {
 		if errors.Is(err, ErrProcessOwnershipUncertain) {
 			if uncertain, ok := uncertainProcess(err); ok {
@@ -1511,7 +1528,10 @@ func removeKnownAt(root *os.Root, name string, want artifactFingerprint) error {
 		if originalExists {
 			return newUpdateError("update_cleanup_residue_present")
 		}
-		return root.RemoveAll(cleanupName)
+		if err := root.RemoveAll(cleanupName); err != nil {
+			return err
+		}
+		return syncRecoveryRoot(root)
 	}
 	if !originalExists {
 		return nil
@@ -1521,12 +1541,18 @@ func removeKnownAt(root *os.Root, name string, want artifactFingerprint) error {
 	} else if err != nil {
 		return err
 	}
+	if err := syncRecoveryRoot(root); err != nil {
+		return err
+	}
 	moved, err := fingerprintArtifactAt(root, cleanupName)
 	if err != nil || moved != want {
 		_ = root.Rename(cleanupName, name)
 		return newUpdateError("update_artifact_substituted")
 	}
-	return root.RemoveAll(cleanupName)
+	if err := root.RemoveAll(cleanupName); err != nil {
+		return err
+	}
+	return syncRecoveryRoot(root)
 }
 
 func copyFileBetweenRoots(source *os.Root, sourceName string, destination *os.Root, destinationName string) error {
@@ -1635,7 +1661,10 @@ func removeRootOwnedTransactionDirectory(path, parent, transactionID string) err
 		return err
 	}
 	defer root.Close()
-	return root.RemoveAll(transactionID)
+	if err := root.RemoveAll(transactionID); err != nil {
+		return err
+	}
+	return syncRecoveryRoot(root)
 }
 
 func requiredGuardianProtocol(packageData []byte, arch string) (int, error) {

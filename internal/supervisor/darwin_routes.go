@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 )
 
@@ -61,7 +62,15 @@ func commandString(name string, args ...string) string {
 //
 // ⚠️ `-reject` 的确切 route 语法(dummy gateway `::1`)与本地 errno 需在真实 macOS 上验证。
 func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass []string, blockV6 bool) []darwinRouteSpec {
+	return darwinRouteSpecsWithHandoff(tunName, gw, directCIDRs, serverBypass, userBypass, blockV6, nil)
+}
+
+func darwinRouteSpecsWithHandoff(tunName, gw string, directCIDRs, serverBypass, userBypass []string, blockV6 bool, handoffBypasses []string) []darwinRouteSpec {
 	var specs []darwinRouteSpec
+	authorized := make(map[string]struct{}, len(handoffBypasses))
+	for _, cidr := range handoffBypasses {
+		authorized[cidr] = struct{}{}
+	}
 	viaGW := func(cidr string, adopt bool) darwinRouteSpec {
 		spec := darwinRouteSpec{
 			add: []string{"-n", "add", "-net", cidr, gw},
@@ -82,7 +91,8 @@ func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass 
 		specs = append(specs, viaGW(c, false))
 	}
 	for _, c := range serverBypass {
-		specs = append(specs, viaGW(c, true))
+		_, adopt := authorized[c]
+		specs = append(specs, viaGW(c, adopt))
 	}
 	for _, c := range userBypass {
 		specs = append(specs, viaGW(c, false))
@@ -125,4 +135,25 @@ func cleanupDarwinRouteSpecs(specs []darwinRouteSpec, run func(...string) error)
 func darwinRouteAlreadyExists(err error) bool {
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "file exists") || strings.Contains(message, "already exists")
+}
+
+func parseGuardianBypassHandoff(value string) []string {
+	if value == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var bypasses []string
+	for _, candidate := range strings.Split(value, ",") {
+		prefix, err := netip.ParsePrefix(candidate)
+		if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 32 || prefix != prefix.Masked() {
+			return nil
+		}
+		canonical := prefix.String()
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		bypasses = append(bypasses, canonical)
+	}
+	return bypasses
 }

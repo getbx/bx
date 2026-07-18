@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +16,10 @@ import (
 	"github.com/getbx/bx/internal/supervisor"
 )
 
-const defaultProcessStatePath = "/var/lib/bx/core-process.json"
+const (
+	defaultProcessStatePath  = "/var/lib/bx/core-process.json"
+	guardianBypassHandoffEnv = "BX_GUARDIAN_BYPASS_HANDOFF"
+)
 
 var ErrProcessNotRunning = errors.New("process is not running")
 var ErrProcessOwnershipUncertain = errors.New("Core process ownership is uncertain")
@@ -82,7 +86,7 @@ type StartedProcess interface {
 }
 
 type ProcessOperations interface {
-	Start(executable string, args []string) (StartedProcess, error)
+	Start(executable string, args, environment []string) (StartedProcess, error)
 	Inspect(pid int) (Process, error)
 }
 
@@ -116,7 +120,7 @@ func coreArgs(configPath, dnsListen string) []string {
 	return []string{"run", "-c", configPath, "--listen-dns", dnsListen}
 }
 
-func (r *ExecCoreRunner) Start(ctx context.Context) (Process, error) {
+func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (Process, error) {
 	if err := ctx.Err(); err != nil {
 		return Process{}, err
 	}
@@ -131,8 +135,15 @@ func (r *ExecCoreRunner) Start(ctx context.Context) (Process, error) {
 	if err := r.saveRecord(r.statePath(), processRecord{State: processRecordLaunching}); err != nil {
 		return Process{}, fmt.Errorf("persist launch marker before starting Core: %w", err)
 	}
+	environment, err := coreStartEnvironment(os.Environ(), options)
+	if err != nil {
+		if clearErr := r.clearLaunchMarker(); clearErr != nil {
+			return Process{}, uncertainOwnership(Process{Uncertain: true}, errors.Join(err, clearErr))
+		}
+		return Process{}, err
+	}
 	operations := r.operations()
-	started, err := operations.Start(r.Executable, coreArgs(r.ConfigPath, r.DNSListen))
+	started, err := operations.Start(r.Executable, coreArgs(r.ConfigPath, r.DNSListen), environment)
 	if err != nil {
 		if clearErr := r.clearLaunchMarker(); clearErr != nil {
 			return Process{}, uncertainOwnership(Process{Uncertain: true}, errors.Join(fmt.Errorf("start installed Core: %w", err), clearErr))
@@ -167,6 +178,30 @@ func (r *ExecCoreRunner) Start(ctx context.Context) (Process, error) {
 	}()
 	process.Exit = exit
 	return process, nil
+}
+
+func coreStartEnvironment(base []string, options CoreStartOptions) ([]string, error) {
+	environment := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		if strings.HasPrefix(entry, guardianBypassHandoffEnv+"=") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	if len(options.GuardianBypassHandoff) == 0 {
+		return environment, nil
+	}
+	canonical, err := canonicalBypassSet(options.GuardianBypassHandoff)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Guardian bypass handoff")
+	}
+	bypasses := make([]string, 0, len(canonical))
+	for bypass := range canonical {
+		bypasses = append(bypasses, bypass)
+	}
+	sort.Strings(bypasses)
+	environment = append(environment, guardianBypassHandoffEnv+"="+strings.Join(bypasses, ","))
+	return environment, nil
 }
 
 func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
@@ -558,8 +593,9 @@ func uncertainProcess(err error) (Process, bool) {
 
 type osProcessOperations struct{}
 
-func (osProcessOperations) Start(executable string, args []string) (StartedProcess, error) {
+func (osProcessOperations) Start(executable string, args, environment []string) (StartedProcess, error) {
 	cmd := exec.Command(executable, args...)
+	cmd.Env = environment
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

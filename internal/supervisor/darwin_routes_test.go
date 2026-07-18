@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -151,7 +152,10 @@ func TestDarwinCoreAdoptsAndOwnsPreinstalledServerBypass(t *testing.T) {
 		return nil
 	}
 
-	specs := darwinRouteSpecs("utun5", "192.168.1.1", nil, []string{"1.2.3.4/32"}, nil, false)
+	specs := darwinRouteSpecsWithHandoff(
+		"utun5", "192.168.1.1", nil, []string{"1.2.3.4/32"}, nil, false,
+		[]string{"1.2.3.4/32"},
+	)
 	owned, err := applyDarwinRouteSpecs(specs, run)
 	if err != nil {
 		t.Fatalf("Core rejected Guardian bypass: %v; commands=%#v", err, commands)
@@ -170,6 +174,56 @@ func TestDarwinCoreAdoptsAndOwnsPreinstalledServerBypass(t *testing.T) {
 	cleanupDarwinRouteSpecs(owned, run)
 	if len(routes) != 0 {
 		t.Fatalf("Core cleanup did not remove owned routes: %#v", routes)
+	}
+}
+
+func TestDarwinCoreDoesNotAdoptUnauthorizedServerBypassCollision(t *testing.T) {
+	routes := map[string]string{"1.2.3.4/32": "192.168.1.254"}
+	var commands []string
+	run := func(args ...string) error {
+		commands = append(commands, strings.Join(args, " "))
+		if args[1] == "add" {
+			if _, exists := routes[args[3]]; exists {
+				return errors.New("route: writing to routing socket: File exists")
+			}
+			routes[args[3]] = strings.Join(args[4:], " ")
+			return nil
+		}
+		if args[1] == "change" {
+			routes[args[3]] = strings.Join(args[4:], " ")
+			return nil
+		}
+		if args[1] == "delete" {
+			delete(routes, args[3])
+			return nil
+		}
+		return errors.New("unsupported route command")
+	}
+
+	specs := darwinRouteSpecs("utun5", "192.168.1.1", nil, []string{"1.2.3.4/32"}, nil, false)
+	owned, err := applyDarwinRouteSpecs(specs, run)
+	if err == nil {
+		t.Fatal("ordinary Core start adopted an unauthorized server bypass collision")
+	}
+	cleanupDarwinRouteSpecs(owned, run)
+	if got := routes["1.2.3.4/32"]; got != "192.168.1.254" {
+		t.Fatalf("unauthorized route changed or deleted: routes=%#v commands=%#v", routes, commands)
+	}
+	for _, command := range commands {
+		if strings.HasPrefix(command, "-n change -net 1.2.3.4/32") || strings.HasPrefix(command, "-n delete -net 1.2.3.4/32") {
+			t.Fatalf("unauthorized collision was mutated by %q", command)
+		}
+	}
+}
+
+func TestParseGuardianBypassHandoffFailsClosed(t *testing.T) {
+	if got := parseGuardianBypassHandoff("198.51.100.10/32,203.0.113.20/32,198.51.100.10/32"); !reflect.DeepEqual(got, []string{"198.51.100.10/32", "203.0.113.20/32"}) {
+		t.Fatalf("valid handoff = %#v", got)
+	}
+	for _, value := range []string{"", "198.51.100.0/24", "2001:db8::1/128", "198.51.100.10/32,invalid"} {
+		if got := parseGuardianBypassHandoff(value); len(got) != 0 {
+			t.Fatalf("unsafe handoff %q authorized %#v", value, got)
+		}
 	}
 }
 

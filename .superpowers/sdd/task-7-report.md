@@ -200,6 +200,59 @@ either boundary.
 RED: successful phase persistence converted an empty `last_error` to
 `update_failed`. GREEN: `safeUpdateCode("")` now remains empty.
 
+## Second Review-Fix Wave (2026-07-18)
+
+All five remaining findings were confirmed against the full source. None was
+technically false.
+
+### 1. Cleanup-only recovery invariant
+
+RED: reboot tests for ordinary prepared cleanup and matching-receipt cleanup
+showed that `Commit` or journal-clear failure could return with `DesiredOn`, no
+Core, no barrier, and an `off` status. GREEN: cleanup-only recovery now returns
+only after proving a complete recovery barrier. Tests cover both failure sites,
+assert no protected claim, assert exact dual-stack block-only routes when the
+descriptor is durably gone, and prove a later retry reaches a healthy Core.
+
+### 2. Exact bypass-set transfer
+
+RED: release removed only reject routes, retaining every Guardian bypass even
+when the target runtime used a different server address. GREEN: release takes
+the target runtime bypass set, preserves only its exact intersection with the
+Guardian-owned set, and deletes all old bypasses. Stateful route-command tests
+cover old A to target B to Down and finish with neither route present.
+
+### 3. Explicit adoption authorization
+
+RED: Darwin Core route setup adopted any duplicate server bypass globally.
+GREEN: Guardian passes a validated, canonical IPv4 `/32` handoff only for the
+specific Core start protected by a proven barrier. It strips ambient handoff
+state on ordinary starts. Core adopts only an exact authorized collision;
+unauthorized/admin-owned collisions fail without route change or deletion.
+
+### 4. Ordered durable cleanup
+
+RED: prepared cleanup continued through `errors.Join`, deleting staging after
+earlier CLI, app, or snapshot failures, and recovered cleanup had no directory
+sync proof. GREEN: cleanup is sequential and fail-fast; every namespace
+mutation is followed by parent-directory fsync, snapshot precedes staging, and
+staging removal plus parent sync is the final proof event. Generic, Darwin FD,
+and recovered-cleanup tests show failures preserve staging/residue for an
+idempotent receipt-driven retry.
+
+### 5. Attempted versus proven barrier ownership
+
+RED: a failed first route command still set `barrierHeld` and reported
+`ProtectionBlocked`; ownership-uncertain exit handling then skipped retry.
+GREEN: an explicit ownership state distinguishes absent, install attempted,
+proven, release attempted, and removal attempted. Only a fully successful
+install reports blocked or authorizes handoff. A later exit retries a partial
+attempt, and only the successful retry becomes proven.
+
+The previously approved slow-preparation exit handling, descriptor-less
+dual-stack block-only recovery, resumable rename recovery, and update-boundary
+gateway/runtime refresh remain covered and unchanged in behavior.
+
 ## Coverage
 
 - Exact success and failure ordering for prepared journal, barrier install, old
@@ -227,17 +280,21 @@ RED: successful phase persistence converted an empty `last_error` to
 - `internal/guardian/daemon.go` and `daemon_test.go`: startup recovery retry
   while diagnostics remain available.
 - `internal/guardian/manager.go` and `manager_test.go`: recovery gate, update
-  operation token, fresh exit-recovery budget, gateway provider, and healthy
-  bypass handoff.
+  operation token, fresh exit-recovery budget, gateway provider, explicit
+  barrier proof state, and exact healthy bypass handoff.
+- `internal/guardian/process.go` and `process_test.go`: validated per-start
+  bypass-adoption authorization with ambient authorization removal.
 - `internal/guardian/store.go`, `store_test.go`, and `types.go`: validated
   receipt loading, durable journal unlink, and barrier-install intent.
 - `internal/guardian/update.go` and `update_test.go`: boundary revalidation,
   intent/receipt recovery, fingerprinted rename reconciliation, and all focused
   review regressions.
 - `internal/supervisor/darwin_routes.go`, `platform_darwin.go`, and
-  `darwin_routes_test.go`: Core server-bypass adoption and ownership cleanup.
-- `internal/update/macos_install.go`: cleanup ordering that removes staging
-  last, making a missing descriptor a durable terminal-cleanup signal.
+  `darwin_routes_test.go`: explicitly authorized Core server-bypass adoption
+  and ownership cleanup.
+- `internal/update/macos_install.go`, `macos_install_darwin.go`, and their
+  tests: fail-fast cleanup ordering and parent-directory fsync that remove
+  staging last, making a missing descriptor a durable terminal-cleanup signal.
 
 No CLI update code was modified.
 
