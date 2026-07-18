@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"io"
 	"strings"
 	"testing"
 )
@@ -104,6 +105,39 @@ func TestExtractMacOSPackageRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestExtractMacOSPackageRejectsOversizedAggregateIncludingIgnoredFiles(t *testing.T) {
+	var out bytes.Buffer
+	gz := gzip.NewWriter(&out)
+	tarWriter := tar.NewWriter(gz)
+	for _, name := range []string{"bx-macos-arm64/ignored-a", "bx-macos-arm64/ignored-b"} {
+		size := maxMacOSPackageBytes/2 + 1
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: size}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.CopyN(tarWriter, zeroReader{}, size); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, entry := range validMacOSPackageEntries() {
+		if err := tarWriter.WriteHeader(&entry.header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write(entry.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ExtractMacOSPackage(out.Bytes(), "arm64"); err == nil {
+		t.Fatal("oversized ignored files bypassed aggregate package limit")
+	}
+}
+
 func TestExtractMacOSPackageRequiresCLI(t *testing.T) {
 	archive := macOSPackageArchive(t, []macOSArchiveEntry{
 		fileEntry("bx-macos-arm64/Bx.app/Contents/Info.plist", "plist"),
@@ -137,6 +171,13 @@ func TestExtractMacOSPackageRequiresInfoPlist(t *testing.T) {
 type macOSArchiveEntry struct {
 	header tar.Header
 	data   []byte
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(buffer []byte) (int, error) {
+	clear(buffer)
+	return len(buffer), nil
 }
 
 func fileEntry(name, data string) macOSArchiveEntry {

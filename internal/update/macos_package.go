@@ -53,6 +53,7 @@ func ExtractMacOSPackage(data []byte, arch string) (MacOSPayload, error) {
 		if header.Size < 0 || header.Size > maxMacOSPackageBytes-total {
 			return MacOSPayload{}, fmt.Errorf("macOS package is too large")
 		}
+		total += header.Size
 		if header.Name != root+"/bx" && !strings.HasPrefix(header.Name, appPrefix) {
 			continue
 		}
@@ -67,7 +68,6 @@ func ExtractMacOSPackage(data []byte, arch string) (MacOSPayload, error) {
 		if int64(len(content)) != header.Size {
 			return MacOSPayload{}, fmt.Errorf("macOS package file %q is truncated", header.Name)
 		}
-		total += header.Size
 		if header.Name == root+"/bx" {
 			payload.CLI = content
 			continue
