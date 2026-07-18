@@ -86,6 +86,9 @@ func (s *Store) LoadTransaction() (*Transaction, error) {
 	if !transaction.Phase.valid() {
 		return nil, fmt.Errorf("invalid transaction phase %q", transaction.Phase)
 	}
+	if transaction.LastError != "" && !safeLastErrorPattern.MatchString(transaction.LastError) {
+		return nil, fmt.Errorf("invalid transaction last error")
+	}
 	return &transaction, nil
 }
 

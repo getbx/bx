@@ -44,6 +44,13 @@ type mutationLifecycle interface {
 	waitForMutations(context.Context) error
 }
 
+type recoveringController interface {
+	Controller
+	Recover(context.Context) error
+}
+
+type daemonStarter func(context.Context, DaemonOptions) (*Daemon, error)
+
 func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 	path := options.SocketPath
 	if path == "" {
@@ -241,18 +248,22 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	if err != nil {
 		return err
 	}
-	options.Handler = NewLocalAPI(manager)
-	options.OwnerUID = 0
-	daemon, err := StartDaemon(ctx, options)
+	daemon, err := startRecoveredDaemon(ctx, options, manager, StartDaemon)
 	if err != nil {
 		return err
 	}
 	defer daemon.Close()
-	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, guardianMutationTimeout)
-	_ = manager.Recover(recoveryCtx)
-	cancelRecovery()
 	<-ctx.Done()
 	return daemon.Close()
+}
+
+func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller recoveringController, start daemonStarter) (*Daemon, error) {
+	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, guardianMutationTimeout)
+	_ = controller.Recover(recoveryCtx)
+	cancelRecovery()
+	options.Handler = NewLocalAPI(controller)
+	options.OwnerUID = 0
+	return start(ctx, options)
 }
 
 type systemNetworkRestorer struct {

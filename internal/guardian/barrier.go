@@ -14,6 +14,7 @@ type BarrierContext struct {
 	Gateway      string
 	ServerBypass []string
 	BlockIPv6    bool
+	blockOnly    bool
 }
 
 type Command struct {
@@ -103,12 +104,15 @@ func rejectRoute(cidr string, ipv6 bool) barrierRoute {
 }
 
 func validateBarrierContext(ctx BarrierContext) (string, []string, error) {
+	if len(ctx.ServerBypass) == 0 {
+		if ctx.blockOnly {
+			return "", nil, nil
+		}
+		return "", nil, errors.New("server bypass required")
+	}
 	gateway, err := parseIPv4(ctx.Gateway)
 	if err != nil {
 		return "", nil, fmt.Errorf("invalid barrier gateway: %w", err)
-	}
-	if len(ctx.ServerBypass) == 0 {
-		return "", nil, errors.New("server bypass required")
 	}
 
 	bypasses := make([]string, 0, len(ctx.ServerBypass))

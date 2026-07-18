@@ -46,16 +46,18 @@ type LegacyCoreLifecycle interface {
 }
 
 type ManagerOptions struct {
-	Store          DesiredStore
-	Runner         CoreRunner
-	Health         HealthGate
-	Barrier        Barrier
-	Restorer       NetworkRestorer
-	Legacy         LegacyCoreLifecycle
-	BarrierContext BarrierContext
-	CoreVersion    string
-	RestartTimeout time.Duration
-	CleanupTimeout time.Duration
+	Store            DesiredStore
+	Runner           CoreRunner
+	Health           HealthGate
+	Barrier          Barrier
+	Restorer         NetworkRestorer
+	Legacy           LegacyCoreLifecycle
+	BarrierContext   BarrierContext
+	CoreVersion      string
+	RestartTimeout   time.Duration
+	CleanupTimeout   time.Duration
+	UpdatePreparer   UpdatePreparer
+	GuardianProtocol int
 }
 
 type Manager struct {
@@ -71,6 +73,10 @@ type Manager struct {
 	coreVersion       string
 	restartTimeout    time.Duration
 	cleanupTimeout    time.Duration
+	updates           updateStore
+	updatePaths       Paths
+	updatePreparer    UpdatePreparer
+	guardianProtocol  int
 	current           Process
 	runtime           supervisor.RuntimeState
 	status            Status
@@ -107,6 +113,20 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	if cleanupTimeout <= 0 {
 		cleanupTimeout = 15 * time.Second
 	}
+	updates, _ := options.Store.(updateStore)
+	pathsProvider, _ := options.Store.(guardianPathsProvider)
+	var updatePaths Paths
+	if pathsProvider != nil {
+		updatePaths = pathsProvider.guardianPaths()
+	}
+	updatePreparer := options.UpdatePreparer
+	if updatePreparer == nil {
+		updatePreparer = macOSUpdatePreparer{}
+	}
+	guardianProtocol := options.GuardianProtocol
+	if guardianProtocol <= 0 {
+		guardianProtocol = currentGuardianProtocol
+	}
 	recoveryContext, cancelRecovery := context.WithCancel(context.Background())
 	m := &Manager{
 		mutation:          make(chan struct{}, 1),
@@ -120,6 +140,10 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		coreVersion:       options.CoreVersion,
 		restartTimeout:    restartTimeout,
 		cleanupTimeout:    cleanupTimeout,
+		updates:           updates,
+		updatePaths:       updatePaths,
+		updatePreparer:    updatePreparer,
+		guardianProtocol:  guardianProtocol,
 		recoveryContext:   recoveryContext,
 		cancelRecovery:    cancelRecovery,
 		recoveryAccepting: true,
@@ -392,6 +416,9 @@ func (m *Manager) Recover(ctx context.Context) error {
 		return err
 	}
 	defer m.releaseMutation()
+	if err := m.recoverUpdateLocked(ctx); err != nil {
+		return err
+	}
 	desired, err := m.store.LoadDesired()
 	if err != nil {
 		m.needsAttention(DesiredOn, "desired_state_read_failed")

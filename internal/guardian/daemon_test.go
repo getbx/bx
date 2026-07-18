@@ -3,10 +3,52 @@ package guardian
 import (
 	"context"
 	"errors"
+	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/getbx/bx/internal/install"
 )
+
+func TestDaemonRunsJournalRecoveryBeforeServingLocalAPI(t *testing.T) {
+	for _, recoveryErr := range []error{nil, errors.New("needs attention")} {
+		events := []string{}
+		controller := &daemonStartupController{
+			recover: func(context.Context) error {
+				events = append(events, "recover")
+				return recoveryErr
+			},
+		}
+		start := func(_ context.Context, options DaemonOptions) (*Daemon, error) {
+			events = append(events, "serve")
+			if options.Handler == nil {
+				t.Fatal("LocalAPI handler was not installed")
+			}
+			if options.OwnerUID != 0 {
+				t.Fatalf("OwnerUID = %d, want root", options.OwnerUID)
+			}
+			return &Daemon{}, nil
+		}
+
+		if _, err := startRecoveredDaemon(context.Background(), DaemonOptions{}, controller, start); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"recover", "serve"}; !reflect.DeepEqual(events, want) {
+			t.Fatalf("events = %#v, want %#v", events, want)
+		}
+	}
+}
+
+type daemonStartupController struct {
+	recover func(context.Context) error
+}
+
+func (*daemonStartupController) Status() Status                      { return Status{} }
+func (*daemonStartupController) Up(context.Context) error            { return nil }
+func (*daemonStartupController) Down(context.Context) error          { return nil }
+func (c *daemonStartupController) Recover(ctx context.Context) error { return c.recover(ctx) }
+
+var _ http.Handler = NewLocalAPI(&daemonStartupController{recover: func(context.Context) error { return nil }})
 
 func TestSystemNetworkRestorerPropagatesCancellationToDNSRestore(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
