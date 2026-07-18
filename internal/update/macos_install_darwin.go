@@ -113,6 +113,7 @@ func newDarwinPreparedInstall(options InstallOptions, payload MacOSPayload) (_ *
 	defer func() {
 		if returnErr != nil {
 			_ = p.cleanup()
+			p.closeFDs()
 		}
 	}()
 	var err error
@@ -405,27 +406,51 @@ func (p *darwinPreparedInstall) Commit() error {
 }
 
 func (p *darwinPreparedInstall) cleanupAppPaths() error {
-	return errors.Join(
-		p.removeTrackedEntry(p.appParent.fd, p.appStageName, p.appStage, &p.appStageAtName),
-		p.removeTrackedEntry(p.appParent.fd, p.appPreviousName, p.appOriginal, &p.appPreviousAtName),
-		p.removeTrackedEntry(p.appParent.fd, p.appRestoreName, p.appRestore, &p.appRestoreAtName),
-		p.removeTrackedEntry(p.appParent.fd, p.appDiscardName, p.appDiscard, &p.appDiscardAtName),
-	)
+	for _, item := range []struct {
+		name     string
+		identity darwinFileIdentity
+		atName   *bool
+	}{
+		{p.appStageName, p.appStage, &p.appStageAtName},
+		{p.appPreviousName, p.appOriginal, &p.appPreviousAtName},
+		{p.appRestoreName, p.appRestore, &p.appRestoreAtName},
+		{p.appDiscardName, p.appDiscard, &p.appDiscardAtName},
+	} {
+		if err := p.removeTrackedEntryDurably(p.appParent.fd, item.name, item.identity, item.atName); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *darwinPreparedInstall) cleanup() error {
 	if p.closed {
 		return nil
 	}
-	err := errors.Join(
-		p.removeTrackedEntry(p.cliParent.fd, p.cliStageName, p.cliStage, &p.cliStageAtName),
-		p.removeTrackedEntry(p.cliParent.fd, p.cliRestoreName, p.cliRestored, &p.cliRestoreAtName),
-		p.cleanupAppPaths(),
-		p.removeTrackedEntry(p.snapshotParent.fd, p.transactionName, p.snapshotDir, &p.snapshotAtName),
-		p.removeTrackedEntry(p.stagingParent.fd, p.transactionName, p.stagingDir, &p.stagingAtName),
-	)
+	if err := p.removeTrackedEntryDurably(p.cliParent.fd, p.cliStageName, p.cliStage, &p.cliStageAtName); err != nil {
+		return err
+	}
+	if err := p.removeTrackedEntryDurably(p.cliParent.fd, p.cliRestoreName, p.cliRestored, &p.cliRestoreAtName); err != nil {
+		return err
+	}
+	if err := p.cleanupAppPaths(); err != nil {
+		return err
+	}
+	if err := p.removeTrackedEntryDurably(p.snapshotParent.fd, p.transactionName, p.snapshotDir, &p.snapshotAtName); err != nil {
+		return err
+	}
+	if err := p.removeTrackedEntryDurably(p.stagingParent.fd, p.transactionName, p.stagingDir, &p.stagingAtName); err != nil {
+		return err
+	}
 	p.closeFDs()
-	return err
+	return nil
+}
+
+func (p *darwinPreparedInstall) removeTrackedEntryDurably(parentFD int, name string, identity darwinFileIdentity, atName *bool) error {
+	if err := p.removeTrackedEntry(parentFD, name, identity, atName); err != nil {
+		return err
+	}
+	return unix.Fsync(parentFD)
 }
 
 func (p *darwinPreparedInstall) removeTrackedEntry(parentFD int, name string, identity darwinFileIdentity, atName *bool) error {

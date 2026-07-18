@@ -126,11 +126,11 @@ func TestManagerMigrateBarrierFailureLeavesLegacyCoreUntouchedAndFailsClosed(t *
 	if env.legacy.stopCount != 0 || env.runner.startCount() != 0 {
 		t.Fatal("barrier failure stopped old Core or started a second Core")
 	}
-	if !env.manager.barrierHeld {
-		t.Fatal("ambiguous partial barrier was not retained fail closed")
+	if env.manager.barrierProven() || env.manager.barrierOwnership.proof != barrierInstallAttempted {
+		t.Fatal("failed barrier install was not retained as attempted and unproven")
 	}
-	if got := env.manager.Status(); got.Protection != ProtectionBlocked || got.LastError != "barrier_install_failed" {
-		t.Fatalf("migration status = %+v, want blocked barrier_install_failed", got)
+	if got := env.manager.Status(); got.Protection != ProtectionNeedsAttention || got.LastError != "barrier_install_failed" {
+		t.Fatalf("migration status = %+v, want unproven barrier_install_failed", got)
 	}
 }
 
@@ -148,7 +148,7 @@ func TestManagerMigrateLegacyRemovalFailureRetainsBarrier(t *testing.T) {
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("migration events = %#v, want %#v", got, want)
 	}
-	if !env.manager.barrierHeld {
+	if !env.manager.barrierProven() {
 		t.Fatal("migration barrier released before legacy ownership was removed")
 	}
 	status := env.manager.Status()
@@ -232,7 +232,7 @@ func TestManagerBarrierRemovalRetryReusesAcceptedWatcher(t *testing.T) {
 	existing := Process{PID: 42, Executable: install.BinPath, UID: 0, Generation: "adopted:1"}
 	env.runner.existing = existing
 	env.runner.watchExit = make(chan error, 1)
-	env.manager.barrierHeld = true
+	env.manager.barrierOwnership = barrierOwnership{proof: barrierProven, context: cloneBarrierContext(env.manager.barrierContext)}
 	env.manager.setStatus(Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseNeedsAttention, Protection: ProtectionBlocked})
 	env.barrier.removeErr = errors.New("barrier remove failed")
 	t.Cleanup(func() { cleanupManagerWatchers(env) })
@@ -677,7 +677,7 @@ func TestManagerDownRestoreAndRecoveryStayWithinOverallDeadline(t *testing.T) {
 	if len(deadlines) != 2 || deadlines[1].IsZero() || deadlines[1].After(overallDeadline) {
 		t.Fatalf("recovery deadlines = %#v, want child deadline no later than %s", deadlines, overallDeadline)
 	}
-	if !env.manager.barrierHeld {
+	if !env.manager.barrierProven() {
 		t.Fatal("barrier released after bounded recovery failure")
 	}
 	if got := env.manager.Status(); got.Protection != ProtectionBlocked || got.Phase != PhaseNeedsAttention {
@@ -946,7 +946,7 @@ func TestManagerHealthyRecoveryReleasesHeldBarrierBeforeProtected(t *testing.T) 
 			if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "barrier.release"}) {
 				t.Fatalf("events = %#v, want health-gated barrier release", got)
 			}
-			if env.manager.barrierHeld {
+			if env.manager.barrierProven() {
 				t.Fatal("barrier remains held after healthy recovery")
 			}
 			if got := env.manager.Status(); got.Protection != ProtectionProtected || got.Phase != PhaseCommitted {
@@ -969,7 +969,7 @@ func TestManagerHeldBarrierRemainsWhenRecoveryHealthFails(t *testing.T) {
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "core.stop"}) {
 		t.Fatalf("events = %#v, want no barrier removal before health", got)
 	}
-	if !env.manager.barrierHeld {
+	if !env.manager.barrierProven() {
 		t.Fatal("barrier released after recovery health failure")
 	}
 	if got := env.manager.Status(); got.Protection != ProtectionBlocked || got.Phase != PhaseNeedsAttention || got.LastError != "core_health_failed" {
@@ -990,11 +990,11 @@ func TestManagerHeldBarrierRemovalFailureDoesNotClaimProtected(t *testing.T) {
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "barrier.release"}) {
 		t.Fatalf("events = %#v, want attempted post-health barrier removal", got)
 	}
-	if !env.manager.barrierHeld {
-		t.Fatal("barrier state cleared after removal failure")
+	if env.manager.barrierProven() || env.manager.barrierOwnership.proof != barrierReleaseAttempted {
+		t.Fatal("partial barrier release was not retained as attempted and unproven")
 	}
-	if got := env.manager.Status(); got.Protection != ProtectionBlocked || got.Phase != PhaseNeedsAttention || got.LastError != "barrier_remove_failed" {
-		t.Fatalf("status = %+v, want blocked barrier_remove_failed", got)
+	if got := env.manager.Status(); got.Protection != ProtectionNeedsAttention || got.Phase != PhaseNeedsAttention || got.LastError != "barrier_remove_failed" {
+		t.Fatalf("status = %+v, want unproven barrier_remove_failed", got)
 	}
 }
 
@@ -1006,7 +1006,7 @@ func retainBarrierAfterDesiredReadFailure(t *testing.T, env *managerTestEnv) {
 	eventually(t, func() bool {
 		return env.manager.Status().LastError == "desired_state_read_failed"
 	})
-	if !env.manager.barrierHeld {
+	if !env.manager.barrierProven() {
 		t.Fatal("fail-closed setup did not retain barrier")
 	}
 }
@@ -1186,7 +1186,7 @@ func (r *fakeCoreRunner) Watch(process Process) Process {
 	return process
 }
 
-func (r *fakeCoreRunner) Start(ctx context.Context) (Process, error) {
+func (r *fakeCoreRunner) Start(ctx context.Context, _ CoreStartOptions) (Process, error) {
 	r.events.add("core.start")
 	r.mu.Lock()
 	r.starts++
@@ -1378,6 +1378,8 @@ type fakeBarrier struct {
 	onRemove       func()
 	mu             sync.Mutex
 	installContext BarrierContext
+	releaseContext BarrierContext
+	transferred    []string
 }
 
 func (b *fakeBarrier) Install(_ context.Context, barrierContext BarrierContext) error {
@@ -1393,12 +1395,22 @@ func (b *fakeBarrier) ReassertBypass(context.Context, BarrierContext) error {
 	return b.reassertErr
 }
 
-func (b *fakeBarrier) Release(context.Context, BarrierContext) error {
+func (b *fakeBarrier) Release(_ context.Context, barrierContext BarrierContext, transferred []string) error {
 	b.events.add("barrier.release")
+	b.mu.Lock()
+	b.releaseContext = cloneBarrierContext(barrierContext)
+	b.transferred = append([]string(nil), transferred...)
+	b.mu.Unlock()
 	if b.onRemove != nil {
 		b.onRemove()
 	}
 	return b.removeErr
+}
+
+func (b *fakeBarrier) lastRelease() (BarrierContext, []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return cloneBarrierContext(b.releaseContext), append([]string(nil), b.transferred...)
 }
 
 func (b *fakeBarrier) Remove(context.Context, BarrierContext) error {

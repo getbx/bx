@@ -47,7 +47,7 @@ func TestPlanBarrierReleaseToCorePreservesTransferredBypass(t *testing.T) {
 		Gateway:      "192.168.50.2",
 		ServerBypass: []string{"23.27.134.77/32"},
 		BlockIPv6:    true,
-	})
+	}, []string{"23.27.134.77/32"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +65,82 @@ func TestPlanBarrierReleaseToCorePreservesTransferredBypass(t *testing.T) {
 		if strings.Contains(command.String(), "23.27.134.77/32") {
 			t.Fatalf("release deleted transferred bypass: %s", command.String())
 		}
+	}
+}
+
+func TestPlanBarrierReleaseDeletesOldBypassNotTransferredToTarget(t *testing.T) {
+	release, err := PlanBarrierRelease(BarrierContext{
+		Gateway:      "192.168.50.2",
+		ServerBypass: []string{"23.27.134.77/32"},
+		BlockIPv6:    true,
+	}, []string{"198.51.100.20/32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := release[len(release)-1].String(); got != "route -n delete -net 23.27.134.77/32" {
+		t.Fatalf("last release command = %q, want stale Guardian bypass deletion", got)
+	}
+	for _, command := range release {
+		if strings.Contains(command.String(), "198.51.100.20/32") {
+			t.Fatalf("release deleted target-owned bypass: %s", command.String())
+		}
+	}
+}
+
+func TestBarrierOwnershipOldAToTargetBThenDownLeavesNoBypass(t *testing.T) {
+	oldContext := BarrierContext{Gateway: "192.168.50.2", ServerBypass: []string{"23.27.134.77/32"}, BlockIPv6: true}
+	targetContext := BarrierContext{Gateway: "192.168.50.2", ServerBypass: []string{"198.51.100.20/32"}, BlockIPv6: true}
+	routes := make(map[string]struct{})
+	apply := func(commands []Command) {
+		for _, command := range commands {
+			cidr := ""
+			for index, arg := range command.Args {
+				if arg == "-net" && index+1 < len(command.Args) {
+					cidr = command.Args[index+1]
+					break
+				}
+			}
+			if cidr == "" {
+				t.Fatalf("route command has no CIDR: %s", command.String())
+			}
+			switch command.Args[1] {
+			case "add":
+				routes[cidr] = struct{}{}
+			case "delete":
+				delete(routes, cidr)
+			default:
+				t.Fatalf("unsupported route command: %s", command.String())
+			}
+		}
+	}
+
+	oldApply, _, _, err := PlanBarrier(oldContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply(oldApply)
+	routes[targetContext.ServerBypass[0]] = struct{}{} // target Core owns B
+	release, err := PlanBarrierRelease(oldContext, targetContext.ServerBypass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply(release)
+	if _, exists := routes[oldContext.ServerBypass[0]]; exists {
+		t.Fatalf("old Guardian bypass survived target handoff: %#v", routes)
+	}
+	if _, exists := routes[targetContext.ServerBypass[0]]; !exists {
+		t.Fatalf("target bypass was not preserved: %#v", routes)
+	}
+
+	downApply, _, downCleanup, err := PlanBarrier(targetContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply(downApply)
+	delete(routes, targetContext.ServerBypass[0]) // Core teardown releases B
+	apply(downCleanup)
+	if len(routes) != 0 {
+		t.Fatalf("old A -> target B -> Down leaked routes: %#v", routes)
 	}
 }
 

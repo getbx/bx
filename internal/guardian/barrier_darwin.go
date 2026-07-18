@@ -46,8 +46,8 @@ func (b darwinBarrier) ReassertBypass(ctx context.Context, barrierCtx BarrierCon
 	return b.run(ctx, reassert, isRouteAlreadyExists)
 }
 
-func (b darwinBarrier) Release(ctx context.Context, barrierCtx BarrierContext) error {
-	release, err := PlanBarrierRelease(barrierCtx)
+func (b darwinBarrier) Release(ctx context.Context, barrierCtx BarrierContext, transferredBypasses []string) error {
+	release, err := PlanBarrierRelease(barrierCtx, transferredBypasses)
 	if err != nil {
 		return err
 	}

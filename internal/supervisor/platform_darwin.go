@@ -28,6 +28,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
+const guardianBypassHandoffEnv = "BX_GUARDIAN_BYPASS_HANDOFF"
+
 func newPlatform() platform { return darwinPlatform{} }
 
 type darwinPlatform struct{}
@@ -108,7 +110,8 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 	// 2) 组装路由:v4 私网/bypass 经物理网关、split-default 劫进 utun;
 	//    v6(内核启用时)fail-closed reject 全局 v6(纯构造见 darwinRouteSpecs)。
 	blockV6 := ipv6HostEnabled()
-	specs := darwinRouteSpecs(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, blockV6)
+	handoff := parseGuardianBypassHandoff(os.Getenv(guardianBypassHandoffEnv))
+	specs := darwinRouteSpecsWithHandoff(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, blockV6, handoff)
 
 	var done []darwinRouteSpec // 已加路由,用于对称还原(只管路由;TUN 关闭归 Run 的 closeTUN)
 	cleanup := func() {

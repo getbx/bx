@@ -36,7 +36,7 @@ type CommandRunner interface {
 type Barrier interface {
 	Install(context.Context, BarrierContext) error
 	ReassertBypass(context.Context, BarrierContext) error
-	Release(context.Context, BarrierContext) error
+	Release(context.Context, BarrierContext, []string) error
 	Remove(context.Context, BarrierContext) error
 }
 
@@ -77,16 +77,39 @@ func PlanBarrier(ctx BarrierContext) (apply, reassert, cleanup []Command, err er
 	return apply, reassert, cleanup, nil
 }
 
-func PlanBarrierRelease(ctx BarrierContext) ([]Command, error) {
-	if _, _, err := validateBarrierContext(ctx); err != nil {
+func PlanBarrierRelease(ctx BarrierContext, transferredBypasses []string) ([]Command, error) {
+	_, installedBypasses, err := validateBarrierContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	transferred, err := canonicalBypassSet(transferredBypasses)
+	if err != nil {
 		return nil, err
 	}
 	routes := blockingBarrierRoutes(ctx.BlockIPv6)
-	release := make([]Command, 0, len(routes))
+	release := make([]Command, 0, len(routes)+len(installedBypasses))
 	for i := len(routes) - 1; i >= 0; i-- {
 		release = append(release, routes[i].del)
 	}
+	for i := len(installedBypasses) - 1; i >= 0; i-- {
+		if _, ok := transferred[installedBypasses[i]]; ok {
+			continue
+		}
+		release = append(release, routeViaGateway(installedBypasses[i], ctx.Gateway).del)
+	}
 	return release, nil
+}
+
+func canonicalBypassSet(bypasses []string) (map[string]struct{}, error) {
+	canonical := make(map[string]struct{}, len(bypasses))
+	for _, bypass := range bypasses {
+		prefix, err := netip.ParsePrefix(bypass)
+		if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 32 || prefix != prefix.Masked() {
+			return nil, fmt.Errorf("invalid transferred IPv4 /32 server bypass %q", bypass)
+		}
+		canonical[prefix.String()] = struct{}{}
+	}
+	return canonical, nil
 }
 
 func blockingBarrierRoutes(blockIPv6 bool) []barrierRoute {

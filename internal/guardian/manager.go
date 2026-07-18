@@ -18,6 +18,21 @@ const (
 	ProtectionNeedsAttention = "needs_attention"
 )
 
+type barrierProof uint8
+
+const (
+	barrierAbsent barrierProof = iota
+	barrierInstallAttempted
+	barrierProven
+	barrierReleaseAttempted
+	barrierRemovalAttempted
+)
+
+type barrierOwnership struct {
+	proof   barrierProof
+	context BarrierContext
+}
+
 var errRecoveryIncomplete = errors.New("guardian startup recovery incomplete")
 
 type DesiredStore interface {
@@ -29,8 +44,12 @@ type CoreRunner interface {
 	Existing(context.Context) (Process, error)
 	Watch(Process) Process
 	Verify(Process) error
-	Start(context.Context) (Process, error)
+	Start(context.Context, CoreStartOptions) (Process, error)
 	Stop(context.Context, Process) error
+}
+
+type CoreStartOptions struct {
+	GuardianBypassHandoff []string
 }
 
 type HealthGate interface {
@@ -95,7 +114,7 @@ type Manager struct {
 	current           Process
 	runtime           supervisor.RuntimeState
 	status            Status
-	barrierHeld       bool
+	barrierOwnership  barrierOwnership
 	recoveryBlocked   bool
 	recoveryMu        sync.Mutex
 	recoveryContext   context.Context
@@ -246,14 +265,10 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 	}
 	barrierContext := migrationBarrierContext(normalized)
 	m.barrierContext = cloneBarrierContext(barrierContext)
-	if err := m.barrier.Install(ctx, barrierContext); err != nil {
-		// Install may have applied a strict subset before returning. Retaining
-		// ownership of the attempted barrier is the only fail-closed choice.
-		m.barrierHeld = true
+	if err := m.installBarrier(ctx, barrierContext); err != nil {
 		m.needsAttention(DesiredOn, "barrier_install_failed")
 		return fmt.Errorf("install migration barrier: %w", err)
 	}
-	m.barrierHeld = true
 	m.setStatus(Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseBarrierActive, Protection: ProtectionBlocked})
 
 	if err := m.legacy.Stop(ctx); err != nil {
@@ -292,10 +307,7 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 func (m *Manager) retainMigrationBarrier(ctx context.Context, barrierContext BarrierContext) error {
 	reinstallCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cleanupTimeout)
 	defer cancel()
-	err := m.barrier.Install(reinstallCtx, barrierContext)
-	// Install can fail after applying a strict subset. Treat the attempted
-	// barrier as held until an explicit recovery reconciles it.
-	m.barrierHeld = true
+	err := m.installBarrier(reinstallCtx, barrierContext)
 	if err != nil {
 		return fmt.Errorf("restore migration barrier after legacy cleanup failure: %w", err)
 	}
@@ -401,11 +413,10 @@ func (m *Manager) Down(ctx context.Context) error {
 	}
 
 	barrierContext := m.contextForRuntime(runtimeState)
-	if err := m.barrier.Install(ctx, barrierContext); err != nil {
+	if err := m.installBarrier(ctx, barrierContext); err != nil {
 		m.needsAttention(desired, "barrier_install_failed")
 		return fmt.Errorf("install down barrier: %w", err)
 	}
-	m.barrierHeld = true
 	m.setStatus(Status{SchemaVersion: 1, Desired: desired, Phase: PhaseBarrierActive, CorePID: process.PID, CoreVersion: runtimeState.Version, Protection: ProtectionBlocked})
 
 	if process.PID != 0 {
@@ -488,7 +499,7 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 		return supervisor.RuntimeState{}, err
 	}
 	defer cancelOperation()
-	process, err := m.runner.Start(operationCtx)
+	process, err := m.runner.Start(operationCtx, m.coreStartOptions())
 	if err != nil {
 		if errors.Is(err, ErrProcessOwnershipUncertain) {
 			if uncertain, ok := uncertainProcess(err); ok {
@@ -550,21 +561,31 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 	}
 	m.current = process
 	m.runtime = state
-	if m.barrierHeld {
-		m.setStatus(Status{
-			SchemaVersion: 1,
-			Desired:       DesiredOn,
-			Phase:         PhaseBarrierActive,
-			CorePID:       process.PID,
-			CoreVersion:   state.Version,
-			Protection:    ProtectionBlocked,
-		})
-		if !releaseBarrier {
-			return nil
-		}
-		if err := m.releaseBarrierToCore(ctx, m.contextForRuntime(state)); err != nil {
-			m.needsAttention(DesiredOn, "barrier_remove_failed")
-			return err
+	if m.barrierOwnership.proof != barrierAbsent {
+		if m.barrierOwnership.proof == barrierReleaseAttempted && releaseBarrier {
+			if err := m.releaseBarrierToCore(ctx, m.contextForRuntime(state)); err != nil {
+				m.needsAttention(DesiredOn, "barrier_remove_failed")
+				return err
+			}
+		} else if !m.barrierProven() {
+			m.needsAttention(DesiredOn, "barrier_install_unproven")
+			return errors.New("maintenance barrier installation is unproven")
+		} else {
+			m.setStatus(Status{
+				SchemaVersion: 1,
+				Desired:       DesiredOn,
+				Phase:         PhaseBarrierActive,
+				CorePID:       process.PID,
+				CoreVersion:   state.Version,
+				Protection:    ProtectionBlocked,
+			})
+			if !releaseBarrier {
+				return nil
+			}
+			if err := m.releaseBarrierToCore(ctx, m.contextForRuntime(state)); err != nil {
+				m.needsAttention(DesiredOn, "barrier_remove_failed")
+				return err
+			}
 		}
 	}
 	m.setStatus(Status{
@@ -626,10 +647,8 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 	}
 	if errors.Is(exitErr, ErrProcessOwnershipUncertain) {
 		barrierContext := m.contextForRuntime(m.runtime)
-		if !m.barrierHeld {
-			if barrierErr := m.barrier.Install(operationCtx, barrierContext); barrierErr == nil {
-				m.barrierHeld = true
-			}
+		if !m.barrierProven() {
+			_ = m.installBarrier(operationCtx, barrierContext)
 		}
 		process.Uncertain = true
 		m.current = process
@@ -639,10 +658,8 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 	desired, err := m.store.LoadDesired()
 	if err != nil {
 		barrierContext := m.contextForRuntime(m.runtime)
-		if !m.barrierHeld {
-			if barrierErr := m.barrier.Install(operationCtx, barrierContext); barrierErr == nil {
-				m.barrierHeld = true
-			}
+		if !m.barrierProven() {
+			_ = m.installBarrier(operationCtx, barrierContext)
 		}
 		m.needsAttention(DesiredOn, "desired_state_read_failed")
 		return
@@ -655,15 +672,13 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 	barrierContext := m.contextForRuntime(m.runtime)
 	m.current = Process{}
 	m.needsAttention(DesiredOn, "core_unexpected_exit")
-	if err := m.barrier.Install(operationCtx, barrierContext); err == nil {
-		m.barrierHeld = true
-	}
+	_ = m.installBarrier(operationCtx, barrierContext)
 
 	if _, err := m.startCoreLocked(operationCtx); err != nil {
 		m.needsAttention(DesiredOn, "core_restart_failed")
 		return
 	}
-	if m.barrierHeld {
+	if m.barrierOwnership.proof != barrierAbsent {
 		if err := m.removeBarrier(operationCtx, barrierContext); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 		}
@@ -806,25 +821,79 @@ func (m *Manager) releaseMutation() {
 }
 
 func (m *Manager) removeBarrier(ctx context.Context, barrierContext BarrierContext) error {
-	if !m.barrierHeld {
+	if m.barrierOwnership.proof == barrierAbsent {
 		return nil
 	}
-	if err := m.barrier.Remove(ctx, barrierContext); err != nil {
+	ownedContext := cloneBarrierContext(m.barrierOwnership.context)
+	if err := m.barrier.Remove(ctx, ownedContext); err != nil {
+		m.barrierOwnership.proof = barrierRemovalAttempted
 		return fmt.Errorf("remove maintenance barrier: %w", err)
 	}
-	m.barrierHeld = false
+	m.barrierOwnership = barrierOwnership{}
 	return nil
 }
 
 func (m *Manager) releaseBarrierToCore(ctx context.Context, barrierContext BarrierContext) error {
-	if !m.barrierHeld {
+	if m.barrierOwnership.proof == barrierAbsent {
 		return nil
 	}
-	if err := m.barrier.Release(ctx, barrierContext); err != nil {
+	if !m.barrierProven() && m.barrierOwnership.proof != barrierReleaseAttempted {
+		return errors.New("release maintenance barrier before installation was proven")
+	}
+	ownedContext := cloneBarrierContext(m.barrierOwnership.context)
+	if err := m.barrier.Release(ctx, ownedContext, m.runtime.ServerBypass); err != nil {
+		m.barrierOwnership.proof = barrierReleaseAttempted
 		return fmt.Errorf("release maintenance barrier to Core: %w", err)
 	}
-	m.barrierHeld = false
+	m.barrierOwnership = barrierOwnership{}
 	return nil
+}
+
+func (m *Manager) installBarrier(ctx context.Context, barrierContext BarrierContext) error {
+	m.recordBarrierAttempt(barrierContext)
+	if err := m.barrier.Install(ctx, barrierContext); err != nil {
+		return err
+	}
+	m.barrierOwnership.proof = barrierProven
+	return nil
+}
+
+func (m *Manager) recordBarrierAttempt(barrierContext BarrierContext) {
+	owned := cloneBarrierContext(m.barrierOwnership.context)
+	if m.barrierOwnership.proof == barrierAbsent {
+		owned = cloneBarrierContext(barrierContext)
+	} else {
+		if barrierContext.Gateway != "" {
+			owned.Gateway = barrierContext.Gateway
+		}
+		owned.BlockIPv6 = owned.BlockIPv6 || barrierContext.BlockIPv6
+		owned.blockOnly = owned.blockOnly && barrierContext.blockOnly
+		seen := make(map[string]struct{}, len(owned.ServerBypass)+len(barrierContext.ServerBypass))
+		merged := make([]string, 0, len(owned.ServerBypass)+len(barrierContext.ServerBypass))
+		for _, bypass := range append(append([]string(nil), owned.ServerBypass...), barrierContext.ServerBypass...) {
+			if _, ok := seen[bypass]; ok {
+				continue
+			}
+			seen[bypass] = struct{}{}
+			merged = append(merged, bypass)
+		}
+		owned.ServerBypass = merged
+		if len(owned.ServerBypass) != 0 {
+			owned.blockOnly = false
+		}
+	}
+	m.barrierOwnership = barrierOwnership{proof: barrierInstallAttempted, context: owned}
+}
+
+func (m *Manager) barrierProven() bool {
+	return m.barrierOwnership.proof == barrierProven
+}
+
+func (m *Manager) coreStartOptions() CoreStartOptions {
+	if !m.barrierProven() {
+		return CoreStartOptions{}
+	}
+	return CoreStartOptions{GuardianBypassHandoff: append([]string(nil), m.barrierOwnership.context.ServerBypass...)}
 }
 
 func (m *Manager) downRestoreContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -856,7 +925,7 @@ func (m *Manager) needsAttention(desired DesiredState, code string) {
 	status.Desired = desired
 	status.Phase = PhaseNeedsAttention
 	status.Protection = ProtectionNeedsAttention
-	if m.barrierHeld {
+	if m.barrierProven() {
 		status.Protection = ProtectionBlocked
 	}
 	status.LastError = code

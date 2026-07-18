@@ -68,6 +68,76 @@ func TestPreparedInstallCommitDeletesSnapshotAndStaging(t *testing.T) {
 	}
 }
 
+func TestPreparedInstallCleanupFailurePreservesStagingForRetry(t *testing.T) {
+	for _, failure := range []struct {
+		name string
+		path func(*PreparedInstall) string
+	}{
+		{name: "CLI", path: func(prepared *PreparedInstall) string { return prepared.cliStage }},
+		{name: "app", path: func(prepared *PreparedInstall) string { return prepared.appStage }},
+		{name: "snapshot", path: func(prepared *PreparedInstall) string { return prepared.options.SnapshotDir }},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			env := newInstallTestEnv(t, "old-cli", "old-menu")
+			prepared, err := PrepareMacOSInstall(env.options(), testPayload("new-cli", "new-menu"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor := filepath.Join(env.stagingPath, "guardian-recovery.json")
+			writeTestFile(t, descriptor, "recovery", 0o600)
+			env.ops.FailRemoveAll(failure.path(prepared))
+
+			if err := prepared.Commit(); err == nil {
+				t.Fatal("cleanup failure returned success")
+			}
+			requireFileContents(t, descriptor, "recovery")
+			if _, err := os.Stat(env.stagingPath); err != nil {
+				t.Fatalf("cleanup failure removed staging proof: %v", err)
+			}
+
+			if err := prepared.Commit(); err != nil {
+				t.Fatalf("receipt recovery cleanup retry failed: %v", err)
+			}
+			if _, err := os.Stat(env.stagingPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("successful retry retained staging: %v", err)
+			}
+		})
+	}
+}
+
+func TestPreparedInstallCommitDurablyRemovesStagingLast(t *testing.T) {
+	env := newInstallTestEnv(t, "old-cli", "old-menu")
+	prepared, err := PrepareMacOSInstall(env.options(), testPayload("new-cli", "new-menu"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.ops.events = nil
+	if err := prepared.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	wantTail := []string{
+		"remove " + prepared.options.StagingDir,
+		"sync " + filepath.Dir(prepared.options.StagingDir),
+	}
+	if len(env.ops.events) < len(wantTail) || !reflect.DeepEqual(env.ops.events[len(env.ops.events)-len(wantTail):], wantTail) {
+		t.Fatalf("cleanup events tail = %#v, want durable staging proof last %#v", env.ops.events, wantTail)
+	}
+	snapshotRemove := "remove " + prepared.options.SnapshotDir
+	stagingRemove := "remove " + prepared.options.StagingDir
+	var snapshotIndex, stagingIndex = -1, -1
+	for index, event := range env.ops.events {
+		if event == snapshotRemove {
+			snapshotIndex = index
+		}
+		if event == stagingRemove {
+			stagingIndex = index
+		}
+	}
+	if snapshotIndex < 0 || stagingIndex < 0 || snapshotIndex >= stagingIndex {
+		t.Fatalf("snapshot/staging removal order is not durable: %#v", env.ops.events)
+	}
+}
+
 func TestPreparedInstallNeverCopiesConfigOrState(t *testing.T) {
 	env := newInstallTestEnv(t, "old-cli", "old-menu")
 	writeTestFile(t, filepath.Join(env.root, "etc/bx/config.yaml"), "server: secret-link", 0o600)
@@ -344,11 +414,17 @@ func listRelativeFiles(root string) ([]string, error) {
 type installTestFileOps struct {
 	root          string
 	failRenameTo  string
+	failRemoveAll string
 	writeModeMask fs.FileMode
+	events        []string
 }
 
 func (o *installTestFileOps) FailRenameTo(path string) {
 	o.failRenameTo = filepath.Clean(path)
+}
+
+func (o *installTestFileOps) FailRemoveAll(path string) {
+	o.failRemoveAll = filepath.Clean(path)
 }
 
 func (o *installTestFileOps) translate(path string) string {
@@ -401,5 +477,20 @@ func (o *installTestFileOps) Rename(oldPath, newPath string) error {
 }
 
 func (o *installTestFileOps) RemoveAll(path string) error {
+	o.events = append(o.events, "remove "+filepath.Clean(path))
+	if filepath.Clean(path) == o.failRemoveAll {
+		o.failRemoveAll = ""
+		return errors.New("injected cleanup failure")
+	}
 	return os.RemoveAll(o.translate(path))
+}
+
+func (o *installTestFileOps) SyncDir(path string) error {
+	o.events = append(o.events, "sync "+filepath.Clean(path))
+	directory, err := os.Open(o.translate(path))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }

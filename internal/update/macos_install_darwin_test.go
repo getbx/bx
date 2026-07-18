@@ -126,6 +126,21 @@ func TestDarwinPreparedInstallCleanupRefusesSubstitutedStage(t *testing.T) {
 		t.Fatal("cleanup accepted a substituted app stage")
 	}
 	requireFileContents(t, marker, "attacker-data")
+	if _, err := os.Stat(env.options.SnapshotDir); err != nil {
+		t.Fatalf("failed app cleanup removed snapshot recovery state: %v", err)
+	}
+	if _, err := os.Stat(env.options.StagingDir); err != nil {
+		t.Fatalf("failed app cleanup removed staging descriptor proof: %v", err)
+	}
+	if err := os.RemoveAll(stagePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(stagePath+".stolen", stagePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Commit(); err != nil {
+		t.Fatalf("cleanup retry failed: %v", err)
+	}
 	requirePathAbsent(t, env.options.SnapshotDir)
 	requirePathAbsent(t, env.options.StagingDir)
 }
