@@ -75,7 +75,7 @@ func TestPreparedInstallNeverCopiesConfigOrState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := listRelativeFiles(prepared.SnapshotPath())
+	entries, err := listRelativeFiles(env.ops.translate(prepared.SnapshotPath()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +104,27 @@ func TestPreparedInstallActivatesStagedCLIAndApp(t *testing.T) {
 	}
 }
 
+func TestPreparedInstallEnforcesModesUnderRestrictiveUmask(t *testing.T) {
+	env := newInstallTestEnv(t, "old-cli", "old-menu")
+	env.ops.writeModeMask = 0o600
+	prepared, err := PrepareMacOSInstall(env.options(), testPayload("new-cli", "new-menu"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]fs.FileMode{
+		env.cliPath: 0o755,
+		filepath.Join(env.appPath, "Contents/MacOS/BxMenu"): 0o755,
+		filepath.Join(env.appPath, "Contents/Info.plist"):   0o644,
+	} {
+		if got := requireFileMode(t, path); got != want {
+			t.Fatalf("%s mode = %o, want %o", path, got, want)
+		}
+	}
+}
+
 func TestPrepareMacOSInstallRejectsInvalidDestinationsAndOwnership(t *testing.T) {
 	env := newInstallTestEnv(t, "old-cli", "old-menu")
 	tests := []struct {
@@ -115,6 +136,9 @@ func TestPrepareMacOSInstallRejectsInvalidDestinationsAndOwnership(t *testing.T)
 		{name: "wrong app name", mutate: func(options *InstallOptions) { options.AppDestination = "/Applications/Other.app" }},
 		{name: "system app owner", mutate: func(options *InstallOptions) { options.AppUID = 501 }},
 		{name: "negative owner", mutate: func(options *InstallOptions) { options.AppGID = -1 }},
+		{name: "snapshot outside state root", mutate: func(options *InstallOptions) { options.SnapshotDir = "/etc/bx-snapshot" }},
+		{name: "staging outside state root", mutate: func(options *InstallOptions) { options.StagingDir = "/tmp/bx-staging" }},
+		{name: "transaction token mismatch", mutate: func(options *InstallOptions) { options.StagingDir = filepath.Join(macOSStagingRoot, "tx-2") }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,11 +151,88 @@ func TestPrepareMacOSInstallRejectsInvalidDestinationsAndOwnership(t *testing.T)
 	}
 }
 
+func TestValidateInstallOptionsAcceptsMatchingConsoleUserApp(t *testing.T) {
+	options := consoleUserInstallOptions()
+	if err := validateInstallOptions(options); err != nil {
+		t.Fatalf("matching console user app was rejected: %v", err)
+	}
+}
+
+func TestValidateInstallOptionsRejectsAnotherLocalUser(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*InstallOptions)
+	}{
+		{name: "UID", mutate: func(options *InstallOptions) { options.AppUID = 502 }},
+		{name: "GID", mutate: func(options *InstallOptions) { options.AppGID = 80 }},
+		{name: "home", mutate: func(options *InstallOptions) {
+			options.AppDestination = "/Users/another/Applications/Bx.app"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			options := consoleUserInstallOptions()
+			tt.mutate(&options)
+			if err := validateInstallOptions(options); err == nil {
+				t.Fatal("another local user's app destination or ownership was accepted")
+			}
+		})
+	}
+}
+
+func consoleUserInstallOptions() InstallOptions {
+	return InstallOptions{
+		CLIDestination: install.BinPath,
+		AppDestination: "/Users/console/Applications/Bx.app",
+		AppUID:         501,
+		AppGID:         20,
+		SnapshotDir:    filepath.Join(macOSSnapshotRoot, "tx-console"),
+		StagingDir:     filepath.Join(macOSStagingRoot, "tx-console"),
+		consoleUser: func() (macOSConsoleUser, error) {
+			return macOSConsoleUser{uid: 501, gid: 20, home: "/Users/console"}, nil
+		},
+	}
+}
+
 func TestPrepareMacOSInstallRejectsIncompletePayloadBeforeMutation(t *testing.T) {
 	env := newInstallTestEnv(t, "old-cli", "old-menu")
 	if _, err := PrepareMacOSInstall(env.options(), MacOSPayload{CLI: []byte("new-cli")}); err == nil {
 		t.Fatal("incomplete payload was accepted")
 	}
+	requireFileContents(t, env.cliPath, "old-cli")
+	requireFileContents(t, filepath.Join(env.appPath, "Contents/MacOS/BxMenu"), "old-menu")
+}
+
+func TestPrepareMacOSInstallRejectsOverlappingTransactionPathsWithoutMutation(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*InstallOptions)
+	}{
+		{name: "snapshot is CLI", mutate: func(options *InstallOptions) { options.SnapshotDir = options.CLIDestination }},
+		{name: "staging is app", mutate: func(options *InstallOptions) { options.StagingDir = options.AppDestination }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newInstallTestEnv(t, "old-cli", "old-menu")
+			options := env.options()
+			tt.mutate(&options)
+			if _, err := PrepareMacOSInstall(options, testPayload("new-cli", "new-menu")); err == nil {
+				t.Fatal("overlapping transaction path was accepted")
+			}
+			requireFileContents(t, env.cliPath, "old-cli")
+			requireFileContents(t, filepath.Join(env.appPath, "Contents/MacOS/BxMenu"), "old-menu")
+		})
+	}
+}
+
+func TestPrepareMacOSInstallPreservesExistingTransactionForRecovery(t *testing.T) {
+	env := newInstallTestEnv(t, "old-cli", "old-menu")
+	marker := filepath.Join(env.snapshotPath, "recovery-marker")
+	writeTestFile(t, marker, "keep", 0o600)
+
+	if _, err := PrepareMacOSInstall(env.options(), testPayload("new-cli", "new-menu")); err == nil {
+		t.Fatal("existing transaction was silently replaced")
+	}
+	requireFileContents(t, marker, "keep")
 	requireFileContents(t, env.cliPath, "old-cli")
 	requireFileContents(t, filepath.Join(env.appPath, "Contents/MacOS/BxMenu"), "old-menu")
 }
@@ -142,6 +243,8 @@ type installTestEnv struct {
 	appPath        string
 	snapshotPath   string
 	stagingPath    string
+	snapshotDir    string
+	stagingDir     string
 	appDestination string
 	ops            *installTestFileOps
 }
@@ -155,6 +258,8 @@ func newInstallTestEnv(t *testing.T, cli, menu string) *installTestEnv {
 		appPath:        filepath.Join(root, "Applications/Bx.app"),
 		snapshotPath:   filepath.Join(root, "var/lib/bx/update/snapshots/tx-1"),
 		stagingPath:    filepath.Join(root, "var/lib/bx/update/staging/tx-1"),
+		snapshotDir:    filepath.Join(macOSSnapshotRoot, "tx-1"),
+		stagingDir:     filepath.Join(macOSStagingRoot, "tx-1"),
 		appDestination: "/Applications/Bx.app",
 	}
 	env.ops = &installTestFileOps{root: root}
@@ -170,8 +275,8 @@ func (e *installTestEnv) options() InstallOptions {
 		AppDestination: e.appDestination,
 		AppUID:         0,
 		AppGID:         0,
-		SnapshotDir:    e.snapshotPath,
-		StagingDir:     e.stagingPath,
+		SnapshotDir:    e.snapshotDir,
+		StagingDir:     e.stagingDir,
 		fileOps:        e.ops,
 	}
 }
@@ -237,8 +342,9 @@ func listRelativeFiles(root string) ([]string, error) {
 }
 
 type installTestFileOps struct {
-	root         string
-	failRenameTo string
+	root          string
+	failRenameTo  string
+	writeModeMask fs.FileMode
 }
 
 func (o *installTestFileOps) FailRenameTo(path string) {
@@ -247,7 +353,7 @@ func (o *installTestFileOps) FailRenameTo(path string) {
 
 func (o *installTestFileOps) translate(path string) string {
 	path = filepath.Clean(path)
-	for _, prefix := range []string{filepath.Dir(install.BinPath), "/Applications"} {
+	for _, prefix := range []string{filepath.Dir(install.BinPath), "/Applications", macOSSnapshotRoot, macOSStagingRoot} {
 		if path == prefix || strings.HasPrefix(path, prefix+string(filepath.Separator)) {
 			return filepath.Join(o.root, strings.TrimPrefix(path, string(filepath.Separator)))
 		}
@@ -272,7 +378,14 @@ func (o *installTestFileOps) MkdirAll(path string, mode fs.FileMode) error {
 }
 
 func (o *installTestFileOps) WriteFile(path string, data []byte, mode fs.FileMode) error {
+	if o.writeModeMask != 0 {
+		mode &= o.writeModeMask
+	}
 	return os.WriteFile(o.translate(path), data, mode)
+}
+
+func (o *installTestFileOps) Chmod(path string, mode fs.FileMode) error {
+	return os.Chmod(o.translate(path), mode)
 }
 
 func (o *installTestFileOps) Chown(path string, uid, gid int) error {

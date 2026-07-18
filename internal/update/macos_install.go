@@ -5,14 +5,23 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/getbx/bx/internal/install"
 )
+
+const (
+	macOSSnapshotRoot = "/var/lib/bx/update/snapshots"
+	macOSStagingRoot  = "/var/lib/bx/update/staging"
+)
+
+var macOSTransactionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type InstallOptions struct {
 	CLIDestination string
@@ -22,7 +31,14 @@ type InstallOptions struct {
 	SnapshotDir    string
 	StagingDir     string
 
-	fileOps FileOps
+	fileOps     FileOps
+	consoleUser func() (macOSConsoleUser, error)
+}
+
+type macOSConsoleUser struct {
+	uid  int
+	gid  int
+	home string
 }
 
 type FileOps interface {
@@ -31,6 +47,7 @@ type FileOps interface {
 	ReadFile(string) ([]byte, error)
 	MkdirAll(string, fs.FileMode) error
 	WriteFile(string, []byte, fs.FileMode) error
+	Chmod(string, fs.FileMode) error
 	Chown(string, int, int) error
 	Rename(string, string) error
 	RemoveAll(string) error
@@ -39,6 +56,7 @@ type FileOps interface {
 type PreparedInstall struct {
 	options     InstallOptions
 	ops         FileOps
+	platform    platformPreparedInstall
 	hadCLI      bool
 	hadApp      bool
 	cliStage    string
@@ -57,6 +75,13 @@ func PrepareMacOSInstall(options InstallOptions, payload MacOSPayload) (*Prepare
 	}
 	ops := options.fileOps
 	if ops == nil {
+		platform, err := newPlatformPreparedInstall(options, payload)
+		if err != nil {
+			return nil, err
+		}
+		if platform != nil {
+			return &PreparedInstall{options: options, platform: platform}, nil
+		}
 		ops = osFileOps{}
 	}
 	token := filepath.Base(filepath.Clean(options.StagingDir))
@@ -68,6 +93,9 @@ func PrepareMacOSInstall(options InstallOptions, payload MacOSPayload) (*Prepare
 		appPrevious: filepath.Join(filepath.Dir(options.AppDestination), ".Bx.app.previous-"+token),
 		appRestore:  filepath.Join(filepath.Dir(options.AppDestination), ".Bx.app.restore-"+token),
 		appDiscard:  filepath.Join(filepath.Dir(options.AppDestination), ".Bx.app.discard-"+token),
+	}
+	if err := prepared.requireFreshTransaction(); err != nil {
+		return nil, err
 	}
 
 	if err := prepared.prepare(payload); err != nil {
@@ -82,6 +110,9 @@ func (p *PreparedInstall) SnapshotPath() string {
 }
 
 func (p *PreparedInstall) Activate() error {
+	if p.platform != nil {
+		return p.platform.Activate()
+	}
 	if err := p.ops.Rename(p.cliStage, p.options.CLIDestination); err != nil {
 		return fmt.Errorf("activate updated CLI: %w", err)
 	}
@@ -103,6 +134,9 @@ func (p *PreparedInstall) Activate() error {
 }
 
 func (p *PreparedInstall) Restore() error {
+	if p.platform != nil {
+		return p.platform.Restore()
+	}
 	if err := p.restoreCLI(); err != nil {
 		return err
 	}
@@ -113,18 +147,30 @@ func (p *PreparedInstall) Restore() error {
 }
 
 func (p *PreparedInstall) Commit() error {
+	if p.platform != nil {
+		return p.platform.Commit()
+	}
 	return p.cleanup()
 }
 
+type platformPreparedInstall interface {
+	Activate() error
+	Restore() error
+	Commit() error
+}
+
 func (p *PreparedInstall) prepare(payload MacOSPayload) error {
-	if err := p.cleanup(); err != nil {
-		return fmt.Errorf("clear stale install transaction: %w", err)
-	}
 	if err := p.ops.MkdirAll(p.options.SnapshotDir, 0o700); err != nil {
 		return fmt.Errorf("create install snapshot: %w", err)
 	}
+	if err := p.ops.Chmod(p.options.SnapshotDir, 0o700); err != nil {
+		return fmt.Errorf("restrict install snapshot: %w", err)
+	}
 	if err := p.ops.MkdirAll(p.options.StagingDir, 0o700); err != nil {
 		return fmt.Errorf("create install staging: %w", err)
+	}
+	if err := p.ops.Chmod(p.options.StagingDir, 0o700); err != nil {
+		return fmt.Errorf("restrict install staging: %w", err)
 	}
 
 	cliInfo, err := p.ops.Lstat(p.options.CLIDestination)
@@ -159,10 +205,37 @@ func (p *PreparedInstall) prepare(payload MacOSPayload) error {
 	if err := p.ops.WriteFile(p.cliStage, payload.CLI, 0o755); err != nil {
 		return fmt.Errorf("stage updated CLI: %w", err)
 	}
+	if err := p.ops.Chmod(p.cliStage, 0o755); err != nil {
+		return fmt.Errorf("set updated CLI mode: %w", err)
+	}
 	if err := stageApp(p.ops, p.appStage, payload, p.options.AppUID, p.options.AppGID); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (p *PreparedInstall) requireFreshTransaction() error {
+	for _, path := range p.transactionPaths() {
+		if _, err := p.ops.Lstat(path); err == nil {
+			return fmt.Errorf("macOS install transaction path already exists %q", path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect macOS install transaction path %q: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func (p *PreparedInstall) transactionPaths() []string {
+	return []string{
+		p.options.SnapshotDir,
+		p.options.StagingDir,
+		p.cliStage,
+		p.cliStage + ".restore",
+		p.appStage,
+		p.appPrevious,
+		p.appRestore,
+		p.appDiscard,
+	}
 }
 
 func (p *PreparedInstall) restoreCLI() error {
@@ -256,7 +329,7 @@ func validateInstallOptions(options InstallOptions) error {
 		if options.AppUID != 0 || options.AppGID != 0 {
 			return fmt.Errorf("system macOS app must be root-owned")
 		}
-	} else if err := validateUserAppDestination(app, options.AppUID, options.AppGID); err != nil {
+	} else if err := validateUserAppDestination(app, options.AppUID, options.AppGID, options.consoleUser); err != nil {
 		return err
 	}
 	for label, path := range map[string]string{"snapshot": options.SnapshotDir, "staging": options.StagingDir} {
@@ -264,26 +337,98 @@ func validateInstallOptions(options InstallOptions) error {
 			return fmt.Errorf("invalid macOS install %s directory %q", label, path)
 		}
 	}
-	if options.SnapshotDir == options.StagingDir {
-		return fmt.Errorf("snapshot and staging directories must differ")
+	snapshotID := filepath.Base(options.SnapshotDir)
+	stagingID := filepath.Base(options.StagingDir)
+	if filepath.Dir(options.SnapshotDir) != macOSSnapshotRoot || filepath.Dir(options.StagingDir) != macOSStagingRoot ||
+		snapshotID != stagingID || !macOSTransactionIDPattern.MatchString(snapshotID) {
+		return fmt.Errorf("macOS install transaction directories must use matching safe IDs under %s and %s", macOSSnapshotRoot, macOSStagingRoot)
+	}
+	transactionPaths := installTransactionPaths(options)
+	destinations := []string{options.CLIDestination, app}
+	for _, transactionPath := range transactionPaths {
+		for _, destination := range destinations {
+			if pathsOverlap(transactionPath, destination) {
+				return fmt.Errorf("macOS install transaction path %q overlaps destination %q", transactionPath, destination)
+			}
+		}
+	}
+	for i := range transactionPaths {
+		for j := i + 1; j < len(transactionPaths); j++ {
+			if pathsOverlap(transactionPaths[i], transactionPaths[j]) {
+				return fmt.Errorf("macOS install transaction paths overlap: %q and %q", transactionPaths[i], transactionPaths[j])
+			}
+		}
 	}
 	return nil
 }
 
-func validateUserAppDestination(app string, uid, gid int) error {
-	account, err := user.LookupId(strconv.Itoa(uid))
+func installTransactionPaths(options InstallOptions) []string {
+	token := filepath.Base(filepath.Clean(options.StagingDir))
+	cliParent := filepath.Dir(options.CLIDestination)
+	appParent := filepath.Dir(options.AppDestination)
+	cliStage := filepath.Join(cliParent, ".bx-update-"+token)
+	return []string{
+		options.SnapshotDir,
+		options.StagingDir,
+		cliStage,
+		cliStage + ".restore",
+		filepath.Join(appParent, ".Bx.app.update-"+token),
+		filepath.Join(appParent, ".Bx.app.previous-"+token),
+		filepath.Join(appParent, ".Bx.app.restore-"+token),
+		filepath.Join(appParent, ".Bx.app.discard-"+token),
+	}
+}
+
+func pathsOverlap(first, second string) bool {
+	first = filepath.Clean(first)
+	second = filepath.Clean(second)
+	return pathContains(first, second) || pathContains(second, first)
+}
+
+func pathContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
 	if err != nil {
-		return fmt.Errorf("look up macOS app owner %d: %w", uid, err)
+		return false
 	}
-	accountGID, err := strconv.Atoi(account.Gid)
-	if err != nil || accountGID != gid {
-		return fmt.Errorf("macOS app owner does not match user %d", uid)
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+func validateUserAppDestination(app string, uid, gid int, lookup func() (macOSConsoleUser, error)) error {
+	if lookup == nil {
+		lookup = discoverMacOSConsoleUser
 	}
-	want := filepath.Join(account.HomeDir, "Applications", "Bx.app")
+	console, err := lookup()
+	if err != nil {
+		return fmt.Errorf("discover macOS console user: %w", err)
+	}
+	if console.uid != uid || console.gid != gid {
+		return fmt.Errorf("macOS app owner %d:%d is not the console user", uid, gid)
+	}
+	want := filepath.Join(console.home, "Applications", "Bx.app")
 	if app != want {
-		return fmt.Errorf("macOS app destination %q does not belong to user %d", app, uid)
+		return fmt.Errorf("macOS app destination %q does not belong to console user %d", app, uid)
 	}
 	return nil
+}
+
+func discoverMacOSConsoleUser() (macOSConsoleUser, error) {
+	output, err := exec.Command("/usr/bin/stat", "-f", "%u", "/dev/console").Output()
+	if err != nil {
+		return macOSConsoleUser{}, err
+	}
+	uid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil || uid <= 0 {
+		return macOSConsoleUser{}, fmt.Errorf("invalid console UID")
+	}
+	account, err := user.LookupId(strconv.Itoa(uid))
+	if err != nil {
+		return macOSConsoleUser{}, fmt.Errorf("look up macOS app owner %d: %w", uid, err)
+	}
+	gid, err := strconv.Atoi(account.Gid)
+	if err != nil || gid < 0 || account.HomeDir == "" {
+		return macOSConsoleUser{}, fmt.Errorf("invalid console account metadata")
+	}
+	return macOSConsoleUser{uid: uid, gid: gid, home: account.HomeDir}, nil
 }
 
 func validateMacOSPayload(payload MacOSPayload) error {
@@ -308,6 +453,9 @@ func stageApp(ops FileOps, destination string, payload MacOSPayload, uid, gid in
 	if err := ops.MkdirAll(destination, 0o755); err != nil {
 		return fmt.Errorf("create app staging directory: %w", err)
 	}
+	if err := ops.Chmod(destination, 0o755); err != nil {
+		return fmt.Errorf("set app staging directory mode: %w", err)
+	}
 	paths := make([]string, 0, len(payload.Menu))
 	for name := range payload.Menu {
 		paths = append(paths, name)
@@ -318,12 +466,18 @@ func stageApp(ops FileOps, destination string, payload MacOSPayload, uid, gid in
 		if err := ops.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("create app path %q: %w", name, err)
 		}
+		if err := chmodDirectoryChain(ops, destination, filepath.Dir(target)); err != nil {
+			return fmt.Errorf("set app directory mode for %q: %w", name, err)
+		}
 		mode := fs.FileMode(0o644)
 		if name == "Contents/MacOS/BxMenu" {
 			mode = 0o755
 		}
 		if err := ops.WriteFile(target, payload.Menu[name], mode); err != nil {
 			return fmt.Errorf("write app file %q: %w", name, err)
+		}
+		if err := ops.Chmod(target, mode); err != nil {
+			return fmt.Errorf("set app file mode %q: %w", name, err)
 		}
 	}
 	if err := chownTree(ops, destination, uid, gid); err != nil {
@@ -341,6 +495,9 @@ func copyTree(ops FileOps, source, destination string) error {
 		return fmt.Errorf("source %q is not a directory", source)
 	}
 	if err := ops.MkdirAll(destination, info.Mode().Perm()); err != nil {
+		return err
+	}
+	if err := ops.Chmod(destination, info.Mode().Perm()); err != nil {
 		return err
 	}
 	entries, err := ops.ReadDir(source)
@@ -379,7 +536,25 @@ func copyRegularFile(ops FileOps, source, destination string, mode fs.FileMode) 
 	if err := ops.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return err
 	}
-	return ops.WriteFile(destination, data, mode)
+	if err := ops.WriteFile(destination, data, mode); err != nil {
+		return err
+	}
+	return ops.Chmod(destination, mode)
+}
+
+func chmodDirectoryChain(ops FileOps, root, directory string) error {
+	for current := directory; ; current = filepath.Dir(current) {
+		if err := ops.Chmod(current, 0o755); err != nil {
+			return err
+		}
+		if current == root {
+			return nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current || !pathContains(root, current) {
+			return fmt.Errorf("directory %q escapes app staging root", directory)
+		}
+	}
 }
 
 func chownTree(ops FileOps, root string, uid, gid int) error {
@@ -414,6 +589,7 @@ func (osFileOps) MkdirAll(path string, mode fs.FileMode) error { return os.Mkdir
 func (osFileOps) WriteFile(path string, data []byte, mode fs.FileMode) error {
 	return os.WriteFile(path, data, mode)
 }
-func (osFileOps) Chown(path string, uid, gid int) error { return os.Chown(path, uid, gid) }
-func (osFileOps) Rename(oldPath, newPath string) error  { return os.Rename(oldPath, newPath) }
-func (osFileOps) RemoveAll(path string) error           { return os.RemoveAll(path) }
+func (osFileOps) Chmod(path string, mode fs.FileMode) error { return os.Chmod(path, mode) }
+func (osFileOps) Chown(path string, uid, gid int) error     { return os.Chown(path, uid, gid) }
+func (osFileOps) Rename(oldPath, newPath string) error      { return os.Rename(oldPath, newPath) }
+func (osFileOps) RemoveAll(path string) error               { return os.RemoveAll(path) }
