@@ -1,6 +1,9 @@
 package supervisor
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // darwin_routes.go 是 macOS Hijack 的**纯路由命令构造**(无 build tag、不执行 route,
 // 故可在任意平台免 root 单测)。真正调用 `route`/检测 v6 的部分在 platform_darwin.go。
@@ -11,8 +14,9 @@ var darwinDirectCIDRs = singleTableDirectCIDRs
 
 // darwinRouteSpec 是一条 macOS 路由:add 命令与对称的 del 命令(均为 `route` 的参数,不含 "route" 本身)。
 type darwinRouteSpec struct {
-	add []string
-	del []string
+	add   []string
+	adopt []string
+	del   []string
 }
 
 // DarwinRoutePlanOptions 是 macOS 路由 dry-run 的输入。它只用于生成命令文本,不执行任何命令。
@@ -58,11 +62,15 @@ func commandString(name string, args ...string) string {
 // ⚠️ `-reject` 的确切 route 语法(dummy gateway `::1`)与本地 errno 需在真实 macOS 上验证。
 func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass []string, blockV6 bool) []darwinRouteSpec {
 	var specs []darwinRouteSpec
-	viaGW := func(cidr string) darwinRouteSpec {
-		return darwinRouteSpec{
+	viaGW := func(cidr string, adopt bool) darwinRouteSpec {
+		spec := darwinRouteSpec{
 			add: []string{"-n", "add", "-net", cidr, gw},
 			del: []string{"-n", "delete", "-net", cidr},
 		}
+		if adopt {
+			spec.adopt = []string{"-n", "change", "-net", cidr, gw}
+		}
+		return spec
 	}
 	viaTun := func(cidr string) darwinRouteSpec {
 		return darwinRouteSpec{
@@ -71,13 +79,13 @@ func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass 
 		}
 	}
 	for _, c := range directCIDRs {
-		specs = append(specs, viaGW(c))
+		specs = append(specs, viaGW(c, false))
 	}
 	for _, c := range serverBypass {
-		specs = append(specs, viaGW(c))
+		specs = append(specs, viaGW(c, true))
 	}
 	for _, c := range userBypass {
-		specs = append(specs, viaGW(c))
+		specs = append(specs, viaGW(c, false))
 	}
 	for _, c := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
 		specs = append(specs, viaTun(c))
@@ -91,4 +99,30 @@ func darwinRouteSpecs(tunName, gw string, directCIDRs, serverBypass, userBypass 
 		}
 	}
 	return specs
+}
+
+func applyDarwinRouteSpecs(specs []darwinRouteSpec, run func(...string) error) ([]darwinRouteSpec, error) {
+	done := make([]darwinRouteSpec, 0, len(specs))
+	for _, spec := range specs {
+		err := run(spec.add...)
+		if err != nil && len(spec.adopt) != 0 && darwinRouteAlreadyExists(err) {
+			err = run(spec.adopt...)
+		}
+		if err != nil {
+			return done, fmt.Errorf("route %s: %w", strings.Join(spec.add, " "), err)
+		}
+		done = append(done, spec)
+	}
+	return done, nil
+}
+
+func cleanupDarwinRouteSpecs(specs []darwinRouteSpec, run func(...string) error) {
+	for i := len(specs) - 1; i >= 0; i-- {
+		_ = run(specs[i].del...)
+	}
+}
+
+func darwinRouteAlreadyExists(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "file exists") || strings.Contains(message, "already exists")
 }

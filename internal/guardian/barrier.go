@@ -36,6 +36,7 @@ type CommandRunner interface {
 type Barrier interface {
 	Install(context.Context, BarrierContext) error
 	ReassertBypass(context.Context, BarrierContext) error
+	Release(context.Context, BarrierContext) error
 	Remove(context.Context, BarrierContext) error
 }
 
@@ -59,14 +60,7 @@ func PlanBarrier(ctx BarrierContext) (apply, reassert, cleanup []Command, err er
 	for _, bypass := range bypasses {
 		routes = append(routes, routeViaGateway(bypass, gateway))
 	}
-	for _, block := range publicIPv4Blocks {
-		routes = append(routes, rejectRoute(block, false))
-	}
-	if ctx.BlockIPv6 {
-		for _, block := range publicIPv6Blocks {
-			routes = append(routes, rejectRoute(block, true))
-		}
-	}
+	routes = append(routes, blockingBarrierRoutes(ctx.BlockIPv6)...)
 
 	apply = make([]Command, 0, len(routes))
 	for _, route := range routes {
@@ -81,6 +75,31 @@ func PlanBarrier(ctx BarrierContext) (apply, reassert, cleanup []Command, err er
 		cleanup = append(cleanup, routes[i].del)
 	}
 	return apply, reassert, cleanup, nil
+}
+
+func PlanBarrierRelease(ctx BarrierContext) ([]Command, error) {
+	if _, _, err := validateBarrierContext(ctx); err != nil {
+		return nil, err
+	}
+	routes := blockingBarrierRoutes(ctx.BlockIPv6)
+	release := make([]Command, 0, len(routes))
+	for i := len(routes) - 1; i >= 0; i-- {
+		release = append(release, routes[i].del)
+	}
+	return release, nil
+}
+
+func blockingBarrierRoutes(blockIPv6 bool) []barrierRoute {
+	routes := make([]barrierRoute, 0, len(publicIPv4Blocks)+len(publicIPv6Blocks))
+	for _, block := range publicIPv4Blocks {
+		routes = append(routes, rejectRoute(block, false))
+	}
+	if blockIPv6 {
+		for _, block := range publicIPv6Blocks {
+			routes = append(routes, rejectRoute(block, true))
+		}
+	}
+	return routes
 }
 
 func routeViaGateway(cidr, gateway string) barrierRoute {

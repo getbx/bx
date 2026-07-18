@@ -1,17 +1,21 @@
 package guardian
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 )
 
 type Store struct {
-	mu    sync.Mutex
-	paths Paths
+	mu            sync.Mutex
+	paths         Paths
+	syncDirectory func(string) error
 }
 
 const (
@@ -32,7 +36,7 @@ func OpenDefaultStore() *Store {
 }
 
 func OpenStore(paths Paths) *Store {
-	return &Store{paths: paths}
+	return &Store{paths: paths, syncDirectory: syncGuardianDirectory}
 }
 
 func (s *Store) LoadDesired() (DesiredState, error) {
@@ -113,15 +117,42 @@ func (s *Store) ClearTransaction() error {
 	if err := s.ensureDirectories(); err != nil {
 		return err
 	}
-	if err := os.Remove(s.paths.Transaction); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(s.paths.Transaction); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return fmt.Errorf("clear transaction: %w", err)
+	}
+	if err := s.syncDirectory(filepath.Dir(s.paths.Transaction)); err != nil {
+		return fmt.Errorf("sync cleared transaction: %w", err)
 	}
 	return nil
 }
 
+func (s *Store) LoadReceipt() (*Receipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	b, err := os.ReadFile(s.paths.Receipt)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read receipt: %w", err)
+	}
+	var receipt Receipt
+	if err := json.Unmarshal(b, &receipt); err != nil {
+		return nil, fmt.Errorf("decode receipt: %w", err)
+	}
+	if !validReceipt(receipt) {
+		return nil, fmt.Errorf("invalid receipt")
+	}
+	return &receipt, nil
+}
+
 func (s *Store) SaveReceipt(receipt Receipt) error {
-	if !receipt.Outcome.terminal() {
-		return fmt.Errorf("invalid receipt outcome %q", receipt.Outcome)
+	if !validReceipt(receipt) {
+		return fmt.Errorf("invalid receipt")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,6 +160,16 @@ func (s *Store) SaveReceipt(receipt Receipt) error {
 		return err
 	}
 	return writeJSONAtomically(s.paths.Receipt, receipt)
+}
+
+func validReceipt(receipt Receipt) bool {
+	if !receipt.Outcome.terminal() || !updateTransactionIDPattern.MatchString(receipt.TransactionID) ||
+		!updateVersionPattern.MatchString(receipt.FromVersion) || !updateVersionPattern.MatchString(receipt.ToVersion) ||
+		len(receipt.AssetDigest) != 2*sha256.Size || receipt.AssetDigest != strings.ToLower(receipt.AssetDigest) || receipt.CompletedAt.IsZero() {
+		return false
+	}
+	_, err := hex.DecodeString(receipt.AssetDigest)
+	return err == nil
 }
 
 func (s *Store) ensureDirectories() error {
@@ -181,7 +222,11 @@ func writeJSONAtomically(path string, value any) error {
 	if err := os.Rename(name, path); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
+	return syncGuardianDirectory(filepath.Dir(path))
+}
+
+func syncGuardianDirectory(path string) error {
+	dir, err := os.Open(path)
 	if err != nil {
 		return err
 	}

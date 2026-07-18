@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testPaths(root string) Paths {
@@ -95,7 +96,9 @@ func TestStoreRejectsInvalidAndNonTerminalReceiptOutcomes(t *testing.T) {
 	s := OpenStore(testPaths(t.TempDir()))
 	for _, outcome := range []Phase{Phase("unknown"), PhaseIdle, PhasePrepared, PhaseBarrierActive, PhaseActivating, PhaseRollingBack} {
 		t.Run(string(outcome), func(t *testing.T) {
-			err := s.SaveReceipt(Receipt{TransactionID: "tx-1", Outcome: outcome})
+			receipt := validStoreTestReceipt(PhaseCommitted)
+			receipt.Outcome = outcome
+			err := s.SaveReceipt(receipt)
 			if err == nil {
 				t.Fatalf("receipt outcome %q accepted", outcome)
 			}
@@ -107,10 +110,67 @@ func TestStoreAcceptsTerminalReceiptOutcomes(t *testing.T) {
 	s := OpenStore(testPaths(t.TempDir()))
 	for _, outcome := range []Phase{PhaseCommitted, PhaseRolledBack, PhaseNeedsAttention} {
 		t.Run(string(outcome), func(t *testing.T) {
-			if err := s.SaveReceipt(Receipt{TransactionID: "tx-1", Outcome: outcome}); err != nil {
+			if err := s.SaveReceipt(validStoreTestReceipt(outcome)); err != nil {
 				t.Fatalf("save receipt: %v", err)
 			}
 		})
+	}
+}
+
+func TestStoreLoadsOnlyValidatedReceipts(t *testing.T) {
+	paths := testPaths(t.TempDir())
+	store := OpenStore(paths)
+	want := validStoreTestReceipt(PhaseCommitted)
+	if err := store.SaveReceipt(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadReceipt()
+	if err != nil || got == nil || *got != want {
+		t.Fatalf("LoadReceipt = %#v, %v; want %#v", got, err, want)
+	}
+
+	invalid := want
+	invalid.AssetDigest = "not-a-digest"
+	b, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Receipt, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.LoadReceipt(); err == nil || got != nil {
+		t.Fatalf("invalid receipt loaded as %#v, %v", got, err)
+	}
+}
+
+func TestStoreClearTransactionSyncsParentDirectory(t *testing.T) {
+	paths := testPaths(t.TempDir())
+	store := OpenStore(paths)
+	transaction := Transaction{ID: "tx-1", Phase: PhasePrepared}
+	if err := store.SaveTransaction(transaction); err != nil {
+		t.Fatal(err)
+	}
+	var synced string
+	store.syncDirectory = func(path string) error {
+		synced = path
+		return nil
+	}
+	if err := store.ClearTransaction(); err != nil {
+		t.Fatal(err)
+	}
+	if synced != filepath.Dir(paths.Transaction) {
+		t.Fatalf("synced directory = %q, want %q", synced, filepath.Dir(paths.Transaction))
+	}
+}
+
+func validStoreTestReceipt(outcome Phase) Receipt {
+	return Receipt{
+		TransactionID: "tx-1",
+		FromVersion:   "v1",
+		ToVersion:     "v2",
+		AssetDigest:   strings.Repeat("a", 64),
+		Outcome:       outcome,
+		CompletedAt:   time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC),
 	}
 }
 

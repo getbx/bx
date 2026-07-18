@@ -18,6 +18,8 @@ const (
 	ProtectionNeedsAttention = "needs_attention"
 )
 
+var errRecoveryIncomplete = errors.New("guardian startup recovery incomplete")
+
 type DesiredStore interface {
 	LoadDesired() (DesiredState, error)
 	SaveDesired(DesiredState) error
@@ -33,6 +35,16 @@ type CoreRunner interface {
 
 type HealthGate interface {
 	Wait(context.Context, HealthTarget) (supervisor.RuntimeState, error)
+}
+
+type GatewayProvider interface {
+	DefaultGateway(context.Context) (string, error)
+}
+
+type GatewayProviderFunc func(context.Context) (string, error)
+
+func (f GatewayProviderFunc) DefaultGateway(ctx context.Context) (string, error) {
+	return f(ctx)
 }
 
 type NetworkRestorer interface {
@@ -53,6 +65,7 @@ type ManagerOptions struct {
 	Restorer         NetworkRestorer
 	Legacy           LegacyCoreLifecycle
 	BarrierContext   BarrierContext
+	GatewayProvider  GatewayProvider
 	CoreVersion      string
 	RestartTimeout   time.Duration
 	CleanupTimeout   time.Duration
@@ -62,6 +75,7 @@ type ManagerOptions struct {
 
 type Manager struct {
 	mutation          chan struct{}
+	updateOperation   chan struct{}
 	statusMu          sync.RWMutex
 	store             DesiredStore
 	runner            CoreRunner
@@ -70,6 +84,7 @@ type Manager struct {
 	restorer          NetworkRestorer
 	legacy            LegacyCoreLifecycle
 	barrierContext    BarrierContext
+	gatewayProvider   GatewayProvider
 	coreVersion       string
 	restartTimeout    time.Duration
 	cleanupTimeout    time.Duration
@@ -81,6 +96,7 @@ type Manager struct {
 	runtime           supervisor.RuntimeState
 	status            Status
 	barrierHeld       bool
+	recoveryBlocked   bool
 	recoveryMu        sync.Mutex
 	recoveryContext   context.Context
 	cancelRecovery    context.CancelFunc
@@ -127,9 +143,20 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	if guardianProtocol <= 0 {
 		guardianProtocol = currentGuardianProtocol
 	}
+	gatewayProvider := options.GatewayProvider
+	if gatewayProvider == nil {
+		gateway := options.BarrierContext.Gateway
+		gatewayProvider = GatewayProviderFunc(func(context.Context) (string, error) {
+			if gateway == "" {
+				return "", errors.New("default gateway unavailable")
+			}
+			return gateway, nil
+		})
+	}
 	recoveryContext, cancelRecovery := context.WithCancel(context.Background())
 	m := &Manager{
 		mutation:          make(chan struct{}, 1),
+		updateOperation:   make(chan struct{}, 1),
 		store:             options.Store,
 		runner:            options.Runner,
 		health:            options.Health,
@@ -137,6 +164,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		restorer:          options.Restorer,
 		legacy:            options.Legacy,
 		barrierContext:    cloneBarrierContext(options.BarrierContext),
+		gatewayProvider:   gatewayProvider,
 		coreVersion:       options.CoreVersion,
 		restartTimeout:    restartTimeout,
 		cleanupTimeout:    cleanupTimeout,
@@ -156,6 +184,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		},
 	}
 	m.mutation <- struct{}{}
+	m.updateOperation <- struct{}{}
 	return m, nil
 }
 
@@ -170,6 +199,9 @@ func (m *Manager) Up(ctx context.Context) error {
 		return err
 	}
 	defer m.releaseMutation()
+	if m.recoveryBlocked {
+		return errRecoveryIncomplete
+	}
 	return m.upLocked(ctx)
 }
 
@@ -185,6 +217,9 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 		return err
 	}
 	defer m.releaseMutation()
+	if m.recoveryBlocked {
+		return errRecoveryIncomplete
+	}
 
 	if m.current.Uncertain {
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
@@ -234,7 +269,7 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 		return err
 	}
 	barrierContext = m.contextForRuntime(state)
-	if err := m.removeBarrier(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return err
 	}
@@ -328,6 +363,9 @@ func (m *Manager) Down(ctx context.Context) error {
 		return err
 	}
 	defer m.releaseMutation()
+	if m.recoveryBlocked {
+		return errRecoveryIncomplete
+	}
 
 	desired, err := m.store.LoadDesired()
 	if err != nil {
@@ -417,18 +455,26 @@ func (m *Manager) Recover(ctx context.Context) error {
 	}
 	defer m.releaseMutation()
 	if err := m.recoverUpdateLocked(ctx); err != nil {
+		m.recoveryBlocked = true
 		return err
 	}
 	desired, err := m.store.LoadDesired()
 	if err != nil {
 		m.needsAttention(DesiredOn, "desired_state_read_failed")
+		m.recoveryBlocked = true
 		return err
 	}
 	if desired == DesiredOff {
 		m.setStatus(Status{SchemaVersion: 1, Desired: DesiredOff, Phase: PhaseIdle, Protection: ProtectionOff})
+		m.recoveryBlocked = false
 		return nil
 	}
-	return m.upLocked(ctx)
+	if err := m.upLocked(ctx); err != nil {
+		m.recoveryBlocked = true
+		return err
+	}
+	m.recoveryBlocked = false
+	return nil
 }
 
 func (m *Manager) startCoreLocked(ctx context.Context) (supervisor.RuntimeState, error) {
@@ -516,7 +562,7 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 		if !releaseBarrier {
 			return nil
 		}
-		if err := m.removeBarrier(ctx, m.contextForRuntime(state)); err != nil {
+		if err := m.releaseBarrierToCore(ctx, m.contextForRuntime(state)); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 			return err
 		}
@@ -573,13 +619,15 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		return
 	}
 	defer m.releaseMutation()
+	operationCtx, cancelOperation := context.WithTimeout(recoveryCtx, m.restartTimeout)
+	defer cancelOperation()
 	if !sameProcessGeneration(m.current, process) {
 		return
 	}
 	if errors.Is(exitErr, ErrProcessOwnershipUncertain) {
 		barrierContext := m.contextForRuntime(m.runtime)
 		if !m.barrierHeld {
-			if barrierErr := m.barrier.Install(recoveryCtx, barrierContext); barrierErr == nil {
+			if barrierErr := m.barrier.Install(operationCtx, barrierContext); barrierErr == nil {
 				m.barrierHeld = true
 			}
 		}
@@ -592,7 +640,7 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 	if err != nil {
 		barrierContext := m.contextForRuntime(m.runtime)
 		if !m.barrierHeld {
-			if barrierErr := m.barrier.Install(recoveryCtx, barrierContext); barrierErr == nil {
+			if barrierErr := m.barrier.Install(operationCtx, barrierContext); barrierErr == nil {
 				m.barrierHeld = true
 			}
 		}
@@ -607,18 +655,16 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 	barrierContext := m.contextForRuntime(m.runtime)
 	m.current = Process{}
 	m.needsAttention(DesiredOn, "core_unexpected_exit")
-	if err := m.barrier.Install(recoveryCtx, barrierContext); err == nil {
+	if err := m.barrier.Install(operationCtx, barrierContext); err == nil {
 		m.barrierHeld = true
 	}
 
-	restartCtx, cancel := context.WithTimeout(recoveryCtx, m.restartTimeout)
-	defer cancel()
-	if _, err := m.startCoreLocked(restartCtx); err != nil {
+	if _, err := m.startCoreLocked(operationCtx); err != nil {
 		m.needsAttention(DesiredOn, "core_restart_failed")
 		return
 	}
 	if m.barrierHeld {
-		if err := m.removeBarrier(restartCtx, barrierContext); err != nil {
+		if err := m.removeBarrier(operationCtx, barrierContext); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 		}
 	}
@@ -698,7 +744,7 @@ func (m *Manager) admitRecovery() (context.Context, func(), bool) {
 		return nil, nil, false
 	}
 	m.recoveryActive++
-	ctx, cancel := context.WithTimeout(m.recoveryContext, m.restartTimeout)
+	ctx, cancel := context.WithCancel(m.recoveryContext)
 	return ctx, func() {
 		cancel()
 		m.finishRecovery()
@@ -765,6 +811,17 @@ func (m *Manager) removeBarrier(ctx context.Context, barrierContext BarrierConte
 	}
 	if err := m.barrier.Remove(ctx, barrierContext); err != nil {
 		return fmt.Errorf("remove maintenance barrier: %w", err)
+	}
+	m.barrierHeld = false
+	return nil
+}
+
+func (m *Manager) releaseBarrierToCore(ctx context.Context, barrierContext BarrierContext) error {
+	if !m.barrierHeld {
+		return nil
+	}
+	if err := m.barrier.Release(ctx, barrierContext); err != nil {
+		return fmt.Errorf("release maintenance barrier to Core: %w", err)
 	}
 	m.barrierHeld = false
 	return nil

@@ -306,11 +306,11 @@ func (p *PreparedInstall) removeAppTransactionPaths() error {
 
 func (p *PreparedInstall) cleanup() error {
 	return errors.Join(
-		p.ops.RemoveAll(p.options.SnapshotDir),
-		p.ops.RemoveAll(p.options.StagingDir),
 		p.ops.RemoveAll(p.cliStage),
 		p.ops.RemoveAll(p.cliStage+".restore"),
 		p.removeAppTransactionPaths(),
+		p.ops.RemoveAll(p.options.SnapshotDir),
+		p.ops.RemoveAll(p.options.StagingDir),
 	)
 }
 
