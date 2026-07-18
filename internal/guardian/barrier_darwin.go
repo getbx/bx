@@ -46,6 +46,14 @@ func (b darwinBarrier) ReassertBypass(ctx context.Context, barrierCtx BarrierCon
 	return b.run(ctx, reassert, isRouteAlreadyExists)
 }
 
+func (b darwinBarrier) Release(ctx context.Context, barrierCtx BarrierContext) error {
+	release, err := PlanBarrierRelease(barrierCtx)
+	if err != nil {
+		return err
+	}
+	return b.run(ctx, release, isRouteNotInTable)
+}
+
 func (b darwinBarrier) Remove(ctx context.Context, barrierCtx BarrierContext) error {
 	_, _, cleanup, err := PlanBarrier(barrierCtx)
 	if err != nil {

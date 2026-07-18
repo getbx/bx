@@ -5,13 +5,16 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/install"
 )
 
 func TestDaemonRunsJournalRecoveryBeforeServingLocalAPI(t *testing.T) {
 	for _, recoveryErr := range []error{nil, errors.New("needs attention")} {
+		ctx, cancel := context.WithCancel(context.Background())
 		events := []string{}
 		controller := &daemonStartupController{
 			recover: func(context.Context) error {
@@ -30,12 +33,58 @@ func TestDaemonRunsJournalRecoveryBeforeServingLocalAPI(t *testing.T) {
 			return &Daemon{}, nil
 		}
 
-		if _, err := startRecoveredDaemon(context.Background(), DaemonOptions{}, controller, start); err != nil {
+		if _, err := startRecoveredDaemon(ctx, DaemonOptions{}, controller, start); err != nil {
 			t.Fatal(err)
 		}
+		cancel()
 		if want := []string{"recover", "serve"}; !reflect.DeepEqual(events, want) {
 			t.Fatalf("events = %#v, want %#v", events, want)
 		}
+	}
+}
+
+func TestDaemonRetriesRecoveryWhileServingDiagnostics(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	attempts := 0
+	retried := make(chan struct{})
+	controller := &daemonStartupController{recover: func(context.Context) error {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if attempts == 1 {
+			return errors.New("barrier unavailable")
+		}
+		select {
+		case <-retried:
+		default:
+			close(retried)
+		}
+		return nil
+	}}
+	served := make(chan struct{})
+	start := func(_ context.Context, options DaemonOptions) (*Daemon, error) {
+		if options.Handler == nil {
+			t.Fatal("diagnostics handler was not installed")
+		}
+		close(served)
+		return &Daemon{}, nil
+	}
+
+	if _, err := startRecoveredDaemon(ctx, DaemonOptions{}, controller, start); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-served:
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not serve diagnostics after recovery failure")
+	}
+	select {
+	case <-retried:
+	case <-time.After(2 * time.Second):
+		t.Fatal("daemon discarded recovery failure instead of retrying")
 	}
 }
 

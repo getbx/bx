@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -119,6 +120,79 @@ func TestDarwinRoutePlanIsDryRunText(t *testing.T) {
 	if !stringSliceContains(cleanup, "route -n delete -net 0.0.0.0/1") {
 		t.Error("cleanup 缺 split-default 清理命令")
 	}
+}
+
+func TestDarwinCoreAdoptsAndOwnsPreinstalledServerBypass(t *testing.T) {
+	routes := map[string]string{"1.2.3.4/32": "192.168.1.1"}
+	var commands []string
+	run := func(args ...string) error {
+		commands = append(commands, strings.Join(args, " "))
+		if len(args) < 4 || args[0] != "-n" {
+			return errors.New("malformed route command")
+		}
+		switch args[1] {
+		case "add":
+			cidr := args[3]
+			if _, exists := routes[cidr]; exists {
+				return errors.New("route: writing to routing socket: File exists")
+			}
+			routes[cidr] = strings.Join(args[4:], " ")
+		case "change":
+			cidr := args[3]
+			if _, exists := routes[cidr]; !exists {
+				return errors.New("route: not in table")
+			}
+			routes[cidr] = strings.Join(args[4:], " ")
+		case "delete":
+			delete(routes, args[3])
+		default:
+			return errors.New("unsupported route command")
+		}
+		return nil
+	}
+
+	specs := darwinRouteSpecs("utun5", "192.168.1.1", nil, []string{"1.2.3.4/32"}, nil, false)
+	owned, err := applyDarwinRouteSpecs(specs, run)
+	if err != nil {
+		t.Fatalf("Core rejected Guardian bypass: %v; commands=%#v", err, commands)
+	}
+	wantPrefix := []string{
+		"-n add -net 1.2.3.4/32 192.168.1.1",
+		"-n change -net 1.2.3.4/32 192.168.1.1",
+	}
+	if len(commands) < len(wantPrefix) || !reflectStringPrefix(commands, wantPrefix) {
+		t.Fatalf("commands = %#v, want prefix %#v", commands, wantPrefix)
+	}
+	if got := routes["1.2.3.4/32"]; got != "192.168.1.1" {
+		t.Fatalf("adopted bypass target = %q", got)
+	}
+
+	cleanupDarwinRouteSpecs(owned, run)
+	if len(routes) != 0 {
+		t.Fatalf("Core cleanup did not remove owned routes: %#v", routes)
+	}
+}
+
+func TestDarwinCoreDoesNotAdoptUnownedDuplicateRoute(t *testing.T) {
+	run := func(args ...string) error {
+		if strings.Join(args, " ") == "-n add -net 0.0.0.0/1 -interface utun5" {
+			return errors.New("route: writing to routing socket: File exists")
+		}
+		return nil
+	}
+	specs := darwinRouteSpecs("utun5", "192.168.1.1", nil, nil, nil, false)
+	if _, err := applyDarwinRouteSpecs(specs, run); err == nil {
+		t.Fatal("Core adopted a duplicate route outside the Guardian server handoff")
+	}
+}
+
+func reflectStringPrefix(got, want []string) bool {
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func stringSliceContains(xs []string, want string) bool {

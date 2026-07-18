@@ -39,9 +39,10 @@ func TestManagerUpdateTransactions(t *testing.T) {
 			wantPhase:   PhaseCommitted,
 			wantVersion: "v2",
 			wantEventPrefix: []string{
-				"prepare", "journal.prepared", "barrier.install", "journal.barrier_active",
+				"prepare", "health.v1", "install.bind_barrier", "journal.prepared",
+				"journal.prepared.barrier_intent", "barrier.install", "journal.barrier_active",
 				"core.stop.v1", "barrier.reassert", "journal.activating", "install.activate",
-				"core.start.v2", "health.v2", "journal.committed", "barrier.remove",
+				"core.start.v2", "health.v2", "journal.committed", "barrier.release",
 				"receipt.committed", "install.commit", "journal.clear",
 			},
 		},
@@ -51,11 +52,12 @@ func TestManagerUpdateTransactions(t *testing.T) {
 			wantPhase:   PhaseRolledBack,
 			wantVersion: "v1",
 			wantEventPrefix: []string{
-				"prepare", "journal.prepared", "barrier.install", "journal.barrier_active",
+				"prepare", "health.v1", "install.bind_barrier", "journal.prepared",
+				"journal.prepared.barrier_intent", "barrier.install", "journal.barrier_active",
 				"core.stop.v1", "barrier.reassert", "journal.activating", "install.activate",
 				"core.start.v2", "health.v2", "core.stop.v2", "journal.rolling_back",
-				"install.restore", "core.start.v1", "health.v1", "journal.rolled_back",
-				"barrier.remove", "receipt.rolled_back", "install.commit", "journal.clear",
+				"install.restore", "barrier.reassert", "core.start.v1", "health.v1", "journal.rolled_back",
+				"barrier.release", "receipt.rolled_back", "install.commit", "journal.clear",
 			},
 		},
 		{
@@ -65,10 +67,11 @@ func TestManagerUpdateTransactions(t *testing.T) {
 			wantBarrier: true,
 			wantErr:     true,
 			wantEventPrefix: []string{
-				"prepare", "journal.prepared", "barrier.install", "journal.barrier_active",
+				"prepare", "health.v1", "install.bind_barrier", "journal.prepared",
+				"journal.prepared.barrier_intent", "barrier.install", "journal.barrier_active",
 				"core.stop.v1", "barrier.reassert", "journal.activating", "install.activate",
 				"core.start.v2", "health.v2", "core.stop.v2", "journal.rolling_back",
-				"install.restore", "core.start.v1", "health.v1", "core.stop.v1",
+				"install.restore", "barrier.reassert", "core.start.v1", "health.v1", "core.stop.v1",
 				"journal.needs_attention",
 			},
 		},
@@ -130,7 +133,7 @@ func TestManagerUpdateFailureEventsRemainFailClosed(t *testing.T) {
 		{failAt: "prepared", wantPhase: PhaseCommitted, wantVersion: "v1", wantErr: true},
 		{failAt: "barrier-install", wantBarrier: true, wantPhase: PhaseNeedsAttention, wantVersion: "v1", wantErr: true},
 		{failAt: "old-stop", wantBarrier: true, wantPhase: PhaseNeedsAttention, wantVersion: "v1", wantErr: true},
-		{failAt: "bypass-reassert", wantPhase: PhaseRolledBack, wantVersion: "v1", wantBarrierRemoved: true},
+		{failAt: "bypass-reassert", wantBarrier: true, wantPhase: PhaseNeedsAttention, wantVersion: "v1", wantErr: true},
 		{failAt: "activate", wantPhase: PhaseRolledBack, wantVersion: "v1", wantBarrierRemoved: true},
 		{failAt: "new-start", wantPhase: PhaseRolledBack, wantVersion: "v1", wantBarrierRemoved: true},
 		{failAt: "new-health", wantPhase: PhaseRolledBack, wantVersion: "v1", wantBarrierRemoved: true},
@@ -154,12 +157,22 @@ func TestManagerUpdateFailureEventsRemainFailClosed(t *testing.T) {
 			if env.manager.barrierHeld != tt.wantBarrier {
 				t.Fatalf("barrierHeld = %v, want %v", env.manager.barrierHeld, tt.wantBarrier)
 			}
-			if tt.wantBarrierRemoved && !containsEvent(env.events.snapshot(), "barrier.remove") {
+			if tt.wantBarrierRemoved && !containsEvent(env.events.snapshot(), "barrier.release") {
 				t.Fatalf("healthy Core did not reach barrier cleanup: %#v", env.events.snapshot())
 			}
 			assertSecretFreeUpdateValues(t, result, err, status)
 		})
 	}
+}
+
+func TestManagerUpdatePersistsBarrierIntentBeforeRouteMutation(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	if _, err := env.manager.Update(context.Background(), env.request); err != nil {
+		t.Fatal(err)
+	}
+	events := env.events.snapshot()
+	assertEventBefore(t, events, "journal.prepared.barrier_intent", "barrier.install")
+	assertEventBefore(t, events, "barrier.install", "journal.barrier_active")
 }
 
 func TestManagerUpdateRejectsUnsafePackageBeforeBarrier(t *testing.T) {
@@ -321,68 +334,183 @@ func TestManagerUpdateDerivesBarrierFromLiveRuntime(t *testing.T) {
 	env := newUpdateTestEnv(t)
 	env.manager.barrierContext = BarrierContext{Gateway: "192.0.2.9", ServerBypass: []string{"203.0.113.99/32"}, BlockIPv6: true}
 	env.manager.runtime.ServerBypass = []string{"198.51.100.44/32"}
+	live := updateRuntime(env.old.PID, "v1")
+	live.ServerBypass = []string{"198.51.100.77/32"}
+	env.health.runtimeByVersion = map[string]supervisor.RuntimeState{"v1": live}
+	gateways := &fakeGatewayProvider{gateway: "192.0.2.55"}
+	env.manager.gatewayProvider = gateways
 
 	if _, err := env.manager.Update(context.Background(), env.request); err != nil {
 		t.Fatal(err)
 	}
 	got := env.barrier.lastInstallContext()
-	want := BarrierContext{Gateway: "192.0.2.9", ServerBypass: []string{"198.51.100.44/32"}, BlockIPv6: true}
+	want := BarrierContext{Gateway: "192.0.2.55", ServerBypass: []string{"198.51.100.77/32"}, BlockIPv6: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("barrier context = %+v, want live runtime %+v", got, want)
 	}
+	if !reflect.DeepEqual(env.prepared.boundBarrierContext, want) {
+		t.Fatalf("recovery metadata context = %+v, want %+v", env.prepared.boundBarrierContext, want)
+	}
+	if gateways.callCount() != 1 {
+		t.Fatalf("gateway discoveries = %d, want 1", gateways.callCount())
+	}
+	events := env.events.snapshot()
+	assertEventBefore(t, events, "prepare", "health.v1")
+	assertEventBefore(t, events, "health.v1", "install.bind_barrier")
+	assertEventBefore(t, events, "install.bind_barrier", "journal.prepared")
 }
 
-func TestManagerUpdateSerializesEveryMutation(t *testing.T) {
-	operations := []struct {
-		name string
-		run  func(context.Context, *updateTestEnv) error
-	}{
-		{name: "up", run: func(ctx context.Context, env *updateTestEnv) error { return env.manager.Up(ctx) }},
-		{name: "down", run: func(ctx context.Context, env *updateTestEnv) error { return env.manager.Down(ctx) }},
-		{name: "migration", run: func(ctx context.Context, env *updateTestEnv) error {
-			return env.manager.Migrate(ctx, MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}})
-		}},
-		{name: "update", run: func(ctx context.Context, env *updateTestEnv) error {
-			request := env.writeRequest(t, "tx-2", []byte("second verified package"))
-			_, err := env.manager.Update(ctx, request)
-			return err
-		}},
+func TestManagerUpdateGatewayRefreshFailureCleansPreparationBeforeJournal(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.manager.gatewayProvider = &fakeGatewayProvider{err: errors.New("DHCP gateway unavailable")}
+
+	if _, err := env.manager.Update(context.Background(), env.request); err == nil {
+		t.Fatal("update continued without a fresh gateway")
+	}
+	events := env.events.snapshot()
+	if !containsEvent(events, "install.commit") {
+		t.Fatalf("prepared update was not cleaned: %#v", events)
+	}
+	for _, forbidden := range []string{"journal.prepared", "barrier.install"} {
+		if containsEvent(events, forbidden) {
+			t.Fatalf("gateway failure reached %q: %#v", forbidden, events)
+		}
+	}
+}
+
+func TestManagerSerializesUpdatePreparationAgainstAnotherUpdate(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.updater.block = make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := env.manager.Update(context.Background(), env.request)
+		firstDone <- err
+	}()
+	select {
+	case <-env.updater.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first update did not enter preparation")
 	}
 
-	for _, operation := range operations {
-		t.Run(operation.name, func(t *testing.T) {
-			env := newUpdateTestEnv(t)
-			env.updater.block = make(chan struct{})
-			firstDone := make(chan error, 1)
-			go func() {
-				_, err := env.manager.Update(context.Background(), env.request)
-				firstDone <- err
-			}()
-			select {
-			case <-env.updater.entered:
-			case <-time.After(time.Second):
-				t.Fatal("first update did not enter preparation")
-			}
+	secondDone := make(chan error, 1)
+	go func() {
+		request := env.writeRequest(t, "tx-2", []byte("second verified package"))
+		_, err := env.manager.Update(context.Background(), request)
+		secondDone <- err
+	}()
+	select {
+	case err := <-secondDone:
+		close(env.updater.block)
+		<-firstDone
+		t.Fatalf("second update overlapped preparation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(env.updater.block)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Update: %v", err)
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("second update did not continue after first Update")
+	}
+}
 
-			secondDone := make(chan error, 1)
-			go func() { secondDone <- operation.run(context.Background(), env) }()
-			select {
-			case err := <-secondDone:
-				close(env.updater.block)
-				<-firstDone
-				t.Fatalf("%s overlapped Update: %v", operation.name, err)
-			case <-time.After(50 * time.Millisecond):
-			}
+func TestManagerSlowUpdatePreparationDoesNotDropCoreExit(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.manager.restartTimeout = 75 * time.Millisecond
+	env.runner.startSequence = []string{"v1", "v2", "v1"}
+	env.updater.block = make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
 			close(env.updater.block)
-			if err := <-firstDone; err != nil {
-				t.Fatalf("first Update: %v", err)
-			}
-			select {
-			case <-secondDone:
-			case <-time.After(time.Second):
-				t.Fatalf("%s did not continue after Update", operation.name)
-			}
-		})
+		}
+	}()
+
+	updateDone := make(chan error, 1)
+	go func() {
+		_, err := env.manager.Update(context.Background(), env.request)
+		updateDone <- err
+	}()
+	select {
+	case <-env.updater.entered:
+	case <-time.After(time.Second):
+		t.Fatal("update did not enter slow preparation")
+	}
+
+	env.runner.mu.Lock()
+	env.runner.current = Process{}
+	env.runner.mu.Unlock()
+	recoveryDone := make(chan struct{})
+	go func() {
+		env.manager.handleUnexpectedExit(env.old, errors.New("Core exited during preparation"))
+		close(recoveryDone)
+	}()
+	select {
+	case <-recoveryDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Core exit recovery remained blocked by package preparation")
+	}
+	if env.manager.current.PID == 0 || env.manager.current.PID == env.old.PID {
+		t.Fatalf("Core exit was dropped during preparation: current=%+v events=%#v", env.manager.current, env.events.snapshot())
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionProtected || got.CorePID != env.manager.current.PID {
+		t.Fatalf("status remained stale after concurrent Core exit: %+v", got)
+	}
+
+	close(env.updater.block)
+	released = true
+	if err := <-updateDone; err != nil {
+		t.Fatalf("update did not revalidate after exit recovery: %v; events=%#v", err, env.events.snapshot())
+	}
+}
+
+func TestManagerFailedPreparationCleanupDoesNotHoldLifecycleMutation(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.updater.block = make(chan struct{})
+	env.prepared.commitEntered = make(chan struct{}, 1)
+	env.prepared.commitBlock = make(chan struct{})
+	commitReleased := false
+	defer func() {
+		if !commitReleased {
+			close(env.prepared.commitBlock)
+		}
+	}()
+
+	updateDone := make(chan error, 1)
+	go func() {
+		_, err := env.manager.Update(context.Background(), env.request)
+		updateDone <- err
+	}()
+	select {
+	case <-env.updater.entered:
+	case <-time.After(time.Second):
+		t.Fatal("update did not enter preparation")
+	}
+
+	if err := env.manager.acquireMutation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	env.manager.setStatus(Status{SchemaVersion: 1, Desired: DesiredOff, Phase: PhaseIdle, Protection: ProtectionOff})
+	env.manager.releaseMutation()
+	close(env.updater.block)
+
+	select {
+	case <-env.prepared.commitEntered:
+	case <-time.After(time.Second):
+		t.Fatal("invalidated preparation did not begin cleanup")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := env.manager.acquireMutation(ctx); err != nil {
+		t.Fatalf("preparation cleanup retained lifecycle mutation: %v", err)
+	}
+	env.manager.releaseMutation()
+	close(env.prepared.commitBlock)
+	commitReleased = true
+	if err := <-updateDone; err == nil {
+		t.Fatal("update succeeded after lifecycle state changed during preparation")
 	}
 }
 
@@ -405,6 +533,26 @@ func TestUpdateErrorsResultsAndJournalContainNoSecrets(t *testing.T) {
 		t.Fatal(marshalErr)
 	}
 	assertNoUpdateSecrets(t, string(b))
+}
+
+func TestSaveUpdatePhasePreservesEmptyLastError(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	now := time.Now().UTC()
+	transaction := Transaction{
+		ID: env.request.TransactionID, FromVersion: env.request.FromVersion, ToVersion: env.request.ToVersion,
+		Phase: PhasePrepared, AssetDigest: env.request.AssetSHA256,
+		SnapshotPath: filepath.Join(env.paths.Snapshots, env.request.TransactionID), StartedAt: now, UpdatedAt: now,
+	}
+	if err := env.manager.saveUpdatePhase(&transaction, PhaseBarrierActive, ""); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := env.store.LoadTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.LastError != "" {
+		t.Fatalf("successful phase last_error = %q, want empty", stored.LastError)
+	}
 }
 
 func TestManagerRecoversEveryPersistedUpdatePhase(t *testing.T) {
@@ -475,6 +623,41 @@ func TestManagerRecoversEveryPersistedUpdatePhase(t *testing.T) {
 	}
 }
 
+func TestManagerRecoversCrashAfterBarrierInstallBeforeBarrierActiveJournal(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	now := time.Now().UTC()
+	transaction := Transaction{
+		ID: env.request.TransactionID, FromVersion: env.request.FromVersion, ToVersion: env.request.ToVersion,
+		Phase: PhasePrepared, BarrierInstallIntent: true, AssetDigest: env.request.AssetSHA256,
+		SnapshotPath: filepath.Join(env.paths.Snapshots, env.request.TransactionID),
+		StartedAt:    now.Add(-time.Minute), UpdatedAt: now,
+	}
+	if err := env.store.Store.SaveTransaction(transaction); err != nil {
+		t.Fatal(err)
+	}
+	env.events.reset()
+	manager := env.restartedManagerWithoutJournal(t, "v1")
+
+	if err := manager.Recover(context.Background()); err != nil {
+		t.Fatalf("intent recovery failed: %v; events=%#v", err, env.events.snapshot())
+	}
+	events := env.events.snapshot()
+	assertEventBefore(t, events, "barrier.install", "health.v1")
+	for _, forbidden := range []string{"install.activate", "install.restore", "core.start.v2"} {
+		if containsEvent(events, forbidden) {
+			t.Fatalf("prepared barrier intent repeated %q: %#v", forbidden, events)
+		}
+	}
+	for _, required := range []string{"barrier.reassert", "journal.rolled_back", "barrier.release", "receipt.rolled_back", "install.commit", "journal.clear"} {
+		if !containsEvent(events, required) {
+			t.Fatalf("intent recovery omitted %q: %#v", required, events)
+		}
+	}
+	if manager.barrierHeld || manager.Status().Protection != ProtectionProtected || manager.Status().CoreVersion != "v1" {
+		t.Fatalf("intent recovery did not return previous protected Core: status=%+v barrier=%v", manager.Status(), manager.barrierHeld)
+	}
+}
+
 func TestManagerCommittedRecoveryCleansUpWithoutSecondActivation(t *testing.T) {
 	env := newUpdateTestEnv(t)
 	manager := env.restartedManager(t, PhaseCommitted, "v2")
@@ -490,6 +673,84 @@ func TestManagerCommittedRecoveryCleansUpWithoutSecondActivation(t *testing.T) {
 	}
 	if !containsEvent(events, "receipt.committed") || !containsEvent(events, "install.commit") || !containsEvent(events, "journal.clear") {
 		t.Fatalf("committed recovery did not finish receipt cleanup: %#v", events)
+	}
+}
+
+func TestManagerRecoveryUsesMatchingTerminalReceiptAfterDescriptorCleanup(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	now := time.Now().UTC()
+	transaction := Transaction{
+		ID: env.request.TransactionID, FromVersion: env.request.FromVersion, ToVersion: env.request.ToVersion,
+		Phase: PhaseCommitted, AssetDigest: env.request.AssetSHA256,
+		SnapshotPath: filepath.Join(env.paths.Snapshots, env.request.TransactionID),
+		StartedAt:    now.Add(-time.Minute), UpdatedAt: now,
+	}
+	if err := env.store.Store.SaveTransaction(transaction); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.Store.SaveReceipt(Receipt{
+		TransactionID: transaction.ID, FromVersion: transaction.FromVersion, ToVersion: transaction.ToVersion,
+		AssetDigest: transaction.AssetDigest, Outcome: transaction.Phase, CompletedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(env.paths.Staging, transaction.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(env.paths.Staging, transaction.ID, updateRecoveryDescriptorName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recovery descriptor still exists: %v", err)
+	}
+
+	env.events.reset()
+	manager := env.restartedManagerWithoutJournal(t, "v2")
+	manager.updatePreparer = macOSUpdatePreparer{}
+	if err := manager.Recover(context.Background()); err != nil {
+		t.Fatalf("receipt-backed recovery failed: %v; events=%#v", err, env.events.snapshot())
+	}
+	for _, forbidden := range []string{"barrier.install", "install.activate", "install.restore", "core.start.v2"} {
+		if containsEvent(env.events.snapshot(), forbidden) {
+			t.Fatalf("receipt-backed cleanup repeated %q: %#v", forbidden, env.events.snapshot())
+		}
+	}
+	if transaction, err := env.store.LoadTransaction(); err != nil || transaction != nil {
+		t.Fatalf("terminal journal remains after receipt recovery: %#v, %v", transaction, err)
+	}
+	if got := manager.Status(); got.Protection != ProtectionProtected || got.CoreVersion != "v2" {
+		t.Fatalf("status = %+v, want adopted protected target", got)
+	}
+}
+
+func TestManagerRecoveryUsesMatchingTerminalReceiptToFinishPendingCleanup(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	now := time.Now().UTC()
+	transaction := Transaction{
+		ID: env.request.TransactionID, FromVersion: env.request.FromVersion, ToVersion: env.request.ToVersion,
+		Phase: PhaseCommitted, AssetDigest: env.request.AssetSHA256,
+		SnapshotPath: filepath.Join(env.paths.Snapshots, env.request.TransactionID),
+		StartedAt:    now.Add(-time.Minute), UpdatedAt: now,
+	}
+	if err := env.store.Store.SaveTransaction(transaction); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.Store.SaveReceipt(Receipt{
+		TransactionID: transaction.ID, FromVersion: transaction.FromVersion, ToVersion: transaction.ToVersion,
+		AssetDigest: transaction.AssetDigest, Outcome: transaction.Phase, CompletedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.events.reset()
+	manager := env.restartedManagerWithoutJournal(t, "v2")
+
+	if err := manager.Recover(context.Background()); err != nil {
+		t.Fatalf("pending terminal cleanup failed: %v; events=%#v", err, env.events.snapshot())
+	}
+	if !containsEvent(env.events.snapshot(), "install.commit") || !containsEvent(env.events.snapshot(), "journal.clear") {
+		t.Fatalf("receipt recovery skipped pending cleanup: %#v", env.events.snapshot())
+	}
+	for _, forbidden := range []string{"barrier.install", "install.activate", "install.restore", "core.start.v2"} {
+		if containsEvent(env.events.snapshot(), forbidden) {
+			t.Fatalf("pending cleanup repeated %q: %#v", forbidden, env.events.snapshot())
+		}
 	}
 }
 
@@ -527,6 +788,36 @@ func TestManagerMalformedUpdateJournalKeepsBarrierAndStartsNoCore(t *testing.T) 
 	assertNoUpdateSecrets(t, err.Error())
 }
 
+func TestBlockOnlyRecoveryAlwaysPlansExactIPv4AndIPv6Routes(t *testing.T) {
+	apply, reassert, cleanup, err := PlanBarrier(blockOnlyRecoveryContext(BarrierContext{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCommands(t, apply,
+		"route -n add -net 0.0.0.0/2 127.0.0.1 -reject",
+		"route -n add -net 64.0.0.0/2 127.0.0.1 -reject",
+		"route -n add -net 128.0.0.0/2 127.0.0.1 -reject",
+		"route -n add -net 192.0.0.0/2 127.0.0.1 -reject",
+		"route -n add -inet6 -net ::/2 ::1 -reject",
+		"route -n add -inet6 -net 4000::/2 ::1 -reject",
+		"route -n add -inet6 -net 8000::/2 ::1 -reject",
+		"route -n add -inet6 -net c000::/2 ::1 -reject",
+	)
+	if len(reassert) != 0 {
+		t.Fatalf("block-only recovery planned bypass commands: %v", reassert)
+	}
+	requireCommands(t, cleanup,
+		"route -n delete -inet6 -net c000::/2",
+		"route -n delete -inet6 -net 8000::/2",
+		"route -n delete -inet6 -net 4000::/2",
+		"route -n delete -inet6 -net ::/2",
+		"route -n delete -net 192.0.0.0/2",
+		"route -n delete -net 128.0.0.0/2",
+		"route -n delete -net 64.0.0.0/2",
+		"route -n delete -net 0.0.0.0/2",
+	)
+}
+
 func TestManagerRecoveryRejectsSecretBearingJournal(t *testing.T) {
 	env := newUpdateTestEnv(t)
 	transaction := Transaction{
@@ -558,18 +849,20 @@ func TestManagerRecoveryRejectsSecretBearingJournal(t *testing.T) {
 
 func TestManagerRecoveryFailuresStayBehindBarrier(t *testing.T) {
 	tests := []struct {
-		name   string
-		phase  Phase
-		mutate func(*updateTestEnv)
+		name           string
+		phase          Phase
+		mutate         func(*updateTestEnv)
+		wantBarrier    bool
+		wantProtection string
 	}{
-		{name: "descriptor", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.updater.recoverErr = errors.New("secret descriptor path") }},
-		{name: "barrier install", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.barrier.installErr = errors.New("secret barrier failure") }},
-		{name: "bypass reassert", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.barrier.reassertErr = errors.New("secret bypass failure") }},
-		{name: "restore", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.prepared.restoreErr = errors.New("vless://secret") }},
-		{name: "previous start", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.runner.failStartVersion = "v1" }},
+		{name: "descriptor", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.updater.recoverErr = errors.New("secret descriptor path") }, wantBarrier: true, wantProtection: ProtectionBlocked},
+		{name: "barrier install", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.barrier.installErr = errors.New("secret barrier failure") }, wantProtection: ProtectionNeedsAttention},
+		{name: "bypass reassert", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.barrier.reassertErr = errors.New("secret bypass failure") }, wantBarrier: true, wantProtection: ProtectionBlocked},
+		{name: "restore", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.prepared.restoreErr = errors.New("vless://secret") }, wantBarrier: true, wantProtection: ProtectionBlocked},
+		{name: "previous start", phase: PhaseActivating, mutate: func(env *updateTestEnv) { env.runner.failStartVersion = "v1" }, wantBarrier: true, wantProtection: ProtectionBlocked},
 		{name: "previous health", phase: PhaseRollingBack, mutate: func(env *updateTestEnv) {
 			env.health.failVersions = map[string]error{"v1": errors.New("token=secret")}
-		}},
+		}, wantBarrier: true, wantProtection: ProtectionBlocked},
 	}
 
 	for _, tt := range tests {
@@ -582,14 +875,50 @@ func TestManagerRecoveryFailuresStayBehindBarrier(t *testing.T) {
 			if err == nil {
 				t.Fatal("injected recovery failure succeeded")
 			}
-			if !manager.barrierHeld {
-				t.Fatalf("recovery failure released barrier: events=%#v", env.events.snapshot())
+			if manager.barrierHeld != tt.wantBarrier {
+				t.Fatalf("barrierHeld = %v, want %v; events=%#v", manager.barrierHeld, tt.wantBarrier, env.events.snapshot())
 			}
-			if got := manager.Status(); got.Phase != PhaseNeedsAttention || got.Protection != ProtectionBlocked {
-				t.Fatalf("status = %+v, want blocked needs_attention", got)
+			if got := manager.Status(); got.Phase != PhaseNeedsAttention || got.Protection != tt.wantProtection {
+				t.Fatalf("status = %+v, want needs_attention protection %q", got, tt.wantProtection)
 			}
 			assertNoUpdateSecrets(t, err.Error())
 		})
+	}
+}
+
+func TestManagerUnprovenRecoveryBarrierGatesLifecycleUntilRetry(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	manager := env.restartedManager(t, PhaseActivating, "")
+	env.barrier.installErr = errors.New("barrier unavailable")
+
+	err := manager.Recover(context.Background())
+	if err == nil {
+		t.Fatal("recovery unexpectedly succeeded without a proven barrier")
+	}
+	if manager.barrierHeld {
+		t.Fatal("failed barrier install was recorded as held")
+	}
+	if got := manager.Status(); got.Protection != ProtectionNeedsAttention || got.Phase != PhaseNeedsAttention {
+		t.Fatalf("status = %+v, want unproven needs_attention", got)
+	}
+	if containsEvent(env.events.snapshot(), "core.start.v1") {
+		t.Fatalf("Core started without a proven recovery barrier: %#v", env.events.snapshot())
+	}
+
+	eventsBeforeUp := env.events.snapshot()
+	if err := manager.Up(context.Background()); err == nil {
+		t.Fatal("Up bypassed failed startup recovery")
+	}
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, eventsBeforeUp) {
+		t.Fatalf("gated Up mutated lifecycle: before=%#v after=%#v", eventsBeforeUp, got)
+	}
+
+	env.barrier.installErr = nil
+	if err := manager.Recover(context.Background()); err != nil {
+		t.Fatalf("recovery retry failed: %v; events=%#v", err, env.events.snapshot())
+	}
+	if manager.barrierHeld || manager.Status().Protection != ProtectionProtected {
+		t.Fatalf("successful retry did not restore protection: status=%+v barrier=%v", manager.Status(), manager.barrierHeld)
 	}
 }
 
@@ -847,6 +1176,7 @@ func (e *updateTestEnv) fail(event string) {
 			"v2": errors.New("new health secret failure"),
 			"v1": errors.New("old health secret failure"),
 		}
+		e.health.failAfter = map[string]int{"v1": 2}
 	case "receipt":
 		e.store.failReceipt = true
 	case "barrier-cleanup":
@@ -881,6 +1211,10 @@ func (b *planValidatingBarrier) ReassertBypass(ctx context.Context, barrierConte
 	return b.delegate.ReassertBypass(ctx, barrierContext)
 }
 
+func (b *planValidatingBarrier) Release(ctx context.Context, barrierContext BarrierContext) error {
+	return b.delegate.Release(ctx, barrierContext)
+}
+
 func (b *planValidatingBarrier) Remove(ctx context.Context, barrierContext BarrierContext) error {
 	return b.delegate.Remove(ctx, barrierContext)
 }
@@ -890,7 +1224,11 @@ func (s *updateTestStore) SaveDesired(desired DesiredState) error {
 }
 
 func (s *updateTestStore) SaveTransaction(transaction Transaction) error {
-	s.events.add("journal." + string(transaction.Phase))
+	event := "journal." + string(transaction.Phase)
+	if transaction.BarrierInstallIntent {
+		event += ".barrier_intent"
+	}
+	s.events.add(event)
 	if s.failPhase == transaction.Phase {
 		return errors.New("journal secret failure")
 	}
@@ -911,17 +1249,26 @@ func (s *updateTestStore) ClearTransaction() error {
 }
 
 type fakePreparedUpdate struct {
-	events           *eventLog
-	snapshotPath     string
-	requiredProtocol int
-	activateErr      error
-	restoreErr       error
-	commitErr        error
+	events              *eventLog
+	snapshotPath        string
+	requiredProtocol    int
+	activateErr         error
+	restoreErr          error
+	commitErr           error
+	boundBarrierContext BarrierContext
+	bindErr             error
+	commitEntered       chan struct{}
+	commitBlock         chan struct{}
 }
 
 func (p *fakePreparedUpdate) SnapshotPath() string { return p.snapshotPath }
 func (p *fakePreparedUpdate) RequiredGuardianProtocol() int {
 	return p.requiredProtocol
+}
+func (p *fakePreparedUpdate) BindBarrierContext(barrierContext BarrierContext) error {
+	p.events.add("install.bind_barrier")
+	p.boundBarrierContext = cloneBarrierContext(barrierContext)
+	return p.bindErr
 }
 func (p *fakePreparedUpdate) Activate() error {
 	p.events.add("install.activate")
@@ -933,6 +1280,13 @@ func (p *fakePreparedUpdate) Restore() error {
 }
 func (p *fakePreparedUpdate) Commit() error {
 	p.events.add("install.commit")
+	select {
+	case p.commitEntered <- struct{}{}:
+	default:
+	}
+	if p.commitBlock != nil {
+		<-p.commitBlock
+	}
 	return p.commitErr
 }
 
@@ -947,7 +1301,7 @@ type fakeUpdatePreparer struct {
 	recoverErr       error
 }
 
-func (p *fakeUpdatePreparer) Prepare(_ context.Context, _ UpdateRequest, _ []byte, _ BarrierContext, _ Paths) (PreparedUpdate, error) {
+func (p *fakeUpdatePreparer) Prepare(_ context.Context, _ UpdateRequest, _ []byte, _ Paths) (PreparedUpdate, error) {
 	p.events.add("prepare")
 	select {
 	case p.entered <- struct{}{}:
@@ -1063,21 +1417,52 @@ func (r *updateCoreRunner) Stop(ctx context.Context, process Process) error {
 }
 
 type updateHealthGate struct {
-	events        *eventLog
-	failVersions  map[string]error
-	blockVersions map[string]bool
+	events           *eventLog
+	failVersions     map[string]error
+	failAfter        map[string]int
+	blockVersions    map[string]bool
+	runtimeByVersion map[string]supervisor.RuntimeState
+	calls            map[string]int
 }
 
 func (h *updateHealthGate) Wait(ctx context.Context, target HealthTarget) (supervisor.RuntimeState, error) {
 	h.events.add("health." + target.Version)
+	if h.calls == nil {
+		h.calls = make(map[string]int)
+	}
+	h.calls[target.Version]++
 	if h.blockVersions[target.Version] {
 		<-ctx.Done()
 		return supervisor.RuntimeState{}, ctx.Err()
 	}
-	if err := h.failVersions[target.Version]; err != nil {
+	if err := h.failVersions[target.Version]; err != nil &&
+		(h.failAfter[target.Version] == 0 || h.calls[target.Version] >= h.failAfter[target.Version]) {
 		return supervisor.RuntimeState{}, err
 	}
+	if state, ok := h.runtimeByVersion[target.Version]; ok {
+		return state, nil
+	}
 	return updateRuntime(target.PID, target.Version), nil
+}
+
+type fakeGatewayProvider struct {
+	mu      sync.Mutex
+	gateway string
+	err     error
+	calls   int
+}
+
+func (p *fakeGatewayProvider) DefaultGateway(context.Context) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	return p.gateway, p.err
+}
+
+func (p *fakeGatewayProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
 }
 
 func updateRuntime(pid int, version string) supervisor.RuntimeState {
@@ -1197,6 +1582,104 @@ func TestRecoveredMacOSUpdateRefusesSubstitutedDestination(t *testing.T) {
 	}
 	requireDiskFileContents(t, env.cliPath, "substituted-secret-cli")
 	assertNoUpdateSecrets(t, err.Error())
+}
+
+func TestRecoveredMacOSUpdateResumesAtomicRenameStates(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*diskRecoveryTestEnv) error
+	}{
+		{name: "activation app old moved aside", mutate: func(env *diskRecoveryTestEnv) error {
+			return os.Rename(env.appPath, filepath.Join(filepath.Dir(env.appPath), ".Bx.app.update-tx-1"))
+		}},
+		{name: "rollback app new moved to discard", mutate: func(env *diskRecoveryTestEnv) error {
+			parent := filepath.Dir(env.appPath)
+			if err := os.Rename(filepath.Join(parent, ".Bx.app.previous-tx-1"), filepath.Join(parent, ".Bx.app.restore-tx-1")); err != nil {
+				return err
+			}
+			return os.Rename(env.appPath, filepath.Join(parent, ".Bx.app.discard-tx-1"))
+		}},
+		{name: "rollback app restore promoted", mutate: func(env *diskRecoveryTestEnv) error {
+			parent := filepath.Dir(env.appPath)
+			if err := os.Rename(env.appPath, filepath.Join(parent, ".Bx.app.discard-tx-1")); err != nil {
+				return err
+			}
+			return os.Rename(filepath.Join(parent, ".Bx.app.previous-tx-1"), env.appPath)
+		}},
+		{name: "rollback CLI new moved to discard", mutate: func(env *diskRecoveryTestEnv) error {
+			parent := filepath.Dir(env.cliPath)
+			if err := os.Rename(env.cliPath, filepath.Join(parent, ".bx-update-tx-1.discard-recovery")); err != nil {
+				return err
+			}
+			data, err := os.ReadFile(filepath.Join(env.snapshotPath, "bx"))
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(parent, ".bx-update-tx-1.restore-recovery"), data, 0o600)
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newDiskRecoveryTestEnv(t)
+			transaction := env.writeDescriptor(t, updateRecoveryDescriptorVersion)
+			if err := tt.mutate(env); err != nil {
+				t.Fatal(err)
+			}
+			prepared, _, err := readRecoveredMacOSUpdate(transaction, env.paths, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := prepared.Restore(); err != nil {
+				t.Fatalf("resume restore: %v", err)
+			}
+			if err := prepared.Restore(); err != nil {
+				t.Fatalf("idempotent restore: %v", err)
+			}
+			requireDiskFileContents(t, env.cliPath, "old-cli")
+			requireDiskFileContents(t, filepath.Join(env.appPath, "Contents/MacOS/BxMenu"), "old-menu")
+			if err := prepared.Commit(); err != nil {
+				t.Fatalf("cleanup resumed state: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecoveredMacOSUpdateResumesCleanupRenameResidue(t *testing.T) {
+	tests := []struct {
+		name string
+		path func(*diskRecoveryTestEnv) string
+	}{
+		{name: "CLI discard", path: func(env *diskRecoveryTestEnv) string {
+			return filepath.Join(filepath.Dir(env.cliPath), ".bx-update-tx-1.discard-recovery")
+		}},
+		{name: "app discard", path: func(env *diskRecoveryTestEnv) string {
+			return filepath.Join(filepath.Dir(env.appPath), ".Bx.app.discard-tx-1")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newDiskRecoveryTestEnv(t)
+			transaction := env.writeDescriptor(t, updateRecoveryDescriptorVersion)
+			prepared, _, err := readRecoveredMacOSUpdate(transaction, env.paths, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := prepared.Restore(); err != nil {
+				t.Fatal(err)
+			}
+			path := tt.path(env)
+			if err := os.Rename(path, path+".guardian-cleanup"); err != nil {
+				t.Fatal(err)
+			}
+			if err := prepared.Commit(); err != nil {
+				t.Fatalf("cleanup residue was not resumed: %v", err)
+			}
+			if _, err := os.Lstat(path + ".guardian-cleanup"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("cleanup residue remains: %v", err)
+			}
+		})
+	}
 }
 
 func TestRecoveredMacOSUpdateVerifiesEverySnapshotBeforeMutation(t *testing.T) {

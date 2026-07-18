@@ -72,7 +72,7 @@ func TestManagerMigrateTransitionsLegacyCoreBehindValidatedBarrier(t *testing.T)
 		"legacy.stop",
 		"barrier.reassert",
 		"core.start",
-		"barrier.remove",
+		"barrier.release",
 		"legacy.remove",
 	}
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
@@ -144,7 +144,7 @@ func TestManagerMigrateLegacyRemovalFailureRetainsBarrier(t *testing.T) {
 	if err == nil {
 		t.Fatal("legacy plist removal failure accepted")
 	}
-	want := []string{"desired.on", "barrier.install", "legacy.stop", "barrier.reassert", "core.start", "barrier.remove", "legacy.remove", "barrier.install"}
+	want := []string{"desired.on", "barrier.install", "legacy.stop", "barrier.reassert", "core.start", "barrier.release", "legacy.remove", "barrier.install"}
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("migration events = %#v, want %#v", got, want)
 	}
@@ -606,7 +606,7 @@ func TestManagerDownRestoreFailureRecoversProtectedCore(t *testing.T) {
 	if err := env.manager.Down(context.Background()); err == nil {
 		t.Fatal("Down succeeded despite restoration failure")
 	}
-	want := []string{"barrier.install", "core.stop", "network.restore", "core.start", "barrier.remove"}
+	want := []string{"barrier.install", "core.stop", "network.restore", "core.start", "barrier.release"}
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
@@ -638,7 +638,7 @@ func TestManagerDownRestoreTimeoutUsesReservedRecoveryBudget(t *testing.T) {
 	if len(startErrs) != 2 || startErrs[1] != nil {
 		t.Fatalf("recovery start context errors = %#v, want live second context", startErrs)
 	}
-	want := []string{"barrier.install", "core.stop", "network.restore", "core.start", "barrier.remove"}
+	want := []string{"barrier.install", "core.stop", "network.restore", "core.start", "barrier.release"}
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
@@ -711,7 +711,7 @@ func TestManagerUnexpectedExitInstallsBarrierAndRestartsOnce(t *testing.T) {
 	env.runner.exit(process.PID, errors.New("unexpected exit"))
 	eventually(t, func() bool { return env.runner.startCount() == 2 })
 	eventually(t, func() bool { return env.manager.Status().Protection == ProtectionProtected })
-	want := []string{"barrier.install", "core.start", "barrier.remove"}
+	want := []string{"barrier.install", "core.start", "barrier.release"}
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
@@ -747,6 +747,44 @@ func TestDaemonShutdownCancelsQueuedRecoveryBeforeStart(t *testing.T) {
 	<-done
 	if got := env.runner.startCount(); got != 1 {
 		t.Fatalf("queued recovery starts = %d, want original Core only", got)
+	}
+}
+
+func TestManagerUnexpectedExitWaitsForMutationWithoutLosingRecoveryBudget(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	env.manager.restartTimeout = 25 * time.Millisecond
+	process := env.runner.currentProcess()
+	if err := env.manager.acquireMutation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			env.manager.releaseMutation()
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		env.manager.handleUnexpectedExit(process, errors.New("Core exited"))
+		close(done)
+	}()
+	time.Sleep(3 * env.manager.restartTimeout)
+	select {
+	case <-done:
+		t.Fatal("unexpected exit was dropped while lifecycle mutation was busy")
+	default:
+	}
+
+	env.manager.releaseMutation()
+	released = true
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("queued unexpected exit did not recover after mutation completed")
+	}
+	if got := env.runner.startCount(); got != 2 {
+		t.Fatalf("Core starts = %d, want recovery restart", got)
 	}
 }
 
@@ -905,7 +943,7 @@ func TestManagerHealthyRecoveryReleasesHeldBarrierBeforeProtected(t *testing.T) 
 			if err := tt.run(env.manager, context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "barrier.remove"}) {
+			if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "barrier.release"}) {
 				t.Fatalf("events = %#v, want health-gated barrier release", got)
 			}
 			if env.manager.barrierHeld {
@@ -949,7 +987,7 @@ func TestManagerHeldBarrierRemovalFailureDoesNotClaimProtected(t *testing.T) {
 	if err := env.manager.Up(context.Background()); err == nil {
 		t.Fatal("Up succeeded despite held barrier removal failure")
 	}
-	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "barrier.remove"}) {
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "barrier.release"}) {
 		t.Fatalf("events = %#v, want attempted post-health barrier removal", got)
 	}
 	if !env.manager.barrierHeld {
@@ -1353,6 +1391,14 @@ func (b *fakeBarrier) Install(_ context.Context, barrierContext BarrierContext) 
 func (b *fakeBarrier) ReassertBypass(context.Context, BarrierContext) error {
 	b.events.add("barrier.reassert")
 	return b.reassertErr
+}
+
+func (b *fakeBarrier) Release(context.Context, BarrierContext) error {
+	b.events.add("barrier.release")
+	if b.onRemove != nil {
+		b.onRemove()
+	}
+	return b.removeErr
 }
 
 func (b *fakeBarrier) Remove(context.Context, BarrierContext) error {

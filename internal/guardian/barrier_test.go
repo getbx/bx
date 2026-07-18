@@ -42,6 +42,32 @@ func TestPlanBarrierBlocksPublicIPv4MoreSpecificallyThanSplitDefault(t *testing.
 	)
 }
 
+func TestPlanBarrierReleaseToCorePreservesTransferredBypass(t *testing.T) {
+	release, err := PlanBarrierRelease(BarrierContext{
+		Gateway:      "192.168.50.2",
+		ServerBypass: []string{"23.27.134.77/32"},
+		BlockIPv6:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCommands(t, release,
+		"route -n delete -inet6 -net c000::/2",
+		"route -n delete -inet6 -net 8000::/2",
+		"route -n delete -inet6 -net 4000::/2",
+		"route -n delete -inet6 -net ::/2",
+		"route -n delete -net 192.0.0.0/2",
+		"route -n delete -net 128.0.0.0/2",
+		"route -n delete -net 64.0.0.0/2",
+		"route -n delete -net 0.0.0.0/2",
+	)
+	for _, command := range release {
+		if strings.Contains(command.String(), "23.27.134.77/32") {
+			t.Fatalf("release deleted transferred bypass: %s", command.String())
+		}
+	}
+}
+
 func TestPlanBarrierRejectsUnsafeHandoffs(t *testing.T) {
 	for _, context := range []BarrierContext{
 		{Gateway: "not-an-ip", ServerBypass: []string{"23.27.134.77/32"}},

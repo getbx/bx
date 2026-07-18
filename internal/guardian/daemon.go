@@ -18,6 +18,11 @@ import (
 
 const SocketPath = "/var/run/bx-guard.sock"
 
+const (
+	guardianRecoveryRetryInitial = 100 * time.Millisecond
+	guardianRecoveryRetryMax     = 5 * time.Second
+)
+
 type DaemonOptions struct {
 	ConfigPath      string
 	DNSListen       string
@@ -236,14 +241,15 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	}
 	runner := NewExecCoreRunner(install.BinPath, options.ConfigPath, options.DNSListen)
 	manager, err := NewManager(ManagerOptions{
-		Store:          OpenDefaultStore(),
-		Runner:         runner,
-		Health:         HealthChecker{},
-		Barrier:        NewBarrier(nil),
-		Restorer:       systemNetworkRestorer{},
-		Legacy:         systemLegacyCoreLifecycle{},
-		BarrierContext: BarrierContext{Gateway: gateway, BlockIPv6: true},
-		CoreVersion:    version.Version,
+		Store:           OpenDefaultStore(),
+		Runner:          runner,
+		Health:          HealthChecker{},
+		Barrier:         NewBarrier(nil),
+		Restorer:        systemNetworkRestorer{},
+		Legacy:          systemLegacyCoreLifecycle{},
+		BarrierContext:  BarrierContext{Gateway: gateway, BlockIPv6: true},
+		GatewayProvider: GatewayProviderFunc(DiscoverDefaultGateway),
+		CoreVersion:     version.Version,
 	})
 	if err != nil {
 		return err
@@ -259,11 +265,44 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 
 func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller recoveringController, start daemonStarter) (*Daemon, error) {
 	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, guardianMutationTimeout)
-	_ = controller.Recover(recoveryCtx)
+	recoveryErr := controller.Recover(recoveryCtx)
 	cancelRecovery()
 	options.Handler = NewLocalAPI(controller)
 	options.OwnerUID = 0
-	return start(ctx, options)
+	daemon, err := start(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	if recoveryErr != nil {
+		go retryDaemonRecovery(ctx, controller)
+	}
+	return daemon, nil
+}
+
+func retryDaemonRecovery(ctx context.Context, controller recoveringController) {
+	delay := guardianRecoveryRetryInitial
+	for {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
+		recoveryCtx, cancel := context.WithTimeout(ctx, guardianMutationTimeout)
+		err := controller.Recover(recoveryCtx)
+		cancel()
+		if err == nil {
+			return
+		}
+		if delay < guardianRecoveryRetryMax/2 {
+			delay *= 2
+		} else {
+			delay = guardianRecoveryRetryMax
+		}
+	}
 }
 
 type systemNetworkRestorer struct {

@@ -27,15 +27,16 @@ type Paths struct {
 }
 
 type Transaction struct {
-	ID           string    `json:"transaction_id"`
-	FromVersion  string    `json:"from_version"`
-	ToVersion    string    `json:"to_version"`
-	Phase        Phase     `json:"phase"`
-	AssetDigest  string    `json:"asset_digest"`
-	SnapshotPath string    `json:"snapshot_path"`
-	StartedAt    time.Time `json:"started_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	LastError    string    `json:"last_error,omitempty"`
+	ID                   string    `json:"transaction_id"`
+	FromVersion          string    `json:"from_version"`
+	ToVersion            string    `json:"to_version"`
+	Phase                Phase     `json:"phase"`
+	BarrierInstallIntent bool      `json:"barrier_install_intent,omitempty"`
+	AssetDigest          string    `json:"asset_digest"`
+	SnapshotPath         string    `json:"snapshot_path"`
+	StartedAt            time.Time `json:"started_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+	LastError            string    `json:"last_error,omitempty"`
 }
 
 type Receipt struct {

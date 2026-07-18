@@ -51,19 +51,21 @@ type UpdateRequest struct {
 type PreparedUpdate interface {
 	SnapshotPath() string
 	RequiredGuardianProtocol() int
+	BindBarrierContext(BarrierContext) error
 	Activate() error
 	Restore() error
 	Commit() error
 }
 
 type UpdatePreparer interface {
-	Prepare(context.Context, UpdateRequest, []byte, BarrierContext, Paths) (PreparedUpdate, error)
+	Prepare(context.Context, UpdateRequest, []byte, Paths) (PreparedUpdate, error)
 	Recover(context.Context, Transaction, Paths) (PreparedUpdate, BarrierContext, error)
 	RecoveryBarrierContext(context.Context, Paths) (BarrierContext, error)
 }
 
 type updateStore interface {
 	LoadTransaction() (*Transaction, error)
+	LoadReceipt() (*Receipt, error)
 	SaveTransaction(Transaction) error
 	ClearTransaction() error
 	SaveReceipt(Receipt) error
@@ -119,11 +121,112 @@ func (m *Manager) Update(ctx context.Context, request UpdateRequest) (UpdateResu
 	if err != nil {
 		return UpdateResult{}, err
 	}
+	if err := m.acquireUpdateOperation(ctx); err != nil {
+		return UpdateResult{}, err
+	}
+	defer m.releaseUpdateOperation()
+
 	if err := m.acquireMutation(ctx); err != nil {
 		return UpdateResult{}, err
 	}
+	if m.recoveryBlocked {
+		m.releaseMutation()
+		return UpdateResult{}, errRecoveryIncomplete
+	}
+	status := m.Status()
+	if m.updates == nil || m.updatePreparer == nil || m.updatePaths.Staging == "" || m.updatePaths.Snapshots == "" {
+		m.releaseMutation()
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_unavailable")
+	}
+	if !m.validUpdateSourceLocked(normalized, status) {
+		m.releaseMutation()
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_state_invalid")
+	}
+	m.releaseMutation()
+
+	packageData, err := readVerifiedUpdatePackage(normalized, m.updatePaths)
+	if err != nil {
+		return m.updateResult(normalized, status.Phase, false, false), err
+	}
+	prepared, err := m.updatePreparer.Prepare(ctx, normalized, packageData, m.updatePaths)
+	if err != nil {
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_prepare_failed")
+	}
+	if prepared.RequiredGuardianProtocol() > m.guardianProtocol {
+		_ = prepared.Commit()
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("guardian_protocol_unsupported")
+	}
+
+	if err := m.acquireMutation(ctx); err != nil {
+		_ = prepared.Commit()
+		return m.updateResult(normalized, m.Status().Phase, false, false), err
+	}
+	if m.recoveryBlocked {
+		m.releaseMutation()
+		_ = prepared.Commit()
+		return UpdateResult{}, errRecoveryIncomplete
+	}
+	status = m.Status()
+	if !m.validUpdateSourceLocked(normalized, status) {
+		m.releaseMutation()
+		_ = prepared.Commit()
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_state_invalid")
+	}
+	if err := m.runner.Verify(m.current); err != nil {
+		m.releaseMutation()
+		_ = prepared.Commit()
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_source_identity_failed")
+	}
+	liveRuntime, err := m.health.Wait(ctx, HealthTarget{Version: normalized.FromVersion, PID: m.current.PID})
+	if err != nil || liveRuntime.PID != m.current.PID || liveRuntime.Version != normalized.FromVersion {
+		m.releaseMutation()
+		_ = prepared.Commit()
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_runtime_refresh_failed")
+	}
+	gateway, err := m.gatewayProvider.DefaultGateway(ctx)
+	if err != nil {
+		m.releaseMutation()
+		_ = prepared.Commit()
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_gateway_discovery_failed")
+	}
+	barrierContext := cloneBarrierContext(m.barrierContext)
+	barrierContext.Gateway = gateway
+	barrierContext.ServerBypass = append([]string(nil), liveRuntime.ServerBypass...)
+	if _, _, _, err := PlanBarrier(barrierContext); err != nil {
+		m.releaseMutation()
+		_ = prepared.Commit()
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_handoff_invalid")
+	}
+	if err := prepared.BindBarrierContext(barrierContext); err != nil {
+		m.releaseMutation()
+		_ = prepared.Commit()
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_recovery_metadata_failed")
+	}
+	m.runtime = liveRuntime
 	defer m.releaseMutation()
-	return m.updateLocked(ctx, normalized)
+	return m.updatePreparedLocked(ctx, normalized, prepared, barrierContext)
+}
+
+func (m *Manager) validUpdateSourceLocked(request UpdateRequest, status Status) bool {
+	return status.Desired == DesiredOn && status.Protection == ProtectionProtected &&
+		m.current.PID != 0 && m.runtime.Version == request.FromVersion
+}
+
+func (m *Manager) acquireUpdateOperation(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.updateOperation:
+	}
+	if err := ctx.Err(); err != nil {
+		m.releaseUpdateOperation()
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) releaseUpdateOperation() {
+	m.updateOperation <- struct{}{}
 }
 
 func (m *Manager) recoverUpdateLocked(ctx context.Context) error {
@@ -148,8 +251,19 @@ func (m *Manager) recoverUpdateLocked(ctx context.Context) error {
 		}
 		return m.failMalformedUpdateRecovery(ctx, barrierContext)
 	}
-
+	terminalReceiptMatches := m.matchingTerminalReceipt(transaction)
 	prepared, barrierContext, recoverErr := m.updatePreparer.Recover(ctx, *transaction, m.updatePaths)
+	if terminalReceiptMatches {
+		switch {
+		case recoverErr == nil:
+			if err := prepared.Commit(); err != nil {
+				return newUpdateError("update_cleanup_failed")
+			}
+			return m.clearReceiptBackedTransaction(transaction)
+		case updateTransactionStagingGone(*transaction, m.updatePaths):
+			return m.clearReceiptBackedTransaction(transaction)
+		}
+	}
 	if recoverErr != nil {
 		if barrierContext.Gateway == "" {
 			barrierContext, _ = m.updatePreparer.RecoveryBarrierContext(ctx, m.updatePaths)
@@ -163,6 +277,9 @@ func (m *Manager) recoverUpdateLocked(ctx context.Context) error {
 
 	switch transaction.Phase {
 	case PhasePrepared:
+		if transaction.BarrierInstallIntent {
+			return m.recoverPreparedBarrierIntent(ctx, transaction, prepared, barrierContext)
+		}
 		if prepared.RequiredGuardianProtocol() > m.guardianProtocol {
 			if err := prepared.Commit(); err != nil {
 				return newUpdateError("update_cleanup_failed")
@@ -227,6 +344,78 @@ func (m *Manager) recoverUpdateLocked(ctx context.Context) error {
 	}
 }
 
+func (m *Manager) recoverPreparedBarrierIntent(ctx context.Context, transaction *Transaction, prepared PreparedUpdate, barrierContext BarrierContext) error {
+	if err := m.installRecoveryBarrier(ctx, barrierContext); err != nil {
+		return err
+	}
+	if err := m.barrier.ReassertBypass(ctx, barrierContext); err != nil {
+		return m.failRecoveredUpdate(transaction, "barrier_reassert_failed")
+	}
+	process, state, err := m.adoptOrStartRecoveredCore(ctx, transaction.FromVersion)
+	if err != nil {
+		return m.failRecoveredUpdate(transaction, "previous_core_health_failed")
+	}
+	if err := m.acceptHealthy(ctx, process, state, false); err != nil {
+		return m.failRecoveredUpdate(transaction, "previous_core_accept_failed")
+	}
+	m.coreVersion = transaction.FromVersion
+	transaction.BarrierInstallIntent = false
+	if err := m.saveUpdatePhase(transaction, PhaseRolledBack, "barrier_install_recovered"); err != nil {
+		return m.failRecoveredUpdate(transaction, "update_journal_failed")
+	}
+	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
+		m.needsAttention(DesiredOn, "barrier_remove_failed")
+		return newUpdateError("barrier_remove_failed")
+	}
+	m.setStatus(Status{
+		SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseRolledBack,
+		CorePID: process.PID, CoreVersion: transaction.FromVersion,
+		Protection: ProtectionProtected, LastError: "barrier_install_recovered",
+	})
+	return m.finishUpdate(transaction, prepared, PhaseRolledBack)
+}
+
+func (m *Manager) matchingTerminalReceipt(transaction *Transaction) bool {
+	if transaction.Phase != PhaseCommitted && transaction.Phase != PhaseRolledBack {
+		return false
+	}
+	receipt, err := m.updates.LoadReceipt()
+	if err != nil || receipt == nil || !receiptMatchesTransaction(*receipt, *transaction) {
+		return false
+	}
+	return true
+}
+
+func (m *Manager) clearReceiptBackedTransaction(transaction *Transaction) error {
+	if err := m.updates.ClearTransaction(); err != nil {
+		return newUpdateError("update_journal_cleanup_failed")
+	}
+	if transaction.Phase == PhaseCommitted {
+		m.coreVersion = transaction.ToVersion
+	} else {
+		m.coreVersion = transaction.FromVersion
+	}
+	return nil
+}
+
+func receiptMatchesTransaction(receipt Receipt, transaction Transaction) bool {
+	return receipt.TransactionID == transaction.ID &&
+		receipt.FromVersion == transaction.FromVersion &&
+		receipt.ToVersion == transaction.ToVersion &&
+		receipt.AssetDigest == transaction.AssetDigest &&
+		receipt.Outcome == transaction.Phase &&
+		!receipt.CompletedAt.Before(transaction.UpdatedAt)
+}
+
+func updateTransactionStagingGone(transaction Transaction, paths Paths) bool {
+	transactionStaging := filepath.Join(paths.Staging, transaction.ID)
+	if filepath.Dir(transactionStaging) != paths.Staging || filepath.Base(transactionStaging) != transaction.ID {
+		return false
+	}
+	_, err := os.Lstat(transactionStaging)
+	return errors.Is(err, os.ErrNotExist)
+}
+
 func validPersistedUpdate(transaction Transaction, paths Paths) bool {
 	if !updateTransactionIDPattern.MatchString(transaction.ID) ||
 		!updateVersionPattern.MatchString(transaction.FromVersion) ||
@@ -245,8 +434,11 @@ func (m *Manager) failMalformedUpdateRecovery(ctx context.Context, barrierContex
 	if _, _, _, err := PlanBarrier(barrierContext); err != nil {
 		barrierContext = blockOnlyRecoveryContext(barrierContext)
 	}
-	_ = m.barrier.Install(ctx, barrierContext)
-	// Install may have applied only the blocking subset before failing.
+	if err := m.barrier.Install(ctx, barrierContext); err != nil {
+		m.barrierHeld = false
+		m.needsAttention(DesiredOn, "update_journal_malformed")
+		return newUpdateError("update_journal_malformed")
+	}
 	m.barrierHeld = true
 	m.needsAttention(DesiredOn, "update_journal_malformed")
 	return newUpdateError("update_journal_malformed")
@@ -257,7 +449,7 @@ func (m *Manager) installRecoveryBarrier(ctx context.Context, barrierContext Bar
 		barrierContext = blockOnlyRecoveryContext(barrierContext)
 	}
 	if err := m.barrier.Install(ctx, barrierContext); err != nil {
-		m.barrierHeld = true
+		m.barrierHeld = false
 		m.needsAttention(DesiredOn, "barrier_install_failed")
 		return newUpdateError("barrier_install_failed")
 	}
@@ -268,6 +460,7 @@ func (m *Manager) installRecoveryBarrier(ctx context.Context, barrierContext Bar
 
 func blockOnlyRecoveryContext(barrierContext BarrierContext) BarrierContext {
 	barrierContext.ServerBypass = nil
+	barrierContext.BlockIPv6 = true
 	barrierContext.blockOnly = true
 	return barrierContext
 }
@@ -291,6 +484,9 @@ func (m *Manager) recoverUpdateRollback(ctx context.Context, transaction *Transa
 	if err := prepared.Restore(); err != nil {
 		return m.failRecoveredUpdate(transaction, "update_restore_failed")
 	}
+	if err := m.barrier.ReassertBypass(ctx, barrierContext); err != nil {
+		return m.failRecoveredUpdate(transaction, "barrier_reassert_failed")
+	}
 	m.coreVersion = transaction.FromVersion
 	process, state, err := m.startUpdateCore(ctx, transaction.FromVersion)
 	if err != nil {
@@ -302,7 +498,7 @@ func (m *Manager) recoverUpdateRollback(ctx context.Context, transaction *Transa
 	if err := m.saveUpdatePhase(transaction, PhaseRolledBack, "update_recovered"); err != nil {
 		return m.failRecoveredUpdate(transaction, "update_journal_failed")
 	}
-	if err := m.removeBarrier(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return newUpdateError("barrier_remove_failed")
 	}
@@ -330,7 +526,7 @@ func (m *Manager) recoverTerminalUpdate(ctx context.Context, transaction *Transa
 		return m.failRecoveredUpdate(transaction, "recovered_core_accept_failed")
 	}
 	m.coreVersion = version
-	if err := m.removeBarrier(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return newUpdateError("barrier_remove_failed")
 	}
@@ -367,31 +563,7 @@ func (m *Manager) failRecoveredUpdate(transaction *Transaction, code string) err
 	return newUpdateError(code)
 }
 
-func (m *Manager) updateLocked(ctx context.Context, request UpdateRequest) (UpdateResult, error) {
-	if m.updates == nil || m.updatePreparer == nil || m.updatePaths.Staging == "" || m.updatePaths.Snapshots == "" {
-		return m.updateResult(request, m.Status().Phase, false, false), newUpdateError("update_unavailable")
-	}
-	status := m.Status()
-	if status.Desired != DesiredOn || status.Protection != ProtectionProtected || m.current.PID == 0 || m.runtime.Version != request.FromVersion {
-		return m.updateResult(request, status.Phase, false, false), newUpdateError("update_state_invalid")
-	}
-	barrierContext := m.contextForRuntime(m.runtime)
-	if _, _, _, err := PlanBarrier(barrierContext); err != nil {
-		return m.updateResult(request, status.Phase, false, false), newUpdateError("update_handoff_invalid")
-	}
-	packageData, err := readVerifiedUpdatePackage(request, m.updatePaths)
-	if err != nil {
-		return m.updateResult(request, status.Phase, false, false), err
-	}
-	prepared, err := m.updatePreparer.Prepare(ctx, request, packageData, barrierContext, m.updatePaths)
-	if err != nil {
-		return m.updateResult(request, status.Phase, false, false), newUpdateError("update_prepare_failed")
-	}
-	if prepared.RequiredGuardianProtocol() > m.guardianProtocol {
-		_ = prepared.Commit()
-		return m.updateResult(request, status.Phase, false, false), newUpdateError("guardian_protocol_unsupported")
-	}
-
+func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateRequest, prepared PreparedUpdate, barrierContext BarrierContext) (UpdateResult, error) {
 	now := time.Now().UTC()
 	transaction := Transaction{
 		ID: request.TransactionID, FromVersion: request.FromVersion, ToVersion: request.ToVersion,
@@ -400,13 +572,19 @@ func (m *Manager) updateLocked(ctx context.Context, request UpdateRequest) (Upda
 	}
 	if err := m.updates.SaveTransaction(transaction); err != nil {
 		_ = prepared.Commit()
-		return m.updateResult(request, status.Phase, false, false), newUpdateError("update_journal_failed")
+		return m.updateResult(request, m.Status().Phase, false, false), newUpdateError("update_journal_failed")
+	}
+	transaction.BarrierInstallIntent = true
+	if err := m.updates.SaveTransaction(transaction); err != nil {
+		_ = prepared.Commit()
+		return m.updateResult(request, m.Status().Phase, false, false), newUpdateError("update_journal_failed")
 	}
 	if err := m.barrier.Install(ctx, barrierContext); err != nil {
 		m.barrierHeld = true
 		return m.failUpdate(transaction, request, "barrier_install_failed", false, false)
 	}
 	m.barrierHeld = true
+	transaction.BarrierInstallIntent = false
 	if err := m.saveUpdatePhase(&transaction, PhaseBarrierActive, ""); err != nil {
 		m.needsAttention(DesiredOn, "update_journal_failed")
 		return m.updateResult(request, PhaseNeedsAttention, false, false), newUpdateError("update_journal_failed")
@@ -447,7 +625,7 @@ func (m *Manager) updateLocked(ctx context.Context, request UpdateRequest) (Upda
 		m.needsAttention(DesiredOn, "update_journal_failed")
 		return m.updateResult(request, PhaseNeedsAttention, true, false), newUpdateError("update_journal_failed")
 	}
-	if err := m.removeBarrier(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return m.updateResult(request, PhaseNeedsAttention, true, false), newUpdateError("barrier_remove_failed")
 	}
@@ -516,6 +694,9 @@ func (m *Manager) rollbackUpdate(
 	if err := prepared.Restore(); err != nil {
 		return m.failUpdate(*transaction, request, "update_restore_failed", false, false)
 	}
+	if err := m.barrier.ReassertBypass(ctx, barrierContext); err != nil {
+		return m.failUpdate(*transaction, request, "barrier_reassert_failed", false, false)
+	}
 	m.coreVersion = request.FromVersion
 	process, state, err := m.startUpdateCore(ctx, request.FromVersion)
 	if err != nil {
@@ -527,7 +708,7 @@ func (m *Manager) rollbackUpdate(
 	if err := m.saveUpdatePhase(transaction, PhaseRolledBack, safeUpdateCode(cause)); err != nil {
 		return m.failUpdate(*transaction, request, "update_journal_failed", false, false)
 	}
-	if err := m.removeBarrier(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return m.updateResult(request, PhaseNeedsAttention, false, true), newUpdateError("barrier_remove_failed")
 	}
@@ -582,6 +763,9 @@ func (m *Manager) updateResult(request UpdateRequest, phase Phase, activated, ro
 }
 
 func safeUpdateCode(code string) string {
+	if code == "" {
+		return ""
+	}
 	if safeLastErrorPattern.MatchString(code) {
 		return code
 	}
@@ -667,7 +851,7 @@ func ownedByGuardian(info os.FileInfo) bool {
 
 type macOSUpdatePreparer struct{}
 
-func (macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, packageData []byte, barrierContext BarrierContext, paths Paths) (PreparedUpdate, error) {
+func (macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, packageData []byte, paths Paths) (PreparedUpdate, error) {
 	requiredProtocol, err := requiredGuardianProtocol(packageData, runtime.GOARCH)
 	if err != nil {
 		return nil, err
@@ -695,16 +879,17 @@ func (macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, pac
 	if err != nil {
 		return nil, err
 	}
-	descriptor, err := buildUpdateRecoveryDescriptor(request, paths, appPath, barrierContext, requiredProtocol)
+	descriptor, err := buildUpdateRecoveryDescriptorTemplate(request, paths, appPath, requiredProtocol)
 	if err != nil {
 		_ = prepared.Commit()
 		return nil, err
 	}
-	if err := writeUpdateRecoveryDescriptor(descriptor); err != nil {
-		_ = prepared.Commit()
-		return nil, err
-	}
-	return &preparedMacOSUpdate{PreparedInstall: prepared, requiredProtocol: requiredProtocol, barrierContext: barrierContext}, nil
+	return &preparedMacOSUpdate{
+		PreparedInstall:  prepared,
+		requiredProtocol: requiredProtocol,
+		paths:            paths,
+		descriptor:       descriptor,
+	}, nil
 }
 
 func (macOSUpdatePreparer) Recover(_ context.Context, transaction Transaction, paths Paths) (PreparedUpdate, BarrierContext, error) {
@@ -743,10 +928,29 @@ func (macOSUpdatePreparer) RecoveryBarrierContext(_ context.Context, paths Paths
 type preparedMacOSUpdate struct {
 	*updatepkg.PreparedInstall
 	requiredProtocol int
-	barrierContext   BarrierContext
+	paths            Paths
+	descriptor       updateRecoveryDescriptor
+	barrierBound     bool
 }
 
 func (p *preparedMacOSUpdate) RequiredGuardianProtocol() int { return p.requiredProtocol }
+
+func (p *preparedMacOSUpdate) BindBarrierContext(barrierContext BarrierContext) error {
+	if p.barrierBound {
+		return newUpdateError("update_recovery_metadata_failed")
+	}
+	descriptor := p.descriptor
+	descriptor.BarrierContext = cloneBarrierContext(barrierContext)
+	if err := validateUpdateRecoveryDescriptor(descriptor, p.paths, true); err != nil {
+		return err
+	}
+	if err := writeUpdateRecoveryDescriptor(descriptor); err != nil {
+		return err
+	}
+	p.descriptor = descriptor
+	p.barrierBound = true
+	return nil
+}
 
 type artifactFingerprint struct {
 	Kind   string `json:"kind"`
@@ -775,7 +979,7 @@ type updateRecoveryDescriptor struct {
 	NewApp           artifactFingerprint `json:"new_app"`
 }
 
-func buildUpdateRecoveryDescriptor(request UpdateRequest, paths Paths, appPath string, barrierContext BarrierContext, protocol int) (updateRecoveryDescriptor, error) {
+func buildUpdateRecoveryDescriptorTemplate(request UpdateRequest, paths Paths, appPath string, protocol int) (updateRecoveryDescriptor, error) {
 	transactionID := request.TransactionID
 	snapshotPath := filepath.Join(paths.Snapshots, transactionID)
 	stagingPath := filepath.Join(paths.Staging, transactionID)
@@ -786,7 +990,7 @@ func buildUpdateRecoveryDescriptor(request UpdateRequest, paths Paths, appPath s
 		TransactionID: transactionID, FromVersion: request.FromVersion, ToVersion: request.ToVersion,
 		AssetDigest: request.AssetSHA256, CLIPath: install.BinPath, AppPath: appPath,
 		AppUID: request.AppUID, AppGID: request.AppGID, SnapshotPath: snapshotPath,
-		StagingPath: stagingPath, BarrierContext: cloneBarrierContext(barrierContext),
+		StagingPath: stagingPath,
 	}
 	var err error
 	if descriptor.OldCLI, descriptor.HadCLI, err = fingerprintOptionalArtifact(filepath.Join(snapshotPath, "bx")); err != nil {
@@ -801,7 +1005,7 @@ func buildUpdateRecoveryDescriptor(request UpdateRequest, paths Paths, appPath s
 	if descriptor.NewApp, err = fingerprintArtifact(appStage); err != nil {
 		return updateRecoveryDescriptor{}, newUpdateError("update_recovery_metadata_failed")
 	}
-	if err := validateUpdateRecoveryDescriptor(descriptor, paths, true); err != nil {
+	if err := validateUpdateRecoveryDescriptorStatic(descriptor, paths, true); err != nil {
 		return updateRecoveryDescriptor{}, err
 	}
 	return descriptor, nil
@@ -873,6 +1077,16 @@ func readUpdateRecoveryDescriptor(path string) (updateRecoveryDescriptor, error)
 }
 
 func validateUpdateRecoveryDescriptor(descriptor updateRecoveryDescriptor, paths Paths, requireSystemDestinations bool) error {
+	if err := validateUpdateRecoveryDescriptorStatic(descriptor, paths, requireSystemDestinations); err != nil {
+		return err
+	}
+	if _, _, _, err := PlanBarrier(descriptor.BarrierContext); err != nil {
+		return newUpdateError("update_recovery_metadata_failed")
+	}
+	return nil
+}
+
+func validateUpdateRecoveryDescriptorStatic(descriptor updateRecoveryDescriptor, paths Paths, requireSystemDestinations bool) error {
 	if descriptor.SchemaVersion != 0 && descriptor.SchemaVersion != updateRecoveryDescriptorVersion {
 		return newUpdateError("update_recovery_version_unsupported")
 	}
@@ -891,9 +1105,6 @@ func validateUpdateRecoveryDescriptor(descriptor updateRecoveryDescriptor, paths
 		return newUpdateError("update_recovery_metadata_failed")
 	}
 	if requireSystemDestinations && descriptor.CLIPath != install.BinPath {
-		return newUpdateError("update_recovery_metadata_failed")
-	}
-	if _, _, _, err := PlanBarrier(descriptor.BarrierContext); err != nil {
 		return newUpdateError("update_recovery_metadata_failed")
 	}
 	for _, fingerprint := range []artifactFingerprint{descriptor.NewCLI, descriptor.NewApp} {
@@ -1004,6 +1215,9 @@ func (p *recoveredMacOSUpdate) SnapshotPath() string { return p.descriptor.Snaps
 func (p *recoveredMacOSUpdate) RequiredGuardianProtocol() int {
 	return p.descriptor.GuardianProtocol
 }
+func (*recoveredMacOSUpdate) BindBarrierContext(BarrierContext) error {
+	return newUpdateError("update_recovery_metadata_failed")
+}
 func (*recoveredMacOSUpdate) Activate() error { return newUpdateError("update_reactivation_forbidden") }
 
 func (p *recoveredMacOSUpdate) Restore() error {
@@ -1056,35 +1270,59 @@ func (p *recoveredMacOSUpdate) restoreCLI() error {
 	if err != nil {
 		return err
 	}
-	if d.HadCLI && exists && current == d.OldCLI {
-		return nil
-	}
-	if !exists || current != d.NewCLI {
+	if exists && current != d.NewCLI && (!d.HadCLI || current != d.OldCLI) {
 		return newUpdateError("update_artifact_substituted")
 	}
 	discardName := ".bx-update-" + d.TransactionID + ".discard-recovery"
-	if err := moveKnownAside(cliRoot, filepath.Base(d.CLIPath), discardName, d.NewCLI); err != nil {
-		return err
+	if d.HadCLI && exists && current == d.OldCLI {
+		return nil
+	}
+	if exists {
+		discardExists, err := optionalKnownFingerprintAt(cliRoot, discardName, d.NewCLI)
+		if err != nil {
+			return err
+		}
+		if discardExists {
+			return newUpdateError("update_recovery_residue_present")
+		}
+		if err := moveKnownAside(cliRoot, filepath.Base(d.CLIPath), discardName, d.NewCLI); err != nil {
+			return err
+		}
+		exists = false
 	}
 	if !d.HadCLI {
-		return removeKnownAt(cliRoot, discardName, d.NewCLI)
+		return nil
+	}
+	restoreNames := []string{
+		".bx-update-" + d.TransactionID + ".restore-recovery",
+		".bx-update-" + d.TransactionID + ".restore",
+	}
+	for _, restoreName := range restoreNames {
+		restoreExists, err := optionalKnownFingerprintAt(cliRoot, restoreName, d.OldCLI)
+		if err != nil {
+			return err
+		}
+		if !restoreExists {
+			continue
+		}
+		if err := cliRoot.Rename(restoreName, filepath.Base(d.CLIPath)); err != nil {
+			return err
+		}
+		return requireKnownFingerprintAt(cliRoot, filepath.Base(d.CLIPath), d.OldCLI)
 	}
 	snapshotRoot, err := os.OpenRoot(d.SnapshotPath)
 	if err != nil {
-		_ = cliRoot.Rename(discardName, filepath.Base(d.CLIPath))
 		return err
 	}
 	defer snapshotRoot.Close()
-	restoreName := ".bx-update-" + d.TransactionID + ".restore-recovery"
+	restoreName := restoreNames[0]
 	if err := copyFileBetweenRoots(snapshotRoot, "bx", cliRoot, restoreName); err != nil {
-		_ = cliRoot.Rename(discardName, filepath.Base(d.CLIPath))
 		return err
 	}
 	if err := cliRoot.Rename(restoreName, filepath.Base(d.CLIPath)); err != nil {
-		_ = cliRoot.Rename(discardName, filepath.Base(d.CLIPath))
 		return err
 	}
-	return nil
+	return requireKnownFingerprintAt(cliRoot, filepath.Base(d.CLIPath), d.OldCLI)
 }
 
 func (p *recoveredMacOSUpdate) restoreApp() error {
@@ -1099,35 +1337,59 @@ func (p *recoveredMacOSUpdate) restoreApp() error {
 	if err != nil {
 		return err
 	}
-	if d.HadApp && exists && current == d.OldApp {
-		return nil
-	}
-	if !exists || current != d.NewApp {
+	if exists && current != d.NewApp && (!d.HadApp || current != d.OldApp) {
 		return newUpdateError("update_artifact_substituted")
 	}
 	discardName := ".Bx.app.discard-" + d.TransactionID
-	if err := moveKnownAside(appRoot, appName, discardName, d.NewApp); err != nil {
-		return err
+	if d.HadApp && exists && current == d.OldApp {
+		return nil
+	}
+	if exists {
+		discardExists, err := optionalKnownFingerprintAt(appRoot, discardName, d.NewApp)
+		if err != nil {
+			return err
+		}
+		if discardExists {
+			return newUpdateError("update_recovery_residue_present")
+		}
+		if err := moveKnownAside(appRoot, appName, discardName, d.NewApp); err != nil {
+			return err
+		}
+		exists = false
 	}
 	if !d.HadApp {
-		return removeKnownAt(appRoot, discardName, d.NewApp)
+		return nil
+	}
+	restoreNames := []string{
+		".Bx.app.restore-" + d.TransactionID,
+		".Bx.app.previous-" + d.TransactionID,
+	}
+	for _, restoreName := range restoreNames {
+		restoreExists, err := optionalKnownFingerprintAt(appRoot, restoreName, d.OldApp)
+		if err != nil {
+			return err
+		}
+		if !restoreExists {
+			continue
+		}
+		if err := appRoot.Rename(restoreName, appName); err != nil {
+			return err
+		}
+		return requireKnownFingerprintAt(appRoot, appName, d.OldApp)
 	}
 	snapshotRoot, err := os.OpenRoot(d.SnapshotPath)
 	if err != nil {
-		_ = appRoot.Rename(discardName, appName)
 		return err
 	}
 	defer snapshotRoot.Close()
-	restoreName := ".Bx.app.restore-" + d.TransactionID
+	restoreName := restoreNames[0]
 	if err := copyTreeBetweenRoots(snapshotRoot, "Bx.app", appRoot, restoreName, d.AppUID, d.AppGID); err != nil {
-		_ = appRoot.Rename(discardName, appName)
 		return err
 	}
 	if err := appRoot.Rename(restoreName, appName); err != nil {
-		_ = appRoot.Rename(discardName, appName)
 		return err
 	}
-	return nil
+	return requireKnownFingerprintAt(appRoot, appName, d.OldApp)
 }
 
 func (p *recoveredMacOSUpdate) Commit() error {
@@ -1185,6 +1447,31 @@ func optionalFingerprintAt(root *os.Root, name string) (artifactFingerprint, boo
 	return fingerprint, err == nil, err
 }
 
+func optionalKnownFingerprintAt(root *os.Root, name string, want artifactFingerprint) (bool, error) {
+	got, exists, err := optionalFingerprintAt(root, name)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	if !want.valid() || got != want {
+		return false, newUpdateError("update_artifact_substituted")
+	}
+	return true, nil
+}
+
+func requireKnownFingerprintAt(root *os.Root, name string, want artifactFingerprint) error {
+	exists, err := optionalKnownFingerprintAt(root, name, want)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return newUpdateError("update_artifact_missing")
+	}
+	return nil
+}
+
 func moveKnownAside(root *os.Root, name, discard string, want artifactFingerprint) error {
 	if _, err := root.Lstat(discard); err == nil {
 		return newUpdateError("update_recovery_residue_present")
@@ -1204,16 +1491,30 @@ func moveKnownAside(root *os.Root, name, discard string, want artifactFingerprin
 
 func removeKnownAt(root *os.Root, name string, want artifactFingerprint) error {
 	if !want.valid() {
-		if _, err := root.Lstat(name); errors.Is(err, os.ErrNotExist) {
+		_, originalErr := root.Lstat(name)
+		_, cleanupErr := root.Lstat(name + ".guardian-cleanup")
+		if errors.Is(originalErr, os.ErrNotExist) && errors.Is(cleanupErr, os.ErrNotExist) {
 			return nil
 		}
 		return newUpdateError("update_cleanup_identity_missing")
 	}
 	cleanupName := name + ".guardian-cleanup"
-	if _, err := root.Lstat(cleanupName); err == nil {
-		return newUpdateError("update_cleanup_residue_present")
-	} else if !errors.Is(err, os.ErrNotExist) {
+	cleanupExists, err := optionalKnownFingerprintAt(root, cleanupName, want)
+	if err != nil {
 		return err
+	}
+	originalExists, err := optionalKnownFingerprintAt(root, name, want)
+	if err != nil {
+		return err
+	}
+	if cleanupExists {
+		if originalExists {
+			return newUpdateError("update_cleanup_residue_present")
+		}
+		return root.RemoveAll(cleanupName)
+	}
+	if !originalExists {
+		return nil
 	}
 	if err := root.Rename(name, cleanupName); errors.Is(err, os.ErrNotExist) {
 		return nil

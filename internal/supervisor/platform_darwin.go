@@ -112,19 +112,27 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 
 	var done []darwinRouteSpec // 已加路由,用于对称还原(只管路由;TUN 关闭归 Run 的 closeTUN)
 	cleanup := func() {
-		for i := len(done) - 1; i >= 0; i-- {
-			_ = runCmdQuiet("route", done[i].del...)
-		}
+		cleanupDarwinRouteSpecs(done, func(args ...string) error { return runCmdQuiet("route", args...) })
 	}
-	for _, s := range specs {
-		if err := runCmd("route", s.add...); err != nil {
-			cleanup()
-			return nil, fmt.Errorf("route %s: %w", strings.Join(s.add, " "), err)
-		}
-		done = append(done, s)
+	done, err = applyDarwinRouteSpecs(specs, runDarwinRouteCommand)
+	if err != nil {
+		cleanup()
+		return nil, err
 	}
 	log.Printf("默认路由已劫持进 %s;serverBypass=%v userBypass=%v via %s;v6阻断=%v", t.Name, serverBypass, userBypass, gw, blockV6)
 	return cleanup, nil
+}
+
+func runDarwinRouteCommand(args ...string) error {
+	output, err := exec.Command("route", args...).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, message)
 }
 
 // RehijackRoutes 路由-only 重落实(darwin):重探网关 + 幂等配地址 + 重装路由。

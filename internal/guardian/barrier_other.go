@@ -25,6 +25,10 @@ func (unsupportedBarrier) ReassertBypass(context.Context, BarrierContext) error 
 	return fmt.Errorf("reassert barrier bypass: %w", ErrUnsupported)
 }
 
+func (unsupportedBarrier) Release(context.Context, BarrierContext) error {
+	return fmt.Errorf("release barrier to Core: %w", ErrUnsupported)
+}
+
 func (unsupportedBarrier) Remove(context.Context, BarrierContext) error {
 	return fmt.Errorf("remove barrier: %w", ErrUnsupported)
 }
