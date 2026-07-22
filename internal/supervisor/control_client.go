@@ -261,6 +261,8 @@ func doPathRecoveryRequest(client *http.Client, req *http.Request) (PathRecovery
 		if code == "" {
 			code = "recovery_failed"
 		}
+		snapshot.ErrorCode = code
+		snapshot.Detail = ""
 		return snapshot, &PathRecoveryError{Code: code}
 	}
 	return snapshot, nil

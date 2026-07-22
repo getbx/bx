@@ -16,7 +16,7 @@ type darwinUnderlayManager struct {
 	defaultRoute      func(context.Context) (gateway, interfaceName string, err error)
 	interfacePrefixes func(string) ([]netip.Prefix, error)
 	routeLookup       func(context.Context, string, bool) (darwinRouteSelection, error)
-	ipv6Enabled       func() bool
+	ipv6Capability    func() (bool, error)
 }
 
 type darwinRouteSelection struct {
@@ -33,7 +33,7 @@ func newDarwinUnderlayManager() *darwinUnderlayManager {
 		defaultRoute:      defaultRouteDarwinContext,
 		interfacePrefixes: darwinInterfacePrefixes,
 		routeLookup:       darwinRouteLookup,
-		ipv6Enabled:       ipv6HostEnabled,
+		ipv6Capability:    ipv6HostEnabledWithError,
 	}
 }
 
@@ -69,7 +69,14 @@ func (m *darwinUnderlayManager) ValidateCapture(ctx context.Context, tun tunHand
 			return captureMissing("IPv4 capture for %s selected %q, want %q", destination, selection.Interface, tun.Name)
 		}
 	}
-	if m.ipv6Enabled != nil && m.ipv6Enabled() {
+	if m.ipv6Capability == nil {
+		return captureMissing("IPv6 capability is unavailable")
+	}
+	ipv6Enabled, err := m.ipv6Capability()
+	if err != nil {
+		return captureMissing("detect IPv6 capability: %v", err)
+	}
+	if ipv6Enabled {
 		for _, destination := range []string{"2001:4860:4860::8888", "9000::1"} {
 			selection, err := m.routeLookup(ctx, destination, true)
 			if err != nil {
@@ -86,6 +93,9 @@ func (m *darwinUnderlayManager) ValidateCapture(ctx context.Context, tun tunHand
 func (m *darwinUnderlayManager) Rebind(ctx context.Context, tun tunHandle, old, next UnderlaySnapshot, serverBypass, userBypass []string) error {
 	if !strings.HasPrefix(tun.Name, "utun") || m.runner == nil {
 		return &PathRecoveryError{Code: "underlay_rebind_failed", Detail: "active bx utun is unavailable"}
+	}
+	if err := m.ValidateCapture(ctx, tun); err != nil {
+		return err
 	}
 	plan, err := darwinUnderlayPlan(old, next, serverBypass, userBypass)
 	if err != nil {
@@ -113,16 +123,43 @@ func darwinInterfacePrefixes(interfaceName string) ([]netip.Prefix, error) {
 			if !ok {
 				continue
 			}
-			bits, _ := ipNet.Mask.Size()
-			addr, ok := netip.AddrFromSlice(ipNet.IP)
-			if !ok {
-				continue
+			prefix, err := darwinPrefixFromIPNet(ipNet)
+			if err != nil {
+				return nil, err
 			}
-			prefixes = append(prefixes, netip.PrefixFrom(addr, bits))
+			prefixes = append(prefixes, prefix)
 		}
 		return prefixes, nil
 	}
 	return nil, fmt.Errorf("interface not found")
+}
+
+func darwinPrefixFromIPNet(ipNet *net.IPNet) (netip.Prefix, error) {
+	if ipNet == nil {
+		return netip.Prefix{}, fmt.Errorf("nil interface address")
+	}
+	ones, bits := ipNet.Mask.Size()
+	if bits == 0 {
+		return netip.Prefix{}, fmt.Errorf("invalid interface mask")
+	}
+	addr, ok := netip.AddrFromSlice(ipNet.IP)
+	if !ok {
+		return netip.Prefix{}, fmt.Errorf("invalid interface address")
+	}
+	if addr.Is4In6() {
+		addr = addr.Unmap()
+		if bits == 128 {
+			if ones < 96 {
+				return netip.Prefix{}, fmt.Errorf("invalid mapped IPv4 mask")
+			}
+			ones -= 96
+			bits = 32
+		}
+	}
+	if addr.BitLen() != bits {
+		return netip.Prefix{}, fmt.Errorf("address and mask family differ")
+	}
+	return netip.PrefixFrom(addr, ones), nil
 }
 
 func darwinRouteLookup(ctx context.Context, destination string, ipv6 bool) (darwinRouteSelection, error) {

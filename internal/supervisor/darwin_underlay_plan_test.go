@@ -51,7 +51,7 @@ func TestDarwinUnderlayPlanUnchangedGenerationDoesNothing(t *testing.T) {
 	}
 }
 
-func TestDarwinUnderlayPlanHonorsAnExplicitUnchangedGeneration(t *testing.T) {
+func TestDarwinUnderlayPlanDoesNotTrustForgedEqualGeneration(t *testing.T) {
 	old := mustUnderlaySnapshot(t, "en0", "192.168.50.2", "192.168.50.27/24")
 	next := mustUnderlaySnapshot(t, "en1", "192.168.1.1", "192.168.1.42/24")
 	next.Generation = old.Generation
@@ -60,8 +60,13 @@ func TestDarwinUnderlayPlanHonorsAnExplicitUnchangedGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan) != 0 {
-		t.Fatalf("unchanged generation planned mutations: %#v", plan)
+	if len(plan) == 0 {
+		t.Fatal("forged equal generation suppressed required bypass rebind")
+	}
+	for _, command := range darwinUnderlayCommandTexts(plan) {
+		if !strings.HasSuffix(command, "192.168.1.1") {
+			t.Fatalf("forged generation planned stale gateway command: %q", command)
+		}
 	}
 }
 

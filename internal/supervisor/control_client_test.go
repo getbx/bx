@@ -323,6 +323,33 @@ func TestPathRecoveryControlMapsUnknownErrorCodeToStableFailure(t *testing.T) {
 	}
 }
 
+func TestPathRecoveryControlPreservesAllowlistedSafetyCodesWithoutDetail(t *testing.T) {
+	const secret = "server route and transport diagnostics"
+	for _, code := range []string{"capture_missing", "underlay_rebind_failed"} {
+		t.Run(code, func(t *testing.T) {
+			sock := startControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusInternalServerError, PathRecoverySnapshot{
+					State:     "blocked",
+					ErrorCode: code,
+					Detail:    secret,
+				})
+			})
+
+			snapshot, err := RecoverPathControl(context.Background(), sock, PathRecoveryRequest{Reason: "manual"})
+			var recoveryErr *PathRecoveryError
+			if !errors.As(err, &recoveryErr) {
+				t.Fatalf("RecoverPathControl error = %v, want PathRecoveryError", err)
+			}
+			if recoveryErr.Code != code || recoveryErr.Detail != "" {
+				t.Fatalf("recovery error = %+v, want redacted %q", recoveryErr, code)
+			}
+			if snapshot.ErrorCode != code || snapshot.Detail != "" {
+				t.Fatalf("snapshot = %+v, want redacted %q", snapshot, code)
+			}
+		})
+	}
+}
+
 func startControlSocket(t *testing.T, handler http.HandlerFunc) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "bxs-")

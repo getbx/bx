@@ -30,9 +30,6 @@ func darwinUnderlayPlan(old, next UnderlaySnapshot, serverBypass, userBypass []s
 	if err != nil {
 		return nil, fmt.Errorf("invalid next underlay: %w", err)
 	}
-	if old.Generation != "" && old.Generation == next.Generation {
-		return nil, nil
-	}
 	if underlayGeneration(canonicalOld) == underlayGeneration(canonicalNext) {
 		return nil, nil
 	}
