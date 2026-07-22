@@ -272,6 +272,57 @@ func TestReconnectControlOperationTimeoutDiffersFromGeneric(t *testing.T) {
 	}
 }
 
+func TestPathRecoveryControlClient(t *testing.T) {
+	sock := startControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/path-recovery":
+			if r.Method == http.MethodPost {
+				var in PathRecoveryRequest
+				if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				if in.Reason != "manual" || in.Generation != "wifi-b" {
+					t.Errorf("request = %+v", in)
+				}
+			}
+			writeJSON(w, http.StatusOK, PathRecoverySnapshot{ID: "recovery-1", State: "succeeded", Stage: "succeeded", Reason: "manual", Generation: "wifi-b"})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			writeJSON(w, http.StatusNotFound, controlResponse{Status: "error"})
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started, err := RecoverPathControl(ctx, sock, PathRecoveryRequest{Reason: "manual", Generation: "wifi-b"})
+	if err != nil || started.ID != "recovery-1" {
+		t.Fatalf("RecoverPathControl = %+v, %v", started, err)
+	}
+	current, err := FetchPathRecovery(ctx, sock)
+	if err != nil || current.ID != "recovery-1" {
+		t.Fatalf("FetchPathRecovery = %+v, %v", current, err)
+	}
+}
+
+func TestPathRecoveryControlMapsUnknownErrorCodeToStableFailure(t *testing.T) {
+	sock := startControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusInternalServerError, PathRecoverySnapshot{
+			State:     "blocked",
+			ErrorCode: "vless://secret-uuid@proxy.example",
+			Detail:    "secret transport diagnostic",
+		})
+	})
+
+	_, err := RecoverPathControl(context.Background(), sock, PathRecoveryRequest{Reason: "manual"})
+	var recoveryErr *PathRecoveryError
+	if !errors.As(err, &recoveryErr) {
+		t.Fatalf("RecoverPathControl error = %v, want PathRecoveryError", err)
+	}
+	if recoveryErr.Code != "recovery_failed" || recoveryErr.Detail != "" {
+		t.Fatalf("recovery error = %+v", recoveryErr)
+	}
+}
+
 func startControlSocket(t *testing.T, handler http.HandlerFunc) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "bxs-")

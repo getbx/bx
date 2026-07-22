@@ -217,6 +217,55 @@ func ReconnectControlContext(ctx context.Context, sockPath string) (string, erro
 	return reconnectControlContext(ctx, sockPath, controlHTTPClientForOperation)
 }
 
+// RecoverPathControl runs the Core's serialized path recovery operation. The caller
+// supplies the operation deadline because transport health may exceed normal RPC timeouts.
+func RecoverPathControl(ctx context.Context, sockPath string, in PathRecoveryRequest) (PathRecoverySnapshot, error) {
+	body, err := json.Marshal(in)
+	if err != nil {
+		return PathRecoverySnapshot{}, err
+	}
+	client := controlHTTPClientForOperation(sockPath)
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://local/v0/path-recovery", bytes.NewReader(body))
+	if err != nil {
+		return PathRecoverySnapshot{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return doPathRecoveryRequest(client, req)
+}
+
+// FetchPathRecovery returns the latest non-secret recovery snapshot without waiting
+// for an in-flight POST operation.
+func FetchPathRecovery(ctx context.Context, sockPath string) (PathRecoverySnapshot, error) {
+	client := controlHTTPClient(sockPath)
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://local/v0/path-recovery", nil)
+	if err != nil {
+		return PathRecoverySnapshot{}, err
+	}
+	return doPathRecoveryRequest(client, req)
+}
+
+func doPathRecoveryRequest(client *http.Client, req *http.Request) (PathRecoverySnapshot, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return PathRecoverySnapshot{}, err
+	}
+	defer resp.Body.Close()
+	var snapshot PathRecoverySnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		return PathRecoverySnapshot{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		code := stablePathRecoveryCode(snapshot.ErrorCode)
+		if code == "" {
+			code = "recovery_failed"
+		}
+		return snapshot, &PathRecoveryError{Code: code}
+	}
+	return snapshot, nil
+}
+
 func reconnectControlContext(ctx context.Context, sockPath string, clientFactory func(string) *http.Client) (string, error) {
 	client := clientFactory(sockPath)
 	defer client.CloseIdleConnections()
