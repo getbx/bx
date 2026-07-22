@@ -13,6 +13,7 @@
 package supervisor
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -33,6 +34,10 @@ const guardianBypassHandoffEnv = "BX_GUARDIAN_BYPASS_HANDOFF"
 func newPlatform() platform { return darwinPlatform{} }
 
 type darwinPlatform struct{}
+
+// Underlay returns the recovery-only manager. It is intentionally separate from
+// Hijack/RehijackRoutes, which own complete route sets including capture routes.
+func (darwinPlatform) Underlay() underlayManager { return newUnderlayManager() }
 
 // OpenTUN 创建 utun 设备(名字须 utunN 或 "utun" 由内核分配),桥接成 gVisor 端点。
 // 返回的 closeTUN 停 pump、关设备,由 Run 用 defer 接管。
@@ -163,10 +168,18 @@ func (darwinPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []str
 
 // defaultRouteDarwin 解析 `route -n get default` 的网关与出口网卡。
 func defaultRouteDarwin() (gw, dev string, err error) {
-	out, err := exec.Command("route", "-n", "get", "default").Output()
+	return defaultRouteDarwinContext(context.Background())
+}
+
+func defaultRouteDarwinContext(ctx context.Context) (gw, dev string, err error) {
+	out, err := exec.CommandContext(ctx, "route", "-n", "get", "default").Output()
 	if err != nil {
 		return "", "", err
 	}
+	return parseDefaultRouteDarwin(out)
+}
+
+func parseDefaultRouteDarwin(out []byte) (gw, dev string, err error) {
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 2 {
