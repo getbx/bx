@@ -120,12 +120,12 @@ func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot
 		return transaction.snapshot, nil
 	}
 
-	operationCtx, cancel := context.WithTimeout(context.Background(), guardianMutationTimeout)
+	operationCtx, cancel := m.pathRecoveryNewContext()
 	m.pathRecoveryCurrent = transaction.snapshot
 	m.pathRecoveryCancel = cancel
 	m.pathRecoveryActive = true
 	m.pathRecoveryMu.Unlock()
-	go m.runPathRecovery(operationCtx, transaction)
+	go m.runPathRecovery(operationCtx, cancel, transaction)
 	return transaction.snapshot, nil
 }
 
@@ -135,10 +135,11 @@ func (m *Manager) CurrentPathRecovery() RecoverySnapshot {
 	return m.pathRecoveryCurrent
 }
 
-func (m *Manager) runPathRecovery(operationCtx context.Context, transaction pathRecoveryTransaction) {
+func (m *Manager) runPathRecovery(operationCtx context.Context, cancel context.CancelFunc, transaction pathRecoveryTransaction) {
 	for {
 		m.publishRunningPathRecovery(transaction)
 		result := m.executePathRecovery(operationCtx, transaction)
+		cancel()
 
 		m.pathRecoveryMu.Lock()
 		if m.pathRecoveryCurrent.ID == transaction.snapshot.ID {
@@ -175,7 +176,8 @@ func (m *Manager) runPathRecovery(operationCtx context.Context, transaction path
 			m.pathRecoveryMu.Unlock()
 			return
 		}
-		operationCtx, m.pathRecoveryCancel = context.WithTimeout(context.Background(), guardianMutationTimeout)
+		operationCtx, cancel = m.pathRecoveryNewContext()
+		m.pathRecoveryCancel = cancel
 		m.pathRecoveryCurrent = transaction.snapshot
 		m.pathRecoveryMu.Unlock()
 	}
@@ -184,7 +186,7 @@ func (m *Manager) runPathRecovery(operationCtx context.Context, transaction path
 func (m *Manager) publishRunningPathRecovery(transaction pathRecoveryTransaction) {
 	m.pathRecoveryMu.Lock()
 	defer m.pathRecoveryMu.Unlock()
-	if m.pathRecoveryCurrent.ID != transaction.snapshot.ID {
+	if m.pathRecoveryFences > 0 || m.pathRecoveryCurrent.ID != transaction.snapshot.ID {
 		return
 	}
 	snapshot := transaction.snapshot
@@ -245,6 +247,9 @@ func (m *Manager) beginPathRecoveryTransition(transition pathRecoveryTransition)
 		m.queueInterruptedPathRecoveryLocked(false)
 	} else {
 		m.queueInterruptedPathRecoveryLocked(true)
+		if m.pathRecoveryPending != nil {
+			m.pathRecoveryCurrent = m.pathRecoveryPending.snapshot
+		}
 	}
 	cancel := m.pathRecoveryCancel
 	m.pathRecoveryMu.Unlock()
@@ -285,12 +290,12 @@ func (m *Manager) endPathRecoveryTransition() {
 		m.pathRecoveryMu.Unlock()
 		return
 	}
-	operationCtx, cancel := context.WithTimeout(context.Background(), guardianMutationTimeout)
+	operationCtx, cancel := m.pathRecoveryNewContext()
 	m.pathRecoveryCurrent = transaction.snapshot
 	m.pathRecoveryCancel = cancel
 	m.pathRecoveryActive = true
 	m.pathRecoveryMu.Unlock()
-	go m.runPathRecovery(operationCtx, transaction)
+	go m.runPathRecovery(operationCtx, cancel, transaction)
 }
 
 func (m *Manager) queueInterruptedPathRecoveryLocked(generatedOnly bool) {
