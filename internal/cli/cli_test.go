@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"os"
@@ -683,6 +684,33 @@ func TestArchiveClientLogsRecordsReason(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("archive should include %s: %v", name, err)
 		}
+	}
+}
+
+func TestAutoArchiveAfterClientCommandRecordsExactError(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("BX_LOG_ARCHIVE_DIR", root)
+	t.Setenv("BX_STATUS_SOCKET", filepath.Join(root, "missing.sock"))
+
+	commandErr := context.DeadlineExceeded
+	autoArchiveAfterClientCommand("reconnect", &commandErr, false)
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("archive entries = %d, want 1", len(entries))
+	}
+	got, err := os.ReadFile(filepath.Join(root, entries[0].Name(), "command-error.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "context deadline exceeded\n" {
+		t.Fatalf("command error = %q, want exact context deadline error", got)
+	}
+	if strings.Contains(string(got), "transport failure") {
+		t.Fatalf("command error was rewritten as transport failure: %q", got)
 	}
 }
 

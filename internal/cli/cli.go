@@ -3839,7 +3839,7 @@ func reconnectAction(c *cli.Context) (err error) {
 		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
 	}
 	stepLine("保护", "安全重连传输")
-	if _, err := supervisor.ReconnectControl(statusSocketPath()); err != nil {
+	if _, err := supervisor.ReconnectControlContext(c.Context, statusSocketPath()); err != nil {
 		return err
 	}
 	stepDone("保护", "已安全重连")
@@ -4212,6 +4212,14 @@ func autoArchiveAfterClientCommand(command string, commandErr *error, announce b
 	}
 	if err := pruneLogArchives(filepath.Dir(dir), defaultAutoArchiveLimit); err != nil && os.Getenv("BX_DEBUG") == "1" {
 		fmt.Fprintf(os.Stderr, "Diagnostics archive prune failed: %v\n", err)
+	}
+	if commandErr != nil && *commandErr != nil {
+		if err := os.WriteFile(filepath.Join(dir, "command-error.txt"), []byte((*commandErr).Error()+"\n"), 0o600); err != nil {
+			if announce {
+				fmt.Fprintf(os.Stderr, "Diagnostics archive failed: %v\n", err)
+			}
+			return
+		}
 	}
 	if announce || (commandErr != nil && *commandErr != nil) {
 		fmt.Fprintf(os.Stderr, "Diagnostics archived: %s\n", dir)
