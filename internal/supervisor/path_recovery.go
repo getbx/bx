@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -142,8 +143,11 @@ func pathRecoveryID(sequence uint64) string {
 }
 
 func pathRecoveryErrorCode(err error) string {
-	if recoveryErr, ok := err.(*PathRecoveryError); ok {
-		return stablePathRecoveryCode(recoveryErr.Code)
+	var recoveryErr *PathRecoveryError
+	if errors.As(err, &recoveryErr) && recoveryErr != nil {
+		if code := stablePathRecoveryCode(recoveryErr.Code); code != "" {
+			return code
+		}
 	}
 	return "recovery_failed"
 }
