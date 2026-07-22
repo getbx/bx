@@ -90,39 +90,50 @@ type ManagerOptions struct {
 	CleanupTimeout   time.Duration
 	UpdatePreparer   UpdatePreparer
 	GuardianProtocol int
+	CorePath         CorePathClient
 }
 
 type Manager struct {
-	mutation          chan struct{}
-	updateOperation   chan struct{}
-	statusMu          sync.RWMutex
-	store             DesiredStore
-	runner            CoreRunner
-	health            HealthGate
-	barrier           Barrier
-	restorer          NetworkRestorer
-	legacy            LegacyCoreLifecycle
-	barrierContext    BarrierContext
-	gatewayProvider   GatewayProvider
-	coreVersion       string
-	restartTimeout    time.Duration
-	cleanupTimeout    time.Duration
-	updates           updateStore
-	updatePaths       Paths
-	updatePreparer    UpdatePreparer
-	guardianProtocol  int
-	current           Process
-	runtime           supervisor.RuntimeState
-	status            Status
-	barrierOwnership  barrierOwnership
-	recoveryBlocked   bool
-	recoveryMu        sync.Mutex
-	recoveryContext   context.Context
-	cancelRecovery    context.CancelFunc
-	recoveryAccepting bool
-	recoveryActive    int
-	recoveryDrained   chan struct{}
-	recoveryClosed    bool
+	mutation              chan struct{}
+	updateOperation       chan struct{}
+	statusMu              sync.RWMutex
+	store                 DesiredStore
+	runner                CoreRunner
+	health                HealthGate
+	barrier               Barrier
+	restorer              NetworkRestorer
+	legacy                LegacyCoreLifecycle
+	barrierContext        BarrierContext
+	gatewayProvider       GatewayProvider
+	coreVersion           string
+	restartTimeout        time.Duration
+	cleanupTimeout        time.Duration
+	updates               updateStore
+	updatePaths           Paths
+	updatePreparer        UpdatePreparer
+	guardianProtocol      int
+	current               Process
+	runtime               supervisor.RuntimeState
+	status                Status
+	barrierOwnership      barrierOwnership
+	recoveryBlocked       bool
+	recoveryMu            sync.Mutex
+	recoveryContext       context.Context
+	cancelRecovery        context.CancelFunc
+	recoveryAccepting     bool
+	recoveryActive        int
+	recoveryDrained       chan struct{}
+	recoveryClosed        bool
+	corePath              CorePathClient
+	pathRecoveryMu        sync.Mutex
+	pathRecoveryCurrent   RecoverySnapshot
+	pathRecoveryPending   *pathRecoveryTransaction
+	pathRecoveryCancel    context.CancelFunc
+	pathRecoverySequence  uint64
+	pathRecoveryAccepting bool
+	pathRecoveryActive    bool
+	pathRecoveryDrained   chan struct{}
+	pathRecoveryClosed    bool
 }
 
 func NewManager(options ManagerOptions) (*Manager, error) {
@@ -162,6 +173,10 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	if guardianProtocol <= 0 {
 		guardianProtocol = currentGuardianProtocol
 	}
+	corePath := options.CorePath
+	if corePath == nil {
+		corePath, _ = options.Runner.(CorePathClient)
+	}
 	gatewayProvider := options.GatewayProvider
 	if gatewayProvider == nil {
 		gateway := options.BarrierContext.Gateway
@@ -174,27 +189,31 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	}
 	recoveryContext, cancelRecovery := context.WithCancel(context.Background())
 	m := &Manager{
-		mutation:          make(chan struct{}, 1),
-		updateOperation:   make(chan struct{}, 1),
-		store:             options.Store,
-		runner:            options.Runner,
-		health:            options.Health,
-		barrier:           options.Barrier,
-		restorer:          options.Restorer,
-		legacy:            options.Legacy,
-		barrierContext:    cloneBarrierContext(options.BarrierContext),
-		gatewayProvider:   gatewayProvider,
-		coreVersion:       options.CoreVersion,
-		restartTimeout:    restartTimeout,
-		cleanupTimeout:    cleanupTimeout,
-		updates:           updates,
-		updatePaths:       updatePaths,
-		updatePreparer:    updatePreparer,
-		guardianProtocol:  guardianProtocol,
-		recoveryContext:   recoveryContext,
-		cancelRecovery:    cancelRecovery,
-		recoveryAccepting: true,
-		recoveryDrained:   make(chan struct{}),
+		mutation:              make(chan struct{}, 1),
+		updateOperation:       make(chan struct{}, 1),
+		store:                 options.Store,
+		runner:                options.Runner,
+		health:                options.Health,
+		barrier:               options.Barrier,
+		restorer:              options.Restorer,
+		legacy:                options.Legacy,
+		barrierContext:        cloneBarrierContext(options.BarrierContext),
+		gatewayProvider:       gatewayProvider,
+		coreVersion:           options.CoreVersion,
+		restartTimeout:        restartTimeout,
+		cleanupTimeout:        cleanupTimeout,
+		updates:               updates,
+		updatePaths:           updatePaths,
+		updatePreparer:        updatePreparer,
+		guardianProtocol:      guardianProtocol,
+		recoveryContext:       recoveryContext,
+		cancelRecovery:        cancelRecovery,
+		recoveryAccepting:     true,
+		recoveryDrained:       make(chan struct{}),
+		corePath:              corePath,
+		pathRecoveryCurrent:   RecoverySnapshot{State: "idle", Stage: "idle"},
+		pathRecoveryAccepting: true,
+		pathRecoveryDrained:   make(chan struct{}),
 		status: Status{
 			SchemaVersion: 1,
 			Desired:       DesiredOff,
@@ -371,6 +390,7 @@ func (m *Manager) upLocked(ctx context.Context) error {
 }
 
 func (m *Manager) Down(ctx context.Context) error {
+	m.cancelPathRecoveryForDown()
 	if err := m.acquireMutation(ctx); err != nil {
 		return err
 	}

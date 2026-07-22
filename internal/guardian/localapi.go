@@ -3,6 +3,7 @@ package guardian
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -25,6 +26,15 @@ type UpdateController interface {
 	Update(context.Context, UpdateRequest) (UpdateResult, error)
 }
 
+type PathRecoveryController interface {
+	RequestPathRecovery(RecoveryRequest) (RecoverySnapshot, error)
+	CurrentPathRecovery() RecoverySnapshot
+}
+
+type LocalAPIOptions struct {
+	OwnerUID uint32
+}
+
 type peerCredentialsKey struct{}
 
 type peerCredentials struct {
@@ -33,9 +43,10 @@ type peerCredentials struct {
 }
 
 type localAPI struct {
-	handler    http.Handler
-	mutations  *acceptedMutations
-	recoveries recoveryLifecycle
+	handler        http.Handler
+	mutations      *acceptedMutations
+	recoveries     recoveryLifecycle
+	pathRecoveries pathRecoveryLifecycle
 }
 
 type recoveryLifecycle interface {
@@ -55,7 +66,11 @@ func withPeerCredentials(ctx context.Context, uid uint32, got bool) context.Cont
 	return context.WithValue(ctx, peerCredentialsKey{}, peerCredentials{uid: uid, got: got})
 }
 
-func NewLocalAPI(controller Controller) http.Handler {
+func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handler {
+	var options LocalAPIOptions
+	if len(provided) != 0 {
+		options = provided[0]
+	}
 	mutations := &acceptedMutations{accepting: true, drained: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/status", func(w http.ResponseWriter, r *http.Request) {
@@ -71,8 +86,82 @@ func NewLocalAPI(controller Controller) http.Handler {
 	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations))
 	updateController, _ := controller.(UpdateController)
 	mux.HandleFunc("/v1/update", updateHandler(updateController, mutations))
+	pathRecoveryController, _ := controller.(PathRecoveryController)
+	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(pathRecoveryController, options.OwnerUID))
+	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
 	recoveries, _ := controller.(recoveryLifecycle)
-	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries}
+	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
+	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries}
+}
+
+func recoveryRequestHandler(controller PathRecoveryController, ownerUID uint32) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if !authorizeRecoveryPeer(r.Context(), ownerUID) {
+			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "recovery requires owner or root peer"})
+			return
+		}
+		if controller == nil {
+			writeGuardianJSON(w, http.StatusNotImplemented, map[string]string{"error": "recovery unavailable"})
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		var request RecoveryRequest
+		if err := decoder.Decode(&request); err != nil {
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid recovery metadata"})
+			return
+		}
+		if err := ensureJSONEOF(decoder); err != nil {
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid recovery metadata"})
+			return
+		}
+		normalized, err := ValidateRecoveryRequest(request)
+		if err != nil {
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid recovery metadata"})
+			return
+		}
+		snapshot, err := controller.RequestPathRecovery(normalized)
+		if errors.Is(err, errPathRecoveryShuttingDown) {
+			writeGuardianJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "guardian is shutting down"})
+			return
+		}
+		if err != nil {
+			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"error": "guardian operation failed"})
+			return
+		}
+		writeGuardianJSON(w, http.StatusAccepted, redactRecoverySnapshot(snapshot))
+	}
+}
+
+func recoveryCurrentHandler(controller PathRecoveryController, ownerUID uint32) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if !authorizeRecoveryPeer(r.Context(), ownerUID) {
+			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "recovery requires owner or root peer"})
+			return
+		}
+		if controller == nil {
+			writeGuardianJSON(w, http.StatusNotImplemented, map[string]string{"error": "recovery unavailable"})
+			return
+		}
+		writeGuardianJSON(w, http.StatusOK, redactRecoverySnapshot(controller.CurrentPathRecovery()))
+	}
+}
+
+func authorizeRecoveryPeer(ctx context.Context, ownerUID uint32) bool {
+	credentials, _ := ctx.Value(peerCredentialsKey{}).(peerCredentials)
+	if !credentials.got {
+		return false
+	}
+	return credentials.uid == 0 || (ownerUID != 0 && credentials.uid == ownerUID)
 }
 
 func updateHandler(updater UpdateController, mutations *acceptedMutations) http.HandlerFunc {
@@ -198,13 +287,21 @@ func (a *localAPI) beginRecoveryShutdown() {
 	if a.recoveries != nil {
 		a.recoveries.beginRecoveryShutdown()
 	}
+	if a.pathRecoveries != nil {
+		a.pathRecoveries.beginPathRecoveryShutdown()
+	}
 }
 
 func (a *localAPI) waitForRecoveries(ctx context.Context) error {
-	if a.recoveries == nil {
-		return nil
+	var recoveryErr error
+	if a.recoveries != nil {
+		recoveryErr = a.recoveries.waitForRecoveries(ctx)
 	}
-	return a.recoveries.waitForRecoveries(ctx)
+	var pathRecoveryErr error
+	if a.pathRecoveries != nil {
+		pathRecoveryErr = a.pathRecoveries.waitForPathRecoveries(ctx)
+	}
+	return errors.Join(recoveryErr, pathRecoveryErr)
 }
 
 func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations) http.HandlerFunc {

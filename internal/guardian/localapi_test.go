@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 func TestLocalAPIStatusIsReadableWithoutPeerCredentials(t *testing.T) {
@@ -253,8 +256,194 @@ func TestLocalAPIMutationOutlivesClientCancellation(t *testing.T) {
 	}
 }
 
+func TestRecoveryLocalAPIPostReturnsAcceptedWhileGetRemainsResponsive(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	handler := NewLocalAPI(env.manager, LocalAPIOptions{OwnerUID: 501})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/recoveries", strings.NewReader(`{"reason":"underlay_changed","generation":"wifi-b"}`))
+	request = request.WithContext(withPeerCredentials(request.Context(), 501, true))
+	recorder := httptest.NewRecorder()
+	started := time.Now()
+	handler.ServeHTTP(recorder, request)
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("POST waited for Core work: %s", elapsed)
+	}
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("POST status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var accepted RecoverySnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.ID == "" || accepted.State != "accepted" {
+		t.Fatalf("accepted snapshot = %+v", accepted)
+	}
+	core.waitForRequest(t)
+
+	get := httptest.NewRequest(http.MethodGet, "/v1/recoveries/current", nil)
+	get = get.WithContext(withPeerCredentials(get.Context(), 501, true))
+	currentRecorder := httptest.NewRecorder()
+	started = time.Now()
+	handler.ServeHTTP(currentRecorder, get)
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("GET blocked behind Core work: %s", elapsed)
+	}
+	if currentRecorder.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, body=%s", currentRecorder.Code, currentRecorder.Body.String())
+	}
+	var running RecoverySnapshot
+	if err := json.Unmarshal(currentRecorder.Body.Bytes(), &running); err != nil {
+		t.Fatal(err)
+	}
+	if running.ID != accepted.ID || running.State != "running" {
+		t.Fatalf("running snapshot = %+v, accepted = %+v", running, accepted)
+	}
+
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded", Detail: "vless://must-not-escape",
+	}})
+	eventually(t, func() bool { return env.manager.CurrentPathRecovery().State == "succeeded" })
+	currentRecorder = httptest.NewRecorder()
+	handler.ServeHTTP(currentRecorder, get)
+	var succeeded RecoverySnapshot
+	if err := json.Unmarshal(currentRecorder.Body.Bytes(), &succeeded); err != nil {
+		t.Fatal(err)
+	}
+	if succeeded.ID != accepted.ID || succeeded.State != "succeeded" || succeeded.Detail != "" {
+		t.Fatalf("succeeded snapshot = %+v", succeeded)
+	}
+	if strings.Contains(currentRecorder.Body.String(), "vless://") {
+		t.Fatalf("GET leaked Core detail: %s", currentRecorder.Body.String())
+	}
+}
+
+func TestRecoveryLocalAPIAuthorizesOnlyRootOrConfiguredOwner(t *testing.T) {
+	tests := []struct {
+		name     string
+		method   string
+		path     string
+		body     string
+		uid      uint32
+		gotUID   bool
+		wantCode int
+	}{
+		{name: "POST missing credentials", method: http.MethodPost, path: "/v1/recoveries", body: `{"reason":"manual"}`, wantCode: http.StatusForbidden},
+		{name: "POST unrelated user", method: http.MethodPost, path: "/v1/recoveries", body: `{"reason":"manual"}`, uid: 502, gotUID: true, wantCode: http.StatusForbidden},
+		{name: "POST owner", method: http.MethodPost, path: "/v1/recoveries", body: `{"reason":"manual"}`, uid: 501, gotUID: true, wantCode: http.StatusAccepted},
+		{name: "POST root", method: http.MethodPost, path: "/v1/recoveries", body: `{"reason":"manual"}`, uid: 0, gotUID: true, wantCode: http.StatusAccepted},
+		{name: "GET missing credentials", method: http.MethodGet, path: "/v1/recoveries/current", wantCode: http.StatusForbidden},
+		{name: "GET unrelated user", method: http.MethodGet, path: "/v1/recoveries/current", uid: 502, gotUID: true, wantCode: http.StatusForbidden},
+		{name: "GET owner", method: http.MethodGet, path: "/v1/recoveries/current", uid: 501, gotUID: true, wantCode: http.StatusOK},
+		{name: "GET root", method: http.MethodGet, path: "/v1/recoveries/current", uid: 0, gotUID: true, wantCode: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			controller := &fakeController{
+				recoveryResult:  RecoverySnapshot{ID: "recovery-1", State: "accepted", Stage: "queued", Reason: "manual"},
+				recoveryCurrent: RecoverySnapshot{ID: "recovery-1", State: "running", Stage: "core_recovery", Reason: "manual"},
+			}
+			request := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			request = request.WithContext(withPeerCredentials(request.Context(), tt.uid, tt.gotUID))
+			recorder := httptest.NewRecorder()
+			NewLocalAPI(controller, LocalAPIOptions{OwnerUID: 501}).ServeHTTP(recorder, request)
+			if recorder.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d, body=%s", recorder.Code, tt.wantCode, recorder.Body.String())
+			}
+		})
+	}
+
+	controller := &fakeController{}
+	request := httptest.NewRequest(http.MethodPost, "/v1/up", nil)
+	request = request.WithContext(withPeerCredentials(request.Context(), 501, true))
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(controller, LocalAPIOptions{OwnerUID: 501}).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden || controller.upCalls != 0 {
+		t.Fatalf("owner-only lifecycle mutation = status %d calls %d, want root-only", recorder.Code, controller.upCalls)
+	}
+}
+
+func TestRecoveryLocalAPIRejectsUnsafeMetadataAndRedactsCoreFailures(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	handler := NewLocalAPI(env.manager, LocalAPIOptions{OwnerUID: 501})
+	for _, body := range []string{
+		`{"reason":"manual","client_link":"vless://user:password@example.test"}`,
+		`{"reason":"vless://user:password@example.test"}`,
+		`{"reason":"manual","generation":"token=secret value"}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/recoveries", strings.NewReader(body))
+		request = request.WithContext(withPeerCredentials(request.Context(), 501, true))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("unsafe metadata status = %d, body=%s", recorder.Code, recorder.Body.String())
+		}
+		if strings.Contains(recorder.Body.String(), "vless://") || strings.Contains(recorder.Body.String(), "token=") {
+			t.Fatalf("validation response reflected secret: %s", recorder.Body.String())
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/recoveries", strings.NewReader(`{"reason":"manual"}`))
+	request = request.WithContext(withPeerCredentials(request.Context(), 501, true))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("POST status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	core.waitForRequest(t)
+	secret := "vless://user:password@example.test?token=secret"
+	core.release(corePathResult{
+		snapshot: supervisor.PathRecoverySnapshot{State: "blocked", Stage: "blocked", ErrorCode: "transport_unavailable", Detail: secret},
+		err:      &supervisor.PathRecoveryError{Code: "transport_unavailable", Detail: secret},
+	})
+	eventually(t, func() bool { return env.manager.CurrentPathRecovery().State == "failed" })
+
+	get := httptest.NewRequest(http.MethodGet, "/v1/recoveries/current", nil)
+	get = get.WithContext(withPeerCredentials(get.Context(), 501, true))
+	currentRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(currentRecorder, get)
+	var failed RecoverySnapshot
+	if err := json.Unmarshal(currentRecorder.Body.Bytes(), &failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.ErrorCode != "transport_unavailable" || failed.Detail != "" {
+		t.Fatalf("failed snapshot = %+v", failed)
+	}
+	if strings.Contains(currentRecorder.Body.String(), "password") || strings.Contains(currentRecorder.Body.String(), "token=") {
+		t.Fatalf("failure response leaked Core detail: %s", currentRecorder.Body.String())
+	}
+}
+
+func TestRecoveryLocalAPIClientRequiresExactStatuses(t *testing.T) {
+	client := &Client{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		if request.Method == http.MethodGet {
+			status = http.StatusAccepted
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"recovery_id":"recovery-1","state":"running","stage":"core_recovery","reason":"manual"}`)),
+			Request:    request,
+		}, nil
+	})}}
+	if _, err := client.RequestRecovery(context.Background(), RecoveryRequest{Reason: "manual"}); err == nil {
+		t.Fatal("RequestRecovery accepted HTTP 200 instead of requiring 202")
+	}
+	if _, err := client.CurrentRecovery(context.Background()); err == nil {
+		t.Fatal("CurrentRecovery accepted HTTP 202 instead of requiring 200")
+	}
+}
+
 func TestClientUsesGuardianUnixAPI(t *testing.T) {
-	controller := &fakeController{status: Status{SchemaVersion: 1, Desired: DesiredOff, Phase: PhaseIdle, Protection: ProtectionOff}}
+	controller := &fakeController{
+		status:          Status{SchemaVersion: 1, Desired: DesiredOff, Phase: PhaseIdle, Protection: ProtectionOff},
+		recoveryResult:  RecoverySnapshot{ID: "recovery-1", State: "accepted", Stage: "queued", Reason: "manual"},
+		recoveryCurrent: RecoverySnapshot{ID: "recovery-1", State: "succeeded", Stage: "succeeded", Reason: "manual"},
+	}
 	socketDir := filepath.Join("/tmp", fmt.Sprintf("bxg-%d", os.Getpid()))
 	_ = os.RemoveAll(socketDir)
 	if err := os.Mkdir(socketDir, 0o755); err != nil {
@@ -293,12 +482,21 @@ func TestClientUsesGuardianUnixAPI(t *testing.T) {
 	if _, err := client.Update(context.Background(), updateRequest); err != nil {
 		t.Fatal(err)
 	}
+	accepted, err := client.RequestRecovery(context.Background(), RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := client.CurrentRecovery(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	status, err := client.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if controller.upCalls != 1 || controller.downCalls != 1 || controller.migrateCalls != 1 || controller.updateCalls != 1 || status.SchemaVersion != 1 {
-		t.Fatalf("calls/status = %d/%d/%d/%d %+v", controller.upCalls, controller.downCalls, controller.migrateCalls, controller.updateCalls, status)
+	if controller.upCalls != 1 || controller.downCalls != 1 || controller.migrateCalls != 1 || controller.updateCalls != 1 || controller.recoveryCalls != 1 ||
+		accepted.ID != "recovery-1" || current.State != "succeeded" || status.SchemaVersion != 1 {
+		t.Fatalf("calls/recovery/status = %d/%d/%d/%d/%d %+v/%+v/%+v", controller.upCalls, controller.downCalls, controller.migrateCalls, controller.updateCalls, controller.recoveryCalls, accepted, current, status)
 	}
 }
 
@@ -457,6 +655,12 @@ type fakeController struct {
 	migrateErr   error
 	updateErr    error
 	upContextErr error
+
+	recoveryCalls   int
+	recoveryRequest RecoveryRequest
+	recoveryResult  RecoverySnapshot
+	recoveryCurrent RecoverySnapshot
+	recoveryErr     error
 }
 
 type blockingController struct {
@@ -502,4 +706,20 @@ func (c *fakeController) Update(_ context.Context, request UpdateRequest) (Updat
 	c.updateCalls++
 	c.update = request
 	return c.updateResult, c.updateErr
+}
+
+func (c *fakeController) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot, error) {
+	c.recoveryCalls++
+	c.recoveryRequest = request
+	return c.recoveryResult, c.recoveryErr
+}
+
+func (c *fakeController) CurrentPathRecovery() RecoverySnapshot {
+	return c.recoveryCurrent
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }

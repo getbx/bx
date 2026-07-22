@@ -67,6 +67,24 @@ type UpdateResult struct {
 	ProtectionState string `json:"protection_state"`
 }
 
+type RecoveryRequest struct {
+	Reason     string `json:"reason"`
+	Generation string `json:"generation,omitempty"`
+}
+
+type RecoverySnapshot struct {
+	ID         string    `json:"recovery_id"`
+	State      string    `json:"state"`
+	Stage      string    `json:"stage"`
+	Reason     string    `json:"reason"`
+	Generation string    `json:"generation,omitempty"`
+	ErrorCode  string    `json:"last_error_code,omitempty"`
+	Detail     string    `json:"detail,omitempty"`
+	Attempt    int       `json:"attempt"`
+	StartedAt  time.Time `json:"started_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 func (s DesiredState) valid() bool {
 	return s == DesiredOn || s == DesiredOff
 }

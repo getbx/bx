@@ -57,6 +57,76 @@ func TestManagerDownTransitionsBehindBarrier(t *testing.T) {
 	}
 }
 
+func TestManagerDownCancelsPathRecoveryBeforeWaitingForMutation(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+
+	downDone := make(chan error, 1)
+	go func() { downDone <- env.manager.Down(context.Background()) }()
+	select {
+	case <-core.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Down waited behind path recovery without canceling it")
+	}
+	select {
+	case err := <-downDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Down did not finish after canceling path recovery")
+	}
+	if got := env.manager.Status(); got.Desired != DesiredOff || got.Protection != ProtectionOff {
+		t.Fatalf("status after Down = %+v", got)
+	}
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+}
+
+func TestDaemonShutdownCancelsAndDrainsPathRecovery(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	socketPath := filepath.Join(shortSocketDir(t), "guard.sock")
+	daemon, err := StartDaemon(context.Background(), DaemonOptions{
+		SocketPath: socketPath,
+		Handler:    NewLocalAPI(env.manager),
+		OwnerUID:   uint32(os.Geteuid()),
+		PeerCredentials: func(net.Conn) (uint32, bool) {
+			return 0, true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewClient(socketPath).RequestRecovery(context.Background(), RecoveryRequest{Reason: "manual"}); err != nil {
+		_ = daemon.Close()
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- daemon.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not cancel and drain path recovery")
+	}
+	if got := env.manager.pathRecoveryActiveCount(); got != 0 {
+		t.Fatalf("active path recoveries after shutdown = %d", got)
+	}
+	if got := env.manager.recoveryActiveCount(); got != 0 {
+		t.Fatalf("unexpected-Core recovery count after path drain = %d", got)
+	}
+}
+
 func TestManagerMigrateTransitionsLegacyCoreBehindValidatedBarrier(t *testing.T) {
 	env := newManagerTestEnv(t)
 	request := MigrationRequest{

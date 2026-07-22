@@ -87,6 +87,52 @@ func (c *Client) Update(ctx context.Context, request UpdateRequest) (UpdateResul
 	return result, nil
 }
 
+func (c *Client) RequestRecovery(ctx context.Context, in RecoveryRequest) (RecoverySnapshot, error) {
+	normalized, err := ValidateRecoveryRequest(in)
+	if err != nil {
+		return RecoverySnapshot{}, err
+	}
+	body, err := json.Marshal(normalized)
+	if err != nil {
+		return RecoverySnapshot{}, err
+	}
+	return c.recoveryRequest(ctx, http.MethodPost, "/v1/recoveries", bytes.NewReader(body), http.StatusAccepted)
+}
+
+func (c *Client) CurrentRecovery(ctx context.Context) (RecoverySnapshot, error) {
+	return c.recoveryRequest(ctx, http.MethodGet, "/v1/recoveries/current", nil, http.StatusOK)
+}
+
+func (c *Client) recoveryRequest(ctx context.Context, method, path string, body io.Reader, expectedStatus int) (RecoverySnapshot, error) {
+	client := c.HTTPClient
+	if client == nil {
+		client = guardianHTTPClient(c.SocketPath)
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		defer transport.CloseIdleConnections()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://local"+path, body)
+	if err != nil {
+		return RecoverySnapshot{}, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return RecoverySnapshot{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != expectedStatus {
+		return RecoverySnapshot{}, fmt.Errorf("Guardian %s returned %d", path, response.StatusCode)
+	}
+	var snapshot RecoverySnapshot
+	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		return RecoverySnapshot{}, err
+	}
+	return redactRecoverySnapshot(snapshot), nil
+}
+
 func (c *Client) request(ctx context.Context, method, path string, body io.Reader) (Status, error) {
 	client := c.HTTPClient
 	if client == nil {
