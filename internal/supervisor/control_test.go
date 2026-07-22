@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -198,6 +199,48 @@ func TestControlPathRecoveryPublishesCurrentSnapshotWhilePostRuns(t *testing.T) 
 	defer post.Body.Close()
 	if post.StatusCode != http.StatusOK {
 		t.Fatalf("POST status = %d", post.StatusCode)
+	}
+}
+
+func TestControlPathRecoveryMapsTypedErrorsToSafeCodes(t *testing.T) {
+	secret := "vless://secret-uuid@proxy.example:443?pbk=secret-key"
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{
+			name: "unknown typed code falls back",
+			err:  &PathRecoveryError{Code: "vless://secret-code", Detail: secret},
+			code: "recovery_failed",
+		},
+		{
+			name: "wrapped known code is preserved",
+			err:  fmt.Errorf("candidate failed: %w", &PathRecoveryError{Code: "transport_unavailable", Detail: secret}),
+			code: "transport_unavailable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recoverer := &scriptedPathRecoverer{err: tc.err}
+			h := newControlMuxWithPathRecovery(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, nopMutator{}, nil, 0, recoverer)
+			req := httptest.NewRequest(http.MethodPost, "/v0/path-recovery", strings.NewReader(`{"reason":"manual"}`))
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+			}
+			if strings.Contains(w.Body.String(), secret) {
+				t.Fatalf("HTTP body leaked recovery detail: %s", w.Body.String())
+			}
+			var snapshot PathRecoverySnapshot
+			if err := json.NewDecoder(w.Body).Decode(&snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.ErrorCode != tc.code || snapshot.Detail != "" {
+				t.Fatalf("snapshot = %+v, want code %q without detail", snapshot, tc.code)
+			}
+		})
 	}
 }
 
