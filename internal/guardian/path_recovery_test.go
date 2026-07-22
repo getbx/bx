@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -234,6 +235,181 @@ func TestManagerPathRecoveryFailedUpdatePreservesGeneratedRecoveryAndSameGenerat
 	}
 }
 
+func TestManagerPathRecoveryPublishesQueuedPendingDuringOnPreservingTransitions(t *testing.T) {
+	tests := []struct {
+		name       string
+		prepare    func(*managerTestEnv)
+		run        func(*managerTestEnv) error
+		wantError  string
+		supersedes bool
+	}{
+		{
+			name: "update",
+			prepare: func(env *managerTestEnv) {
+				env.manager.updates = nil
+			},
+			run: func(env *managerTestEnv) error {
+				_, err := env.manager.Update(context.Background(), unavailablePathRecoveryUpdateRequest("tx-current-update"))
+				return err
+			},
+			wantError:  "update_unavailable",
+			supersedes: true,
+		},
+		{
+			name: "migrate",
+			run: func(env *managerTestEnv) error {
+				return env.manager.Migrate(context.Background(), MigrationRequest{
+					Gateway:      "192.0.2.1",
+					ServerBypass: []string{"198.51.100.10/32"},
+				})
+			},
+		},
+		{
+			name: "startup recover",
+			run: func(env *managerTestEnv) error {
+				return env.manager.Recover(context.Background())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			if tt.prepare != nil {
+				tt.prepare(env)
+			}
+			core := newFakeCorePathClient(false)
+			env.manager.corePath = core
+			handler := NewLocalAPI(env.manager, LocalAPIOptions{OwnerUID: 501})
+			if err := env.manager.acquireMutation(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			mutationHeld := true
+			defer func() {
+				if mutationHeld {
+					env.manager.releaseMutation()
+				}
+			}()
+
+			first, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			transitionDone := make(chan error, 1)
+			go func() { transitionDone <- tt.run(env) }()
+			eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+			current := currentPathRecoveryFromAPI(t, handler)
+			if current.ID != first.ID || current.Generation != "wifi-a" || current.State != "accepted" || current.Stage != "queued" || current.ErrorCode != "" {
+				t.Fatalf("GET current while %s is held = %+v, want queued recovery %q", tt.name, current, first.ID)
+			}
+
+			expected := first
+			if tt.supersedes {
+				newer, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-b"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				expected = newer
+				current = currentPathRecoveryFromAPI(t, handler)
+				if current.ID != newer.ID || current.Generation != "wifi-b" || current.State != "accepted" || current.Stage != "queued" || current.ErrorCode != "" {
+					t.Fatalf("GET current after supersession = %+v, want queued recovery %q", current, newer.ID)
+				}
+			}
+
+			env.manager.releaseMutation()
+			mutationHeld = false
+			select {
+			case err := <-transitionDone:
+				if tt.wantError == "" && err != nil {
+					t.Fatal(err)
+				}
+				if tt.wantError != "" && (err == nil || err.Error() != tt.wantError) {
+					t.Fatalf("%s error = %v, want %s", tt.name, err, tt.wantError)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("%s transition did not finish", tt.name)
+			}
+			if got := core.waitForRequest(t); got.Generation != expected.Generation {
+				t.Fatalf("Core request after %s = %+v, want generation %q", tt.name, got, expected.Generation)
+			}
+			core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+			eventually(t, func() bool {
+				current := env.manager.CurrentPathRecovery()
+				return current.ID == expected.ID && current.State == "succeeded"
+			})
+		})
+	}
+}
+
+func TestManagerPathRecoveryExplicitManualDuringCanceledActiveWindowGetsFreshQueuedWork(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(true)
+	env.manager.corePath = core
+	env.manager.updates = nil
+	handler := NewLocalAPI(env.manager, LocalAPIOptions{OwnerUID: 501})
+	if err := env.manager.acquireUpdateOperation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	updateOperationHeld := true
+	defer func() {
+		if updateOperationHeld {
+			env.manager.releaseUpdateOperation()
+		}
+	}()
+
+	first, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	updateDone := make(chan error, 1)
+	go func() {
+		_, updateErr := env.manager.Update(context.Background(), unavailablePathRecoveryUpdateRequest("tx-manual-window"))
+		updateDone <- updateErr
+	}()
+	eventually(t, func() bool {
+		env.manager.pathRecoveryMu.Lock()
+		defer env.manager.pathRecoveryMu.Unlock()
+		return env.manager.pathRecoveryFences > 0
+	})
+
+	explicit, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.ID == first.ID || explicit.State != "accepted" || explicit.Stage != "queued" {
+		t.Fatalf("manual request during canceled-active window = %+v, want fresh queued ID after %q", explicit, first.ID)
+	}
+	current := currentPathRecoveryFromAPI(t, handler)
+	if current.ID != explicit.ID || current.State != "accepted" || current.Stage != "queued" {
+		t.Fatalf("GET current manual recovery = %+v, want fresh queued recovery %q", current, explicit.ID)
+	}
+
+	core.release(corePathResult{err: context.Canceled})
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+	current = currentPathRecoveryFromAPI(t, handler)
+	if current.ID != explicit.ID || current.State != "accepted" || current.Stage != "queued" {
+		t.Fatalf("GET current after canceled worker exits = %+v, want queued recovery %q", current, explicit.ID)
+	}
+
+	env.manager.releaseUpdateOperation()
+	updateOperationHeld = false
+	if err := <-updateDone; err == nil || err.Error() != "update_unavailable" {
+		t.Fatalf("Update error = %v, want update_unavailable", err)
+	}
+	if got := core.waitForRequest(t); got.Reason != "manual" || got.Generation != "" {
+		t.Fatalf("explicit manual Core request = %+v, want generation-less manual", got)
+	}
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	eventually(t, func() bool {
+		current := env.manager.CurrentPathRecovery()
+		return current.ID == explicit.ID && current.State == "succeeded"
+	})
+	if got := core.callCount(); got != 2 {
+		t.Fatalf("Core calls = %d, want canceled manual plus explicit manual", got)
+	}
+}
+
 func TestManagerPathRecoveryOnPreservingTransitionsReplayGeneratedRecovery(t *testing.T) {
 	tests := []struct {
 		name string
@@ -282,6 +458,32 @@ func TestManagerPathRecoveryOnPreservingTransitionsReplayGeneratedRecovery(t *te
 			}
 		})
 	}
+}
+
+func unavailablePathRecoveryUpdateRequest(transactionID string) UpdateRequest {
+	return UpdateRequest{
+		TransactionID: transactionID,
+		FromVersion:   "v1",
+		ToVersion:     "v2",
+		AssetSHA256:   strings.Repeat("0", 64),
+		PackagePath:   filepath.Join("/tmp", transactionID+".tar.gz"),
+	}
+}
+
+func currentPathRecoveryFromAPI(t *testing.T, handler http.Handler) RecoverySnapshot {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/v1/recoveries/current", nil)
+	request = request.WithContext(withPeerCredentials(request.Context(), 501, true))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET current status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var snapshot RecoverySnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func TestManagerPathRecoveryNewerPendingGenerationSupersedesInterruptedReplay(t *testing.T) {

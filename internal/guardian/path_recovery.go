@@ -77,7 +77,9 @@ func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot
 		m.pathRecoveryMu.Unlock()
 		return snapshot, nil
 	}
-	if m.pathRecoveryActive && samePathRecoveryGeneration(recoveryRequestFromSnapshot(m.pathRecoveryCurrent), normalized) {
+	if m.pathRecoveryActive &&
+		!(m.pathRecoveryFences > 0 && normalized.Generation == "") &&
+		samePathRecoveryGeneration(recoveryRequestFromSnapshot(m.pathRecoveryCurrent), normalized) {
 		snapshot := m.pathRecoveryCurrent
 		m.pathRecoveryMu.Unlock()
 		return snapshot, nil
@@ -93,6 +95,9 @@ func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot
 	transaction := m.newPathRecoveryTransactionLocked(normalized)
 	if m.pathRecoveryActive {
 		m.pathRecoveryPending = &transaction
+		if m.pathRecoveryFences > 0 {
+			m.pathRecoveryCurrent = transaction.snapshot
+		}
 		cancel := m.pathRecoveryCancel
 		m.pathRecoveryMu.Unlock()
 		if cancel != nil {
@@ -102,6 +107,7 @@ func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot
 	}
 	if m.pathRecoveryFences > 0 {
 		m.pathRecoveryPending = &transaction
+		m.pathRecoveryCurrent = transaction.snapshot
 		m.pathRecoveryMu.Unlock()
 		return transaction.snapshot, nil
 	}
@@ -148,6 +154,9 @@ func (m *Manager) runPathRecovery(operationCtx context.Context, transaction path
 		}
 		if m.pathRecoveryFences > 0 {
 			m.pathRecoveryActive = false
+			if m.pathRecoveryPending != nil {
+				m.pathRecoveryCurrent = m.pathRecoveryPending.snapshot
+			}
 			m.pathRecoveryMu.Unlock()
 			return
 		}
