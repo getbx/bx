@@ -129,6 +129,7 @@ type Manager struct {
 	pathRecoveryCurrent    RecoverySnapshot
 	pathRecoveryPending    *pathRecoveryTransaction
 	pathRecoveryCancel     context.CancelFunc
+	pathRecoveryNewContext func() (context.Context, context.CancelFunc)
 	pathRecoverySequence   uint64
 	pathRecoveryAccepting  bool
 	pathRecoveryActive     bool
@@ -222,6 +223,9 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 			Phase:         PhaseIdle,
 			Protection:    ProtectionOff,
 		},
+	}
+	m.pathRecoveryNewContext = func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), guardianMutationTimeout)
 	}
 	m.mutation <- struct{}{}
 	m.updateOperation <- struct{}{}

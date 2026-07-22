@@ -277,32 +277,15 @@ func TestManagerPathRecoveryPublishesQueuedPendingDuringOnPreservingTransitions(
 			if tt.prepare != nil {
 				tt.prepare(env)
 			}
-			core := newFakeCorePathClient(false)
+			core := newFakeCorePathClient(true)
 			env.manager.corePath = core
 			handler := NewLocalAPI(env.manager, LocalAPIOptions{OwnerUID: 501})
-			if err := env.manager.acquireMutation(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			mutationHeld := true
-			defer func() {
-				if mutationHeld {
-					env.manager.releaseMutation()
-				}
-			}()
 
 			first, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			transitionDone := make(chan error, 1)
-			go func() { transitionDone <- tt.run(env) }()
-			eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
-
-			current := currentPathRecoveryFromAPI(t, handler)
-			if current.ID != first.ID || current.Generation != "wifi-a" || current.State != "accepted" || current.Stage != "queued" || current.ErrorCode != "" {
-				t.Fatalf("GET current while %s is held = %+v, want queued recovery %q", tt.name, current, first.ID)
-			}
-
+			core.waitForRequest(t)
 			expected := first
 			if tt.supersedes {
 				newer, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-b"})
@@ -310,14 +293,43 @@ func TestManagerPathRecoveryPublishesQueuedPendingDuringOnPreservingTransitions(
 					t.Fatal(err)
 				}
 				expected = newer
-				current = currentPathRecoveryFromAPI(t, handler)
-				if current.ID != newer.ID || current.Generation != "wifi-b" || current.State != "accepted" || current.Stage != "queued" || current.ErrorCode != "" {
-					t.Fatalf("GET current after supersession = %+v, want queued recovery %q", current, newer.ID)
-				}
 			}
 
-			env.manager.releaseMutation()
-			mutationHeld = false
+			transitionDone := make(chan error, 1)
+			go func() { transitionDone <- tt.run(env) }()
+			eventually(t, func() bool {
+				env.manager.pathRecoveryMu.Lock()
+				defer env.manager.pathRecoveryMu.Unlock()
+				return env.manager.pathRecoveryFences > 0
+			})
+			if got := env.manager.pathRecoveryActiveCount(); got != 1 {
+				t.Fatalf("active path recoveries during slow %s cancellation = %d, want 1", tt.name, got)
+			}
+
+			current := currentPathRecoveryFromAPI(t, handler)
+			if current.ID != expected.ID || current.Generation != expected.Generation || current.State != "accepted" || current.Stage != "queued" || current.ErrorCode != "" {
+				t.Fatalf("GET current before %s cancellation finishes = %+v, want queued recovery %q", tt.name, current, expected.ID)
+			}
+
+			published := make(chan struct{})
+			go func() {
+				env.manager.publishRunningPathRecovery(pathRecoveryTransaction{
+					request:  RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"},
+					snapshot: first,
+				})
+				close(published)
+			}()
+			select {
+			case <-published:
+			case <-time.After(time.Second):
+				t.Fatal("publishRunningPathRecovery blocked")
+			}
+			current = currentPathRecoveryFromAPI(t, handler)
+			if current.ID != expected.ID || current.Generation != expected.Generation || current.State != "accepted" || current.Stage != "queued" {
+				t.Fatalf("concurrent running publication during %s = %+v, want queued recovery %q", tt.name, current, expected.ID)
+			}
+
+			core.release(corePathResult{err: context.Canceled})
 			select {
 			case err := <-transitionDone:
 				if tt.wantError == "" && err != nil {
@@ -408,6 +420,88 @@ func TestManagerPathRecoveryExplicitManualDuringCanceledActiveWindowGetsFreshQue
 	if got := core.callCount(); got != 2 {
 		t.Fatalf("Core calls = %d, want canceled manual plus explicit manual", got)
 	}
+}
+
+func TestManagerPathRecoveryCancelsAttemptContextsPromptly(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    corePathResult
+		wantState string
+	}{
+		{
+			name:      "success",
+			result:    corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}},
+			wantState: "succeeded",
+		},
+		{
+			name:      "failure",
+			result:    corePathResult{err: errors.New("Core attempt failed")},
+			wantState: "failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			core := newFakeCorePathClient(false)
+			env.manager.corePath = core
+			attempts := make(chan context.Context, 1)
+			env.manager.pathRecoveryNewContext = func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				attempts <- ctx
+				return ctx, cancel
+			}
+
+			if _, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"}); err != nil {
+				t.Fatal(err)
+			}
+			attemptCtx := <-attempts
+			core.waitForRequest(t)
+			core.release(tt.result)
+			eventually(t, func() bool { return env.manager.CurrentPathRecovery().State == tt.wantState })
+			select {
+			case <-attemptCtx.Done():
+			case <-time.After(time.Second):
+				t.Fatalf("%s attempt context was not canceled after completion", tt.name)
+			}
+		})
+	}
+
+	t.Run("coalesced replay", func(t *testing.T) {
+		env := newProtectedManagerTestEnv(t)
+		core := newFakeCorePathClient(true)
+		env.manager.corePath = core
+		attempts := make(chan context.Context, 2)
+		env.manager.pathRecoveryNewContext = func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			attempts <- ctx
+			return ctx, cancel
+		}
+
+		if _, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"}); err != nil {
+			t.Fatal(err)
+		}
+		<-attempts
+		core.waitForRequest(t)
+		second, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.release(corePathResult{err: context.Canceled})
+		replayCtx := <-attempts
+		if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+			t.Fatalf("replayed Core request = %+v, want wifi-b", got)
+		}
+		core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+		eventually(t, func() bool {
+			current := env.manager.CurrentPathRecovery()
+			return current.ID == second.ID && current.State == "succeeded"
+		})
+		select {
+		case <-replayCtx.Done():
+		case <-time.After(time.Second):
+			t.Fatal("replayed attempt context was not canceled after completion")
+		}
+	})
 }
 
 func TestManagerPathRecoveryOnPreservingTransitionsReplayGeneratedRecovery(t *testing.T) {
