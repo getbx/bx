@@ -159,6 +159,48 @@ func TestControlReconnectPropagatesFailure(t *testing.T) {
 	}
 }
 
+func TestControlPathRecoveryPublishesCurrentSnapshotWhilePostRuns(t *testing.T) {
+	release := make(chan struct{})
+	recoverer := &scriptedPathRecoverer{entered: make(chan struct{}), release: release}
+	h := newControlMuxWithPathRecovery(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, nopMutator{}, nil, 0, recoverer)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	postDone := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Post(srv.URL+"/v0/path-recovery", "application/json", strings.NewReader(`{"reason":"underlay_changed","generation":"wifi-b"}`))
+		if err != nil {
+			t.Errorf("POST path recovery: %v", err)
+			return
+		}
+		postDone <- resp
+	}()
+	<-recoverer.entered
+
+	resp, err := http.Get(srv.URL + "/v0/path-recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d", resp.StatusCode)
+	}
+	var current PathRecoverySnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current.State != "recovering" || current.Stage != "observe" || current.Generation != "wifi-b" {
+		t.Fatalf("current snapshot = %+v", current)
+	}
+
+	close(release)
+	post := <-postDone
+	defer post.Body.Close()
+	if post.StatusCode != http.StatusOK {
+		t.Fatalf("POST status = %d", post.StatusCode)
+	}
+}
+
 func TestControlCommitOK(t *testing.T) {
 	srv := httptest.NewServer(testMux(&fakeControlEngine{state: confirm.StateCommitted}))
 	defer srv.Close()

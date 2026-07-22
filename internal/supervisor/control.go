@@ -59,6 +59,7 @@ type controlServer struct {
 	ownerUID     uint32
 	processPID   int
 	shutdown     func()
+	pathRecovery *pathRecoveryOperation
 }
 
 func stateName(s confirm.State) string {
@@ -84,7 +85,18 @@ func newControlMuxWithRuntime(eng controlEngine, report func() stats.Report, run
 }
 
 func newControlMuxWithRuntimeAndShutdown(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, ownerUID uint32, processPID int, shutdown func()) http.Handler {
+	return newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng, report, runtime, mut, reload, ownerUID, processPID, shutdown, nil)
+}
+
+func newControlMuxWithPathRecovery(eng controlEngine, report func() stats.Report, mut mutator, reload func() error, ownerUID uint32, recoverer pathRecoverer) http.Handler {
+	return newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng, report, nil, mut, reload, ownerUID, 0, nil, recoverer)
+}
+
+func newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer) http.Handler {
 	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, ownerUID: ownerUID, processPID: processPID, shutdown: shutdown}
+	if recoverer != nil {
+		cs.pathRecovery = newPathRecoveryOperation(recoverer)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/status", cs.handleStatus)
 	mux.HandleFunc("/v0/runtime", cs.handleRuntime)
@@ -93,10 +105,40 @@ func newControlMuxWithRuntimeAndShutdown(eng controlEngine, report func() stats.
 	mux.HandleFunc("/v0/rollback", cs.handleRollback)
 	mux.HandleFunc("/v0/transport", cs.handleSetTransport)
 	mux.HandleFunc("/v0/reconnect", cs.handleReconnect)
+	mux.HandleFunc("/v0/path-recovery", cs.handlePathRecovery)
 	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
 	mux.HandleFunc("/v0/reload", cs.handleReload)
 	mux.HandleFunc("/v0/shutdown", cs.handleShutdown)
 	return mux
+}
+
+func (cs *controlServer) handlePathRecovery(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if cs.pathRecovery == nil {
+			writeJSON(w, http.StatusNotImplemented, controlResponse{Status: "error", Error: "path recovery unavailable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, cs.pathRecovery.Snapshot())
+		return
+	}
+	if !cs.requireOwnerOrRoot(w, r) {
+		return
+	}
+	if cs.pathRecovery == nil {
+		writeJSON(w, http.StatusNotImplemented, controlResponse{Status: "error", Error: "path recovery unavailable"})
+		return
+	}
+	var request PathRecoveryRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Reason == "" {
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: "reason is required"})
+		return
+	}
+	snapshot, err := cs.pathRecovery.Recover(r.Context(), request)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, snapshot)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (cs *controlServer) handleRuntime(w http.ResponseWriter, r *http.Request) {
