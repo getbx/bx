@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/stats"
 )
@@ -230,6 +231,38 @@ func TestReconnectControl(t *testing.T) {
 	if gotMethod != http.MethodPost || gotPath != "/v0/reconnect" {
 		t.Fatalf("got %s %s", gotMethod, gotPath)
 	}
+}
+
+func TestReconnectControlUsesCallerDeadline(t *testing.T) {
+	sock := startControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(75 * time.Millisecond)
+		writeJSON(w, http.StatusOK, controlResponse{Status: "ok", State: "reconnected"})
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	state, err := ReconnectControlContext(ctx, sock)
+	if err != nil || state != "reconnected" {
+		t.Fatalf("ReconnectControlContext = %q, %v", state, err)
+	}
+}
+
+func startControlSocket(t *testing.T, handler http.HandlerFunc) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "bxs-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "bx.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	srv := &http.Server{Handler: http.HandlerFunc(handler)}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { _ = srv.Close() })
+	return sock
 }
 
 func TestRehijackControl(t *testing.T) {

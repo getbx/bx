@@ -17,11 +17,19 @@ import (
 
 func controlHTTPClient(sockPath string) *http.Client {
 	return &http.Client{
-		Timeout: 3 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{Timeout: 1 * time.Second}).DialContext(ctx, "unix", sockPath)
-			},
+		Timeout:   3 * time.Second,
+		Transport: controlHTTPTransport(sockPath),
+	}
+}
+
+func controlHTTPClientForOperation(sockPath string) *http.Client {
+	return &http.Client{Transport: controlHTTPTransport(sockPath)}
+}
+
+func controlHTTPTransport(sockPath string) *http.Transport {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 1 * time.Second}).DialContext(ctx, "unix", sockPath)
 		},
 	}
 }
@@ -199,7 +207,38 @@ func SetTransportControl(sockPath, link string) (string, error) {
 
 // ReconnectControl 让守护进程安全重建当前传输。TUN、路由和 DNS 保持不变。
 func ReconnectControl(sockPath string) (string, error) {
-	return postControl(sockPath, "/v0/reconnect")
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return ReconnectControlContext(ctx, sockPath)
+}
+
+func ReconnectControlContext(ctx context.Context, sockPath string) (string, error) {
+	client := controlHTTPClientForOperation(sockPath)
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://local/v0/reconnect", nil)
+	if err != nil {
+		return "", err
+	}
+	return doControlRequest(client, req, "/v0/reconnect")
+}
+
+func doControlRequest(client *http.Client, req *http.Request, path string) (string, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out controlResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		if out.Error != "" {
+			return "", fmt.Errorf("控制面 %s 返回 %d: %s", path, resp.StatusCode, out.Error)
+		}
+		return "", fmt.Errorf("控制面 %s 返回 %d", path, resp.StatusCode)
+	}
+	return out.State, nil
 }
 
 func RehijackControl(sockPath string) (string, error) {
