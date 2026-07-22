@@ -130,7 +130,7 @@ func (m *Manager) Update(ctx context.Context, request UpdateRequest) (UpdateResu
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	m.beginPathRecoveryTransition()
+	m.beginPathRecoveryTransition(pathRecoveryTransitionPreserveGenerated)
 	defer m.endPathRecoveryTransition()
 	if err := m.acquireUpdateOperation(ctx); err != nil {
 		return UpdateResult{}, err

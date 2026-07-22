@@ -94,47 +94,48 @@ type ManagerOptions struct {
 }
 
 type Manager struct {
-	mutation              chan struct{}
-	updateOperation       chan struct{}
-	statusMu              sync.RWMutex
-	store                 DesiredStore
-	runner                CoreRunner
-	health                HealthGate
-	barrier               Barrier
-	restorer              NetworkRestorer
-	legacy                LegacyCoreLifecycle
-	barrierContext        BarrierContext
-	gatewayProvider       GatewayProvider
-	coreVersion           string
-	restartTimeout        time.Duration
-	cleanupTimeout        time.Duration
-	updates               updateStore
-	updatePaths           Paths
-	updatePreparer        UpdatePreparer
-	guardianProtocol      int
-	current               Process
-	runtime               supervisor.RuntimeState
-	status                Status
-	barrierOwnership      barrierOwnership
-	recoveryBlocked       bool
-	recoveryMu            sync.Mutex
-	recoveryContext       context.Context
-	cancelRecovery        context.CancelFunc
-	recoveryAccepting     bool
-	recoveryActive        int
-	recoveryDrained       chan struct{}
-	recoveryClosed        bool
-	corePath              CorePathClient
-	pathRecoveryMu        sync.Mutex
-	pathRecoveryCurrent   RecoverySnapshot
-	pathRecoveryPending   *pathRecoveryTransaction
-	pathRecoveryCancel    context.CancelFunc
-	pathRecoverySequence  uint64
-	pathRecoveryAccepting bool
-	pathRecoveryActive    bool
-	pathRecoveryFences    int
-	pathRecoveryDrained   chan struct{}
-	pathRecoveryClosed    bool
+	mutation               chan struct{}
+	updateOperation        chan struct{}
+	statusMu               sync.RWMutex
+	store                  DesiredStore
+	runner                 CoreRunner
+	health                 HealthGate
+	barrier                Barrier
+	restorer               NetworkRestorer
+	legacy                 LegacyCoreLifecycle
+	barrierContext         BarrierContext
+	gatewayProvider        GatewayProvider
+	coreVersion            string
+	restartTimeout         time.Duration
+	cleanupTimeout         time.Duration
+	updates                updateStore
+	updatePaths            Paths
+	updatePreparer         UpdatePreparer
+	guardianProtocol       int
+	current                Process
+	runtime                supervisor.RuntimeState
+	status                 Status
+	barrierOwnership       barrierOwnership
+	recoveryBlocked        bool
+	recoveryMu             sync.Mutex
+	recoveryContext        context.Context
+	cancelRecovery         context.CancelFunc
+	recoveryAccepting      bool
+	recoveryActive         int
+	recoveryDrained        chan struct{}
+	recoveryClosed         bool
+	corePath               CorePathClient
+	pathRecoveryMu         sync.Mutex
+	pathRecoveryCurrent    RecoverySnapshot
+	pathRecoveryPending    *pathRecoveryTransaction
+	pathRecoveryCancel     context.CancelFunc
+	pathRecoverySequence   uint64
+	pathRecoveryAccepting  bool
+	pathRecoveryActive     bool
+	pathRecoveryFences     int
+	pathRecoveryResolveOff bool
+	pathRecoveryDrained    chan struct{}
+	pathRecoveryClosed     bool
 }
 
 func NewManager(options ManagerOptions) (*Manager, error) {
@@ -249,7 +250,7 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 	if err != nil {
 		return err
 	}
-	m.beginPathRecoveryTransition()
+	m.beginPathRecoveryTransition(pathRecoveryTransitionPreserveGenerated)
 	defer m.endPathRecoveryTransition()
 	if m.legacy == nil {
 		return errors.New("legacy Core lifecycle unavailable")
@@ -393,7 +394,7 @@ func (m *Manager) upLocked(ctx context.Context) error {
 }
 
 func (m *Manager) Down(ctx context.Context) error {
-	m.beginPathRecoveryTransition()
+	m.beginPathRecoveryTransition(pathRecoveryTransitionResolveOff)
 	defer m.endPathRecoveryTransition()
 	if err := m.acquireMutation(ctx); err != nil {
 		return err
@@ -485,7 +486,7 @@ func (m *Manager) Down(ctx context.Context) error {
 // Recover restores the persisted desired state without treating daemon shutdown
 // as an instruction to stop Core or restore direct networking.
 func (m *Manager) Recover(ctx context.Context) error {
-	m.beginPathRecoveryTransition()
+	m.beginPathRecoveryTransition(pathRecoveryTransitionPreserveGenerated)
 	defer m.endPathRecoveryTransition()
 	if err := m.acquireMutation(ctx); err != nil {
 		return err

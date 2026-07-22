@@ -61,7 +61,8 @@ func TestManagerDownCancelsPathRecoveryBeforeWaitingForMutation(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	core := newFakeCorePathClient(false)
 	env.manager.corePath = core
-	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"}); err != nil {
+	accepted, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	core.waitForRequest(t)
@@ -85,6 +86,12 @@ func TestManagerDownCancelsPathRecoveryBeforeWaitingForMutation(t *testing.T) {
 		t.Fatalf("status after Down = %+v", got)
 	}
 	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+	if got := env.manager.CurrentPathRecovery(); got.ID != accepted.ID || got.State != "ignored" || got.Stage != "off" {
+		t.Fatalf("interrupted recovery after Down = %+v, want %q ignored/off", got, accepted.ID)
+	}
+	if got := core.callCount(); got != 1 {
+		t.Fatalf("Core calls after Down = %d, want interrupted attempt only", got)
+	}
 }
 
 func TestManagerDownFencesPathRecoveryAdmissionUntilTransitionCompletes(t *testing.T) {

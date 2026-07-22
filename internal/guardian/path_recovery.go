@@ -26,6 +26,13 @@ type pathRecoveryTransaction struct {
 	snapshot RecoverySnapshot
 }
 
+type pathRecoveryTransition uint8
+
+const (
+	pathRecoveryTransitionPreserveGenerated pathRecoveryTransition = iota
+	pathRecoveryTransitionResolveOff
+)
+
 type pathRecoveryLifecycle interface {
 	beginPathRecoveryShutdown()
 	waitForPathRecoveries(context.Context) error
@@ -146,11 +153,19 @@ func (m *Manager) runPathRecovery(operationCtx context.Context, transaction path
 		}
 		if m.pathRecoveryPending == nil {
 			m.pathRecoveryActive = false
+			m.pathRecoveryResolveOff = false
 			m.pathRecoveryMu.Unlock()
 			return
 		}
 		transaction = *m.pathRecoveryPending
 		m.pathRecoveryPending = nil
+		if m.pathRecoveryResolveOff {
+			m.pathRecoveryResolveOff = false
+			m.pathRecoveryActive = false
+			m.pathRecoveryCurrent = ignoredPathRecoverySnapshot(transaction.snapshot)
+			m.pathRecoveryMu.Unlock()
+			return
+		}
 		operationCtx, m.pathRecoveryCancel = context.WithTimeout(context.Background(), guardianMutationTimeout)
 		m.pathRecoveryCurrent = transaction.snapshot
 		m.pathRecoveryMu.Unlock()
@@ -213,9 +228,15 @@ func (m *Manager) newPathRecoveryTransactionLocked(request RecoveryRequest) path
 	}
 }
 
-func (m *Manager) beginPathRecoveryTransition() {
+func (m *Manager) beginPathRecoveryTransition(transition pathRecoveryTransition) {
 	m.pathRecoveryMu.Lock()
 	m.pathRecoveryFences++
+	if transition == pathRecoveryTransitionResolveOff {
+		m.pathRecoveryResolveOff = true
+		m.queueInterruptedPathRecoveryLocked(false)
+	} else {
+		m.queueInterruptedPathRecoveryLocked(true)
+	}
 	cancel := m.pathRecoveryCancel
 	m.pathRecoveryMu.Unlock()
 	if cancel != nil {
@@ -229,17 +250,29 @@ func (m *Manager) endPathRecoveryTransition() {
 	if m.pathRecoveryFences > 0 {
 		m.pathRecoveryFences--
 	}
-	if m.pathRecoveryFences > 0 || !m.pathRecoveryAccepting || m.pathRecoveryPending == nil || m.pathRecoveryActive {
+	if desired == DesiredOff {
+		m.pathRecoveryResolveOff = true
+	}
+	if m.pathRecoveryFences > 0 || !m.pathRecoveryAccepting {
+		m.pathRecoveryMu.Unlock()
+		return
+	}
+	if m.pathRecoveryPending == nil {
+		if !m.pathRecoveryActive {
+			m.pathRecoveryResolveOff = false
+		}
+		m.pathRecoveryMu.Unlock()
+		return
+	}
+	if m.pathRecoveryActive {
 		m.pathRecoveryMu.Unlock()
 		return
 	}
 	transaction := *m.pathRecoveryPending
 	m.pathRecoveryPending = nil
-	if desired == DesiredOff {
-		transaction.snapshot.State = "ignored"
-		transaction.snapshot.Stage = "off"
-		transaction.snapshot.UpdatedAt = time.Now().UTC()
-		m.pathRecoveryCurrent = transaction.snapshot
+	if m.pathRecoveryResolveOff {
+		m.pathRecoveryResolveOff = false
+		m.pathRecoveryCurrent = ignoredPathRecoverySnapshot(transaction.snapshot)
 		m.pathRecoveryMu.Unlock()
 		return
 	}
@@ -251,10 +284,39 @@ func (m *Manager) endPathRecoveryTransition() {
 	go m.runPathRecovery(operationCtx, transaction)
 }
 
+func (m *Manager) queueInterruptedPathRecoveryLocked(generatedOnly bool) {
+	if !m.pathRecoveryActive || m.pathRecoveryPending != nil || m.pathRecoveryCurrent.ID == "" {
+		return
+	}
+	if generatedOnly && m.pathRecoveryCurrent.Generation == "" {
+		return
+	}
+	snapshot := m.pathRecoveryCurrent
+	snapshot.State = "accepted"
+	snapshot.Stage = "queued"
+	snapshot.ErrorCode = ""
+	snapshot.Detail = ""
+	snapshot.UpdatedAt = time.Now().UTC()
+	m.pathRecoveryPending = &pathRecoveryTransaction{
+		request:  recoveryRequestFromSnapshot(snapshot),
+		snapshot: snapshot,
+	}
+}
+
+func ignoredPathRecoverySnapshot(snapshot RecoverySnapshot) RecoverySnapshot {
+	snapshot.State = "ignored"
+	snapshot.Stage = "off"
+	snapshot.ErrorCode = ""
+	snapshot.Detail = ""
+	snapshot.UpdatedAt = time.Now().UTC()
+	return snapshot
+}
+
 func (m *Manager) beginPathRecoveryShutdown() {
 	m.pathRecoveryMu.Lock()
 	m.pathRecoveryAccepting = false
 	m.pathRecoveryPending = nil
+	m.pathRecoveryResolveOff = false
 	cancel := m.pathRecoveryCancel
 	m.closePathRecoveryDrainedLocked()
 	m.pathRecoveryMu.Unlock()
