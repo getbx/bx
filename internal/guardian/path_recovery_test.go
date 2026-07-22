@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +112,60 @@ func TestManagerPathRecoveryIgnoresRequestsWhileOff(t *testing.T) {
 	}
 	if got := env.manager.pathRecoveryActiveCount(); got != 0 {
 		t.Fatalf("active path recoveries while Off = %d, want 0", got)
+	}
+}
+
+func TestManagerPathRecoveryCompletedGenerationIsIdempotentAndManualIsRepeatable(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+
+	first, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	eventually(t, func() bool { return env.manager.CurrentPathRecovery().State == "succeeded" })
+	completed := env.manager.CurrentPathRecovery()
+
+	duplicate, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(duplicate, completed) || duplicate.ID != first.ID {
+		t.Fatalf("completed duplicate = %+v, want original %+v", duplicate, completed)
+	}
+	if got := env.manager.pathRecoveryActiveCount(); got != 0 {
+		t.Fatalf("completed duplicate started %d worker(s)", got)
+	}
+	if got := core.callCount(); got != 1 {
+		t.Fatalf("Core calls after completed duplicate = %d, want 1", got)
+	}
+
+	manualOne, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	eventually(t, func() bool {
+		return env.manager.CurrentPathRecovery().ID == manualOne.ID && env.manager.CurrentPathRecovery().State == "succeeded"
+	})
+	manualTwo, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manualTwo.ID == manualOne.ID {
+		t.Fatalf("generation-less manual recovery reused completed ID %q", manualTwo.ID)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	eventually(t, func() bool {
+		return env.manager.CurrentPathRecovery().ID == manualTwo.ID && env.manager.CurrentPathRecovery().State == "succeeded"
+	})
+	if got := core.callCount(); got != 3 {
+		t.Fatalf("Core calls after repeatable manual requests = %d, want 3", got)
 	}
 }
 
@@ -221,6 +277,64 @@ func TestExecCoreRunnerPathRecoveryUsesConfiguredControlSocket(t *testing.T) {
 	}
 	if got, want := <-received, (supervisor.PathRecoveryRequest{Reason: "manual", Generation: "wifi-b"}); got != want {
 		t.Fatalf("Core request = %+v, want %+v", got, want)
+	}
+}
+
+func TestCompletedPathRecoverySnapshotRequiresExplicitSucceededState(t *testing.T) {
+	secret := "vless://user:password@example.test?token=secret"
+	tests := []struct {
+		name      string
+		result    supervisor.PathRecoverySnapshot
+		wantState string
+		wantStage string
+		wantCode  string
+	}{
+		{
+			name:      "explicit success",
+			result:    supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded", ErrorCode: "transport_unavailable", Detail: secret},
+			wantState: "succeeded",
+			wantStage: "succeeded",
+		},
+		{
+			name:      "still recovering",
+			result:    supervisor.PathRecoverySnapshot{State: "recovering", Stage: "observe", Detail: secret},
+			wantState: "failed",
+			wantStage: "observe",
+			wantCode:  "recovery_failed",
+		},
+		{
+			name:      "empty state",
+			result:    supervisor.PathRecoverySnapshot{Detail: secret},
+			wantState: "failed",
+			wantStage: "failed",
+			wantCode:  "recovery_failed",
+		},
+		{
+			name:      "unknown future state",
+			result:    supervisor.PathRecoverySnapshot{State: "future_state", Stage: "future_stage", Detail: secret},
+			wantState: "failed",
+			wantStage: "failed",
+			wantCode:  "recovery_failed",
+		},
+		{
+			name:      "blocked stable failure",
+			result:    supervisor.PathRecoverySnapshot{State: "blocked", Stage: "blocked", ErrorCode: "transport_unavailable", Detail: secret},
+			wantState: "failed",
+			wantStage: "blocked",
+			wantCode:  "transport_unavailable",
+		},
+	}
+	base := RecoverySnapshot{ID: "recovery-1", State: "running", Stage: "core_recovery", Reason: "manual", Attempt: 1}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := completedPathRecoverySnapshot(base, tt.result)
+			if got.State != tt.wantState || got.Stage != tt.wantStage || got.ErrorCode != tt.wantCode {
+				t.Fatalf("snapshot = %+v, want state/stage/code %q/%q/%q", got, tt.wantState, tt.wantStage, tt.wantCode)
+			}
+			if got.Detail != "" || strings.Contains(fmt.Sprintf("%+v", got), secret) {
+				t.Fatalf("snapshot leaked Core detail: %+v", got)
+			}
+		})
 	}
 }
 

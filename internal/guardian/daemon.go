@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/version"
 )
@@ -24,12 +25,13 @@ const (
 )
 
 type DaemonOptions struct {
-	ConfigPath      string
-	DNSListen       string
-	SocketPath      string
-	Handler         http.Handler
-	OwnerUID        uint32
-	PeerCredentials func(net.Conn) (uint32, bool)
+	ConfigPath       string
+	DNSListen        string
+	SocketPath       string
+	Handler          http.Handler
+	OwnerUID         uint32
+	LocalAPIOwnerUID uint32
+	PeerCredentials  func(net.Conn) (uint32, bool)
 }
 
 type Daemon struct {
@@ -235,6 +237,11 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	if os.Geteuid() != 0 {
 		return errors.New("Guardian daemon requires root")
 	}
+	localAPIOwnerUID, err := loadGuardianLocalAPIOwnerUID(options.ConfigPath)
+	if err != nil {
+		return err
+	}
+	options.LocalAPIOwnerUID = localAPIOwnerUID
 	gateway, err := discoverDaemonGateway(ctx)
 	if err != nil {
 		return err
@@ -267,7 +274,7 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, guardianMutationTimeout)
 	recoveryErr := controller.Recover(recoveryCtx)
 	cancelRecovery()
-	options.Handler = NewLocalAPI(controller)
+	options.Handler = NewLocalAPI(controller, LocalAPIOptions{OwnerUID: options.LocalAPIOwnerUID})
 	options.OwnerUID = 0
 	daemon, err := start(ctx, options)
 	if err != nil {
@@ -277,6 +284,21 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 		go retryDaemonRecovery(ctx, controller)
 	}
 	return daemon, nil
+}
+
+func loadGuardianLocalAPIOwnerUID(configPath string) (uint32, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return 0, fmt.Errorf("read Guardian configuration: %w", err)
+	}
+	cfg, err := config.Parse(data)
+	if err != nil {
+		return 0, fmt.Errorf("parse Guardian configuration: %w", err)
+	}
+	if uint64(cfg.OwnerUID) > uint64(^uint32(0)) {
+		return 0, errors.New("Guardian owner UID is out of range")
+	}
+	return uint32(cfg.OwnerUID), nil
 }
 
 func retryDaemonRecovery(ctx context.Context, controller recoveringController) {

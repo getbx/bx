@@ -132,6 +132,7 @@ type Manager struct {
 	pathRecoverySequence  uint64
 	pathRecoveryAccepting bool
 	pathRecoveryActive    bool
+	pathRecoveryFences    int
 	pathRecoveryDrained   chan struct{}
 	pathRecoveryClosed    bool
 }
@@ -248,6 +249,8 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 	if err != nil {
 		return err
 	}
+	m.beginPathRecoveryTransition()
+	defer m.endPathRecoveryTransition()
 	if m.legacy == nil {
 		return errors.New("legacy Core lifecycle unavailable")
 	}
@@ -390,7 +393,8 @@ func (m *Manager) upLocked(ctx context.Context) error {
 }
 
 func (m *Manager) Down(ctx context.Context) error {
-	m.cancelPathRecoveryForDown()
+	m.beginPathRecoveryTransition()
+	defer m.endPathRecoveryTransition()
 	if err := m.acquireMutation(ctx); err != nil {
 		return err
 	}
@@ -481,6 +485,8 @@ func (m *Manager) Down(ctx context.Context) error {
 // Recover restores the persisted desired state without treating daemon shutdown
 // as an instruction to stop Core or restore direct networking.
 func (m *Manager) Recover(ctx context.Context) error {
+	m.beginPathRecoveryTransition()
+	defer m.endPathRecoveryTransition()
 	if err := m.acquireMutation(ctx); err != nil {
 		return err
 	}

@@ -87,6 +87,72 @@ func TestManagerDownCancelsPathRecoveryBeforeWaitingForMutation(t *testing.T) {
 	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
 }
 
+func TestManagerDownFencesPathRecoveryAdmissionUntilTransitionCompletes(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	if err := env.manager.acquireMutation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	downObserved := false
+	downDone := make(chan error, 1)
+	defer func() {
+		if !released {
+			env.manager.releaseMutation()
+		}
+		if !downObserved {
+			select {
+			case <-downDone:
+			case <-time.After(time.Second):
+			}
+		}
+	}()
+
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"}); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		downDone <- env.manager.Down(ctx)
+	}()
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	accepted, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.State != "accepted" || accepted.ID == "" {
+		t.Fatalf("gap admission = %+v, want accepted", accepted)
+	}
+	if got := env.manager.pathRecoveryActiveCount(); got != 0 {
+		t.Fatalf("gap admission started %d path recovery worker(s) before Down owned mutation", got)
+	}
+	if got := core.callCount(); got != 0 {
+		t.Fatalf("Core calls before Down transition = %d, want 0", got)
+	}
+
+	env.manager.releaseMutation()
+	released = true
+	select {
+	case err := <-downDone:
+		downObserved = true
+		if err != nil {
+			t.Fatalf("Down exhausted its bounded context: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Down deadlocked with path recovery admitted during cancellation gap")
+	}
+	current := env.manager.CurrentPathRecovery()
+	if current.ID != accepted.ID || current.State != "ignored" || current.Stage != "off" {
+		t.Fatalf("gap recovery after Down = %+v, want accepted ID resolved Off", current)
+	}
+	if got := core.callCount(); got != 0 {
+		t.Fatalf("Core calls after Down = %d, want 0", got)
+	}
+}
+
 func TestDaemonShutdownCancelsAndDrainsPathRecovery(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	core := newFakeCorePathClient(false)
