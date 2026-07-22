@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -4214,7 +4215,7 @@ func autoArchiveAfterClientCommand(command string, commandErr *error, announce b
 		fmt.Fprintf(os.Stderr, "Diagnostics archive prune failed: %v\n", err)
 	}
 	if commandErr != nil && *commandErr != nil {
-		if err := os.WriteFile(filepath.Join(dir, "command-error.txt"), []byte((*commandErr).Error()+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "command-error.txt"), []byte(persistedCommandError(*commandErr)+"\n"), 0o600); err != nil {
 			if announce {
 				fmt.Fprintf(os.Stderr, "Diagnostics archive failed: %v\n", err)
 			}
@@ -4224,6 +4225,13 @@ func autoArchiveAfterClientCommand(command string, commandErr *error, announce b
 	if announce || (commandErr != nil && *commandErr != nil) {
 		fmt.Fprintf(os.Stderr, "Diagnostics archived: %s\n", dir)
 	}
+}
+
+func persistedCommandError(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded.Error()
+	}
+	return "client command failed"
 }
 
 func defaultLogArchiveRoot() string {

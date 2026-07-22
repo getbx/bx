@@ -16,14 +16,15 @@ import (
 )
 
 func controlHTTPClient(sockPath string) *http.Client {
-	return &http.Client{
-		Timeout:   3 * time.Second,
-		Transport: controlHTTPTransport(sockPath),
-	}
+	return controlHTTPClientWithTimeout(sockPath, 3*time.Second)
 }
 
 func controlHTTPClientForOperation(sockPath string) *http.Client {
-	return &http.Client{Transport: controlHTTPTransport(sockPath)}
+	return controlHTTPClientWithTimeout(sockPath, 0)
+}
+
+func controlHTTPClientWithTimeout(sockPath string, timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: controlHTTPTransport(sockPath)}
 }
 
 func controlHTTPTransport(sockPath string) *http.Transport {
@@ -213,7 +214,11 @@ func ReconnectControl(sockPath string) (string, error) {
 }
 
 func ReconnectControlContext(ctx context.Context, sockPath string) (string, error) {
-	client := controlHTTPClientForOperation(sockPath)
+	return reconnectControlContext(ctx, sockPath, controlHTTPClientForOperation)
+}
+
+func reconnectControlContext(ctx context.Context, sockPath string, clientFactory func(string) *http.Client) (string, error) {
+	client := clientFactory(sockPath)
 	defer client.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://local/v0/reconnect", nil)
 	if err != nil {
