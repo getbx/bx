@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -692,7 +694,7 @@ func TestAutoArchiveAfterClientCommandRecordsExactError(t *testing.T) {
 	t.Setenv("BX_LOG_ARCHIVE_DIR", root)
 	t.Setenv("BX_STATUS_SOCKET", filepath.Join(root, "missing.sock"))
 
-	commandErr := context.DeadlineExceeded
+	commandErr := fmt.Errorf("control request failed: %w", context.DeadlineExceeded)
 	autoArchiveAfterClientCommand("reconnect", &commandErr, false)
 
 	entries, err := os.ReadDir(root)
@@ -711,6 +713,30 @@ func TestAutoArchiveAfterClientCommandRecordsExactError(t *testing.T) {
 	}
 	if strings.Contains(string(got), "transport failure") {
 		t.Fatalf("command error was rewritten as transport failure: %q", got)
+	}
+}
+
+func TestAutoArchiveAfterClientCommandRedactsErrorDetails(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("BX_LOG_ARCHIVE_DIR", root)
+	t.Setenv("BX_STATUS_SOCKET", filepath.Join(root, "missing.sock"))
+
+	commandErr := errors.New("control-plane secret=token-value server detail")
+	autoArchiveAfterClientCommand("reconnect", &commandErr, false)
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, entries[0].Name(), "command-error.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "client command failed\n" {
+		t.Fatalf("command error = %q, want redacted diagnostic", got)
+	}
+	if strings.Contains(string(got), "token-value") || strings.Contains(string(got), "server detail") {
+		t.Fatalf("secret-bearing command error persisted: %q", got)
 	}
 }
 

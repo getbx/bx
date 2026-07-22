@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -243,6 +244,31 @@ func TestReconnectControlUsesCallerDeadline(t *testing.T) {
 	state, err := ReconnectControlContext(ctx, sock)
 	if err != nil || state != "reconnected" {
 		t.Fatalf("ReconnectControlContext = %q, %v", state, err)
+	}
+}
+
+func TestReconnectControlOperationTimeoutDiffersFromGeneric(t *testing.T) {
+	sock := startControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(75 * time.Millisecond)
+		writeJSON(w, http.StatusOK, controlResponse{Status: "ok", State: "reconnected"})
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	started := time.Now()
+	state, err := reconnectControlContext(ctx, sock, func(sockPath string) *http.Client {
+		return controlHTTPClientWithTimeout(sockPath, 10*time.Millisecond)
+	})
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("generic reconnect error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("generic timeout path took %s, want short timeout", elapsed)
+	}
+
+	state, err = reconnectControlContext(ctx, sock, controlHTTPClientForOperation)
+	if err != nil || state != "reconnected" {
+		t.Fatalf("operation reconnect = %q, %v", state, err)
 	}
 }
 
