@@ -169,6 +169,222 @@ func TestManagerPathRecoveryCompletedGenerationIsIdempotentAndManualIsRepeatable
 	}
 }
 
+func TestManagerPathRecoveryFailedUpdatePreservesGeneratedRecoveryAndSameGenerationIdentity(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	env.manager.updates = nil
+	if err := env.manager.acquireUpdateOperation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	updateOperationHeld := true
+	defer func() {
+		if updateOperationHeld {
+			env.manager.releaseUpdateOperation()
+		}
+	}()
+
+	first, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+
+	updateDone := make(chan error, 1)
+	go func() {
+		_, updateErr := env.manager.Update(context.Background(), UpdateRequest{
+			TransactionID: "tx-path-recovery",
+			FromVersion:   "v1",
+			ToVersion:     "v2",
+			AssetSHA256:   strings.Repeat("0", 64),
+			PackagePath:   filepath.Join(t.TempDir(), "package.tar.gz"),
+		})
+		updateDone <- updateErr
+	}()
+	select {
+	case <-core.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Update did not cancel active path recovery")
+	}
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	duplicate, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.ID != first.ID || duplicate.State != "accepted" || duplicate.Stage != "queued" {
+		t.Fatalf("same generation during Update = %+v, want queued replay with ID %q", duplicate, first.ID)
+	}
+
+	env.manager.releaseUpdateOperation()
+	updateOperationHeld = false
+	if err := <-updateDone; err == nil || err.Error() != "update_unavailable" {
+		t.Fatalf("Update error = %v, want update_unavailable", err)
+	}
+	if got := core.waitForRequest(t); got.Generation != "wifi-a" {
+		t.Fatalf("replayed Core request = %+v, want wifi-a", got)
+	}
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	eventually(t, func() bool {
+		current := env.manager.CurrentPathRecovery()
+		return current.ID == first.ID && current.State == "succeeded"
+	})
+	if got := core.callCount(); got != 2 {
+		t.Fatalf("Core calls after failed Update = %d, want interrupted attempt plus replay", got)
+	}
+}
+
+func TestManagerPathRecoveryOnPreservingTransitionsReplayGeneratedRecovery(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*managerTestEnv) error
+	}{
+		{
+			name: "migrate protected Core",
+			run: func(env *managerTestEnv) error {
+				return env.manager.Migrate(context.Background(), MigrationRequest{
+					Gateway:      "192.0.2.1",
+					ServerBypass: []string{"198.51.100.10/32"},
+				})
+			},
+		},
+		{
+			name: "startup recovery no-op",
+			run: func(env *managerTestEnv) error {
+				return env.manager.Recover(context.Background())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			core := newFakeCorePathClient(false)
+			env.manager.corePath = core
+			first, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			core.waitForRequest(t)
+
+			if err := tt.run(env); err != nil {
+				t.Fatal(err)
+			}
+			if got := core.waitForRequest(t); got.Generation != "wifi-a" {
+				t.Fatalf("replayed Core request = %+v, want wifi-a", got)
+			}
+			core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+			eventually(t, func() bool {
+				current := env.manager.CurrentPathRecovery()
+				return current.ID == first.ID && current.State == "succeeded"
+			})
+			if got := core.callCount(); got != 2 {
+				t.Fatalf("Core calls = %d, want interrupted attempt plus replay", got)
+			}
+		})
+	}
+}
+
+func TestManagerPathRecoveryNewerPendingGenerationSupersedesInterruptedReplay(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	env.manager.updates = nil
+	if err := env.manager.acquireUpdateOperation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	updateOperationHeld := true
+	defer func() {
+		if updateOperationHeld {
+			env.manager.releaseUpdateOperation()
+		}
+	}()
+
+	first, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	updateDone := make(chan error, 1)
+	go func() {
+		_, updateErr := env.manager.Update(context.Background(), UpdateRequest{
+			TransactionID: "tx-path-recovery-newer",
+			FromVersion:   "v1",
+			ToVersion:     "v2",
+			AssetSHA256:   strings.Repeat("0", 64),
+			PackagePath:   filepath.Join(t.TempDir(), "package.tar.gz"),
+		})
+		updateDone <- updateErr
+	}()
+	select {
+	case <-core.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Update did not cancel active path recovery")
+	}
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	newer, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newer.ID == first.ID || newer.State != "accepted" {
+		t.Fatalf("newer pending recovery = %+v, interrupted = %+v", newer, first)
+	}
+	env.manager.releaseUpdateOperation()
+	updateOperationHeld = false
+	if err := <-updateDone; err == nil || err.Error() != "update_unavailable" {
+		t.Fatalf("Update error = %v, want update_unavailable", err)
+	}
+	if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+		t.Fatalf("Core request after Update = %+v, want newer wifi-b", got)
+	}
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	eventually(t, func() bool {
+		current := env.manager.CurrentPathRecovery()
+		return current.ID == newer.ID && current.State == "succeeded"
+	})
+	if got, want := core.requestsSnapshot(), []supervisor.PathRecoveryRequest{
+		{Reason: "underlay_changed", Generation: "wifi-a"},
+		{Reason: "underlay_changed", Generation: "wifi-b"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Core requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestManagerPathRecoveryOnPreservingTransitionDoesNotReplayManualRecovery(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	first, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+
+	if err := env.manager.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := core.callCount(); got != 1 {
+		t.Fatalf("Core calls after startup recovery = %d, want no implicit manual replay", got)
+	}
+	if got := env.manager.CurrentPathRecovery(); got.ID != first.ID || got.State != "failed" {
+		t.Fatalf("interrupted manual recovery = %+v, want canceled failure for %q", got, first.ID)
+	}
+
+	repeated, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.ID == first.ID {
+		t.Fatalf("explicit manual recovery reused interrupted ID %q", repeated.ID)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	eventually(t, func() bool {
+		current := env.manager.CurrentPathRecovery()
+		return current.ID == repeated.ID && current.State == "succeeded"
+	})
+}
+
 func TestManagerPathRecoverySerializesWithLifecycleMutation(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	core := newFakeCorePathClient(false)
