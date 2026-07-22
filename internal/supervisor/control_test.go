@@ -219,6 +219,16 @@ func TestControlPathRecoveryMapsTypedErrorsToSafeCodes(t *testing.T) {
 			err:  fmt.Errorf("candidate failed: %w", &PathRecoveryError{Code: "transport_unavailable", Detail: secret}),
 			code: "transport_unavailable",
 		},
+		{
+			name: "capture missing is preserved",
+			err:  &PathRecoveryError{Code: "capture_missing", Detail: secret},
+			code: "capture_missing",
+		},
+		{
+			name: "underlay rebind failure is preserved",
+			err:  &PathRecoveryError{Code: "underlay_rebind_failed", Detail: secret},
+			code: "underlay_rebind_failed",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recoverer := &scriptedPathRecoverer{err: tc.err}

@@ -5,6 +5,7 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -39,6 +40,20 @@ func TestDarwinUnderlayObserveCanonicalizesPhysicalPath(t *testing.T) {
 	}
 }
 
+func TestDarwinPrefixFromIPNetUnmapsOrdinaryIPv4(t *testing.T) {
+	ipNet := &net.IPNet{
+		IP:   net.ParseIP("192.168.50.27"),
+		Mask: net.CIDRMask(24, 32),
+	}
+	got, err := darwinPrefixFromIPNet(ipNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := netip.MustParsePrefix("192.168.50.27/24"); got != want {
+		t.Fatalf("prefix = %s, want %s", got, want)
+	}
+}
+
 func TestDarwinUnderlayValidateCaptureRequiresBothIPv4HalvesAndIPv6Rejects(t *testing.T) {
 	lookups := map[string]darwinRouteSelection{
 		"1.1.1.1":              {Interface: "utun9"},
@@ -55,7 +70,7 @@ func TestDarwinUnderlayValidateCaptureRequiresBothIPv4HalvesAndIPv6Rejects(t *te
 			}
 			return lookups[destination], nil
 		},
-		ipv6Enabled: func() bool { return true },
+		ipv6Capability: func() (bool, error) { return true, nil },
 	}
 
 	if err := manager.ValidateCapture(context.Background(), tunHandle{Name: "utun9"}); err != nil {
@@ -75,11 +90,48 @@ func TestDarwinUnderlayValidateCaptureReturnsCaptureMissing(t *testing.T) {
 			}
 			return darwinRouteSelection{Interface: "utun9"}, nil
 		},
-		ipv6Enabled: func() bool { return false },
+		ipv6Capability: func() (bool, error) { return false, nil },
 	}
 	err := manager.ValidateCapture(context.Background(), tunHandle{Name: "utun9"})
 	if err == nil || !strings.Contains(err.Error(), "capture_missing") {
 		t.Fatalf("validation error = %v, want capture_missing", err)
+	}
+}
+
+func TestDarwinUnderlayValidateCaptureFailsClosedWhenIPv6CapabilityErrors(t *testing.T) {
+	manager := &darwinUnderlayManager{
+		routeLookup: func(_ context.Context, _ string, ipv6 bool) (darwinRouteSelection, error) {
+			if ipv6 {
+				t.Fatal("IPv6 lookup must not run after capability detection fails")
+			}
+			return darwinRouteSelection{Interface: "utun9"}, nil
+		},
+		ipv6Capability: func() (bool, error) { return false, errors.New("interface enumeration failed") },
+	}
+	err := manager.ValidateCapture(context.Background(), tunHandle{Name: "utun9"})
+	if err == nil || !strings.Contains(err.Error(), "capture_missing") {
+		t.Fatalf("validation error = %v, want capture_missing", err)
+	}
+}
+
+func TestDarwinUnderlayRebindValidatesCaptureBeforeExecutingRoutes(t *testing.T) {
+	old := mustUnderlaySnapshot(t, "en0", "192.168.50.2", "192.168.50.27/24")
+	next := mustUnderlaySnapshot(t, "en1", "192.168.1.1", "192.168.1.42/24")
+	runner := &recordingCommandRunner{}
+	manager := &darwinUnderlayManager{
+		runner: runner,
+		routeLookup: func(_ context.Context, _ string, _ bool) (darwinRouteSelection, error) {
+			return darwinRouteSelection{Interface: "en0"}, nil
+		},
+		ipv6Capability: func() (bool, error) { return false, nil },
+	}
+
+	err := manager.Rebind(context.Background(), tunHandle{Name: "utun9"}, old, next, []string{"203.0.113.9/32"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "capture_missing") {
+		t.Fatalf("Rebind error = %v, want capture_missing", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("capture failure ran route commands: %#v", runner.calls)
 	}
 }
 
@@ -94,7 +146,7 @@ func TestDarwinUnderlayValidateCaptureRejectsWrongIPv6RejectGateway(t *testing.T
 			}
 			return darwinRouteSelection{Gateway: "::1", Reject: true}, nil
 		},
-		ipv6Enabled: func() bool { return true },
+		ipv6Capability: func() (bool, error) { return true, nil },
 	}
 	err := manager.ValidateCapture(context.Background(), tunHandle{Name: "utun9"})
 	if err == nil || !strings.Contains(err.Error(), "capture_missing") {
@@ -109,7 +161,13 @@ func TestDarwinUnderlayRebindUsesFakeRunnerAndNeverTouchesCapture(t *testing.T) 
 		"route -n change -net 203.0.113.9/32 192.168.1.1": errors.New("route: not in table"),
 		"route -n delete -net 203.0.113.9/32":             errors.New("route: not in table"),
 	}}
-	manager := &darwinUnderlayManager{runner: runner}
+	manager := &darwinUnderlayManager{
+		runner: runner,
+		routeLookup: func(_ context.Context, _ string, _ bool) (darwinRouteSelection, error) {
+			return darwinRouteSelection{Interface: "utun9"}, nil
+		},
+		ipv6Capability: func() (bool, error) { return false, nil },
+	}
 
 	if err := manager.Rebind(context.Background(), tunHandle{Name: "utun9"}, old, next, []string{"203.0.113.9/32"}, nil); err != nil {
 		t.Fatal(err)
