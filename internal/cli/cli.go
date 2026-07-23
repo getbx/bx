@@ -3498,6 +3498,9 @@ func setupAction(c *cli.Context) error {
 	if err := install.WriteUnit(buildExecStart(bin, abs)); err != nil {
 		return err
 	}
+	if err := postSetupAutostart(); err != nil {
+		return fmt.Errorf("设默认开机自启: %w", err)
+	}
 	fmt.Printf("✅ bx 已装到 %s、写好配置 %s、装好服务。下一步:sudo bx up\n", install.BinPath, cfgPath)
 	return nil
 }
