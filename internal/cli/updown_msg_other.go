@@ -12,3 +12,13 @@ func upDoneMessage() string {
 func downDoneMessage() string {
 	return "✅ bx 已停止并取消开机自启。"
 }
+
+// upStepLabel 返回 up 进度行的标签。Linux/macOS 上 up 启动并设为开机自启。
+func upStepLabel() string {
+	return "已启动并设为开机自启"
+}
+
+// downStepLabel 返回 down 进度行的标签。Linux/macOS 上 down 停止并取消开机自启。
+func downStepLabel() string {
+	return "已停止并取消开机自启"
+}

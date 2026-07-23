@@ -3801,7 +3801,7 @@ func upAction(c *cli.Context) (err error) {
 	if err := install.Enable(); err != nil {
 		return err
 	}
-	stepDone("服务", "已启动并设为开机自启")
+	stepDone("服务", upStepLabel())
 	if runtime.GOOS == "darwin" {
 		stepLine("状态", "等待 bx 就绪")
 		if err := waitStatusSocket(15 * time.Second); err != nil {
