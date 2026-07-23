@@ -10,8 +10,8 @@ var iconProtected []byte
 //go:embed icons/off.ico
 var iconOff []byte
 
-//go:embed icons/attention.ico
-var iconAttention []byte
+//go:embed icons/failed.ico
+var iconFailed []byte
 
 // iconFor 按托盘态选图标字节:protected→绿、attention→红,其余(off/notSetup/notInstalled)→灰。
 func iconFor(s TrayState) []byte {
@@ -19,7 +19,7 @@ func iconFor(s TrayState) []byte {
 	case StateProtected:
 		return iconProtected
 	case StateAttention:
-		return iconAttention
+		return iconFailed
 	default:
 		return iconOff
 	}
