@@ -178,7 +178,7 @@ func tooltipFor(s TrayState, d StatusDetail) string {
 	case StateProtected:
 		return fmt.Sprintf("bx 保护中 · 延迟 %dms · %s", d.LatencyMS, d.Server)
 	case StateWarning:
-		return fmt.Sprintf("bx 保护中 · 有新版可用 · 延迟 %dms", d.LatencyMS)
+		return fmt.Sprintf("bx 保护中 · 有新版可用 · 延迟 %dms · %s", d.LatencyMS, d.Server)
 	case StateAttention:
 		return "bx 需注意(隧道不健康)"
 	case StateOff:
