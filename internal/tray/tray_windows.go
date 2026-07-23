@@ -107,7 +107,7 @@ func onReady() {
 func pollLoop(exe string, items toggleItems) {
 	var autostartOnce sync.Once
 	for {
-		state, detail := detectState(exe, configPath)
+		state, detail := detectState(exe, configPath, false)
 		systray.SetIcon(iconFor(state))
 		systray.SetTooltip(tooltipFor(state, detail))
 

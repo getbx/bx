@@ -29,8 +29,9 @@ func parseStatusJSON(b []byte) (StatusDetail, bool) {
 	return StatusDetail{Healthy: raw.TunnelHealthy, LatencyMS: raw.LatencyMS, Server: raw.Server, Transport: raw.Transport}, true
 }
 
-// detectState 非提权合成托盘态 + 细节。svc 态经 install.ServiceState(只读 SCM);健康经 spawn bx status --json。
-func detectState(exePath, configPath string) (TrayState, StatusDetail) {
+// detectState 非提权合成托盘态 + 细节。updateAvailable 由调用方(轮询循环,节流)传入;
+// detectState 自身不发起更新检查。
+func detectState(exePath, configPath string, updateAvailable bool) (TrayState, StatusDetail) {
 	svcRunning := install.ServiceState("is-active", "bx") == "active"
 	_, statErr := os.Stat(configPath)
 	configExists := statErr == nil
@@ -40,5 +41,5 @@ func detectState(exePath, configPath string) (TrayState, StatusDetail) {
 			detail = d
 		}
 	}
-	return trayStateFrom(svcRunning, configExists, detail.Healthy), detail
+	return trayStateFrom(svcRunning, configExists, detail.Healthy, updateAvailable), detail
 }
