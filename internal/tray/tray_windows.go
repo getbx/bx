@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"fyne.io/systray"
+
+	"github.com/getbx/bx/internal/install"
 )
 
 const configPath = `C:\ProgramData\bx\config.yaml`
@@ -30,6 +32,7 @@ type toggleItems struct {
 	Setup      *systray.MenuItem
 	Restart    *systray.MenuItem
 	Update     *systray.MenuItem
+	Autostart  *systray.MenuItem
 }
 
 func onReady() {
@@ -40,6 +43,7 @@ func onReady() {
 	mDisconnect := systray.AddMenuItem("断开", "流量回到直连")
 	mSetup := systray.AddMenuItem("从剪贴板设置…", "用剪贴板里的 bx:// 链接配置")
 	mRestart := systray.AddMenuItem("重启保护", "重启 bx 服务")
+	mAutostart := systray.AddMenuItemCheckbox("开机自启", "开机自动保护 + 显示图标", install.AutostartEnabled())
 	mUpdate := systray.AddMenuItem("更新到最新版", "下载并安装最新 bx")
 	mStatus := systray.AddMenuItem("打开状态", "查看 bx 当前状态")
 	mLogs := systray.AddMenuItem("查看日志", "用记事本打开服务日志")
@@ -80,6 +84,17 @@ func onReady() {
 		}
 	}()
 	go func() {
+		for range mAutostart.ClickedCh {
+			verb := "on"
+			if install.AutostartEnabled() {
+				verb = "off"
+			}
+			if confirm("开机自启", "切换 bx 开机自启(服务 + 托盘图标)?") {
+				_ = elevateRun("autostart " + verb)
+			}
+		}
+	}()
+	go func() {
 		for range mUpdate.ClickedCh {
 			if confirm("更新 bx", "下载并安装最新版 bx?保护会自动保留。") {
 				_ = elevateRun("update")
@@ -110,16 +125,17 @@ func onReady() {
 		Setup:      mSetup,
 		Restart:    mRestart,
 		Update:     mUpdate,
+		Autostart:  mAutostart,
 	})
 }
 
-// pollLoop 定期刷新图标 + tooltip + 动作项显隐;首轮顺带注册开机自启(幂等,只需一次)。
-// 更新检查按 updateCheckInterval 节流,且在后台 goroutine 里跑——checkUpdateAvailable 会
+// pollLoop 定期刷新图标 + tooltip + 动作项显隐 + 开机自启勾选态(据 install.AutostartEnabled
+// 的真实服务态同步,不是本地缓存)。更新检查按 updateCheckInterval 节流,且在后台 goroutine
+// 里跑——checkUpdateAvailable 会
 // spawn `bx update --check`,其 HTTP 客户端超时可达 90s,绝不能同步卡住这个 3s 轮询循环
 // (否则死网络/被墙时图标、tooltip、菜单显隐全部冻结 90s)。mu 保护 updateAvailable/
 // lastUpdateCheck/checking 这三个跨 goroutine 共享的状态。
 func pollLoop(exe string, items toggleItems) {
-	var autostartOnce sync.Once
 	var mu sync.Mutex
 	var updateAvailable bool
 	var lastUpdateCheck time.Time
@@ -155,9 +171,11 @@ func pollLoop(exe string, items toggleItems) {
 		showOrHide(items.Restart, m.Restart.Visible)
 		showOrHide(items.Update, m.Update.Visible)
 
-		autostartOnce.Do(func() {
-			_ = setAutostart(exe)
-		})
+		if install.AutostartEnabled() {
+			items.Autostart.Check()
+		} else {
+			items.Autostart.Uncheck()
+		}
 
 		time.Sleep(3 * time.Second)
 	}

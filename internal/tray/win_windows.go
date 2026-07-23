@@ -8,7 +8,6 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 )
 
 // MessageBox 相关常量。x/sys/windows 不导出这些 flag,自定义。
@@ -110,21 +109,6 @@ func messageBox(title, text string, flags uint32) int32 {
 // confirm 弹 OK/Cancel + 问号图标的确认框,OK 才算确认。
 func confirm(title, text string) bool {
 	return messageBox(title, text, MB_OKCANCEL|MB_ICONQUESTION) == IDOK
-}
-
-// setAutostart 在 HKCU Run 注册开机自启,值名固定 "bx"、命令固定带 tray 子命令。幂等——
-// 重复调用直接覆盖同名值。
-func setAutostart(exePath string) error {
-	k, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)
-	if err != nil {
-		return fmt.Errorf("registry.CreateKey: %w", err)
-	}
-	defer k.Close()
-
-	if err := k.SetStringValue("bx", `"`+exePath+`" tray`); err != nil {
-		return fmt.Errorf("SetStringValue: %w", err)
-	}
-	return nil
 }
 
 // freeConsole 释放当前进程挂着的控制台(隐藏从资源管理器双击启动时冒出的黑框)。
