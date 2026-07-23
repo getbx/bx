@@ -86,6 +86,7 @@ func New() *cli.App {
 			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Hidden: true, Flags: runFlags(), Action: runAction},
 			{Name: "tray", Usage: "启动系统托盘(Windows;点图标连/断/设置/看状态)", Action: trayAction},
+			{Name: "autostart", Usage: "开机自启开关(Windows;on|off|status)", ArgsUsage: "on|off|status", Action: autostartAction},
 			{Name: "debug-tun", Usage: "仅创建 TUN 适配器(不起隧道/不碰路由),真机验证 wintun+wgbridge", Hidden: true, Flags: debugTunFlags(), Action: debugTunAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
 			{Name: "mcp", Usage: "启动 agent 控制面 MCP server(stdio)", Hidden: false, Flags: mcpFlags(), Action: mcpAction, Subcommands: []*cli.Command{
