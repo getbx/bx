@@ -16,9 +16,43 @@ func TestTrayStateFrom(t *testing.T) {
 		{"跑但不健康", true, true, false, StateAttention},
 	}
 	for _, c := range cases {
-		if got := trayStateFrom(c.svcRunning, c.configOK, c.healthy); got != c.want {
+		if got := trayStateFrom(c.svcRunning, c.configOK, c.healthy, false); got != c.want {
 			t.Errorf("%s: trayStateFrom(%v,%v,%v)=%v want %v", c.name, c.svcRunning, c.configOK, c.healthy, got, c.want)
 		}
+	}
+}
+
+func TestTrayStateFromPriority(t *testing.T) {
+	cases := []struct {
+		name                      string
+		svc, cfg, healthy, update bool
+		want                      TrayState
+	}{
+		{"未配置", false, false, false, false, StateNotSetup},
+		{"未配置即便有更新", false, false, false, true, StateNotSetup},
+		{"有配置未运行", false, true, false, false, StateOff},
+		{"未运行即便有更新", false, true, false, true, StateOff},
+		{"运行但不健康", true, true, false, false, StateAttention},
+		{"不健康优先于更新", true, true, false, true, StateAttention},
+		{"健康且有更新", true, true, true, true, StateWarning},
+		{"健康无更新", true, true, true, false, StateProtected},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := trayStateFrom(c.svc, c.cfg, c.healthy, c.update); got != c.want {
+				t.Fatalf("trayStateFrom(%v,%v,%v,%v)=%v want %v", c.svc, c.cfg, c.healthy, c.update, got, c.want)
+			}
+		})
+	}
+}
+
+func TestMenuItemsForWarningShowsUpdate(t *testing.T) {
+	m := menuItemsFor(StateWarning)
+	if !m.Update.Visible {
+		t.Fatal("StateWarning 应显示 Update 项")
+	}
+	if !m.Disconnect.Visible {
+		t.Fatal("StateWarning 应显示 Disconnect 项")
 	}
 }
 
