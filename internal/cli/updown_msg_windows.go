@@ -18,8 +18,3 @@ func downDoneMessage() string {
 func upStepLabel() string {
 	return "已启动"
 }
-
-// downStepLabel 返回 down 进度行的标签。Windows 上 down 只停止,不取消自启。
-func downStepLabel() string {
-	return "已停止"
-}
