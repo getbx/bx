@@ -62,6 +62,7 @@ func New() *cli.App {
 		Name:    "bx",
 		Usage:   "透明全局代理",
 		Version: version.String(),
+		Action:  rootAction,
 		Commands: []*cli.Command{
 			{Name: "setup", Usage: "首次配置:写配置+装服务+连通检测(不启动)", ArgsUsage: "bx://...", Flags: setupFlags(), Action: setupAction},
 			{Name: "probe", Usage: "检测 bx:// 链接连通性(不写配置/不改路由)", ArgsUsage: "bx://...", Flags: probeFlags(), Action: probeAction},
