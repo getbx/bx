@@ -38,6 +38,9 @@ func SetAutostart(enabled bool) error {
 	if err := s.UpdateConfig(cfg); err != nil {
 		return fmt.Errorf("设服务 StartType: %w", err)
 	}
+	// SCM StartType 与 HKCU Run 是两次独立系统调用、非事务:StartType 已落地而此处失败时,
+	// 以下 error 会如实上报给调用方,但 AutostartEnabled(只读 StartType)仍会如实反映已落地
+	// 的那一半——不会跨两处强行回滚,best-effort。
 	return setTrayLoginAutostart(enabled)
 }
 

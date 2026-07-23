@@ -3820,7 +3820,7 @@ func upAction(c *cli.Context) (err error) {
 		printUpSummary(rep)
 		return nil
 	}
-	fmt.Println("✅ bx 已启动。")
+	fmt.Println(upDoneMessage())
 	return nil
 }
 
@@ -3838,7 +3838,7 @@ func downAction(c *cli.Context) (err error) {
 	if err := install.Disable(); err != nil {
 		return err
 	}
-	fmt.Println("✅ bx 已停止并取消开机自启。")
+	fmt.Println(downDoneMessage())
 	return nil
 }
 
