@@ -25,13 +25,15 @@ const (
 )
 
 type DaemonOptions struct {
-	ConfigPath       string
-	DNSListen        string
-	SocketPath       string
-	Handler          http.Handler
-	OwnerUID         uint32
-	LocalAPIOwnerUID uint32
-	PeerCredentials  func(net.Conn) (uint32, bool)
+	ConfigPath             string
+	DNSListen              string
+	SocketPath             string
+	Handler                http.Handler
+	OwnerUID               uint32
+	LocalAPIOwnerUID       uint32
+	PeerCredentials        func(net.Conn) (uint32, bool)
+	networkObserver        daemonNetworkObserver
+	networkObserverDesired func() DesiredState
 }
 
 type Daemon struct {
@@ -41,6 +43,7 @@ type Daemon struct {
 	socketInfo   os.FileInfo
 	mutations    mutationLifecycle
 	recoveries   recoveryLifecycle
+	observer     *daemonNetworkObserverLifecycle
 	shutdownOnce sync.Once
 	shutdownDone chan struct{}
 	shutdownErr  error
@@ -53,10 +56,15 @@ type mutationLifecycle interface {
 
 type recoveringController interface {
 	Controller
+	PathRecoveryController
 	Recover(context.Context) error
 }
 
 type daemonStarter func(context.Context, DaemonOptions) (*Daemon, error)
+
+type daemonNetworkObserver interface {
+	Run(context.Context)
+}
 
 func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 	path := options.SocketPath
@@ -101,8 +109,18 @@ func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 	if credentials == nil {
 		credentials = localPeerCredentials
 	}
+	handler := options.Handler
+	var observer *daemonNetworkObserverLifecycle
+	if options.networkObserver != nil {
+		observer = newDaemonNetworkObserverLifecycle(ctx, options.networkObserver)
+		handler = &networkObserverDesiredHandler{
+			next:     handler,
+			observer: observer,
+			desired:  options.networkObserverDesired,
+		}
+	}
 	server := &http.Server{
-		Handler:           options.Handler,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
@@ -115,7 +133,10 @@ func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 	daemon := &Daemon{
 		path: path, listener: listener, server: server, socketInfo: info,
 		mutations: mutations, shutdownDone: make(chan struct{}),
-		recoveries: recoveries,
+		recoveries: recoveries, observer: observer,
+	}
+	if observer != nil {
+		observer.syncDesired(context.Background(), observerDesiredState(options.networkObserverDesired))
 	}
 	go func() { _ = server.Serve(listener) }()
 	go func() {
@@ -139,6 +160,13 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		if d.mutations != nil {
 			d.mutations.beginShutdown()
 		}
+		if d.observer != nil {
+			d.observer.beginShutdown()
+		}
+		var observerErr error
+		if d.observer != nil {
+			observerErr = d.observer.wait(ctx)
+		}
 		shutdownErr := d.server.Shutdown(ctx)
 		var mutationErr error
 		if d.mutations != nil {
@@ -148,7 +176,7 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		if d.recoveries != nil {
 			recoveryErr = d.recoveries.waitForRecoveries(ctx)
 		}
-		if shutdownErr != nil || mutationErr != nil || recoveryErr != nil {
+		if shutdownErr != nil || observerErr != nil || mutationErr != nil || recoveryErr != nil {
 			_ = d.server.Close()
 		}
 		listenerErr := d.listener.Close()
@@ -161,7 +189,7 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 			removeErr = statErr
 		}
-		d.shutdownErr = errors.Join(shutdownErr, mutationErr, recoveryErr, listenerErr, removeErr)
+		d.shutdownErr = errors.Join(shutdownErr, observerErr, mutationErr, recoveryErr, listenerErr, removeErr)
 		close(d.shutdownDone)
 	})
 	<-d.shutdownDone
@@ -276,6 +304,12 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 	cancelRecovery()
 	options.Handler = NewLocalAPI(controller, LocalAPIOptions{OwnerUID: options.LocalAPIOwnerUID})
 	options.OwnerUID = 0
+	if options.networkObserver == nil {
+		options.networkObserver = newPlatformNetworkObserver(controller)
+	}
+	options.networkObserverDesired = func() DesiredState {
+		return controller.Status().Desired
+	}
 	daemon, err := start(ctx, options)
 	if err != nil {
 		return nil, err
@@ -284,6 +318,111 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 		go retryDaemonRecovery(ctx, controller)
 	}
 	return daemon, nil
+}
+
+type networkObserverDesiredHandler struct {
+	next     http.Handler
+	observer *daemonNetworkObserverLifecycle
+	desired  func() DesiredState
+}
+
+func (h *networkObserverDesiredHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.next.ServeHTTP(w, r)
+	ctx, cancel := context.WithTimeout(context.Background(), guardianMutationTimeout)
+	defer cancel()
+	_ = h.observer.syncDesired(ctx, observerDesiredState(h.desired))
+}
+
+func observerDesiredState(desired func() DesiredState) DesiredState {
+	if desired == nil {
+		return DesiredOff
+	}
+	return desired()
+}
+
+type daemonNetworkObserverLifecycle struct {
+	mu        sync.Mutex
+	root      context.Context
+	observer  daemonNetworkObserver
+	accepting bool
+	cancel    context.CancelFunc
+	done      chan struct{}
+}
+
+func newDaemonNetworkObserverLifecycle(ctx context.Context, observer daemonNetworkObserver) *daemonNetworkObserverLifecycle {
+	return &daemonNetworkObserverLifecycle{
+		root:      ctx,
+		observer:  observer,
+		accepting: true,
+	}
+}
+
+func (l *daemonNetworkObserverLifecycle) syncDesired(ctx context.Context, desired DesiredState) error {
+	l.mu.Lock()
+	if desired == DesiredOn && l.accepting {
+		if l.done == nil {
+			runCtx, cancel := context.WithCancel(l.root)
+			done := make(chan struct{})
+			l.cancel = cancel
+			l.done = done
+			go l.run(runCtx, done)
+		}
+		l.mu.Unlock()
+		return nil
+	}
+	cancel, done := l.cancel, l.done
+	l.mu.Unlock()
+
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (l *daemonNetworkObserverLifecycle) run(ctx context.Context, done chan struct{}) {
+	defer func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.done == done {
+			close(done)
+			l.cancel = nil
+			l.done = nil
+			return
+		}
+		close(done)
+	}()
+	l.observer.Run(ctx)
+}
+
+func (l *daemonNetworkObserverLifecycle) beginShutdown() {
+	l.mu.Lock()
+	l.accepting = false
+	cancel := l.cancel
+	l.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (l *daemonNetworkObserverLifecycle) wait(ctx context.Context) error {
+	l.mu.Lock()
+	done := l.done
+	l.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func loadGuardianLocalAPIOwnerUID(configPath string) (uint32, error) {

@@ -3,6 +3,7 @@ package guardian
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,154 @@ import (
 
 	"github.com/getbx/bx/internal/install"
 )
+
+func TestDaemonNetworkObserverFollowsDesiredState(t *testing.T) {
+	var desiredMu sync.Mutex
+	desired := DesiredOff
+	currentDesired := func() DesiredState {
+		desiredMu.Lock()
+		defer desiredMu.Unlock()
+		return desired
+	}
+	setDesired := func(next DesiredState) {
+		desiredMu.Lock()
+		defer desiredMu.Unlock()
+		desired = next
+	}
+	observer := &fakeDaemonNetworkObserver{
+		started:  make(chan struct{}, 2),
+		canceled: make(chan struct{}, 2),
+	}
+	socketPath := filepath.Join(shortSocketDir(t), "observer.sock")
+	daemon, err := StartDaemon(context.Background(), DaemonOptions{
+		SocketPath:             socketPath,
+		Handler:                http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		OwnerUID:               uint32(os.Geteuid()),
+		networkObserver:        observer,
+		networkObserverDesired: currentDesired,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = daemon.Close() })
+
+	select {
+	case <-observer.started:
+		t.Fatal("network observer started while desired state was Off")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	setDesired(DesiredOn)
+	requestDaemonObserverSync(t, socketPath)
+	select {
+	case <-observer.started:
+	case <-time.After(time.Second):
+		t.Fatal("network observer did not start after desired state became On")
+	}
+	select {
+	case <-observer.canceled:
+		t.Fatal("request completion canceled daemon-owned network observer")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	setDesired(DesiredOff)
+	requestDaemonObserverSync(t, socketPath)
+	select {
+	case <-observer.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("network observer did not stop after desired state became Off")
+	}
+
+	setDesired(DesiredOn)
+	requestDaemonObserverSync(t, socketPath)
+	select {
+	case <-observer.started:
+	case <-time.After(time.Second):
+		t.Fatal("network observer did not restart after desired state returned to On")
+	}
+}
+
+func TestDaemonShutdownDrainsNetworkObserverBeforeSocketRemoval(t *testing.T) {
+	release := make(chan struct{})
+	observer := &fakeDaemonNetworkObserver{
+		started:  make(chan struct{}, 1),
+		canceled: make(chan struct{}, 1),
+		release:  release,
+	}
+	socketPath := filepath.Join(shortSocketDir(t), "observer-drain.sock")
+	daemon, err := StartDaemon(context.Background(), DaemonOptions{
+		SocketPath:             socketPath,
+		Handler:                http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		OwnerUID:               uint32(os.Geteuid()),
+		networkObserver:        observer,
+		networkObserverDesired: func() DesiredState { return DesiredOn },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-observer.started:
+	case <-time.After(time.Second):
+		t.Fatal("network observer did not start")
+	}
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		shutdownDone <- daemon.Shutdown(ctx)
+	}()
+	select {
+	case <-observer.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("daemon shutdown did not cancel network observer")
+	}
+	if _, err := os.Lstat(socketPath); err != nil {
+		t.Fatalf("Guardian socket removed before observer drain: %v", err)
+	}
+
+	close(release)
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("daemon shutdown: %v", err)
+	}
+	if _, err := os.Lstat(socketPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Guardian socket still present after observer drain: %v", err)
+	}
+}
+
+func requestDaemonObserverSync(t *testing.T, socketPath string) {
+	t.Helper()
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+		},
+	}}
+	t.Cleanup(client.CloseIdleConnections)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://guardian/sync", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+}
+
+type fakeDaemonNetworkObserver struct {
+	started  chan struct{}
+	canceled chan struct{}
+	release  <-chan struct{}
+}
+
+func (o *fakeDaemonNetworkObserver) Run(ctx context.Context) {
+	o.started <- struct{}{}
+	<-ctx.Done()
+	o.canceled <- struct{}{}
+	if o.release != nil {
+		<-o.release
+	}
+}
 
 func TestDaemonRunsJournalRecoveryBeforeServingLocalAPI(t *testing.T) {
 	for _, recoveryErr := range []error{nil, errors.New("needs attention")} {
