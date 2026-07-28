@@ -46,15 +46,14 @@ type DecisionCounter interface {
 
 // Dialer 把 Router 决策落到实际拨号。
 type Dialer struct {
-	router       atomic.Pointer[route.Router]
-	transport    atomic.Pointer[Transport] // 取代裸 Proxy/Healthy:运行期可原子换隧道
-	udpTransport atomic.Pointer[Transport] // 可空:UDP 专用传输(如 hysteria);nil=UDP 用主传输。按类分流的速度档
-	Fake         *fakeip.Pool              // 可空:无 fake-IP 时按 IP 直判
-	Resolver     Resolver
-	Direct       ContextDialer // 直连
-	Killswitch   bool
-	Stats        DecisionCounter // 可空:决策计数
-	UDPMode      string          // proxy(默认,走隧道), direct-realtime(直连真实 IP), block
+	router     atomic.Pointer[route.Router]
+	transports atomic.Pointer[transportGeneration]
+	Fake       *fakeip.Pool // 可空:无 fake-IP 时按 IP 直判
+	Resolver   Resolver
+	Direct     ContextDialer // 直连
+	Killswitch bool
+	Stats      DecisionCounter // 可空:决策计数
+	UDPMode    string          // proxy(默认,走隧道), direct-realtime(直连真实 IP), block
 	// SplitDirect 可空:split-DNS 解析出的内网真实 IP 集,命中即强制直连(绕 Router)。
 	SplitDirect *splitdns.Set
 
@@ -67,12 +66,54 @@ type Transport struct {
 	Healthy func() bool   // 隧道健康(kill-switch 用);可空
 }
 
-// SetTransport 原子替换当前传输(proxy + healthy 一并换,绝不半换)。
-func (d *Dialer) SetTransport(t *Transport) { d.transport.Store(t) }
+type transportGeneration struct {
+	main *Transport
+	udp  *Transport
+}
+
+// SetTransportGeneration 把主传输和可选 UDP 传输作为同一 generation 一次发布。
+func (d *Dialer) SetTransportGeneration(main, udp *Transport) {
+	d.transports.Store(&transportGeneration{main: main, udp: udp})
+}
+
+// SetTransport 原子替换主传输并保留当前 UDP slot。
+func (d *Dialer) SetTransport(t *Transport) {
+	for {
+		current := d.transports.Load()
+		var udp *Transport
+		if current != nil {
+			udp = current.udp
+		}
+		next := &transportGeneration{main: t, udp: udp}
+		if d.transports.CompareAndSwap(current, next) {
+			return
+		}
+	}
+}
 
 // SetUDPTransport 设 UDP 专用传输(按类分流的速度档,如 hysteria2);nil 则 UDP 走主传输。
 // 不变量:该传输不健康时 UDP proxy 仍 fail-closed Block,绝不回落直连/主传输。
-func (d *Dialer) SetUDPTransport(t *Transport) { d.udpTransport.Store(t) }
+func (d *Dialer) SetUDPTransport(t *Transport) {
+	for {
+		current := d.transports.Load()
+		var main *Transport
+		if current != nil {
+			main = current.main
+		}
+		next := &transportGeneration{main: main, udp: t}
+		if d.transports.CompareAndSwap(current, next) {
+			return
+		}
+	}
+}
+
+func (d *Dialer) loadTransportGeneration() (main, udp *Transport) {
+	current := d.transports.Load()
+	if current == nil {
+		return nil, nil
+	}
+	return current.main, current.udp
+}
 
 // SetRouter 原子替换当前分流脑(用于列表刷新后的热重载)。
 func (d *Dialer) SetRouter(r *route.Router) { d.router.Store(r) }
@@ -103,7 +144,7 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 // DialWithInitial 可用 TCP 首包中的 TLS SNI / HTTP Host 为未知 fake-IP 恢复域名。
 func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []byte) (net.Conn, error) {
 	rt := d.router.Load()
-	tr := d.transport.Load()
+	tr, udpTransport := d.loadTransportGeneration()
 	if tr == nil {
 		// 未 SetTransport(理论不发生:run.go 启动即设、且早于开始服务)。仅防 nil 解引用 panic。
 		// 此空传输 Healthy==nil:killswitch 开时 killswitchBlocks 视作 fail-closed → Proxy 决策
@@ -159,7 +200,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			// hys2 与主传输去的是同一台 VPS、同一条加密隧道,故回落它 ≠ 回落直连、不泄漏——
 			// killswitch 真正要防的是回落直连暴露真实 IP。hys2 是纯加速档:好用时走它、挂了
 			// 自动退到 reality 保通路,绝不黑洞 UDP。只有主传输也挂,下面的 killswitch 才 Block。
-			utr := d.udpTransport.Load()
+			utr := udpTransport
 			if utr == nil || utr.Healthy == nil || !utr.Healthy() {
 				utr = tr
 			}

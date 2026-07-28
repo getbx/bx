@@ -223,7 +223,7 @@ func pathRecoveryErrorCode(err error) string {
 
 func stablePathRecoveryCode(code string) string {
 	switch code {
-	case "capture_invalid", "capture_missing", "recovery_failed", "recovery_unavailable", "transport_unavailable", "underlay_rebind_failed", "underlay_unavailable", "verification_failed":
+	case "capture_invalid", "capture_missing", "network_unavailable", "recovery_failed", "recovery_unavailable", "transport_unavailable", "underlay_rebind_failed", "underlay_unavailable", "verification_failed":
 		return code
 	default:
 		return ""

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+
+	"github.com/getbx/bx/internal/dialer"
 )
 
 type transportCandidate interface {
@@ -21,8 +23,9 @@ type transportSet interface {
 var errTransportGenerationStopped = errors.New("transport generation stopped")
 
 type transportGeneration struct {
-	mu      sync.Mutex
-	stopped bool
+	mu             sync.Mutex
+	beforeLockTest func()
+	stopped        bool
 }
 
 func newTransportGeneration() *transportGeneration {
@@ -30,6 +33,9 @@ func newTransportGeneration() *transportGeneration {
 }
 
 func (g *transportGeneration) run(operation func() error) error {
+	if g.beforeLockTest != nil {
+		g.beforeLockTest()
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.stopped {
@@ -39,6 +45,9 @@ func (g *transportGeneration) run(operation func() error) error {
 }
 
 func (g *transportGeneration) stop(teardown func()) {
+	if g.beforeLockTest != nil {
+		g.beforeLockTest()
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.stopped {
@@ -86,23 +95,35 @@ type transportSetSlot struct {
 	name    transportSlotName
 	link    func() string
 	prepare func(context.Context, string, string) (transportCandidate, error)
-	commit  func(transportCandidate, string) transportCandidate
+	commit  func(transportCandidate, string) transportSlotCommit
 	abort   func(transportCandidate)
 	stop    func()
+}
+
+type transportSlotCommit struct {
+	retired          transportCandidate
+	transport        *dialer.Transport
+	afterPublication func()
 }
 
 type liveTransportSet struct {
 	generation *transportGeneration
 	main       transportSetSlot
 	udp        *transportSetSlot
+	publish    func(main, udp *dialer.Transport)
 	sequence   atomic.Uint64
 }
 
-func newLiveTransportSet(generation *transportGeneration, main transportSetSlot, udp *transportSetSlot) *liveTransportSet {
+func newLiveTransportSet(
+	generation *transportGeneration,
+	main transportSetSlot,
+	udp *transportSetSlot,
+	publish func(main, udp *dialer.Transport),
+) *liveTransportSet {
 	if generation == nil {
 		generation = newTransportGeneration()
 	}
-	return &liveTransportSet{generation: generation, main: main, udp: udp}
+	return &liveTransportSet{generation: generation, main: main, udp: udp, publish: publish}
 }
 
 type preparedTransportResult struct {
@@ -180,14 +201,30 @@ func (s *liveTransportSet) recover(ctx context.Context) error {
 		return &transportSetError{Slot: udpTransportSlot, Err: udpErr}
 	}
 
-	retired := make([]transportCandidate, 0, len(prepared))
+	commits := make([]transportSlotCommit, 0, len(prepared))
+	var mainTransport, udpTransport *dialer.Transport
 	for _, result := range prepared {
-		if old := result.slot.commit(result.candidate, result.link); old != nil {
-			retired = append(retired, old)
+		commit := result.slot.commit(result.candidate, result.link)
+		commits = append(commits, commit)
+		switch result.slot.name {
+		case mainTransportSlot:
+			mainTransport = commit.transport
+		case udpTransportSlot:
+			udpTransport = commit.transport
 		}
 	}
-	for _, old := range retired {
-		old.Stop()
+	if s.publish != nil {
+		s.publish(mainTransport, udpTransport)
+	}
+	for _, commit := range commits {
+		if commit.afterPublication != nil {
+			commit.afterPublication()
+		}
+	}
+	for _, commit := range commits {
+		if commit.retired != nil {
+			commit.retired.Stop()
+		}
 	}
 	return nil
 }

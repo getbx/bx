@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 func TestNetworkObserverDebouncesBurstsAndChecksOpaqueGeneration(t *testing.T) {
@@ -106,6 +108,236 @@ func TestNetworkObserverSubmitsNewGenerationWhileRecoveryIsActive(t *testing.T) 
 	}
 }
 
+func TestNetworkObserverAndManagerRetryAcceptedGenerationAfterAsyncFailure(t *testing.T) {
+	clock := newFakeNetworkObserverClock()
+	events := make(chan struct{})
+	generations := &fakeUnderlayGenerationSource{generation: "wifi-a"}
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	retries := newControlledPathRecoveryRetries()
+	env.manager.pathRecoveryRetryWait = retries.Wait
+	observer := newNetworkObserver(&fakeNetworkEventSource{events: events}, generations, env.manager, networkObserverConfig{
+		clock:              clock,
+		quietWindow:        time.Second,
+		generationInterval: time.Minute,
+		retryInitial:       100 * time.Millisecond,
+		retryMax:           5 * time.Second,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		observer.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		waitForNetworkObserverDone(t, done)
+		env.manager.beginPathRecoveryShutdown()
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+		defer waitCancel()
+		if err := env.manager.waitForPathRecoveries(waitCtx); err != nil {
+			t.Errorf("drain path recovery: %v", err)
+		}
+	})
+	generations.waitForCalls(t, 1)
+
+	generations.set("wifi-b")
+	events <- struct{}{}
+	clock.waitForReset(t, time.Second, 1)
+	clock.Advance(time.Second)
+	if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+		t.Fatalf("first Core request = %+v, want wifi-b", got)
+	}
+	first := env.manager.CurrentPathRecovery()
+	core.release(corePathResult{
+		snapshot: supervisor.PathRecoverySnapshot{State: "blocked", Stage: "observe", ErrorCode: "network_unavailable"},
+		err:      &supervisor.PathRecoveryError{Code: "network_unavailable", Detail: "default route missing: secret interface detail"},
+	})
+
+	retry := retries.Next(t)
+	if retry.delay != 100*time.Millisecond {
+		t.Fatalf("first retry delay = %s, want 100ms", retry.delay)
+	}
+	queued := env.manager.CurrentPathRecovery()
+	if queued.ID != first.ID || queued.Generation != "wifi-b" || queued.State != "accepted" || queued.Stage != "queued" ||
+		queued.Attempt != 2 || queued.ErrorCode != "network_unavailable" || queued.Detail != "" {
+		t.Fatalf("queued retry = %+v, want same redacted transaction at attempt 2", queued)
+	}
+
+	retry.Release()
+	if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+		t.Fatalf("retried Core request = %+v, want wifi-b", got)
+	}
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded", Attempt: 1,
+	}})
+	eventually(t, func() bool {
+		current := env.manager.CurrentPathRecovery()
+		return current.ID == first.ID && current.State == "succeeded"
+	})
+	if got := env.manager.CurrentPathRecovery(); got.Attempt != 2 || got.ErrorCode != "" || got.Detail != "" {
+		t.Fatalf("completed retry = %+v, want redacted attempt 2 success", got)
+	}
+	if got := core.callCount(); got != 2 {
+		t.Fatalf("Core calls = %d, want failed attempt plus retry", got)
+	}
+}
+
+func TestManagerPathRecoveryRetryBackoffCapsAndNewGenerationSupersedesWait(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	retries := newControlledPathRecoveryRetries()
+	env.manager.pathRecoveryRetryWait = retries.Wait
+
+	first, err := env.manager.RequestPathRecovery(RecoveryRequest{
+		Reason:     "underlay_changed",
+		Generation: "wifi-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDelays := []time.Duration{
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+		400 * time.Millisecond,
+		800 * time.Millisecond,
+		1600 * time.Millisecond,
+		3200 * time.Millisecond,
+		5 * time.Second,
+		5 * time.Second,
+	}
+	for attempt, wantDelay := range wantDelays {
+		if got := core.waitForRequest(t); got.Generation != "wifi-a" {
+			t.Fatalf("Core request %d = %+v, want wifi-a", attempt+1, got)
+		}
+		core.release(corePathResult{
+			snapshot: supervisor.PathRecoverySnapshot{State: "blocked", Stage: "transport_health", ErrorCode: "transport_unavailable"},
+			err:      &supervisor.PathRecoveryError{Code: "transport_unavailable", Detail: "secret transport failure"},
+		})
+		retry := retries.Next(t)
+		if retry.delay != wantDelay {
+			t.Fatalf("retry %d delay = %s, want %s", attempt+1, retry.delay, wantDelay)
+		}
+		if attempt != len(wantDelays)-1 {
+			retry.Release()
+		}
+	}
+
+	waiting := retries.Last()
+	newer, err := env.manager.RequestPathRecovery(RecoveryRequest{
+		Reason:     "underlay_changed",
+		Generation: "wifi-b",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting.WaitCanceled(t)
+	if newer.ID == first.ID {
+		t.Fatalf("newer generation reused retrying transaction ID %q", first.ID)
+	}
+	if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+		t.Fatalf("superseding Core request = %+v, want wifi-b", got)
+	}
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	eventually(t, func() bool {
+		current := env.manager.CurrentPathRecovery()
+		return current.ID == newer.ID && current.State == "succeeded"
+	})
+	if got := core.callCount(); got != len(wantDelays)+1 {
+		t.Fatalf("Core calls = %d, want %d capped retries plus superseding generation", got, len(wantDelays)+1)
+	}
+}
+
+func TestManagerPathRecoveryRetryWaitRespectsOffShutdownAndLifecycleFences(t *testing.T) {
+	newRetryingRecovery := func(t *testing.T) (*managerTestEnv, *fakeCorePathClient, *controlledPathRecoveryRetries, *controlledPathRecoveryRetry, RecoverySnapshot) {
+		t.Helper()
+		env := newProtectedManagerTestEnv(t)
+		core := newFakeCorePathClient(false)
+		env.manager.corePath = core
+		retries := newControlledPathRecoveryRetries()
+		env.manager.pathRecoveryRetryWait = retries.Wait
+		accepted, err := env.manager.RequestPathRecovery(RecoveryRequest{
+			Reason:     "underlay_changed",
+			Generation: "wifi-b",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.waitForRequest(t)
+		core.release(corePathResult{
+			snapshot: supervisor.PathRecoverySnapshot{State: "blocked", Stage: "observe", ErrorCode: "network_unavailable"},
+			err:      &supervisor.PathRecoveryError{Code: "network_unavailable"},
+		})
+		return env, core, retries, retries.Next(t), accepted
+	}
+
+	t.Run("successful Down resolves retry as Off", func(t *testing.T) {
+		env, core, _, retry, accepted := newRetryingRecovery(t)
+		if err := env.manager.Down(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		retry.WaitCanceled(t)
+		eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+		current := env.manager.CurrentPathRecovery()
+		if current.ID != accepted.ID || current.State != "ignored" || current.Stage != "off" {
+			t.Fatalf("recovery after successful Down = %+v, want %q ignored/off", current, accepted.ID)
+		}
+		if got := core.callCount(); got != 1 {
+			t.Fatalf("Core calls after successful Down = %d, want failed attempt only", got)
+		}
+	})
+
+	t.Run("shutdown cancels retry and drains", func(t *testing.T) {
+		env, core, _, retry, _ := newRetryingRecovery(t)
+		env.manager.beginPathRecoveryShutdown()
+		retry.WaitCanceled(t)
+		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := env.manager.waitForPathRecoveries(waitCtx); err != nil {
+			t.Fatal(err)
+		}
+		if got := core.callCount(); got != 1 {
+			t.Fatalf("Core calls after shutdown = %d, want failed attempt only", got)
+		}
+	})
+
+	t.Run("On-preserving update preserves backoff and replays after fence", func(t *testing.T) {
+		env, core, retries, retry, accepted := newRetryingRecovery(t)
+		env.manager.updates = nil
+		_, err := env.manager.Update(context.Background(), unavailablePathRecoveryUpdateRequest("tx-retry-fence"))
+		if err == nil || err.Error() != "update_unavailable" {
+			t.Fatalf("Update error = %v, want update_unavailable", err)
+		}
+		retry.WaitCanceled(t)
+		if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+			t.Fatalf("replayed Core request = %+v, want wifi-b", got)
+		}
+		core.release(corePathResult{
+			snapshot: supervisor.PathRecoverySnapshot{State: "blocked", Stage: "observe", ErrorCode: "network_unavailable"},
+			err:      &supervisor.PathRecoveryError{Code: "network_unavailable"},
+		})
+		nextRetry := retries.Next(t)
+		if nextRetry.delay != 200*time.Millisecond {
+			t.Fatalf("retry delay after lifecycle fence = %s, want preserved 200ms backoff", nextRetry.delay)
+		}
+		nextRetry.Release()
+		if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+			t.Fatalf("post-fence retry Core request = %+v, want wifi-b", got)
+		}
+		core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+		eventually(t, func() bool {
+			current := env.manager.CurrentPathRecovery()
+			return current.ID == accepted.ID && current.State == "succeeded"
+		})
+		if got := core.callCount(); got != 3 {
+			t.Fatalf("Core calls after update fence = %d, want failed attempt, replay, and retry", got)
+		}
+	})
+}
+
 func TestNetworkObserverCancellationDrainsEventSourcePromptly(t *testing.T) {
 	clock := newFakeNetworkObserverClock()
 	source := &cancelClosingNetworkEventSource{started: make(chan struct{})}
@@ -181,6 +413,44 @@ func TestNetworkObserverRetriesEventSourceWithBoundedBackoff(t *testing.T) {
 	clock.assertTimerCount(t, 2)
 }
 
+func TestNetworkObserverRetriesAfterEventChannelCloses(t *testing.T) {
+	clock := newFakeNetworkObserverClock()
+	first := make(chan struct{})
+	close(first)
+	second := make(chan struct{})
+	source := &sequenceNetworkEventSource{
+		sources: []<-chan struct{}{first, second},
+		calls:   make(chan int, 2),
+	}
+	observer := newNetworkObserver(source, &fakeUnderlayGenerationSource{generation: "wifi-a"}, &recordingNetworkRecoveries{}, networkObserverConfig{
+		clock:              clock,
+		quietWindow:        time.Second,
+		generationInterval: time.Minute,
+		retryInitial:       100 * time.Millisecond,
+		retryMax:           5 * time.Second,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		observer.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		waitForNetworkObserverDone(t, done)
+	})
+
+	if got := <-source.calls; got != 1 {
+		t.Fatalf("first subscription call = %d", got)
+	}
+	clock.waitForReset(t, 100*time.Millisecond, 1)
+	clock.Advance(100 * time.Millisecond)
+	if got := <-source.calls; got != 2 {
+		t.Fatalf("retry subscription call = %d", got)
+	}
+}
+
 func waitForNetworkObserverDone(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
@@ -243,6 +513,47 @@ func (s *fakeNetworkEventSource) waitForCalls(t *testing.T, want int) {
 type cancelClosingNetworkEventSource struct {
 	started chan struct{}
 	once    sync.Once
+}
+
+type sequenceNetworkEventSource struct {
+	mu      sync.Mutex
+	sources []<-chan struct{}
+	calls   chan int
+	count   int
+}
+
+func (s *sequenceNetworkEventSource) Events(ctx context.Context) (<-chan struct{}, error) {
+	s.mu.Lock()
+	if len(s.sources) == 0 {
+		s.mu.Unlock()
+		return nil, errors.New("unexpected subscription")
+	}
+	s.count++
+	s.calls <- s.count
+	source := s.sources[0]
+	s.sources = s.sources[1:]
+	s.mu.Unlock()
+
+	events := make(chan struct{})
+	go func() {
+		defer close(events)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, open := <-source:
+				if !open {
+					return
+				}
+				select {
+				case events <- event:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return events, nil
 }
 
 func (s *cancelClosingNetworkEventSource) Events(ctx context.Context) (<-chan struct{}, error) {
@@ -360,6 +671,75 @@ func (r *coalescingNetworkRecoveries) pendingCount() int {
 		return 0
 	}
 	return 1
+}
+
+type controlledPathRecoveryRetries struct {
+	mu      sync.Mutex
+	started chan *controlledPathRecoveryRetry
+	waits   []*controlledPathRecoveryRetry
+}
+
+type controlledPathRecoveryRetry struct {
+	delay      time.Duration
+	release    chan struct{}
+	canceled   chan struct{}
+	releaseOne sync.Once
+	cancelOne  sync.Once
+}
+
+func newControlledPathRecoveryRetries() *controlledPathRecoveryRetries {
+	return &controlledPathRecoveryRetries{
+		started: make(chan *controlledPathRecoveryRetry, 16),
+	}
+}
+
+func (r *controlledPathRecoveryRetries) Wait(ctx context.Context, delay time.Duration) error {
+	wait := &controlledPathRecoveryRetry{
+		delay:    delay,
+		release:  make(chan struct{}),
+		canceled: make(chan struct{}),
+	}
+	r.mu.Lock()
+	r.waits = append(r.waits, wait)
+	r.mu.Unlock()
+	r.started <- wait
+	select {
+	case <-wait.release:
+		return nil
+	case <-ctx.Done():
+		wait.cancelOne.Do(func() { close(wait.canceled) })
+		return ctx.Err()
+	}
+}
+
+func (r *controlledPathRecoveryRetries) Next(t *testing.T) *controlledPathRecoveryRetry {
+	t.Helper()
+	select {
+	case wait := <-r.started:
+		return wait
+	case <-time.After(time.Second):
+		t.Fatal("path recovery retry was not scheduled")
+		return nil
+	}
+}
+
+func (r *controlledPathRecoveryRetries) Last() *controlledPathRecoveryRetry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.waits[len(r.waits)-1]
+}
+
+func (r *controlledPathRecoveryRetry) Release() {
+	r.releaseOne.Do(func() { close(r.release) })
+}
+
+func (r *controlledPathRecoveryRetry) WaitCanceled(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("path recovery retry wait was not canceled")
+	}
 }
 
 type fakeNetworkObserverClock struct {

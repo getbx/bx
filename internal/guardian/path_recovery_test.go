@@ -835,6 +835,13 @@ func TestCompletedPathRecoverySnapshotRequiresExplicitSucceededState(t *testing.
 			wantStage: "blocked",
 			wantCode:  "transport_unavailable",
 		},
+		{
+			name:      "network unavailable",
+			result:    supervisor.PathRecoverySnapshot{State: "blocked", Stage: "observe", ErrorCode: "network_unavailable", Detail: secret},
+			wantState: "failed",
+			wantStage: "observe",
+			wantCode:  "network_unavailable",
+		},
 	}
 	base := RecoverySnapshot{ID: "recovery-1", State: "running", Stage: "core_recovery", Reason: "manual", Attempt: 1}
 	for _, tt := range tests {

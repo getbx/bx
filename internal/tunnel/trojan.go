@@ -39,5 +39,5 @@ func NewTrojan(singboxBin, link, probe, confPath, httpAddr string) (*Tunnel, err
 		return nil, err
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	return New(addr, trojanFactory(singboxBin, link, confPath, httpAddr), socks5Health(probe)), nil
+	return newWithHTTP(addr, httpAddr, trojanFactory(singboxBin, link, confPath, httpAddr), socks5Health(probe)), nil
 }

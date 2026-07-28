@@ -49,5 +49,5 @@ func NewVmess(singboxBin, link, probe, confPath, httpAddr string) (*Tunnel, erro
 		return nil, err
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	return New(addr, vmessFactory(singboxBin, link, confPath, httpAddr), socks5Health(probe)), nil
+	return newWithHTTP(addr, httpAddr, vmessFactory(singboxBin, link, confPath, httpAddr), socks5Health(probe)), nil
 }

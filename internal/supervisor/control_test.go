@@ -229,6 +229,11 @@ func TestControlPathRecoveryMapsTypedErrorsToSafeCodes(t *testing.T) {
 			err:  &PathRecoveryError{Code: "underlay_rebind_failed", Detail: secret},
 			code: "underlay_rebind_failed",
 		},
+		{
+			name: "network unavailable is preserved",
+			err:  &PathRecoveryError{Code: "network_unavailable", Detail: secret},
+			code: "network_unavailable",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recoverer := &scriptedPathRecoverer{err: tc.err}

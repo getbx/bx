@@ -40,5 +40,5 @@ func NewHysteria2(singboxBin, link, probe, confPath, httpAddr string) (*Tunnel, 
 		return nil, err
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	return New(addr, hysteria2Factory(singboxBin, link, confPath, httpAddr), socks5Health(probe)), nil
+	return newWithHTTP(addr, httpAddr, hysteria2Factory(singboxBin, link, confPath, httpAddr), socks5Health(probe)), nil
 }

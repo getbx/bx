@@ -16,9 +16,10 @@ import (
 func TestTransportSwapperPreparePassesTransactionIDToBuilder(t *testing.T) {
 	buildErr := errors.New("stop before process start")
 	var gotLink, gotRecoveryID string
+	var gotAuxiliaryHTTP bool
 	swapper := &transportSwapper{
-		build: func(link, recoveryID string) (*tunnel.Tunnel, error) {
-			gotLink, gotRecoveryID = link, recoveryID
+		build: func(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error) {
+			gotLink, gotRecoveryID, gotAuxiliaryHTTP = link, recoveryID, auxiliaryHTTP
 			return nil, buildErr
 		},
 	}
@@ -30,6 +31,15 @@ func TestTransportSwapperPreparePassesTransactionIDToBuilder(t *testing.T) {
 	if gotLink != "vless://candidate" || gotRecoveryID != "recovery-7-main" {
 		t.Fatalf("builder got link=%q recoveryID=%q", gotLink, gotRecoveryID)
 	}
+	if !gotAuxiliaryHTTP {
+		t.Fatal("main candidate did not request a private auxiliary endpoint")
+	}
+
+	swapper.udp = true
+	_, _ = swapper.prepare(context.Background(), "hysteria2://candidate", "recovery-7-udp")
+	if gotAuxiliaryHTTP {
+		t.Fatal("UDP candidate requested an auxiliary HTTP endpoint")
+	}
 }
 
 func TestTransportSwapperFailedSwapPreservesOldSlot(t *testing.T) {
@@ -40,7 +50,7 @@ func TestTransportSwapperFailedSwapPreservesOldSlot(t *testing.T) {
 	swapper := &transportSwapper{
 		lt:  live,
 		ctx: context.Background(),
-		build: func(string, string) (*tunnel.Tunnel, error) {
+		build: func(string, string, bool) (*tunnel.Tunnel, error) {
 			return nil, buildErr
 		},
 	}
@@ -70,9 +80,12 @@ func TestTransportSwapperSuccessfulSwapActivatesCandidateAndRetiresOld(t *testin
 		d:             &dialer.Dialer{},
 		ctx:           context.Background(),
 		healthTimeout: 2 * time.Second,
-		build: func(link, recoveryID string) (*tunnel.Tunnel, error) {
+		build: func(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error) {
 			if link != "vless://new" || recoveryID == "" {
 				t.Fatalf("build link=%q recoveryID=%q", link, recoveryID)
+			}
+			if !auxiliaryHTTP {
+				t.Fatal("main failover candidate did not request auxiliary HTTP")
 			}
 			return candidate, nil
 		},
@@ -119,6 +132,180 @@ func TestTransportConfigPathSeparatesActiveAndRecoveryCandidates(t *testing.T) {
 	}
 	if string(got) != "active-generation" {
 		t.Fatalf("candidate preparation overwrote active config: %q", got)
+	}
+}
+
+func TestTransportSwapperAbortRemovesCandidateConfigAfterProcessStop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sing-box.recovery-1-main.json")
+	if err := os.WriteFile(path, []byte("candidate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &healthySwapRunner{done: make(chan struct{})}
+	candidate := tunnel.New(
+		"127.0.0.1:10003",
+		func(string) (tunnel.Runner, error) { return runner, nil },
+		func(string) (int64, error) { return 0, errors.New("candidate unhealthy") },
+	)
+	candidate.CleanupFileOnStop(path)
+	swapper := &transportSwapper{
+		ctx:           context.Background(),
+		healthTimeout: 5 * time.Millisecond,
+		build: func(string, string, bool) (*tunnel.Tunnel, error) {
+			return candidate, nil
+		},
+	}
+
+	_, err := swapper.prepare(context.Background(), "vless://candidate", "recovery-1-main")
+	if err == nil {
+		t.Fatal("prepare unexpectedly succeeded before its first health poll")
+	}
+	select {
+	case <-runner.done:
+	default:
+		t.Fatal("candidate config cleanup ran before process stop")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("aborted candidate config still exists: %v", err)
+	}
+}
+
+func TestTransportSwapperFailoverKeepsActiveConfigUntilTeardown(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "sing-box.active-main.json")
+	newPath := filepath.Join(dir, "sing-box.swap-1.json")
+	for path, contents := range map[string]string{oldPath: "old", newPath: "new"} {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	old, _ := newHealthySwapTunnel("127.0.0.1:10004")
+	old.CleanupFileOnStop(oldPath)
+	old.Start()
+	if err := waitTunnelHealthy(context.Background(), old, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	candidate, _ := newHealthySwapTunnel("127.0.0.1:10005")
+	candidate.CleanupFileOnStop(newPath)
+	live := &liveTunnel{}
+	live.set(old)
+	swapper := &transportSwapper{
+		lt:            live,
+		d:             &dialer.Dialer{},
+		ctx:           context.Background(),
+		healthTimeout: 2 * time.Second,
+		build: func(string, string, bool) (*tunnel.Tunnel, error) {
+			return candidate, nil
+		},
+	}
+
+	if err := swapper.swapTo("vless://new"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("retired config still exists: %v", err)
+	}
+	if got, err := os.ReadFile(newPath); err != nil || string(got) != "new" {
+		t.Fatalf("active config = %q, %v; want retained", got, err)
+	}
+
+	candidate.Stop()
+	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+		t.Fatalf("teardown config still exists: %v", err)
+	}
+}
+
+func TestTransportSetRecoveryCleansRetiredConfigsAndTeardownCleansActive(t *testing.T) {
+	dir := t.TempDir()
+	paths := map[string]string{
+		"old-main": filepath.Join(dir, "sing-box.active-main.json"),
+		"old-udp":  filepath.Join(dir, "sing-box.active-udp.json"),
+		"new-main": filepath.Join(dir, "sing-box.recovery-1-main.json"),
+		"new-udp":  filepath.Join(dir, "sing-box.recovery-1-udp.json"),
+	}
+	for name, path := range paths {
+		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	oldMain, _ := newHealthySwapTunnel("127.0.0.1:10006")
+	oldUDP, _ := newHealthySwapTunnel("127.0.0.1:10007")
+	newMain, _ := newHealthySwapTunnel("127.0.0.1:10008")
+	newUDP, _ := newHealthySwapTunnel("127.0.0.1:10009")
+	for tun, path := range map[*tunnel.Tunnel]string{
+		oldMain: paths["old-main"],
+		oldUDP:  paths["old-udp"],
+		newMain: paths["new-main"],
+		newUDP:  paths["new-udp"],
+	} {
+		tun.CleanupFileOnStop(path)
+	}
+	oldMain.Start()
+	oldUDP.Start()
+	for _, tun := range []*tunnel.Tunnel{oldMain, oldUDP} {
+		if err := waitTunnelHealthy(context.Background(), tun, 2*time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	generation := newTransportGeneration()
+	d := &dialer.Dialer{}
+	mainLive := &liveTunnel{}
+	mainLive.set(oldMain)
+	udpLive := &liveTunnel{}
+	udpLive.set(oldUDP)
+	main := &transportSwapper{
+		generation:    generation,
+		lt:            mainLive,
+		d:             d,
+		ctx:           context.Background(),
+		healthTimeout: 2 * time.Second,
+		build: func(string, string, bool) (*tunnel.Tunnel, error) {
+			return newMain, nil
+		},
+	}
+	main.setLink("vless://main")
+	udp := &transportSwapper{
+		generation:    generation,
+		lt:            udpLive,
+		d:             d,
+		ctx:           context.Background(),
+		healthTimeout: 2 * time.Second,
+		udp:           true,
+		build: func(string, string, bool) (*tunnel.Tunnel, error) {
+			return newUDP, nil
+		},
+	}
+	udp.setLink("hysteria2://udp")
+	udpSlot := udp.transportSetSlot(udpTransportSlot)
+	set := newLiveTransportSet(
+		generation,
+		main.transportSetSlot(mainTransportSlot),
+		&udpSlot,
+		d.SetTransportGeneration,
+	)
+	t.Cleanup(set.Stop)
+
+	if err := set.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"old-main", "old-udp"} {
+		if _, err := os.Stat(paths[name]); !os.IsNotExist(err) {
+			t.Errorf("%s config still exists: %v", name, err)
+		}
+	}
+	for _, name := range []string{"new-main", "new-udp"} {
+		if got, err := os.ReadFile(paths[name]); err != nil || string(got) != name {
+			t.Errorf("%s active config = %q, %v", name, got, err)
+		}
+	}
+
+	set.Stop()
+	for _, name := range []string{"new-main", "new-udp"} {
+		if _, err := os.Stat(paths[name]); !os.IsNotExist(err) {
+			t.Errorf("%s teardown config still exists: %v", name, err)
+		}
 	}
 }
 
