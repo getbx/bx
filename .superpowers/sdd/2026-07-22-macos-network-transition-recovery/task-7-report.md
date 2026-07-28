@@ -207,3 +207,167 @@ sudo，也未修改本机网络。
   测试基础设施；其 inputs/outputs 已显式声明，并通过 clean build 验证不会
   缓存假绿。
 - 无已知 fail-open、fallback 扩张或产品范围外 concern。
+
+---
+
+## Fix Round 1（2026-07-27）
+
+### 状态与提交
+
+- 状态：DONE
+- Fix commit：`5960ecaf88555eaabbaac6c3725d904a172759e4`
+- 范围严格限于 controller 指定的 MCP reconnect、Guardian recovery
+  client、CLI legacy fallback 输出、BxMenu Unix client / parser / failure
+  presentation；未扩展其他 MCP mutator。
+
+### 修复内容
+
+1. **MCP `bx_reconnect`**
+   - `Ops.Reconnect` 改为 context-aware Guardian recovery lifecycle。
+   - `liveOps` 只向 Guardian 提交 `reason=manual`，按 250ms、后续 500ms
+     观察同一 recovery ID，最多 6 次。
+   - 返回 `recovery_id/state/stage/last_error_code/still_running/note`；
+     terminal 与 bounded still-running 都是 agent-friendly structured result。
+   - 删除 MCP `liveOps.Reconnect` 对 `supervisor.ReconnectControl` 的直接调用，
+     不存在 direct-Core fallback。
+
+2. **Guardian Go client fail-closed 分类**
+   - 只有默认 Unix `DialContext` 明确失败时携带私有 dial marker，并转成
+     `UnavailableError`。
+   - 其他 `HTTPClient.Do` 错误均为 `AmbiguousRecoveryError`。
+   - POST 收到 202 后 response body 中途断开或无法解码也为 ambiguous；
+     CLI 因而绝不 legacy fallback。
+   - 回归使用真实临时 Unix listener，分别覆盖完整 POST 后无响应断开和
+     202 partial-body 断开。
+
+3. **CLI legacy fallback 输出**
+   - human legacy success 精确输出：
+
+     ```text
+     • Protection  Reconnecting
+     ✓ Protection  Reconnected
+     ```
+
+   - `--json` legacy success 只输出稳定 JSON：
+
+     ```json
+     {
+       "state": "succeeded",
+       "stage": "legacy_core",
+       "reason": "manual",
+       "attempt": 1
+     }
+     ```
+
+   - 测试同时固定 stdout、合法 JSON 和 nil error（exit 0）语义。
+
+4. **Swift Unix client 与菜单失败收口**
+   - 默认 Unix connect 改为 nonblocking `poll`，使用单调 deadline；
+     read/write 设置有限 `SO_RCVTIMEO` / `SO_SNDTIMEO`。
+   - 完整 Content-Length body 到齐立即返回，不等待 EOF。
+   - partial/stall 在 deadline 内抛错，所有成功/失败路径关闭 client FD。
+   - request 或 observation 失败统一生成 failed transition：
+     `reconnectInFlight=false`、红色失败 presentation，并保留 Details /
+     Run Doctor 菜单入口。
+
+5. **Swift strict parser**
+   - 只接受 HTTP/1.0 或 HTTP/1.1 与三位 100...599 status。
+   - 校验 header field-name token；Content-Length 必填、上限 1 MiB，
+     重复时只允许完全相同值，冲突拒绝。
+   - Content-Type 必须且只能出现一次，并为 `application/json`；
+     Transfer-Encoding 一律拒绝（重复同样拒绝）。
+   - body 必须与 Content-Length 精确相等；short body、extra bytes、
+     malformed status/version、缺失长度均拒绝。
+
+### RED 证据
+
+1. MCP lifecycle：
+
+   ```text
+   go test ./internal/mcp -run 'TestReconnect' -count=1
+   ```
+
+   首次 FAIL：`reconnectOut` 缺少 `RecoveryID`、`Stage`、
+   `StillRunning`，证明旧 MCP 结果没有 Guardian lifecycle identity/state。
+
+2. Guardian ambiguous POST：
+
+   ```text
+   go test ./internal/guardian -run 'RecoveryClient' -count=1
+   ```
+
+   首次 FAIL：`undefined: AmbiguousRecoveryError`。补强 202 partial-body
+   回归后再次按预期 FAIL：
+
+   ```text
+   partial accepted response error = *errors.errorString unexpected EOF,
+   want typed ambiguous
+   ```
+
+3. CLI fallback 输出：
+
+   ```text
+   go test ./internal/cli -run 'ReconnectLegacy|ReconnectFallsBack' -count=1
+   ```
+
+   首次 FAIL：human 与 JSON stdout 均为 `""`。
+
+4. Swift timeout / menu transition：
+
+   ```text
+   swift test --package-path apps/macos/BxMenu --filter RecoveryPresentationTests
+   ```
+
+   首次 FAIL：`cannot find 'recoveryFailureTransition' in scope`；新增 client
+   tests 同时要求无 EOF 完成、partial timeout、finite socket options 与 FD
+   close。
+
+5. Swift parser：
+
+   ```text
+   bash apps/macos/BxMenu/run-swift-tests.sh /tmp/bxmenu-test-marker
+   ```
+
+   在换成合法 RecoverySnapshot fixture 后准确 FAIL：
+
+   ```text
+   failed: conflicting duplicate Content-Length
+   ```
+
+### GREEN 与最终验证
+
+以下命令均 exit 0：
+
+```text
+go test ./internal/mcp -run 'TestReconnect' -count=1
+go test ./internal/guardian -run 'RecoveryClient' -count=1
+go test ./internal/cli -run 'Reconnect' -count=1
+go test ./internal/mcp ./internal/guardian ./internal/cli -run 'Reconnect|RecoveryClient|MacMenu' -count=1
+go test -race ./internal/mcp ./internal/guardian ./internal/cli -run 'Reconnect|RecoveryClient|MacMenu' -count=1
+swift test --package-path apps/macos/BxMenu
+./scripts/test-macos-menu.sh
+go test ./...
+go vet ./...
+go build ./...
+GOOS=darwin GOARCH=arm64 go build -o /dev/null ./...
+git diff --check
+```
+
+关键结果：
+
+- focused 与 race：MCP、Guardian、CLI 全部 `ok`。
+- clean/repeated Swift build：`BxMenu Swift tests passed`，
+  `Build complete!`。
+- 全仓 Go test、vet、build 与 Darwin arm64 build 全通过。
+- `rg 'ReconnectControl|ReconnectControlContext' internal/mcp` 无结果。
+
+### Concerns
+
+- 按安全约束未连接真实 `/var/run/bx-guard.sock`、未驱动真实 AppKit 菜单；
+  Unix protocol、timeout、FD close 与 presentation 使用临时 Unix listener /
+  `socketpair` 确定性覆盖。
+- 未运行任何 `bx up/down/reconnect`、`launchctl`、`route`、
+  `networksetup`、`sudo` 或网络变更命令。
+- 当前会话无 reviewer subagent 工具；controller findings 已逐项落实，
+  并完成最终逐文件 diff 自审。
+- 无已知 fail-open、direct-Core fallback 或其他开放功能 concern。
