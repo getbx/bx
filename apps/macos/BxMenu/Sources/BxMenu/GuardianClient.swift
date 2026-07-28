@@ -5,6 +5,7 @@ private let guardianHeaderLimit = 32 * 1024
 private let guardianBodyLimit = 1024 * 1024
 private let guardianSocketPath = "/var/run/bx-guard.sock"
 private let guardianDefaultTimeout: TimeInterval = 5
+private let guardianMaximumTimeout: TimeInterval = TimeInterval(Int32.max) / 1_000
 
 private enum GuardianEndpoint {
     case requestRecovery
@@ -51,34 +52,48 @@ private struct GuardianHTTPHead {
 
 private struct GuardianDeadline {
     private let deadline: TimeInterval
+    private let now: () -> TimeInterval
 
-    init(timeout: TimeInterval) {
-        deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
+    init(timeout: TimeInterval, now: @escaping () -> TimeInterval) {
+        self.now = now
+        let boundedTimeout = timeout > 0 ? min(timeout, guardianMaximumTimeout) : 0
+        deadline = now() + boundedTimeout
     }
 
     func remaining() throws -> TimeInterval {
-        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        let remaining = deadline - now()
         guard remaining > 0 else {
             throw GuardianClientError.socket(ETIMEDOUT)
         }
         return remaining
+    }
+
+    func checkpoint() throws {
+        _ = try remaining()
     }
 }
 
 struct GuardianClient {
     private let connectSocket: (GuardianDeadline) throws -> Int32
     private let ioTimeout: TimeInterval
+    private let clock: () -> TimeInterval
 
     init() {
         ioTimeout = guardianDefaultTimeout
+        clock = { ProcessInfo.processInfo.systemUptime }
         connectSocket = { deadline in
             try connectToGuardian(deadline: deadline)
         }
     }
 
-    init(connectSocket: @escaping () throws -> Int32, ioTimeout: TimeInterval = guardianDefaultTimeout) {
+    init(
+        connectSocket: @escaping () throws -> Int32,
+        ioTimeout: TimeInterval = guardianDefaultTimeout,
+        clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) {
         self.connectSocket = { _ in try connectSocket() }
         self.ioTimeout = ioTimeout
+        self.clock = clock
     }
 
     func requestRecovery() throws -> RecoverySnapshot {
@@ -90,7 +105,7 @@ struct GuardianClient {
     }
 
     private func perform(endpoint: GuardianEndpoint) throws -> RecoverySnapshot {
-        let deadline = GuardianDeadline(timeout: ioTimeout)
+        let deadline = GuardianDeadline(timeout: ioTimeout, now: clock)
         let fd = try connectSocket(deadline)
         defer { close(fd) }
         try configureGuardianSocketTimeouts(fd, timeout: deadline.remaining())
@@ -178,6 +193,7 @@ private func connectToGuardian(deadline: GuardianDeadline) throws -> Int32 {
     guard originalFlags >= 0, fcntl(fd, F_SETFL, originalFlags | O_NONBLOCK) == 0 else {
         throw GuardianClientError.socket(errno)
     }
+    try deadline.checkpoint()
     let result = withUnsafePointer(to: &address) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
             Darwin.connect(fd, $0, length)
@@ -189,6 +205,7 @@ private func connectToGuardian(deadline: GuardianDeadline) throws -> Int32 {
     if result != 0 {
         try waitForGuardianConnect(fd, deadline: deadline)
     }
+    try deadline.checkpoint()
     guard fcntl(fd, F_SETFL, originalFlags) == 0 else {
         throw GuardianClientError.socket(errno)
     }
@@ -221,7 +238,7 @@ private func waitForGuardianConnect(_ fd: Int32, deadline: GuardianDeadline) thr
 
 private func guardianPollMilliseconds(_ deadline: GuardianDeadline) throws -> Int32 {
     let remaining = try deadline.remaining()
-    return Int32(max(1, min(Double(Int32.max), ceil(remaining * 1000))))
+    return Int32(max(1, ceil(remaining * 1_000)))
 }
 
 private func waitForGuardianIO(_ fd: Int32, events: Int16, deadline: GuardianDeadline) throws {
@@ -234,6 +251,7 @@ private func waitForGuardianIO(_ fd: Int32, events: Int16, deadline: GuardianDea
         guard result > 0 else {
             throw GuardianClientError.socket(result == 0 ? ETIMEDOUT : errno)
         }
+        try deadline.checkpoint()
         return
     }
 }
@@ -263,6 +281,7 @@ private func writeGuardianRequest(_ request: Data, to fd: Int32, deadline: Guard
         var written = 0
         while written < rawBuffer.count {
             try waitForGuardianIO(fd, events: Int16(POLLOUT), deadline: deadline)
+            try deadline.checkpoint()
             let count = Darwin.write(fd, base.advanced(by: written), rawBuffer.count - written)
             if count < 0 && errno == EINTR {
                 continue
@@ -274,6 +293,7 @@ private func writeGuardianRequest(_ request: Data, to fd: Int32, deadline: Guard
                 throw GuardianClientError.socket(errno)
             }
             written += count
+            try deadline.checkpoint()
         }
     }
 }
@@ -284,8 +304,10 @@ private func readGuardianHTTPResponse(from fd: Int32, deadline: GuardianDeadline
     var buffer = [UInt8](repeating: 0, count: 8192)
     while true {
         try waitForGuardianIO(fd, events: Int16(POLLIN), deadline: deadline)
+        try deadline.checkpoint()
         let count = Darwin.read(fd, &buffer, buffer.count)
         if count == 0 {
+            try deadline.checkpoint()
             return response
         }
         guard count > 0 else {
@@ -301,6 +323,7 @@ private func readGuardianHTTPResponse(from fd: Int32, deadline: GuardianDeadline
             throw GuardianClientError.responseTooLarge
         }
         response.append(buffer, count: count)
+        try deadline.checkpoint()
         if response.range(of: Data("\r\n\r\n".utf8)) == nil && response.count >= guardianHeaderLimit {
             throw GuardianClientError.responseTooLarge
         }
@@ -308,6 +331,7 @@ private func readGuardianHTTPResponse(from fd: Int32, deadline: GuardianDeadline
             guard response.count == expectedLength else {
                 throw GuardianClientError.invalidResponse
             }
+            try deadline.checkpoint()
             return response
         }
     }
