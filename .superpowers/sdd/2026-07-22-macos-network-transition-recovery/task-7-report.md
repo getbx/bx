@@ -535,3 +535,67 @@ git diff --check
 - 未连接真实 Guardian socket、未运行 live `bx`/网络/`sudo`/路由/launchd 命令；
   hard deadline 由 socketpair 与可控单调 clock 确定性覆盖。
 - 无已知 deadline-after-success、busy loop 或 timeout conversion overflow concern。
+
+---
+
+## Fix Round 4（2026-07-27）
+
+### 状态与提交
+
+- 状态：DONE
+- Fix commit：`6d51c5c46f28c781a33af073a5af1d33fe78127f`
+- 范围仅限 GuardianClient 成功 JSON decode 后的 request-wide hard deadline
+  checkpoint。
+
+### 修复内容
+
+1. **decode 后 deadline checkpoint**
+   - `GuardianClient.perform` 先成功解码 `RecoverySnapshot`，随后立即检查同一个
+     absolute deadline，再返回 snapshot。
+   - decode 期间/之后到期时抛出 `GuardianClientError.socket(ETIMEDOUT)`；
+     deadline 内完成 decode 仍正常返回。
+
+2. **decode error 优先级保持**
+   - malformed JSON 在 decode 阶段继续抛出 `GuardianClientError.invalidResponse`。
+   - post-decode checkpoint 只在成功取得 snapshot 后执行，不覆盖先发生的 decode
+     failure。
+
+3. **确定性 Swift 回归**
+   - `socketpair` + injected sequence clock 将下一次 clock sample 固定在 decode
+     边界：到期的成功 decode 必须 timeout，未到期的成功 decode 必须返回。
+   - 同一测试以 malformed JSON 确认 decode failure 不会被后续 deadline 语义覆盖。
+
+### RED 证据
+
+```text
+bash apps/macos/BxMenu/run-swift-tests.sh /tmp/bxmenu-red-fix-round-4
+```
+
+旧实现按预期 exit 1：
+
+```text
+failed: successful decode cannot cross deadline
+```
+
+### GREEN 与最终验证
+
+以下命令均 exit 0：
+
+```text
+bash apps/macos/BxMenu/run-swift-tests.sh /tmp/bxmenu-green-fix-round-4
+swift test --package-path apps/macos/BxMenu
+./scripts/test-macos-menu.sh
+go test ./internal/mcp ./internal/guardian ./internal/cli -run 'Reconnect|RecoveryClient|MacMenu' -count=1
+go test -race ./internal/mcp ./internal/guardian ./internal/cli -run 'Reconnect|RecoveryClient|MacMenu' -count=1
+GOOS=darwin GOARCH=arm64 go build -o /dev/null ./...
+go test ./...
+go vet ./...
+go build ./...
+git diff --check
+```
+
+### Concerns
+
+- 未连接真实 Guardian socket，未运行 live `bx`、网络、`sudo`、路由或 launchd
+  命令；decode boundary 由 `socketpair` 与 injected clock 确定性覆盖。
+- 无已知 decode 后超期成功或 decode error 被 timeout 覆盖的 concern。
