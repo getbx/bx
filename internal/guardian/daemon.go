@@ -37,16 +37,17 @@ type DaemonOptions struct {
 }
 
 type Daemon struct {
-	path         string
-	listener     net.Listener
-	server       *http.Server
-	socketInfo   os.FileInfo
-	mutations    mutationLifecycle
-	recoveries   recoveryLifecycle
-	observer     *daemonNetworkObserverLifecycle
-	shutdownOnce sync.Once
-	shutdownDone chan struct{}
-	shutdownErr  error
+	path             string
+	listener         net.Listener
+	server           *http.Server
+	socketInfo       os.FileInfo
+	mutations        mutationLifecycle
+	recoveries       recoveryLifecycle
+	observer         *daemonNetworkObserverLifecycle
+	shutdownMu       sync.Mutex
+	shutdownStarted  bool
+	shutdownComplete bool
+	shutdownErr      error
 }
 
 type mutationLifecycle interface {
@@ -64,6 +65,19 @@ type daemonStarter func(context.Context, DaemonOptions) (*Daemon, error)
 
 type daemonNetworkObserver interface {
 	Run(context.Context)
+}
+
+type DaemonShutdownError struct {
+	Stage string
+	Err   error
+}
+
+func (e *DaemonShutdownError) Error() string {
+	return fmt.Sprintf("Guardian shutdown %s: %v", e.Stage, e.Err)
+}
+
+func (e *DaemonShutdownError) Unwrap() error {
+	return e.Err
 }
 
 func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
@@ -132,8 +146,7 @@ func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 	recoveries, _ := options.Handler.(recoveryLifecycle)
 	daemon := &Daemon{
 		path: path, listener: listener, server: server, socketInfo: info,
-		mutations: mutations, shutdownDone: make(chan struct{}),
-		recoveries: recoveries, observer: observer,
+		mutations: mutations, recoveries: recoveries, observer: observer,
 	}
 	if observer != nil {
 		observer.syncDesired(context.Background(), observerDesiredState(options.networkObserverDesired))
@@ -153,7 +166,13 @@ func (d *Daemon) Close() error {
 }
 
 func (d *Daemon) Shutdown(ctx context.Context) error {
-	d.shutdownOnce.Do(func() {
+	d.shutdownMu.Lock()
+	defer d.shutdownMu.Unlock()
+	if d.shutdownComplete {
+		return d.shutdownErr
+	}
+	if !d.shutdownStarted {
+		d.shutdownStarted = true
 		if d.recoveries != nil {
 			d.recoveries.beginRecoveryShutdown()
 		}
@@ -163,36 +182,37 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		if d.observer != nil {
 			d.observer.beginShutdown()
 		}
-		var observerErr error
-		if d.observer != nil {
-			observerErr = d.observer.wait(ctx)
+	}
+	if d.observer != nil {
+		if err := d.observer.wait(ctx); err != nil {
+			return &DaemonShutdownError{Stage: "network_observer_drain", Err: err}
 		}
-		shutdownErr := d.server.Shutdown(ctx)
-		var mutationErr error
-		if d.mutations != nil {
-			mutationErr = d.mutations.waitForMutations(ctx)
-		}
-		var recoveryErr error
-		if d.recoveries != nil {
-			recoveryErr = d.recoveries.waitForRecoveries(ctx)
-		}
-		if shutdownErr != nil || observerErr != nil || mutationErr != nil || recoveryErr != nil {
-			_ = d.server.Close()
-		}
-		listenerErr := d.listener.Close()
-		if errors.Is(listenerErr, net.ErrClosed) {
-			listenerErr = nil
-		}
-		var removeErr error
-		if current, statErr := os.Lstat(d.path); statErr == nil && os.SameFile(current, d.socketInfo) {
-			removeErr = os.Remove(d.path)
-		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			removeErr = statErr
-		}
-		d.shutdownErr = errors.Join(shutdownErr, observerErr, mutationErr, recoveryErr, listenerErr, removeErr)
-		close(d.shutdownDone)
-	})
-	<-d.shutdownDone
+	}
+
+	shutdownErr := d.server.Shutdown(ctx)
+	var mutationErr error
+	if d.mutations != nil {
+		mutationErr = d.mutations.waitForMutations(ctx)
+	}
+	var recoveryErr error
+	if d.recoveries != nil {
+		recoveryErr = d.recoveries.waitForRecoveries(ctx)
+	}
+	if shutdownErr != nil || mutationErr != nil || recoveryErr != nil {
+		_ = d.server.Close()
+	}
+	listenerErr := d.listener.Close()
+	if errors.Is(listenerErr, net.ErrClosed) {
+		listenerErr = nil
+	}
+	var removeErr error
+	if current, statErr := os.Lstat(d.path); statErr == nil && os.SameFile(current, d.socketInfo) {
+		removeErr = os.Remove(d.path)
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		removeErr = statErr
+	}
+	d.shutdownErr = errors.Join(shutdownErr, mutationErr, recoveryErr, listenerErr, removeErr)
+	d.shutdownComplete = true
 	return d.shutdownErr
 }
 
@@ -345,6 +365,7 @@ type daemonNetworkObserverLifecycle struct {
 	root      context.Context
 	observer  daemonNetworkObserver
 	accepting bool
+	target    DesiredState
 	cancel    context.CancelFunc
 	done      chan struct{}
 }
@@ -354,18 +375,28 @@ func newDaemonNetworkObserverLifecycle(ctx context.Context, observer daemonNetwo
 		root:      ctx,
 		observer:  observer,
 		accepting: true,
+		target:    DesiredOff,
 	}
 }
 
 func (l *daemonNetworkObserverLifecycle) syncDesired(ctx context.Context, desired DesiredState) error {
 	l.mu.Lock()
-	if desired == DesiredOn && l.accepting {
+	if !l.accepting {
+		l.target = DesiredOff
+		cancel := l.cancel
+		l.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		return nil
+	}
+	if desired != DesiredOn {
+		desired = DesiredOff
+	}
+	l.target = desired
+	if l.target == DesiredOn {
 		if l.done == nil {
-			runCtx, cancel := context.WithCancel(l.root)
-			done := make(chan struct{})
-			l.cancel = cancel
-			l.done = done
-			go l.run(runCtx, done)
+			l.startLocked()
 		}
 		l.mu.Unlock()
 		return nil
@@ -385,6 +416,14 @@ func (l *daemonNetworkObserverLifecycle) syncDesired(ctx context.Context, desire
 	}
 }
 
+func (l *daemonNetworkObserverLifecycle) startLocked() {
+	runCtx, cancel := context.WithCancel(l.root)
+	done := make(chan struct{})
+	l.cancel = cancel
+	l.done = done
+	go l.run(runCtx, done)
+}
+
 func (l *daemonNetworkObserverLifecycle) run(ctx context.Context, done chan struct{}) {
 	defer func() {
 		l.mu.Lock()
@@ -393,6 +432,9 @@ func (l *daemonNetworkObserverLifecycle) run(ctx context.Context, done chan stru
 			close(done)
 			l.cancel = nil
 			l.done = nil
+			if l.accepting && l.target == DesiredOn {
+				l.startLocked()
+			}
 			return
 		}
 		close(done)
@@ -403,6 +445,7 @@ func (l *daemonNetworkObserverLifecycle) run(ctx context.Context, done chan stru
 func (l *daemonNetworkObserverLifecycle) beginShutdown() {
 	l.mu.Lock()
 	l.accepting = false
+	l.target = DesiredOff
 	cancel := l.cancel
 	l.mu.Unlock()
 	if cancel != nil {

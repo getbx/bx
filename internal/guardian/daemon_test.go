@@ -83,6 +83,98 @@ func TestDaemonNetworkObserverFollowsDesiredState(t *testing.T) {
 	}
 }
 
+func TestDaemonNetworkObserverRapidOffOnRestartsAfterDrain(t *testing.T) {
+	observer := newControlledDaemonNetworkObserver()
+	lifecycle := newDaemonNetworkObserverLifecycle(context.Background(), observer)
+	t.Cleanup(func() {
+		lifecycle.beginShutdown()
+		observer.releaseAll()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = lifecycle.wait(ctx)
+	})
+
+	if err := lifecycle.syncDesired(context.Background(), DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	first := observer.waitForRun(t)
+
+	offDone := make(chan error, 1)
+	go func() {
+		offDone <- lifecycle.syncDesired(context.Background(), DesiredOff)
+	}()
+	first.waitForCancellation(t)
+
+	if err := lifecycle.syncDesired(context.Background(), DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	first.release()
+	if err := <-offDone; err != nil {
+		t.Fatalf("Off transition: %v", err)
+	}
+	second := observer.waitForRun(t)
+	select {
+	case extra := <-observer.started:
+		extra.release()
+		t.Fatal("rapid Off -> On started more than one replacement observer")
+	default:
+	}
+	second.release()
+}
+
+func TestDaemonNetworkObserverDesiredBurstsCoalesceToOneFinalRun(t *testing.T) {
+	observer := newControlledDaemonNetworkObserver()
+	lifecycle := newDaemonNetworkObserverLifecycle(context.Background(), observer)
+	t.Cleanup(func() {
+		lifecycle.beginShutdown()
+		observer.releaseAll()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = lifecycle.wait(ctx)
+	})
+
+	if err := lifecycle.syncDesired(context.Background(), DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	first := observer.waitForRun(t)
+	offDone := make(chan error, 1)
+	go func() {
+		offDone <- lifecycle.syncDesired(context.Background(), DesiredOff)
+	}()
+	first.waitForCancellation(t)
+
+	for _, desired := range []DesiredState{
+		DesiredOn,
+		DesiredOff,
+		DesiredOn,
+		DesiredOff,
+		DesiredOn,
+		DesiredOff,
+		DesiredOn,
+	} {
+		ctx := context.Background()
+		if desired == DesiredOff {
+			expired, cancel := context.WithCancel(ctx)
+			cancel()
+			ctx = expired
+		}
+		_ = lifecycle.syncDesired(ctx, desired)
+	}
+
+	first.release()
+	if err := <-offDone; err != nil {
+		t.Fatalf("initial Off transition: %v", err)
+	}
+	replacement := observer.waitForRun(t)
+	select {
+	case extra := <-observer.started:
+		extra.release()
+		t.Fatal("desired-state burst started more than one replacement observer")
+	default:
+	}
+	replacement.release()
+}
+
 func TestDaemonShutdownDrainsNetworkObserverBeforeSocketRemoval(t *testing.T) {
 	release := make(chan struct{})
 	observer := &fakeDaemonNetworkObserver{
@@ -131,6 +223,56 @@ func TestDaemonShutdownDrainsNetworkObserverBeforeSocketRemoval(t *testing.T) {
 	}
 }
 
+func TestDaemonShutdownTimeoutPreservesSocketAndAllowsCleanupRetry(t *testing.T) {
+	release := make(chan struct{})
+	observer := &fakeDaemonNetworkObserver{
+		started:  make(chan struct{}, 1),
+		canceled: make(chan struct{}, 1),
+		release:  release,
+	}
+	socketPath := filepath.Join(shortSocketDir(t), "observer-timeout.sock")
+	daemon, err := StartDaemon(context.Background(), DaemonOptions{
+		SocketPath:             socketPath,
+		Handler:                http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		OwnerUID:               uint32(os.Geteuid()),
+		networkObserver:        observer,
+		networkObserverDesired: func() DesiredState { return DesiredOn },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-observer.started:
+	case <-time.After(time.Second):
+		t.Fatal("network observer did not start")
+	}
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	err = daemon.Shutdown(expired)
+	var shutdownErr *DaemonShutdownError
+	if !errors.As(err, &shutdownErr) {
+		t.Fatalf("shutdown error = %T %v, want structured DaemonShutdownError", err, err)
+	}
+	if shutdownErr.Stage != "network_observer_drain" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error = %+v, want network_observer_drain/deadline", shutdownErr)
+	}
+	if _, err := os.Lstat(socketPath); err != nil {
+		t.Fatalf("Guardian socket removed after observer drain timeout: %v", err)
+	}
+	requestDaemonObserverSync(t, socketPath)
+
+	close(release)
+	ctx, retryCancel := context.WithTimeout(context.Background(), time.Second)
+	defer retryCancel()
+	if err := daemon.Shutdown(ctx); err != nil {
+		t.Fatalf("retry shutdown: %v", err)
+	}
+	if _, err := os.Lstat(socketPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Guardian socket still present after retry cleanup: %v", err)
+	}
+}
+
 func requestDaemonObserverSync(t *testing.T, socketPath string) {
 	t.Helper()
 	client := &http.Client{Transport: &http.Transport{
@@ -162,6 +304,70 @@ func (o *fakeDaemonNetworkObserver) Run(ctx context.Context) {
 	o.canceled <- struct{}{}
 	if o.release != nil {
 		<-o.release
+	}
+}
+
+type controlledDaemonObserverRun struct {
+	canceled   chan struct{}
+	releaseCh  chan struct{}
+	releaseOne sync.Once
+}
+
+func (r *controlledDaemonObserverRun) waitForCancellation(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("observer run was not canceled")
+	}
+}
+
+func (r *controlledDaemonObserverRun) release() {
+	r.releaseOne.Do(func() { close(r.releaseCh) })
+}
+
+type controlledDaemonNetworkObserver struct {
+	mu      sync.Mutex
+	started chan *controlledDaemonObserverRun
+	runs    []*controlledDaemonObserverRun
+}
+
+func newControlledDaemonNetworkObserver() *controlledDaemonNetworkObserver {
+	return &controlledDaemonNetworkObserver{
+		started: make(chan *controlledDaemonObserverRun, 16),
+	}
+}
+
+func (o *controlledDaemonNetworkObserver) Run(ctx context.Context) {
+	run := &controlledDaemonObserverRun{
+		canceled:  make(chan struct{}),
+		releaseCh: make(chan struct{}),
+	}
+	o.mu.Lock()
+	o.runs = append(o.runs, run)
+	o.mu.Unlock()
+	o.started <- run
+	<-ctx.Done()
+	close(run.canceled)
+	<-run.releaseCh
+}
+
+func (o *controlledDaemonNetworkObserver) waitForRun(t *testing.T) *controlledDaemonObserverRun {
+	t.Helper()
+	select {
+	case run := <-o.started:
+		return run
+	case <-time.After(time.Second):
+		t.Fatal("observer run did not start")
+		return nil
+	}
+}
+
+func (o *controlledDaemonNetworkObserver) releaseAll() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, run := range o.runs {
+		run.release()
 	}
 }
 
