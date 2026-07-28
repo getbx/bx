@@ -1,5 +1,7 @@
 package mcp
 
+import "context"
+
 // Ops 是 MCP tools 依赖的操作 port。liveOps(Task 8)绑到现有 internal 包,
 // 测试用 fakeOps。这样 tool handler 可纯逻辑测试,免 root。
 type Ops interface {
@@ -13,7 +15,7 @@ type Ops interface {
 	Logs(LogsIn) (LogsOut, error)
 	ApplyPolicy(PolicyApplyIn) (PolicyApplyOut, error)
 	SetTransport(SetTransportIn) error
-	Reconnect() error
+	Reconnect(context.Context) (reconnectOut, error)
 	Rehijack() error
 	Commit() error
 	Rollback() error

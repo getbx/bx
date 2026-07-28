@@ -32,6 +32,29 @@ struct RecoveryPresentation: Equatable {
     }
 }
 
+struct RecoveryFailureTransition: Equatable {
+    let snapshot: RecoverySnapshot
+    let reconnectInFlight: Bool
+}
+
+func recoveryFailureTransition(from snapshot: RecoverySnapshot, errorCode: String) -> RecoveryFailureTransition {
+    RecoveryFailureTransition(
+        snapshot: RecoverySnapshot(
+            recoveryID: snapshot.recoveryID,
+            state: "failed",
+            stage: "failed",
+            reason: snapshot.reason,
+            generation: snapshot.generation,
+            lastErrorCode: errorCode,
+            detail: nil,
+            attempt: snapshot.attempt,
+            startedAt: snapshot.startedAt,
+            updatedAt: snapshot.updatedAt
+        ),
+        reconnectInFlight: false
+    )
+}
+
 func recoveryPresentation(for snapshot: RecoverySnapshot) -> RecoveryPresentation {
     switch snapshot.state {
     case "accepted":

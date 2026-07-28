@@ -1,5 +1,12 @@
 package mcp
 
+import (
+	"context"
+	"time"
+
+	"github.com/getbx/bx/internal/guardian"
+)
+
 type fakeOps struct {
 	caps                 CapabilitiesOut
 	status               StatusOut
@@ -19,6 +26,11 @@ type fakeOps struct {
 	policyApply          PolicyApplyIn
 	policyApplyOut       PolicyApplyOut
 	policyApplyErr       error
+	recoverySubmitted    guardian.RecoverySnapshot
+	recoveryCurrent      []guardian.RecoverySnapshot
+	recoveryCurrentCall  int
+	recoveryPollLimit    int
+	recoveryWait         func(context.Context, time.Duration) error
 }
 
 func (f *fakeOps) Capabilities() (CapabilitiesOut, error) { return f.caps, nil }
@@ -52,9 +64,34 @@ func (f *fakeOps) SetTransport(in SetTransportIn) error {
 	return f.setTransportErr
 }
 
-func (f *fakeOps) Reconnect() error {
-	f.calls = append(f.calls, "reconnect")
-	return nil
+func (f *fakeOps) Reconnect(ctx context.Context) (reconnectOut, error) {
+	wait := f.recoveryWait
+	if wait == nil {
+		wait = func(context.Context, time.Duration) error { return nil }
+	}
+	polls := f.recoveryPollLimit
+	if polls <= 0 {
+		polls = 6
+	}
+	return reconnectThroughGuardian(ctx, f, wait, polls)
+}
+
+func (f *fakeOps) RequestRecovery(context.Context, guardian.RecoveryRequest) (guardian.RecoverySnapshot, error) {
+	f.calls = append(f.calls, "request_recovery")
+	return f.recoverySubmitted, nil
+}
+
+func (f *fakeOps) CurrentRecovery(context.Context) (guardian.RecoverySnapshot, error) {
+	f.calls = append(f.calls, "current_recovery")
+	if len(f.recoveryCurrent) == 0 {
+		return f.recoverySubmitted, nil
+	}
+	index := f.recoveryCurrentCall
+	if index >= len(f.recoveryCurrent) {
+		index = len(f.recoveryCurrent) - 1
+	}
+	f.recoveryCurrentCall++
+	return f.recoveryCurrent[index], nil
 }
 
 func (f *fakeOps) Rehijack() error {

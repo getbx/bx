@@ -3838,6 +3838,13 @@ type reconnectDependencies struct {
 	legacyReconnect func(context.Context) error
 }
 
+type legacyReconnectOutput struct {
+	State   string `json:"state"`
+	Stage   string `json:"stage"`
+	Reason  string `json:"reason"`
+	Attempt int    `json:"attempt"`
+}
+
 func defaultReconnectDependencies() reconnectDependencies {
 	return reconnectDependencies{
 		client: guardian.NewClient(guardian.SocketPath),
@@ -3896,7 +3903,19 @@ func reconnectWithDependencies(ctx context.Context, jsonOutput bool, deps reconn
 	if err != nil {
 		var unavailable *guardian.UnavailableError
 		if errors.As(err, &unavailable) && deps.legacyReconnect != nil {
-			return deps.legacyReconnect(ctx)
+			if !jsonOutput {
+				fmt.Fprintln(deps.output, "• Protection  Reconnecting")
+			}
+			if err := deps.legacyReconnect(ctx); err != nil {
+				return err
+			}
+			if jsonOutput {
+				return writeJSON(deps.output, legacyReconnectOutput{
+					State: "succeeded", Stage: "legacy_core", Reason: "manual", Attempt: 1,
+				})
+			}
+			fmt.Fprintln(deps.output, "✓ Protection  Reconnected")
+			return nil
 		}
 		return err
 	}

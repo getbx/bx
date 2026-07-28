@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/policy"
 	"github.com/getbx/bx/internal/supervisor"
@@ -32,11 +33,26 @@ func isRoot() bool { return os.Geteuid() == 0 }
 
 // liveOps 把 Ops 绑到现有 internal 逻辑。
 type liveOps struct {
-	configPath string
+	configPath     string
+	recoveryClient guardianRecoveryClient
+	recoveryWait   func(context.Context, time.Duration) error
+	recoveryPolls  int
 }
 
 // NewLiveOps 构造绑定现有逻辑的 Ops。
-func NewLiveOps(configPath string) Ops { return &liveOps{configPath: configPath} }
+func NewLiveOps(configPath string) Ops {
+	return &liveOps{
+		configPath:     configPath,
+		recoveryClient: guardian.NewClient(guardian.SocketPath),
+		recoveryWait:   waitForGuardianRecovery,
+		recoveryPolls:  6,
+	}
+}
+
+type guardianRecoveryClient interface {
+	RequestRecovery(context.Context, guardian.RecoveryRequest) (guardian.RecoverySnapshot, error)
+	CurrentRecovery(context.Context) (guardian.RecoverySnapshot, error)
+}
 
 // Capabilities 返回平台能力:platform from runtime.GOOS,transports,Installed = config 文件存在。
 func (o *liveOps) Capabilities() (CapabilitiesOut, error) {
@@ -464,18 +480,90 @@ func (o *liveOps) SetTransport(in SetTransportIn) error {
 	return nil
 }
 
-func (o *liveOps) Reconnect() error {
+func (o *liveOps) Reconnect(ctx context.Context) (reconnectOut, error) {
 	if err := requireRoot(isRoot()); err != nil {
-		return err
+		return reconnectOut{}, err
 	}
-	if _, err := supervisor.ReconnectControl(supervisor.SockPath); err != nil {
-		return ToolError{
+	if o.recoveryClient == nil {
+		return reconnectOut{}, ToolError{
 			Code:        CodeTunnelUnhealthy,
-			Message:     "safe reconnect 失败: " + err.Error(),
-			Remediation: "确认 bx 守护进程在跑(bx up),然后查 bx_logs",
+			Message:     "Guardian recovery client unavailable",
+			Remediation: "确认 bx Guardian 已安装并运行,然后查 bx_logs",
 		}
 	}
-	return nil
+	wait := o.recoveryWait
+	if wait == nil {
+		wait = waitForGuardianRecovery
+	}
+	polls := o.recoveryPolls
+	if polls <= 0 {
+		polls = 6
+	}
+	out, err := reconnectThroughGuardian(ctx, o.recoveryClient, wait, polls)
+	if err != nil {
+		return reconnectOut{}, ToolError{
+			Code:        CodeTunnelUnhealthy,
+			Message:     "Guardian recovery request failed: " + err.Error(),
+			Remediation: "确认 bx Guardian 已安装并运行,然后查 bx_logs",
+		}
+	}
+	return out, nil
+}
+
+func reconnectThroughGuardian(
+	ctx context.Context,
+	client guardianRecoveryClient,
+	wait func(context.Context, time.Duration) error,
+	maxPolls int,
+) (reconnectOut, error) {
+	snapshot, err := client.RequestRecovery(ctx, guardian.RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		return reconnectOut{}, err
+	}
+	delay := 250 * time.Millisecond
+	for poll := 0; recoveryStateRunning(snapshot.State) && poll < maxPolls; poll++ {
+		if err := wait(ctx, delay); err != nil {
+			return reconnectResult(snapshot, true, "recovery accepted; observation ended while it is still running"), nil
+		}
+		delay = 500 * time.Millisecond
+		current, err := client.CurrentRecovery(ctx)
+		if err != nil {
+			return reconnectResult(snapshot, true, "recovery accepted; Guardian observation is temporarily unavailable"), nil
+		}
+		if current.ID == snapshot.ID {
+			snapshot = current
+		}
+	}
+	if recoveryStateRunning(snapshot.State) {
+		return reconnectResult(snapshot, true, "recovery accepted and is still running; inspect the recovery ID later"), nil
+	}
+	return reconnectResult(snapshot, false, "Guardian recovery reached a terminal state"), nil
+}
+
+func reconnectResult(snapshot guardian.RecoverySnapshot, stillRunning bool, note string) reconnectOut {
+	return reconnectOut{
+		RecoveryID:   snapshot.ID,
+		State:        snapshot.State,
+		Stage:        snapshot.Stage,
+		ErrorCode:    snapshot.ErrorCode,
+		StillRunning: stillRunning,
+		Note:         note,
+	}
+}
+
+func recoveryStateRunning(state string) bool {
+	return state == "accepted" || state == "running"
+}
+
+func waitForGuardianRecovery(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (o *liveOps) Rehijack() error {

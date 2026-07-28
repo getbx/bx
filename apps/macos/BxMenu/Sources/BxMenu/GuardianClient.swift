@@ -4,6 +4,7 @@ import Foundation
 private let guardianHeaderLimit = 32 * 1024
 private let guardianBodyLimit = 1024 * 1024
 private let guardianSocketPath = "/var/run/bx-guard.sock"
+private let guardianDefaultTimeout: TimeInterval = 5
 
 private enum GuardianEndpoint {
     case requestRecovery
@@ -42,15 +43,26 @@ enum GuardianClientError: LocalizedError {
     }
 }
 
+private struct GuardianHTTPHead {
+    let status: Int
+    let contentLength: Int
+    let bodyOffset: Int
+}
+
 struct GuardianClient {
     private let connectSocket: () throws -> Int32
+    private let ioTimeout: TimeInterval
 
     init() {
-        connectSocket = connectToGuardian
+        ioTimeout = guardianDefaultTimeout
+        connectSocket = {
+            try connectToGuardian(timeout: guardianDefaultTimeout)
+        }
     }
 
-    init(connectSocket: @escaping () throws -> Int32) {
+    init(connectSocket: @escaping () throws -> Int32, ioTimeout: TimeInterval = guardianDefaultTimeout) {
         self.connectSocket = connectSocket
+        self.ioTimeout = ioTimeout
     }
 
     func requestRecovery() throws -> RecoverySnapshot {
@@ -64,8 +76,11 @@ struct GuardianClient {
     private func perform(endpoint: GuardianEndpoint) throws -> RecoverySnapshot {
         let fd = try connectSocket()
         defer { close(fd) }
+        try configureGuardianSocketTimeouts(fd, timeout: ioTimeout)
         var noSignal: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout.size(ofValue: noSignal)))
+        guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout.size(ofValue: noSignal))) == 0 else {
+            throw GuardianClientError.socket(errno)
+        }
         try writeGuardianRequest(guardianRequest(for: endpoint), to: fd)
         let response = try readGuardianHTTPResponse(from: fd)
         return try decodeGuardianHTTPResponse(response, expectedStatus: endpoint.expectedStatus)
@@ -73,62 +88,13 @@ struct GuardianClient {
 }
 
 func decodeGuardianHTTPResponse(_ response: Data, expectedStatus: Int) throws -> RecoverySnapshot {
-    let separator = Data("\r\n\r\n".utf8)
-    guard let separatorRange = response.range(of: separator) else {
-        if response.count > guardianHeaderLimit {
-            throw GuardianClientError.responseTooLarge
-        }
+    let head = try parseGuardianHTTPHead(response)
+    guard head.status == expectedStatus else {
+        throw GuardianClientError.status(head.status)
+    }
+    let body = response[head.bodyOffset...]
+    guard body.count == head.contentLength else {
         throw GuardianClientError.invalidResponse
-    }
-    guard separatorRange.upperBound <= guardianHeaderLimit else {
-        throw GuardianClientError.responseTooLarge
-    }
-
-    let headerData = response[..<separatorRange.lowerBound]
-    guard let headerText = String(data: headerData, encoding: .utf8) else {
-        throw GuardianClientError.invalidResponse
-    }
-    let lines = headerText.components(separatedBy: "\r\n")
-    guard let statusLine = lines.first else {
-        throw GuardianClientError.invalidResponse
-    }
-    let statusParts = statusLine.split(separator: " ", maxSplits: 2)
-    guard statusParts.count >= 2, statusParts[0].hasPrefix("HTTP/1."), let status = Int(statusParts[1]) else {
-        throw GuardianClientError.invalidResponse
-    }
-    var headers: [String: String] = [:]
-    for line in lines.dropFirst() {
-        guard let colon = line.firstIndex(of: ":") else {
-            throw GuardianClientError.invalidResponse
-        }
-        let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
-        let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        headers[name] = value
-    }
-    guard let contentType = headers["content-type"]?
-        .split(separator: ";", maxSplits: 1)
-        .first?
-        .trimmingCharacters(in: .whitespaces)
-        .lowercased(),
-        contentType == "application/json"
-    else {
-        throw GuardianClientError.contentType
-    }
-    guard status == expectedStatus else {
-        throw GuardianClientError.status(status)
-    }
-    if headers["transfer-encoding"] != nil {
-        throw GuardianClientError.invalidResponse
-    }
-
-    let body = response[separatorRange.upperBound...]
-    guard body.count <= guardianBodyLimit else {
-        throw GuardianClientError.responseTooLarge
-    }
-    if let rawLength = headers["content-length"] {
-        guard let length = Int(rawLength), length >= 0, length <= guardianBodyLimit, length == body.count else {
-            throw GuardianClientError.invalidResponse
-        }
     }
     do {
         return try JSONDecoder().decode(RecoverySnapshot.self, from: body)
@@ -164,15 +130,20 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
     return request
 }
 
-private func connectToGuardian() throws -> Int32 {
+private func connectToGuardian(timeout: TimeInterval) throws -> Int32 {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else {
         throw GuardianClientError.socket(errno)
     }
+    var keepOpen = false
+    defer {
+        if !keepOpen {
+            close(fd)
+        }
+    }
     var address = sockaddr_un()
     let path = Array(guardianSocketPath.utf8CString)
     guard path.count <= MemoryLayout.size(ofValue: address.sun_path) else {
-        close(fd)
         throw GuardianClientError.invalidResponse
     }
     address.sun_family = sa_family_t(AF_UNIX)
@@ -185,17 +156,66 @@ private func connectToGuardian() throws -> Int32 {
     }
     let length = socklen_t(MemoryLayout<sa_family_t>.size + path.count)
     address.sun_len = UInt8(length)
+    let originalFlags = fcntl(fd, F_GETFL)
+    guard originalFlags >= 0, fcntl(fd, F_SETFL, originalFlags | O_NONBLOCK) == 0 else {
+        throw GuardianClientError.socket(errno)
+    }
     let result = withUnsafePointer(to: &address) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
             Darwin.connect(fd, $0, length)
         }
     }
-    guard result == 0 else {
-        let code = errno
-        close(fd)
-        throw GuardianClientError.socket(code)
+    if result != 0 && errno != EINPROGRESS {
+        throw GuardianClientError.socket(errno)
     }
+    if result != 0 {
+        try waitForGuardianConnect(fd, timeout: timeout)
+    }
+    guard fcntl(fd, F_SETFL, originalFlags) == 0 else {
+        throw GuardianClientError.socket(errno)
+    }
+    keepOpen = true
     return fd
+}
+
+private func waitForGuardianConnect(_ fd: Int32, timeout: TimeInterval) throws {
+    let deadline = ProcessInfo.processInfo.systemUptime + max(0.001, timeout)
+    var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+    while true {
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        guard remaining > 0 else {
+            throw GuardianClientError.socket(ETIMEDOUT)
+        }
+        let milliseconds = Int32(max(1, min(Double(Int32.max), remaining * 1000)))
+        let result = Darwin.poll(&descriptor, 1, milliseconds)
+        if result < 0 && errno == EINTR {
+            continue
+        }
+        guard result > 0 else {
+            throw GuardianClientError.socket(result == 0 ? ETIMEDOUT : errno)
+        }
+        break
+    }
+    var socketError: Int32 = 0
+    var length = socklen_t(MemoryLayout.size(ofValue: socketError))
+    guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &length) == 0 else {
+        throw GuardianClientError.socket(errno)
+    }
+    guard socketError == 0 else {
+        throw GuardianClientError.socket(socketError)
+    }
+}
+
+private func configureGuardianSocketTimeouts(_ fd: Int32, timeout: TimeInterval) throws {
+    let bounded = max(0.001, timeout)
+    let seconds = Int(bounded)
+    let microseconds = Int32((bounded - Double(seconds)) * 1_000_000)
+    var value = timeval(tv_sec: seconds, tv_usec: microseconds)
+    for option in [SO_RCVTIMEO, SO_SNDTIMEO] {
+        guard setsockopt(fd, SOL_SOCKET, option, &value, socklen_t(MemoryLayout.size(ofValue: value))) == 0 else {
+            throw GuardianClientError.socket(errno)
+        }
+    }
 }
 
 private func writeGuardianRequest(_ request: Data, to fd: Int32) throws {
@@ -204,6 +224,9 @@ private func writeGuardianRequest(_ request: Data, to fd: Int32) throws {
         var written = 0
         while written < rawBuffer.count {
             let count = Darwin.write(fd, base.advanced(by: written), rawBuffer.count - written)
+            if count < 0 && errno == EINTR {
+                continue
+            }
             guard count > 0 else {
                 throw GuardianClientError.socket(errno)
             }
@@ -231,8 +254,129 @@ private func readGuardianHTTPResponse(from fd: Int32) throws -> Data {
             throw GuardianClientError.responseTooLarge
         }
         response.append(buffer, count: count)
-        if response.range(of: Data("\r\n\r\n".utf8)) == nil && response.count > guardianHeaderLimit {
+        if response.range(of: Data("\r\n\r\n".utf8)) == nil && response.count >= guardianHeaderLimit {
             throw GuardianClientError.responseTooLarge
         }
+        if let expectedLength = try completeGuardianResponseLength(response) {
+            guard response.count == expectedLength else {
+                throw GuardianClientError.invalidResponse
+            }
+            return response
+        }
+    }
+}
+
+private func completeGuardianResponseLength(_ response: Data) throws -> Int? {
+    let separator = Data("\r\n\r\n".utf8)
+    guard response.range(of: separator) != nil else {
+        return nil
+    }
+    let head = try parseGuardianHTTPHead(response)
+    let expected = head.bodyOffset + head.contentLength
+    if response.count < expected {
+        return nil
+    }
+    return expected
+}
+
+private func parseGuardianHTTPHead(_ response: Data) throws -> GuardianHTTPHead {
+    let separator = Data("\r\n\r\n".utf8)
+    guard let separatorRange = response.range(of: separator) else {
+        if response.count >= guardianHeaderLimit {
+            throw GuardianClientError.responseTooLarge
+        }
+        throw GuardianClientError.invalidResponse
+    }
+    guard separatorRange.upperBound <= guardianHeaderLimit else {
+        throw GuardianClientError.responseTooLarge
+    }
+    guard let headerText = String(data: response[..<separatorRange.lowerBound], encoding: .utf8) else {
+        throw GuardianClientError.invalidResponse
+    }
+    let lines = headerText.components(separatedBy: "\r\n")
+    guard let statusLine = lines.first else {
+        throw GuardianClientError.invalidResponse
+    }
+    let statusParts = statusLine.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
+    guard statusParts.count >= 2,
+          statusParts[0] == "HTTP/1.0" || statusParts[0] == "HTTP/1.1",
+          statusParts[1].utf8.count == 3,
+          statusParts[1].utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+          let status = Int(statusParts[1]),
+          (100...599).contains(status)
+    else {
+        throw GuardianClientError.invalidResponse
+    }
+
+    var contentType: String?
+    var contentLength: Int?
+    var sawTransferEncoding = false
+    for line in lines.dropFirst() {
+        guard let colon = line.firstIndex(of: ":"), colon != line.startIndex else {
+            throw GuardianClientError.invalidResponse
+        }
+        let rawName = line[..<colon]
+        guard rawName == rawName.trimmingCharacters(in: .whitespaces),
+              rawName.utf8.allSatisfy(isGuardianHeaderTokenByte)
+        else {
+            throw GuardianClientError.invalidResponse
+        }
+        let name = rawName.lowercased()
+        let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        switch name {
+        case "content-type":
+            guard contentType == nil else {
+                throw GuardianClientError.invalidResponse
+            }
+            contentType = value
+        case "content-length":
+            guard !value.isEmpty,
+                  value.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+                  let length = Int(value),
+                  length <= guardianBodyLimit
+            else {
+                throw GuardianClientError.invalidResponse
+            }
+            if let existing = contentLength, existing != length {
+                throw GuardianClientError.invalidResponse
+            }
+            contentLength = length
+        case "transfer-encoding":
+            if sawTransferEncoding {
+                throw GuardianClientError.invalidResponse
+            }
+            sawTransferEncoding = true
+        default:
+            break
+        }
+    }
+    guard !sawTransferEncoding else {
+        throw GuardianClientError.invalidResponse
+    }
+    guard let rawContentType = contentType,
+          rawContentType.split(separator: ";", maxSplits: 1).first?
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased() == "application/json"
+    else {
+        throw GuardianClientError.contentType
+    }
+    guard let contentLength else {
+        throw GuardianClientError.invalidResponse
+    }
+    return GuardianHTTPHead(
+        status: status,
+        contentLength: contentLength,
+        bodyOffset: separatorRange.upperBound
+    )
+}
+
+private func isGuardianHeaderTokenByte(_ byte: UInt8) -> Bool {
+    switch byte {
+    case 48...57, 65...90, 97...122:
+        return true
+    case 33, 35...39, 42, 43, 45, 46, 94, 95, 96, 124, 126:
+        return true
+    default:
+        return false
     }
 }
