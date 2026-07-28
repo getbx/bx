@@ -34,6 +34,75 @@ type pathRecoverer interface {
 	RecoverPath(context.Context, PathRecoveryRequest, func(PathRecoverySnapshot)) (PathRecoverySnapshot, error)
 }
 
+type livePathRecoverer struct {
+	mu           sync.Mutex
+	underlay     underlayManager
+	transports   transportSet
+	tun          tunHandle
+	previous     UnderlaySnapshot
+	serverBypass []string
+	userBypass   []string
+	verify       func(context.Context) error
+}
+
+func (r *livePathRecoverer) RecoverPath(ctx context.Context, _ PathRecoveryRequest, observe func(PathRecoverySnapshot)) (PathRecoverySnapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	publish := func(stage string) {
+		if observe != nil {
+			observe(PathRecoverySnapshot{State: "recovering", Stage: stage})
+		}
+	}
+	publish("observe")
+	next, err := r.underlay.Observe(ctx)
+	if err != nil {
+		return PathRecoverySnapshot{Stage: "observe"}, err
+	}
+
+	publish("validate_capture")
+	if err := r.underlay.ValidateCapture(ctx, r.tun); err != nil {
+		return PathRecoverySnapshot{Stage: "validate_capture"}, err
+	}
+
+	publish("rebind_underlay")
+	if err := r.underlay.Rebind(ctx, r.tun, r.previous, next, r.serverBypass, r.userBypass); err != nil {
+		return PathRecoverySnapshot{Stage: "rebind_underlay"}, err
+	}
+	r.previous = next
+
+	publish("transport_health")
+	if err := r.transports.Recover(ctx); err != nil {
+		if transportErrorSlot(err) == udpTransportSlot {
+			return PathRecoverySnapshot{
+				State:     "needs_attention",
+				Stage:     "transport_health",
+				ErrorCode: "transport_unavailable",
+			}, nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return PathRecoverySnapshot{Stage: "transport_health"}, err
+		}
+		return PathRecoverySnapshot{Stage: "transport_health"}, &PathRecoveryError{
+			Code:   "transport_unavailable",
+			Detail: err.Error(),
+		}
+	}
+
+	publish("verify")
+	if r.verify != nil {
+		if err := r.verify(ctx); err != nil {
+			return PathRecoverySnapshot{Stage: "verify"}, &PathRecoveryError{
+				Code:   "verification_failed",
+				Detail: err.Error(),
+			}
+		}
+	}
+
+	publish("succeeded")
+	return PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}, nil
+}
+
 // PathRecoveryError describes a stable category without making free-form diagnostics
 // part of the LocalAPI contract.
 type PathRecoveryError struct {
@@ -160,3 +229,5 @@ func stablePathRecoveryCode(code string) string {
 		return ""
 	}
 }
+
+var _ pathRecoverer = (*livePathRecoverer)(nil)

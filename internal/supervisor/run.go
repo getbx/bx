@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -157,42 +158,46 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	// 2) 隧道:按 server link 的 scheme 选传输(brook | reality),数据面不变。
 	// buildTunnel 由 link 建隧道(含按需 sing-box 准备),供启动与 Slice 2b 运行期换隧道复用。
-	buildTunnel := func(link string) (*tunnel.Tunnel, error) {
-		switch transportKind(link) {
+	var buildTunnelMu sync.Mutex
+	buildTunnel := func(link, recoveryID string) (*tunnel.Tunnel, error) {
+		buildTunnelMu.Lock()
+		defer buildTunnelMu.Unlock()
+		kind := transportKind(link)
+		switch kind {
 		case "reality":
 			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
-			confPath := filepath.Join(cfg.DataDir, "sing-box.json")
+			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			return tunnel.NewReality(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
 		case "hysteria2":
 			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
-			confPath := filepath.Join(cfg.DataDir, "sing-box-hy2.json")
+			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			return tunnel.NewHysteria2(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
 		case "trojan":
 			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
-			confPath := filepath.Join(cfg.DataDir, "sing-box-trojan.json")
+			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			return tunnel.NewTrojan(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
 		case "shadowsocks":
 			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
-			confPath := filepath.Join(cfg.DataDir, "sing-box-ss.json")
+			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			return tunnel.NewShadowsocks(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
 		case "vmess":
 			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
-			confPath := filepath.Join(cfg.DataDir, "sing-box-vmess.json")
+			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			return tunnel.NewVmess(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
 		default:
 			brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion(), cfg.BrookURL, cfg.BrookSHA256)
@@ -202,7 +207,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			return tunnel.NewBrook(brookPath, link, opts.Probe, cfg.HTTPProxy)
 		}
 	}
-	tun0, err := buildTunnel(cfg.Server)
+	tun0, err := buildTunnel(cfg.Server, "active-main")
 	if err != nil {
 		return fmt.Errorf("构建隧道: %w", err)
 	}
@@ -211,12 +216,20 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	tun0.Start()
 	// 停"当前"隧道:swap 后 lt 指向新隧道。swapper 就绪后经其锁停(与在飞 swapTo 串行,修 M3);
 	// 未就绪(健康前提前返回)则直接停 lt(Stop 幂等,双停安全)。
-	var swapper *transportSwapper
+	var swapper, udpSwapper *transportSwapper
+	var udpLT *liveTunnel
 	defer func() {
 		if swapper != nil {
 			swapper.stop()
 		} else {
 			lt.get().Stop()
+		}
+	}()
+	defer func() {
+		if udpSwapper != nil {
+			udpSwapper.stop()
+		} else if udpLT != nil {
+			udpLT.get().Stop()
 		}
 	}()
 	log.Printf("bx 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
@@ -339,15 +352,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 拖进重启循环。未健康时由上面的 fail-closed 不变量兜住,连上后自动接管 UDP/QUIC。
 	var udpHealthy func() bool
 	if udpEnabled {
-		udpTun, err := buildTunnel(cfg.UDP.Transport)
+		udpTun, err := buildTunnel(cfg.UDP.Transport, "active-udp")
 		if err != nil {
 			return fmt.Errorf("构建 UDP 传输: %w", err)
 		}
-		defer udpTun.Stop()
+		udpLT = &liveTunnel{}
+		udpLT.set(udpTun)
 		if err := attachUDPCompanion(d, udpTun, transportLabel(cfg.UDP.Transport)); err != nil {
 			return fmt.Errorf("挂载 UDP 传输: %w", err)
 		}
-		udpHealthy = udpTun.Healthy
+		udpHealthy = udpLT.Healthy
 	}
 
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
@@ -385,6 +399,17 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		ctx:           ctx,
 	}
 	swapper.setLink(cfg.Server)
+	if udpLT != nil {
+		udpSwapper = &transportSwapper{
+			lt:            udpLT,
+			d:             d,
+			build:         buildTunnel,
+			healthTimeout: healthTimeout,
+			ctx:           ctx,
+			udp:           true,
+		}
+		udpSwapper.setLink(cfg.UDP.Transport)
+	}
 	// 多传输自动容灾(reality 主 / brook 备…):后台监健康,持续不健康→按优先级 swapTo 备选,
 	// 全程 fail-closed;防抖(滞回+冷静期+全挂不切)。单传输跳过(由 kill-switch 接管)。
 	if len(cfg.Transports) > 1 {
@@ -416,6 +441,49 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			RoutesInstalled: routes.ready(),
 			UDPRequired:     udpRequired,
 			UDPReady:        udpReady,
+		}
+	}
+	var recoverer pathRecoverer
+	if provider, ok := plat.(interface{ Underlay() underlayManager }); ok && !opts.NoHijack {
+		underlay := provider.Underlay()
+		initialUnderlay, observeErr := underlay.Observe(ctx)
+		if observeErr != nil {
+			log.Printf("网络路径恢复不可用:初始 underlay 观察失败: %v", observeErr)
+		} else {
+			var udpSlot *transportSetSlot
+			if udpSwapper != nil {
+				slot := udpSwapper.transportSetSlot(udpTransportSlot)
+				udpSlot = &slot
+			}
+			transports := newLiveTransportSet(&swapper.mu, swapper.transportSetSlot(mainTransportSlot), udpSlot)
+			verify := func(verifyCtx context.Context) error {
+				if err := underlay.ValidateCapture(verifyCtx, tunH); err != nil {
+					return err
+				}
+				state := runtimeState()
+				if !state.TunnelHealthy {
+					return fmt.Errorf("main transport is unhealthy")
+				}
+				if !state.DNSListening {
+					return fmt.Errorf("DNS listener is unavailable")
+				}
+				if !state.RoutesInstalled {
+					return fmt.Errorf("capture routes are not installed")
+				}
+				if state.UDPRequired && !state.UDPReady {
+					return fmt.Errorf("UDP transport is unhealthy")
+				}
+				return nil
+			}
+			recoverer = &livePathRecoverer{
+				underlay:     underlay,
+				transports:   transports,
+				tun:          tunH,
+				previous:     initialUnderlay,
+				serverBypass: serverBypass,
+				userBypass:   cfg.Bypass,
+				verify:       verify,
+			}
 		}
 	}
 	// status 用的传输信息:active 动态(从 swapper 当前链接,容灾后反映实际),容灾列表/UDP 静态。
@@ -465,7 +533,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return nil
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControl(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, cancel, uint32(cfg.OwnerUID))
+		return serveControlWithPathRecovery(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, cancel, uint32(cfg.OwnerUID), recoverer)
 	})
 	if err != nil {
 		return err

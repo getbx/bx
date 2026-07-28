@@ -2,7 +2,10 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,9 +22,12 @@ type transportSwapper struct {
 	mu            sync.Mutex
 	lt            *liveTunnel
 	d             *dialer.Dialer
-	build         func(link string) (*tunnel.Tunnel, error)
+	build         func(link, recoveryID string) (*tunnel.Tunnel, error)
 	healthTimeout time.Duration
 	ctx           context.Context
+	udp           bool
+	prepared      sync.Map
+	sequence      atomic.Uint64
 	curLink       atomic.Pointer[string] // 无锁读:swapTo 持 mu 跨健康等待(可达 healthTimeout)时,status 读不被卡
 }
 
@@ -38,26 +44,67 @@ func (s *transportSwapper) currentLink() string {
 func (s *transportSwapper) swapTo(link string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	newTun, err := s.build(link)
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	recoveryID := fmt.Sprintf("swap-%d", s.sequence.Add(1))
+	newTun, err := s.prepare(ctx, link, recoveryID)
 	if err != nil {
 		return err
 	}
+	s.commit(newTun, link)
+	return nil
+}
+
+func (s *transportSwapper) prepare(ctx context.Context, link, recoveryID string) (*tunnel.Tunnel, error) {
+	newTun, err := s.build(link, recoveryID)
+	if err != nil {
+		return nil, err
+	}
 	newTun.Start()
-	if err := waitTunnelHealthy(s.ctx, newTun, s.healthTimeout); err != nil {
+	if err := waitTunnelHealthy(ctx, newTun, s.healthTimeout); err != nil {
 		newTun.Stop() // 新隧道没起来:停掉、不换,旧隧道仍在服务
-		return err
+		return nil, err
 	}
 	px, err := socksProxy(newTun.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
 	if err != nil {
 		newTun.Stop()
-		return err
+		return nil, err
 	}
+	s.prepared.Store(newTun, px)
+	return newTun, nil
+}
+
+func (s *transportSwapper) commit(candidate *tunnel.Tunnel, link string) {
+	old := s.activate(candidate, link)
+	old.Stop()
+}
+
+func (s *transportSwapper) activate(candidate *tunnel.Tunnel, link string) *tunnel.Tunnel {
+	proxyValue, ok := s.prepared.LoadAndDelete(candidate)
+	if !ok {
+		panic("transport candidate committed without successful prepare")
+	}
+	px := proxyValue.(dialer.ContextDialer)
 	old := s.lt.get()
-	s.lt.set(newTun)                                                        // serveControl/refreshLoop 跟随
-	s.d.SetTransport(&dialer.Transport{Proxy: px, Healthy: newTun.Healthy}) // 新连接走新隧道
+	s.lt.set(candidate)
+	transport := &dialer.Transport{Proxy: px, Healthy: candidate.Healthy}
+	if s.udp {
+		s.d.SetUDPTransport(transport)
+	} else {
+		s.d.SetTransport(transport)
+	}
 	s.setLink(link)
-	old.Stop() // 停旧 brook(既有连接重置)
-	return nil
+	return old
+}
+
+func (s *transportSwapper) abort(candidate *tunnel.Tunnel) {
+	if candidate == nil {
+		return
+	}
+	s.prepared.Delete(candidate)
+	candidate.Stop()
 }
 
 // stop 在 s.mu 下停掉当前隧道,供 Run 退出清理。经锁与 swapTo 串行:任何在飞的
@@ -66,6 +113,50 @@ func (s *transportSwapper) stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lt.get().Stop()
+}
+
+func (s *transportSwapper) transportSetSlot(name transportSlotName) transportSetSlot {
+	return transportSetSlot{
+		name: name,
+		link: s.currentLink,
+		prepare: func(ctx context.Context, link, recoveryID string) (transportCandidate, error) {
+			return s.prepare(ctx, link, recoveryID)
+		},
+		commit: func(candidate transportCandidate, link string) transportCandidate {
+			return s.activate(candidate.(*tunnel.Tunnel), link)
+		},
+		abort: func(candidate transportCandidate) {
+			s.abort(candidate.(*tunnel.Tunnel))
+		},
+	}
+}
+
+func transportConfigPath(dataDir, kind, recoveryID string) string {
+	name := "sing-box.json"
+	switch kind {
+	case "hysteria2":
+		name = "sing-box-hy2.json"
+	case "trojan":
+		name = "sing-box-trojan.json"
+	case "shadowsocks":
+		name = "sing-box-ss.json"
+	case "vmess":
+		name = "sing-box-vmess.json"
+	}
+	if recoveryID == "" {
+		return filepath.Join(dataDir, name)
+	}
+	recoveryID = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, recoveryID)
+	extension := filepath.Ext(name)
+	base := strings.TrimSuffix(name, extension)
+	return filepath.Join(dataDir, base+"."+recoveryID+extension)
 }
 
 var _ linkSwapper = (*transportSwapper)(nil)
