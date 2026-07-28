@@ -52,10 +52,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private let bxPath = "/usr/local/bin/bx"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let statusPanel = StatusPanelController()
+    private let guardianClient = GuardianClient()
     private var timer: Timer?
     private var updateTimer: Timer?
     private var state: BxState = .off
     private var updateCheck: UpdateCheck?
+    private var recoverySnapshot: RecoverySnapshot?
+    private var reconnectInFlight = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMenu()
@@ -83,6 +86,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         state = loadState()
         updateIcon()
         rebuildMenu()
+        if let snapshot = recoverySnapshot,
+           recoveryPresentation(for: snapshot).isRunning,
+           !reconnectInFlight {
+            observeRecovery(startingWith: snapshot)
+        }
     }
 
     private func loadState() -> BxState {
@@ -90,7 +98,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return .missing("Install bx at /usr/local/bin/bx")
         }
         let version = loadVersion()
-        if !cliSupportsDiagnosticsArchive() || !cliSupportsSafeReconnect() {
+        if !cliSupportsDiagnosticsArchive() {
             return .updateNeeded("Update bx CLI", version: version)
         }
         let status = runBx(["status", "--json"])
@@ -101,15 +109,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
             return .warning("Status unreadable", version: version)
         }
-        if report.tunnelHealthy && !runtimeSupportsSafeReconnect() {
-            return .updateNeeded("Runtime update pending", version: version)
-        }
         return report.tunnelHealthy ? .connected(report, version: version ?? "unknown", dns: loadDNSStatus()) : .warning("Tunnel unhealthy", version: version)
     }
 
     private func updateIcon() {
         guard let button = statusItem.button else { return }
-        button.image = compactStatusImage(for: statusIndicator(for: statusIndicatorState()))
+        let indicator = recoverySnapshot.map { recoveryPresentation(for: $0).indicator }
+            ?? statusIndicator(for: statusIndicatorState())
+        button.image = compactStatusImage(for: indicator)
         button.imagePosition = .imageOnly
         button.title = ""
         button.toolTip = tooltipText()
@@ -160,6 +167,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     private func tooltipText() -> String {
+        if let snapshot = recoverySnapshot {
+            let presentation = recoveryPresentation(for: snapshot)
+            if let reason = presentation.shortReason {
+                return "bx: \(presentation.title), \(reason)"
+            }
+            return "bx: \(presentation.title)"
+        }
         switch state {
         case .connected(let report, _, _):
             return "bx: Protected, \(report.latencyMS) ms"
@@ -178,6 +192,33 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        if let snapshot = recoverySnapshot {
+            let presentation = recoveryPresentation(for: snapshot)
+            menu.addHeader("bx", subtitle: presentation.title)
+            menu.addInfo("Status", presentation.shortReason ?? presentation.title)
+            if !snapshot.recoveryID.isEmpty {
+                menu.addInfo("Recovery", snapshot.recoveryID)
+            }
+            menu.addItem(.separator())
+            if presentation.isRunning {
+                menu.addAction(
+                    "Reconnect",
+                    symbol: "arrow.clockwise",
+                    target: self,
+                    action: #selector(reconnectBx),
+                    enabled: false
+                )
+            } else if snapshot.state == "failed" {
+                menu.addAction("Details", symbol: "info.circle", target: self, action: #selector(showRecoveryDetails))
+                menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+            } else {
+                menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            }
+            menu.addItem(.separator())
+            menu.addAction(quitMenuActionTitle, symbol: "xmark.circle", target: self, action: #selector(quit))
+            statusItem.menu = menu
+            return
+        }
         switch state {
         case .connected(let report, let version, let dns):
             menu.addHeader("bx", subtitle: "Connected")
@@ -348,10 +389,125 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func reconnectBx() {
-        if !runPrivileged("'\(bxPath)' reconnect") {
-            showFailure("Reconnect Failed", "bx could not establish a replacement protected transport.")
+        guard !reconnectInFlight else { return }
+        reconnectInFlight = true
+        let pending = localRecoverySnapshot(state: "accepted", stage: "queued")
+        recoverySnapshot = pending
+        updateIcon()
+        rebuildMenu()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                let submitted = try self.guardianClient.requestRecovery()
+                DispatchQueue.main.async { [weak self] in
+                    self?.publishRecovery(submitted)
+                }
+                self.pollRecovery(startingWith: submitted)
+            } catch {
+                let failed = self.localRecoverySnapshot(
+                    state: "failed",
+                    stage: "failed",
+                    errorCode: self.recoveryErrorCode(error)
+                )
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.reconnectInFlight = false
+                    self.publishRecovery(failed)
+                }
+            }
         }
-        refresh()
+    }
+
+    private func observeRecovery(startingWith snapshot: RecoverySnapshot) {
+        reconnectInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.pollRecovery(startingWith: snapshot)
+        }
+    }
+
+    private func pollRecovery(startingWith submitted: RecoverySnapshot) {
+        var snapshot = submitted
+        var delay = 0.25
+        while recoveryPresentation(for: snapshot).isRunning {
+            Thread.sleep(forTimeInterval: delay)
+            delay = 0.5
+            do {
+                let current = try guardianClient.currentRecovery()
+                guard current.recoveryID == submitted.recoveryID else { continue }
+                snapshot = current
+                DispatchQueue.main.async { [weak self] in
+                    self?.publishRecovery(current)
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.reconnectInFlight = false
+                }
+                return
+            }
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.reconnectInFlight = false
+            self.publishRecovery(snapshot)
+            if snapshot.state == "succeeded" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    guard let self, self.recoverySnapshot?.recoveryID == snapshot.recoveryID else { return }
+                    self.recoverySnapshot = nil
+                    self.refresh()
+                }
+            }
+        }
+    }
+
+    private func publishRecovery(_ snapshot: RecoverySnapshot) {
+        recoverySnapshot = snapshot
+        updateIcon()
+        rebuildMenu()
+    }
+
+    @objc private func showRecoveryDetails() {
+        guard let snapshot = recoverySnapshot else { return }
+        let presentation = recoveryPresentation(for: snapshot)
+        let alert = NSAlert()
+        alert.messageText = presentation.title
+        alert.informativeText = [
+            presentation.shortReason,
+            snapshot.recoveryID.isEmpty ? nil : "Recovery: \(snapshot.recoveryID)",
+            "Stage: \(snapshot.stage)",
+        ].compactMap { $0 }.joined(separator: "\n")
+        alert.addButton(withTitle: "Run Doctor")
+        alert.addButton(withTitle: "OK")
+        if alert.runModal() == .alertFirstButtonReturn {
+            runDoctor()
+        }
+    }
+
+    private func localRecoverySnapshot(
+        state: String,
+        stage: String,
+        errorCode: String? = nil
+    ) -> RecoverySnapshot {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        return RecoverySnapshot(
+            recoveryID: "",
+            state: state,
+            stage: stage,
+            reason: "manual",
+            generation: nil,
+            lastErrorCode: errorCode,
+            detail: nil,
+            attempt: 1,
+            startedAt: timestamp,
+            updatedAt: timestamp
+        )
+    }
+
+    private func recoveryErrorCode(_ error: Error) -> String {
+        if case GuardianClientError.socket = error {
+            return "recovery_unavailable"
+        }
+        return "recovery_failed"
     }
 
     @objc private func updateBx() {
@@ -516,15 +672,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         return result.code == 0 && result.stdout.contains("--archive") && result.stdout.contains("--dir")
     }
 
-    private func cliSupportsSafeReconnect() -> Bool {
-        let result = runBx(["reconnect", "--help"])
-        return result.code == 0
-    }
-
-    private func runtimeSupportsSafeReconnect() -> Bool {
-        runBx(["reconnect", "--check"]).code == 0
-    }
-
     private func loadDNSStatus() -> String? {
         let result = runBx(["dns", "status"])
         guard result.code == 0 else { return nil }
@@ -608,10 +755,11 @@ private extension NSMenu {
         addItem(item)
     }
 
-    func addAction(_ title: String, symbol: String, target: AnyObject, action: Selector) {
+    func addAction(_ title: String, symbol: String, target: AnyObject, action: Selector, enabled: Bool = true) {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = target
         item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        item.isEnabled = enabled
         addItem(item)
     }
 }

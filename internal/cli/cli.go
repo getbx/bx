@@ -25,6 +25,7 @@ import (
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/gateway"
+	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/mcp"
 	"github.com/getbx/bx/internal/procredact"
@@ -379,7 +380,10 @@ func realtimeFlags() []cli.Flag {
 }
 
 func reconnectFlags() []cli.Flag {
-	return []cli.Flag{&cli.BoolFlag{Name: "check", Usage: "只检查运行中的 bx 是否支持安全重连"}}
+	return []cli.Flag{
+		&cli.BoolFlag{Name: "check", Usage: "只检查运行中的 bx 是否支持安全重连"},
+		&cli.BoolFlag{Name: "json", Usage: "输出最终 recovery snapshot"},
+	}
 }
 
 func webrtcCheckFlags() []cli.Flag {
@@ -3822,10 +3826,48 @@ func downAction(c *cli.Context) (err error) {
 	return nil
 }
 
-// reconnectAction 在守护进程内安全更换传输。替代传输健康前,旧路径仍负责数据面;
-// 因而不会释放 TUN、路由或 DNS,失败时也不会形成直连窗口。
+type guardianRecoveryClient interface {
+	RequestRecovery(context.Context, guardian.RecoveryRequest) (guardian.RecoverySnapshot, error)
+	CurrentRecovery(context.Context) (guardian.RecoverySnapshot, error)
+}
+
+type reconnectDependencies struct {
+	client          guardianRecoveryClient
+	output          io.Writer
+	wait            func(context.Context, time.Duration) error
+	legacyReconnect func(context.Context) error
+}
+
+func defaultReconnectDependencies() reconnectDependencies {
+	return reconnectDependencies{
+		client: guardian.NewClient(guardian.SocketPath),
+		output: os.Stdout,
+		wait:   waitForReconnectPoll,
+		legacyReconnect: func(ctx context.Context) error {
+			if !install.UnitInstalled() {
+				return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
+			}
+			if _, err := supervisor.ReconnectControlContext(ctx, statusSocketPath()); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+}
+
+// reconnectAction asks Guardian to serialize the complete protected path recovery.
+// A legacy direct-Core reconnect remains only for installations with no reachable Guardian.
 func reconnectAction(c *cli.Context) (err error) {
+	deps := defaultReconnectDependencies()
 	if c.Bool("check") {
+		_, err := deps.client.CurrentRecovery(c.Context)
+		if err == nil {
+			return nil
+		}
+		var unavailable *guardian.UnavailableError
+		if !errors.As(err, &unavailable) {
+			return err
+		}
 		ok, err := supervisor.SupportsSafeReconnect(statusSocketPath())
 		if err != nil {
 			return err
@@ -3836,20 +3878,84 @@ func reconnectAction(c *cli.Context) (err error) {
 		return nil
 	}
 	defer autoArchiveAfterClientCommand("reconnect", &err, true)
-	if !install.UnitInstalled() {
-		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
+	return reconnectWithDependencies(c.Context, c.Bool("json"), deps)
+}
+
+func reconnectWithDependencies(ctx context.Context, jsonOutput bool, deps reconnectDependencies) error {
+	if deps.client == nil {
+		return fmt.Errorf("Guardian recovery client unavailable")
 	}
-	stepLine("保护", "安全重连传输")
-	if _, err := supervisor.ReconnectControlContext(c.Context, statusSocketPath()); err != nil {
+	if deps.output == nil {
+		deps.output = io.Discard
+	}
+	if deps.wait == nil {
+		deps.wait = waitForReconnectPoll
+	}
+
+	snapshot, err := deps.client.RequestRecovery(ctx, guardian.RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		var unavailable *guardian.UnavailableError
+		if errors.As(err, &unavailable) && deps.legacyReconnect != nil {
+			return deps.legacyReconnect(ctx)
+		}
 		return err
 	}
-	stepDone("保护", "已安全重连")
-	if rep, rerr := readStatusReport(); rerr == nil {
-		printUpSummary(rep)
+	if !jsonOutput {
+		fmt.Fprintln(deps.output, "• Protection  Reconnecting")
+	}
+
+	delay := 250 * time.Millisecond
+	for {
+		switch snapshot.State {
+		case "succeeded":
+			if jsonOutput {
+				return writeJSON(deps.output, snapshot)
+			}
+			fmt.Fprintln(deps.output, "✓ Protection  Reconnected")
+			return nil
+		case "failed":
+			if jsonOutput {
+				if err := writeJSON(deps.output, snapshot); err != nil {
+					return err
+				}
+			}
+			code := snapshot.ErrorCode
+			if code == "" {
+				code = "recovery_failed"
+			}
+			return fmt.Errorf("recovery failed: %s", code)
+		case "ignored":
+			if jsonOutput {
+				if err := writeJSON(deps.output, snapshot); err != nil {
+					return err
+				}
+			}
+			return fmt.Errorf("recovery was not started: %s", snapshot.Stage)
+		}
+
+		if err := deps.wait(ctx, delay); err != nil {
+			return fmt.Errorf("recovery %s is still running: %w", snapshot.ID, err)
+		}
+		delay = 500 * time.Millisecond
+		current, err := deps.client.CurrentRecovery(ctx)
+		if err != nil {
+			return fmt.Errorf("recovery %s is still running: %w", snapshot.ID, err)
+		}
+		if current.ID == snapshot.ID {
+			snapshot = current
+		}
+	}
+}
+
+func waitForReconnectPoll(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
 		return nil
 	}
-	fmt.Println("✅ bx 已安全重连。")
-	return nil
 }
 
 // restartAction 保留旧命令,但语义与 reconnect 完全一致。

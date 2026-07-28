@@ -96,6 +96,67 @@ func TestManagerPathRecoveryDeduplicatesSameGenerationAndCoalescesNewestPending(
 	}
 }
 
+func TestManagerPathRecoveryRelaysCoreRecoveryStage(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := &observedCorePathClient{
+		observed: make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	env.manager.corePath = core
+
+	started, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-core.observed:
+	case <-time.After(time.Second):
+		t.Fatal("Guardian did not receive Core recovery progress")
+	}
+	current := env.manager.CurrentPathRecovery()
+	if current.ID != started.ID || current.State != "running" || current.Stage != "rebind_underlay" {
+		t.Fatalf("Guardian recovery progress = %+v, want Core rebind_underlay stage", current)
+	}
+	close(core.release)
+	eventually(t, func() bool {
+		return env.manager.CurrentPathRecovery().State == "succeeded"
+	})
+}
+
+type observedCorePathClient struct {
+	observed chan struct{}
+	release  chan struct{}
+}
+
+func (c *observedCorePathClient) RecoverPath(context.Context, supervisor.PathRecoveryRequest) (supervisor.PathRecoverySnapshot, error) {
+	return supervisor.PathRecoverySnapshot{State: "failed", Stage: "failed"}, errors.New("unobserved Core recovery path used")
+}
+
+func (c *observedCorePathClient) RecoverPathObserved(
+	_ context.Context,
+	request supervisor.PathRecoveryRequest,
+	observe func(supervisor.PathRecoverySnapshot),
+) (supervisor.PathRecoverySnapshot, error) {
+	observe(supervisor.PathRecoverySnapshot{
+		ID:         "core-recovery-1",
+		State:      "recovering",
+		Stage:      "rebind_underlay",
+		Reason:     request.Reason,
+		Generation: request.Generation,
+		Attempt:    1,
+	})
+	close(c.observed)
+	<-c.release
+	return supervisor.PathRecoverySnapshot{
+		ID:         "core-recovery-1",
+		State:      "succeeded",
+		Stage:      "succeeded",
+		Reason:     request.Reason,
+		Generation: request.Generation,
+		Attempt:    1,
+	}, nil
+}
+
 func TestManagerPathRecoveryIgnoresRequestsWhileOff(t *testing.T) {
 	env := newManagerTestEnv(t)
 	core := newFakeCorePathClient(false)

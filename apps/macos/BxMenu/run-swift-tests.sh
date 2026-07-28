@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MENU="$ROOT/apps/macos/BxMenu"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/bx-menu-tests.XXXXXX")"
+MENU="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MARKER="$1"
+OUTPUT="$(dirname "$MARKER")"
+mkdir -p "$OUTPUT"
+TMP="$(mktemp -d "$OUTPUT/.tests.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+rm -f "$MARKER"
 
 run_test() {
   local name="$1"
   shift
-  swiftc "$@" -o "$TMP/$name"
+  xcrun swiftc "$@" -o "$TMP/$name"
   "$TMP/$name"
 }
 
@@ -32,4 +35,5 @@ run_test guardian-client \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Tests/GuardianClientTests.swift"
 
-echo "macOS menu tests passed"
+touch "$MARKER"
+echo "BxMenu Swift tests passed"
