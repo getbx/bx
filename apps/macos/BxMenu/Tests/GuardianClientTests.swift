@@ -8,6 +8,10 @@ struct GuardianClientTests {
         try run("complete body without EOF", testCompleteContentLengthReturnsWithoutEOFAndSetsTimeouts)
         try run("partial body timeout", testPartialBodyTimesOutAndClosesClientFD)
         try run("progressive body respects total deadline", testProgressiveBodyRespectsTotalDeadline)
+        try run("deadline expires after write poll", testDeadlineExpiresAfterWritePollReadiness)
+        try run("deadline rejects complete response", testCompleteResponseAfterDeadlineIsRejected)
+        try run("deadline accepts complete response", testCompleteResponseBeforeDeadlineIsAccepted)
+        try run("extreme deadline stays bounded", testExtremeTimeoutDoesNotOverflow)
         try run("parser bounds", testResponseBoundsAndContentType)
         try run("strict HTTP framing", testStrictHTTPFraming)
     }
@@ -23,7 +27,7 @@ struct GuardianClientTests {
 
     private static func testFixedRecoveryRequestsAndJSONDecode() throws {
         let post = try fixtureClient(response: response(status: 202, body: recoveryJSON))
-        let submitted = try post.client.requestRecovery()
+        let submitted = try GuardianClient(connectSocket: { post.clientSocket }).requestRecovery()
         expect(submitted.recoveryID == "recovery-1", "POST snapshot decoded")
         let postRequest = try readRequest(post.serverFD)
         expect(postRequest.hasPrefix("POST /v1/recoveries HTTP/1.1\r\n"), "fixed POST path")
@@ -31,7 +35,7 @@ struct GuardianClientTests {
         expect(postRequest.hasSuffix("\r\n\r\n{\"reason\":\"manual\"}"), "fixed manual recovery body")
 
         let get = try fixtureClient(response: response(status: 200, body: recoveryJSON))
-        let current = try get.client.currentRecovery()
+        let current = try GuardianClient(connectSocket: { get.clientSocket }).currentRecovery()
         expect(current.stage == "rebind_underlay", "GET snapshot decoded")
         let getRequest = try readRequest(get.serverFD)
         expect(getRequest.hasPrefix("GET /v1/recoveries/current HTTP/1.1\r\n"), "fixed GET path")
@@ -236,7 +240,65 @@ struct GuardianClientTests {
         expect(finishedWriting.wait(timeout: .now() + 1) == .success, "progressive writer stopped after client close")
     }
 
-    private static func fixtureClient(response: Data) throws -> (client: GuardianClient, serverFD: Int32) {
+    private static func testDeadlineExpiresAfterWritePollReadiness() throws {
+        var sockets = [Int32](repeating: -1, count: 2)
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
+            throw POSIXError(.ENOTCONN)
+        }
+        defer { close(sockets[1]) }
+
+        let clock = TestClock(samples: [0, 0, 0, 0.05])
+        let client = GuardianClient(
+            connectSocket: { sockets[0] },
+            ioTimeout: 0.05,
+            clock: clock.now
+        )
+        expectSocketTimeout("deadline expires after write poll readiness") {
+            _ = try client.requestRecovery()
+        }
+        expect(try readRequestToEOF(sockets[1]).isEmpty, "expired write is never attempted")
+    }
+
+    private static func testCompleteResponseAfterDeadlineIsRejected() throws {
+        let fixture = try fixtureClient(response: response(status: 202, body: recoveryJSON))
+        let clock = TestClock(samples: Array(repeating: 0, count: 10) + [0.05])
+        let client = GuardianClient(
+            connectSocket: { fixture.clientSocket },
+            ioTimeout: 0.05,
+            clock: clock.now
+        )
+        expectSocketTimeout("complete response is rejected after deadline") {
+            _ = try client.requestRecovery()
+        }
+        expect((try readRequest(fixture.serverFD)).hasPrefix("POST /v1/recoveries HTTP/1.1\r\n"), "expired response still closes client FD")
+    }
+
+    private static func testCompleteResponseBeforeDeadlineIsAccepted() throws {
+        let fixture = try fixtureClient(response: response(status: 202, body: recoveryJSON))
+        let clock = TestClock(samples: Array(repeating: 0, count: 11))
+        let client = GuardianClient(
+            connectSocket: { fixture.clientSocket },
+            ioTimeout: 0.05,
+            clock: clock.now
+        )
+        let snapshot = try client.requestRecovery()
+        expect(snapshot.recoveryID == "recovery-1", "complete response before deadline succeeds")
+        _ = try readRequest(fixture.serverFD)
+    }
+
+    private static func testExtremeTimeoutDoesNotOverflow() throws {
+        let fixture = try fixtureClient(response: response(status: 202, body: recoveryJSON))
+        let clock = TestClock(samples: Array(repeating: 0, count: 11))
+        let client = GuardianClient(
+            connectSocket: { fixture.clientSocket },
+            ioTimeout: .greatestFiniteMagnitude,
+            clock: clock.now
+        )
+        expect(try client.requestRecovery().recoveryID == "recovery-1", "extreme timeout does not overflow socket timeout")
+        _ = try readRequest(fixture.serverFD)
+    }
+
+    private static func fixtureClient(response: Data) throws -> (clientSocket: Int32, serverFD: Int32) {
         var sockets = [Int32](repeating: -1, count: 2)
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
             throw POSIXError(.ENOTCONN)
@@ -245,7 +307,7 @@ struct GuardianClientTests {
         guard shutdown(sockets[1], SHUT_WR) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        return (GuardianClient(connectSocket: { sockets[0] }), sockets[1])
+        return (sockets[0], sockets[1])
     }
 
     private static func readRequest(_ fd: Int32) throws -> String {
@@ -337,6 +399,21 @@ struct GuardianClientTests {
             expect(code == ETIMEDOUT, label)
         } catch {
             expect(false, "\(label): unexpected \(error)")
+        }
+    }
+
+    private final class TestClock {
+        private var samples: [TimeInterval]
+        private var index = 0
+
+        init(samples: [TimeInterval]) {
+            self.samples = samples
+        }
+
+        func now() -> TimeInterval {
+            let sample = samples[min(index, samples.count - 1)]
+            index += 1
+            return sample
         }
     }
 
