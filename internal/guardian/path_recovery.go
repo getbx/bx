@@ -535,7 +535,7 @@ func shouldRetryPathRecovery(transaction pathRecoveryTransaction, result Recover
 		return false
 	}
 	switch result.ErrorCode {
-	case "capture_invalid", "capture_missing", "recovery_canceled", "recovery_unavailable":
+	case "capture_invalid", "capture_missing", "recovery_canceled", "recovery_unavailable", "underlay_unavailable":
 		return false
 	default:
 		return true

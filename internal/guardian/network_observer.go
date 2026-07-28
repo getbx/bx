@@ -105,7 +105,6 @@ func (o *NetworkObserver) Run(ctx context.Context) {
 		next, err := o.events.Events(ctx)
 		if err == nil && next != nil {
 			events = next
-			retryDelay = o.config.retryInitial
 			retryC = nil
 			return
 		}
@@ -132,6 +131,7 @@ func (o *NetworkObserver) Run(ctx context.Context) {
 				retryDelay = nextNetworkObserverBackoff(retryDelay, o.config.retryMax)
 				continue
 			}
+			retryDelay = o.config.retryInitial
 			debounceTimer = resetOrCreateNetworkObserverTimer(o.config.clock, debounceTimer, o.config.quietWindow)
 			debounceC = debounceTimer.C()
 		case <-debounceC:
