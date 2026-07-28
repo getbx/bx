@@ -468,3 +468,70 @@ git diff --check
   `socketpair` 与 pure presentation test 覆盖，未运行任何 live `bx`、网络、
   `sudo`、路由或 launchd 命令。
 - 无已知 fail-open、无限 observation 或 deadline reset concern。
+
+---
+
+## Fix Round 3（2026-07-27）
+
+### 状态与提交
+
+- 状态：DONE
+- Fix commit：`32606cab534094b302815c1bdf2722a314fe4e22`
+- 范围仅限 GuardianClient Swift 的 request-wide hard deadline 边界。
+
+### 修复内容
+
+1. **硬 deadline checkpoint**
+   - 默认继续使用 `systemUptime` 单调 clock；测试构造器可注入 clock。
+   - Unix connect、每次 `poll` 就绪后的实际 write/read 前、write/read 后，
+     以及接受完整 `Content-Length` 前均重新检查同一个 absolute deadline。
+   - deadline 已到一律抛出 `GuardianClientError.socket(ETIMEDOUT)`；完整响应
+     即使已到齐也不会再被解码为成功。
+
+2. **边界数值安全**
+   - timeout 钳制为 `poll(Int32)` 可表示的最大毫秒范围，避免极大 timeout
+     在 `timeval` 转换中 overflow。
+   - `poll` 预算保持向上取整且最小 1ms，避免亚毫秒 0ms busy loop；poll 返回后
+     的 checkpoint 保证向上取整不允许超期成功。
+
+3. **确定性 Swift 回归**
+   - `socketpair` + sequence clock 覆盖 poll-ready 后 deadline 跨越时 write
+     不得发生、完整 Content-Length 到齐但 acceptance 已过期时必须 timeout、
+     deadline 内完整响应仍成功，以及极大 timeout 不触发整数 overflow。
+
+### RED 证据
+
+```text
+bash apps/macos/BxMenu/run-swift-tests.sh /tmp/bxmenu-red-fix-round-3
+```
+
+首次失败：`extra argument 'clock' in call`，证明旧 client 无法构造 poll-ready
+与实际 I/O 之间的确定性 deadline 跨越。补充 overflow 守卫后，旧实现按预期
+触发：
+
+```text
+Fatal error: Double value cannot be converted to Int because the result would be greater than Int.max
+```
+
+### GREEN 与最终验证
+
+以下命令均 exit 0：
+
+```text
+bash apps/macos/BxMenu/run-swift-tests.sh /tmp/bxmenu-green-overflow-fix-round-3
+swift test --package-path apps/macos/BxMenu
+./scripts/test-macos-menu.sh
+go test ./internal/mcp ./internal/guardian ./internal/cli -run 'Reconnect|RecoveryClient|MacMenu' -count=1
+go test -race ./internal/mcp ./internal/guardian ./internal/cli -run 'Reconnect|RecoveryClient|MacMenu' -count=1
+GOOS=darwin GOARCH=arm64 go build -o /dev/null ./...
+go test ./...
+go vet ./...
+go build ./...
+git diff --check
+```
+
+### Concerns
+
+- 未连接真实 Guardian socket、未运行 live `bx`/网络/`sudo`/路由/launchd 命令；
+  hard deadline 由 socketpair 与可控单调 clock 确定性覆盖。
+- 无已知 deadline-after-success、busy loop 或 timeout conversion overflow concern。
