@@ -41,6 +41,33 @@ struct RecoveryPresentationTests {
         let timeoutPresentation = recoveryPresentation(for: transition.snapshot)
         expect(timeoutPresentation.title == "Reconnect Failed", "observation failure title")
         expect(timeoutPresentation.shortReason == "Recovery unavailable", "observation failure has Details reason")
+
+        let submitted = recoverySnapshot(state: "running", stage: "transport_health")
+        let replacement = RecoverySnapshot(
+            recoveryID: "recovery-2",
+            state: "succeeded",
+            stage: "succeeded",
+            reason: "manual",
+            generation: nil,
+            lastErrorCode: nil,
+            detail: nil,
+            attempt: 1,
+            startedAt: "2026-07-27T12:00:00Z",
+            updatedAt: "2026-07-27T12:00:01Z"
+        )
+        guard let replacementTransition = recoveryObservationFailure(
+            submitted: submitted,
+            observed: replacement
+        ) else {
+            expect(false, "replacement recovery becomes an observation failure")
+            return
+        }
+        expect(!replacementTransition.reconnectInFlight, "replacement resets reconnect in-flight state")
+        expect(replacementTransition.snapshot.recoveryID == submitted.recoveryID, "replacement does not replace submitted recovery")
+        expect(replacementTransition.snapshot.state == "failed", "replacement is not reported as success")
+        let replacementPresentation = recoveryPresentation(for: replacementTransition.snapshot)
+        expect(replacementPresentation.title == "Reconnect Failed", "replacement failure title")
+        expect(replacementPresentation.shortReason == "Recovery was replaced", "replacement failure short reason")
     }
 
     private static func recoverySnapshot(

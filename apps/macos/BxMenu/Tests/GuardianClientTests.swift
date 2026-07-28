@@ -7,6 +7,7 @@ struct GuardianClientTests {
         try run("fixed requests", testFixedRecoveryRequestsAndJSONDecode)
         try run("complete body without EOF", testCompleteContentLengthReturnsWithoutEOFAndSetsTimeouts)
         try run("partial body timeout", testPartialBodyTimesOutAndClosesClientFD)
+        try run("progressive body respects total deadline", testProgressiveBodyRespectsTotalDeadline)
         try run("parser bounds", testResponseBoundsAndContentType)
         try run("strict HTTP framing", testStrictHTTPFraming)
     }
@@ -192,6 +193,49 @@ struct GuardianClientTests {
         expect(request.hasPrefix("POST /v1/recoveries HTTP/1.1\r\n"), "timeout closes client FD")
     }
 
+    private static func testProgressiveBodyRespectsTotalDeadline() throws {
+        var sockets = [Int32](repeating: -1, count: 2)
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
+            throw POSIXError(.ENOTCONN)
+        }
+        defer { close(sockets[1]) }
+
+        var noSignal: Int32 = 1
+        guard setsockopt(
+            sockets[1],
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &noSignal,
+            socklen_t(MemoryLayout.size(ofValue: noSignal))
+        ) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        let response = response(status: 202, body: recoveryJSON)
+        try writeAll(response.prefix(1), to: sockets[1])
+        let finishedWriting = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            defer { finishedWriting.signal() }
+            for byte in response.dropFirst() {
+                usleep(20_000)
+                var chunk = byte
+                if Darwin.write(sockets[1], &chunk, 1) <= 0 {
+                    return
+                }
+            }
+        }
+
+        let client = GuardianClient(connectSocket: { sockets[0] }, ioTimeout: 0.08)
+        let started = Date()
+        expectSocketTimeout("progressive response uses one total deadline") {
+            _ = try client.requestRecovery()
+        }
+        expect(Date().timeIntervalSince(started) < 0.5, "progressive response cannot renew deadline")
+        let request = try readRequestToEOF(sockets[1])
+        expect(request.hasPrefix("POST /v1/recoveries HTTP/1.1\r\n"), "progressive timeout closes client FD")
+        expect(finishedWriting.wait(timeout: .now() + 1) == .success, "progressive writer stopped after client close")
+    }
+
     private static func fixtureClient(response: Data) throws -> (client: GuardianClient, serverFD: Int32) {
         var sockets = [Int32](repeating: -1, count: 2)
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
@@ -282,6 +326,17 @@ struct GuardianClientTests {
             expect(false, label)
         } catch {
             return
+        }
+    }
+
+    private static func expectSocketTimeout(_ label: String, _ body: () throws -> Void) {
+        do {
+            try body()
+            expect(false, label)
+        } catch GuardianClientError.socket(let code) {
+            expect(code == ETIMEDOUT, label)
+        } catch {
+            expect(false, "\(label): unexpected \(error)")
         }
     }
 
