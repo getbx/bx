@@ -11,6 +11,7 @@ struct GuardianClientTests {
         try run("deadline expires after write poll", testDeadlineExpiresAfterWritePollReadiness)
         try run("deadline rejects complete response", testCompleteResponseAfterDeadlineIsRejected)
         try run("deadline accepts complete response", testCompleteResponseBeforeDeadlineIsAccepted)
+        try run("decode boundary respects deadline", testDecodeBoundaryRespectsDeadline)
         try run("extreme deadline stays bounded", testExtremeTimeoutDoesNotOverflow)
         try run("parser bounds", testResponseBoundsAndContentType)
         try run("strict HTTP framing", testStrictHTTPFraming)
@@ -284,6 +285,47 @@ struct GuardianClientTests {
         let snapshot = try client.requestRecovery()
         expect(snapshot.recoveryID == "recovery-1", "complete response before deadline succeeds")
         _ = try readRequest(fixture.serverFD)
+    }
+
+    private static func testDecodeBoundaryRespectsDeadline() throws {
+        let expired = try fixtureClient(response: response(status: 202, body: recoveryJSON))
+        let expiredClock = TestClock(samples: Array(repeating: 0, count: 11) + [0.05])
+        let expiredClient = GuardianClient(
+            connectSocket: { expired.clientSocket },
+            ioTimeout: 0.05,
+            clock: expiredClock.now
+        )
+        expectSocketTimeout("successful decode cannot cross deadline") {
+            _ = try expiredClient.requestRecovery()
+        }
+        _ = try readRequest(expired.serverFD)
+
+        let timely = try fixtureClient(response: response(status: 202, body: recoveryJSON))
+        let timelyClock = TestClock(samples: Array(repeating: 0, count: 11) + [0.049])
+        let timelyClient = GuardianClient(
+            connectSocket: { timely.clientSocket },
+            ioTimeout: 0.05,
+            clock: timelyClock.now
+        )
+        expect(try timelyClient.requestRecovery().recoveryID == "recovery-1", "decode before deadline succeeds")
+        _ = try readRequest(timely.serverFD)
+
+        let malformed = try fixtureClient(response: response(status: 202, body: "{}"))
+        let malformedClock = TestClock(samples: Array(repeating: 0, count: 11) + [0.05])
+        let malformedClient = GuardianClient(
+            connectSocket: { malformed.clientSocket },
+            ioTimeout: 0.05,
+            clock: malformedClock.now
+        )
+        do {
+            _ = try malformedClient.requestRecovery()
+            expect(false, "malformed decode fails")
+        } catch GuardianClientError.invalidResponse {
+            // Decode errors take precedence because no snapshot exists to return.
+        } catch {
+            expect(false, "malformed decode returned unexpected error: \(error)")
+        }
+        _ = try readRequest(malformed.serverFD)
     }
 
     private static func testExtremeTimeoutDoesNotOverflow() throws {
