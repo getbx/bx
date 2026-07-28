@@ -18,6 +18,36 @@ type transportSet interface {
 	Recover(context.Context) error
 }
 
+var errTransportGenerationStopped = errors.New("transport generation stopped")
+
+type transportGeneration struct {
+	mu      sync.Mutex
+	stopped bool
+}
+
+func newTransportGeneration() *transportGeneration {
+	return &transportGeneration{}
+}
+
+func (g *transportGeneration) run(operation func() error) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.stopped {
+		return errTransportGenerationStopped
+	}
+	return operation()
+}
+
+func (g *transportGeneration) stop(teardown func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.stopped {
+		return
+	}
+	g.stopped = true
+	teardown()
+}
+
 type transportSlotName string
 
 const (
@@ -58,20 +88,21 @@ type transportSetSlot struct {
 	prepare func(context.Context, string, string) (transportCandidate, error)
 	commit  func(transportCandidate, string) transportCandidate
 	abort   func(transportCandidate)
+	stop    func()
 }
 
 type liveTransportSet struct {
-	mu       *sync.Mutex
-	main     transportSetSlot
-	udp      *transportSetSlot
-	sequence atomic.Uint64
+	generation *transportGeneration
+	main       transportSetSlot
+	udp        *transportSetSlot
+	sequence   atomic.Uint64
 }
 
-func newLiveTransportSet(mu *sync.Mutex, main transportSetSlot, udp *transportSetSlot) *liveTransportSet {
-	if mu == nil {
-		mu = &sync.Mutex{}
+func newLiveTransportSet(generation *transportGeneration, main transportSetSlot, udp *transportSetSlot) *liveTransportSet {
+	if generation == nil {
+		generation = newTransportGeneration()
 	}
-	return &liveTransportSet{mu: mu, main: main, udp: udp}
+	return &liveTransportSet{generation: generation, main: main, udp: udp}
 }
 
 type preparedTransportResult struct {
@@ -82,8 +113,12 @@ type preparedTransportResult struct {
 }
 
 func (s *liveTransportSet) Recover(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.generation.run(func() error {
+		return s.recover(ctx)
+	})
+}
+
+func (s *liveTransportSet) recover(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -155,6 +190,17 @@ func (s *liveTransportSet) Recover(ctx context.Context) error {
 		old.Stop()
 	}
 	return nil
+}
+
+func (s *liveTransportSet) Stop() {
+	s.generation.stop(func() {
+		if s.udp != nil && s.udp.stop != nil {
+			s.udp.stop()
+		}
+		if s.main.stop != nil {
+			s.main.stop()
+		}
+	})
 }
 
 var _ transportSet = (*liveTransportSet)(nil)

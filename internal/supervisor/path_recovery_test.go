@@ -122,8 +122,9 @@ func TestPathRecoveryFailureStoresStableCodeWithoutDetail(t *testing.T) {
 }
 
 type fakeLiveUnderlay struct {
-	next UnderlaySnapshot
-	errs map[string]error
+	next     UnderlaySnapshot
+	errs     map[string]error
+	recorder *chronologicalRecoveryRecorder
 
 	mu    sync.Mutex
 	calls []string
@@ -133,6 +134,9 @@ func (u *fakeLiveUnderlay) record(call string) {
 	u.mu.Lock()
 	u.calls = append(u.calls, call)
 	u.mu.Unlock()
+	if u.recorder != nil {
+		u.recorder.record(call)
+	}
 }
 
 func (u *fakeLiveUnderlay) Observe(context.Context) (UnderlaySnapshot, error) {
@@ -151,7 +155,8 @@ func (u *fakeLiveUnderlay) Rebind(context.Context, tunHandle, UnderlaySnapshot, 
 }
 
 type fakeLiveTransportSet struct {
-	err error
+	err      error
+	recorder *chronologicalRecoveryRecorder
 
 	mu    sync.Mutex
 	calls []string
@@ -161,16 +166,35 @@ func (s *fakeLiveTransportSet) Recover(context.Context) error {
 	s.mu.Lock()
 	s.calls = append(s.calls, "transport_health")
 	s.mu.Unlock()
+	if s.recorder != nil {
+		s.recorder.record("transport_health")
+	}
 	return s.err
+}
+
+type chronologicalRecoveryRecorder struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *chronologicalRecoveryRecorder) record(call string) {
+	r.mu.Lock()
+	r.calls = append(r.calls, call)
+	r.mu.Unlock()
+}
+
+func (r *chronologicalRecoveryRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
 }
 
 func TestLivePathRecovererRunsCaptureSafeOrderAndVerifies(t *testing.T) {
 	old := mustUnderlaySnapshot(t, "en0", "192.0.2.1", "192.0.2.0/24")
 	next := mustUnderlaySnapshot(t, "en1", "198.51.100.1", "198.51.100.0/24")
-	underlay := &fakeLiveUnderlay{next: next, errs: map[string]error{}}
-	transports := &fakeLiveTransportSet{}
-	var orderMu sync.Mutex
-	var order []string
+	recorder := &chronologicalRecoveryRecorder{}
+	underlay := &fakeLiveUnderlay{next: next, errs: map[string]error{}, recorder: recorder}
+	transports := &fakeLiveTransportSet{recorder: recorder}
 	recoverer := &livePathRecoverer{
 		underlay:     underlay,
 		transports:   transports,
@@ -179,9 +203,7 @@ func TestLivePathRecovererRunsCaptureSafeOrderAndVerifies(t *testing.T) {
 		serverBypass: []string{"203.0.113.9/32"},
 		userBypass:   []string{"10.0.0.0/8"},
 		verify: func(context.Context) error {
-			orderMu.Lock()
-			order = append(order, "verify")
-			orderMu.Unlock()
+			recorder.record("verify")
 			return nil
 		},
 	}
@@ -196,16 +218,7 @@ func TestLivePathRecovererRunsCaptureSafeOrderAndVerifies(t *testing.T) {
 	if result.State != "succeeded" || result.Stage != "succeeded" {
 		t.Fatalf("result = %+v", result)
 	}
-	underlay.mu.Lock()
-	underlayCalls := append([]string(nil), underlay.calls...)
-	underlay.mu.Unlock()
-	transports.mu.Lock()
-	transportCalls := append([]string(nil), transports.calls...)
-	transports.mu.Unlock()
-	orderMu.Lock()
-	verifyCalls := append([]string(nil), order...)
-	orderMu.Unlock()
-	gotCalls := append(append(underlayCalls, transportCalls...), verifyCalls...)
+	gotCalls := recorder.snapshot()
 	wantCalls := []string{"observe", "validate_capture", "rebind_underlay", "transport_health", "verify"}
 	if !equalStrings(gotCalls, wantCalls) {
 		t.Fatalf("recovery calls = %v, want %v", gotCalls, wantCalls)

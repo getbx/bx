@@ -214,23 +214,20 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	lt := &liveTunnel{}
 	lt.set(tun0)
 	tun0.Start()
-	// 停"当前"隧道:swap 后 lt 指向新隧道。swapper 就绪后经其锁停(与在飞 swapTo 串行,修 M3);
-	// 未就绪(健康前提前返回)则直接停 lt(Stop 幂等,双停安全)。
+	// 停完整传输 generation:协调器就绪后,主/UDP teardown 与 recovery/failover 共用同一
+	// 串行边界并永久封住新提交;未就绪的提前返回则直接停止已创建的 live slots。
 	var swapper, udpSwapper *transportSwapper
+	var liveTransports *liveTransportSet
 	var udpLT *liveTunnel
 	defer func() {
-		if swapper != nil {
-			swapper.stop()
-		} else {
-			lt.get().Stop()
+		if liveTransports != nil {
+			liveTransports.Stop()
+			return
 		}
-	}()
-	defer func() {
-		if udpSwapper != nil {
-			udpSwapper.stop()
-		} else if udpLT != nil {
+		if udpLT != nil {
 			udpLT.get().Stop()
 		}
+		lt.get().Stop()
 	}()
 	log.Printf("bx 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
 	healthTimeout := opts.HealthTimeout
@@ -391,7 +388,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
 	serverBypass := mergeBypassCIDRs(addrsToCIDRs(serverAddrs), tailscaleBootstrapBypassCIDRs(ctx, direct))
+	generation := newTransportGeneration()
 	swapper = &transportSwapper{
+		generation:    generation,
 		lt:            lt,
 		d:             d,
 		build:         buildTunnel,
@@ -401,6 +400,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	swapper.setLink(cfg.Server)
 	if udpLT != nil {
 		udpSwapper = &transportSwapper{
+			generation:    generation,
 			lt:            udpLT,
 			d:             d,
 			build:         buildTunnel,
@@ -410,6 +410,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		}
 		udpSwapper.setLink(cfg.UDP.Transport)
 	}
+	var udpSlot *transportSetSlot
+	if udpSwapper != nil {
+		slot := udpSwapper.transportSetSlot(udpTransportSlot)
+		udpSlot = &slot
+	}
+	liveTransports = newLiveTransportSet(generation, swapper.transportSetSlot(mainTransportSlot), udpSlot)
 	// 多传输自动容灾(reality 主 / brook 备…):后台监健康,持续不健康→按优先级 swapTo 备选,
 	// 全程 fail-closed;防抖(滞回+冷静期+全挂不切)。单传输跳过(由 kill-switch 接管)。
 	if len(cfg.Transports) > 1 {
@@ -450,12 +456,6 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		if observeErr != nil {
 			log.Printf("网络路径恢复不可用:初始 underlay 观察失败: %v", observeErr)
 		} else {
-			var udpSlot *transportSetSlot
-			if udpSwapper != nil {
-				slot := udpSwapper.transportSetSlot(udpTransportSlot)
-				udpSlot = &slot
-			}
-			transports := newLiveTransportSet(&swapper.mu, swapper.transportSetSlot(mainTransportSlot), udpSlot)
 			verify := func(verifyCtx context.Context) error {
 				if err := underlay.ValidateCapture(verifyCtx, tunH); err != nil {
 					return err
@@ -477,7 +477,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			}
 			recoverer = &livePathRecoverer{
 				underlay:     underlay,
-				transports:   transports,
+				transports:   liveTransports,
 				tun:          tunH,
 				previous:     initialUnderlay,
 				serverBypass: serverBypass,
