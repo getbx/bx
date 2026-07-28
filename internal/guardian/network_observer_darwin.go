@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
@@ -23,7 +24,7 @@ func (darwinRouteEventSource) Events(ctx context.Context) (<-chan struct{}, erro
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, unix.AF_UNSPEC)
+	fd, err := openDarwinRouteSocket(defaultDarwinRouteSocketOps())
 	if err != nil {
 		return nil, fmt.Errorf("open routing socket: %w", err)
 	}
@@ -31,6 +32,44 @@ func (darwinRouteEventSource) Events(ctx context.Context) (<-chan struct{}, erro
 	events := make(chan struct{}, 1)
 	go readDarwinRouteEvents(ctx, fd, events)
 	return events, nil
+}
+
+type darwinRouteSocketOps struct {
+	forkLock    sync.Locker
+	socket      func(int, int, int) (int, error)
+	closeOnExec func(int) error
+	close       func(int) error
+}
+
+func defaultDarwinRouteSocketOps() darwinRouteSocketOps {
+	return darwinRouteSocketOps{
+		forkLock:    syscall.ForkLock.RLocker(),
+		socket:      unix.Socket,
+		closeOnExec: setDarwinRouteSocketCloseOnExec,
+		close:       unix.Close,
+	}
+}
+
+func openDarwinRouteSocket(ops darwinRouteSocketOps) (int, error) {
+	if ops.forkLock == nil || ops.socket == nil || ops.closeOnExec == nil || ops.close == nil {
+		return -1, fmt.Errorf("routing socket opener is incomplete")
+	}
+	ops.forkLock.Lock()
+	defer ops.forkLock.Unlock()
+	fd, err := ops.socket(unix.AF_ROUTE, unix.SOCK_RAW, unix.AF_UNSPEC)
+	if err != nil {
+		return -1, err
+	}
+	if err := ops.closeOnExec(fd); err != nil {
+		_ = ops.close(fd)
+		return -1, fmt.Errorf("set routing socket close-on-exec: %w", err)
+	}
+	return fd, nil
+}
+
+func setDarwinRouteSocketCloseOnExec(fd int) error {
+	_, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC)
+	return err
 }
 
 func readDarwinRouteEvents(ctx context.Context, fd int, events chan<- struct{}) {
