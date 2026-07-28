@@ -8,6 +8,16 @@ let package = Package(
         .executable(name: "BxMenu", targets: ["BxMenu"])
     ],
     targets: [
-        .executableTarget(name: "BxMenu")
+        .executableTarget(name: "BxMenu"),
+        .testTarget(
+            name: "BxMenuTests",
+            path: "SwiftPMTests",
+            plugins: ["BxMenuTestPlugin"]
+        ),
+        .plugin(
+            name: "BxMenuTestPlugin",
+            capability: .buildTool(),
+            path: "Plugins/BxMenuTestPlugin"
+        ),
     ]
 )

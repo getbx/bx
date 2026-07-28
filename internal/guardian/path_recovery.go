@@ -26,6 +26,14 @@ type CorePathClient interface {
 	RecoverPath(context.Context, supervisor.PathRecoveryRequest) (supervisor.PathRecoverySnapshot, error)
 }
 
+type corePathProgressClient interface {
+	RecoverPathObserved(
+		context.Context,
+		supervisor.PathRecoveryRequest,
+		func(supervisor.PathRecoverySnapshot),
+	) (supervisor.PathRecoverySnapshot, error)
+}
+
 type pathRecoveryTransaction struct {
 	request  RecoveryRequest
 	snapshot RecoverySnapshot
@@ -64,6 +72,47 @@ func (r *ExecCoreRunner) RecoverPath(ctx context.Context, request supervisor.Pat
 		controlSocket = supervisor.SockPath
 	}
 	return supervisor.RecoverPathControl(ctx, controlSocket, request)
+}
+
+func (r *ExecCoreRunner) RecoverPathObserved(
+	ctx context.Context,
+	request supervisor.PathRecoveryRequest,
+	observe func(supervisor.PathRecoverySnapshot),
+) (supervisor.PathRecoverySnapshot, error) {
+	controlSocket := r.ControlSocket
+	if controlSocket == "" {
+		controlSocket = supervisor.SockPath
+	}
+	result := make(chan observedCorePathResult, 1)
+	go func() {
+		snapshot, err := supervisor.RecoverPathControl(ctx, controlSocket, request)
+		result <- observedCorePathResult{snapshot: snapshot, err: err}
+	}()
+
+	timer := time.NewTimer(pathRecoveryRetryInitial)
+	defer timer.Stop()
+	for {
+		select {
+		case completed := <-result:
+			return completed.snapshot, completed.err
+		case <-ctx.Done():
+			return supervisor.PathRecoverySnapshot{}, ctx.Err()
+		case <-timer.C:
+			snapshot, err := supervisor.FetchPathRecovery(ctx, controlSocket)
+			if err == nil &&
+				snapshot.State == "recovering" &&
+				snapshot.Reason == request.Reason &&
+				snapshot.Generation == request.Generation {
+				observe(snapshot)
+			}
+			timer.Reset(pathRecoveryRetryInitial)
+		}
+	}
+}
+
+type observedCorePathResult struct {
+	snapshot supervisor.PathRecoverySnapshot
+	err      error
 }
 
 func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot, error) {
@@ -277,14 +326,43 @@ func (m *Manager) executePathRecovery(ctx context.Context, transaction pathRecov
 	if m.corePath == nil {
 		return failedPathRecoverySnapshot(transaction.snapshot, supervisor.PathRecoverySnapshot{}, &supervisor.PathRecoveryError{Code: "recovery_unavailable"})
 	}
-	result, err := m.corePath.RecoverPath(ctx, supervisor.PathRecoveryRequest{
+	request := supervisor.PathRecoveryRequest{
 		Reason:     transaction.request.Reason,
 		Generation: transaction.request.Generation,
-	})
+	}
+	var result supervisor.PathRecoverySnapshot
+	var err error
+	if core, ok := m.corePath.(corePathProgressClient); ok {
+		result, err = core.RecoverPathObserved(ctx, request, func(progress supervisor.PathRecoverySnapshot) {
+			m.publishCorePathRecovery(transaction.snapshot.ID, progress)
+		})
+	} else {
+		result, err = m.corePath.RecoverPath(ctx, request)
+	}
 	if err != nil {
 		return failedPathRecoverySnapshot(transaction.snapshot, result, err)
 	}
 	return completedPathRecoverySnapshot(transaction.snapshot, result)
+}
+
+func (m *Manager) publishCorePathRecovery(id string, progress supervisor.PathRecoverySnapshot) {
+	stage := publicPathRecoveryStage(progress.Stage)
+	if stage == "" {
+		return
+	}
+	m.pathRecoveryMu.Lock()
+	defer m.pathRecoveryMu.Unlock()
+	if m.pathRecoveryFences > 0 || m.pathRecoveryCurrent.ID != id {
+		return
+	}
+	snapshot := m.pathRecoveryCurrent
+	snapshot.State = "running"
+	snapshot.Stage = stage
+	if progress.Attempt > snapshot.Attempt {
+		snapshot.Attempt = progress.Attempt
+	}
+	snapshot.UpdatedAt = time.Now().UTC()
+	m.pathRecoveryCurrent = snapshot
 }
 
 func (m *Manager) newPathRecoveryTransactionLocked(request RecoveryRequest) pathRecoveryTransaction {

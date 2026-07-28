@@ -16,6 +16,18 @@ type Client struct {
 	HTTPClient *http.Client
 }
 
+type UnavailableError struct {
+	Err error
+}
+
+func (e *UnavailableError) Error() string {
+	return fmt.Sprintf("Guardian unavailable: %v", e.Err)
+}
+
+func (e *UnavailableError) Unwrap() error {
+	return e.Err
+}
+
 func NewClient(socketPath string) *Client {
 	return &Client{SocketPath: socketPath}
 }
@@ -120,7 +132,10 @@ func (c *Client) recoveryRequest(ctx context.Context, method, path string, body 
 	}
 	response, err := client.Do(req)
 	if err != nil {
-		return RecoverySnapshot{}, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RecoverySnapshot{}, ctxErr
+		}
+		return RecoverySnapshot{}, &UnavailableError{Err: err}
 	}
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/urfave/cli/v2"
@@ -72,6 +75,9 @@ func TestAppHasVersion(t *testing.T) {
 	if !appHasCommand(app, "reconnect") {
 		t.Fatal("app should expose bx reconnect")
 	}
+	if reconnect := findAppCommand(app, "reconnect"); !commandHasFlag(reconnect, "json") {
+		t.Fatal("reconnect should expose --json")
+	}
 	inspect := findAppCommand(app, "inspect")
 	if inspect == nil || !commandHasFlag(inspect, "json") {
 		t.Fatal("inspect should expose --json")
@@ -100,12 +106,196 @@ func TestMacMenuReconnectDoesNotCycleProtection(t *testing.T) {
 	if !strings.Contains(text, "func reconnectBx()") {
 		t.Fatal("macOS menu should implement reconnect action")
 	}
-	if !strings.Contains(text, "'\\(bxPath)' reconnect") {
-		t.Fatal("macOS reconnect should use bx reconnect")
+	if !strings.Contains(text, "guardianClient.requestRecovery()") {
+		t.Fatal("macOS reconnect should submit directly to Guardian")
+	}
+	if strings.Contains(text, "runPrivileged(\"'\\(bxPath)' reconnect\")") {
+		t.Fatal("macOS reconnect must not invoke the CLI through privileged AppleScript")
 	}
 	if strings.Contains(text, "'\\(bxPath)' down &&") {
 		t.Fatal("macOS reconnect must not cycle bx down && bx up")
 	}
+}
+
+func TestReconnectSubmitsOncePollsToSuccessAndPrintsHumanProgress(t *testing.T) {
+	var output bytes.Buffer
+	client := &scriptedRecoveryClient{
+		submitted: guardian.RecoverySnapshot{
+			ID: "recovery-7", State: "accepted", Stage: "queued", Reason: "manual",
+		},
+		current: []guardian.RecoverySnapshot{
+			{ID: "recovery-7", State: "running", Stage: "transport_health", Reason: "manual"},
+			{ID: "recovery-7", State: "succeeded", Stage: "succeeded", Reason: "manual"},
+		},
+	}
+	var waits []time.Duration
+	err := reconnectWithDependencies(context.Background(), false, reconnectDependencies{
+		client: client,
+		output: &output,
+		wait: func(_ context.Context, delay time.Duration) error {
+			waits = append(waits, delay)
+			return nil
+		},
+		legacyReconnect: func(context.Context) error {
+			t.Fatal("successful Guardian recovery must not use legacy Core reconnect")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.submitCalls != 1 {
+		t.Fatalf("Guardian submit calls = %d, want 1", client.submitCalls)
+	}
+	if got, want := waits, []time.Duration{250 * time.Millisecond, 500 * time.Millisecond}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("poll waits = %v, want %v", got, want)
+	}
+	if got, want := output.String(), "• Protection  Reconnecting\n✓ Protection  Reconnected\n"; got != want {
+		t.Fatalf("human output = %q, want %q", got, want)
+	}
+}
+
+func TestReconnectJSONReturnsFinalRecoverySnapshot(t *testing.T) {
+	var output bytes.Buffer
+	client := &scriptedRecoveryClient{
+		submitted: guardian.RecoverySnapshot{
+			ID: "recovery-8", State: "succeeded", Stage: "succeeded", Reason: "manual", Attempt: 2,
+		},
+	}
+	if err := reconnectWithDependencies(context.Background(), true, reconnectDependencies{
+		client: client,
+		output: &output,
+		wait:   func(context.Context, time.Duration) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var got guardian.RecoverySnapshot
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("decode reconnect JSON: %v\n%s", err, output.String())
+	}
+	if got.ID != "recovery-8" || got.State != "succeeded" || got.Attempt != 2 {
+		t.Fatalf("final snapshot = %+v", got)
+	}
+}
+
+func TestReconnectReportsStableGuardianFailureWithoutLegacyFallback(t *testing.T) {
+	client := &scriptedRecoveryClient{
+		submitted: guardian.RecoverySnapshot{
+			ID: "recovery-9", State: "accepted", Stage: "queued", Reason: "manual",
+		},
+		current: []guardian.RecoverySnapshot{{
+			ID: "recovery-9", State: "failed", Stage: "observe", Reason: "manual",
+			ErrorCode: "network_unavailable", Detail: "secret underlay detail",
+		}},
+	}
+	legacyCalls := 0
+	err := reconnectWithDependencies(context.Background(), false, reconnectDependencies{
+		client: client,
+		output: io.Discard,
+		wait:   func(context.Context, time.Duration) error { return nil },
+		legacyReconnect: func(context.Context) error {
+			legacyCalls++
+			return nil
+		},
+	})
+	if err == nil || err.Error() != "recovery failed: network_unavailable" {
+		t.Fatalf("reconnect error = %v, want stable recovery code", err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("reconnect error leaked Guardian detail: %v", err)
+	}
+	if legacyCalls != 0 {
+		t.Fatalf("legacy Core reconnect calls = %d, want 0", legacyCalls)
+	}
+}
+
+func TestReconnectFallsBackOnlyForTypedGuardianUnavailable(t *testing.T) {
+	tests := []struct {
+		name       string
+		requestErr error
+		wantLegacy int
+		wantError  string
+	}{
+		{
+			name:       "typed unavailable",
+			requestErr: &guardian.UnavailableError{Err: errors.New("missing socket")},
+			wantLegacy: 1,
+		},
+		{
+			name:       "Guardian business failure",
+			requestErr: errors.New("Guardian /v1/recoveries returned 500"),
+			wantError:  "Guardian /v1/recoveries returned 500",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			legacyCalls := 0
+			err := reconnectWithDependencies(context.Background(), false, reconnectDependencies{
+				client: &scriptedRecoveryClient{requestErr: tt.requestErr},
+				output: io.Discard,
+				wait:   func(context.Context, time.Duration) error { return nil },
+				legacyReconnect: func(context.Context) error {
+					legacyCalls++
+					return nil
+				},
+			})
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || err.Error() != tt.wantError {
+				t.Fatalf("reconnect error = %v, want %q", err, tt.wantError)
+			}
+			if legacyCalls != tt.wantLegacy {
+				t.Fatalf("legacy Core reconnect calls = %d, want %d", legacyCalls, tt.wantLegacy)
+			}
+		})
+	}
+}
+
+func TestReconnectObservationTimeoutKeepsRecoveryRunning(t *testing.T) {
+	client := &scriptedRecoveryClient{submitted: guardian.RecoverySnapshot{
+		ID: "recovery-10", State: "accepted", Stage: "queued", Reason: "manual",
+	}}
+	err := reconnectWithDependencies(context.Background(), false, reconnectDependencies{
+		client: client,
+		output: io.Discard,
+		wait: func(context.Context, time.Duration) error {
+			return context.DeadlineExceeded
+		},
+	})
+	if err == nil || err.Error() != "recovery recovery-10 is still running: context deadline exceeded" {
+		t.Fatalf("timeout error = %v", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "failed") {
+		t.Fatalf("timeout must not claim recovery failure: %v", err)
+	}
+}
+
+type scriptedRecoveryClient struct {
+	submitted   guardian.RecoverySnapshot
+	current     []guardian.RecoverySnapshot
+	requestErr  error
+	currentErr  error
+	submitCalls int
+	currentCall int
+}
+
+func (c *scriptedRecoveryClient) RequestRecovery(context.Context, guardian.RecoveryRequest) (guardian.RecoverySnapshot, error) {
+	c.submitCalls++
+	return c.submitted, c.requestErr
+}
+
+func (c *scriptedRecoveryClient) CurrentRecovery(context.Context) (guardian.RecoverySnapshot, error) {
+	if c.currentErr != nil {
+		return guardian.RecoverySnapshot{}, c.currentErr
+	}
+	if c.currentCall >= len(c.current) {
+		return c.submitted, nil
+	}
+	snapshot := c.current[c.currentCall]
+	c.currentCall++
+	return snapshot, nil
 }
 
 func TestMacMenuQuitBxStopsProtectionThenQuitsMenu(t *testing.T) {
@@ -125,17 +315,17 @@ func TestMacMenuQuitBxStopsProtectionThenQuitsMenu(t *testing.T) {
 	}
 }
 
-func TestMacMenuRequiresCLIReconnectSupport(t *testing.T) {
+func TestMacMenuUsesGuardianInsteadOfCLIReconnectSupport(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
-	if !strings.Contains(text, "func cliSupportsSafeReconnect()") {
-		t.Fatal("macOS menu should detect whether the installed CLI supports safe reconnect")
+	if !strings.Contains(text, "private let guardianClient = GuardianClient()") {
+		t.Fatal("macOS menu should own a fixed Guardian client")
 	}
-	if !strings.Contains(text, "!cliSupportsDiagnosticsArchive() || !cliSupportsSafeReconnect()") {
-		t.Fatal("macOS menu should require safe reconnect support before presenting a healthy state")
+	if strings.Contains(text, "func cliSupportsSafeReconnect()") || strings.Contains(text, "func runtimeSupportsSafeReconnect()") {
+		t.Fatal("macOS menu must not probe the legacy CLI/Core reconnect path")
 	}
 }
 
