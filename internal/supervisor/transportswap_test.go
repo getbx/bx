@@ -5,8 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/getbx/bx/internal/dialer"
 	"github.com/getbx/bx/internal/tunnel"
 )
 
@@ -51,6 +54,48 @@ func TestTransportSwapperFailedSwapPreservesOldSlot(t *testing.T) {
 	}
 }
 
+func TestTransportSwapperSuccessfulSwapActivatesCandidateAndRetiresOld(t *testing.T) {
+	old, oldRunner := newHealthySwapTunnel("127.0.0.1:10001")
+	old.Start()
+	if err := waitTunnelHealthy(context.Background(), old, 2*time.Second); err != nil {
+		t.Fatalf("old tunnel health = %v", err)
+	}
+	candidate, _ := newHealthySwapTunnel("127.0.0.1:10002")
+	live := &liveTunnel{}
+	live.set(old)
+	generation := newTransportGeneration()
+	swapper := &transportSwapper{
+		generation:    generation,
+		lt:            live,
+		d:             &dialer.Dialer{},
+		ctx:           context.Background(),
+		healthTimeout: 2 * time.Second,
+		build: func(link, recoveryID string) (*tunnel.Tunnel, error) {
+			if link != "vless://new" || recoveryID == "" {
+				t.Fatalf("build link=%q recoveryID=%q", link, recoveryID)
+			}
+			return candidate, nil
+		},
+	}
+	swapper.setLink("vless://old")
+
+	if err := swapper.swapTo("vless://new"); err != nil {
+		t.Fatalf("swapTo = %v", err)
+	}
+	if live.get() != candidate || swapper.currentLink() != "vless://new" {
+		t.Fatalf("successful swap live=%p link=%q", live.get(), swapper.currentLink())
+	}
+	select {
+	case <-oldRunner.done:
+	default:
+		t.Fatal("old transport was not retired after successful activation")
+	}
+	if !candidate.Healthy() {
+		t.Fatal("committed candidate is not healthy")
+	}
+	candidate.Stop()
+}
+
 func TestTransportConfigPathSeparatesActiveAndRecoveryCandidates(t *testing.T) {
 	dir := t.TempDir()
 	active := transportConfigPath(dir, "reality", "")
@@ -75,4 +120,28 @@ func TestTransportConfigPathSeparatesActiveAndRecoveryCandidates(t *testing.T) {
 	if string(got) != "active-generation" {
 		t.Fatalf("candidate preparation overwrote active config: %q", got)
 	}
+}
+
+type healthySwapRunner struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func newHealthySwapTunnel(addr string) (*tunnel.Tunnel, *healthySwapRunner) {
+	runner := &healthySwapRunner{done: make(chan struct{})}
+	return tunnel.New(
+		addr,
+		func(string) (tunnel.Runner, error) { return runner, nil },
+		func(string) (int64, error) { return 1, nil },
+	), runner
+}
+
+func (r *healthySwapRunner) Wait() error {
+	<-r.done
+	return nil
+}
+
+func (r *healthySwapRunner) Kill() error {
+	r.once.Do(func() { close(r.done) })
+	return nil
 }

@@ -19,16 +19,17 @@ import (
 // build 复用 run.go 的 buildTunnel(含按需 sing-box)。硬换:换成后立即停旧隧道
 // (既有 TCP 连接重置)。健康失败则停新、不换,旧隧道无损。
 type transportSwapper struct {
-	mu            sync.Mutex
-	lt            *liveTunnel
-	d             *dialer.Dialer
-	build         func(link, recoveryID string) (*tunnel.Tunnel, error)
-	healthTimeout time.Duration
-	ctx           context.Context
-	udp           bool
-	prepared      sync.Map
-	sequence      atomic.Uint64
-	curLink       atomic.Pointer[string] // 无锁读:swapTo 持 mu 跨健康等待(可达 healthTimeout)时,status 读不被卡
+	generation     *transportGeneration
+	generationOnce sync.Once
+	lt             *liveTunnel
+	d              *dialer.Dialer
+	build          func(link, recoveryID string) (*tunnel.Tunnel, error)
+	healthTimeout  time.Duration
+	ctx            context.Context
+	udp            bool
+	prepared       sync.Map
+	sequence       atomic.Uint64
+	curLink        atomic.Pointer[string] // 无锁读:swapTo 持 generation 锁跨健康等待时,status 读不被卡
 }
 
 // setLink 原子记录当前活跃传输链接(link 形参是新副本,存其地址安全)。
@@ -42,8 +43,12 @@ func (s *transportSwapper) currentLink() string {
 }
 
 func (s *transportSwapper) swapTo(link string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.transportGeneration().run(func() error {
+		return s.swapToLocked(link)
+	})
+}
+
+func (s *transportSwapper) swapToLocked(link string) error {
 	ctx := s.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -55,6 +60,15 @@ func (s *transportSwapper) swapTo(link string) error {
 	}
 	s.commit(newTun, link)
 	return nil
+}
+
+func (s *transportSwapper) transportGeneration() *transportGeneration {
+	s.generationOnce.Do(func() {
+		if s.generation == nil {
+			s.generation = newTransportGeneration()
+		}
+	})
+	return s.generation
 }
 
 func (s *transportSwapper) prepare(ctx context.Context, link, recoveryID string) (*tunnel.Tunnel, error) {
@@ -107,11 +121,7 @@ func (s *transportSwapper) abort(candidate *tunnel.Tunnel) {
 	candidate.Stop()
 }
 
-// stop 在 s.mu 下停掉当前隧道,供 Run 退出清理。经锁与 swapTo 串行:任何在飞的
-// (死手自动回滚触发的)swapTo 先完成再停,故停的是最终 current,不会漏停换进来的新隧道(修 M3)。
-func (s *transportSwapper) stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *transportSwapper) stopLocked() {
 	s.lt.get().Stop()
 }
 
@@ -128,6 +138,7 @@ func (s *transportSwapper) transportSetSlot(name transportSlotName) transportSet
 		abort: func(candidate transportCandidate) {
 			s.abort(candidate.(*tunnel.Tunnel))
 		},
+		stop: s.stopLocked,
 	}
 }
 
