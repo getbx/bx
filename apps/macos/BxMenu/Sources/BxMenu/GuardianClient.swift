@@ -116,7 +116,9 @@ struct GuardianClient {
         }
         try writeGuardianRequest(guardianRequest(for: endpoint), to: fd, deadline: deadline)
         let response = try readGuardianHTTPResponse(from: fd, deadline: deadline)
-        return try decodeGuardianHTTPResponse(response, expectedStatus: endpoint.expectedStatus)
+        let snapshot = try decodeGuardianHTTPResponse(response, expectedStatus: endpoint.expectedStatus)
+        try deadline.checkpoint()
+        return snapshot
     }
 }
 
