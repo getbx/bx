@@ -433,7 +433,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             delay = 0.5
             do {
                 let current = try guardianClient.currentRecovery()
-                guard current.recoveryID == submitted.recoveryID else { continue }
+                if let transition = recoveryObservationFailure(submitted: submitted, observed: current) {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.reconnectInFlight = transition.reconnectInFlight
+                        self.publishRecovery(transition.snapshot)
+                    }
+                    return
+                }
                 snapshot = current
                 DispatchQueue.main.async { [weak self] in
                     self?.publishRecovery(current)

@@ -55,6 +55,16 @@ func recoveryFailureTransition(from snapshot: RecoverySnapshot, errorCode: Strin
     )
 }
 
+func recoveryObservationFailure(
+    submitted: RecoverySnapshot,
+    observed: RecoverySnapshot
+) -> RecoveryFailureTransition? {
+    guard observed.recoveryID != submitted.recoveryID else {
+        return nil
+    }
+    return recoveryFailureTransition(from: submitted, errorCode: "recovery_replaced")
+}
+
 func recoveryPresentation(for snapshot: RecoverySnapshot) -> RecoveryPresentation {
     switch snapshot.state {
     case "accepted":
@@ -121,6 +131,8 @@ private func recoveryFailureReason(_ code: String?) -> String {
         return "Recovery canceled"
     case "recovery_unavailable":
         return "Recovery unavailable"
+    case "recovery_replaced":
+        return "Recovery was replaced"
     case "transport_unavailable":
         return "Protected transport unavailable"
     case "underlay_rebind_failed":
