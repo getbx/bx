@@ -325,7 +325,7 @@ func TestPathRecoveryControlMapsUnknownErrorCodeToStableFailure(t *testing.T) {
 
 func TestPathRecoveryControlPreservesAllowlistedSafetyCodesWithoutDetail(t *testing.T) {
 	const secret = "server route and transport diagnostics"
-	for _, code := range []string{"capture_missing", "underlay_rebind_failed"} {
+	for _, code := range []string{"capture_missing", "network_unavailable", "underlay_rebind_failed"} {
 		t.Run(code, func(t *testing.T) {
 			sock := startControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusInternalServerError, PathRecoverySnapshot{

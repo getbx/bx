@@ -160,6 +160,99 @@ func TestManagerDownFencesPathRecoveryAdmissionUntilTransitionCompletes(t *testi
 	}
 }
 
+func TestManagerFailedDownReplaysGeneratedPathRecoveryWhileDesiredRemainsOn(t *testing.T) {
+	tests := []struct {
+		name            string
+		prepare         func(*testing.T, *managerTestEnv)
+		runDown         func(*managerTestEnv) error
+		firstCoreStarts bool
+	}{
+		{
+			name: "mutation timeout",
+			prepare: func(t *testing.T, env *managerTestEnv) {
+				t.Helper()
+				if err := env.manager.acquireMutation(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			},
+			runDown: func(env *managerTestEnv) error {
+				expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				defer cancel()
+				err := env.manager.Down(expired)
+				env.manager.releaseMutation()
+				return err
+			},
+		},
+		{
+			name: "barrier install failure",
+			prepare: func(_ *testing.T, env *managerTestEnv) {
+				env.barrier.installErr = errors.New("barrier unavailable")
+			},
+			runDown: func(env *managerTestEnv) error {
+				return env.manager.Down(context.Background())
+			},
+			firstCoreStarts: true,
+		},
+		{
+			name: "Core stop failure",
+			prepare: func(_ *testing.T, env *managerTestEnv) {
+				env.runner.stopErr = errors.New("Core stop failed")
+			},
+			runDown: func(env *managerTestEnv) error {
+				return env.manager.Down(context.Background())
+			},
+			firstCoreStarts: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			core := newFakeCorePathClient(false)
+			env.manager.corePath = core
+			tt.prepare(t, env)
+
+			accepted, err := env.manager.RequestPathRecovery(RecoveryRequest{
+				Reason:     "underlay_changed",
+				Generation: "wifi-b",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.firstCoreStarts {
+				if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+					t.Fatalf("first Core request = %+v, want wifi-b", got)
+				}
+			}
+
+			if err := tt.runDown(env); err == nil {
+				t.Fatal("Down succeeded despite injected failure")
+			}
+			if got := env.manager.Status().Desired; got != DesiredOn {
+				t.Fatalf("desired state after failed Down = %q, want On", got)
+			}
+
+			if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+				t.Fatalf("replayed Core request = %+v, want wifi-b", got)
+			}
+			core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+				State: "succeeded", Stage: "succeeded",
+			}})
+			eventually(t, func() bool {
+				current := env.manager.CurrentPathRecovery()
+				return current.ID == accepted.ID && current.State == "succeeded"
+			})
+			wantCalls := 1
+			if tt.firstCoreStarts {
+				wantCalls = 2
+			}
+			if got := core.callCount(); got != wantCalls {
+				t.Fatalf("Core calls after failed Down = %d, want %d", got, wantCalls)
+			}
+		})
+	}
+}
+
 func TestDaemonShutdownCancelsAndDrainsPathRecovery(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	core := newFakeCorePathClient(false)

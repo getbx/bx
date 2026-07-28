@@ -72,12 +72,24 @@ func setDarwinRouteSocketCloseOnExec(fd int) error {
 	return err
 }
 
+type darwinRouteEventIO struct {
+	read  func(int, []byte) (int, error)
+	close func(int) error
+}
+
 func readDarwinRouteEvents(ctx context.Context, fd int, events chan<- struct{}) {
+	readDarwinRouteEventsWithIO(ctx, fd, events, darwinRouteEventIO{
+		read:  unix.Read,
+		close: unix.Close,
+	})
+}
+
+func readDarwinRouteEventsWithIO(ctx context.Context, fd int, events chan<- struct{}, eventIO darwinRouteEventIO) {
 	defer close(events)
 	var closeOnce sync.Once
 	closeFD := func() {
 		closeOnce.Do(func() {
-			_ = unix.Close(fd)
+			_ = eventIO.close(fd)
 		})
 	}
 	defer closeFD()
@@ -94,11 +106,14 @@ func readDarwinRouteEvents(ctx context.Context, fd int, events chan<- struct{}) 
 
 	buffer := make([]byte, 64<<10)
 	for {
-		n, err := unix.Read(fd, buffer)
+		n, err := eventIO.read(fd, buffer)
 		if err != nil {
 			return
 		}
-		if n == 0 || !relevantDarwinRouteEvent(buffer[:n]) {
+		if n == 0 {
+			return
+		}
+		if !relevantDarwinRouteEvent(buffer[:n]) {
 			continue
 		}
 		select {

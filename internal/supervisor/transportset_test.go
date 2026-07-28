@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/dialer"
 	"github.com/getbx/bx/internal/tunnel"
 )
 
@@ -35,6 +36,7 @@ type fakeTransportSlot struct {
 	link      string
 	candidate transportCandidate
 	retired   transportCandidate
+	transport *dialer.Transport
 	err       error
 	prepare   func(context.Context, string, string) (transportCandidate, error)
 
@@ -57,11 +59,11 @@ func (s *fakeTransportSlot) descriptor(name transportSlotName) transportSetSlot 
 			}
 			return s.candidate, s.err
 		},
-		commit: func(candidate transportCandidate, _ string) transportCandidate {
+		commit: func(candidate transportCandidate, _ string) transportSlotCommit {
 			s.mu.Lock()
 			s.commits = append(s.commits, candidate)
 			s.mu.Unlock()
-			return s.retired
+			return transportSlotCommit{retired: s.retired, transport: s.transport}
 		},
 		abort: func(candidate transportCandidate) {
 			s.mu.Lock()
@@ -81,7 +83,7 @@ func (s *fakeTransportSlot) counts() (commits, aborts int) {
 func TestTransportSetMainOnlyCommitsHealthyCandidate(t *testing.T) {
 	mainCandidate := newFakeTransportCandidate(true)
 	main := &fakeTransportSlot{link: "vless://main", candidate: mainCandidate}
-	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), nil)
+	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), nil, nil)
 
 	if err := set.Recover(context.Background()); err != nil {
 		t.Fatalf("Recover = %v", err)
@@ -104,7 +106,7 @@ func TestTransportSetMainAndUDPCommitOnlyAfterBothPrepare(t *testing.T) {
 		return mainCandidate, nil
 	}
 	udp := &fakeTransportSlot{link: "hysteria2://udp", candidate: udpCandidate}
-	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)))
+	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)), nil)
 
 	done := make(chan error, 1)
 	go func() { done <- set.Recover(context.Background()) }()
@@ -153,7 +155,7 @@ func TestTransportSetActivatesBothSlotsBeforeRetiringOldCandidates(t *testing.T)
 	}
 	main.retired.(*fakeTransportCandidate).onStop = assertBothCommitted
 	udp.retired.(*fakeTransportCandidate).onStop = assertBothCommitted
-	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)))
+	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)), nil)
 
 	if err := set.Recover(context.Background()); err != nil {
 		t.Fatalf("Recover = %v", err)
@@ -163,13 +165,53 @@ func TestTransportSetActivatesBothSlotsBeforeRetiringOldCandidates(t *testing.T)
 	}
 }
 
+func TestTransportSetPublishesMainAndUDPAsOneGeneration(t *testing.T) {
+	mainTransport := &dialer.Transport{}
+	udpTransport := &dialer.Transport{}
+	main := &fakeTransportSlot{
+		link:      "vless://main",
+		candidate: newFakeTransportCandidate(true),
+		transport: mainTransport,
+	}
+	udp := &fakeTransportSlot{
+		link:      "hysteria2://udp",
+		candidate: newFakeTransportCandidate(true),
+		transport: udpTransport,
+	}
+	var publications atomic.Int32
+	publish := func(gotMain, gotUDP *dialer.Transport) {
+		if gotMain != mainTransport || gotUDP != udpTransport {
+			t.Fatalf("published generation = (%p, %p), want (%p, %p)", gotMain, gotUDP, mainTransport, udpTransport)
+		}
+		mainCommits, _ := main.counts()
+		udpCommits, _ := udp.counts()
+		if mainCommits != 1 || udpCommits != 1 {
+			t.Fatalf("published before both slots activated: main=%d UDP=%d", mainCommits, udpCommits)
+		}
+		publications.Add(1)
+	}
+	set := newLiveTransportSet(
+		newTransportGeneration(),
+		main.descriptor(mainTransportSlot),
+		slotPointer(udp.descriptor(udpTransportSlot)),
+		publish,
+	)
+
+	if err := set.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := publications.Load(); got != 1 {
+		t.Fatalf("generation publications = %d, want 1", got)
+	}
+}
+
 func TestTransportSetMainFailureAbortsEveryCandidateAndPreservesSlots(t *testing.T) {
 	mainCandidate := newFakeTransportCandidate(false)
 	udpCandidate := newFakeTransportCandidate(true)
 	mainErr := errors.New("main unavailable")
 	main := &fakeTransportSlot{link: "vless://main", candidate: mainCandidate, err: mainErr}
 	udp := &fakeTransportSlot{link: "hysteria2://udp", candidate: udpCandidate}
-	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)))
+	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)), nil)
 
 	err := set.Recover(context.Background())
 	if !errors.Is(err, mainErr) || transportErrorSlot(err) != mainTransportSlot {
@@ -191,7 +233,7 @@ func TestTransportSetUDPFailureAbortsMainAndPreservesBothSlots(t *testing.T) {
 	udpErr := errors.New("UDP unavailable")
 	main := &fakeTransportSlot{link: "vless://main", candidate: mainCandidate}
 	udp := &fakeTransportSlot{link: "hysteria2://udp", candidate: udpCandidate, err: udpErr}
-	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)))
+	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)), nil)
 
 	err := set.Recover(context.Background())
 	if !errors.Is(err, udpErr) || transportErrorSlot(err) != udpTransportSlot {
@@ -220,7 +262,7 @@ func TestTransportSetCancellationCleansAllCandidates(t *testing.T) {
 	}
 	main := &fakeTransportSlot{link: "vless://main", prepare: blockedPrepare(mainCandidate)}
 	udp := &fakeTransportSlot{link: "hysteria2://udp", prepare: blockedPrepare(udpCandidate)}
-	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)))
+	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), slotPointer(udp.descriptor(udpTransportSlot)), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
@@ -250,14 +292,20 @@ func TestTransportSetSerializesSecondRecovery(t *testing.T) {
 		}
 		return newFakeTransportCandidate(true), nil
 	}
-	set := newLiveTransportSet(newTransportGeneration(), main.descriptor(mainTransportSlot), nil)
+	generation := newTransportGeneration()
+	set := newLiveTransportSet(generation, main.descriptor(mainTransportSlot), nil, nil)
 
 	firstDone := make(chan error, 1)
 	secondDone := make(chan error, 1)
 	go func() { firstDone <- set.Recover(context.Background()) }()
 	<-firstEntered
+	secondAtLockBoundary := make(chan struct{})
+	var secondBoundaryOnce sync.Once
+	generation.beforeLockTest = func() {
+		secondBoundaryOnce.Do(func() { close(secondAtLockBoundary) })
+	}
 	go func() { secondDone <- set.Recover(context.Background()) }()
-	time.Sleep(50 * time.Millisecond)
+	<-secondAtLockBoundary
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("prepare calls while first recovery holds lock = %d, want 1", got)
 	}
@@ -295,12 +343,12 @@ func TestTransportSetSerializesRecoveryAndShutdownWithoutPostTeardownPublication
 			<-releaseMain
 			return newMain, nil
 		},
-		commit: func(candidate transportCandidate, _ string) transportCandidate {
+		commit: func(candidate transportCandidate, _ string) transportSlotCommit {
 			stateMu.Lock()
 			old := currentMain
 			currentMain = candidate
 			stateMu.Unlock()
-			return old
+			return transportSlotCommit{retired: old}
 		},
 		abort: func(candidate transportCandidate) { candidate.Stop() },
 		stop: func() {
@@ -320,12 +368,12 @@ func TestTransportSetSerializesRecoveryAndShutdownWithoutPostTeardownPublication
 			prepareCalls.Add(1)
 			return newUDP, nil
 		},
-		commit: func(candidate transportCandidate, _ string) transportCandidate {
+		commit: func(candidate transportCandidate, _ string) transportSlotCommit {
 			stateMu.Lock()
 			old := currentUDP
 			currentUDP = candidate
 			stateMu.Unlock()
-			return old
+			return transportSlotCommit{retired: old}
 		},
 		abort: func(candidate transportCandidate) { candidate.Stop() },
 		stop: func() {
@@ -338,23 +386,26 @@ func TestTransportSetSerializesRecoveryAndShutdownWithoutPostTeardownPublication
 			}
 		},
 	}
-	set := newLiveTransportSet(generation, main, slotPointer(udp))
+	set := newLiveTransportSet(generation, main, slotPointer(udp), nil)
 
 	recoveryDone := make(chan error, 1)
 	go func() { recoveryDone <- set.Recover(context.Background()) }()
 	<-mainEntered
-	shutdownStarted := make(chan struct{})
+	shutdownAtLockBoundary := make(chan struct{})
+	var shutdownBoundaryOnce sync.Once
+	generation.beforeLockTest = func() {
+		shutdownBoundaryOnce.Do(func() { close(shutdownAtLockBoundary) })
+	}
 	shutdownDone := make(chan struct{})
 	go func() {
-		close(shutdownStarted)
 		set.Stop()
 		close(shutdownDone)
 	}()
-	<-shutdownStarted
+	<-shutdownAtLockBoundary
 	select {
 	case <-shutdownDone:
 		t.Fatal("shutdown crossed the in-flight recovery generation")
-	case <-time.After(25 * time.Millisecond):
+	default:
 	}
 
 	close(releaseMain)
@@ -398,13 +449,13 @@ func TestTransportSetSerializesRecoveryAgainstAutomaticFailoverSwap(t *testing.T
 		<-releaseRecovery
 		return newFakeTransportCandidate(true), nil
 	}
-	set := newLiveTransportSet(generation, main.descriptor(mainTransportSlot), nil)
+	set := newLiveTransportSet(generation, main.descriptor(mainTransportSlot), nil, nil)
 	buildErr := errors.New("failover candidate unavailable")
 	failoverBuild := make(chan struct{})
 	swapper := &transportSwapper{
 		generation: generation,
 		ctx:        context.Background(),
-		build: func(string, string) (*tunnel.Tunnel, error) {
+		build: func(string, string, bool) (*tunnel.Tunnel, error) {
 			close(failoverBuild)
 			return nil, buildErr
 		},
@@ -413,17 +464,20 @@ func TestTransportSetSerializesRecoveryAgainstAutomaticFailoverSwap(t *testing.T
 	recoveryDone := make(chan error, 1)
 	go func() { recoveryDone <- set.Recover(context.Background()) }()
 	<-recoveryEntered
-	failoverStarted := make(chan struct{})
+	failoverAtLockBoundary := make(chan struct{})
+	var failoverBoundaryOnce sync.Once
+	generation.beforeLockTest = func() {
+		failoverBoundaryOnce.Do(func() { close(failoverAtLockBoundary) })
+	}
 	failoverDone := make(chan error, 1)
 	go func() {
-		close(failoverStarted)
 		failoverDone <- swapper.swapTo("brook://backup")
 	}()
-	<-failoverStarted
+	<-failoverAtLockBoundary
 	select {
 	case <-failoverBuild:
 		t.Fatal("automatic failover prepared while recovery held the generation")
-	case <-time.After(25 * time.Millisecond):
+	default:
 	}
 
 	close(releaseRecovery)

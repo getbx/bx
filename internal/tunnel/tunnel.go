@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"time"
 )
@@ -35,6 +36,7 @@ type Stats struct {
 // Tunnel 监督 brook 子进程:健康检查 + 自动重连。
 type Tunnel struct {
 	socksAddr string
+	httpAddr  string
 	factory   RunnerFactory
 	health    HealthCheck
 	interval  time.Duration
@@ -51,6 +53,10 @@ type Tunnel struct {
 
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	cleanupMu    sync.Mutex
+	cleanupFiles []string
+	cleanupOnce  sync.Once
 }
 
 // New 构造一个隧道(默认参数;测试可覆盖 interval/base/max)。
@@ -68,8 +74,27 @@ func New(socksAddr string, f RunnerFactory, h HealthCheck) *Tunnel {
 	}
 }
 
+func newWithHTTP(socksAddr, httpAddr string, f RunnerFactory, h HealthCheck) *Tunnel {
+	t := New(socksAddr, f, h)
+	t.httpAddr = httpAddr
+	return t
+}
+
 // SocksAddr 返回本地 socks5 监听地址 "127.0.0.1:N"。
 func (t *Tunnel) SocksAddr() string { return t.socksAddr }
+
+// HTTPAddr 返回该传输私有的 HTTP 入站地址;空值表示未配置。
+func (t *Tunnel) HTTPAddr() string { return t.httpAddr }
+
+// CleanupFileOnStop 把进程私有文件的删除绑定到该隧道的停止生命周期。
+func (t *Tunnel) CleanupFileOnStop(path string) {
+	if path == "" {
+		return
+	}
+	t.cleanupMu.Lock()
+	t.cleanupFiles = append(t.cleanupFiles, path)
+	t.cleanupMu.Unlock()
+}
 
 // Healthy 当前隧道是否健康。
 func (t *Tunnel) Healthy() bool {
@@ -128,6 +153,14 @@ func (t *Tunnel) Stop() {
 		r.Kill()
 	}
 	<-t.done
+	t.cleanupOnce.Do(func() {
+		t.cleanupMu.Lock()
+		files := append([]string(nil), t.cleanupFiles...)
+		t.cleanupMu.Unlock()
+		for _, path := range files {
+			_ = os.Remove(path)
+		}
+	})
 }
 
 func (t *Tunnel) supervise(ctx context.Context) {
@@ -165,10 +198,12 @@ func (t *Tunnel) runOnce(ctx context.Context) (healthy bool, _ error) {
 	t.mu.Lock()
 	t.runner = r
 	t.mu.Unlock()
-	defer r.Kill()
-
 	exitCh := make(chan struct{})
 	go func() { r.Wait(); close(exitCh) }()
+	defer func() {
+		_ = r.Kill()
+		<-exitCh
+	}()
 
 	ticker := time.NewTicker(t.interval)
 	defer ticker.Stop()

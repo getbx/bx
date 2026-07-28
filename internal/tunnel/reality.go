@@ -42,5 +42,5 @@ func NewReality(singboxBin, link, probe, confPath, httpAddr string) (*Tunnel, er
 		return nil, err
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	return New(addr, realityFactory(singboxBin, link, confPath, httpAddr), socks5Health(probe)), nil
+	return newWithHTTP(addr, httpAddr, realityFactory(singboxBin, link, confPath, httpAddr), socks5Health(probe)), nil
 }

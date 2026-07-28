@@ -40,6 +40,62 @@ func TestDarwinUnderlayObserveCanonicalizesPhysicalPath(t *testing.T) {
 	}
 }
 
+func TestDarwinUnderlayObserveMapsNetworkFailuresWithoutDetail(t *testing.T) {
+	secret := "secret interface and gateway diagnostic"
+	tests := []struct {
+		name    string
+		manager *darwinUnderlayManager
+	}{
+		{
+			name: "default route unavailable",
+			manager: &darwinUnderlayManager{
+				defaultRoute: func(context.Context) (string, string, error) {
+					return "", "", errors.New(secret)
+				},
+				interfacePrefixes: func(string) ([]netip.Prefix, error) {
+					t.Fatal("interface lookup ran after default route failure")
+					return nil, nil
+				},
+			},
+		},
+		{
+			name: "interface addresses unavailable",
+			manager: &darwinUnderlayManager{
+				defaultRoute: func(context.Context) (string, string, error) {
+					return "192.168.1.1", "en0", nil
+				},
+				interfacePrefixes: func(string) ([]netip.Prefix, error) {
+					return nil, errors.New(secret)
+				},
+			},
+		},
+		{
+			name: "gateway malformed",
+			manager: &darwinUnderlayManager{
+				defaultRoute: func(context.Context) (string, string, error) {
+					return secret, "en0", nil
+				},
+				interfacePrefixes: func(string) ([]netip.Prefix, error) {
+					return []netip.Prefix{netip.MustParsePrefix("192.168.1.2/24")}, nil
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.manager.Observe(context.Background())
+			var recoveryErr *PathRecoveryError
+			if !errors.As(err, &recoveryErr) || recoveryErr.Code != "network_unavailable" {
+				t.Fatalf("Observe error = %v, want network_unavailable", err)
+			}
+			if recoveryErr.Detail != "" || strings.Contains(err.Error(), secret) {
+				t.Fatalf("Observe error leaked detail: %+v", recoveryErr)
+			}
+		})
+	}
+}
+
 func TestDarwinPrefixFromIPNetUnmapsOrdinaryIPv4(t *testing.T) {
 	ipNet := &net.IPNet{
 		IP:   net.ParseIP("192.168.50.27"),

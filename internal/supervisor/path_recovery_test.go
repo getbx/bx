@@ -121,6 +121,24 @@ func TestPathRecoveryFailureStoresStableCodeWithoutDetail(t *testing.T) {
 	}
 }
 
+func TestPathRecoveryNetworkUnavailableIsStableWithoutDetail(t *testing.T) {
+	secret := "default route secret"
+	recoverer := &scriptedPathRecoverer{
+		stages: []string{"observe"},
+		err:    &PathRecoveryError{Code: "network_unavailable", Detail: secret},
+	}
+	op := newPathRecoveryOperation(recoverer)
+
+	snapshot, err := op.Recover(context.Background(), PathRecoveryRequest{Reason: "underlay_changed"})
+	var recoveryErr *PathRecoveryError
+	if !errors.As(err, &recoveryErr) {
+		t.Fatalf("Recover error = %v, want PathRecoveryError", err)
+	}
+	if snapshot.State != "blocked" || snapshot.ErrorCode != "network_unavailable" || snapshot.Detail != "" {
+		t.Fatalf("failure snapshot = %+v", snapshot)
+	}
+}
+
 type fakeLiveUnderlay struct {
 	next     UnderlaySnapshot
 	errs     map[string]error

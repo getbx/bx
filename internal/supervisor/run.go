@@ -6,6 +6,7 @@ package supervisor
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -159,9 +160,13 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 2) 隧道:按 server link 的 scheme 选传输(brook | reality),数据面不变。
 	// buildTunnel 由 link 建隧道(含按需 sing-box 准备),供启动与 Slice 2b 运行期换隧道复用。
 	var buildTunnelMu sync.Mutex
-	buildTunnel := func(link, recoveryID string) (*tunnel.Tunnel, error) {
+	buildTunnel := func(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error) {
 		buildTunnelMu.Lock()
 		defer buildTunnelMu.Unlock()
+		httpAddr, err := privateAuxiliaryAddr(cfg.HTTPProxy, auxiliaryHTTP)
+		if err != nil {
+			return nil, fmt.Errorf("分配传输私有 HTTP 监听: %w", err)
+		}
 		kind := transportKind(link)
 		switch kind {
 		case "reality":
@@ -170,44 +175,64 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
-			return tunnel.NewReality(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
+			tun, err := tunnel.NewReality(singboxPath, link, opts.Probe, confPath, httpAddr)
+			if tun != nil {
+				tun.CleanupFileOnStop(confPath)
+			}
+			return tun, err
 		case "hysteria2":
 			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
-			return tunnel.NewHysteria2(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
+			tun, err := tunnel.NewHysteria2(singboxPath, link, opts.Probe, confPath, httpAddr)
+			if tun != nil {
+				tun.CleanupFileOnStop(confPath)
+			}
+			return tun, err
 		case "trojan":
 			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
-			return tunnel.NewTrojan(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
+			tun, err := tunnel.NewTrojan(singboxPath, link, opts.Probe, confPath, httpAddr)
+			if tun != nil {
+				tun.CleanupFileOnStop(confPath)
+			}
+			return tun, err
 		case "shadowsocks":
 			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
-			return tunnel.NewShadowsocks(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
+			tun, err := tunnel.NewShadowsocks(singboxPath, link, opts.Probe, confPath, httpAddr)
+			if tun != nil {
+				tun.CleanupFileOnStop(confPath)
+			}
+			return tun, err
 		case "vmess":
 			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 sing-box: %w", err)
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
-			return tunnel.NewVmess(singboxPath, link, opts.Probe, confPath, cfg.HTTPProxy)
+			tun, err := tunnel.NewVmess(singboxPath, link, opts.Probe, confPath, httpAddr)
+			if tun != nil {
+				tun.CleanupFileOnStop(confPath)
+			}
+			return tun, err
 		default:
 			brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion(), cfg.BrookURL, cfg.BrookSHA256)
 			if err != nil {
 				return nil, fmt.Errorf("准备 brook: %w", err)
 			}
-			return tunnel.NewBrook(brookPath, link, opts.Probe, cfg.HTTPProxy)
+			return tunnel.NewBrook(brookPath, link, opts.Probe, httpAddr)
 		}
 	}
-	tun0, err := buildTunnel(cfg.Server, "active-main")
+	tun0, err := buildTunnel(cfg.Server, "active-main", true)
 	if err != nil {
 		return fmt.Errorf("构建隧道: %w", err)
 	}
@@ -238,6 +263,17 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return err
 	}
 	log.Printf("bx 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)
+	var auxiliary *auxiliaryProxy
+	if cfg.HTTPProxy != "" {
+		if tun0.HTTPAddr() == "" {
+			return errors.New("主传输缺少私有 HTTP 监听")
+		}
+		auxiliary, err = startAuxiliaryProxy(cfg.HTTPProxy, tun0.HTTPAddr())
+		if err != nil {
+			return fmt.Errorf("监听固定 HTTP 代理: %w", err)
+		}
+		defer auxiliary.Close()
+	}
 
 	serverHost, err := serverHostFromLink(cfg.Server)
 	if err != nil {
@@ -339,7 +375,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		UDPMode:     cfg.UDP.Mode,
 		SplitDirect: splitDirect,
 	}
-	d.SetTransport(&dialer.Transport{Proxy: proxyDialer, Healthy: lt.Healthy})
+	d.SetTransport(&dialer.Transport{Proxy: proxyDialer, Healthy: tun0.Healthy})
 	d.SetRouter(router)
 
 	// 按类分流:UDP 专用传输(如 hysteria,QUIC 对丢包/高 RTT 更快)与主传输并行。
@@ -349,7 +385,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 拖进重启循环。未健康时由上面的 fail-closed 不变量兜住,连上后自动接管 UDP/QUIC。
 	var udpHealthy func() bool
 	if udpEnabled {
-		udpTun, err := buildTunnel(cfg.UDP.Transport, "active-udp")
+		udpTun, err := buildTunnel(cfg.UDP.Transport, "active-udp", false)
 		if err != nil {
 			return fmt.Errorf("构建 UDP 传输: %w", err)
 		}
@@ -394,6 +430,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		lt:            lt,
 		d:             d,
 		build:         buildTunnel,
+		auxiliary:     auxiliary,
 		healthTimeout: healthTimeout,
 		ctx:           ctx,
 	}
@@ -415,7 +452,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		slot := udpSwapper.transportSetSlot(udpTransportSlot)
 		udpSlot = &slot
 	}
-	liveTransports = newLiveTransportSet(generation, swapper.transportSetSlot(mainTransportSlot), udpSlot)
+	liveTransports = newLiveTransportSet(
+		generation,
+		swapper.transportSetSlot(mainTransportSlot),
+		udpSlot,
+		d.SetTransportGeneration,
+	)
 	// 多传输自动容灾(reality 主 / brook 备…):后台监健康,持续不健康→按优先级 swapTo 备选,
 	// 全程 fail-closed;防抖(滞回+冷静期+全挂不切)。单传输跳过(由 kill-switch 接管)。
 	if len(cfg.Transports) > 1 {

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -23,7 +24,8 @@ type transportSwapper struct {
 	generationOnce sync.Once
 	lt             *liveTunnel
 	d              *dialer.Dialer
-	build          func(link, recoveryID string) (*tunnel.Tunnel, error)
+	build          func(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error)
+	auxiliary      *auxiliaryProxy
 	healthTimeout  time.Duration
 	ctx            context.Context
 	udp            bool
@@ -72,7 +74,7 @@ func (s *transportSwapper) transportGeneration() *transportGeneration {
 }
 
 func (s *transportSwapper) prepare(ctx context.Context, link, recoveryID string) (*tunnel.Tunnel, error) {
-	newTun, err := s.build(link, recoveryID)
+	newTun, err := s.build(link, recoveryID, !s.udp)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +82,10 @@ func (s *transportSwapper) prepare(ctx context.Context, link, recoveryID string)
 	if err := waitTunnelHealthy(ctx, newTun, s.healthTimeout); err != nil {
 		newTun.Stop() // 新隧道没起来:停掉、不换,旧隧道仍在服务
 		return nil, err
+	}
+	if s.auxiliary != nil && newTun.HTTPAddr() == "" {
+		newTun.Stop()
+		return nil, errors.New("transport candidate has no private auxiliary endpoint")
 	}
 	px, err := socksProxy(newTun.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
 	if err != nil {
@@ -91,11 +97,21 @@ func (s *transportSwapper) prepare(ctx context.Context, link, recoveryID string)
 }
 
 func (s *transportSwapper) commit(candidate *tunnel.Tunnel, link string) {
-	old := s.activate(candidate, link)
-	old.Stop()
+	commit := s.activate(candidate, link)
+	if s.udp {
+		s.d.SetUDPTransport(commit.transport)
+	} else {
+		s.d.SetTransport(commit.transport)
+	}
+	if commit.afterPublication != nil {
+		commit.afterPublication()
+	}
+	if commit.retired != nil {
+		commit.retired.Stop()
+	}
 }
 
-func (s *transportSwapper) activate(candidate *tunnel.Tunnel, link string) *tunnel.Tunnel {
+func (s *transportSwapper) activate(candidate *tunnel.Tunnel, link string) transportSlotCommit {
 	proxyValue, ok := s.prepared.LoadAndDelete(candidate)
 	if !ok {
 		panic("transport candidate committed without successful prepare")
@@ -104,13 +120,15 @@ func (s *transportSwapper) activate(candidate *tunnel.Tunnel, link string) *tunn
 	old := s.lt.get()
 	s.lt.set(candidate)
 	transport := &dialer.Transport{Proxy: px, Healthy: candidate.Healthy}
-	if s.udp {
-		s.d.SetUDPTransport(transport)
-	} else {
-		s.d.SetTransport(transport)
-	}
 	s.setLink(link)
-	return old
+	commit := transportSlotCommit{retired: old, transport: transport}
+	if !s.udp && s.auxiliary != nil {
+		target := candidate.HTTPAddr()
+		commit.afterPublication = func() {
+			s.auxiliary.SetTarget(target)
+		}
+	}
+	return commit
 }
 
 func (s *transportSwapper) abort(candidate *tunnel.Tunnel) {
@@ -132,7 +150,7 @@ func (s *transportSwapper) transportSetSlot(name transportSlotName) transportSet
 		prepare: func(ctx context.Context, link, recoveryID string) (transportCandidate, error) {
 			return s.prepare(ctx, link, recoveryID)
 		},
-		commit: func(candidate transportCandidate, link string) transportCandidate {
+		commit: func(candidate transportCandidate, link string) transportSlotCommit {
 			return s.activate(candidate.(*tunnel.Tunnel), link)
 		},
 		abort: func(candidate transportCandidate) {

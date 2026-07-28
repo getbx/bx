@@ -17,6 +17,11 @@ var (
 	recoveryGenerationPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 )
 
+const (
+	pathRecoveryRetryInitial = 100 * time.Millisecond
+	pathRecoveryRetryMax     = 5 * time.Second
+)
+
 type CorePathClient interface {
 	RecoverPath(context.Context, supervisor.PathRecoveryRequest) (supervisor.PathRecoverySnapshot, error)
 }
@@ -136,6 +141,7 @@ func (m *Manager) CurrentPathRecovery() RecoverySnapshot {
 }
 
 func (m *Manager) runPathRecovery(operationCtx context.Context, cancel context.CancelFunc, transaction pathRecoveryTransaction) {
+attempts:
 	for {
 		m.publishRunningPathRecovery(transaction)
 		result := m.executePathRecovery(operationCtx, transaction)
@@ -146,6 +152,66 @@ func (m *Manager) runPathRecovery(operationCtx context.Context, cancel context.C
 			m.pathRecoveryCurrent = result
 		}
 		m.pathRecoveryCancel = nil
+		if !m.pathRecoveryAccepting {
+			m.pathRecoveryPending = nil
+			m.pathRecoveryActive = false
+			m.closePathRecoveryDrainedLocked()
+			m.pathRecoveryMu.Unlock()
+			return
+		}
+		if m.pathRecoveryFences > 0 {
+			m.pathRecoveryActive = false
+			if m.pathRecoveryPending != nil {
+				m.pathRecoveryCurrent = m.pathRecoveryPending.snapshot
+			}
+			m.pathRecoveryMu.Unlock()
+			return
+		}
+		if m.pathRecoveryPending == nil {
+			if shouldRetryPathRecovery(transaction, result, m.Status().Desired) {
+				delay := pathRecoveryRetryBackoff(transaction.snapshot.Attempt)
+				transaction.snapshot = queuedPathRecoveryRetrySnapshot(result)
+				retryCtx, retryCancel := context.WithCancel(context.Background())
+				m.pathRecoveryCurrent = transaction.snapshot
+				m.pathRecoveryCancel = retryCancel
+				wait := m.pathRecoveryRetryWait
+				m.pathRecoveryMu.Unlock()
+
+				retryErr := wait(retryCtx, delay)
+				retryCancel()
+
+				m.pathRecoveryMu.Lock()
+				m.pathRecoveryCancel = nil
+				if retryErr == nil &&
+					m.pathRecoveryAccepting &&
+					m.pathRecoveryFences == 0 &&
+					m.pathRecoveryPending == nil &&
+					m.Status().Desired == DesiredOn {
+					operationCtx, cancel = m.pathRecoveryNewContext()
+					m.pathRecoveryCancel = cancel
+					m.pathRecoveryCurrent = transaction.snapshot
+					m.pathRecoveryMu.Unlock()
+					continue attempts
+				}
+				if retryErr != nil &&
+					m.pathRecoveryAccepting &&
+					m.pathRecoveryFences == 0 &&
+					m.pathRecoveryPending == nil {
+					if m.pathRecoveryCurrent.ID == transaction.snapshot.ID {
+						m.pathRecoveryCurrent = result
+					}
+					m.pathRecoveryActive = false
+					m.pathRecoveryResolveOff = false
+					m.pathRecoveryMu.Unlock()
+					return
+				}
+			} else {
+				m.pathRecoveryActive = false
+				m.pathRecoveryResolveOff = false
+				m.pathRecoveryMu.Unlock()
+				return
+			}
+		}
 		if !m.pathRecoveryAccepting {
 			m.pathRecoveryPending = nil
 			m.pathRecoveryActive = false
@@ -243,7 +309,6 @@ func (m *Manager) beginPathRecoveryTransition(transition pathRecoveryTransition)
 	m.pathRecoveryMu.Lock()
 	m.pathRecoveryFences++
 	if transition == pathRecoveryTransitionResolveOff {
-		m.pathRecoveryResolveOff = true
 		m.queueInterruptedPathRecoveryLocked(false)
 	} else {
 		m.queueInterruptedPathRecoveryLocked(true)
@@ -264,8 +329,8 @@ func (m *Manager) endPathRecoveryTransition() {
 	if m.pathRecoveryFences > 0 {
 		m.pathRecoveryFences--
 	}
-	if desired == DesiredOff {
-		m.pathRecoveryResolveOff = true
+	if m.pathRecoveryFences == 0 {
+		m.pathRecoveryResolveOff = desired == DesiredOff
 	}
 	if m.pathRecoveryFences > 0 || !m.pathRecoveryAccepting {
 		m.pathRecoveryMu.Unlock()
@@ -366,7 +431,7 @@ func (m *Manager) closePathRecoveryDrainedLocked() {
 
 func completedPathRecoverySnapshot(base RecoverySnapshot, result supervisor.PathRecoverySnapshot) RecoverySnapshot {
 	snapshot := base
-	if result.Attempt > 0 {
+	if result.Attempt > snapshot.Attempt {
 		snapshot.Attempt = result.Attempt
 	}
 	snapshot.Stage = publicPathRecoveryStage(result.Stage)
@@ -393,7 +458,7 @@ func completedPathRecoverySnapshot(base RecoverySnapshot, result supervisor.Path
 
 func failedPathRecoverySnapshot(base RecoverySnapshot, result supervisor.PathRecoverySnapshot, err error) RecoverySnapshot {
 	snapshot := base
-	if result.Attempt > 0 {
+	if result.Attempt > snapshot.Attempt {
 		snapshot.Attempt = result.Attempt
 	}
 	snapshot.State = "failed"
@@ -425,7 +490,7 @@ func guardianPathRecoveryErrorCode(err error, resultCode string) string {
 
 func stableGuardianPathRecoveryCode(code string) string {
 	switch code {
-	case "capture_invalid", "capture_missing", "recovery_canceled", "recovery_failed", "recovery_unavailable", "transport_unavailable", "underlay_rebind_failed", "underlay_unavailable", "verification_failed":
+	case "capture_invalid", "capture_missing", "network_unavailable", "recovery_canceled", "recovery_failed", "recovery_unavailable", "transport_unavailable", "underlay_rebind_failed", "underlay_unavailable", "verification_failed":
 		return code
 	default:
 		return ""
@@ -460,4 +525,58 @@ func recoveryRequestFromSnapshot(snapshot RecoverySnapshot) RecoveryRequest {
 
 func completedPathRecoveryState(state string) bool {
 	return state == "succeeded" || state == "failed"
+}
+
+func shouldRetryPathRecovery(transaction pathRecoveryTransaction, result RecoverySnapshot, desired DesiredState) bool {
+	if desired != DesiredOn ||
+		transaction.request.Reason != "underlay_changed" ||
+		transaction.request.Generation == "" ||
+		result.State != "failed" {
+		return false
+	}
+	switch result.ErrorCode {
+	case "capture_invalid", "capture_missing", "recovery_canceled", "recovery_unavailable":
+		return false
+	default:
+		return true
+	}
+}
+
+func queuedPathRecoveryRetrySnapshot(result RecoverySnapshot) RecoverySnapshot {
+	result.State = "accepted"
+	result.Stage = "queued"
+	result.Attempt++
+	result.Detail = ""
+	result.UpdatedAt = time.Now().UTC()
+	return result
+}
+
+func nextPathRecoveryRetryBackoff(current time.Duration) time.Duration {
+	if current >= pathRecoveryRetryMax {
+		return pathRecoveryRetryMax
+	}
+	next := current * 2
+	if next < current || next > pathRecoveryRetryMax {
+		return pathRecoveryRetryMax
+	}
+	return next
+}
+
+func pathRecoveryRetryBackoff(attempt int) time.Duration {
+	delay := pathRecoveryRetryInitial
+	for completed := 1; completed < attempt; completed++ {
+		delay = nextPathRecoveryRetryBackoff(delay)
+	}
+	return delay
+}
+
+func waitForPathRecoveryRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

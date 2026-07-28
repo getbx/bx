@@ -69,5 +69,5 @@ func NewBrook(brookBin, link, probe, httpAddr string) (*Tunnel, error) {
 		return nil, err
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	return New(addr, brookFactory(brookBin, link, httpAddr), socks5Health(probe)), nil
+	return newWithHTTP(addr, httpAddr, brookFactory(brookBin, link, httpAddr), socks5Health(probe)), nil
 }

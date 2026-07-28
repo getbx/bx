@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -43,17 +44,31 @@ func (m *darwinUnderlayManager) Observe(ctx context.Context) (UnderlaySnapshot, 
 	}
 	gateway, interfaceName, err := m.defaultRoute(ctx)
 	if err != nil {
-		return UnderlaySnapshot{}, fmt.Errorf("observe default route: %w", err)
+		return UnderlaySnapshot{}, darwinNetworkUnavailable(ctx, err)
 	}
 	prefixes, err := m.interfacePrefixes(interfaceName)
 	if err != nil {
-		return UnderlaySnapshot{}, fmt.Errorf("observe interface %q addresses: %w", interfaceName, err)
+		return UnderlaySnapshot{}, darwinNetworkUnavailable(ctx, err)
 	}
 	parsedGateway, err := netip.ParseAddr(gateway)
 	if err != nil {
-		return UnderlaySnapshot{}, fmt.Errorf("parse underlay gateway %q: %w", gateway, err)
+		return UnderlaySnapshot{}, darwinNetworkUnavailable(ctx, err)
 	}
-	return newUnderlaySnapshot(interfaceName, parsedGateway, prefixes)
+	snapshot, err := newUnderlaySnapshot(interfaceName, parsedGateway, prefixes)
+	if err != nil {
+		return UnderlaySnapshot{}, darwinNetworkUnavailable(ctx, err)
+	}
+	return snapshot, nil
+}
+
+func darwinNetworkUnavailable(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return &PathRecoveryError{Code: "network_unavailable"}
 }
 
 func (m *darwinUnderlayManager) ValidateCapture(ctx context.Context, tun tunHandle) error {

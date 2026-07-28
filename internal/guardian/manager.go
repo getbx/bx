@@ -130,6 +130,7 @@ type Manager struct {
 	pathRecoveryPending    *pathRecoveryTransaction
 	pathRecoveryCancel     context.CancelFunc
 	pathRecoveryNewContext func() (context.Context, context.CancelFunc)
+	pathRecoveryRetryWait  func(context.Context, time.Duration) error
 	pathRecoverySequence   uint64
 	pathRecoveryAccepting  bool
 	pathRecoveryActive     bool
@@ -227,6 +228,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	m.pathRecoveryNewContext = func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.Background(), guardianMutationTimeout)
 	}
+	m.pathRecoveryRetryWait = waitForPathRecoveryRetry
 	m.mutation <- struct{}{}
 	m.updateOperation <- struct{}{}
 	return m, nil

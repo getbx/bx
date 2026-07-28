@@ -354,6 +354,57 @@ func TestDialSetTransportRace(t *testing.T) {
 	wg.Wait()
 }
 
+func TestTransportGenerationPublicationNeverMixesMainAndUDP(t *testing.T) {
+	oldMain := &Transport{}
+	oldUDP := &Transport{}
+	newMain := &Transport{}
+	newUDP := &Transport{}
+	d := &Dialer{}
+	d.SetTransportGeneration(oldMain, oldUDP)
+
+	const readers = 8
+	start := make(chan struct{})
+	stop := make(chan struct{})
+	errs := make(chan string, readers)
+	var wg sync.WaitGroup
+	for range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				main, udp := d.loadTransportGeneration()
+				if (main == oldMain && udp == oldUDP) || (main == newMain && udp == newUDP) {
+					continue
+				}
+				select {
+				case errs <- "observed a mixed transport generation":
+				default:
+				}
+				return
+			}
+		}()
+	}
+
+	close(start)
+	for i := 0; i < 10_000; i++ {
+		d.SetTransportGeneration(newMain, newUDP)
+		d.SetTransportGeneration(oldMain, oldUDP)
+	}
+	close(stop)
+	wg.Wait()
+	select {
+	case err := <-errs:
+		t.Fatal(err)
+	default:
+	}
+}
+
 // 设了 UDP 专用传输(如 hysteria)→ UDP proxy 走它,不走主传输。
 func TestDialProxyUDPUsesUDPTransport(t *testing.T) {
 	d, px, _ := newTestDialer(nil, fakeResolver{}, true, true)
