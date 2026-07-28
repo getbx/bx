@@ -383,6 +383,10 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // transportInfo(可空)返回当前活跃传输标签、容灾列表、UDP 专用传输标签,供 status 呈现;
 // active 动态(容灾后反映实际),list/udp 多为静态配置。
 func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, shutdown func(), ownerUID uint32) (io.Closer, error) {
+	return serveControlWithPathRecovery(ctx, c, t, server, mode, udpMode, transportInfo, runtime, eng, mut, reload, shutdown, ownerUID, nil)
+}
+
+func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, shutdown func(), ownerUID uint32, recoverer pathRecoverer) (io.Closer, error) {
 	guard := startNetworkGuard(ctx)
 	report := func() stats.Report {
 		ts := t.Stats()
@@ -416,7 +420,7 @@ func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, serve
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler:           newControlMuxWithRuntimeAndShutdown(eng, report, runtime, mut, reload, ownerUID, os.Getpid(), shutdown),
+		Handler:           newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng, report, runtime, mut, reload, ownerUID, os.Getpid(), shutdown, recoverer),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
