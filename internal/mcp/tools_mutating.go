@@ -13,8 +13,12 @@ type armedOut struct {
 }
 
 type reconnectOut struct {
-	State string `json:"state" jsonschema:"reconnected"`
-	Note  string `json:"note"`
+	RecoveryID   string `json:"recovery_id"`
+	State        string `json:"state" jsonschema:"accepted, running, succeeded, failed, or ignored"`
+	Stage        string `json:"stage"`
+	ErrorCode    string `json:"last_error_code,omitempty"`
+	StillRunning bool   `json:"still_running"`
+	Note         string `json:"note"`
 }
 
 const armedNote = "改动已由 bx 守护进程武装 240s 死手;请用 bx_inspect 或 bx_leak_check 验证后调 bx_commit,否则将自动回滚"
@@ -51,15 +55,16 @@ func registerMutating(s *mcpsdk.Server, ops Ops) {
 		})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_reconnect", Description: "safely reconnect the current transport without releasing TUN, routes, or DNS", Annotations: dx},
-		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ emptyIn) (*mcpsdk.CallToolResult, reconnectOut, error) {
-			if err := ops.Reconnect(); err != nil {
+		func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ emptyIn) (*mcpsdk.CallToolResult, reconnectOut, error) {
+			out, err := ops.Reconnect(ctx)
+			if err != nil {
 				var te ToolError
 				if errors.As(err, &te) {
 					return errResultTyped[reconnectOut](te)
 				}
 				return errResultTyped[reconnectOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error(), Remediation: "查 bx_diagnose 或 bx_logs"})
 			}
-			return nil, reconnectOut{State: "reconnected", Note: "replacement transport was healthy before bx switched traffic"}, nil
+			return nil, out, nil
 		})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_rehijack", Description: "reinstall route hijack; armed under commit-confirmed", Annotations: dx},

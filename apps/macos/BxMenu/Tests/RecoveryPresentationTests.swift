@@ -31,6 +31,16 @@ struct RecoveryPresentationTests {
         expect(failed.indicator == .red, "failed indicator")
         expect(failed.shortReason == "Network unavailable", "failed reason")
         expect(!(failed.shortReason?.contains("secret") ?? true), "failed reason is redacted")
+
+        let transition = recoveryFailureTransition(
+            from: recoverySnapshot(state: "running", stage: "transport_health"),
+            errorCode: "recovery_unavailable"
+        )
+        expect(!transition.reconnectInFlight, "observation failure resets reconnect in-flight state")
+        expect(transition.snapshot.state == "failed", "observation failure remains visible")
+        let timeoutPresentation = recoveryPresentation(for: transition.snapshot)
+        expect(timeoutPresentation.title == "Reconnect Failed", "observation failure title")
+        expect(timeoutPresentation.shortReason == "Recovery unavailable", "observation failure has Details reason")
     }
 
     private static func recoverySnapshot(

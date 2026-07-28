@@ -405,15 +405,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                 }
                 self.pollRecovery(startingWith: submitted)
             } catch {
-                let failed = self.localRecoverySnapshot(
-                    state: "failed",
-                    stage: "failed",
+                let transition = recoveryFailureTransition(
+                    from: pending,
                     errorCode: self.recoveryErrorCode(error)
                 )
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    self.reconnectInFlight = false
-                    self.publishRecovery(failed)
+                    self.reconnectInFlight = transition.reconnectInFlight
+                    self.publishRecovery(transition.snapshot)
                 }
             }
         }
@@ -440,8 +439,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                     self?.publishRecovery(current)
                 }
             } catch {
+                let transition = recoveryFailureTransition(
+                    from: snapshot,
+                    errorCode: recoveryErrorCode(error)
+                )
                 DispatchQueue.main.async { [weak self] in
-                    self?.reconnectInFlight = false
+                    guard let self else { return }
+                    self.reconnectInFlight = transition.reconnectInFlight
+                    self.publishRecovery(transition.snapshot)
                 }
                 return
             }

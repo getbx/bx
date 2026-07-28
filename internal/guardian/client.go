@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,6 +27,30 @@ func (e *UnavailableError) Error() string {
 
 func (e *UnavailableError) Unwrap() error {
 	return e.Err
+}
+
+type AmbiguousRecoveryError struct {
+	Err error
+}
+
+func (e *AmbiguousRecoveryError) Error() string {
+	return fmt.Sprintf("Guardian recovery request may have been accepted: %v", e.Err)
+}
+
+func (e *AmbiguousRecoveryError) Unwrap() error {
+	return e.Err
+}
+
+type guardianDialError struct {
+	err error
+}
+
+func (e *guardianDialError) Error() string {
+	return e.err.Error()
+}
+
+func (e *guardianDialError) Unwrap() error {
+	return e.err
 }
 
 func NewClient(socketPath string) *Client {
@@ -135,7 +160,11 @@ func (c *Client) recoveryRequest(ctx context.Context, method, path string, body 
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return RecoverySnapshot{}, ctxErr
 		}
-		return RecoverySnapshot{}, &UnavailableError{Err: err}
+		var dialErr *guardianDialError
+		if errors.As(err, &dialErr) {
+			return RecoverySnapshot{}, &UnavailableError{Err: dialErr.err}
+		}
+		return RecoverySnapshot{}, &AmbiguousRecoveryError{Err: err}
 	}
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
@@ -143,6 +172,9 @@ func (c *Client) recoveryRequest(ctx context.Context, method, path string, body 
 	}
 	var snapshot RecoverySnapshot
 	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		if method == http.MethodPost {
+			return RecoverySnapshot{}, &AmbiguousRecoveryError{Err: err}
+		}
 		return RecoverySnapshot{}, err
 	}
 	return redactRecoverySnapshot(snapshot), nil
@@ -189,7 +221,11 @@ func guardianHTTPClient(socketPath string) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "unix", socketPath)
+			conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "unix", socketPath)
+			if err != nil {
+				return nil, &guardianDialError{err: err}
+			}
+			return conn, nil
 		}},
 	}
 }

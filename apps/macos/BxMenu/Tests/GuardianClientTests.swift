@@ -4,8 +4,20 @@ import Foundation
 @main
 struct GuardianClientTests {
     static func main() throws {
-        try testFixedRecoveryRequestsAndJSONDecode()
-        try testResponseBoundsAndContentType()
+        try run("fixed requests", testFixedRecoveryRequestsAndJSONDecode)
+        try run("complete body without EOF", testCompleteContentLengthReturnsWithoutEOFAndSetsTimeouts)
+        try run("partial body timeout", testPartialBodyTimesOutAndClosesClientFD)
+        try run("parser bounds", testResponseBoundsAndContentType)
+        try run("strict HTTP framing", testStrictHTTPFraming)
+    }
+
+    private static func run(_ label: String, _ body: () throws -> Void) throws {
+        do {
+            try body()
+        } catch {
+            fputs("failed: \(label): \(error)\n", stderr)
+            throw error
+        }
     }
 
     private static func testFixedRecoveryRequestsAndJSONDecode() throws {
@@ -69,6 +81,117 @@ struct GuardianClientTests {
         }
     }
 
+    private static func testStrictHTTPFraming() throws {
+        expectThrows("conflicting duplicate Content-Length") {
+            _ = try decodeGuardianHTTPResponse(
+                Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1\r\nContent-Length: \(recoveryJSON.utf8.count)\r\n\r\n\(recoveryJSON)".utf8),
+                expectedStatus: 200
+            )
+        }
+        let duplicateMatchingLength = try decodeGuardianHTTPResponse(
+            Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(recoveryJSON.utf8.count)\r\nContent-Length: \(recoveryJSON.utf8.count)\r\n\r\n\(recoveryJSON)".utf8),
+            expectedStatus: 200
+        )
+        expect(duplicateMatchingLength.recoveryID == "recovery-1", "matching duplicate Content-Length accepted")
+
+        expectThrows("duplicate Content-Type") {
+            _ = try decodeGuardianHTTPResponse(
+                Data("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Type: application/json\r\nContent-Length: \(recoveryJSON.utf8.count)\r\n\r\n\(recoveryJSON)".utf8),
+                expectedStatus: 200
+            )
+        }
+        expectThrows("duplicate Transfer-Encoding") {
+            _ = try decodeGuardianHTTPResponse(
+                Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: identity\r\nContent-Length: 2\r\n\r\n{}".utf8),
+                expectedStatus: 200
+            )
+        }
+        expectThrows("malformed HTTP version") {
+            _ = try decodeGuardianHTTPResponse(
+                Data("HTTP/1.x 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(recoveryJSON.utf8.count)\r\n\r\n\(recoveryJSON)".utf8),
+                expectedStatus: 200
+            )
+        }
+        expectThrows("malformed short status code") {
+            _ = try decodeGuardianHTTPResponse(
+                Data("HTTP/1.1 20 OK\r\nContent-Type: application/json\r\nContent-Length: \(recoveryJSON.utf8.count)\r\n\r\n\(recoveryJSON)".utf8),
+                expectedStatus: 20
+            )
+        }
+        expectThrows("missing Content-Length") {
+            _ = try decodeGuardianHTTPResponse(
+                Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\(recoveryJSON)".utf8),
+                expectedStatus: 200
+            )
+        }
+        expectThrows("short body") {
+            _ = try decodeGuardianHTTPResponse(
+                Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 3\r\n\r\n{}".utf8),
+                expectedStatus: 200
+            )
+        }
+        expectThrows("extra bytes after body") {
+            _ = try decodeGuardianHTTPResponse(
+                Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}x".utf8),
+                expectedStatus: 200
+            )
+        }
+    }
+
+    private static func testCompleteContentLengthReturnsWithoutEOFAndSetsTimeouts() throws {
+        var sockets = [Int32](repeating: -1, count: 2)
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
+            throw POSIXError(.ENOTCONN)
+        }
+        var inspectionFD: Int32 = -1
+        let client = GuardianClient(
+            connectSocket: {
+                inspectionFD = dup(sockets[0])
+                return sockets[0]
+            },
+            ioTimeout: 0.05
+        )
+        try writeAll(response(status: 202, body: recoveryJSON), to: sockets[1])
+
+        let snapshot: RecoverySnapshot
+        do {
+            snapshot = try client.requestRecovery()
+        } catch {
+            fputs("failed: complete response client call: \(error)\n", stderr)
+            throw error
+        }
+        expect(snapshot.recoveryID == "recovery-1", "complete Content-Length returns without EOF")
+        expectSocketHasFiniteTimeout(inspectionFD, option: SO_RCVTIMEO, label: "read timeout")
+        expectSocketHasFiniteTimeout(inspectionFD, option: SO_SNDTIMEO, label: "write timeout")
+        close(inspectionFD)
+        let request: String
+        do {
+            request = try readRequestToEOF(sockets[1])
+        } catch {
+            fputs("failed: complete response peer close check: \(error)\n", stderr)
+            throw error
+        }
+        expect(request.hasPrefix("POST /v1/recoveries HTTP/1.1\r\n"), "complete response closes client FD")
+    }
+
+    private static func testPartialBodyTimesOutAndClosesClientFD() throws {
+        var sockets = [Int32](repeating: -1, count: 2)
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
+            throw POSIXError(.ENOTCONN)
+        }
+        let fullResponse = response(status: 202, body: recoveryJSON)
+        try writeAll(fullResponse.dropLast(8), to: sockets[1])
+        let client = GuardianClient(connectSocket: { sockets[0] }, ioTimeout: 0.05)
+
+        let started = Date()
+        expectThrows("partial Content-Length times out") {
+            _ = try client.requestRecovery()
+        }
+        expect(Date().timeIntervalSince(started) < 1, "partial response timeout is bounded")
+        let request = try readRequestToEOF(sockets[1])
+        expect(request.hasPrefix("POST /v1/recoveries HTTP/1.1\r\n"), "timeout closes client FD")
+    }
+
     private static func fixtureClient(response: Data) throws -> (client: GuardianClient, serverFD: Int32) {
         var sockets = [Int32](repeating: -1, count: 2)
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
@@ -89,6 +212,37 @@ struct GuardianClientTests {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         return String(decoding: bytes.prefix(count), as: UTF8.self)
+    }
+
+    private static func readRequestToEOF(_ fd: Int32) throws -> String {
+        defer { close(fd) }
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        var request = Data()
+        var bytes = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = read(fd, &bytes, bytes.count)
+            if count == 0 {
+                return String(decoding: request, as: UTF8.self)
+            }
+            guard count > 0 else {
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    throw POSIXError(.ETIMEDOUT)
+                }
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            request.append(bytes, count: count)
+        }
+    }
+
+    private static func expectSocketHasFiniteTimeout(_ fd: Int32, option: Int32, label: String) {
+        var timeout = timeval()
+        var length = socklen_t(MemoryLayout.size(ofValue: timeout))
+        let result = getsockopt(fd, SOL_SOCKET, option, &timeout, &length)
+        expect(result == 0, "\(label) readable")
+        expect(timeout.tv_sec > 0 || timeout.tv_usec > 0, "\(label) is finite")
     }
 
     private static func writeAll(_ data: Data, to fd: Int32) throws {

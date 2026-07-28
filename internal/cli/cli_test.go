@@ -226,6 +226,11 @@ func TestReconnectFallsBackOnlyForTypedGuardianUnavailable(t *testing.T) {
 			requestErr: errors.New("Guardian /v1/recoveries returned 500"),
 			wantError:  "Guardian /v1/recoveries returned 500",
 		},
+		{
+			name:       "possibly accepted POST",
+			requestErr: &guardian.AmbiguousRecoveryError{Err: io.ErrUnexpectedEOF},
+			wantError:  "Guardian recovery request may have been accepted: unexpected EOF",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -250,6 +255,52 @@ func TestReconnectFallsBackOnlyForTypedGuardianUnavailable(t *testing.T) {
 				t.Fatalf("legacy Core reconnect calls = %d, want %d", legacyCalls, tt.wantLegacy)
 			}
 		})
+	}
+}
+
+func TestReconnectLegacyFallbackSuccessPrintsHumanProgress(t *testing.T) {
+	var output bytes.Buffer
+	legacyCalls := 0
+	err := reconnectWithDependencies(context.Background(), false, reconnectDependencies{
+		client: &scriptedRecoveryClient{
+			requestErr: &guardian.UnavailableError{Err: errors.New("missing Guardian socket")},
+		},
+		output: &output,
+		legacyReconnect: func(context.Context) error {
+			legacyCalls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("legacy reconnect exit error = %v, want nil", err)
+	}
+	if legacyCalls != 1 {
+		t.Fatalf("legacy reconnect calls = %d, want 1", legacyCalls)
+	}
+	if got, want := output.String(), "• Protection  Reconnecting\n✓ Protection  Reconnected\n"; got != want {
+		t.Fatalf("legacy human stdout = %q, want %q", got, want)
+	}
+}
+
+func TestReconnectLegacyFallbackSuccessPrintsStableJSONOnly(t *testing.T) {
+	var output bytes.Buffer
+	err := reconnectWithDependencies(context.Background(), true, reconnectDependencies{
+		client: &scriptedRecoveryClient{
+			requestErr: &guardian.UnavailableError{Err: errors.New("missing Guardian socket")},
+		},
+		output:          &output,
+		legacyReconnect: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("legacy JSON reconnect exit error = %v, want nil", err)
+	}
+	const want = "{\n  \"state\": \"succeeded\",\n  \"stage\": \"legacy_core\",\n  \"reason\": \"manual\",\n  \"attempt\": 1\n}\n"
+	if got := output.String(); got != want {
+		t.Fatalf("legacy JSON stdout = %q, want %q", got, want)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("legacy stdout is not valid JSON: %v", err)
 	}
 }
 
