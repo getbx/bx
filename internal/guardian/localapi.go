@@ -31,6 +31,10 @@ type PathRecoveryController interface {
 	CurrentPathRecovery() RecoverySnapshot
 }
 
+type pathRecoveryStatusController interface {
+	currentPathRecoveryStatus() (RecoverySnapshot, string)
+}
+
 type LocalAPIOptions struct {
 	OwnerUID uint32
 }
@@ -78,7 +82,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		writeGuardianJSON(w, http.StatusOK, controller.Status())
+		writeGuardianJSON(w, http.StatusOK, observableStatus(controller, pathRecoveryControllerFor(controller)))
 	})
 	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations))
 	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down, mutations))
@@ -92,6 +96,37 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
 	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries}
+}
+
+func pathRecoveryControllerFor(controller Controller) PathRecoveryController {
+	pathRecoveryController, _ := controller.(PathRecoveryController)
+	return pathRecoveryController
+}
+
+func observableStatus(controller Controller, recoveries PathRecoveryController) Status {
+	status := controller.Status()
+	status.Recovery = RecoverySnapshot{State: "idle", Stage: "idle"}
+	if recoveries == nil {
+		return status
+	}
+	if current, ok := recoveries.(pathRecoveryStatusController); ok {
+		status.Recovery, status.NetworkGeneration = current.currentPathRecoveryStatus()
+	} else {
+		status.Recovery = recoveries.CurrentPathRecovery()
+		status.NetworkGeneration = status.Recovery.Generation
+	}
+	status.Recovery = redactRecoverySnapshot(status.Recovery)
+	switch status.Recovery.State {
+	case "accepted", "running":
+		if status.Desired == DesiredOn {
+			status.Protection = ProtectionRecovering
+		}
+	case "failed":
+		if status.Protection != ProtectionNeedsAttention {
+			status.Protection = ProtectionBlocked
+		}
+	}
+	return status
 }
 
 func recoveryRequestHandler(controller PathRecoveryController, ownerUID uint32) http.HandlerFunc {

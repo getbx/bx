@@ -3,6 +3,7 @@ package guardian
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -13,6 +14,39 @@ import (
 	"testing"
 	"time"
 )
+
+func TestStatusClientRedactsNestedRecoveryBeforePersistence(t *testing.T) {
+	secret := "vless://user:password@example.test?token=secret"
+	client := &Client{HTTPClient: &http.Client{Transport: recoveryRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		body, err := json.Marshal(Status{
+			SchemaVersion: 1,
+			Protection:    ProtectionBlocked,
+			Recovery: RecoverySnapshot{
+				ID:        "recovery-8",
+				State:     "failed",
+				Stage:     "transport_health",
+				ErrorCode: "future_secret_error",
+				Detail:    secret,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(string(body))),
+		}, nil
+	})}}
+
+	status, err := client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Recovery.Detail != "" || status.Recovery.ErrorCode != "recovery_failed" {
+		t.Fatalf("status recovery = %+v, want redacted stable failure", status.Recovery)
+	}
+}
 
 func TestRecoveryClientTypesOnlyTransportFailureAsGuardianUnavailable(t *testing.T) {
 	client := NewClient(filepath.Join(t.TempDir(), "missing.sock"))

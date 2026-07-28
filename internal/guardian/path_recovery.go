@@ -2,7 +2,9 @@ package guardian
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -37,6 +39,17 @@ type corePathProgressClient interface {
 type pathRecoveryTransaction struct {
 	request  RecoveryRequest
 	snapshot RecoverySnapshot
+}
+
+type recoveryLogRecord struct {
+	RecoveryID string `json:"recovery_id"`
+	Generation string `json:"generation"`
+	Reason     string `json:"reason"`
+	State      string `json:"state"`
+	Stage      string `json:"stage"`
+	Attempt    int    `json:"attempt"`
+	DurationMS int64  `json:"duration_ms"`
+	ErrorCode  string `json:"error_code"`
 }
 
 type pathRecoveryTransition uint8
@@ -122,6 +135,9 @@ func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot
 	}
 
 	m.pathRecoveryMu.Lock()
+	if normalized.Generation != "" {
+		m.networkGeneration = normalized.Generation
+	}
 	if !m.pathRecoveryAccepting {
 		m.pathRecoveryMu.Unlock()
 		return RecoverySnapshot{}, errPathRecoveryShuttingDown
@@ -171,6 +187,7 @@ func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot
 		transaction.snapshot.UpdatedAt = time.Now().UTC()
 		m.pathRecoveryCurrent = transaction.snapshot
 		m.pathRecoveryMu.Unlock()
+		logRecoverySnapshot(transaction.snapshot)
 		return transaction.snapshot, nil
 	}
 
@@ -189,12 +206,19 @@ func (m *Manager) CurrentPathRecovery() RecoverySnapshot {
 	return m.pathRecoveryCurrent
 }
 
+func (m *Manager) currentPathRecoveryStatus() (RecoverySnapshot, string) {
+	m.pathRecoveryMu.Lock()
+	defer m.pathRecoveryMu.Unlock()
+	return m.pathRecoveryCurrent, m.networkGeneration
+}
+
 func (m *Manager) runPathRecovery(operationCtx context.Context, cancel context.CancelFunc, transaction pathRecoveryTransaction) {
 attempts:
 	for {
 		m.publishRunningPathRecovery(transaction)
 		result := m.executePathRecovery(operationCtx, transaction)
 		cancel()
+		logRecoverySnapshot(result)
 
 		m.pathRecoveryMu.Lock()
 		if m.pathRecoveryCurrent.ID == transaction.snapshot.ID {
@@ -288,7 +312,9 @@ attempts:
 			m.pathRecoveryResolveOff = false
 			m.pathRecoveryActive = false
 			m.pathRecoveryCurrent = ignoredPathRecoverySnapshot(transaction.snapshot)
+			result := m.pathRecoveryCurrent
 			m.pathRecoveryMu.Unlock()
+			logRecoverySnapshot(result)
 			return
 		}
 		operationCtx, cancel = m.pathRecoveryNewContext()
@@ -591,6 +617,31 @@ func redactRecoverySnapshot(snapshot RecoverySnapshot) RecoverySnapshot {
 		snapshot.ErrorCode = "recovery_failed"
 	}
 	return snapshot
+}
+
+func recoveryLogRecordFor(snapshot RecoverySnapshot) recoveryLogRecord {
+	snapshot = redactRecoverySnapshot(snapshot)
+	duration := snapshot.UpdatedAt.Sub(snapshot.StartedAt)
+	if duration < 0 {
+		duration = 0
+	}
+	return recoveryLogRecord{
+		RecoveryID: snapshot.ID,
+		Generation: snapshot.Generation,
+		Reason:     snapshot.Reason,
+		State:      snapshot.State,
+		Stage:      snapshot.Stage,
+		Attempt:    snapshot.Attempt,
+		DurationMS: duration.Milliseconds(),
+		ErrorCode:  snapshot.ErrorCode,
+	}
+}
+
+func logRecoverySnapshot(snapshot RecoverySnapshot) {
+	record, err := json.Marshal(recoveryLogRecordFor(snapshot))
+	if err == nil {
+		log.Printf("network_recovery %s", record)
+	}
 }
 
 func samePathRecoveryGeneration(a, b RecoveryRequest) bool {

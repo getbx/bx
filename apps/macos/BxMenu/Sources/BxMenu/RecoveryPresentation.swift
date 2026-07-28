@@ -37,6 +37,13 @@ struct RecoveryFailureTransition: Equatable {
     let reconnectInFlight: Bool
 }
 
+func visibleStatusRecovery(_ snapshot: RecoverySnapshot?) -> RecoverySnapshot? {
+    guard let snapshot, snapshot.state != "idle" else {
+        return nil
+    }
+    return snapshot
+}
+
 func recoveryFailureTransition(from snapshot: RecoverySnapshot, errorCode: String) -> RecoveryFailureTransition {
     RecoveryFailureTransition(
         snapshot: RecoverySnapshot(
@@ -89,8 +96,9 @@ func recoveryPresentation(for snapshot: RecoverySnapshot) -> RecoveryPresentatio
             showsSuccessAlert: false
         )
     default:
+        let title = snapshot.reason == "underlay_changed" ? "Blocked" : "Reconnect Failed"
         return RecoveryPresentation(
-            title: "Reconnect Failed",
+            title: title,
             indicator: .red,
             shortReason: recoveryFailureReason(snapshot.lastErrorCode),
             showsSuccessAlert: false

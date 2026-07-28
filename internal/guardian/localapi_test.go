@@ -22,7 +22,17 @@ import (
 )
 
 func TestLocalAPIStatusIsReadableWithoutPeerCredentials(t *testing.T) {
-	controller := &fakeController{status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, CorePID: 42, Protection: ProtectionProtected}}
+	controller := &fakeController{
+		status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, CorePID: 42, Protection: ProtectionProtected},
+		recoveryCurrent: RecoverySnapshot{
+			ID:         "recovery-8",
+			State:      "running",
+			Stage:      "transport_health",
+			Reason:     "underlay_changed",
+			Generation: "wifi-b",
+			Attempt:    2,
+		},
+	}
 	recorder := httptest.NewRecorder()
 	NewLocalAPI(controller).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
 	if recorder.Code != http.StatusOK {
@@ -32,8 +42,40 @@ func TestLocalAPIStatusIsReadableWithoutPeerCredentials(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.CorePID != 42 || got.Protection != ProtectionProtected {
+	if got.CorePID != 42 || got.Protection != ProtectionRecovering ||
+		got.NetworkGeneration != "wifi-b" || got.Recovery.ID != "recovery-8" {
 		t.Fatalf("response = %+v", got)
+	}
+}
+
+func TestLocalAPIStatusPreservesLatestNetworkGenerationAcrossManualRecovery(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "underlay_changed", Generation: "wifi-b"}); err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	eventually(t, func() bool { return env.manager.CurrentPathRecovery().State == "succeeded" })
+
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	t.Cleanup(func() {
+		core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}})
+	})
+
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(env.manager).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	var got Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.NetworkGeneration != "wifi-b" || got.Recovery.Generation != "" || got.Recovery.Reason != "manual" {
+		t.Fatalf("status = %+v, want latest network generation plus manual recovery snapshot", got)
 	}
 }
 

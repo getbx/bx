@@ -100,8 +100,8 @@ func TestMacMenuReconnectDoesNotCycleProtection(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	if !strings.Contains(text, "menu.addAction(\"Reconnect\"") {
-		t.Fatal("macOS menu should expose Reconnect")
+	if !strings.Contains(text, "menu.addAction(\"Troubleshoot: Reconnect\"") {
+		t.Fatal("macOS menu should expose Reconnect only as troubleshooting")
 	}
 	if !strings.Contains(text, "func reconnectBx()") {
 		t.Fatal("macOS menu should implement reconnect action")
@@ -380,6 +380,70 @@ func TestMacMenuUsesGuardianInsteadOfCLIReconnectSupport(t *testing.T) {
 	}
 }
 
+func TestMacMenuAndReadmeDescribeAutomaticSafeNetworkRecovery(t *testing.T) {
+	menu, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(menu), "Automatically recovers safely after network changes") {
+		t.Fatal("macOS menu should describe automatic safe recovery after network changes")
+	}
+	for _, want := range []string{"网络变化后自动安全恢复", "`bx reconnect`", "troubleshooting", "绝不回落直连"} {
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("README missing recovery guidance %q", want)
+		}
+	}
+}
+
+func TestDarwinTestkitNetworkTransitionCheckIsDryRunAndUserGated(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "scripts", "darwin-testkit.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, want := range []string{
+		"--network-transition-check",
+		"--acknowledge-physical-change",
+		"before-status.json",
+		"after-status.json",
+		"user-sequence.txt",
+		"NETWORK-CHANGED",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("network transition testkit missing %q", want)
+		}
+	}
+	start := strings.Index(text, "run_network_transition_check() {")
+	if start < 0 {
+		t.Fatal("network transition check function is missing")
+	}
+	end := strings.Index(text[start:], "\n}\n\n")
+	if end < 0 {
+		t.Fatal("network transition check function end is missing")
+	}
+	body := text[start : start+end]
+	for _, want := range []string{
+		`if [[ "$EXECUTE" != "1" ]]`,
+		`if [[ "$ACKNOWLEDGE_PHYSICAL_CHANGE" != "1" ]]`,
+		`"$BX" status --json`,
+		`"protection_state"[[:space:]]*:[[:space:]]*"protected"`,
+		`"tunnel_healthy"[[:space:]]*:[[:space:]]*true`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("network transition check body missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"networksetup -setairport", "airport -z", `"$BX" reconnect`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("network transition check actively changes the network with %q", forbidden)
+		}
+	}
+}
+
 func TestMacMenuUsesSingleCompactStatusIcon(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
@@ -600,6 +664,128 @@ func TestClientDoctorJSONReport(t *testing.T) {
 	}
 	if parsed.Kind != "client" {
 		t.Fatalf("parsed kind = %q", parsed.Kind)
+	}
+}
+
+func TestStatusReportIncludesTruthfulGuardianRecovery(t *testing.T) {
+	started := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	rep := assembleClientStatusReport(
+		stats.Report{TunnelHealthy: true, LatencyMS: 18},
+		guardian.Status{
+			SchemaVersion:     1,
+			Protection:        guardian.ProtectionProtected,
+			NetworkGeneration: "wifi-b",
+			Recovery: guardian.RecoverySnapshot{
+				ID:         "recovery-8",
+				State:      "running",
+				Stage:      "transport_health",
+				Reason:     "underlay_changed",
+				Generation: "wifi-b",
+				Attempt:    2,
+				StartedAt:  started,
+				UpdatedAt:  started.Add(time.Second),
+			},
+		},
+	)
+
+	var encoded map[string]any
+	data, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		t.Fatal(err)
+	}
+	if encoded["protection_state"] != guardian.ProtectionRecovering {
+		t.Fatalf("protection_state = %v, want recovering", encoded["protection_state"])
+	}
+	if encoded["network_generation"] != "wifi-b" {
+		t.Fatalf("network_generation = %v, want wifi-b", encoded["network_generation"])
+	}
+	recovery, ok := encoded["recovery"].(map[string]any)
+	if !ok || recovery["recovery_id"] != "recovery-8" || recovery["stage"] != "transport_health" {
+		t.Fatalf("recovery = %#v", encoded["recovery"])
+	}
+}
+
+func TestHumanStatusDistinguishesRecoverySafetyStates(t *testing.T) {
+	tests := []struct {
+		name       string
+		protection string
+		recovery   guardian.RecoverySnapshot
+		want       string
+	}{
+		{
+			name:       "reconnecting",
+			protection: guardian.ProtectionRecovering,
+			recovery:   guardian.RecoverySnapshot{State: "running", Stage: "verify"},
+			want:       "Reconnecting",
+		},
+		{
+			name:       "blocked",
+			protection: guardian.ProtectionBlocked,
+			recovery:   guardian.RecoverySnapshot{State: "failed", Stage: "transport_health", ErrorCode: "transport_unavailable"},
+			want:       "Blocked",
+		},
+		{
+			name:       "repair required",
+			protection: guardian.ProtectionNeedsAttention,
+			recovery:   guardian.RecoverySnapshot{State: "failed", Stage: "verify", ErrorCode: "verification_failed"},
+			want:       "Repair Required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderClientStatus(clientStatusReport{
+				Report:          stats.Report{TunnelHealthy: true},
+				ProtectionState: tt.protection,
+				Recovery:        tt.recovery,
+			})
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("status output = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDarwinStatusFallbackRequiresRepairWhenGuardianIsUnavailable(t *testing.T) {
+	status := guardianStatusFallback(stats.Report{TunnelHealthy: true}, "darwin")
+	if status.Protection != guardian.ProtectionNeedsAttention {
+		t.Fatalf("darwin fallback protection = %q, want needs_attention", status.Protection)
+	}
+	if status.Recovery.State != "failed" || status.Recovery.ErrorCode != "recovery_unavailable" {
+		t.Fatalf("darwin fallback recovery = %+v", status.Recovery)
+	}
+
+	linux := guardianStatusFallback(stats.Report{TunnelHealthy: true}, "linux")
+	if linux.Protection != guardian.ProtectionProtected {
+		t.Fatalf("linux fallback protection = %q, want protected", linux.Protection)
+	}
+}
+
+func TestDoctorReportsLatestRecoveryWithoutDirectFallback(t *testing.T) {
+	check := recoveryDoctorCheck(guardian.RecoverySnapshot{
+		ID:         "recovery-8",
+		State:      "failed",
+		Stage:      "transport_health",
+		Reason:     "underlay_changed",
+		Generation: "wifi-b",
+		ErrorCode:  "transport_unavailable",
+		Attempt:    3,
+	})
+	if check.Name != "network_recovery" || check.Status != "warn" {
+		t.Fatalf("recovery doctor check = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "stage=transport_health") ||
+		!strings.Contains(check.Detail, "error_code=transport_unavailable") {
+		t.Fatalf("recovery doctor detail = %q", check.Detail)
+	}
+	guidance := strings.ToLower(check.Hint)
+	if strings.Contains(guidance, "direct") || strings.Contains(guidance, "fallback") {
+		t.Fatalf("doctor suggested unsafe fallback: %q", check.Hint)
+	}
+	if !strings.Contains(guidance, "bx logs") || !strings.Contains(guidance, "bx reconnect") {
+		t.Fatalf("doctor hint = %q, want logs and troubleshooting reconnect", check.Hint)
 	}
 }
 
@@ -923,10 +1109,38 @@ func TestArchiveClientLogsRecordsReason(t *testing.T) {
 	if !strings.Contains(string(meta), "reason=doctor") {
 		t.Fatalf("meta should include archive reason:\n%s", meta)
 	}
-	for _, name := range []string{"doctor.json"} {
+	for _, name := range []string{"doctor.json", "recovery.json"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("archive should include %s: %v", name, err)
 		}
+	}
+}
+
+func TestPersistRecoverySnapshotRedactsFreeFormTransportError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "recovery.json")
+	secret := "vless://user:password@example.test?token=secret"
+	if err := persistRecoverySnapshot(path, guardian.RecoverySnapshot{
+		ID:        "recovery-8",
+		State:     "failed",
+		Stage:     "transport_health",
+		ErrorCode: "future_secret_error",
+		Detail:    secret,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), "future_secret_error") {
+		t.Fatalf("recovery archive leaked free-form failure: %s", data)
+	}
+	var got guardian.RecoverySnapshot
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ErrorCode != "recovery_failed" || got.Detail != "" {
+		t.Fatalf("recovery archive = %+v, want stable redacted failure", got)
 	}
 }
 

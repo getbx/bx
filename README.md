@@ -145,7 +145,7 @@ WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md
 
 `bx status` 是运行期面板。macOS 上 daemon 会轻量只读监测 Tailscale 路由、系统代理和已连接的 VPN 服务；如果 bx 启动后又出现其他通道,status 会显示 `提醒`,菜单栏也可用同一份 JSON 变成需要注意的状态。
 
-macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Reconnect、Update、Quit bx、Logs、Doctor 这些必要入口。命令行仍然保留,用于自动化、远程诊断和高级维护。
+macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Troubleshoot: Reconnect、Update、Quit bx、Logs、Doctor 这些必要入口。网络变化后自动安全恢复;恢复时可能短暂断网但绝不回落直连。`bx reconnect` 仅用于 troubleshooting,不是日常网络切换步骤。命令行仍然保留,用于自动化、远程诊断和高级维护。
 
 #### macOS 安装包
 

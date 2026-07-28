@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -46,15 +47,28 @@ func privateAuxiliaryAddr(configured string, enabled bool) (string, error) {
 	if configured == "" || !enabled {
 		return "", nil
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return "", err
+	for {
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			return "", err
+		}
+		addr := listener.Addr().String()
+		if err := listener.Close(); err != nil {
+			return "", err
+		}
+		if privateAuxiliaryAddrAllowed(configured, addr) {
+			return addr, nil
+		}
 	}
-	addr := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		return "", err
+}
+
+func privateAuxiliaryAddrAllowed(configured, candidate string) bool {
+	_, configuredPort, configuredErr := net.SplitHostPort(strings.TrimSpace(configured))
+	_, candidatePort, candidateErr := net.SplitHostPort(strings.TrimSpace(candidate))
+	if configuredErr != nil || candidateErr != nil || configuredPort == "0" {
+		return true
 	}
-	return addr, nil
+	return configuredPort != candidatePort
 }
 
 func (p *auxiliaryProxy) SetTarget(target string) {

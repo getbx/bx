@@ -68,19 +68,38 @@ struct RecoveryPresentationTests {
         let replacementPresentation = recoveryPresentation(for: replacementTransition.snapshot)
         expect(replacementPresentation.title == "Reconnect Failed", "replacement failure title")
         expect(replacementPresentation.shortReason == "Recovery was replaced", "replacement failure short reason")
+
+        expect(
+            visibleStatusRecovery(recoverySnapshot(state: "running", stage: "verify"))?.stage == "verify",
+            "automatic status recovery is visible"
+        )
+        expect(
+            visibleStatusRecovery(recoverySnapshot(state: "idle", stage: "idle")) == nil,
+            "idle status recovery is hidden"
+        )
+        let automaticFailure = recoveryPresentation(
+            for: recoverySnapshot(
+                state: "failed",
+                stage: "transport_health",
+                errorCode: "transport_unavailable",
+                reason: "underlay_changed"
+            )
+        )
+        expect(automaticFailure.title == "Blocked", "automatic recovery failure is blocked")
     }
 
     private static func recoverySnapshot(
         state: String,
         stage: String,
         errorCode: String? = nil,
-        detail: String? = nil
+        detail: String? = nil,
+        reason: String = "manual"
     ) -> RecoverySnapshot {
         RecoverySnapshot(
             recoveryID: "recovery-1",
             state: state,
             stage: stage,
-            reason: "manual",
+            reason: reason,
             generation: nil,
             lastErrorCode: errorCode,
             detail: detail,

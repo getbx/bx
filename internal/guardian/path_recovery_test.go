@@ -918,6 +918,43 @@ func TestCompletedPathRecoverySnapshotRequiresExplicitSucceededState(t *testing.
 	}
 }
 
+func TestRecoveryLogRecordIsStructuredStableAndRedacted(t *testing.T) {
+	started := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	record := recoveryLogRecordFor(RecoverySnapshot{
+		ID:         "recovery-8",
+		State:      "failed",
+		Stage:      "transport_health",
+		Reason:     "underlay_changed",
+		Generation: "wifi-b",
+		ErrorCode:  "transport_unavailable",
+		Detail:     "vless://user:password@example.test?token=secret",
+		Attempt:    3,
+		StartedAt:  started,
+		UpdatedAt:  started.Add(1750 * time.Millisecond),
+	})
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`"recovery_id":"recovery-8"`,
+		`"generation":"wifi-b"`,
+		`"reason":"underlay_changed"`,
+		`"stage":"transport_health"`,
+		`"attempt":3`,
+		`"duration_ms":1750`,
+		`"error_code":"transport_unavailable"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("recovery log = %s, want %s", text, want)
+		}
+	}
+	if strings.Contains(text, "password") || strings.Contains(text, "secret") || strings.Contains(text, "detail") {
+		t.Fatalf("recovery log persisted free-form detail: %s", text)
+	}
+}
+
 type corePathResult struct {
 	snapshot supervisor.PathRecoverySnapshot
 	err      error
