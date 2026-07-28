@@ -1,0 +1,209 @@
+# Task 7 Report: CLI 与 BxMenu Reconnect 统一迁移到 Guardian
+
+## 状态
+
+DONE
+
+- Requirements source: `task-7-brief.md`
+- Base commit: `65ad47e124ab6a065699ff1b0b4cbe151587752d`
+- Implementation commit: `3801a02`
+- 未读取整份计划替代 brief。
+
+## 改动
+
+### CLI Guardian-first recovery
+
+- `bx reconnect` 改为向 Guardian `POST /v1/recoveries` 提交一次
+  `reason=manual`，随后用 `GET /v1/recoveries/current` 观察同一 recovery ID。
+- 首次轮询等待 250ms，后续等待 500ms；所有等待和请求都受 command
+  context 约束。
+- 默认人类输出固定为：
+
+  ```text
+  • Protection  Reconnecting
+  ✓ Protection  Reconnected
+  ```
+
+- 新增 `--json`，终态成功或失败均输出最终 `RecoverySnapshot`。
+- 观察超时/中断返回“recovery 仍在运行”并包含 recovery ID，不把观察失败
+  误报为 recovery 业务失败。
+- Guardian terminal failure 仅呈现 allowlist 后的稳定 error code，不输出
+  `detail`。
+
+### Legacy fallback 边界
+
+- Guardian recovery transport 失败新增 typed `guardian.UnavailableError`。
+- 仅首次 POST 尚未被 Guardian 接受且返回该 typed error 时，才调用 Task 1
+  legacy direct-Core reconnect。
+- Guardian HTTP/业务失败不 fallback。
+- Guardian 已接受 recovery 后，GET 观察失败也不 fallback，避免重复或绕开
+  Guardian 序列化。
+- `reconnect --check` 同样先探测 Guardian；只有 typed unavailable 才检查
+  legacy Core capability。
+
+### BxMenu
+
+- 删除 Reconnect 的 privileged AppleScript/CLI 路径及 `reconnect --check`
+  capability 探测。
+- 点击后在主线程立即显示黄色 `Reconnecting`，禁用重复点击；POST 和 GET
+  轮询均在后台 queue。
+- accepted/running/succeeded/failed 映射为稳定标题、颜色和短原因。
+- 成功显示绿色 `Reconnected`，不弹成功 modal，2 秒后回到普通状态。
+- 失败保留红色短原因，菜单提供 `Details` 和 `Run Doctor`。
+- 轮询暂时失败时不触发 direct fallback；菜单定时刷新会恢复观察。
+
+### 固定 Unix HTTP client
+
+- BxMenu client 只暴露 `requestRecovery()` 与 `currentRecovery()`，内部 endpoint
+  是封闭 enum。
+- 固定 Unix socket `/var/run/bx-guard.sock`，固定两条 path 和固定 manual body。
+- 不接受 shell、命令、自由 path、method 或 argument 输入。
+- header 上限 32 KiB（包含 `CRLFCRLF`），body 上限 1 MiB。
+- 所有响应（包括非 2xx）必须是 `Content-Type: application/json`。
+- 拒绝 transfer encoding、非法 status/header、长度不一致和非法 JSON。
+
+### Core recovery stage 延期项
+
+- `ExecCoreRunner.RecoverPathObserved` 在 Core recovery POST 运行期间读取 Core
+  `GET /v0/path-recovery`。
+- Guardian 只转发既有 `publicPathRecoveryStage` allowlist，且只发布与当前
+  request reason/generation 匹配的 `recovering` snapshot。
+- Guardian client 因而可看到 `observe`、`rebind_underlay`、
+  `transport_health`、`verify` 等 Core stage；未扩展 Task 7 产品表面，也不
+  暴露 Core detail。
+- ledger 的 “Guardian should relay Core recovery stages for client
+  presentation” 已在本任务关闭。
+
+### Swift 测试入口
+
+- 当前 Command Line Tools 不提供 XCTest/Swift Testing 模块。为保证 brief
+  指定的 `swift test` 真正执行现有 `swiftc + @main` 测试，而不是零测试
+  退出，新增 SwiftPM build-tool plugin。
+- plugin 显式声明测试/实现文件为 inputs、`tests-passed` marker 为 output；
+  任一输入变化都会重跑测试，失败会使 `swift test` 非零退出。
+- 原有三组菜单测试与新增 presentation/client 测试都由同一 harness 执行。
+
+## RED 证据
+
+### CLI
+
+命令：
+
+```text
+go test ./internal/cli -run Reconnect -count=1
+```
+
+首次结果：FAIL。关键输出：
+
+```text
+undefined: reconnectWithDependencies
+undefined: reconnectDependencies
+undefined: guardian.UnavailableError
+```
+
+菜单契约独立 RED：
+
+```text
+go test ./internal/cli -run 'Reconnect|MacMenu' -count=1
+```
+
+结果：FAIL，指出 BxMenu 尚未直接提交 Guardian，且尚未持有固定
+`GuardianClient`。
+
+### Swift presentation/client
+
+首次普通 SwiftPM test target 暴露本机无 XCTest：
+
+```text
+error: no such module 'XCTest'
+```
+
+改为仓库既有轻量测试方式并接入 SwiftPM 后，产品行为 RED 为：
+
+```text
+error opening input file '.../RecoveryPresentation.swift'
+```
+
+补充 parser 边界测试后，关闭旧实现的 RED 为：
+
+```text
+failed: error response validated status before content type
+```
+
+### Guardian typed unavailable / stage relay
+
+首次 Guardian 定向命令：
+
+```text
+go test ./internal/guardian -run 'RecoveryClientTypes|RelaysCore' -count=1
+```
+
+结果：FAIL，关键输出：
+
+```text
+undefined: UnavailableError
+```
+
+stage relay 另做 mutation check：临时关闭 observed Core 分支后：
+
+```text
+go test ./internal/guardian -run TestManagerPathRecoveryRelaysCoreRecoveryStage -count=1
+```
+
+结果按预期 FAIL：
+
+```text
+Guardian did not receive Core recovery progress
+```
+
+恢复实现后同命令 PASS，且 worktree 回到 commit 内容。
+
+## GREEN 与最终验证
+
+以下命令均为 exit 0：
+
+```text
+go test ./internal/cli -run 'Reconnect|MacMenu' -count=1
+swift test --package-path apps/macos/BxMenu
+go test ./internal/guardian -run 'PathRecovery|RecoveryClient' -count=1
+./scripts/test-macos-menu.sh
+go test -race ./internal/cli ./internal/guardian -run 'Reconnect|MacMenu|PathRecovery|RecoveryClient' -count=1
+go test ./...
+go vet ./...
+go build ./...
+GOOS=darwin GOARCH=arm64 go build -o /dev/null ./...
+git diff --check
+```
+
+关键结果：
+
+- brief Go: `ok github.com/getbx/bx/internal/cli`
+- fresh/clean Swift build: `BxMenu Swift tests passed`，并成功链接 BxMenu
+- Guardian focused: `ok github.com/getbx/bx/internal/guardian`
+- race: CLI 与 Guardian 均 `ok`
+- 全仓 Go test、vet、build 与 Darwin arm64 build 全部通过
+
+所有测试只使用 fake client、`socketpair`、missing Unix socket 或内存 HTTP
+fixture；未运行 `bx up/down/reconnect`、launchctl、route、networksetup、
+sudo，也未修改本机网络。
+
+## 自审
+
+- 未发现 Guardian 业务失败进入 direct-Core fallback 的路径。
+- 未发现 Guardian 接受 recovery 后再 fallback 的路径。
+- BxMenu Reconnect 不再构造或执行 shell/CLI 命令。
+- Swift client endpoint、socket、body 都固定；没有菜单可传入的自由
+  path/method/argument。
+- Core stage 只经 allowlist 转发，`detail` 仍为空。
+- `git diff --check` 通过；Task 1–6 文件改动均为增量协作，没有覆盖或回退。
+- 当前环境没有可用 reviewer subagent；已人工逐文件审阅完整 diff，并用
+  targeted race、cold Swift build 和 stage mutation check 补强。
+
+## 风险 / Concerns
+
+- 按任务安全约束，没有连接真实 Guardian socket 或驱动真实菜单交互；Unix
+  HTTP framing、轮询和展示由 fake socket/fixture 与 Swift build 覆盖。
+- SwiftPM build-tool test harness 是为当前无 XCTest 的 CLT 环境增加的少量
+  测试基础设施；其 inputs/outputs 已显式声明，并通过 clean build 验证不会
+  缓存假绿。
+- 无已知 fail-open、fallback 扩张或产品范围外 concern。
