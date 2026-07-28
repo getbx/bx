@@ -68,6 +68,15 @@ func TestPrivateAuxiliaryAddressNeverBindsConfiguredListener(t *testing.T) {
 	}
 }
 
+func TestPrivateAuxiliaryAddressExplicitlyRejectsUnboundConfiguredPort(t *testing.T) {
+	if privateAuxiliaryAddrAllowed("127.0.0.1:17890", "127.0.0.1:17890") {
+		t.Fatal("private endpoint accepted the custom fixed listener port before Core bound it")
+	}
+	if !privateAuxiliaryAddrAllowed("127.0.0.1:17890", "127.0.0.1:17891") {
+		t.Fatal("private endpoint rejected a distinct loopback port")
+	}
+}
+
 func startTaggedTCPServer(t *testing.T, tag string) (string, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

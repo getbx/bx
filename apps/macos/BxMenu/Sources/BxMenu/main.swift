@@ -12,13 +12,18 @@ struct BxReport: Decodable {
     let proxy: Int64
     let direct: Int64
     let blocked: Int64
+    let protectionState: String?
+    let networkGeneration: String?
+    let recovery: RecoverySnapshot?
 
     enum CodingKeys: String, CodingKey {
         case tunnelHealthy = "tunnel_healthy"
         case latencyMS = "latency_ms"
         case udpMode = "udp_mode"
         case udpNote = "udp_note"
-        case restarts, active, proxy, direct, blocked
+        case protectionState = "protection_state"
+        case networkGeneration = "network_generation"
+        case restarts, active, proxy, direct, blocked, recovery
     }
 }
 
@@ -108,6 +113,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         let data = Data(status.stdout.utf8)
         guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
             return .warning("Status unreadable", version: version)
+        }
+        if !reconnectInFlight && report.protectionState != "needs_attention" {
+            recoverySnapshot = visibleStatusRecovery(report.recovery)
+        }
+        if report.protectionState == "needs_attention" {
+            recoverySnapshot = nil
+            return .warning("Repair Required", version: version)
+        }
+        if report.protectionState == "blocked", recoverySnapshot == nil {
+            return .warning("Blocked", version: version)
         }
         return report.tunnelHealthy ? .connected(report, version: version ?? "unknown", dns: loadDNSStatus()) : .warning("Tunnel unhealthy", version: version)
     }
@@ -202,7 +217,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addItem(.separator())
             if presentation.isRunning {
                 menu.addAction(
-                    "Reconnect",
+                    "Troubleshoot: Reconnect",
                     symbol: "arrow.clockwise",
                     target: self,
                     action: #selector(reconnectBx),
@@ -212,7 +227,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                 menu.addAction("Details", symbol: "info.circle", target: self, action: #selector(showRecoveryDetails))
                 menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
             } else {
-                menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+                menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             }
             menu.addItem(.separator())
             menu.addAction(quitMenuActionTitle, symbol: "xmark.circle", target: self, action: #selector(quit))
@@ -223,6 +238,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .connected(let report, let version, let dns):
             menu.addHeader("bx", subtitle: "Connected")
             menu.addInfo("Status", "Protected")
+            menu.addInfo("Network changes", "Automatically recovers safely after network changes")
             menu.addInfo("Tunnel", "\(report.latencyMS) ms")
             menu.addInfo("UDP Relay", udpRelayLabel(report.udpMode))
             if let dns {
@@ -274,10 +290,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         switch state {
         case .connected:
-            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         case .warning:
-            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         case .off:
             menu.addAction("Start Protection", symbol: "play.fill", target: self, action: #selector(startBx))

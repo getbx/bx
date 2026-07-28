@@ -13,6 +13,7 @@ import (
 const (
 	ProtectionOff            = "off"
 	ProtectionStarting       = "starting"
+	ProtectionRecovering     = "recovering"
 	ProtectionProtected      = "protected"
 	ProtectionBlocked        = "blocked"
 	ProtectionNeedsAttention = "needs_attention"
@@ -132,6 +133,7 @@ type Manager struct {
 	pathRecoveryNewContext func() (context.Context, context.CancelFunc)
 	pathRecoveryRetryWait  func(context.Context, time.Duration) error
 	pathRecoverySequence   uint64
+	networkGeneration      string
 	pathRecoveryAccepting  bool
 	pathRecoveryActive     bool
 	pathRecoveryFences     int

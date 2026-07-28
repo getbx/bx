@@ -194,6 +194,11 @@ func (o *pathRecoveryOperation) normalize(update, base PathRecoverySnapshot) Pat
 	if update.StartedAt.IsZero() {
 		update.StartedAt = base.StartedAt
 	}
+	if update.State == "succeeded" || update.Stage == "succeeded" {
+		update.State = "succeeded"
+		update.Stage = "succeeded"
+		update.ErrorCode = ""
+	}
 	update.UpdatedAt = time.Now().UTC()
 	update.ErrorCode = stablePathRecoveryCode(update.ErrorCode)
 	update.Detail = ""

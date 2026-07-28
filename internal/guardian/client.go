@@ -214,6 +214,10 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
 		return Status{}, err
 	}
+	status.Recovery = redactRecoverySnapshot(status.Recovery)
+	if status.NetworkGeneration == "" {
+		status.NetworkGeneration = status.Recovery.Generation
+	}
 	return status, nil
 }
 

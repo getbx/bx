@@ -49,13 +49,15 @@ type Receipt struct {
 }
 
 type Status struct {
-	SchemaVersion int          `json:"schema_version"`
-	Desired       DesiredState `json:"desired"`
-	Phase         Phase        `json:"phase"`
-	CorePID       int          `json:"core_pid,omitempty"`
-	CoreVersion   string       `json:"core_version,omitempty"`
-	Protection    string       `json:"protection_state"`
-	LastError     string       `json:"last_error,omitempty"`
+	SchemaVersion     int              `json:"schema_version"`
+	Desired           DesiredState     `json:"desired"`
+	Phase             Phase            `json:"phase"`
+	CorePID           int              `json:"core_pid,omitempty"`
+	CoreVersion       string           `json:"core_version,omitempty"`
+	Protection        string           `json:"protection_state"`
+	NetworkGeneration string           `json:"network_generation"`
+	Recovery          RecoverySnapshot `json:"recovery"`
+	LastError         string           `json:"last_error,omitempty"`
 }
 
 type UpdateResult struct {

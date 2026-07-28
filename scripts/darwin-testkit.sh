@@ -10,6 +10,10 @@ Usage:
 Options:
   --execute                 Actually run the short macOS test. Without this, only logs a dry-run plan.
   --reconnect-check         Verify an already running bx reconnect without changing routes or DNS.
+  --network-transition-check
+                            Record a user-operated network change and automatic safe recovery. Dry-run by default.
+  --acknowledge-physical-change
+                            Confirm that execution will pause for a physical/user-operated network change.
   --bx PATH                 bx binary path. Default: /tmp/bx-mac/bx, built automatically if missing.
   --brook PATH              Internal transport binary override for debugging.
   --link LINK               bx:// link. Default: $BX_LINK; old $BX_BROOK_LINK still works.
@@ -39,6 +43,10 @@ executes route/ifconfig unless --execute is set.
 Reconnect-check is separate from the route test: it requires an already running
 bx service, records its route/DNS state, and invokes only `bx reconnect` when
 --execute is present. It does not need a link, gateway, or server bypass.
+
+Network-transition-check never switches Wi-Fi or invokes bx reconnect. Execution
+requires a healthy bx, --execute, --acknowledge-physical-change, and an interactive
+NETWORK-CHANGED confirmation after the user physically changes the network.
 EOF
 }
 
@@ -240,6 +248,66 @@ run_reconnect_check() {
   echo "Reconnect check complete. Logs: $LOG_DIR"
 }
 
+run_network_transition_check() {
+  cat >"$LOG_DIR/user-sequence.txt" <<'EOF'
+1. Confirm bx is Protected and tunnel_healthy before changing the network.
+2. Physically change the active network (for example, choose another Wi-Fi network or hotspot).
+3. Wait for macOS to finish the user-operated change.
+4. Type NETWORK-CHANGED in this terminal; the script never changes Wi-Fi itself.
+5. Wait while bx automatically recovers safely and snapshots are recorded.
+EOF
+  {
+    echo "# network transition check: user-operated change plus read-only bx snapshots"
+    cat "$LOG_DIR/user-sequence.txt"
+    echo "# recovery may briefly block networking and never falls back to direct"
+  } | tee "$LOG_DIR/plan.txt"
+
+  if [[ "$EXECUTE" != "1" ]]; then
+    echo
+    echo "Dry-run complete. Logs: $LOG_DIR"
+    echo "No status command or network change was executed."
+    echo "To execute: $0 --network-transition-check --execute --acknowledge-physical-change --bx $BX"
+    fix_log_permissions
+    exit 0
+  fi
+  if [[ "$ACKNOWLEDGE_PHYSICAL_CHANGE" != "1" ]]; then
+    die "--network-transition-check --execute requires --acknowledge-physical-change"
+  fi
+  [[ -x "$BX" ]] || die "bx binary not executable: $BX"
+
+  "$BX" status --json >"$LOG_DIR/before-status.json"
+  if ! grep -Eq '"protection_state"[[:space:]]*:[[:space:]]*"protected"' "$LOG_DIR/before-status.json" ||
+     ! grep -Eq '"tunnel_healthy"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/before-status.json"; then
+    die "bx must already be healthy and Protected; inspect $LOG_DIR/before-status.json"
+  fi
+
+  echo "Physically change the active network now. This script will not change Wi-Fi."
+  read -r -p "After the physical change completes, type NETWORK-CHANGED: " physical_confirmation
+  [[ "$physical_confirmation" == "NETWORK-CHANGED" ]] || die "physical network change was not acknowledged"
+  printf 'confirmation=%s\n' "$physical_confirmation" >"$LOG_DIR/user-confirmation.txt"
+
+  before_generation="$(sed -n 's/.*"network_generation":[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/before-status.json" | head -1)"
+  : >"$LOG_DIR/recovery-timeline.ndjson"
+  recovered=0
+  for _ in $(seq 1 60); do
+    "$BX" status --json >"$LOG_DIR/after-status.json" 2>"$LOG_DIR/after-status-error.txt" || true
+    tr -d '\n' <"$LOG_DIR/after-status.json" >>"$LOG_DIR/recovery-timeline.ndjson"
+    printf '\n' >>"$LOG_DIR/recovery-timeline.ndjson"
+    after_generation="$(sed -n 's/.*"network_generation":[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/after-status.json" | head -1)"
+    if [[ -n "$after_generation" && "$after_generation" != "$before_generation" ]] &&
+       grep -Eq '"protection_state"[[:space:]]*:[[:space:]]*"protected"' "$LOG_DIR/after-status.json" &&
+       grep -Eq '"tunnel_healthy"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/after-status.json"; then
+      recovered=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "$recovered" == "1" ]] || die "bx did not return to Protected within 60 seconds"
+
+  fix_log_permissions
+  echo "Network transition check complete. Logs: $LOG_DIR"
+}
+
 fix_log_permissions() {
   if [[ -n "${SUDO_USER:-}" && "${SUDO_USER:-}" != "root" && -d "${LOG_DIR:-}" ]]; then
     chown -R "$SUDO_USER":staff "$LOG_DIR" 2>/dev/null || true
@@ -314,6 +382,8 @@ DNS_SERVICE=""
 WEBRTC_BROWSER=0
 LEAK_NETWORK=0
 RECONNECT_CHECK=0
+NETWORK_TRANSITION_CHECK=0
+ACKNOWLEDGE_PHYSICAL_CHANGE=0
 SERVER_BYPASS=()
 USER_BYPASS=()
 
@@ -321,6 +391,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --execute) EXECUTE=1; shift ;;
     --reconnect-check) RECONNECT_CHECK=1; shift ;;
+    --network-transition-check) NETWORK_TRANSITION_CHECK=1; shift ;;
+    --acknowledge-physical-change) ACKNOWLEDGE_PHYSICAL_CHANGE=1; shift ;;
     --bx) BX="${2:-}"; BX_PROVIDED=1; shift 2 ;;
     --brook) BROOK="${2:-}"; shift 2 ;;
     --link) LINK="${2:-}"; shift 2 ;;
@@ -347,24 +419,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$RECONNECT_CHECK" != "1" ]]; then
+if [[ "$RECONNECT_CHECK" == "1" && "$NETWORK_TRANSITION_CHECK" == "1" ]]; then
+  die "--reconnect-check and --network-transition-check are mutually exclusive"
+fi
+
+if [[ "$RECONNECT_CHECK" != "1" && "$NETWORK_TRANSITION_CHECK" != "1" ]]; then
   [[ ${#SERVER_BYPASS[@]} -gt 0 ]] || die "--server-bypass A.B.C.D/32 is required"
 fi
 
-if [[ "$RECONNECT_CHECK" == "1" && "$BX_PROVIDED" != "1" ]]; then
+if [[ ( "$RECONNECT_CHECK" == "1" || "$NETWORK_TRANSITION_CHECK" == "1" ) && "$BX_PROVIDED" != "1" ]]; then
   BX="/usr/local/bin/bx"
 fi
 
-if [[ "$RECONNECT_CHECK" != "1" && ( "$BX_PROVIDED" != "1" || ! -x "$BX" ) ]]; then
+if [[ "$RECONNECT_CHECK" != "1" && "$NETWORK_TRANSITION_CHECK" != "1" && ( "$BX_PROVIDED" != "1" || ! -x "$BX" ) ]]; then
   mkdir -p "$(dirname "$BX")"
   go build -o "$BX" .
 fi
-[[ -x "$BX" ]] || die "bx binary not executable: $BX"
+if [[ "$NETWORK_TRANSITION_CHECK" != "1" || "$EXECUTE" == "1" ]]; then
+  [[ -x "$BX" ]] || die "bx binary not executable: $BX"
+fi
 
-if [[ "$RECONNECT_CHECK" != "1" && -z "$GATEWAY" ]]; then
+if [[ "$RECONNECT_CHECK" != "1" && "$NETWORK_TRANSITION_CHECK" != "1" && -z "$GATEWAY" ]]; then
   GATEWAY="$(detect_gateway)"
 fi
-if [[ "$RECONNECT_CHECK" != "1" ]]; then
+if [[ "$RECONNECT_CHECK" != "1" && "$NETWORK_TRANSITION_CHECK" != "1" ]]; then
   [[ -n "$GATEWAY" ]] || die "could not detect gateway; pass --gateway"
 fi
 
@@ -383,6 +461,9 @@ chmod 700 "$LOG_DIR"
 
 if [[ "$RECONNECT_CHECK" == "1" ]]; then
   run_reconnect_check
+fi
+if [[ "$NETWORK_TRANSITION_CHECK" == "1" ]]; then
+  run_network_transition_check
 fi
 
 PLAN_ARGS=(darwin-plan --tun "$TUN" --gateway "$GATEWAY")

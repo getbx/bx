@@ -80,7 +80,7 @@ func New() *cli.App {
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
-			{Name: "reconnect", Usage: "安全重连传输(不中断 TUN、路由或 DNS)", Flags: reconnectFlags(), Action: reconnectAction},
+			{Name: "reconnect", Usage: "故障排查:手动触发安全恢复(正常网络变化会自动恢复)", Flags: reconnectFlags(), Action: reconnectAction},
 			{Name: "restart", Usage: "安全重连保护(reconnect 的兼容别名)", Hidden: true, Action: restartAction},
 			{Name: "update", Usage: "更新 bx 到最新 release(SHA256 校验 + 原子替换,不打断保护)", Flags: updateFlags(), Action: updateAction},
 			{Name: "direct", Usage: "管理直连白名单(global 下只有白名单域名直连,其余走隧道)", Subcommands: directCommands()},
@@ -185,6 +185,13 @@ type doctorReport struct {
 	ChangesNetwork  bool          `json:"changes_network"`
 	RequiresRoot    bool          `json:"requires_root"`
 	Checks          []checkReport `json:"checks"`
+}
+
+type clientStatusReport struct {
+	stats.Report
+	ProtectionState   string                    `json:"protection_state"`
+	NetworkGeneration string                    `json:"network_generation"`
+	Recovery          guardian.RecoverySnapshot `json:"recovery"`
 }
 
 type inspectReport struct {
@@ -1487,6 +1494,17 @@ func doctorAction(c *cli.Context) (err error) {
 	} else {
 		doctorLine("ok", "status socket", "reachable")
 	}
+	if runtime.GOOS == "darwin" {
+		guardianStatus, guardianErr := readGuardianStatus()
+		if guardianErr != nil {
+			guardianStatus = guardianStatusFallback(stats.Report{}, runtime.GOOS)
+		}
+		check := recoveryDoctorCheck(guardianStatus.Recovery)
+		doctorLine(check.Status, check.Name, check.Detail)
+		if check.Hint != "" {
+			doctorLine("hint", check.Name, check.Hint)
+		}
+	}
 	return nil
 }
 
@@ -2206,6 +2224,13 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 	}
 	status, detail, hint := udpPolicyDoctor(udpMode)
 	rep.addCheck("udp_policy", status, detail, hint)
+	if runtime.GOOS == "darwin" {
+		guardianStatus, err := readGuardianStatus()
+		if err != nil {
+			guardianStatus = guardianStatusFallback(stats.Report{}, runtime.GOOS)
+		}
+		rep.Checks = append(rep.Checks, recoveryDoctorCheck(guardianStatus.Recovery))
+	}
 	rep.OK = !rep.hasFail()
 	return rep
 }
@@ -4027,7 +4052,7 @@ func linkAction(c *cli.Context) error {
 }
 
 func statusAction(c *cli.Context) error {
-	rep, err := readStatusReport()
+	rep, err := readClientStatusReport()
 	if err != nil {
 		if c.Bool("json") {
 			return err // 机器面:不变(返回错误)
@@ -4038,8 +4063,113 @@ func statusAction(c *cli.Context) error {
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, rep)
 	}
-	fmt.Print(stats.Render(rep))
+	fmt.Print(renderClientStatus(rep))
 	return nil
+}
+
+func readClientStatusReport() (clientStatusReport, error) {
+	core, err := readStatusReport()
+	if err != nil {
+		return clientStatusReport{}, err
+	}
+	status, guardianErr := readGuardianStatus()
+	if guardianErr != nil {
+		status = guardianStatusFallback(core, runtime.GOOS)
+	}
+	return assembleClientStatusReport(core, status), nil
+}
+
+func guardianStatusFallback(core stats.Report, platform string) guardian.Status {
+	if platform == "darwin" {
+		return guardian.Status{
+			Protection: guardian.ProtectionNeedsAttention,
+			Recovery: guardian.RecoverySnapshot{
+				State:     "failed",
+				Stage:     "unknown",
+				ErrorCode: "recovery_unavailable",
+			},
+		}
+	}
+	protection := guardian.ProtectionProtected
+	if !core.TunnelHealthy {
+		protection = guardian.ProtectionBlocked
+	}
+	return guardian.Status{
+		Protection: protection,
+		Recovery:   guardian.RecoverySnapshot{State: "idle", Stage: "idle"},
+	}
+}
+
+func readGuardianStatus() (guardian.Status, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return guardian.NewClient(guardian.SocketPath).Status(ctx)
+}
+
+func assembleClientStatusReport(core stats.Report, status guardian.Status) clientStatusReport {
+	protection := status.Protection
+	switch status.Recovery.State {
+	case "accepted", "running":
+		protection = guardian.ProtectionRecovering
+	case "failed":
+		if protection != guardian.ProtectionNeedsAttention {
+			protection = guardian.ProtectionBlocked
+		}
+	}
+	return clientStatusReport{
+		Report:            core,
+		ProtectionState:   protection,
+		NetworkGeneration: status.NetworkGeneration,
+		Recovery:          status.Recovery,
+	}
+}
+
+func renderClientStatus(report clientStatusReport) string {
+	label := "Protected"
+	switch report.ProtectionState {
+	case guardian.ProtectionRecovering:
+		label = "Reconnecting"
+	case guardian.ProtectionBlocked:
+		label = "Blocked"
+	case guardian.ProtectionNeedsAttention:
+		label = "Repair Required"
+	case guardian.ProtectionOff:
+		label = "Off"
+	case guardian.ProtectionStarting:
+		label = "Starting"
+	}
+	var b strings.Builder
+	fmt.Fprintln(&b, "bx protection")
+	fmt.Fprintf(&b, "  Status  %s\n", label)
+	if report.NetworkGeneration != "" {
+		fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
+	}
+	if report.Recovery.State != "" && report.Recovery.State != "idle" {
+		fmt.Fprintf(&b, "  Recovery %s stage=%s attempt=%d", report.Recovery.ID, report.Recovery.Stage, report.Recovery.Attempt)
+		if report.Recovery.ErrorCode != "" {
+			fmt.Fprintf(&b, " error_code=%s", report.Recovery.ErrorCode)
+		}
+		fmt.Fprintln(&b)
+	}
+	b.WriteString(stats.Render(report.Report))
+	return b.String()
+}
+
+func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {
+	status := "ok"
+	hint := ""
+	switch snapshot.State {
+	case "accepted", "running":
+		status = "info"
+	case "failed":
+		status = "warn"
+		hint = "bx logs --json; bx reconnect (troubleshooting only)"
+	}
+	detail := fmt.Sprintf("state=%s stage=%s attempt=%d", snapshot.State, snapshot.Stage, snapshot.Attempt)
+	if snapshot.ErrorCode != "" {
+		detail += " error_code=" + snapshot.ErrorCode
+	}
+	return checkReport{Name: "network_recovery", Status: status, Detail: detail, Hint: hint}
 }
 
 func readStatusReport() (stats.Report, error) {
@@ -4320,12 +4450,34 @@ func archiveClientLogsWithReason(root, reason string) (string, error) {
 	if err := writeJSONFile(filepath.Join(dir, "doctor.json"), doctor); err != nil {
 		return "", err
 	}
+	recovery := guardian.RecoverySnapshot{State: "idle", Stage: "idle"}
+	if status, err := readGuardianStatus(); err == nil {
+		recovery = status.Recovery
+	} else if runtime.GOOS == "darwin" {
+		recovery = guardianStatusFallback(stats.Report{}, runtime.GOOS).Recovery
+	}
+	if err := persistRecoverySnapshot(filepath.Join(dir, "recovery.json"), recovery); err != nil {
+		return "", err
+	}
 	for _, src := range install.ClientLogPaths() {
 		if err := copyIfExists(src, filepath.Join(dir, filepath.Base(src))); err != nil {
 			return "", err
 		}
 	}
 	return dir, nil
+}
+
+func persistRecoverySnapshot(path string, snapshot guardian.RecoverySnapshot) error {
+	snapshot.Detail = ""
+	switch snapshot.ErrorCode {
+	case "", "capture_invalid", "capture_missing", "network_unavailable", "recovery_canceled", "recovery_failed", "recovery_unavailable", "transport_unavailable", "underlay_rebind_failed", "underlay_unavailable", "verification_failed":
+	default:
+		snapshot.ErrorCode = ""
+	}
+	if snapshot.State == "failed" && snapshot.ErrorCode == "" {
+		snapshot.ErrorCode = "recovery_failed"
+	}
+	return writeJSONFile(path, snapshot)
 }
 
 func autoArchiveAfterClientCommand(command string, commandErr *error, announce bool) {

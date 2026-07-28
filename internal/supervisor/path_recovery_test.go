@@ -21,6 +21,35 @@ type scriptedPathRecoverer struct {
 	err         error
 }
 
+type terminalProgressRecoverer struct {
+	published chan struct{}
+	release   chan struct{}
+}
+
+func (r *terminalProgressRecoverer) RecoverPath(_ context.Context, _ PathRecoveryRequest, observe func(PathRecoverySnapshot)) (PathRecoverySnapshot, error) {
+	observe(PathRecoverySnapshot{State: "recovering", Stage: "succeeded"})
+	close(r.published)
+	<-r.release
+	return PathRecoverySnapshot{State: "succeeded", Stage: "succeeded"}, nil
+}
+
+func TestPathRecoveryNeverPublishesRecoveringSucceeded(t *testing.T) {
+	recoverer := &terminalProgressRecoverer{published: make(chan struct{}), release: make(chan struct{})}
+	op := newPathRecoveryOperation(recoverer)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = op.Recover(context.Background(), PathRecoveryRequest{Reason: "manual"})
+	}()
+	<-recoverer.published
+
+	if got := op.Snapshot(); got.State != "succeeded" || got.Stage != "succeeded" {
+		t.Fatalf("transient success snapshot = %+v, want succeeded/succeeded", got)
+	}
+	close(recoverer.release)
+	<-done
+}
+
 func (r *scriptedPathRecoverer) RecoverPath(_ context.Context, _ PathRecoveryRequest, observe func(PathRecoverySnapshot)) (PathRecoverySnapshot, error) {
 	active := r.active.Add(1)
 	for {
