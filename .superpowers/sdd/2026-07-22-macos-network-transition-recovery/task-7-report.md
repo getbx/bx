@@ -371,3 +371,100 @@ git diff --check
 - 当前会话无 reviewer subagent 工具；controller findings 已逐项落实，
   并完成最终逐文件 diff 自审。
 - 无已知 fail-open、direct-Core fallback 或其他开放功能 concern。
+
+---
+
+## Fix Round 2（2026-07-27）
+
+### 状态与提交
+
+- 状态：DONE
+- Fix commit：`d66c8877d39e7d0d428d8a8d44d9571ee9ac60cf`
+- 范围仅限 controller 指定的两个 Swift 生命周期问题：BxMenu recovery
+  observation 的替换 ID，以及 Guardian Unix client 的请求级 deadline。
+
+### 修复内容
+
+1. **被替换 recovery 的有限终态**
+   - `GET /v1/recoveries/current` 返回的 ID 与提交 ID 不同时，菜单不再
+     `continue` 轮询。
+   - 该情况转换为结构化 `recovery_replaced` observation failure，保留原
+     submitted recovery ID，主线程将 `reconnectInFlight` 清为 `false`，发布
+     红色 `Reconnect Failed` 与短原因 `Recovery was replaced`。
+   - 既有 Details / Run Doctor 路径继续读取该失败 snapshot，因此不会把新
+     recovery 当作旧 recovery 成功，也不会永久禁用 Reconnect。
+
+2. **Guardian client 单一绝对 deadline**
+   - 每个请求在 connect 前建立基于 `systemUptime` 的单调 deadline；默认
+     Unix connect、request write 和 response read 共用该 deadline。
+   - FD 在 I/O 前设为 nonblocking；每次 `poll` 都使用剩余毫秒预算，
+     `EAGAIN` / `EWOULDBLOCK` 继续等待同一 deadline。`SO_RCVTIMEO` /
+     `SO_SNDTIMEO` 仍只作为有限的内核 inactivity 保护，不再定义总时限。
+   - 收到完整 `Content-Length` 仍立即返回；超时和其他失败继续通过 `defer`
+     关闭 client FD。
+
+### RED 证据
+
+1. 替换 ID presentation：
+
+   ```text
+   bash apps/macos/BxMenu/run-swift-tests.sh /tmp/bxmenu-red-fix-round-2
+   ```
+
+   首次按预期 FAIL：
+
+   ```text
+   cannot find 'recoveryObservationFailure' in scope
+   ```
+
+   该测试构造 submitted `recovery-1` 与已成功的 replacement `recovery-2`，
+   固定要求失败 snapshot 保留 `recovery-1`、清除 in-flight 且不得显示成功。
+
+2. progressive trickle read：
+
+   ```text
+   swiftc .../StatusIndicator.swift .../RecoveryPresentation.swift \
+     .../GuardianClient.swift .../GuardianClientTests.swift \
+     -o /tmp/bx-guardian-client-red-fix-round-2
+   /tmp/bx-guardian-client-red-fix-round-2
+   ```
+
+   旧 client 在 `socketpair` 上每 20ms 收到一个响应字节时仍持续约 6.5 秒，
+   随后按预期 FAIL：
+
+   ```text
+   failed: progressive response uses one total deadline
+   ```
+
+   这证明旧 `SO_RCVTIMEO` 仅限制 inactivity，无法限制持续慢滴流的总时间。
+
+### GREEN 与最终验证
+
+以下命令均 exit 0：
+
+```text
+bash apps/macos/BxMenu/run-swift-tests.sh /tmp/bxmenu-green-fix-round-2
+swift test --package-path apps/macos/BxMenu
+./scripts/test-macos-menu.sh
+go test ./internal/mcp ./internal/guardian ./internal/cli -run 'Reconnect|RecoveryClient|MacMenu' -count=1
+go test -race ./internal/mcp ./internal/guardian ./internal/cli -run 'Reconnect|RecoveryClient|MacMenu' -count=1
+GOOS=darwin GOARCH=arm64 go build -o /dev/null ./...
+go test ./...
+go vet ./...
+go build ./...
+git diff --check
+```
+
+关键结果：
+
+- Swift harness、SwiftPM build 与菜单脚本全部通过。
+- progressive trickle regression 在 80ms 总预算内抛出 `ETIMEDOUT`，client FD
+  被 peer 观察到关闭；完整 `Content-Length` 的无 EOF 成功回归仍通过。
+- focused Go、race、全仓 Go test / vet / build 与 Darwin arm64 build 全部通过。
+
+### Concerns
+
+- 未连接真实 Guardian socket 或运行 AppKit 菜单；该轮的 lifecycle 边界由
+  `socketpair` 与 pure presentation test 覆盖，未运行任何 live `bx`、网络、
+  `sudo`、路由或 launchd 命令。
+- 无已知 fail-open、无限 observation 或 deadline reset concern。
