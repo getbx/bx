@@ -28,7 +28,8 @@ Options:
   --no-udp-probe            Skip UDP smoke probes.
   --health-timeout SECONDS  bx tunnel health startup timeout. Default: 45
   --rollback-after SECONDS  External rollback delay. Default: 75
-  --log-dir DIR             Log directory. In transition mode it must not exist; default is a unique mktemp directory.
+  --log-dir DIR             Log directory. In transition mode it must not exist and its parent chain must be trusted;
+                            default is a unique mktemp directory.
   --set-system-dns          Temporarily set the active macOS network service DNS to 127.0.0.1.
   --dns-service NAME        Network service to change with --set-system-dns. Default: detected from default route.
   --webrtc-browser          Run bx webrtc-check with a real browser ICE candidate test.
@@ -53,6 +54,90 @@ EOF
 die() {
   echo "error: $*" >&2
   exit 1
+}
+
+read_path_owner_mode() {
+  local path="$1"
+  local result=""
+  if result="$(stat -f '%u %Lp' "$path" 2>/dev/null)" && [[ "$result" == *" "* ]]; then
+    :
+  elif result="$(stat -c '%u %a' "$path" 2>/dev/null)" && [[ "$result" == *" "* ]]; then
+    :
+  else
+    die "could not inspect log directory parent: $path"
+  fi
+  PATH_OWNER="${result%% *}"
+  PATH_MODE="${result##* }"
+  [[ "$PATH_OWNER" =~ ^[0-9]+$ && "$PATH_MODE" =~ ^[0-7]+$ ]] ||
+    die "could not inspect log directory parent: $path"
+}
+
+validate_trusted_log_parent_component() {
+  local path="$1"
+  local trusted_uid="$2"
+  if [[ -L "$path" ]]; then
+    die "log directory parent must not contain symbolic links: $path"
+  fi
+  [[ -d "$path" ]] || die "log directory parent must already exist: $path"
+  read_path_owner_mode "$path"
+  if [[ "$PATH_OWNER" != "0" && "$PATH_OWNER" != "$trusted_uid" ]]; then
+    die "log directory parent owner must be root or invoking user: $path"
+  fi
+  if (( (8#$PATH_MODE & 8#022) != 0 )); then
+    die "log directory parent must not be group/other writable: $path"
+  fi
+}
+
+create_transition_log_dir() {
+  local requested="$1"
+  if [[ -e "$requested" || -L "$requested" ]]; then
+    die "log directory must not already exist: $requested"
+  fi
+
+  local absolute="$requested"
+  if [[ "$absolute" != /* ]]; then
+    absolute="$PWD/$absolute"
+  fi
+  local leaf="${absolute##*/}"
+  local parent="${absolute%/*}"
+  [[ -n "$leaf" && "$leaf" != "." && "$leaf" != ".." ]] ||
+    die "log directory must name a new final directory: $requested"
+
+  local current_uid
+  current_uid="$(id -u)"
+  local trusted_uid="$current_uid"
+  if [[ "$current_uid" == "0" && "${SUDO_UID:-}" =~ ^[0-9]+$ ]]; then
+    trusted_uid="$SUDO_UID"
+  fi
+
+  local current="/"
+  validate_trusted_log_parent_component "$current" "$trusted_uid"
+  local component
+  local components=()
+  IFS='/' read -r -a components <<< "$parent"
+  for component in "${components[@]}"; do
+    [[ -z "$component" ]] && continue
+    if [[ "$component" == "." || "$component" == ".." ]]; then
+      die "log directory parent must use a canonical path: $parent"
+    fi
+    current="${current%/}/$component"
+    validate_trusted_log_parent_component "$current" "$trusted_uid"
+  done
+
+  local canonical_parent
+  canonical_parent="$(cd "$parent" 2>/dev/null && pwd -P)" ||
+    die "log directory parent must already exist: $parent"
+  if [[ "$canonical_parent" != "$current" ]]; then
+    die "log directory parent must use a canonical path without symbolic links: $parent"
+  fi
+  if [[ "$canonical_parent" == "/" ]]; then
+    LOG_DIR="/$leaf"
+  else
+    LOG_DIR="$canonical_parent/$leaf"
+  fi
+
+  umask 077
+  mkdir -m 700 -- "$LOG_DIR" || die "could not create log directory: $LOG_DIR"
 }
 
 detect_gateway() {
@@ -459,10 +544,7 @@ if [[ "$NETWORK_TRANSITION_CHECK" == "1" ]]; then
     TMP_ROOT="${TMPDIR:-/tmp}"
     LOG_DIR="$(mktemp -d "${TMP_ROOT%/}/bx-network-transition-check.XXXXXX")" || die "could not create unique log directory"
   else
-    if [[ -e "$LOG_DIR" || -L "$LOG_DIR" ]]; then
-      die "log directory must not already exist: $LOG_DIR"
-    fi
-    mkdir -m 700 -- "$LOG_DIR" || die "could not create log directory: $LOG_DIR"
+    create_transition_log_dir "$LOG_DIR"
   fi
 else
   if [[ -z "$LOG_DIR" ]]; then
