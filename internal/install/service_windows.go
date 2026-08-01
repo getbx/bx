@@ -50,7 +50,12 @@ func windowsInstallService(execStart string) error {
 	return nil
 }
 
-// windowsEnableService 设开机自启并启动(bx up)。
+// windowsEnableService 启动服务(bx up)。开机自启由 setup 默认 + `bx autostart` 单独治理,
+// 与本函数正交,故此处只 Start,不再改 StartType。
+//
+// 兼容旧版遗留:本功能解耦前的老版 `bx down` 会把服务 StartType 设成 Disabled(而非现在的
+// Manual),这类机器升级后 s.Start() 恒 ERROR_SERVICE_DISABLED——把它提升到 StartManual(不是
+// StartAutomatic,自启仍只由开关治理)后重试一次即可恢复,不需要用户手动修 SCM。
 func windowsEnableService() error {
 	m, s, err := openService()
 	if err != nil {
@@ -58,21 +63,21 @@ func windowsEnableService() error {
 	}
 	defer m.Disconnect()
 	defer s.Close()
-	cfg, err := s.Config()
-	if err != nil {
-		return fmt.Errorf("读服务配置: %w", err)
+	err = s.Start()
+	if errors.Is(err, windows.ERROR_SERVICE_DISABLED) {
+		if cfg, cerr := s.Config(); cerr == nil {
+			cfg.StartType = mgr.StartManual
+			_ = s.UpdateConfig(cfg)
+		}
+		err = s.Start()
 	}
-	cfg.StartType = mgr.StartAutomatic
-	if err := s.UpdateConfig(cfg); err != nil {
-		return fmt.Errorf("设开机自启: %w", err)
-	}
-	if err := s.Start(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
+	if err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
 		return fmt.Errorf("启动服务: %w", err)
 	}
 	return nil
 }
 
-// windowsDisableService 停止并取消开机自启(bx down)。
+// windowsDisableService 停止服务(bx down)。开机自启状态不受影响(见 windowsEnableService 注释)。
 func windowsDisableService() error {
 	m, s, err := openService()
 	if err != nil {
@@ -81,10 +86,6 @@ func windowsDisableService() error {
 	defer m.Disconnect()
 	defer s.Close()
 	_ = stopAndWait(s)
-	if cfg, err := s.Config(); err == nil {
-		cfg.StartType = mgr.StartDisabled
-		_ = s.UpdateConfig(cfg)
-	}
 	return nil
 }
 

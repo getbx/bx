@@ -202,9 +202,11 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 			_ = ipif6.Set()
 		}
 	}
-	// 5) 应用路由计划,逐条记录以对称还原。
+	// 5) 应用路由计划,逐条记录以对称还原。ignoreExisting=true:与 RehijackRoutes 同幂等语义——
+	//    某条旁路路由(如私网 10/8、Tailscale/公司原生 10/8,或前次未删净的残留)已存在时跳过、
+	//    不计入 added(teardown 也就不会误删非 bx 建的路由),不再整个 Hijack 一票否决致服务崩。
 	plan := windowsRoutes(windowsDirectCIDRs, serverBypass, userBypass, blockV6)
-	added, err := addPlannedRoutes(tunLUID, physLUID, gw, plan, false)
+	added, err := addPlannedRoutes(tunLUID, physLUID, gw, plan, true)
 	wfpOn := false
 	cleanup := func() {
 		if wfpOn {
