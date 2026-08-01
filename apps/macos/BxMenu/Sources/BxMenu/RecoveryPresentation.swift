@@ -38,7 +38,22 @@ struct RecoveryFailureTransition: Equatable {
 }
 
 func visibleStatusRecovery(_ snapshot: RecoverySnapshot?) -> RecoverySnapshot? {
-    guard let snapshot, snapshot.state != "idle" else {
+    guard let snapshot else { return nil }
+    return recoverySnapshotForDisplay(snapshot, allowsTerminalSuccess: false)
+}
+
+func passiveStatusRecovery(protectionState: String?, recovery: RecoverySnapshot?) -> RecoverySnapshot? {
+    if protectionState == "blocked" || protectionState == "needs_attention" {
+        return nil
+    }
+    return visibleStatusRecovery(recovery)
+}
+
+func recoverySnapshotForDisplay(
+    _ snapshot: RecoverySnapshot,
+    allowsTerminalSuccess: Bool
+) -> RecoverySnapshot? {
+    if snapshot.state == "idle" || (snapshot.state == "succeeded" && !allowsTerminalSuccess) {
         return nil
     }
     return snapshot

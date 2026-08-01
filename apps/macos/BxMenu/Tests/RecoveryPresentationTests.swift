@@ -77,6 +77,38 @@ struct RecoveryPresentationTests {
             visibleStatusRecovery(recoverySnapshot(state: "idle", stage: "idle")) == nil,
             "idle status recovery is hidden"
         )
+        expect(
+            visibleStatusRecovery(recoverySnapshot(state: "succeeded", stage: "succeeded")) == nil,
+            "passive status refresh cannot resurrect terminal success"
+        )
+        expect(
+            recoverySnapshotForDisplay(
+                recoverySnapshot(state: "succeeded", stage: "succeeded"),
+                allowsTerminalSuccess: false
+            ) == nil,
+            "automatic observation cannot display terminal success"
+        )
+        expect(
+            recoverySnapshotForDisplay(
+                recoverySnapshot(state: "succeeded", stage: "succeeded"),
+                allowsTerminalSuccess: true
+            )?.state == "succeeded",
+            "direct action may display terminal success"
+        )
+        expect(
+            passiveStatusRecovery(
+                protectionState: "blocked",
+                recovery: recoverySnapshot(state: "running", stage: "verify")
+            ) == nil,
+            "passive recovery cannot obscure blocked protection"
+        )
+        expect(
+            passiveStatusRecovery(
+                protectionState: "needs_attention",
+                recovery: recoverySnapshot(state: "running", stage: "verify")
+            ) == nil,
+            "passive recovery cannot obscure repair-required protection"
+        )
         let automaticFailure = recoveryPresentation(
             for: recoverySnapshot(
                 state: "failed",

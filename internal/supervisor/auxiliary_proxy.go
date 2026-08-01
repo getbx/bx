@@ -2,12 +2,17 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 )
+
+const privateAuxiliaryAddrAttempts = 16
+
+var errPrivateAuxiliaryAddrUnavailable = errors.New("private auxiliary endpoint unavailable")
 
 // auxiliaryProxy owns the configured stable HTTP-proxy listener and forwards
 // each accepted connection to the active transport's private HTTP endpoint.
@@ -44,22 +49,31 @@ func startAuxiliaryProxy(listenAddr, target string) (*auxiliaryProxy, error) {
 }
 
 func privateAuxiliaryAddr(configured string, enabled bool) (string, error) {
+	return privateAuxiliaryAddrWithListen(configured, enabled, net.Listen)
+}
+
+func privateAuxiliaryAddrWithListen(
+	configured string,
+	enabled bool,
+	listen func(network, address string) (net.Listener, error),
+) (string, error) {
 	if configured == "" || !enabled {
 		return "", nil
 	}
-	for {
-		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	for range privateAuxiliaryAddrAttempts {
+		listener, err := listen("tcp4", "127.0.0.1:0")
 		if err != nil {
-			return "", err
+			continue
 		}
 		addr := listener.Addr().String()
 		if err := listener.Close(); err != nil {
-			return "", err
+			return "", errPrivateAuxiliaryAddrUnavailable
 		}
 		if privateAuxiliaryAddrAllowed(configured, addr) {
 			return addr, nil
 		}
 	}
+	return "", errPrivateAuxiliaryAddrUnavailable
 }
 
 func privateAuxiliaryAddrAllowed(configured, candidate string) bool {

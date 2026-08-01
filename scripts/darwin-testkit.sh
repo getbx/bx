@@ -28,7 +28,7 @@ Options:
   --no-udp-probe            Skip UDP smoke probes.
   --health-timeout SECONDS  bx tunnel health startup timeout. Default: 45
   --rollback-after SECONDS  External rollback delay. Default: 75
-  --log-dir DIR             Log directory. Default: ./.bx-test-logs/bx-mac-test-YYYYmmdd-HHMMSS
+  --log-dir DIR             Log directory. In transition mode it must not exist; default is a unique mktemp directory.
   --set-system-dns          Temporarily set the active macOS network service DNS to 127.0.0.1.
   --dns-service NAME        Network service to change with --set-system-dns. Default: detected from default route.
   --webrtc-browser          Run bx webrtc-check with a real browser ICE candidate test.
@@ -453,17 +453,31 @@ if [[ "$SET_SYSTEM_DNS" == "1" && -z "$DNS_SERVICE" ]]; then
   [[ -n "$DNS_SERVICE" ]] || die "could not detect network service; pass --dns-service"
 fi
 
-if [[ -z "$LOG_DIR" ]]; then
-  LOG_DIR="$REPO_ROOT/.bx-test-logs/bx-mac-test-$(date +%Y%m%d-%H%M%S)"
+if [[ "$NETWORK_TRANSITION_CHECK" == "1" ]]; then
+  umask 077
+  if [[ -z "$LOG_DIR" ]]; then
+    TMP_ROOT="${TMPDIR:-/tmp}"
+    LOG_DIR="$(mktemp -d "${TMP_ROOT%/}/bx-network-transition-check.XXXXXX")" || die "could not create unique log directory"
+  else
+    if [[ -e "$LOG_DIR" || -L "$LOG_DIR" ]]; then
+      die "log directory must not already exist: $LOG_DIR"
+    fi
+    mkdir -m 700 -- "$LOG_DIR" || die "could not create log directory: $LOG_DIR"
+  fi
+else
+  if [[ -z "$LOG_DIR" ]]; then
+    LOG_DIR="$REPO_ROOT/.bx-test-logs/bx-mac-test-$(date +%Y%m%d-%H%M%S)"
+  fi
+  mkdir -p "$LOG_DIR"
+  chmod 700 "$LOG_DIR"
 fi
-mkdir -p "$LOG_DIR"
-chmod 700 "$LOG_DIR"
 
 if [[ "$RECONNECT_CHECK" == "1" ]]; then
   run_reconnect_check
 fi
 if [[ "$NETWORK_TRANSITION_CHECK" == "1" ]]; then
   run_network_transition_check
+  exit 0
 fi
 
 PLAN_ARGS=(darwin-plan --tun "$TUN" --gateway "$GATEWAY")

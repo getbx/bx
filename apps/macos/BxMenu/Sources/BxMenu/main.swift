@@ -114,15 +114,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
             return .warning("Status unreadable", version: version)
         }
-        if !reconnectInFlight && report.protectionState != "needs_attention" {
-            recoverySnapshot = visibleStatusRecovery(report.recovery)
-        }
         if report.protectionState == "needs_attention" {
             recoverySnapshot = nil
             return .warning("Repair Required", version: version)
         }
-        if report.protectionState == "blocked", recoverySnapshot == nil {
+        if report.protectionState == "blocked" {
+            recoverySnapshot = nil
             return .warning("Blocked", version: version)
+        }
+        if !reconnectInFlight {
+            recoverySnapshot = passiveStatusRecovery(
+                protectionState: report.protectionState,
+                recovery: report.recovery
+            )
         }
         return report.tunnelHealthy ? .connected(report, version: version ?? "unknown", dns: loadDNSStatus()) : .warning("Tunnel unhealthy", version: version)
     }
@@ -419,7 +423,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [weak self] in
                     self?.publishRecovery(submitted)
                 }
-                self.pollRecovery(startingWith: submitted)
+                self.pollRecovery(startingWith: submitted, allowsTerminalSuccess: true)
             } catch {
                 let transition = recoveryFailureTransition(
                     from: pending,
@@ -437,11 +441,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private func observeRecovery(startingWith snapshot: RecoverySnapshot) {
         reconnectInFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            self?.pollRecovery(startingWith: snapshot)
+            self?.pollRecovery(startingWith: snapshot, allowsTerminalSuccess: false)
         }
     }
 
-    private func pollRecovery(startingWith submitted: RecoverySnapshot) {
+    private func pollRecovery(startingWith submitted: RecoverySnapshot, allowsTerminalSuccess: Bool) {
         var snapshot = submitted
         var delay = 0.25
         while recoveryPresentation(for: snapshot).isRunning {
@@ -453,13 +457,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                     DispatchQueue.main.async { [weak self] in
                         guard let self else { return }
                         self.reconnectInFlight = transition.reconnectInFlight
-                        self.publishRecovery(transition.snapshot)
+                        self.publishRecovery(
+                            transition.snapshot,
+                            allowsTerminalSuccess: allowsTerminalSuccess
+                        )
                     }
                     return
                 }
                 snapshot = current
                 DispatchQueue.main.async { [weak self] in
-                    self?.publishRecovery(current)
+                    self?.publishRecovery(current, allowsTerminalSuccess: allowsTerminalSuccess)
                 }
             } catch {
                 let transition = recoveryFailureTransition(
@@ -469,7 +476,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.reconnectInFlight = transition.reconnectInFlight
-                    self.publishRecovery(transition.snapshot)
+                    self.publishRecovery(
+                        transition.snapshot,
+                        allowsTerminalSuccess: allowsTerminalSuccess
+                    )
                 }
                 return
             }
@@ -477,8 +487,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.reconnectInFlight = false
-            self.publishRecovery(snapshot)
-            if snapshot.state == "succeeded" {
+            self.publishRecovery(snapshot, allowsTerminalSuccess: allowsTerminalSuccess)
+            if snapshot.state == "succeeded" && allowsTerminalSuccess {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                     guard let self, self.recoverySnapshot?.recoveryID == snapshot.recoveryID else { return }
                     self.recoverySnapshot = nil
@@ -488,10 +498,28 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func publishRecovery(_ snapshot: RecoverySnapshot) {
-        recoverySnapshot = snapshot
+    private func publishRecovery(_ snapshot: RecoverySnapshot, allowsTerminalSuccess: Bool = true) {
+        if allowsTerminalSuccess {
+            recoverySnapshot = recoverySnapshotForDisplay(snapshot, allowsTerminalSuccess: true)
+        } else {
+            recoverySnapshot = passiveStatusRecovery(
+                protectionState: passiveProtectionState,
+                recovery: snapshot
+            )
+        }
         updateIcon()
         rebuildMenu()
+    }
+
+    private var passiveProtectionState: String? {
+        switch state {
+        case .warning("Blocked", _):
+            return "blocked"
+        case .warning("Repair Required", _):
+            return "needs_attention"
+        default:
+            return nil
+        }
     }
 
     @objc private func showRecoveryDetails() {
