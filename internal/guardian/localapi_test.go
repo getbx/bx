@@ -48,6 +48,24 @@ func TestLocalAPIStatusIsReadableWithoutPeerCredentials(t *testing.T) {
 	}
 }
 
+func TestObservableStatusNeedsAttentionOutranksAcceptedRecovery(t *testing.T) {
+	controller := &fakeController{
+		status: Status{
+			SchemaVersion: 1,
+			Desired:       DesiredOn,
+			Phase:         PhaseNeedsAttention,
+			Protection:    ProtectionNeedsAttention,
+			LastError:     "core_ownership_uncertain",
+		},
+		recoveryCurrent: RecoverySnapshot{State: "accepted", Stage: "queued", Reason: "manual"},
+	}
+
+	got := observableStatus(controller, controller)
+	if got.Protection != ProtectionNeedsAttention {
+		t.Fatalf("protection = %q, want needs_attention", got.Protection)
+	}
+}
+
 func TestLocalAPIStatusPreservesLatestNetworkGenerationAcrossManualRecovery(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	core := newFakeCorePathClient(false)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -444,6 +445,136 @@ func TestDarwinTestkitNetworkTransitionCheckIsDryRunAndUserGated(t *testing.T) {
 	}
 }
 
+func TestDarwinTestkitNetworkTransitionModeTerminatesBeforeLegacyHarness(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "scripts", "darwin-testkit.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	dispatch := strings.Index(text, `if [[ "$NETWORK_TRANSITION_CHECK" == "1" ]]`)
+	legacy := strings.Index(text, "PLAN_ARGS=(darwin-plan")
+	if dispatch < 0 || legacy < 0 || dispatch >= legacy {
+		t.Fatalf("network transition dispatch=%d legacy harness=%d", dispatch, legacy)
+	}
+	between := text[dispatch:legacy]
+	if !strings.Contains(between, "run_network_transition_check\n  exit 0") {
+		t.Fatalf("network transition mode can fall through into legacy harness:\n%s", between)
+	}
+}
+
+func TestDarwinTestkitNetworkTransitionLogDirectoryIsUniqueAndPrivate(t *testing.T) {
+	tmp := t.TempDir()
+	first := runDarwinTransitionFixture(t, tmp)
+	second := runDarwinTransitionFixture(t, tmp)
+	firstDir := transitionLogDir(t, first)
+	secondDir := transitionLogDir(t, second)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(firstDir)
+		_ = os.RemoveAll(secondDir)
+	})
+	if firstDir == secondDir {
+		t.Fatalf("default transition log directory was reused: %s", firstDir)
+	}
+	for _, dir := range []string{firstDir, secondDir} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("transition log directory mode = %04o, want 0700", got)
+		}
+	}
+}
+
+func TestDarwinTestkitRejectsExistingOrSymlinkLogDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	existing := filepath.Join(tmp, "existing")
+	if err := os.Mkdir(existing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(tmp, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(tmp, "symlink")
+	if err := os.Symlink(target, symlink); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{existing, symlink} {
+		cmd := exec.Command("bash", filepath.Join("..", "..", "scripts", "darwin-testkit.sh"),
+			"--network-transition-check", "--log-dir", path)
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("existing log path %q was accepted:\n%s", path, output)
+		}
+		if !strings.Contains(string(output), "log directory must not already exist") {
+			t.Fatalf("existing log path error = %q", output)
+		}
+	}
+}
+
+func TestDarwinTestkitExecutedTransitionFixtureRunsOnlyStatusSnapshots(t *testing.T) {
+	tmp := t.TempDir()
+	fakeBX := filepath.Join(tmp, "bx-fixture")
+	fixture := `#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >>"$0.args"
+count=0
+if [[ -f "$0.count" ]]; then count="$(cat "$0.count")"; fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$0.count"
+generation=wifi-a
+if [[ "$count" -gt 1 ]]; then generation=wifi-b; fi
+printf '{"protection_state":"protected","tunnel_healthy":true,"network_generation":"%s"}\n' "$generation"
+`
+	if err := os.WriteFile(fakeBX, []byte(fixture), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logDir := filepath.Join(tmp, "transition-logs")
+	cmd := exec.Command("bash", filepath.Join("..", "..", "scripts", "darwin-testkit.sh"),
+		"--network-transition-check", "--execute", "--acknowledge-physical-change",
+		"--bx", fakeBX, "--log-dir", logDir)
+	cmd.Stdin = strings.NewReader("NETWORK-CHANGED\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("fixture transition: %v\n%s", err, output)
+	}
+	args, err := os.ReadFile(fakeBX + ".args")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(args), "status --json\nstatus --json\n"; got != want {
+		t.Fatalf("fixture bx calls = %q, want %q", got, want)
+	}
+	if strings.Contains(string(output), "darwin-plan") {
+		t.Fatalf("transition fixture reached legacy harness:\n%s", output)
+	}
+}
+
+func runDarwinTransitionFixture(t *testing.T, tmp string) string {
+	t.Helper()
+	cmd := exec.Command("bash", filepath.Join("..", "..", "scripts", "darwin-testkit.sh"), "--network-transition-check")
+	cmd.Env = append(os.Environ(), "TMPDIR="+tmp)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("network transition dry-run: %v\n%s", err, output)
+	}
+	return string(output)
+}
+
+func transitionLogDir(t *testing.T, output string) string {
+	t.Helper()
+	const marker = "Dry-run complete. Logs: "
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, marker) {
+			return strings.TrimPrefix(line, marker)
+		}
+	}
+	t.Fatalf("dry-run output omitted log directory:\n%s", output)
+	return ""
+}
+
 func TestMacMenuUsesSingleCompactStatusIcon(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
@@ -705,6 +836,71 @@ func TestStatusReportIncludesTruthfulGuardianRecovery(t *testing.T) {
 	recovery, ok := encoded["recovery"].(map[string]any)
 	if !ok || recovery["recovery_id"] != "recovery-8" || recovery["stage"] != "transport_health" {
 		t.Fatalf("recovery = %#v", encoded["recovery"])
+	}
+}
+
+func TestStatusUsesGuardianWhenCoreSocketIsUnavailable(t *testing.T) {
+	coreCalls := 0
+	guardianCalls := 0
+	rep, err := readClientStatusReportWith(
+		func() (stats.Report, error) {
+			coreCalls++
+			return stats.Report{}, errors.New("missing Core socket")
+		},
+		func() (guardian.Status, error) {
+			guardianCalls++
+			return guardian.Status{
+				Protection: guardian.ProtectionNeedsAttention,
+				Recovery: guardian.RecoverySnapshot{
+					State: "failed", Stage: "verify", ErrorCode: "verification_failed",
+				},
+			}, nil
+		},
+		"darwin",
+	)
+	if err != nil {
+		t.Fatalf("status rejected authoritative Guardian state: %v", err)
+	}
+	if coreCalls != 1 || guardianCalls != 1 {
+		t.Fatalf("status calls Core=%d Guardian=%d, want one each", coreCalls, guardianCalls)
+	}
+	if rep.ProtectionState != guardian.ProtectionNeedsAttention || rep.TunnelHealthy {
+		t.Fatalf("partial status = %+v, want Repair Required and unhealthy Core", rep)
+	}
+	if got := renderClientStatus(rep); !strings.Contains(got, "Repair Required") {
+		t.Fatalf("human status = %q, want Repair Required", got)
+	}
+}
+
+func TestStatusDoesNotClaimProtectedWithoutCoreEvidence(t *testing.T) {
+	rep, err := readClientStatusReportWith(
+		func() (stats.Report, error) { return stats.Report{}, errors.New("missing Core socket") },
+		func() (guardian.Status, error) {
+			return guardian.Status{
+				Protection: guardian.ProtectionProtected,
+				Recovery:   guardian.RecoverySnapshot{State: "idle", Stage: "idle"},
+			}, nil
+		},
+		"darwin",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.ProtectionState != guardian.ProtectionNeedsAttention || rep.TunnelHealthy {
+		t.Fatalf("Core-less status = %+v, want fail-closed needs_attention", rep)
+	}
+}
+
+func TestCLIRepairRequiredOutranksTransientRecovery(t *testing.T) {
+	rep := assembleClientStatusReport(stats.Report{TunnelHealthy: true}, guardian.Status{
+		Protection: guardian.ProtectionNeedsAttention,
+		Recovery:   guardian.RecoverySnapshot{State: "accepted", Stage: "queued"},
+	})
+	if rep.ProtectionState != guardian.ProtectionNeedsAttention {
+		t.Fatalf("protection = %q, want needs_attention", rep.ProtectionState)
+	}
+	if got := renderClientStatus(rep); !strings.Contains(got, "Repair Required") || strings.Contains(got, "Status  Reconnecting") {
+		t.Fatalf("human status = %q, want Repair Required precedence", got)
 	}
 }
 

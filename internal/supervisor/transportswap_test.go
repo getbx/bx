@@ -64,6 +64,40 @@ func TestTransportSwapperFailedSwapPreservesOldSlot(t *testing.T) {
 	}
 }
 
+func TestAuxiliaryPortHandoffCollisionFailsHealthGateWithoutCommit(t *testing.T) {
+	old, _ := newHealthySwapTunnel("127.0.0.1:10001")
+	old.Start()
+	defer old.Stop()
+	if err := waitTunnelHealthy(context.Background(), old, 2*time.Second); err != nil {
+		t.Fatalf("active protected transport health = %v", err)
+	}
+	candidate := tunnel.New(
+		"127.0.0.1:10002",
+		func(string) (tunnel.Runner, error) {
+			return nil, errors.New("bind private HTTP endpoint: address in use")
+		},
+		func(string) (int64, error) { return 0, errors.New("candidate unavailable") },
+	)
+	live := &liveTunnel{}
+	live.set(old)
+	swapper := &transportSwapper{
+		lt:            live,
+		ctx:           context.Background(),
+		healthTimeout: 5 * time.Millisecond,
+		build: func(string, string, bool) (*tunnel.Tunnel, error) {
+			return candidate, nil
+		},
+	}
+	swapper.setLink("vless://active")
+
+	if err := swapper.swapTo("vless://candidate"); err == nil {
+		t.Fatal("candidate with a handed-off port collision passed the health gate")
+	}
+	if live.get() != old || swapper.currentLink() != "vless://active" {
+		t.Fatalf("failed candidate committed: tunnel=%p link=%q", live.get(), swapper.currentLink())
+	}
+}
+
 func TestTransportSwapperSuccessfulSwapActivatesCandidateAndRetiresOld(t *testing.T) {
 	old, oldRunner := newHealthySwapTunnel("127.0.0.1:10001")
 	old.Start()

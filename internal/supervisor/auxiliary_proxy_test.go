@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -76,6 +77,30 @@ func TestPrivateAuxiliaryAddressExplicitlyRejectsUnboundConfiguredPort(t *testin
 		t.Fatal("private endpoint rejected a distinct loopback port")
 	}
 }
+
+func TestPrivateAuxiliaryAddressExhaustionIsBoundedAndFailClosed(t *testing.T) {
+	attempts := 0
+	listen := func(_, _ string) (net.Listener, error) {
+		attempts++
+		return &fixedAddrListener{addr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 17890}}, nil
+	}
+
+	got, err := privateAuxiliaryAddrWithListen("127.0.0.1:17890", true, listen)
+	if got != "" || !errors.Is(err, errPrivateAuxiliaryAddrUnavailable) {
+		t.Fatalf("private address = %q, error = %v; want stable fail-closed error", got, err)
+	}
+	if attempts != privateAuxiliaryAddrAttempts {
+		t.Fatalf("allocation attempts = %d, want %d", attempts, privateAuxiliaryAddrAttempts)
+	}
+}
+
+type fixedAddrListener struct {
+	addr net.Addr
+}
+
+func (l *fixedAddrListener) Accept() (net.Conn, error) { return nil, errors.New("unused") }
+func (l *fixedAddrListener) Close() error              { return nil }
+func (l *fixedAddrListener) Addr() net.Addr            { return l.addr }
 
 func startTaggedTCPServer(t *testing.T, tag string) (string, func()) {
 	t.Helper()

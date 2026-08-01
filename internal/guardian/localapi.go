@@ -118,7 +118,7 @@ func observableStatus(controller Controller, recoveries PathRecoveryController) 
 	status.Recovery = redactRecoverySnapshot(status.Recovery)
 	switch status.Recovery.State {
 	case "accepted", "running":
-		if status.Desired == DesiredOn {
+		if status.Desired == DesiredOn && status.Protection != ProtectionNeedsAttention {
 			status.Protection = ProtectionRecovering
 		}
 	case "failed":

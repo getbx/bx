@@ -4068,13 +4068,30 @@ func statusAction(c *cli.Context) error {
 }
 
 func readClientStatusReport() (clientStatusReport, error) {
-	core, err := readStatusReport()
-	if err != nil {
-		return clientStatusReport{}, err
-	}
-	status, guardianErr := readGuardianStatus()
+	return readClientStatusReportWith(readStatusReport, readGuardianStatus, runtime.GOOS)
+}
+
+func readClientStatusReportWith(
+	readCore func() (stats.Report, error),
+	readGuardian func() (guardian.Status, error),
+	platform string,
+) (clientStatusReport, error) {
+	core, coreErr := readCore()
+	status, guardianErr := readGuardian()
 	if guardianErr != nil {
-		status = guardianStatusFallback(core, runtime.GOOS)
+		if coreErr != nil {
+			return clientStatusReport{}, coreErr
+		}
+		status = guardianStatusFallback(core, platform)
+	} else if coreErr != nil {
+		if platform != "darwin" {
+			return clientStatusReport{}, coreErr
+		}
+		switch status.Protection {
+		case guardian.ProtectionOff, guardian.ProtectionBlocked, guardian.ProtectionNeedsAttention:
+		default:
+			status.Protection = guardian.ProtectionNeedsAttention
+		}
 	}
 	return assembleClientStatusReport(core, status), nil
 }
@@ -4110,7 +4127,9 @@ func assembleClientStatusReport(core stats.Report, status guardian.Status) clien
 	protection := status.Protection
 	switch status.Recovery.State {
 	case "accepted", "running":
-		protection = guardian.ProtectionRecovering
+		if protection != guardian.ProtectionNeedsAttention {
+			protection = guardian.ProtectionRecovering
+		}
 	case "failed":
 		if protection != guardian.ProtectionNeedsAttention {
 			protection = guardian.ProtectionBlocked
