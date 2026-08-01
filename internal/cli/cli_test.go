@@ -514,8 +514,81 @@ func TestDarwinTestkitRejectsExistingOrSymlinkLogDirectory(t *testing.T) {
 	}
 }
 
+func TestDarwinTestkitRejectsSymlinkedLogDirectoryParent(t *testing.T) {
+	root := trustedRepoTempDir(t)
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkedParent := filepath.Join(root, "linked-parent")
+	if err := os.Symlink(target, linkedParent); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", filepath.Join("..", "..", "scripts", "darwin-testkit.sh"),
+		"--network-transition-check", "--log-dir", filepath.Join(linkedParent, "logs"))
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("symlinked log parent was accepted:\n%s", output)
+	}
+	if !strings.Contains(string(output), "log directory parent must not contain symbolic links") {
+		t.Fatalf("symlinked log parent error = %q", output)
+	}
+}
+
+func TestDarwinTestkitRejectsGroupOrWorldWritableLogDirectoryParent(t *testing.T) {
+	tests := []struct {
+		name string
+		mode os.FileMode
+	}{
+		{name: "group writable", mode: 0o770},
+		{name: "world writable", mode: 0o702},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := trustedRepoTempDir(t)
+			untrusted := filepath.Join(root, "untrusted")
+			if err := os.Mkdir(untrusted, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(untrusted, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command("bash", filepath.Join("..", "..", "scripts", "darwin-testkit.sh"),
+				"--network-transition-check", "--log-dir", filepath.Join(untrusted, "logs"))
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("%s log parent was accepted:\n%s", tt.name, output)
+			}
+			if !strings.Contains(string(output), "log directory parent must not be group/other writable") {
+				t.Fatalf("%s log parent error = %q", tt.name, output)
+			}
+		})
+	}
+}
+
+func TestDarwinTestkitAcceptsPrivateUserOwnedLogDirectoryParent(t *testing.T) {
+	root := trustedRepoTempDir(t)
+	logDir := filepath.Join(root, "logs")
+	cmd := exec.Command("bash", filepath.Join("..", "..", "scripts", "darwin-testkit.sh"),
+		"--network-transition-check", "--log-dir", logDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("private user-owned log parent was rejected: %v\n%s", err, output)
+	}
+	info, err := os.Stat(logDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("custom transition log directory mode = %04o, want 0700", got)
+	}
+}
+
 func TestDarwinTestkitExecutedTransitionFixtureRunsOnlyStatusSnapshots(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := trustedRepoTempDir(t)
 	fakeBX := filepath.Join(tmp, "bx-fixture")
 	fixture := `#!/usr/bin/env bash
 set -eu
@@ -550,6 +623,24 @@ printf '{"protection_state":"protected","tunnel_healthy":true,"network_generatio
 	if strings.Contains(string(output), "darwin-plan") {
 		t.Fatalf("transition fixture reached legacy harness:\n%s", output)
 	}
+}
+
+func trustedRepoTempDir(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp(wd, ".darwin-testkit-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
 
 func runDarwinTransitionFixture(t *testing.T, tmp string) string {
@@ -833,6 +924,9 @@ func TestStatusReportIncludesTruthfulGuardianRecovery(t *testing.T) {
 	if encoded["network_generation"] != "wifi-b" {
 		t.Fatalf("network_generation = %v, want wifi-b", encoded["network_generation"])
 	}
+	if encoded["core_available"] != true || encoded["core_evidence"] != "local_status_socket" {
+		t.Fatalf("Core evidence = available:%v evidence:%v, want local status socket", encoded["core_available"], encoded["core_evidence"])
+	}
 	recovery, ok := encoded["recovery"].(map[string]any)
 	if !ok || recovery["recovery_id"] != "recovery-8" || recovery["stage"] != "transport_health" {
 		t.Fatalf("recovery = %#v", encoded["recovery"])
@@ -864,11 +958,99 @@ func TestStatusUsesGuardianWhenCoreSocketIsUnavailable(t *testing.T) {
 	if coreCalls != 1 || guardianCalls != 1 {
 		t.Fatalf("status calls Core=%d Guardian=%d, want one each", coreCalls, guardianCalls)
 	}
-	if rep.ProtectionState != guardian.ProtectionNeedsAttention || rep.TunnelHealthy {
-		t.Fatalf("partial status = %+v, want Repair Required and unhealthy Core", rep)
+	if rep.ProtectionState != guardian.ProtectionNeedsAttention {
+		t.Fatalf("partial status = %+v, want Repair Required", rep)
 	}
 	if got := renderClientStatus(rep); !strings.Contains(got, "Repair Required") {
 		t.Fatalf("human status = %q, want Repair Required", got)
+	}
+}
+
+func TestCoreUnavailableStatusIsPartialAndTruthful(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    guardian.Status
+		wantState string
+		wantLabel string
+	}{
+		{
+			name:      "Guardian off",
+			status:    guardian.Status{Protection: guardian.ProtectionOff, Recovery: guardian.RecoverySnapshot{State: "idle", Stage: "idle"}},
+			wantState: guardian.ProtectionOff,
+			wantLabel: "Off",
+		},
+		{
+			name: "Guardian blocked",
+			status: guardian.Status{
+				Protection: guardian.ProtectionBlocked,
+				Recovery:   guardian.RecoverySnapshot{State: "failed", Stage: "transport_health", ErrorCode: "transport_unavailable"},
+			},
+			wantState: guardian.ProtectionBlocked,
+			wantLabel: "Blocked",
+		},
+		{
+			name: "Guardian needs attention outranks recovery",
+			status: guardian.Status{
+				Protection: guardian.ProtectionNeedsAttention,
+				Recovery:   guardian.RecoverySnapshot{State: "running", Stage: "verify"},
+			},
+			wantState: guardian.ProtectionNeedsAttention,
+			wantLabel: "Repair Required",
+		},
+		{
+			name: "Guardian recovering",
+			status: guardian.Status{
+				Protection: guardian.ProtectionRecovering,
+				Recovery:   guardian.RecoverySnapshot{State: "running", Stage: "transport_health"},
+			},
+			wantState: guardian.ProtectionRecovering,
+			wantLabel: "Reconnecting",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rep, err := readClientStatusReportWith(
+				func() (stats.Report, error) { return stats.Report{}, errors.New("missing Core socket") },
+				func() (guardian.Status, error) { return tt.status, nil },
+				"darwin",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rep.ProtectionState != tt.wantState {
+				t.Fatalf("protection_state = %q, want %q", rep.ProtectionState, tt.wantState)
+			}
+
+			data, err := json.Marshal(rep)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var encoded map[string]any
+			if err := json.Unmarshal(data, &encoded); err != nil {
+				t.Fatal(err)
+			}
+			if encoded["core_available"] != false || encoded["core_evidence"] != "unavailable" {
+				t.Fatalf("Core evidence = available:%v evidence:%v, want unavailable", encoded["core_available"], encoded["core_evidence"])
+			}
+			for _, key := range []string{"server", "socks_addr", "tunnel_healthy", "latency_ms", "restarts", "udp_mode"} {
+				if _, ok := encoded[key]; ok {
+					t.Fatalf("partial JSON fabricated unevidenced Core field %q: %s", key, data)
+				}
+			}
+
+			human := renderClientStatus(rep)
+			for _, want := range []string{tt.wantLabel, "Core", "Unavailable", "cannot be verified"} {
+				if !strings.Contains(human, want) {
+					t.Fatalf("partial human status = %q, want %q", human, want)
+				}
+			}
+			for _, forbidden := range []string{"bx 状态", "kill-switch", "真实 IP", "隧道", "健康"} {
+				if strings.Contains(human, forbidden) {
+					t.Fatalf("partial human status made unevidenced Core claim %q: %s", forbidden, human)
+				}
+			}
+		})
 	}
 }
 
@@ -886,7 +1068,7 @@ func TestStatusDoesNotClaimProtectedWithoutCoreEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.ProtectionState != guardian.ProtectionNeedsAttention || rep.TunnelHealthy {
+	if rep.ProtectionState != guardian.ProtectionNeedsAttention {
 		t.Fatalf("Core-less status = %+v, want fail-closed needs_attention", rep)
 	}
 }
@@ -933,7 +1115,9 @@ func TestHumanStatusDistinguishesRecoverySafetyStates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := renderClientStatus(clientStatusReport{
-				Report:          stats.Report{TunnelHealthy: true},
+				Report:          &stats.Report{TunnelHealthy: true},
+				CoreAvailable:   true,
+				CoreEvidence:    "local_status_socket",
 				ProtectionState: tt.protection,
 				Recovery:        tt.recovery,
 			})

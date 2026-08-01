@@ -188,7 +188,9 @@ type doctorReport struct {
 }
 
 type clientStatusReport struct {
-	stats.Report
+	*stats.Report
+	CoreAvailable     bool                      `json:"core_available"`
+	CoreEvidence      string                    `json:"core_evidence"`
 	ProtectionState   string                    `json:"protection_state"`
 	NetworkGeneration string                    `json:"network_generation"`
 	Recovery          guardian.RecoverySnapshot `json:"recovery"`
@@ -4088,10 +4090,11 @@ func readClientStatusReportWith(
 			return clientStatusReport{}, coreErr
 		}
 		switch status.Protection {
-		case guardian.ProtectionOff, guardian.ProtectionBlocked, guardian.ProtectionNeedsAttention:
+		case guardian.ProtectionOff, guardian.ProtectionBlocked, guardian.ProtectionNeedsAttention, guardian.ProtectionRecovering:
 		default:
 			status.Protection = guardian.ProtectionNeedsAttention
 		}
+		return assemblePartialClientStatusReport(status), nil
 	}
 	return assembleClientStatusReport(core, status), nil
 }
@@ -4124,6 +4127,14 @@ func readGuardianStatus() (guardian.Status, error) {
 }
 
 func assembleClientStatusReport(core stats.Report, status guardian.Status) clientStatusReport {
+	return assembleClientStatusReportWithCore(&core, "local_status_socket", status)
+}
+
+func assemblePartialClientStatusReport(status guardian.Status) clientStatusReport {
+	return assembleClientStatusReportWithCore(nil, "unavailable", status)
+}
+
+func assembleClientStatusReportWithCore(core *stats.Report, evidence string, status guardian.Status) clientStatusReport {
 	protection := status.Protection
 	switch status.Recovery.State {
 	case "accepted", "running":
@@ -4137,6 +4148,8 @@ func assembleClientStatusReport(core stats.Report, status guardian.Status) clien
 	}
 	return clientStatusReport{
 		Report:            core,
+		CoreAvailable:     core != nil,
+		CoreEvidence:      evidence,
 		ProtectionState:   protection,
 		NetworkGeneration: status.NetworkGeneration,
 		Recovery:          status.Recovery,
@@ -4144,8 +4157,34 @@ func assembleClientStatusReport(core stats.Report, status guardian.Status) clien
 }
 
 func renderClientStatus(report clientStatusReport) string {
+	label := clientProtectionLabel(report.ProtectionState)
+	if !report.CoreAvailable || report.Report == nil {
+		var b strings.Builder
+		fmt.Fprintln(&b, "bx protection (partial)")
+		fmt.Fprintf(&b, "  Guardian %s\n", label)
+		fmt.Fprintln(&b, "  Core     Unavailable")
+		fmt.Fprintln(&b, "  Protection Core status/protection cannot be verified")
+		if report.NetworkGeneration != "" {
+			fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
+		}
+		writeClientRecovery(&b, report.Recovery)
+		return b.String()
+	}
+
+	var b strings.Builder
+	fmt.Fprintln(&b, "bx protection")
+	fmt.Fprintf(&b, "  Status  %s\n", label)
+	if report.NetworkGeneration != "" {
+		fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
+	}
+	writeClientRecovery(&b, report.Recovery)
+	b.WriteString(stats.Render(*report.Report))
+	return b.String()
+}
+
+func clientProtectionLabel(protection string) string {
 	label := "Protected"
-	switch report.ProtectionState {
+	switch protection {
 	case guardian.ProtectionRecovering:
 		label = "Reconnecting"
 	case guardian.ProtectionBlocked:
@@ -4157,21 +4196,17 @@ func renderClientStatus(report clientStatusReport) string {
 	case guardian.ProtectionStarting:
 		label = "Starting"
 	}
-	var b strings.Builder
-	fmt.Fprintln(&b, "bx protection")
-	fmt.Fprintf(&b, "  Status  %s\n", label)
-	if report.NetworkGeneration != "" {
-		fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
-	}
-	if report.Recovery.State != "" && report.Recovery.State != "idle" {
-		fmt.Fprintf(&b, "  Recovery %s stage=%s attempt=%d", report.Recovery.ID, report.Recovery.Stage, report.Recovery.Attempt)
-		if report.Recovery.ErrorCode != "" {
-			fmt.Fprintf(&b, " error_code=%s", report.Recovery.ErrorCode)
+	return label
+}
+
+func writeClientRecovery(b *strings.Builder, recovery guardian.RecoverySnapshot) {
+	if recovery.State != "" && recovery.State != "idle" {
+		fmt.Fprintf(b, "  Recovery %s stage=%s attempt=%d", recovery.ID, recovery.Stage, recovery.Attempt)
+		if recovery.ErrorCode != "" {
+			fmt.Fprintf(b, " error_code=%s", recovery.ErrorCode)
 		}
-		fmt.Fprintln(&b)
+		fmt.Fprintln(b)
 	}
-	b.WriteString(stats.Render(report.Report))
-	return b.String()
 }
 
 func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {

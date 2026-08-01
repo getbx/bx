@@ -26,7 +26,7 @@ scripts/darwin-testkit.sh --network-transition-check \
 
 脚本先把 `bx status --json` 保存为 `before-status.json`，并拒绝非 `Protected` 或 tunnel unhealthy 的起点。随后用户在 macOS 中手动选择另一个 Wi-Fi、热点或其他物理网络，回到终端输入 `NETWORK-CHANGED`。脚本只轮询只读 status，记录 `recovery-timeline.ndjson` 和 `after-status.json`，并要求新的 `network_generation` 最终回到 `Protected`。
 
-如需 `--log-dir`，必须传入尚不存在的唯一目录路径；脚本拒绝已有目录和符号链接，并以限制性 umask 创建权限为 `0700` 的目录。不要使用可预测的固定 `/tmp` 路径。
+如需 `--log-dir`，必须传入尚不存在的唯一目录路径。其已存在父目录链必须是规范路径，不含符号链接，逐级由 root 或执行 sudo 的用户拥有，且任何一级都不可被 group/other 写入；因此自定义路径不能放在可写的 `/tmp` 链下。脚本验证父链后仅创建最终目录一次，并以限制性 umask 和 mode `0700` 创建。不要使用可预测的固定临时路径。
 
 `bx reconnect` 只用于 troubleshooting，不属于正常网络切换流程。不得用本脚本或自动化调用 `networksetup`、切换 Wi-Fi、执行 `bx up/down/reconnect`，也不得为了验收临时关闭 fail-closed。
 
