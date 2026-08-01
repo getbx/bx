@@ -9,21 +9,25 @@ const (
 	StateNotSetup                      // 无 config
 	StateOff                           // 有 config,服务未跑
 	StateProtected                     // 服务跑且隧道健康
+	StateWarning                       // 服务跑、隧道健康,但有可用更新
 	StateAttention                     // 服务跑但隧道不健康
 )
 
-// trayStateFrom 由三个非提权可得的信号合成托盘态。
-func trayStateFrom(svcRunning, configExists, tunnelHealthy bool) TrayState {
+// trayStateFrom 由非提权可得的信号合成托盘态。故障优先于更新;走备用传输(健康)恒绿。
+func trayStateFrom(svcRunning, configExists, tunnelHealthy, updateAvailable bool) TrayState {
 	if !configExists {
 		return StateNotSetup
 	}
 	if !svcRunning {
 		return StateOff
 	}
-	if tunnelHealthy {
-		return StateProtected
+	if !tunnelHealthy {
+		return StateAttention
 	}
-	return StateAttention
+	if updateAvailable {
+		return StateWarning
+	}
+	return StateProtected
 }
 
 // setupLinkPrefixes 是 bx setup 认的链接前缀(对齐现有 setup/blink 支持)。
@@ -57,6 +61,7 @@ type TrayMenu struct {
 	Disconnect menuItem
 	Setup      menuItem
 	Restart    menuItem
+	Update     menuItem
 }
 
 func menuItemsFor(s TrayState) TrayMenu {
@@ -65,6 +70,7 @@ func menuItemsFor(s TrayState) TrayMenu {
 		Disconnect: menuItem{Label: "断开"},
 		Setup:      menuItem{Label: "从剪贴板设置…"},
 		Restart:    menuItem{Label: "重启保护"},
+		Update:     menuItem{Label: "更新到最新版"},
 	}
 	switch s {
 	case StateNotSetup, StateNotInstalled:
@@ -74,6 +80,9 @@ func menuItemsFor(s TrayState) TrayMenu {
 		m.Setup.Visible = true // 允许换链接
 	case StateProtected:
 		m.Disconnect.Visible = true
+	case StateWarning:
+		m.Disconnect.Visible = true
+		m.Update.Visible = true
 	case StateAttention:
 		m.Disconnect.Visible = true
 		m.Restart.Visible = true

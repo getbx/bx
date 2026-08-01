@@ -64,6 +64,7 @@ func New() *cli.App {
 		Name:    "bx",
 		Usage:   "透明全局代理",
 		Version: version.String(),
+		Action:  rootAction,
 		Commands: []*cli.Command{
 			guardianCommand(),
 			{Name: "setup", Usage: "首次配置:写配置+装服务+连通检测(不启动)", ArgsUsage: "bx://...", Flags: setupFlags(), Action: setupAction},
@@ -89,6 +90,7 @@ func New() *cli.App {
 			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
 			{Name: "run", Usage: "前台运行(调试/服务内部用)", Hidden: true, Flags: runFlags(), Action: runAction},
 			{Name: "tray", Usage: "启动系统托盘(Windows;点图标连/断/设置/看状态)", Action: trayAction},
+			{Name: "autostart", Usage: "开机自启开关(Windows;on|off|status)", ArgsUsage: "on|off|status", Action: autostartAction},
 			{Name: "debug-tun", Usage: "仅创建 TUN 适配器(不起隧道/不碰路由),真机验证 wintun+wgbridge", Hidden: true, Flags: debugTunFlags(), Action: debugTunAction},
 			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
 			{Name: "mcp", Usage: "启动 agent 控制面 MCP server(stdio)", Hidden: false, Flags: mcpFlags(), Action: mcpAction, Subcommands: []*cli.Command{
@@ -3530,6 +3532,9 @@ func setupAction(c *cli.Context) error {
 	if err := install.WriteUnit(buildExecStart(bin, abs)); err != nil {
 		return err
 	}
+	if err := postSetupAutostart(); err != nil {
+		return fmt.Errorf("设默认开机自启: %w", err)
+	}
 	fmt.Printf("✅ bx 已装到 %s、写好配置 %s、装好服务。下一步:sudo bx up\n", install.BinPath, cfgPath)
 	return nil
 }
@@ -3832,12 +3837,12 @@ func upAction(c *cli.Context) (err error) {
 	if err := install.Enable(); err != nil {
 		return err
 	}
-	stepDone("服务", "已启动并设为开机自启")
+	stepDone("服务", upStepLabel())
 	if rep, err := readStatusReport(); err == nil {
 		printUpSummary(rep)
 		return nil
 	}
-	fmt.Println("✅ bx 已启动。")
+	fmt.Println(upDoneMessage())
 	return nil
 }
 
@@ -3849,7 +3854,7 @@ func downAction(c *cli.Context) (err error) {
 	if err := install.Disable(); err != nil {
 		return err
 	}
-	fmt.Println("✅ bx 已停止并取消开机自启。")
+	fmt.Println(downDoneMessage())
 	return nil
 }
 
