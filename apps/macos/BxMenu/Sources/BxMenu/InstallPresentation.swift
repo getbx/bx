@@ -21,9 +21,18 @@ func installActionTitle(runtimeInstalled: Bool, cliUsable: Bool) -> String? {
     return "Install bx…"
 }
 
-func menuUpdateActionTitle(check: UpdateCheck?, runtimeInstalled: Bool) -> String? {
-    if runtimeInstalled { return nil }
-    return updateActionTitle(for: check)
+func menuUpdateActionTitle(check: UpdateCheck?) -> String? {
+    updateActionTitle(for: check)
+}
+
+func updatingBanner(phase: String?) -> String? {
+    guard let phase else { return nil }
+    switch phase {
+    case "prepared", "barrier_active", "activating", "rolling_back":
+        return "Updating bx…"
+    default:
+        return nil
+    }
 }
 
 let turnOffActionTitle = "Turn Off bx"

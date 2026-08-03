@@ -20,14 +20,23 @@ struct InstallPresentationTests {
         expect(turnOffActionTitle == "Turn Off bx", "turn off title pinned")
 
         let verifiedAvailable = UpdateCheck(current: "1.0.0", latest: "1.1.0", available: true, verified: true)
-        expect(menuUpdateActionTitle(check: verifiedAvailable, runtimeInstalled: true) == nil,
-               "unified layout hides update action even when available")
-        expect(menuUpdateActionTitle(check: verifiedAvailable, runtimeInstalled: false) == "Update bx…",
-               "legacy layout still offers update action")
-        expect(menuUpdateActionTitle(check: nil, runtimeInstalled: true) == nil,
-               "no check yields no update action under unified layout")
-        expect(menuUpdateActionTitle(check: nil, runtimeInstalled: false) == nil,
-               "no check yields no update action under legacy layout")
+        expect(menuUpdateActionTitle(check: verifiedAvailable) == "Update bx…",
+               "available verified update is actionable")
+        let unverifiedAvailable = UpdateCheck(current: "1.0.0", latest: "1.1.0", available: true, verified: false)
+        expect(menuUpdateActionTitle(check: unverifiedAvailable) == nil,
+               "unverified update is hidden")
+        let notAvailable = UpdateCheck(current: "1.0.0", latest: "1.0.0", available: false, verified: true)
+        expect(menuUpdateActionTitle(check: notAvailable) == nil,
+               "not-available update is hidden")
+        expect(menuUpdateActionTitle(check: nil) == nil,
+               "no check yields no update action")
+
+        expect(updatingBanner(phase: "prepared") == "Updating bx…", "prepared phase shows updating banner")
+        expect(updatingBanner(phase: "barrier_active") == "Updating bx…", "barrier_active phase shows updating banner")
+        expect(updatingBanner(phase: "activating") == "Updating bx…", "activating phase shows updating banner")
+        expect(updatingBanner(phase: "rolling_back") == "Updating bx…", "rolling_back phase shows updating banner")
+        expect(updatingBanner(phase: "committed") == nil, "committed phase shows no updating banner")
+        expect(updatingBanner(phase: nil) == nil, "no phase shows no updating banner")
 
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("bx-install-presentation-\(getpid())")
