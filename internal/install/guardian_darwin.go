@@ -20,9 +20,9 @@ const (
 )
 
 // GuardianPlistText returns the root LaunchDaemon contract used on macOS.
-func GuardianPlistText(configPath string) string {
+func GuardianPlistText(executable, configPath string) string {
 	args := []string{
-		BinPath,
+		executable,
 		"guardian",
 		"--config",
 		configPath,
@@ -69,15 +69,18 @@ func GuardianPlistText(configPath string) string {
 	return b.String()
 }
 
-func WriteGuardianUnit(configPath string) error {
-	return writeGuardianUnitAt(guardianLaunchdPlistPath, configPath, os.Chown)
+func WriteGuardianUnit(executable, configPath string) error {
+	return writeGuardianUnitAt(guardianLaunchdPlistPath, executable, configPath, os.Chown)
 }
 
-func writeGuardianUnitAt(path, configPath string, chown func(string, int, int) error) error {
+func writeGuardianUnitAt(path, executable, configPath string, chown func(string, int, int) error) error {
+	if !filepath.IsAbs(executable) {
+		return fmt.Errorf("Guardian executable path must be absolute: %q", executable)
+	}
 	if !filepath.IsAbs(configPath) {
 		return fmt.Errorf("Guardian config path must be absolute: %q", configPath)
 	}
-	if err := writeLaunchdPlist(path, GuardianPlistText(configPath)); err != nil {
+	if err := writeLaunchdPlist(path, GuardianPlistText(executable, configPath)); err != nil {
 		return err
 	}
 	if err := os.Chmod(path, 0o644); err != nil {

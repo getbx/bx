@@ -5043,7 +5043,9 @@ func buildExecStart(bin, configPath string) string {
 func buildExecStartForGOOS(goos, bin, configPath string) string {
 	switch goos {
 	case "darwin":
-		return fmt.Sprintf("%s guardian --config %s --listen-dns %s", bin, configPath, darwinDNSListen)
+		// darwin 忽略 bin 参数:Guardian LaunchDaemon 该指向哪个可执行文件由
+		// install.GuardianExecutable() 决定(统一 runtime 已装好时优先指向它,否则回落 BinPath)。
+		return fmt.Sprintf("%s guardian --config %s --listen-dns %s", install.GuardianExecutable(), configPath, darwinDNSListen)
 	case "windows":
 		// Windows 服务 BinaryPathName:bin/config 路径含空格(Program Files / ProgramData),
 		// 必须加引号,交 install.commandLineFields 按引号拆回 exepath+args。

@@ -58,10 +58,12 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 	client := guardian.NewClient(guardian.SocketPath)
 	return macOSLifecycleDeps{
 		guardianInstalled: install.GuardianInstalled,
-		writeGuardianUnit: install.WriteGuardianUnit,
-		enableGuardian:    install.EnableGuardian,
-		legacyInstalled:   install.LegacyCoreInstalled,
-		legacyLoaded:      install.LegacyCoreLoaded,
+		writeGuardianUnit: func(configPath string) error {
+			return install.WriteGuardianUnit(install.GuardianExecutable(), configPath)
+		},
+		enableGuardian:  install.EnableGuardian,
+		legacyInstalled: install.LegacyCoreInstalled,
+		legacyLoaded:    install.LegacyCoreLoaded,
 		migrationRequest: func(ctx context.Context, configPath string) (guardian.MigrationRequest, error) {
 			return legacyMigrationRequest(ctx, configPath, migrationMetadataDeps{})
 		},

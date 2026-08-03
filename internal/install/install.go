@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/getbx/bx/internal/runtimedir"
 )
 
 const (
@@ -218,11 +220,11 @@ WantedBy=multi-user.target
 func WriteUnit(execStart string) error {
 	switch runtime.GOOS {
 	case "darwin":
-		configPath, err := guardianConfigPathFromExecStart(execStart)
+		executable, configPath, err := parseGuardianExecStart(execStart)
 		if err != nil {
 			return err
 		}
-		return WriteGuardianUnit(configPath)
+		return WriteGuardianUnit(executable, configPath)
 	case "windows":
 		return windowsInstallService(execStart)
 	default:
@@ -230,16 +232,36 @@ func WriteUnit(execStart string) error {
 	}
 }
 
-func guardianConfigPathFromExecStart(execStart string) (string, error) {
-	fields := strings.Fields(execStart)
-	if len(fields) != 6 || fields[0] != BinPath || fields[1] != "guardian" ||
-		fields[2] != "--config" || fields[4] != "--listen-dns" || fields[5] != "127.0.0.1:53" {
-		return "", fmt.Errorf("refusing non-Guardian macOS service command")
+// GuardianExecutable 返回 macOS Guardian LaunchDaemon 应指向的可执行文件:统一 runtime
+// 已装好时优先指向它(`/Library/Application Support/bx/runtime/current/bx`),否则回落
+// BinPath 桥。跨平台无 build tag(cli.go 的 buildExecStartForGOOS 无 tag,需在所有 GOOS 下可编译)。
+func GuardianExecutable() string {
+	if runtimedir.Installed(runtimedir.Root) {
+		return runtimedir.ExecutablePath(runtimedir.Root)
 	}
-	if !filepath.IsAbs(fields[3]) {
-		return "", fmt.Errorf("Guardian config path must be absolute: %q", fields[3])
+	return BinPath
+}
+
+// parseGuardianExecStart 从 Guardian ExecStart 命令行解析出可执行文件与 config 路径,
+// 只信任两个已知前缀(BinPath、统一 runtime 可执行路径)——runtime 路径含空格,不能对整串
+// 用 strings.Fields 切分,必须先按前缀剥离可执行文件,再对剩余参数 Fields。
+func parseGuardianExecStart(execStart string) (string, string, error) {
+	var executable string
+	for _, candidate := range []string{runtimedir.ExecutablePath(runtimedir.Root), BinPath} {
+		if strings.HasPrefix(execStart, candidate+" ") {
+			executable = candidate
+			break
+		}
 	}
-	return fields[3], nil
+	if executable == "" {
+		return "", "", fmt.Errorf("guardian ExecStart %q does not start with a trusted bx executable", execStart)
+	}
+	rest := strings.Fields(strings.TrimPrefix(execStart, executable+" "))
+	if len(rest) != 5 || rest[0] != "guardian" || rest[1] != "--config" ||
+		rest[3] != "--listen-dns" || rest[4] != "127.0.0.1:53" || !filepath.IsAbs(rest[2]) {
+		return "", "", fmt.Errorf("guardian ExecStart %q has unexpected arguments", execStart)
+	}
+	return executable, rest[2], nil
 }
 
 // WriteServerUnit 写入 bx server unit 文件并 daemon-reload(不 enable、不 start)。需 root。
