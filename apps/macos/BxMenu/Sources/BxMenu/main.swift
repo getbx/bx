@@ -504,22 +504,24 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     @objc private func installBx() {
         runEmbeddedInstaller(
             confirmTitle: "Install bx?",
-            confirmMessage: "bx will install its command line tool and background protection service. macOS will ask for administrator authorization. Protection is not started until you set up and turn it on."
+            confirmMessage: "bx will install its command line tool and background protection service. macOS will ask for administrator authorization. Protection is not started until you set up and turn it on.",
+            confirmButton: "Install"
         )
     }
 
     @objc private func repairBx() {
         runEmbeddedInstaller(
             confirmTitle: "Repair bx?",
-            confirmMessage: "bx will reinstall its components from this app. Your connection settings are kept."
+            confirmMessage: "bx will reinstall its components from this app. Your connection settings are kept.",
+            confirmButton: "Repair"
         )
     }
 
-    private func runEmbeddedInstaller(confirmTitle: String, confirmMessage: String) {
+    private func runEmbeddedInstaller(confirmTitle: String, confirmMessage: String, confirmButton: String) {
         let alert = NSAlert()
         alert.messageText = confirmTitle
         alert.informativeText = confirmMessage
-        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: confirmButton)
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let bundlePath = Bundle.main.bundleURL.path

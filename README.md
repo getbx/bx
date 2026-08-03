@@ -281,6 +281,15 @@ scripts/darwin-testkit.sh --reconnect-check
 sudo scripts/darwin-testkit.sh --reconnect-check --execute
 ```
 
+统一安装与统一更新也各有真机验收脚本,默认 dry-run(只在临时目录打包并打印计划,零系统改动),显式 `--execute --yes` 才真正执行:
+
+```bash
+bash scripts/darwin-unified-install-check.sh          # 统一安装演练(dry-run)
+sudo bash scripts/darwin-unified-install-check.sh --execute --yes
+bash scripts/darwin-unified-update-check.sh           # 统一更新+自动回滚演练(dry-run)
+sudo bash scripts/darwin-unified-update-check.sh --execute --yes
+```
+
 日常使用:
 
 ```bash
@@ -357,6 +366,8 @@ sudo bx server shares --json
 | `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist/macos/Bx.app` |
 | `scripts/package-macos-release.sh` | 生成 macOS release 目录和 `.tar.gz` |
 | `scripts/verify-macos-release.sh` | 验证 macOS release 目录、压缩包和 SHA256SUMS |
+| `scripts/darwin-unified-install-check.sh` | 统一安装真机验收(默认 dry-run) |
+| `scripts/darwin-unified-update-check.sh` | 统一更新真机验收(默认 dry-run) |
 | `scripts/open-privacy-checks.sh` | 打开第三方浏览器指纹参考页(默认 dry-run;不采集、不判断) |
 | `scripts/install-macos-menu.sh install` | 安装并启动 macOS 菜单栏 App,不启动 protection、不修改网络配置 |
 | `scripts/install-macos-menu.sh status` | 查看 macOS 菜单栏 App 安装和运行状态 |
