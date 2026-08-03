@@ -55,6 +55,8 @@ if [ "$(id -u)" -ne 0 ]; then
 	SUDO="sudo"
 	echo "→ 需要 sudo 写入 $BIN"
 fi
+# 干净 macOS(无 Homebrew)默认没有 /usr/local/bin,install(1) 不建父目录,必须先 mkdir
+$SUDO mkdir -p "$(dirname "$BIN")"
 $SUDO install -m 0755 "$tmp/bx" "$BIN"
 
 echo "✅ bx 已安装:$BIN"

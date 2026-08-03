@@ -156,6 +156,8 @@ macOS release 包是统一安装:一份 `bx-macos-<arch>.tar.gz` 只含 `Bx.app`
 1. 把 `Bx.app` 拖到 `/Applications`,双击打开,菜单栏点 `Install bx…`(一次管理员授权)。
 2. 运行包内 `./install.sh`(等价的命令行方式,内部对 `Bx.app/Contents/Resources/bx-cli app-install` 发起同一次 sudo 安装)。
 
+> **远程 / 自动化(非交互 SSH)提示**:非登录 shell 不跑 `path_helper`,PATH 常不含 `/usr/local/bin`,`sudo bx …` 会报 `command not found`——用绝对路径 `sudo /usr/local/bin/bx …` 即可,不是安装失败。
+
 安装只做落位和铺路,不启动保护、不修改 DNS 或路由:
 
 - `Bx.app` 落到 `/Applications/Bx.app`(唯一产品位置)
