@@ -26,8 +26,8 @@ const (
 	menuLaunchAgentPlistName  = "com.getbx.bx.menu.plist"
 	defaultAppDestinationPath = "/Applications/Bx.app"
 	appBundleName             = "Bx.app"
-	appInstallStageDirSuffix  = ".Bx.app.install-stage"
 	appInstallOldDirSuffix    = ".Bx.app.install-old"
+	appInstallStagePrefix     = ".bx-app-stage-"
 )
 
 // UnifiedInstallOptions 描述一次特权统一安装(Bx.app + bx runtime + bridge + Guardian + 登录项)的输入。
@@ -197,7 +197,13 @@ func readBundleIdentifier(infoPlistPath string) (string, error) {
 }
 
 // installAppBundle 把源 Bx.app 落位到 options.AppDestination:两者(经 EvalSymlinks)相同时跳过;
-// 否则 copyBundleTree 到隐藏 stage 目录、整树 chown 到 root:wheel、旧 App 原子替换。
+// 否则 copyBundleTree 到不可预测名字的 stage 临时目录、整树 chown 到 root:wheel、旧 App 原子替换。
+//
+// stage 刻意不落在 destDir(如 /Applications,drwxrwxr-x root:admin,同 admin 组任意用户可写)下:
+// 若用固定/可预测的 stage 名字,攻击者可在 RemoveAll(旧 stage) 与本次 copy 之间的窗口抢先在该路径
+// 种一个指向自己目录的符号链接,而 MkdirAll/OpenFile(O_CREATE)/os.Chown 都会跟随符号链接写穿,
+// chownTreeWith 就会把攻击者目录 chown 成 root(TOCTOU 提权)。改为在 RuntimeRoot 的父目录(仅
+// root 可写,非 group-writable)下 os.MkdirTemp 出不可预测名字的 stage,race 窗口消失。
 func installAppBundle(options UnifiedInstallOptions) (string, error) {
 	dest := options.AppDestination
 	same, err := samePath(options.BundlePath, dest)
@@ -212,13 +218,25 @@ func installAppBundle(options UnifiedInstallOptions) (string, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return "", fmt.Errorf("建目录 %s: %w", destDir, err)
 	}
-	stage := filepath.Join(destDir, appInstallStageDirSuffix)
-	if err := os.RemoveAll(stage); err != nil {
-		return "", fmt.Errorf("清理旧 stage 目录 %s: %w", stage, err)
+
+	stageParent := filepath.Dir(options.RuntimeRoot)
+	if err := os.MkdirAll(stageParent, 0o755); err != nil {
+		return "", fmt.Errorf("建目录 %s: %w", stageParent, err)
+	}
+	stage, err := os.MkdirTemp(stageParent, appInstallStagePrefix)
+	if err != nil {
+		return "", fmt.Errorf("建 stage 临时目录: %w", err)
 	}
 	if err := copyBundleTree(options.BundlePath, stage); err != nil {
 		_ = os.RemoveAll(stage)
 		return "", err
+	}
+	// MkdirTemp 默认以 0700 创建 stage 根目录,copyBundleTree 对已存在的根目录不会改权限
+	// (os.MkdirAll 遇到已存在的目录直接返回,不改 mode),这里补 chmod 让落位后的 App 目录
+	// 权限恢复常规的 0755(可执行/可读),不残留 0700。
+	if err := os.Chmod(stage, 0o755); err != nil {
+		_ = os.RemoveAll(stage)
+		return "", fmt.Errorf("chmod stage %s: %w", stage, err)
 	}
 	if err := chownTreeWith(options.Chown, stage, 0, 0); err != nil {
 		_ = os.RemoveAll(stage)
