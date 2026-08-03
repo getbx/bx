@@ -899,6 +899,20 @@ func TestClientDoctorIncludesPlatformChecks(t *testing.T) {
 	}
 }
 
+func TestCollectClientDoctorWithIncludePlatformChecksToggle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.yaml")
+
+	withPlatform := collectClientDoctorWith(path, "example.com:443", 0, true, true)
+	if got := findCheck(withPlatform.Checks, "terminal_proxy"); got.Name == "" {
+		t.Fatalf("includePlatformChecks=true should include terminal_proxy check: %+v", withPlatform.Checks)
+	}
+
+	withoutPlatform := collectClientDoctorWith(path, "example.com:443", 0, true, false)
+	if got := findCheck(withoutPlatform.Checks, "terminal_proxy"); got.Name != "" {
+		t.Fatalf("includePlatformChecks=false must not include terminal_proxy check: %+v", withoutPlatform.Checks)
+	}
+}
+
 func TestStatusReportIncludesTruthfulGuardianRecovery(t *testing.T) {
 	started := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	rep := assembleClientStatusReport(
