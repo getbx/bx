@@ -21,4 +21,9 @@ func installActionTitle(runtimeInstalled: Bool, cliUsable: Bool) -> String? {
     return "Install bx…"
 }
 
+func menuUpdateActionTitle(check: UpdateCheck?, runtimeInstalled: Bool) -> String? {
+    if runtimeInstalled { return nil }
+    return updateActionTitle(for: check)
+}
+
 let turnOffActionTitle = "Turn Off bx"

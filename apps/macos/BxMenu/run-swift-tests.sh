@@ -39,6 +39,7 @@ run_test instance-gate \
   "$MENU/Tests/InstanceGateTests.swift"
 run_test install-presentation \
   "$MENU/Sources/BxMenu/InstallPresentation.swift" \
+  "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Tests/InstallPresentationTests.swift"
 
 touch "$MARKER"
