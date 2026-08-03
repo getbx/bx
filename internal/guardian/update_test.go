@@ -200,6 +200,142 @@ func TestLegacyPreparedSkipsExecutableSwitch(t *testing.T) {
 	}
 }
 
+// TestRecoveryRollbackRestoresRuntimeCurrentAndExecutable exercises the
+// crash-recovery rollback path (recoverUpdateLocked dispatching phase
+// activating -> recoverUpdateRollback), not the live rollbackUpdate path
+// TestRollbackSwitchesExecutableBack above covers. Guardian crashed mid
+// activation; on restart it must still switch the runner's configured
+// executable back to the FROM version before restarting the old Core — note
+// per the brief, it is legitimate for guardian to be restarted by launchd
+// running the NEW binary (current already flipped to `to`) to perform this
+// rollback; the recovery code does not need to know or care which binary is
+// running it.
+func TestRecoveryRollbackRestoresRuntimeCurrentAndExecutable(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	manager := env.restartedManager(t, PhaseActivating, "v2")
+	toExecutable := filepath.Join(env.root, "runtime", "v2", "bx")
+	fromExecutable := filepath.Join(env.root, "runtime", "v1", "bx")
+	env.prepared.coreExecutable = toExecutable
+	env.prepared.previousCoreExecutable = fromExecutable
+
+	if err := manager.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v; events=%#v", err, env.events.snapshot())
+	}
+
+	status := manager.Status()
+	if status.Phase != PhaseRolledBack || status.CoreVersion != "v1" {
+		t.Fatalf("status = %+v, want phase=%q version=%q", status, PhaseRolledBack, "v1")
+	}
+	if got := env.runner.Executable(); got != fromExecutable {
+		t.Fatalf("runner.Executable() = %q, want %q", got, fromExecutable)
+	}
+
+	events := env.events.snapshot()
+	fromIndex := indexOfEvent(events, "core.set_executable."+fromExecutable)
+	restartIndex := indexOfEvent(events, "core.start.v1")
+	if fromIndex == -1 || restartIndex == -1 {
+		t.Fatalf("expected both SetExecutable(from) and core.start.v1, got %#v", events)
+	}
+	if fromIndex > restartIndex {
+		t.Fatalf("SetExecutable(from) happened after the old Core was restarted: events=%#v", events)
+	}
+}
+
+// TestRecoveryCommittedEnsuresCurrentFlipped covers the defensive branch of
+// recoverCommittedUpdate: descriptor/journal say the update already reached
+// PhaseCommitted (to=v2), but current on disk somehow still points at
+// from=v1. The real preparedMacOSUpdate.Activate() always flips current
+// before a live update can land in PhaseCommitted, and Activate() is
+// forbidden during crash recovery (recoveredMacOSUpdate.Activate always
+// errors) — so this state should be unreachable via the real code paths.
+// Recovery must nonetheless flip current forward idempotently as
+// defense-in-depth, and must set the runner's executable to the to-version
+// path.
+func TestRecoveryCommittedEnsuresCurrentFlipped(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	runtimeRoot := t.TempDir()
+	seedRuntimeCurrent(t, runtimeRoot, "v1", []byte("cli-1"))
+	installRuntimeVersion(t, runtimeRoot, "v2", []byte("cli-2"))
+	if info, _, err := runtimedir.Current(runtimeRoot); err != nil {
+		t.Fatalf("seed runtime current: %v", err)
+	} else if info.Version != "v1" {
+		t.Fatalf("fixture bug: seeded current = %q, want %q", info.Version, "v1")
+	}
+
+	manager := env.restartedManager(t, PhaseCommitted, "v2")
+	toExecutable := filepath.Join(runtimeRoot, "v2", "bx")
+	env.prepared.coreExecutable = toExecutable
+	env.prepared.runtimeSwitchRoot = runtimeRoot
+	env.prepared.runtimeSwitchVersion = "v2"
+	env.prepared.runtimeSwitchOK = true
+
+	if err := manager.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v; events=%#v", err, env.events.snapshot())
+	}
+
+	status := manager.Status()
+	if status.Phase != PhaseCommitted || status.CoreVersion != "v2" {
+		t.Fatalf("status = %+v, want phase=%q version=%q", status, PhaseCommitted, "v2")
+	}
+	if info, _, err := runtimedir.Current(runtimeRoot); err != nil {
+		t.Fatalf("runtime Current after recovery: %v", err)
+	} else if info.Version != "v2" {
+		t.Fatalf("runtime current after recovery = %q, want %q (committed recovery must flip current forward defensively)", info.Version, "v2")
+	}
+	if got := env.runner.Executable(); got != toExecutable {
+		t.Fatalf("runner.Executable() = %q, want %q", got, toExecutable)
+	}
+}
+
+// TestRecoveryLegacyDescriptorUntouchedByRuntimeLogic pins that a legacy
+// (pre-unified-runtime) descriptor — runtime fields all empty/zero-value —
+// takes the original recovery path unchanged: no SetExecutable call, no
+// SwitchCurrent attempt (runtimeCurrentTarget's ok=false is respected).
+func TestRecoveryLegacyDescriptorUntouchedByRuntimeLogic(t *testing.T) {
+	assertNoExecutableSwitch := func(t *testing.T, env *updateTestEnv) {
+		t.Helper()
+		events := env.events.snapshot()
+		for _, event := range events {
+			if strings.HasPrefix(event, "core.set_executable.") {
+				t.Fatalf("SetExecutable was called for a legacy prepared update: events=%#v", events)
+			}
+		}
+		if got := env.runner.Executable(); got != "" {
+			t.Fatalf("runner.Executable() = %q, want empty (unchanged)", got)
+		}
+	}
+
+	t.Run("rollback", func(t *testing.T) {
+		env := newUpdateTestEnv(t)
+		manager := env.restartedManager(t, PhaseActivating, "v2")
+		// env.prepared.previousCoreExecutable/coreExecutable left at zero
+		// value ("") — legacy prepared update, as in TestLegacyPreparedSkipsExecutableSwitch.
+
+		if err := manager.Recover(context.Background()); err != nil {
+			t.Fatalf("Recover: %v; events=%#v", err, env.events.snapshot())
+		}
+		assertNoExecutableSwitch(t, env)
+		if status := manager.Status(); status.Phase != PhaseRolledBack || status.CoreVersion != "v1" {
+			t.Fatalf("status = %+v, want phase=%q version=%q", status, PhaseRolledBack, "v1")
+		}
+	})
+
+	t.Run("committed", func(t *testing.T) {
+		env := newUpdateTestEnv(t)
+		manager := env.restartedManager(t, PhaseCommitted, "v2")
+		// env.prepared.coreExecutable/runtimeSwitch* left at zero value —
+		// legacy prepared update; runtimeCurrentTarget() returns ok=false.
+
+		if err := manager.Recover(context.Background()); err != nil {
+			t.Fatalf("Recover: %v; events=%#v", err, env.events.snapshot())
+		}
+		assertNoExecutableSwitch(t, env)
+		if status := manager.Status(); status.Phase != PhaseCommitted || status.CoreVersion != "v2" {
+			t.Fatalf("status = %+v, want phase=%q version=%q", status, PhaseCommitted, "v2")
+		}
+	})
+}
+
 func indexOfEvent(events []string, want string) int {
 	for index, event := range events {
 		if event == want {
@@ -1520,6 +1656,9 @@ type fakePreparedUpdate struct {
 	commitBlock            chan struct{}
 	coreExecutable         string
 	previousCoreExecutable string
+	runtimeSwitchRoot      string
+	runtimeSwitchVersion   string
+	runtimeSwitchOK        bool
 }
 
 func (p *fakePreparedUpdate) SnapshotPath() string { return p.snapshotPath }
@@ -1557,6 +1696,15 @@ func (p *fakePreparedUpdate) Commit() error {
 
 func (p *fakePreparedUpdate) CoreExecutable() string         { return p.coreExecutable }
 func (p *fakePreparedUpdate) PreviousCoreExecutable() string { return p.previousCoreExecutable }
+
+// runtimeCurrentTarget makes *fakePreparedUpdate satisfy the unexported
+// runtimeCurrentTargeter seam (structural typing — same as production's
+// *recoveredMacOSUpdate) so recovery tests can drive/observe
+// recoverCommittedUpdate's defensive SwitchCurrent without going through the
+// real macOS descriptor/package machinery.
+func (p *fakePreparedUpdate) runtimeCurrentTarget() (root, version string, ok bool) {
+	return p.runtimeSwitchRoot, p.runtimeSwitchVersion, p.runtimeSwitchOK
+}
 
 type fakeUpdatePreparer struct {
 	events           *eventLog
