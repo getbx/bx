@@ -80,6 +80,29 @@ func TestNewerAvailable(t *testing.T) {
 	}
 }
 
+func TestShouldBypassManifest(t *testing.T) {
+	cases := []struct {
+		name          string
+		unifiedLayout bool
+		packageFile   string
+		checkOnly     bool
+		want          bool
+	}{
+		{"unified + package-file → bypass", true, "/tmp/pkg.tar.gz", false, true},
+		{"legacy layout never bypasses even with package-file", false, "/tmp/pkg.tar.gz", false, false},
+		{"unified without package-file does not bypass", true, "", false, false},
+		{"--check always queries network even with package-file", true, "/tmp/pkg.tar.gz", true, false},
+		{"neither unified nor package-file", false, "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldBypassManifest(tc.unifiedLayout, tc.packageFile, tc.checkOnly); got != tc.want {
+				t.Fatalf("shouldBypassManifest(%v, %q, %v) = %v, want %v", tc.unifiedLayout, tc.packageFile, tc.checkOnly, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExpectedSum(t *testing.T) {
 	sums := "abc123  bx_linux_amd64.tar.gz\ndef456  bx_darwin_arm64.tar.gz\n"
 	if got := expectedSum(sums, "bx_linux_amd64.tar.gz"); got != "abc123" {
