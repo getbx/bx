@@ -900,6 +900,9 @@ func (p macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, p
 	if pkg.Release.Version != request.ToVersion {
 		return nil, fmt.Errorf("package release version %q does not match to_version %q", pkg.Release.Version, request.ToVersion)
 	}
+	if request.FromVersion == request.ToVersion {
+		return nil, fmt.Errorf("update to_version equals running from_version %q", request.FromVersion)
+	}
 	runtimeRoot := p.root()
 	currentInfo, _, err := runtimedir.Current(runtimeRoot)
 	if err != nil {
@@ -934,13 +937,16 @@ func (p macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, p
 	descriptor, err := buildUpdateRecoveryDescriptorTemplate(request, paths, appPath, requiredProtocol)
 	if err != nil {
 		_ = prepared.Commit()
+		// 已落盘的新版本目录未被任何 descriptor 引用、current 也未指向它——
+		// GC 只保留 from,把孤儿 to 目录清掉;失败不致命(下次 Prepare/GC 仍会重试)。
+		_ = runtimedir.GC(runtimeRoot, []string{request.FromVersion})
 		return nil, err
 	}
 	descriptor.RuntimeRoot = runtimeRoot
 	descriptor.FromRuntimeVersion = request.FromVersion
 	descriptor.ToRuntimeVersion = request.ToVersion
 	return &preparedMacOSUpdate{
-		PreparedInstall:  prepared,
+		inner:            prepared,
 		requiredProtocol: requiredProtocol,
 		paths:            paths,
 		descriptor:       descriptor,
@@ -980,13 +986,28 @@ func (macOSUpdatePreparer) RecoveryBarrierContext(_ context.Context, paths Paths
 	return cloneBarrierContext(found.BarrierContext), nil
 }
 
+// preparedInstallSteps is the seam preparedMacOSUpdate drives for the
+// bridge+App half of an update (snapshot/activate/restore/commit). Production
+// wires the real *updatepkg.PreparedInstall in (it already satisfies this
+// interface); tests inject a fake to exercise Activate/Restore/Commit
+// ordering against a real runtimedir root without touching the real,
+// non-test-overridable install.BinPath.
+type preparedInstallSteps interface {
+	SnapshotPath() string
+	Activate() error
+	Restore() error
+	Commit() error
+}
+
 type preparedMacOSUpdate struct {
-	*updatepkg.PreparedInstall
+	inner            preparedInstallSteps
 	requiredProtocol int
 	paths            Paths
 	descriptor       updateRecoveryDescriptor
 	barrierBound     bool
 }
+
+func (p *preparedMacOSUpdate) SnapshotPath() string { return p.inner.SnapshotPath() }
 
 func (p *preparedMacOSUpdate) RequiredGuardianProtocol() int { return p.requiredProtocol }
 
@@ -1008,7 +1029,7 @@ func (p *preparedMacOSUpdate) BindBarrierContext(barrierContext BarrierContext) 
 }
 
 func (p *preparedMacOSUpdate) Activate() error {
-	if err := p.PreparedInstall.Activate(); err != nil { // bridge + App 原子换
+	if err := p.inner.Activate(); err != nil { // bridge + App 原子换
 		return err
 	}
 	return runtimedir.SwitchCurrent(p.descriptor.RuntimeRoot, p.descriptor.ToRuntimeVersion)
@@ -1019,11 +1040,11 @@ func (p *preparedMacOSUpdate) Restore() error {
 	if err := runtimedir.SwitchCurrent(p.descriptor.RuntimeRoot, p.descriptor.FromRuntimeVersion); err != nil {
 		return err
 	}
-	return p.PreparedInstall.Restore()
+	return p.inner.Restore()
 }
 
 func (p *preparedMacOSUpdate) Commit() error {
-	if err := p.PreparedInstall.Commit(); err != nil {
+	if err := p.inner.Commit(); err != nil {
 		return err
 	}
 	// 只保留 from/to 两个版本,清 staging/discard 残留;失败不致命。

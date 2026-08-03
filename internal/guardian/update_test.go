@@ -2296,136 +2296,227 @@ func seedRuntimeCurrent(t *testing.T, root, version string, cli []byte) {
 	}
 }
 
-// requireRootForRealBinPath skips tests that exercise macOSUpdatePreparer.Prepare
-// end-to-end: Prepare stages/activates the bridge binary at the real, pinned
-// install.BinPath (not test-overridable — it is a deliberate security fixed
-// point), which is a root-owned system path on a normal macOS install and
-// must never be touched by an unprivileged test run.
-func requireRootForRealBinPath(t *testing.T) {
+// installRuntimeVersion installs (without flipping current to) a runtime
+// version directory under root — the state runtimedir.InstallVersion leaves
+// things in inside macOSUpdatePreparer.Prepare before any Activate.
+func installRuntimeVersion(t *testing.T, root, version string, cli []byte) {
 	t.Helper()
-	if os.Geteuid() != 0 {
-		t.Skip("需要 root:Prepare/Activate 操作真实系统路径 install.BinPath,非 root 环境跳过以免误碰真实安装")
+	sum := sha256.Sum256(cli)
+	info := release.Info{
+		SchemaVersion: 1, Version: version, Platform: runtime.GOOS + "/" + runtime.GOARCH,
+		Assets: map[string]string{"bx-cli": hex.EncodeToString(sum[:])},
+	}
+	if _, err := runtimedir.InstallVersion(root, runtimedir.Payload{CLI: cli, Info: info}); err != nil {
+		t.Fatalf("install runtime version %q: %v", version, err)
 	}
 }
 
-// productionMacOSUpdatePaths mirrors what NewManager wires guardian up with
-// in production (see productionUpdatePaths/guardianUpdateDirectory):
-// updatepkg.PrepareMacOSInstall's own validateInstallOptions pins
-// Staging/Snapshots to these exact directories (macOSStagingRoot/
-// macOSSnapshotRoot), so unlike runtimeRoot they cannot be redirected into
-// a t.TempDir for testing.
-func productionMacOSUpdatePaths(t *testing.T) Paths {
-	t.Helper()
-	paths := Paths{
-		Staging:   guardianUpdateDirectory + "/staging",
-		Snapshots: guardianUpdateDirectory + "/snapshots",
-	}
-	// In production the CLI update flow creates these before Guardian ever
-	// sees a transaction (it writes the downloaded package into Staging).
-	// Calling macOSUpdatePreparer.Prepare directly here skips that, so
-	// create them ourselves.
-	if err := os.MkdirAll(paths.Staging, 0o700); err != nil {
-		t.Fatalf("create production staging dir: %v", err)
-	}
-	if err := os.MkdirAll(paths.Snapshots, 0o700); err != nil {
-		t.Fatalf("create production snapshots dir: %v", err)
-	}
-	return paths
+// fakePreparedInstallSteps is a root-free stand-in for *updatepkg.PreparedInstall
+// satisfying the preparedInstallSteps seam, letting Activate/Restore/Commit
+// flip-ordering be exercised against a real runtimedir root in t.TempDir
+// without ever touching the real, non-test-overridable install.BinPath.
+type fakePreparedInstallSteps struct {
+	snapshotPath string
+	activateFn   func() error
+	restoreFn    func() error
+	commitFn     func() error
+
+	activateCalled bool
+	restoreCalled  bool
+	commitCalled   bool
 }
 
-func TestUnifiedPrepareInstallsVersionWithoutFlip(t *testing.T) {
-	requireRootForRealBinPath(t)
+func (f *fakePreparedInstallSteps) SnapshotPath() string { return f.snapshotPath }
 
+func (f *fakePreparedInstallSteps) Activate() error {
+	f.activateCalled = true
+	if f.activateFn != nil {
+		return f.activateFn()
+	}
+	return nil
+}
+
+func (f *fakePreparedInstallSteps) Restore() error {
+	f.restoreCalled = true
+	if f.restoreFn != nil {
+		return f.restoreFn()
+	}
+	return nil
+}
+
+func (f *fakePreparedInstallSteps) Commit() error {
+	f.commitCalled = true
+	if f.commitFn != nil {
+		return f.commitFn()
+	}
+	return nil
+}
+
+func TestUnifiedActivateOrder(t *testing.T) {
 	runtimeRoot := t.TempDir()
-	seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("old-runtime-cli"))
-	data, cli, bridge := buildUnifiedMacOSPackage(t, "2.0.0")
+	seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("cli-1"))
+	installRuntimeVersion(t, runtimeRoot, "2.0.0", []byte("cli-2"))
 
-	// updatepkg.PrepareMacOSInstall pins Staging/Snapshots to the real
-	// production directories (macOSStagingRoot/macOSSnapshotRoot); unlike
-	// runtimeRoot they are not test-injectable, so this test — gated to root
-	// above — necessarily touches the real system location.
-	transactionID := "tx-unified-noflip"
-	paths := productionMacOSUpdatePaths(t)
-	request := UpdateRequest{TransactionID: transactionID, FromVersion: "1.0.0", ToVersion: "2.0.0"}
-
-	preparer := macOSUpdatePreparer{runtimeRoot: runtimeRoot}
-	prepared, err := preparer.Prepare(context.Background(), request, data, paths)
-	if err != nil {
-		t.Fatalf("Prepare: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := prepared.Commit(); err != nil {
-			t.Errorf("cleanup Commit: %v", err)
+	var currentAtActivateTime string
+	fake := &fakePreparedInstallSteps{activateFn: func() error {
+		info, _, err := runtimedir.Current(runtimeRoot)
+		if err != nil {
+			t.Fatalf("read current inside fake Activate: %v", err)
 		}
-	})
-
-	requireDiskFileContents(t, filepath.Join(runtimeRoot, "2.0.0", "bx"), string(cli))
-
-	currentInfo, _, err := runtimedir.Current(runtimeRoot)
-	if err != nil {
-		t.Fatalf("runtime Current: %v", err)
-	}
-	if currentInfo.Version != "1.0.0" {
-		t.Fatalf("runtime current flipped early: got %q, want %q", currentInfo.Version, "1.0.0")
-	}
-
-	cliStage := filepath.Join(filepath.Dir(install.BinPath), ".bx-update-"+transactionID)
-	requireDiskFileContents(t, cliStage, string(bridge))
-}
-
-func TestUnifiedActivateFlipsAndRestoreUnflips(t *testing.T) {
-	requireRootForRealBinPath(t)
-
-	originalExists := true
-	originalBinPath, err := os.ReadFile(install.BinPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("read original BinPath: %v", err)
-		}
-		originalExists = false
-	}
-
-	runtimeRoot := t.TempDir()
-	seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("old-runtime-cli"))
-	data, _, bridge := buildUnifiedMacOSPackage(t, "2.0.0")
-
-	transactionID := "tx-unified-activate"
-	paths := productionMacOSUpdatePaths(t)
-	request := UpdateRequest{TransactionID: transactionID, FromVersion: "1.0.0", ToVersion: "2.0.0"}
-
-	preparer := macOSUpdatePreparer{runtimeRoot: runtimeRoot}
-	prepared, err := preparer.Prepare(context.Background(), request, data, paths)
-	if err != nil {
-		t.Fatalf("Prepare: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := prepared.Commit(); err != nil {
-			t.Errorf("cleanup Commit: %v", err)
-		}
-	})
+		currentAtActivateTime = info.Version
+		return nil
+	}}
+	prepared := &preparedMacOSUpdate{inner: fake, descriptor: updateRecoveryDescriptor{
+		RuntimeRoot: runtimeRoot, FromRuntimeVersion: "1.0.0", ToRuntimeVersion: "2.0.0",
+	}}
 
 	if err := prepared.Activate(); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
-	requireDiskFileContents(t, install.BinPath, string(bridge))
-	if currentInfo, _, err := runtimedir.Current(runtimeRoot); err != nil {
-		t.Fatalf("runtime Current after activate: %v", err)
-	} else if currentInfo.Version != "2.0.0" {
-		t.Fatalf("current after activate = %q, want %q", currentInfo.Version, "2.0.0")
+	if !fake.activateCalled {
+		t.Fatal("inner.Activate was never called")
 	}
+	if currentAtActivateTime != "1.0.0" {
+		t.Fatalf("inner.Activate observed current=%q, want pre-flip %q (inner must run BEFORE the current flip)", currentAtActivateTime, "1.0.0")
+	}
+	if info, _, err := runtimedir.Current(runtimeRoot); err != nil {
+		t.Fatalf("runtime Current after Activate: %v", err)
+	} else if info.Version != "2.0.0" {
+		t.Fatalf("current after Activate = %q, want %q", info.Version, "2.0.0")
+	}
+}
+
+func TestUnifiedRestoreOrder(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("cli-1"))
+	installRuntimeVersion(t, runtimeRoot, "2.0.0", []byte("cli-2"))
+	if err := runtimedir.SwitchCurrent(runtimeRoot, "2.0.0"); err != nil {
+		t.Fatalf("seed post-activate current=2.0.0: %v", err)
+	}
+
+	var currentAtRestoreTime string
+	fake := &fakePreparedInstallSteps{restoreFn: func() error {
+		info, _, err := runtimedir.Current(runtimeRoot)
+		if err != nil {
+			t.Fatalf("read current inside fake Restore: %v", err)
+		}
+		currentAtRestoreTime = info.Version
+		return nil
+	}}
+	prepared := &preparedMacOSUpdate{inner: fake, descriptor: updateRecoveryDescriptor{
+		RuntimeRoot: runtimeRoot, FromRuntimeVersion: "1.0.0", ToRuntimeVersion: "2.0.0",
+	}}
 
 	if err := prepared.Restore(); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-	if originalExists {
-		requireDiskFileContents(t, install.BinPath, string(originalBinPath))
-	} else if _, err := os.Lstat(install.BinPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("BinPath still present after restoring a previously-absent CLI: err=%v", err)
+	if !fake.restoreCalled {
+		t.Fatal("inner.Restore was never called")
 	}
-	if currentInfo, _, err := runtimedir.Current(runtimeRoot); err != nil {
-		t.Fatalf("runtime Current after restore: %v", err)
-	} else if currentInfo.Version != "1.0.0" {
-		t.Fatalf("current after restore = %q, want %q", currentInfo.Version, "1.0.0")
+	if currentAtRestoreTime != "1.0.0" {
+		t.Fatalf("inner.Restore observed current=%q, want post-flip %q (current must flip back BEFORE inner.Restore runs)", currentAtRestoreTime, "1.0.0")
+	}
+}
+
+func TestUnifiedActivateInnerFailureNoFlip(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("cli-1"))
+	installRuntimeVersion(t, runtimeRoot, "2.0.0", []byte("cli-2"))
+
+	wantErr := errors.New("bridge/app activate boom")
+	fake := &fakePreparedInstallSteps{activateFn: func() error { return wantErr }}
+	prepared := &preparedMacOSUpdate{inner: fake, descriptor: updateRecoveryDescriptor{
+		RuntimeRoot: runtimeRoot, FromRuntimeVersion: "1.0.0", ToRuntimeVersion: "2.0.0",
+	}}
+
+	if err := prepared.Activate(); !errors.Is(err, wantErr) {
+		t.Fatalf("Activate() error = %v, want %v", err, wantErr)
+	}
+	if info, _, err := runtimedir.Current(runtimeRoot); err != nil {
+		t.Fatalf("runtime Current after failed Activate: %v", err)
+	} else if info.Version != "1.0.0" {
+		t.Fatalf("current changed after failed inner.Activate: got %q, want unchanged %q", info.Version, "1.0.0")
+	}
+}
+
+func TestUnifiedCommitRunsGC(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("cli-1"))
+	installRuntimeVersion(t, runtimeRoot, "2.0.0", []byte("cli-2"))
+	installRuntimeVersion(t, runtimeRoot, "0.9.0", []byte("cli-stale"))
+	if err := runtimedir.SwitchCurrent(runtimeRoot, "2.0.0"); err != nil {
+		t.Fatalf("seed post-activate current=2.0.0: %v", err)
+	}
+
+	fake := &fakePreparedInstallSteps{}
+	prepared := &preparedMacOSUpdate{inner: fake, descriptor: updateRecoveryDescriptor{
+		RuntimeRoot: runtimeRoot, FromRuntimeVersion: "1.0.0", ToRuntimeVersion: "2.0.0",
+	}}
+
+	if err := prepared.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if !fake.commitCalled {
+		t.Fatal("inner.Commit was never called")
+	}
+	if _, err := os.Stat(filepath.Join(runtimeRoot, "0.9.0")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale version 0.9.0 survived Commit's GC: err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runtimeRoot, "1.0.0")); err != nil {
+		t.Fatalf("kept from-version 1.0.0 was removed by Commit's GC: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runtimeRoot, "2.0.0")); err != nil {
+		t.Fatalf("kept to-version 2.0.0 was removed by Commit's GC: %v", err)
+	}
+}
+
+// TestUnifiedPrepareRejectsSameVersion is the regression test for the
+// from_version == to_version guard: without it, InstallVersion rename-swaps
+// the LIVE version directory in place (discarding the old one, no barrier,
+// no Restore path) — the exact "Prepare 不影响旧 Core" invariant Prepare must
+// uphold. The rejection must happen before any I/O against the runtime root.
+func TestUnifiedPrepareRejectsSameVersion(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("cli-1"))
+	data, newCLI, _ := buildUnifiedMacOSPackage(t, "1.0.0")
+
+	root := t.TempDir()
+	paths := Paths{Staging: filepath.Join(root, "staging"), Snapshots: filepath.Join(root, "snapshots")}
+	request := UpdateRequest{TransactionID: "tx-same-version", FromVersion: "1.0.0", ToVersion: "1.0.0"}
+
+	preparer := macOSUpdatePreparer{runtimeRoot: runtimeRoot}
+	if _, err := preparer.Prepare(context.Background(), request, data, paths); err == nil {
+		t.Fatal("from_version == to_version was accepted")
+	}
+
+	// The invariant this guards: without it, Prepare would reach
+	// runtimedir.InstallVersion(runtimeRoot, ...) for a version equal to
+	// current — which rename-swaps the LIVE version directory's contents in
+	// place (deleting the old backup, no barrier, no Restore path) even
+	// though Prepare goes on to fail later (here, at PrepareMacOSInstall's
+	// validateInstallOptions, since this test's Staging/Snapshots aren't the
+	// pinned production paths). So the real check isn't "did Prepare error"
+	// but "did the version directory's content ever change": if the bug
+	// regresses, <root>/1.0.0/bx would hold newCLI's bytes instead of the
+	// original seed.
+	requireDiskFileContents(t, filepath.Join(runtimeRoot, "1.0.0", "bx"), "cli-1")
+	if string(newCLI) == "cli-1" {
+		t.Fatal("test fixture bug: new package CLI bytes collide with the original seed, assertion above would be vacuous")
+	}
+
+	entries, err := os.ReadDir(runtimeRoot)
+	if err != nil {
+		t.Fatalf("read runtime root: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".staging-") || strings.HasPrefix(entry.Name(), ".discard-") {
+			t.Fatalf("Prepare left runtime-root staging/discard residue: found %s", entry.Name())
+		}
+	}
+	if info, _, err := runtimedir.Current(runtimeRoot); err != nil {
+		t.Fatalf("runtime Current: %v", err)
+	} else if info.Version != "1.0.0" {
+		t.Fatalf("runtime current changed by a rejected same-version Prepare: got %q, want unchanged %q", info.Version, "1.0.0")
 	}
 }
 
