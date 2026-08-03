@@ -15,6 +15,7 @@ struct BxReport: Decodable {
     let protectionState: String?
     let networkGeneration: String?
     let recovery: RecoverySnapshot?
+    let phase: String?
 
     enum CodingKeys: String, CodingKey {
         case tunnelHealthy = "tunnel_healthy"
@@ -23,7 +24,7 @@ struct BxReport: Decodable {
         case udpNote = "udp_note"
         case protectionState = "protection_state"
         case networkGeneration = "network_generation"
-        case restarts, active, proxy, direct, blocked, recovery
+        case restarts, active, proxy, direct, blocked, recovery, phase
     }
 }
 
@@ -155,6 +156,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         let data = Data(status.stdout.utf8)
         guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
             return .warning("Status unreadable", version: version)
+        }
+        if let banner = updatingBanner(phase: report.phase) {
+            recoverySnapshot = nil
+            return .warning(banner, version: version)
         }
         if report.protectionState == "needs_attention" {
             recoverySnapshot = nil
@@ -324,7 +329,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addInfo("Status", "Not running")
         }
         menu.addItem(.separator())
-        if let title = menuUpdateActionTitle(check: updateCheck, runtimeInstalled: unifiedRuntimeVersion() != nil) {
+        if let title = menuUpdateActionTitle(check: updateCheck) {
             menu.addAction(title, symbol: "arrow.down.circle", target: self, action: #selector(updateBx))
             menu.addItem(.separator())
         }
@@ -654,17 +659,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func updateBx() {
-        guard menuUpdateActionTitle(check: updateCheck, runtimeInstalled: unifiedRuntimeVersion() != nil) != nil,
-              let check = updateCheck else { return }
+        guard menuUpdateActionTitle(check: updateCheck) != nil else { return }
         let alert = NSAlert()
-        alert.messageText = "Update bx?"
-        alert.informativeText = "bx will verify and install \(check.latest). Protection stays on; only the menu bar app restarts."
+        alert.messageText = updateConfirmTitle
+        alert.informativeText = updateConfirmMessage
         alert.addButton(withTitle: "Update")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Not Now")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let appPath = Bundle.main.bundleURL.path
-        let owner = "\(getuid()):\(getgid())"
         let logDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/bx")
         let logPath = logDir.appendingPathComponent("menu-update.log").path
@@ -677,9 +679,22 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             showFailure("Update Failed", "bx could not prepare its update log.")
             return
         }
-        let command = "'\(bxPath)' update --package --app-path \(shellSingleQuoted(appPath)) --app-owner \(shellSingleQuoted(owner)) > \(shellSingleQuoted(logPath)) 2>&1"
-        if !runPrivileged(command) {
-            showFailure("Update Failed", "bx could not install the verified update.")
+        let command = "'\(bxPath)' update --json > \(shellSingleQuoted(logPath)) 2>&1"
+        _ = runPrivileged(command)
+        // bx exits non-zero on rollback but still prints valid JSON; always inspect the log.
+        guard let logData = FileManager.default.contents(atPath: logPath) else {
+            showFailure("Update Failed", "bx could not complete the update. Run Doctor for details.")
+            return
+        }
+        switch parseUpdateOutcome(logData) {
+        case .succeeded:
+            showMessage("Update Complete", updateSucceededMessage)
+            refresh()
+            refreshUpdateCheck()
+        case .rolledBack:
+            showMessage("Update Rolled Back", updateRolledBackMessage)
+        case .failed:
+            showFailure("Update Failed", "bx could not complete the update. Run Doctor for details.")
         }
     }
 
