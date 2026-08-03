@@ -1833,7 +1833,7 @@ func capabilities() capabilitiesReport {
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--check", "--force"},
 				Examples:       []string{"sudo bx update", "bx update --check"},
-				SafeNotes:      []string{"Downloads a SHA256-checked release and atomically replaces the CLI binary.", "Does not restart the running protection service or release TUN, routes, or DNS.", "The replacement binary is used the next time protection starts."},
+				SafeNotes:      []string{"Downloads a SHA256-checked release and atomically replaces the CLI binary.", "Does not restart the running protection service or release TUN, routes, or DNS.", "The replacement binary is used the next time protection starts.", "On a protected macOS unified install, this runs as a fail-closed Guardian update transaction: network access may pause briefly, it never falls back to a direct (unprotected) connection, and a failed health check automatically rolls back to the previous version while protection stays on.", "Agents should call this command directly; do not simulate an update by combining down and up."},
 			},
 			{
 				Command:        "sudo bx direct add <domain>",

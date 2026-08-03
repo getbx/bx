@@ -1752,6 +1752,13 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(update.SafeNotes, " "), "Does not restart") {
 		t.Fatalf("update should document preserved protection: %+v", update)
 	}
+	updateNotes := strings.Join(update.SafeNotes, " ")
+	if !strings.Contains(updateNotes, "fail-closed") || !strings.Contains(updateNotes, "rolls back") {
+		t.Fatalf("update should document fail-closed Guardian transaction semantics: %+v", update)
+	}
+	if !strings.Contains(updateNotes, "do not simulate an update by combining down and up") {
+		t.Fatalf("update should tell agents not to simulate updates with down/up: %+v", update)
+	}
 	direct := findCapability(rep.Commands, "sudo bx direct add <domain>")
 	if !direct.Stable || !direct.RequiresRoot || !direct.ChangesSystem || direct.ChangesNetwork || !direct.ReadsSecrets {
 		t.Fatalf("unexpected direct add capability: %+v", direct)
