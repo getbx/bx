@@ -324,7 +324,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addInfo("Status", "Not running")
         }
         menu.addItem(.separator())
-        if let title = updateActionTitle(for: updateCheck) {
+        if let title = menuUpdateActionTitle(check: updateCheck, runtimeInstalled: unifiedRuntimeVersion() != nil) {
             menu.addAction(title, symbol: "arrow.down.circle", target: self, action: #selector(updateBx))
             menu.addItem(.separator())
         }
@@ -654,7 +654,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func updateBx() {
-        guard let check = updateCheck, check.available, check.verified else { return }
+        guard menuUpdateActionTitle(check: updateCheck, runtimeInstalled: unifiedRuntimeVersion() != nil) != nil,
+              let check = updateCheck else { return }
         let alert = NSAlert()
         alert.messageText = "Update bx?"
         alert.informativeText = "bx will verify and install \(check.latest). Protection stays on; only the menu bar app restarts."

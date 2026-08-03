@@ -19,6 +19,16 @@ struct InstallPresentationTests {
 
         expect(turnOffActionTitle == "Turn Off bx", "turn off title pinned")
 
+        let verifiedAvailable = UpdateCheck(current: "1.0.0", latest: "1.1.0", available: true, verified: true)
+        expect(menuUpdateActionTitle(check: verifiedAvailable, runtimeInstalled: true) == nil,
+               "unified layout hides update action even when available")
+        expect(menuUpdateActionTitle(check: verifiedAvailable, runtimeInstalled: false) == "Update bx…",
+               "legacy layout still offers update action")
+        expect(menuUpdateActionTitle(check: nil, runtimeInstalled: true) == nil,
+               "no check yields no update action under unified layout")
+        expect(menuUpdateActionTitle(check: nil, runtimeInstalled: false) == nil,
+               "no check yields no update action under legacy layout")
+
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("bx-install-presentation-\(getpid())")
         let current = dir.appendingPathComponent("current")
