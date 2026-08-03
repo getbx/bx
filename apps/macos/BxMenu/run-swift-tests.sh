@@ -37,6 +37,9 @@ run_test guardian-client \
 run_test instance-gate \
   "$MENU/Sources/BxMenu/InstanceGate.swift" \
   "$MENU/Tests/InstanceGateTests.swift"
+run_test install-presentation \
+  "$MENU/Sources/BxMenu/InstallPresentation.swift" \
+  "$MENU/Tests/InstallPresentationTests.swift"
 
 touch "$MARKER"
 echo "BxMenu Swift tests passed"

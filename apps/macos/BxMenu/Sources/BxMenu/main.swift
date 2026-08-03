@@ -50,6 +50,7 @@ enum BxState {
     case updateNeeded(String, version: String?)
     case setupNeeded(String)
     case missing(String)
+    case notInstalled(bundleVersion: String?)
     case off
 }
 
@@ -135,6 +136,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     private func loadState() -> BxState {
+        let runtimeInstalled = unifiedRuntimeVersion() != nil
+        let cliUsable = FileManager.default.isExecutableFile(atPath: bxPath) && runBx(["--version"]).code == 0
+        if installActionTitle(runtimeInstalled: runtimeInstalled, cliUsable: cliUsable) != nil {
+            return .notInstalled(bundleVersion: bundleReleaseVersion())
+        }
         guard FileManager.default.isExecutableFile(atPath: bxPath) else {
             return .missing("Install bx at /usr/local/bin/bx")
         }
@@ -189,6 +195,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return .setupNeeded
         case .missing:
             return .missing
+        case .notInstalled:
+            return .missing
         case .off:
             return .off
         }
@@ -239,6 +247,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .setupNeeded:
             return "bx: Setup Required"
         case .missing:
+            return "bx: Not Installed"
+        case .notInstalled:
             return "bx: Not Installed"
         case .off:
             return "bx: Off"
@@ -304,6 +314,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .missing(let message):
             menu.addHeader("bx", subtitle: "Not Installed")
             menu.addInfo("Status", message)
+        case .notInstalled(let bundleVersion):
+            menu.addHeader("bx", subtitle: "Not Installed")
+            if let bundleVersion {
+                menu.addInfo("Version", bundleVersion)
+            }
         case .off:
             menu.addHeader("bx", subtitle: "Off")
             menu.addInfo("Status", "Not running")
@@ -317,7 +332,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .setupNeeded:
             menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
             menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
-        case .missing, .updateNeeded:
+        case .missing, .updateNeeded, .notInstalled:
             menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
         case .off:
             menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
@@ -331,9 +346,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         switch state {
         case .connected:
             menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
             menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         case .warning:
             menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
             menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         case .off:
             menu.addAction("Start Protection", symbol: "play.fill", target: self, action: #selector(startBx))
@@ -343,6 +360,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addAction("Set Up bx...", symbol: "link", target: self, action: #selector(setUpBx))
         case .missing:
             menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
+        case .notInstalled:
+            menu.addAction("Install bx…", symbol: "arrow.down.circle", target: self, action: #selector(installBx))
         }
         menu.addItem(.separator())
         menu.addAction(quitMenuActionTitle, symbol: "xmark.circle", target: self, action: #selector(quit))
@@ -390,6 +409,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return StatusSnapshot(title: "Setup Required", rows: [StatusRow(label: "Status", value: message)])
         case .missing(let message):
             return StatusSnapshot(title: "Not Installed", rows: [StatusRow(label: "Status", value: message)])
+        case .notInstalled(let bundleVersion):
+            var rows: [StatusRow] = []
+            if let bundleVersion {
+                rows.append(StatusRow(label: "Version", value: bundleVersion))
+            }
+            return StatusSnapshot(title: "Not Installed", rows: rows)
         case .off:
             return .off()
         }
@@ -434,6 +459,32 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             }
         }
         refresh()
+    }
+
+    @objc private func installBx() {
+        let alert = NSAlert()
+        alert.messageText = "Install bx?"
+        alert.informativeText = "bx will install its command line tool and background protection service. macOS will ask for administrator authorization. Protection is not started until you set up and turn it on."
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let bundlePath = Bundle.main.bundleURL.path
+        let installer = bundlePath + "/Contents/Resources/bx-cli"
+        guard FileManager.default.isExecutableFile(atPath: installer) else {
+            showFailure("Install Failed", "This copy of Bx.app has no embedded installer. Download the full bx-macos package.")
+            return
+        }
+        let command = "\(shellSingleQuoted(installer)) app-install --app-source \(shellSingleQuoted(bundlePath))"
+        if runPrivileged(command) {
+            if bundlePath != "/Applications/Bx.app" {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Bx.app"))
+                NSApp.terminate(nil)
+            } else {
+                refresh()
+            }
+        } else {
+            showFailure("Install Failed", "bx could not complete the installation.")
+        }
     }
 
     @objc private func openInstallGuide() {
@@ -647,6 +698,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func turnOffBx() {
+        let alert = NSAlert()
+        alert.messageText = "Turn off bx?"
+        alert.informativeText = "bx will stop protecting system traffic and restore managed DNS settings. The menu stays open."
+        alert.addButton(withTitle: "Turn Off")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if !runPrivileged("'\(bxPath)' down") {
+            showFailure("Turn Off Failed", "bx did not stop.")
+        }
+        refresh()
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -757,6 +821,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         let result = runBx(["--version"])
         guard result.code == 0 else { return nil }
         return result.stdout.replacingOccurrences(of: "bx version ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func bundleReleaseVersion() -> String? {
+        guard let url = Bundle.main.url(forResource: "release", withExtension: "json") else { return nil }
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return decodeRuntimeVersion(data)
     }
 
     private func cliSupportsDiagnosticsArchive() -> Bool {
