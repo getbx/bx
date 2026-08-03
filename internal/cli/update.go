@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -185,7 +186,20 @@ func verifiedReleaseManifest(client *http.Client, tag string) (updatepkg.Manifes
 	return manifest, nil
 }
 
+// unifiedUpdateGuard 拦截统一布局(Bx.app)下的就地 bx update:旧的整二进制替换会
+// 覆盖 CLI bridge、绕过 Guardian 事务,统一在线更新留待下一阶段实现前先明确拒绝并指引。
+// --check 只读、不落盘,始终放行。
+func unifiedUpdateGuard(unifiedLayout, checkOnly bool) error {
+	if !unifiedLayout || checkOnly {
+		return nil
+	}
+	return errors.New("统一安装(Bx.app)模式暂不支持 bx update 就地更新:请下载新版 bx-macos 包,打开新版 Bx.app(或运行其 install.sh)完成整体升级;经 Guardian 的统一在线更新将在下一阶段提供")
+}
+
 func updateAction(c *cli.Context) error {
+	if err := unifiedUpdateGuard(unifiedLayoutActive(), c.Bool("check")); err != nil {
+		return err
+	}
 	client := &http.Client{Timeout: 90 * time.Second}
 	cur := version.Version
 
