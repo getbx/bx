@@ -203,6 +203,15 @@ func updateAction(c *cli.Context) error {
 	client := &http.Client{Timeout: 90 * time.Second}
 	cur := version.Version
 
+	// 损坏的统一布局(runtime/current 产物在但健康检查不过)必须在任何网络 I/O
+	// 之前拦下——离线/网络受限的机器(典型正是靠 --package-file 免网更新的那批)
+	// 不该先陪 latestReleaseTag+verifiedReleaseManifest 跑一轮网络错误,才看到
+	// 修复提示。--check 只是"看看有没有新版"、不安装任何东西,继续放行让它照常
+	// 查网络报告可用版本。
+	if !c.Bool("check") && unifiedLayoutDegraded() {
+		return errors.New(unifiedRepairHint)
+	}
+
 	// --package-file 在统一布局下应完全离线:本地包已是完整的、待校验的 macOS 包,
 	// 无需(也不该)先打个查最新 tag + 下 manifest 的网络往返去凑一个用不上的
 	// manifest/latest。updateUnifiedMacOS 在 localPackage != "" 时本就不碰这两个
@@ -244,9 +253,6 @@ func updateAction(c *cli.Context) error {
 
 	if unifiedLayoutActive() {
 		return updateUnifiedMacOS(c, client, manifest, latest)
-	}
-	if unifiedLayoutDegraded() {
-		return errors.New(unifiedRepairHint)
 	}
 	if c.Bool("package") {
 		return fmt.Errorf("--package 已废弃:legacy 布局请用完整包重装(install.sh)")
