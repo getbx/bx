@@ -13,12 +13,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/release"
+	"github.com/getbx/bx/internal/runtimedir"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
@@ -1420,16 +1424,18 @@ func (s *updateTestStore) ClearTransaction() error {
 }
 
 type fakePreparedUpdate struct {
-	events              *eventLog
-	snapshotPath        string
-	requiredProtocol    int
-	activateErr         error
-	restoreErr          error
-	commitErr           error
-	boundBarrierContext BarrierContext
-	bindErr             error
-	commitEntered       chan struct{}
-	commitBlock         chan struct{}
+	events                 *eventLog
+	snapshotPath           string
+	requiredProtocol       int
+	activateErr            error
+	restoreErr             error
+	commitErr              error
+	boundBarrierContext    BarrierContext
+	bindErr                error
+	commitEntered          chan struct{}
+	commitBlock            chan struct{}
+	coreExecutable         string
+	previousCoreExecutable string
 }
 
 func (p *fakePreparedUpdate) SnapshotPath() string { return p.snapshotPath }
@@ -1464,6 +1470,9 @@ func (p *fakePreparedUpdate) Commit() error {
 	}
 	return p.commitErr
 }
+
+func (p *fakePreparedUpdate) CoreExecutable() string         { return p.coreExecutable }
+func (p *fakePreparedUpdate) PreviousCoreExecutable() string { return p.previousCoreExecutable }
 
 type fakeUpdatePreparer struct {
 	events           *eventLog
@@ -2220,4 +2229,344 @@ func guardianProtocolTestPackage(t *testing.T, arch string, metadata []byte) []b
 		t.Fatal(err)
 	}
 	return compressed.Bytes()
+}
+
+// buildUnifiedMacOSPackage builds a valid v2 macOS update package (gzip+tar,
+// root bx-macos-<GOARCH>/Bx.app/...) carrying the given release version, and
+// returns the archive bytes plus the raw CLI/bridge payload bytes it embeds.
+func buildUnifiedMacOSPackage(t *testing.T, version string) (data, cli, bridge []byte) {
+	t.Helper()
+	arch := runtime.GOARCH
+	cli = []byte("unified-cli-" + version)
+	bridge = []byte("unified-bridge-" + version)
+	cliSum := sha256.Sum256(cli)
+	bridgeSum := sha256.Sum256(bridge)
+	releaseJSON := fmt.Sprintf(
+		`{"schema_version":1,"version":%q,"platform":%q,"assets":{"bx-cli":"%x","bx-bridge":"%x"}}`,
+		version, runtime.GOOS+"/"+arch, cliSum, bridgeSum,
+	)
+	files := map[string][]byte{
+		"bx-macos-" + arch + "/Bx.app/Contents/MacOS/BxMenu":           []byte("menu"),
+		"bx-macos-" + arch + "/Bx.app/Contents/Info.plist":             []byte("<plist/>"),
+		"bx-macos-" + arch + "/Bx.app/Contents/Resources/bx-cli":       cli,
+		"bx-macos-" + arch + "/Bx.app/Contents/Resources/bx-bridge":    bridge,
+		"bx-macos-" + arch + "/Bx.app/Contents/Resources/release.json": []byte(releaseJSON),
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out bytes.Buffer
+	gz := gzip.NewWriter(&out)
+	tarWriter := tar.NewWriter(gz)
+	for _, name := range names {
+		content := files[name]
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o755, Size: int64(len(content))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes(), cli, bridge
+}
+
+// seedRuntimeCurrent installs a runtime version directory under root and
+// flips current to point at it, mirroring the state runtimedir would be in
+// before an update is prepared against it.
+func seedRuntimeCurrent(t *testing.T, root, version string, cli []byte) {
+	t.Helper()
+	sum := sha256.Sum256(cli)
+	info := release.Info{
+		SchemaVersion: 1, Version: version, Platform: runtime.GOOS + "/" + runtime.GOARCH,
+		Assets: map[string]string{"bx-cli": hex.EncodeToString(sum[:])},
+	}
+	if _, err := runtimedir.InstallVersion(root, runtimedir.Payload{CLI: cli, Info: info}); err != nil {
+		t.Fatalf("seed runtime version %q: %v", version, err)
+	}
+	if err := runtimedir.SwitchCurrent(root, version); err != nil {
+		t.Fatalf("seed runtime current %q: %v", version, err)
+	}
+}
+
+// requireRootForRealBinPath skips tests that exercise macOSUpdatePreparer.Prepare
+// end-to-end: Prepare stages/activates the bridge binary at the real, pinned
+// install.BinPath (not test-overridable — it is a deliberate security fixed
+// point), which is a root-owned system path on a normal macOS install and
+// must never be touched by an unprivileged test run.
+func requireRootForRealBinPath(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip("需要 root:Prepare/Activate 操作真实系统路径 install.BinPath,非 root 环境跳过以免误碰真实安装")
+	}
+}
+
+// productionMacOSUpdatePaths mirrors what NewManager wires guardian up with
+// in production (see productionUpdatePaths/guardianUpdateDirectory):
+// updatepkg.PrepareMacOSInstall's own validateInstallOptions pins
+// Staging/Snapshots to these exact directories (macOSStagingRoot/
+// macOSSnapshotRoot), so unlike runtimeRoot they cannot be redirected into
+// a t.TempDir for testing.
+func productionMacOSUpdatePaths(t *testing.T) Paths {
+	t.Helper()
+	paths := Paths{
+		Staging:   guardianUpdateDirectory + "/staging",
+		Snapshots: guardianUpdateDirectory + "/snapshots",
+	}
+	// In production the CLI update flow creates these before Guardian ever
+	// sees a transaction (it writes the downloaded package into Staging).
+	// Calling macOSUpdatePreparer.Prepare directly here skips that, so
+	// create them ourselves.
+	if err := os.MkdirAll(paths.Staging, 0o700); err != nil {
+		t.Fatalf("create production staging dir: %v", err)
+	}
+	if err := os.MkdirAll(paths.Snapshots, 0o700); err != nil {
+		t.Fatalf("create production snapshots dir: %v", err)
+	}
+	return paths
+}
+
+func TestUnifiedPrepareInstallsVersionWithoutFlip(t *testing.T) {
+	requireRootForRealBinPath(t)
+
+	runtimeRoot := t.TempDir()
+	seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("old-runtime-cli"))
+	data, cli, bridge := buildUnifiedMacOSPackage(t, "2.0.0")
+
+	// updatepkg.PrepareMacOSInstall pins Staging/Snapshots to the real
+	// production directories (macOSStagingRoot/macOSSnapshotRoot); unlike
+	// runtimeRoot they are not test-injectable, so this test — gated to root
+	// above — necessarily touches the real system location.
+	transactionID := "tx-unified-noflip"
+	paths := productionMacOSUpdatePaths(t)
+	request := UpdateRequest{TransactionID: transactionID, FromVersion: "1.0.0", ToVersion: "2.0.0"}
+
+	preparer := macOSUpdatePreparer{runtimeRoot: runtimeRoot}
+	prepared, err := preparer.Prepare(context.Background(), request, data, paths)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := prepared.Commit(); err != nil {
+			t.Errorf("cleanup Commit: %v", err)
+		}
+	})
+
+	requireDiskFileContents(t, filepath.Join(runtimeRoot, "2.0.0", "bx"), string(cli))
+
+	currentInfo, _, err := runtimedir.Current(runtimeRoot)
+	if err != nil {
+		t.Fatalf("runtime Current: %v", err)
+	}
+	if currentInfo.Version != "1.0.0" {
+		t.Fatalf("runtime current flipped early: got %q, want %q", currentInfo.Version, "1.0.0")
+	}
+
+	cliStage := filepath.Join(filepath.Dir(install.BinPath), ".bx-update-"+transactionID)
+	requireDiskFileContents(t, cliStage, string(bridge))
+}
+
+func TestUnifiedActivateFlipsAndRestoreUnflips(t *testing.T) {
+	requireRootForRealBinPath(t)
+
+	originalExists := true
+	originalBinPath, err := os.ReadFile(install.BinPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read original BinPath: %v", err)
+		}
+		originalExists = false
+	}
+
+	runtimeRoot := t.TempDir()
+	seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("old-runtime-cli"))
+	data, _, bridge := buildUnifiedMacOSPackage(t, "2.0.0")
+
+	transactionID := "tx-unified-activate"
+	paths := productionMacOSUpdatePaths(t)
+	request := UpdateRequest{TransactionID: transactionID, FromVersion: "1.0.0", ToVersion: "2.0.0"}
+
+	preparer := macOSUpdatePreparer{runtimeRoot: runtimeRoot}
+	prepared, err := preparer.Prepare(context.Background(), request, data, paths)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := prepared.Commit(); err != nil {
+			t.Errorf("cleanup Commit: %v", err)
+		}
+	})
+
+	if err := prepared.Activate(); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	requireDiskFileContents(t, install.BinPath, string(bridge))
+	if currentInfo, _, err := runtimedir.Current(runtimeRoot); err != nil {
+		t.Fatalf("runtime Current after activate: %v", err)
+	} else if currentInfo.Version != "2.0.0" {
+		t.Fatalf("current after activate = %q, want %q", currentInfo.Version, "2.0.0")
+	}
+
+	if err := prepared.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if originalExists {
+		requireDiskFileContents(t, install.BinPath, string(originalBinPath))
+	} else if _, err := os.Lstat(install.BinPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("BinPath still present after restoring a previously-absent CLI: err=%v", err)
+	}
+	if currentInfo, _, err := runtimedir.Current(runtimeRoot); err != nil {
+		t.Fatalf("runtime Current after restore: %v", err)
+	} else if currentInfo.Version != "1.0.0" {
+		t.Fatalf("current after restore = %q, want %q", currentInfo.Version, "1.0.0")
+	}
+}
+
+func TestUnifiedPrepareRejectsVersionMismatch(t *testing.T) {
+	t.Run("package release version does not match to_version", func(t *testing.T) {
+		runtimeRoot := t.TempDir()
+		seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("old-runtime-cli"))
+		data, _, _ := buildUnifiedMacOSPackage(t, "9.9.9")
+
+		root := t.TempDir()
+		paths := Paths{Staging: filepath.Join(root, "staging"), Snapshots: filepath.Join(root, "snapshots")}
+		request := UpdateRequest{TransactionID: "tx-1", FromVersion: "1.0.0", ToVersion: "2.0.0"}
+
+		preparer := macOSUpdatePreparer{runtimeRoot: runtimeRoot}
+		if _, err := preparer.Prepare(context.Background(), request, data, paths); err == nil {
+			t.Fatal("package/to_version mismatch was accepted")
+		}
+	})
+
+	t.Run("runtime current does not match from_version", func(t *testing.T) {
+		runtimeRoot := t.TempDir()
+		seedRuntimeCurrent(t, runtimeRoot, "1.0.0", []byte("old-runtime-cli"))
+		data, _, _ := buildUnifiedMacOSPackage(t, "2.0.0")
+
+		root := t.TempDir()
+		paths := Paths{Staging: filepath.Join(root, "staging"), Snapshots: filepath.Join(root, "snapshots")}
+		request := UpdateRequest{TransactionID: "tx-1", FromVersion: "9.9.9", ToVersion: "2.0.0"}
+
+		preparer := macOSUpdatePreparer{runtimeRoot: runtimeRoot}
+		if _, err := preparer.Prepare(context.Background(), request, data, paths); err == nil {
+			t.Fatal("runtime current/from_version mismatch was accepted")
+		}
+	})
+
+	t.Run("runtime not installed at all", func(t *testing.T) {
+		runtimeRoot := t.TempDir()
+		data, _, _ := buildUnifiedMacOSPackage(t, "2.0.0")
+
+		root := t.TempDir()
+		paths := Paths{Staging: filepath.Join(root, "staging"), Snapshots: filepath.Join(root, "snapshots")}
+		request := UpdateRequest{TransactionID: "tx-1", FromVersion: "1.0.0", ToVersion: "2.0.0"}
+
+		preparer := macOSUpdatePreparer{runtimeRoot: runtimeRoot}
+		if _, err := preparer.Prepare(context.Background(), request, data, paths); err == nil {
+			t.Fatal("prepare against an uninstalled runtime root was accepted")
+		}
+	})
+}
+
+func TestUnifiedCoreExecutablePaths(t *testing.T) {
+	prepared := &preparedMacOSUpdate{descriptor: updateRecoveryDescriptor{
+		RuntimeRoot: "/tmp/bx-runtime-root", FromRuntimeVersion: "1.0.0", ToRuntimeVersion: "2.0.0",
+	}}
+	if got, want := prepared.CoreExecutable(), filepath.Join("/tmp/bx-runtime-root", "2.0.0", "bx"); got != want {
+		t.Fatalf("preparedMacOSUpdate.CoreExecutable() = %q, want %q", got, want)
+	}
+	if got, want := prepared.PreviousCoreExecutable(), filepath.Join("/tmp/bx-runtime-root", "1.0.0", "bx"); got != want {
+		t.Fatalf("preparedMacOSUpdate.PreviousCoreExecutable() = %q, want %q", got, want)
+	}
+
+	recoveredPopulated := &recoveredMacOSUpdate{descriptor: updateRecoveryDescriptor{
+		RuntimeRoot: "/tmp/bx-runtime-root", FromRuntimeVersion: "1.0.0", ToRuntimeVersion: "2.0.0",
+	}}
+	if got, want := recoveredPopulated.CoreExecutable(), filepath.Join("/tmp/bx-runtime-root", "2.0.0", "bx"); got != want {
+		t.Fatalf("recoveredMacOSUpdate.CoreExecutable() = %q, want %q", got, want)
+	}
+	if got, want := recoveredPopulated.PreviousCoreExecutable(), filepath.Join("/tmp/bx-runtime-root", "1.0.0", "bx"); got != want {
+		t.Fatalf("recoveredMacOSUpdate.PreviousCoreExecutable() = %q, want %q", got, want)
+	}
+
+	recoveredLegacy := &recoveredMacOSUpdate{descriptor: updateRecoveryDescriptor{}}
+	if got := recoveredLegacy.CoreExecutable(); got != "" {
+		t.Fatalf("legacy recoveredMacOSUpdate.CoreExecutable() = %q, want empty", got)
+	}
+	if got := recoveredLegacy.PreviousCoreExecutable(); got != "" {
+		t.Fatalf("legacy recoveredMacOSUpdate.PreviousCoreExecutable() = %q, want empty", got)
+	}
+}
+
+func TestDescriptorRuntimeFieldsValidated(t *testing.T) {
+	paths := Paths{Staging: "/var/lib/bx/update/staging", Snapshots: "/var/lib/bx/update/snapshots"}
+	base := updateRecoveryDescriptor{
+		GuardianProtocol: currentGuardianProtocol,
+		TransactionID:    "tx-1",
+		FromVersion:      "v1",
+		ToVersion:        "v2",
+		AssetDigest:      strings.Repeat("a", 64),
+		CLIPath:          install.BinPath,
+		AppPath:          "/Applications/Bx.app",
+		SnapshotPath:     filepath.Join(paths.Snapshots, "tx-1"),
+		StagingPath:      filepath.Join(paths.Staging, "tx-1"),
+		NewCLI:           artifactFingerprint{Kind: "file", SHA256: strings.Repeat("b", 64)},
+		NewApp:           artifactFingerprint{Kind: "directory", SHA256: strings.Repeat("c", 64)},
+	}
+
+	t.Run("half-empty runtime fields rejected", func(t *testing.T) {
+		descriptor := base
+		descriptor.RuntimeRoot = runtimedir.Root
+		// FromRuntimeVersion/ToRuntimeVersion intentionally left empty.
+		if err := validateUpdateRecoveryDescriptorStatic(descriptor, paths, true); err == nil {
+			t.Fatal("half-empty runtime fields were accepted")
+		}
+	})
+
+	t.Run("all-empty legacy descriptor accepted", func(t *testing.T) {
+		descriptor := base
+		if err := validateUpdateRecoveryDescriptorStatic(descriptor, paths, true); err != nil {
+			t.Fatalf("legacy (all-empty runtime fields) descriptor rejected: %v", err)
+		}
+	})
+
+	t.Run("fully populated valid runtime fields accepted", func(t *testing.T) {
+		descriptor := base
+		descriptor.RuntimeRoot = runtimedir.Root
+		descriptor.FromRuntimeVersion = "1.0.0"
+		descriptor.ToRuntimeVersion = "2.0.0"
+		if err := validateUpdateRecoveryDescriptorStatic(descriptor, paths, true); err != nil {
+			t.Fatalf("fully populated valid runtime fields rejected: %v", err)
+		}
+	})
+
+	t.Run("non-system runtime root rejected only when required", func(t *testing.T) {
+		descriptor := base
+		descriptor.RuntimeRoot = "/tmp/not-the-system-runtime-root"
+		descriptor.FromRuntimeVersion = "1.0.0"
+		descriptor.ToRuntimeVersion = "2.0.0"
+		if err := validateUpdateRecoveryDescriptorStatic(descriptor, paths, true); err == nil {
+			t.Fatal("non-system runtime root accepted under requireSystemDestinations")
+		}
+		if err := validateUpdateRecoveryDescriptorStatic(descriptor, paths, false); err != nil {
+			t.Fatalf("non-system runtime root rejected without requireSystemDestinations: %v", err)
+		}
+	})
+
+	t.Run("invalid runtime version pattern rejected", func(t *testing.T) {
+		descriptor := base
+		descriptor.RuntimeRoot = runtimedir.Root
+		descriptor.FromRuntimeVersion = "1.0.0"
+		descriptor.ToRuntimeVersion = "../escape"
+		if err := validateUpdateRecoveryDescriptorStatic(descriptor, paths, true); err == nil {
+			t.Fatal("invalid runtime version pattern accepted")
+		}
+	})
 }

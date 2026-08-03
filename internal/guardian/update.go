@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/runtimedir"
 	"github.com/getbx/bx/internal/supervisor"
 	updatepkg "github.com/getbx/bx/internal/update"
 )
@@ -64,6 +66,8 @@ type PreparedUpdate interface {
 	Activate() error
 	Restore() error
 	Commit() error
+	CoreExecutable() string         // 新 Core 应从哪个绝对路径启动;"" = 不切换(保持 runner 现值)
+	PreviousCoreExecutable() string // 回滚时应切回的绝对路径;"" = 不切换
 }
 
 type UpdatePreparer interface {
@@ -868,9 +872,20 @@ func ownedByGuardian(info os.FileInfo) bool {
 	return ok && uid == uint32(os.Geteuid())
 }
 
-type macOSUpdatePreparer struct{}
+// macOSUpdatePreparer 是统一布局下的 macOS 更新事务实现:Prepare 把新版本装
+// 进 runtime 版本目录(不 flip)并给 bridge+App 建快照,Activate/Restore 负责
+// current 符号链的原子换版与回退。runtimeRoot 零值时使用生产路径
+// runtimedir.Root;测试通过注入非零值绕开真实系统目录。
+type macOSUpdatePreparer struct{ runtimeRoot string }
 
-func (macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, packageData []byte, paths Paths) (PreparedUpdate, error) {
+func (p macOSUpdatePreparer) root() string {
+	if p.runtimeRoot != "" {
+		return p.runtimeRoot
+	}
+	return runtimedir.Root
+}
+
+func (p macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, packageData []byte, paths Paths) (PreparedUpdate, error) {
 	requiredProtocol, err := requiredGuardianProtocol(packageData, runtime.GOARCH)
 	if err != nil {
 		return nil, err
@@ -879,23 +894,40 @@ func (macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, pac
 	if err != nil {
 		return nil, err
 	}
-	payload := updatepkg.MacOSPayload{CLI: pkg.Bridge, Menu: pkg.App}
+	if err := pkg.VerifyAssets(runtime.GOOS, runtime.GOARCH); err != nil {
+		return nil, err
+	}
+	if pkg.Release.Version != request.ToVersion {
+		return nil, fmt.Errorf("package release version %q does not match to_version %q", pkg.Release.Version, request.ToVersion)
+	}
+	runtimeRoot := p.root()
+	currentInfo, _, err := runtimedir.Current(runtimeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("unified runtime not installed: %w", err)
+	}
+	if currentInfo.Version != request.FromVersion {
+		return nil, fmt.Errorf("runtime current %q does not match from_version %q", currentInfo.Version, request.FromVersion)
+	}
+	// 屏障外的大 I/O:新版本目录落盘(不 flip,不影响旧 Core)。
+	if _, err := runtimedir.InstallVersion(runtimeRoot, runtimedir.Payload{CLI: pkg.CLI, Info: pkg.Release}); err != nil {
+		return nil, err
+	}
 	transactionRoot := filepath.Join(paths.Staging, request.TransactionID)
 	if err := os.RemoveAll(transactionRoot); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reset staging: %w", err)
 	}
 	appPath := request.AppPath
 	if appPath == "" {
 		appPath = "/Applications/Bx.app"
 	}
 	prepared, err := updatepkg.PrepareMacOSInstall(updatepkg.InstallOptions{
-		CLIDestination: install.BinPath,
+		CLIDestination: install.BinPath, // bridge 的家;钉死点保持
 		AppDestination: appPath,
 		AppUID:         request.AppUID,
 		AppGID:         request.AppGID,
 		SnapshotDir:    filepath.Join(paths.Snapshots, request.TransactionID),
 		StagingDir:     transactionRoot,
-	}, payload)
+	}, updatepkg.MacOSPayload{CLI: pkg.Bridge, Menu: pkg.App}) // CLI 槽位装 bridge 字节
 	if err != nil {
 		return nil, err
 	}
@@ -904,6 +936,9 @@ func (macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, pac
 		_ = prepared.Commit()
 		return nil, err
 	}
+	descriptor.RuntimeRoot = runtimeRoot
+	descriptor.FromRuntimeVersion = request.FromVersion
+	descriptor.ToRuntimeVersion = request.ToVersion
 	return &preparedMacOSUpdate{
 		PreparedInstall:  prepared,
 		requiredProtocol: requiredProtocol,
@@ -972,31 +1007,66 @@ func (p *preparedMacOSUpdate) BindBarrierContext(barrierContext BarrierContext) 
 	return nil
 }
 
+func (p *preparedMacOSUpdate) Activate() error {
+	if err := p.PreparedInstall.Activate(); err != nil { // bridge + App 原子换
+		return err
+	}
+	return runtimedir.SwitchCurrent(p.descriptor.RuntimeRoot, p.descriptor.ToRuntimeVersion)
+}
+
+func (p *preparedMacOSUpdate) Restore() error {
+	// 先把 current 指回旧版本(旧版本目录不可变、始终存在),再还原 bridge+App。
+	if err := runtimedir.SwitchCurrent(p.descriptor.RuntimeRoot, p.descriptor.FromRuntimeVersion); err != nil {
+		return err
+	}
+	return p.PreparedInstall.Restore()
+}
+
+func (p *preparedMacOSUpdate) Commit() error {
+	if err := p.PreparedInstall.Commit(); err != nil {
+		return err
+	}
+	// 只保留 from/to 两个版本,清 staging/discard 残留;失败不致命。
+	_ = runtimedir.GC(p.descriptor.RuntimeRoot, []string{p.descriptor.FromRuntimeVersion, p.descriptor.ToRuntimeVersion})
+	return nil
+}
+
+func (p *preparedMacOSUpdate) CoreExecutable() string {
+	return filepath.Join(p.descriptor.RuntimeRoot, p.descriptor.ToRuntimeVersion, "bx")
+}
+
+func (p *preparedMacOSUpdate) PreviousCoreExecutable() string {
+	return filepath.Join(p.descriptor.RuntimeRoot, p.descriptor.FromRuntimeVersion, "bx")
+}
+
 type artifactFingerprint struct {
 	Kind   string `json:"kind"`
 	SHA256 string `json:"sha256"`
 }
 
 type updateRecoveryDescriptor struct {
-	SchemaVersion    int                 `json:"schema_version,omitempty"`
-	GuardianProtocol int                 `json:"guardian_protocol,omitempty"`
-	TransactionID    string              `json:"transaction_id"`
-	FromVersion      string              `json:"from_version"`
-	ToVersion        string              `json:"to_version"`
-	AssetDigest      string              `json:"asset_digest"`
-	CLIPath          string              `json:"cli_path"`
-	AppPath          string              `json:"app_path"`
-	AppUID           int                 `json:"app_uid"`
-	AppGID           int                 `json:"app_gid"`
-	SnapshotPath     string              `json:"snapshot_path"`
-	StagingPath      string              `json:"staging_path"`
-	BarrierContext   BarrierContext      `json:"barrier_context"`
-	HadCLI           bool                `json:"had_cli"`
-	HadApp           bool                `json:"had_app"`
-	OldCLI           artifactFingerprint `json:"old_cli"`
-	NewCLI           artifactFingerprint `json:"new_cli"`
-	OldApp           artifactFingerprint `json:"old_app"`
-	NewApp           artifactFingerprint `json:"new_app"`
+	SchemaVersion      int                 `json:"schema_version,omitempty"`
+	GuardianProtocol   int                 `json:"guardian_protocol,omitempty"`
+	TransactionID      string              `json:"transaction_id"`
+	FromVersion        string              `json:"from_version"`
+	ToVersion          string              `json:"to_version"`
+	AssetDigest        string              `json:"asset_digest"`
+	CLIPath            string              `json:"cli_path"`
+	AppPath            string              `json:"app_path"`
+	AppUID             int                 `json:"app_uid"`
+	AppGID             int                 `json:"app_gid"`
+	SnapshotPath       string              `json:"snapshot_path"`
+	StagingPath        string              `json:"staging_path"`
+	BarrierContext     BarrierContext      `json:"barrier_context"`
+	RuntimeRoot        string              `json:"runtime_root,omitempty"`
+	FromRuntimeVersion string              `json:"from_runtime_version,omitempty"`
+	ToRuntimeVersion   string              `json:"to_runtime_version,omitempty"`
+	HadCLI             bool                `json:"had_cli"`
+	HadApp             bool                `json:"had_app"`
+	OldCLI             artifactFingerprint `json:"old_cli"`
+	NewCLI             artifactFingerprint `json:"new_cli"`
+	OldApp             artifactFingerprint `json:"old_app"`
+	NewApp             artifactFingerprint `json:"new_app"`
 }
 
 func buildUpdateRecoveryDescriptorTemplate(request UpdateRequest, paths Paths, appPath string, protocol int) (updateRecoveryDescriptor, error) {
@@ -1127,6 +1197,19 @@ func validateUpdateRecoveryDescriptorStatic(descriptor updateRecoveryDescriptor,
 	if requireSystemDestinations && descriptor.CLIPath != install.BinPath {
 		return newUpdateError("update_recovery_metadata_failed")
 	}
+	switch {
+	case descriptor.RuntimeRoot == "" && descriptor.FromRuntimeVersion == "" && descriptor.ToRuntimeVersion == "":
+		// legacy descriptor(升级前写入),没有 runtime 版本目录概念,不做进一步校验。
+	case descriptor.RuntimeRoot == "" || descriptor.FromRuntimeVersion == "" || descriptor.ToRuntimeVersion == "":
+		return newUpdateError("update_recovery_metadata_failed")
+	default:
+		if !updateVersionPattern.MatchString(descriptor.FromRuntimeVersion) || !updateVersionPattern.MatchString(descriptor.ToRuntimeVersion) {
+			return newUpdateError("update_recovery_metadata_failed")
+		}
+		if requireSystemDestinations && descriptor.RuntimeRoot != runtimedir.Root {
+			return newUpdateError("update_recovery_metadata_failed")
+		}
+	}
 	for _, fingerprint := range []artifactFingerprint{descriptor.NewCLI, descriptor.NewApp} {
 		if !fingerprint.valid() {
 			return newUpdateError("update_recovery_metadata_failed")
@@ -1235,12 +1318,36 @@ func (p *recoveredMacOSUpdate) SnapshotPath() string { return p.descriptor.Snaps
 func (p *recoveredMacOSUpdate) RequiredGuardianProtocol() int {
 	return p.descriptor.GuardianProtocol
 }
+
 func (*recoveredMacOSUpdate) BindBarrierContext(BarrierContext) error {
 	return newUpdateError("update_recovery_metadata_failed")
 }
+
 func (*recoveredMacOSUpdate) Activate() error { return newUpdateError("update_reactivation_forbidden") }
 
+func (p *recoveredMacOSUpdate) CoreExecutable() string {
+	d := p.descriptor
+	if d.RuntimeRoot == "" || d.ToRuntimeVersion == "" {
+		return ""
+	}
+	return filepath.Join(d.RuntimeRoot, d.ToRuntimeVersion, "bx")
+}
+
+func (p *recoveredMacOSUpdate) PreviousCoreExecutable() string {
+	d := p.descriptor
+	if d.RuntimeRoot == "" || d.FromRuntimeVersion == "" {
+		return ""
+	}
+	return filepath.Join(d.RuntimeRoot, d.FromRuntimeVersion, "bx")
+}
+
 func (p *recoveredMacOSUpdate) Restore() error {
+	d := p.descriptor
+	if d.RuntimeRoot != "" && d.FromRuntimeVersion != "" {
+		if err := runtimedir.SwitchCurrent(d.RuntimeRoot, d.FromRuntimeVersion); err != nil {
+			return newUpdateError("update_restore_failed")
+		}
+	}
 	if err := p.verifySnapshot(); err != nil {
 		return newUpdateError("update_restore_failed")
 	}
