@@ -4597,7 +4597,12 @@ func archiveClientLogsWithReason(root, reason string) (string, error) {
 	} else {
 		_ = os.WriteFile(filepath.Join(dir, "status-error.txt"), []byte(err.Error()+"\n"), 0o600)
 	}
-	doctor := collectClientDoctor(defaultConfigPath, defaultProbeTarget, 0, true)
+	// includePlatformChecks=false:归档只是把已发生的状态落盘留档,不是又一次体检——
+	// text-mode doctor 已经在 doctorAction 里跑过一遍 collectPlatformChecks,`up`/
+	// `down`/`reconnect` 退出时也不该白付一次 pgrep/netstat/scutil 的 exec 开销;
+	// 代价是 doctor.json 里没了 coexistence 那几条(它们是即时环境探测,不是日志材料,
+	// 丢了不影响事后排障)。
+	doctor := collectClientDoctorWith(defaultConfigPath, defaultProbeTarget, 0, true, false)
 	if err := writeJSONFile(filepath.Join(dir, "doctor.json"), doctor); err != nil {
 		return "", err
 	}
