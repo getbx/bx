@@ -31,5 +31,8 @@ run_test guardian-client \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Tests/GuardianClientTests.swift"
+run_test instance-gate \
+  "$MENU/Sources/BxMenu/InstanceGate.swift" \
+  "$MENU/Tests/InstanceGateTests.swift"
 
 echo "macOS menu tests passed"

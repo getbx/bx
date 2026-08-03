@@ -66,6 +66,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private var reconnectInFlight = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        enforceSingleInstance()
+        ensureLoginItemIfCanonical()
         configureMenu()
         refresh()
         refreshUpdateCheck()
@@ -75,6 +77,40 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { [weak self] _ in
             self?.refreshUpdateCheck()
         }
+    }
+
+    private func enforceSingleInstance() {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        let selfPID = NSRunningApplication.current.processIdentifier
+        let peers = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != selfPID }
+        guard let peer = peers.first else { return }
+        switch resolveInstanceConflict(selfPath: Bundle.main.bundleURL.path,
+                                       peerPath: peer.bundleURL?.path,
+                                       canonicalPath: "/Applications/Bx.app") {
+        case .keepSelf(terminatePeer: true):
+            peer.terminate()
+        case .keepSelf(terminatePeer: false):
+            break
+        case .yieldToPeer:
+            peer.activate(options: [])
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func ensureLoginItemIfCanonical() {
+        let canonical = "/Applications/Bx.app"
+        guard Bundle.main.bundleURL.path == canonical else { return }
+        let agentDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents")
+        let agentURL = agentDir.appendingPathComponent("com.getbx.bx.menu.plist")
+        let logDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/bx").path
+        let desired = menuLaunchAgentPlist(executablePath: canonical + "/Contents/MacOS/BxMenu",
+                                           logDirectory: logDir)
+        if (try? String(contentsOf: agentURL, encoding: .utf8)) == desired { return }
+        try? FileManager.default.createDirectory(at: agentDir, withIntermediateDirectories: true)
+        try? desired.write(to: agentURL, atomically: true, encoding: .utf8)
     }
 
     private func configureMenu() {
