@@ -47,6 +47,23 @@ struct InstallPresentationTests {
         expect(unifiedRuntimeVersion(root: dir.path) == "9.9.9", "reads version via current link dir")
         expect(unifiedRuntimeVersion(root: dir.path + "-missing") == nil, "missing root yields nil")
 
+        expect(repairActionTitle == "Repair bx…", "repair action title pinned")
+
+        expect(repairActionNeeded(bundleVersion: "1.0.0", runtimeVersion: "1.0.0", coreVersion: "1.0.0", phase: nil) == false,
+               "all three versions agree needs no repair")
+        expect(repairActionNeeded(bundleVersion: "1.0.0", runtimeVersion: "1.1.0", coreVersion: "1.1.0", phase: nil) == true,
+               "runtime differing from bundle needs repair")
+        expect(repairActionNeeded(bundleVersion: "1.0.0", runtimeVersion: "1.0.0", coreVersion: "0.9.0", phase: nil) == true,
+               "core differing from runtime needs repair")
+        expect(repairActionNeeded(bundleVersion: "1.0.0", runtimeVersion: "1.0.0", coreVersion: nil, phase: nil) == false,
+               "core off (nil) and bundle==runtime needs no repair")
+        expect(repairActionNeeded(bundleVersion: "1.0.0", runtimeVersion: "1.1.0", coreVersion: nil, phase: nil) == true,
+               "core off (nil) but bundle!=runtime needs repair")
+        expect(repairActionNeeded(bundleVersion: "1.0.0", runtimeVersion: "1.1.0", coreVersion: "0.9.0", phase: "activating") == false,
+               "in-flight update phase suppresses repair despite mismatch")
+        expect(repairActionNeeded(bundleVersion: "1.0.0", runtimeVersion: nil, coreVersion: "1.0.0", phase: nil) == false,
+               "runtime not installed defers to Install flow, not Repair")
+
         if failures > 0 { exit(1) }
         print("InstallPresentationTests passed")
     }

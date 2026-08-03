@@ -16,6 +16,9 @@ struct BxReport: Decodable {
     let networkGeneration: String?
     let recovery: RecoverySnapshot?
     let phase: String?
+    let coreVersion: String?
+    let guardianVersion: String?
+    let runtimeVersion: String?
 
     enum CodingKeys: String, CodingKey {
         case tunnelHealthy = "tunnel_healthy"
@@ -24,6 +27,9 @@ struct BxReport: Decodable {
         case udpNote = "udp_note"
         case protectionState = "protection_state"
         case networkGeneration = "network_generation"
+        case coreVersion = "core_version"
+        case guardianVersion = "guardian_version"
+        case runtimeVersion = "runtime_version"
         case restarts, active, proxy, direct, blocked, recovery, phase
     }
 }
@@ -66,6 +72,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private var updateCheck: UpdateCheck?
     private var recoverySnapshot: RecoverySnapshot?
     private var reconnectInFlight = false
+    private var repairVersions: (bundle: String?, runtime: String?, core: String?)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         enforceSingleInstance()
@@ -161,6 +168,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             recoverySnapshot = nil
             return .warning(banner, version: version)
         }
+        let bundleVersion = bundleReleaseVersion()
+        let runtimeVersion = unifiedRuntimeVersion()
+        if repairActionNeeded(
+            bundleVersion: bundleVersion,
+            runtimeVersion: runtimeVersion,
+            coreVersion: report.coreVersion,
+            phase: report.phase
+        ) {
+            recoverySnapshot = nil
+            repairVersions = (bundle: bundleVersion, runtime: runtimeVersion, core: report.coreVersion)
+            return .warning("Repair Required", version: version)
+        }
+        repairVersions = nil
         if report.protectionState == "needs_attention" {
             recoverySnapshot = nil
             return .warning("Repair Required", version: version)
@@ -304,7 +324,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .warning(let message, let version):
             menu.addHeader("bx", subtitle: "Needs Attention")
             menu.addInfo("Status", message)
-            if let version {
+            if message == "Repair Required", let versions = repairVersions {
+                if let bundle = versions.bundle {
+                    menu.addInfo("App", bundle)
+                }
+                if let runtime = versions.runtime {
+                    menu.addInfo("Runtime", runtime)
+                }
+                if let core = versions.core {
+                    menu.addInfo("Core", core)
+                }
+            } else if let version {
                 menu.addInfo("Version", version)
             }
         case .updateNeeded(let message, let version):
@@ -350,6 +380,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         switch state {
         case .connected:
+            menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
+            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
+        case .warning("Repair Required", _):
+            menu.addAction(repairActionTitle, symbol: "wrench.and.screwdriver", target: self, action: #selector(repairBx))
             menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
             menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
@@ -467,9 +502,23 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func installBx() {
+        runEmbeddedInstaller(
+            confirmTitle: "Install bx?",
+            confirmMessage: "bx will install its command line tool and background protection service. macOS will ask for administrator authorization. Protection is not started until you set up and turn it on."
+        )
+    }
+
+    @objc private func repairBx() {
+        runEmbeddedInstaller(
+            confirmTitle: "Repair bx?",
+            confirmMessage: "bx will reinstall its components from this app. Your connection settings are kept."
+        )
+    }
+
+    private func runEmbeddedInstaller(confirmTitle: String, confirmMessage: String) {
         let alert = NSAlert()
-        alert.messageText = "Install bx?"
-        alert.informativeText = "bx will install its command line tool and background protection service. macOS will ask for administrator authorization. Protection is not started until you set up and turn it on."
+        alert.messageText = confirmTitle
+        alert.informativeText = confirmMessage
         alert.addButton(withTitle: "Install")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
