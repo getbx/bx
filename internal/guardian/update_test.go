@@ -213,10 +213,25 @@ func TestLegacyPreparedSkipsExecutableSwitch(t *testing.T) {
 func TestRecoveryRollbackRestoresRuntimeCurrentAndExecutable(t *testing.T) {
 	env := newUpdateTestEnv(t)
 	manager := env.restartedManager(t, PhaseActivating, "v2")
-	toExecutable := filepath.Join(env.root, "runtime", "v2", "bx")
-	fromExecutable := filepath.Join(env.root, "runtime", "v1", "bx")
+
+	// Real runtimedir root seeded with both versions, current left flipped at
+	// "to" (v2) — simulating a crash after the live activation flip landed
+	// but before rollback (recoverUpdateRollback -> prepared.Restore()) could
+	// flip it back. This lets the test assert the real `current` symlink,
+	// not just the fake's recorded call ordering.
+	runtimeRoot := t.TempDir()
+	seedRuntimeCurrent(t, runtimeRoot, "v1", []byte("cli-1"))
+	installRuntimeVersion(t, runtimeRoot, "v2", []byte("cli-2"))
+	if err := runtimedir.SwitchCurrent(runtimeRoot, "v2"); err != nil {
+		t.Fatalf("simulate crash-after-flip: %v", err)
+	}
+
+	toExecutable := filepath.Join(runtimeRoot, "v2", "bx")
+	fromExecutable := filepath.Join(runtimeRoot, "v1", "bx")
 	env.prepared.coreExecutable = toExecutable
 	env.prepared.previousCoreExecutable = fromExecutable
+	env.prepared.restoreSwitchRoot = runtimeRoot
+	env.prepared.restoreSwitchVersion = "v1"
 
 	if err := manager.Recover(context.Background()); err != nil {
 		t.Fatalf("Recover: %v; events=%#v", err, env.events.snapshot())
@@ -228,6 +243,11 @@ func TestRecoveryRollbackRestoresRuntimeCurrentAndExecutable(t *testing.T) {
 	}
 	if got := env.runner.Executable(); got != fromExecutable {
 		t.Fatalf("runner.Executable() = %q, want %q", got, fromExecutable)
+	}
+	if info, _, err := runtimedir.Current(runtimeRoot); err != nil {
+		t.Fatalf("runtime Current after recovery: %v", err)
+	} else if info.Version != "v1" {
+		t.Fatalf("runtime current after recovery = %q, want %q (rollback must flip current back)", info.Version, "v1")
 	}
 
 	events := env.events.snapshot()
@@ -1254,6 +1274,28 @@ func TestManagerRecoveryFailuresStayBehindBarrier(t *testing.T) {
 		{name: "previous health", phase: PhaseRollingBack, mutate: func(env *updateTestEnv) {
 			env.health.failVersions = map[string]error{"v1": errors.New("token=secret")}
 		}, wantBarrier: true, wantProtection: ProtectionBlocked},
+		// recoverUpdateRollback: SetExecutable(from) failure after a successful
+		// Restore() — mirrors the "restore" case above but drives the
+		// runner-level executable switch instead of Restore() itself.
+		{name: "rollback executable switch", phase: PhaseActivating, mutate: func(env *updateTestEnv) {
+			env.prepared.previousCoreExecutable = filepath.Join(env.root, "runtime", "v1", "bx")
+			env.runner.setExecutableErr = errors.New("secret set executable failure")
+		}, wantBarrier: true, wantProtection: ProtectionBlocked},
+		// recoverCommittedUpdate: defensive SwitchCurrent failure — descriptor
+		// says the runtime should be at "to" (v2), but the version directory
+		// was never installed under the given root, so runtimedir.SwitchCurrent
+		// (which stats <root>/<version>/bx) errors.
+		{name: "committed runtime switch", phase: PhaseCommitted, mutate: func(env *updateTestEnv) {
+			env.prepared.runtimeSwitchRoot = filepath.Join(env.root, "runtime-missing")
+			env.prepared.runtimeSwitchVersion = "v2"
+			env.prepared.runtimeSwitchOK = true
+		}, wantBarrier: true, wantProtection: ProtectionBlocked},
+		// recoverCommittedUpdate: SetExecutable(to) failure after the (skipped,
+		// since runtimeSwitchOK stays false) SwitchCurrent step.
+		{name: "committed executable switch", phase: PhaseCommitted, mutate: func(env *updateTestEnv) {
+			env.prepared.coreExecutable = filepath.Join(env.root, "runtime", "v2", "bx")
+			env.runner.setExecutableErr = errors.New("secret activate failure")
+		}, wantBarrier: true, wantProtection: ProtectionBlocked},
 	}
 
 	for _, tt := range tests {
@@ -1659,6 +1701,8 @@ type fakePreparedUpdate struct {
 	runtimeSwitchRoot      string
 	runtimeSwitchVersion   string
 	runtimeSwitchOK        bool
+	restoreSwitchRoot      string
+	restoreSwitchVersion   string
 }
 
 func (p *fakePreparedUpdate) SnapshotPath() string { return p.snapshotPath }
@@ -1677,9 +1721,22 @@ func (p *fakePreparedUpdate) Activate() error {
 	return p.activateErr
 }
 
+// Restore, when restoreSwitchRoot is set (and no restoreErr is injected),
+// performs the real runtimedir.SwitchCurrent(root, from) — mirroring what
+// production's recoveredMacOSUpdate.Restore() does — so recovery tests can
+// assert the real `current` symlink un-flip rather than only the fake's
+// recorded event/call-ordering.
 func (p *fakePreparedUpdate) Restore() error {
 	p.events.add("install.restore")
-	return p.restoreErr
+	if p.restoreErr != nil {
+		return p.restoreErr
+	}
+	if p.restoreSwitchRoot != "" {
+		if err := runtimedir.SwitchCurrent(p.restoreSwitchRoot, p.restoreSwitchVersion); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *fakePreparedUpdate) Commit() error {
@@ -1762,6 +1819,7 @@ type updateCoreRunner struct {
 	stopSawCanceled       map[string]bool
 	startOptions          []CoreStartOptions
 	executable            string
+	setExecutableErr      error
 }
 
 func newUpdateCoreRunner(events *eventLog) *updateCoreRunner {
@@ -1857,6 +1915,9 @@ func (r *updateCoreRunner) SetExecutable(executable string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.setExecutableErr != nil {
+		return r.setExecutableErr
+	}
 	r.executable = executable
 	r.events.add("core.set_executable." + executable)
 	return nil
