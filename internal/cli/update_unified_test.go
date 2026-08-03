@@ -105,6 +105,45 @@ func TestDecideUnifiedUpdateRoute(t *testing.T) {
 	}
 }
 
+func TestShouldCleanUpdateStaging(t *testing.T) {
+	cases := []struct {
+		name      string
+		result    guardian.UpdateResult
+		updateErr error
+		want      bool
+	}{
+		{
+			name:   "committed cleans up",
+			result: guardian.UpdateResult{Phase: guardian.PhaseCommitted},
+			want:   true,
+		},
+		{
+			name:   "rolled_back cleans up",
+			result: guardian.UpdateResult{Phase: guardian.PhaseRolledBack},
+			want:   true,
+		},
+		{
+			name:   "needs_attention keeps staging for recovery",
+			result: guardian.UpdateResult{Phase: guardian.PhaseNeedsAttention},
+			want:   false,
+		},
+		{
+			name:      "transport error keeps staging for recovery",
+			result:    guardian.UpdateResult{},
+			updateErr: errUnavailable,
+			want:      false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldCleanUpdateStaging(tc.result, tc.updateErr); got != tc.want {
+				t.Fatalf("shouldCleanUpdateStaging(%+v, %v) = %v, want %v", tc.result, tc.updateErr, got, tc.want)
+			}
+		})
+	}
+}
+
 var errUnavailable = &guardian.UnavailableError{}
 
 func TestBuildGuardianUpdateRequest(t *testing.T) {
