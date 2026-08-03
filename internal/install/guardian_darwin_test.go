@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/runtimedir"
 )
 
 func TestGuardianPlistTextUsesCanonicalLifecycleOwner(t *testing.T) {
-	plist := GuardianPlistText("/etc/bx/config.yaml")
+	plist := GuardianPlistText(BinPath, "/etc/bx/config.yaml")
 	for _, want := range []string{
 		"<string>com.getbx.bx.guard</string>",
 		"<string>/usr/local/bin/bx</string>",
@@ -60,15 +62,52 @@ func TestGuardianEnableCommandsBootstrapCanonicalLabel(t *testing.T) {
 }
 
 func TestGuardianConfigPathFromExecStartRejectsDirectCore(t *testing.T) {
-	got, err := guardianConfigPathFromExecStart("/usr/local/bin/bx guardian --config /etc/bx/config.yaml --listen-dns 127.0.0.1:53")
+	gotExec, got, err := parseGuardianExecStart("/usr/local/bin/bx guardian --config /etc/bx/config.yaml --listen-dns 127.0.0.1:53")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if gotExec != "/usr/local/bin/bx" {
+		t.Fatalf("Guardian executable = %q", gotExec)
 	}
 	if got != "/etc/bx/config.yaml" {
 		t.Fatalf("Guardian config path = %q", got)
 	}
-	if _, err := guardianConfigPathFromExecStart("/usr/local/bin/bx run -c /etc/bx/config.yaml --listen-dns 127.0.0.1:53"); err == nil {
+	if _, _, err := parseGuardianExecStart("/usr/local/bin/bx run -c /etc/bx/config.yaml --listen-dns 127.0.0.1:53"); err == nil {
 		t.Fatal("fresh macOS setup accepted a direct Core service")
+	}
+}
+
+func TestGuardianPlistTextRuntimeExecutable(t *testing.T) {
+	text := GuardianPlistText("/Library/Application Support/bx/runtime/current/bx", "/etc/bx/config.yaml")
+	for _, want := range []string{
+		"<string>/Library/Application Support/bx/runtime/current/bx</string>",
+		"<string>guardian</string>",
+		"<string>/etc/bx/config.yaml</string>",
+		"<string>com.getbx.bx.guard</string>",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("plist missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "<string>/usr/local/bin/bx</string>") {
+		t.Fatal("runtime plist must not reference the bridge path")
+	}
+}
+
+func TestParseGuardianExecStart(t *testing.T) {
+	runtimeExec := runtimedir.ExecutablePath(runtimedir.Root)
+	cases := []struct{ execStart, wantExec, wantConfig string }{
+		{BinPath + " guardian --config /etc/bx/config.yaml --listen-dns 127.0.0.1:53", BinPath, "/etc/bx/config.yaml"},
+		{runtimeExec + " guardian --config /etc/bx/config.yaml --listen-dns 127.0.0.1:53", runtimeExec, "/etc/bx/config.yaml"},
+	}
+	for _, tc := range cases {
+		gotExec, gotConfig, err := parseGuardianExecStart(tc.execStart)
+		if err != nil || gotExec != tc.wantExec || gotConfig != tc.wantConfig {
+			t.Fatalf("parse(%q) = %q %q %v", tc.execStart, gotExec, gotConfig, err)
+		}
+	}
+	if _, _, err := parseGuardianExecStart("/opt/evil/bx guardian --config /etc/bx/config.yaml --listen-dns 127.0.0.1:53"); err == nil {
+		t.Fatal("want unknown executable rejected")
 	}
 }
 
@@ -121,7 +160,7 @@ func TestWriteGuardianUnitAtEnforcesRootOwnershipAndMode(t *testing.T) {
 	}
 	var ownerPath string
 	var ownerUID, ownerGID int
-	err := writeGuardianUnitAt(path, "/etc/bx/config.yaml", func(path string, uid, gid int) error {
+	err := writeGuardianUnitAt(path, BinPath, "/etc/bx/config.yaml", func(path string, uid, gid int) error {
 		ownerPath, ownerUID, ownerGID = path, uid, gid
 		return nil
 	})

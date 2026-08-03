@@ -9,7 +9,7 @@ import (
 
 var errGuardianUnsupported = errors.New("macOS Guardian installation is unsupported on this platform")
 
-func WriteGuardianUnit(string) error { return errGuardianUnsupported }
+func WriteGuardianUnit(string, string) error { return errGuardianUnsupported }
 
 func EnableGuardian() error { return errGuardianUnsupported }
 
