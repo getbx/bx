@@ -21,8 +21,10 @@ const (
 	guardianBypassHandoffEnv = "BX_GUARDIAN_BYPASS_HANDOFF"
 )
 
-var ErrProcessNotRunning = errors.New("process is not running")
-var ErrProcessOwnershipUncertain = errors.New("Core process ownership is uncertain")
+var (
+	ErrProcessNotRunning         = errors.New("process is not running")
+	ErrProcessOwnershipUncertain = errors.New("Core process ownership is uncertain")
+)
 
 const (
 	processRecordLaunching = "launching"
@@ -91,7 +93,9 @@ type ProcessOperations interface {
 }
 
 type ExecCoreRunner struct {
-	Executable           string
+	// ExecutablePath 是构造期设置的初始 Core 可执行路径;运行期读写请走
+	// Executable()/SetExecutable()(锁保护,支持热切换),不要直接读写此字段。
+	ExecutablePath       string
 	ConfigPath           string
 	DNSListen            string
 	StatePath            string
@@ -109,10 +113,10 @@ type ExecCoreRunner struct {
 
 func NewExecCoreRunner(executable, configPath, dnsListen string) *ExecCoreRunner {
 	return &ExecCoreRunner{
-		Executable: executable,
-		ConfigPath: configPath,
-		DNSListen:  dnsListen,
-		StatePath:  defaultProcessStatePath,
+		ExecutablePath: executable,
+		ConfigPath:     configPath,
+		DNSListen:      dnsListen,
+		StatePath:      defaultProcessStatePath,
 	}
 }
 
@@ -143,7 +147,8 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 		return Process{}, err
 	}
 	operations := r.operations()
-	started, err := operations.Start(r.Executable, coreArgs(r.ConfigPath, r.DNSListen), environment)
+	executable := r.executablePath()
+	started, err := operations.Start(executable, coreArgs(r.ConfigPath, r.DNSListen), environment)
 	if err != nil {
 		if clearErr := r.clearLaunchMarker(); clearErr != nil {
 			return Process{}, uncertainOwnership(Process{Uncertain: true}, errors.Join(fmt.Errorf("start installed Core: %w", err), clearErr))
@@ -157,7 +162,7 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 	if process.PID != started.PID() {
 		return Process{}, r.cleanupFailedStart(ctx, started, process, fmt.Errorf("started Core PID %d inspected as PID %d", started.PID(), process.PID))
 	}
-	if err := verifyInstalledProcess(process, r.Executable); err != nil {
+	if err := verifyInstalledProcess(process, executable); err != nil {
 		return Process{}, r.cleanupFailedStart(ctx, started, process, fmt.Errorf("verify started Core PID %d: %w", started.PID(), err))
 	}
 	if err := ctx.Err(); err != nil {
@@ -256,7 +261,7 @@ func (r *ExecCoreRunner) Watch(process Process) Process {
 }
 
 func (r *ExecCoreRunner) Verify(process Process) error {
-	return verifyInstalledProcess(process, r.Executable)
+	return verifyInstalledProcess(process, r.executablePath())
 }
 
 func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
@@ -266,7 +271,7 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := verifyInstalledProcess(process, r.Executable); err != nil {
+	if err := verifyInstalledProcess(process, r.executablePath()); err != nil {
 		return fmt.Errorf("verify recorded Core PID %d before shutdown: %w", process.PID, err)
 	}
 	current, err := r.operations().Inspect(process.PID)
@@ -376,7 +381,7 @@ func (r *ExecCoreRunner) inspectInterval(fallback time.Duration) time.Duration {
 }
 
 func (r *ExecCoreRunner) validate() error {
-	if !filepath.IsAbs(r.Executable) {
+	if !filepath.IsAbs(r.executablePath()) {
 		return errors.New("installed Core executable must be absolute")
 	}
 	if !filepath.IsAbs(r.ConfigPath) {
@@ -386,6 +391,30 @@ func (r *ExecCoreRunner) validate() error {
 		return errors.New("Core DNS listen address required")
 	}
 	return nil
+}
+
+// Executable 返回当前生效的 Core 可执行路径(并发安全)。
+func (r *ExecCoreRunner) Executable() string {
+	return r.executablePath()
+}
+
+// SetExecutable 热切换 Core 可执行路径,必须绝对路径,并发安全。
+func (r *ExecCoreRunner) SetExecutable(executable string) error {
+	if !filepath.IsAbs(executable) {
+		return errors.New("installed Core executable must be absolute")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ExecutablePath = executable
+	return nil
+}
+
+// executablePath 是内部读取入口,锁内读取导出字段 ExecutablePath,
+// 供 Start/Verify/Stop/validate 使用,避免与 SetExecutable 并发写产生数据竞争。
+func (r *ExecCoreRunner) executablePath() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ExecutablePath
 }
 
 func (r *ExecCoreRunner) operations() ProcessOperations {

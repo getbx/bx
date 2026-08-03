@@ -468,7 +468,7 @@ func TestExecCoreRunnerAdoptedWatcherSurvivesAtomicExecutableReplacement(t *test
 		t.Fatal(err)
 	}
 	process = runner.Watch(process)
-	replaceExecutableAtomically(t, runner.Executable)
+	replaceExecutableAtomically(t, runner.Executable())
 	time.Sleep(4 * runner.InspectInterval)
 	select {
 	case err := <-process.Exit:
@@ -609,7 +609,7 @@ func TestExecCoreRunnerStopAmbiguousInspectionFailsClosedWithoutSignal(t *testin
 
 func TestExecCoreRunnerStopDoesNotTreatAtomicReplacementAsExit(t *testing.T) {
 	runner, process, operations := newRecordedProcessRunner(t)
-	replaceExecutableAtomically(t, runner.Executable)
+	replaceExecutableAtomically(t, runner.Executable())
 	shutdownCalls := 0
 	runner.ShutdownCore = func(context.Context, string, int) error {
 		shutdownCalls++
@@ -694,7 +694,7 @@ func TestExecCoreRunnerExistingAmbiguousGenerationRetainsRecord(t *testing.T) {
 
 func TestExecCoreRunnerLegacyRecordFailsClosed(t *testing.T) {
 	runner, _, operations := newRecordedProcessRunner(t)
-	if err := writeJSONAtomically(runner.StatePath, processRecord{PID: 42, Executable: runner.Executable}); err != nil {
+	if err := writeJSONAtomically(runner.StatePath, processRecord{PID: 42, Executable: runner.Executable()}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -725,6 +725,22 @@ func TestExecCoreRunnerStopWaitsForRecordedIdentityToDisappear(t *testing.T) {
 	}
 	if got := operations.signalCount(); got != 0 {
 		t.Fatalf("reused PID invoked signal seam %d times", got)
+	}
+}
+
+func TestExecCoreRunnerSetExecutable(t *testing.T) {
+	runner := NewExecCoreRunner("/a/bx", "/etc/bx/config.yaml", "127.0.0.1:53")
+	if runner.Executable() != "/a/bx" {
+		t.Fatalf("initial executable = %q", runner.Executable())
+	}
+	if err := runner.SetExecutable("relative/bx"); err == nil {
+		t.Fatal("relative path must be rejected")
+	}
+	if err := runner.SetExecutable("/b/bx"); err != nil {
+		t.Fatal(err)
+	}
+	if runner.Executable() != "/b/bx" {
+		t.Fatalf("swapped executable = %q", runner.Executable())
 	}
 }
 

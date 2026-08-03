@@ -130,3 +130,51 @@ func TestCurrentRejectsAbsoluteOrEscapingLink(t *testing.T) {
 		t.Fatal("want escaping link rejected")
 	}
 }
+
+func TestGC(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "runtime")
+	for _, v := range []string{"1.0.0", "1.1.0", "1.2.0"} {
+		if _, err := InstallVersion(root, payloadFor(t, v, []byte("cli-"+v))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := SwitchCurrent(root, "1.2.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".staging-leftover"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := GC(root, []string{"1.1.0", "1.2.0"}); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	for path, want := range map[string]bool{
+		filepath.Join(root, "1.0.0"):             false,
+		filepath.Join(root, "1.1.0"):             true,
+		filepath.Join(root, "1.2.0"):             true,
+		filepath.Join(root, ".staging-leftover"): false,
+	} {
+		_, err := os.Stat(path)
+		if got := err == nil; got != want {
+			t.Fatalf("%s exists=%v want %v", path, got, want)
+		}
+	}
+	if _, _, err := Current(root); err != nil {
+		t.Fatalf("current must survive GC: %v", err)
+	}
+}
+
+func TestGCNeverRemovesCurrentTarget(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "runtime")
+	if _, err := InstallVersion(root, payloadFor(t, "1.0.0", []byte("x"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := SwitchCurrent(root, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := GC(root, []string{"9.9.9"}); err != nil {
+		t.Fatal(err)
+	}
+	if !Installed(root) {
+		t.Fatal("GC must not remove the version current points to")
+	}
+}

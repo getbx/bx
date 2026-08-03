@@ -1436,19 +1436,23 @@ func (p *fakePreparedUpdate) SnapshotPath() string { return p.snapshotPath }
 func (p *fakePreparedUpdate) RequiredGuardianProtocol() int {
 	return p.requiredProtocol
 }
+
 func (p *fakePreparedUpdate) BindBarrierContext(barrierContext BarrierContext) error {
 	p.events.add("install.bind_barrier")
 	p.boundBarrierContext = cloneBarrierContext(barrierContext)
 	return p.bindErr
 }
+
 func (p *fakePreparedUpdate) Activate() error {
 	p.events.add("install.activate")
 	return p.activateErr
 }
+
 func (p *fakePreparedUpdate) Restore() error {
 	p.events.add("install.restore")
 	return p.restoreErr
 }
+
 func (p *fakePreparedUpdate) Commit() error {
 	p.events.add("install.commit")
 	select {
@@ -1516,6 +1520,7 @@ type updateCoreRunner struct {
 	failStopVersion       string
 	stopSawCanceled       map[string]bool
 	startOptions          []CoreStartOptions
+	executable            string
 }
 
 func newUpdateCoreRunner(events *eventLog) *updateCoreRunner {
@@ -1596,6 +1601,22 @@ func (r *updateCoreRunner) Stop(ctx context.Context, process Process) error {
 	if r.current.PID == process.PID {
 		r.current = Process{}
 	}
+	return nil
+}
+
+func (r *updateCoreRunner) Executable() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.executable
+}
+
+func (r *updateCoreRunner) SetExecutable(executable string) error {
+	if !filepath.IsAbs(executable) {
+		return fmt.Errorf("executable must be absolute")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.executable = executable
 	return nil
 }
 
