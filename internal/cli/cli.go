@@ -1523,6 +1523,12 @@ func doctorAction(c *cli.Context) (err error) {
 			doctorLine("hint", check.Name, check.Hint)
 		}
 	}
+	for _, check := range collectPlatformChecks(c.Context) {
+		doctorLine(check.Status, check.Name, check.Detail)
+		if check.Hint != "" {
+			doctorLine("hint", check.Name, check.Hint)
+		}
+	}
 	return nil
 }
 
@@ -2248,6 +2254,9 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 			guardianStatus = guardianStatusFallback(stats.Report{}, runtime.GOOS)
 		}
 		rep.Checks = append(rep.Checks, recoveryDoctorCheck(guardianStatus.Recovery))
+	}
+	for _, check := range collectPlatformChecks(context.Background()) {
+		rep.addReport(check)
 	}
 	rep.OK = !rep.hasFail()
 	return rep
