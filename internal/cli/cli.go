@@ -5073,6 +5073,9 @@ func buildExecStartForGOOS(goos, bin, configPath string) string {
 }
 
 func uninstallAction(c *cli.Context) error {
+	if runtime.GOOS == "darwin" {
+		return uninstallDarwinAction(c)
+	}
 	if err := install.Uninstall(); err != nil {
 		return err
 	}
