@@ -54,6 +54,14 @@ func TestInstallSwitchCurrent(t *testing.T) {
 	if err != nil || fi.Mode().Perm() != 0o755 {
 		t.Fatalf("bx perm = %v err=%v", fi.Mode(), err)
 	}
+	dirFi, err := os.Stat(dir)
+	if err != nil || dirFi.Mode().Perm() != 0o755 {
+		t.Fatalf("version dir perm = %v err=%v", dirFi.Mode(), err)
+	}
+	releaseFi, err := os.Stat(filepath.Join(dir, release.FileName))
+	if err != nil || releaseFi.Mode().Perm() != 0o644 {
+		t.Fatalf("release.json perm = %v err=%v", releaseFi.Mode(), err)
+	}
 }
 
 func TestSwitchCurrentReplacesAtomically(t *testing.T) {

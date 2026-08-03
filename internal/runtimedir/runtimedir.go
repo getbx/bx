@@ -58,6 +58,13 @@ func InstallVersion(root string, payload Payload) (string, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", err
 	}
+	// MkdirAll/WriteFile 的 mode 参数会被 umask 二次过滤:sudo 环境常见 umask 077
+	// 会把这里的 0o755/0o644 实际落成 0o700/0o600,导致非 root 的 bridge
+	// (/usr/local/bin/bx)与菜单栏进程读不到 runtime——故创建后显式 Chmod 一遍,
+	// 不依赖调用方 umask。
+	if err := os.Chmod(root, 0o755); err != nil {
+		return "", err
+	}
 	versionDir := filepath.Join(root, payload.Info.Version)
 	staging := filepath.Join(root, ".staging-"+payload.Info.Version)
 	if err := os.RemoveAll(staging); err != nil {
@@ -66,10 +73,19 @@ func InstallVersion(root string, payload Payload) (string, error) {
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return "", err
 	}
+	if err := os.Chmod(staging, 0o755); err != nil {
+		return "", err
+	}
 	if err := os.WriteFile(filepath.Join(staging, "bx"), payload.CLI, 0o755); err != nil {
 		return "", err
 	}
+	if err := os.Chmod(filepath.Join(staging, "bx"), 0o755); err != nil {
+		return "", err
+	}
 	if err := release.Write(filepath.Join(staging, release.FileName), payload.Info); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(filepath.Join(staging, release.FileName), 0o644); err != nil {
 		return "", err
 	}
 	discard := filepath.Join(root, ".discard-"+payload.Info.Version)
@@ -82,6 +98,9 @@ func InstallVersion(root string, payload Payload) (string, error) {
 		}
 	}
 	if err := os.Rename(staging, versionDir); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(versionDir, 0o755); err != nil {
 		return "", err
 	}
 	_ = os.RemoveAll(discard)

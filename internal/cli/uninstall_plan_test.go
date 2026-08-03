@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
@@ -78,5 +80,30 @@ func TestBuildDarwinUninstallPlanNoConsoleUserSkipsUserScope(t *testing.T) {
 		if !slices.Contains(plan.RemovePaths, want) {
 			t.Fatalf("RemovePaths missing %s: %v", want, plan.RemovePaths)
 		}
+	}
+}
+
+// TestUnifiedTeardownNeededExistenceNotHealth 证明判定用的是「存在」而非「健康」:
+// 一次半途失败的 app-install(runtime root 目录已建、但没有 current 符号链接,
+// 相当于 runtimedir.Installed 会判 false 的损坏态)仍要触发统一卸载分支,否则
+// runtime root 与 Bx.app 会被误判成 legacy 布局侥幸存活成 root-owned 孤儿。
+func TestUnifiedTeardownNeededExistenceNotHealth(t *testing.T) {
+	dir := t.TempDir()
+	runtimeRoot := filepath.Join(dir, "runtime") // 目录存在,但没有 "current" 链接:health 检查会判 false
+	appBundle := filepath.Join(dir, "Bx.app")    // 不存在
+
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if !unifiedTeardownNeeded(runtimeRoot, appBundle) {
+		t.Fatal("want true: damaged-but-present runtime root must still trigger unified teardown")
+	}
+}
+
+func TestUnifiedTeardownNeededFalseWhenNeitherExists(t *testing.T) {
+	dir := t.TempDir()
+	if unifiedTeardownNeeded(filepath.Join(dir, "runtime"), filepath.Join(dir, "Bx.app")) {
+		t.Fatal("want false: neither artifact present means legacy layout")
 	}
 }
