@@ -70,6 +70,17 @@ type PreparedUpdate interface {
 	PreviousCoreExecutable() string // 回滚时应切回的绝对路径;"" = 不切换
 }
 
+// runtimeCurrentTargeter 是 PreparedUpdate 的可选扩展:统一 runtime 的
+// recovered 实现借它暴露 current 该指向的 (root, version)。崩溃恢复期
+// Activate() 恒被禁用(recoveredMacOSUpdate.Activate 直接返回
+// update_reactivation_forbidden),所以 recoverCommittedUpdate 不能靠
+// Activate() 补 flip,只能自己幂等 SwitchCurrent——防的是「相位已落
+// committed 但 current 仍指旧版本」这种正常代码路径到不了、但崩溃恢复必须
+// 兜底的态。旧(legacy)descriptor 没有 runtime 版本目录概念,ok=false。
+type runtimeCurrentTargeter interface {
+	runtimeCurrentTarget() (root, version string, ok bool)
+}
+
 type UpdatePreparer interface {
 	Prepare(context.Context, UpdateRequest, []byte, Paths) (PreparedUpdate, error)
 	Recover(context.Context, Transaction, Paths) (PreparedUpdate, BarrierContext, error)
@@ -509,6 +520,14 @@ func (m *Manager) recoverUpdateRollback(ctx context.Context, transaction *Transa
 	if err := prepared.Restore(); err != nil {
 		return m.failRecoveredUpdate(transaction, "update_restore_failed")
 	}
+	// current 的回退已在 prepared.Restore() 内完成(recoveredMacOSUpdate.Restore
+	// 先 SwitchCurrent(from) 再还原 CLI/App);这里补运行时该切回的可执行路径,
+	// 与 rollbackUpdate(实时路径)保持同一顺序:Restore 后、重启旧 Core 前。
+	if prev := prepared.PreviousCoreExecutable(); prev != "" {
+		if err := m.runner.SetExecutable(prev); err != nil {
+			return m.failRecoveredUpdate(transaction, "update_restore_failed")
+		}
+	}
 	if err := m.barrier.ReassertBypass(ctx, barrierContext); err != nil {
 		return m.failRecoveredUpdate(transaction, "barrier_reassert_failed")
 	}
@@ -539,6 +558,22 @@ func (m *Manager) recoverUpdateRollback(ctx context.Context, transaction *Transa
 }
 
 func (m *Manager) recoverCommittedUpdate(ctx context.Context, transaction *Transaction, prepared PreparedUpdate, barrierContext BarrierContext) error {
+	// 防御:committed 相位在正常代码路径下 current 必已在 Activate() 里
+	// flip 到 to(Activate 崩溃恢复期又恒被禁用,补不了),这里幂等重放一次
+	// SwitchCurrent,兜住理论上不该发生但不可证伪的「flip 前崩溃却落了
+	// committed 日志」态。
+	if targeter, ok := prepared.(runtimeCurrentTargeter); ok {
+		if root, version, has := targeter.runtimeCurrentTarget(); has {
+			if err := runtimedir.SwitchCurrent(root, version); err != nil {
+				return m.failRecoveredUpdate(transaction, "update_runtime_switch_failed")
+			}
+		}
+	}
+	if next := prepared.CoreExecutable(); next != "" {
+		if err := m.runner.SetExecutable(next); err != nil {
+			return m.failRecoveredUpdate(transaction, "update_activate_failed")
+		}
+	}
 	return m.recoverTerminalUpdate(ctx, transaction, prepared, barrierContext, transaction.ToVersion)
 }
 
@@ -1370,6 +1405,14 @@ func (p *recoveredMacOSUpdate) PreviousCoreExecutable() string {
 		return ""
 	}
 	return filepath.Join(d.RuntimeRoot, d.FromRuntimeVersion, "bx")
+}
+
+func (p *recoveredMacOSUpdate) runtimeCurrentTarget() (root, version string, ok bool) {
+	d := p.descriptor
+	if d.RuntimeRoot == "" || d.ToRuntimeVersion == "" {
+		return "", "", false
+	}
+	return d.RuntimeRoot, d.ToRuntimeVersion, true
 }
 
 func (p *recoveredMacOSUpdate) Restore() error {
