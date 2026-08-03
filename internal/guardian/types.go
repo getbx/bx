@@ -58,6 +58,8 @@ type Status struct {
 	NetworkGeneration string           `json:"network_generation"`
 	Recovery          RecoverySnapshot `json:"recovery"`
 	LastError         string           `json:"last_error,omitempty"`
+	GuardianVersion   string           `json:"guardian_version,omitempty"`
+	RuntimeVersion    string           `json:"runtime_version,omitempty"`
 }
 
 type UpdateResult struct {

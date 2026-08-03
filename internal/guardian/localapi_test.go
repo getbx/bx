@@ -60,7 +60,7 @@ func TestObservableStatusNeedsAttentionOutranksAcceptedRecovery(t *testing.T) {
 		recoveryCurrent: RecoverySnapshot{State: "accepted", Stage: "queued", Reason: "manual"},
 	}
 
-	got := observableStatus(controller, controller)
+	got := observableStatus(controller, controller, LocalAPIOptions{})
 	if got.Protection != ProtectionNeedsAttention {
 		t.Fatalf("protection = %q, want needs_attention", got.Protection)
 	}
@@ -776,6 +776,81 @@ func (c *fakeController) RequestPathRecovery(request RecoveryRequest) (RecoveryS
 
 func (c *fakeController) CurrentPathRecovery() RecoverySnapshot {
 	return c.recoveryCurrent
+}
+
+func TestLocalAPIStatusExposesVersions(t *testing.T) {
+	controller := &fakeController{
+		status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, CorePID: 42, Protection: ProtectionProtected},
+	}
+	options := LocalAPIOptions{
+		OwnerUID:        0,
+		GuardianVersion: "9.9.9",
+		RuntimeVersion: func() string {
+			return "8.8.8"
+		},
+	}
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(controller, options).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.GuardianVersion != "9.9.9" {
+		t.Fatalf("guardian_version = %q, want 9.9.9", got.GuardianVersion)
+	}
+	if got.RuntimeVersion != "8.8.8" {
+		t.Fatalf("runtime_version = %q, want 8.8.8", got.RuntimeVersion)
+	}
+}
+
+func TestLocalAPIStatusOmitsVersionsWhenNotProvided(t *testing.T) {
+	controller := &fakeController{
+		status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, CorePID: 42, Protection: ProtectionProtected},
+	}
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(controller).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.GuardianVersion != "" {
+		t.Fatalf("guardian_version = %q, want empty", got.GuardianVersion)
+	}
+	if got.RuntimeVersion != "" {
+		t.Fatalf("runtime_version = %q, want empty", got.RuntimeVersion)
+	}
+}
+
+func TestLocalAPIStatusHandlesNilRuntimeVersionFunc(t *testing.T) {
+	controller := &fakeController{
+		status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, CorePID: 42, Protection: ProtectionProtected},
+	}
+	options := LocalAPIOptions{
+		OwnerUID:        0,
+		GuardianVersion: "9.9.9",
+		RuntimeVersion:  nil,
+	}
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(controller, options).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.GuardianVersion != "9.9.9" {
+		t.Fatalf("guardian_version = %q, want 9.9.9", got.GuardianVersion)
+	}
+	if got.RuntimeVersion != "" {
+		t.Fatalf("runtime_version = %q, want empty", got.RuntimeVersion)
+	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

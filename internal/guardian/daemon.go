@@ -14,6 +14,7 @@ import (
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/runtimedir"
 	"github.com/getbx/bx/internal/version"
 )
 
@@ -333,7 +334,18 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, guardianMutationTimeout)
 	recoveryErr := controller.Recover(recoveryCtx)
 	cancelRecovery()
-	options.Handler = NewLocalAPI(controller, LocalAPIOptions{OwnerUID: options.LocalAPIOwnerUID})
+	localAPIOptions := LocalAPIOptions{
+		OwnerUID:        options.LocalAPIOwnerUID,
+		GuardianVersion: version.Version,
+		RuntimeVersion: func() string {
+			info, _, err := runtimedir.Current(runtimedir.Root)
+			if err != nil {
+				return ""
+			}
+			return info.Version
+		},
+	}
+	options.Handler = NewLocalAPI(controller, localAPIOptions)
 	options.OwnerUID = 0
 	if options.networkObserver == nil {
 		options.networkObserver = newPlatformNetworkObserver(controller)
