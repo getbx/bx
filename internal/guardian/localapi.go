@@ -36,7 +36,9 @@ type pathRecoveryStatusController interface {
 }
 
 type LocalAPIOptions struct {
-	OwnerUID uint32
+	OwnerUID        uint32
+	GuardianVersion string
+	RuntimeVersion  func() string
 }
 
 type peerCredentialsKey struct{}
@@ -82,7 +84,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		writeGuardianJSON(w, http.StatusOK, observableStatus(controller, pathRecoveryControllerFor(controller)))
+		writeGuardianJSON(w, http.StatusOK, observableStatus(controller, pathRecoveryControllerFor(controller), options))
 	})
 	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations))
 	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down, mutations))
@@ -103,10 +105,14 @@ func pathRecoveryControllerFor(controller Controller) PathRecoveryController {
 	return pathRecoveryController
 }
 
-func observableStatus(controller Controller, recoveries PathRecoveryController) Status {
+func observableStatus(controller Controller, recoveries PathRecoveryController, options LocalAPIOptions) Status {
 	status := controller.Status()
 	status.Recovery = RecoverySnapshot{State: "idle", Stage: "idle"}
 	if recoveries == nil {
+		status.GuardianVersion = options.GuardianVersion
+		if options.RuntimeVersion != nil {
+			status.RuntimeVersion = options.RuntimeVersion()
+		}
 		return status
 	}
 	if current, ok := recoveries.(pathRecoveryStatusController); ok {
@@ -125,6 +131,10 @@ func observableStatus(controller Controller, recoveries PathRecoveryController) 
 		if status.Protection != ProtectionNeedsAttention {
 			status.Protection = ProtectionBlocked
 		}
+	}
+	status.GuardianVersion = options.GuardianVersion
+	if options.RuntimeVersion != nil {
+		status.RuntimeVersion = options.RuntimeVersion()
 	}
 	return status
 }
