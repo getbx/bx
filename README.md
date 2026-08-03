@@ -145,43 +145,46 @@ WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md
 
 `bx status` 是运行期面板。macOS 上 daemon 会轻量只读监测 Tailscale 路由、系统代理和已连接的 VPN 服务；如果 bx 启动后又出现其他通道,status 会显示 `提醒`,菜单栏也可用同一份 JSON 变成需要注意的状态。
 
-macOS 用户优先使用 release 包。安装后菜单栏图标会常驻显示保护状态,并提供 Set Up、Start Protection、Troubleshoot: Reconnect、Update、Quit bx、Logs、Doctor 这些必要入口。网络变化后自动安全恢复;恢复时可能短暂断网但绝不回落直连。`bx reconnect` 仅用于 troubleshooting,不是日常网络切换步骤。命令行仍然保留,用于自动化、远程诊断和高级维护。
+macOS 用户优先使用统一安装包(`Bx.app`)。安装后菜单栏图标会常驻显示保护状态,并按当前状态提供 Install bx…、Set Up bx、Start Protection、Troubleshoot: Reconnect、Turn Off bx、Quit bx…、Update bx(有新版时)、Logs、Doctor 这些必要入口。网络变化后自动安全恢复;恢复时可能短暂断网但绝不回落直连。`bx reconnect` 仅用于 troubleshooting,不是日常网络切换步骤。命令行仍然保留,用于自动化、远程诊断和高级维护。
 
 #### macOS 安装包
 
-macOS release 包会一次装好两件事并启动菜单栏 App:
+macOS release 包是统一安装:一份 `bx-macos-<arch>.tar.gz` 只含 `Bx.app`(内嵌 `Contents/Resources/{bx-cli,bx-bridge,release.json}`)、`install.sh`、`uninstall.sh`、`README.txt`,不再有顶层裸 `bx` 二进制。
 
-- `bx` CLI:安装到 `/usr/local/bin/bx`
-- 菜单栏 App:安装到 `~/Applications/Bx.app`
-- 菜单栏日志:写到 `~/Library/Logs/bx/menu.log` 和 `menu.err.log`
+安装(两种方式任选其一):
 
-菜单栏 App 是 macOS 的默认体验:它显示当前保护状态、延迟、DNS 接管状态和诊断入口。`Open Status` 在 App 内打开简洁状态面板,不依赖 Terminal。盾牌右侧的静态状态点表示保护状态:绿=已保护,黄=安全恢复中或需要注意,红=保护不可用(当 bx 明确报告该状态时),灰=已关闭或未配置。它保持克制,不是复杂控制面板;安装时也不会自动配置或接管网络。真正启动保护需要用户明确确认:通常在菜单栏里完成,也可以用命令行备用路径。
+1. 把 `Bx.app` 拖到 `/Applications`,双击打开,菜单栏点 `Install bx…`(一次管理员授权)。
+2. 运行包内 `./install.sh`(等价的命令行方式,内部对 `Bx.app/Contents/Resources/bx-cli app-install` 发起同一次 sudo 安装)。
 
-下载 release 后运行:
+安装只做落位和铺路,不启动保护、不修改 DNS 或路由:
+
+- `Bx.app` 落到 `/Applications/Bx.app`(唯一产品位置)
+- 运行时装到 `/Library/Application Support/bx/runtime/<version>/`(root 拥有,按版本存放,升级靠切换 `current`)
+- 稳定命令行入口 `/usr/local/bin/bx`(bridge,定位并 exec 到 `runtime/current` 里同版本的 CLI)——因此终端 `bx --version` 永远和 App 版本一致
+- Guardian 保护服务的 plist 就绪但不 enable、不启动
+- 菜单栏登录项指向 `/Applications/Bx.app`
+
+菜单栏 App 是 macOS 的默认体验:它显示当前保护状态、延迟、DNS 接管状态和诊断入口。`Open Status` 在 App 内打开简洁状态面板,不依赖 Terminal。盾牌右侧的静态状态点表示保护状态:绿=已保护,黄=安全恢复中或需要注意,红=保护不可用(当 bx 明确报告该状态时),灰=已关闭或未配置。
+
+安装后打开菜单栏图标即可。如果显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接;配置成功后菜单栏会询问是否立即 `Start Protection`。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
+
+菜单栏的 `Turn Off bx` 只停止保护、恢复 bx 管理的 DNS,菜单栏 App 本身继续常驻;`Quit bx…` 在此之上再确认关闭菜单栏 App;`Quit Menu` 只退出图标,不碰保护状态。也可以用命令行 `sudo bx down`。
+
+**更新**:统一安装布局下 `bx update` 拒绝就地替换(`bx update --check` 仍然只读可用,供菜单栏或自动化查询新版)。有新版时,按上面「安装」的方式下载新包重新装一遍即可——重装是幂等操作,会保留 `/etc/bx/config.yaml`,不影响当前已停止的保护状态。Guardian 统一在线更新留待下一阶段。
+
+**卸载**:
 
 ```bash
-./install.sh
+sudo bx uninstall
 ```
 
-`install.sh` 会先检查 macOS、CPU 架构和必要文件,避免装错包。它只安装 CLI、安装并启动菜单栏 App;不会执行 `bx setup`、不会执行 `bx up`、不会修改 DNS 或路由。
+保护仍在运行时 `bx uninstall` 会拒绝并提示先 `sudo bx down`(它自己不会代为停止保护)。卸载会移除 Guardian plist、统一 runtime、`/usr/local/bin/bx`、`/Applications/Bx.app` 和登录项,但保留 `/etc/bx`(连接配置)与 `/var/lib/bx`(运行时数据)。
 
-安装后看菜单栏图标即可。如果菜单栏显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接即可完成配置。配置成功后菜单栏会询问是否立即开始保护。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
+#### 开发模式 / 从源码安装菜单栏 App
 
-菜单栏的 `Quit bx…` 会确认后停止保护、恢复 bx 管理的 DNS 并关闭菜单。`Quit Menu` 只退出图标,不会关闭保护。也可运行 `sudo bx down`。
+仓库内 `./bx`(本地 `go build` 产物)照常可以跑测试、`sudo ./bx run` 前台调试;它不会注册生产 Guardian 服务,也不会覆盖或写入统一 runtime(`/Library/Application Support/bx/runtime`)。
 
-菜单栏会在启动时、以及之后每天只读检查一次已签名的 release。有新版时会显示 `Update bx…`。确认后,它会校验完整 macOS 包、一起替换 CLI 与菜单栏 App,再只重启菜单栏自身;运行中的保护会话、TUN、路由和 DNS 保持不变。更新记录在 `~/Library/Logs/bx/menu-update.log`。
-
-无法使用菜单栏时,可下载新版 release 后再次运行:
-
-```bash
-./install.sh
-```
-
-安装器会保留 `/etc/bx/config.yaml`,只替换 `/usr/local/bin/bx`、菜单栏 App 和菜单栏 LaunchAgent,不会中断正在运行的保护。菜单栏的 `Reconnect` 只安全更换传输,不会为了加载新二进制而释放保护路径。运行中的守护进程会继续使用已加载的版本;进程级升级是单独的维护操作,不由安装器自动触发。
-
-#### 从源码安装菜单栏 App
-
-开发时也可以从仓库源码打包并安装到当前用户:
+只想单独开发/测试菜单栏 App(不涉及统一安装的 CLI/runtime/Guardian)时,可以从仓库源码打包并安装到当前用户:
 
 ```bash
 cd /path/to/bx
@@ -202,12 +205,7 @@ scripts/install-macos-menu.sh restart
 scripts/install-macos-menu.sh uninstall
 ```
 
-如果菜单栏显示 `Update Required`,说明 `/usr/local/bin/bx` 太旧。重新安装当前 CLI 后重启菜单栏:
-
-```bash
-sudo install -m 0755 ./bx /usr/local/bin/bx
-scripts/install-macos-menu.sh restart
-```
+这条路径只装菜单栏 App 本身,`/usr/local/bin/bx` 仍由统一安装的 bridge 提供。如果菜单栏显示 `Update Required`,说明当前 CLI 版本落后于菜单栏预期——按上面「macOS 安装包」的方式重新走一遍安装(`./install.sh` 或菜单栏 `Install bx…`)即可;不要手工拿本地 `./bx` 覆盖 `/usr/local/bin/bx`,那会绕开 bridge,让 `bx --version` 和 App 版本脱节。
 
 ### 应用可用性预设
 
@@ -238,7 +236,6 @@ scripts/package-macos-release.sh
 
 ```text
 dist/release/bx-macos-arm64/
-  bx
   Bx.app
   install.sh
   uninstall.sh
@@ -247,16 +244,12 @@ dist/release/bx-macos-arm64.tar.gz
 dist/release/SHA256SUMS
 ```
 
+`Bx.app/Contents/Resources` 内嵌 `bx-cli`、`bx-bridge` 和 `release.json`(校验用的 sha256 摘要),不再有顶层裸 `bx` 二进制。
+
 发包前可验证产物:
 
 ```bash
 scripts/verify-macos-release.sh
-```
-
-菜单栏 App 会调用 `/usr/local/bin/bx`,因此本机 CLI 更新后也应同步安装到该路径:
-
-```bash
-sudo install -m 0755 ./bx /usr/local/bin/bx
 ```
 
 macOS DNS 状态可单独查看或手动修复:
@@ -331,7 +324,7 @@ sudo bx server shares --json
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `sudo bx reconnect` | 安全重连传输:替代传输健康后切换,不中断 TUN、路由或 DNS |
 | `bx update --check --json` | 只读检查已签名 release,供菜单栏或自动化读取 |
-| `sudo bx update` | 校验已签名 release 并原子替换 CLI,不打断当前保护会话 |
+| `sudo bx update` | 校验已签名 release 并原子替换 CLI;macOS 统一安装(Bx.app)下会拒绝就地更新,提示改用新包重装 |
 | `sudo bx direct add <domain>` | 将域名加入直连白名单,会与 proxy 规则互斥清理 |
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |
 | `sudo bx proxy add <domain>` | 强制域名走隧道,会与 direct 规则互斥清理 |
