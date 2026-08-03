@@ -420,9 +420,18 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 		return fmt.Errorf("无法确认运行版本,先 bx doctor")
 	}
 	if from == target && !c.Bool("force") {
-		if !c.Bool("json") {
-			fmt.Println("✅ 已是最新,无需更新。")
+		if c.Bool("json") {
+			result := guardian.UpdateResult{
+				FromVersion:     from,
+				ToVersion:       target,
+				Phase:           guardian.PhaseCommitted,
+				CoreActivated:   false,
+				RolledBack:      false,
+				ProtectionState: guardian.ProtectionProtected,
+			}
+			return json.NewEncoder(os.Stdout).Encode(result)
 		}
+		fmt.Println("✅ 已是最新,无需更新。")
 		return nil
 	}
 
@@ -435,7 +444,6 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
 		return fmt.Errorf("创建暂存目录: %w", err)
 	}
-	defer os.RemoveAll(stagingDir)
 	packagePath := filepath.Join(stagingDir, "package.tgz")
 	if err := os.WriteFile(packagePath, data, 0o600); err != nil {
 		return fmt.Errorf("暂存更新包: %w", err)
@@ -450,6 +458,15 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 	sum := sha256.Sum256(data)
 	request := buildGuardianUpdateRequest(txid, from, pkg, hex.EncodeToString(sum[:]), packagePath)
 	result, err := guardian.NewClientWithTimeout(guardian.SocketPath, 90*time.Second).Update(context.Background(), request)
+	// 暂存目录(内含 Guardian 写入的 guardian-recovery.json 崩溃恢复描述符)只在终态
+	// (committed/rolled_back)才由这里清理,belt-and-braces 收拾 package.tgz——那两种
+	// 情形 Guardian 自己已经处理完毕。error 或 needs_attention 意味着事务未终结,
+	// Guardian 下次启动要靠这份暂存元数据自动恢复/回滚,绝不能被 CLI 删掉。
+	if shouldCleanUpdateStaging(result, err) {
+		os.RemoveAll(stagingDir)
+	} else if !asJSON {
+		fmt.Printf("! 更新未终结:保留 %s 供 Guardian 恢复使用\n", stagingDir)
+	}
 	if err != nil {
 		return fmt.Errorf("更新失败:%w;运行 sudo bx status 与 bx doctor 检查保护状态", err)
 	}
@@ -470,6 +487,18 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 		return fmt.Errorf("更新已自动回滚,仍运行 %s", result.FromVersion)
 	}
 	return nil
+}
+
+// shouldCleanUpdateStaging 是纯函数:只有 Update 调用无错误、且事务落到终态
+// (committed 或 rolled_back)才该由 CLI 清理暂存目录——那两种情形 Guardian 自己已经
+// 完成收尾,这里只是顺手清掉 package.tgz。updateErr!=nil 或结果是 needs_attention
+// (含未来任何非终态取值)一律不清:暂存目录里的 guardian-recovery.json 是 Guardian
+// 下次启动自动恢复/回滚要用的崩溃恢复描述符,删了就等于关掉这条恢复路径。
+func shouldCleanUpdateStaging(result guardian.UpdateResult, updateErr error) bool {
+	if updateErr != nil {
+		return false
+	}
+	return result.Phase == guardian.PhaseCommitted || result.Phase == guardian.PhaseRolledBack
 }
 
 // decideUnifiedUpdateRoute 是纯函数:按 Guardian /v1/status 的结果决定 bx update 走
