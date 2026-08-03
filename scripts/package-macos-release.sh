@@ -32,174 +32,83 @@ echo "Packaging menu bar app..."
 BX_ARCH="$ARCH" BX_VERSION="$VERSION" BX_DIST_DIR="$ROOT/dist/macos-$ARCH" "$ROOT/scripts/package-macos-menu.sh" >/dev/null
 ditto "$ROOT/dist/macos-$ARCH/Bx.app" "$RELEASE_DIR/Bx.app"
 
+echo "Embedding release assets into Bx.app..."
+RESOURCES="$RELEASE_DIR/Bx.app/Contents/Resources"
+install -m 0755 "$RELEASE_DIR/bx" "$RESOURCES/bx-cli"
+GOOS=darwin GOARCH="$ARCH" go build -trimpath -ldflags "-X github.com/getbx/bx/internal/version.Version=$VERSION" \
+  -o "$RESOURCES/bx-bridge" "$ROOT/cmd/bx-bridge"
+CLI_SHA=$(shasum -a 256 "$RESOURCES/bx-cli" | awk '{print $1}')
+BRIDGE_SHA=$(shasum -a 256 "$RESOURCES/bx-bridge" | awk '{print $1}')
+cat > "$RESOURCES/release.json" <<EOF
+{
+  "schema_version": 1,
+  "version": "$VERSION",
+  "platform": "darwin/$ARCH",
+  "assets": {
+    "bx-cli": "$CLI_SHA",
+    "bx-bridge": "$BRIDGE_SHA"
+  }
+}
+EOF
+rm "$RELEASE_DIR/bx"   # 顶层裸 bx 不再进包(经 App 内 bx-cli 由 app-install 安装)
+
 cat > "$RELEASE_DIR/install.sh" <<'SCRIPT'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RELEASE_ARCH="__BX_RELEASE_ARCH__"
-BX_DST="${BX_DST:-/usr/local/bin/bx}"
-CONFIG_PATH="${BX_CONFIG_PATH:-/etc/bx/config.yaml}"
-APP_DST="${BX_APP_DST:-$HOME/Applications/Bx.app}"
-AGENT_ID="com.getbx.bx.menu"
-LEGACY_AGENT_ID="com.ggshr9.bx.menu"
-AGENT_DIR="$HOME/Library/LaunchAgents"
-AGENT_DST="$AGENT_DIR/$AGENT_ID.plist"
-LEGACY_AGENT_DST="$AGENT_DIR/$LEGACY_AGENT_ID.plist"
-DOMAIN="gui/$(id -u)"
-LOG_DIR="${BX_LOG_DIR:-$HOME/Library/Logs/bx}"
-
-fail() {
-  echo "install failed: $*" >&2
-  exit 1
-}
-
-preflight() {
-  [[ "$(uname -s)" == "Darwin" ]] || fail "this package is for macOS"
-  [[ "${EUID:-$(id -u)}" != "0" ]] || fail "run ./install.sh as your normal macOS user; the installer will ask for administrator permission only when installing the bx CLI"
-  local machine_arch
-  machine_arch="$(uname -m)"
-  case "$RELEASE_ARCH:$machine_arch" in
-    arm64:arm64|amd64:x86_64) ;;
-    *) fail "package architecture $RELEASE_ARCH does not match this Mac ($machine_arch)" ;;
-  esac
-  [[ -x "$DIR/bx" ]] || fail "missing bx executable"
-  [[ -x "$DIR/Bx.app/Contents/MacOS/BxMenu" ]] || fail "missing Bx.app"
-  command -v launchctl >/dev/null || fail "missing launchctl"
-  command -v ditto >/dev/null || fail "missing ditto"
-}
-
-preflight
-
-if [[ -x "$BX_DST" ]]; then
-  echo "Existing bx CLI found at $BX_DST; this install will upgrade it."
-else
-  echo "No existing bx CLI found at $BX_DST; this install will add it."
-fi
-if [[ -f "$CONFIG_PATH" ]]; then
-  echo "Existing client config will be preserved: $CONFIG_PATH"
-fi
-
-echo "Installing bx CLI to $BX_DST..."
-sudo install -m 0755 "$DIR/bx" "$BX_DST"
-
-echo "Installing bx menu bar app to $APP_DST..."
-mkdir -p "$(dirname "$APP_DST")"
-ditto "$DIR/Bx.app" "$APP_DST"
-mkdir -p "$AGENT_DIR" "$LOG_DIR"
-launchctl bootout "$DOMAIN" "$LEGACY_AGENT_DST" >/dev/null 2>&1 || true
-rm -f "$LEGACY_AGENT_DST"
-cat > "$AGENT_DST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>$AGENT_ID</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$APP_DST/Contents/MacOS/BxMenu</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>$LOG_DIR/menu.log</string>
-  <key>StandardErrorPath</key>
-  <string>$LOG_DIR/menu.err.log</string>
-</dict>
-</plist>
-PLIST
-
-launchctl bootout "$DOMAIN" "$AGENT_DST" >/dev/null 2>&1 || true
-launchctl bootstrap "$DOMAIN" "$AGENT_DST"
-launchctl kickstart -k "$DOMAIN/$AGENT_ID"
-
-cat <<MSG
-bx installed.
-The menu bar app is installed and running.
-
-Next:
-  Open the bx menu bar icon and choose Set Up bx...
-
-Upgrade notes:
-  Existing client config is preserved. This installer only replaces the CLI,
-  menu bar app, and menu LaunchAgent.
-  Protection stays running. Reconnect only replaces the transport safely;
-  it does not restart the protection process to load a new CLI binary.
-
-CLI fallback:
-  sudo bx setup '<client-link>' && sudo bx up
-
-The installer did not start bx or change DNS/routes.
-Do not run this installer with sudo; it installs the menu bar app for the current user.
-MSG
+DIR="$(cd "$(dirname "$0")" && pwd)"
+[ "$(uname -s)" = "Darwin" ] || { echo "仅支持 macOS" >&2; exit 1; }
+[ "$(id -u)" -ne 0 ] || { echo "请勿用 root 运行本脚本(安装时会请求一次 sudo)" >&2; exit 1; }
+MACHINE="$(uname -m)"
+case "__BX_RELEASE_ARCH__:$MACHINE" in
+  arm64:arm64|amd64:x86_64) ;;
+  *) echo "架构不匹配:包为 __BX_RELEASE_ARCH__,机器为 $MACHINE" >&2; exit 1 ;;
+esac
+[ -x "$DIR/Bx.app/Contents/Resources/bx-cli" ] || { echo "包不完整:缺少 bx-cli" >&2; exit 1; }
+echo "即将安装 Bx.app 到 /Applications 并配置 bx(需要一次管理员授权)。"
+echo "安装不会启动保护、不修改你的连接配置。"
+sudo "$DIR/Bx.app/Contents/Resources/bx-cli" app-install --app-source "$DIR/Bx.app"
+echo "完成。打开菜单栏的 bx 图标继续 Set Up。"
 SCRIPT
 
 perl -0pi -e "s/__BX_RELEASE_ARCH__/$ARCH/g" "$RELEASE_DIR/install.sh"
 
 cat > "$RELEASE_DIR/uninstall.sh" <<'SCRIPT'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-
-BX_DST="${BX_DST:-/usr/local/bin/bx}"
-APP_DST="${BX_APP_DST:-$HOME/Applications/Bx.app}"
-AGENT_ID="com.getbx.bx.menu"
-AGENT_DST="$HOME/Library/LaunchAgents/$AGENT_ID.plist"
-DOMAIN="gui/$(id -u)"
-
-if [[ "${EUID:-$(id -u)}" == "0" ]]; then
-  echo "uninstall failed: run ./uninstall.sh as your normal macOS user, not with sudo." >&2
-  exit 1
-fi
-
-launchctl bootout "$DOMAIN" "$AGENT_DST" >/dev/null 2>&1 || true
-rm -f "$AGENT_DST"
-rm -rf "$APP_DST"
-
-echo "Removed bx menu bar app."
-echo "CLI remains at $BX_DST. Remove it manually if desired:"
-echo "  sudo rm -f '$BX_DST'"
+echo "本包不再包含独立的卸载脚本。"
+echo "请运行:"
+echo "  sudo bx uninstall"
 echo
-echo "This did not turn off protection or change DNS/routes."
+echo "该命令会:停用并卸载 Guardian 保护服务、移除 Bx.app 与 bx CLI、"
+echo "移除 launchd 登录项;但会保留 /etc/bx(你的连接配置)与 /var/lib/bx(运行时数据)。"
 SCRIPT
 
 cat > "$RELEASE_DIR/README.txt" <<TXT
 bx macOS $ARCH release ($VERSION)
 
-Install:
-  ./install.sh
+安装(两种方式任选其一):
+  1. 将 Bx.app 拖到 /Applications,双击打开后点 "Install bx..."。
+  2. 运行 ./install.sh(等价于上一步,命令行方式)。
 
-After install:
-  The menu bar app is installed and running.
-  Open the bx menu bar icon and choose Set Up bx...
+安装做了什么:
+  将 Bx.app 装到 /Applications,并把 App 内嵌的 bx-cli 安装为系统 bx 命令、
+  配置 Guardian 保护服务与登录项。安装不会启动保护、不修改你的连接配置。
 
-Upgrade:
-  Re-running install.sh is safe. It preserves /etc/bx/config.yaml and replaces
-  only the bx CLI, menu bar app, and menu LaunchAgent.
-  Protection stays running. Reconnect only replaces the transport safely;
-  it does not restart the protection process to load a new CLI binary.
+安装之后:
+  打开菜单栏的 bx 图标,选择 Set Up bx... 继续配置。
 
-CLI fallback:
-  sudo bx setup '<client-link>' && sudo bx up
-
-Menu bar app:
-  Installed to ~/Applications/Bx.app
-  Login item: ~/Library/LaunchAgents/com.getbx.bx.menu.plist
-  Logs: ~/Library/Logs/bx/menu.log and menu.err.log
-
-Remove menu bar app:
-  ./uninstall.sh
+卸载:
+  sudo bx uninstall
+  (详见 ./uninstall.sh)
 
 Notes:
-  install.sh installs the bx CLI, installs the menu bar app, and starts the menu bar app.
-  install.sh preserves existing client config at /etc/bx/config.yaml.
-  install.sh does not run bx setup, does not run bx up, and does not change DNS/routes.
-  Run install.sh as your normal macOS user, not with sudo.
-  uninstall.sh removes only the menu bar app and does not turn off protection.
-  Run uninstall.sh as your normal macOS user, not with sudo.
+  install.sh 需要以你的普通 macOS 用户身份运行(会在需要时通过 sudo 请求一次管理员授权)。
+  install.sh 不会执行 bx setup、不会执行 bx up、不会修改 DNS/路由。
+  旧版客户端(升级前安装的 bx)对本包运行 bx update --package 会解包失败并干净报错,
+  属预期行为(pre-1.0);请改用本 README 的安装方式重新安装。
 TXT
 
-chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh" "$RELEASE_DIR/bx"
+chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh"
 
 (
   cd "$DIST_ROOT"
