@@ -124,6 +124,60 @@ func SwitchCurrent(root, version string) error {
 	return os.Rename(next, CurrentLink(root))
 }
 
+// GC 清理 <root> 下的过期版本目录与残留:
+//   - 所有 ".staging-*"/".discard-*" 前缀目录一律删除(升级中断的残留);
+//   - 版本名目录(经 validVersionName 校验)若不在 keep 集合、且不是 current
+//     符号链当前指向的版本,则删除;
+//   - "current" 符号链本身与非法/非版本名条目一律跳过,不动。
+//
+// keep 中混入的非法版本名会被忽略,不视为错误(防御式:调用方传来的 keep
+// 列表哪怕含脏数据,GC 也不能因此报错中断或误删)。
+func GC(root string, keep []string) error {
+	keepSet := make(map[string]struct{}, len(keep))
+	for _, version := range keep {
+		if err := validVersionName(version); err != nil {
+			continue
+		}
+		keepSet[version] = struct{}{}
+	}
+	var currentTarget string
+	if target, err := os.Readlink(CurrentLink(root)); err == nil {
+		currentTarget = target
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "current" {
+			continue
+		}
+		if strings.HasPrefix(name, ".staging-") || strings.HasPrefix(name, ".discard-") {
+			if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := validVersionName(name); err != nil {
+			continue
+		}
+		if _, ok := keepSet[name]; ok {
+			continue
+		}
+		if name == currentTarget {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validVersionName(version string) error {
 	if version == "" || version == "current" ||
 		strings.ContainsAny(version, "/\\") || strings.Contains(version, "..") ||

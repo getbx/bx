@@ -47,6 +47,8 @@ type CoreRunner interface {
 	Verify(Process) error
 	Start(context.Context, CoreStartOptions) (Process, error)
 	Stop(context.Context, Process) error
+	Executable() string
+	SetExecutable(string) error // 必须绝对路径,否则 error;并发安全
 }
 
 type CoreStartOptions struct {

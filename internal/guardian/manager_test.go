@@ -507,7 +507,6 @@ func TestManagerAcceptedAdoptionObservesExit(t *testing.T) {
 	env.runner.exitWatched(errors.New("adopted Core exited"))
 	eventually(t, func() bool { return env.runner.startCount() == 1 })
 	eventually(t, func() bool { return env.manager.Status().Protection == ProtectionProtected })
-
 }
 
 func cleanupManagerWatchers(env *managerTestEnv) {
@@ -1389,6 +1388,8 @@ type fakeCoreRunner struct {
 	watches                int
 	stopContextErr         error
 	stopDeadline           time.Time
+
+	executable string
 }
 
 func newFakeCoreRunner(events *eventLog) *fakeCoreRunner {
@@ -1554,6 +1555,22 @@ func (r *fakeCoreRunner) exit(pid int, err error) {
 	if exit != nil {
 		exit <- err
 	}
+}
+
+func (r *fakeCoreRunner) Executable() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.executable
+}
+
+func (r *fakeCoreRunner) SetExecutable(executable string) error {
+	if !filepath.IsAbs(executable) {
+		return fmt.Errorf("executable must be absolute")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.executable = executable
+	return nil
 }
 
 type fakeHealthGate struct {
