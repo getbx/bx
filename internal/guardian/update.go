@@ -875,10 +875,11 @@ func (macOSUpdatePreparer) Prepare(_ context.Context, request UpdateRequest, pac
 	if err != nil {
 		return nil, err
 	}
-	payload, err := updatepkg.ExtractMacOSPackage(packageData, runtime.GOARCH)
+	pkg, err := updatepkg.ExtractMacOSPackage(packageData, runtime.GOARCH)
 	if err != nil {
 		return nil, err
 	}
+	payload := updatepkg.MacOSPayload{CLI: pkg.Bridge, Menu: pkg.App}
 	transactionRoot := filepath.Join(paths.Staging, request.TransactionID)
 	if err := os.RemoveAll(transactionRoot); err != nil {
 		return nil, err

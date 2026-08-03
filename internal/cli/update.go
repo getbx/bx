@@ -310,10 +310,11 @@ func updateMacOSPackage(c *cli.Context, client *http.Client, releaseTag string, 
 	if err := verifyChecksum(packageData, asset.SHA256); err != nil {
 		return fmt.Errorf("完整 macOS 包校验失败(已中止,未替换): %w", err)
 	}
-	payload, err := extractMacOSPackage(packageData, runtime.GOARCH)
+	pkg, err := extractMacOSPackage(packageData, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
+	payload := updatepkg.MacOSPayload{CLI: pkg.CLI, Menu: pkg.App}
 	destination := install.BinPath
 	if self, err := os.Executable(); err == nil && self != "" {
 		destination = self
