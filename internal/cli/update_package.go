@@ -37,7 +37,7 @@ func parseMacOSAppOwner(raw string) (macOSAppOwner, error) {
 	return macOSAppOwner{uid: uid, gid: gid}, nil
 }
 
-func extractMacOSPackage(data []byte, arch string) (macOSPackagePayload, error) {
+func extractMacOSPackage(data []byte, arch string) (updatepkg.MacOSPackage, error) {
 	return updatepkg.ExtractMacOSPackage(data, arch)
 }
 
