@@ -10,20 +10,22 @@ The shield has a static status dot: green means protected, yellow means bx is
 safely recovering or needs attention, red means a future explicit protection
 failure, and gray means bx is off or not configured.
 
+- Install bx
 - Open Status
 - View Logs
 - Run Doctor
 - Set Up bx
 - Start Protection
 - Reconnect
+- Turn Off bx
 - Update bx
 - Quit bx
 
 It does not install, configure, start, reconnect, or turn off protection by itself unless you choose one of the explicit menu actions.
 Starting protection always asks for confirmation before bx takes over system traffic.
 Turning protection off also asks for confirmation and restores managed DNS settings.
-`Quit bx…` stops protection through `bx down`, restores bx-managed DNS, then closes the menu. `Quit Menu` closes only the menu bar UI; it deliberately leaves protection running.
-Use `Quit bx…` when you want to stop protection, restore managed DNS, and close the menu.
+`Turn Off bx` stops protection through `bx down` and restores bx-managed DNS, but leaves the menu bar app running. `Quit bx…` does the same and then also closes the menu bar app. `Quit Menu` closes only the menu bar UI; it deliberately leaves protection running.
+Use `Turn Off bx` when you want to stop protection but keep the menu bar app open; use `Quit bx…` when you also want to close the app.
 When bx needs attention, the primary action is to reconnect. bx keeps TUN, routes, and managed DNS in place while it verifies a replacement transport, so a failed reconnect does not create a direct-traffic window.
 
 When the menu shows `Setup Required`, choose `Set Up bx...`, paste your bx link, and approve the macOS administrator prompt. After setup succeeds, the menu asks whether to start protection now. If setup fails, use `Run Doctor` from the same menu.
@@ -31,11 +33,14 @@ If setup, start, reconnect, or turn off fails, the failure dialog offers `Run Do
 
 `Open Status` stays inside the bx app. The first action that needs Terminal, currently `Run Doctor`, may ask for permission to control Terminal. bx uses this only for the action you selected. Approve the macOS prompt to continue.
 
-At launch and then every 24 hours, the menu checks for a signed bx release in
-the background. If an update is available, choose `Update bx…` and approve the
-macOS administrator prompt. The verified package replaces both the CLI and the
-installed app, then restarts only the menu bar app. Active protection is not
-stopped, and no DNS or route settings are changed. Update output is written to:
+At launch and then every 24 hours, the menu checks (read-only) for a signed bx
+release in the background and shows `Update bx…` when one is available. On a
+unified install (`Bx.app` in `/Applications`, the normal case for release
+packages) choosing it currently reports that in-place update isn't supported
+yet — download the new `bx-macos-<arch>.tar.gz` and reinstall (`./install.sh`
+or the menu's `Install bx…`) instead; that reinstall is idempotent and keeps
+`/etc/bx/config.yaml`. A one-click online update through Guardian is planned
+for a later phase. Update attempt output is written to:
 
 ```text
 ~/Library/Logs/bx/menu-update.log
@@ -74,7 +79,7 @@ scripts/package-macos-release.sh
 scripts/verify-macos-release.sh
 ```
 
-The release folder includes `bx`, `Bx.app`, `install.sh`, `uninstall.sh`, `README.txt`, and a top-level `SHA256SUMS`.
+The release folder includes `Bx.app` (with `bx-cli`/`bx-bridge`/`release.json` embedded under `Contents/Resources`), `install.sh`, `uninstall.sh`, `README.txt`, and a top-level `SHA256SUMS`. There is no top-level `bx` binary.
 
 Start at login:
 
@@ -99,15 +104,6 @@ scripts/install-macos-menu.sh restart
 scripts/install-macos-menu.sh uninstall
 ```
 
-Manual LaunchAgent install:
-
-```bash
-mkdir -p ~/Library/LaunchAgents
-cp dist/macos/com.getbx.bx.menu.plist ~/Library/LaunchAgents/
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.getbx.bx.menu.plist
-launchctl kickstart -k "gui/$(id -u)/com.getbx.bx.menu"
-```
-
 Remove the menu bar app:
 
 ```bash
@@ -115,6 +111,8 @@ scripts/install-macos-menu.sh uninstall
 ```
 
 The installer uses `~/Applications/Bx.app` by default. Override `BX_APP_DST` if you intentionally want another location.
+
+This dev-only path installs the menu app by itself. The production install (`Bx.app` in `/Applications`, run via `Install bx…` in the menu or the release package's `install.sh`) writes its own LaunchAgent pointing at `/Applications/Bx.app` and self-heals it on launch — you never need to hand-install a plist for that path.
 
 BxMenu reads status through:
 
@@ -148,8 +146,4 @@ sudo bx setup '<client-link>'
 sudo bx up
 ```
 
-When updating from a local build, also update the CLI used by the menu bar:
-
-```bash
-sudo install -m 0755 ./bx /usr/local/bin/bx
-```
+`/usr/local/bin/bx` is a bridge installed by the unified installer: it resolves and execs the matching CLI under `/Library/Application Support/bx/runtime/current`, so `bx --version` always matches the installed `Bx.app` version. Don't overwrite it by hand with a locally built `./bx` — that bypasses the bridge and desyncs the CLI from the App version. To pick up a local build, package a full release (`scripts/package-macos-release.sh`) and reinstall via `install.sh`.
