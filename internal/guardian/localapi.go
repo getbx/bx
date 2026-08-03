@@ -105,14 +105,18 @@ func pathRecoveryControllerFor(controller Controller) PathRecoveryController {
 	return pathRecoveryController
 }
 
+func applyVersionFields(status *Status, options LocalAPIOptions) {
+	status.GuardianVersion = options.GuardianVersion
+	if options.RuntimeVersion != nil {
+		status.RuntimeVersion = options.RuntimeVersion()
+	}
+}
+
 func observableStatus(controller Controller, recoveries PathRecoveryController, options LocalAPIOptions) Status {
 	status := controller.Status()
 	status.Recovery = RecoverySnapshot{State: "idle", Stage: "idle"}
 	if recoveries == nil {
-		status.GuardianVersion = options.GuardianVersion
-		if options.RuntimeVersion != nil {
-			status.RuntimeVersion = options.RuntimeVersion()
-		}
+		applyVersionFields(&status, options)
 		return status
 	}
 	if current, ok := recoveries.(pathRecoveryStatusController); ok {
@@ -132,10 +136,7 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 			status.Protection = ProtectionBlocked
 		}
 	}
-	status.GuardianVersion = options.GuardianVersion
-	if options.RuntimeVersion != nil {
-		status.RuntimeVersion = options.RuntimeVersion()
-	}
+	applyVersionFields(&status, options)
 	return status
 }
 
