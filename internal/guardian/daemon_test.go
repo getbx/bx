@@ -552,3 +552,33 @@ func TestSystemLegacyCoreLifecycleForwardsStopAndRemove(t *testing.T) {
 		t.Fatalf("legacy lifecycle calls = present:%v stop:%v remove:%v", inspected, stopped, removed)
 	}
 }
+
+func TestCoreExecutablePinsResolvedSelf(t *testing.T) {
+	got := coreExecutable(
+		func() (string, error) { return "/Library/Application Support/bx/runtime/current/bx", nil },
+		func(path string) (string, error) { return "/Library/Application Support/bx/runtime/1.2.3/bx", nil },
+	)
+	if got != "/Library/Application Support/bx/runtime/1.2.3/bx" {
+		t.Fatalf("coreExecutable = %q", got)
+	}
+}
+
+func TestCoreExecutableFallsBackToBinPath(t *testing.T) {
+	got := coreExecutable(
+		func() (string, error) { return "", errors.New("no self") },
+		func(path string) (string, error) { return path, nil },
+	)
+	if got != install.BinPath {
+		t.Fatalf("fallback = %q", got)
+	}
+}
+
+func TestCoreExecutableKeepsPathWhenResolveFails(t *testing.T) {
+	got := coreExecutable(
+		func() (string, error) { return "/usr/local/bin/bx", nil },
+		func(path string) (string, error) { return "", errors.New("eval failed") },
+	)
+	if got != "/usr/local/bin/bx" {
+		t.Fatalf("got %q", got)
+	}
+}
