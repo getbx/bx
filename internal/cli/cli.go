@@ -206,6 +206,10 @@ type clientStatusReport struct {
 	ProtectionState   string                    `json:"protection_state"`
 	NetworkGeneration string                    `json:"network_generation"`
 	Recovery          guardian.RecoverySnapshot `json:"recovery"`
+	Phase             string                    `json:"phase,omitempty"`
+	CoreVersion       string                    `json:"core_version,omitempty"`
+	GuardianVersion   string                    `json:"guardian_version,omitempty"`
+	RuntimeVersion    string                    `json:"runtime_version,omitempty"`
 }
 
 type inspectReport struct {
@@ -4175,6 +4179,10 @@ func assembleClientStatusReportWithCore(core *stats.Report, evidence string, sta
 		ProtectionState:   protection,
 		NetworkGeneration: status.NetworkGeneration,
 		Recovery:          status.Recovery,
+		Phase:             string(status.Phase),
+		CoreVersion:       status.CoreVersion,
+		GuardianVersion:   status.GuardianVersion,
+		RuntimeVersion:    status.RuntimeVersion,
 	}
 }
 
@@ -4184,6 +4192,9 @@ func renderClientStatus(report clientStatusReport) string {
 		var b strings.Builder
 		fmt.Fprintln(&b, "bx protection (partial)")
 		fmt.Fprintf(&b, "  Guardian %s\n", label)
+		if shouldShowUpdateMessage(report.Phase) {
+			fmt.Fprintf(&b, "  更新中(%s):网络可能短暂暂停,完成后自动恢复\n", report.Phase)
+		}
 		fmt.Fprintln(&b, "  Core     Unavailable")
 		fmt.Fprintln(&b, "  Protection Core status/protection cannot be verified")
 		if report.NetworkGeneration != "" {
@@ -4196,12 +4207,24 @@ func renderClientStatus(report clientStatusReport) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "bx protection")
 	fmt.Fprintf(&b, "  Status  %s\n", label)
+	if shouldShowUpdateMessage(report.Phase) {
+		fmt.Fprintf(&b, "  更新中(%s):网络可能短暂暂停,完成后自动恢复\n", report.Phase)
+	}
 	if report.NetworkGeneration != "" {
 		fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
 	}
 	writeClientRecovery(&b, report.Recovery)
 	b.WriteString(stats.Render(*report.Report))
 	return b.String()
+}
+
+func shouldShowUpdateMessage(phase string) bool {
+	switch phase {
+	case "prepared", "barrier_active", "activating", "rolling_back":
+		return true
+	default:
+		return false
+	}
 }
 
 func clientProtectionLabel(protection string) string {
