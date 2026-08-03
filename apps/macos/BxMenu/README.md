@@ -36,11 +36,18 @@ If setup, start, reconnect, or turn off fails, the failure dialog offers `Run Do
 At launch and then every 24 hours, the menu checks (read-only) for a signed bx
 release in the background and shows `Update bx…` when one is available. On a
 unified install (`Bx.app` in `/Applications`, the normal case for release
-packages) choosing it currently reports that in-place update isn't supported
-yet — download the new `bx-macos-<arch>.tar.gz` and reinstall (`./install.sh`
-or the menu's `Install bx…`) instead; that reinstall is idempotent and keeps
-`/etc/bx/config.yaml`. A one-click online update through Guardian is planned
-for a later phase. Update attempt output is written to:
+packages), choosing it runs a one-click online update covering the App, CLI,
+and runtime together; afterwards `bx --version` matches the App version. A
+confirmation dialog ("Internet access may pause briefly. bx will reconnect
+automatically.") appears first. If protection is on, the update runs as a
+fail-closed Guardian transaction: network access may pause briefly, DNS stays
+under bx's control throughout, it never falls back to a direct connection, and
+a new version that fails its health check is automatically rolled back while
+protection stays on. While an update is in progress the menu shows a yellow
+`Updating bx…` state rather than red Blocked. If protection is off, the update
+is a direct file-level replacement with no network impact. If the App, CLI,
+and runtime versions ever disagree, the menu shows `Repair bx…` to bring them
+back in sync with one click. Update attempt output is written to:
 
 ```text
 ~/Library/Logs/bx/menu-update.log

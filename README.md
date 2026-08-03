@@ -170,7 +170,12 @@ macOS release 包是统一安装:一份 `bx-macos-<arch>.tar.gz` 只含 `Bx.app`
 
 菜单栏的 `Turn Off bx` 只停止保护、恢复 bx 管理的 DNS,菜单栏 App 本身继续常驻;`Quit bx…` 在此之上再确认关闭菜单栏 App;`Quit Menu` 只退出图标,不碰保护状态。也可以用命令行 `sudo bx down`。
 
-**更新**:统一安装布局下 `bx update` 拒绝就地替换(`bx update --check` 仍然只读可用,供菜单栏或自动化查询新版)。有新版时,按上面「安装」的方式下载新包重新装一遍即可——重装是幂等操作,会保留 `/etc/bx/config.yaml`,不影响当前已停止的保护状态。Guardian 统一在线更新留待下一阶段。
+**更新**:统一安装布局下 `sudo bx update`(等价菜单栏 `Update bx…`)是就地在线更新,覆盖 App+CLI+runtime 三组件,完成后 `bx --version` 与 App 版本一致。行为按当前保护状态分两条路:
+
+- **保护开启**:经 Guardian 安全事务(4 个阶段——1/4 准备并校验新包、2/4 更新中、3/4 重连、4/4 完成),期间网络可能短暂暂停,但全程 fail-closed(DNS 保持接管、绝不回落直连);新版本未通过健康检查会自动回滚到旧版本并保持保护。
+- **保护关闭**:直接文件级升级(1/2 校验安装、2/2 完成),零网络影响。
+
+`bx update --check` 始终只读,只查有无新版,不下载不安装。`--json` 输出结构化 `UpdateResult`(`from_version`/`to_version`/`phase`/`core_activated`/`rolled_back`/`protection_state`);`rolled_back=true` 时退出码非零。若 App/CLI/runtime 三版本出现不一致,菜单栏会出现 `Repair bx…` 一键修复;更新进行中菜单栏显示黄色 `Updating bx…`(非红色 Blocked)。菜单栏更新前的确认弹窗文案是「Internet access may pause briefly. bx will reconnect automatically.」。
 
 **卸载**:
 
@@ -324,7 +329,7 @@ sudo bx server shares --json
 | `sudo bx down` | 停止客户端并取消开机自启 |
 | `sudo bx reconnect` | 安全重连传输:替代传输健康后切换,不中断 TUN、路由或 DNS |
 | `bx update --check --json` | 只读检查已签名 release,供菜单栏或自动化读取 |
-| `sudo bx update` | 校验已签名 release 并原子替换 CLI;macOS 统一安装(Bx.app)下会拒绝就地更新,提示改用新包重装 |
+| `sudo bx update` | 校验已签名 release 并原子替换 CLI;macOS 统一安装(Bx.app)下走统一在线更新(保护开启经 Guardian fail-closed 事务、失败自动回滚,保护关闭直接文件级升级) |
 | `sudo bx direct add <domain>` | 将域名加入直连白名单,会与 proxy 规则互斥清理 |
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |
 | `sudo bx proxy add <domain>` | 强制域名走隧道,会与 direct 规则互斥清理 |
