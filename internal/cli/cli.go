@@ -102,6 +102,16 @@ func New() *cli.App {
 			{Name: "blink", Usage: "把内部传输链接换壳成 bx://", ArgsUsage: "<link> [link2 ...]", Hidden: true, Action: linkAction},
 			{Name: "darwin-plan", Usage: "打印 macOS 路由 dry-run 计划(不改网络)", Hidden: true, Flags: darwinPlanFlags(), Action: darwinPlanAction},
 			{Name: "router-plan", Usage: "打印 router 模式 dry-run 计划(ip + nft,不改网络)", Hidden: true, Flags: routerPlanFlags(), Action: routerPlanAction},
+			{
+				Name:   "app-install",
+				Usage:  "从 Bx.app 安装统一 runtime/CLI bridge/Guardian(macOS,root)",
+				Hidden: true,
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "app-source", Usage: "源 Bx.app 路径(默认从自身位置推导)"},
+					&cli.StringFlag{Name: "config", Value: defaultConfigPath, Usage: "Guardian 配置路径"},
+				},
+				Action: appInstallAction,
+			},
 			{Name: "uninstall", Usage: "卸载客户端服务", Action: uninstallAction},
 		},
 	}
