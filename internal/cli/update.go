@@ -70,6 +70,15 @@ func newerAvailable(current, latest string) bool {
 	return current != latest
 }
 
+// shouldBypassManifest 是纯函数:判断 bx update 能否完全跳过网络(latest tag 查询 +
+// manifest 下载),直接用本地包文件走统一布局安装。三个条件缺一不可——非统一布局没有
+// "本地完整包"这条路(legacy 单文件更新必须靠 manifest 里的 asset 校验和);--check 是
+// "只看有没有新版",即便给了 --package-file 也该照常问网络报告可用版本、不能被当作安装
+// 触发器。
+func shouldBypassManifest(unifiedLayout bool, packageFile string, checkOnly bool) bool {
+	return unifiedLayout && packageFile != "" && !checkOnly
+}
+
 // expectedSum 从 SHA256SUMS 内容里取某资产的十六进制校验和(缺失返回空)。
 // 行格式:"<hex>  <filename>"(两空格,coreutils 风格)。
 func expectedSum(sums, asset string) string {
@@ -192,6 +201,14 @@ func verifiedReleaseManifest(client *http.Client, tag string) (updatepkg.Manifes
 func updateAction(c *cli.Context) error {
 	client := &http.Client{Timeout: 90 * time.Second}
 	cur := version.Version
+
+	// --package-file 在统一布局下应完全离线:本地包已是完整的、待校验的 macOS 包,
+	// 无需(也不该)先打个查最新 tag + 下 manifest 的网络往返去凑一个用不上的
+	// manifest/latest。updateUnifiedMacOS 在 localPackage != "" 时本就不碰这两个
+	// 参数(FindPackage/版本比对都在 else 分支),故空值安全喂给它。
+	if shouldBypassManifest(unifiedLayoutActive(), c.String("package-file"), c.Bool("check")) {
+		return updateUnifiedMacOS(c, client, updatepkg.Manifest{}, "")
+	}
 
 	if !c.Bool("json") {
 		fmt.Printf("当前版本:%s\n⏳ 查询最新 release…\n", version.String())
@@ -436,14 +453,22 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 	if err != nil {
 		return fmt.Errorf("更新失败:%w;运行 sudo bx status 与 bx doctor 检查保护状态", err)
 	}
+	// JSON body 无论成功还是回滚都先写出(调用方需要 to_version/rolled_back 等字段
+	// 判读结果);但退出码绝不能在写完 JSON 后就地 return nil——回滚意味着更新失败,
+	// 必须走下面统一的 RolledBack 判断落到非零退出,--json 和人读模式共用同一条
+	// "回滚→非零退出"路径,不能因为选了 --json 就被绕过。
 	if asJSON {
-		return json.NewEncoder(os.Stdout).Encode(result)
+		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+			return err
+		}
+	} else if result.RolledBack {
+		fmt.Printf("3/4 新版本未通过健康检查,已自动回滚\n4/4 完成:保持 %s,保护未降级直连 ✅\n", result.FromVersion)
+	} else {
+		fmt.Printf("3/4 已重连(protection_state=%s)\n4/4 完成 ✅ bx 已更新到 %s\n", result.ProtectionState, result.ToVersion)
 	}
 	if result.RolledBack {
-		fmt.Printf("3/4 新版本未通过健康检查,已自动回滚\n4/4 完成:保持 %s,保护未降级直连 ✅\n", result.FromVersion)
 		return fmt.Errorf("更新已自动回滚,仍运行 %s", result.FromVersion)
 	}
-	fmt.Printf("3/4 已重连(protection_state=%s)\n4/4 完成 ✅ bx 已更新到 %s\n", result.ProtectionState, result.ToVersion)
 	return nil
 }
 
