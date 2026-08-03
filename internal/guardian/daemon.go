@@ -278,6 +278,17 @@ func removeStaleSocketWithDial(path string, ownerUID uint32, dial func(context.C
 	return os.Remove(path)
 }
 
+func coreExecutable(selfExecutable func() (string, error), evalSymlinks func(string) (string, error)) string {
+	path, err := selfExecutable()
+	if err != nil || path == "" {
+		return install.BinPath
+	}
+	if resolved, err := evalSymlinks(path); err == nil && resolved != "" {
+		return resolved
+	}
+	return path
+}
+
 func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	if err := requireDaemonPlatform(); err != nil {
 		return err
@@ -294,7 +305,7 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	if err != nil {
 		return err
 	}
-	runner := NewExecCoreRunner(install.BinPath, options.ConfigPath, options.DNSListen)
+	runner := NewExecCoreRunner(coreExecutable(os.Executable, filepath.EvalSymlinks), options.ConfigPath, options.DNSListen)
 	manager, err := NewManager(ManagerOptions{
 		Store:           OpenDefaultStore(),
 		Runner:          runner,
