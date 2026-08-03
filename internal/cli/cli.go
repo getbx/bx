@@ -455,6 +455,7 @@ func serverInstallFlags() []cli.Flag {
 		&cli.StringFlag{Name: "password", Usage: "brook 连接密码(留空自动生成)"},
 		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(留空自动探测公网 IP)"},
 		&cli.BoolFlag{Name: "force", Usage: "覆盖已存在的 server 配置"},
+		&cli.BoolFlag{Name: "open-ufw", Usage: "安装后自动执行 ufw allow(reality+hys2 会同时放行 tcp 与 udp)"},
 	}
 }
 
@@ -770,6 +771,13 @@ func serverInstallAction(c *cli.Context) error {
 	fmt.Printf("✅ bx server 已安装(协议 %s)。下一步:sudo bx server start\n", cfg.Type)
 	if hint := serverFirewallHintFor(cfg); hint != "" {
 		fmt.Println(hint)
+	}
+	if c.Bool("open-ufw") {
+		rules := serverUFWRules(cfg)
+		if err := openUFWRules(rules); err != nil {
+			return err
+		}
+		fmt.Printf("✅ 已放行 ufw 规则: %s\n", strings.Join(rules, ", "))
 	}
 	// reality/hysteria2:链接已在生成时含 host,直接给(换壳成 bx://)。
 	if cfg.Type == "reality" || cfg.Type == "hysteria2" {
@@ -1336,13 +1344,28 @@ func serverStopAction(c *cli.Context) error {
 // serverUpAction 一键:没装过就用好默认装一遍(reality+hys2、自动探测公网 IP),然后启动。
 // 让 server 端像客户端 bx up/down/status 一样简单。
 func serverUpAction(c *cli.Context) error {
+	var ufwRules []string
 	if install.ServerUnitInstalled() {
 		fmt.Println("bx server 已安装,直接启动(要换协议/重生成密钥:sudo bx server install --force)。")
+		// 已装分支不经过 serverInstallAction,--open-ufw 要在这里单独生效(读盘现有配置推导规则)。
+		if c.Bool("open-ufw") {
+			cfg, err := readServerConfig(c.String("config"))
+			if err != nil {
+				return fmt.Errorf("读取 server 配置以应用 --open-ufw: %w", err)
+			}
+			ufwRules = serverUFWRules(cfg)
+			if err := openUFWRules(ufwRules); err != nil {
+				return err
+			}
+		}
 	} else if err := serverInstallAction(c); err != nil {
 		return err
 	}
 	if err := install.EnableServer(); err != nil {
 		return err
+	}
+	if len(ufwRules) > 0 {
+		fmt.Printf("✅ 已放行 ufw 规则: %s\n", strings.Join(ufwRules, ", "))
 	}
 	fmt.Println("✅ bx server 已启动并开机自启。看状态:bx server status;停:sudo bx server down")
 	return nil
@@ -2097,8 +2120,9 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
-				Arguments:      []string{"--host <host>", "--listen <addr>", "--password <password>", "--force"},
+				Arguments:      []string{"--host <host>", "--listen <addr>", "--password <password>", "--force", "--open-ufw"},
 				Examples:       []string{"sudo bx server install --host <host>"},
+				SafeNotes:      []string{"May change firewall only when --open-ufw is passed."},
 			},
 			{
 				Command:        "sudo bx server share <name> --host <host>",

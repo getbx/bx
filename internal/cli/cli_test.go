@@ -1736,6 +1736,16 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(invite.SafeNotes, " "), "preferred human-facing") {
 		t.Fatalf("invite capability should guide agents toward human sharing: %+v", invite)
 	}
+	serverInstall := findCapability(rep.Commands, "sudo bx server install --host <host>")
+	if serverInstall.Command == "" || !serverInstall.RequiresRoot || !serverInstall.ChangesSystem || serverInstall.ChangesNetwork {
+		t.Fatalf("unexpected server install capability: %+v", serverInstall)
+	}
+	if !strings.Contains(strings.Join(serverInstall.Arguments, " "), "--open-ufw") {
+		t.Fatalf("server install capability should advertise --open-ufw: %+v", serverInstall)
+	}
+	if !strings.Contains(strings.Join(serverInstall.SafeNotes, " "), "May change firewall only when --open-ufw is passed.") {
+		t.Fatalf("server install capability should document --open-ufw firewall note: %+v", serverInstall)
+	}
 	userList := findCapability(rep.Commands, "sudo bx user list --json")
 	if userList.Command == "" || !userList.RequiresRoot || userList.ChangesSystem || userList.ChangesNetwork {
 		t.Fatalf("unexpected user list capability: %+v", userList)
