@@ -4,10 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	updatepkg "github.com/getbx/bx/internal/update"
 	"github.com/getbx/bx/internal/version"
@@ -125,9 +127,10 @@ func updateFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "check", Usage: "只检查有无新版,不下载安装"},
 		&cli.BoolFlag{Name: "json", Usage: "输出机器可读更新状态"},
-		&cli.BoolFlag{Name: "package", Usage: "macOS:更新 CLI 和菜单栏 App"},
-		&cli.StringFlag{Name: "app-path", Hidden: true},
-		&cli.StringFlag{Name: "app-owner", Hidden: true},
+		&cli.BoolFlag{Name: "package", Hidden: true, Usage: "已废弃(legacy 布局报错;统一布局忽略,行为等同默认路径)"},
+		&cli.StringFlag{Name: "package-file", Hidden: true, Usage: "统一布局:本地已下载的包文件路径,跳过下载与 manifest 查询(真机演练用)"},
+		&cli.StringFlag{Name: "app-path", Hidden: true, Usage: "已废弃,忽略"},
+		&cli.StringFlag{Name: "app-owner", Hidden: true, Usage: "已废弃,忽略"},
 		&cli.BoolFlag{Name: "force", Usage: "即便已是最新(或 dev 构建)也强制下载安装最新版"},
 		&cli.BoolFlag{Name: "no-restart", Usage: "已废弃:更新始终保留当前保护会话", Hidden: true},
 	}
@@ -186,20 +189,7 @@ func verifiedReleaseManifest(client *http.Client, tag string) (updatepkg.Manifes
 	return manifest, nil
 }
 
-// unifiedUpdateGuard 拦截统一布局(Bx.app)下的就地 bx update:旧的整二进制替换会
-// 覆盖 CLI bridge、绕过 Guardian 事务,统一在线更新留待下一阶段实现前先明确拒绝并指引。
-// --check 只读、不落盘,始终放行。
-func unifiedUpdateGuard(unifiedLayout, checkOnly bool) error {
-	if !unifiedLayout || checkOnly {
-		return nil
-	}
-	return errors.New("统一安装(Bx.app)模式暂不支持 bx update 就地更新:请下载新版 bx-macos 包,打开新版 Bx.app(或运行其 install.sh)完成整体升级;经 Guardian 的统一在线更新将在下一阶段提供")
-}
-
 func updateAction(c *cli.Context) error {
-	if err := unifiedUpdateGuard(unifiedLayoutActive(), c.Bool("check")); err != nil {
-		return err
-	}
 	client := &http.Client{Timeout: 90 * time.Second}
 	cur := version.Version
 
@@ -233,8 +223,12 @@ func updateAction(c *cli.Context) error {
 		fmt.Printf("🆕 有新版可用:%s → 运行 sudo bx update 安装。\n", latest)
 		return nil
 	}
+
+	if unifiedLayoutActive() {
+		return updateUnifiedMacOS(c, client, manifest, latest)
+	}
 	if c.Bool("package") {
-		return updateMacOSPackage(c, client, releaseTag, manifest, latest)
+		return fmt.Errorf("--package 已废弃:legacy 布局请用完整包重装(install.sh)")
 	}
 
 	asset, err := updatepkg.FindAsset(manifest, runtime.GOOS+"/"+runtime.GOARCH)
@@ -280,51 +274,215 @@ func updateAction(c *cli.Context) error {
 	return nil
 }
 
-func updateMacOSPackage(c *cli.Context, client *http.Client, releaseTag string, manifest updatepkg.Manifest, latest string) error {
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("完整 App 更新仅支持 macOS")
-	}
+// updateUnifiedMacOS 是统一布局(Bx.app)下 bx update 的主路径:先取到并校验一份完整
+// macOS 包(pkg.CLI/Bridge/Release/App),再按 Guardian 当前保护状态选路——
+// Protected 走 Guardian /v1/update 事务(barrier 切换+健康检查+失败自动回滚),
+// Off 直接就地统一安装(反正无网络保护要保,没有回滚必要)。
+func updateUnifiedMacOS(c *cli.Context, client *http.Client, manifest updatepkg.Manifest, latest string) error {
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("完整 App 更新需要管理员权限;从菜单栏选择 Update bx 即可")
+		return fmt.Errorf("统一布局更新需要管理员权限:请用 sudo bx update")
 	}
-	appPath := c.String("app-path")
-	if !filepath.IsAbs(appPath) || filepath.Base(appPath) != "Bx.app" {
-		return fmt.Errorf("完整 App 更新需要有效的菜单栏 App 路径")
+
+	localPackage := c.String("package-file")
+	var data []byte
+	if localPackage != "" {
+		var err error
+		data, err = os.ReadFile(localPackage)
+		if err != nil {
+			return fmt.Errorf("读取本地包文件 %s: %w", localPackage, err)
+		}
+	} else {
+		asset, err := updatepkg.FindPackage(manifest, runtime.GOOS+"/"+runtime.GOARCH)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("⏳ 下载完整 macOS 包 %s…\n", asset.Name)
+		data, err = downloadBytes(client, fmt.Sprintf("%s/%s/%s", repoReleaseDL, latest, asset.Name))
+		if err != nil {
+			return err
+		}
+		if int64(len(data)) != asset.Size {
+			return fmt.Errorf("下载大小不符:期望 %d,实得 %d", asset.Size, len(data))
+		}
+		if err := verifyChecksum(data, asset.SHA256); err != nil {
+			return fmt.Errorf("完整 macOS 包校验失败(已中止,未替换): %w", err)
+		}
 	}
-	owner, err := parseMacOSAppOwner(c.String("app-owner"))
-	if err != nil {
-		return fmt.Errorf("完整 App 更新需要菜单栏用户信息: %w", err)
-	}
-	asset, err := updatepkg.FindPackage(manifest, runtime.GOOS+"/"+runtime.GOARCH)
+
+	pkg, err := updatepkg.ExtractMacOSPackage(data, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("⏳ 下载完整 macOS 包 %s…\n", asset.Name)
-	packageData, err := downloadBytes(client, fmt.Sprintf("%s/%s/%s", repoReleaseDL, releaseTag, asset.Name))
+	if err := pkg.VerifyAssets(runtime.GOOS, runtime.GOARCH); err != nil {
+		return err
+	}
+	target := pkg.Release.Version
+	if localPackage == "" && target != latest {
+		return fmt.Errorf("下载的包版本 %s 与最新版本 %s 不符,已中止", target, latest)
+	}
+
+	statusCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	status, statusErr := guardian.NewClient(guardian.SocketPath).Status(statusCtx)
+	cancel()
+	route, err := decideUnifiedUpdateRoute(status, statusErr, install.GuardianActive())
 	if err != nil {
 		return err
 	}
-	if int64(len(packageData)) != asset.Size {
-		return fmt.Errorf("下载大小不符:期望 %d,实得 %d", asset.Size, len(packageData))
+
+	if route == "direct" {
+		return updateUnifiedMacOSDirect(c, pkg, target)
 	}
-	if err := verifyChecksum(packageData, asset.SHA256); err != nil {
-		return fmt.Errorf("完整 macOS 包校验失败(已中止,未替换): %w", err)
+	return updateUnifiedMacOSGuarded(c, data, pkg, status, target)
+}
+
+// updateUnifiedMacOSDirect 处理 route=="direct"(Guardian 未开保护,或状态不明但也
+// 没装 Guardian):没有在跑的受保护会话要保,不必走事务/回滚,直接把新版 Bx.app
+// 就地统一安装即可。
+func updateUnifiedMacOSDirect(c *cli.Context, pkg updatepkg.MacOSPackage, target string) error {
+	asJSON := c.Bool("json")
+	if !asJSON {
+		fmt.Println("1/2 校验并安装新版本…")
 	}
-	pkg, err := extractMacOSPackage(packageData, runtime.GOARCH)
+
+	tmpRoot, err := os.MkdirTemp("/var/lib/bx", ".bx-update-app-")
 	if err != nil {
-		return err
+		return fmt.Errorf("创建临时目录: %w", err)
 	}
-	payload := updatepkg.MacOSPayload{CLI: pkg.CLI, Menu: pkg.App}
-	destination := install.BinPath
-	if self, err := os.Executable(); err == nil && self != "" {
-		destination = self
+	defer os.RemoveAll(tmpRoot)
+	bundlePath := filepath.Join(tmpRoot, "Bx.app")
+	if err := writeMacOSAppTree(bundlePath, pkg.App); err != nil {
+		return fmt.Errorf("展开新版 Bx.app: %w", err)
 	}
-	if err := applyMacOSPackage(destination, appPath, payload, &owner); err != nil {
-		return err
+
+	if err := directInstallUnifiedUpdate(bundlePath, defaultConfigPath); err != nil {
+		return fmt.Errorf("安装新版本失败: %w", err)
 	}
-	fmt.Printf("✅ 已更新 CLI 与菜单栏 App 到 %s。保护会话保持运行。\n", latest)
-	if err := restartMacOSMenu(owner); err != nil {
-		fmt.Printf("  菜单栏会在下次登录时加载新版(立即重启失败:%v)。\n", err)
+
+	if !asJSON {
+		fmt.Printf("2/2 完成 ✅ bx 已更新到 %s(保护未开启,无网络影响)\n", target)
+		return nil
+	}
+	result := guardian.UpdateResult{
+		FromVersion:     version.Version,
+		ToVersion:       target,
+		Phase:           guardian.PhaseCommitted,
+		CoreActivated:   false,
+		RolledBack:      false,
+		ProtectionState: guardian.ProtectionOff,
+	}
+	return json.NewEncoder(os.Stdout).Encode(result)
+}
+
+// writeMacOSAppTree 把 pkg.App(Bx.app 内相对路径 → 内容)展开到 bundlePath 下,
+// 供直接安装路径喂给 install.UnifiedInstall。目录 0755;Contents/MacOS/ 下的文件与
+// Contents/Resources/bx-cli、Contents/Resources/bx-bridge 保留可执行位(0755),
+// 其余(Info.plist、release.json 等)0644。
+func writeMacOSAppTree(bundlePath string, app map[string][]byte) error {
+	for name, content := range app {
+		target := filepath.Join(bundlePath, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("建目录(为 %q): %w", name, err)
+		}
+		mode := os.FileMode(0o644)
+		if strings.HasPrefix(name, "Contents/MacOS/") || name == "Contents/Resources/bx-cli" || name == "Contents/Resources/bx-bridge" {
+			mode = 0o755
+		}
+		if err := os.WriteFile(target, content, mode); err != nil {
+			return fmt.Errorf("写 %q: %w", name, err)
+		}
 	}
 	return nil
+}
+
+// updateUnifiedMacOSGuarded 处理 route=="guardian"(Protected):不能说停就停——把
+// 包暂存好、走 Guardian 的 /v1/update 事务(它自己管 barrier 切换、健康检查、失败
+// 自动回滚),bx update 只管把包交过去、报告最终结果。
+func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSPackage, status guardian.Status, target string) error {
+	from := status.CoreVersion
+	if from == "" {
+		return fmt.Errorf("无法确认运行版本,先 bx doctor")
+	}
+	if from == target && !c.Bool("force") {
+		if !c.Bool("json") {
+			fmt.Println("✅ 已是最新,无需更新。")
+		}
+		return nil
+	}
+
+	var randomSuffix [4]byte
+	if _, err := rand.Read(randomSuffix[:]); err != nil {
+		return fmt.Errorf("生成事务 ID: %w", err)
+	}
+	txid := newUpdateTransactionID(time.Now().Unix(), randomSuffix[:])
+	stagingDir := filepath.Join("/var/lib/bx/update/staging", txid)
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+		return fmt.Errorf("创建暂存目录: %w", err)
+	}
+	defer os.RemoveAll(stagingDir)
+	packagePath := filepath.Join(stagingDir, "package.tgz")
+	if err := os.WriteFile(packagePath, data, 0o600); err != nil {
+		return fmt.Errorf("暂存更新包: %w", err)
+	}
+
+	asJSON := c.Bool("json")
+	if !asJSON {
+		fmt.Println("1/4 准备:包已验证并暂存")
+		fmt.Println("2/4 更新中:网络可能短暂暂停,bx 将自动重连…")
+	}
+
+	sum := sha256.Sum256(data)
+	request := buildGuardianUpdateRequest(txid, from, pkg, hex.EncodeToString(sum[:]), packagePath)
+	result, err := guardian.NewClientWithTimeout(guardian.SocketPath, 90*time.Second).Update(context.Background(), request)
+	if err != nil {
+		return fmt.Errorf("更新失败:%w;运行 sudo bx status 与 bx doctor 检查保护状态", err)
+	}
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+	if result.RolledBack {
+		fmt.Printf("3/4 新版本未通过健康检查,已自动回滚\n4/4 完成:保持 %s,保护未降级直连 ✅\n", result.FromVersion)
+		return fmt.Errorf("更新已自动回滚,仍运行 %s", result.FromVersion)
+	}
+	fmt.Printf("3/4 已重连(protection_state=%s)\n4/4 完成 ✅ bx 已更新到 %s\n", result.ProtectionState, result.ToVersion)
+	return nil
+}
+
+// decideUnifiedUpdateRoute 是纯函数:按 Guardian /v1/status 的结果决定 bx update 走
+// 哪条路。statusErr!=nil 是「问不到 Guardian」——若确认装了 Guardian(guardianLoaded)
+// 这就是异常态,拒绝盲猜、指引 doctor;若压根没装 Guardian,则视为 Off 直接安装。
+func decideUnifiedUpdateRoute(status guardian.Status, statusErr error, guardianLoaded bool) (string, error) {
+	if statusErr == nil {
+		switch status.Protection {
+		case guardian.ProtectionProtected:
+			return "guardian", nil
+		case guardian.ProtectionOff:
+			return "direct", nil
+		case guardian.ProtectionStarting, guardian.ProtectionRecovering:
+			return "", fmt.Errorf("Guardian 正在 %s,请稍后再试", status.Protection)
+		default: // blocked、needs_attention 或未知取值
+			return "", fmt.Errorf("Guardian 状态需处理(%s),请先运行 sudo bx doctor", status.Protection)
+		}
+	}
+	if guardianLoaded {
+		return "", fmt.Errorf("Guardian 状态不明,先 sudo bx doctor: %w", statusErr)
+	}
+	return "direct", nil
+}
+
+// newUpdateTransactionID 是纯函数,生成形如 "update-<unix>-<hex>" 的事务 ID
+// (匹配 guardian 的 updateTransactionIDPattern),同输入确定性、便于测试。
+func newUpdateTransactionID(now int64, random []byte) string {
+	return fmt.Sprintf("update-%d-%s", now, hex.EncodeToString(random))
+}
+
+// buildGuardianUpdateRequest 是纯函数,把已校验好的本地状态组装成
+// guardian.UpdateRequest。AppPath 留空,由服务端默认到 /Applications/Bx.app。
+func buildGuardianUpdateRequest(txid, fromVersion string, pkg updatepkg.MacOSPackage, packageSHA, packagePath string) guardian.UpdateRequest {
+	return guardian.UpdateRequest{
+		TransactionID: txid,
+		FromVersion:   fromVersion,
+		ToVersion:     pkg.Release.Version,
+		AssetSHA256:   packageSHA,
+		PackagePath:   packagePath,
+	}
 }
