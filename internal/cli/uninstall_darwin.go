@@ -30,7 +30,8 @@ func uninstallDarwinAction(c *urfavecli.Context) error {
 	}
 
 	consoleUID, consoleHome := darwinConsoleUserForUninstall()
-	plan := buildDarwinUninstallPlan(consoleUID, consoleHome, unifiedLayoutActive())
+	unifiedLayout := unifiedTeardownNeeded(darwinRuntimeRootPath, darwinAppBundlePath)
+	plan := buildDarwinUninstallPlan(consoleUID, consoleHome, unifiedLayout)
 
 	for _, args := range plan.LaunchctlCommands {
 		cmd := exec.Command(args[0], args[1:]...)

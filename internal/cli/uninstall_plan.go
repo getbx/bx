@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -62,4 +63,22 @@ func buildDarwinUninstallPlan(consoleUID int, consoleHome string, unifiedLayout 
 	}
 
 	return plan
+}
+
+// unifiedTeardownNeeded 报告是否存在任一「统一 App 布局」产物路径(runtime root、
+// /Applications/Bx.app)——用**存在性**而非健康度判定要不要走统一卸载分支。
+//
+// 不能用 unifiedLayoutActive()(靠 runtimedir.Installed 健康检查:current 链接
+// 有效 + release.json 可解析 + bx 可执行文件存在)做这个决定:一次半途失败的
+// app-install(SwitchCurrent 之前中断、release.json 损坏)会让健康检查判 false,
+// 于是被误分类成 legacy 布局——runtime root 与 Bx.app 都不会被删,只有 bridge
+// 被删,留下 root-owned 孤儿目录且违背「完整卸载」的承诺。存在性检查对损坏安装
+// 也能正确触发清理。
+func unifiedTeardownNeeded(paths ...string) bool {
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
 }
