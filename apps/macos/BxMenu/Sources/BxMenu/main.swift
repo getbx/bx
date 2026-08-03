@@ -672,9 +672,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         let logPath = logDir.appendingPathComponent("menu-update.log").path
         do {
             try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-            if !FileManager.default.fileExists(atPath: logPath) {
-                FileManager.default.createFile(atPath: logPath, contents: nil)
-            }
+            FileManager.default.createFile(atPath: logPath, contents: nil)
         } catch {
             showFailure("Update Failed", "bx could not prepare its update log.")
             return
