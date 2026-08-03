@@ -57,6 +57,15 @@ func NewClient(socketPath string) *Client {
 	return &Client{SocketPath: socketPath}
 }
 
+// NewClientWithTimeout 与 NewClient 同,但 HTTPClient 超时为给定值:update 事务
+// 服务端上限 guardianMutationTimeout(60s),调用方按需给出余量(如 90s)以覆盖
+// 一次完整 barrier/activate/commit 往返而不提前掐断连接。
+func NewClientWithTimeout(socketPath string, timeout time.Duration) *Client {
+	client := guardianHTTPClient(socketPath)
+	client.Timeout = timeout
+	return &Client{SocketPath: socketPath, HTTPClient: client}
+}
+
 func (c *Client) Status(ctx context.Context) (Status, error) {
 	return c.request(ctx, http.MethodGet, "/v1/status", nil)
 }
