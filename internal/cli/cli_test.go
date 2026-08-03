@@ -2448,3 +2448,59 @@ func TestVlessUUIDHelpers(t *testing.T) {
 		t.Error("非 vless 应返回空")
 	}
 }
+
+func TestStatusReportIncludesUpdateObservabilityFields(t *testing.T) {
+	rep := assembleClientStatusReport(
+		stats.Report{TunnelHealthy: true},
+		guardian.Status{
+			Protection:      guardian.ProtectionProtected,
+			Phase:           guardian.PhaseActivating,
+			CoreVersion:     "1.2.3",
+			GuardianVersion: "1.2.2",
+			RuntimeVersion:  "1.2.3",
+		},
+	)
+
+	var encoded map[string]any
+	data, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check all four fields are present and correct
+	if encoded["phase"] != "activating" {
+		t.Fatalf("phase = %v, want activating", encoded["phase"])
+	}
+	if encoded["core_version"] != "1.2.3" {
+		t.Fatalf("core_version = %v, want 1.2.3", encoded["core_version"])
+	}
+	if encoded["guardian_version"] != "1.2.2" {
+		t.Fatalf("guardian_version = %v, want 1.2.2", encoded["guardian_version"])
+	}
+	if encoded["runtime_version"] != "1.2.3" {
+		t.Fatalf("runtime_version = %v, want 1.2.3", encoded["runtime_version"])
+	}
+}
+
+func TestStatusReportOmitsEmptyPhase(t *testing.T) {
+	rep := assembleClientStatusReport(
+		stats.Report{TunnelHealthy: true},
+		guardian.Status{
+			Protection: guardian.ProtectionProtected,
+			// Phase is empty (default)
+		},
+	)
+
+	data, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check that phase is not in the JSON (omitempty)
+	if strings.Contains(string(data), "\"phase\"") {
+		t.Fatalf("phase should be omitted when empty, but found in: %s", string(data))
+	}
+}
