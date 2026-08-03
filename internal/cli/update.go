@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -243,6 +244,9 @@ func updateAction(c *cli.Context) error {
 
 	if unifiedLayoutActive() {
 		return updateUnifiedMacOS(c, client, manifest, latest)
+	}
+	if unifiedLayoutDegraded() {
+		return errors.New(unifiedRepairHint)
 	}
 	if c.Bool("package") {
 		return fmt.Errorf("--package 已废弃:legacy 布局请用完整包重装(install.sh)")
