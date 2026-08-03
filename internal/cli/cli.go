@@ -2198,6 +2198,14 @@ func capabilities() capabilitiesReport {
 }
 
 func collectClientDoctor(configPath, target string, timeout time.Duration, skipProbe bool) doctorReport {
+	return collectClientDoctorWith(configPath, target, timeout, skipProbe, true)
+}
+
+// collectClientDoctorWith 是 collectClientDoctor 的完整实现,多一个 includePlatformChecks 开关:
+// doctorAction 的独立 JSON 路径要平台检查(true,行为不变);collectLeakCheck 内嵌本函数时传 false,
+// 因为 leak-check 自己在顶层已经跑一遍 collectPlatformChecks——避免同一批 pgrep/netstat/scutil
+// 探测跑两遍、同一条检查在 leak.doctor.checks[] 和 leak.checks[] 里重复出现。
+func collectClientDoctorWith(configPath, target string, timeout time.Duration, skipProbe, includePlatformChecks bool) doctorReport {
 	rep := doctorReport{Kind: "client", Version: version.String(), SecretsRedacted: true}
 	cfgPath := resolveConfigPath(configPath)
 	udpMode := "proxy"
@@ -2255,8 +2263,10 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 		}
 		rep.Checks = append(rep.Checks, recoveryDoctorCheck(guardianStatus.Recovery))
 	}
-	for _, check := range collectPlatformChecks(context.Background()) {
-		rep.addReport(check)
+	if includePlatformChecks {
+		for _, check := range collectPlatformChecks(context.Background()) {
+			rep.addReport(check)
+		}
 	}
 	rep.OK = !rep.hasFail()
 	return rep
@@ -2330,7 +2340,9 @@ func collectWebRTCCheck(configPath, dnsService string) webrtcCheckReport {
 }
 
 func collectLeakCheck(ctx context.Context, configPath, dnsService string, browser bool, browserTimeout time.Duration, network bool, networkTimeout time.Duration, expectedIPs []string) leakCheckReport {
-	doctor := collectClientDoctor(configPath, defaultProbeTarget, 0, true)
+	// includePlatformChecks=false:下面已经在顶层跑过一次 collectPlatformChecks(ctx),
+	// 内嵌 doctor 不重复跑,避免同一批探测执行两次、同一条检查出现在 doctor.checks[] 和顶层 checks[] 里。
+	doctor := collectClientDoctorWith(configPath, defaultProbeTarget, 0, true, false)
 	webrtc := collectWebRTCCheck(configPath, dnsService)
 	if browser {
 		expected := append([]string{}, expectedIPs...)
