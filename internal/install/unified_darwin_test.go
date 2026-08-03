@@ -5,6 +5,7 @@ package install
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -51,8 +52,17 @@ func writeFakeBundle(t *testing.T, dir string, version string) (bundle string, c
 
 func testOptions(t *testing.T, bundle string) (UnifiedInstallOptions, *[]string) {
 	t.Helper()
+	opts, guardianCalls, _ := testOptionsWithChown(t, bundle)
+	return opts, guardianCalls
+}
+
+// testOptionsWithChown 同 testOptions,额外返回一个记录所有 Chown 调用("path uid:gid")的切片指针,
+// 供需要断言 chown 实际发生的用例使用。
+func testOptionsWithChown(t *testing.T, bundle string) (UnifiedInstallOptions, *[]string, *[]string) {
+	t.Helper()
 	base := t.TempDir()
 	var guardianCalls []string
+	var chownCalls []string
 	opts := UnifiedInstallOptions{
 		BundlePath:     bundle,
 		AppDestination: filepath.Join(base, "Applications", "Bx.app"),
@@ -61,7 +71,10 @@ func testOptions(t *testing.T, bundle string) (UnifiedInstallOptions, *[]string)
 		BridgePath:     filepath.Join(base, "bin", "bx"),
 		ConsoleHome:    filepath.Join(base, "home"),
 		ConsoleUID:     501, ConsoleGID: 20,
-		Chown: func(string, int, int) error { return nil },
+		Chown: func(path string, uid, gid int) error {
+			chownCalls = append(chownCalls, fmt.Sprintf("%s %d:%d", path, uid, gid))
+			return nil
+		},
 		WriteGuardian: func(executable, configPath string) error {
 			guardianCalls = append(guardianCalls, executable+" "+configPath)
 			return nil
@@ -76,12 +89,12 @@ func testOptions(t *testing.T, bundle string) (UnifiedInstallOptions, *[]string)
 	if err := os.MkdirAll(opts.ConsoleHome, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return opts, &guardianCalls
+	return opts, &guardianCalls, &chownCalls
 }
 
 func TestUnifiedInstallFresh(t *testing.T) {
 	bundle, cli, bridgeBin := writeFakeBundle(t, t.TempDir(), "1.0.0")
-	opts, guardianCalls := testOptions(t, bundle)
+	opts, guardianCalls, chownCalls := testOptionsWithChown(t, bundle)
 	result, err := UnifiedInstall(opts)
 	if err != nil {
 		t.Fatalf("UnifiedInstall: %v", err)
@@ -107,6 +120,42 @@ func TestUnifiedInstallFresh(t *testing.T) {
 	}
 	if len(*guardianCalls) != 1 || !strings.Contains((*guardianCalls)[0], filepath.Join(opts.RuntimeRoot, "current", "bx")) {
 		t.Fatalf("guardian calls = %v", *guardianCalls)
+	}
+
+	// Chown 必须真的被调用到:staged App 树(以 root:wheel 落位)、bridge 二进制、agent plist(以
+	// 控制台用户 uid:gid 落位)——防止「静默从不 chown,文件其实以 build 时的 uid 落地」这类回归。
+	calls := *chownCalls
+	appTreeChowned := false
+	for _, c := range calls {
+		if strings.HasSuffix(c, "/Contents/MacOS/BxMenu 0:0") {
+			appTreeChowned = true
+			break
+		}
+	}
+	if !appTreeChowned {
+		t.Fatalf("want a chown call covering staged .../Contents/MacOS/BxMenu at 0:0, got %v", calls)
+	}
+	bridgeWant := opts.BridgePath + " 0:0"
+	bridgeChowned := false
+	for _, c := range calls {
+		if c == bridgeWant {
+			bridgeChowned = true
+			break
+		}
+	}
+	if !bridgeChowned {
+		t.Fatalf("want chown call %q, got %v", bridgeWant, calls)
+	}
+	agentWant := fmt.Sprintf("%s %d:%d", agent, opts.ConsoleUID, opts.ConsoleGID)
+	agentChowned := false
+	for _, c := range calls {
+		if c == agentWant {
+			agentChowned = true
+			break
+		}
+	}
+	if !agentChowned {
+		t.Fatalf("want chown call %q, got %v", agentWant, calls)
 	}
 }
 
