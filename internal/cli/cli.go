@@ -3531,16 +3531,23 @@ func setupAction(c *cli.Context) error {
 	if err := setup.WriteConfig(cfgPath, configLinks, udpTransport, c.Bool("force")); err != nil {
 		return err
 	}
-	bin, err := install.SelfInstall()
-	if err != nil {
-		return fmt.Errorf("安装 bx 到 PATH: %w", err)
-	}
 	abs, err := filepath.Abs(cfgPath)
 	if err != nil {
 		return err
 	}
-	if err := install.WriteUnit(buildExecStart(bin, abs)); err != nil {
-		return err
+	if unifiedLayoutActive() {
+		if err := install.WriteGuardianUnit(install.GuardianExecutable(), abs); err != nil {
+			return fmt.Errorf("写入 Guardian 服务失败: %w", err)
+		}
+		fmt.Println("✓ 统一布局:保留 CLI bridge,Guardian 指向 runtime")
+	} else {
+		bin, err := install.SelfInstall()
+		if err != nil {
+			return fmt.Errorf("安装 bx 到 PATH: %w", err)
+		}
+		if err := install.WriteUnit(buildExecStart(bin, abs)); err != nil {
+			return err
+		}
 	}
 	if err := postSetupAutostart(); err != nil {
 		return fmt.Errorf("设默认开机自启: %w", err)
