@@ -125,6 +125,90 @@ func TestManagerUpdateTransactions(t *testing.T) {
 	}
 }
 
+func TestUpdateSwitchesRunnerExecutableBeforeNewCore(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	toExecutable := filepath.Join(env.root, "runtime", "v2", "bx")
+	env.prepared.coreExecutable = toExecutable
+
+	result, err := env.manager.Update(context.Background(), env.request)
+	if err != nil {
+		t.Fatalf("Update() error = %v, want nil; result=%+v", err, result)
+	}
+
+	events := env.events.snapshot()
+	setIndex := indexOfEvent(events, "core.set_executable."+toExecutable)
+	startIndex := indexOfEvent(events, "core.start.v2")
+	if setIndex == -1 || startIndex == -1 {
+		t.Fatalf("expected both SetExecutable and core.start.v2 events, got %#v", events)
+	}
+	if setIndex > startIndex {
+		t.Fatalf("SetExecutable happened after new Core start: events=%#v", events)
+	}
+	if got := env.runner.Executable(); got != toExecutable {
+		t.Fatalf("runner.Executable() = %q, want %q", got, toExecutable)
+	}
+}
+
+func TestRollbackSwitchesExecutableBack(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	toExecutable := filepath.Join(env.root, "runtime", "v2", "bx")
+	fromExecutable := filepath.Join(env.root, "runtime", "v1", "bx")
+	env.prepared.coreExecutable = toExecutable
+	env.prepared.previousCoreExecutable = fromExecutable
+	env.fail("new-health")
+
+	result, err := env.manager.Update(context.Background(), env.request)
+	if err != nil {
+		t.Fatalf("Update() error = %v, want nil; result=%+v", err, result)
+	}
+	status := env.manager.Status()
+	if status.Phase != PhaseRolledBack {
+		t.Fatalf("status.Phase = %q, want %q", status.Phase, PhaseRolledBack)
+	}
+
+	events := env.events.snapshot()
+	toIndex := indexOfEvent(events, "core.set_executable."+toExecutable)
+	fromIndex := indexOfEvent(events, "core.set_executable."+fromExecutable)
+	if toIndex == -1 || fromIndex == -1 {
+		t.Fatalf("expected both SetExecutable calls, got %#v", events)
+	}
+	if toIndex > fromIndex {
+		t.Fatalf("SetExecutable call order wrong: events=%#v", events)
+	}
+	if got := env.runner.Executable(); got != fromExecutable {
+		t.Fatalf("runner.Executable() = %q, want %q", got, fromExecutable)
+	}
+}
+
+func TestLegacyPreparedSkipsExecutableSwitch(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	// env.prepared.coreExecutable/previousCoreExecutable left at zero value ("") — legacy prepared update.
+
+	result, err := env.manager.Update(context.Background(), env.request)
+	if err != nil {
+		t.Fatalf("Update() error = %v, want nil; result=%+v", err, result)
+	}
+
+	events := env.events.snapshot()
+	for _, event := range events {
+		if strings.HasPrefix(event, "core.set_executable.") {
+			t.Fatalf("SetExecutable was called for a legacy prepared update: events=%#v", events)
+		}
+	}
+	if got := env.runner.Executable(); got != "" {
+		t.Fatalf("runner.Executable() = %q, want empty (unchanged)", got)
+	}
+}
+
+func indexOfEvent(events []string, want string) int {
+	for index, event := range events {
+		if event == want {
+			return index
+		}
+	}
+	return -1
+}
+
 func TestManagerUpdateFailureEventsRemainFailClosed(t *testing.T) {
 	tests := []struct {
 		failAt             string
@@ -1626,6 +1710,7 @@ func (r *updateCoreRunner) SetExecutable(executable string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.executable = executable
+	r.events.add("core.set_executable." + executable)
 	return nil
 }
 

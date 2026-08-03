@@ -632,6 +632,11 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 	if err := prepared.Activate(); err != nil {
 		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "update_activate_failed")
 	}
+	if next := prepared.CoreExecutable(); next != "" {
+		if err := m.runner.SetExecutable(next); err != nil {
+			return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "update_activate_failed")
+		}
+	}
 
 	process, runtimeState, startErr := m.startUpdateCore(ctx, request.ToVersion)
 	if startErr != nil {
@@ -716,6 +721,11 @@ func (m *Manager) rollbackUpdate(
 	}
 	if err := prepared.Restore(); err != nil {
 		return m.failUpdate(*transaction, request, "update_restore_failed", false, false)
+	}
+	if prev := prepared.PreviousCoreExecutable(); prev != "" {
+		if err := m.runner.SetExecutable(prev); err != nil {
+			return m.failUpdate(*transaction, request, "update_restore_failed", true, false)
+		}
 	}
 	if err := m.barrier.ReassertBypass(ctx, barrierContext); err != nil {
 		return m.failUpdate(*transaction, request, "barrier_reassert_failed", false, false)
