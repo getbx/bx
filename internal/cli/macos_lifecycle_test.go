@@ -315,10 +315,75 @@ func TestMenuLaunchdCommandsUseOnlyCanonicalAndLegacyLabels(t *testing.T) {
 	if !reflect.DeepEqual(commands, want) {
 		t.Fatalf("menu launchd commands = %#v, want %#v", commands, want)
 	}
-	commands = menuLaunchdCommands(501, true, false, plist)
-	want = [][]string{{"kickstart", "-k", "gui/501/com.getbx.bx.menu"}}
-	if !reflect.DeepEqual(commands, want) {
-		t.Fatalf("idempotent menu commands = %#v, want %#v", commands, want)
+}
+
+// TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect is the
+// regression test for the production hang: launchd only re-reads a plist on
+// bootstrap, so a stale-but-loaded canonical label must be booted out and
+// rebootstrapped from the current plist rather than just kickstarted, or a
+// path change (e.g. UnifiedInstall moving the app) never takes effect and
+// `launchctl kickstart -k` blocks forever waiting for a spawn that can never
+// succeed.
+func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing.T) {
+	plist := "/Users/alice/Library/LaunchAgents/com.getbx.bx.menu.plist"
+
+	t.Run("loaded, no legacy", func(t *testing.T) {
+		commands := menuLaunchdCommands(501, true, false, plist)
+		want := [][]string{
+			{"bootout", "gui/501/com.getbx.bx.menu"},
+			{"bootstrap", "gui/501", plist},
+			{"kickstart", "-k", "gui/501/com.getbx.bx.menu"},
+		}
+		if !reflect.DeepEqual(commands, want) {
+			t.Fatalf("menu launchd commands = %#v, want %#v", commands, want)
+		}
+	})
+
+	t.Run("not loaded, no legacy", func(t *testing.T) {
+		commands := menuLaunchdCommands(501, false, false, plist)
+		want := [][]string{
+			{"bootstrap", "gui/501", plist},
+			{"kickstart", "-k", "gui/501/com.getbx.bx.menu"},
+		}
+		if !reflect.DeepEqual(commands, want) {
+			t.Fatalf("menu launchd commands = %#v, want %#v", commands, want)
+		}
+	})
+
+	t.Run("loaded plus legacy loaded", func(t *testing.T) {
+		commands := menuLaunchdCommands(501, true, true, plist)
+		want := [][]string{
+			{"bootout", "gui/501/com.ggshr9.bx.menu"},
+			{"bootout", "gui/501/com.getbx.bx.menu"},
+			{"bootstrap", "gui/501", plist},
+			{"kickstart", "-k", "gui/501/com.getbx.bx.menu"},
+		}
+		if !reflect.DeepEqual(commands, want) {
+			t.Fatalf("menu launchd commands = %#v, want %#v", commands, want)
+		}
+	})
+
+	for _, tc := range []struct {
+		name                        string
+		currentLoaded, legacyLoaded bool
+	}{
+		{"not loaded, not legacy", false, false},
+		{"loaded, not legacy", true, false},
+		{"not loaded, legacy", false, true},
+		{"loaded, legacy", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			commands := menuLaunchdCommands(501, tc.currentLoaded, tc.legacyLoaded, plist)
+			found := false
+			for _, args := range commands {
+				if len(args) == 3 && args[0] == "bootstrap" && args[1] == "gui/501" && args[2] == plist {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("menu launchd commands %#v missing bootstrap of current plist so a changed plist would never take effect", commands)
+			}
+		})
 	}
 }
 
@@ -357,6 +422,101 @@ func TestEnsureMacOSMenuRunningWithDepsRemovesLegacyAndVerifiesLabels(t *testing
 	}
 	if !control.loaded["gui/501/com.getbx.bx.menu"] || control.loaded["gui/501/com.ggshr9.bx.menu"] {
 		t.Fatalf("final menu labels = %#v", control.loaded)
+	}
+}
+
+// TestEnsureMacOSMenuRunningWithDepsReloadsStaleLoadedAgent is the
+// end-to-end regression test for the production hang: the canonical label
+// is already loaded (as it would be after UnifiedInstall moved the app and
+// rewrote the plist on disk without reloading launchd), so kickstarting it
+// alone would try to respawn a program at a path that no longer exists and
+// block forever. It must be booted out and rebootstrapped from the
+// (possibly changed) plist on disk, and the legacy plist must be removed
+// exactly once, not twice.
+func TestEnsureMacOSMenuRunningWithDepsReloadsStaleLoadedAgent(t *testing.T) {
+	home := t.TempDir()
+	currentPlist := filepath.Join(home, "Library", "LaunchAgents", "com.getbx.bx.menu.plist")
+	legacyPlist := filepath.Join(home, "Library", "LaunchAgents", "com.ggshr9.bx.menu.plist")
+	control := &fakeMenuLaunchdControl{loaded: map[string]bool{
+		"gui/501/com.getbx.bx.menu": true, // stale: loaded, but program on disk moved
+	}}
+	var removed []string
+	err := ensureMacOSMenuRunningWithDeps(context.Background(), 501, menuBootstrapDeps{
+		homeDir: func(int) (string, error) { return home, nil },
+		fileExists: func(path string) (bool, error) {
+			return path == currentPlist, nil
+		},
+		remove: func(path string) error {
+			removed = append(removed, path)
+			return nil
+		},
+		control: control,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []string{
+		"bootout gui/501/com.getbx.bx.menu",
+		"bootstrap gui/501 " + currentPlist,
+		"kickstart -k gui/501/com.getbx.bx.menu",
+	}
+	if !reflect.DeepEqual(control.calls, wantCalls) {
+		t.Fatalf("menu launchctl calls = %#v, want %#v", control.calls, wantCalls)
+	}
+	if !reflect.DeepEqual(removed, []string{legacyPlist}) {
+		t.Fatalf("removed menu plists = %#v, want exactly one removal", removed)
+	}
+	if !control.loaded["gui/501/com.getbx.bx.menu"] || control.loaded["gui/501/com.ggshr9.bx.menu"] {
+		t.Fatalf("final menu labels = %#v", control.loaded)
+	}
+}
+
+// blockingMenuLaunchdControl simulates a launchctl invocation that never
+// returns on its own (e.g. `kickstart -k` waiting on a spawn that can never
+// succeed) so tests can prove the caller enforces a deadline instead of
+// hanging forever.
+type blockingMenuLaunchdControl struct {
+	loaded map[string]bool
+}
+
+func (c *blockingMenuLaunchdControl) Loaded(_ context.Context, label string) (bool, error) {
+	return c.loaded[label], nil
+}
+
+func (c *blockingMenuLaunchdControl) Run(ctx context.Context, _ ...string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestEnsureMacOSMenuRunningWithDepsReturnsPromptlyOnTimeout(t *testing.T) {
+	home := t.TempDir()
+	currentPlist := filepath.Join(home, "Library", "LaunchAgents", "com.getbx.bx.menu.plist")
+	control := &blockingMenuLaunchdControl{loaded: map[string]bool{
+		"gui/501/com.getbx.bx.menu": true,
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ensureMacOSMenuRunningWithDeps(ctx, 501, menuBootstrapDeps{
+			homeDir:    func(int) (string, error) { return home, nil },
+			fileExists: func(path string) (bool, error) { return path == currentPlist, nil },
+			remove:     func(string) error { return nil },
+			control:    control,
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		if !strings.Contains(err.Error(), "bootstrap") || !strings.Contains(err.Error(), "bootout") {
+			t.Fatalf("timeout error not actionable: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ensureMacOSMenuRunningWithDeps did not return promptly on context deadline")
 	}
 }
 
