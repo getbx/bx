@@ -369,21 +369,47 @@ func (m *Manager) executePathRecovery(ctx context.Context, transaction pathRecov
 		return failedPathRecoverySnapshot(transaction.snapshot, result, err)
 	}
 	if result.State == "succeeded" {
+		completeProtection := pathRecoveryNeedsProtectionCommit(m.Status().LastError)
 		if err := m.ensureDNSManaged(ctx, m.runtime); err != nil {
 			result.Stage = "verify"
 			return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(m.Status().LastError))
+		}
+		if completeProtection {
+			if m.barrierOwnership.proof != barrierAbsent {
+				if err := m.releaseBarrierToCore(ctx); err != nil {
+					m.needsAttention(DesiredOn, "barrier_remove_failed")
+					result.Stage = "verify"
+					return failedPathRecoverySnapshot(transaction.snapshot, result, err)
+				}
+			}
+			if err := m.setProtectedStatus(PhaseCommitted, m.current.PID, m.runtime.Version, ""); err != nil {
+				result.Stage = "verify"
+				activationErr := m.failDNSActivation(ctx, m.runtime, "dns_verification_failed", err)
+				return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(m.Status().LastError, activationErr))
+			}
 		}
 	}
 	return completedPathRecoverySnapshot(transaction.snapshot, result)
 }
 
-func pathRecoveryDNSError(code string) error {
+func pathRecoveryNeedsProtectionCommit(code string) bool {
+	switch code {
+	case "dns_takeover_failed", "dns_verification_failed", "barrier_remove_failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func pathRecoveryDNSError(code string, causes ...error) error {
 	switch code {
 	case "dns_takeover_failed", "dns_verification_failed":
 	default:
 		code = "dns_verification_failed"
 	}
-	return &supervisor.PathRecoveryError{Code: code}
+	errs := []error{&supervisor.PathRecoveryError{Code: code}}
+	errs = append(errs, causes...)
+	return errors.Join(errs...)
 }
 
 func (m *Manager) publishCorePathRecovery(id string, progress supervisor.PathRecoverySnapshot) {
