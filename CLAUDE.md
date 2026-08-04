@@ -30,7 +30,7 @@
 - `platform_linux.go`(`//go:build linux`)— `OpenTUN`=fdbased、`DirectDialer`=SO_MARK(fwMark 0x162)、`Hijack`=`ip rule` 策略路由(table 100 + 私网 pref 150 + 全量 pref 200)。
 - `platform_darwin.go`(`//go:build darwin`)— `OpenTUN`=utun、`DirectDialer`=`IP_BOUND_IF`、`Hijack`=split-default(`0/1`+`128/1`)。
 - `tun/wgbridge.go`(`darwin||windows`)— wireguard `tun.Device` ↔ gVisor `channel.Endpoint` 桥接 + 收发 pump(mac/win 共用;Linux 走 `device_linux.go` fdbased)。
-- `paths_<os>.go` — 运行期 socket/pid 路径(linux `/run`、darwin `/var/run`)。
+- `paths_<os>.go` — 运行期 socket/pid 路径,落 bx 自有子目录而非共享父目录(linux `/run/bx`、darwin `/var/run/bx`,`internal/secdir` 校验属主与权限)。
 
 ```go
 type platform interface {
