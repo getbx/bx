@@ -1500,7 +1500,7 @@ func (e *updateTestEnv) restartedManagerWithoutJournal(t *testing.T, existingVer
 	}
 	manager, err := NewManager(ManagerOptions{
 		Store: e.store, Runner: e.runner, Health: e.health, Barrier: e.barrier,
-		Restorer: &fakeNetworkRestorer{events: e.events}, Legacy: &fakeLegacyCore{events: e.events},
+		DNS: newFakeDNSManager(e.events), Legacy: &fakeLegacyCore{events: e.events},
 		BarrierContext: BarrierContext{Gateway: "192.0.2.1", BlockIPv6: true}, CoreVersion: "v2",
 		UpdatePreparer: e.updater, GuardianProtocol: currentGuardianProtocol,
 	})
@@ -1537,7 +1537,7 @@ func newUpdateTestEnv(t *testing.T) *updateTestEnv {
 		Runner:           runner,
 		Health:           health,
 		Barrier:          barrier,
-		Restorer:         &fakeNetworkRestorer{events: events},
+		DNS:              newFakeDNSManager(events),
 		Legacy:           &fakeLegacyCore{events: events},
 		BarrierContext:   BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.9/32"}, BlockIPv6: true},
 		CoreVersion:      "v1",
