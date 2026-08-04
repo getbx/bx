@@ -183,7 +183,7 @@ func TestManagerUpdateDNSFailureRollsBackAndReturnsError(t *testing.T) {
 		t.Fatal("successful DNS-verified rollback retained barrier")
 	}
 	if got, want := updateDNSLifecycleEvents(env.events.snapshot()), []string{
-		"core.start.v2", "dns.ensure", "dns.inspect", "core.start.v1", "dns.ensure", "dns.inspect", "barrier.release",
+		"core.start.v2", "dns.ensure", "dns.inspect", "core.stop.v2", "core.start.v1", "dns.ensure", "dns.inspect", "barrier.release",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("DNS rollback events = %#v, want %#v; all=%#v", got, want, env.events.snapshot())
 	}
@@ -209,6 +209,64 @@ func TestManagerUpdateDNSFailureKeepsBarrierWhenRollbackVerificationFails(t *tes
 	}
 }
 
+func TestManagerUpdateDNSFailureDoesNotRollbackAcrossUncertainTargetCleanup(t *testing.T) {
+	tests := []struct {
+		name     string
+		wantCode string
+		prepare  func(*fakeDNSManager)
+	}{
+		{
+			name:     "takeover",
+			wantCode: "dns_takeover_failed",
+			prepare: func(dns *fakeDNSManager) {
+				dns.ensureErr = errors.New("resolver change failed")
+			},
+		},
+		{
+			name:     "verification",
+			wantCode: "dns_verification_failed",
+			prepare: func(dns *fakeDNSManager) {
+				dns.inspectResults = []fakeDNSResult{{
+					status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"},
+				}}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newUpdateTestEnv(t)
+			env.manager.cleanupTimeout = 100 * time.Millisecond
+			env.runner.failStopVersion = "v2"
+			tt.prepare(env.dns)
+
+			result, err := env.manager.Update(context.Background(), env.request)
+			if err == nil || err.Error() != tt.wantCode {
+				t.Fatalf("Update error = %v, want %q; result=%+v", err, tt.wantCode, result)
+			}
+			events := env.events.snapshot()
+			if !containsEvent(events, "core.stop.v2") {
+				t.Fatalf("target Core cleanup was not attempted: %#v", events)
+			}
+			if containsEvent(events, "install.restore") || containsEvent(events, "core.start.v1") {
+				t.Fatalf("rollback crossed uncertain target ownership: %#v", events)
+			}
+			if env.runner.stopSawCanceled["v2"] {
+				t.Fatal("target cleanup used a canceled context")
+			}
+			if deadline := env.runner.stopDeadline["v2"]; deadline.IsZero() || time.Until(deadline) <= 0 || time.Until(deadline) > env.manager.cleanupTimeout {
+				t.Fatalf("target cleanup deadline = %v, want live deadline within %s", deadline, env.manager.cleanupTimeout)
+			}
+			if !env.manager.current.Uncertain || !env.manager.barrierProven() {
+				t.Fatalf("uncertain target was not retained behind barrier: current=%+v barrier=%v", env.manager.current, env.manager.barrierProven())
+			}
+			if status := env.manager.Status(); status.LastError != tt.wantCode || status.Protection != ProtectionBlocked {
+				t.Fatalf("status = %+v, want blocked %q", status, tt.wantCode)
+			}
+		})
+	}
+}
+
 func TestManagerUpdateProtectedCommitRechecksCachedDNS(t *testing.T) {
 	env := newUpdateTestEnv(t)
 	env.barrier.onRemove = func() {
@@ -228,7 +286,7 @@ func updateDNSLifecycleEvents(events []string) []string {
 	var filtered []string
 	for _, event := range events {
 		switch event {
-		case "core.start.v2", "core.start.v1", "dns.ensure", "dns.inspect", "barrier.release":
+		case "core.start.v2", "core.start.v1", "core.stop.v2", "dns.ensure", "dns.inspect", "barrier.release":
 			filtered = append(filtered, event)
 		}
 	}
@@ -1931,6 +1989,7 @@ type updateCoreRunner struct {
 	uncertainStartVersion string
 	failStopVersion       string
 	stopSawCanceled       map[string]bool
+	stopDeadline          map[string]time.Time
 	startOptions          []CoreStartOptions
 	executable            string
 	setExecutableErr      error
@@ -1940,6 +1999,7 @@ func newUpdateCoreRunner(events *eventLog) *updateCoreRunner {
 	return &updateCoreRunner{
 		events: events, versions: make(map[int]string), nextPID: 100,
 		startSequence: []string{"v2", "v1", "v2", "v1"}, stopSawCanceled: make(map[string]bool),
+		stopDeadline: make(map[string]time.Time),
 	}
 }
 
@@ -1965,9 +2025,12 @@ func (r *updateCoreRunner) Verify(process Process) error {
 	return nil
 }
 
-func (r *updateCoreRunner) Start(_ context.Context, options CoreStartOptions) (Process, error) {
+func (r *updateCoreRunner) Start(ctx context.Context, options CoreStartOptions) (Process, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Process{}, err
+	}
 	r.startOptions = append(r.startOptions, CoreStartOptions{GuardianBypassHandoff: append([]string(nil), options.GuardianBypassHandoff...)})
 	version := "v2"
 	if len(r.startSequence) != 0 {
@@ -1975,6 +2038,11 @@ func (r *updateCoreRunner) Start(_ context.Context, options CoreStartOptions) (P
 		r.startSequence = r.startSequence[1:]
 	}
 	r.events.add("core.start." + version)
+	if r.current.PID != 0 {
+		current := r.current
+		current.Uncertain = true
+		return Process{}, uncertainOwnership(current, errors.New("durable launch marker already exists"))
+	}
 	if version == r.uncertainStartVersion {
 		r.nextPID++
 		process := Process{PID: r.nextPID, Executable: install.BinPath, UID: 0, Generation: fmt.Sprintf("%s:%d", version, r.nextPID)}
@@ -2008,6 +2076,7 @@ func (r *updateCoreRunner) Stop(ctx context.Context, process Process) error {
 	version := r.versions[process.PID]
 	r.events.add("core.stop." + version)
 	r.stopSawCanceled[version] = ctx.Err() != nil
+	r.stopDeadline[version], _ = ctx.Deadline()
 	if version == r.failStopVersion {
 		return errors.New("stop secret failure")
 	}
