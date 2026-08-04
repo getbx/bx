@@ -396,7 +396,7 @@ func (m *Manager) recoverPreparedBarrierIntent(ctx context.Context, transaction 
 		return m.failRecoveredUpdate(transaction, "previous_core_health_failed")
 	}
 	if err := m.acceptHealthy(ctx, process, state, false); err != nil {
-		return m.failRecoveredUpdate(transaction, "previous_core_accept_failed")
+		return m.failRecoveredUpdate(transaction, m.updateAcceptFailureCode("previous_core_accept_failed"))
 	}
 	m.coreVersion = transaction.FromVersion
 	transaction.BarrierInstallIntent = false
@@ -407,11 +407,10 @@ func (m *Manager) recoverPreparedBarrierIntent(ctx context.Context, transaction 
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return newUpdateError("barrier_remove_failed")
 	}
-	m.setStatus(Status{
-		SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseRolledBack,
-		CorePID: process.PID, CoreVersion: transaction.FromVersion,
-		Protection: ProtectionProtected, LastError: "barrier_install_recovered",
-	})
+	if err := m.setProtectedStatus(PhaseRolledBack, process.PID, transaction.FromVersion, "barrier_install_recovered"); err != nil {
+		_ = m.failDNSActivation(ctx, state, "dns_verification_failed", err)
+		return newUpdateError("dns_verification_failed")
+	}
 	return m.finishUpdate(transaction, prepared, PhaseRolledBack)
 }
 
@@ -537,7 +536,7 @@ func (m *Manager) recoverUpdateRollback(ctx context.Context, transaction *Transa
 		return m.failRecoveredUpdate(transaction, "previous_core_health_failed")
 	}
 	if err := m.acceptHealthy(ctx, process, state, false); err != nil {
-		return m.failRecoveredUpdate(transaction, "previous_core_accept_failed")
+		return m.failRecoveredUpdate(transaction, m.updateAcceptFailureCode("previous_core_accept_failed"))
 	}
 	if err := m.saveUpdatePhase(transaction, PhaseRolledBack, "update_recovered"); err != nil {
 		return m.failRecoveredUpdate(transaction, "update_journal_failed")
@@ -546,11 +545,10 @@ func (m *Manager) recoverUpdateRollback(ctx context.Context, transaction *Transa
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return newUpdateError("barrier_remove_failed")
 	}
-	m.setStatus(Status{
-		SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseRolledBack,
-		CorePID: process.PID, CoreVersion: transaction.FromVersion,
-		Protection: ProtectionProtected, LastError: "update_recovered",
-	})
+	if err := m.setProtectedStatus(PhaseRolledBack, process.PID, transaction.FromVersion, "update_recovered"); err != nil {
+		_ = m.failDNSActivation(ctx, state, "dns_verification_failed", err)
+		return newUpdateError("dns_verification_failed")
+	}
 	if err := m.finishUpdate(transaction, prepared, PhaseRolledBack); err != nil {
 		return err
 	}
@@ -583,18 +581,17 @@ func (m *Manager) recoverTerminalUpdate(ctx context.Context, transaction *Transa
 		return m.failRecoveredUpdate(transaction, "recovered_core_health_failed")
 	}
 	if err := m.acceptHealthy(ctx, process, state, false); err != nil {
-		return m.failRecoveredUpdate(transaction, "recovered_core_accept_failed")
+		return m.failRecoveredUpdate(transaction, m.updateAcceptFailureCode("recovered_core_accept_failed"))
 	}
 	m.coreVersion = version
 	if err := m.releaseBarrierToCore(ctx); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return newUpdateError("barrier_remove_failed")
 	}
-	m.setStatus(Status{
-		SchemaVersion: 1, Desired: DesiredOn, Phase: transaction.Phase,
-		CorePID: process.PID, CoreVersion: version, Protection: ProtectionProtected,
-		LastError: transaction.LastError,
-	})
+	if err := m.setProtectedStatus(transaction.Phase, process.PID, version, transaction.LastError); err != nil {
+		_ = m.failDNSActivation(ctx, state, "dns_verification_failed", err)
+		return newUpdateError("dns_verification_failed")
+	}
 	return m.finishUpdate(transaction, prepared, transaction.Phase)
 }
 
@@ -681,7 +678,12 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, startErr.Error())
 	}
 	if err := m.acceptHealthy(ctx, process, runtimeState, false); err != nil {
-		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "new_core_accept_failed")
+		cause := m.updateAcceptFailureCode("new_core_accept_failed")
+		result, rollbackErr := m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, cause)
+		if rollbackErr != nil {
+			return result, rollbackErr
+		}
+		return result, newUpdateError(cause)
 	}
 	m.coreVersion = request.ToVersion
 	if err := m.saveUpdatePhase(&transaction, PhaseCommitted, ""); err != nil {
@@ -692,10 +694,10 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return m.updateResult(request, PhaseNeedsAttention, true, false), newUpdateError("barrier_remove_failed")
 	}
-	m.setStatus(Status{
-		SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted,
-		CorePID: process.PID, CoreVersion: request.ToVersion, Protection: ProtectionProtected,
-	})
+	if err := m.setProtectedStatus(PhaseCommitted, process.PID, request.ToVersion, ""); err != nil {
+		_ = m.failDNSActivation(ctx, runtimeState, "dns_verification_failed", err)
+		return m.updateResult(request, PhaseNeedsAttention, true, false), newUpdateError("dns_verification_failed")
+	}
 	result := m.updateResult(request, PhaseCommitted, true, false)
 	if err := m.finishUpdate(&transaction, prepared, PhaseCommitted); err != nil {
 		return result, err
@@ -771,7 +773,7 @@ func (m *Manager) rollbackUpdate(
 		return m.failUpdate(*transaction, request, "previous_core_health_failed", false, false)
 	}
 	if err := m.acceptHealthy(ctx, process, state, false); err != nil {
-		return m.failUpdate(*transaction, request, "previous_core_accept_failed", false, false)
+		return m.failUpdate(*transaction, request, m.updateAcceptFailureCode("previous_core_accept_failed"), false, false)
 	}
 	if err := m.saveUpdatePhase(transaction, PhaseRolledBack, safeUpdateCode(cause)); err != nil {
 		return m.failUpdate(*transaction, request, "update_journal_failed", false, false)
@@ -780,16 +782,24 @@ func (m *Manager) rollbackUpdate(
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return m.updateResult(request, PhaseNeedsAttention, false, true), newUpdateError("barrier_remove_failed")
 	}
-	m.setStatus(Status{
-		SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseRolledBack,
-		CorePID: process.PID, CoreVersion: request.FromVersion,
-		Protection: ProtectionProtected, LastError: safeUpdateCode(cause),
-	})
+	if err := m.setProtectedStatus(PhaseRolledBack, process.PID, request.FromVersion, safeUpdateCode(cause)); err != nil {
+		_ = m.failDNSActivation(ctx, state, "dns_verification_failed", err)
+		return m.updateResult(request, PhaseNeedsAttention, false, true), newUpdateError("dns_verification_failed")
+	}
 	result := m.updateResult(request, PhaseRolledBack, false, true)
 	if err := m.finishUpdate(transaction, prepared, PhaseRolledBack); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+func (m *Manager) updateAcceptFailureCode(fallback string) string {
+	switch code := m.Status().LastError; code {
+	case "dns_takeover_failed", "dns_verification_failed":
+		return code
+	default:
+		return fallback
+	}
 }
 
 func (m *Manager) failUpdate(transaction Transaction, request UpdateRequest, code string, activated, rolledBack bool) (UpdateResult, error) {

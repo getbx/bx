@@ -368,7 +368,22 @@ func (m *Manager) executePathRecovery(ctx context.Context, transaction pathRecov
 	if err != nil {
 		return failedPathRecoverySnapshot(transaction.snapshot, result, err)
 	}
+	if result.State == "succeeded" {
+		if err := m.ensureDNSManaged(ctx, m.runtime); err != nil {
+			result.Stage = "verify"
+			return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(m.Status().LastError))
+		}
+	}
 	return completedPathRecoverySnapshot(transaction.snapshot, result)
+}
+
+func pathRecoveryDNSError(code string) error {
+	switch code {
+	case "dns_takeover_failed", "dns_verification_failed":
+	default:
+		code = "dns_verification_failed"
+	}
+	return &supervisor.PathRecoveryError{Code: code}
 }
 
 func (m *Manager) publishCorePathRecovery(id string, progress supervisor.PathRecoverySnapshot) {
@@ -594,7 +609,7 @@ func guardianPathRecoveryErrorCode(err error, resultCode string) string {
 
 func stableGuardianPathRecoveryCode(code string) string {
 	switch code {
-	case "capture_invalid", "capture_missing", "network_unavailable", "recovery_canceled", "recovery_failed", "recovery_unavailable", "transport_unavailable", "underlay_rebind_failed", "underlay_unavailable", "verification_failed":
+	case "capture_invalid", "capture_missing", "dns_takeover_failed", "dns_verification_failed", "network_unavailable", "recovery_canceled", "recovery_failed", "recovery_unavailable", "transport_unavailable", "underlay_rebind_failed", "underlay_unavailable", "verification_failed":
 		return code
 	default:
 		return ""
