@@ -21,12 +21,6 @@ const (
 	guardianLaunchdStdoutPath = "/var/log/bx-guard.log"
 	guardianLaunchdStderrPath = "/var/log/bx-guard.err.log"
 
-	// guardianSocketPath must stay in lockstep with guardian.SocketPath
-	// (internal/guardian/daemon.go). It cannot be imported directly: the
-	// guardian package already imports install, so importing guardian back
-	// here would create a cycle.
-	guardianSocketPath = "/var/run/bx/guardian.sock"
-
 	guardianSocketProbeTimeout = 200 * time.Millisecond
 	guardianLogTailMaxBytes    = 64 * 1024
 )
@@ -155,7 +149,7 @@ func enableGuardianWithControl(ctx context.Context, control guardianLaunchdContr
 // by EnableGuardian: a single quick dial attempt against the Guardian
 // control socket.
 func guardianSocketReachable() bool {
-	conn, err := net.DialTimeout("unix", guardianSocketPath, guardianSocketProbeTimeout)
+	conn, err := net.DialTimeout("unix", GuardianSocketPath, guardianSocketProbeTimeout)
 	if err != nil {
 		return false
 	}
