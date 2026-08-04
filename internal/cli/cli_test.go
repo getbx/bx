@@ -717,17 +717,28 @@ func TestAppHidesLegacyAndDeveloperCommands(t *testing.T) {
 }
 
 func TestBuildExecStart(t *testing.T) {
+	// Linux: 标准路径格式无引号
 	got := buildExecStartForGOOS("linux", "/usr/local/bin/bx", "/etc/bx/config.yaml")
 	want := "/usr/local/bin/bx run -c /etc/bx/config.yaml"
 	if got != want {
-		t.Fatalf("ExecStart 应跑 run, got %q", got)
+		t.Fatalf("Linux ExecStart 应跑 run, got %q", got)
 	}
-	got = buildExecStartForGOOS("darwin", "/usr/local/bin/bx", "/etc/bx/config.yaml")
+
+	// darwin legacy: Guardian 可执行文件在 /usr/local/bin/bx
+	got = buildExecStartWith("darwin", "/usr/local/bin/bx", "/etc/bx/config.yaml", "/usr/local/bin/bx")
 	want = "/usr/local/bin/bx guardian --config /etc/bx/config.yaml --listen-dns 127.0.0.1:53"
 	if got != want {
-		t.Fatalf("darwin ExecStart should install Guardian, got %q", got)
+		t.Fatalf("darwin legacy ExecStart, got %q", got)
 	}
-	// Windows:含空格路径必须加引号,否则服务 BinaryPathName 拆分会崩。
+
+	// darwin unified runtime: Guardian 可执行文件在统一 runtime 目录(含空格)
+	got = buildExecStartWith("darwin", "/usr/local/bin/bx", "/etc/bx/config.yaml", "/Library/Application Support/bx/runtime/current/bx")
+	want = "/Library/Application Support/bx/runtime/current/bx guardian --config /etc/bx/config.yaml --listen-dns 127.0.0.1:53"
+	if got != want {
+		t.Fatalf("darwin unified runtime ExecStart (with spaces in path), got %q", got)
+	}
+
+	// Windows: 含空格路径必须加引号,否则服务 BinaryPathName 拆分会崩。
 	got = buildExecStartForGOOS("windows", `C:\Program Files\bx\bx.exe`, `C:\ProgramData\bx\config.yaml`)
 	want = `"C:\Program Files\bx\bx.exe" run -c "C:\ProgramData\bx\config.yaml"`
 	if got != want {

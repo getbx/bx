@@ -5137,12 +5137,14 @@ func buildExecStart(bin, configPath string) string {
 	return buildExecStartForGOOS(runtime.GOOS, bin, configPath)
 }
 
-func buildExecStartForGOOS(goos, bin, configPath string) string {
+// buildExecStartWith 是 buildExecStartForGOOS 的纯函数内核:darwin 分支该用哪个可执行文件由
+// 调用方解析(生产是 install.GuardianExecutable(),测试注入),避免测试依赖本机是否已装统一 runtime。
+func buildExecStartWith(goos, bin, configPath, guardianExecutable string) string {
 	switch goos {
 	case "darwin":
-		// darwin 忽略 bin 参数:Guardian LaunchDaemon 该指向哪个可执行文件由
-		// install.GuardianExecutable() 决定(统一 runtime 已装好时优先指向它,否则回落 BinPath)。
-		return fmt.Sprintf("%s guardian --config %s --listen-dns %s", install.GuardianExecutable(), configPath, darwinDNSListen)
+		// darwin:Guardian LaunchDaemon 指向由调用方解析的可执行文件(生产经 install.GuardianExecutable(),
+		// 统一 runtime 已装好时优先指向它,否则回落 BinPath;测试注入显式路径)。
+		return fmt.Sprintf("%s guardian --config %s --listen-dns %s", guardianExecutable, configPath, darwinDNSListen)
 	case "windows":
 		// Windows 服务 BinaryPathName:bin/config 路径含空格(Program Files / ProgramData),
 		// 必须加引号,交 install.commandLineFields 按引号拆回 exepath+args。
@@ -5150,6 +5152,16 @@ func buildExecStartForGOOS(goos, bin, configPath string) string {
 	default:
 		return fmt.Sprintf("%s run -c %s", bin, configPath)
 	}
+}
+
+func buildExecStartForGOOS(goos, bin, configPath string) string {
+	// darwin 分支通过 install.GuardianExecutable() 解析实际该用哪个可执行文件,
+	// 其他 GOOS 的 guardianExecutable 参数无关。
+	guardianExecutable := ""
+	if goos == "darwin" {
+		guardianExecutable = install.GuardianExecutable()
+	}
+	return buildExecStartWith(goos, bin, configPath, guardianExecutable)
 }
 
 func uninstallAction(c *cli.Context) error {
