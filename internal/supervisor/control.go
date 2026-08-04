@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/confirm"
+	"github.com/getbx/bx/internal/secdir"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tunnel"
 )
@@ -411,7 +412,9 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 			Warnings:      guard.warnings(),
 		}
 	}
-	_ = os.MkdirAll(filepath.Dir(SockPath), 0o755)
+	if err := secdir.Ensure(filepath.Dir(SockPath), os.Geteuid(), 0o755); err != nil {
+		return nil, fmt.Errorf("准备控制 socket 目录: %w", err)
+	}
 	_ = os.Remove(SockPath)
 	ln, err := net.Listen("unix", SockPath)
 	if err != nil {
