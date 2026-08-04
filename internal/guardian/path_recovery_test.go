@@ -123,6 +123,66 @@ func TestManagerPathRecoveryRelaysCoreRecoveryStage(t *testing.T) {
 	})
 }
 
+func TestPathRecoveryDNSFailureIsNotPublishedAsSuccess(t *testing.T) {
+	tests := []struct {
+		name     string
+		wantCode string
+		prepare  func(*fakeDNSManager)
+	}{
+		{
+			name:     "takeover",
+			wantCode: "dns_takeover_failed",
+			prepare: func(dns *fakeDNSManager) {
+				dns.ensureErr = errors.New("resolver change failed")
+			},
+		},
+		{
+			name:     "verification",
+			wantCode: "dns_verification_failed",
+			prepare: func(dns *fakeDNSManager) {
+				dns.inspectResults = []fakeDNSResult{{
+					status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"},
+				}}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			core := newFakeCorePathClient(false)
+			env.manager.corePath = core
+			env.dns.record = true
+			tt.prepare(env.dns)
+			env.manager.pathRecoveryRetryWait = func(context.Context, time.Duration) error {
+				return context.Canceled
+			}
+
+			if _, err := env.manager.RequestPathRecovery(RecoveryRequest{
+				Reason: "underlay_changed", Generation: "wifi-b",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			core.waitForRequest(t)
+			core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+				State: "succeeded", Stage: "succeeded",
+			}})
+			eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+			snapshot := env.manager.CurrentPathRecovery()
+			if snapshot.State != "failed" || snapshot.ErrorCode != tt.wantCode {
+				t.Fatalf("snapshot = %+v, want failed %q", snapshot, tt.wantCode)
+			}
+			if env.manager.Status().Protection == ProtectionProtected {
+				t.Fatalf("status = %+v", env.manager.Status())
+			}
+			if !env.manager.barrierProven() {
+				t.Fatal("DNS failure did not preserve fail-closed protection")
+			}
+		})
+	}
+}
+
 type observedCorePathClient struct {
 	observed chan struct{}
 	release  chan struct{}
