@@ -6,10 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -17,6 +20,15 @@ const (
 	guardianLaunchdPlistPath  = "/Library/LaunchDaemons/com.getbx.bx.guard.plist"
 	guardianLaunchdStdoutPath = "/var/log/bx-guard.log"
 	guardianLaunchdStderrPath = "/var/log/bx-guard.err.log"
+
+	// guardianSocketPath must stay in lockstep with guardian.SocketPath
+	// (internal/guardian/daemon.go). It cannot be imported directly: the
+	// guardian package already imports install, so importing guardian back
+	// here would create a cycle.
+	guardianSocketPath = "/var/run/bx/guardian.sock"
+
+	guardianSocketProbeTimeout = 200 * time.Millisecond
+	guardianLogTailMaxBytes    = 64 * 1024
 )
 
 // GuardianPlistText returns the root LaunchDaemon contract used on macOS.
@@ -105,19 +117,30 @@ func GuardianActive() bool {
 	return err == nil && active
 }
 
+// EnableGuardian ensures the Guardian launchd service is loaded and
+// reachable, using a real unix-socket probe to detect an already-loaded
+// but crash-looping service.
 func EnableGuardian() error {
+	return EnableGuardianWithProbe(guardianSocketReachable)
+}
+
+// EnableGuardianWithProbe 在服务已加载但探测显示未就绪时强制 kickstart 一次,
+// 避免「launchd 认为已加载、进程实则在崩溃循环」这种静默失败。ready 为 nil 时
+// 一律按「未就绪」处理。
+func EnableGuardianWithProbe(ready func() bool) error {
 	if !GuardianInstalled() {
 		return fmt.Errorf("Guardian launchd service is not installed at %s", guardianLaunchdPlistPath)
 	}
-	return enableGuardianWithControl(context.Background(), execGuardianLaunchdControl{})
+	return enableGuardianWithControl(context.Background(), execGuardianLaunchdControl{}, ready)
 }
 
-func enableGuardianWithControl(ctx context.Context, control guardianLaunchdControl) error {
+func enableGuardianWithControl(ctx context.Context, control guardianLaunchdControl, ready func() bool) error {
 	active, err := control.Loaded(ctx, guardianLaunchdLabel)
 	if err != nil {
 		return fmt.Errorf("inspect Guardian launchd service: %w", err)
 	}
-	for _, args := range guardianEnableCommands(active) {
+	isReady := ready != nil && ready()
+	for _, args := range guardianEnableCommands(active, isReady) {
 		if err := control.Run(ctx, args...); err != nil {
 			if loaded, statusErr := control.Loaded(ctx, guardianLaunchdLabel); statusErr == nil && loaded {
 				return nil
@@ -126,6 +149,61 @@ func enableGuardianWithControl(ctx context.Context, control guardianLaunchdContr
 		}
 	}
 	return nil
+}
+
+// guardianSocketReachable is the real "is Guardian actually up" probe used
+// by EnableGuardian: a single quick dial attempt against the Guardian
+// control socket.
+func guardianSocketReachable() bool {
+	conn, err := net.DialTimeout("unix", guardianSocketPath, guardianSocketProbeTimeout)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// GuardianLogTail returns the last n lines of the Guardian stderr log
+// (/var/log/bx-guard.err.log). It never returns an error: if the log is
+// missing or unreadable it returns an empty string.
+func GuardianLogTail(lines int) string {
+	return guardianLogTailAt(guardianLaunchdStderrPath, lines)
+}
+
+func guardianLogTailAt(path string, lines int) string {
+	if lines <= 0 {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	size := info.Size()
+	readSize := size
+	if readSize > guardianLogTailMaxBytes {
+		readSize = guardianLogTailMaxBytes
+	}
+	if readSize <= 0 {
+		return ""
+	}
+	buf := make([]byte, readSize)
+	if _, err := f.ReadAt(buf, size-readSize); err != nil && !errors.Is(err, io.EOF) {
+		return ""
+	}
+	text := strings.TrimRight(string(buf), "\n")
+	if text == "" {
+		return ""
+	}
+	all := strings.Split(text, "\n")
+	if len(all) > lines {
+		all = all[len(all)-lines:]
+	}
+	return strings.Join(all, "\n")
 }
 
 func LegacyCoreLoaded() (bool, error) {
@@ -248,15 +326,24 @@ func launchdLabelAbsent(output []byte) bool {
 		strings.Contains(text, "service is disabled")
 }
 
-func guardianEnableCommands(active bool) [][]string {
-	if active {
-		return nil
-	}
+// guardianEnableCommands plans the launchctl commands needed to bring
+// Guardian up. If launchd already reports the label loaded (active) but a
+// live probe shows it isn't actually reachable (!ready), launchd's belief
+// alone is not trustworthy — the service may be crash-looping — so a
+// kickstart is still issued to force a fresh start attempt.
+func guardianEnableCommands(active, ready bool) [][]string {
 	domainLabel := "system/" + guardianLaunchdLabel
-	return [][]string{
-		{"enable", domainLabel},
-		{"bootstrap", "system", guardianLaunchdPlistPath},
-		{"kickstart", "-k", domainLabel},
+	switch {
+	case active && ready:
+		return nil
+	case active:
+		return [][]string{{"kickstart", "-k", domainLabel}}
+	default:
+		return [][]string{
+			{"enable", domainLabel},
+			{"bootstrap", "system", guardianLaunchdPlistPath},
+			{"kickstart", "-k", domainLabel},
+		}
 	}
 }
 

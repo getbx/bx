@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -42,7 +43,7 @@ func TestGuardianPlistTextUsesCanonicalLifecycleOwner(t *testing.T) {
 }
 
 func TestGuardianEnableCommandsBootstrapCanonicalLabel(t *testing.T) {
-	commands := guardianEnableCommands(false)
+	commands := guardianEnableCommands(false, false)
 	want := []string{
 		"enable system/com.getbx.bx.guard",
 		"bootstrap system /Library/LaunchDaemons/com.getbx.bx.guard.plist",
@@ -56,8 +57,22 @@ func TestGuardianEnableCommandsBootstrapCanonicalLabel(t *testing.T) {
 			t.Fatalf("command[%d] = %q, want %q", i, got, want[i])
 		}
 	}
-	if commands := guardianEnableCommands(true); len(commands) != 0 {
-		t.Fatalf("active Guardian should need no commands: %#v", commands)
+	if commands := guardianEnableCommands(true, true); len(commands) != 0 {
+		t.Fatalf("active+ready Guardian should need no commands: %#v", commands)
+	}
+}
+
+func TestGuardianEnableCommandsKickstartsLoadedButNotReady(t *testing.T) {
+	if got := guardianEnableCommands(true, true); got != nil {
+		t.Fatalf("loaded+ready 应为 no-op,got %v", got)
+	}
+	got := guardianEnableCommands(true, false)
+	want := [][]string{{"kickstart", "-k", "system/com.getbx.bx.guard"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loaded+not-ready = %v want %v", got, want)
+	}
+	if len(guardianEnableCommands(false, false)) != 3 {
+		t.Fatal("未加载时仍应 enable+bootstrap+kickstart")
 	}
 }
 
@@ -181,7 +196,7 @@ func TestWriteGuardianUnitAtEnforcesRootOwnershipAndMode(t *testing.T) {
 
 func TestEnableGuardianWithControlUsesPlannedArgv(t *testing.T) {
 	control := &fakeGuardianLaunchdControl{}
-	if err := enableGuardianWithControl(context.Background(), control); err != nil {
+	if err := enableGuardianWithControl(context.Background(), control, func() bool { return false }); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -191,6 +206,53 @@ func TestEnableGuardianWithControlUsesPlannedArgv(t *testing.T) {
 	}
 	if strings.Join(control.calls, "|") != strings.Join(want, "|") {
 		t.Fatalf("launchctl calls = %#v, want %#v", control.calls, want)
+	}
+}
+
+func TestEnableGuardianWithControlKickstartsWhenLoadedButProbeUnready(t *testing.T) {
+	control := &fakeGuardianLaunchdControl{loaded: map[string]bool{guardianLaunchdLabel: true}}
+	if err := enableGuardianWithControl(context.Background(), control, func() bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"kickstart -k system/com.getbx.bx.guard"}
+	if strings.Join(control.calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("launchctl calls = %#v, want %#v", control.calls, want)
+	}
+}
+
+func TestEnableGuardianWithControlNoopWhenLoadedAndReady(t *testing.T) {
+	control := &fakeGuardianLaunchdControl{loaded: map[string]bool{guardianLaunchdLabel: true}}
+	if err := enableGuardianWithControl(context.Background(), control, func() bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.calls) != 0 {
+		t.Fatalf("loaded+ready should be a no-op: %#v", control.calls)
+	}
+}
+
+func TestEnableGuardianWithControlTreatsNilProbeAsNotReady(t *testing.T) {
+	control := &fakeGuardianLaunchdControl{loaded: map[string]bool{guardianLaunchdLabel: true}}
+	if err := enableGuardianWithControl(context.Background(), control, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"kickstart -k system/com.getbx.bx.guard"}
+	if strings.Join(control.calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("nil probe should still kickstart: %#v", control.calls)
+	}
+}
+
+func TestGuardianLogTailReturnsLastLinesAndEmptyWhenUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bx-guard.err.log")
+	content := strings.Join([]string{"line1", "line2", "line3", "line4"}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := guardianLogTailAt(path, 2), "line3\nline4"; got != want {
+		t.Fatalf("guardianLogTailAt = %q, want %q", got, want)
+	}
+	if got := guardianLogTailAt(filepath.Join(dir, "missing.log"), 10); got != "" {
+		t.Fatalf("missing log should be empty, got %q", got)
 	}
 }
 

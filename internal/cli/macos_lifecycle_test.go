@@ -124,7 +124,7 @@ func TestMacOSUpLifecycleMigratesBeforeMenuAndWaitsForProtected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"legacy.loaded", "metadata", "guardian.enable", "guardian.migrate", "guardian.status", "console.uid", "menu.ensure"}
+	want := []string{"legacy.loaded", "metadata", "guardian.enable", "guardian.ready", "guardian.migrate", "guardian.status", "console.uid", "menu.ensure"}
 	if strings.Join(events, "|") != strings.Join(want, "|") {
 		t.Fatalf("macOS up events = %#v, want %#v", events, want)
 	}
@@ -156,7 +156,7 @@ func TestMacOSUpLifecycleRemovesOrphanLegacyPlistWithoutMigrating(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"legacy.loaded", "legacy.remove", "guardian.enable", "guardian.up", "console.uid", "menu.ensure"}
+	want := []string{"legacy.loaded", "legacy.remove", "guardian.enable", "guardian.ready", "guardian.up", "console.uid", "menu.ensure"}
 	if strings.Join(events, "|") != strings.Join(want, "|") {
 		t.Fatalf("macOS up events = %#v, want %#v", events, want)
 	}
@@ -193,7 +193,7 @@ func TestMacOSUpLifecycleStillMigratesWhenLegacyLoaded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"legacy.loaded", "metadata", "guardian.enable", "guardian.migrate", "guardian.status", "console.uid", "menu.ensure"}
+	want := []string{"legacy.loaded", "metadata", "guardian.enable", "guardian.ready", "guardian.migrate", "guardian.status", "console.uid", "menu.ensure"}
 	if strings.Join(events, "|") != strings.Join(want, "|") {
 		t.Fatalf("macOS up events = %#v, want %#v", events, want)
 	}
@@ -225,7 +225,7 @@ func TestMacOSUpLifecycleInstallsGuardianAndLeavesMenuFailureBestEffort(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"guardian.install:/etc/bx/config.yaml", "legacy.loaded", "guardian.enable", "guardian.up", "console.uid", "menu.ensure"}
+	want := []string{"guardian.install:/etc/bx/config.yaml", "legacy.loaded", "guardian.enable", "guardian.ready", "guardian.up", "console.uid", "menu.ensure"}
 	if strings.Join(events, "|") != strings.Join(want, "|") {
 		t.Fatalf("macOS up events = %#v, want %#v", events, want)
 	}
@@ -258,6 +258,32 @@ func TestMacOSUpLifecycleMetadataFailureLeavesGuardianAndLegacyUntouched(t *test
 	}
 }
 
+func TestMacOSUpLifecycleFailsWithGuardianLogWhenSocketNeverReady(t *testing.T) {
+	var events []string
+	client := &recordingGuardianClient{
+		upStatus: guardian.Status{Desired: guardian.DesiredOn, Phase: guardian.PhaseCommitted, Protection: guardian.ProtectionProtected},
+		events:   &events,
+	}
+	deps := testMacOSLifecycleDeps(&events, client)
+	deps.guardianReady = func(context.Context) bool {
+		events = append(events, "guardian.ready")
+		return false
+	}
+	_, err := macOSUpLifecycle(context.Background(), "/etc/bx/config.yaml", deps)
+	if err == nil {
+		t.Fatal("unready Guardian socket should fail bx up")
+	}
+	if !strings.Contains(err.Error(), "Guardian 服务未能启动") || !strings.Contains(err.Error(), guardian.SocketPath) {
+		t.Fatalf("error missing diagnostic content: %v", err)
+	}
+	if got, want := strings.Join(events, "|"), "legacy.loaded|guardian.enable|guardian.ready"; got != want {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+	if client.upCalls != 0 || client.migrateCalls != 0 {
+		t.Fatalf("client mutation reached despite unready socket: up=%d migrate=%d", client.upCalls, client.migrateCalls)
+	}
+}
+
 func TestMacOSDownLifecycleCallsGuardianOnly(t *testing.T) {
 	var events []string
 	client := &recordingGuardianClient{
@@ -269,7 +295,7 @@ func TestMacOSDownLifecycleCallsGuardianOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"legacy.loaded", "guardian.enable", "guardian.down"}
+	want := []string{"legacy.loaded", "guardian.enable", "guardian.ready", "guardian.down"}
 	if strings.Join(events, "|") != strings.Join(want, "|") {
 		t.Fatalf("macOS down events = %#v, want %#v", events, want)
 	}
@@ -355,6 +381,10 @@ func testMacOSLifecycleDeps(events *[]string, client guardianLifecycleClient) ma
 		enableGuardian: func() error {
 			*events = append(*events, "guardian.enable")
 			return nil
+		},
+		guardianReady: func(context.Context) bool {
+			*events = append(*events, "guardian.ready")
+			return true
 		},
 		legacyInstalled: func() bool { return false },
 		legacyLoaded: func() (bool, error) {
