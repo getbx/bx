@@ -237,7 +237,7 @@ func macOSUpAction(c *urfavecli.Context) error {
 		fmt.Fprintf(os.Stderr, "⚠️  bx 已受保护,但菜单栏未启动: %v\n", result.MenuWarning)
 	}
 	if report, err := readStatusReport(); err == nil {
-		printUpSummary(report)
+		printUpSummary(report, result.Status)
 		return nil
 	}
 	fmt.Println("✅ bx 已启动。")
