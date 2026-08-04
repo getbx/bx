@@ -69,10 +69,6 @@ func (f GatewayProviderFunc) DefaultGateway(ctx context.Context) (string, error)
 	return f(ctx)
 }
 
-type NetworkRestorer interface {
-	Restore(context.Context) error
-}
-
 type LegacyCoreLifecycle interface {
 	Present(context.Context) (bool, error)
 	Stop(context.Context) error
@@ -84,7 +80,8 @@ type ManagerOptions struct {
 	Runner           CoreRunner
 	Health           HealthGate
 	Barrier          Barrier
-	Restorer         NetworkRestorer
+	DNS              DNSManager
+	Restorer         DNSManager
 	Legacy           LegacyCoreLifecycle
 	BarrierContext   BarrierContext
 	GatewayProvider  GatewayProvider
@@ -104,7 +101,8 @@ type Manager struct {
 	runner                 CoreRunner
 	health                 HealthGate
 	barrier                Barrier
-	restorer               NetworkRestorer
+	dns                    DNSManager
+	dnsStatus              DNSStatus
 	legacy                 LegacyCoreLifecycle
 	barrierContext         BarrierContext
 	gatewayProvider        GatewayProvider
@@ -145,6 +143,12 @@ type Manager struct {
 }
 
 func NewManager(options ManagerOptions) (*Manager, error) {
+	dns := options.DNS
+	// Update lifecycle migration is staged separately; keep its legacy DNS
+	// injection alias without weakening the production daemon contract.
+	if dns == nil && options.UpdatePreparer != nil && options.Restorer != nil {
+		dns = options.Restorer
+	}
 	switch {
 	case options.Store == nil:
 		return nil, errors.New("guardian desired store required")
@@ -154,8 +158,8 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		return nil, errors.New("guardian health gate required")
 	case options.Barrier == nil:
 		return nil, errors.New("guardian barrier required")
-	case options.Restorer == nil:
-		return nil, errors.New("guardian network restorer required")
+	case dns == nil:
+		return nil, errors.New("guardian DNS manager required")
 	case options.CoreVersion == "":
 		return nil, errors.New("guardian Core version required")
 	}
@@ -203,7 +207,8 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		runner:                options.Runner,
 		health:                options.Health,
 		barrier:               options.Barrier,
-		restorer:              options.Restorer,
+		dns:                   dns,
+		dnsStatus:             DNSStatus{State: DNSUnknown},
 		legacy:                options.Legacy,
 		barrierContext:        cloneBarrierContext(options.BarrierContext),
 		gatewayProvider:       gatewayProvider,
@@ -227,6 +232,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 			Desired:       DesiredOff,
 			Phase:         PhaseIdle,
 			Protection:    ProtectionOff,
+			DNSState:      DNSUnknown,
 		},
 	}
 	m.pathRecoveryNewContext = func() (context.Context, context.CancelFunc) {
@@ -333,14 +339,9 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 		m.needsAttention(DesiredOn, "legacy_unit_remove_failed")
 		return errors.Join(fmt.Errorf("remove migrated Core unit: %w", err), reinstallErr)
 	}
-	m.setStatus(Status{
-		SchemaVersion: 1,
-		Desired:       DesiredOn,
-		Phase:         PhaseCommitted,
-		CorePID:       m.current.PID,
-		CoreVersion:   state.Version,
-		Protection:    ProtectionProtected,
-	})
+	if err := m.setProtectedStatus(PhaseCommitted, m.current.PID, state.Version, ""); err != nil {
+		return m.failDNSActivation(ctx, state, "dns_verification_failed", err)
+	}
 	return nil
 }
 
@@ -427,6 +428,16 @@ func (m *Manager) Down(ctx context.Context) error {
 		return err
 	}
 	if desired == DesiredOff && m.current.PID == 0 {
+		status, restoreErr := m.dns.Restore(ctx)
+		m.cacheDNSStatus(status)
+		if restoreErr != nil {
+			m.needsAttention(DesiredOff, "dns_restore_failed")
+			return fmt.Errorf("restore stale managed DNS: %w", restoreErr)
+		}
+		if status.State != DNSUnmanaged {
+			m.needsAttention(DesiredOff, "dns_restore_failed")
+			return fmt.Errorf("restore stale managed DNS: state is %q", status.State)
+		}
 		m.setStatus(Status{SchemaVersion: 1, Desired: DesiredOff, Phase: PhaseIdle, Protection: ProtectionOff})
 		return nil
 	}
@@ -475,10 +486,14 @@ func (m *Manager) Down(ctx context.Context) error {
 	m.runtime = supervisor.RuntimeState{}
 
 	restoreCtx, cancelRestore := m.downRestoreContext(ctx)
-	restoreErr := m.restorer.Restore(restoreCtx)
+	dnsStatus, restoreErr := m.dns.Restore(restoreCtx)
 	cancelRestore()
+	m.cacheDNSStatus(dnsStatus)
+	if restoreErr == nil && dnsStatus.State != DNSUnmanaged {
+		restoreErr = fmt.Errorf("DNS restore left state %q", dnsStatus.State)
+	}
 	if restoreErr != nil {
-		restoreErr := fmt.Errorf("restore managed network: %w", restoreErr)
+		restoreErr := fmt.Errorf("restore managed DNS: %w", restoreErr)
 		recoveryCtx, cancelRecovery := context.WithTimeout(ctx, m.restartTimeout)
 		defer cancelRecovery()
 		if _, recoveryErr := m.startCoreLocked(recoveryCtx); recoveryErr != nil {
@@ -657,6 +672,9 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 	}
 	m.current = process
 	m.runtime = state
+	if err := m.ensureDNSManaged(ctx, state); err != nil {
+		return err
+	}
 	if m.barrierOwnership.proof != barrierAbsent {
 		if m.barrierOwnership.proof == barrierReleaseAttempted && releaseBarrier {
 			if err := m.releaseBarrierToCore(ctx); err != nil {
@@ -684,13 +702,51 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 			}
 		}
 	}
+	if err := m.setProtectedStatus(PhaseCommitted, process.PID, state.Version, ""); err != nil {
+		return m.failDNSActivation(ctx, state, "dns_verification_failed", err)
+	}
+	return nil
+}
+
+func (m *Manager) ensureDNSManaged(ctx context.Context, runtimeState supervisor.RuntimeState) error {
+	status, err := m.dns.EnsureManaged(ctx)
+	m.cacheDNSStatus(status)
+	if err != nil {
+		return m.failDNSActivation(ctx, runtimeState, "dns_takeover_failed", fmt.Errorf("take over DNS: %w", err))
+	}
+
+	status, err = m.dns.Inspect(ctx)
+	m.cacheDNSStatus(status)
+	if err != nil {
+		return m.failDNSActivation(ctx, runtimeState, "dns_verification_failed", fmt.Errorf("verify managed DNS: %w", err))
+	}
+	if status.State != DNSManaged {
+		return m.failDNSActivation(ctx, runtimeState, "dns_verification_failed", fmt.Errorf("verify managed DNS: state is %q", status.State))
+	}
+	return nil
+}
+
+func (m *Manager) failDNSActivation(ctx context.Context, runtimeState supervisor.RuntimeState, code string, cause error) error {
+	var barrierErr error
+	if !m.barrierProven() {
+		barrierErr = m.installBarrierForRecovery(ctx, runtimeState)
+	}
+	m.needsAttention(DesiredOn, code)
+	return errors.Join(cause, barrierErr)
+}
+
+func (m *Manager) setProtectedStatus(phase Phase, pid int, version, lastError string) error {
+	if m.dnsStatus.State != DNSManaged {
+		return fmt.Errorf("cannot publish protected status with DNS state %q", m.dnsStatus.State)
+	}
 	m.setStatus(Status{
 		SchemaVersion: 1,
 		Desired:       DesiredOn,
-		Phase:         PhaseCommitted,
-		CorePID:       process.PID,
-		CoreVersion:   state.Version,
+		Phase:         phase,
+		CorePID:       pid,
+		CoreVersion:   version,
 		Protection:    ProtectionProtected,
+		LastError:     lastError,
 	})
 	return nil
 }
@@ -1075,7 +1131,17 @@ func (m *Manager) needsAttention(desired DesiredState, code string) {
 	m.setStatus(status)
 }
 
+func (m *Manager) cacheDNSStatus(status DNSStatus) {
+	m.dnsStatus = DNSStatus{
+		State:   normalizedDNSState(status.State),
+		Service: status.Service,
+	}
+}
+
 func (m *Manager) setStatus(status Status) {
+	status.DNSState = m.dnsStatus.State
+	status.DNSManaged = m.dnsStatus.State == DNSManaged
+	status.DNSService = m.dnsStatus.Service
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
 	m.status = status
