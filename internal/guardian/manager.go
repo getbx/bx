@@ -21,6 +21,11 @@ const (
 
 type barrierProof uint8
 
+// A barrier credential identifies one ownership epoch. Install assigns a new
+// credential, while successful release/remove consumes it, so delayed work
+// cannot act on a barrier another lifecycle replaced or completed.
+type barrierCredential uint64
+
 const (
 	barrierAbsent barrierProof = iota
 	barrierInstallAttempted
@@ -30,8 +35,9 @@ const (
 )
 
 type barrierOwnership struct {
-	proof   barrierProof
-	context BarrierContext
+	proof      barrierProof
+	credential barrierCredential
+	context    BarrierContext
 }
 
 var errRecoveryIncomplete = errors.New("guardian startup recovery incomplete")
@@ -116,6 +122,7 @@ type Manager struct {
 	runtime                supervisor.RuntimeState
 	status                 Status
 	barrierOwnership       barrierOwnership
+	barrierGeneration      barrierCredential
 	recoveryBlocked        bool
 	recoveryMu             sync.Mutex
 	recoveryContext        context.Context
@@ -1011,7 +1018,7 @@ func (m *Manager) removeBarrier(ctx context.Context) error {
 		m.barrierOwnership.proof = barrierRemovalAttempted
 		return fmt.Errorf("remove maintenance barrier: %w", err)
 	}
-	m.barrierOwnership = barrierOwnership{}
+	m.consumeBarrierOwnership()
 	return nil
 }
 
@@ -1027,7 +1034,7 @@ func (m *Manager) releaseBarrierToCore(ctx context.Context) error {
 		m.barrierOwnership.proof = barrierReleaseAttempted
 		return fmt.Errorf("release maintenance barrier to Core: %w", err)
 	}
-	m.barrierOwnership = barrierOwnership{}
+	m.consumeBarrierOwnership()
 	return nil
 }
 
@@ -1064,7 +1071,24 @@ func (m *Manager) recordBarrierAttempt(barrierContext BarrierContext) {
 			owned.blockOnly = false
 		}
 	}
-	m.barrierOwnership = barrierOwnership{proof: barrierInstallAttempted, context: owned}
+	m.barrierOwnership = barrierOwnership{
+		proof:      barrierInstallAttempted,
+		credential: m.nextBarrierCredential(),
+		context:    owned,
+	}
+}
+
+func (m *Manager) consumeBarrierOwnership() {
+	m.nextBarrierCredential()
+	m.barrierOwnership = barrierOwnership{}
+}
+
+func (m *Manager) nextBarrierCredential() barrierCredential {
+	m.barrierGeneration++
+	if m.barrierGeneration == 0 {
+		m.barrierGeneration++
+	}
+	return m.barrierGeneration
 }
 
 func (m *Manager) barrierProven() bool {
