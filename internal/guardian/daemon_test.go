@@ -396,35 +396,77 @@ func (o *controlledDaemonNetworkObserver) releaseAll() {
 	}
 }
 
-func TestDaemonRunsJournalRecoveryBeforeServingLocalAPI(t *testing.T) {
-	for _, recoveryErr := range []error{nil, errors.New("needs attention")} {
-		ctx, cancel := context.WithCancel(context.Background())
-		events := []string{}
-		controller := &daemonStartupController{
-			recover: func(context.Context) error {
-				events = append(events, "recover")
-				return recoveryErr
-			},
-		}
-		start := func(_ context.Context, options DaemonOptions) (*Daemon, error) {
-			events = append(events, "serve")
-			if options.Handler == nil {
-				t.Fatal("LocalAPI handler was not installed")
-			}
-			if options.OwnerUID != 0 {
-				t.Fatalf("OwnerUID = %d, want root", options.OwnerUID)
-			}
-			return &Daemon{}, nil
-		}
+// TestDaemonServesLocalAPIWhileRecoveryIsInFlight is the regression guard for
+// the "false Guardian 未能启动" bug: startRecoveredDaemon must open the
+// LocalAPI socket and return WITHOUT waiting for the startup Recover to
+// finish. Recover (guardianMutationTimeout budget, up to ~60s for a
+// recovering Up with Core health waits) legitimately outlasts the client's
+// socket-readiness timeout (guardianReadyTimeout, 10s in cli/guardian.go);
+// serving first is what lets a slow-but-healthy recovery still be observed
+// as "the socket exists" instead of being misreported as a startup failure.
+func TestDaemonServesLocalAPIWhileRecoveryIsInFlight(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-		if _, err := startRecoveredDaemon(ctx, DaemonOptions{}, controller, start); err != nil {
-			t.Fatal(err)
-		}
-		cancel()
-		if want := []string{"recover", "serve"}; !reflect.DeepEqual(events, want) {
-			t.Fatalf("events = %#v, want %#v", events, want)
-		}
+	var mu sync.Mutex
+	events := []string{}
+	recoverStarted := make(chan struct{})
+	releaseRecover := make(chan struct{})
+	controller := &daemonStartupController{
+		recover: func(context.Context) error {
+			close(recoverStarted)
+			<-releaseRecover
+			mu.Lock()
+			events = append(events, "recover")
+			mu.Unlock()
+			return nil
+		},
 	}
+	start := func(_ context.Context, options DaemonOptions) (*Daemon, error) {
+		mu.Lock()
+		events = append(events, "serve")
+		mu.Unlock()
+		if options.Handler == nil {
+			t.Fatal("LocalAPI handler was not installed")
+		}
+		if options.OwnerUID != 0 {
+			t.Fatalf("OwnerUID = %d, want root", options.OwnerUID)
+		}
+		return &Daemon{}, nil
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		if _, err := startRecoveredDaemon(ctx, DaemonOptions{}, controller, start); err != nil {
+			t.Error(err)
+		}
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("startRecoveredDaemon blocked on Recover instead of serving first")
+	}
+	select {
+	case <-recoverStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background Recover never started")
+	}
+
+	mu.Lock()
+	got := append([]string(nil), events...)
+	mu.Unlock()
+	if !reflect.DeepEqual(got, []string{"serve"}) {
+		t.Fatalf("events while Recover is in flight = %#v, want [serve] only (socket must be observable before recovery completes)", got)
+	}
+
+	close(releaseRecover)
+	eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return reflect.DeepEqual(events, []string{"serve", "recover"})
+	})
 }
 
 func TestStartRecoveredDaemonWiresConfiguredOwnerIntoLocalAPI(t *testing.T) {
@@ -519,6 +561,7 @@ func (c *daemonStartupController) Recover(ctx context.Context) error { return c.
 func (*daemonStartupController) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot, error) {
 	return RecoverySnapshot{ID: "recovery-1", State: "accepted", Stage: "queued", Reason: request.Reason, Generation: request.Generation}, nil
 }
+
 func (*daemonStartupController) CurrentPathRecovery() RecoverySnapshot {
 	return RecoverySnapshot{State: "idle", Stage: "idle"}
 }

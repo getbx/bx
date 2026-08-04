@@ -318,10 +318,26 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	return daemon.Close()
 }
 
+// startRecoveredDaemon starts the LocalAPI socket first and runs the startup
+// Recover in the background — it deliberately does NOT wait for Recover to
+// finish before returning. Recover's budget (guardianMutationTimeout, 60s;
+// a recovering Up can itself wait up to ~20s for Core health) comfortably
+// exceeds how long a client should have to wait to prove the socket exists
+// (guardianReadyTimeout, 10s in cli/guardian.go) — waiting for Recover here
+// used to make a legitimately-recovering Guardian look like it failed to
+// start at all.
+//
+// This is safe without any extra fencing: Recover and every mutation
+// (Up/Down/Migrate) already serialize through Manager's single-slot
+// mutation channel (acquireMutation/releaseMutation), so a mutation request
+// that lands on the now-earlier-available socket while Recover is still
+// running simply queues behind it — it cannot interleave with or corrupt
+// Recover's state changes. Status reads go through a separate RWMutex and
+// were never gated on Recover, so they stay observable throughout. Recover
+// still runs exactly once on this path; retryDaemonRecovery below is the
+// same single follow-up the synchronous version used on failure, just
+// triggered from the background goroutine instead of inline.
 func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller recoveringController, start daemonStarter) (*Daemon, error) {
-	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, guardianMutationTimeout)
-	recoveryErr := controller.Recover(recoveryCtx)
-	cancelRecovery()
 	localAPIOptions := LocalAPIOptions{
 		OwnerUID:        options.LocalAPIOwnerUID,
 		GuardianVersion: version.Version,
@@ -345,10 +361,21 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 	if err != nil {
 		return nil, err
 	}
-	if recoveryErr != nil {
-		go retryDaemonRecovery(ctx, controller)
-	}
+	go runStartupRecovery(ctx, controller)
 	return daemon, nil
+}
+
+// runStartupRecovery performs the one initial post-start Recover in the
+// background; on failure it hands off to the existing retry machinery
+// (guardianRecoveryRetryInitial..Max backoff) so Recover still only ever
+// runs sequentially, never concurrently with itself.
+func runStartupRecovery(ctx context.Context, controller recoveringController) {
+	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, guardianMutationTimeout)
+	err := controller.Recover(recoveryCtx)
+	cancelRecovery()
+	if err != nil {
+		retryDaemonRecovery(ctx, controller)
+	}
 }
 
 type networkObserverDesiredHandler struct {
