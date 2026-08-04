@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"regexp"
 	"strconv"
@@ -40,6 +41,9 @@ type pathRecoveryTransaction struct {
 	request               RecoveryRequest
 	snapshot              RecoverySnapshot
 	needsProtectionCommit bool
+	ownsProvenBarrier     bool
+	barrierProofPending   bool
+	protectionErrorCode   string
 }
 
 type recoveryLogRecord struct {
@@ -165,6 +169,7 @@ func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot
 
 	transaction := m.newPathRecoveryTransactionLocked(normalized)
 	if m.pathRecoveryActive {
+		transferPathRecoveryProtection(m.pathRecoveryPending, &transaction)
 		m.pathRecoveryPending = &transaction
 		if m.pathRecoveryFences > 0 {
 			m.pathRecoveryCurrent = transaction.snapshot
@@ -177,6 +182,7 @@ func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot
 		return transaction.snapshot, nil
 	}
 	if m.pathRecoveryFences > 0 {
+		transferPathRecoveryProtection(m.pathRecoveryPending, &transaction)
 		m.pathRecoveryPending = &transaction
 		m.pathRecoveryCurrent = transaction.snapshot
 		m.pathRecoveryMu.Unlock()
@@ -234,6 +240,7 @@ attempts:
 			return
 		}
 		if m.pathRecoveryFences > 0 {
+			transferPathRecoveryProtection(&transaction, m.pathRecoveryPending)
 			m.pathRecoveryActive = false
 			if m.pathRecoveryPending != nil {
 				m.pathRecoveryCurrent = m.pathRecoveryPending.snapshot
@@ -294,6 +301,7 @@ attempts:
 			return
 		}
 		if m.pathRecoveryFences > 0 {
+			transferPathRecoveryProtection(&transaction, m.pathRecoveryPending)
 			m.pathRecoveryActive = false
 			if m.pathRecoveryPending != nil {
 				m.pathRecoveryCurrent = m.pathRecoveryPending.snapshot
@@ -307,6 +315,7 @@ attempts:
 			m.pathRecoveryMu.Unlock()
 			return
 		}
+		transferPathRecoveryProtection(&transaction, m.pathRecoveryPending)
 		transaction = *m.pathRecoveryPending
 		m.pathRecoveryPending = nil
 		if m.pathRecoveryResolveOff {
@@ -372,38 +381,105 @@ func (m *Manager) executePathRecovery(ctx context.Context, transaction *pathReco
 	if result.State == "succeeded" {
 		barrierProofBeforeDNS := m.barrierOwnership.proof
 		if err := m.ensureDNSManaged(ctx, m.runtime); err != nil {
-			if barrierProofBeforeDNS == barrierAbsent && m.barrierProven() {
-				transaction.needsProtectionCommit = true
-			}
+			recordPathRecoveryProtectionFailure(transaction, barrierProofBeforeDNS, m.barrierOwnership.proof, m.Status().LastError)
 			result.Stage = "verify"
-			return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(m.Status().LastError))
+			return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(transaction.protectionErrorCode))
 		}
 		if transaction.needsProtectionCommit {
-			if m.barrierOwnership.proof != barrierAbsent {
-				if err := m.releaseBarrierToCore(ctx); err != nil {
-					m.needsAttention(DesiredOn, "barrier_remove_failed")
-					result.Stage = "verify"
-					return failedPathRecoverySnapshot(transaction.snapshot, result, err)
-				}
+			if err := m.provePathRecoveryBarrier(ctx, transaction); err != nil {
+				result.Stage = "verify"
+				return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(transaction.protectionErrorCode, err))
 			}
+			if err := m.releaseBarrierToCore(ctx); err != nil {
+				m.needsAttention(DesiredOn, transaction.protectionErrorCode)
+				result.Stage = "verify"
+				return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(transaction.protectionErrorCode, err))
+			}
+			transaction.ownsProvenBarrier = false
 			if err := m.setProtectedStatus(PhaseCommitted, m.current.PID, m.runtime.Version, ""); err != nil {
 				result.Stage = "verify"
+				barrierProofBeforeFailure := m.barrierOwnership.proof
 				activationErr := m.failDNSActivation(ctx, m.runtime, "dns_verification_failed", err)
-				return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(m.Status().LastError, activationErr))
+				recordPathRecoveryProtectionFailure(transaction, barrierProofBeforeFailure, m.barrierOwnership.proof, "dns_verification_failed")
+				return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(transaction.protectionErrorCode, activationErr))
 			}
-			transaction.needsProtectionCommit = false
+			clearPathRecoveryProtection(transaction)
 		}
 	}
 	return completedPathRecoverySnapshot(transaction.snapshot, result)
 }
 
-func pathRecoveryDNSError(code string, causes ...error) error {
+func recordPathRecoveryProtectionFailure(transaction *pathRecoveryTransaction, before, after barrierProof, code string) {
+	transaction.needsProtectionCommit = true
+	transaction.protectionErrorCode = pathRecoveryDNSCode(code)
+
+	if transaction.ownsProvenBarrier || transaction.barrierProofPending {
+		transaction.ownsProvenBarrier = after == barrierProven
+		transaction.barrierProofPending = after != barrierProven
+		return
+	}
+	if before != barrierAbsent {
+		return
+	}
+	transaction.ownsProvenBarrier = after == barrierProven
+	transaction.barrierProofPending = after != barrierProven
+}
+
+func (m *Manager) provePathRecoveryBarrier(ctx context.Context, transaction *pathRecoveryTransaction) error {
+	if transaction.ownsProvenBarrier && m.barrierProven() {
+		return nil
+	}
+	if !transaction.ownsProvenBarrier && !transaction.barrierProofPending {
+		return errors.New("path recovery does not own the pending protection barrier")
+	}
+
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), m.cleanupTimeout)
+	err := m.installBarrierForRecovery(cleanupCtx, m.runtime)
+	cancelCleanup()
+	if err != nil {
+		transaction.ownsProvenBarrier = false
+		transaction.barrierProofPending = true
+		m.needsAttention(DesiredOn, transaction.protectionErrorCode)
+		return fmt.Errorf("prove path recovery barrier: %w", err)
+	}
+	transaction.ownsProvenBarrier = true
+	transaction.barrierProofPending = false
+	return nil
+}
+
+func transferPathRecoveryProtection(from *pathRecoveryTransaction, to *pathRecoveryTransaction) {
+	if from == nil || to == nil || !from.needsProtectionCommit {
+		return
+	}
+	to.needsProtectionCommit = true
+	to.ownsProvenBarrier = to.ownsProvenBarrier || from.ownsProvenBarrier
+	to.barrierProofPending = to.barrierProofPending || from.barrierProofPending
+	if to.ownsProvenBarrier {
+		to.barrierProofPending = false
+	}
+	if to.protectionErrorCode == "" {
+		to.protectionErrorCode = from.protectionErrorCode
+	}
+}
+
+func clearPathRecoveryProtection(transaction *pathRecoveryTransaction) {
+	transaction.needsProtectionCommit = false
+	transaction.ownsProvenBarrier = false
+	transaction.barrierProofPending = false
+	transaction.protectionErrorCode = ""
+}
+
+func pathRecoveryDNSCode(code string) string {
 	switch code {
 	case "dns_takeover_failed", "dns_verification_failed":
+		return code
 	default:
-		code = "dns_verification_failed"
+		return "dns_verification_failed"
 	}
-	errs := []error{&supervisor.PathRecoveryError{Code: code}}
+}
+
+func pathRecoveryDNSError(code string, causes ...error) error {
+	errs := []error{&supervisor.PathRecoveryError{Code: pathRecoveryDNSCode(code)}}
 	errs = append(errs, causes...)
 	return errors.Join(errs...)
 }
