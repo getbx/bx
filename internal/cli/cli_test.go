@@ -931,6 +931,8 @@ func TestStatusReportIncludesTruthfulGuardianRecovery(t *testing.T) {
 		guardian.Status{
 			SchemaVersion:     1,
 			Protection:        guardian.ProtectionProtected,
+			DNSState:          guardian.DNSManaged,
+			DNSManaged:        true,
 			NetworkGeneration: "wifi-b",
 			Recovery: guardian.RecoverySnapshot{
 				ID:         "recovery-8",
@@ -994,21 +996,46 @@ func TestStatusReportIncludesGuardianDNSState(t *testing.T) {
 }
 
 func TestDarwinStatusDowngradesProtectedWhenGuardianDNSIsNotManaged(t *testing.T) {
-	for _, status := range []guardian.Status{
-		{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnmanaged},
-		{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnknown},
+	var legacy guardian.Status
+	if err := json.Unmarshal([]byte(`{"protection_state":"protected"}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name   string
+		status guardian.Status
+	}{
+		{name: "legacy Guardian JSON without dns_state", status: legacy},
+		{name: "unknown DNS", status: guardian.Status{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnknown}},
+		{name: "unmanaged DNS", status: guardian.Status{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnmanaged}},
+		{name: "managed state without managed evidence", status: guardian.Status{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSManaged}},
 	} {
-		rep, err := readClientStatusReportWith(
-			func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
-			func() (guardian.Status, error) { return status, nil },
-			"darwin",
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if rep.ProtectionState != guardian.ProtectionNeedsAttention {
-			t.Fatalf("status = %+v, want needs_attention", rep)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			rep, err := readClientStatusReportWith(
+				func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
+				func() (guardian.Status, error) { return tt.status, nil },
+				"darwin",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rep.ProtectionState != guardian.ProtectionNeedsAttention {
+				t.Fatalf("status = %+v, want needs_attention", rep)
+			}
+		})
+	}
+
+	rep, err := readClientStatusReportWith(
+		func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
+		func() (guardian.Status, error) {
+			return guardian.Status{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnknown}, nil
+		},
+		"linux",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.ProtectionState != guardian.ProtectionProtected {
+		t.Fatalf("non-Darwin status = %+v, want protected", rep)
 	}
 }
 

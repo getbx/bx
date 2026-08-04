@@ -138,11 +138,24 @@ func TestMacOSUpLifecycleMigratesBeforeMenuAndWaitsForProtected(t *testing.T) {
 }
 
 func TestMacOSUpSummaryIncludesGuardianDNSState(t *testing.T) {
+	for _, status := range []guardian.Status{
+		{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnmanaged, DNSService: "Wi-Fi"},
+		{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnknown, DNSService: "Wi-Fi"},
+		{Protection: guardian.ProtectionProtected},
+	} {
+		got := renderUpSummary(stats.Report{TunnelHealthy: true, LatencyMS: 18, UDPMode: "proxy"}, status)
+		if !strings.Contains(got, "Status     Needs Attention") {
+			t.Fatalf("macOS up summary = %q, want Needs Attention", got)
+		}
+	}
 	got := renderUpSummary(stats.Report{TunnelHealthy: true, LatencyMS: 18, UDPMode: "proxy"}, guardian.Status{
-		DNSState: guardian.DNSManaged, DNSManaged: true, DNSService: "Wi-Fi",
+		Protection: guardian.ProtectionProtected,
+		DNSState:   guardian.DNSManaged,
+		DNSManaged: true,
+		DNSService: "Wi-Fi",
 	})
-	if !strings.Contains(got, "DNS        managed (Wi-Fi)") {
-		t.Fatalf("macOS up summary = %q, want managed Wi-Fi DNS", got)
+	if !strings.Contains(got, "Status     Protected") || !strings.Contains(got, "DNS        managed (Wi-Fi)") {
+		t.Fatalf("macOS up summary = %q, want protected managed Wi-Fi DNS", got)
 	}
 }
 
