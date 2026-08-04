@@ -3,7 +3,7 @@ import Foundation
 
 private let guardianHeaderLimit = 32 * 1024
 private let guardianBodyLimit = 1024 * 1024
-private let guardianSocketPath = "/var/run/bx-guard.sock"
+private let guardianSocketPath = "/var/run/bx/guardian.sock"
 private let guardianDefaultTimeout: TimeInterval = 5
 private let guardianMaximumTimeout: TimeInterval = TimeInterval(Int32.max) / 1_000
 
