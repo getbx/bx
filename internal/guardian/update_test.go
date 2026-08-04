@@ -125,6 +125,116 @@ func TestManagerUpdateTransactions(t *testing.T) {
 	}
 }
 
+func TestManagerUpdateReverifiesDNSBeforeBarrierRelease(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.dns.record = true
+	protectedAtRelease := false
+	env.barrier.onRemove = func() {
+		protectedAtRelease = env.manager.Status().Protection == ProtectionProtected
+	}
+
+	if _, err := env.manager.Update(context.Background(), env.request); err != nil {
+		t.Fatal(err)
+	}
+	events := env.events.snapshot()
+	for _, pair := range [][2]string{
+		{"barrier.install", "core.stop.v1"},
+		{"core.stop.v1", "core.start.v2"},
+		{"core.start.v2", "dns.ensure"},
+		{"dns.ensure", "dns.inspect"},
+		{"dns.inspect", "barrier.release"},
+	} {
+		assertEventBefore(t, events, pair[0], pair[1])
+	}
+	if protectedAtRelease {
+		t.Fatalf("Protected was published before barrier release: %#v", events)
+	}
+	if status := env.manager.Status(); status.Protection != ProtectionProtected || status.DNSState != DNSManaged {
+		t.Fatalf("status = %+v, want Protected with managed DNS", status)
+	}
+}
+
+func TestManagerUpdateDNSFailureRollsBackAndReturnsError(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.dns.record = true
+	env.dns.inspectResults = []fakeDNSResult{
+		{status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}},
+		{status: DNSStatus{State: DNSManaged, Service: "Wi-Fi"}},
+	}
+
+	result, err := env.manager.Update(context.Background(), env.request)
+	if err == nil {
+		t.Fatalf("Update returned success after target DNS verification failed: result=%+v", result)
+	}
+	if err.Error() != "dns_verification_failed" {
+		t.Fatalf("Update error = %q, want dns_verification_failed", err)
+	}
+	if result.Phase != PhaseRolledBack || !result.RolledBack {
+		t.Fatalf("result = %+v, want rolled back", result)
+	}
+	status := env.manager.Status()
+	if status.Phase != PhaseRolledBack || status.CoreVersion != "v1" || status.Protection != ProtectionProtected || status.DNSState != DNSManaged {
+		t.Fatalf("status = %+v, want protected v1 rollback with managed DNS", status)
+	}
+	if status.LastError != "dns_verification_failed" {
+		t.Fatalf("status.LastError = %q, want dns_verification_failed", status.LastError)
+	}
+	if env.manager.barrierProven() {
+		t.Fatal("successful DNS-verified rollback retained barrier")
+	}
+	if got, want := updateDNSLifecycleEvents(env.events.snapshot()), []string{
+		"core.start.v2", "dns.ensure", "dns.inspect", "core.start.v1", "dns.ensure", "dns.inspect", "barrier.release",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("DNS rollback events = %#v, want %#v; all=%#v", got, want, env.events.snapshot())
+	}
+}
+
+func TestManagerUpdateDNSFailureKeepsBarrierWhenRollbackVerificationFails(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.dns.record = true
+	env.dns.inspectResults = []fakeDNSResult{
+		{status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}},
+		{status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}},
+	}
+
+	result, err := env.manager.Update(context.Background(), env.request)
+	if err == nil {
+		t.Fatalf("Update returned success after target and rollback DNS verification failed: result=%+v", result)
+	}
+	if !env.manager.barrierProven() || containsEvent(env.events.snapshot(), "barrier.release") {
+		t.Fatalf("failed rollback DNS verification released barrier: %#v", env.events.snapshot())
+	}
+	if status := env.manager.Status(); status.Protection == ProtectionProtected || status.DNSState == DNSManaged || status.LastError != "dns_verification_failed" {
+		t.Fatalf("status = %+v, want non-Protected unmanaged DNS with dns_verification_failed", status)
+	}
+}
+
+func TestManagerUpdateProtectedCommitRechecksCachedDNS(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.barrier.onRemove = func() {
+		env.manager.cacheDNSStatus(DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"})
+	}
+
+	result, err := env.manager.Update(context.Background(), env.request)
+	if err == nil {
+		t.Fatalf("Update published success after DNS changed before status commit: result=%+v", result)
+	}
+	if !env.manager.barrierProven() || env.manager.Status().Protection == ProtectionProtected {
+		t.Fatalf("status = %+v barrier=%v, want fail-closed non-Protected", env.manager.Status(), env.manager.barrierProven())
+	}
+}
+
+func updateDNSLifecycleEvents(events []string) []string {
+	var filtered []string
+	for _, event := range events {
+		switch event {
+		case "core.start.v2", "core.start.v1", "dns.ensure", "dns.inspect", "barrier.release":
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
 func TestUpdateSwitchesRunnerExecutableBeforeNewCore(t *testing.T) {
 	env := newUpdateTestEnv(t)
 	toExecutable := filepath.Join(env.root, "runtime", "v2", "bx")
@@ -1456,6 +1566,7 @@ type updateTestEnv struct {
 	runner   *updateCoreRunner
 	health   *updateHealthGate
 	barrier  *fakeBarrier
+	dns      *fakeDNSManager
 	updater  *fakeUpdatePreparer
 	prepared *fakePreparedUpdate
 	manager  *Manager
@@ -1498,9 +1609,10 @@ func (e *updateTestEnv) restartedManagerWithoutJournal(t *testing.T, existingVer
 			Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}, BlockIPv6: true,
 		},
 	}
+	dns := newFakeDNSManager(e.events)
 	manager, err := NewManager(ManagerOptions{
 		Store: e.store, Runner: e.runner, Health: e.health, Barrier: e.barrier,
-		DNS: newFakeDNSManager(e.events), Legacy: &fakeLegacyCore{events: e.events},
+		DNS: dns, Legacy: &fakeLegacyCore{events: e.events},
 		BarrierContext: BarrierContext{Gateway: "192.0.2.1", BlockIPv6: true}, CoreVersion: "v2",
 		UpdatePreparer: e.updater, GuardianProtocol: currentGuardianProtocol,
 	})
@@ -1508,6 +1620,7 @@ func (e *updateTestEnv) restartedManagerWithoutJournal(t *testing.T, existingVer
 		t.Fatal(err)
 	}
 	e.manager = manager
+	e.dns = dns
 	return manager
 }
 
@@ -1532,12 +1645,13 @@ func newUpdateTestEnv(t *testing.T) *updateTestEnv {
 	barrier := &fakeBarrier{events: events}
 	prepared := &fakePreparedUpdate{events: events, snapshotPath: filepath.Join(paths.Snapshots, "tx-1"), requiredProtocol: currentGuardianProtocol}
 	updater := &fakeUpdatePreparer{events: events, prepared: prepared, entered: make(chan struct{}, 1), requiredProtocol: currentGuardianProtocol}
+	dns := newFakeDNSManager(events)
 	manager, err := NewManager(ManagerOptions{
 		Store:            store,
 		Runner:           runner,
 		Health:           health,
 		Barrier:          barrier,
-		DNS:              newFakeDNSManager(events),
+		DNS:              dns,
 		Legacy:           &fakeLegacyCore{events: events},
 		BarrierContext:   BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.9/32"}, BlockIPv6: true},
 		CoreVersion:      "v1",
@@ -1554,7 +1668,7 @@ func newUpdateTestEnv(t *testing.T) *updateTestEnv {
 	manager.setStatus(Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, CorePID: old.PID, CoreVersion: "v1", Protection: ProtectionProtected})
 	env := &updateTestEnv{
 		root: root, paths: paths, events: events, store: store, runner: runner, health: health,
-		barrier: barrier, updater: updater, prepared: prepared, manager: manager, old: old,
+		barrier: barrier, dns: dns, updater: updater, prepared: prepared, manager: manager, old: old,
 	}
 	env.request = env.writeRequest(t, "tx-1", []byte("verified macOS package"))
 	return env
