@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/guardian"
+	"github.com/getbx/bx/internal/install"
 	urfavecli "github.com/urfave/cli/v2"
 )
 
@@ -59,5 +60,11 @@ func TestGuardianCommandPassesConfigurationToInjectedDaemon(t *testing.T) {
 	}
 	if got.ConfigPath != "/tmp/config.yaml" || got.DNSListen != "127.0.0.1:1053" {
 		t.Fatalf("options = %+v", got)
+	}
+}
+
+func TestInstallGuardianSocketPathMatchesGuardian(t *testing.T) {
+	if install.GuardianSocketPath != guardian.SocketPath {
+		t.Fatalf("install.GuardianSocketPath = %q, guardian.SocketPath = %q — 两处必须一致(install 不能 import guardian:会成环)", install.GuardianSocketPath, guardian.SocketPath)
 	}
 }

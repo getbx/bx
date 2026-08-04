@@ -31,6 +31,12 @@ const (
 	launchdStdoutPath      = "/var/log/bx.log"
 	launchdStderrPath      = "/var/log/bx.err.log"
 	dnsStatePath           = "/var/lib/bx/dns-original.json"
+
+	// GuardianSocketPath must stay in lockstep with guardian.SocketPath
+	// (internal/guardian/daemon.go). It cannot be imported directly: the
+	// guardian package already imports install, so importing guardian back
+	// into install would create a cycle.
+	GuardianSocketPath = "/var/run/bx/guardian.sock"
 )
 
 // BinPath 是 bx 自身安装到 PATH 的规范位置(OS-aware,见 paths_{windows,other}.go)。
