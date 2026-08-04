@@ -17,6 +17,31 @@ import (
 	"github.com/getbx/bx/internal/install"
 )
 
+// TestRunDaemonDoesNotDiscoverGatewayAtStartup is a static regression guard:
+// RunDaemon must not require a default gateway before the socket exists.
+// Another VPN can legitimately own the default route via a point-to-point
+// utun (no gateway) without that blocking the Guardian daemon from starting;
+// the gateway is only an operation-time dependency for planning a barrier
+// with server-bypass routes (see barrierContextForRuntime in manager.go).
+func TestRunDaemonDoesNotDiscoverGatewayAtStartup(t *testing.T) {
+	if _, err := os.Stat("daemon_darwin.go"); err == nil {
+		data, readErr := os.ReadFile("daemon_darwin.go")
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if strings.Contains(string(data), "discoverDaemonGateway") {
+			t.Fatal("discoverDaemonGateway must be gone: gateway is an operation-time dependency")
+		}
+	}
+	data, err := os.ReadFile("daemon.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "discoverDaemonGateway") {
+		t.Fatal("RunDaemon must not call discoverDaemonGateway at startup")
+	}
+}
+
 func TestDaemonNetworkObserverFollowsDesiredState(t *testing.T) {
 	var desiredMu sync.Mutex
 	desired := DesiredOff

@@ -180,6 +180,18 @@ func TestParseDefaultGatewayRejectsMissingOrNonIPv4Gateway(t *testing.T) {
 	}
 }
 
+func TestParseDefaultGatewayNamesPointToPointInterface(t *testing.T) {
+	_, err := parseDefaultGateway([]byte("   route to: default\ndestination: default\n  interface: utun16\n"))
+	if err == nil {
+		t.Fatal("want error")
+	}
+	for _, want := range []string{"utun16", "point-to-point"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
+	}
+}
+
 func TestDarwinBarrierUsesValidatedRouteArgvAndIdempotentErrors(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Darwin executor is unavailable on this platform")

@@ -175,16 +175,25 @@ func validateBarrierContext(ctx BarrierContext) (string, []string, error) {
 }
 
 func parseDefaultGateway(output []byte) (string, error) {
+	var iface string
 	for _, line := range strings.Split(string(output), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "gateway:" {
+		if len(fields) < 2 {
 			continue
 		}
-		gateway, err := parseIPv4(fields[1])
-		if err != nil {
-			return "", fmt.Errorf("invalid default gateway: %w", err)
+		switch fields[0] {
+		case "interface:":
+			iface = fields[1]
+		case "gateway:":
+			gateway, err := parseIPv4(fields[1])
+			if err != nil {
+				return "", fmt.Errorf("invalid default gateway: %w", err)
+			}
+			return gateway.String(), nil
 		}
-		return gateway.String(), nil
+	}
+	if iface != "" {
+		return "", fmt.Errorf("default route via %s has no gateway (point-to-point tunnel: another VPN likely owns the default route)", iface)
 	}
 	return "", errors.New("default gateway not found")
 }

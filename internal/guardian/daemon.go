@@ -294,10 +294,6 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 		return err
 	}
 	options.LocalAPIOwnerUID = localAPIOwnerUID
-	gateway, err := discoverDaemonGateway(ctx)
-	if err != nil {
-		return err
-	}
 	runner := NewExecCoreRunner(coreExecutable(os.Executable, filepath.EvalSymlinks), options.ConfigPath, options.DNSListen)
 	manager, err := NewManager(ManagerOptions{
 		Store:           OpenDefaultStore(),
@@ -306,7 +302,7 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 		Barrier:         NewBarrier(nil),
 		Restorer:        systemNetworkRestorer{},
 		Legacy:          systemLegacyCoreLifecycle{},
-		BarrierContext:  BarrierContext{Gateway: gateway, BlockIPv6: true},
+		BarrierContext:  BarrierContext{BlockIPv6: true},
 		GatewayProvider: GatewayProviderFunc(DiscoverDefaultGateway),
 		CoreVersion:     version.Version,
 	})
