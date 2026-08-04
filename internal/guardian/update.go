@@ -679,6 +679,15 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 	}
 	if err := m.acceptHealthy(ctx, process, runtimeState, false); err != nil {
 		cause := m.updateAcceptFailureCode("new_core_accept_failed")
+		if cleanupErr := m.cleanupStartedCore(context.WithoutCancel(ctx), process); cleanupErr != nil {
+			m.retainUncertain(Process{
+				PID: process.PID, Executable: process.Executable, UID: process.UID,
+				Generation: process.Generation, Exit: process.Exit, Resolution: process.Resolution,
+			})
+			return m.failUpdate(transaction, request, cause, false, false)
+		}
+		m.current = Process{}
+		m.runtime = supervisor.RuntimeState{}
 		result, rollbackErr := m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, cause)
 		if rollbackErr != nil {
 			return result, rollbackErr

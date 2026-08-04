@@ -183,6 +183,74 @@ func TestPathRecoveryDNSFailureIsNotPublishedAsSuccess(t *testing.T) {
 	}
 }
 
+func TestPathRecoveryDNSRetryCompletesFullProtectionTransaction(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	env.dns.record = true
+	env.dns.inspectResults = []fakeDNSResult{
+		{status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}},
+		{status: DNSStatus{State: DNSManaged, Service: "Wi-Fi"}},
+	}
+	retrying := make(chan struct{}, 1)
+	env.manager.pathRecoveryRetryWait = func(context.Context, time.Duration) error {
+		retrying <- struct{}{}
+		return nil
+	}
+	releasedAfterDNS := false
+	env.barrier.onRemove = func() {
+		releasedAfterDNS = env.manager.dnsStatus.State == DNSManaged && env.manager.Status().Protection != ProtectionProtected
+	}
+
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{
+		Reason: "underlay_changed", Generation: "wifi-b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	select {
+	case <-retrying:
+	case <-time.After(time.Second):
+		t.Fatal("DNS failure did not enter path recovery retry")
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	snapshot := env.manager.CurrentPathRecovery()
+	if snapshot.State != "succeeded" || snapshot.Attempt != 2 || snapshot.ErrorCode != "" {
+		t.Fatalf("snapshot = %+v, want clean succeeded retry", snapshot)
+	}
+	status := env.manager.Status()
+	if env.manager.barrierProven() || status.Protection != ProtectionProtected || status.DNSState != DNSManaged || status.LastError != "" {
+		t.Fatalf("status = %+v barrier=%v, want complete protected transaction", status, env.manager.barrierProven())
+	}
+	if !releasedAfterDNS {
+		t.Fatal("barrier was not released after DNS management and before Protected")
+	}
+	if got, want := pathRecoveryDNSLifecycleEvents(env.events.snapshot()), []string{
+		"dns.ensure", "dns.inspect", "barrier.install", "dns.ensure", "dns.inspect", "barrier.release",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("DNS retry events = %#v, want %#v; all=%#v", got, want, env.events.snapshot())
+	}
+}
+
+func pathRecoveryDNSLifecycleEvents(events []string) []string {
+	var filtered []string
+	for _, event := range events {
+		switch event {
+		case "dns.ensure", "dns.inspect", "barrier.install", "barrier.release":
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
 type observedCorePathClient struct {
 	observed chan struct{}
 	release  chan struct{}
