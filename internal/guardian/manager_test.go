@@ -37,6 +37,12 @@ func TestManagerUpStartsOneCoreAndPersistsOn(t *testing.T) {
 	}
 }
 
+func TestManagerOptionsRequiresDNSWithoutLegacyRestorerAlias(t *testing.T) {
+	if _, ok := reflect.TypeOf(ManagerOptions{}).FieldByName("Restorer"); ok {
+		t.Fatal("ManagerOptions still exposes legacy Restorer alias")
+	}
+}
+
 func TestManagerUpVerifiesDNSBeforeProtected(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.dns.record = true
@@ -80,6 +86,88 @@ func TestManagerUpDNSInspectionMustConfirmManaged(t *testing.T) {
 	}
 	if !env.manager.barrierProven() {
 		t.Fatal("DNS verification failure did not retain a proven barrier")
+	}
+}
+
+func TestManagerDNSContextFailureUsesBoundedBarrierCleanupContext(t *testing.T) {
+	dnsFailures := []struct {
+		name      string
+		configure func(*fakeDNSManager, func(context.Context) error)
+		wantCode  string
+	}{
+		{
+			name: "ensure",
+			configure: func(dns *fakeDNSManager, fail func(context.Context) error) {
+				dns.ensureFunc = func(ctx context.Context) (DNSStatus, error) {
+					return DNSStatus{State: DNSUnknown, Service: "Wi-Fi"}, fail(ctx)
+				}
+			},
+			wantCode: "dns_takeover_failed",
+		},
+		{
+			name: "inspect",
+			configure: func(dns *fakeDNSManager, fail func(context.Context) error) {
+				dns.inspectFunc = func(ctx context.Context) (DNSStatus, error) {
+					return DNSStatus{State: DNSUnknown, Service: "Wi-Fi"}, fail(ctx)
+				}
+			},
+			wantCode: "dns_verification_failed",
+		},
+	}
+	contextFailures := []struct {
+		name string
+		new  func() (context.Context, context.CancelFunc, func(context.Context) error)
+	}{
+		{
+			name: "canceled",
+			new: func() (context.Context, context.CancelFunc, func(context.Context) error) {
+				ctx, cancel := context.WithCancel(context.Background())
+				return ctx, cancel, func(ctx context.Context) error {
+					cancel()
+					return ctx.Err()
+				}
+			},
+		},
+		{
+			name: "deadline",
+			new: func() (context.Context, context.CancelFunc, func(context.Context) error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+				return ctx, cancel, func(ctx context.Context) error {
+					<-ctx.Done()
+					return ctx.Err()
+				}
+			},
+		},
+	}
+
+	for _, dnsFailure := range dnsFailures {
+		for _, contextFailure := range contextFailures {
+			t.Run(dnsFailure.name+"/"+contextFailure.name, func(t *testing.T) {
+				env := newManagerTestEnv(t)
+				env.manager.cleanupTimeout = 100 * time.Millisecond
+				env.barrier.failIfContextDone = true
+				ctx, cancel, fail := contextFailure.new()
+				t.Cleanup(cancel)
+				dnsFailure.configure(env.dns, fail)
+
+				if err := env.manager.Up(ctx); err == nil {
+					t.Fatal("Up succeeded after DNS request context failure")
+				}
+				if !env.manager.barrierProven() {
+					t.Fatal("DNS context failure did not leave a proven barrier")
+				}
+				contextErr, deadline := env.barrier.lastInstallCallContext()
+				if contextErr != nil {
+					t.Fatalf("barrier context error = %v, want independent live context", contextErr)
+				}
+				if deadline.IsZero() || time.Until(deadline) <= 0 || time.Until(deadline) > env.manager.cleanupTimeout {
+					t.Fatalf("barrier deadline = %v, want live deadline within %s", deadline, env.manager.cleanupTimeout)
+				}
+				if got := env.manager.Status().LastError; got != dnsFailure.wantCode {
+					t.Fatalf("LastError = %q, want %q", got, dnsFailure.wantCode)
+				}
+			})
+		}
 	}
 }
 
@@ -501,6 +589,38 @@ func TestManagerUpAndRecoverRefuseLegacyOwnership(t *testing.T) {
 				t.Fatalf("status = %+v", status)
 			}
 		})
+	}
+}
+
+func TestManagerRecoverRestoresStaleDNSBeforePublishingOff(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.dns.record = true
+
+	if err := env.manager.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := env.events.snapshot(), []string{"dns.restore"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	status := env.manager.Status()
+	if status.Protection != ProtectionOff || status.DNSState != DNSUnmanaged || status.DNSManaged {
+		t.Fatalf("status = %+v, want Off with unmanaged DNS", status)
+	}
+}
+
+func TestManagerRecoverDNSRestoreFailureCannotPublishOff(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.dns.restoreErr = errors.New("resolver restore failed")
+
+	if err := env.manager.Recover(context.Background()); err == nil {
+		t.Fatal("Recover succeeded despite stale DNS restore failure")
+	}
+	status := env.manager.Status()
+	if status.Protection == ProtectionOff || status.LastError != "dns_restore_failed" {
+		t.Fatalf("status = %+v, want non-Off dns_restore_failed", status)
+	}
+	if !env.manager.recoveryBlocked {
+		t.Fatal("startup recovery unblocked mutations after DNS restore failure")
 	}
 }
 
@@ -1044,6 +1164,27 @@ func TestManagerDownRestoreFailureReverifiesDNSBeforeRecoveredProtection(t *test
 	}
 }
 
+func TestManagerDownRecoveryPreservesDNSActivationError(t *testing.T) {
+	for _, tt := range dnsActivationFailureCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			env.dns.restoreErr = errors.New("dns restore failed")
+			tt.configure(env.dns)
+
+			if err := env.manager.Down(context.Background()); err == nil {
+				t.Fatal("Down succeeded despite restore and DNS activation failures")
+			}
+			status := env.manager.Status()
+			if status.LastError != tt.wantCode {
+				t.Fatalf("LastError = %q, want %q; status=%+v", status.LastError, tt.wantCode, status)
+			}
+			if status.Protection != ProtectionBlocked || !env.manager.barrierProven() {
+				t.Fatalf("status = %+v, want proven blocked protection", status)
+			}
+		})
+	}
+}
+
 func TestManagerDownRestoreTimeoutUsesReservedRecoveryBudget(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	env.manager.restartTimeout = 40 * time.Millisecond
@@ -1177,6 +1318,29 @@ func TestManagerUnexpectedExitInstallsBarrierAndRestartsOnce(t *testing.T) {
 	}
 	if installed.blockOnly {
 		t.Fatal("installed barrier blockOnly = true, want bypass-carrying (not block-only) when gateway resolves")
+	}
+}
+
+func TestManagerUnexpectedExitPreservesDNSActivationError(t *testing.T) {
+	for _, tt := range dnsActivationFailureCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			tt.configure(env.dns)
+			process := env.runner.currentProcess()
+
+			env.runner.exit(process.PID, errors.New("unexpected exit"))
+			eventually(t, func() bool {
+				return env.runner.startCount() == 2 && env.manager.recoveryActiveCount() == 0
+			})
+
+			status := env.manager.Status()
+			if status.LastError != tt.wantCode {
+				t.Fatalf("LastError = %q, want %q; status=%+v", status.LastError, tt.wantCode, status)
+			}
+			if status.Protection != ProtectionBlocked || !env.manager.barrierProven() {
+				t.Fatalf("status = %+v, want proven blocked protection", status)
+			}
+		})
 	}
 }
 
@@ -1556,6 +1720,37 @@ func TestManagerPlannedDownDoesNotRestartExitedCore(t *testing.T) {
 	}
 }
 
+type dnsActivationFailureCase struct {
+	name      string
+	wantCode  string
+	configure func(*fakeDNSManager)
+}
+
+func dnsActivationFailureCases() []dnsActivationFailureCase {
+	return []dnsActivationFailureCase{
+		{
+			name:     "takeover",
+			wantCode: "dns_takeover_failed",
+			configure: func(dns *fakeDNSManager) {
+				dns.ensureResults = []fakeDNSResult{{
+					status: DNSStatus{State: DNSUnknown, Service: "Wi-Fi"},
+					err:    errors.New("resolver change failed"),
+				}}
+			},
+		},
+		{
+			name:     "verification",
+			wantCode: "dns_verification_failed",
+			configure: func(dns *fakeDNSManager) {
+				dns.inspectResults = []fakeDNSResult{{
+					status: DNSStatus{State: DNSUnknown, Service: "Wi-Fi"},
+					err:    errors.New("resolver inspection failed"),
+				}}
+			},
+		},
+	}
+}
+
 type managerTestEnv struct {
 	manager *Manager
 	store   *recordingDesiredStore
@@ -1922,22 +2117,31 @@ func healthyRuntime(pid int) supervisor.RuntimeState {
 }
 
 type fakeBarrier struct {
-	events         *eventLog
-	installErr     error
-	reassertErr    error
-	removeErr      error
-	onRemove       func()
-	mu             sync.Mutex
-	installContext BarrierContext
-	releaseContext BarrierContext
-	transferred    []string
+	events            *eventLog
+	installErr        error
+	reassertErr       error
+	removeErr         error
+	failIfContextDone bool
+	onRemove          func()
+	mu                sync.Mutex
+	installContext    BarrierContext
+	installContextErr error
+	installDeadline   time.Time
+	releaseContext    BarrierContext
+	transferred       []string
 }
 
-func (b *fakeBarrier) Install(_ context.Context, barrierContext BarrierContext) error {
+func (b *fakeBarrier) Install(ctx context.Context, barrierContext BarrierContext) error {
 	b.events.add("barrier.install")
 	b.mu.Lock()
 	b.installContext = cloneBarrierContext(barrierContext)
+	b.installContextErr = ctx.Err()
+	b.installDeadline, _ = ctx.Deadline()
+	failIfContextDone := b.failIfContextDone
 	b.mu.Unlock()
+	if failIfContextDone && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return b.installErr
 }
 
@@ -1978,6 +2182,12 @@ func (b *fakeBarrier) lastInstallContext() BarrierContext {
 	return cloneBarrierContext(b.installContext)
 }
 
+func (b *fakeBarrier) lastInstallCallContext() (error, time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.installContextErr, b.installDeadline
+}
+
 type fakeLegacyCore struct {
 	events      *eventLog
 	present     bool
@@ -2015,6 +2225,8 @@ type fakeDNSManager struct {
 	ensureErr      error
 	inspectErr     error
 	restoreErr     error
+	ensureFunc     func(context.Context) (DNSStatus, error)
+	inspectFunc    func(context.Context) (DNSStatus, error)
 	ensureResults  []fakeDNSResult
 	inspectResults []fakeDNSResult
 	restoreResults []fakeDNSResult
@@ -2027,18 +2239,30 @@ func newFakeDNSManager(events *eventLog) *fakeDNSManager {
 	return &fakeDNSManager{events: events}
 }
 
-func (d *fakeDNSManager) EnsureManaged(context.Context) (DNSStatus, error) {
+func (d *fakeDNSManager) EnsureManaged(ctx context.Context) (DNSStatus, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.recordEvent("dns.ensure")
-	return d.pop(&d.ensureResults, DNSStatus{State: DNSManaged, Service: "Wi-Fi"}, d.ensureErr)
+	ensureFunc := d.ensureFunc
+	if ensureFunc == nil {
+		status, err := d.pop(&d.ensureResults, DNSStatus{State: DNSManaged, Service: "Wi-Fi"}, d.ensureErr)
+		d.mu.Unlock()
+		return status, err
+	}
+	d.mu.Unlock()
+	return ensureFunc(ctx)
 }
 
-func (d *fakeDNSManager) Inspect(context.Context) (DNSStatus, error) {
+func (d *fakeDNSManager) Inspect(ctx context.Context) (DNSStatus, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.recordEvent("dns.inspect")
-	return d.pop(&d.inspectResults, DNSStatus{State: DNSManaged, Service: "Wi-Fi"}, d.inspectErr)
+	inspectFunc := d.inspectFunc
+	if inspectFunc == nil {
+		status, err := d.pop(&d.inspectResults, DNSStatus{State: DNSManaged, Service: "Wi-Fi"}, d.inspectErr)
+		d.mu.Unlock()
+		return status, err
+	}
+	d.mu.Unlock()
+	return inspectFunc(ctx)
 }
 
 func (d *fakeDNSManager) Restore(ctx context.Context) (DNSStatus, error) {
@@ -2077,23 +2301,6 @@ func (d *fakeDNSManager) lastContextError() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.contextErr
-}
-
-type fakeNetworkRestorer struct {
-	events *eventLog
-}
-
-func (*fakeNetworkRestorer) EnsureManaged(context.Context) (DNSStatus, error) {
-	return DNSStatus{State: DNSManaged}, nil
-}
-
-func (*fakeNetworkRestorer) Inspect(context.Context) (DNSStatus, error) {
-	return DNSStatus{State: DNSManaged}, nil
-}
-
-func (r *fakeNetworkRestorer) Restore(context.Context) (DNSStatus, error) {
-	r.events.add("network.restore")
-	return DNSStatus{State: DNSUnmanaged}, nil
 }
 
 func eventually(t *testing.T, condition func() bool) {
