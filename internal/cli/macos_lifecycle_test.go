@@ -15,6 +15,7 @@ import (
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/guardian"
+	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
@@ -133,6 +134,15 @@ func TestMacOSUpLifecycleMigratesBeforeMenuAndWaitsForProtected(t *testing.T) {
 	}
 	if client.upCalls != 0 || client.migrateCalls != 1 {
 		t.Fatalf("Guardian calls = up:%d migrate:%d", client.upCalls, client.migrateCalls)
+	}
+}
+
+func TestMacOSUpSummaryIncludesGuardianDNSState(t *testing.T) {
+	got := renderUpSummary(stats.Report{TunnelHealthy: true, LatencyMS: 18, UDPMode: "proxy"}, guardian.Status{
+		DNSState: guardian.DNSManaged, DNSManaged: true, DNSService: "Wi-Fi",
+	})
+	if !strings.Contains(got, "DNS        managed (Wi-Fi)") {
+		t.Fatalf("macOS up summary = %q, want managed Wi-Fi DNS", got)
 	}
 }
 
