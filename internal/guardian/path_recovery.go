@@ -38,12 +38,11 @@ type corePathProgressClient interface {
 }
 
 type pathRecoveryTransaction struct {
-	request               RecoveryRequest
-	snapshot              RecoverySnapshot
-	needsProtectionCommit bool
-	ownsProvenBarrier     bool
-	barrierProofPending   bool
-	protectionErrorCode   string
+	request                     RecoveryRequest
+	snapshot                    RecoverySnapshot
+	needsProtectionCommit       bool
+	protectionBarrierCredential barrierCredential
+	protectionErrorCode         string
 }
 
 type recoveryLogRecord struct {
@@ -379,11 +378,16 @@ func (m *Manager) executePathRecovery(ctx context.Context, transaction *pathReco
 		return failedPathRecoverySnapshot(transaction.snapshot, result, err)
 	}
 	if result.State == "succeeded" {
-		barrierProofBeforeDNS := m.barrierOwnership.proof
+		barrierBeforeDNS := m.barrierOwnership
 		if err := m.ensureDNSManaged(ctx, m.runtime); err != nil {
-			recordPathRecoveryProtectionFailure(transaction, barrierProofBeforeDNS, m.barrierOwnership.proof, m.Status().LastError)
+			recordPathRecoveryProtectionFailure(transaction, barrierBeforeDNS, m.barrierOwnership, m.Status().LastError)
 			result.Stage = "verify"
 			return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(transaction.protectionErrorCode))
+		}
+		if transaction.needsProtectionCommit &&
+			transaction.protectionBarrierCredential != 0 &&
+			!m.pathRecoveryBarrierCredentialCurrent(transaction.protectionBarrierCredential) {
+			clearPathRecoveryProtection(transaction)
 		}
 		if transaction.needsProtectionCommit {
 			if err := m.provePathRecoveryBarrier(ctx, transaction); err != nil {
@@ -391,16 +395,17 @@ func (m *Manager) executePathRecovery(ctx context.Context, transaction *pathReco
 				return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(transaction.protectionErrorCode, err))
 			}
 			if err := m.releaseBarrierToCore(ctx); err != nil {
+				transaction.protectionBarrierCredential = m.barrierOwnership.credential
 				m.needsAttention(DesiredOn, transaction.protectionErrorCode)
 				result.Stage = "verify"
 				return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(transaction.protectionErrorCode, err))
 			}
-			transaction.ownsProvenBarrier = false
+			transaction.protectionBarrierCredential = 0
 			if err := m.setProtectedStatus(PhaseCommitted, m.current.PID, m.runtime.Version, ""); err != nil {
 				result.Stage = "verify"
-				barrierProofBeforeFailure := m.barrierOwnership.proof
+				barrierBeforeFailure := m.barrierOwnership
 				activationErr := m.failDNSActivation(ctx, m.runtime, "dns_verification_failed", err)
-				recordPathRecoveryProtectionFailure(transaction, barrierProofBeforeFailure, m.barrierOwnership.proof, "dns_verification_failed")
+				recordPathRecoveryProtectionFailure(transaction, barrierBeforeFailure, m.barrierOwnership, "dns_verification_failed")
 				return failedPathRecoverySnapshot(transaction.snapshot, result, pathRecoveryDNSError(transaction.protectionErrorCode, activationErr))
 			}
 			clearPathRecoveryProtection(transaction)
@@ -409,42 +414,48 @@ func (m *Manager) executePathRecovery(ctx context.Context, transaction *pathReco
 	return completedPathRecoverySnapshot(transaction.snapshot, result)
 }
 
-func recordPathRecoveryProtectionFailure(transaction *pathRecoveryTransaction, before, after barrierProof, code string) {
+func recordPathRecoveryProtectionFailure(transaction *pathRecoveryTransaction, before, after barrierOwnership, code string) {
 	transaction.needsProtectionCommit = true
 	transaction.protectionErrorCode = pathRecoveryDNSCode(code)
 
-	if transaction.ownsProvenBarrier || transaction.barrierProofPending {
-		transaction.ownsProvenBarrier = after == barrierProven
-		transaction.barrierProofPending = after != barrierProven
+	if transaction.protectionBarrierCredential != 0 &&
+		transaction.protectionBarrierCredential == before.credential {
+		transaction.protectionBarrierCredential = after.credential
 		return
 	}
-	if before != barrierAbsent {
+	if before.proof != barrierAbsent {
 		return
 	}
-	transaction.ownsProvenBarrier = after == barrierProven
-	transaction.barrierProofPending = after != barrierProven
+	transaction.protectionBarrierCredential = after.credential
 }
 
 func (m *Manager) provePathRecoveryBarrier(ctx context.Context, transaction *pathRecoveryTransaction) error {
-	if transaction.ownsProvenBarrier && m.barrierProven() {
-		return nil
-	}
-	if !transaction.ownsProvenBarrier && !transaction.barrierProofPending {
+	credential := transaction.protectionBarrierCredential
+	if credential == 0 {
 		return errors.New("path recovery does not own the pending protection barrier")
+	}
+	if !m.pathRecoveryBarrierCredentialCurrent(credential) {
+		return errors.New("path recovery protection barrier credential is stale")
+	}
+	if m.barrierProven() {
+		return nil
 	}
 
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), m.cleanupTimeout)
 	err := m.installBarrierForRecovery(cleanupCtx, m.runtime)
 	cancelCleanup()
+	transaction.protectionBarrierCredential = m.barrierOwnership.credential
 	if err != nil {
-		transaction.ownsProvenBarrier = false
-		transaction.barrierProofPending = true
 		m.needsAttention(DesiredOn, transaction.protectionErrorCode)
 		return fmt.Errorf("prove path recovery barrier: %w", err)
 	}
-	transaction.ownsProvenBarrier = true
-	transaction.barrierProofPending = false
 	return nil
+}
+
+func (m *Manager) pathRecoveryBarrierCredentialCurrent(credential barrierCredential) bool {
+	return credential != 0 &&
+		m.barrierOwnership.proof != barrierAbsent &&
+		m.barrierOwnership.credential == credential
 }
 
 func transferPathRecoveryProtection(from *pathRecoveryTransaction, to *pathRecoveryTransaction) {
@@ -452,10 +463,8 @@ func transferPathRecoveryProtection(from *pathRecoveryTransaction, to *pathRecov
 		return
 	}
 	to.needsProtectionCommit = true
-	to.ownsProvenBarrier = to.ownsProvenBarrier || from.ownsProvenBarrier
-	to.barrierProofPending = to.barrierProofPending || from.barrierProofPending
-	if to.ownsProvenBarrier {
-		to.barrierProofPending = false
+	if from.protectionBarrierCredential != 0 {
+		to.protectionBarrierCredential = from.protectionBarrierCredential
 	}
 	if to.protectionErrorCode == "" {
 		to.protectionErrorCode = from.protectionErrorCode
@@ -464,8 +473,7 @@ func transferPathRecoveryProtection(from *pathRecoveryTransaction, to *pathRecov
 
 func clearPathRecoveryProtection(transaction *pathRecoveryTransaction) {
 	transaction.needsProtectionCommit = false
-	transaction.ownsProvenBarrier = false
-	transaction.barrierProofPending = false
+	transaction.protectionBarrierCredential = 0
 	transaction.protectionErrorCode = ""
 }
 
