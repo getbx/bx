@@ -240,6 +240,48 @@ func TestPathRecoveryDNSRetryCompletesFullProtectionTransaction(t *testing.T) {
 	}
 }
 
+func TestPathRecoveryDoesNotConsumeAmbientUpdateDNSBarrier(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	env.manager.barrierOwnership = barrierOwnership{
+		proof:   barrierProven,
+		context: cloneBarrierContext(env.manager.barrierContext),
+	}
+	ambient := Status{
+		SchemaVersion: 1,
+		Desired:       DesiredOn,
+		Phase:         PhaseNeedsAttention,
+		CorePID:       env.manager.current.PID,
+		CoreVersion:   env.manager.runtime.Version,
+		Protection:    ProtectionBlocked,
+		LastError:     "dns_verification_failed",
+	}
+	env.manager.setStatus(ambient)
+	ambient = env.manager.Status()
+	env.events.reset()
+	env.dns.record = true
+
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{Reason: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	if snapshot := env.manager.CurrentPathRecovery(); snapshot.State != "succeeded" {
+		t.Fatalf("snapshot = %+v, want succeeded path recovery", snapshot)
+	}
+	if !env.manager.barrierProven() || containsEvent(env.events.snapshot(), "barrier.release") {
+		t.Fatalf("path recovery consumed ambient update barrier: %#v", env.events.snapshot())
+	}
+	if status := env.manager.Status(); !reflect.DeepEqual(status, ambient) {
+		t.Fatalf("path recovery overwrote ambient update status: got=%+v want=%+v", status, ambient)
+	}
+}
+
 func pathRecoveryDNSLifecycleEvents(events []string) []string {
 	var filtered []string
 	for _, event := range events {
