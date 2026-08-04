@@ -561,7 +561,7 @@ func TestClientUsesGuardianUnixAPI(t *testing.T) {
 }
 
 func TestDaemonRefusesToReplaceNonSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "bx-guard.sock")
+	path := filepath.Join(t.TempDir(), "guardian.sock")
 	if err := os.WriteFile(path, []byte("do not replace"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -699,6 +699,47 @@ func shortSocketDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
+}
+
+func TestGuardianSocketLivesInOwnedRuntimeDir(t *testing.T) {
+	if filepath.Dir(SocketPath) != RuntimeDir {
+		t.Fatalf("SocketPath %q must live under %q", SocketPath, RuntimeDir)
+	}
+	if RuntimeDir == "/var/run" {
+		t.Fatal("Guardian must not put its socket directly in the shared /var/run")
+	}
+	if len(SocketPath) >= 104 {
+		t.Fatalf("SocketPath %q exceeds sun_path limit", SocketPath)
+	}
+}
+
+func TestStartDaemonAcceptsGroupWritableParentOfOwnedDir(t *testing.T) {
+	// 复刻 macOS:/var/run 组可写,但我们只要求自有子目录本身干净。
+	// 用 shortSocketDir 而非 t.TempDir():macOS 上 t.TempDir() 落在
+	// /var/folders/.../T/<很长的测试名>/001 下,加上 "run/bx/guardian.sock"
+	// 常年会超出 AF_UNIX 的 sun_path 104 字节上限(bind: invalid argument),
+	// 与 secdir 的正确性无关,纯粹是路径长度问题——同文件里已有的
+	// shortSocketDir(t)(/tmp/bxg-*)正是为此而设的既有约定。
+	root := shortSocketDir(t)
+	shared := filepath.Join(root, "run")
+	if err := os.Mkdir(shared, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	owned := filepath.Join(shared, "bx")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	daemon, err := StartDaemon(ctx, DaemonOptions{
+		SocketPath: filepath.Join(owned, "guardian.sock"),
+		Handler:    http.NewServeMux(),
+		OwnerUID:   uint32(os.Geteuid()),
+	})
+	if err != nil {
+		t.Fatalf("StartDaemon under group-writable grandparent: %v", err)
+	}
+	defer daemon.Close()
+	if _, err := os.Stat(filepath.Join(owned, "guardian.sock")); err != nil {
+		t.Fatalf("socket not created: %v", err)
+	}
 }
 
 type fakeController struct {

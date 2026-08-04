@@ -15,10 +15,16 @@ import (
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/runtimedir"
+	"github.com/getbx/bx/internal/secdir"
 	"github.com/getbx/bx/internal/version"
 )
 
-const SocketPath = "/var/run/bx-guard.sock"
+// RuntimeDir 是 bx 自有的运行期目录:socket 等「路径即信任边界」的对象都放这里。
+// 不能用 /var/run 本身——macOS 出厂 /var/run 是 0775 root:daemon(组可写),
+// 任何「父目录不可被他人写」的加固在那里都不可能成立。
+const RuntimeDir = "/var/run/bx"
+
+const SocketPath = RuntimeDir + "/guardian.sock"
 
 const (
 	guardianRecoveryRetryInitial = 100 * time.Millisecond
@@ -218,22 +224,8 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 }
 
 func prepareSocketDirectory(path string, ownerUID uint32) error {
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := secdir.Ensure(path, int(ownerUID), 0o755); err != nil {
 		return fmt.Errorf("create Guardian socket directory: %w", err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("Guardian socket parent %s is not a directory", path)
-	}
-	uid, gotUID := fileOwnerUID(info)
-	if !gotUID || uid != ownerUID {
-		return fmt.Errorf("Guardian socket directory owner is %d, want %d", uid, ownerUID)
-	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("Guardian socket directory %s is group/other writable", path)
 	}
 	return nil
 }
