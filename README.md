@@ -168,6 +168,8 @@ macOS release 包是统一安装:一份 `bx-macos-<arch>.tar.gz` 只含 `Bx.app`
 
 菜单栏 App 是 macOS 的默认体验:它显示当前保护状态、延迟、DNS 接管状态和诊断入口。`Open Status` 在 App 内打开简洁状态面板,不依赖 Terminal。盾牌右侧的静态状态点表示保护状态:绿=已保护,黄=安全恢复中或需要注意,红=保护不可用(当 bx 明确报告该状态时),灰=已关闭或未配置。
 
+**绿色的完整含义**:隧道健康、路由保护到位,**且 DNS 已核实由 bx 接管**——三者缺一不可。DNS 处于未接管(`unmanaged`)或状态不明(`unknown`、旧版 core 未上报)时,菜单栏一律显示**黄色 Needs Attention**(`DNS not managed` / `DNS status unavailable`),不会因为隧道通就报绿。同样地,`sudo bx up` 在 DNS 未能接管时会**返回错误**而非静默成功。安全恢复、重连和更新在返回绿色之前都会重新核实 DNS,因此不存在"路由已恢复但 DNS 还漏着"的中间态。
+
 安装后打开菜单栏图标即可。如果显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接;配置成功后菜单栏会询问是否立即 `Start Protection`。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
 菜单栏的 `Turn Off bx` 只停止保护、恢复 bx 管理的 DNS,菜单栏 App 本身继续常驻;`Quit bx…` 在此之上再确认关闭菜单栏 App;`Quit Menu` 只退出图标,不碰保护状态。也可以用命令行 `sudo bx down`。
@@ -275,6 +277,8 @@ bx dns status
 sudo bx dns on
 sudo bx dns off
 ```
+
+**正常使用不需要这三条命令。**`sudo bx up` 自己会接管 macOS DNS,`sudo bx down` 自己会还原;安全恢复、重连、更新也都会在返回绿色前重新核实 DNS。`bx dns on`/`off` 是**修复工具**,只在诊断出 DNS 状态异常(菜单栏黄色 `DNS not managed`,或 `bx doctor` 的 `guardian_dns` 检查失败)时才用得上,不是启动流程的一环。
 
 macOS launchd 实机验证可先 dry-run:
 
