@@ -939,6 +939,34 @@ func TestManagerDownDoubleFailureKeepsBarrierAndNeedsAttention(t *testing.T) {
 	}
 }
 
+func TestBarrierContextForRuntimeResolvesGatewayLazily(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.barrierContext = BarrierContext{BlockIPv6: true}
+	gateways := &fakeGatewayProvider{gateway: "192.168.1.1"}
+	env.manager.gatewayProvider = gateways
+
+	barrierContext, err := env.manager.barrierContextForRuntime(context.Background(), supervisor.RuntimeState{ServerBypass: []string{"203.0.113.20/32"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if barrierContext.Gateway != "192.168.1.1" {
+		t.Fatalf("gateway = %q, want lazily resolved 192.168.1.1", barrierContext.Gateway)
+	}
+	if gateways.callCount() != 1 {
+		t.Fatalf("gateway provider calls = %d, want exactly 1", gateways.callCount())
+	}
+}
+
+func TestBarrierContextForRuntimeFailsWhenGatewayUnavailable(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.barrierContext = BarrierContext{BlockIPv6: true}
+	env.manager.gatewayProvider = &fakeGatewayProvider{err: errors.New("no default gateway")}
+
+	if _, err := env.manager.barrierContextForRuntime(context.Background(), supervisor.RuntimeState{ServerBypass: []string{"203.0.113.20/32"}}); err == nil {
+		t.Fatal("want error (fail-closed) when gateway cannot be resolved for a bypass barrier")
+	}
+}
+
 func TestManagerUnexpectedExitInstallsBarrierAndRestartsOnce(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	process := env.runner.currentProcess()

@@ -316,7 +316,11 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 	if err != nil {
 		return err
 	}
-	barrierContext = m.contextForRuntime(state)
+	barrierContext, err = m.barrierContextForRuntime(ctx, state)
+	if err != nil {
+		m.needsAttention(DesiredOn, "barrier_gateway_unavailable")
+		return fmt.Errorf("resolve migration release gateway: %w", err)
+	}
 	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return err
@@ -447,7 +451,11 @@ func (m *Manager) Down(ctx context.Context) error {
 		runtimeState = state
 	}
 
-	barrierContext := m.contextForRuntime(runtimeState)
+	barrierContext, err := m.barrierContextForRuntime(ctx, runtimeState)
+	if err != nil {
+		m.needsAttention(desired, "barrier_gateway_unavailable")
+		return fmt.Errorf("resolve down barrier gateway: %w", err)
+	}
 	if err := m.installBarrier(ctx, barrierContext); err != nil {
 		m.needsAttention(desired, "barrier_install_failed")
 		return fmt.Errorf("install down barrier: %w", err)
@@ -600,7 +608,12 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 	m.runtime = state
 	if m.barrierOwnership.proof != barrierAbsent {
 		if m.barrierOwnership.proof == barrierReleaseAttempted && releaseBarrier {
-			if err := m.releaseBarrierToCore(ctx, m.contextForRuntime(state)); err != nil {
+			barrierContext, err := m.barrierContextForRuntime(ctx, state)
+			if err != nil {
+				m.needsAttention(DesiredOn, "barrier_gateway_unavailable")
+				return fmt.Errorf("resolve barrier release gateway: %w", err)
+			}
+			if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
 				m.needsAttention(DesiredOn, "barrier_remove_failed")
 				return err
 			}
@@ -619,7 +632,12 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 			if !releaseBarrier {
 				return nil
 			}
-			if err := m.releaseBarrierToCore(ctx, m.contextForRuntime(state)); err != nil {
+			barrierContext, err := m.barrierContextForRuntime(ctx, state)
+			if err != nil {
+				m.needsAttention(DesiredOn, "barrier_gateway_unavailable")
+				return fmt.Errorf("resolve barrier release gateway: %w", err)
+			}
+			if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
 				m.needsAttention(DesiredOn, "barrier_remove_failed")
 				return err
 			}
@@ -683,9 +701,10 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		return
 	}
 	if errors.Is(exitErr, ErrProcessOwnershipUncertain) {
-		barrierContext := m.contextForRuntime(m.runtime)
 		if !m.barrierProven() {
-			_ = m.installBarrier(operationCtx, barrierContext)
+			if barrierContext, err := m.barrierContextForRuntime(operationCtx, m.runtime); err == nil {
+				_ = m.installBarrier(operationCtx, barrierContext)
+			}
 		}
 		process.Uncertain = true
 		m.current = process
@@ -694,9 +713,10 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 	}
 	desired, err := m.store.LoadDesired()
 	if err != nil {
-		barrierContext := m.contextForRuntime(m.runtime)
 		if !m.barrierProven() {
-			_ = m.installBarrier(operationCtx, barrierContext)
+			if barrierContext, ctxErr := m.barrierContextForRuntime(operationCtx, m.runtime); ctxErr == nil {
+				_ = m.installBarrier(operationCtx, barrierContext)
+			}
 		}
 		m.needsAttention(DesiredOn, "desired_state_read_failed")
 		return
@@ -706,10 +726,12 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		return
 	}
 
-	barrierContext := m.contextForRuntime(m.runtime)
+	barrierContext, ctxErr := m.barrierContextForRuntime(operationCtx, m.runtime)
 	m.current = Process{}
 	m.needsAttention(DesiredOn, "core_unexpected_exit")
-	_ = m.installBarrier(operationCtx, barrierContext)
+	if ctxErr == nil {
+		_ = m.installBarrier(operationCtx, barrierContext)
+	}
 
 	if _, err := m.startCoreLocked(operationCtx); err != nil {
 		m.needsAttention(DesiredOn, "core_restart_failed")
@@ -954,6 +976,25 @@ func (m *Manager) contextForRuntime(state supervisor.RuntimeState) BarrierContex
 		barrierContext.ServerBypass = append([]string(nil), state.ServerBypass...)
 	}
 	return barrierContext
+}
+
+// barrierContextForRuntime resolves the barrier context that should be used to
+// actually install/reassert/release a barrier for the given runtime state. The
+// default gateway is only discovered here, lazily, the moment a barrier with
+// server-bypass routes is really about to be planned — daemon startup and any
+// other path that never installs a bypass barrier (status reads, blockOnly
+// recovery) must not depend on it, since another VPN can legitimately own the
+// default route (point-to-point utun, no gateway) without that blocking Guardian.
+func (m *Manager) barrierContextForRuntime(ctx context.Context, state supervisor.RuntimeState) (BarrierContext, error) {
+	barrierContext := m.contextForRuntime(state)
+	if barrierContext.Gateway == "" && len(barrierContext.ServerBypass) > 0 {
+		gateway, err := m.gatewayProvider.DefaultGateway(ctx)
+		if err != nil {
+			return BarrierContext{}, fmt.Errorf("resolve default gateway for barrier: %w", err)
+		}
+		barrierContext.Gateway = gateway
+	}
+	return barrierContext, nil
 }
 
 func (m *Manager) needsAttention(desired DesiredState, code string) {
