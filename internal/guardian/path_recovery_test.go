@@ -240,6 +240,74 @@ func TestPathRecoveryDNSRetryCompletesFullProtectionTransaction(t *testing.T) {
 	}
 }
 
+func TestPathRecoveryDNSRetryDoesNotReuseBarrierConsumedByUp(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	env.dns.record = true
+	env.dns.inspectResults = []fakeDNSResult{
+		{status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}},
+		{status: DNSStatus{State: DNSManaged, Service: "Wi-Fi"}},
+		{status: DNSStatus{State: DNSManaged, Service: "Wi-Fi"}},
+	}
+	retrying := make(chan struct{})
+	resumeRetry := make(chan struct{})
+	retryWaits := 0
+	env.manager.pathRecoveryRetryWait = func(ctx context.Context, _ time.Duration) error {
+		retryWaits++
+		if retryWaits > 1 {
+			return context.Canceled
+		}
+		close(retrying)
+		select {
+		case <-resumeRetry:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{
+		Reason: "underlay_changed", Generation: "wifi-b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	select {
+	case <-retrying:
+	case <-time.After(time.Second):
+		t.Fatal("DNS failure did not enter path recovery retry")
+	}
+
+	env.runner.existing = env.manager.current
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatalf("Up did not consume the path recovery barrier: %v", err)
+	}
+	if status := env.manager.Status(); env.manager.barrierProven() || status.Protection != ProtectionProtected || status.LastError != "" {
+		t.Fatalf("status after Up = %+v barrier=%v, want Protected without barrier", status, env.manager.barrierProven())
+	}
+	env.barrier.installErr = errors.New("stale path ownership must not reinstall barrier")
+	close(resumeRetry)
+
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	assertPathRecoveryProtectionCompleted(t, env, "succeeded")
+	if got, want := pathRecoveryDNSLifecycleEvents(env.events.snapshot()), []string{
+		"dns.ensure", "dns.inspect", "barrier.install",
+		"dns.ensure", "dns.inspect", "barrier.release",
+		"dns.ensure", "dns.inspect",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("stale retry events = %#v, want %#v; all=%#v", got, want, env.events.snapshot())
+	}
+}
+
 func TestPathRecoveryDNSRetryProvesBarrierAfterInitialInstallFailure(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	core := newFakeCorePathClient(false)
