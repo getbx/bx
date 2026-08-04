@@ -187,6 +187,15 @@ sudo bx uninstall
 
 保护仍在运行时 `bx uninstall` 会拒绝并提示先 `sudo bx down`(它自己不会代为停止保护)。卸载会移除 Guardian plist、统一 runtime、`/usr/local/bin/bx`、`/Applications/Bx.app` 和登录项,但保留 `/etc/bx`(连接配置)与 `/var/lib/bx`(运行时数据)。
 
+#### 排查:保护起不来时
+
+Guardian 的控制 socket 落在 bx 自有的运行期目录 `/var/run/bx/`(`guardian.sock`,Core 的 `core.sock`/`core.pid` 同目录),而不是共享的 `/var/run` 根——目录本身经权限校验,不受同目录下其它进程占位影响。`sudo bx up`/`bx down` 会自动等 socket 就绪,并对已加载但探测无响应的服务强制 kickstart 一次;仍失败时会打印 Guardian 自身日志尾巴而不是裸 dial 错误。手工排查可以:
+
+- `sudo launchctl print system/com.getbx.bx.guard`(看服务是否 loaded、上次退出码)
+- `tail -20 /var/log/bx-guard.err.log`(守护进程自身的拒绝原因)
+
+bx 不会与其它全局 VPN 争抢默认路由:如果另一条隧道(如 Tailscale、WireGuard 等)已经占着默认路由,`bx up` 会明确报告是哪个接口占用、无法解析网关,而不是崩溃循环——关掉对方那条全局隧道再试。
+
 #### 开发模式 / 从源码安装菜单栏 App
 
 仓库内 `./bx`(本地 `go build` 产物)照常可以跑测试、`sudo ./bx run` 前台调试;它不会注册生产 Guardian 服务,也不会覆盖或写入统一 runtime(`/Library/Application Support/bx/runtime`)。
