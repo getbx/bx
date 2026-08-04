@@ -22,6 +22,11 @@ type guardianCommandDeps struct {
 	run     func(context.Context, guardian.DaemonOptions) error
 }
 
+const (
+	guardianReadyTimeout      = 10 * time.Second
+	guardianReadyPollInterval = 200 * time.Millisecond
+)
+
 type migrationMetadataDeps struct {
 	discoverGateway func(context.Context) (string, error)
 	fetchRuntime    func(string) (supervisor.RuntimeState, error)
@@ -40,6 +45,7 @@ type macOSLifecycleDeps struct {
 	guardianInstalled func() bool
 	writeGuardianUnit func(string) error
 	enableGuardian    func() error
+	guardianReady     func(context.Context) bool
 	legacyInstalled   func() bool
 	legacyLoaded      func() (bool, error)
 	removeLegacyUnit  func() error
@@ -62,7 +68,10 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		writeGuardianUnit: func(configPath string) error {
 			return install.WriteGuardianUnit(install.GuardianExecutable(), configPath)
 		},
-		enableGuardian:   install.EnableGuardian,
+		enableGuardian: install.EnableGuardian,
+		guardianReady: func(ctx context.Context) bool {
+			return waitGuardianSocket(ctx, guardian.SocketPath, guardianReadyTimeout, guardianReadyPollInterval)
+		},
 		legacyInstalled:  install.LegacyCoreInstalled,
 		legacyLoaded:     install.LegacyCoreLoaded,
 		removeLegacyUnit: install.RemoveLegacyCoreUnit,
@@ -233,10 +242,40 @@ func macOSDownAction(c *urfavecli.Context) error {
 	return nil
 }
 
+// waitGuardianSocket polls the Guardian control socket until it accepts a
+// connection or timeout elapses, respecting ctx cancellation. It returns
+// true as soon as a dial succeeds.
+func waitGuardianSocket(ctx context.Context, socketPath string, timeout, interval time.Duration) bool {
+	if interval <= 0 {
+		interval = guardianReadyPollInterval
+	}
+	deadline := time.Now().Add(timeout)
+	var dialer net.Dialer
+	for {
+		dialCtx, cancel := context.WithTimeout(ctx, interval)
+		conn, err := dialer.DialContext(dialCtx, "unix", socketPath)
+		cancel()
+		if err == nil {
+			conn.Close()
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
+}
+
 func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSLifecycleDeps) (guardian.Status, bool, error) {
 	if deps.client == nil || deps.guardianInstalled == nil || deps.writeGuardianUnit == nil ||
-		deps.enableGuardian == nil || deps.legacyInstalled == nil || deps.legacyLoaded == nil ||
-		deps.removeLegacyUnit == nil || deps.migrationRequest == nil {
+		deps.enableGuardian == nil || deps.guardianReady == nil || deps.legacyInstalled == nil ||
+		deps.legacyLoaded == nil || deps.removeLegacyUnit == nil || deps.migrationRequest == nil {
 		return guardian.Status{}, false, fmt.Errorf("macOS Guardian lifecycle dependencies unavailable")
 	}
 	if !deps.guardianInstalled() {
@@ -267,6 +306,11 @@ func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSL
 	}
 	if err := deps.enableGuardian(); err != nil {
 		return guardian.Status{}, false, fmt.Errorf("bootstrap Guardian: %w", err)
+	}
+	if !deps.guardianReady(ctx) {
+		return guardian.Status{}, false, fmt.Errorf(
+			"Guardian 服务未能启动(socket %s 未就绪)。最近的守护日志:\n%s\n排查:sudo launchctl print system/com.getbx.bx.guard;完整日志 /var/log/bx-guard.err.log",
+			guardian.SocketPath, install.GuardianLogTail(10))
 	}
 	if !legacyLoaded {
 		return guardian.Status{}, false, nil

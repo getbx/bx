@@ -13,6 +13,10 @@ func WriteGuardianUnit(string, string) error { return errGuardianUnsupported }
 
 func EnableGuardian() error { return errGuardianUnsupported }
 
+func EnableGuardianWithProbe(func() bool) error { return errGuardianUnsupported }
+
+func GuardianLogTail(int) string { return "" }
+
 func GuardianInstalled() bool { return false }
 
 func GuardianActive() bool { return false }
