@@ -136,6 +136,75 @@ func TestMacOSUpLifecycleMigratesBeforeMenuAndWaitsForProtected(t *testing.T) {
 	}
 }
 
+func TestMacOSUpLifecycleRemovesOrphanLegacyPlistWithoutMigrating(t *testing.T) {
+	var events []string
+	client := &recordingGuardianClient{
+		events:   &events,
+		upStatus: guardian.Status{Desired: guardian.DesiredOn, Phase: guardian.PhaseCommitted, Protection: guardian.ProtectionProtected},
+	}
+	deps := testMacOSLifecycleDeps(&events, client)
+	deps.legacyInstalled = func() bool { return true }
+	deps.legacyLoaded = func() (bool, error) {
+		events = append(events, "legacy.loaded")
+		return false, nil
+	}
+	deps.migrationRequest = func(context.Context, string) (guardian.MigrationRequest, error) {
+		events = append(events, "metadata")
+		return guardian.MigrationRequest{}, errors.New("migration request must not be built for an orphan plist")
+	}
+	result, err := macOSUpLifecycle(context.Background(), "/etc/bx/config.yaml", deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"legacy.loaded", "legacy.remove", "guardian.enable", "guardian.up", "console.uid", "menu.ensure"}
+	if strings.Join(events, "|") != strings.Join(want, "|") {
+		t.Fatalf("macOS up events = %#v, want %#v", events, want)
+	}
+	if result.Status.Protection != guardian.ProtectionProtected || result.MenuWarning != nil {
+		t.Fatalf("macOS up result = %+v", result)
+	}
+	if client.upCalls != 1 || client.migrateCalls != 0 {
+		t.Fatalf("Guardian calls = up:%d migrate:%d", client.upCalls, client.migrateCalls)
+	}
+}
+
+func TestMacOSUpLifecycleStillMigratesWhenLegacyLoaded(t *testing.T) {
+	var events []string
+	client := &recordingGuardianClient{
+		events:        &events,
+		migrateStatus: guardian.Status{Protection: guardian.ProtectionStarting},
+		statuses:      []guardian.Status{{Desired: guardian.DesiredOn, Phase: guardian.PhaseCommitted, Protection: guardian.ProtectionProtected}},
+	}
+	deps := testMacOSLifecycleDeps(&events, client)
+	deps.legacyInstalled = func() bool { return true }
+	deps.legacyLoaded = func() (bool, error) {
+		events = append(events, "legacy.loaded")
+		return true, nil
+	}
+	deps.removeLegacyUnit = func() error {
+		events = append(events, "legacy.remove")
+		return errors.New("removeLegacyUnit must not be called while legacy Core is loaded")
+	}
+	deps.migrationRequest = func(context.Context, string) (guardian.MigrationRequest, error) {
+		events = append(events, "metadata")
+		return guardian.MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}}, nil
+	}
+	result, err := macOSUpLifecycle(context.Background(), "/etc/bx/config.yaml", deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"legacy.loaded", "metadata", "guardian.enable", "guardian.migrate", "guardian.status", "console.uid", "menu.ensure"}
+	if strings.Join(events, "|") != strings.Join(want, "|") {
+		t.Fatalf("macOS up events = %#v, want %#v", events, want)
+	}
+	if result.Status.Protection != guardian.ProtectionProtected || result.MenuWarning != nil {
+		t.Fatalf("macOS up result = %+v", result)
+	}
+	if client.upCalls != 0 || client.migrateCalls != 1 {
+		t.Fatalf("Guardian calls = up:%d migrate:%d", client.upCalls, client.migrateCalls)
+	}
+}
+
 func TestMacOSUpLifecycleInstallsGuardianAndLeavesMenuFailureBestEffort(t *testing.T) {
 	var events []string
 	client := &recordingGuardianClient{
@@ -170,6 +239,10 @@ func TestMacOSUpLifecycleMetadataFailureLeavesGuardianAndLegacyUntouched(t *test
 	client := &recordingGuardianClient{events: &events}
 	deps := testMacOSLifecycleDeps(&events, client)
 	deps.legacyInstalled = func() bool { return true }
+	deps.legacyLoaded = func() (bool, error) {
+		events = append(events, "legacy.loaded")
+		return true, nil
+	}
 	deps.migrationRequest = func(context.Context, string) (guardian.MigrationRequest, error) {
 		events = append(events, "metadata")
 		return guardian.MigrationRequest{}, errors.New("invalid handoff")
@@ -287,6 +360,10 @@ func testMacOSLifecycleDeps(events *[]string, client guardianLifecycleClient) ma
 		legacyLoaded: func() (bool, error) {
 			*events = append(*events, "legacy.loaded")
 			return false, nil
+		},
+		removeLegacyUnit: func() error {
+			*events = append(*events, "legacy.remove")
+			return nil
 		},
 		migrationRequest: func(context.Context, string) (guardian.MigrationRequest, error) {
 			*events = append(*events, "metadata")
