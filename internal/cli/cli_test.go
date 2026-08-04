@@ -381,6 +381,32 @@ func TestMacMenuUsesGuardianInsteadOfCLIReconnectSupport(t *testing.T) {
 	}
 }
 
+// The menu must read DNS state only from the authoritative `bx status --json`
+// report. A second source (shelling out to `bx dns status` and parsing its
+// lines) can disagree with Guardian and paint the shield green while DNS is
+// unmanaged, which is exactly the leak this guard prevents from returning.
+func TestMacMenuDerivesDNSFromStatusJSONOnly(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if strings.Contains(text, "loadDNSStatus") {
+		t.Fatal("macOS menu must not keep a second DNS status source (loadDNSStatus)")
+	}
+	if strings.Contains(text, `runBx(["dns", "status"])`) {
+		t.Fatal("macOS menu must not shell out to `bx dns status` for menu state")
+	}
+	if !strings.Contains(text, "dnsPresentation(") {
+		t.Fatal("macOS menu should derive its DNS verdict from dnsPresentation")
+	}
+	for _, key := range []string{`case dnsState = "dns_state"`, `case dnsManaged = "dns_managed"`, `case dnsService = "dns_service"`} {
+		if !strings.Contains(text, key) {
+			t.Fatalf("macOS menu should decode the authoritative status field: %s", key)
+		}
+	}
+}
+
 func TestMacMenuAndReadmeDescribeAutomaticSafeNetworkRecovery(t *testing.T) {
 	menu, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {

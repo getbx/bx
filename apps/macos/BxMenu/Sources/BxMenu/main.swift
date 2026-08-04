@@ -19,6 +19,9 @@ struct BxReport: Decodable {
     let coreVersion: String?
     let guardianVersion: String?
     let runtimeVersion: String?
+    let dnsState: String?
+    let dnsManaged: Bool?
+    let dnsService: String?
 
     enum CodingKeys: String, CodingKey {
         case tunnelHealthy = "tunnel_healthy"
@@ -30,6 +33,9 @@ struct BxReport: Decodable {
         case coreVersion = "core_version"
         case guardianVersion = "guardian_version"
         case runtimeVersion = "runtime_version"
+        case dnsState = "dns_state"
+        case dnsManaged = "dns_managed"
+        case dnsService = "dns_service"
         case restarts, active, proxy, direct, blocked, recovery, phase
     }
 }
@@ -195,7 +201,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                 recovery: report.recovery
             )
         }
-        return report.tunnelHealthy ? .connected(report, version: version ?? "unknown", dns: loadDNSStatus()) : .warning("Tunnel unhealthy", version: version)
+        guard report.tunnelHealthy else {
+            return .warning("Tunnel unhealthy", version: version)
+        }
+        let dns = dnsPresentation(
+            state: report.dnsState,
+            managed: report.dnsManaged ?? false,
+            service: report.dnsService
+        )
+        guard dns.allowsProtected else {
+            recoverySnapshot = nil
+            return .warning(dns.menuWarning ?? "DNS status unavailable", version: version)
+        }
+        return .connected(report, version: version ?? "unknown", dns: dns.label)
     }
 
     private func updateIcon() {
@@ -899,21 +917,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         return result.code == 0 && result.stdout.contains("--archive") && result.stdout.contains("--dir")
     }
 
-    private func loadDNSStatus() -> String? {
-        let result = runBx(["dns", "status"])
-        guard result.code == 0 else { return nil }
-        let lines = result.stdout.split(separator: "\n").map(String.init)
-        let enabled = value(in: lines, key: "enabled")
-        let service = value(in: lines, key: "service")
-        if enabled == "true", let service {
-            return "\(service) managed"
-        }
-        if enabled == "true" {
-            return "Managed"
-        }
-        return "Not managed"
-    }
-
     private func refreshUpdateCheck() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
@@ -929,11 +932,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func value(in lines: [String], key: String) -> String? {
-        let prefix = key + ":"
-        guard let line = lines.first(where: { $0.hasPrefix(prefix) }) else { return nil }
-        return line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     private func runBx(_ arguments: [String]) -> CommandResult {
         let process = Process()
