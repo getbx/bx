@@ -702,9 +702,7 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 	}
 	if errors.Is(exitErr, ErrProcessOwnershipUncertain) {
 		if !m.barrierProven() {
-			if barrierContext, err := m.barrierContextForRuntime(operationCtx, m.runtime); err == nil {
-				_ = m.installBarrier(operationCtx, barrierContext)
-			}
+			_ = m.installBarrierForRecovery(operationCtx, m.runtime)
 		}
 		process.Uncertain = true
 		m.current = process
@@ -714,9 +712,7 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 	desired, err := m.store.LoadDesired()
 	if err != nil {
 		if !m.barrierProven() {
-			if barrierContext, ctxErr := m.barrierContextForRuntime(operationCtx, m.runtime); ctxErr == nil {
-				_ = m.installBarrier(operationCtx, barrierContext)
-			}
+			_ = m.installBarrierForRecovery(operationCtx, m.runtime)
 		}
 		m.needsAttention(DesiredOn, "desired_state_read_failed")
 		return
@@ -726,11 +722,13 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		return
 	}
 
-	barrierContext, ctxErr := m.barrierContextForRuntime(operationCtx, m.runtime)
+	runtimeState := m.runtime
 	m.current = Process{}
-	m.needsAttention(DesiredOn, "core_unexpected_exit")
-	if ctxErr == nil {
-		_ = m.installBarrier(operationCtx, barrierContext)
+	installErr := m.installBarrierForRecovery(operationCtx, runtimeState)
+	if installErr != nil {
+		m.needsAttention(DesiredOn, "barrier_install_failed")
+	} else {
+		m.needsAttention(DesiredOn, "core_unexpected_exit")
 	}
 
 	if _, err := m.startCoreLocked(operationCtx); err != nil {
@@ -738,10 +736,25 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		return
 	}
 	if m.barrierOwnership.proof != barrierAbsent {
-		if err := m.removeBarrier(operationCtx, barrierContext); err != nil {
+		if err := m.removeBarrier(operationCtx, m.barrierOwnership.context); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 		}
 	}
+}
+
+// installBarrierForRecovery installs a barrier ahead of an unexpected-exit
+// restart or an ownership-uncertain hold. If the bypass-carrying context
+// cannot be resolved (e.g. the default gateway is unavailable because
+// another VPN owns the default route via a point-to-point tunnel), it
+// degrades to a block-only barrier — public IPv4/IPv6 blackholed, no
+// bypasses — rather than leaving Core to come back with no barrier at all.
+// Fail-closed over fail-open.
+func (m *Manager) installBarrierForRecovery(ctx context.Context, state supervisor.RuntimeState) error {
+	barrierContext, err := m.barrierContextForRuntime(ctx, state)
+	if err != nil {
+		barrierContext = blockOnlyRecoveryContext(m.contextForRuntime(state))
+	}
+	return m.installBarrier(ctx, barrierContext)
 }
 
 func (m *Manager) cleanupStartedCore(ctx context.Context, process Process) error {

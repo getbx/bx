@@ -978,6 +978,47 @@ func TestManagerUnexpectedExitInstallsBarrierAndRestartsOnce(t *testing.T) {
 	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
+	installed := env.barrier.lastInstallContext()
+	if len(installed.ServerBypass) == 0 {
+		t.Fatal("installed barrier ServerBypass is empty, want bypass-carrying barrier when gateway resolves")
+	}
+	if installed.blockOnly {
+		t.Fatal("installed barrier blockOnly = true, want bypass-carrying (not block-only) when gateway resolves")
+	}
+}
+
+// TestManagerUnexpectedExitDegradesToBlockOnlyBarrierWhenGatewayUnavailable
+// covers the fail-open window a reviewer found in lazy gateway discovery
+// (Task 4): if the default gateway cannot be resolved during an
+// unexpected-exit restart (e.g. another VPN owns the default route via a
+// point-to-point utun), Guardian must still install a barrier — degraded to
+// block-only (no bypasses) — rather than restarting Core with no barrier at
+// all and leaking traffic direct.
+func TestManagerUnexpectedExitDegradesToBlockOnlyBarrierWhenGatewayUnavailable(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	env.manager.barrierContext.Gateway = ""
+	env.manager.gatewayProvider = &fakeGatewayProvider{err: errors.New("no default gateway")}
+	process := env.runner.currentProcess()
+	if len(env.manager.runtime.ServerBypass) == 0 {
+		t.Fatal("test setup: runtime ServerBypass is empty, want non-empty to exercise gateway resolution")
+	}
+	env.events.reset()
+
+	env.runner.exit(process.PID, errors.New("unexpected exit"))
+	eventually(t, func() bool { return env.runner.startCount() == 2 })
+
+	events := env.events.snapshot()
+	if len(events) == 0 || events[0] != "barrier.install" {
+		t.Fatalf("events = %#v, want barrier.install installed before Core restart", events)
+	}
+
+	installed := env.barrier.lastInstallContext()
+	if len(installed.ServerBypass) != 0 {
+		t.Fatalf("installed barrier ServerBypass = %v, want block-only (no bypasses) when gateway unresolvable", installed.ServerBypass)
+	}
+	if !installed.blockOnly {
+		t.Fatal("installed barrier blockOnly = false, want true (public IPv4/IPv6 blackholed) when gateway unresolvable")
+	}
 }
 
 func TestDaemonShutdownCancelsQueuedRecoveryBeforeStart(t *testing.T) {
