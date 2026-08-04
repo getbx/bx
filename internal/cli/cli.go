@@ -4221,11 +4221,7 @@ func assembleClientStatusReportWithCore(core *stats.Report, evidence string, sta
 }
 
 func assembleClientStatusReportWithCoreForPlatform(core *stats.Report, evidence string, status guardian.Status, platform string) clientStatusReport {
-	protection := status.Protection
-	if platform == "darwin" && protection == guardian.ProtectionProtected && status.DNSState != "" &&
-		(status.DNSState != guardian.DNSManaged || !status.DNSManaged) {
-		protection = guardian.ProtectionNeedsAttention
-	}
+	protection := normalizedGuardianProtectionState(status, platform)
 	switch status.Recovery.State {
 	case "accepted", "running":
 		if protection != guardian.ProtectionNeedsAttention {
@@ -4288,6 +4284,18 @@ func renderClientStatus(report clientStatusReport) string {
 }
 
 func writeClientDNS(b *strings.Builder, state guardian.DNSState, service string) {
+	fmt.Fprintf(b, "  DNS     %s\n", guardianDNSLabel(state, service))
+}
+
+func normalizedGuardianProtectionState(status guardian.Status, platform string) string {
+	if platform == "darwin" && status.Protection == guardian.ProtectionProtected &&
+		(status.DNSState != guardian.DNSManaged || !status.DNSManaged) {
+		return guardian.ProtectionNeedsAttention
+	}
+	return status.Protection
+}
+
+func guardianDNSLabel(state guardian.DNSState, service string) string {
 	value := string(state)
 	if value == "" {
 		value = string(guardian.DNSUnknown)
@@ -4295,7 +4303,7 @@ func writeClientDNS(b *strings.Builder, state guardian.DNSState, service string)
 	if service != "" {
 		value += " (" + service + ")"
 	}
-	fmt.Fprintf(b, "  DNS     %s\n", value)
+	return value
 }
 
 func shouldShowUpdateMessage(phase string) bool {
@@ -4389,6 +4397,8 @@ func renderUpSummary(rep stats.Report, statuses ...guardian.Status) string {
 		state = "Needs Attention"
 	} else if len(rep.Warnings) > 0 {
 		state = "Needs Attention"
+	} else if len(statuses) > 0 && normalizedGuardianProtectionState(statuses[0], runtime.GOOS) != guardian.ProtectionProtected {
+		state = "Needs Attention"
 	}
 	var b strings.Builder
 	fmt.Fprintln(&b)
@@ -4397,14 +4407,7 @@ func renderUpSummary(rep stats.Report, statuses ...guardian.Status) string {
 	fmt.Fprintf(&b, "  Tunnel     %dms\n", rep.LatencyMS)
 	fmt.Fprintf(&b, "  UDP Relay  %s\n", onOff(rep.UDPMode == "proxy"))
 	if len(statuses) > 0 {
-		value := string(statuses[0].DNSState)
-		if value == "" {
-			value = string(guardian.DNSUnknown)
-		}
-		if statuses[0].DNSService != "" {
-			value += " (" + statuses[0].DNSService + ")"
-		}
-		fmt.Fprintf(&b, "  DNS        %s\n", value)
+		fmt.Fprintf(&b, "  DNS        %s\n", guardianDNSLabel(statuses[0].DNSState, statuses[0].DNSService))
 	}
 	if len(rep.Warnings) > 0 {
 		fmt.Fprintf(&b, "  Warning    %s\n", rep.Warnings[0].Detail)
