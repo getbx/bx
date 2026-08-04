@@ -2,6 +2,7 @@ package guardian
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -85,6 +86,23 @@ type Status struct {
 	DNSState          DNSState         `json:"dns_state"`
 	DNSManaged        bool             `json:"dns_managed"`
 	DNSService        string           `json:"dns_service,omitempty"`
+}
+
+// MarshalJSON keeps externally observable DNS state within the Guardian
+// contract while existing lifecycle paths have not supplied a DNS result yet.
+func (s Status) MarshalJSON() ([]byte, error) {
+	s.DNSState = normalizedDNSState(s.DNSState)
+	type statusJSON Status
+	return json.Marshal(statusJSON(s))
+}
+
+func normalizedDNSState(state DNSState) DNSState {
+	switch state {
+	case DNSManaged, DNSUnmanaged, DNSUnknown:
+		return state
+	default:
+		return DNSUnknown
+	}
 }
 
 type UpdateResult struct {
