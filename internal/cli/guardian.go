@@ -42,6 +42,7 @@ type macOSLifecycleDeps struct {
 	enableGuardian    func() error
 	legacyInstalled   func() bool
 	legacyLoaded      func() (bool, error)
+	removeLegacyUnit  func() error
 	migrationRequest  func(context.Context, string) (guardian.MigrationRequest, error)
 	client            guardianLifecycleClient
 	consoleUID        func() (int, error)
@@ -61,9 +62,10 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		writeGuardianUnit: func(configPath string) error {
 			return install.WriteGuardianUnit(install.GuardianExecutable(), configPath)
 		},
-		enableGuardian:  install.EnableGuardian,
-		legacyInstalled: install.LegacyCoreInstalled,
-		legacyLoaded:    install.LegacyCoreLoaded,
+		enableGuardian:   install.EnableGuardian,
+		legacyInstalled:  install.LegacyCoreInstalled,
+		legacyLoaded:     install.LegacyCoreLoaded,
+		removeLegacyUnit: install.RemoveLegacyCoreUnit,
 		migrationRequest: func(ctx context.Context, configPath string) (guardian.MigrationRequest, error) {
 			return legacyMigrationRequest(ctx, configPath, migrationMetadataDeps{})
 		},
@@ -233,7 +235,8 @@ func macOSDownAction(c *urfavecli.Context) error {
 
 func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSLifecycleDeps) (guardian.Status, bool, error) {
 	if deps.client == nil || deps.guardianInstalled == nil || deps.writeGuardianUnit == nil ||
-		deps.enableGuardian == nil || deps.legacyInstalled == nil || deps.legacyLoaded == nil || deps.migrationRequest == nil {
+		deps.enableGuardian == nil || deps.legacyInstalled == nil || deps.legacyLoaded == nil ||
+		deps.removeLegacyUnit == nil || deps.migrationRequest == nil {
 		return guardian.Status{}, false, fmt.Errorf("macOS Guardian lifecycle dependencies unavailable")
 	}
 	if !deps.guardianInstalled() {
@@ -245,18 +248,27 @@ func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSL
 	if err != nil {
 		return guardian.Status{}, false, fmt.Errorf("inspect legacy Core: %w", err)
 	}
-	legacyPresent := deps.legacyInstalled() || legacyLoaded
 	var request guardian.MigrationRequest
-	if legacyPresent {
+	switch {
+	case legacyLoaded:
+		// A live legacy Core is running: it must go through the
+		// barrier-protected migration transaction (needs the gateway).
 		request, err = deps.migrationRequest(ctx, configPath)
 		if err != nil {
 			return guardian.Status{}, false, fmt.Errorf("validate legacy Core handoff: %w", err)
+		}
+	case deps.legacyInstalled():
+		// Only an orphan plist remains: nothing is running to hand off,
+		// so just delete it — don't demand a default gateway or run a
+		// migration transaction for it.
+		if err := deps.removeLegacyUnit(); err != nil {
+			return guardian.Status{}, false, fmt.Errorf("清理 legacy Core 服务: %w", err)
 		}
 	}
 	if err := deps.enableGuardian(); err != nil {
 		return guardian.Status{}, false, fmt.Errorf("bootstrap Guardian: %w", err)
 	}
-	if !legacyPresent {
+	if !legacyLoaded {
 		return guardian.Status{}, false, nil
 	}
 	status, err := deps.client.Migrate(ctx, request)
