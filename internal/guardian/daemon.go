@@ -44,17 +44,18 @@ type DaemonOptions struct {
 }
 
 type Daemon struct {
-	path             string
-	listener         net.Listener
-	server           *http.Server
-	socketInfo       os.FileInfo
-	mutations        mutationLifecycle
-	recoveries       recoveryLifecycle
-	observer         *daemonNetworkObserverLifecycle
-	shutdownMu       sync.Mutex
-	shutdownStarted  bool
-	shutdownComplete bool
-	shutdownErr      error
+	path                string
+	listener            net.Listener
+	server              *http.Server
+	socketInfo          os.FileInfo
+	mutations           mutationLifecycle
+	recoveries          recoveryLifecycle
+	observer            *daemonNetworkObserverLifecycle
+	startupRecoveryDone chan struct{}
+	shutdownMu          sync.Mutex
+	shutdownStarted     bool
+	shutdownComplete    bool
+	shutdownErr         error
 }
 
 type mutationLifecycle interface {
@@ -66,6 +67,9 @@ type recoveringController interface {
 	Controller
 	PathRecoveryController
 	Recover(context.Context) error
+	BeginStartupRecovery()
+	RunStartupRecovery(context.Context) error
+	AbortStartupRecovery()
 }
 
 type daemonStarter func(context.Context, DaemonOptions) (*Daemon, error)
@@ -166,6 +170,37 @@ func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 	return daemon, nil
 }
 
+// trackStartupRecovery runs fn (the background startup-recovery goroutine) in
+// a new goroutine and records its completion so Shutdown can wait for it
+// instead of exiting mid-recovery, which could otherwise orphan Core or leave
+// the path-recovery fence installed. Must be called at most once per Daemon.
+func (d *Daemon) trackStartupRecovery(fn func()) {
+	d.startupRecoveryDone = make(chan struct{})
+	go func() {
+		defer close(d.startupRecoveryDone)
+		fn()
+	}()
+}
+
+// waitForStartupRecovery blocks until the tracked startup-recovery goroutine
+// finishes or ctx is done, whichever comes first — it never blocks forever.
+// In the ordinary shutdown path the goroutine is already unwinding by the
+// time this runs: it shares the same ctx that RunDaemon derives its shutdown
+// trigger from, so a SIGTERM that starts a Shutdown also cancels the
+// recovery attempt directly. This wait exists as the bound for the remaining
+// cases (a caller invoking Shutdown without canceling that outer context).
+func (d *Daemon) waitForStartupRecovery(ctx context.Context) error {
+	if d.startupRecoveryDone == nil {
+		return nil
+	}
+	select {
+	case <-d.startupRecoveryDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (d *Daemon) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), guardianMutationTimeout)
 	defer cancel()
@@ -205,7 +240,8 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 	if d.recoveries != nil {
 		recoveryErr = d.recoveries.waitForRecoveries(ctx)
 	}
-	if shutdownErr != nil || mutationErr != nil || recoveryErr != nil {
+	startupRecoveryErr := d.waitForStartupRecovery(ctx)
+	if shutdownErr != nil || mutationErr != nil || recoveryErr != nil || startupRecoveryErr != nil {
 		_ = d.server.Close()
 	}
 	listenerErr := d.listener.Close()
@@ -218,7 +254,7 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		removeErr = statErr
 	}
-	d.shutdownErr = errors.Join(shutdownErr, mutationErr, recoveryErr, listenerErr, removeErr)
+	d.shutdownErr = errors.Join(shutdownErr, mutationErr, recoveryErr, startupRecoveryErr, listenerErr, removeErr)
 	d.shutdownComplete = true
 	return d.shutdownErr
 }
@@ -327,16 +363,22 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 // used to make a legitimately-recovering Guardian look like it failed to
 // start at all.
 //
-// This is safe without any extra fencing: Recover and every mutation
-// (Up/Down/Migrate) already serialize through Manager's single-slot
-// mutation channel (acquireMutation/releaseMutation), so a mutation request
-// that lands on the now-earlier-available socket while Recover is still
-// running simply queues behind it — it cannot interleave with or corrupt
-// Recover's state changes. Status reads go through a separate RWMutex and
-// were never gated on Recover, so they stay observable throughout. Recover
-// still runs exactly once on this path; retryDaemonRecovery below is the
-// same single follow-up the synchronous version used on failure, just
-// triggered from the background goroutine instead of inline.
+// Recover and every mutation (Up/Down/Migrate/Update) already serialize
+// through Manager's single-slot mutation channel (acquireMutation/
+// releaseMutation), so a mutation request that lands on the now-earlier-
+// available socket while Recover is still running simply queues behind it —
+// it cannot interleave with or corrupt Recover's state changes. But which of
+// the two wins that channel is a race, and a mutation winning it ahead of
+// Recover would otherwise run before recoverUpdateLocked has even inspected
+// the update journal. controller.BeginStartupRecovery closes that window
+// synchronously, before the socket exists, by raising recoveryBlocked (and
+// the path-recovery fence) up front — so no matter which side wins the
+// channel, a premature mutation still observes recoveryBlocked and fails
+// closed. Status reads go through a separate RWMutex and were never gated on
+// Recover, so they stay observable throughout. Recover still runs exactly
+// once on this path; retryDaemonRecovery below is the same single follow-up
+// the synchronous version used on failure, just triggered from the
+// background goroutine instead of inline.
 func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller recoveringController, start daemonStarter) (*Daemon, error) {
 	localAPIOptions := LocalAPIOptions{
 		OwnerUID:        options.LocalAPIOwnerUID,
@@ -357,21 +399,32 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 	options.networkObserverDesired = func() DesiredState {
 		return controller.Status().Desired
 	}
+	controller.BeginStartupRecovery()
 	daemon, err := start(ctx, options)
 	if err != nil {
+		// The socket never opened, so nothing could have raced the fence —
+		// release it here rather than leaking a permanently-queued
+		// path-recovery state onto a Manager that a caller might reuse.
+		controller.AbortStartupRecovery()
 		return nil, err
 	}
-	go runStartupRecovery(ctx, controller)
+	daemon.trackStartupRecovery(func() { runStartupRecovery(ctx, controller) })
 	return daemon, nil
 }
 
 // runStartupRecovery performs the one initial post-start Recover in the
 // background; on failure it hands off to the existing retry machinery
 // (guardianRecoveryRetryInitial..Max backoff) so Recover still only ever
-// runs sequentially, never concurrently with itself.
+// runs sequentially, never concurrently with itself. It calls
+// RunStartupRecovery rather than Recover because controller.BeginStartupRecovery
+// (in startRecoveredDaemon) already raised the path-recovery fence
+// synchronously before the socket opened; RunStartupRecovery releases that
+// same fence instead of raising a second one, keeping the counter balanced.
+// Any subsequent retry goes through the ordinary Recover, which raises and
+// releases its own fence per attempt.
 func runStartupRecovery(ctx context.Context, controller recoveringController) {
 	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, guardianMutationTimeout)
-	err := controller.Recover(recoveryCtx)
+	err := controller.RunStartupRecovery(recoveryCtx)
 	cancelRecovery()
 	if err != nil {
 		retryDaemonRecovery(ctx, controller)

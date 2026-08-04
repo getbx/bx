@@ -25,6 +25,16 @@ type guardianCommandDeps struct {
 const (
 	guardianReadyTimeout      = 10 * time.Second
 	guardianReadyPollInterval = 200 * time.Millisecond
+	// guardianMutationClientTimeout is the HTTP client timeout for Guardian
+	// mutations (Up/Down/Migrate). It must exceed the server-side mutation
+	// budget (guardianMutationTimeout, 60s in internal/guardian/localapi.go)
+	// with real margin: since the startup-recovery fence (see
+	// Manager.BeginStartupRecovery), a POST here can legitimately queue
+	// behind an in-flight startup Recover — up to that same 60s budget —
+	// before it even begins. guardian.NewClient's default 30s timeout would
+	// fail such a request with "Client.Timeout exceeded while awaiting
+	// headers" even though the daemon would have succeeded.
+	guardianMutationClientTimeout = 90 * time.Second
 )
 
 type migrationMetadataDeps struct {
@@ -62,7 +72,10 @@ type macOSUpResult struct {
 }
 
 func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
-	client := guardian.NewClient(guardian.SocketPath)
+	// This client issues the actual mutations (Up/Down/Migrate below), so it
+	// needs guardianMutationClientTimeout rather than NewClient's default
+	// 30s — see that constant's comment.
+	client := guardian.NewClientWithTimeout(guardian.SocketPath, guardianMutationClientTimeout)
 	return macOSLifecycleDeps{
 		guardianInstalled: install.GuardianInstalled,
 		writeGuardianUnit: func(configPath string) error {

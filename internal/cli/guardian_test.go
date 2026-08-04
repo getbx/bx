@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
@@ -66,5 +67,31 @@ func TestGuardianCommandPassesConfigurationToInjectedDaemon(t *testing.T) {
 func TestInstallGuardianSocketPathMatchesGuardian(t *testing.T) {
 	if install.GuardianSocketPath != guardian.SocketPath {
 		t.Fatalf("install.GuardianSocketPath = %q, guardian.SocketPath = %q — 两处必须一致(install 不能 import guardian:会成环)", install.GuardianSocketPath, guardian.SocketPath)
+	}
+}
+
+// TestDefaultMacOSLifecycleDepsMutationClientOutlivesServerBudget guards
+// against guardian.NewClient's default 30s HTTP timeout firing on a Guardian
+// mutation (Up/Down/Migrate) queued behind a startup Recover: the server-side
+// mutation budget is guardianMutationTimeout (60s in
+// internal/guardian/localapi.go), so a client that gives up sooner can see
+// "Client.Timeout exceeded while awaiting headers" for a request the daemon
+// was actually about to satisfy. defaultMacOSLifecycleDeps must use
+// guardian.NewClientWithTimeout with real margin over that 60s budget.
+func TestDefaultMacOSLifecycleDepsMutationClientOutlivesServerBudget(t *testing.T) {
+	deps := defaultMacOSLifecycleDeps()
+	client, ok := deps.client.(*guardian.Client)
+	if !ok {
+		t.Fatalf("client type = %T, want *guardian.Client", deps.client)
+	}
+	if client.HTTPClient == nil {
+		t.Fatal("HTTPClient is nil: falls back to guardian's default 30s timeout")
+	}
+	const serverMutationBudget = time.Minute
+	if client.HTTPClient.Timeout <= serverMutationBudget {
+		t.Fatalf("mutation client timeout = %v, want > %v (the server-side mutation budget)", client.HTTPClient.Timeout, serverMutationBudget)
+	}
+	if client.HTTPClient.Timeout != guardianMutationClientTimeout {
+		t.Fatalf("mutation client timeout = %v, want %v", client.HTTPClient.Timeout, guardianMutationClientTimeout)
 	}
 }
