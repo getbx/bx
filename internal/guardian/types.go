@@ -1,6 +1,9 @@
 package guardian
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type DesiredState string
 
@@ -24,6 +27,25 @@ const (
 
 type Paths struct {
 	Desired, Transaction, Receipt, Staging, Snapshots string
+}
+
+type DNSState string
+
+const (
+	DNSUnknown   DNSState = "unknown"
+	DNSManaged   DNSState = "managed"
+	DNSUnmanaged DNSState = "unmanaged"
+)
+
+type DNSStatus struct {
+	State   DNSState
+	Service string
+}
+
+type DNSManager interface {
+	EnsureManaged(context.Context) (DNSStatus, error)
+	Inspect(context.Context) (DNSStatus, error)
+	Restore(context.Context) (DNSStatus, error)
 }
 
 type Transaction struct {
@@ -60,6 +82,9 @@ type Status struct {
 	LastError         string           `json:"last_error,omitempty"`
 	GuardianVersion   string           `json:"guardian_version,omitempty"`
 	RuntimeVersion    string           `json:"runtime_version,omitempty"`
+	DNSState          DNSState         `json:"dns_state"`
+	DNSManaged        bool             `json:"dns_managed"`
+	DNSService        string           `json:"dns_service,omitempty"`
 }
 
 type UpdateResult struct {

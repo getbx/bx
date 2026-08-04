@@ -269,6 +269,21 @@ func TestDNSStateMissingRecognizesWrappedNotExist(t *testing.T) {
 	}
 }
 
+func TestEnableDNSDarwinContextStopsBeforeCommandsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runner := &scriptedDNSCommandRunner{
+		combinedOutput: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("canceled enable executed a command")
+			return nil, nil
+		},
+	}
+	_, err := enableDNSDarwinContextWithRunner(ctx, runner, filepath.Join(t.TempDir(), "dns-original.json"), "Wi-Fi")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context canceled", err)
+	}
+}
+
 func TestRunNetworksetupContextWithRunnerHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := &blockingDNSCommandRunner{entered: make(chan struct{})}
