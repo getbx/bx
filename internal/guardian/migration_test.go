@@ -2,9 +2,41 @@ package guardian
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 )
+
+func TestManagerMigrationVerifiesDNSBeforeBarrierRelease(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.dns.record = true
+	request := MigrationRequest{
+		Gateway:      "192.0.2.1",
+		ServerBypass: []string{"198.51.100.10/32"},
+	}
+	if err := env.manager.Migrate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"desired.on",
+		"barrier.install",
+		"legacy.stop",
+		"barrier.reassert",
+		"core.start",
+		"dns.ensure",
+		"dns.inspect",
+		"barrier.release",
+		"legacy.remove",
+	}
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	status := env.manager.Status()
+	if status.Protection != ProtectionProtected || status.DNSState != DNSManaged {
+		t.Fatalf("status = %+v", status)
+	}
+}
 
 func TestMigrationRequestJSONContainsOnlyNonSecretHandoffMetadata(t *testing.T) {
 	request := MigrationRequest{

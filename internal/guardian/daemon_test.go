@@ -751,19 +751,23 @@ func (*daemonStartupController) CurrentPathRecovery() RecoverySnapshot {
 
 var _ http.Handler = NewLocalAPI(&daemonStartupController{recover: func(context.Context) error { return nil }})
 
-func TestSystemNetworkRestorerPropagatesCancellationToDNSRestore(t *testing.T) {
+func TestSystemDNSManagerPropagatesCancellationToAutoDetectedRestore(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	called := false
-	restorer := systemNetworkRestorer{disableDNS: func(got context.Context, service string) (install.DNSStatus, error) {
+	dns, ok := systemDNSManager().(dnsManager)
+	if !ok {
+		t.Fatalf("system DNS manager type = %T, want dnsManager", systemDNSManager())
+	}
+	dns.restore = func(got context.Context, service string) (install.DNSStatus, error) {
 		called = true
 		if service != "" {
 			t.Fatalf("service = %q, want auto-detect", service)
 		}
 		return install.DNSStatus{}, got.Err()
-	}}
+	}
 
-	err := restorer.Restore(ctx)
+	_, err := dns.Restore(ctx)
 	if !called {
 		t.Fatal("DNS restore was not called")
 	}
