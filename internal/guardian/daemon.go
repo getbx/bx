@@ -318,6 +318,10 @@ func coreExecutable(selfExecutable func() (string, error), evalSymlinks func(str
 	return path
 }
 
+func systemDNSManager() DNSManager {
+	return NewDNSManager("")
+}
+
 func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	if err := requireDaemonPlatform(); err != nil {
 		return err
@@ -336,7 +340,7 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 		Runner:          runner,
 		Health:          HealthChecker{},
 		Barrier:         NewBarrier(nil),
-		Restorer:        systemNetworkRestorer{},
+		DNS:             systemDNSManager(),
 		Legacy:          systemLegacyCoreLifecycle{},
 		BarrierContext:  BarrierContext{BlockIPv6: true},
 		GatewayProvider: GatewayProviderFunc(DiscoverDefaultGateway),
@@ -600,10 +604,6 @@ func retryDaemonRecovery(ctx context.Context, controller recoveringController) {
 	}
 }
 
-type systemNetworkRestorer struct {
-	disableDNS func(context.Context, string) (install.DNSStatus, error)
-}
-
 type systemLegacyCoreLifecycle struct {
 	present func(context.Context) (bool, error)
 	stop    func(context.Context) error
@@ -636,13 +636,4 @@ func (l systemLegacyCoreLifecycle) Remove() error {
 		remove = install.RemoveLegacyCoreUnit
 	}
 	return remove()
-}
-
-func (r systemNetworkRestorer) Restore(ctx context.Context) error {
-	disableDNS := r.disableDNS
-	if disableDNS == nil {
-		disableDNS = install.DisableDNSContext
-	}
-	_, err := disableDNS(ctx, "")
-	return err
 }
