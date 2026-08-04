@@ -739,7 +739,12 @@ func ClientLogPaths() []string {
 }
 
 func InspectDNS(service string) (DNSStatus, error) {
-	return inspectDNSContextWithRunner(context.Background(), execDNSCommandRunner{}, service)
+	return InspectDNSContext(context.Background(), service)
+}
+
+// InspectDNSContext reports the macOS DNS takeover state while honoring ctx.
+func InspectDNSContext(ctx context.Context, service string) (DNSStatus, error) {
+	return inspectDNSContextWithRunner(ctx, execDNSCommandRunner{}, service)
 }
 
 func inspectDNSContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) (DNSStatus, error) {
@@ -753,6 +758,9 @@ func inspectDNSContextWithRunner(ctx context.Context, runner dnsCommandRunner, s
 }
 
 func inspectDNSDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner, statePath, service string) (DNSStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return DNSStatus{}, err
+	}
 	resolved, err := resolveDNSServiceContextWithRunner(ctx, runner, service)
 	if err != nil {
 		return DNSStatus{Supported: true, StatePath: statePath}, err
@@ -773,39 +781,69 @@ func inspectDNSDarwinContextWithRunner(ctx context.Context, runner dnsCommandRun
 }
 
 func EnableDNS(service string) (DNSStatus, error) {
+	return EnableDNSContext(context.Background(), service)
+}
+
+// EnableDNSContext switches the active macOS DNS service to bx while honoring
+// cancellation across service discovery, resolver changes, cache flush, and
+// final inspection.
+func EnableDNSContext(ctx context.Context, service string) (DNSStatus, error) {
+	return enableDNSContextWithRunner(ctx, execDNSCommandRunner{}, service)
+}
+
+func enableDNSContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) (DNSStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return DNSStatus{}, err
+	}
 	if runtime.GOOS != "darwin" {
 		return DNSStatus{Supported: false, Detail: "DNS 接管仅支持 macOS"}, fmt.Errorf("DNS 接管仅支持 macOS")
 	}
-	resolved, err := resolveDNSService(service)
-	if err != nil {
-		return DNSStatus{Supported: true, StatePath: dnsStatePath}, err
+	return enableDNSDarwinContextWithRunner(ctx, runner, dnsStatePath, service)
+}
+
+func enableDNSDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner, statePath, service string) (DNSStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return DNSStatus{}, err
 	}
-	state, stateErr := readDNSState()
+	resolved, err := resolveDNSServiceContextWithRunner(ctx, runner, service)
+	if err != nil {
+		return DNSStatus{Supported: true, StatePath: statePath}, err
+	}
+	state, stateErr := readDNSStateAtPath(statePath)
 	if stateErr != nil || shouldRefreshDNSState(state, resolved) {
 		if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
-			return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, stateErr
+			return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, stateErr
 		}
 		if stateErr == nil && shouldRefreshDNSState(state, resolved) {
-			if err := runNetworksetup(dnsRestoreArgs(state)...); err != nil {
-				return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+			if err := runNetworksetupContextWithRunner(ctx, runner, dnsRestoreArgs(state)...); err != nil {
+				return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
 			}
 		}
-		servers, err := currentDNSServers(resolved)
+		if err := ctx.Err(); err != nil {
+			return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
+		}
+		servers, err := currentDNSServersContextWithRunner(ctx, runner, resolved)
 		if err != nil {
-			return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+			return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
 		}
 		state := dnsState{Service: resolved, Servers: servers, Empty: len(servers) == 0}
-		if err := writeDNSState(state); err != nil {
-			return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+		if err := writeDNSStateAtPath(statePath, state); err != nil {
+			return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
 		}
 	}
-	if err := runNetworksetup("setdnsservers", resolved, "127.0.0.1"); err != nil {
-		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+	if err := ctx.Err(); err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
 	}
-	if err := flushDNSCache(); err != nil {
-		return DNSStatus{Supported: true, Service: resolved, StatePath: dnsStatePath}, err
+	if err := runNetworksetupContextWithRunner(ctx, runner, "setdnsservers", resolved, "127.0.0.1"); err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
 	}
-	return InspectDNS(service)
+	if err := ctx.Err(); err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
+	}
+	if err := flushDNSCacheContextWithRunner(ctx, runner); err != nil {
+		return DNSStatus{Supported: true, Service: resolved, StatePath: statePath}, err
+	}
+	return inspectDNSDarwinContextWithRunner(ctx, runner, statePath, service)
 }
 
 func shouldRefreshDNSState(state dnsState, resolvedService string) bool {
@@ -926,6 +964,9 @@ func resolveDNSService(service string) (string, error) {
 }
 
 func resolveDNSServiceContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if strings.TrimSpace(service) != "" {
 		return strings.TrimSpace(service), nil
 	}
@@ -941,6 +982,9 @@ func defaultDeviceDarwin() (string, error) {
 }
 
 func defaultDeviceDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	out, err := runner.CombinedOutput(ctx, "route", "-n", "get", "default")
 	if err != nil {
 		return "", fmt.Errorf("route -n get default: %w", err)
@@ -959,6 +1003,9 @@ func serviceForDeviceDarwin(dev string) (string, error) {
 }
 
 func serviceForDeviceDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner, dev string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	out, err := runner.CombinedOutput(ctx, "networksetup", "-listnetworkserviceorder")
 	if err != nil {
 		return "", fmt.Errorf("networksetup -listnetworkserviceorder: %w", err)
@@ -989,6 +1036,9 @@ func currentDNSServers(service string) ([]string, error) {
 }
 
 func currentDNSServersContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	out, err := runner.CombinedOutput(ctx, "networksetup", "-getdnsservers", service)
 	if err != nil {
 		return nil, fmt.Errorf("networksetup -getdnsservers %s: %w", service, err)
@@ -1049,6 +1099,9 @@ func runNetworksetup(args ...string) error {
 }
 
 func runNetworksetupContextWithRunner(ctx context.Context, runner dnsCommandRunner, args ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		return fmt.Errorf("networksetup: missing arguments")
 	}
@@ -1073,6 +1126,9 @@ func flushDNSCacheContextWithRunner(ctx context.Context, runner dnsCommandRunner
 		{"dscacheutil", "-flushcache"},
 		{"killall", "-HUP", "mDNSResponder"},
 	} {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := runner.CombinedOutput(ctx, command[0], command[1:]...); err != nil {
 			if errors.Is(err, exec.ErrNotFound) {
 				unavailable = append(unavailable, command[0])
