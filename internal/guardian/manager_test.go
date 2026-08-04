@@ -424,6 +424,73 @@ func TestManagerUpAndRecoverRefuseLegacyOwnership(t *testing.T) {
 	}
 }
 
+// TestBeginStartupRecoveryFencesUpBeforeRecoverRuns is the regression guard
+// for the fail-closed window fd1fd90 opened: the daemon reorder makes the
+// LocalAPI socket observable before the startup Recover call actually runs
+// (it moved to a background goroutine), so a client racing to connect the
+// instant the socket exists could win Manager's single-slot mutation channel
+// ahead of that goroutine. Before this fix, recoveryBlocked only became true
+// once Recover itself started running — so a mutation winning that race
+// would see recoveryBlocked still false and proceed to start Core ahead of
+// recoverUpdateLocked ever inspecting the crash-mid-update journal. This
+// simulates the winning side of that race directly: BeginStartupRecovery
+// raises recoveryBlocked synchronously, so Up must fail closed even though
+// nothing has attempted RunStartupRecovery yet.
+func TestBeginStartupRecoveryFencesUpBeforeRecoverRuns(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.events.reset()
+
+	env.manager.BeginStartupRecovery()
+
+	if err := env.manager.Up(context.Background()); !errors.Is(err, errRecoveryIncomplete) {
+		t.Fatalf("Up before RunStartupRecovery ran = %v, want errRecoveryIncomplete", err)
+	}
+	if env.runner.startCount() != 0 {
+		t.Fatal("Core started ahead of startup recovery inspecting the crash-recovery journal")
+	}
+
+	if err := env.manager.RunStartupRecovery(context.Background()); err != nil {
+		t.Fatalf("RunStartupRecovery: %v", err)
+	}
+	if env.runner.startCount() != 1 {
+		t.Fatalf("Core start count after recovery = %d, want 1", env.runner.startCount())
+	}
+	if env.manager.pathRecoveryFences != 0 {
+		t.Fatalf("pathRecoveryFences = %d after RunStartupRecovery, want 0 (leaked fence would permanently queue recoveries)", env.manager.pathRecoveryFences)
+	}
+
+	// Startup recovery has genuinely completed now: Up must no longer be
+	// fenced.
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatalf("Up after recovery completed: %v", err)
+	}
+}
+
+// TestAbortStartupRecoveryReleasesFenceWithoutRunning proves the balancing
+// half of BeginStartupRecovery used on the daemon-start-failure path: it must
+// release the path-recovery fence without performing any recovery work, and
+// must leave recoveryBlocked set (no Recover actually ran, so nothing should
+// assume the crash journal was inspected).
+func TestAbortStartupRecoveryReleasesFenceWithoutRunning(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.BeginStartupRecovery()
+
+	env.manager.AbortStartupRecovery()
+
+	if env.manager.pathRecoveryFences != 0 {
+		t.Fatalf("pathRecoveryFences = %d after AbortStartupRecovery, want 0", env.manager.pathRecoveryFences)
+	}
+	if !env.manager.recoveryBlocked {
+		t.Fatal("recoveryBlocked was cleared by AbortStartupRecovery; no Recover ever ran")
+	}
+	if err := env.manager.Up(context.Background()); !errors.Is(err, errRecoveryIncomplete) {
+		t.Fatalf("Up after AbortStartupRecovery = %v, want errRecoveryIncomplete (no recovery ever ran)", err)
+	}
+}
+
 func TestManagerAdoptsMatchingHealthyCore(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.runner.existing = Process{PID: 42, Executable: install.BinPath, UID: 0}

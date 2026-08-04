@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -550,14 +551,196 @@ func TestDaemonRetriesRecoveryWhileServingDiagnostics(t *testing.T) {
 	}
 }
 
+// TestStartRecoveredDaemonRaisesFenceBeforeServing is the regression guard
+// for the fail-closed window fd1fd90 opened: BeginStartupRecovery (which
+// raises Manager.recoveryBlocked and the path-recovery fence) must happen
+// SYNCHRONOUSLY, before the socket is handed to `start`, not from inside the
+// background recovery goroutine. Otherwise a client that wins the race to
+// connect the instant the socket exists could win the mutation channel ahead
+// of the background Recover and run before the crash-recovery journal was
+// ever inspected.
+func TestStartRecoveredDaemonRaisesFenceBeforeServing(t *testing.T) {
+	controller := &daemonStartupController{recover: func(context.Context) error { return nil }}
+	beganBeforeStart := false
+	start := func(_ context.Context, options DaemonOptions) (*Daemon, error) {
+		beganBeforeStart = controller.beginCallCount() == 1
+		return &Daemon{}, nil
+	}
+	if _, err := startRecoveredDaemon(context.Background(), DaemonOptions{}, controller, start); err != nil {
+		t.Fatal(err)
+	}
+	if !beganBeforeStart {
+		t.Fatal("BeginStartupRecovery was not raised before the listener started accepting")
+	}
+	if got := controller.abortCallCount(); got != 0 {
+		t.Fatalf("AbortStartupRecovery called %d times after a successful start, want 0", got)
+	}
+}
+
+// TestStartRecoveredDaemonAbortsFenceWhenStartFails proves the fence raised
+// by BeginStartupRecovery does not leak when the socket never opens: without
+// AbortStartupRecovery, a failed start would leave the path-recovery fence
+// permanently raised on the Manager, queuing every future recovery forever —
+// worse than the race the fence exists to close.
+func TestStartRecoveredDaemonAbortsFenceWhenStartFails(t *testing.T) {
+	controller := &daemonStartupController{recover: func(context.Context) error { return nil }}
+	start := func(_ context.Context, options DaemonOptions) (*Daemon, error) {
+		return nil, errors.New("bind failed")
+	}
+	if _, err := startRecoveredDaemon(context.Background(), DaemonOptions{}, controller, start); err == nil {
+		t.Fatal("expected the start failure to propagate")
+	}
+	if got := controller.beginCallCount(); got != 1 {
+		t.Fatalf("BeginStartupRecovery called %d times, want 1", got)
+	}
+	if got := controller.abortCallCount(); got != 1 {
+		t.Fatalf("AbortStartupRecovery called %d times, want 1", got)
+	}
+}
+
+// TestDaemonShutdownWaitsForStartupRecovery is the regression guard for the
+// unwaited startup-recovery goroutine: before this fix, nothing waited for
+// it, so a SIGTERM arriving during the first seconds of a slow recovery could
+// let Shutdown return (and the process exit) mid-startCoreLocked, risking an
+// orphaned Core or a path-recovery fence left installed. Shutdown must now
+// block until the tracked goroutine finishes (bounded by its own ctx).
+func TestDaemonShutdownWaitsForStartupRecovery(t *testing.T) {
+	socketPath := filepath.Join(shortSocketDir(t), "startup-recovery.sock")
+	daemon, err := StartDaemon(context.Background(), DaemonOptions{
+		SocketPath: socketPath,
+		Handler:    http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		OwnerUID:   uint32(os.Geteuid()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var finished atomic.Bool
+	daemon.trackStartupRecovery(func() {
+		close(started)
+		<-release
+		finished.Store(true)
+	})
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("tracked startup recovery never started")
+	}
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		shutdownDone <- daemon.Shutdown(shutdownCtx)
+	}()
+
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned (%v) before the startup recovery goroutine finished", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if finished.Load() {
+		t.Fatal("test bug: recovery finished before Shutdown had a chance to observe it in flight")
+	}
+
+	close(release)
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not return after the startup recovery goroutine finished")
+	}
+	if !finished.Load() {
+		t.Fatal("Shutdown returned without the tracked startup recovery goroutine completing")
+	}
+}
+
+// TestDaemonShutdownDoesNotBlockForeverOnStuckStartupRecovery proves the wait
+// added for the previous test is bounded, not infinite: a startup recovery
+// goroutine that never returns must not hang Shutdown past its own context
+// deadline.
+func TestDaemonShutdownDoesNotBlockForeverOnStuckStartupRecovery(t *testing.T) {
+	socketPath := filepath.Join(shortSocketDir(t), "startup-recovery-stuck.sock")
+	daemon, err := StartDaemon(context.Background(), DaemonOptions{
+		SocketPath: socketPath,
+		Handler:    http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		OwnerUID:   uint32(os.Geteuid()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	daemon.trackStartupRecovery(func() { <-block })
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- daemon.Shutdown(shutdownCtx) }()
+	select {
+	case err := <-shutdownDone:
+		if err == nil {
+			t.Fatal("Shutdown succeeded despite the tracked startup recovery never finishing")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown blocked forever on a stuck startup recovery goroutine")
+	}
+}
+
+// daemonStartupController is a fake recoveringController for daemon-level
+// tests. By default RunStartupRecovery, BeginStartupRecovery and
+// AbortStartupRecovery just delegate to recover/begin/abort — most tests only
+// care about `recover` (aliased as runStartup when set) and never touch the
+// begin/abort hooks, so those default to no-ops.
 type daemonStartupController struct {
-	recover func(context.Context) error
+	mu          sync.Mutex
+	recover     func(context.Context) error
+	runStartup  func(context.Context) error
+	beginCalled int
+	abortCalled int
 }
 
 func (*daemonStartupController) Status() Status                      { return Status{} }
 func (*daemonStartupController) Up(context.Context) error            { return nil }
 func (*daemonStartupController) Down(context.Context) error          { return nil }
 func (c *daemonStartupController) Recover(ctx context.Context) error { return c.recover(ctx) }
+
+func (c *daemonStartupController) BeginStartupRecovery() {
+	c.mu.Lock()
+	c.beginCalled++
+	c.mu.Unlock()
+}
+
+func (c *daemonStartupController) RunStartupRecovery(ctx context.Context) error {
+	if c.runStartup != nil {
+		return c.runStartup(ctx)
+	}
+	return c.recover(ctx)
+}
+
+func (c *daemonStartupController) AbortStartupRecovery() {
+	c.mu.Lock()
+	c.abortCalled++
+	c.mu.Unlock()
+}
+
+func (c *daemonStartupController) beginCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.beginCalled
+}
+
+func (c *daemonStartupController) abortCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.abortCalled
+}
+
 func (*daemonStartupController) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot, error) {
 	return RecoverySnapshot{ID: "recovery-1", State: "accepted", Stage: "queued", Reason: request.Reason, Generation: request.Generation}, nil
 }

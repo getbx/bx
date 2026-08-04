@@ -504,11 +504,59 @@ func (m *Manager) Down(ctx context.Context) error {
 	return nil
 }
 
+// BeginStartupRecovery synchronously raises the same fences Recover raises at
+// its own start (recoveryBlocked and the path-recovery transition fence)
+// before the Guardian LocalAPI listener begins accepting connections. It
+// closes the fail-closed window opened by starting the socket ahead of the
+// startup Recover call: without it, a concurrent Up/Down/Migrate/Update could
+// win Manager's single-slot mutation channel ahead of the background Recover
+// goroutine and run before recoverUpdateLocked has even inspected the update
+// journal, skipping the crash-mid-update recovery barrier that machinery
+// exists for. Because recoveryBlocked is already true the instant the
+// listener opens, that race no longer matters: whichever side wins the
+// mutation channel, a premature mutation still observes recoveryBlocked and
+// fails closed with errRecoveryIncomplete.
+//
+// Must be paired with exactly one subsequent RunStartupRecovery call (never a
+// direct Recover call) so the path-recovery fence counter stays balanced —
+// see beginPathRecoveryTransition/endPathRecoveryTransition. If the daemon
+// fails to start before RunStartupRecovery can run, call
+// AbortStartupRecovery instead to release the fence without performing any
+// recovery work.
+func (m *Manager) BeginStartupRecovery() {
+	m.recoveryBlocked = true
+	m.beginPathRecoveryTransition(pathRecoveryTransitionPreserveGenerated)
+}
+
+// RunStartupRecovery performs the deferred body of the startup Recover call
+// after BeginStartupRecovery has already raised the path-recovery fence
+// synchronously. It releases that same fence (rather than raising a second
+// one), keeping the begin/end pair balanced instead of leaking a permanently
+// raised fence.
+func (m *Manager) RunStartupRecovery(ctx context.Context) error {
+	defer m.endPathRecoveryTransition()
+	return m.recoverLocked(ctx)
+}
+
+// AbortStartupRecovery releases the fence BeginStartupRecovery raised without
+// performing any recovery work. It exists solely for the daemon-failed-to-
+// start path, where start() errors before RunStartupRecovery can ever run —
+// without this, the path-recovery fence would leak, permanently queuing
+// recoveries. recoveryBlocked is deliberately left set: no Recover actually
+// ran, so nothing downstream should assume the crash journal was inspected.
+func (m *Manager) AbortStartupRecovery() {
+	m.endPathRecoveryTransition()
+}
+
 // Recover restores the persisted desired state without treating daemon shutdown
 // as an instruction to stop Core or restore direct networking.
 func (m *Manager) Recover(ctx context.Context) error {
 	m.beginPathRecoveryTransition(pathRecoveryTransitionPreserveGenerated)
 	defer m.endPathRecoveryTransition()
+	return m.recoverLocked(ctx)
+}
+
+func (m *Manager) recoverLocked(ctx context.Context) error {
 	if err := m.acquireMutation(ctx); err != nil {
 		return err
 	}
