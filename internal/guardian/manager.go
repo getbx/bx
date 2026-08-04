@@ -316,17 +316,20 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 	if err != nil {
 		return err
 	}
-	barrierContext, err = m.barrierContextForRuntime(ctx, state)
-	if err != nil {
-		m.needsAttention(DesiredOn, "barrier_gateway_unavailable")
-		return fmt.Errorf("resolve migration release gateway: %w", err)
-	}
-	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return err
 	}
 	if err := m.legacy.Remove(); err != nil {
-		reinstallErr := m.retainMigrationBarrier(ctx, barrierContext)
+		// Reinstalling the barrier here is a real install (see comment on
+		// removeBarrier/releaseBarrierToCore) and does need a gateway;
+		// degrade to block-only rather than leaving Core to run with no
+		// barrier at all if the gateway can't be resolved right now.
+		reinstallContext, gatewayErr := m.barrierContextForRuntime(ctx, state)
+		if gatewayErr != nil {
+			reinstallContext = blockOnlyRecoveryContext(m.contextForRuntime(state))
+		}
+		reinstallErr := m.retainMigrationBarrier(ctx, reinstallContext)
 		m.needsAttention(DesiredOn, "legacy_unit_remove_failed")
 		return errors.Join(fmt.Errorf("remove migrated Core unit: %w", err), reinstallErr)
 	}
@@ -482,7 +485,7 @@ func (m *Manager) Down(ctx context.Context) error {
 			m.needsAttention(DesiredOn, "down_restore_recovery_failed")
 			return errors.Join(restoreErr, recoveryErr)
 		}
-		if err := m.removeBarrier(recoveryCtx, barrierContext); err != nil {
+		if err := m.removeBarrier(recoveryCtx); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 			return errors.Join(restoreErr, err)
 		}
@@ -493,7 +496,7 @@ func (m *Manager) Down(ctx context.Context) error {
 		m.needsAttention(desired, "desired_state_write_failed")
 		return fmt.Errorf("persist disabled state behind barrier: %w", err)
 	}
-	if err := m.removeBarrier(ctx, barrierContext); err != nil {
+	if err := m.removeBarrier(ctx); err != nil {
 		m.needsAttention(DesiredOff, "barrier_remove_failed")
 		return err
 	}
@@ -608,12 +611,7 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 	m.runtime = state
 	if m.barrierOwnership.proof != barrierAbsent {
 		if m.barrierOwnership.proof == barrierReleaseAttempted && releaseBarrier {
-			barrierContext, err := m.barrierContextForRuntime(ctx, state)
-			if err != nil {
-				m.needsAttention(DesiredOn, "barrier_gateway_unavailable")
-				return fmt.Errorf("resolve barrier release gateway: %w", err)
-			}
-			if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
+			if err := m.releaseBarrierToCore(ctx); err != nil {
 				m.needsAttention(DesiredOn, "barrier_remove_failed")
 				return err
 			}
@@ -632,12 +630,7 @@ func (m *Manager) acceptHealthy(ctx context.Context, process Process, state supe
 			if !releaseBarrier {
 				return nil
 			}
-			barrierContext, err := m.barrierContextForRuntime(ctx, state)
-			if err != nil {
-				m.needsAttention(DesiredOn, "barrier_gateway_unavailable")
-				return fmt.Errorf("resolve barrier release gateway: %w", err)
-			}
-			if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
+			if err := m.releaseBarrierToCore(ctx); err != nil {
 				m.needsAttention(DesiredOn, "barrier_remove_failed")
 				return err
 			}
@@ -736,7 +729,7 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		return
 	}
 	if m.barrierOwnership.proof != barrierAbsent {
-		if err := m.removeBarrier(operationCtx, m.barrierOwnership.context); err != nil {
+		if err := m.removeBarrier(operationCtx); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
 		}
 	}
@@ -892,7 +885,18 @@ func (m *Manager) releaseMutation() {
 	m.mutation <- struct{}{}
 }
 
-func (m *Manager) removeBarrier(ctx context.Context, barrierContext BarrierContext) error {
+// removeBarrier and releaseBarrierToCore both act only on
+// m.barrierOwnership.context — the context recorded when the barrier was
+// installed (recordBarrierAttempt already folded any gateway resolved at
+// install time into it). They deliberately take no BarrierContext parameter:
+// a caller resolving one just to hand it to a function that ignores it is
+// dead work that can fail for no reason (see barrierContextForRuntime's
+// gateway discovery being called on a release path — a transient `route -n
+// get default` failure had no business turning a healthy release into a
+// Blocked machine). Only the two real *install* sites — Down and
+// installBarrierForRecovery — need to resolve a gateway, because they are
+// about to hand a fresh BarrierContext to Install/installBarrier.
+func (m *Manager) removeBarrier(ctx context.Context) error {
 	if m.barrierOwnership.proof == barrierAbsent {
 		return nil
 	}
@@ -905,7 +909,7 @@ func (m *Manager) removeBarrier(ctx context.Context, barrierContext BarrierConte
 	return nil
 }
 
-func (m *Manager) releaseBarrierToCore(ctx context.Context, barrierContext BarrierContext) error {
+func (m *Manager) releaseBarrierToCore(ctx context.Context) error {
 	if m.barrierOwnership.proof == barrierAbsent {
 		return nil
 	}

@@ -1260,6 +1260,42 @@ func TestManagerHealthyRecoveryReleasesHeldBarrierBeforeProtected(t *testing.T) 
 	}
 }
 
+// TestManagerHealthyRecoveryReleasesHeldBarrierWhenGatewayProviderErrors is
+// the regression guard for the "gratuitous new failure mode" review finding:
+// releaseBarrierToCore/removeBarrier only ever act on the BarrierContext
+// recorded at install time (m.barrierOwnership.context) — they never needed
+// a freshly resolved gateway. Yet the release call sites used to resolve one
+// via barrierContextForRuntime first and abort on any resolution error (e.g.
+// a transient `route -n get default` failure), discarding the result and
+// leaving Core Blocked instead of Protected for no reason. This proves
+// release still succeeds — and the machine still ends up Protected — even
+// when the gateway provider is broken at release time.
+func TestManagerHealthyRecoveryReleasesHeldBarrierWhenGatewayProviderErrors(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	retainBarrierAfterDesiredReadFailure(t, env)
+	env.store.setLoadError(nil)
+	env.events.reset()
+
+	// Break gateway resolution only now, after the barrier is already held —
+	// a bypass-carrying release would have needed a lazily-resolved gateway
+	// under the old (buggy) call sites.
+	env.manager.barrierContext.Gateway = ""
+	env.manager.gatewayProvider = &fakeGatewayProvider{err: errors.New("no default gateway")}
+
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatalf("Up failed despite the gateway provider erroring on a release-only path: %v", err)
+	}
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "barrier.release"}) {
+		t.Fatalf("events = %#v, want health-gated barrier release despite broken gateway provider", got)
+	}
+	if env.manager.barrierProven() {
+		t.Fatal("barrier remains held after healthy recovery")
+	}
+	if got := env.manager.Status(); got.Protection != ProtectionProtected || got.Phase != PhaseCommitted {
+		t.Fatalf("status = %+v, want Protected even though the gateway provider errors", got)
+	}
+}
+
 func TestManagerHeldBarrierRemainsWhenRecoveryHealthFails(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	retainBarrierAfterDesiredReadFailure(t, env)

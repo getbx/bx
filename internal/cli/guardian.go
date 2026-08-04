@@ -310,7 +310,8 @@ func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSL
 	if !deps.guardianReady(ctx) {
 		return guardian.Status{}, false, fmt.Errorf(
 			"Guardian 服务未能启动(socket %s 未就绪)。最近的守护日志:\n%s\n排查:sudo launchctl print system/com.getbx.bx.guard;完整日志 /var/log/bx-guard.err.log",
-			guardian.SocketPath, install.GuardianLogTail(10))
+			guardian.SocketPath, install.GuardianLogTail(10),
+		)
 	}
 	if !legacyLoaded {
 		return guardian.Status{}, false, nil

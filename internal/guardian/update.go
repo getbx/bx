@@ -403,7 +403,7 @@ func (m *Manager) recoverPreparedBarrierIntent(ctx context.Context, transaction 
 	if err := m.saveUpdatePhase(transaction, PhaseRolledBack, "barrier_install_recovered"); err != nil {
 		return m.failRecoveredUpdate(transaction, "update_journal_failed")
 	}
-	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return newUpdateError("barrier_remove_failed")
 	}
@@ -542,7 +542,7 @@ func (m *Manager) recoverUpdateRollback(ctx context.Context, transaction *Transa
 	if err := m.saveUpdatePhase(transaction, PhaseRolledBack, "update_recovered"); err != nil {
 		return m.failRecoveredUpdate(transaction, "update_journal_failed")
 	}
-	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return newUpdateError("barrier_remove_failed")
 	}
@@ -586,7 +586,7 @@ func (m *Manager) recoverTerminalUpdate(ctx context.Context, transaction *Transa
 		return m.failRecoveredUpdate(transaction, "recovered_core_accept_failed")
 	}
 	m.coreVersion = version
-	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return newUpdateError("barrier_remove_failed")
 	}
@@ -688,7 +688,7 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 		m.needsAttention(DesiredOn, "update_journal_failed")
 		return m.updateResult(request, PhaseNeedsAttention, true, false), newUpdateError("update_journal_failed")
 	}
-	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return m.updateResult(request, PhaseNeedsAttention, true, false), newUpdateError("barrier_remove_failed")
 	}
@@ -776,7 +776,7 @@ func (m *Manager) rollbackUpdate(
 	if err := m.saveUpdatePhase(transaction, PhaseRolledBack, safeUpdateCode(cause)); err != nil {
 		return m.failUpdate(*transaction, request, "update_journal_failed", false, false)
 	}
-	if err := m.releaseBarrierToCore(ctx, barrierContext); err != nil {
+	if err := m.releaseBarrierToCore(ctx); err != nil {
 		m.needsAttention(DesiredOn, "barrier_remove_failed")
 		return m.updateResult(request, PhaseNeedsAttention, false, true), newUpdateError("barrier_remove_failed")
 	}
