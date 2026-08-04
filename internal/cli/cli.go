@@ -206,6 +206,9 @@ type clientStatusReport struct {
 	ProtectionState   string                    `json:"protection_state"`
 	NetworkGeneration string                    `json:"network_generation"`
 	Recovery          guardian.RecoverySnapshot `json:"recovery"`
+	DNSState          guardian.DNSState         `json:"dns_state"`
+	DNSManaged        bool                      `json:"dns_managed"`
+	DNSService        string                    `json:"dns_service,omitempty"`
 	Phase             string                    `json:"phase,omitempty"`
 	CoreVersion       string                    `json:"core_version,omitempty"`
 	GuardianVersion   string                    `json:"guardian_version,omitempty"`
@@ -2285,6 +2288,7 @@ func collectClientDoctorWith(configPath, target string, timeout time.Duration, s
 		if err != nil {
 			guardianStatus = guardianStatusFallback(stats.Report{}, runtime.GOOS)
 		}
+		rep.Checks = append(rep.Checks, guardianDNSDoctorCheck(guardianStatus))
 		rep.Checks = append(rep.Checks, recoveryDoctorCheck(guardianStatus.Recovery))
 	}
 	if includePlatformChecks {
@@ -4174,7 +4178,7 @@ func readClientStatusReportWith(
 		}
 		return assemblePartialClientStatusReport(status), nil
 	}
-	return assembleClientStatusReport(core, status), nil
+	return assembleClientStatusReportWithCoreForPlatform(&core, "local_status_socket", status, platform), nil
 }
 
 func guardianStatusFallback(core stats.Report, platform string) guardian.Status {
@@ -4213,7 +4217,15 @@ func assemblePartialClientStatusReport(status guardian.Status) clientStatusRepor
 }
 
 func assembleClientStatusReportWithCore(core *stats.Report, evidence string, status guardian.Status) clientStatusReport {
+	return assembleClientStatusReportWithCoreForPlatform(core, evidence, status, runtime.GOOS)
+}
+
+func assembleClientStatusReportWithCoreForPlatform(core *stats.Report, evidence string, status guardian.Status, platform string) clientStatusReport {
 	protection := status.Protection
+	if platform == "darwin" && protection == guardian.ProtectionProtected && status.DNSState != "" &&
+		(status.DNSState != guardian.DNSManaged || !status.DNSManaged) {
+		protection = guardian.ProtectionNeedsAttention
+	}
 	switch status.Recovery.State {
 	case "accepted", "running":
 		if protection != guardian.ProtectionNeedsAttention {
@@ -4231,6 +4243,9 @@ func assembleClientStatusReportWithCore(core *stats.Report, evidence string, sta
 		ProtectionState:   protection,
 		NetworkGeneration: status.NetworkGeneration,
 		Recovery:          status.Recovery,
+		DNSState:          status.DNSState,
+		DNSManaged:        status.DNSManaged,
+		DNSService:        status.DNSService,
 		Phase:             string(status.Phase),
 		CoreVersion:       status.CoreVersion,
 		GuardianVersion:   status.GuardianVersion,
@@ -4249,6 +4264,7 @@ func renderClientStatus(report clientStatusReport) string {
 		}
 		fmt.Fprintln(&b, "  Core     Unavailable")
 		fmt.Fprintln(&b, "  Protection Core status/protection cannot be verified")
+		writeClientDNS(&b, report.DNSState, report.DNSService)
 		if report.NetworkGeneration != "" {
 			fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
 		}
@@ -4265,9 +4281,21 @@ func renderClientStatus(report clientStatusReport) string {
 	if report.NetworkGeneration != "" {
 		fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
 	}
+	writeClientDNS(&b, report.DNSState, report.DNSService)
 	writeClientRecovery(&b, report.Recovery)
 	b.WriteString(stats.Render(*report.Report))
 	return b.String()
+}
+
+func writeClientDNS(b *strings.Builder, state guardian.DNSState, service string) {
+	value := string(state)
+	if value == "" {
+		value = string(guardian.DNSUnknown)
+	}
+	if service != "" {
+		value += " (" + service + ")"
+	}
+	fmt.Fprintf(b, "  DNS     %s\n", value)
 }
 
 func shouldShowUpdateMessage(phase string) bool {
@@ -4323,6 +4351,26 @@ func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {
 	return checkReport{Name: "network_recovery", Status: status, Detail: detail, Hint: hint}
 }
 
+func guardianDNSDoctorCheck(status guardian.Status) checkReport {
+	state := status.DNSState
+	if state == "" {
+		state = guardian.DNSUnknown
+	}
+	detail := fmt.Sprintf("state=%s managed=%t", state, status.DNSManaged)
+	if status.DNSService != "" {
+		detail += " service=" + status.DNSService
+	}
+	if state == guardian.DNSManaged && status.DNSManaged {
+		return checkReport{Name: "guardian_dns", Status: "ok", Detail: detail}
+	}
+	return checkReport{
+		Name:   "guardian_dns",
+		Status: "fail",
+		Detail: detail,
+		Hint:   "sudo bx up; bx logs",
+	}
+}
+
 func readStatusReport() (stats.Report, error) {
 	rep, err := supervisor.FetchStatusReport(statusSocketPath())
 	if err != nil {
@@ -4331,21 +4379,37 @@ func readStatusReport() (stats.Report, error) {
 	return rep, nil
 }
 
-func printUpSummary(rep stats.Report) {
+func printUpSummary(rep stats.Report, statuses ...guardian.Status) {
+	fmt.Print(renderUpSummary(rep, statuses...))
+}
+
+func renderUpSummary(rep stats.Report, statuses ...guardian.Status) string {
 	state := "Protected"
 	if !rep.TunnelHealthy {
 		state = "Needs Attention"
 	} else if len(rep.Warnings) > 0 {
 		state = "Needs Attention"
 	}
-	fmt.Println()
-	fmt.Println("bx is on")
-	fmt.Printf("  Status     %s\n", state)
-	fmt.Printf("  Tunnel     %dms\n", rep.LatencyMS)
-	fmt.Printf("  UDP Relay  %s\n", onOff(rep.UDPMode == "proxy"))
-	if len(rep.Warnings) > 0 {
-		fmt.Printf("  Warning    %s\n", rep.Warnings[0].Detail)
+	var b strings.Builder
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "bx is on")
+	fmt.Fprintf(&b, "  Status     %s\n", state)
+	fmt.Fprintf(&b, "  Tunnel     %dms\n", rep.LatencyMS)
+	fmt.Fprintf(&b, "  UDP Relay  %s\n", onOff(rep.UDPMode == "proxy"))
+	if len(statuses) > 0 {
+		value := string(statuses[0].DNSState)
+		if value == "" {
+			value = string(guardian.DNSUnknown)
+		}
+		if statuses[0].DNSService != "" {
+			value += " (" + statuses[0].DNSService + ")"
+		}
+		fmt.Fprintf(&b, "  DNS        %s\n", value)
 	}
+	if len(rep.Warnings) > 0 {
+		fmt.Fprintf(&b, "  Warning    %s\n", rep.Warnings[0].Detail)
+	}
+	return b.String()
 }
 
 func stepLine(name, detail string) {

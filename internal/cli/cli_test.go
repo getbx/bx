@@ -968,6 +968,50 @@ func TestStatusReportIncludesTruthfulGuardianRecovery(t *testing.T) {
 	}
 }
 
+func TestStatusReportIncludesGuardianDNSState(t *testing.T) {
+	rep := assembleClientStatusReport(stats.Report{TunnelHealthy: true}, guardian.Status{
+		Protection: guardian.ProtectionProtected,
+		DNSState:   guardian.DNSManaged,
+		DNSManaged: true,
+		DNSService: "Wi-Fi",
+	})
+	data, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"\"dns_state\":\"managed\"",
+		"\"dns_managed\":true",
+		"\"dns_service\":\"Wi-Fi\"",
+	} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("missing %s: %s", want, data)
+		}
+	}
+	if got := renderClientStatus(rep); !strings.Contains(got, "DNS     managed (Wi-Fi)") {
+		t.Fatalf("human status = %q, want managed Wi-Fi DNS", got)
+	}
+}
+
+func TestDarwinStatusDowngradesProtectedWhenGuardianDNSIsNotManaged(t *testing.T) {
+	for _, status := range []guardian.Status{
+		{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnmanaged},
+		{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnknown},
+	} {
+		rep, err := readClientStatusReportWith(
+			func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
+			func() (guardian.Status, error) { return status, nil },
+			"darwin",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.ProtectionState != guardian.ProtectionNeedsAttention {
+			t.Fatalf("status = %+v, want needs_attention", rep)
+		}
+	}
+}
+
 func TestStatusUsesGuardianWhenCoreSocketIsUnavailable(t *testing.T) {
 	coreCalls := 0
 	guardianCalls := 0
@@ -1201,6 +1245,19 @@ func TestDoctorReportsLatestRecoveryWithoutDirectFallback(t *testing.T) {
 	}
 	if !strings.Contains(guidance, "bx logs") || !strings.Contains(guidance, "bx reconnect") {
 		t.Fatalf("doctor hint = %q, want logs and troubleshooting reconnect", check.Hint)
+	}
+}
+
+func TestGuardianDNSDoctorCheck(t *testing.T) {
+	managed := guardianDNSDoctorCheck(guardian.Status{
+		DNSState: guardian.DNSManaged, DNSManaged: true, DNSService: "Wi-Fi",
+	})
+	if managed.Status != "ok" {
+		t.Fatalf("managed = %+v", managed)
+	}
+	unmanaged := guardianDNSDoctorCheck(guardian.Status{DNSState: guardian.DNSUnmanaged})
+	if unmanaged.Status != "fail" || unmanaged.Hint == "" {
+		t.Fatalf("unmanaged = %+v", unmanaged)
 	}
 }
 
