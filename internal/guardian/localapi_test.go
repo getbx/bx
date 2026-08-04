@@ -48,6 +48,41 @@ func TestLocalAPIStatusIsReadableWithoutPeerCredentials(t *testing.T) {
 	}
 }
 
+func TestLocalAPIStatusNormalizesDNSState(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state DNSState
+		want  DNSState
+	}{
+		{name: "zero value", want: DNSUnknown},
+		{name: "invalid value", state: DNSState("invalid"), want: DNSUnknown},
+		{name: "managed", state: DNSManaged, want: DNSManaged},
+		{name: "unmanaged", state: DNSUnmanaged, want: DNSUnmanaged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			controller := &fakeController{status: Status{
+				SchemaVersion: 1,
+				Desired:       DesiredOn,
+				Phase:         PhaseCommitted,
+				Protection:    ProtectionProtected,
+				DNSState:      tc.state,
+			}}
+			recorder := httptest.NewRecorder()
+			NewLocalAPI(controller).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+			}
+			var got Status
+			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.DNSState != tc.want {
+				t.Fatalf("dns_state = %q, want %q", got.DNSState, tc.want)
+			}
+		})
+	}
+}
+
 func TestObservableStatusNeedsAttentionOutranksAcceptedRecovery(t *testing.T) {
 	controller := &fakeController{
 		status: Status{
