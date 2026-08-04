@@ -240,6 +240,216 @@ func TestPathRecoveryDNSRetryCompletesFullProtectionTransaction(t *testing.T) {
 	}
 }
 
+func TestPathRecoveryDNSRetryProvesBarrierAfterInitialInstallFailure(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	env.dns.record = true
+	env.dns.inspectResults = []fakeDNSResult{
+		{status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}},
+		{status: DNSStatus{State: DNSManaged, Service: "Wi-Fi"}},
+	}
+	env.barrier.installErr = errors.New("partial barrier install failed")
+	retrying := make(chan struct{}, 1)
+	env.manager.pathRecoveryRetryWait = func(context.Context, time.Duration) error {
+		retrying <- struct{}{}
+		return nil
+	}
+
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{
+		Reason: "underlay_changed", Generation: "wifi-b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	select {
+	case <-retrying:
+	case <-time.After(time.Second):
+		t.Fatal("DNS failure did not enter path recovery retry")
+	}
+	env.barrier.installErr = nil
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	assertPathRecoveryProtectionCompleted(t, env, "succeeded")
+	if got, want := pathRecoveryDNSLifecycleEvents(env.events.snapshot()), []string{
+		"dns.ensure", "dns.inspect", "barrier.install",
+		"dns.ensure", "dns.inspect", "barrier.install", "barrier.release",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("DNS retry events = %#v, want %#v; all=%#v", got, want, env.events.snapshot())
+	}
+}
+
+func TestPathRecoveryDNSRetryFailsWhenBarrierCannotBeProven(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	env.dns.record = true
+	env.dns.inspectResults = []fakeDNSResult{
+		{status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}},
+		{status: DNSStatus{State: DNSManaged, Service: "Wi-Fi"}},
+	}
+	env.barrier.installErr = errors.New("partial barrier install failed")
+	retrying := make(chan struct{}, 1)
+	retryCount := 0
+	env.manager.pathRecoveryRetryWait = func(context.Context, time.Duration) error {
+		retryCount++
+		if retryCount == 1 {
+			retrying <- struct{}{}
+			return nil
+		}
+		return context.Canceled
+	}
+
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{
+		Reason: "underlay_changed", Generation: "wifi-b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	select {
+	case <-retrying:
+	case <-time.After(time.Second):
+		t.Fatal("DNS failure did not enter path recovery retry")
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	snapshot := env.manager.CurrentPathRecovery()
+	if snapshot.State != "failed" || snapshot.ErrorCode != "dns_verification_failed" {
+		t.Fatalf("snapshot = %+v, want failed dns_verification_failed", snapshot)
+	}
+	if env.manager.Status().Protection == ProtectionProtected || env.manager.barrierOwnership.proof != barrierInstallAttempted {
+		t.Fatalf("status = %+v barrier=%v, want unproven fail-closed state", env.manager.Status(), env.manager.barrierOwnership.proof)
+	}
+	if containsEvent(env.events.snapshot(), "barrier.release") {
+		t.Fatalf("unproven barrier was released: %#v", env.events.snapshot())
+	}
+}
+
+func TestPathRecoveryGenerationHandoffTransfersOwnedProtectionCommit(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	env.dns.record = true
+	env.dns.inspectResults = []fakeDNSResult{
+		{status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}},
+		{status: DNSStatus{State: DNSManaged, Service: "Wi-Fi"}},
+	}
+	retrying := make(chan struct{}, 1)
+	env.manager.pathRecoveryRetryWait = func(ctx context.Context, _ time.Duration) error {
+		retrying <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	if _, err := env.manager.RequestPathRecovery(RecoveryRequest{
+		Reason: "underlay_changed", Generation: "wifi-b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	select {
+	case <-retrying:
+	case <-time.After(time.Second):
+		t.Fatal("DNS failure did not enter path recovery retry")
+	}
+	latest, err := env.manager.RequestPathRecovery(RecoveryRequest{
+		Reason: "underlay_changed", Generation: "wifi-c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := core.waitForRequest(t); got.Generation != "wifi-c" {
+		t.Fatalf("handoff Core request = %+v, want wifi-c", got)
+	}
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	assertPathRecoveryProtectionCompleted(t, env, "succeeded")
+	if snapshot := env.manager.CurrentPathRecovery(); snapshot.ID != latest.ID || snapshot.Generation != "wifi-c" {
+		t.Fatalf("snapshot = %+v, want completed handoff %q", snapshot, latest.ID)
+	}
+}
+
+func TestPathRecoveryLifecycleFenceTransfersOwnedProtectionCommit(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	core := newFakeCorePathClient(false)
+	env.manager.corePath = core
+	env.dns.record = true
+	env.dns.inspectResults = []fakeDNSResult{
+		{status: DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}},
+		{status: DNSStatus{State: DNSManaged, Service: "Wi-Fi"}},
+	}
+	retrying := make(chan struct{}, 1)
+	env.manager.pathRecoveryRetryWait = func(ctx context.Context, _ time.Duration) error {
+		retrying <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	started, err := env.manager.RequestPathRecovery(RecoveryRequest{
+		Reason: "underlay_changed", Generation: "wifi-b",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.waitForRequest(t)
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	select {
+	case <-retrying:
+	case <-time.After(time.Second):
+		t.Fatal("DNS failure did not enter path recovery retry")
+	}
+
+	env.manager.BeginStartupRecovery()
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+	env.manager.AbortStartupRecovery()
+	if got := core.waitForRequest(t); got.Generation != "wifi-b" {
+		t.Fatalf("replayed Core request = %+v, want wifi-b", got)
+	}
+	core.release(corePathResult{snapshot: supervisor.PathRecoverySnapshot{
+		State: "succeeded", Stage: "succeeded",
+	}})
+	eventually(t, func() bool { return env.manager.pathRecoveryActiveCount() == 0 })
+
+	assertPathRecoveryProtectionCompleted(t, env, "succeeded")
+	if snapshot := env.manager.CurrentPathRecovery(); snapshot.ID != started.ID || snapshot.Generation != "wifi-b" {
+		t.Fatalf("snapshot = %+v, want completed lifecycle replay %q", snapshot, started.ID)
+	}
+}
+
+func assertPathRecoveryProtectionCompleted(t *testing.T, env *managerTestEnv, wantState string) {
+	t.Helper()
+	snapshot := env.manager.CurrentPathRecovery()
+	if snapshot.State != wantState || snapshot.ErrorCode != "" {
+		t.Fatalf("snapshot = %+v, want clean %s", snapshot, wantState)
+	}
+	status := env.manager.Status()
+	if env.manager.barrierOwnership.proof != barrierAbsent || status.Protection != ProtectionProtected || status.DNSState != DNSManaged || status.LastError != "" {
+		t.Fatalf("status = %+v barrier=%v, want complete protected transaction", status, env.manager.barrierOwnership.proof)
+	}
+}
+
 func TestPathRecoveryDoesNotConsumeAmbientUpdateDNSBarrier(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
 	core := newFakeCorePathClient(false)
