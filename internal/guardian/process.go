@@ -189,43 +189,26 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 }
 
 // refuseLiveLaunchMarker decides whether an already-present durable launch
-// marker blocks a new Start. For an owned record it returns nil only when the
-// OS authoritatively confirms the recorded PID is dead — the same authority
-// Existing() uses to treat a stale record as "no existing Core". For a
-// launching marker (PID always 0 — process.go never records a PID before the
-// spawn) it returns nil unconditionally: the OS has no PID to confirm either
-// way, so refusing forever bought no safety, only a permanently stuck bx up
-// (the exact shape the user hit on 2026-08-05).
+// marker blocks a new Start. It returns nil only when the OS authoritatively
+// confirms the recorded PID is dead — the same authority Existing() uses to
+// treat a stale record as "no existing Core".
 //
 // Without this, Existing()'s tolerance of an unremovable stale record bought
 // nothing end to end: Start immediately rejected the very same file with
 // "durable launch marker already exists", producing the identical
 // core_ownership_uncertain the user saw before (only one step later).
 //
-// fail-closed is unchanged in every remaining uncertain case: a *live*
-// recorded PID still refuses (another Core may genuinely be running under it,
-// matching identity or not), an inconclusive inspection still refuses, and a
-// launching marker with a non-zero PID (should never happen — defensive only)
-// still refuses without even asking the OS, since that data shape already
-// contradicts the invariant that produced it.
+// fail-closed is unchanged in every uncertain case: a *live* recorded PID
+// still refuses (another Core may genuinely be running under it, matching
+// identity or not), a marker with no PID (launching: the PID was never
+// recorded, so an unrecorded Core may exist) still refuses, and an
+// inconclusive inspection still refuses.
 func (r *ExecCoreRunner) refuseLiveLaunchMarker(record processRecord) error {
 	uncertain := func(cause error) error {
 		return uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, cause)
 	}
 	if record.PID <= 0 {
-		// launching 标记的 PID 恒为 0(process.go 写入时不带 PID)。Existing() 已经把
-		// 这类记录当陈旧孤儿标记自愈(见其注释)——这里必须放行覆写,否则
-		// Existing() 放行后 Start() 立刻用另一个理由拒绝,用户可见行为与修复前一
-		// 模一样(上一轮就是这样栽的:只改了 Existing() 一跳)。PID==0 结构上不
-		// 可能对应任何活进程,没有进程可被"拥有",放行不削弱 fail-closed。
-		log.Printf("guardian_orphan_launch_marker pid=%d generation=%s", record.PID, record.Generation)
-		return nil
-	}
-	if record.state() == processRecordLaunching {
-		// 理论上不该出现:launching 标记本不该带非零 PID(写入路径恒为 0)。数据
-		// 形状本身已经和不变量矛盾,不去问 OS 求证,直接判不确定——防御纵深,不
-		// 是真实场景,不放宽。
-		return uncertain(errors.New("durable launch marker has an unexpected PID"))
+		return uncertain(errors.New("durable launch marker already exists"))
 	}
 	if _, err := r.operations().Inspect(record.PID); err != nil {
 		if !errors.Is(err, ErrProcessNotRunning) {
@@ -279,19 +262,7 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 		return Process{}, err
 	}
 	if record.state() != processRecordOwned {
-		if record.PID != 0 {
-			// 理论上不该出现:launching 标记本不该带非零 PID(process.go 写入时恒
-			// 为 0)。数据形状本身已经和不变量矛盾,不当陈旧标记处理,继续拦住。
-			return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, errors.New("durable launch marker has no accepted process record"))
-		}
-		// launching 标记的 PID 恒为 0(process.go:142 写入时不带 PID)。Guardian 可
-		// 能崩在"写完标记、还没保存 owned 记录"之间——PID==0 结构上不可能对应任
-		// 何活进程,没有进程可被"拥有",按陈旧标记清理不削弱 fail-closed(与已
-		// 死 PID 的 owned 记录同一套自愈语义)。清不掉也不该卡死 bx up(真机事
-		// 故:core-process.json 卡在 launching,只能手删文件才恢复)。
-		clearErr := r.clearLaunchMarker()
-		log.Printf("guardian_orphan_launch_marker cleared=%t err=%v", clearErr == nil, clearErr)
-		return Process{}, nil
+		return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, errors.New("durable launch marker has no accepted process record"))
 	}
 	process, err := r.operations().Inspect(record.PID)
 	if err != nil {

@@ -1005,12 +1005,6 @@ func TestManagerUpBlocksSameAndReconstructedDaemonAfterUncertainLaunch(t *testin
 	if err := env.manager.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("same-daemon retry error = %v, want uncertain ownership", err)
 	}
-	// 同一 daemon 的重试保护来自内存态 m.current.Uncertain(upLocked 顶部的
-	// short-circuit),从不重新调用 Existing()/Start():只应有第一次 Up() 那一次
-	// 真实启动尝试。
-	if got := operations.startCount(); got != 1 {
-		t.Fatalf("same-daemon retry attempted a duplicate spawn: starts = %d, want 1", got)
-	}
 
 	reconstructed, err := NewManager(ManagerOptions{
 		Store: env.store, Runner: newRunner(), Health: env.health, Barrier: env.barrier, DNS: env.dns,
@@ -1019,18 +1013,11 @@ func TestManagerUpBlocksSameAndReconstructedDaemonAfterUncertainLaunch(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 重建的 Manager 没有内存态可以短路:它读到的仍是那个 PID=0 的 launching 标
-	// 记,与 Guardian 真的崩溃后什么都没留下的孤儿标记字节完全相同——本轮修复
-	// 让 Existing() 按既定取舍(PID==0 结构上无法验证归属任何进程)自愈它,于是
-	// reconstructed.Up() 会真的重新尝试起一次 Core,而不是被陈旧标记提前拦下
-	// (这正是本轮修复的目的)。安全性没有被削弱:同一个持久化失败会再次发生,
-	// Start() 仍然以 ErrProcessOwnershipUncertain 收场——只是从"看见旧文件就拒
-	// 绝"变成了"真尝试、真失败",所以这里预期一次新增的启动尝试。
 	if err := reconstructed.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("reconstructed Up error = %v, want uncertain ownership", err)
 	}
-	if got := operations.startCount(); got != 2 {
-		t.Fatalf("reconstructed retry starts = %d, want 2 (genuine second attempt after orphan self-heal, same underlying failure recurs)", got)
+	if got := operations.startCount(); got != 1 {
+		t.Fatalf("duplicate starts = %d, want 1", got)
 	}
 }
 
@@ -2568,64 +2555,6 @@ func TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord(t *testing.T) {
 
 	if err := manager.Up(context.Background()); err != nil {
 		t.Fatalf("陈旧死记录仍卡死 bx up: %v", err)
-	}
-	if got := manager.Status().LastError; got != "" {
-		t.Errorf("Up 成功时不应留失败码,实际 = %q", got)
-	}
-	if operations.startCount() != 1 {
-		t.Errorf("Core 启动次数 = %d, want 1", operations.startCount())
-	}
-}
-
-// 同一事故形态的另一个分支,Manager 级回归:孤儿 launching 标记(PID=0,Guardian
-// 崩在"写完标记、还没保存 owned 记录"之间)也不该让 bx up 永久失败——这正是用
-// 户 2026-08-05 实际踩到的形态。清不掉标记文件也一样不该卡死。只测 Existing()
-// 一跳的单测是假绿(上一轮的教训),所以这里同样走真实 ExecCoreRunner 的 Manager
-// 级 Up()。
-func TestManagerUpStartsCoreDespiteOrphanLaunchMarker(t *testing.T) {
-	dir := t.TempDir()
-	executable := filepath.Join(dir, "bx")
-	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	statePath := filepath.Join(dir, "core-process.json")
-	if err := saveProcessRecord(statePath, processRecord{State: processRecordLaunching}); err != nil {
-		t.Fatal(err)
-	}
-	started := newStartTestProcess(6001)
-	defer started.release()
-	operations := &pidAwareProcessOperations{
-		live:    map[int]Process{6001: {PID: 6001, Executable: executable, UID: 0, Generation: "darwin:1785999999:1"}},
-		started: started,
-	}
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
-	runner.StatePath = statePath
-	runner.ControlSocket = filepath.Join(dir, "bx.sock")
-	runner.Operations = operations
-	runner.RemoveProcessRecord = func(string) error { return errors.New("remove record: permission denied") }
-
-	events := &eventLog{}
-	manager, err := NewManager(ManagerOptions{
-		Store: OpenStore(Paths{
-			Desired:     filepath.Join(dir, "guardian-state.json"),
-			Transaction: filepath.Join(dir, "transaction.json"),
-			Receipt:     filepath.Join(dir, "receipt.json"),
-			Staging:     filepath.Join(dir, "staging"),
-			Snapshots:   filepath.Join(dir, "snapshots"),
-		}),
-		Runner:         runner,
-		Health:         &fakeHealthGate{},
-		Barrier:        &fakeBarrier{events: events},
-		DNS:            newFakeDNSManager(events),
-		BarrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}, BlockIPv6: true},
-		CoreVersion:    version.Version,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := manager.Up(context.Background()); err != nil {
-		t.Fatalf("孤儿 launching 标记仍卡死 bx up: %v", err)
 	}
 	if got := manager.Status().LastError; got != "" {
 		t.Errorf("Up 成功时不应留失败码,实际 = %q", got)
