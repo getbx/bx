@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/getbx/bx/internal/install"
 )
 
 type Client struct {
@@ -221,8 +223,9 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 
 // guardianFailureBody mirrors failureResponseBody in localapi.go: the JSON
 // shape Guardian's four mutation handlers (mutation/update/migration/
-// recoveryRequest) write on a 500 response. "code" is present only when the
-// underlying failure actually set a fresh LastError this call — see
+// recoveryRequest) write on a 500 response. "code" is present when the
+// failure is one of the named short circuits (recovery_incomplete /
+// guardian_busy) or when it actually set a fresh LastError this call — see
 // failureResponseBody's comment for why a missing code must stay missing
 // rather than replay a stale one.
 type guardianFailureBody struct {
@@ -230,24 +233,34 @@ type guardianFailureBody struct {
 	Code  string `json:"code"`
 }
 
-// guardianHTTPError turns a non-2xx Guardian HTTP response into a readable
-// error. When the body carries a failure code, the message surfaces it
-// alongside concrete next steps (`sudo bx doctor` / `sudo bx logs`) instead
-// of leaving the operator with just "guardian operation failed" and no way
-// to act on it. A missing or unparsable code falls back to the original,
-// terser message — never an empty "code=" placeholder.
+// guardianTroubleshootingHint names the Guardian log explicitly: `bx logs`
+// reads the *Core* launchd logs (/var/log/bx.log), while the full reason for
+// a Guardian failure — the raw error the response deliberately withholds —
+// is only ever written to the Guardian log. During the 2026-08-05 incident
+// the diagnostics archive was consulted and yielded stale Core logs, which
+// is exactly what pointing at the wrong log produces.
+const guardianTroubleshootingHint = "排查:sudo bx doctor;完整原因见 Guardian 日志 sudo tail -50 " +
+	install.GuardianStderrLogPath + "(bx logs 看的是 Core 日志,不含 Guardian 失败原因)"
+
+// guardianHTTPError renders a Guardian error response. Every 500 carries the
+// troubleshooting hint, with or without a code: the failures that arrive
+// without one (short circuits that never reach needsAttention, or an older
+// Guardian) are precisely the ones a user cannot act on unaided, so gating
+// the hint on "has a code" withheld it from the cases that needed it most.
 func guardianHTTPError(path string, statusCode int, body []byte) error {
 	var failure guardianFailureBody
 	_ = json.Unmarshal(body, &failure)
-	switch {
-	case failure.Error != "" && failure.Code != "":
-		return fmt.Errorf("Guardian %s returned %d: %s(code=%s)。排查:sudo bx doctor;详细日志 sudo bx logs",
-			path, statusCode, failure.Error, failure.Code)
-	case failure.Error != "":
-		return fmt.Errorf("Guardian %s returned %d: %s", path, statusCode, failure.Error)
-	default:
-		return fmt.Errorf("Guardian %s returned %d", path, statusCode)
+	message := fmt.Sprintf("Guardian %s returned %d", path, statusCode)
+	if failure.Error != "" {
+		message += ": " + failure.Error
 	}
+	if failure.Code != "" {
+		message += fmt.Sprintf("(code=%s)", failure.Code)
+	}
+	if statusCode == http.StatusInternalServerError {
+		message += "。" + guardianTroubleshootingHint
+	}
+	return errors.New(message)
 }
 
 func guardianHTTPClient(socketPath string) *http.Client {

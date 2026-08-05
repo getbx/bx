@@ -4694,8 +4694,22 @@ func archiveClientLogsWithReason(root, reason string) (string, error) {
 			return "", err
 		}
 	}
+	// Guardian 日志(0600 root-only)才有 Guardian 失败的完整原因;Core 日志
+	// 对一次 `bx up` 500 可能一个字都没写——事故里翻诊断包只拿到陈旧 Core
+	// 日志就是这么来的。但非 root 归档读不到它属正常,只留说明,绝不让整个
+	// 诊断包因此失败。
+	for _, src := range guardianArchiveLogPaths() {
+		dst := filepath.Join(dir, filepath.Base(src))
+		if err := copyIfExists(src, dst); err != nil {
+			_ = os.Remove(dst)
+			_ = os.WriteFile(dst+".unavailable.txt", []byte(err.Error()+"\n"), 0o600)
+		}
+	}
 	return dir, nil
 }
+
+// guardianArchiveLogPaths 是 install.GuardianLogPaths 的可替换入口(测试注入)。
+var guardianArchiveLogPaths = install.GuardianLogPaths
 
 func persistRecoverySnapshot(path string, snapshot guardian.RecoverySnapshot) error {
 	snapshot.Detail = ""

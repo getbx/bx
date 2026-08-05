@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/getbx/bx/internal/install"
 )
 
 // 用户看到 "guardian operation failed" 时无从下手;必须把失败码和下一步给出来。
@@ -252,4 +254,40 @@ type recoveryRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f recoveryRoundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+// 最需要排查指引的恰恰是那些没有 code 的 500(recoveryBlocked 之外的短路、
+// 旧版 Guardian):指引不能以「有 code」为前提。
+func TestGuardianHTTPError500AlwaysCarriesTroubleshooting(t *testing.T) {
+	for _, body := range [][]byte{
+		[]byte(`{"error":"guardian operation failed","code":"recovery_incomplete"}`),
+		[]byte(`{"error":"guardian operation failed"}`),
+		nil,
+	} {
+		msg := guardianHTTPError("/v1/up", http.StatusInternalServerError, body).Error()
+		if !strings.Contains(msg, "bx doctor") {
+			t.Errorf("500 必须附排查指引,实际:%s", msg)
+		}
+	}
+}
+
+// bx logs 读的是 Core 日志(/var/log/bx.log),而 Guardian 失败的完整原因写在
+// Guardian 日志里——事故中「翻诊断包只拿到陈旧 Core 日志」就是这么来的。
+// 指引必须点名 Guardian 日志路径。
+func TestGuardianHTTPErrorPointsAtGuardianLog(t *testing.T) {
+	msg := guardianHTTPError("/v1/up", http.StatusInternalServerError,
+		[]byte(`{"error":"guardian operation failed","code":"recovery_incomplete"}`)).Error()
+	if !strings.Contains(msg, install.GuardianStderrLogPath) {
+		t.Errorf("排查指引必须点名 Guardian 日志 %s,实际:%s", install.GuardianStderrLogPath, msg)
+	}
+}
+
+// 非 500(如关机中的 503)保持原样:那不是「Guardian 内部失败」,别拿排查
+// 指引去噪扰正常的生命周期响应。
+func TestGuardianHTTPErrorNon500StaysPlain(t *testing.T) {
+	msg := guardianHTTPError("/v1/up", http.StatusServiceUnavailable,
+		[]byte(`{"error":"guardian is shutting down"}`)).Error()
+	if strings.Contains(msg, "bx doctor") {
+		t.Errorf("非 500 不应附排查指引,实际:%s", msg)
+	}
 }
