@@ -307,9 +307,15 @@ func TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit(t *testing.T) 
 	if _, err := os.Stat(runner.StatePath); err != nil {
 		t.Fatalf("owned record removed after failed reconciliation: %v", err)
 	}
+	// 记录仍在磁盘上(上面的清除失败),但进程已死:Existing 不应把"清不掉陈旧
+	// 文件"当成"所有权不确定"——那会卡死 bx up。应视为无既有 Core 继续。
 	operations.setInspectError(ErrProcessNotRunning)
-	if _, err := runner.Existing(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
-		t.Fatalf("Existing after failed reconciliation = %v, want uncertain ownership", err)
+	existing, err := runner.Existing(context.Background())
+	if err != nil {
+		t.Fatalf("Existing after failed reconciliation = %v, want no error (treated as no existing Core)", err)
+	}
+	if existing.PID != 0 || existing.Uncertain {
+		t.Fatalf("Existing after failed reconciliation = %+v, want zero-value Process", existing)
 	}
 }
 
@@ -511,6 +517,22 @@ func TestExecCoreRunnerExistingDefinitiveExitRemovesRecord(t *testing.T) {
 	}
 	if _, err := os.Stat(runner.StatePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("process record error = %v, want removed", err)
+	}
+}
+
+// 进程已死却清不掉陈旧记录时,不应等价于"所有权不确定"——那会卡死 bx up。
+// 真机事故:core-process.json 指向早已死亡的 PID,导致 up 持续失败(手工删文件后才恢复)。
+func TestExecCoreRunnerExistingTreatsUnremovableDeadRecordAsNoCore(t *testing.T) {
+	runner, _, operations := newRecordedProcessRunner(t)
+	operations.setAlive(false)
+	runner.RemoveProcessRecord = func(string) error { return errors.New("remove record: permission denied") }
+
+	process, err := runner.Existing(context.Background())
+	if err != nil {
+		t.Fatalf("死进程的陈旧记录不应让 Existing 报错: %v", err)
+	}
+	if process.PID != 0 || process.Uncertain {
+		t.Errorf("应视为无既有 Core,实际 = %+v", process)
 	}
 }
 

@@ -11,8 +11,8 @@ import (
 // 便于在任意 GOOS 下单测。
 type darwinUninstallPlan struct {
 	LaunchctlCommands [][]string // bootout guard(+ 控制台用户在场时再 bootout gui menu)
-	RemovePaths       []string   // plists、bridge、(统一布局下)runtime root + App、用户 agent plists
-	KeepPaths         []string   // /etc/bx、/var/lib/bx(仅说明用,绝不出现在 RemovePaths)
+	RemovePaths       []string   // plists、bridge、/var/lib/bx 下的运行时状态文件(逐个,非整目录)、(统一布局下)runtime root + App、用户 agent plists
+	KeepPaths         []string   // /etc/bx、/var/lib/bx(仅说明用,绝不出现在 RemovePaths;目录本身与其余内容如 brook/sing-box/china 列表保留)
 }
 
 const (
@@ -25,6 +25,15 @@ const (
 	darwinAppBundlePath          = "/Applications/Bx.app"
 	darwinConfigDirPath          = "/etc/bx"
 	darwinDataDirPath            = "/var/lib/bx"
+
+	// 运行时状态文件,与 darwinDataDirPath 下的用户数据(brook/sing-box 二进制、
+	// china 列表、/etc/bx 配置)不同命运:卸载必须清掉,否则陈旧记录(如指向
+	// 已死 PID 的 core-process.json)会活过卸载重装,卡死下一次 `bx up`
+	// (真机事故,2026-08-05)。逐个文件加入 RemovePaths,绝不整目录删
+	// darwinDataDirPath——那会连同内嵌释放的 brook/sing-box 二进制、china
+	// 列表一起删掉。
+	darwinCoreProcessStatePath = darwinDataDirPath + "/core-process.json"
+	darwinGuardianStatePath    = darwinDataDirPath + "/guardian-state.json"
 )
 
 // buildDarwinUninstallPlan 构造完整卸载计划。
@@ -43,6 +52,8 @@ func buildDarwinUninstallPlan(consoleUID int, consoleHome string, unifiedLayout 
 		RemovePaths: []string{
 			darwinGuardLaunchdPlistPath,
 			darwinBridgeBinPath,
+			darwinCoreProcessStatePath,
+			darwinGuardianStatePath,
 		},
 		KeepPaths: []string{darwinConfigDirPath, darwinDataDirPath},
 	}
