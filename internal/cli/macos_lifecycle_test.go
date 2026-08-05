@@ -6,7 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -342,6 +345,9 @@ type fakeMacOSLifecycleDeps struct {
 	events             []string
 	client             *recordingGuardianClient
 	forceTeardownCount int
+	stopCoreCount      int
+	clearBarrierCount  int
+	desiredOffCount    int
 }
 
 func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
@@ -357,8 +363,25 @@ func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
 		f.events = append(f.events, "guardian.forceTeardown")
 		return nil
 	}
+	f.macOSLifecycleDeps.stopCore = func(context.Context) error {
+		f.stopCoreCount++
+		f.events = append(f.events, "core.shutdown")
+		return nil
+	}
+	f.macOSLifecycleDeps.markDesiredOff = func() error {
+		f.desiredOffCount++
+		f.events = append(f.events, "desired.off")
+		return nil
+	}
+	f.macOSLifecycleDeps.clearBarrierRoutes = func(context.Context) error {
+		f.clearBarrierCount++
+		f.events = append(f.events, "barrier.clear")
+		return nil
+	}
 	return f
 }
+
+func (f *fakeMacOSLifecycleDeps) trace() string { return strings.Join(f.events, "|") }
 
 func (f *fakeMacOSLifecycleDeps) forcedTeardownCalled() bool { return f.forceTeardownCount > 0 }
 func (f *fakeMacOSLifecycleDeps) clientDownCalled() bool     { return f.client.downCalls > 0 }
@@ -421,6 +444,195 @@ func TestMacOSDownForcedTeardownFailureIsActionable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "uninstall") {
 		t.Fatalf("forced teardown failure not actionable, missing next-step guidance: %v", err)
+	}
+}
+
+// TestMacOSDownForcedTeardownStopsCoreClearsBarrierAndPersistsOff pins the
+// whole forced sequence, in order. Before this, forced teardown only ran
+// `launchctl bootout` on Guardian and hoped for the best:
+//
+//   - the running Core was expected to die from a SIGTERM that happened to
+//     reach the whole process group — nothing in the code establishes that
+//     process group (no Setpgid/Setsid), Guardian's Shutdown never signals
+//     Core, and launchd may follow up with SIGKILL and cut Core's defer-based
+//     restore in half. Asking Core to shut itself down over its own control
+//     socket (the same cooperative path Guardian's runner uses) removes the
+//     guesswork entirely, and must happen BEFORE Guardian is booted out so
+//     Core still has a live restore path;
+//   - the barrier's /2 reject routes stayed in the kernel forever: bootout
+//     destroys the in-memory ownership record, so no later up/down/uninstall
+//     can find them, and the machine has zero connectivity while `bx status`
+//     happily reports protected. Cleanup must be unconditional;
+//   - desired state stayed On, so the next boot's Guardian (RunAtLoad +
+//     KeepAlive) restarted Core straight back into the broken state.
+func TestMacOSDownForcedTeardownStopsCoreClearsBarrierAndPersistsOff(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return false }
+
+	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
+	if err != nil {
+		t.Fatalf("强制拆除应当成功: %v", err)
+	}
+	if !result.Forced {
+		t.Error("Guardian 不可达时应报告走了强制拆除")
+	}
+	want := "core.shutdown|guardian.forceTeardown|desired.off|barrier.clear"
+	if got := deps.trace(); got != want {
+		t.Fatalf("强制拆除调用序列 = %q, want %q", got, want)
+	}
+}
+
+// TestMacOSDownForcedTeardownClearsBarrierEvenWhenEarlierStepsFail is the
+// core-value case: the whole point of the escape hatch is that a failure
+// anywhere still leaves the user's network usable. If bootout fails and we
+// bail out early, the /2 reject routes stay installed and the machine is
+// dead — worse than the bug this feature was meant to fix.
+func TestMacOSDownForcedTeardownClearsBarrierEvenWhenEarlierStepsFail(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return false }
+	deps.stopCore = func(context.Context) error { return errors.New("core control socket gone") }
+	deps.forceTeardown = func(context.Context) error {
+		deps.forceTeardownCount++
+		deps.events = append(deps.events, "guardian.forceTeardown")
+		return errors.New("launchctl bootout: operation not permitted")
+	}
+
+	_, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
+	if err == nil {
+		t.Fatal("部分步骤失败必须如实报错")
+	}
+	if deps.clearBarrierCount != 1 {
+		t.Fatalf("阻断路由清理必须照常执行(实际 %d 次),否则用户整机断网", deps.clearBarrierCount)
+	}
+	if deps.desiredOffCount != 1 {
+		t.Fatalf("关闭意图必须照常落盘(实际 %d 次),否则重启后保护自己回来", deps.desiredOffCount)
+	}
+	for _, want := range []string{"uninstall", "route -n delete -net 0.0.0.0/2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("错误缺少可执行的下一步 %q: %v", want, err)
+		}
+	}
+}
+
+// TestMacOSDownFallsBackToForcedTeardownWhenGuardianDownFails covers the
+// reachable-but-permanently-failing Guardian: Manager.Down returns
+// errRecoveryIncomplete as its very first statement whenever recoveryBlocked
+// is set, which a Guardian restart during a network outage makes permanent.
+// The socket answers, so the "unreachable" escape hatch never triggered —
+// and by then Down had already installed the block-only barrier, so `bx
+// down` failed forever with the machine cut off. Any failure of the clean
+// path must fall through to the forced one.
+func TestMacOSDownFallsBackToForcedTeardownWhenGuardianDownFails(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return true }
+	deps.client.downErr = errors.New("guardian recovery incomplete")
+
+	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
+	if err != nil {
+		t.Fatalf("Down 事务失败后必须还有逃生口,实际返回错误: %v", err)
+	}
+	if !result.Forced || result.Cause == nil {
+		t.Fatalf("应报告降级为强制拆除并带上原因: forced=%v cause=%v", result.Forced, result.Cause)
+	}
+	if !strings.Contains(result.Cause.Error(), "recovery incomplete") {
+		t.Errorf("降级原因应保留原始错误: %v", result.Cause)
+	}
+	if deps.client.downCalls != 1 {
+		t.Errorf("仍应先尝试干净事务,Down 调用 = %d", deps.client.downCalls)
+	}
+	if deps.clearBarrierCount != 1 {
+		t.Error("Down 失败时屏障已经装上了,必须清理")
+	}
+	if deps.forceTeardownCount != 1 || deps.stopCoreCount != 1 || deps.desiredOffCount != 1 {
+		t.Errorf("强制拆除步骤不完整: stopCore=%d bootout=%d desiredOff=%d",
+			deps.stopCoreCount, deps.forceTeardownCount, deps.desiredOffCount)
+	}
+}
+
+// TestMacOSDownFallsBackToForcedTeardownWhenOwnershipFails: the legacy-Core
+// handoff inside ensureGuardianOwnership needs a default gateway, which a
+// network outage removes — the same "stop depends on a precondition that the
+// outage just destroyed" trap. Failing there must not strand the user either.
+func TestMacOSDownFallsBackToForcedTeardownWhenOwnershipFails(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return true }
+	deps.legacyLoaded = func() (bool, error) { return true, nil }
+	deps.migrationRequest = func(context.Context, string) (guardian.MigrationRequest, error) {
+		return guardian.MigrationRequest{}, errors.New("discover migration gateway: default gateway not found")
+	}
+
+	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
+	if err != nil {
+		t.Fatalf("接管失败后必须还有逃生口,实际返回错误: %v", err)
+	}
+	if !result.Forced || deps.clearBarrierCount != 1 {
+		t.Fatalf("forced=%v barrier.clear=%d", result.Forced, deps.clearBarrierCount)
+	}
+}
+
+// TestShutdownRunningCoreAsksTheLiveCoreToStopItself proves the forced path
+// no longer relies on an unverified process-group SIGTERM side effect: it
+// speaks the same cooperative /v0/shutdown protocol Guardian's own runner
+// uses, addressed to the PID the Core itself reported.
+func TestShutdownRunningCoreAsksTheLiveCoreToStopItself(t *testing.T) {
+	dir, err := os.MkdirTemp("", "bxcore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "core.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shutdownPID int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/runtime", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(supervisor.RuntimeState{PID: 4242, TunName: "utun7"})
+	})
+	mux.HandleFunc("/v0/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ExpectedPID int `json:"expected_pid"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		shutdownPID = body.ExpectedPID
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	server := &http.Server{Handler: mux}
+	go func() { _ = server.Serve(listener) }()
+	defer server.Close()
+
+	t.Setenv("BX_STATUS_SOCKET", socket)
+	if err := shutdownRunningCoreWithin(context.Background(), 50*time.Millisecond); err != nil {
+		t.Fatalf("协作关闭 Core 失败: %v", err)
+	}
+	if shutdownPID != 4242 {
+		t.Fatalf("/v0/shutdown expected_pid = %d, want 4242(Core 自报的 PID)", shutdownPID)
+	}
+}
+
+// 没有可达的 Core(常见:Core 已经死了、只剩孤儿屏障)不是错误——强制拆除必须
+// 继续往下走完剩余步骤。
+func TestShutdownRunningCoreIsNoopWhenNoCoreIsReachable(t *testing.T) {
+	dir, err := os.MkdirTemp("", "bxcore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Setenv("BX_STATUS_SOCKET", filepath.Join(dir, "absent.sock"))
+	if err := shutdownRunningCoreWithin(context.Background(), 50*time.Millisecond); err != nil {
+		t.Fatalf("Core 不可达时不应报错: %v", err)
+	}
+}
+
+// TestDefaultMacOSLifecycleDepsWiresEveryForcedTeardownStep guards the
+// production wiring: a nil hook silently skips its step, which is exactly
+// how an orphan barrier would come back.
+func TestDefaultMacOSLifecycleDepsWiresEveryForcedTeardownStep(t *testing.T) {
+	deps := defaultMacOSLifecycleDeps()
+	if deps.forceTeardown == nil || deps.stopCore == nil || deps.clearBarrierRoutes == nil || deps.markDesiredOff == nil {
+		t.Fatalf("强制拆除挂钩未接全: forceTeardown=%v stopCore=%v clearBarrierRoutes=%v markDesiredOff=%v",
+			deps.forceTeardown != nil, deps.stopCore != nil, deps.clearBarrierRoutes != nil, deps.markDesiredOff != nil)
 	}
 }
 
@@ -701,6 +913,7 @@ type recordingGuardianClient struct {
 	upCalls       int
 	downCalls     int
 	migrateCalls  int
+	downErr       error
 }
 
 type fakeMenuLaunchdControl struct {
@@ -733,6 +946,9 @@ func (c *recordingGuardianClient) Up(context.Context) (guardian.Status, error) {
 func (c *recordingGuardianClient) Down(context.Context) (guardian.Status, error) {
 	c.downCalls++
 	*c.events = append(*c.events, "guardian.down")
+	if c.downErr != nil {
+		return guardian.Status{}, c.downErr
+	}
 	return c.downStatus, nil
 }
 

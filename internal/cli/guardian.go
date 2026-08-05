@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +37,11 @@ const (
 	// fail such a request with "Client.Timeout exceeded while awaiting
 	// headers" even though the daemon would have succeeded.
 	guardianMutationClientTimeout = 90 * time.Second
+	// coreShutdownWait bounds how long the forced teardown waits for a Core
+	// that accepted a cooperative shutdown to actually exit, so its own
+	// route/DNS restore can finish before Guardian is booted out.
+	coreShutdownWait         = 15 * time.Second
+	coreShutdownPollInterval = 200 * time.Millisecond
 )
 
 type migrationMetadataDeps struct {
@@ -64,13 +71,33 @@ type macOSLifecycleDeps struct {
 	consoleUID        func() (int, error)
 	ensureMenu        func(int) error
 	pollInterval      time.Duration
-	// forceTeardown is the `bx down` escape hatch: it stops the Guardian
-	// launchd service (only — never installs/bootstraps it, never touches
-	// /etc/bx or /var/lib/bx) so the daemon process exits and its own
-	// defer-based teardown restores routes/DNS. Used when Guardian is
-	// unreachable, so `bx down` never depends on Guardian successfully
-	// starting up first (see macOSDownLifecycle).
+	// The four hooks below make up the `bx down` escape hatch, run in this
+	// order by forcedMacOSTeardown whenever the clean Guardian transaction
+	// is unavailable or fails. None of them installs or bootstraps
+	// anything, and none of them removes /etc/bx, /var/lib/bx or any other
+	// file — that is `bx uninstall`'s job.
+	//
+	// stopCore asks a running Core to cancel its own Run context over its
+	// control socket, so Core's defer-based teardown restores routes and
+	// DNS itself. This must happen before forceTeardown: it is the only
+	// deterministic way to stop Core. (Relying on `launchctl bootout`'s
+	// SIGTERM reaching Core through a shared process group is guesswork —
+	// nothing here calls Setpgid/Setsid, Guardian's Shutdown never signals
+	// Core, and launchd may follow up with SIGKILL mid-teardown.)
+	stopCore func(context.Context) error
+	// forceTeardown stops the Guardian launchd service (only).
 	forceTeardown func(context.Context) error
+	// markDesiredOff persists desired=off so Guardian's RunAtLoad+KeepAlive
+	// plist does not restart protection at the next boot — the forced path
+	// never reaches Manager.Down, which is what normally records it.
+	markDesiredOff func() error
+	// clearBarrierRoutes deletes the barrier's blocking routes. Booting
+	// Guardian out drops its in-memory ownership record while the kernel
+	// keeps the /2 reject routes, which outrank Core's /1 split-default and
+	// blackhole the whole machine with nothing left able to remove them.
+	// This is not a fail-closed regression: it happens only because the
+	// user explicitly asked to stop protection.
+	clearBarrierRoutes func(context.Context) error
 }
 
 type macOSUpResult struct {
@@ -98,11 +125,63 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		migrationRequest: func(ctx context.Context, configPath string) (guardian.MigrationRequest, error) {
 			return legacyMigrationRequest(ctx, configPath, migrationMetadataDeps{})
 		},
-		client:        client,
-		consoleUID:    consoleUserUID,
-		ensureMenu:    ensureMacOSMenuRunning,
-		pollInterval:  100 * time.Millisecond,
-		forceTeardown: install.BootoutGuardian,
+		client:         client,
+		consoleUID:     consoleUserUID,
+		ensureMenu:     ensureMacOSMenuRunning,
+		pollInterval:   100 * time.Millisecond,
+		stopCore:       shutdownRunningCore,
+		forceTeardown:  install.BootoutGuardian,
+		markDesiredOff: func() error { return guardian.OpenDefaultStore().SaveDesired(guardian.DesiredOff) },
+		clearBarrierRoutes: func(ctx context.Context) error {
+			return guardian.RemoveBlockingBarrierRoutes(ctx, nil)
+		},
+	}
+}
+
+// shutdownRunningCore asks the Core process that owns the control socket to
+// cancel its own Run context, then gives it a bounded moment to exit so its
+// defer-based restore can finish before the caller boots Guardian out. This
+// is the same cooperative protocol Guardian's own ExecCoreRunner.Stop uses.
+// A Core that is unreachable is not an error: there is simply nothing to
+// stop, and the remaining teardown steps still have work to do.
+func shutdownRunningCore(ctx context.Context) error {
+	return shutdownRunningCoreWithin(ctx, coreShutdownWait)
+}
+
+func shutdownRunningCoreWithin(ctx context.Context, wait time.Duration) error {
+	socketPath := statusSocketPath()
+	state, err := supervisor.FetchRuntimeState(socketPath)
+	if err != nil || state.PID <= 0 {
+		return nil
+	}
+	if err := supervisor.ShutdownControl(ctx, socketPath, state.PID); err != nil {
+		return fmt.Errorf("请求 Core(PID %d)协作关闭: %w", state.PID, err)
+	}
+	waitCoreSocketClosed(ctx, socketPath, wait)
+	return nil
+}
+
+// waitCoreSocketClosed polls until Core's control socket stops accepting
+// connections (it closes as the process exits, after its teardown defers
+// have restored routes and DNS). Best effort: a Core that outlives the wait
+// is reported by neither this nor the caller, because the remaining forced
+// steps still improve the user's situation.
+func waitCoreSocketClosed(ctx context.Context, socketPath string, wait time.Duration) {
+	deadline := time.Now().Add(wait)
+	var dialer net.Dialer
+	for time.Now().Before(deadline) {
+		conn, err := dialer.DialContext(ctx, "unix", socketPath)
+		if err != nil {
+			return
+		}
+		conn.Close()
+		timer := time.NewTimer(coreShutdownPollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 	}
 }
 
@@ -228,47 +307,123 @@ func macOSUpLifecycle(ctx context.Context, configPath string, deps macOSLifecycl
 // the clean one. macOSDownAction uses macOSDownLifecycleDetailed instead, so
 // it can report honestly when it had to fall back.
 func macOSDownLifecycle(ctx context.Context, configPath string, deps macOSLifecycleDeps) (guardian.Status, error) {
-	status, _, err := macOSDownLifecycleDetailed(ctx, configPath, deps)
-	return status, err
+	result, err := macOSDownLifecycleDetailed(ctx, configPath, deps)
+	return result.Status, err
+}
+
+// macOSDownResult reports which path `bx down` actually took, so the command
+// can describe honestly what it did rather than claiming a clean shutdown it
+// did not perform.
+type macOSDownResult struct {
+	Status guardian.Status
+	// Forced is true when the clean Guardian transaction was skipped or
+	// abandoned and the escape hatch ran instead.
+	Forced bool
+	// Cause is the clean-path error that triggered the fallback; nil when
+	// Guardian was simply unreachable to begin with.
+	Cause error
 }
 
 // macOSDownLifecycleDetailed implements `bx down`'s two paths:
 //
-//   - Guardian reachable: go through the same clean ownership+Down
-//     transaction as before (ensureGuardianOwnership handles legacy-Core
-//     handoff bookkeeping, then deps.client.Down commits the shutdown).
-//   - Guardian unreachable: this is exactly the moment a user most needs
-//     to be able to shut bx down (e.g. Guardian stuck in an infinite
-//     recovery retry loop after a network fault — the production
-//     incident this fixes). Calling ensureGuardianOwnership here would
-//     install/bootstrap Guardian and require it to become ready before
-//     `down` could proceed, which is backwards: "stop" must never depend
-//     on first successfully "starting" the thing being stopped. Instead
-//     fall back to forceTeardown, which only stops the Guardian service;
-//     the running core process (if any) notices via its own health/ctx
-//     machinery and its defer-based teardown restores routes/DNS.
+//   - Guardian reachable and healthy: go through the same clean
+//     ownership+Down transaction as before (ensureGuardianOwnership handles
+//     legacy-Core handoff bookkeeping, then deps.client.Down commits the
+//     shutdown). This is the cleanest outcome and stays the default.
+//   - Anything else: run the forced teardown. That covers Guardian being
+//     unreachable (calling ensureGuardianOwnership would install/bootstrap
+//     it and require it to become ready before `down` could proceed —
+//     backwards: "stop" must never depend on first successfully "starting"
+//     the thing being stopped) *and* Guardian answering while refusing to
+//     shut down. The latter is not hypothetical: Manager.Down returns
+//     errRecoveryIncomplete as its first statement whenever recoveryBlocked
+//     is set, which a Guardian restart during a network outage makes
+//     permanent — the socket answers, the transaction installs its
+//     block-only barrier, and then fails forever. Without a fallback here
+//     the user is left cut off with no way out.
 //
-// It never installs or bootstraps Guardian on the unreachable path, and the
-// forced path never touches /etc/bx or /var/lib/bx — only `bx uninstall`
-// removes files.
-func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps macOSLifecycleDeps) (status guardian.Status, forced bool, err error) {
+// It never installs or bootstraps Guardian on the forced path, and that path
+// never touches /etc/bx or /var/lib/bx — only `bx uninstall` removes files.
+func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps macOSLifecycleDeps) (macOSDownResult, error) {
 	if deps.guardianReady != nil && deps.guardianReady(ctx) {
-		if _, _, err := ensureGuardianOwnership(ctx, configPath, deps); err != nil {
-			return guardian.Status{}, false, err
+		status, cleanErr := cleanGuardianDown(ctx, configPath, deps)
+		if cleanErr == nil {
+			return macOSDownResult{Status: status}, nil
 		}
-		status, err = deps.client.Down(ctx)
-		return status, false, err
+		if err := forcedMacOSTeardown(ctx, deps, cleanErr); err != nil {
+			return macOSDownResult{}, err
+		}
+		return macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}, Forced: true, Cause: cleanErr}, nil
 	}
+	if err := forcedMacOSTeardown(ctx, deps, nil); err != nil {
+		return macOSDownResult{}, err
+	}
+	return macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}, Forced: true}, nil
+}
+
+func cleanGuardianDown(ctx context.Context, configPath string, deps macOSLifecycleDeps) (guardian.Status, error) {
+	if _, _, err := ensureGuardianOwnership(ctx, configPath, deps); err != nil {
+		return guardian.Status{}, err
+	}
+	return deps.client.Down(ctx)
+}
+
+// forcedMacOSTeardown is the escape hatch. Every step is best effort and all
+// of them run even when an earlier one fails: bailing out early is what
+// leaves the machine unusable (an unremoved barrier blackholes everything,
+// and a desired=On state brings the broken protection back at next boot).
+// Failures are collected and reported together with the next steps the user
+// can take by hand.
+func forcedMacOSTeardown(ctx context.Context, deps macOSLifecycleDeps, cause error) error {
 	if deps.forceTeardown == nil {
-		return guardian.Status{}, false, fmt.Errorf("Guardian 不可达,且强制拆除功能在此平台不可用")
+		return fmt.Errorf("Guardian 无法正常关闭,且强制拆除功能在此平台不可用")
 	}
+	var failures []error
+	// 1. Ask the running Core to stop itself first, while it still has a
+	//    live path to restore routes/DNS.
+	if deps.stopCore != nil {
+		if err := deps.stopCore(ctx); err != nil {
+			failures = append(failures, fmt.Errorf("协作关闭 Core: %w", err))
+		}
+	}
+	// 2. Stop the Guardian service so it cannot restart Core behind us.
 	if err := deps.forceTeardown(ctx); err != nil {
-		return guardian.Status{}, false, fmt.Errorf(
-			"Guardian 未响应,强制停止也失败: %w。请尝试 sudo bx uninstall 脱离,或手动执行: sudo launchctl bootout system/com.getbx.bx.guard",
-			err,
-		)
+		failures = append(failures, fmt.Errorf("停止 Guardian 服务: %w", err))
 	}
-	return guardian.Status{Protection: guardian.ProtectionOff}, true, nil
+	// 3. Record the user's intent, or the next boot brings protection back.
+	if deps.markDesiredOff != nil {
+		if err := deps.markDesiredOff(); err != nil {
+			failures = append(failures, fmt.Errorf("记录关闭意图(下次开机可能仍会自动启动保护): %w", err))
+		}
+	}
+	// 4. Remove the barrier's blocking routes. Nothing else can: Guardian
+	//    is gone along with its ownership record.
+	if deps.clearBarrierRoutes != nil {
+		if err := deps.clearBarrierRoutes(ctx); err != nil {
+			failures = append(failures, fmt.Errorf("清理屏障阻断路由: %w", err))
+		}
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	problems := errors.Join(failures...)
+	if cause != nil {
+		problems = errors.Join(fmt.Errorf("Guardian 关闭事务失败: %w", cause), problems)
+	}
+	return fmt.Errorf(
+		"强制停止未能全部完成:\n%w\n下一步:sudo bx uninstall(停止全部服务并还原网络,保留 /etc/bx 配置);"+
+			"或手动执行 sudo launchctl bootout system/com.getbx.bx.guard,再逐条删除阻断路由:\n  sudo %s",
+		problems, strings.Join(blockingRouteCleanupHints(), "\n  sudo "),
+	)
+}
+
+func blockingRouteCleanupHints() []string {
+	commands := guardian.PlanBlockingBarrierCleanup()
+	hints := make([]string, 0, len(commands))
+	for _, command := range commands {
+		hints = append(hints, command.String())
+	}
+	return hints
 }
 
 func macOSUpAction(c *urfavecli.Context) error {
@@ -296,13 +451,20 @@ func macOSUpAction(c *urfavecli.Context) error {
 func macOSDownAction(c *urfavecli.Context) error {
 	configPath := defaultConfigPath
 	stepLine("Guardian", "停止 bx 保护并恢复网络")
-	_, forced, err := macOSDownLifecycleDetailed(c.Context, configPath, defaultMacOSLifecycleDeps())
+	result, err := macOSDownLifecycleDetailed(c.Context, configPath, defaultMacOSLifecycleDeps())
 	if err != nil {
 		return err
 	}
-	if forced {
-		stepDone("Guardian", "Guardian 未响应,已强制停止并还原网络")
-		fmt.Println("⚠️  Guardian 未响应,已强制停止服务;网络路由/DNS 将由其进程退出时的自动还原逻辑恢复。")
+	if result.Forced {
+		stepDone("Guardian", "已强制停止 bx")
+		if result.Cause != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Guardian 正常关闭事务失败(%v),已改走强制停止。\n", result.Cause)
+		} else {
+			fmt.Fprintln(os.Stderr, "⚠️  Guardian 未响应,已改走强制停止。")
+		}
+		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
+		fmt.Println("已执行:请求 Core 退出(由它自己还原路由与 DNS)、停止 Guardian 服务、记录关闭意图(不再开机自启)、删除屏障阻断路由。")
+		fmt.Println("请确认网络是否已恢复(例如 bx status 或打开任意网页);若仍不通,执行 sudo bx uninstall(会保留 /etc/bx 配置)。")
 		return nil
 	}
 	stepDone("Guardian", "bx 已停止,网络已恢复")
