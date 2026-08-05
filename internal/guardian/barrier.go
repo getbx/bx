@@ -112,6 +112,28 @@ func canonicalBypassSet(bypasses []string) (map[string]struct{}, error) {
 	return canonical, nil
 }
 
+// PlanBlockingBarrierCleanup returns the delete commands for every blocking
+// route the barrier can install (all IPv4 and IPv6 /2 reject routes), in
+// reverse install order.
+//
+// Unlike PlanBarrier/PlanBarrierRelease it takes no BarrierContext: it exists
+// for the forced-teardown escape hatch, where the Guardian process has been
+// booted out and its in-memory barrierOwnership is gone while the reject
+// routes survive in the kernel. Those routes are /2 — longer than Core's /1
+// split-default — so they win the longest-prefix match and blackhole the
+// whole machine, and no later up/down can find them again through ownership
+// bookkeeping. Deleting a route that is not installed fails with "not in
+// table", which the darwin executor tolerates, so this plan is safe to run
+// unconditionally.
+func PlanBlockingBarrierCleanup() []Command {
+	routes := blockingBarrierRoutes(true)
+	cleanup := make([]Command, 0, len(routes))
+	for i := len(routes) - 1; i >= 0; i-- {
+		cleanup = append(cleanup, routes[i].del)
+	}
+	return cleanup
+}
+
 func blockingBarrierRoutes(blockIPv6 bool) []barrierRoute {
 	routes := make([]barrierRoute, 0, len(publicIPv4Blocks)+len(publicIPv6Blocks))
 	for _, block := range publicIPv4Blocks {

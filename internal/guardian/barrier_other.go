@@ -17,6 +17,10 @@ func DiscoverDefaultGateway(context.Context) (string, error) {
 	return "", fmt.Errorf("discover default gateway: %w", ErrUnsupported)
 }
 
+func RemoveBlockingBarrierRoutes(context.Context, CommandRunner) error {
+	return fmt.Errorf("remove blocking barrier routes: %w", ErrUnsupported)
+}
+
 func (unsupportedBarrier) Install(context.Context, BarrierContext) error {
 	return fmt.Errorf("install barrier: %w", ErrUnsupported)
 }
