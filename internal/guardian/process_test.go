@@ -355,18 +355,26 @@ func TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker(t *t
 	if record.State != processRecordLaunching {
 		t.Fatalf("marker state = %q, want %q", record.State, processRecordLaunching)
 	}
-	if _, err := runner.Existing(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
-		t.Fatalf("same-runner Existing error = %v, want uncertain ownership", err)
+
+	// 留在磁盘上的是 PID=0 的 launching 标记,清理尚未证实(Terminate 失败、Wait
+	// 还在等 released 才返回)。runner.Existing() 本身是无记忆的纯读:它读到的字
+	// 节和"Guardian 早就崩了、什么都没剩下"那个孤儿标记完全一样,无法区分。按
+	// 本轮修复的既定取舍(PID==0 结构上不可能验证归属任何进程),Existing() 把
+	// 它当陈旧孤儿标记自愈,不再报 uncertain——这不削弱 fail-closed:同一
+	// daemon 内的重试保护来自 Manager 的内存态 m.current.Uncertain,而不是这
+	// 里(见 TestManagerUpBlocksSameAndReconstructedDaemonAfterUncertainLaunch)。
+	if existing, err := runner.Existing(context.Background()); err != nil || existing.PID != 0 || existing.Uncertain {
+		t.Fatalf("same-runner Existing after unproven cleanup = %+v, %v; want self-healed no-core", existing, err)
 	}
 
 	reconstructed := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	reconstructed.StatePath = statePath
 	reconstructed.Operations = operations
-	if _, err := reconstructed.Existing(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
-		t.Fatalf("reconstructed Existing error = %v, want uncertain ownership", err)
+	if existing, err := reconstructed.Existing(context.Background()); err != nil || existing.PID != 0 || existing.Uncertain {
+		t.Fatalf("reconstructed Existing after unproven cleanup = %+v, %v; want self-healed no-core", existing, err)
 	}
 	if got := operations.startCount(); got != 1 {
-		t.Fatalf("starts after retry/reconstruction = %d, want 1", got)
+		t.Fatalf("Existing()-only calls should never spawn: starts = %d, want 1", got)
 	}
 }
 
@@ -533,6 +541,108 @@ func TestExecCoreRunnerExistingTreatsUnremovableDeadRecordAsNoCore(t *testing.T)
 	}
 	if process.PID != 0 || process.Uncertain {
 		t.Errorf("应视为无既有 Core,实际 = %+v", process)
+	}
+}
+
+// Guardian 崩在"写完 launching 标记、还没保存 owned 记录"之间会留下 PID=0 的孤
+// 儿标记。PID=0 结构上不可能对应任何活进程,不该让 bx up 永久失败——用户
+// 2026-08-05 实际踩到的正是这个形态。
+func TestExecCoreRunnerExistingTreatsOrphanLaunchMarkerAsNoCore(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	if err := saveProcessRecord(statePath, processRecord{State: processRecordLaunching}); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+
+	process, err := runner.Existing(context.Background())
+	if err != nil {
+		t.Fatalf("孤儿 launching 标记不应让 Existing 报错: %v", err)
+	}
+	if process.PID != 0 || process.Uncertain {
+		t.Errorf("应视为无既有 Core,实际 = %+v", process)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("孤儿标记应被清除,实际 = %v", err)
+	}
+}
+
+// 防御性:launching 标记若带非零 PID(不该出现,process.go 写入路径恒为 0),
+// 数据形状本身已经和不变量矛盾,仍必须判不确定,不放宽。
+func TestExecCoreRunnerExistingStillRefusesLaunchMarkerWithUnexpectedPID(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	// saveProcessRecord/loadProcessRecord 都会用 valid() 拒绝这种形状的记录(launching
+	// 要求 PID==0),所以这里直接写原始 JSON,模拟未来格式漂移/文件损坏的防御场景。
+	if err := os.WriteFile(statePath, []byte(`{"pid":4242,"state":"launching"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+
+	if _, err := runner.Existing(context.Background()); err == nil {
+		t.Error("带意外 PID 的 launching 标记不应被放行")
+	}
+}
+
+// 清不掉孤儿 launching 标记也不该卡死——与"已死 PID 的 owned 记录"同一套自愈
+// 语义。
+func TestExecCoreRunnerExistingToleratesUnremovableOrphanLaunchMarker(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	if err := saveProcessRecord(statePath, processRecord{State: processRecordLaunching}); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.RemoveProcessRecord = func(string) error { return errors.New("permission denied") }
+
+	process, err := runner.Existing(context.Background())
+	if err != nil || process.Uncertain {
+		t.Errorf("清不掉孤儿标记也应视为无 Core,实际 err=%v process=%+v", err, process)
+	}
+	if process.PID != 0 {
+		t.Errorf("PID = %d, want 0", process.PID)
+	}
+	// 文件确实清不掉(注入的 RemoveProcessRecord 恒失败),但 Existing 不应因此
+	// 报错——与已死 PID 记录一致。
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("清除失败时记录应仍在磁盘上(用于观测),实际 = %v", err)
+	}
+}
+
+// 直接测试 refuseLiveLaunchMarker 的拆分:PID==0 的孤儿标记必须放行覆写(否则
+// Existing() 放行后 Start() 用另一个理由拒绝,重蹈上一轮覆辙);带非零 PID 的
+// launching 标记(理论上不该出现)仍必须判不确定,且不去问 OS。
+func TestExecCoreRunnerRefuseLiveLaunchMarkerSplitsOnPID(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.Operations = &pidAwareProcessOperations{}
+
+	if err := runner.refuseLiveLaunchMarker(processRecord{State: processRecordLaunching}); err != nil {
+		t.Fatalf("PID=0 的孤儿 launching 标记应放行覆写,实际 = %v", err)
+	}
+
+	err := runner.refuseLiveLaunchMarker(processRecord{State: processRecordLaunching, PID: 4242})
+	if !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Errorf("带意外 PID 的 launching 标记必须仍判不确定,实际 err = %v", err)
+	}
+	if got := runner.Operations.(*pidAwareProcessOperations).inspectCount(); got != 0 {
+		t.Errorf("带意外 PID 的 launching 标记不该去问 OS,实际 Inspect 调用 %d 次", got)
 	}
 }
 
@@ -992,12 +1102,13 @@ func (o *watchTestProcessOperations) signalCount() int {
 // pidAwareProcessOperations 按 PID 分别回答:陈旧记录里那个 PID 已死,新起的
 // 进程活着。watchTestProcessOperations 无视 PID,测不出这个区分。
 type pidAwareProcessOperations struct {
-	mu       sync.Mutex
-	dead     map[int]bool
-	live     map[int]Process
-	started  StartedProcess
-	starts   int
-	startErr error
+	mu          sync.Mutex
+	dead        map[int]bool
+	live        map[int]Process
+	started     StartedProcess
+	starts      int
+	startErr    error
+	inspections int
 }
 
 func (o *pidAwareProcessOperations) Start(string, []string, []string) (StartedProcess, error) {
@@ -1013,6 +1124,7 @@ func (o *pidAwareProcessOperations) Start(string, []string, []string) (StartedPr
 func (o *pidAwareProcessOperations) Inspect(pid int) (Process, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.inspections++
 	if o.dead[pid] {
 		return Process{}, ErrProcessNotRunning
 	}
@@ -1026,6 +1138,12 @@ func (o *pidAwareProcessOperations) startCount() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.starts
+}
+
+func (o *pidAwareProcessOperations) inspectCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.inspections
 }
 
 // Existing() 放行陈旧死记录只是第一跳:Start() 紧接着看到同一个文件还在,
@@ -1072,8 +1190,55 @@ func TestExecCoreRunnerStartOverwritesOSConfirmedDeadLaunchMarker(t *testing.T) 
 	}
 }
 
+// 同一对陷阱,针对孤儿 launching 标记(PID=0):Existing() 放行(即便清不掉文
+// 件)只是第一跳,Start() 紧接着必须也放行覆写,否则又是
+// core_ownership_uncertain,用户可见行为与修复前一模一样——这正是用户
+// 2026-08-05 实际踩到的形态。
+func TestExecCoreRunnerStartOverwritesOrphanLaunchMarker(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	if err := saveProcessRecord(statePath, processRecord{State: processRecordLaunching}); err != nil {
+		t.Fatal(err)
+	}
+	started := newStartTestProcess(6001)
+	defer started.release()
+	operations := &pidAwareProcessOperations{
+		live:    map[int]Process{6001: {PID: 6001, Executable: executable, UID: 0, Generation: "darwin:1785999999:1"}},
+		started: started,
+	}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.ControlSocket = filepath.Join(dir, "bx.sock")
+	runner.Operations = operations
+	// 真机事故形态:标记清不掉(权限/只读),文件留在磁盘上。
+	runner.RemoveProcessRecord = func(string) error { return errors.New("remove record: permission denied") }
+
+	existing, err := runner.Existing(context.Background())
+	if err != nil || existing.PID != 0 {
+		t.Fatalf("Existing = (%+v, %v), want zero-value Process 与 nil error", existing, err)
+	}
+	process, err := runner.Start(context.Background(), CoreStartOptions{})
+	if err != nil {
+		t.Fatalf("Start 仍被陈旧孤儿标记挡住(用户可见行为与修复前相同): %v", err)
+	}
+	if process.PID != 6001 {
+		t.Fatalf("Start 返回 PID = %d, want 6001", process.PID)
+	}
+	if operations.startCount() != 1 {
+		t.Fatalf("Core 启动次数 = %d, want 1", operations.startCount())
+	}
+}
+
 // fail-closed 不得被削弱:记录里的进程还活着(身份是否匹配都一样)时,
 // Start 仍必须拒绝——那是"另一个 Core 可能正在跑"的真实所有权存疑。
+// launching+PID=0 的孤儿标记不再在这张表里(现在必须放行,见
+// TestExecCoreRunnerStartOverwritesOrphanLaunchMarker);launching+非零 PID 的
+// 防御场景由 TestExecCoreRunnerRefuseLiveLaunchMarkerSplitsOnPID 直接覆盖(该
+// 记录形状无法通过 saveProcessRecord 的 valid() 落盘,不适合走这张表)。
 func TestExecCoreRunnerStartStillRefusesLiveLaunchMarker(t *testing.T) {
 	dir := t.TempDir()
 	executable := filepath.Join(dir, "bx")
@@ -1090,11 +1255,6 @@ func TestExecCoreRunnerStartStillRefusesLiveLaunchMarker(t *testing.T) {
 			name:   "记录里的进程还活着",
 			record: processRecord{PID: 5129, Executable: executable, Generation: "darwin:1:1", State: processRecordOwned},
 			live:   map[int]Process{5129: {PID: 5129, Executable: "/other/bx", UID: 0, Generation: "darwin:9:9"}},
-		},
-		{
-			name:   "launching 标记没有 PID,无从向 OS 求证",
-			record: processRecord{State: processRecordLaunching},
-			live:   map[int]Process{},
 		},
 	}
 	for _, tt := range tests {
