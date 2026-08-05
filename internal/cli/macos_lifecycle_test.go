@@ -835,7 +835,7 @@ func TestMenuLaunchdCommandsUseOnlyCanonicalAndLegacyLabels(t *testing.T) {
 	commands := menuLaunchdCommands(501, false, true, plist)
 	want := [][]string{
 		{"bootout", "gui/501/com.ggshr9.bx.menu"},
-		{"bootstrap", "gui/501", plist},
+		{"asuser", "501", "launchctl", "bootstrap", "gui/501", plist},
 		{"kickstart", "-k", "gui/501/com.getbx.bx.menu"},
 	}
 	if !reflect.DeepEqual(commands, want) {
@@ -857,7 +857,7 @@ func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing
 		commands := menuLaunchdCommands(501, true, false, plist)
 		want := [][]string{
 			{"bootout", "gui/501/com.getbx.bx.menu"},
-			{"bootstrap", "gui/501", plist},
+			{"asuser", "501", "launchctl", "bootstrap", "gui/501", plist},
 			{"kickstart", "-k", "gui/501/com.getbx.bx.menu"},
 		}
 		if !reflect.DeepEqual(commands, want) {
@@ -868,7 +868,7 @@ func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing
 	t.Run("not loaded, no legacy", func(t *testing.T) {
 		commands := menuLaunchdCommands(501, false, false, plist)
 		want := [][]string{
-			{"bootstrap", "gui/501", plist},
+			{"asuser", "501", "launchctl", "bootstrap", "gui/501", plist},
 			{"kickstart", "-k", "gui/501/com.getbx.bx.menu"},
 		}
 		if !reflect.DeepEqual(commands, want) {
@@ -881,7 +881,7 @@ func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing
 		want := [][]string{
 			{"bootout", "gui/501/com.ggshr9.bx.menu"},
 			{"bootout", "gui/501/com.getbx.bx.menu"},
-			{"bootstrap", "gui/501", plist},
+			{"asuser", "501", "launchctl", "bootstrap", "gui/501", plist},
 			{"kickstart", "-k", "gui/501/com.getbx.bx.menu"},
 		}
 		if !reflect.DeepEqual(commands, want) {
@@ -900,9 +900,10 @@ func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			commands := menuLaunchdCommands(501, tc.currentLoaded, tc.legacyLoaded, plist)
+			want := menuBootstrapCommand(501, plist)
 			found := false
 			for _, args := range commands {
-				if len(args) == 3 && args[0] == "bootstrap" && args[1] == "gui/501" && args[2] == plist {
+				if reflect.DeepEqual(args, want) {
 					found = true
 				}
 			}
@@ -910,6 +911,25 @@ func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing
 				t.Fatalf("menu launchd commands %#v missing bootstrap of current plist so a changed plist would never take effect", commands)
 			}
 		})
+	}
+}
+
+// TestMenuBootstrapUsesAsuserWhenRoot is the regression test for the
+// production failure: `bx up` runs as root, and root bootstrapping
+// gui/<uid> directly returns EIO(5) ("Bootstrap failed: 5: Input/output
+// error") because root carries no audit session token for the console
+// user's GUI domain. `launchctl asuser <uid>` re-execs launchctl inside
+// that user's session first, which is what actually succeeded when the
+// identical bootstrap was run manually as the console user on real
+// hardware.
+func TestMenuBootstrapUsesAsuserWhenRoot(t *testing.T) {
+	args := menuBootstrapCommand(501, "/Users/test/Library/LaunchAgents/com.getbx.bx.menu.plist")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "asuser 501") {
+		t.Errorf("必须经 launchctl asuser 进入用户上下文,实际:%s", joined)
+	}
+	if !strings.Contains(joined, "bootstrap gui/501") {
+		t.Errorf("仍应 bootstrap 到用户 GUI 域,实际:%s", joined)
 	}
 }
 
@@ -937,7 +957,7 @@ func TestEnsureMacOSMenuRunningWithDepsRemovesLegacyAndVerifiesLabels(t *testing
 	}
 	wantCalls := []string{
 		"bootout gui/501/com.ggshr9.bx.menu",
-		"bootstrap gui/501 " + currentPlist,
+		"asuser 501 launchctl bootstrap gui/501 " + currentPlist,
 		"kickstart -k gui/501/com.getbx.bx.menu",
 	}
 	if !reflect.DeepEqual(control.calls, wantCalls) {
@@ -983,7 +1003,7 @@ func TestEnsureMacOSMenuRunningWithDepsReloadsStaleLoadedAgent(t *testing.T) {
 	}
 	wantCalls := []string{
 		"bootout gui/501/com.getbx.bx.menu",
-		"bootstrap gui/501 " + currentPlist,
+		"asuser 501 launchctl bootstrap gui/501 " + currentPlist,
 		"kickstart -k gui/501/com.getbx.bx.menu",
 	}
 	if !reflect.DeepEqual(control.calls, wantCalls) {
@@ -1125,8 +1145,11 @@ func (f *fakeMenuLaunchdControl) Run(_ context.Context, args ...string) error {
 	if len(args) >= 2 && args[0] == "bootout" {
 		f.loaded[args[1]] = false
 	}
-	if len(args) >= 3 && args[0] == "bootstrap" {
-		f.loaded[args[1]+"/com.getbx.bx.menu"] = true
+	// bootstrap is now issued via `launchctl asuser <uid> launchctl bootstrap
+	// <domain> <plist>` (see menuBootstrapCommand), so the domain moved from
+	// args[1] to args[4].
+	if len(args) >= 6 && args[0] == "asuser" && args[2] == "launchctl" && args[3] == "bootstrap" {
+		f.loaded[args[4]+"/com.getbx.bx.menu"] = true
 	}
 	return nil
 }
