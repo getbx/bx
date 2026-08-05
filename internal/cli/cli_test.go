@@ -407,6 +407,41 @@ func TestMacMenuDerivesDNSFromStatusJSONOnly(t *testing.T) {
 	}
 }
 
+// The CLI and the macOS menu both render DNS state to a human, in two languages
+// that cannot share code. They must not drift into saying the same state two
+// different ways, so pin the wording on both sides. The raw enum stays in
+// `bx status --json` for machines.
+func TestGuardianDNSLabelMatchesMenuWording(t *testing.T) {
+	cases := []struct {
+		state   guardian.DNSState
+		service string
+		want    string
+	}{
+		{guardian.DNSManaged, "Wi-Fi", "Wi-Fi managed"},
+		{guardian.DNSManaged, "", "Managed"},
+		{guardian.DNSUnmanaged, "", "Not managed"},
+		{guardian.DNSUnmanaged, "Wi-Fi", "Not managed"},
+		{guardian.DNSUnknown, "", "Status unavailable"},
+		{"", "", "Status unavailable"},
+	}
+	for _, tc := range cases {
+		if got := guardianDNSLabel(tc.state, tc.service); got != tc.want {
+			t.Errorf("guardianDNSLabel(%q, %q) = %q, want %q", tc.state, tc.service, got, tc.want)
+		}
+	}
+
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "StatusPresentation.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	swift := string(source)
+	for _, literal := range []string{`"\(service) managed"`, `"Managed"`, `"Not managed"`, `"Status unavailable"`} {
+		if !strings.Contains(swift, literal) {
+			t.Errorf("StatusPresentation.swift should render DNS with the same wording as the CLI: %s", literal)
+		}
+	}
+}
+
 // updateIcon lets a live recovery snapshot override the state-derived indicator,
 // so a warning verdict must drop any snapshot that would paint the shield green
 // — otherwise the icon shows green while the tunnel is unhealthy or DNS is
@@ -1040,7 +1075,7 @@ func TestStatusReportIncludesGuardianDNSState(t *testing.T) {
 			t.Fatalf("missing %s: %s", want, data)
 		}
 	}
-	if got := renderClientStatus(rep); !strings.Contains(got, "DNS     managed (Wi-Fi)") {
+	if got := renderClientStatus(rep); !strings.Contains(got, "DNS     Wi-Fi managed") {
 		t.Fatalf("human status = %q, want managed Wi-Fi DNS", got)
 	}
 }
