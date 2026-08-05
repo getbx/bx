@@ -145,6 +145,33 @@ func enableGuardianWithControl(ctx context.Context, control guardianLaunchdContr
 	return nil
 }
 
+// BootoutGuardian stops the Guardian launchd service (issuing the same
+// `launchctl bootout system/com.getbx.bx.guard` that `bx uninstall` uses)
+// without touching its plist, /etc/bx config, or /var/lib/bx data — it is
+// strictly a "stop", not a "remove". It is idempotent: calling it when
+// Guardian isn't loaded (or isn't installed at all) is a no-op, not an
+// error, so callers can use it as an unconditional escape hatch.
+func BootoutGuardian(ctx context.Context) error {
+	return bootoutGuardianWithControl(ctx, execGuardianLaunchdControl{})
+}
+
+func bootoutGuardianWithControl(ctx context.Context, control guardianLaunchdControl) error {
+	loaded, err := control.Loaded(ctx, guardianLaunchdLabel)
+	if err != nil {
+		return fmt.Errorf("inspect Guardian launchd service: %w", err)
+	}
+	if !loaded {
+		return nil
+	}
+	if err := control.Run(ctx, "bootout", "system/"+guardianLaunchdLabel); err != nil {
+		if stillLoaded, statusErr := control.Loaded(ctx, guardianLaunchdLabel); statusErr == nil && !stillLoaded {
+			return nil
+		}
+		return fmt.Errorf("bootout Guardian launchd service: %w", err)
+	}
+	return nil
+}
+
 // guardianSocketReachable is the real "is Guardian actually up" probe used
 // by EnableGuardian: a single quick dial attempt against the Guardian
 // control socket.

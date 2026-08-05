@@ -241,6 +241,68 @@ func TestEnableGuardianWithControlTreatsNilProbeAsNotReady(t *testing.T) {
 	}
 }
 
+func TestBootoutGuardianWithControlStopsLoadedServiceOnly(t *testing.T) {
+	control := &fakeGuardianLaunchdControl{loaded: map[string]bool{guardianLaunchdLabel: true}}
+	if err := bootoutGuardianWithControl(context.Background(), control); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"bootout system/com.getbx.bx.guard"}
+	if strings.Join(control.calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("launchctl calls = %#v, want %#v", control.calls, want)
+	}
+}
+
+func TestBootoutGuardianWithControlNoopWhenNotLoaded(t *testing.T) {
+	control := &fakeGuardianLaunchdControl{}
+	if err := bootoutGuardianWithControl(context.Background(), control); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.calls) != 0 {
+		t.Fatalf("bootout issued for a service that was never loaded: %#v", control.calls)
+	}
+}
+
+func TestBootoutGuardianWithControlToleratesRaceWhereServiceAlreadyExited(t *testing.T) {
+	// bootout errored, but a follow-up Loaded() probe shows the service is
+	// gone anyway (e.g. it exited between the two launchctl calls): this
+	// must not be surfaced as a failure to the caller (bx down must
+	// succeed rather than block the user from escaping).
+	control := &raceGuardianLaunchdControl{
+		runErr: errors.New("no such process"),
+	}
+	if err := bootoutGuardianWithControl(context.Background(), control); err != nil {
+		t.Fatalf("bootout race treated as failure: %v", err)
+	}
+}
+
+func TestBootoutGuardianWithControlReportsGenuineFailure(t *testing.T) {
+	control := &fakeGuardianLaunchdControl{
+		loaded: map[string]bool{guardianLaunchdLabel: true},
+		runErr: map[string]error{"bootout system/com.getbx.bx.guard": errors.New("permission denied")},
+	}
+	if err := bootoutGuardianWithControl(context.Background(), control); err == nil {
+		t.Fatal("genuine bootout failure (service still loaded) was swallowed")
+	}
+}
+
+// raceGuardianLaunchdControl simulates a Guardian service that reports
+// loaded on the pre-Run probe, has its Run("bootout", ...) call error, but
+// is observed gone on the post-Run probe — exercising the "did it actually
+// stop despite Run erroring" fallback check.
+type raceGuardianLaunchdControl struct {
+	runErr error
+	ran    bool
+}
+
+func (r *raceGuardianLaunchdControl) Loaded(context.Context, string) (bool, error) {
+	return !r.ran, nil
+}
+
+func (r *raceGuardianLaunchdControl) Run(context.Context, ...string) error {
+	r.ran = true
+	return r.runErr
+}
+
 func TestGuardianLogTailReturnsLastLinesAndEmptyWhenUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bx-guard.err.log")
