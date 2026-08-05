@@ -4295,15 +4295,22 @@ func normalizedGuardianProtectionState(status guardian.Status, platform string) 
 	return status.Protection
 }
 
+// guardianDNSLabel renders DNS state for a human. It must stay word-for-word in
+// sync with dnsPresentation in apps/macos/BxMenu/Sources/BxMenu/StatusPresentation.swift
+// (pinned by TestGuardianDNSLabelMatchesMenuWording); machines read the raw
+// enum from `bx status --json` instead.
 func guardianDNSLabel(state guardian.DNSState, service string) string {
-	value := string(state)
-	if value == "" {
-		value = string(guardian.DNSUnknown)
+	switch state {
+	case guardian.DNSManaged:
+		if service != "" {
+			return service + " managed"
+		}
+		return "Managed"
+	case guardian.DNSUnmanaged:
+		return "Not managed"
+	default:
+		return "Status unavailable"
 	}
-	if service != "" {
-		value += " (" + service + ")"
-	}
-	return value
 }
 
 func shouldShowUpdateMessage(phase string) bool {
