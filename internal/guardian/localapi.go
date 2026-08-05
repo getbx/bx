@@ -179,8 +179,10 @@ func recoveryRequestHandler(controller Controller, recovery PathRecoveryControll
 			return
 		}
 		if err != nil {
-			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
-			// 避免把路径/链接/凭据经 socket 外传。
+			// 完整错误只进 Guardian 日志(安装时被强制为 0600 root:wheel,
+			// 见 install.SecureGuardianLogs——launchd 默认建的是 0644,
+			// 本地任何用户可读);响应只带失败码,避免把路径/链接/凭据经
+			// socket 外传。
 			log.Printf("guardian_recovery_request_failed err=%v", err)
 			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, statusOf(controller)))
 			return
@@ -296,8 +298,10 @@ func updateHandler(controller Controller, updater UpdateController, mutations *a
 		before := controller.Status()
 		result, err := updater.Update(mutationCtx, normalized)
 		if err != nil {
-			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
-			// 避免把路径/链接/凭据经 socket 外传。
+			// 完整错误只进 Guardian 日志(安装时被强制为 0600 root:wheel,
+			// 见 install.SecureGuardianLogs——launchd 默认建的是 0644,
+			// 本地任何用户可读);响应只带失败码,避免把路径/链接/凭据经
+			// socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
 			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status()))
 			return
@@ -347,8 +351,10 @@ func migrationHandler(controller Controller, migration MigrationController, muta
 		defer cancel()
 		before := controller.Status()
 		if err := migration.Migrate(mutationCtx, normalized); err != nil {
-			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
-			// 避免把路径/链接/凭据经 socket 外传。
+			// 完整错误只进 Guardian 日志(安装时被强制为 0600 root:wheel,
+			// 见 install.SecureGuardianLogs——launchd 默认建的是 0644,
+			// 本地任何用户可读);响应只带失败码,避免把路径/链接/凭据经
+			// socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
 			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status()))
 			return
@@ -422,8 +428,10 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 		defer cancel()
 		before := controller.Status()
 		if err := mutate(mutationCtx); err != nil {
-			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
-			// 避免把路径/链接/凭据经 socket 外传。
+			// 完整错误只进 Guardian 日志(安装时被强制为 0600 root:wheel,
+			// 见 install.SecureGuardianLogs——launchd 默认建的是 0644,
+			// 本地任何用户可读);响应只带失败码,避免把路径/链接/凭据经
+			// socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
 			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status()))
 			return

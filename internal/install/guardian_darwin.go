@@ -18,8 +18,8 @@ import (
 const (
 	guardianLaunchdLabel      = "com.getbx.bx.guard"
 	guardianLaunchdPlistPath  = "/Library/LaunchDaemons/com.getbx.bx.guard.plist"
-	guardianLaunchdStdoutPath = "/var/log/bx-guard.log"
-	guardianLaunchdStderrPath = "/var/log/bx-guard.err.log"
+	guardianLaunchdStdoutPath = GuardianStdoutLogPath
+	guardianLaunchdStderrPath = GuardianStderrLogPath
 
 	guardianSocketProbeTimeout = 200 * time.Millisecond
 	guardianLogTailMaxBytes    = 64 * 1024
@@ -76,7 +76,51 @@ func GuardianPlistText(executable, configPath string) string {
 }
 
 func WriteGuardianUnit(executable, configPath string) error {
-	return writeGuardianUnitAt(guardianLaunchdPlistPath, executable, configPath, os.Chown)
+	if err := writeGuardianUnitAt(guardianLaunchdPlistPath, executable, configPath, os.Chown); err != nil {
+		return err
+	}
+	return SecureGuardianLogs()
+}
+
+// SecureGuardianLogs creates the Guardian launchd logs (if absent) and
+// tightens them to 0600 root:wheel.
+//
+// launchd creates StandardOutPath/StandardErrorPath with the process umask,
+// which on a real machine yields 0644 — world-readable. Those files carry the
+// *full* failure detail on purpose (server IP, every bypass CIDR, raw error
+// strings that may embed paths, links or credentials); the whole
+// "response carries only a code, the log carries everything" split is
+// premised on the log being root-only, so the file mode has to actually
+// enforce it. Called from WriteGuardianUnit so every install/upgrade path
+// re-asserts the mode on logs launchd may have recreated 0644.
+func SecureGuardianLogs() error {
+	return secureGuardianLogsAt(GuardianLogPaths(), os.Chown)
+}
+
+func secureGuardianLogsAt(paths []string, chown func(string, int, int) error) error {
+	if chown == nil {
+		return errors.New("Guardian log ownership function required")
+	}
+	for _, path := range paths {
+		// O_APPEND, never O_TRUNC: an existing log is troubleshooting
+		// material, tightening its mode must not destroy it.
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return fmt.Errorf("create Guardian log %s: %w", path, err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("create Guardian log %s: %w", path, err)
+		}
+		// A pre-existing file keeps its old mode through O_CREATE, so chmod
+		// unconditionally — that is the case this exists for.
+		if err := os.Chmod(path, 0o600); err != nil {
+			return fmt.Errorf("restrict Guardian log %s: %w", path, err)
+		}
+		if err := chown(path, 0, 0); err != nil {
+			return fmt.Errorf("set Guardian log %s owner root:wheel: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func writeGuardianUnitAt(path, executable, configPath string, chown func(string, int, int) error) error {
