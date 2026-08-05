@@ -17,7 +17,7 @@ log "--- 开机加载器 ---"
 plutil -p /System/Library/LaunchDaemons/com.apple.pfctl.plist | grep -A4 ProgramArguments || true
 
 log "=== 2. 只读:当前 pf 启用状态(决定待验证项 3) ==="
-pfctl -s info 2>&1 | head -3 || true
+sudo pfctl -s info 2>&1 | head -3 || true
 
 log "=== 3. 只读:当前 TUN 接口名(决定待验证项 2) ==="
 ifconfig | grep -oE '^utun[0-9]+' || log "(无 utun,bx 未运行)"
@@ -53,65 +53,82 @@ log "--- 选定 TUN 接口:$TUN ---"
 
 RULES="$(mktemp)"
 MAIN="$(mktemp)"
+TOKEN_FILE="$(mktemp)"
+DEADMAN_SCRIPT="$(mktemp)"
 DEADMAN_LOG="${TMPDIR:-/tmp}/darwin-dns-probe-deadman-$$.log"
 PF_TOKEN=""
 
 cleanup() {
-  local anchor_rc pf_rc
-  anchor_rc=$(sudo pfctl -a "$ANCHOR" -F all 2>&1) || {
-    log "✗ 清空 anchor 失败:$anchor_rc"
-    log "  请手动执行:sudo pfctl -a com.getbx.bx.probe -F all"
-  }
-  if [[ -z "$anchor_rc" ]] || [[ $? -eq 0 ]]; then
+  local pf_ok=1
+  local out
+
+  if out=$(sudo pfctl -a "$ANCHOR" -F all 2>&1); then
     log "✓ anchor 已清空"
+  else
+    pf_ok=0
+    log "✗ 清空 anchor 失败:$out"
+    log "  请手动执行:sudo pfctl -a $ANCHOR -F all"
   fi
 
   if [[ -n "$PF_TOKEN" ]]; then
-    pf_rc=$(sudo pfctl -X "$PF_TOKEN" 2>&1) || {
-      log "✗ 释放 pf 引用计数失败:$pf_rc"
+    if out=$(sudo pfctl -X "$PF_TOKEN" 2>&1); then
+      log "✓ pf 引用计数已释放(token=$PF_TOKEN)"
+    else
+      pf_ok=0
+      log "✗ 释放 pf 引用计数失败:$out"
       log "  请手动执行:sudo pfctl -X $PF_TOKEN"
-    }
-    if [[ -z "$pf_rc" ]] || [[ $? -eq 0 ]]; then
-      log "✓ pf 状态已释放"
     fi
   fi
 
-  rm -f "$RULES" "$MAIN"
-  log "已复原:anchor 清空 + pf 引用计数释放"
+  rm -f "$RULES" "$MAIN" "$TOKEN_FILE" "$DEADMAN_SCRIPT"
+
+  if [[ "$pf_ok" -eq 1 ]]; then
+    log "已复原:anchor 清空 + pf 引用计数释放"
+  else
+    log "!!! 复原未完全成功,请检查上面的手动救命命令"
+  fi
 }
 trap cleanup EXIT
 
+# 死手脚本写入独立文件、由 nohup 的 bash 进程执行。token 在此刻(死手刚启动时)
+# 还是空的——必须让死手在 DEADMAN 秒后真正触发的那一刻才去读 TOKEN_FILE 的
+# 当时内容,而不是把启动时刻的(空)变量值烘焙进命令行。
+cat >"$DEADMAN_SCRIPT" <<EOF
+sleep '$DEADMAN'
+{
+  if ! sudo pfctl -a '$ANCHOR' -F all 2>&1; then
+    echo '[死手] 清空 anchor 失败,请手动执行:sudo pfctl -a $ANCHOR -F all'
+  fi
+  dm_token="\$(cat '$TOKEN_FILE' 2>/dev/null || true)"
+  if [[ -n "\$dm_token" ]]; then
+    if ! sudo pfctl -X "\$dm_token" 2>&1; then
+      echo "[死手] 释放 pf 引用计数失败,请手动执行:sudo pfctl -X \$dm_token"
+    fi
+  fi
+  echo '[死手] ${DEADMAN}s 到,已强制复原'
+} >> '$DEADMAN_LOG' 2>&1
+EOF
+
 # 死手:独立于终端会话(nohup + disown),DEADMAN 秒后强制复原
 # nohup 使进程忽略 SIGHUP,disown 移出作业表防止 shell 干涉
-nohup bash -c "
-  sleep '$DEADMAN'
-  {
-    if ! sudo pfctl -a '$ANCHOR' -F all 2>&1; then
-      echo '[死手]清空 anchor 失败,请手动执行:sudo pfctl -a com.getbx.bx.probe -F all'
-    fi
-    if [[ -n '$PF_TOKEN' ]]; then
-      if ! sudo pfctl -X '$PF_TOKEN' 2>&1; then
-        echo '[死手]释放 pf 失败,请手动执行:sudo pfctl -X $PF_TOKEN'
-      fi
-    fi
-    echo '[死手] ${DEADMAN}s 到,已强制复原'
-  } >> '$DEADMAN_LOG' 2>&1
-" >/dev/null 2>&1 &
+nohup bash "$DEADMAN_SCRIPT" >/dev/null 2>&1 &
 DEADMAN_PID=$!
 disown $DEADMAN_PID 2>/dev/null || true
 
-# 启用 pf,捕获 token 以便后续释放
+# 启用 pf,捕获 token 以便后续释放。系统 grep 是 BSD grep,不支持 -P/PCRE,
+# 用 awk 取最后一个字段(pfctl -E 的输出形如 "Token : 12345678")。
 pf_enable_out=$(sudo pfctl -E 2>&1 || true)
-PF_TOKEN=$(echo "$pf_enable_out" | grep -oP 'Token : \K\d+' || echo "")
+PF_TOKEN=$(printf '%s\n' "$pf_enable_out" | awk '/Token/{print $NF}')
 if [[ -z "$PF_TOKEN" ]]; then
   # 检查是否已启用
-  if echo "$pf_enable_out" | grep -qi "already enabled"; then
+  if printf '%s\n' "$pf_enable_out" | grep -qi "already enabled"; then
     log "--- pf 已启用(无新 token) ---"
   else
     log "!!! 启用 pf 失败:$pf_enable_out"
     exit 1
   fi
 else
+  printf '%s' "$PF_TOKEN" > "$TOKEN_FILE"
   log "--- pf 已启用,token = $PF_TOKEN ---"
 fi
 
