@@ -17,7 +17,7 @@ log "--- 开机加载器 ---"
 plutil -p /System/Library/LaunchDaemons/com.apple.pfctl.plist | grep -A4 ProgramArguments || true
 
 log "=== 2. 只读:当前 pf 启用状态(决定待验证项 3) ==="
-sudo pfctl -s info 2>&1 | head -3 || true
+pfctl -s info 2>&1 | head -3 || true
 
 log "=== 3. 只读:当前 TUN 接口名(决定待验证项 2) ==="
 ifconfig | grep -oE '^utun[0-9]+' || log "(无 utun,bx 未运行)"
@@ -28,27 +28,92 @@ if [[ "$EXECUTE" -ne 1 ]]; then
   exit 0
 fi
 
-TUN="$(ifconfig | grep -oE '^utun[0-9]+' | tail -1 || true)"
+# TUN 接口选择必须校验:bx 默认使用 198.51.100.1/30
+TUN="${BX_TUN:-}"
 if [[ -z "$TUN" ]]; then
-  log "!!! 需要 bx 正在运行以提供 utun 接口,先 sudo bx up 再重跑"
+  # 遍历所有 utun*,找出 inet 地址属于 198.51.100.0/30 的那一个
+  while IFS= read -r line; do
+    iface="${line%%:*}"
+    if [[ "$iface" =~ ^utun[0-9]+$ ]]; then
+      addr=$(ifconfig "$iface" 2>/dev/null | grep 'inet ' | awk '{print $2}' || true)
+      if [[ "$addr" == 198.51.100.* ]]; then
+        TUN="$iface"
+        break
+      fi
+    fi
+  done < <(ifconfig | grep -E '^utun[0-9]+:')
+fi
+
+if [[ -z "$TUN" ]]; then
+  log "!!! 未找到 bx TUN 接口(198.51.100.0/30 网段);可用 BX_TUN=utunX 环境变量指定,或先 sudo bx up"
   exit 1
 fi
 
+log "--- 选定 TUN 接口:$TUN ---"
+
 RULES="$(mktemp)"
 MAIN="$(mktemp)"
+DEADMAN_LOG="${TMPDIR:-/tmp}/darwin-dns-probe-deadman-$$.log"
+PF_TOKEN=""
+
 cleanup() {
-  sudo pfctl -a "$ANCHOR" -F all >/dev/null 2>&1 || true
-  sudo pfctl -f /etc/pf.conf >/dev/null 2>&1 || true
+  local anchor_rc pf_rc
+  anchor_rc=$(sudo pfctl -a "$ANCHOR" -F all 2>&1) || {
+    log "✗ 清空 anchor 失败:$anchor_rc"
+    log "  请手动执行:sudo pfctl -a com.getbx.bx.probe -F all"
+  }
+  if [[ -z "$anchor_rc" ]] || [[ $? -eq 0 ]]; then
+    log "✓ anchor 已清空"
+  fi
+
+  if [[ -n "$PF_TOKEN" ]]; then
+    pf_rc=$(sudo pfctl -X "$PF_TOKEN" 2>&1) || {
+      log "✗ 释放 pf 引用计数失败:$pf_rc"
+      log "  请手动执行:sudo pfctl -X $PF_TOKEN"
+    }
+    if [[ -z "$pf_rc" ]] || [[ $? -eq 0 ]]; then
+      log "✓ pf 状态已释放"
+    fi
+  fi
+
   rm -f "$RULES" "$MAIN"
-  log "已复原:anchor 清空 + 主规则集重载 /etc/pf.conf"
+  log "已复原:anchor 清空 + pf 引用计数释放"
 }
 trap cleanup EXIT
 
-# 死手:无论脚本发生什么,DEADMAN 秒后强制复原
-( sleep "$DEADMAN"; sudo pfctl -a "$ANCHOR" -F all >/dev/null 2>&1 || true; \
-  sudo pfctl -f /etc/pf.conf >/dev/null 2>&1 || true; \
-  echo "[死手] ${DEADMAN}s 到,已强制复原" ) &
+# 死手:独立于终端会话(nohup + disown),DEADMAN 秒后强制复原
+# nohup 使进程忽略 SIGHUP,disown 移出作业表防止 shell 干涉
+nohup bash -c "
+  sleep '$DEADMAN'
+  {
+    if ! sudo pfctl -a '$ANCHOR' -F all 2>&1; then
+      echo '[死手]清空 anchor 失败,请手动执行:sudo pfctl -a com.getbx.bx.probe -F all'
+    fi
+    if [[ -n '$PF_TOKEN' ]]; then
+      if ! sudo pfctl -X '$PF_TOKEN' 2>&1; then
+        echo '[死手]释放 pf 失败,请手动执行:sudo pfctl -X $PF_TOKEN'
+      fi
+    fi
+    echo '[死手] ${DEADMAN}s 到,已强制复原'
+  } >> '$DEADMAN_LOG' 2>&1
+" >/dev/null 2>&1 &
 DEADMAN_PID=$!
+disown $DEADMAN_PID 2>/dev/null || true
+
+# 启用 pf,捕获 token 以便后续释放
+pf_enable_out=$(sudo pfctl -E 2>&1 || true)
+PF_TOKEN=$(echo "$pf_enable_out" | grep -oP 'Token : \K\d+' || echo "")
+if [[ -z "$PF_TOKEN" ]]; then
+  # 检查是否已启用
+  if echo "$pf_enable_out" | grep -qi "already enabled"; then
+    log "--- pf 已启用(无新 token) ---"
+  else
+    log "!!! 启用 pf 失败:$pf_enable_out"
+    exit 1
+  fi
+else
+  log "--- pf 已启用,token = $PF_TOKEN ---"
+fi
 
 cat >"$RULES" <<EOF
 pass out quick on lo0 proto { udp, tcp } to port 53
@@ -70,9 +135,14 @@ anchor "$ANCHOR"
 EOF
 
 log "=== 4. 装载(内存中),验证 anchor 是否真的被求值 ==="
-sudo pfctl -e 2>&1 | head -2 || true
-sudo pfctl -f "$MAIN"
-sudo pfctl -a "$ANCHOR" -f "$RULES"
+sudo pfctl -f "$MAIN" || {
+  log "!!! 主规则集装载失败"
+  exit 1
+}
+sudo pfctl -a "$ANCHOR" -f "$RULES" || {
+  log "!!! anchor 规则装载失败"
+  exit 1
+}
 log "--- anchor 内规则(为空则说明未生效,这是头号风险) ---"
 sudo pfctl -a "$ANCHOR" -s rules
 
