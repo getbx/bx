@@ -348,6 +348,7 @@ type fakeMacOSLifecycleDeps struct {
 	stopCoreCount      int
 	clearBarrierCount  int
 	desiredOffCount    int
+	restoreDNSCount    int
 }
 
 func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
@@ -378,7 +379,22 @@ func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
 		f.events = append(f.events, "barrier.clear")
 		return nil
 	}
+	f.macOSLifecycleDeps.restoreSystemDNS = func(context.Context) error {
+		f.restoreDNSCount++
+		f.events = append(f.events, "dns.restore")
+		return nil
+	}
 	return f
+}
+
+// eventIndex reports where an event landed in the recorded sequence, or -1.
+func (f *fakeMacOSLifecycleDeps) eventIndex(event string) int {
+	for i, got := range f.events {
+		if got == event {
+			return i
+		}
+	}
+	return -1
 }
 
 func (f *fakeMacOSLifecycleDeps) trace() string { return strings.Join(f.events, "|") }
@@ -464,7 +480,12 @@ func TestMacOSDownForcedTeardownFailureIsActionable(t *testing.T) {
 //     can find them, and the machine has zero connectivity while `bx status`
 //     happily reports protected. Cleanup must be unconditional;
 //   - desired state stayed On, so the next boot's Guardian (RunAtLoad +
-//     KeepAlive) restarted Core straight back into the broken state.
+//     KeepAlive) restarted Core straight back into the broken state — and,
+//     worse, so did the *live* Guardian the moment Core stopped (see
+//     TestMacOSDownForcedTeardownPersistsDesiredOffBeforeStoppingCore);
+//   - the system DNS Guardian pointed at 127.0.0.1 was never restored by
+//     anyone (see
+//     TestMacOSDownForcedTeardownRestoresSystemDNSAfterGuardianIsGone).
 func TestMacOSDownForcedTeardownStopsCoreClearsBarrierAndPersistsOff(t *testing.T) {
 	deps := newFakeMacOSLifecycleDeps()
 	deps.guardianReady = func(context.Context) bool { return false }
@@ -476,9 +497,102 @@ func TestMacOSDownForcedTeardownStopsCoreClearsBarrierAndPersistsOff(t *testing.
 	if !result.Forced {
 		t.Error("Guardian 不可达时应报告走了强制拆除")
 	}
-	want := "core.shutdown|guardian.forceTeardown|desired.off|barrier.clear"
+	want := "desired.off|core.shutdown|guardian.forceTeardown|dns.restore|barrier.clear|desired.off"
 	if got := deps.trace(); got != want {
 		t.Fatalf("强制拆除调用序列 = %q, want %q", got, want)
+	}
+}
+
+// TestMacOSDownForcedTeardownPersistsDesiredOffBeforeStoppingCore pins the
+// step that makes the whole forced sequence deterministic instead of a race.
+//
+// The dangerous case is a Guardian that is *alive* but whose Down transaction
+// fails permanently (recoveryBlocked). Stopping Core first wakes Guardian's
+// monitor goroutine, which calls handleUnexpectedExit; that function reads the
+// desired state straight off the store (manager.go: `desired, err :=
+// m.store.LoadDesired()`) and, while it still reads On, reinstalls the eight
+// blocking reject routes via installBarrierForRecovery and restarts Core via
+// startCoreLocked. We would then boot Guardian out and clear the barrier — but
+// only if we won the race, and the loser's prize is exactly the orphan barrier
+// (or a brand-new unmanaged Core) this whole feature exists to prevent.
+//
+// Persisting DesiredOff *first* removes the race: LoadDesired sees Off and
+// handleUnexpectedExit returns immediately (`if desired != DesiredOn {
+// m.current = Process{}; return }`) without touching routes or Core.
+func TestMacOSDownForcedTeardownPersistsDesiredOffBeforeStoppingCore(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return true }
+	deps.client.downErr = errors.New("guardian recovery incomplete")
+
+	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
+		t.Fatalf("强制拆除应当成功: %v", err)
+	}
+	desiredOff, stopCore := deps.eventIndex("desired.off"), deps.eventIndex("core.shutdown")
+	if desiredOff < 0 || stopCore < 0 {
+		t.Fatalf("强制拆除缺步骤: %q", deps.trace())
+	}
+	if desiredOff > stopCore {
+		t.Fatalf("必须先落 DesiredOff 再停 Core,否则活着的 Guardian 会重装屏障并重启 Core: %q", deps.trace())
+	}
+	// Guardian can no longer overwrite it once booted out, so the final
+	// write makes Off the last word on disk rather than a hopeful one.
+	if deps.desiredOffCount != 2 {
+		t.Errorf("DesiredOff 应在停 Core 前落一次、bootout 后再幂等落一次,实际 %d 次", deps.desiredOffCount)
+	}
+}
+
+// TestMacOSDownForcedTeardownRestoresSystemDNSAfterGuardianIsGone covers the
+// symptom the user actually reported: "网页打不开".
+//
+// On macOS the system resolver is taken over by *Guardian*, not Core
+// (guardian/dns.go → install.EnableDNSContext → `networksetup -setdnsservers
+// <svc> 127.0.0.1`), and only Manager.Down's restoreDNS ever undoes it —
+// Daemon.Shutdown does not, and internal/supervisor does not even import
+// internal/install, so Core cannot: it is merely the process listening on
+// 127.0.0.1:53. A forced teardown that skips this leaves every DNS query
+// pointed at a listener that just exited, so the machine still cannot browse
+// even though its routes are perfectly clean.
+//
+// Ordering is load-bearing: restoring before the bootout would race Guardian
+// re-taking DNS (ensureDNS runs on its recovery paths), so this must come
+// after Guardian is gone.
+func TestMacOSDownForcedTeardownRestoresSystemDNSAfterGuardianIsGone(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return false }
+
+	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
+		t.Fatalf("强制拆除应当成功: %v", err)
+	}
+	if deps.restoreDNSCount != 1 {
+		t.Fatalf("系统 DNS 必须还原(实际 %d 次),否则 DNS 仍指向已退出的 127.0.0.1:53 监听者", deps.restoreDNSCount)
+	}
+	bootout, restoreDNS := deps.eventIndex("guardian.forceTeardown"), deps.eventIndex("dns.restore")
+	if bootout < 0 || restoreDNS < 0 || restoreDNS < bootout {
+		t.Fatalf("还原 DNS 必须在停掉 Guardian 之后(它才是接管者,活着会重新接管): %q", deps.trace())
+	}
+}
+
+// TestMacOSDownForcedTeardownDNSFailureIsActionable: a DNS restore that fails
+// must neither abort the remaining steps nor leave the user guessing — the
+// manual equivalent (`sudo bx dns off`) has to be in the error.
+func TestMacOSDownForcedTeardownDNSFailureIsActionable(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return false }
+	deps.restoreSystemDNS = func(context.Context) error {
+		deps.restoreDNSCount++
+		deps.events = append(deps.events, "dns.restore")
+		return errors.New("networksetup: 权限不足")
+	}
+
+	_, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
+	if err == nil {
+		t.Fatal("DNS 还原失败必须如实报错")
+	}
+	if deps.clearBarrierCount != 1 {
+		t.Errorf("DNS 还原失败不得中断后续步骤,阻断路由清理实际 %d 次", deps.clearBarrierCount)
+	}
+	if !strings.Contains(err.Error(), "bx dns off") {
+		t.Errorf("错误缺少可执行的下一步 %q: %v", "bx dns off", err)
 	}
 }
 
@@ -504,8 +618,11 @@ func TestMacOSDownForcedTeardownClearsBarrierEvenWhenEarlierStepsFail(t *testing
 	if deps.clearBarrierCount != 1 {
 		t.Fatalf("阻断路由清理必须照常执行(实际 %d 次),否则用户整机断网", deps.clearBarrierCount)
 	}
-	if deps.desiredOffCount != 1 {
-		t.Fatalf("关闭意图必须照常落盘(实际 %d 次),否则重启后保护自己回来", deps.desiredOffCount)
+	if deps.desiredOffCount != 2 {
+		t.Fatalf("关闭意图必须照常落盘(停 Core 前 + bootout 后各一次,实际 %d 次),否则重启后保护自己回来", deps.desiredOffCount)
+	}
+	if deps.restoreDNSCount != 1 {
+		t.Fatalf("系统 DNS 必须照常还原(实际 %d 次),否则用户仍然网页打不开", deps.restoreDNSCount)
 	}
 	for _, want := range []string{"uninstall", "route -n delete -net 0.0.0.0/2"} {
 		if !strings.Contains(err.Error(), want) {
@@ -543,9 +660,9 @@ func TestMacOSDownFallsBackToForcedTeardownWhenGuardianDownFails(t *testing.T) {
 	if deps.clearBarrierCount != 1 {
 		t.Error("Down 失败时屏障已经装上了,必须清理")
 	}
-	if deps.forceTeardownCount != 1 || deps.stopCoreCount != 1 || deps.desiredOffCount != 1 {
-		t.Errorf("强制拆除步骤不完整: stopCore=%d bootout=%d desiredOff=%d",
-			deps.stopCoreCount, deps.forceTeardownCount, deps.desiredOffCount)
+	if deps.forceTeardownCount != 1 || deps.stopCoreCount != 1 || deps.desiredOffCount != 2 || deps.restoreDNSCount != 1 {
+		t.Errorf("强制拆除步骤不完整: stopCore=%d bootout=%d desiredOff=%d dnsRestore=%d",
+			deps.stopCoreCount, deps.forceTeardownCount, deps.desiredOffCount, deps.restoreDNSCount)
 	}
 }
 
@@ -630,9 +747,11 @@ func TestShutdownRunningCoreIsNoopWhenNoCoreIsReachable(t *testing.T) {
 // how an orphan barrier would come back.
 func TestDefaultMacOSLifecycleDepsWiresEveryForcedTeardownStep(t *testing.T) {
 	deps := defaultMacOSLifecycleDeps()
-	if deps.forceTeardown == nil || deps.stopCore == nil || deps.clearBarrierRoutes == nil || deps.markDesiredOff == nil {
-		t.Fatalf("强制拆除挂钩未接全: forceTeardown=%v stopCore=%v clearBarrierRoutes=%v markDesiredOff=%v",
-			deps.forceTeardown != nil, deps.stopCore != nil, deps.clearBarrierRoutes != nil, deps.markDesiredOff != nil)
+	if deps.forceTeardown == nil || deps.stopCore == nil || deps.clearBarrierRoutes == nil ||
+		deps.markDesiredOff == nil || deps.restoreSystemDNS == nil {
+		t.Fatalf("强制拆除挂钩未接全: forceTeardown=%v stopCore=%v clearBarrierRoutes=%v markDesiredOff=%v restoreSystemDNS=%v",
+			deps.forceTeardown != nil, deps.stopCore != nil, deps.clearBarrierRoutes != nil,
+			deps.markDesiredOff != nil, deps.restoreSystemDNS != nil)
 	}
 }
 

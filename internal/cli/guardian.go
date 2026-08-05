@@ -71,15 +71,15 @@ type macOSLifecycleDeps struct {
 	consoleUID        func() (int, error)
 	ensureMenu        func(int) error
 	pollInterval      time.Duration
-	// The four hooks below make up the `bx down` escape hatch, run in this
-	// order by forcedMacOSTeardown whenever the clean Guardian transaction
-	// is unavailable or fails. None of them installs or bootstraps
-	// anything, and none of them removes /etc/bx, /var/lib/bx or any other
-	// file — that is `bx uninstall`'s job.
+	// The five hooks below make up the `bx down` escape hatch, run by
+	// forcedMacOSTeardown whenever the clean Guardian transaction is
+	// unavailable or fails. None of them installs or bootstraps anything,
+	// and none of them removes /etc/bx, /var/lib/bx or any other file —
+	// that is `bx uninstall`'s job.
 	//
 	// stopCore asks a running Core to cancel its own Run context over its
-	// control socket, so Core's defer-based teardown restores routes and
-	// DNS itself. This must happen before forceTeardown: it is the only
+	// control socket, so Core's defer-based teardown restores the routes it
+	// installed. This must happen before forceTeardown: it is the only
 	// deterministic way to stop Core. (Relying on `launchctl bootout`'s
 	// SIGTERM reaching Core through a shared process group is guesswork —
 	// nothing here calls Setpgid/Setsid, Guardian's Shutdown never signals
@@ -87,10 +87,25 @@ type macOSLifecycleDeps struct {
 	stopCore func(context.Context) error
 	// forceTeardown stops the Guardian launchd service (only).
 	forceTeardown func(context.Context) error
-	// markDesiredOff persists desired=off so Guardian's RunAtLoad+KeepAlive
-	// plist does not restart protection at the next boot — the forced path
+	// markDesiredOff persists desired=off. It runs *first*, before Core is
+	// stopped: a live Guardian's monitor reacts to Core's exit by reading
+	// this very state off the store (Manager.handleUnexpectedExit), and
+	// while it still reads On it reinstalls the blocking barrier and
+	// restarts Core behind us. With Off already persisted that handler
+	// returns immediately. It also keeps Guardian's RunAtLoad+KeepAlive
+	// plist from restarting protection at the next boot — the forced path
 	// never reaches Manager.Down, which is what normally records it.
 	markDesiredOff func() error
+	// restoreSystemDNS puts the macOS resolver back to its saved servers.
+	// On macOS it is *Guardian* that points the system at 127.0.0.1
+	// (guardian/dns.go → install.EnableDNSContext), and only Manager.Down
+	// undoes it; Daemon.Shutdown does not, and Core cannot — internal/
+	// supervisor does not even import internal/install, it merely listens
+	// on 127.0.0.1:53. Skipping this leaves DNS aimed at a listener that
+	// just exited, i.e. the "网页打不开" symptom that motivated this whole
+	// escape hatch, with routes that look perfectly clean. It runs after
+	// forceTeardown because a live Guardian would just take DNS back.
+	restoreSystemDNS func(context.Context) error
 	// clearBarrierRoutes deletes the barrier's blocking routes. Booting
 	// Guardian out drops its in-memory ownership record while the kernel
 	// keeps the /2 reject routes, which outrank Core's /1 split-default and
@@ -134,6 +149,16 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		markDesiredOff: func() error { return guardian.OpenDefaultStore().SaveDesired(guardian.DesiredOff) },
 		clearBarrierRoutes: func(ctx context.Context) error {
 			return guardian.RemoveBlockingBarrierRoutes(ctx, nil)
+		},
+		// An empty service name means "the network service recorded when
+		// DNS was taken over" (install.disableDNSDarwinContextWithRunner
+		// falls back to the saved state's service), which is exactly how
+		// Guardian itself calls it — guardian/daemon.go builds its DNS
+		// manager with NewDNSManager(""). It is a no-op returning nil when
+		// no takeover state exists and DNS is not pointed at bx.
+		restoreSystemDNS: func(ctx context.Context) error {
+			_, err := install.DisableDNSContext(ctx, "")
+			return err
 		},
 	}
 }
@@ -379,29 +404,51 @@ func forcedMacOSTeardown(ctx context.Context, deps macOSLifecycleDeps, cause err
 		return fmt.Errorf("Guardian 无法正常关闭,且强制拆除功能在此平台不可用")
 	}
 	var failures []error
-	// 1. Ask the running Core to stop itself first, while it still has a
-	//    live path to restore routes/DNS.
+	// 1. Record the user's intent BEFORE touching anything. A Guardian that
+	//    is still alive treats Core's exit as a crash and, as long as the
+	//    store still says On, reinstalls the blocking barrier and restarts
+	//    Core (Manager.handleUnexpectedExit) — racing every step below.
+	//    Persisting Off first makes that handler a no-op instead.
+	desiredErr := persistDesiredOff(deps)
+	// 2. Ask the running Core to stop itself, while it still has a live
+	//    path to restore the routes it installed.
 	if deps.stopCore != nil {
 		if err := deps.stopCore(ctx); err != nil {
 			failures = append(failures, fmt.Errorf("协作关闭 Core: %w", err))
 		}
 	}
-	// 2. Stop the Guardian service so it cannot restart Core behind us.
+	// 3. Stop the Guardian service so it cannot restart Core behind us.
 	if err := deps.forceTeardown(ctx); err != nil {
 		failures = append(failures, fmt.Errorf("停止 Guardian 服务: %w", err))
 	}
-	// 3. Record the user's intent, or the next boot brings protection back.
-	if deps.markDesiredOff != nil {
-		if err := deps.markDesiredOff(); err != nil {
-			failures = append(failures, fmt.Errorf("记录关闭意图(下次开机可能仍会自动启动保护): %w", err))
+	// 4. Put the system resolver back. Guardian owns the DNS takeover and
+	//    is the only thing that ever restores it, so this must happen here:
+	//    after it is gone (it would otherwise take DNS back), and never
+	//    before, or the machine keeps resolving through a 127.0.0.1:53
+	//    listener that exited with Core.
+	if deps.restoreSystemDNS != nil {
+		if err := deps.restoreSystemDNS(ctx); err != nil {
+			failures = append(failures, fmt.Errorf("还原系统 DNS(否则仍会网页打不开,可手动执行 sudo bx dns off): %w", err))
 		}
 	}
-	// 4. Remove the barrier's blocking routes. Nothing else can: Guardian
+	// 5. Remove the barrier's blocking routes. Nothing else can: Guardian
 	//    is gone along with its ownership record.
 	if deps.clearBarrierRoutes != nil {
 		if err := deps.clearBarrierRoutes(ctx); err != nil {
 			failures = append(failures, fmt.Errorf("清理屏障阻断路由: %w", err))
 		}
+	}
+	// 6. Persist the intent once more. Cheap, idempotent, and now
+	//    authoritative: with Guardian booted out nothing can overwrite it,
+	//    so a concurrent Up that raced step 1 cannot leave On behind.
+	//    Either write succeeding is enough — the goal is Off on disk.
+	if err := persistDesiredOff(deps); err == nil {
+		desiredErr = nil
+	} else if desiredErr != nil {
+		desiredErr = errors.Join(desiredErr, err)
+	}
+	if desiredErr != nil {
+		failures = append(failures, fmt.Errorf("记录关闭意图(下次开机可能仍会自动启动保护): %w", desiredErr))
 	}
 	if len(failures) == 0 {
 		return nil
@@ -415,6 +462,15 @@ func forcedMacOSTeardown(ctx context.Context, deps macOSLifecycleDeps, cause err
 			"或手动执行 sudo launchctl bootout system/com.getbx.bx.guard,再逐条删除阻断路由:\n  sudo %s",
 		problems, strings.Join(blockingRouteCleanupHints(), "\n  sudo "),
 	)
+}
+
+// persistDesiredOff runs the markDesiredOff hook if one is wired. A missing
+// hook is not a failure — the caller's remaining steps still have work to do.
+func persistDesiredOff(deps macOSLifecycleDeps) error {
+	if deps.markDesiredOff == nil {
+		return nil
+	}
+	return deps.markDesiredOff()
 }
 
 func blockingRouteCleanupHints() []string {
@@ -463,7 +519,7 @@ func macOSDownAction(c *urfavecli.Context) error {
 			fmt.Fprintln(os.Stderr, "⚠️  Guardian 未响应,已改走强制停止。")
 		}
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
-		fmt.Println("已执行:请求 Core 退出(由它自己还原路由与 DNS)、停止 Guardian 服务、记录关闭意图(不再开机自启)、删除屏障阻断路由。")
+		fmt.Println("已执行:记录关闭意图(不再开机自启)、请求 Core 退出(由它自己还原它装的路由)、停止 Guardian 服务、还原系统 DNS、删除屏障阻断路由。")
 		fmt.Println("请确认网络是否已恢复(例如 bx status 或打开任意网页);若仍不通,执行 sudo bx uninstall(会保留 /etc/bx 配置)。")
 		return nil
 	}
