@@ -44,6 +44,15 @@ type barrierOwnership struct {
 
 var errRecoveryIncomplete = errors.New("guardian startup recovery incomplete")
 
+// errMutationBusy marks the "another mutation holds the lock and ctx ran out
+// while queueing" failure. It is a sentinel rather than a bare ctx error so
+// LocalAPI can name it (guardian_busy) in the 500 response: that path never
+// calls needsAttention, so without a name the response carries no code at
+// all — and "Guardian is busy" is one of the two shapes a user hits while
+// repeatedly retrying sudo bx up. The ctx error stays wrapped so existing
+// errors.Is(err, context.DeadlineExceeded) callers keep working.
+var errMutationBusy = errors.New("guardian is busy with another operation")
+
 type DesiredStore interface {
 	LoadDesired() (DesiredState, error)
 	SaveDesired(DesiredState) error
@@ -994,12 +1003,12 @@ func (m *Manager) closeRecoveryDrainedLocked() {
 func (m *Manager) acquireMutation(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("%w: %w", errMutationBusy, ctx.Err())
 	case <-m.mutation:
 	}
 	if err := ctx.Err(); err != nil {
 		m.releaseMutation()
-		return err
+		return fmt.Errorf("%w: %w", errMutationBusy, err)
 	}
 	return nil
 }

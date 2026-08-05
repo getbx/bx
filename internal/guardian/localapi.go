@@ -184,7 +184,7 @@ func recoveryRequestHandler(controller Controller, recovery PathRecoveryControll
 			// 本地任何用户可读);响应只带失败码,避免把路径/链接/凭据经
 			// socket 外传。
 			log.Printf("guardian_recovery_request_failed err=%v", err)
-			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, statusOf(controller)))
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, statusOf(controller), err))
 			return
 		}
 		writeGuardianJSON(w, http.StatusAccepted, redactRecoverySnapshot(snapshot))
@@ -222,12 +222,44 @@ func statusOf(controller Controller) Status {
 // code is omitted rather than replaying a stale/unrelated value: a wrong
 // code is worse than no code, because it points troubleshooting in the
 // wrong direction.
-func failureResponseBody(before, after Status) map[string]string {
+//
+// Two of those paths are the *main* incident use case — "startup recovery
+// already failed, user keeps running bx up" and "another mutation holds the
+// lock" — so they are named from the error itself (failureCodeForError)
+// instead of being left codeless. That is not a stale value: the sentinel
+// describes exactly this call's failure. It takes precedence over the
+// LastError channel because it is derived from the error actually being
+// reported, whereas LastError is shared long-term state.
+func failureResponseBody(before, after Status, err error) map[string]string {
 	body := map[string]string{"error": "guardian operation failed"}
+	if code := failureCodeForError(err); code != "" {
+		body["code"] = code
+		return body
+	}
 	if after.LastErrorGeneration != before.LastErrorGeneration && after.LastError != "" {
 		body["code"] = after.LastError
 	}
 	return body
+}
+
+// failureCodeForError names the failures that short-circuit before any
+// needsAttention call. Only sentinels are matched — an unrecognised error
+// yields "" so the caller falls back to the LastError channel (and, failing
+// that, to no code at all). A bare context error is deliberately not
+// "guardian_busy": only acquireMutation's queueing timeout wraps
+// errMutationBusy, while a ctx error surfacing from deeper mutation work
+// means something else entirely.
+func failureCodeForError(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, errRecoveryIncomplete):
+		return "recovery_incomplete"
+	case errors.Is(err, errMutationBusy):
+		return "guardian_busy"
+	default:
+		return ""
+	}
 }
 
 func recoveryCurrentHandler(controller PathRecoveryController, ownerUID uint32) http.HandlerFunc {
@@ -303,7 +335,7 @@ func updateHandler(controller Controller, updater UpdateController, mutations *a
 			// 本地任何用户可读);响应只带失败码,避免把路径/链接/凭据经
 			// socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
-			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status()))
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status(), err))
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, result)
@@ -356,7 +388,7 @@ func migrationHandler(controller Controller, migration MigrationController, muta
 			// 本地任何用户可读);响应只带失败码,避免把路径/链接/凭据经
 			// socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
-			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status()))
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status(), err))
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, controller.Status())
@@ -433,7 +465,7 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 			// 本地任何用户可读);响应只带失败码,避免把路径/链接/凭据经
 			// socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
-			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status()))
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status(), err))
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, controller.Status())

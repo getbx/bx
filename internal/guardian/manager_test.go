@@ -2443,3 +2443,64 @@ func eventually(t *testing.T, condition func() bool) {
 	}
 	t.Fatal("condition was not satisfied before timeout")
 }
+
+// 事故主用例:另一条 mutation 占着锁时 bx up 排队超时。该路径从不走
+// needsAttention,此前 500 响应因此不带任何码——「Guardian 正忙」正是用户
+// 反复 sudo bx up 时最常撞上的形态,必须有一个属于本次失败的真实名字。
+func TestManagerBusyMutationIsNamedGuardianBusy(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.blockStart = make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- env.manager.Up(context.Background()) }()
+	select {
+	case <-env.runner.startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Up did not enter Core start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- env.manager.Down(ctx) }()
+	<-ctx.Done()
+	close(env.runner.blockStart)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	err := <-secondDone
+	if !errors.Is(err, errMutationBusy) {
+		t.Fatalf("排队超时的 Down err = %v, want errMutationBusy", err)
+	}
+	// 既有调用方按 ctx 错误分支处理,包装不得破坏它。
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("排队超时的 Down err = %v, 仍须可被 errors.Is(ctx err) 识别", err)
+	}
+	if got := env.manager.Status().LastError; got != "" {
+		t.Errorf("busy 短路不应改写 LastError,实际 = %q", got)
+	}
+}
+
+// 「启动恢复未完成」与「Guardian 正忙」是本次失败的真实描述,不是从别处
+// 抄来的陈旧码;它们由错误本身识别,不经 needsAttention,故也不会污染
+// status.LastError(那是长期状态,不该被一次排队超时改写)。
+func TestFailureCodeForErrorNamesTheRealFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"recoveryBlocked 短路", errRecoveryIncomplete, "recovery_incomplete"},
+		{"包装后的 recoveryBlocked", fmt.Errorf("up: %w", errRecoveryIncomplete), "recovery_incomplete"},
+		{"acquireMutation 排队超时", fmt.Errorf("%w: %w", errMutationBusy, context.DeadlineExceeded), "guardian_busy"},
+		{"其它错误不硬凑码", errors.New("start installed Core: boom"), ""},
+		{"裸 ctx 错误不等于 busy", context.DeadlineExceeded, ""},
+		{"nil", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := failureCodeForError(tt.err); got != tt.want {
+				t.Fatalf("failureCodeForError(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}

@@ -246,11 +246,15 @@ func TestMutationHandlerReturnsCodeOnRepeatedIdenticalFailure(t *testing.T) {
 	}
 }
 
-// 真实失败路径里有好几条从不调用 needsAttention 就直接返回 err
-// (acquireMutation 超时、recoveryBlocked、Down 的 DNS-restore-恢复成功分支清空
-// LastError 后返回):此时 500 响应里若仍夹带 controller.Status().LastError,
-// 拿到的会是上一次不相关失败留下的陈旧值(或空串),把排查者指向错误方向。
-// 宁可不带 code,也不能带错的 code。
+// 真实失败路径里有好几条从不调用 needsAttention 就直接返回 err(如 Down 的
+// DNS-restore-恢复成功分支清空 LastError 后返回,或任何深层错误直接冒泡):
+// 此时 500 响应里若仍夹带 controller.Status().LastError,拿到的会是上一次
+// 不相关失败留下的陈旧值(或空串),把排查者指向错误方向。宁可不带 code,
+// 也不能带错的 code。
+// (recoveryBlocked 与 acquireMutation 排队超时是例外:它们有各自的哨兵错误,
+// 由 failureCodeForError 命名 —— 见
+// TestMutationHandlerNamesRecoveryIncompleteAndBusyFailures。那不是陈旧值,
+// 而是对本次失败的准确描述。)
 func TestMutationHandlerOmitsStaleOrEmptyCodeWhenLastErrorUnchanged(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1239,4 +1243,52 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+// 事故主用例:用户反复 sudo bx up,每次都撞在「启动恢复未完成」或「Guardian
+// 正忙」上。这两条短路从不调用 needsAttention,按「宁可无码也不给错码」的
+// 规则会被省略 code —— 最需要指引的场景反而什么都没有。它们各自有属于本次
+// 失败的真实码,由错误本身识别,与 LastError 的新鲜度无关。
+func TestMutationHandlerNamesRecoveryIncompleteAndBusyFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{"recoveryBlocked 短路", errRecoveryIncomplete, "recovery_incomplete"},
+		{"acquireMutation 排队超时", fmt.Errorf("%w: %w", errMutationBusy, context.DeadlineExceeded), "guardian_busy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			restore := swapGuardianLogOutput(&buf)
+			defer restore()
+
+			// LastError 停留在一条更早的、不相关的失败上,且这次调用不会更新它。
+			controller := &fakeController{status: Status{LastError: "stale_unrelated_code"}}
+			handler := mutationHandler(controller, func(context.Context) error { return tt.err }, newAcceptedMutations())
+
+			rec := httptest.NewRecorder()
+			handler(rec, rootMutationRequest(t))
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("状态码 = %d, want 500", rec.Code)
+			}
+			var body map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["code"] != tt.wantCode {
+				t.Fatalf("code = %q, want %q(body = %v)", body["code"], tt.wantCode, body)
+			}
+			// 陈旧码绝不能借这条路径回来。
+			if strings.Contains(rec.Body.String(), "stale_unrelated_code") {
+				t.Errorf("响应不得夹带陈旧码,实际 = %s", rec.Body.String())
+			}
+			// 响应仍只带码,原始错误串只进 Guardian 日志。
+			if !strings.Contains(buf.String(), tt.err.Error()) {
+				t.Errorf("Guardian 日志必须记录完整错误,实际 = %q", buf.String())
+			}
+		})
+	}
 }
