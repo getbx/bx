@@ -89,18 +89,19 @@ func ensureMacOSMenuRunningWithDeps(ctx context.Context, uid int, deps menuBoots
 	legacyDomainLabel := domain + "/" + legacyMenuLaunchdLabel
 
 	// actionable wraps a launchctl-related error with a manual recovery hint
-	// when it was caused by the bounded context expiring, instead of the
-	// caller seeing a bare (and easily misread as "still broken")
-	// "context deadline exceeded" or "not running" message.
+	// (a command the console user can run themselves, no root needed)
+	// instead of letting the caller see a bare error with no next step. This
+	// is deliberately unconditional, not just for a timed-out context: the
+	// production failure that motivated this hint was a normal (non-timeout)
+	// error from `bx up` (root) trying to bootstrap the console user's GUI
+	// domain, and the fix that unblocked the user was exactly this command
+	// run manually as themselves.
 	actionable := func(err error) error {
 		if err == nil {
 			return nil
 		}
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("%w (menu bootstrap timed out; reload manually with: launchctl bootout %s && launchctl bootstrap %s %s)",
-				err, currentDomainLabel, domain, currentPlist)
-		}
-		return err
+		return fmt.Errorf("%w (reload manually as the console user (not root): launchctl bootout %s; launchctl bootstrap %s %s)",
+			err, currentDomainLabel, domain, currentPlist)
 	}
 
 	currentLoaded, err := deps.control.Loaded(ctx, currentDomainLabel)
@@ -114,7 +115,7 @@ func ensureMacOSMenuRunningWithDeps(ctx context.Context, uid int, deps menuBoots
 
 	commands := menuLaunchdCommands(uid, currentLoaded, legacyLoaded, currentPlist)
 	for _, args := range commands {
-		if args[0] == "bootstrap" {
+		if isMenuBootstrapCommand(args) {
 			if err := deps.remove(legacyPlist); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove legacy menu LaunchAgent: %w", err)
 			}
@@ -158,9 +159,44 @@ func menuLaunchdCommands(uid int, currentLoaded, legacyLoaded bool, currentPlist
 	if currentLoaded {
 		commands = append(commands, []string{"bootout", domain + "/" + menuLaunchdLabel})
 	}
-	commands = append(commands, []string{"bootstrap", domain, currentPlist})
+	commands = append(commands, menuBootstrapCommand(uid, currentPlist))
 	commands = append(commands, []string{"kickstart", "-k", domain + "/" + menuLaunchdLabel})
 	return commands
+}
+
+// menuBootstrapCommand builds the launchctl invocation that (re)loads the
+// menu-bar LaunchAgent into the console user's GUI domain.
+//
+// `bx up` runs as root (it manages routing and TUN devices), and a root
+// process bootstrapping gui/<uid> directly fails every time with EIO(5):
+// "Bootstrap failed: 5: Input/output error" — root carries no audit session
+// token for the target user's GUI domain, and bootstrap (unlike bootout or
+// kickstart) requires actually being inside that session to register the
+// new job. `launchctl asuser <uid>` re-execs launchctl with that user's
+// session token before issuing the real bootstrap.
+//
+// Confirmed on real hardware (2026-08-05): `bx up` (root) hit exactly this
+// EIO on every run, while running the identical bootstrap manually as the
+// console user (no asuser, no root) succeeded immediately — i.e. the
+// failure is root's context, not the command itself.
+func menuBootstrapCommand(uid int, plist string) []string {
+	domain := fmt.Sprintf("gui/%d", uid)
+	return []string{"asuser", strconv.Itoa(uid), "launchctl", "bootstrap", domain, plist}
+}
+
+// isMenuBootstrapCommand reports whether args is the launchctl invocation
+// built by menuBootstrapCommand. It no longer starts with "bootstrap"
+// directly (that got pushed past the asuser/uid/launchctl prefix), so the
+// caller that needs to single out the bootstrap step (to remove the legacy
+// plist right before launchd re-reads the directory) checks for the
+// "bootstrap" token anywhere in the args instead of at args[0].
+func isMenuBootstrapCommand(args []string) bool {
+	for _, arg := range args {
+		if arg == "bootstrap" {
+			return true
+		}
+	}
+	return false
 }
 
 func consoleUserUID() (int, error) {
