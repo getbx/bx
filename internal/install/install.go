@@ -37,7 +37,25 @@ const (
 	// guardian package already imports install, so importing guardian back
 	// into install would create a cycle.
 	GuardianSocketPath = "/var/run/bx/guardian.sock"
+
+	// GuardianStdoutLogPath/GuardianStderrLogPath are the launchd log files
+	// declared by the Guardian plist. They live here (not behind the darwin
+	// build tag) so cross-platform callers — the diagnostics archive, the
+	// Guardian client's troubleshooting hint — can name them without a tag.
+	GuardianStdoutLogPath = "/var/log/bx-guard.log"
+	GuardianStderrLogPath = "/var/log/bx-guard.err.log"
 )
+
+// GuardianLogPaths returns the Guardian launchd log files on macOS (nil
+// elsewhere). These hold the *full* failure detail — server IP, bypass
+// CIDRs, raw error strings — so they are installed 0600 root:wheel
+// (SecureGuardianLogs); launchd itself would create them 0644.
+func GuardianLogPaths() []string {
+	if runtime.GOOS == "darwin" {
+		return []string{GuardianStdoutLogPath, GuardianStderrLogPath}
+	}
+	return nil
+}
 
 // BinPath 是 bx 自身安装到 PATH 的规范位置(OS-aware,见 paths_{windows,other}.go)。
 

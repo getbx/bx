@@ -391,3 +391,52 @@ func (f *fakeGuardianLaunchdControl) Run(_ context.Context, args ...string) erro
 	f.calls = append(f.calls, call)
 	return f.runErr[call]
 }
+
+// Guardian 日志里有服务器 IP、bypass 网段和完整错误串(可能含路径/链接/凭据)。
+// 真机实测 launchd 建出来的是 0644 —— 任何本地用户都能读。安装时必须收紧到 0600。
+func TestSecureGuardianLogsAtCreatesRootOnlyFiles(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "bx-guard.err.log")
+	if err := os.WriteFile(existing, []byte("166.1.190.123\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "bx-guard.log")
+
+	owners := map[string][2]int{}
+	err := secureGuardianLogsAt([]string{existing, missing}, func(path string, uid, gid int) error {
+		owners[path] = [2]int{uid, gid}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{existing, missing} {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("Guardian 日志必须存在(不存在就创建):%v", statErr)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s mode = %#o, want 0600", path, got)
+		}
+		if owners[path] != [2]int{0, 0} {
+			t.Errorf("%s owner = %v, want root:wheel(0,0)", path, owners[path])
+		}
+	}
+	// 收紧权限不能顺手清空已有日志——那等于销毁排查材料。
+	content, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "166.1.190.123") {
+		t.Errorf("已有日志内容必须保留,实际 = %q", content)
+	}
+}
+
+// 安装 Guardian 单元时顺带收紧日志权限,不能只在某条罕见路径上做。
+func TestGuardianLogPathsCoverBothLaunchdLogs(t *testing.T) {
+	paths := GuardianLogPaths()
+	want := []string{"/var/log/bx-guard.log", "/var/log/bx-guard.err.log"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("GuardianLogPaths() = %v, want %v", paths, want)
+	}
+}
