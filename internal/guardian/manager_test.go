@@ -73,6 +73,61 @@ func swapGuardianLogOutput(w io.Writer) func() {
 	return func() { log.SetOutput(previous) }
 }
 
+// acquireMutation 因锁被另一变更操作占用而超时,是真实并发场景(1 分钟的
+// guardianMutationTimeout 完全够真机上撞见)——它在触碰 LastError 之前就直接
+// return err。回传给调用方的 code 绝不能是更早一次不相关失败遗留的陈旧值。
+func TestManagerAcquireMutationTimeoutDoesNotTouchLastError(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.needsAttention(DesiredOn, "stale_unrelated_code")
+
+	if err := env.manager.acquireMutation(context.Background()); err != nil {
+		t.Fatalf("hold mutation lock: %v", err)
+	}
+	defer env.manager.releaseMutation()
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := env.manager.Up(expired); err == nil {
+		t.Fatal("Up 应在锁被占用且 ctx 已过期时失败")
+	}
+	if got := env.manager.Status().LastError; got != "stale_unrelated_code" {
+		t.Errorf("acquireMutation 超时不应触碰 LastError,实际 = %q", got)
+	}
+}
+
+// recoveryBlocked 为真时 Up/Down 直接 return errRecoveryIncomplete,从不触碰
+// LastError。回传给调用方的 code 绝不能是更早一次不相关失败遗留的陈旧值。
+func TestManagerRecoveryBlockedDoesNotTouchLastError(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.needsAttention(DesiredOn, "stale_unrelated_code")
+	env.manager.recoveryBlocked = true
+
+	err := env.manager.Up(context.Background())
+	if !errors.Is(err, errRecoveryIncomplete) {
+		t.Fatalf("err = %v, want errRecoveryIncomplete", err)
+	}
+	if got := env.manager.Status().LastError; got != "stale_unrelated_code" {
+		t.Errorf("recoveryBlocked 短路不应触碰 LastError,实际 = %q", got)
+	}
+}
+
+// Down 的 DNS-restore-失败但恢复成功分支(装屏障时的 setStatus 字面量已把
+// LastError 清空为 "",随后 core 重启与屏障拆除都成功)全程不调用
+// needsAttention 就 return restoreErr。回传给调用方的 code 绝不能是更早一次
+// 不相关失败遗留的陈旧值——此时 LastError 已被清空,该回传空,不该回传陈旧值。
+func TestManagerDownRestoreFailureButRecoverySuccessLeavesLastErrorEmpty(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	env.manager.needsAttention(DesiredOn, "stale_unrelated_code")
+	env.dns.restoreErr = errors.New("dns restore failed")
+
+	if err := env.manager.Down(context.Background()); err == nil {
+		t.Fatal("Down 应在 DNS 还原失败时返回错误")
+	}
+	if got := env.manager.Status().LastError; got != "" {
+		t.Errorf("恢复成功后 LastError 应被清空,不应残留陈旧值,实际 = %q", got)
+	}
+}
+
 func TestManagerUpVerifiesDNSBeforeProtected(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.dns.record = true
