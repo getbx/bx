@@ -118,6 +118,25 @@ struct RecoveryPresentationTests {
             )
         )
         expect(automaticFailure.title == "Blocked", "automatic recovery failure is blocked")
+
+        // A snapshot that paints the shield green must not outlive a warning
+        // verdict, or the icon contradicts the verdict. Non-green ones say more
+        // than the generic warning does, so they survive.
+        expect(
+            recoverySnapshotSurvivingWarning(recoverySnapshot(state: "succeeded", stage: "succeeded")) == nil,
+            "green succeeded snapshot is dropped under a warning"
+        )
+        let stillRunning = recoverySnapshot(state: "running", stage: "rebind_underlay")
+        expect(
+            recoverySnapshotSurvivingWarning(stillRunning) == stillRunning,
+            "yellow reconnecting snapshot survives a warning"
+        )
+        let failedSnapshot = recoverySnapshot(state: "failed", stage: "failed", errorCode: "transport_unavailable")
+        expect(
+            recoverySnapshotSurvivingWarning(failedSnapshot) == failedSnapshot,
+            "red failed snapshot survives a warning and keeps its severity"
+        )
+        expect(recoverySnapshotSurvivingWarning(nil) == nil, "no snapshot stays no snapshot")
     }
 
     private static func recoverySnapshot(

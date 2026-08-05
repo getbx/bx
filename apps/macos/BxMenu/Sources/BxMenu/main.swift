@@ -210,7 +210,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             service: report.dnsService
         )
         guard dns.allowsProtected else {
-            recoverySnapshot = nil
+            recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)
             return .warning(dns.menuWarning ?? "DNS status unavailable", version: version)
         }
         return .connected(report, version: version ?? "unknown", dns: dns.label)
@@ -931,7 +931,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             }
         }
     }
-
 
     private func runBx(_ arguments: [String]) -> CommandResult {
         let process = Process()

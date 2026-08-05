@@ -42,6 +42,20 @@ func visibleStatusRecovery(_ snapshot: RecoverySnapshot?) -> RecoverySnapshot? {
     return recoverySnapshotForDisplay(snapshot, allowsTerminalSuccess: false)
 }
 
+/// Filters a recovery snapshot for a state that resolved to a warning.
+///
+/// `updateIcon` lets a live recovery snapshot override the state-derived
+/// indicator, so a snapshot that paints the shield green (a `succeeded`
+/// reconnect, still published while `reconnectInFlight` is true) would
+/// contradict the warning and show green while, say, DNS is unmanaged. Those
+/// are dropped. Yellow `Reconnecting` and red `Reconnect Failed` snapshots are
+/// kept: they carry more information than the generic warning, and dropping the
+/// red one would quietly downgrade a failure to a mere warning.
+func recoverySnapshotSurvivingWarning(_ snapshot: RecoverySnapshot?) -> RecoverySnapshot? {
+    guard let snapshot else { return nil }
+    return recoveryPresentation(for: snapshot).indicator == .green ? nil : snapshot
+}
+
 func passiveStatusRecovery(protectionState: String?, recovery: RecoverySnapshot?) -> RecoverySnapshot? {
     if protectionState == "blocked" || protectionState == "needs_attention" {
         return nil
