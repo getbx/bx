@@ -15,6 +15,91 @@ import (
 	"time"
 )
 
+// 用户看到 "guardian operation failed" 时无从下手;必须把失败码和下一步给出来。
+func TestGuardianHTTPErrorSurfacesFailureCode(t *testing.T) {
+	err := guardianHTTPError("/v1/up", http.StatusInternalServerError,
+		[]byte(`{"error":"guardian operation failed","code":"core_ownership_uncertain"}`))
+
+	msg := err.Error()
+	if !strings.Contains(msg, "core_ownership_uncertain") {
+		t.Errorf("必须展示失败码,实际:%s", msg)
+	}
+	if !strings.Contains(msg, "bx logs") && !strings.Contains(msg, "bx doctor") {
+		t.Errorf("必须给出下一步排查动作,实际:%s", msg)
+	}
+}
+
+// 旧版 Guardian 不回传 code 时不得崩溃或输出空码。
+func TestGuardianHTTPErrorWithoutCodeStaysReadable(t *testing.T) {
+	err := guardianHTTPError("/v1/up", http.StatusInternalServerError,
+		[]byte(`{"error":"guardian operation failed"}`))
+	if strings.Contains(err.Error(), "code=") {
+		t.Errorf("无 code 时不应输出空码,实际:%s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "guardian operation failed") {
+		t.Errorf("无 code 时应保留原文案,实际:%s", err.Error())
+	}
+}
+
+// 响应体既非法 JSON 又无内容时,仍要保持可读、不崩溃。
+func TestGuardianHTTPErrorWithUnparsableBodyStaysReadable(t *testing.T) {
+	err := guardianHTTPError("/v1/up", http.StatusInternalServerError, nil)
+	if strings.Contains(err.Error(), "code=") {
+		t.Errorf("空 body 不应输出空码,实际:%s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "returned 500") {
+		t.Errorf("空 body 仍要保留状态码,实际:%s", err.Error())
+	}
+}
+
+// client.Up()(经 c.request 共用路径)要把 Guardian 500 响应里的 code 透传给调用方。
+func TestClientRequestSurfacesFailureCode(t *testing.T) {
+	client := &Client{HTTPClient: &http.Client{Transport: recoveryRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"guardian operation failed","code":"core_ownership_uncertain"}`)),
+		}, nil
+	})}}
+	_, err := client.Up(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "core_ownership_uncertain") {
+		t.Fatalf("Up() error = %v, want failure code surfaced", err)
+	}
+}
+
+// client.Update() 走独立的解析路径(非 c.request),同样要透传 code。
+func TestClientUpdateSurfacesFailureCode(t *testing.T) {
+	client := &Client{HTTPClient: &http.Client{Transport: recoveryRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"guardian operation failed","code":"core_ownership_uncertain"}`)),
+		}, nil
+	})}}
+	_, err := client.Update(context.Background(), UpdateRequest{
+		TransactionID: "tx-1", FromVersion: "v1", ToVersion: "v2",
+		AssetSHA256: strings.Repeat("a", 64), PackagePath: "/var/lib/bx/update/staging/tx-1/package.tar.gz",
+	})
+	if err == nil || !strings.Contains(err.Error(), "core_ownership_uncertain") {
+		t.Fatalf("Update() error = %v, want failure code surfaced", err)
+	}
+}
+
+// client.RequestRecovery() 走第三条独立解析路径,同样要透传 code。
+func TestClientRequestRecoverySurfacesFailureCode(t *testing.T) {
+	client := &Client{HTTPClient: &http.Client{Transport: recoveryRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"guardian operation failed","code":"core_ownership_uncertain"}`)),
+		}, nil
+	})}}
+	_, err := client.RequestRecovery(context.Background(), RecoveryRequest{Reason: "manual"})
+	if err == nil || !strings.Contains(err.Error(), "core_ownership_uncertain") {
+		t.Fatalf("RequestRecovery() error = %v, want failure code surfaced", err)
+	}
+}
+
 func TestStatusClientRedactsNestedRecoveryBeforePersistence(t *testing.T) {
 	secret := "vless://user:password@example.test?token=secret"
 	client := &Client{HTTPClient: &http.Client{Transport: recoveryRoundTripperFunc(func(*http.Request) (*http.Response, error) {

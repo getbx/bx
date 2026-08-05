@@ -117,14 +117,8 @@ func (c *Client) Update(ctx context.Context, request UpdateRequest) (UpdateResul
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		var failure struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(response.Body).Decode(&failure)
-		if failure.Error != "" {
-			return UpdateResult{}, fmt.Errorf("Guardian /v1/update returned %d: %s", response.StatusCode, failure.Error)
-		}
-		return UpdateResult{}, fmt.Errorf("Guardian /v1/update returned %d", response.StatusCode)
+		body, _ := io.ReadAll(response.Body)
+		return UpdateResult{}, guardianHTTPError("/v1/update", response.StatusCode, body)
 	}
 	var result UpdateResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
@@ -177,7 +171,8 @@ func (c *Client) recoveryRequest(ctx context.Context, method, path string, body 
 	}
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
-		return RecoverySnapshot{}, fmt.Errorf("Guardian %s returned %d", path, response.StatusCode)
+		body, _ := io.ReadAll(response.Body)
+		return RecoverySnapshot{}, guardianHTTPError(path, response.StatusCode, body)
 	}
 	var snapshot RecoverySnapshot
 	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
@@ -210,14 +205,8 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		var failure struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(response.Body).Decode(&failure)
-		if failure.Error != "" {
-			return Status{}, fmt.Errorf("Guardian %s returned %d: %s", path, response.StatusCode, failure.Error)
-		}
-		return Status{}, fmt.Errorf("Guardian %s returned %d", path, response.StatusCode)
+		body, _ := io.ReadAll(response.Body)
+		return Status{}, guardianHTTPError(path, response.StatusCode, body)
 	}
 	var status Status
 	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
@@ -228,6 +217,37 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 		status.NetworkGeneration = status.Recovery.Generation
 	}
 	return status, nil
+}
+
+// guardianFailureBody mirrors failureResponseBody in localapi.go: the JSON
+// shape Guardian's four mutation handlers (mutation/update/migration/
+// recoveryRequest) write on a 500 response. "code" is present only when the
+// underlying failure actually set a fresh LastError this call — see
+// failureResponseBody's comment for why a missing code must stay missing
+// rather than replay a stale one.
+type guardianFailureBody struct {
+	Error string `json:"error"`
+	Code  string `json:"code"`
+}
+
+// guardianHTTPError turns a non-2xx Guardian HTTP response into a readable
+// error. When the body carries a failure code, the message surfaces it
+// alongside concrete next steps (`sudo bx doctor` / `sudo bx logs`) instead
+// of leaving the operator with just "guardian operation failed" and no way
+// to act on it. A missing or unparsable code falls back to the original,
+// terser message — never an empty "code=" placeholder.
+func guardianHTTPError(path string, statusCode int, body []byte) error {
+	var failure guardianFailureBody
+	_ = json.Unmarshal(body, &failure)
+	switch {
+	case failure.Error != "" && failure.Code != "":
+		return fmt.Errorf("Guardian %s returned %d: %s(code=%s)。排查:sudo bx doctor;详细日志 sudo bx logs",
+			path, statusCode, failure.Error, failure.Code)
+	case failure.Error != "":
+		return fmt.Errorf("Guardian %s returned %d: %s", path, statusCode, failure.Error)
+	default:
+		return fmt.Errorf("Guardian %s returned %d", path, statusCode)
+	}
 }
 
 func guardianHTTPClient(socketPath string) *http.Client {
