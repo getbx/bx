@@ -202,6 +202,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             )
         }
         guard report.tunnelHealthy else {
+            recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)
             return .warning("Tunnel unhealthy", version: version)
         }
         let dns = dnsPresentation(
