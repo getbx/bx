@@ -21,6 +21,39 @@
 
 另:`SecureGuardianLogs()` 目前只在 `WriteGuardianUnit` 里调用,而 `bx up` 仅在 `!guardianInstalled()` 时才走该路径。因此**既有安装的日志仍是 0644**(真机实测,内含服务器 IP 与 116 条 bypass 网段),日志被删后 launchd 重建也是 0644。
 
+## ⚠️ 本计划 Task 1 的判据是错的(2026-08-05 复审推翻,实现已回退)
+
+原文写「`launching` 标记 PID 恒为 0,**PID==0 结构上不可能对应任何活进程**」——**这是范畴错误**。
+
+追该标记的出身(`3ba59fc fix(macos): retain guardian ownership across launch failures`):
+标记在 `operations.Start()` **之前**落盘,只有 `Wait()` 证实清理完成后才清除。因此它的语义是:
+
+> **「我可能已经 fork 了一个连 PID 都没来得及记录的 Core」**
+
+PID==0 不是「没有进程」,而是「**我连 PID 都没有,无法向 OS 求证**」——**最强的不确定,不是最弱的**。
+它还是这套机制里**唯一跨进程、跨重启存活**的不确定性载体(内存态 `m.current.Uncertain`
+随守护进程消失)。
+
+按错误判据放宽会造成真实的双 Core 风险(复审逐条验证):Core 会在 Guardian 死后存活
+(代码里的收养路径即证明)、无 PDEATHSIG、无单例锁,Core#2 会经 `os.Remove(SockPath)`
+抢走控制 socket 与 split-default 路由;此后 `bx down` 只停得到 Core#2,Core#1 成为
+关不掉的失控进程;而 Core#1 将来退出时会用**自己那份旧快照**还原路由/DNS,掀掉 Core#2
+的劫持 → `bx status` 显绿而流量已明文直连。正是 CLAUDE.md 反复加固过的 fail-open 那一类。
+
+**可行的替代方案(复审建议,择一重做):**
+
+1. **两段式 marker(推荐)**:`Start()` 一返回就立刻落一条带子进程 PID 的记录(新 state,
+   如 `spawned`,`valid()` 放行 PID>0),再去 Inspect/写 owned。此后磁盘形态**可区分**:
+   PID==0 ⇒ 确实还没 fork 过(**判据这时才真正成立**),放心自愈;PID>0 ⇒ 问 OS,
+   死了自愈、活着继续 fail-closed。残留窗口缩到 fork 与一次写盘之间。
+2. **boot 代际兜底**:marker 记当次 boot 标识(项目已有 `Generation`=进程 starttime 先例)。
+   跨 boot 的 marker ⇒ 那个纪元的进程不可能存活 ⇒ 无条件自愈。逻辑上无懈可击,
+   且大概率覆盖用户真机那次(重启后即自愈)。
+3. **显式人工兜底**:保持拒绝,但把 500 的排查指引升级成有文档的命令
+   (如 `bx recover --clear-core-record`),让用户不必手删文件,也绝不静默起第二个 Core。
+
+Task 2(日志权限复述)与 Task 3(文档)不受此影响,判据独立成立。
+
 ## Global Constraints
 
 - **不得削弱 fail-closed**。放宽只允许针对「结构上不可能对应任何活进程」的记录;「进程还在但身份存疑」必须继续被拦住。
