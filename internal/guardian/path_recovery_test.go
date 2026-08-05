@@ -1471,3 +1471,34 @@ func (c *fakeCorePathClient) requestsSnapshot() []supervisor.PathRecoveryRequest
 	defer c.mu.Unlock()
 	return append([]supervisor.PathRecoveryRequest(nil), c.requests...)
 }
+
+// 事故中同一次恢复重试了 178 次、71 分钟,永远不停到用户可处理的状态。
+// 超过上限必须放弃,让状态落到 needs_attention。
+func TestShouldRetryPathRecoveryStopsAtAttemptCap(t *testing.T) {
+	newTransaction := func(attempt int) pathRecoveryTransaction {
+		return pathRecoveryTransaction{
+			request:  RecoveryRequest{Reason: "underlay_changed", Generation: "gen-1"},
+			snapshot: RecoverySnapshot{Attempt: attempt},
+		}
+	}
+	failed := RecoverySnapshot{State: "failed", ErrorCode: "recovery_failed"}
+
+	if !shouldRetryPathRecovery(newTransaction(1), failed, DesiredOn) {
+		t.Error("首次失败应当重试")
+	}
+	if !shouldRetryPathRecovery(newTransaction(maxPathRecoveryAttempts-1), failed, DesiredOn) {
+		t.Error("未达上限时应当继续重试")
+	}
+	if shouldRetryPathRecovery(newTransaction(maxPathRecoveryAttempts), failed, DesiredOn) {
+		t.Error("达到上限必须停止重试,否则用户会被无限重试困住")
+	}
+	if shouldRetryPathRecovery(newTransaction(178), failed, DesiredOn) {
+		t.Error("远超上限必须停止(事故中实际到了 178 次)")
+	}
+}
+
+func TestPathRecoveryAttemptCapIsBounded(t *testing.T) {
+	if maxPathRecoveryAttempts <= 0 || maxPathRecoveryAttempts > 60 {
+		t.Errorf("重试上限 = %d,应为正且不过大(事故中 178 次/71 分钟是不可接受的)", maxPathRecoveryAttempts)
+	}
+}
