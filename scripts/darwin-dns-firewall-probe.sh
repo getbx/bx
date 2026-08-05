@@ -337,14 +337,24 @@ if [[ "$PATHB_LOAD_OK" -eq 1 && "$PATHB_RULES_LISTED_OK" -eq 1 && "$BH_B_OK" -eq
 fi
 
 load_status="否"; [[ "$PATHB_LOAD_OK" -eq 1 ]] && load_status="是"
-listed_status="否"; [[ "$PATHB_RULES_LISTED_OK" -eq 1 ]] && listed_status="是"
+
+# 下面几项只有在装载成功、真的跑过对应检查时才有意义;装载失败时它们从未
+# 被执行,必须显示为"未测"而不是"否"——"否"意味着"测过且不通过",两者
+# 语义不同,不能混淆,否则会被误读成"已验证为受影响/不通过"。
+listed_status="未测"
 a_status="未测"
-if [[ "$BH_A_RAN" -eq 1 ]]; then
-  if [[ "$BH_A_OK" -eq 1 ]]; then a_status="是"; else a_status="否"; fi
+b_status="未测"
+c_status="未测"
+unaffected_status="未测"
+if [[ "$PATHB_LOAD_OK" -eq 1 ]]; then
+  listed_status="否"; [[ "$PATHB_RULES_LISTED_OK" -eq 1 ]] && listed_status="是"
+  if [[ "$BH_A_RAN" -eq 1 ]]; then
+    if [[ "$BH_A_OK" -eq 1 ]]; then a_status="是"; else a_status="否"; fi
+  fi
+  b_status="否"; [[ "$BH_B_OK" -eq 1 ]] && b_status="是"
+  c_status="否"; [[ "$BH_C_OK" -eq 1 ]] && c_status="是"
+  unaffected_status="否"; [[ "$PATHB_APPLE_UNAFFECTED_OK" -eq 1 ]] && unaffected_status="是"
 fi
-b_status="否"; [[ "$BH_B_OK" -eq 1 ]] && b_status="是"
-c_status="否"; [[ "$BH_C_OK" -eq 1 ]] && c_status="是"
-unaffected_status="否"; [[ "$PATHB_APPLE_UNAFFECTED_OK" -eq 1 ]] && unaffected_status="是"
 
 log ""
 log "=== 结论摘要:路径 B(挂进 com.apple 命名空间)是否可行? ==="
@@ -357,13 +367,18 @@ log "  Apple 其它子 anchor 未受影响:  $unaffected_status"
 log "  >>> 路径 B 结论:$PATHB_VERDICT <<<"
 
 # ============================================================
-# 路径 A(兜底,侵入):仅当路径 B 未通过验证、且用户显式设 PROBE_REPLACE_MAIN=1
-# 时才执行。完整保留备份 / 第三方内容护栏 / FORCE_REPLACE_MAIN / 主规则集
-# 条件还原这一整套机制。
+# 路径 A(兜底,侵入):仅当"路径 B 未通过验证"与"用户显式设
+# PROBE_REPLACE_MAIN=1"两个条件同时成立才执行——是"与"不是"或"。哪怕环境
+# 变量因为别的原因(比如 shell 里有残留 export)恰好是 1,只要路径 B 已判定
+# 可行,也绝不执行这一步侵入式的主规则集替换。完整保留备份 / 第三方内容护
+# 栏 / FORCE_REPLACE_MAIN / 主规则集条件还原这一整套机制。
 # ============================================================
 log ""
 if [[ "$PATHB_VERDICT" == "可行" ]]; then
-  log "=== 路径 B 已验证可行,默认无需验证路径 A ==="
+  log "=== 路径 B 已验证可行,路径 A 无需验证,已跳过 ==="
+  if [[ "${PROBE_REPLACE_MAIN:-0}" == "1" ]]; then
+    log "--- 检测到 PROBE_REPLACE_MAIN=1,但路径 B 已可行,忽略该设置,不执行侵入式路径 A ---"
+  fi
 else
   log "=== 路径 B 未通过验证 ==="
   if [[ "${PROBE_REPLACE_MAIN:-0}" != "1" ]]; then
@@ -371,9 +386,9 @@ else
   fi
 fi
 
-if [[ "${PROBE_REPLACE_MAIN:-0}" == "1" ]]; then
+if [[ "$PATHB_VERDICT" != "可行" && "${PROBE_REPLACE_MAIN:-0}" == "1" ]]; then
   log ""
-  log "=== 路径 A(兜底,侵入):PROBE_REPLACE_MAIN=1 已设置,开始验证 ==="
+  log "=== 路径 A(兜底,侵入):路径 B 未通过 + PROBE_REPLACE_MAIN=1 已设置,开始验证 ==="
 
   # 关键验证:主规则集必须引用我们的 anchor,规则才会被求值。
   # 只在内存中替换主规则集(保留 Apple 的 anchor),不写 /etc/pf.conf。
