@@ -126,9 +126,44 @@ pf anchor 提供不变量 1 的硬保证——系统 DNS 指向哪里都无所�
 Manager 只做接线。规则文本生成与漂移判据都是纯函数,免 root 可测;系统调用集中在
 `_darwin` 文件并走 runner 抽象,可注入假 runner 验证时序。
 
+## anchor 挂载路径(决定冲突面大小)
+
+pf 的规则装进一个**未被主规则集引用**的 anchor 里完全不生效。macOS 的
+`/etc/pf.conf` 只引用 `com.apple/*`,因此 bx 必须解决"如何让自己的 anchor 被求值"。
+两条路径的代价差异巨大:
+
+**路径 B — 挂进 `com.apple` 子 anchor(优先)。** `man 5 pf.conf` 明确定义:
+
+> Anchors may end with the asterisk ('*') character, which signifies that **all
+> anchors attached at that point should be evaluated** in the alphabetical
+> ordering of their anchor name.
+
+即 `anchor "com.apple/*"` 会求值所有挂在 `com.apple` 下的子 anchor,**包括运行时
+装入的**。Apple 自己就是这么组织的(`/etc/pf.anchors/com.apple` 内含
+`anchor "200.AirDrop/*"` 与 `anchor "250.ApplicationFirewall/*"`)。若可行:
+
+- **完全不碰主规则集** → 不会覆盖 Little Snitch / MDM 等第三方的 pf 规则,冲突面归零
+- 不改 `/etc/pf.conf`,重启仍必然清空
+- `pfctl -a com.apple/<名字> -F all` 仍可精确清除
+
+代价:占用 Apple 的命名空间,不够体面,且 Apple 理论上可能变更该结构。另需注意求值
+按**字母序**,anchor 命名决定它排在 AirDrop/ApplicationFirewall 之前还是之后,而
+`quick` 是先匹配先生效——命名即优先级,须谨慎选定。
+
+**路径 A — 替换主规则集(兜底)。** 用 `pfctl -f` 装载一份包含 Apple 原有 anchor
+加 bx anchor 的主规则集。`pfctl -f` 是**整体替换**语义(且是原子的:装载失败则原
+规则集保持不变),因此会**覆盖任何其它工具在内存中装载的主规则集**。
+
+覆盖不可逆:`pfctl -s rules` 的输出**不是**可原样回灌的格式,抓取只能用于事后排查,
+无法保真还原。因此该路径必须先检测第三方内容、默认中止、由用户显式放行。
+
+**决策依赖真机验证**:路径 B 是否可行(SIP 是否允许第三方写入 `com.apple` 命名空间、
+规则是否真被求值、是否影响 Apple 其它子 anchor)只能实测。探测脚本
+`scripts/darwin-dns-firewall-probe.sh` 同时验证两条路径,优先 B,A 需显式开关。
+
 ## pf 规则
 
-anchor 名固定 `com.getbx.bx`。**绝不写入 `/etc/pf.conf`**——这是"重启必然恢复"这条
+anchor 名视上节验证结果确定。**绝不写入 `/etc/pf.conf`**——这是"重启必然恢复"这条
 逃生口的前提,由源码守卫测试钉死。
 
 规则形状(确切文本与 `quick` 顺序**必须真机验证**,见"待验证项"):
@@ -204,7 +239,7 @@ anchor **全程保持**,所以修复期间也不泄漏。巡检失败不降级�
 | L1 | desired=off 时绝不装 anchor;`bx down` 成功落到关闭终态时必定拆除 | 正常关闭 |
 | L2 | Guardian 崩溃 → launchd KeepAlive 秒级拉起 → **启动时无条件把 anchor 对齐到期望状态**,off 则拆除 | 崩溃、被杀、升级中断 |
 | L3 | **重启必然清空**(已验证);开机若 desired=off 不重装 | 所有自动机制都失效 |
-| L4 | `sudo pfctl -a com.getbx.bx -F all`,**由菜单栏在检测到阻断态时直接展示**,并写入 README | 用户手动自救 |
+| L4 | `sudo pfctl -a <anchor> -F all`(路径 B 为 `com.apple/<名字>`,路径 A 为 `com.getbx.bx`,取决于验证结果),**由菜单栏在检测到阻断态时直接展示**,并写入 README | 用户手动自救 |
 
 L2 是相对 Mullvad 的关键改进:它的守护进程崩溃后规则会一直留着,bx 的会被拉起来
 对齐。用户此前担心的"bx 又被拉起、反复"在这里是**优点**,前提是拉起后必须尊重
@@ -218,7 +253,7 @@ Mullvad 文档给出的全局 `pfctl -d`。
 | 情况 | 行为 | 用户看到 |
 |---|---|---|
 | anchor 装不上 | 并入 `failDNSActivation`:装屏障 + needs_attention | 黄色 + 具体错误码 |
-| anchor 拆不掉(终态应为关闭) | 显式报错,不静默;状态明确标记为"仍在阻断" | 直接展示 `sudo pfctl -a com.getbx.bx -F all`,并说明重启同样可恢复 |
+| anchor 拆不掉(终态应为关闭) | 显式报错,不静默;状态明确标记为"仍在阻断" | 直接展示 `sudo pfctl -a <anchor> -F all`(实际 anchor 名),并说明重启同样可恢复 |
 | DNS 还原失败致 down 回滚 | 保留既有重启 core 行为(避免留下指向死进程的 DNS) | "已停止但 DNS 还原失败,已重新开启保护以免断网" + 修复指引,取代现有误导性的 `bx did not stop` |
 | 巡检发现漂移 | 屏障内自动修复 | 短暂黄色,恢复后转绿 |
 | 巡检修复反复失败 | 停在 needs_attention,保持 anchor | 黄色 + 原因 |
@@ -254,8 +289,10 @@ DNS 还原失败阻挡"与"desired=off 时启动不装 anchor"。
 1. **`user root` 放行粒度粗于 Windows 的 app-id**:任何以 root 运行的进程都能查
    DNS。这是本轮明确接受的取舍(替代方案"按目的地白名单"会在上游 DNS 配置变更时
    产生新的漂移面)。
-2. **与其它 pf 使用者共存**:Little Snitch、Docker、公司 MDM 都可能操作 pf。独立
-   anchor 已把冲突面降到最小,但不能保证零冲突,需真机观察。
+2. **与其它 pf 使用者共存**:Little Snitch、公司 MDM 都可能操作 pf(已核实 Docker
+   Desktop 走 VM+vmnet,不碰宿主 pf)。冲突面的大小**完全取决于采用哪条 anchor
+   挂载路径**,见下节"anchor 挂载路径"。原先"独立 anchor 已把冲突面降到最小"的
+   说法不准确,已更正。
 3. **Apple 自有流量绕过**:Mullvad 曾公开记录 macOS 上系统组件与 Private Relay
    绕过防火墙规则的情况。若 bx 遇到同类问题,属 OS 层面限制,应如实记入文档而非
    假装已覆盖。
@@ -265,6 +302,12 @@ DNS 还原失败阻挡"与"desired=off 时启动不装 anchor"。
 
 ## 待验证项(真机)
 
+0. **anchor 挂载路径(最高优先级,决定整个方案形态)**:路径 B(挂进 `com.apple`
+   子 anchor)是否可行——SIP 是否允许第三方写入该命名空间、规则是否**真的被求值**
+   (仅"装载成功"不足为证,必须通过行为验证)、以及是否影响 Apple 自己的
+   `200.AirDrop` / `250.ApplicationFirewall`。B 可行则冲突面归零,A 作废;B 不可行
+   才退回 A 并接受其覆盖风险。另需记录 `com.apple` 下的实际求值顺序,以确定 bx
+   anchor 的命名(命名即优先级)。
 1. pf 规则的确切文本与 `quick` 顺序:必须验证进 TUN 的 :53 放行、off-TUN 的 :53
    阻断,两者同时成立。
 2. TUN 接口名的动态获取:规则中 `<tun>` 需在装载时替换为实际 utun 名。
