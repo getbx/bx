@@ -407,6 +407,30 @@ func TestMacMenuDerivesDNSFromStatusJSONOnly(t *testing.T) {
 	}
 }
 
+// updateIcon lets a live recovery snapshot override the state-derived indicator,
+// so a warning verdict must drop any snapshot that would paint the shield green
+// — otherwise the icon shows green while the tunnel is unhealthy or DNS is
+// unmanaged. loadState is an AppKit method that shells out, so this wiring has no
+// unit test; pin it at the source level instead.
+func TestMacMenuWarningsDropGreenRecoverySnapshot(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	branches := map[string]string{
+		"tunnel unhealthy": "recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)\n" +
+			`            return .warning("Tunnel unhealthy", version: version)`,
+		"DNS not managed": "recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)\n" +
+			`            return .warning(dns.menuWarning ?? "DNS status unavailable", version: version)`,
+	}
+	for name, snippet := range branches {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("the %s warning branch must filter the recovery snapshot before returning", name)
+		}
+	}
+}
+
 func TestMacMenuAndReadmeDescribeAutomaticSafeNetworkRecovery(t *testing.T) {
 	menu, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
