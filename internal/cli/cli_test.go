@@ -2725,3 +2725,56 @@ func TestStatusReportOmitsEmptyPhase(t *testing.T) {
 		t.Fatalf("phase should be omitted when empty, but found in: %s", string(data))
 	}
 }
+
+// 事故里「翻诊断包只拿到陈旧 Core 日志」正是因为归档只收 ClientLogPaths()。
+// Guardian 失败的完整原因写在 Guardian 日志里,必须一并收进诊断包。
+func TestArchiveClientLogsCollectsGuardianLogs(t *testing.T) {
+	source := t.TempDir()
+	guardLog := filepath.Join(source, "bx-guard.err.log")
+	if err := os.WriteFile(guardLog, []byte("guardian_needs_attention code=core_ownership_uncertain\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restore := swapGuardianArchiveLogPaths([]string{guardLog, filepath.Join(source, "absent.log")})
+	defer restore()
+
+	dir, err := archiveClientLogsWithReason(t.TempDir(), "up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "bx-guard.err.log"))
+	if err != nil {
+		t.Fatalf("诊断包必须包含 Guardian 日志:%v", err)
+	}
+	if !strings.Contains(string(got), "core_ownership_uncertain") {
+		t.Errorf("Guardian 日志内容未收全,实际 = %q", got)
+	}
+}
+
+// Guardian 日志是 0600 root-only:非 root 跑 bx logs --archive(以及 up/down
+// 失败后的自动归档)读不到很正常,不能因此让整个诊断包失败。
+func TestArchiveClientLogsSurvivesUnreadableGuardianLog(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 能读任何文件,无法构造不可读场景")
+	}
+	source := t.TempDir()
+	guardLog := filepath.Join(source, "bx-guard.err.log")
+	if err := os.WriteFile(guardLog, []byte("secret\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	restore := swapGuardianArchiveLogPaths([]string{guardLog})
+	defer restore()
+
+	dir, err := archiveClientLogsWithReason(t.TempDir(), "up")
+	if err != nil {
+		t.Fatalf("Guardian 日志读不到不应让归档失败:%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "meta.txt")); err != nil {
+		t.Fatalf("归档仍应产出其余材料:%v", err)
+	}
+}
+
+func swapGuardianArchiveLogPaths(paths []string) func() {
+	previous := guardianArchiveLogPaths
+	guardianArchiveLogPaths = func() []string { return paths }
+	return func() { guardianArchiveLogPaths = previous }
+}
