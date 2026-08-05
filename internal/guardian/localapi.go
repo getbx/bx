@@ -172,7 +172,7 @@ func recoveryRequestHandler(controller Controller, recovery PathRecoveryControll
 			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid recovery metadata"})
 			return
 		}
-		before := lastErrorOf(controller)
+		before := statusOf(controller)
 		snapshot, err := recovery.RequestPathRecovery(normalized)
 		if errors.Is(err, errPathRecoveryShuttingDown) {
 			writeGuardianJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "guardian is shutting down"})
@@ -182,38 +182,48 @@ func recoveryRequestHandler(controller Controller, recovery PathRecoveryControll
 			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
 			// 避免把路径/链接/凭据经 socket 外传。
 			log.Printf("guardian_recovery_request_failed err=%v", err)
-			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, lastErrorOf(controller)))
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, statusOf(controller)))
 			return
 		}
 		writeGuardianJSON(w, http.StatusAccepted, redactRecoverySnapshot(snapshot))
 	}
 }
 
-// lastErrorOf reads controller.Status().LastError, tolerating a nil
-// Controller (recoveryRequestHandler may be wired without one in tests that
-// only exercise the PathRecoveryController side).
-func lastErrorOf(controller Controller) string {
+// statusOf reads controller.Status(), tolerating a nil Controller
+// (recoveryRequestHandler may be wired without one in tests that only
+// exercise the PathRecoveryController side).
+func statusOf(controller Controller) Status {
 	if controller == nil {
-		return ""
+		return Status{}
 	}
-	return controller.Status().LastError
+	return controller.Status()
 }
 
 // failureResponseBody builds the body for a mutation-failure 500 response.
-// It only includes "code" when the controller's LastError actually changed
-// as a result of this failure (i.e. something on this call path invoked
-// needsAttention). Several real failure paths return an error without ever
-// touching LastError — acquireMutation timing out on a busy mutation lock,
-// recoveryBlocked short-circuiting with errRecoveryIncomplete, or Down's DNS
-// restore-failure branch which explicitly clears LastError back to "" before
-// returning. In those cases "after" is unchanged (or empty) and the code is
-// omitted rather than replaying a stale/unrelated value: a wrong code is
-// worse than no code, because it points troubleshooting in the wrong
-// direction.
-func failureResponseBody(before, after string) map[string]string {
+// It only includes "code" when needsAttention actually ran during this
+// specific call — tracked via Status.LastErrorGeneration, a monotonic
+// counter, rather than by comparing LastError's value. A value comparison
+// cannot tell "this failure just set LastError to X" apart from "LastError
+// already happened to be X from an earlier, unrelated failure" in the one
+// case that matters most: two consecutive failures with the same code.
+// That is exactly the scenario this feature exists for (bx up failing
+// repeatedly for the same reason) — a value comparison would wrongly treat
+// the second failure's code as stale and suppress it, making the code
+// flicker on and off across a client's retries even though the failure
+// never changed.
+//
+// Several real failure paths return an error without ever calling
+// needsAttention at all: acquireMutation timing out on a busy mutation
+// lock, recoveryBlocked short-circuiting with errRecoveryIncomplete, or
+// Down's DNS restore-failure branch which recovers and returns without
+// touching LastError. On those paths the generation is unchanged and the
+// code is omitted rather than replaying a stale/unrelated value: a wrong
+// code is worse than no code, because it points troubleshooting in the
+// wrong direction.
+func failureResponseBody(before, after Status) map[string]string {
 	body := map[string]string{"error": "guardian operation failed"}
-	if after != "" && after != before {
-		body["code"] = after
+	if after.LastErrorGeneration != before.LastErrorGeneration && after.LastError != "" {
+		body["code"] = after.LastError
 	}
 	return body
 }
@@ -283,13 +293,13 @@ func updateHandler(controller Controller, updater UpdateController, mutations *a
 		defer mutations.done()
 		mutationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), guardianMutationTimeout)
 		defer cancel()
-		before := controller.Status().LastError
+		before := controller.Status()
 		result, err := updater.Update(mutationCtx, normalized)
 		if err != nil {
 			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
 			// 避免把路径/链接/凭据经 socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
-			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status().LastError))
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status()))
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, result)
@@ -335,8 +345,12 @@ func migrationHandler(controller Controller, migration MigrationController, muta
 		defer mutations.done()
 		mutationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), guardianMutationTimeout)
 		defer cancel()
+		before := controller.Status()
 		if err := migration.Migrate(mutationCtx, normalized); err != nil {
-			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"error": "guardian operation failed"})
+			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
+			// 避免把路径/链接/凭据经 socket 外传。
+			log.Printf("guardian_mutation_failed err=%v", err)
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status()))
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, controller.Status())
@@ -406,12 +420,12 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 		defer mutations.done()
 		mutationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), guardianMutationTimeout)
 		defer cancel()
-		before := controller.Status().LastError
+		before := controller.Status()
 		if err := mutate(mutationCtx); err != nil {
 			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
 			// 避免把路径/链接/凭据经 socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
-			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status().LastError))
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status()))
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, controller.Status())

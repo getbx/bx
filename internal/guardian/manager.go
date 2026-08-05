@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getbx/bx/internal/supervisor"
@@ -147,6 +148,11 @@ type Manager struct {
 	pathRecoveryResolveOff bool
 	pathRecoveryDrained    chan struct{}
 	pathRecoveryClosed     bool
+	// lastErrorGeneration backs Status.LastErrorGeneration (see
+	// nextLastErrorGeneration/needsAttention). atomic rather than guarded by
+	// statusMu because needsAttention can race with concurrent status reads
+	// from other goroutines (e.g. the unexpected-exit monitor).
+	lastErrorGeneration atomic.Uint64
 }
 
 func NewManager(options ManagerOptions) (*Manager, error) {
@@ -1158,10 +1164,24 @@ func (m *Manager) needsAttention(desired DesiredState, code string) {
 		status.Protection = ProtectionBlocked
 	}
 	status.LastError = code
+	// 代际号必须每次都真的往前走——即使是连续两次同一个失败码。「持续、重复的
+	// 同一失败」正是回传失败码这一功能存在的理由;如果 LocalAPI 靠比较
+	// LastError 的值来判断"这次失败是否真的设置过它",连续同因失败会被误判为
+	// 陈旧而丢弃。代际号只看"needsAttention 是否真的跑过一次",与具体码值无关。
+	status.LastErrorGeneration = m.nextLastErrorGeneration()
 	m.setStatus(status)
 	// 失败码只存在内存里等于没有:真机事故中 Guardian 已经知道原因,
 	// 却既不落日志也不外传,排查耗时四轮。
 	log.Printf("guardian_needs_attention code=%s desired=%s protection=%s", code, desired, status.Protection)
+}
+
+// nextLastErrorGeneration returns a fresh, strictly-increasing generation
+// number for LastErrorGeneration. Backed by an atomic counter (rather than
+// statusMu) so it stays safe to call from needsAttention regardless of
+// which goroutine is racing to publish the next status (e.g. the
+// unexpected-exit monitor runs on its own goroutine).
+func (m *Manager) nextLastErrorGeneration() uint64 {
+	return m.lastErrorGeneration.Add(1)
 }
 
 func (m *Manager) needsAttentionUnlessDNSActivationFailure(code string) {
@@ -1186,6 +1206,16 @@ func (m *Manager) setStatus(status Status) {
 	status.DNSService = m.dnsStatus.Service
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
+	// setStatus replaces m.status wholesale, and the vast majority of call
+	// sites construct a fresh Status{...} literal that never mentions
+	// LastErrorGeneration (so it's the zero value). Only needsAttention ever
+	// sets a real, nonzero generation. Preserve the previous one across every
+	// other status transition so the counter stays a reliable "did
+	// needsAttention run" signal instead of getting silently wiped by the
+	// next unrelated setStatus call.
+	if status.LastErrorGeneration == 0 {
+		status.LastErrorGeneration = m.status.LastErrorGeneration
+	}
 	m.status = status
 }
 

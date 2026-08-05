@@ -65,6 +65,50 @@ func TestNeedsAttentionLogsTheFailureCode(t *testing.T) {
 	}
 }
 
+// needsAttention 用同一个失败码连续调用两次时,LastErrorGeneration 仍必须
+// 真的往前走——这是 LocalAPI 层区分"这次真的失败了"与"上次的陈旧码"的唯一
+// 可靠信号,不能退化成对 LastError 值的比较(值比较在连续同因失败时会把第二次
+// 真实失败误判为陈旧,导致回传的 code 时有时无)。
+func TestNeedsAttentionIncrementsGenerationEvenWithSameCode(t *testing.T) {
+	env := newManagerTestEnv(t)
+
+	env.manager.needsAttention(DesiredOn, "core_ownership_uncertain")
+	first := env.manager.Status().LastErrorGeneration
+	if first == 0 {
+		t.Fatal("第一次 needsAttention 后 LastErrorGeneration 不应是零值")
+	}
+
+	env.manager.needsAttention(DesiredOn, "core_ownership_uncertain")
+	second := env.manager.Status().LastErrorGeneration
+	if second <= first {
+		t.Fatalf("第二次调用(同一失败码)后代际号必须严格递增: first=%d second=%d", first, second)
+	}
+	if got := env.manager.Status().LastError; got != "core_ownership_uncertain" {
+		t.Fatalf("LastError = %q, want core_ownership_uncertain", got)
+	}
+}
+
+// setStatus 的绝大多数调用点(Up/Down/Migrate 等状态转换)都会构造一个不带
+// LastErrorGeneration 字段的全新 Status{} 字面量;若不保留旧代际号,这些无关
+// 的状态转换会把代际号悄悄清零,使它失去"needsAttention 是否真的跑过"的
+// 判别力(handler 层比较 before/after 代际号就会失真)。
+func TestSetStatusPreservesLastErrorGenerationAcrossUnrelatedTransitions(t *testing.T) {
+	env := newManagerTestEnv(t)
+
+	env.manager.needsAttention(DesiredOn, "core_ownership_uncertain")
+	generation := env.manager.Status().LastErrorGeneration
+	if generation == 0 {
+		t.Fatal("needsAttention 后 LastErrorGeneration 不应是零值")
+	}
+
+	// 模拟一次与失败码无关的状态转换(不经 needsAttention 的普通 setStatus 调用)。
+	env.manager.setStatus(Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseActivating, Protection: ProtectionStarting})
+
+	if got := env.manager.Status().LastErrorGeneration; got != generation {
+		t.Fatalf("无关的状态转换不应改变 LastErrorGeneration: got=%d want=%d", got, generation)
+	}
+}
+
 // swapGuardianLogOutput 替换标准 log 包的输出目标,返回还原函数。测试用它捕获
 // Guardian 通过 log.Printf 记录的完整错误,断言"落日志"这一不变量。
 func swapGuardianLogOutput(w io.Writer) func() {
