@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -229,8 +230,12 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 	process, err := r.operations().Inspect(record.PID)
 	if err != nil {
 		if errors.Is(err, ErrProcessNotRunning) {
+			// 进程已经死了。清不掉一个陈旧文件不等于"所有权不确定"——
+			// 后者是给"进程还在但身份存疑"准备的语义。把它当成不确定会卡死
+			// bx up(真机事故:core-process.json 指向早已死亡的 PID,手工删
+			// 文件后才恢复)。记日志继续,当作无既有 Core。
 			if clearErr := r.removeRecordIfGeneration(record.PID, record.Generation); clearErr != nil {
-				return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, fmt.Errorf("clear exited Core record: %w", clearErr))
+				log.Printf("guardian_stale_core_record pid=%d clear_failed=%v", record.PID, clearErr)
 			}
 			return Process{}, nil
 		}

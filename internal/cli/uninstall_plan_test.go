@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,28 @@ func TestUnifiedTeardownNeededExistenceNotHealth(t *testing.T) {
 
 	if !unifiedTeardownNeeded(runtimeRoot, appBundle) {
 		t.Fatal("want true: damaged-but-present runtime root must still trigger unified teardown")
+	}
+}
+
+// uninstall 保留 /var/lib/bx 是为了保住用户配置,但运行时状态不该跟着活下来——
+// 陈旧的 core-process.json 会让重装后的 bx up 失败(真机事故)。
+func TestUninstallPlanRemovesRuntimeStateButKeepsConfig(t *testing.T) {
+	plan := buildDarwinUninstallPlan(501, "/Users/alice", true)
+
+	joined := strings.Join(plan.RemovePaths, " ")
+	for _, runtime := range []string{"core-process.json", "guardian-state.json"} {
+		if !strings.Contains(joined, runtime) {
+			t.Errorf("运行时状态必须清除:%s;RemovePaths = %v", runtime, plan.RemovePaths)
+		}
+	}
+	keep := strings.Join(plan.KeepPaths, " ")
+	if !strings.Contains(keep, "/etc/bx") {
+		t.Errorf("用户配置必须保留,KeepPaths = %v", plan.KeepPaths)
+	}
+	for _, p := range plan.RemovePaths {
+		if p == "/etc/bx" || p == "/var/lib/bx" {
+			t.Errorf("不得整目录删除配置数据:%s", p)
+		}
 	}
 }
 
