@@ -94,7 +94,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	updateController, _ := controller.(UpdateController)
 	mux.HandleFunc("/v1/update", updateHandler(controller, updateController, mutations))
 	pathRecoveryController, _ := controller.(PathRecoveryController)
-	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(pathRecoveryController, options.OwnerUID))
+	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(controller, pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
@@ -141,7 +141,7 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 	return status
 }
 
-func recoveryRequestHandler(controller PathRecoveryController, ownerUID uint32) http.HandlerFunc {
+func recoveryRequestHandler(controller Controller, recovery PathRecoveryController, ownerUID uint32) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -151,7 +151,7 @@ func recoveryRequestHandler(controller PathRecoveryController, ownerUID uint32) 
 			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "recovery requires owner or root peer"})
 			return
 		}
-		if controller == nil {
+		if recovery == nil {
 			writeGuardianJSON(w, http.StatusNotImplemented, map[string]string{"error": "recovery unavailable"})
 			return
 		}
@@ -172,17 +172,50 @@ func recoveryRequestHandler(controller PathRecoveryController, ownerUID uint32) 
 			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid recovery metadata"})
 			return
 		}
-		snapshot, err := controller.RequestPathRecovery(normalized)
+		before := lastErrorOf(controller)
+		snapshot, err := recovery.RequestPathRecovery(normalized)
 		if errors.Is(err, errPathRecoveryShuttingDown) {
 			writeGuardianJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "guardian is shutting down"})
 			return
 		}
 		if err != nil {
-			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"error": "guardian operation failed"})
+			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
+			// 避免把路径/链接/凭据经 socket 外传。
+			log.Printf("guardian_recovery_request_failed err=%v", err)
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, lastErrorOf(controller)))
 			return
 		}
 		writeGuardianJSON(w, http.StatusAccepted, redactRecoverySnapshot(snapshot))
 	}
+}
+
+// lastErrorOf reads controller.Status().LastError, tolerating a nil
+// Controller (recoveryRequestHandler may be wired without one in tests that
+// only exercise the PathRecoveryController side).
+func lastErrorOf(controller Controller) string {
+	if controller == nil {
+		return ""
+	}
+	return controller.Status().LastError
+}
+
+// failureResponseBody builds the body for a mutation-failure 500 response.
+// It only includes "code" when the controller's LastError actually changed
+// as a result of this failure (i.e. something on this call path invoked
+// needsAttention). Several real failure paths return an error without ever
+// touching LastError — acquireMutation timing out on a busy mutation lock,
+// recoveryBlocked short-circuiting with errRecoveryIncomplete, or Down's DNS
+// restore-failure branch which explicitly clears LastError back to "" before
+// returning. In those cases "after" is unchanged (or empty) and the code is
+// omitted rather than replaying a stale/unrelated value: a wrong code is
+// worse than no code, because it points troubleshooting in the wrong
+// direction.
+func failureResponseBody(before, after string) map[string]string {
+	body := map[string]string{"error": "guardian operation failed"}
+	if after != "" && after != before {
+		body["code"] = after
+	}
+	return body
 }
 
 func recoveryCurrentHandler(controller PathRecoveryController, ownerUID uint32) http.HandlerFunc {
@@ -250,15 +283,13 @@ func updateHandler(controller Controller, updater UpdateController, mutations *a
 		defer mutations.done()
 		mutationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), guardianMutationTimeout)
 		defer cancel()
+		before := controller.Status().LastError
 		result, err := updater.Update(mutationCtx, normalized)
 		if err != nil {
 			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
 			// 避免把路径/链接/凭据经 socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
-			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "guardian operation failed",
-				"code":  controller.Status().LastError,
-			})
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status().LastError))
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, result)
@@ -375,14 +406,12 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 		defer mutations.done()
 		mutationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), guardianMutationTimeout)
 		defer cancel()
+		before := controller.Status().LastError
 		if err := mutate(mutationCtx); err != nil {
 			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
 			// 避免把路径/链接/凭据经 socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
-			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "guardian operation failed",
-				"code":  controller.Status().LastError,
-			})
+			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status().LastError))
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, controller.Status())

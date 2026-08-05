@@ -175,15 +175,21 @@ func TestLocalAPIDownReturnsControllerFailure(t *testing.T) {
 	}
 }
 
-// 调用方只看到 "guardian operation failed" 时无从下手;必须回传失败码。
+// 调用方只看到 "guardian operation failed" 时无从下手;必须回传失败码——但只
+// 有当这次失败真的通过 needsAttention 设置了 LastError(即 before != after)
+// 时才回传,故 mutate 在失败前把它自己会做的事(设置 LastError)也做了,
+// 模拟 Manager 内部真实调用 needsAttention 的效果。
 func TestMutationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 	var buf bytes.Buffer
 	restore := swapGuardianLogOutput(&buf)
 	defer restore()
 
-	controller := &fakeController{status: Status{LastError: "core_ownership_uncertain"}}
+	controller := &fakeController{}
 	handler := mutationHandler(controller,
-		func(context.Context) error { return errors.New("inspect recorded Core PID 5129: boom") },
+		func(context.Context) error {
+			controller.status.LastError = "core_ownership_uncertain"
+			return errors.New("inspect recorded Core PID 5129: boom")
+		},
 		newAcceptedMutations())
 
 	rec := httptest.NewRecorder()
@@ -210,10 +216,135 @@ func TestMutationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 	}
 }
 
+// 真实失败路径里有好几条从不调用 needsAttention 就直接返回 err
+// (acquireMutation 超时、recoveryBlocked、Down 的 DNS-restore-恢复成功分支清空
+// LastError 后返回):此时 500 响应里若仍夹带 controller.Status().LastError,
+// 拿到的会是上一次不相关失败留下的陈旧值(或空串),把排查者指向错误方向。
+// 宁可不带 code,也不能带错的 code。
+func TestMutationHandlerOmitsStaleOrEmptyCodeWhenLastErrorUnchanged(t *testing.T) {
+	tests := []struct {
+		name   string
+		before string
+		mutate func(*fakeController) func(context.Context) error
+	}{
+		{
+			name:   "LastError 未变(模拟 acquireMutation 超时 / recoveryBlocked 直接 return err)",
+			before: "stale_unrelated_code",
+			mutate: func(*fakeController) func(context.Context) error {
+				return func(context.Context) error { return context.DeadlineExceeded }
+			},
+		},
+		{
+			name:   "LastError 被清空为空串(模拟 Down 的 DNS-restore-恢复成功分支)",
+			before: "stale_unrelated_code",
+			mutate: func(c *fakeController) func(context.Context) error {
+				return func(context.Context) error {
+					c.status.LastError = ""
+					return errors.New("restore managed DNS: dns restore failed")
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			restore := swapGuardianLogOutput(&buf)
+			defer restore()
+
+			controller := &fakeController{status: Status{LastError: tt.before}}
+			handler := mutationHandler(controller, tt.mutate(controller), newAcceptedMutations())
+
+			rec := httptest.NewRecorder()
+			handler(rec, rootMutationRequest(t))
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("状态码 = %d, want 500", rec.Code)
+			}
+			var body map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if code, ok := body["code"]; ok {
+				t.Errorf("LastError 未因这次失败而更新时不应回传 code,实际 code = %q", code)
+			}
+		})
+	}
+}
+
 // newAcceptedMutations 构造一个开放接受中的 acceptedMutations,与 NewLocalAPI
 // 内部构造的初始状态一致,供直接调用 mutationHandler/updateHandler 的测试使用。
 func newAcceptedMutations() *acceptedMutations {
 	return &acceptedMutations{accepting: true, drained: make(chan struct{})}
+}
+
+// rootRecoveryRequest 构造一个带 root peer 凭据(uid==0)的 /v1/recoveries POST
+// 请求,满足 recoveryRequestHandler 的鉴权前提。
+func rootRecoveryRequest(t *testing.T, body string) *http.Request {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/v1/recoveries", strings.NewReader(body))
+	return request.WithContext(withPeerCredentials(request.Context(), 0, true))
+}
+
+// recoveryRequestHandler 此前把 err 整个丢弃,只回固定文案——同 mutationHandler
+// 的问题,brief 澄清后一并修:记录完整错误到 Guardian 日志,响应只带失败码
+// (且只在这次失败真的更新了 LastError 时才带,同 issue① 的陈旧码约束)。
+func TestRecoveryRequestHandlerReturnsFailureCodeAndLogs(t *testing.T) {
+	var buf bytes.Buffer
+	restore := swapGuardianLogOutput(&buf)
+	defer restore()
+
+	controller := &fakeController{
+		recoveryErr:           errors.New("inspect recorded Core PID 5129: boom"),
+		recoverySetsLastError: "recovery_admission_failed",
+	}
+	handler := recoveryRequestHandler(controller, controller, 0)
+
+	rec := httptest.NewRecorder()
+	handler(rec, rootRecoveryRequest(t, `{"reason":"manual"}`))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d, want 500, body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["code"] != "recovery_admission_failed" {
+		t.Errorf("响应必须带失败码,实际 body = %v", body)
+	}
+	if strings.Contains(rec.Body.String(), "boom") || strings.Contains(rec.Body.String(), "5129") {
+		t.Errorf("响应不得包含原始错误内容,实际 = %s", rec.Body.String())
+	}
+	if !strings.Contains(buf.String(), "boom") {
+		t.Errorf("Guardian 日志必须记录完整错误,实际 = %q", buf.String())
+	}
+}
+
+// 同 mutationHandler:若这次失败没有更新 LastError,500 响应不得夹带一个更早
+// 不相关失败留下的陈旧 code。
+func TestRecoveryRequestHandlerOmitsStaleCodeWhenLastErrorUnchanged(t *testing.T) {
+	controller := &fakeController{
+		status:      Status{LastError: "stale_unrelated_code"},
+		recoveryErr: errors.New("path recovery admission failed"),
+		// recoverySetsLastError intentionally left empty: this failure path
+		// does not touch LastError, matching acquireMutation-timeout-style
+		// real failures.
+	}
+	handler := recoveryRequestHandler(controller, controller, 0)
+
+	rec := httptest.NewRecorder()
+	handler(rec, rootRecoveryRequest(t, `{"reason":"manual"}`))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d, want 500, body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if code, ok := body["code"]; ok {
+		t.Errorf("LastError 未因这次失败而更新时不应回传 code,实际 code = %q", code)
+	}
 }
 
 // rootMutationRequest 构造一个带 root peer 凭据(uid==0)的 POST 请求,满足
@@ -846,6 +977,11 @@ type fakeController struct {
 	recoveryResult  RecoverySnapshot
 	recoveryCurrent RecoverySnapshot
 	recoveryErr     error
+	// recoverySetsLastError, if non-empty and recoveryErr != nil, is written to
+	// status.LastError before RequestPathRecovery returns — simulating a real
+	// needsAttention side effect so tests can distinguish "this failure set a
+	// fresh code" from "this failure left LastError untouched/stale".
+	recoverySetsLastError string
 }
 
 type blockingController struct {
@@ -896,6 +1032,9 @@ func (c *fakeController) Update(_ context.Context, request UpdateRequest) (Updat
 func (c *fakeController) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot, error) {
 	c.recoveryCalls++
 	c.recoveryRequest = request
+	if c.recoveryErr != nil && c.recoverySetsLastError != "" {
+		c.status.LastError = c.recoverySetsLastError
+	}
 	return c.recoveryResult, c.recoveryErr
 }
 
