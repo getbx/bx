@@ -198,6 +198,10 @@ Guardian 的控制 socket 落在 bx 自有的运行期目录 `/var/run/bx/`(`gua
 
 bx 不会与其它全局 VPN 争抢默认路由:如果另一条隧道(如 Tailscale、WireGuard 等)已经占着默认路由,`bx up` 会明确报告是哪个接口占用、无法解析网关,而不是崩溃循环——关掉对方那条全局隧道再试。
 
+#### 排查:关不掉怎么办
+
+`sudo bx down` 在 Guardian 无响应或网络故障(解析不到默认网关)时也能完成拆除——前者会强制停止 Guardian 并由 core 还原网络,后者会降级为纯阻断屏障继续拆除。若 `down` 仍失败,`sudo bx uninstall` 会停止全部服务并还原网络(保留 `/etc/bx` 配置,便于重装)。
+
 #### 开发模式 / 从源码安装菜单栏 App
 
 仓库内 `./bx`(本地 `go build` 产物)照常可以跑测试、`sudo ./bx run` 前台调试;它不会注册生产 Guardian 服务,也不会覆盖或写入统一 runtime(`/Library/Application Support/bx/runtime`)。
