@@ -64,6 +64,13 @@ type macOSLifecycleDeps struct {
 	consoleUID        func() (int, error)
 	ensureMenu        func(int) error
 	pollInterval      time.Duration
+	// forceTeardown is the `bx down` escape hatch: it stops the Guardian
+	// launchd service (only — never installs/bootstraps it, never touches
+	// /etc/bx or /var/lib/bx) so the daemon process exits and its own
+	// defer-based teardown restores routes/DNS. Used when Guardian is
+	// unreachable, so `bx down` never depends on Guardian successfully
+	// starting up first (see macOSDownLifecycle).
+	forceTeardown func(context.Context) error
 }
 
 type macOSUpResult struct {
@@ -91,10 +98,11 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		migrationRequest: func(ctx context.Context, configPath string) (guardian.MigrationRequest, error) {
 			return legacyMigrationRequest(ctx, configPath, migrationMetadataDeps{})
 		},
-		client:       client,
-		consoleUID:   consoleUserUID,
-		ensureMenu:   ensureMacOSMenuRunning,
-		pollInterval: 100 * time.Millisecond,
+		client:        client,
+		consoleUID:    consoleUserUID,
+		ensureMenu:    ensureMacOSMenuRunning,
+		pollInterval:  100 * time.Millisecond,
+		forceTeardown: install.BootoutGuardian,
 	}
 }
 
@@ -215,11 +223,52 @@ func macOSUpLifecycle(ctx context.Context, configPath string, deps macOSLifecycl
 	return result, nil
 }
 
+// macOSDownLifecycle is the plain two-value entry point kept for callers
+// (and tests) that don't need to distinguish the forced-teardown path from
+// the clean one. macOSDownAction uses macOSDownLifecycleDetailed instead, so
+// it can report honestly when it had to fall back.
 func macOSDownLifecycle(ctx context.Context, configPath string, deps macOSLifecycleDeps) (guardian.Status, error) {
-	if _, _, err := ensureGuardianOwnership(ctx, configPath, deps); err != nil {
-		return guardian.Status{}, err
+	status, _, err := macOSDownLifecycleDetailed(ctx, configPath, deps)
+	return status, err
+}
+
+// macOSDownLifecycleDetailed implements `bx down`'s two paths:
+//
+//   - Guardian reachable: go through the same clean ownership+Down
+//     transaction as before (ensureGuardianOwnership handles legacy-Core
+//     handoff bookkeeping, then deps.client.Down commits the shutdown).
+//   - Guardian unreachable: this is exactly the moment a user most needs
+//     to be able to shut bx down (e.g. Guardian stuck in an infinite
+//     recovery retry loop after a network fault — the production
+//     incident this fixes). Calling ensureGuardianOwnership here would
+//     install/bootstrap Guardian and require it to become ready before
+//     `down` could proceed, which is backwards: "stop" must never depend
+//     on first successfully "starting" the thing being stopped. Instead
+//     fall back to forceTeardown, which only stops the Guardian service;
+//     the running core process (if any) notices via its own health/ctx
+//     machinery and its defer-based teardown restores routes/DNS.
+//
+// It never installs or bootstraps Guardian on the unreachable path, and the
+// forced path never touches /etc/bx or /var/lib/bx — only `bx uninstall`
+// removes files.
+func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps macOSLifecycleDeps) (status guardian.Status, forced bool, err error) {
+	if deps.guardianReady != nil && deps.guardianReady(ctx) {
+		if _, _, err := ensureGuardianOwnership(ctx, configPath, deps); err != nil {
+			return guardian.Status{}, false, err
+		}
+		status, err = deps.client.Down(ctx)
+		return status, false, err
 	}
-	return deps.client.Down(ctx)
+	if deps.forceTeardown == nil {
+		return guardian.Status{}, false, fmt.Errorf("Guardian 不可达,且强制拆除功能在此平台不可用")
+	}
+	if err := deps.forceTeardown(ctx); err != nil {
+		return guardian.Status{}, false, fmt.Errorf(
+			"Guardian 未响应,强制停止也失败: %w。请尝试 sudo bx uninstall 脱离,或手动执行: sudo launchctl bootout system/com.getbx.bx.guard",
+			err,
+		)
+	}
+	return guardian.Status{Protection: guardian.ProtectionOff}, true, nil
 }
 
 func macOSUpAction(c *urfavecli.Context) error {
@@ -247,8 +296,14 @@ func macOSUpAction(c *urfavecli.Context) error {
 func macOSDownAction(c *urfavecli.Context) error {
 	configPath := defaultConfigPath
 	stepLine("Guardian", "停止 bx 保护并恢复网络")
-	if _, err := macOSDownLifecycle(c.Context, configPath, defaultMacOSLifecycleDeps()); err != nil {
+	_, forced, err := macOSDownLifecycleDetailed(c.Context, configPath, defaultMacOSLifecycleDeps())
+	if err != nil {
 		return err
+	}
+	if forced {
+		stepDone("Guardian", "Guardian 未响应,已强制停止并还原网络")
+		fmt.Println("⚠️  Guardian 未响应,已强制停止服务;网络路由/DNS 将由其进程退出时的自动还原逻辑恢复。")
+		return nil
 	}
 	stepDone("Guardian", "bx 已停止,网络已恢复")
 	fmt.Println("✅ bx 已停止并取消开机自启。")

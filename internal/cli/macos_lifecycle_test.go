@@ -318,12 +318,109 @@ func TestMacOSDownLifecycleCallsGuardianOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"legacy.loaded", "guardian.enable", "guardian.ready", "guardian.down"}
+	// The leading "guardian.ready" is macOSDownLifecycle's own upfront
+	// reachability probe (see TestMacOSDownDoesNotRequireGuardianBootstrap):
+	// only once that confirms Guardian is already up does it proceed into
+	// the normal ensureGuardianOwnership+Down transaction, which itself
+	// re-checks readiness after (a no-op) enable.
+	want := []string{"guardian.ready", "legacy.loaded", "guardian.enable", "guardian.ready", "guardian.down"}
 	if strings.Join(events, "|") != strings.Join(want, "|") {
 		t.Fatalf("macOS down events = %#v, want %#v", events, want)
 	}
 	if status.Protection != guardian.ProtectionOff || client.downCalls != 1 {
 		t.Fatalf("macOS down status/calls = %+v/%d", status, client.downCalls)
+	}
+}
+
+// fakeMacOSLifecycleDeps wraps testMacOSLifecycleDeps with a forceTeardown
+// hook and call-counters, for the down-specific escape-hatch tests below:
+// down must not require successfully bootstrapping Guardian first (that was
+// the production incident — Guardian stuck retrying, `bx down` refusing to
+// run because it insisted on starting Guardian before it would stop it).
+type fakeMacOSLifecycleDeps struct {
+	macOSLifecycleDeps
+	events             []string
+	client             *recordingGuardianClient
+	forceTeardownCount int
+}
+
+func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
+	f := &fakeMacOSLifecycleDeps{}
+	client := &recordingGuardianClient{
+		events:     &f.events,
+		downStatus: guardian.Status{Desired: guardian.DesiredOff, Phase: guardian.PhaseIdle, Protection: guardian.ProtectionOff},
+	}
+	f.client = client
+	f.macOSLifecycleDeps = testMacOSLifecycleDeps(&f.events, client)
+	f.macOSLifecycleDeps.forceTeardown = func(context.Context) error {
+		f.forceTeardownCount++
+		f.events = append(f.events, "guardian.forceTeardown")
+		return nil
+	}
+	return f
+}
+
+func (f *fakeMacOSLifecycleDeps) forcedTeardownCalled() bool { return f.forceTeardownCount > 0 }
+func (f *fakeMacOSLifecycleDeps) clientDownCalled() bool     { return f.client.downCalls > 0 }
+
+// TestMacOSDownDoesNotRequireGuardianBootstrap is the regression test for the
+// production incident: Guardian was stuck in an infinite recovery retry
+// loop, and `bx down` refused to run at all because it insisted on
+// successfully starting (bootstrapping) Guardian before it would stop it —
+// "shutdown depends on the thing you're shutting down starting up first" is
+// exactly backwards, and left the user with no way out short of `bx
+// uninstall`. Guardian being unreachable must degrade to a forced teardown
+// (stop Guardian, let core's own defer-based restore undo routes/DNS on
+// process exit) instead of failing.
+func TestMacOSDownDoesNotRequireGuardianBootstrap(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return false }
+	deps.enableGuardian = func() error { return errors.New("bootstrap Guardian: launchctl failed") }
+
+	if _, err := macOSDownLifecycle(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
+		t.Fatalf("Guardian 起不来时 down 仍必须完成拆除,实际返回错误: %v", err)
+	}
+	if !deps.forcedTeardownCalled() {
+		t.Error("Guardian 不可达时应退化为强制拆除(停止 Guardian,由 core 的 defer 还原)")
+	}
+	if deps.clientDownCalled() {
+		t.Error("Guardian 不可达时不应尝试走客户端 Down 事务")
+	}
+}
+
+// TestMacOSDownUsesGuardianTransactionWhenAvailable proves the fix doesn't
+// overcorrect: when Guardian is reachable, down must still go through the
+// normal clean transaction rather than always taking the forced shortcut.
+func TestMacOSDownUsesGuardianTransactionWhenAvailable(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return true }
+
+	if _, err := macOSDownLifecycle(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
+		t.Fatal(err)
+	}
+	if !deps.clientDownCalled() {
+		t.Error("Guardian 可达时应走正常的 Down 事务")
+	}
+	if deps.forcedTeardownCalled() {
+		t.Error("Guardian 可达时不应触发强制拆除")
+	}
+}
+
+// TestMacOSDownForcedTeardownFailureIsActionable proves that when even the
+// forced teardown fails, the returned error tells the user what to do next
+// instead of surfacing a bare low-level error — the whole point of this
+// escape hatch is that the user has a way out.
+func TestMacOSDownForcedTeardownFailureIsActionable(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return false }
+	deps.forceTeardown = func(context.Context) error { return errors.New("launchctl bootout: operation not permitted") }
+
+	_, err := macOSDownLifecycle(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
+	if err == nil {
+		t.Fatal("forced teardown failure must not be swallowed")
+	}
+	if !strings.Contains(err.Error(), "uninstall") {
+		t.Fatalf("forced teardown failure not actionable, missing next-step guidance: %v", err)
 	}
 }
 
