@@ -23,6 +23,14 @@ var (
 const (
 	pathRecoveryRetryInitial = 100 * time.Millisecond
 	pathRecoveryRetryMax     = 5 * time.Second
+
+	// maxPathRecoveryAttempts 是同一次路径恢复的重试上限。
+	//
+	// 退避上限只有 5 秒,若不设次数上限,恢复会以约 25 秒一轮无限重试
+	// (真实事故中达到 178 次、71 分钟),每轮新起一个隧道进程,且永远不会
+	// 停到用户可处理的状态。达到上限后放弃,让状态落到 needs_attention,
+	// 用户可以看到并采取行动(换服务器、关闭保护)。
+	maxPathRecoveryAttempts = 20
 )
 
 type CorePathClient interface {
@@ -781,7 +789,8 @@ func shouldRetryPathRecovery(transaction pathRecoveryTransaction, result Recover
 	if desired != DesiredOn ||
 		transaction.request.Reason != "underlay_changed" ||
 		transaction.request.Generation == "" ||
-		result.State != "failed" {
+		result.State != "failed" ||
+		transaction.snapshot.Attempt >= maxPathRecoveryAttempts {
 		return false
 	}
 	switch result.ErrorCode {
