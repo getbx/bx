@@ -133,7 +133,9 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 		return Process{}, err
 	}
 	if record, err := loadProcessRecord(r.statePath()); err == nil {
-		return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, errors.New("durable launch marker already exists"))
+		if err := r.refuseLiveLaunchMarker(record); err != nil {
+			return Process{}, err
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Process{}, uncertainOwnership(Process{Uncertain: true}, fmt.Errorf("read durable launch marker: %w", err))
 	}
@@ -184,6 +186,41 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 	}()
 	process.Exit = exit
 	return process, nil
+}
+
+// refuseLiveLaunchMarker decides whether an already-present durable launch
+// marker blocks a new Start. It returns nil only when the OS authoritatively
+// confirms the recorded PID is dead — the same authority Existing() uses to
+// treat a stale record as "no existing Core".
+//
+// Without this, Existing()'s tolerance of an unremovable stale record bought
+// nothing end to end: Start immediately rejected the very same file with
+// "durable launch marker already exists", producing the identical
+// core_ownership_uncertain the user saw before (only one step later).
+//
+// fail-closed is unchanged in every uncertain case: a *live* recorded PID
+// still refuses (another Core may genuinely be running under it, matching
+// identity or not), a marker with no PID (launching: the PID was never
+// recorded, so an unrecorded Core may exist) still refuses, and an
+// inconclusive inspection still refuses.
+func (r *ExecCoreRunner) refuseLiveLaunchMarker(record processRecord) error {
+	uncertain := func(cause error) error {
+		return uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, cause)
+	}
+	if record.PID <= 0 {
+		return uncertain(errors.New("durable launch marker already exists"))
+	}
+	if _, err := r.operations().Inspect(record.PID); err != nil {
+		if !errors.Is(err, ErrProcessNotRunning) {
+			return uncertain(fmt.Errorf("durable launch marker already exists: inspect recorded Core PID %d: %w", record.PID, err))
+		}
+		// 记录里的进程已被 OS 确认死亡:陈旧文件不是"所有权不确定"。
+		// saveRecord 随后会覆盖它(remove 可能正因权限失败而清不掉,那也
+		// 不该卡死 bx up)。
+		log.Printf("guardian_stale_launch_marker pid=%d generation=%s", record.PID, record.Generation)
+		return nil
+	}
+	return uncertain(errors.New("durable launch marker already exists"))
 }
 
 func coreStartEnvironment(base []string, options CoreStartOptions) ([]string, error) {
