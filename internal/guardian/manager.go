@@ -459,10 +459,13 @@ func (m *Manager) Down(ctx context.Context) error {
 		runtimeState = state
 	}
 
+	// 网络故障时解析不到默认网关,而这正是用户最需要关闭保护的时刻。
+	// 降级为 block-only 屏障(去掉 bypass、强制阻断 IPv6)继续拆除——这比
+	// 带 bypass 的屏障更收紧,不会放松 fail-closed。与
+	// installBarrierForRecovery 的处理保持一致。
 	barrierContext, err := m.barrierContextForRuntime(ctx, runtimeState)
 	if err != nil {
-		m.needsAttention(desired, "barrier_gateway_unavailable")
-		return fmt.Errorf("resolve down barrier gateway: %w", err)
+		barrierContext = blockOnlyRecoveryContext(m.contextForRuntime(runtimeState))
 	}
 	if err := m.installBarrier(ctx, barrierContext); err != nil {
 		m.needsAttention(desired, "barrier_install_failed")
