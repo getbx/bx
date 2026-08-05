@@ -988,3 +988,131 @@ func (o *watchTestProcessOperations) signalCount() int {
 	defer o.mu.Unlock()
 	return o.signals
 }
+
+// pidAwareProcessOperations 按 PID 分别回答:陈旧记录里那个 PID 已死,新起的
+// 进程活着。watchTestProcessOperations 无视 PID,测不出这个区分。
+type pidAwareProcessOperations struct {
+	mu       sync.Mutex
+	dead     map[int]bool
+	live     map[int]Process
+	started  StartedProcess
+	starts   int
+	startErr error
+}
+
+func (o *pidAwareProcessOperations) Start(string, []string, []string) (StartedProcess, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.starts++
+	if o.startErr != nil {
+		return nil, o.startErr
+	}
+	return o.started, nil
+}
+
+func (o *pidAwareProcessOperations) Inspect(pid int) (Process, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.dead[pid] {
+		return Process{}, ErrProcessNotRunning
+	}
+	if process, ok := o.live[pid]; ok {
+		return process, nil
+	}
+	return Process{}, ErrProcessNotRunning
+}
+
+func (o *pidAwareProcessOperations) startCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.starts
+}
+
+// Existing() 放行陈旧死记录只是第一跳:Start() 紧接着看到同一个文件还在,
+// 就以 "durable launch marker already exists" 拒绝 → 又是
+// core_ownership_uncertain,用户可见行为与修复前一模一样。这条测试覆盖
+// Existing→Start 这一对(此前只测了 Existing 一跳,是假绿)。
+func TestExecCoreRunnerStartOverwritesOSConfirmedDeadLaunchMarker(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	if err := saveProcessRecord(statePath, processRecord{PID: 5129, Executable: executable, Generation: "darwin:1785895536:393862", State: processRecordOwned}); err != nil {
+		t.Fatal(err)
+	}
+	started := newStartTestProcess(6001)
+	defer started.release()
+	operations := &pidAwareProcessOperations{
+		dead:    map[int]bool{5129: true},
+		live:    map[int]Process{6001: {PID: 6001, Executable: executable, UID: 0, Generation: "darwin:1785999999:1"}},
+		started: started,
+	}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.ControlSocket = filepath.Join(dir, "bx.sock")
+	runner.Operations = operations
+	// 真机事故形态:记录清不掉(权限/只读),文件留在磁盘上。
+	runner.RemoveProcessRecord = func(string) error { return errors.New("remove record: permission denied") }
+
+	existing, err := runner.Existing(context.Background())
+	if err != nil || existing.PID != 0 {
+		t.Fatalf("Existing = (%+v, %v), want zero-value Process 与 nil error", existing, err)
+	}
+	process, err := runner.Start(context.Background(), CoreStartOptions{})
+	if err != nil {
+		t.Fatalf("Start 仍被陈旧启动标记挡住(用户可见行为与修复前相同): %v", err)
+	}
+	if process.PID != 6001 {
+		t.Fatalf("Start 返回 PID = %d, want 6001", process.PID)
+	}
+	if operations.startCount() != 1 {
+		t.Fatalf("Core 启动次数 = %d, want 1", operations.startCount())
+	}
+}
+
+// fail-closed 不得被削弱:记录里的进程还活着(身份是否匹配都一样)时,
+// Start 仍必须拒绝——那是"另一个 Core 可能正在跑"的真实所有权存疑。
+func TestExecCoreRunnerStartStillRefusesLiveLaunchMarker(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	tests := []struct {
+		name   string
+		record processRecord
+		live   map[int]Process
+	}{
+		{
+			name:   "记录里的进程还活着",
+			record: processRecord{PID: 5129, Executable: executable, Generation: "darwin:1:1", State: processRecordOwned},
+			live:   map[int]Process{5129: {PID: 5129, Executable: "/other/bx", UID: 0, Generation: "darwin:9:9"}},
+		},
+		{
+			name:   "launching 标记没有 PID,无从向 OS 求证",
+			record: processRecord{State: processRecordLaunching},
+			live:   map[int]Process{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := saveProcessRecord(statePath, tt.record); err != nil {
+				t.Fatal(err)
+			}
+			operations := &pidAwareProcessOperations{live: tt.live, started: newStartTestProcess(6001)}
+			runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+			runner.StatePath = statePath
+			runner.ControlSocket = filepath.Join(dir, "bx.sock")
+			runner.Operations = operations
+			if _, err := runner.Start(context.Background(), CoreStartOptions{}); !errors.Is(err, ErrProcessOwnershipUncertain) {
+				t.Fatalf("Start = %v, want ErrProcessOwnershipUncertain", err)
+			}
+			if operations.startCount() != 0 {
+				t.Fatalf("拒绝时不得启动 Core,实际启动 %d 次", operations.startCount())
+			}
+		})
+	}
+}

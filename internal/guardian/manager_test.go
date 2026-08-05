@@ -2504,3 +2504,62 @@ func TestFailureCodeForErrorNamesTheRealFailure(t *testing.T) {
 		})
 	}
 }
+
+// 事故的完整形态,走真实 ExecCoreRunner 的 Manager 级回归:陈旧 core-process.json
+// 指向早已死亡的 PID 且清除失败时,sudo bx up 必须成功。此前 Existing() 一跳
+// 被放行、Start() 立刻以「durable launch marker already exists」拒绝,
+// 用户可见行为(core_ownership_uncertain)与修复前完全一致——只测 Existing()
+// 一跳的单测是假绿。
+func TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "core-process.json")
+	if err := saveProcessRecord(statePath, processRecord{PID: 5129, Executable: executable, Generation: "darwin:1785895536:393862", State: processRecordOwned}); err != nil {
+		t.Fatal(err)
+	}
+	started := newStartTestProcess(6001)
+	defer started.release()
+	operations := &pidAwareProcessOperations{
+		dead:    map[int]bool{5129: true},
+		live:    map[int]Process{6001: {PID: 6001, Executable: executable, UID: 0, Generation: "darwin:1785999999:1"}},
+		started: started,
+	}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = statePath
+	runner.ControlSocket = filepath.Join(dir, "bx.sock")
+	runner.Operations = operations
+	runner.RemoveProcessRecord = func(string) error { return errors.New("remove record: permission denied") }
+
+	events := &eventLog{}
+	manager, err := NewManager(ManagerOptions{
+		Store: OpenStore(Paths{
+			Desired:     filepath.Join(dir, "guardian-state.json"),
+			Transaction: filepath.Join(dir, "transaction.json"),
+			Receipt:     filepath.Join(dir, "receipt.json"),
+			Staging:     filepath.Join(dir, "staging"),
+			Snapshots:   filepath.Join(dir, "snapshots"),
+		}),
+		Runner:         runner,
+		Health:         &fakeHealthGate{},
+		Barrier:        &fakeBarrier{events: events},
+		DNS:            newFakeDNSManager(events),
+		BarrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}, BlockIPv6: true},
+		CoreVersion:    version.Version,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Up(context.Background()); err != nil {
+		t.Fatalf("陈旧死记录仍卡死 bx up: %v", err)
+	}
+	if got := manager.Status().LastError; got != "" {
+		t.Errorf("Up 成功时不应留失败码,实际 = %q", got)
+	}
+	if operations.startCount() != 1 {
+		t.Errorf("Core 启动次数 = %d, want 1", operations.startCount())
+	}
+}
