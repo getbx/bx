@@ -62,6 +62,21 @@ func (b darwinBarrier) Remove(ctx context.Context, barrierCtx BarrierContext) er
 	return b.run(ctx, cleanup, isRouteNotInTable)
 }
 
+// RemoveBlockingBarrierRoutes deletes every blocking route the barrier can
+// install, without consulting any BarrierContext or ownership record. It is
+// the cleanup half of the forced-teardown escape hatch (`bx down` when
+// Guardian is unreachable): booting Guardian out destroys the in-memory
+// ownership record while the kernel keeps the reject routes, so nothing else
+// would ever remove them. Missing routes ("not in table") are tolerated, so
+// callers may run it unconditionally; genuine failures (e.g. not root) are
+// reported.
+func RemoveBlockingBarrierRoutes(ctx context.Context, runner CommandRunner) error {
+	if runner == nil {
+		runner = darwinRunner{}
+	}
+	return darwinBarrier{runner: runner}.run(ctx, PlanBlockingBarrierCleanup(), isRouteNotInTable)
+}
+
 func (b darwinBarrier) run(ctx context.Context, planned []Command, tolerated func(error) bool) error {
 	for _, plan := range planned {
 		command := Command{Name: darwinRoutePath, Args: append([]string(nil), plan.Args...)}

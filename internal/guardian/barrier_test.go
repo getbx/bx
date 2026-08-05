@@ -260,3 +260,76 @@ func requireCommands(t *testing.T, commands []Command, want ...string) {
 		}
 	}
 }
+
+// 强制拆除路径(`bx down` 在 Guardian 不可达时 launchctl bootout)会连同 Guardian
+// 进程一起抹掉内存里的 barrierOwnership,但内核里的 reject 路由还在——它们的前缀
+// (/2)比 Core 的 split-default(/1)更长,压过一切,整机零连通;此后 up 的新
+// Guardian 因为 barrierOwnership 为空而认为"无屏障",down 的 removeBarrier 直接
+// no-op,孤儿屏障在 up/down/uninstall 全周期存活。所以清理必须**不依赖任何
+// BarrierContext / 所有权记录**,并覆盖全部 v4+v6 阻断段。
+func TestPlanBlockingBarrierCleanupDeletesEveryBlockingRouteWithoutContext(t *testing.T) {
+	requireCommands(t, PlanBlockingBarrierCleanup(),
+		"route -n delete -inet6 -net c000::/2",
+		"route -n delete -inet6 -net 8000::/2",
+		"route -n delete -inet6 -net 4000::/2",
+		"route -n delete -inet6 -net ::/2",
+		"route -n delete -net 192.0.0.0/2",
+		"route -n delete -net 128.0.0.0/2",
+		"route -n delete -net 64.0.0.0/2",
+		"route -n delete -net 0.0.0.0/2",
+	)
+}
+
+// 守卫:以后谁往 publicIPv4Blocks/publicIPv6Blocks 里加阻断段,清理必须自动跟上,
+// 否则又会留下删不掉的孤儿路由。
+func TestPlanBlockingBarrierCleanupCoversEveryDeclaredBlock(t *testing.T) {
+	commands := PlanBlockingBarrierCleanup()
+	for _, block := range append(append([]string(nil), publicIPv4Blocks...), publicIPv6Blocks...) {
+		found := false
+		for _, command := range commands {
+			if strings.HasSuffix(command.String(), " "+block) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("阻断段 %s 没有对应的清理命令: %v", block, commands)
+		}
+	}
+}
+
+func TestRemoveBlockingBarrierRoutesDeletesAllBlocksAndToleratesMissing(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin executor is unavailable on this platform")
+	}
+	// 孤儿清理是无条件运行的:大多数情况下路由并不存在,"not in table" 必须被容忍,
+	// 否则第一条不存在的路由就会中断后面 7 条真正需要删除的命令。
+	runner := &recordingRunner{errors: []error{
+		errors.New("route: writing to routing socket: not in table"),
+		nil,
+		errors.New("route: writing to routing socket: not in table"),
+	}}
+	if err := RemoveBlockingBarrierRoutes(context.Background(), runner); err != nil {
+		t.Fatalf("清理孤儿屏障路由不应因缺失路由而失败: %v", err)
+	}
+	requireCommands(t, runner.commands,
+		"/sbin/route -n delete -inet6 -net c000::/2",
+		"/sbin/route -n delete -inet6 -net 8000::/2",
+		"/sbin/route -n delete -inet6 -net 4000::/2",
+		"/sbin/route -n delete -inet6 -net ::/2",
+		"/sbin/route -n delete -net 192.0.0.0/2",
+		"/sbin/route -n delete -net 128.0.0.0/2",
+		"/sbin/route -n delete -net 64.0.0.0/2",
+		"/sbin/route -n delete -net 0.0.0.0/2",
+	)
+}
+
+func TestRemoveBlockingBarrierRoutesReportsGenuineFailure(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin executor is unavailable on this platform")
+	}
+	runner := &recordingRunner{errors: []error{errors.New("route: writing to routing socket: Operation not permitted")}}
+	if err := RemoveBlockingBarrierRoutes(context.Background(), runner); err == nil {
+		t.Fatal("真实失败(如非 root)必须报出来,否则用户以为路由已清理")
+	}
+}
