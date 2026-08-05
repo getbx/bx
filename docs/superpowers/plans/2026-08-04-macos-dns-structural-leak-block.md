@@ -99,12 +99,15 @@ RULES="$(mktemp)"
 MAIN="$(mktemp)"
 TOKEN_FILE="$(mktemp)"
 DEADMAN_SCRIPT="$(mktemp)"
+MAIN_REPLACED_FILE="$(mktemp)"
 DEADMAN_LOG="${TMPDIR:-/tmp}/darwin-dns-probe-deadman-$$.log"
 PF_TOKEN=""
+BACKUP=""
 
 cleanup() {
   local pf_ok=1
   local out
+  local replaced
 
   if out=$(sudo pfctl -a "$ANCHOR" -F all 2>&1); then
     log "✓ anchor 已清空"
@@ -112,6 +115,19 @@ cleanup() {
     pf_ok=0
     log "✗ 清空 anchor 失败:$out"
     log "  请手动执行:sudo pfctl -a $ANCHOR -F all"
+  fi
+
+  replaced=$(cat "$MAIN_REPLACED_FILE" 2>/dev/null || true)
+  if [[ "$replaced" == "1" ]]; then
+    if out=$(sudo pfctl -f /etc/pf.conf 2>&1); then
+      log "✓ 主规则集已还原为 /etc/pf.conf"
+    else
+      pf_ok=0
+      log "✗ 还原主规则集失败:$out"
+      log "  请手动执行:sudo pfctl -f /etc/pf.conf"
+    fi
+  else
+    log "--- 主规则集未被本脚本替换过,无需还原 ---"
   fi
 
   if [[ -n "$PF_TOKEN" ]]; then
@@ -124,24 +140,34 @@ cleanup() {
     fi
   fi
 
-  rm -f "$RULES" "$MAIN" "$TOKEN_FILE" "$DEADMAN_SCRIPT"
+  rm -f "$RULES" "$MAIN" "$TOKEN_FILE" "$DEADMAN_SCRIPT" "$MAIN_REPLACED_FILE"
+  if [[ -n "$BACKUP" ]]; then
+    log "--- 备份文件保留供事后排查(不会被自动删除):$BACKUP ---"
+  fi
 
   if [[ "$pf_ok" -eq 1 ]]; then
-    log "已复原:anchor 清空 + pf 引用计数释放"
+    log "已复原:anchor 清空 + 主规则集还原 + pf 引用计数释放"
   else
     log "!!! 复原未完全成功,请检查上面的手动救命命令"
   fi
 }
 trap cleanup EXIT
 
-# 死手脚本写入独立文件、由 nohup 的 bash 进程执行。token 在此刻(死手刚启动时)
-# 还是空的——必须让死手在 DEADMAN 秒后真正触发的那一刻才去读 TOKEN_FILE 的
-# 当时内容,而不是把启动时刻的(空)变量值烘焙进命令行。
+# 死手脚本写入独立文件、由 nohup 的 bash 进程执行。token、主规则集是否被
+# 替换过这些状态在此刻(死手刚启动时)都还不知道——必须让死手在 DEADMAN 秒
+# 后真正触发的那一刻才去读 TOKEN_FILE / MAIN_REPLACED_FILE 的当时内容,而
+# 不是把启动时刻的(空)变量值烘焙进命令行。
 cat >"$DEADMAN_SCRIPT" <<EOF
 sleep '$DEADMAN'
 {
   if ! sudo pfctl -a '$ANCHOR' -F all 2>&1; then
     echo '[死手] 清空 anchor 失败,请手动执行:sudo pfctl -a $ANCHOR -F all'
+  fi
+  dm_replaced="\$(cat '$MAIN_REPLACED_FILE' 2>/dev/null || true)"
+  if [[ "\$dm_replaced" == "1" ]]; then
+    if ! sudo pfctl -f /etc/pf.conf 2>&1; then
+      echo '[死手] 还原主规则集失败,请手动执行:sudo pfctl -f /etc/pf.conf'
+    fi
   fi
   dm_token="\$(cat '$TOKEN_FILE' 2>/dev/null || true)"
   if [[ -n "\$dm_token" ]]; then
@@ -195,11 +221,64 @@ load anchor "com.apple" from "/etc/pf.anchors/com.apple"
 anchor "$ANCHOR"
 EOF
 
+# pfctl -f 是整体替换语义,会把内存里当前实时的主规则集整个换掉,不是追加。
+# /etc/pf.conf 在磁盘上是出厂状态不代表内存里的实时规则集也是——可能有别的
+# 工具装了东西。装载前先把实时规则集备份下来(不自动删除,供事后排查),
+# 再核对一遍:如果发现非 com.apple、非本脚本 anchor 的内容,说明会覆盖到
+# 第三方的东西,默认中止,除非用户显式设 FORCE_REPLACE_MAIN=1 确认接受。
+log "=== 装载前:备份当前实时 pf 规则集,并核对是否有第三方内容 ==="
+BACKUP="${TMPDIR:-/tmp}/darwin-dns-probe-backup-$$.txt"
+live_rules=$(sudo pfctl -s rules 2>&1 || true)
+live_nat=$(sudo pfctl -s nat 2>&1 || true)
+live_anchors=$(sudo pfctl -s Anchors 2>&1 || true)
+{
+  echo "=== pfctl -s rules ($(date)) ==="
+  printf '%s\n' "$live_rules"
+  echo
+  echo "=== pfctl -s nat ==="
+  printf '%s\n' "$live_nat"
+  echo
+  echo "=== pfctl -s Anchors ==="
+  printf '%s\n' "$live_anchors"
+} > "$BACKUP"
+log "--- 已备份到:$BACKUP(不会被自动删除,供事后排查) ---"
+
+bad_rules=$(printf '%s\n' "$live_rules" | grep -vE '^[[:space:]]*$' | grep -viE 'com\.apple' | grep -vF "$ANCHOR" || true)
+bad_nat=$(printf '%s\n' "$live_nat" | grep -vE '^[[:space:]]*$' | grep -viE 'com\.apple' | grep -vF "$ANCHOR" || true)
+bad_anchors=$(printf '%s\n' "$live_anchors" | grep -vE '^[[:space:]]*$' | grep -viE '^com\.apple' | grep -vF "$ANCHOR" || true)
+
+if [[ -n "$bad_rules" || -n "$bad_nat" || -n "$bad_anchors" ]]; then
+  log ""
+  log "!!! 警告:实时 pf 主规则集里存在非 com.apple、非本脚本 anchor 的内容 !!!"
+  log "!!! sudo pfctl -f \"\$MAIN\" 会整体替换主规则集,可能覆盖第三方工具装的规则,且无法保证完美复原 !!!"
+  if [[ -n "$bad_rules" ]]; then
+    log "--- 可疑规则行(pfctl -s rules) ---"
+    printf '%s\n' "$bad_rules" | while IFS= read -r l; do log "  $l"; done
+  fi
+  if [[ -n "$bad_nat" ]]; then
+    log "--- 可疑 NAT 规则(pfctl -s nat) ---"
+    printf '%s\n' "$bad_nat" | while IFS= read -r l; do log "  $l"; done
+  fi
+  if [[ -n "$bad_anchors" ]]; then
+    log "--- 可疑 anchor(pfctl -s Anchors) ---"
+    printf '%s\n' "$bad_anchors" | while IFS= read -r l; do log "  $l"; done
+  fi
+  log "完整内容见备份:$BACKUP"
+  if [[ "${FORCE_REPLACE_MAIN:-0}" != "1" ]]; then
+    log "已中止,未替换主规则集,系统状态未改动。若确认可以接受覆盖以上内容,设 FORCE_REPLACE_MAIN=1 重跑。"
+    exit 1
+  fi
+  log "--- FORCE_REPLACE_MAIN=1 已设置,按用户确认继续覆盖 ---"
+else
+  log "--- 实时主规则集与出厂状态(仅 com.apple)一致,可以安全替换 ---"
+fi
+
 log "=== 4. 装载(内存中),验证 anchor 是否真的被求值 ==="
 sudo pfctl -f "$MAIN" || {
   log "!!! 主规则集装载失败"
   exit 1
 }
+echo 1 > "$MAIN_REPLACED_FILE"
 sudo pfctl -a "$ANCHOR" -f "$RULES" || {
   log "!!! anchor 规则装载失败"
   exit 1
