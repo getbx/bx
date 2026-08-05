@@ -42,6 +42,19 @@ const (
 	// route/DNS restore can finish before Guardian is booted out.
 	coreShutdownWait         = 15 * time.Second
 	coreShutdownPollInterval = 200 * time.Millisecond
+	// dnsRestoreTimeout bounds the forced teardown's DNS restore step. It
+	// shells out to several external commands with no timeout of their own
+	// (`networksetup` x2, `dscacheutil`, `killall`), and app.Run(os.Args)
+	// (main.go) runs under context.Background(), which never expires by
+	// itself — so without a bound here a stuck networksetup call (a real
+	// failure mode on a broken network stack, which is exactly when this
+	// escape hatch gets used) would hang `bx down` forever. 20s sits
+	// between guardianReadyTimeout (10s, a single readiness poll) and twice
+	// coreShutdownWait (15s, one cooperative RPC): up to four commands run
+	// here sequentially, each normally well under a second, so the bound
+	// exists to guarantee termination on a hang, not to accommodate
+	// expected latency.
+	dnsRestoreTimeout = 20 * time.Second
 )
 
 type migrationMetadataDeps struct {
@@ -104,14 +117,25 @@ type macOSLifecycleDeps struct {
 	// on 127.0.0.1:53. Skipping this leaves DNS aimed at a listener that
 	// just exited, i.e. the "网页打不开" symptom that motivated this whole
 	// escape hatch, with routes that look perfectly clean. It runs after
-	// forceTeardown because a live Guardian would just take DNS back.
+	// forceTeardown because a live Guardian would just take DNS back, and
+	// after clearBarrierRoutes: this step shells out to several external
+	// commands with no timeout of their own, so forcedMacOSTeardown wraps
+	// it in dnsRestoreTimeout and runs it *after* the barrier is cleared —
+	// restoring connectivity does not depend on DNS being restored first,
+	// and must not be delayed behind a command that can hang.
 	restoreSystemDNS func(context.Context) error
 	// clearBarrierRoutes deletes the barrier's blocking routes. Booting
 	// Guardian out drops its in-memory ownership record while the kernel
 	// keeps the /2 reject routes, which outrank Core's /1 split-default and
 	// blackhole the whole machine with nothing left able to remove them.
 	// This is not a fail-closed regression: it happens only because the
-	// user explicitly asked to stop protection.
+	// user explicitly asked to stop protection. It is the step that
+	// actually gets the user back online, so it runs as early as
+	// forceTeardown allows — in particular before restoreSystemDNS, whose
+	// external commands have no bound of their own and must never be
+	// allowed to delay route cleanup. Deleting routes touches no DNS
+	// state, so the two steps have no ordering dependency in the other
+	// direction either.
 	clearBarrierRoutes func(context.Context) error
 }
 
@@ -421,21 +445,29 @@ func forcedMacOSTeardown(ctx context.Context, deps macOSLifecycleDeps, cause err
 	if err := deps.forceTeardown(ctx); err != nil {
 		failures = append(failures, fmt.Errorf("停止 Guardian 服务: %w", err))
 	}
-	// 4. Put the system resolver back. Guardian owns the DNS takeover and
-	//    is the only thing that ever restores it, so this must happen here:
-	//    after it is gone (it would otherwise take DNS back), and never
-	//    before, or the machine keeps resolving through a 127.0.0.1:53
-	//    listener that exited with Core.
-	if deps.restoreSystemDNS != nil {
-		if err := deps.restoreSystemDNS(ctx); err != nil {
-			failures = append(failures, fmt.Errorf("还原系统 DNS(否则仍会网页打不开,可手动执行 sudo bx dns off): %w", err))
-		}
-	}
-	// 5. Remove the barrier's blocking routes. Nothing else can: Guardian
-	//    is gone along with its ownership record.
+	// 4. Remove the barrier's blocking routes. Nothing else can: Guardian
+	//    is gone along with its ownership record. This is the step that
+	//    actually gets the user back online (it deletes the 8 reject
+	//    routes covering the whole public internet), so it runs before DNS
+	//    restore rather than after: the two steps do not depend on each
+	//    other, and restore's several unbounded external commands (step 5)
+	//    must never be allowed to delay it.
 	if deps.clearBarrierRoutes != nil {
 		if err := deps.clearBarrierRoutes(ctx); err != nil {
 			failures = append(failures, fmt.Errorf("清理屏障阻断路由: %w", err))
+		}
+	}
+	// 5. Put the system resolver back. Guardian owns the DNS takeover and
+	//    is the only thing that ever restores it, so this must happen
+	//    after it is gone (it would otherwise take DNS back). Bounded by
+	//    dnsRestoreTimeout: app.Run(os.Args) runs under context.Background()
+	//    (main.go), which never expires on its own, and this step's
+	//    underlying `networksetup`/`dscacheutil`/`killall` calls have no
+	//    timeout of their own — without a bound a stuck one would hang `bx
+	//    down` forever.
+	if deps.restoreSystemDNS != nil {
+		if err := runWithTimeout(ctx, dnsRestoreTimeout, deps.restoreSystemDNS); err != nil {
+			failures = append(failures, fmt.Errorf("还原系统 DNS(否则仍会网页打不开,可手动执行 sudo bx dns off): %w", err))
 		}
 	}
 	// 6. Persist the intent once more. Cheap, idempotent, and now
@@ -462,6 +494,18 @@ func forcedMacOSTeardown(ctx context.Context, deps macOSLifecycleDeps, cause err
 			"或手动执行 sudo launchctl bootout system/com.getbx.bx.guard,再逐条删除阻断路由:\n  sudo %s",
 		problems, strings.Join(blockingRouteCleanupHints(), "\n  sudo "),
 	)
+}
+
+// runWithTimeout calls fn with a context derived from ctx and bounded by
+// timeout, so a hook whose own external commands have no deadline (like
+// restoreSystemDNS's networksetup/dscacheutil/killall calls) cannot hang the
+// caller indefinitely. It relies on fn's own commands honoring context
+// cancellation (exec.CommandContext does); it cannot forcibly interrupt a
+// callee that ignores ctx.
+func runWithTimeout(ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return fn(timeoutCtx)
 }
 
 // persistDesiredOff runs the markDesiredOff hook if one is wired. A missing
@@ -519,7 +563,7 @@ func macOSDownAction(c *urfavecli.Context) error {
 			fmt.Fprintln(os.Stderr, "⚠️  Guardian 未响应,已改走强制停止。")
 		}
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
-		fmt.Println("已执行:记录关闭意图(不再开机自启)、请求 Core 退出(由它自己还原它装的路由)、停止 Guardian 服务、还原系统 DNS、删除屏障阻断路由。")
+		fmt.Println("已执行:记录关闭意图(不再开机自启)、请求 Core 退出(由它自己还原它装的路由)、停止 Guardian 服务、删除屏障阻断路由、还原系统 DNS。")
 		fmt.Println("请确认网络是否已恢复(例如 bx status 或打开任意网页);若仍不通,执行 sudo bx uninstall(会保留 /etc/bx 配置)。")
 		return nil
 	}

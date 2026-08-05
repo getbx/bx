@@ -497,7 +497,7 @@ func TestMacOSDownForcedTeardownStopsCoreClearsBarrierAndPersistsOff(t *testing.
 	if !result.Forced {
 		t.Error("Guardian 不可达时应报告走了强制拆除")
 	}
-	want := "desired.off|core.shutdown|guardian.forceTeardown|dns.restore|barrier.clear|desired.off"
+	want := "desired.off|core.shutdown|guardian.forceTeardown|barrier.clear|dns.restore|desired.off"
 	if got := deps.trace(); got != want {
 		t.Fatalf("强制拆除调用序列 = %q, want %q", got, want)
 	}
@@ -593,6 +593,81 @@ func TestMacOSDownForcedTeardownDNSFailureIsActionable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bx dns off") {
 		t.Errorf("错误缺少可执行的下一步 %q: %v", "bx dns off", err)
+	}
+}
+
+// TestMacOSDownForcedTeardownClearsBarrierBeforeRestoringDNS pins the reorder
+// this fix makes: clearing the barrier's blocking routes is what actually
+// gets the user back online, so it must not sit behind the DNS restore
+// step's several unbounded external commands (networksetup x2, dscacheutil,
+// killall — see dnsRestoreTimeout). The two steps do not depend on each
+// other: route deletion touches no DNS state, and restoring DNS touches no
+// routes.
+func TestMacOSDownForcedTeardownClearsBarrierBeforeRestoringDNS(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return false }
+
+	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
+		t.Fatalf("强制拆除应当成功: %v", err)
+	}
+	clearBarrier, restoreDNS := deps.eventIndex("barrier.clear"), deps.eventIndex("dns.restore")
+	if clearBarrier < 0 || restoreDNS < 0 {
+		t.Fatalf("强制拆除缺步骤: %q", deps.trace())
+	}
+	if clearBarrier > restoreDNS {
+		t.Fatalf("清屏障(恢复联网的关键步)必须先于 DNS 还原(可能因无超时的外部命令卡住): %q", deps.trace())
+	}
+}
+
+// TestMacOSDownForcedTeardownDNSRestoreHasBoundedDeadline proves the DNS
+// restore hook is invoked with a context carrying a deadline bounded by
+// dnsRestoreTimeout, rather than the caller's raw context — which, via
+// app.Run(os.Args) in main.go, is context.Background() and never expires on
+// its own. Without this, a stuck `networksetup` call (the failure mode that
+// motivated this whole escape hatch) hangs `bx down` forever.
+func TestMacOSDownForcedTeardownDNSRestoreHasBoundedDeadline(t *testing.T) {
+	deps := newFakeMacOSLifecycleDeps()
+	deps.guardianReady = func(context.Context) bool { return false }
+	var sawDeadline bool
+	var remaining time.Duration
+	deps.restoreSystemDNS = func(ctx context.Context) error {
+		deps.restoreDNSCount++
+		deps.events = append(deps.events, "dns.restore")
+		deadline, ok := ctx.Deadline()
+		sawDeadline = ok
+		if ok {
+			remaining = time.Until(deadline)
+		}
+		return nil
+	}
+
+	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
+		t.Fatalf("强制拆除应当成功: %v", err)
+	}
+	if !sawDeadline {
+		t.Fatal("DNS 还原必须带有界超时的 context,否则可能被无超时的外部命令挂住而永不返回")
+	}
+	if remaining <= 0 || remaining > dnsRestoreTimeout {
+		t.Fatalf("DNS 还原超时窗口不合理: remaining=%v want (0, %v]", remaining, dnsRestoreTimeout)
+	}
+}
+
+// TestRunWithTimeoutBoundsHangingCall proves runWithTimeout actually cancels
+// a hook that blocks on ctx.Done(), rather than merely decorating the
+// context and hoping the callee respects it — fast to run (short custom
+// wait) unlike a full end-to-end test at the production dnsRestoreTimeout.
+func TestRunWithTimeoutBoundsHangingCall(t *testing.T) {
+	start := time.Now()
+	err := runWithTimeout(context.Background(), 50*time.Millisecond, func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("挂住的调用超时后必须返回错误")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("runWithTimeout 未能及时截断挂住的调用,耗时 %v", elapsed)
 	}
 }
 
