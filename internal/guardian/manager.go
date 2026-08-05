@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -1158,6 +1159,9 @@ func (m *Manager) needsAttention(desired DesiredState, code string) {
 	}
 	status.LastError = code
 	m.setStatus(status)
+	// 失败码只存在内存里等于没有:真机事故中 Guardian 已经知道原因,
+	// 却既不落日志也不外传,排查耗时四轮。
+	log.Printf("guardian_needs_attention code=%s desired=%s protection=%s", code, desired, status.Protection)
 }
 
 func (m *Manager) needsAttentionUnlessDNSActivationFailure(code string) {

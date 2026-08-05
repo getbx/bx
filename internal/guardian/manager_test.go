@@ -1,13 +1,17 @@
 package guardian
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,6 +45,32 @@ func TestManagerOptionsRequiresDNSWithoutLegacyRestorerAlias(t *testing.T) {
 	if _, ok := reflect.TypeOf(ManagerOptions{}).FieldByName("Restorer"); ok {
 		t.Fatal("ManagerOptions still exposes legacy Restorer alias")
 	}
+}
+
+// 失败码只存在内存里等于没有——排查时既看不到日志也拿不到返回。
+func TestNeedsAttentionLogsTheFailureCode(t *testing.T) {
+	var buf bytes.Buffer
+	restore := swapGuardianLogOutput(&buf)
+	defer restore()
+
+	env := newManagerTestEnv(t)
+	env.manager.needsAttention(DesiredOn, "core_ownership_uncertain")
+
+	logged := buf.String()
+	if !strings.Contains(logged, "core_ownership_uncertain") {
+		t.Errorf("失败码必须写进日志,实际日志:%q", logged)
+	}
+	if env.manager.Status().LastError != "core_ownership_uncertain" {
+		t.Error("失败码仍应保留在 status.LastError")
+	}
+}
+
+// swapGuardianLogOutput 替换标准 log 包的输出目标,返回还原函数。测试用它捕获
+// Guardian 通过 log.Printf 记录的完整错误,断言"落日志"这一不变量。
+func swapGuardianLogOutput(w io.Writer) func() {
+	previous := log.Writer()
+	log.SetOutput(w)
+	return func() { log.SetOutput(previous) }
 }
 
 func TestManagerUpVerifiesDNSBeforeProtected(t *testing.T) {

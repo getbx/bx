@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -91,7 +92,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	migrationController, _ := controller.(MigrationController)
 	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations))
 	updateController, _ := controller.(UpdateController)
-	mux.HandleFunc("/v1/update", updateHandler(updateController, mutations))
+	mux.HandleFunc("/v1/update", updateHandler(controller, updateController, mutations))
 	pathRecoveryController, _ := controller.(PathRecoveryController)
 	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
@@ -210,7 +211,7 @@ func authorizeRecoveryPeer(ctx context.Context, ownerUID uint32) bool {
 	return credentials.uid == 0 || (ownerUID != 0 && credentials.uid == ownerUID)
 }
 
-func updateHandler(updater UpdateController, mutations *acceptedMutations) http.HandlerFunc {
+func updateHandler(controller Controller, updater UpdateController, mutations *acceptedMutations) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -251,7 +252,13 @@ func updateHandler(updater UpdateController, mutations *acceptedMutations) http.
 		defer cancel()
 		result, err := updater.Update(mutationCtx, normalized)
 		if err != nil {
-			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"error": "guardian operation failed"})
+			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
+			// 避免把路径/链接/凭据经 socket 外传。
+			log.Printf("guardian_mutation_failed err=%v", err)
+			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "guardian operation failed",
+				"code":  controller.Status().LastError,
+			})
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, result)
@@ -369,7 +376,13 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 		mutationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), guardianMutationTimeout)
 		defer cancel()
 		if err := mutate(mutationCtx); err != nil {
-			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"error": "guardian operation failed"})
+			// 完整错误只进 root-only 的 Guardian 日志;响应只带失败码,
+			// 避免把路径/链接/凭据经 socket 外传。
+			log.Printf("guardian_mutation_failed err=%v", err)
+			writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "guardian operation failed",
+				"code":  controller.Status().LastError,
+			})
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, controller.Status())

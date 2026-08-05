@@ -175,6 +175,55 @@ func TestLocalAPIDownReturnsControllerFailure(t *testing.T) {
 	}
 }
 
+// 调用方只看到 "guardian operation failed" 时无从下手;必须回传失败码。
+func TestMutationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
+	var buf bytes.Buffer
+	restore := swapGuardianLogOutput(&buf)
+	defer restore()
+
+	controller := &fakeController{status: Status{LastError: "core_ownership_uncertain"}}
+	handler := mutationHandler(controller,
+		func(context.Context) error { return errors.New("inspect recorded Core PID 5129: boom") },
+		newAcceptedMutations())
+
+	rec := httptest.NewRecorder()
+	handler(rec, rootMutationRequest(t))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d, want 500", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["code"] != "core_ownership_uncertain" {
+		t.Errorf("响应必须带失败码,实际 body = %v", body)
+	}
+	// 原始错误可能含路径/链接/凭据,绝不能回传给调用方。
+	if strings.Contains(rec.Body.String(), "boom") ||
+		strings.Contains(rec.Body.String(), "5129") {
+		t.Errorf("响应不得包含原始错误内容,实际 = %s", rec.Body.String())
+	}
+	// 但 Guardian 自己的日志(root-only)必须记全,否则排查无据。
+	if !strings.Contains(buf.String(), "boom") {
+		t.Errorf("Guardian 日志必须记录完整错误,实际 = %q", buf.String())
+	}
+}
+
+// newAcceptedMutations 构造一个开放接受中的 acceptedMutations,与 NewLocalAPI
+// 内部构造的初始状态一致,供直接调用 mutationHandler/updateHandler 的测试使用。
+func newAcceptedMutations() *acceptedMutations {
+	return &acceptedMutations{accepting: true, drained: make(chan struct{})}
+}
+
+// rootMutationRequest 构造一个带 root peer 凭据(uid==0)的 POST 请求,满足
+// mutationHandler/updateHandler/migrationHandler 的鉴权前提。
+func rootMutationRequest(t *testing.T) *http.Request {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/v1/up", nil)
+	return request.WithContext(withPeerCredentials(request.Context(), 0, true))
+}
+
 func TestLocalAPIMigrateRequiresRootAndStrictMetadata(t *testing.T) {
 	validBody := []byte(`{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"]}`)
 	tests := []struct {
