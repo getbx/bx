@@ -86,6 +86,17 @@ type Status struct {
 	DNSState          DNSState         `json:"dns_state"`
 	DNSManaged        bool             `json:"dns_managed"`
 	DNSService        string           `json:"dns_service,omitempty"`
+
+	// LastErrorGeneration is a monotonic counter bumped every time
+	// needsAttention actually runs (see Manager.needsAttention). It exists so
+	// LocalAPI failure handlers can tell "this call really did set LastError"
+	// apart from "LastError happens to already hold this value from an
+	// earlier, unrelated failure" — a value comparison on LastError itself
+	// cannot distinguish a repeated failure with the *same* code (the
+	// exact scenario this whole feature exists for) from a stale one.
+	// Deliberately excluded from the public JSON contract: it is an internal
+	// freshness signal, not an observable status field.
+	LastErrorGeneration uint64 `json:"-"`
 }
 
 // MarshalJSON keeps externally observable DNS state within the Guardian

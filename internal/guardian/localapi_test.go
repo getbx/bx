@@ -187,7 +187,7 @@ func TestMutationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 	controller := &fakeController{}
 	handler := mutationHandler(controller,
 		func(context.Context) error {
-			controller.status.LastError = "core_ownership_uncertain"
+			controller.simulateNeedsAttention("core_ownership_uncertain")
 			return errors.New("inspect recorded Core PID 5129: boom")
 		},
 		newAcceptedMutations())
@@ -213,6 +213,36 @@ func TestMutationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 	// 但 Guardian 自己的日志(root-only)必须记全,否则排查无据。
 	if !strings.Contains(buf.String(), "boom") {
 		t.Errorf("Guardian 日志必须记录完整错误,实际 = %q", buf.String())
+	}
+}
+
+// 「连续两次因同一原因失败」正是回传失败码这一功能存在的理由——用户那次
+// bx up 就是同一原因反复失败。needsAttention 每次都真的执行了一遍,只是恰好
+// 设成了同一个字符串值;若靠比较 LastError 的值判断"这次失败是否真的设置过
+// 它",第二次会被误判为陈旧而丢弃,轮询时 code 就会时有时无,反而像"问题变了"。
+// 必须靠"这次调用期间 needsAttention 是否真的跑过"(代际号)而非值比较来判断。
+func TestMutationHandlerReturnsCodeOnRepeatedIdenticalFailure(t *testing.T) {
+	controller := &fakeController{}
+	failingMutate := func(context.Context) error {
+		controller.simulateNeedsAttention("core_ownership_uncertain")
+		return errors.New("inspect recorded Core PID 5129: boom")
+	}
+	handler := mutationHandler(controller, failingMutate, newAcceptedMutations())
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		rec := httptest.NewRecorder()
+		handler(rec, rootMutationRequest(t))
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("第 %d 次:状态码 = %d, want 500", attempt, rec.Code)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["code"] != "core_ownership_uncertain" {
+			t.Fatalf("第 %d 次失败必须仍回传相同失败码,实际 body = %v", attempt, body)
+		}
 	}
 }
 
@@ -345,6 +375,76 @@ func TestRecoveryRequestHandlerOmitsStaleCodeWhenLastErrorUnchanged(t *testing.T
 	if code, ok := body["code"]; ok {
 		t.Errorf("LastError 未因这次失败而更新时不应回传 code,实际 code = %q", code)
 	}
+}
+
+// migrationHandler 此前也原样丢弃 migration.Migrate 的错误——同一个问题,
+// 一并按同样约束修:日志记全 + 只回失败码(且遵守"不回传陈旧码"约束)。
+// 迁移失败(legacy Core 接管)是低频、高风险、极难诊断的场景,恰是本任务
+// 要解决的。
+func TestMigrationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
+	var buf bytes.Buffer
+	restore := swapGuardianLogOutput(&buf)
+	defer restore()
+
+	controller := &fakeController{
+		migrateErr:           errors.New("inspect recorded Core PID 5129: boom"),
+		migrateSetsLastError: "legacy_core_migration_pending",
+	}
+	handler := migrationHandler(controller, controller, newAcceptedMutations())
+
+	rec := httptest.NewRecorder()
+	handler(rec, rootMigrationRequest(t))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d, want 500, body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["code"] != "legacy_core_migration_pending" {
+		t.Errorf("响应必须带失败码,实际 body = %v", body)
+	}
+	if strings.Contains(rec.Body.String(), "boom") || strings.Contains(rec.Body.String(), "5129") {
+		t.Errorf("响应不得包含原始错误内容,实际 = %s", rec.Body.String())
+	}
+	if !strings.Contains(buf.String(), "boom") {
+		t.Errorf("Guardian 日志必须记录完整错误,实际 = %q", buf.String())
+	}
+}
+
+// 同 mutationHandler/recoveryRequestHandler:若这次失败没有更新 LastError,
+// 500 响应不得夹带一个更早不相关失败留下的陈旧 code。
+func TestMigrationHandlerOmitsStaleCodeWhenLastErrorUnchanged(t *testing.T) {
+	controller := &fakeController{
+		status:     Status{LastError: "stale_unrelated_code"},
+		migrateErr: errors.New("migration admission failed"),
+		// migrateSetsLastError intentionally left empty.
+	}
+	handler := migrationHandler(controller, controller, newAcceptedMutations())
+
+	rec := httptest.NewRecorder()
+	handler(rec, rootMigrationRequest(t))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d, want 500, body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if code, ok := body["code"]; ok {
+		t.Errorf("LastError 未因这次失败而更新时不应回传 code,实际 code = %q", code)
+	}
+}
+
+// rootMigrationRequest 构造一个带 root peer 凭据、通过校验的 /v1/migrate POST
+// 请求,满足 migrationHandler 的鉴权与元数据前提。
+func rootMigrationRequest(t *testing.T) *http.Request {
+	t.Helper()
+	body := `{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/migrate", strings.NewReader(body))
+	return request.WithContext(withPeerCredentials(request.Context(), 0, true))
 }
 
 // rootMutationRequest 构造一个带 root peer 凭据(uid==0)的 POST 请求,满足
@@ -971,17 +1071,32 @@ type fakeController struct {
 	migrateErr   error
 	updateErr    error
 	upContextErr error
+	// migrateSetsLastError, if non-empty and migrateErr != nil, is applied via
+	// simulateNeedsAttention before Migrate returns — see recoverySetsLastError.
+	migrateSetsLastError string
 
 	recoveryCalls   int
 	recoveryRequest RecoveryRequest
 	recoveryResult  RecoverySnapshot
 	recoveryCurrent RecoverySnapshot
 	recoveryErr     error
-	// recoverySetsLastError, if non-empty and recoveryErr != nil, is written to
-	// status.LastError before RequestPathRecovery returns — simulating a real
-	// needsAttention side effect so tests can distinguish "this failure set a
-	// fresh code" from "this failure left LastError untouched/stale".
+	// recoverySetsLastError, if non-empty and recoveryErr != nil, is applied via
+	// simulateNeedsAttention before RequestPathRecovery returns — simulating a
+	// real needsAttention side effect so tests can distinguish "this failure
+	// set a fresh code" from "this failure left LastError untouched/stale".
 	recoverySetsLastError string
+}
+
+// simulateNeedsAttention mimics the side effect of a real Manager calling
+// needsAttention during a failing mutation: it sets LastError *and* bumps
+// LastErrorGeneration. Tests use this (rather than only setting LastError)
+// because failureResponseBody keys off the generation counter, not the
+// string value — see the comment on failureResponseBody in localapi.go for
+// why a value comparison is insufficient (it breaks on two consecutive
+// failures with the same code).
+func (c *fakeController) simulateNeedsAttention(code string) {
+	c.status.LastError = code
+	c.status.LastErrorGeneration++
 }
 
 type blockingController struct {
@@ -1020,6 +1135,9 @@ func (c *fakeController) Down(context.Context) error {
 func (c *fakeController) Migrate(_ context.Context, request MigrationRequest) error {
 	c.migrateCalls++
 	c.migration = request
+	if c.migrateErr != nil && c.migrateSetsLastError != "" {
+		c.simulateNeedsAttention(c.migrateSetsLastError)
+	}
 	return c.migrateErr
 }
 
@@ -1033,7 +1151,7 @@ func (c *fakeController) RequestPathRecovery(request RecoveryRequest) (RecoveryS
 	c.recoveryCalls++
 	c.recoveryRequest = request
 	if c.recoveryErr != nil && c.recoverySetsLastError != "" {
-		c.status.LastError = c.recoverySetsLastError
+		c.simulateNeedsAttention(c.recoverySetsLastError)
 	}
 	return c.recoveryResult, c.recoveryErr
 }
