@@ -24,7 +24,7 @@ failure, and gray means bx is off or not configured.
 It does not install, configure, start, reconnect, or turn off protection by itself unless you choose one of the explicit menu actions.
 Starting protection always asks for confirmation before bx takes over system traffic.
 Turning protection off also asks for confirmation and restores managed DNS settings.
-`Turn Off bx` stops protection through `bx down` and restores bx-managed DNS, but leaves the menu bar app running. `Quit bx…` does the same and then also closes the menu bar app. `Quit Menu` closes only the menu bar UI; it deliberately leaves protection running.
+`Turn Off bx` stops protection through `bx down` and restores bx-managed DNS, but leaves the menu bar app running. `Quit bx…` does the same and then also closes the menu bar app.
 Use `Turn Off bx` when you want to stop protection but keep the menu bar app open; use `Quit bx…` when you also want to close the app.
 When bx needs attention, the primary action is to reconnect. bx keeps TUN, routes, and managed DNS in place while it verifies a replacement transport, so a failed reconnect does not create a direct-traffic window.
 
