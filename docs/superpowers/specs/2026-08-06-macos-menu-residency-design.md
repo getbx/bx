@@ -93,13 +93,20 @@ Quit bx                       Quit bx        (保留,行为不变)
 | 用户点 `Quit bx`(exit 0) | 保护停 + 菜单关,**不重启** |
 | 崩溃 / 被强退(退出码非 0) | launchd 拉回来 |
 
-三处 plist 生成器都要改,否则不同安装路径行为不一致:
+**四处** plist 生成器都要改,否则不同安装路径行为不一致:
 
 | 生成器 | 用途 |
 |---|---|
 | `internal/install/unified_darwin.go` 的 `MenuAgentPlistText` | **统一安装(生产路径)** |
 | `scripts/install-macos-menu.sh` 的 `write_launch_agent` | legacy 开发安装 |
 | `scripts/package-macos-menu.sh` | 打包产物内的样例 plist |
+| `apps/macos/BxMenu/Sources/BxMenu/InstanceGate.swift` 的 `menuLaunchAgentPlist` | **菜单自愈**:`main.swift` 的 `ensureLoginItemIfCanonical()` 每次菜单启动都拿它与盘上 plist 比对,不一致就覆写 |
+
+最后一处最容易漏也最致命:它跑得最勤,漏写任何一个键都等于**每次菜单启动都把装
+对的 plist 改回错的**(launchd 本次会话仍用旧配置,故当场看起来正常,下次
+`bx up` 或下次登录才发作)。四处必须逐字一致;守卫见
+`internal/install/menu_plist_generators_darwin_test.go`(读三份源码逐字比对)与
+`TestMenuAgentPlistTextRestartsOnlyOnAbnormalExit`(对 Go 生成器的输出断言)。
 
 `bx uninstall` 与更新流程用 `launchctl bootout`,它把服务移出 domain,压得过
 KeepAlive,二者不冲突。
@@ -149,6 +156,14 @@ KeepAlive,二者不冲突。
 任何退出菜单的入口**,菜单会一直留到下次登录。这正是「菜单要一直存在」的直接结果;
 在这些状态下保护本来就没开,不存在「保护跑着却看不见」的问题。若日后觉得
 `.off` 状态该允许收起图标,那是一次独立的产品决定,不在本期。
+
+同一后果还落在**安全恢复覆盖层**上(`main.swift` 的 `rebuildMenu()`,`recoverySnapshot`
+非 nil 的那一段):它建完 header/Status/Recovery 与一个动作项就 `return`,压根走不到
+下面按 `state` 建菜单的 `switch`,因此 `quitBxActionTitle` 同样不出现——恢复**正在
+进行**时那唯一的动作项还是**禁用**的 `Troubleshoot: Reconnect`,即菜单在这段时间里
+一个可点的项都没有。与上面几个状态不同的是,此时保护通常是开着的,但恢复本就是个
+过渡态(结束后菜单回到 `.connected`/`.warning`,退出入口随即回来),且恢复途中允许
+用户关掉菜单也并不可取。记录在案,本期不改菜单代码。
 
 ## 本期不做
 
