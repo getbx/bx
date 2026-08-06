@@ -22,6 +22,7 @@ import (
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/urfave/cli/v2"
 )
@@ -2777,4 +2778,146 @@ func swapGuardianArchiveLogPaths(paths []string) func() {
 	previous := guardianArchiveLogPaths
 	guardianArchiveLogPaths = func() []string { return paths }
 	return func() { guardianArchiveLogPaths = previous }
+}
+
+// bx status --json 必须把观测与信念并列发布,并在二者不一致时明写 divergence。
+// 真实事故形态:Guardian 报 protected,而流量其实走 en0 明文直连——旧的平坦
+// 结构里这件事根本表达不出来。
+func TestClientStatusPublishesObservationAndDivergence(t *testing.T) {
+	protectedStatus := func() (guardian.Status, error) {
+		return guardian.Status{
+			Desired:    guardian.DesiredOn,
+			Protection: guardian.ProtectionProtected,
+			DNSState:   guardian.DNSManaged,
+			DNSManaged: true,
+		}, nil
+	}
+	healthyCore := func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil }
+
+	t.Run("信念与事实不符时必须产出 divergence", func(t *testing.T) {
+		rep, err := readClientStatusReportWithObserver(
+			healthyCore, protectedStatus, "darwin",
+			func(context.Context) observe.ObservedState {
+				return observe.ObservedState{
+					CaptureOK: observe.False, CaptureInterface: "en0",
+					DNSManaged: observe.True, TunnelHealthy: observe.True,
+				}
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Observed == nil {
+			t.Fatal("必须发布观测,否则消费者无从分辨哪些字段是记忆")
+		}
+		if rep.ProtectionState != guardian.ProtectionProtected {
+			t.Errorf("观测不得覆盖信念,protection_state = %q, want protected", rep.ProtectionState)
+		}
+		var found bool
+		for _, d := range rep.Divergence {
+			if d.Field == "capture_ok" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("劫持未生效却声称 protected 必须产出 capture_ok divergence,实际 = %+v", rep.Divergence)
+		}
+
+		encoded := map[string]any{}
+		payload, err := json.Marshal(rep)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(payload, &encoded); err != nil {
+			t.Fatal(err)
+		}
+		if encoded["observed"] == nil {
+			t.Errorf("JSON 必须含 observed,实际 = %s", payload)
+		}
+		if encoded["divergence"] == nil {
+			t.Errorf("JSON 必须含 divergence,实际 = %s", payload)
+		}
+		if encoded["desired"] != "on" {
+			t.Errorf("JSON 必须发布意图 desired,实际 = %s", payload)
+		}
+	})
+
+	t.Run("一致时必须安静", func(t *testing.T) {
+		rep, err := readClientStatusReportWithObserver(
+			healthyCore, protectedStatus, "darwin",
+			func(context.Context) observe.ObservedState {
+				return observe.ObservedState{
+					CaptureOK: observe.True, CaptureInterface: "utun4",
+					DNSManaged: observe.True, TunnelHealthy: observe.True,
+					BarrierPresent: observe.False,
+				}
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rep.Divergence) != 0 {
+			t.Errorf("观测与信念一致时不应有 divergence,实际 = %+v", rep.Divergence)
+		}
+	})
+}
+
+// 观测不得改变 bx status 的成败:Core socket 不可达时该报错的仍报错,
+// 能出报告的仍出报告。
+func TestClientStatusObservationDoesNotChangeOutcome(t *testing.T) {
+	observer := func(context.Context) observe.ObservedState {
+		return observe.ObservedState{Errors: []observe.ObserveError{{Item: "capture_ok", Err: "boom"}}}
+	}
+	if _, err := readClientStatusReportWithObserver(
+		func() (stats.Report, error) { return stats.Report{}, errors.New("missing Core socket") },
+		func() (guardian.Status, error) { return guardian.Status{}, errors.New("guardian down") },
+		"darwin", observer,
+	); err == nil {
+		t.Error("Core 与 Guardian 双双不可达时仍须报错,观测不得掩盖")
+	}
+
+	rep, err := readClientStatusReportWithObserver(
+		func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
+		func() (guardian.Status, error) {
+			return guardian.Status{Desired: guardian.DesiredOn, Protection: guardian.ProtectionProtected}, nil
+		},
+		"linux", observer,
+	)
+	if err != nil {
+		t.Fatalf("观测项失败不得让 bx status 失败:%v", err)
+	}
+	var explained bool
+	for _, d := range rep.Divergence {
+		if d.Field == "capture_ok" && d.Observed == "unknown" {
+			explained = true
+		}
+	}
+	if !explained {
+		t.Errorf("观测失败必须以 unknown 的 divergence 现身,实际 = %+v", rep.Divergence)
+	}
+}
+
+// desired=off 却观测到屏障/DNS 残留,是"用户已关闭保护但整机仍断网"这类事故的
+// 唯一可见信号。
+func TestClientStatusFlagsResidueWhenDesiredOff(t *testing.T) {
+	rep, err := readClientStatusReportWithObserver(
+		func() (stats.Report, error) { return stats.Report{}, nil },
+		func() (guardian.Status, error) {
+			return guardian.Status{Desired: guardian.DesiredOff, Protection: guardian.ProtectionOff}, nil
+		},
+		"darwin",
+		func(context.Context) observe.ObservedState {
+			return observe.ObservedState{BarrierPresent: observe.True, DNSManaged: observe.True}
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]bool{}
+	for _, d := range rep.Divergence {
+		fields[d.Field] = true
+	}
+	if !fields["barrier_present"] || !fields["dns_managed"] {
+		t.Errorf("关闭意图下的屏障/DNS 残留必须各产出一条 divergence,实际 = %+v", rep.Divergence)
+	}
 }
