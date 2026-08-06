@@ -251,3 +251,31 @@ func TestUnifiedInstallKeepsForeignUserApp(t *testing.T) {
 		t.Fatal("foreign bundle id must not be removed")
 	}
 }
+
+// 菜单栏是普通用户唯一的非命令行控制面,崩溃后必须自己回来。
+//
+// 但 KeepAlive 只能是 {SuccessfulExit:false} 字典形式,绝不能是 true:
+// NSApp.terminate 是干净退出(exit 0),KeepAlive=true 会让 launchd 立刻把菜单
+// 拉回来,于是 Quit bx 静默失效——用户点了"退出",菜单眨眼就回来了,而保护
+// 已经停了。这个区别不产生任何编译错误,只能靠断言钉住。
+func TestMenuAgentPlistTextRestartsOnlyOnAbnormalExit(t *testing.T) {
+	text := MenuAgentPlistText(
+		"/Applications/Bx.app/Contents/MacOS/BxMenu",
+		"/Users/alice/Library/Logs/bx",
+	)
+
+	const keepAlive = `  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>`
+	if !strings.Contains(text, keepAlive) {
+		t.Fatalf("菜单栏 plist 必须带 KeepAlive={SuccessfulExit:false},否则崩溃后要等下次登录才回来。实际:\n%s", text)
+	}
+
+	const keepAliveAlways = `  <key>KeepAlive</key>
+  <true/>`
+	if strings.Contains(text, keepAliveAlways) {
+		t.Fatalf("KeepAlive 不得写成 true:那会让 Quit bx 静默失效(exit 0 也重启)。实际:\n%s", text)
+	}
+}

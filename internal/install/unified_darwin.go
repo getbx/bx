@@ -459,6 +459,11 @@ func MenuAgentPlistText(executable, logDir string) string {
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>StandardOutPath</key>
   <string>`)
 	writeXMLEscaped(&b, filepath.Join(logDir, "menu.log"))
