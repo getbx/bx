@@ -2921,3 +2921,43 @@ func TestClientStatusFlagsResidueWhenDesiredOff(t *testing.T) {
 		t.Errorf("关闭意图下的屏障/DNS 残留必须各产出一条 divergence,实际 = %+v", rep.Divergence)
 	}
 }
+
+// 观测的路由/DNS 原语目前只有 macOS 实现。在其余平台附一份全 Unknown 的观测,
+// 不带来任何新事实(tunnel_healthy 本就取自同一个控制 socket,已在扁平字段里),
+// 却让 divergence 恒非空——每次 bx status 都吐 5 条「该项无法观测」。那会把
+// divergence 训练成用户和 agent 学会忽略的噪声,正好毁掉它唯一的价值。
+func TestObservationOnlyAttachedWherePrimitivesExist(t *testing.T) {
+	for _, platform := range []string{"linux", "windows"} {
+		t.Run(platform, func(t *testing.T) {
+			if observerForPlatform(platform) != nil {
+				t.Errorf("%s 上不得附观测:原语不存在,只会产出恒定噪声", platform)
+			}
+		})
+	}
+	if observerForPlatform("darwin") == nil {
+		t.Error("darwin 上必须附观测——本期全部价值都在这里")
+	}
+}
+
+// 平台不支持时,报告里宁可没有 observed,也不能有一份「全 Unknown + 满屏
+// 无法观测」的观测:字段缺席是诚实的「没问」,后者是把静态平台限制伪装成
+// 每次调用都新发生的差异。
+func TestClientStatusOmitsObservationOnUnsupportedPlatform(t *testing.T) {
+	rep, err := readClientStatusReportWithObserver(
+		func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
+		func() (guardian.Status, error) {
+			return guardian.Status{Desired: guardian.DesiredOn, Protection: guardian.ProtectionProtected}, nil
+		},
+		"linux",
+		observerForPlatform("linux"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Observed != nil {
+		t.Errorf("不支持观测的平台不得发布 observed,实际 = %+v", rep.Observed)
+	}
+	if len(rep.Divergence) != 0 {
+		t.Errorf("不支持观测的平台不得发布 divergence,实际 = %+v", rep.Divergence)
+	}
+}
