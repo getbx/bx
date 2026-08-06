@@ -4473,7 +4473,7 @@ func renderUpSummary(rep stats.Report, statuses ...guardian.Status) string {
 	state := "Protected"
 	if !rep.TunnelHealthy {
 		state = "Needs Attention"
-	} else if len(rep.Warnings) > 0 {
+	} else if hasBlockingWarning(rep.Warnings) {
 		state = "Needs Attention"
 	} else if len(statuses) > 0 && normalizedGuardianProtectionState(statuses[0], runtime.GOOS) != guardian.ProtectionProtected {
 		state = "Needs Attention"
@@ -4491,6 +4491,22 @@ func renderUpSummary(rep stats.Report, statuses ...guardian.Status) string {
 		fmt.Fprintf(&b, "  Warning    %s\n", rep.Warnings[0].Detail)
 	}
 	return b.String()
+}
+
+// hasBlockingWarning 只把 error 级告警当作降级总状态的理由。
+//
+// warn 级是共存 advisory(Tailscale、系统代理、其他 packet tunnel):它已经单独
+// 占一行显示,把头条状态一并降级是重复的,而且会让完全正常的保护看起来像出了
+// 故障——用户正是据此判断要不要排查。真机 2026-08-06:隧道 322ms 健康、Guardian
+// Protected、观测层 divergence 为空,却因为 Tailscale 在跑而每次 up 都显示
+// Needs Attention。
+func hasBlockingWarning(warnings []stats.Warning) bool {
+	for _, warning := range warnings {
+		if strings.EqualFold(strings.TrimSpace(warning.Severity), "error") {
+			return true
+		}
+	}
+	return false
 }
 
 func stepLine(name, detail string) {
