@@ -124,6 +124,32 @@ func TestUninstallPlanRemovesRuntimeStateButKeepsConfig(t *testing.T) {
 	}
 }
 
+// 菜单栏 agent 带 KeepAlive 之后,一次失败的 gui 域 bootout 不再是良性的:job
+// 留在 launchd 里,而卸载紧接着删掉 /Applications/Bx.app,launchd 就会每 ~10s
+// 重拉一个已不存在的二进制刷屏 menu.err.log,直到用户注销——用户却以为卸干净了。
+// 故 gui 域 bootout 失败必须先用 asuser 重试一次(同 menuBootstrapCommand 的修复)。
+func TestGUIBootoutRetriesViaAsuserSoKeepAliveJobCannotSurviveUninstall(t *testing.T) {
+	got := asuserBootoutFallback([]string{"launchctl", "bootout", "gui/501/com.getbx.bx.menu"})
+	want := []string{"launchctl", "asuser", "501", "launchctl", "bootout", "gui/501/com.getbx.bx.menu"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gui bootout fallback = %v, want %v", got, want)
+	}
+}
+
+func TestAsuserBootoutFallbackOnlyForGUIBootout(t *testing.T) {
+	for name, args := range map[string][]string{
+		"system domain has no gui session to enter": {"launchctl", "bootout", "system/com.getbx.bx.guard"},
+		"not a bootout":                             {"launchctl", "kickstart", "gui/501/com.getbx.bx.menu"},
+		"gui domain without uid":                    {"launchctl", "bootout", "gui/"},
+		"gui domain with non-numeric uid":           {"launchctl", "bootout", "gui/alice/com.getbx.bx.menu"},
+		"already an asuser retry":                   {"launchctl", "asuser", "501", "launchctl", "bootout", "gui/501/com.getbx.bx.menu"},
+	} {
+		if got := asuserBootoutFallback(args); got != nil {
+			t.Errorf("%s: want no fallback, got %v", name, got)
+		}
+	}
+}
+
 func TestUnifiedTeardownNeededFalseWhenNeitherExists(t *testing.T) {
 	dir := t.TempDir()
 	if unifiedTeardownNeeded(filepath.Join(dir, "runtime"), filepath.Join(dir, "Bx.app")) {
