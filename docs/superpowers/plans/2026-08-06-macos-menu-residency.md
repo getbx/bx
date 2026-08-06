@@ -343,6 +343,92 @@ git commit -m "feat(menu): Quit 确认文案告诉用户怎么把 bx 开回来"
 
 ---
 
+### Task 6: 删除 `Quit Menu`
+
+**Files:**
+- Modify: `apps/macos/BxMenu/Sources/BxMenu/main.swift`(:326、:424、:755)
+- Modify: `apps/macos/BxMenu/Sources/BxMenu/UpdatePresentation.swift`(:16)
+- Modify: `apps/macos/BxMenu/Tests/UpdatePresentationTests.swift`(:16)
+
+**Interfaces:**
+- Consumes: 无
+- Produces: 无(纯删除)
+
+**为什么加这个任务:** 本计划起初假定「今天没有『只关菜单』的选项」——**那是错的**。
+`Quit Menu`(`quitMenuActionTitle` → `quit()` → `NSApp.terminate(nil)`)一直存在,
+只关界面、不动保护,且 `:424` 把它加给**每个**状态。它与「关菜单 = 关 bx」直接
+冲突;加上 `KeepAlive={SuccessfulExit:false}` 后更彻底——`NSApp.terminate` 是
+exit 0,launchd 不会拉回来,用户一键就能进入「保护跑着但没有任何指示灯」的状态。
+用户 2026-08-06 裁决:删掉。
+
+- [ ] **Step 1: 确认现有测试是绿的(基线)**
+
+Run: `bash scripts/test-macos-menu.sh`
+Expected: 全部 passed
+
+- [ ] **Step 2: 删掉两处菜单项**
+
+`main.swift:326`(recovery/updating 分支)与 `main.swift:424`(state switch 之后、
+加给所有状态的那一处),各删掉这一行:
+
+```swift
+        menu.addAction(quitMenuActionTitle, symbol: "xmark.circle", target: self, action: #selector(quit))
+```
+
+两处都紧跟在一个 `menu.addItem(.separator())` 之后。**该 separator 也一并删掉**——
+否则菜单尾部会留一条什么都不分隔的横线。
+
+- [ ] **Step 3: 删掉 action**
+
+`main.swift:755` 附近:
+
+```swift
+    @objc private func quit() {
+        NSApp.terminate(nil)
+    }
+```
+
+注意不要误删 `quitBx()`——那是另一个方法,必须保留。
+
+- [ ] **Step 4: 删掉常量与断言**
+
+`UpdatePresentation.swift:16`:
+
+```swift
+let quitMenuActionTitle = "Quit Menu"
+```
+
+`Tests/UpdatePresentationTests.swift:16`:
+
+```swift
+        expect(quitMenuActionTitle == "Quit Menu", "quit action names the menu only")
+```
+
+- [ ] **Step 5: 确认没有悬空引用**
+
+```bash
+grep -rn "quitMenuActionTitle\|#selector(quit)" apps/macos/BxMenu/Sources apps/macos/BxMenu/Tests
+```
+Expected: 零命中。**注意 `#selector(quitBx)` 不该被这条 grep 匹配到**(模式是
+`#selector(quit)`,精确到右括号),若它出现说明你删错了方法。
+
+- [ ] **Step 6: 跑测试与构建**
+
+```bash
+bash scripts/test-macos-menu.sh
+bash scripts/package-macos-menu.sh
+```
+Expected: 测试全 passed;构建打印 `Build complete!`
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add apps/macos/BxMenu
+git commit -m "refactor(menu): 删除 Quit Menu,关菜单不再是独立于关 bx 的动作"
+```
+
+---
+
 ### Task 5: 文档与全量验证
 
 **Files:**
@@ -361,6 +447,11 @@ git commit -m "feat(menu): Quit 确认文案告诉用户怎么把 bx 开回来"
 - `Quit bx` 与 `Turn Off bx` 都保留,区分是「不用了(停保护+关菜单)」与
   「暂停(停保护,菜单留着显示 Off)」。Quit 确认文案现含 `To start bx again, open
   Bx.app from Applications.`——菜单是普通用户唯一的非命令行入口。
+- `Quit Menu`(只关界面、不动保护)已删除:它与「关菜单 = 关 bx」冲突,且在
+  `KeepAlive={SuccessfulExit:false}` 下 `NSApp.terminate`(exit 0)不会被拉回,用户
+  一键即可进入「保护跑着但没有指示灯」的状态。**已知后果**:`Quit bx` 只在
+  `.connected`/`.warning` 出现,故 `.off` 等状态下没有任何退出菜单的入口,菜单留到
+  下次登录——这是「菜单要一直存在」的直接结果,那些状态下保护本就没开。
 - 观测面板(把 `bx status --json` 的 `observed`/`divergence` 做成「信念 vs 事实」对照)
   **本期未做**,留待真机攒够 divergence 样本后另立一期。
 

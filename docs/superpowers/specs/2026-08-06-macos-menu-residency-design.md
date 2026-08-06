@@ -30,7 +30,20 @@
 
 ## 设计
 
-### 一、菜单项:只删 `Open Status`
+### 〇、更正:`Quit Menu` 一直存在(2026-08-06,实施中发现)
+
+本 spec 起初断言「今天没有『只关菜单』这个选项」。**那是错的。**
+`main.swift:424` 在 state switch 之后无条件给**每个状态**加了 `Quit Menu`
+(`quitMenuActionTitle` → `quit()` → `NSApp.terminate(nil)`),`:326` 的
+recovery/updating 分支也有一份。它只关界面、不动保护。
+
+这与「关菜单 = 关 bx」直接冲突,而且加上 `KeepAlive={SuccessfulExit:false}` 之后更
+彻底:`NSApp.terminate` 是 exit 0,launchd 不会拉回来,用户能一键进入「保护跑着但
+没有任何指示灯」的状态。
+
+**裁决(用户,2026-08-06):删掉 `Quit Menu`。** 见下面第六节。
+
+### 一、菜单项:删 `Open Status`
 
 `connected` 与 `warning` 状态的动作区:
 
@@ -96,14 +109,13 @@ KeepAlive,二者不冲突。
 | 文件 | 处置 |
 |---|---|
 | `main.swift` | 删 `openStatus()`、`statusSnapshot()`、`statusPanel` 成员、`Open Status` 菜单项(**只有 1 处**:`.connected, .warning` 是合并的 case) |
+| `StatusPanel.swift`(83 行) | 整个删除 |
+| `StatusPresentation.swift`(56 行) | 删 `StatusRow`、`StatusSnapshot`;**保留 `DNSPresentation` 与 `dnsPresentation`**——一级菜单的 DNS 行在用 |
+| `Tests/StatusPresentationTests.swift` | 删 `StatusSnapshot`/`StatusRow` 断言;**保留 dnsPresentation 的 6 处断言**,文件本身不删 |
 
 `main.swift` 中 `StatusSnapshot`/`StatusRow`/`statusPanel` 共 14 处引用**全部**落在三个
 位置:`statusPanel` 成员声明(:73)、`openStatus()` 里的调用点(:442)、`statusSnapshot()`
 函数体(:445-478)。删掉这三处即清零,没有散落引用需要单独处理。
-
-| `StatusPanel.swift`(83 行) | 整个删除 |
-| `StatusPresentation.swift`(56 行) | 删 `StatusRow`、`StatusSnapshot`;**保留 `DNSPresentation` 与 `dnsPresentation`**——一级菜单的 DNS 行在用 |
-| `Tests/StatusPresentationTests.swift` | 删 `StatusSnapshot`/`StatusRow` 断言;**保留 dnsPresentation 的 6 处断言**,文件本身不删 |
 
 `quitBx()` 与 `quitBxActionTitle` **不删**。
 
@@ -117,6 +129,26 @@ KeepAlive,二者不冲突。
   编译单元在删掉 `StatusSnapshot`/`StatusRow` 后仍须通过(证明 dnsPresentation 未被
   连累)。
 - 两个脚本里的 plist 由 review 保证与 Go 侧一致(它们不进 CI 测试)。
+
+### 六、删除 `Quit Menu`
+
+删除以下五处,使「关菜单」不再是一个独立于「关 bx」的动作:
+
+| 位置 | 内容 |
+|---|---|
+| `main.swift:326` | recovery/updating 分支的 `Quit Menu` 菜单项 |
+| `main.swift:424` | state switch 之后、加给所有状态的 `Quit Menu` 菜单项 |
+| `main.swift:755` | `@objc private func quit() { NSApp.terminate(nil) }` |
+| `UpdatePresentation.swift:16` | `let quitMenuActionTitle = "Quit Menu"` |
+| `Tests/UpdatePresentationTests.swift:16` | 对应断言 |
+
+保留 `Turn Off bx`(停保护、菜单留着显示 Off)与 `Quit bx`(停保护 + 关菜单)。
+
+**已知后果(有意接受):** `Quit bx` 只出现在 `.connected`/`.warning`,因此在
+`.off`/`.setupNeeded`/`.missing`/`.notInstalled`/`.updateNeeded` 这些状态下将**没有
+任何退出菜单的入口**,菜单会一直留到下次登录。这正是「菜单要一直存在」的直接结果;
+在这些状态下保护本来就没开,不存在「保护跑着却看不见」的问题。若日后觉得
+`.off` 状态该允许收起图标,那是一次独立的产品决定,不在本期。
 
 ## 本期不做
 
