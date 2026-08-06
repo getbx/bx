@@ -129,6 +129,11 @@ write_launch_agent() {
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>StandardOutPath</key>
   <string>$LOG_DIR/menu.log</string>
   <key>StandardErrorPath</key>
