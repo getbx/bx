@@ -172,7 +172,7 @@ macOS release 包是统一安装:一份 `bx-macos-<arch>.tar.gz` 只含 `Bx.app`
 
 安装后打开菜单栏图标即可。如果显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接;配置成功后菜单栏会询问是否立即 `Start Protection`。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
-菜单栏的 `Turn Off bx` 只停止保护、恢复 bx 管理的 DNS,菜单栏 App 本身继续常驻;`Quit bx…` 在此之上再确认关闭菜单栏 App;`Quit Menu` 只退出图标,不碰保护状态。也可以用命令行 `sudo bx down`。
+菜单栏的 `Turn Off bx` 只停止保护、恢复 bx 管理的 DNS,菜单栏 App 本身继续常驻;`Quit bx…` 在此之上再确认关闭菜单栏 App。也可以用命令行 `sudo bx down`。
 
 **更新**:统一安装布局下 `sudo bx update`(等价菜单栏 `Update bx…`)是就地在线更新,覆盖 App+CLI+runtime 三组件,完成后 `bx --version` 与 App 版本一致。行为按当前保护状态分两条路:
 
