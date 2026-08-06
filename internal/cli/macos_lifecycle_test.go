@@ -1184,3 +1184,50 @@ func (c *recordingGuardianClient) Status(context.Context) (guardian.Status, erro
 	c.statuses = c.statuses[1:]
 	return status, nil
 }
+
+// 共存提示(severity=warn)不得把总状态写成 Needs Attention。
+//
+// 真机 2026-08-06:隧道健康 322ms、Guardian Protected、观测层 divergence 为空,
+// 但每次 sudo bx up 都显示 "Status Needs Attention",只因 Tailscale 在跑而产生
+// 一条 advisory。告警本身已经单独占一行显示,把头条状态一并降级是重复的,而且
+// 会让完全正常的保护看起来像出了故障——用户据此判断要不要排查。
+func TestUpSummaryKeepsProtectedForAdvisoryWarnings(t *testing.T) {
+	report := stats.Report{
+		TunnelHealthy: true, LatencyMS: 322, UDPMode: "proxy",
+		Warnings: []stats.Warning{{
+			Name: "tailscale", Severity: "warn",
+			Detail: "macOS VPN service active: Tailscale",
+		}},
+	}
+	got := renderUpSummary(report, protectedGuardianStatus())
+	if !strings.Contains(got, "Status     Protected") {
+		t.Errorf("仅有 advisory 时总状态必须仍是 Protected,实际 =\n%s", got)
+	}
+	if !strings.Contains(got, "tailscale") && !strings.Contains(got, "Tailscale") {
+		t.Errorf("告警本身仍须显示,不能因为不降级就不提,实际 =\n%s", got)
+	}
+}
+
+// severity=error 的告警仍必须拉低总状态——这条区分才是降级逻辑存在的意义。
+func TestUpSummaryDowngradesForErrorSeverityWarnings(t *testing.T) {
+	report := stats.Report{
+		TunnelHealthy: true, LatencyMS: 18, UDPMode: "proxy",
+		Warnings: []stats.Warning{{Name: "leak", Severity: "error", Detail: "流量绕过隧道"}},
+	}
+	got := renderUpSummary(report, protectedGuardianStatus())
+	if !strings.Contains(got, "Needs Attention") {
+		t.Errorf("error 级告警必须拉低总状态,实际 =\n%s", got)
+	}
+}
+
+// protectedGuardianStatus 构造一个在 darwin 上也真正算 protected 的 Guardian 状态:
+// normalizedGuardianProtectionState 在 macOS 上额外要求 DNS 接管证据,缺了它会被
+// 正确降级成 needs_attention,那样就测不到告警严重度这条分支了。
+func protectedGuardianStatus() guardian.Status {
+	return guardian.Status{
+		Protection: guardian.ProtectionProtected,
+		DNSState:   guardian.DNSManaged,
+		DNSManaged: true,
+		DNSService: "Wi-Fi",
+	}
+}
