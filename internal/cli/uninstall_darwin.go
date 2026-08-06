@@ -34,10 +34,7 @@ func uninstallDarwinAction(c *urfavecli.Context) error {
 	plan := buildDarwinUninstallPlan(consoleUID, consoleHome, unifiedLayout)
 
 	for _, args := range plan.LaunchctlCommands {
-		cmd := exec.Command(args[0], args[1:]...)
-		if err := cmd.Run(); err != nil {
-			fmt.Printf("! %s: %v\n", strings.Join(args, " "), err)
-		}
+		runLaunchctlBestEffort(args)
 	}
 
 	if err := install.Uninstall(); err != nil {
@@ -57,6 +54,35 @@ func uninstallDarwinAction(c *urfavecli.Context) error {
 		fmt.Printf("  %s\n", path)
 	}
 	return nil
+}
+
+// runLaunchctlBestEffort 执行一条卸载计划里的 launchctl 命令。失败时,若它是
+// gui 域的 bootout(菜单栏 LaunchAgent),先用 `launchctl asuser <uid>` 重试一次
+// 再放弃——root 没有目标用户 GUI 域的 session token,这与 menuBootstrapCommand
+// 已修过的那类失败同源。
+//
+// 之所以值得多这一跳:菜单栏 agent 现在带 KeepAlive,bootout 失败 = job 留在
+// launchd 里,而后续步骤会把 App bundle 删掉,launchd 便会不停重拉一个不存在的
+// 二进制,直到用户注销。
+//
+// 全程 best-effort:重试失败也只打警告继续,卸载绝不因此中止——「停止」不许依赖
+// 先成功做成别的事。
+func runLaunchctlBestEffort(args []string) {
+	err := exec.Command(args[0], args[1:]...).Run()
+	if err == nil {
+		return
+	}
+	fallback := asuserBootoutFallback(args)
+	if fallback == nil {
+		fmt.Printf("! %s: %v\n", strings.Join(args, " "), err)
+		return
+	}
+	retryErr := exec.Command(fallback[0], fallback[1:]...).Run()
+	if retryErr == nil {
+		return
+	}
+	fmt.Printf("! %s: %v(已重试 %s: %v)\n",
+		strings.Join(args, " "), err, strings.Join(fallback, " "), retryErr)
 }
 
 // ensureGuardianNotRunningForUninstall 拒绝在保护仍在运行时卸载:Guardian 不可达
