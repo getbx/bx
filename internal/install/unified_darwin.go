@@ -438,9 +438,10 @@ func removeLegacyUserApp(options UnifiedInstallOptions, appPath string) (bool, e
 }
 
 // MenuAgentPlistText 返回统一菜单栏 App 的用户级 LaunchAgent plist 文本,与
-// scripts/install-macos-menu.sh 的 write_launch_agent 模板逐键一致
-// (Label com.getbx.bx.menu、单元素 ProgramArguments、RunAtLoad true、
-// StandardOut/ErrPath 指向 <logDir>/menu.log|menu.err.log,无 KeepAlive)。
+// scripts/install-macos-menu.sh 的 write_launch_agent 和 scripts/package-macos-menu.sh
+// 生成的 LaunchAgent 逐键一致(Label com.getbx.bx.menu、单元素 ProgramArguments、
+// RunAtLoad true、KeepAlive={SuccessfulExit: false}、StandardOut/ErrPath 指向
+// <logDir>/menu.log|menu.err.log)。
 func MenuAgentPlistText(executable, logDir string) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
