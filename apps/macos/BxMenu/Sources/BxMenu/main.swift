@@ -70,7 +70,6 @@ enum BxState {
 final class BxMenuApp: NSObject, NSApplicationDelegate {
     private let bxPath = "/usr/local/bin/bx"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let statusPanel = StatusPanelController()
     private let guardianClient = GuardianClient()
     private var timer: Timer?
     private var updateTimer: Timer?
@@ -392,7 +391,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
             menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
         case .connected, .warning:
-            menu.addAction("Open Status", symbol: "list.bullet.rectangle", target: self, action: #selector(openStatus))
             menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
             menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
         }
@@ -435,47 +433,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return "Direct"
         default:
             return "Blocked"
-        }
-    }
-
-    @objc private func openStatus() {
-        statusPanel.present(statusSnapshot())
-    }
-
-    private func statusSnapshot() -> StatusSnapshot {
-        switch state {
-        case .connected(let report, let version, let dns):
-            return .protected(
-                latency: "\(report.latencyMS) ms",
-                udpRelay: udpRelayLabel(report.udpMode),
-                dns: dns,
-                active: "\(report.active)",
-                version: version
-            )
-        case .warning(let message, let version):
-            var rows = [StatusRow(label: "Status", value: message)]
-            if let version {
-                rows.append(StatusRow(label: "Version", value: version))
-            }
-            return StatusSnapshot(title: "Needs Attention", rows: rows)
-        case .updateNeeded(let message, let version):
-            var rows = [StatusRow(label: "Status", value: message)]
-            if let version {
-                rows.append(StatusRow(label: "Version", value: version))
-            }
-            return StatusSnapshot(title: "Update Required", rows: rows)
-        case .setupNeeded(let message):
-            return StatusSnapshot(title: "Setup Required", rows: [StatusRow(label: "Status", value: message)])
-        case .missing(let message):
-            return StatusSnapshot(title: "Not Installed", rows: [StatusRow(label: "Status", value: message)])
-        case .notInstalled(let bundleVersion):
-            var rows: [StatusRow] = []
-            if let bundleVersion {
-                rows.append(StatusRow(label: "Version", value: bundleVersion))
-            }
-            return StatusSnapshot(title: "Not Installed", rows: rows)
-        case .off:
-            return .off()
         }
     }
 
