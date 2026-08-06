@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **`KeepAlive` 必须是字典形式 `{SuccessfulExit: false}`,绝不能写成 `true`。** `NSApp.terminate` 是干净退出(exit 0),`KeepAlive=true` 会让 launchd 立刻把菜单拉回来,`Quit bx` 静默失效。
-- **`Quit bx` 与 `Turn Off bx` 都保留,行为不变。** 本计划只删 `Open Status`。
+- **`Quit bx` 与 `Turn Off bx` 都保留,行为不变。** 本计划删掉的是 `Open Status`(Task 3)与 `Quit Menu`(Task 6)。
 - **保留 `DNSPresentation` 与 `dnsPresentation`**(`StatusPresentation.swift`)——一级菜单的 DNS 行在用,只删 `StatusRow` 与 `StatusSnapshot`。
 - 不碰 Guardian、CLI、保护语义;不碰 `Turn Off bx`/`Start Protection`/`Reconnect`/更新 的任何逻辑。
 - **绝不擅自启动 bx / 改路由 / 跑 `install.sh`。** 本计划全部改动只写仓库文件,验证只跑编译与单测。
