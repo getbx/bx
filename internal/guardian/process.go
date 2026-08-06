@@ -29,7 +29,17 @@ var (
 
 const (
 	processRecordLaunching = "launching"
-	processRecordOwned     = "owned"
+	// processRecordSpawned 记录「已经 fork 出子进程,但还没验明它的身份」。
+	//
+	// 它把残留窗口从「fork → Inspect → verify → 写 owned」缩短到「fork → 一次写盘」:
+	// 窗口内崩溃留下的是带真实 PID、可向 OS 求证的 spawned 记录(死了自愈,活着
+	// fail-closed),而不是一个 PID==0、无从判断的 launching 标记。
+	//
+	// **注意它没有让 launching 变安全**:spawned 那次写盘本身失败时(磁盘错误),
+	// fork 已发生而盘上仍只有 launching。故 launching 依旧一律判所有权不确定。
+	// 要彻底解开,需要绕过自身簿记去问系统「有没有进程在跑我们的 Core 可执行文件」。
+	processRecordSpawned = "spawned"
+	processRecordOwned   = "owned"
 )
 
 type Process struct {
@@ -158,6 +168,13 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 		}
 		return Process{}, fmt.Errorf("start installed Core: %w", err)
 	}
+	// fork 已经发生:立刻把子进程 PID 落盘,再去验明身份。此后即便崩在
+	// Inspect/verify/写 owned 之间,盘上留下的也是可向 OS 求证的 spawned 记录,
+	// 而不是一个 PID==0、无从判断有没有孤儿 Core 的 launching 标记。
+	if err := r.saveRecord(r.statePath(), processRecord{PID: started.PID(), State: processRecordSpawned}); err != nil {
+		return Process{}, r.cleanupFailedStart(ctx, started, Process{},
+			fmt.Errorf("persist spawned Core PID %d: %w", started.PID(), err))
+	}
 	process, err := operations.Inspect(started.PID())
 	if err != nil {
 		return Process{}, r.cleanupFailedStart(ctx, started, Process{}, fmt.Errorf("inspect started Core PID %d: %w", started.PID(), err))
@@ -200,9 +217,10 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 //
 // fail-closed is unchanged in every uncertain case: a *live* recorded PID
 // still refuses (another Core may genuinely be running under it, matching
-// identity or not), a marker with no PID (launching: the PID was never
-// recorded, so an unrecorded Core may exist) still refuses, and an
-// inconclusive inspection still refuses.
+// identity or not), and an inconclusive inspection still refuses.
+//
+// launching(PID==0)仍然拒绝:两段式标记缩小了它出现的窗口,但没有让它变得
+// 安全——spawned 那次写盘失败时,fork 已发生而盘上仍只有 launching。
 func (r *ExecCoreRunner) refuseLiveLaunchMarker(record processRecord) error {
 	uncertain := func(cause error) error {
 		return uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, cause)
@@ -261,7 +279,20 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 	if err != nil {
 		return Process{}, err
 	}
-	if record.state() != processRecordOwned {
+	switch record.state() {
+	case processRecordLaunching:
+		// 仍然 fail-closed。两段式标记把「已 fork 未记录」这一含义搬给了 spawned,
+		// 但没有把 launching 变成安全的:spawned 那次**写盘本身失败**时(磁盘错误),
+		// fork 已经发生而盘上仍只有 launching,孤儿 Core 可能真的活着。
+		// 把它当作「确定没 fork」会起第二个 Core——正是 af81632 被回退的原因。
+		// 要真正解开,需要绕过自身簿记去向系统求证「有没有跑着我们的 Core 可执行
+		// 文件的进程」,见 docs/superpowers/plans/2026-08-05-guardian-launch-marker-deadlock.md。
+		return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, errors.New("durable launch marker has no accepted process record"))
+	case processRecordSpawned:
+		// 已 fork、身份未验:交给下面的 Inspect 向 OS 求证——死了自愈,
+		// 活着则 fail-closed(我们没验明它,绝不能当自己的 Core 接管)。
+	case processRecordOwned:
+	default:
 		return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, errors.New("durable launch marker has no accepted process record"))
 	}
 	process, err := r.operations().Inspect(record.PID)
@@ -271,12 +302,21 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 			// 后者是给"进程还在但身份存疑"准备的语义。把它当成不确定会卡死
 			// bx up(真机事故:core-process.json 指向早已死亡的 PID,手工删
 			// 文件后才恢复)。记日志继续,当作无既有 Core。
-			if clearErr := r.removeRecordIfGeneration(record.PID, record.Generation); clearErr != nil {
-				log.Printf("guardian_stale_core_record pid=%d clear_failed=%v", record.PID, clearErr)
+			if clearErr := r.removeStaleRecord(record); clearErr != nil {
+				log.Printf("guardian_stale_core_record pid=%d state=%s clear_failed=%v", record.PID, record.state(), clearErr)
 			}
 			return Process{}, nil
 		}
 		return Process{}, fmt.Errorf("inspect recorded Core PID %d: %w", record.PID, err)
+	}
+	if record.state() == processRecordSpawned {
+		// 进程活着,但我们从没验明它的身份(spawned 记录里没有 executable /
+		// generation)。既不能当自己的 Core 接管,更不能当它不存在——那会起
+		// 第二个 Core:两个 Core 抢控制 socket 与 split-default 路由,先退出的
+		// 那个用旧快照还原,掀掉另一个的劫持 → status 显绿而流量明文直连。
+		return Process{}, uncertainOwnership(
+			Process{PID: record.PID, Uncertain: true},
+			errors.New("spawned Core record has a live process whose identity was never verified"))
 	}
 	expected := Process{PID: record.PID, Executable: record.Executable, UID: 0, Generation: record.Generation}
 	same, err := sameProcessIdentity(expected, process)
@@ -535,9 +575,36 @@ func (r *ExecCoreRunner) clearLaunchMarker() error {
 	return r.removeProcessRecord(r.statePath())
 }
 
+// removeStaleRecord 删除一条已判定为陈旧的非 owned 记录:launching(还没 fork),
+// 或进程已被 OS 确认死亡的 spawned。按 state+PID 精确匹配后才删,避免误删并发
+// 写入的新记录。owned 记录不走这里——它由 removeRecordIfGeneration 按
+// pid+generation 匹配删除。
+func (r *ExecCoreRunner) removeStaleRecord(expect processRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, err := loadProcessRecord(r.statePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if record.state() == processRecordOwned {
+		return r.removeRecordIfGenerationLocked(record.PID, record.Generation)
+	}
+	if record.state() != expect.state() || record.PID != expect.PID {
+		return nil
+	}
+	return r.removeProcessRecord(r.statePath())
+}
+
 func (r *ExecCoreRunner) removeRecordIfGeneration(pid int, generation string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.removeRecordIfGenerationLocked(pid, generation)
+}
+
+func (r *ExecCoreRunner) removeRecordIfGenerationLocked(pid int, generation string) error {
 	record, err := loadProcessRecord(r.statePath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -642,6 +709,9 @@ func (r processRecord) valid() bool {
 	switch r.state() {
 	case processRecordLaunching:
 		return r.PID == 0 && r.Executable == "" && r.Generation == ""
+	case processRecordSpawned:
+		// 只要求 PID:此刻还没 Inspect 过,可执行路径与 generation 都无从填写。
+		return r.PID > 0
 	case processRecordOwned:
 		return r.PID > 0 && filepath.IsAbs(r.Executable) && strings.TrimSpace(r.Generation) != ""
 	default:
