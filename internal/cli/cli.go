@@ -28,6 +28,7 @@ import (
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/mcp"
+	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/procredact"
 	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/route"
@@ -203,6 +204,7 @@ type clientStatusReport struct {
 	*stats.Report
 	CoreAvailable     bool                      `json:"core_available"`
 	CoreEvidence      string                    `json:"core_evidence"`
+	Desired           string                    `json:"desired,omitempty"`
 	ProtectionState   string                    `json:"protection_state"`
 	NetworkGeneration string                    `json:"network_generation"`
 	Recovery          guardian.RecoverySnapshot `json:"recovery"`
@@ -213,6 +215,11 @@ type clientStatusReport struct {
 	CoreVersion       string                    `json:"core_version,omitempty"`
 	GuardianVersion   string                    `json:"guardian_version,omitempty"`
 	RuntimeVersion    string                    `json:"runtime_version,omitempty"`
+
+	// Observed 与 Divergence 是刚从系统读回的事实,以及它与上面那些「信念」字段的
+	// 差异。刻意不用观测覆盖信念——二者的 diff 本身就是最有价值的诊断信号。
+	Observed   *observe.ObservedState `json:"observed,omitempty"`
+	Divergence []observe.Divergence   `json:"divergence,omitempty"`
 }
 
 type inspectReport struct {
@@ -4151,14 +4158,36 @@ func statusAction(c *cli.Context) error {
 	return nil
 }
 
+// observation 向系统现问事实。它是注入的,好让 status 的组装逻辑免 root 可测:
+// 真实实现要跑 route/networksetup 并连 Core 的控制 socket。
+type observation func(context.Context) observe.ObservedState
+
+// observeTimeout 给整轮观测封顶。观测要跑若干外部命令,而 bx status 是用户
+// (和 agent)在出问题时最先敲的命令——它宁可少答一项,也绝不能挂住。
+const observeTimeout = 5 * time.Second
+
 func readClientStatusReport() (clientStatusReport, error) {
-	return readClientStatusReportWith(readStatusReport, readGuardianStatus, runtime.GOOS)
+	return readClientStatusReportWithObserver(readStatusReport, readGuardianStatus, runtime.GOOS, liveObservation)
+}
+
+// liveObservation 是生产观测:向真实系统现问,不改动任何状态。
+func liveObservation(ctx context.Context) observe.ObservedState {
+	return observe.Observe(ctx, observe.LiveDeps(statusSocketPath()))
 }
 
 func readClientStatusReportWith(
 	readCore func() (stats.Report, error),
 	readGuardian func() (guardian.Status, error),
 	platform string,
+) (clientStatusReport, error) {
+	return readClientStatusReportWithObserver(readCore, readGuardian, platform, nil)
+}
+
+func readClientStatusReportWithObserver(
+	readCore func() (stats.Report, error),
+	readGuardian func() (guardian.Status, error),
+	platform string,
+	observer observation,
 ) (clientStatusReport, error) {
 	core, coreErr := readCore()
 	status, guardianErr := readGuardian()
@@ -4176,9 +4205,34 @@ func readClientStatusReportWith(
 		default:
 			status.Protection = guardian.ProtectionNeedsAttention
 		}
-		return assemblePartialClientStatusReport(status), nil
+		return attachObservation(assemblePartialClientStatusReport(status), status, observer), nil
 	}
-	return assembleClientStatusReportWithCoreForPlatform(&core, "local_status_socket", status, platform), nil
+	report := assembleClientStatusReportWithCoreForPlatform(&core, "local_status_socket", status, platform)
+	return attachObservation(report, status, observer), nil
+}
+
+// attachObservation 把观测与差异并列挂到报告上,绝不用观测改写既有的信念字段。
+//
+// 观测失败不让 bx status 失败:Observe 本身从不返回错误,失败的项以 Unknown
+// 加原因出现在观测里,并由 Diverge 转成一条自解释的 divergence。
+func attachObservation(report clientStatusReport, status guardian.Status, observer observation) clientStatusReport {
+	if observer == nil {
+		return report
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), observeTimeout)
+	defer cancel()
+	observed := observer(ctx)
+	report.Observed = &observed
+	report.Divergence = observe.Diverge(
+		observe.Intent{Desired: string(status.Desired)},
+		observed,
+		observe.Believed{
+			Protection: report.ProtectionState,
+			Phase:      report.Phase,
+			LastError:  status.LastError,
+		},
+	)
+	return report
 }
 
 func guardianStatusFallback(core stats.Report, platform string) guardian.Status {
@@ -4236,6 +4290,7 @@ func assembleClientStatusReportWithCoreForPlatform(core *stats.Report, evidence 
 		Report:            core,
 		CoreAvailable:     core != nil,
 		CoreEvidence:      evidence,
+		Desired:           string(status.Desired),
 		ProtectionState:   protection,
 		NetworkGeneration: status.NetworkGeneration,
 		Recovery:          status.Recovery,
