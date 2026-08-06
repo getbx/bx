@@ -64,6 +64,11 @@ struct InstallPresentationTests {
         expect(repairActionNeeded(bundleVersion: "1.0.0", runtimeVersion: nil, coreVersion: "1.0.0", phase: nil) == false,
                "runtime not installed defers to Install flow, not Repair")
 
+        // Quit 会同时停掉保护并关掉菜单,而菜单是普通用户唯一的非命令行入口。
+        // 文案必须告诉他们怎么回来,否则只剩 CLI 这条路——对普通用户等于没有路。
+        expect(quitBxConfirmMessage.contains("Bx.app"), "quit confirm names the app to reopen")
+        expect(quitBxConfirmMessage.contains("stop protecting"), "quit confirm still states protection stops")
+
         if failures > 0 { exit(1) }
         print("InstallPresentationTests passed")
     }
