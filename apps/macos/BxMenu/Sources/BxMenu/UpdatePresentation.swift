@@ -13,7 +13,6 @@ func updateActionTitle(for check: UpdateCheck?) -> String? {
 }
 
 let quitBxActionTitle = "Quit bx…"
-let quitMenuActionTitle = "Quit Menu"
 let quitBxConfirmMessage = "bx will stop protecting system traffic, restore managed DNS settings, and close this menu. To start bx again, open Bx.app from Applications."
 
 struct UpdateResultJSON: Decodable, Equatable {

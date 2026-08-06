@@ -13,7 +13,6 @@ struct UpdatePresentationTests {
         expect(updateActionTitle(for: current) == nil, "current release has no action")
 
         expect(quitBxActionTitle == "Quit bx…", "protection shutdown action is explicit")
-        expect(quitMenuActionTitle == "Quit Menu", "quit action names the menu only")
 
         let committedLine = #"{"from_version":"1.0.0","to_version":"1.1.0","phase":"committed","core_activated":true,"rolled_back":false,"protection_state":"protected"}"#
         expect(parseUpdateOutcome(Data(committedLine.utf8)) == .succeeded(to: "1.1.0"),

@@ -322,8 +322,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             } else {
                 menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             }
-            menu.addItem(.separator())
-            menu.addAction(quitMenuActionTitle, symbol: "xmark.circle", target: self, action: #selector(quit))
             statusItem.menu = menu
             return
         }
@@ -420,8 +418,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .notInstalled:
             menu.addAction("Install bx…", symbol: "arrow.down.circle", target: self, action: #selector(installBx))
         }
-        menu.addItem(.separator())
-        menu.addAction(quitMenuActionTitle, symbol: "xmark.circle", target: self, action: #selector(quit))
         statusItem.menu = menu
     }
 
@@ -750,10 +746,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             showFailure("Turn Off Failed", "bx did not stop.")
         }
         refresh()
-    }
-
-    @objc private func quit() {
-        NSApp.terminate(nil)
     }
 
     private func runPrivileged(_ command: String) -> Bool {
