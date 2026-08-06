@@ -133,6 +133,43 @@ func extractBxFromTarGz(gzData []byte) ([]byte, error) {
 	return nil, fmt.Errorf("包内未找到 bx 二进制")
 }
 
+// updateDisposition 是 `bx update` 在拿到最新版本信息后该做什么。
+type updateDisposition int
+
+const (
+	// updateDispositionReport:只报告有无新版,不安装(--check)。
+	updateDispositionReport updateDisposition = iota
+	// updateDispositionUpToDate:已是最新,无需安装。
+	updateDispositionUpToDate
+	// updateDispositionInstall:执行安装。
+	updateDispositionInstall
+)
+
+// decideUpdateDisposition 决定本次 `bx update` 装不装。
+//
+// 刻意**不接收 json 参数**:--json 是输出格式,不是模式开关。此前它兼任模式,
+// 使 `bx update --json` 永远只打一份检查报告就退出,菜单栏的 Update 按钮
+// (跑的正是这条命令)于是结构性地不可能成功(真机 2026-08-06)。
+func decideUpdateDisposition(check, force, available bool) updateDisposition {
+	if check {
+		return updateDispositionReport
+	}
+	if !force && !available {
+		return updateDispositionUpToDate
+	}
+	return updateDispositionInstall
+}
+
+// currentProtectionStateForUpdate 尽力读出当前保护状态,读不到就报 unknown。
+// 只用于「已是最新、什么都没做」那条路径的机器可读结果——读不到不该让命令失败。
+func currentProtectionStateForUpdate() string {
+	status, err := readGuardianStatus()
+	if err != nil {
+		return "unknown"
+	}
+	return status.Protection
+}
+
 func updateFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "check", Usage: "只检查有无新版,不下载安装"},
@@ -237,18 +274,39 @@ func updateAction(c *cli.Context) error {
 	}
 	latest = manifest.Version
 	available := newerAvailable(cur, latest)
-	if c.Bool("json") {
-		return json.NewEncoder(os.Stdout).Encode(updateCheckReport{Current: cur, Latest: latest, Available: available, Verified: true})
-	}
-	fmt.Printf("最新版本:%s (已验证)\n", latest)
-
-	if !c.Bool("force") && !available {
+	asJSON := c.Bool("json")
+	switch decideUpdateDisposition(c.Bool("check"), c.Bool("force"), available) {
+	case updateDispositionReport:
+		if asJSON {
+			return json.NewEncoder(os.Stdout).Encode(updateCheckReport{Current: cur, Latest: latest, Available: available, Verified: true})
+		}
+		fmt.Printf("最新版本:%s (已验证)\n", latest)
+		if available {
+			fmt.Printf("🆕 有新版可用:%s → 运行 sudo bx update 安装。\n", latest)
+		} else {
+			fmt.Println("✅ 已是最新,无需更新。")
+		}
+		return nil
+	case updateDispositionUpToDate:
+		if asJSON {
+			// 机器面必须拿到**安装结果**的形状,不能是检查报告:菜单栏按
+			// UpdateResultJSON 解析,给它一份 {current,latest,...} 会被判成失败。
+			// 请求的终态(处在最新版)已经成立,故 phase=committed。
+			return json.NewEncoder(os.Stdout).Encode(guardian.UpdateResult{
+				FromVersion:     cur,
+				ToVersion:       latest,
+				Phase:           guardian.PhaseCommitted,
+				CoreActivated:   false,
+				RolledBack:      false,
+				ProtectionState: currentProtectionStateForUpdate(),
+			})
+		}
+		fmt.Printf("最新版本:%s (已验证)\n", latest)
 		fmt.Println("✅ 已是最新,无需更新。")
 		return nil
 	}
-	if c.Bool("check") {
-		fmt.Printf("🆕 有新版可用:%s → 运行 sudo bx update 安装。\n", latest)
-		return nil
+	if !asJSON {
+		fmt.Printf("最新版本:%s (已验证)\n", latest)
 	}
 
 	if unifiedLayoutActive() {
