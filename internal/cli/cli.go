@@ -1531,14 +1531,20 @@ func doctorAction(c *cli.Context) (err error) {
 			}
 		}
 	}
-	doctorLine(boolStatus(install.UnitInstalled()), "service installed", install.ServiceName)
-	activeState := serviceState("is-active", install.ServiceName)
-	doctorLine(serviceStatusFromState("is-active", activeState), "service active", activeState)
-	if activeState != "active" {
-		doctorLine("hint", "logs", "bx logs")
+	if runtime.GOOS == "darwin" {
+		for _, line := range darwinServiceDoctorLines(install.GuardianInstalled(), install.GuardianActive()) {
+			doctorLine(line.Status, line.Key, line.Value)
+		}
+	} else {
+		doctorLine(boolStatus(install.UnitInstalled()), "service installed", install.ServiceName)
+		activeState := serviceState("is-active", install.ServiceName)
+		doctorLine(serviceStatusFromState("is-active", activeState), "service active", activeState)
+		if activeState != "active" {
+			doctorLine("hint", "logs", "bx logs")
+		}
+		enabledState := serviceState("is-enabled", install.ServiceName)
+		doctorLine(serviceStatusFromState("is-enabled", enabledState), "service enabled", enabledState)
 	}
-	enabledState := serviceState("is-enabled", install.ServiceName)
-	doctorLine(serviceStatusFromState("is-enabled", enabledState), "service enabled", enabledState)
 	if err := checkStatusSocket(); err != nil {
 		doctorLine("warn", "status socket", err.Error())
 		doctorLine("hint", "logs", "bx logs")
@@ -5180,6 +5186,43 @@ func nextShareListen(dir string) (string, error) {
 		return ":" + p, nil
 	}
 	return "", fmt.Errorf("没有可用 share 端口(10000-10999)")
+}
+
+// darwinGuardianServiceName 是 macOS 上真正承担 bx 生命周期的 launchd 服务。
+//
+// 统一布局下 Core 不是 launchd 服务(由 Guardian 起停),所以 doctor 绝不能去查
+// install.UnitInstalled() 那两个 Core plist——那必然三条 FAIL,而保护好得很
+// (真机 2026-08-06)。install.ServiceName 是 systemd 的 "bx.service",同样不该
+// 印在 macOS 上。
+const darwinGuardianServiceName = "com.getbx.bx.guard"
+
+// doctorLineSpec 是一条待输出的 doctor 行,抽出来是为了让判定逻辑可测。
+type doctorLineSpec struct {
+	Status string
+	Key    string
+	Value  string
+}
+
+// darwinServiceDoctorLines 由 Guardian 的安装/活跃状态产出 doctor 的服务三行。
+//
+// launchd 没有 systemd 那种 enabled 与 active 的分离:Guardian 的 plist 带
+// RunAtLoad+KeepAlive,装上即开机自启,故 enabled 直接由 installed 决定。
+func darwinServiceDoctorLines(installed, active bool) []doctorLineSpec {
+	lines := []doctorLineSpec{{boolStatus(installed), "service installed", darwinGuardianServiceName}}
+	activeState := "inactive"
+	if active {
+		activeState = "active"
+	}
+	lines = append(lines, doctorLineSpec{serviceStatusFromState("is-active", activeState), "service active", activeState})
+	if !active {
+		lines = append(lines, doctorLineSpec{"hint", "logs", "bx logs"})
+	}
+	enabledState := "disabled"
+	if installed {
+		enabledState = "enabled"
+	}
+	lines = append(lines, doctorLineSpec{serviceStatusFromState("is-enabled", enabledState), "service enabled", enabledState})
+	return lines
 }
 
 func doctorLine(status, name, detail string) {
