@@ -166,7 +166,7 @@ macOS release 包是统一安装:一份 `bx-macos-<arch>.tar.gz` 只含 `Bx.app`
 - Guardian 保护服务的 plist 就绪但不 enable、不启动
 - 菜单栏登录项指向 `/Applications/Bx.app`
 
-菜单栏 App 是 macOS 的默认体验:它显示当前保护状态、延迟、DNS 接管状态和诊断入口。`Open Status` 在 App 内打开简洁状态面板,不依赖 Terminal。盾牌右侧的静态状态点表示保护状态:绿=已保护,黄=安全恢复中或需要注意,红=保护不可用(当 bx 明确报告该状态时),灰=已关闭或未配置。
+菜单栏 App 是 macOS 的默认体验:它显示当前保护状态、延迟、DNS 接管状态和诊断入口。盾牌右侧的静态状态点表示保护状态:绿=已保护,黄=安全恢复中或需要注意,红=保护不可用(当 bx 明确报告该状态时),灰=已关闭或未配置。
 
 **绿色的完整含义**:隧道健康、路由保护到位,**且 DNS 已核实由 bx 接管**——三者缺一不可。DNS 处于未接管(`unmanaged`)或状态不明(`unknown`、旧版 core 未上报)时,菜单栏一律显示**黄色 Needs Attention**(`DNS not managed` / `DNS status unavailable`),不会因为隧道通就报绿。同样地,`sudo bx up` 在 DNS 未能接管时会**返回错误**而非静默成功。安全恢复、重连和更新在返回绿色之前都会重新核实 DNS,因此不存在"路由已恢复但 DNS 还漏着"的中间态。
 

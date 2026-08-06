@@ -2,7 +2,7 @@
 
 Small macOS menu bar app for bx.
 
-It is intentionally not a control panel. On macOS it is the default user surface: it shows whether bx is protected, off, not set up, or needs attention, and exposes only the actions a user normally needs. `Open Status` opens a small native status panel and does not require Terminal access.
+It is intentionally not a control panel. On macOS it is the default user surface: it shows whether bx is protected, off, not set up, or needs attention, and exposes only the actions a user normally needs.
 
 Hovering the menu bar icon shows the current bx state.
 When protected, `UDP Relay` shows `On`, `Direct`, or `Blocked`.
@@ -11,7 +11,6 @@ safely recovering or needs attention, red means a future explicit protection
 failure, and gray means bx is off or not configured.
 
 - Install bx
-- Open Status
 - View Logs
 - Run Doctor
 - Set Up bx
@@ -31,7 +30,7 @@ When bx needs attention, the primary action is to reconnect. bx keeps TUN, route
 When the menu shows `Setup Required`, choose `Set Up bx...`, paste your bx link, and approve the macOS administrator prompt. After setup succeeds, the menu asks whether to start protection now. If setup fails, use `Run Doctor` from the same menu.
 If setup, start, reconnect, or turn off fails, the failure dialog offers `Run Doctor` directly so diagnostics can be archived without hunting through the menu again.
 
-`Open Status` stays inside the bx app. The first action that needs Terminal, currently `Run Doctor`, may ask for permission to control Terminal. bx uses this only for the action you selected. Approve the macOS prompt to continue.
+The first action that needs Terminal, currently `Run Doctor`, may ask for permission to control Terminal. bx uses this only for the action you selected. Approve the macOS prompt to continue.
 
 At launch and then every 24 hours, the menu checks (read-only) for a signed bx
 release in the background and shows `Update bx…` when one is available. On a
