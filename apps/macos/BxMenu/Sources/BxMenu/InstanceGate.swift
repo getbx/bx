@@ -12,6 +12,17 @@ func resolveInstanceConflict(selfPath: String, peerPath: String?, canonicalPath:
     return .yieldToPeer
 }
 
+// menuLaunchAgentPlist renders the menu-bar LaunchAgent plist. It is the
+// fourth generator of this same file — the others live in
+// internal/install/unified_darwin.go (MenuAgentPlistText),
+// scripts/install-macos-menu.sh and scripts/package-macos-menu.sh — and it is
+// the one that runs most often: ensureLoginItemIfCanonical() compares the
+// on-disk plist against this text on every menu launch and rewrites the file
+// when they differ. Any key missing here is therefore silently stripped from
+// a correctly installed plist, so all four must stay byte-for-byte identical.
+// In particular KeepAlive={SuccessfulExit:false} must be present (crash =>
+// relaunch, deliberate Quit bx => stays quit); KeepAlive=true would make
+// Quit bx silently fail.
 func menuLaunchAgentPlist(executablePath: String, logDirectory: String) -> String {
     """
     <?xml version="1.0" encoding="UTF-8"?>
@@ -26,6 +37,11 @@ func menuLaunchAgentPlist(executablePath: String, logDirectory: String) -> Strin
       </array>
       <key>RunAtLoad</key>
       <true/>
+      <key>KeepAlive</key>
+      <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+      </dict>
       <key>StandardOutPath</key>
       <string>\(logDirectory)/menu.log</string>
       <key>StandardErrorPath</key>
