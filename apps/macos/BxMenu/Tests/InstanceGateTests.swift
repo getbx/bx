@@ -24,7 +24,18 @@ struct InstanceGateTests {
         expect(plist.contains("<string>com.getbx.bx.menu</string>"), "agent label present")
         expect(plist.contains("<string>/Applications/Bx.app/Contents/MacOS/BxMenu</string>"), "agent points at canonical app")
         expect(plist.contains("<string>/Users/a/Library/Logs/bx/menu.log</string>"), "stdout log path")
-        expect(!plist.contains("KeepAlive"), "menu agent must not keep-alive")
+        // The menu agent must survive a crash but honor a deliberate quit, and
+        // this generator overwrites the installed plist on every launch — a
+        // missing KeepAlive here silently strips it from a good install.
+        let keepAlive = """
+          <key>KeepAlive</key>
+          <dict>
+            <key>SuccessfulExit</key>
+            <false/>
+          </dict>
+        """
+        expect(plist.contains(keepAlive), "menu agent must keep-alive as {SuccessfulExit: false}")
+        expect(!plist.contains("<key>KeepAlive</key>\n  <true/>"), "KeepAlive must not be the bare true form")
 
         if failures > 0 { exit(1) }
         print("InstanceGateTests passed")
