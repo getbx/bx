@@ -726,7 +726,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     @objc private func quitBx() {
         let alert = NSAlert()
         alert.messageText = "Quit bx?"
-        alert.informativeText = "bx will stop protecting system traffic, restore managed DNS settings, and close this menu."
+        alert.informativeText = quitBxConfirmMessage
         alert.addButton(withTitle: "Quit bx")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
