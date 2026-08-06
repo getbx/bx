@@ -95,7 +95,7 @@ KeepAlive,二者不冲突。
 
 | 文件 | 处置 |
 |---|---|
-| `main.swift` | 删 `openStatus()`、`statusSnapshot()`、`statusPanel` 成员、两处 `Open Status` 菜单项 |
+| `main.swift` | 删 `openStatus()`、`statusSnapshot()`、`statusPanel` 成员、`Open Status` 菜单项(**只有 1 处**:`.connected, .warning` 是合并的 case) |
 
 `main.swift` 中 `StatusSnapshot`/`StatusRow`/`statusPanel` 共 14 处引用**全部**落在三个
 位置:`statusPanel` 成员声明(:73)、`openStatus()` 里的调用点(:442)、`statusSnapshot()`
