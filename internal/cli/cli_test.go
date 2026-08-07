@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -387,11 +388,18 @@ func TestMacMenuUsesGuardianInsteadOfCLIReconnectSupport(t *testing.T) {
 // lines) can disagree with Guardian and paint the shield green while DNS is
 // unmanaged, which is exactly the leak this guard prevents from returning.
 func TestMacMenuDerivesDNSFromStatusJSONOnly(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	menuSource, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(source)
+	// BxReport 已从 main.swift 移到 StatusReport.swift(它必须能被单测覆盖:
+	// 把 Core 字段声明成非可选曾让 bx down 后的 partial 报告整份解码失败)。
+	// 不变量不变——DNS 判定只能来自 bx status --json——只是字段现在住在另一个文件。
+	reportSource, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "StatusReport.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(menuSource) + "\n" + string(reportSource)
 	if strings.Contains(text, "loadDNSStatus") {
 		t.Fatal("macOS menu must not keep a second DNS status source (loadDNSStatus)")
 	}
@@ -453,18 +461,72 @@ func TestMacMenuWarningsDropGreenRecoverySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(source)
-	branches := map[string]string{
-		"tunnel unhealthy": "recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)\n" +
-			`            return .warning("Tunnel unhealthy", version: version)`,
-		"DNS not managed": "recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)\n" +
-			`            return .warning(dns.menuWarning ?? "DNS status unavailable", version: version)`,
+	body, ok := swiftFunctionBody(string(source), "private func loadState()")
+	if !ok {
+		t.Fatal("could not locate loadState in main.swift")
 	}
-	for name, snippet := range branches {
-		if !strings.Contains(text, snippet) {
-			t.Fatalf("the %s warning branch must filter the recovery snapshot before returning", name)
+	// Structural, not literal: every `return .warning(` inside loadState must be
+	// immediately preceded by an assignment to recoverySnapshot. Pinning the exact
+	// snippet instead made this guard fail the moment the branch stopped hardcoding
+	// its reason string, even though the invariant still held — the failure said
+	// "not what I remember" rather than "you broke the protection".
+	// Walk back over the plain assignments and comments that may sit between the
+	// snapshot handling and the return (e.g. repairVersions), and require that one
+	// of them assigned recoverySnapshot. Anything else — a guard, an if, a case —
+	// ends the window: the branch reached its return without touching the snapshot.
+	assignment := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]* = `)
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, "return .warning(") {
+			continue
+		}
+		filtered := false
+		var lastSeen string
+		for j := i - 1; j >= 0; j-- {
+			previous := strings.TrimSpace(lines[j])
+			if previous == "" || strings.HasPrefix(previous, "//") {
+				continue
+			}
+			if strings.HasPrefix(previous, "recoverySnapshot = ") {
+				filtered = true
+				break
+			}
+			if !assignment.MatchString(previous) {
+				lastSeen = previous
+				break
+			}
+		}
+		if !filtered {
+			t.Fatalf("loadState line %d returns a warning without first filtering the recovery snapshot;\n  return: %s\n  branch begins: %s",
+				i+1, strings.TrimSpace(line), lastSeen)
 		}
 	}
+}
+
+// swiftFunctionBody returns the brace-balanced body of the named Swift function.
+func swiftFunctionBody(source, signature string) (string, bool) {
+	start := strings.Index(source, signature)
+	if start < 0 {
+		return "", false
+	}
+	open := strings.Index(source[start:], "{")
+	if open < 0 {
+		return "", false
+	}
+	open += start
+	depth := 0
+	for i := open; i < len(source); i++ {
+		switch source[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return source[open+1 : i], true
+			}
+		}
+	}
+	return "", false
 }
 
 func TestMacMenuAndReadmeDescribeAutomaticSafeNetworkRecovery(t *testing.T) {
