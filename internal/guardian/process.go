@@ -236,8 +236,14 @@ func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord) error {
 		for _, core := range cores {
 			pids = append(pids, strconv.Itoa(core.PID))
 		}
+		// 扫到的进程是「疑似」而非「已验明的我们的 Core」——诊断信息(PID)
+		// 只进错误文本,不得进 Process payload。record 自身的身份(PID==0)
+		// 才是这条 launching 标记的真实身份;把扫描到的第三方 PID 塞进
+		// Process 会被 Manager.retainUncertain 原样收下,Down() 据此以为
+		// 有个已知 PID 的 Core、调用 Stop 并把这个陌生 PID 发布进用户可见
+		// 状态——扫到的进程从未被验明是我们的 Core。
 		return uncertainOwnership(
-			Process{PID: cores[0].PID, Executable: cores[0].Executable, Uncertain: true},
+			Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true},
 			fmt.Errorf("durable launch marker with no PID, and Core appears to be running (PID %s)", strings.Join(pids, ", ")))
 	}
 	log.Printf("guardian_orphan_launch_marker no_core_running=true (self-healing)")
