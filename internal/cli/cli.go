@@ -3616,10 +3616,38 @@ func reportTransportChange(before setup.TransportsBefore, links []string, udpTra
 	fmt.Println("• 配置里的其余设置(分流策略、模式、列表等)未改动")
 }
 
+// checkSetupArgs 拒绝多余的位置参数。
+//
+// urfave/cli 沿用 Go flag 包语义:**遇到第一个位置参数就停止解析 flag**。于是
+//
+//	sudo bx setup '<链接>' --udp '<链接>'
+//
+// 里的 --udp 会变成两个普通位置参数,被**静默忽略**——命令看起来完全成功,而
+// udp.transport 一个字没改。真机 2026-08-06/07 在 Mac 与 ws-via-vps 上都是这么
+// 敲的,结果 UDP 传输一直停在旧服务器(那台的旧 IP 早已不可达)。
+//
+// 静默吞掉用户明确写出来的意图是最坏的一类失败:没有任何线索指向真正的原因。
+// bx setup 只接受一个链接,多出来的一律报错,并点名那个被吞掉的 flag。
+func checkSetupArgs(args []string) error {
+	if len(args) <= 1 {
+		return nil
+	}
+	for _, arg := range args[1:] {
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return fmt.Errorf("%s 写在了链接后面,会被静默忽略(flag 必须在链接之前)。\n正确写法:sudo bx setup %s '<值>' '<链接>'", arg, arg)
+	}
+	return fmt.Errorf("bx setup 只接受一个链接,多给了 %d 个参数;若要传 flag,必须写在链接之前", len(args)-1)
+}
+
 func setupAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if arg == "" {
 		return fmt.Errorf("用法: sudo bx setup <客户端链接>")
+	}
+	if err := checkSetupArgs(c.Args().Slice()); err != nil {
+		return err
 	}
 	link, configLinks, err := resolveConfigLinks(arg)
 	if err != nil {
