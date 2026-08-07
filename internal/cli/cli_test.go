@@ -3082,3 +3082,31 @@ func TestSetupDispositionNeverRewritesExistingConfigWithoutForce(t *testing.T) {
 		})
 	}
 }
+
+// bx setup 只接受一个链接。多出来的位置参数几乎必然是「flag 写在了位置参数后面」
+// ——urfave/cli 沿用 Go flag 包语义,遇到第一个位置参数就停止解析 flag,于是
+//
+//     sudo bx setup '<链接>' --udp '<链接>'
+//
+// 里的 --udp 会被当成两个普通参数**静默忽略**。真机 2026-08-06/07:Mac 与
+// ws-via-vps 上都是这么敲的,结果 udp.transport 一直停在旧服务器,而命令看起来
+// 完全成功。静默吞掉用户明确写出来的意图,是最坏的一类失败。
+func TestSetupExtraArgsAreRejectedNotIgnored(t *testing.T) {
+	err := checkSetupArgs([]string{"bx://main", "--udp", "bx://udp"})
+	if err == nil {
+		t.Fatal("多余的位置参数必须报错——它几乎总是被吞掉的 flag,静默忽略会让用户以为配置成功了")
+	}
+	if !strings.Contains(err.Error(), "--udp") {
+		t.Errorf("报错必须点名那个被吞掉的 flag,实际 = %v", err)
+	}
+	if !strings.Contains(err.Error(), "bx setup --udp") {
+		t.Errorf("报错必须给出正确写法(flag 放前面),实际 = %v", err)
+	}
+
+	if err := checkSetupArgs([]string{"bx://main"}); err != nil {
+		t.Errorf("单个链接是正常用法,不该报错:%v", err)
+	}
+	if err := checkSetupArgs(nil); err != nil {
+		t.Errorf("无参数由既有的用法提示处理,这里不该报错:%v", err)
+	}
+}
