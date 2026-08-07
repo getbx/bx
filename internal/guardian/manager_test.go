@@ -995,6 +995,13 @@ func TestManagerUpBlocksSameAndReconstructedDaemonAfterUncertainLaunch(t *testin
 			}
 			return errors.New("normal process record write failed")
 		}
+		// 同 TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker
+		// 的场景:Core 已经 fork(PID 52)、但 spawned 记录写不进去,盘上只留下
+		// launching 标记。真实扫描看不见这个测试里的假 Core,注入一个「系统里
+		// 有 Core」的扫描,让判据与它模拟的场景保持一致。
+		runner.ScanRunningCores = func() ([]Process, error) {
+			return []Process{{PID: 52, Executable: executable, UID: 0}}, nil
+		}
 		return runner
 	}
 	env := newManagerTestEnv(t)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -18,16 +19,15 @@ import (
 //
 // 拆开之后:
 //   spawned  (PID>0) ⇒ 已 fork、身份未验 ⇒ 问 OS:死了自愈,活着仍 fail-closed
-//   launching(PID==0)⇒ **仍然一律 fail-closed**
-//
-// 注意第二条。设计文档 option 1 主张此时「PID==0 ⇒ 确定没 fork ⇒ 可安全自愈」,
-// 实现时被既有测试当场证伪:spawned 那次写盘**本身失败**(磁盘错误)时,fork
-// 已经发生而盘上仍只有 launching。所以这个判据不成立,launching 没有变安全。
+//   launching(PID==0)⇒ 无法向 OS 求证这条记录本身,但可以绕开它、直接问系统
+//                      「有没有任何进程在跑 bx Core」(ScanRunningCores):
+//                      没有 ⇒ 孤儿标记,自愈;有 ⇒ 仍然 fail-closed;
+//                      问不出来(扫描失败)⇒ 同样 fail-closed。
 //
 // 本次真正的收益是把残留窗口从「fork → Inspect → verify → 写 owned」缩短到
 // 「fork → 一次写盘」:窗口外的崩溃现在留下带真实 PID、可向 OS 求证的 spawned
-// 记录,不再是无从判断的 launching。彻底解开 launching 需要绕过自身簿记去问系统
-// 「有没有进程在跑我们的 Core 可执行文件」,见
+// 记录,不再是无从判断的 launching。而 launching 本身也不再无条件卡死——它
+// 改向系统求证「有没有在跑我们的 Core 可执行文件的进程」,见
 // docs/superpowers/plans/2026-08-05-guardian-launch-marker-deadlock.md。
 
 type spawnMarkerOperations struct {
@@ -109,25 +109,6 @@ func TestStartRecordsSpawnedPIDBeforeVerification(t *testing.T) {
 	}
 }
 
-// launching 仍然必须 fail-closed —— 两段式标记**没有**让它变安全。
-//
-// 起初我按设计文档 option 1 把它改成「PID==0 ⇒ 确定没 fork ⇒ 自愈」,被既有测试
-// TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker 当场证伪:
-// spawned 那次写盘本身失败时(磁盘错误),fork 已经发生而盘上仍只有 launching。
-// 此时自愈就会起第二个 Core —— 两个 Core 抢控制 socket 与 split-default 路由,
-// 先退出的那个用旧快照还原、掀掉另一个的劫持 → status 显绿而流量明文直连。
-// 那正是 af81632 被回退的原因。这条测试把这个判据钉住,防止再被"优化"掉。
-func TestExistingStillRefusesLaunchingMarker(t *testing.T) {
-	runner, _ := newSpawnMarkerRunner(t, &spawnMarkerOperations{})
-	if err := saveProcessRecord(runner.StatePath, processRecord{State: processRecordLaunching}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runner.Existing(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
-		t.Fatalf("launching 标记的 Existing = %v, want ErrProcessOwnershipUncertain——"+
-			"fork 可能已发生而写盘失败,自愈会起第二个 Core", err)
-	}
-}
-
 // spawned 且进程还活着 ⇒ 有一个我们没验明身份的 Core 在跑 ⇒ 必须 fail-closed。
 // 这条正是原先由 launching 承担的安全属性,拆分后由 spawned 接管,不得丢失。
 func TestExistingRefusesSpawnedMarkerWhoseProcessIsAlive(t *testing.T) {
@@ -185,6 +166,95 @@ func TestStartRefusesSpawnedMarkerWhoseProcessIsAlive(t *testing.T) {
 	}
 	runner, _ := newSpawnMarkerRunner(t, ops)
 	if err := saveProcessRecord(runner.StatePath, processRecord{PID: 7003, State: processRecordSpawned}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Start(context.Background(), CoreStartOptions{}); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Start = %v, want ErrProcessOwnershipUncertain", err)
+	}
+	if ops.startCount() != 0 {
+		t.Fatalf("拒绝时不得启动 Core,实际启动 %d 次", ops.startCount())
+	}
+}
+
+// launching 标记 + 系统里没有任何 Core 在跑 ⇒ 那个标记确实是孤儿,可安全自愈。
+//
+// 这是本期的核心:此前无论如何都判 uncertain,于是一个残留标记让 bx up 永久失败,
+// 只能靠 bx uninstall 脱身(真机 2026-08-05 / 2026-08-06 各一次)。
+// 判据不再来自我们自己的记账,而是向系统求证——fork 一返回子进程就存在,
+// 早于它执行我们的任何代码,所以这个判据在「fork 与写盘之间」那个窗口里仍然有效。
+func TestExistingHealsLaunchingMarkerWhenNoCoreRunning(t *testing.T) {
+	runner, _ := newSpawnMarkerRunner(t, &spawnMarkerOperations{})
+	runner.ScanRunningCores = func() ([]Process, error) { return nil, nil }
+	if err := saveProcessRecord(runner.StatePath, processRecord{State: processRecordLaunching}); err != nil {
+		t.Fatal(err)
+	}
+	process, err := runner.Existing(context.Background())
+	if err != nil {
+		t.Fatalf("系统里没有 Core 时 launching 标记必须自愈,实际: %v", err)
+	}
+	if process.PID != 0 {
+		t.Fatalf("不该产出既有 Core,实际 = %+v", process)
+	}
+}
+
+// launching 标记 + 系统里真有一个 Core ⇒ 仍然 fail-closed,且必须把 PID 说出来。
+func TestExistingRefusesLaunchingMarkerWhenCoreIsRunning(t *testing.T) {
+	runner, _ := newSpawnMarkerRunner(t, &spawnMarkerOperations{})
+	runner.ScanRunningCores = func() ([]Process, error) {
+		return []Process{{PID: 4242, Executable: "/usr/local/bin/bx", UID: 0}}, nil
+	}
+	if err := saveProcessRecord(runner.StatePath, processRecord{State: processRecordLaunching}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runner.Existing(context.Background())
+	if !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("系统里有 Core 时必须 fail-closed,实际 = %v", err)
+	}
+	if !strings.Contains(err.Error(), "4242") {
+		t.Errorf("错误必须点出那个 PID(用户要靠它判断怎么处置),实际 = %v", err)
+	}
+}
+
+// 扫描本身失败 ⇒ 保持 uncertain。「问不出来」不等于「没有」。
+func TestExistingRefusesLaunchingMarkerWhenScanFails(t *testing.T) {
+	runner, _ := newSpawnMarkerRunner(t, &spawnMarkerOperations{})
+	runner.ScanRunningCores = func() ([]Process, error) { return nil, errors.New("sysctl failed") }
+	if err := saveProcessRecord(runner.StatePath, processRecord{State: processRecordLaunching}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Existing(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("扫描失败时必须保持 fail-closed,实际 = %v", err)
+	}
+}
+
+// Existing 放行只是第一跳:Start 紧接着看到同一个文件也必须放行,
+// 否则用户可见行为与修复前一模一样(60b76f3 的教训)。
+func TestStartProceedsPastLaunchingMarkerWhenNoCoreRunning(t *testing.T) {
+	started := newStartTestProcess(71)
+	t.Cleanup(started.release)
+	ops := &spawnMarkerOperations{started: started}
+	runner, executable := newSpawnMarkerRunner(t, ops)
+	ops.process = Process{PID: 71, Executable: executable, UID: 0, Generation: "darwin:5:5"}
+	runner.ScanRunningCores = func() ([]Process, error) { return nil, nil }
+	if err := saveProcessRecord(runner.StatePath, processRecord{State: processRecordLaunching}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Start(context.Background(), CoreStartOptions{}); err != nil {
+		t.Fatalf("孤儿 launching 标记不得卡死 Start:%v", err)
+	}
+	if ops.startCount() != 1 {
+		t.Fatalf("应当真的启动了 Core,实际启动 %d 次", ops.startCount())
+	}
+}
+
+// 而系统里有 Core 时,Start 仍必须拒绝——绝不允许起第二个。
+func TestStartRefusesLaunchingMarkerWhenCoreIsRunning(t *testing.T) {
+	ops := &spawnMarkerOperations{started: newStartTestProcess(72)}
+	runner, _ := newSpawnMarkerRunner(t, ops)
+	runner.ScanRunningCores = func() ([]Process, error) {
+		return []Process{{PID: 4242, Executable: "/usr/local/bin/bx", UID: 0}}, nil
+	}
+	if err := saveProcessRecord(runner.StatePath, processRecord{State: processRecordLaunching}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runner.Start(context.Background(), CoreStartOptions{}); !errors.Is(err, ErrProcessOwnershipUncertain) {
