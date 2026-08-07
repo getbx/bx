@@ -3023,3 +3023,35 @@ func TestClientStatusOmitsObservationOnUnsupportedPlatform(t *testing.T) {
 		t.Errorf("不支持观测的平台不得发布 divergence,实际 = %+v", rep.Divergence)
 	}
 }
+
+// 处在 off / 未配置 / 未安装 时,用户唯一想点的就是那个建设性主动作
+// (Start Protection / Set Up bx / Install bx)。把它排在 View Logs 与
+// Run Doctor 之下是本末倒置——真机反馈 2026-08-06:「start protection
+// 是不是应该在最上面,最显眼的地方」。
+//
+// 破坏性动作(Turn Off / Quit)不在此列:它们留在菜单底部是 macOS 惯例,
+// 也避免误点。所以这条只钉建设性主动作与诊断入口的相对次序。
+func TestMacMenuPutsConstructiveActionBeforeDiagnostics(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(source), "private func rebuildMenu()")
+	if !ok {
+		t.Fatal("could not locate rebuildMenu in main.swift")
+	}
+	firstDiagnostic := strings.Index(body, `"View Logs"`)
+	if firstDiagnostic < 0 {
+		t.Fatal("rebuildMenu should still offer View Logs")
+	}
+	for _, action := range []string{`"Start Protection"`, `"Set Up bx..."`, `"Install bx…"`} {
+		at := strings.Index(body, action)
+		if at < 0 {
+			t.Errorf("rebuildMenu should still offer %s", action)
+			continue
+		}
+		if at > firstDiagnostic {
+			t.Errorf("%s must come before the first View Logs entry — it is the one action a user in that state wants, and burying it under diagnostics is why they could not start bx from the menu", action)
+		}
+	}
+}

@@ -156,3 +156,33 @@ func TestUnifiedTeardownNeededFalseWhenNeitherExists(t *testing.T) {
 		t.Fatal("want false: neither artifact present means legacy layout")
 	}
 }
+
+// launchctl 用 ESRCH(退出码 3)表达「没有这个服务」。而卸载要的**正是**这个
+// 终态——服务不在了。把它当成错误刷一行红字只会吓用户:真机 2026-08-06,
+// 强制拆除已经 bootout 过 Guardian,随后的 sudo bx uninstall 再 bootout 自然
+// exit 3,用户于是看到
+//   ! launchctl bootout system/com.getbx.bx.guard: exit status 3
+// 排在一堆 ✓ 之上,像是卸载出了问题,实际上完全正常。
+func TestBootoutAlreadyGoneIsNotAFailure(t *testing.T) {
+	const esrch, other = 3, 1
+
+	if !launchctlBootoutAlreadyGone([]string{"launchctl", "bootout", "system/com.getbx.bx.guard"}, esrch) {
+		t.Error("bootout 得到 ESRCH(3)= 服务本来就不在,是卸载想要的终态,不该报错")
+	}
+	// asuser 重试形态也要认得
+	if !launchctlBootoutAlreadyGone([]string{"launchctl", "asuser", "501", "launchctl", "bootout", "gui/501/com.getbx.bx.menu"}, esrch) {
+		t.Error("asuser 形态的 bootout 同样要认 ESRCH")
+	}
+	// 其它退出码是真失败,必须继续报
+	if launchctlBootoutAlreadyGone([]string{"launchctl", "bootout", "system/com.getbx.bx.guard"}, other) {
+		t.Error("非 ESRCH 的失败仍是失败,不得被吞掉")
+	}
+	// 非 bootout 命令不适用这条豁免
+	if launchctlBootoutAlreadyGone([]string{"launchctl", "bootstrap", "gui/501", "/tmp/x.plist"}, esrch) {
+		t.Error("只有 bootout 才有「本来就没加载 = 成功」的语义")
+	}
+	// 取不到退出码(命令根本没跑起来)不算「本来就没加载」
+	if launchctlBootoutAlreadyGone([]string{"launchctl", "bootout", "system/com.getbx.bx.guard"}, -1) {
+		t.Error("拿不到退出码时不得假定服务不存在")
+	}
+}

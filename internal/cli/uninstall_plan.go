@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -96,6 +97,26 @@ func buildDarwinUninstallPlan(consoleUID int, consoleHome string, unifiedLayout 
 //
 // 调用方必须保持整条路径 best-effort:重试再失败也只警告、继续卸载,绝不中止。
 // 「停止」永远不许依赖先成功做成别的什么事。
+// launchctlBootoutAlreadyGone 报告一次 bootout 失败是否只是「本来就没加载」。
+//
+// launchctl 用 ESRCH(退出码 3)表达「没有这个服务」,而卸载要的**正是**这个终态。
+// 把它当错误刷红字只会吓用户:真机 2026-08-06,强制拆除已经 bootout 过 Guardian,
+// 随后的 sudo bx uninstall 再 bootout 自然 exit 3,于是
+//
+//	! launchctl bootout system/com.getbx.bx.guard: exit status 3
+//
+// 排在一堆 ✓ 之上,看着像卸载出了问题,实际完全正常。
+//
+// 只对 bootout 豁免——bootstrap 之类没有「本来就没有 = 成功」的语义。
+// 退出码取不到(exitCode < 0,命令根本没跑起来)同样不豁免:那不是「服务不存在」,
+// 是「不知道发生了什么」。
+func launchctlBootoutAlreadyGone(args []string, exitCode int) bool {
+	if exitCode != 3 {
+		return false
+	}
+	return slices.Contains(args, "bootout")
+}
+
 func asuserBootoutFallback(args []string) []string {
 	if len(args) != 3 || args[1] != "bootout" {
 		return nil

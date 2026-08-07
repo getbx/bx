@@ -832,7 +832,7 @@ func TestDefaultMacOSLifecycleDepsWiresEveryForcedTeardownStep(t *testing.T) {
 
 func TestMenuLaunchdCommandsUseOnlyCanonicalAndLegacyLabels(t *testing.T) {
 	plist := "/Users/alice/Library/LaunchAgents/com.getbx.bx.menu.plist"
-	commands := menuLaunchdCommands(501, false, true, plist)
+	commands := menuLaunchdCommands(501, false, true, true, plist)
 	want := [][]string{
 		{"bootout", "gui/501/com.ggshr9.bx.menu"},
 		{"asuser", "501", "launchctl", "bootstrap", "gui/501", plist},
@@ -843,18 +843,18 @@ func TestMenuLaunchdCommandsUseOnlyCanonicalAndLegacyLabels(t *testing.T) {
 	}
 }
 
-// TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect is the
+// TestMenuLaunchdCommandsBootstrapOnForcedReloadSoChangedPlistTakesEffect is the
 // regression test for the production hang: launchd only re-reads a plist on
 // bootstrap, so a stale-but-loaded canonical label must be booted out and
 // rebootstrapped from the current plist rather than just kickstarted, or a
 // path change (e.g. UnifiedInstall moving the app) never takes effect and
 // `launchctl kickstart -k` blocks forever waiting for a spawn that can never
 // succeed.
-func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing.T) {
+func TestMenuLaunchdCommandsBootstrapOnForcedReloadSoChangedPlistTakesEffect(t *testing.T) {
 	plist := "/Users/alice/Library/LaunchAgents/com.getbx.bx.menu.plist"
 
 	t.Run("loaded, no legacy", func(t *testing.T) {
-		commands := menuLaunchdCommands(501, true, false, plist)
+		commands := menuLaunchdCommands(501, true, false, true, plist)
 		want := [][]string{
 			{"bootout", "gui/501/com.getbx.bx.menu"},
 			{"asuser", "501", "launchctl", "bootstrap", "gui/501", plist},
@@ -866,7 +866,7 @@ func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing
 	})
 
 	t.Run("not loaded, no legacy", func(t *testing.T) {
-		commands := menuLaunchdCommands(501, false, false, plist)
+		commands := menuLaunchdCommands(501, false, false, true, plist)
 		want := [][]string{
 			{"asuser", "501", "launchctl", "bootstrap", "gui/501", plist},
 			{"kickstart", "-k", "gui/501/com.getbx.bx.menu"},
@@ -877,7 +877,7 @@ func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing
 	})
 
 	t.Run("loaded plus legacy loaded", func(t *testing.T) {
-		commands := menuLaunchdCommands(501, true, true, plist)
+		commands := menuLaunchdCommands(501, true, true, true, plist)
 		want := [][]string{
 			{"bootout", "gui/501/com.ggshr9.bx.menu"},
 			{"bootout", "gui/501/com.getbx.bx.menu"},
@@ -899,7 +899,7 @@ func TestMenuLaunchdCommandsAlwaysBootstrapsSoChangedPlistTakesEffect(t *testing
 		{"loaded, legacy", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			commands := menuLaunchdCommands(501, tc.currentLoaded, tc.legacyLoaded, plist)
+			commands := menuLaunchdCommands(501, tc.currentLoaded, tc.legacyLoaded, true, plist)
 			want := menuBootstrapCommand(501, plist)
 			found := false
 			for _, args := range commands {
@@ -941,7 +941,7 @@ func TestEnsureMacOSMenuRunningWithDepsRemovesLegacyAndVerifiesLabels(t *testing
 		"gui/501/com.ggshr9.bx.menu": true,
 	}}
 	var removed []string
-	err := ensureMacOSMenuRunningWithDeps(context.Background(), 501, menuBootstrapDeps{
+	err := ensureMacOSMenuRunningWithDeps(context.Background(), 501, true, menuBootstrapDeps{
 		homeDir: func(int) (string, error) { return home, nil },
 		fileExists: func(path string) (bool, error) {
 			return path == currentPlist, nil
@@ -987,7 +987,7 @@ func TestEnsureMacOSMenuRunningWithDepsReloadsStaleLoadedAgent(t *testing.T) {
 		"gui/501/com.getbx.bx.menu": true, // stale: loaded, but program on disk moved
 	}}
 	var removed []string
-	err := ensureMacOSMenuRunningWithDeps(context.Background(), 501, menuBootstrapDeps{
+	err := ensureMacOSMenuRunningWithDeps(context.Background(), 501, true, menuBootstrapDeps{
 		homeDir: func(int) (string, error) { return home, nil },
 		fileExists: func(path string) (bool, error) {
 			return path == currentPlist, nil
@@ -1045,7 +1045,7 @@ func TestEnsureMacOSMenuRunningWithDepsReturnsPromptlyOnTimeout(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- ensureMacOSMenuRunningWithDeps(ctx, 501, menuBootstrapDeps{
+		done <- ensureMacOSMenuRunningWithDeps(ctx, 501, true, menuBootstrapDeps{
 			homeDir:    func(int) (string, error) { return home, nil },
 			fileExists: func(path string) (bool, error) { return path == currentPlist, nil },
 			remove:     func(string) error { return nil },
@@ -1229,5 +1229,67 @@ func protectedGuardianStatus() guardian.Status {
 		DNSState:   guardian.DNSManaged,
 		DNSManaged: true,
 		DNSService: "Wi-Fi",
+	}
+}
+
+// bx up 不得把已经在跑的菜单栏杀掉重启。
+//
+// 真机反馈 2026-08-06:「start 之后会有短暂图标消失,用户不知道发生了什么,
+// 然后一会图标回归」。原因是 menuLaunchdCommands 无条件 bootout + bootstrap
+// + kickstart -k,而 ensureMacOSMenuRunning 挂在 bx up 的生命周期钩子上——
+// 每次启动保护都把菜单栏进程杀一遍。
+//
+// plist 变更只发生在安装/更新之后,那条路径显式要求强制重载;bx up 只需要
+// 「确保它在跑」。
+func TestMenuLaunchdCommandsDoNotRestartAlreadyRunningMenu(t *testing.T) {
+	plist := "/Users/alice/Library/LaunchAgents/com.getbx.bx.menu.plist"
+
+	got := menuLaunchdCommands(501, true, false, false, plist)
+	for _, args := range got {
+		if len(args) > 0 && args[0] == "bootout" {
+			t.Errorf("已加载的菜单栏不得被 bootout(会让图标消失):%v", got)
+		}
+		if len(args) > 1 && args[0] == "kickstart" && args[1] == "-k" {
+			t.Errorf("不得用 kickstart -k 强制重启已在跑的菜单栏:%v", got)
+		}
+	}
+
+	// 但仍要确保它真的在跑:崩溃后干净退出时 KeepAlive{SuccessfulExit:false}
+	// 不会拉起来,菜单栏会一直缺席。不带 -k 的 kickstart 跑着就是 no-op。
+	var kickstarts int
+	for _, args := range got {
+		if len(args) > 0 && args[0] == "kickstart" {
+			kickstarts++
+		}
+	}
+	if kickstarts == 0 {
+		t.Errorf("仍须 kickstart 以修复「已加载但没在跑」,实际 = %v", got)
+	}
+
+	// 强制重载(安装/更新后)照旧完整重启,否则改过的 plist 不会生效。
+	forced := menuLaunchdCommands(501, true, false, true, plist)
+	var sawBootout, sawForcedKickstart bool
+	for _, args := range forced {
+		if len(args) > 0 && args[0] == "bootout" {
+			sawBootout = true
+		}
+		if len(args) > 1 && args[0] == "kickstart" && args[1] == "-k" {
+			sawForcedKickstart = true
+		}
+	}
+	if !sawBootout || !sawForcedKickstart {
+		t.Errorf("强制重载必须 bootout + kickstart -k,否则改过的 plist 不生效,实际 = %v", forced)
+	}
+
+	// 未加载时无论是否强制都必须 bootstrap,否则菜单栏根本起不来。
+	notLoaded := menuLaunchdCommands(501, false, false, false, plist)
+	var sawBootstrap bool
+	for _, args := range notLoaded {
+		if isMenuBootstrapCommand(args) {
+			sawBootstrap = true
+		}
+	}
+	if !sawBootstrap {
+		t.Errorf("未加载时必须 bootstrap,实际 = %v", notLoaded)
 	}
 }
