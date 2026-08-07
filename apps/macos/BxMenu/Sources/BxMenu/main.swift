@@ -355,6 +355,22 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addAction(title, symbol: "arrow.down.circle", target: self, action: #selector(updateBx))
             menu.addItem(.separator())
         }
+        // 建设性主动作排在诊断入口之前:处在 off / 未配置 / 未安装 时,用户唯一
+        // 想点的就是它,把它压在 View Logs 与 Run Doctor 下面是本末倒置。
+        // 破坏性动作(Turn Off / Quit)反过来仍留在菜单底部——那是 macOS 惯例,
+        // 也避免误点,所以 .connected/.warning 的顺序不动。
+        switch state {
+        case .off:
+            menu.addAction("Start Protection", symbol: "play.fill", target: self, action: #selector(startBx))
+        case .setupNeeded:
+            menu.addAction("Set Up bx...", symbol: "link", target: self, action: #selector(setUpBx))
+        case .notInstalled:
+            menu.addAction("Install bx…", symbol: "arrow.down.circle", target: self, action: #selector(installBx))
+        case .missing, .updateNeeded:
+            menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
+        case .connected, .warning:
+            break
+        }
         switch state {
         case .setupNeeded:
             menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
@@ -368,7 +384,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
             menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
         }
-        menu.addItem(.separator())
+        switch state {
+        case .connected, .warning:
+            // 只有这两个状态在下面还会加动作,分隔符才有东西可分隔。
+            menu.addItem(.separator())
+        default:
+            break
+        }
         switch state {
         case .connected:
             menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
@@ -383,16 +405,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
             menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
-        case .off:
-            menu.addAction("Start Protection", symbol: "play.fill", target: self, action: #selector(startBx))
-        case .updateNeeded:
-            menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
-        case .setupNeeded:
-            menu.addAction("Set Up bx...", symbol: "link", target: self, action: #selector(setUpBx))
-        case .missing:
-            menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
-        case .notInstalled:
-            menu.addAction("Install bx…", symbol: "arrow.down.circle", target: self, action: #selector(installBx))
+        case .off, .updateNeeded, .setupNeeded, .missing, .notInstalled:
+            // 这些状态的主动作已经排在诊断入口之前了,这里不再重复。
+            break
         }
         statusItem.menu = menu
     }

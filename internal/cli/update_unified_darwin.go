@@ -31,6 +31,18 @@ func directInstallUnifiedUpdate(bundlePath, configPath string) error {
 		options.ConsoleUID = uid
 		options.ConsoleGID = gid
 	}
-	_, err := install.UnifiedInstall(options)
-	return err
+	if _, err := install.UnifiedInstall(options); err != nil {
+		return err
+	}
+	// 安装刚改写过菜单栏 plist(runtime 可执行路径随版本走),必须强制重载才能让
+	// 新版本的菜单栏生效。此前是靠 bx up 无条件 bootout+bootstrap 顺带做掉的,
+	// 而那条路径已经改成「已加载就不重载」(否则每次启动保护都闪一下图标),
+	// 所以这里必须显式重载,不能再指望它。
+	// 重载失败不让更新失败:菜单栏是 UI 壳,下次登录也会带上新 plist。
+	if options.ConsoleUID > 0 {
+		if err := ensureMacOSMenuReloaded(options.ConsoleUID, true); err != nil {
+			fmt.Printf("  (菜单栏未能重载,下次登录后生效: %v)\n", err)
+		}
+	}
+	return nil
 }

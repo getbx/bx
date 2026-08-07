@@ -72,6 +72,9 @@ func runLaunchctlBestEffort(args []string) {
 	if err == nil {
 		return
 	}
+	if launchctlBootoutAlreadyGone(args, commandExitCode(err)) {
+		return
+	}
 	fallback := asuserBootoutFallback(args)
 	if fallback == nil {
 		fmt.Printf("! %s: %v\n", strings.Join(args, " "), err)
@@ -81,8 +84,20 @@ func runLaunchctlBestEffort(args []string) {
 	if retryErr == nil {
 		return
 	}
+	if launchctlBootoutAlreadyGone(fallback, commandExitCode(retryErr)) {
+		return
+	}
 	fmt.Printf("! %s: %v(已重试 %s: %v)\n",
 		strings.Join(args, " "), err, strings.Join(fallback, " "), retryErr)
+}
+
+// commandExitCode 取出命令的退出码;命令根本没跑起来(找不到可执行文件等)返回 -1。
+func commandExitCode(err error) int {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
 }
 
 // ensureGuardianNotRunningForUninstall 拒绝在保护仍在运行时卸载:Guardian 不可达

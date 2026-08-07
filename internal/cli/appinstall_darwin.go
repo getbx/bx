@@ -55,7 +55,8 @@ func appInstallAction(c *urfavecli.Context) error {
 	if install.GuardianActive() {
 		fmt.Println("! 检测到 Guardian 正在运行:旧进程仍按旧版运行,建议尽快执行 sudo bx down && sudo bx up 完成切换")
 	}
-	if err := ensureMacOSMenuRunning(uid); err != nil {
+	// 安装刚改过 plist(可执行路径可能变了),必须强制重载才能生效。
+	if err := ensureMacOSMenuReloaded(uid, true); err != nil {
 		fmt.Printf("! 菜单栏未能自动启动(可手动打开 Bx.app): %v\n", err)
 	}
 	fmt.Println("下一步:菜单栏 Set Up bx,或 sudo bx setup <client-link> && sudo bx up")

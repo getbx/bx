@@ -40,10 +40,17 @@ type menuBootstrapDeps struct {
 	control    menuLaunchdControl
 }
 
+// ensureMacOSMenuRunning 确保菜单栏在跑,但不重载它(不闪烁)。
 func ensureMacOSMenuRunning(uid int) error {
+	return ensureMacOSMenuReloaded(uid, false)
+}
+
+// ensureMacOSMenuReloaded 在 forceReload 时完整 bootout+bootstrap,让改过的
+// plist 生效——只有安装/更新路径需要它。
+func ensureMacOSMenuReloaded(uid int, forceReload bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), menuBootstrapTimeout)
 	defer cancel()
-	return ensureMacOSMenuRunningWithDeps(ctx, uid, menuBootstrapDeps{
+	return ensureMacOSMenuRunningWithDeps(ctx, uid, forceReload, menuBootstrapDeps{
 		homeDir: func(uid int) (string, error) {
 			account, err := user.LookupId(strconv.Itoa(uid))
 			if err != nil {
@@ -63,7 +70,7 @@ func ensureMacOSMenuRunning(uid int) error {
 	})
 }
 
-func ensureMacOSMenuRunningWithDeps(ctx context.Context, uid int, deps menuBootstrapDeps) error {
+func ensureMacOSMenuRunningWithDeps(ctx context.Context, uid int, forceReload bool, deps menuBootstrapDeps) error {
 	if uid <= 0 {
 		return fmt.Errorf("no logged-in console user")
 	}
@@ -113,7 +120,7 @@ func ensureMacOSMenuRunningWithDeps(ctx context.Context, uid int, deps menuBoots
 		return actionable(fmt.Errorf("inspect legacy menu label: %w", err))
 	}
 
-	commands := menuLaunchdCommands(uid, currentLoaded, legacyLoaded, currentPlist)
+	commands := menuLaunchdCommands(uid, currentLoaded, legacyLoaded, forceReload, currentPlist)
 	for _, args := range commands {
 		if isMenuBootstrapCommand(args) {
 			if err := deps.remove(legacyPlist); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -150,11 +157,20 @@ func ensureMacOSMenuRunningWithDeps(ctx context.Context, uid int, deps menuBoots
 // forever trying to respawn a program that may no longer exist at its old
 // path. bootstrap is therefore unconditional: it always appears, so a
 // changed plist always takes effect.
-func menuLaunchdCommands(uid int, currentLoaded, legacyLoaded bool, currentPlist string) [][]string {
+func menuLaunchdCommands(uid int, currentLoaded, legacyLoaded, forceReload bool, currentPlist string) [][]string {
 	domain := fmt.Sprintf("gui/%d", uid)
 	var commands [][]string
 	if legacyLoaded {
 		commands = append(commands, []string{"bootout", domain + "/" + legacyMenuLaunchdLabel})
+	}
+	if currentLoaded && !forceReload {
+		// 已经加载:不重载。此前无条件 bootout + bootstrap + kickstart -k,而这个
+		// 函数挂在 bx up 的生命周期钩子上,于是**每次启动保护都把菜单栏杀掉重启**
+		// ——用户看到图标消失一会儿又回来,不知道发生了什么(真机 2026-08-06)。
+		// 不带 -k 的 kickstart:跑着就是 no-op,没跑才启动,因此既不闪烁,也能修好
+		// 「已加载但没在跑」(干净退出时 KeepAlive{SuccessfulExit:false} 不会拉起)。
+		commands = append(commands, []string{"kickstart", domain + "/" + menuLaunchdLabel})
+		return commands
 	}
 	if currentLoaded {
 		commands = append(commands, []string{"bootout", domain + "/" + menuLaunchdLabel})
