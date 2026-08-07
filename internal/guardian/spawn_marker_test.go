@@ -30,6 +30,18 @@ import (
 // 改向系统求证「有没有在跑我们的 Core 可执行文件的进程」,见
 // docs/superpowers/plans/2026-08-05-guardian-launch-marker-deadlock.md。
 
+// noCoresRunning 是测试夹具用的进程扫描替身:如实回答「查过了,系统里没有 Core」。
+//
+// 生产默认实现要 root(单测进程非 root ⇒ 一律报错 ⇒ fail-closed 拒绝启动),
+// 而 Start 现在**在盘上没有任何记录时也要问系统**(没有记录只说明我们自己的
+// 簿记是空的,不说明系统里没有 Core)。所以每个走 Start 的测试都必须显式声明
+// 这台"系统"里有没有 Core 在跑。
+//
+// 这不是放宽断言:真正的判据由 TestStartRefusesToForkWithoutRecordWhenCoreIsRunning
+// 与 TestStartRefusesToForkWithoutRecordWhenScanFails 钉住,这里只是把夹具的
+// 前提写明白——它们此前是隐含的(「没记录 ⇒ 直接 fork」)。
+func noCoresRunning() ([]Process, error) { return nil, nil }
+
 type spawnMarkerOperations struct {
 	mu        sync.Mutex
 	started   StartedProcess
@@ -79,6 +91,7 @@ func newSpawnMarkerRunner(t *testing.T, ops ProcessOperations) (*ExecCoreRunner,
 	}
 	statePath := filepath.Join(dir, "core-process.json")
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.Operations = ops

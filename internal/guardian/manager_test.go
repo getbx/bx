@@ -997,9 +997,12 @@ func TestManagerUpBlocksSameAndReconstructedDaemonAfterUncertainLaunch(t *testin
 		}
 		// 同 TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker
 		// 的场景:Core 已经 fork(PID 52)、但 spawned 记录写不进去,盘上只留下
-		// launching 标记。真实扫描看不见这个测试里的假 Core,注入一个「系统里
-		// 有 Core」的扫描,让判据与它模拟的场景保持一致。
+		// launching 标记。真实扫描看不见这个测试里的假 Core,注入一个与场景一致
+		// 的扫描:fork 之前系统里没有 Core,fork 之后才有。
 		runner.ScanRunningCores = func() ([]Process, error) {
+			if operations.startCount() == 0 {
+				return nil, nil
+			}
 			return []Process{{PID: 52, Executable: executable, UID: 0}}, nil
 		}
 		return runner
@@ -1101,6 +1104,7 @@ func TestManagerLateLaunchCleanupProofClearsUncertaintyForRetry(t *testing.T) {
 	}
 	statePath := filepath.Join(dir, "core-process.json")
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.Operations = operations
 	runner.LaunchCleanupTimeout = 10 * time.Millisecond
@@ -1148,6 +1152,7 @@ func TestManagerPostForkCleanupHonorsAcceptedDeadlineAndLateProofClearsUncertain
 	}
 	statePath := filepath.Join(dir, "core-process.json")
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.Operations = operations
 	runner.LaunchCleanupTimeout = 200 * time.Millisecond
@@ -2541,6 +2546,7 @@ func TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord(t *testing.T) {
 		started: started,
 	}
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.Operations = operations

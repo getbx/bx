@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -91,6 +92,12 @@ func looksLikeCore(executable string, argv []string, uid int) bool {
 //   - **一个都没读成功**(enumerated>0 但 readable==0):不管是不是 root,这
 //     种系统状态本身就反常,不能把「读不出任何进程参数」悄悄折叠成「没有
 //     bx 进程」。
+//
+// 这条下限的判定抽在 decideCoreScan(纯函数,procscan.go)里,syscall 这一半
+// 单测造不出来,而那条下限必须被钉住。
+//
+// **僵尸被显式排除**:见 isZombieProcess —— 崩溃重启路径靠它才不会被刚死的
+// 旧 Core 卡住。
 func scanRunningCores() ([]Process, error) {
 	if os.Geteuid() != 0 {
 		return nil, errors.New("scan for running Core processes requires root privileges (non-root cannot see a root-owned Core)")
@@ -105,6 +112,9 @@ func scanRunningCores() ([]Process, error) {
 		pid := int(procs[i].Proc.P_pid)
 		if pid <= 0 {
 			continue
+		}
+		if isZombieProcess(procs[i].Proc.P_stat) {
+			continue // 已经退出、只等回收:不持有 socket 也不持有路由
 		}
 		raw, err := unix.SysctlRaw("kern.procargs2", pid)
 		if err != nil {
@@ -121,8 +131,8 @@ func scanRunningCores() ([]Process, error) {
 		}
 		cores = append(cores, Process{PID: pid, Executable: executable, UID: uid})
 	}
-	if readable == 0 {
-		return nil, fmt.Errorf("read process arguments from 0 of %d enumerated processes: cannot rule out a running Core", len(procs))
-	}
-	return cores, nil
+	// 普查数据只有这里拿得到,而放行一次 fork 的那条日志(guardian_orphan_launch_marker /
+	// guardian_no_core_record)最需要它来判断「这个结论是查了多少个进程得出的」。
+	log.Printf("guardian_core_scan enumerated=%d readable=%d cores=%d", len(procs), readable, len(cores))
+	return decideCoreScan(len(procs), readable, cores)
 }

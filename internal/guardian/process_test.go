@@ -89,6 +89,7 @@ func TestExecCoreRunnerStartPersistsInspectedGeneration(t *testing.T) {
 		process: Process{PID: 52, Executable: executable, UID: 0, Generation: "darwin:123:456"},
 	}
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.Operations = operations
 
@@ -135,6 +136,7 @@ func TestExecCoreRunnerScopesBypassHandoffToAuthorizedStart(t *testing.T) {
 				process: Process{PID: 52, Executable: executable, UID: 0, Generation: "darwin:123:456"},
 			}
 			runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+			runner.ScanRunningCores = noCoresRunning
 			runner.StatePath = filepath.Join(dir, strings.ReplaceAll(tt.name, " ", "-")+".json")
 			runner.Operations = operations
 
@@ -180,6 +182,7 @@ func TestExecCoreRunnerStartAmbiguousGenerationTerminatesDirectChild(t *testing.
 		process: Process{PID: 52, Executable: executable, UID: 0},
 	}
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.Operations = operations
 
@@ -209,6 +212,7 @@ func TestExecCoreRunnerStartErrorClearsLaunchMarkerForRetry(t *testing.T) {
 	}
 	statePath := filepath.Join(dir, "core-process.json")
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.Operations = operations
 
@@ -224,6 +228,7 @@ func TestExecCoreRunnerStartErrorClearsLaunchMarkerForRetry(t *testing.T) {
 
 	operations.setStartError(nil)
 	reconstructed := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	reconstructed.ScanRunningCores = noCoresRunning
 	reconstructed.StatePath = statePath
 	reconstructed.Operations = operations
 	if _, err := reconstructed.Start(context.Background(), CoreStartOptions{}); err != nil {
@@ -246,6 +251,7 @@ func TestExecCoreRunnerWaitClearsOwnedRecordBeforePublishingExit(t *testing.T) {
 		process: Process{PID: 54, Executable: executable, UID: 0, Generation: "darwin:123:458"},
 	}
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.Operations = operations
 	removeStarted := make(chan struct{})
@@ -292,6 +298,7 @@ func TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit(t *testing.T) 
 		process: Process{PID: 55, Executable: executable, UID: 0, Generation: "darwin:123:459"},
 	}
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.Operations = operations
 	runner.RemoveProcessRecord = func(string) error { return errors.New("record removal failed") }
@@ -343,9 +350,14 @@ func TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker(t *t
 	}
 	// 这条测试模拟的场景是:Core 已经 fork 出来(PID 52)、但 spawned 记录写不
 	// 进去、清理又不确定——盘上只留下一个 launching 标记,而那个 Core 其实还
-	// 活着。真实扫描看不见这个测试里的假 Core 对象,所以必须注入一个「系统里
-	// 有 Core」的扫描,让判据与它模拟的场景保持一致(而不是弱化断言)。
+	// 活着。真实扫描看不见这个测试里的假 Core 对象,所以必须注入一个与场景一致
+	// 的扫描(而不是弱化断言):**fork 之前系统里没有 Core,fork 之后才有**。
+	// 静态返回「一直有 Core」会让第一次 Start 在 fork 之前就被拒绝,后面模拟的
+	// 残留窗口根本不会发生。
 	runner.ScanRunningCores = func() ([]Process, error) {
+		if operations.startCount() == 0 {
+			return nil, nil
+		}
 		return []Process{{PID: 52, Executable: executable, UID: 0}}, nil
 	}
 
@@ -391,6 +403,7 @@ func TestExecCoreRunnerLateCleanupProofClearsMarkerForSameAndReconstructedRetry(
 	}
 	statePath := filepath.Join(dir, "core-process.json")
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.Operations = operations
 	runner.LaunchCleanupTimeout = 10 * time.Millisecond
@@ -416,6 +429,7 @@ func TestExecCoreRunnerLateCleanupProofClearsMarkerForSameAndReconstructedRetry(
 		t.Fatalf("same-runner Existing after late proof = %+v, %v; want no process", existing, err)
 	}
 	reconstructed := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	reconstructed.ScanRunningCores = noCoresRunning
 	reconstructed.StatePath = statePath
 	reconstructed.Operations = operations
 	if existing, err := reconstructed.Existing(context.Background()); err != nil || existing.PID != 0 {
@@ -436,6 +450,7 @@ func TestExecCoreRunnerAdoptedWatcherOutlivesInspectionContext(t *testing.T) {
 	}
 	operations := &watchTestProcessOperations{process: Process{PID: 42, Executable: executable, UID: 0, Generation: generation}, alive: true}
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.Operations = operations
 	runner.InspectInterval = 10 * time.Millisecond
@@ -760,6 +775,7 @@ func TestExecCoreRunnerStopWaitsForRecordedIdentityToDisappear(t *testing.T) {
 
 func TestExecCoreRunnerSetExecutable(t *testing.T) {
 	runner := NewExecCoreRunner("/a/bx", "/etc/bx/config.yaml", "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	if runner.Executable() != "/a/bx" {
 		t.Fatalf("initial executable = %q", runner.Executable())
 	}
@@ -788,6 +804,7 @@ func newRecordedProcessRunner(t *testing.T) (*ExecCoreRunner, Process, *watchTes
 	}
 	operations := &watchTestProcessOperations{process: process, alive: true}
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.InspectInterval = 5 * time.Millisecond
@@ -1058,6 +1075,7 @@ func TestExecCoreRunnerStartOverwritesOSConfirmedDeadLaunchMarker(t *testing.T) 
 		started: started,
 	}
 	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.Operations = operations
@@ -1114,6 +1132,7 @@ func TestExecCoreRunnerStartStillRefusesLiveLaunchMarker(t *testing.T) {
 			}
 			operations := &pidAwareProcessOperations{live: tt.live, started: newStartTestProcess(6001)}
 			runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+			runner.ScanRunningCores = noCoresRunning
 			runner.StatePath = statePath
 			runner.ControlSocket = filepath.Join(dir, "bx.sock")
 			runner.Operations = operations

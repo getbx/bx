@@ -1288,6 +1288,7 @@ func TestExecCoreRunnerPathRecoveryUsesConfiguredControlSocket(t *testing.T) {
 	})
 
 	runner := NewExecCoreRunner("/unused/bx", "/unused/config.yaml", "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
 	runner.ControlSocket = socketPath
 	snapshot, err := runner.RecoverPath(context.Background(), supervisor.PathRecoveryRequest{Reason: "manual", Generation: "wifi-b"})
 	if err != nil {
