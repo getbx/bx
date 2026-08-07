@@ -242,6 +242,24 @@ type guardianFailureBody struct {
 const guardianTroubleshootingHint = "排查:sudo bx doctor;完整原因见 Guardian 日志 sudo tail -50 " +
 	install.GuardianStderrLogPath + "(bx logs 看的是 Core 日志,不含 Guardian 失败原因)"
 
+// guardianCodeHints carries the per-code next step for failures the generic
+// hint cannot resolve.
+//
+// core_ownership_uncertain is **latched**: Manager.upLocked/Migrate check
+// m.current.Uncertain before Existing() is ever called again, so a scan
+// observation taken at one instant becomes a permanent refusal — if the
+// third-party Core later disappears, `bx up` still fails and never re-scans.
+// Down() clears m.current, which is the only escape. The latch is deliberately
+// left in place (rewiring manager.go's lifecycle state machine is higher risk
+// than the payoff, and the case is rare), so the failure has to explain itself
+// instead. The Guardian response body deliberately withholds the raw error
+// (it may carry paths/links/credentials), which is why the wording lives here
+// on the CLI side rather than in the error text the daemon produces.
+var guardianCodeHints = map[string]string{
+	"core_ownership_uncertain": "若确认没有第二个 Core 在跑,执行 sudo bx down 再 sudo bx up 可清除这条已锁存的判定" +
+		"(Guardian 把「所有权不确定」记在内存里,只有 down 会清)",
+}
+
 // guardianHTTPError renders a Guardian error response. Every 500 carries the
 // troubleshooting hint, with or without a code: the failures that arrive
 // without one (short circuits that never reach needsAttention, or an older
@@ -258,6 +276,12 @@ func guardianHTTPError(path string, statusCode int, body []byte) error {
 		message += fmt.Sprintf("(code=%s)", failure.Code)
 	}
 	if statusCode == http.StatusInternalServerError {
+		// 专用指引在前、通用排查在后:前者是这一类失败的直接出路。
+		// 与通用指引一样只挂在 500 上(非 500 保持素净,见
+		// TestGuardianHTTPErrorNon500StaysPlain)。
+		if hint := guardianCodeHints[failure.Code]; hint != "" {
+			message += "。" + hint
+		}
 		message += "。" + guardianTroubleshootingHint
 	}
 	return errors.New(message)

@@ -31,6 +31,33 @@ func TestGuardianHTTPErrorSurfacesFailureCode(t *testing.T) {
 	}
 }
 
+// core_ownership_uncertain 是**锁存**的:Manager.upLocked/Migrate 在再次调用
+// Existing() 之前就先看 m.current.Uncertain 并短路返回,于是某一瞬间扫到的
+// 第三方 Core 会变成永久拒绝——那个进程后来消失了,bx up 依旧失败且再也不会
+// 重新扫描。唯一的脱身办法是 down 一次(它清掉 m.current)。这一轮刻意不动
+// 那个锁存(改 manager.go 的生命周期状态机风险大于收益),所以失败必须自解释;
+// 而 Guardian 响应体刻意不外传原始错误串,故这句话只能落在 CLI 这一侧。
+func TestGuardianHTTPErrorNamesEscapeForLatchedOwnershipUncertainty(t *testing.T) {
+	msg := guardianHTTPError("/v1/up", http.StatusInternalServerError,
+		[]byte(`{"error":"guardian operation failed","code":"core_ownership_uncertain"}`)).Error()
+
+	if !strings.Contains(msg, "bx down") {
+		t.Errorf("必须告诉用户 sudo bx down 能清除这条锁存判定,实际:%s", msg)
+	}
+	if !strings.Contains(msg, "bx up") {
+		t.Errorf("必须给出完整的脱身动作(down 之后还要 up),实际:%s", msg)
+	}
+}
+
+// 别的失败码不得被这条专用指引污染——指错方向比不指更糟。
+func TestGuardianHTTPErrorDoesNotAttachEscapeHintToOtherCodes(t *testing.T) {
+	msg := guardianHTTPError("/v1/up", http.StatusInternalServerError,
+		[]byte(`{"error":"guardian operation failed","code":"barrier_install_failed"}`)).Error()
+	if strings.Contains(msg, "bx down") {
+		t.Errorf("无关失败码不该出现 down/up 脱身指引,实际:%s", msg)
+	}
+}
+
 // 旧版 Guardian 不回传 code 时不得崩溃或输出空码。
 func TestGuardianHTTPErrorWithoutCodeStaysReadable(t *testing.T) {
 	err := guardianHTTPError("/v1/up", http.StatusInternalServerError,

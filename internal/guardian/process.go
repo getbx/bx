@@ -36,9 +36,12 @@ const (
 	// 窗口内崩溃留下的是带真实 PID、可向 OS 求证的 spawned 记录(死了自愈,活着
 	// fail-closed),而不是一个 PID==0、无从判断的 launching 标记。
 	//
-	// **注意它没有让 launching 变安全**:spawned 那次写盘本身失败时(磁盘错误),
-	// fork 已发生而盘上仍只有 launching。故 launching 依旧一律判所有权不确定。
-	// 要彻底解开,需要绕过自身簿记去问系统「有没有进程在跑我们的 Core 可执行文件」。
+	// **注意它没有让 launching 自身变安全**:spawned 那次写盘本身失败时(磁盘
+	// 错误),fork 已发生而盘上仍只有 launching —— 一个 PID==0、无从向 OS 求证
+	// 的标记。launching 的死结已由另一条路解开:绕过自身簿记直接问系统「有没有
+	// 进程在跑我们的 Core」(resolveOrphanLaunchMarker + scanRunningCores),
+	// 没有才自愈,有或问不出来仍然 fail-closed。两段式标记的价值是把残留窗口
+	// 缩到最小,不是替代那次求证。
 	processRecordSpawned = "spawned"
 	processRecordOwned   = "owned"
 )
@@ -146,11 +149,23 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 	if err := r.validate(); err != nil {
 		return Process{}, err
 	}
-	if record, err := loadProcessRecord(r.statePath()); err == nil {
-		if err := r.refuseLiveLaunchMarker(record); err != nil {
+	marker, err := loadProcessRecord(r.statePath())
+	switch {
+	case err == nil:
+		if err := r.refuseLiveLaunchMarker(marker); err != nil {
 			return Process{}, err
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	case errors.Is(err, os.ErrNotExist):
+		// 盘上一条记录都没有 —— 这只说明**我们的簿记**里没有 Core,不说明
+		// 系统里没有。用户手删 core-process.json(本项目文档一度就是这么建议
+		// 的)时 Core 可能正跑着,而这条路径上没有第二道防线:supervisor 的
+		// 控制面在 net.Listen 前先 os.Remove(SockPath),新 Core 会静默夺走
+		// 控制 socket,两个 Core 争 split-default 路由,先退出的那个用旧快照
+		// 还原、掀掉另一个的劫持 —— status 显绿而流量明文直连。
+		if err := r.refuseUnrecordedRunningCore(); err != nil {
+			return Process{}, err
+		}
+	default:
 		return Process{}, uncertainOwnership(Process{Uncertain: true}, fmt.Errorf("read durable launch marker: %w", err))
 	}
 	if err := r.saveRecord(r.statePath(), processRecord{State: processRecordLaunching}); err != nil {
@@ -209,6 +224,35 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 	return process, nil
 }
 
+// scanCores 向系统求证「有没有进程在跑 Core」。抽出来是为了让
+// resolveOrphanLaunchMarker 与 refuseUnrecordedRunningCore 共用同一个判据
+// (以及同一个可注入点)。
+func (r *ExecCoreRunner) scanCores() ([]Process, error) {
+	scan := r.ScanRunningCores
+	if scan == nil {
+		scan = scanRunningCores
+	}
+	return scan()
+}
+
+// scannedCorePIDs 把扫到的 PID 拼成诊断文本。**只用于错误文本**——这些进程
+// 是「疑似」而非「已验明的我们的 Core」,绝不得进 Process payload。
+func scannedCorePIDs(cores []Process) string {
+	pids := make([]string, 0, len(cores))
+	for _, core := range cores {
+		pids = append(pids, strconv.Itoa(core.PID))
+	}
+	return strings.Join(pids, ", ")
+}
+
+// ownershipUncertainEscapeHint 是这条判定唯一的脱身办法。
+//
+// Manager.upLocked/Migrate 在调用 Existing() 之前就先看 m.current.Uncertain 并
+// 短路返回,所以某一瞬间扫到的第三方 Core 会被**锁存**成永久拒绝:那个进程后来
+// 消失了,bx up 依旧失败且再也不会重新扫描。这一轮刻意不动 manager.go 的生命
+// 周期状态机(风险大于收益,且这种情况罕见),改为让失败自解释。
+const ownershipUncertainEscapeHint = "run `sudo bx down` then `sudo bx up` to clear this latched judgement"
+
 // resolveOrphanLaunchMarker 判定一个 launching 标记是不是孤儿。
 //
 // launching 标记的 PID 恒为 0,无法向 OS 求证——此前因此一律判 uncertain,
@@ -218,24 +262,19 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 // 现在改为绕开自己的记账、直接问系统。这个判据在「fork 与写盘之间」那个窗口里
 // 仍然有效:fork 一返回子进程就已经作为进程存在,早于它执行我们的任何代码。
 //
+// hop 标明是哪一跳(existing / start)在做这个判定:这是事故排查里唯一能把
+// 「谁放行了这次启动」定位到代码位置的信息。
+//
 // 返回的 error 非 nil 表示必须继续 fail-closed。
-func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord) error {
-	scan := r.ScanRunningCores
-	if scan == nil {
-		scan = scanRunningCores
-	}
-	cores, err := scan()
+func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord, hop string) error {
+	cores, err := r.scanCores()
 	if err != nil {
 		// 问不出来不等于没有。
 		return uncertainOwnership(
 			Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true},
-			fmt.Errorf("durable launch marker with no PID, and scanning for running Cores failed: %w", err))
+			fmt.Errorf("durable launch marker with no PID, and scanning for running Cores failed: %w; %s", err, ownershipUncertainEscapeHint))
 	}
 	if len(cores) > 0 {
-		pids := make([]string, 0, len(cores))
-		for _, core := range cores {
-			pids = append(pids, strconv.Itoa(core.PID))
-		}
 		// 扫到的进程是「疑似」而非「已验明的我们的 Core」——诊断信息(PID)
 		// 只进错误文本,不得进 Process payload。record 自身的身份(PID==0)
 		// 才是这条 launching 标记的真实身份;把扫描到的第三方 PID 塞进
@@ -244,9 +283,37 @@ func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord) error {
 		// 状态——扫到的进程从未被验明是我们的 Core。
 		return uncertainOwnership(
 			Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true},
-			fmt.Errorf("durable launch marker with no PID, and Core appears to be running (PID %s)", strings.Join(pids, ", ")))
+			fmt.Errorf("durable launch marker with no PID, and Core appears to be running (PID %s); %s", scannedCorePIDs(cores), ownershipUncertainEscapeHint))
 	}
-	log.Printf("guardian_orphan_launch_marker no_core_running=true (self-healing)")
+	// 这是「我允许了一个 Core 启动,因为我认为没有别的 Core 在跑」的唯一记录:
+	// 出事时必须能定位到是哪一跳、看的哪个状态文件、判的哪条记录。扫描的普查
+	// 数据(枚举/可读进程数)由 scanRunningCores 紧邻着打在 guardian_core_scan
+	// 那一行上。
+	log.Printf("guardian_orphan_launch_marker hop=%s state_path=%s marker_state=%s marker_pid=%d cores_found=0 no_core_running=true (self-healing)",
+		hop, r.statePath(), record.state(), record.PID)
+	return nil
+}
+
+// refuseUnrecordedRunningCore 守住「盘上一条记录都没有」这条路径。
+//
+// 没有记录只说明我们自己的簿记是空的。此前 Start 在这条路径上直接 fork,
+// 全程没问过系统一句——而用户手删 core-process.json(本项目文档一度就是这么
+// 建议的)恰恰把系统带进「有 Core 在跑 + 无记录」的状态,于是起第二个 Core。
+//
+// 与 resolveOrphanLaunchMarker 同一个判据、同一条 fail-closed 规则:
+// 扫到 Core、或扫不出来,都拒绝。
+func (r *ExecCoreRunner) refuseUnrecordedRunningCore() error {
+	cores, err := r.scanCores()
+	if err != nil {
+		return uncertainOwnership(Process{Uncertain: true},
+			fmt.Errorf("no Core process record on disk, and scanning for running Cores failed: %w; %s", err, ownershipUncertainEscapeHint))
+	}
+	if len(cores) > 0 {
+		// 同上:扫到的 PID 只进错误文本,不进 payload。
+		return uncertainOwnership(Process{Uncertain: true},
+			fmt.Errorf("no Core process record on disk, but Core appears to be running (PID %s); %s", scannedCorePIDs(cores), ownershipUncertainEscapeHint))
+	}
+	log.Printf("guardian_no_core_record hop=start state_path=%s cores_found=0 no_core_running=true (proceeding to fork)", r.statePath())
 	return nil
 }
 
@@ -273,11 +340,11 @@ func (r *ExecCoreRunner) refuseLiveLaunchMarker(record processRecord) error {
 	if record.PID <= 0 {
 		// 与 Existing() 同一判据:Existing 放行而 Start 拒绝,等于没修
 		// (60b76f3 的教训:只修一跳是假绿)。
-		return r.resolveOrphanLaunchMarker(record)
+		return r.resolveOrphanLaunchMarker(record, "start")
 	}
 	if _, err := r.operations().Inspect(record.PID); err != nil {
 		if !errors.Is(err, ErrProcessNotRunning) {
-			return uncertain(fmt.Errorf("durable launch marker already exists: inspect recorded Core PID %d: %w", record.PID, err))
+			return uncertain(fmt.Errorf("durable launch marker already exists: inspect recorded Core PID %d: %w; %s", record.PID, err, ownershipUncertainEscapeHint))
 		}
 		// 记录里的进程已被 OS 确认死亡:陈旧文件不是"所有权不确定"。
 		// saveRecord 随后会覆盖它(remove 可能正因权限失败而清不掉,那也
@@ -285,7 +352,7 @@ func (r *ExecCoreRunner) refuseLiveLaunchMarker(record processRecord) error {
 		log.Printf("guardian_stale_launch_marker pid=%d generation=%s", record.PID, record.Generation)
 		return nil
 	}
-	return uncertain(errors.New("durable launch marker already exists"))
+	return uncertain(fmt.Errorf("durable launch marker already exists; %s", ownershipUncertainEscapeHint))
 }
 
 func coreStartEnvironment(base []string, options CoreStartOptions) ([]string, error) {
@@ -330,7 +397,7 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 	case processRecordLaunching:
 		// PID 为 0,无法向 OS 求证这条记录本身——改为绕开记账问系统:
 		// 系统里没有任何 Core 在跑 ⇒ 这个标记是孤儿,清掉当作无既有 Core。
-		if err := r.resolveOrphanLaunchMarker(record); err != nil {
+		if err := r.resolveOrphanLaunchMarker(record, "existing"); err != nil {
 			return Process{}, err
 		}
 		if clearErr := r.removeStaleRecord(record); clearErr != nil {
