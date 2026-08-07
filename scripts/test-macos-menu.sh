@@ -34,6 +34,11 @@ run_test guardian-client \
 run_test instance-gate \
   "$MENU/Sources/BxMenu/InstanceGate.swift" \
   "$MENU/Tests/InstanceGateTests.swift"
+run_test status-report \
+  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
+  "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/StatusReport.swift" \
+  "$MENU/Tests/StatusReportTests.swift"
 run_test install-presentation \
   "$MENU/Sources/BxMenu/InstallPresentation.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \

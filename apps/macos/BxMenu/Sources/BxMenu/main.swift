@@ -2,44 +2,6 @@ import AppKit
 import Darwin
 import Foundation
 
-struct BxReport: Decodable {
-    let tunnelHealthy: Bool
-    let latencyMS: Int64
-    let restarts: Int
-    let udpMode: String?
-    let udpNote: String?
-    let active: Int64
-    let proxy: Int64
-    let direct: Int64
-    let blocked: Int64
-    let protectionState: String?
-    let networkGeneration: String?
-    let recovery: RecoverySnapshot?
-    let phase: String?
-    let coreVersion: String?
-    let guardianVersion: String?
-    let runtimeVersion: String?
-    let dnsState: String?
-    let dnsManaged: Bool?
-    let dnsService: String?
-
-    enum CodingKeys: String, CodingKey {
-        case tunnelHealthy = "tunnel_healthy"
-        case latencyMS = "latency_ms"
-        case udpMode = "udp_mode"
-        case udpNote = "udp_note"
-        case protectionState = "protection_state"
-        case networkGeneration = "network_generation"
-        case coreVersion = "core_version"
-        case guardianVersion = "guardian_version"
-        case runtimeVersion = "runtime_version"
-        case dnsState = "dns_state"
-        case dnsManaged = "dns_managed"
-        case dnsService = "dns_service"
-        case restarts, active, proxy, direct, blocked, recovery, phase
-    }
-}
-
 struct DoctorReport: Decodable {
     let checks: [DoctorCheck]
 }
@@ -167,6 +129,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         }
         let data = Data(status.stdout.utf8)
         guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
+            // 必须先清恢复快照:updateIcon 让快照覆盖状态图标,留着一个绿快照
+            // 会画出「状态是 warning、盾牌却是绿的」。
+            recoverySnapshot = nil
             return .warning("Status unreadable", version: version)
         }
         if let banner = updatingBanner(phase: report.phase) {
@@ -186,13 +151,24 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return .warning("Repair Required", version: version)
         }
         repairVersions = nil
-        if report.protectionState == "needs_attention" {
+        let verdict = menuProtectionVerdict(report)
+        switch verdict {
+        case .off:
+            // 用户主动关掉了保护。必须先于隧道判定返回——Core 已退出,隧道当然
+            // 不健康,若先看 tunnelHealthy 就会把「自己关的」报成「隧道坏了」,
+            // 而 .warning 分支不提供 Start Protection,用户就没法从菜单开回来
+            // (真机 2026-08-06:只能回去敲 sudo bx up)。
             recoverySnapshot = nil
-            return .warning("Repair Required", version: version)
-        }
-        if report.protectionState == "blocked" {
-            recoverySnapshot = nil
-            return .warning("Blocked", version: version)
+            return .off
+        case .attention(let reason):
+            // Guardian 明确报告的异常先于被动恢复快照判定,与既有行为一致:
+            // 这两种状态下不保留恢复快照。
+            if report.protectionState == "needs_attention" || report.protectionState == "blocked" {
+                recoverySnapshot = nil
+                return .warning(reason, version: version)
+            }
+        case .healthy:
+            break
         }
         if !reconnectInFlight {
             recoverySnapshot = passiveStatusRecovery(
@@ -200,9 +176,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                 recovery: report.recovery
             )
         }
-        guard report.tunnelHealthy else {
+        if case .attention(let reason) = verdict {
             recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)
-            return .warning("Tunnel unhealthy", version: version)
+            return .warning(reason, version: version)
         }
         let dns = dnsPresentation(
             state: report.dnsState,
