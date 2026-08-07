@@ -215,6 +215,39 @@ func TestExistingRefusesLaunchingMarkerWhenCoreIsRunning(t *testing.T) {
 	}
 }
 
+// 扫到的第三方 PID 只能进错误文本,绝不能进 uncertain 的 Process payload——
+// 那个进程从未被验明是我们的 Core。若混进去,Manager.retainUncertain 会把
+// 它原样收进 m.current,Down() 据此当作"有个已知 PID 的 Core"跳过重新校验、
+// 把这个陌生 PID 发布进用户可见状态、并对它发起 Stop。这条测试钉住 Down()
+// 依赖的那条边界:Process.PID 必须仍是记录自身的身份(launching ⇒ 0),
+// 而不是扫描器看到的那个 PID。
+func TestExistingRefusesLaunchingMarkerWithoutSmugglingScannedPIDIntoProcess(t *testing.T) {
+	runner, _ := newSpawnMarkerRunner(t, &spawnMarkerOperations{})
+	runner.ScanRunningCores = func() ([]Process, error) {
+		return []Process{{PID: 4242, Executable: "/usr/local/bin/bx", UID: 0}}, nil
+	}
+	if err := saveProcessRecord(runner.StatePath, processRecord{State: processRecordLaunching}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runner.Existing(context.Background())
+	if !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("系统里有 Core 时必须 fail-closed,实际 = %v", err)
+	}
+	process, ok := uncertainProcess(err)
+	if !ok {
+		t.Fatalf("期望 error 里带 uncertain Process payload,实际 = %v", err)
+	}
+	if process.PID == 4242 {
+		t.Fatalf("uncertain Process 不得携带扫描到的第三方 PID,实际 PID = %d", process.PID)
+	}
+	if process.PID != 0 {
+		t.Fatalf("launching 标记自身 PID 恒为 0,uncertain Process 应保持这个身份,实际 PID = %d", process.PID)
+	}
+	if !strings.Contains(err.Error(), "4242") {
+		t.Errorf("诊断信息(扫到的 PID)必须仍留在错误文本里,实际 = %v", err)
+	}
+}
+
 // 扫描本身失败 ⇒ 保持 uncertain。「问不出来」不等于「没有」。
 func TestExistingRefusesLaunchingMarkerWhenScanFails(t *testing.T) {
 	runner, _ := newSpawnMarkerRunner(t, &spawnMarkerOperations{})

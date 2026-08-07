@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/unix"
@@ -77,12 +78,29 @@ func looksLikeCore(executable string, argv []string, uid int) bool {
 //
 // 单个进程读不出信息(权限、刚退出)就跳过它,不让整次扫描失败——但**整体
 // sysctl 失败必须报错**,由调用方保持 fail-closed。
+//
+// 两条判据是「没查到 Core」与「查不出来」的分界线,都必须报错而不是安静地
+// 返回空列表——空列表在调用方(resolveOrphanLaunchMarker)眼里就是「确认没有
+// Core,可以自愈」,一旦被误当成真的查过,后果是把一个真实存在的孤儿 launch
+// marker 判定为安全,而实际上系统里可能正跑着 Core(真机 2026-08-07 复审时
+// 用非 root 身份测出:874 个进程里 305 个 procargs2 读不出、其余 uid 不含
+// root,结果是「0 个 Core、error=nil」——与「真的没有 Core」在返回值上完全
+// 无法区分):
+//   - **非 root 调用方**:root 跑的 Core 的 procargs2/ucred 对非 root 不可读,
+//     这个身份本身就没有资格得出「没有 Core」的结论,不管扫到什么都不可信。
+//   - **一个都没读成功**(enumerated>0 但 readable==0):不管是不是 root,这
+//     种系统状态本身就反常,不能把「读不出任何进程参数」悄悄折叠成「没有
+//     bx 进程」。
 func scanRunningCores() ([]Process, error) {
+	if os.Geteuid() != 0 {
+		return nil, errors.New("scan for running Core processes requires root privileges (non-root cannot see a root-owned Core)")
+	}
 	procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
 	if err != nil {
 		return nil, fmt.Errorf("enumerate processes: %w", err)
 	}
 	var cores []Process
+	readable := 0
 	for i := range procs {
 		pid := int(procs[i].Proc.P_pid)
 		if pid <= 0 {
@@ -96,11 +114,15 @@ func scanRunningCores() ([]Process, error) {
 		if err != nil {
 			continue
 		}
+		readable++
 		uid := int(procs[i].Eproc.Ucred.Uid)
 		if !looksLikeCore(executable, argv, uid) {
 			continue
 		}
 		cores = append(cores, Process{PID: pid, Executable: executable, UID: uid})
+	}
+	if readable == 0 {
+		return nil, fmt.Errorf("read process arguments from 0 of %d enumerated processes: cannot rule out a running Core", len(procs))
 	}
 	return cores, nil
 }

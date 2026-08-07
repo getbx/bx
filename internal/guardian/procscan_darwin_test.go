@@ -4,6 +4,8 @@ package guardian
 
 import (
 	"encoding/binary"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -127,10 +129,20 @@ func TestLooksLikeCoreAcceptsBxViaArgv0(t *testing.T) {
 	}
 }
 
-// 真实扫描必须能在本机跑通且不 panic。它至少应该看到本测试进程之外的东西,
-// 但不断言具体内容——那取决于机器状态。这条只证明 syscall 路径是活的。
-func TestScanRunningCoresDoesNotFailOnRealSystem(t *testing.T) {
-	if _, err := scanRunningCores(); err != nil {
-		t.Fatalf("在真实系统上扫描不应失败: %v", err)
+// 测试进程本身不是 root——真实系统上跑这条测试,scanRunningCores 必须报错,
+// 而不是安静地返回一个「看起来正常」的空列表。空列表在调用方眼里就是「确认
+// 没有 Core,可以自愈」;非 root 身份看不到 root 跑的 Core,压根没资格得出
+// 这个结论。这条断言取代了此前只查 err==nil 的版本——旧版本在 scanRunningCores
+// 彻底失灵(比如权限判据被删掉)时依然通过,没有测到任何东西。
+func TestScanRunningCoresFailsWithoutRootPrivileges(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("测试进程以 root 身份运行,无法验证非 root 分支")
+	}
+	_, err := scanRunningCores()
+	if err == nil {
+		t.Fatal("非 root 调用 scanRunningCores 必须报错——不能默默判定「没有 Core」")
+	}
+	if !strings.Contains(err.Error(), "root") {
+		t.Errorf("错误信息应说明是权限问题,便于后来者理解,实际 = %v", err)
 	}
 }
