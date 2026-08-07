@@ -2262,6 +2262,12 @@ type fakeBarrier struct {
 
 func (b *fakeBarrier) Install(ctx context.Context, barrierContext BarrierContext) error {
 	b.events.add("barrier.install")
+	// 按真实规则校验前置条件。不校验的假屏障会让 Manager 级测试对
+	// "server bypass required" 这类硬失败完全免疫——真机 2026-08-06 的
+	// barrier_install_failed 正是这么漏过去的。
+	if _, _, err := validateBarrierContext(barrierContext); err != nil {
+		return err
+	}
 	b.mu.Lock()
 	b.installContext = cloneBarrierContext(barrierContext)
 	b.installContextErr = ctx.Err()

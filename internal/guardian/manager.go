@@ -475,12 +475,19 @@ func (m *Manager) Down(ctx context.Context) error {
 		runtimeState = state
 	}
 
-	// 网络故障时解析不到默认网关,而这正是用户最需要关闭保护的时刻。
-	// 降级为 block-only 屏障(去掉 bypass、强制阻断 IPv6)继续拆除——这比
-	// 带 bypass 的屏障更收紧,不会放松 fail-closed。与
-	// installBarrierForRecovery 的处理保持一致。
+	// 屏障上下文有两种不可用法,都发生在用户最需要关闭保护的那一刻:
+	//   ① 网络故障时解析不到默认网关 —— barrierContextForRuntime 直接报错;
+	//   ② Core 从没成功起来过,runtime 里没有 server bypass —— 此时
+	//      barrierContextForRuntime **成功**返回,只是产出的 ServerBypass 为空,
+	//      要到 installBarrier 里才被 validateBarrierContext 以
+	//      "server bypass required" 拒掉。
+	// 只挡住 ① 是不够的:真机 2026-08-06 走的正是 ② —— VPS 不通、Core 健康检查
+	// 20s 超时、控制 socket 从未出现,于是 bx down 报 500 barrier_install_failed,
+	// 用户看到一屏红字后只能 uninstall。关闭路径不得依赖「Core 必须先成功起来过」。
+	// 两种情况都降级为 block-only(去掉 bypass、强制阻断 IPv6)继续拆除——那比
+	// 带 bypass 的屏障更收紧,不会放松 fail-closed。
 	barrierContext, err := m.barrierContextForRuntime(ctx, runtimeState)
-	if err != nil {
+	if err != nil || len(barrierContext.ServerBypass) == 0 {
 		barrierContext = blockOnlyRecoveryContext(m.contextForRuntime(runtimeState))
 	}
 	if err := m.installBarrier(ctx, barrierContext); err != nil {
