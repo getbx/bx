@@ -67,6 +67,13 @@ func buildProcArgs(executable string, argv []string, padding int) []byte {
 	return raw
 }
 
+// buildTruncatedProcArgs 造一份最后一项缺 NUL 结尾的缓冲区(模拟内核缓冲被截断)。
+func buildTruncatedProcArgs(executable string, complete []string, truncated string) []byte {
+	raw := buildProcArgs(executable, complete, 1)
+	binary.NativeEndian.PutUint32(raw[:4], uint32(len(complete)+1))
+	return append(raw, []byte(truncated)...)
+}
+
 func TestParseProcArgsReadsExecutableAndArgv(t *testing.T) {
 	raw := buildProcArgs("/Library/Application Support/bx/runtime/dev/bx",
 		[]string{"/usr/local/bin/bx", "run", "-c", "/etc/bx/config.yaml"}, 3)
@@ -93,6 +100,13 @@ func TestParseProcArgsRejectsMalformed(t *testing.T) {
 		{"太短", []byte{1, 2}},
 		{"只有 argc 没有路径", []byte{1, 0, 0, 0}},
 		{"路径没有 NUL 结尾", append([]byte{1, 0, 0, 0}, []byte("/usr/local/bin/bx")...)},
+		// 以下两种是「看起来合理的残缺结果」——最危险的一类:静默返回会让一个
+		// 真的 Core 被判成「不是 Core」。
+		{"argc 说有 2 项,路径之后一个字节都没有",
+			append(append([]byte{2, 0, 0, 0}, []byte("/usr/local/bin/bx")...), 0)},
+		{"最后一项没有 NUL 结尾(缓冲区被截断)",
+			buildTruncatedProcArgs("/usr/local/bin/bx", []string{"bx"}, "ru")},
+		{"argc 为 0", append(append([]byte{0, 0, 0, 0}, []byte("/usr/local/bin/bx")...), 0)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, _, err := parseProcArgs(tt.raw); err == nil {
@@ -165,6 +179,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"path/filepath"
 )
 
@@ -189,12 +204,19 @@ func parseProcArgs(raw []byte) (string, []string, error) {
 	for len(rest) > 0 && rest[0] == 0 { // 路径与 argv[0] 之间的填充
 		rest = rest[1:]
 	}
-	var argv []string
-	for i := 0; i < argc && len(rest) > 0; i++ {
+	if argc < 1 {
+		// 每个真实进程至少有 argv[0]。argc 为 0 意味着这份缓冲区没解析成功,
+		// 而「没解析成功」绝不能被上层读成「这不是 Core」。
+		return "", nil, errors.New("procargs2 reports no arguments")
+	}
+	argv := make([]string, 0, argc)
+	for i := 0; i < argc; i++ {
 		end := bytes.IndexByte(rest, 0)
 		if end < 0 {
-			argv = append(argv, string(rest))
-			break
+			// 缓冲区在凑够 argc 项之前就断了(内核缓冲竞态、截断)。
+			// 静默返回残缺结果会让一个真的 Core 被判成「不是 Core」——正是本任务
+			// 要防的漏认。宁可报错让调用方 fail-closed。
+			return "", nil, fmt.Errorf("procargs2 truncated: got %d of %d arguments", i, argc)
 		}
 		argv = append(argv, string(rest[:end]))
 		rest = rest[end+1:]
