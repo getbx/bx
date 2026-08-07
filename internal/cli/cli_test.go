@@ -3055,3 +3055,30 @@ func TestMacMenuPutsConstructiveActionBeforeDiagnostics(t *testing.T) {
 		}
 	}
 }
+
+// bx setup 在已有配置上必须**只换传输**,不得整份重写。
+//
+// 真机事故 2026-08-06:用户 sudo bx setup <新服务器> 想换机器,看到
+// 「✅ 服务器连通 366ms」以为成功,实际旧逻辑是「配置已存在就拒绝」——配置没写,
+// 随后 bx up 用旧配置起来显示 Protected,用户完全有理由相信自己换过去了。
+// 而唯一的出路 --force 会整份重写,把手写的 apple/steam 直连策略一起冲掉。
+func TestSetupDispositionNeverRewritesExistingConfigWithoutForce(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		exists bool
+		force  bool
+		want   setupDisposition
+	}{
+		{"无配置:全新写入", false, false, setupWriteFresh},
+		{"有配置:只换传输,保留其余", true, false, setupUpdateTransports},
+		{"有配置 + --force:整份重写", true, true, setupOverwrite},
+		{"无配置 + --force:仍是全新写入", false, true, setupWriteFresh},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := decideSetupDisposition(tt.exists, tt.force); got != tt.want {
+				t.Errorf("decideSetupDisposition(exists=%v, force=%v) = %v, want %v",
+					tt.exists, tt.force, got, tt.want)
+			}
+		})
+	}
+}

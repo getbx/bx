@@ -3556,6 +3556,66 @@ func userRuntimeDir() (string, error) {
 	return filepath.Join(base, "bx"), nil
 }
 
+// setupDisposition 决定 bx setup 该怎么落配置。
+type setupDisposition int
+
+const (
+	// setupWriteFresh:还没有配置,写一份全新的。
+	setupWriteFresh setupDisposition = iota
+	// setupUpdateTransports:已有配置,**只换传输链接**,其余一个字不动。
+	setupUpdateTransports
+	// setupOverwrite:--force,整份重写(会丢掉用户手写的策略等设置)。
+	setupOverwrite
+)
+
+// decideSetupDisposition 的核心约束:没有 --force 就绝不整份重写已有配置。
+//
+// 旧行为是「配置已存在就拒绝」,而拒绝发生在 15 秒连通探测**之后**,于是用户先看到
+// 一个绿勾再看到一行错误,读起来像「成功了,附带说明」;随后 bx up 用旧配置起来
+// 显示 Protected,用户完全有理由相信自己换过服务器了(真机事故 2026-08-06)。
+// 现在这条路直接可用:换传输保留其余,不再需要 --force,也就没有那次误导。
+func decideSetupDisposition(configExists, force bool) setupDisposition {
+	switch {
+	case !configExists:
+		return setupWriteFresh
+	case force:
+		return setupOverwrite
+	default:
+		return setupUpdateTransports
+	}
+}
+
+// reportTransportChange 把「从什么换成了什么」并排打出来。
+//
+// 只说「已更新」不够:用户此前正是在看不出配置有没有真的改的情况下,以为自己换了
+// 服务器而实际没换。链接自带凭据,故一律经 redactLink 打码。
+func reportTransportChange(before setup.TransportsBefore, links []string, udpTransport string) {
+	oldMain := before.Server
+	if oldMain == "" && len(before.Transports) > 0 {
+		oldMain = before.Transports[0]
+	}
+	newMain := links[0]
+	if oldMain == newMain {
+		fmt.Printf("• 主传输不变:%s\n", redactLink(newMain))
+	} else {
+		fmt.Printf("• 主传输:%s → %s\n", redactLink(oldMain), redactLink(newMain))
+	}
+	if len(links) > 1 {
+		fmt.Printf("• 容灾传输共 %d 条\n", len(links))
+	}
+	switch {
+	case udpTransport == "":
+		if before.UDPTransport != "" {
+			fmt.Printf("• UDP 传输保持不变:%s\n", redactLink(before.UDPTransport))
+		}
+	case before.UDPTransport == udpTransport:
+		fmt.Printf("• UDP 传输不变:%s\n", redactLink(udpTransport))
+	default:
+		fmt.Printf("• UDP 传输:%s → %s\n", redactLink(before.UDPTransport), redactLink(udpTransport))
+	}
+	fmt.Println("• 配置里的其余设置(分流策略、模式、列表等)未改动")
+}
+
 func setupAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if arg == "" {
@@ -3594,8 +3654,18 @@ func setupAction(c *cli.Context) error {
 	} else {
 		fmt.Printf("✅ 服务器连通,延迟 %dms\n", lat)
 	}
-	if err := setup.WriteConfig(cfgPath, configLinks, udpTransport, c.Bool("force")); err != nil {
-		return err
+	_, statErr := os.Stat(cfgPath)
+	switch decideSetupDisposition(statErr == nil, c.Bool("force")) {
+	case setupUpdateTransports:
+		before, err := setup.UpdateTransports(cfgPath, configLinks, udpTransport)
+		if err != nil {
+			return err
+		}
+		reportTransportChange(before, configLinks, udpTransport)
+	default:
+		if err := setup.WriteConfig(cfgPath, configLinks, udpTransport, c.Bool("force")); err != nil {
+			return err
+		}
 	}
 	abs, err := filepath.Abs(cfgPath)
 	if err != nil {
