@@ -650,6 +650,32 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	return nil
 }
 
+// healthErrStderrLines 是附进健康失败消息的子进程日志行数。取几行而非全部:
+// 目的是给出「为什么」的线索,不是把日志搬进错误消息。
+const healthErrStderrLines = 5
+
+// tunnelStderrSource 是 withTunnelStderr 需要的窄能力(*tunnel.Tunnel 满足它)。
+// 收窄成接口而非直接吃 *tunnel.Tunnel,是为了这段判定能被单测覆盖。
+type tunnelStderrSource interface {
+	RecentStderr() []string
+}
+
+// withTunnelStderr 把传输子进程最近的 stderr 附到错误后面。
+//
+// 「bx 隧道健康检查超时(20s)」本身不说明任何原因——真机事故 2026-08-06 里,
+// 运维只能拿到这一句,分不出是握手失败、超时还是被 reset,于是反复重装。
+// 子进程那几行(已抹密)往往就是唯一能回答「为什么」的东西。
+func withTunnelStderr(src tunnelStderrSource, err error) error {
+	lines := src.RecentStderr()
+	if len(lines) == 0 {
+		return err
+	}
+	if len(lines) > healthErrStderrLines {
+		lines = lines[len(lines)-healthErrStderrLines:]
+	}
+	return fmt.Errorf("%w\n  %s", err, strings.Join(lines, "\n  "))
+}
+
 func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Duration) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -664,7 +690,7 @@ func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Durat
 			return ctx.Err()
 		case <-deadline.C:
 			s := t.Stats()
-			return fmt.Errorf("bx 隧道健康检查超时(%s): restarts=%d", timeout, s.Restarts)
+			return withTunnelStderr(t, fmt.Errorf("bx 隧道健康检查超时(%s): restarts=%d", timeout, s.Restarts))
 		case <-tick.C:
 		}
 	}

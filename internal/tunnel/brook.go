@@ -11,9 +11,20 @@ import (
 )
 
 // execRunner 用 os/exec 跑 brook。
-type execRunner struct{ cmd *exec.Cmd }
+type execRunner struct {
+	cmd    *exec.Cmd
+	stderr *stderrSink
+}
 
 func (e *execRunner) Wait() error { return e.cmd.Wait() }
+
+// RecentStderr 实现 stderrTailer:把子进程最近吐的几行交给诊断路径。
+func (e *execRunner) RecentStderr() []string {
+	if e.stderr == nil {
+		return nil
+	}
+	return e.stderr.RecentStderr()
+}
 func (e *execRunner) Kill() error {
 	if e.cmd.Process != nil {
 		return e.cmd.Process.Kill()
@@ -31,10 +42,12 @@ func brookFactory(brookBin, link, httpAddr string) RunnerFactory {
 			args = append(args, "--http", httpAddr)
 		}
 		cmd := exec.Command(brookBin, args...)
-		if err := cmd.Start(); err != nil {
+		// link 就在 argv 上,brook 有可能把它回显进自己的日志——必须登记为 secret。
+		runner, err := startWithStderr(cmd, "brook", link)
+		if err != nil {
 			return nil, fmt.Errorf("启动传输进程: %w", err)
 		}
-		return &execRunner{cmd: cmd}, nil
+		return runner, nil
 	}
 }
 
