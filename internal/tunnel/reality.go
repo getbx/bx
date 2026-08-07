@@ -23,10 +23,12 @@ func realityFactory(singboxBin, link, confPath, httpAddr string) RunnerFactory {
 			return nil, fmt.Errorf("写 sing-box 配置: %w", err)
 		}
 		cmd := exec.Command(singboxBin, "run", "-c", confPath)
-		if err := cmd.Start(); err != nil {
+		// link 登记为 secret:它自带凭据,而日志本身就是泄露面。
+		runner, err := startWithStderr(cmd, "singbox", link)
+		if err != nil {
 			return nil, fmt.Errorf("启动 sing-box: %w", err)
 		}
-		return &execRunner{cmd: cmd}, nil
+		return runner, nil
 	}
 }
 

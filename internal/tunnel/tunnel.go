@@ -97,6 +97,21 @@ func (t *Tunnel) CleanupFileOnStop(path string) {
 }
 
 // Healthy 当前隧道是否健康。
+// RecentStderr 返回当前子进程最近的 stderr(已抹密)。没有子进程时返回空。
+//
+// 用户实际看到的失败消息(如「bx 隧道健康检查超时」)在 supervisor 里拼装,
+// 不经隧道返回的 error,所以光包装 error 到不了那里——必须有这个出口。
+func (t *Tunnel) RecentStderr() []string {
+	t.mu.Lock()
+	runner := t.runner
+	t.mu.Unlock()
+	tailer, ok := runner.(stderrTailer)
+	if !ok {
+		return nil
+	}
+	return tailer.RecentStderr()
+}
+
 func (t *Tunnel) Healthy() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
