@@ -50,6 +50,30 @@ func TestParseProcArgsRejectsMalformed(t *testing.T) {
 		{"太短", []byte{1, 2}},
 		{"只有 argc 没有路径", []byte{1, 0, 0, 0}},
 		{"路径没有 NUL 结尾", append([]byte{1, 0, 0, 0}, []byte("/usr/local/bin/bx")...)},
+		{"argc>0 但缓冲区在路径后耗尽", func() []byte {
+			raw := make([]byte, 4)
+			binary.NativeEndian.PutUint32(raw, 2) // argc=2
+			raw = append(raw, []byte("/usr/local/bin/bx")...)
+			raw = append(raw, 0) // path NUL，然后没有更多数据
+			return raw
+		}()},
+		{"argv 项截断(无 NUL 结尾)", func() []byte {
+			raw := make([]byte, 4)
+			binary.NativeEndian.PutUint32(raw, 2)
+			raw = append(raw, []byte("/usr/local/bin/bx")...)
+			raw = append(raw, 0)
+			raw = append(raw, []byte("bx")...)
+			raw = append(raw, 0)
+			raw = append(raw, "ru"...) // 截断的 "run"，没有 NUL 结尾
+			return raw
+		}()},
+		{"argc=0", func() []byte {
+			raw := make([]byte, 4)
+			binary.NativeEndian.PutUint32(raw, 0)
+			raw = append(raw, []byte("/usr/local/bin/bx")...)
+			raw = append(raw, 0)
+			return raw
+		}()},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, _, err := parseProcArgs(tt.raw); err == nil {

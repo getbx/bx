@@ -20,6 +20,9 @@ func parseProcArgs(raw []byte) (string, []string, error) {
 		return "", nil, errors.New("procargs2 too short")
 	}
 	argc := int(binary.NativeEndian.Uint32(raw[:4]))
+	if argc == 0 {
+		return "", nil, errors.New("procargs2 has argc=0")
+	}
 	rest := raw[4:]
 	end := bytes.IndexByte(rest, 0)
 	if end <= 0 {
@@ -31,11 +34,14 @@ func parseProcArgs(raw []byte) (string, []string, error) {
 		rest = rest[1:]
 	}
 	var argv []string
-	for i := 0; i < argc && len(rest) > 0; i++ {
+	for i := 0; i < argc; i++ {
+		if len(rest) == 0 {
+			return "", nil, errors.New("procargs2 incomplete: buffer exhausted before reading all argv")
+		}
 		end := bytes.IndexByte(rest, 0)
 		if end < 0 {
-			argv = append(argv, string(rest))
-			break
+			// 没有找到 NUL 结尾——这是截断缓冲区的标志
+			return "", nil, errors.New("procargs2 incomplete: final argv item missing NUL terminator")
 		}
 		argv = append(argv, string(rest[:end]))
 		rest = rest[end+1:]
