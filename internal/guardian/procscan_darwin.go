@@ -6,7 +6,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"path/filepath"
+
+	"golang.org/x/sys/unix"
 )
 
 // parseProcArgs 解析 macOS 的 kern.procargs2 布局:
@@ -68,4 +71,36 @@ func looksLikeCore(executable string, argv []string, uid int) bool {
 		return true
 	}
 	return filepath.Base(argv[0]) == "bx"
+}
+
+// scanRunningCores 枚举系统里所有在跑 bx Core 的进程。
+//
+// 单个进程读不出信息(权限、刚退出)就跳过它,不让整次扫描失败——但**整体
+// sysctl 失败必须报错**,由调用方保持 fail-closed。
+func scanRunningCores() ([]Process, error) {
+	procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
+	if err != nil {
+		return nil, fmt.Errorf("enumerate processes: %w", err)
+	}
+	var cores []Process
+	for i := range procs {
+		pid := int(procs[i].Proc.P_pid)
+		if pid <= 0 {
+			continue
+		}
+		raw, err := unix.SysctlRaw("kern.procargs2", pid)
+		if err != nil {
+			continue // 权限不足或进程刚退出:跳过这一个
+		}
+		executable, argv, err := parseProcArgs(raw)
+		if err != nil {
+			continue
+		}
+		uid := int(procs[i].Eproc.Ucred.Uid)
+		if !looksLikeCore(executable, argv, uid) {
+			continue
+		}
+		cores = append(cores, Process{PID: pid, Executable: executable, UID: uid})
+	}
+	return cores, nil
 }

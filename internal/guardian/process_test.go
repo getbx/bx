@@ -341,6 +341,13 @@ func TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker(t *t
 		}
 		return errors.New("normal process record write failed")
 	}
+	// 这条测试模拟的场景是:Core 已经 fork 出来(PID 52)、但 spawned 记录写不
+	// 进去、清理又不确定——盘上只留下一个 launching 标记,而那个 Core 其实还
+	// 活着。真实扫描看不见这个测试里的假 Core 对象,所以必须注入一个「系统里
+	// 有 Core」的扫描,让判据与它模拟的场景保持一致(而不是弱化断言)。
+	runner.ScanRunningCores = func() ([]Process, error) {
+		return []Process{{PID: 52, Executable: executable, UID: 0}}, nil
+	}
 
 	if _, err := runner.Start(context.Background(), CoreStartOptions{}); !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("Start error = %v, want uncertain ownership", err)
@@ -362,6 +369,7 @@ func TestExecCoreRunnerPersistenceFailureLeavesDurableUncertainLaunchMarker(t *t
 	reconstructed := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	reconstructed.StatePath = statePath
 	reconstructed.Operations = operations
+	reconstructed.ScanRunningCores = runner.ScanRunningCores
 	if _, err := reconstructed.Existing(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("reconstructed Existing error = %v, want uncertain ownership", err)
 	}
@@ -1085,6 +1093,7 @@ func TestExecCoreRunnerStartStillRefusesLiveLaunchMarker(t *testing.T) {
 		name   string
 		record processRecord
 		live   map[int]Process
+		scan   func() ([]Process, error)
 	}{
 		{
 			name:   "记录里的进程还活着",
@@ -1092,9 +1101,10 @@ func TestExecCoreRunnerStartStillRefusesLiveLaunchMarker(t *testing.T) {
 			live:   map[int]Process{5129: {PID: 5129, Executable: "/other/bx", UID: 0, Generation: "darwin:9:9"}},
 		},
 		{
-			name:   "launching 标记没有 PID,无从向 OS 求证",
+			name:   "launching 标记且系统里有 Core 在跑",
 			record: processRecord{State: processRecordLaunching},
 			live:   map[int]Process{},
+			scan:   func() ([]Process, error) { return []Process{{PID: 4242, Executable: "/usr/local/bin/bx", UID: 0}}, nil },
 		},
 	}
 	for _, tt := range tests {
@@ -1107,6 +1117,7 @@ func TestExecCoreRunnerStartStillRefusesLiveLaunchMarker(t *testing.T) {
 			runner.StatePath = statePath
 			runner.ControlSocket = filepath.Join(dir, "bx.sock")
 			runner.Operations = operations
+			runner.ScanRunningCores = tt.scan
 			if _, err := runner.Start(context.Background(), CoreStartOptions{}); !errors.Is(err, ErrProcessOwnershipUncertain) {
 				t.Fatalf("Start = %v, want ErrProcessOwnershipUncertain", err)
 			}

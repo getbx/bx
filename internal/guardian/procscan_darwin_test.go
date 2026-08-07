@@ -126,3 +126,11 @@ func TestLooksLikeCoreAcceptsBxViaArgv0(t *testing.T) {
 		t.Error("argv[0] 是 bx 就该认 —— 过度匹配的后果是 fail-closed,方向安全")
 	}
 }
+
+// 真实扫描必须能在本机跑通且不 panic。它至少应该看到本测试进程之外的东西,
+// 但不断言具体内容——那取决于机器状态。这条只证明 syscall 路径是活的。
+func TestScanRunningCoresDoesNotFailOnRealSystem(t *testing.T) {
+	if _, err := scanRunningCores(); err != nil {
+		t.Fatalf("在真实系统上扫描不应失败: %v", err)
+	}
+}

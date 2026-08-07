@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +119,9 @@ type ExecCoreRunner struct {
 	LaunchCleanupTimeout time.Duration
 	SaveProcessRecord    func(string, processRecord) error
 	RemoveProcessRecord  func(string) error
+	// ScanRunningCores 向系统求证「有没有进程在跑 Core」。nil 时用平台默认实现。
+	// 抽成可注入字段是为了让 launching 标记的处置能被单测覆盖。
+	ScanRunningCores func() ([]Process, error)
 
 	mu sync.Mutex
 }
@@ -205,6 +209,41 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 	return process, nil
 }
 
+// resolveOrphanLaunchMarker 判定一个 launching 标记是不是孤儿。
+//
+// launching 标记的 PID 恒为 0,无法向 OS 求证——此前因此一律判 uncertain,
+// 于是一个残留标记就让 bx up 永久失败,只能靠 bx uninstall 脱身(真机
+// 2026-08-05 / 2026-08-06 各一次)。
+//
+// 现在改为绕开自己的记账、直接问系统。这个判据在「fork 与写盘之间」那个窗口里
+// 仍然有效:fork 一返回子进程就已经作为进程存在,早于它执行我们的任何代码。
+//
+// 返回的 error 非 nil 表示必须继续 fail-closed。
+func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord) error {
+	scan := r.ScanRunningCores
+	if scan == nil {
+		scan = scanRunningCores
+	}
+	cores, err := scan()
+	if err != nil {
+		// 问不出来不等于没有。
+		return uncertainOwnership(
+			Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true},
+			fmt.Errorf("durable launch marker with no PID, and scanning for running Cores failed: %w", err))
+	}
+	if len(cores) > 0 {
+		pids := make([]string, 0, len(cores))
+		for _, core := range cores {
+			pids = append(pids, strconv.Itoa(core.PID))
+		}
+		return uncertainOwnership(
+			Process{PID: cores[0].PID, Executable: cores[0].Executable, Uncertain: true},
+			fmt.Errorf("durable launch marker with no PID, and Core appears to be running (PID %s)", strings.Join(pids, ", ")))
+	}
+	log.Printf("guardian_orphan_launch_marker no_core_running=true (self-healing)")
+	return nil
+}
+
 // refuseLiveLaunchMarker decides whether an already-present durable launch
 // marker blocks a new Start. It returns nil only when the OS authoritatively
 // confirms the recorded PID is dead — the same authority Existing() uses to
@@ -219,14 +258,16 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 // still refuses (another Core may genuinely be running under it, matching
 // identity or not), and an inconclusive inspection still refuses.
 //
-// launching(PID==0)仍然拒绝:两段式标记缩小了它出现的窗口,但没有让它变得
-// 安全——spawned 那次写盘失败时,fork 已发生而盘上仍只有 launching。
+// launching(PID==0)现在改为向系统求证:系统里没有任何 Core 在跑才放行,
+// 求证不出来或系统里确有 Core 仍然拒绝。
 func (r *ExecCoreRunner) refuseLiveLaunchMarker(record processRecord) error {
 	uncertain := func(cause error) error {
 		return uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, cause)
 	}
 	if record.PID <= 0 {
-		return uncertain(errors.New("durable launch marker already exists"))
+		// 与 Existing() 同一判据:Existing 放行而 Start 拒绝,等于没修
+		// (60b76f3 的教训:只修一跳是假绿)。
+		return r.resolveOrphanLaunchMarker(record)
 	}
 	if _, err := r.operations().Inspect(record.PID); err != nil {
 		if !errors.Is(err, ErrProcessNotRunning) {
@@ -281,13 +322,15 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 	}
 	switch record.state() {
 	case processRecordLaunching:
-		// 仍然 fail-closed。两段式标记把「已 fork 未记录」这一含义搬给了 spawned,
-		// 但没有把 launching 变成安全的:spawned 那次**写盘本身失败**时(磁盘错误),
-		// fork 已经发生而盘上仍只有 launching,孤儿 Core 可能真的活着。
-		// 把它当作「确定没 fork」会起第二个 Core——正是 af81632 被回退的原因。
-		// 要真正解开,需要绕过自身簿记去向系统求证「有没有跑着我们的 Core 可执行
-		// 文件的进程」,见 docs/superpowers/plans/2026-08-05-guardian-launch-marker-deadlock.md。
-		return Process{}, uncertainOwnership(Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true}, errors.New("durable launch marker has no accepted process record"))
+		// PID 为 0,无法向 OS 求证这条记录本身——改为绕开记账问系统:
+		// 系统里没有任何 Core 在跑 ⇒ 这个标记是孤儿,清掉当作无既有 Core。
+		if err := r.resolveOrphanLaunchMarker(record); err != nil {
+			return Process{}, err
+		}
+		if clearErr := r.removeStaleRecord(record); clearErr != nil {
+			log.Printf("guardian_stale_launch_marker clear_failed=%v", clearErr)
+		}
+		return Process{}, nil
 	case processRecordSpawned:
 		// 已 fork、身份未验:交给下面的 Inspect 向 OS 求证——死了自愈,
 		// 活着则 fail-closed(我们没验明它,绝不能当自己的 Core 接管)。
