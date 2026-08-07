@@ -77,7 +77,13 @@ basename(executable) == "bx"   且   argv[1] == "run"   且   uid == 0
 
 ### 平台
 
-darwin 实现 + `!darwin` 桩。桩**保持现有的无条件 fail-closed**,不改行为。
+darwin 实现 + `!darwin` 桩。桩恒返回错误 = 恒 fail-closed。
+
+**注(实现后补)**:桩并非「不改行为」。fork 前的判定改为一律向系统求证之后,
+桩使得非 darwin 平台上**连「无记录」这条原本能正常 fork 的路也会拒绝**——移植时
+必须先实现 `scanRunningCores`,否则 `bx up` 起不来 Core。今天不可达
+(`daemon.go` 的 `requireDaemonPlatform()` 在构造 `ExecCoreRunner` 之前就挡住了),
+警告写在 `procscan_other.go` 桩自己身上。
 
 这套标记机制在实践中只在 macOS 存在:Guardian 只有 darwin 实体
 (`daemon_darwin.go` 有实现,`daemon_other.go` 是桩),`ExecCoreRunner` 只被
