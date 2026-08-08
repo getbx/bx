@@ -77,4 +77,11 @@ run_test menu-icon \
   "$MENU/Sources/BxMenu/MenuIcon.swift" \
   "$MENU/Tests/MenuIconTests.swift"
 
+run_test menu-rows \
+  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
+  "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/StatusReport.swift" \
+  "$MENU/Sources/BxMenu/MenuRows.swift" \
+  "$MENU/Tests/MenuRowsTests.swift"
+
 echo "macOS menu tests passed"

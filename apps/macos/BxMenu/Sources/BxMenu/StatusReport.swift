@@ -32,6 +32,8 @@ struct BxReport: Decodable {
     let dnsState: String?
     let dnsManaged: Bool?
     let dnsService: String?
+    let server: String?
+    let transport: String?
 
     enum CodingKeys: String, CodingKey {
         case tunnelHealthy = "tunnel_healthy"
@@ -47,6 +49,7 @@ struct BxReport: Decodable {
         case dnsState = "dns_state"
         case dnsManaged = "dns_managed"
         case dnsService = "dns_service"
+        case server, transport
         case restarts, active, proxy, direct, blocked, recovery, phase, desired
     }
 
@@ -73,6 +76,8 @@ struct BxReport: Decodable {
         dnsState = try container.decodeIfPresent(String.self, forKey: .dnsState)
         dnsManaged = try container.decodeIfPresent(Bool.self, forKey: .dnsManaged)
         dnsService = try container.decodeIfPresent(String.self, forKey: .dnsService)
+        server = try container.decodeIfPresent(String.self, forKey: .server)
+        transport = try container.decodeIfPresent(String.self, forKey: .transport)
     }
 }
 
