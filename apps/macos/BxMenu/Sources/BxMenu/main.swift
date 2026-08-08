@@ -179,7 +179,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
            !reconnectInFlight {
             observeRecovery(startingWith: snapshot)
         }
-        refreshGate.end()
+        // 被丢掉的那次里可能就有用户刚做完动作后发起的刷新;补跑一次,别让菜单
+        // 把用户自己那一下的结果报错到下一拍。补跑是一次性的,不是队列。
+        if refreshGate.end() {
+            refresh()
+        }
     }
 
     /// 一次刷新的产物。`loadState` 跑在后台线程,故它**不再直接改 self**:
