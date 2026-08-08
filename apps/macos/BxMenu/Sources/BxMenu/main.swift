@@ -685,6 +685,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
     }
 
+    /// 把带 payload 的 `BxState` 收成可测的 `MenuStateKind`。**只是映射,没有判定**
+    /// —— 判定住在 ToggleController.swift(quitPlan),那里能被单测覆盖。
+    /// 新增 BxState case 时这个 switch 会编译失败,漏映射跑不掉。
+    private func menuStateKind() -> MenuStateKind {
+        switch state {
+        case .connected: return .connected
+        case .warning: return .warning
+        case .updateNeeded: return .updateNeeded
+        case .setupNeeded: return .setupNeeded
+        case .missing: return .missing
+        case .notInstalled: return .notInstalled
+        case .off: return .off
+        }
+    }
+
     private func menuRowsNow() -> MenuRowSet {
         switch state {
         case .connected(let report, _, let dns):
@@ -985,6 +1000,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "Quit bx")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        // 没有东西可关就直接退出:在 .notInstalled/.missing/.setupNeeded 下走
+        // turnOff 是一次注定失败的 socket 调用,而失败之后按阶段①的裁决又不退出
+        // —— 用户被困在一个关不掉的菜单里,却根本没有保护需要被守着。判定在
+        // quitPlan(纯函数,有单测),这里只照做。
+        if quitPlan(state: menuStateKind(), inFlight: toggleInFlight?.action) == .terminateImmediately {
+            NSApp.terminate(nil)
+            return
+        }
         let disposition = quitDisposition(inFlight: toggleInFlight?.action)
         switch disposition {
         case .turnOffNow:
