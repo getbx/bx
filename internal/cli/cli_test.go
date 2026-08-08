@@ -3491,6 +3491,105 @@ func TestMacMenuDrainsSubprocessPipesBeforeWaiting(t *testing.T) {
 	}
 }
 
+// 刷新闸门必须被释放,且释放必须是无条件的。
+//
+// RefreshGate.begin 一旦返回 true,闸门就关上了;不 end,菜单**从此不再更新** ——
+// 定时器照跑、每一拍都被 begin 挡回去,图标停在最后一次成功刷新的样子,没有报错、
+// 没有卡顿、没有任何症状。评审用变异坐实过:删掉 applyRefresh 里那次 end(),
+// 整套测试全绿。RefreshGate 自己的规则在 MenuCadence.swift 由 MenuCadenceTests
+// 钉着,但**调不调它在 main.swift**,而 main.swift 编不进 test-macos-menu.sh。
+//
+// 守的是「无条件」:end() 落进任何 if/guard/catch 里,失败那条路上就会漏掉它,
+// 而失败恰恰是最需要下一拍能重来的时候。
+func TestMacMenuAlwaysReleasesRefreshGate(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	refresh, ok := swiftFunctionBody(text, "private func refresh(")
+	if !ok {
+		t.Fatal("找不到 refresh 的函数体")
+	}
+	if !strings.Contains(refresh, "refreshGate.begin(") {
+		t.Fatal("refresh 必须过闸门,否则并发刷新会堆成一串拿到时已作废的结果")
+	}
+	apply, ok := swiftFunctionBody(text, "private func applyRefresh(")
+	if !ok {
+		t.Fatal("找不到 applyRefresh 的函数体")
+	}
+	// 落定路径必须释放闸门。applyRefresh 是 refresh 唯一的收尾点(采集回主线程后
+	// 一次性落定),begin 与 end 因此必须在这一对函数里配平。
+	if !strings.Contains(apply, "refreshGate.end()") {
+		t.Fatal("applyRefresh 必须释放刷新闸门,否则菜单会无声无息地永久停止更新")
+	}
+	// 释放必须在函数体顶层(不在任何 case/if/闭包里)出现:一旦被条件包住,
+	// 就有一条路径会带着关死的闸门返回。
+	unconditional := 0
+	depth := 0
+	for _, line := range strings.Split(apply, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if depth == 0 && !strings.HasPrefix(trimmed, "//") && strings.Contains(trimmed, "refreshGate.end()") {
+			unconditional++
+		}
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+	}
+	if unconditional != 1 {
+		t.Fatalf("refreshGate.end() 必须在 applyRefresh 顶层无条件调用一次,实际顶层出现 %d 次", unconditional)
+	}
+	// 早退那条路(begin 返回 false)绝不能 end:那次刷新根本没占住闸门,
+	// 替别人放掉闸门等于让两次采集同时在跑。
+	guardLine := ""
+	for _, line := range strings.Split(refresh, "\n") {
+		if strings.Contains(line, "refreshGate.begin(") {
+			guardLine = line
+		}
+	}
+	if !strings.Contains(guardLine, "guard ") && !strings.Contains(guardLine, "if ") {
+		t.Fatalf("refresh 必须在 begin 返回 false 时早退,实际那一行 = %q", guardLine)
+	}
+	if strings.Contains(refresh, "refreshGate.end()") {
+		t.Fatal("refresh 自己不得 end:被闸门挡回去的那一次没占住闸门,替别人放掉等于允许两次采集并行")
+	}
+}
+
+// 后台采集的结果必须先回主队列再落定。
+//
+// applyRefresh 碰的全是 AppKit 对象(statusItem.button 的图像与 alpha、NSMenu 的
+// 增删项)。AppKit 不是线程安全的:在 DispatchQueue.global 上直接调它不会崩在
+// 当场,而是偶发 —— 菜单项错乱、图标不更新、随机 crash,且**只在真机上、只在
+// 采集恰好慢过一次点击时**发生。评审用变异坐实过:去掉这一跳,整套测试全绿。
+//
+// 同一条要求也落在 loadState 的反面(它 spawn 四个子进程,必须留在后台),
+// 那半边由 TestMacMenuRefreshRunsSubprocessesOffMainThread 守;这里守的是回程。
+func TestMacMenuAppliesRefreshOnMainQueue(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(source), "private func refresh(")
+	if !ok {
+		t.Fatal("找不到 refresh 的函数体")
+	}
+	apply := strings.Index(body, "applyRefresh(")
+	if apply < 0 {
+		t.Fatal("refresh 里找不到 applyRefresh 调用")
+	}
+	hop := strings.Index(body, "DispatchQueue.main.async")
+	if hop < 0 {
+		t.Fatal("后台采集的结果必须回主队列再落定:applyRefresh 全程在碰 AppKit 对象,off-main 是偶发失败而不是当场报错")
+	}
+	if hop > apply {
+		t.Fatal("回主队列那一跳必须在 applyRefresh 之前")
+	}
+	// 采集那一跳仍必须在前面 —— 否则「回主队列」就成了从主线程跳到主线程,
+	// 子进程照样在主线程上跑。
+	background := strings.Index(body, "DispatchQueue.global")
+	if background < 0 || background > hop {
+		t.Fatal("必须先甩到后台队列采集、再回主队列落定")
+	}
+}
+
 // 图标的可访问性接线:形态是主要载体,动效可被关掉,颜色可被系统接管。
 //
 // 这三条判定都在 MenuIcon.swift 里由 Swift 单测钉着,但**接不接线在 main.swift**,
