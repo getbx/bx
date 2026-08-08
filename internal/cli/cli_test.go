@@ -3491,6 +3491,37 @@ func TestMacMenuDrainsSubprocessPipesBeforeWaiting(t *testing.T) {
 	}
 }
 
+// `.updateNeeded` 画裂盾是**经过裁决保留**的,不是抄来的。
+//
+// 「CLI 太旧」与「流量可能没被保护」紧急程度不同,共用一个字形值得怀疑。四态固定,
+// 可选只有两个:空心盾(.off)会**断言**「没在保护」—— 而 `.updateNeeded` 这条路径
+// 在跑 `bx status --json` 之前就返回了,菜单对保护开没开一无所知,那是一句它无权
+// 说的话,还偏偏是四态里最安静最容易被忽略的一个;裂盾说的是「要看一眼」,而
+// 「指示灯读不到状态」正是要看一眼的事。紧急程度的差别由菜单正文承担(副标题
+// "Update Required"、状态行 "Update bx CLI")。
+//
+// 这条守卫不是防抖动,是**要求下一个想改它的人先读那段裁决**:改法本身没有编译
+// 错误、也没有别的测试会红。
+func TestMacMenuUpdateNeededSharesTheAttentionGlyphDeliberately(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(source), "private func menuIconStateNow()")
+	if !ok {
+		t.Fatal("找不到 menuIconStateNow 的函数体")
+	}
+	if !strings.Contains(body, "case .warning, .updateNeeded:") {
+		t.Fatal("`.updateNeeded` 的图标归属被改动了:先读 menuIconStateNow 里那段裁决——" +
+			"空心盾会断言「没在保护」,而这条路径在跑 bx status --json 之前就返回了,菜单无权那么说")
+	}
+	// 裁决必须留在代码旁边。删掉理由、只留下这一行 case,下一个人就只看得到一个
+	// 看起来像是随手复用的分支。
+	if !strings.Contains(body, "bx status --json") {
+		t.Fatal("共用裂盾的理由必须写在 menuIconStateNow 里,否则它读起来只是一次随手复用")
+	}
+}
+
 // 刷新闸门必须被释放,且释放必须是无条件的。
 //
 // RefreshGate.begin 一旦返回 true,闸门就关上了;不 end,菜单**从此不再更新** ——
