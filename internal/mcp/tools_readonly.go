@@ -87,5 +87,4 @@ func registerReadOnly(s *mcpsdk.Server, ops Ops) {
 			}
 			return nil, out, nil
 		})
-
 }

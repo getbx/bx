@@ -33,6 +33,7 @@ func TestDarwinProcessGenerationUsesStartTime(t *testing.T) {
 //   - Start() 的「OS 确认已死才放行陈旧标记」永不触发
 //   - bx down 停 Core 后确认拿到 EIO → 判 core_stop_failed → 误以为 Core 崩溃
 //     → 重启 → 留下 launching 标记 → 此后每次 bx up 都 500
+//
 // 真机事故 2026-08-06:整条链在 /var/log/bx-guard.err.log 里逐行可见。
 func TestInspectProcessReportsDeadPIDAsNotRunning(t *testing.T) {
 	cmd := exec.Command("/usr/bin/true")

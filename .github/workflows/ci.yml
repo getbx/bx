@@ -23,8 +23,11 @@ jobs:
         run: |
           set -euo pipefail
           go install mvdan.cc/gofumpt@v0.10.0
-          # 排除内嵌二进制资产;有漂移即失败(附文件名),防格式腐化。
-          drift=$("$(go env GOPATH)/bin/gofumpt" -l $(git ls-files '*.go' | grep -v '^internal/embedded/assets/'))
+          # 排除内嵌二进制资产,以及 internal/winfw —— 那是 WireGuard 的 vendored
+          # 副本(SPDX MIT),CLAUDE.md 要求逐字保留以便与上游同步,按本项目格式
+          # 规范重排会让下次同步产生大量假冲突。
+          # 其余有漂移即失败(附文件名),防格式腐化。
+          drift=$("$(go env GOPATH)/bin/gofumpt" -l $(git ls-files '*.go' | grep -v '^internal/embedded/assets/' | grep -v '^internal/winfw/'))
           if [ -n "$drift" ]; then
             echo "::error::以下文件未按 gofumpt 格式化,请跑 gofumpt -w:"; echo "$drift"; exit 1
           fi

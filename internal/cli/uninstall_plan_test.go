@@ -139,10 +139,10 @@ func TestGUIBootoutRetriesViaAsuserSoKeepAliveJobCannotSurviveUninstall(t *testi
 func TestAsuserBootoutFallbackOnlyForGUIBootout(t *testing.T) {
 	for name, args := range map[string][]string{
 		"system domain has no gui session to enter": {"launchctl", "bootout", "system/com.getbx.bx.guard"},
-		"not a bootout":                             {"launchctl", "kickstart", "gui/501/com.getbx.bx.menu"},
-		"gui domain without uid":                    {"launchctl", "bootout", "gui/"},
-		"gui domain with non-numeric uid":           {"launchctl", "bootout", "gui/alice/com.getbx.bx.menu"},
-		"already an asuser retry":                   {"launchctl", "asuser", "501", "launchctl", "bootout", "gui/501/com.getbx.bx.menu"},
+		"not a bootout":                   {"launchctl", "kickstart", "gui/501/com.getbx.bx.menu"},
+		"gui domain without uid":          {"launchctl", "bootout", "gui/"},
+		"gui domain with non-numeric uid": {"launchctl", "bootout", "gui/alice/com.getbx.bx.menu"},
+		"already an asuser retry":         {"launchctl", "asuser", "501", "launchctl", "bootout", "gui/501/com.getbx.bx.menu"},
 	} {
 		if got := asuserBootoutFallback(args); got != nil {
 			t.Errorf("%s: want no fallback, got %v", name, got)
@@ -161,7 +161,9 @@ func TestUnifiedTeardownNeededFalseWhenNeitherExists(t *testing.T) {
 // 终态——服务不在了。把它当成错误刷一行红字只会吓用户:真机 2026-08-06,
 // 强制拆除已经 bootout 过 Guardian,随后的 sudo bx uninstall 再 bootout 自然
 // exit 3,用户于是看到
-//   ! launchctl bootout system/com.getbx.bx.guard: exit status 3
+//
+//	! launchctl bootout system/com.getbx.bx.guard: exit status 3
+//
 // 排在一堆 ✓ 之上,像是卸载出了问题,实际上完全正常。
 func TestBootoutAlreadyGoneIsNotAFailure(t *testing.T) {
 	const esrch, other = 3, 1

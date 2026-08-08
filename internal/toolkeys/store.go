@@ -86,6 +86,7 @@ func (s *Store) Put(c Credential) error {
 	s.state.Credentials[c.ID] = diskCredential{Credential: c, Secret: c.Secret}
 	return s.save()
 }
+
 func (s *Store) Resolve(id string) (Credential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -97,6 +98,7 @@ func (s *Store) Resolve(id string) (Credential, error) {
 	c.Secret = disk.Secret
 	return c, nil
 }
+
 func (s *Store) List() []CredentialMeta {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -107,6 +109,7 @@ func (s *Store) List() []CredentialMeta {
 	}
 	return out
 }
+
 func (s *Store) ReplaceSecret(id, secret string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -164,6 +167,7 @@ func randomID() (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
+
 func (s *Store) CreatePending(origin string, hint AuthHint, reason, docs string) (PendingRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -179,6 +183,7 @@ func (s *Store) CreatePending(origin string, hint AuthHint, reason, docs string)
 	s.state.Pending[id] = p
 	return p, s.save()
 }
+
 func (s *Store) CompletePending(id, secret string) (Credential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

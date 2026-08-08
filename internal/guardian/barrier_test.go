@@ -17,7 +17,8 @@ func TestPlanBarrierBlocksPublicIPv4MoreSpecificallyThanSplitDefault(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireCommands(t, apply,
+	requireCommands(
+		t, apply,
 		"route -n add -net 23.27.134.77/32 192.168.50.2",
 		"route -n add -net 0.0.0.0/2 127.0.0.1 -reject",
 		"route -n add -net 64.0.0.0/2 127.0.0.1 -reject",
@@ -29,7 +30,8 @@ func TestPlanBarrierBlocksPublicIPv4MoreSpecificallyThanSplitDefault(t *testing.
 		"route -n add -inet6 -net c000::/2 ::1 -reject",
 	)
 	requireCommands(t, reassert, "route -n add -net 23.27.134.77/32 192.168.50.2")
-	requireCommands(t, cleanup,
+	requireCommands(
+		t, cleanup,
 		"route -n delete -inet6 -net c000::/2",
 		"route -n delete -inet6 -net 8000::/2",
 		"route -n delete -inet6 -net 4000::/2",
@@ -51,7 +53,8 @@ func TestPlanBarrierReleaseToCorePreservesTransferredBypass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireCommands(t, release,
+	requireCommands(
+		t, release,
 		"route -n delete -inet6 -net c000::/2",
 		"route -n delete -inet6 -net 8000::/2",
 		"route -n delete -inet6 -net 4000::/2",
@@ -268,7 +271,8 @@ func requireCommands(t *testing.T, commands []Command, want ...string) {
 // no-op,孤儿屏障在 up/down/uninstall 全周期存活。所以清理必须**不依赖任何
 // BarrierContext / 所有权记录**,并覆盖全部 v4+v6 阻断段。
 func TestPlanBlockingBarrierCleanupDeletesEveryBlockingRouteWithoutContext(t *testing.T) {
-	requireCommands(t, PlanBlockingBarrierCleanup(),
+	requireCommands(
+		t, PlanBlockingBarrierCleanup(),
 		"route -n delete -inet6 -net c000::/2",
 		"route -n delete -inet6 -net 8000::/2",
 		"route -n delete -inet6 -net 4000::/2",
@@ -312,7 +316,8 @@ func TestRemoveBlockingBarrierRoutesDeletesAllBlocksAndToleratesMissing(t *testi
 	if err := RemoveBlockingBarrierRoutes(context.Background(), runner); err != nil {
 		t.Fatalf("清理孤儿屏障路由不应因缺失路由而失败: %v", err)
 	}
-	requireCommands(t, runner.commands,
+	requireCommands(
+		t, runner.commands,
 		"/sbin/route -n delete -inet6 -net c000::/2",
 		"/sbin/route -n delete -inet6 -net 8000::/2",
 		"/sbin/route -n delete -inet6 -net 4000::/2",

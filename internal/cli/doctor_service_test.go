@@ -6,9 +6,11 @@ import "testing"
 //
 // 真机 2026-08-06:bx 保护正常运行(status socket reachable、隧道健康、观测层
 // divergence 为空),doctor 却给出三条 FAIL:
-//     [FAIL] service installed: bx.service
-//     [FAIL] service active: inactive
-//     [FAIL] service enabled: disabled
+//
+//	[FAIL] service installed: bx.service
+//	[FAIL] service active: inactive
+//	[FAIL] service enabled: disabled
+//
 // 原因有二:① install.UnitInstalled() 在 darwin 上查的是
 // /Library/LaunchDaemons/com.getbx.bx.plist(Core 的 legacy plist),而统一布局下
 // Core 根本不是 launchd 服务、生命周期归 Guardian,实际存在的是

@@ -47,6 +47,7 @@ func (f *fakeOps) LeakCheck(LeakCheckIn) (JSONCommandOut, error) {
 func (f *fakeOps) Observe(ObserveIn) (JSONCommandOut, error) {
 	return f.observe, nil
 }
+
 func (f *fakeOps) Check(in CheckIn) (CheckOut, error) {
 	f.calls = append(f.calls, "check")
 	f.checkIn = in
@@ -58,6 +59,7 @@ func (f *fakeOps) ApplyPolicy(in PolicyApplyIn) (PolicyApplyOut, error) {
 	f.policyApply = in
 	return f.policyApplyOut, f.policyApplyErr
 }
+
 func (f *fakeOps) SetTransport(in SetTransportIn) error {
 	f.calls = append(f.calls, "set_transport")
 	f.lastSetTransportLink = in.Link

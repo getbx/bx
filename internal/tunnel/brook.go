@@ -25,6 +25,7 @@ func (e *execRunner) RecentStderr() []string {
 	}
 	return e.stderr.RecentStderr()
 }
+
 func (e *execRunner) Kill() error {
 	if e.cmd.Process != nil {
 		return e.cmd.Process.Kill()

@@ -1372,7 +1372,8 @@ func TestBlockOnlyRecoveryAlwaysPlansExactIPv4AndIPv6Routes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireCommands(t, apply,
+	requireCommands(
+		t, apply,
 		"route -n add -net 0.0.0.0/2 127.0.0.1 -reject",
 		"route -n add -net 64.0.0.0/2 127.0.0.1 -reject",
 		"route -n add -net 128.0.0.0/2 127.0.0.1 -reject",
@@ -1385,7 +1386,8 @@ func TestBlockOnlyRecoveryAlwaysPlansExactIPv4AndIPv6Routes(t *testing.T) {
 	if len(reassert) != 0 {
 		t.Fatalf("block-only recovery planned bypass commands: %v", reassert)
 	}
-	requireCommands(t, cleanup,
+	requireCommands(
+		t, cleanup,
 		"route -n delete -inet6 -net c000::/2",
 		"route -n delete -inet6 -net 8000::/2",
 		"route -n delete -inet6 -net 4000::/2",

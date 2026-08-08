@@ -70,6 +70,7 @@ func testBroker(t *testing.T, secret string, client *http.Client) *Broker {
 	}
 	return NewBroker(store, audit, client)
 }
+
 func testHTTPClient(ts *httptest.Server) *http.Client {
 	d := &net.Dialer{Timeout: time.Second}
 	return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
