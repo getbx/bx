@@ -84,9 +84,12 @@ func upVersionMismatchMessage(guardianVersion, runtimeVersion string) string {
 	if guardianVersion == "" || runtimeVersion == "" || guardianVersion == runtimeVersion {
 		return ""
 	}
+	// 刻意只给这一条命令。曾追加过「或打开 Bx.app 点 Install bx…」,而菜单只在
+	// .notInstalled 状态才有那一项 —— 那个状态与「检测到版本不一致」互斥(能检测到
+	// 不一致,说明 runtime 装着且 CLI 可用,此时菜单是 .connected/.warning)。
+	// 给一条指向不存在菜单项的指引,与本函数要消灭的那类假话同级。
 	return fmt.Sprintf(
-		"! Guardian 仍在跑旧版 %s(已安装 %s)。执行 %s 完成切换(会断网几秒);"+
-			"或打开 Bx.app 点 Install bx…(同一条路)。",
+		"! Guardian 仍在跑旧版 %s(已安装 %s)。执行 %s 完成切换(会断网几秒)。",
 		guardianVersion, runtimeVersion, upgradeSwitchCommand,
 	)
 }

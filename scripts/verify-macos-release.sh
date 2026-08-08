@@ -57,7 +57,7 @@ ACTUAL_BRIDGE_SHA=$(shasum -a 256 "$RESOURCES/bx-bridge" | awk '{print $1}')
 
 grep -qF "install.sh 不会执行 bx setup" "$RELEASE_DIR/README.txt" || fail "README missing no-setup note"
 # 升级路径改成「一次做完」之后,「不会执行 bx up、不修改 DNS/路由」只对全新安装
-# 成立:覆盖安装到一台保护正在运行的机器上时,安装会在用户确认后把保护重启回来。
+# 成立:覆盖安装到一台已经装过 bx 的机器上时,安装会在用户确认后把保护重启回来。
 # 这里钉住的必须是真话,否则 CI 会把一句假话钉死在发布物里(旧版正是如此:
 # 它 grep 那三句无条件的承诺,谁去改正就撞红)。
 grep -qF "全新安装不启动保护、不修改 DNS/路由" "$RELEASE_DIR/README.txt" || fail "README missing fresh-install network safety note"
