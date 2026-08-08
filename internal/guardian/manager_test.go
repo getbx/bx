@@ -1907,11 +1907,12 @@ func newManagerTestEnv(t *testing.T) *managerTestEnv {
 	t.Helper()
 	events := &eventLog{}
 	store := &recordingDesiredStore{Store: OpenStore(Paths{
-		Desired:     filepath.Join(t.TempDir(), "guardian-state.json"),
-		Transaction: filepath.Join(t.TempDir(), "transaction.json"),
-		Receipt:     filepath.Join(t.TempDir(), "receipt.json"),
-		Staging:     filepath.Join(t.TempDir(), "staging"),
-		Snapshots:   filepath.Join(t.TempDir(), "snapshots"),
+		Desired:       filepath.Join(t.TempDir(), "guardian-state.json"),
+		Transaction:   filepath.Join(t.TempDir(), "transaction.json"),
+		Receipt:       filepath.Join(t.TempDir(), "receipt.json"),
+		Staging:       filepath.Join(t.TempDir(), "staging"),
+		Snapshots:     filepath.Join(t.TempDir(), "snapshots"),
+		UpgradeIntent: filepath.Join(t.TempDir(), "upgrade-intent.json"),
 	}), events: events}
 	runner := newFakeCoreRunner(events)
 	health := &fakeHealthGate{}

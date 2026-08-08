@@ -73,9 +73,13 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 
 	if stopsProtection && !assumeYes {
 		agreed, err := io.confirm(upgradeConfirmMessage(desiredOn))
-		if err != nil {
+		if errors.Is(err, errCannotAsk) {
 			// 问不出来 ≠ 用户说不。必须报错退出:静静地 return nil 会让
 			// install.sh(set -e)紧接着打印「完成」,而旧 daemon 还跑着旧代码。
+			// 文案按 desiredOn 生成,不对一台保护本就关着的机器声称会断网。
+			return outcome, errors.New(upgradeCannotAskMessage(desiredOn))
+		}
+		if err != nil {
 			return outcome, err
 		}
 		if !agreed {

@@ -44,6 +44,23 @@ func upgradeConfirmMessage(desiredOn bool) string {
 	return "升级需要重启保护服务,当前保护未开启,不会影响网络。现在继续吗?"
 }
 
+// upgradeCannotAskMessage 是「没有终端可问」时给用户的那句话。
+//
+// 与 upgradeConfirmMessage 一样按 desiredOn 分叉,而且必须如此:升级要走确认
+// 这条路的条件是「Guardian 在跑」,不是「保护开着」—— 而 Guardian 在跑、保护
+// 关着,正是任何一次 bx down 之后的常态。对着这样一台机器说「会断网」,就是
+// 在专门用来如实相告的地方再放一句不成立的话。
+func upgradeCannotAskMessage(desiredOn bool) string {
+	detail := "当前保护未开启,升级不会影响网络"
+	if desiredOn {
+		detail = "升级期间会断网几秒"
+	}
+	return fmt.Sprintf(
+		"无法确认这次升级:当前不是交互式终端(%s)。"+
+			"确认要升级请重跑并加 --yes(例如 ./install.sh --yes,或 bx app-install --yes)。", detail,
+	)
+}
+
 func upgradeFailureMessage(step UpgradeStep, err error) string {
 	return upgradeFailureMessageWithNetwork(step, err, true)
 }

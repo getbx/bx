@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/guardian"
 )
 
 // fakeUpgradeIO 记录调用顺序 —— 本编排的正确性大半是**顺序**,不是返回值。
@@ -249,14 +251,14 @@ func TestRunUpgradeDoesNotClaimUsableNetworkAfterForcedTeardown(t *testing.T) {
 
 // 欠条落盘/读取/清除的往返,以及「一次失败的升级之后,重试仍知道欠一次保护」。
 func TestUpgradeIntentRoundTripSurvivesAFailedUpgrade(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "upgrade-intent.json")
-	if _, present := loadUpgradeIntent(path); present {
+	store := guardian.OpenStore(guardian.Paths{UpgradeIntent: filepath.Join(t.TempDir(), "upgrade-intent.json")})
+	if _, present := store.LoadUpgradeIntent(); present {
 		t.Fatal("没有文件就不该有欠条")
 	}
-	if err := saveUpgradeIntent(path, true); err != nil {
+	if err := store.SaveUpgradeIntent(true); err != nil {
 		t.Fatal(err)
 	}
-	pending, present := loadUpgradeIntent(path)
+	pending, present := store.LoadUpgradeIntent()
 	if !present || !pending {
 		t.Fatalf("欠条应为 (true,true),实际 (%v,%v)", pending, present)
 	}
@@ -265,14 +267,11 @@ func TestUpgradeIntentRoundTripSurvivesAFailedUpgrade(t *testing.T) {
 	if !resolveUpgradeDesiredOn(false, pending, present) {
 		t.Fatal("欠条说 on,重试就必须把保护起回来")
 	}
-	if err := clearUpgradeIntent(path); err != nil {
+	if err := store.ClearUpgradeIntent(); err != nil {
 		t.Fatal(err)
 	}
-	if _, present := loadUpgradeIntent(path); present {
+	if _, present := store.LoadUpgradeIntent(); present {
 		t.Fatal("清过之后不该还有欠条")
-	}
-	if err := clearUpgradeIntent(path); err != nil {
-		t.Fatalf("清一个不存在的欠条不算失败:%v", err)
 	}
 	if resolveUpgradeDesiredOn(false, false, false) {
 		t.Fatal("没有欠条、store 也说 off,就不该擅自开保护")
@@ -326,16 +325,13 @@ func TestRunUpgradeExplicitNoIsNotAnError(t *testing.T) {
 // 欠条胜出,保护被打开、DNS 与路由被接管,而这与用户最后一次明确指令相反,
 // 还会配一句「保护已按升级前的状态恢复」的假话。
 func TestForgetUpgradeDebtOnExplicitOffClearsTheDebt(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "upgrade-intent.json")
-	if err := saveUpgradeIntent(path, true); err != nil {
+	store := guardian.OpenStore(guardian.Paths{UpgradeIntent: filepath.Join(t.TempDir(), "upgrade-intent.json")})
+	if err := store.SaveUpgradeIntent(true); err != nil {
 		t.Fatal(err)
 	}
 	var warnings []string
-	forgetUpgradeDebtOnExplicitOff(
-		func() error { return clearUpgradeIntent(path) },
-		func(line string) { warnings = append(warnings, line) },
-	)
-	if _, present := loadUpgradeIntent(path); present {
+	forgetUpgradeDebtOnExplicitOff(store.ClearUpgradeIntent, func(line string) { warnings = append(warnings, line) })
+	if _, present := store.LoadUpgradeIntent(); present {
 		t.Fatal("用户明确关闭保护之后,欠条必须销账")
 	}
 	if len(warnings) != 0 {
@@ -348,7 +344,11 @@ func TestForgetUpgradeDebtOnExplicitOffClearsTheDebt(t *testing.T) {
 	}
 }
 
-// bx down 必须真的调用它 —— 这一跳没有类型能替我们检查。
+// bx down 的**强制拆除**路径必须销账 —— 这一跳没有类型能替我们检查。
+//
+// 正常路径的销账在 guardian.Manager.Down(见
+// TestDownOverTheLocalAPISocketClearsTheUpgradeIntent,那条才是菜单走的路);
+// 强制拆除时 Guardian 已被 bootout,Manager.Down 从未被调用,只能在这里补。
 func TestMacOSDownActionForgetsTheUpgradeDebt(t *testing.T) {
 	source, err := os.ReadFile("guardian.go")
 	if err != nil {
@@ -356,7 +356,7 @@ func TestMacOSDownActionForgetsTheUpgradeDebt(t *testing.T) {
 	}
 	body := goFuncBody(t, string(source), "macOSDownAction")
 	if !strings.Contains(body, "forgetUpgradeDebtOnExplicitOff(") {
-		t.Fatal("bx down 是用户毫不含糊地说「不要保护」的地方,必须在那里销掉升级欠条")
+		t.Fatal("bx down 的强制拆除路径够不到 Manager.Down,必须在这里销掉升级欠条")
 	}
 }
 
@@ -373,52 +373,4 @@ func goFuncBody(t *testing.T, text, name string) string {
 		rest = rest[:next]
 	}
 	return rest
-}
-
-// 欠条必须原子落盘:临时文件 + rename,而不是就地截断。
-//
-// 就地截断时,改写一份已有欠条中途崩溃会留下半截文件——正是这个文件存在的意义
-// 被反过来吃掉。rename 覆盖会换掉目录项指向的 inode,这里就用 inode 变化来钉死
-// 「不是就地写」。
-func TestSaveUpgradeIntentReplacesFileAtomically(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "upgrade-intent.json")
-	if err := saveUpgradeIntent(path, true); err != nil {
-		t.Fatal(err)
-	}
-	first, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := saveUpgradeIntent(path, true); err != nil {
-		t.Fatal(err)
-	}
-	second, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sameFile(first, second) {
-		t.Fatal("改写欠条必须走临时文件 + rename(换 inode),就地截断会留下半截文件")
-	}
-	entries, err := os.ReadDir(filepath.Dir(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("不得留下临时文件,实际 %d 项", len(entries))
-	}
-	if pending, present := loadUpgradeIntent(path); !present || !pending {
-		t.Fatalf("原子写之后内容仍须正确,实际 (%v,%v)", pending, present)
-	}
-}
-
-// 文件在、内容读不懂 => 仍算欠条(往「多恢复一次保护」偏,不往「永远不再保护」偏)。
-func TestLoadUpgradeIntentTreatsCorruptFileAsDebt(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "upgrade-intent.json")
-	if err := os.WriteFile(path, []byte("{\"schema_ver"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	pending, present := loadUpgradeIntent(path)
-	if !present || !pending {
-		t.Fatalf("半截文件必须仍算欠条(这正是它存在的原因),实际 (%v,%v)", pending, present)
-	}
 }

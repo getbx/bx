@@ -26,10 +26,13 @@ func bundleRootFromExecutable(executable string) (string, error) {
 // 「用户说不」而静静退出 0,会让上层脚本(生成的 install.sh 在 set -e 下紧接着
 // 打印「完成」)把「什么都没做」报成成功 —— 那正是本期要消灭的形状:旧 daemon
 // 继续跑着旧代码,而用户以为升级落地了。
-var errCannotAsk = errors.New(
-	"当前不是交互式终端,无法确认这次会断网的升级;" +
-		"确认要升级请重跑并加 --yes(例如 ./install.sh --yes 或 bx app-install --yes)",
-)
+//
+// 它是个**不带任何断言的哨兵**:给用户看的那句话由 upgradeCannotAskMessage
+// 按 desiredOn 生成。上一版把「会断网」写死在这里,而 stopsProtection 只要
+// Guardian 处于 loaded 就为真(保护未开启时同样如此,那正是任何一次 bx down
+// 之后的常态)—— 于是一次运行里会先打印「当前保护未开启,不会影响网络」,
+// 紧接着报「会断网的升级」,自相矛盾。
+var errCannotAsk = errors.New("非交互环境,无法确认升级")
 
 // confirmOnTTY 就地问用户一句「继续吗」。
 // 返回 (是否同意, 是否问不出来)。

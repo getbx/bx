@@ -27,11 +27,12 @@ var safeLastErrorPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
 
 func OpenDefaultStore() *Store {
 	return OpenStore(Paths{
-		Desired:     guardianStateDirectory + "/guardian-state.json",
-		Transaction: guardianUpdateDirectory + "/transaction.json",
-		Receipt:     guardianUpdateDirectory + "/receipt.json",
-		Staging:     guardianUpdateDirectory + "/staging",
-		Snapshots:   guardianUpdateDirectory + "/snapshots",
+		Desired:       guardianStateDirectory + "/guardian-state.json",
+		Transaction:   guardianUpdateDirectory + "/transaction.json",
+		Receipt:       guardianUpdateDirectory + "/receipt.json",
+		Staging:       guardianUpdateDirectory + "/staging",
+		Snapshots:     guardianUpdateDirectory + "/snapshots",
+		UpgradeIntent: guardianStateDirectory + "/upgrade-intent.json",
 	})
 }
 
@@ -70,6 +71,64 @@ func (s *Store) SaveDesired(desired DesiredState) error {
 		return err
 	}
 	return writeJSONAtomically(s.paths.Desired, desired)
+}
+
+// UpgradeIntent 是一次升级开始前记下的「用户本来要不要保护开着」。
+//
+// 为什么必须落盘:升级第一步(停保护)会把 desired 写成 off,于是**一次中途
+// 失败之后**重跑 app-install,读 desired 只会读到 off,升级计划就不再包含
+// 「恢复保护」—— 重试「成功」了,而机器从此再也不会被保护。
+type UpgradeIntent struct {
+	SchemaVersion int  `json:"schema_version"`
+	DesiredOn     bool `json:"desired_on"`
+}
+
+// LoadUpgradeIntent 返回 (desiredOn, present)。
+//
+// 文件不存在或读不动:没有欠条。文件在、内容却读不懂:**仍算欠条**,且按
+// desired_on=true 处理 —— 这个文件只在 desiredOn=true 时被写出来,所以「存在
+// 但坏了」几乎必然是一张真欠条。往「多恢复一次保护」偏,不往「永远不再保护」
+// 偏:后者正是这个文件存在的原因。
+func (s *Store) LoadUpgradeIntent() (bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paths.UpgradeIntent == "" {
+		return false, false
+	}
+	b, err := os.ReadFile(s.paths.UpgradeIntent)
+	if err != nil {
+		return false, false
+	}
+	var intent UpgradeIntent
+	if err := json.Unmarshal(b, &intent); err != nil || intent.SchemaVersion != 1 {
+		return true, true
+	}
+	return intent.DesiredOn, true
+}
+
+func (s *Store) SaveUpgradeIntent(desiredOn bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paths.UpgradeIntent == "" {
+		return fmt.Errorf("guardian upgrade intent path required")
+	}
+	if err := os.MkdirAll(filepath.Dir(s.paths.UpgradeIntent), 0o700); err != nil {
+		return fmt.Errorf("create guardian state directory: %w", err)
+	}
+	return writeJSONAtomically(s.paths.UpgradeIntent, UpgradeIntent{SchemaVersion: 1, DesiredOn: desiredOn})
+}
+
+// ClearUpgradeIntent 销账。文件本来就不在不算失败(幂等)。
+func (s *Store) ClearUpgradeIntent() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paths.UpgradeIntent == "" {
+		return nil
+	}
+	if err := os.Remove(s.paths.UpgradeIntent); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove guardian upgrade intent: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) LoadTransaction() (*Transaction, error) {

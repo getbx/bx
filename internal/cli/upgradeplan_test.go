@@ -162,3 +162,25 @@ func TestAppInstallDoesNotAdviseTheIneffectiveDownUp(t *testing.T) {
 		t.Fatal("runUpgrade 必须按 upgradeSteps 执行,而不是自己另编一套顺序")
 	}
 }
+
+// 「问不出来」那句话也必须按 desiredOn 分叉,不能写死「会断网」。
+//
+// 走确认这条路的条件是「Guardian 在跑」,不是「保护开着」—— 而 Guardian 在跑、
+// 保护关着,正是任何一次 bx down 之后的常态。上一版把「会断网的升级」写死在哨兵
+// 里,于是同一次运行先打印「当前保护未开启,不会影响网络」,紧接着报「会断网的
+// 升级」,两句自相矛盾。这是 f7f976e 修过的同一个错误换了件衣服。
+func TestUpgradeCannotAskMessageDoesNotInventAnOutage(t *testing.T) {
+	on := upgradeCannotAskMessage(true)
+	if !strings.Contains(on, "断网") {
+		t.Fatalf("保护开着时必须说明会断网,实际 = %q", on)
+	}
+	off := upgradeCannotAskMessage(false)
+	if strings.Contains(off, "断网") {
+		t.Fatalf("保护未开启时不该声称会断网,实际 = %q", off)
+	}
+	for _, msg := range []string{on, off} {
+		if !strings.Contains(msg, "--yes") {
+			t.Fatalf("必须告诉调用方怎么显式表态,实际 = %q", msg)
+		}
+	}
+}
