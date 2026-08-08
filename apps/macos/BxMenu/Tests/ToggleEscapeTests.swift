@@ -47,7 +47,7 @@ struct ToggleEscapeTests {
         // 改由 CLI 强制拆除」,静默成功等于隐瞒 Guardian 已经不听话。
         let escaped = toggleResultText(code: nil, transportDescription: "Guardian connection failed (61).",
                                        escape: .succeeded)
-        expect(escaped?.contains("强制拆除") == true,
+        expect(escaped?.contains("forced teardown") == true,
                "逃生成功必须说明是强制拆除完成的,实际 = \(String(describing: escaped))")
 
         // 逃生也失败:必须给出最后一条人工出路。

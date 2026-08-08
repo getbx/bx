@@ -548,7 +548,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addPlainText(quitQueuedStatusText())
             } else if let hint = toggleSlowHint(elapsedSeconds: elapsed) {
                 menu.addPlainText(hint)
-                menu.addAction("查看 Guardian 日志", symbol: "doc.text", target: self, action: #selector(openLogs))
+                menu.addAction("View Guardian Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
             }
             menu.addItem(.separator())
             menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
@@ -632,7 +632,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let failure = toggleFailureText {
             menu.addItem(.separator())
-            menu.addInfo("上次操作失败", failure)
+            menu.addInfo("Last operation failed", failure)
         }
         menu.addItem(.separator())
         if let title = menuUpdateActionTitle(check: updateCheck) {

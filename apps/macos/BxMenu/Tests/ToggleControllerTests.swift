@@ -14,18 +14,23 @@ struct ToggleControllerTests {
     static func main() {
         // 进行中必须显示已用时。2026-08-04 事故里 bx down 卡了 71 分钟,
         // 界面全程没有一个字 —— 秒数是这一期最核心的产出。
-        expect(toggleProgressText(action: .turnOff, elapsedSeconds: 0) == "正在断开… 0 秒",
+        expect(toggleProgressText(action: .turnOff, elapsedSeconds: 0) == "Disconnecting… 0s",
                "0 秒文案 = \(toggleProgressText(action: .turnOff, elapsedSeconds: 0))")
-        expect(toggleProgressText(action: .turnOff, elapsedSeconds: 23) == "正在断开… 23 秒",
+        expect(toggleProgressText(action: .turnOff, elapsedSeconds: 23) == "Disconnecting… 23s",
                "23 秒文案 = \(toggleProgressText(action: .turnOff, elapsedSeconds: 23))")
-        expect(toggleProgressText(action: .turnOn, elapsedSeconds: 2) == "正在连接… 2 秒",
+        expect(toggleProgressText(action: .turnOn, elapsedSeconds: 2) == "Connecting… 2s",
                "连接文案 = \(toggleProgressText(action: .turnOn, elapsedSeconds: 2))")
 
         // 逾时提示:阈值以下不出现,达到阈值才出现
         expect(toggleSlowHint(elapsedSeconds: 19) == nil, "19 秒不该有逾时提示")
         expect(toggleSlowHint(elapsedSeconds: 20) != nil, "20 秒必须有逾时提示")
-        expect(toggleSlowHint(elapsedSeconds: 60)?.contains("通常") == true,
-               "逾时提示要说明正常耗时")
+        // 意义不变:必须同时说「比预期久」与「正常 3 秒内完成」。分成两条断言
+        // 是收紧而非放松——原来的单条只验了「正常耗时」那一半。
+        let slow = toggleSlowHint(elapsedSeconds: 60)
+        expect(slow?.contains("longer than usual") == true,
+               "逾时提示必须说明这次比预期久,实际 = \(String(describing: slow))")
+        expect(slow?.contains("3 seconds") == true,
+               "逾时提示必须说明正常约 3 秒内完成,实际 = \(String(describing: slow))")
 
         // 失败指引:必须与 Go 侧 guardianCodeHints 对齐。
         // core_ownership_uncertain 是锁存的,唯一出路是 down 再 up —— 不说这句用户无从下手。
@@ -52,7 +57,7 @@ struct ToggleControllerTests {
         // 持锁方 defer 释放,是瞬时状态而非锁存 —— "稍候重试" 必须出现。
         let busyHint = toggleFailureHint(code: "guardian_busy")
         expect(busyHint != nil, "guardian_busy 必须有指引")
-        expect(busyHint?.contains("重试") == true,
+        expect(busyHint?.contains("retry") == true,
                "指引必须说明可以重试,实际 = \(String(describing: busyHint))")
 
         if failures == 0 {
