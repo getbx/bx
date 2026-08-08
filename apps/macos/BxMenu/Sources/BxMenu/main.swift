@@ -35,6 +35,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private let guardianClient = GuardianClient()
     private var timer: Timer?
     private var updateTimer: Timer?
+    /// 非 nil 表示有一个开关动作正在进行中。菜单据此显示进度而不是常规状态。
+    private var toggleInFlight: (action: ToggleAction, startedAt: Date)?
+    private var toggleTicker: Timer?
+    /// 上一次开关失败留下的指引,下次动作开始时清掉。
+    private var toggleFailureText: String?
     private var state: BxState = .off
     private var updateCheck: UpdateCheck?
     private var recoverySnapshot: RecoverySnapshot?
@@ -276,6 +281,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        if let inFlight = toggleInFlight {
+            let elapsed = Int(Date().timeIntervalSince(inFlight.startedAt))
+            menu.addHeader("bx", subtitle: inFlight.action == .turnOn ? "Connecting" : "Disconnecting")
+            menu.addInfo("Status", toggleProgressText(action: inFlight.action, elapsedSeconds: elapsed))
+            if let hint = toggleSlowHint(elapsedSeconds: elapsed) {
+                menu.addPlainText(hint)
+                menu.addAction("查看 Guardian 日志", symbol: "doc.text", target: self, action: #selector(openLogs))
+            }
+            menu.addItem(.separator())
+            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
+            statusItem.menu = menu
+            return
+        }
         if let snapshot = recoverySnapshot {
             let presentation = recoveryPresentation(for: snapshot)
             menu.addHeader("bx", subtitle: presentation.title)
@@ -349,6 +367,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .off:
             menu.addHeader("bx", subtitle: "Off")
             menu.addInfo("Status", "Not running")
+        }
+        if let failure = toggleFailureText {
+            menu.addItem(.separator())
+            menu.addInfo("上次操作失败", failure)
         }
         menu.addItem(.separator())
         if let title = menuUpdateActionTitle(check: updateCheck) {
@@ -442,10 +464,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
     @objc private func startBx() {
         guard confirmStartProtection() else { return }
-        if !runPrivileged("'\(bxPath)' up") {
-            showFailure("Start Failed", "bx did not start.")
-        }
-        refresh()
+        performToggle(.turnOn)
     }
 
     @objc private func setUpBx() {
@@ -717,12 +736,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Quit bx")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
-            if !runPrivileged("'\(bxPath)' down") {
-                showFailure("Quit bx Failed", "bx did not stop.")
-                refresh()
-                return
+            performToggle(.turnOff) {
+                NSApp.terminate(nil)
             }
-            NSApp.terminate(nil)
         }
     }
 
@@ -733,15 +749,64 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Turn Off")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        if !runPrivileged("'\(bxPath)' down") {
-            showFailure("Turn Off Failed", "bx did not stop.")
-        }
-        refresh()
+        performToggle(.turnOff)
     }
 
     private func runPrivileged(_ command: String) -> Bool {
         let script = "do shell script \(shellQuoted(command)) with administrator privileges"
         return runAppleScript(script)
+    }
+
+    /// 开/关保护。经 Guardian socket 发起,全程不阻塞主线程。
+    ///
+    /// 不再走 AppleScript `with administrator privileges`:那条路既要每次输密码,
+    /// 又是同步的 —— 2026-08-04 事故里 bx down 卡了 71 分钟,菜单跟着冻了 71 分钟。
+    private func performToggle(_ action: ToggleAction, completion: (() -> Void)? = nil) {
+        guard toggleInFlight == nil else { return }
+        toggleFailureText = nil
+        toggleInFlight = (action, Date())
+        startToggleTicker()
+        rebuildMenu()
+        updateIcon()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            var failureCode: String?
+            var transportError: String?
+            do {
+                let status = action == .turnOn ? try self.guardianClient.turnOn() : try self.guardianClient.turnOff()
+                failureCode = status.lastError
+            } catch {
+                transportError = error.localizedDescription
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.toggleInFlight = nil
+                self.stopToggleTicker()
+                if let transportError {
+                    self.toggleFailureText = transportError
+                } else if let failureCode {
+                    self.toggleFailureText = toggleFailureHint(code: failureCode) ?? "失败码 \(failureCode)"
+                }
+                self.refresh()
+                completion?()
+            }
+        }
+    }
+
+    /// 每秒重画一次,好让已用秒数往前走。
+    private func startToggleTicker() {
+        stopToggleTicker()
+        toggleTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, self.toggleInFlight != nil else { return }
+            self.rebuildMenu()
+            self.updateIcon()
+        }
+    }
+
+    private func stopToggleTicker() {
+        toggleTicker?.invalidate()
+        toggleTicker = nil
     }
 
     private func openTerminal(_ command: String) {
@@ -916,6 +981,14 @@ private extension NSMenu {
 
     func addInfo(_ label: String, _ value: String) {
         let item = NSMenuItem(title: "\(label): \(value)", action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        addItem(item)
+    }
+
+    /// 一行不带 "label: " 前缀的纯文本(禁用态)。`addInfo("", text)` 会渲染成
+    /// 带孤零零冒号的 ": text",专门给不需要标签的提示行用。
+    func addPlainText(_ text: String) {
+        let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
         item.isEnabled = false
         addItem(item)
     }
