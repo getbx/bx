@@ -185,6 +185,38 @@ func TestUpVersionMismatchIsReported(t *testing.T) {
 	}
 }
 
+// 那条命令必须**照抄下来就能跑通**。
+//
+// 上一轮把「无效的 down && up」换成了 `sudo bx app-install` —— 同样跑不通:
+// /usr/local/bin/bx 是 bridge,exec 到 runtime/<version>/bx,而 appInstallAction
+// 用 os.Executable() 反推 --app-source,那条路径不在任何 Bx.app 里,于是必然
+// 以 "is not inside a Bx.app bundle; pass --app-source" 退出。换掉一句无效建议
+// 却换上另一句无效建议,用户看到的差别只是错误信息不同。
+//
+// 这里用**生产代码自己的解析器**(bundleRootFromExecutable,就是 app-install
+// 定 --app-source 的那一跳)检查命令里的可执行文件,而不是比对一个字符串常量:
+// 只有它说得通,这条命令才真的能启动一次升级。
+func TestUpgradeSwitchCommandCanActuallyRun(t *testing.T) {
+	fields := strings.Fields(upgradeSwitchCommand)
+	if len(fields) != 3 || fields[0] != "sudo" || fields[2] != "app-install" {
+		t.Fatalf("命令形如 `sudo <可执行文件> app-install`,实际 = %q", upgradeSwitchCommand)
+	}
+	root, err := bundleRootFromExecutable(fields[1])
+	if err != nil {
+		t.Fatalf("命令里的可执行文件必须能反推出 Bx.app 包根(app-install 正是这么定 --app-source 的):%v", err)
+	}
+	if root != darwinAppBundlePath {
+		t.Fatalf("推出的包根 = %q,want %q(安装目的地)", root, darwinAppBundlePath)
+	}
+	// `sudo bx app-install` 是 bridge,反推不出包根 —— 不得回到这个形式。
+	if _, err := bundleRootFromExecutable("/usr/local/bin/bx"); err == nil {
+		t.Fatal("test premise 失效:bridge 路径本应反推不出 Bx.app 包根")
+	}
+	if strings.Contains(upVersionMismatchMessage("dev", "phase2"), "sudo bx app-install") {
+		t.Fatal("不得再建议 `sudo bx app-install`:经 bridge 跑必然报 not inside a Bx.app bundle")
+	}
+}
+
 // bx up 必须真的把版本不一致的提示打印出来,不能只在别处定义一个没人调用的
 // 纯函数 —— 那样 upVersionMismatchMessage 本身测得再绿,也拦不住"忘记接线"
 // 这一类回归(2026-08-08 事故正是"看得到却没说出来")。macOSUpAction 依赖真实
