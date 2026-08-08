@@ -41,7 +41,7 @@ func upgradeConfirmMessage(desiredOn bool) string {
 	if desiredOn {
 		return "升级需要重启保护,期间会断网几秒。现在继续吗?"
 	}
-	return "升级需要重启保护服务,期间会断网几秒(当前保护未开启)。现在继续吗?"
+	return "升级需要重启保护服务,当前保护未开启,不会影响网络。现在继续吗?"
 }
 
 func upgradeFailureMessage(step UpgradeStep, err error) string {

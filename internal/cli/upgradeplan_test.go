@@ -73,11 +73,20 @@ func TestUpgradeStepsAlwaysRestartGuardianWhenItIsRunning(t *testing.T) {
 
 // 确认文案必须明说会断网,而不是含糊的「可能有短暂中断」。
 func TestUpgradeConfirmMessageStatesTheOutage(t *testing.T) {
-	msg := upgradeConfirmMessage(true)
+	on := upgradeConfirmMessage(true)
 	for _, must := range []string{"断网", "重启保护"} {
-		if !strings.Contains(msg, must) {
-			t.Fatalf("确认文案必须包含 %q,实际 = %q", must, msg)
+		if !strings.Contains(on, must) {
+			t.Fatalf("确认文案必须包含 %q,实际 = %q", must, on)
 		}
+	}
+
+	// desiredOn=false 时 Guardian 停/重启的是空转(没有 Core、没有 TUN、没有
+	// 劫持路由可言),不该断言一个不会发生的断网 —— Guardian plist 是
+	// KeepAlive=true,"Guardian 在跑、保护未开启" 正是任何一次 bx down 之后的
+	// 常态,不是边角情况。
+	off := upgradeConfirmMessage(false)
+	if strings.Contains(off, "断网") {
+		t.Fatalf("保护未开启时不该声称会断网,实际 = %q", off)
 	}
 }
 
