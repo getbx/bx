@@ -3278,8 +3278,12 @@ func TestMacMenuPollsOnCadence(t *testing.T) {
 	if !ok {
 		t.Fatal("找不到 rescheduleRefreshTimer 的函数体")
 	}
-	if strings.Contains(reschedule, "userInitiated") {
+	// 只禁 true:userInitiated 现在没有默认值,轮询那一拍必须显式写 false。
+	if strings.Contains(reschedule, "userInitiated: true") {
 		t.Fatal("轮询定时器不得把自己那一拍标成用户动作,否则被丢弃的每一拍都补跑、占空比 100%")
+	}
+	if !strings.Contains(reschedule, "userInitiated: false") {
+		t.Fatal("轮询那一拍必须显式表态(userInitiated: false)")
 	}
 }
 
@@ -3367,6 +3371,38 @@ func TestMacMenuTimersRunInCommonMode(t *testing.T) {
 		}
 		if strings.Contains(trimmed, "Timer.scheduledTimer") {
 			t.Fatalf("第 %d 行仍用 Timer.scheduledTimer(只进 .default,菜单展开时不触发),改用 commonModeTimer:%s", i+1, trimmed)
+		}
+	}
+}
+
+// 每个 refresh 调用点都必须显式表态是不是用户动作。
+//
+// 漏传的代价是**静默的**:用户刚开完/关完保护,那次刷新若撞上在途的一次就被丢掉
+// 且不补跑,菜单要到下一个自然拍才纠正(关闭档最长 30 秒),没有任何报错 ——
+// 而 startBx/turnOffBx/setup 正是全 app 最常见的三个动作。
+//
+// 主防线是 Swift 那边把 userInitiated 声明成**没有默认值**,编译器强制每个调用点
+// 当场表态,连将来新增的也跑不掉;这条守卫是它在 CI 里的替身(CI 不编 Swift app),
+// 顺带钉住「不许有人后来给它补一个默认值」。
+func TestMacMenuRefreshCallsDeclareUserIntent(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if strings.Contains(text, "func refresh(userInitiated: Bool = ") {
+		t.Fatal("userInitiated 不得有默认值:新加的调用点会默默落进「不补跑」那一档,而漏传是静默失败")
+	}
+	if !strings.Contains(text, "func refresh(userInitiated: Bool)") {
+		t.Fatal("找不到 refresh(userInitiated:) 的声明")
+	}
+	for i, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.Contains(trimmed, "refresh()") {
+			t.Fatalf("第 %d 行是裸 refresh():必须显式写明 userInitiated —— %s", i+1, trimmed)
 		}
 	}
 }
