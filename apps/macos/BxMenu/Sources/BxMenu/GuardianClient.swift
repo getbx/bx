@@ -10,7 +10,7 @@ private let guardianDefaultTimeout: TimeInterval = 5
 private let guardianMutationTimeout: TimeInterval = 75
 private let guardianMaximumTimeout: TimeInterval = TimeInterval(Int32.max) / 1_000
 
-private enum GuardianEndpoint {
+enum GuardianEndpoint {
     case requestRecovery
     case currentRecovery
     case turnOn
@@ -122,8 +122,16 @@ struct GuardianClient {
         try perform(endpoint: .turnOff, as: GuardianStatus.self)
     }
 
+    /// 单一出口:生产 `init()` 让每个端点用自己的 `timeout`(`overrideTimeout == nil`);
+    /// 测试用 `init(connectSocket:ioTimeout:clock:)` 注入的值始终优先。
+    /// `perform` 与测试都必须经它取超时,不许各自重算 `overrideTimeout ?? endpoint.timeout`
+    /// ——否则两处会各自正确却整体对不上,而套件不会注意到。
+    func effectiveTimeout(for endpoint: GuardianEndpoint) -> TimeInterval {
+        overrideTimeout ?? endpoint.timeout
+    }
+
     private func perform<T: Decodable>(endpoint: GuardianEndpoint, as type: T.Type) throws -> T {
-        let deadline = GuardianDeadline(timeout: overrideTimeout ?? endpoint.timeout, now: clock)
+        let deadline = GuardianDeadline(timeout: effectiveTimeout(for: endpoint), now: clock)
         let fd = try connectSocket(deadline)
         defer { close(fd) }
         try configureGuardianSocketTimeouts(fd, timeout: deadline.remaining())
