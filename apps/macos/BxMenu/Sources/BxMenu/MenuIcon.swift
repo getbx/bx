@@ -76,21 +76,6 @@ func menuIconStyle(state: MenuIconState, reduceMotion: Bool = false) -> MenuIcon
     return MenuIconStyle(form: style.form, motion: .still)
 }
 
-/// 图标是否交给系统上色(NSImage.isTemplate)。
-///
-/// 灰色那两态必须交出去:`secondaryLabelColor` 在 lockFocus 的 Aqua 外观下解析成
-/// **50% 黑**,而菜单栏是半透明的、深色壁纸下即使在浅色模式也是深的 —— 于是
-/// 「保护没开」这个最不能看不见的状态会直接消失。template 让系统按菜单栏实际
-/// 外观上色,黑底白、白底黑。绿/黄两态的颜色是有意的加强,保留自绘颜色。
-func menuIconUsesSystemTint(state: MenuIconState) -> Bool {
-    switch state {
-    case .off, .transitioning:
-        return true
-    case .protected, .attention:
-        return false
-    }
-}
-
 /// 盾形轮廓,16×16 坐标系,y 向下(与 NSBezierPath 翻转后一致)。
 /// 顺序即描边顺序:顶点 → 右上 → 右下弧 → 底尖 → 左下弧 → 左上。
 let shieldOutlinePoints: [(x: Double, y: Double)] = [

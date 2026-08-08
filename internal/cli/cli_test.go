@@ -11,8 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -3370,7 +3370,7 @@ func TestSetupDispositionNeverRewritesExistingConfigWithoutForce(t *testing.T) {
 // bx setup 只接受一个链接。多出来的位置参数几乎必然是「flag 写在了位置参数后面」
 // ——urfave/cli 沿用 Go flag 包语义,遇到第一个位置参数就停止解析 flag,于是
 //
-//     sudo bx setup '<链接>' --udp '<链接>'
+//	sudo bx setup '<链接>' --udp '<链接>'
 //
 // 里的 --udp 会被当成两个普通参数**静默忽略**。真机 2026-08-06/07:Mac 与
 // ws-via-vps 上都是这么敲的,结果 udp.transport 一直停在旧服务器,而命令看起来
@@ -3926,11 +3926,16 @@ func TestMacMenuIconRespectsReduceMotionAndSystemTint(t *testing.T) {
 	if !strings.Contains(text, "accessibilityDisplayShouldReduceMotion") {
 		t.Fatal("图标必须尊重系统的「减弱动态效果」——菜单栏常驻视野边缘,是最不该无视它的地方")
 	}
-	if !strings.Contains(text, "menuIconUsesSystemTint(state:") {
-		t.Fatal("无色两态必须交给系统上色:自绘的 secondaryLabelColor 在深色菜单栏上会消失")
+	// 四态一律 template,由系统按菜单栏明暗上色。这比原先「无色两态才 template」
+	// 更严:任何一态自绘颜色,都必然在浅色或深色菜单栏之一里看不见。
+	if !strings.Contains(text, "image.isTemplate = true") {
+		t.Fatal("图标必须是 template:写死颜色必有一种菜单栏明暗下看不见")
 	}
 	if strings.Contains(text, "image.isTemplate = false") {
-		t.Fatal("isTemplate 不得写死为 false,它由 menuIconUsesSystemTint 决定")
+		t.Fatal("isTemplate 不得为 false")
+	}
+	if strings.Contains(text, "systemGreen") || strings.Contains(text, "systemYellow") {
+		t.Fatal("图标不得自绘颜色:形态承担全部信息,颜色只会在某一种菜单栏下失效")
 	}
 }
 
