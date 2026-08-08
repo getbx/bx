@@ -26,7 +26,10 @@ enum BxState {
     case setupNeeded(String)
     case missing(String)
     case notInstalled(bundleVersion: String?)
-    case off
+    /// 保护没开。**必须带上来路**:两条来路的证据强度不同,Quit 的处置也不同
+    /// (见 OffOrigin / quitPlan)。合并过一次,代价是 Guardian 服务已停时点 Quit
+    /// 会弹一个意外的授权框,取消掉就换来一句「bx 还在跑」——而那时什么都没在跑。
+    case off(OffOrigin)
 }
 
 final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -43,7 +46,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 非 nil 表示用户已经确认 Quit,但当时有另一个动作在跑,只能排队——
     /// 等那个动作的 completion 里落定后再执行(参见 `quitDisposition`)。
     private var pendingQuit: QuitDisposition?
-    private var state: BxState = .off
+    // 首次刷新之前什么都还没观测过。默认取**不会直接退出**的那一支:
+    // 这个窗口里点 Quit 应当走关闭路径,而不是凭一个还没问过的假设就退出。
+    private var state: BxState = .off(.guardianResponding)
     private var updateCheck: UpdateCheck?
     /// 这两个是恢复状态的全部载体。**写入即 bump 代际号**——用 didSet 而不是逐个
     /// 改写者,是因为漏掉任何一个写者都不会有编译错误,只会在真机上偶发一次假红。
@@ -297,7 +302,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // 而 .warning 分支不提供 Start Protection,用户就没法从菜单开回来
                 // (真机 2026-08-06:只能回去敲 sudo bx up)。
                 recoverySnapshot = nil
-                return .off
+                // Guardian 应答了、报告也解码了,它说保护是关的 —— 一个信念。
+                return .off(.guardianResponding)
             case .attention(let reason):
                 // Guardian 明确报告的异常先于被动恢复快照判定,与既有行为一致:
                 // 这两种状态下不保留恢复快照。
@@ -708,7 +714,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .setupNeeded: return .setupNeeded
         case .missing: return .missing
         case .notInstalled: return .notInstalled
-        case .off: return .off
+        case .off(let origin):
+            switch origin {
+            case .guardianResponding: return .offGuardianResponding
+            case .serviceStopped: return .offServiceStopped
+            }
         }
     }
 
@@ -1256,7 +1266,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return .setupNeeded("Run sudo bx setup <client-link>")
         }
         if check(report, "service_active")?.status != "ok" {
-            return .off
+            // 到这儿意味着两条新鲜的否定观测叠在一起:`bx status --json` 已经失败
+            // (控制 socket 不应答),doctor 又刚看到 launchd job 没装载。
+            return .off(.serviceStopped)
         }
         if let socket = check(report, "status_socket"), socket.status != "ok" {
             return .warning(socket.detail ?? "Status socket unavailable", version: version)

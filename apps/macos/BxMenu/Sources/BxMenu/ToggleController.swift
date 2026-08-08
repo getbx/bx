@@ -95,7 +95,23 @@ enum QuitDisposition: Equatable {
     }
 }
 
-/// 菜单八态的**种类**(去掉 payload)。
+/// `.off` 的两条来路。**证据强度不同,不能合并。**
+///
+/// 合并的代价是实打实的:route 2 下走关闭路径会弹一个意外的授权框,用户一取消
+/// 就 `escape == .failed` → `finishQuit(turnedOff: false)` → 菜单拒绝退出,并且
+/// 断言「bx 还在跑 / 退出会让保护仍在运行却没有任何指示灯」—— 而那时**什么都
+/// 没在跑**。本项目的全部历史就是不让界面断言不成立的事。
+enum OffOrigin: Equatable {
+    /// `bx status --json` 跑通了,报告说保护是关的(`menuProtectionVerdict == .off`)。
+    /// Guardian 就在那儿应答 —— 这是一个**信念**,而且最长可能是 30 秒前采的。
+    case guardianResponding
+    /// `bx status --json` **失败**,随后 doctor 观测到 `service_active != ok`
+    /// (launchd job 没装载)。同一次刷新里的**两条新鲜的否定观测**。
+    case serviceStopped
+}
+
+/// 菜单七态(`BxState`)的**种类**(去掉 payload),其中 `.off` 按来路分成两支,
+/// 故这里是八种。
 ///
 /// `BxState` 带着 `BxReport`/版本号等 payload 住在 main.swift 里,而 main.swift
 /// 编不进 scripts/test-macos-menu.sh(它要 AppKit)。判定要可测就必须吃一个不带
@@ -108,7 +124,8 @@ enum MenuStateKind: Equatable {
     case setupNeeded
     case missing
     case notInstalled
-    case off
+    case offGuardianResponding
+    case offServiceStopped
 }
 
 /// 点了 Quit 之后,退出之前**要不要先关一次**。
@@ -131,28 +148,33 @@ enum QuitPlan: Equatable {
 /// 退出会抹掉唯一的指示灯」;没有东西在跑的时候这个理由整个不成立,剩下的只是
 /// 一个白白困住用户的拒绝。
 ///
-/// **`.off` 有意留在 turnOffFirst 这一侧**,尽管它字面意思是「没在跑」:
-/// ① `.off` 是一个**信念**,而且是关于一台已安装、已配置、Guardian 就在那儿的机器
-///    的信念 —— 这正是 internal/observe 整个存在的理由:信念与事实会分叉。菜单看到的
-///    这份 `.off` 最长可能是 30 秒前采的(关闭档轮询间隔)。另外三态没有这个问题:
-///    它们说的是「bx 压根不在这台机器上」,那不是一个可能过时的信念。
-/// ② 那三态里 turnOff 是**注定失败**,而 `.off` 里它是幂等且几乎注定成功的;万一
-///    失败,那次失败本身就是「下面有东西不对劲」的证据 —— 恰恰是该保留指示灯的场合。
-/// 代价是 Guardian 服务不在跑的那种 `.off` 下点 Quit 会弹一次授权框(逃生路径),
-/// 这是拿一次点击换掉一个隐形保护的风险,值。
+/// **`.off` 按来路分两侧裁决**(见 `OffOrigin`)——一开始把两条路合并成一个
+/// turnOffFirst 是错的,理由只对其中一条成立:
+/// ① `.offGuardianResponding` 是一个**信念**,而且是关于一台已安装、已配置、
+///    Guardian 就在那儿的机器的信念 —— 这正是 internal/observe 整个存在的理由:
+///    信念与事实会分叉。这份 `.off` 最长可能是 30 秒前采的(关闭档轮询间隔),
+///    而那里的 turnOff 是幂等的、几乎注定成功;万一失败,那次失败本身就是
+///    「下面有东西不对劲」的证据 —— 恰恰是该保留指示灯的场合。→ turnOffFirst。
+/// ② `.offServiceStopped` 不是信念,是**同一次刷新里的两条新鲜否定观测**:
+///    `bx status --json` 没跑通(控制 socket 不应答),doctor 又刚刚看到 launchd
+///    job 没装载。这与 `.missing`/`.notInstalled`/`.setupNeeded` 属同一类证据 ——
+///    可以当场核实的事实,不是可能过时的信念。而那里 socket 关闭必然失败、只会
+///    弹一个意外的授权框,用户一取消就换来一句不成立的「bx 还在跑」。
+///    → terminateImmediately。
 ///
 /// 有动作在跑时一律 turnOffFirst:进行中说明 Guardian 就在那儿,而且退出前必须
-/// 先让那次动作落定(见 quitDisposition)。
+/// 先让那次动作落定(见 quitDisposition)。这一条盖过 state,连 `.offServiceStopped`
+/// 也不例外 —— 一次在途的 turnOn 若被直接退出抛在身后,保护起来了而指示灯没了。
 func quitPlan(state: MenuStateKind, inFlight: ToggleAction?) -> QuitPlan {
     if inFlight != nil { return .turnOffFirst }
     switch state {
-    case .connected, .warning, .off:
+    case .connected, .warning, .offGuardianResponding:
         return .turnOffFirst
     case .updateNeeded:
         // CLI 太旧 → 菜单在跑 `bx status --json` **之前**就返回了,它对保护开没开
         // 一无所知。不知道就不能当成「没在跑」。
         return .turnOffFirst
-    case .setupNeeded, .missing, .notInstalled:
+    case .setupNeeded, .missing, .notInstalled, .offServiceStopped:
         return .terminateImmediately
     }
 }
