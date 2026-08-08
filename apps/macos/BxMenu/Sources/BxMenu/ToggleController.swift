@@ -69,6 +69,49 @@ func toggleSlowHint(elapsedSeconds: Int) -> String? {
 ///   状态,"稍候重试" 如实描述了会发生什么。
 ///
 /// 未知码/无码一律返回 nil —— 宁可不给指引,也不编一句错的。
+/// 用户点了 Quit 之后菜单该做什么。
+///
+/// 这条规则原本(第一轮实现)是"没有动作在跑就直接开始 turnOff、否则什么都不做"——
+/// 而 `performToggle` 对已有动作在跑时的 guard 会让第二次调用直接静默返回,
+/// 于是"已经在关闭/打开中时点 Quit"会吞掉确认框之后的一切:没有报错、没有退出、
+/// 也没有任何界面提示,是 CLAUDE.md「拆除/停止不得依赖先成功做成别的事」这条
+/// 不变量的直接违反。三种情况都必须以退出收尾,不需要用户再点一次:
+enum QuitDisposition: Equatable {
+    /// 没有动作在跑:现在就发起 turnOff,完成后退出。
+    case turnOffNow
+    /// 已经在关闭中:不发起新请求,原地搭车等它落定,退出。
+    case waitThenQuit
+    /// 正在打开中:不能眼睁睁让进程在保护可能刚开启时消失(退出前必须已关闭
+    /// 是比"抢在动作前面退出"更硬的不变量)。而客户端也没有办法真正取消一个
+    /// 已经发到 Guardian socket 上的请求——服务端可能已经在执行 turnOn 了,
+    /// 只是标记"已取消"并不能让保护真的关掉。所以等这次 turnOn 落定(不论成
+    /// 败),再补发一次 turnOff,等它也落定后才退出。
+    case waitThenTurnOffThenQuit
+
+    /// 落定之后(即当前那个动作的 completion 里)要不要在退出前再补一次 turnOff。
+    var chainsTurnOffBeforeQuitting: Bool {
+        self == .waitThenTurnOffThenQuit
+    }
+}
+
+/// 根据"现在有没有动作在跑、跑的是哪一个"决定 Quit 的处置方式。
+func quitDisposition(inFlight: ToggleAction?) -> QuitDisposition {
+    switch inFlight {
+    case nil:
+        return .turnOffNow
+    case .turnOff:
+        return .waitThenQuit
+    case .turnOn:
+        return .waitThenTurnOffThenQuit
+    }
+}
+
+/// Quit 排队等待当前动作完成时,菜单该显示的一行——不能让界面看起来
+/// 像没事发生:用户已经确认退出,必须能看到"退出请求收到了"。
+func quitQueuedStatusText() -> String {
+    "将在当前操作完成后退出"
+}
+
 func toggleFailureHint(code: String?) -> String? {
     guard let code, !code.isEmpty else { return nil }
     switch code {

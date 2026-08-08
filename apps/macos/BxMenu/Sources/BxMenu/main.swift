@@ -40,6 +40,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private var toggleTicker: Timer?
     /// 上一次开关失败留下的指引,下次动作开始时清掉。
     private var toggleFailureText: String?
+    /// 非 nil 表示用户已经确认 Quit,但当时有另一个动作在跑,只能排队——
+    /// 等那个动作的 completion 里落定后再执行(参见 `quitDisposition`)。
+    private var pendingQuit: QuitDisposition?
     private var state: BxState = .off
     private var updateCheck: UpdateCheck?
     private var recoverySnapshot: RecoverySnapshot?
@@ -285,7 +288,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             let elapsed = Int(Date().timeIntervalSince(inFlight.startedAt))
             menu.addHeader("bx", subtitle: inFlight.action == .turnOn ? "Connecting" : "Disconnecting")
             menu.addInfo("Status", toggleProgressText(action: inFlight.action, elapsedSeconds: elapsed))
-            if let hint = toggleSlowHint(elapsedSeconds: elapsed) {
+            if pendingQuit != nil {
+                // Quit 已经排队:这是最重要的一句话,用户点了确认框,必须能
+                // 看到"收到了",而不是一个看起来什么都没变的菜单。
+                menu.addPlainText(quitQueuedStatusText())
+            } else if let hint = toggleSlowHint(elapsedSeconds: elapsed) {
                 menu.addPlainText(hint)
                 menu.addAction("查看 Guardian 日志", symbol: "doc.text", target: self, action: #selector(openLogs))
             }
@@ -735,10 +742,18 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         alert.informativeText = quitBxConfirmMessage
         alert.addButton(withTitle: "Quit bx")
         alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let disposition = quitDisposition(inFlight: toggleInFlight?.action)
+        switch disposition {
+        case .turnOffNow:
             performToggle(.turnOff) {
                 NSApp.terminate(nil)
             }
+        case .waitThenQuit, .waitThenTurnOffThenQuit:
+            // 已经有一个动作在跑,performToggle 的 re-entrancy guard 会让第二次
+            // 调用静默返回——排队,让那个动作的 completion 负责收尾退出。
+            pendingQuit = disposition
+            rebuildMenu()
         }
     }
 
@@ -787,6 +802,22 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                     self.toggleFailureText = transportError
                 } else if let failureCode {
                     self.toggleFailureText = toggleFailureHint(code: failureCode) ?? "失败码 \(failureCode)"
+                }
+                // 排队的 Quit 优先于常规收尾:不管刚落定的这个动作成不成功,
+                // 用户已经确认要退出,不能让他们再点一次。
+                if let pending = self.pendingQuit {
+                    self.pendingQuit = nil
+                    if pending.chainsTurnOffBeforeQuitting {
+                        // 刚落定的是 turnOn(quitDisposition 只在这种情况下才会
+                        // 产出 chainsTurnOffBeforeQuitting == true)——退出前必须
+                        // 已关闭,再补一次 turnOff,它的 completion 才真正终止进程。
+                        self.performToggle(.turnOff) {
+                            NSApp.terminate(nil)
+                        }
+                    } else {
+                        NSApp.terminate(nil)
+                    }
+                    return
                 }
                 self.refresh()
                 completion?()

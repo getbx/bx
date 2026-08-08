@@ -361,15 +361,40 @@ func TestMacMenuQuitBxStopsProtectionThenQuitsMenu(t *testing.T) {
 	if !strings.Contains(text, "menu.addAction(quitBxActionTitle") {
 		t.Fatal("macOS menu should expose an explicit Quit bx action")
 	}
+
+	// Scope the remaining checks to quitBx()'s own body, not the whole file:
+	// turnOffBx() also calls performToggle(.turnOff), so a whole-file
+	// substring check would pass even if quitBx() called something else
+	// entirely.
+	start := strings.Index(text, "func quitBx()")
+	if start == -1 {
+		t.Fatal("macOS menu should define quitBx()")
+	}
+	end := strings.Index(text[start:], "func turnOffBx()")
+	if end == -1 {
+		t.Fatal("could not find the end of quitBx() (expected turnOffBx() to follow it)")
+	}
+	body := text[start : start+end]
+
 	// Quit no longer shells out to `bx down` via AppleScript (that path is
 	// synchronous and blocked the menu for 71 minutes during the 2026-08-04
 	// incident); it now goes through performToggle(.turnOff), which talks to
 	// Guardian over the socket on a background queue.
-	if !strings.Contains(text, "func quitBx()") || !strings.Contains(text, "performToggle(.turnOff)") {
+	if !strings.Contains(body, "performToggle(.turnOff)") {
 		t.Fatal("Quit bx should use the safe Guardian turnOff path")
 	}
-	if !strings.Contains(text, "NSApp.terminate(nil)") {
+	if !strings.Contains(body, "NSApp.terminate(nil)") {
 		t.Fatal("Quit bx should close the menu only after bx stops")
+	}
+	// A toggle may already be in flight when Quit is clicked (Turn Off
+	// stuck, or Start Protection still connecting). performToggle's
+	// re-entrancy guard makes a second direct call silently no-op, so
+	// quitBx must consult quitDisposition and queue instead of calling
+	// performToggle unconditionally (2026-08-07 fix round 1: quitBx used to
+	// swallow the confirmed quit with no error and no exit whenever a
+	// toggle was already running).
+	if !strings.Contains(body, "quitDisposition(inFlight:") {
+		t.Fatal("Quit bx must account for an in-flight toggle via quitDisposition, not call performToggle unconditionally")
 	}
 }
 
