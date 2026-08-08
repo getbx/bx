@@ -65,7 +65,8 @@ case "__BX_RELEASE_ARCH__:$MACHINE" in
 esac
 [ -x "$DIR/Bx.app/Contents/Resources/bx-cli" ] || { echo "包不完整:缺少 bx-cli" >&2; exit 1; }
 echo "即将安装 Bx.app 到 /Applications 并配置 bx(需要一次管理员授权)。"
-echo "安装不会启动保护、不修改你的连接配置。"
+echo "安装不修改你的连接配置。全新安装不会启动保护;若保护正在运行,安装会先征得你同意,"
+echo "再停止保护、换好文件、重启保护服务并把保护恢复到原状态(期间断网几秒)。"
 sudo "$DIR/Bx.app/Contents/Resources/bx-cli" app-install --app-source "$DIR/Bx.app"
 echo "完成。打开菜单栏的 bx 图标继续 Set Up。"
 SCRIPT
@@ -92,7 +93,9 @@ bx macOS $ARCH release ($VERSION)
 
 安装做了什么:
   将 Bx.app 装到 /Applications,并把 App 内嵌的 bx-cli 安装为系统 bx 命令、
-  配置 Guardian 保护服务与登录项。安装不会启动保护、不修改你的连接配置。
+  配置 Guardian 保护服务与登录项。安装不修改你的连接配置。
+  全新安装不会启动保护。若保护正在运行(覆盖安装/升级),安装会先问你一次,
+  再停止保护、换好文件、重启保护服务并把保护恢复到原状态——期间断网几秒。
 
 安装之后:
   打开菜单栏的 bx 图标,选择 Set Up bx... 继续配置。
@@ -103,7 +106,9 @@ bx macOS $ARCH release ($VERSION)
 
 Notes:
   install.sh 需要以你的普通 macOS 用户身份运行(会在需要时通过 sudo 请求一次管理员授权)。
-  install.sh 不会执行 bx setup、不会执行 bx up、不会修改 DNS/路由。
+  install.sh 不会执行 bx setup(你的连接配置一个字都不改)。
+  全新安装不启动保护、不修改 DNS/路由;覆盖安装到一台保护正在运行的机器上时,
+  安装会在你确认后重启保护——DNS 与路由随之被重新接管,这是恢复保护的必然结果。
   旧版客户端(升级前安装的 bx)对本包运行 bx update --package 会解包失败并干净报错,
   属预期行为(pre-1.0);请改用本 README 的安装方式重新安装。
 TXT
