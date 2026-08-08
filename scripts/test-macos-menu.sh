@@ -62,5 +62,12 @@ run_test toggle-controller \
 run_test quit-disposition \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
   "$MENU/Tests/QuitDispositionTests.swift"
+run_test guardian-failure-code \
+  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
+  "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/ToggleController.swift" \
+  "$MENU/Tests/GuardianFailureCodeTests.swift"
 
 echo "macOS menu tests passed"

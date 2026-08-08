@@ -792,17 +792,20 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                 let status = action == .turnOn ? try self.guardianClient.turnOn() : try self.guardianClient.turnOff()
                 failureCode = status.lastError
             } catch {
+                // Guardian 把失败码写在 500 响应体里,GuardianClient 已经在抛出
+                // 之前把它读出来了 —— 这是 toggleFailureHint 唯一的活水源:200
+                // 那条路上 Manager 早把 LastError 清了。
+                failureCode = guardianFailureCode(of: error)
                 transportError = error.localizedDescription
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.toggleInFlight = nil
                 self.stopToggleTicker()
-                if let transportError {
-                    self.toggleFailureText = transportError
-                } else if let failureCode {
-                    self.toggleFailureText = toggleFailureHint(code: failureCode) ?? "失败码 \(failureCode)"
-                }
+                self.toggleFailureText = toggleFailureMessage(
+                    code: failureCode,
+                    transportDescription: transportError
+                )
                 // 排队的 Quit 优先于常规收尾:不管刚落定的这个动作成不成功,
                 // 用户已经确认要退出,不能让他们再点一次。
                 if let pending = self.pendingQuit {
