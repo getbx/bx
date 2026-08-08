@@ -555,6 +555,12 @@ func macOSDownAction(c *urfavecli.Context) error {
 	if err != nil {
 		return err
 	}
+	// 用户明确要求关闭保护:销掉上一次未完成升级留下的欠条,免得下一次
+	// app-install(菜单的 Repair 还带 --yes,连问都不问)拿旧欠条把保护打开。
+	forgetUpgradeDebtOnExplicitOff(
+		func() error { return clearUpgradeIntent(upgradeIntentPath) },
+		func(line string) { fmt.Fprintln(os.Stderr, line) },
+	)
 	if result.Forced {
 		stepDone("Guardian", "已强制停止 bx")
 		if result.Cause != nil {
