@@ -56,5 +56,8 @@ run_test guardian-client-timeout \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Tests/GuardianClientTimeoutTests.swift"
+run_test toggle-controller \
+  "$MENU/Sources/BxMenu/ToggleController.swift" \
+  "$MENU/Tests/ToggleControllerTests.swift"
 
 echo "macOS menu tests passed"
