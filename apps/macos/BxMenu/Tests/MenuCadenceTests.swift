@@ -22,6 +22,24 @@ struct MenuCadenceTests {
         // 否则上一次还没回来下一次就发起了,等于常驻满占空比。
         expect(open >= 2, "打开时的间隔不得低于 2 秒,实际 \(open) 秒")
 
+        // 刷新闸门:2 秒的间隔比一次刷新(status --json 封顶 5 秒)还短,
+        // 慢的那一次必须让后来者**丢弃**而不是排队 —— 排队只会堆出一串
+        // 拿到时已经作废的刷新,每一次还各 spawn 两个子进程。
+        var gate = RefreshGate()
+        expect(gate.begin(), "首次刷新必须放行")
+        expect(!gate.begin(), "已有刷新在跑时必须挡掉,不得再发起")
+        expect(!gate.begin(), "连续挡掉的刷新是丢弃,不是排队")
+        expect(gate.skipped == 2, "被丢弃的次数应为 2,实际 \(gate.skipped)")
+        gate.end()
+        expect(gate.begin(), "上一次结束后必须能再刷新")
+        expect(gate.skipped == 2, "放行的一次不该计入丢弃,实际 \(gate.skipped)")
+
+        // end() 之后闸门必须真的开着 —— 忘了这一条会让菜单永久停更。
+        var reopened = RefreshGate()
+        _ = reopened.begin()
+        reopened.end()
+        expect(!reopened.inFlight, "end() 之后不得仍标记为进行中")
+
         if failures == 0 { print("MenuCadenceTests passed") } else { exit(1) }
     }
 }

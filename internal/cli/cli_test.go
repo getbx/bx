@@ -3211,3 +3211,55 @@ func TestSetupExtraArgsAreRejectedNotIgnored(t *testing.T) {
 		t.Errorf("无参数由既有的用法提示处理,这里不该报错:%v", err)
 	}
 }
+
+// 退出入口必须在每个 BxState 分支都能找到。此前 quitBxActionTitle 只出现在
+// .connected / .warning 两个分支里,.off / .setupNeeded / .missing /
+// .notInstalled / .updateNeeded 下菜单**没有任何退出入口**,用户只能等下次
+// 登录随 launchd 清场。main.swift 编不进 scripts/test-macos-menu.sh(它要
+// AppKit),这条不变量只能读源码文本来守。
+//
+// 守的是「无条件」而不是「出现过」:把那一次挪回任意一个 case 里,它在函数体
+// 里的花括号深度就不再是 0,守卫立刻转红——只数出现次数抓不到这种回退,因为
+// 挪进 .connected 之后次数还是 1。
+// (`if let inFlight` 那个提前 return 的进度浮层自带一次退出项,它在深度 1,
+// 不参与本计数;恢复浮层没有退出项是记录在案的既有取舍,见 CLAUDE.md。)
+func TestMacMenuQuitActionPresentInEveryState(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(source), "private func rebuildMenu()")
+	if !ok {
+		t.Fatal("找不到 rebuildMenu 的函数体")
+	}
+	unconditional := 0
+	depth := 0
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if depth == 0 && !strings.HasPrefix(trimmed, "//") && strings.Contains(trimmed, "quitBxActionTitle") {
+			unconditional++
+		}
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+	}
+	if unconditional != 1 {
+		t.Fatalf("退出项必须在 rebuildMenu 顶层(不在任何 case/if 里)无条件加一次,实际在顶层出现 %d 次", unconditional)
+	}
+}
+
+// 轮询必须按菜单开合调频,不能再固定 5 秒。
+//
+// 原实现不论有没有人看都 5 秒 spawn 两个进程(`bx --version` + `bx status --json`),
+// 而 macOS 上后者要跑完整观测、整轮封顶 5 秒——几乎满占空比。
+func TestMacMenuPollsOnCadence(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "menuPollInterval(menuOpen:") {
+		t.Fatal("刷新间隔必须来自 menuPollInterval,不得再硬编码")
+	}
+	if strings.Contains(text, "withTimeInterval: 5, repeats: true") {
+		t.Fatal("固定 5 秒的轮询定时器仍在,调频没有生效")
+	}
+}
