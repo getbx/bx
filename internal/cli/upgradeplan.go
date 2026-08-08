@@ -61,6 +61,21 @@ func upgradeCannotAskMessage(desiredOn bool) string {
 	)
 }
 
+// upgradeSwitchCommand 是「把 Guardian 切到已装好的新版」在终端里**真的能跑通**
+// 的那条命令。
+//
+// 不能写成 `sudo bx app-install`:/usr/local/bin/bx 是 bridge,它 syscall.Exec 到
+// /Library/Application Support/bx/runtime/<version>/bx,于是 appInstallAction 用
+// os.Executable() 反推 --app-source 时拿到的是 runtime 路径 —— 那里没有
+// /Bx.app/Contents/Resources/,bundleRootFromExecutable 直接报
+// "is not inside a Bx.app bundle"。一条抄下来必然失败的命令,比不给命令更糟。
+// 从 App 包里的 bx-cli 直接跑就没有这一跳:它自己就在 Bx.app 里,--app-source
+// 自动推成 /Applications/Bx.app,而 installAppBundle 认得「源与目的地是同一个」
+// (samePath)并跳过整树复制,其余步骤(runtime/bridge/Guardian plist/重启/恢复
+// 保护)照常做完 —— 这正是「完成切换」需要的。unifiedlayout.go 的
+// unifiedRepairHint 早就用的是这一条,两处保持一致。
+const upgradeSwitchCommand = "sudo " + darwinAppBundlePath + "/Contents/Resources/bx-cli app-install"
+
 // upVersionMismatchMessage 在 Guardian 跑着旧版时给出提示。
 //
 // 2026-08-08:`bx up` 能看到 runtime 是新版而自己是旧版,却照常报 Protected ——
@@ -70,8 +85,9 @@ func upVersionMismatchMessage(guardianVersion, runtimeVersion string) string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"! Guardian 仍在跑旧版 %s(已安装 %s)。执行 sudo bx app-install 完成切换(会断网几秒)。",
-		guardianVersion, runtimeVersion,
+		"! Guardian 仍在跑旧版 %s(已安装 %s)。执行 %s 完成切换(会断网几秒);"+
+			"或打开 Bx.app 点 Install bx…(同一条路)。",
+		guardianVersion, runtimeVersion, upgradeSwitchCommand,
 	)
 }
 
