@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/getbx/bx/internal/guardian"
@@ -27,14 +29,16 @@ import (
 
 // upgradeE2EEnv 是一台「Guardian 正跑着、保护开着」的机器。
 type upgradeE2EEnv struct {
-	store      *guardian.Store
-	client     *guardian.Client
-	deps       macOSLifecycleDeps
-	events     []string
-	socketPath string
+	store  *guardian.Store
+	client *guardian.Client
+	deps   macOSLifecycleDeps
+	events []string
 }
 
-func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
+// serveGuardian 把给定的 handler 挂到一个真的 unix socket 上,并回一个真的
+// guardian.Client —— CLI 与 Guardian 之间那条线因此全程是真的(客户端拼的 URL、
+// handler 的路由与鉴权、状态的 JSON 往返),没有任何一环被替身跳过。
+func serveGuardian(t *testing.T, handler http.Handler) *guardian.Client {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		// unix socket + /tmp 路径是这套 harness 的前提;Guardian 本就只在
@@ -47,7 +51,22 @@ func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "guard.sock")
+	daemon, err := guardian.StartDaemon(context.Background(), guardian.DaemonOptions{
+		SocketPath:      socketPath,
+		Handler:         handler,
+		OwnerUID:        uint32(os.Geteuid()),
+		PeerCredentials: func(net.Conn) (uint32, bool) { return 0, true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = daemon.Close() })
+	return guardian.NewClient(socketPath)
+}
 
+func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
+	t.Helper()
 	stateDir := t.TempDir()
 	store := guardian.OpenStore(guardian.Paths{
 		Desired:       filepath.Join(stateDir, "guardian-state.json"),
@@ -76,22 +95,56 @@ func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
 		t.Fatal(err)
 	}
 
-	socketPath := filepath.Join(socketDir, "guard.sock")
-	daemon, err := guardian.StartDaemon(context.Background(), guardian.DaemonOptions{
-		SocketPath:      socketPath,
-		Handler:         guardian.NewLocalAPI(manager),
-		OwnerUID:        uint32(os.Geteuid()),
-		PeerCredentials: func(net.Conn) (uint32, bool) { return 0, true },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = daemon.Close() })
-
-	env := &upgradeE2EEnv{store: store, client: guardian.NewClient(socketPath), socketPath: socketPath}
+	env := &upgradeE2EEnv{store: store, client: serveGuardian(t, guardian.NewLocalAPI(manager))}
 	env.deps = testMacOSLifecycleDeps(&env.events, env.client)
 	return env
 }
+
+// 版本不一致的提示必须在 `bx up` 实际走的那条路上真的能打印出来。
+//
+// 2026-08-08 复审 C2:提示读的是 result.Status.GuardianVersion/RuntimeVersion,
+// 而这两个字段此前只有 GET /v1/status 填;`bx up` 拿的是 POST /v1/up 的响应,
+// 且 Up 一报 Protected,waitGuardianProtected 立刻返回、根本不会再发 GET ——
+// 于是在这条提示唯一该出现的场合(Guardian=dev、runtime=phase2)它恒为空。
+// 原来的守卫用例只 grep 源码里有没有这次调用与字段名,值是空的照样绿。
+// 这个用例走真 socket、真 LocalAPI、真 Client,比的是**到达比较点时的值**。
+func TestUpLifecycleSeesGuardianAndRuntimeVersions(t *testing.T) {
+	client := serveGuardian(t, guardian.NewLocalAPI(
+		protectedStubController{},
+		guardian.LocalAPIOptions{
+			GuardianVersion: "dev",
+			RuntimeVersion:  func() string { return "phase2" },
+		},
+	))
+	var events []string
+	result, err := macOSUpLifecycle(context.Background(), "/etc/bx/config.yaml", testMacOSLifecycleDeps(&events, client))
+	if err != nil {
+		t.Fatalf("bx up 失败: %v", err)
+	}
+	if result.Status.GuardianVersion != "dev" || result.Status.RuntimeVersion != "phase2" {
+		t.Fatalf("比较点上的版本 = (%q, %q),两者都必须非空,否则提示永远打印不出来",
+			result.Status.GuardianVersion, result.Status.RuntimeVersion)
+	}
+	msg := upVersionMismatchMessage(result.Status.GuardianVersion, result.Status.RuntimeVersion)
+	if msg == "" {
+		t.Fatal("Guardian 跑 dev、盘上装 phase2,必须提示版本不一致")
+	}
+	if !strings.Contains(msg, "dev") || !strings.Contains(msg, "phase2") {
+		t.Fatalf("提示必须点名两个版本,实际 = %q", msg)
+	}
+}
+
+// protectedStubController 是一台「已经受保护」的 Guardian。
+//
+// 它只提供 Protection 这一位,版本字段刻意留空 —— 那两个字段该由 LocalAPI 的
+// options 填上,而那正是本用例要验的生产代码。
+type protectedStubController struct{}
+
+func (protectedStubController) Status() guardian.Status {
+	return guardian.Status{SchemaVersion: 1, Desired: guardian.DesiredOn, Protection: guardian.ProtectionProtected}
+}
+func (protectedStubController) Up(context.Context) error   { return nil }
+func (protectedStubController) Down(context.Context) error { return nil }
 
 // 一次中途失败的升级必须把欠条留在盘上 —— 哪怕它自己的第一步就是「停保护」。
 //
