@@ -361,8 +361,12 @@ func TestMacMenuQuitBxStopsProtectionThenQuitsMenu(t *testing.T) {
 	if !strings.Contains(text, "menu.addAction(quitBxActionTitle") {
 		t.Fatal("macOS menu should expose an explicit Quit bx action")
 	}
-	if !strings.Contains(text, "func quitBx()") || !strings.Contains(text, "'\\(bxPath)' down") {
-		t.Fatal("Quit bx should use the safe bx down path")
+	// Quit no longer shells out to `bx down` via AppleScript (that path is
+	// synchronous and blocked the menu for 71 minutes during the 2026-08-04
+	// incident); it now goes through performToggle(.turnOff), which talks to
+	// Guardian over the socket on a background queue.
+	if !strings.Contains(text, "func quitBx()") || !strings.Contains(text, "performToggle(.turnOff)") {
+		t.Fatal("Quit bx should use the safe Guardian turnOff path")
 	}
 	if !strings.Contains(text, "NSApp.terminate(nil)") {
 		t.Fatal("Quit bx should close the menu only after bx stops")
