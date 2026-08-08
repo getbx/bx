@@ -23,16 +23,31 @@ func TestMenuInstallerPassesYesAndWarnsAboutTheOutage(t *testing.T) {
 	if !strings.Contains(text, "app-install --yes --app-source") {
 		t.Fatal("菜单必须以 --yes 调用 app-install,否则 Install/Repair 会被无终端确认挡下")
 	}
-	for _, action := range []string{"Install bx?", "Repair bx?"} {
-		idx := strings.Index(text, action)
-		if idx < 0 {
-			t.Fatalf("找不到 %q 的确认框", action)
-		}
-		window := text[idx:min(idx+900, len(text))]
-		if !strings.Contains(window, "network drops") {
-			t.Fatalf("%q 的确认文案必须说明会断网(GUI 用户看不到 CLI 的提示)", action)
+	// 按**函数**切,不按字节窗口切。固定字节窗口会从 installBx 一路读进
+	// repairBx:删掉 Install 那句告知,Repair 的同一句会滑进窗口,测试照样绿
+	// (复审实测,当时只剩 27 字节余量),于是 GUI 用户点 Install bx… 断网前
+	// 一个字的警告都看不到 —— 而 --yes 又跳过了本可兜住的 CLI 提示。
+	for _, fn := range []string{"installBx", "repairBx"} {
+		body := swiftFuncBody(t, text, fn)
+		if !strings.Contains(body, "network drops") {
+			t.Fatalf("%s 的确认文案必须说明会断网(GUI 用户看不到 CLI 的提示)", fn)
 		}
 	}
+}
+
+// swiftFuncBody 截出一个 Swift 方法体:从 `func <name>(` 到下一个 `func ` 为止。
+func swiftFuncBody(t *testing.T, text, name string) string {
+	t.Helper()
+	marker := "func " + name + "("
+	start := strings.Index(text, marker)
+	if start < 0 {
+		t.Fatalf("找不到 Swift 方法 %s", name)
+	}
+	rest := text[start+len(marker):]
+	if next := strings.Index(rest, "func "); next >= 0 {
+		rest = rest[:next]
+	}
+	return rest
 }
 
 func TestBundleRootFromExecutable(t *testing.T) {
@@ -71,24 +86,33 @@ func TestConfirmationAcceptedOnlyOnExplicitYes(t *testing.T) {
 // 需要在非交互环境里升级的调用方显式加 --yes(菜单就是这么做的)。
 func TestConfirmPromptCancelsWithoutATerminal(t *testing.T) {
 	var out strings.Builder
-	if confirmPrompt(strings.NewReader("y\n"), false, &out, "升级需要重启保护,期间会断网几秒。现在继续吗?") {
+	agreed, err := confirmPrompt(strings.NewReader("y\n"), false, &out, "升级需要重启保护,期间会断网几秒。现在继续吗?")
+	if agreed {
 		t.Fatal("没有终端时必须取消,哪怕 stdin 里躺着一个 y")
 	}
-	if !strings.Contains(out.String(), "--yes") {
-		t.Fatalf("取消时必须告诉调用方怎么显式表态,实际 = %q", out.String())
+	// 而且必须**报错**而不是静静地返回「用户说不」:后者会让调用它的脚本
+	// (install.sh 在 set -e 下)接着打印「完成」,把没做的升级报成成功。
+	if err == nil {
+		t.Fatal("问不出来必须回传错误,不能与「用户明确说不」同形")
+	}
+	if !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("必须告诉调用方怎么显式表态,实际 = %q", err)
 	}
 }
 
 // 有终端时才真的问,并且照答案办。
 func TestConfirmPromptAsksOnATerminal(t *testing.T) {
 	var yes, no strings.Builder
-	if !confirmPrompt(strings.NewReader("y\n"), true, &yes, "继续吗?") {
-		t.Fatal("答 y 应继续")
+	agreed, err := confirmPrompt(strings.NewReader("y\n"), true, &yes, "继续吗?")
+	if !agreed || err != nil {
+		t.Fatalf("答 y 应继续,实际 agreed=%v err=%v", agreed, err)
 	}
 	if !strings.Contains(yes.String(), "继续吗?") {
 		t.Fatalf("必须把问题打给用户看,实际 = %q", yes.String())
 	}
-	if confirmPrompt(strings.NewReader("\n"), true, &no, "继续吗?") {
-		t.Fatal("直接回车应取消")
+	// 有终端时的「不」是正常结束,不是错误。
+	agreed, err = confirmPrompt(strings.NewReader("\n"), true, &no, "继续吗?")
+	if agreed || err != nil {
+		t.Fatalf("直接回车应取消且不报错,实际 agreed=%v err=%v", agreed, err)
 	}
 }
