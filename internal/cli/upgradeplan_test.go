@@ -2,7 +2,11 @@ package cli
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -264,5 +268,75 @@ func TestUpgradeCannotAskMessageDoesNotInventAnOutage(t *testing.T) {
 		if !strings.Contains(msg, "--yes") {
 			t.Fatalf("必须告诉调用方怎么显式表态,实际 = %q", msg)
 		}
+	}
+}
+
+// 「保护正在运行」这个说法已经被修过两次、regress 了两次(README、install.sh 的
+// 前言、README.txt 的正文、README.txt 的 Notes、--help),每次都是改了这一处、
+// 漏了那一处。它之所以反复回来,是因为它读起来很自然而事实上是错的:确认与中止
+// 的真实触发条件是 install.GuardianLoaded ——launchd 里那个 label 加载着,与保护
+// 开没开无关。装过 bx 但 bx down 之后,正是这个说法最容易骗到人的状态。
+//
+// 靠人盯已经证明不行,所以钉住它。
+func TestNoUserFacingCopyClaimsProtectionMustBeRunning(t *testing.T) {
+	// 必须先转绝对路径:WalkDir 的第一个回调是根目录本身,而相对根 "../.." 的
+	// d.Name() 就是 ".." —— 下面那条「跳过隐藏目录」会当场把整个遍历 SkipDir 掉,
+	// 守卫变成永远为绿的空壳(变异测试当场逮到过一次)。
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 排除本文件:它必然包含这个字符串(注释、搜索字面量、失败信息各一处),
+	// 否则守卫会检出自己。用 runtime.Caller 而不是写死文件名,改名也不会失效。
+	_, self, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("拿不到本测试文件路径")
+	}
+	// docs/ 是设计与计划的历史记录,不是用户可见文案,不在此列。
+	skipDirs := map[string]bool{".git": true, "docs": true, "dist": true, "node_modules": true}
+	var offenders []string
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		// 读不动的路径跳过而不是整个失败:本守卫的职责是找错误文案,
+		// 不是断言文件系统可读(仓库里有 root 拥有的测试日志目录)。
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") && d.Name() != "." {
+				return filepath.SkipDir
+			}
+			if skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		switch filepath.Ext(path) {
+		case ".go", ".sh", ".md", ".swift":
+		default:
+			return nil
+		}
+		if path == self {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		for i, line := range strings.Split(string(body), "\n") {
+			if strings.Contains(line, "保护正在运行") {
+				offenders = append(offenders, fmt.Sprintf("%s:%d", path, i+1))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("确认/中止的触发条件是「已装过 bx(Guardian 已加载)」,不是「保护正在运行」;"+
+			"以下位置仍是旧说法:\n  %s", strings.Join(offenders, "\n  "))
 	}
 }
