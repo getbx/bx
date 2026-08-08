@@ -127,6 +127,53 @@ func toggleFailureHint(code: String?) -> String? {
     }
 }
 
+/// socket 那条路失败之后还剩哪条路。
+///
+/// 只有**关闭**有后备,而且必须有:CLI 的 `bx down` 走
+/// `macOSDownLifecycleDetailed`(internal/cli/guardian.go:396),它在 Guardian
+/// 不可达、或应答了却拒绝关闭时都会落到 `forcedMacOSTeardown` 强制拆除——
+/// 持久化 desired=Off、停 Core、bootout Guardian、清屏障阻断路由、还原 DNS。
+/// 菜单改走 socket 之后把这条逃生路径整个丢了:Guardian 死掉而 Core 还活着时
+/// `bx status --json` 仍以 0 退出并报 needs_attention,菜单画成 .warning——那个
+/// 状态的菜单恰恰提供 Turn Off 与 Quit,而两者都会死在 connect() 上。
+/// 「停止」不得依赖先成功做成别的事(CLAUDE.md,2026-08-04 事故)。
+///
+/// 打开没有对应的东西:不存在「强制打开」,失败就是失败,不能拿 UAC/密码框
+/// 去骚扰一个只是没连上的用户。
+enum ToggleEscape: Equatable {
+    case none
+    /// 回落到特权 CLI `bx down`(会弹一次管理员授权框)。
+    case privilegedCLIDown
+}
+
+func toggleEscape(action: ToggleAction, socketSucceeded: Bool) -> ToggleEscape {
+    guard !socketSucceeded else { return .none }
+    switch action {
+    case .turnOn: return .none
+    case .turnOff: return .privilegedCLIDown
+    }
+}
+
+/// 逃生路径实际跑了没有、跑成了没有。
+enum ToggleEscapeOutcome: Equatable {
+    case notAttempted
+    case succeeded
+    case failed
+}
+
+/// 逃生路径要执行的 AppleScript(`do shell script … with administrator privileges`)。
+///
+/// 写成纯函数是为了让引号转义可测:bxPath 里的单引号会先按 shell 规则闭合再转义
+/// (`'\''`),整条命令再按 AppleScript 字符串规则转义反斜杠与双引号——两层顺序
+/// 搞反就是一个命令注入口子,而它在 main.swift 里不可测。
+func privilegedTurnOffScript(bxPath: String) -> String {
+    let command = "'" + bxPath.replacingOccurrences(of: "'", with: "'\\''") + "' down"
+    let escaped = command
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+    return "do shell script \"\(escaped)\" with administrator privileges"
+}
+
 /// 一次失败的开关在菜单里显示的那一行。
 ///
 /// 三级递降,每一级都比下一级更能让用户照做:
@@ -144,4 +191,40 @@ func toggleFailureMessage(code: String?, transportDescription: String?) -> Strin
         return "失败码 \(code)"
     }
     return transportDescription
+}
+
+/// 一次开关落定之后菜单显示的那一行,含逃生路径的结局。
+///
+/// 逃生成功也要说话:用户点的是「Turn Off」,实际发生的是「Guardian 关不掉,
+/// 改由特权 CLI 强制拆除」——这是两件不同的事,静默成功等于隐瞒 Guardian 已经
+/// 不听话了。逃生失败则必须把最后一条人工出路(在终端敲 sudo bx down)说出来,
+/// 那时菜单已经无路可走。
+func toggleResultText(code: String?, transportDescription: String?, escape: ToggleEscapeOutcome) -> String? {
+    let base = toggleFailureMessage(code: code, transportDescription: transportDescription)
+    switch escape {
+    case .notAttempted:
+        return base
+    case .succeeded:
+        return "Guardian 关不掉,已改用 sudo bx down 强制拆除完成"
+    case .failed:
+        let reason = base ?? "Guardian 关闭失败"
+        return reason + ";sudo bx down 也没能完成,请在终端手动执行 sudo bx down"
+    }
+}
+
+/// turn-off 每条路都失败之后,Quit 该不该退出。
+///
+/// **不退出。** 终止进程会抹掉菜单栏图标,而保护仍在跑——正是 CLAUDE.md 反复
+/// 拒绝交付的「保护在跑却没有任何指示灯」隐形状态(`Quit Menu` 就是因此被整个
+/// 删掉的)。退出唯一能换来的是「界面看起来听话了」,代价是用户既看不到保护还
+/// 开着、也再没有入口去关它,只能等下次登录。所以关不掉就留在原地,把失败连同
+/// 唯一的人工出路显示出来——用户可以照做之后再点一次 Quit。
+func quitTerminatesAfterTurnOff(turnedOff: Bool) -> Bool {
+    turnedOff
+}
+
+/// 关不掉因而没有退出时,弹给用户的那句话。
+func quitBlockedByFailedTurnOffMessage() -> String {
+    "bx 没能关闭,菜单继续保留——退出会让保护仍在运行却没有任何指示灯。" +
+        "请在终端执行 sudo bx down(它会在 Guardian 拒绝关闭时强制拆除),完成后再点 Quit bx。"
 }

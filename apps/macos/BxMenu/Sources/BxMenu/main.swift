@@ -746,8 +746,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         let disposition = quitDisposition(inFlight: toggleInFlight?.action)
         switch disposition {
         case .turnOffNow:
-            performToggle(.turnOff) {
-                NSApp.terminate(nil)
+            performToggle(.turnOff) { [weak self] turnedOff in
+                self?.finishQuit(turnedOff: turnedOff)
             }
         case .waitThenQuit, .waitThenTurnOffThenQuit:
             // 已经有一个动作在跑,performToggle 的 re-entrancy guard 会让第二次
@@ -772,11 +772,45 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         return runAppleScript(script)
     }
 
+    /// 在非主线程执行一段特权 AppleScript。
+    ///
+    /// 不用 `runPrivileged`/NSAppleScript:那是同步的、且 NSAppleScript 按 Apple
+    /// 的说法不是线程安全的,而这条路径只在后台队列上跑(它会阻塞到用户输完密码
+    /// 为止,放在主线程就是 2026-08-04 那种「菜单冻住」的复刻)。改 spawn
+    /// `/usr/bin/osascript` 子进程——独立进程,天然线程安全,授权框由系统
+    /// SecurityAgent 弹。
+    private func runPrivilegedScriptOffMainThread(_ script: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return false
+        }
+        return process.terminationStatus == 0
+    }
+
+    /// Quit 的收尾。关不掉就**不退出** —— 见 quitTerminatesAfterTurnOff。
+    private func finishQuit(turnedOff: Bool) {
+        guard quitTerminatesAfterTurnOff(turnedOff: turnedOff) else {
+            pendingQuit = nil
+            toggleFailureText = quitBlockedByFailedTurnOffMessage()
+            refresh()
+            showFailure("bx Is Still Running", quitBlockedByFailedTurnOffMessage())
+            return
+        }
+        NSApp.terminate(nil)
+    }
+
     /// 开/关保护。经 Guardian socket 发起,全程不阻塞主线程。
     ///
     /// 不再走 AppleScript `with administrator privileges`:那条路既要每次输密码,
     /// 又是同步的 —— 2026-08-04 事故里 bx down 卡了 71 分钟,菜单跟着冻了 71 分钟。
-    private func performToggle(_ action: ToggleAction, completion: (() -> Void)? = nil) {
+    private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {
         guard toggleInFlight == nil else { return }
         toggleFailureText = nil
         toggleInFlight = (action, Date())
@@ -786,11 +820,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
+            var succeeded = false
             var failureCode: String?
             var transportError: String?
             do {
                 let status = action == .turnOn ? try self.guardianClient.turnOn() : try self.guardianClient.turnOff()
                 failureCode = status.lastError
+                succeeded = true
             } catch {
                 // Guardian 把失败码写在 500 响应体里,GuardianClient 已经在抛出
                 // 之前把它读出来了 —— 这是 toggleFailureHint 唯一的活水源:200
@@ -798,13 +834,26 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                 failureCode = guardianFailureCode(of: error)
                 transportError = error.localizedDescription
             }
+            // 逃生路径:socket 关不掉就回落到特权 CLI `bx down`,它拥有
+            // forcedMacOSTeardown(Guardian 不可达或拒绝关闭时强制拆除)。
+            // 同步执行,故必须留在这条后台队列上,绝不能回主线程再跑。
+            var escape = ToggleEscapeOutcome.notAttempted
+            if toggleEscape(action: action, socketSucceeded: succeeded) == .privilegedCLIDown {
+                escape = self.runPrivilegedScriptOffMainThread(
+                    privilegedTurnOffScript(bxPath: self.bxPath)
+                ) ? .succeeded : .failed
+                if escape == .succeeded {
+                    succeeded = true
+                }
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.toggleInFlight = nil
                 self.stopToggleTicker()
-                self.toggleFailureText = toggleFailureMessage(
+                self.toggleFailureText = toggleResultText(
                     code: failureCode,
-                    transportDescription: transportError
+                    transportDescription: transportError,
+                    escape: escape
                 )
                 // 排队的 Quit 优先于常规收尾:不管刚落定的这个动作成不成功,
                 // 用户已经确认要退出,不能让他们再点一次。
@@ -814,16 +863,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
                         // 刚落定的是 turnOn(quitDisposition 只在这种情况下才会
                         // 产出 chainsTurnOffBeforeQuitting == true)——退出前必须
                         // 已关闭,再补一次 turnOff,它的 completion 才真正终止进程。
-                        self.performToggle(.turnOff) {
-                            NSApp.terminate(nil)
+                        self.performToggle(.turnOff) { [weak self] turnedOff in
+                            self?.finishQuit(turnedOff: turnedOff)
                         }
                     } else {
-                        NSApp.terminate(nil)
+                        // 刚落定的就是那次 turnOff:它成了才退出。
+                        self.finishQuit(turnedOff: succeeded)
                     }
                     return
                 }
                 self.refresh()
-                completion?()
+                completion?(succeeded)
             }
         }
     }
