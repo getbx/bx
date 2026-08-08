@@ -446,33 +446,162 @@ func TestMacMenuQuitTerminatesWhenThereIsNothingToTurnOff(t *testing.T) {
 	if !ok {
 		t.Fatal("找不到 quitBx 的函数体")
 	}
-	plan := strings.Index(body, "quitPlan(state:")
-	if plan < 0 {
+	// ① 判定必须被问到,且**方向不能反**。把 `== .terminateImmediately` 改成
+	// `!=` 能编译、能通过每一条 Go 与 Swift 测试,效果却是 `.connected` 下点 Quit
+	// 立刻终止进程 —— 保护还开着而菜单栏图标没了,正是本项目一贯拒绝交付的那个
+	// 状态。所以钉的是**配对**:terminateImmediately ⇒ terminate,其余 ⇒ 关闭路径。
+	lines := strings.Split(body, "\n")
+	planLine, planAt := "", -1
+	for i, line := range lines {
+		if strings.Contains(line, "quitPlan(state:") {
+			planLine, planAt = line, i
+		}
+	}
+	if planAt < 0 {
 		t.Fatal("quitBx 必须先问 quitPlan:没东西可关时那次 turnOff 注定失败,而失败之后按阶段①的裁决又不退出")
 	}
-	if !strings.Contains(body, ".terminateImmediately") {
-		t.Fatal("quitBx 必须对 quitPlan 的 terminateImmediately 表态")
+	if !strings.Contains(planLine, "== .terminateImmediately") {
+		t.Fatalf("quitPlan 的比较方向必须是 `== .terminateImmediately`:反过来会让 .connected 下点 Quit 直接终止进程,"+
+			"保护还开着而指示灯没了。实际那一行 = %q", strings.TrimSpace(planLine))
+	}
+	if strings.Contains(planLine, "!=") {
+		t.Fatalf("quitPlan 那一行不得出现 `!=`,实际 = %q", strings.TrimSpace(planLine))
+	}
+	// 配对的另一半:这个分支里紧接着必须就是 terminate,不能是别的动作。
+	next := ""
+	for _, line := range lines[planAt+1:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		next = trimmed
+		break
+	}
+	if next != "NSApp.terminate(nil)" {
+		t.Fatalf("terminateImmediately 那个分支必须紧接着 NSApp.terminate(nil),实际下一句 = %q", next)
 	}
 	// 顺序是关键:quitPlan 必须问在 quitDisposition/performToggle 之前,否则那次
 	// 注定失败的 socket 调用照样发出去,直接退出这条路永远走不到。
+	plan := strings.Index(body, "quitPlan(state:")
 	disposition := strings.Index(body, "quitDisposition(inFlight:")
-	if disposition >= 0 && plan > disposition {
-		t.Fatal("quitPlan 必须问在 quitDisposition 之前,否则注定失败的 turnOff 照样先发出去了")
+	if disposition < 0 {
+		t.Fatal("其余状态必须仍走关闭路径(quitDisposition),不得被这条捷径吃掉")
 	}
-	terminate := strings.Index(body, "NSApp.terminate(nil)")
-	if terminate < 0 {
-		t.Fatal("quitBx 必须在没东西可关时真的退出,而不只是算出一个没人用的结论")
+	if plan > disposition {
+		t.Fatal("quitPlan 必须问在 quitDisposition 之前,否则注定失败的 turnOff 照样先发出去了")
 	}
 	// terminate 只许出现在 quitPlan 那个分支里:落在它前面就是无条件退出,
 	// 那会把「关不掉就不退出」这条阶段①的裁决整个废掉(保护在跑却没有指示灯)。
-	if terminate < plan {
+	if terminate := strings.Index(body, "NSApp.terminate(nil)"); terminate < 0 || terminate < plan {
 		t.Fatal("quitBx 里的 terminate 必须由 quitPlan 把关,不得无条件退出")
 	}
-	// 映射必须逐 case 写在 menuStateKind 里(Swift 穷尽性检查兜住新增 case),
-	// 判定不许悄悄搬回 main.swift —— 那里编不进 Swift 测试套件。
-	if _, ok := swiftFunctionBody(text, "private func menuStateKind() -> MenuStateKind"); !ok {
-		t.Fatal("BxState → MenuStateKind 的映射必须是一个逐 case 的 switch,漏掉新 case 要能被编译器拦下")
+
+	// ② 映射必须**真的逐 case 覆盖 BxState**。此前这里只查函数存在,于是把函数体
+	// 整个换成 `return .connected`(签名不动、穷尽性 switch 没了)照样绿,而
+	// quitPlan 从此对每一个状态都收到错的输入 —— 守卫的注释宣称自己钉的是
+	// 「逐 case 写在 menuStateKind 里」,它并没有。现在按 BxState 的真实 case 列表逐条查。
+	mapping, ok := swiftFunctionBody(text, "private func menuStateKind() -> MenuStateKind")
+	if !ok {
+		t.Fatal("找不到 menuStateKind 的函数体")
 	}
+	if !strings.Contains(mapping, "switch state") {
+		t.Fatal("menuStateKind 必须是一个对 state 的 switch,漏掉新 case 才会被编译器拦下")
+	}
+	cases := swiftEnumCaseNames(text, "enum BxState {")
+	if len(cases) < 7 {
+		t.Fatalf("BxState 的 case 一条都没解析出来或少得可疑(%v),守卫等于没跑", cases)
+	}
+	for _, name := range cases {
+		if !strings.Contains(mapping, "case ."+name) {
+			t.Errorf("menuStateKind 漏了 BxState 的 .%s —— quitPlan 会收到一个错的状态", name)
+			continue
+		}
+		if name == "off" {
+			// `.off` 是唯一不做同名映射的:它按来路分成两支,分开裁决(见 OffOrigin)。
+			// 塌回一个结论就是本轮修复前那个「Guardian 已停也去弹授权框」的行为。
+			for _, want := range []string{".offGuardianResponding", ".offServiceStopped"} {
+				if !strings.Contains(mapping, want) {
+					t.Errorf(".off 必须按来路分成两支(缺 %s):两条来路证据强度不同,合并会让界面断言一件不成立的事", want)
+				}
+			}
+			continue
+		}
+		// 其余全是同名映射。把 `case .missing: return .connected` 这类错接抓住。
+		mapped := false
+		for _, line := range strings.Split(mapping, "\n") {
+			if strings.Contains(line, "case ."+name) && strings.Contains(line, "return ."+name) {
+				mapped = true
+			}
+		}
+		if !mapped {
+			t.Errorf("menuStateKind 必须把 BxState 的 .%s 映射到同名的 MenuStateKind.%s", name, name)
+		}
+	}
+}
+
+// `.off` 的两条来路必须**各自贴对标签**。
+//
+// quitPlan 对两支的裁决相反(信念 → 先关;新鲜观测 → 直接退出),所以标错等于
+// 把裁决整个接反,而这不会有任何编译错误:两个 OffOrigin 类型相同、互换照样编译。
+// 判定住在 quitPlan(QuitPlanTests 钉着),标签贴在 main.swift 的两个构造点上,
+// 那里编不进 Swift 测试套件。
+//
+// 证据在代码里就摆着:loadState 那一支是 `bx status --json` 跑通、报告解码成功、
+// menuProtectionVerdict 说保护关着 —— Guardian 就在应答,是个信念;diagnoseStopped
+// 那一支是 status 已经失败之后,doctor 又观测到 service_active != ok。
+func TestMacMenuOffOriginsMatchTheirEvidence(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, tt := range []struct {
+		fn, want, reject, why string
+	}{
+		{
+			fn: "private func loadState(", want: ".off(.guardianResponding)", reject: ".off(.serviceStopped)",
+			why: "status --json 跑通、Guardian 在应答 —— 这是一个可能过时的信念,Quit 必须先关",
+		},
+		{
+			fn: "private func diagnoseStopped(", want: ".off(.serviceStopped)", reject: ".off(.guardianResponding)",
+			why: "status --json 已失败 + doctor 刚看到 launchd job 没装载 —— 两条新鲜否定观测,Quit 应直接退出",
+		},
+	} {
+		body, ok := swiftFunctionBody(text, tt.fn)
+		if !ok {
+			t.Fatalf("找不到 %s 的函数体", tt.fn)
+		}
+		if !strings.Contains(body, tt.want) {
+			t.Errorf("%s 必须构造 %s:%s", tt.fn, tt.want, tt.why)
+		}
+		if strings.Contains(body, tt.reject) {
+			t.Errorf("%s 不得构造 %s —— 标错来路会把 quitPlan 的裁决整个接反(%s)", tt.fn, tt.reject, tt.why)
+		}
+	}
+}
+
+// 取一个 Swift enum 声明里所有 case 的名字(忽略关联值)。
+func swiftEnumCaseNames(source, signature string) []string {
+	body, ok := swiftFunctionBody(source, signature)
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "case ") {
+			continue
+		}
+		name := strings.TrimPrefix(trimmed, "case ")
+		name = strings.TrimSpace(name)
+		if cut := strings.IndexAny(name, "(:, \t"); cut >= 0 {
+			name = name[:cut]
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // Turning off must keep a working escape path when the Guardian socket call
@@ -3515,8 +3644,9 @@ func TestMacMenuUserFacingStringsAreEnglish(t *testing.T) {
 			t.Fatal(err)
 		}
 		scanned++
-		for i, line := range strings.Split(string(source), "\n") {
-			code := stripSwiftComment(line)
+		raw := strings.Split(string(source), "\n")
+		for i, code := range swiftCodeLines(string(source)) {
+			line := raw[i]
 			for _, r := range code {
 				if isCJK(r) {
 					t.Errorf("%s:%d 用户可见的字必须是英文(注释不在此列):%s",
@@ -3531,26 +3661,57 @@ func TestMacMenuUserFacingStringsAreEnglish(t *testing.T) {
 	}
 }
 
-// 去掉行尾注释。`//` 只有在**不处于字符串字面量中**时才算注释起点,
-// 否则 "https://…" 这类字面量会被从中间截断。
-func stripSwiftComment(line string) string {
-	inString := false
-	runes := []rune(line)
-	for i := 0; i < len(runes); i++ {
-		switch runes[i] {
-		case '\\':
-			if inString {
-				i++ // 跳过被转义的那个字符,别让 \" 结束字符串
-			}
-		case '"':
-			inString = !inString
-		case '/':
-			if !inString && i+1 < len(runes) && runes[i+1] == '/' {
-				return string(runes[:i])
+// 把源码逐行剥掉注释,返回与输入等长的「只剩代码」的行数组(下标即行号-1)。
+//
+// 行注释与**块注释**都要处理:`/* 中文 */` 若不剥,CJK 守卫会对一段合法的中文
+// 注释误报。`//` 与 `/*` 只有在**不处于字符串字面量中**时才算注释起点,
+// 否则 "https://…" 这类字面量会被从中间截断。块注释状态跨行保持。
+func swiftCodeLines(source string) []string {
+	lines := strings.Split(source, "\n")
+	out := make([]string, len(lines))
+	inBlock := false
+	for i, line := range lines {
+		runes := []rune(line)
+		var code []rune
+		inString := false
+		for j := 0; j < len(runes); j++ {
+			r := runes[j]
+			switch {
+			case inBlock:
+				if r == '*' && j+1 < len(runes) && runes[j+1] == '/' {
+					inBlock = false
+					j++
+				}
+			case inString:
+				code = append(code, r)
+				if r == '\\' && j+1 < len(runes) {
+					j++ // 跳过被转义的那个字符,别让 \" 结束字符串
+					code = append(code, runes[j])
+					continue
+				}
+				if r == '"' {
+					inString = false
+				}
+			case r == '"':
+				inString = true
+				code = append(code, r)
+			case r == '/' && j+1 < len(runes) && runes[j+1] == '/':
+				j = len(runes) // 行注释:本行到此为止
+			case r == '/' && j+1 < len(runes) && runes[j+1] == '*':
+				inBlock = true
+				j++
+			default:
+				code = append(code, r)
 			}
 		}
+		out[i] = string(code)
 	}
-	return line
+	return out
+}
+
+// 折叠连续空白,让按行钉死的表达式不被重新缩进/换空格弄红。
+func collapseSpaces(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func isCJK(r rune) bool {
@@ -3600,13 +3761,19 @@ func TestMacMenuAnomalyCountDrivesTheIcon(t *testing.T) {
 	if decision == "" {
 		t.Fatal("图标必须看数据行的异常计数:隧道不健康时 state 仍是 .connected,只看 state 会画出一面撒谎的绿盾")
 	}
-	// 计数必须**就地决定**返回哪一态。松一点的写法(全函数体里找得到 anomalyCount
-	// 和 .attention 就算过)抓不到 `_ = menuRowsNow().anomalyCount` 后面接一个
-	// 无条件 `return .protected` —— 算了又丢掉,与删掉接线的效果一模一样。
-	for _, want := range []string{".attention", ".protected", "return"} {
-		if !strings.Contains(decision, want) {
-			t.Fatalf("异常计数必须就地决定图标(缺 %q),不得算出来又丢掉:实际那一行 = %q", want, decision)
-		}
+	// 计数必须**就地决定**返回哪一态,而且**谓词本身也要钉死**。
+	//
+	// 这条守卫被收紧过两次,两次都是自己的假绿:
+	// ① 第一版只在整个函数体里找 anomalyCount 与 .attention,被
+	//    `_ = menuRowsNow().anomalyCount` + 无条件 `return .protected` 骗过;
+	// ② 第二版按行查 `.attention`/`.protected`/`return` 三个词都在,却仍被
+	//    `anomalyCount < 0 ? .attention : .protected` 骗过 —— 计数永远不小于 0,
+	//    于是盾牌恒为实心绿,而菜单正文里那行正写着 `Tunnel unhealthy ✗`。
+	// 谓词是一句机械的表达式,原样钉住即可;改写它的人应当先读这段。
+	const decisionExpr = "anomalyCount > 0 ? .attention : .protected"
+	if !strings.Contains(collapseSpaces(decision), decisionExpr) {
+		t.Fatalf("异常计数必须就地按 %q 决定图标(不得算了又丢掉、也不得改谓词方向):实际那一行 = %q",
+			decisionExpr, decision)
 	}
 	// `.unknown` 不计入异常是 MenuRows 那边的判定;这里顺带钉住 main.swift 不许
 	// 绕过 anomalyCount 自己数行(那会把「没问出来」重新压成「坏了」)。
