@@ -87,12 +87,12 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 		}
 		writeGuardianJSON(w, http.StatusOK, observableStatus(controller, pathRecoveryControllerFor(controller), options))
 	})
-	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations, options.OwnerUID, "/v1/up"))
+	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations, options, "/v1/up"))
 	// markUpgradeStop 只包 /v1/down:它把「这次停保护是升级自己的一步」翻译进
 	// 请求上下文,Manager.Down 据此保住升级欠条(见 upgradeintent.go)。
-	mux.HandleFunc("/v1/down", markUpgradeStop(mutationHandler(controller, controller.Down, mutations, options.OwnerUID, "/v1/down")))
+	mux.HandleFunc("/v1/down", markUpgradeStop(mutationHandler(controller, controller.Down, mutations, options, "/v1/down")))
 	migrationController, _ := controller.(MigrationController)
-	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations))
+	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations, options))
 	updateController, _ := controller.(UpdateController)
 	mux.HandleFunc("/v1/update", updateHandler(controller, updateController, mutations))
 	pathRecoveryController, _ := controller.(PathRecoveryController)
@@ -108,11 +108,25 @@ func pathRecoveryControllerFor(controller Controller) PathRecoveryController {
 	return pathRecoveryController
 }
 
+// applyVersionFields 填上「跑着的 Guardian 是哪一版」与「盘上装的是哪一版」。
+//
+// **每一个回 Status 的响应都要填**,不只 GET /v1/status:`bx up` 拿的是
+// POST /v1/up 的响应,而 macOSUpLifecycle 在 Up 已经报 Protected 时根本不会再发
+// 一次 GET(waitGuardianProtected 立刻返回)。只在 GET 上填,等于让「Guardian
+// 仍在跑旧版」这条提示在它唯一该出现的场合恒为空 —— 那正是 2026-08-08 复审 C2:
+// 一台 Guardian=dev / runtime=phase2 的机器上 `bx up` 一个字都不说。
 func applyVersionFields(status *Status, options LocalAPIOptions) {
 	status.GuardianVersion = options.GuardianVersion
 	if options.RuntimeVersion != nil {
 		status.RuntimeVersion = options.RuntimeVersion()
 	}
+}
+
+// statusWithVersions 是 mutation/migration handler 回给客户端的那份状态。
+func statusWithVersions(controller Controller, options LocalAPIOptions) Status {
+	status := statusOf(controller)
+	applyVersionFields(&status, options)
+	return status
 }
 
 func observableStatus(controller Controller, recoveries PathRecoveryController, options LocalAPIOptions) Status {
@@ -359,7 +373,7 @@ func updateHandler(controller Controller, updater UpdateController, mutations *a
 	}
 }
 
-func migrationHandler(controller Controller, migration MigrationController, mutations *acceptedMutations) http.HandlerFunc {
+func migrationHandler(controller Controller, migration MigrationController, mutations *acceptedMutations, options LocalAPIOptions) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -408,7 +422,7 @@ func migrationHandler(controller Controller, migration MigrationController, muta
 			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status(), err))
 			return
 		}
-		writeGuardianJSON(w, http.StatusOK, controller.Status())
+		writeGuardianJSON(w, http.StatusOK, statusWithVersions(controller, options))
 	}
 }
 
@@ -469,13 +483,13 @@ func (a *localAPI) waitForRecoveries(ctx context.Context) error {
 //
 // 两行都只有 uid / 端点 / 时间 / 成败这些非敏感字段。原始错误仍然只在
 // guardian_mutation_failed 那行里(见下),响应体照旧只带失败码。
-func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations, ownerUID uint32, endpoint string) http.HandlerFunc {
+func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations, options LocalAPIOptions, endpoint string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		if !authorizeOwnerPeer(r.Context(), ownerUID) {
+		if !authorizeOwnerPeer(r.Context(), options.OwnerUID) {
 			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "mutation requires root or owner peer"})
 			return
 		}
@@ -507,7 +521,8 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 		}
 		log.Printf("guardian_mutation_result endpoint=%s uid=%d outcome=ok elapsed=%s",
 			endpoint, uid, time.Since(started).Round(time.Millisecond))
-		writeGuardianJSON(w, http.StatusOK, controller.Status())
+		// 版本字段必须一起回:`bx up` 只看这一个响应,不会再补一次 GET /v1/status。
+		writeGuardianJSON(w, http.StatusOK, statusWithVersions(controller, options))
 	}
 }
 

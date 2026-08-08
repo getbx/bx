@@ -191,7 +191,7 @@ func TestMutationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 			controller.simulateNeedsAttention("core_ownership_uncertain")
 			return errors.New("inspect recorded Core PID 5129: boom")
 		},
-		newAcceptedMutations(), 0, "/v1/up")
+		newAcceptedMutations(), LocalAPIOptions{}, "/v1/up")
 
 	rec := httptest.NewRecorder()
 	handler(rec, rootMutationRequest(t))
@@ -228,7 +228,7 @@ func TestMutationHandlerReturnsCodeOnRepeatedIdenticalFailure(t *testing.T) {
 		controller.simulateNeedsAttention("core_ownership_uncertain")
 		return errors.New("inspect recorded Core PID 5129: boom")
 	}
-	handler := mutationHandler(controller, failingMutate, newAcceptedMutations(), 0, "/v1/up")
+	handler := mutationHandler(controller, failingMutate, newAcceptedMutations(), LocalAPIOptions{}, "/v1/up")
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		rec := httptest.NewRecorder()
@@ -287,7 +287,7 @@ func TestMutationHandlerOmitsStaleOrEmptyCodeWhenLastErrorUnchanged(t *testing.T
 			defer restore()
 
 			controller := &fakeController{status: Status{LastError: tt.before}}
-			handler := mutationHandler(controller, tt.mutate(controller), newAcceptedMutations(), 0, "/v1/up")
+			handler := mutationHandler(controller, tt.mutate(controller), newAcceptedMutations(), LocalAPIOptions{}, "/v1/up")
 
 			rec := httptest.NewRecorder()
 			handler(rec, rootMutationRequest(t))
@@ -395,7 +395,7 @@ func TestMigrationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 		migrateErr:           errors.New("inspect recorded Core PID 5129: boom"),
 		migrateSetsLastError: "legacy_core_migration_pending",
 	}
-	handler := migrationHandler(controller, controller, newAcceptedMutations())
+	handler := migrationHandler(controller, controller, newAcceptedMutations(), LocalAPIOptions{})
 
 	rec := httptest.NewRecorder()
 	handler(rec, rootMigrationRequest(t))
@@ -426,7 +426,7 @@ func TestMigrationHandlerOmitsStaleCodeWhenLastErrorUnchanged(t *testing.T) {
 		migrateErr: errors.New("migration admission failed"),
 		// migrateSetsLastError intentionally left empty.
 	}
-	handler := migrationHandler(controller, controller, newAcceptedMutations())
+	handler := migrationHandler(controller, controller, newAcceptedMutations(), LocalAPIOptions{})
 
 	rec := httptest.NewRecorder()
 	handler(rec, rootMigrationRequest(t))
@@ -1190,6 +1190,53 @@ func TestLocalAPIStatusExposesVersions(t *testing.T) {
 	}
 }
 
+// 版本字段必须跟着**每一个**回 Status 的响应走,不只 GET /v1/status。
+//
+// `bx up` 只看 POST /v1/up 的响应:Up 一报 Protected,waitGuardianProtected 就
+// 立刻返回,不会再补一次 GET。只在 GET 上填版本,等于让「Guardian 仍在跑旧版」
+// 这条提示在它唯一该出现的场合恒为空(2026-08-08 复审 C2)。/v1/down 与
+// /v1/migrate 同理:菜单与 legacy 迁移读的都是 mutation 的响应。
+func TestMutationResponsesCarryVersions(t *testing.T) {
+	options := LocalAPIOptions{
+		OwnerUID:        0,
+		GuardianVersion: "9.9.9",
+		RuntimeVersion:  func() string { return "8.8.8" },
+	}
+	for _, tc := range []struct {
+		path string
+		body string
+	}{
+		{path: "/v1/up"},
+		{path: "/v1/down"},
+		{path: "/v1/migrate", body: `{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"]}`},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			controller := &fakeController{
+				status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, CorePID: 42, Protection: ProtectionProtected},
+			}
+			var body io.Reader
+			if tc.body != "" {
+				body = strings.NewReader(tc.body)
+			}
+			request := httptest.NewRequest(http.MethodPost, tc.path, body)
+			request = request.WithContext(withPeerCredentials(request.Context(), 0, true))
+			recorder := httptest.NewRecorder()
+			NewLocalAPI(controller, options).ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("POST %s = %d, body=%s", tc.path, recorder.Code, recorder.Body.String())
+			}
+			var got Status
+			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.GuardianVersion != "9.9.9" || got.RuntimeVersion != "8.8.8" {
+				t.Fatalf("POST %s 回的版本 = (%q, %q),want (9.9.9, 8.8.8):客户端只看这一个响应",
+					tc.path, got.GuardianVersion, got.RuntimeVersion)
+			}
+		})
+	}
+}
+
 func TestLocalAPIStatusOmitsVersionsWhenNotProvided(t *testing.T) {
 	controller := &fakeController{
 		status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, CorePID: 42, Protection: ProtectionProtected},
@@ -1264,7 +1311,7 @@ func TestMutationHandlerNamesRecoveryIncompleteAndBusyFailures(t *testing.T) {
 
 			// LastError 停留在一条更早的、不相关的失败上,且这次调用不会更新它。
 			controller := &fakeController{status: Status{LastError: "stale_unrelated_code"}}
-			handler := mutationHandler(controller, func(context.Context) error { return tt.err }, newAcceptedMutations(), 0, "/v1/up")
+			handler := mutationHandler(controller, func(context.Context) error { return tt.err }, newAcceptedMutations(), LocalAPIOptions{}, "/v1/up")
 
 			rec := httptest.NewRecorder()
 			handler(rec, rootMutationRequest(t))
