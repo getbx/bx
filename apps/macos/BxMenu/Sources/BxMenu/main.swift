@@ -29,7 +29,7 @@ enum BxState {
     case off
 }
 
-final class BxMenuApp: NSObject, NSApplicationDelegate {
+final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let bxPath = "/usr/local/bin/bx"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let guardianClient = GuardianClient()
@@ -48,6 +48,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private var recoverySnapshot: RecoverySnapshot?
     private var reconnectInFlight = false
     private var repairVersions: (bundle: String?, runtime: String?, core: String?)?
+    /// 图标呼吸的驱动。只动 alpha,见 `applyBreathing`。
+    private var breathTimer: Timer?
+    private var breathPhase: Double = 0
+    /// 一次刷新未回时挡掉下一次(丢弃,不排队)。规则在 `RefreshGate`,这里只照做。
+    private var refreshGate = RefreshGate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         enforceSingleInstance()
@@ -55,9 +60,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         configureMenu()
         refresh()
         refreshUpdateCheck()
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
+        rescheduleRefreshTimer(menuOpen: false)
         updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { [weak self] _ in
             self?.refreshUpdateCheck()
         }
@@ -100,14 +103,38 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
     private func configureMenu() {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(openMenu)
-        statusItem.menu = NSMenu()
+        let menu = NSMenu()
+        menu.delegate = self
+        statusItem.menu = menu
     }
 
     @objc private func openMenu() {
         refresh()
     }
 
+    /// 刷新按菜单开合调频:有人在看就勤一点,没人看就别每 5 秒 spawn 两个进程。
+    private func rescheduleRefreshTimer(menuOpen: Bool) {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(
+            withTimeInterval: menuPollInterval(menuOpen: menuOpen), repeats: true
+        ) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        refresh()                              // 打开的瞬间数据要是新的
+        rescheduleRefreshTimer(menuOpen: true)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        rescheduleRefreshTimer(menuOpen: false)
+    }
+
     private func refresh() {
+        // 上一次还没回来就丢掉这一次:排队只会堆出一串拿到时已作废的刷新。
+        guard refreshGate.begin() else { return }
+        defer { refreshGate.end() }
         state = loadState()
         updateIcon()
         rebuildMenu()
@@ -202,58 +229,139 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
     private func updateIcon() {
         guard let button = statusItem.button else { return }
-        let indicator = recoverySnapshot.map { recoveryPresentation(for: $0).indicator }
-            ?? statusIndicator(for: statusIndicatorState())
-        button.image = compactStatusImage(for: indicator)
+        let style = menuIconStyle(state: menuIconStateNow())
+        button.image = compactStatusImage(for: style, tint: iconTint())
         button.imagePosition = .imageOnly
         button.title = ""
         button.toolTip = tooltipText()
+        applyBreathing(style.motion)
     }
 
-    private func statusIndicatorState() -> StatusIndicatorState {
+    /// 把菜单的八个状态收敛到图标的四态。
+    ///
+    /// 恢复浮层沿用它自己的判定(它比 `state` 知道得更多):正在跑 = 过渡态,
+    /// 失败 = 需要注意。**不能一律当过渡态** —— 那会把一次失败的恢复画成
+    /// 「正在忙」,而正在忙的图标是实心盾,与「保护中」只差快慢。
+    private func menuIconStateNow() -> MenuIconState {
+        if toggleInFlight != nil { return .transitioning }
+        if let snapshot = recoverySnapshot {
+            switch recoveryPresentation(for: snapshot).indicator {
+            case .yellow:
+                return .transitioning
+            case .red:
+                return .attention
+            case .green, .gray:
+                break   // 快照不再有话说,落回按 state 判定
+            }
+        }
         switch state {
         case .connected:
-            return .connected
-        case .warning:
-            return .warning
-        case .updateNeeded:
-            return .updateNeeded
-        case .setupNeeded:
-            return .setupNeeded
-        case .missing:
-            return .missing
-        case .notInstalled:
-            return .missing
-        case .off:
+            return menuRowsNow().anomalyCount > 0 ? .attention : .protected
+        case .warning, .updateNeeded:
+            return .attention
+        case .off, .setupNeeded, .missing, .notInstalled:
             return .off
         }
     }
 
-    private func compactStatusImage(for indicator: StatusIndicator) -> NSImage {
-        let size = NSSize(width: 18, height: 18)
-        let image = NSImage(size: size)
+    /// 颜色只作可选加强:去掉它四态仍靠形态可分(见 MenuIconTests)。
+    private func iconTint() -> NSColor {
+        switch menuIconStateNow() {
+        case .protected: return .systemGreen
+        case .attention: return .systemYellow
+        case .transitioning, .off: return .secondaryLabelColor
+        }
+    }
+
+    /// 盾形轮廓。数据是 16×16、y 向下,这里翻 y 并整体 +1 居中进 18×18 的图标框。
+    private func shieldPoint(_ point: (x: Double, y: Double)) -> NSPoint {
+        NSPoint(x: point.x + 1, y: 17 - point.y)
+    }
+
+    private func shieldPath() -> NSBezierPath {
+        let path = NSBezierPath()
+        for (index, point) in shieldOutlinePoints.enumerated() {
+            let p = shieldPoint(point)
+            if index == 0 { path.move(to: p) } else { path.line(to: p) }
+        }
+        path.close()
+        return path
+    }
+
+    /// 裂开的盾:同一条锯齿裂缝把盾切成两半,两半再各自错开一点——
+    /// 读起来是「已经滑开了」,不是「画了一条线」。
+    ///
+    /// 每一半 = 沿裂缝从顶点走到底尖,再沿自己那侧的外缘走回顶点。顺序不能乱:
+    /// 绕错了会自交成蝴蝶结,非零环绕规则下填出来是两个三角形,不是半个盾。
+    private func crackedShieldPaths() -> (left: NSBezierPath, right: NSBezierPath) {
+        func half(sideBackToApex: [(x: Double, y: Double)]) -> NSBezierPath {
+            let path = NSBezierPath()
+            for (index, point) in (shieldCrackPoints + sideBackToApex).enumerated() {
+                let p = shieldPoint(point)
+                if index == 0 { path.move(to: p) } else { path.line(to: p) }
+            }
+            path.close()
+            return path
+        }
+        // 轮廓点顺序:顶点 → 右上 → 右下弧 → 底尖 → 左下弧 → 左上
+        let leftSide = Array(shieldOutlinePoints[5...])                     // 底尖 → 左上
+        let rightSide = Array(shieldOutlinePoints[1...3].reversed())        // 底尖 → 右上
+        return (half(sideBackToApex: leftSide), half(sideBackToApex: rightSide))
+    }
+
+    private func compactStatusImage(for style: MenuIconStyle, tint: NSColor) -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18))
         image.lockFocus()
         defer { image.unlockFocus() }
-
-        let shield = NSImage(systemSymbolName: "shield", accessibilityDescription: "bx")!
-            .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))!
-        shield.draw(in: NSRect(x: 0, y: 1, width: 16, height: 16))
-
-        let color: NSColor
-        switch indicator {
-        case .green:
-            color = .systemGreen
-        case .yellow:
-            color = .systemYellow
-        case .red:
-            color = .systemRed
-        case .gray:
-            color = .secondaryLabelColor
+        tint.setFill()
+        tint.setStroke()
+        switch style.form {
+        case .filled:
+            shieldPath().fill()
+        case .hollow:
+            let path = shieldPath()
+            path.lineWidth = 1.35
+            path.stroke()
+        case .cracked:
+            let halves = crackedShieldPaths()
+            halves.left.transform(using: AffineTransform(translationByX: -0.65, byY: 0.15))
+            halves.right.transform(using: AffineTransform(translationByX: 0.65, byY: -0.3))
+            halves.left.fill()
+            halves.right.fill()
         }
-        color.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 12, y: 0, width: 6, height: 6)).fill()
         image.isTemplate = false
         return image
+    }
+
+    /// 呼吸靠周期性调 button.alphaValue 实现。
+    /// 不用 CABasicAnimation:状态项按钮的图层由 AppKit 托管,直接动 alpha
+    /// 简单且在图标被替换时不会残留动画。
+    private func applyBreathing(_ motion: MenuIconMotion) {
+        breathTimer?.invalidate()
+        breathTimer = nil
+        guard let button = statusItem.button else { return }
+        let period: Double
+        let floorAlpha: Double
+        switch motion {
+        case .still:
+            button.alphaValue = 1
+            return
+        case .breathe(let p):
+            period = p
+            floorAlpha = 0.45          // 稳态:幅度小到不盯着看注意不到
+        case .pulse(let p):
+            period = p
+            floorAlpha = 0.35          // 过渡态:更明显,用户在等
+        }
+        let step = 0.05
+        breathTimer = Timer.scheduledTimer(withTimeInterval: step, repeats: true) { [weak self] _ in
+            guard let self, let button = self.statusItem.button else { return }
+            self.breathPhase += step
+            let t = (self.breathPhase.truncatingRemainder(dividingBy: period)) / period
+            // 余弦让两端停留久一点,读起来像呼吸而不是闪
+            let eased = (1 - cos(t * 2 * Double.pi)) / 2
+            button.alphaValue = floorAlpha + (1 - floorAlpha) * (1 - eased)
+        }
     }
 
     private func tooltipText() -> String {
@@ -284,6 +392,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        // 每次都是新 NSMenu,delegate 必须跟着走 —— 漏一次,menuWillOpen/
+        // menuDidClose 从此不再触发,轮询就永远停在关闭档。
+        menu.delegate = self
         if let inFlight = toggleInFlight {
             let elapsed = Int(Date().timeIntervalSince(inFlight.startedAt))
             menu.addHeader("bx", subtitle: inFlight.action == .turnOn ? "Connecting" : "Disconnecting")
@@ -327,16 +438,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
             return
         }
         switch state {
-        case .connected(let report, let version, let dns):
+        case .connected(_, let version, _):
             menu.addHeader("bx", subtitle: "Connected")
             menu.addInfo("Status", "Protected")
             menu.addInfo("Network changes", "Automatically recovers safely after network changes")
-            menu.addInfo("Tunnel", "\(report.latencyMS) ms")
-            menu.addInfo("UDP Relay", udpRelayLabel(report.udpMode))
-            if let dns {
-                menu.addInfo("DNS", dns)
+            for row in menuRowsNow().rows {
+                let suffix: String
+                switch row.mark {
+                case .ok: suffix = ""
+                case .bad: suffix = "  ✗"
+                case .unknown: suffix = ""
+                }
+                menu.addInfo(row.label, row.value + suffix)
             }
-            menu.addInfo("Active", "\(report.active)")
             menu.addInfo("Version", version)
         case .warning(let message, let version):
             menu.addHeader("bx", subtitle: "Needs Attention")
@@ -424,31 +538,31 @@ final class BxMenuApp: NSObject, NSApplicationDelegate {
         case .connected:
             menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
-            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         case .warning("Repair Required", _):
             menu.addAction(repairActionTitle, symbol: "wrench.and.screwdriver", target: self, action: #selector(repairBx))
             menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
-            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         case .warning:
             menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
-            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         case .off, .updateNeeded, .setupNeeded, .missing, .notInstalled:
             // 这些状态的主动作已经排在诊断入口之前了,这里不再重复。
             break
         }
+        // 退出入口无条件加一次。**不要挪回上面任何一个 case**:此前它只在
+        // .connected/.warning 里,于是 .off/.setupNeeded/.missing/.notInstalled/
+        // .updateNeeded 下菜单没有任何退出入口(TestMacMenuQuitActionPresentInEveryState)。
+        menu.addItem(.separator())
+        menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
         statusItem.menu = menu
     }
 
-    private func udpRelayLabel(_ mode: String?) -> String {
-        switch mode {
-        case nil, "", "proxy":
-            return "On"
-        case "direct-realtime":
-            return "Direct"
+    private func menuRowsNow() -> MenuRowSet {
+        switch state {
+        case .connected(let report, _, let dns):
+            return menuRows(report: report, dns: dns)
         default:
-            return "Blocked"
+            return menuRows(report: nil, dns: nil)
         }
     }
 
