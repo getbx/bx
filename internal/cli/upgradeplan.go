@@ -45,11 +45,36 @@ func upgradeConfirmMessage(desiredOn bool) string {
 }
 
 func upgradeFailureMessage(step UpgradeStep, err error) string {
+	return upgradeFailureMessageWithNetwork(step, err, true)
+}
+
+// upgradeFailureMessageWithNetwork 在失败时如实说清「现在处于什么状态」。
+//
+// networkRestored=false 表示停保护那一步走了强制拆除(`bx down` 的逃生路径)。
+// 那条路是 best-effort,macOSDownAction 自己都只列举做过的动作、明确拒绝断言
+// 「网络已还原」;在这里替它断言「网络仍可正常使用」,就是把一句它不敢说的话
+// 说给一个可能正断着网的用户听。
+func upgradeFailureMessageWithNetwork(step UpgradeStep, err error, networkRestored bool) string {
 	switch step {
 	case UpgradeStopProtection:
-		return fmt.Sprintf("停止保护失败,升级未开始,当前状态未变:%v", err)
+		// 「当前状态未变」是假的:macOSDownLifecycleDetailed 只会在
+		// forcedMacOSTeardown 报错时返回错误,而那条逃生路径按设计会把六个
+		// 破坏性步骤**全做完**再报告(记 desired=off、请 Core 退出、bootout
+		// Guardian、删屏障阻断路由、还原系统 DNS)。保护已经被停过了。
+		return fmt.Sprintf(
+			"停止保护未能全部完成:%v\n"+
+				"新版本文件尚未安装(升级没有开始),但保护已经被停过,网络是否已恢复未经确认——"+
+				"请打开任意网页确认;若仍不通,执行 sudo bx uninstall(保留 /etc/bx 配置)后重新安装。", err,
+		)
 	default:
-		// 走到这里说明已经停过保护 —— 网络已还原为直连,可用。
+		if !networkRestored {
+			return fmt.Sprintf(
+				"升级未完成:%v\n"+
+					"停止保护时走了强制拆除,网络是否已恢复未经确认——请打开任意网页确认。"+
+					"若不通,执行 sudo bx uninstall 后重新安装。", err,
+			)
+		}
+		// 走到这里说明已经干净地停过保护 —— 网络已还原为直连,可用。
 		return fmt.Sprintf(
 			"升级未完成:%v\n网络仍可正常使用(直连,无保护)。"+
 				"若反复失败,执行 sudo bx uninstall 后重新安装。", err,

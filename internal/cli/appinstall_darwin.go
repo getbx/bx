@@ -41,79 +41,112 @@ func appInstallAction(c *urfavecli.Context) error {
 	if err != nil {
 		return err
 	}
+	configPath := c.String("config")
 
-	// 意图必须在动手之前读完:第一步(停保护)会把 desired 写成 off,之后再读
-	// 就永远是 off,保护再也回不来。
-	guardianRunning := install.GuardianActive()
-	desiredOn := upgradeDesiredOn(c.Context)
-	steps := upgradeSteps(guardianRunning, desiredOn)
-
-	// 只有确实要动运行中的 Guardian 时才问 —— 全新安装什么都不会中断。
-	if guardianRunning && !c.Bool("yes") {
-		if !confirmOnTTY(upgradeConfirmMessage(desiredOn)) {
-			fmt.Println("已取消,未做任何改动。")
-			return nil
-		}
-	}
-
-	var result install.UnifiedInstallResult
-	for _, step := range steps {
-		var stepErr error
-		switch step {
-		case UpgradeStopProtection:
-			fmt.Println("• 停止保护(网络将暂时回到直连)")
-			_, stepErr = macOSDownLifecycleDetailed(c.Context, c.String("config"), defaultMacOSLifecycleDeps())
-		case UpgradeInstallFiles:
-			fmt.Println("• 安装新版本文件")
-			result, stepErr = install.UnifiedInstall(install.UnifiedInstallOptions{
+	outcome, err := runUpgrade(upgradeIO{
+		guardianRunning: func() (bool, error) { return install.GuardianLoaded(c.Context) },
+		loadDesiredOn:   func() bool { return upgradeDesiredOn(c.Context) },
+		saveIntent:      func(desiredOn bool) error { return saveUpgradeIntent(upgradeIntentPath, desiredOn) },
+		clearIntent:     func() error { return clearUpgradeIntent(upgradeIntentPath) },
+		confirm:         confirmOnTTY,
+		stopProtection: func() (bool, error, error) {
+			result, err := macOSDownLifecycleDetailed(c.Context, configPath, defaultMacOSLifecycleDeps())
+			// 出错时 macOSDownLifecycleDetailed 返回零值 result(Forced=false),
+			// 但错误只可能来自 forcedMacOSTeardown —— 也就是说强制拆除确实跑过。
+			return result.Forced || err != nil, result.Cause, err
+		},
+		installFiles: func() (installedFiles, error) {
+			result, err := install.UnifiedInstall(install.UnifiedInstallOptions{
 				BundlePath:  source,
-				ConfigPath:  c.String("config"),
+				ConfigPath:  configPath,
 				ConsoleHome: account.HomeDir,
 				ConsoleUID:  uid,
 				ConsoleGID:  gid,
 			})
-		case UpgradeRestartGuardian:
-			fmt.Println("• 重启保护服务(使新版本生效)")
-			stepErr = restartGuardianForUpgrade(c.Context)
-		case UpgradeStartProtection:
-			fmt.Println("• 恢复保护")
-			_, stepErr = macOSUpLifecycle(c.Context, c.String("config"), defaultMacOSLifecycleDeps())
-		}
-		if stepErr != nil {
-			return errors.New(upgradeFailureMessage(step, stepErr))
+			return installedFiles{
+				Version:           result.Version,
+				AppPath:           result.AppPath,
+				RuntimeExecutable: result.RuntimeExecutable,
+			}, err
+		},
+		restartGuardian: func() error { return restartGuardianForUpgrade(c.Context) },
+		startProtection: func() error {
+			_, err := macOSUpLifecycle(c.Context, configPath, defaultMacOSLifecycleDeps())
+			return err
+		},
+		log: func(line string) { fmt.Println(line) },
+	}, c.Bool("yes"))
+	if outcome.ForcedTeardown {
+		// bx down 走逃生路径时会如实告知,这里不能把它吞掉:那条路是 best-effort,
+		// 可能没能真正让网络恢复。
+		if outcome.ForcedCause != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Guardian 正常关闭事务失败(%v),已改走强制停止;请自行确认网络是否恢复。\n", outcome.ForcedCause)
+		} else {
+			fmt.Fprintln(os.Stderr, "⚠️  Guardian 未响应,已改走强制停止;请自行确认网络是否恢复。")
 		}
 	}
+	if err != nil {
+		return err
+	}
+	if outcome.Cancelled {
+		fmt.Println("已取消,未做任何改动。")
+		return nil
+	}
 
-	fmt.Printf("✓ 已安装 Bx.app %s → %s\n", result.Version, result.AppPath)
-	fmt.Printf("✓ runtime → %s\n", result.RuntimeExecutable)
+	fmt.Printf("✓ 已安装 Bx.app %s → %s\n", outcome.Files.Version, outcome.Files.AppPath)
+	fmt.Printf("✓ runtime → %s\n", outcome.Files.RuntimeExecutable)
 	fmt.Println("✓ 命令行入口 /usr/local/bin/bx 与 Guardian 服务已就绪")
 	// 安装刚改过 plist(可执行路径可能变了),必须强制重载才能生效。
 	if err := ensureMacOSMenuReloaded(uid, true); err != nil {
 		fmt.Printf("! 菜单栏未能自动启动(可手动打开 Bx.app): %v\n", err)
 	}
-	if desiredOn {
-		fmt.Println("升级完成,保护已按升级前的状态恢复。")
-		return nil
-	}
-	fmt.Println("下一步:菜单栏 Set Up bx,或 sudo bx setup <client-link> && sudo bx up")
+	// 收尾文案由**做过的事**导出,不由「打算做什么」导出。
+	fmt.Println(appInstallNextStep(outcome.ProtectionRestored, configured(configPath)))
 	return nil
+}
+
+// appInstallNextStep 挑一句收尾。
+//
+// 「下一步:sudo bx setup <client-link>」只对从没配过的机器成立;对一台刚升级完
+// 的机器说这句,等于让用户去重做一遍他早就做过的事。
+func appInstallNextStep(protectionRestored, configured bool) string {
+	switch {
+	case protectionRestored:
+		return "升级完成,保护已按升级前的状态恢复。"
+	case configured:
+		return "安装完成(未启动保护)。开启保护:sudo bx up,或用菜单栏的开关。"
+	default:
+		return "下一步:菜单栏 Set Up bx,或 sudo bx setup <client-link> && sudo bx up"
+	}
+}
+
+func configured(configPath string) bool {
+	_, err := os.Stat(configPath)
+	return err == nil
 }
 
 // upgradeDesiredOn 回答「这台机器此刻想不想开着保护」,决定升级末尾要不要把
 // 保护起回来。
 //
-// 取自 Guardian 自己的 desired store(/var/lib/bx/guardian-state.json):那正是
-// Guardian 开机时据以决定要不要起保护的状态,也是 bx down 写 off 的地方 ——
-// 用同一份状态才不会和 Guardian 的判断分家。文件不存在按 off(Store.LoadDesired
-// 的语义),即从未装过/从未开过。
+// 两个来源合成(resolveUpgradeDesiredOn):
+//   - 上一次未完成升级留下的欠条(upgradeIntentPath)。**没有它就修不好重试**:
+//     第一步会把 desired 写成 off,重试时读 store 只会读到 off。
+//   - Guardian 自己的 desired store(/var/lib/bx/guardian-state.json):那正是
+//     Guardian 开机时据以决定要不要起保护的状态,也是 bx down 写 off 的地方。
+//     文件不存在按 off(Store.LoadDesired 的语义),即从未装过/从未开过。
 //
-// 只有读**失败**(损坏、不可读)时才退而问运行中的 Guardian 控制 socket:一个
-// 正在 Protected 的实例,其意图必然是 on。两处都问不出来就当 off —— 宁可让用户
+// 只有 store **读失败**(损坏、不可读)时才退而问运行中的 Guardian 控制 socket:
+// 一个正在 Protected 的实例,其意图必然是 on。都问不出来就当 off —— 宁可让用户
 // 自己 sudo bx up,也不要在不知情的情况下替他把保护打开。
 //
 // 调用点必须早于第一步:UpgradeStopProtection 无论走干净路径还是强制拆除,都会
 // 把 desired 记成 off。
 func upgradeDesiredOn(ctx context.Context) bool {
+	pending, present := loadUpgradeIntent(upgradeIntentPath)
+	return resolveUpgradeDesiredOn(guardianDesiredOn(ctx), pending, present)
+}
+
+func guardianDesiredOn(ctx context.Context) bool {
 	if desired, err := guardian.OpenDefaultStore().LoadDesired(); err == nil {
 		return desired == guardian.DesiredOn
 	}
