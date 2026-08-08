@@ -10,12 +10,13 @@ enum ToggleAction {
     case turnOn
     case turnOff
 
-    /// 进行中的动词。用「正在连接/正在断开」而非「启动中/停止中」,
-    /// 与菜单其余文案(已保护/未保护)保持同一套说法。
+    /// 进行中的动词。用 Connecting/Disconnecting 而非 Starting/Stopping,
+    /// 与菜单其余文案(Connected / Off)保持同一套说法。
+    /// 菜单全英文:这是用户看得见的字,与 rebuildMenu 里的表头/数据行同一语言。
     var progressVerb: String {
         switch self {
-        case .turnOn: return "正在连接"
-        case .turnOff: return "正在断开"
+        case .turnOn: return "Connecting"
+        case .turnOff: return "Disconnecting"
         }
     }
 }
@@ -25,7 +26,7 @@ enum ToggleAction {
 /// 秒数是这一期最核心的产出:2026-08-04 事故里 `bx down` 卡了 71 分钟,
 /// 界面全程没有一个字。
 func toggleProgressText(action: ToggleAction, elapsedSeconds: Int) -> String {
-    "\(action.progressVerb)… \(max(0, elapsedSeconds)) 秒"
+    "\(action.progressVerb)… \(max(0, elapsedSeconds))s"
 }
 
 /// 逾时提示;未达阈值返回 nil(调用方据此决定要不要多画一行)。
@@ -35,7 +36,7 @@ func toggleProgressText(action: ToggleAction, elapsedSeconds: Int) -> String {
 /// 恒定被忽略的入参。
 func toggleSlowHint(elapsedSeconds: Int) -> String? {
     guard elapsedSeconds >= toggleSlowThresholdSeconds else { return nil }
-    return "比预期久,通常 3 秒内完成"
+    return "Taking longer than usual — this normally finishes within about 3 seconds"
 }
 
 /// 失败码 → 用户能照做的下一步。
@@ -171,19 +172,20 @@ func quitDisposition(inFlight: ToggleAction?) -> QuitDisposition {
 /// Quit 排队等待当前动作完成时,菜单该显示的一行——不能让界面看起来
 /// 像没事发生:用户已经确认退出,必须能看到"退出请求收到了"。
 func quitQueuedStatusText() -> String {
-    "将在当前操作完成后退出"
+    "Will quit once the current operation finishes"
 }
 
 func toggleFailureHint(code: String?) -> String? {
     guard let code, !code.isEmpty else { return nil }
     switch code {
     case "core_ownership_uncertain":
-        return "若确认没有第二个 bx 在跑,执行 sudo bx down 再 sudo bx up 可清除这条已锁存的判定"
+        return "If no second bx is running, run sudo bx down then sudo bx up to clear this latched judgement"
     case "recovery_incomplete":
-        return "菜单直接调用没有后备,请改在终端执行 sudo bx down(不是再点一次开关)——" +
-            "命令行在 Guardian 拒绝关闭时会自动强制拆除脱困;拆除后再试 sudo bx up"
+        return "The menu's direct call has no fallback. Run sudo bx down in Terminal " +
+            "(not this toggle again) — the command line forces a teardown when Guardian " +
+            "refuses to stop. Then try sudo bx up"
     case "guardian_busy":
-        return "Guardian 正在处理上一个请求,稍候重试"
+        return "Guardian is still handling the previous request — retry shortly"
     default:
         return nil
     }
@@ -250,7 +252,7 @@ func toggleFailureMessage(code: String?, transportDescription: String?) -> Strin
         return hint
     }
     if let code, !code.isEmpty {
-        return "失败码 \(code)"
+        return "Failure code \(code)"
     }
     return transportDescription
 }
@@ -267,10 +269,10 @@ func toggleResultText(code: String?, transportDescription: String?, escape: Togg
     case .notAttempted:
         return base
     case .succeeded:
-        return "Guardian 关不掉,已改用 sudo bx down 强制拆除完成"
+        return "Guardian could not turn bx off; completed by forced teardown via sudo bx down"
     case .failed:
-        let reason = base ?? "Guardian 关闭失败"
-        return reason + ";sudo bx down 也没能完成,请在终端手动执行 sudo bx down"
+        let reason = base ?? "Turning bx off through Guardian failed"
+        return reason + "; sudo bx down did not complete either — run sudo bx down in Terminal yourself"
     }
 }
 
@@ -287,6 +289,7 @@ func quitTerminatesAfterTurnOff(turnedOff: Bool) -> Bool {
 
 /// 关不掉因而没有退出时,弹给用户的那句话。
 func quitBlockedByFailedTurnOffMessage() -> String {
-    "bx 没能关闭,菜单继续保留——退出会让保护仍在运行却没有任何指示灯。" +
-        "请在终端执行 sudo bx down(它会在 Guardian 拒绝关闭时强制拆除),完成后再点 Quit bx。"
+    "bx did not stop, so the menu stays. Quitting now would leave protection running " +
+        "with no indicator at all. Run sudo bx down in Terminal (it forces a teardown when " +
+        "Guardian refuses to stop), then click Quit bx again."
 }

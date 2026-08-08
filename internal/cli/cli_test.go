@@ -3491,6 +3491,80 @@ func TestMacMenuDrainsSubprocessPipesBeforeWaiting(t *testing.T) {
 	}
 }
 
+// 菜单栏 app 里**用户看得见的字**必须全英文。
+//
+// 阶段①的开关文案(Connecting / Disconnecting、逾时提示、三条失败指引)与阶段②
+// 的数据行同处一个菜单,一中一英是两套语气拼在一起。代码注释不在此列 —— 它们
+// 是写给读源码的人的,项目通篇中文注释。
+//
+// 判据是「非注释部分不得出现中日韩字符」:Sources 里的 CJK 只可能出现在注释或
+// 字符串里,注释剥掉之后剩下的就是用户看得见的那部分。
+func TestMacMenuUserFacingStringsAreEnglish(t *testing.T) {
+	dir := filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanned := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".swift") {
+			continue
+		}
+		source, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		scanned++
+		for i, line := range strings.Split(string(source), "\n") {
+			code := stripSwiftComment(line)
+			for _, r := range code {
+				if isCJK(r) {
+					t.Errorf("%s:%d 用户可见的字必须是英文(注释不在此列):%s",
+						entry.Name(), i+1, strings.TrimSpace(line))
+					break
+				}
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("一个 Swift 源文件都没扫到,守卫等于没跑")
+	}
+}
+
+// 去掉行尾注释。`//` 只有在**不处于字符串字面量中**时才算注释起点,
+// 否则 "https://…" 这类字面量会被从中间截断。
+func stripSwiftComment(line string) string {
+	inString := false
+	runes := []rune(line)
+	for i := 0; i < len(runes); i++ {
+		switch runes[i] {
+		case '\\':
+			if inString {
+				i++ // 跳过被转义的那个字符,别让 \" 结束字符串
+			}
+		case '"':
+			inString = !inString
+		case '/':
+			if !inString && i+1 < len(runes) && runes[i+1] == '/' {
+				return string(runes[:i])
+			}
+		}
+	}
+	return line
+}
+
+func isCJK(r rune) bool {
+	switch {
+	case r >= 0x4E00 && r <= 0x9FFF: // 汉字
+		return true
+	case r >= 0x3000 && r <= 0x303F: // 中日韩标点(、。「」——)
+		return true
+	case r >= 0xFF00 && r <= 0xFFEF: // 全角形式(,:;)
+		return true
+	}
+	return false
+}
+
 // 数据行的异常计数必须真的驱动图标。
 //
 // 三态行模型(ok / bad / unknown)整个存在的理由就是这一条:`.connected` 不是
