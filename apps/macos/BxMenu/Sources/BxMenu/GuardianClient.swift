@@ -36,7 +36,9 @@ enum GuardianClientError: LocalizedError {
     case invalidResponse
     case responseTooLarge
     case contentType
-    case status(Int)
+    /// Guardian 回了一个不是我们要的状态码。`code` 是它在响应体里附的失败码
+    /// (仅 500 会带),**可能合法缺席** —— 见 `guardianFailureCode(body:contentLength:)`。
+    case status(Int, code: String?)
 
     var errorDescription: String? {
         switch self {
@@ -48,10 +50,45 @@ enum GuardianClientError: LocalizedError {
             return "Guardian response exceeded its safety limit."
         case .contentType:
             return "Guardian returned a non-JSON response."
-        case .status(let code):
-            return "Guardian request failed (\(code))."
+        case .status(let status, let code):
+            guard let code, !code.isEmpty else {
+                return "Guardian request failed (\(status))."
+            }
+            return "Guardian request failed (\(status), code=\(code))."
         }
     }
+}
+
+/// Guardian 失败响应体里菜单用得上的字段。
+///
+/// 契约在 Go 侧 `internal/guardian/localapi.go` 的 `failureResponseBody`
+/// (`{"error":…,"code":…}`),`internal/guardian/client.go` 的
+/// `guardianFailureBody` 是同一份镜像。四个 mutation handler
+/// (mutation/update/migration/recoveryRequest)都只在 **500** 上写它。
+private struct GuardianFailureBody: Decodable {
+    let error: String?
+    let code: String?
+}
+
+/// 从失败响应体里取出 Guardian 的失败码。
+///
+/// `code` 会**合法缺席**:`failureResponseBody` 只在这次调用真的走过
+/// `needsAttention`(用递增代际号判定,不是值比较),或者错误本身是
+/// `recovery_incomplete`/`guardian_busy` 这两个短路哨兵时才写它。其余失败
+/// 宁可不带码也不肯回放一个陈旧的值 —— 错的码比没有码更糟,它把排查引向
+/// 错误方向。所以这里也必须让「缺席」如实保持为 nil,绝不替它编一个。
+func guardianFailureCode(body: Data, contentLength: Int) -> String? {
+    guard body.count == contentLength else { return nil }
+    guard let failure = try? JSONDecoder().decode(GuardianFailureBody.self, from: body) else { return nil }
+    guard let code = failure.code, !code.isEmpty else { return nil }
+    return code
+}
+
+/// 从一次抛出的错误里取出 Guardian 的失败码;不是「Guardian 明确回了状态码」
+/// 这类错误(连不上、响应损坏等)一律 nil。
+func guardianFailureCode(of error: Error) -> String? {
+    guard case GuardianClientError.status(_, let code) = error else { return nil }
+    return code
 }
 
 private struct GuardianHTTPHead {
@@ -150,10 +187,18 @@ struct GuardianClient {
 
 func decodeGuardianHTTPResponse<T: Decodable>(_ response: Data, expectedStatus: Int, as type: T.Type) throws -> T {
     let head = try parseGuardianHTTPHead(response)
-    guard head.status == expectedStatus else {
-        throw GuardianClientError.status(head.status)
-    }
     let body = response[head.bodyOffset...]
+    guard head.status == expectedStatus else {
+        // 失败码必须在这里取:抛出之前不读响应体,整套 toggleFailureHint 就
+        // 永远拿不到码(Guardian 的码只在 500 上,而 200 那条路上 Manager
+        // 已经把 LastError 清掉了),用户只会看到 "Guardian request
+        // failed (500)."。响应体损坏/长度对不上时取不到码 —— 那就没有码,
+        // 但状态码本身仍要如实抛出,不能因为体读不动就变成 invalidResponse。
+        throw GuardianClientError.status(
+            head.status,
+            code: guardianFailureCode(body: body, contentLength: head.contentLength)
+        )
+    }
     guard body.count == head.contentLength else {
         throw GuardianClientError.invalidResponse
     }

@@ -126,3 +126,22 @@ func toggleFailureHint(code: String?) -> String? {
         return nil
     }
 }
+
+/// 一次失败的开关在菜单里显示的那一行。
+///
+/// 三级递降,每一级都比下一级更能让用户照做:
+/// ① 认识这个码 → 给出这个码专属的下一步;
+/// ② 有码但不认识(将来新增的码、更旧/更新的 Guardian)→ 如实报码,用户能拿去搜或贴给我们;
+/// ③ 没有码(Guardian 根本没回码,或压根没连上)→ 报传输层的描述。
+///
+/// 「没有码」不能被伪装成有码:`toggleFailureHint` 对 nil/空码返回 nil,这里
+/// 也绝不替它补一句通用套话冒充专属指引。
+func toggleFailureMessage(code: String?, transportDescription: String?) -> String? {
+    if let hint = toggleFailureHint(code: code) {
+        return hint
+    }
+    if let code, !code.isEmpty {
+        return "失败码 \(code)"
+    }
+    return transportDescription
+}
