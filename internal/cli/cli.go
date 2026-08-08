@@ -4272,7 +4272,8 @@ const observeTimeout = 5 * time.Second
 
 func readClientStatusReport() (clientStatusReport, error) {
 	return readClientStatusReportWithObserver(
-		readStatusReport, readGuardianStatus, runtime.GOOS, observerForPlatform(runtime.GOOS))
+		readStatusReport, readGuardianStatus, runtime.GOOS, observerForPlatform(runtime.GOOS),
+	)
 }
 
 // observerForPlatform 只在观测原语真实存在的平台上附观测。

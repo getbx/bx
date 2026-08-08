@@ -66,11 +66,13 @@ func buildDarwinUninstallPlan(consoleUID int, consoleHome string, unifiedLayout 
 	}
 
 	if consoleUID > 0 && consoleHome != "" {
-		plan.LaunchctlCommands = append(plan.LaunchctlCommands,
+		plan.LaunchctlCommands = append(
+			plan.LaunchctlCommands,
 			[]string{"launchctl", "bootout", fmt.Sprintf("gui/%d/%s", consoleUID, darwinMenuLaunchdLabel)},
 		)
 		agentDir := filepath.Join(consoleHome, "Library", "LaunchAgents")
-		plan.RemovePaths = append(plan.RemovePaths,
+		plan.RemovePaths = append(
+			plan.RemovePaths,
 			filepath.Join(agentDir, darwinMenuLaunchdLabel+".plist"),
 			filepath.Join(agentDir, darwinLegacyMenuLaunchdLabel+".plist"),
 		)

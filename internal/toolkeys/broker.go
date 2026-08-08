@@ -25,6 +25,7 @@ func NewBroker(store *Store, audit *Audit, client *http.Client) *Broker {
 	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Broker{store: store, audit: audit, client: &clone}
 }
+
 func (b *Broker) Do(ctx context.Context, in APIRequest, surface string) (APIResponse, error) {
 	started := time.Now()
 	c, err := b.store.Resolve(in.CredentialID)

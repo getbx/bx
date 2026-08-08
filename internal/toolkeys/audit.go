@@ -35,6 +35,7 @@ func OpenAudit(path string, retention time.Duration) (*Audit, error) {
 	}
 	return &Audit{path: path, retention: retention}, nil
 }
+
 func (a *Audit) Record(entry AuditEntry) error {
 	if strings.Contains(entry.Path, "?") {
 		return fmt.Errorf("audit path cannot contain query")

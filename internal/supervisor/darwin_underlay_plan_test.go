@@ -13,7 +13,8 @@ func TestDarwinUnderlayPlanChangesOnlyExactBypasses(t *testing.T) {
 	old := mustUnderlaySnapshot(t, "en0", "::ffff:192.168.50.2", "192.168.50.27/24")
 	next := mustUnderlaySnapshot(t, "en1", "192.168.1.1", "192.168.1.42/24")
 
-	plan, err := darwinUnderlayPlan(old, next,
+	plan, err := darwinUnderlayPlan(
+		old, next,
 		[]string{"203.0.113.9/32", "203.0.113.9/32"},
 		[]string{"10.44.0.0/16", "10.44.0.0/16", "192.200.0.101/32"},
 	)
@@ -100,7 +101,8 @@ func TestDarwinUnderlayPlanFallbackDeletesOnlyMissingExactBypass(t *testing.T) {
 func TestDarwinUnderlayPlanNeverTouchesCaptureRoutes(t *testing.T) {
 	old := mustUnderlaySnapshot(t, "en0", "192.168.50.2", "192.168.50.27/24")
 	next := mustUnderlaySnapshot(t, "en1", "192.168.1.1", "192.168.1.42/24")
-	plan, err := darwinUnderlayPlan(old, next,
+	plan, err := darwinUnderlayPlan(
+		old, next,
 		[]string{"203.0.113.9/32"},
 		[]string{"10.44.0.0/16", "192.200.0.101/32"},
 	)

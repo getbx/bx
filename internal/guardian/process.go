@@ -272,7 +272,8 @@ func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord, hop str
 		// 问不出来不等于没有。
 		return uncertainOwnership(
 			Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true},
-			fmt.Errorf("durable launch marker with no PID, and scanning for running Cores failed: %w; %s", err, ownershipUncertainEscapeHint))
+			fmt.Errorf("durable launch marker with no PID, and scanning for running Cores failed: %w; %s", err, ownershipUncertainEscapeHint),
+		)
 	}
 	if len(cores) > 0 {
 		// 扫到的进程是「疑似」而非「已验明的我们的 Core」——诊断信息(PID)
@@ -283,7 +284,8 @@ func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord, hop str
 		// 状态——扫到的进程从未被验明是我们的 Core。
 		return uncertainOwnership(
 			Process{PID: record.PID, Executable: record.Executable, Generation: record.Generation, Uncertain: true},
-			fmt.Errorf("durable launch marker with no PID, and Core appears to be running (PID %s); %s", scannedCorePIDs(cores), ownershipUncertainEscapeHint))
+			fmt.Errorf("durable launch marker with no PID, and Core appears to be running (PID %s); %s", scannedCorePIDs(cores), ownershipUncertainEscapeHint),
+		)
 	}
 	// 这是「我允许了一个 Core 启动,因为我认为没有别的 Core 在跑」的唯一记录:
 	// 出事时必须能定位到是哪一跳、看的哪个状态文件、判的哪条记录。扫描的普查
@@ -432,7 +434,8 @@ func (r *ExecCoreRunner) Existing(ctx context.Context) (Process, error) {
 		// 那个用旧快照还原,掀掉另一个的劫持 → status 显绿而流量明文直连。
 		return Process{}, uncertainOwnership(
 			Process{PID: record.PID, Uncertain: true},
-			errors.New("spawned Core record has a live process whose identity was never verified"))
+			errors.New("spawned Core record has a live process whose identity was never verified"),
+		)
 	}
 	expected := Process{PID: record.PID, Executable: record.Executable, UID: 0, Generation: record.Generation}
 	same, err := sameProcessIdentity(expected, process)

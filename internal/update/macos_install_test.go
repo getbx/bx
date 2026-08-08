@@ -124,7 +124,7 @@ func TestPreparedInstallCommitDurablyRemovesStagingLast(t *testing.T) {
 	}
 	snapshotRemove := "remove " + prepared.options.SnapshotDir
 	stagingRemove := "remove " + prepared.options.StagingDir
-	var snapshotIndex, stagingIndex = -1, -1
+	snapshotIndex, stagingIndex := -1, -1
 	for index, event := range env.ops.events {
 		if event == snapshotRemove {
 			snapshotIndex = index
