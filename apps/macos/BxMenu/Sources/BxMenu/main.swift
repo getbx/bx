@@ -65,7 +65,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         enforceSingleInstance()
         ensureLoginItemIfCanonical()
         configureMenu()
-        refresh()
+        // 启动那一次不可能撞上在途刷新,补跑与否无意义;标 false 以免被读成用户动作。
+        refresh(userInitiated: false)
         refreshUpdateCheck()
         rescheduleRefreshTimer(menuOpen: false)
         updateTimer = commonModeTimer(every: 24 * 60 * 60, tolerance: 60) { [weak self] in
@@ -151,7 +152,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func rescheduleRefreshTimer(menuOpen: Bool) {
         timer?.invalidate()
         timer = commonModeTimer(every: menuPollInterval(menuOpen: menuOpen)) { [weak self] in
-            self?.refresh()
+            self?.refresh(userInitiated: false)
         }
     }
 
@@ -163,7 +164,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         rescheduleRefreshTimer(menuOpen: true)
-        refresh(userInitiated: true)   // 异步:数据回来后就地更新已经展开的这个菜单
+        // 异步:数据回来后就地更新已经展开的这个菜单。
+        //
+        // 标 userInitiated 是**有意的判断**,尽管打开菜单不是一次变更的结果:若这次
+        // 撞上在途刷新而不补跑,用户看到的是那次刷新**在他打开之前**采样的数据
+        // (落定时已陈旧最多 5 秒),而菜单开着时的 2 秒拍每次撞上在途刷新也照样被丢
+        // 且不补 —— 两条本该兜底的路径都不保证「打开之后采过一次」。补跑正好保证
+        // 这一次,且每次打开最多补一次,不会像定时器那样接成满占空比。
+        refresh(userInitiated: true)
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -177,7 +185,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 就地更新,所以结果统一回主线程由 `applyRefresh` 一次落定。
     /// `userInitiated` = 这一次是用户动作(点开菜单、setup、开关、更新)的直接后果。
     /// 只有这一类在被丢弃后会补跑;定时器那一拍丢了就丢了(见 RefreshGate.begin)。
-    private func refresh(userInitiated: Bool = false) {
+    ///
+    /// **刻意不给默认值。** 漏传的代价是静默的:用户刚开完/关完保护,那次刷新若正好
+    /// 撞上在途的一次就被丢掉且不补,菜单要到下一个自然拍才纠正(关闭档最长 30 秒)——
+    /// 没有任何报错。给了默认值,新加的调用点会默默落进「不补跑」那一档;不给,
+    /// 编译器强制每个调用点当场表态。裸 `refresh()` 另有 Go 守卫兜(CI 不编 Swift)。
+    private func refresh(userInitiated: Bool) {
         // 上一次还没回来就丢掉这一次:排队只会堆出一串拿到时已作废的刷新。
         guard refreshGate.begin(userInitiated: userInitiated) else { return }
         let inFlight = reconnectInFlight
@@ -716,7 +729,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 showFailure("Start Failed", "bx is configured, but did not start.")
             }
         }
-        refresh()
+        refresh(userInitiated: true)
     }
 
     @objc private func installBx() {
@@ -1101,7 +1114,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                     return
                 }
-                self.refresh()
+                self.refresh(userInitiated: true)
                 completion?(succeeded)
             }
         }
