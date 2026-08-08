@@ -87,8 +87,8 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 		}
 		writeGuardianJSON(w, http.StatusOK, observableStatus(controller, pathRecoveryControllerFor(controller), options))
 	})
-	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations))
-	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down, mutations))
+	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations, options.OwnerUID))
+	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down, mutations, options.OwnerUID))
 	migrationController, _ := controller.(MigrationController)
 	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations))
 	updateController, _ := controller.(UpdateController)
@@ -147,7 +147,7 @@ func recoveryRequestHandler(controller Controller, recovery PathRecoveryControll
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		if !authorizeRecoveryPeer(r.Context(), ownerUID) {
+		if !authorizeOwnerPeer(r.Context(), ownerUID) {
 			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "recovery requires owner or root peer"})
 			return
 		}
@@ -268,7 +268,7 @@ func recoveryCurrentHandler(controller PathRecoveryController, ownerUID uint32) 
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		if !authorizeRecoveryPeer(r.Context(), ownerUID) {
+		if !authorizeOwnerPeer(r.Context(), ownerUID) {
 			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "recovery requires owner or root peer"})
 			return
 		}
@@ -280,7 +280,13 @@ func recoveryCurrentHandler(controller PathRecoveryController, ownerUID uint32) 
 	}
 }
 
-func authorizeRecoveryPeer(ctx context.Context, ownerUID uint32) bool {
+// authorizeOwnerPeer 是「root 或 config 里配置的 owner」这条判据。
+//
+// ownerUID 为 0(未配置)时退化为 root-only —— 绝不因为「没配」就放宽。
+// 守着 /v1/recoveries(路径恢复)与 /v1/up、/v1/down(日常开关)。
+// 装卸(/v1/update)与迁移(/v1/migrate)刻意不用它,见
+// TestLocalAPIUpdateAndMigrateStayRootOnlyEvenWithOwnerConfigured。
+func authorizeOwnerPeer(ctx context.Context, ownerUID uint32) bool {
 	credentials, _ := ctx.Value(peerCredentialsKey{}).(peerCredentials)
 	if !credentials.got {
 		return false
@@ -440,15 +446,14 @@ func (a *localAPI) waitForRecoveries(ctx context.Context) error {
 	return errors.Join(recoveryErr, pathRecoveryErr)
 }
 
-func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations) http.HandlerFunc {
+func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations, ownerUID uint32) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		credentials, _ := r.Context().Value(peerCredentialsKey{}).(peerCredentials)
-		if !credentials.got || credentials.uid != 0 {
-			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "mutation requires root peer"})
+		if !authorizeOwnerPeer(r.Context(), ownerUID) {
+			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "mutation requires root or owner peer"})
 			return
 		}
 		if !mutations.accept() {

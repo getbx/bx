@@ -190,7 +190,7 @@ func TestMutationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 			controller.simulateNeedsAttention("core_ownership_uncertain")
 			return errors.New("inspect recorded Core PID 5129: boom")
 		},
-		newAcceptedMutations())
+		newAcceptedMutations(), 0)
 
 	rec := httptest.NewRecorder()
 	handler(rec, rootMutationRequest(t))
@@ -227,7 +227,7 @@ func TestMutationHandlerReturnsCodeOnRepeatedIdenticalFailure(t *testing.T) {
 		controller.simulateNeedsAttention("core_ownership_uncertain")
 		return errors.New("inspect recorded Core PID 5129: boom")
 	}
-	handler := mutationHandler(controller, failingMutate, newAcceptedMutations())
+	handler := mutationHandler(controller, failingMutate, newAcceptedMutations(), 0)
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		rec := httptest.NewRecorder()
@@ -286,7 +286,7 @@ func TestMutationHandlerOmitsStaleOrEmptyCodeWhenLastErrorUnchanged(t *testing.T
 			defer restore()
 
 			controller := &fakeController{status: Status{LastError: tt.before}}
-			handler := mutationHandler(controller, tt.mutate(controller), newAcceptedMutations())
+			handler := mutationHandler(controller, tt.mutate(controller), newAcceptedMutations(), 0)
 
 			rec := httptest.NewRecorder()
 			handler(rec, rootMutationRequest(t))
@@ -733,14 +733,11 @@ func TestRecoveryLocalAPIAuthorizesOnlyRootOrConfiguredOwner(t *testing.T) {
 		})
 	}
 
-	controller := &fakeController{}
-	request := httptest.NewRequest(http.MethodPost, "/v1/up", nil)
-	request = request.WithContext(withPeerCredentials(request.Context(), 501, true))
-	recorder := httptest.NewRecorder()
-	NewLocalAPI(controller, LocalAPIOptions{OwnerUID: 501}).ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusForbidden || controller.upCalls != 0 {
-		t.Fatalf("owner-only lifecycle mutation = status %d calls %d, want root-only", recorder.Code, controller.upCalls)
-	}
+	// 此处曾额外钉住「配置了 owner 时 /v1/up 仍 root-only」——那是
+	// authorizeOwnerPeer 只覆盖 /v1/recoveries 时的旧策略。本任务把同一判据
+	// 推广到 /v1/up、/v1/down(菜单栏日常开关),故该断言已被有意反转,
+	// 覆盖范围由 TestLocalAPIUpDownAcceptsConfiguredOwner 承接
+	// (root/owner/other-user/no-credentials 四态皆有专门用例)。
 }
 
 func TestRecoveryLocalAPIRejectsUnsafeMetadataAndRedactsCoreFailures(t *testing.T) {
@@ -1266,7 +1263,7 @@ func TestMutationHandlerNamesRecoveryIncompleteAndBusyFailures(t *testing.T) {
 
 			// LastError 停留在一条更早的、不相关的失败上,且这次调用不会更新它。
 			controller := &fakeController{status: Status{LastError: "stale_unrelated_code"}}
-			handler := mutationHandler(controller, func(context.Context) error { return tt.err }, newAcceptedMutations())
+			handler := mutationHandler(controller, func(context.Context) error { return tt.err }, newAcceptedMutations(), 0)
 
 			rec := httptest.NewRecorder()
 			handler(rec, rootMutationRequest(t))
@@ -1288,6 +1285,64 @@ func TestMutationHandlerNamesRecoveryIncompleteAndBusyFailures(t *testing.T) {
 			// 响应仍只带码,原始错误串只进 Guardian 日志。
 			if !strings.Contains(buf.String(), tt.err.Error()) {
 				t.Errorf("Guardian 日志必须记录完整错误,实际 = %q", buf.String())
+			}
+		})
+	}
+}
+
+// 菜单栏以普通用户身份连 Guardian socket 开关保护,不再弹管理员密码框。
+// 该判据早已存在并守着 /v1/recoveries(路径恢复会重装路由,同样是改网络的操作),
+// 此处把它推广到日常开关。装卸与迁移不在其列,见下一条测试。
+func TestLocalAPIUpDownAcceptsConfiguredOwner(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		uid      uint32
+		gotUID   bool
+		wantCode int
+		wantUp   int
+		wantDown int
+	}{
+		{name: "owner up", path: "/v1/up", uid: 501, gotUID: true, wantCode: http.StatusOK, wantUp: 1},
+		{name: "owner down", path: "/v1/down", uid: 501, gotUID: true, wantCode: http.StatusOK, wantDown: 1},
+		{name: "root up", path: "/v1/up", uid: 0, gotUID: true, wantCode: http.StatusOK, wantUp: 1},
+		{name: "other user up", path: "/v1/up", uid: 502, gotUID: true, wantCode: http.StatusForbidden},
+		{name: "no credentials", path: "/v1/up", wantCode: http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			controller := &fakeController{status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, Protection: ProtectionProtected}}
+			request := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			request = request.WithContext(withPeerCredentials(request.Context(), tt.uid, tt.gotUID))
+			recorder := httptest.NewRecorder()
+			NewLocalAPI(controller, LocalAPIOptions{OwnerUID: 501}).ServeHTTP(recorder, request)
+			if recorder.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d, body=%s", recorder.Code, tt.wantCode, recorder.Body.String())
+			}
+			if controller.upCalls != tt.wantUp {
+				t.Fatalf("Up calls = %d, want %d", controller.upCalls, tt.wantUp)
+			}
+			if controller.downCalls != tt.wantDown {
+				t.Fatalf("Down calls = %d, want %d", controller.downCalls, tt.wantDown)
+			}
+		})
+	}
+}
+
+// 回归守卫:装卸与版本迁移**不**随开关一起放开。
+// 没有这条,将来一次「顺手把判据统一一下」就会把 update/migrate 也交给普通用户,
+// 而那两个动作会改磁盘上的二进制与服务定义,后果与开关完全不同量级。
+func TestLocalAPIUpdateAndMigrateStayRootOnlyEvenWithOwnerConfigured(t *testing.T) {
+	for _, path := range []string{"/v1/update", "/v1/migrate"} {
+		t.Run(path, func(t *testing.T) {
+			controller := &fakeController{status: Status{SchemaVersion: 1}}
+			request := httptest.NewRequest(http.MethodPost, path, nil)
+			request = request.WithContext(withPeerCredentials(request.Context(), 501, true))
+			recorder := httptest.NewRecorder()
+			NewLocalAPI(controller, LocalAPIOptions{OwnerUID: 501}).ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("%s status = %d, want 403 (owner 不得装卸/迁移), body=%s",
+					path, recorder.Code, recorder.Body.String())
 			}
 		})
 	}
