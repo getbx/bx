@@ -27,11 +27,13 @@ struct RefreshGate {
     private(set) var inFlight = false
     /// 被丢掉的次数。持续增长说明刷新比间隔还慢,是调间隔的依据。
     private(set) var skipped = 0
+    private var pending = false
 
     /// true = 调用方应当真的去刷新;false = 已有一次在跑,这次丢掉。
     mutating func begin() -> Bool {
         if inFlight {
             skipped += 1
+            pending = true
             return false
         }
         inFlight = true
@@ -39,7 +41,15 @@ struct RefreshGate {
     }
 
     /// 刷新结束(成功与否都要调),否则闸门永久关死、菜单从此不再更新。
-    mutating func end() {
+    ///
+    /// 返回 true 表示**补跑一次**。丢弃期间被挡掉的刷新里,有些是用户刚做完
+    /// 某个动作(开/关/setup)后发起的 —— 全丢掉的话,菜单会把用户自己那一下
+    /// 的结果报错到下一拍(关闭档下最长 30 秒)。补跑是**一次性的**:补跑期间
+    /// 再被挡掉的会再置一次 pending,但永远不会堆成队列。
+    mutating func end() -> Bool {
         inFlight = false
+        guard pending else { return false }
+        pending = false
+        return true
     }
 }

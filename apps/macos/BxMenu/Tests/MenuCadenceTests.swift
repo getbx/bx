@@ -30,14 +30,17 @@ struct MenuCadenceTests {
         expect(!gate.begin(), "已有刷新在跑时必须挡掉,不得再发起")
         expect(!gate.begin(), "连续挡掉的刷新是丢弃,不是排队")
         expect(gate.skipped == 2, "被丢弃的次数应为 2,实际 \(gate.skipped)")
-        gate.end()
+        expect(gate.end(), "有刷新被挡掉过,结束时必须要求补跑一次")
         expect(gate.begin(), "上一次结束后必须能再刷新")
         expect(gate.skipped == 2, "放行的一次不该计入丢弃,实际 \(gate.skipped)")
+
+        // 补跑是一次性的,不是队列:挡掉两次也只补一次。
+        expect(!gate.end(), "没有新的刷新被挡掉时不得再要求补跑")
 
         // end() 之后闸门必须真的开着 —— 忘了这一条会让菜单永久停更。
         var reopened = RefreshGate()
         _ = reopened.begin()
-        reopened.end()
+        expect(!reopened.end(), "没被挡过就不该补跑")
         expect(!reopened.inFlight, "end() 之后不得仍标记为进行中")
 
         if failures == 0 { print("MenuCadenceTests passed") } else { exit(1) }
