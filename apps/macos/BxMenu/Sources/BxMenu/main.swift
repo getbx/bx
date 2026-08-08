@@ -104,6 +104,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(openMenu)
         let menu = NSMenu()
+        // delegate 只在这里设一次,菜单对象此后**永不更换**(rebuildMenu 就地重填)。
+        // 换对象就等于换掉 delegate:menuWillOpen/menuDidClose 不再触发,轮询
+        // 永久停在关闭档;而且 AppKit 在用户点击那一刻就捕获了当时的菜单对象,
+        // 换上去的新菜单要到下一次打开才看得见。
         menu.delegate = self
         statusItem.menu = menu
     }
@@ -112,30 +116,62 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
-    /// 刷新按菜单开合调频:有人在看就勤一点,没人看就别每 5 秒 spawn 两个进程。
+    /// 刷新按菜单开合调频:有人在看就勤一点,没人看就别每 5 秒 spawn 四个进程。
+    ///
+    /// **必须挂进 `.common` 模式**:菜单展开期间主 runloop 处于
+    /// `NSEventTrackingRunLoopMode`,`Timer.scheduledTimer` 只进 `.default`,
+    /// 于是打开档那 2 秒一次在菜单开着的时候一次都不会触发(实测 0 次 vs
+    /// `.default` 下同样一秒 10 次)——正是它唯一该干活的时候。
     private func rescheduleRefreshTimer(menuOpen: Bool) {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(
-            withTimeInterval: menuPollInterval(menuOpen: menuOpen), repeats: true
+        let scheduled = Timer(
+            timeInterval: menuPollInterval(menuOpen: menuOpen), repeats: true
         ) { [weak self] _ in
             self?.refresh()
         }
+        RunLoop.main.add(scheduled, forMode: .common)
+        timer = scheduled
+    }
+
+    /// 菜单显示前重填。**只用缓存状态,不 spawn 任何子进程** —— 这条路径在
+    /// 用户点击与菜单出现之间,跑一次 status --json(封顶 5 秒)就是肉眼可见的卡顿。
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        rebuildMenu()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        refresh()                              // 打开的瞬间数据要是新的
         rescheduleRefreshTimer(menuOpen: true)
+        refresh()   // 异步:数据回来后就地更新已经展开的这个菜单
     }
 
     func menuDidClose(_ menu: NSMenu) {
         rescheduleRefreshTimer(menuOpen: false)
     }
 
+    /// 发起一次刷新。**子进程全在后台线程跑**,主线程一秒都不阻塞。
+    ///
+    /// 一次刷新要 spawn 四个 bx 子进程,其中 `status --json` 在 macOS 上跑完整观测、
+    /// 整轮封顶 5 秒。放主线程就是菜单冻住;而它又必须能在菜单开着的时候跑完并
+    /// 就地更新,所以结果统一回主线程由 `applyRefresh` 一次落定。
     private func refresh() {
         // 上一次还没回来就丢掉这一次:排队只会堆出一串拿到时已作废的刷新。
         guard refreshGate.begin() else { return }
-        defer { refreshGate.end() }
-        state = loadState()
+        let inFlight = reconnectInFlight
+        let snapshot = recoverySnapshot
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let outcome = self.loadState(reconnectInFlight: inFlight, snapshot: snapshot)
+            DispatchQueue.main.async { [weak self] in
+                self?.applyRefresh(outcome)
+            }
+        }
+    }
+
+    /// 把后台收集到的结果落定。只在主线程调用。
+    private func applyRefresh(_ outcome: RefreshOutcome) {
+        state = outcome.state
+        recoverySnapshot = outcome.recoverySnapshot
+        repairVersions = outcome.repairVersions
         updateIcon()
         rebuildMenu()
         if let snapshot = recoverySnapshot,
@@ -143,88 +179,113 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
            !reconnectInFlight {
             observeRecovery(startingWith: snapshot)
         }
+        refreshGate.end()
     }
 
-    private func loadState() -> BxState {
-        let runtimeInstalled = unifiedRuntimeVersion() != nil
-        let cliUsable = FileManager.default.isExecutableFile(atPath: bxPath) && runBx(["--version"]).code == 0
-        if installActionTitle(runtimeInstalled: runtimeInstalled, cliUsable: cliUsable) != nil {
-            return .notInstalled(bundleVersion: bundleReleaseVersion())
-        }
-        guard FileManager.default.isExecutableFile(atPath: bxPath) else {
-            return .missing("Install bx at /usr/local/bin/bx")
-        }
-        let version = loadVersion()
-        if !cliSupportsDiagnosticsArchive() {
-            return .updateNeeded("Update bx CLI", version: version)
-        }
-        let status = runBx(["status", "--json"])
-        guard status.code == 0 else {
-            return diagnoseStopped(version: version, fallback: status.stderr)
-        }
-        let data = Data(status.stdout.utf8)
-        guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
-            // 必须先清恢复快照:updateIcon 让快照覆盖状态图标,留着一个绿快照
-            // 会画出「状态是 warning、盾牌却是绿的」。
-            recoverySnapshot = nil
-            return .warning("Status unreadable", version: version)
-        }
-        if let banner = updatingBanner(phase: report.phase) {
-            recoverySnapshot = nil
-            return .warning(banner, version: version)
-        }
-        let bundleVersion = bundleReleaseVersion()
-        let runtimeVersion = unifiedRuntimeVersion()
-        if repairActionNeeded(
-            bundleVersion: bundleVersion,
-            runtimeVersion: runtimeVersion,
-            coreVersion: report.coreVersion,
-            phase: report.phase
-        ) {
-            recoverySnapshot = nil
-            repairVersions = (bundle: bundleVersion, runtime: runtimeVersion, core: report.coreVersion)
-            return .warning("Repair Required", version: version)
-        }
-        repairVersions = nil
-        let verdict = menuProtectionVerdict(report)
-        switch verdict {
-        case .off:
-            // 用户主动关掉了保护。必须先于隧道判定返回——Core 已退出,隧道当然
-            // 不健康,若先看 tunnelHealthy 就会把「自己关的」报成「隧道坏了」,
-            // 而 .warning 分支不提供 Start Protection,用户就没法从菜单开回来
-            // (真机 2026-08-06:只能回去敲 sudo bx up)。
-            recoverySnapshot = nil
-            return .off
-        case .attention(let reason):
-            // Guardian 明确报告的异常先于被动恢复快照判定,与既有行为一致:
-            // 这两种状态下不保留恢复快照。
-            if report.protectionState == "needs_attention" || report.protectionState == "blocked" {
+    /// 一次刷新的产物。`loadState` 跑在后台线程,故它**不再直接改 self**:
+    /// 输入由参数带进来,输出一次性带回主线程落定,否则就是数据竞争
+    /// (`RecoverySnapshot` 是个十来个 String 的结构体,撕裂读不是理论问题)。
+    private struct RefreshOutcome {
+        let state: BxState
+        let recoverySnapshot: RecoverySnapshot?
+        let repairVersions: (bundle: String?, runtime: String?, core: String?)?
+    }
+
+    /// 收集一次状态。**跑在后台线程**(它 spawn 四个 bx 子进程),因此不碰 self 的
+    /// 可变状态:恢复快照与 repairVersions 作为局部量进出,由调用方在主线程落定。
+    ///
+    /// 判定体原样保在嵌套的 `resolve()` 里:那些 `recoverySnapshot = …` 紧跟
+    /// `return .warning(…)` 的写法是 TestMacMenuWarningsDropGreenRecoverySnapshot
+    /// 逐行审的对象,改写它等于把那条守卫连同它守的东西一起弄没。
+    private func loadState(reconnectInFlight: Bool, snapshot: RecoverySnapshot?) -> RefreshOutcome {
+        var recoverySnapshot = snapshot
+        var repairVersions: (bundle: String?, runtime: String?, core: String?)?
+        func resolve() -> BxState {
+            let runtimeInstalled = unifiedRuntimeVersion() != nil
+            let cliUsable = FileManager.default.isExecutableFile(atPath: bxPath) && runBx(["--version"]).code == 0
+            if installActionTitle(runtimeInstalled: runtimeInstalled, cliUsable: cliUsable) != nil {
+                return .notInstalled(bundleVersion: bundleReleaseVersion())
+            }
+            guard FileManager.default.isExecutableFile(atPath: bxPath) else {
+                return .missing("Install bx at /usr/local/bin/bx")
+            }
+            let version = loadVersion()
+            if !cliSupportsDiagnosticsArchive() {
+                return .updateNeeded("Update bx CLI", version: version)
+            }
+            let status = runBx(["status", "--json"])
+            guard status.code == 0 else {
+                return diagnoseStopped(version: version, fallback: status.stderr)
+            }
+            let data = Data(status.stdout.utf8)
+            guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
+                // 必须先清恢复快照:updateIcon 让快照覆盖状态图标,留着一个绿快照
+                // 会画出「状态是 warning、盾牌却是绿的」。
                 recoverySnapshot = nil
+                return .warning("Status unreadable", version: version)
+            }
+            if let banner = updatingBanner(phase: report.phase) {
+                recoverySnapshot = nil
+                return .warning(banner, version: version)
+            }
+            let bundleVersion = bundleReleaseVersion()
+            let runtimeVersion = unifiedRuntimeVersion()
+            if repairActionNeeded(
+                bundleVersion: bundleVersion,
+                runtimeVersion: runtimeVersion,
+                coreVersion: report.coreVersion,
+                phase: report.phase
+            ) {
+                recoverySnapshot = nil
+                repairVersions = (bundle: bundleVersion, runtime: runtimeVersion, core: report.coreVersion)
+                return .warning("Repair Required", version: version)
+            }
+            repairVersions = nil
+            let verdict = menuProtectionVerdict(report)
+            switch verdict {
+            case .off:
+                // 用户主动关掉了保护。必须先于隧道判定返回——Core 已退出,隧道当然
+                // 不健康,若先看 tunnelHealthy 就会把「自己关的」报成「隧道坏了」,
+                // 而 .warning 分支不提供 Start Protection,用户就没法从菜单开回来
+                // (真机 2026-08-06:只能回去敲 sudo bx up)。
+                recoverySnapshot = nil
+                return .off
+            case .attention(let reason):
+                // Guardian 明确报告的异常先于被动恢复快照判定,与既有行为一致:
+                // 这两种状态下不保留恢复快照。
+                if report.protectionState == "needs_attention" || report.protectionState == "blocked" {
+                    recoverySnapshot = nil
+                    return .warning(reason, version: version)
+                }
+            case .healthy:
+                break
+            }
+            if !reconnectInFlight {
+                recoverySnapshot = passiveStatusRecovery(
+                    protectionState: report.protectionState,
+                    recovery: report.recovery
+                )
+            }
+            if case .attention(let reason) = verdict {
+                recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)
                 return .warning(reason, version: version)
             }
-        case .healthy:
-            break
-        }
-        if !reconnectInFlight {
-            recoverySnapshot = passiveStatusRecovery(
-                protectionState: report.protectionState,
-                recovery: report.recovery
+            let dns = dnsPresentation(
+                state: report.dnsState,
+                managed: report.dnsManaged ?? false,
+                service: report.dnsService
             )
+            guard dns.allowsProtected else {
+                recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)
+                return .warning(dns.menuWarning ?? "DNS status unavailable", version: version)
+            }
+            return .connected(report, version: version ?? "unknown", dns: dns.label)
         }
-        if case .attention(let reason) = verdict {
-            recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)
-            return .warning(reason, version: version)
-        }
-        let dns = dnsPresentation(
-            state: report.dnsState,
-            managed: report.dnsManaged ?? false,
-            service: report.dnsService
+        return RefreshOutcome(
+            state: resolve(),
+            recoverySnapshot: recoverySnapshot,
+            repairVersions: repairVersions
         )
-        guard dns.allowsProtected else {
-            recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)
-            return .warning(dns.menuWarning ?? "DNS status unavailable", version: version)
-        }
-        return .connected(report, version: version ?? "unknown", dns: dns.label)
     }
 
     private func updateIcon() {
@@ -390,11 +451,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// 就地重填菜单项。**不建新 NSMenu**(见 configureMenu),这样重填会落在用户
+    /// 正看着的那个菜单上,而不是下一次打开才生效的另一个对象上。只读缓存状态,
+    /// 不 spawn 子进程,因此放在菜单显示前的路径上也是安全的。
     private func rebuildMenu() {
-        let menu = NSMenu()
-        // 每次都是新 NSMenu,delegate 必须跟着走 —— 漏一次,menuWillOpen/
-        // menuDidClose 从此不再触发,轮询就永远停在关闭档。
-        menu.delegate = self
+        guard let menu = statusItem.menu else { return }
+        menu.removeAllItems()
         if let inFlight = toggleInFlight {
             let elapsed = Int(Date().timeIntervalSince(inFlight.startedAt))
             menu.addHeader("bx", subtitle: inFlight.action == .turnOn ? "Connecting" : "Disconnecting")
@@ -409,7 +471,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             menu.addItem(.separator())
             menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
-            statusItem.menu = menu
             return
         }
         if let snapshot = recoverySnapshot {
@@ -434,7 +495,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             }
-            statusItem.menu = menu
             return
         }
         switch state {
@@ -554,7 +614,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // .updateNeeded 下菜单没有任何退出入口(TestMacMenuQuitActionPresentInEveryState)。
         menu.addItem(.separator())
         menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
-        statusItem.menu = menu
     }
 
     private func menuRowsNow() -> MenuRowSet {
