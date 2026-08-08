@@ -3491,6 +3491,56 @@ func TestMacMenuDrainsSubprocessPipesBeforeWaiting(t *testing.T) {
 	}
 }
 
+// 数据行的异常计数必须真的驱动图标。
+//
+// 三态行模型(ok / bad / unknown)整个存在的理由就是这一条:`.connected` 不是
+// 「一切都好」的同义词 —— 隧道不健康、DNS 掉管,报告仍然解码成功、状态仍然是
+// `.connected`,而图标若只看 `state` 就会画一面**实心绿盾**,同时菜单正文里那行
+// 明晃晃写着 "Tunnel unhealthy ✗"。图标是余光扫过唯一看得到的东西,正文没人盯着。
+//
+// 判定(哪些行算 bad、unknown 为什么不计入)在 MenuRows.swift 由 MenuRowsTests
+// 钉着,但**接不接线在 main.swift**:把 `menuRowsNow().anomalyCount > 0 ? … :`
+// 删掉,Swift 照样编译、整套测试照样全绿,只是绿盾开始撒谎。
+func TestMacMenuAnomalyCountDrivesTheIcon(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(source), "private func menuIconStateNow()")
+	if !ok {
+		t.Fatal("找不到 menuIconStateNow 的函数体")
+	}
+	// 只看代码:注释里解释这条不变量时也会写到 anomalyCount。
+	var code []string
+	for _, line := range strings.Split(body, "\n") {
+		if trimmed := strings.TrimSpace(line); !strings.HasPrefix(trimmed, "//") {
+			code = append(code, line)
+		}
+	}
+	decision := ""
+	for _, line := range code {
+		if strings.Contains(line, "anomalyCount") {
+			decision = strings.TrimSpace(line)
+		}
+	}
+	if decision == "" {
+		t.Fatal("图标必须看数据行的异常计数:隧道不健康时 state 仍是 .connected,只看 state 会画出一面撒谎的绿盾")
+	}
+	// 计数必须**就地决定**返回哪一态。松一点的写法(全函数体里找得到 anomalyCount
+	// 和 .attention 就算过)抓不到 `_ = menuRowsNow().anomalyCount` 后面接一个
+	// 无条件 `return .protected` —— 算了又丢掉,与删掉接线的效果一模一样。
+	for _, want := range []string{".attention", ".protected", "return"} {
+		if !strings.Contains(decision, want) {
+			t.Fatalf("异常计数必须就地决定图标(缺 %q),不得算出来又丢掉:实际那一行 = %q", want, decision)
+		}
+	}
+	// `.unknown` 不计入异常是 MenuRows 那边的判定;这里顺带钉住 main.swift 不许
+	// 绕过 anomalyCount 自己数行(那会把「没问出来」重新压成「坏了」)。
+	if strings.Contains(strings.Join(code, "\n"), ".mark ==") {
+		t.Fatal("main.swift 不得自己数行:三态的取舍(unknown 不算异常)只能由 MenuRows.anomalyCount 说了算")
+	}
+}
+
 // `.updateNeeded` 画裂盾是**经过裁决保留**的,不是抄来的。
 //
 // 「CLI 太旧」与「流量可能没被保护」紧急程度不同,共用一个字形值得怀疑。四态固定,
