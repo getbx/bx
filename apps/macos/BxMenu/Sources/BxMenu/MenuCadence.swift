@@ -30,10 +30,16 @@ struct RefreshGate {
     private var pending = false
 
     /// true = 调用方应当真的去刷新;false = 已有一次在跑,这次丢掉。
-    mutating func begin() -> Bool {
+    ///
+    /// `userInitiated` 决定这次被丢掉后要不要补跑。**定时器那一拍绝不补**:
+    /// 打开档 2 秒一拍、而一次刷新可能要 5 秒,每次结束时必然已经积压了两拍,
+    /// 于是补跑接补跑 —— 菜单开着的整段时间里四个 bx 子进程首尾相接、占空比 100%,
+    /// 比不补跑的老行为还糟(丢掉的那拍本来会留出空档到下一个边沿)。
+    /// 用户刚做完动作那一次才补:那才是「结果必须尽快出现」的场合,而且它不重复。
+    mutating func begin(userInitiated: Bool = false) -> Bool {
         if inFlight {
             skipped += 1
-            pending = true
+            pending = pending || userInitiated
             return false
         }
         inFlight = true
@@ -42,14 +48,40 @@ struct RefreshGate {
 
     /// 刷新结束(成功与否都要调),否则闸门永久关死、菜单从此不再更新。
     ///
-    /// 返回 true 表示**补跑一次**。丢弃期间被挡掉的刷新里,有些是用户刚做完
-    /// 某个动作(开/关/setup)后发起的 —— 全丢掉的话,菜单会把用户自己那一下
-    /// 的结果报错到下一拍(关闭档下最长 30 秒)。补跑是**一次性的**:补跑期间
-    /// 再被挡掉的会再置一次 pending,但永远不会堆成队列。
+    /// 返回 true 表示**补跑一次**。用户刚做完某个动作(开/关/setup)后发起的刷新
+    /// 若正好被丢掉,菜单会把用户自己那一下的结果报错到下一拍(关闭档下最长 30 秒)。
+    /// 补跑是**一次性的**,且只补用户那一类:定时器那一拍被丢掉就让它丢,
+    /// 下一个边沿自然会再来 —— 否则就成了首尾相接的满占空比(见 begin)。
     mutating func end() -> Bool {
         inFlight = false
         guard pending else { return false }
         pending = false
         return true
+    }
+}
+
+/// 恢复快照的代际号。**每一次对 `recoverySnapshot` / `reconnectInFlight` 的写入都 +1。**
+///
+/// 采集移到后台线程之后出现了一个原来不可能有的窗口:`refresh()` 在 t 时刻采样这两个
+/// 输入,`applyRefresh` 在 t+Δ(Δ 最长 5 秒)把据此算出来的结果写回去。窗口里有三个
+/// 主线程写者(reconnectBx / publishRecovery / pollRecovery 的终态清理),它们的结果会
+/// 被一份用陈旧输入算出来的值盖掉。**后果不是慢半拍,是假红**:被动恢复成功、轮询器
+/// 已清掉浮层,而在途的那次刷新因为「当时被告知 reconnectInFlight 为真」跳过了
+/// passiveStatusRecovery、把陈旧的 running 快照原样带回来 —— 浮层复活、observeRecovery
+/// 被重新武装,若 Guardian 此时已经开始另一次恢复,recoveryID 对不上就会发布一条
+/// 「Reconnect Failed / Recovery was replaced」,而那次恢复其实成功了。
+///
+/// 判定放在这里而不是 main.swift:它是一条规则(陈旧的不许写回),不是绘制。
+struct RecoveryGeneration {
+    private(set) var value = 0
+
+    mutating func bump() {
+        value += 1
+    }
+
+    /// 采集期间没人动过这两个输入,结果才配写回快照那半边。
+    /// 变过就丢弃 —— 主线程上那个写者知道的比后台那次采集新。
+    func acceptsWriteBack(captured: Int) -> Bool {
+        captured == value
     }
 }

@@ -3272,6 +3272,15 @@ func TestMacMenuPollsOnCadence(t *testing.T) {
 			t.Fatalf("轮询定时器必须挂进 .common 模式,缺 %q", want)
 		}
 	}
+	// 定时器那一拍**不是**用户动作:声称是的话,被丢弃的每一拍都会补跑,
+	// 而打开档 2 秒一拍、刷新可能 5 秒 —— 补跑接补跑,占空比 100%。
+	reschedule, ok := swiftFunctionBody(text, "private func rescheduleRefreshTimer(")
+	if !ok {
+		t.Fatal("找不到 rescheduleRefreshTimer 的函数体")
+	}
+	if strings.Contains(reschedule, "userInitiated") {
+		t.Fatal("轮询定时器不得把自己那一拍标成用户动作,否则被丢弃的每一拍都补跑、占空比 100%")
+	}
 }
 
 // 菜单对象必须始终是同一个,重填就地做。
@@ -3302,6 +3311,63 @@ func TestMacMenuRebuildsMenuInPlace(t *testing.T) {
 	}
 	if !strings.Contains(configure, "menu.delegate = self") {
 		t.Fatal("菜单 delegate 必须在 configureMenu 里设上,否则 menuWillOpen/menuDidClose 不触发、轮询永久停在关闭档")
+	}
+}
+
+// 恢复状态的写回必须带代际号,陈旧的一律丢弃。
+//
+// 采集移到后台线程之后,refresh() 在 t 采样输入、applyRefresh 在 t+Δ(最长 5 秒)
+// 写回结果,窗口里有三个主线程写者(reconnectBx / publishRecovery / pollRecovery
+// 的终态清理)。放行陈旧写回会复活一个已经结束的恢复浮层,并重新武装观察者 ——
+// 若 Guardian 此时已开始另一次恢复,recoveryID 对不上就会对一次**成功**的恢复
+// 报出红色的「Reconnect Failed / Recovery was replaced」。
+func TestMacMenuDropsStaleRecoveryWriteBack(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	// 两个载体都要在写入时 bump —— 用 didSet 而不是逐个改写者,是因为漏掉任何
+	// 一个写者都不会有编译错误,只会在真机上偶发一次假红。
+	if got := strings.Count(text, "didSet { recoveryGeneration.bump() }"); got != 2 {
+		t.Fatalf("recoverySnapshot 与 reconnectInFlight 都必须在写入时 bump 代际号,实际 %d 处", got)
+	}
+	body, ok := swiftFunctionBody(text, "private func applyRefresh(")
+	if !ok {
+		t.Fatal("找不到 applyRefresh 的函数体")
+	}
+	gate := strings.Index(body, "acceptsWriteBack(captured:")
+	write := strings.Index(body, "recoverySnapshot = outcome.recoverySnapshot")
+	if gate < 0 || write < 0 || gate > write {
+		t.Fatal("恢复快照的写回必须先过代际号检查,否则陈旧结果会复活已经结束的恢复浮层")
+	}
+	refresh, ok := swiftFunctionBody(text, "private func refresh(")
+	if !ok {
+		t.Fatal("找不到 refresh 的函数体")
+	}
+	if !strings.Contains(refresh, "recoveryGeneration.value") {
+		t.Fatal("refresh 必须在采样输入的同时记下代际号")
+	}
+}
+
+// 本文件里不许出现 Timer.scheduledTimer:它只进 .default 模式,而菜单展开期间
+// 主 runloop 在 NSEventTrackingRunLoopMode —— 实测触发 0 次。冻住的正是菜单开着时
+// 唯一在动的两样:图标呼吸,以及「Connecting — N 秒」那个计数器。后者是阶段①的
+// 全部交付物,它存在的理由就是 2026-08-04 那次 bx down 卡了 71 分钟而菜单是死的;
+// 一个冻住的计数器正是我们要消灭的症状本身。
+func TestMacMenuTimersRunInCommonMode(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range strings.Split(string(source), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "///") {
+			continue
+		}
+		if strings.Contains(trimmed, "Timer.scheduledTimer") {
+			t.Fatalf("第 %d 行仍用 Timer.scheduledTimer(只进 .default,菜单展开时不触发),改用 commonModeTimer:%s", i+1, trimmed)
+		}
 	}
 }
 
@@ -3337,7 +3403,8 @@ func TestMacMenuRefreshRunsSubprocessesOffMainThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, ok := swiftFunctionBody(string(source), "private func refresh()")
+	// 前缀匹配:refresh 现在带 userInitiated 参数(定时器那一拍不补跑)。
+	body, ok := swiftFunctionBody(string(source), "private func refresh(")
 	if !ok {
 		t.Fatal("找不到 refresh 的函数体")
 	}

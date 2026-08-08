@@ -45,8 +45,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingQuit: QuitDisposition?
     private var state: BxState = .off
     private var updateCheck: UpdateCheck?
-    private var recoverySnapshot: RecoverySnapshot?
-    private var reconnectInFlight = false
+    /// 这两个是恢复状态的全部载体。**写入即 bump 代际号**——用 didSet 而不是逐个
+    /// 改写者,是因为漏掉任何一个写者都不会有编译错误,只会在真机上偶发一次假红。
+    private var recoverySnapshot: RecoverySnapshot? {
+        didSet { recoveryGeneration.bump() }
+    }
+    private var reconnectInFlight = false {
+        didSet { recoveryGeneration.bump() }
+    }
+    private var recoveryGeneration = RecoveryGeneration()
     private var repairVersions: (bundle: String?, runtime: String?, core: String?)?
     /// 图标呼吸的驱动。只动 alpha,见 `applyBreathing`。
     private var breathTimer: Timer?
@@ -61,7 +68,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
         refreshUpdateCheck()
         rescheduleRefreshTimer(menuOpen: false)
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { [weak self] _ in
+        updateTimer = commonModeTimer(every: 24 * 60 * 60, tolerance: 60) { [weak self] in
             self?.refreshUpdateCheck()
         }
     }
@@ -113,7 +120,26 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openMenu() {
-        refresh()
+        refresh(userInitiated: true)
+    }
+
+    /// 建一个挂在 `.common` 模式的重复定时器。
+    ///
+    /// **本文件里不许再出现 `Timer.scheduledTimer`**:它只进 `.default`,而菜单展开
+    /// 期间主 runloop 处于 `NSEventTrackingRunLoopMode` —— 实测一次都不触发。冻住的
+    /// 恰恰是菜单开着时唯一在动的两样东西:图标呼吸(图标就在展开的菜单正上方),
+    /// 以及「Connecting / Disconnecting — N 秒」那个计数器 —— 而后者是阶段①的全部
+    /// 交付物,它存在的理由就是 2026-08-04 那次 `bx down` 卡了 71 分钟、菜单是死的。
+    /// 一个冻住的计数器正是我们要消灭的那个症状本身。
+    private func commonModeTimer(
+        every interval: TimeInterval,
+        tolerance: TimeInterval = 0,
+        _ body: @escaping () -> Void
+    ) -> Timer {
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in body() }
+        timer.tolerance = tolerance
+        RunLoop.main.add(timer, forMode: .common)
+        return timer
     }
 
     /// 刷新按菜单开合调频:有人在看就勤一点,没人看就别每 5 秒 spawn 四个进程。
@@ -124,13 +150,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `.default` 下同样一秒 10 次)——正是它唯一该干活的时候。
     private func rescheduleRefreshTimer(menuOpen: Bool) {
         timer?.invalidate()
-        let scheduled = Timer(
-            timeInterval: menuPollInterval(menuOpen: menuOpen), repeats: true
-        ) { [weak self] _ in
+        timer = commonModeTimer(every: menuPollInterval(menuOpen: menuOpen)) { [weak self] in
             self?.refresh()
         }
-        RunLoop.main.add(scheduled, forMode: .common)
-        timer = scheduled
     }
 
     /// 菜单显示前重填。**只用缓存状态,不 spawn 任何子进程** —— 这条路径在
@@ -141,7 +163,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         rescheduleRefreshTimer(menuOpen: true)
-        refresh()   // 异步:数据回来后就地更新已经展开的这个菜单
+        refresh(userInitiated: true)   // 异步:数据回来后就地更新已经展开的这个菜单
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -153,24 +175,33 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 一次刷新要 spawn 四个 bx 子进程,其中 `status --json` 在 macOS 上跑完整观测、
     /// 整轮封顶 5 秒。放主线程就是菜单冻住;而它又必须能在菜单开着的时候跑完并
     /// 就地更新,所以结果统一回主线程由 `applyRefresh` 一次落定。
-    private func refresh() {
+    /// `userInitiated` = 这一次是用户动作(点开菜单、setup、开关、更新)的直接后果。
+    /// 只有这一类在被丢弃后会补跑;定时器那一拍丢了就丢了(见 RefreshGate.begin)。
+    private func refresh(userInitiated: Bool = false) {
         // 上一次还没回来就丢掉这一次:排队只会堆出一串拿到时已作废的刷新。
-        guard refreshGate.begin() else { return }
+        guard refreshGate.begin(userInitiated: userInitiated) else { return }
         let inFlight = reconnectInFlight
         let snapshot = recoverySnapshot
+        let generation = recoveryGeneration.value
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let outcome = self.loadState(reconnectInFlight: inFlight, snapshot: snapshot)
             DispatchQueue.main.async { [weak self] in
-                self?.applyRefresh(outcome)
+                self?.applyRefresh(outcome, capturedGeneration: generation)
             }
         }
     }
 
     /// 把后台收集到的结果落定。只在主线程调用。
-    private func applyRefresh(_ outcome: RefreshOutcome) {
+    ///
+    /// 快照那半边**只在代际号没变时**才写回:采集期间若有人动过恢复状态,主线程上
+    /// 那个写者知道的比这次采集新,盖回去就是复活一个已经结束的恢复(见 RecoveryGeneration)。
+    /// state/repairVersions 不受影响 —— 它们只由报告本身决定。
+    private func applyRefresh(_ outcome: RefreshOutcome, capturedGeneration: Int) {
         state = outcome.state
-        recoverySnapshot = outcome.recoverySnapshot
+        if recoveryGeneration.acceptsWriteBack(captured: capturedGeneration) {
+            recoverySnapshot = outcome.recoverySnapshot
+        }
         repairVersions = outcome.repairVersions
         updateIcon()
         rebuildMenu()
@@ -182,7 +213,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 被丢掉的那次里可能就有用户刚做完动作后发起的刷新;补跑一次,别让菜单
         // 把用户自己那一下的结果报错到下一拍。补跑是一次性的,不是队列。
         if refreshGate.end() {
-            refresh()
+            refresh(userInitiated: true)
         }
     }
 
@@ -440,7 +471,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 10Hz 足够:4 秒周期下每帧 alpha 最多变 0.043,看不出台阶。tolerance 让
         // 系统把这些唤醒合并到别的定时器上 —— 常驻进程,省电是白拿的。
         let step = 0.1
-        breathTimer = Timer.scheduledTimer(withTimeInterval: step, repeats: true) { [weak self] _ in
+        breathTimer = commonModeTimer(every: step, tolerance: 0.02) { [weak self] in
             guard let self, let button = self.statusItem.button else { return }
             self.breathPhase += step
             let t = (self.breathPhase.truncatingRemainder(dividingBy: period)) / period
@@ -448,7 +479,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let eased = (1 - cos(t * 2 * Double.pi)) / 2
             button.alphaValue = floorAlpha + (1 - floorAlpha) * (1 - eased)
         }
-        breathTimer?.tolerance = 0.02
     }
 
     private func tooltipText() -> String {
@@ -678,7 +708,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let command = "'\(bxPath)' setup \(shellSingleQuoted(link))"
         guard runPrivileged(command) else {
             showFailure("Setup Failed", "bx was not configured.")
-            refresh()
+            refresh(userInitiated: true)
             return
         }
         if confirmStartProtection(title: "bx is set up", cancelTitle: "Later") {
@@ -724,7 +754,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Bx.app"))
                 NSApp.terminate(nil)
             } else {
-                refresh()
+                refresh(userInitiated: true)
             }
         } else {
             showFailure("Install Failed", "bx could not complete the installation.")
@@ -823,7 +853,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                     guard let self, self.recoverySnapshot?.recoveryID == snapshot.recoveryID else { return }
                     self.recoverySnapshot = nil
-                    self.refresh()
+                    self.refresh(userInitiated: true)
                 }
             }
         }
@@ -926,7 +956,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch parseUpdateOutcome(logData) {
         case .succeeded:
             showMessage("Update Complete", updateSucceededMessage)
-            refresh()
+            refresh(userInitiated: true)
             refreshUpdateCheck()
         case .rolledBack:
             showMessage("Update Rolled Back", updateRolledBackMessage)
@@ -998,7 +1028,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard quitTerminatesAfterTurnOff(turnedOff: turnedOff) else {
             pendingQuit = nil
             toggleFailureText = quitBlockedByFailedTurnOffMessage()
-            refresh()
+            refresh(userInitiated: true)
             showFailure("bx Is Still Running", quitBlockedByFailedTurnOffMessage())
             return
         }
@@ -1080,7 +1110,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 每秒重画一次,好让已用秒数往前走。
     private func startToggleTicker() {
         stopToggleTicker()
-        toggleTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        // .common 模式:这个计数器最该走字的时刻,正是用户把菜单打开盯着它的时刻。
+        toggleTicker = commonModeTimer(every: 1) { [weak self] in
             guard let self, self.toggleInFlight != nil else { return }
             self.rebuildMenu()
             self.updateIcon()
