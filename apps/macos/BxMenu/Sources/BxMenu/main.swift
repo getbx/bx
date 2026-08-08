@@ -1262,12 +1262,24 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         process.standardError = errors
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return CommandResult(code: 127, stdout: "", stderr: error.localizedDescription)
         }
-        let stdout = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        // **先排空管道,再等退出。** 反过来写(原实现)在子进程写满管道缓冲区
+        // (约 64KB)时死锁:子进程阻塞在 write、我们阻塞在 waitUntilExit,谁也不动。
+        // 今天的四条命令输出都只有几 KB,够不着;但这条路径现在跑在 refreshGate
+        // 后面,一旦死锁,闸门永久关死、菜单**无声无息**停止更新,连个报错都没有。
+        // 代价是两个后台读取,不值得为「今天够不着」留着。
+        var outData = Data()
+        var errData = Data()
+        let drain = DispatchGroup()
+        let queue = DispatchQueue.global(qos: .userInitiated)
+        queue.async(group: drain) { outData = output.fileHandleForReading.readDataToEndOfFile() }
+        queue.async(group: drain) { errData = errors.fileHandleForReading.readDataToEndOfFile() }
+        process.waitUntilExit()
+        drain.wait()
+        let stdout = String(data: outData, encoding: .utf8) ?? ""
+        let stderr = String(data: errData, encoding: .utf8) ?? ""
         return CommandResult(code: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
 
