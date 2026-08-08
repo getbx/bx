@@ -562,7 +562,9 @@ func TestMacMenuWarningsDropGreenRecoverySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, ok := swiftFunctionBody(string(source), "private func loadState()")
+	// 签名按前缀匹配:loadState 现在带参数(它跑在后台线程,输入必须由参数带进来
+	// 而不是从 self 读)。断言本身一个字没改。
+	body, ok := swiftFunctionBody(string(source), "private func loadState(")
 	if !ok {
 		t.Fatal("could not locate loadState in main.swift")
 	}
@@ -3261,5 +3263,71 @@ func TestMacMenuPollsOnCadence(t *testing.T) {
 	}
 	if strings.Contains(text, "withTimeInterval: 5, repeats: true") {
 		t.Fatal("固定 5 秒的轮询定时器仍在,调频没有生效")
+	}
+	// 菜单展开期间主 runloop 在 NSEventTrackingRunLoopMode,Timer.scheduledTimer
+	// 只进 .default —— 实测在 tracking 模式下触发 0 次。打开档那 2 秒不挂进
+	// .common 就等于不存在,而那正是它唯一该干活的时候。
+	for _, want := range []string{"RunLoop.main.add(", "forMode: .common"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("轮询定时器必须挂进 .common 模式,缺 %q", want)
+		}
+	}
+}
+
+// 菜单对象必须始终是同一个,重填就地做。
+//
+// 两个后果都不产生编译错误、也不会被别的测试抓到:① AppKit 在用户点击那一刻就
+// 捕获了当时的菜单对象,rebuildMenu 换个新的只会在**下一次**打开时才出现,用户
+// 看到的永远是上一拍的数据;② delegate 只在 configureMenu 里设一次,菜单对象一换
+// 就再也不触发 menuWillOpen/menuDidClose,轮询永久停在关闭档(30 秒)。
+func TestMacMenuRebuildsMenuInPlace(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	body, ok := swiftFunctionBody(text, "private func rebuildMenu()")
+	if !ok {
+		t.Fatal("找不到 rebuildMenu 的函数体")
+	}
+	if strings.Contains(body, "statusItem.menu =") {
+		t.Fatal("rebuildMenu 不得更换 statusItem.menu:换对象等于换掉 delegate,且新菜单要到下一次打开才可见")
+	}
+	if !strings.Contains(body, "removeAllItems()") {
+		t.Fatal("rebuildMenu 必须就地清空重填(removeAllItems)")
+	}
+	configure, ok := swiftFunctionBody(text, "private func configureMenu()")
+	if !ok {
+		t.Fatal("找不到 configureMenu 的函数体")
+	}
+	if !strings.Contains(configure, "menu.delegate = self") {
+		t.Fatal("菜单 delegate 必须在 configureMenu 里设上,否则 menuWillOpen/menuDidClose 不触发、轮询永久停在关闭档")
+	}
+}
+
+// 刷新的子进程一律不在主线程跑。
+//
+// 一次刷新 spawn 四个 bx 子进程,其中 status --json 在 macOS 上要跑完整观测、
+// 整轮封顶 5 秒。同步跑在主线程上,菜单就会在点击与出现之间肉眼可见地卡住,
+// 菜单开着时更是每一拍都冻一次。
+func TestMacMenuRefreshRunsSubprocessesOffMainThread(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(source), "private func refresh()")
+	if !ok {
+		t.Fatal("找不到 refresh 的函数体")
+	}
+	dispatch := strings.Index(body, "DispatchQueue.global")
+	if dispatch < 0 {
+		t.Fatal("refresh 必须把采集甩到后台队列,不能在主线程 spawn 子进程")
+	}
+	load := strings.Index(body, "loadState(")
+	if load < 0 {
+		t.Fatal("refresh 里找不到 loadState 调用")
+	}
+	if load < dispatch {
+		t.Fatal("loadState 必须在后台队列里调用 —— 它 spawn 四个子进程,其中一个封顶 5 秒")
 	}
 }
