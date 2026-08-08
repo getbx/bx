@@ -156,7 +156,7 @@ macOS release 包是统一安装:一份 `bx-macos-<arch>.tar.gz` 只含 `Bx.app`
 1. 把 `Bx.app` 拖到 `/Applications`,双击打开,菜单栏点 `Install bx…`(一次管理员授权)。
 2. 运行包内 `./install.sh`(等价的命令行方式,内部对 `Bx.app/Contents/Resources/bx-cli app-install` 发起同一次 sudo 安装)。
 
-> **远程 / 自动化(非交互 SSH)提示**:非登录 shell 不跑 `path_helper`,PATH 常不含 `/usr/local/bin`,`sudo bx …` 会报 `command not found`——用绝对路径 `sudo /usr/local/bin/bx …` 即可,不是安装失败。另:覆盖安装到一台**保护正在运行**的机器上要先确认(见下),而非交互 SSH 没有终端可问——此时安装会**报错中止**(绝不假装装好),确认要升级就跑 `./install.sh --yes`。
+> **远程 / 自动化(非交互 SSH)提示**:非登录 shell 不跑 `path_helper`,PATH 常不含 `/usr/local/bin`,`sudo bx …` 会报 `command not found`——用绝对路径 `sudo /usr/local/bin/bx …` 即可,不是安装失败。另:覆盖安装到一台**已经装过 bx**(Guardian 服务已加载,无论保护是否开启)的机器上要先确认(见下),而非交互 SSH 没有终端可问——此时安装会**报错中止**(绝不假装装好),确认要升级就跑 `./install.sh --yes`。
 
 全新安装只做落位和铺路,不启动保护、不修改 DNS 或路由:
 

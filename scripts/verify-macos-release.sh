@@ -70,7 +70,10 @@ grep -qF "app-install --app-source" "$RELEASE_DIR/install.sh" || fail "install.s
 # install.sh 刻意不写死 --yes(用户就在终端前,该问就问),但必须把自己的参数透传,
 # 否则非交互调用方无处表态:app-install 问不出来会非零退出,而 install.sh 又不给
 # 任何加 --yes 的途径,升级就成了死路。
-grep -qF 'app-install --app-source "$DIR/Bx.app" "$@"' "$RELEASE_DIR/install.sh" || fail "install.sh must forward its own args to app-install"
+grep -qF 'app-install --app-source "$DIR/Bx.app" $ASSUME_YES' "$RELEASE_DIR/install.sh" || fail "install.sh must forward an opt-in --yes to app-install"
+grep -qF '--yes|-y) ASSUME_YES="--yes"' "$RELEASE_DIR/install.sh" || fail "install.sh must accept --yes"
+# 用户明确说「不」时 app-install 退出 2;脚本必须据此不再打印「完成」。
+grep -qF 'if [ "$rc" -eq 2 ]' "$RELEASE_DIR/install.sh" || fail "install.sh must branch on the explicit-cancel exit code"
 ! grep -qE 'app-install .*--yes' "$RELEASE_DIR/install.sh" || fail "install.sh must not hardcode --yes"
 grep -qF "全新安装不会启动保护" "$RELEASE_DIR/install.sh" || fail "install.sh missing fresh-install protection note"
 grep -qF "再停止保护、换好文件、重启保护服务" "$RELEASE_DIR/install.sh" || fail "install.sh missing upgrade outage disclosure"
