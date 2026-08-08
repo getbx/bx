@@ -84,4 +84,8 @@ run_test menu-rows \
   "$MENU/Sources/BxMenu/MenuRows.swift" \
   "$MENU/Tests/MenuRowsTests.swift"
 
+run_test menu-cadence \
+  "$MENU/Sources/BxMenu/MenuCadence.swift" \
+  "$MENU/Tests/MenuCadenceTests.swift"
+
 echo "macOS menu tests passed"
