@@ -42,6 +42,15 @@ struct MenuIconTests {
         expect(idle >= 3.5, "稳态呼吸要足够慢才不分心,实际 \(idle) 秒")
         expect(idle >= busy * 2, "两种呼吸的周期差距要一眼可辨,实际 \(idle) vs \(busy)")
 
+        // 周期必须参与相等性判断:仅 form/motion-kind 相同、period 不同的两个样式
+        // 不能被判等,否则上面「四态两两不同」那个循环其实什么都没验证到周期。
+        let sameFormDifferentPeriod = MenuIconStyle(
+            form: protectedStyle.form,
+            motion: .breathe(period: idle + 1))
+        expect(
+            sameFormDifferentPeriod != protectedStyle,
+            "呼吸周期不同却被判等,== 丢弃了 period")
+
         // 需要注意也要呼吸(否则和已关闭只差一个裂缝,余光扫过分不出)
         expect(badStyle.motion != .still, "需要注意必须有动效")
 
@@ -52,10 +61,40 @@ struct MenuIconTests {
         let ys = shieldCrackPoints.map(\.y)
         expect(ys.min()! <= 2 && ys.max()! >= 14, "裂缝必须贯穿上下,实际 y 范围 \(ys.min()!)…\(ys.max()!)")
 
+        // 几何:裂缝的每一个顶点都必须落在盾轮廓内部,否则 NSBezierPath 会画出
+        // 一根戳出盾外的毛刺(Task 4 直接拿这些点描边)。盾轮廓是凸多边形,用
+        // 叉积符号一致性做点在凸多边形内测试。
+        for (i, p) in shieldCrackPoints.enumerated() {
+            expect(
+                isInsideConvexPolygon(p, shieldOutlinePoints),
+                "裂缝顶点 \(i) \(p) 落在盾轮廓之外")
+        }
+
         finish()
     }
 
     static func finish() {
         if failures == 0 { print("MenuIconTests passed") } else { exit(1) }
+    }
+
+    /// 判断 `point` 是否落在凸多边形 `polygon`(顶点按序,顺时针或逆时针均可)
+    /// 内部或边上:沿各边求叉积,若符号全程一致(或为 0,即在边上)则在内部。
+    static func isInsideConvexPolygon(
+        _ point: (x: Double, y: Double), _ polygon: [(x: Double, y: Double)]
+    ) -> Bool {
+        var sign = 0
+        for i in polygon.indices {
+            let a = polygon[i]
+            let b = polygon[(i + 1) % polygon.count]
+            let cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x)
+            if cross > 1e-9 {
+                if sign < 0 { return false }
+                sign = 1
+            } else if cross < -1e-9 {
+                if sign > 0 { return false }
+                sign = -1
+            }
+        }
+        return true
     }
 }
