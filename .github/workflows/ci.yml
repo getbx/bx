@@ -65,6 +65,34 @@ jobs:
       - name: Build native binary
         run: go build -o /dev/null .
 
+  # macOS 菜单栏 App。在此之前 CI 从不编译任何 Swift 代码,也从不跑 Swift 测试:
+  # 整个 apps/macos/BxMenu 与全部 Swift 套件只在有人本地手动跑时才被验证,
+  # Swift 侧写个编译错误 CI 照样绿。这个 job 补上那个缺口。
+  #
+  # 两步不可互相替代:`swift build` 只编 SwiftPM target(Sources/BxMenu),
+  # 而 Tests/ 下的文件不属于任何 target、只由 scripts/test-macos-menu.sh 用
+  # swiftc 直编直跑。少任何一步都会漏掉一半代码。
+  macos-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build menu app
+        run: swift build --package-path apps/macos/BxMenu
+
+      # 脚本用 set -euo pipefail,任一套件失败即非零退出。但「一个套件都没跑」
+      # 同样会安静地退 0(例如 run_test 块被误删),故断言收尾横幅确实打印过
+      # ——与 integration job 断言 netns PoC 真跑过是同一条理由。
+      - name: Run menu test suites
+        run: |
+          set -o pipefail
+          bash scripts/test-macos-menu.sh | tee /tmp/menu-tests.log
+          grep -q '^macOS menu tests passed$' /tmp/menu-tests.log \
+            || { echo "::error::菜单测试脚本未跑到收尾横幅 —— 可能中途 return 或套件被清空"; exit 1; }
+
   integration:
     runs-on: ubuntu-latest
     steps:
