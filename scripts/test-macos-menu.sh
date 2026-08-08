@@ -73,4 +73,8 @@ run_test guardian-failure-code \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
   "$MENU/Tests/GuardianFailureCodeTests.swift"
 
+run_test menu-icon \
+  "$MENU/Sources/BxMenu/MenuIcon.swift" \
+  "$MENU/Tests/MenuIconTests.swift"
+
 echo "macOS menu tests passed"
