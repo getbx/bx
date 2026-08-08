@@ -3,8 +3,11 @@ package guardian
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/getbx/bx/internal/supervisor"
@@ -119,6 +122,63 @@ func TestDownOverTheLocalAPISocketClearsTheUpgradeIntent(t *testing.T) {
 
 	if pending, present := env.store.LoadUpgradeIntent(); present {
 		t.Fatalf("经 socket 关闭保护之后,欠条必须销账(否则下次 Repair 会违背用户意愿开回保护),实际 pending=%v", pending)
+	}
+}
+
+// 升级自己的那次停保护不得销掉它前一秒才写下的欠条。
+//
+// app-install 的顺序是「写欠条 → 停保护 → 换文件 → 重启 Guardian → 起保护」。
+// 上一轮里第二步走的是普通 Down,而 Manager.Down 把每一次成功的关闭都当作
+// 「用户不要保护了」销账 —— 欠条在写下的**下一步**就被删掉,于是换文件一失败,
+// 重试既读到 desired=off 又找不到欠条,「成功」地把机器永久留在无保护状态。
+//
+// 两条路都跑真实的 Client → 真实 unix socket → 真实 LocalAPI → 真实
+// Manager.Down → 真实 *Store:标记是否被客户端带上、handler 是否认得、
+// Manager 是否照办,任何一环断了这个用例都会红。
+func TestDownForUpgradeKeepsTheUpgradeIntentThatUserDownClears(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		down        func(context.Context, *Client) (Status, error)
+		wantPresent bool
+		why         string
+	}{
+		{
+			name:        "用户明确关闭",
+			down:        func(ctx context.Context, c *Client) (Status, error) { return c.Down(ctx) },
+			wantPresent: false,
+			why:         "用户明确说 off 之后,旧欠条必须销账,否则下次 Repair 会违背用户意愿开回保护",
+		},
+		{
+			name:        "升级停保护",
+			down:        func(ctx context.Context, c *Client) (Status, error) { return c.DownForUpgrade(ctx) },
+			wantPresent: true,
+			why:         "升级把停保护当作自己的一步,欠条是中途失败后唯一知道「还欠一次恢复保护」的东西",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newProtectedManagerTestEnv(t)
+			if err := env.store.SaveUpgradeIntent(true); err != nil {
+				t.Fatal(err)
+			}
+			socketPath := filepath.Join(shortSocketDir(t), "guard.sock")
+			daemon, err := StartDaemon(context.Background(), DaemonOptions{
+				SocketPath:      socketPath,
+				Handler:         NewLocalAPI(env.manager),
+				OwnerUID:        uint32(os.Geteuid()),
+				PeerCredentials: func(net.Conn) (uint32, bool) { return 0, true },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer daemon.Close()
+
+			if _, err := tc.down(context.Background(), NewClient(socketPath)); err != nil {
+				t.Fatalf("停保护失败: %v", err)
+			}
+			if _, present := env.store.LoadUpgradeIntent(); present != tc.wantPresent {
+				t.Fatalf("停保护之后欠条 present=%v,want %v —— %s", present, tc.wantPresent, tc.why)
+			}
+		})
 	}
 }
 

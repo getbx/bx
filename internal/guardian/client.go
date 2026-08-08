@@ -80,6 +80,16 @@ func (c *Client) Down(ctx context.Context) (Status, error) {
 	return c.request(ctx, http.MethodPost, "/v1/down", nil)
 }
 
+// DownForUpgrade 停保护,但**保住**升级欠条(upgrade-intent.json)。
+//
+// 升级把「停保护」当作自己的一步,而普通的 Down 会把欠条当成陈旧记录销掉 ——
+// 那张欠条恰恰是升级中途失败后唯一知道「还欠用户一次恢复保护」的东西。
+// 调用方只有一个:sudo bx app-install 的停保护步骤。用户明确说 off 的每一条路
+// (bx down、菜单 Turn Off)都必须继续用 Down,那才是销账的正确时机。
+func (c *Client) DownForUpgrade(ctx context.Context) (Status, error) {
+	return c.request(ctx, http.MethodPost, downForUpgradePath, nil)
+}
+
 func (c *Client) Migrate(ctx context.Context, request MigrationRequest) (Status, error) {
 	normalized, err := ValidateMigrationRequest(request)
 	if err != nil {
