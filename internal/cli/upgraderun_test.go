@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ type fakeUpgradeIO struct {
 	intentCleared  bool
 
 	confirmAnswer  bool
+	confirmErr     error
 	confirmPrompts []string
 
 	stopForced bool
@@ -53,10 +55,10 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 			f.intentCleared = f.clearIntentErr == nil
 			return f.clearIntentErr
 		},
-		confirm: func(prompt string) bool {
+		confirm: func(prompt string) (bool, error) {
 			f.calls = append(f.calls, "confirm")
 			f.confirmPrompts = append(f.confirmPrompts, prompt)
-			return f.confirmAnswer
+			return f.confirmAnswer, f.confirmErr
 		},
 		stopProtection: func() (bool, error, error) {
 			f.calls = append(f.calls, "stopProtection")
@@ -277,5 +279,146 @@ func TestUpgradeIntentRoundTripSurvivesAFailedUpgrade(t *testing.T) {
 	}
 	if !resolveUpgradeDesiredOn(true, false, false) {
 		t.Fatal("store 说 on 就是 on")
+	}
+}
+
+// 「问不出来」必须是非零退出,不能和「用户说不」一样静静地成功返回。
+//
+// 生成的 install.sh 在 set -euo pipefail 下紧接着无条件打印「完成」。若这里
+// return nil,一次非交互 SSH 升级就会:什么都没做 → 退出 0 → install.sh 说
+// 「完成」→ 旧 daemon 继续跑旧代码,而用户以为升级落地了。那正是本期要消灭的
+// 形状,只不过换了一扇门进来。
+func TestRunUpgradeFailsLoudlyWhenItCannotAsk(t *testing.T) {
+	fake := &fakeUpgradeIO{running: true, desiredOn: true, confirmErr: errCannotAsk}
+	outcome, err := runUpgrade(fake.io(), false)
+	if err == nil {
+		t.Fatal("问不出来必须报错(非零退出),否则上层脚本会把它当成升级成功")
+	}
+	if outcome.Cancelled {
+		t.Fatal("「问不出来」不是「用户取消」,不得混为一谈")
+	}
+	if !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("必须告诉调用方怎么显式表态,实际 = %q", err)
+	}
+	for _, forbidden := range []string{"saveIntent", "stopProtection", "installFiles"} {
+		if indexOfCall(fake.calls, forbidden) >= 0 {
+			t.Fatalf("没问成就不得动手 %s:%v", forbidden, fake.calls)
+		}
+	}
+}
+
+// 用户明确说「不」仍然是一次正常结束(退出码 0),不该报错。
+func TestRunUpgradeExplicitNoIsNotAnError(t *testing.T) {
+	fake := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: false}
+	outcome, err := runUpgrade(fake.io(), false)
+	if err != nil {
+		t.Fatalf("用户说不是正常结束,不该报错:%v", err)
+	}
+	if !outcome.Cancelled {
+		t.Fatal("必须如实标记为取消")
+	}
+}
+
+// 用户明确关掉保护之后,旧欠条必须销账。
+//
+// 否则:升级在装文件那步失败(欠条 desired_on=true 留在盘上)→ 用户决定就这么
+// 关着(或显式 sudo bx down)→ 之后点菜单的 Repair(带 --yes,连问都不问)→
+// 欠条胜出,保护被打开、DNS 与路由被接管,而这与用户最后一次明确指令相反,
+// 还会配一句「保护已按升级前的状态恢复」的假话。
+func TestForgetUpgradeDebtOnExplicitOffClearsTheDebt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upgrade-intent.json")
+	if err := saveUpgradeIntent(path, true); err != nil {
+		t.Fatal(err)
+	}
+	var warnings []string
+	forgetUpgradeDebtOnExplicitOff(
+		func() error { return clearUpgradeIntent(path) },
+		func(line string) { warnings = append(warnings, line) },
+	)
+	if _, present := loadUpgradeIntent(path); present {
+		t.Fatal("用户明确关闭保护之后,欠条必须销账")
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("成功销账不该警告:%v", warnings)
+	}
+	// 抹不掉只警告:停止这条路绝不能因为一个记账文件而失败。
+	forgetUpgradeDebtOnExplicitOff(func() error { return errors.New("read-only fs") }, func(line string) { warnings = append(warnings, line) })
+	if len(warnings) != 1 {
+		t.Fatalf("失败必须留下可见警告,实际 %v", warnings)
+	}
+}
+
+// bx down 必须真的调用它 —— 这一跳没有类型能替我们检查。
+func TestMacOSDownActionForgetsTheUpgradeDebt(t *testing.T) {
+	source, err := os.ReadFile("guardian.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := goFuncBody(t, string(source), "macOSDownAction")
+	if !strings.Contains(body, "forgetUpgradeDebtOnExplicitOff(") {
+		t.Fatal("bx down 是用户毫不含糊地说「不要保护」的地方,必须在那里销掉升级欠条")
+	}
+}
+
+// goFuncBody 截出一个顶层函数的函数体(到下一个 `func ` 为止)。
+func goFuncBody(t *testing.T, text, name string) string {
+	t.Helper()
+	marker := "func " + name + "("
+	start := strings.Index(text, marker)
+	if start < 0 {
+		t.Fatalf("找不到函数 %s", name)
+	}
+	rest := text[start+len(marker):]
+	if next := strings.Index(rest, "\nfunc "); next >= 0 {
+		rest = rest[:next]
+	}
+	return rest
+}
+
+// 欠条必须原子落盘:临时文件 + rename,而不是就地截断。
+//
+// 就地截断时,改写一份已有欠条中途崩溃会留下半截文件——正是这个文件存在的意义
+// 被反过来吃掉。rename 覆盖会换掉目录项指向的 inode,这里就用 inode 变化来钉死
+// 「不是就地写」。
+func TestSaveUpgradeIntentReplacesFileAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upgrade-intent.json")
+	if err := saveUpgradeIntent(path, true); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveUpgradeIntent(path, true); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameFile(first, second) {
+		t.Fatal("改写欠条必须走临时文件 + rename(换 inode),就地截断会留下半截文件")
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("不得留下临时文件,实际 %d 项", len(entries))
+	}
+	if pending, present := loadUpgradeIntent(path); !present || !pending {
+		t.Fatalf("原子写之后内容仍须正确,实际 (%v,%v)", pending, present)
+	}
+}
+
+// 文件在、内容读不懂 => 仍算欠条(往「多恢复一次保护」偏,不往「永远不再保护」偏)。
+func TestLoadUpgradeIntentTreatsCorruptFileAsDebt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upgrade-intent.json")
+	if err := os.WriteFile(path, []byte("{\"schema_ver"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pending, present := loadUpgradeIntent(path)
+	if !present || !pending {
+		t.Fatalf("半截文件必须仍算欠条(这正是它存在的原因),实际 (%v,%v)", pending, present)
 	}
 }

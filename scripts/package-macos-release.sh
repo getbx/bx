@@ -67,7 +67,10 @@ esac
 echo "即将安装 Bx.app 到 /Applications 并配置 bx(需要一次管理员授权)。"
 echo "安装不修改你的连接配置。全新安装不会启动保护;若保护正在运行,安装会先征得你同意,"
 echo "再停止保护、换好文件、重启保护服务并把保护恢复到原状态(期间断网几秒)。"
-sudo "$DIR/Bx.app/Contents/Resources/bx-cli" app-install --app-source "$DIR/Bx.app"
+# 不加 --yes:命令行安装时用户就在终端前,该问就问(会断网的操作必须当面确认)。
+# 非交互场景(无终端的 SSH/CI)由用户显式 ./install.sh --yes 表态,经 "$@" 透传;
+# 不表态时 app-install 会以非零退出报错,set -e 就会在打印「完成」之前中止。
+sudo "$DIR/Bx.app/Contents/Resources/bx-cli" app-install --app-source "$DIR/Bx.app" "$@"
 echo "完成。打开菜单栏的 bx 图标继续 Set Up。"
 SCRIPT
 
@@ -106,6 +109,8 @@ bx macOS $ARCH release ($VERSION)
 
 Notes:
   install.sh 需要以你的普通 macOS 用户身份运行(会在需要时通过 sudo 请求一次管理员授权)。
+  覆盖安装到一台保护正在运行的机器上时会先问你一次;无终端的场景(非交互 SSH、CI)
+  问不出来,install.sh 会报错中止而不是假装装好——确认要升级就跑 ./install.sh --yes。
   install.sh 不会执行 bx setup(你的连接配置一个字都不改)。
   全新安装不启动保护、不修改 DNS/路由;覆盖安装到一台保护正在运行的机器上时,
   安装会在你确认后重启保护——DNS 与路由随之被重新接管,这是恢复保护的必然结果。

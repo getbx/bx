@@ -30,8 +30,10 @@ type upgradeIO struct {
 	saveIntent func(desiredOn bool) error
 	// clearIntent 抹掉欠条(升级完整做完,或本来就没欠)。
 	clearIntent func() error
-	// confirm 询问用户;返回 false 表示取消,此时一步都不做。
-	confirm func(prompt string) bool
+	// confirm 询问用户。返回 (同意, 错误):false+nil 是「用户说不」,
+	// 非 nil error 是「问不出来」—— 后者必须把整条命令带成非零退出,否则调用它的
+	// 脚本会在 set -e 下继续往下走、把「什么都没做」打印成「完成」。
+	confirm func(prompt string) (bool, error)
 	// stopProtection 停保护。forced 为真表示走了 bx down 的强制拆除逃生路径 ——
 	// 那条路是 best-effort,bx down 自己都拒绝断言「网络已还原」。
 	stopProtection  func() (forced bool, cause error, err error)
@@ -70,7 +72,13 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 	stopsProtection := stepsContain(steps, UpgradeStopProtection)
 
 	if stopsProtection && !assumeYes {
-		if !io.confirm(upgradeConfirmMessage(desiredOn)) {
+		agreed, err := io.confirm(upgradeConfirmMessage(desiredOn))
+		if err != nil {
+			// 问不出来 ≠ 用户说不。必须报错退出:静静地 return nil 会让
+			// install.sh(set -e)紧接着打印「完成」,而旧 daemon 还跑着旧代码。
+			return outcome, err
+		}
+		if !agreed {
 			outcome.Cancelled = true
 			return outcome, nil
 		}
