@@ -19,6 +19,12 @@ enum MenuIconForm {
     case hollow
     /// 沿中线裂开的盾:轮廓本身破了
     case cracked
+    /// 虚线描边的盾:轮廓还没「合上」,读起来是「正在建立」。
+    ///
+    /// 过渡态**必须有自己的形态**。它与 .protected 若同为实心、只靠呼吸快慢区分,
+    /// 那么在 macOS「减弱动态效果」下两者一模一样(动画被关掉了),bug 报告里的
+    /// 静态截图也分不出来 —— 形态是主要信息载体,动效不能是唯一的载体。
+    case dashed
 }
 
 enum MenuIconMotion: Equatable {
@@ -36,23 +42,52 @@ struct MenuIconStyle: Equatable {
 
 extension MenuIconForm: Equatable {}
 
+/// 稳态呼吸的谷底透明度。越接近 1 幅度越小。
+///
+/// 稳态呼吸的职责是「它还活着」,不是「看我」:0.85 表示整个周期里只在 15%
+/// 的透明度区间里走一趟,余光扫过察觉不到。谷底压到 0.45 那种是慢闪,不是呼吸。
+let menuIconIdleFloorAlpha: Double = 0.85
+/// 过渡态脉冲的谷底透明度。用户在等,这一个是**应该**被注意到的。
+let menuIconBusyFloorAlpha: Double = 0.45
+
 /// 稳态呼吸周期。取 4 秒是为了「注意不到但确实在动」——低于 3 秒就开始分心。
 let menuIconIdlePeriod: Double = 4
 /// 过渡态脉冲周期。与稳态差 2.7 倍,快慢一眼可辨。
 let menuIconBusyPeriod: Double = 1.5
 
-func menuIconStyle(state: MenuIconState) -> MenuIconStyle {
+/// `reduceMotion` 为真时一律静止 —— 用户在系统里明确要求过「减弱动态效果」,
+/// 菜单栏这种常驻视野边缘的东西尤其不该无视它。四态此时全靠形态区分,故形态
+/// 必须两两不同(MenuIconTests 钉死)。
+func menuIconStyle(state: MenuIconState, reduceMotion: Bool = false) -> MenuIconStyle {
+    let style: MenuIconStyle
     switch state {
     case .protected:
-        return MenuIconStyle(form: .filled, motion: .breathe(period: menuIconIdlePeriod))
+        style = MenuIconStyle(form: .filled, motion: .breathe(period: menuIconIdlePeriod))
     case .off:
         // 唯一完全静止的状态:什么都没在发生,图标就不该动
-        return MenuIconStyle(form: .hollow, motion: .still)
+        style = MenuIconStyle(form: .hollow, motion: .still)
     case .transitioning:
-        return MenuIconStyle(form: .filled, motion: .pulse(period: menuIconBusyPeriod))
+        style = MenuIconStyle(form: .dashed, motion: .pulse(period: menuIconBusyPeriod))
     case .attention:
         // 也呼吸:只靠一道裂缝与「已关闭」区分,余光扫过太弱
-        return MenuIconStyle(form: .cracked, motion: .breathe(period: menuIconIdlePeriod))
+        style = MenuIconStyle(form: .cracked, motion: .breathe(period: menuIconIdlePeriod))
+    }
+    guard reduceMotion else { return style }
+    return MenuIconStyle(form: style.form, motion: .still)
+}
+
+/// 图标是否交给系统上色(NSImage.isTemplate)。
+///
+/// 灰色那两态必须交出去:`secondaryLabelColor` 在 lockFocus 的 Aqua 外观下解析成
+/// **50% 黑**,而菜单栏是半透明的、深色壁纸下即使在浅色模式也是深的 —— 于是
+/// 「保护没开」这个最不能看不见的状态会直接消失。template 让系统按菜单栏实际
+/// 外观上色,黑底白、白底黑。绿/黄两态的颜色是有意的加强,保留自绘颜色。
+func menuIconUsesSystemTint(state: MenuIconState) -> Bool {
+    switch state {
+    case .off, .transitioning:
+        return true
+    case .protected, .attention:
+        return false
     }
 }
 
