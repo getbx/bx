@@ -118,10 +118,14 @@ print_plan() {
   echo "  $GUARD_PLIST (写入但不 enable/加载)"
   echo "  $AGENT_PLIST"
   echo
-  echo "== 不会做 =="
+  echo "== 不会做(Guardian 未在运行时) =="
   echo "  不执行 bx up"
   echo "  不 bootstrap/加载 Guardian(guard LaunchDaemon 只写文件,不启动保护)"
   echo "  不修改 DNS/路由"
+  echo
+  echo "== 会做(Guardian 正在运行时,即覆盖安装/升级) =="
+  echo "  停止保护 → 换文件 → bootout 并重新 bootstrap Guardian → 恢复升级前的保护状态"
+  echo "  期间网络回到直连几秒;本脚本以 --yes 直通 app-install 的确认"
 }
 
 if [[ "$EXECUTE" != "1" ]]; then
@@ -142,8 +146,10 @@ if launchctl print "system/$GUARD_LABEL" >"$LOG_DIR/guard-before.txt" 2>&1; then
 fi
 
 echo
-echo "Running: $APP/Contents/Resources/bx-cli app-install --app-source $APP"
-if ! "$APP/Contents/Resources/bx-cli" app-install --app-source "$APP" 2>&1 | tee "$LOG_DIR/app-install.log"; then
+# --yes:本脚本自己已经要求过 --execute --yes 两道确认,且 stdout 被 tee 接管、
+# 常在自动化里跑;app-install 在无法确认时会(正确地)取消,故这里显式表态。
+echo "Running: $APP/Contents/Resources/bx-cli app-install --yes --app-source $APP"
+if ! "$APP/Contents/Resources/bx-cli" app-install --yes --app-source "$APP" 2>&1 | tee "$LOG_DIR/app-install.log"; then
   die "bx app-install failed; see $LOG_DIR/app-install.log"
 fi
 
