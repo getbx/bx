@@ -540,6 +540,9 @@ func macOSUpAction(c *urfavecli.Context) error {
 	if result.MenuWarning != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  bx 已受保护,但菜单栏未启动: %v\n", result.MenuWarning)
 	}
+	if msg := upVersionMismatchMessage(result.Status.GuardianVersion, result.Status.RuntimeVersion); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
 	if report, err := readStatusReport(); err == nil {
 		printUpSummary(report, result.Status)
 		return nil

@@ -61,6 +61,20 @@ func upgradeCannotAskMessage(desiredOn bool) string {
 	)
 }
 
+// upVersionMismatchMessage 在 Guardian 跑着旧版时给出提示。
+//
+// 2026-08-08:`bx up` 能看到 runtime 是新版而自己是旧版,却照常报 Protected ——
+// 「信念 vs 事实」在这里又演了一遍。任一版本为空说明信息不全,不猜。
+func upVersionMismatchMessage(guardianVersion, runtimeVersion string) string {
+	if guardianVersion == "" || runtimeVersion == "" || guardianVersion == runtimeVersion {
+		return ""
+	}
+	return fmt.Sprintf(
+		"! Guardian 仍在跑旧版 %s(已安装 %s)。执行 sudo bx app-install 完成切换(会断网几秒)。",
+		guardianVersion, runtimeVersion,
+	)
+}
+
 func upgradeFailureMessage(step UpgradeStep, err error) string {
 	return upgradeFailureMessageWithNetwork(step, err, true)
 }
