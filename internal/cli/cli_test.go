@@ -383,8 +383,33 @@ func TestMacMenuQuitBxStopsProtectionThenQuitsMenu(t *testing.T) {
 	if !strings.Contains(body, "performToggle(.turnOff)") {
 		t.Fatal("Quit bx should use the safe Guardian turnOff path")
 	}
-	if !strings.Contains(body, "NSApp.terminate(nil)") {
-		t.Fatal("Quit bx should close the menu only after bx stops")
+	// Quit closes the menu only after bx actually stopped. The terminate call
+	// moved out of quitBx() into finishQuit(turnedOff:) when the forced-teardown
+	// escape hatch was restored, so both halves are asserted: quitBx must route
+	// its outcome there, and finishQuit must gate terminate on
+	// quitTerminatesAfterTurnOff. That is strictly more than the previous
+	// "quitBx mentions NSApp.terminate" check — an unconditional terminate in
+	// quitBx would now fail, and it used to pass.
+	if !strings.Contains(body, "finishQuit(turnedOff:") {
+		t.Fatal("Quit bx should close the menu only after bx stops (via finishQuit(turnedOff:))")
+	}
+	quitStart := strings.Index(text, "func finishQuit(turnedOff: Bool)")
+	if quitStart == -1 {
+		t.Fatal("macOS menu should define finishQuit(turnedOff:)")
+	}
+	quitEnd := strings.Index(text[quitStart:], "\n    private func performToggle")
+	if quitEnd == -1 {
+		t.Fatal("could not find the end of finishQuit() (expected performToggle() to follow it)")
+	}
+	finishBody := text[quitStart : quitStart+quitEnd]
+	if !strings.Contains(finishBody, "NSApp.terminate(nil)") {
+		t.Fatal("finishQuit should terminate the menu once bx stopped")
+	}
+	// Terminating after a failed turn-off would leave protection running with
+	// no menu bar indicator — the invisible-protection state this project has
+	// repeatedly refused to ship (Quit Menu was deleted for exactly this).
+	if !strings.Contains(finishBody, "quitTerminatesAfterTurnOff(turnedOff:") {
+		t.Fatal("finishQuit must not terminate when the turn-off failed (no invisible protection)")
 	}
 	// A toggle may already be in flight when Quit is clicked (Turn Off
 	// stuck, or Start Protection still connecting). performToggle's
@@ -395,6 +420,53 @@ func TestMacMenuQuitBxStopsProtectionThenQuitsMenu(t *testing.T) {
 	// toggle was already running).
 	if !strings.Contains(body, "quitDisposition(inFlight:") {
 		t.Fatal("Quit bx must account for an in-flight toggle via quitDisposition, not call performToggle unconditionally")
+	}
+}
+
+// Turning off must keep a working escape path when the Guardian socket call
+// fails. `bx down` is the CLI that owns forcedMacOSTeardown (stop Core, bootout
+// Guardian, remove the blocking barrier routes, restore DNS); the menu's socket
+// call has no equivalent, and the state that needs it is real — with Guardian
+// dead and Core alive the menu renders .warning, whose Turn Off and Quit both
+// die at connect(). Stopping must never depend on first succeeding at something
+// else (2026-08-04 incident).
+//
+// The escape is asserted here rather than in the Swift suites because it lives
+// in main.swift, which scripts/test-macos-menu.sh cannot compile. The decision
+// itself (toggleEscape / quitTerminatesAfterTurnOff) is unit-tested there.
+func TestMacMenuTurnOffFallsBackToPrivilegedDown(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	start := strings.Index(text, "private func performToggle")
+	if start == -1 {
+		t.Fatal("macOS menu should define performToggle")
+	}
+	end := strings.Index(text[start:], "private func startToggleTicker")
+	if end == -1 {
+		t.Fatal("could not find the end of performToggle (expected startToggleTicker to follow it)")
+	}
+	body := text[start : start+end]
+
+	if !strings.Contains(body, "toggleEscape(action:") {
+		t.Fatal("performToggle must consult toggleEscape when the socket call fails")
+	}
+	if !strings.Contains(body, "privilegedTurnOffScript(bxPath:") {
+		t.Fatal("the escape path must run the privileged `bx down`, which owns forcedMacOSTeardown")
+	}
+	// The privileged fallback is synchronous (it blocks until the user answers
+	// the authorization prompt). Running it on the main thread reproduces the
+	// frozen menu the whole async rewrite existed to prevent, so it must stay
+	// on the background queue — i.e. before the hop back to main.
+	escape := strings.Index(body, "runPrivilegedScriptOffMainThread")
+	if escape == -1 {
+		t.Fatal("the privileged fallback must run off the main thread")
+	}
+	mainHop := strings.Index(body, "DispatchQueue.main.async")
+	if mainHop == -1 || escape > mainHop {
+		t.Fatal("the privileged fallback must run before performToggle hops back to the main queue")
 	}
 }
 
