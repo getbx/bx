@@ -56,14 +56,19 @@ ACTUAL_BRIDGE_SHA=$(shasum -a 256 "$RESOURCES/bx-bridge" | awk '{print $1}')
 [[ "$RELEASE_BRIDGE_SHA" == "$ACTUAL_BRIDGE_SHA" ]] || fail "release.json bx-bridge digest mismatch"
 
 grep -qF "install.sh 不会执行 bx setup" "$RELEASE_DIR/README.txt" || fail "README missing no-setup note"
-grep -qF "不会执行 bx up" "$RELEASE_DIR/README.txt" || fail "README missing no-up note"
-grep -qF "不会修改 DNS/路由" "$RELEASE_DIR/README.txt" || fail "README missing network safety note"
+# 升级路径改成「一次做完」之后,「不会执行 bx up、不修改 DNS/路由」只对全新安装
+# 成立:覆盖安装到一台保护正在运行的机器上时,安装会在用户确认后把保护重启回来。
+# 这里钉住的必须是真话,否则 CI 会把一句假话钉死在发布物里(旧版正是如此:
+# 它 grep 那三句无条件的承诺,谁去改正就撞红)。
+grep -qF "全新安装不启动保护、不修改 DNS/路由" "$RELEASE_DIR/README.txt" || fail "README missing fresh-install network safety note"
+grep -qF "安装会在你确认后重启保护" "$RELEASE_DIR/README.txt" || fail "README missing upgrade-restarts-protection disclosure"
 grep -qF "Install bx" "$RELEASE_DIR/README.txt" || fail "README missing Install bx menu note"
 grep -qF "sudo bx uninstall" "$RELEASE_DIR/README.txt" || fail "README missing uninstall pointer"
 grep -qF "普通 macOS 用户身份运行" "$RELEASE_DIR/README.txt" || fail "README missing non-root install note"
 
 grep -qF "app-install --app-source" "$RELEASE_DIR/install.sh" || fail "install.sh missing app-install invocation"
-grep -qF "不会启动保护" "$RELEASE_DIR/install.sh" || fail "install.sh missing protection safety note"
+grep -qF "全新安装不会启动保护" "$RELEASE_DIR/install.sh" || fail "install.sh missing fresh-install protection note"
+grep -qF "再停止保护、换好文件、重启保护服务" "$RELEASE_DIR/install.sh" || fail "install.sh missing upgrade outage disclosure"
 ! grep -qF "bx setup" "$RELEASE_DIR/install.sh" || fail "install.sh must not invoke bx setup"
 ! grep -qF "bx up " "$RELEASE_DIR/install.sh" || fail "install.sh must not invoke bx up"
 ! grep -qF "networksetup" "$RELEASE_DIR/install.sh" || fail "install.sh must not touch networksetup"

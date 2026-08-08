@@ -158,13 +158,15 @@ macOS release 包是统一安装:一份 `bx-macos-<arch>.tar.gz` 只含 `Bx.app`
 
 > **远程 / 自动化(非交互 SSH)提示**:非登录 shell 不跑 `path_helper`,PATH 常不含 `/usr/local/bin`,`sudo bx …` 会报 `command not found`——用绝对路径 `sudo /usr/local/bin/bx …` 即可,不是安装失败。
 
-安装只做落位和铺路,不启动保护、不修改 DNS 或路由:
+全新安装只做落位和铺路,不启动保护、不修改 DNS 或路由:
 
 - `Bx.app` 落到 `/Applications/Bx.app`(唯一产品位置)
 - 运行时装到 `/Library/Application Support/bx/runtime/<version>/`(root 拥有,按版本存放,升级靠切换 `current`)
 - 稳定命令行入口 `/usr/local/bin/bx`(bridge,定位并 exec 到 `runtime/current` 里同版本的 CLI)——因此终端 `bx --version` 永远和 App 版本一致
 - Guardian 保护服务的 plist 就绪但不 enable、不启动
 - 菜单栏登录项指向 `/Applications/Bx.app`
+
+装到一台**保护正在运行**的机器上(覆盖安装/升级)则不同:安装会先问你一次,然后停止保护 → 换文件 → 重启 Guardian 服务 → 把保护恢复到升级前的状态,期间网络回到直连几秒。这是有意的——只换文件不重启进程,跑着的仍是旧版本(2026-08-08 真机事故)。停保护排在换文件之前也是有意的:其后任何一步失败,机器最差只是「没有保护」,而不是「断网」。菜单里的 `Install bx…` / `Repair bx…` 走同一条路(确认框在菜单里弹)。
 
 菜单栏 App 是 macOS 的默认体验:它显示当前保护状态、延迟、DNS 接管状态和诊断入口。盾牌右侧的静态状态点表示保护状态:绿=已保护,黄=安全恢复中或需要注意,红=保护不可用(当 bx 明确报告该状态时),灰=已关闭或未配置。
 
