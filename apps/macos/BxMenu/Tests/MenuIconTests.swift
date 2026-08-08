@@ -60,9 +60,6 @@ struct MenuIconTests {
                "过渡态脉冲必须看得见(谷底 \(menuIconBusyFloorAlpha))")
 
         // 「没开保护」不能靠自绘的灰:菜单栏在深色壁纸下是深的,50% 黑会消失。
-        expect(menuIconUsesSystemTint(state: .off), "已关闭必须交给系统上色,否则深色菜单栏下看不见")
-        expect(menuIconUsesSystemTint(state: .transitioning), "切换中同为无色态,交给系统上色")
-        expect(!menuIconUsesSystemTint(state: .protected), "保护中的绿色是有意的加强,保留自绘颜色")
 
         expect(protectedStyle.form == .filled, "已保护应为实心盾")
         expect(offStyle.form == .hollow, "已关闭应为空心盾")

@@ -351,11 +351,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             state: iconState,
             reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         )
-        let systemTint = menuIconUsesSystemTint(state: iconState)
-        // template 只吃 alpha 通道,颜色随便;给不透明黑是为了让蒙版是实的。
-        button.image = compactStatusImage(for: style,
-                                          tint: systemTint ? .black : iconTint(iconState),
-                                          template: systemTint)
+        // 四态一律交系统上色:菜单栏图标随明暗反色,写死颜色必有一种模式看不见。
+        // 形态本就承担全部信息(MenuIconTests 钉死去掉动效仍两两可分),颜色是多余的。
+        button.image = compactStatusImage(for: style)
         button.imagePosition = .imageOnly
         button.title = ""
         button.toolTip = tooltipText()
@@ -401,18 +399,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// 颜色只作可选加强:去掉它四态仍靠形态可分(见 MenuIconTests)。
-    ///
-    /// 无色的两态不走这里(它们交给系统 template 上色,见 menuIconUsesSystemTint)——
-    /// 自绘的 secondaryLabelColor 在深色菜单栏上会消失。
-    private func iconTint(_ state: MenuIconState) -> NSColor {
-        switch state {
-        case .protected: return .systemGreen
-        case .attention: return .systemYellow
-        case .transitioning, .off: return .black
-        }
-    }
-
     /// 盾形轮廓。数据是 16×16、y 向下,这里翻 y 并整体 +1 居中进 18×18 的图标框。
     private func shieldPoint(_ point: (x: Double, y: Double)) -> NSPoint {
         NSPoint(x: point.x + 1, y: 17 - point.y)
@@ -449,12 +435,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (half(sideBackToApex: leftSide), half(sideBackToApex: rightSide))
     }
 
-    private func compactStatusImage(for style: MenuIconStyle, tint: NSColor, template: Bool) -> NSImage {
+    private func compactStatusImage(for style: MenuIconStyle) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18))
         image.lockFocus()
         defer { image.unlockFocus() }
-        tint.setFill()
-        tint.setStroke()
+        // template 只吃 alpha 通道,填什么颜色都一样;用不透明黑是为了蒙版是实的
+        // ——换成半透明色(如 secondaryLabelColor)会让蒙版峰值只有 0.5,图标发虚。
+        NSColor.black.setFill()
+        NSColor.black.setStroke()
         switch style.form {
         case .filled:
             shieldPath().fill()
@@ -475,7 +463,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             halves.left.fill()
             halves.right.fill()
         }
-        image.isTemplate = template
+        image.isTemplate = true
         return image
     }
 
