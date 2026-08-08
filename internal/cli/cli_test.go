@@ -3371,6 +3371,38 @@ func TestMacMenuTimersRunInCommonMode(t *testing.T) {
 	}
 }
 
+// 子进程的管道必须在 waitUntilExit 之前排空。
+//
+// 反过来写会在子进程输出超过管道缓冲区(约 64KB)时死锁:子进程阻塞在 write、
+// 我们阻塞在 wait。今天四条命令的输出都只有几 KB、够不着,但这条路径跑在
+// refreshGate 后面 —— 一旦死锁,闸门永久关死,菜单无声无息地停止更新。
+func TestMacMenuDrainsSubprocessPipesBeforeWaiting(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := swiftFunctionBody(string(source), "private func runBx(")
+	if !ok {
+		t.Fatal("找不到 runBx 的函数体")
+	}
+	// 只看代码:注释里解释这个坑时也会写到这两个名字。
+	var code []string
+	for _, line := range strings.Split(raw, "\n") {
+		if trimmed := strings.TrimSpace(line); !strings.HasPrefix(trimmed, "//") {
+			code = append(code, line)
+		}
+	}
+	body := strings.Join(code, "\n")
+	drain := strings.Index(body, "readDataToEndOfFile")
+	wait := strings.Index(body, "waitUntilExit")
+	if drain < 0 || wait < 0 {
+		t.Fatal("runBx 里找不到管道读取或进程等待")
+	}
+	if drain > wait {
+		t.Fatal("必须先排空管道再等退出:反过来会在输出超过 64KB 时死锁,并把 refreshGate 永久锁死")
+	}
+}
+
 // 图标的可访问性接线:形态是主要载体,动效可被关掉,颜色可被系统接管。
 //
 // 这三条判定都在 MenuIcon.swift 里由 Swift 单测钉着,但**接不接线在 main.swift**,
