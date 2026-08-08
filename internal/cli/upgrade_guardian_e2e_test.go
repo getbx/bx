@@ -1,3 +1,10 @@
+//go:build darwin
+
+// darwin-only:这里跑的是 macOS 的生命周期编排(macOSUpLifecycle /
+// macOSDownLifecycleFor)与 Guardian 的 unix socket,与 macos_lifecycle_test.go
+// 同一个约束 —— 它提供的 testMacOSLifecycleDeps 本身就是 darwin-tagged。
+// 少了这行,ubuntu/windows runner 上的 go test ./... 会直接编译失败。
+
 package cli
 
 import (
@@ -7,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -40,11 +46,6 @@ type upgradeE2EEnv struct {
 // handler 的路由与鉴权、状态的 JSON 往返),没有任何一环被替身跳过。
 func serveGuardian(t *testing.T, handler http.Handler) *guardian.Client {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		// unix socket + /tmp 路径是这套 harness 的前提;Guardian 本就只在
-		// macOS 上运行(daemon.go 的 requireDaemonPlatform)。
-		t.Skip("Guardian 的 unix socket harness 不在 Windows 上跑")
-	}
 	// sun_path 有 104 字节上限,t.TempDir() 的名字太长。
 	socketDir, err := os.MkdirTemp("/tmp", "bxcli-")
 	if err != nil {
