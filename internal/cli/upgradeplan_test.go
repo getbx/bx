@@ -163,6 +163,56 @@ func TestAppInstallDoesNotAdviseTheIneffectiveDownUp(t *testing.T) {
 	}
 }
 
+// up 不能在自己是旧版时若无其事地报 Protected。
+func TestUpVersionMismatchIsReported(t *testing.T) {
+	if got := upVersionMismatchMessage("phase2", "phase2"); got != "" {
+		t.Fatalf("版本一致时不该提示,实际 = %q", got)
+	}
+	if got := upVersionMismatchMessage("", "phase2"); got != "" {
+		t.Fatalf("信息不全时不该猜,实际 = %q", got)
+	}
+	msg := upVersionMismatchMessage("dev", "phase2")
+	if msg == "" {
+		t.Fatal("Guardian 跑着旧版而盘上是新版,必须提示")
+	}
+	// 给出的命令必须是真正管用的那条。上次事故的根因正是一句看起来权威、
+	// 执行起来无效的建议。
+	if strings.Contains(msg, "bx down && sudo bx up") {
+		t.Fatalf("不得给出那条无效建议,实际 = %q", msg)
+	}
+	if !strings.Contains(msg, "app-install") {
+		t.Fatalf("必须指向真正能完成切换的入口,实际 = %q", msg)
+	}
+}
+
+// bx up 必须真的把版本不一致的提示打印出来,不能只在别处定义一个没人调用的
+// 纯函数 —— 那样 upVersionMismatchMessage 本身测得再绿,也拦不住"忘记接线"
+// 这一类回归(2026-08-08 事故正是"看得到却没说出来")。macOSUpAction 依赖真实
+// Guardian socket 与 /etc/bx/config.yaml,没法直接跑起来断言 stderr,所以像
+// TestAppInstallDoesNotAdviseTheIneffectiveDownUp 一样读源码确认调用点存在:
+// 删掉那一行调用,这条测试就会变红,而只测纯函数的测试不会。
+func TestMacOSUpActionWiresVersionMismatchMessage(t *testing.T) {
+	source, err := os.ReadFile("guardian.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	start := strings.Index(text, "\nfunc macOSUpAction(")
+	if start < 0 {
+		t.Fatal("macOSUpAction 未找到")
+	}
+	body := text[start+1:]
+	if next := strings.Index(body, "\nfunc "); next >= 0 {
+		body = body[:next]
+	}
+	if !strings.Contains(body, "upVersionMismatchMessage(") {
+		t.Fatal("macOSUpAction 必须调用 upVersionMismatchMessage 并打印非空结果,否则版本不一致时用户什么都看不到")
+	}
+	if !strings.Contains(body, "result.Status.GuardianVersion") || !strings.Contains(body, "result.Status.RuntimeVersion") {
+		t.Fatal("必须用 macOSUpLifecycle 实际返回的 Guardian 状态,而不是猜一个版本号")
+	}
+}
+
 // 「问不出来」那句话也必须按 desiredOn 分叉,不能写死「会断网」。
 //
 // 走确认这条路的条件是「Guardian 在跑」,不是「保护开着」—— 而 Guardian 在跑、
