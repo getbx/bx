@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -190,7 +191,7 @@ func TestMutationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 			controller.simulateNeedsAttention("core_ownership_uncertain")
 			return errors.New("inspect recorded Core PID 5129: boom")
 		},
-		newAcceptedMutations(), 0)
+		newAcceptedMutations(), 0, "/v1/up")
 
 	rec := httptest.NewRecorder()
 	handler(rec, rootMutationRequest(t))
@@ -227,7 +228,7 @@ func TestMutationHandlerReturnsCodeOnRepeatedIdenticalFailure(t *testing.T) {
 		controller.simulateNeedsAttention("core_ownership_uncertain")
 		return errors.New("inspect recorded Core PID 5129: boom")
 	}
-	handler := mutationHandler(controller, failingMutate, newAcceptedMutations(), 0)
+	handler := mutationHandler(controller, failingMutate, newAcceptedMutations(), 0, "/v1/up")
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		rec := httptest.NewRecorder()
@@ -286,7 +287,7 @@ func TestMutationHandlerOmitsStaleOrEmptyCodeWhenLastErrorUnchanged(t *testing.T
 			defer restore()
 
 			controller := &fakeController{status: Status{LastError: tt.before}}
-			handler := mutationHandler(controller, tt.mutate(controller), newAcceptedMutations(), 0)
+			handler := mutationHandler(controller, tt.mutate(controller), newAcceptedMutations(), 0, "/v1/up")
 
 			rec := httptest.NewRecorder()
 			handler(rec, rootMutationRequest(t))
@@ -1263,7 +1264,7 @@ func TestMutationHandlerNamesRecoveryIncompleteAndBusyFailures(t *testing.T) {
 
 			// LastError 停留在一条更早的、不相关的失败上,且这次调用不会更新它。
 			controller := &fakeController{status: Status{LastError: "stale_unrelated_code"}}
-			handler := mutationHandler(controller, func(context.Context) error { return tt.err }, newAcceptedMutations(), 0)
+			handler := mutationHandler(controller, func(context.Context) error { return tt.err }, newAcceptedMutations(), 0, "/v1/up")
 
 			rec := httptest.NewRecorder()
 			handler(rec, rootMutationRequest(t))
@@ -1345,5 +1346,100 @@ func TestLocalAPIUpdateAndMigrateStayRootOnlyEvenWithOwnerConfigured(t *testing.
 					path, recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+// captureGuardianLog 把 log 的输出接到 buffer 上,返回读取器与还原函数。
+func captureGuardianLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buffer bytes.Buffer
+	output := log.Writer()
+	flags := log.Flags()
+	log.SetOutput(&buffer)
+	log.SetFlags(0) // 故意抹掉行首时间前缀:审计行必须自带 at=,不能靠前缀。
+	t.Cleanup(func() {
+		log.SetOutput(output)
+		log.SetFlags(flags)
+	})
+	return &buffer
+}
+
+// owner_uid 授权的代价是「以该 uid 运行的任何进程都能悄无声息地开关 bx」,
+// 设计文档接受这个风险的唯一条件是:Guardian 日志记下每一次 up/down 的发起
+// uid 与时间。这条测试就是那句话的执行副本——写在 spec 里而代码里没有的缓解
+// 措施比从未声称的更糟,因为它会被相信。
+func TestLocalAPIMutationLogsInitiatorUIDAndTime(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		uid         uint32
+		failure     error
+		wantOutcome string
+	}{
+		{name: "owner up", path: "/v1/up", uid: 501, wantOutcome: "outcome=ok"},
+		{name: "owner down", path: "/v1/down", uid: 501, wantOutcome: "outcome=ok"},
+		{name: "root down", path: "/v1/down", uid: 0, wantOutcome: "outcome=ok"},
+		// 失败也必须留下发起者:事故排查里「谁按的」和「为什么失败」一样重要。
+		{name: "failed up", path: "/v1/up", uid: 501, failure: errors.New("boom"), wantOutcome: "outcome=failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureGuardianLog(t)
+			controller := &fakeController{status: Status{SchemaVersion: 1}, upErr: tt.failure, downErr: tt.failure}
+			request := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			request = request.WithContext(withPeerCredentials(request.Context(), tt.uid, true))
+			recorder := httptest.NewRecorder()
+			NewLocalAPI(controller, LocalAPIOptions{OwnerUID: 501}).ServeHTTP(recorder, request)
+
+			text := logs.String()
+			wantUID := fmt.Sprintf("uid=%d", tt.uid)
+			wantEndpoint := "endpoint=" + tt.path
+			if !strings.Contains(text, "guardian_mutation_requested") {
+				t.Fatalf("发起未被记录,日志 = %q", text)
+			}
+			for _, want := range []string{wantUID, wantEndpoint, "at=", tt.wantOutcome} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("日志缺 %q(uid/端点/时间/成败缺一不可),日志 = %q", want, text)
+				}
+			}
+			// 时间必须可解析,而不是随便一个字符串。
+			for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+				index := strings.Index(line, "at=")
+				if index < 0 {
+					continue
+				}
+				stamp := strings.TrimSpace(line[index+len("at="):])
+				if _, err := time.Parse(time.RFC3339, stamp); err != nil {
+					t.Fatalf("at= 不是可解析的时间戳 %q: %v", stamp, err)
+				}
+			}
+			// 审计行只带 uid/端点/时间/成败,绝不外传原始错误串——
+			// 那条纪律由 guardian_mutation_failed 一行独占,响应体更是只带码。
+			for _, line := range strings.Split(text, "\n") {
+				if !strings.HasPrefix(line, "guardian_mutation_requested") && !strings.HasPrefix(line, "guardian_mutation_result") {
+					continue
+				}
+				if strings.Contains(line, "boom") {
+					t.Fatalf("审计行不得夹带原始错误:%q", line)
+				}
+			}
+		})
+	}
+}
+
+// 未授权的请求不该被记成一次「发起」:403 连 mutation 都没进,把它记下来
+// 只会让审计日志被扫端口的噪声淹没,而真正的开关记录淹没在里面。
+func TestLocalAPIRejectedMutationIsNotLoggedAsInitiated(t *testing.T) {
+	logs := captureGuardianLog(t)
+	controller := &fakeController{status: Status{SchemaVersion: 1}}
+	request := httptest.NewRequest(http.MethodPost, "/v1/up", nil)
+	request = request.WithContext(withPeerCredentials(request.Context(), 502, true))
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(controller, LocalAPIOptions{OwnerUID: 501}).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", recorder.Code)
+	}
+	if strings.Contains(logs.String(), "guardian_mutation_requested") {
+		t.Fatalf("403 不该被记成一次发起,日志 = %q", logs.String())
 	}
 }

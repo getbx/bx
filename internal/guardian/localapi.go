@@ -87,8 +87,8 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 		}
 		writeGuardianJSON(w, http.StatusOK, observableStatus(controller, pathRecoveryControllerFor(controller), options))
 	})
-	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations, options.OwnerUID))
-	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down, mutations, options.OwnerUID))
+	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations, options.OwnerUID, "/v1/up"))
+	mux.HandleFunc("/v1/down", mutationHandler(controller, controller.Down, mutations, options.OwnerUID, "/v1/down"))
 	migrationController, _ := controller.(MigrationController)
 	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations))
 	updateController, _ := controller.(UpdateController)
@@ -286,6 +286,15 @@ func recoveryCurrentHandler(controller PathRecoveryController, ownerUID uint32) 
 // 守着 /v1/recoveries(路径恢复)与 /v1/up、/v1/down(日常开关)。
 // 装卸(/v1/update)与迁移(/v1/migrate)刻意不用它,见
 // TestLocalAPIUpdateAndMigrateStayRootOnlyEvenWithOwnerConfigured。
+// peerUIDFrom 取出对端 uid,供审计日志使用。第二个返回值区分「内核给了我们
+// 凭据」与「没拿到」——没拿到时 uid 是零值 0,而 0 恰好就是 root,不区分就会
+// 把「不知道谁」记成「root 干的」。今天调用它的路径都在 authorizeOwnerPeer
+// 通过之后(没有凭据根本进不来),但这个函数不该依赖调用点的顺序才正确。
+func peerUIDFrom(ctx context.Context) (uint32, bool) {
+	credentials, _ := ctx.Value(peerCredentialsKey{}).(peerCredentials)
+	return credentials.uid, credentials.got
+}
+
 func authorizeOwnerPeer(ctx context.Context, ownerUID uint32) bool {
 	credentials, _ := ctx.Value(peerCredentialsKey{}).(peerCredentials)
 	if !credentials.got {
@@ -446,7 +455,19 @@ func (a *localAPI) waitForRecoveries(ctx context.Context) error {
 	return errors.Join(recoveryErr, pathRecoveryErr)
 }
 
-func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations, ownerUID uint32) http.HandlerFunc {
+// mutationHandler 服务 /v1/up 与 /v1/down。endpoint 只用于审计日志。
+//
+// **审计是 owner_uid 授权那条已接受风险的唯一缓解措施**:开关不再需要管理员
+// 密码之后,以该 uid 身份运行的**任何**进程都能悄无声息地开关 bx。设计文档
+// (docs/superpowers/specs/2026-08-07-macos-menubar-redesign-design.md 「风险」)
+// 把「Guardian 日志记录每一次 up/down 的发起 uid 与时间,事后可追溯」写成了
+// 接受这个风险的条件——写在文档里而代码里没有的缓解措施比从未声称的更糟,
+// 因为它会被相信。故这里对**每一次**授权通过的调用各打两行:发起时一行(哪怕
+// 这次 mutation 挂住了 60 秒也已经留下「谁发起的」),落定时一行带成败与耗时。
+//
+// 两行都只有 uid / 端点 / 时间 / 成败这些非敏感字段。原始错误仍然只在
+// guardian_mutation_failed 那行里(见下),响应体照旧只带失败码。
+func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations, ownerUID uint32, endpoint string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -456,7 +477,14 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "mutation requires root or owner peer"})
 			return
 		}
+		// 显式带 at= 时间戳,不指望日志行首的时间前缀:调用方随时可能
+		// log.SetFlags(0),而「时间」是这条缓解措施被点名要求的一半。
+		uid, _ := peerUIDFrom(r.Context())
+		started := time.Now()
+		log.Printf("guardian_mutation_requested endpoint=%s uid=%d at=%s",
+			endpoint, uid, started.UTC().Format(time.RFC3339))
 		if !mutations.accept() {
+			log.Printf("guardian_mutation_result endpoint=%s uid=%d outcome=refused reason=shutting_down", endpoint, uid)
 			writeGuardianJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "guardian is shutting down"})
 			return
 		}
@@ -470,9 +498,13 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 			// 本地任何用户可读);响应只带失败码,避免把路径/链接/凭据经
 			// socket 外传。
 			log.Printf("guardian_mutation_failed err=%v", err)
+			log.Printf("guardian_mutation_result endpoint=%s uid=%d outcome=failed elapsed=%s",
+				endpoint, uid, time.Since(started).Round(time.Millisecond))
 			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status(), err))
 			return
 		}
+		log.Printf("guardian_mutation_result endpoint=%s uid=%d outcome=ok elapsed=%s",
+			endpoint, uid, time.Since(started).Round(time.Millisecond))
 		writeGuardianJSON(w, http.StatusOK, controller.Status())
 	}
 }
