@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -98,5 +99,22 @@ func TestUpgradeFailureMessageSaysNetworkIsUsable(t *testing.T) {
 	}
 	if !strings.Contains(msg, "uninstall") {
 		t.Fatalf("失败必须给出真正管用的下一步(卸载重装),实际 = %q", msg)
+	}
+}
+
+// 那句建议用户照做也没用:bx down 的干净路径不 bootout Guardian,
+// 所以 down/up 只会让同一个旧 Guardian 重起一个旧 Core(2026-08-08 真机实证)。
+// 照做也没用的指引比没有指引更糟 —— 它让用户以为自己已经处理过了。
+func TestAppInstallDoesNotAdviseTheIneffectiveDownUp(t *testing.T) {
+	source, err := os.ReadFile("appinstall_darwin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if strings.Contains(text, "bx down && sudo bx up") {
+		t.Fatal("这句建议无效,不得再出现:app-install 必须自己把升级做完")
+	}
+	if !strings.Contains(text, "upgradeSteps(") {
+		t.Fatal("app-install 必须按 upgradeSteps 执行完整升级")
 	}
 }
