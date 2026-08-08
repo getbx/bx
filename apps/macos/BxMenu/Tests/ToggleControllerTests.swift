@@ -34,9 +34,26 @@ struct ToggleControllerTests {
         expect(uncertain?.contains("bx down") == true && uncertain?.contains("bx up") == true,
                "指引必须给出 down 再 up 这条唯一出路,实际 = \(String(describing: uncertain))")
 
-        // 未知码与无码都不能编造指引,但也不能崩
+        // 未知码、无码、空码都不能编造指引,但也不能崩
         expect(toggleFailureHint(code: nil) == nil, "无码时不得编造指引")
+        expect(toggleFailureHint(code: "") == nil, "空码不得编造指引")
         expect(toggleFailureHint(code: "some_future_code") == nil, "未知码不得编造指引")
+
+        // recovery_incomplete:Manager.Up/Down/Migrate 在 recoveryBlocked 时用同一个
+        // errRecoveryIncomplete 短路,菜单的 /v1/down 直接撞这堵墙 —— 指引不能建议
+        // "再点一次开关"(死循环),必须点名终端命令 sudo bx down,因为只有 CLI 的
+        // 清理路径撞见这个错误时会自动强制拆除脱困(菜单直连 API 没有这条后备)。
+        let recoveryHint = toggleFailureHint(code: "recovery_incomplete")
+        expect(recoveryHint != nil, "recovery_incomplete 必须有指引")
+        expect(recoveryHint?.contains("bx down") == true,
+               "指引必须点名终端命令 sudo bx down,实际 = \(String(describing: recoveryHint))")
+
+        // guardian_busy:acquireMutation 只是排队等 1 容量 mutation channel 腾出来,
+        // 持锁方 defer 释放,是瞬时状态而非锁存 —— "稍候重试" 必须出现。
+        let busyHint = toggleFailureHint(code: "guardian_busy")
+        expect(busyHint != nil, "guardian_busy 必须有指引")
+        expect(busyHint?.contains("重试") == true,
+               "指引必须说明可以重试,实际 = \(String(describing: busyHint))")
 
         if failures == 0 {
             print("ToggleControllerTests passed")

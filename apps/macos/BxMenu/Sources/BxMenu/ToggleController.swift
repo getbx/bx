@@ -45,18 +45,38 @@ func toggleSlowHint(elapsedSeconds: Int) -> String? {
 /// 在客户端。`core_ownership_uncertain` 是 guardianCodeHints 里目前唯一的
 /// 专用条目,且这条判定是锁存的(Manager.upLocked/Migrate 在再次调用
 /// Existing() 之前就先看缓存的 Uncertain 标记)——down 再 up 是唯一出路,
-/// 不说这句用户无从下手。`recovery_incomplete`/`guardian_busy` 是
-/// failureCodeForError 直接从哨兵错误命名的两条(不经 guardianCodeHints
-/// 那张表,但含义同样明确:上次恢复没完成 / 上一个操作还占着锁),补上
-/// 对应指引不算编造。未知码/无码一律返回 nil —— 宁可不给指引,也不编
-/// 一句错的。
+/// 不说这句用户无从下手。
+///
+/// `recovery_incomplete`/`guardian_busy` 不在 guardianCodeHints 表里(Go
+/// 侧目前只让它们落回通用的 "sudo bx doctor" 提示),这里补的两条都各自
+/// 有源码依据,而不是照抄 core_ownership_uncertain 的套话:
+///
+/// - `recovery_incomplete`:`Manager.Up`(manager.go:274-275)、`.Down`
+///   (:437-438)、`.Migrate`(:293-294)在 `m.recoveryBlocked` 为真时都用
+///   同一个 errRecoveryIncomplete 短路——菜单调的 `/v1/down`/`/v1/up`
+///   直接打这堵墙,"再点一次" 或 "去菜单里 down 再 up" 只会拿到同一个
+///   码,是死循环,不能这么建议。但 CLI 的 `sudo bx down` 走的是另一条
+///   路径(internal/cli/guardian.go 的 `macOSDownLifecycleDetailed` →
+///   `cleanGuardianDown` 撞见这同一个 errRecoveryIncomplete 后,会自动
+///   落入 `forcedMacOSTeardown` 强制拆除——停 Guardian 服务、清除阻断
+///   路由,注释里明确写着这就是为了兜底 "recoveryBlocked 被一次网络中断
+///   期间的 Guardian 重启变成永久状态,socket 仍应答但 Down 永远失败"
+///   这种情况)。菜单的直接 API 调用没有这条后备,所以指引必须点名
+///   "去终端敲命令"而不是"再点一次开关"。
+/// - `guardian_busy`:`acquireMutation`(manager.go:1010 起)只是在等
+///   `m.mutation` 这个 1 容量 channel 腾出来,持锁方 `defer
+///   m.releaseMutation()` 保证操作结束必放锁——这是瞬时排队,不是锁存
+///   状态,"稍候重试" 如实描述了会发生什么。
+///
+/// 未知码/无码一律返回 nil —— 宁可不给指引,也不编一句错的。
 func toggleFailureHint(code: String?) -> String? {
     guard let code, !code.isEmpty else { return nil }
     switch code {
     case "core_ownership_uncertain":
         return "若确认没有第二个 bx 在跑,执行 sudo bx down 再 sudo bx up 可清除这条已锁存的判定"
     case "recovery_incomplete":
-        return "上次网络恢复未完成。执行 sudo bx down 再 sudo bx up"
+        return "菜单直接调用没有后备,请改在终端执行 sudo bx down(不是再点一次开关)——" +
+            "命令行在 Guardian 拒绝关闭时会自动强制拆除脱困;拆除后再试 sudo bx up"
     case "guardian_busy":
         return "Guardian 正在处理上一个请求,稍候重试"
     default:
