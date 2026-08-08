@@ -57,6 +57,7 @@ func buildDarwinUninstallPlan(consoleUID int, consoleHome string, unifiedLayout 
 			darwinBridgeBinPath,
 			darwinCoreProcessStatePath,
 			darwinGuardianStatePath,
+			upgradeIntentPath,
 		},
 		KeepPaths: []string{darwinConfigDirPath, darwinDataDirPath},
 	}

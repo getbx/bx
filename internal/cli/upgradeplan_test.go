@@ -102,6 +102,41 @@ func TestUpgradeFailureMessageSaysNetworkIsUsable(t *testing.T) {
 	}
 }
 
+// 停保护失败时不得声称「当前状态未变」。
+//
+// macOSDownLifecycleDetailed 只会在 forcedMacOSTeardown 报错时返回错误,而那条
+// 逃生路径按设计把六个破坏性步骤全做完再报告(记 desired=off、请 Core 退出、
+// bootout Guardian、删屏障阻断路由、还原 DNS)。说「状态未变」是把机器的实际
+// 状态说反了。
+func TestUpgradeFailureMessageForStopDoesNotClaimNothingChanged(t *testing.T) {
+	msg := upgradeFailureMessage(UpgradeStopProtection, errors.New("boom"))
+	if strings.Contains(msg, "状态未变") {
+		t.Fatalf("强制拆除已经跑过了,不得声称状态未变,实际 = %q", msg)
+	}
+	if !strings.Contains(msg, "未经确认") {
+		t.Fatalf("必须说明网络状态未经确认,实际 = %q", msg)
+	}
+	if !strings.Contains(msg, "尚未安装") {
+		t.Fatalf("必须说清文件还没换(升级没开始),实际 = %q", msg)
+	}
+}
+
+// 走过强制拆除之后,不得替 bx down 说出它自己拒绝说的那句话。
+func TestUpgradeFailureMessageWithoutRestoredNetworkDoesNotPromiseConnectivity(t *testing.T) {
+	msg := upgradeFailureMessageWithNetwork(UpgradeStartProtection, errors.New("boom"), false)
+	if strings.Contains(msg, "网络仍可正常使用") {
+		t.Fatalf("强制拆除是 best-effort,不得断言网络可用,实际 = %q", msg)
+	}
+	if !strings.Contains(msg, "未经确认") || !strings.Contains(msg, "uninstall") {
+		t.Fatalf("必须说明未经确认并给出下一步,实际 = %q", msg)
+	}
+	// 干净停过保护那条路的措辞不变(既有断言仍然成立)。
+	clean := upgradeFailureMessageWithNetwork(UpgradeStartProtection, errors.New("boom"), true)
+	if !strings.Contains(clean, "网络仍可正常使用") {
+		t.Fatalf("干净路径仍应如实告知网络可用,实际 = %q", clean)
+	}
+}
+
 // 那句建议用户照做也没用:bx down 的干净路径不 bootout Guardian,
 // 所以 down/up 只会让同一个旧 Guardian 重起一个旧 Core(2026-08-08 真机实证)。
 // 照做也没用的指引比没有指引更糟 —— 它让用户以为自己已经处理过了。
@@ -114,7 +149,16 @@ func TestAppInstallDoesNotAdviseTheIneffectiveDownUp(t *testing.T) {
 	if strings.Contains(text, "bx down && sudo bx up") {
 		t.Fatal("这句建议无效,不得再出现:app-install 必须自己把升级做完")
 	}
-	if !strings.Contains(text, "upgradeSteps(") {
-		t.Fatal("app-install 必须按 upgradeSteps 执行完整升级")
+	// 编排搬进了 upgraderun.go(为了让顺序可测),所以链条分两段查:
+	// app-install 走 runUpgrade,runUpgrade 按 upgradeSteps 执行。
+	if !strings.Contains(text, "runUpgrade(") {
+		t.Fatal("app-install 必须经 runUpgrade 执行完整升级")
+	}
+	orchestrator, err := os.ReadFile("upgraderun.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(orchestrator), "upgradeSteps(") {
+		t.Fatal("runUpgrade 必须按 upgradeSteps 执行,而不是自己另编一套顺序")
 	}
 }
