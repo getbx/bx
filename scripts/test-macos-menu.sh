@@ -50,5 +50,11 @@ run_test guardian-status \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Tests/GuardianStatusTests.swift"
+run_test guardian-client-timeout \
+  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
+  "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Tests/GuardianClientTimeoutTests.swift"
 
 echo "macOS menu tests passed"
