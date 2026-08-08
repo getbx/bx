@@ -460,8 +460,14 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 	//
 	// 只在成功后销账:Down 失败时保护可能还开着,欠条仍然有意义。销不掉只记日志,
 	// 绝不让「关闭」因为一个记账文件而失败。
+	//
+	// **升级自己的那次停保护除外**(downClearsUpgradeIntent):app-install 前一秒
+	// 才写下欠条,紧接着就来停保护;不加区分就会在写下的下一步把它删掉,于是
+	// 一次中途失败的升级重试时既读到 desired=off 又找不到欠条,「成功」地把机器
+	// 永久留在无保护状态。判据是请求作用域的(POST /v1/down?reason=upgrade),
+	// 因此欠条只写一次、全程不删,没有任何崩溃窗口。
 	defer func() {
-		if err == nil {
+		if err == nil && downClearsUpgradeIntent(ctx) {
 			m.forgetUpgradeIntent()
 		}
 	}()

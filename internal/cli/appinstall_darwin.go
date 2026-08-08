@@ -50,7 +50,11 @@ func appInstallAction(c *urfavecli.Context) error {
 		clearIntent:     clearUpgradeIntent,
 		confirm:         confirmOnTTY,
 		stopProtection: func() (bool, error, error) {
-			result, err := macOSDownLifecycleDetailed(c.Context, configPath, defaultMacOSLifecycleDeps())
+			// downPurposeUpgrade:这一跳必须保住上一行刚写下的升级欠条。
+			// 用普通的 Down,Guardian 会把它当作「用户不要保护了」立刻销掉,
+			// 于是装文件一失败,重试既读到 desired=off 又找不到欠条,
+			// 「成功」地把机器永久留在无保护状态(2026-08-08 复审 C1)。
+			result, err := macOSDownLifecycleFor(c.Context, downPurposeUpgrade, configPath, defaultMacOSLifecycleDeps())
 			// 出错时 macOSDownLifecycleDetailed 返回零值 result(Forced=false),
 			// 但错误只可能来自 forcedMacOSTeardown —— 也就是说强制拆除确实跑过。
 			return result.Forced || err != nil, result.Cause, err

@@ -68,8 +68,27 @@ type guardianLifecycleClient interface {
 	Status(context.Context) (guardian.Status, error)
 	Up(context.Context) (guardian.Status, error)
 	Down(context.Context) (guardian.Status, error)
+	// DownForUpgrade 与 Down 停的是同一件事,区别只在**升级欠条**:
+	// Guardian 把每一次成功的 Down 当作「用户不要保护了」并销掉欠条,而升级
+	// 自己那次停保护必须保住它(见 guardian/upgradeintent.go)。
+	DownForUpgrade(context.Context) (guardian.Status, error)
 	Migrate(context.Context, guardian.MigrationRequest) (guardian.Status, error)
 }
+
+// downPurpose 说明这次停保护是谁要的 —— 决定 Guardian 要不要销掉升级欠条。
+//
+// 它不是 macOSLifecycleDeps 的一部分:deps 装的是「怎么做」,而这是「为什么
+// 做」,同一套 deps 两种用途都成立(app-install 与 bx down 都用
+// defaultMacOSLifecycleDeps)。
+type downPurpose int
+
+const (
+	// downPurposeUser:用户明确要关保护(bx down)。旧欠条一并销账。
+	downPurposeUser downPurpose = iota
+	// downPurposeUpgrade:升级把停保护当作自己的一步。欠条必须留着,否则
+	// 装文件一失败,重试就再也不知道该把保护起回来。
+	downPurposeUpgrade
+)
 
 type macOSLifecycleDeps struct {
 	guardianInstalled func() bool
@@ -394,8 +413,14 @@ type macOSDownResult struct {
 // It never installs or bootstraps Guardian on the forced path, and that path
 // never touches /etc/bx or /var/lib/bx — only `bx uninstall` removes files.
 func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps macOSLifecycleDeps) (macOSDownResult, error) {
+	return macOSDownLifecycleFor(ctx, downPurposeUser, configPath, deps)
+}
+
+// macOSDownLifecycleFor 是带用途的入口:升级用 downPurposeUpgrade 调它,
+// 其余一律经 macOSDownLifecycleDetailed 走 downPurposeUser。
+func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (macOSDownResult, error) {
 	if deps.guardianReady != nil && deps.guardianReady(ctx) {
-		status, cleanErr := cleanGuardianDown(ctx, configPath, deps)
+		status, cleanErr := cleanGuardianDown(ctx, purpose, configPath, deps)
 		if cleanErr == nil {
 			return macOSDownResult{Status: status}, nil
 		}
@@ -410,9 +435,15 @@ func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps mac
 	return macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}, Forced: true}, nil
 }
 
-func cleanGuardianDown(ctx context.Context, configPath string, deps macOSLifecycleDeps) (guardian.Status, error) {
+func cleanGuardianDown(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (guardian.Status, error) {
 	if _, _, err := ensureGuardianOwnership(ctx, configPath, deps); err != nil {
 		return guardian.Status{}, err
+	}
+	if purpose == downPurposeUpgrade {
+		// 升级欠条(「还欠你一次把保护起回来」)必须活过这一跳:它是这次
+		// app-install 前一秒才写下的,而 Guardian 会把普通的 Down 当作
+		// 「用户不要保护了」把它销掉 —— 那正是 2026-08-08 复审 C1。
+		return deps.client.DownForUpgrade(ctx)
 	}
 	return deps.client.Down(ctx)
 }

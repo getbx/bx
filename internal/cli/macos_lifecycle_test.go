@@ -1128,6 +1128,8 @@ type recordingGuardianClient struct {
 	downCalls     int
 	migrateCalls  int
 	downErr       error
+
+	downForUpgradeCalls int
 }
 
 type fakeMenuLaunchdControl struct {
@@ -1163,6 +1165,18 @@ func (c *recordingGuardianClient) Up(context.Context) (guardian.Status, error) {
 func (c *recordingGuardianClient) Down(context.Context) (guardian.Status, error) {
 	c.downCalls++
 	*c.events = append(*c.events, "guardian.down")
+	if c.downErr != nil {
+		return guardian.Status{}, c.downErr
+	}
+	return c.downStatus, nil
+}
+
+// DownForUpgrade 单独记事件:调用方用哪一个,决定 Guardian 会不会把升级欠条
+// 当作陈旧记录销掉,而两者的返回值一模一样 —— 弄错了不会有任何编译或运行期
+// 提示,只会在一次中途失败的升级之后留下一台永远不再被保护的机器。
+func (c *recordingGuardianClient) DownForUpgrade(ctx context.Context) (guardian.Status, error) {
+	c.downForUpgradeCalls++
+	*c.events = append(*c.events, "guardian.down.upgrade")
 	if c.downErr != nil {
 		return guardian.Status{}, c.downErr
 	}
