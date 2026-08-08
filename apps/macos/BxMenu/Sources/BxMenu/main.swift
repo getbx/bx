@@ -376,6 +376,18 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch state {
         case .connected:
             return menuRowsNow().anomalyCount > 0 ? .attention : .protected
+        // `.updateNeeded` 与 `.warning` **有意共用裂盾**,尽管「CLI 太旧」与
+        // 「流量可能没被保护」是两件不同紧急程度的事。四态是固定的,可选只有两个:
+        // ① 空心盾(.off):它**断言**「没在保护」。而 `.updateNeeded` 这条路径在
+        //    跑 `bx status --json` **之前**就返回了 —— 菜单对保护开没开一无所知,
+        //    画成「没在保护」是一句它无权说的话,而且是四态里最安静、最容易被
+        //    忽略的一个,恰好把「指示灯已经不能再指示了」这件事藏起来。
+        // ② 裂盾(.attention):它说的是「有事需要你看一眼」。旧 CLI 让菜单读不到
+        //    状态,这**正是**需要看一眼的事——本项目一贯的立场是不许把「问不出来」
+        //    伪装成一个自信的答案(internal/observe 的三态 Tristate、MenuRows 的
+        //    .unknown 都是同一条原则)。
+        // 紧急程度的差别由菜单正文承担:副标题是 "Update Required"、状态行是
+        // "Update bx CLI",与 .warning 的措辞完全不同。图标只负责「要不要看一眼」。
         case .warning, .updateNeeded:
             return .attention
         case .off, .setupNeeded, .missing, .notInstalled:
