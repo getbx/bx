@@ -155,6 +155,17 @@ func GuardianActive() bool {
 	return err == nil && active
 }
 
+// GuardianLoaded 报告 Guardian launchd 服务是否已加载,并**如实回传探测失败**。
+//
+// GuardianActive() 把 error 压成 false,对「显示一个状态」够用,但对「据此决定
+// 要不要停保护再换文件」不够:一次探测失败会让调用方以为没有 Guardian 在跑,
+// 于是在活着的旧 daemon 底下换掉文件 —— 正是 2026-08-08 事故的形状。需要
+// fail-closed 的调用方用这个,自己决定把 error 当成什么。
+// 标签根本不存在(从未安装)不是错误,返回 (false, nil)。
+func GuardianLoaded(ctx context.Context) (bool, error) {
+	return (execGuardianLaunchdControl{}).Loaded(ctx, guardianLaunchdLabel)
+}
+
 // EnableGuardian ensures the Guardian launchd service is loaded and
 // reachable, using a real unix-socket probe to detect an already-loaded
 // but crash-looping service.

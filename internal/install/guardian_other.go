@@ -23,6 +23,10 @@ func GuardianInstalled() bool { return false }
 
 func GuardianActive() bool { return false }
 
+// GuardianLoaded 在非 macOS 上没有 Guardian 可言:(false, nil) 是事实,不是
+// 「问不出来」—— 调用方的 fail-closed 分支不该在这些平台上被触发。
+func GuardianLoaded(context.Context) (bool, error) { return false, nil }
+
 func LegacyCoreLoaded() (bool, error) { return false, nil }
 
 func LegacyCoreInstalled() bool { return false }
