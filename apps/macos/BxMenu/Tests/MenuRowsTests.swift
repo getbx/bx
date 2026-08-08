@@ -29,21 +29,21 @@ struct MenuRowsTests {
         let set = menuRows(report: healthy, dns: "127.0.0.1")
 
         // 阶段②能上的行
-        expect(row(set, "线路")?.value.contains("reality") == true,
-               "线路行应显示传输,实际 \(String(describing: row(set, "线路")))")
-        expect(row(set, "延迟")?.value == "390 ms",
-               "延迟行,实际 \(String(describing: row(set, "延迟")?.value))")
-        expect(row(set, "UDP 中继")?.value == "hysteria2",
-               "UDP 中继行,实际 \(String(describing: row(set, "UDP 中继")?.value))")
+        expect(row(set, "Route")?.value.contains("reality") == true,
+               "线路行应显示传输,实际 \(String(describing: row(set, "Route")))")
+        expect(row(set, "Latency")?.value == "390 ms",
+               "延迟行,实际 \(String(describing: row(set, "Latency")?.value))")
+        expect(row(set, "UDP Relay")?.value == "hysteria2",
+               "UDP 中继行,实际 \(String(describing: row(set, "UDP Relay")?.value))")
         expect(row(set, "DNS")?.mark == .ok, "DNS 已知时应为 ok")
 
         // 阶段③的行:必须在场、必须是 unknown、必须不算异常
-        for pending in ["出口位置", "IPv6 泄漏", "WebRTC"] {
+        for pending in ["Exit Location", "IPv6 Leak", "WebRTC"] {
             guard let r = row(set, pending) else {
                 expect(false, "\(pending) 行必须在场(阶段③点亮),现在缺席"); continue
             }
             expect(r.mark == .unknown, "\(pending) 在阶段②必须是 unknown,实际 \(r.mark)")
-            expect(r.value == "未观测", "\(pending) 的占位文案应为「未观测」,实际 \(r.value)")
+            expect(r.value == "Not checked", "\(pending) 的占位文案应为「未观测」,实际 \(r.value)")
         }
         expect(set.anomalyCount == 0,
                "全部正常 + 三行未观测时异常数必须为 0,实际 \(set.anomalyCount) —— 未观测不是异常")
