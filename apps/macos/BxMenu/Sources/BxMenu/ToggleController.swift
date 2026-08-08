@@ -1,0 +1,65 @@
+import Foundation
+
+/// 超过这个秒数就在菜单里追加一行「比预期久」并给出日志入口。
+///
+/// 20 秒的依据:正常的 up/down 在 3 秒内完成,而 Go 侧 guardianMutationTimeout
+/// 是 60 秒 —— 阈值必须落在两者之间,让用户在服务端还没放弃之前就拿到线索。
+let toggleSlowThresholdSeconds = 20
+
+enum ToggleAction {
+    case turnOn
+    case turnOff
+
+    /// 进行中的动词。用「正在连接/正在断开」而非「启动中/停止中」,
+    /// 与菜单其余文案(已保护/未保护)保持同一套说法。
+    var progressVerb: String {
+        switch self {
+        case .turnOn: return "正在连接"
+        case .turnOff: return "正在断开"
+        }
+    }
+}
+
+/// 进行中的状态行文案,永远带已用秒数。
+///
+/// 秒数是这一期最核心的产出:2026-08-04 事故里 `bx down` 卡了 71 分钟,
+/// 界面全程没有一个字。
+func toggleProgressText(action: ToggleAction, elapsedSeconds: Int) -> String {
+    "\(action.progressVerb)… \(max(0, elapsedSeconds)) 秒"
+}
+
+/// 逾时提示;未达阈值返回 nil(调用方据此决定要不要多画一行)。
+///
+/// 不接受 `action` 参数:提示文案本身与「在连接还是在断开」无关(都是
+/// 「比预期久」),硬塞一个不影响输出的参数只会制造一个看似有用实则
+/// 恒定被忽略的入参。
+func toggleSlowHint(elapsedSeconds: Int) -> String? {
+    guard elapsedSeconds >= toggleSlowThresholdSeconds else { return nil }
+    return "比预期久,通常 3 秒内完成"
+}
+
+/// 失败码 → 用户能照做的下一步。
+///
+/// 与 Go 侧 internal/guardian/client.go 对齐:Guardian 的响应体刻意只回传
+/// 失败码、不外传原始错误串(可能含路径/链接/凭据),所以具体说法必须写
+/// 在客户端。`core_ownership_uncertain` 是 guardianCodeHints 里目前唯一的
+/// 专用条目,且这条判定是锁存的(Manager.upLocked/Migrate 在再次调用
+/// Existing() 之前就先看缓存的 Uncertain 标记)——down 再 up 是唯一出路,
+/// 不说这句用户无从下手。`recovery_incomplete`/`guardian_busy` 是
+/// failureCodeForError 直接从哨兵错误命名的两条(不经 guardianCodeHints
+/// 那张表,但含义同样明确:上次恢复没完成 / 上一个操作还占着锁),补上
+/// 对应指引不算编造。未知码/无码一律返回 nil —— 宁可不给指引,也不编
+/// 一句错的。
+func toggleFailureHint(code: String?) -> String? {
+    guard let code, !code.isEmpty else { return nil }
+    switch code {
+    case "core_ownership_uncertain":
+        return "若确认没有第二个 bx 在跑,执行 sudo bx down 再 sudo bx up 可清除这条已锁存的判定"
+    case "recovery_incomplete":
+        return "上次网络恢复未完成。执行 sudo bx down 再 sudo bx up"
+    case "guardian_busy":
+        return "Guardian 正在处理上一个请求,稍候重试"
+    default:
+        return nil
+    }
+}
