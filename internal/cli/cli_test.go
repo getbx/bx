@@ -3305,6 +3305,28 @@ func TestMacMenuRebuildsMenuInPlace(t *testing.T) {
 	}
 }
 
+// 图标的可访问性接线:形态是主要载体,动效可被关掉,颜色可被系统接管。
+//
+// 这三条判定都在 MenuIcon.swift 里由 Swift 单测钉着,但**接不接线在 main.swift**,
+// 而 main.swift 编不进 scripts/test-macos-menu.sh。漏接线不会有任何测试转红:
+// 图标照样画得出来,只是「减弱动态效果」被无视、灰色盾在深色菜单栏上消失。
+func TestMacMenuIconRespectsReduceMotionAndSystemTint(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "accessibilityDisplayShouldReduceMotion") {
+		t.Fatal("图标必须尊重系统的「减弱动态效果」——菜单栏常驻视野边缘,是最不该无视它的地方")
+	}
+	if !strings.Contains(text, "menuIconUsesSystemTint(state:") {
+		t.Fatal("无色两态必须交给系统上色:自绘的 secondaryLabelColor 在深色菜单栏上会消失")
+	}
+	if strings.Contains(text, "image.isTemplate = false") {
+		t.Fatal("isTemplate 不得写死为 false,它由 menuIconUsesSystemTint 决定")
+	}
+}
+
 // 刷新的子进程一律不在主线程跑。
 //
 // 一次刷新 spawn 四个 bx 子进程,其中 status --json 在 macOS 上要跑完整观测、

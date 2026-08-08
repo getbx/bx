@@ -290,8 +290,18 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateIcon() {
         guard let button = statusItem.button else { return }
-        let style = menuIconStyle(state: menuIconStateNow())
-        button.image = compactStatusImage(for: style, tint: iconTint())
+        let iconState = menuIconStateNow()
+        // 用户在系统里要求过「减弱动态效果」就别动:菜单栏常驻视野边缘,是最不该
+        // 无视这个设置的地方。四态此时全靠形态区分(MenuIconTests 钉死)。
+        let style = menuIconStyle(
+            state: iconState,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+        let systemTint = menuIconUsesSystemTint(state: iconState)
+        // template 只吃 alpha 通道,颜色随便;给不透明黑是为了让蒙版是实的。
+        button.image = compactStatusImage(for: style,
+                                          tint: systemTint ? .black : iconTint(iconState),
+                                          template: systemTint)
         button.imagePosition = .imageOnly
         button.title = ""
         button.toolTip = tooltipText()
@@ -326,11 +336,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 颜色只作可选加强:去掉它四态仍靠形态可分(见 MenuIconTests)。
-    private func iconTint() -> NSColor {
-        switch menuIconStateNow() {
+    ///
+    /// 无色的两态不走这里(它们交给系统 template 上色,见 menuIconUsesSystemTint)——
+    /// 自绘的 secondaryLabelColor 在深色菜单栏上会消失。
+    private func iconTint(_ state: MenuIconState) -> NSColor {
+        switch state {
         case .protected: return .systemGreen
         case .attention: return .systemYellow
-        case .transitioning, .off: return .secondaryLabelColor
+        case .transitioning, .off: return .black
         }
     }
 
@@ -370,7 +383,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (half(sideBackToApex: leftSide), half(sideBackToApex: rightSide))
     }
 
-    private func compactStatusImage(for style: MenuIconStyle, tint: NSColor) -> NSImage {
+    private func compactStatusImage(for style: MenuIconStyle, tint: NSColor, template: Bool) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18))
         image.lockFocus()
         defer { image.unlockFocus() }
@@ -383,6 +396,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let path = shieldPath()
             path.lineWidth = 1.35
             path.stroke()
+        case .dashed:
+            // 虚线 = 轮廓还没合上。与实心/空心/裂开三者在灰度、静态下都可分。
+            let path = shieldPath()
+            path.lineWidth = 1.6
+            path.setLineDash([2.4, 1.9], count: 2, phase: 0)
+            path.stroke()
         case .cracked:
             let halves = crackedShieldPaths()
             halves.left.transform(using: AffineTransform(translationByX: -0.65, byY: 0.15))
@@ -390,7 +409,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             halves.left.fill()
             halves.right.fill()
         }
-        image.isTemplate = false
+        image.isTemplate = template
         return image
     }
 
@@ -409,12 +428,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         case .breathe(let p):
             period = p
-            floorAlpha = 0.45          // 稳态:幅度小到不盯着看注意不到
+            floorAlpha = menuIconIdleFloorAlpha
         case .pulse(let p):
             period = p
-            floorAlpha = 0.35          // 过渡态:更明显,用户在等
+            floorAlpha = menuIconBusyFloorAlpha
         }
-        let step = 0.05
+        // 10Hz 足够:4 秒周期下每帧 alpha 最多变 0.043,看不出台阶。tolerance 让
+        // 系统把这些唤醒合并到别的定时器上 —— 常驻进程,省电是白拿的。
+        let step = 0.1
         breathTimer = Timer.scheduledTimer(withTimeInterval: step, repeats: true) { [weak self] _ in
             guard let self, let button = self.statusItem.button else { return }
             self.breathPhase += step
@@ -423,6 +444,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let eased = (1 - cos(t * 2 * Double.pi)) / 2
             button.alphaValue = floorAlpha + (1 - floorAlpha) * (1 - eased)
         }
+        breathTimer?.tolerance = 0.02
     }
 
     private func tooltipText() -> String {

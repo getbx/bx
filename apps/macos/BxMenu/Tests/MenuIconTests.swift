@@ -25,6 +25,45 @@ struct MenuIconTests {
             }
         }
 
+        // 形态本身必须两两不同:开了「减弱动态效果」之后动效全没了,四态就只剩
+        // 形态可分;bug 报告里的静态截图同理。
+        let forms = all.map { $0.form }
+        for i in forms.indices {
+            for j in forms.indices where j > i {
+                expect(forms[i] != forms[j], "第 \(i) 态与第 \(j) 态形态相同,动效关掉后无法区分")
+            }
+        }
+
+        // 减弱动态效果:一律静止,且四态仍然两两可分
+        let reduced = [
+            menuIconStyle(state: .protected, reduceMotion: true),
+            menuIconStyle(state: .off, reduceMotion: true),
+            menuIconStyle(state: .transitioning, reduceMotion: true),
+            menuIconStyle(state: .attention, reduceMotion: true),
+        ]
+        for (index, style) in reduced.enumerated() {
+            expect(style.motion == .still, "减弱动态效果下第 \(index) 态仍在动:\(style.motion)")
+        }
+        for i in reduced.indices {
+            for j in reduced.indices where j > i {
+                expect(reduced[i] != reduced[j], "减弱动态效果下第 \(i) 态与第 \(j) 态无法区分")
+            }
+        }
+
+        // 稳态呼吸必须比过渡态脉冲**浅得多**:谷底越接近 1 幅度越小。
+        // 两者只差一成的话,稳态读起来就是慢闪,而它的职责只是「还活着」。
+        expect(menuIconIdleFloorAlpha > menuIconBusyFloorAlpha,
+               "稳态呼吸的幅度必须小于过渡态脉冲")
+        expect(menuIconIdleFloorAlpha >= 0.75,
+               "稳态呼吸幅度过大(谷底 \(menuIconIdleFloorAlpha)),那是慢闪不是呼吸")
+        expect(menuIconBusyFloorAlpha <= 0.6,
+               "过渡态脉冲必须看得见(谷底 \(menuIconBusyFloorAlpha))")
+
+        // 「没开保护」不能靠自绘的灰:菜单栏在深色壁纸下是深的,50% 黑会消失。
+        expect(menuIconUsesSystemTint(state: .off), "已关闭必须交给系统上色,否则深色菜单栏下看不见")
+        expect(menuIconUsesSystemTint(state: .transitioning), "切换中同为无色态,交给系统上色")
+        expect(!menuIconUsesSystemTint(state: .protected), "保护中的绿色是有意的加强,保留自绘颜色")
+
         expect(protectedStyle.form == .filled, "已保护应为实心盾")
         expect(offStyle.form == .hollow, "已关闭应为空心盾")
         expect(badStyle.form == .cracked, "需要注意应为裂开的盾")
