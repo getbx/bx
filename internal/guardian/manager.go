@@ -427,13 +427,44 @@ func (m *Manager) upLocked(ctx context.Context) error {
 	return err
 }
 
-func (m *Manager) Down(ctx context.Context) error {
+// upgradeIntentStore 是可选能力:实现了它的 store 才有升级欠条可销。
+// 用可选接口而不是塞进 DesiredStore,是为了不逼所有既有实现(含测试替身)
+// 都长出一个它们并不需要的方法。
+type upgradeIntentStore interface {
+	ClearUpgradeIntent() error
+}
+
+func (m *Manager) forgetUpgradeIntent() {
+	store, ok := m.store.(upgradeIntentStore)
+	if !ok {
+		return
+	}
+	if err := store.ClearUpgradeIntent(); err != nil {
+		log.Printf("guardian_upgrade_intent_clear_failed err=%v", err)
+	}
+}
+
+func (m *Manager) Down(ctx context.Context) (err error) {
 	m.beginPathRecoveryTransition(pathRecoveryTransitionResolveOff)
 	defer m.endPathRecoveryTransition()
-	if err := m.acquireMutation(ctx); err != nil {
+	if err = m.acquireMutation(ctx); err != nil {
 		return err
 	}
 	defer m.releaseMutation()
+	// 关成了就销掉上一次未完成升级留下的欠条(upgrade-intent.json)。
+	//
+	// 钩子挂在这里而不是某个调用方,是因为**每一条**「用户说 off」都汇合于此:
+	// 菜单的 Turn Off 走 socket → POST /v1/down → controller.Down;CLI 的干净
+	// 路径走 client.Down 到同一个 handler。挂在 macOSDownAction 上只覆盖后者,
+	// 菜单那条根本不经过 CLI —— 那正是上一轮漏掉的路径。
+	//
+	// 只在成功后销账:Down 失败时保护可能还开着,欠条仍然有意义。销不掉只记日志,
+	// 绝不让「关闭」因为一个记账文件而失败。
+	defer func() {
+		if err == nil {
+			m.forgetUpgradeIntent()
+		}
+	}()
 	if m.recoveryBlocked {
 		return errRecoveryIncomplete
 	}

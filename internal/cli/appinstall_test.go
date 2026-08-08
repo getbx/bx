@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -92,12 +93,11 @@ func TestConfirmPromptCancelsWithoutATerminal(t *testing.T) {
 	}
 	// 而且必须**报错**而不是静静地返回「用户说不」:后者会让调用它的脚本
 	// (install.sh 在 set -e 下)接着打印「完成」,把没做的升级报成成功。
-	if err == nil {
-		t.Fatal("问不出来必须回传错误,不能与「用户明确说不」同形")
+	if !errors.Is(err, errCannotAsk) {
+		t.Fatalf("问不出来必须回传 errCannotAsk,不能与「用户明确说不」同形,实际 = %v", err)
 	}
-	if !strings.Contains(err.Error(), "--yes") {
-		t.Fatalf("必须告诉调用方怎么显式表态,实际 = %q", err)
-	}
+	// 给用户看的那句话由 upgradeCannotAskMessage 按 desiredOn 生成(见
+	// TestUpgradeCannotAskMessageDoesNotInventAnOutage),哨兵本身不作任何断言。
 }
 
 // 有终端时才真的问,并且照答案办。
@@ -114,5 +114,29 @@ func TestConfirmPromptAsksOnATerminal(t *testing.T) {
 	agreed, err = confirmPrompt(strings.NewReader("\n"), true, &no, "继续吗?")
 	if agreed || err != nil {
 		t.Fatalf("直接回车应取消且不报错,实际 agreed=%v err=%v", agreed, err)
+	}
+}
+
+// 用户明确说「不」必须以退出码 2 结束,而不是 0。
+//
+// 生成的 install.sh 据此分支:0 才打印「完成」,2 打印「已取消」。若这里退 0,
+// 一次当面取消仍会得到一句「完成。打开菜单栏的 bx 图标继续 Set Up。」——
+// 比原来的 N2 轻,但仍是同一句「什么都没做却说做完了」。
+func TestAppInstallExitsWithTheCancelCodeOnExplicitNo(t *testing.T) {
+	source, err := os.ReadFile("appinstall_darwin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := swiftFuncBody(t, string(source), "appInstallAction") // 同样是「切到下一个 func」
+	idx := strings.Index(body, "outcome.Cancelled")
+	if idx < 0 {
+		t.Fatal("找不到取消分支")
+	}
+	branch := body[idx:]
+	if end := strings.Index(branch, "\n\t}"); end >= 0 {
+		branch = branch[:end]
+	}
+	if !strings.Contains(branch, "urfavecli.Exit(") || !strings.Contains(branch, ", 2)") {
+		t.Fatalf("取消必须以退出码 2 结束(install.sh 据此不再打印「完成」),实际分支 = %q", branch)
 	}
 }

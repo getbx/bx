@@ -37,6 +37,9 @@ const (
 	// 列表一起删掉。
 	darwinCoreProcessStatePath = darwinDataDirPath + "/core-process.json"
 	darwinGuardianStatePath    = darwinDataDirPath + "/guardian-state.json"
+	// 升级欠条(guardian.Paths.UpgradeIntent 的默认路径)。卸载必须清掉,否则
+	// 一张陈旧欠条会活过卸载重装,在下一次 app-install 时把保护打开。
+	darwinUpgradeIntentPath = darwinDataDirPath + "/upgrade-intent.json"
 )
 
 // buildDarwinUninstallPlan 构造完整卸载计划。
@@ -57,7 +60,7 @@ func buildDarwinUninstallPlan(consoleUID int, consoleHome string, unifiedLayout 
 			darwinBridgeBinPath,
 			darwinCoreProcessStatePath,
 			darwinGuardianStatePath,
-			upgradeIntentPath,
+			darwinUpgradeIntentPath,
 		},
 		KeepPaths: []string{darwinConfigDirPath, darwinDataDirPath},
 	}

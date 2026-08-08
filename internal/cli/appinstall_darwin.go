@@ -46,8 +46,8 @@ func appInstallAction(c *urfavecli.Context) error {
 	outcome, err := runUpgrade(upgradeIO{
 		guardianRunning: func() (bool, error) { return install.GuardianLoaded(c.Context) },
 		loadDesiredOn:   func() bool { return upgradeDesiredOn(c.Context) },
-		saveIntent:      func(desiredOn bool) error { return saveUpgradeIntent(upgradeIntentPath, desiredOn) },
-		clearIntent:     func() error { return clearUpgradeIntent(upgradeIntentPath) },
+		saveIntent:      saveUpgradeIntent,
+		clearIntent:     clearUpgradeIntent,
 		confirm:         confirmOnTTY,
 		stopProtection: func() (bool, error, error) {
 			result, err := macOSDownLifecycleDetailed(c.Context, configPath, defaultMacOSLifecycleDeps())
@@ -89,8 +89,9 @@ func appInstallAction(c *urfavecli.Context) error {
 		return err
 	}
 	if outcome.Cancelled {
-		fmt.Println("已取消,未做任何改动。")
-		return nil
+		// 退出码 2 = 用户明确说了不。不是失败(没有任何东西坏掉),但也不是
+		// 成功——调用它的 install.sh 据此不再打印「完成」,而是如实说取消了。
+		return urfavecli.Exit("已取消,未做任何改动。", 2)
 	}
 
 	fmt.Printf("✓ 已安装 Bx.app %s → %s\n", outcome.Files.Version, outcome.Files.AppPath)
@@ -129,7 +130,7 @@ func configured(configPath string) bool {
 // 保护起回来。
 //
 // 两个来源合成(resolveUpgradeDesiredOn):
-//   - 上一次未完成升级留下的欠条(upgradeIntentPath)。**没有它就修不好重试**:
+//   - 上一次未完成升级留下的欠条(guardian.Store 的 UpgradeIntent)。**没有它就修不好重试**:
 //     第一步会把 desired 写成 off,重试时读 store 只会读到 off。
 //   - Guardian 自己的 desired store(/var/lib/bx/guardian-state.json):那正是
 //     Guardian 开机时据以决定要不要起保护的状态,也是 bx down 写 off 的地方。
@@ -142,7 +143,7 @@ func configured(configPath string) bool {
 // 调用点必须早于第一步:UpgradeStopProtection 无论走干净路径还是强制拆除,都会
 // 把 desired 记成 off。
 func upgradeDesiredOn(ctx context.Context) bool {
-	pending, present := loadUpgradeIntent(upgradeIntentPath)
+	pending, present := loadUpgradeIntent()
 	return resolveUpgradeDesiredOn(guardianDesiredOn(ctx), pending, present)
 }
 

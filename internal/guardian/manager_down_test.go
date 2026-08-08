@@ -3,6 +3,8 @@ package guardian
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/getbx/bx/internal/supervisor"
@@ -85,5 +87,53 @@ func TestManagerDownFallsBackToBlockOnlyBarrierWhenServerBypassMissing(t *testin
 	}
 	if status.LastError == "barrier_install_failed" {
 		t.Error("降级成功后不得留下 barrier_install_failed")
+	}
+}
+
+// 用户明确关掉保护之后,升级欠条必须销账 —— 而且必须在**菜单走的那条路**上。
+//
+// 上一轮把销账挂在 internal/cli 的 macOSDownAction 上,以为菜单的 Turn Off 会
+// 经过它。它不会:菜单直接连 Guardian socket,POST /v1/down → controller.Down,
+// 全程不碰 CLI(ToggleController 只有在 socket **失败**时才回落到
+// privilegedCLIDown)。于是钩子恰好只在罕见的逃生路径上生效。
+//
+// 这个用例走真实的 LocalAPI handler + 真实的 *Store,证明的是那条路本身:
+// 若销账不在 Manager.Down 里,请求成功而欠条仍在。
+func TestDownOverTheLocalAPISocketClearsTheUpgradeIntent(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	if err := env.store.SaveUpgradeIntent(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := env.store.LoadUpgradeIntent(); !present {
+		t.Fatal("test setup: 欠条应当已存在")
+	}
+
+	// 菜单栏的 Turn Off 就是这一跳(GuardianClient.turnOff → POST /v1/down)。
+	request := httptest.NewRequest(http.MethodPost, "/v1/down", nil)
+	request = request.WithContext(withPeerCredentials(request.Context(), 0, true))
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(env.manager).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST /v1/down = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	if pending, present := env.store.LoadUpgradeIntent(); present {
+		t.Fatalf("经 socket 关闭保护之后,欠条必须销账(否则下次 Repair 会违背用户意愿开回保护),实际 pending=%v", pending)
+	}
+}
+
+// Down 失败时不得销账:保护可能还开着,欠条仍然有意义。
+func TestFailedDownKeepsTheUpgradeIntent(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	if err := env.store.SaveUpgradeIntent(true); err != nil {
+		t.Fatal(err)
+	}
+	env.store.setLoadError(errors.New("desired state unreadable"))
+
+	if err := env.manager.Down(context.Background()); err == nil {
+		t.Fatal("test setup: 这一步应当失败")
+	}
+	if _, present := env.store.LoadUpgradeIntent(); !present {
+		t.Fatal("Down 失败时欠条必须留着 —— 保护可能还开着")
 	}
 }

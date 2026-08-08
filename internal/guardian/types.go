@@ -28,6 +28,12 @@ const (
 
 type Paths struct {
 	Desired, Transaction, Receipt, Staging, Snapshots string
+	// UpgradeIntent 记录「上一次升级欠用户一次『把保护起回来』」。
+	// 它与 Desired 是兄弟状态、同住 /var/lib/bx,所以由本 Store 拥有:写它的是
+	// app-install,而销它的必须是**每一条**「用户说 off」的路径,那条路径的汇合
+	// 点是 Manager.Down(菜单走 socket → /v1/down → controller.Down;CLI 干净
+	// 路径走 client.Down 到同一个 handler),在 internal/guardian 里。
+	UpgradeIntent string
 }
 
 type DNSState string
