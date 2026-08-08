@@ -5,18 +5,28 @@ private let guardianHeaderLimit = 32 * 1024
 private let guardianBodyLimit = 1024 * 1024
 private let guardianSocketPath = "/var/run/bx/guardian.sock"
 private let guardianDefaultTimeout: TimeInterval = 5
+// Go 侧 guardianMutationTimeout = 1 分钟。客户端必须比它长,否则拿到的是自己的
+// 超时而不是服务端给的失败码(用户最需要的恰恰是那个码)。
+private let guardianMutationTimeout: TimeInterval = 75
 private let guardianMaximumTimeout: TimeInterval = TimeInterval(Int32.max) / 1_000
 
 private enum GuardianEndpoint {
     case requestRecovery
     case currentRecovery
+    case turnOn
+    case turnOff
 
     var expectedStatus: Int {
         switch self {
-        case .requestRecovery:
-            return 202
-        case .currentRecovery:
-            return 200
+        case .requestRecovery: return 202
+        case .currentRecovery, .turnOn, .turnOff: return 200
+        }
+    }
+
+    var timeout: TimeInterval {
+        switch self {
+        case .requestRecovery, .currentRecovery: return guardianDefaultTimeout
+        case .turnOn, .turnOff: return guardianMutationTimeout
         }
     }
 }
@@ -75,11 +85,11 @@ private struct GuardianDeadline {
 
 struct GuardianClient {
     private let connectSocket: (GuardianDeadline) throws -> Int32
-    private let ioTimeout: TimeInterval
+    private let overrideTimeout: TimeInterval?
     private let clock: () -> TimeInterval
 
     init() {
-        ioTimeout = guardianDefaultTimeout
+        overrideTimeout = nil
         clock = { ProcessInfo.processInfo.systemUptime }
         connectSocket = { deadline in
             try connectToGuardian(deadline: deadline)
@@ -92,20 +102,28 @@ struct GuardianClient {
         clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.connectSocket = { _ in try connectSocket() }
-        self.ioTimeout = ioTimeout
+        self.overrideTimeout = ioTimeout
         self.clock = clock
     }
 
     func requestRecovery() throws -> RecoverySnapshot {
-        try perform(endpoint: .requestRecovery)
+        try perform(endpoint: .requestRecovery, as: RecoverySnapshot.self)
     }
 
     func currentRecovery() throws -> RecoverySnapshot {
-        try perform(endpoint: .currentRecovery)
+        try perform(endpoint: .currentRecovery, as: RecoverySnapshot.self)
     }
 
-    private func perform(endpoint: GuardianEndpoint) throws -> RecoverySnapshot {
-        let deadline = GuardianDeadline(timeout: ioTimeout, now: clock)
+    func turnOn() throws -> GuardianStatus {
+        try perform(endpoint: .turnOn, as: GuardianStatus.self)
+    }
+
+    func turnOff() throws -> GuardianStatus {
+        try perform(endpoint: .turnOff, as: GuardianStatus.self)
+    }
+
+    private func perform<T: Decodable>(endpoint: GuardianEndpoint, as type: T.Type) throws -> T {
+        let deadline = GuardianDeadline(timeout: overrideTimeout ?? endpoint.timeout, now: clock)
         let fd = try connectSocket(deadline)
         defer { close(fd) }
         try configureGuardianSocketTimeouts(fd, timeout: deadline.remaining())
@@ -116,13 +134,13 @@ struct GuardianClient {
         }
         try writeGuardianRequest(guardianRequest(for: endpoint), to: fd, deadline: deadline)
         let response = try readGuardianHTTPResponse(from: fd, deadline: deadline)
-        let snapshot = try decodeGuardianHTTPResponse(response, expectedStatus: endpoint.expectedStatus)
+        let decoded = try decodeGuardianHTTPResponse(response, expectedStatus: endpoint.expectedStatus, as: T.self)
         try deadline.checkpoint()
-        return snapshot
+        return decoded
     }
 }
 
-func decodeGuardianHTTPResponse(_ response: Data, expectedStatus: Int) throws -> RecoverySnapshot {
+func decodeGuardianHTTPResponse<T: Decodable>(_ response: Data, expectedStatus: Int, as type: T.Type) throws -> T {
     let head = try parseGuardianHTTPHead(response)
     guard head.status == expectedStatus else {
         throw GuardianClientError.status(head.status)
@@ -132,10 +150,14 @@ func decodeGuardianHTTPResponse(_ response: Data, expectedStatus: Int) throws ->
         throw GuardianClientError.invalidResponse
     }
     do {
-        return try JSONDecoder().decode(RecoverySnapshot.self, from: body)
+        return try JSONDecoder().decode(T.self, from: body)
     } catch {
         throw GuardianClientError.invalidResponse
     }
+}
+
+func decodeGuardianHTTPResponse(_ response: Data, expectedStatus: Int) throws -> RecoverySnapshot {
+    try decodeGuardianHTTPResponse(response, expectedStatus: expectedStatus, as: RecoverySnapshot.self)
 }
 
 private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
@@ -151,6 +173,14 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         method = "GET"
         path = "/v1/recoveries/current"
         body = nil
+    case .turnOn:
+        method = "POST"
+        path = "/v1/up"
+        body = Data("{}".utf8)
+    case .turnOff:
+        method = "POST"
+        path = "/v1/down"
+        body = Data("{}".utf8)
     }
 
     var requestText = "\(method) \(path) HTTP/1.1\r\nHost: local\r\nAccept: application/json\r\nConnection: close\r\n"
