@@ -110,7 +110,7 @@ func New() *cli.App {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "app-source", Usage: "源 Bx.app 路径(默认从自身位置推导)"},
 					&cli.StringFlag{Name: "config", Value: defaultConfigPath, Usage: "Guardian 配置路径"},
-					&cli.BoolFlag{Name: "yes", Usage: "跳过升级确认(供脚本/菜单使用;会断网几秒)"},
+					&cli.BoolFlag{Name: "yes", Usage: "跳过升级确认(非交互调用必须显式加;保护正在运行时会停止并重启保护)"},
 				},
 				Action: appInstallAction,
 			},

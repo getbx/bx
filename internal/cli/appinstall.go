@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -19,23 +20,27 @@ func bundleRootFromExecutable(executable string) (string, error) {
 }
 
 // confirmOnTTY 就地问用户一句「继续吗」,返回 true 表示继续。
-//
-// stdin 不是终端时不问,直接继续并把问题连同这个事实打印出来(留在
-// install.log / 菜单的 privileged 输出里)。这是有意的:此时没有人可问,而
-// 「默认取消」会把菜单里的 Install/Repair 变成一个看起来成功、实际什么都没做
-// 的按钮 —— 正是本期要消灭的那类失败(2026-08-08 的事故就是「照做也没用的
-// 指引」)。真正不想被打断、又身处终端的调用方用 --yes 显式表态。
 func confirmOnTTY(prompt string) bool {
-	if !stdinIsTerminal() {
-		fmt.Printf("%s(非交互环境,自动继续)\n", prompt)
-		return true
+	return confirmPrompt(os.Stdin, stdinIsTerminal(), os.Stdout, prompt)
+}
+
+// confirmPrompt 是 confirmOnTTY 的可注入内核(interactive 与 in/out 由调用方给)。
+//
+// **没有终端 = 取消**。没人可问的时候默认「继续」等于把一次会断网的操作强加给
+// 每一个非终端调用方(脚本、CI、打包步骤、将来某个 shell 出去的 bx update),
+// 而且无从退出 —— --yes 只是把本来就会发生的事写明,那不叫确认。要在非交互环境
+// 里升级,调用方显式加 --yes 表态;菜单正是这么做的(它自己先弹了一个 NSAlert)。
+func confirmPrompt(in io.Reader, interactive bool, out io.Writer, prompt string) bool {
+	if !interactive {
+		fmt.Fprintf(out, "%s\n已取消:当前不是交互式终端,无法确认。如需在脚本/自动化中升级,加 --yes 重试。\n", prompt)
+		return false
 	}
-	fmt.Printf("%s [y/N] ", prompt)
-	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	fmt.Fprintf(out, "%s [y/N] ", prompt)
+	answer, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && answer == "" {
 		// 读不到回答(EOF/中断)按取消处理:人在终端前却没答话,
 		// 不能替他决定一次会断网的操作。
-		fmt.Println()
+		fmt.Fprintln(out)
 		return false
 	}
 	return confirmationAccepted(answer)

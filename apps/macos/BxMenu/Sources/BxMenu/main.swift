@@ -760,7 +760,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func installBx() {
         runEmbeddedInstaller(
             confirmTitle: "Install bx?",
-            confirmMessage: "bx will install its command line tool and background protection service. macOS will ask for administrator authorization. Protection is not started until you set up and turn it on.",
+            // 断网这句必须出现在这里:菜单调用走 osascript,CLI 的确认提示进了
+            // 一个没人看的管道,这个 NSAlert 是 GUI 用户唯一看得到的告知。
+            confirmMessage: "bx will install its command line tool and background protection service. macOS will ask for administrator authorization. If protection is already running, it is stopped and restarted to complete the upgrade — your network drops for a few seconds. On a fresh install, protection is not started until you set up and turn it on.",
             confirmButton: "Install"
         )
     }
@@ -768,7 +770,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func repairBx() {
         runEmbeddedInstaller(
             confirmTitle: "Repair bx?",
-            confirmMessage: "bx will reinstall its components from this app. Your connection settings are kept.",
+            confirmMessage: "bx will reinstall its components from this app. Your connection settings are kept. If protection is running, it is stopped and restarted to finish the change — your network drops for a few seconds, then protection comes back on.",
             confirmButton: "Repair"
         )
     }
@@ -786,7 +788,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showFailure("Install Failed", "This copy of Bx.app has no embedded installer. Download the full bx-macos package.")
             return
         }
-        let command = "\(shellSingleQuoted(installer)) app-install --app-source \(shellSingleQuoted(bundlePath))"
+        // --yes:这条命令跑在 osascript 里,没有终端可问,而同意已经在上面那个
+        // NSAlert 里拿到了。不带它,CLI 会(正确地)因为无法确认而取消,Repair
+        // 就成了一个弹完框却什么都没做的按钮。
+        let command = "\(shellSingleQuoted(installer)) app-install --yes --app-source \(shellSingleQuoted(bundlePath))"
         if runPrivileged(command) {
             if bundlePath != "/Applications/Bx.app" {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Bx.app"))
