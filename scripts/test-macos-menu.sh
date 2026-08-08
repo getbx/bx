@@ -29,6 +29,7 @@ run_test recovery-presentation \
 run_test guardian-client \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Tests/GuardianClientTests.swift"
 run_test instance-gate \
@@ -43,5 +44,11 @@ run_test install-presentation \
   "$MENU/Sources/BxMenu/InstallPresentation.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Tests/InstallPresentationTests.swift"
+run_test guardian-status \
+  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
+  "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Tests/GuardianStatusTests.swift"
 
 echo "macOS menu tests passed"
