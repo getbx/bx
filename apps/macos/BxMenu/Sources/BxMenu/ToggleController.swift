@@ -94,6 +94,68 @@ enum QuitDisposition: Equatable {
     }
 }
 
+/// 菜单八态的**种类**(去掉 payload)。
+///
+/// `BxState` 带着 `BxReport`/版本号等 payload 住在 main.swift 里,而 main.swift
+/// 编不进 scripts/test-macos-menu.sh(它要 AppKit)。判定要可测就必须吃一个不带
+/// payload 的输入;main.swift 那边只剩一个逐 case 的映射,漏掉新 case 会被
+/// Swift 的穷尽性检查当场拦下。
+enum MenuStateKind: Equatable {
+    case connected
+    case warning
+    case updateNeeded
+    case setupNeeded
+    case missing
+    case notInstalled
+    case off
+}
+
+/// 点了 Quit 之后,退出之前**要不要先关一次**。
+enum QuitPlan: Equatable {
+    /// 保护可能正在跑:先 turnOff,关不掉就不退出(见 quitTerminatesAfterTurnOff)。
+    case turnOffFirst
+    /// 没有任何可关的东西:直接退出。
+    case terminateImmediately
+}
+
+/// Quit 之前有没有东西要关。
+///
+/// 阶段②把退出入口铺到了每一个状态,于是 `.notInstalled` / `.missing` /
+/// `.setupNeeded` 下点 Quit 会走 `performToggle(.turnOff)` → Guardian socket ——
+/// 而这三个状态的定义就是「Guardian 不在那儿」(没装 app、没有 /usr/local/bin/bx、
+/// 没跑过 setup 因而 service_installed 为 fail)。socket 必然失败,逃生路径那次
+/// `sudo bx down` 也必然失败(二进制不在/服务没装),`quitTerminatesAfterTurnOff`
+/// 于是拒绝退出 —— 用户被关在一个**关不掉的菜单**里,而根本没有任何保护需要被
+/// 保护。阶段①「关不掉就不退出」的裁决是对的,但它的理由是「保护可能还在跑,
+/// 退出会抹掉唯一的指示灯」;没有东西在跑的时候这个理由整个不成立,剩下的只是
+/// 一个白白困住用户的拒绝。
+///
+/// **`.off` 有意留在 turnOffFirst 这一侧**,尽管它字面意思是「没在跑」:
+/// ① `.off` 是一个**信念**,而且是关于一台已安装、已配置、Guardian 就在那儿的机器
+///    的信念 —— 这正是 internal/observe 整个存在的理由:信念与事实会分叉。菜单看到的
+///    这份 `.off` 最长可能是 30 秒前采的(关闭档轮询间隔)。另外三态没有这个问题:
+///    它们说的是「bx 压根不在这台机器上」,那不是一个可能过时的信念。
+/// ② 那三态里 turnOff 是**注定失败**,而 `.off` 里它是幂等且几乎注定成功的;万一
+///    失败,那次失败本身就是「下面有东西不对劲」的证据 —— 恰恰是该保留指示灯的场合。
+/// 代价是 Guardian 服务不在跑的那种 `.off` 下点 Quit 会弹一次授权框(逃生路径),
+/// 这是拿一次点击换掉一个隐形保护的风险,值。
+///
+/// 有动作在跑时一律 turnOffFirst:进行中说明 Guardian 就在那儿,而且退出前必须
+/// 先让那次动作落定(见 quitDisposition)。
+func quitPlan(state: MenuStateKind, inFlight: ToggleAction?) -> QuitPlan {
+    if inFlight != nil { return .turnOffFirst }
+    switch state {
+    case .connected, .warning, .off:
+        return .turnOffFirst
+    case .updateNeeded:
+        // CLI 太旧 → 菜单在跑 `bx status --json` **之前**就返回了,它对保护开没开
+        // 一无所知。不知道就不能当成「没在跑」。
+        return .turnOffFirst
+    case .setupNeeded, .missing, .notInstalled:
+        return .terminateImmediately
+    }
+}
+
 /// 根据"现在有没有动作在跑、跑的是哪一个"决定 Quit 的处置方式。
 func quitDisposition(inFlight: ToggleAction?) -> QuitDisposition {
     switch inFlight {

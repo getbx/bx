@@ -423,6 +423,58 @@ func TestMacMenuQuitBxStopsProtectionThenQuitsMenu(t *testing.T) {
 	}
 }
 
+// 退出入口铺到每个状态之后,「没东西可关」的那几个状态必须能直接退出。
+//
+// .notInstalled / .missing / .setupNeeded 的定义就是「Guardian 不在那儿」(没装
+// app、没有 /usr/local/bin/bx、没跑过 setup 因而 service_installed 为 fail)。走
+// performToggle(.turnOff) 是一次注定失败的 socket 调用,逃生路径那次
+// sudo bx down 同样注定失败,而 quitTerminatesAfterTurnOff 于是**拒绝退出** ——
+// 恰恰是在退出入口刚刚变得可见的那几个状态里,点它什么都不会发生,用户被困在
+// 一个关不掉的菜单里,却根本没有保护需要被守着。
+//
+// 判定本身(哪些状态算「没东西可关」、.off 为什么不算)在 ToggleController.swift
+// 的 quitPlan 里由 QuitPlanTests 钉着;这条守卫只管**接线**——quitBx 必须先问
+// quitPlan、并在它说 terminateImmediately 时真的 terminate。接线漏掉不会有任何
+// 编译错误,而 main.swift 编不进 scripts/test-macos-menu.sh。
+func TestMacMenuQuitTerminatesWhenThereIsNothingToTurnOff(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	body, ok := swiftFunctionBody(text, "private func quitBx()")
+	if !ok {
+		t.Fatal("找不到 quitBx 的函数体")
+	}
+	plan := strings.Index(body, "quitPlan(state:")
+	if plan < 0 {
+		t.Fatal("quitBx 必须先问 quitPlan:没东西可关时那次 turnOff 注定失败,而失败之后按阶段①的裁决又不退出")
+	}
+	if !strings.Contains(body, ".terminateImmediately") {
+		t.Fatal("quitBx 必须对 quitPlan 的 terminateImmediately 表态")
+	}
+	// 顺序是关键:quitPlan 必须问在 quitDisposition/performToggle 之前,否则那次
+	// 注定失败的 socket 调用照样发出去,直接退出这条路永远走不到。
+	disposition := strings.Index(body, "quitDisposition(inFlight:")
+	if disposition >= 0 && plan > disposition {
+		t.Fatal("quitPlan 必须问在 quitDisposition 之前,否则注定失败的 turnOff 照样先发出去了")
+	}
+	terminate := strings.Index(body, "NSApp.terminate(nil)")
+	if terminate < 0 {
+		t.Fatal("quitBx 必须在没东西可关时真的退出,而不只是算出一个没人用的结论")
+	}
+	// terminate 只许出现在 quitPlan 那个分支里:落在它前面就是无条件退出,
+	// 那会把「关不掉就不退出」这条阶段①的裁决整个废掉(保护在跑却没有指示灯)。
+	if terminate < plan {
+		t.Fatal("quitBx 里的 terminate 必须由 quitPlan 把关,不得无条件退出")
+	}
+	// 映射必须逐 case 写在 menuStateKind 里(Swift 穷尽性检查兜住新增 case),
+	// 判定不许悄悄搬回 main.swift —— 那里编不进 Swift 测试套件。
+	if _, ok := swiftFunctionBody(text, "private func menuStateKind() -> MenuStateKind"); !ok {
+		t.Fatal("BxState → MenuStateKind 的映射必须是一个逐 case 的 switch,漏掉新 case 要能被编译器拦下")
+	}
+}
+
 // Turning off must keep a working escape path when the Guardian socket call
 // fails. `bx down` is the CLI that owns forcedMacOSTeardown (stop Core, bootout
 // Guardian, remove the blocking barrier routes, restore DNS); the menu's socket

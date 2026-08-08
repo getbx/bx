@@ -62,6 +62,9 @@ run_test toggle-controller \
 run_test quit-disposition \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
   "$MENU/Tests/QuitDispositionTests.swift"
+run_test quit-plan \
+  "$MENU/Sources/BxMenu/ToggleController.swift" \
+  "$MENU/Tests/QuitPlanTests.swift"
 run_test toggle-escape \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
   "$MENU/Tests/ToggleEscapeTests.swift"
