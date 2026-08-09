@@ -810,6 +810,113 @@ func TestMacMenuNeverReportsOffWhileTheCoreSocketAnswers(t *testing.T) {
 	if strings.Contains(body, "if check(report,") {
 		t.Fatal("diagnoseStopped 不得自己按 doctor 的检查排序做判定:那个顺序是安全属性,住在 StoppedDiagnosis.swift 由单测钉着")
 	}
+
+	// ── 结论 → BxState 的那一步映射,也必须钉住 ────────────────────────────
+	//
+	// 复审用变异坐实过:把 `.warning` 那一支改成 `return .off(.serviceStopped)`,
+	// 上面每一条断言、以及整套 Go 与 Swift 测试**全绿** —— 本轮刚修好的 bug 就这么
+	// 无声无息地回来了。判定函数(StoppedDiagnosis.swift)测得再密,把它的结论搬进
+	// UI 状态的那一步没有任何测试看着,而**两次 bug 都恰恰住在那一步**。
+	//
+	// **这条守卫看不见什么,说在前面**(宁可要一条如实的弱守卫,也不要一条自信的
+	// 假守卫 —— 这个文件在这上面栽过):
+	//   · 它只读文本。`stoppedDiagnosis` 在 coreSocket=="ok" 时是否真的返回
+	//     `.warning`,由 StoppedDiagnosisTests 负责;这里只假定那一支叫 `warning`。
+	//   · 它看不穿间接层:某一支若改成 `return someHelper()`,而那个 helper 返回
+	//     `.off(…)`,本守卫抓不到(`must` 那条会先失败,但改写者可能顺手一起改)。
+	//   · 它不懂控制流,只按 case 名切块。
+	// 换句话说:它挡的是「顺手把一支改成另一个 BxState」这种最可能发生的手滑,
+	// 挡不住一个想绕开它的人。真正的解法是把 `BxState` 与这段映射搬出 main.swift
+	// (它要 AppKit、编不进 scripts/test-macos-menu.sh),让整段状态推导可单测。
+	switchBody, ok := swiftFunctionBody(body, "switch diagnosis")
+	if !ok {
+		t.Fatal("diagnoseStopped 必须用一个 `switch diagnosis` 把结论逐支落回 BxState:" +
+			"换成别的写法本守卫就看不懂了(这是有意的响亮失败,不是静默通过)——请连同这条守卫一起重写")
+	}
+	arms := swiftSwitchArms(switchBody)
+	for _, want := range []struct {
+		arm, must string
+		reject    []string
+		why       string
+	}{
+		{
+			arm: "warning", must: "return .warning(",
+			reject: []string{".off(", ".setupNeeded("},
+			why: "Core 还在应答时 stoppedDiagnosis 给的正是这一支;它若落成 .off/.setupNeeded," +
+				"quitPlan 会判 terminateImmediately —— 保护还在跑,用户点 Quit 却什么都没关,菜单直接消失",
+		},
+		{
+			arm: "serviceStopped", must: "return .off(.serviceStopped)",
+			why: "确实都停了才给灰盾与 Start Protection;落成 .warning 会让 bx down 之后的用户没法从菜单开回来(2026-08-06 真机症状)",
+		},
+		{
+			arm: "setupNeeded", must: "return .setupNeeded(",
+			reject: []string{".off("},
+			why:    "没配置过就是没配置过,不是「关着」",
+		},
+	} {
+		code, present := arms[want.arm]
+		if !present {
+			t.Errorf("switch diagnosis 缺少 `.%s` 这一支 —— 结论少落一支,编译器会拦,但改名或合并不会:%s", want.arm, want.why)
+			continue
+		}
+		code = swiftCodeOnly(code)
+		if !strings.Contains(code, want.must) {
+			t.Errorf("`.%s` 这一支必须落成 %q:%s(实际 = %q)", want.arm, want.must, want.why, strings.TrimSpace(code))
+		}
+		for _, forbidden := range want.reject {
+			if strings.Contains(code, forbidden) {
+				t.Errorf("`.%s` 这一支不得构造 %s:%s(实际 = %q)", want.arm, forbidden, want.why, strings.TrimSpace(code))
+			}
+		}
+	}
+	// switch 之前不许有任何 .off/.setupNeeded 的构造:那是绕过判定的另一条路
+	// (上面的 index 检查只盯 `.off(.serviceStopped)` 一个字面量)。
+	prelude := swiftCodeOnly(body[:strings.Index(body, "switch diagnosis")])
+	for _, forbidden := range []string{".off(", ".setupNeeded("} {
+		if strings.Contains(prelude, forbidden) {
+			t.Errorf("问过 stoppedDiagnosis 之前不得构造 %s:任何「没在跑」的结论都必须先过 Core socket 那道关卡", forbidden)
+		}
+	}
+}
+
+// swiftSwitchArms 把一个 switch 的体拆成「case 名 → 该支的代码」。
+//
+// 只按 `case .x` 行切块,不理解嵌套:被切的 switch 里若出现嵌套 switch,内层的
+// case 会被当成外层的支。调用点(diagnoseStopped)今天没有嵌套,真要加请连同调用
+// 它的那条守卫一起重写。
+func swiftSwitchArms(switchBody string) map[string]string {
+	arms := map[string]string{}
+	current := ""
+	for _, line := range strings.Split(switchBody, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "case .") {
+			name := strings.TrimPrefix(trimmed, "case .")
+			if cut := strings.IndexAny(name, "(:, \t"); cut >= 0 {
+				name = name[:cut]
+			}
+			current = name
+			arms[current] = ""
+			continue
+		}
+		if current != "" {
+			arms[current] += line + "\n"
+		}
+	}
+	return arms
+}
+
+// swiftCodeOnly 去掉整行注释。守卫按字面量判断代码时必须先过它:注释里解释
+// 「这一支为什么不能是 .off」会让一条正确的实现被自己的注释判红。
+func swiftCodeOnly(text string) string {
+	var kept []string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 // The CLI and the macOS menu both render DNS state to a human, in two languages
