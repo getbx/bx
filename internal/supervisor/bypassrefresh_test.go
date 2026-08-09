@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -539,6 +540,31 @@ func TestRunWiresPathRecovererToLiveBypassStore(t *testing.T) {
 		t.Fatal("路径恢复必须接到共享 store(bypass: bypassState):拿启动时那份冻结拷贝,\n" +
 			"切过服务器后一次 Wi-Fi 切换就会用旧集合重装旁路,把刚切过去的那台漏在外面 = 成环")
 	}
+
+	// 上面那两个子串挡不住这个(复审实测,能编译、`go test ./...` 全绿):
+	//   bypass: newBypassStore(bypassState.cidrs(), bypassState.staticEntries(), …)
+	// 它含 "bypass:" 也含 "bypassState",而 store 是**新的一份**,刷新写不进去
+	// —— 正是本守卫名字里那个 bug。改判身份:那个位置必须是 bypassState 本身。
+	why := "路径恢复读的必须是那份共享 store,不是它的任何拷贝/快照:\n" +
+		"切过服务器后一次 Wi-Fi 切换就会用旧集合重装旁路,把刚切过去的那台漏在外面 = 静默成环"
+	fn := runFuncDecl(t)
+	requireSelector(t, soleAssignment(t, fn, "bypassState", why), "bypassWire", "store", why)
+	requireNoFieldWrites(t, fn, "bypassState", why)
+	requireNoWritesToFieldNamed(t, fn, "bypass", why)
+	requireBareIdent(t, compositeField(t, fn, "livePathRecoverer", "bypass"), "bypassState", why)
+}
+
+// liveMutator 的 store 字段是同一处接线的另一半:它为 nil 时 currentServerBypass
+// 回落到 liveMutator.serverBypass —— 那正是启动时的冻结拷贝,而 Rehijack 存在的
+// 全部理由就是把**新**服务器的 IP 装进去。这条此前完全没有守卫。
+func TestRunWiresLiveMutatorToLiveBypassStore(t *testing.T) {
+	why := "Rehijack 必须读共享 store:接成拷贝或 nil 会让它回落到启动时的冻结集合,\n" +
+		"于是「装新服务器的路由」这个动作什么都没装,切过去立刻成环(静默:status 显绿)"
+	fn := runFuncDecl(t)
+	requireSelector(t, soleAssignment(t, fn, "bypassState", why), "bypassWire", "store", why)
+	requireNoFieldWrites(t, fn, "bypassState", why)
+	requireNoWritesToFieldNamed(t, fn, "store", why)
+	requireBareIdent(t, compositeField(t, fn, "liveMutator", "store"), "bypassState", why)
 }
 
 func TestRunTakesRuntimeBypassFromWiringNotAFrozenSlice(t *testing.T) {
@@ -549,6 +575,28 @@ func TestRunTakesRuntimeBypassFromWiringNotAFrozenSlice(t *testing.T) {
 	}
 	if !strings.Contains(src, "ServerBypass:    runtimeBypass(),") {
 		t.Fatal("RuntimeState 必须调用访问器而不是引用某个切片快照")
+	}
+
+	// 上面两个子串**原样留着**也挡不住这个(复审实测,能编译、全绿):
+	//   cachedBypass := runtimeBypass()
+	//   runtimeBypass = func() []string { return cachedBypass }
+	// 看着像一次缓存优化,实际把屏障开口冻回启动值 —— 正是 a8c670f 修掉的那个 bug。
+	// 攻击是**事后重新赋值**,光盯初始化式抓不到;故这里判「Run() 里只赋值一次」。
+	why := "RuntimeState.ServerBypass 经 cli/guardian.go 变成 Guardian 屏障的开口。\n" +
+		"冻住(哪怕只是缓存一次)就等于切过服务器之后屏障放行的还是旧那台、新的被堵死"
+	fn := runFuncDecl(t)
+	requireCallOf(t, soleAssignment(t, fn, "bypassWire", why), "wireBypass", why)
+	requireNoFieldWrites(t, fn, "bypassWire", why)
+	requireNoWritesToFieldNamed(t, fn, "runtimeServerBypass", why)
+	requireNoPackageWritesToFieldNamed(t, "runtimeServerBypass", why)
+	requireSelector(t, soleAssignment(t, fn, "runtimeBypass", why), "bypassWire", "runtimeServerBypass", why)
+	call, ok := compositeField(t, fn, "RuntimeState", "ServerBypass").(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("ServerBypass 必须是 runtimeBypass() 这个调用本身。\n%s", why)
+	}
+	requireBareIdent(t, call.Fun, "runtimeBypass", why)
+	if len(call.Args) != 0 {
+		t.Fatalf("ServerBypass 必须是无参调用 runtimeBypass()。\n%s", why)
 	}
 }
 
