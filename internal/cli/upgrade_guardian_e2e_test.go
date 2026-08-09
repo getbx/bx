@@ -162,9 +162,8 @@ func TestRunUpgradeKeepsTheDebtAcrossARealGuardianDown(t *testing.T) {
 		saveIntent:      env.store.SaveUpgradeIntent,
 		clearIntent:     env.store.ClearUpgradeIntent,
 		confirm:         func(string) (bool, error) { return true, nil },
-		stopProtection: func() (bool, error, error) {
-			result, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", env.deps)
-			return result.Forced || err != nil, result.Cause, err
+		stopProtection: func() (macOSDownResult, error) {
+			return macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", env.deps)
 		},
 		installFiles:    func() (installedFiles, error) { return installedFiles{}, installFailure },
 		restartGuardian: func() error { return nil },

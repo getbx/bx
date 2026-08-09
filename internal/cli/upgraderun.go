@@ -34,9 +34,11 @@ type upgradeIO struct {
 	// 非 nil error 是「问不出来」—— 后者必须把整条命令带成非零退出,否则调用它的
 	// 脚本会在 set -e 下继续往下走、把「什么都没做」打印成「完成」。
 	confirm func(prompt string) (bool, error)
-	// stopProtection 停保护。forced 为真表示走了 bx down 的强制拆除逃生路径 ——
+	// stopProtection 停保护,返回 bx down 那条路自己的结果。整个 result 一起
+	// 带回来(而不是拆成 forced+cause 两个值)是有理由的:强制路径的**原因**不止
+	// 两种,收尾文案要靠 forcedTeardownReason 区分,少带一个字段就会打印出假话。
 	// 那条路是 best-effort,bx down 自己都拒绝断言「网络已还原」。
-	stopProtection  func() (forced bool, cause error, err error)
+	stopProtection  func() (macOSDownResult, error)
 	installFiles    func() (installedFiles, error)
 	restartGuardian func() error
 	startProtection func() error
@@ -49,9 +51,11 @@ type upgradeOutcome struct {
 	Files              installedFiles
 	Cancelled          bool
 	ProtectionRestored bool
-	ForcedTeardown     bool
-	ForcedCause        error
-	IntentLeftBehind   bool
+	// Down 是停保护那一步的完整结果 —— 收尾文案必须能区分强制路径的每一种
+	// 原因(见 forcedTeardownReason),所以这里不把它拆扁。
+	Down             macOSDownResult
+	ForcedTeardown   bool
+	IntentLeftBehind bool
 }
 
 func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
@@ -101,9 +105,12 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 		switch step {
 		case UpgradeStopProtection:
 			io.log("• 停止保护(网络将暂时回到直连)")
-			forced, cause, err := io.stopProtection()
-			outcome.ForcedTeardown, outcome.ForcedCause = forced, cause
-			if forced {
+			down, err := io.stopProtection()
+			// 出错时 macOSDownLifecycleFor 返回零值 result,但错误只可能来自
+			// 强制拆除本身 —— 也就是说那条路确实跑过。
+			outcome.Down = down
+			outcome.ForcedTeardown = down.Forced || err != nil
+			if outcome.ForcedTeardown {
 				networkRestored = false
 			}
 			stepErr = err

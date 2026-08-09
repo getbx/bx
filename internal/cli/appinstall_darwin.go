@@ -49,15 +49,12 @@ func appInstallAction(c *urfavecli.Context) error {
 		saveIntent:      saveUpgradeIntent,
 		clearIntent:     clearUpgradeIntent,
 		confirm:         confirmOnTTY,
-		stopProtection: func() (bool, error, error) {
+		stopProtection: func() (macOSDownResult, error) {
 			// downPurposeUpgrade:这一跳必须保住上一行刚写下的升级欠条。
 			// 用普通的 Down,Guardian 会把它当作「用户不要保护了」立刻销掉,
 			// 于是装文件一失败,重试既读到 desired=off 又找不到欠条,
 			// 「成功」地把机器永久留在无保护状态(2026-08-08 复审 C1)。
-			result, err := macOSDownLifecycleFor(c.Context, downPurposeUpgrade, configPath, defaultMacOSLifecycleDeps())
-			// 出错时 macOSDownLifecycleDetailed 返回零值 result(Forced=false),
-			// 但错误只可能来自 forcedMacOSTeardown —— 也就是说强制拆除确实跑过。
-			return result.Forced || err != nil, result.Cause, err
+			return macOSDownLifecycleFor(c.Context, downPurposeUpgrade, configPath, defaultMacOSLifecycleDeps())
 		},
 		installFiles: func() (installedFiles, error) {
 			result, err := install.UnifiedInstall(install.UnifiedInstallOptions{
@@ -83,11 +80,12 @@ func appInstallAction(c *urfavecli.Context) error {
 	if outcome.ForcedTeardown {
 		// bx down 走逃生路径时会如实告知,这里不能把它吞掉:那条路是 best-effort,
 		// 可能没能真正让网络恢复。
-		if outcome.ForcedCause != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Guardian 正常关闭事务失败(%v),已改走强制停止;请自行确认网络是否恢复。\n", outcome.ForcedCause)
-		} else {
-			fmt.Fprintln(os.Stderr, "⚠️  Guardian 未响应,已改走强制停止;请自行确认网络是否恢复。")
-		}
+		//
+		// 原因**必须**由 forcedTeardownReason 导出,不能在这里再抄一份:强制路径
+		// 的进法不止两种,而 macOSDownLifecycleFor 选 legacy 分支时根本不看
+		// purpose —— 升级路径照样会走到它。内联的副本就是这么把「Guardian 未响应」
+		// 打印在一个明明应答了的 Guardian 头上的。
+		fmt.Fprintf(os.Stderr, "⚠️  %s;请自行确认网络是否恢复。\n", forcedTeardownReason(outcome.Down))
 	}
 	if err != nil {
 		return err

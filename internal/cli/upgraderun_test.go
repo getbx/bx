@@ -62,9 +62,9 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 			f.confirmPrompts = append(f.confirmPrompts, prompt)
 			return f.confirmAnswer, f.confirmErr
 		},
-		stopProtection: func() (bool, error, error) {
+		stopProtection: func() (macOSDownResult, error) {
 			f.calls = append(f.calls, "stopProtection")
-			return f.stopForced, f.stopCause, f.stopErr
+			return macOSDownResult{Forced: f.stopForced, Cause: f.stopCause}, f.stopErr
 		},
 		installFiles: func() (installedFiles, error) {
 			f.calls = append(f.calls, "installFiles")
@@ -238,7 +238,9 @@ func TestRunUpgradeDoesNotClaimUsableNetworkAfterForcedTeardown(t *testing.T) {
 	if err == nil {
 		t.Fatal("装文件失败必须报错")
 	}
-	if !outcome.ForcedTeardown || outcome.ForcedCause == nil {
+	// 原因现在住在 outcome.Down 里(整个 result 一起回传,收尾文案才能区分强制
+	// 路径的每一种原因);断言的东西没变:原因必须到得了调用方。
+	if !outcome.ForcedTeardown || outcome.Down.Cause == nil {
 		t.Fatalf("强制拆除必须被上报给调用方,outcome=%+v", outcome)
 	}
 	if strings.Contains(err.Error(), "网络仍可正常使用") {

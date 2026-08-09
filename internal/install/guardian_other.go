@@ -29,6 +29,10 @@ func GuardianLoaded(context.Context) (bool, error) { return false, nil }
 
 func LegacyCoreLoaded() (bool, error) { return false, nil }
 
+// LegacyCoreLoadedContext 同上 —— 非 macOS 上 (false, nil) 是事实而非「问不出来」,
+// 所以调用方的 fail-closed 分支不该被它触发。
+func LegacyCoreLoadedContext(context.Context) (bool, error) { return false, nil }
+
 func LegacyCoreInstalled() bool { return false }
 
 func BootoutLegacyCoreUnit(context.Context) error { return errGuardianUnsupported }

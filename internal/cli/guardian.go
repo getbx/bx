@@ -55,6 +55,21 @@ const (
 	// exists to guarantee termination on a hang, not to accommodate
 	// expected latency.
 	dnsRestoreTimeout = 20 * time.Second
+	// legacyProbeTimeout bounds the legacy-Core probe on the stop path. The
+	// probe forks `launchctl print` **twice** (one per legacy label), and it
+	// now runs *first* — before anything has been stopped. A wedged launchd
+	// there would hang `bx down` before it did any useful work, which is the
+	// shape of the 2026-08-04 incident (71 minutes unable to turn protection
+	// off). Two `launchctl print` calls are sub-second in every healthy case,
+	// so this bound exists to guarantee termination, not to allow for latency.
+	// Exceeding it surfaces as an error, which legacyCoreMayBeRunning already
+	// treats as "cannot determine ⇒ assume a legacy Core exists".
+	legacyProbeTimeout = 5 * time.Second
+	// legacyBootoutTimeout bounds disarming the legacy launchd job, for the
+	// same reason as legacyProbeTimeout: it shells out to launchctl (once to
+	// list labels, then once per loaded label) on the stop path, where a hang
+	// is the worst possible outcome.
+	legacyBootoutTimeout = 10 * time.Second
 )
 
 type migrationMetadataDeps struct {
@@ -96,7 +111,16 @@ type macOSLifecycleDeps struct {
 	enableGuardian    func() error
 	guardianReady     func(context.Context) bool
 	legacyInstalled   func() bool
-	legacyLoaded      func() (bool, error)
+	// legacyLoaded 带 ctx,因为它会 fork 两次 `launchctl print`,而停止路径上
+	// 一个卡住的 launchd 就是 2026-08-04 那次 71 分钟事故的形状。调用方负责
+	// 给它一个有界的 ctx(见 legacyProbeTimeout)。
+	legacyLoaded func(context.Context) (bool, error)
+	// bootoutLegacyUnit 解除 legacy Core 的 launchd job。**它不是可选的礼貌
+	// 动作**:legacy plist 带无条件的 KeepAlive(install.go 的 launchd 模板),
+	// 所以只请求 Core 退出的话,launchd 会立刻(或过了 10s 节流后)把它拉回来
+	// —— 「已停止」于是在几秒后重新变成假话。Guardian 自己的迁移用的就是这个
+	// 函数(Manager.Migrate → m.legacy.Stop → install.BootoutLegacyCoreUnit)。
+	bootoutLegacyUnit func(context.Context) error
 	removeLegacyUnit  func() error
 	migrationRequest  func(context.Context, string) (guardian.MigrationRequest, error)
 	client            guardianLifecycleClient
@@ -177,9 +201,10 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		guardianReady: func(ctx context.Context) bool {
 			return waitGuardianSocket(ctx, guardian.SocketPath, guardianReadyTimeout, guardianReadyPollInterval)
 		},
-		legacyInstalled:  install.LegacyCoreInstalled,
-		legacyLoaded:     install.LegacyCoreLoaded,
-		removeLegacyUnit: install.RemoveLegacyCoreUnit,
+		legacyInstalled:   install.LegacyCoreInstalled,
+		legacyLoaded:      install.LegacyCoreLoadedContext,
+		bootoutLegacyUnit: install.BootoutLegacyCoreUnit,
+		removeLegacyUnit:  install.RemoveLegacyCoreUnit,
 		migrationRequest: func(ctx context.Context, configPath string) (guardian.MigrationRequest, error) {
 			return legacyMigrationRequest(ctx, configPath, migrationMetadataDeps{})
 		},
@@ -436,8 +461,20 @@ func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps mac
 func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (macOSDownResult, error) {
 	if deps.guardianReady != nil && deps.guardianReady(ctx) {
 		// 一个便宜的判定,决定走哪条路 —— 不是启动的活。
-		if legacyCoreMayBeRunning(deps) {
-			if err := forcedMacOSTeardown(ctx, deps, nil); err != nil {
+		if legacyCoreMayBeRunning(ctx, deps) {
+			// **先解除 job,再进强制拆除。** legacy plist 带无条件 KeepAlive,
+			// 只让 Core 退出的话 launchd 会把它拉回来,「已停止」几秒后重新
+			// 变成假话。放在 forcedMacOSTeardown **之前**有两个理由:一是必须
+			// 早于它的第 2 步(请求 Core 退出),否则中间留一个重启窗口;二是
+			// forcedMacOSTeardown 的六步顺序被专门的测试逐字钉住,而那六步是
+			// 「Guardian 不可达」那条路也要跑的通用拆除 —— 解除 legacy job 只
+			// 属于这条分支,不该混进那个通用序列。
+			//
+			// best-effort:失败不阻断下面任何一步(「停止」不许依赖先成功做成
+			// 别的事),但也**不吞掉** —— job 还armed 着意味着 Core 会回来。
+			legacyErr := disarmLegacyCoreUnit(ctx, deps)
+			forcedErr := forcedMacOSTeardown(ctx, deps, nil)
+			if err := errors.Join(legacyErr, forcedErr); err != nil {
 				return macOSDownResult{}, err
 			}
 			return macOSDownResult{
@@ -477,11 +514,36 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 // **问不出来时返回 true**:探查失败(或钩子缺失)证明不了「没有」,而安全方向是
 // 那条万一有就能停下它的路。走错了的代价是一次本可以更轻的停止变重;反过来赌错的
 // 代价是对用户说一句假话。与本仓库别处的三态纪律同形:「无法判定」不许塌缩成「否」。
-func legacyCoreMayBeRunning(deps macOSLifecycleDeps) bool {
+// disarmLegacyCoreUnit 解除 legacy Core 的 launchd job,使它在被请求退出之后
+// **留在**停止状态。没有这一步,停止只是暂时的:legacy plist 的 KeepAlive 是
+// 无条件的(不是菜单栏那种 {SuccessfulExit:false}),launchd 会把 Core 拉回来。
+//
+// 这一步不是这次新发明的语义 —— 改动前的停止路径经 ensureGuardianOwnership →
+// Migrate 走到 Manager.Migrate,那里做的正是 m.legacy.Stop(BootoutLegacyCoreUnit)
+// 加 m.legacy.Remove。我们不再迁移,但「让它别再自己起来」这条必须留下。
+//
+// 只解除 job,不删 plist:删文件是 `bx uninstall` 的职责,拆除路径一个文件都不碰。
+func disarmLegacyCoreUnit(ctx context.Context, deps macOSLifecycleDeps) error {
+	if deps.bootoutLegacyUnit == nil {
+		return nil
+	}
+	if err := runWithTimeout(ctx, legacyBootoutTimeout, deps.bootoutLegacyUnit); err != nil {
+		return fmt.Errorf(
+			"解除旧版 Core 的开机自启(launchd job)失败:%w\n"+
+				"它带 KeepAlive,可能会自己重新启动。请手动执行 sudo bx uninstall,或 sudo launchctl bootout system/com.getbx.bx",
+			err,
+		)
+	}
+	return nil
+}
+
+func legacyCoreMayBeRunning(ctx context.Context, deps macOSLifecycleDeps) bool {
 	if deps.legacyLoaded == nil {
 		return true
 	}
-	loaded, err := deps.legacyLoaded()
+	probeCtx, cancel := context.WithTimeout(ctx, legacyProbeTimeout)
+	defer cancel()
+	loaded, err := deps.legacyLoaded(probeCtx)
 	if err != nil {
 		return true
 	}
@@ -720,7 +782,7 @@ func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSL
 			return guardian.Status{}, false, fmt.Errorf("install Guardian: %w", err)
 		}
 	}
-	legacyLoaded, err := deps.legacyLoaded()
+	legacyLoaded, err := deps.legacyLoaded(ctx)
 	if err != nil {
 		return guardian.Status{}, false, fmt.Errorf("inspect legacy Core: %w", err)
 	}
