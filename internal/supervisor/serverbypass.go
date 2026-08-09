@@ -95,7 +95,23 @@ func resolveServerBypassRequiring(cfg *config.Config, requiredLinks []string, re
 // bypass,而 runFailover 随时可能切到它 —— 那时它没有旁路 = 成环。
 // 但保留只发生在**本轮仍然被遍历到**的主机上(即 fresh 配置仍写着、或调用方点名的),
 // 用户删掉的服务器不会被查到、因而真的消失 —— 留着它等于它的流量绕开隧道。
+//
+// **调用方点名的主机一律不保留。** `/v0/server` 把目标点名出来,正是为了让
+// 「落实不了新服务器的 bypass 就绝不切过去」有个判据;沿用上一轮的地址回报成功,
+// 等于让一次「我不知道这台服务器今天在哪」的切换照常进行 —— 那就是本函数全部
+// 注释都在防的那个静默成环。禁用按 **host** 而不是按 link:同一个 host 可能同时
+// 以「清单里的非必需链接」和「被点名的链接」两种身份出现,前者先被遍历到就会替
+// 后者把保留用掉,后者再撞上去重直接返回 nil —— 于是点名那条根本走不到判定。
 func resolveServerBypassRetaining(cfg *config.Config, requiredLinks []string, resolve func(string) []netip.Addr, retain map[string][]netip.Addr) (map[string][]netip.Addr, []netip.Addr, error) {
+	noRetain := make(map[string]bool, len(requiredLinks))
+	for _, l := range requiredLinks {
+		if l == "" {
+			continue
+		}
+		if h, err := serverHostFromLink(l); err == nil {
+			noRetain[h] = true
+		}
+	}
 	staticA := map[string][]netip.Addr{}
 	var addrs []netip.Addr
 	add := func(link string) error {
@@ -108,7 +124,7 @@ func resolveServerBypassRetaining(cfg *config.Config, requiredLinks []string, re
 		}
 		a := resolve(h)
 		if len(a) == 0 {
-			if kept := retain[h]; len(kept) > 0 {
+			if kept := retain[h]; len(kept) > 0 && !noRetain[h] {
 				log.Printf("bypass 刷新:%q 本轮解析失败,沿用上一轮已解析的地址(掉出 bypass 会成环)", h)
 				staticA[h] = append([]netip.Addr(nil), kept...)
 				addrs = append(addrs, kept...)

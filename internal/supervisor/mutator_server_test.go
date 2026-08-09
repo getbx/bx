@@ -145,8 +145,9 @@ func TestServerBypassIsSafeUnderConcurrentUpdateAndRehijack(t *testing.T) {
 		for i := 0; i < 200; i++ {
 			store.set([]string{"1.1.1.1/32", "2.2.2.2/32"},
 				map[string][]netip.Addr{"h": {netip.MustParseAddr("2.2.2.2")}},
-				[]netip.Addr{netip.MustParseAddr("2.2.2.2")})
+				map[string][]netip.Addr{"h": {netip.MustParseAddr("2.2.2.2")}})
 			_ = store.staticEntries()
+			_ = store.serverEntries()
 			_ = store.serverAddrs()
 		}
 	}()

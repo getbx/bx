@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"net/netip"
+	"slices"
 	"sync"
 )
 
@@ -20,35 +21,69 @@ type bypassStore struct {
 	mu      sync.Mutex
 	bypass  []string
 	statics map[string][]netip.Addr
-	// servers 只是**传输服务器**那些地址(不含 tailscale 旁路、不含用户 hosts 覆盖)。
-	// 它经 RuntimeState.ServerBypass → cli/guardian.go → guardian 屏障的
-	// BarrierContext.ServerBypass:屏障据此给服务器 IP 开口子。混进无关网段会
-	// 把屏障开大,漏掉当前那台则会在屏障生效时把它堵死。
-	servers []netip.Addr
+	// servers 是**传输服务器**那一半的静态表:host → 这一轮解析到的地址
+	// (不含 tailscale 旁路、不含用户 hosts 覆盖)。
+	//
+	// 它有两个消费者,两个都要求「只有传输服务器」:
+	//   - serverAddrs() → RuntimeState.ServerBypass → cli/guardian.go →
+	//     guardian.BarrierContext.ServerBypass:fail-closed `/2` 屏障据此给服务器
+	//     IP 开字面的 permit 口子。混进无关地址 = 屏障上的洞,漏掉当前那台 =
+	//     屏障生效时把它堵死。
+	//   - serverEntries() 是下一轮刷新的**保留基准**。它必须与 statics 分开:
+	//     statics 含用户 hosts 覆盖,拿它当基准就会在一次解析失败时把用户配的
+	//     任意 IPv4 「保留」成服务器地址,同时进静态表与屏障开口。
+	//     按 host 存(而不是拍平成地址列表)正是为了让保留能按 host 查。
+	servers map[string][]netip.Addr
 }
 
 // newBypassStore 三份视图全部显式给出。**刻意不从 statics 推 servers**:
 // statics 里含用户 hosts 覆盖,推出来的 servers 会把那些 IP 带进屏障开口。
-func newBypassStore(cidrs []string, statics map[string][]netip.Addr, servers []netip.Addr) *bypassStore {
+func newBypassStore(cidrs []string, statics, servers map[string][]netip.Addr) *bypassStore {
 	s := &bypassStore{}
 	s.set(cidrs, statics, servers)
 	return s
 }
 
 // set 一次替换三份视图。刻意不提供只改一份的入口:半边更新正是本类型要消灭的故障。
-func (s *bypassStore) set(cidrs []string, statics map[string][]netip.Addr, servers []netip.Addr) {
+func (s *bypassStore) set(cidrs []string, statics, servers map[string][]netip.Addr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.bypass = append([]string(nil), cidrs...)
 	s.statics = cloneStaticA(statics)
-	s.servers = append([]netip.Addr(nil), servers...)
+	s.servers = cloneStaticA(servers)
+}
+
+// serverEntries 返回传输服务器那一半的静态表(供下一轮刷新做保留基准)。
+func (s *bypassStore) serverEntries() map[string][]netip.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneStaticA(s.servers)
 }
 
 // serverAddrs 返回传输服务器地址(供 RuntimeState / Guardian 屏障用)。
+// 从 servers 派生而不是另存一份:两份就会有一份先过期,而过期的那份是屏障开口。
+// 排序 + 去重只为让输出稳定(status 的 JSON、路由安装顺序),不影响语义。
 func (s *bypassStore) serverAddrs() []netip.Addr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]netip.Addr(nil), s.servers...)
+	return flattenServerAddrs(s.servers)
+}
+
+func flattenServerAddrs(servers map[string][]netip.Addr) []netip.Addr {
+	var out []netip.Addr
+	seen := make(map[netip.Addr]struct{}, len(servers))
+	for _, addrs := range servers {
+		for _, a := range addrs {
+			a = a.Unmap()
+			if _, ok := seen[a]; ok {
+				continue
+			}
+			seen[a] = struct{}{}
+			out = append(out, a)
+		}
+	}
+	slices.SortFunc(out, func(a, b netip.Addr) int { return a.Compare(b) })
+	return out
 }
 
 func (s *bypassStore) cidrs() []string {

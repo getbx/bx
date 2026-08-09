@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/getbx/bx/internal/config"
 )
 
 // 这些测试补的是复审指出的空洞:refreshServerBypass 整个闭包此前零覆盖,
@@ -161,7 +163,10 @@ func TestBypassRefreshRetainsKnownServerThatFailedThisRound(t *testing.T) {
 			"tokyo.example":   {netip.MustParseAddr("2.2.2.2")},
 			"deleted.example": {netip.MustParseAddr("8.8.8.8")}, // 已从配置里删掉
 		},
-		[]netip.Addr{netip.MustParseAddr("2.2.2.2"), netip.MustParseAddr("8.8.8.8")},
+		map[string][]netip.Addr{
+			"tokyo.example":   {netip.MustParseAddr("2.2.2.2")},
+			"deleted.example": {netip.MustParseAddr("8.8.8.8")},
+		},
 	)
 	refresh := newBypassRefresher(deps)
 
@@ -238,6 +243,101 @@ hosts:
 	}
 	if len(published["intranet.corp"]) == 0 {
 		t.Fatalf("刷新不该抹掉用户 hosts 覆盖, got %v", published)
+	}
+}
+
+// 用户 hosts 覆盖的 IP **永远**不能变成「传输服务器地址」。
+//
+// 那份地址会经 store.serverAddrs() → RuntimeState.ServerBypass → cli/guardian.go →
+// guardian.BarrierContext.ServerBypass,变成 fail-closed `/2` 屏障上一个字面的
+// permit 洞。而 `hosts:` 接受任何 IPv4 字面量、不限内网 —— 一条用户配置就能在
+// 断网窗口里给任意公网 IP 打洞。
+//
+// 触发条件很窄但完全合法:某个域名先在 `hosts:` 里(于是进了 store 的静态表),
+// 之后被用户改成传输服务器,而**这一轮**它解析失败 —— 上一轮那个用户 IP 就会被
+// 「保留」逻辑捞回来,同时进 staticA 与屏障开口。讽刺的是 mergeHostOverrides
+// 在**同一次刷新**里明确拒绝了这条覆盖(hosts_override_ignored),理由正是
+// 「隧道会连到错误的地方 —— 而且是静默的」。
+func TestBypassRefreshNeverPromotesHostOverrideIntoServerAddrs(t *testing.T) {
+	deps := testRefresherDeps(t, twoServerConfig(t), staticResolver(map[string][]string{
+		"hk.example": {"1.1.1.1"},
+		// tokyo.example 这轮解析不了
+	}))
+	// 上一轮的 store:tokyo.example 那条来自用户 `hosts:`,不是解析出来的服务器地址。
+	deps.store = newBypassStore(
+		[]string{"1.1.1.1/32", "203.0.113.77/32"},
+		map[string][]netip.Addr{
+			"hk.example":    {netip.MustParseAddr("1.1.1.1")},
+			"tokyo.example": {netip.MustParseAddr("203.0.113.77")}, // 用户 hosts 覆盖
+		},
+		map[string][]netip.Addr{
+			"hk.example": {netip.MustParseAddr("1.1.1.1")}, // 真正的传输服务器只有 hk
+		},
+	)
+	refresh := newBypassRefresher(deps)
+
+	if _, err := refresh(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	carve := runtimeIPv4Bypass(deps.store.serverAddrs())
+	if containsString(carve, "203.0.113.77/32") {
+		t.Fatalf("用户 hosts 里的 IP 进了 Guardian 屏障开口 —— 这是 fail-closed 屏障上的一个洞, got %v", carve)
+	}
+	if got := deps.store.staticEntries()["tokyo.example"]; len(got) > 0 {
+		t.Fatalf("被 mergeHostOverrides 当场拒绝的覆盖不该从「保留」那条路走回静态表, got %v", got)
+	}
+}
+
+// 调用方点名的目标解析不了,刷新必须**失败**。
+//
+// `/v0/server` 用它作为「落实不了新服务器的 bypass 就绝不切过去」的判据。
+// 沿用上一轮的地址回报成功,等于让一次「我不知道这台服务器今天在哪」的切换
+// 照常进行 —— 而那正是本任务全部存在理由的那个成环。
+// (非点名的已知服务器仍然保留,见 …RetainsKnownServerThatFailedThisRound:
+// 那条是「别让一台正在用的服务器因为 DNS 抖一下掉出 bypass」,方向相反。)
+func TestBypassRefreshRefusesWhenNamedTargetOnlyHasRetainedAddress(t *testing.T) {
+	deps := testRefresherDeps(t, twoServerConfig(t), staticResolver(map[string][]string{
+		"hk.example": {"1.1.1.1"},
+		// tokyo.example 这轮解析不了
+	}))
+	deps.store = newBypassStore(
+		[]string{"1.1.1.1/32", "2.2.2.2/32"},
+		map[string][]netip.Addr{
+			"hk.example":    {netip.MustParseAddr("1.1.1.1")},
+			"tokyo.example": {netip.MustParseAddr("2.2.2.2")},
+		},
+		map[string][]netip.Addr{
+			"hk.example":    {netip.MustParseAddr("1.1.1.1")},
+			"tokyo.example": {netip.MustParseAddr("2.2.2.2")},
+		},
+	)
+	refresh := newBypassRefresher(deps)
+
+	if _, err := refresh(context.Background(), []string{"vless://u@tokyo.example:443"}); err == nil {
+		t.Fatal("被点名的切换目标这轮解析不了,必须报错拒绝切换,而不是沿用上一轮地址报成功")
+	}
+}
+
+// 同一个 host 既在配置清单里(非必需)又被调用方点名时,先被遍历到的那条
+// 不能替点名的那条把「保留」用掉 —— 去重会让点名的那条根本走不到解析。
+func TestResolveServerBypassNamedHostNeverRetainsEvenViaDuplicateLink(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.Server{
+			{Name: "hk", Link: "vless://u@hk.example:443"},
+			{Name: "tokyo", Link: "vless://u@tokyo.example:443", UDP: "hysteria2://u@tokyo.example:8443"},
+		},
+		Current: "hk",
+	}
+	retain := map[string][]netip.Addr{"tokyo.example": {netip.MustParseAddr("2.2.2.2")}}
+	resolve := func(host string) []netip.Addr {
+		if host == "hk.example" {
+			return []netip.Addr{netip.MustParseAddr("1.1.1.1")}
+		}
+		return nil
+	}
+	_, _, err := resolveServerBypassRetaining(cfg, []string{"vless://u@tokyo.example:443"}, resolve, retain)
+	if err == nil {
+		t.Fatal("点名 host 的保留必须按 host 禁掉:清单里同 host 的另一条链接先跑,会替它把保留用掉再被去重跳过")
 	}
 }
 
@@ -347,10 +447,10 @@ func TestBypassRefreshUpdatesServerAddrsForRuntimeState(t *testing.T) {
 func testWiringParams(t *testing.T, configPath string) bypassWiringParams {
 	t.Helper()
 	return bypassWiringParams{
-		configPath:  configPath,
-		serverAddrs: []netip.Addr{netip.MustParseAddr("1.1.1.1")},
-		staticA:     map[string][]netip.Addr{"hk.example": {netip.MustParseAddr("1.1.1.1")}},
-		resolver:    allResolver{addrs: []netip.Addr{netip.MustParseAddr("1.1.1.1")}},
+		configPath:    configPath,
+		serverStatics: map[string][]netip.Addr{"hk.example": {netip.MustParseAddr("1.1.1.1")}},
+		staticA:       map[string][]netip.Addr{"hk.example": {netip.MustParseAddr("1.1.1.1")}},
+		resolver:      allResolver{addrs: []netip.Addr{netip.MustParseAddr("1.1.1.1")}},
 	}
 }
 
@@ -466,9 +566,9 @@ func TestRunFeedsBypassWiringTheLoopSafeResolver(t *testing.T) {
 	if strings.Contains(body, "hostToAddrs") {
 		t.Fatal("接线里出现了 hostToAddrs(系统解析器)—— 那正是 Critical 1")
 	}
-	// serverAddrs 与 staticA 必须分开传:从 staticA 推 servers 会把用户 hosts
+	// serverStatics 与 staticA 必须分开传:从 staticA 推 servers 会把用户 hosts
 	// 覆盖的任意 IPv4 打进 Guardian 屏障开口。
-	if !strings.Contains(body, "serverAddrs: serverAddrs") || !strings.Contains(body, "staticA:     staticA") {
-		t.Fatal("serverAddrs(屏障开口)与 staticA(DNS 静态表)必须各传各的")
+	if !strings.Contains(body, "serverStatics: serverStatic") || !strings.Contains(body, "staticA:       staticA") {
+		t.Fatal("serverStatics(屏障开口 + 保留基准)与 staticA(DNS 静态表)必须各传各的")
 	}
 }

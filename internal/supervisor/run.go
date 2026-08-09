@@ -287,7 +287,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 去重、空集合检查一起住在 resolveServerBypass 里:**切换前刷新 bypass 走的是
 	// 同一个函数**。两条路径分头实现,迟早有一条会漏掉某类链接,而漏掉的那一条
 	// 就是成环(静默:连得上、status 显绿、流量绕圈)。
-	staticA, serverAddrs, err := resolveServerBypass(cfg)
+	// serverStatic 是**合并用户 hosts 覆盖之前**的那一半(host → 服务器真 IP)。
+	// 它必须原样留到 wireBypass:屏障开口与刷新的保留基准都只能用它,
+	// 从合并后的表推回去会把用户 hosts 里的任意 IPv4 带进 fail-closed 屏障的开口。
+	serverStatic, _, err := resolveServerBypass(cfg)
 	if err != nil {
 		return err
 	}
@@ -310,7 +313,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		// 的启动失败。
 		return fmt.Errorf("hosts 覆盖: %w", err)
 	}
-	staticA, appliedHosts, ignoredHosts := mergeHostOverrides(staticA, userHosts)
+	staticA, appliedHosts, ignoredHosts := mergeHostOverrides(serverStatic, userHosts)
 	for _, host := range ignoredHosts {
 		// 只记不停:配置里那条是错的,但传输服务器的真 IP 已经用上了,
 		// 隧道是安全的。停在这里对用户没有好处。
@@ -431,14 +434,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 自动重装旁路)、刷新与 RuntimeState 全都读写它。各自留一份启动时的冻结拷贝
 	// 正是静默成环的来源。
 	//
-	// serverAddrs 与 staticA 分开传是**要紧的**:前者(合并用户 hosts 覆盖之前)
-	// 决定 Guardian 屏障给谁开口,后者是 DNS 静态表。从后者推前者会把用户 hosts
-	// 里的任意 IPv4 打进屏障。
+	// serverStatics 与 staticA 分开传是**要紧的**:前者(合并用户 hosts 覆盖之前)
+	// 决定 Guardian 屏障给谁开口、也是刷新的保留基准,后者是 DNS 静态表。
+	// 从后者推前者会把用户 hosts 里的任意 IPv4 打进屏障。
 	bypassWire := wireBypass(bypassWiringParams{
-		configPath:  opts.ConfigPath,
-		serverAddrs: serverAddrs,
-		staticA:     staticA,
-		extraCIDRs:  tailscaleBypass,
+		configPath:    opts.ConfigPath,
+		serverStatics: serverStatic,
+		staticA:       staticA,
+		extraCIDRs:    tailscaleBypass,
 		// 与 Dialer 同一个国内 DNS + 防环直连。**绝不能**换成系统解析器:
 		// 刷新发生在 DNS 已交给 bx 之后,系统解析器此刻就是 bx 自己,新服务器
 		// (还没有静态 A)会被回一个 198.18/15 的 fake IP。
