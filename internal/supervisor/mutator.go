@@ -56,8 +56,11 @@ type liveMutator struct {
 	tunH         tunHandle
 	mu           sync.Mutex
 	serverBypass []string
-	userBypass   []string
-	routes       *routeReadiness
+	// store 非空时**压过** serverBypass:那是全进程唯一那份「什么必须绕开隧道」,
+	// 刷新写它、路径恢复读它、这里也读它。各自留一份冻结拷贝正是成环的来源。
+	store      *bypassStore
+	userBypass []string
+	routes     *routeReadiness
 }
 
 // SetTransport 返回真 apply:换到 newLink(建新+等健康+原子换+停旧)。
@@ -83,12 +86,20 @@ func (m *liveMutator) Reconnect() error {
 // SetServerBypass 更新 bypass 集合。加**新**服务器时新 IP 不在启动时算好的集合里,
 // 必须先更新再 Rehijack —— 顺序反了就等于没装,而没装就成环。
 func (m *liveMutator) SetServerBypass(cidrs []string) {
+	if m.store != nil {
+		// 只换路由那一半,静态 DNS 保持原样(这条路径的调用方只知道 CIDR)。
+		m.store.set(cidrs, m.store.staticEntries())
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.serverBypass = append([]string(nil), cidrs...)
 }
 
 func (m *liveMutator) currentServerBypass() []string {
+	if m.store != nil {
+		return m.store.cidrs()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]string(nil), m.serverBypass...)

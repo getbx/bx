@@ -41,8 +41,20 @@ type livePathRecoverer struct {
 	tun          tunHandle
 	previous     UnderlaySnapshot
 	serverBypass []string
-	userBypass   []string
-	verify       func(context.Context) error
+	// bypass 非空时**压过** serverBypass:后者是启动时冻结的一份拷贝,切过服务器
+	// 之后就是陈旧的。路径恢复由 Wi-Fi 切换之类的事件自动触发,拿旧集合重装旁路
+	// 会把刚切过去的那台漏在外面 —— 静默成环,而用户什么都没做。
+	bypass     *bypassStore
+	userBypass []string
+	verify     func(context.Context) error
+}
+
+// currentServerBypass 返回此刻真正该旁路的集合。
+func (r *livePathRecoverer) currentServerBypass() []string {
+	if r.bypass != nil {
+		return r.bypass.cidrs()
+	}
+	return r.serverBypass
 }
 
 func (r *livePathRecoverer) RecoverPath(ctx context.Context, _ PathRecoveryRequest, observe func(PathRecoverySnapshot)) (PathRecoverySnapshot, error) {
@@ -66,7 +78,7 @@ func (r *livePathRecoverer) RecoverPath(ctx context.Context, _ PathRecoveryReque
 	}
 
 	publish("rebind_underlay")
-	if err := r.underlay.Rebind(ctx, r.tun, r.previous, next, r.serverBypass, r.userBypass); err != nil {
+	if err := r.underlay.Rebind(ctx, r.tun, r.previous, next, r.currentServerBypass(), r.userBypass); err != nil {
 		return PathRecoverySnapshot{Stage: "rebind_underlay"}, err
 	}
 	r.previous = next

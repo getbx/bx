@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"sync"
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/fakeip"
@@ -26,12 +27,16 @@ func debugf(format string, args ...any) {
 
 // Server 处理 DNS 查询,A 记录用 fake IP 应答。
 type Server struct {
-	pool    *fakeip.Pool
-	ttl     uint32
-	staticA map[string][]netip.Addr
-	splits  []SplitRoute
-	fwd     Forwarder
-	direct  *splitdns.Set
+	pool *fakeip.Pool
+	ttl  uint32
+	// staticMu 守 staticA:它过去只在启动时写一次(单线程),现在「切服务器」的
+	// bypass 刷新路径也会在运行期重写它,而 Respond 正在并发读 —— 那是一条真实
+	// 的 data race(去掉这把锁,server_test 里那条并发测试立刻被 -race 抓住)。
+	staticMu sync.RWMutex
+	staticA  map[string][]netip.Addr
+	splits   []SplitRoute
+	fwd      Forwarder
+	direct   *splitdns.Set
 
 	// fakeip-filter:这些域名不分配 fake-IP,而是转发到 fakeipServer 真实解析并强制直连
 	// (本地/反查域名代理无意义,fake-IP 会破坏本地解析)。与 mihomo/sing-box 的 fake-ip-filter 对齐。
@@ -77,7 +82,7 @@ func (s *Server) SetFakeipFilter(domains []string, server string, fwd Forwarder,
 // bx 自己传输服务器的防环记录就此形同虚设——查询转而落进 fake-IP,而这条
 // 记录存在的唯一理由就是不让这一步发生。
 func (s *Server) SetStaticA(records map[string][]netip.Addr, direct *splitdns.Set) {
-	s.staticA = make(map[string][]netip.Addr, len(records))
+	next := make(map[string][]netip.Addr, len(records))
 	for domain, addrs := range records {
 		key := config.NormalizeHostName(domain)
 		if key == "" {
@@ -88,12 +93,22 @@ func (s *Server) SetStaticA(records map[string][]netip.Addr, direct *splitdns.Se
 			if !addr.IsValid() {
 				continue
 			}
-			s.staticA[key] = append(s.staticA[key], addr)
+			next[key] = append(next[key], addr)
 			if direct != nil {
 				direct.Add(addr)
 			}
 		}
 	}
+	s.staticMu.Lock()
+	s.staticA = next
+	s.staticMu.Unlock()
+}
+
+// staticAddrs 取一条静态 A 记录(读锁)。
+func (s *Server) staticAddrs(domain string) []netip.Addr {
+	s.staticMu.RLock()
+	defer s.staticMu.RUnlock()
+	return s.staticA[domain]
 }
 
 // matchSplit 返回命中的 split 路由(无则 nil)。
@@ -124,7 +139,7 @@ func (s *Server) Respond(query []byte) ([]byte, error) {
 
 	domain := config.NormalizeHostName(q.Name.String())
 
-	if addrs := s.staticA[domain]; len(addrs) > 0 && q.Type == dnsmessage.TypeA && q.Class == dnsmessage.ClassINET {
+	if addrs := s.staticAddrs(domain); len(addrs) > 0 && q.Type == dnsmessage.TypeA && q.Class == dnsmessage.ClassINET {
 		return s.staticAResponse(h, q, addrs)
 	}
 

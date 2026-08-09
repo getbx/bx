@@ -355,3 +355,45 @@ func equalStrings(got, want []string) bool {
 	}
 	return true
 }
+
+// bypassCapturingUnderlay 只为看清 Rebind 实际拿到了哪一组 serverBypass。
+type bypassCapturingUnderlay struct {
+	next      UnderlaySnapshot
+	gotBypass []string
+}
+
+func (u *bypassCapturingUnderlay) Observe(context.Context) (UnderlaySnapshot, error) {
+	return u.next, nil
+}
+func (u *bypassCapturingUnderlay) ValidateCapture(context.Context, tunHandle) error { return nil }
+func (u *bypassCapturingUnderlay) Rebind(_ context.Context, _ tunHandle, _, _ UnderlaySnapshot, serverBypass, _ []string) error {
+	u.gotBypass = append([]string(nil), serverBypass...)
+	return nil
+}
+
+// 路径恢复此前拿的是**启动时冻结的那份** serverBypass。切到一台新服务器之后,
+// 一次 Wi-Fi 切换就足以触发自动路径恢复,而它会用旧集合重装旁路 ——
+// 刚切过去的那台不在里面 = 成环,且是自动发生的,用户什么都没做。
+func TestLivePathRecovererUsesLiveBypassSet(t *testing.T) {
+	next := mustUnderlaySnapshot(t, "en1", "198.51.100.1", "198.51.100.0/24")
+	underlay := &bypassCapturingUnderlay{next: next}
+	store := newBypassStore([]string{"203.0.113.9/32"}, nil)
+	recoverer := &livePathRecoverer{
+		underlay:     underlay,
+		transports:   &fakeLiveTransportSet{recorder: &chronologicalRecoveryRecorder{}},
+		tun:          tunHandle{Name: "utun7"},
+		previous:     mustUnderlaySnapshot(t, "en0", "192.0.2.1", "192.0.2.0/24"),
+		serverBypass: []string{"203.0.113.9/32"}, // 启动时那份,已陈旧
+		bypass:       store,
+		verify:       func(context.Context) error { return nil },
+	}
+	// 切到新服务器:刷新把新集合发布进 store。
+	store.set([]string{"203.0.113.9/32", "198.51.100.77/32"}, nil)
+
+	if _, err := recoverer.RecoverPath(context.Background(), PathRecoveryRequest{Reason: "underlay_changed"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(underlay.gotBypass, "198.51.100.77/32") {
+		t.Fatalf("路径恢复必须用当前的 bypass 集合,不是启动时那份 —— 否则刚切过去的服务器被漏在外面 = 成环, got %v", underlay.gotBypass)
+	}
+}

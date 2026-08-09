@@ -152,3 +152,34 @@ func TestServerBypassIsSafeUnderConcurrentUpdateAndRehijack(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// liveMutator 与刷新、路径恢复必须看同一份集合。以前它自己藏一份,
+// 刷新写进去、路径恢复读不到,反之亦然 —— 每多一份冻结拷贝就多一个成环入口。
+func TestLiveMutatorReadsSharedBypassStore(t *testing.T) {
+	fp := &fakePlatform{}
+	store := newBypassStore([]string{"1.1.1.1/32"}, nil)
+	m := &liveMutator{plat: fp, store: store}
+
+	store.set([]string{"1.1.1.1/32", "2.2.2.2/32"}, nil)
+	apply, _, err := m.Rehijack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply(); err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(fp.lastServerBypass, "2.2.2.2/32") {
+		t.Fatalf("Rehijack 必须拿到 store 里的当前集合, got %v", fp.lastServerBypass)
+	}
+}
+
+// SetServerBypass 在接了 store 的部署里必须写进 store(而不是写进自己那份影子拷贝,
+// 那样路径恢复与后续刷新都看不见)。
+func TestLiveMutatorSetServerBypassWritesThroughToStore(t *testing.T) {
+	store := newBypassStore([]string{"1.1.1.1/32"}, nil)
+	m := &liveMutator{plat: &fakePlatform{}, store: store}
+	m.SetServerBypass([]string{"3.3.3.3/32"})
+	if !containsString(store.cidrs(), "3.3.3.3/32") {
+		t.Fatalf("写进 store 才能被所有消费者看见, got %v", store.cidrs())
+	}
+}

@@ -99,3 +99,32 @@ func TestServer_AAAAQuery_ReturnsNoData(t *testing.T) {
 		t.Errorf("AAAA 应无 answer(NODATA),却有 answer 或错误: %v", err)
 	}
 }
+
+// SetStaticA 过去只在启动时调一次(单线程),现在「切服务器」的刷新路径也会调它,
+// 而 Respond 正在并发读同一张表。没有锁就是一条真实的 data race。
+func TestSetStaticAIsSafeAgainstConcurrentRespond(t *testing.T) {
+	pool, err := fakeip.New("198.18.0.0/15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(pool, 1)
+	s.SetStaticA(map[string][]netip.Addr{"a.example": {netip.MustParseAddr("1.1.1.1")}}, nil)
+	query := buildQuery(t, 0x1234, "a.example.", dnsmessage.TypeA)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			s.SetStaticA(map[string][]netip.Addr{
+				"a.example": {netip.MustParseAddr("2.2.2.2")},
+				"b.example": {netip.MustParseAddr("3.3.3.3")},
+			}, nil)
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		if _, err := s.Respond(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-done
+}
