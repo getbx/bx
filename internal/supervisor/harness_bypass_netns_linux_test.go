@@ -65,9 +65,24 @@ func TestHarnessSwitchToNewServerInstallsBypassBeforeSwappingTransport(t *testin
 
 	// 清单外(config 里只有 .10/.11/.12/.13),且是 IP 字面量 —— netns 里没有 DNS,
 	// 解析必须不经网络。unionRequired 会把端点点名的链接并进来并标 Required。
-	const target = "vless://u@203.0.113.20:443"
-	const targetIP = "203.0.113.20"
+	// **切两次,而且两次都是清单外的。**
+	//
+	// 只切一次的话,任何「第一次 Rehijack 之后才引入的陈旧」在结构上都看不见 ——
+	// 复审用一个延迟冻结的变异(liveMutator.currentServerBypass 首次读取时把 store
+	// 换成快照)证明过:单次切换版本全绿,而第二次切换时新服务器的路由根本没装上,
+	// 隧道自己连服务器的流量被劫进 TUN,`bx status` 却仍然绿。
+	// 这条正是被删掉的那条 AST 守卫(禁止包内给 .store 赋值)原本覆盖的性质 ——
+	// 它管的是「任何时刻都不许」,而只切一次只能证明「启动那一刻没有」。
+	for _, target := range []struct{ link, ip string }{
+		{"vless://u@203.0.113.20:443", "203.0.113.20"},
+		{"vless://u@203.0.113.30:443", "203.0.113.30"},
+	} {
+		assertBypassInstalledBeforeSwap(t, h, target.link, target.ip)
+	}
+}
 
+func assertBypassInstalledBeforeSwap(t *testing.T, h *harness, target, targetIP string) {
+	t.Helper()
 	// 切换前它不该在表里,否则「建隧道时已经在」是从一开始就成立的,断言等于没测。
 	if before := ipOut(t, "route", "show", "table", itoa(routeTable)); strings.Contains(before, targetIP) {
 		t.Fatalf("%s 切换前就已经在 bypass 里了,这条断言会失去意义:\n%s", targetIP, before)
