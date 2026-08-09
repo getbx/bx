@@ -398,3 +398,67 @@ func TestParseWithoutHostsYieldsNone(t *testing.T) {
 		t.Fatalf("未配 hosts 时应为空,实际 %v", cfg.HostOverrides())
 	}
 }
+
+// HostOverrides 不能只对经过 Parse 的 Config 生效。测试代码里到处用字面量
+// 直接构造 config.Config{...}(如 internal/supervisor/router_test.go),这条
+// 路径绕开 Parse —— 若 HostOverrides 读的是一个只由 Parse 填充的缓存字段,
+// 这里就会静默拿到 nil,尽管 Hosts 明明配了合法值。
+func TestHostOverridesWorksOnLiteralConfigNotOnlyParse(t *testing.T) {
+	cfg := &Config{Hosts: map[string]string{"literal.example.com": "10.0.0.9"}}
+	got := cfg.HostOverrides()
+	if a, ok := got["literal.example.com"]; !ok || a.String() != "10.0.0.9" {
+		t.Fatalf("literal.example.com = %v ok=%v, want 10.0.0.9 present", a, ok)
+	}
+}
+
+// 反过来,字面量构造出的非法 Hosts 必须响亮地失败(panic),而不是让
+// HostOverrides 假装"没有任何覆盖"——那样会把同一个"配了但没生效"的陷阱
+// 从用户的 YAML 搬到调用方代码里。Parse 是校验用户输入的关口;绕开它手造
+// 非法 Config 属于调用方的编程错误。
+func TestHostOverridesPanicsOnInvalidLiteralHosts(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("非法 Hosts 应 panic,而不是静默返回空/残缺结果")
+		}
+	}()
+	cfg := &Config{Hosts: map[string]string{"bad.example.com": "not-an-ip"}}
+	cfg.HostOverrides()
+}
+
+// 归一化后的重复必须报错,而不是让后写入的值悄悄覆盖先写入的值——那正是
+// 「按其中一种写法配、按另一种查」这个风险的另一面:两条写法都配了,却只有
+// 一条生效,用户毫无办法从配置文件看出会是哪一条。
+func TestParseRejectsNormalizedDuplicateHosts(t *testing.T) {
+	_, err := Parse([]byte("server: brook://example.com:9999\nhosts:\n  Torchfun.com.: 127.0.0.1\n  torchfun.com: 127.0.0.2\n"))
+	if err == nil {
+		t.Fatal("归一化后重复的 hosts 必须报错")
+	}
+	if !strings.Contains(err.Error(), "torchfun.com") {
+		t.Fatalf("错误必须点名冲突的域名,实际 = %v", err)
+	}
+}
+
+// normalizeHostName 必须去掉全部尾点,而不是只去一个——否则 "example.com.."
+// 归一化成 "example.com." 而非 "example.com",被当成一条独立的合法条目放行,
+// 是「畸形输入被当作合法值容忍」这条原则在归一化步骤上的翻版。
+func TestNormalizeHostNameStripsAllTrailingDots(t *testing.T) {
+	cfg, err := Parse([]byte("server: brook://example.com:9999\nhosts:\n  example.com..: 127.0.0.1\n"))
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	got := cfg.HostOverrides()
+	if a, ok := got["example.com"]; !ok || a.String() != "127.0.0.1" {
+		t.Fatalf("example.com = %v ok=%v, want normalized entry under example.com", a, ok)
+	}
+	if _, ok := got["example.com."]; ok {
+		t.Fatal("不应残留带尾点的独立条目")
+	}
+}
+
+// 仅由点号组成的域名去尾点后是空字符串,必须落进「域名不能为空」的既有校验,
+// 而不是被当成合法 key 放行。
+func TestParseRejectsDotsOnlyHostKey(t *testing.T) {
+	if _, err := Parse([]byte("server: brook://example.com:9999\nhosts:\n  \"..\": 127.0.0.1\n")); err == nil {
+		t.Fatal("仅有点号的域名必须报错")
+	}
+}
