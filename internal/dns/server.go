@@ -8,8 +8,8 @@ import (
 	"log"
 	"net/netip"
 	"os"
-	"strings"
 
+	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/splitdns"
@@ -68,10 +68,18 @@ func (s *Server) SetFakeipFilter(domains []string, server string, fwd Forwarder,
 
 // SetStaticA 配置固定 A 记录。用于保护 bx 自己的上游服务器域名:
 // 运行期系统 DNS 指向 bx 后,这些域名仍返回启动时已加入路由旁路的真实 IP。
+//
+// key 归一化必须与 Respond 里查询域名的归一化用同一个函数(config.
+// NormalizeHostName)——这里曾经手写过一份 ToLower+TrimSuffix(单尾点),而
+// serverStatic 的 key 来自 net/url.Hostname(),对形如 "VPS.example.com.."
+// (双尾点)这类 link 只会削掉一个点,存进去的 key 仍带一个尾点;真实查询经
+// dnsmessage 解析总是恰好单尾点的 FQDN,归一到零尾点后必然查不中这条静态 A,
+// bx 自己传输服务器的防环记录就此形同虚设——查询转而落进 fake-IP,而这条
+// 记录存在的唯一理由就是不让这一步发生。
 func (s *Server) SetStaticA(records map[string][]netip.Addr, direct *splitdns.Set) {
 	s.staticA = make(map[string][]netip.Addr, len(records))
 	for domain, addrs := range records {
-		key := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+		key := config.NormalizeHostName(domain)
 		if key == "" {
 			continue
 		}
@@ -114,7 +122,7 @@ func (s *Server) Respond(query []byte) ([]byte, error) {
 		return nil, fmt.Errorf("DNS 查询无 question: %w", err)
 	}
 
-	domain := strings.ToLower(strings.TrimSuffix(q.Name.String(), "."))
+	domain := config.NormalizeHostName(q.Name.String())
 
 	if addrs := s.staticA[domain]; len(addrs) > 0 && q.Type == dnsmessage.TypeA && q.Class == dnsmessage.ClassINET {
 		return s.staticAResponse(h, q, addrs)

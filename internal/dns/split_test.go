@@ -127,6 +127,31 @@ func TestRespondStaticAMatchReturnsPinnedAddress(t *testing.T) {
 	}
 }
 
+// 防环记录的 key 若带双尾点(server link 里 "VPS.example.com.." 这类写法,
+// net/url.Hostname() 原样保留,只削一个尾点是不够的)必须仍能命中静态 A。
+//
+// 这条记录是 bx 自己传输服务器域名的防环措施——查不中就会落回 fake-IP,
+// 隧道子进程解析到假 IP 而不是服务器真 IP,而 bx status 完全看不出来。
+// SetStaticA 与 Respond 的归一化必须是同一个函数(config.NormalizeHostName),
+// 否则任何一边漏归一到位,这条防环记录就在特定输入下悄悄失效。
+func TestRespondStaticAMatchesDoubledTrailingDotServerHostname(t *testing.T) {
+	set := splitdns.NewSet()
+	pool, _ := fakeip.New("198.18.0.0/15")
+	s := NewServer(pool, 1)
+	real := netip.MustParseAddr("203.0.113.20")
+	s.SetStaticA(map[string][]netip.Addr{
+		"VPS.example.com..": {real}, // 混合大小写 + 双尾点,同时覆盖两个歸一化维度
+	}, set)
+
+	resp, err := s.Respond(buildQuery(t, 1, "vps.example.com.", dnsmessage.TypeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstA(t, resp) != real {
+		t.Fatalf("双尾点的服务器域名必须仍命中静态 A、返回真 IP,实际 %v —— 防环失效会让隧道子进程解析到 fake-IP", firstA(t, resp))
+	}
+}
+
 func TestRespondSplitMissDoesNotForward(t *testing.T) {
 	set := splitdns.NewSet()
 	fwd := &fakeForwarder{answer: netip.MustParseAddr("10.0.13.45")}
