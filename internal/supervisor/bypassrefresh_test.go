@@ -620,3 +620,33 @@ func TestRunFeedsBypassWiringTheLoopSafeResolver(t *testing.T) {
 		t.Fatal("serverStatics(屏障开口 + 保留基准)与 staticA(DNS 静态表)必须各传各的")
 	}
 }
+
+// 屏障开口那条守卫此前只钉了**启动**那一次转置(wireBypass 的入参),没钉**刷新**
+// 那一次发布。而 `d.store.set(next, staticA, serverStatic)` 里后两个实参同型
+// (都是 map[string][]netip.Addr),写反了照样编译 —— 这正是 6c28339 把 servers
+// 视图从 []netip.Addr 改成 map 时丢掉的那道编译期保护。
+//
+// 复审实测:把它改成 `set(next, staticA, staticA)`,既有守卫全绿,而用户 hosts:
+// 里写的任意 IPv4 就此进了 fail-closed 屏障的放行口。既有守卫抓不到是因为它用的
+// twoServerConfig 根本没有 hosts: 段,staticA == serverStatic,那个变异是空操作。
+func TestBypassRefreshPublishKeepsHostOverridesOutOfBarrierCarveOut(t *testing.T) {
+	path := writeTestConfig(t, `
+servers:
+  - name: hk
+    link: vless://u@hk.example:443
+current: hk
+hosts:
+    public-override.example: 203.0.113.77
+`)
+	p := testWiringParams(t, path)
+	p.resolver = allResolver{addrs: []netip.Addr{netip.MustParseAddr("1.1.1.1")}}
+	w := wireBypass(p)
+
+	if _, err := w.refresh(context.Background(), nil); err != nil {
+		t.Fatalf("刷新应成功: %v", err)
+	}
+	got := w.runtimeServerBypass()
+	if len(got) != 1 || got[0] != "1.1.1.1/32" {
+		t.Fatalf("刷新后的屏障开口只能是传输服务器地址,不得含用户 hosts 覆盖(203.0.113.77), got %v", got)
+	}
+}
