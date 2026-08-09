@@ -51,6 +51,8 @@ type fakeMutator struct {
 	rehCalled       bool
 	reconnectCalled bool
 	reconnectErr    error
+	serverLink      string
+	serverUDP       string
 }
 
 func (f *fakeMutator) SetTransport(link string) (func() error, func() error, error) {
@@ -70,6 +72,8 @@ func (f *fakeMutator) Rehijack() (func() error, func() error, error) {
 func (f *fakeMutator) SetServer(link, udp string) (func() error, func() error, error) {
 	f.setCalled = true
 	f.gotLink = link
+	f.serverLink = link
+	f.serverUDP = udp
 	if f.setErr != nil {
 		return nil, nil, f.setErr
 	}
@@ -83,6 +87,23 @@ func (f *fakeMutator) Reconnect() error {
 
 func testMuxMut(eng controlEngine, mut mutator) http.Handler {
 	return newControlMux(eng, func() stats.Report { return stats.Report{Server: "test-node"} }, mut, nil, 0)
+}
+
+// newTestControlServer 直接构造 *controlServer(而非经 mux),供需要直调 handler
+// 方法(如 handleSetServer)的测试用。
+func newTestControlServer(t *testing.T, mut mutator) *controlServer {
+	t.Helper()
+	return &controlServer{
+		eng:    &fakeControlEngine{},
+		report: func() stats.Report { return stats.Report{Server: "test-node"} },
+		mut:    mut,
+	}
+}
+
+// newTestControlMux 建一个装好全部路由的 mux,供「路由是否注册」这类测试用。
+func newTestControlMux(t *testing.T) http.Handler {
+	t.Helper()
+	return testMuxMut(&fakeControlEngine{}, &fakeMutator{})
 }
 
 func testMuxReload(eng controlEngine, reload func() error) http.Handler {
@@ -482,5 +503,39 @@ func TestControlRehijackArmed(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 || !mut.rehCalled || !eng.armed {
 		t.Fatalf("rehijack 应 200 + mut.Rehijack + Arm;code=%d mut=%+v armed=%v", resp.StatusCode, mut, eng.armed)
+	}
+}
+
+func TestHandleSetServerArmsPairedSwap(t *testing.T) {
+	rec := &fakeMutator{}
+	cs := newTestControlServer(t, rec)
+	body := strings.NewReader(`{"link":"vless://tokyo","udp":"hysteria2://tokyo"}`)
+	w := httptest.NewRecorder()
+	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if rec.serverLink != "vless://tokyo" || rec.serverUDP != "hysteria2://tokyo" {
+		t.Fatalf("两条链接都要传到 mutator, got %q / %q", rec.serverLink, rec.serverUDP)
+	}
+}
+
+func TestHandleSetServerRejectsMissingLink(t *testing.T) {
+	cs := newTestControlServer(t, &fakeMutator{})
+	w := httptest.NewRecorder()
+	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server", strings.NewReader(`{"udp":"hysteria2://tokyo"}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("缺 link 必须 400, got %d", w.Code)
+	}
+}
+
+func TestSetServerRouteIsRegistered(t *testing.T) {
+	// 端点没注册时 mux 返回 404 text/plain,在客户端表现为解析错误而不是
+	// 「切换失败」—— 用户看到的是一句读不懂的话,而不是「这台连不上」。
+	mux := newTestControlMux(t)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v0/server", strings.NewReader(`{"link":"vless://tokyo"}`)))
+	if w.Code == http.StatusNotFound {
+		t.Fatal("/v0/server 没注册进 mux")
 	}
 }

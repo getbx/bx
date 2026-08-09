@@ -105,6 +105,7 @@ func newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng controlEngine, repor
 	mux.HandleFunc("/v0/commit", cs.handleCommit)
 	mux.HandleFunc("/v0/rollback", cs.handleRollback)
 	mux.HandleFunc("/v0/transport", cs.handleSetTransport)
+	mux.HandleFunc("/v0/server", cs.handleSetServer)
 	mux.HandleFunc("/v0/reconnect", cs.handleReconnect)
 	mux.HandleFunc("/v0/path-recovery", cs.handlePathRecovery)
 	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
@@ -324,6 +325,47 @@ func (cs *controlServer) handleSetTransport(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	apply, undo, merr := cs.mut.SetTransport(req.Link)
+	if merr != nil {
+		cs.mu.Unlock()
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: merr.Error()})
+		return
+	}
+	armErr := cs.eng.Arm(apply, undo)
+	state := stateName(cs.eng.State())
+	cs.mu.Unlock()
+	respondArm(w, armErr, state)
+}
+
+type setServerReq struct {
+	Link string `json:"link"`
+	UDP  string `json:"udp"`
+}
+
+// handleSetServer 换一台服务器 = 一次把主传输与 UDP 专用传输一起换过去。
+//
+// 为什么不是对 /v0/transport 调两次:两次调用之间没有共同的 Arm/undo,做不到原子。
+// 半切状态(TCP 在新那台、UDP 还在旧那台)是个合法配置 —— 不报错、还能用、
+// status 也显绿,只是出口不是用户以为的那台。
+//
+// 与 /v0/transport 一样是 commit-confirmed:arm 后须在窗口内 /v0/commit,
+// 否则死手到点自动 revert(undo + 路由快照网)。
+func (cs *controlServer) handleSetServer(w http.ResponseWriter, r *http.Request) {
+	if !cs.requireOwnerOrRoot(w, r) {
+		return
+	}
+	var req setServerReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Link == "" {
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: "缺 link"})
+		return
+	}
+	cs.mu.Lock()
+	if cs.eng.State() == confirm.StateArmed {
+		state := stateName(cs.eng.State())
+		cs.mu.Unlock()
+		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
+		return
+	}
+	apply, undo, merr := cs.mut.SetServer(req.Link, req.UDP)
 	if merr != nil {
 		cs.mu.Unlock()
 		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: merr.Error()})

@@ -217,6 +217,12 @@ func SetTransportControl(sockPath, link string) (string, error) {
 	return postControlBody(sockPath, "/v0/transport", map[string]string{"link": link})
 }
 
+// SetServerControl 请 Core 把主传输与 UDP 传输一起换到目标服务器(commit-confirmed:
+// 成功后调用方须 CommitControl,否则死手到点自动 revert)。
+func SetServerControl(sockPath, link, udp string) (string, error) {
+	return postControlBody(sockPath, "/v0/server", map[string]string{"link": link, "udp": udp})
+}
+
 // ReconnectControl 让守护进程安全重建当前传输。TUN、路由和 DNS 保持不变。
 func ReconnectControl(sockPath string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
