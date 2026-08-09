@@ -67,6 +67,15 @@ func (f *fakeMutator) Rehijack() (func() error, func() error, error) {
 	return func() error { return nil }, func() error { return nil }, nil
 }
 
+func (f *fakeMutator) SetServer(link, udp string) (func() error, func() error, error) {
+	f.setCalled = true
+	f.gotLink = link
+	if f.setErr != nil {
+		return nil, nil, f.setErr
+	}
+	return func() error { return nil }, func() error { return nil }, nil
+}
+
 func (f *fakeMutator) Reconnect() error {
 	f.reconnectCalled = true
 	return f.reconnectErr
