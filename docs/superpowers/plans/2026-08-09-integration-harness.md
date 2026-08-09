@@ -17,8 +17,8 @@
 - 配置一律 `global: true`,绕开 china 列表(它在 global 模式下根本不加载)。
 - **每条断言都要用变异证明它会红**,且变异必须取自本轮真实发生过的 bug。
 - TDD;中文 conventional commits,结尾 `Co-Authored-By: Claude <noreply@anthropic.com>`;直接在 `master` 提交。
-- 验证:`go build ./... && go vet ./... && go test ./... -count=1`;交叉编译 linux/darwin/windows × amd64/arm64;`gofumpt -l`(排除 `internal/embedded/assets/` 与 `internal/winfw/`)。集成台另跑 `sudo go test -tags integration ./internal/supervisor -run <名字> -v`。
-- **agent 不得在 macOS 宿主上运行集成台**(它是 linux-only,且需 root)。只做交叉编译与 `go vet -tags integration` 的语法/类型检查;真跑交给 CI 或用户的 Linux 环境。
+- 验证:`go build ./... && go vet ./... && go test ./... -count=1`;`GOOS=linux go vet -tags integration ./internal/supervisor`;交叉编译 linux/darwin/windows × amd64/arm64;`gofumpt -l`(排除 `internal/embedded/assets/` 与 `internal/winfw/`)。
+- **集成台用 `bash scripts/run-netns-tests.sh [-test.run …] [-test.v]` 跑**:它在宿主交叉编译,然后在本机 Colima 的特权 busybox 容器里执行。**绝不在 macOS 宿主上 `sudo go test`** —— netns 在那儿根本不存在,而宿主正开着 bx 日常使用。只用 `--rm` 一次性容器(用户还有别的容器在跑)。
 
 ---
 
