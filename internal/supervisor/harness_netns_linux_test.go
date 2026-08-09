@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -265,11 +266,30 @@ func assertProcessWideIsolation(t *testing.T) {
 // ipOut 在当前 netns 执行 ip 命令并返回其输出(基线比对用)。
 func ipOut(t *testing.T, args ...string) string {
 	t.Helper()
-	out, err := exec.Command("ip", args...).CombinedOutput()
+	out, err := ipRun(args...)
 	if err != nil {
 		t.Fatalf("ip %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
-	return string(out)
+	return out
+}
+
+// ipQuiet 与 ipOut 问的是同一个内核,但**不吃 *testing.T**。
+//
+// 它给的是假隧道工厂里那个观测点用的,而工厂跑在 swapTo 自己的 goroutine 上 ——
+// 从非测试 goroutine 调 t.Fatalf **不做它看起来做的事**:那只会标记失败并结束
+// 那一个 goroutine,测试本体照常往下跑,而 swapTo 就此永远等不到返回。
+// 故失败在这里不是控制流,而是**数据**:原样并进返回值,让读到它的断言消息自解释。
+func ipQuiet(args ...string) string {
+	out, err := ipRun(args...)
+	if err != nil {
+		return fmt.Sprintf("(ip %s 失败: %v)\n%s", strings.Join(args, " "), err, out)
+	}
+	return out
+}
+
+func ipRun(args ...string) (string, error) {
+	out, err := exec.Command("ip", args...).CombinedOutput()
+	return string(out), err
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +313,14 @@ type fakeTunnelRequest struct {
 	Link          string
 	RecoveryID    string
 	AuxiliaryHTTP bool
+	// RoutesAtBuild 是**建这条隧道那一刻**的 table 100 快照。
+	//
+	// 它是「先装 bypass 路由、再把传输换过去」那条顺序不变量的唯一观测点:两种顺序的
+	// **终态完全相同**(路由最后都装上了),差别只是一个转瞬即逝的窗口 —— 传输已经换到
+	// 新服务器、而它的 bypass 路由还没装,隧道自己连服务器的流量在那一瞬被劫进 TUN。
+	// 只比 before/after 的断言在结构上就看不见窗口,不管写得多仔细。
+	// swapTo 正是在窗口里调本工厂的,故在这里问一次内核就等于站到了窗口中间。
+	RoutesAtBuild string
 }
 
 func newFakeTunnels(t *testing.T) *fakeTunnels {
@@ -301,8 +329,13 @@ func newFakeTunnels(t *testing.T) *fakeTunnels {
 }
 
 func (f *fakeTunnels) build(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error) {
+	// 先问内核再上锁:ipQuiet 要 fork/exec 一个进程,持锁做它会把并发的建隧道请求
+	// 串起来 —— 那会改变被观测对象本身的时序。
+	routes := ipQuiet("route", "show", "table", itoa(routeTable))
 	f.mu.Lock()
-	f.requests = append(f.requests, fakeTunnelRequest{link, recoveryID, auxiliaryHTTP})
+	f.requests = append(f.requests, fakeTunnelRequest{
+		Link: link, RecoveryID: recoveryID, AuxiliaryHTTP: auxiliaryHTTP, RoutesAtBuild: routes,
+	})
 	f.mu.Unlock()
 	return tunnel.New(
 		f.socksAddr,
@@ -659,9 +692,17 @@ func TestHarnessStartsAndRestoresCleanly(t *testing.T) {
 	base.assertRestored(t, h)
 }
 
-// 台子跑的是 servers:/current: 那一支,故"每一条配置过的链接都要有 bypass 路由"
-// 这条防环不变量在这里是**真的**被生产代码走过的(transports: 那支是另一套语义)。
-func TestHarnessRunsTheServersBranchWithEveryLinkBypassed(t *testing.T) {
+// 清单里**每一台**服务器的**两条**链接对应的 IP,都必须真的在内核路由表里 ——
+// 少一条,切过去之后隧道自己连服务器的那条流量就会被劫进 TUN = 成环。
+//
+// **这不是一条管道连通性检查,别当它是。** 成环是**静默**的:隧道连得上、
+// bx status 显绿、没有任何一处报错,流量只是绕圈或者从错的地方出去。这条不变量
+// 走过五轮修复四轮复审,而在此之前保护它的全部是对抽出来的纯函数的断言 ——
+// 那些断言证明不了内核里真的有那几条路由。这里是第一次问内核。
+//
+// 台子跑的是 servers:/current: 那一支,故这条不变量在这里是**真的**被生产代码
+// 走过的(transports: 那支 Required 语义与 s.UDP 处理都不同,是另一套)。
+func TestHarnessBypassCoversEveryConfiguredServerElseSilentLoop(t *testing.T) {
 	enterIsolatedNetns(t)
 	base := captureBaseline(t)
 
