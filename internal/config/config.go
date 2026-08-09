@@ -87,8 +87,6 @@ type Config struct {
 	SingboxURL    string            `yaml:"singbox_url"`    // reality 传输:仅无内嵌 arch 兜底用,下载 sing-box 的地址(linux amd64/arm64 已内嵌,无需设)
 	SingboxSHA256 string            `yaml:"singbox_sha256"` // 下载兜底时的校验(设了 singbox_url 才用,强烈建议)
 	SingboxBin    string            `yaml:"singbox_bin"`    // 可选:直接指定本地 sing-box 路径(优先级最高,压过内嵌)
-
-	hostOverrides map[string]netip.Addr `yaml:"-"`
 }
 
 // Router 是网关模式参数:只代理「源在 lan_cidrs 内」的转发流量。
@@ -216,8 +214,37 @@ func Parse(b []byte) (*Config, error) {
 	//
 	// 不在运行期静默丢弃,理由与上面 KnownFields(true) 相同:staticA 是 DNS
 	// 第一跳且不受 rules 影响,一个悄悄没生效的覆盖,用户会以为它生效了。
-	normalizedHosts := make(map[string]netip.Addr, len(c.Hosts))
-	for name, value := range c.Hosts {
+	//
+	// 这里只为「拒绝启动」的效果调用 parseHostOverrides,故意不缓存结果 ——
+	// HostOverrides() 每次都重新推导,而不是读一个仅由 Parse 填充的字段。
+	// 原因:测试/其它代码常常绕开 Parse、直接用字面量构造 Config{Hosts: ...}
+	// (internal/supervisor/router_test.go 已经这么干),那种路径下缓存字段
+	// 永远是 nil —— 明明配了 Hosts,HostOverrides() 却悄悄报告"没有任何覆盖",
+	// 这正是本功能要消灭的那种静默失效,只是从用户的 YAML 搬到了下一个工程师
+	// 的测试代码里。
+	if _, err := parseHostOverrides(c.Hosts); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// normalizeHostName 归一化域名:小写 + 去全部尾点。
+//
+// Torchfun.com. 与 torchfun.com 必须是同一条 —— 用户按其中一种写法配、DNS 按
+// 另一种查,覆盖就静默不生效,而这类静默失效正是本功能要消灭的东西。
+//
+// 用 TrimRight 而非 TrimSuffix:后者只削一个点,"example.com.." 会被当成与
+// "example.com" 不同的独立条目留下来 —— 同一类"看似归一、实则放过畸形输入"
+// 的问题,只是换了个位置。
+func normalizeHostName(name string) string {
+	return strings.TrimRight(strings.ToLower(strings.TrimSpace(name)), ".")
+}
+
+// parseHostOverrides 校验并归一化一份 hosts 映射。Parse 用它在解析期拒绝非法
+// 配置;HostOverrides 用它在每次调用时重新推导,两处共享同一套规则,不会走漂。
+func parseHostOverrides(hosts map[string]string) (map[string]netip.Addr, error) {
+	normalized := make(map[string]netip.Addr, len(hosts))
+	for name, value := range hosts {
 		host := normalizeHostName(name)
 		if host == "" {
 			return nil, fmt.Errorf("config: hosts 的域名不能为空")
@@ -232,24 +259,28 @@ func Parse(b []byte) (*Config, error) {
 		if addr.IsUnspecified() {
 			return nil, fmt.Errorf("config: hosts[%s] 不能是 0.0.0.0", host)
 		}
-		if _, dup := normalizedHosts[host]; dup {
+		if _, dup := normalized[host]; dup {
 			return nil, fmt.Errorf("config: hosts 里 %s 出现多次(大小写/尾点归一后相同)", host)
 		}
-		normalizedHosts[host] = addr
+		normalized[host] = addr
 	}
-	c.hostOverrides = normalizedHosts
-	return &c, nil
+	return normalized, nil
 }
 
-// normalizeHostName 归一化域名:小写 + 去尾点。
+// HostOverrides 返回归一化并校验过的 hosts 覆盖。
 //
-// Torchfun.com. 与 torchfun.com 必须是同一条 —— 用户按其中一种写法配、DNS 按
-// 另一种查,覆盖就静默不生效,而这类静默失效正是本功能要消灭的东西。
-func normalizeHostName(name string) string {
-	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
-}
-
-// HostOverrides 返回归一化并校验过的 hosts 覆盖。Parse 已保证每个值都是合法 IPv4。
+// 每次调用都重新推导(不读缓存字段)——见 Parse 里的注释:字面量构造的
+// Config{Hosts: ...}(测试代码常见写法)不经过 Parse,若结果来自一个只由
+// Parse 填充的缓存字段,那种路径会静默拿到空结果。
+//
+// 若 c.Hosts 本身非法(唯一途径:绕开 Parse 手造了非法 Config),panic ——
+// 这是调用方的编程错误,不是用户配置错误;Parse 才是校验用户输入的关口,
+// 这里假装"没有任何覆盖"糊弄过去,只会把同一个"看着配了、其实没生效"的
+// 陷阱重新引入。
 func (c *Config) HostOverrides() map[string]netip.Addr {
-	return c.hostOverrides
+	overrides, err := parseHostOverrides(c.Hosts)
+	if err != nil {
+		panic(fmt.Sprintf("config: HostOverrides 的前置条件被打破(Hosts 未经 Parse 校验): %v", err))
+	}
+	return overrides
 }
