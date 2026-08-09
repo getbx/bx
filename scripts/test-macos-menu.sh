@@ -30,6 +30,7 @@ run_test guardian-client \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Tests/GuardianClientTests.swift"
 run_test instance-gate \
@@ -49,12 +50,14 @@ run_test guardian-status \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Tests/GuardianStatusTests.swift"
 run_test guardian-client-timeout \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Tests/GuardianClientTimeoutTests.swift"
 run_test toggle-controller \
@@ -73,6 +76,7 @@ run_test guardian-failure-code \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
   "$MENU/Tests/GuardianFailureCodeTests.swift"
@@ -101,6 +105,7 @@ run_test guardian-status-fields \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Tests/GuardianStatusFieldsTests.swift"
 

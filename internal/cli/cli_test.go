@@ -25,6 +25,7 @@ import (
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/stats"
+	"github.com/getbx/bx/internal/supervisor"
 	"github.com/urfave/cli/v2"
 )
 
@@ -715,15 +716,16 @@ func TestMacMenuDerivesDNSFromStatusJSONOnly(t *testing.T) {
 // scripts/test-macos-menu.sh —— 把 spawn 加回来不会有任何编译错误,也不会有任何
 // Swift 测试转红,只会让每次刷新重新长出两个子进程。
 //
-// `doctor` / `update --check` / `logs --help` 三种 spawn 属 Task 4,本守卫不管。
-//
-// **禁令的范围刻意只到 `loadState` 的函数体,不是整个 main.swift。** 守的是
-// 「轮询路径不 spawn」,而不是「这个进程永远不执行 CLI」:Setup 那条动作路径
+// **禁令的范围刻意只到「轮询路径」的函数体,不是整个 main.swift。** 守的是
+// 「轮询不 spawn」,而不是「这个进程永远不执行 CLI」:Setup 那条动作路径
 // 本来就要执行它,「CLI 跑不跑得起来」也只有真去执行才能确知。整文件禁令会把
 // 动作路径上一次**正当**的 exec 探测一并封死 —— Task 3 正是因此把 Setup 前的
-// 探测降级成了一次 stat。**Task 4 收掉 `logs --help` 时必须把动作路径上真正的
-// exec 探测补回来**:今天「装了但跑不起来」还能被那次 `logs --help` 兜成
-// `.updateNeeded`,Task 4 之后就没人兜了。
+// 探测降级成了一次 stat,而 Task 4 把真探测补了回来
+// (见 TestMacMenuActionPathProbesTheCLIByExecutingIt)。
+//
+// Task 4 之后轮询路径是两个函数:`loadState`(每 2–30 秒)与 `refreshUpdateCheck`
+// (每天一次 + 启动一次)。两者都必须**一次 spawn 都没有** —— 后者此前跑
+// `bx update --check --json`,现在问 Guardian 的 /v1/update-check。
 func TestMacMenuPollingPathDoesNotSpawnTheCLI(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
@@ -734,18 +736,38 @@ func TestMacMenuPollingPathDoesNotSpawnTheCLI(t *testing.T) {
 	if !ok {
 		t.Fatal("找不到 loadState 的函数体")
 	}
+	// 轮询路径上一次 spawn 都不许有。此前逐个字面量列举(status / --version),
+	// 那挡不住换一个子命令重新长出来 —— Task 4 之后这条路径上**没有任何**
+	// 正当的 spawn,所以直接禁 `runBx(` 本身。
+	if strings.Contains(swiftCodeOnly(body), "runBx(") {
+		t.Error("loadState 不得 spawn 任何 bx 子进程:状态只能来自 Guardian 的 /v1/status," +
+			"再 spawn 一个可能是旧版的 CLI 去重新推导同一件事,就是让 UI 变回第三个控制面")
+	}
+	updateBody, ok := swiftFunctionBody(text, "private func refreshUpdateCheck(")
+	if !ok {
+		t.Fatal("找不到 refreshUpdateCheck 的函数体")
+	}
+	if strings.Contains(swiftCodeOnly(updateBody), "runBx(") {
+		t.Error("refreshUpdateCheck 不得 spawn:更新检查由 Guardian 代查(/v1/update-check)," +
+			"菜单只读答案")
+	}
+	if !strings.Contains(updateBody, "guardianClient.updateCheck()") {
+		t.Error("refreshUpdateCheck 必须问 Guardian 的 /v1/update-check")
+	}
+
+	// 被删掉的三种 spawn 不得以任何形式在**整个文件**里复活。
+	//
+	// 前两条是「同一件事换个问法」:doctor 的那三条检查现在由菜单直接观测
+	// (见 diagnoseStopped),更新检查由 Guardian 代查。第三条是能力探测 ——
+	// **一个 UI 解析另一个程序的帮助文本来做特性判断**,是整份架构诊断里最直白
+	// 的症状;能力现由 Guardian 在 /v1/status 里声明(capabilities)。
 	for _, forbidden := range []struct{ literal, why string }{
-		{
-			literal: `runBx(["status"`,
-			why:     "状态只能来自 Guardian 的 /v1/status:再 spawn 一个 CLI 去解析同一件事,就是让 UI 变回第三个控制面",
-		},
-		{
-			literal: `runBx(["--version"`,
-			why:     "版本 Guardian 直接给;「CLI 能不能跑」只在真要执行 CLI 之前才有意义,不该每几秒 spawn 一次去问",
-		},
+		{`"doctor"`, "doctor 的观测由菜单自己做:能走到那条路径的前提就是 Guardian 不应答,再 spawn 一个 CLI 转述只是多一层可能说谎的中间人"},
+		{`"--check"`, "更新检查由 Guardian 代查并经 /v1/update-check 发布,菜单不再自己跑 `bx update --check`"},
+		{`"--help"`, "能力必须由 daemon 声明,绝不能靠解析帮助文本猜 —— 被问的那个二进制恰恰可能是旧版"},
 	} {
-		if strings.Contains(body, forbidden.literal) {
-			t.Errorf("loadState 不得 spawn %s:%s", forbidden.literal, forbidden.why)
+		if strings.Contains(swiftCodeOnly(text), forbidden.literal) {
+			t.Errorf("main.swift 不得再出现 %s:%s", forbidden.literal, forbidden.why)
 		}
 	}
 
@@ -797,18 +819,26 @@ func TestMacMenuNeverReportsOffWhileTheCoreSocketAnswers(t *testing.T) {
 	if decision < 0 {
 		t.Fatal("diagnoseStopped 必须问 stoppedDiagnosis —— 顺序(先证明 Core socket 不应答,再谈 off)是安全属性,只有那里的单测盯得住")
 	}
-	// 判定必须吃到 Core 的控制 socket 那条检查。少了它,stoppedDiagnosis 只能拿
-	// launchd 对 Guardian job 的看法说事 —— 而这正是本条守卫要挡的那个误判。
-	if !strings.Contains(body, `check(report, "status_socket")`) {
-		t.Fatal("必须把 doctor 的 status_socket(Core 的控制 socket)喂给判定,否则「Core 还活着」根本无从得知")
+	// 判定必须吃到 Core 的控制 socket 那条观测。少了它,stoppedDiagnosis 只能拿
+	// Guardian 那一侧的证据说事 —— 而这正是本条守卫要挡的那个误判。
+	//
+	// Task 4 之前这条证据来自 `bx doctor --json` 的 status_socket 检查(一次 spawn);
+	// 现在是菜单自己拨 Core 的控制 socket。**观测的对象没变,转述者少了一层。**
+	if !strings.Contains(body, "probeCoreControlSocket()") {
+		t.Fatal("必须直接观测 Core 的控制 socket 并喂给判定,否则「Core 还活着」根本无从得知")
+	}
+	if !strings.Contains(body, "coreSocketAnswering:") {
+		t.Fatal("观测结果必须作为 coreSocketAnswering 进入判定 —— 判定的安全属性全建立在这条证据上")
 	}
 	if off := strings.Index(body, ".off(.serviceStopped)"); off < 0 || off < decision {
 		t.Fatal("`.off(.serviceStopped)` 只能作为 stoppedDiagnosis 的结论出现,不能在问它之前就返回")
 	}
-	// 旧写法是一串 `if check(report, …) { return … }`,顺序即判定、而且没有任何
-	// 测试盯着。留一条就够把判定悄悄搬回这里(main.swift 编不进 Swift 套件)。
-	if strings.Contains(body, "if check(report,") {
-		t.Fatal("diagnoseStopped 不得自己按 doctor 的检查排序做判定:那个顺序是安全属性,住在 StoppedDiagnosis.swift 由单测钉着")
+	// 旧写法是一串 `if <某条检查> { return … }`,顺序即判定、而且没有任何测试
+	// 盯着。留一条就够把判定悄悄搬回这里(main.swift 编不进 Swift 套件)。
+	for _, forbidden := range []string{"if core.answering", "if evidence."} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("diagnoseStopped 不得自己按观测结果排序做判定(%s):那个顺序是安全属性,住在 StoppedDiagnosis.swift 由单测钉着", forbidden)
+		}
 	}
 
 	// ── 结论 → BxState 的那一步映射,也必须钉住 ────────────────────────────
@@ -876,6 +906,141 @@ func TestMacMenuNeverReportsOffWhileTheCoreSocketAnswers(t *testing.T) {
 	for _, forbidden := range []string{".off(", ".setupNeeded("} {
 		if strings.Contains(prelude, forbidden) {
 			t.Errorf("问过 stoppedDiagnosis 之前不得构造 %s:任何「没在跑」的结论都必须先过 Core socket 那道关卡", forbidden)
+		}
+	}
+}
+
+// 动作路径必须**真去执行一次** CLI,而不是只 stat 一下。
+//
+// 「装了但跑不起来」(架构不符 / 文件损坏 / 被 Gatekeeper 隔离)是一档真实存在
+// 的失败,而 `FileManager.isExecutableFile` 一次 stat 答不了它 —— 只有真执行一次
+// 才能确知。Task 3 把 Setup 前的探测从 exec 降级成 stat,判定「安全」的依据是
+// **轮询路径上那次 `bx logs --help` 还在跑**,它会把这种机器兜成
+// `.updateNeeded("Update bx CLI")`(一个可操作的状态)。Task 4 删掉了那次探测
+// (能力改由 Guardian 声明),那道兜底随之消失 —— 所以真探测必须回到动作路径,
+// 也就是**真正要执行 CLI 的地方**,在弹授权框之前问一次。
+//
+// 这条守卫与 TestMacMenuPollingPathDoesNotSpawnTheCLI 是**一对**:一个说轮询路径
+// 一次都不许 spawn,一个说动作路径必须 spawn 一次。任何一边单独存在都会被下一个
+// 读者当成矛盾而删掉其中一条。
+func TestMacMenuActionPathProbesTheCLIByExecutingIt(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+
+	probe, ok := swiftFunctionBody(text, "private func cliRuns(")
+	if !ok {
+		t.Fatal("找不到 cliRuns —— 动作路径需要一次真正的 exec 探测," +
+			"stat 答不了「文件在、但一执行就失败」")
+	}
+	if !strings.Contains(swiftCodeOnly(probe), "runBx(") {
+		t.Fatal("cliRuns 必须真的执行 CLI:一次 stat 换不来「跑得起来」这个事实," +
+			"而那正是 `bx logs --help` 被删之后没人兜的那一档")
+	}
+
+	gate, ok := swiftFunctionBody(text, "private func ensureCLIUsable(")
+	if !ok {
+		t.Fatal("找不到 ensureCLIUsable —— 动作路径的前置检查应当收在一处")
+	}
+	gateCode := swiftCodeOnly(gate)
+	if !strings.Contains(gateCode, "cliIsInstalled()") || !strings.Contains(gateCode, "cliRuns()") {
+		t.Fatal("ensureCLIUsable 必须两问都问:「在不在」(stat)与「跑不跑得起来」(exec)。" +
+			"只问前者就是 Task 3 那个已知缺口,只问后者会把「没装」报成一个含糊的执行失败")
+	}
+	// showFailure 的按钮是 "Run Doctor",而 Run Doctor 要跑的正是这个跑不起来的
+	// 二进制 —— 把用户支到一个必然失败的动作上。
+	if strings.Contains(gateCode, "showFailure(") {
+		t.Fatal("ensureCLIUsable 不得用 showFailure:它的 Run Doctor 按钮要执行的正是这个跑不起来的 CLI")
+	}
+
+	// 每一条会 shell out 到 /usr/local/bin/bx 的动作,都必须先过这道闸门。
+	// (Install/Repair 走的是 bundle 里的 Contents/Resources/bx-cli,有它自己的
+	// isExecutableFile 前置检查,不在此列。)
+	for _, action := range []string{"private func setUpBx(", "private func updateBx("} {
+		body, ok := swiftFunctionBody(text, action)
+		if !ok {
+			t.Fatalf("找不到 %s", action)
+		}
+		if !strings.Contains(swiftCodeOnly(body), "ensureCLIUsable()") {
+			t.Errorf("%s 会去执行 %s,必须先过 ensureCLIUsable:让用户输完管理员密码才被告知「跑不起来」是最糟的顺序", action, "'\\(bxPath)'")
+		}
+	}
+}
+
+// 能力由 Guardian **声明**,不是由菜单去嗅探某个二进制。
+//
+// 这是本阶段架构诊断的核心症状之一:UI 解析 CLI 的帮助文本来做特性判断。它不仅
+// 丑,而且问错了对象 —— 被问的是 /usr/local/bin/bx(可能是旧版),而真正知道答案
+// 的是正在应答你的那个 Guardian。
+func TestMacMenuTakesCapabilitiesFromGuardianNotFromHelpText(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(source), "private func loadState(")
+	if !ok {
+		t.Fatal("找不到 loadState 的函数体")
+	}
+	code := swiftCodeOnly(body)
+	if !strings.Contains(code, "declaresDiagnosticsArchive(report.capabilities)") {
+		t.Fatal("loadState 必须按 Guardian 声明的 capabilities 判断能力(判据住在 StatusReport.swift,有单测)")
+	}
+	// 声明者就是应答者:能力判定必须在拿到 Guardian 的状态之后。放在之前,唯一
+	// 可能的数据来源就又变回「去问那个二进制」。
+	statusIndex := strings.Index(code, "guardianClient.status()")
+	capabilityIndex := strings.Index(code, "declaresDiagnosticsArchive(")
+	if statusIndex < 0 || capabilityIndex < statusIndex {
+		t.Fatal("能力判定必须在 guardianClient.status() 之后:声明它的就是应答你的那一个")
+	}
+
+	// Swift 侧的能力名与 Go 侧的常量必须逐字相同 —— 一边改名不会有编译错误,
+	// 只会让每一台机器都显示 Update Required。
+	swift, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "StatusReport.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("%q", guardian.CapabilityDiagnosticsArchive)
+	if !strings.Contains(string(swift), "let diagnosticsArchiveCapability = "+want) {
+		t.Fatalf("StatusReport.swift 的能力名必须与 guardian.CapabilityDiagnosticsArchive(%s)逐字一致", want)
+	}
+}
+
+// 菜单直接观测的两条路径,必须与 Go 侧的权威定义一致。
+//
+// 它们现在是**菜单自己**去 stat / 去拨的对象(此前由 `bx doctor` 代劳)。跨语言
+// 的字面量没有编译器把关:路径写错不会有任何构建错误,只会让 diagnoseStopped 在
+// 一台完全正常的机器上得出「什么都没在跑」。
+func TestMacMenuObservedPathsMatchTheGoDefinitions(t *testing.T) {
+	swift, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(swift)
+
+	// Core 的控制 socket:supervisor.SockPath 是权威(它是导出常量,直接比对)。
+	if runtime.GOOS == "darwin" {
+		if !strings.Contains(text, fmt.Sprintf("let coreControlSocketPath = %q", supervisor.SockPath)) {
+			t.Errorf("菜单拨的 Core 控制 socket 必须是 supervisor.SockPath(%s)", supervisor.SockPath)
+		}
+	}
+
+	// Guardian 的 launchd plist:install 里那两个常量不导出,故两边都按字面量钉,
+	// 并要求 install.go 里确实还写着它们 —— 任何一边改名,这条都会响。
+	installSource, err := os.ReadFile(filepath.Join("..", "install", "install.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/Library/LaunchDaemons/com.getbx.bx.plist",
+		"/Library/LaunchDaemons/com.ggshr9.bx.plist",
+	} {
+		if !strings.Contains(string(installSource), fmt.Sprintf("%q", path)) {
+			t.Errorf("internal/install/install.go 不再认识 %s —— 菜单的 stat 会跟着失准", path)
+		}
+		if !strings.Contains(text, fmt.Sprintf("%q", path)) {
+			t.Errorf("main.swift 必须 stat %s(install.UnitInstalled 在 darwin 上查的就是这两个)", path)
 		}
 	}
 }
@@ -4005,12 +4170,15 @@ func TestMacMenuAnomalyCountDrivesTheIcon(t *testing.T) {
 
 // `.updateNeeded` 画裂盾是**经过裁决保留**的,不是抄来的。
 //
-// 「CLI 太旧」与「流量可能没被保护」紧急程度不同,共用一个字形值得怀疑。四态固定,
-// 可选只有两个:空心盾(.off)会**断言**「没在保护」—— 而 `.updateNeeded` 这条路径
-// 在跑 `bx status --json` 之前就返回了,菜单对保护开没开一无所知,那是一句它无权
-// 说的话,还偏偏是四态里最安静最容易被忽略的一个;裂盾说的是「要看一眼」,而
-// 「指示灯读不到状态」正是要看一眼的事。紧急程度的差别由菜单正文承担(副标题
-// "Update Required"、状态行 "Update bx CLI")。
+// 「版本太旧」与「流量可能没被保护」紧急程度不同,共用一个字形值得怀疑。四态固定,
+// 可选只有两个:空心盾(.off)会**断言**「没在保护」,还偏偏是四态里最安静最容易被
+// 忽略的一个;裂盾说的是「要看一眼」,而这正是要看一眼的事。紧急程度的差别由菜单
+// 正文承担(副标题 "Update Required"、状态行 "Update bx")。
+//
+// Task 4 换掉了这条路径的来路:能力探测从 spawn `bx logs --help` 改成读 Guardian
+// `/v1/status` 里的 capabilities,于是 `.updateNeeded` 现在返回于**问过 Guardian
+// 之后**。裁决因此更硬:那一刻 Guardian 可能刚说完 protected,空心盾就不只是
+// 「一句无权说的话」,而是一句可被当场证伪的谎。
 //
 // 这条守卫不是防抖动,是**要求下一个想改它的人先读那段裁决**:改法本身没有编译
 // 错误、也没有别的测试会红。
@@ -4025,12 +4193,13 @@ func TestMacMenuUpdateNeededSharesTheAttentionGlyphDeliberately(t *testing.T) {
 	}
 	if !strings.Contains(body, "case .warning, .updateNeeded:") {
 		t.Fatal("`.updateNeeded` 的图标归属被改动了:先读 menuIconStateNow 里那段裁决——" +
-			"空心盾会断言「没在保护」,而这条路径在问 Guardian 的 /v1/status 之前就返回了,菜单无权那么说")
+			"空心盾会断言「没在保护」,而这条路径可能返回于 Guardian 刚说完 protected 之后")
 	}
 	// 裁决必须留在代码旁边。删掉理由、只留下这一行 case,下一个人就只看得到一个
-	// 看起来像是随手复用的分支。钉的是「理由点名了那个数据源」——数据源换过一次
-	// (bx status --json → Guardian /v1/status),换的时候这段理由必须跟着更新,
-	// 否则它会开始描述一个不存在的调用。
+	// 看起来像是随手复用的分支。钉的是「理由点名了那个数据源」——数据源换过两次
+	// (bx status --json → Guardian /v1/status;能力探测 bx logs --help → 同一个
+	// /v1/status),每次换的时候这段理由都必须跟着更新,否则它会开始描述一个
+	// 不存在的调用。
 	if !strings.Contains(body, "/v1/status") {
 		t.Fatal("共用裂盾的理由必须写在 menuIconStateNow 里(并点名当前的数据源),否则它读起来只是一次随手复用")
 	}

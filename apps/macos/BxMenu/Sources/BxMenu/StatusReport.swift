@@ -1,5 +1,24 @@
 import Foundation
 
+/// 菜单要求运行时具备的能力名,与 Go 侧 `guardian.CapabilityDiagnosticsArchive`
+/// 逐字对应(`bx logs --archive/--dir`,Run Doctor 的诊断包靠它)。
+let diagnosticsArchiveCapability = "diagnostics_archive"
+
+/// 运行时是否具备菜单要求的能力 —— 由 Guardian **声明**,不再靠解析
+/// `bx logs --help` 的帮助文本猜。
+///
+/// 三种输入必须分得开,而且都不能塌成同一个结果:
+///   · 声明了且包含  → 支持
+///   · 声明了但不含  → 不支持(这一版运行时确实没有这个能力)
+///   · **没声明过(nil)** → 也判不支持,但理由不同:能声明而没声明的只有本次
+///     契约之前的旧 Guardian,那本身就是「该升级了」。**刻意选 fail-safe 的那一
+///     边**:反过来(把「没说」当成「有」)会在真的缺能力时让 Run Doctor 收集
+///     不到诊断包,而那正是用户最需要它的时刻。
+func declaresDiagnosticsArchive(_ capabilities: [String]?) -> Bool {
+    guard let capabilities else { return false }
+    return capabilities.contains(diagnosticsArchiveCapability)
+}
+
 /// MenuProtectionVerdict 是「这份状态该让菜单显示什么」的判定。
 enum MenuProtectionVerdict: Equatable {
     /// 保护被用户主动关掉。菜单应显示 Off 并提供 Start Protection。

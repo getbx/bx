@@ -15,6 +15,7 @@ struct GuardianClientTests {
         try run("extreme deadline stays bounded", testExtremeTimeoutDoesNotOverflow)
         try run("parser bounds", testResponseBoundsAndContentType)
         try run("strict HTTP framing", testStrictHTTPFraming)
+        try run("update check round trip", testUpdateCheckRoundTrip)
     }
 
     private static func run(_ label: String, _ body: () throws -> Void) throws {
@@ -41,6 +42,28 @@ struct GuardianClientTests {
         let getRequest = try readRequest(get.serverFD)
         expect(getRequest.hasPrefix("GET /v1/recoveries/current HTTP/1.1\r\n"), "fixed GET path")
         expect(getRequest.hasSuffix("\r\n\r\n"), "GET has no request body")
+    }
+
+    /// `/v1/update-check` 走一次**真实的 socket 往返**。
+    ///
+    /// Task 2 留下的 minor 说得很准:一个只测枚举属性的端点,路径打错字要到运行
+    /// 时才炸。新端点不重复那次教训——路径、方法、无请求体、以及解码出来的四个
+    /// 字段,全部由这条断言钉住。
+    private static func testUpdateCheckRoundTrip() throws {
+        let body = #"{"current":"v0.1.0","latest":"v0.2.0","available":true,"verified":true}"#
+        let fixture = try fixtureClient(response: response(status: 200, body: body))
+        let check = try GuardianClient(connectSocket: { fixture.clientSocket }).updateCheck()
+        expect(check == UpdateCheck(current: "v0.1.0", latest: "v0.2.0", available: true, verified: true),
+               "update check decoded")
+        let request = try readRequest(fixture.serverFD)
+        expect(request.hasPrefix("GET /v1/update-check HTTP/1.1\r\n"), "fixed update-check path")
+        expect(request.hasSuffix("\r\n\r\n"), "update check has no request body")
+
+        // 503(Guardian 查不动)必须抛错,绝不能被解成一个「已是最新」的答案。
+        let failing = try fixtureClient(response: response(status: 503, body: #"{"error":"update check unavailable"}"#))
+        expectThrows("503 update check throws instead of answering") {
+            _ = try GuardianClient(connectSocket: { failing.clientSocket }).updateCheck()
+        }
     }
 
     private static func testResponseBoundsAndContentType() throws {

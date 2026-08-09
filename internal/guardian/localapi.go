@@ -46,6 +46,12 @@ type LocalAPIOptions struct {
 	// its own CLI subprocess. Nil means "not wired" — existing callers keep
 	// working with no Core field at all, not a zero-valued one.
 	CoreRuntime func(context.Context) (CoreRuntime, error)
+	// UpdateCheck, if set, backs GET /v1/update-check. It does network I/O
+	// (GitHub release lookup + signed manifest verification), which is why it
+	// is injected rather than implemented here: the code that knows how to do
+	// it lives in internal/cli, and Guardian must not grow a second copy.
+	// Nil means the endpoint answers 501 — "not wired" is not "no update".
+	UpdateCheck func(context.Context) (UpdateAvailability, error)
 }
 
 // coreRuntimeFetchTimeout bounds how long observableStatus waits on
@@ -53,6 +59,18 @@ type LocalAPIOptions struct {
 // the menu's only data source and gets polled at second-level frequency, so
 // an unreachable or slow Core must never stall the whole response.
 const coreRuntimeFetchTimeout = time.Second
+
+// updateCheckTimeout bounds the injected UpdateCheck provider. It talks to
+// GitHub, so it can be slow or hang outright; the endpoint must return either
+// an answer or a failure, never a stalled connection the menu waits on.
+const updateCheckTimeout = 20 * time.Second
+
+// updateCheckCacheTTL is how long a successful answer is reused. The menu asks
+// once a day, but nothing stops another peer from asking in a loop, and each
+// miss is outbound network I/O performed by a root daemon. Failures are
+// deliberately NOT cached: a transient network outage must not pin the answer
+// to "could not ask" for an hour.
+const updateCheckCacheTTL = time.Hour
 
 type peerCredentialsKey struct{}
 
@@ -108,6 +126,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	updateController, _ := controller.(UpdateController)
 	mux.HandleFunc("/v1/update", updateHandler(controller, updateController, mutations))
 	pathRecoveryController, _ := controller.(PathRecoveryController)
+	mux.HandleFunc("/v1/update-check", updateCheckHandler(newUpdateCheckCache(options.UpdateCheck), options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(controller, pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
 	recoveries, _ := controller.(recoveryLifecycle)
@@ -132,6 +151,10 @@ func applyVersionFields(status *Status, options LocalAPIOptions) {
 	if options.RuntimeVersion != nil {
 		status.RuntimeVersion = options.RuntimeVersion()
 	}
+	// 能力与版本同源:两者说的都是「正在应答你的这一版是什么」,所以在同一处
+	// 填、经同一批响应发布。它是编译期常量,不问任何外部进程 —— 这正是它取代
+	// `bx logs --help` 文本探测的理由。
+	status.Capabilities = GuardianCapabilities()
 }
 
 // statusWithVersions 是 mutation/migration handler 回给客户端的那份状态。
@@ -192,6 +215,88 @@ func attachCoreRuntime(status *Status, options LocalAPIOptions) {
 		runtime = CoreRuntime{Reachable: false}
 	}
 	status.Core = &runtime
+}
+
+// updateCheckCache serializes and caches the injected update-check provider.
+//
+// Serializing (one mutex held across the provider call) is not an optimisation:
+// it is what keeps N concurrent requests from becoming N concurrent outbound
+// HTTPS conversations started by a root daemon. The second caller either waits
+// and then reads the fresh cache entry, or — if the first call failed — makes
+// its own attempt.
+type updateCheckCache struct {
+	mu      sync.Mutex
+	check   func(context.Context) (UpdateAvailability, error)
+	value   UpdateAvailability
+	expires time.Time
+	now     func() time.Time
+}
+
+func newUpdateCheckCache(check func(context.Context) (UpdateAvailability, error)) *updateCheckCache {
+	return &updateCheckCache{check: check, now: time.Now}
+}
+
+// get returns the cached answer when it is still fresh, otherwise asks the
+// provider once. A failure is returned as-is and **not** cached: "could not
+// ask" is a momentary condition, and freezing it for an hour would turn one
+// flaky lookup into a day of silence.
+func (c *updateCheckCache) get(ctx context.Context) (UpdateAvailability, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.check == nil {
+		return UpdateAvailability{}, errUpdateCheckUnavailable
+	}
+	if !c.expires.IsZero() && c.now().Before(c.expires) {
+		return c.value, nil
+	}
+	value, err := c.check(ctx)
+	if err != nil {
+		return UpdateAvailability{}, err
+	}
+	c.value = value
+	c.expires = c.now().Add(updateCheckCacheTTL)
+	return value, nil
+}
+
+var errUpdateCheckUnavailable = errors.New("update check not wired")
+
+// updateCheckHandler serves GET /v1/update-check.
+//
+// **授权:与 /v1/recoveries 同款 authorizeOwnerPeer,不是 /v1/status 那样人人可读。**
+// payload 本身不敏感(版本号在 /v1/status 里早就有了),真正要挡的是**副作用**:
+// 这是本地 socket 上唯一一个「任一对端一句话就能让 root 守护进程发起出网请求」的
+// 端点。不设防等于给同机任何进程一个可反复触发的外连触发器(流量指纹、放大、
+// 以及把 Guardian 的出口暴露给一个不该能驱动它的调用方)。缓存 + 串行化把频率
+// 压住,授权把「谁可以驱动」限死 —— 两者都要,少一个都是靠另一个兜底。
+//
+// 失败一律 503 且**只说「问不出来」**:绝不退化成 `available:false`(那会被菜单
+// 读成「你已经是最新」,一个自信的错答案),也绝不把 provider 的原始错误串外传
+// (它含 URL 与网络细节,和其余 handler 的处置一致——完整错误只进 Guardian 日志)。
+func updateCheckHandler(cache *updateCheckCache, ownerUID uint32) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if !authorizeOwnerPeer(r.Context(), ownerUID) {
+			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "update check requires owner or root peer"})
+			return
+		}
+		if cache == nil || cache.check == nil {
+			writeGuardianJSON(w, http.StatusNotImplemented, map[string]string{"error": "update check unavailable"})
+			return
+		}
+		// WithoutCancel:一个客户端中途走开不该打断另一个客户端正在等的那次查询。
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), updateCheckTimeout)
+		defer cancel()
+		availability, err := cache.get(ctx)
+		if err != nil {
+			log.Printf("guardian_update_check_failed err=%v", err)
+			writeGuardianJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "update check unavailable"})
+			return
+		}
+		writeGuardianJSON(w, http.StatusOK, availability)
+	}
 }
 
 func recoveryRequestHandler(controller Controller, recovery PathRecoveryController, ownerUID uint32) http.HandlerFunc {

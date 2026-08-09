@@ -184,7 +184,14 @@ func updateFlags() []cli.Flag {
 }
 
 func httpGet(client *http.Client, url string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	return httpGetContext(context.Background(), client, url)
+}
+
+// httpGetContext 是 httpGet 的 ctx 版兄弟。Guardian 的 /v1/update-check 给这条
+// 查询套了 20 秒上限,而 http.Client.Timeout 只管单次请求、管不到调用方的截止
+// 时间;没有 ctx 就没法让那个上限真正生效(一次挂住的 TLS 握手会拖满整条链)。
+func httpGetContext(ctx context.Context, client *http.Client, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +201,11 @@ func httpGet(client *http.Client, url string) (*http.Response, error) {
 
 // latestReleaseTag 跟随 /releases/latest 跳转,从落地 URL 解析出最新 tag。
 func latestReleaseTag(client *http.Client) (string, error) {
-	resp, err := httpGet(client, repoReleasesLatest)
+	return latestReleaseTagContext(context.Background(), client)
+}
+
+func latestReleaseTagContext(ctx context.Context, client *http.Client) (string, error) {
+	resp, err := httpGetContext(ctx, client, repoReleasesLatest)
 	if err != nil {
 		return "", fmt.Errorf("查询最新版本: %w", err)
 	}
@@ -207,7 +218,11 @@ func latestReleaseTag(client *http.Client) (string, error) {
 }
 
 func downloadBytes(client *http.Client, url string) ([]byte, error) {
-	resp, err := httpGet(client, url)
+	return downloadBytesContext(context.Background(), client, url)
+}
+
+func downloadBytesContext(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	resp, err := httpGetContext(ctx, client, url)
 	if err != nil {
 		return nil, err
 	}
@@ -220,12 +235,16 @@ func downloadBytes(client *http.Client, url string) ([]byte, error) {
 }
 
 func verifiedReleaseManifest(client *http.Client, tag string) (updatepkg.Manifest, error) {
+	return verifiedReleaseManifestContext(context.Background(), client, tag)
+}
+
+func verifiedReleaseManifestContext(ctx context.Context, client *http.Client, tag string) (updatepkg.Manifest, error) {
 	base := fmt.Sprintf("%s/%s", repoReleaseDL, tag)
-	data, err := downloadBytes(client, base+"/"+updateManifestName)
+	data, err := downloadBytesContext(ctx, client, base+"/"+updateManifestName)
 	if err != nil {
 		return updatepkg.Manifest{}, fmt.Errorf("download update manifest: %w", err)
 	}
-	signature, err := downloadBytes(client, base+"/"+updateSignatureName)
+	signature, err := downloadBytesContext(ctx, client, base+"/"+updateSignatureName)
 	if err != nil {
 		return updatepkg.Manifest{}, fmt.Errorf("download update manifest signature: %w", err)
 	}
@@ -234,6 +253,45 @@ func verifiedReleaseManifest(client *http.Client, tag string) (updatepkg.Manifes
 		return updatepkg.Manifest{}, fmt.Errorf("verify update manifest: %w", err)
 	}
 	return manifest, nil
+}
+
+// guardianUpdateCheckClientTimeout 是这条查询自己的 HTTP 上限。它短于 Guardian 给
+// 整轮查询的 20 秒(updateCheckTimeout),两者叠加后先到期的仍是 ctx —— 这里的值
+// 只是防止一个没有 ctx 的调用路径将来把它跑成无限等待。
+const guardianUpdateCheckClientTimeout = 15 * time.Second
+
+// checkLatestReleaseAvailability 是 Guardian GET /v1/update-check 背后的取数函数。
+//
+// 它跑的是 `bx update --check --json` 那条完全相同的路径(latest tag → 下载并用
+// Ed25519 校验 manifest → newerAvailable),因为菜单此前问的就是那条命令;搬进
+// Guardian 只是换了**谁**去问,没有换问法。
+//
+// **失败一定要作为错误返回,不能就地降级成 Available:false。** 那会把「问不出来」
+// 编成一个自信的「你已经是最新」——错答案比没答案糟,而端点侧对错误的处置(503)
+// 恰好让菜单落回「不知道」,也就是不显示任何更新入口。
+func checkLatestReleaseAvailability(ctx context.Context) (guardian.UpdateAvailability, error) {
+	client := &http.Client{Timeout: guardianUpdateCheckClientTimeout}
+	tag, err := latestReleaseTagContext(ctx, client)
+	if err != nil {
+		return guardian.UpdateAvailability{}, err
+	}
+	if tag == "" {
+		return guardian.UpdateAvailability{}, fmt.Errorf("解析最新版本失败(仓库可能尚无 release)")
+	}
+	manifest, err := verifiedReleaseManifestContext(ctx, client, tag)
+	if err != nil {
+		return guardian.UpdateAvailability{}, err
+	}
+	current := version.Version
+	return guardian.UpdateAvailability{
+		Current:   current,
+		Latest:    manifest.Version,
+		Available: newerAvailable(current, manifest.Version),
+		// manifest 已经过 updatepkg.ParseAndVerify 的签名校验(校验不过上面就返回
+		// 错误了),所以走到这里 Verified 恒为 true —— 与 `bx update --check --json`
+		// 同一条依据。
+		Verified: true,
+	}, nil
 }
 
 func updateAction(c *cli.Context) error {

@@ -2,17 +2,6 @@ import AppKit
 import Darwin
 import Foundation
 
-struct DoctorReport: Decodable {
-    let checks: [DoctorCheck]
-}
-
-struct DoctorCheck: Decodable {
-    let name: String
-    let status: String
-    let detail: String?
-    let hint: String?
-}
-
 struct CommandResult {
     let code: Int32
     let stdout: String
@@ -31,6 +20,17 @@ enum BxState {
     /// 会弹一个意外的授权框,取消掉就换来一句「bx 还在跑」——而那时什么都没在跑。
     case off(OffOrigin)
 }
+
+/// Core 的控制 socket(`supervisor.SockPath`)。菜单只**拨**它、不说它的协议:
+/// 「socket 在应答」本身就是存活观测,与 internal/observe 同一条依据。
+let coreControlSocketPath = "/var/run/bx/core.sock"
+
+/// Guardian 的 launchd plist。与 `install.UnitInstalled()` 在 darwin 上查的两个
+/// 路径逐字一致(新旧标签各一)——drift 由 Go 侧守卫钉住。
+let guardianLaunchdPlistPaths = [
+    "/Library/LaunchDaemons/com.getbx.bx.plist",
+    "/Library/LaunchDaemons/com.ggshr9.bx.plist",
+]
 
 final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let bxPath = "/usr/local/bin/bx"
@@ -275,19 +275,20 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard cliUsable else {
                 return .missing("Install bx at /usr/local/bin/bx")
             }
-            if !cliSupportsDiagnosticsArchive() {
-                return .updateNeeded("Update bx CLI", version: runtimeVersion)
-            }
             let report: GuardianStatus
             do {
                 report = try guardianClient.status()
             } catch {
-                if case GuardianClientError.socket = error {
-                    // Guardian 的 socket 拨不通。「bx 没装」与「装了但没跑」在这里
-                    // 分不开,而分开它们今天只有 doctor 的 service_active 一条路
-                    // (那条 spawn 归 Task 4 收)。落到这里是**有意**的,不是漏网:
-                    // 控制 socket 不应答正是 diagnoseStopped 当初被写出来的场景。
-                    return diagnoseStopped(version: runtimeVersion, fallback: error.localizedDescription)
+                if case GuardianClientError.socket(let code) = error {
+                    // Guardian 的 socket 拨不通。「bx 没装」「装了但没跑」「还在但
+                    // 挂住了」三者要在这里分开,而分开它们靠的是菜单**自己的直接
+                    // 观测**(见 diagnoseStopped)——不是再 spawn 一个 CLI 转述,
+                    // 也不可能是 Guardian 的某个端点:能走到这一支的前提就是它不应答。
+                    return diagnoseStopped(
+                        guardianErrno: code,
+                        version: runtimeVersion,
+                        detail: error.localizedDescription
+                    )
                 }
                 // Guardian 应答了,只是答案读不动(协议损坏、解码失败)。这不是
                 // 「没跑」—— 拿 doctor 去问 launchd 只会得到一个误导性的 off,而
@@ -299,6 +300,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let banner = updatingBanner(phase: report.phase) {
                 recoverySnapshot = nil
                 return .warning(banner, version: runtimeVersion)
+            }
+            // 能力**由 Guardian 声明**,不再靠 spawn `bx logs --help` 去帮助文本里
+            // 找 flag。位置从「问 Guardian 之前」挪到了「问到之后」——这是数据源
+            // 改变的直接后果,不是顺手挪的:声明者就是应答者。放在 updatingBanner
+            // 之后,免得升级过程中(新旧两版交接)闪一次 Update Required。
+            //
+            // 键缺席也判「不支持」:能声明而没声明的只有本次契约之前的旧 Guardian,
+            // 那本身就是该升级了。判据住在 declaresDiagnosticsArchive(有单测)。
+            guard declaresDiagnosticsArchive(report.capabilities) else {
+                return .updateNeeded("Update bx", version: runtimeVersion)
             }
             // 版本号原先来自 `bx --version`(每次刷新一次 spawn)。改报「正在保护
             // 你的那个 bx」:Guardian 说的 Core 版本;Core 没跑时回落到盘上的
@@ -414,7 +425,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         //    伪装成一个自信的答案(internal/observe 的三态 Tristate、MenuRows 的
         //    .unknown 都是同一条原则)。
         // 紧急程度的差别由菜单正文承担:副标题是 "Update Required"、状态行是
-        // "Update bx CLI",与 .warning 的措辞完全不同。图标只负责「要不要看一眼」。
+        // "Update bx",与 .warning 的措辞完全不同。图标只负责「要不要看一眼」。
+        //
+        // Task 4 之后 `.updateNeeded` 的来路变了(能力探测从 spawn `bx logs --help`
+        // 改成读 Guardian `/v1/status` 里的 capabilities),它现在返回于**问过
+        // Guardian 之后**。裁决因此更硬而不是更软:那一刻 Guardian 可能刚说完
+        // `protected`,空心盾就不只是「一句无权说的话」,而是一句可被当场证伪的谎。
         case .warning, .updateNeeded:
             return .attention
         case .off, .setupNeeded, .missing, .notInstalled:
@@ -771,15 +787,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func setUpBx() {
-        // 这是「CLI 在不在」真正有意义的地方:下面那条 AppleScript 会去执行它,
-        // 而执行之前先弹一个授权框。轮询路径不再替这里探路(那是每几秒一次 spawn),
-        // 所以在**要用它的那一刻**问一次 —— 让用户输完密码才被告知「没装」是最糟
-        // 的顺序。用 showMessage 而不是 showFailure:后者的 Run Doctor 同样要跑
-        // 这个不存在的二进制。
-        guard cliIsInstalled() else {
-            showMessage("bx Not Found", "bx is not installed at \(bxPath). Install bx, then try again.")
-            return
-        }
+        // 这是「CLI 在不在、跑不跑得起来」真正有意义的地方:下面那条 AppleScript
+        // 会去执行它,而执行之前先弹一个授权框。轮询路径不再替这里探路(那是每几秒
+        // 一次 spawn),所以在**要用它的那一刻**问一次 —— 让用户输完密码才被告知
+        // 「没装」是最糟的顺序。`ensureCLIUsable` 里那次 `--version` 是本进程唯一
+        // 一次真去执行 CLI 的探测,它接手了 `bx logs --help` 被删之后留下的那一档:
+        // 文件在、却跑不起来。
+        guard ensureCLIUsable() else { return }
         guard let link = promptForClientLink() else { return }
         let command = "'\(bxPath)' setup \(shellSingleQuoted(link))"
         guard runPrivileged(command) else {
@@ -1010,6 +1024,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func updateBx() {
         guard menuUpdateActionTitle(check: updateCheck) != nil else { return }
+        // 同一条前置检查:这个动作也要 shell out 到 CLI(`bx update --json`),
+        // 而且它跑在一次授权框之后 —— 跑不起来的二进制不该先向用户要密码。
+        guard ensureCLIUsable() else { return }
         let alert = NSAlert()
         alert.messageText = updateConfirmTitle
         alert.informativeText = updateConfirmMessage
@@ -1287,40 +1304,65 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Guardian 的 socket 拨不通之后,拿 doctor 的观测判菜单该显示什么。
+    /// Guardian 的 socket 拨不通之后,拿**直接观测**判菜单该显示什么。
     ///
-    /// **判定本身住在 StoppedDiagnosis.swift(有单测)**,这里只负责取三条检查
-    /// 与落回 `BxState`。判定的要点是顺序:任何「没在跑」的结论都必须先证明
-    /// **Core** 的控制 socket 不应答 —— Guardian 不在不等于 Core 不在,而
+    /// 此前这里 spawn `bx doctor --json --skip-probe` 再从报告里挑三条检查。那次
+    /// spawn 已经删掉,**而且没有换成 Guardian 的端点**:能走到这个函数的前提就是
+    /// Guardian 不应答,同一个 socket 上再开一个端点照样答不了。CLI 当初替我们做的
+    /// 也只是 stat 一个 plist、拨一次 Core 的控制 socket ——菜单自己就能做,少一层
+    /// 可能是旧版的转述者(而那层正是这轮架构诊断要拆掉的东西)。
+    ///
+    /// **判定本身住在 StoppedDiagnosis.swift(有单测)**,这里只负责采集与落回
+    /// `BxState`。判定的要点是顺序:任何「没在跑」的结论都必须先证明 **Core** 的
+    /// 控制 socket 不应答 —— Guardian 不在不等于 Core 不在,而
     /// `.off(.serviceStopped)` 与 `.setupNeeded` 都会让 quitPlan 判
     /// terminateImmediately,在 Core 还活着时那就是「保护在跑但没有指示灯」。
-    private func diagnoseStopped(version: String?, fallback: String) -> BxState {
-        let doctor = runBx(["doctor", "--json", "--skip-probe"])
-        guard doctor.code == 0, let report = try? JSONDecoder().decode(DoctorReport.self, from: Data(doctor.stdout.utf8)) else {
-            let message = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
-            return .warning(message.isEmpty ? "Status unavailable" : message, version: version)
-        }
-        let socket = check(report, "status_socket")
+    private func diagnoseStopped(guardianErrno: Int32, version: String?, detail: String) -> BxState {
+        let core = probeCoreControlSocket()
         let diagnosis = stoppedDiagnosis(StoppedEvidence(
-            serviceInstalled: check(report, "service_installed")?.status,
-            serviceActive: check(report, "service_active")?.status,
-            coreSocket: socket?.status,
-            coreSocketDetail: socket?.detail
+            serviceInstalled: guardianUnitInstalled(),
+            guardianListening: socketObservation(connectErrno: guardianErrno),
+            coreSocketAnswering: core.answering,
+            coreSocketDetail: core.detail,
+            guardianDetail: nonEmpty(detail)
         ))
         switch diagnosis {
         case .setupNeeded:
             return .setupNeeded("Run sudo bx setup <client-link>")
         case .serviceStopped:
-            // 到这儿意味着两条新鲜的否定观测叠在一起:Core 的控制 socket 已被
-            // 证实不应答,doctor 又刚看到 launchd job 没装载。
+            // 到这儿意味着两条新鲜的否定观测叠在一起:Core 的控制 socket 与
+            // Guardian 的 socket **都**被内核明确告知没人在那儿。
             return .off(.serviceStopped)
         case .warning(let message):
             return .warning(message, version: version)
         }
     }
 
-    private func check(_ report: DoctorReport, _ name: String) -> DoctorCheck? {
-        report.checks.first { $0.name == name }
+    /// Guardian 的 launchd plist 在不在盘上 —— 一次 stat,`install.UnitInstalled()`
+    /// 在 darwin 上做的是同一件事(新旧两个标签任一存在即算装过)。
+    private func guardianUnitInstalled() -> Bool? {
+        guardianLaunchdPlistPaths.contains { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    /// 拨一次 Core 的控制 socket:应不应答,以及失败时的人话。
+    ///
+    /// 只 connect 再关掉,不发任何请求 —— 我们要的就是「有没有人在监听」这一个
+    /// 事实,而 `bx doctor` 的 status_socket 检查做的也正是这件事
+    /// (`net.DialTimeout` + `Close`)。判读住在 `socketObservation`(纯函数、有
+    /// 单测),这里只负责 syscall。
+    private func probeCoreControlSocket() -> (answering: Bool?, detail: String?) {
+        guard let failure = connectUnixSocket(path: coreControlSocketPath, timeout: 0.5) else {
+            return (true, nil)
+        }
+        return (
+            socketObservation(connectErrno: failure),
+            "\(coreControlSocketPath): \(String(cString: strerror(failure)))"
+        )
+    }
+
+    private func nonEmpty(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// CLI 装没装 —— 一次 stat,**不执行它**。
@@ -1340,18 +1382,47 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return decodeRuntimeVersion(data)
     }
 
-    private func cliSupportsDiagnosticsArchive() -> Bool {
-        let result = runBx(["logs", "--help"])
-        return result.code == 0 && result.stdout.contains("--archive") && result.stdout.contains("--dir")
+    /// 真·exec 探测:盘上那个二进制**跑不跑得起来**。
+    ///
+    /// `cliIsInstalled()` 那次 stat 答的是「在不在」;「架构不符 / 文件损坏 /
+    /// 被 Gatekeeper 隔离」这几种「在、但一执行就失败」只有**真去执行一次**才能
+    /// 知道。此前替所有人兜住这一档的是轮询路径上那次 `bx logs --help`;它已经
+    /// 被删(能力改由 Guardian 声明),所以探测必须回到**真正要执行 CLI 的地方**
+    /// ——那也是它唯一有意义的地方:在弹出授权框之前问,而不是每几秒问一次。
+    ///
+    /// `--version` 是最便宜且无副作用的一条:不碰配置、不碰网络、不碰路由。
+    private func cliRuns() -> Bool {
+        runBx(["--version"]).code == 0
     }
 
+    /// 动作路径的统一前置检查:CLI 在不在、跑不跑得起来。
+    /// 用 showMessage 而不是 showFailure —— 后者的 "Run Doctor" 要跑的正是这个
+    /// 跑不起来的二进制。
+    private func ensureCLIUsable() -> Bool {
+        guard cliIsInstalled() else {
+            showMessage("bx Not Found", "bx is not installed at \(bxPath). Install bx, then try again.")
+            return false
+        }
+        guard cliRuns() else {
+            showMessage(
+                "bx Can't Run",
+                "bx is installed at \(bxPath) but could not be started. Reinstall bx from Bx.app, then try again."
+            )
+            return false
+        }
+        return true
+    }
+
+    /// 有没有可装的新版 —— 问 Guardian(它代跑 `bx update --check` 那条路径),
+    /// 不再 spawn 那条命令。
+    ///
+    /// 失败一律落回 `nil` = **不知道**,也就是不显示更新入口;绝不把「问不出来」
+    /// 变成一个「有新版」或「已最新」的断言。Guardian 侧同样只在真拿到答案时才
+    /// 回 200(见 updateCheckHandler)。
     private func refreshUpdateCheck() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let result = self.runBx(["update", "--check", "--json"])
-            let check = result.code == 0
-                ? try? JSONDecoder().decode(UpdateCheck.self, from: Data(result.stdout.utf8))
-                : nil
+            let check = try? self.guardianClient.updateCheck()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.updateCheck = check
@@ -1399,6 +1470,53 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func shellSingleQuoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
+}
+
+/// 连一次 unix socket 就关掉。成功返回 nil,失败返回 errno。
+///
+/// 非阻塞 connect + poll:unix socket 的 connect 通常立刻返回,但 backlog 满时会
+/// 阻塞,而这条路径跑在 `refreshGate` 后面 —— 一次挂住就等于菜单**无声无息**停止
+/// 更新(runBx 那个死锁坑的同一课)。超时算作 ETIMEDOUT,由 `socketObservation`
+/// 判成「问不出来」而不是「不在」。
+func connectUnixSocket(path: String, timeout: TimeInterval) -> Int32? {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { return errno }
+    defer { close(fd) }
+    var address = sockaddr_un()
+    let bytes = Array(path.utf8CString)
+    guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else { return ENAMETOOLONG }
+    address.sun_family = sa_family_t(AF_UNIX)
+    withUnsafeMutablePointer(to: &address.sun_path) { destination in
+        destination.withMemoryRebound(to: CChar.self, capacity: bytes.count) { slot in
+            for index in bytes.indices {
+                slot[index] = bytes[index]
+            }
+        }
+    }
+    let length = socklen_t(MemoryLayout<sa_family_t>.size + bytes.count)
+    address.sun_len = UInt8(length)
+    let flags = fcntl(fd, F_GETFL)
+    guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { return errno }
+    let result = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.connect(fd, $0, length)
+        }
+    }
+    if result == 0 { return nil }
+    guard errno == EINPROGRESS else { return errno }
+    var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+    let milliseconds = Int32(max(1, ceil(timeout * 1_000)))
+    while true {
+        let ready = Darwin.poll(&descriptor, 1, milliseconds)
+        if ready < 0 && errno == EINTR { continue }
+        if ready == 0 { return ETIMEDOUT }
+        guard ready > 0 else { return errno }
+        break
+    }
+    var socketError: Int32 = 0
+    var size = socklen_t(MemoryLayout.size(ofValue: socketError))
+    guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &size) == 0 else { return errno }
+    return socketError == 0 ? nil : socketError
 }
 
 private extension NSMenu {
