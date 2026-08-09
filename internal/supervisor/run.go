@@ -480,6 +480,32 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if udpSwapper != nil {
 		mut.udpSwap = udpSwapper
 	}
+	// refreshServerBypass 重读配置、重算 bypass 集合并写进 mutator。
+	// 加**新**服务器后切过去时必须先调它:新服务器的 IP 不在启动时算好的集合里,
+	// 而没在集合里就意味着隧道自己连服务器的流量会被劫进 TUN(成环)。
+	refreshServerBypass := func() (bool, error) {
+		if opts.ConfigPath == "" {
+			return false, fmt.Errorf("未知配置路径,无法刷新 bypass")
+		}
+		raw, err := os.ReadFile(opts.ConfigPath)
+		if err != nil {
+			return false, fmt.Errorf("重读配置: %w", err)
+		}
+		fresh, err := config.Parse(raw)
+		if err != nil {
+			return false, fmt.Errorf("重读配置: %w", err)
+		}
+		_, addrs, err := resolveServerBypass(fresh)
+		if err != nil {
+			return false, err
+		}
+		next := mergeBypassCIDRs(addrsToCIDRs(addrs), tailscaleBootstrapBypassCIDRs(ctx, direct))
+		changed := !equalStringSets(mut.currentServerBypass(), next)
+		if changed {
+			mut.SetServerBypass(next)
+		}
+		return changed, nil
+	}
 	runtimeBypass := runtimeIPv4Bypass(serverAddrs)
 	runtimeState := func() RuntimeState {
 		udpRequired, udpReady := udpRuntimeReadiness(cfg.UDP.Mode, lt.Healthy, udpHealthy)
@@ -580,7 +606,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return nil
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControlWithPathRecovery(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, cancel, uint32(cfg.OwnerUID), recoverer)
+		return serveControlWithPathRecovery(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, refreshServerBypass, cancel, uint32(cfg.OwnerUID), recoverer)
 	})
 	if err != nil {
 		return err

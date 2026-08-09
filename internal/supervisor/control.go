@@ -57,10 +57,14 @@ type controlServer struct {
 	runtime      func() RuntimeState
 	mut          mutator
 	reload       func() error // 重读配置 rules 并热重建 router(不断隧道);可空
-	ownerUID     uint32
-	processPID   int
-	shutdown     func()
-	pathRecovery *pathRecoveryOperation
+	// refreshBypass 重读配置、重算 serverBypass 集合并写进 mutator,回报集合是否变了。
+	// 可为 nil = 该部署不支持刷新(如没有 ConfigPath),此时 /v0/server 只做配对切换、
+	// 不碰路由。
+	refreshBypass func() (changed bool, err error)
+	ownerUID      uint32
+	processPID    int
+	shutdown      func()
+	pathRecovery  *pathRecoveryOperation
 }
 
 func stateName(s confirm.State) string {
@@ -94,7 +98,13 @@ func newControlMuxWithPathRecovery(eng controlEngine, report func() stats.Report
 }
 
 func newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer) http.Handler {
-	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, ownerUID: ownerUID, processPID: processPID, shutdown: shutdown}
+	return newControlMuxFull(eng, report, runtime, mut, reload, nil, ownerUID, processPID, shutdown, recoverer)
+}
+
+// newControlMuxFull 是唯一真正构造 controlServer 的地方;上面几个包装只是历史调用点的
+// 便捷入口(refreshBypass 传 nil = 不支持刷新)。
+func newControlMuxFull(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, refreshBypass func() (bool, error), ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer) http.Handler {
+	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, refreshBypass: refreshBypass, ownerUID: ownerUID, processPID: processPID, shutdown: shutdown}
 	if recoverer != nil {
 		cs.pathRecovery = newPathRecoveryOperation(recoverer)
 	}
@@ -365,11 +375,36 @@ func (cs *controlServer) handleSetServer(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
 		return
 	}
-	apply, undo, merr := cs.mut.SetServer(req.Link, req.UDP)
+	changed := false
+	if cs.refreshBypass != nil {
+		var rerr error
+		changed, rerr = cs.refreshBypass()
+		if rerr != nil {
+			cs.mu.Unlock()
+			// 落实不了新服务器的 bypass 就绝不切过去。切过去 = 隧道自己的流量
+			// 被劫进 TUN = 成环,而成环是静默的(连得上、status 显绿、流量绕圈)。
+			writeJSON(w, http.StatusInternalServerError,
+				controlResponse{Status: "error", Error: "刷新 bypass 失败,已拒绝切换: " + rerr.Error()})
+			return
+		}
+	}
+	swapApply, swapUndo, merr := cs.mut.SetServer(req.Link, req.UDP)
 	if merr != nil {
 		cs.mu.Unlock()
 		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: merr.Error()})
 		return
+	}
+	apply, undo := swapApply, swapUndo
+	if changed {
+		// 顺序是硬要求:先把新服务器的 bypass 路由装上,再换传输。
+		// 反过来会在两步之间留下一个成环窗口。
+		rhApply, rhUndo, rerr := cs.mut.Rehijack()
+		if rerr != nil {
+			cs.mu.Unlock()
+			writeJSON(w, http.StatusInternalServerError, controlResponse{Status: "error", Error: rerr.Error()})
+			return
+		}
+		apply, undo = composeMutations(rhApply, rhUndo, swapApply, swapUndo)
 	}
 	armErr := cs.eng.Arm(apply, undo)
 	state := stateName(cs.eng.State())
@@ -426,10 +461,10 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // transportInfo(可空)返回当前活跃传输标签、容灾列表、UDP 专用传输标签,供 status 呈现;
 // active 动态(容灾后反映实际),list/udp 多为静态配置。
 func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, shutdown func(), ownerUID uint32) (io.Closer, error) {
-	return serveControlWithPathRecovery(ctx, c, t, server, mode, udpMode, transportInfo, runtime, eng, mut, reload, shutdown, ownerUID, nil)
+	return serveControlWithPathRecovery(ctx, c, t, server, mode, udpMode, transportInfo, runtime, eng, mut, reload, nil, shutdown, ownerUID, nil)
 }
 
-func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, shutdown func(), ownerUID uint32, recoverer pathRecoverer) (io.Closer, error) {
+func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, refreshBypass func() (bool, error), shutdown func(), ownerUID uint32, recoverer pathRecoverer) (io.Closer, error) {
 	guard := startNetworkGuard(ctx)
 	report := func() stats.Report {
 		ts := t.Stats()
@@ -465,7 +500,7 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler:           newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng, report, runtime, mut, reload, ownerUID, os.Getpid(), shutdown, recoverer),
+		Handler:           newControlMuxFull(eng, report, runtime, mut, reload, refreshBypass, ownerUID, os.Getpid(), shutdown, recoverer),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {

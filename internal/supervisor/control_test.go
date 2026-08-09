@@ -574,3 +574,119 @@ func TestSetServerRouteIsRegistered(t *testing.T) {
 		t.Fatal("/v0/server 没注册进 mux")
 	}
 }
+
+// recordingMutator 在 **apply 闭包里** 记录动作发生的顺序(不是方法体里 ——
+// mutator 的契约是方法本身无副作用,真实改动只发生在 apply 内)。
+type recordingMutator struct {
+	onRehijack  func()
+	onSetServer func()
+	rehijackErr error
+	setErr      error
+}
+
+func (r *recordingMutator) SetTransport(string) (func() error, func() error, error) {
+	return func() error { return nil }, func() error { return nil }, nil
+}
+
+func (r *recordingMutator) SetServer(string, string) (func() error, func() error, error) {
+	if r.setErr != nil {
+		return nil, nil, r.setErr
+	}
+	return func() error {
+		if r.onSetServer != nil {
+			r.onSetServer()
+		}
+		return nil
+	}, func() error { return nil }, nil
+}
+
+func (r *recordingMutator) Rehijack() (func() error, func() error, error) {
+	if r.rehijackErr != nil {
+		return nil, nil, r.rehijackErr
+	}
+	return func() error {
+		if r.onRehijack != nil {
+			r.onRehijack()
+		}
+		return nil
+	}, func() error { return nil }, nil
+}
+
+func (r *recordingMutator) Reconnect() error { return nil }
+
+// 先换传输再装路由 = 在新服务器的 bypass 还没落实的那一小段时间里,
+// 隧道自己的流量被劫进 TUN —— 成环。而成环是静默的:连得上、status 显绿。
+func TestSetServerRehijacksBeforeSwappingWhenBypassChanged(t *testing.T) {
+	var order []string
+	rec := &recordingMutator{
+		onRehijack:  func() { order = append(order, "rehijack") },
+		onSetServer: func() { order = append(order, "swap") },
+	}
+	cs := newTestControlServer(t, rec)
+	cs.refreshBypass = func() (bool, error) { return true, nil } // 集合变了
+
+	w := httptest.NewRecorder()
+	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server",
+		strings.NewReader(`{"link":"vless://new"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(order) != 2 || order[0] != "rehijack" || order[1] != "swap" {
+		t.Fatalf("必须先 rehijack 再换传输, got %v", order)
+	}
+}
+
+func TestSetServerSkipsRehijackWhenBypassUnchanged(t *testing.T) {
+	var order []string
+	rec := &recordingMutator{
+		onRehijack:  func() { order = append(order, "rehijack") },
+		onSetServer: func() { order = append(order, "swap") },
+	}
+	cs := newTestControlServer(t, rec)
+	cs.refreshBypass = func() (bool, error) { return false, nil } // 已知服务器之间切换
+
+	w := httptest.NewRecorder()
+	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server",
+		strings.NewReader(`{"link":"vless://known"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	// 已知服务器的 bypass 启动时就铺好了。此时重装路由是纯粹的风险:
+	// 它会重探网关、拆装真实路由,而这次切换根本不需要动路由。
+	if len(order) != 1 || order[0] != "swap" {
+		t.Fatalf("集合没变时不该重装路由, got %v", order)
+	}
+}
+
+func TestSetServerRefusesWhenBypassRefreshFails(t *testing.T) {
+	cs := newTestControlServer(t, &recordingMutator{})
+	cs.refreshBypass = func() (bool, error) { return false, errors.New("解析不了新服务器的 IP") }
+
+	w := httptest.NewRecorder()
+	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server",
+		strings.NewReader(`{"link":"vless://new"}`)))
+	if w.Code == http.StatusOK {
+		t.Fatal("bypass 刷新失败必须拒绝切换 —— 落实不了就绝不切过去,这是成环与不成环的分界")
+	}
+}
+
+// refreshBypass 可为 nil(该部署不支持刷新,如没有 ConfigPath):此时 /v0/server
+// 仍须正常做配对切换,只是不碰路由。既有测试构造的 controlServer 全是这种。
+func TestSetServerWorksWithoutBypassRefresh(t *testing.T) {
+	var order []string
+	rec := &recordingMutator{
+		onRehijack:  func() { order = append(order, "rehijack") },
+		onSetServer: func() { order = append(order, "swap") },
+	}
+	cs := newTestControlServer(t, rec) // refreshBypass 未设 = nil
+
+	w := httptest.NewRecorder()
+	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server",
+		strings.NewReader(`{"link":"vless://x"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(order) != 1 || order[0] != "swap" {
+		t.Fatalf("无刷新能力时只做配对切换, got %v", order)
+	}
+}
