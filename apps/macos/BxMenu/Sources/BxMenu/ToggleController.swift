@@ -102,10 +102,11 @@ enum QuitDisposition: Equatable {
 /// 断言「bx 还在跑 / 退出会让保护仍在运行却没有任何指示灯」—— 而那时**什么都
 /// 没在跑**。本项目的全部历史就是不让界面断言不成立的事。
 enum OffOrigin: Equatable {
-    /// `bx status --json` 跑通了,报告说保护是关的(`menuProtectionVerdict == .off`)。
-    /// Guardian 就在那儿应答 —— 这是一个**信念**,而且最长可能是 30 秒前采的。
+    /// Guardian 的 `/v1/status` 应答了,报告说保护是关的
+    /// (`menuProtectionVerdict == .off`)。Guardian 就在那儿应答 —— 这是一个
+    /// **信念**,而且最长可能是 30 秒前采的。
     case guardianResponding
-    /// `bx status --json` **失败**,随后 doctor 观测到 `service_active != ok`
+    /// Guardian 的 socket **拨不通**,随后 doctor 观测到 `service_active != ok`
     /// (launchd job 没装载)。同一次刷新里的**两条新鲜的否定观测**。
     case serviceStopped
 }
@@ -113,7 +114,7 @@ enum OffOrigin: Equatable {
 /// 菜单七态(`BxState`)的**种类**(去掉 payload),其中 `.off` 按来路分成两支,
 /// 故这里是八种。
 ///
-/// `BxState` 带着 `BxReport`/版本号等 payload 住在 main.swift 里,而 main.swift
+/// `BxState` 带着 `GuardianStatus`/版本号等 payload 住在 main.swift 里,而 main.swift
 /// 编不进 scripts/test-macos-menu.sh(它要 AppKit)。判定要可测就必须吃一个不带
 /// payload 的输入;main.swift 那边只剩一个逐 case 的映射,漏掉新 case 会被
 /// Swift 的穷尽性检查当场拦下。

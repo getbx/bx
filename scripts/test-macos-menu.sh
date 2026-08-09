@@ -38,6 +38,7 @@ run_test instance-gate \
 run_test status-report \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/StatusReport.swift" \
   "$MENU/Tests/StatusReportTests.swift"
 run_test install-presentation \
@@ -83,6 +84,7 @@ run_test menu-icon \
 run_test menu-rows \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/StatusReport.swift" \
   "$MENU/Sources/BxMenu/MenuRows.swift" \
   "$MENU/Tests/MenuRowsTests.swift"
