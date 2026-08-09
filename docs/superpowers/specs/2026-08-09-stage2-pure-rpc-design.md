@@ -12,24 +12,41 @@
 
 那么阶段②真正要解决的是什么?测绘给出了答案,而且比我原先写的更具体。
 
-## 真正的问题:停止路径会去安装和启动
+## 真正的问题(第二次更正:比测绘说的窄,但仍是真的)
 
-`cleanGuardianDown`(`internal/cli/guardian.go:446-457`)的第一件事是
-`ensureGuardianOwnership`(`:447`),而后者会:
+> **更正记录。** 本节初稿照测绘写成「`bx down` 的干净路径会安装并启动 Guardian」。
+> **在常规路径上这不成立**,读代码时被我采信得太快了:
+> `guardianEnableCommands(active=true, ready=true)` 返回 **nil**
+> (`internal/install/guardian_darwin.go:413-414`),而干净路径的前置条件正是
+> `guardianReady` 为真;plist 也因 `guardianInstalled()` 为真而不会被写。
+> 所以 `ensureGuardianOwnership` 在健康机器上是**空操作**。
+> 原作者是知道这条不变量的 —— `guardian.go:411-417` 的注释逐字写着「stop 必须永不
+> 依赖先成功 start」,并用 `guardianReady` 预检挡住了它。
 
-- 写 `/Library/LaunchDaemons/com.getbx.bx.guard.plist`(`guardian.go:665`)
-- `launchctl bootstrap` + `kickstart` 拉起 Guardian(`guardian.go:690`)
+去掉夸大之后,剩下两条是真的,而且都值得修。
 
-**然后**才发 `POST /v1/down`。
+### A. 停止会因为**与停止无关的工作**失败,并因此升级为强制拆除
 
-也就是说:**`bx down` 想停下保护,得先成功把 Guardian 装好并启动起来。** 这正面违反
-「停止永不依赖别的先成功」——那条不变量是 2026-08-04 那次用户 71 分钟关不掉保护换来的。
+`cleanGuardianDown` → `ensureGuardianOwnership` 在发 `POST /v1/down` **之前**还要:
 
-今天唯一挡着它的是 `:430` 那个 10 秒 socket 预检:socket 通了才走干净路径。但
-**「Guardian 可达」不等于「干净停止可行」**——`Manager.Down` 的第一句是
-`if m.recoveryBlocked { return errRecoveryIncomplete }`(`internal/guardian/manager.go:474-476`),
-而 `recoveryBlocked` 在启动恢复失败后会**永久为真**。于是:socket 应答、屏障被这次事务装上、
-事务永远失败。这条路径今天靠 `:435` 的回落兜住,而回落之前 `ensureGuardianOwnership` 已经跑过了。
+1. `deps.legacyLoaded()` —— shell 出去跑 `launchctl print` 查 legacy Core(`guardian.go:669`)
+2. legacy Core 真在跑时:`deps.migrationRequest(ctx, configPath)` —— **网关发现 + 读 Core
+   `/v0/runtime` + 解析 config + DNS 查询**(`guardian.go:676`,实现在 `:291-352`)
+3. 只剩孤儿 plist 时:`deps.removeLegacyUnit()`(`guardian.go:685`)
+
+**任何一步报错,`cleanGuardianDown` 就返回错误,于是升级成强制拆除。** 也就是说:
+一次「查 legacy Core 失败」或「网关发现失败」,会把一次本可以干净完成的停止,
+变成拆屏障、还原 DNS、写 desired=off 的重手术。
+
+停止不该关心有没有 legacy Core 要迁移 —— **那是 `up` 的工作**。
+
+### B. 空操作是巧合,不是契约
+
+`enableGuardian` 今天不做事,靠的是 `guardianEnableCommands` 里 `active && ready → nil`
+那一个分支。谁要是为了稳妥把它改成「总是 kickstart 一次」,`bx down` 就会在停止之前
+**重启守护进程**,而且没有任何测试会红。函数名叫 `ensureGuardianOwnership`,契约是
+「确保它装好并归我管」——**在停止路径上调用一个契约是「确保它起着」的函数,本身就是错的**,
+哪怕今天恰好没有后果。
 
 ## 第二个问题:逃生口没有自己的名字
 
