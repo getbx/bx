@@ -157,8 +157,12 @@ enum QuitPlan: Equatable {
 ///    而那里的 turnOff 是幂等的、几乎注定成功;万一失败,那次失败本身就是
 ///    「下面有东西不对劲」的证据 —— 恰恰是该保留指示灯的场合。→ turnOffFirst。
 /// ② `.offServiceStopped` 不是信念,是**同一次刷新里的两条新鲜否定观测**:
-///    `bx status --json` 没跑通(控制 socket 不应答),doctor 又刚刚看到 launchd
-///    job 没装载。这与 `.missing`/`.notInstalled`/`.setupNeeded` 属同一类证据 ——
+///    doctor 刚刚证实 **Core** 的控制 socket 不应答(`status_socket != ok`),
+///    且 launchd 说 Guardian 的 job 没装载。**两条缺一不可** —— Guardian 不在
+///    不等于 Core 不在(`bootout` 的 SIGTERM 不可靠地投给 Core),只凭后者就判
+///    off,就会在保护还开着时把指示灯连同保护一起「退出」掉;判定顺序因此住在
+///    StoppedDiagnosis.swift 由单测钉着。这与 `.missing`/`.notInstalled`/
+///    `.setupNeeded` 属同一类证据 ——
 ///    可以当场核实的事实,不是可能过时的信念。而那里 socket 关闭必然失败、只会
 ///    弹一个意外的授权框,用户一取消就换来一句不成立的「bx 还在跑」。
 ///    → terminateImmediately。
@@ -172,8 +176,8 @@ func quitPlan(state: MenuStateKind, inFlight: ToggleAction?) -> QuitPlan {
     case .connected, .warning, .offGuardianResponding:
         return .turnOffFirst
     case .updateNeeded:
-        // CLI 太旧 → 菜单在跑 `bx status --json` **之前**就返回了,它对保护开没开
-        // 一无所知。不知道就不能当成「没在跑」。
+        // CLI 太旧 → 菜单在问 Guardian 的 `/v1/status` **之前**就返回了,它对保护
+        // 开没开一无所知。不知道就不能当成「没在跑」。
         return .turnOffFirst
     case .setupNeeded, .missing, .notInstalled, .offServiceStopped:
         return .terminateImmediately

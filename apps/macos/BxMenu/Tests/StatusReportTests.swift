@@ -71,6 +71,16 @@ struct StatusReportTests {
         expect(neverAsked == .attention("Core status unavailable"),
                "没问过 Core 时应如实说状态未知,实际 \(neverAsked)")
 
+        // 键缺席同样是「不知道」。`tunnel_healthy` 没出现时判 "Tunnel unhealthy"
+        // 就是拿一个缺失的键造出一个自信的坏答案 —— 而它会让指示灯裂开、让用户
+        // 去排查一个 Guardian 从没说过的故障。
+        let partialCore = menuProtectionVerdict(makeStatus(protectionState: "protected", core: #"{"reachable":true}"#))
+        expect(partialCore != .healthy, "tunnel_healthy 缺席时不能说健康")
+        expect(partialCore != .attention("Tunnel unhealthy"),
+               "tunnel_healthy 缺席不是「隧道坏了」,实际 \(partialCore)")
+        expect(partialCore == .attention("Core status unavailable"),
+               "键缺席应归入「问不出来」,实际 \(partialCore)")
+
         // 隧道不健康仍是告警
         expect(menuProtectionVerdict(makeStatus(protectionState: "protected", core: reachable(tunnelHealthy: false)))
                == .attention("Tunnel unhealthy"), "隧道不健康 = 告警")

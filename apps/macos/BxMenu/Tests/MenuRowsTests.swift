@@ -79,6 +79,19 @@ struct MenuRowsTests {
         expect(row(unasked, "Route")?.mark == .unknown, "没问过 Core 时线路必须是 unknown")
         expect(unasked.anomalyCount == 0, "没问过不等于有异常,实际 \(unasked.anomalyCount)")
 
+        // Core 答了,但 Guardian 没给 tunnel_healthy/latency_ms:同样只是未观测。
+        // 拿缺席的键画一行 "Tunnel unhealthy ✗" 会让指示灯裂开在一个没人报告过
+        // 的故障上。
+        let partial = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"server":"vps","transport":"reality@vps"}}
+        """)
+        let thin = menuRows(status: partial, dns: "127.0.0.1")
+        expect(row(thin, "Route")?.mark == .ok, "在场的字段照常点亮")
+        expect(row(thin, "Latency")?.mark == .unknown,
+               "tunnel_healthy 缺席时延迟必须是 unknown,实际 \(String(describing: row(thin, "Latency")))")
+        expect(thin.anomalyCount == 0, "缺席的键不得被计成异常,实际 \(thin.anomalyCount)")
+
         // DNS 未知不是异常,只是未观测
         let noDNS = menuRows(status: healthy, dns: nil)
         expect(row(noDNS, "DNS")?.mark == .unknown, "DNS 取不到时应为 unknown 而非 bad")

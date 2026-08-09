@@ -50,10 +50,17 @@ func menuRows(status: GuardianStatus?, dns: String?) -> MenuRowSet {
             .compactMap { $0 }.first { !$0.isEmpty }
         rows.append(line.map { MenuRow(label: "Route", value: $0, mark: .ok) }
             ?? MenuRow(label: "Route", value: notObserved, mark: .unknown))
-        rows.append(MenuRow(
-            label: "Latency",
-            value: core.tunnelHealthy ? "\(core.latencyMS) ms" : "Tunnel unhealthy",
-            mark: core.tunnelHealthy ? .ok : .bad))
+        // 三档,不是两档:`tunnel_healthy` 缺席时 Guardian 没说过隧道好不好,
+        // 画一行 "Tunnel unhealthy ✗" 就是拿一个缺失的键造出一个坏答案。
+        switch core.tunnelHealthy {
+        case .some(true):
+            rows.append(core.latencyMS.map { MenuRow(label: "Latency", value: "\($0) ms", mark: .ok) }
+                ?? MenuRow(label: "Latency", value: notObserved, mark: .unknown))
+        case .some(false):
+            rows.append(MenuRow(label: "Latency", value: "Tunnel unhealthy", mark: .bad))
+        case .none:
+            rows.append(MenuRow(label: "Latency", value: notObserved, mark: .unknown))
+        }
     } else {
         rows.append(MenuRow(label: "Route", value: notObserved, mark: .unknown))
         rows.append(MenuRow(label: "Latency", value: notObserved, mark: .unknown))
@@ -80,6 +87,6 @@ func menuRows(status: GuardianStatus?, dns: String?) -> MenuRowSet {
 /// 只有**答过话的** Core 的统计才算数据。没问过(nil)与问了没答(reachable=false)
 /// 在这里一律归成「没有数据」——它们携带的全是零值,当真会画出一行撒谎的 ✗。
 private func answeringCore(_ status: GuardianStatus?) -> CoreRuntime? {
-    guard let core = status?.core, core.reachable else { return nil }
+    guard let core = status?.core, core.reachable == true else { return nil }
     return core
 }
