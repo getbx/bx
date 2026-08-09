@@ -72,6 +72,15 @@ type Options struct {
 	DNSListen       string        // 可选:本地 DNS 监听地址,如 127.0.0.1:53(macOS 系统 DNS 接入)
 	ConfigPath      string        // 可选:配置文件路径;非空则 /v0/reload 重读它热重建 router(bx direct/proxy 用)
 	NoHijack        bool          // 分步验证:起隧道+TUN+引擎但跳过 Hijack(不劫路由/不设 DNS/不装 WFP),系统网络零改动
+
+	// BuildTunnel 可选:替换建隧道的方式。nil = 生产默认(拉起 brook/sing-box 子进程)。
+	//
+	// 存在的理由是集成台要在 netns 里跑完整 Run() 而不发任何真实外网流量。这是本
+	// 代码库唯一一处「组装根可以被外部指定」的缝:2026-08-09 那一轮的两个 Critical
+	// 都住在 Run() 的接线里,而接线不可测正是它们能活到复审第三轮的原因。
+	//
+	// 非 nil 时**只**替换建隧道这一件事;平台、路由、DNS、屏障、控制面一律走生产代码。
+	BuildTunnel func(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error)
 }
 
 // tunHandle 是 OpenTUN 返回的设备句柄,交给 Hijack 配路由。
@@ -163,6 +172,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	buildTunnel := func(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error) {
 		buildTunnelMu.Lock()
 		defer buildTunnelMu.Unlock()
+		if opts.BuildTunnel != nil {
+			return opts.BuildTunnel(link, recoveryID, auxiliaryHTTP)
+		}
 		httpAddr, err := privateAuxiliaryAddr(cfg.HTTPProxy, auxiliaryHTTP)
 		if err != nil {
 			return nil, fmt.Errorf("分配传输私有 HTTP 监听: %w", err)
