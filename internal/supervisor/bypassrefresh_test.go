@@ -357,7 +357,7 @@ func testWiringParams(t *testing.T, configPath string) bypassWiringParams {
 // 屏障开口(RuntimeState.ServerBypass → BarrierContext.ServerBypass)是在
 // `/2` reject 屏障上**打洞**:每条都变成一条 `route add <ip>/32 <gateway>`。
 // 用户 hosts 覆盖的 IP 混进去 = 在断网窗口里给一个任意 IPv4 开了口子
-//(hosts: 接受任何 IPv4 字面量,不限内网)。
+// (hosts: 接受任何 IPv4 字面量,不限内网)。
 func TestWireBypassKeepsHostOverridesOutOfBarrierCarveOut(t *testing.T) {
 	p := testWiringParams(t, twoServerConfig(t))
 	// 与 run.go 一样:发布给 DNS 的静态表**已经**合并过用户 hosts 覆盖。
