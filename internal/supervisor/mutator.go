@@ -88,7 +88,7 @@ func (m *liveMutator) Reconnect() error {
 func (m *liveMutator) SetServerBypass(cidrs []string) {
 	if m.store != nil {
 		// 只换路由那一半,静态 DNS 保持原样(这条路径的调用方只知道 CIDR)。
-		m.store.set(cidrs, m.store.staticEntries())
+		m.store.set(cidrs, m.store.staticEntries(), m.store.serverAddrs())
 		return
 	}
 	m.mu.Lock()

@@ -159,7 +159,8 @@ func TestBypassRefreshRetainsKnownServerThatFailedThisRound(t *testing.T) {
 		map[string][]netip.Addr{
 			"tokyo.example":   {netip.MustParseAddr("2.2.2.2")},
 			"deleted.example": {netip.MustParseAddr("8.8.8.8")}, // 已从配置里删掉
-		})
+		},
+	)
 	refresh := newBypassRefresher(deps)
 
 	if _, err := refresh(context.Background(), nil); err != nil {
@@ -310,4 +311,29 @@ type failingResolver struct{}
 
 func (failingResolver) Resolve(context.Context, string) (netip.Addr, error) {
 	return netip.Addr{}, errors.New("resolver down")
+}
+
+// RuntimeState.ServerBypass 不是显示用的:它经 cli/guardian.go 变成 Guardian
+// 屏障的 BarrierContext.ServerBypass —— 屏障据此给服务器 IP 开口子。
+// 用启动时那份冻结拷贝,切过服务器之后屏障放行的是**旧**服务器,新的那台被堵死。
+func TestBypassRefreshUpdatesServerAddrsForRuntimeState(t *testing.T) {
+	deps := testRefresherDeps(t, twoServerConfig(t), staticResolver(map[string][]string{
+		"hk.example":    {"1.1.1.1"},
+		"tokyo.example": {"2.2.2.2"},
+		"new.example":   {"9.9.9.9"},
+	}))
+	deps.extraCIDRs = func() []string { return []string{"100.64.0.1/32"} }
+	refresh := newBypassRefresher(deps)
+
+	if _, err := refresh(context.Background(), []string{"vless://u@new.example:443"}); err != nil {
+		t.Fatal(err)
+	}
+	got := runtimeIPv4Bypass(deps.store.serverAddrs())
+	if !containsString(got, "9.9.9.9/32") {
+		t.Fatalf("屏障要放行的是当前这台服务器, got %v", got)
+	}
+	// tailscale 与用户 hosts 覆盖不属于「传输服务器」,不该混进屏障开口。
+	if containsString(got, "100.64.0.1/32") {
+		t.Fatalf("与传输服务器无关的旁路不该进 RuntimeState.ServerBypass, got %v", got)
+	}
 }

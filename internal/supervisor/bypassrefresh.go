@@ -14,7 +14,7 @@ import (
 
 // bypassRefreshDeps 是「切换前刷新 bypass」的全部外部依赖。
 // 抽成结构体是为了让这段逻辑**可测**:复审在它内部做过四处变异
-//(changed 恒 false、删掉写回、最后一跳把 requiredLinks 换成 nil、
+// (changed 恒 false、删掉写回、最后一跳把 requiredLinks 换成 nil、
 // WithTimeout 换 WithCancel),每一处都制造出静默成环,而当时整套测试全绿
 // —— 因为它是个捕获局部变量的闭包,没有任何测试能碰到它。
 type bypassRefreshDeps struct {
@@ -81,7 +81,7 @@ func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bo
 		// 它的流量绕开隧道)。「仍然写着」这一条由遍历范围天然保证 —— 只有
 		// 从 fresh 配置(和调用方点名)推出的主机才会被查到。
 		retain := d.store.staticEntries()
-		staticA, addrs, err := resolveServerBypassRetaining(fresh, requiredLinks, resolve, retain)
+		serverStatic, addrs, err := resolveServerBypassRetaining(fresh, requiredLinks, resolve, retain)
 		if err != nil {
 			return false, err
 		}
@@ -91,7 +91,7 @@ func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bo
 		if err != nil {
 			return false, fmt.Errorf("hosts 覆盖: %w", err)
 		}
-		staticA, _, ignored := mergeHostOverrides(staticA, userHosts)
+		staticA, _, ignored := mergeHostOverrides(serverStatic, userHosts)
 		for _, host := range ignored {
 			log.Printf("hosts_override_ignored host=%s reason=transport_server", host)
 		}
@@ -105,7 +105,8 @@ func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bo
 		// 两半一起发布,且**无论 changed 与否都发布**:路由集合可以没变而静态
 		// DNS 变了(同一台服务器换了 IP 之外的记录),漏发布就等于隧道子进程
 		// 仍拿旧答案。
-		d.store.set(next, staticA)
+		// addrs 只含传输服务器地址(合并用户 hosts 之前),屏障开口用的正是它。
+		d.store.set(next, staticA, addrs)
 		if d.setStaticA != nil {
 			d.setStaticA(staticA)
 		}
@@ -116,7 +117,7 @@ func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bo
 // dropFakeIPs 剔掉落在 fake-IP 段里的应答。
 //
 // 给一个 fake IP 装 bypass 路由永远是错的:真实服务器 IP 一次都没进过 bypass
-//(隧道连不上),而那条 /32 会一直留在集合里,之后任何一次 rehijack 都会把它
+// (隧道连不上),而那条 /32 会一直留在集合里,之后任何一次 rehijack 都会把它
 // 重新装上 —— 那个域名就此被黑洞。宁可当作「解析失败」拒绝切换。
 func dropFakeIPs(host string, addrs []netip.Addr, fakeip netip.Prefix) []netip.Addr {
 	var out []netip.Addr

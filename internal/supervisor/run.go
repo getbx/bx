@@ -505,7 +505,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		extraCIDRs: func() []string { return tailscaleBypass },
 		fakeipCIDR: cfg.DNS.FakeipCIDR,
 	})
-	runtimeBypass := runtimeIPv4Bypass(serverAddrs)
+	// 从共享集合现算,而不是启动时算一次冻在这里:RuntimeState.ServerBypass 经
+	// cli/guardian.go 变成 Guardian 屏障的 BarrierContext.ServerBypass —— 屏障据此
+	// 给服务器 IP 开口子。用旧值等于切过服务器之后屏障放行的还是旧那台,新的被堵死。
+	runtimeBypass := func() []string { return runtimeIPv4Bypass(bypassState.serverAddrs()) }
 	runtimeState := func() RuntimeState {
 		udpRequired, udpReady := udpRuntimeReadiness(cfg.UDP.Mode, lt.Healthy, udpHealthy)
 		return RuntimeState{
@@ -513,7 +516,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			PID:             os.Getpid(),
 			TunName:         tunH.Name,
 			SocksAddr:       lt.SocksAddr(),
-			ServerBypass:    append([]string(nil), runtimeBypass...),
+			ServerBypass:    runtimeBypass(),
 			TunnelHealthy:   lt.Healthy(),
 			DNSListening:    dnsListening,
 			RoutesInstalled: routes.ready(),
