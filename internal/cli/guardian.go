@@ -610,18 +610,16 @@ func macOSDownAction(c *urfavecli.Context) error {
 	)
 	if result.Forced {
 		stepDone("Guardian", "已强制停止 bx")
-		if result.Cause != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Guardian 正常关闭事务失败(%v),已改走强制停止。\n", result.Cause)
-		} else {
-			fmt.Fprintln(os.Stderr, "⚠️  Guardian 未响应,已改走强制停止。")
-		}
-		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
-		fmt.Println("已执行:记录关闭意图(不再开机自启)、请求 Core 退出(由它自己还原它装的路由)、停止 Guardian 服务、删除屏障阻断路由、还原系统 DNS。")
-		fmt.Println("请确认网络是否已恢复(例如 bx status 或打开任意网页);若仍不通,执行 sudo bx uninstall(会保留 /etc/bx 配置)。")
-		return nil
+	} else {
+		stepDone("Guardian", "bx 已停止,网络已恢复")
 	}
-	stepDone("Guardian", "bx 已停止,网络已恢复")
-	fmt.Println("✅ bx 已停止并取消开机自启。")
+	stdout, stderrLines := downReportLines(result)
+	for _, line := range stderrLines {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	for _, line := range stdout {
+		fmt.Println(line)
+	}
 	return nil
 }
 

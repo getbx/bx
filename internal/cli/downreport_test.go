@@ -1,0 +1,69 @@
+package cli
+
+import (
+	"strings"
+	"testing"
+)
+
+// 强制路径打印的这几行是用户在最坏时刻(保护关不掉、网络可能不通)看到的唯一指引。
+// 它今天零覆盖,而阶段② 要重排这段代码 —— 先钉住,重构才可能是安全的。
+func TestDownReportForcedPathTellsTheTruthAndGivesTheNextStep(t *testing.T) {
+	out, errLines := downReportLines(macOSDownResult{Forced: true})
+	joined := strings.Join(append(append([]string{}, out...), errLines...), "\n")
+
+	// ① 必须说清「走的是强制」,否则用户以为一切正常。
+	if !strings.Contains(joined, "强制") {
+		t.Errorf("强制路径必须让用户知道走的是强制:\n%s", joined)
+	}
+	// ② 必须逐条列出做过的动作。用户要凭它判断还差什么。
+	for _, action := range []string{"关闭意图", "Core", "Guardian", "屏障", "DNS"} {
+		if !strings.Contains(joined, action) {
+			t.Errorf("强制路径必须列出做过的动作,缺 %q:\n%s", action, joined)
+		}
+	}
+	// ③ **绝不能断言「网络已还原」。** 强制拆除是尽力而为,六步里任何一步都可能失败
+	//    而流程仍然继续 —— 断言已还原就是骗人,而被骗的人此刻可能正断着网。
+	if strings.Contains(joined, "网络已恢复") {
+		t.Errorf("强制路径不得断言网络已恢复(它做不到这个保证):\n%s", joined)
+	}
+	// ④ 必须给出下一步。
+	if !strings.Contains(joined, "bx uninstall") {
+		t.Errorf("强制路径必须给出仍不通时的下一步:\n%s", joined)
+	}
+}
+
+// 干净路径可以断言已恢复 —— Guardian 的事务成功返回才走到这里。
+func TestDownReportCleanPathMayAssertRecovery(t *testing.T) {
+	out, _ := downReportLines(macOSDownResult{})
+	joined := strings.Join(out, "\n")
+	if !strings.Contains(joined, "已停止") {
+		t.Errorf("干净路径要告诉用户已停止:\n%s", joined)
+	}
+	if strings.Contains(joined, "强制") {
+		t.Errorf("干净路径不该出现「强制」字样:\n%s", joined)
+	}
+}
+
+// 回落原因必须原样带给用户:它是唯一能说明「为什么没能干净停下」的东西。
+func TestDownReportCarriesTheCleanPathFailureCause(t *testing.T) {
+	_, errLines := downReportLines(macOSDownResult{Forced: true, Cause: errSentinelForReport})
+	joined := strings.Join(errLines, "\n")
+	if !strings.Contains(joined, errSentinelForReport.Error()) {
+		t.Errorf("回落原因必须出现在给用户的输出里:\n%s", joined)
+	}
+}
+
+// Cause 为 nil 表示 Guardian 压根没应答 —— 那也要说清楚,不能只说「失败了」。
+func TestDownReportSaysGuardianWasUnreachableWhenThereIsNoCause(t *testing.T) {
+	_, errLines := downReportLines(macOSDownResult{Forced: true})
+	joined := strings.Join(errLines, "\n")
+	if !strings.Contains(joined, "未响应") {
+		t.Errorf("没有 Cause 时要说明 Guardian 未响应:\n%s", joined)
+	}
+}
+
+var errSentinelForReport = errReportSentinel{}
+
+type errReportSentinel struct{}
+
+func (errReportSentinel) Error() string { return "recovery-incomplete-sentinel" }
