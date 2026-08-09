@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/socks5"
 	"github.com/getbx/bx/internal/tunnel"
 	"golang.org/x/sys/unix"
 )
@@ -39,9 +40,6 @@ const (
 	// harnessIsolatedEnv 非空即表示"本进程已经在台子的独立 namespace 里",
 	// 用来终止 re-exec 递归。
 	harnessIsolatedEnv = "BX_HARNESS_ISOLATED"
-	// harnessOuterNetnsEnv 由父进程写入外层 netns 的标识,子进程据此证明自己真的换了 ns
-	//(而不是 Cloneflags 被静默忽略之后照常在外面跑)。
-	harnessOuterNetnsEnv = "BX_HARNESS_OUTER_NETNS"
 
 	// 假上行:空 netns 里只有一个 down 的 lo,而 Hijack 要 defaultRoute() 探到默认网关,
 	// server bypass 路由也要 via 它。用 TEST-NET-3,与 TUN 的 TEST-NET-2、fake-IP 的
@@ -56,6 +54,19 @@ const (
 // runtimeMountPoint 是台子要盖 tmpfs 的那个目录,由 RuntimeDir 推导而非写死:
 // 运行期路径若哪天搬家,隔离必须跟着搬,否则台子会退回去动宿主真实的 /run/bx。
 var runtimeMountPoint = filepath.Dir(RuntimeDir)
+
+// isolatedNamespaces 是台子要求独占的那几种 namespace。
+//
+// **mnt 与 net 同等重要,不是陪衬**:少了 mnt,tmpfs 会盖在宿主真实的 /run 上,
+// control.go 的 os.Remove(SockPath) 删的就是宿主 bx 的控制 socket。
+var isolatedNamespaces = []string{"net", "mnt"}
+
+// harnessOuterNSEnv 是父进程用来传递外层 namespace 标识的环境变量名。
+// 子进程据此证明自己**真的**换了这套 namespace,而不是 Cloneflags 被静默忽略、
+// 或者有人手工设了 harnessIsolatedEnv 就让台子在宿主 namespace 里开工。
+func harnessOuterNSEnv(ns string) string {
+	return "BX_HARNESS_OUTER_" + strings.ToUpper(ns) + "NS"
+}
 
 // enterIsolatedNetns 让本测试在一套**整进程**独占的 net + mount namespace 里运行。
 //
@@ -92,21 +103,23 @@ func rerunInNewNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("定位测试二进制: %v", err)
 	}
-	outerNet, err := os.Readlink("/proc/self/ns/net")
-	if err != nil {
-		t.Fatalf("读当前 netns: %v", err)
+	env := append(os.Environ(), harnessIsolatedEnv+"=1")
+	for _, ns := range isolatedNamespaces {
+		id, err := os.Readlink("/proc/self/ns/" + ns)
+		if err != nil {
+			t.Fatalf("读当前 %s namespace: %v", ns, err)
+		}
+		env = append(env, harnessOuterNSEnv(ns)+"="+id)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), harnessChildTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe,
+	cmd := exec.CommandContext(
+		ctx, exe,
 		"-test.run", "^"+regexp.QuoteMeta(t.Name())+"$",
 		"-test.v",
 		"-test.count=1",
 	)
-	cmd.Env = append(os.Environ(),
-		harnessIsolatedEnv+"=1",
-		harnessOuterNetnsEnv+"="+outerNet,
-	)
+	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWNET | syscall.CLONE_NEWNS,
 		Pdeathsig:  syscall.SIGKILL, // 父进程被 go test 超时打死时,子进程不留下来占着 TUN
@@ -143,15 +156,27 @@ func prepareIsolatedNamespaces(t *testing.T) {
 	}
 	// /run 换成 tmpfs:SockPath 与 core.pid 就此落在一次性文件系统里,
 	// 宿主上正在跑的 bx 完全看不见,也不会被 control.go 的 os.Remove 掉。
-	// 挂载点得先存在(busybox 镜像里没有 /run);这一步已在私有 mount ns 内,不外泄。
-	if err := os.MkdirAll(runtimeMountPoint, 0o755); err != nil {
-		t.Fatalf("建 %s 挂载点: %v", runtimeMountPoint, err)
+	//
+	// 挂载点得先存在(busybox 镜像里没有 /run)。注意 **MS_PRIVATE 挡的是挂载传播,
+	// 不是文件写入** —— 新 mount namespace 看到的仍是同一个底层文件系统,这里 MkdirAll
+	// 建出来的目录是真的落在盘上的。故只在缺失时建,并在收尾时卸载 + 删掉,不留痕。
+	if _, err := os.Stat(runtimeMountPoint); os.IsNotExist(err) {
+		if err := os.MkdirAll(runtimeMountPoint, 0o755); err != nil {
+			t.Fatalf("建 %s 挂载点: %v", runtimeMountPoint, err)
+		}
+		t.Cleanup(func() {
+			_ = unix.Unmount(runtimeMountPoint, 0)
+			_ = os.Remove(runtimeMountPoint) // 只删我们建的那个空目录;非空/不存在都会失败而无害
+		})
 	}
 	if err := unix.Mount("tmpfs", runtimeMountPoint, "tmpfs", 0, ""); err != nil {
 		t.Fatalf("在 %s 挂 tmpfs: %v", runtimeMountPoint, err)
 	}
+	// 注意这条断言证明的是"台子看不见宿主的 socket",**不能**用来证明隔离生效
+	//(漏掉 CLONE_NEWNS 时它照样通过,因为 socket 是被自己的 tmpfs 盖住的)。
+	// 真正证明隔离的是上面的 assertProcessWideIsolation。
 	if _, err := os.Stat(SockPath); err == nil {
-		t.Fatalf("tmpfs 挂上之后 %s 仍然可见 —— 隔离没生效,再往下跑会夺走宿主 bx 的控制 socket", SockPath)
+		t.Fatalf("tmpfs 挂上之后 %s 仍然可见 —— 隔离没生效", SockPath)
 	}
 
 	mustIP(t, "link", "set", "lo", "up")
@@ -163,20 +188,36 @@ func prepareIsolatedNamespaces(t *testing.T) {
 	mustIP(t, "route", "add", "default", "via", harnessGateway, "dev", harnessUplinkDev)
 }
 
-// assertProcessWideIsolation 证明隔离是**整进程**的,不是某一个线程的。
-// 这条断言直接钉死上面注释里那个失败模式:线程级 unshare 下,本进程会有线程留在
-// 外层 namespace,而 Run() 的 goroutine 恰好就跑在那些线程上。
+// assertProcessWideIsolation 证明隔离**既真的换过**、又是**整进程**的。
+//
+// 两条缺一不可,而且对 net 和 mnt 都要查:
+//   - 换没换(与父进程传来的外层标识比):Cloneflags 少写一个、或者有人手工设了
+//     harnessIsolatedEnv 直接跑,进程会安安静静地留在宿主 namespace 里。少了 mnt 这半边,
+//     漏掉 CLONE_NEWNS 的台子会把 tmpfs 盖在**宿主真实的 /run** 上、把宿主 bx 的控制
+//     socket 删掉,然后报绿 —— 下面那条 os.Stat(SockPath) 的不可见断言此时**恰恰会通过**,
+//     因为 socket 正是被自己的 tmpfs 盖住/删掉的。
+//   - 是不是整进程(逐线程比):线程级 unshare 下本进程会有线程留在外层 namespace,
+//     而 Run() 的 goroutine 恰好就跑在那些线程上。
+//
+// 外层标识**缺席即 fatal**,不是"跳过这一条":缺席只可能发生在没有经过
+// rerunInNewNamespaces 的路径上,而那正是最需要拦住的情形。
 func assertProcessWideIsolation(t *testing.T) {
 	t.Helper()
-	for _, ns := range []string{"net", "mnt"} {
+	for _, ns := range isolatedNamespaces {
 		self, err := os.Readlink("/proc/self/ns/" + ns)
 		if err != nil {
 			t.Fatalf("读 %s namespace: %v", ns, err)
 		}
-		if ns == "net" {
-			if outer := os.Getenv(harnessOuterNetnsEnv); outer != "" && outer == self {
-				t.Fatalf("没有真的换 netns:仍在 %s", self)
-			}
+		outer := os.Getenv(harnessOuterNSEnv(ns))
+		if outer == "" {
+			t.Fatalf("缺少外层 %s namespace 标识(%s)—— 无从证明真的换过 namespace。"+
+				"本进程只该由 rerunInNewNamespaces 以子进程身份进到这里;手工设 %s 会让台子"+
+				"在**宿主**的 namespace 里挂 tmpfs、建 TUN、改路由。",
+				ns, harnessOuterNSEnv(ns), harnessIsolatedEnv)
+		}
+		if outer == self {
+			t.Fatalf("没有真的换 %s namespace:仍在 %s(Cloneflags 少了 CLONE_NEW%s?)",
+				ns, self, strings.ToUpper(ns))
 		}
 		entries, err := os.ReadDir("/proc/self/task")
 		if err != nil {
@@ -210,18 +251,61 @@ func ipOut(t *testing.T, args ...string) string {
 // 假隧道
 // ---------------------------------------------------------------------------
 
-// fakeTunnelBuilder 造一个可以直接塞进 Options.BuildTunnel 的建隧道函数:
-// 进程内 socks5 服务端 + 不拉子进程的 Runner + 立即健康。tunnel.New 本就是导出的,
-// 故台子不碰 internal/tunnel 的任何内部结构。
+// fakeTunnels 是台子那一侧的"传输工厂":进程内 socks5 服务端 + 不拉子进程的 Runner
+// + 立即健康,并**记下每一次被要求建的链接**。tunnel.New 本就是导出的,故台子不碰
+// internal/tunnel 的任何内部结构。
+//
+// 记链接不是为了好看:切服务器(/v0/server)之后"到底切到哪一台去了"只有这里知道 ——
+// 从外面看,健康的假隧道长得都一样。
+type fakeTunnels struct {
+	socksAddr string
+
+	mu       sync.Mutex
+	requests []fakeTunnelRequest
+}
+
+type fakeTunnelRequest struct {
+	Link          string
+	RecoveryID    string
+	AuxiliaryHTTP bool
+}
+
+func newFakeTunnels(t *testing.T) *fakeTunnels {
+	t.Helper()
+	return &fakeTunnels{socksAddr: startFakeSocks5(t)}
+}
+
+func (f *fakeTunnels) build(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error) {
+	f.mu.Lock()
+	f.requests = append(f.requests, fakeTunnelRequest{link, recoveryID, auxiliaryHTTP})
+	f.mu.Unlock()
+	return tunnel.New(
+		f.socksAddr,
+		func(string) (tunnel.Runner, error) { return newNoopRunner(), nil },
+		func(string) (int64, error) { return 1, nil },
+	), nil
+}
+
+// requests 返回至今为止的建隧道请求(按发生顺序)。
+func (f *fakeTunnels) snapshot() []fakeTunnelRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeTunnelRequest(nil), f.requests...)
+}
+
+// links 返回至今为止被要求建的链接(按发生顺序)。
+func (f *fakeTunnels) links() []string {
+	var out []string
+	for _, r := range f.snapshot() {
+		out = append(out, r.Link)
+	}
+	return out
+}
+
+// fakeTunnelBuilder 是 fakeTunnels 的薄封装,给不关心"建过哪些链接"的调用方用。
 func fakeTunnelBuilder(t *testing.T) func(string, string, bool) (*tunnel.Tunnel, error) {
 	t.Helper()
-	addr := startFakeSocks5(t)
-	return func(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error) {
-		return tunnel.New(addr,
-			func(string) (tunnel.Runner, error) { return newNoopRunner(), nil },
-			func(string) (int64, error) { return 1, nil },
-		), nil
-	}
+	return newFakeTunnels(t).build
 }
 
 // noopRunner 冒充传输子进程:Wait() 阻塞(真隧道进程也不会自己退出),Kill() 解除阻塞。
@@ -317,66 +401,129 @@ func serveFakeSocks5(c net.Conn) {
 // 起停 Run()
 // ---------------------------------------------------------------------------
 
-// twoServerHarnessConfig 是台子的基准配置。
+// harnessTunName 是台子建的 TUN 名字(= 生产默认值,不另起炉灶)。
+const harnessTunName = "bx0"
+
+// twoServerHarnessConfig 是台子的基准配置,**刻意用 servers:/current: 这一支**。
+//
+// 为什么不是 transports:(骨架初版用的就是那个,已改掉)——`bypassLinks` 有两条分支,
+// 语义并不相同:transports 那支把每条链接都标 Required、且没有"当前服务器"与 s.UDP 的
+// 概念;servers 那支只把 current 标 Required,UDP 伴随传输从 s.UDP 取。在 transports 上
+// 写的断言("每台配过的服务器都在 bypass 里")会在生产真正走的 servers 分支退化时
+// —— 漏掉非当前服务器、或漏掉 UDP 伴随 —— 继续绿着,而那正是静默成环本身。
+// 且 /v0/server 切服务器整条路径只在 servers 模型下才存在。
 //
 //   - global: true —— Run() 因此整段跳过 china 列表的准备(不下载、不读内嵌),
 //     启动路径里再没有任何需要联网或落大文件的事。
-//   - 两条 transports —— 走多传输那一支(runFailover 起来),并把"每一台服务器都要有
-//     bypass 路由"这条防环不变量摆到台子上。
+//   - 每台都带 udp: 伴随 —— 四条链接(2 台 × 主+UDP)全都该进 bypass。
 //   - 地址全用 IP 字面量 —— 启动路径一次 DNS 都不做(netns 里也没有 DNS 可用)。
 //
-// data_dir 由 startHarness 追加 t.TempDir()(常量里写不了)。
+// data_dir 由 startHarness 追加 t.TempDir()(常量里写不了),整份 YAML 会落到临时文件
+// 并经 Options.ConfigPath 交给 Run —— 少了它,/v0/server 会以
+// 「未知配置路径,无法刷新 bypass」直接 500,切服务器整条路根本走不到。
 const twoServerHarnessConfig = `global: true
+current: alpha
+servers:
+  - name: alpha
+    link: vless://u@203.0.113.10:443
+    udp: hysteria2://u@203.0.113.11:443
+  - name: beta
+    link: vless://u@203.0.113.12:443
+    udp: hysteria2://u@203.0.113.13:443
+`
+
+// failoverHarnessConfig 保住 transports: 那一支的覆盖(len(cfg.Transports)>1 才会
+// 启动 runFailover)。基准配置搬去 servers: 之后,没有它这条分支就再没人跑过。
+const failoverHarnessConfig = `global: true
 transports:
   - vless://u@203.0.113.10:443
-  - vless://u@203.0.113.11:443
+  - vless://u@203.0.113.12:443
 `
 
 type harness struct {
-	t        *testing.T
-	sockPath string
-	cancel   context.CancelFunc
-	done     chan error
-	stopOnce sync.Once
+	t          *testing.T
+	sockPath   string
+	configPath string
+	tunName    string
+	tunnels    *fakeTunnels
+	cancel     context.CancelFunc
+	done       chan error
+	stopOnce   sync.Once
 }
 
 // startHarness 用给定配置在当前(已隔离的)namespace 里跑起完整的 Run(),
-// 等到控制 socket 就绪才返回。
+// 等到**路由真的装好**才返回。
 func startHarness(t *testing.T, cfgYAML string) *harness {
 	t.Helper()
-	cfg, err := config.Parse([]byte(cfgYAML + "data_dir: " + t.TempDir() + "\n"))
+	full := cfgYAML + "data_dir: " + t.TempDir() + "\n"
+	cfg, err := config.Parse([]byte(full))
 	if err != nil {
 		t.Fatalf("解析台子配置: %v", err)
 	}
+	// 配置必须真的落盘:Run 的 ConfigPath 为空时 newBypassRefresher 直接短路,
+	// /v0/server 会以「未知配置路径,无法刷新 bypass」500 —— 切服务器整条路不可达。
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(full), 0o600); err != nil {
+		t.Fatalf("写台子配置文件: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &harness{t: t, sockPath: SockPath, cancel: cancel, done: make(chan error, 1)}
+	h := &harness{
+		t: t, sockPath: SockPath, configPath: configPath, tunName: harnessTunName,
+		tunnels: newFakeTunnels(t), cancel: cancel, done: make(chan error, 1),
+	}
 	opts := Options{
-		TunName:       "bx0",
+		TunName:       h.tunName,
 		TunAddr:       "198.51.100.1/30",
 		MTU:           1500,
 		Probe:         "203.0.113.10:443", // 假健康检查不看它;留真实形状便于读日志
 		HealthTimeout: 15 * time.Second,
-		BuildTunnel:   fakeTunnelBuilder(t),
+		ConfigPath:    configPath,
+		BuildTunnel:   h.tunnels.build,
 	}
 	go func() { h.done <- Run(ctx, cfg, opts) }()
 	t.Cleanup(h.stop)
 
-	// 控制 socket 是 Run() 走完建隧道 / 健康等待 / DNS / TUN / 引擎之后的第一个可观测里程碑。
-	deadline := time.Now().Add(60 * time.Second)
+	// 里程碑一:控制 socket。它在建隧道 / 等健康 / DNS / TUN / 引擎之后创建。
+	h.awaitStartup(t, 60*time.Second, func() (bool, string) {
+		_, err := os.Stat(h.sockPath)
+		return err == nil, "控制 socket " + h.sockPath + " 未出现"
+	})
+	// 里程碑二:路由真的装上了。**socket 早于 Hijack**,拿 socket 当"起好了"会让
+	// 后续断言撞上一个空的 table 100(实测两次同样的探针:一次空、一次满)。
+	// RoutesInstalled 由 Hijack 成功后紧接着的 routes.set(true) 置位,是唯一权威信号。
+	if !opts.NoHijack {
+		h.awaitStartup(t, 30*time.Second, func() (bool, string) {
+			state, err := FetchRuntimeState(h.sockPath)
+			if err != nil {
+				return false, "读运行期状态失败: " + err.Error()
+			}
+			return state.RoutesInstalled, "RoutesInstalled 仍为 false(Hijack 还没装完路由)"
+		})
+	}
+	return h
+}
+
+// awaitStartup 轮询一个启动里程碑,期间 Run() 一旦提前返回就立刻如实报出来
+// (而不是干等到超时,把根因埋掉)。
+func (h *harness) awaitStartup(t *testing.T, timeout time.Duration, ready func() (bool, string)) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var why string
 	for {
-		if _, err := os.Stat(h.sockPath); err == nil {
-			return h
+		var ok bool
+		if ok, why = ready(); ok {
+			return
 		}
 		select {
 		case runErr := <-h.done:
 			// Run() 已经返回,stop() 不必再等它 —— 否则 Fatalf 触发的 Cleanup 会挂死。
 			h.stopOnce.Do(func() {})
-			t.Fatalf("Run() 在控制 socket 就绪前就返回了: %v", runErr)
+			t.Fatalf("Run() 在启动完成前就返回了: %v(当时:%s)", runErr, why)
 		default:
 		}
 		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("等 %s 出现超时(60s)", h.sockPath)
+			h.cancel()
+			t.Fatalf("等启动里程碑超时(%s):%s", timeout, why)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -400,6 +547,55 @@ func (h *harness) stop() {
 }
 
 // ---------------------------------------------------------------------------
+// 还原基线
+// ---------------------------------------------------------------------------
+
+// harnessBaseline 是台子开工之前的内核状态。
+//
+// 只比 `ip rule list` 是不够的 —— 那是 **IPv4-only**,而且对设备、路由表内容、
+// 控制 socket 一个字都没说。实测:把 netConf.downSteps 的 `link del` 删掉、或者把
+// v6 那半段整个删掉,只比 v4 rule 的断言**照样全绿**,而 namespace 里留着一个 bx0、
+// 一条 `unreachable default` 在 table 100、以及一整套 v6 规则 —— 也就是 bx 退出之后
+// 全局 IPv6 仍然被黑洞掉。
+type harnessBaseline struct {
+	rules4 string
+	rules6 string
+}
+
+func captureBaseline(t *testing.T) harnessBaseline {
+	t.Helper()
+	return harnessBaseline{
+		rules4: ipOut(t, "rule", "list"),
+		rules6: ipOut(t, "-6", "rule", "list"),
+	}
+}
+
+// assertRestored 断言台子停掉之后,内核状态回到基线且不留任何残留。
+func (b harnessBaseline) assertRestored(t *testing.T, h *harness) {
+	t.Helper()
+	if after := ipOut(t, "rule", "list"); after != b.rules4 {
+		t.Errorf("v4 策略规则未干净还原:\n--- base ---\n%s\n--- after ---\n%s", b.rules4, after)
+	}
+	if after := ipOut(t, "-6", "rule", "list"); after != b.rules6 {
+		t.Errorf("v6 策略规则未干净还原(bx 退出后仍在黑洞 IPv6?):\n--- base ---\n%s\n--- after ---\n%s", b.rules6, after)
+	}
+	if links := ipOut(t, "link", "show"); strings.Contains(links, h.tunName) {
+		t.Errorf("TUN 设备 %s 未被移除:\n%s", h.tunName, links)
+	}
+	for _, args := range [][]string{
+		{"route", "show", "table", itoa(routeTable)},
+		{"-6", "route", "show", "table", itoa(routeTable)},
+	} {
+		if got := strings.TrimSpace(ipOut(t, args...)); got != "" {
+			t.Errorf("ip %s 未清空:\n%s", strings.Join(args, " "), got)
+		}
+	}
+	if _, err := os.Stat(h.sockPath); err == nil {
+		t.Errorf("控制 socket %s 未被删除", h.sockPath)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
@@ -409,15 +605,105 @@ func (h *harness) stop() {
 // 这一条是硬要求 —— 少了它,在开着 bx 的机器上跑一次台子就会夺走它的控制 socket。
 func TestHarnessStartsAndRestoresCleanly(t *testing.T) {
 	enterIsolatedNetns(t)
-	base := ipOut(t, "rule", "list")
+	base := captureBaseline(t)
 
 	h := startHarness(t, twoServerHarnessConfig)
 	if _, err := os.Stat(h.sockPath); err != nil {
 		t.Fatalf("控制 socket 应已就绪: %v", err)
 	}
-	h.stop()
-
-	if after := ipOut(t, "rule", "list"); after != base {
-		t.Fatalf("退出未干净还原:\n--- base ---\n%s\n--- after ---\n%s", base, after)
+	// startHarness 返回时路由必须已经装上(而不只是 socket 出现了)——
+	// 这条断言把那个"先到的里程碑"与"要的那个里程碑"之差钉死。
+	if got := ipOut(t, "route", "show", "table", itoa(routeTable)); !strings.Contains(got, "default") {
+		t.Fatalf("startHarness 返回时 table %d 里还没有 default(拿 socket 当起好了?):\n%s", routeTable, got)
 	}
+
+	h.stop()
+	base.assertRestored(t, h)
+}
+
+// 台子跑的是 servers:/current: 那一支,故"每一条配置过的链接都要有 bypass 路由"
+// 这条防环不变量在这里是**真的**被生产代码走过的(transports: 那支是另一套语义)。
+func TestHarnessRunsTheServersBranchWithEveryLinkBypassed(t *testing.T) {
+	enterIsolatedNetns(t)
+	base := captureBaseline(t)
+
+	h := startHarness(t, twoServerHarnessConfig)
+	table := ipOut(t, "route", "show", "table", itoa(routeTable))
+	for _, want := range []string{
+		"203.0.113.10", // alpha 主链接(current)
+		"203.0.113.11", // alpha 的 UDP 伴随
+		"203.0.113.12", // beta 主链接(非 current,但仍必须旁路)
+		"203.0.113.13", // beta 的 UDP 伴随
+	} {
+		if !strings.Contains(table, want) {
+			t.Errorf("服务器 %s 没有 bypass 路由(它的流量会落回 TUN = 成环):\n%s", want, table)
+		}
+	}
+	// 当前那台的主链接与 UDP 伴随都得真的被建成隧道。
+	links := h.tunnels.links()
+	for _, want := range []string{
+		"vless://u@203.0.113.10:443",
+		"hysteria2://u@203.0.113.11:443",
+	} {
+		if !slicesContains(links, want) {
+			t.Errorf("没有经注入缝建过 %q;建过的是 %v", want, links)
+		}
+	}
+
+	h.stop()
+	base.assertRestored(t, h)
+}
+
+// transports: 那一支(自动容灾)在基准配置搬去 servers: 之后仍要有人跑过。
+func TestHarnessAlsoStartsTheFailoverTransportsBranch(t *testing.T) {
+	enterIsolatedNetns(t)
+	base := captureBaseline(t)
+
+	h := startHarness(t, failoverHarnessConfig)
+	table := ipOut(t, "route", "show", "table", itoa(routeTable))
+	for _, want := range []string{"203.0.113.10", "203.0.113.12"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("容灾清单里的 %s 没有 bypass 路由:\n%s", want, table)
+		}
+	}
+
+	h.stop()
+	base.assertRestored(t, h)
+}
+
+// 假 socks5 服务端是台子唯一自己写的协议实现,而健康检查是个常量、永远不会去拨它 ——
+// 不专门拨一次,就没人证明过它真的会说 SOCKS5。这里用**生产的** socks5 客户端拨。
+func TestHarnessFakeSocks5SpeaksTheProtocol(t *testing.T) {
+	addr := startFakeSocks5(t)
+	d, err := socks5.NewDialer(addr, &net.Dialer{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("建 socks5 客户端: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := d.DialContext(ctx, "tcp", "203.0.113.99:443")
+	if err != nil {
+		t.Fatalf("经假 socks5 CONNECT: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("写: %v", err)
+	}
+	buf := make([]byte, 4)
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("读回显: %v", err)
+	}
+	if string(buf) != "ping" {
+		t.Fatalf("回显 = %q, want %q", buf, "ping")
+	}
+}
+
+func slicesContains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
