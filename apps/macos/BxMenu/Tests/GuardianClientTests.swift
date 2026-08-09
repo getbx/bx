@@ -16,6 +16,7 @@ struct GuardianClientTests {
         try run("parser bounds", testResponseBoundsAndContentType)
         try run("strict HTTP framing", testStrictHTTPFraming)
         try run("update check round trip", testUpdateCheckRoundTrip)
+        try run("status round trip", testStatusRoundTrip)
     }
 
     private static func run(_ label: String, _ body: () throws -> Void) throws {
@@ -63,6 +64,50 @@ struct GuardianClientTests {
         let failing = try fixtureClient(response: response(status: 503, body: #"{"error":"update check unavailable"}"#))
         expectThrows("503 update check throws instead of answering") {
             _ = try GuardianClient(connectSocket: { failing.clientSocket }).updateCheck()
+        }
+    }
+
+    /// `/v1/status` 走一次**真实的 socket 往返**。
+    ///
+    /// Task 2 记下的那条 minor 一直没还,而这一路下来它反而变成了整条分支里最该还
+    /// 的一条:`/v1/status` 现在是**菜单唯一的数据源**,它的路径字符串却是被测得
+    /// 最少的一根 —— 没有往返测试,也没有跨语言的钉子,打错一个字母不会有任何构建
+    /// 错误。
+    ///
+    /// 而失败的形状恰恰最坏:Guardian 的 mux 对未知路径回 **404 text/plain**,于是
+    /// `parseGuardianHTTPHead` 抛 `.contentType`,**不是 `.socket`** —— 而 loadState
+    /// 只有 `.socket` 那一支才落到 diagnoseStopped。结果是每一台机器都永久停在
+    /// `.warning("Status unreadable")`:黄灯、不给 Start Protection、也不给
+    /// 「没装 vs 装了没跑」的区分,且没有任何一台机器能自己走出来。
+    private static func testStatusRoundTrip() throws {
+        let body = #"""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",\#
+        "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":390},\#
+        "dns_state":"managed","dns_managed":true,"dns_service":"Wi-Fi",\#
+        "capabilities":["diagnostics_archive"]}
+        """#
+        let fixture = try fixtureClient(response: response(status: 200, body: body))
+        let status = try GuardianClient(connectSocket: { fixture.clientSocket }).status()
+        expect(status.protectionState == "protected", "status 解码出 protection_state")
+        expect(status.core?.latencyMS == 390, "status 解码出 Core 运行时统计")
+        expect(status.capabilities == ["diagnostics_archive"], "status 解码出 capabilities")
+        let request = try readRequest(fixture.serverFD)
+        expect(request.hasPrefix("GET /v1/status HTTP/1.1\r\n"), "fixed status path")
+        expect(request.hasSuffix("\r\n\r\n"), "status has no request body")
+
+        // 路径打错时 Guardian 的 mux 给的就是这个形状。断言它**抛错**只是次要的;
+        // 上面那条 hasPrefix 才是真正挡住打错字的那一条 —— 这里钉的是「一旦真打错,
+        // 得到的错误不是 .socket」,即 diagnoseStopped 那条自愈路径根本不会被走到。
+        let notFound = Data("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 19\r\n\r\n404 page not found\n".utf8)
+        let missing = try fixtureClient(response: notFound)
+        do {
+            _ = try GuardianClient(connectSocket: { missing.clientSocket }).status()
+            expect(false, "未知路径必须抛错")
+        } catch GuardianClientError.contentType {
+            // 如预期:**不是** .socket,所以 loadState 落到 "Status unreadable",
+            // 永远走不到 diagnoseStopped。这正是路径打错时的真实症状。
+        } catch {
+            expect(false, "未知路径应抛 .contentType(Guardian 的 404 是 text/plain),实际 \(error)")
         }
     }
 

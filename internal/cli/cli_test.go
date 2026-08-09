@@ -1107,6 +1107,46 @@ func TestMacMenuOldGuardianKeepsProtectionStateVisible(t *testing.T) {
 	}
 }
 
+// 菜单请求的每一条 Guardian 路径,都必须真的有人在服务。
+//
+// 这些字符串没有编译器把关,而 `/v1/status` 现在是菜单**唯一的数据源**。打错一个
+// 字母的后果不是「这次请求失败」:Guardian 的 mux 对未知路径回 404 **text/plain**
+// → `parseGuardianHTTPHead` 抛 `.contentType`,而 loadState 只有 `.socket` 那一支
+// 才落到 diagnoseStopped —— 于是每一台机器都永久停在 `.warning("Status unreadable")`,
+// 没有一台能自己走出来。
+//
+// Swift 侧另有一条真实 socket 往返(GuardianClientTests 的 status round trip)钉住
+// 请求行确实长成那样;这一条负责跨语言的另一半:那条路径在 Go 侧确实注册过。
+func TestMenuGuardianPathsAreServedByTheDaemon(t *testing.T) {
+	swift, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "GuardianClient.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	localAPI, err := os.ReadFile(filepath.Join("..", "..", "internal", "guardian", "localapi.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := map[string]bool{}
+	for _, match := range regexp.MustCompile(`mux\.HandleFunc\("([^"]+)"`).FindAllStringSubmatch(string(localAPI), -1) {
+		served[match[1]] = true
+	}
+	if len(served) == 0 {
+		t.Fatal("在 localapi.go 里一条 mux.HandleFunc 都没解析出来 —— 本守卫读不懂现在的代码," +
+			"请连同它一起重写(响亮失败,不是静默通过)")
+	}
+	requested := regexp.MustCompile(`(?m)^\s*path = "([^"]+)"`).FindAllStringSubmatch(string(swift), -1)
+	if len(requested) == 0 {
+		t.Fatal("在 GuardianClient.swift 里一条请求路径都没解析出来 —— 同上,请连同本守卫一起重写")
+	}
+	for _, match := range requested {
+		if !served[match[1]] {
+			t.Errorf("菜单请求 %s,而 Guardian 没有注册这条路由:未知路径的应答是 404 text/plain,"+
+				"在客户端表现为 .contentType 而不是 .socket —— 菜单会永久停在 \"Status unreadable\","+
+				"既不落到 diagnoseStopped,也没有任何一台机器能自己走出来", match[1])
+		}
+	}
+}
+
 // 菜单直接观测的两条路径,必须与 Go 侧的权威定义一致。
 //
 // 它们现在是**菜单自己**去 stat / 去拨的对象(此前由 `bx doctor` 代劳)。跨语言
