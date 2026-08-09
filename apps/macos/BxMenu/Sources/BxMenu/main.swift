@@ -406,7 +406,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // `.updateNeeded` 与 `.warning` **有意共用裂盾**,尽管「CLI 太旧」与
         // 「流量可能没被保护」是两件不同紧急程度的事。四态是固定的,可选只有两个:
         // ① 空心盾(.off):它**断言**「没在保护」。而 `.updateNeeded` 这条路径在
-        //    跑 `bx status --json` **之前**就返回了 —— 菜单对保护开没开一无所知,
+        //    问 Guardian 的 `/v1/status` **之前**就返回了 —— 菜单对保护开没开一无所知,
         //    画成「没在保护」是一句它无权说的话,而且是四态里最安静、最容易被
         //    忽略的一个,恰好把「指示灯已经不能再指示了」这件事藏起来。
         // ② 裂盾(.attention):它说的是「有事需要你看一眼」。旧 CLI 让菜单读不到
@@ -536,10 +536,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 只有答过话的 Core 才有延迟可报。`.connected` 本就要求 reachable
             // (menuProtectionVerdict 拦在前面),这里的兜底是为了不让类型上的
             // 可选性被一句 `!` 抹掉 —— 零值延迟比没有延迟更像谎话。
-            guard let core = report.core, core.reachable else {
+            guard let core = report.core, core.reachable == true, let latency = core.latencyMS else {
                 return "bx: Protected"
             }
-            return "bx: Protected, \(core.latencyMS) ms"
+            return "bx: Protected, \(latency) ms"
         case .warning(let message, _):
             return "bx: \(message)"
         case .updateNeeded:
@@ -1287,24 +1287,36 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Guardian 的 socket 拨不通之后,拿 doctor 的观测判菜单该显示什么。
+    ///
+    /// **判定本身住在 StoppedDiagnosis.swift(有单测)**,这里只负责取三条检查
+    /// 与落回 `BxState`。判定的要点是顺序:任何「没在跑」的结论都必须先证明
+    /// **Core** 的控制 socket 不应答 —— Guardian 不在不等于 Core 不在,而
+    /// `.off(.serviceStopped)` 与 `.setupNeeded` 都会让 quitPlan 判
+    /// terminateImmediately,在 Core 还活着时那就是「保护在跑但没有指示灯」。
     private func diagnoseStopped(version: String?, fallback: String) -> BxState {
         let doctor = runBx(["doctor", "--json", "--skip-probe"])
         guard doctor.code == 0, let report = try? JSONDecoder().decode(DoctorReport.self, from: Data(doctor.stdout.utf8)) else {
             let message = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
             return .warning(message.isEmpty ? "Status unavailable" : message, version: version)
         }
-        if check(report, "service_installed")?.status == "fail" {
+        let socket = check(report, "status_socket")
+        let diagnosis = stoppedDiagnosis(StoppedEvidence(
+            serviceInstalled: check(report, "service_installed")?.status,
+            serviceActive: check(report, "service_active")?.status,
+            coreSocket: socket?.status,
+            coreSocketDetail: socket?.detail
+        ))
+        switch diagnosis {
+        case .setupNeeded:
             return .setupNeeded("Run sudo bx setup <client-link>")
-        }
-        if check(report, "service_active")?.status != "ok" {
-            // 到这儿意味着两条新鲜的否定观测叠在一起:`bx status --json` 已经失败
-            // (控制 socket 不应答),doctor 又刚看到 launchd job 没装载。
+        case .serviceStopped:
+            // 到这儿意味着两条新鲜的否定观测叠在一起:Core 的控制 socket 已被
+            // 证实不应答,doctor 又刚看到 launchd job 没装载。
             return .off(.serviceStopped)
+        case .warning(let message):
+            return .warning(message, version: version)
         }
-        if let socket = check(report, "status_socket"), socket.status != "ok" {
-            return .warning(socket.detail ?? "Status socket unavailable", version: version)
-        }
-        return .warning("Needs attention", version: version)
     }
 
     private func check(_ report: DoctorReport, _ name: String) -> DoctorCheck? {

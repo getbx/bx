@@ -59,16 +59,24 @@ struct GuardianStatus: Decodable {
 
 /// Guardian 代取的 Core 运行时统计——`internal/guardian.CoreRuntime` 的镜像。
 ///
-/// `reachable`、`tunnelHealthy`、`latencyMS` 在 Go 侧没有 `omitempty`,`core` 对象
-/// 一旦存在就恒带这三个键,故按必需解码;`server`/`transport`/`udpMode` 有
-/// `omitempty`(空字符串即省略),按可选解码。
+/// **三个「必有」的键也按可选解码。** Go 侧今天没给 `reachable`/`tunnel_healthy`/
+/// `latency_ms` 加 `omitempty`,但那是**生产者当下的选择**,不是本结构体能依赖的
+/// 保证:哪天有人加上 `omitempty`,Go 侧的测试全都照样绿(它们 unmarshal 回同一个
+/// 结构体),而菜单会因为缺一个键就整份 `GuardianStatus` 解码失败 → 落到
+/// `.warning("Status unreadable")` —— 正是 2026-08-06 那个「bx down 后菜单变黄、
+/// 连 Start Protection 都没有」的失明 bug 换个层级重演。`Status.Core` 里那三个键
+/// 恒在场这件事改由 Go 侧一条对 marshal 结果的键存在性断言钉住(生产者自己的
+/// 契约由生产者守),这里则**在任何形状下都解得动**。
+///
+/// 缺席 ⇒ `nil` ⇒ 「不知道」,消费侧一律不得把它读成一个自信的答案:
+/// `tunnelHealthy == nil` 不是「隧道坏了」,`reachable == nil` 不是「Core 不在」。
 ///
 /// `reachable = false` 时 Go 侧承诺其余字段全为零值——这里不额外校验,只如实
 /// 解码;菜单侧判断健康与否必须先看 `reachable`,不能拿 `tunnelHealthy` 直接冒充。
 struct CoreRuntime: Decodable {
-    let reachable: Bool
-    let tunnelHealthy: Bool
-    let latencyMS: Int64
+    let reachable: Bool?
+    let tunnelHealthy: Bool?
+    let latencyMS: Int64?
     let server: String?
     let transport: String?
     let udpMode: String?
@@ -80,5 +88,15 @@ struct CoreRuntime: Decodable {
         case server
         case transport
         case udpMode = "udp_mode"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reachable = try container.decodeIfPresent(Bool.self, forKey: .reachable)
+        tunnelHealthy = try container.decodeIfPresent(Bool.self, forKey: .tunnelHealthy)
+        latencyMS = try container.decodeIfPresent(Int64.self, forKey: .latencyMS)
+        server = try container.decodeIfPresent(String.self, forKey: .server)
+        transport = try container.decodeIfPresent(String.self, forKey: .transport)
+        udpMode = try container.decodeIfPresent(String.self, forKey: .udpMode)
     }
 }

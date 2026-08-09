@@ -1561,3 +1561,43 @@ func TestStatusWithoutCoreRuntimeProviderOmitsIt(t *testing.T) {
 		t.Fatalf("未注入取数函数时不该有 Core 字段,实际 %+v", got.Core)
 	}
 }
+
+// CoreRuntime 的三个「必有」键必须真的出现在线上的 JSON 里。
+//
+// 菜单侧(apps/macos/BxMenu)把 reachable/tunnel_healthy/latency_ms 全按可选解码,
+// 依据是 Go 这边没给它们加 omitempty —— 但那个依据**本身没有测试守着**。上面几条
+// Task 1 的测试都是 Unmarshal 回同一个 Status 结构体,加了 omitempty 之后它们照样
+// 全绿:零值本来就是零值,谁也看不出键少了。而菜单那边少一个键就是整份状态解不动
+// (在它把可选化补上之前),即 2026-08-06「bx down 后菜单变黄、连 Start Protection
+// 都没有」那个失明 bug 换个层级重演。
+//
+// 所以这条断言看的是**序列化出来的键本身**,不是反序列化回来的值:三个键在 Core
+// 全零值时也必须在场。要给它们加 omitempty 的人,请先改菜单侧的语义,再改这里。
+func TestCoreRuntimeAlwaysMarshalsItsThreeAlwaysPresentKeys(t *testing.T) {
+	controller := &fakeController{status: Status{SchemaVersion: 1, Desired: DesiredOn}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(controller, LocalAPIOptions{
+		// 全零值的 Core:omitempty 若被加上,恰恰是这种响应会丢掉键。
+		CoreRuntime: func(context.Context) (CoreRuntime, error) { return CoreRuntime{}, nil },
+	}).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	var envelope struct {
+		Core map[string]json.RawMessage `json:"core"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Core == nil {
+		t.Fatal("注入了取数函数,core 对象必须在场")
+	}
+	for _, key := range []string{"reachable", "tunnel_healthy", "latency_ms"} {
+		if _, ok := envelope.Core[key]; !ok {
+			t.Errorf("core.%s 必须恒在场(不得加 omitempty):菜单据此区分「没问过」与「问了没答」,"+
+				"缺键会让它退回「不知道」而不是一个可信的答案。真要改,先改菜单侧的语义。", key)
+		}
+	}
+}

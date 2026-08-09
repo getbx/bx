@@ -44,13 +44,19 @@ func menuProtectionVerdict(_ status: GuardianStatus) -> MenuProtectionVerdict {
     //   `reachable == false` 问了,Core 没答。这才是「Core 不在」。
     // 二者都不得说成 healthy,也都不得说成「隧道不健康」:那是把「问不出来」压成
     // 「答案是坏的」,正是 internal/observe 的三态 Tristate 存在的理由。
-    guard let core = status.core else {
+    // 键缺席(`nil`)与 `false` 也是两回事:缺席是「Guardian 没说」,同样归入
+    // 「问不出来」那一档,绝不能当成一个自信的坏答案 —— 尤其 `tunnel_healthy`
+    // 缺席若被读成 false,就会凭空造出一句 "Tunnel unhealthy"。
+    guard let core = status.core, let reachable = core.reachable else {
         return .attention("Core status unavailable")
     }
-    if !core.reachable {
+    if !reachable {
         return .attention("Core unavailable")
     }
-    if !core.tunnelHealthy {
+    guard let tunnelHealthy = core.tunnelHealthy else {
+        return .attention("Core status unavailable")
+    }
+    if !tunnelHealthy {
         return .attention("Tunnel unhealthy")
     }
     return .healthy

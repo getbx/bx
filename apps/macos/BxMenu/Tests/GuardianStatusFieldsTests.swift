@@ -37,9 +37,9 @@ struct GuardianStatusFieldsTests {
             expect(status.dnsService == "Wi-Fi", "dnsService = \(String(describing: status.dnsService))")
             expect(status.coreVersion == "v0.3.1", "coreVersion = \(String(describing: status.coreVersion))")
             if let core = status.core {
-                expect(core.reachable == true, "core.reachable = \(core.reachable)")
-                expect(core.tunnelHealthy == true, "core.tunnelHealthy = \(core.tunnelHealthy)")
-                expect(core.latencyMS == 42, "core.latencyMS = \(core.latencyMS)")
+                expect(core.reachable == true, "core.reachable = \(String(describing: core.reachable))")
+                expect(core.tunnelHealthy == true, "core.tunnelHealthy = \(String(describing: core.tunnelHealthy))")
+                expect(core.latencyMS == 42, "core.latencyMS = \(String(describing: core.latencyMS))")
                 expect(core.server == "vps.example.com", "core.server = \(String(describing: core.server))")
                 expect(core.transport == "reality", "core.transport = \(String(describing: core.transport))")
                 expect(core.udpMode == "proxy", "core.udpMode = \(String(describing: core.udpMode))")
@@ -80,9 +80,9 @@ struct GuardianStatusFieldsTests {
         do {
             let status = try JSONDecoder().decode(GuardianStatus.self, from: unreachableBody)
             if let core = status.core {
-                expect(core.reachable == false, "core.reachable = \(core.reachable)")
-                expect(core.tunnelHealthy == false, "core.tunnelHealthy = \(core.tunnelHealthy)")
-                expect(core.latencyMS == 0, "core.latencyMS = \(core.latencyMS)")
+                expect(core.reachable == false, "core.reachable = \(String(describing: core.reachable))")
+                expect(core.tunnelHealthy == false, "core.tunnelHealthy = \(String(describing: core.tunnelHealthy))")
+                expect(core.latencyMS == 0, "core.latencyMS = \(String(describing: core.latencyMS))")
                 expect(core.server == nil, "core.server 应为 nil,实际 \(String(describing: core.server))")
                 expect(core.transport == nil, "core.transport 应为 nil,实际 \(String(describing: core.transport))")
                 expect(core.udpMode == nil, "core.udpMode 应为 nil,实际 \(String(describing: core.udpMode))")
@@ -96,7 +96,32 @@ struct GuardianStatusFieldsTests {
             expect(false, "core.reachable=false 时解码失败: \(error)")
         }
 
-        // 4) `.status` 端点走 GET /v1/status,期望 200,用短默认超时——
+        // 4) **键缺席也必须解得动。** Go 侧今天没给 reachable/tunnel_healthy/
+        //    latency_ms 加 omitempty,但那是生产者当下的选择:哪天加上,Go 的测试
+        //    照样全绿(它们 unmarshal 回同一个结构体),而菜单会因为缺一个键就整份
+        //    解码失败 → .warning("Status unreadable"),即 2026-08-06 那个失明 bug
+        //    换个层级重演。缺席 ⇒ nil ⇒ 「不知道」,绝不许被读成 false。
+        let partialCoreBody = Data("""
+        {"schema_version":1,"desired":"on","phase":"committed","protection_state":"protected",
+         "network_generation":"","recovery":{"recovery_id":"","state":"","stage":"",
+         "reason":"","attempt":0,"started_at":"2026-08-08T00:00:00Z","updated_at":"2026-08-08T00:00:00Z"},
+         "dns_state":"managed","dns_managed":true,
+         "core":{"reachable":true}}
+        """.utf8)
+        do {
+            let status = try JSONDecoder().decode(GuardianStatus.self, from: partialCoreBody)
+            guard let core = status.core else {
+                expect(false, "core 只带一个键时不该解成 nil")
+                exit(1)
+            }
+            expect(core.reachable == true, "在场的键照常读出")
+            expect(core.tunnelHealthy == nil, "tunnel_healthy 缺席 ⇒ nil(不知道),不得读成 false")
+            expect(core.latencyMS == nil, "latency_ms 缺席 ⇒ nil,不得读成 0")
+        } catch {
+            expect(false, "core 缺键时不该让整份状态解码失败: \(error)")
+        }
+
+        // 5) `.status` 端点走 GET /v1/status,期望 200,用短默认超时——
         //    与 currentRecovery 同档,不该套用 mutation 端点的长超时。
         expect(GuardianEndpoint.status.expectedStatus == 200, "status.expectedStatus = \(GuardianEndpoint.status.expectedStatus)")
         expect(GuardianEndpoint.status.timeout == GuardianEndpoint.currentRecovery.timeout, "status.timeout 应与 currentRecovery 同档")

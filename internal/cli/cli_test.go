@@ -716,12 +716,24 @@ func TestMacMenuDerivesDNSFromStatusJSONOnly(t *testing.T) {
 // Swift 测试转红,只会让每次刷新重新长出两个子进程。
 //
 // `doctor` / `update --check` / `logs --help` 三种 spawn 属 Task 4,本守卫不管。
+//
+// **禁令的范围刻意只到 `loadState` 的函数体,不是整个 main.swift。** 守的是
+// 「轮询路径不 spawn」,而不是「这个进程永远不执行 CLI」:Setup 那条动作路径
+// 本来就要执行它,「CLI 跑不跑得起来」也只有真去执行才能确知。整文件禁令会把
+// 动作路径上一次**正当**的 exec 探测一并封死 —— Task 3 正是因此把 Setup 前的
+// 探测降级成了一次 stat。**Task 4 收掉 `logs --help` 时必须把动作路径上真正的
+// exec 探测补回来**:今天「装了但跑不起来」还能被那次 `logs --help` 兜成
+// `.updateNeeded`,Task 4 之后就没人兜了。
 func TestMacMenuPollingPathDoesNotSpawnTheCLI(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
+	body, ok := swiftFunctionBody(text, "private func loadState(")
+	if !ok {
+		t.Fatal("找不到 loadState 的函数体")
+	}
 	for _, forbidden := range []struct{ literal, why string }{
 		{
 			literal: `runBx(["status"`,
@@ -729,18 +741,14 @@ func TestMacMenuPollingPathDoesNotSpawnTheCLI(t *testing.T) {
 		},
 		{
 			literal: `runBx(["--version"`,
-			why:     "版本与「CLI 能不能跑」都不该由轮询路径每几秒 spawn 一次去问 —— 前者 Guardian 直接给,后者只在真要执行 CLI 之前才有意义",
+			why:     "版本 Guardian 直接给;「CLI 能不能跑」只在真要执行 CLI 之前才有意义,不该每几秒 spawn 一次去问",
 		},
 	} {
-		if strings.Contains(text, forbidden.literal) {
-			t.Errorf("main.swift 不得在轮询路径 spawn %s:%s", forbidden.literal, forbidden.why)
+		if strings.Contains(body, forbidden.literal) {
+			t.Errorf("loadState 不得 spawn %s:%s", forbidden.literal, forbidden.why)
 		}
 	}
 
-	body, ok := swiftFunctionBody(text, "private func loadState(")
-	if !ok {
-		t.Fatal("找不到 loadState 的函数体")
-	}
 	if !strings.Contains(body, "guardianClient.status()") {
 		t.Fatal("loadState 必须向 Guardian 取状态:它是菜单唯一的数据源")
 	}
@@ -758,6 +766,49 @@ func TestMacMenuPollingPathDoesNotSpawnTheCLI(t *testing.T) {
 	}
 	if stopped < socket {
 		t.Fatal("diagnoseStopped 必须在「拨不通」那一支里,不能是所有失败的默认去处")
+	}
+}
+
+// Core 还在应答时,菜单绝不许说「没在跑」。
+//
+// 本任务把数据源换成 Guardian 之后,`diagnoseStopped` 的**触发条件变松了**:此前
+// `bx status --json` 有 Guardian 不可达的回落(`guardianStatusFallback`),Core 一
+// 应答 CLI 就成功,于是只有 Guardian 与 Core **双双**不可达才会走到这里;现在
+// Guardian socket 拨不通就够了。而 Guardian 不在**不等于** Core 不在 —— CLAUDE.md
+// 记着 `launchctl bootout` 的 SIGTERM 不可靠地投给 Core(强制拆除因此要另经
+// `/v0/shutdown` 关它),所以「Guardian job 没装载、Core 仍在转发流量」是真实可达的。
+//
+// 那时若判 `.off(.serviceStopped)`:灰盾 + "Not running" + "Start Protection",而
+// quitPlan 对 `.offServiceStopped`(以及 `.setupNeeded`)判 terminateImmediately
+// —— 用户点 Quit,菜单消失,路由与 DNS 原封不动。**保护在跑但没有任何指示灯**。
+//
+// 判定顺序住在 StoppedDiagnosis.swift(StoppedDiagnosisTests 逐条钉着);这条守卫
+// 只管 main.swift 的接线:它必须去问那个判定,而不是自己按 doctor 的检查排序。
+func TestMacMenuNeverReportsOffWhileTheCoreSocketAnswers(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(source), "private func diagnoseStopped(")
+	if !ok {
+		t.Fatal("找不到 diagnoseStopped 的函数体")
+	}
+	decision := strings.Index(body, "stoppedDiagnosis(")
+	if decision < 0 {
+		t.Fatal("diagnoseStopped 必须问 stoppedDiagnosis —— 顺序(先证明 Core socket 不应答,再谈 off)是安全属性,只有那里的单测盯得住")
+	}
+	// 判定必须吃到 Core 的控制 socket 那条检查。少了它,stoppedDiagnosis 只能拿
+	// launchd 对 Guardian job 的看法说事 —— 而这正是本条守卫要挡的那个误判。
+	if !strings.Contains(body, `check(report, "status_socket")`) {
+		t.Fatal("必须把 doctor 的 status_socket(Core 的控制 socket)喂给判定,否则「Core 还活着」根本无从得知")
+	}
+	if off := strings.Index(body, ".off(.serviceStopped)"); off < 0 || off < decision {
+		t.Fatal("`.off(.serviceStopped)` 只能作为 stoppedDiagnosis 的结论出现,不能在问它之前就返回")
+	}
+	// 旧写法是一串 `if check(report, …) { return … }`,顺序即判定、而且没有任何
+	// 测试盯着。留一条就够把判定悄悄搬回这里(main.swift 编不进 Swift 套件)。
+	if strings.Contains(body, "if check(report,") {
+		t.Fatal("diagnoseStopped 不得自己按 doctor 的检查排序做判定:那个顺序是安全属性,住在 StoppedDiagnosis.swift 由单测钉着")
 	}
 }
 
@@ -3867,12 +3918,14 @@ func TestMacMenuUpdateNeededSharesTheAttentionGlyphDeliberately(t *testing.T) {
 	}
 	if !strings.Contains(body, "case .warning, .updateNeeded:") {
 		t.Fatal("`.updateNeeded` 的图标归属被改动了:先读 menuIconStateNow 里那段裁决——" +
-			"空心盾会断言「没在保护」,而这条路径在跑 bx status --json 之前就返回了,菜单无权那么说")
+			"空心盾会断言「没在保护」,而这条路径在问 Guardian 的 /v1/status 之前就返回了,菜单无权那么说")
 	}
 	// 裁决必须留在代码旁边。删掉理由、只留下这一行 case,下一个人就只看得到一个
-	// 看起来像是随手复用的分支。
-	if !strings.Contains(body, "bx status --json") {
-		t.Fatal("共用裂盾的理由必须写在 menuIconStateNow 里,否则它读起来只是一次随手复用")
+	// 看起来像是随手复用的分支。钉的是「理由点名了那个数据源」——数据源换过一次
+	// (bx status --json → Guardian /v1/status),换的时候这段理由必须跟着更新,
+	// 否则它会开始描述一个不存在的调用。
+	if !strings.Contains(body, "/v1/status") {
+		t.Fatal("共用裂盾的理由必须写在 menuIconStateNow 里(并点名当前的数据源),否则它读起来只是一次随手复用")
 	}
 }
 
