@@ -2,6 +2,12 @@
 // fake 测、nopMutator 生产(A2)、真 impl 留硬件刀(run.go 捕获 tun0/teardown/plat/cfg)。
 package supervisor
 
+import (
+	"errors"
+	"fmt"
+	"sync"
+)
+
 // mutator:改动类操作的执行器。apply 执行改动;undo 语义回滚(路由还原另有 9a 快照网兜底)。
 // 约定:方法本身必须无副作用——只构造并返回 apply/undo 闭包,不做任何真实改动。
 // 真实改动发生在 apply 内部(由 engine.Arm 在 armed 状态下持有,commit 时执行)。
@@ -9,6 +15,7 @@ package supervisor
 // 因此任何在方法体内执行的改动都会绕过快照/undo 机制,且在 already-armed 路径上无法回滚。
 type mutator interface {
 	SetTransport(link string) (apply func() error, undo func() error, err error)
+	SetServer(link, udp string) (apply func() error, undo func() error, err error)
 	Rehijack() (apply func() error, undo func() error, err error)
 	Reconnect() error
 }
@@ -20,8 +27,11 @@ type nopMutator struct{}
 func nop() error { return nil }
 
 func (nopMutator) SetTransport(string) (func() error, func() error, error) { return nop, nop, nil }
-func (nopMutator) Rehijack() (func() error, func() error, error)           { return nop, nop, nil }
-func (nopMutator) Reconnect() error                                        { return nil }
+func (nopMutator) SetServer(string, string) (func() error, func() error, error) {
+	return nop, nop, nil
+}
+func (nopMutator) Rehijack() (func() error, func() error, error) { return nop, nop, nil }
+func (nopMutator) Reconnect() error                              { return nil }
 
 // rehijacker 是 liveMutator 对 platform 的窄依赖(只需路由-only 重落实)。
 // platform 接口的方法集 ⊇ rehijacker,故 run.go 的 plat 可直接赋值;
@@ -42,7 +52,9 @@ type linkSwapper interface {
 type liveMutator struct {
 	plat         rehijacker
 	swap         linkSwapper
+	udpSwap      linkSwapper // nil = 该配置没有 UDP 专用槽
 	tunH         tunHandle
+	mu           sync.Mutex
 	serverBypass []string
 	userBypass   []string
 	routes       *routeReadiness
@@ -68,13 +80,76 @@ func (m *liveMutator) Reconnect() error {
 	return m.swap.swapTo(m.swap.currentLink())
 }
 
+// SetServerBypass 更新 bypass 集合。加**新**服务器时新 IP 不在启动时算好的集合里,
+// 必须先更新再 Rehijack —— 顺序反了就等于没装,而没装就成环。
+func (m *liveMutator) SetServerBypass(cidrs []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.serverBypass = append([]string(nil), cidrs...)
+}
+
+func (m *liveMutator) currentServerBypass() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.serverBypass...)
+}
+
+// SetServer 换一台服务器 = 换一对链接。两个槽必须一起换成功或一起留在原地:
+// 半切状态(TCP 在 tokyo、UDP 还在 hk)是个合法配置,不报错、还能用,
+// 但出口不是用户以为的那台。
+//
+// udp 为空表示目标服务器没有 UDP 专用传输 —— 此时 UDP 槽跟随主传输,
+// 而不是留着上一台的(留着 = UDP 流量仍从上一台出去)。
+func (m *liveMutator) SetServer(link, udp string) (apply, undo func() error, err error) {
+	oldMain := m.swap.currentLink()
+	var oldUDP string
+	if m.udpSwap != nil {
+		oldUDP = m.udpSwap.currentLink()
+	}
+	targetUDP := udp
+	if targetUDP == "" {
+		targetUDP = link
+	}
+	apply = func() error {
+		if err := m.swap.swapTo(link); err != nil {
+			return fmt.Errorf("换主传输: %w", err)
+		}
+		if m.udpSwap == nil {
+			return nil
+		}
+		if err := m.udpSwap.swapTo(targetUDP); err != nil {
+			// 主传输已经换过去了。留着就是半切状态,故立刻换回。
+			if rerr := m.swap.swapTo(oldMain); rerr != nil {
+				return fmt.Errorf("换 UDP 传输失败(%w),回退主传输也失败(%v)——两个槽可能不一致", err, rerr)
+			}
+			return fmt.Errorf("换 UDP 传输: %w(主传输已换回 %s)", err, transportLabel(oldMain))
+		}
+		return nil
+	}
+	undo = func() error {
+		var errs []error
+		if m.swap.currentLink() != oldMain {
+			if err := m.swap.swapTo(oldMain); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if m.udpSwap != nil && m.udpSwap.currentLink() != oldUDP && oldUDP != "" {
+			if err := m.udpSwap.swapTo(oldUDP); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	}
+	return apply, undo, nil
+}
+
 // Rehijack 返回真 apply:在存活设备上重落实劫持路由(重探网关 + 拆旧路由 + 装新路由)。
 // 方法体无副作用(A2 契约):只构造闭包。undo 先悲观清 readiness;路由还原仍靠
 // engine.Arm 的 snapshotter.Restore(9a 快照网),未验证的还原不会重新宣称路由就绪。
 func (m *liveMutator) Rehijack() (apply, undo func() error, err error) {
 	apply = func() error {
 		m.setRoutesInstalled(false)
-		if err := m.plat.RehijackRoutes(m.tunH, m.serverBypass, m.userBypass); err != nil {
+		if err := m.plat.RehijackRoutes(m.tunH, m.currentServerBypass(), m.userBypass); err != nil {
 			return err
 		}
 		m.setRoutesInstalled(true)

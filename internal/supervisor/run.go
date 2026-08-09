@@ -500,6 +500,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		userBypass:   cfg.Bypass,
 		routes:       routes,
 	}
+	// 显式判断:*transportSwapper 的 nil 指针直接赋给 linkSwapper 接口会得到一个
+	// **非 nil 的接口**(typed nil),后面 m.udpSwap != nil 就成了永真,调用即 panic。
+	if udpSwapper != nil {
+		mut.udpSwap = udpSwapper
+	}
 	runtimeBypass := runtimeIPv4Bypass(serverAddrs)
 	runtimeState := func() RuntimeState {
 		udpRequired, udpReady := udpRuntimeReadiness(cfg.UDP.Mode, lt.Healthy, udpHealthy)

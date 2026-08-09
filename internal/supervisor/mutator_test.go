@@ -27,11 +27,12 @@ func TestNopMutator(t *testing.T) {
 }
 
 type fakePlatform struct {
-	rehijackCalls int
-	gotTun        tunHandle
-	gotServer     []string
-	gotUser       []string
-	rehijackErr   error
+	rehijackCalls    int
+	gotTun           tunHandle
+	gotServer        []string
+	gotUser          []string
+	rehijackErr      error
+	lastServerBypass []string
 }
 
 func (f *fakePlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
@@ -39,6 +40,7 @@ func (f *fakePlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []st
 	f.gotTun = t
 	f.gotServer = serverBypass
 	f.gotUser = userBypass
+	f.lastServerBypass = serverBypass
 	return f.rehijackErr
 }
 
