@@ -160,7 +160,7 @@ func TestLiveMutatorReadsSharedBypassStore(t *testing.T) {
 	store := newBypassStore([]string{"1.1.1.1/32"}, nil)
 	m := &liveMutator{plat: fp, store: store}
 
-	store.set([]string{"1.1.1.1/32", "2.2.2.2/32"}, nil)
+	store.set([]string{"1.1.1.1/32", "2.2.2.2/32"}, nil, nil)
 	apply, _, err := m.Rehijack()
 	if err != nil {
 		t.Fatal(err)

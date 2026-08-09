@@ -20,20 +20,41 @@ type bypassStore struct {
 	mu      sync.Mutex
 	bypass  []string
 	statics map[string][]netip.Addr
+	// servers 只是**传输服务器**那些地址(不含 tailscale 旁路、不含用户 hosts 覆盖)。
+	// 它经 RuntimeState.ServerBypass → cli/guardian.go → guardian 屏障的
+	// BarrierContext.ServerBypass:屏障据此给服务器 IP 开口子。混进无关网段会
+	// 把屏障开大,漏掉当前那台则会在屏障生效时把它堵死。
+	servers []netip.Addr
 }
 
 func newBypassStore(cidrs []string, statics map[string][]netip.Addr) *bypassStore {
 	s := &bypassStore{}
-	s.set(cidrs, statics)
+	s.set(cidrs, statics, staticAddrValues(statics))
 	return s
 }
 
-// set 一次替换两半。刻意不提供只改一半的入口:半边更新正是本类型要消灭的故障。
-func (s *bypassStore) set(cidrs []string, statics map[string][]netip.Addr) {
+// set 一次替换三份视图。刻意不提供只改一份的入口:半边更新正是本类型要消灭的故障。
+func (s *bypassStore) set(cidrs []string, statics map[string][]netip.Addr, servers []netip.Addr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.bypass = append([]string(nil), cidrs...)
 	s.statics = cloneStaticA(statics)
+	s.servers = append([]netip.Addr(nil), servers...)
+}
+
+// serverAddrs 返回传输服务器地址(供 RuntimeState / Guardian 屏障用)。
+func (s *bypassStore) serverAddrs() []netip.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]netip.Addr(nil), s.servers...)
+}
+
+func staticAddrValues(in map[string][]netip.Addr) []netip.Addr {
+	var out []netip.Addr
+	for _, addrs := range in {
+		out = append(out, addrs...)
+	}
+	return out
 }
 
 func (s *bypassStore) cidrs() []string {
