@@ -80,7 +80,12 @@ func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bo
 		// 随时可能切到它 = 成环);而用户删掉的服务器必须真的消失(留着 =
 		// 它的流量绕开隧道)。「仍然写着」这一条由遍历范围天然保证 —— 只有
 		// 从 fresh 配置(和调用方点名)推出的主机才会被查到。
-		retain := d.store.staticEntries()
+		//
+		// 基准取 serverEntries() 而**不是** staticEntries():后者含用户 `hosts:`
+		// 覆盖,一个先在 hosts 里、后来变成传输服务器的域名一旦这轮解析失败,
+		// 用户配的那个任意 IPv4 就会被「保留」成服务器地址,同时进静态表与
+		// Guardian 屏障开口 —— 而 mergeHostOverrides 在同一次刷新里正拒绝着它。
+		retain := d.store.serverEntries()
 		serverStatic, addrs, err := resolveServerBypassRetaining(fresh, requiredLinks, resolve, retain)
 		if err != nil {
 			return false, err
@@ -105,8 +110,9 @@ func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bo
 		// 两半一起发布,且**无论 changed 与否都发布**:路由集合可以没变而静态
 		// DNS 变了(同一台服务器换了 IP 之外的记录),漏发布就等于隧道子进程
 		// 仍拿旧答案。
-		// addrs 只含传输服务器地址(合并用户 hosts 之前),屏障开口用的正是它。
-		d.store.set(next, staticA, addrs)
+		// serverStatic 是合并用户 hosts **之前**的那一半,屏障开口与下一轮的
+		// 保留基准用的正是它。
+		d.store.set(next, staticA, serverStatic)
 		if d.setStaticA != nil {
 			d.setStaticA(staticA)
 		}
@@ -171,12 +177,12 @@ func resolveAll(ctx context.Context, r dialer.Resolver, host string) ([]netip.Ad
 // bypassWiringParams 是把 bypass 那套接起来所需的全部输入。
 type bypassWiringParams struct {
 	configPath string
-	// serverAddrs 是传输服务器地址,**合并用户 hosts 覆盖之前**的那份。
-	// 屏障开口用的正是它:混进 hosts 覆盖的 IP 等于在断网窗口里给一个任意 IPv4
-	// 打洞(hosts: 接受任何 IPv4 字面量,不限内网)。
-	serverAddrs []netip.Addr
+	// serverStatics 是传输服务器那一半的静态表,**合并用户 hosts 覆盖之前**的那份。
+	// 屏障开口与刷新的保留基准用的都是它:混进 hosts 覆盖的 IP 等于在断网窗口里
+	// 给一个任意 IPv4 打洞(hosts: 接受任何 IPv4 字面量,不限内网)。
+	serverStatics map[string][]netip.Addr
 	// staticA 是发布给 DNS 的静态表,**已经**合并过用户 hosts 覆盖。
-	// 它与 serverAddrs 刻意分开传:一个是「谁能穿过屏障」,一个是「谁有静态答案」,
+	// 它与 serverStatics 刻意分开传:一个是「谁能穿过屏障」,一个是「谁有静态答案」,
 	// 从后者推前者正是 a8c670f 引入的那个洞。
 	staticA    map[string][]netip.Addr
 	extraCIDRs []string
@@ -201,9 +207,9 @@ type bypassWiring struct {
 // 屏障开口混进用户 hosts 覆盖)**都是接线错误**,不是单元错误。
 func wireBypass(p bypassWiringParams) bypassWiring {
 	store := newBypassStore(
-		mergeBypassCIDRs(addrsToCIDRs(p.serverAddrs), p.extraCIDRs),
+		mergeBypassCIDRs(addrsToCIDRs(flattenServerAddrs(p.serverStatics)), p.extraCIDRs),
 		p.staticA,
-		p.serverAddrs,
+		p.serverStatics,
 	)
 	extra := append([]string(nil), p.extraCIDRs...)
 	refresh := newBypassRefresher(bypassRefreshDeps{
