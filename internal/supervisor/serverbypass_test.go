@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"net/netip"
 	"testing"
 
 	"github.com/getbx/bx/internal/config"
@@ -102,5 +103,87 @@ func TestLegacyUDPBypassStillGatedByProxyMode(t *testing.T) {
 		if l.Link == cfg.UDP.Transport {
 			t.Fatal("mode != proxy 时 udp.transport 不该进 bypass(它根本不会被挂载)")
 		}
+	}
+}
+
+// 下面这两条钉的是 bypassLinks 的 Required 在**解析**环节的兑现。
+// 这个分支此前一条测试都没有:它活在 run.go 的一个闭包里,要真发生一次 DNS 失败
+// 才走得到。把解析抽成 resolveServerBypass 并让 host 解析可注入之后,它才可测。
+
+// 非当前那台解析不了 = 跳过,启动照常。清单是会攒的,里面难免有退役的、
+// 换了 IP 的、DNS 偶尔抖的;用一台今天根本没在用的机器堵死整台电脑的保护
+// 是说不过去的。
+func TestResolveServerBypassSkipsUnresolvableNonCurrentServer(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.Server{
+			{Name: "hk", Link: "vless://u@hk.example:443"},
+			{Name: "tokyo", Link: "vless://u@tokyo.example:443"},
+		},
+		Current: "hk",
+	}
+	resolve := func(host string) []netip.Addr {
+		if host == "hk.example" {
+			return []netip.Addr{netip.MustParseAddr("1.1.1.1")}
+		}
+		return nil // tokyo 解析不了
+	}
+	staticA, addrs, err := resolveServerBypassWith(cfg, resolve)
+	if err != nil {
+		t.Fatalf("非当前那台解析不了不该连累启动: %v", err)
+	}
+	if _, ok := staticA["hk.example"]; !ok {
+		t.Fatalf("当前那台必须在静态表里, got %v", staticA)
+	}
+	if _, ok := staticA["tokyo.example"]; ok {
+		t.Fatalf("解析不了的那台不该进静态表(半装状态),got %v", staticA)
+	}
+	if len(addrs) != 1 || addrs[0] != netip.MustParseAddr("1.1.1.1") {
+		t.Fatalf("只该有当前那台的地址, got %v", addrs)
+	}
+}
+
+// 当前那台解析不了就必须拒绝启动:它的 IP 进不了 bypass,隧道自己连服务器的
+// 流量就会被劫进 TUN —— 成环,而且是静默的(连得上、status 显绿、流量绕圈)。
+func TestResolveServerBypassFailsWhenCurrentServerUnresolvable(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.Server{
+			{Name: "hk", Link: "vless://u@hk.example:443"},
+			{Name: "tokyo", Link: "vless://u@tokyo.example:443"},
+		},
+		Current: "hk",
+	}
+	resolve := func(host string) []netip.Addr {
+		if host == "tokyo.example" {
+			return []netip.Addr{netip.MustParseAddr("2.2.2.2")}
+		}
+		return nil // 当前那台(hk)解析不了
+	}
+	if _, _, err := resolveServerBypassWith(cfg, resolve); err == nil {
+		t.Fatal("当前那台解析不了必须报错 —— 它不在 bypass 里就是成环")
+	}
+}
+
+func TestResolveServerBypassFailsWhenNothingResolves(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.Server{{Name: "hk", Link: "vless://u@hk.example:443"}},
+		Current: "hk",
+	}
+	if _, _, err := resolveServerBypassWith(cfg, func(string) []netip.Addr { return nil }); err == nil {
+		t.Fatal("一个服务器 IP 都解析不出必须报错")
+	}
+}
+
+func TestEqualStringSetsIgnoresOrderAndCatchesDifference(t *testing.T) {
+	if !equalStringSets([]string{"1.1.1.1/32", "2.2.2.2/32"}, []string{"2.2.2.2/32", "1.1.1.1/32"}) {
+		t.Fatal("顺序不同不代表集合变了 —— 会白白重装一次真实路由")
+	}
+	if equalStringSets([]string{"1.1.1.1/32"}, []string{"1.1.1.1/32", "2.2.2.2/32"}) {
+		t.Fatal("多一条就是变了 —— 漏判就是新服务器没进 bypass = 成环")
+	}
+	if equalStringSets([]string{"1.1.1.1/32"}, []string{"2.2.2.2/32"}) {
+		t.Fatal("换了一条就是变了")
+	}
+	if !equalStringSets(nil, nil) {
+		t.Fatal("空对空应相等")
 	}
 }
