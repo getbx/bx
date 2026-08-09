@@ -1,6 +1,12 @@
 package supervisor
 
-import "github.com/getbx/bx/internal/config"
+import (
+	"fmt"
+	"log"
+	"net/netip"
+
+	"github.com/getbx/bx/internal/config"
+)
 
 // bypassLink 是一条需要进 serverBypass + 静态 DNS 的传输链接。
 //
@@ -47,4 +53,73 @@ func bypassLinks(cfg *config.Config) []bypassLink {
 		links = append(links, bypassLink{Link: cfg.UDP.Transport, Required: true})
 	}
 	return links
+}
+
+// resolveServerBypass 解析清单里全部服务器的 host → IP,产出静态 DNS 表与地址集合。
+// 启动与「切换前刷新」共用它:两条路径分头实现,迟早有一条会漏掉某类链接,
+// 而漏掉的那一条就是成环。
+func resolveServerBypass(cfg *config.Config) (map[string][]netip.Addr, []netip.Addr, error) {
+	return resolveServerBypassWith(cfg, hostToAddrs)
+}
+
+// resolveServerBypassWith 是 resolveServerBypass 的可注入版本:resolve 默认是
+// hostToAddrs(真实系统解析),单测注入假解析器才走得到「解析失败」那两条分支
+// —— 它们此前活在 run.go 的闭包里,要真发生一次 DNS 失败才可达,故一直没有测试。
+//
+// Required 语义(见 bypassLink):当前那台解析不了 = 拒绝(它不在 bypass 里就是
+// 成环);其余解析不了 = 跳过(清单是会攒的,一台今天没在用的机器不该堵死启动)。
+func resolveServerBypassWith(cfg *config.Config, resolve func(string) []netip.Addr) (map[string][]netip.Addr, []netip.Addr, error) {
+	staticA := map[string][]netip.Addr{}
+	var addrs []netip.Addr
+	add := func(link string) error {
+		h, err := serverHostFromLink(link)
+		if err != nil {
+			return fmt.Errorf("取传输服务器: %w", err)
+		}
+		if _, ok := staticA[h]; ok {
+			return nil // 去重(多传输同 server)
+		}
+		a := resolve(h)
+		if len(a) == 0 {
+			return fmt.Errorf("无法解析传输服务器 %q 为 IP(bypass 必需,否则成环)", h)
+		}
+		staticA[h] = a
+		addrs = append(addrs, a...)
+		return nil
+	}
+	for _, l := range bypassLinks(cfg) {
+		if err := add(l.Link); err != nil {
+			if l.Required {
+				return nil, nil, err
+			}
+			// 跳过的那台此刻不在 bypass 里,故也切不过去 —— 切换路径会重新刷新
+			// bypass 并按需 rehijack,那时再解析一次;在那之前它对数据面不存在,
+			// 不会有半装状态。
+			log.Printf("跳过服务器 bypass(非当前选中,暂不可切换): %v", err)
+		}
+	}
+	if len(addrs) == 0 {
+		return nil, nil, fmt.Errorf("无法解析任何传输服务器 IP(bypass 必需)")
+	}
+	return staticA, addrs, nil
+}
+
+// equalStringSets 判两个 CIDR 列表是不是同一个集合(顺序无关)。
+// 用它决定「要不要重装路由」:相等就别装 —— 重装会重探网关、拆装真实路由,
+// 是纯粹的风险;不等就必须装 —— 漏判等于新服务器没进 bypass = 成环。
+func equalStringSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, s := range a {
+		seen[s]++
+	}
+	for _, s := range b {
+		seen[s]--
+		if seen[s] < 0 {
+			return false
+		}
+	}
+	return true
 }

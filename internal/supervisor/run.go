@@ -282,41 +282,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 多传输防环:每个传输(主 + 容灾备选 + UDP 专用)的 server 都要进 serverBypass + 静态 DNS,
 	// 否则切到「不同 server」的备选时,其子进程连自己 server 的连接会落进 TUN(成环/被 Block),
 	// 容灾静默失效。在系统 DNS 交给 bx 前解析一次,同一批 IP 既做路由旁路又做本地 DNS 静态答案。
-	staticA := map[string][]netip.Addr{}
-	var serverAddrs []netip.Addr
-	addServer := func(link string) error {
-		h, err := serverHostFromLink(link)
-		if err != nil {
-			return fmt.Errorf("取传输服务器: %w", err)
-		}
-		if _, ok := staticA[h]; ok {
-			return nil // 去重(多传输同 server)
-		}
-		a := hostToAddrs(h)
-		if len(a) == 0 {
-			return fmt.Errorf("无法解析传输服务器 %q 为 IP(bypass 必需,否则成环)", h)
-		}
-		staticA[h] = a
-		serverAddrs = append(serverAddrs, a...)
-		return nil
-	}
 	// 服务器清单在场时这里是**每一台的两条链接**,不只当前那台 —— 见 bypassLinks 的注释。
-	// 非当前那些解析失败只跳过、不连累启动:清单是会攒的,里面难免有退役或 DNS 抖动的
-	// 服务器,而用一台今天根本没在用的机器堵死整台电脑的保护是说不过去的。
-	// 跳过的那台此刻不在 bypass 里,故也切不过去 —— 切换路径会重新刷新 bypass 并按需
-	// rehijack,那时再解析一次;在那之前它对数据面不存在,不会有半装状态。
-	for _, l := range bypassLinks(cfg) {
-		if err := addServer(l.Link); err != nil {
-			if l.Required {
-				return err
-			}
-			log.Printf("跳过服务器 bypass(非当前选中,暂不可切换): %v", err)
-		}
+	// 非当前那些解析失败只跳过、不连累启动;当前那台失败则拒绝启动。这套判断连同
+	// 去重、空集合检查一起住在 resolveServerBypass 里:**切换前刷新 bypass 走的是
+	// 同一个函数**。两条路径分头实现,迟早有一条会漏掉某类链接,而漏掉的那一条
+	// 就是成环(静默:连得上、status 显绿、流量绕圈)。
+	staticA, serverAddrs, err := resolveServerBypass(cfg)
+	if err != nil {
+		return err
 	}
 	udpEnabled := cfg.UDP.Transport != "" && cfg.UDP.Mode == "proxy"
-	if len(serverAddrs) == 0 {
-		return fmt.Errorf("无法解析任何传输服务器 IP(bypass 必需)")
-	}
 
 	// 3) fake-IP 池 + DNS 处理器
 	pool, err := fakeip.New(cfg.DNS.FakeipCIDR)
