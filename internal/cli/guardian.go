@@ -402,15 +402,16 @@ type macOSDownResult struct {
 
 // macOSDownLifecycleDetailed implements `bx down`'s two paths:
 //
-//   - Guardian reachable and healthy: go through the same clean
-//     ownership+Down transaction as before (ensureGuardianOwnership handles
-//     legacy-Core handoff bookkeeping, then deps.client.Down commits the
-//     shutdown). This is the cleanest outcome and stays the default.
+//   - Guardian reachable and healthy: commit the clean shutdown, and
+//     nothing else — deps.client.Down (or DownForUpgrade) is the whole
+//     transaction. This is the cleanest outcome and stays the default.
+//     It deliberately does no startup work: legacy-Core handoff bookkeeping
+//     lives on macOSUpLifecycle, where it belongs (see cleanGuardianDown).
 //   - Anything else: run the forced teardown. That covers Guardian being
-//     unreachable (calling ensureGuardianOwnership would install/bootstrap
-//     it and require it to become ready before `down` could proceed —
-//     backwards: "stop" must never depend on first successfully "starting"
-//     the thing being stopped) *and* Guardian answering while refusing to
+//     unreachable (installing/bootstrapping it and waiting for it to become
+//     ready before `down` could proceed would be backwards: "stop" must
+//     never depend on first successfully "starting" the thing being
+//     stopped) *and* Guardian answering while refusing to
 //     shut down. The latter is not hypothetical: Manager.Down returns
 //     errRecoveryIncomplete as its first statement whenever recoveryBlocked
 //     is set, which a Guardian restart during a network outage makes
@@ -443,10 +444,21 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 	return macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}, Forced: true}, nil
 }
 
+// cleanGuardianDown 停止只做停止。
+//
+// 这里**曾经**先调 ensureGuardianOwnership —— 那会在发 /v1/down 之前 shell 出去查
+// legacy Core,legacy Core 真在跑时还要做网关发现 + 读 Core /v0/runtime + 解析 config
+// + DNS 查询。任何一步报错,一次本可以干净完成的停止就升级成拆屏障、还原 DNS 的重手术。
+//
+// 而且那个函数的契约是「确保它装好并起着」——在停止路径上调用它本身就是错的,
+// 哪怕 guardianEnableCommands 的 active&&ready 快路径让它今天恰好是空操作:
+// 那是巧合不是契约,谁把它改成「总是 kickstart 一次」,down 就会在停止前重启守护进程。
+//
+// legacy Core 的迁移没有丢,它留在 up 上(macOSUpLifecycle),那本来就是它该在的地方。
+//
+// configPath 因此在这里不再被用到;参数保留,是为了让调用方的形状不随这次收窄而变。
 func cleanGuardianDown(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (guardian.Status, error) {
-	if _, _, err := ensureGuardianOwnership(ctx, configPath, deps); err != nil {
-		return guardian.Status{}, err
-	}
+	_ = configPath // 见上:停止路径不再读 config,参数只为保持调用方形状不变
 	if purpose == downPurposeUpgrade {
 		// 升级欠条(「还欠你一次把保护起回来」)必须活过这一跳:它是这次
 		// app-install 前一秒才写下的,而 Guardian 会把普通的 Down 当作
