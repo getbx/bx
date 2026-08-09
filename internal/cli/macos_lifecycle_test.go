@@ -323,10 +323,14 @@ func TestMacOSDownLifecycleCallsGuardianOnly(t *testing.T) {
 	}
 	// The leading "guardian.ready" is macOSDownLifecycle's own upfront
 	// reachability probe (see TestMacOSDownDoesNotRequireGuardianBootstrap):
-	// only once that confirms Guardian is already up does it proceed into
-	// the normal ensureGuardianOwnership+Down transaction, which itself
-	// re-checks readiness after (a no-op) enable.
-	want := []string{"guardian.ready", "legacy.loaded", "guardian.enable", "guardian.ready", "guardian.down"}
+	// only once that confirms Guardian is already up does it commit the
+	// shutdown.
+	//
+	// 这条序列此前还夹着 legacy.loaded|guardian.enable|guardian.ready ——
+	// cleanGuardianDown 先跑一遍 ensureGuardianOwnership 的痕迹。那三步是启动
+	// 的活,已经搬回 up(见 TestCleanDownDoesNoStartupWork / TestUpStillDoesTheStartupWork);
+	// 本条断言的「down 只跟 Guardian 说一句话」没变,变的是那句话前面不再有别的话。
+	want := []string{"guardian.ready", "guardian.down"}
 	if strings.Join(events, "|") != strings.Join(want, "|") {
 		t.Fatalf("macOS down events = %#v, want %#v", events, want)
 	}
@@ -349,6 +353,16 @@ type fakeMacOSLifecycleDeps struct {
 	clearBarrierCount  int
 	desiredOffCount    int
 	restoreDNSCount    int
+
+	// 启动侧的钩子也各带一个计数器。它们存在的理由只有一个:让「停止路径
+	// 有没有做启动的活」成为一条可断言的行为事实,而不是靠读源码目视确认。
+	// 源码文本匹配在这里是没用的 —— 调用可以换个名字、可以搬进别的函数,
+	// 而计数器盯的是它到底跑没跑。
+	legacyLoadedCount      int
+	migrationRequestCount  int
+	removeLegacyUnitCount  int
+	writeGuardianUnitCount int
+	enableGuardianCount    int
 }
 
 func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
@@ -356,9 +370,13 @@ func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
 	client := &recordingGuardianClient{
 		events:     &f.events,
 		downStatus: guardian.Status{Desired: guardian.DesiredOff, Phase: guardian.PhaseIdle, Protection: guardian.ProtectionOff},
+		// up 侧要走完 waitGuardianProtected 才会返回,否则它会去轮询
+		// Status()(空队列 → 报错),让 up 用例连启动路径都跑不到头。
+		upStatus: guardian.Status{Desired: guardian.DesiredOn, Phase: guardian.PhaseCommitted, Protection: guardian.ProtectionProtected},
 	}
 	f.client = client
 	f.macOSLifecycleDeps = testMacOSLifecycleDeps(&f.events, client)
+	f.countStartupHooks()
 	f.macOSLifecycleDeps.forceTeardown = func(context.Context) error {
 		f.forceTeardownCount++
 		f.events = append(f.events, "guardian.forceTeardown")
@@ -387,6 +405,37 @@ func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
 	return f
 }
 
+// countStartupHooks 把启动侧的五个钩子各包一层计数,行为一字不改(仍然记
+// 同样的事件、返回同样的值),只是多记一笔「被调用过」。包一层而不是重写,
+// 是为了让计数与 testMacOSLifecycleDeps 的默认行为不会各自漂移。
+func (f *fakeMacOSLifecycleDeps) countStartupHooks() {
+	legacyLoaded := f.macOSLifecycleDeps.legacyLoaded
+	f.macOSLifecycleDeps.legacyLoaded = func() (bool, error) {
+		f.legacyLoadedCount++
+		return legacyLoaded()
+	}
+	migrationRequest := f.macOSLifecycleDeps.migrationRequest
+	f.macOSLifecycleDeps.migrationRequest = func(ctx context.Context, configPath string) (guardian.MigrationRequest, error) {
+		f.migrationRequestCount++
+		return migrationRequest(ctx, configPath)
+	}
+	removeLegacyUnit := f.macOSLifecycleDeps.removeLegacyUnit
+	f.macOSLifecycleDeps.removeLegacyUnit = func() error {
+		f.removeLegacyUnitCount++
+		return removeLegacyUnit()
+	}
+	writeGuardianUnit := f.macOSLifecycleDeps.writeGuardianUnit
+	f.macOSLifecycleDeps.writeGuardianUnit = func(configPath string) error {
+		f.writeGuardianUnitCount++
+		return writeGuardianUnit(configPath)
+	}
+	enableGuardian := f.macOSLifecycleDeps.enableGuardian
+	f.macOSLifecycleDeps.enableGuardian = func() error {
+		f.enableGuardianCount++
+		return enableGuardian()
+	}
+}
+
 // eventIndex reports where an event landed in the recorded sequence, or -1.
 func (f *fakeMacOSLifecycleDeps) eventIndex(event string) int {
 	for i, got := range f.events {
@@ -401,6 +450,48 @@ func (f *fakeMacOSLifecycleDeps) trace() string { return strings.Join(f.events, 
 
 func (f *fakeMacOSLifecycleDeps) forcedTeardownCalled() bool { return f.forceTeardownCount > 0 }
 func (f *fakeMacOSLifecycleDeps) clientDownCalled() bool     { return f.client.downCalls > 0 }
+
+// 停止就是停止。发 POST /v1/down 之前不该查 legacy Core、不该做网关发现、
+// 不该解析 config、不该碰 launchd。
+//
+// 今天它们都会跑:cleanGuardianDown 第一步是 ensureGuardianOwnership。后果不是
+// 假想的 —— 任何一步报错都会让一次本可以干净完成的停止,升级成拆屏障、还原 DNS、
+// 写 desired=off 的重手术。而停止不该关心有没有 legacy Core 要迁移:那是 up 的工作。
+func TestCleanDownDoesNoStartupWork(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps); err != nil {
+		t.Fatal(err)
+	}
+	if f.forcedTeardownCalled() {
+		t.Fatalf("这条用例的前提是走干净路径, trace=%s", f.trace())
+	}
+	for _, probe := range []struct {
+		name  string
+		count int
+	}{
+		{"legacyLoaded", f.legacyLoadedCount},
+		{"migrationRequest", f.migrationRequestCount},
+		{"removeLegacyUnit", f.removeLegacyUnitCount},
+		{"writeGuardianUnit", f.writeGuardianUnitCount},
+		{"enableGuardian", f.enableGuardianCount},
+	} {
+		if probe.count != 0 {
+			t.Errorf("干净停止路径上不该调用 %s(实际 %d 次)—— 停止不许依赖与停止无关的工作",
+				probe.name, probe.count)
+		}
+	}
+}
+
+// 反向:迁移没有丢,它留在 up 上 —— 那本来就是它该在的地方。
+func TestUpStillDoesTheStartupWork(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	if _, err := macOSUpLifecycle(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps); err != nil {
+		t.Fatal(err)
+	}
+	if f.legacyLoadedCount == 0 {
+		t.Error("up 必须仍然检查 legacy Core —— 把它从 down 上摘掉不等于把它删掉")
+	}
+}
 
 // TestMacOSDownDoesNotRequireGuardianBootstrap is the regression test for the
 // production incident: Guardian was stuck in an infinite recovery retry
@@ -741,11 +832,21 @@ func TestMacOSDownFallsBackToForcedTeardownWhenGuardianDownFails(t *testing.T) {
 	}
 }
 
-// TestMacOSDownFallsBackToForcedTeardownWhenOwnershipFails: the legacy-Core
-// handoff inside ensureGuardianOwnership needs a default gateway, which a
-// network outage removes — the same "stop depends on a precondition that the
-// outage just destroyed" trap. Failing there must not strand the user either.
-func TestMacOSDownFallsBackToForcedTeardownWhenOwnershipFails(t *testing.T) {
+// TestMacOSDownIgnoresBrokenLegacyHandoffEntirely 是同一个场景的**新答案**。
+//
+// 场景没变:有一个 legacy Core 在跑,而一次断网正好抹掉了默认网关,于是
+// legacy 接管所需的网关发现必然失败 —— 「停止依赖一个刚被这次故障摧毁的前提」
+// 那个陷阱。旧的答案是「至少还有逃生口」:干净路径失败 → 强制拆除(拆屏障、
+// 还原 DNS、写两次 desired=off)。那确实救得了用户,但它是在为一个本不该存在
+// 的失败买单 —— 停止根本不需要知道有没有 legacy Core 要迁移。
+//
+// 新的答案是这个前提压根不再被问:down 直接把 /v1/down 发出去,干净停下,
+// 一根屏障路由都不用拆。
+//
+// 这条同时是一条变异探针:一旦 ensureGuardianOwnership 被挪回停止路径,
+// 这里的 migrationRequest 就会报错,干净路径随之失败、退化成强制拆除,
+// 下面三条断言会一起变红。
+func TestMacOSDownIgnoresBrokenLegacyHandoffEntirely(t *testing.T) {
 	deps := newFakeMacOSLifecycleDeps()
 	deps.guardianReady = func(context.Context) bool { return true }
 	deps.legacyLoaded = func() (bool, error) { return true, nil }
@@ -755,10 +856,17 @@ func TestMacOSDownFallsBackToForcedTeardownWhenOwnershipFails(t *testing.T) {
 
 	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
 	if err != nil {
-		t.Fatalf("接管失败后必须还有逃生口,实际返回错误: %v", err)
+		t.Fatalf("停止不该关心 legacy 接管能不能做成,实际返回错误: %v", err)
 	}
-	if !result.Forced || deps.clearBarrierCount != 1 {
-		t.Fatalf("forced=%v barrier.clear=%d", result.Forced, deps.clearBarrierCount)
+	if result.Forced {
+		t.Errorf("网关发现失败不得再把一次能干净完成的停止升级成强制拆除, trace=%s", deps.trace())
+	}
+	if !deps.clientDownCalled() {
+		t.Errorf("干净事务必须照常提交, trace=%s", deps.trace())
+	}
+	if deps.clearBarrierCount != 0 || deps.restoreDNSCount != 0 {
+		t.Errorf("干净停止不该动屏障或系统 DNS: barrier.clear=%d dns.restore=%d",
+			deps.clearBarrierCount, deps.restoreDNSCount)
 	}
 }
 
