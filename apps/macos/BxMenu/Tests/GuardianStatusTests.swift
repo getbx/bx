@@ -14,9 +14,15 @@ struct GuardianStatusTests {
     static func main() {
         // Guardian 的 Status JSON 字段远多于菜单需要的几个;解码必须容忍未知字段,
         // 也必须容忍 last_error 缺席(omitempty:成功时它根本不出现)。
+        // recovery 是 Go 侧的值类型字段(无 omitempty),真实响应里恒是完整对象——
+        // 一个空 `{}` 从不会真的出现,写成完整形状避免跟 Task 2 新增的
+        // `GuardianStatus.recovery: RecoverySnapshot?` 解码(必需子字段)打架。
         let fullBody = Data("""
         {"schema_version":1,"desired":"on","phase":"committed","protection_state":"protected",
-         "network_generation":"wifi-a","recovery":{},"dns_state":"managed","dns_managed":true,
+         "network_generation":"wifi-a",
+         "recovery":{"recovery_id":"","state":"","stage":"","reason":"","attempt":0,
+                     "started_at":"0001-01-01T00:00:00Z","updated_at":"0001-01-01T00:00:00Z"},
+         "dns_state":"managed","dns_managed":true,
          "guardian_version":"v0.2.9","runtime_version":"v0.2.9"}
         """.utf8)
 

@@ -15,17 +15,18 @@ enum GuardianEndpoint {
     case currentRecovery
     case turnOn
     case turnOff
+    case status
 
     var expectedStatus: Int {
         switch self {
         case .requestRecovery: return 202
-        case .currentRecovery, .turnOn, .turnOff: return 200
+        case .currentRecovery, .turnOn, .turnOff, .status: return 200
         }
     }
 
     var timeout: TimeInterval {
         switch self {
-        case .requestRecovery, .currentRecovery: return guardianDefaultTimeout
+        case .requestRecovery, .currentRecovery, .status: return guardianDefaultTimeout
         case .turnOn, .turnOff: return guardianMutationTimeout
         }
     }
@@ -159,6 +160,10 @@ struct GuardianClient {
         try perform(endpoint: .turnOff, as: GuardianStatus.self)
     }
 
+    func status() throws -> GuardianStatus {
+        try perform(endpoint: .status, as: GuardianStatus.self)
+    }
+
     /// 单一出口:生产 `init()` 让每个端点用自己的 `timeout`(`overrideTimeout == nil`);
     /// 测试用 `init(connectSocket:ioTimeout:clock:)` 注入的值始终优先。
     /// `perform` 与测试都必须经它取超时,不许各自重算 `overrideTimeout ?? endpoint.timeout`
@@ -234,6 +239,10 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         method = "POST"
         path = "/v1/down"
         body = Data("{}".utf8)
+    case .status:
+        method = "GET"
+        path = "/v1/status"
+        body = nil
     }
 
     var requestText = "\(method) \(path) HTTP/1.1\r\nHost: local\r\nAccept: application/json\r\nConnection: close\r\n"

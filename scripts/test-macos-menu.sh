@@ -91,4 +91,11 @@ run_test menu-cadence \
   "$MENU/Sources/BxMenu/MenuCadence.swift" \
   "$MENU/Tests/MenuCadenceTests.swift"
 
+run_test guardian-status-fields \
+  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
+  "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Tests/GuardianStatusFieldsTests.swift"
+
 echo "macOS menu tests passed"
