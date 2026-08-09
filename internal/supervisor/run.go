@@ -426,11 +426,28 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// tailscale 那组旁路与「切到哪台服务器」无关,启动时算一次,之后每轮刷新原样带上
 	// (重探一次失败就会在下次 rehijack 时悄悄缩小 tailscale 共存旁路)。
 	tailscaleBypass := tailscaleBootstrapBypassCIDRs(ctx, direct)
-	serverBypass := mergeBypassCIDRs(addrsToCIDRs(serverAddrs), tailscaleBypass)
-	// bypassState 是全进程唯一那份「什么必须绕开隧道」:liveMutator(rehijack)、
-	// livePathRecoverer(Wi-Fi 切换后自动重装旁路)与刷新路径全都读写它。
-	// 各自留一份启动时的冻结拷贝正是静默成环的来源。
-	bypassState := newBypassStore(serverBypass, staticA)
+	// bypass 那一套的**组合**全在 wireBypass 里(可测):store 是全进程唯一那份
+	// 「什么必须绕开隧道」,liveMutator(rehijack)、livePathRecoverer(Wi-Fi 切换后
+	// 自动重装旁路)、刷新与 RuntimeState 全都读写它。各自留一份启动时的冻结拷贝
+	// 正是静默成环的来源。
+	//
+	// serverAddrs 与 staticA 分开传是**要紧的**:前者(合并用户 hosts 覆盖之前)
+	// 决定 Guardian 屏障给谁开口,后者是 DNS 静态表。从后者推前者会把用户 hosts
+	// 里的任意 IPv4 打进屏障。
+	bypassWire := wireBypass(bypassWiringParams{
+		configPath:  opts.ConfigPath,
+		serverAddrs: serverAddrs,
+		staticA:     staticA,
+		extraCIDRs:  tailscaleBypass,
+		// 与 Dialer 同一个国内 DNS + 防环直连。**绝不能**换成系统解析器:
+		// 刷新发生在 DNS 已交给 bx 之后,系统解析器此刻就是 bx 自己,新服务器
+		// (还没有静态 A)会被回一个 198.18/15 的 fake IP。
+		resolver:   newResolver(cfg.DNS.China, direct),
+		setStaticA: func(records map[string][]netip.Addr) { dnsSrv.SetStaticA(records, splitDirect) },
+		fakeipCIDR: cfg.DNS.FakeipCIDR,
+	})
+	bypassState := bypassWire.store
+	serverBypass := bypassState.cidrs()
 	generation := newTransportGeneration()
 	swapper = &transportSwapper{
 		generation:    generation,
@@ -488,27 +505,8 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if udpSwapper != nil {
 		mut.udpSwap = udpSwapper
 	}
-	// 「切换前刷新 bypass」的真身在 newBypassRefresher(可测)。这里只接线。
-	//
-	// 解析**绝不能**走系统解析器:刷新发生在 DNS 已经交给 bx 之后,系统解析器
-	// 此刻就是 bx 自己,而新服务器的域名还没有静态 A 记录 —— bx 会老老实实回一个
-	// 198.18/15 的 fake IP,于是我们给一个假 IP 装 bypass 路由,真 IP 一次都没进过
-	// 集合。故这里用与 Dialer 同一个国内 DNS + 防环直连的解析器。
-	bypassResolver := newResolver(cfg.DNS.China, direct)
-	refreshServerBypass := newBypassRefresher(bypassRefreshDeps{
-		configPath: opts.ConfigPath,
-		resolve: func(rctx context.Context, host string) ([]netip.Addr, error) {
-			return resolveAll(rctx, bypassResolver, host)
-		},
-		store:      bypassState,
-		setStaticA: func(records map[string][]netip.Addr) { dnsSrv.SetStaticA(records, splitDirect) },
-		extraCIDRs: func() []string { return tailscaleBypass },
-		fakeipCIDR: cfg.DNS.FakeipCIDR,
-	})
-	// 从共享集合现算,而不是启动时算一次冻在这里:RuntimeState.ServerBypass 经
-	// cli/guardian.go 变成 Guardian 屏障的 BarrierContext.ServerBypass —— 屏障据此
-	// 给服务器 IP 开口子。用旧值等于切过服务器之后屏障放行的还是旧那台,新的被堵死。
-	runtimeBypass := func() []string { return runtimeIPv4Bypass(bypassState.serverAddrs()) }
+	refreshServerBypass := bypassWire.refresh
+	runtimeBypass := bypassWire.runtimeServerBypass
 	runtimeState := func() RuntimeState {
 		udpRequired, udpReady := udpRuntimeReadiness(cfg.UDP.Mode, lt.Healthy, udpHealthy)
 		return RuntimeState{

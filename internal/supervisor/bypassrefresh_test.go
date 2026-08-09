@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,7 +60,7 @@ func testRefresherDeps(t *testing.T, path string, resolve func(context.Context, 
 	return bypassRefreshDeps{
 		configPath: path,
 		resolve:    resolve,
-		store:      newBypassStore(nil, nil),
+		store:      newBypassStore(nil, nil, nil),
 		timeout:    2 * time.Second,
 	}
 }
@@ -160,6 +161,7 @@ func TestBypassRefreshRetainsKnownServerThatFailedThisRound(t *testing.T) {
 			"tokyo.example":   {netip.MustParseAddr("2.2.2.2")},
 			"deleted.example": {netip.MustParseAddr("8.8.8.8")}, // 已从配置里删掉
 		},
+		[]netip.Addr{netip.MustParseAddr("2.2.2.2"), netip.MustParseAddr("8.8.8.8")},
 	)
 	refresh := newBypassRefresher(deps)
 
@@ -335,5 +337,138 @@ func TestBypassRefreshUpdatesServerAddrsForRuntimeState(t *testing.T) {
 	// tailscale 与用户 hosts 覆盖不属于「传输服务器」,不该混进屏障开口。
 	if containsString(got, "100.64.0.1/32") {
 		t.Fatalf("与传输服务器无关的旁路不该进 RuntimeState.ServerBypass, got %v", got)
+	}
+}
+
+// —— 接线(wireBypass)——
+// 这一层存在的理由:本轮两个 Critical **都**是接线错误,而每个被抽出来的单元
+// 各自都有测试。把组合本身抽出来,组合才有人盯着。
+
+func testWiringParams(t *testing.T, configPath string) bypassWiringParams {
+	t.Helper()
+	return bypassWiringParams{
+		configPath:  configPath,
+		serverAddrs: []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+		staticA:     map[string][]netip.Addr{"hk.example": {netip.MustParseAddr("1.1.1.1")}},
+		resolver:    allResolver{addrs: []netip.Addr{netip.MustParseAddr("1.1.1.1")}},
+	}
+}
+
+// 屏障开口(RuntimeState.ServerBypass → BarrierContext.ServerBypass)是在
+// `/2` reject 屏障上**打洞**:每条都变成一条 `route add <ip>/32 <gateway>`。
+// 用户 hosts 覆盖的 IP 混进去 = 在断网窗口里给一个任意 IPv4 开了口子
+//(hosts: 接受任何 IPv4 字面量,不限内网)。
+func TestWireBypassKeepsHostOverridesOutOfBarrierCarveOut(t *testing.T) {
+	p := testWiringParams(t, twoServerConfig(t))
+	// 与 run.go 一样:发布给 DNS 的静态表**已经**合并过用户 hosts 覆盖。
+	p.staticA = map[string][]netip.Addr{
+		"hk.example":    {netip.MustParseAddr("1.1.1.1")},
+		"intranet.corp": {netip.MustParseAddr("10.1.2.3")},
+		"nas.lan":       {netip.MustParseAddr("192.168.9.9")},
+	}
+	w := wireBypass(p)
+
+	got := w.runtimeServerBypass()
+	if len(got) != 1 || got[0] != "1.1.1.1/32" {
+		t.Fatalf("屏障开口只能是传输服务器,不能带上用户 hosts 覆盖, got %v", got)
+	}
+}
+
+// 刷新必须走注入的防环解析器。若接线接回系统解析器(hostToAddrs),这个域名
+// 在真实世界解析不出来 —— 而生产里更糟:系统解析器此刻就是 bx,会回一个 fake IP。
+func TestWireBypassRefreshUsesInjectedResolverNotSystemResolver(t *testing.T) {
+	path := writeTestConfig(t, `
+servers:
+  - name: hk
+    link: vless://u@only-resolvable-via-injected-resolver.invalid:443
+current: hk
+`)
+	p := testWiringParams(t, path)
+	p.resolver = allResolver{addrs: []netip.Addr{netip.MustParseAddr("9.9.9.9")}}
+	w := wireBypass(p)
+
+	if _, err := w.refresh(context.Background(), nil); err != nil {
+		t.Fatalf("刷新应经注入的解析器解析成功(接回系统解析器就会失败): %v", err)
+	}
+	if !containsString(w.store.cidrs(), "9.9.9.9/32") {
+		t.Fatalf("解析结果必须来自注入的解析器, got %v", w.store.cidrs())
+	}
+}
+
+// runtimeServerBypass 必须现算。冻在启动值上 = 切过服务器之后屏障放行的还是旧那台。
+func TestWireBypassRuntimeStateFollowsRefresh(t *testing.T) {
+	p := testWiringParams(t, twoServerConfig(t))
+	p.resolver = allResolver{addrs: []netip.Addr{netip.MustParseAddr("7.7.7.7")}}
+	w := wireBypass(p)
+	if got := w.runtimeServerBypass(); len(got) != 1 || got[0] != "1.1.1.1/32" {
+		t.Fatalf("启动值, got %v", got)
+	}
+
+	if _, err := w.refresh(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.runtimeServerBypass(); !containsString(got, "7.7.7.7/32") {
+		t.Fatalf("刷新之后屏障开口必须跟着走, got %v", got)
+	}
+}
+
+// runBodyBetween 取 run.go 里一段源码,供接线守卫用。
+func runSource(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("run.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// 这三条守的是**赋值**,不是逻辑 —— 它们抬不出 Run():livePathRecoverer 的
+// 构造捕获了 underlay/transports/tun/previous/verify 一串 Run 局部量,把它整个
+// 提出去比这里守着的风险更大。而复审实测:这三处各自改回旧写法,`go test ./...`
+// 全绿 —— 本轮两个 Critical 都正是这种接线错误。
+//
+// 文本守卫天生是漏的(CLAUDE.md 已经记着这一点),但「漏」好过「零」。
+func TestRunWiresPathRecovererToLiveBypassStore(t *testing.T) {
+	src := runSource(t)
+	start := strings.Index(src, "recoverer = &livePathRecoverer{")
+	if start < 0 {
+		t.Fatal("找不到 livePathRecoverer 构造点(接线守卫失效,请更新本测试)")
+	}
+	body := src[start : start+strings.Index(src[start:], "\n\t\t\t}")]
+	if !strings.Contains(body, "bypass:") || !strings.Contains(body, "bypassState") {
+		t.Fatal("路径恢复必须接到共享 store(bypass: bypassState):拿启动时那份冻结拷贝,\n" +
+			"切过服务器后一次 Wi-Fi 切换就会用旧集合重装旁路,把刚切过去的那台漏在外面 = 成环")
+	}
+}
+
+func TestRunTakesRuntimeBypassFromWiringNotAFrozenSlice(t *testing.T) {
+	src := runSource(t)
+	if !strings.Contains(src, "runtimeBypass := bypassWire.runtimeServerBypass") {
+		t.Fatal("RuntimeState.ServerBypass 必须现算(bypassWire.runtimeServerBypass):\n" +
+			"它经 cli/guardian.go 变成 Guardian 屏障的开口,冻住就等于切过服务器后放行的还是旧那台")
+	}
+	if !strings.Contains(src, "ServerBypass:    runtimeBypass(),") {
+		t.Fatal("RuntimeState 必须调用访问器而不是引用某个切片快照")
+	}
+}
+
+func TestRunFeedsBypassWiringTheLoopSafeResolver(t *testing.T) {
+	src := runSource(t)
+	start := strings.Index(src, "bypassWire := wireBypass(bypassWiringParams{")
+	if start < 0 {
+		t.Fatal("找不到 wireBypass 接线点(接线守卫失效,请更新本测试)")
+	}
+	body := src[start : start+strings.Index(src[start:], "\n\t})")]
+	if !strings.Contains(body, "resolver:   newResolver(cfg.DNS.China, direct)") {
+		t.Fatal("刷新必须走防环解析器(newResolver + DirectDialer):换成系统解析器就是\n" +
+			"经 bx 自己解析 —— 新服务器会拿到 198.18/15 的 fake IP,然后给假 IP 装 bypass 路由")
+	}
+	if strings.Contains(body, "hostToAddrs") {
+		t.Fatal("接线里出现了 hostToAddrs(系统解析器)—— 那正是 Critical 1")
+	}
+	// serverAddrs 与 staticA 必须分开传:从 staticA 推 servers 会把用户 hosts
+	// 覆盖的任意 IPv4 打进 Guardian 屏障开口。
+	if !strings.Contains(body, "serverAddrs: serverAddrs") || !strings.Contains(body, "staticA:     staticA") {
+		t.Fatal("serverAddrs(屏障开口)与 staticA(DNS 静态表)必须各传各的")
 	}
 }
