@@ -301,9 +301,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return nil
 	}
 	// 服务器清单在场时这里是**每一台的两条链接**,不只当前那台 —— 见 bypassLinks 的注释。
-	for _, link := range bypassLinks(cfg) {
-		if err := addServer(link); err != nil {
-			return err
+	// 非当前那些解析失败只跳过、不连累启动:清单是会攒的,里面难免有退役或 DNS 抖动的
+	// 服务器,而用一台今天根本没在用的机器堵死整台电脑的保护是说不过去的。
+	// 跳过的那台此刻不在 bypass 里,故也切不过去 —— 切换路径会重新刷新 bypass 并按需
+	// rehijack,那时再解析一次;在那之前它对数据面不存在,不会有半装状态。
+	for _, l := range bypassLinks(cfg) {
+		if err := addServer(l.Link); err != nil {
+			if l.Required {
+				return err
+			}
+			log.Printf("跳过服务器 bypass(非当前选中,暂不可切换): %v", err)
 		}
 	}
 	udpEnabled := cfg.UDP.Transport != "" && cfg.UDP.Mode == "proxy"
