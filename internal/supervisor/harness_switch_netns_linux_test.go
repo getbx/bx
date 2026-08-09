@@ -108,7 +108,11 @@ func TestHarnessRefusesSwitchWhenTargetUnresolvable(t *testing.T) {
 	if len(beforeRT.ServerBypass) == 0 {
 		t.Fatalf("切换前 ServerBypass 就是空的 —— 没有开口可谈,「原地不动」无从证明")
 	}
-	// 先走 CLI/MCP 真正用的那条路:它对这次切换必须报错 —— 哪怕原因只是客户端超时。
+	// 先走客户端那条路:它对这次切换必须报错 —— 哪怕原因只是客户端超时。
+	//
+	// (注:SetServerControl 今天**没有任何生产调用方**;MCP 接的是 /v0/transport,
+	// 而那条路不刷新 bypass、够不到 5s 期限。所以这里的 3s 客户端超时 vs 服务端 5s
+	// 刷新期限,是给将来接服务器切换 UX 的人留的一个坑,不是今天已经在漏的伤口。)
 	// 这条只保证生产客户端不会把一次被拒绝的切换读成成功;它**证明不了**服务端拒绝过
 	//(原因见 postServerSwitchAwaitingAnswer 的注释),所以紧接着还要问一次服务端本人。
 	// 放在前面是为了让它那个已经超时、却仍在服务端跑着的请求先跑完
@@ -146,6 +150,16 @@ func TestHarnessRefusesSwitchWhenTargetUnresolvable(t *testing.T) {
 // hostOverrideIP 是配置里那条用户 hosts: 覆盖的值 —— 屏障开口里绝不该出现的那个 IP。
 const hostOverrideIP = "203.0.113.77"
 
+// allHarnessServerIPs 是 harnessConfigWithHostOverride 里**所有**服务器的传输地址
+// —— 屏障开口的合法全集。刻意列全而不是只列当前那台:清单里每台的地址在启动时就
+// 全部铺好(已知服务器之间切换才能一条路由都不动),所以「上一台还在开口里」是对的,
+// 「多出一个谁都不认识的条目」才是洞。
+var allHarnessServerIPs = []string{
+	"203.0.113.10", "203.0.113.11", // alpha
+	"203.0.113.12", "203.0.113.13", // beta
+	"198.51.100.20", "198.51.100.21", // 切换目标(清单外,切过去时现装)
+}
+
 // assertBarrierCarveOut 观测一次屏障开口,并按「先证明观测成功、再判有无」的顺序断言。
 //
 // when 只进消息:同一条不变量要在**启动后**与**切换后**各观测一次(为什么见调用处),
@@ -164,9 +178,18 @@ func assertBarrierCarveOut(t *testing.T, sockPath, when string, mustContain []st
 		t.Fatalf("%s:ServerBypass 为空 —— 屏障没有任何开口,反极性断言无从谈起", when)
 	}
 	got := strings.Join(rt.ServerBypass, ",")
-	// ③ 到这里才轮到反极性那一条。
-	if strings.Contains(got, hostOverrideIP) {
-		t.Errorf("%s:用户 hosts: 覆盖绝不能进屏障开口(它在 /2 reject 上打洞): %s", when, got)
+	// ③ 到这里才轮到反极性那一条,而且要按**闭集**判,不能只盯着那个种进去的 IP。
+	// 只判 !contains(hostOverrideIP) 的话,任何**别的**外来条目 —— 漏过 dropFakeIPs
+	// 的 fake-IP、china DNS 地址、解析器地址 —— 都会安静地进到 /2 屏障的开口里。
+	// 「不含 X」和「除了该有的什么都没有」是两条强度差很远的断言,而 brief 要的是后者。
+	allowed := map[string]bool{}
+	for _, ip := range allHarnessServerIPs {
+		allowed[ip+"/32"] = true
+	}
+	for _, entry := range rt.ServerBypass {
+		if !allowed[entry] {
+			t.Errorf("%s:屏障开口里有不该有的条目 %s(它在 /2 reject 上打洞): %s", when, entry, got)
+		}
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(got, want) {
@@ -176,9 +199,15 @@ func assertBarrierCarveOut(t *testing.T, sockPath, when string, mustContain []st
 }
 
 // 断言 4:屏障开口(RuntimeState.ServerBypass → BarrierContext.ServerBypass)
-// 只含当前那台的传输服务器地址 —— 不含用户 hosts: 覆盖、不含上一台。
-// 它在 /2 reject 屏障上打洞,混进任何别的东西都是 fail-closed 上的一个口子。
+// **只含清单里各台服务器的传输地址,一个都不多**。它在 /2 reject 屏障上打洞,
+// 混进任何别的东西都是 fail-closed 上的一个口子。
 // 这条走过五轮修复、三次翻车,全部只有单元测试背书。
+//
+// **注意不是「只含当前那台」。** brief 与本文件早先的注释都这么写过,实测恰恰相反:
+// 切换之后开口里仍然有上一台 —— 那是**有意的**,清单里每台的地址在启动时就全部铺好,
+// 已知服务器之间切换才能一条路由都不动(见同包的
+// TestHarnessBypassCoversEveryConfiguredServerElseSilentLoop)。
+// 谁要是照着旧注释去补一条「不含上一台」的断言,破坏的正是那条 anti-loop 不变量。
 func TestHarnessBarrierCarveOutFollowsCurrentServerOnly(t *testing.T) {
 	enterIsolatedNetns(t)
 	h := startHarness(t, harnessConfigWithHostOverride) // hosts: public-override.example → 203.0.113.77

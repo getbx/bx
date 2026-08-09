@@ -381,7 +381,9 @@ func TestHarnessRefusesSwitchWhenTargetUnresolvable(t *testing.T) {
 }
 
 // 断言 4:屏障开口(RuntimeState.ServerBypass → BarrierContext.ServerBypass)
-// 只含当前那台的传输服务器地址 —— 不含用户 hosts: 覆盖、不含上一台。
+// **只含清单里各台服务器的传输地址,一个都不多**——尤其不含用户 hosts: 覆盖。
+// ⚠️ 不是「只含当前那台」:切换之后上一台仍在开口里,那是**有意的**
+//(清单里每台启动时全部铺好,已知服务器之间切换才能一条路由都不动)。
 // 它在 /2 reject 屏障上打洞,混进任何别的东西都是 fail-closed 上的一个口子。
 // 这条走过五轮修复、三次翻车,全部只有单元测试背书。
 func TestHarnessBarrierCarveOutFollowsCurrentServerOnly(t *testing.T) {
