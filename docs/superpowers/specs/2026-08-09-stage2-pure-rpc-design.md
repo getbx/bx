@@ -60,16 +60,22 @@
 
 ## 设计
 
-### 一、把安装/启动从停止路径上摘掉
+### 一、停止路径只做停止
 
-`cleanGuardianDown` 不再调 `ensureGuardianOwnership`。停止只做停止:发 `POST /v1/down`。
+`cleanGuardianDown` 不再调 `ensureGuardianOwnership`。停止就是发 `POST /v1/down`,
+不查 legacy Core、不做网关发现、不解析 config、不查 DNS、不碰 launchd。
 
-Guardian 没装、没起、不应答 —— 那是**回落到强制拆除**的理由,不是「先装好再说」的理由。
+这同时修掉 A 与 B:停止不再会因为「查 legacy 失败」或「网关发现失败」升级成强制拆除(A),
+而契约是「确保它起着」的那个函数从此不在停止路径上,今天的空操作变成结构上的不可能(B)。
 
-**这条改动很小,但它是本阶段的全部要点。** 一条守卫测试钉死:
-`cleanGuardianDown` 的调用图里不得出现任何安装/启动动作。今天
-`TestMacOSDownDoesNotRequireGuardianBootstrap`(`macos_lifecycle_test.go:414`)
-只覆盖了 socket 不可达那一支 —— 它证明不了「可达时也不会去装」。
+**legacy Core 的迁移不会丢**,它留在 `up` 上(`macOSUpLifecycle` → `ensureGuardianOwnership`),
+那本来就是它该在的地方。停止一台还挂着 legacy Core 的机器不需要先迁移它 ——
+Guardian 的 `/v1/down` 停的是**当前**的保护,而强制路径无论如何都会把 Core 关掉。
+
+**守卫(行为断言,不是文本匹配)**:注入的 fake deps 上,干净路径跑完之后
+`legacyLoaded`/`migrationRequest`/`removeLegacyUnit`/`writeGuardianUnit`/`enableGuardian`
+的调用次数必须**全为 0**。今天 `TestMacOSDownDoesNotRequireGuardianBootstrap`
+(`macos_lifecycle_test.go:414`)只覆盖 socket 不可达那一支,证明不了可达时的行为。
 
 ### 二、`bx force-teardown`:给逃生口一个名字
 
@@ -144,9 +150,11 @@ CLI 在强制路径上写两次(`guardian.go:475`、`:516`),`Manager` 也写
 
 ## 测试策略
 
-- **守卫(新)**:`cleanGuardianDown` 的调用图里不得出现 `WriteGuardianUnit`/`EnableGuardian`/
-  `ensureGuardianOwnership`。用注入的 fake deps 断言这些 hook 在干净路径上**调用次数为 0**——
-  行为断言,不是源码文本匹配。
+- **守卫(新)**:干净路径跑完后,`legacyLoaded`/`migrationRequest`/`removeLegacyUnit`/
+  `writeGuardianUnit`/`enableGuardian` 的调用次数**全为 0**——行为断言,不是源码文本匹配。
+  变异验证:把 `ensureGuardianOwnership` 调回去,这条必须红。
+- **不得回归**:`up` 路径上那些 hook 仍然要被调到(迁移没有丢)。
+  同一组 fake deps,`up` 跑完后 `legacyLoaded` 至少 1 次。
 - **回归**:`macos_lifecycle_test.go` 里那组钉住强制路径**六步精确顺序**的测试
   (`:489` 断言 `desired.off|core.shutdown|guardian.forceTeardown|barrier.clear|dns.restore|desired.off`)
   必须**一个断言都不改**就通过 —— 那是「重排没有改变行为」的证据。
