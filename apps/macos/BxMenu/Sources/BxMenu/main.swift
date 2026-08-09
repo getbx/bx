@@ -460,10 +460,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 紧急程度的差别由菜单正文承担:副标题是 "Update Required"、状态行是
         // "Update bx",与 .warning 的措辞完全不同。图标只负责「要不要看一眼」。
         //
-        // Task 4 之后 `.updateNeeded` 的来路变了(能力探测从 spawn `bx logs --help`
-        // 改成读 Guardian `/v1/status` 里的 capabilities),它现在返回于**问过
-        // Guardian 之后**。裁决因此更硬而不是更软:那一刻 Guardian 可能刚说完
-        // `protected`,空心盾就不只是「一句无权说的话」,而是一句可被当场证伪的谎。
+        // 注意 `.updateNeeded` **今天没有任何产出点**(见其枚举定义处):能力缺席
+        // 已降级成一条与保护状态并排的数据行,不再顶掉状态推导。这条裁决留着,是
+        // 因为它约束的是「将来若有东西再产出这个状态,图标该怎么画」——而那个将来
+        // 的产出点必然也在问过 Guardian 之后,届时空心盾就不只是「一句无权说的话」,
+        // 而是一句可被当场证伪的谎。
         case .warning, .updateNeeded:
             return .attention
         case .off, .setupNeeded, .missing, .notInstalled:
