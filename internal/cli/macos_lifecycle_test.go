@@ -116,7 +116,7 @@ func TestMacOSUpLifecycleMigratesBeforeMenuAndWaitsForProtected(t *testing.T) {
 	}
 	deps := testMacOSLifecycleDeps(&events, client)
 	deps.legacyInstalled = func() bool { return true }
-	deps.legacyLoaded = func() (bool, error) {
+	deps.legacyLoaded = func(context.Context) (bool, error) {
 		events = append(events, "legacy.loaded")
 		return true, nil
 	}
@@ -170,7 +170,7 @@ func TestMacOSUpLifecycleRemovesOrphanLegacyPlistWithoutMigrating(t *testing.T) 
 	}
 	deps := testMacOSLifecycleDeps(&events, client)
 	deps.legacyInstalled = func() bool { return true }
-	deps.legacyLoaded = func() (bool, error) {
+	deps.legacyLoaded = func(context.Context) (bool, error) {
 		events = append(events, "legacy.loaded")
 		return false, nil
 	}
@@ -203,7 +203,7 @@ func TestMacOSUpLifecycleStillMigratesWhenLegacyLoaded(t *testing.T) {
 	}
 	deps := testMacOSLifecycleDeps(&events, client)
 	deps.legacyInstalled = func() bool { return true }
-	deps.legacyLoaded = func() (bool, error) {
+	deps.legacyLoaded = func(context.Context) (bool, error) {
 		events = append(events, "legacy.loaded")
 		return true, nil
 	}
@@ -265,7 +265,7 @@ func TestMacOSUpLifecycleMetadataFailureLeavesGuardianAndLegacyUntouched(t *test
 	client := &recordingGuardianClient{events: &events}
 	deps := testMacOSLifecycleDeps(&events, client)
 	deps.legacyInstalled = func() bool { return true }
-	deps.legacyLoaded = func() (bool, error) {
+	deps.legacyLoaded = func(context.Context) (bool, error) {
 		events = append(events, "legacy.loaded")
 		return true, nil
 	}
@@ -355,6 +355,7 @@ type fakeMacOSLifecycleDeps struct {
 	clearBarrierCount  int
 	desiredOffCount    int
 	restoreDNSCount    int
+	bootoutLegacyCount int
 
 	// 启动侧的钩子也各带一个计数器。它们存在的理由只有一个:让「停止路径
 	// 有没有做启动的活」成为一条可断言的行为事实,而不是靠读源码目视确认。
@@ -382,6 +383,11 @@ func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
 	f.macOSLifecycleDeps.forceTeardown = func(context.Context) error {
 		f.forceTeardownCount++
 		f.events = append(f.events, "guardian.forceTeardown")
+		return nil
+	}
+	f.macOSLifecycleDeps.bootoutLegacyUnit = func(context.Context) error {
+		f.bootoutLegacyCount++
+		f.events = append(f.events, "legacy.bootout")
 		return nil
 	}
 	f.macOSLifecycleDeps.stopCore = func(context.Context) error {
@@ -412,9 +418,9 @@ func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
 // 是为了让计数与 testMacOSLifecycleDeps 的默认行为不会各自漂移。
 func (f *fakeMacOSLifecycleDeps) countStartupHooks() {
 	legacyLoaded := f.macOSLifecycleDeps.legacyLoaded
-	f.macOSLifecycleDeps.legacyLoaded = func() (bool, error) {
+	f.macOSLifecycleDeps.legacyLoaded = func(ctx context.Context) (bool, error) {
 		f.legacyLoadedCount++
-		return legacyLoaded()
+		return legacyLoaded(ctx)
 	}
 	migrationRequest := f.macOSLifecycleDeps.migrationRequest
 	f.macOSLifecycleDeps.migrationRequest = func(ctx context.Context, configPath string) (guardian.MigrationRequest, error) {
@@ -512,7 +518,7 @@ func TestCleanDownDoesNoStartupWork(t *testing.T) {
 func TestMacOSDownStopsLegacyCoreInsteadOfClaimingSuccess(t *testing.T) {
 	f := newFakeMacOSLifecycleDeps()
 	f.guardianReady = func(context.Context) bool { return true }
-	f.legacyLoaded = func() (bool, error) { return true, nil }
+	f.legacyLoaded = func(context.Context) (bool, error) { return true, nil }
 
 	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps)
 	if err != nil {
@@ -529,12 +535,101 @@ func TestMacOSDownStopsLegacyCoreInsteadOfClaimingSuccess(t *testing.T) {
 	}
 }
 
+// **停下来还不够,它得留在停下的状态。**
+//
+// legacy Core 的 plist 带的是**无条件** KeepAlive(install.go 的 launchd 模板里
+// `<key>KeepAlive</key><true/>`,不是 {SuccessfulExit:false} 那种带条件的)。于是
+// 只请求 Core 退出的话,它退出 → launchd 立刻(或过了 10s 节流后)把它拉回来 →
+// 「已停止」在几秒钟之内重新变成假话。而这条分支的**选中条件本身**就保证了陷阱
+// 是armed 的:legacyLoaded==true 的意思就是那个 job 正装在 launchd 里。
+//
+// 必须先解除 job 再请求退出(反过来就是给 launchd 留一个重启窗口)。
+// Guardian 自己的迁移用的正是同一个函数:Manager.Migrate → m.legacy.Stop →
+// install.BootoutLegacyCoreUnit。
+func TestMacOSDownDisarmsLegacyUnitBeforeAskingCoreToExit(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	f.guardianReady = func(context.Context) bool { return true }
+	f.legacyLoaded = func(context.Context) (bool, error) { return true, nil }
+
+	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps); err != nil {
+		t.Fatalf("停止必须完成: %v", err)
+	}
+	bootout, shutdown := f.eventIndex("legacy.bootout"), f.eventIndex("core.shutdown")
+	if bootout < 0 {
+		t.Fatalf("必须解除 legacy 的 launchd job,否则 KeepAlive 会把 Core 拉回来, trace=%s", f.trace())
+	}
+	if shutdown < 0 {
+		t.Fatalf("仍须请求 Core 退出, trace=%s", f.trace())
+	}
+	if bootout > shutdown {
+		t.Errorf("必须先解除 job 再请求退出,否则中间留下一个 launchd 重启窗口, trace=%s", f.trace())
+	}
+}
+
+// 解除 job 失败不得中断停止的其余步骤 —— 与强制拆除里每一步的约定相同:
+// 「停止」不许依赖先成功做成别的事。但它也**不许被静静吞掉**:job 还armed 着
+// 意味着 Core 会回来,用户必须知道。
+func TestMacOSDownReportsButSurvivesLegacyBootoutFailure(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	f.guardianReady = func(context.Context) bool { return true }
+	f.legacyLoaded = func(context.Context) (bool, error) { return true, nil }
+	f.bootoutLegacyUnit = func(context.Context) error { return errors.New("launchctl bootout: 权限不足") }
+
+	_, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps)
+	if err == nil {
+		t.Fatal("解除 job 失败必须如实报错 —— 否则用户以为关掉了,而 launchd 正准备把 Core 拉回来")
+	}
+	if f.stopCoreCount != 1 || f.clearBarrierCount != 1 || f.restoreDNSCount != 1 {
+		t.Errorf("解除失败不得中断其余步骤: stopCore=%d barrier=%d dns=%d",
+			f.stopCoreCount, f.clearBarrierCount, f.restoreDNSCount)
+	}
+}
+
+// 探查必须有界。它 fork 两次 `launchctl print`,而且现在**跑在最前面** —— 什么都
+// 还没停就先卡住,正是 2026-08-04 那次「71 分钟关不掉保护」的形状。本文件已经为
+// restoreSystemDNS 做过同样的事(dnsRestoreTimeout)。
+func TestMacOSDownBoundsTheLegacyProbe(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	f.guardianReady = func(context.Context) bool { return true }
+	var sawDeadline bool
+	var remaining time.Duration
+	f.legacyLoaded = func(ctx context.Context) (bool, error) {
+		deadline, ok := ctx.Deadline()
+		sawDeadline = ok
+		if ok {
+			remaining = time.Until(deadline)
+		}
+		return false, nil
+	}
+
+	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps); err != nil {
+		t.Fatal(err)
+	}
+	if !sawDeadline {
+		t.Fatal("legacy 探查必须带有界超时的 context,否则卡住的 launchd 会把停止挂死在第一步")
+	}
+	if remaining <= 0 || remaining > legacyProbeTimeout {
+		t.Fatalf("探查超时窗口不合理: remaining=%v want (0, %v]", remaining, legacyProbeTimeout)
+	}
+}
+
+// fail-closed 的地板:钩子根本没接线时必须当作「可能有」。
+//
+// 这条看着平凡,但它是**唯一**盯着那个分支的东西 —— 把它改成 return false 之前
+// 整套测试仍然全绿。本仓库对这类地板的先例是 decideCoreScan:判定式抽出来、
+// 由单测逐条钉死。
+func TestLegacyCoreMayBeRunningAssumesTrueWithoutAProbe(t *testing.T) {
+	if !legacyCoreMayBeRunning(context.Background(), macOSLifecycleDeps{}) {
+		t.Error("没有探查手段时必须假定可能有 legacy Core —— 「问不出来」不许塌缩成「没有」")
+	}
+}
+
 // 「问不出来」不等于「没有」。探查失败时无法证明没有 legacy Core,安全方向是
 // 走那条**万一有就能停下它**的路 —— 与本仓库别处的三态纪律同形。
 func TestMacOSDownTakesForcedPathWhenLegacyProbeFails(t *testing.T) {
 	f := newFakeMacOSLifecycleDeps()
 	f.guardianReady = func(context.Context) bool { return true }
-	f.legacyLoaded = func() (bool, error) { return false, errors.New("launchctl print: 权限不足") }
+	f.legacyLoaded = func(context.Context) (bool, error) { return false, errors.New("launchctl print: 权限不足") }
 
 	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps)
 	if err != nil {
@@ -912,7 +1007,7 @@ func TestMacOSDownFallsBackToForcedTeardownWhenGuardianDownFails(t *testing.T) {
 func TestMacOSDownFallsBackToForcedTeardownWhenLegacyCoreLoaded(t *testing.T) {
 	deps := newFakeMacOSLifecycleDeps()
 	deps.guardianReady = func(context.Context) bool { return true }
-	deps.legacyLoaded = func() (bool, error) { return true, nil }
+	deps.legacyLoaded = func(context.Context) (bool, error) { return true, nil }
 	deps.migrationRequest = func(context.Context, string) (guardian.MigrationRequest, error) {
 		return guardian.MigrationRequest{}, errors.New("discover migration gateway: default gateway not found")
 	}
@@ -1261,7 +1356,7 @@ func testMacOSLifecycleDeps(events *[]string, client guardianLifecycleClient) ma
 			return true
 		},
 		legacyInstalled: func() bool { return false },
-		legacyLoaded: func() (bool, error) {
+		legacyLoaded: func(context.Context) (bool, error) {
 			*events = append(*events, "legacy.loaded")
 			return false, nil
 		},

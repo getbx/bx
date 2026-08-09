@@ -13,18 +13,7 @@ import "fmt"
 // steps cannot promise that.
 func downReportLines(result macOSDownResult) (stdout []string, stderr []string) {
 	if result.Forced {
-		switch {
-		case result.LegacyCore:
-			// 这一条既不是「Guardian 未响应」(它响应了),也不是「事务失败」
-			// (根本没发过)。走强制路径是有意的选择:干净事务停不下一个
-			// Guardian 不掌管的 Core,只会报成功。措辞用「可能」是如实的 ——
-			// 探查失败时我们同样走这条路,而那时确实只是不能排除。
-			stderr = append(stderr, "⚠️  可能有不受 Guardian 掌管的旧版 Core 在运行,已改走强制停止(只有这条路停得下它)。")
-		case result.Cause != nil:
-			stderr = append(stderr, fmt.Sprintf("⚠️  Guardian 正常关闭事务失败(%v),已改走强制停止。", result.Cause))
-		default:
-			stderr = append(stderr, "⚠️  Guardian 未响应,已改走强制停止。")
-		}
+		stderr = append(stderr, "⚠️  "+forcedTeardownReason(result)+"。")
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
 		stdout = append(
 			stdout,
@@ -35,4 +24,24 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 	}
 	stdout = append(stdout, "✅ bx 已停止并取消开机自启。")
 	return stdout, stderr
+}
+
+// forcedTeardownReason 说明**为什么**走了强制路径,不带句尾标点 —— 调用方各自
+// 接自己的下文(bx down 直接句号;升级路径接「;请自行确认网络是否恢复」)。
+//
+// 它是纯函数且**必须是唯一的一份**:升级路径(appinstall_darwin.go)此前内联着
+// 自己的副本,于是 legacy 那条分支一加,升级就开始打印「Guardian 未响应」——
+// 而 Guardian 明明应答了,是我们主动选的重路径。同一句话散成两份,修一份就是
+// 修一半;这个函数存在的意义就是让那种半修不可能发生。
+func forcedTeardownReason(result macOSDownResult) string {
+	switch {
+	case result.LegacyCore:
+		// 措辞用「可能」是如实的:探查失败时我们同样走这条路,那时确实只是
+		// 不能排除,而不是确知有。
+		return "可能有不受 Guardian 掌管的旧版 Core 在运行,已改走强制停止(只有这条路停得下它)"
+	case result.Cause != nil:
+		return fmt.Sprintf("Guardian 正常关闭事务失败(%v),已改走强制停止", result.Cause)
+	default:
+		return "Guardian 未响应,已改走强制停止"
+	}
 }

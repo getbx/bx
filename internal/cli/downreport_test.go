@@ -84,6 +84,72 @@ func TestDownReportExplainsLegacyCoreForcedPathWithoutBlamingGuardian(t *testing
 	}
 }
 
+// Task 1 钉住的那几条性质,必须对**每一种**强制子情况都成立。
+//
+// 它们此前只对 {Forced:true} 断言过,而强制路径现在有三种进法(Guardian 未响应 /
+// 干净事务失败 / 可能有旧版 Core)。一个新分支只要早返回一步,就能悄悄绕过
+// 「列出做过的动作」「不断言网络已恢复」「给出 bx uninstall 这条下一步」——
+// 而这三条恰恰是用户在最坏时刻唯一的指引。
+func TestDownReportForcedPropertiesHoldForEveryForcedSubCase(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result macOSDownResult
+	}{
+		{"guardian 未响应", macOSDownResult{Forced: true}},
+		{"干净事务失败", macOSDownResult{Forced: true, Cause: errSentinelForReport}},
+		{"可能有旧版 Core", macOSDownResult{Forced: true, LegacyCore: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, errLines := downReportLines(tc.result)
+			joined := strings.Join(append(append([]string{}, out...), errLines...), "\n")
+
+			if !strings.Contains(joined, "强制") {
+				t.Errorf("必须让用户知道走的是强制:\n%s", joined)
+			}
+			for _, action := range []string{"关闭意图", "Core", "Guardian", "屏障", "DNS"} {
+				if !strings.Contains(joined, action) {
+					t.Errorf("必须列出做过的动作,缺 %q:\n%s", action, joined)
+				}
+			}
+			if strings.Contains(joined, "网络已恢复") {
+				t.Errorf("不得断言网络已恢复(强制拆除做不到这个保证):\n%s", joined)
+			}
+			if !strings.Contains(joined, "bx uninstall") {
+				t.Errorf("必须给出仍不通时的下一步:\n%s", joined)
+			}
+		})
+	}
+}
+
+// 升级路径**不得**自己抄一份措辞。
+//
+// appinstall_darwin.go 一直内联着自己那份「⚠️ Guardian 未响应,已改走强制停止」,
+// 而 macOSDownLifecycleFor 选择 legacy 分支时根本不看 purpose —— 于是升级路径会
+// 打印出与 bx down 相同的那句假话(Guardian 明明应答了)。两处必须由同一个纯函数
+// 导出原因。
+func TestForcedTeardownReasonDistinguishesEveryForcedSubCase(t *testing.T) {
+	unreachable := forcedTeardownReason(macOSDownResult{Forced: true})
+	failed := forcedTeardownReason(macOSDownResult{Forced: true, Cause: errSentinelForReport})
+	legacy := forcedTeardownReason(macOSDownResult{Forced: true, LegacyCore: true})
+
+	if !strings.Contains(unreachable, "未响应") {
+		t.Errorf("Guardian 没应答时要说清:%q", unreachable)
+	}
+	if !strings.Contains(failed, errSentinelForReport.Error()) {
+		t.Errorf("干净事务失败必须带上原因:%q", failed)
+	}
+	if strings.Contains(legacy, "未响应") {
+		t.Errorf("Guardian 应答了,不得说它未响应:%q", legacy)
+	}
+	if !strings.Contains(legacy, "旧版 Core") {
+		t.Errorf("必须说明真实原因:%q", legacy)
+	}
+	// 三种原因必须互不相同,否则区分它们的意义就没了。
+	if unreachable == failed || failed == legacy || unreachable == legacy {
+		t.Errorf("三种强制原因必须可区分:\n%q\n%q\n%q", unreachable, failed, legacy)
+	}
+}
+
 var errSentinelForReport = errReportSentinel{}
 
 type errReportSentinel struct{}

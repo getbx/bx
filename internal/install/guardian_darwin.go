@@ -286,6 +286,14 @@ func LegacyCoreLoaded() (bool, error) {
 	return legacyCoreLoadedWithControl(context.Background(), execGuardianLaunchdControl{})
 }
 
+// LegacyCoreLoadedContext 是可打断的那一版。它要紧,因为这次探查会 fork **两次**
+// `launchctl print`(每个 legacy label 一次),而调用方之一是 `bx down` —— 一个
+// 卡住的 launchd 会把「停止保护」挂在那里,正是 2026-08-04 那次 71 分钟事故的形状。
+// exec.CommandContext 会在 ctx 到期时杀掉子进程,所以这个 ctx 是真的有约束力。
+func LegacyCoreLoadedContext(ctx context.Context) (bool, error) {
+	return legacyCoreLoadedWithControl(ctx, execGuardianLaunchdControl{})
+}
+
 func LegacyCoreInstalled() bool {
 	return legacyCoreInstalledAt([]string{launchdPlistPath, legacyLaunchdPlistPath})
 }
