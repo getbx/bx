@@ -56,8 +56,13 @@ func outdatedRuntimeNotice(capabilities: [String]?) -> OutdatedRuntimeNotice? {
     if declaresDiagnosticsArchive(capabilities) {
         return nil
     }
+    // 键整个缺席 ⇒ 这是本次契约之前的 Guardian,而 `core` 与 capabilities 是同一批
+    // 加的字段,所以它同样给不出 Core 的运行时状态 —— 保护状态因此显示
+    // Needs Attention / "Core status unavailable"。只说诊断包会让用户以为坏的只有
+    // Run Doctor,转头看见裂盾就合理地以为保护坏了(而 Turn Off 就在两行下面)。
+    // 两个后果同源,必须一起说,并由同一条 remedy 一起解决。
     let summary = capabilities == nil
-        ? "Older build; diagnostics archive unavailable"
+        ? "Older build; live Core status and diagnostics archive unavailable"
         : "Diagnostics archive unavailable"
     return OutdatedRuntimeNotice(
         summary: summary,

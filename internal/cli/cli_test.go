@@ -858,8 +858,16 @@ func TestMacMenuNeverReportsOffWhileTheCoreSocketAnswers(t *testing.T) {
 		t.Fatal("读不出 coreSocketAnswering 的实参 —— 本守卫看不懂现在的写法,请连同它一起重写")
 	}
 	actual := strings.TrimSpace(argument[1])
-	if !strings.HasPrefix(actual, "core.") {
-		t.Fatalf("coreSocketAnswering 的实参是 %q,必须是那次探测的返回值(`core.` 开头):"+
+	// **前缀不够。** `core.answering ?? false` 以 `core.` 开头、编译通过、整套测试全绿,
+	// 却把三态压回二值:probeCoreControlSocket 只把 ENOENT/ECONNREFUSED 判成「没人在那儿」,
+	// 其余 errno(机器负载高时的 EAGAIN、EACCES)一律 nil = 「问不出来」。`?? false` 把
+	// 「问不出来」读成「没在跑」,于是 Guardian 已被 bootout、Core 仍在转发流量时菜单照样
+	// 落到 .off(.serviceStopped) —— 与直接写 false 是同一个事故,只是绕过了前缀检查。
+	// 故实参必须是**光秃秃的一次取值**,不许附着任何运算符。
+	bareProbeValue := regexp.MustCompile(`^core\.[A-Za-z_][A-Za-z0-9_]*$`)
+	if !bareProbeValue.MatchString(actual) {
+		t.Fatalf("coreSocketAnswering 的实参是 %q,必须是那次探测的返回值本身(形如 `core.answering`,"+
+			"不许 `?? false` / `== true` / `!` 这类把三态压成二值的写法):"+
 			"喂给判定一个字面量,探测就白跑了 —— 判定的全部安全性建立在这条**新鲜观测**上,"+
 			"而 false 会在 Core 还在转发流量时把菜单打成 .off(.serviceStopped)(quitPlan 判 terminateImmediately,"+
 			"用户点 Quit 菜单消失、路由与 DNS 原封不动)", actual)
@@ -1065,13 +1073,23 @@ func TestMacMenuOldGuardianKeepsProtectionStateVisible(t *testing.T) {
 	if !ok {
 		t.Fatal("找不到 loadState 的函数体")
 	}
-	// ① 能力判据不得再产出任何状态。`.updateNeeded` 是它当初的落点,而状态推导
-	//    里**任何**由能力驱动的提前返回都是同一个高度错误 —— 这里只查最直接的
-	//    那种回归(把闸门原样写回来)。
+	// ① 能力判据不得再产出任何状态。
+	//
+	// 只禁 `.updateNeeded(` 是禁了这个回归的**一种拼法**:复审把闸门原样写回、
+	// 落点换成 `.off(.guardianResponding)`,整套测试全绿 —— 而那比原 bug 更坏
+	// (空盾 + "Not running" + 把 Turn Off 换成 Start Protection,出现在一台
+	// 保护正开着的机器上,正是第三条不变量禁止的「保护在跑却没有指示灯」)。
+	//
+	// 所以禁的是**判据本身出现在状态推导里**,不是它的某个落点。今天
+	// declaresDiagnosticsArchive 的唯一正当调用方是 StatusReport.swift 的
+	// outdatedRuntimeNotice —— 一个只影响 Run Doctor 那一行的数据行。
+	if strings.Contains(swiftCodeOnly(load), "declaresDiagnosticsArchive(") {
+		t.Fatal("loadState 不得直接使用能力判据:它影响的只有 Run Doctor 的诊断包," +
+			"任何由它驱动的状态返回都会顶掉保护状态,让升级窗口里的用户既看不到 Protected/Off," +
+			"也点不到 Turn Off / Reconnect。要表达「Guardian 是旧版」请走 outdatedRuntimeNotice 那条数据行")
+	}
 	if strings.Contains(swiftCodeOnly(load), ".updateNeeded(") {
-		t.Fatal("loadState 不得因「Guardian 没声明某个能力」而返回一个状态:" +
-			"它影响的只有 Run Doctor 的诊断包,顶掉保护状态会让升级窗口里的用户既看不到 Protected/Off," +
-			"也点不到 Turn Off / Reconnect")
+		t.Fatal("loadState 不得因「Guardian 没声明某个能力」而返回一个状态(同上,这是它当初的落点)")
 	}
 	// ② 事实仍必须抵达用户:算出来 → 带出后台线程 → 落定 → 画出来。缺任何一跳,
 	//    这次修复就变成「把问题删掉」而不是「把它降到正确的高度」。
@@ -1135,8 +1153,20 @@ func TestMenuGuardianPathsAreServedByTheDaemon(t *testing.T) {
 			"请连同它一起重写(响亮失败,不是静默通过)")
 	}
 	requested := regexp.MustCompile(`(?m)^\s*path = "([^"]+)"`).FindAllStringSubmatch(string(swift), -1)
-	if len(requested) == 0 {
-		t.Fatal("在 GuardianClient.swift 里一条请求路径都没解析出来 —— 同上,请连同本守卫一起重写")
+	// 下限按**条数**而不是「非零」:每个 GuardianEndpoint 在 guardianRequest 的
+	// switch 里各赋值一次 path,少一条就说明有端点改成了别的写法(常量、拼接、
+	// 计算属性),本守卫对那条路径已经失明。判「非零」会让它悄悄缩水成只钉住
+	// 剩下几条 —— 复审实测:把一条改成引用常量,守卫依旧全绿。
+	enumBody, ok := swiftFunctionBody(string(swift), "enum GuardianEndpoint {")
+	if !ok {
+		t.Fatal("找不到 enum GuardianEndpoint —— 本守卫读不懂现在的代码,请连同它一起重写")
+	}
+	// `case .x:` 那些是 switch 的分支(带点),不是端点声明,`\w` 不匹配点故自然排除。
+	endpoints := regexp.MustCompile(`(?m)^\s*case\s+\w+\s*$`).FindAllString(enumBody, -1)
+	if len(requested) != len(endpoints) || len(endpoints) == 0 {
+		t.Fatalf("GuardianEndpoint 有 %d 个端点,却只解析出 %d 条 `path = \"…\"` —— "+
+			"本守卫对差额里的那些路径是失明的,请连同它一起重写(响亮失败,不是静默缩水)",
+			len(endpoints), len(requested))
 	}
 	for _, match := range requested {
 		if !served[match[1]] {
@@ -1404,10 +1434,18 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			why:     "进程创建的出口必须是可枚举的一小撮。多一个没人盯着的,上面整条链的证明就绕过去了",
 		},
 		{
-			// Process 只是 Foundation 那一条路。这三条各自都能独立拉起一个进程,
+			// Process 只是 Foundation 那一条路。下面这些各自都能独立拉起一个进程,
 			// 一条都不许出现 —— 菜单没有任何正当理由绕过 runBx 那唯一的出口。
-			pattern: regexp.MustCompile(`\bposix_spawn\w*\b|\bNSTask\b|\bexec[lv][pe]*\b`),
-			label:   "POSIX/Cocoa 的另一条进程创建通路(posix_spawn / NSTask / exec*)",
+			//
+			// `popen`/`system` 是复审实测绕过去的那两条:`popen("bx status --json", "r")`
+			// 一行、就在 probeCoreControlSocket 里、正在轮询路径上,整套测试全绿。它俩恰好
+			// 是 runBx 的语义(起进程 + 收 stdout),也就是后来人最顺手会写的那个写法。
+			// 除 NSTask(类型名)外一律要求带调用括号:`system` 这个词在本文件里
+			// 既是 `NSStatusBar.system` 也是用户可见文案里的 "system traffic",按裸词
+			// 匹配会把守卫变成常年红灯 —— 一条常年红的守卫等于没有守卫。`[^.\w]` 排掉
+			// 成员访问(`.system`),留下真正的自由函数调用。
+			pattern: regexp.MustCompile(`\bposix_spawn\w*\s*\(|\bNSTask\b|\bexec[lv]\w*\s*\(|\bpopen\s*\(|[^.\w]system\s*\(|\bv?fork\s*\(`),
+			label:   "POSIX/Cocoa 的另一条进程创建通路(posix_spawn / NSTask / exec* / popen / system / fork)",
 			callers: nil,
 			why: "它们绕过 Process 这一条链上的全部证明。菜单要执行 CLI 只有 runBx 一个出口," +
 				"多一条就等于「谁会 spawn」重新变成没人枚举得全的事",
@@ -1419,19 +1457,19 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 		},
 		{
 			pattern: call("cliRuns("), label: "cliRuns(", callers: []string{"ensureCLIUsable"},
-			why:     "exec 探测只经这一道闸门对外,否则「谁会 spawn」又变成要手工枚举的事",
+			why: "exec 探测只经这一道闸门对外,否则「谁会 spawn」又变成要手工枚举的事",
 		},
 		{
 			pattern: call("ensureCLIUsable("), label: "ensureCLIUsable(", callers: []string{"setUpBx", "updateBx"},
-			why:     "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
+			why: "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
 		},
 		{
 			pattern: call("setUpBx("), label: "setUpBx(", callers: nil,
-			why:     "它是 #selector 的菜单入口,只能由用户点击触发,不该被任何代码调用",
+			why: "它是 #selector 的菜单入口,只能由用户点击触发,不该被任何代码调用",
 		},
 		{
 			pattern: call("updateBx("), label: "updateBx(", callers: nil,
-			why:     "同上",
+			why: "同上",
 		},
 	} {
 		allowed := map[string]bool{}
@@ -1453,6 +1491,39 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			if !allowed[caller] {
 				t.Errorf("%s 出现在 %s 里,只允许 %v:%s", rule.label, caller, rule.callers, rule.why)
 			}
+		}
+	}
+
+	// 上面整条链只证明了 main.swift。**这个包不止一个文件。**
+	//
+	// 复审实测:在 StoppedDiagnosis.swift 写一句 `typealias CommandRunner = Process`,
+	// 再在 main.swift 里用 `CommandRunner()` —— 整套测试全绿,轮询路径上的 spawn 就此
+	// 复活。链证明的是「main.swift 里谁能 spawn」,而进程创建通路可以在任何一个兄弟
+	// 文件里被重新命名、包装、导出。
+	//
+	// 兄弟文件全是纯逻辑(状态推导、文案、socket 编解码),没有一个有正当理由创建进程,
+	// 所以这里的规则最简单也最强:**一处都不许有**。要加进程创建能力,请连同这条守卫
+	// 与上面那条链一起重新论证。
+	siblings, err := filepath.Glob(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "*.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(siblings) < 2 {
+		t.Fatalf("只找到 %d 个 Swift 源文件 —— 本守卫读不懂现在的目录结构,请连同它一起重写", len(siblings))
+	}
+	spawnPrimitive := regexp.MustCompile(`\bProcess\b|\bNSTask\b|\bposix_spawn\w*\s*\(|\bexec[lv]\w*\s*\(|\bpopen\s*\(|[^.\w]system\s*\(|\bv?fork\s*\(`)
+	for _, file := range siblings {
+		if filepath.Base(file) == "main.swift" {
+			continue // 由上面那条链逐函数证明
+		}
+		body, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hit := spawnPrimitive.FindString(swiftCodeOnly(string(body))); hit != "" {
+			t.Errorf("%s 里出现进程创建原语 %q:兄弟文件全是纯逻辑,一处都不该有 —— "+
+				"在这里给 Process 换个名字(typealias / 包装函数)就能让 main.swift 那条链的证明整个失效",
+				filepath.Base(file), hit)
 		}
 	}
 

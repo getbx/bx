@@ -133,6 +133,12 @@ struct StatusReportTests {
                "键缺席只可能来自本次契约之前的旧 Guardian,这个事实必须说出来,实际 \(neverDeclared.summary)")
         expect(neverDeclared.summary.lowercased().contains("diagnostics archive"),
                "同时必须说清降级的到底是哪一项 —— 不说清就会被读成「保护出问题了」")
+        // 键缺席的那台机器上,`core` 也一定缺席(两个字段同批加的),于是保护状态
+        // 会显示 Needs Attention / "Core status unavailable" —— 那是同一个旧版
+        // Guardian 的**第二个**后果。附注只提诊断包,用户就会得出「坏的只有 Run Doctor」,
+        // 转头看见裂盾和一句读不出的状态,合理地以为保护坏了 —— 而 Turn Off 就在两行下面。
+        expect(neverDeclared.summary.lowercased().contains("core status"),
+               "旧 Guardian 连 Core 状态都给不出,附注必须把这第二个后果也说出来,实际 \(neverDeclared.summary)")
 
         // 声明过、但这一版确实没有这个能力:降级同样成立,但**不能**说人家是旧版。
         guard let declaredWithout = outdatedRuntimeNotice(capabilities: ["something_else"]) else {
