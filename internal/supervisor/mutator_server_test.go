@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -116,4 +117,38 @@ func TestRehijackReadsBypassAtApplyTime(t *testing.T) {
 	if len(fp.lastServerBypass) != 2 {
 		t.Fatalf("Rehijack 必须用调用时的 bypass 集合(否则新服务器的 IP 装不进去,切过去成环), got %v", fp.lastServerBypass)
 	}
+}
+
+// serverBypass 上那把锁守的是一条真实可达的并发:commit-confirmed 引擎跑在自己的
+// goroutine 上(run.go 的 `go mutEng.Run(ctx)`)、由它执行 Rehijack 的 apply,
+// 而 SetServerBypass 来自控制面那条路 —— 后续任务把「切服务器」的 HTTP handler
+// 接上之后,两者就确确实实在不同 goroutine 上跑。
+//
+// 但锁本身没有任何测试盯着。它是那种**去掉之后一切照常绿**的东西:
+// 竞态要在真实并发下才暴露,而单测默认不并发。这条补的就是那个空档 ——
+// 它只在 `go test -race` 下有意义,而 -race 已经是本项目的固定验证命令之一。
+func TestServerBypassIsSafeUnderConcurrentUpdateAndRehijack(t *testing.T) {
+	m := &liveMutator{plat: &fakePlatform{}, serverBypass: []string{"1.1.1.1/32"}}
+	apply, _, err := m.Rehijack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			m.SetServerBypass([]string{"1.1.1.1/32", "2.2.2.2/32"})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			if err := apply(); err != nil {
+				t.Errorf("apply 报错: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
 }
