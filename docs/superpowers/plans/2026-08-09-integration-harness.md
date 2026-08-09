@@ -333,6 +333,22 @@ git commit -m "test(supervisor): 集成台钉住 bypass 覆盖与「切换不动
 
 ## Task 4: 断言 3、4 —— 拒绝切换与屏障开口
 
+**Task 3 复审量出来的两条,先读再动手:**
+
+1. **`harnessConfigWithHostOverride` 还不存在,由本任务新建**:照 `twoServerHarnessConfig`
+   的 `servers:`/`current:` 形状,再加一段 `hosts:`,值用一个**公网** IPv4
+   (如 `public-override.example: 203.0.113.77`)—— `hosts:` 接受任意 IPv4 字面量,
+   而屏障开口是在 `/2` reject 屏障上**打洞**,混进一个公网 IP 就是 fail-closed 上的口子。
+2. **断言 4 是反极性的(「不得含 X」),这类断言最容易静默通过。**
+   刚在 Task 3 修掉的正是同款陷阱:观测本身失败时什么都找不到,于是「没有不该有的
+   东西」,绿灯。所以本任务的每一条反极性断言都必须**先证明观测成功**:
+   `FetchRuntimeState` 的 error 要判;`rt.ServerBypass` 为空要单独判失败(空集合
+   同样满足「不含覆盖 IP」,但它意味着屏障没有任何开口 —— 那是另一个事故);
+   再判「含当前那台的两条」与「不含覆盖 IP」。
+   **观测不到 ≠ 观测到没有** —— 这是 `internal/observe` 的三态 `Tristate` 已经表达过的
+   原则,台子里不能退回二值。
+
+
 **Files:**
 - Create: `internal/supervisor/harness_switch_netns_linux_test.go`
 
