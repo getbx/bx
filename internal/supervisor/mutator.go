@@ -83,18 +83,10 @@ func (m *liveMutator) Reconnect() error {
 	return m.swap.swapTo(m.swap.currentLink())
 }
 
-// SetServerBypass 更新 bypass 集合。加**新**服务器时新 IP 不在启动时算好的集合里,
-// 必须先更新再 Rehijack —— 顺序反了就等于没装,而没装就成环。
-func (m *liveMutator) SetServerBypass(cidrs []string) {
-	if m.store != nil {
-		// 只换路由那一半,静态 DNS 保持原样(这条路径的调用方只知道 CIDR)。
-		m.store.set(cidrs, m.store.staticEntries(), m.store.serverAddrs())
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.serverBypass = append([]string(nil), cidrs...)
-}
+// 这里曾有一个 SetServerBypass:零生产调用方,而它的 store 分支只换路由那一半、
+// 让 servers 留在旧值 —— 谁哪天把它接上,就会从另一扇门把 a8c670f 那个洞
+//(屏障开口与实际服务器脱节)放回来。发布 bypass 的唯一入口是
+// bypassStore.set(三份视图一起给),经 newBypassRefresher 调用。
 
 func (m *liveMutator) currentServerBypass() []string {
 	if m.store != nil {

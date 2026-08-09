@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"errors"
+	"net/netip"
 	"sync"
 	"testing"
 )
@@ -105,12 +106,15 @@ func TestSetServerUndoRestoresBothSlots(t *testing.T) {
 // 切过去立刻成环。
 func TestRehijackReadsBypassAtApplyTime(t *testing.T) {
 	fp := &fakePlatform{}
-	m := &liveMutator{plat: fp, serverBypass: []string{"1.1.1.1/32"}}
+	// 发布 bypass 的唯一入口是 bypassStore(旧的 liveMutator.SetServerBypass 已删:
+	// 零生产调用方,且它只换三份视图里的一份)。断言一字未改。
+	store := newBypassStore([]string{"1.1.1.1/32"}, nil, nil)
+	m := &liveMutator{plat: fp, store: store}
 	apply, _, err := m.Rehijack()
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.SetServerBypass([]string{"1.1.1.1/32", "2.2.2.2/32"})
+	store.set([]string{"1.1.1.1/32", "2.2.2.2/32"}, nil, nil)
 	if err := apply(); err != nil {
 		t.Fatal(err)
 	}
@@ -121,14 +125,15 @@ func TestRehijackReadsBypassAtApplyTime(t *testing.T) {
 
 // serverBypass 上那把锁守的是一条真实可达的并发:commit-confirmed 引擎跑在自己的
 // goroutine 上(run.go 的 `go mutEng.Run(ctx)`)、由它执行 Rehijack 的 apply,
-// 而 SetServerBypass 来自控制面那条路 —— 后续任务把「切服务器」的 HTTP handler
+// 而发布 bypass(bypassStore.set)来自控制面那条路 —— 「切服务器」的 HTTP handler
 // 接上之后,两者就确确实实在不同 goroutine 上跑。
 //
 // 但锁本身没有任何测试盯着。它是那种**去掉之后一切照常绿**的东西:
 // 竞态要在真实并发下才暴露,而单测默认不并发。这条补的就是那个空档 ——
 // 它只在 `go test -race` 下有意义,而 -race 已经是本项目的固定验证命令之一。
 func TestServerBypassIsSafeUnderConcurrentUpdateAndRehijack(t *testing.T) {
-	m := &liveMutator{plat: &fakePlatform{}, serverBypass: []string{"1.1.1.1/32"}}
+	store := newBypassStore([]string{"1.1.1.1/32"}, nil, nil)
+	m := &liveMutator{plat: &fakePlatform{}, store: store}
 	apply, _, err := m.Rehijack()
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +143,11 @@ func TestServerBypassIsSafeUnderConcurrentUpdateAndRehijack(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
-			m.SetServerBypass([]string{"1.1.1.1/32", "2.2.2.2/32"})
+			store.set([]string{"1.1.1.1/32", "2.2.2.2/32"},
+				map[string][]netip.Addr{"h": {netip.MustParseAddr("2.2.2.2")}},
+				[]netip.Addr{netip.MustParseAddr("2.2.2.2")})
+			_ = store.staticEntries()
+			_ = store.serverAddrs()
 		}
 	}()
 	go func() {
@@ -170,16 +179,5 @@ func TestLiveMutatorReadsSharedBypassStore(t *testing.T) {
 	}
 	if !containsString(fp.lastServerBypass, "2.2.2.2/32") {
 		t.Fatalf("Rehijack 必须拿到 store 里的当前集合, got %v", fp.lastServerBypass)
-	}
-}
-
-// SetServerBypass 在接了 store 的部署里必须写进 store(而不是写进自己那份影子拷贝,
-// 那样路径恢复与后续刷新都看不见)。
-func TestLiveMutatorSetServerBypassWritesThroughToStore(t *testing.T) {
-	store := newBypassStore([]string{"1.1.1.1/32"}, nil, nil)
-	m := &liveMutator{plat: &fakePlatform{}, store: store}
-	m.SetServerBypass([]string{"3.3.3.3/32"})
-	if !containsString(store.cidrs(), "3.3.3.3/32") {
-		t.Fatalf("写进 store 才能被所有消费者看见, got %v", store.cidrs())
 	}
 }
