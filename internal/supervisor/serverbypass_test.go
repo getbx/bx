@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"context"
 	"net/netip"
 	"testing"
 
@@ -185,5 +186,103 @@ func TestEqualStringSetsIgnoresOrderAndCatchesDifference(t *testing.T) {
 	}
 	if !equalStringSets(nil, nil) {
 		t.Fatal("空对空应相等")
+	}
+}
+
+// /v0/server 的请求体里就带着目标链接 —— 它不该从配置文件的 current 去**猜**自己
+// 要切到哪台。spec 是「先热切、成功后再落盘 current」,故切换那一刻目标往往还不是
+// current;Required 若只看文件,目标解析失败就会被当成「一台今天没在用的服务器」
+// 静默跳过,然后不装 bypass 直接切过去 = 成环(连得上、status 显绿、流量绕圈)。
+func TestResolveServerBypassTreatsCallerNamedLinksAsRequired(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.Server{
+			{Name: "hk", Link: "vless://u@hk.example:443"},
+			{Name: "tokyo", Link: "vless://u@tokyo.example:443"},
+		},
+		Current: "hk", // 注意:文件里当前仍是 hk,目标 tokyo 还没落盘
+	}
+	resolve := func(host string) []netip.Addr {
+		if host == "hk.example" {
+			return []netip.Addr{netip.MustParseAddr("1.1.1.1")}
+		}
+		return nil // tokyo 解析不了
+	}
+	_, _, err := resolveServerBypassRequiring(cfg, []string{"vless://u@tokyo.example:443"}, resolve)
+	if err == nil {
+		t.Fatal("调用方点名的目标解析不了必须报错 —— 静默跳过就等于不装 bypass 切过去 = 成环")
+	}
+}
+
+// 目标可能**还不在配置文件里**(先切后落盘),此时它必须仍然进 bypass 集合。
+func TestResolveServerBypassIncludesCallerNamedLinkAbsentFromConfig(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.Server{{Name: "hk", Link: "vless://u@hk.example:443"}},
+		Current: "hk",
+	}
+	resolve := func(host string) []netip.Addr {
+		switch host {
+		case "hk.example":
+			return []netip.Addr{netip.MustParseAddr("1.1.1.1")}
+		case "new.example":
+			return []netip.Addr{netip.MustParseAddr("9.9.9.9")}
+		}
+		return nil
+	}
+	staticA, addrs, err := resolveServerBypassRequiring(cfg, []string{"vless://u@new.example:443"}, resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := staticA["new.example"]; !ok {
+		t.Fatalf("配置里还没有的目标也必须进 bypass, got %v", staticA)
+	}
+	var found bool
+	for _, a := range addrs {
+		if a == netip.MustParseAddr("9.9.9.9") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("目标的 IP 必须进地址集合, got %v", addrs)
+	}
+}
+
+// 点名只提升被点名的那些,不把整张清单变成必需 —— 否则一台退役服务器又能堵死切换了。
+func TestResolveServerBypassRequiringStillSkipsOtherUnresolvableServers(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.Server{
+			{Name: "hk", Link: "vless://u@hk.example:443"},
+			{Name: "tokyo", Link: "vless://u@tokyo.example:443"},
+			{Name: "dead", Link: "vless://u@dead.example:443"}, // 退役,解析不了
+		},
+		Current: "hk",
+	}
+	resolve := func(host string) []netip.Addr {
+		if host == "dead.example" {
+			return nil
+		}
+		return []netip.Addr{netip.MustParseAddr("1.1.1.1")}
+	}
+	if _, _, err := resolveServerBypassRequiring(cfg, []string{"vless://u@tokyo.example:443"}, resolve); err != nil {
+		t.Fatalf("没被点名的那台解析不了不该堵死切换: %v", err)
+	}
+}
+
+// 刷新路径在 cs.mu 里跑,而 net.LookupIP 没有超时:解析器一挂,/v0/commit、
+// /v0/transport、/v0/rehijack 全被连坐(这个项目已经有过一次「71 分钟关不掉保护」)。
+// 故刷新路径必须用带 ctx 的解析器,由调用方封顶。
+func TestHostToAddrsCtxHonoursContextCancellation(t *testing.T) {
+	// 前提:这个名字不查网络也解析得出(/etc/hosts),故本测试离线可跑,
+	// 「返回空」只可能来自 ctx 而不是「本机没网」。
+	if len(hostToAddrs("localhost")) == 0 {
+		t.Skip("本机 localhost 解析不出,本测试前提不成立")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := hostToAddrsCtx(ctx, "localhost"); len(got) != 0 {
+		t.Fatalf("ctx 已取消仍在解析 = 刷新路径的持锁时长无上限, got %v", got)
+	}
+	// IP 字面量不需要解析器,ctx 取消也该照常给出。
+	if got := hostToAddrsCtx(ctx, "1.2.3.4"); len(got) != 1 {
+		t.Fatalf("IP 字面量不该受 ctx 影响, got %v", got)
 	}
 }

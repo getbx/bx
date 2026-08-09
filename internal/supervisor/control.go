@@ -58,9 +58,12 @@ type controlServer struct {
 	mut          mutator
 	reload       func() error // 重读配置 rules 并热重建 router(不断隧道);可空
 	// refreshBypass 重读配置、重算 serverBypass 集合并写进 mutator,回报集合是否变了。
+	// requiredLinks 是调用方**点名**的必需链接(切换目标):端点自己知道要切到哪台,
+	// 不该让闭包去读配置文件的 current 猜 —— spec 是「先热切、成功后才落盘 current」,
+	// 猜必然错一次,而错的那一次就是不装 bypass 直接切过去 = 成环。
 	// 可为 nil = 该部署不支持刷新(如没有 ConfigPath),此时 /v0/server 只做配对切换、
 	// 不碰路由。
-	refreshBypass func() (changed bool, err error)
+	refreshBypass func(requiredLinks []string) (changed bool, err error)
 	ownerUID      uint32
 	processPID    int
 	shutdown      func()
@@ -103,7 +106,7 @@ func newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng controlEngine, repor
 
 // newControlMuxFull 是唯一真正构造 controlServer 的地方;上面几个包装只是历史调用点的
 // 便捷入口(refreshBypass 传 nil = 不支持刷新)。
-func newControlMuxFull(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, refreshBypass func() (bool, error), ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer) http.Handler {
+func newControlMuxFull(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer) http.Handler {
 	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, refreshBypass: refreshBypass, ownerUID: ownerUID, processPID: processPID, shutdown: shutdown}
 	if recoverer != nil {
 		cs.pathRecovery = newPathRecoveryOperation(recoverer)
@@ -377,8 +380,15 @@ func (cs *controlServer) handleSetServer(w http.ResponseWriter, r *http.Request)
 	}
 	changed := false
 	if cs.refreshBypass != nil {
+		// 点名目标的两条链接:端点知道自己要切到哪台,直接说出来,不让刷新去猜。
+		// udp 为空(目标没有 UDP 专用传输)时不塞空串 —— 空串取不出 host,
+		// 会把一次完全正常的切换拒掉。
+		requiredLinks := []string{req.Link}
+		if req.UDP != "" {
+			requiredLinks = append(requiredLinks, req.UDP)
+		}
 		var rerr error
-		changed, rerr = cs.refreshBypass()
+		changed, rerr = cs.refreshBypass(requiredLinks)
 		if rerr != nil {
 			cs.mu.Unlock()
 			// 落实不了新服务器的 bypass 就绝不切过去。切过去 = 隧道自己的流量
@@ -464,7 +474,7 @@ func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, serve
 	return serveControlWithPathRecovery(ctx, c, t, server, mode, udpMode, transportInfo, runtime, eng, mut, reload, nil, shutdown, ownerUID, nil)
 }
 
-func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, refreshBypass func() (bool, error), shutdown func(), ownerUID uint32, recoverer pathRecoverer) (io.Closer, error) {
+func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), shutdown func(), ownerUID uint32, recoverer pathRecoverer) (io.Closer, error) {
 	guard := startNetworkGuard(ctx)
 	report := func() stats.Report {
 		ts := t.Stats()

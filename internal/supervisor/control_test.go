@@ -623,7 +623,7 @@ func TestSetServerRehijacksBeforeSwappingWhenBypassChanged(t *testing.T) {
 		onSetServer: func() { order = append(order, "swap") },
 	}
 	cs := newTestControlServer(t, rec)
-	cs.refreshBypass = func() (bool, error) { return true, nil } // 集合变了
+	cs.refreshBypass = func([]string) (bool, error) { return true, nil } // 集合变了
 
 	w := httptest.NewRecorder()
 	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server",
@@ -643,7 +643,7 @@ func TestSetServerSkipsRehijackWhenBypassUnchanged(t *testing.T) {
 		onSetServer: func() { order = append(order, "swap") },
 	}
 	cs := newTestControlServer(t, rec)
-	cs.refreshBypass = func() (bool, error) { return false, nil } // 已知服务器之间切换
+	cs.refreshBypass = func([]string) (bool, error) { return false, nil } // 已知服务器之间切换
 
 	w := httptest.NewRecorder()
 	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server",
@@ -660,7 +660,7 @@ func TestSetServerSkipsRehijackWhenBypassUnchanged(t *testing.T) {
 
 func TestSetServerRefusesWhenBypassRefreshFails(t *testing.T) {
 	cs := newTestControlServer(t, &recordingMutator{})
-	cs.refreshBypass = func() (bool, error) { return false, errors.New("解析不了新服务器的 IP") }
+	cs.refreshBypass = func([]string) (bool, error) { return false, errors.New("解析不了新服务器的 IP") }
 
 	w := httptest.NewRecorder()
 	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server",
@@ -688,5 +688,55 @@ func TestSetServerWorksWithoutBypassRefresh(t *testing.T) {
 	}
 	if len(order) != 1 || order[0] != "swap" {
 		t.Fatalf("无刷新能力时只做配对切换, got %v", order)
+	}
+}
+
+// 端点知道自己要切到哪台(请求体里就是),必须把目标显式告诉刷新闭包。
+// 交给闭包去读配置文件的 current 猜 = 在「先热切、成功后才落盘」的 spec 下
+// 必然猜错一次 —— 而猜错的那一次就是不装 bypass 直接切过去 = 成环。
+func TestSetServerPassesTargetLinksToBypassRefresh(t *testing.T) {
+	var got []string
+	cs := newTestControlServer(t, &recordingMutator{})
+	cs.refreshBypass = func(required []string) (bool, error) {
+		got = append([]string(nil), required...)
+		return false, nil
+	}
+	w := httptest.NewRecorder()
+	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server",
+		strings.NewReader(`{"link":"vless://tokyo","udp":"hysteria2://tokyo"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	want := map[string]bool{"vless://tokyo": false, "hysteria2://tokyo": false}
+	for _, l := range got {
+		if _, ok := want[l]; !ok {
+			t.Fatalf("传了不该传的 %q, got %v", l, got)
+		}
+		want[l] = true
+	}
+	for l, seen := range want {
+		if !seen {
+			t.Fatalf("目标的 %s 必须点名为必需 —— 漏掉它就会被当成「没在用的服务器」跳过 = 成环", l)
+		}
+	}
+}
+
+// udp 为空(目标没有 UDP 专用传输)时不能把空串塞进去:空串取不出 host,
+// 会让刷新失败,进而把一次完全正常的切换拒掉。
+func TestSetServerOmitsEmptyUDPFromRequiredLinks(t *testing.T) {
+	var got []string
+	cs := newTestControlServer(t, &recordingMutator{})
+	cs.refreshBypass = func(required []string) (bool, error) {
+		got = append([]string(nil), required...)
+		return false, nil
+	}
+	w := httptest.NewRecorder()
+	cs.handleSetServer(w, httptest.NewRequest(http.MethodPost, "/v0/server",
+		strings.NewReader(`{"link":"vless://tokyo"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(got) != 1 || got[0] != "vless://tokyo" {
+		t.Fatalf("udp 为空时不该传空串, got %#v", got)
 	}
 }
