@@ -137,11 +137,16 @@ func TestHostOverridesRealDNSServerNormalResolutionUnaffected(t *testing.T) {
 	}
 }
 
-// 归一化必须与 config.NormalizeHostName 完全同源,而不是本函数里再手写一份近似
-// 实现。用三重尾点 + 首尾空白 + 大小写混杂的组合专挑"只做了局部归一(比如只
-// TrimSuffix 一个点,或漏了 TrimSpace)"的实现:那种实现会在这条用例上漏判冲突,
-// 而真正调用 config.NormalizeHostName 本身则不会。这条测试因此间接把"必须调用
-// 同一个函数、不得就地重写"这条约束钉在了行为上,而不只是留在注释里。
+// 这条测试只验证行为:对三重尾点 + 首尾空白 + 大小写混杂这一个精心构造的输入,
+// mergeHostOverrides 判出的结果要跟直接调 config.NormalizeHostName 算出来的
+// 一致。它能抓住"归一化规则实现得不完整"(比如只 TrimSuffix 一次、或漏了
+// TrimSpace),**但抓不住"重新实现"本身**——复审证实了这一点:把这里换成一份
+// 逐字节行为相同的手写 normalize 函数,本测试和其余测试全部照样通过,因为它
+// 只断言输出、不关心输出是怎么算出来的。两份实现只要在测过的输入上凑巧一致,
+// 就能滑过这条测试——而这正是本轮要修的那类问题的本质:分歧不是「测漏了某个
+// 输入」,是「压根有两份实现」。真正堵住"重新实现"这件事的是下面那条读源码的
+// TestHostsMergeUsesSharedNormalizerNotALocalReimplementation;这条测试仍然
+// 保留,因为"行为是否正确"和"是否共用同一份代码"是两件事,值得分别断言。
 func TestMergeHostOverridesNormalizationMatchesConfigExactly(t *testing.T) {
 	serverKey := "  VPS.Example.COM...  "
 	// 先验证测试数据本身站得住:config.NormalizeHostName 确实会把这个畸形写法
