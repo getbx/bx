@@ -98,6 +98,23 @@ func stoppedDiagnosis(_ evidence: StoppedEvidence) -> StoppedDiagnosis {
 /// `nil` errno = 连上了。`ENOENT`/`ECONNREFUSED` 是内核明确的「没人在那儿」;
 /// 其余(超时、EACCES、EAGAIN…)一律 `nil` —— 这些情形下 socket 那头**可能**
 /// 好端端地活着,把它们读成「不在」正是本文件反复在挡的那种谎。
+/// 把一次 `stat(2)` 的结果翻译成三态观测。
+///
+/// `nil` errno = 文件在。`ENOENT`/`ENOTDIR` 是内核明确的「路径上没有这个东西」;
+/// 其余(`EACCES` 目录不可读、`EIO`…)一律 `nil`。
+///
+/// **不要用 `FileManager.fileExists` 代替它**:那个 API 对「不存在」与「问不出来」
+/// 一律回 `false`,正是本文件通篇禁止的那种压缩 —— 而 `serviceInstalled` 的 `false`
+/// 会让 `stoppedDiagnosis` 抢在两条否定观测之前返回 `.setupNeeded`,把一台配置完好
+/// 的机器打回 Setup Required。
+func fileObservation(statErrno: Int32?) -> Bool? {
+    guard let statErrno else { return true }
+    if statErrno == ENOENT || statErrno == ENOTDIR {
+        return false
+    }
+    return nil
+}
+
 func socketObservation(connectErrno: Int32?) -> Bool? {
     guard let connectErrno else { return true }
     if connectErrno == ENOENT || connectErrno == ECONNREFUSED {

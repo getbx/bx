@@ -112,6 +112,17 @@ struct StoppedDiagnosisTests {
         expect(socketObservation(connectErrno: ETIMEDOUT) == nil, "超时说明不了对面死活")
         expect(socketObservation(connectErrno: EACCES) == nil, "权限不足说明不了对面死活")
 
+        // ── fileObservation:stat 的 errno 同样是三态 ──────────────────────────
+        //
+        // `serviceInstalled` 的 false 会让判定抢在两条否定观测之前返回 .setupNeeded,
+        // 把一台配置完好的机器打回 Setup Required —— 所以「问不出来」在这一项上尤其
+        // 不能被压成 false(`FileManager.fileExists` 正是这么压的,故不可用)。
+        expect(fileObservation(statErrno: nil) == true, "stat 成功 = 文件在")
+        expect(fileObservation(statErrno: ENOENT) == false, "ENOENT = 确实没有")
+        expect(fileObservation(statErrno: ENOTDIR) == false, "路径中间不是目录 = 确实没有")
+        expect(fileObservation(statErrno: EACCES) == nil, "目录读不了说明不了文件在不在")
+        expect(fileObservation(statErrno: EIO) == nil, "I/O 错误说明不了文件在不在")
+
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) failure(s)\n".utf8))
             exit(1)

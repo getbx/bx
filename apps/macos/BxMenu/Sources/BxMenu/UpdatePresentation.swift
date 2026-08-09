@@ -12,6 +12,18 @@ func updateActionTitle(for check: UpdateCheck?) -> String? {
     return "Update bx…"
 }
 
+/// 一次更新检查的结果如何并入既有答案。
+///
+/// **查不动就保留上一次的已知答案。** 此前是无条件覆盖:一次抖动(Guardian 刚重启、
+/// 网络断了几秒)就把「有新版可装」抹成 nil,Update 入口凭空消失,而下一次检查要等
+/// 到 24 小时后 —— 用户看到的是一个安静地少了一项的菜单,没有任何症状可循。
+///
+/// 反过来的代价很小:装完之后 `updateBx` 会立刻再查一次并覆盖掉;真查不动时多留着
+/// 一个 Update 入口,点下去跑的也只是 `bx update`(已是最新时它自己就什么都不做)。
+func mergedUpdateCheck(previous: UpdateCheck?, fetched: UpdateCheck?) -> UpdateCheck? {
+    fetched ?? previous
+}
+
 let quitBxActionTitle = "Quit bx…"
 let quitBxConfirmMessage = "bx will stop protecting system traffic, restore managed DNS settings, and close this menu. To start bx again, open Bx.app from Applications."
 
