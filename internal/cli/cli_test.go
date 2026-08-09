@@ -841,6 +841,29 @@ func TestMacMenuNeverReportsOffWhileTheCoreSocketAnswers(t *testing.T) {
 	if !strings.Contains(body, "coreSocketAnswering:") {
 		t.Fatal("观测结果必须作为 coreSocketAnswering 进入判定 —— 判定的安全属性全建立在这条证据上")
 	}
+	// **「探测存在」+「参数名存在」证明不了两者相连。** 复审把这一行改成
+	// `coreSocketAnswering: false,` —— 探测照跑、结果被丢掉,上面两条断言、整套
+	// Swift 套件、以及 StoppedDiagnosisTests(它测的是纯函数,喂什么算什么)全绿,
+	// 而 Guardian 挂掉、Core 仍在转发流量时菜单就此报 `.off(.serviceStopped)`:
+	// 灰盾 + Quit 立即退出 + 路由与 DNS 全留在原处。那正是 99079bf 修掉的那个 bug。
+	//
+	// 所以要钉的是**数据流**:这一项的实参必须来自那次探测的返回值。
+	probeBinding := regexp.MustCompile(`let\s+core\s*=\s*probeCoreControlSocket\(\)`)
+	if !probeBinding.MatchString(body) {
+		t.Fatal("探测结果必须绑成 `let core = probeCoreControlSocket()` —— " +
+			"本守卫靠这个名字证明喂进判定的就是这次观测;换个写法请连同它一起重写(响亮失败,不是静默通过)")
+	}
+	argument := regexp.MustCompile(`coreSocketAnswering:\s*([^,\n]+)`).FindStringSubmatch(body)
+	if argument == nil {
+		t.Fatal("读不出 coreSocketAnswering 的实参 —— 本守卫看不懂现在的写法,请连同它一起重写")
+	}
+	actual := strings.TrimSpace(argument[1])
+	if !strings.HasPrefix(actual, "core.") {
+		t.Fatalf("coreSocketAnswering 的实参是 %q,必须是那次探测的返回值(`core.` 开头):"+
+			"喂给判定一个字面量,探测就白跑了 —— 判定的全部安全性建立在这条**新鲜观测**上,"+
+			"而 false 会在 Core 还在转发流量时把菜单打成 .off(.serviceStopped)(quitPlan 判 terminateImmediately,"+
+			"用户点 Quit 菜单消失、路由与 DNS 原封不动)", actual)
+	}
 	if off := strings.Index(body, ".off(.serviceStopped)"); off < 0 || off < decision {
 		t.Fatal("`.off(.serviceStopped)` 只能作为 stoppedDiagnosis 的结论出现,不能在问它之前就返回")
 	}
