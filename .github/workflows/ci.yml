@@ -114,3 +114,27 @@ jobs:
           sudo "$(which go)" test -tags integration -v ./... | tee /tmp/itest.log
           grep -q -- '--- PASS: TestNetConfRoundTripInNetns' /tmp/itest.log \
             || { echo "::error::netns PoC 未真正运行(被 SKIP?)—— 集成环境可能缺 netns 能力"; exit 1; }
+
+      # 集成台(真 supervisor.Run + 真 TUN + 真策略路由)同理,但**多一个坑**:
+      # 台子会 re-exec 进子 net+mount namespace 跑断言,所以顶层打印的是 `--- SKIP`,
+      # `--- PASS` 只出现在被 indentLines 缩进并加了 `  | ` 前缀的子进程输出里。
+      # 写成 `grep '^--- PASS: TestHarness…'` 是**保证的假红** —— 故认那条带 `| ` 的行
+      # (不锚首,缩进空格数由 go test 的嵌套深度决定,不该被写死)。
+      #
+      # 逐个名字分别断言,不合成一次 grep:某条被改名或删掉时必须当场红,
+      # 而不是安静地少跑一条。退出码单独证明不了什么(SKIP、-test.run 打错、
+      # 漏 -tags integration 全都退 0);上一步的 pipefail + 默认 `bash -e`
+      # 保证非零必挂,两者合起来才等于「真跑过 **且** 全绿」。
+      - name: Assert integration harness really ran
+        run: |
+          for name in \
+            TestHarnessStartsAndRestoresCleanly \
+            TestHarnessBypassCoversEveryConfiguredServerElseSilentLoop \
+            TestHarnessAlsoStartsTheFailoverTransportsBranch \
+            TestHarnessSwitchBetweenKnownServersDoesNotTouchRoutes \
+            TestHarnessSwitchToNewServerInstallsBypassBeforeSwappingTransport \
+            TestHarnessRefusesSwitchWhenTargetUnresolvable \
+            TestHarnessBarrierCarveOutFollowsCurrentServerOnly ; do
+            grep -qF -- "| --- PASS: $name " /tmp/itest.log \
+              || { echo "::error::集成台断言 $name 没有在子 namespace 里跑过(被 SKIP?改名?删了?)—— runner 可能缺 CAP_SYS_ADMIN 或 iproute2"; exit 1; }
+          done
