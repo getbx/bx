@@ -461,7 +461,7 @@ func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps mac
 func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (macOSDownResult, error) {
 	if deps.guardianReady != nil && deps.guardianReady(ctx) {
 		// 一个便宜的判定,决定走哪条路 —— 不是启动的活。
-		if legacyCoreMayBeRunning(ctx, deps) {
+		if mayRun, known := legacyCoreMayBeRunning(ctx, deps); mayRun {
 			// **先解除 job,再进强制拆除。** legacy plist 带无条件 KeepAlive,
 			// 只让 Core 退出的话 launchd 会把它拉回来,「已停止」几秒后重新
 			// 变成假话。放在 forcedMacOSTeardown **之前**有两个理由:一是必须
@@ -473,9 +473,19 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 			// best-effort:失败不阻断下面任何一步(「停止」不许依赖先成功做成
 			// 别的事),但也**不吞掉** —— job 还armed 着意味着 Core 会回来。
 			legacyErr := disarmLegacyCoreUnit(ctx, deps)
+			// 解除失败只在**确知 job 加载着**时才是硬失败:那时 job 还armed,
+			// Core 一定回来,「已停止」是假话。而探查失败时我们其实不知道有没有
+			// legacy unit —— 一次 launchctl 抖动不该让一台干净机器的 bx down
+			// 整个失败。那正是「停止不许依赖别的先成功」本身。
+			if !known {
+				legacyErr = nil
+			}
 			forcedErr := forcedMacOSTeardown(ctx, deps, nil)
 			if err := errors.Join(legacyErr, forcedErr); err != nil {
-				return macOSDownResult{}, err
+				// 结果必须带上 Forced/LegacyCore:调用方拿零值去渲染的话,
+				// downReportLines 对零值渲染的正是 "✅ bx 已停止并取消开机自启。"
+				// —— 这一期要杀的那句原话,离被打印只差一个忽略 err 的 caller。
+				return macOSDownResult{Forced: true, LegacyCore: true}, err
 			}
 			return macOSDownResult{
 				Status:     guardian.Status{Protection: guardian.ProtectionOff},
@@ -488,14 +498,37 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 			return macOSDownResult{Status: status}, nil
 		}
 		if err := forcedMacOSTeardown(ctx, deps, cleanErr); err != nil {
-			return macOSDownResult{}, err
+			return macOSDownResult{Forced: true, Cause: cleanErr}, err
 		}
 		return macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}, Forced: true, Cause: cleanErr}, nil
 	}
 	if err := forcedMacOSTeardown(ctx, deps, nil); err != nil {
-		return macOSDownResult{}, err
+		return macOSDownResult{Forced: true}, err
 	}
 	return macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}, Forced: true}, nil
+}
+
+// disarmLegacyCoreUnit 解除 legacy Core 的 launchd job,使它在被请求退出之后
+// **留在**停止状态。没有这一步,停止只是暂时的:legacy plist 的 KeepAlive 是
+// 无条件的(不是菜单栏那种 {SuccessfulExit:false}),launchd 会把 Core 拉回来。
+//
+// 这一步不是这次新发明的语义 —— 改动前的停止路径经 ensureGuardianOwnership →
+// Migrate 走到 Manager.Migrate,那里做的正是 m.legacy.Stop(BootoutLegacyCoreUnit)
+// 加 m.legacy.Remove。我们不再迁移,但「让它别再自己起来」这条必须留下。
+//
+// 只解除 job,不删 plist:删文件是 `bx uninstall` 的职责,拆除路径一个文件都不碰。
+func disarmLegacyCoreUnit(ctx context.Context, deps macOSLifecycleDeps) error {
+	if deps.bootoutLegacyUnit == nil {
+		return nil
+	}
+	if err := runWithTimeout(ctx, legacyBootoutTimeout, deps.bootoutLegacyUnit); err != nil {
+		return fmt.Errorf(
+			"解除旧版 Core 的开机自启(launchd job)失败:%w\n"+
+				"它带 KeepAlive,可能会自己重新启动。请执行 sudo bx uninstall —— 它会把两个旧 label(com.getbx.bx 与 com.ggshr9.bx)都停掉并删除,而单独 bootout 其中一个可能落空",
+			err,
+		)
+	}
+	return nil
 }
 
 // legacyCoreMayBeRunning 回答一个便宜的问题:此刻有没有可能存在一个 Guardian
@@ -514,40 +547,17 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 // **问不出来时返回 true**:探查失败(或钩子缺失)证明不了「没有」,而安全方向是
 // 那条万一有就能停下它的路。走错了的代价是一次本可以更轻的停止变重;反过来赌错的
 // 代价是对用户说一句假话。与本仓库别处的三态纪律同形:「无法判定」不许塌缩成「否」。
-// disarmLegacyCoreUnit 解除 legacy Core 的 launchd job,使它在被请求退出之后
-// **留在**停止状态。没有这一步,停止只是暂时的:legacy plist 的 KeepAlive 是
-// 无条件的(不是菜单栏那种 {SuccessfulExit:false}),launchd 会把 Core 拉回来。
-//
-// 这一步不是这次新发明的语义 —— 改动前的停止路径经 ensureGuardianOwnership →
-// Migrate 走到 Manager.Migrate,那里做的正是 m.legacy.Stop(BootoutLegacyCoreUnit)
-// 加 m.legacy.Remove。我们不再迁移,但「让它别再自己起来」这条必须留下。
-//
-// 只解除 job,不删 plist:删文件是 `bx uninstall` 的职责,拆除路径一个文件都不碰。
-func disarmLegacyCoreUnit(ctx context.Context, deps macOSLifecycleDeps) error {
-	if deps.bootoutLegacyUnit == nil {
-		return nil
-	}
-	if err := runWithTimeout(ctx, legacyBootoutTimeout, deps.bootoutLegacyUnit); err != nil {
-		return fmt.Errorf(
-			"解除旧版 Core 的开机自启(launchd job)失败:%w\n"+
-				"它带 KeepAlive,可能会自己重新启动。请手动执行 sudo bx uninstall,或 sudo launchctl bootout system/com.getbx.bx",
-			err,
-		)
-	}
-	return nil
-}
-
-func legacyCoreMayBeRunning(ctx context.Context, deps macOSLifecycleDeps) bool {
+func legacyCoreMayBeRunning(ctx context.Context, deps macOSLifecycleDeps) (mayRun, known bool) {
 	if deps.legacyLoaded == nil {
-		return true
+		return true, false
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, legacyProbeTimeout)
 	defer cancel()
 	loaded, err := deps.legacyLoaded(probeCtx)
 	if err != nil {
-		return true
+		return true, false
 	}
-	return loaded
+	return loaded, true
 }
 
 // cleanGuardianDown 停止只做停止。
