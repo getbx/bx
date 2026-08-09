@@ -13,9 +13,16 @@ import "fmt"
 // steps cannot promise that.
 func downReportLines(result macOSDownResult) (stdout []string, stderr []string) {
 	if result.Forced {
-		if result.Cause != nil {
+		switch {
+		case result.LegacyCore:
+			// 这一条既不是「Guardian 未响应」(它响应了),也不是「事务失败」
+			// (根本没发过)。走强制路径是有意的选择:干净事务停不下一个
+			// Guardian 不掌管的 Core,只会报成功。措辞用「可能」是如实的 ——
+			// 探查失败时我们同样走这条路,而那时确实只是不能排除。
+			stderr = append(stderr, "⚠️  可能有不受 Guardian 掌管的旧版 Core 在运行,已改走强制停止(只有这条路停得下它)。")
+		case result.Cause != nil:
 			stderr = append(stderr, fmt.Sprintf("⚠️  Guardian 正常关闭事务失败(%v),已改走强制停止。", result.Cause))
-		} else {
+		default:
 			stderr = append(stderr, "⚠️  Guardian 未响应,已改走强制停止。")
 		}
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
