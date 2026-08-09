@@ -434,6 +434,27 @@ git commit -m "test(supervisor): 集成台钉住「解析失败拒绝切换」�
 
 ## Task 5: CI 接入,并逐条清算 AST 接线守卫
 
+**Task 4 复审已经替你做完了大半判定,直接用:**
+
+| AST 守卫 | 台子覆盖到没有 | 处置 |
+|---|---|---|
+| `TestRunTakesRuntimeBypassFromWiringNotAFrozenSlice` | **有**(复审实测:照它命名的那个冻结攻击改下去,断言 4 转红) | 删 |
+| `TestRunWiresLiveMutatorToLiveBypassStore` | **有**(冻结 `liveMutator.store` 使 Rehijack 装启动那份,Task 3 的 `RoutesAtBuild` 就丢了 `.20`) | 删 |
+| `TestRunWiresPathRecovererToLiveBypassStore` | **没有** —— 没有任何台子测试驱动 `/v0/path-recovery` | **留**,并在注释里写明台子为什么照不到它 |
+
+**一刀切退役三条会开一个洞。** 删之前**逐条实测**:对该守卫所守的属性做一次变异,
+看台子红不红 —— 台子红就删,台子绿就留下并把缺口记在注释里。
+
+**CI 那边的事实与坑(复审实测):**
+- `ci.yml` 的 `integration` job **今天已经在跑** `sudo go test -tags integration -v ./...`,
+  所以台子的测试在 CI 里是执行了的;缺的只是「**断言它们真跑过**」。
+- 台子会 re-exec 进子 namespace,所以**顶层打印的是 `--- SKIP`**,`--- PASS` 只出现在
+  被 `indentLines` 缩进并加了 `  | ` 前缀的子进程输出里。写成 `grep -q '^--- PASS: TestHarness'`
+  会是**假红**;必须匹配那条缩进行,且**逐个测试名**分别 grep(名字被改掉或删掉要能发现)。
+- 退出码单独什么都不证明(SKIP、`-test.run` 打错、漏 `-tags integration` 全都是 0),
+  但非零确实证明有东西挂了 —— 所以断言要求 **rc==0 且逐名 grep 命中**,两者缺一不可。
+
+
 **Files:**
 - Modify: `.github/workflows/ci.yml`
 - Modify: `internal/supervisor/runwiring_ast_test.go`
