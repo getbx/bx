@@ -1018,19 +1018,19 @@ func TestMacMenuTakesCapabilitiesFromGuardianNotFromHelpText(t *testing.T) {
 		t.Fatal("找不到 loadState 的函数体")
 	}
 	code := swiftCodeOnly(body)
-	if !strings.Contains(code, "declaresDiagnosticsArchive(report.capabilities)") {
+	if !strings.Contains(code, "outdatedRuntimeNotice(capabilities: report.capabilities)") {
 		t.Fatal("loadState 必须按 Guardian 声明的 capabilities 判断能力(判据住在 StatusReport.swift,有单测)")
 	}
 	// 声明者就是应答者:能力判定必须在拿到 Guardian 的状态之后。放在之前,唯一
 	// 可能的数据来源就又变回「去问那个二进制」。
 	statusIndex := strings.Index(code, "guardianClient.status()")
-	capabilityIndex := strings.Index(code, "declaresDiagnosticsArchive(")
+	capabilityIndex := strings.Index(code, "outdatedRuntimeNotice(")
 	if statusIndex < 0 || capabilityIndex < statusIndex {
 		t.Fatal("能力判定必须在 guardianClient.status() 之后:声明它的就是应答你的那一个")
 	}
 
 	// Swift 侧的能力名与 Go 侧的常量必须逐字相同 —— 一边改名不会有编译错误,
-	// 只会让每一台机器都显示 Update Required。
+	// 只会让每一台机器都显示一条它并不缺的降级。
 	swift, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "StatusReport.swift"))
 	if err != nil {
 		t.Fatal(err)
@@ -1038,6 +1038,72 @@ func TestMacMenuTakesCapabilitiesFromGuardianNotFromHelpText(t *testing.T) {
 	want := fmt.Sprintf("%q", guardian.CapabilityDiagnosticsArchive)
 	if !strings.Contains(string(swift), "let diagnosticsArchiveCapability = "+want) {
 		t.Fatalf("StatusReport.swift 的能力名必须与 guardian.CapabilityDiagnosticsArchive(%s)逐字一致", want)
+	}
+}
+
+// 旧 Guardian 应答时,保护状态必须照常显示 —— 能力缺席只降级它影响的那一项。
+//
+// 复审抓到的高度错误:`guard declaresDiagnosticsArchive(…) else { return
+// .updateNeeded(…) }` 排在 loadState 里**每一条保护判定之前**。而「Guardian 还在
+// 跑旧版」是本产品明确建模、还会主动打印提示的处境(upgradeplan.go 的
+// upVersionMismatchMessage),那一版 Guardian 不声明能力 —— 于是那个窗口里菜单
+// 表头是 "Update Required"、状态行是 "Update bx",**没有 Protected/Off、没有
+// Turn Off、没有 Reconnect**,而保护此刻很可能正开着。唯一剩下的建设性菜单项是
+// "Open Install Guide"(错的补救);连更新入口都长不出来,因为 /v1/update-check
+// 在旧 Guardian 上是 404 → text/plain → .contentType → try? 吞成 nil。
+// **能力契约本身发布的那一次,每个既有用户都会撞上一回,不多不少。**
+//
+// 这条守卫钉三件事:判据不许再变回状态、事实必须仍然抵达用户、补救必须是那条
+// 真能跑通的命令。
+func TestMacMenuOldGuardianKeepsProtectionStateVisible(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	load, ok := swiftFunctionBody(text, "private func loadState(")
+	if !ok {
+		t.Fatal("找不到 loadState 的函数体")
+	}
+	// ① 能力判据不得再产出任何状态。`.updateNeeded` 是它当初的落点,而状态推导
+	//    里**任何**由能力驱动的提前返回都是同一个高度错误 —— 这里只查最直接的
+	//    那种回归(把闸门原样写回来)。
+	if strings.Contains(swiftCodeOnly(load), ".updateNeeded(") {
+		t.Fatal("loadState 不得因「Guardian 没声明某个能力」而返回一个状态:" +
+			"它影响的只有 Run Doctor 的诊断包,顶掉保护状态会让升级窗口里的用户既看不到 Protected/Off," +
+			"也点不到 Turn Off / Reconnect")
+	}
+	// ② 事实仍必须抵达用户:算出来 → 带出后台线程 → 落定 → 画出来。缺任何一跳,
+	//    这次修复就变成「把问题删掉」而不是「把它降到正确的高度」。
+	for _, hop := range []struct{ needle, why string }{
+		{"outdatedRuntime = outdatedRuntimeNotice(", "loadState 必须把这条附注算出来"},
+		{"outdatedRuntime: outdatedRuntime", "必须随 RefreshOutcome 带回主线程(loadState 跑在后台线程,不许直接写 self)"},
+		{"outdatedRuntime = outcome.outdatedRuntime", "applyRefresh 必须落定它,否则永远画不出来"},
+	} {
+		if !strings.Contains(swiftCodeOnly(text), hop.needle) {
+			t.Fatalf("%s(缺 %q)", hop.why, hop.needle)
+		}
+	}
+	rebuild, ok := swiftFunctionBody(text, "private func rebuildMenu()")
+	if !ok {
+		t.Fatal("找不到 rebuildMenu 的函数体")
+	}
+	rebuildCode := swiftCodeOnly(rebuild)
+	if !strings.Contains(rebuildCode, "notice.summary") || !strings.Contains(rebuildCode, "notice.remedy") {
+		t.Fatal("rebuildMenu 必须把降级与补救都画出来:" +
+			"只说「旧版」不说降级了什么会被读成「保护出问题了」,只说降级不给命令等于没给出路")
+	}
+
+	// ③ 补救命令跨语言逐字一致。`sudo bx app-install` 是抄下来必然失败的那条
+	//    (bridge exec 到 runtime 目录,--app-source 反推不出 Bx.app),
+	//    upgradeplan.go 为此专门写了一段;两处写法一旦漂移,菜单给的就是那条坏命令。
+	swift, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "StatusReport.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCommand := fmt.Sprintf("let outdatedRuntimeRepairCommand = %q", upgradeSwitchCommand)
+	if !strings.Contains(string(swift), wantCommand) {
+		t.Fatalf("StatusReport.swift 的补救命令必须与 upgradeSwitchCommand 逐字一致,应为:%s", wantCommand)
 	}
 }
 

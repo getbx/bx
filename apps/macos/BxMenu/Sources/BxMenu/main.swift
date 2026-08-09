@@ -11,6 +11,15 @@ struct CommandResult {
 enum BxState {
     case connected(GuardianStatus, version: String, dns: String?)
     case warning(String, version: String?)
+    /// **今天没有生产者。** 唯一一处是「Guardian 没声明 diagnostics_archive 能力」
+    /// 那道闸门,它已被降为一条并排的附注(见 loadState / outdatedRuntimeNotice)
+    /// —— 一个只影响 Run Doctor 诊断包的判据,不该顶掉整个保护状态。
+    ///
+    /// 原样留着,与下面的 `.missing` 同一处置:删一个状态要连着改 quitPlan 的
+    /// MenuStateKind、图标归属(那段裁决有它自己的守卫)、三处 rebuildMenu 分支
+    /// 与 StatusIndicator —— 那是动状态机,而本次动的是「谁有资格决定状态」。
+    /// 真出现一个**真正阻断**的不兼容(菜单再也读不懂 Guardian 的应答)时,
+    /// 它就是那个落点。
     case updateNeeded(String, version: String?)
     case setupNeeded(String)
     case missing(String)
@@ -65,6 +74,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private var recoveryGeneration = RecoveryGeneration()
     private var repairVersions: (bundle: String?, runtime: String?, core: String?)?
+    /// Guardian 缺 diagnostics_archive 能力时的那条附注(见 outdatedRuntimeNotice)。
+    /// nil 有两种来路:声明了能力,或**根本没问到**(Guardian 不应答时 resolve()
+    /// 早就返回了)。两种都该让这一行消失 —— 「没问」不该被画成「已确认没问题」
+    /// 的反面,而这一行只在**确知降级**时出现。
+    private var outdatedRuntime: OutdatedRuntimeNotice?
     /// 图标呼吸的驱动。只动 alpha,见 `applyBreathing`。
     private var breathTimer: Timer?
     private var breathPhase: Double = 0
@@ -226,6 +240,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             recoverySnapshot = outcome.recoverySnapshot
         }
         repairVersions = outcome.repairVersions
+        outdatedRuntime = outcome.outdatedRuntime
         updateIcon()
         rebuildMenu()
         if let snapshot = recoverySnapshot,
@@ -247,6 +262,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let state: BxState
         let recoverySnapshot: RecoverySnapshot?
         let repairVersions: (bundle: String?, runtime: String?, core: String?)?
+        let outdatedRuntime: OutdatedRuntimeNotice?
     }
 
     /// 收集一次状态。**跑在后台线程**(它要拨 Guardian 的 socket、还剩两处 spawn),
@@ -264,6 +280,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func loadState(reconnectInFlight: Bool, snapshot: RecoverySnapshot?) -> RefreshOutcome {
         var recoverySnapshot = snapshot
         var repairVersions: (bundle: String?, runtime: String?, core: String?)?
+        var outdatedRuntime: OutdatedRuntimeNotice?
         func resolve() -> BxState {
             let runtimeVersion = unifiedRuntimeVersion()
             // 「CLI 能不能执行」是关于**本机环境**的事实,Guardian 答不上来 —— 但
@@ -309,13 +326,23 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 能力**由 Guardian 声明**,不再靠 spawn `bx logs --help` 去帮助文本里
             // 找 flag。位置从「问 Guardian 之前」挪到了「问到之后」——这是数据源
             // 改变的直接后果,不是顺手挪的:声明者就是应答者。放在 updatingBanner
-            // 之后,免得升级过程中(新旧两版交接)闪一次 Update Required。
+            // 之后,免得升级过程中(新旧两版交接)多报一条正在解决中的降级。
             //
-            // 键缺席也判「不支持」:能声明而没声明的只有本次契约之前的旧 Guardian,
-            // 那本身就是该升级了。判据住在 declaresDiagnosticsArchive(有单测)。
-            guard declaresDiagnosticsArchive(report.capabilities) else {
-                return .updateNeeded("Update bx", version: runtimeVersion)
-            }
+            // **它是一条附注,不是一道闸门。** 这里曾经是
+            // `guard declaresDiagnosticsArchive(…) else { return .updateNeeded(…) }`,
+            // 排在下面每一条保护判定**之前** —— 而旧 Guardian(本次能力契约之前的
+            // 那一版)不声明能力,于是「Guardian 还在跑旧版」这个本产品明确建模、
+            // 还会主动打印提示的处境(upgradeplan.go 的 upVersionMismatchMessage)
+            // 里,菜单整个失去保护状态:没有 Protected/Off、没有 Turn Off、没有
+            // Reconnect,只剩 "Update bx" 和一个错的补救("Open Install Guide" ——
+            // 而 /v1/update-check 在旧 Guardian 上是 404,连那个更新入口都长不出来)。
+            // **能力契约本身发布的那一次,每个既有用户都会撞上一回。**
+            //
+            // 判据影响的只有 Run Doctor 的诊断包这一项,状态照常从 Guardian 确实
+            // 回答了的字段推导(protection_state / dns_* / core_version 都早于本轮
+            // 改动就存在,旧 Guardian 一样给得出)。降级只报降级的那一项,连同真能
+            // 解决它的那条命令,由 rebuildMenu 与保护状态**并排**显示。
+            outdatedRuntime = outdatedRuntimeNotice(capabilities: report.capabilities)
             // 版本号原先来自 `bx --version`(每次刷新一次 spawn)。改报「正在保护
             // 你的那个 bx」:Guardian 说的 Core 版本;Core 没跑时回落到盘上的
             // runtime 版本(纯文件读)。健康态下二者本就相等 —— 不等即 Repair Required。
@@ -377,7 +404,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return RefreshOutcome(
             state: resolve(),
             recoverySnapshot: recoverySnapshot,
-            repairVersions: repairVersions
+            repairVersions: repairVersions,
+            outdatedRuntime: outdatedRuntime
         )
     }
 
@@ -673,6 +701,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .off:
             menu.addHeader("bx", subtitle: "Off")
             menu.addInfo("Status", "Not running")
+        }
+        // 「Guardian 跑的是旧版」是一条**与保护状态并排**的事实,不是一个顶掉它的
+        // 状态。此前它被拿来门控整个状态机(见 loadState 里那段),于是升级窗口
+        // 里保护状态整个消失;现在它只占这一行,降级的那一项与真能解决它的那条
+        // 命令都写明,Protected/Off、Turn Off、Reconnect 一个不少。
+        if let notice = outdatedRuntime {
+            menu.addInfo("Guardian", notice.summary)
+            menu.addPlainText(notice.remedy)
         }
         if let failure = toggleFailureText {
             menu.addItem(.separator())
