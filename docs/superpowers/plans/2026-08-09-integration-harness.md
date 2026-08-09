@@ -251,14 +251,22 @@ git commit -m "test(supervisor): netns+mountns 集成台骨架,起停完整 Run(
 - Create: `internal/supervisor/harness_bypass_netns_linux_test.go`
 
 **Interfaces:**
-- Consumes: Task 2 的 `enterIsolatedNetns`/`startHarness`/`ipOut`
+- Consumes(Task 2 已就位,签名以文件为准):`enterIsolatedNetns(t)`、`captureBaseline(t) harnessBaseline`、`startHarness(t, cfgYAML) *harness`、`ipOut(t, args...) string`、`h.sockPath` / `h.tunnels` / `h.stop()`、`twoServerHarnessConfig`
+
+**Task 2 复审量出来的三条更正,先读再动手:**
+
+1. **bypass 条目是 table 100 里的路由,不是 `ip rule`。** 本计划初稿写的 `ip rule list` 里 grep 服务器 IP 是错的 —— 那样断言会因为**错的理由**失败。实测形状:`203.0.113.10 via 203.0.113.1 dev bxup0`,用 `ipOut(t, "route", "show", "table", itoa(routeTable))`。
+2. **`startHarness` 现在等 `RoutesInstalled` 才返回**,别再拿控制 socket 出现当"起好了"的信号(此前 8 次里有 2 次拿到空路由表)。
+3. **`twoServerHarnessConfig` 已是 `servers:`/`current:` 模型**,四条链接:alpha = `203.0.113.10` + udp `.11`,beta = `203.0.113.12` + udp `.13`,`current: alpha`。**必须用它**,别退回 `transports:` —— 那会走 `bypassLinks` 的另一条分支,而两条分支恰好在本任务要钉的地方不同(谁是 Required、`s.UDP` 认不认)。
 
 - [ ] **Step 1: 写失败测试**
 
 ```go
 //go:build integration && linux
 
-// 断言 1:清单里**每一台**服务器的**两条**链接对应的 IP,都真的在内核里有 bypass。
+package supervisor
+
+// 断言 1:清单里**每一台**服务器的**两条**链接对应的 IP,都真的在内核路由表里。
 // 少一条 = 切过去之后隧道自己的流量被劫进 TUN = 成环,而成环是静默的
 // (连得上、status 显绿、流量绕圈)。这条走过五轮修复,此前只有单元测试背书。
 func TestHarnessBypassCoversEveryConfiguredServer(t *testing.T) {
@@ -266,44 +274,53 @@ func TestHarnessBypassCoversEveryConfiguredServer(t *testing.T) {
 	h := startHarness(t, twoServerHarnessConfig)
 	defer h.stop()
 
-	rules := ipOut(t, "rule", "list")
-	for _, ip := range []string{"192.0.2.10", "192.0.2.11", "198.51.100.20", "198.51.100.21"} {
-		if !strings.Contains(rules, ip) {
-			t.Errorf("服务器 %s 不在 bypass 里 —— 切过去就成环(静默)\nip rule list=\n%s", ip, rules)
+	routes := ipOut(t, "route", "show", "table", itoa(routeTable))
+	for _, ip := range []string{"203.0.113.10", "203.0.113.11", "203.0.113.12", "203.0.113.13"} {
+		if !strings.Contains(routes, ip) {
+			t.Errorf("服务器 %s 不在 bypass 里 —— 切过去就成环(静默)\ntable %d=\n%s", ip, routeTable, routes)
 		}
 	}
 }
 
 // 断言 2:已知服务器之间切换**一条路由都不该动**(启动时已全部铺好)。
-// 这是「全铺好」那条设计的唯一实证。
+// 这是「全铺好」那条设计的唯一实证 —— 单元测试证明不了它,因为它是关于内核状态的。
 func TestHarnessSwitchBetweenKnownServersDoesNotTouchRoutes(t *testing.T) {
 	enterIsolatedNetns(t)
 	h := startHarness(t, twoServerHarnessConfig)
 	defer h.stop()
 
-	before := ipOut(t, "rule", "list") + ipOut(t, "route", "show", "table", "100")
-	if _, err := SetServerControl(h.sockPath, "vless://u@198.51.100.20:443", "hysteria2://u@198.51.100.21:443"); err != nil {
-		t.Fatalf("切换应成功: %v", err)
+	snapshot := func() string {
+		return ipOut(t, "rule", "list") +
+			ipOut(t, "route", "show", "table", itoa(routeTable)) +
+			ipOut(t, "-6", "route", "show", "table", itoa(routeTable))
+	}
+	before := snapshot()
+	if _, err := SetServerControl(h.sockPath, "vless://u@203.0.113.12:443", "hysteria2://u@203.0.113.13:443"); err != nil {
+		t.Fatalf("切到已知服务器应成功: %v", err)
 	}
 	if _, err := CommitControl(h.sockPath); err != nil {
 		t.Fatalf("确认应成功: %v", err)
 	}
-	after := ipOut(t, "rule", "list") + ipOut(t, "route", "show", "table", "100")
-	if before != after {
+	if after := snapshot(); before != after {
 		t.Fatalf("已知服务器之间切换不该动任何路由\n--- before ---\n%s\n--- after ---\n%s", before, after)
+	}
+	// 切过去这件事本身也要有证据,否则「什么都没发生」同样能让上面那条通过。
+	if links := h.tunnels.links(); !slices.Contains(links, "vless://u@203.0.113.12:443") {
+		t.Fatalf("没有证据表明真的切到了 beta:建过的链接=%v", links)
 	}
 }
 ```
 
-- [ ] **Step 2: 跑它,确认失败**(实现前 `bypassLinks` 若被改窄即红;此步先确认测试本身跑得起来)
+- [ ] **Step 2: 跑它**
 
-Run: `sudo go test -tags integration ./internal/supervisor -run 'TestHarnessBypass|TestHarnessSwitch' -v`
+Run: `bash scripts/run-netns-tests.sh -test.run 'TestHarnessBypass|TestHarnessSwitch' -test.v`
 
-- [ ] **Step 3: 变异验证 —— 这两条断言必须抓住真实发生过的 bug**
+- [ ] **Step 3: 变异验证 —— 这两条必须抓住真实发生过的 bug**
 
-① 把 `bypassLinks` 改成只返回当前那台(`return links[:2]` 之类)→ 断言 1 必须红。
-② 把 `handleSetServer` 的 `composeMutations(rhApply, rhUndo, swapApply, swapUndo)` 两对参数对调(先换传输再装路由)→ 断言 2 必须红(路由集合会变)。
-两处改回。**任一变异没能让台子转红,如实报告** —— 那说明台子没测到它自称测的东西。
+① `serverbypass.go` 的 `bypassLinks`:在 `servers` 分支里把非当前那台 `continue` 掉 → 断言 1 必须红,且指名缺的是 `.12`/`.13`。
+② 同一分支里把 `if s.UDP != ""` 那两行去掉 → 断言 1 必须红,指名 `.11`/`.13`。
+③ `control.go` 的 `handleSetServer`:把 `composeMutations(rhApply, rhUndo, swapApply, swapUndo)` 两对参数对调(先换传输再装路由)→ 断言 2 必须红。
+三处逐个改回。**任一变异没能让台子转红,如实报告** —— 那说明台子没测到它自称测的东西。
 
 - [ ] **Step 4: 提交**
 
