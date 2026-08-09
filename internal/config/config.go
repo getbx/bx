@@ -61,10 +61,14 @@ func (l Lists) RefreshInterval() time.Duration {
 type Config struct {
 	Server     string   `yaml:"server"`     // bx:// 链接或内部传输链接(自带凭据;故无独立 password 字段)。= transports 的首条
 	Transports []string `yaml:"transports"` // 可选:有序多传输(优先级,reality 主在前),自动容灾。空=单 [server]
-	Killswitch bool     `yaml:"killswitch"`
-	OwnerUID   int      `yaml:"owner_uid"` // 业主 uid(sudo bx setup 捕获);0=无业主,控制面退回 root-only
-	DNS        DNS      `yaml:"dns"`
-	Rules      []Rule   `yaml:"rules"`
+	// Servers 是用户手选的服务器清单(与 Transports 互斥)。一项 = 一对链接。
+	Servers []Server `yaml:"servers"`
+	// Current 是当前选中的服务器名字(意图,与 desired: on/off 同类)。
+	Current    string `yaml:"current"`
+	Killswitch bool   `yaml:"killswitch"`
+	OwnerUID   int    `yaml:"owner_uid"` // 业主 uid(sudo bx setup 捕获);0=无业主,控制面退回 root-only
+	DNS        DNS    `yaml:"dns"`
+	Rules      []Rule `yaml:"rules"`
 	// Hosts 把域名钉到固定 IPv4,由 bx 自己的 DNS 在 fake-IP 之前直接应答。
 	//
 	// 存在的理由:bx 开着时,被它接管的应用走系统 DNS(已指向 bx),/etc/hosts
@@ -126,6 +130,9 @@ func Parse(b []byte) (*Config, error) {
 		// 负数 owner_uid 是手改配置的错误:转 uint32 会成巨值、授权不到任何真实用户。
 		// 显式拒绝(防 int→uint32 脚枪),正常由 bx setup 写正整数或省略(0=root-only)。
 		return nil, fmt.Errorf("config: owner_uid 不能为负: %d", c.OwnerUID)
+	}
+	if err := c.resolveServers(); err != nil {
+		return nil, err
 	}
 	// 传输解析:优先 transports(有序多传输 + 自动容灾),否则单 server。
 	// 各链接 bx://blink:// 换壳的还原为内部链接;Server 取首条(向后兼容读 cfg.Server 的代码)。
