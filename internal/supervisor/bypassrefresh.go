@@ -167,3 +167,60 @@ func resolveAll(ctx context.Context, r dialer.Resolver, host string) ([]netip.Ad
 	}
 	return []netip.Addr{addr.Unmap()}, nil
 }
+
+// bypassWiringParams 是把 bypass 那套接起来所需的全部输入。
+type bypassWiringParams struct {
+	configPath string
+	// serverAddrs 是传输服务器地址,**合并用户 hosts 覆盖之前**的那份。
+	// 屏障开口用的正是它:混进 hosts 覆盖的 IP 等于在断网窗口里给一个任意 IPv4
+	// 打洞(hosts: 接受任何 IPv4 字面量,不限内网)。
+	serverAddrs []netip.Addr
+	// staticA 是发布给 DNS 的静态表,**已经**合并过用户 hosts 覆盖。
+	// 它与 serverAddrs 刻意分开传:一个是「谁能穿过屏障」,一个是「谁有静态答案」,
+	// 从后者推前者正是 a8c670f 引入的那个洞。
+	staticA    map[string][]netip.Addr
+	extraCIDRs []string
+	// resolver 必须是防环解析器(国内 DNS + DirectDialer),**绝不能**是系统解析器:
+	// 刷新发生在 DNS 已交给 bx 之后,系统解析器此刻就是 bx 自己。
+	resolver   dialer.Resolver
+	setStaticA func(map[string][]netip.Addr)
+	fakeipCIDR string
+}
+
+// bypassWiring 是接好之后的那几个口子。
+type bypassWiring struct {
+	store               *bypassStore
+	refresh             func(context.Context, []string) (bool, error)
+	runtimeServerBypass func() []string
+}
+
+// wireBypass 把「什么必须绕开隧道」的**组合**集中到一处。
+//
+// 为什么要有这个函数:被抽出来的每个单元都有测试,而把它们连起来的那几行
+// 没有任何东西盯着 —— 而本轮两个 Critical(经 bx 自己的 fake-IP DNS 解析、
+// 屏障开口混进用户 hosts 覆盖)**都是接线错误**,不是单元错误。
+func wireBypass(p bypassWiringParams) bypassWiring {
+	store := newBypassStore(
+		mergeBypassCIDRs(addrsToCIDRs(p.serverAddrs), p.extraCIDRs),
+		p.staticA,
+		p.serverAddrs,
+	)
+	extra := append([]string(nil), p.extraCIDRs...)
+	refresh := newBypassRefresher(bypassRefreshDeps{
+		configPath: p.configPath,
+		resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
+			return resolveAll(ctx, p.resolver, host)
+		},
+		store:      store,
+		setStaticA: p.setStaticA,
+		extraCIDRs: func() []string { return extra },
+		fakeipCIDR: p.fakeipCIDR,
+	})
+	return bypassWiring{
+		store:   store,
+		refresh: refresh,
+		// 现算,不冻:RuntimeState.ServerBypass 经 cli/guardian.go 变成 Guardian
+		// 屏障的开口,冻住等于切过服务器之后放行的还是旧那台。
+		runtimeServerBypass: func() []string { return runtimeIPv4Bypass(store.serverAddrs()) },
+	}
+}

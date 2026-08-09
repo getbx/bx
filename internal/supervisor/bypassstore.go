@@ -27,9 +27,11 @@ type bypassStore struct {
 	servers []netip.Addr
 }
 
-func newBypassStore(cidrs []string, statics map[string][]netip.Addr) *bypassStore {
+// newBypassStore 三份视图全部显式给出。**刻意不从 statics 推 servers**:
+// statics 里含用户 hosts 覆盖,推出来的 servers 会把那些 IP 带进屏障开口。
+func newBypassStore(cidrs []string, statics map[string][]netip.Addr, servers []netip.Addr) *bypassStore {
 	s := &bypassStore{}
-	s.set(cidrs, statics, staticAddrValues(statics))
+	s.set(cidrs, statics, servers)
 	return s
 }
 
@@ -47,14 +49,6 @@ func (s *bypassStore) serverAddrs() []netip.Addr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]netip.Addr(nil), s.servers...)
-}
-
-func staticAddrValues(in map[string][]netip.Addr) []netip.Addr {
-	var out []netip.Addr
-	for _, addrs := range in {
-		out = append(out, addrs...)
-	}
-	return out
 }
 
 func (s *bypassStore) cidrs() []string {
