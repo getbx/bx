@@ -483,7 +483,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// refreshServerBypass 重读配置、重算 bypass 集合并写进 mutator。
 	// 加**新**服务器后切过去时必须先调它:新服务器的 IP 不在启动时算好的集合里,
 	// 而没在集合里就意味着隧道自己连服务器的流量会被劫进 TUN(成环)。
-	refreshServerBypass := func() (bool, error) {
+	//
+	// requiredLinks 是调用方点名的切换目标。**不从配置文件的 current 推断**:
+	// spec 是「先热切、成功后才落盘 current」,故切换那一刻目标往往还不是 current、
+	// 甚至还不在文件里 —— 推断必然错一次,而错的那一次会把目标当成「一台没在用的
+	// 服务器」静默跳过,然后不装 bypass 直接切过去 = 成环。
+	//
+	// 整个刷新在控制面的 cs.mu 里跑,故解析必须封顶:解析器一挂就会把 /v0/commit、
+	// /v0/transport、/v0/rehijack 一起连坐(「71 分钟关不掉保护」就是这个形状)。
+	// 超时按刷新失败处理 —— 落实不了 bypass 就不切,与其他失败同一条规则。
+	refreshServerBypass := func(requiredLinks []string) (bool, error) {
 		if opts.ConfigPath == "" {
 			return false, fmt.Errorf("未知配置路径,无法刷新 bypass")
 		}
@@ -495,11 +504,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		if err != nil {
 			return false, fmt.Errorf("重读配置: %w", err)
 		}
-		_, addrs, err := resolveServerBypass(fresh)
+		rctx, cancelRefresh := context.WithTimeout(ctx, bypassRefreshTimeout)
+		defer cancelRefresh()
+		_, addrs, err := resolveServerBypassRequiring(fresh, requiredLinks,
+			func(host string) []netip.Addr { return hostToAddrsCtx(rctx, host) })
 		if err != nil {
 			return false, err
 		}
-		next := mergeBypassCIDRs(addrsToCIDRs(addrs), tailscaleBootstrapBypassCIDRs(ctx, direct))
+		next := mergeBypassCIDRs(addrsToCIDRs(addrs), tailscaleBootstrapBypassCIDRs(rctx, direct))
 		changed := !equalStringSets(mut.currentServerBypass(), next)
 		if changed {
 			mut.SetServerBypass(next)

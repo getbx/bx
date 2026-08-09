@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"time"
 
 	"github.com/getbx/bx/internal/config"
 )
@@ -55,6 +56,11 @@ func bypassLinks(cfg *config.Config) []bypassLink {
 	return links
 }
 
+// bypassRefreshTimeout 封顶「切换前刷新 bypass」的整轮耗时(DNS + tailscale 探测)。
+// 这段跑在控制面锁里,不封顶就等于给 /v0/commit、/v0/transport、/v0/rehijack
+// 一个无限期的连坐窗口。
+const bypassRefreshTimeout = 5 * time.Second
+
 // resolveServerBypass 解析清单里全部服务器的 host → IP,产出静态 DNS 表与地址集合。
 // 启动与「切换前刷新」共用它:两条路径分头实现,迟早有一条会漏掉某类链接,
 // 而漏掉的那一条就是成环。
@@ -65,10 +71,21 @@ func resolveServerBypass(cfg *config.Config) (map[string][]netip.Addr, []netip.A
 // resolveServerBypassWith 是 resolveServerBypass 的可注入版本:resolve 默认是
 // hostToAddrs(真实系统解析),单测注入假解析器才走得到「解析失败」那两条分支
 // —— 它们此前活在 run.go 的闭包里,要真发生一次 DNS 失败才可达,故一直没有测试。
-//
-// Required 语义(见 bypassLink):当前那台解析不了 = 拒绝(它不在 bypass 里就是
-// 成环);其余解析不了 = 跳过(清单是会攒的,一台今天没在用的机器不该堵死启动)。
 func resolveServerBypassWith(cfg *config.Config, resolve func(string) []netip.Addr) (map[string][]netip.Addr, []netip.Addr, error) {
+	return resolveServerBypassRequiring(cfg, nil, resolve)
+}
+
+// resolveServerBypassRequiring 在配置清单之外再**点名**一批必需链接。
+//
+// 为什么需要点名:`/v0/server` 的请求体里就带着目标链接,而 spec 是「先热切、
+// 成功后才落盘 current」—— 切换那一刻目标往往还不是配置文件里的 current,甚至
+// 可能还不在文件里。若 Required 只从文件的 current 推断,目标解析失败就会被当成
+// 「一台今天没在用的服务器」静默跳过,然后不装 bypass 直接切过去 = 成环
+// (静默:连得上、status 显绿、流量绕圈)。**知道答案的一方直接说出来,不要猜。**
+//
+// Required 语义(见 bypassLink):当前那台、以及被点名的那些,解析不了 = 拒绝;
+// 其余解析不了 = 跳过(清单是会攒的,一台今天没在用的机器不该堵死启动/切换)。
+func resolveServerBypassRequiring(cfg *config.Config, requiredLinks []string, resolve func(string) []netip.Addr) (map[string][]netip.Addr, []netip.Addr, error) {
 	staticA := map[string][]netip.Addr{}
 	var addrs []netip.Addr
 	add := func(link string) error {
@@ -87,7 +104,7 @@ func resolveServerBypassWith(cfg *config.Config, resolve func(string) []netip.Ad
 		addrs = append(addrs, a...)
 		return nil
 	}
-	for _, l := range bypassLinks(cfg) {
+	for _, l := range unionRequired(bypassLinks(cfg), requiredLinks) {
 		if err := add(l.Link); err != nil {
 			if l.Required {
 				return nil, nil, err
@@ -102,6 +119,38 @@ func resolveServerBypassWith(cfg *config.Config, resolve func(string) []netip.Ad
 		return nil, nil, fmt.Errorf("无法解析任何传输服务器 IP(bypass 必需)")
 	}
 	return staticA, addrs, nil
+}
+
+// unionRequired 把点名的链接并进清单:已在清单里的**提升**为 Required,
+// 不在清单里的(目标还没落盘时就是这种)追加为 Required。
+// 只提升被点名的那些 —— 不把整张清单变成必需,否则一台退役服务器又能堵死切换。
+func unionRequired(links []bypassLink, requiredLinks []string) []bypassLink {
+	if len(requiredLinks) == 0 {
+		return links
+	}
+	required := make(map[string]bool, len(requiredLinks))
+	for _, l := range requiredLinks {
+		if l != "" {
+			required[l] = true
+		}
+	}
+	out := make([]bypassLink, 0, len(links)+len(required))
+	seen := make(map[string]bool, len(links))
+	for _, l := range links {
+		seen[l.Link] = true
+		if required[l.Link] {
+			l.Required = true
+		}
+		out = append(out, l)
+	}
+	for _, l := range requiredLinks {
+		if l == "" || seen[l] {
+			continue
+		}
+		seen[l] = true
+		out = append(out, bypassLink{Link: l, Required: true})
+	}
+	return out
 }
 
 // equalStringSets 判两个 CIDR 列表是不是同一个集合(顺序无关)。
