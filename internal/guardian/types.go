@@ -92,6 +92,37 @@ type CoreRuntime struct {
 	UDPMode       string `json:"udp_mode,omitempty"`
 }
 
+// UpdateAvailability 是「有没有可装的新版」这一个问题的答案,由 Guardian 代查后
+// 随 GET /v1/update-check 发布。
+//
+// 字段与 `bx update --check --json` 的 updateCheckReport 逐字同形,因为它就是同一
+// 件事的同一个答案 —— 菜单此前是 spawn 那条命令来问的。**Verified 与 Available 分开**:
+// Verified=false 意味着这份答案没经过 manifest 签名校验,消费方(菜单)据此拒绝
+// 显示「有新版」入口,绝不把一个未经校验的版本号推给用户去装。
+type UpdateAvailability struct {
+	Current   string `json:"current"`
+	Latest    string `json:"latest"`
+	Available bool   `json:"available"`
+	Verified  bool   `json:"verified"`
+}
+
+// CapabilityDiagnosticsArchive 表示这一版运行时的 `bx logs` 支持 --archive/--dir。
+//
+// 菜单此前是 spawn `bx logs --help` 再**在帮助文本里找这两个 flag** 来判断的 ——
+// 一个 UI 靠解析另一个程序的帮助文本来做特性探测,是整份控制面架构诊断里最直白
+// 的症状。能力应当由 daemon 自己声明:Guardian 与 CLI 出自同一次构建、装在同一个
+// runtime 目录下,它对「这一版支持什么」有第一手知识,而被探测的那个二进制恰恰
+// 可能是旧版(此前那次探测正是拿 /usr/local/bin/bx 去问的)。
+const CapabilityDiagnosticsArchive = "diagnostics_archive"
+
+// GuardianCapabilities 是这一版 Guardian 声明支持的能力集合。
+//
+// 每次调用都返回新切片:它会被塞进 Status 交给 JSON 编码,共享一份底层数组等于
+// 把一个包级可变状态发布出去。
+func GuardianCapabilities() []string {
+	return []string{CapabilityDiagnosticsArchive}
+}
+
 type Status struct {
 	SchemaVersion     int              `json:"schema_version"`
 	Desired           DesiredState     `json:"desired"`
@@ -110,6 +141,14 @@ type Status struct {
 	// Core 只在 LocalAPIOptions 注入了取数函数时才填(既有调用方不受影响、
 	// 也不凭空造字段)。取不到时仍会填,但 Reachable=false、其余字段零值。
 	Core *CoreRuntime `json:"core,omitempty"`
+
+	// Capabilities 是这一版 Guardian 声明支持的能力(见 GuardianCapabilities)。
+	//
+	// **刻意没有 omitempty。** 消费方要分得开两件事:「声明过、这个能力不在里面」
+	// (键在、数组里没有)与「这一版压根没声明过能力」(键缺席 —— 例如升级窗口里
+	// 还没换掉的旧 Guardian)。omitempty 会把空集合与从未声明压成同一个形状,而
+	// 菜单正是靠这个区分决定要不要提示用户升级。
+	Capabilities []string `json:"capabilities"`
 
 	// LastErrorGeneration is a monotonic counter bumped every time
 	// needsAttention actually runs (see Manager.needsAttention). It exists so

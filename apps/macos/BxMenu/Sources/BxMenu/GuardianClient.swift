@@ -8,6 +8,9 @@ private let guardianDefaultTimeout: TimeInterval = 5
 // Go 侧 guardianMutationTimeout = 1 分钟。客户端必须比它长,否则拿到的是自己的
 // 超时而不是服务端给的失败码(用户最需要的恰恰是那个码)。
 private let guardianMutationTimeout: TimeInterval = 75
+// Go 侧 updateCheckTimeout = 20 秒(这条查询要跟 GitHub 往返)。客户端必须比它长,
+// 否则拿到的永远是自己的超时,而服务端那个上限一次都不会生效。
+private let guardianUpdateCheckTimeout: TimeInterval = 30
 private let guardianMaximumTimeout: TimeInterval = TimeInterval(Int32.max) / 1_000
 
 enum GuardianEndpoint {
@@ -16,11 +19,12 @@ enum GuardianEndpoint {
     case turnOn
     case turnOff
     case status
+    case updateCheck
 
     var expectedStatus: Int {
         switch self {
         case .requestRecovery: return 202
-        case .currentRecovery, .turnOn, .turnOff, .status: return 200
+        case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck: return 200
         }
     }
 
@@ -28,6 +32,7 @@ enum GuardianEndpoint {
         switch self {
         case .requestRecovery, .currentRecovery, .status: return guardianDefaultTimeout
         case .turnOn, .turnOff: return guardianMutationTimeout
+        case .updateCheck: return guardianUpdateCheckTimeout
         }
     }
 }
@@ -164,6 +169,15 @@ struct GuardianClient {
         try perform(endpoint: .status, as: GuardianStatus.self)
     }
 
+    /// 有没有可装的新版。**由 Guardian 代查**(它跑的是 `bx update --check --json`
+    /// 那条完全相同的路径),菜单不再 spawn 那条命令。
+    ///
+    /// 查不动时服务端回 503 → 这里抛错 → 调用方落到「不知道」(不显示更新入口),
+    /// 而不是被喂一个 `available:false` 的假「已是最新」。
+    func updateCheck() throws -> UpdateCheck {
+        try perform(endpoint: .updateCheck, as: UpdateCheck.self)
+    }
+
     /// 单一出口:生产 `init()` 让每个端点用自己的 `timeout`(`overrideTimeout == nil`);
     /// 测试用 `init(connectSocket:ioTimeout:clock:)` 注入的值始终优先。
     /// `perform` 与测试都必须经它取超时,不许各自重算 `overrideTimeout ?? endpoint.timeout`
@@ -242,6 +256,10 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
     case .status:
         method = "GET"
         path = "/v1/status"
+        body = nil
+    case .updateCheck:
+        method = "GET"
+        path = "/v1/update-check"
         body = nil
     }
 

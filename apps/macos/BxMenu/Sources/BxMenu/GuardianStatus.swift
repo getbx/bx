@@ -28,6 +28,10 @@ struct GuardianStatus: Decodable {
     /// 非 nil 时再看 `.reachable`——那才是「问了但 Core 没答」与「答了」的分界。
     /// 绝不能让这两种「没有健康数据」的场景在 Swift 里塌缩成同一件事。
     let core: CoreRuntime?
+    /// Guardian 声明自己支持哪些能力。**nil 与 `[]` 是两件事**:nil 是「这一版
+    /// 压根没声明过能力」(旧 Guardian,键缺席),`[]` 是「声明了,一个都没有」。
+    /// Go 侧刻意没给这个键加 omitempty 就是为了让这个区分成立。
+    let capabilities: [String]?
 
     enum CodingKeys: String, CodingKey {
         case desired
@@ -40,6 +44,7 @@ struct GuardianStatus: Decodable {
         case dnsService = "dns_service"
         case coreVersion = "core_version"
         case core
+        case capabilities
     }
 
     init(from decoder: Decoder) throws {
@@ -54,6 +59,7 @@ struct GuardianStatus: Decodable {
         dnsService = try container.decodeIfPresent(String.self, forKey: .dnsService)
         coreVersion = try container.decodeIfPresent(String.self, forKey: .coreVersion)
         core = try container.decodeIfPresent(CoreRuntime.self, forKey: .core)
+        capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities)
     }
 }
 

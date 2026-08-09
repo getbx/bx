@@ -275,7 +275,15 @@ func guardianCommandWithDeps(deps guardianCommandDeps) *urfavecli.Command {
 			}
 			ctx, cancel := signal.NotifyContext(c.Context, syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
-			return deps.run(ctx, guardian.DaemonOptions{ConfigPath: c.String("config"), DNSListen: c.String("listen-dns"), SocketPath: guardian.SocketPath})
+			return deps.run(ctx, guardian.DaemonOptions{
+				ConfigPath: c.String("config"),
+				DNSListen:  c.String("listen-dns"),
+				SocketPath: guardian.SocketPath,
+				// 菜单不再 spawn `bx update --check --json`:同一件事由 Guardian
+				// 代查、经 /v1/update-check 发布。取数函数留在 CLI 侧,因为 release
+				// 查询与 manifest 签名校验本来就住在这里。
+				UpdateCheck: checkLatestReleaseAvailability,
+			})
 		},
 	}
 }

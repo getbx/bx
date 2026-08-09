@@ -85,6 +85,32 @@ struct StatusReportTests {
         expect(menuProtectionVerdict(makeStatus(protectionState: "protected", core: reachable(tunnelHealthy: false)))
                == .attention("Tunnel unhealthy"), "隧道不健康 = 告警")
 
+        // ── 能力由 Guardian 声明,不再靠解析 `bx logs --help` ────────────────
+        //
+        // 此前菜单 spawn `bx logs --help`,在帮助文本里找 `--archive`/`--dir` 来判断
+        // 装着的 CLI 支不支持诊断归档 —— 一个 UI 靠解析另一个程序的帮助文本做特性
+        // 探测,是整份控制面架构诊断里最直白的症状。而且它问错了对象:被问的是
+        // /usr/local/bin/bx,可能是旧版;真正知道答案的是正在应答你的那个 Guardian。
+        expect(declaresDiagnosticsArchive(["diagnostics_archive"]),
+               "声明了就是支持")
+        expect(declaresDiagnosticsArchive(["something_else", "diagnostics_archive"]),
+               "混在别的能力里也要认出来")
+        expect(!declaresDiagnosticsArchive(["something_else"]),
+               "声明了但不含 = 这一版确实没有这个能力")
+        expect(!declaresDiagnosticsArchive([]),
+               "声明了一个都没有 = 不支持")
+        // **nil 与 [] 不同源,但结论必须同为「不支持」。** nil 只可能来自本次契约
+        // 之前的旧 Guardian(Go 侧刻意没给 capabilities 加 omitempty,健康的新版
+        // 永远给得出这个键),那本身就是「该升级了」。反过来把「没说」当成「有」,
+        // 会在真的缺能力时让 Run Doctor 收集不到诊断包 —— 恰恰是用户最需要它的时刻。
+        expect(!declaresDiagnosticsArchive(nil),
+               "键缺席(旧 Guardian)必须判不支持 —— 「没说」不是「有」")
+        // 端到端:能力经真实解码抵达判定,不是靠测试自己造的数组。
+        let declared = makeStatus(protectionState: "protected", core: nil, capabilities: #"["diagnostics_archive"]"#)
+        expect(declaresDiagnosticsArchive(declared.capabilities), "capabilities 必须真的解得出来")
+        expect(makeStatus(protectionState: "protected", core: nil, capabilities: nil).capabilities == nil,
+               "键缺席时解成 nil,不得被默认成空数组 —— 那会抹掉「旧 Guardian」这个唯一信号")
+
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) failure(s)\n".utf8))
             exit(1)
@@ -96,12 +122,18 @@ struct StatusReportTests {
         #"{"reachable":true,"tunnel_healthy":\#(tunnelHealthy),"latency_ms":390}"#
     }
 
-    /// `core` 传 nil 表示 Guardian 的响应里根本没有这个键(没问过 Core)。
-    private static func makeStatus(protectionState: String, core: String?) -> GuardianStatus {
+    /// `core` 传 nil 表示 Guardian 的响应里根本没有这个键(没问过 Core);
+    /// `capabilities` 传 nil 同理(这一版 Guardian 从没声明过能力)。
+    private static func makeStatus(
+        protectionState: String,
+        core: String?,
+        capabilities: String? = nil
+    ) -> GuardianStatus {
         let coreField = core.map { ",\"core\":\($0)" } ?? ""
+        let capabilitiesField = capabilities.map { ",\"capabilities\":\($0)" } ?? ""
         let json = """
         {"schema_version":1,"desired":"on","phase":"idle",\
-        "protection_state":"\(protectionState)"\(coreField)}
+        "protection_state":"\(protectionState)"\(coreField)\(capabilitiesField)}
         """
         // swiftlint:disable:next force_try
         return try! JSONDecoder().decode(GuardianStatus.self, from: Data(json.utf8))

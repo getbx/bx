@@ -33,13 +33,18 @@ const (
 )
 
 type DaemonOptions struct {
-	ConfigPath             string
-	DNSListen              string
-	SocketPath             string
-	Handler                http.Handler
-	OwnerUID               uint32
-	LocalAPIOwnerUID       uint32
-	PeerCredentials        func(net.Conn) (uint32, bool)
+	ConfigPath       string
+	DNSListen        string
+	SocketPath       string
+	Handler          http.Handler
+	OwnerUID         uint32
+	LocalAPIOwnerUID uint32
+	PeerCredentials  func(net.Conn) (uint32, bool)
+	// UpdateCheck backs GET /v1/update-check. It is supplied by the caller
+	// (internal/cli) because the release lookup + signed manifest verification
+	// already lives there; Guardian publishes the answer, it does not
+	// reimplement the question. Nil leaves the endpoint answering 501.
+	UpdateCheck            func(context.Context) (UpdateAvailability, error)
 	networkObserver        daemonNetworkObserver
 	networkObserverDesired func() DesiredState
 }
@@ -421,6 +426,7 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 			return info.Version
 		},
 		CoreRuntime: fetchCoreRuntime,
+		UpdateCheck: options.UpdateCheck,
 	}
 	options.Handler = NewLocalAPI(controller, localAPIOptions)
 	options.OwnerUID = 0
