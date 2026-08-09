@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/confirm"
 	"github.com/getbx/bx/internal/stats"
@@ -738,5 +740,61 @@ func TestSetServerOmitsEmptyUDPFromRequiredLinks(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "vless://tokyo" {
 		t.Fatalf("udp 为空时不该传空串, got %#v", got)
+	}
+}
+
+// 刷新是**替换**语义(SetServerBypass/store.set 整组换掉,不是并集),故两次
+// 刷新绝不能交错:后写的那次会抹掉前一次刚算进去的那台服务器,而那台的路由
+// 已经装上了 —— 集合与内核就此对不上,下一次 rehijack 把它拆掉 = 成环。
+// 串行化由 cs.mu 提供,这条测试就是钉住「刷新确实在锁里面」。
+func TestSetServerSerializesConcurrentBypassRefresh(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var inFlight atomic.Int32
+	var overlapped atomic.Bool
+	var calls atomic.Int32
+
+	cs := newTestControlServer(t, &recordingMutator{})
+	cs.refreshBypass = func([]string) (bool, error) {
+		if inFlight.Add(1) > 1 {
+			overlapped.Store(true)
+		}
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release // 第一次刷新卡在锁里
+		}
+		inFlight.Add(-1)
+		return false, nil
+	}
+
+	first := make(chan struct{})
+	go func() {
+		defer close(first)
+		cs.handleSetServer(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v0/server",
+			strings.NewReader(`{"link":"vless://a"}`)))
+	}()
+	<-entered
+
+	second := make(chan struct{})
+	go func() {
+		defer close(second)
+		cs.handleSetServer(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v0/server",
+			strings.NewReader(`{"link":"vless://b"}`)))
+	}()
+	// 第二个必须还没进到刷新里(否则就是没被 cs.mu 挡住)。
+	select {
+	case <-second:
+		t.Fatal("第二次切换在第一次还没做完时就返回了 —— 刷新没有被 cs.mu 串行化")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("第二次刷新在第一次持锁期间就跑了 = 交错,替换语义下会互相抹掉, calls=%d", calls.Load())
+	}
+
+	close(release)
+	<-first
+	<-second
+	if overlapped.Load() {
+		t.Fatal("两次刷新出现了重叠")
 	}
 }

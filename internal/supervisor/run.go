@@ -423,7 +423,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	go mutEng.Run(ctx)
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
-	serverBypass := mergeBypassCIDRs(addrsToCIDRs(serverAddrs), tailscaleBootstrapBypassCIDRs(ctx, direct))
+	// tailscale 那组旁路与「切到哪台服务器」无关,启动时算一次,之后每轮刷新原样带上
+	// (重探一次失败就会在下次 rehijack 时悄悄缩小 tailscale 共存旁路)。
+	tailscaleBypass := tailscaleBootstrapBypassCIDRs(ctx, direct)
+	serverBypass := mergeBypassCIDRs(addrsToCIDRs(serverAddrs), tailscaleBypass)
+	// bypassState 是全进程唯一那份「什么必须绕开隧道」:liveMutator(rehijack)、
+	// livePathRecoverer(Wi-Fi 切换后自动重装旁路)与刷新路径全都读写它。
+	// 各自留一份启动时的冻结拷贝正是静默成环的来源。
+	bypassState := newBypassStore(serverBypass, staticA)
 	generation := newTransportGeneration()
 	swapper = &transportSwapper{
 		generation:    generation,
@@ -472,6 +479,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		swap:         swapper,
 		tunH:         tunH,
 		serverBypass: serverBypass,
+		store:        bypassState,
 		userBypass:   cfg.Bypass,
 		routes:       routes,
 	}
@@ -480,44 +488,23 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if udpSwapper != nil {
 		mut.udpSwap = udpSwapper
 	}
-	// refreshServerBypass 重读配置、重算 bypass 集合并写进 mutator。
-	// 加**新**服务器后切过去时必须先调它:新服务器的 IP 不在启动时算好的集合里,
-	// 而没在集合里就意味着隧道自己连服务器的流量会被劫进 TUN(成环)。
+	// 「切换前刷新 bypass」的真身在 newBypassRefresher(可测)。这里只接线。
 	//
-	// requiredLinks 是调用方点名的切换目标。**不从配置文件的 current 推断**:
-	// spec 是「先热切、成功后才落盘 current」,故切换那一刻目标往往还不是 current、
-	// 甚至还不在文件里 —— 推断必然错一次,而错的那一次会把目标当成「一台没在用的
-	// 服务器」静默跳过,然后不装 bypass 直接切过去 = 成环。
-	//
-	// 整个刷新在控制面的 cs.mu 里跑,故解析必须封顶:解析器一挂就会把 /v0/commit、
-	// /v0/transport、/v0/rehijack 一起连坐(「71 分钟关不掉保护」就是这个形状)。
-	// 超时按刷新失败处理 —— 落实不了 bypass 就不切,与其他失败同一条规则。
-	refreshServerBypass := func(requiredLinks []string) (bool, error) {
-		if opts.ConfigPath == "" {
-			return false, fmt.Errorf("未知配置路径,无法刷新 bypass")
-		}
-		raw, err := os.ReadFile(opts.ConfigPath)
-		if err != nil {
-			return false, fmt.Errorf("重读配置: %w", err)
-		}
-		fresh, err := config.Parse(raw)
-		if err != nil {
-			return false, fmt.Errorf("重读配置: %w", err)
-		}
-		rctx, cancelRefresh := context.WithTimeout(ctx, bypassRefreshTimeout)
-		defer cancelRefresh()
-		_, addrs, err := resolveServerBypassRequiring(fresh, requiredLinks,
-			func(host string) []netip.Addr { return hostToAddrsCtx(rctx, host) })
-		if err != nil {
-			return false, err
-		}
-		next := mergeBypassCIDRs(addrsToCIDRs(addrs), tailscaleBootstrapBypassCIDRs(rctx, direct))
-		changed := !equalStringSets(mut.currentServerBypass(), next)
-		if changed {
-			mut.SetServerBypass(next)
-		}
-		return changed, nil
-	}
+	// 解析**绝不能**走系统解析器:刷新发生在 DNS 已经交给 bx 之后,系统解析器
+	// 此刻就是 bx 自己,而新服务器的域名还没有静态 A 记录 —— bx 会老老实实回一个
+	// 198.18/15 的 fake IP,于是我们给一个假 IP 装 bypass 路由,真 IP 一次都没进过
+	// 集合。故这里用与 Dialer 同一个国内 DNS + 防环直连的解析器。
+	bypassResolver := newResolver(cfg.DNS.China, direct)
+	refreshServerBypass := newBypassRefresher(bypassRefreshDeps{
+		configPath: opts.ConfigPath,
+		resolve: func(rctx context.Context, host string) ([]netip.Addr, error) {
+			return resolveAll(rctx, bypassResolver, host)
+		},
+		store:      bypassState,
+		setStaticA: func(records map[string][]netip.Addr) { dnsSrv.SetStaticA(records, splitDirect) },
+		extraCIDRs: func() []string { return tailscaleBypass },
+		fakeipCIDR: cfg.DNS.FakeipCIDR,
+	})
 	runtimeBypass := runtimeIPv4Bypass(serverAddrs)
 	runtimeState := func() RuntimeState {
 		udpRequired, udpReady := udpRuntimeReadiness(cfg.UDP.Mode, lt.Healthy, udpHealthy)
@@ -566,8 +553,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 				tun:          tunH,
 				previous:     initialUnderlay,
 				serverBypass: serverBypass,
-				userBypass:   cfg.Bypass,
-				verify:       verify,
+				// 读共享集合而不是上面那份启动快照:切过服务器之后,一次 Wi-Fi
+				// 切换就会让自动路径恢复用旧集合重装旁路,把刚切过去的那台漏在
+				// 外面 —— 静默成环,而用户什么都没做。
+				bypass:     bypassState,
+				userBypass: cfg.Bypass,
+				verify:     verify,
 			}
 		}
 	}
@@ -618,7 +609,8 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		return nil
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
-		return serveControlWithPathRecovery(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, refreshServerBypass, cancel, uint32(cfg.OwnerUID), recoverer)
+		refresh := func(requiredLinks []string) (bool, error) { return refreshServerBypass(ctx, requiredLinks) }
+		return serveControlWithPathRecovery(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, refresh, cancel, uint32(cfg.OwnerUID), recoverer)
 	})
 	if err != nil {
 		return err
@@ -823,3 +815,17 @@ func readLines(path string) []string {
 }
 
 func itoa(i int) string { return fmt.Sprintf("%d", i) }
+
+// ResolveAll 给出全部解析结果,供 bypass 刷新用(见 resolveAll 的注释:
+// 服务器域名多条 A 记录时只覆盖其中一条就是成环)。
+func (d *dnsResolver) ResolveAll(ctx context.Context, domain string) ([]netip.Addr, error) {
+	ips, err := d.r.LookupNetIP(ctx, "ip", domain)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, ip.Unmap())
+	}
+	return out, nil
+}

@@ -86,6 +86,16 @@ func resolveServerBypassWith(cfg *config.Config, resolve func(string) []netip.Ad
 // Required 语义(见 bypassLink):当前那台、以及被点名的那些,解析不了 = 拒绝;
 // 其余解析不了 = 跳过(清单是会攒的,一台今天没在用的机器不该堵死启动/切换)。
 func resolveServerBypassRequiring(cfg *config.Config, requiredLinks []string, resolve func(string) []netip.Addr) (map[string][]netip.Addr, []netip.Addr, error) {
+	return resolveServerBypassRetaining(cfg, requiredLinks, resolve, nil)
+}
+
+// resolveServerBypassRetaining 在解析失败时回落到 retain 里上一轮已解析成功的地址。
+//
+// 为什么需要:刷新是**替换**不是并集,一台已知服务器这轮 DNS 抖一下就会掉出
+// bypass,而 runFailover 随时可能切到它 —— 那时它没有旁路 = 成环。
+// 但保留只发生在**本轮仍然被遍历到**的主机上(即 fresh 配置仍写着、或调用方点名的),
+// 用户删掉的服务器不会被查到、因而真的消失 —— 留着它等于它的流量绕开隧道。
+func resolveServerBypassRetaining(cfg *config.Config, requiredLinks []string, resolve func(string) []netip.Addr, retain map[string][]netip.Addr) (map[string][]netip.Addr, []netip.Addr, error) {
 	staticA := map[string][]netip.Addr{}
 	var addrs []netip.Addr
 	add := func(link string) error {
@@ -98,6 +108,12 @@ func resolveServerBypassRequiring(cfg *config.Config, requiredLinks []string, re
 		}
 		a := resolve(h)
 		if len(a) == 0 {
+			if kept := retain[h]; len(kept) > 0 {
+				log.Printf("bypass 刷新:%q 本轮解析失败,沿用上一轮已解析的地址(掉出 bypass 会成环)", h)
+				staticA[h] = append([]netip.Addr(nil), kept...)
+				addrs = append(addrs, kept...)
+				return nil
+			}
 			return fmt.Errorf("无法解析传输服务器 %q 为 IP(bypass 必需,否则成环)", h)
 		}
 		staticA[h] = a

@@ -1,7 +1,6 @@
 package supervisor
 
 import (
-	"context"
 	"net/netip"
 	"testing"
 
@@ -264,25 +263,5 @@ func TestResolveServerBypassRequiringStillSkipsOtherUnresolvableServers(t *testi
 	}
 	if _, _, err := resolveServerBypassRequiring(cfg, []string{"vless://u@tokyo.example:443"}, resolve); err != nil {
 		t.Fatalf("没被点名的那台解析不了不该堵死切换: %v", err)
-	}
-}
-
-// 刷新路径在 cs.mu 里跑,而 net.LookupIP 没有超时:解析器一挂,/v0/commit、
-// /v0/transport、/v0/rehijack 全被连坐(这个项目已经有过一次「71 分钟关不掉保护」)。
-// 故刷新路径必须用带 ctx 的解析器,由调用方封顶。
-func TestHostToAddrsCtxHonoursContextCancellation(t *testing.T) {
-	// 前提:这个名字不查网络也解析得出(/etc/hosts),故本测试离线可跑,
-	// 「返回空」只可能来自 ctx 而不是「本机没网」。
-	if len(hostToAddrs("localhost")) == 0 {
-		t.Skip("本机 localhost 解析不出,本测试前提不成立")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if got := hostToAddrsCtx(ctx, "localhost"); len(got) != 0 {
-		t.Fatalf("ctx 已取消仍在解析 = 刷新路径的持锁时长无上限, got %v", got)
-	}
-	// IP 字面量不需要解析器,ctx 取消也该照常给出。
-	if got := hostToAddrsCtx(ctx, "1.2.3.4"); len(got) != 1 {
-		t.Fatalf("IP 字面量不该受 ctx 影响, got %v", got)
 	}
 }

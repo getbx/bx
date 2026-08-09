@@ -380,6 +380,12 @@ func (cs *controlServer) handleSetServer(w http.ResponseWriter, r *http.Request)
 	}
 	changed := false
 	if cs.refreshBypass != nil {
+		// ⚠️ 这一段必须留在 cs.mu 里面。刷新是**替换**语义(整组 bypass 换掉,
+		// 不是并集),两次刷新一旦交错,后写的会抹掉前一次刚算进去的那台服务器,
+		// 而那台的路由已经装上了 —— 集合与内核对不上,下一次 rehijack 把它拆掉
+		// = 成环。把它挪到锁外面是个看起来很合理的重构(「别让 DNS 卡住控制面」),
+		// 挪之前请先看 TestSetServerSerializesConcurrentBypassRefresh。
+		// 持锁时长由刷新自己的 deadline 封顶,不靠挪出锁来解决。
 		// 点名目标的两条链接:端点知道自己要切到哪台,直接说出来,不让刷新去猜。
 		// udp 为空(目标没有 UDP 专用传输)时不塞空串 —— 空串取不出 host,
 		// 会把一次完全正常的切换拒掉。
