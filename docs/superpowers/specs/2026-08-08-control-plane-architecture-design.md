@@ -112,10 +112,18 @@ Guardian 需要补的端点(现有 7 个:status/up/down/migrate/update/recoverie
 把 networksetup / launchctl / 路由操作从 `internal/cli/guardian.go` 收回 Guardian,
 CLI 只剩发请求 + 渲染。
 
-**逃生口显式保留并改名**——`bx force-teardown`(或同类),让「这是例外」写在命令名里,
-而不是藏在 `down` 的失败分支中。今天 `down` 会在干净路径失败时**静默**落到强制拆除,
-用户看到的措辞与实际做的事不完全一致;显式化之后,`down` 的语义变干净,逃生口的语义
-也变清楚。
+**逃生口显式保留并改名**——`bx force-teardown`,让「这是例外」有自己的名字。
+
+> **2026-08-09 更正:本节原先写「今天 `down` 会在干净路径失败时**静默**落到强制拆除,
+> 用户看到的措辞与实际做的事不完全一致」——**这是错的,已实测**。`macOSDownAction`
+> (`internal/cli/guardian.go:611-624`)会打印「已强制停止 bx」、一行 ⚠️ 点名原因、
+> 逐条列出实际做过的动作,并明确拒绝断言「网络已还原」。回落是响亮的。
+>
+> 阶段②真正要修的是另一件事:**`bx down` 的干净路径会先安装并启动 Guardian**
+> (`cleanGuardianDown` → `ensureGuardianOwnership`,写 plist + `launchctl bootstrap`,
+> **然后**才发 `POST /v1/down`)——「停止永不依赖别的先成功」的正面违反。
+> 且 `down` 的自动回落**不该删除**:用户在最需要关掉保护的时候,恰恰最不可能知道该换个命令。
+> 详见 `2026-08-09-stage2-pure-rpc-design.md`。
 
 ### 第三步:调谐循环
 
