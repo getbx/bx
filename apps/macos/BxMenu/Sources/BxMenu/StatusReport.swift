@@ -19,6 +19,52 @@ func declaresDiagnosticsArchive(_ capabilities: [String]?) -> Bool {
     return capabilities.contains(diagnosticsArchiveCapability)
 }
 
+/// 「把 Guardian 切到已装好的新版」在终端里**真的能跑通**的那条命令。
+///
+/// 必须与 Go 侧 `upgradeplan.go` 的 `upgradeSwitchCommand` 逐字相同(跨语言由
+/// TestMacMenuOldGuardianKeepsProtectionStateVisible 钉住)。不能写成
+/// `sudo bx app-install`:/usr/local/bin/bx 是 bridge,它 exec 到 runtime 目录下的
+/// bx,那里不在任何 Bx.app 里,`--app-source` 反推直接报错 —— 一条抄下来必然失败
+/// 的命令,比不给命令更糟。
+let outdatedRuntimeRepairCommand = "sudo /Applications/Bx.app/Contents/Resources/bx-cli app-install"
+
+/// Guardian 缺这个能力时,菜单要**并排**告诉用户的那件事。
+///
+/// **它是一条附注,不是一个状态。** 这个判据一度门控整个状态机:
+/// `guard declaresDiagnosticsArchive(…) else { return .updateNeeded(…) }` 排在所有
+/// 保护判定之前。而「Guardian 还在跑旧版」是本产品**明确建模并会主动打印**的一种
+/// 处境(见 `internal/cli/upgradeplan.go` 的 `upVersionMismatchMessage`),旧版
+/// Guardian 不声明能力 —— 于是那个窗口里菜单只剩表头 "Update Required" 与一句
+/// "Update bx":没有 Protected/Off、没有 Turn Off、没有 Reconnect,而那一刻保护
+/// 很可能正开着。**能力契约本身发布的那一次,每个既有用户都会撞上一回,不多不少。**
+///
+/// 高度错了:`diagnostics_archive` 影响的只有 Run Doctor 的诊断包收集这一项。所以
+/// 现在只报这一项的降级 + 真正能解决它的那条命令,保护状态照常从 Guardian 确实
+/// 回答了的字段推导(`protection_state`/`dns_*`/`core_version` 都早于本轮改动)。
+///
+/// 两种成因分开说:**键缺席**只可能来自本次契约之前的旧 Guardian;**声明了却不含**
+/// 是这一版运行时确实没有这个能力 —— 那时断言人家「是旧版」是一句多出来的假话。
+struct OutdatedRuntimeNotice: Equatable {
+    /// 数据行的值:降级了什么。说清楚、不夸大 —— 它会与保护状态并排显示,
+    /// 含糊其辞会被读成「保护出问题了」。
+    let summary: String
+    /// 怎么办。
+    let remedy: String
+}
+
+func outdatedRuntimeNotice(capabilities: [String]?) -> OutdatedRuntimeNotice? {
+    if declaresDiagnosticsArchive(capabilities) {
+        return nil
+    }
+    let summary = capabilities == nil
+        ? "Older build; diagnostics archive unavailable"
+        : "Diagnostics archive unavailable"
+    return OutdatedRuntimeNotice(
+        summary: summary,
+        remedy: "To finish updating, run: \(outdatedRuntimeRepairCommand)"
+    )
+}
+
 /// MenuProtectionVerdict 是「这份状态该让菜单显示什么」的判定。
 enum MenuProtectionVerdict: Equatable {
     /// 保护被用户主动关掉。菜单应显示 Off 并提供 Start Protection。

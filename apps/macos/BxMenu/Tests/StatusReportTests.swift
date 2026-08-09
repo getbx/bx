@@ -111,6 +111,48 @@ struct StatusReportTests {
         expect(makeStatus(protectionState: "protected", core: nil, capabilities: nil).capabilities == nil,
                "键缺席时解成 nil,不得被默认成空数组 —— 那会抹掉「旧 Guardian」这个唯一信号")
 
+        // ── 能力缺席是一条附注,不是一个状态 ──────────────────────────────
+        //
+        // 这个判据一度**门控整个状态机**(`guard declaresDiagnosticsArchive(…) else
+        // { return .updateNeeded(…) }` 排在所有保护判定之前)。旧 Guardian 不声明
+        // 能力,于是升级窗口里菜单只剩表头 "Update Required" 和一句 "Update bx":
+        // 没有 Protected/Off、没有 Turn Off、没有 Reconnect —— 而那一刻保护很可能
+        // 正开着。**能力契约发布那一次,每个既有用户都会撞上一回。**
+        //
+        // 高度错了:diagnostics_archive 影响的只有 Run Doctor 的诊断包这一项。
+        expect(outdatedRuntimeNotice(capabilities: ["diagnostics_archive"]) == nil,
+               "声明了能力就没有附注可说")
+        expect(outdatedRuntimeNotice(capabilities: ["diagnostics_archive", "future_thing"]) == nil,
+               "多声明了别的能力不影响这一条")
+
+        guard let neverDeclared = outdatedRuntimeNotice(capabilities: nil) else {
+            fail("旧 Guardian(capabilities 键缺席)必须留下一条附注,否则这个事实一个字都到不了用户")
+            exit(1)
+        }
+        expect(neverDeclared.summary.contains("Older build"),
+               "键缺席只可能来自本次契约之前的旧 Guardian,这个事实必须说出来,实际 \(neverDeclared.summary)")
+        expect(neverDeclared.summary.lowercased().contains("diagnostics archive"),
+               "同时必须说清降级的到底是哪一项 —— 不说清就会被读成「保护出问题了」")
+
+        // 声明过、但这一版确实没有这个能力:降级同样成立,但**不能**说人家是旧版。
+        guard let declaredWithout = outdatedRuntimeNotice(capabilities: ["something_else"]) else {
+            fail("声明了却不含这个能力,降级照样成立,附注不能省")
+            exit(1)
+        }
+        expect(!declaredWithout.summary.contains("Older build"),
+               "它声明过能力,断言它是旧版就是一句多出来的假话,实际 \(declaredWithout.summary)")
+        expect(declaredWithout.summary.lowercased().contains("diagnostics archive"), "降级的那一项照说")
+
+        // 补救必须是**真能解决它**的那条命令。此前这个状态给的是 "Open Install
+        // Guide" —— 一个错的补救,而唯一正确的那条命令(upgradeplan.go 早就在
+        // 终端里打印它)当时一次都没出现在菜单上。
+        for notice in [neverDeclared, declaredWithout] {
+            expect(notice.remedy.contains(outdatedRuntimeRepairCommand),
+                   "附注必须带上那条真能完成切换的命令,实际 \(notice.remedy)")
+        }
+        expect(outdatedRuntimeRepairCommand.hasPrefix("sudo /Applications/Bx.app/"),
+               "命令要从 App 包里的 bx-cli 跑 —— 经 /usr/local/bin/bx 那条 bridge 必然失败(见 upgradeplan.go)")
+
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) failure(s)\n".utf8))
             exit(1)
