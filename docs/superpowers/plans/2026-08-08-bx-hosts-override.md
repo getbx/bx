@@ -520,12 +520,24 @@ Expected: 编译失败(`HostOverrides` 字段不存在)。
 
 - [ ] **Step 4: 接线**
 
-`internal/supervisor/control.go` 的 `Serve`(或其签名)加一个参数把生效的覆盖带进来,
-在 `report := func()` 里填进 `stats.Report{... HostOverrides: hostOverrides}`。
-`run.go` 把 Task 2 得到的 `appliedHosts` 转成 `map[string]string` 传进去。
+构造点在 `internal/supervisor/control.go:390` 的
+`serveControlWithPathRecovery(...)` 里的 `report := func() stats.Report` 闭包
+(`serveControl`(`:386`)是它的薄包装,两处签名都要跟着改)。
 
-**具体签名以现有代码为准**——读 `control.go` 里 `Serve` 的现有参数怎么传 `server`/`mode`/
-`udpMode` 这些,照同样的方式加。不要新造一套传参机制。
+**已核对的现实,请带着它决定怎么传**:这个函数**已经有 13 个位置参数**
+(`ctx, c, t, server, mode, udpMode, transportInfo, runtime, eng, mut, reload, shutdown,
+ownerUID`),再加第 14 个不好看。三条路自己选并说明理由:
+
+1. 直接加第 14 个 `hostOverrides map[string]string`——与既有风格一致,改动最小,
+   但把一个已经过长的签名推得更长。
+2. 仿 `transportInfo func() (string, []string, string)` 的形状加一个闭包——一致性更好,
+   但覆盖在进程生命周期内不会变(本期不做热重载),用闭包是没必要的间接。
+3. 把这一串参数收进 options struct——最干净,但**超出本计划范围**,会碰到所有调用点
+   和它们的测试,风险大于收益。**不建议在本任务里做。**
+
+`run.go` 把 Task 2 得到的 `appliedHosts`(`map[string]netip.Addr`)转成
+`map[string]string` 再传进去——`stats.Report` 是要序列化成 JSON 的,`netip.Addr`
+在那里没有好处。
 
 - [ ] **Step 5: 跑全部测试**
 
