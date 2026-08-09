@@ -322,15 +322,17 @@ func TestMacOSDownLifecycleCallsGuardianOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The leading "guardian.ready" is macOSDownLifecycle's own upfront
-	// reachability probe (see TestMacOSDownDoesNotRequireGuardianBootstrap):
-	// only once that confirms Guardian is already up does it commit the
-	// shutdown.
+	// reachability probe (see TestMacOSDownDoesNotRequireGuardianBootstrap).
+	// "legacy.loaded" is the path decision: a legacy Core can only be stopped
+	// by the forced path, so down must ask (see
+	// TestMacOSDownStopsLegacyCoreInsteadOfClaimingSuccess). Only then does
+	// it commit the shutdown.
 	//
-	// 这条序列此前还夹着 legacy.loaded|guardian.enable|guardian.ready ——
-	// cleanGuardianDown 先跑一遍 ensureGuardianOwnership 的痕迹。那三步是启动
-	// 的活,已经搬回 up(见 TestCleanDownDoesNoStartupWork / TestUpStillDoesTheStartupWork);
-	// 本条断言的「down 只跟 Guardian 说一句话」没变,变的是那句话前面不再有别的话。
-	want := []string{"guardian.ready", "guardian.down"}
+	// 这条序列此前在 legacy.loaded 之后还夹着 guardian.enable|guardian.ready ——
+	// cleanGuardianDown 先跑一遍 ensureGuardianOwnership 的痕迹。那两步(以及
+	// legacy.loaded 之后原本要做的接管:网关发现、读 runtime、解析 config、DNS
+	// 查询)是启动的活,已经搬回 up;留下的只有一次便宜的 launchctl 探查。
+	want := []string{"guardian.ready", "legacy.loaded", "guardian.down"}
 	if strings.Join(events, "|") != strings.Join(want, "|") {
 		t.Fatalf("macOS down events = %#v, want %#v", events, want)
 	}
@@ -451,12 +453,22 @@ func (f *fakeMacOSLifecycleDeps) trace() string { return strings.Join(f.events, 
 func (f *fakeMacOSLifecycleDeps) forcedTeardownCalled() bool { return f.forceTeardownCount > 0 }
 func (f *fakeMacOSLifecycleDeps) clientDownCalled() bool     { return f.client.downCalls > 0 }
 
-// 停止就是停止。发 POST /v1/down 之前不该查 legacy Core、不该做网关发现、
-// 不该解析 config、不该碰 launchd。
+// 停止就是停止。发 POST /v1/down 之前不该做网关发现、不该读 Core 的 runtime、
+// 不该解析 config、不该做 DNS 查询、不该碰 launchd 的装载与 kickstart。
 //
-// 今天它们都会跑:cleanGuardianDown 第一步是 ensureGuardianOwnership。后果不是
+// 这些**曾经**都会跑:cleanGuardianDown 第一步是 ensureGuardianOwnership。后果不是
 // 假想的 —— 任何一步报错都会让一次本可以干净完成的停止,升级成拆屏障、还原 DNS、
-// 写 desired=off 的重手术。而停止不该关心有没有 legacy Core 要迁移:那是 up 的工作。
+// 写 desired=off 的重手术。
+//
+// legacyLoaded 是**唯一**的例外,允许被调用至多一次。理由必须写清楚,否则下一个人
+// 会以为这条例外是随手放宽的:
+//   - 它只是一次 `launchctl print`,不做网关发现、不解析 config、不查 DNS;
+//   - 它决定的是**走哪条路**,本身不是启动的活:legacy Core 只有强制路径停得下来
+//     (见 TestMacOSDownStopsLegacyCoreInsteadOfClaimingSuccess);
+//   - 它失败也不会把一次无关的故障升级成重手术 —— 失败就去强制路径,而那正是
+//     「可能有 legacy Core」时的正确答案(见 TestMacOSDownTakesForcedPathWhenLegacyProbeFails)。
+//
+// 另外四个钩子仍必须是 0:它们全是启动的活,住在 up 上。
 func TestCleanDownDoesNoStartupWork(t *testing.T) {
 	f := newFakeMacOSLifecycleDeps()
 	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps); err != nil {
@@ -469,7 +481,6 @@ func TestCleanDownDoesNoStartupWork(t *testing.T) {
 		name  string
 		count int
 	}{
-		{"legacyLoaded", f.legacyLoadedCount},
 		{"migrationRequest", f.migrationRequestCount},
 		{"removeLegacyUnit", f.removeLegacyUnitCount},
 		{"writeGuardianUnit", f.writeGuardianUnitCount},
@@ -479,6 +490,58 @@ func TestCleanDownDoesNoStartupWork(t *testing.T) {
 			t.Errorf("干净停止路径上不该调用 %s(实际 %d 次)—— 停止不许依赖与停止无关的工作",
 				probe.name, probe.count)
 		}
+	}
+	if f.legacyLoadedCount > 1 {
+		t.Errorf("路径判定只需问一次 legacy Core,实际 %d 次", f.legacyLoadedCount)
+	}
+}
+
+// 这一条是本轮真正要防的事故,而且它比原来那个缺陷更严重。
+//
+// Guardian 从没启动过 legacy Core(那是旧 launchd unit 起的),所以
+// /var/lib/bx/core-process.json 里没有它的记录:ExecCoreRunner.Existing 读不到文件
+// 就返回 Process{} —— PID 0。Manager.Down 里 `if process.PID != 0` 那一支于是整个
+// 被跳过,Guardian 装上 block-only 屏障、写 desired=off、还原 DNS、**返回成功**,
+// 而那个 legacy Core 连同它的 TUN 和路由一动没动。
+//
+// 用户看到的是 “✅ bx 已停止并取消开机自启。”,而保护其实还开着 —— 一句假话,
+// 正是这一期要消灭的那一类。
+//
+// 只有强制路径停得下它:stopCore 走 supervisor.ShutdownControl 对着 Core 的控制
+// socket 说话,跟它是被哪个 launchd unit 拉起来的毫无关系。
+func TestMacOSDownStopsLegacyCoreInsteadOfClaimingSuccess(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	f.guardianReady = func(context.Context) bool { return true }
+	f.legacyLoaded = func() (bool, error) { return true, nil }
+
+	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps)
+	if err != nil {
+		t.Fatalf("停止必须完成: %v", err)
+	}
+	if f.eventIndex("core.shutdown") < 0 {
+		t.Errorf("legacy Core 必须被真的请求停下,否则「已停止」是假话, trace=%s", f.trace())
+	}
+	if !result.Forced {
+		t.Errorf("legacy Core 在跑时必须走强制路径(干净路径停不下它), trace=%s", f.trace())
+	}
+	if f.clientDownCalled() {
+		t.Errorf("不该走干净事务:它会报成功而 legacy Core 照旧在跑, trace=%s", f.trace())
+	}
+}
+
+// 「问不出来」不等于「没有」。探查失败时无法证明没有 legacy Core,安全方向是
+// 走那条**万一有就能停下它**的路 —— 与本仓库别处的三态纪律同形。
+func TestMacOSDownTakesForcedPathWhenLegacyProbeFails(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	f.guardianReady = func(context.Context) bool { return true }
+	f.legacyLoaded = func() (bool, error) { return false, errors.New("launchctl print: 权限不足") }
+
+	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps)
+	if err != nil {
+		t.Fatalf("探查失败不得让停止本身失败: %v", err)
+	}
+	if !result.Forced || f.eventIndex("core.shutdown") < 0 {
+		t.Errorf("无法证明没有 legacy Core 时必须走强制路径, forced=%v trace=%s", result.Forced, f.trace())
 	}
 }
 
@@ -832,21 +895,21 @@ func TestMacOSDownFallsBackToForcedTeardownWhenGuardianDownFails(t *testing.T) {
 	}
 }
 
-// TestMacOSDownIgnoresBrokenLegacyHandoffEntirely 是同一个场景的**新答案**。
+// TestMacOSDownFallsBackToForcedTeardownWhenLegacyCoreLoaded:同一个 fixture,
+// 同一个结论,**理由换了,而且换成了更好的那个**。
 //
-// 场景没变:有一个 legacy Core 在跑,而一次断网正好抹掉了默认网关,于是
-// legacy 接管所需的网关发现必然失败 —— 「停止依赖一个刚被这次故障摧毁的前提」
-// 那个陷阱。旧的答案是「至少还有逃生口」:干净路径失败 → 强制拆除(拆屏障、
-// 还原 DNS、写两次 desired=off)。那确实救得了用户,但它是在为一个本不该存在
-// 的失败买单 —— 停止根本不需要知道有没有 legacy Core 要迁移。
+// 场景:有一个 legacy Core 在跑,而一次断网正好抹掉了默认网关,于是 legacy 接管
+// 所需的网关发现必然失败。
 //
-// 新的答案是这个前提压根不再被问:down 直接把 /v1/down 发出去,干净停下,
-// 一根屏障路由都不用拆。
+// 旧理由:停止路径会去做接管,接管失败 → 干净路径失败 → 退化为强制拆除。也就是说
+// 结论对,但对得很偶然 —— 它是被一个「停止根本不该做的动作」的失败推过去的,而那个
+// 动作换成任何别的失败方式(读 runtime 超时、DNS 查询挂住)结果都一样重手术。
 //
-// 这条同时是一条变异探针:一旦 ensureGuardianOwnership 被挪回停止路径,
-// 这里的 migrationRequest 就会报错,干净路径随之失败、退化成强制拆除,
-// 下面三条断言会一起变红。
-func TestMacOSDownIgnoresBrokenLegacyHandoffEntirely(t *testing.T) {
+// 新理由:停止路径不再做接管,但它仍然会问一句「有没有 legacy Core 在跑」。有 ⇒
+// 走强制路径,因为**只有强制路径停得下它**(干净路径会报成功而它照旧在跑,见
+// TestMacOSDownStopsLegacyCoreInsteadOfClaimingSuccess)。网关发现失败与这个判断
+// 完全无关 —— 这条用例里的 migrationRequest 现在一次都不会被调用。
+func TestMacOSDownFallsBackToForcedTeardownWhenLegacyCoreLoaded(t *testing.T) {
 	deps := newFakeMacOSLifecycleDeps()
 	deps.guardianReady = func(context.Context) bool { return true }
 	deps.legacyLoaded = func() (bool, error) { return true, nil }
@@ -856,17 +919,14 @@ func TestMacOSDownIgnoresBrokenLegacyHandoffEntirely(t *testing.T) {
 
 	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
 	if err != nil {
-		t.Fatalf("停止不该关心 legacy 接管能不能做成,实际返回错误: %v", err)
+		t.Fatalf("接管失败后必须还有逃生口,实际返回错误: %v", err)
 	}
-	if result.Forced {
-		t.Errorf("网关发现失败不得再把一次能干净完成的停止升级成强制拆除, trace=%s", deps.trace())
+	if !result.Forced || deps.clearBarrierCount != 1 {
+		t.Fatalf("forced=%v barrier.clear=%d", result.Forced, deps.clearBarrierCount)
 	}
-	if !deps.clientDownCalled() {
-		t.Errorf("干净事务必须照常提交, trace=%s", deps.trace())
-	}
-	if deps.clearBarrierCount != 0 || deps.restoreDNSCount != 0 {
-		t.Errorf("干净停止不该动屏障或系统 DNS: barrier.clear=%d dns.restore=%d",
-			deps.clearBarrierCount, deps.restoreDNSCount)
+	// 新旧理由的分水岭:接管本身已经不在这条路上了。
+	if deps.migrationRequestCount != 0 {
+		t.Errorf("停止路径不得再做 legacy 接管(实际 %d 次)", deps.migrationRequestCount)
 	}
 }
 

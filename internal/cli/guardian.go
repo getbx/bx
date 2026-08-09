@@ -398,6 +398,12 @@ type macOSDownResult struct {
 	// Cause is the clean-path error that triggered the fallback; nil when
 	// Guardian was simply unreachable to begin with.
 	Cause error
+	// LegacyCore is true when the forced path was chosen because a Core that
+	// Guardian does not own may still be running (see legacyCoreMayBeRunning).
+	// It exists so the report can say why: without it, "forced with no Cause"
+	// renders as "Guardian 未响应", which in this case is simply false —
+	// Guardian answered, we chose the heavier path on purpose.
+	LegacyCore bool
 }
 
 // macOSDownLifecycleDetailed implements `bx down`'s two paths:
@@ -429,6 +435,17 @@ func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps mac
 // 其余一律经 macOSDownLifecycleDetailed 走 downPurposeUser。
 func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (macOSDownResult, error) {
 	if deps.guardianReady != nil && deps.guardianReady(ctx) {
+		// 一个便宜的判定,决定走哪条路 —— 不是启动的活。
+		if legacyCoreMayBeRunning(deps) {
+			if err := forcedMacOSTeardown(ctx, deps, nil); err != nil {
+				return macOSDownResult{}, err
+			}
+			return macOSDownResult{
+				Status:     guardian.Status{Protection: guardian.ProtectionOff},
+				Forced:     true,
+				LegacyCore: true,
+			}, nil
+		}
 		status, cleanErr := cleanGuardianDown(ctx, purpose, configPath, deps)
 		if cleanErr == nil {
 			return macOSDownResult{Status: status}, nil
@@ -442,6 +459,33 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 		return macOSDownResult{}, err
 	}
 	return macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}, Forced: true}, nil
+}
+
+// legacyCoreMayBeRunning 回答一个便宜的问题:此刻有没有可能存在一个 Guardian
+// 并不掌管的旧版 Core。它只做一次 `launchctl print`(install.LegacyCoreLoaded),
+// 不做网关发现、不读 Core runtime、不解析 config、不查 DNS —— 那些正是这次从停止
+// 路径上摘掉的东西。
+//
+// **为什么停止路径非问不可**:legacy Core 是旧 launchd unit 起的,Guardian 从没
+// 为它写过 /var/lib/bx/core-process.json。于是 ExecCoreRunner.Existing 读不到文件、
+// 返回 PID 0,Manager.Down 里 `if process.PID != 0 { runner.Stop(...) }` 整个被跳过:
+// Guardian 装屏障、写 desired=off、还原 DNS、**报成功**,而那个 Core 连同它的 TUN
+// 和路由一动没动。用户被告知「已停止」,保护其实还开着 —— 这比一次多余的强制拆除
+// 坏得多。只有强制路径停得下它:stopCore 走 supervisor.ShutdownControl 对着 Core
+// 自己的控制 socket 说话,与它由哪个 launchd unit 拉起来无关。
+//
+// **问不出来时返回 true**:探查失败(或钩子缺失)证明不了「没有」,而安全方向是
+// 那条万一有就能停下它的路。走错了的代价是一次本可以更轻的停止变重;反过来赌错的
+// 代价是对用户说一句假话。与本仓库别处的三态纪律同形:「无法判定」不许塌缩成「否」。
+func legacyCoreMayBeRunning(deps macOSLifecycleDeps) bool {
+	if deps.legacyLoaded == nil {
+		return true
+	}
+	loaded, err := deps.legacyLoaded()
+	if err != nil {
+		return true
+	}
+	return loaded
 }
 
 // cleanGuardianDown 停止只做停止。

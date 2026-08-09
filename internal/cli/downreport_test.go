@@ -64,6 +64,26 @@ func TestDownReportSaysGuardianWasUnreachableWhenThereIsNoCause(t *testing.T) {
 	}
 }
 
+// legacy Core 那条强制路径**不是**「Guardian 未响应」。
+//
+// 它是三条强制路径里唯一一条 Guardian 好端端应答、而我们**主动**选了重手术的:
+// 干净事务停不下一个 Guardian 不掌管的 Core,只会报成功。沿用 Cause==nil 那句
+// 文案会让用户去排查一个根本不存在的「Guardian 没应答」故障 —— 在这一期专门
+// 消灭假话的语境里,那本身就是一句新的假话。
+func TestDownReportExplainsLegacyCoreForcedPathWithoutBlamingGuardian(t *testing.T) {
+	_, errLines := downReportLines(macOSDownResult{Forced: true, LegacyCore: true})
+	joined := strings.Join(errLines, "\n")
+	if strings.Contains(joined, "未响应") {
+		t.Errorf("Guardian 应答了,不得说它未响应:\n%s", joined)
+	}
+	if !strings.Contains(joined, "旧版 Core") {
+		t.Errorf("必须说明真实原因(旧版 Core):\n%s", joined)
+	}
+	if !strings.Contains(joined, "强制") {
+		t.Errorf("仍要说清走的是强制路径:\n%s", joined)
+	}
+}
+
 var errSentinelForReport = errReportSentinel{}
 
 type errReportSentinel struct{}
