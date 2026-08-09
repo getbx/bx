@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -60,6 +61,16 @@ var runtimeMountPoint = filepath.Dir(RuntimeDir)
 // **mnt 与 net 同等重要,不是陪衬**:少了 mnt,tmpfs 会盖在宿主真实的 /run 上,
 // control.go 的 os.Remove(SockPath) 删的就是宿主 bx 的控制 socket。
 var isolatedNamespaces = []string{"net", "mnt"}
+
+// cloneFlagFor 把 namespace 名映射到真实的 clone flag 常量名。
+// 排查的人会照着这句话去改代码,所以它必须是真名 —— mnt 对应的是 CLONE_NEWNS,
+// 不存在 CLONE_NEWMNT。
+func cloneFlagFor(ns string) string {
+	if ns == "mnt" {
+		return "CLONE_NEWNS"
+	}
+	return "CLONE_NEW" + strings.ToUpper(ns)
+}
 
 // harnessOuterNSEnv 是父进程用来传递外层 namespace 标识的环境变量名。
 // 子进程据此证明自己**真的**换了这套 namespace,而不是 Cloneflags 被静默忽略、
@@ -208,16 +219,30 @@ func assertProcessWideIsolation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("读 %s namespace: %v", ns, err)
 		}
-		outer := os.Getenv(harnessOuterNSEnv(ns))
-		if outer == "" {
-			t.Fatalf("缺少外层 %s namespace 标识(%s)—— 无从证明真的换过 namespace。"+
-				"本进程只该由 rerunInNewNamespaces 以子进程身份进到这里;手工设 %s 会让台子"+
-				"在**宿主**的 namespace 里挂 tmpfs、建 TUN、改路由。",
-				ns, harnessOuterNSEnv(ns), harnessIsolatedEnv)
+		// 外层参照必须**不可伪造**。它此前来自父进程写进环境变量的 id ——
+		// 复审把那一行改成写死的假 id、同时去掉 CLONE_NEWNS,台子照样 PASS,
+		// 跑完把外层的 /run 用 tmpfs 盖住、宿主的 core.sock 删掉:正是本守卫要防的那件事。
+		// 更糟的是下面那条「socket 不可见」的检查会**确认错的东西** —— 它通过恰恰
+		// 因为 tmpfs 把宿主的 socket 藏起来了。信自己的记账而不去问内核,是这个项目
+		// 在别处反复点名的反模式,这里不能再犯。
+		//
+		// /proc/1 永远在外层:容器里 PID 1 是父进程(它不进新 namespace),裸机上是 init。
+		// 子进程伪造不了它。
+		//
+		// 注意:将来若给 Cloneflags 加上 CLONE_NEWPID,/proc/1 就变成子进程自己、
+		// self == outer,本守卫会**响亮失败** —— 方向是安全的,但届时要连它一起重写。
+		outer, err := os.Readlink("/proc/1/ns/" + ns)
+		if err != nil {
+			t.Fatalf("读 PID 1 的 %s namespace(外层参照): %v", ns, err)
 		}
 		if outer == self {
-			t.Fatalf("没有真的换 %s namespace:仍在 %s(Cloneflags 少了 CLONE_NEW%s?)",
-				ns, self, strings.ToUpper(ns))
+			t.Fatalf("没有真的换 %s namespace:仍与 PID 1 同在 %s(Cloneflags 少了 %s?)",
+				ns, self, cloneFlagFor(ns))
+		}
+		// 父进程传来的那份保留为冗余交叉核对:两者不一致说明有人在中间做了手脚。
+		if declared := os.Getenv(harnessOuterNSEnv(ns)); declared != "" && declared != outer {
+			t.Fatalf("父进程声称的外层 %s namespace 是 %s,而 PID 1 实际在 %s —— 对不上",
+				ns, declared, outer)
 		}
 		entries, err := os.ReadDir("/proc/self/task")
 		if err != nil {
@@ -562,6 +587,16 @@ type harnessBaseline struct {
 	rules6 string
 }
 
+// pidPathLeftBehind 报告 core.pid 是否残留。
+//
+// 它值得单独一条:PidPath 的 defer os.Remove **只在写入成功时**注册,所以一个残留的
+// core.pid 今天完全不可见。而「陈旧的进程记录」正是 2026-08-05/06 两次真实事故
+// (core-process.json 指向已死 PID,bx up 永久 500)的形状。
+func pidPathLeftBehind() bool {
+	_, err := os.Stat(PidPath)
+	return err == nil
+}
+
 func captureBaseline(t *testing.T) harnessBaseline {
 	t.Helper()
 	return harnessBaseline{
@@ -592,6 +627,9 @@ func (b harnessBaseline) assertRestored(t *testing.T, h *harness) {
 	}
 	if _, err := os.Stat(h.sockPath); err == nil {
 		t.Errorf("控制 socket %s 未被删除", h.sockPath)
+	}
+	if pidPathLeftBehind() {
+		t.Errorf("%s 未被删除 —— 陈旧的进程记录正是 2026-08-05/06 两次事故的形状", PidPath)
 	}
 }
 
@@ -645,7 +683,7 @@ func TestHarnessRunsTheServersBranchWithEveryLinkBypassed(t *testing.T) {
 		"vless://u@203.0.113.10:443",
 		"hysteria2://u@203.0.113.11:443",
 	} {
-		if !slicesContains(links, want) {
+		if !slices.Contains(links, want) {
 			t.Errorf("没有经注入缝建过 %q;建过的是 %v", want, links)
 		}
 	}
@@ -697,13 +735,4 @@ func TestHarnessFakeSocks5SpeaksTheProtocol(t *testing.T) {
 	if string(buf) != "ping" {
 		t.Fatalf("回显 = %q, want %q", buf, "ping")
 	}
-}
-
-func slicesContains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }
