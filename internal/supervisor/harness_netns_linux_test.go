@@ -279,12 +279,12 @@ func ipOut(t *testing.T, args ...string) string {
 // 从非测试 goroutine 调 t.Fatalf **不做它看起来做的事**:那只会标记失败并结束
 // 那一个 goroutine,测试本体照常往下跑,而 swapTo 就此永远等不到返回。
 // 故失败在这里不是控制流,而是**数据**:原样并进返回值,让读到它的断言消息自解释。
-func ipQuiet(args ...string) string {
+func ipQuiet(args ...string) (string, error) {
 	out, err := ipRun(args...)
 	if err != nil {
-		return fmt.Sprintf("(ip %s 失败: %v)\n%s", strings.Join(args, " "), err, out)
+		return out, fmt.Errorf("ip %s: %w\n%s", strings.Join(args, " "), err, out)
 	}
-	return out
+	return out, nil
 }
 
 func ipRun(args ...string) (string, error) {
@@ -313,6 +313,16 @@ type fakeTunnelRequest struct {
 	Link          string
 	RecoveryID    string
 	AuxiliaryHTTP bool
+	// RoutesAtBuildErr 与 RoutesAtBuild **必须分开存**,不能把错误折进字符串。
+	//
+	// 折进去只对「找到某个 IP 才算通过」的正极性断言安全:ip 自己失败时错误文本里
+	// 当然不含那个 IP,断言照样红。但反极性的断言(「屏障开口里**不得**含用户
+	// hosts 覆盖」正是这一种)会因为同一个原因**静默通过** —— ip 挂了,于是什么都
+	// 没找到,于是"没有不该有的东西",绿灯。
+	//
+	// 观测不到与观测到"没有",是两件事。这是本项目在 internal/observe 里已经用
+	// 三态 Tristate 表达过的同一条原则,这里不能退回二值。
+	RoutesAtBuildErr error
 	// RoutesAtBuild 是**建这条隧道那一刻**的 table 100 快照。
 	//
 	// 它是「先装 bypass 路由、再把传输换过去」那条顺序不变量的唯一观测点:两种顺序的
@@ -331,10 +341,11 @@ func newFakeTunnels(t *testing.T) *fakeTunnels {
 func (f *fakeTunnels) build(link, recoveryID string, auxiliaryHTTP bool) (*tunnel.Tunnel, error) {
 	// 先问内核再上锁:ipQuiet 要 fork/exec 一个进程,持锁做它会把并发的建隧道请求
 	// 串起来 —— 那会改变被观测对象本身的时序。
-	routes := ipQuiet("route", "show", "table", itoa(routeTable))
+	routes, routesErr := ipQuiet("route", "show", "table", itoa(routeTable))
 	f.mu.Lock()
 	f.requests = append(f.requests, fakeTunnelRequest{
-		Link: link, RecoveryID: recoveryID, AuxiliaryHTTP: auxiliaryHTTP, RoutesAtBuild: routes,
+		Link: link, RecoveryID: recoveryID, AuxiliaryHTTP: auxiliaryHTTP,
+		RoutesAtBuild: routes, RoutesAtBuildErr: routesErr,
 	})
 	f.mu.Unlock()
 	return tunnel.New(
