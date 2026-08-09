@@ -10,6 +10,16 @@ struct UpdatePresentationTests {
         expect(updateActionTitle(for: unverified) == nil, "unverified update is hidden")
 
         let current = UpdateCheck(current: "v0.2.0", latest: "v0.2.0", available: false, verified: true)
+
+        // 查不动(nil)不得抹掉上一次的已知答案:一次抖动就让 Update 入口消失、
+        // 而下一次检查要等 24 小时,用户只会看到一个安静地少了一项的菜单。
+        expect(mergedUpdateCheck(previous: available, fetched: nil) == available,
+               "失败必须保留上一次的答案")
+        // 拿到新答案就以新的为准 —— 装完之后那次刷新正是靠这条把入口收掉。
+        expect(mergedUpdateCheck(previous: available, fetched: current) == current,
+               "拿到新答案时必须覆盖旧的")
+        expect(mergedUpdateCheck(previous: nil, fetched: nil) == nil,
+               "从没成功过就还是不知道")
         expect(updateActionTitle(for: current) == nil, "current release has no action")
 
         expect(quitBxActionTitle == "Quit bx…", "protection shutdown action is explicit")

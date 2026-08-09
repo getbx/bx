@@ -25,12 +25,17 @@ enum BxState {
 /// 「socket 在应答」本身就是存活观测,与 internal/observe 同一条依据。
 let coreControlSocketPath = "/var/run/bx/core.sock"
 
-/// Guardian 的 launchd plist。与 `install.UnitInstalled()` 在 darwin 上查的两个
-/// 路径逐字一致(新旧标签各一)——drift 由 Go 侧守卫钉住。
-let guardianLaunchdPlistPaths = [
-    "/Library/LaunchDaemons/com.getbx.bx.plist",
-    "/Library/LaunchDaemons/com.ggshr9.bx.plist",
-]
+/// Guardian 的 launchd plist,与 `install.GuardianInstalled()` 查的是同一个文件
+/// (`install.guardianLaunchdPlistPath`)——drift 由 Go 侧守卫钉住。
+///
+/// **不要写成 `com.getbx.bx.plist` / `com.ggshr9.bx.plist`。** 那两个是 **Core**
+/// 的(以及它的 legacy 标签)plist,`install.UnitInstalled()` 查的就是它们;而
+/// 统一布局下 **Core 根本不是 launchd 服务**(由 Guardian 起停),所以在一台
+/// 装好且正在保护的 mac 上它们**都不存在**(真机 2026-08-06,记在
+/// `cli.go` 的 `darwinGuardianServiceName` 旁)。拿它们当「装没装」的判据,
+/// 会让 `stoppedDiagnosis` 对一台配置完好的机器抢先返回 `.setupNeeded`
+/// (「去跑 sudo bx setup」),并让 `.off(.serviceStopped)` 永远走不到。
+let guardianLaunchdPlistPath = "/Library/LaunchDaemons/com.getbx.bx.guard.plist"
 
 final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let bxPath = "/usr/local/bin/bx"
@@ -1338,10 +1343,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Guardian 的 launchd plist 在不在盘上 —— 一次 stat,`install.UnitInstalled()`
-    /// 在 darwin 上做的是同一件事(新旧两个标签任一存在即算装过)。
+    /// Guardian 的 launchd plist 在不在盘上 —— 一次 stat,`install.GuardianInstalled()`
+    /// 做的是同一件事。
+    ///
+    /// **返回 `Bool?` 而且真的会返回 `nil`。** 用 `FileManager.fileExists` 写这个
+    /// 函数才是错的:它对「不存在」与「问不出来」(目录不可读、I/O 错误)一律回
+    /// `false`,正是 `StoppedDiagnosis.swift` 通篇在禁止的那种压缩 —— 而这一项的
+    /// `false` 会让 `stoppedDiagnosis` 抢在两条否定观测之前返回 `.setupNeeded`,
+    /// 把一台配置完好的机器打回 Setup Required。所以走 `stat(2)` 看 errno:
+    /// `ENOENT`/`ENOTDIR` 才是「确实没有」,其余一律「不知道」。
     private func guardianUnitInstalled() -> Bool? {
-        guardianLaunchdPlistPaths.contains { FileManager.default.fileExists(atPath: $0) }
+        var info = stat()
+        if stat(guardianLaunchdPlistPath, &info) == 0 {
+            return fileObservation(statErrno: nil)
+        }
+        return fileObservation(statErrno: errno)
     }
 
     /// 拨一次 Core 的控制 socket:应不应答,以及失败时的人话。
@@ -1422,10 +1438,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func refreshUpdateCheck() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let check = try? self.guardianClient.updateCheck()
+            let fetched = try? self.guardianClient.updateCheck()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.updateCheck = check
+                // 查不动时保留上一次的已知答案,别把「有新版」抹成 nil —— 判据住在
+                // mergedUpdateCheck(有单测)。
+                self.updateCheck = mergedUpdateCheck(previous: self.updateCheck, fetched: fetched)
                 self.rebuildMenu()
             }
         }

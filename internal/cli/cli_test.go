@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -751,8 +752,18 @@ func TestMacMenuPollingPathDoesNotSpawnTheCLI(t *testing.T) {
 		t.Error("refreshUpdateCheck 不得 spawn:更新检查由 Guardian 代查(/v1/update-check)," +
 			"菜单只读答案")
 	}
-	if !strings.Contains(updateBody, "guardianClient.updateCheck()") {
+	// **按去注释后的代码判断。** 这两句解释性注释里都写着被查的名字,拿原始函数体
+	// 去 Contains 会让一次真实的回归被它自己的注释兜住(变异实测:把赋值改成
+	// `self.updateCheck = fetched`,守卫照样绿)——swiftCodeOnly 就是为这个而存在的。
+	updateCode := swiftCodeOnly(updateBody)
+	if !strings.Contains(updateCode, "guardianClient.updateCheck()") {
 		t.Error("refreshUpdateCheck 必须问 Guardian 的 /v1/update-check")
+	}
+	// 查不动时不得抹掉上一次的已知答案(判据在 mergedUpdateCheck,有单测)。
+	// 无条件赋值会让一次抖动吞掉 Update 入口,而下一拍要等 24 小时——症状是
+	// 「菜单安静地少了一项」,没人会把它当成 bug 报上来。
+	if !strings.Contains(updateCode, "mergedUpdateCheck(") {
+		t.Error("refreshUpdateCheck 必须经 mergedUpdateCheck 并入结果,不能无条件覆盖")
 	}
 
 	// 被删掉的三种 spawn 不得以任何形式在**整个文件**里复活。
@@ -771,7 +782,7 @@ func TestMacMenuPollingPathDoesNotSpawnTheCLI(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(body, "guardianClient.status()") {
+	if !strings.Contains(swiftCodeOnly(body), "guardianClient.status()") {
 		t.Fatal("loadState 必须向 Guardian 取状态:它是菜单唯一的数据源")
 	}
 	// Guardian 拨不通时,「没装」与「装了没跑」仍然要分得开 —— 今天唯一的判据是
@@ -1026,22 +1037,287 @@ func TestMacMenuObservedPathsMatchTheGoDefinitions(t *testing.T) {
 		}
 	}
 
-	// Guardian 的 launchd plist:install 里那两个常量不导出,故两边都按字面量钉,
-	// 并要求 install.go 里确实还写着它们 —— 任何一边改名,这条都会响。
-	installSource, err := os.ReadFile(filepath.Join("..", "install", "install.go"))
+	// Guardian 的 launchd plist:install 里那个常量不导出,故两边都按字面量钉,
+	// 并要求 guardian_darwin.go 里确实还写着它 —— 任何一边改名,这条都会响。
+	guardianSource, err := os.ReadFile(filepath.Join("..", "install", "guardian_darwin.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{
+	const guardianPlist = "/Library/LaunchDaemons/com.getbx.bx.guard.plist"
+	if !strings.Contains(string(guardianSource), fmt.Sprintf("%q", guardianPlist)) {
+		t.Errorf("internal/install/guardian_darwin.go 不再认识 %s —— 菜单的 stat 会跟着失准", guardianPlist)
+	}
+	if !strings.Contains(text, fmt.Sprintf("%q", guardianPlist)) {
+		t.Errorf("main.swift 必须 stat %s(install.GuardianInstalled() 查的就是它)", guardianPlist)
+	}
+
+	// **反向断言:Core 的 plist 不得出现在菜单里。**
+	//
+	// 这两个是 `install.UnitInstalled()` 查的路径,而统一布局下 **Core 不是 launchd
+	// 服务**(由 Guardian 起停),所以在一台装好且正在保护的 mac 上它们都不存在
+	// (真机 2026-08-06,见 darwinGuardianServiceName 旁的注释)。菜单一度就是抄了
+	// 它们:后果是 `stoppedDiagnosis` 对一台配置完好的机器抢先返回 `.setupNeeded`
+	// (「去跑 sudo bx setup」),而 `.off(.serviceStopped)` 在每台现代安装上都成了
+	// 死代码 —— 三态判别塌成两态,塌掉的恰好是真机验收要走的那条。
+	for _, corePlist := range []string{
 		"/Library/LaunchDaemons/com.getbx.bx.plist",
 		"/Library/LaunchDaemons/com.ggshr9.bx.plist",
 	} {
-		if !strings.Contains(string(installSource), fmt.Sprintf("%q", path)) {
-			t.Errorf("internal/install/install.go 不再认识 %s —— 菜单的 stat 会跟着失准", path)
+		if strings.Contains(text, fmt.Sprintf("%q", corePlist)) {
+			t.Errorf("main.swift 不得把 %s(**Core** 的 plist)当作「bx 装没装」的判据:"+
+				"统一布局下 Core 不是 launchd 服务,这个文件在健康的 mac 上根本不存在", corePlist)
 		}
-		if !strings.Contains(text, fmt.Sprintf("%q", path)) {
-			t.Errorf("main.swift 必须 stat %s(install.UnitInstalled 在 darwin 上查的就是这两个)", path)
+	}
+
+	// 那次 stat 的**判读**必须走 fileObservation(纯函数、有单测的三态判据)。
+	// 这是个三行的 I/O 适配器,直接 `return false` 一样编译得过、一样没有任何
+	// Swift 测试会红(变异实测),而它 false 的代价是把配置完好的机器打回
+	// Setup Required —— 与 socketObservation 同一条纪律。
+	unit, ok := swiftFunctionBody(text, "private func guardianUnitInstalled(")
+	if !ok {
+		t.Fatal("找不到 guardianUnitInstalled")
+	}
+	unitCode := swiftCodeOnly(unit)
+	// 点名**失败那一支**:只查 `fileObservation(` 挡不住把失败支改成 `return false`
+	// —— 成功支那次调用会替它把守卫兜绿(变异实测)。而失败支恰恰是唯一能产生
+	// 「问不出来」的地方,也是这条不变量的全部内容。
+	if !strings.Contains(unitCode, "fileObservation(statErrno: errno)") {
+		t.Error("guardianUnitInstalled 的失败支必须把 errno 交给 fileObservation 判读," +
+			"不能自己把「问不出来」压成 false")
+	}
+	for _, forbidden := range []string{"return false", "return true", "FileManager"} {
+		if strings.Contains(unitCode, forbidden) {
+			t.Errorf("guardianUnitInstalled 不得出现 %q:三态判读只能来自 fileObservation"+
+				"(FileManager.fileExists 对「不存在」与「问不出来」一律回 false)", forbidden)
 		}
+	}
+}
+
+// macOS 上 doctor 的 Guardian 生产者必须问 install.GuardianInstalled()。
+//
+// 这是个两行的 I/O 适配器:把它换成 install.UnitInstalled()(Core 的 plist)照样
+// 编译、照样全绿(变异实测)—— 而那正是本轮修的那个 bug 的原样复发。派发那半由
+// TestServiceDoctorChecksAskGuardianOnDarwin 钉着,这一半只能按源码钉。
+func TestGuardianServiceChecksAskGuardianInstalled(t *testing.T) {
+	source, err := os.ReadFile("cli.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := goFunctionBody(string(source), "func guardianServiceChecks() []checkReport {")
+	if !ok {
+		t.Fatal("找不到 guardianServiceChecks")
+	}
+	if !strings.Contains(body, "install.GuardianInstalled()") {
+		t.Error("guardianServiceChecks 必须问 install.GuardianInstalled()(Guardian 的 plist)")
+	}
+	for _, forbidden := range []string{"install.UnitInstalled()", "install.ServiceName"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("guardianServiceChecks 不得使用 %s:那是 Core 的 plist / systemd 的服务名,"+
+				"统一布局的 mac 上必然 FAIL 而保护好得很(真机 2026-08-06)", forbidden)
+		}
+	}
+}
+
+// goFunctionBody 返回 Go 源码里某个函数签名之后花括号平衡的函数体。
+func goFunctionBody(source, signature string) (string, bool) {
+	start := strings.Index(source, signature)
+	if start < 0 {
+		return "", false
+	}
+	open := start + len(signature) - 1
+	depth := 0
+	for i := open; i < len(source); i++ {
+		switch source[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return source[open+1 : i], true
+			}
+		}
+	}
+	return "", false
+}
+
+// swiftFunc 是 main.swift 里一个函数定义的名字与它函数体在源码中的区间。
+type swiftFunc struct {
+	name       string
+	start, end int // 函数体(不含花括号)在源码里的字节区间
+}
+
+// swiftFunctionDefs 枚举源码里**全部** `func NAME(` 定义(含嵌套函数),按体积
+// 从小到大排序,便于取「最内层包含某偏移的那个函数」。
+//
+// 它按文本扫,不是 Swift 解析器。**用它的守卫必须自己检查覆盖率**(见
+// enclosingSwiftFunc 的调用点):任何落在所有函数体之外的命中都要响亮报错,
+// 而不是被当成「不存在」静默放过。
+func swiftFunctionDefs(source string) []swiftFunc {
+	var defs []swiftFunc
+	pattern := regexp.MustCompile(`\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	for _, match := range pattern.FindAllStringSubmatchIndex(source, -1) {
+		name := source[match[2]:match[3]]
+		open := strings.Index(source[match[1]:], "{")
+		if open < 0 {
+			continue
+		}
+		open += match[1]
+		depth := 0
+		for i := open; i < len(source); i++ {
+			switch source[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					defs = append(defs, swiftFunc{name: name, start: open + 1, end: i})
+					i = len(source)
+				}
+			}
+		}
+	}
+	sort.Slice(defs, func(i, j int) bool {
+		return defs[i].end-defs[i].start < defs[j].end-defs[j].start
+	})
+	return defs
+}
+
+// enclosingSwiftFunc 返回包含 offset 的最内层函数名;不在任何函数体内返回 ""。
+func enclosingSwiftFunc(defs []swiftFunc, offset int) string {
+	for _, def := range defs {
+		if offset >= def.start && offset < def.end {
+			return def.name
+		}
+	}
+	return ""
+}
+
+// spawnAllowlistRoots 是「调用 X 的函数只能是这些」的一条链。
+type callerRule struct {
+	needle  string   // 要找的调用字面量
+	callers []string // 允许出现它的函数(nil = 一个都不许)
+	why     string
+}
+
+// 子进程只能从**动作路径**长出来,这条链从 spawn 本身往外证明。
+//
+// **为什么不是「扫轮询路径的函数体」。** 上一版守卫扫的是 `loadState` 与
+// `refreshUpdateCheck` 两个函数体 —— 而轮询路径上还有 `diagnoseStopped`、
+// `probeCoreControlSocket`、`guardianUnitInstalled`、`cliIsInstalled`……一个都没被扫。
+// 复审把 `runBx(["status","--json"])` 塞进 `probeCoreControlSocket()`(Guardian
+// 不可达时**每一拍**都会走到),整套测试全绿:本阶段的头号不变量零测试信号。
+// 手工枚举「轮询路径有哪些函数」这件事本身就是错的形状 —— 每加一个 helper 都要
+// 有人记得回来改它,而漏掉不会有任何症状。
+//
+// 所以改成从**唯一的 spawn 点**倒着锁:
+//
+//	Process()  只在 runBx 里
+//	runBx(     只被 cliRuns 调
+//	cliRuns(   只被 ensureCLIUsable 调
+//	ensureCLIUsable( 只被 setUpBx / updateBx 调
+//	setUpBx( / updateBx( 不被任何函数体调用(它们是 #selector 的菜单入口)
+//
+// 这五条一起构成一个**闭合证明**:进程创建只能沿这条链发生,而链的顶端是两个只能
+// 由用户点击触发的 @objc 动作。轮询路径叫什么、有几个 helper、将来加多少个,都
+// 与这个证明无关 —— 任何地方新长出一次 spawn 都会撞在第一或第二条上。
+//
+// **覆盖率是自证的**:每一处命中都必须落在某个函数体内(或是被查函数自己的定义行),
+// 否则守卫**响亮失败**而不是静默放过 —— 类级属性初始化、顶层闭包这些它读不懂的
+// 位置,要求写的人连同这条守卫一起重写(与 Task 3 那条顺序守卫同一纪律)。
+func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := swiftCodeOnly(string(source))
+	defs := swiftFunctionDefs(text)
+
+	// 解析健全性:这条链上的每一环都必须被解析出来。少一个就说明本守卫读不懂
+	// 现在的 main.swift,那时它**必须报错**——一个解析不出目标的文本守卫会安静
+	// 地对一切放行,那比没有守卫更糟(这个文件在这上面栽过五次)。
+	found := map[string]bool{}
+	for _, def := range defs {
+		found[def.name] = true
+	}
+	for _, name := range []string{
+		"runBx", "cliRuns", "ensureCLIUsable", "setUpBx", "updateBx",
+		"loadState", "refreshUpdateCheck", "diagnoseStopped", "probeCoreControlSocket",
+	} {
+		if !found[name] {
+			t.Fatalf("本守卫在 main.swift 里找不到 %s —— 它读不懂现在的代码了,"+
+				"请连同这条守卫一起重写(这是有意的响亮失败,不是静默通过)", name)
+		}
+	}
+
+	for _, rule := range []callerRule{
+		{
+			// runPrivilegedScriptOffMainThread 跑的是 /usr/bin/osascript(特权逃生
+			// 路径,toggleEscape 用),不是 bx —— 由下面 assertOsascriptOnly 单独钉住
+			// 它永远不会变成第二个 bx spawn。
+			needle: "Process()", callers: []string{"runBx", "runPrivilegedScriptOffMainThread"},
+			why: "进程创建的出口必须是可枚举的一小撮。多一个没人盯着的,上面整条链的证明就绕过去了",
+		},
+		{
+			needle: "runBx(", callers: []string{"cliRuns"},
+			why: "唯一正当的 spawn 是动作路径上那次 exec 探测(「装了但跑不起来」只有真执行一次才知道);" +
+				"轮询路径上的任何 spawn 都是让 UI 变回第三个控制面",
+		},
+		{
+			needle: "cliRuns(", callers: []string{"ensureCLIUsable"},
+			why: "exec 探测只经这一道闸门对外,否则「谁会 spawn」又变成要手工枚举的事",
+		},
+		{
+			needle: "ensureCLIUsable(", callers: []string{"setUpBx", "updateBx"},
+			why: "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
+		},
+		{
+			needle: "setUpBx(", callers: nil,
+			why: "它是 #selector 的菜单入口,只能由用户点击触发,不该被任何代码调用",
+		},
+		{
+			needle: "updateBx(", callers: nil,
+			why: "同上",
+		},
+	} {
+		allowed := map[string]bool{}
+		for _, caller := range rule.callers {
+			allowed[caller] = true
+		}
+		for offset := 0; ; {
+			index := strings.Index(text[offset:], rule.needle)
+			if index < 0 {
+				break
+			}
+			at := offset + index
+			offset = at + len(rule.needle)
+			// 被查函数自己的定义行也含有 needle(`func runBx(`),那不是调用。
+			if strings.HasSuffix(text[:at], "func ") {
+				continue
+			}
+			caller := enclosingSwiftFunc(defs, at)
+			if caller == "" {
+				t.Errorf("%s 出现在所有函数体之外(第 %d 字节附近)——本守卫看不懂那个位置,"+
+					"请连同它一起重写:%s", rule.needle, at, rule.why)
+				continue
+			}
+			if !allowed[caller] {
+				t.Errorf("%s 出现在 %s 里,只允许 %v:%s", rule.needle, caller, rule.callers, rule.why)
+			}
+		}
+	}
+
+	// 链上被放行的第二个 Process() 必须一直是 osascript,绝不能变成第二条 bx 通路
+	// —— 否则上面那条放行就成了整个证明里的一个洞。
+	escape, ok := swiftFunctionBody(text, "private func runPrivilegedScriptOffMainThread(")
+	if !ok {
+		t.Fatal("找不到 runPrivilegedScriptOffMainThread —— 它是 Process() 白名单里的第二项,守卫必须能读到它")
+	}
+	if !strings.Contains(escape, `"/usr/bin/osascript"`) {
+		t.Error("runPrivilegedScriptOffMainThread 必须只跑 /usr/bin/osascript")
+	}
+	if strings.Contains(escape, "bxPath") {
+		t.Error("runPrivilegedScriptOffMainThread 不得直接执行 bx:它在 Process() 白名单上," +
+			"是因为它跑的是 osascript;让它碰 bxPath 等于开一条绕过 exec 探测的 spawn 通路")
 	}
 }
 

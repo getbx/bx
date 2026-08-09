@@ -2285,11 +2285,19 @@ func collectClientDoctorWith(configPath, target string, timeout time.Duration, s
 			}
 		}
 	}
-	rep.addCheck("service_installed", boolStatus(install.UnitInstalled()), install.ServiceName, "sudo bx setup <client-link>")
-	activeState := serviceState("is-active", install.ServiceName)
-	rep.addCheck("service_active", serviceStatusFromState("is-active", activeState), activeState, hintForState(activeState, "sudo bx up", "bx logs"))
-	enabledState := serviceState("is-enabled", install.ServiceName)
-	rep.addCheck("service_enabled", serviceStatusFromState("is-enabled", enabledState), enabledState, "sudo bx up")
+	// macOS 上服务三行必须问 **Guardian**,不是 Core / 不是 systemd。
+	//
+	// 统一布局下 Core 不是 launchd 服务(由 Guardian 起停),所以
+	// `install.UnitInstalled()`(查 Core 的两个 plist)与 `install.ServiceName`
+	// (systemd 的 "bx.service")在一台**装好且正在保护**的 mac 上必然三条 FAIL
+	// —— 真机 2026-08-06,教训写在 darwinGuardianServiceName 旁边。人读版 doctor
+	// (doctorAction)早就照做了,**这条 --json 路径此前漏了**:后果不只是三行难看,
+	// 还有 `rep.OK = !rep.hasFail()` 让一台健康的 mac 恒报 `ok:false`,以及
+	// doctorNextActions 把 "sudo bx setup <client-link>" 列进 next_actions ——
+	// 建议用户去重跑一个已经跑过的 setup。
+	for _, check := range serviceDoctorChecks(runtime.GOOS, guardianServiceChecks, systemdServiceChecks) {
+		rep.addReport(check)
+	}
 	if err := checkStatusSocket(); err != nil {
 		rep.addCheck("status_socket", "warn", err.Error(), "bx logs")
 	} else {
@@ -5323,6 +5331,71 @@ func darwinServiceDoctorLines(installed, active bool) []doctorLineSpec {
 	}
 	lines = append(lines, doctorLineSpec{serviceStatusFromState("is-enabled", enabledState), "service enabled", enabledState})
 	return lines
+}
+
+// serviceDoctorChecks 选 doctor 的服务三条问谁。**纯派发,两个生产者都注入**
+// —— 唯一的目的是让「macOS 走 Guardian」这件事本身可以被单测钉住,不必碰真实
+// 文件系统。此前这段判断内联在 collectClientDoctorWith 里:把它改回问 Core /
+// systemd,整套测试照样绿(变异实测),而两个生产者各自的单测也照样绿 ——
+// 被测的是生产者,没人测**接的是哪一个**。
+func serviceDoctorChecks(goos string, guardian, systemd func() []checkReport) []checkReport {
+	if goos == "darwin" {
+		return guardian()
+	}
+	return systemd()
+}
+
+// guardianServiceChecks / systemdServiceChecks 是两个生产者的实际接线(会碰
+// 文件系统与 launchctl/systemctl),故与上面的派发分开,派发那半可测。
+func guardianServiceChecks() []checkReport {
+	return darwinServiceChecks(install.GuardianInstalled(), install.GuardianActive())
+}
+
+func systemdServiceChecks() []checkReport {
+	activeState := serviceState("is-active", install.ServiceName)
+	enabledState := serviceState("is-enabled", install.ServiceName)
+	return []checkReport{
+		{Name: "service_installed", Status: boolStatus(install.UnitInstalled()), Detail: install.ServiceName, Hint: "sudo bx setup <client-link>"},
+		{
+			Name:   "service_active",
+			Status: serviceStatusFromState("is-active", activeState),
+			Detail: activeState,
+			Hint:   hintForState(activeState, "sudo bx up", "bx logs"),
+		},
+		{Name: "service_enabled", Status: serviceStatusFromState("is-enabled", enabledState), Detail: enabledState, Hint: "sudo bx up"},
+	}
+}
+
+// darwinServiceChecks 是 darwinServiceDoctorLines 的机器可读兄弟:同一份判据
+// (Guardian 的安装/活跃状态),产出 doctor --json 的服务三条。
+//
+// launchd 没有 systemd 那种 enabled 与 active 的分离:Guardian 的 plist 带
+// RunAtLoad+KeepAlive,装上即开机自启,故 enabled 直接由 installed 决定。
+// 检查**名字**与 linux 那三条保持一致(service_installed/active/enabled),
+// 消费方按名字取值,不该因为平台不同而找不到。
+func darwinServiceChecks(installed, active bool) []checkReport {
+	installHint := ""
+	if !installed {
+		installHint = "sudo bx setup <client-link>"
+	}
+	activeState := "inactive"
+	if active {
+		activeState = "active"
+	}
+	enabledState := "disabled"
+	if installed {
+		enabledState = "enabled"
+	}
+	return []checkReport{
+		{Name: "service_installed", Status: boolStatus(installed), Detail: darwinGuardianServiceName, Hint: installHint},
+		{
+			Name:   "service_active",
+			Status: serviceStatusFromState("is-active", activeState),
+			Detail: activeState,
+			Hint:   hintForState(activeState, "sudo bx up", "bx logs"),
+		},
+		{Name: "service_enabled", Status: serviceStatusFromState("is-enabled", enabledState), Detail: enabledState, Hint: "sudo bx up"},
+	}
 }
 
 func doctorLine(status, name, detail string) {
