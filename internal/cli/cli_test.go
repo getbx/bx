@@ -1194,8 +1194,9 @@ func enclosingSwiftFunc(defs []swiftFunc, offset int) string {
 
 // spawnAllowlistRoots 是「调用 X 的函数只能是这些」的一条链。
 type callerRule struct {
-	needle  string   // 要找的调用字面量
-	callers []string // 允许出现它的函数(nil = 一个都不许)
+	pattern *regexp.Regexp // 要找的形态(不是字面量,见下面那段「锚在类型上」)
+	label   string         // 报错里怎么称呼它
+	callers []string       // 允许出现它的函数(nil = 一个都不许)
 	why     string
 }
 
@@ -1211,7 +1212,7 @@ type callerRule struct {
 //
 // 所以改成从**唯一的 spawn 点**倒着锁:
 //
-//	Process()  只在 runBx 里
+//	Process    只在 runBx 里
 //	runBx(     只被 cliRuns 调
 //	cliRuns(   只被 ensureCLIUsable 调
 //	ensureCLIUsable( 只被 setUpBx / updateBx 调
@@ -1224,6 +1225,16 @@ type callerRule struct {
 // **覆盖率是自证的**:每一处命中都必须落在某个函数体内(或是被查函数自己的定义行),
 // 否则守卫**响亮失败**而不是静默放过 —— 类级属性初始化、顶层闭包这些它读不懂的
 // 位置,要求写的人连同这条守卫一起重写(与 Task 3 那条顺序守卫同一纪律)。
+//
+// **锚点在类型上,不在调用写法上。** 上一版查的是字面量 `Process()`,而
+// `Process.init()` 与 `Process ()`(带一个空格)都是同一件事的合法 Swift 写法,
+// 两种都能从它底下溜过去 —— 复审把 `let sniff = Process.init()` 放进
+// `probeCoreControlSocket()`(轮询路径),整套测试全绿。写法的花样是无穷的
+// (`Process.init`、`Process . init`、先 `let T = Process.self` 再 `T()`……),
+// 而**类型名只有一个**:凡是 `main.swift` 里提到 `Process` 这个标识符的地方,
+// 都必须落在白名单那两个函数里。同理补上另外三种在 Cocoa/POSIX 上同样能拉起
+// 进程的入口(`posix_spawn` / `NSTask` / `exec*`),它们各自都是一条绕开
+// `Process` 的完整通路。
 func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
@@ -1249,47 +1260,57 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 		}
 	}
 
+	call := func(name string) *regexp.Regexp { return regexp.MustCompile(regexp.QuoteMeta(name)) }
 	for _, rule := range []callerRule{
 		{
 			// runPrivilegedScriptOffMainThread 跑的是 /usr/bin/osascript(特权逃生
 			// 路径,toggleEscape 用),不是 bx —— 由下面 assertOsascriptOnly 单独钉住
 			// 它永远不会变成第二个 bx spawn。
-			needle: "Process()", callers: []string{"runBx", "runPrivilegedScriptOffMainThread"},
-			why: "进程创建的出口必须是可枚举的一小撮。多一个没人盯着的,上面整条链的证明就绕过去了",
+			//
+			// 只认**类型名**:`Process()`、`Process.init()`、`Process ()` 是同一件
+			// 事的三种写法,查字面量只挡得住第一种(复审用后两种各绕过一次)。
+			// `\b` 让 `ProcessInfo` 这类前缀相同的标识符不被误伤。
+			pattern: regexp.MustCompile(`\bProcess\b`), label: "Process 类型",
+			callers: []string{"runBx", "runPrivilegedScriptOffMainThread"},
+			why:     "进程创建的出口必须是可枚举的一小撮。多一个没人盯着的,上面整条链的证明就绕过去了",
 		},
 		{
-			needle: "runBx(", callers: []string{"cliRuns"},
+			// Process 只是 Foundation 那一条路。这三条各自都能独立拉起一个进程,
+			// 一条都不许出现 —— 菜单没有任何正当理由绕过 runBx 那唯一的出口。
+			pattern: regexp.MustCompile(`\bposix_spawn\w*\b|\bNSTask\b|\bexec[lv][pe]*\b`),
+			label:   "POSIX/Cocoa 的另一条进程创建通路(posix_spawn / NSTask / exec*)",
+			callers: nil,
+			why: "它们绕过 Process 这一条链上的全部证明。菜单要执行 CLI 只有 runBx 一个出口," +
+				"多一条就等于「谁会 spawn」重新变成没人枚举得全的事",
+		},
+		{
+			pattern: call("runBx("), label: "runBx(", callers: []string{"cliRuns"},
 			why: "唯一正当的 spawn 是动作路径上那次 exec 探测(「装了但跑不起来」只有真执行一次才知道);" +
 				"轮询路径上的任何 spawn 都是让 UI 变回第三个控制面",
 		},
 		{
-			needle: "cliRuns(", callers: []string{"ensureCLIUsable"},
-			why: "exec 探测只经这一道闸门对外,否则「谁会 spawn」又变成要手工枚举的事",
+			pattern: call("cliRuns("), label: "cliRuns(", callers: []string{"ensureCLIUsable"},
+			why:     "exec 探测只经这一道闸门对外,否则「谁会 spawn」又变成要手工枚举的事",
 		},
 		{
-			needle: "ensureCLIUsable(", callers: []string{"setUpBx", "updateBx"},
-			why: "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
+			pattern: call("ensureCLIUsable("), label: "ensureCLIUsable(", callers: []string{"setUpBx", "updateBx"},
+			why:     "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
 		},
 		{
-			needle: "setUpBx(", callers: nil,
-			why: "它是 #selector 的菜单入口,只能由用户点击触发,不该被任何代码调用",
+			pattern: call("setUpBx("), label: "setUpBx(", callers: nil,
+			why:     "它是 #selector 的菜单入口,只能由用户点击触发,不该被任何代码调用",
 		},
 		{
-			needle: "updateBx(", callers: nil,
-			why: "同上",
+			pattern: call("updateBx("), label: "updateBx(", callers: nil,
+			why:     "同上",
 		},
 	} {
 		allowed := map[string]bool{}
 		for _, caller := range rule.callers {
 			allowed[caller] = true
 		}
-		for offset := 0; ; {
-			index := strings.Index(text[offset:], rule.needle)
-			if index < 0 {
-				break
-			}
-			at := offset + index
-			offset = at + len(rule.needle)
+		for _, span := range rule.pattern.FindAllStringIndex(text, -1) {
+			at := span[0]
 			// 被查函数自己的定义行也含有 needle(`func runBx(`),那不是调用。
 			if strings.HasSuffix(text[:at], "func ") {
 				continue
@@ -1297,11 +1318,11 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			caller := enclosingSwiftFunc(defs, at)
 			if caller == "" {
 				t.Errorf("%s 出现在所有函数体之外(第 %d 字节附近)——本守卫看不懂那个位置,"+
-					"请连同它一起重写:%s", rule.needle, at, rule.why)
+					"请连同它一起重写:%s", rule.label, at, rule.why)
 				continue
 			}
 			if !allowed[caller] {
-				t.Errorf("%s 出现在 %s 里,只允许 %v:%s", rule.needle, caller, rule.callers, rule.why)
+				t.Errorf("%s 出现在 %s 里,只允许 %v:%s", rule.label, caller, rule.callers, rule.why)
 			}
 		}
 	}
