@@ -59,7 +59,7 @@ func TestMergeHostOverridesNeverOverridesTransportServer(t *testing.T) {
 //
 // serverStatic 的 key 来自 net/url.Hostname()(不做大小写归一,link 里写
 // VPS.example.com 就原样留着),user 的 key 来自 cfg.HostOverrides()(已经
-// normalizeHostName 全小写)。若冲突判定按原始 key 直接 map 查找,这两个
+// config.NormalizeHostName 全小写)。若冲突判定按原始 key 直接 map 查找,这两个
 // key 空间对不上,同一个域名的大小写变体会被误判成"没有冲突"、两条都进
 // merged —— 下游 dns.Server.SetStaticA 再各自小写一次,会把两条 append 进
 // 同一个桶,一次查询同时应答服务器真 IP 与用户 IP,而 ignored/status 一个
@@ -75,6 +75,34 @@ func TestMergeHostOverridesNeverOverridesTransportServerCaseInsensitive(t *testi
 	}
 	if got, ok := merged["vps.example.com"]; ok {
 		t.Fatalf("不得在 merged 里留下大小写不同的第二份条目(会被 SetStaticA 小写后 append 进同一个桶):%v", got)
+	}
+	if _, ok := applied["vps.example.com"]; ok {
+		t.Fatal("被忽略的条目不得出现在 applied 里(否则 status 会谎报它生效了)")
+	}
+	if len(ignored) != 1 || ignored[0] != "vps.example.com" {
+		t.Fatalf("必须报出被忽略的域名,实际 %v", ignored)
+	}
+}
+
+// 传输服务器域名的尾点不能绕过冲突检测——同一类问题,不同的归一化维度。
+//
+// config.NormalizeHostName 做两件事:小写 + 去全部尾点。fix round 1 只补了
+// 前者,serverStatic 的 key 带尾点(net/url.Hostname() 原样保留 "vps.example.
+// com." 里的那个点)时,"vps.example.com." 与用户写的 "vps.example.com" 仍会
+// 被判成两个不同域名——冲突检测又失效了一次,后果与大小写那次完全一样:两条
+// 都进 merged,真实 dns.Server.SetStaticA 各自归一后 append 进同一个桶,一次
+// 查询同时应答服务器真 IP 与用户 IP。
+func TestMergeHostOverridesNeverOverridesTransportServerTrailingDot(t *testing.T) {
+	server := map[string][]netip.Addr{"vps.example.com.": addrs("203.0.113.20")}
+	user := map[string]netip.Addr{"vps.example.com": netip.MustParseAddr("127.0.0.1")}
+
+	merged, applied, ignored := mergeHostOverrides(server, user)
+
+	if got := merged["vps.example.com."]; len(got) != 1 || got[0].String() != "203.0.113.20" {
+		t.Fatalf("服务器域名必须保持真 IP,实际 %v —— 隧道会静默连错地方", got)
+	}
+	if got, ok := merged["vps.example.com"]; ok {
+		t.Fatalf("不得在 merged 里留下带尾点差异的第二份条目(会被 SetStaticA 归一后 append 进同一个桶):%v", got)
 	}
 	if _, ok := applied["vps.example.com"]; ok {
 		t.Fatal("被忽略的条目不得出现在 applied 里(否则 status 会谎报它生效了)")

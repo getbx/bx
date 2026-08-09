@@ -228,7 +228,7 @@ func Parse(b []byte) (*Config, error) {
 	return &c, nil
 }
 
-// normalizeHostName 归一化域名:小写 + 去全部尾点。
+// NormalizeHostName 归一化域名:小写 + 去全部尾点。
 //
 // Torchfun.com. 与 torchfun.com 必须是同一条 —— 用户按其中一种写法配、DNS 按
 // 另一种查,覆盖就静默不生效,而这类静默失效正是本功能要消灭的东西。
@@ -236,7 +236,15 @@ func Parse(b []byte) (*Config, error) {
 // 用 TrimRight 而非 TrimSuffix:后者只削一个点,"example.com.." 会被当成与
 // "example.com" 不同的独立条目留下来 —— 同一类"看似归一、实则放过畸形输入"
 // 的问题,只是换了个位置。
-func normalizeHostName(name string) string {
+//
+// 导出(而非包内私有)是刻意的:域名归一化规则只能有一份实现。这条规则曾经
+// 短暂地在 internal/supervisor 里被复刻过一次(只做了小写、漏了去尾点),
+// 两份各自维护、彼此靠人工保持一致的实现分道扬镳只是时间问题——出问题的
+// 不是"忘了同步",是"两份实现"这个结构本身。任何要判断"两个域名是否指同
+// 一条 hosts 覆盖"的调用方(config 包内的 parseHostOverrides、
+// internal/supervisor 的 mergeHostOverrides)都必须调这一个函数,不得自己
+// 再写一遍 ToLower/TrimRight。
+func NormalizeHostName(name string) string {
 	return strings.TrimRight(strings.ToLower(strings.TrimSpace(name)), ".")
 }
 
@@ -245,7 +253,7 @@ func normalizeHostName(name string) string {
 func parseHostOverrides(hosts map[string]string) (map[string]netip.Addr, error) {
 	normalized := make(map[string]netip.Addr, len(hosts))
 	for name, value := range hosts {
-		host := normalizeHostName(name)
+		host := NormalizeHostName(name)
 		if host == "" {
 			return nil, fmt.Errorf("config: hosts 的域名不能为空")
 		}

@@ -457,7 +457,7 @@ func TestParseRejectsNormalizedDuplicateHosts(t *testing.T) {
 	}
 }
 
-// normalizeHostName 必须去掉全部尾点,而不是只去一个——否则 "example.com.."
+// NormalizeHostName 必须去掉全部尾点,而不是只去一个——否则 "example.com.."
 // 归一化成 "example.com." 而非 "example.com",被当成一条独立的合法条目放行,
 // 是「畸形输入被当作合法值容忍」这条原则在归一化步骤上的翻版。
 func TestNormalizeHostNameStripsAllTrailingDots(t *testing.T) {
