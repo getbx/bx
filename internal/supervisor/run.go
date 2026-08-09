@@ -300,17 +300,13 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		serverAddrs = append(serverAddrs, a...)
 		return nil
 	}
-	for _, link := range cfg.Transports { // 含主传输(transports[0]=cfg.Server)+ 容灾备选
+	// 服务器清单在场时这里是**每一台的两条链接**,不只当前那台 —— 见 bypassLinks 的注释。
+	for _, link := range bypassLinks(cfg) {
 		if err := addServer(link); err != nil {
 			return err
 		}
 	}
 	udpEnabled := cfg.UDP.Transport != "" && cfg.UDP.Mode == "proxy"
-	if udpEnabled {
-		if err := addServer(cfg.UDP.Transport); err != nil {
-			return err
-		}
-	}
 	if len(serverAddrs) == 0 {
 		return fmt.Errorf("无法解析任何传输服务器 IP(bypass 必需)")
 	}
