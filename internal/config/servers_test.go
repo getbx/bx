@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/blink"
 )
 
 func parseOrFail(t *testing.T, y string) *Config {
@@ -120,5 +122,28 @@ func TestDeriveServerNameFromLink(t *testing.T) {
 	}
 	if got != "195.133.192.92" {
 		t.Fatalf("没给 --name 时应取主机名, got %q", got)
+	}
+}
+
+// 用户实际粘贴的从来不是裸 vless://,而是 `bx server install` / `bx invite` 生成的
+// bx:// 换壳链接 —— 也就是说清单里**每一项**的真实形状都是它。
+//
+// 而 Parse 会对同一条链接解两次壳:resolveServers 解一次,其后既有的
+// 「优先 transports」分支再解一次。这依赖 decodeServerLink 对已解壳链接的幂等性,
+// 而那份幂等性今天没有任何测试守着 —— 一次对 decodeServerLink 的重构就能悄悄打破它,
+// 后果是所有用户粘贴的链接全部失效。
+func TestServersEntryAcceptsBxLinkWrapper(t *testing.T) {
+	const raw = "vless://u@195.133.192.92:443?sni=www.cloudflare.com"
+	const rawUDP = "hysteria2://p@195.133.192.92:443?obfs=salamander"
+	c := parseOrFail(t, "servers:\n  - name: tokyo\n    link: "+blink.Encode(raw)+
+		"\n    udp: "+blink.Encode(rawUDP)+"\n")
+	if c.Server != raw {
+		t.Fatalf("bx:// 壳必须被解开且只解一次, got %q 想要 %q", c.Server, raw)
+	}
+	if c.UDP.Transport != rawUDP {
+		t.Fatalf("udp 的 bx:// 壳同样要解开, got %q 想要 %q", c.UDP.Transport, rawUDP)
+	}
+	if c.Servers[0].Link != raw {
+		t.Fatalf("清单里存的也应是解开后的链接(下游 bypass 与切换都读它), got %q", c.Servers[0].Link)
 	}
 }
