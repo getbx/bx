@@ -25,5 +25,10 @@ mkdir -p "$OUT"
 echo "⏳ 交叉编译 supervisor 集成测试 (linux/$GOARCH) …"
 GOOS=linux GOARCH="$GOARCH" go test -c -tags integration -o "$OUT/supervisor.test" "$ROOT/internal/supervisor"
 
+# 源码也要**只读**挂进去并把工作目录设成包目录:本包有若干读源码的守卫测试
+# (读 run.go、找 go.mod),只挂二进制的话它们会以 "no such file" 失败 ——
+# 那种失败与真实回归长得一模一样,会让这个脚本的红灯失去意义。
 echo "⏳ 在特权容器里跑(--rm,一次性;宿主的路由/DNS 碰不到)…"
-exec docker run --rm --privileged -v "$OUT":/h:ro busybox /h/supervisor.test "$@"
+exec docker run --rm --privileged \
+	-v "$OUT":/h:ro -v "$ROOT":/src:ro -w /src/internal/supervisor \
+	busybox /h/supervisor.test "$@"
