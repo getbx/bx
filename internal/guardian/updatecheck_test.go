@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -264,6 +265,23 @@ func TestStatusAlwaysCarriesTheCapabilitiesKey(t *testing.T) {
 			t.Errorf("%s %s 的响应缺 capabilities 键;缺席是「旧版 Guardian」的唯一信号,不能被健康的新版占用",
 				tc.method, tc.path)
 		}
+	}
+
+	// 上面那圈跑的是**今天的** GuardianCapabilities():它非空,所以就算给字段加上
+	// `,omitempty`,键照样出现、整套测试照样全绿(实测过)。「刻意不加 omitempty」
+	// 这条契约写在 types.go 的注释里,而注释拦不住任何人 —— 直接断言结构体标签。
+	//
+	// 真正会踩雷的是这个组合:某天能力集合被清空(或某条路径发布的是零值 Status),
+	// 加了 omitempty 的字段就会静默消失,而消失恰恰是「旧版 Guardian」的专属信号
+	// —— 菜单会对一台完好的新机器报「运行的是旧版」。
+	field, ok := reflect.TypeOf(Status{}).FieldByName("Capabilities")
+	if !ok {
+		t.Fatal("Status 没有 Capabilities 字段 —— 本守卫读不懂现在的代码,请连同它一起重写")
+	}
+	if tag := field.Tag.Get("json"); tag != "capabilities" {
+		t.Errorf(`Status.Capabilities 的 json 标签是 %q,必须恰好是 "capabilities":`+
+			`加上 omitempty 会让空集合与「从未声明」塌成同一个形状,而菜单正是靠这个区分`+
+			`判断对面是不是旧版 Guardian`, tag)
 	}
 }
 
