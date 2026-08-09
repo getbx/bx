@@ -77,6 +77,21 @@ type Receipt struct {
 	CompletedAt   time.Time `json:"completed_at"`
 }
 
+// CoreRuntime 是 Core 的运行时统计,由 Guardian 代取并随 Status 一起发布。
+//
+// Guardian 是菜单唯一的数据源(见控制面架构设计),所以这些字段必须从这里拿得到,
+// 而不是让 UI 自己去 spawn 一个 CLI 把两个源合起来。
+type CoreRuntime struct {
+	// Reachable 区分「问到了」与「问不出来」。Core 拨不通时其余字段全为零值,
+	// 不得用 TunnelHealthy=false 冒充 —— 那是把「没问到」压成「答案是坏的」。
+	Reachable     bool   `json:"reachable"`
+	TunnelHealthy bool   `json:"tunnel_healthy"`
+	LatencyMS     int64  `json:"latency_ms"`
+	Server        string `json:"server,omitempty"`
+	Transport     string `json:"transport,omitempty"`
+	UDPMode       string `json:"udp_mode,omitempty"`
+}
+
 type Status struct {
 	SchemaVersion     int              `json:"schema_version"`
 	Desired           DesiredState     `json:"desired"`
@@ -92,6 +107,9 @@ type Status struct {
 	DNSState          DNSState         `json:"dns_state"`
 	DNSManaged        bool             `json:"dns_managed"`
 	DNSService        string           `json:"dns_service,omitempty"`
+	// Core 只在 LocalAPIOptions 注入了取数函数时才填(既有调用方不受影响、
+	// 也不凭空造字段)。取不到时仍会填,但 Reachable=false、其余字段零值。
+	Core *CoreRuntime `json:"core,omitempty"`
 
 	// LastErrorGeneration is a monotonic counter bumped every time
 	// needsAttention actually runs (see Manager.needsAttention). It exists so

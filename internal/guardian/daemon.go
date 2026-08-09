@@ -16,6 +16,7 @@ import (
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/runtimedir"
 	"github.com/getbx/bx/internal/secdir"
+	"github.com/getbx/bx/internal/supervisor"
 	"github.com/getbx/bx/internal/version"
 )
 
@@ -322,6 +323,31 @@ func systemDNSManager() DNSManager {
 	return NewDNSManager("")
 }
 
+// fetchCoreRuntime is the CoreRuntime provider wired into LocalAPIOptions so
+// GET /v1/status can fold the Core's own statistics into Guardian's
+// response, instead of leaving the menu to spawn `bx status` itself for
+// them. It talks to the Core's own control socket (supervisor.SockPath),
+// the same one health.go and the cooperative-shutdown path already use —
+// this is not a second client, just another caller of the existing one.
+//
+// ctx already carries the short deadline attachCoreRuntime sets (1s); a
+// failure or timeout here is reported as CoreRuntime{Reachable: false},
+// never as TunnelHealthy: false standing in for "could not ask".
+func fetchCoreRuntime(ctx context.Context) (CoreRuntime, error) {
+	report, err := supervisor.FetchStatusReportContext(ctx, supervisor.SockPath)
+	if err != nil {
+		return CoreRuntime{}, err
+	}
+	return CoreRuntime{
+		Reachable:     true,
+		TunnelHealthy: report.TunnelHealthy,
+		LatencyMS:     report.LatencyMS,
+		Server:        report.Server,
+		Transport:     report.Transport,
+		UDPMode:       report.UDPMode,
+	}, nil
+}
+
 func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	if err := requireDaemonPlatform(); err != nil {
 		return err
@@ -394,6 +420,7 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 			}
 			return info.Version
 		},
+		CoreRuntime: fetchCoreRuntime,
 	}
 	options.Handler = NewLocalAPI(controller, localAPIOptions)
 	options.OwnerUID = 0

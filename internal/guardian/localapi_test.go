@@ -1490,3 +1490,74 @@ func TestLocalAPIRejectedMutationIsNotLoggedAsInitiated(t *testing.T) {
 		t.Fatalf("403 不该被记成一次发起,日志 = %q", logs.String())
 	}
 }
+
+// Core 不可达时 /v1/status 必须成功返回并如实说不可达 —— 菜单是它唯一的
+// 数据源,让这个端点失败等于让菜单瞎掉。且不得用 tunnel_healthy=false 表示「没
+// 问到」。
+func TestStatusReportsCoreUnreachableWithoutFailing(t *testing.T) {
+	controller := &fakeController{status: Status{SchemaVersion: 1, Desired: DesiredOn, Protection: ProtectionProtected}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(controller, LocalAPIOptions{
+		CoreRuntime: func(context.Context) (CoreRuntime, error) {
+			return CoreRuntime{}, errors.New("dial core: connection refused")
+		},
+	}).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("Core 不可达不得让 status 失败,实际 %d", recorder.Code)
+	}
+	var got Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Core == nil {
+		t.Fatal("Core 字段必须在场并说明不可达")
+	}
+	if got.Core.Reachable {
+		t.Fatal("Core 拨不通时 Reachable 必须为 false")
+	}
+	if got.Core.TunnelHealthy {
+		t.Fatal("不得用 tunnel_healthy 表达「没问到」")
+	}
+}
+
+func TestStatusCarriesCoreRuntimeWhenReachable(t *testing.T) {
+	controller := &fakeController{status: Status{SchemaVersion: 1, Desired: DesiredOn, Protection: ProtectionProtected}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(controller, LocalAPIOptions{
+		CoreRuntime: func(context.Context) (CoreRuntime, error) {
+			return CoreRuntime{
+				Reachable: true, TunnelHealthy: true, LatencyMS: 390,
+				Server: "vps", Transport: "reality@vps", UDPMode: "proxy",
+			}, nil
+		},
+	}).ServeHTTP(recorder, request)
+
+	var got Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Core == nil || !got.Core.Reachable || got.Core.LatencyMS != 390 || got.Core.Transport != "reality@vps" {
+		t.Fatalf("Core 运行时字段 = %+v", got.Core)
+	}
+}
+
+// 没有注入取数函数时(既有调用方全都如此)不得 panic,也不得凭空造 Core 字段。
+func TestStatusWithoutCoreRuntimeProviderOmitsIt(t *testing.T) {
+	controller := &fakeController{status: Status{SchemaVersion: 1}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(controller).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	var got Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Core != nil {
+		t.Fatalf("未注入取数函数时不该有 Core 字段,实际 %+v", got.Core)
+	}
+}

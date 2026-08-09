@@ -40,7 +40,19 @@ type LocalAPIOptions struct {
 	OwnerUID        uint32
 	GuardianVersion string
 	RuntimeVersion  func() string
+	// CoreRuntime, if set, is called on every GET /v1/status to fetch the
+	// Core's runtime statistics (tunnel health, latency, server, transport,
+	// UDP mode) so the menu can read them from Guardian instead of spawning
+	// its own CLI subprocess. Nil means "not wired" — existing callers keep
+	// working with no Core field at all, not a zero-valued one.
+	CoreRuntime func(context.Context) (CoreRuntime, error)
 }
+
+// coreRuntimeFetchTimeout bounds how long observableStatus waits on
+// CoreRuntime before giving up and reporting Reachable: false. /v1/status is
+// the menu's only data source and gets polled at second-level frequency, so
+// an unreachable or slow Core must never stall the whole response.
+const coreRuntimeFetchTimeout = time.Second
 
 type peerCredentialsKey struct{}
 
@@ -134,6 +146,7 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 	status.Recovery = RecoverySnapshot{State: "idle", Stage: "idle"}
 	if recoveries == nil {
 		applyVersionFields(&status, options)
+		attachCoreRuntime(&status, options)
 		return status
 	}
 	if current, ok := recoveries.(pathRecoveryStatusController); ok {
@@ -154,7 +167,31 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 		}
 	}
 	applyVersionFields(&status, options)
+	attachCoreRuntime(&status, options)
 	return status
+}
+
+// attachCoreRuntime fills status.Core when the caller wired a CoreRuntime
+// provider (options.CoreRuntime != nil). With no provider, status.Core stays
+// nil — existing callers of NewLocalAPI(controller) with no options keep
+// emitting no "core" field at all, not a fabricated one.
+//
+// A fetch error or timeout is reported as CoreRuntime{Reachable: false} —
+// never as a Core-unreachable status with TunnelHealthy: true left over from
+// a zero value, and never by failing the whole /v1/status response. The
+// menu's only data source cannot be allowed to go dark because the Core
+// socket happened to be unreachable at the moment of the poll.
+func attachCoreRuntime(status *Status, options LocalAPIOptions) {
+	if options.CoreRuntime == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), coreRuntimeFetchTimeout)
+	defer cancel()
+	runtime, err := options.CoreRuntime(ctx)
+	if err != nil {
+		runtime = CoreRuntime{Reachable: false}
+	}
+	status.Core = &runtime
 }
 
 func recoveryRequestHandler(controller Controller, recovery PathRecoveryController, ownerUID uint32) http.HandlerFunc {
