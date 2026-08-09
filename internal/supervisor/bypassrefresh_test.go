@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go/ast"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -523,10 +522,25 @@ func runSource(t *testing.T) string {
 	return string(b)
 }
 
-// 这三条守的是**赋值**,不是逻辑 —— 它们抬不出 Run():livePathRecoverer 的
-// 构造捕获了 underlay/transports/tun/previous/verify 一串 Run 局部量,把它整个
-// 提出去比这里守着的风险更大。而复审实测:这三处各自改回旧写法,`go test ./...`
-// 全绿 —— 本轮两个 Critical 都正是这种接线错误。
+// 这条守的是**赋值**,不是逻辑 —— 它抬不出 Run():livePathRecoverer 的构造
+// 捕获了 underlay/transports/tun/previous/verify 一串 Run 局部量,把它整个提出去
+// 比这里守着的风险更大。
+//
+// **它同批的另外三条已经退场**(TestRunTakesRuntimeBypassFromWiringNotAFrozenSlice /
+// TestRunWiresLiveMutatorToLiveBypassStore / TestNoPackageWritesToLiveMutatorStore):
+// 集成台(`-tags integration`,真 Run + 真 netns + 真路由表)对它们守的属性各做过一次
+// 变异,台子当场转红,守卫因此成了更弱的重复品。
+//
+// **这一条留下,因为台子照不到它 ——** 台子里没有任何一条测试驱动 `/v0/path-recovery`:
+// livePathRecoverer 只在「underlay 观察到网络路径变了」时才跑,而那要求平台实现
+// `Underlay()`(今天只有 darwin 有)并真的发生一次 Wi-Fi/网关切换。netns 里的
+// linux 平台压根构造不出这个 recoverer,于是它读的是共享 store 还是一份冻结拷贝,
+// 在台子里**没有任何可观测的差别**。
+//
+// 实测坐实(2026-08-09,不是推断):把这里的 `bypass: bypassState` 变异成
+// `bypass: newBypassStore(bypassState.cidrs(), …)`,容器里跑完整 `-tags integration`
+// 全套 —— **全绿,唯一转红的就是本测试**。哪天有人给台子补上一条驱动路径恢复的
+// 断言(需要一个可注入的 underlayManager),再回来删这条。
 //
 // 文本守卫天生是漏的(CLAUDE.md 已经记着这一点),但「漏」好过「零」。
 func TestRunWiresPathRecovererToLiveBypassStore(t *testing.T) {
@@ -554,51 +568,20 @@ func TestRunWiresPathRecovererToLiveBypassStore(t *testing.T) {
 	requireBareIdent(t, compositeField(t, fn, "livePathRecoverer", "bypass"), "bypassState", why)
 }
 
-// liveMutator 的 store 字段是同一处接线的另一半:它为 nil 时 currentServerBypass
-// 回落到 liveMutator.serverBypass —— 那正是启动时的冻结拷贝,而 Rehijack 存在的
-// 全部理由就是把**新**服务器的 IP 装进去。这条此前完全没有守卫。
-func TestRunWiresLiveMutatorToLiveBypassStore(t *testing.T) {
-	why := "Rehijack 必须读共享 store:接成拷贝或 nil 会让它回落到启动时的冻结集合,\n" +
-		"于是「装新服务器的路由」这个动作什么都没装,切过去立刻成环(静默:status 显绿)"
-	fn := runFuncDecl(t)
-	requireSelector(t, soleAssignment(t, fn, "bypassState", why), "bypassWire", "store", why)
-	requireNoFieldWrites(t, fn, "bypassState", why)
-	requireNoWritesToFieldNamed(t, fn, "store", why)
-	requireBareIdent(t, compositeField(t, fn, "liveMutator", "store"), "bypassState", why)
-}
-
-func TestRunTakesRuntimeBypassFromWiringNotAFrozenSlice(t *testing.T) {
-	src := runSource(t)
-	if !strings.Contains(src, "runtimeBypass := bypassWire.runtimeServerBypass") {
-		t.Fatal("RuntimeState.ServerBypass 必须现算(bypassWire.runtimeServerBypass):\n" +
-			"它经 cli/guardian.go 变成 Guardian 屏障的开口,冻住就等于切过服务器后放行的还是旧那台")
-	}
-	if !strings.Contains(src, "ServerBypass:    runtimeBypass(),") {
-		t.Fatal("RuntimeState 必须调用访问器而不是引用某个切片快照")
-	}
-
-	// 上面两个子串**原样留着**也挡不住这个(复审实测,能编译、全绿):
-	//   cachedBypass := runtimeBypass()
-	//   runtimeBypass = func() []string { return cachedBypass }
-	// 看着像一次缓存优化,实际把屏障开口冻回启动值 —— 正是 a8c670f 修掉的那个 bug。
-	// 攻击是**事后重新赋值**,光盯初始化式抓不到;故这里判「Run() 里只赋值一次」。
-	why := "RuntimeState.ServerBypass 经 cli/guardian.go 变成 Guardian 屏障的开口。\n" +
-		"冻住(哪怕只是缓存一次)就等于切过服务器之后屏障放行的还是旧那台、新的被堵死"
-	fn := runFuncDecl(t)
-	requireCallOf(t, soleAssignment(t, fn, "bypassWire", why), "wireBypass", why)
-	requireNoFieldWrites(t, fn, "bypassWire", why)
-	requireNoWritesToFieldNamed(t, fn, "runtimeServerBypass", why)
-	requireNoPackageWritesToFieldNamed(t, "runtimeServerBypass", why)
-	requireSelector(t, soleAssignment(t, fn, "runtimeBypass", why), "bypassWire", "runtimeServerBypass", why)
-	call, ok := compositeField(t, fn, "RuntimeState", "ServerBypass").(*ast.CallExpr)
-	if !ok {
-		t.Fatalf("ServerBypass 必须是 runtimeBypass() 这个调用本身。\n%s", why)
-	}
-	requireBareIdent(t, call.Fun, "runtimeBypass", why)
-	if len(call.Args) != 0 {
-		t.Fatalf("ServerBypass 必须是无参调用 runtimeBypass()。\n%s", why)
-	}
-}
+// 这里曾有 TestRunWiresLiveMutatorToLiveBypassStore(liveMutator.store 必须是共享
+// store 本身)与 TestRunTakesRuntimeBypassFromWiringNotAFrozenSlice(RuntimeState
+// .ServerBypass 必须现算)。两条都被集成台接手,已删 —— 判据是变异实测,不是读代码:
+//
+//	① store: newBypassStore(bypassState.cidrs(), …)  /  store: nil
+//	  → TestHarnessSwitchToNewServerInstallsBypassBeforeSwappingTransport 转红
+//	    (换传输到清单外那台的**那一刻**,内核路由表里没有它的 /32)
+//	② runtimeBypass = func() []string { return cachedBypass }(Run() 内事后冻结)
+//	  以及在 Run() 外 freezeWiringForNow(&bypassWire)(包级冻结)
+//	  → TestHarnessBarrierCarveOutFollowsCurrentServerOnly 转红
+//	    (切换后屏障开口里没有新那台的 198.51.100.20/21)
+//
+// 台子问的是内核与控制面发布的事实,AST 守卫问的是 run.go 长什么样;后者本轮被
+// 绕过 8 次。两道并列会让人误以为有两道防线,实际只有一道。
 
 func TestRunFeedsBypassWiringTheLoopSafeResolver(t *testing.T) {
 	src := runSource(t)
