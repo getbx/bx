@@ -20,7 +20,7 @@ struct CommandResult {
 }
 
 enum BxState {
-    case connected(BxReport, version: String, dns: String?)
+    case connected(GuardianStatus, version: String, dns: String?)
     case warning(String, version: String?)
     case updateNeeded(String, version: String?)
     case setupNeeded(String)
@@ -244,8 +244,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let repairVersions: (bundle: String?, runtime: String?, core: String?)?
     }
 
-    /// 收集一次状态。**跑在后台线程**(它 spawn 四个 bx 子进程),因此不碰 self 的
-    /// 可变状态:恢复快照与 repairVersions 作为局部量进出,由调用方在主线程落定。
+    /// 收集一次状态。**跑在后台线程**(它要拨 Guardian 的 socket、还剩两处 spawn),
+    /// 因此不碰 self 的可变状态:恢复快照与 repairVersions 作为局部量进出,由调用方
+    /// 在主线程落定。
+    ///
+    /// **状态只有一个来源:Guardian 的 `/v1/status`。** 此前这里每次刷新 spawn
+    /// `bx --version` + `bx status --json`,再把两份输出拼成状态 —— 那是把 UI 变成
+    /// 第三个控制面:同一件事 Guardian 已经知道,菜单却用一个可能是旧版的二进制
+    /// 重新推导一遍,两边一旦不一致,指示灯画的是错的那份。
     ///
     /// 判定体原样保在嵌套的 `resolve()` 里:那些 `recoverySnapshot = …` 紧跟
     /// `return .warning(…)` 的写法是 TestMacMenuWarningsDropGreenRecoverySnapshot
@@ -254,35 +260,52 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var recoverySnapshot = snapshot
         var repairVersions: (bundle: String?, runtime: String?, core: String?)?
         func resolve() -> BxState {
-            let runtimeInstalled = unifiedRuntimeVersion() != nil
-            let cliUsable = FileManager.default.isExecutableFile(atPath: bxPath) && runBx(["--version"]).code == 0
-            if installActionTitle(runtimeInstalled: runtimeInstalled, cliUsable: cliUsable) != nil {
+            let runtimeVersion = unifiedRuntimeVersion()
+            // 「CLI 能不能执行」是关于**本机环境**的事实,Guardian 答不上来 —— 但
+            // 它也不该由轮询路径每 2–30 秒 spawn 一次去问。真正需要这个答案的是
+            // 要 shell out 的动作路径(Setup),那里执行之前问一次就够(见 setUpBx)。
+            // 轮询这里只需要「装没装」,而那是一次 stat 就能答的。
+            let cliUsable = cliIsInstalled()
+            if installActionTitle(runtimeInstalled: runtimeVersion != nil, cliUsable: cliUsable) != nil {
                 return .notInstalled(bundleVersion: bundleReleaseVersion())
             }
-            guard FileManager.default.isExecutableFile(atPath: bxPath) else {
+            // 这一支在**本次改动之前就已经到不了**:`installActionTitle` 在
+            // `!cliUsable` 时就返回了 `.notInstalled`。原样留着(数据源变了,
+            // 可达性没变),删它属于动状态机而不是动数据源。
+            guard cliUsable else {
                 return .missing("Install bx at /usr/local/bin/bx")
             }
-            let version = loadVersion()
             if !cliSupportsDiagnosticsArchive() {
-                return .updateNeeded("Update bx CLI", version: version)
+                return .updateNeeded("Update bx CLI", version: runtimeVersion)
             }
-            let status = runBx(["status", "--json"])
-            guard status.code == 0 else {
-                return diagnoseStopped(version: version, fallback: status.stderr)
-            }
-            let data = Data(status.stdout.utf8)
-            guard let report = try? JSONDecoder().decode(BxReport.self, from: data) else {
-                // 必须先清恢复快照:updateIcon 让快照覆盖状态图标,留着一个绿快照
-                // 会画出「状态是 warning、盾牌却是绿的」。
+            let report: GuardianStatus
+            do {
+                report = try guardianClient.status()
+            } catch {
+                if case GuardianClientError.socket = error {
+                    // Guardian 的 socket 拨不通。「bx 没装」与「装了但没跑」在这里
+                    // 分不开,而分开它们今天只有 doctor 的 service_active 一条路
+                    // (那条 spawn 归 Task 4 收)。落到这里是**有意**的,不是漏网:
+                    // 控制 socket 不应答正是 diagnoseStopped 当初被写出来的场景。
+                    return diagnoseStopped(version: runtimeVersion, fallback: error.localizedDescription)
+                }
+                // Guardian 应答了,只是答案读不动(协议损坏、解码失败)。这不是
+                // 「没跑」—— 拿 doctor 去问 launchd 只会得到一个误导性的 off,而
+                // 保护此刻可能正开着。必须先清恢复快照:updateIcon 让快照覆盖状态
+                // 图标,留着一个绿快照会画出「状态是 warning、盾牌却是绿的」。
                 recoverySnapshot = nil
-                return .warning("Status unreadable", version: version)
+                return .warning("Status unreadable", version: runtimeVersion)
             }
             if let banner = updatingBanner(phase: report.phase) {
                 recoverySnapshot = nil
-                return .warning(banner, version: version)
+                return .warning(banner, version: runtimeVersion)
             }
+            // 版本号原先来自 `bx --version`(每次刷新一次 spawn)。改报「正在保护
+            // 你的那个 bx」:Guardian 说的 Core 版本;Core 没跑时回落到盘上的
+            // runtime 版本(纯文件读)。健康态下二者本就相等 —— 不等即 Repair Required。
+            let reportedCoreVersion = report.coreVersion ?? ""
+            let version = reportedCoreVersion.isEmpty ? runtimeVersion : reportedCoreVersion
             let bundleVersion = bundleReleaseVersion()
-            let runtimeVersion = unifiedRuntimeVersion()
             if repairActionNeeded(
                 bundleVersion: bundleVersion,
                 runtimeVersion: runtimeVersion,
@@ -510,7 +533,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         switch state {
         case .connected(let report, _, _):
-            return "bx: Protected, \(report.latencyMS) ms"
+            // 只有答过话的 Core 才有延迟可报。`.connected` 本就要求 reachable
+            // (menuProtectionVerdict 拦在前面),这里的兜底是为了不让类型上的
+            // 可选性被一句 `!` 抹掉 —— 零值延迟比没有延迟更像谎话。
+            guard let core = report.core, core.reachable else {
+                return "bx: Protected"
+            }
+            return "bx: Protected, \(core.latencyMS) ms"
         case .warning(let message, _):
             return "bx: \(message)"
         case .updateNeeded:
@@ -713,9 +742,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func menuRowsNow() -> MenuRowSet {
         switch state {
         case .connected(let report, _, let dns):
-            return menuRows(report: report, dns: dns)
+            return menuRows(status: report, dns: dns)
         default:
-            return menuRows(report: nil, dns: nil)
+            return menuRows(status: nil, dns: nil)
         }
     }
 
@@ -742,6 +771,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func setUpBx() {
+        // 这是「CLI 在不在」真正有意义的地方:下面那条 AppleScript 会去执行它,
+        // 而执行之前先弹一个授权框。轮询路径不再替这里探路(那是每几秒一次 spawn),
+        // 所以在**要用它的那一刻**问一次 —— 让用户输完密码才被告知「没装」是最糟
+        // 的顺序。用 showMessage 而不是 showFailure:后者的 Run Doctor 同样要跑
+        // 这个不存在的二进制。
+        guard cliIsInstalled() else {
+            showMessage("bx Not Found", "bx is not installed at \(bxPath). Install bx, then try again.")
+            return
+        }
         guard let link = promptForClientLink() else { return }
         let command = "'\(bxPath)' setup \(shellSingleQuoted(link))"
         guard runPrivileged(command) else {
@@ -1273,10 +1311,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         report.checks.first { $0.name == name }
     }
 
-    private func loadVersion() -> String? {
-        let result = runBx(["--version"])
-        guard result.code == 0 else { return nil }
-        return result.stdout.replacingOccurrences(of: "bx version ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+    /// CLI 装没装 —— 一次 stat,**不执行它**。
+    ///
+    /// 「能不能执行」严格来说要执行一次才知道,而那正是轮询路径每几秒 spawn 一个
+    /// `bx --version` 的由来。那一次 spawn 换来的额外信息只有「文件在、但跑不起来」
+    /// (架构不符、损坏)这一种情形,而这种情形下真正会执行 CLI 的动作路径本来就
+    /// 会失败并弹出它自己的失败框。所以这里只答「在不在」,把「跑不跑得起来」交给
+    /// 真正要跑它的那次调用去回答。
+    private func cliIsInstalled() -> Bool {
+        FileManager.default.isExecutableFile(atPath: bxPath)
     }
 
     private func bundleReleaseVersion() -> String? {

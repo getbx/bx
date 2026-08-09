@@ -546,9 +546,9 @@ func TestMacMenuQuitTerminatesWhenThereIsNothingToTurnOff(t *testing.T) {
 // 判定住在 quitPlan(QuitPlanTests 钉着),标签贴在 main.swift 的两个构造点上,
 // 那里编不进 Swift 测试套件。
 //
-// 证据在代码里就摆着:loadState 那一支是 `bx status --json` 跑通、报告解码成功、
+// 证据在代码里就摆着:loadState 那一支是 Guardian 的 /v1/status 应答了、解码成功、
 // menuProtectionVerdict 说保护关着 —— Guardian 就在应答,是个信念;diagnoseStopped
-// 那一支是 status 已经失败之后,doctor 又观测到 service_active != ok。
+// 那一支是 Guardian socket 已经拨不通之后,doctor 又观测到 service_active != ok。
 func TestMacMenuOffOriginsMatchTheirEvidence(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
@@ -560,11 +560,11 @@ func TestMacMenuOffOriginsMatchTheirEvidence(t *testing.T) {
 	}{
 		{
 			fn: "private func loadState(", want: ".off(.guardianResponding)", reject: ".off(.serviceStopped)",
-			why: "status --json 跑通、Guardian 在应答 —— 这是一个可能过时的信念,Quit 必须先关",
+			why: "/v1/status 应答了、Guardian 在应答 —— 这是一个可能过时的信念,Quit 必须先关",
 		},
 		{
 			fn: "private func diagnoseStopped(", want: ".off(.serviceStopped)", reject: ".off(.guardianResponding)",
-			why: "status --json 已失败 + doctor 刚看到 launchd job 没装载 —— 两条新鲜否定观测,Quit 应直接退出",
+			why: "Guardian socket 已拨不通 + doctor 刚看到 launchd job 没装载 —— 两条新鲜否定观测,Quit 应直接退出",
 		},
 	} {
 		body, ok := swiftFunctionBody(text, tt.fn)
@@ -665,23 +665,29 @@ func TestMacMenuUsesGuardianInsteadOfCLIReconnectSupport(t *testing.T) {
 	}
 }
 
-// The menu must read DNS state only from the authoritative `bx status --json`
-// report. A second source (shelling out to `bx dns status` and parsing its
-// lines) can disagree with Guardian and paint the shield green while DNS is
-// unmanaged, which is exactly the leak this guard prevents from returning.
+// The menu must read DNS state only from Guardian's authoritative status. A
+// second source (shelling out to `bx dns status` and parsing its lines) can
+// disagree with Guardian and paint the shield green while DNS is unmanaged,
+// which is exactly the leak this guard prevents from returning.
 func TestMacMenuDerivesDNSFromStatusJSONOnly(t *testing.T) {
 	menuSource, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// BxReport 已从 main.swift 移到 StatusReport.swift(它必须能被单测覆盖:
-	// 把 Core 字段声明成非可选曾让 bx down 后的 partial 报告整份解码失败)。
-	// 不变量不变——DNS 判定只能来自 bx status --json——只是字段现在住在另一个文件。
-	reportSource, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "StatusReport.swift"))
-	if err != nil {
-		t.Fatal(err)
+	// 权威来源已从 `bx status --json`(BxReport)换成 Guardian 的 `/v1/status`
+	// (GuardianStatus)——菜单不再 spawn 一个可能是旧版的 CLI 去解析同一件事。
+	// 判定函数仍住在 StatusReport.swift(它必须能被单测覆盖:把 Core 字段声明成
+	// 非可选曾让 bx down 后的残缺报告整份解码失败)。**不变量一个字没变**:
+	// DNS 判定只能来自那一个权威状态,只是字段现在住在另一个文件。
+	var sources []string
+	for _, name := range []string{"StatusReport.swift", "GuardianStatus.swift"} {
+		source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources = append(sources, string(source))
 	}
-	text := string(menuSource) + "\n" + string(reportSource)
+	text := string(menuSource) + "\n" + strings.Join(sources, "\n")
 	if strings.Contains(text, "loadDNSStatus") {
 		t.Fatal("macOS menu must not keep a second DNS status source (loadDNSStatus)")
 	}
@@ -695,6 +701,63 @@ func TestMacMenuDerivesDNSFromStatusJSONOnly(t *testing.T) {
 		if !strings.Contains(text, key) {
 			t.Fatalf("macOS menu should decode the authoritative status field: %s", key)
 		}
+	}
+}
+
+// 轮询路径不得再 spawn bx 子进程。
+//
+// 菜单每 2–30 秒刷新一次,每次都跑 `bx --version` 与 `bx status --json`,自己把
+// 两份输出拼成状态 —— 那是**第三个控制面**:同一件事 Guardian 已经知道,UI 却
+// 用一个可能是旧版的二进制重新推导一遍。Guardian 现在是唯一聚合点(`/v1/status`
+// 已带 Core 运行时统计),菜单只该问它一次。
+//
+// 这条守卫住在 Go 侧,因为 main.swift 要 AppKit、编不进
+// scripts/test-macos-menu.sh —— 把 spawn 加回来不会有任何编译错误,也不会有任何
+// Swift 测试转红,只会让每次刷新重新长出两个子进程。
+//
+// `doctor` / `update --check` / `logs --help` 三种 spawn 属 Task 4,本守卫不管。
+func TestMacMenuPollingPathDoesNotSpawnTheCLI(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, forbidden := range []struct{ literal, why string }{
+		{
+			literal: `runBx(["status"`,
+			why:     "状态只能来自 Guardian 的 /v1/status:再 spawn 一个 CLI 去解析同一件事,就是让 UI 变回第三个控制面",
+		},
+		{
+			literal: `runBx(["--version"`,
+			why:     "版本与「CLI 能不能跑」都不该由轮询路径每几秒 spawn 一次去问 —— 前者 Guardian 直接给,后者只在真要执行 CLI 之前才有意义",
+		},
+	} {
+		if strings.Contains(text, forbidden.literal) {
+			t.Errorf("main.swift 不得在轮询路径 spawn %s:%s", forbidden.literal, forbidden.why)
+		}
+	}
+
+	body, ok := swiftFunctionBody(text, "private func loadState(")
+	if !ok {
+		t.Fatal("找不到 loadState 的函数体")
+	}
+	if !strings.Contains(body, "guardianClient.status()") {
+		t.Fatal("loadState 必须向 Guardian 取状态:它是菜单唯一的数据源")
+	}
+	// Guardian 拨不通时,「没装」与「装了没跑」仍然要分得开 —— 今天唯一的判据是
+	// doctor 的 service_active(Task 4 才收)。这一跳必须是**有意**的:落错地方
+	// (比如一律报 .warning)会让 bx down 之后的菜单变黄且不给 Start Protection,
+	// 正是 2026-08-06 真机上那个「只能回去敲 sudo bx up」的症状。
+	socket := strings.Index(body, "GuardianClientError.socket")
+	if socket < 0 {
+		t.Fatal("loadState 必须把「Guardian 拨不通」与「答案读不动」分开:前者是没跑,后者是应答了但答案坏了")
+	}
+	stopped := strings.Index(body, "diagnoseStopped(")
+	if stopped < 0 {
+		t.Fatal("Guardian 拨不通时必须落到 diagnoseStopped —— 那是「没装 vs 装了没跑」今天唯一的判据")
+	}
+	if stopped < socket {
+		t.Fatal("diagnoseStopped 必须在「拨不通」那一支里,不能是所有失败的默认去处")
 	}
 }
 

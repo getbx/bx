@@ -15,18 +15,19 @@ struct MenuRowsTests {
         set.rows.first { $0.label == label }
     }
 
-    /// BxReport 有自定义 init(from:),Swift 因此不合成 memberwise init ——
-    /// 只能从 JSON 解码。这反而是好事:测试吃的是真实的 `bx status --json` 形状。
-    static func decode(_ json: String) -> BxReport {
-        try! JSONDecoder().decode(BxReport.self, from: Data(json.utf8))
+    /// GuardianStatus 有自定义 init(from:),Swift 因此不合成 memberwise init ——
+    /// 只能从 JSON 解码。这反而是好事:测试吃的是真实的 `/v1/status` 形状。
+    static func decode(_ json: String) -> GuardianStatus {
+        try! JSONDecoder().decode(GuardianStatus.self, from: Data(json.utf8))
     }
 
     static func main() {
         let healthy = decode("""
-        {"tunnel_healthy":true,"latency_ms":390,"active":47,
-         "server":"vps","transport":"reality@vps","udp_mode":"hysteria2"}
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":390,
+                 "server":"vps","transport":"reality@vps","udp_mode":"hysteria2"}}
         """)
-        let set = menuRows(report: healthy, dns: "127.0.0.1")
+        let set = menuRows(status: healthy, dns: "127.0.0.1")
 
         // 阶段②能上的行
         expect(row(set, "Route")?.value.contains("reality") == true,
@@ -50,20 +51,41 @@ struct MenuRowsTests {
 
         // 隧道不健康是真异常
         let unhealthy = decode("""
-        {"tunnel_healthy":false,"latency_ms":0,"active":0,
-         "server":"vps","transport":"reality@vps","udp_mode":"hysteria2"}
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":false,"latency_ms":0,
+                 "server":"vps","transport":"reality@vps","udp_mode":"hysteria2"}}
         """)
-        let bad = menuRows(report: unhealthy, dns: "127.0.0.1")
+        let bad = menuRows(status: unhealthy, dns: "127.0.0.1")
         expect(bad.anomalyCount >= 1, "隧道不健康必须计入异常,实际 \(bad.anomalyCount)")
         expect(bad.rows.contains { $0.mark == .bad }, "必须有一行标记为 bad")
 
+        // Guardian 问了、Core 没答:这**不是**「隧道坏了」。零值 tunnel_healthy
+        // 被当成 bad 就是把「问不出来」压成「答案是坏的」—— 三态存在的全部理由。
+        let unreachable = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":false,"tunnel_healthy":false,"latency_ms":0}}
+        """)
+        let silent = menuRows(status: unreachable, dns: "127.0.0.1")
+        expect(row(silent, "Latency")?.mark == .unknown,
+               "Core 没答时延迟是未观测,不是 bad,实际 \(String(describing: row(silent, "Latency")))")
+        expect(silent.anomalyCount == 0, "Core 没答不得被计成隧道异常,实际 \(silent.anomalyCount)")
+
+        // Guardian 压根没问过 Core(core 键缺席):同样只是未观测
+        let neverAsked = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected"}
+        """)
+        let unasked = menuRows(status: neverAsked, dns: "127.0.0.1")
+        expect(row(unasked, "Latency")?.mark == .unknown, "没问过 Core 时延迟必须是 unknown")
+        expect(row(unasked, "Route")?.mark == .unknown, "没问过 Core 时线路必须是 unknown")
+        expect(unasked.anomalyCount == 0, "没问过不等于有异常,实际 \(unasked.anomalyCount)")
+
         // DNS 未知不是异常,只是未观测
-        let noDNS = menuRows(report: healthy, dns: nil)
+        let noDNS = menuRows(status: healthy, dns: nil)
         expect(row(noDNS, "DNS")?.mark == .unknown, "DNS 取不到时应为 unknown 而非 bad")
         expect(noDNS.anomalyCount == 0, "DNS 未观测不得计入异常,实际 \(noDNS.anomalyCount)")
 
-        // 完全没有报告(bx 没跑)时不得崩,也不得谎报正常
-        let none = menuRows(report: nil, dns: nil)
+        // 完全没有报告(Guardian 都没问到)时不得崩,也不得谎报正常
+        let none = menuRows(status: nil, dns: nil)
         expect(none.rows.allSatisfy { $0.mark == .unknown },
                "没有报告时所有行都应是 unknown")
         expect(none.anomalyCount == 0, "没有报告不等于有异常")
