@@ -2094,6 +2094,14 @@ func (r *updateCoreRunner) Executable() string {
 	return r.executable
 }
 
+// ScanRunning 让这个替身模拟一台**干净机器**:系统里没有任何 Core 在跑。
+//
+// 必须实现它,而不是让替身落到 coreScanner 的「求证不了」那一支——
+// confirmCoreStopped 的默认方向是「不能求证就不说 off」,替身若不实现,
+// 每一条既有的 Down 测试都会变成 needs_attention。那不是发现了问题,
+// 只是把新默认值撞在了测试上。
+func (r *updateCoreRunner) ScanRunning() ([]Process, error) { return nil, nil }
+
 func (r *updateCoreRunner) SetExecutable(executable string) error {
 	if !filepath.IsAbs(executable) {
 		return fmt.Errorf("executable must be absolute")

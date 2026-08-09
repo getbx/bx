@@ -235,6 +235,11 @@ func (r *ExecCoreRunner) scanCores() ([]Process, error) {
 	return scan()
 }
 
+// ScanRunning 把 scanCores 暴露给 Manager:它在报告「已关闭」之前要向系统求证,
+// 而不能只信 /var/lib/bx/core-process.json —— 那份记录里没有 legacy Core、
+// 没有 `sudo bx run` 起的 Core,手删过它的机器上更是什么都没有。
+func (r *ExecCoreRunner) ScanRunning() ([]Process, error) { return r.scanCores() }
+
 // scannedCorePIDs 把扫到的 PID 拼成诊断文本。**只用于错误文本**——这些进程
 // 是「疑似」而非「已验明的我们的 Core」,绝不得进 Process payload。
 func scannedCorePIDs(cores []Process) string {

@@ -72,6 +72,46 @@ type CoreStartOptions struct {
 	GuardianBypassHandoff []string
 }
 
+// coreScanner 由能向系统求证「有没有 Core 在跑」的 runner 实现。
+//
+// 刻意做成**可选**接口而不是塞进 CoreRunner:实现不了的 runner 落到
+// 「没能确认」那一支即可,不该被迫编造一个答案。
+type coreScanner interface {
+	ScanRunning() ([]Process, error)
+}
+
+// coreScanSettle 是两次扫描之间的等待。刚收到 SIGTERM、正在跑 defer 的进程
+// 既不是僵尸(scanRunningCores 已跳过僵尸)也还没消失,扫到它就断言「还在跑」
+// 会把每一次正常关闭都变成告警 —— 而被训练成忽略告警的用户,真出事时也会忽略。
+var coreScanSettle = 300 * time.Millisecond
+
+// confirmCoreStopped 在拆除做完之后问系统:还有没有 Core 在跑?
+//
+// **永不返回 error。** 扫描的任何失败模式都不得让 Down 失败 —— 那是 2026-08-04
+// 那条不变量(用户 71 分钟关不掉保护)。它只回答「能不能说 off」,以及为什么不能。
+func (m *Manager) confirmCoreStopped() (bool, string) {
+	scanner, ok := m.runner.(coreScanner)
+	if !ok {
+		return false, "core_scan_unsupported"
+	}
+	cores, err := scanner.ScanRunning()
+	if err == nil && len(cores) == 0 {
+		return true, ""
+	}
+	// 一次不算 —— 见 coreScanSettle。
+	time.Sleep(coreScanSettle)
+	cores, err = scanner.ScanRunning()
+	switch {
+	case err != nil:
+		log.Printf("guardian_core_scan_failed_on_down err=%v", err)
+		return false, "core_scan_failed"
+	case len(cores) > 0:
+		log.Printf("guardian_core_still_running_after_down pids=%s", scannedCorePIDs(cores))
+		return false, "core_still_running"
+	}
+	return true, ""
+}
+
 type HealthGate interface {
 	Wait(context.Context, HealthTarget) (supervisor.RuntimeState, error)
 }
