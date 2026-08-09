@@ -619,8 +619,14 @@ func TestMacOSDownBoundsTheLegacyProbe(t *testing.T) {
 // 整套测试仍然全绿。本仓库对这类地板的先例是 decideCoreScan:判定式抽出来、
 // 由单测逐条钉死。
 func TestLegacyCoreMayBeRunningAssumesTrueWithoutAProbe(t *testing.T) {
-	if !legacyCoreMayBeRunning(context.Background(), macOSLifecycleDeps{}) {
+	mayRun, known := legacyCoreMayBeRunning(context.Background(), macOSLifecycleDeps{})
+	if !mayRun {
 		t.Error("没有探查手段时必须假定可能有 legacy Core —— 「问不出来」不许塌缩成「没有」")
+	}
+	// known 必须是 false:这决定了解除 job 失败时**不**硬失败 ——
+	// 我们其实不知道有没有 legacy unit,一次探查抖动不该让干净机器的 down 整个失败。
+	if known {
+		t.Error("没有探查手段时不许自称「已知」—— 那会把一次抖动升级成 bx down 硬失败")
 	}
 }
 
@@ -1568,5 +1574,49 @@ func TestMenuLaunchdCommandsDoNotRestartAlreadyRunningMenu(t *testing.T) {
 	}
 	if !sawBootstrap {
 		t.Errorf("未加载时必须 bootstrap,实际 = %v", notLoaded)
+	}
+}
+
+// 探查失败时,解除 legacy job 失败**不得**让 bx down 整个失败。
+//
+// 这条分支是探查失败也会进的,而 bootoutLegacyCoreWithControl 内部会重跑那个刚刚
+// 失败的 launchctl 查询 —— 于是一台**根本没有 legacy unit** 的干净机器,遇上一次
+// launchctl 抖动就会让 bx down 非零退出、报告被吞掉。那正是「停止不许依赖别的先
+// 成功」本身:停止的成败被一次与停止无关的查询绑架了。
+func TestLegacyDisarmFailureIsNotFatalWhenTheProbeItselfFailed(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	f.guardianReady = func(context.Context) bool { return true }
+	f.legacyLoaded = func(context.Context) (bool, error) { return false, errors.New("launchctl 抖了一下") }
+	f.bootoutLegacyUnit = func(context.Context) error { return errors.New("bootout 也失败") }
+
+	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps)
+	if err != nil {
+		t.Fatalf("探查失败时,解除 job 的失败不该让停止本身失败: %v", err)
+	}
+	if !result.Forced {
+		t.Errorf("仍应如实报告走了强制路径, trace=%s", f.trace())
+	}
+}
+
+// 反过来:**确知** job 加载着时,解除失败就是硬失败 —— job 还armed,Core 一定回来,
+// 此时说「已停止」是假话。
+func TestLegacyDisarmFailureIsFatalWhenTheUnitIsKnownLoaded(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	f.guardianReady = func(context.Context) bool { return true }
+	f.legacyLoaded = func(context.Context) (bool, error) { return true, nil }
+	f.bootoutLegacyUnit = func(context.Context) error { return errors.New("bootout 失败") }
+
+	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", f.macOSLifecycleDeps)
+	if err == nil {
+		t.Fatal("确知 job 加载着而解除失败时必须报错 —— KeepAlive 会把 Core 拉回来,「已停止」是假话")
+	}
+	// **出错时返回的 result 也不能是零值。** 零值经 downReportLines 渲染出来的是
+	// "✅ bx 已停止并取消开机自启。" —— 这一期要杀的那句原话,离被打印只差一个
+	// 忽略 err 的调用方(upgraderun.go 那条路正是拿结果去渲染的)。
+	if !result.Forced {
+		t.Error("出错路径返回的结果必须仍标记 Forced —— 零值会被渲染成干净成功")
+	}
+	if stdout, _ := downReportLines(result); strings.Contains(strings.Join(stdout, "\n"), "✅") {
+		t.Errorf("出错路径的结果渲染成了干净成功:\n%s", strings.Join(stdout, "\n"))
 	}
 }

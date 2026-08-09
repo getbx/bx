@@ -214,3 +214,28 @@ func TestForcedTeardownFailureAlsoCarriesTheCleanPathCause(t *testing.T) {
 		t.Errorf("干净路径的失败原因必须一并带出:\n%s", err.Error())
 	}
 }
+
+// 零值 macOSDownResult 渲染出来的是「✅ bx 已停止并取消开机自启。」——
+// 这一期要杀的那句原话。任何在**出错**时返回零值的路径,只要有一个调用方忽略 err
+// 去渲染,就会把它印给一个保护还开着的用户。所以出错路径也必须带上 Forced。
+//
+// 这条不是假想:复审在 legacy 分支上实测到了零值返回,而 upgraderun.go 那条路
+// 恰恰会拿结果去渲染。
+func TestDownResultOnErrorPathsNeverRendersAsCleanSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result macOSDownResult
+	}{
+		{"legacy 分支出错", macOSDownResult{Forced: true, LegacyCore: true}},
+		{"干净路径失败后强制也失败", macOSDownResult{Forced: true, Cause: errSentinelForReport}},
+		{"Guardian 不可达且强制失败", macOSDownResult{Forced: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, _ := downReportLines(tc.result)
+			joined := strings.Join(stdout, "\n")
+			if strings.Contains(joined, "网络已恢复") || strings.Contains(joined, "✅") {
+				t.Fatalf("出错路径的结果绝不能渲染成干净成功:\n%s", joined)
+			}
+		})
+	}
+}
