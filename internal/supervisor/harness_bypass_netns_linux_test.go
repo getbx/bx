@@ -92,6 +92,11 @@ func TestHarnessSwitchToNewServerInstallsBypassBeforeSwappingTransport(t *testin
 		t.Fatalf("假隧道工厂从没被要求建 %s —— 切换根本没发生(被拒?被跳过?),顺序无从谈起;建过的=%v",
 			target, h.tunnels.links())
 	}
+	// 观测本身失败必须响亮:否则「问不出来」会被读成「没找到」,而本断言恰好
+	// 以「没找到即失败」为极性 —— 今天它因此侥幸安全,但下一个反极性的断言不会。
+	if built.RoutesAtBuildErr != nil {
+		t.Fatalf("建隧道那一刻读不到路由表,无从判断顺序: %v", built.RoutesAtBuildErr)
+	}
 	if !strings.Contains(built.RoutesAtBuild, targetIP) {
 		t.Fatalf("换传输到 %s 那一刻,它的 bypass 路由还没装上 —— 这个窗口里隧道自己连服务器的流量会被劫进 TUN(静默成环)\n建隧道那一刻 table %d=\n%s",
 			targetIP, routeTable, built.RoutesAtBuild)
