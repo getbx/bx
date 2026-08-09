@@ -128,7 +128,7 @@ func requireNoFieldWrites(t *testing.T, fn ast.Node, name, why string) {
 //
 // 后者尤其像正常代码 —— run.go 里本来就有 `mut.udpSwap = udpSwapper`,
 // 所以不能笼统禁掉 mut 的字段写入,只能按**字段名**禁。这三个字段
-//(store / bypass / runtimeServerBypass)在 Run() 里一次合法写入都没有。
+// (store / bypass / runtimeServerBypass)在 Run() 里一次合法写入都没有。
 func requireNoWritesToFieldNamed(t *testing.T, fn ast.Node, field, why string) {
 	t.Helper()
 	var bad []string
@@ -293,4 +293,14 @@ func compositeField(t *testing.T, fn ast.Node, typeName, field string) ast.Expr 
 		t.Fatalf("%s{…} 里没有 %s 字段 —— 缺席等于用零值,而这里的零值就是那个 bug", typeName, field)
 	}
 	return found
+}
+
+// liveMutator.store 在生产代码里**一次合法赋值都没有**(只在 Run() 的复合字面量
+// 里初始化)。所以整包禁掉对它的赋值,是关掉「在 Run() 之外把它换成冻结快照」
+// 那条路的最便宜办法 —— 上一轮把它和 .bypass 一起判定为「做不到」,而 .bypass
+// 确实有一处合法写入(bypassStore.set 自己),.store 没有。
+func TestNoPackageWritesToLiveMutatorStore(t *testing.T) {
+	requireNoPackageWritesToFieldNamed(t, "store",
+		"liveMutator.store 只应在 Run() 里初始化一次;别处赋值意味着有人把它换成了\n"+
+			"冻结快照,而 Rehijack 正是经它读 bypass —— 读到旧集合就是切过服务器之后成环。")
 }

@@ -182,3 +182,22 @@ func TestLiveMutatorReadsSharedBypassStore(t *testing.T) {
 		t.Fatalf("Rehijack 必须拿到 store 里的当前集合, got %v", fp.lastServerBypass)
 	}
 }
+
+// currentServerBypass 是 Rehijack 装路由时读的那个集合。它若回落到构造时的
+// m.serverBypass,切过服务器之后重装路由就会把**刚切过去的那台**漏在 bypass 外
+// —— 静默成环(连得上、status 显绿、流量绕圈)。
+//
+// 它的兄弟(livePathRecoverer 那一侧)有守卫,这一侧此前没有:复审实测把
+// currentServerBypass 改成优先读 m.serverBypass,整套测试全绿。
+func TestLiveMutatorCurrentBypassFollowsTheStoreNotTheStartupSlice(t *testing.T) {
+	empty := map[string][]netip.Addr{}
+	s := newBypassStore([]string{"1.1.1.1/32"}, empty, empty)
+	m := &liveMutator{serverBypass: []string{"1.1.1.1/32"}, store: s}
+
+	s.set([]string{"2.2.2.2/32"}, empty, empty)
+
+	got := m.currentServerBypass()
+	if len(got) != 1 || got[0] != "2.2.2.2/32" {
+		t.Fatalf("必须读 store 的当前值,不能回落到启动时那份, got %v", got)
+	}
+}
