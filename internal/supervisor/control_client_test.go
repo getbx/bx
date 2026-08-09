@@ -207,6 +207,49 @@ func TestSetTransportControl(t *testing.T) {
 	}
 }
 
+// TestSetServerControl 端到端(真实 unix socket)验证 SetServerControl 的请求体字段名
+// 与服务端 setServerReq 的 json tag 对得上——字段名错位会静默变成「link 为空」,
+// 报出的错误会把用户指向错误的问题(见 handleSetServer 缺 link 分支)。
+func TestSetServerControl(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "bx.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/server", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Link string `json:"link"`
+			UDP  string `json:"udp"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Link == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(controlResponse{Status: "error", Error: "缺 link"})
+			return
+		}
+		if req.UDP != "hysteria2://tokyo" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(controlResponse{Status: "error", Error: "udp 字段没传到"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(controlResponse{Status: "armed", State: "armed"})
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln) //nolint:errcheck
+	defer srv.Close()
+
+	state, err := SetServerControl(sock, "vless://x@h:443", "hysteria2://tokyo")
+	if err != nil || state != "armed" {
+		t.Fatalf("SetServerControl state=%q err=%v", state, err)
+	}
+	if _, err := SetServerControl(sock, "", "hysteria2://tokyo"); err == nil {
+		t.Fatal("空 link 服务端 400,客户端应返回错误")
+	}
+}
+
 func TestReconnectControl(t *testing.T) {
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "bx.sock")

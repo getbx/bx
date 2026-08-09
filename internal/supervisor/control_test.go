@@ -529,6 +529,41 @@ func TestHandleSetServerRejectsMissingLink(t *testing.T) {
 	}
 }
 
+func TestControlSetServerUnauthorizedPeerRejected(t *testing.T) {
+	mut := &fakeMutator{}
+	h := newControlMux(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, mut, nil, 501)
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	request := httptest.NewRequest(http.MethodPost, "/v0/server", strings.NewReader(`{"link":"vless://tokyo","udp":"hysteria2://tokyo"}`))
+	request = request.WithContext(context.WithValue(request.Context(), ctxConnKey{}, serverConn))
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unauthorized peer status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+	if mut.setCalled {
+		t.Fatal("unauthorized peer 不应触发 mutator.SetServer")
+	}
+}
+
+func TestControlSetServerAlreadyArmed(t *testing.T) {
+	mut := &fakeMutator{}
+	srv := httptest.NewServer(testMuxMut(&fakeControlEngine{state: confirm.StateArmed}, mut))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v0/server", "application/json", strings.NewReader(`{"link":"vless://tokyo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("已 armed 应 409,得 %d", resp.StatusCode)
+	}
+	if mut.setCalled {
+		t.Fatal("已 armed 不应调用 mutator")
+	}
+}
+
 func TestSetServerRouteIsRegistered(t *testing.T) {
 	// 端点没注册时 mux 返回 404 text/plain,在客户端表现为解析错误而不是
 	// 「切换失败」—— 用户看到的是一句读不懂的话,而不是「这台连不上」。
