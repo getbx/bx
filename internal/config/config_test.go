@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -328,5 +329,72 @@ func TestParseUDPTransportRequiresProxyMode(t *testing.T) {
 	_, err := Parse([]byte("server: brook://x\nudp:\n  mode: block\n  transport: hysteria2://pw@h:443\n"))
 	if err == nil {
 		t.Fatal("udp.transport + mode!=proxy 应报错")
+	}
+}
+
+func TestParseHostsOverrides(t *testing.T) {
+	cfg, err := Parse([]byte(`
+server: brook://example.com:9999
+hosts:
+  Torchfun.com.: 127.0.0.1
+  api.example.com: 192.168.50.10
+`))
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	got := cfg.HostOverrides()
+	// 归一化:小写 + 去尾点。Torchfun.com. 与 torchfun.com 必须是同一条,
+	// 否则用户按其中一种写法配、DNS 按另一种查,覆盖静默不生效。
+	if a, ok := got["torchfun.com"]; !ok || a.String() != "127.0.0.1" {
+		t.Fatalf("torchfun.com = %v ok=%v", a, ok)
+	}
+	if a, ok := got["api.example.com"]; !ok || a.String() != "192.168.50.10" {
+		t.Fatalf("api.example.com = %v ok=%v", a, ok)
+	}
+	if len(got) != 2 {
+		t.Fatalf("条目数 = %d, want 2", len(got))
+	}
+}
+
+// 非法值必须在解析期就拒绝启动。
+//
+// staticA 是 DNS 第一跳且不受 rules 影响 —— 一个运行期被静默丢弃的覆盖,
+// 用户会以为它生效了,而这正是本功能要消灭的那种困惑。
+func TestParseRejectsBadHostOverrides(t *testing.T) {
+	for _, tt := range []struct{ name, value string }{
+		{"域名而非 IP", "another.example.com"},
+		{"IPv6", "::1"},
+		{"空值", ""},
+		{"未指定地址", "0.0.0.0"},
+		{"带端口", "127.0.0.1:53"},
+		{"CIDR", "127.0.0.0/8"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte("server: brook://example.com:9999\nhosts:\n  bad.example.com: \"" + tt.value + "\"\n"))
+			if err == nil {
+				t.Fatalf("值 %q 必须在解析期报错", tt.value)
+			}
+			if !strings.Contains(err.Error(), "bad.example.com") {
+				t.Fatalf("错误必须点名是哪条 hosts 出问题,实际 = %v", err)
+			}
+		})
+	}
+}
+
+// 空域名同样是配置错误,不能默默跳过。
+func TestParseRejectsEmptyHostKey(t *testing.T) {
+	if _, err := Parse([]byte("server: brook://example.com:9999\nhosts:\n  \"\": 127.0.0.1\n")); err == nil {
+		t.Fatal("空域名必须报错")
+	}
+}
+
+// 没配 hosts 时不得凭空造出条目。
+func TestParseWithoutHostsYieldsNone(t *testing.T) {
+	cfg, err := Parse([]byte("server: brook://example.com:9999\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.HostOverrides()) != 0 {
+		t.Fatalf("未配 hosts 时应为空,实际 %v", cfg.HostOverrides())
 	}
 }

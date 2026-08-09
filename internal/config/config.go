@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -58,26 +59,36 @@ func (l Lists) RefreshInterval() time.Duration {
 }
 
 type Config struct {
-	Server        string   `yaml:"server"`     // bx:// 链接或内部传输链接(自带凭据;故无独立 password 字段)。= transports 的首条
-	Transports    []string `yaml:"transports"` // 可选:有序多传输(优先级,reality 主在前),自动容灾。空=单 [server]
-	Killswitch    bool     `yaml:"killswitch"`
-	OwnerUID      int      `yaml:"owner_uid"` // 业主 uid(sudo bx setup 捕获);0=无业主,控制面退回 root-only
-	DNS           DNS      `yaml:"dns"`
-	Rules         []Rule   `yaml:"rules"`
-	Lists         Lists    `yaml:"lists"`
-	UDP           UDP      `yaml:"udp"`
-	Brook         string   `yaml:"brook"`          // 可选调试入口;空=用内嵌传输
-	BrookURL      string   `yaml:"brook_url"`      // brook 传输:仅无内嵌 arch(windows/其他)兜底,下载 brook 的地址;空=按版本派生官方 release
-	BrookSHA256   string   `yaml:"brook_sha256"`   // 下载兜底时的校验(设了 brook_url 才用,强烈建议)
-	DataDir       string   `yaml:"data_dir"`       // 运行期数据目录;空=默认(linux/darwin /var/lib/bx、windows C:\ProgramData\bx)
-	Bypass        []string `yaml:"bypass"`         // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
-	Global        bool     `yaml:"global"`         // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
-	Mode          string   `yaml:"mode"`           // host(默认,劫持本机出站) | router(只劫持 LAN 转发流量)
-	Router        Router   `yaml:"router"`         // 仅 mode=router 生效
-	HTTPProxy     string   `yaml:"http_proxy"`     // 非空:额外开 HTTP 代理(如 127.0.0.1:7890),给只认 HTTP_PROXY 的应用(tailscaled 控制面)
-	SingboxURL    string   `yaml:"singbox_url"`    // reality 传输:仅无内嵌 arch 兜底用,下载 sing-box 的地址(linux amd64/arm64 已内嵌,无需设)
-	SingboxSHA256 string   `yaml:"singbox_sha256"` // 下载兜底时的校验(设了 singbox_url 才用,强烈建议)
-	SingboxBin    string   `yaml:"singbox_bin"`    // 可选:直接指定本地 sing-box 路径(优先级最高,压过内嵌)
+	Server     string   `yaml:"server"`     // bx:// 链接或内部传输链接(自带凭据;故无独立 password 字段)。= transports 的首条
+	Transports []string `yaml:"transports"` // 可选:有序多传输(优先级,reality 主在前),自动容灾。空=单 [server]
+	Killswitch bool     `yaml:"killswitch"`
+	OwnerUID   int      `yaml:"owner_uid"` // 业主 uid(sudo bx setup 捕获);0=无业主,控制面退回 root-only
+	DNS        DNS      `yaml:"dns"`
+	Rules      []Rule   `yaml:"rules"`
+	// Hosts 把域名钉到固定 IPv4,由 bx 自己的 DNS 在 fake-IP 之前直接应答。
+	//
+	// 存在的理由:bx 开着时,被它接管的应用走系统 DNS(已指向 bx),/etc/hosts
+	// 根本不在这条链路上 —— 用户改了却不生效,而且看不出为什么。
+	//
+	// 只支持「一个域名 → 一个 IPv4 字面量」。通配符/多值/CNAME 的语义需要单独
+	// 想清楚,现在加进来只会造成误解。
+	Hosts         map[string]string `yaml:"hosts"`
+	Lists         Lists             `yaml:"lists"`
+	UDP           UDP               `yaml:"udp"`
+	Brook         string            `yaml:"brook"`          // 可选调试入口;空=用内嵌传输
+	BrookURL      string            `yaml:"brook_url"`      // brook 传输:仅无内嵌 arch(windows/其他)兜底,下载 brook 的地址;空=按版本派生官方 release
+	BrookSHA256   string            `yaml:"brook_sha256"`   // 下载兜底时的校验(设了 brook_url 才用,强烈建议)
+	DataDir       string            `yaml:"data_dir"`       // 运行期数据目录;空=默认(linux/darwin /var/lib/bx、windows C:\ProgramData\bx)
+	Bypass        []string          `yaml:"bypass"`         // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
+	Global        bool              `yaml:"global"`         // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
+	Mode          string            `yaml:"mode"`           // host(默认,劫持本机出站) | router(只劫持 LAN 转发流量)
+	Router        Router            `yaml:"router"`         // 仅 mode=router 生效
+	HTTPProxy     string            `yaml:"http_proxy"`     // 非空:额外开 HTTP 代理(如 127.0.0.1:7890),给只认 HTTP_PROXY 的应用(tailscaled 控制面)
+	SingboxURL    string            `yaml:"singbox_url"`    // reality 传输:仅无内嵌 arch 兜底用,下载 sing-box 的地址(linux amd64/arm64 已内嵌,无需设)
+	SingboxSHA256 string            `yaml:"singbox_sha256"` // 下载兜底时的校验(设了 singbox_url 才用,强烈建议)
+	SingboxBin    string            `yaml:"singbox_bin"`    // 可选:直接指定本地 sing-box 路径(优先级最高,压过内嵌)
+
+	hostOverrides map[string]netip.Addr `yaml:"-"`
 }
 
 // Router 是网关模式参数:只代理「源在 lan_cidrs 内」的转发流量。
@@ -201,5 +212,44 @@ func Parse(b []byte) (*Config, error) {
 			return nil, fmt.Errorf("config: router.lan_cidrs[%d] 不是合法 CIDR: %q", i, cidr)
 		}
 	}
+	// hosts 覆盖:解析期校验,非法值直接拒绝启动。
+	//
+	// 不在运行期静默丢弃,理由与上面 KnownFields(true) 相同:staticA 是 DNS
+	// 第一跳且不受 rules 影响,一个悄悄没生效的覆盖,用户会以为它生效了。
+	normalizedHosts := make(map[string]netip.Addr, len(c.Hosts))
+	for name, value := range c.Hosts {
+		host := normalizeHostName(name)
+		if host == "" {
+			return nil, fmt.Errorf("config: hosts 的域名不能为空")
+		}
+		addr, err := netip.ParseAddr(strings.TrimSpace(value))
+		if err != nil {
+			return nil, fmt.Errorf("config: hosts[%s] 的值 %q 不是合法 IP 字面量(只支持 IPv4)", host, value)
+		}
+		if !addr.Is4() {
+			return nil, fmt.Errorf("config: hosts[%s] 只支持 IPv4,得到 %q", host, value)
+		}
+		if addr.IsUnspecified() {
+			return nil, fmt.Errorf("config: hosts[%s] 不能是 0.0.0.0", host)
+		}
+		if _, dup := normalizedHosts[host]; dup {
+			return nil, fmt.Errorf("config: hosts 里 %s 出现多次(大小写/尾点归一后相同)", host)
+		}
+		normalizedHosts[host] = addr
+	}
+	c.hostOverrides = normalizedHosts
 	return &c, nil
+}
+
+// normalizeHostName 归一化域名:小写 + 去尾点。
+//
+// Torchfun.com. 与 torchfun.com 必须是同一条 —— 用户按其中一种写法配、DNS 按
+// 另一种查,覆盖就静默不生效,而这类静默失效正是本功能要消灭的东西。
+func normalizeHostName(name string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+}
+
+// HostOverrides 返回归一化并校验过的 hosts 覆盖。Parse 已保证每个值都是合法 IPv4。
+func (c *Config) HostOverrides() map[string]netip.Addr {
+	return c.hostOverrides
 }
