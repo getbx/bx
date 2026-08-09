@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -67,3 +69,59 @@ var errSentinelForReport = errReportSentinel{}
 type errReportSentinel struct{}
 
 func (errReportSentinel) Error() string { return "recovery-incomplete-sentinel" }
+
+// 逃生口**自己也部分失败**时返回的那条错误,是整条链上最要紧的一段文字:
+// 用户此刻保护关不掉、网络可能不通,而这段话里带着他们必须手敲的
+// `route delete` 命令 —— 那是把网络拿回来的唯一办法。
+//
+// 它今天零覆盖(Task 1 只钉住了成功路径的报告)。而 blockingRouteCleanupHints()
+// 一旦返回空,这段指引就变成一句「或手动执行 …:」后面什么都没有,
+// 而没有任何东西会红。
+func TestForcedTeardownFailureCarriesTheManualRecoveryCommands(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	boom := errors.New("bootout-refused")
+	f.macOSLifecycleDeps.forceTeardown = func(context.Context) error { return boom }
+
+	err := forcedMacOSTeardown(context.Background(), f.macOSLifecycleDeps, nil)
+	if err == nil {
+		t.Fatal("有步骤失败时必须报错 —— 静默成功会让用户以为网络已经还原")
+	}
+	msg := err.Error()
+
+	if !strings.Contains(msg, boom.Error()) {
+		t.Errorf("失败原因必须带出来:\n%s", msg)
+	}
+	// 兜底出路。
+	if !strings.Contains(msg, "bx uninstall") {
+		t.Errorf("必须给出兜底出路:\n%s", msg)
+	}
+	// **手动删屏障路由的命令**:屏障是 /2 reject,不删掉整机不通,
+	// 而此刻自动删除已经失败了,用户只剩手敲这一条路。
+	if !strings.Contains(msg, "launchctl bootout") {
+		t.Errorf("必须给出手动停 Guardian 的命令:\n%s", msg)
+	}
+	hints := blockingRouteCleanupHints()
+	if len(hints) == 0 {
+		t.Fatal("blockingRouteCleanupHints 为空 —— 指引里那句「逐条删除阻断路由」后面就没有东西了")
+	}
+	for _, hint := range hints {
+		if !strings.Contains(msg, hint) {
+			t.Errorf("手动删路由的命令 %q 必须出现在指引里:\n%s", hint, msg)
+		}
+	}
+}
+
+// 干净路径失败导致的回落,原因同样要出现在这条错误里 —— 它解释了「为什么没能干净停下」。
+func TestForcedTeardownFailureAlsoCarriesTheCleanPathCause(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	f.macOSLifecycleDeps.restoreSystemDNS = func(context.Context) error { return errors.New("dns-stuck") }
+	cause := errors.New("recovery-incomplete")
+
+	err := forcedMacOSTeardown(context.Background(), f.macOSLifecycleDeps, cause)
+	if err == nil {
+		t.Fatal("有步骤失败时必须报错")
+	}
+	if !strings.Contains(err.Error(), cause.Error()) {
+		t.Errorf("干净路径的失败原因必须一并带出:\n%s", err.Error())
+	}
+}

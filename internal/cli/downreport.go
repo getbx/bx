@@ -19,7 +19,8 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 			stderr = append(stderr, "⚠️  Guardian 未响应,已改走强制停止。")
 		}
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
-		stdout = append(stdout,
+		stdout = append(
+			stdout,
 			"已执行:记录关闭意图(不再开机自启)、请求 Core 退出(由它自己还原它装的路由)、停止 Guardian 服务、删除屏障阻断路由、还原系统 DNS。",
 			"请确认网络是否已恢复(例如 bx status 或打开任意网页);若仍不通,执行 sudo bx uninstall(会保留 /etc/bx 配置)。",
 		)
