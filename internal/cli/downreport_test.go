@@ -74,9 +74,12 @@ func (errReportSentinel) Error() string { return "recovery-incomplete-sentinel" 
 // 用户此刻保护关不掉、网络可能不通,而这段话里带着他们必须手敲的
 // `route delete` 命令 —— 那是把网络拿回来的唯一办法。
 //
-// 它今天零覆盖(Task 1 只钉住了成功路径的报告)。而 blockingRouteCleanupHints()
-// 一旦返回空,这段指引就变成一句「或手动执行 …:」后面什么都没有,
-// 而没有任何东西会红。
+// **更正(复审指出):这条此前不是零覆盖,是部分覆盖。**
+// macos_lifecycle_test.go:679 的 TestMacOSDownForcedTeardownClearsBarrierEvenWhenEarlierStepsFail
+// 已经硬编码了四条清理命令中的一条("route -n delete -net 0.0.0.0/2")。
+// 本条仍然更强,而且强在两个具体的地方:它查**全部**四条(少一条即红,而硬编码
+// 一条的写法对「少了另外三条」是瞎的),并且在 hints 为空时 t.Fatal 而不是
+// 平凡地通过(「每一条都在里面」对空集合恒真 —— 反极性断言的老陷阱)。
 func TestForcedTeardownFailureCarriesTheManualRecoveryCommands(t *testing.T) {
 	f := newFakeMacOSLifecycleDeps()
 	boom := errors.New("bootout-refused")
