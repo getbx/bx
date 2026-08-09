@@ -322,6 +322,28 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	dnsSrv := bxdns.NewServer(pool, 1)
 	splitDirect := splitdns.NewSet()
+
+	userHosts, err := cfg.HostOverrides()
+	if err != nil {
+		// HostOverrides 只在 cfg.Hosts 未经 Parse 校验时出错——生产路径的 cfg 全部
+		// 经 loadConfig→config.Parse,理论上到不了这里。但它返回 error 而非 panic
+		// 正是为了这一刻:bx Core 由 Guardian 监管,panic 会被当异常退出重启,新
+		// 进程带着同一份 cfg 立刻在同一处再 panic 一次,变成崩溃循环而非一次干净
+		// 的启动失败。
+		return fmt.Errorf("hosts 覆盖: %w", err)
+	}
+	staticA, appliedHosts, ignoredHosts := mergeHostOverrides(staticA, userHosts)
+	for _, host := range ignoredHosts {
+		// 只记不停:配置里那条是错的,但传输服务器的真 IP 已经用上了,
+		// 隧道是安全的。停在这里对用户没有好处。
+		log.Printf("hosts_override_ignored host=%s reason=transport_server", host)
+	}
+	for host, addr := range appliedHosts {
+		log.Printf("hosts_override_applied host=%s addr=%s", host, addr)
+	}
+	// appliedHosts 之后 Task 3 还要用来填 stats.Report,故变量留着不丢弃
+	// (即便这条 log 循环之外没人再用它)。
+
 	dnsSrv.SetStaticA(staticA, splitDirect)
 	dnsListening := false
 	if opts.DNSListen != "" {

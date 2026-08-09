@@ -273,14 +273,14 @@ func parseHostOverrides(hosts map[string]string) (map[string]netip.Addr, error) 
 // Config{Hosts: ...}(测试代码常见写法)不经过 Parse,若结果来自一个只由
 // Parse 填充的缓存字段,那种路径会静默拿到空结果。
 //
-// 若 c.Hosts 本身非法(唯一途径:绕开 Parse 手造了非法 Config),panic ——
-// 这是调用方的编程错误,不是用户配置错误;Parse 才是校验用户输入的关口,
-// 这里假装"没有任何覆盖"糊弄过去,只会把同一个"看着配了、其实没生效"的
-// 陷阱重新引入。
-func (c *Config) HostOverrides() map[string]netip.Addr {
-	overrides, err := parseHostOverrides(c.Hosts)
-	if err != nil {
-		panic(fmt.Sprintf("config: HostOverrides 的前置条件被打破(Hosts 未经 Parse 校验): %v", err))
-	}
-	return overrides
+// 若 c.Hosts 本身非法(唯一途径:绕开 Parse 手造了非法 Config),返回错误
+// 而不是 panic。这是调用方的编程错误,不是用户配置错误——Parse 才是校验
+// 用户输入的关口,这里假装"没有任何覆盖"糊弄过去只会把同一个"看着配了、
+// 其实没生效"的陷阱重新引入。但 bx Core 是被 Guardian 监管的常驻进程,
+// 非预期 panic 在这里不是"响亮地失败",而是崩溃循环:Guardian 把它当异常
+// 退出重新拉起,新进程带着同一份非法 Config 立刻在同一处再 panic 一次。
+// 返回 error 让调用方(尤其 run.go 这条热路径)能把它变成一次干净的启动
+// 失败——错误信息可读、进程不重启、不会陷入死循环。
+func (c *Config) HostOverrides() (map[string]netip.Addr, error) {
+	return parseHostOverrides(c.Hosts)
 }

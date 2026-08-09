@@ -342,7 +342,10 @@ hosts:
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
-	got := cfg.HostOverrides()
+	got, err := cfg.HostOverrides()
+	if err != nil {
+		t.Fatalf("HostOverrides: %v", err)
+	}
 	// 归一化:小写 + 去尾点。Torchfun.com. 与 torchfun.com 必须是同一条,
 	// 否则用户按其中一种写法配、DNS 按另一种查,覆盖静默不生效。
 	if a, ok := got["torchfun.com"]; !ok || a.String() != "127.0.0.1" {
@@ -394,8 +397,12 @@ func TestParseWithoutHostsYieldsNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.HostOverrides()) != 0 {
-		t.Fatalf("未配 hosts 时应为空,实际 %v", cfg.HostOverrides())
+	got, err := cfg.HostOverrides()
+	if err != nil {
+		t.Fatalf("HostOverrides: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("未配 hosts 时应为空,实际 %v", got)
 	}
 }
 
@@ -405,24 +412,36 @@ func TestParseWithoutHostsYieldsNone(t *testing.T) {
 // 这里就会静默拿到 nil,尽管 Hosts 明明配了合法值。
 func TestHostOverridesWorksOnLiteralConfigNotOnlyParse(t *testing.T) {
 	cfg := &Config{Hosts: map[string]string{"literal.example.com": "10.0.0.9"}}
-	got := cfg.HostOverrides()
+	got, err := cfg.HostOverrides()
+	if err != nil {
+		t.Fatalf("HostOverrides: %v", err)
+	}
 	if a, ok := got["literal.example.com"]; !ok || a.String() != "10.0.0.9" {
 		t.Fatalf("literal.example.com = %v ok=%v, want 10.0.0.9 present", a, ok)
 	}
 }
 
-// 反过来,字面量构造出的非法 Hosts 必须响亮地失败(panic),而不是让
+// 反过来,字面量构造出的非法 Hosts 必须响亮地失败(返回 error),而不是让
 // HostOverrides 假装"没有任何覆盖"——那样会把同一个"配了但没生效"的陷阱
 // 从用户的 YAML 搬到调用方代码里。Parse 是校验用户输入的关口;绕开它手造
 // 非法 Config 属于调用方的编程错误。
-func TestHostOverridesPanicsOnInvalidLiteralHosts(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("非法 Hosts 应 panic,而不是静默返回空/残缺结果")
-		}
-	}()
+//
+// 这里刻意不用 panic:bx Core 是被 Guardian 监管的常驻进程,panic 会被当
+// 异常退出重新拉起,而新进程带着同一份非法 Config 会在同一处立刻再 panic
+// 一次——响亮的失败变成了静默的崩溃循环。error 能让调用方把它变成一次
+// 干净的启动失败。
+func TestHostOverridesReturnsErrorOnInvalidLiteralHosts(t *testing.T) {
 	cfg := &Config{Hosts: map[string]string{"bad.example.com": "not-an-ip"}}
-	cfg.HostOverrides()
+	got, err := cfg.HostOverrides()
+	if err == nil {
+		t.Fatal("非法 Hosts 应返回 error,而不是静默返回空/残缺结果")
+	}
+	if got != nil {
+		t.Fatalf("出错时不应返回非 nil 结果,实际 %v", got)
+	}
+	if !strings.Contains(err.Error(), "bad.example.com") {
+		t.Fatalf("错误必须点名是哪条 hosts 出问题,实际 = %v", err)
+	}
 }
 
 // 归一化后的重复必须报错,而不是让后写入的值悄悄覆盖先写入的值——那正是
@@ -446,7 +465,10 @@ func TestNormalizeHostNameStripsAllTrailingDots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
-	got := cfg.HostOverrides()
+	got, err := cfg.HostOverrides()
+	if err != nil {
+		t.Fatalf("HostOverrides: %v", err)
+	}
 	if a, ok := got["example.com"]; !ok || a.String() != "127.0.0.1" {
 		t.Fatalf("example.com = %v ok=%v, want normalized entry under example.com", a, ok)
 	}
