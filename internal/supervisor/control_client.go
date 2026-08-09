@@ -38,9 +38,20 @@ func controlHTTPTransport(sockPath string) *http.Transport {
 // FetchStatusReport 经控制面 GET /v0/status(HTTP over unix socket)取一份 Report。
 // sockPath 通常为 SockPath;测试时可传临时 socket 路径。
 func FetchStatusReport(sockPath string) (stats.Report, error) {
+	return FetchStatusReportContext(context.Background(), sockPath)
+}
+
+// FetchStatusReportContext 是 FetchStatusReport 的带 ctx 版本 —— 调用方需要
+// 一个有界等待时用它(Guardian 把 Core 统计并进 /v1/status 时必须短超时,不能
+// 让一个拨不通的 Core 拖住整个响应)。
+func FetchStatusReportContext(ctx context.Context, sockPath string) (stats.Report, error) {
 	client := controlHTTPClient(sockPath)
 	defer client.CloseIdleConnections()
-	resp, err := client.Get("http://local/v0/status")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://local/v0/status", nil)
+	if err != nil {
+		return stats.Report{}, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return stats.Report{}, err
 	}
