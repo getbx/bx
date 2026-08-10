@@ -268,6 +268,12 @@ const guardianTroubleshootingHint = "排查:sudo bx doctor;完整原因见 Guard
 var guardianCodeHints = map[string]string{
 	"core_ownership_uncertain": "若确认没有第二个 Core 在跑,执行 sudo bx down 再 sudo bx up 可清除这条已锁存的判定" +
 		"(Guardian 把「所有权不确定」记在内存里,只有 down 会清)",
+	// 维护挂起读不出来:Guardian 一律 fail-closed(不起 Core),而保护**不会**
+	// 自己恢复。挂起只是一次升级留下的临时标记,内容读不懂时直接删掉即可 ——
+	// 这条出路必须写在 CLI 侧:响应体刻意不外传原始错误串,daemon 那边写的
+	// 错误文本用户根本看不到。
+	"intent_unreadable": "维护挂起文件读不出来,保护不会自动恢复:检查 " + defaultMaintenanceHoldPath +
+		"(它只是一次升级的临时标记,可直接删除),再 sudo bx up",
 }
 
 // guardianHTTPError renders a Guardian error response. Every 500 carries the

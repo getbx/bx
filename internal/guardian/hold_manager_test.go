@@ -1,9 +1,12 @@
 package guardian
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -79,8 +82,8 @@ func TestIntentSnapshotReadFailureDoesNotRestartCore(t *testing.T) {
 	if got := env.runner.startCount(); got != startsBefore {
 		t.Fatalf("读不出意图时仍重启了 Core:start = %d, want %d", got, startsBefore)
 	}
-	if got := env.manager.Status().LastError; got == "" {
-		t.Fatal("读不出意图必须留下失败码")
+	if got := env.manager.Status().LastError; got != "desired_state_read_failed" {
+		t.Fatalf("desired 那一半读不出来必须点名 desired,失败码 = %q", got)
 	}
 }
 
@@ -102,8 +105,23 @@ func TestUnexpectedCoreExitWithUnreadableHoldDoesNotRestartCore(t *testing.T) {
 	if got := env.runner.startCount(); got != startsBefore {
 		t.Fatalf("挂起读不出来时仍重启了 Core:start = %d, want %d", got, startsBefore)
 	}
-	if got := env.manager.Status().LastError; got == "" {
-		t.Fatal("读不出意图必须留下失败码")
+	// 码必须点名**挂起**:报成 desired_state_read_failed 会把用户送去
+	// guardian-state.json,而唯一的出路在 maintenance-hold.json。
+	if got := env.manager.Status().LastError; got != "intent_unreadable" {
+		t.Fatalf("挂起读不出来的失败码 = %q, want intent_unreadable", got)
+	}
+}
+
+// 发布出去的码必须真的能换来一句可操作的话,而且点名的是**挂起那个文件**。
+// 「失败必须留下可操作线索」——指引把人送去另一个文件比不给指引更糟。
+func TestIntentUnreadableHintNamesTheHoldFile(t *testing.T) {
+	msg := guardianHTTPError("/v1/up", http.StatusInternalServerError,
+		[]byte(`{"error":"guardian operation failed","code":"intent_unreadable"}`)).Error()
+	if !strings.Contains(msg, defaultMaintenanceHoldPath) {
+		t.Fatalf("指引必须点名 %s,实际:%s", defaultMaintenanceHoldPath, msg)
+	}
+	if strings.Contains(msg, "guardian-state.json") {
+		t.Fatalf("指引不许把用户送去 desired 那个文件,实际:%s", msg)
 	}
 }
 
@@ -137,6 +155,66 @@ func TestStartupRecoveryUnderArmedHoldSkipsCoreAndKeepsDownReachable(t *testing.
 	}
 }
 
+// 挂起分支发 off 之前必须**问系统**,和隔壁 desired==off 那一支一样。
+//
+// 「账本说此刻不该有保护」证明不了「系统里没有 Core 在跑」—— legacy Core、
+// 另一个终端里的 sudo bx run、记录丢失的机器,账本里都看不见。这一跳比 Down
+// 那一跳更要紧:Guardian 每次重启都会跑它,于是它会把上一次求证出来的判断抹掉,
+// 换成一句没求证过的 off。
+//
+// **今天升级停机走的是隔壁那支;Task 4 把它搬到这一支上来** —— 求证若不跟着搬,
+// 就会恰好在它当初被写出来的那条路上悄悄消失。
+func TestStartupRecoveryUnderArmedHoldDoesNotClaimOffWhileACoreIsStillRunning(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.scanResult = []Process{{PID: 4242}}
+
+	if err := env.manager.Recover(context.Background()); err != nil {
+		t.Fatalf("扫到 Core 不该让启动恢复失败: %v", err)
+	}
+	if got := env.manager.Status().Protection; got == ProtectionOff {
+		t.Fatal("挂起期间也不许只凭账本就说 off —— 那会抹掉上一次求证过的判断")
+	}
+	if got := env.manager.Status().LastError; got != "core_still_running" {
+		t.Fatalf("没能确认要说清是哪一种, LastError = %q", got)
+	}
+	// 「没能确认」绝不能顺带把关闭的路堵死(2026-08-04 的机制)。
+	if env.manager.recoveryBlocked {
+		t.Fatal("没能确认 + 挂起,仍不许堵死关闭的路")
+	}
+	if err := env.manager.Down(context.Background()); errors.Is(err, errRecoveryIncomplete) {
+		t.Fatal("Down 必须仍然可达")
+	}
+}
+
+// 求证失败(不是「确知还在」)同样不许说 off,也同样不许堵死 Down。
+// 半边输入空间的断言等于没断言:上一条只覆盖 core_still_running。
+func TestStartupRecoveryUnderArmedHoldKeepsShutdownReachableWhenScanFails(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.scanErr = errors.New("sysctl 挂了")
+
+	if err := env.manager.Recover(context.Background()); err != nil {
+		t.Fatalf("扫描失败不该让启动恢复失败: %v", err)
+	}
+	if got := env.manager.Status().LastError; got != "core_scan_failed" {
+		t.Fatalf("「问不出来」必须与「确知还在」区分开, LastError = %q", got)
+	}
+	if env.manager.recoveryBlocked {
+		t.Fatal("「没能确认」绝不能顺带把关闭的路堵死")
+	}
+}
+
 // 挂起读不出来:启动恢复必须 fail-closed(不起 Core),**但仍不许堵死 Down**。
 //
 // 这条是本任务在 brief 之外自己加的一道闸,理由是一条闭环:Task 1 让坏挂起
@@ -156,6 +234,9 @@ func TestStartupRecoveryWithUnreadableHoldFailsClosedButKeepsDownReachable(t *te
 	}
 	if got := env.runner.startCount(); got != 0 {
 		t.Fatalf("读不出意图时启动恢复仍起了 Core:start = %d", got)
+	}
+	if got := env.manager.Status().LastError; got != "intent_unreadable" {
+		t.Fatalf("挂起读不出来的失败码 = %q, want intent_unreadable", got)
 	}
 	if env.manager.recoveryBlocked {
 		t.Fatal("一张读不出来的挂起把 Down 永久堵死了 —— 而清掉它正是唯一的恢复路径")
@@ -268,12 +349,55 @@ func TestManagerClearMaintenanceHoldIsBestEffort(t *testing.T) {
 		t.Fatalf("挂起必须被清掉:armed=%v err=%v", armed, err)
 	}
 
-	// 清不掉的情形(路径是个非空目录 ⇒ os.Remove 失败)不许 panic、不许把
-	// 错误捅给调用方 —— 它没有返回值,这一条钉的是「它不会变成一个返回错误
-	// 的函数」这件行为。
+	// 清不掉的情形(路径是个非空目录 ⇒ os.Remove 失败):不许 panic、不许把错误
+	// 捅给调用方,**但必须留下痕迹**。只调一次「看它不炸」是个空断言 —— 实现即使
+	// 根本不去碰 store 也照样绿。这里断言那行日志真的写出来了:「失败必须留下
+	// 可操作线索」,而这条路唯一的线索就是 Guardian 日志。
 	breakHoldRead(t, env)
 	if err := os.WriteFile(env.store.paths.MaintenanceHold+"/occupied", []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var logged bytes.Buffer
+	restore := swapGuardianLogOutput(&logged)
 	env.manager.clearMaintenanceHold()
+	restore()
+	if !strings.Contains(logged.String(), "guardian_maintenance_hold_clear_failed") {
+		t.Fatalf("清不掉挂起必须落日志,实际日志:%q", logged.String())
+	}
+}
+
+// **启动恢复里有一条合法地跑在挂起检查之前的路:recoverUpdateLocked。**
+//
+// 一台崩在升级中途的机器(update journal 停在 rolling_back)重启后,新 Guardian
+// 起手就跑启动恢复,而 recoverUpdateLocked 在读意图快照**之前**就把快照里的
+// 二进制回滚回去并起一个 Core —— 挂起武装着也照起不误。
+//
+// **这是有意不拦的,别把它「修」成一道栅栏:**
+//   - 它起的不是半换的二进制:回滚先把快照还原回去,起来的是还原后的那一版;
+//   - 拦住它会把一次做了一半的 Guardian 自更新永久卡在中间态,而那比它可能造成的
+//     麻烦更糟 —— 与「停止/恢复路径不得依赖可能已失效的前置条件」同一个方向。
+//
+// 因此「挂起武装 ⇒ Guardian 一个 Core 都不会起」这句话是**假的**,本测试就是
+// 把这条例外钉在明面上,免得后来的人照着那句话去补一道栅栏。
+func TestStartupRecoveryStillFinishesAnInFlightUpdateUnderArmedHold(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	manager := env.restartedManager(t, PhaseRollingBack, "")
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Recover(context.Background()); err != nil {
+		t.Fatalf("挂起不该让崩在升级中途的机器无法完成回滚: %v; events=%#v", err, env.events.snapshot())
+	}
+	events := env.events.snapshot()
+	if !containsEvent(events, "install.restore") {
+		t.Fatalf("回滚必须照常做完(否则机器停在半换状态), events=%#v", events)
+	}
+	if !containsEvent(events, "core.start.v1") {
+		t.Fatalf("回滚会起一个 Core,这条例外是有意的;若它真的消失了,说明有人给 "+
+			"recoverUpdateLocked 加了栅栏 —— 先读本测试的注释再改。events=%#v", events)
+	}
 }

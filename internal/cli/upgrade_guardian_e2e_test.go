@@ -76,6 +76,12 @@ func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
 		Staging:       filepath.Join(stateDir, "staging"),
 		Snapshots:     filepath.Join(stateDir, "snapshots"),
 		UpgradeIntent: filepath.Join(stateDir, "upgrade-intent.json"),
+		// 挂起路径必须填。今天这个环境走不到读快照那一步,所以缺了也绿;但这里
+		// 正是**升级路径**的旗舰 e2e(真 Manager、真 socket),而 Task 4 恰恰要在
+		// 这条路上武装挂起 —— 到那时缺路径会表现为一句
+		// 「maintenance hold unreadable: guardian maintenance hold path required」,
+		// 与被测逻辑毫无关系。现在补上,省下一次红鲱鱼。
+		MaintenanceHold: filepath.Join(stateDir, "maintenance-hold.json"),
 	})
 	// 保护开着:Down 因此会走完整路径(装屏障 → 还原 DNS → 记 off → 撤屏障),
 	// 而不是「desired 已是 off」的短路分支。

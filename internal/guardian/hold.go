@@ -167,6 +167,22 @@ type IntentSnapshot struct {
 //     原样复活。
 var ErrMaintenanceHoldUnreadable = errors.New("maintenance hold unreadable")
 
+// intentReadFailureCode 把「读不出意图」翻译成**对外发布**的失败码。
+//
+// 两半必须有各自的码,否则违反「失败必须留下可操作线索」:一张读不出来的挂起
+// 若报成 desired_state_read_failed,发布出去的码点名的是 guardian-state.json,
+// 而用户唯一的出路是处理 maintenance-hold.json —— 指引把人送去另一个文件,
+// 比不给指引更糟。
+//
+// intent_unreadable 这个名字取自设计缺陷⑤给调谐器第五道栅栏预留的词,Task 3
+// 接栅栏时应沿用同一个码。
+func intentReadFailureCode(err error) string {
+	if errors.Is(err, ErrMaintenanceHoldUnreadable) {
+		return "intent_unreadable"
+	}
+	return "desired_state_read_failed"
+}
+
 // LoadIntentSnapshot 一次读出 desired 与挂起。
 func (s *Store) LoadIntentSnapshot(now time.Time) (IntentSnapshot, error) {
 	return loadIntentSnapshot(s.LoadDesired, s.LoadMaintenanceHold, now)

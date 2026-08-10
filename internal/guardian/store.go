@@ -21,6 +21,10 @@ type Store struct {
 const (
 	guardianStateDirectory  = "/var/lib/bx"
 	guardianUpdateDirectory = guardianStateDirectory + "/update"
+
+	// defaultMaintenanceHoldPath 同时被 OpenDefaultStore 与 intent_unreadable 的
+	// 排查指引引用 —— 指引若把用户送去一个不存在的路径,等于没有指引。
+	defaultMaintenanceHoldPath = guardianStateDirectory + "/maintenance-hold.json"
 )
 
 var safeLastErrorPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
@@ -33,7 +37,7 @@ func OpenDefaultStore() *Store {
 		Staging:         guardianUpdateDirectory + "/staging",
 		Snapshots:       guardianUpdateDirectory + "/snapshots",
 		UpgradeIntent:   guardianStateDirectory + "/upgrade-intent.json",
-		MaintenanceHold: guardianStateDirectory + "/maintenance-hold.json",
+		MaintenanceHold: defaultMaintenanceHoldPath,
 	})
 }
 
