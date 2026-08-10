@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -399,5 +400,184 @@ func TestStartupRecoveryStillFinishesAnInFlightUpdateUnderArmedHold(t *testing.T
 	if !containsEvent(events, "core.start.v1") {
 		t.Fatalf("回滚会起一个 Core,这条例外是有意的;若它真的消失了,说明有人给 "+
 			"recoverUpdateLocked 加了栅栏 —— 先读本测试的注释再改。events=%#v", events)
+	}
+}
+
+// 升级自己的那次停保护经 POST /v1/down?reason=upgrade 进来,**不许改写 desired**。
+func TestMaintenanceDownLeavesDesiredOnAndKeepsHoldArmed(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.manager.Down(withMaintenanceStop(context.Background())); err != nil {
+		t.Fatal(err)
+	}
+	desired, err := env.store.LoadDesired()
+	if err != nil || desired != DesiredOn {
+		t.Fatalf("升级的停机改写了 desired:%q err=%v", desired, err)
+	}
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || !armed {
+		t.Fatalf("升级自己的那次 Down 把挂起销了:armed=%v err=%v", armed, err)
+	}
+	// 拆除照常做完 —— 少写一句 desired 不等于少拆一样东西。
+	env.assertBarrierRemoved(t)
+}
+
+// 用户显式的 down 清挂起,**且与 Down 的成败无关**。
+func TestUserDownClearsHoldEvenWhenDownFails(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	env.dns.restoreErr = errors.New("networksetup timed out") // 让 Down 走失败分支
+	if err := env.manager.Down(context.Background()); err == nil {
+		t.Fatal("DNS 还原失败仍应报错 —— 否则这条测试没走到它自称测的失败分支")
+	}
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
+		t.Fatalf("Down 失败就不销挂起:armed=%v err=%v", armed, err)
+	}
+}
+
+// **Guardian 自发起 Core 的第四条路**:Down 在 DNS 还原失败时的补偿重启
+// (manager.go:697-699)。它的原意是「还原失败了,别把用户停在一个奇怪的中间态」,
+// 而在维护窗口里「把 Core 放回去」放回去的是一个**正换到一半的二进制**。
+func TestMaintenanceDownWithFailedDNSRestoreDoesNotRestartCore(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	startsBefore := env.runner.startCount()
+	env.dns.restoreErr = errors.New("networksetup timed out")
+	env.events.reset()
+
+	if err := env.manager.Down(withMaintenanceStop(context.Background())); err == nil {
+		t.Fatal("DNS 还原失败仍应报错")
+	}
+	if got := env.runner.startCount(); got != startsBefore {
+		t.Fatalf("维护窗口里把 Core 放回去了:start = %d, want %d", got, startsBefore)
+	}
+	// **拆除照常做完。** 少做的只有「重启 Core」那一个动作;屏障是覆盖整个公网的
+	// /2 reject 路由,留下就是整机断网,而拆它从不依赖 Core 在跑(正常的 Down
+	// 成功路径就是这么做的)。
+	if !slices.Contains(env.events.snapshot(), "barrier.remove") {
+		t.Fatalf("屏障没拆 —— 停止不许因为少做一个动作就把用户留在断网里。events=%v", env.events.snapshot())
+	}
+	// 而这次 Down 依然没有改写 desired。
+	if desired, err := env.store.LoadDesired(); err != nil || desired != DesiredOn {
+		t.Fatalf("维护停机改写了 desired:%q err=%v", desired, err)
+	}
+	// 挂起也还在:它是这一整段窗口的凭据,不能被一次失败的 DNS 还原顺手销掉。
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || !armed {
+		t.Fatalf("维护停机把挂起销了:armed=%v err=%v", armed, err)
+	}
+}
+
+// 对照组:**没有**维护标记时这条补偿重启照旧发生 —— 半边输入空间的断言等于
+// 没断言,而这一期不打算削弱那条既有补偿。
+func TestUserDownWithFailedDNSRestoreStillRestartsCore(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	startsBefore := env.runner.startCount()
+	env.dns.restoreErr = errors.New("networksetup timed out")
+
+	if err := env.manager.Down(context.Background()); err == nil {
+		t.Fatal("DNS 还原失败仍应报错")
+	}
+	if got := env.runner.startCount(); got != startsBefore+1 {
+		t.Fatalf("补偿重启被误伤了:start = %d, want %d", got, startsBefore+1)
+	}
+}
+
+// 用户显式的 up 同样清挂起(设计取舍四:显式动作永远压过挂起)。
+func TestUpClearsMaintenanceHold(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
+		t.Fatalf("bx up 之后挂起还武装着:armed=%v err=%v", armed, err)
+	}
+}
+
+// 保护已经开着时 `bx up` 走的是**另一条**出口(upLocked 开头那句「已 Protected
+// 就直接返回」),而它同样是用户显式说的 on。销挂起若挂在写 desired 那一段之后,
+// 这条路就漏了:挂起继续武装着,而 Core 一旦退出,handleUnexpectedExit 会 fail-closed
+// 不把它拉回来 —— 保护在用户以为开着的时候悄悄消失。
+func TestUpClearsMaintenanceHoldWhenAlreadyProtected(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.manager.Status().Protection; got != ProtectionProtected {
+		t.Fatalf("测试前提不成立:第一次 Up 之后应当已 Protected,实际 %q", got)
+	}
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	startsBefore := env.runner.startCount()
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.runner.startCount(); got != startsBefore {
+		t.Fatalf("测试前提不成立:第二次 Up 应当走「已 Protected」那条早返回,实际起了 Core(%d→%d)", startsBefore, got)
+	}
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
+		t.Fatalf("已 Protected 的那条早返回漏了销挂起:armed=%v err=%v", armed, err)
+	}
+}
+
+// Migrate 是 `bx up` 在一台还带 legacy Core 的机器上走的那条路,同样是用户显式
+// 说的 on —— 漏了它,升级完的第一次开机保护会把挂起留在盘上。
+func TestMigrateClearsMaintenanceHold(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.manager.Migrate(context.Background(), MigrationRequest{
+		Gateway:      "192.0.2.1",
+		ServerBypass: []string{"198.51.100.10/32"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
+		t.Fatalf("Migrate 之后挂起还武装着:armed=%v err=%v", armed, err)
+	}
+}
+
+// 启动恢复**绝不许**清挂起。它与用户显式的 up 共用 upLocked,而每一次升级都会
+// 重启 Guardian、跑一遍启动恢复 —— 把销挂起放进 upLocked 里,挂起就会在它最该
+// 生效的那一刻被自己人销掉。
+//
+// 这条覆盖的是「挂起已过期」那一格:此时启动恢复会一路走到 upLocked,盘上那张
+// 过期的挂起是不是被顺手删掉无关紧要,要紧的是**没过期的那张不会被走到**。
+// 前一条(TestStartupRecoveryUnderArmedHoldSkipsCoreAndKeepsDownReachable)已经
+// 钉住了武装态下 Core 不被起来;这里补上「文件仍在盘上」这半边。
+func TestStartupRecoveryUnderArmedHoldDoesNotClearTheHold(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.manager.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || !armed {
+		t.Fatalf("启动恢复把挂起销了 —— 升级窗口里它正靠这张挂起压住 Core:armed=%v err=%v", armed, err)
 	}
 }

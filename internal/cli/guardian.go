@@ -83,14 +83,15 @@ type guardianLifecycleClient interface {
 	Status(context.Context) (guardian.Status, error)
 	Up(context.Context) (guardian.Status, error)
 	Down(context.Context) (guardian.Status, error)
-	// DownForUpgrade 与 Down 停的是同一件事,区别只在**升级欠条**:
-	// Guardian 把每一次成功的 Down 当作「用户不要保护了」并销掉欠条,而升级
-	// 自己那次停保护必须保住它(见 guardian/upgradeintent.go)。
+	// DownForUpgrade 与 Down 停的是同一件事,区别在于 Guardian 把每一次普通的
+	// Down 当作「用户不要保护了」:写 desired=off、销掉维护挂起与升级欠条。
+	// 升级自己那次停保护三样都不要(见 guardian/upgradeintent.go)。
 	DownForUpgrade(context.Context) (guardian.Status, error)
 	Migrate(context.Context, guardian.MigrationRequest) (guardian.Status, error)
 }
 
-// downPurpose 说明这次停保护是谁要的 —— 决定 Guardian 要不要销掉升级欠条。
+// downPurpose 说明这次停保护是谁要的 —— 决定盘上留下的是「用户不想要保护」
+// 还是「此刻不能有保护」。
 //
 // 它不是 macOSLifecycleDeps 的一部分:deps 装的是「怎么做」,而这是「为什么
 // 做」,同一套 deps 两种用途都成立(app-install 与 bx down 都用
@@ -98,10 +99,12 @@ type guardianLifecycleClient interface {
 type downPurpose int
 
 const (
-	// downPurposeUser:用户明确要关保护(bx down)。旧欠条一并销账。
+	// downPurposeUser:用户明确要关保护(bx down)。写 desired=off、销掉维护
+	// 挂起与旧欠条。
 	downPurposeUser downPurpose = iota
-	// downPurposeUpgrade:升级把停保护当作自己的一步。欠条必须留着,否则
-	// 装文件一失败,重试就再也不知道该把保护起回来。
+	// downPurposeUpgrade:升级把停保护当作自己的一步。**不写 desired=off**
+	// ——用户想要保护,只是此刻不能有;那件事由维护挂起表达。欠条也必须留着,
+	// 否则装文件一失败,重试就再也不知道该把保护起回来。
 	downPurposeUpgrade
 )
 
@@ -152,6 +155,18 @@ type macOSLifecycleDeps struct {
 	// plist from restarting protection at the next boot — the forced path
 	// never reaches Manager.Down, which is what normally records it.
 	markDesiredOff func() error
+	// armMaintenanceHold 武装一次维护挂起(见 guardian.MaintenanceHold)。
+	// 升级用它取代「写 desired=off」:磁盘上那句「用户不想要保护」是假的,
+	// 而任何忠实的调谐器都会照它把机器收敛到 off。它守的位置与 markDesiredOff
+	// 完全一样(在停 Core 之前拦住一个还活着的 Guardian 的重启),只是不撒谎。
+	//
+	// **写不成时退回 markDesiredOff**,见 recordStopIntent:「既没挂起也没
+	// desired=off」是一个新的失效模式,比退回一个会撒谎但安全的状态更糟。
+	armMaintenanceHold func(reason string) error
+	// clearMaintenanceHold 撤销挂起。它跑在用户显式关闭的路上,**对拆除的成败
+	// 无条件** —— 强制拆除即使报告失败,六步破坏性动作也已经做完了,躲在
+	// `if err == nil` 后面的销账正是欠条今天留下陈旧记录的原因。
+	clearMaintenanceHold func() error
 	// restoreSystemDNS puts the macOS resolver back to its saved servers.
 	// On macOS it is *Guardian* that points the system at 127.0.0.1
 	// (guardian/dns.go → install.EnableDNSContext), and only Manager.Down
@@ -215,6 +230,10 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		stopCore:       shutdownRunningCore,
 		forceTeardown:  install.BootoutGuardian,
 		markDesiredOff: func() error { return guardian.OpenDefaultStore().SaveDesired(guardian.DesiredOff) },
+		armMaintenanceHold: func(reason string) error {
+			return guardian.OpenDefaultStore().ArmMaintenanceHold(reason, time.Now())
+		},
+		clearMaintenanceHold: func() error { return guardian.OpenDefaultStore().ClearMaintenanceHold() },
 		clearBarrierRoutes: func(ctx context.Context) error {
 			return guardian.RemoveBlockingBarrierRoutes(ctx, nil)
 		},
@@ -459,6 +478,13 @@ func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps mac
 // macOSDownLifecycleFor 是带用途的入口:升级用 downPurposeUpgrade 调它,
 // 其余一律经 macOSDownLifecycleDetailed 走 downPurposeUser。
 func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (macOSDownResult, error) {
+	// **意图必须先于任何破坏性动作落盘,干净路径与强制路径都要。**
+	//
+	// 干净路径也不例外:走完 Manager.Down 之后 CLI 紧接着重启 Guardian
+	// (restartGuardianForUpgrade),新 Guardian 的启动恢复读到 desired=on 就会把
+	// Core 起回来 —— 而那时二进制正换到一半。武装在这里,那次启动恢复就会看见
+	// 挂起并停手。
+	stop := recordStopIntent(deps, purpose)
 	if deps.guardianReady != nil && deps.guardianReady(ctx) {
 		// 一个便宜的判定,决定走哪条路 —— 不是启动的活。
 		if mayRun, known := legacyCoreMayBeRunning(ctx, deps); mayRun {
@@ -480,7 +506,7 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 			if !known {
 				legacyErr = nil
 			}
-			forcedErr := forcedMacOSTeardown(ctx, deps, nil)
+			forcedErr := forcedMacOSTeardown(ctx, stop, deps, nil)
 			if err := errors.Join(legacyErr, forcedErr); err != nil {
 				// 结果必须带上 Forced/LegacyCore:调用方拿零值去渲染的话,
 				// downReportLines 对零值渲染的正是 "✅ bx 已停止并取消开机自启。"
@@ -497,12 +523,12 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 		if cleanErr == nil {
 			return macOSDownResult{Status: status}, nil
 		}
-		if err := forcedMacOSTeardown(ctx, deps, cleanErr); err != nil {
+		if err := forcedMacOSTeardown(ctx, stop, deps, cleanErr); err != nil {
 			return macOSDownResult{Forced: true, Cause: cleanErr}, err
 		}
 		return macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}, Forced: true, Cause: cleanErr}, nil
 	}
-	if err := forcedMacOSTeardown(ctx, deps, nil); err != nil {
+	if err := forcedMacOSTeardown(ctx, stop, deps, nil); err != nil {
 		return macOSDownResult{Forced: true}, err
 	}
 	return macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}, Forced: true}, nil
@@ -576,9 +602,13 @@ func legacyCoreMayBeRunning(ctx context.Context, deps macOSLifecycleDeps) (mayRu
 func cleanGuardianDown(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (guardian.Status, error) {
 	_ = configPath // 见上:停止路径不再读 config,参数只为保持调用方形状不变
 	if purpose == downPurposeUpgrade {
-		// 升级欠条(「还欠你一次把保护起回来」)必须活过这一跳:它是这次
-		// app-install 前一秒才写下的,而 Guardian 会把普通的 Down 当作
-		// 「用户不要保护了」把它销掉 —— 那正是 2026-08-08 复审 C1。
+		// 干净路径也必须带上这个标记,守的是**两件**事:
+		//   - 这一跳不许把 desired 改写成 off。用户想要保护,变的只是「此刻
+		//     不能有」,而那件事由维护挂起表达(recordStopIntent 刚武装好)。
+		//     升级路径上真有两个写入点(这里与 forcedMacOSTeardown),漏一个
+		//     等于没修。
+		//   - 前一秒才武装的挂起、以及那张升级欠条,都不许被这一跳销掉 ——
+		//     Guardian 把普通的 Down 一律当作「用户不要保护了」(2026-08-08 复审 C1)。
 		return deps.client.DownForUpgrade(ctx)
 	}
 	return deps.client.Down(ctx)
@@ -590,17 +620,42 @@ func cleanGuardianDown(ctx context.Context, purpose downPurpose, configPath stri
 // and a desired=On state brings the broken protection back at next boot).
 // Failures are collected and reported together with the next steps the user
 // can take by hand.
-func forcedMacOSTeardown(ctx context.Context, deps macOSLifecycleDeps, cause error) error {
+func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecycleDeps, cause error) error {
 	if deps.forceTeardown == nil {
 		return fmt.Errorf("Guardian 无法正常关闭,且强制拆除功能在此平台不可用")
 	}
 	var failures []error
-	// 1. Record the user's intent BEFORE touching anything. A Guardian that
-	//    is still alive treats Core's exit as a crash and, as long as the
-	//    store still says On, reinstalls the blocking barrier and restarts
-	//    Core (Manager.handleUnexpectedExit) — racing every step below.
-	//    Persisting Off first makes that handler a no-op instead.
-	desiredErr := persistDesiredOff(deps)
+	// 1. Record the intent BEFORE touching anything. A Guardian that is still
+	//    alive treats Core's exit as a crash and, as long as the store still
+	//    says On (and no maintenance hold is armed), reinstalls the blocking
+	//    barrier and restarts Core (Manager.handleUnexpectedExit) — racing
+	//    every step below. Recording first makes that handler a no-op instead.
+	//
+	//    维护(升级)记的是挂起,用户记的是 desired=off;两者都由
+	//    recordStopIntent 在更早的时候做过一次(它必须早于干净路径,见那边的
+	//    注释),这里再做一次是为了盖住「一次并发的 Up 抢在前面」。
+	desiredErr := stop.err
+	if stop.armsHold() {
+		if err := armMaintenanceHold(deps, guardian.HoldReasonUpgrade); err != nil {
+			failures = append(failures, fmt.Errorf("刷新维护挂起: %w", err))
+		}
+	} else if err := persistDesiredOff(deps); err != nil {
+		if desiredErr == nil {
+			desiredErr = err
+		}
+	} else {
+		desiredErr = nil
+	}
+	// 用户明确要关 ⇒ 销挂起。**这一步对拆除的成败无条件**(见 Manager.Down 的
+	// 同款注释):强制拆除即使报告失败,六步破坏性动作也已经做完了,而躲在
+	// `if err == nil` 后面的销账正是欠条今天留下陈旧记录的原因。清不掉只是一条
+	// 警告 —— ClearMaintenanceHold 只有 ENOENT 幂等,EACCES/EIO 照样回错误,
+	// 而「停止」永不许因为一个记账文件而中止剩下的步骤。
+	if stop.purpose != downPurposeUpgrade {
+		if err := clearMaintenanceHold(deps); err != nil {
+			failures = append(failures, fmt.Errorf("清除维护挂起: %w", err))
+		}
+	}
 	// 2. Ask the running Core to stop itself, while it still has a live
 	//    path to restore the routes it installed.
 	if deps.stopCore != nil {
@@ -637,11 +692,15 @@ func forcedMacOSTeardown(ctx context.Context, deps macOSLifecycleDeps, cause err
 			failures = append(failures, fmt.Errorf("还原系统 DNS(否则仍会网页打不开,可手动执行 sudo bx dns off): %w", err))
 		}
 	}
-	// 6. Persist the intent once more. Cheap, idempotent, and now
+	// 6. Record the intent once more. Cheap, idempotent, and now
 	//    authoritative: with Guardian booted out nothing can overwrite it,
 	//    so a concurrent Up that raced step 1 cannot leave On behind.
-	//    Either write succeeding is enough — the goal is Off on disk.
-	if err := persistDesiredOff(deps); err == nil {
+	//    Either write succeeding is enough — the goal is the intent on disk.
+	if stop.armsHold() {
+		if err := armMaintenanceHold(deps, guardian.HoldReasonUpgrade); err != nil {
+			failures = append(failures, fmt.Errorf("刷新维护挂起: %w", err))
+		}
+	} else if err := persistDesiredOff(deps); err == nil {
 		desiredErr = nil
 	} else if desiredErr != nil {
 		desiredErr = errors.Join(desiredErr, err)
@@ -682,6 +741,62 @@ func persistDesiredOff(deps macOSLifecycleDeps) error {
 		return nil
 	}
 	return deps.markDesiredOff()
+}
+
+// stopIntent 是这次停机在盘上留下的那条记录。
+//
+// **升级的挂起必须在停 Core 之前武装好,而且干净路径与强制路径都要**:干净路径
+// 走完 Manager.Down 之后 CLI 紧接着重启 Guardian(restartGuardianForUpgrade),
+// 新 Guardian 的启动恢复读到 desired=on 就会把 Core 起回来 —— 二进制正换到一半。
+type stopIntent struct {
+	purpose  downPurpose
+	fellBack bool  // 挂起写不成,已退回 desired=off
+	err      error // 退回之后仍失败(两条都没写成),留给拆除步骤汇报
+}
+
+// armsHold 报告拆除步骤该记哪一种意图。
+//
+// 退回之后**不再回头去武装挂起**:那半张写不成的挂起若在第 6 步侥幸写成,盘上
+// 就会同时躺着「用户不想要保护」和「此刻不该有保护」两句话,而调谐器与
+// handleUnexpectedExit 各读一句。退回是一次性的决定,不是可以反悔的尝试。
+func (s stopIntent) armsHold() bool {
+	return s.purpose == downPurposeUpgrade && !s.fellBack
+}
+
+// recordStopIntent 在任何破坏性动作之前把这次停机的来由写到盘上。
+func recordStopIntent(deps macOSLifecycleDeps, purpose downPurpose) stopIntent {
+	if purpose != downPurposeUpgrade {
+		return stopIntent{purpose: purpose}
+	}
+	if err := armMaintenanceHold(deps, guardian.HoldReasonUpgrade); err != nil {
+		// **退回今天的行为,而不是报错拒绝、也不是继续往下。**
+		// 退回意味着调谐器会把机器收敛到 off(与今天一模一样,升级结束会重新
+		// 写 on),代价已知且有界;而「既没挂起也没 desired=off」是一个新的
+		// 失效模式:活着的 Guardian 在换二进制时把 Core 重启回来。
+		// 宁可退回一个会撒谎但安全的状态,也不要一个诚实但没人拦着的状态。
+		return stopIntent{purpose: purpose, fellBack: true, err: persistDesiredOff(deps)}
+	}
+	return stopIntent{purpose: purpose}
+}
+
+// armMaintenanceHold 武装挂起。**钩子缺失是失败**,与 persistDesiredOff 相反:
+// 那边缺钩子只是少记一笔,这边缺钩子意味着「此刻不该有保护」这件事根本没落盘,
+// 而调用方正指望它拦住一个活着的 Guardian。报错让 recordStopIntent 退回去写
+// desired=off,那是今天的行为 —— 安全,只是会撒谎。
+func armMaintenanceHold(deps macOSLifecycleDeps, reason string) error {
+	if deps.armMaintenanceHold == nil {
+		return fmt.Errorf("维护挂起在此平台不可用")
+	}
+	return deps.armMaintenanceHold(reason)
+}
+
+// clearMaintenanceHold 撤销挂起。缺钩子不是失败:没有挂起这个概念的平台上,
+// 也就没有挂起要清 —— 而「停止」永不许因为一个记账文件而中止。
+func clearMaintenanceHold(deps macOSLifecycleDeps) error {
+	if deps.clearMaintenanceHold == nil {
+		return nil
+	}
+	return deps.clearMaintenanceHold()
 }
 
 func blockingRouteCleanupHints() []string {

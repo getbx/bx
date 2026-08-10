@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/supervisor"
@@ -104,6 +105,14 @@ func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
 
 	env := &upgradeE2EEnv{store: store, client: serveGuardian(t, guardian.NewLocalAPI(manager))}
 	env.deps = testMacOSLifecycleDeps(&env.events, env.client)
+	// 挂起的两个钩子接到**同一个真 Store** 上。不接的话 armMaintenanceHold 会
+	// 报「此平台不可用」,recordStopIntent 于是退回写 desired=off —— 这条旗舰
+	// e2e 就会在盘上看到 off、照样绿,而它自称验的正是「升级不再写 off」。
+	// (那是本仓库反复出现的那个形状:替身缺一个钩子,测试测的是退化路径。)
+	env.deps.armMaintenanceHold = func(reason string) error {
+		return store.ArmMaintenanceHold(reason, time.Now())
+	}
+	env.deps.clearMaintenanceHold = store.ClearMaintenanceHold
 	return env
 }
 
@@ -186,7 +195,7 @@ func TestRunUpgradeKeepsTheDebtAcrossARealGuardianDown(t *testing.T) {
 	}
 	// **这条测试的全部价值在于它真的走到了装文件那一步。** 少了这句断言,
 	// 一个在更早处中止的升级(例如新加的「保护未确认」闸门)会让下面每一条断言
-	// 都照样成立 —— 报错、ForcedTeardown 为假、desired=off、欠条还在 ——
+	// 都照样成立 —— 报错、ForcedTeardown 为假、desired 仍是 on、欠条还在 ——
 	// 而它自称测试的「升级中途失败」根本没发生。复审用探针实测过这个空壳状态。
 	if !installAttempted {
 		t.Fatal("升级应当走到装文件那一步才失败;它在更早处就中止了,这条测试没测到它自称测的东西")
@@ -194,9 +203,21 @@ func TestRunUpgradeKeepsTheDebtAcrossARealGuardianDown(t *testing.T) {
 	if outcome.ForcedTeardown {
 		t.Fatalf("这次停保护应当走干净路径(Guardian 就在跑),events=%v", env.events)
 	}
-	// 真的关掉了 —— 否则「欠条还在」这句话没有任何分量。
-	if desired, err := env.store.LoadDesired(); err != nil || desired != guardian.DesiredOff {
-		t.Fatalf("Manager.Down 应当已把 desired 记成 off,实际 %q(err=%v);测试没走到真正的关闭路径", desired, err)
+	// **升级的停机不再写 desired=off。** 用户想要保护,只是此刻不能有 ——
+	// 磁盘上那句「用户不想要保护」正是这一期要消灭的谎话,而任何忠实的调谐器
+	// 都会照它把机器收敛到 off。
+	if desired, err := env.store.LoadDesired(); err != nil || desired != guardian.DesiredOn {
+		t.Fatalf("升级的停机改写了 desired:%q(err=%v)", desired, err)
+	}
+	// 「此刻不能有保护」这件事由挂起表达,而且它必须活过这一跳:升级紧接着要
+	// 重启 Guardian,新 Guardian 的启动恢复读到 desired=on 就会把 Core 起回来,
+	// 而那时二进制正换到一半。拦住它的只有这张挂起。
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || !armed {
+		t.Fatalf("升级停机之后挂起必须还武装着:armed=%v err=%v", armed, err)
+	}
+	// 真的关掉了 —— 否则上面两句话都没有分量。
+	if outcome.Down.Status.Protection != guardian.ProtectionOff {
+		t.Fatalf("Manager.Down 应当已报告保护关闭,实际 %+v", outcome.Down.Status)
 	}
 	pending, present := env.store.LoadUpgradeIntent()
 	if !present {

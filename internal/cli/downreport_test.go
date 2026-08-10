@@ -173,7 +173,7 @@ func TestForcedTeardownFailureCarriesTheManualRecoveryCommands(t *testing.T) {
 	boom := errors.New("bootout-refused")
 	f.macOSLifecycleDeps.forceTeardown = func(context.Context) error { return boom }
 
-	err := forcedMacOSTeardown(context.Background(), f.macOSLifecycleDeps, nil)
+	err := forcedMacOSTeardown(context.Background(), stopIntent{purpose: downPurposeUser}, f.macOSLifecycleDeps, nil)
 	if err == nil {
 		t.Fatal("有步骤失败时必须报错 —— 静默成功会让用户以为网络已经还原")
 	}
@@ -208,7 +208,7 @@ func TestForcedTeardownFailureAlsoCarriesTheCleanPathCause(t *testing.T) {
 	f.macOSLifecycleDeps.restoreSystemDNS = func(context.Context) error { return errors.New("dns-stuck") }
 	cause := errors.New("recovery-incomplete")
 
-	err := forcedMacOSTeardown(context.Background(), f.macOSLifecycleDeps, cause)
+	err := forcedMacOSTeardown(context.Background(), stopIntent{purpose: downPurposeUser}, f.macOSLifecycleDeps, cause)
 	if err == nil {
 		t.Fatal("有步骤失败时必须报错")
 	}

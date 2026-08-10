@@ -109,8 +109,9 @@ func upgradeFailureMessageWithNetwork(step UpgradeStep, err error, networkRestor
 	case UpgradeStopProtection:
 		// 「当前状态未变」是假的:macOSDownLifecycleDetailed 只会在
 		// forcedMacOSTeardown 报错时返回错误,而那条逃生路径按设计会把六个
-		// 破坏性步骤**全做完**再报告(记 desired=off、请 Core 退出、bootout
-		// Guardian、删屏障阻断路由、还原系统 DNS)。保护已经被停过了。
+		// 破坏性步骤**全做完**再报告(记下停机意图 —— 升级记维护挂起、用户记
+		// desired=off、请 Core 退出、bootout Guardian、删屏障阻断路由、还原
+		// 系统 DNS)。保护已经被停过了。
 		return fmt.Sprintf(
 			"停止保护未能全部完成:%v\n"+
 				"新版本文件尚未安装(升级没有开始),但保护已经被停过,网络是否已恢复未经确认——"+
