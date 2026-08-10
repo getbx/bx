@@ -746,6 +746,25 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 		return err
 	}
 	defer m.releaseMutation()
+	// **锁存必须在这条路上消失。**
+	//
+	// 被文档、CLI 指引、菜单提示、升级中止文案四处引用的那条出路(「sudo bx down
+	// 再 sudo bx up」)今天在几种形状下都是假的:Down 从不读 Uncertain,它按
+	// m.current.PID 分支,于是分别停在 :784 的提前返回、runner.Existing 的同一次
+	// 失败扫描,以及带真实 PID 那一支里 runner.Stop 重做的那次删记录(与当初把锁存
+	// 造出来的是同一次 unlink,持久条件还在就再失败一次)—— 全都到不了下面那句
+	// m.current = Process{}。
+	// (用户报告它「有时管用」,是因为 CLI 的 bx down 失败会落到强制拆除,把
+	// Guardian 整个 bootout 掉:真正管用的一直是杀掉 daemon,不是 Down 清了记录。)
+	//
+	// **与拆除的成败无关**:注册在最外层,每一条失败路径都会跑到。
+	//
+	// **清掉锁存不等于放行**:下一次 Up 会重新走 runner.Existing/Start,而
+	// ExecCoreRunner 在那两跳上照旧向系统求证(resolveOrphanLaunchMarker /
+	// refuseUnrecordedRunningCore / refuseLiveLaunchMarker)。这里去掉的是一个
+	// **记忆**,不是那道判据。
+	latchedOnEntry := m.current
+	defer m.clearOwnershipLatch(latchedOnEntry)
 	// 一次 map 读,越早越好:关闭是逃生路径,不得因为任何记账逻辑失败或阻塞。
 	//
 	// **升级自己的那次停保护**(POST /v1/down?reason=upgrade)与「用户不要保护了」
@@ -1400,6 +1419,27 @@ func (m *Manager) retainUncertain(process Process) {
 			}
 		}()
 	}
+}
+
+// clearOwnershipLatch 清掉**进 Down 那一刻就已经在那儿**的所有权锁存。
+//
+// 只清那一个:Down 在 DNS 还原失败时会经 startCoreLocked 把 Core 放回去,那一步
+// 可能刚落下一个新的锁存 —— 抹掉它就是 fail-open。Process 全部字段都是
+// int/string/bool/chan,是可比较类型,直接按值比对身份。
+//
+// 第一道 `!latchedOnEntry.Uncertain` 早退在逻辑上被第二道包住(m.current.Uncertain
+// 且 m.current == latchedOnEntry ⇒ latchedOnEntry.Uncertain),因此没有任何测试能
+// 单独把它变红;留着是为了让「只清进门时那一个」这件事在读代码时一眼可见,别把它
+// 当成一道独立的防线。真正被测试盯着的是下面那次按值比对。
+func (m *Manager) clearOwnershipLatch(latchedOnEntry Process) {
+	if !latchedOnEntry.Uncertain {
+		return
+	}
+	if !m.current.Uncertain || m.current != latchedOnEntry {
+		return
+	}
+	m.current = Process{}
+	log.Printf("guardian_ownership_uncertain_latch_cleared by=down pid=%d", latchedOnEntry.PID)
 }
 
 func (m *Manager) clearUncertaintyAfterProof(process Process) {

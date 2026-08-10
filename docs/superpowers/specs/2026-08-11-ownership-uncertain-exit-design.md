@@ -14,7 +14,19 @@
 |---|---|
 | PID==0(扫描派生:`process.go:333`/`:338`、孤儿 launching 标记)且盘上 `desired=off` | 走 `:784-794` 的提前返回(还原 DNS + 报告已停),**根本到不了 `:846` 那句 `m.current = Process{}`**。Down 报成功,锁存原样,`bx up` 照旧拒绝 |
 | PID==0 且 `desired=on`(**最常见** —— 第一次失败的 `Up` 已经在 `:574-579` 把 desired 写成 on) | 落到 `:798-803` 调 `runner.Existing`,**跑的正是当初把它锁上的那次扫描**。持久条件还在就返回同一个错,`Down` 以 `core_state_read_failed` 失败,同样到不了 `:846` |
-| 有真实 PID(`handleUnexpectedExit`,`:1295`) | 走到 `runner.Stop`,而 `Stop` 开头的 `verifyInstalledProcess`(`process.go:498`)对一个**从没验明身份**的进程必然失败 → `core_stop_failed`,还是到不了 `:846` |
+| 有真实 PID(`handleUnexpectedExit`,`:1295`) | 走到 `runner.Stop`。**只在持久条件还在时**停在 `Stop` 里那次 `removeRecordIfGeneration`(`process.go:503`/`:543`)—— 与当初把锁存造出来的是同一次删记录 → `core_stop_failed`,到不了 `:846`;条件是瞬时的话 `Stop` 返回 nil,`Down` 走完并**今天就已经**清掉了锁存 |
+
+> **更正(Task 1 实施时查出来的)**:上表第三行原本写的是「`Stop` 开头的
+> `verifyInstalledProcess`(`process.go:498`)对一个**从没验明身份**的进程必然失败」。
+> **两处都不成立**:① 这个 `process` 来自 `m.current`,是一个验明过身份、
+> 带 `Executable`/`UID`/`Generation` 的真进程(`handleUnexpectedExit` 只在
+> `sameProcessGeneration(m.current, process)` 之后才把 `Uncertain` 打上去),
+> `verifyInstalledProcess` 的五项检查一项都不会挂;② 因此这条形状**不是必然失败**,
+> 它取决于那次 unlink 这回成不成。实测(`newProtectedManagerTestEnv` + 一次带
+> `ErrProcessOwnershipUncertain` 的退出 + `Stop` 成功)证实:`Down` 干净返回、
+> `m.current` 被 `:846` 清空、锁存今天就已经没了。
+> 所以 `TestDownClearsTheOwnershipLatchCarryingARealPID` **注入 `Stop` 的错**(而不是
+> 依赖某一跳自己挂),覆盖的是「持久条件还在」那一半 —— 那一半才是真的到不了 `:846`。
 
 **而且没有任何测试断言过 `Down` 会清掉这个锁存**(`manager_down_test.go` 与
 `daemon_test.go` 里 `Uncertain` 零命中)。
