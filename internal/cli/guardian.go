@@ -709,6 +709,12 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	//    第 1 步失败几乎必然意味着第 6 步也会失败,报绿等于让升级带着一个
 	//    「没人拦着」的窗口继续往下走。fail-closed 的方向。
 	//
+	//    **顺带记一条语义变化**:升级来由下这里不再写 desired=off,于是**装文件
+	//    期间断电**留下的是 desired=on(此前是 off)。方向是对的(用户确实想要
+	//    保护),代价是那台机器下次开机会自己把保护起回来,而二进制可能只换了
+	//    一半 —— 实际风险低(installAppBundle 用 stage+rename,current 符号链接
+	//    也是原子替换),但没有专门的防护,只有这条记录。
+	//
 	//    **升级一台本来就不要保护的机器时两句都不写**(见
 	//    downPurposeUpgradeUnprotected):盘上已经是 off,而 desired 只由用户改。
 	//    代价是一个已知的窄窗口 —— 用户恰好在这几秒里点了 Turn On,那个 on 没有

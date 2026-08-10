@@ -488,8 +488,18 @@ func TestMaintenanceDownWithFailedDNSRestoreDoesNotRestartCore(t *testing.T) {
 	env.dns.restoreErr = errors.New("networksetup timed out")
 	env.events.reset()
 
-	if err := env.manager.Down(withMaintenanceStop(context.Background())); err == nil {
+	var logged syncBuffer
+	restore := swapGuardianLogOutput(&logged)
+	err := env.manager.Down(withMaintenanceStop(context.Background()))
+	restore()
+	if err == nil {
 		t.Fatal("DNS 还原失败仍应报错")
+	}
+	// **被压制的那条自发起 Core 的路必须留下一行。** 另外三条各有自己的一行,
+	// 唯独这一条曾完全无声:真机上只看得到一次没有下文的 restore 失败,而
+	// 「Core 为什么没像往常那样被放回去」无从解释。
+	if !strings.Contains(logged.String(), "guardian_down_restore_recovery_held") {
+		t.Fatalf("压制没留痕迹,实际日志:%q", logged.String())
 	}
 	if got := env.runner.startCount(); got != startsBefore {
 		t.Fatalf("维护窗口里把 Core 放回去了:start = %d, want %d", got, startsBefore)
