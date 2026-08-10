@@ -56,6 +56,37 @@ type ObservedState struct {
 	Errors           []ObserveError `json:"errors,omitempty"`
 }
 
+// UnobservableItems 返回这一轮**没能问出来**的项的名字,固定次序。
+//
+// 判据就是 Tristate 为 Unknown —— 本包对「观测不到」只有这一个说法,不另立
+// 第二套。刻意**不**改从 Errors 推:Errors 记的是「问了、失败了」,而依赖缺席
+// (Deps 某个函数为 nil)同样问不出来却一条错误都不会留下,两者对调用方是同一
+// 件事。名字与 ObserveError.Item、Divergence.Field 用的是同一套词汇,好让日志、
+// 分歧与这份清单指的是同一个东西。
+//
+// 存在的理由:一轮**全盲**的观测(三项皆 Unknown)与一台健康机器在下游读起来
+// 一模一样 —— 判据对 Unknown 一律「什么都不做」,于是两者产出的动作集合都是空。
+// 调谐环的验收恰恰是「健康机器上提议过几次动作」,而 0 正是一个什么都没看见的
+// 循环给出的答案。没有这份清单,那个 0 无从分辨。
+func (s ObservedState) UnobservableItems() []string {
+	var items []string
+	for _, check := range []struct {
+		item  string
+		value Tristate
+	}{
+		{"capture_ok", s.CaptureOK},
+		{"barrier_present", s.BarrierPresent},
+		{"dns_managed", s.DNSManaged},
+		{"core_socket", s.CoreSocket},
+		{"tunnel_healthy", s.TunnelHealthy},
+	} {
+		if check.value == Unknown {
+			items = append(items, check.item)
+		}
+	}
+	return items
+}
+
 // Intent 是用户/agent 声明的意图。观测层只读它,永不改写。
 type Intent struct {
 	Desired string `json:"desired"` // "on" | "off"
