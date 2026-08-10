@@ -257,20 +257,20 @@ func TestReconcileOnceDoesNotTakeTheMutationChannelUnderArmedHold(t *testing.T) 
 func TestReconcileOnceExecutesNothingUnderTheNewFences(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		setup func(*managerTestEnv)
+		setup func(*testing.T, *managerTestEnv)
 	}{
-		{"armed_hold", func(env *managerTestEnv) {
+		{"armed_hold", func(t *testing.T, env *managerTestEnv) {
 			if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"intent_unreadable", func(env *managerTestEnv) {
+		{"intent_unreadable", func(t *testing.T, env *managerTestEnv) {
 			env.store.setLoadError(errors.New("read desired state: EIO"))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newManagerTestEnv(t)
-			tc.setup(env)
+			tc.setup(t, env)
 			before := env.mutationCallCounts()
 
 			got := env.manager.reconcileOnce(context.Background(), observe.ObservedState{

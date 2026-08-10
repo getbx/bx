@@ -167,6 +167,14 @@ type ReconcileReport struct {
 	// Actions 是这一轮**本来会做**的事(阶段③a 一项都不会执行)。
 	Actions []string `json:"actions,omitempty"`
 	// Held 非空时 Actions 必为空,内容是被哪道栅栏挡住的。
+	//
+	// **读 soak 统计的人必须知道:这里报的不一定是「排序最高」的那道栅栏。**
+	// reconcileOnce 先判便宜的栅栏(维护挂起、意图读不出),命中就短路返回,
+	// 那一轮根本没去读 recoveryBlocked 与 ownership_uncertain —— 于是
+	// 「挂起 + 所有权不确定同时成立」只会报 maintenance_hold。
+	// 后果是 Held 的直方图会**系统性少数** ownership_uncertain,而维护窗口
+	// 恰恰是它最容易同时升起的时候。要数「有多少轮根本没在工作」用 Held 非空,
+	// 别拿单个栅栏的计数当那道栅栏的真实发生频次。
 	Held string `json:"held,omitempty"`
 	// UnchangedRounds 是判断连续多少轮没变。它同时是退避的输入,所以一个持续
 	// 增长的数字意味着「循环活着且这段时间一直是同一个判断」。
