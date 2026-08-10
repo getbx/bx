@@ -24,6 +24,11 @@ const (
 	HoldReasonLegacyUpgrade = "legacy_upgrade"
 )
 
+// maintenanceHoldClockSkewGrace 是判「过期时刻远得不合理」时给时钟留的余量:
+// 武装与读取之间机器的钟可能被 NTP 步进一下(正常量级是毫秒到秒),不该因此
+// 把一张好挂起判成坏的;而它拦的是小时/年那个量级的跳变。
+const maintenanceHoldClockSkewGrace = time.Minute
+
 var maintenanceHoldReasonPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 // MaintenanceHold 是「此刻不该有保护」这件事本身,与 desired 正交:它带来由与
@@ -71,13 +76,25 @@ func (s *Store) ArmMaintenanceHold(reason string, now time.Time) error {
 //
 // 过期在**读取时**判,不设定时器:进程重启后照样成立。过期的文件刻意不在这里
 // 删 —— 读路径不许因为一次 unlink 失败而失败;清理由 bx up/bx down/uninstall 做。
+//
+// **返回的 MaintenanceHold 在每种情形下装着什么**(调用方必须只看第二个返回值,
+// 不许用 `hold.Reason != ""` 之类去替代它):
+//   - 没有挂起(ENOENT):零值,armed=false,err=nil
+//   - 任何错误:零值,armed=false,err!=nil
+//   - **挂起过期了:内容原样返回**,armed=false,err=nil —— 好让 bx status 能说出
+//     「一张 upgrade 挂起在 12:15 过期了」而不只是「没有挂起」。正因为它非零,
+//     `if hold.Reason != ""` 会把过期挂起读成还武装着。
 func (s *Store) LoadMaintenanceHold(now time.Time) (MaintenanceHold, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// 路径没配 = 这个 Store 压根没有挂起这个概念(只有测试造得出来;
-	// OpenDefaultStore 永远填它),与「盘上没有挂起」同义。
+	// 路径没配 **不是**「没有挂起」,是这个 Store 答不了这个问题 —— 与 ENOENT
+	// 完全不同,后者是问过盘、确知没有。返回一个自信的 false 正是本文件存在的
+	// 理由要消灭的那种谎:一个用 guardian.Paths{UpgradeIntent: …} 造出来的替身
+	// (internal/cli/upgraderun_test.go:257,331 就是这么造的)会让「显式 down 清
+	// 挂起」「有挂起就不起 Core」这类测试**空洞地绿** —— 没路径 ⇒ 从不武装 ⇒
+	// 没得清 ⇒ 栅栏永不触发。故与 ArmMaintenanceHold 一致:报错。
 	if s.paths.MaintenanceHold == "" {
-		return MaintenanceHold{}, false, nil
+		return MaintenanceHold{}, false, fmt.Errorf("guardian maintenance hold path required")
 	}
 	b, err := os.ReadFile(s.paths.MaintenanceHold)
 	if os.IsNotExist(err) {
@@ -96,21 +113,45 @@ func (s *Store) LoadMaintenanceHold(now time.Time) (MaintenanceHold, bool, error
 	if !maintenanceHoldReasonPattern.MatchString(hold.Reason) {
 		return MaintenanceHold{}, false, fmt.Errorf("invalid maintenance hold reason")
 	}
-	// 没有过期时刻的挂起会永久压制保护。宁可报错(fail-closed 且会在
-	// bx status 上现形),也不接受一个没有尽头的压制。
+	// 「没有一张挂起可以无限期压制保护」这条不变量,零值只是它的一个角落:
+	// 一个远在未来的 ExpiresAt 同样是无限期压制。现实里的触发者不是恶意而是
+	// **时钟跳变** —— 武装那一刻机器的钟偶然快了几年,NTP 校回来之后这张挂起
+	// 就实际上永不过期;在 Task 2 的 fail-closed 栅栏下,那台机器会一直
+	// 「desired=on 却没有保护」,直到用户自己跑 bx up / bx down。
+	//
+	// 上限 = now + MaintenanceHoldDuration(+ 一分钟宽限,容下 NTP 的正常步进,
+	// 而拦得住小时/年这个量级的偏差):任何一张诚实武装的挂起,在任何一次读取
+	// 时都不可能比「此刻刚武装」更晚过期。
+	//
+	// **这里三条拒绝分支(零过期 / 未来过久 / 未知 schema / 坏 reason)在
+	// fail-closed 的消费者眼里本身就是永久压制** —— 这是有意的取舍:它是**吵闹的**
+	// (报错会进日志与 bx status,不像一张悄悄生效的坏挂起),而且**可恢复**
+	// (ClearMaintenanceHold 不看内容,任何一条显式 up/down 都能把它删掉)。
+	// Task 2 的栅栏设计依赖这一点:错误 ⇒ 停手 + 说清楚,而不是猜。
 	if hold.ExpiresAt.IsZero() {
 		return MaintenanceHold{}, false, fmt.Errorf("maintenance hold has no expiry")
+	}
+	if hold.ExpiresAt.After(now.Add(MaintenanceHoldDuration + maintenanceHoldClockSkewGrace)) {
+		return MaintenanceHold{}, false, fmt.Errorf("maintenance hold expiry too far in the future")
 	}
 	return hold, hold.ExpiresAt.After(now), nil
 }
 
 // ClearMaintenanceHold 撤销挂起。文件本来就不在不算失败(幂等)——它跑在
 // 「用户明确要关保护」的路径上,而停止不许依赖先成功做成别的事。
+//
+// 它**不看内容**:坏 schema、坏 reason、过期得离谱的挂起,一样能被一条显式的
+// up/down 清掉。LoadMaintenanceHold 那几条拒绝分支之所以敢报错(在 fail-closed
+// 的消费者眼里等同压制),依据就是这条恢复路径。
+//
+// 路径没配同样报错(与 Arm/Load 一致):一个答不了这个问题的 Store 说「清好了」
+// 是谎。**调用方在拆除路径上必须把这个错误当警告继续做完拆除**,绝不许据此提前
+// 返回 —— 「停止」永远不依赖先成功做成别的事(2026-08-04 那次 71 分钟事故)。
 func (s *Store) ClearMaintenanceHold() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.paths.MaintenanceHold == "" {
-		return nil
+		return fmt.Errorf("guardian maintenance hold path required")
 	}
 	if err := os.Remove(s.paths.MaintenanceHold); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove maintenance hold: %w", err)
