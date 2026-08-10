@@ -1913,6 +1913,10 @@ func newManagerTestEnv(t *testing.T) *managerTestEnv {
 		Staging:       filepath.Join(t.TempDir(), "staging"),
 		Snapshots:     filepath.Join(t.TempDir(), "snapshots"),
 		UpgradeIntent: filepath.Join(t.TempDir(), "upgrade-intent.json"),
+		// 挂起路径必须填:Store 在没有它时**报错**而不是答「没有挂起」
+		// (hold.go 的刻意取舍),否则本文件里每一条依赖挂起的断言都会
+		// 平凡地绿 —— 没路径 ⇒ 从不武装 ⇒ 栅栏永不触发。
+		MaintenanceHold: filepath.Join(t.TempDir(), "maintenance-hold.json"),
 	}), events: events}
 	runner := newFakeCoreRunner(events)
 	health := &fakeHealthGate{}
@@ -2023,6 +2027,16 @@ func (s *recordingDesiredStore) LoadDesired() (DesiredState, error) {
 		return "", err
 	}
 	return s.Store.LoadDesired()
+}
+
+// LoadIntentSnapshot **必须**在这里覆盖:内嵌 *Store 的实现会直接读盘,把
+// setLoadError 注入的错误整个绕过去 —— 那正是「测试测的是相邻的东西」的经典形状。
+//
+// 组合逻辑(含「哪一半读不出来」的分类)不在这里重抄一遍,而是交给同一个
+// loadIntentSnapshot:替身重抄一份就会与生产悄悄分叉,而分叉的方向恰好是
+// 「替身把错误分类丢了、测试照样绿」。
+func (s *recordingDesiredStore) LoadIntentSnapshot(now time.Time) (IntentSnapshot, error) {
+	return loadIntentSnapshot(s.LoadDesired, s.Store.LoadMaintenanceHold, now)
 }
 
 func (s *recordingDesiredStore) setLoadError(err error) {

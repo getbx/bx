@@ -2,6 +2,7 @@ package guardian
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,6 +136,62 @@ func (s *Store) LoadMaintenanceHold(now time.Time) (MaintenanceHold, bool, error
 		return MaintenanceHold{}, false, fmt.Errorf("maintenance hold expiry too far in the future")
 	}
 	return hold, hold.ExpiresAt.After(now), nil
+}
+
+// IntentSnapshot 是**一次**磁盘读拿到的完整意图:用户要什么,以及此刻允不允许动手。
+//
+// 为什么必须同源:调谐器今天读的是内存里的 m.Status().Desired,而内存**已经会
+// 撒谎** —— needsAttention 会把调用方传进来的常量写进 status.Desired
+// (manager.go:1396-1399),好几处传的是字面量 DesiredOn 而磁盘写着 off。挂起从
+// 磁盘读、desired 从内存读,一轮之内就能出现两者互不相干的组合。
+//
+// **它是一个瞬间的快照,不是一段区间内的保证**:CLI 在另一个进程里随时可能改写
+// 这两个文件,本期不引入锁(整文件原子替换 + 最后写者赢)。
+type IntentSnapshot struct {
+	Desired   DesiredState
+	Hold      MaintenanceHold
+	HoldArmed bool
+}
+
+// ErrMaintenanceHoldUnreadable 标记「读不出来的是**挂起**那一半」。
+//
+// 两半的失败后果不同,所以必须分得开:
+//   - desired 读不出来 = 连用户要什么都不知道 ⇒ 启动恢复照旧置
+//     recoveryBlocked=true(既有不变量,本期不放宽)。
+//   - 挂起读不出来 ⇒ 一律 fail-closed(不起 Core),但**绝不置 recoveryBlocked**。
+//     理由是一条闭环:LoadMaintenanceHold 对坏 schema / 坏 reason / 时钟跳变造出
+//     的远期过期一律报错,而这份设计给出的唯一恢复路径是「任何一条显式 up/down
+//     都能清掉它」(ClearMaintenanceHold 不看内容)。recoveryBlocked 为真时
+//     Manager.Down 与 Up 的第一句就返回 errRecoveryIncomplete —— 那条恢复路径
+//     会被自己掐断,等于用一个新文件把 2026-08-04 那次「用户 71 分钟关不掉保护」
+//     原样复活。
+var ErrMaintenanceHoldUnreadable = errors.New("maintenance hold unreadable")
+
+// LoadIntentSnapshot 一次读出 desired 与挂起。
+func (s *Store) LoadIntentSnapshot(now time.Time) (IntentSnapshot, error) {
+	return loadIntentSnapshot(s.LoadDesired, s.LoadMaintenanceHold, now)
+}
+
+// loadIntentSnapshot 把组合逻辑(尤其是**哪一半失败了**这个分类)单点拥有。
+//
+// 测试替身要注入 LoadDesired 的失败,就必须覆盖 LoadIntentSnapshot(否则内嵌的
+// *Store 会直接读盘、把注入绕过去);而一旦覆盖,它就会重抄一遍这段组合 ——
+// 重抄的那份迟早把 ErrMaintenanceHoldUnreadable 的包装丢掉,于是替身与生产悄悄
+// 分叉,而分叉的方向恰好是「测试照样绿」。故这段逻辑不许有第二份。
+func loadIntentSnapshot(
+	loadDesired func() (DesiredState, error),
+	loadHold func(time.Time) (MaintenanceHold, bool, error),
+	now time.Time,
+) (IntentSnapshot, error) {
+	desired, err := loadDesired()
+	if err != nil {
+		return IntentSnapshot{}, err
+	}
+	hold, armed, err := loadHold(now)
+	if err != nil {
+		return IntentSnapshot{}, fmt.Errorf("%w: %w", ErrMaintenanceHoldUnreadable, err)
+	}
+	return IntentSnapshot{Desired: desired, Hold: hold, HoldArmed: armed}, nil
 }
 
 // ClearMaintenanceHold 撤销挂起。文件本来就不在不算失败(幂等)——它跑在

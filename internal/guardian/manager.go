@@ -56,6 +56,12 @@ var errMutationBusy = errors.New("guardian is busy with another operation")
 type DesiredStore interface {
 	LoadDesired() (DesiredState, error)
 	SaveDesired(DesiredState) error
+	// LoadIntentSnapshot 一次读出 desired 与挂起。**加进接口而不是做成可选接口**:
+	// 可选接口在没实现时会安静地退化成「没有挂起」,而那正是本期要消灭的谎言的
+	// 形状;放进接口则由编译器点名每一个实现。
+	LoadIntentSnapshot(time.Time) (IntentSnapshot, error)
+	// ClearMaintenanceHold 由用户显式的 up/down 调用(设计取舍四)。
+	ClearMaintenanceHold() error
 }
 
 type CoreRunner interface {
@@ -588,6 +594,16 @@ func (m *Manager) forgetUpgradeIntent() {
 	}
 }
 
+// clearMaintenanceHold 撤销挂起。**只记日志,绝不让调用方失败**:它跑在
+// up/down 这两条路上,而停止不许依赖先成功做成别的事。
+//
+// 调用方(用户显式的 up/down)由 Task 4 接上;此刻还没有任何东西武装挂起。
+func (m *Manager) clearMaintenanceHold() {
+	if err := m.store.ClearMaintenanceHold(); err != nil {
+		log.Printf("guardian_maintenance_hold_clear_failed err=%v", err)
+	}
+}
+
 func (m *Manager) Down(ctx context.Context) (err error) {
 	m.beginPathRecoveryTransition(pathRecoveryTransitionResolveOff)
 	defer m.endPathRecoveryTransition()
@@ -804,11 +820,35 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 		m.recoveryBlocked = true
 		return err
 	}
-	desired, err := m.store.LoadDesired()
+	intent, err := m.store.LoadIntentSnapshot(time.Now())
 	if err != nil {
 		m.needsAttention(DesiredOn, "desired_state_read_failed")
-		m.recoveryBlocked = true
+		// **只有 desired 那一半读不出来才堵死后续 mutation。** 挂起读不出来时
+		// 一样 fail-closed(下面一句 return,不起 Core),但 recoveryBlocked 保持
+		// false:一张坏挂起(坏 schema、坏 reason、时钟跳变造出的远期过期)在
+		// LoadMaintenanceHold 眼里就是一次读失败,而清掉它的唯一办法是一条显式的
+		// up/down —— recoveryBlocked 为真会让 Up 与 Down 双双第一句就返回
+		// errRecoveryIncomplete,把那条恢复路径自己掐断(2026-08-04 那次 71 分钟
+		// 事故的机制)。
+		m.recoveryBlocked = !errors.Is(err, ErrMaintenanceHoldUnreadable)
 		return err
+	}
+	desired := intent.Desired
+	// 维护挂起:此刻不该有保护,而这不是一次失败的恢复。
+	//
+	// **每一次升级都会走到这里** —— restartGuardianForUpgrade 把 daemon 停掉再拉
+	// 起来,新 Guardian 起手就跑启动恢复;desired 保持 on 之后,不认挂起就等于在
+	// 二进制刚换完、CLI 还没走到「恢复保护」那一步时自己先把 Core 起来了。
+	//
+	// recoveryBlocked **必须置 false**:它为真时 Manager.Down 第一句就返回
+	// errRecoveryIncomplete —— 2026-08-04 那次 71 分钟事故的机制。一次挂起绝不
+	// 允许把关闭的路堵死。
+	if intent.HoldArmed {
+		m.setStatus(Status{SchemaVersion: 1, Desired: desired, Phase: PhaseIdle, Protection: ProtectionOff})
+		m.recoveryBlocked = false
+		log.Printf("guardian_startup_recovery_held reason=%s expires_at=%s",
+			intent.Hold.Reason, intent.Hold.ExpiresAt.Format(time.RFC3339))
+		return nil
 	}
 	if desired == DesiredOff {
 		if restoreErr := m.restoreDNS(ctx); restoreErr != nil {
@@ -1064,15 +1104,29 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
 		return
 	}
-	desired, err := m.store.LoadDesired()
+	intent, err := m.store.LoadIntentSnapshot(time.Now())
 	if err != nil {
+		// 「问不出来」不等于「没有挂起」:两半都读不出来时一律 fail-closed —— 装屏障、
+		// 不重启。屏障在维护窗口里是有害的(见下),但这条分支恰恰是不知道自己在不在
+		// 维护窗口里,而漏掉屏障的代价是真实 IP 泄漏。
 		if !m.barrierProven() {
 			_ = m.installBarrierForRecovery(operationCtx, m.runtime)
 		}
 		m.needsAttention(DesiredOn, "desired_state_read_failed")
 		return
 	}
-	if desired != DesiredOn {
+	// 维护挂起武装着 ⇒ 这次退出是**别人要求的**,不是崩溃。
+	//
+	// 既不装屏障也不重启:升级正在换二进制,而屏障是覆盖整个公网的 /2 reject
+	// 路由 —— 在一台正要去装文件的机器上装它,等于把修复通道自己掐断。
+	// desired 此刻仍然写着 on(这正是本期的全部意义),所以不看挂起就一定会重启。
+	if intent.HoldArmed {
+		log.Printf("guardian_core_exit_under_hold reason=%s expires_at=%s",
+			intent.Hold.Reason, intent.Hold.ExpiresAt.Format(time.RFC3339))
+		m.current = Process{}
+		return
+	}
+	if intent.Desired != DesiredOn {
 		m.current = Process{}
 		return
 	}
