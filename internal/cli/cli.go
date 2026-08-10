@@ -4529,9 +4529,27 @@ func writeClientMaintenanceHold(b *strings.Builder, report clientStatusReport) {
 	if hold == nil {
 		return
 	}
-	fmt.Fprintf(b, "%s维护挂起(%s),%s —— 保护此刻被有意压制,desired 仍是 %s\n",
+	fmt.Fprintf(b, "%s维护挂起(%s),%s —— 保护此刻被有意压制%s\n",
 		maintenanceHoldStatusPrefix, maintenanceHoldReasonLabel(hold.Reason),
-		maintenanceHoldRemaining(time.Until(hold.ExpiresAt)), report.Desired)
+		maintenanceHoldRemaining(time.Until(hold.ExpiresAt)), maintenanceHoldIntentNote(report.Desired))
+}
+
+// maintenanceHoldIntentNote 说明挂起结束之后会发生什么,而那取决于 desired。
+//
+// desired=on 是常态:挂起一过期,机器就回到「用户要保护」那条线上。
+//
+// **desired=off 配一张挂起不是矛盾,是过渡升级的样子**:新 CLI 在停机之前武装了
+// 挂起,而服务那次停机的**旧** Guardian 不认识挂起、无条件写下了 off
+// (restoreIntentAfterHoldUnawareStop 随即把它写回 on,写不成时就停在这里)。
+// 这时印一句「desired 仍是 off」等于把最要紧的那半句咽回去:**过期不会恢复
+// 保护**(设计取舍五:过期买到的是「不再压制」,不是「自动修好」),而盘上写着
+// off,于是下一次开机也不会。用户需要知道的是那条出路。
+func maintenanceHoldIntentNote(desired string) string {
+	if desired == string(guardian.DesiredOn) {
+		return ",desired 仍是 on"
+	}
+	return ";但盘上的 desired 是 " + desired +
+		" —— 挂起过期后保护不会自动恢复(下次开机也不会),需要保护请执行 sudo bx up"
 }
 
 // maintenanceHoldReasonLabel 把稳定标识符翻成一句人话,**并保留标识符本身**。

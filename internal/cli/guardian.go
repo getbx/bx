@@ -103,10 +103,43 @@ const (
 	// 挂起与旧欠条。
 	downPurposeUser downPurpose = iota
 	// downPurposeUpgrade:升级把停保护当作自己的一步。**不写 desired=off**
-	// ——用户想要保护,只是此刻不能有;那件事由维护挂起表达。欠条也必须留着,
-	// 否则装文件一失败,重试就再也不知道该把保护起回来。
+	// ——用户想要保护,只是此刻不能有;那件事由维护挂起表达。
 	downPurposeUpgrade
+	// downPurposeUpgradeUnprotected:升级,但这台机器此刻**本来就不要保护**
+	// (desired=off,用户自己关的)。
+	//
+	// **不武装挂起**,而这不是省事:武装出来的那张挂起没有任何东西会去清它 ——
+	// upgradeSteps(running, desiredOn=false) 里根本没有「恢复保护」这一步,而销
+	// 挂起只发生在用户显式的 up/down/migrate 上。于是接下来 15 分钟里菜单表头写着
+	// Paused、bx status 写着「保护此刻被有意压制」,而机器关着只是因为用户想关着;
+	// 顺带还会让启动恢复走 HoldArmed 那一支、跳过 desired==off 那支的 restoreDNS,
+	// 陈旧的托管 DNS 因此留在系统里。
+	//
+	// 不武装也是**安全**的:挂起在这条路上要拦的是「活着的 Guardian 把 Core 重启
+	// 回来」,而 handleUnexpectedExit 读到 desired != on 本来就直接返回。
+	downPurposeUpgradeUnprotected
 )
+
+// isUpgrade 报告这次停机是不是升级自己的一步(两种升级来由都算)。
+//
+// 判据写成函数而不是散着比较字面量:downPurposeUser 是 iota == 0,「不是升级」
+// 这件事一旦写成 `!= downPurposeUpgrade`,新加的第二种升级来由就会被静静地当成
+// 用户显式的关闭 —— 写 desired=off、销挂起,正是这一期反复抓到的那种漏。
+func (p downPurpose) isUpgrade() bool {
+	return p == downPurposeUpgrade || p == downPurposeUpgradeUnprotected
+}
+
+// upgradeStopPurpose 把「这台机器此刻要不要保护」翻成停机来由。
+//
+// 住在这里(而不是 appinstall_darwin.go 的闭包里)只为一件事:那个文件是
+// darwin-tagged,里面的判断在别的平台上编译不到,也就写不出测试 —— 这一期反复
+// 抓到的「守卫只能读源码文本」正是这么来的。
+func upgradeStopPurpose(protectionWanted bool) downPurpose {
+	if protectionWanted {
+		return downPurposeUpgrade
+	}
+	return downPurposeUpgradeUnprotected
+}
 
 type macOSLifecycleDeps struct {
 	guardianInstalled func() bool
@@ -634,7 +667,7 @@ func legacyCoreMayBeRunning(ctx context.Context, deps macOSLifecycleDeps) (mayRu
 // configPath 因此在这里不再被用到;参数保留,是为了让调用方的形状不随这次收窄而变。
 func cleanGuardianDown(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (guardian.Status, error) {
 	_ = configPath // 见上:停止路径不再读 config,参数只为保持调用方形状不变
-	if purpose == downPurposeUpgrade {
+	if purpose.isUpgrade() {
 		// 干净路径也必须带上这个标记,守的是**两件**事:
 		//   - 这一跳不许把 desired 改写成 off。用户想要保护,变的只是「此刻
 		//     不能有」,而那件事由维护挂起表达(recordStopIntent 刚武装好)。
@@ -675,24 +708,33 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	//    覆盖),而挂起没有第二种表达方式:第 1 步与第 6 步写的是同一个文件,
 	//    第 1 步失败几乎必然意味着第 6 步也会失败,报绿等于让升级带着一个
 	//    「没人拦着」的窗口继续往下走。fail-closed 的方向。
+	//
+	//    **升级一台本来就不要保护的机器时两句都不写**(见
+	//    downPurposeUpgradeUnprotected):盘上已经是 off,而 desired 只由用户改。
+	//    代价是一个已知的窄窗口 —— 用户恰好在这几秒里点了 Turn On,那个 on 没有
+	//    挂起拦着,一个还活着的 Guardian 可能在换二进制期间把 Core 起回来。选它
+	//    是因为另一头更糟:替用户写一句他没说过的 off,正是这一期要消灭的谎。
 	desiredErr := stop.err
-	if stop.armsHold() {
+	switch {
+	case stop.armsHold():
 		if err := armMaintenanceHold(deps, guardian.HoldReasonUpgrade); err != nil {
 			failures = append(failures, fmt.Errorf("刷新维护挂起: %w", err))
 		}
-	} else if err := persistDesiredOff(deps); err != nil {
-		if desiredErr == nil {
-			desiredErr = err
+	case stop.recordsDesiredOff():
+		if err := persistDesiredOff(deps); err != nil {
+			if desiredErr == nil {
+				desiredErr = err
+			}
+		} else {
+			desiredErr = nil
 		}
-	} else {
-		desiredErr = nil
 	}
 	// 用户明确要关 ⇒ 销挂起。**这一步对拆除的成败无条件**(见 Manager.Down 的
 	// 同款注释):强制拆除即使报告失败,六步破坏性动作也已经做完了,而躲在
 	// `if err == nil` 后面的销账正是欠条今天留下陈旧记录的原因。清不掉只是一条
 	// 警告 —— ClearMaintenanceHold 只有 ENOENT 幂等,EACCES/EIO 照样回错误,
 	// 而「停止」永不许因为一个记账文件而中止剩下的步骤。
-	if stop.purpose != downPurposeUpgrade {
+	if !stop.purpose.isUpgrade() {
 		if err := clearMaintenanceHold(deps); err != nil {
 			failures = append(failures, fmt.Errorf("清除维护挂起: %w", err))
 		}
@@ -737,14 +779,17 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	//    authoritative: with Guardian booted out nothing can overwrite it,
 	//    so a concurrent Up that raced step 1 cannot leave On behind.
 	//    Either write succeeding is enough — the goal is the intent on disk.
-	if stop.armsHold() {
+	switch {
+	case stop.armsHold():
 		if err := armMaintenanceHold(deps, guardian.HoldReasonUpgrade); err != nil {
 			failures = append(failures, fmt.Errorf("刷新维护挂起: %w", err))
 		}
-	} else if err := persistDesiredOff(deps); err == nil {
-		desiredErr = nil
-	} else if desiredErr != nil {
-		desiredErr = errors.Join(desiredErr, err)
+	case stop.recordsDesiredOff():
+		if err := persistDesiredOff(deps); err == nil {
+			desiredErr = nil
+		} else if desiredErr != nil {
+			desiredErr = errors.Join(desiredErr, err)
+		}
 	}
 	if desiredErr != nil {
 		failures = append(failures, fmt.Errorf("记录关闭意图(下次开机可能仍会自动启动保护): %w", desiredErr))
@@ -810,6 +855,17 @@ type stopIntent struct {
 // handleUnexpectedExit 各读一句。退回是一次性的决定,不是可以反悔的尝试。
 func (s stopIntent) armsHold() bool {
 	return s.purpose == downPurposeUpgrade && !s.fellBack
+}
+
+// recordsDesiredOff 报告这次停机该不该在盘上写「用户不想要保护」。
+//
+// 两种情形,别扩大:用户明确要关(downPurposeUser),以及升级的挂起写不成之后
+// 那次退回(fellBack)。**升级一台本来就不要保护的机器不在其列** ——
+// downPurposeUpgradeUnprotected 的前提就是盘上已经是 off,再写一次只有坏处:
+// 用户若恰好在这几秒里点了 Turn On,这一笔会把他刚说的话抹掉,而 desired
+// 只由用户改。
+func (s stopIntent) recordsDesiredOff() bool {
+	return s.purpose == downPurposeUser || s.fellBack
 }
 
 // recordStopIntent 在任何破坏性动作之前把这次停机的来由写到盘上。

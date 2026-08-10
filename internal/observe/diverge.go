@@ -94,8 +94,11 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 
 	// 挂起武装期间不谈残留:升级正在进行,屏障与 DNS 接管此刻本来就还在。
 	//
-	// **可达性**(别把它当死代码删掉):一台用户已经关掉保护(desired=off)的机器
-	// 上跑升级,recordStopIntent 照样武装挂起,于是 desired=off 与挂起并存。
+	// **可达性**(别把它当死代码删掉):`desired=off` 与一张武装着的挂起并存,
+	// 是**过渡升级**的样子 —— 新 CLI 在停机之前武装挂起,而服务那次停机的旧
+	// Guardian 不认识挂起、无条件写下 off(它随后会被写回 on,写不成就停在这里)。
+	// 升级一台本来就不要保护的机器**不再**产生这个组合(那种停机根本不武装挂起,
+	// 见 cli 的 downPurposeUpgradeUnprotected)。
 	// 代价是那 15 分钟里真实的残留会被压住 —— 已知取舍,挂起过期即恢复报告。
 	if intent.Desired == "off" && !held {
 		if observed.BarrierPresent == True {

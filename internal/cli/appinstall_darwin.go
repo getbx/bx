@@ -47,7 +47,7 @@ func appInstallAction(c *urfavecli.Context) error {
 		guardianRunning: func() (bool, error) { return install.GuardianLoaded(c.Context) },
 		loadDesiredOn:   func() bool { return upgradeDesiredOn(c.Context) },
 		confirm:         confirmOnTTY,
-		stopProtection: func() (macOSDownResult, error) {
+		stopProtection: func(protectionWanted bool) (macOSDownResult, error) {
 			// downPurposeUpgrade:这一跳把「停下来换二进制」记成一次**维护
 			// 挂起**,而不是把 desired 改写成 off —— 用户想要保护,只是此刻
 			// 不能有,而磁盘上那句「用户不想要保护」会被任何忠实的调谐器照办。
@@ -55,7 +55,11 @@ func appInstallAction(c *urfavecli.Context) error {
 			// 这一跳当作「用户不要保护了」,立刻销挂起并写 desired=off,于是装
 			// 文件一失败,重跑读到 off,「成功」地把机器永久留在无保护状态
 			// (2026-08-08 复审 C1)。
-			return macOSDownLifecycleFor(c.Context, downPurposeUpgrade, configPath, defaultMacOSLifecycleDeps())
+			//
+			// **保护本来就关着的机器不武装挂起**:没有「恢复保护」那一步会去清
+			// 它,那 15 分钟里菜单与 bx status 会把一台用户主动关掉的机器说成
+			// 「维护中」(见 downPurposeUpgradeUnprotected)。
+			return macOSDownLifecycleFor(c.Context, upgradeStopPurpose(protectionWanted), configPath, defaultMacOSLifecycleDeps())
 		},
 		// 只有旧 Guardian 服务过这次停机时才会被调到(见
 		// restoreIntentAfterHoldUnawareStop):它写的是**用户的意图**,与升级
