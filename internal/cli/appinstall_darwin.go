@@ -135,8 +135,11 @@ func configured(configPath string) bool {
 // 保护起回来。
 //
 // 两个来源合成(resolveUpgradeDesiredOn):
-//   - 上一次未完成升级留下的欠条(guardian.Store 的 UpgradeIntent)。**没有它就修不好重试**:
-//     第一步会把 desired 写成 off,重试时读 store 只会读到 off。
+//   - 上一次未完成升级留下的欠条(guardian.Store 的 UpgradeIntent)。
+//     **它今天已经不是唯一的依据了**:UpgradeStopProtection 改为武装维护挂起、
+//     不再改写 desired(见 macOSDownLifecycleFor),所以正常情况下重试时读 store
+//     读到的就是 on。欠条仍然管**退回路径** —— 挂起写不成时退回写 desired=off
+//     (设计取舍三),那一格里 store 只会读到 off。Task 6 会连同欠条一起清理。
 //   - Guardian 自己的 desired store(/var/lib/bx/guardian-state.json):那正是
 //     Guardian 开机时据以决定要不要起保护的状态,也是 bx down 写 off 的地方。
 //     文件不存在按 off(Store.LoadDesired 的语义),即从未装过/从未开过。
@@ -145,8 +148,8 @@ func configured(configPath string) bool {
 // 一个正在 Protected 的实例,其意图必然是 on。都问不出来就当 off —— 宁可让用户
 // 自己 sudo bx up,也不要在不知情的情况下替他把保护打开。
 //
-// 调用点必须早于第一步:UpgradeStopProtection 无论走干净路径还是强制拆除,都会
-// 把 desired 记成 off。
+// 调用点仍必须早于第一步:退回路径上 UpgradeStopProtection 照旧会把 desired
+// 记成 off,而在这里读一次就与它先后无关了。
 func upgradeDesiredOn(ctx context.Context) bool {
 	pending, present := loadUpgradeIntent()
 	return resolveUpgradeDesiredOn(guardianDesiredOn(ctx), pending, present)

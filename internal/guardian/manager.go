@@ -427,14 +427,19 @@ func (m *Manager) Up(ctx context.Context) error {
 	// 用户显式的动作永远压过挂起(设计取舍四)。放在这里而不是调用方:菜单的
 	// Turn On 走 socket,一行 CLI 都不经过。
 	//
-	// **放在 Up 而不是 upLocked**,理由有两条,方向相反而都必须成立:
-	//   - upLocked 有一条「已经 Protected 就直接返回」的早出口,而那同样是一次
-	//     用户显式的 on;挂在写 desired 那一段之后就漏了它,留下「保护开着而挂起
-	//     还武装着」——此后 Core 一旦退出,handleUnexpectedExit 会 fail-closed
-	//     不把它拉回来,保护在用户以为开着的时候悄悄消失。
-	//   - upLocked 还被**启动恢复**复用(recoverLocked → upLocked),而每一次升级
-	//     都会重启 Guardian、跑一遍启动恢复。销挂起若住在 upLocked 里,挂起就会
-	//     在它最该生效的那一刻被自己人销掉。
+	// **放在 Up 而不是 upLocked**,一条是实打实的、一条是纵深防御,别把后者读成前者:
+	//   - (实打实,有测试)upLocked 有一条「已经 Protected 就直接返回」的早出口,
+	//     而那同样是一次用户显式的 on;挂在写 desired 那一段之后就漏了它,留下
+	//     「保护开着而挂起还武装着」——此后 Core 一旦退出,handleUnexpectedExit
+	//     会 fail-closed 不把它拉回来,保护在用户以为开着的时候悄悄消失。
+	//     TestUpClearsMaintenanceHoldWhenAlreadyProtected 钉住这一条。
+	//   - (纵深防御,**今天并不成立**)upLocked 还被启动恢复复用
+	//     (recoverLocked:943),而每次升级都会重启 Guardian 跑一遍启动恢复。
+	//     但挂起武装时 recoverLocked 在 `intent.HoldArmed` 那一支就 return 了
+	//     (:917),根本走不到 upLocked —— 所以「销挂起住在 upLocked 里会在挂起
+	//     最该生效的一刻把它销掉」目前是个假设,不是现存 bug。留着这条理由是因为
+	//     那道 return 属于另一段逻辑,它挪一步这里就成立;别把它当成已被证实的
+	//     事故。
 	m.clearMaintenanceHold()
 	return m.upLocked(ctx)
 }

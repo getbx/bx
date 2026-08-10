@@ -1106,6 +1106,25 @@ func TestDefaultMacOSLifecycleDepsWiresEveryForcedTeardownStep(t *testing.T) {
 	}
 }
 
+// 经**共享 builder** 驱动的升级停机也不许写 desired=off。
+//
+// 这条用例存在的唯一理由是让 testMacOSLifecycleDeps 里那两个挂起钩子成为
+// 「被测到的接线」而不是「看着像接上了」:钩子留空时 recordStopIntent 会安静地
+// 退回写 desired=off,于是任何经这个 builder 跑升级路径的用例都在验退化路径 ——
+// 而这正是 upgrade_guardian_e2e_test.go 踩过一次、当时只在调用点上补掉的那个洞。
+func TestUpgradeDownThroughTheSharedDepsBuilderDoesNotWriteDesiredOff(t *testing.T) {
+	f := newFakeMacOSLifecycleDeps()
+	f.macOSLifecycleDeps.guardianReady = func(context.Context) bool { return false }
+
+	if _, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", f.macOSLifecycleDeps); err != nil {
+		t.Fatalf("强制拆除应当成功: %v", err)
+	}
+	if f.desiredOffCount != 0 {
+		t.Fatalf("升级停机写了 %d 次 desired=off —— 共享 builder 的挂起钩子没接上,退回到了会撒谎的那条路。trace=%q",
+			f.desiredOffCount, f.trace())
+	}
+}
+
 func TestMenuLaunchdCommandsUseOnlyCanonicalAndLegacyLabels(t *testing.T) {
 	plist := "/Users/alice/Library/LaunchAgents/com.getbx.bx.menu.plist"
 	commands := menuLaunchdCommands(501, false, true, true, plist)
@@ -1391,6 +1410,19 @@ func testMacOSLifecycleDeps(events *[]string, client guardianLifecycleClient) ma
 			return nil
 		},
 		pollInterval: time.Microsecond,
+		// **挂起的两个钩子必须在共享 builder 里就接上,不能留给各个调用点。**
+		//
+		// 留空的后果是静默的、而且方向恰好相反:armMaintenanceHold 为 nil 时
+		// recordStopIntent 会**退回写 desired=off**,于是任何一条经这个 builder
+		// 驱动 downPurposeUpgrade 的用例都在验那条退化路径,还照样绿 ——
+		// upgrade_guardian_e2e_test.go 就踩过一次,当时是在调用点上补的。
+		//
+		// 这里的实现刻意**不记事件**:forcedMacOSTeardown 的六步序列被
+		// TestMacOSDownForcedTeardownStopsCoreClearsBarrierAndPersistsOff 逐字
+		// 钉住,多一条事件会把那条无关的测试弄红。要观察挂起的用例自己覆写钩子
+		// (hold_teardown_test.go 的 teardownDeps、newUpgradeE2EEnv 的真 Store)。
+		armMaintenanceHold:   func(string) error { return nil },
+		clearMaintenanceHold: func() error { return nil },
 	}
 }
 

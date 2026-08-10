@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/getbx/bx/internal/guardian"
@@ -40,6 +41,261 @@ func teardownDeps(calls *teardownCalls, armErr, stopErr, dnsErr error) macOSLife
 		forceTeardown:        func(context.Context) error { calls.forceTeardown++; calls.record("guardian.bootout"); return nil },
 		clearBarrierRoutes:   func(context.Context) error { calls.barrier++; calls.record("barrier.clear"); return nil },
 		restoreSystemDNS:     func(context.Context) error { calls.dns++; calls.record("dns.restore"); return dnsErr },
+	}
+}
+
+// holdStubClient 是一个只够 macOSDownLifecycleFor 走完干净路径的 Guardian 客户端。
+// 它刻意住在本文件(无 build tag):recordingGuardianClient 是 darwin-only 的,
+// 而这一组用例验的是与平台无关的编排。
+type holdStubClient struct {
+	downForUpgradeCalls int
+	downCalls           int
+	downErr             error
+}
+
+func (c *holdStubClient) Status(context.Context) (guardian.Status, error) {
+	return guardian.Status{}, nil
+}
+
+func (c *holdStubClient) Up(context.Context) (guardian.Status, error) {
+	return guardian.Status{}, errors.New("holdStubClient 不支持 Up")
+}
+
+func (c *holdStubClient) Down(context.Context) (guardian.Status, error) {
+	c.downCalls++
+	return guardian.Status{Protection: guardian.ProtectionOff}, c.downErr
+}
+
+func (c *holdStubClient) DownForUpgrade(context.Context) (guardian.Status, error) {
+	c.downForUpgradeCalls++
+	return guardian.Status{Protection: guardian.ProtectionOff}, c.downErr
+}
+
+func (c *holdStubClient) Migrate(context.Context, guardian.MigrationRequest) (guardian.Status, error) {
+	return guardian.Status{}, errors.New("holdStubClient 不支持 Migrate")
+}
+
+// **升级停机的三个入口都必须带着 purpose 到达。**
+//
+// 这一条是行为覆盖,不是「读代码看得出来」:`stop` 由 macOSDownLifecycleFor 在分支
+// **之前**算出、再传给三处 forcedMacOSTeardown,而那个论证本身不构成测试。而且
+// 零值恰好是错的答案 —— downPurposeUser 是 iota == 0,一个零 stopIntent 静悄悄地
+// 意思是「用户要关 ⇒ 写 desired=off」。
+//
+// 「legacy 探测失败」这一格尤其要紧:legacyCoreMayBeRunning 在**仅仅探测失败**时
+// 也返回 true(guardian.go 的三态纪律),而设计的风险一节点名的正是这条分支。
+func TestUpgradeDownRecordsTheHoldOnEveryForcedEntrance(t *testing.T) {
+	probeFailure := errors.New("launchctl print 卡住")
+	for _, tc := range []struct {
+		name    string
+		arrange func(*macOSLifecycleDeps, *holdStubClient)
+	}{
+		{
+			name: "Guardian 不可达",
+			arrange: func(deps *macOSLifecycleDeps, _ *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return false }
+			},
+		},
+		{
+			name: "legacy Core 可能在跑",
+			arrange: func(deps *macOSLifecycleDeps, _ *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return true }
+				deps.legacyLoaded = func(context.Context) (bool, error) { return true, nil }
+			},
+		},
+		{
+			name: "legacy 探测本身失败(仅仅问不出来也会走强制路径)",
+			arrange: func(deps *macOSLifecycleDeps, _ *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return true }
+				deps.legacyLoaded = func(context.Context) (bool, error) { return false, probeFailure }
+			},
+		},
+		{
+			name: "干净事务失败后回落",
+			arrange: func(deps *macOSLifecycleDeps, client *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return true }
+				deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+				client.downErr = errors.New("guardian recovery incomplete")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := &teardownCalls{}
+			client := &holdStubClient{}
+			deps := teardownDeps(calls, nil, nil, nil)
+			deps.client = client
+			tc.arrange(&deps, client)
+
+			result, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", deps)
+			if err != nil {
+				t.Fatalf("这一格本该走完强制拆除: %v", err)
+			}
+			if !result.Forced {
+				t.Fatalf("测试前提不成立:这一格应当走强制路径,实际 %+v", result)
+			}
+			if len(calls.armed) == 0 {
+				t.Fatalf("这个入口没有武装挂起 —— purpose 没到达它: %v", calls.order)
+			}
+			if calls.desiredOff != 0 {
+				t.Fatalf("这个入口把升级停机写成了 desired=off(零 stopIntent 的默认答案): %v", calls.order)
+			}
+			if calls.cleared != 0 {
+				t.Fatalf("这个入口把刚武装的挂起销掉了: %v", calls.order)
+			}
+		})
+	}
+}
+
+// 对照组:同样三个入口,**用户**来由必须写 desired=off 并销挂起。
+// 少了它,一个「无论 purpose 一律武装挂起」的实现在上面那组里照样全绿。
+func TestUserDownRecordsDesiredOffOnEveryForcedEntrance(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		arrange func(*macOSLifecycleDeps, *holdStubClient)
+	}{
+		{
+			name: "Guardian 不可达",
+			arrange: func(deps *macOSLifecycleDeps, _ *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return false }
+			},
+		},
+		{
+			name: "legacy Core 可能在跑",
+			arrange: func(deps *macOSLifecycleDeps, _ *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return true }
+				deps.legacyLoaded = func(context.Context) (bool, error) { return true, nil }
+			},
+		},
+		{
+			name: "干净事务失败后回落",
+			arrange: func(deps *macOSLifecycleDeps, client *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return true }
+				deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+				client.downErr = errors.New("guardian recovery incomplete")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := &teardownCalls{}
+			client := &holdStubClient{}
+			deps := teardownDeps(calls, nil, nil, nil)
+			deps.client = client
+			tc.arrange(&deps, client)
+
+			if _, err := macOSDownLifecycleFor(context.Background(), downPurposeUser, "/etc/bx/config.yaml", deps); err != nil {
+				t.Fatalf("这一格本该走完强制拆除: %v", err)
+			}
+			if calls.desiredOff == 0 {
+				t.Fatalf("用户明确要关却没写 desired=off: %v", calls.order)
+			}
+			if len(calls.armed) != 0 {
+				t.Fatalf("用户明确要关却武装了挂起: %v", calls.order)
+			}
+			if calls.cleared == 0 {
+				t.Fatalf("用户明确要关却没销挂起: %v", calls.order)
+			}
+		})
+	}
+}
+
+// **干净路径上「两条都没写成」不许报成功。**
+//
+// 这是那个病态中间态唯一还够得着的入口:干净路径不调 forcedMacOSTeardown,
+// 于是 stop.err 在这里没有第二个读者。盘上 desired=on、没有挂起,而升级的下一步
+// (restartGuardianForUpgrade)会拉起一个读到 desired=on 就自己起 Core 的
+// Guardian —— 二进制正换到一半。设计取舍三说这个状态必须不存在。
+func TestCleanUpgradeDownDoesNotReportSuccessWhenNeitherIntentIsRecorded(t *testing.T) {
+	calls := &teardownCalls{}
+	client := &holdStubClient{}
+	deps := teardownDeps(calls, errors.New("read-only file system"), nil, nil)
+	deps.client = client
+	deps.guardianReady = func(context.Context) bool { return true }
+	deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+	deps.markDesiredOff = func() error {
+		calls.desiredOff++
+		calls.record("desired.off")
+		return errors.New("read-only file system")
+	}
+
+	result, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", deps)
+	if client.downForUpgradeCalls != 1 {
+		t.Fatalf("测试前提不成立:这一格必须走干净路径(DownForUpgrade 调用 %d 次,forced=%v)", client.downForUpgradeCalls, result.Forced)
+	}
+	if result.Forced {
+		t.Fatalf("测试前提不成立:不该回落到强制路径,%+v", result)
+	}
+	if err == nil {
+		t.Fatal("挂起与 desired=off 都没写成,却报告成功 —— 那正是设计取舍三要消灭的中间态")
+	}
+	if result.IntentUnrecorded == nil {
+		t.Fatal("结果里必须留下痕迹:忽略 error 的调用方否则会平静地渲染成「已停止」")
+	}
+	// 「失败必须留下可操作线索」:两次写入都要点名,只说其中一个会把人送去查错文件。
+	for _, want := range []string{"维护挂起", "desired=off"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("错误里必须点名 %q:%v", want, err)
+		}
+	}
+	stdout, stderr := downReportLines(result)
+	if !slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "未能记录停机意图") }) {
+		t.Fatalf("忽略 error 的调用方也必须看到这一行。stderr=%v stdout=%v", stderr, stdout)
+	}
+}
+
+// **退回那一次写入必须发生在 recordStopIntent 里,而不是靠拆除的第 1 步兜住。**
+//
+// 干净路径是唯一能把这两者分开的地方:它根本不调 forcedMacOSTeardown,所以
+// recordStopIntent 是这条路上**唯一**的写入者。把退回从 recordStopIntent 里拿掉
+// (只留 fellBack: true),强制路径那几条用例照样绿 —— 第 1 步会替它写 ——
+// 而这里会看到零次写入,也就是那个「既没挂起也没 desired=off」的中间态。
+func TestCleanUpgradeDownFallsBackToDesiredOffWhenTheHoldWriteFails(t *testing.T) {
+	calls := &teardownCalls{}
+	client := &holdStubClient{}
+	deps := teardownDeps(calls, errors.New("read-only file system"), nil, nil)
+	deps.client = client
+	deps.guardianReady = func(context.Context) bool { return true }
+	deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+
+	result, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", deps)
+	if client.downForUpgradeCalls != 1 || result.Forced {
+		t.Fatalf("测试前提不成立:这一格必须走干净路径(DownForUpgrade %d 次,forced=%v)", client.downForUpgradeCalls, result.Forced)
+	}
+	if err != nil {
+		t.Fatalf("退回成功不是失败:%v", err)
+	}
+	if calls.forceTeardown != 0 {
+		t.Fatalf("测试前提不成立:干净路径不该跑强制拆除,%v", calls.order)
+	}
+	if want := []string{"hold.arm", "desired.off"}; !slices.Equal(calls.order, want) {
+		t.Fatalf("干净路径上退回那次写入没发生在 recordStopIntent 里:%v, want %v", calls.order, want)
+	}
+	if result.IntentUnrecorded != nil {
+		t.Fatalf("退回写成了就不该留失败痕迹: %v", result.IntentUnrecorded)
+	}
+}
+
+// 干净路径**写成了**意图时不许无中生有地报错 —— 反极性的对照组。
+func TestCleanUpgradeDownStaysSilentWhenTheHoldIsRecorded(t *testing.T) {
+	calls := &teardownCalls{}
+	client := &holdStubClient{}
+	deps := teardownDeps(calls, nil, nil, nil)
+	deps.client = client
+	deps.guardianReady = func(context.Context) bool { return true }
+	deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+
+	result, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", deps)
+	if err != nil {
+		t.Fatalf("挂起写成了就不该报错: %v", err)
+	}
+	if result.IntentUnrecorded != nil {
+		t.Fatalf("挂起写成了就不该留失败痕迹: %v", result.IntentUnrecorded)
+	}
+	if len(calls.armed) != 1 || calls.desiredOff != 0 {
+		t.Fatalf("干净路径上意图应当只由 recordStopIntent 武装一次: %v", calls.order)
+	}
+	_, stderr := downReportLines(result)
+	if slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "未能记录停机意图") }) {
+		t.Fatalf("不该无中生有地警告: %v", stderr)
 	}
 }
 

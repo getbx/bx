@@ -16,6 +16,18 @@ import (
 // the network was restored on the forced path, because six best-effort
 // steps cannot promise that.
 func downReportLines(result macOSDownResult) (stdout []string, stderr []string) {
+	// 「两条意图都没写成」必须自己占一行,而且在最前面。
+	//
+	// 它与下面每一条都正交:保护可能干净地停了、Guardian 可能一切正常,而盘上
+	// 仍然既没有维护挂起也没有 desired=off。macOSDownLifecycleFor 同时返回一个
+	// error,但**这一行是给忽略 error 的调用方留的** —— 这个文件顶上那条既有的
+	// 教训(零值 result 会平静地渲染成「✅ bx 已停止」)说的正是这种调用方。
+	if result.IntentUnrecorded != nil {
+		stderr = append(stderr, fmt.Sprintf(
+			"⚠️  未能记录停机意图(维护挂起与 desired=off 都没写成): %v;下次开机可能仍会自动启动保护。",
+			result.IntentUnrecorded,
+		))
+	}
 	if result.Forced {
 		stderr = append(stderr, "⚠️  "+forcedTeardownReason(result)+"。")
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
