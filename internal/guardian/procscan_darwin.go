@@ -98,7 +98,7 @@ func looksLikeCore(executable string, argv []string, uid int) bool {
 //
 // **僵尸被显式排除**:见 isZombieProcess —— 崩溃重启路径靠它才不会被刚死的
 // 旧 Core 卡住。
-func scanRunningCores() ([]Process, error) {
+func scanRunningCores(reason string) ([]Process, error) {
 	if os.Geteuid() != 0 {
 		return nil, errors.New("scan for running Core processes requires root privileges (non-root cannot see a root-owned Core)")
 	}
@@ -133,6 +133,11 @@ func scanRunningCores() ([]Process, error) {
 	}
 	// 普查数据只有这里拿得到,而放行一次 fork 的那条日志(guardian_orphan_launch_marker /
 	// guardian_no_core_record)最需要它来判断「这个结论是查了多少个进程得出的」。
-	log.Printf("guardian_core_scan enumerated=%d readable=%d cores=%d", len(procs), readable, len(cores))
+	//
+	// **reason 区分是谁在扫**,因为调用频次差了两个数量级:准入路径一天几次、
+	// 由用户动作触发;而只观察的调谐循环每轮都扫一次(稳态约 144 次/天,永久)。
+	// 不区分的话,「我放行了一个 Core,因为我认为没有别的 Core 在跑」这条审计线索
+	// ——它唯一的记录就是紧邻的这行普查——会被淹在循环的噪声里。
+	log.Printf("guardian_core_scan reason=%s enumerated=%d readable=%d cores=%d", reason, len(procs), readable, len(cores))
 	return decideCoreScan(len(procs), readable, cores)
 }
