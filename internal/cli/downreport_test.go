@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/guardian"
 )
 
 // 强制路径打印的这几行是用户在最坏时刻(保护关不掉、网络可能不通)看到的唯一指引。
@@ -237,5 +239,39 @@ func TestDownResultOnErrorPathsNeverRendersAsCleanSuccess(t *testing.T) {
 				t.Fatalf("出错路径的结果绝不能渲染成干净成功:\n%s", joined)
 			}
 		})
+	}
+}
+
+// Guardian 现在会在报 off 之前向系统求证;求证不过就发 needs_attention。
+// 而 downReportLines 此前**从不读 result.Status**,于是那份判断在 bx down 这条路上
+// 完全不可见 —— 菜单栏读 protection_state 所以生效了,CLI 没有。
+// 机制建好而最后一寸没接,等于没建。
+func TestDownReportDoesNotClaimStoppedWhenGuardianCouldNotConfirm(t *testing.T) {
+	for _, protection := range []string{
+		guardian.ProtectionNeedsAttention,
+		guardian.ProtectionBlocked,
+	} {
+		t.Run(protection, func(t *testing.T) {
+			stdout, stderr := downReportLines(macOSDownResult{
+				Status: guardian.Status{Protection: protection},
+			})
+			joined := strings.Join(append(append([]string{}, stdout...), stderr...), "\n")
+			if strings.Contains(joined, "✅") {
+				t.Fatalf("Guardian 没能确认关闭时不许打勾:\n%s", joined)
+			}
+			if !strings.Contains(joined, "bx status") {
+				t.Errorf("要给出下一步(看原因):\n%s", joined)
+			}
+		})
+	}
+}
+
+// 反向:Guardian 确认关掉了,照旧打勾 —— 否则这条修复自己变成噪声源。
+func TestDownReportStillConfirmsStopWhenGuardianSaysOff(t *testing.T) {
+	stdout, _ := downReportLines(macOSDownResult{
+		Status: guardian.Status{Protection: guardian.ProtectionOff},
+	})
+	if !strings.Contains(strings.Join(stdout, "\n"), "✅") {
+		t.Fatalf("确认关闭时必须照旧给出肯定答复:\n%s", strings.Join(stdout, "\n"))
 	}
 }
