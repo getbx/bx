@@ -182,6 +182,109 @@ func TestDownForUpgradeKeepsTheUpgradeIntentThatUserDownClears(t *testing.T) {
 	}
 }
 
+// 系统里还有 Core 在跑时,Down 必须**如实说没能关掉**,而不是报 off。
+//
+// 这是本改动的全部理由:Existing() 读的是 Guardian 自己的记账,而 legacy Core、
+// sudo bx run 起的 Core、以及手删过 core-process.json 的机器上,记账里都没有它。
+func TestDownDoesNotClaimOffWhileACoreIsStillRunning(t *testing.T) {
+	// 走完整拆除那条路(desired=on + 记账里有 Core),而不是提前返回那条
+	// —— 提前返回由 TestDownEarlyExitAlsoAsksTheSystem 单独覆盖。
+	env := newProtectedManagerTestEnv(t)
+	env.dns.record = true
+	env.runner.scanResult = []Process{{PID: 4242}}
+
+	if err := env.manager.Down(context.Background()); err != nil {
+		t.Fatalf("扫到 Core 不该让停止失败: %v", err)
+	}
+	status := env.manager.Status()
+	if status.Protection == ProtectionOff {
+		t.Fatal("保护还开着时不许报 off")
+	}
+	if status.LastError != "core_still_running" {
+		t.Errorf("理由要说清, got %q", status.LastError)
+	}
+	// **拆除必须照常做完** —— 「没能确认」不是「什么都没做」。
+	env.assertBarrierRemoved(t)
+	env.assertDNSRestored(t)
+	env.assertDesiredOffPersisted(t)
+}
+
+// 扫描失败不许让停止失败(2026-08-04)。
+func TestDownStillSucceedsWhenTheScanFails(t *testing.T) {
+	env := newProtectedManagerTestEnv(t)
+	env.dns.record = true
+	env.runner.scanErr = errors.New("sysctl 挂了")
+
+	if err := env.manager.Down(context.Background()); err != nil {
+		t.Fatalf("扫描失败绝不能让 Down 失败 —— 那正是 71 分钟事故那条不变量: %v", err)
+	}
+	status := env.manager.Status()
+	if status.Protection == ProtectionOff {
+		t.Error("问不出来时不许声称已关闭")
+	}
+	if status.LastError != "core_scan_failed" {
+		t.Errorf("「问不出来」与「确知还在」是两回事,理由不许塌缩, got %q", status.LastError)
+	}
+	env.assertBarrierRemoved(t)
+	env.assertDNSRestored(t)
+	env.assertDesiredOffPersisted(t)
+}
+
+// 提前返回那条路(desired 已 off 且记账里没 Core)同样是记账,同样要求证。
+func TestDownEarlyExitAlsoAsksTheSystem(t *testing.T) {
+	env := newManagerTestEnv(t)
+	// 提前返回的两个前提:desired 已经是 off、记账里没有 Core。后者是
+	// newManagerTestEnv 的初始状态(从没 Up 过)。
+	if err := env.store.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	env.events.reset()
+	env.runner.scanResult = []Process{{PID: 4242}}
+
+	if err := env.manager.Down(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// 证明这一条走的确实是提前返回:那条路不装屏障,也不停任何 Core。
+	if events := env.events.snapshot(); containsEvent(events, "barrier.install") {
+		t.Fatalf("test setup: 这一条要覆盖提前返回那条路,不该走到装屏障, events=%v", events)
+	}
+	if env.manager.Status().Protection == ProtectionOff {
+		t.Fatal("这条路也不许只凭记账就说 off")
+	}
+	if got := env.manager.Status().LastError; got != "core_still_running" {
+		t.Errorf("理由要说清, got %q", got)
+	}
+}
+
+// **回归**:干净机器仍然报 off。否则这条修复自己成了噪声源,
+// 而被训练成忽略 needs_attention 的用户,下次真出事也会忽略。
+//
+// 两条出口都要覆盖 —— 只守住一条的话,另一条把每一次正常关闭都变成告警,
+// 而这个用例照样绿。
+func TestDownStillReportsOffOnAHealthyMachine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  func(*testing.T) *managerTestEnv
+	}{
+		{name: "完整拆除", env: newProtectedManagerTestEnv},
+		{name: "提前返回", env: newManagerTestEnv},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := tc.env(t)
+			if err := env.manager.Down(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			status := env.manager.Status()
+			if status.Protection != ProtectionOff {
+				t.Fatalf("干净机器必须仍然报 off, got %q (last_error=%q)", status.Protection, status.LastError)
+			}
+			if status.LastError != "" {
+				t.Errorf("干净机器不该留下失败码, got %q", status.LastError)
+			}
+		})
+	}
+}
+
 // Down 失败时不得销账:保护可能还开着,欠条仍然有意义。
 func TestFailedDownKeepsTheUpgradeIntent(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
