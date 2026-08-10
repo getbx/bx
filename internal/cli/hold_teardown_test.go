@@ -413,6 +413,68 @@ func TestForcedTeardownFallbackDoesNotRetryArmingTheHold(t *testing.T) {
 	}
 }
 
+// **第 1 步对两种意图的处置刻意不对称,而这条不对称此前没有任何测试。**
+//
+// desired=off 写失败只是记在一边:第 6 步(Guardian 已被 bootout,那次写入是
+// 权威的)再写一次成功就把它清掉,整条拆除照样报成功。
+func TestForcedTeardownRecoversFromAFirstStepDesiredWriteFailure(t *testing.T) {
+	calls := &teardownCalls{}
+	deps := teardownDeps(calls, nil, nil, nil)
+	failFirst := true
+	deps.markDesiredOff = func() error {
+		calls.desiredOff++
+		calls.record("desired.off")
+		if failFirst {
+			failFirst = false
+			return errors.New("暂时写不进去")
+		}
+		return nil
+	}
+
+	if _, err := macOSDownLifecycleFor(context.Background(), downPurposeUser, "/etc/bx/config.yaml", deps); err != nil {
+		t.Fatalf("第 6 步补写成功之后不该再报错: %v", err)
+	}
+	if calls.desiredOff < 2 {
+		t.Fatalf("测试前提不成立:第 6 步必须再写一次,实际 %v", calls.order)
+	}
+}
+
+// 挂起写失败则相反:整条拆除报错,升级随之中止。
+//
+// 理由是两者补救的余地不同 —— 第 1 步与第 6 步写的是**同一个文件**,第 1 步
+// 失败几乎必然意味着第 6 步也会失败,报绿等于让升级带着一个「没人拦着」的窗口
+// 继续往下走。这里刻意让第 6 步**成功**:只有这样才测得到「不对称」本身,
+// 而不是「两次都失败所以报错」。
+func TestForcedTeardownStillFailsWhenOnlyTheFirstHoldWriteFailed(t *testing.T) {
+	calls := &teardownCalls{}
+	deps := teardownDeps(calls, nil, nil, nil)
+	deps.armMaintenanceHold = func(reason string) error {
+		calls.armed = append(calls.armed, reason)
+		calls.record("hold.arm")
+		// 第 1 次是 recordStopIntent(必须成功,否则会走退回那条路,
+		// 拆除里根本不再武装挂起);第 2 次是拆除的第 1 步;第 3 次是第 6 步。
+		if len(calls.armed) == 2 {
+			return errors.New("暂时写不进去")
+		}
+		return nil
+	}
+
+	_, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", deps)
+	if err == nil {
+		t.Fatal("挂起写失败必须让整条拆除报错 —— 否则升级会带着一个没人拦着的窗口继续")
+	}
+	if !strings.Contains(err.Error(), "刷新维护挂起") {
+		t.Fatalf("报错必须指名是挂起那一笔没写成:%v", err)
+	}
+	if len(calls.armed) != 3 {
+		t.Fatalf("测试前提不成立:应当武装三次(记意图 + 第 1 步 + 第 6 步),实际 %v", calls.order)
+	}
+	// 而且拆除照做完:报错不许中断破坏性步骤。
+	if calls.stopCore == 0 || calls.forceTeardown == 0 || calls.barrier == 0 || calls.dns == 0 {
+		t.Fatalf("报错把拆除中断了: %+v", calls)
+	}
+}
+
 // **欠条那个活 bug 的回归**:用户明确要关,清挂起对拆除的成败必须无条件 ——
 // forcedMacOSTeardown 即使报告失败,六步也已经做完了(upgradeplan.go:110-118)。
 func TestForcedTeardownForUserClearsHoldEvenWhenStepsFail(t *testing.T) {
@@ -534,12 +596,46 @@ func TestHoldFallbackIsReportedOnEveryDownPath(t *testing.T) {
 			if !errors.Is(result.HoldFallback, armFailure) {
 				t.Fatalf("报的不是武装失败的原因,下次还会照样发生:%v", result.HoldFallback)
 			}
-			stdout, stderr := downReportLines(result)
-			if !slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "维护挂起") }) {
-				t.Fatalf("用户看不到这次退回:stdout=%v stderr=%v", stdout, stderr)
+			// **渲染要走生产真的走的那条路。**
+			//
+			// 这里曾经直接调 downReportLines —— 而它唯一的生产调用方是
+			// macOSDownAction(`bx down`,downPurposeUser),那条路上
+			// HoldFallback 恒为 nil。测试自己把两头接起来,于是「用户看得到」
+			// 在生产里从来不成立:真正会渲染它的是 runUpgrade。
+			lines := upgradeStopLines(t, deps)
+			if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "维护挂起") }) {
+				t.Fatalf("用户看不到这次退回:%v", lines)
+			}
+			if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, armFailure.Error()) }) {
+				t.Fatalf("没说清是为什么武装不成,下次还会照样发生:%v", lines)
 			}
 		})
 	}
+}
+
+// upgradeStopLines 复刻 `sudo bx app-install` 停保护那一步真的会打印的东西:
+// 同一个 runUpgrade、同一个 macOSDownLifecycleFor、同一条 io.log。
+//
+// 它刻意在装文件那一步停下 —— 本函数关心的只有停机那一步的输出,而让编排继续
+// 往下走会把无关的失败混进来。
+func upgradeStopLines(t *testing.T, deps macOSLifecycleDeps) []string {
+	t.Helper()
+	var lines []string
+	_, _ = runUpgrade(upgradeIO{
+		guardianRunning: func() (bool, error) { return true, nil },
+		loadDesiredOn:   func() bool { return true },
+		stopProtection: func(protectionWanted bool) (macOSDownResult, error) {
+			return macOSDownLifecycleFor(context.Background(), upgradeStopPurpose(protectionWanted), "/etc/bx/config.yaml", deps)
+		},
+		reassertDesiredOn: func() error { return nil },
+		installFiles: func() (installedFiles, error) {
+			return installedFiles{}, errors.New("到此为止:这条用例只看停机那一步的输出")
+		},
+		restartGuardian: func() error { return nil },
+		startProtection: func() error { return nil },
+		log:             func(line string) { lines = append(lines, line) },
+	}, true)
+	return lines
 }
 
 // 没退回就一个字都不说 —— 与这一期其余每一条新增输出同一条纪律:
@@ -562,9 +658,9 @@ func TestNoHoldFallbackMeansNoExtraLine(t *testing.T) {
 	if result.HoldFallback != nil {
 		t.Fatalf("没退回却报了退回:%v", result.HoldFallback)
 	}
-	_, stderr := downReportLines(result)
-	if slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "维护挂起") }) {
-		t.Fatalf("没退回却多写了一行:%v", stderr)
+	lines := upgradeStopLines(t, deps)
+	if slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "未能武装维护挂起") }) {
+		t.Fatalf("没退回却多写了一行:%v", lines)
 	}
 }
 

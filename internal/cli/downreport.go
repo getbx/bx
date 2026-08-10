@@ -28,17 +28,13 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 			result.IntentUnrecorded,
 		))
 	}
-	// 「退回写了 desired=off」同样要自己占一行,理由与上面那条一样,但**它不产生
-	// error**:退回是成功路径的一种(保护干净地停了、升级会照常走完),所以
-	// 没有任何调用方会因为它多说一个字。而它的后果实打实 —— 盘上留下的是
-	// 「用户不想要保护」,而用户其实想要;那正是维护挂起这一期要消灭的谎。
-	if result.HoldFallback != nil {
-		stderr = append(stderr, fmt.Sprintf(
-			"⚠️  未能武装维护挂起(%v),已退回记录 desired=off:升级期间 bx status 会显示「已关闭」而非「维护挂起」;"+
-				"升级结束后保护会被重新打开。",
-			result.HoldFallback,
-		))
-	}
+	// **HoldFallback 不在这里渲染,这是有意的。**
+	//
+	// 退回只发生在升级那条来由上(recordStopIntent 对 downPurposeUser 直接返回),
+	// 而这个函数唯一的生产调用方是 macOSDownAction —— 也就是 `bx down`,
+	// downPurposeUser。在这里写一支分支,就是写一段生产永远走不到的代码,再配一条
+	// 「自己把两头接起来」的测试;这一期已经抓到过同样的形状。
+	// 升级那条路的渲染住在 runUpgrade(holdFallbackWarning),那里才有真的 producer。
 	if result.Forced {
 		stderr = append(stderr, "⚠️  "+forcedTeardownReason(result)+"。")
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
@@ -70,6 +66,21 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 	}
 	stdout = append(stdout, "✅ bx 已停止并取消开机自启。")
 	return stdout, stderr
+}
+
+// holdFallbackWarning 是「没能武装维护挂起,已退回写 desired=off」那一行的措辞。
+//
+// 它住在这个文件(而不是 upgraderun.go)只为一件事:与它旁边那几行 `bx down`
+// 的文案受同一份约束 —— 它们是用户在最糟糕的时刻唯一的指引,改字要连着测试一起改。
+//
+// **它不是失败**:保护干净地停了、升级会照常走完。它说的是盘上留下的那句
+// desired=off 会撒谎,以及那句谎在升级结束时会被纠正。
+func holdFallbackWarning(cause error) string {
+	return fmt.Sprintf(
+		"未能武装维护挂起(%v),已退回记录 desired=off:升级期间 bx status 会显示「已关闭」而非「维护挂起」;"+
+			"升级结束后保护会被重新打开。",
+		cause,
+	)
 }
 
 // downConfirmedStopped 报告 Guardian 是否**确认**保护已经关闭。

@@ -126,6 +126,15 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 			if outcome.ForcedTeardown {
 				networkRestored = false
 			}
+			// **退回规则触发时必须让用户看到。** 它不产生 error(保护干净地停了、
+			// 升级会照常走完),所以不专门报一行就彻底无声 —— 而后果实打实:盘上
+			// 留下的是「用户不想要保护」,一台正在升级的机器于是与一台用户关掉了
+			// 保护的机器再次长得一模一样。**这里是它唯一的生产渲染点**:
+			// downReportLines 只被 `bx down`(downPurposeUser)调用,而那条路
+			// 从不退回。
+			if down.HoldFallback != nil {
+				io.log("! " + holdFallbackWarning(down.HoldFallback))
+			}
 			restoreIntentAfterHoldUnawareStop(io, desiredOn, down)
 			stepErr = err
 			// **Guardian 没能确认保护关掉时,不许继续换二进制。**

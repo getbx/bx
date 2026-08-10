@@ -56,13 +56,35 @@ type LegacyMigration struct {
 //
 // **删除永远排在最后**:反过来先删则一次崩溃就永久丢失那张欠条。
 func (s *Store) MigrateLegacyUpgradeIntent(now time.Time) (LegacyMigration, error) {
-	return s.migrateLegacyUpgradeIntent(now, func() error { return os.Remove(s.paths.UpgradeIntent) })
+	return s.migrateLegacyUpgradeIntent(now, legacyMigrationWrites{
+		arm:    s.ArmMaintenanceHold,
+		save:   s.SaveDesired,
+		clear:  s.ClearMaintenanceHold,
+		remove: func() error { return os.Remove(s.paths.UpgradeIntent) },
+	})
 }
 
-// migrateLegacyUpgradeIntent 把删除动作做成参数,只为一件事:「删不掉」这条分支
-// 必须能被测到,而用 chmod 造它在 root 身份下拦不住 unlink —— 那种造法会在 CI 的
-// root 容器里静静变绿(hold_test.go 里同款教训)。生产入口就在上面一行。
-func (s *Store) migrateLegacyUpgradeIntent(now time.Time, remove func() error) (LegacyMigration, error) {
+// legacyMigrationWrites 是迁移会改动系统的**每一个**动作。
+//
+// 抽出来只为一件事:**顺序本身就是正确性**,而顺序在前后快照里看不见 ——
+// 两种顺序的终态一模一样,差别只在崩溃窗口里(见上)。观察点必须在窗口**内部**:
+// 让其中一步失败、或记下调用次序。此前只有 remove 是可注入的,于是把 arm 与 save
+// 对调、整个包照样全绿(复审实测),而上面那段注释正是在论证这个顺序不可对调。
+//
+// clear 一并注入,是为了别在替身里留一条真的会去删盘上文件的通路 ——
+// 「回滚那半」与「写那两半」必须能被同一次注入观察到。
+type legacyMigrationWrites struct {
+	arm    func(reason string, now time.Time) error
+	save   func(DesiredState) error
+	clear  func() (bool, error)
+	remove func() error
+}
+
+// migrateLegacyUpgradeIntent 把写入与删除都做成参数。删除那一条另有理由:
+// 「删不掉」这条分支必须能被测到,而用 chmod 造它在 root 身份下拦不住 unlink
+// —— 那种造法会在 CI 的 root 容器里静静变绿(hold_test.go 里同款教训)。
+// 生产入口就在上面一行。
+func (s *Store) migrateLegacyUpgradeIntent(now time.Time, writes legacyMigrationWrites) (LegacyMigration, error) {
 	// 路径没配 **不是**「没有欠条」,是这个 Store 答不了这个问题(与 hold.go 的
 	// Arm/Load/ClearMaintenanceHold 同一条取舍)。一个自信的 false 会把「这台机器
 	// 的保护该不该恢复」静悄悄地答成「不该」—— 正是欠条存在的理由要消灭的那种谎。
@@ -82,7 +104,7 @@ func (s *Store) migrateLegacyUpgradeIntent(now time.Time, remove func() error) (
 	// 而这个仓库只承诺一个版本的兼容。
 	if now.Sub(info.ModTime()) > legacyUpgradeIntentMaxAge {
 		result.Stale = true
-		if err := remove(); err != nil && !os.IsNotExist(err) {
+		if err := writes.remove(); err != nil && !os.IsNotExist(err) {
 			return result, fmt.Errorf("remove stale legacy upgrade intent: %w", err)
 		}
 		return result, nil
@@ -103,16 +125,16 @@ func (s *Store) migrateLegacyUpgradeIntent(now time.Time, remove func() error) (
 		desiredOn = intent.DesiredOn
 	}
 	if desiredOn {
-		if err := s.ArmMaintenanceHold(HoldReasonLegacyUpgrade, now); err != nil {
+		if err := writes.arm(HoldReasonLegacyUpgrade, now); err != nil {
 			return result, err
 		}
 		result.HoldArmed = true
-		if err := s.SaveDesired(DesiredOn); err != nil {
+		if err := writes.save(DesiredOn); err != nil {
 			return result, err
 		}
 		result.RestoredDesiredOn = true
 	}
-	if err := remove(); err != nil && !os.IsNotExist(err) {
+	if err := writes.remove(); err != nil && !os.IsNotExist(err) {
 		// **删不掉 ⇒ 把挂起撤回。**
 		//
 		// 挂起的职责是「拦住这一次启动,15 分钟内把它交还」,而它的尽头靠的是
@@ -125,7 +147,7 @@ func (s *Store) migrateLegacyUpgradeIntent(now time.Time, remove func() error) (
 		// desired=on 那一半保留(它是欠条的全部意义,且不依赖删得掉与否);
 		// 拦不住有尽头的东西就不拦。撤回本身失败只能记日志 —— 没有别的手段了。
 		if result.HoldArmed {
-			if _, clearErr := s.ClearMaintenanceHold(); clearErr != nil {
+			if _, clearErr := writes.clear(); clearErr != nil {
 				log.Printf("guardian_legacy_upgrade_intent_hold_rollback_failed err=%v", clearErr)
 			} else {
 				result.HoldArmed = false
