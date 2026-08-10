@@ -178,32 +178,36 @@ type ManagerOptions struct {
 }
 
 type Manager struct {
-	mutation               chan struct{}
-	updateOperation        chan struct{}
-	statusMu               sync.RWMutex
-	store                  DesiredStore
-	runner                 CoreRunner
-	health                 HealthGate
-	barrier                Barrier
-	dns                    DNSManager
-	dnsStatus              DNSStatus
-	legacy                 LegacyCoreLifecycle
-	barrierContext         BarrierContext
-	gatewayProvider        GatewayProvider
-	coreVersion            string
-	restartTimeout         time.Duration
-	cleanupTimeout         time.Duration
-	updates                updateStore
-	updatePaths            Paths
-	updatePreparer         UpdatePreparer
-	guardianProtocol       int
-	current                Process
-	runtime                supervisor.RuntimeState
-	status                 Status
-	barrierOwnership       barrierOwnership
-	barrierGeneration      barrierCredential
-	recoveryBlocked        bool
-	legacyIntentOnce       sync.Once
+	mutation          chan struct{}
+	updateOperation   chan struct{}
+	statusMu          sync.RWMutex
+	store             DesiredStore
+	runner            CoreRunner
+	health            HealthGate
+	barrier           Barrier
+	dns               DNSManager
+	dnsStatus         DNSStatus
+	legacy            LegacyCoreLifecycle
+	barrierContext    BarrierContext
+	gatewayProvider   GatewayProvider
+	coreVersion       string
+	restartTimeout    time.Duration
+	cleanupTimeout    time.Duration
+	updates           updateStore
+	updatePaths       Paths
+	updatePreparer    UpdatePreparer
+	guardianProtocol  int
+	current           Process
+	runtime           supervisor.RuntimeState
+	status            Status
+	barrierOwnership  barrierOwnership
+	barrierGeneration barrierCredential
+	recoveryBlocked   bool
+	legacyIntentOnce  sync.Once
+	// holdLog 记维护挂起的生命周期(见 hold_log.go)。**它自带锁,不受 Manager
+	// 那把大锁保护**:读意图的四处里有一处(MaintenanceHoldStatus)跑在 HTTP
+	// handler 上,不持有 mutation channel。
+	holdLog                holdObserver
 	recoveryMu             sync.Mutex
 	recoveryContext        context.Context
 	cancelRecovery         context.CancelFunc
@@ -441,7 +445,7 @@ func (m *Manager) Up(ctx context.Context) error {
 	//     最该生效的一刻把它销掉」目前是个假设,不是现存 bug。留着这条理由是因为
 	//     那道 return 属于另一段逻辑,它挪一步这里就成立;别把它当成已被证实的
 	//     事故。
-	m.clearMaintenanceHold()
+	m.clearMaintenanceHold(holdClearedByUp)
 	return m.upLocked(ctx)
 }
 
@@ -465,7 +469,7 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 	// 与 Up 同一条规则(设计取舍四):Migrate 是 `bx up` 在一台还带 legacy Core
 	// 的机器上走的那条路,同样是用户显式说的 on。放在所有早出口之前,理由与
 	// Up 那边一字不差。
-	m.clearMaintenanceHold()
+	m.clearMaintenanceHold(holdClearedByMigrate)
 
 	if m.current.Uncertain {
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
@@ -655,7 +659,7 @@ func (m *Manager) migrateLegacyIntentOnce() {
 // 行为的路径(recoverLocked / handleUnexpectedExit / 调谐环)一律 fail-closed 并
 // 发 intent_unreadable,那才是它该出现的地方。
 func (m *Manager) MaintenanceHoldStatus() *MaintenanceHoldStatus {
-	intent, err := m.store.LoadIntentSnapshot(time.Now())
+	intent, err := m.loadIntentSnapshot(time.Now())
 	if err != nil || !intent.HoldArmed {
 		return nil
 	}
@@ -668,11 +672,29 @@ func (m *Manager) MaintenanceHoldStatus() *MaintenanceHoldStatus {
 // 调用方是用户显式的三条路:Up、Migrate(`bx up` 在带 legacy Core 的机器上走的
 // 那条)、以及 Down 的 defer(维护自己的那次 Down 除外)。启动恢复**不在其列**
 // —— 它与 Up 共用 upLocked,而每次升级都会重启 Guardian 跑一遍启动恢复。
-func (m *Manager) clearMaintenanceHold() {
+// by 是**哪一条用户动作**要求撤销的。它是这条日志唯一有价值的部分:
+// 「挂起没了」在盘上看不出是被谁清的,而「用户点了 Turn On」与「升级自己那次
+// 停机」在排查时是完全不同的两个故事。
+//
+// 成功也记一行,而且**不去分辨盘上原本有没有挂起**:那需要多一次读盘,而这个
+// 函数跑在停止路径上 —— 「停止」不许为了记账多做任何一件可能失败的事。这条线
+// 说的是「这条路上的销挂起动作跑过了」,不是「真有一张挂起被删掉了」;后者由
+// holdObserver 的 _armed 行回答。它不会变成噪声:它一年只出现在用户显式的
+// up/down/migrate 上,不随任何轮询发生。
+func (m *Manager) clearMaintenanceHold(by string) {
 	if err := m.store.ClearMaintenanceHold(); err != nil {
-		log.Printf("guardian_maintenance_hold_clear_failed err=%v", err)
+		log.Printf("guardian_maintenance_hold_clear_failed by=%s err=%v", by, err)
+		return
 	}
+	log.Printf("guardian_maintenance_hold_cleared by=%s", by)
 }
+
+// 撤销挂起的三条用户显式路径。原样进日志,所以是稳定标识符。
+const (
+	holdClearedByUp      = "up"
+	holdClearedByDown    = "down"
+	holdClearedByMigrate = "migrate"
+)
 
 func (m *Manager) Down(ctx context.Context) (err error) {
 	m.beginPathRecoveryTransition(pathRecoveryTransitionResolveOff)
@@ -705,7 +727,7 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 		if maintenance {
 			return
 		}
-		m.clearMaintenanceHold()
+		m.clearMaintenanceHold(holdClearedByDown)
 	}()
 	if m.recoveryBlocked {
 		return errRecoveryIncomplete
@@ -918,7 +940,7 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 		m.recoveryBlocked = true
 		return err
 	}
-	intent, err := m.store.LoadIntentSnapshot(time.Now())
+	intent, err := m.loadIntentSnapshot(time.Now())
 	if err != nil {
 		m.needsAttention(DesiredOn, intentReadFailureCode(err))
 		// **只有 desired 那一半读不出来才堵死后续 mutation。** 挂起读不出来时
@@ -1222,7 +1244,7 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
 		return
 	}
-	intent, err := m.store.LoadIntentSnapshot(time.Now())
+	intent, err := m.loadIntentSnapshot(time.Now())
 	if err != nil {
 		// 「问不出来」不等于「没有挂起」:两半都读不出来时一律 fail-closed —— 装屏障、
 		// 不重启。屏障在维护窗口里是有害的(见下),但这条分支恰恰是不知道自己在不在

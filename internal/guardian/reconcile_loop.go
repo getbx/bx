@@ -100,7 +100,7 @@ func (m *Manager) reconcileOnce(ctx context.Context, observed observe.ObservedSt
 	// 写成调用方传进来的常量(manager.go:1470-1473),好几处传的是字面量 DesiredOn
 	// 而磁盘写着 off;而挂起只在磁盘上。两者必须是同一次读出来的 —— 一半读内存
 	// 一半读磁盘,一轮之内就能出现两者互不相干的组合(设计取舍六)。
-	intent, err := m.store.LoadIntentSnapshot(time.Now())
+	intent, err := m.loadIntentSnapshot(time.Now())
 	if err != nil {
 		// **不许塌缩成 off 或 on。** 读不出来是没有答案,不是某个答案:
 		// 按 off 收敛会去停一个用户要的 Core,按 on 收敛会在维护窗口里起一个
