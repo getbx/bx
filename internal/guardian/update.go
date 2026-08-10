@@ -683,7 +683,7 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 			m.retainUncertain(Process{
 				PID: process.PID, Executable: process.Executable, UID: process.UID,
 				Generation: process.Generation, Exit: process.Exit, Resolution: process.Resolution,
-			})
+			}, cleanupErr)
 			return m.failUpdate(transaction, request, cause, false, false)
 		}
 		m.current = Process{}
@@ -724,7 +724,7 @@ func (m *Manager) startUpdateCore(ctx context.Context, version string) (Process,
 	if err != nil {
 		if errors.Is(err, ErrProcessOwnershipUncertain) {
 			if uncertain, ok := uncertainProcess(err); ok {
-				m.retainUncertain(uncertain)
+				m.retainUncertain(uncertain, err)
 			}
 			return Process{}, supervisor.RuntimeState{}, newUpdateError("core_ownership_uncertain")
 		}
@@ -735,7 +735,7 @@ func (m *Manager) startUpdateCore(ctx context.Context, version string) (Process,
 			m.retainUncertain(Process{
 				PID: process.PID, Executable: process.Executable, UID: process.UID,
 				Generation: process.Generation, Exit: process.Exit, Resolution: process.Resolution,
-			})
+			}, stopErr)
 			return Process{}, supervisor.RuntimeState{}, newUpdateError("core_ownership_uncertain")
 		}
 		return Process{}, supervisor.RuntimeState{}, newUpdateError("new_core_identity_failed")
@@ -746,7 +746,7 @@ func (m *Manager) startUpdateCore(ctx context.Context, version string) (Process,
 			m.retainUncertain(Process{
 				PID: process.PID, Executable: process.Executable, UID: process.UID,
 				Generation: process.Generation, Exit: process.Exit, Resolution: process.Resolution,
-			})
+			}, stopErr)
 			return Process{}, supervisor.RuntimeState{}, newUpdateError("core_ownership_uncertain")
 		}
 		return Process{}, supervisor.RuntimeState{}, newUpdateError("new_core_health_failed")

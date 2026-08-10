@@ -3,6 +3,7 @@ package guardian
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -184,5 +185,65 @@ func TestDownClearsOnlyTheEntryLatchWhenItsRestartCreatesAnother(t *testing.T) {
 	}
 	if !env.manager.current.Uncertain || env.manager.current.PID != 4242 {
 		t.Fatalf("Down 抹掉了还原补偿新造的那个锁存(而不是只清进门时那一个)—— 那是 fail-open, got %+v", env.manager.current)
+	}
+}
+
+// 锁存之后的错误必须**不比**第一次少信息。今天 upLocked/Migrate 短路时传的是
+// nil cause,于是第二次 bx up 只剩一句「Core process ownership is uncertain」:
+// 没有 PID、没有逃生提示、也看不出是十五个产地里的哪一个。
+func TestLatchedRefusalKeepsTheOriginalCause(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.startErr = uncertainOwnership(
+		Process{PID: 4242, Uncertain: true},
+		errors.New("no Core process record on disk, but Core appears to be running (PID 4242)"),
+	)
+
+	first := env.manager.Up(context.Background())
+	if !errors.Is(first, ErrProcessOwnershipUncertain) {
+		t.Fatalf("首次 Up = %v, want 所有权不确定(测试前提)", first)
+	}
+	if !strings.Contains(first.Error(), "PID 4242") {
+		t.Fatalf("测试前提不成立:首次拒绝本来就该带上原因, got %q", first.Error())
+	}
+
+	second := env.manager.Up(context.Background())
+	if !errors.Is(second, ErrProcessOwnershipUncertain) {
+		t.Fatalf("再次 Up = %v, want 所有权不确定", second)
+	}
+	if !strings.Contains(second.Error(), "PID 4242") {
+		t.Fatalf("锁存之后的错误比第一次更少信息 —— 用户第二次看到的反而是一句空话: %q", second.Error())
+	}
+}
+
+// 迁移入口(bx up 在还带 legacy Core 的机器上走的那条)是同一条规矩。
+func TestLatchedMigrateRefusalKeepsTheOriginalCause(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+	env.manager.uncertainCause = errors.New("spawned Core record has a live process whose identity was never verified")
+
+	err := env.manager.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}})
+	if !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Migrate = %v, want 所有权不确定", err)
+	}
+	if !strings.Contains(err.Error(), "identity was never verified") {
+		t.Fatalf("Migrate 的锁存拒绝没有带上原因: %q", err.Error())
+	}
+}
+
+// 锁存被清掉时 cause 必须一起清 —— 否则下一次拒绝会挂着上一个故事的原因,
+// 那比没有原因更坏。
+func TestClearingTheLatchAlsoClearsTheRetainedCause(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	env.manager.current = Process{Uncertain: true}
+	env.manager.uncertainCause = errors.New("stale story from a previous refusal")
+
+	if err := env.manager.Down(context.Background()); err != nil {
+		t.Fatalf("Down = %v, want nil", err)
+	}
+	if env.manager.uncertainCause != nil {
+		t.Fatalf("锁存清了但 cause 留着: %v", env.manager.uncertainCause)
 	}
 }
