@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+
+	"github.com/getbx/bx/internal/barriercidr"
 )
 
 var ErrUnsupported = errors.New("guardian barrier unsupported on this platform")
@@ -45,10 +47,10 @@ type barrierRoute struct {
 	del Command
 }
 
-var (
-	publicIPv4Blocks = []string{"0.0.0.0/2", "64.0.0.0/2", "128.0.0.0/2", "192.0.0.0/2"}
-	publicIPv6Blocks = []string{"::/2", "4000::/2", "8000::/2", "c000::/2"}
-)
+// 网段字面量下沉到 internal/barriercidr 这个叶子包,让只读观测层能引用同一份
+// 清单而不必 import guardian(guardian 侧的调谐判据要反过来 import observe)。
+// 这里仍保留包内的两个变量名,barrier 的其余代码与既有测试一字未改。
+var publicIPv4Blocks, publicIPv6Blocks = barriercidr.Blocking()
 
 func PlanBarrier(ctx BarrierContext) (apply, reassert, cleanup []Command, err error) {
 	gateway, bypasses, err := validateBarrierContext(ctx)
