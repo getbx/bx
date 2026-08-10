@@ -892,6 +892,20 @@ func uncertainProcess(err error) (Process, bool) {
 	return Process{}, false
 }
 
+// retainedUncertainCause 取出「当初那次拒绝」的原因,并剥掉外层的
+// ownershipUncertainError 包装 —— 否则重新报出来时会变成
+// 「uncertain: uncertain: …」的叠词。
+func retainedUncertainCause(err error) error {
+	if err == nil {
+		return nil
+	}
+	var uncertain *ownershipUncertainError
+	if errors.As(err, &uncertain) {
+		return uncertain.cause
+	}
+	return err
+}
+
 type osProcessOperations struct{}
 
 func (osProcessOperations) Start(executable string, args, environment []string) (StartedProcess, error) {

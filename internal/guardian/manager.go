@@ -178,26 +178,31 @@ type ManagerOptions struct {
 }
 
 type Manager struct {
-	mutation          chan struct{}
-	updateOperation   chan struct{}
-	statusMu          sync.RWMutex
-	store             DesiredStore
-	runner            CoreRunner
-	health            HealthGate
-	barrier           Barrier
-	dns               DNSManager
-	dnsStatus         DNSStatus
-	legacy            LegacyCoreLifecycle
-	barrierContext    BarrierContext
-	gatewayProvider   GatewayProvider
-	coreVersion       string
-	restartTimeout    time.Duration
-	cleanupTimeout    time.Duration
-	updates           updateStore
-	updatePaths       Paths
-	updatePreparer    UpdatePreparer
-	guardianProtocol  int
-	current           Process
+	mutation         chan struct{}
+	updateOperation  chan struct{}
+	statusMu         sync.RWMutex
+	store            DesiredStore
+	runner           CoreRunner
+	health           HealthGate
+	barrier          Barrier
+	dns              DNSManager
+	dnsStatus        DNSStatus
+	legacy           LegacyCoreLifecycle
+	barrierContext   BarrierContext
+	gatewayProvider  GatewayProvider
+	coreVersion      string
+	restartTimeout   time.Duration
+	cleanupTimeout   time.Duration
+	updates          updateStore
+	updatePaths      Paths
+	updatePreparer   UpdatePreparer
+	guardianProtocol int
+	current          Process
+	// uncertainCause 是把 current 锁成 Uncertain 的**那一次**拒绝的原因。
+	// 与 current 同由 mutation channel 保护。留着它是因为短路(以及后来的
+	// 重新求证)必须报出与第一次同样多的信息:今天传的是 nil,于是用户第二次
+	// 看到的反而是一句没有 PID、没有产地、没有出路的空话。
+	uncertainCause    error
 	runtime           supervisor.RuntimeState
 	status            Status
 	barrierOwnership  barrierOwnership
@@ -481,7 +486,7 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 
 	if m.current.Uncertain {
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
-		return uncertainOwnership(m.current, nil)
+		return uncertainOwnership(m.current, m.uncertainCause)
 	}
 	if m.current.PID != 0 && m.Status().Protection == ProtectionProtected {
 		if err := m.legacy.Remove(); err != nil {
@@ -558,7 +563,7 @@ func (m *Manager) retainMigrationBarrier(ctx context.Context, barrierContext Bar
 func (m *Manager) upLocked(ctx context.Context) error {
 	if m.current.Uncertain {
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
-		return uncertainOwnership(m.current, nil)
+		return uncertainOwnership(m.current, m.uncertainCause)
 	}
 	if m.current.PID != 0 && m.Status().Protection == ProtectionProtected {
 		return nil
@@ -583,7 +588,7 @@ func (m *Manager) upLocked(ctx context.Context) error {
 	if err != nil {
 		if errors.Is(err, ErrProcessOwnershipUncertain) {
 			if process, ok := uncertainProcess(err); ok {
-				m.retainUncertain(process)
+				m.retainUncertain(process, err)
 			}
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return err
@@ -1119,7 +1124,7 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 	if err != nil {
 		if errors.Is(err, ErrProcessOwnershipUncertain) {
 			if uncertain, ok := uncertainProcess(err); ok {
-				m.retainUncertain(uncertain)
+				m.retainUncertain(uncertain, err)
 			}
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, fmt.Errorf("start Core: %w", err)
@@ -1129,7 +1134,7 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 	}
 	if err := m.runner.Verify(process); err != nil {
 		if cleanupErr := m.cleanupStartedCore(ctx, process); cleanupErr != nil {
-			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true})
+			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true}, cleanupErr)
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("verify started Core: %w", err), uncertainOwnership(m.current, cleanupErr))
 		}
@@ -1139,7 +1144,7 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 	state, err := m.waitHealthy(operationCtx, process)
 	if err != nil {
 		if cleanupErr := m.cleanupStartedCore(ctx, process); cleanupErr != nil {
-			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true})
+			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true}, cleanupErr)
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("wait for Core health: %w", err), uncertainOwnership(m.current, cleanupErr))
 		}
@@ -1322,6 +1327,7 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		}
 		process.Uncertain = true
 		m.current = process
+		m.uncertainCause = retainedUncertainCause(exitErr)
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
 		return
 	}
@@ -1412,9 +1418,10 @@ func (m *Manager) reserveCleanup(ctx context.Context) (context.Context, context.
 	return operationCtx, cancel, nil
 }
 
-func (m *Manager) retainUncertain(process Process) {
+func (m *Manager) retainUncertain(process Process, cause error) {
 	process.Uncertain = true
 	m.current = process
+	m.uncertainCause = retainedUncertainCause(cause)
 	if process.Resolution != nil {
 		go func() {
 			if err, ok := <-process.Resolution; ok && err == nil {
@@ -1449,6 +1456,7 @@ func (m *Manager) clearOwnershipLatch(latchedOnEntry Process) {
 		return
 	}
 	m.current = Process{}
+	m.uncertainCause = nil
 	log.Printf("guardian_ownership_uncertain_latch_cleared by=down pid=%d", latchedOnEntry.PID)
 }
 
@@ -1459,6 +1467,7 @@ func (m *Manager) clearUncertaintyAfterProof(process Process) {
 		return
 	}
 	m.current = Process{}
+	m.uncertainCause = nil
 	status := m.Status()
 	if status.LastError == "core_ownership_uncertain" {
 		status.CorePID = 0
