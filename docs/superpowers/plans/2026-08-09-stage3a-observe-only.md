@@ -308,6 +308,160 @@ git commit -m "feat(guardian): 只观察的调谐循环 —— 记下它本来�
 
 ---
 
+## Task 3: 把循环的判断发布出去(设计里③a 的第三样交付)
+
+**这一项是写计划时漏的,不是 brief 的问题。** 设计
+(`2026-08-09-stage3-reconciler-design.md:80-81`)给阶段③a 列了**三样**交付,计划只写了
+两样;第三样是「`bx status` 的 divergence 从『一次快照』变成『持续观察』—— 今天那个
+字段只在用户敲命令的那一刻算一次」。
+
+**对「变成持续观察」的解读,以及为什么不是替换。** 既有的一次性观测**保留**:
+`bx status` 是出问题时最先敲的命令,那一刻的新鲜事实正是它的价值,拿一份最多可能
+陈旧 10 分钟(退避上限)的缓存去顶替它是退化。改为**并列发布**循环的最近一轮判断 ——
+与本项目既有的「不用观测覆盖信念、二者的 diff 本身才是信号」同一条纪律。
+
+**这一项直接服务 soak。** 今天要回答「循环提议过什么」只能 `sudo tail /var/log/bx-guard.log`
+(root-only)。发布之后 `bx status` 就能回答,而 soak 是本阶段唯一真正的验收。
+
+**Files:**
+- Modify: `internal/guardian/types.go`(`ReconcileReport` 类型、`Status.Reconcile` 字段、能力声明)
+- Modify: `internal/guardian/manager.go`(`recordReconcileRound` + `Status()` 附上)
+- Modify: `internal/guardian/reconcile_loop.go`(每轮记一次)
+- Modify: `internal/cli/cli.go`(`clientStatusReport` 加字段 + 渲染一行)
+- Test: `internal/guardian/reconcile_report_test.go`、`internal/cli/cli_test.go`
+
+**Interfaces:**
+- Consumes: Task 1 的 `reconcileDecision`;Task 2 的 `runReconcileLoopWithPacing`
+- Produces:
+  - `type ReconcileReport struct { At time.Time; Actions []string; Held string; UnchangedRounds int }`
+  - `func (m *Manager) recordReconcileRound(decision reconcileDecision, unchanged int)`
+  - `Status.Reconcile *ReconcileReport`(`json:"reconcile,omitempty"`)
+  - 能力串常量 `CapabilityReconcileReport = "reconcile-report"`
+
+### 这一项唯一真正危险的地方
+
+**零值读起来像「一切正常」。** `reconcileDecision` 的零值(无动作、无栅栏)正是**一台
+健康机器**的判断 —— Task 2 的 `previous` 初值就是靠这一点让健康机器保持静默的。于是:
+
+- 循环**从没跑过一轮**(没挂上、刚启动、每轮都 panic 被 recover 掉)
+- 循环**跑了、什么差异都没有**
+
+这两件事的判断值**完全相同**。而它们在真机上的意义正好相反,后者是 soak 想看到的结果,
+前者是「你拿到的那份干净日志毫无意义」。这与 Task 2 修复轮 2 抓到的是**同一个洞**
+(一个装了但没跑的循环,与一台健康机器,产出的日志一模一样)。
+
+**处置**:`At` 是唯一的判据 —— 没跑过就是零时刻,此时 `Status.Reconcile` **为 nil、
+字段整个缺席**;CLI 见 nil 时必须渲染「尚未完成第一轮观测」,**绝不能渲染成无差异**。
+且渲染出的那一行**在无差异时也要出现**(带「最近观测于 N 前」),否则用户依旧分不清
+「循环活着且干净」与「循环死了」—— 静默正是这一项要消灭的歧义。
+
+- [ ] **Step 1: 写失败测试**
+
+```go
+// 零值绝不能读成「一切正常」。
+//
+// reconcileDecision 的零值就是一台健康机器的判断,于是「从没跑过一轮」与「跑了、
+// 什么差异都没有」在判断值上完全相同 —— 而它们在真机上的意义正好相反。
+// At 是唯一分得开二者的东西。
+func TestStatusOmitsReconcileReportUntilARoundHasCompleted(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if got := env.manager.Status().Reconcile; got != nil {
+		t.Fatalf("一轮都没跑过时必须整个字段缺席,而不是发布一份「无差异」, got %+v", got)
+	}
+}
+
+// 跑过之后必须发布,且「无差异」也要发布 —— 用户要分得清「循环活着且干净」
+// 与「循环死了」,而后者正是 Task 2 修复轮 2 抓到的那个洞。
+func TestStatusPublishesACleanReconcileRound(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.recordReconcileRound(reconcileDecision{}, 7)
+	got := env.manager.Status().Reconcile
+	if got == nil {
+		t.Fatal("跑过一轮之后必须发布,哪怕这一轮什么差异都没有")
+	}
+	if got.At.IsZero() {
+		t.Error("At 是「跑过没跑过」的唯一判据,不能是零值")
+	}
+	if len(got.Actions) != 0 || got.Held != "" {
+		t.Errorf("这一轮是干净的, got %+v", got)
+	}
+	if got.UnchangedRounds != 7 {
+		t.Errorf("UnchangedRounds = %d, want 7", got.UnchangedRounds)
+	}
+}
+
+// 报告不许被别的写 status 的路径顺手抹掉:它存在别的字段里,Status() 组装时附上。
+// 变异:把它并进 m.status 结构体 —— 任何一处整体重建 status 的路径都会让这条红。
+func TestReconcileReportSurvivesAStatusRebuild(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.recordReconcileRound(reconcileDecision{Held: heldOwnershipUncertain}, 0)
+	env.manager.needsAttention(DesiredOn, "core_scan_failed")
+	got := env.manager.Status().Reconcile
+	if got == nil || got.Held != heldOwnershipUncertain {
+		t.Fatalf("别的路径重建 status 之后报告丢了, got %+v", got)
+	}
+}
+
+// 循环每一轮都要记 —— 包括被栅栏挡住的那些轮:soak 要数的正是「有多少轮根本没在工作」。
+func TestReconcileLoopRecordsEveryRoundIncludingHeldOnes(t *testing.T) { /* 用 Task 2 的
+	runReconcileLoopWithPacing + 注入的假观测跑固定轮数,断言每轮之后 Status().Reconcile
+	都更新过(At 前进),且被栅栏挡住的那轮 Held 非空。 */ }
+```
+
+CLI 侧:
+
+```go
+// nil 必须渲染成「尚未观测」,绝不能渲染成无差异 —— 这是本任务唯一真正危险的地方。
+func TestRenderClientStatusDistinguishesNeverRanFromClean(t *testing.T) {
+	never := renderClientStatus(clientStatusReport{ProtectionState: "protected"})
+	clean := renderClientStatus(clientStatusReport{
+		ProtectionState: "protected",
+		Reconcile:       &guardian.ReconcileReport{At: time.Now().Add(-12 * time.Second), UnchangedRounds: 37},
+	})
+	if never == clean {
+		t.Fatal("「从没跑过一轮」与「跑了、无差异」渲染成了同一段文字")
+	}
+	if !strings.Contains(clean, "无差异") {
+		t.Errorf("无差异时也必须出现这一行,否则分不清循环活着还是死了:\n%s", clean)
+	}
+}
+
+// 旧 Guardian(没声明这个能力)不该凭空多出一行 —— 与 observerForPlatform 同一条纪律:
+// 字段缺席是诚实的「没问」。
+func TestRenderClientStatusSaysNothingWhenGuardianHasNoReconcileLoop(t *testing.T) { /* … */ }
+```
+
+- [ ] **Step 2: 跑它,确认失败**
+
+- [ ] **Step 3: 实现**
+
+`Manager` 用**独立字段** `reconcileReport *ReconcileReport` 存(**不并进 `m.status`**:
+有别的路径整体重建 status,并进去迟早被抹掉),`statusMu` 写保护 —— **不是 mutation
+channel**,Global Constraint 明写观测不许持有它。`Status()` 读锁里附上。
+`recordReconcileRound` 由 Task 2 循环在每轮判断之后调用,包括被栅栏挡住的轮。
+
+CLI:`clientStatusReport` 加 `Reconcile *guardian.ReconcileReport`,`renderClientStatus`
+按上面三态渲染(nil 且 Guardian 声明了能力 → 「尚未完成第一轮观测」;nil 且没声明 →
+不输出;非 nil → 「调谐环 最近观测 N 前 · 无差异(连续 M 轮未变)/ 本会提议 … / 被 … 挡住」)。
+
+- [ ] **Step 4: 跑全量**
+
+- [ ] **Step 5: 变异验证**
+
+① `recordReconcileRound` 里不写 `At` → 「零值不许读成正常」那条必须红。
+② 把报告并进 `m.status` → 「重建后仍在」那条必须红。
+③ CLI 对 nil 渲染成无差异 → 「分得开」那条必须红。
+④ 循环只在有差异时才记 → 「每轮都记」那条必须红。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add internal/guardian/ internal/cli/
+git commit -m "feat(status): 并列发布调谐环的最近一轮判断 —— 让 soak 不必去翻 root 日志"
+```
+
+---
+
 ## 完成后应当为真的判据
 
 - `decide` 在**任何** Unknown 观测上产出零动作。
