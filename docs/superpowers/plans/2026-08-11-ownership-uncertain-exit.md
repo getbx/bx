@@ -4,7 +4,9 @@
 
 **Goal:** 让 Guardian 的「Core 所有权不确定」这条 fail-closed 拒绝有一个真实存在的出口 —— `Down` 真的清掉它、用户发起的 `Up`/`Migrate` 每次重新求证而不是把第一次的结论钉死、锁存不再升级成挡住 `Down` 的 `recoveryBlocked`、以及那个「OS 已经确认进程没了、只是删不掉一个 JSON」的产地不再产出这条判定。
 
-**Architecture:** 三处改动方向不同,必须分清:①**放宽记忆,不放宽判据** —— `Down` 清掉的是内存里的一条结论,而下一次 `Up` 会重新走 `runner.Existing`/`Start`,`ExecCoreRunner` 在那两跳上照旧向系统求证(`resolveOrphanLaunchMarker` / `refuseUnrecordedRunningCore` / `refuseLiveLaunchMarker`);②**把「问不问」改掉,「怎么判」一个字不改** —— 用户发起的 `Up`/`Migrate` 把 `m.current.Uncertain` 的短路换成一次带证明纪律的复查(`confirmCoreStopped`:两次扫描 + 300ms 沉降 + panic 兜底 + 「扫不动/扫到了/不支持」一律保持拒绝);③**只对已经握着安全证明的那一处产地停手**(`finishExistingWatch`)。调谐器一侧一个字不改。
+**Architecture:** 三处改动方向不同,必须分清:①**放宽记忆,不放宽判据** —— `Down` 清掉的是内存里的一条结论,而下一次 `Up` 会重新走 `runner.Existing`/`Start`,`ExecCoreRunner` 在那两跳上照旧向系统求证(`resolveOrphanLaunchMarker` / `refuseUnrecordedRunningCore` / `refuseLiveLaunchMarker`);②**把「问不问」改掉,「怎么判」一个字不改** —— 用户发起的 `Up`/`Migrate` 把 `m.current.Uncertain` 的短路换成一次带证明纪律的复查:**释放锁存要求两次扫描全干净、中间隔一个沉降窗口**(`confirmNoCoreForRelease`),扫不动/扫到了/runner 不会扫/panic 一律保持拒绝;③**对两处已经握着安全证明的产地停手**(`finishExistingWatch` 与 `Start` 自己那条 wait goroutine)。调谐器一侧一个字不改。
+
+**一条不能混淆的取舍**:`confirmCoreStopped`(`Down`/`Recover` 用)与 `confirmNoCoreForRelease`(重新求证用)**偏置方向相反,必须是两个函数**。前者回答「能不能对用户说已关闭」,怕的是把每一次正常关闭都报成告警,所以第一次扫脏之后沉降重扫、第二次干净就算数;后者回答「能不能再起一个 Core」,怕的是一次假的「全清」(`cleanupFailedStart` 的残留:子进程已 fork、`Terminate()` 已发、wait 超时,进程既不是僵尸也还没消失,而 `scanRunningCores` 会跳过 argv 读不出的进程),所以**两次都必须干净**。把两者「统一」掉是本期最容易犯、后果最重的错误。
 
 **Tech Stack:** Go 1.26(`internal/guardian`、`internal/cli`)+ Swift(`apps/macos/BxMenu`,`swiftc` 直编直跑的 `Tests/`,不是 XCTest)。无新依赖。
 
@@ -33,7 +35,7 @@
 - **平台事实**(写测试与注释时都用得上):
   - Guardian 只有 darwin 实体(`daemon.go` 的 `requireDaemonPlatform()` 在构造 `ExecCoreRunner` 之前就挡住别的平台),但 `internal/guardian` 包本身在 linux/windows 上照常编译与跑单测(CI 三平台矩阵)。
   - 集成台(`internal/supervisor/harness*_netns_linux_test.go`)只覆盖 Linux 控制面,**本期一行都覆盖不到**。
-  - `procscan_other.go` 的 `scanRunningCores` 在非 darwin 恒返回 `errCoreScanUnsupported` ⇒ `confirmCoreStopped` 恒 `false` ⇒ **重新求证在非 darwin 是 no-op,门仍然焊死**。这句话必须以注释形式写进代码(Task 5),并有一条 `//go:build !darwin` 的回归测试钉住。
+  - `procscan_other.go` 的 `scanRunningCores` 在非 darwin 恒返回 `errCoreScanUnsupported` ⇒ `confirmNoCoreForRelease` 恒 `false` ⇒ **重新求证在非 darwin 是 no-op,门仍然焊死**。这句话必须以注释形式写进代码(Task 6),并有一条 `//go:build !darwin` 的回归测试钉住。
   - CI 的 `macos-app` job **确实**跑 `swift build --package-path apps/macos/BxMenu` 与 `bash scripts/test-macos-menu.sh`;但 `Tests/` 下的文件**不属于任何 SwiftPM target**,没在 `scripts/test-macos-menu.sh` 里注册的测试文件永远不会被执行,而 CI 照样全绿。注册由 `internal/cli/macos_menu_suite_registration_test.go` 守着 —— 新增 Swift 测试文件必须同时改脚本。
 - **本期不做**(设计已定,不要顺手做):不给调谐器执行权;不动 `retainUncertain` 覆盖 `m.current` 顶掉健康 Core `Exit` 句柄那个正交问题;不动非 darwin 的扫描实现。
 
@@ -42,11 +44,11 @@
 | 文件 | 本期承担什么 |
 |---|---|
 | `internal/guardian/manager.go` | 锁存的全部生命周期:产生(`retainUncertain`、`handleUnexpectedExit` 内联那一处)、消费(`upLocked`/`Migrate` 的短路)、清除(`Down` 的新 defer、`clearUncertaintyAfterProof`)、升级(`recoverLocked` 置 `recoveryBlocked`)。新增 `uncertainCause` 字段、`clearOwnershipLatch`、`recheckOwnershipUncertain`、`upOrigin`。 |
-| `internal/guardian/process.go` | `finishExistingWatch` 停止产出 uncertain;`retainedUncertainCause` 辅助;`ownershipUncertainEscapeHint` 文案。 |
+| `internal/guardian/process.go` | 两个 (c) 类产地停止产出 uncertain(`finishExistingWatch` 与 `Start` 里那条 wait goroutine,分两次提交);`retainedUncertainCause` 辅助;`ownershipUncertainEscapeHint` 文案。 |
 | `internal/guardian/update.go` | 只因 `retainUncertain` 签名变化而改(4 处调用点),行为不变。 |
 | `internal/guardian/manager_latch_test.go` | **新建**。本期 Manager 级的全部新测试都住这里(`Down` 清锁存、不清自己新造的、`recoveryBlocked` 不升级、重新求证的四种结局、启动恢复不求证)。 |
 | `internal/guardian/manager_confirm_test.go` | 已有的 `scannerOnlyRunner`/`nonScanningRunner`/`scriptedScanner` 供新测试复用,**不改**。 |
-| `internal/guardian/manager_test.go` | 改两处:`fakeCoreRunner` 加一个扫描计数器;`TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnproven` 改成注入诚实扫描器(Task 6)。 |
+| `internal/guardian/manager_test.go` | 改两处:`fakeCoreRunner` 加一个扫描计数器;`TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnproven` 改成注入诚实扫描器(Task 7)。 |
 | `internal/guardian/process_test.go` | 加 Watch 路径的新断言 + 「Stop 那几处仍然报 uncertain」的越界守卫(Task 3)。 |
 | `internal/guardian/procscan_other_test.go` | **新建**(`//go:build !darwin`),钉住非 darwin 的门是焊死的。 |
 | `internal/cli/client.go` | `guardianCodeHints["core_ownership_uncertain"]` 文案。 |
@@ -61,12 +63,12 @@
 
 1. **Task 1(`Down` 清锁存)排第一**:价值最高、改动最小、**不依赖后面任何一条**,而且方向上只增加逃生口。被文档/CLI/菜单/升级文案四处引用的那条出路今天是假的,先把它变成真的。
 2. **Task 2(`recoveryBlocked` 不升级)排第二**:它保护的是 Task 1 才刚修好的那条路 —— 锁存若还能升级成 `recoveryBlocked`,`Down` 第一句就返回 `errRecoveryIncomplete`,Task 1 的 defer 一样跑不到有意义的地方。两条一起才是完整的「关得掉」。
-3. **Task 3(`finishExistingWatch`)独立**:它减少锁存的产生,与前两条无耦合,放这里是因为它便宜且能立刻减少事故面。
-4. **Task 4(保留 cause)在重新求证之前**:重新求证失败时要带着当初那个 cause 报出来,cause 得先有地方存。它自身也有独立价值(今天锁存后的错误比第一次**更少**信息)。
-5. **Task 5(求证助手,不接线)**:纯新增,谁也不影响,可以单独把证明纪律的四种结局钉死。**这一步之后树的行为一个字没变。**
-6. **Task 6(接进 `upLocked`)是风险最高的一步**,所以排在所有安全网都装好之后:此时 `Down` 已能清、`recoveryBlocked` 已不会升级、cause 已保留、助手已被单独证明过。也是在这一步正面处理 `manager_test.go:1034`。
-7. **Task 7(`Migrate`)**紧随其后,同一套助手,只是第二个入口。
-8. **Task 8/9(消费方文案与文档)**排最后:文案描述的是最终行为,提前改就是让文档撒另一种谎。
+3. **Task 3 与 Task 4(两个 (c) 类产地)独立,且刻意分成两次提交**:它们减少锁存的**产生**,与前两条无耦合。两处形状相同(OS 已确认进程没了,失败的只是删一个 JSON),但分开提交是有意的 —— 它们与重新求证那条线无关,出问题时应当能**各自独立回退**,不必把整期撤掉。
+4. **Task 5(保留 cause)在重新求证之前**:重新求证失败时要带着当初那个 cause 报出来,cause 得先有地方存。它自身也有独立价值(今天锁存后的错误比第一次**更少**信息)。
+5. **Task 6(求证助手,不接线)**:纯新增,谁也不影响,可以单独把释放与拒绝的每一种结局钉死。**这一步之后树的行为一个字没变。**
+6. **Task 7(接进 `upLocked`)是风险最高的一步**,所以排在所有安全网都装好之后:此时 `Down` 已能清、`recoveryBlocked` 已不会升级、cause 已保留、助手已被单独证明过。也是在这一步正面处理 `manager_test.go:1034`。
+7. **Task 8(`Migrate`)**紧随其后,同一套助手,只是第二个入口。
+8. **Task 9/10(消费方文案与文档)**排最后:文案描述的是最终行为,提前改就是让文档撒另一种谎。
 
 ---
 
@@ -77,7 +79,7 @@
 - Test: `internal/guardian/manager_latch_test.go`(新建)
 
 **Interfaces:**
-- Produces: `func (m *Manager) clearOwnershipLatch(latchedOnEntry Process)` —— 后续 Task 4 会在它里面补一行清 `m.uncertainCause`。
+- Produces: `func (m *Manager) clearOwnershipLatch(latchedOnEntry Process)` —— 后续 Task 5 会在它里面补一行清 `m.uncertainCause`。
 - Consumes: 既有 `Manager.current Process`、`newManagerTestEnv`/`newProtectedManagerTestEnv`/`eventually`/`fakeCoreRunner`(`manager_test.go`)。
 
 **背景(动手前读一遍)**:`Down` 从不读 `Uncertain`,它按 `m.current.PID` 分支。三种锁存形状分别停在:① `desired=off` 且 PID==0 → `manager.go:784` 的提前返回;② `desired=on` 且 PID==0 → `runner.Existing`(跑的正是当初把它锁上的那次扫描,同样失败);③ 有真实 PID(`handleUnexpectedExit`)→ `runner.Stop` 开头的 `verifyInstalledProcess` 对一个从没验明身份的进程必然失败。**三条都到不了 `m.current = Process{}`**(`:846`)。
@@ -396,7 +398,7 @@ EOF
 
 ---
 
-### Task 3: `finishExistingWatch` 不再把「已证明安全」记成所有权不确定
+### Task 3: `finishExistingWatch`(接管来的 Core)不再把「已证明安全」记成所有权不确定
 
 **Files:**
 - Modify: `internal/guardian/process.go:592-598`(`finishExistingWatch`)
@@ -485,10 +487,10 @@ func (r *ExecCoreRunner) finishExistingWatch(process Process, exit chan<- error,
 		// Existing() 的判断同源 —— 清不掉一个陈旧文件不等于所有权存疑,后者是给
 		// 「进程还在但身份不匹配」准备的语义。
 		//
-		// **只改这一处。** Stop(:503/:516/:543/:556)与 Existing(:470)形状相似
-		// 但处置的是**可能仍属于活进程**的记录;Start 自己那条 wait goroutine
-		// (:217)证明其实更强(waitpid 已经返回),但设计只点名了这一处 ——
-		// 留待下一期,别顺手一起改。
+		// **Stop(:503/:516/:543/:556)与 Existing(:470)不动**:它们处置的是
+		// **可能仍属于活进程**的记录,证明不同。Start 自己那条 wait goroutine
+		// (:217)与本处同源、证明其实更强(waitpid 已经返回),由**下一个 task
+		// 单独一次提交**处理 —— 分开是为了两者能各自独立回退。
 		log.Printf("guardian_stale_core_record_after_exit pid=%d generation=%s clear_failed=%v",
 			process.PID, process.Generation, clearErr)
 	}
@@ -500,7 +502,7 @@ func (r *ExecCoreRunner) finishExistingWatch(process Process, exit chan<- error,
 - [ ] **Step 4: 跑绿**
 
 Run: `go test ./internal/guardian -count=1` 与 `go test -race ./internal/guardian -count=1`
-Expected: PASS。**注意** `TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit`(`process_test.go:288`)测的是 **Start 自己那条 wait goroutine**(`process.go:217`),不是本处 —— 它必须**仍然绿**。若它红了,说明你改错了地方。
+Expected: PASS。**注意** `TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit`(`process_test.go:288`)测的是 **Start 自己那条 wait goroutine**(`process.go:217`),不是本处 —— 它在本 task 里必须**仍然绿**(下一个 task 才动它)。若它现在就红了,说明你改错了地方。
 
 - [ ] **Step 5: 全量验证**
 
@@ -529,8 +531,8 @@ finishExistingWatch 手里握着「安全」的证明(OS 已确认被观察的�
 文件系统抖动都能锁死 daemon。改为记日志、照常按「进程已消失」处理,与
 603b602 当初对 Existing() 的判断同源。
 
-只改这一处:Stop 与 Existing 那几处处置的是可能仍属于活进程的记录,
-由越界守卫测试钉住不动。
+Stop 与 Existing 那几处处置的是可能仍属于活进程的记录,由越界守卫测试钉住
+不动;Start 自己那条 wait goroutine 同源但单独一次提交,便于各自回退。
 
 Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
@@ -539,7 +541,138 @@ EOF
 
 ---
 
-### Task 4: 保留并报出当初那次拒绝的 cause
+### Task 4: `Start` 的 wait goroutine 也不再把「已证明安全」记成所有权不确定
+
+**Files:**
+- Modify: `internal/guardian/process.go:214-224`(`Start` 末尾那条 `go func(){ started.Wait() ... }`)
+- Modify: `internal/guardian/process_test.go`(改 `TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit`,**不许删**)
+
+**Interfaces:**
+- Produces: 无新符号(行为改变 + 复用 Task 3 那行日志 `guardian_stale_core_record_after_exit`)。
+- Consumes: Task 3 已经确立的判断(清不掉陈旧记录 ≠ 所有权存疑)。
+
+**背景与它为什么比 Task 3 更该改**:这条 goroutine 里 `started.Wait()` **已经返回** —— 那是 `waitpid`,是这个系统里对「进程确定没了」最强的一种证明,比 Task 3 那处(靠 `Inspect` 返回 `ErrProcessNotRunning`)还硬。握着这样一份证明,只因为删不掉一个 JSON 就宣布所有权不确定,与 `603b602` 当初对 `Existing()` 做的判断直接冲突。**这是一处准入放宽**:改完之后这类退出会走 `handleUnexpectedExit` 的正常分支(装屏障 + 重启 Core),而不是锁存拒绝 —— 所以下面那条测试就是专门盯着这次放宽的。
+
+- [ ] **Step 1: 改测试(先改测试,让它先红)**
+
+`internal/guardian/process_test.go` 里把 `TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit` **改名并改断言**(保留它原有的后半段 —— 那半段断言「记录仍在盘上、而 Existing 不把它当所有权不确定」,与本改动同向,必须原样留着):
+
+```go
+// waitpid 已经返回 —— 这是「进程确定没了」最强的一种证明。握着它却因为删不掉
+// 一份 JSON 记录就宣布所有权不确定,与 603b602 当初对 Existing() 的判断直接
+// 冲突,而后果是一次文件系统抖动锁死 daemon。
+//
+// 这条测试原名 ...PublishesUncertainExit,编码的正是被推翻的那个行为。**不删,
+// 改断言** —— 它守着的另外两件事(记录不许被静默丢掉、Existing 之后仍能继续)
+// 依然有效。
+func TestExecCoreRunnerRecordRemovalFailureAfterWaitIsNotOwnershipUncertainty(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := newStartTestProcess(55)
+	operations := &startTestProcessOperations{
+		started: started,
+		process: Process{PID: 55, Executable: executable, UID: 0, Generation: "darwin:123:459"},
+	}
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.ScanRunningCores = noCoresRunning
+	runner.StatePath = filepath.Join(dir, "core-process.json")
+	runner.Operations = operations
+	runner.RemoveProcessRecord = func(string) error { return errors.New("record removal failed") }
+	var logs bytes.Buffer
+	restoreLog := swapGuardianLogOutput(&logs)
+	defer restoreLog()
+
+	process, err := runner.Start(context.Background(), CoreStartOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started.release()
+	if exitErr := <-process.Exit; errors.Is(exitErr, ErrProcessOwnershipUncertain) {
+		t.Fatalf("waitpid 已经返回,却因为删不掉一份记录报了所有权不确定: %v", exitErr)
+	}
+	if !strings.Contains(logs.String(), "guardian_stale_core_record_after_exit") {
+		t.Fatalf("清理失败必须留下线索,日志里没有:\n%s", logs.String())
+	}
+	if _, err := os.Stat(runner.StatePath); err != nil {
+		t.Fatalf("owned record removed after failed reconciliation: %v", err)
+	}
+	// ↓↓↓ 原测试后半段原样保留(记录仍在磁盘上但进程已死,Existing 应视为无既有
+	// Core 继续)。照抄原文件里那几行,不要重写。
+```
+
+- [ ] **Step 2: 跑红**
+
+Run: `go test ./internal/guardian -count=1`
+Expected: `TestExecCoreRunnerRecordRemovalFailureAfterWaitIsNotOwnershipUncertainty` FAIL(`却因为删不掉一份记录报了所有权不确定`)。
+
+- [ ] **Step 3: 最小实现**
+
+`process.go` 的 `Start` 末尾那条 goroutine 改为:
+
+```go
+	exit := make(chan error, 1)
+	go func() {
+		waitErr := started.Wait()
+		if err := r.removeRecordIfGeneration(process.PID, process.Generation); err != nil {
+			// **waitpid 已经返回** —— 进程确定没了,失败的只是删一份 JSON。
+			// 与 finishExistingWatch 同源、证明更硬:那处靠 Inspect 报
+			// ErrProcessNotRunning,这处是内核亲口告诉我们子进程收割完了。
+			// 清不掉一个陈旧文件不等于所有权存疑(603b602 对 Existing() 的判断)。
+			log.Printf("guardian_stale_core_record_after_exit pid=%d generation=%s clear_failed=%v",
+				process.PID, process.Generation, err)
+		}
+		exit <- waitErr
+		close(exit)
+	}()
+```
+
+- [ ] **Step 4: 跑绿**
+
+Run: `go test ./internal/guardian -count=1` 与 `go test -race ./internal/guardian -count=1`
+Expected: PASS。**Task 3 建的那条越界守卫 `TestStopStillReportsUncertaintyWhenItCannotClearTheRecord` 必须仍然绿** —— `Stop` 那几处一个字都不该动。
+
+- [ ] **Step 5: 全量验证**
+
+Run: `go build ./... && go vet ./... && go test ./... -count=1`
+Run: gofumpt 检查(看打印内容)
+
+- [ ] **Step 6: 变异验证**
+
+| 变异 | 必须转红 |
+|---|---|
+| 把 `log.Printf` 换回 `waitErr = errors.Join(waitErr, uncertainOwnership(process, ...))` | `TestExecCoreRunnerRecordRemovalFailureAfterWaitIsNotOwnershipUncertainty` |
+| 删掉那行 `log.Printf`(不报 uncertain 也不留线索) | 同上(它同时断言日志) |
+| 把 `removeRecordIfGeneration` 的返回值整个忽略(连删都不删) | **应当没有测试转红** —— 记下来:这条 goroutine 没有测试断言「确实尝试过删」,可接受(原测试断言的是删**失败**时记录仍在盘上) |
+| 顺手把 `Stop` 的 `:503` 也改成日志 | Task 3 的 `TestStopStillReportsUncertaintyWhenItCannotClearTheRecord` |
+
+还原 + 重新证绿。
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add internal/guardian/process.go internal/guardian/process_test.go
+git commit -m "$(cat <<'EOF'
+fix(guardian): Start 的 wait goroutine 也不再产出所有权不确定
+
+waitpid 已经返回 —— 这是「进程确定没了」最强的一种证明,比 finishExistingWatch
+那处(靠 Inspect 报 ErrProcessNotRunning)还硬。握着它却因为删不掉一份 JSON
+就宣布所有权不确定,与 603b602 对 Existing() 的判断直接冲突。
+
+TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit 编码的正是被推翻的
+那个行为:改断言而不是删掉,它守着的另外两件事(记录不许被静默丢掉、Existing
+之后仍能继续)依然有效。Stop 那几处不动,由越界守卫钉住。
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 5: 保留并报出当初那次拒绝的 cause
 
 **Files:**
 - Modify: `internal/guardian/manager.go`(`Manager` 结构体加字段;`retainUncertain` 签名;`handleUnexpectedExit` 内联赋值;`upLocked`/`Migrate` 两处短路;`clearUncertaintyAfterProof`;`clearOwnershipLatch`)
@@ -729,18 +862,34 @@ EOF
 
 ---
 
-### Task 5: `recheckOwnershipUncertain` —— 带证明纪律的重新求证(先不接线)
+### Task 6: `confirmNoCoreForRelease` + `recheckOwnershipUncertain` —— 带证明纪律的重新求证(先不接线)
 
 **Files:**
-- Modify: `internal/guardian/manager.go`(新增方法,**不改任何调用方**)
+- Modify: `internal/guardian/manager.go`(新增两个方法,**不改任何调用方**,**也不动 `confirmCoreStopped`**)
 - Create: `internal/guardian/procscan_other_test.go`
 - Test: `internal/guardian/manager_latch_test.go`(追加)
 
 **Interfaces:**
-- Produces: `func (m *Manager) recheckOwnershipUncertain(hop string) error` —— 返回 `nil` 表示锁存已被求证清掉、可以继续;返回非 nil 表示继续拒绝(错误包 `ErrProcessOwnershipUncertain`,并带着 Task 4 保留的 cause 与本次求证的 reason)。`hop` 只进日志,取值 `"up"` / `"migrate"`。
-- Consumes: 既有 `confirmCoreStopped()`、`coreScanSettle`、Task 4 的 `m.uncertainCause`。
+- Produces:
+  - `func (m *Manager) confirmNoCoreForRelease() (released bool, reason string)` —— **释放方向**的求证:两次扫描**都**干净、中间隔一个 `coreScanSettle`,才返回 `true`。任何一次扫脏/扫错、runner 不会扫、panic,一律 `false` + 原因(`core_still_running` / `core_scan_failed` / `core_scan_unsupported`)。**永不返回 error、永不 panic 出去。**
+  - `func (m *Manager) recheckOwnershipUncertain(hop string) error` —— 返回 `nil` 表示锁存已被求证清掉、可以继续;返回非 nil 表示继续拒绝(错误包 `ErrProcessOwnershipUncertain`,并带着 Task 5 保留的 cause 与本次求证的 reason)。`hop` 只进日志,取值 `"up"` / `"migrate"`。
+- Consumes: 既有 `coreScanner` 接口、`coreScanSettle`、Task 5 的 `m.uncertainCause`。
 
-**本步之后树的行为一个字没变** —— 新方法还没有任何调用方。这是刻意的:证明纪律的四种结局先单独钉死,再去动准入。
+**为什么不复用 `confirmCoreStopped`(这是本 task 的全部要点)**:它在**第一次扫描就干净时直接返回 true**,不沉降、不重扫。对一个「已 fork、`Terminate()` 已发、wait 超时,进程既不是僵尸也还没消失」的残留(`cleanupFailedStart` 那个窗口),而 `scanRunningCores` 又会跳过 argv 读不出的进程 —— 一次扫描完全可能给出**假的全清**,`confirmCoreStopped` 在这一点上并不比裸扫描强。它真正强的是另外三条(永不返回 error、panic 收成「没能确认」、runner 不会扫时判「没能确认」)。
+
+两个函数的**偏置方向相反,必须分开**:
+
+| | `confirmCoreStopped`(`Down`/`Recover`) | `confirmNoCoreForRelease`(重新求证) |
+|---|---|---|
+| 回答的问题 | 能不能对用户说「已关闭」 | 能不能**再起一个 Core** |
+| 怕什么 | 把每次正常关闭都报成告警(用户会学会忽略告警) | 一次假的「全清」→ 两个 Core 争默认路由,`bx status` 显绿而流量明文直连 |
+| 扫脏一次 | 沉降后重扫,第二次干净就算数 | **立即拒绝** |
+| 说 yes 的条件 | 任意一次干净 | **两次都干净,中间隔一个沉降窗口** |
+| 代价 | 只有扫脏时才付 300ms | 成功释放时固定付 300ms(每次用户发起的 `bx up` 至多一次) |
+
+**把这两个「统一」掉是本期最容易犯、后果最重的错误。** 既有的 `TestConfirmCoreStoppedReScansAfterASettleWindow`(`manager_confirm_test.go:83`)钉住前者的偏置,本 task 新加的 `TestRecheckDoesNotReleaseWhenOnlyTheSecondScanIsClean` 钉住后者 —— 两条必须同时绿,谁想合并它们都会撞上其中一条。
+
+**本步之后树的行为一个字没变** —— 新方法还没有任何调用方。这是刻意的:释放与拒绝的每一种结局先单独钉死,再去动准入。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -748,25 +897,84 @@ EOF
 
 ```go
 // 系统里确实没有 Core 在跑 ⇒ 释放。这是整条出口存在的理由。
-func TestRecheckReleasesTheLatchWhenTheSystemSaysNoCoreIsRunning(t *testing.T) {
-	env := newManagerTestEnv(t)
-	env.manager.current = Process{PID: 4242, Uncertain: true}
-	env.manager.uncertainCause = errors.New("Core appears to be running (PID 4242)")
-
-	if err := env.manager.recheckOwnershipUncertain("up"); err != nil {
-		t.Fatalf("扫干净了仍然拒绝: %v", err)
-	}
-	if env.manager.current.Uncertain || env.manager.uncertainCause != nil {
-		t.Fatal("释放之后锁存或 cause 还留着")
-	}
-}
-
-// 扫到了 ⇒ 保持拒绝,并且报出**当初**那个 cause 加上**这次**的理由。
-func TestRecheckKeepsRefusingWhenACoreIsStillRunning(t *testing.T) {
+// **两次扫描都干净才算数** —— 断言 calls==2,而不只是「释放了」。
+func TestRecheckReleasesTheLatchOnlyAfterTwoCleanScans(t *testing.T) {
 	restore := coreScanSettle
 	coreScanSettle = time.Millisecond
 	t.Cleanup(func() { coreScanSettle = restore })
 
+	scan := &scriptedScanner{}
+	env := newManagerTestEnv(t)
+	env.manager.runner = &scannerOnlyRunner{scan: scan}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+	env.manager.uncertainCause = errors.New("Core appears to be running (PID 4242)")
+
+	if err := env.manager.recheckOwnershipUncertain("up"); err != nil {
+		t.Fatalf("两次都扫干净了仍然拒绝: %v", err)
+	}
+	if env.manager.current.Uncertain || env.manager.uncertainCause != nil {
+		t.Fatal("释放之后锁存或 cause 还留着")
+	}
+	if scan.calls != 2 {
+		t.Fatalf("释放只扫了 %d 次 —— 起第二个 Core 是这个系统里最坏的结果,一次扫描不够", scan.calls)
+	}
+}
+
+// **第一次扫干净、第二次扫到了 ⇒ 绝不释放。**
+//
+// 这正是设计点名的那个残留:子进程已 fork、Terminate() 已发、wait 超时,进程
+// 既不是僵尸也还没消失,而 scanRunningCores 会跳过 argv 读不出的进程 ——
+// 一次扫描完全可能给出假的「全清」。这条测试是「一次干净就够了」这个变异的
+// 唯一守卫。
+func TestRecheckDoesNotReleaseWhenOnlyTheFirstScanIsClean(t *testing.T) {
+	restore := coreScanSettle
+	coreScanSettle = time.Millisecond
+	t.Cleanup(func() { coreScanSettle = restore })
+
+	scan := &scriptedScanner{results: [][]Process{nil, {{PID: 4242}}}}
+	env := newManagerTestEnv(t)
+	env.manager.runner = &scannerOnlyRunner{scan: scan}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+
+	err := env.manager.recheckOwnershipUncertain("up")
+	if !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("一次假的「全清」就放行了: %v", err)
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("锁存被一次假的全清清掉了")
+	}
+	if scan.calls != 2 {
+		t.Fatalf("扫了 %d 次 —— 第一次干净之后必须再扫一次才能下结论", scan.calls)
+	}
+}
+
+// **第一次扫到、沉降后干净 ⇒ 同样不释放。**
+//
+// 这条与上一条方向相反,守的是另一个变异:「直接拿 confirmCoreStopped 来用」。
+// confirmCoreStopped 在这个脚本下**会**说 stopped(它的偏置是别把正常关闭报成
+// 告警,对 Down 是对的),而释放锁存是准入控制,偏置必须反过来。既有的
+// TestConfirmCoreStoppedReScansAfterASettleWindow 钉住那一头,这条钉住这一头。
+func TestRecheckDoesNotReleaseWhenOnlyTheSecondScanIsClean(t *testing.T) {
+	restore := coreScanSettle
+	coreScanSettle = time.Millisecond
+	t.Cleanup(func() { coreScanSettle = restore })
+
+	scan := &scriptedScanner{results: [][]Process{{{PID: 4242}}, nil}}
+	env := newManagerTestEnv(t)
+	env.manager.runner = &scannerOnlyRunner{scan: scan}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+
+	if err := env.manager.recheckOwnershipUncertain("up"); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("复用了 Down 那条偏置相反的求证: %v", err)
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("锁存被 Down 那套偏置清掉了")
+	}
+}
+
+// 扫到了 ⇒ 保持拒绝,并且报出**当初**那个 cause 加上**这次**的理由。
+// (第一次就扫脏,立即拒绝、不沉降,所以这条不需要缩 coreScanSettle。)
+func TestRecheckKeepsRefusingWhenACoreIsStillRunning(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.runner.scanResult = []Process{{PID: 4242}}
 	env.manager.current = Process{PID: 4242, Uncertain: true}
@@ -792,10 +1000,6 @@ func TestRecheckKeepsRefusingWhenACoreIsStillRunning(t *testing.T) {
 
 // **扫不动 ≠ 没有。** 最容易瞬时发生的一类,也是最不能塌缩成「放行」的一类。
 func TestRecheckKeepsRefusingWhenTheScanFails(t *testing.T) {
-	restore := coreScanSettle
-	coreScanSettle = time.Millisecond
-	t.Cleanup(func() { coreScanSettle = restore })
-
 	env := newManagerTestEnv(t)
 	env.runner.scanErr = errors.New("sysctl failed")
 	env.manager.current = Process{Uncertain: true}
@@ -819,19 +1023,17 @@ func TestRecheckKeepsRefusingWhenTheRunnerCannotScan(t *testing.T) {
 	}
 }
 
-// 证明纪律:第一次扫到、沉降之后干净 ⇒ 释放。刚被 Terminate、正在跑 defer 的
-// 进程既不是僵尸也还没消失,一次扫描判「还在」会把每次正常关闭都变成永久拒绝。
-func TestRecheckRescansAfterTheSettleWindow(t *testing.T) {
-	restore := coreScanSettle
-	coreScanSettle = time.Millisecond
-	t.Cleanup(func() { coreScanSettle = restore })
-
+// panic 也是一种失败模式,而且这一条比别的更要命:一次 panic 打死 Guardian,
+// launchd 的 KeepAlive 把它拉起来再 panic —— 崩溃循环。收成「没能确认」,
+// 方向与本函数其余部分一致。(panickingScanner 定义在 manager_down_test.go;
+// 若它不是一个完整的 CoreRunner,照 scannerOnlyRunner 的写法就地包一个。)
+func TestRecheckSurvivesAPanickingScanner(t *testing.T) {
 	env := newManagerTestEnv(t)
-	env.manager.runner = &scannerOnlyRunner{scan: &scriptedScanner{results: [][]Process{{{PID: 4242}}, nil}}}
+	env.manager.runner = panickingScanner{}
 	env.manager.current = Process{Uncertain: true}
 
-	if err := env.manager.recheckOwnershipUncertain("up"); err != nil {
-		t.Fatalf("沉降后已经干净了仍然拒绝: %v", err)
+	if err := env.manager.recheckOwnershipUncertain("up"); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("panic 之后 = %v, want 仍然拒绝(而不是让 Guardian 崩掉)", err)
 	}
 }
 
@@ -862,7 +1064,7 @@ package guardian
 import "testing"
 
 // 非 darwin 上这扇门是**焊死**的:scanRunningCores 恒返回错误 ⇒
-// confirmCoreStopped 恒「没能确认」⇒ 重新求证在这些平台上是 no-op,
+// confirmNoCoreForRelease 恒「没能确认」⇒ 重新求证在这些平台上是 no-op,
 // 锁存永远不会被它释放。谁要把 Guardian 移植过来,必须先实现
 // scanRunningCores —— 否则得到的不是「行为不变」,而是一个永远解不开的锁存。
 func TestCoreScanIsUnsupportedOffDarwin(t *testing.T) {
@@ -879,14 +1081,62 @@ func TestCoreScanIsUnsupportedOffDarwin(t *testing.T) {
 - [ ] **Step 2: 跑红**
 
 Run: `go test ./internal/guardian -count=1`
-Expected: 六条 Manager 级测试 FAIL(编译错误:`recheckOwnershipUncertain` 未定义)。
+Expected: 八条 Manager 级测试 FAIL(编译错误:`recheckOwnershipUncertain` 未定义)。
 Run: `GOOS=linux GOARCH=amd64 go test -c -o /dev/null ./internal/guardian`(确认 `!darwin` 那个文件能编)—— 若本机就是 darwin,该测试文件在本机不参与构建,靠 CI 的 ubuntu/windows runner 跑;交叉编译测试二进制是本机唯一能验它的办法。
 
 - [ ] **Step 3: 最小实现**
 
-`manager.go`,挨着 `confirmCoreStopped` 放:
+`manager.go`,挨着 `confirmCoreStopped` 放(**不要改 `confirmCoreStopped` 一个字**):
 
 ```go
+// confirmNoCoreForRelease 是**释放方向**的求证:能不能允许再起一个 Core?
+//
+// **与 confirmCoreStopped 偏置相反,所以是两个函数。** 那一个回答「能不能对用户
+// 说已关闭」,怕的是把每次正常关闭都报成告警,于是第一次扫脏之后沉降重扫、
+// 第二次干净就算数;**它在第一次扫描就干净时直接返回 true,不沉降、不重扫**,
+// 因此对一次假的「全清」并不比裸扫描强。
+//
+// 而这里问的是准入。假的「全清」在这里的后果是两个 Core 争默认路由、先退出的
+// 那个用旧快照还原掀掉另一个的劫持,于是 bx status 显绿而流量明文直连。设计
+// 自己点名的那个残留(cleanupFailedStart:子进程已 fork、Terminate() 已发、
+// wait 超时,进程既不是僵尸也还没消失,而 scanRunningCores 会跳过 argv 读不出
+// 的进程)恰恰就是一次假的全清。**所以两次都必须干净,中间隔一个沉降窗口。**
+//
+// 代价:一次成功的释放固定多花 coreScanSettle(300ms)。它只发生在已经锁存的
+// 机器上、且由用户动作触发,每次 bx up 至多一次 —— 对这个系统里唯一一个
+// 「判错就是两个 Core」的决定来说很便宜。**拒绝不付这个代价**(第一次扫脏就
+// 立即返回),所以反复重试的用户不会被拖慢。
+//
+// **永不返回 error、永不 panic 出去**:panic 打死 Guardian 会被 launchd 的
+// KeepAlive 拉起来再 panic —— 崩溃循环。收成「没能确认」。
+func (m *Manager) confirmNoCoreForRelease() (released bool, reason string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("guardian_core_scan_panicked_on_release recovered=%v", r)
+			released, reason = false, "core_scan_failed"
+		}
+	}()
+	scanner, ok := m.runner.(coreScanner)
+	if !ok {
+		return false, "core_scan_unsupported"
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			time.Sleep(coreScanSettle)
+		}
+		cores, err := scanner.ScanRunning()
+		switch {
+		case err != nil:
+			log.Printf("guardian_core_scan_failed_on_release attempt=%d err=%v", attempt, err)
+			return false, "core_scan_failed"
+		case len(cores) > 0:
+			log.Printf("guardian_core_still_running_on_release attempt=%d pids=%s", attempt, scannedCorePIDs(cores))
+			return false, "core_still_running"
+		}
+	}
+	return true, ""
+}
+
 // recheckOwnershipUncertain 在**用户显式发起**的 up/migrate 上重新求证所有权,
 // 取代「把第一次的结论钉死」的短路。
 //
@@ -895,23 +1145,17 @@ Run: `GOOS=linux GOARCH=amd64 go test -c -o /dev/null ./internal/guardian`(确�
 // 要么是一次失败的 unlink、要么是一个可能早就退出了的嫌疑 —— 而它们全都锁死
 // 同一扇门。
 //
-// **用 confirmCoreStopped 那套,不用裸的 scanCores。** 它:①永不返回 error;
-// ②panic 收成「没能确认」(Recover 跑在裸 goroutine 里,一次 panic + launchd
-// KeepAlive = 崩溃循环);③runner 不会扫时判「没能确认」而不是编一个答案;
-// ④第一次扫到时沉降 300ms 再扫一次 —— 刚被 Terminate、正在跑 defer 的进程既不是
-// 僵尸也还没消失,一次扫描判「还在」会把每次正常关闭都变成永久拒绝。
-//
-// **只有「确知没有」才释放。** 扫不动、扫到了、求证本身失败,三种情况一律保持
-// 拒绝,fail-closed 一步不让。
+// **只有「确知没有」才释放。** 扫不动、扫到了(哪怕只有两次里的一次)、runner
+// 不会扫、求证本身 panic,一律保持拒绝,fail-closed 一步不让。
 //
 // **非 darwin 上这是个 no-op**:procscan_other.go 的 scanRunningCores 恒返回
-// errCoreScanUnsupported ⇒ confirmCoreStopped 恒 false ⇒ 门仍然焊死。谁要移植
-// Guardian,必须先实现 scanRunningCores。
+// errCoreScanUnsupported ⇒ confirmNoCoreForRelease 恒 false ⇒ 门仍然焊死。
+// 谁要移植 Guardian,必须先实现 scanRunningCores。
 func (m *Manager) recheckOwnershipUncertain(hop string) error {
 	if !m.current.Uncertain {
 		return nil
 	}
-	stopped, reason := m.confirmCoreStopped()
+	stopped, reason := m.confirmNoCoreForRelease()
 	if !stopped {
 		log.Printf("guardian_ownership_uncertain_recheck hop=%s released=false reason=%s pid=%d",
 			hop, reason, m.current.PID)
@@ -934,7 +1178,7 @@ func (m *Manager) recheckOwnershipUncertain(hop string) error {
 - [ ] **Step 4: 跑绿**
 
 Run: `go test ./internal/guardian -count=1` 与 `go test -race ./internal/guardian -count=1`
-Expected: PASS。**既有测试必须一条都没红** —— 本步没有任何调用方,行为不该变。
+Expected: PASS。**既有测试必须一条都没红** —— 本步没有任何调用方,行为不该变。特别确认 `manager_confirm_test.go` 那五条全绿,尤其 `TestConfirmCoreStoppedReScansAfterASettleWindow`:它钉的是 `confirmCoreStopped` 的**相反**偏置,若它红了说明你去改了那个函数(不许改)。
 
 - [ ] **Step 5: 全量验证**
 
@@ -946,10 +1190,15 @@ Run: gofumpt 检查(看打印内容)
 
 | 变异 | 必须转红 |
 |---|---|
-| `if !stopped` 改成 `if false`(永远释放) | `...WhenACoreIsStillRunning`、`...WhenTheScanFails`、`...WhenTheRunnerCannotScan` |
-| `m.confirmCoreStopped()` 换成裸的一次扫描、且把 err 当作「干净」处理 | `...WhenTheScanFails`、`...WhenTheRunnerCannotScan`(**注意** `...WhenACoreIsStillRunning` 不会红 —— 裸扫描在那个场景下同样拒绝。这是真实的覆盖边界,别以为它兜住了) |
+| `if !stopped` 改成 `if false`(永远释放) | `...WhenACoreIsStillRunning`、`...WhenTheScanFails`、`...WhenTheRunnerCannotScan`、`...WhenOnlyTheFirstScanIsClean`、`...WhenOnlyTheSecondScanIsClean`、`...SurvivesAPanickingScanner` |
+| **`confirmNoCoreForRelease` 的循环改成 `attempt < 1`(一次干净就释放)** | `TestRecheckDoesNotReleaseWhenOnlyTheFirstScanIsClean`(**这是那条测试唯一的守卫目标**),以及 `TestRecheckReleasesTheLatchOnlyAfterTwoCleanScans` 的 `calls != 2` 断言 |
+| **`recheckOwnershipUncertain` 里 `m.confirmNoCoreForRelease()` 换成 `m.confirmCoreStopped()`** | `TestRecheckDoesNotReleaseWhenOnlyTheSecondScanIsClean`(**这是那条测试唯一的守卫目标** —— 两条偏置相反的求证被合并,正是本 task 最怕的错误) |
+| 把 `case len(cores) > 0` 那一支删掉(扫到也不算) | `...WhenACoreIsStillRunning`、`...WhenOnlyTheFirstScanIsClean`、`...WhenOnlyTheSecondScanIsClean` |
+| 把 `case err != nil` 改成 `continue`(扫不动就再试,试完当干净) | `...WhenTheScanFails` |
+| 删掉 `scanner, ok := m.runner.(coreScanner)` 的 `!ok` 早退(当作干净) | `...WhenTheRunnerCannotScan`(注意:删掉后是 nil 解引用 panic → 被 recover 收成拒绝 → 可能**不红**。若不红,改成 `if !ok { return true, "" }` 再验一次) |
+| 删掉 `defer func(){ recover() ... }` | `TestRecheckSurvivesAPanickingScanner`(整包会以 panic 中止 —— 那也算红,记下来) |
 | 去掉 `if !m.current.Uncertain { return nil }` 这一句 | `TestRecheckDoesNotScanWhenThereIsNoLatch` |
-| 释放分支里删掉 `m.uncertainCause = nil` | `...WhenTheSystemSaysNoCoreIsRunning` |
+| 释放分支里删掉 `m.uncertainCause = nil` | `TestRecheckReleasesTheLatchOnlyAfterTwoCleanScans` |
 | 拒绝分支里的 `errors.Join(...)` 改成只传 `m.uncertainCause` | `...WhenACoreIsStillRunning`(它断言了 `core_still_running` 出现在文本里) |
 | 拒绝分支里把 `m.needsAttention(DesiredOn, "core_ownership_uncertain")` 改成别的码 | `...WhenACoreIsStillRunning` |
 
@@ -962,9 +1211,15 @@ git add internal/guardian/manager.go internal/guardian/manager_latch_test.go int
 git commit -m "$(cat <<'EOF'
 feat(guardian): 加带证明纪律的所有权重新求证助手(尚未接线)
 
-recheckOwnershipUncertain 用 confirmCoreStopped 那套(两次扫描 + 沉降 +
-panic 兜底 + 「不会扫」判没能确认)重新求证:只有「确知没有」才释放,
-扫不动/扫到了/求证失败一律保持拒绝,判据一个字没变。发布的失败码保持
+confirmNoCoreForRelease 是**释放方向**的求证,与 confirmCoreStopped 偏置相反,
+故是两个函数:后者第一次扫干净就返回 true(对 Down 是对的,怕的是把正常关闭
+报成告警),因此对一次假的「全清」并不比裸扫描强;而释放锁存是准入控制,
+设计点名的残留(cleanupFailedStart:已 fork、Terminate 已发、wait 超时,进程
+既非僵尸也未消失,而扫描会跳过 argv 读不出的进程)恰恰就是假的全清。
+故**两次扫描都干净、中间隔一个沉降窗口**才释放;扫到了/扫不动/不会扫/panic
+一律拒绝,且拒绝不付沉降代价。
+
+recheckOwnershipUncertain 在此之上给出出口,发布的失败码保持
 core_ownership_uncertain,CLI、菜单、升级三处消费方的分支不受影响。
 
 本提交没有任何调用方,行为不变;非 darwin 上它恒为 no-op,门仍然焊死,
@@ -977,7 +1232,7 @@ EOF
 
 ---
 
-### Task 6: 把 `upLocked` 的短路换成重新求证(**只在用户发起时**),并正面处理 `manager_test.go:1034`
+### Task 7: 把 `upLocked` 的短路换成重新求证(**只在用户发起时**),并正面处理 `manager_test.go:1034`
 
 **Files:**
 - Modify: `internal/guardian/manager.go`(`upLocked` 签名加 `origin`;`Up` 与 `recoverLocked` 两个调用点;短路换成 `recheckOwnershipUncertain`)
@@ -989,9 +1244,11 @@ EOF
   - `type upOrigin int`,常量 `upOriginUser`、`upOriginStartupRecovery`
   - `func (m *Manager) upLocked(ctx context.Context, origin upOrigin) error`
   - `func (r *fakeCoreRunner) scanCount() int`(测试替身)
-- Consumes: Task 5 的 `recheckOwnershipUncertain`。
+- Consumes: Task 6 的 `recheckOwnershipUncertain`。
 
-**为什么要分「谁发起的」**:`upLocked` 有两个调用点 —— `Up`(用户)与 `recoverLocked`(启动恢复)。而 `daemon.go` 的 `retryDaemonRecovery` 会**无限重试** `Recover`,退避封顶 `guardianRecoveryRetryMax = 5 * time.Second`:一台锁存的机器上,把两次扫描 + 300ms 沉降放进这条路等于**每 5 秒一轮、永远**(约 1.7 万轮/天)。设计的风险第二条明写「不许把这套纪律搬进任何按时钟驱动的路径」。启动恢复因此保留便宜的短路;它原本最坏的后果(锁存升级成 `recoveryBlocked` 把 `Down` 堵死)已经由 Task 2 拆掉,而用户的 `bx up` 现在每次都会重新求证。
+**为什么要分「谁发起的」**:`upLocked` 有两个调用点 —— `Up`(用户)与 `recoverLocked`(启动恢复)。而 `daemon.go` 的 `retryDaemonRecovery` 会**无限重试** `Recover`,退避封顶 `guardianRecoveryRetryMax = 5 * time.Second`:一台锁存的机器上,把这套求证放进这条路等于**每 5 秒一轮、永远**(约 1.7 万轮/天)。设计的风险第二条明写「不许把这套纪律搬进任何按时钟驱动的路径」。启动恢复因此保留便宜的短路;它原本最坏的后果(锁存升级成 `recoveryBlocked` 把 `Down` 堵死)已经由 Task 2 拆掉,而用户的 `bx up` 现在每次都会重新求证。
+
+**一条被考虑过、并且刻意不做的事(写在这里免得下一个读者以为是漏掉的)**:「让启动恢复自己把一次**瞬时**扫描失败治好」是有价值的 —— 设计文档抱怨的正是「一个专门设计成不放弃的重试循环,永远解不开一个瞬时错误」。本期不做,因为无限重试 × 每轮两次扫描是明确被禁止的按时钟驱动路径,而这个缺口已经有两条兜底:① Task 2 之后瞬时失败不再堵死 `Down`;② 用户的下一次 `bx up` 会重新求证并自愈。**自然的后续做法是「有限次数」而不是「每轮都做」** —— 本仓库已有现成先例 `maxPathRecoveryAttempts`(路径恢复重试 20 次封顶)。等真机 soak 显示这类瞬时锁存确实发生,再单独立一期照那个形状做。
 
 - [ ] **Step 1: 写失败测试(盯着这次放宽本身)**
 
@@ -999,8 +1256,13 @@ EOF
 
 ```go
 // **这次放宽本身**:用户发起的 Up 撞上锁存时,必须重新去问系统,而不是把
-// 第一次的结论钉死。系统说没有 ⇒ 继续,Core 起得来。
+// 第一次的结论钉死。**两次扫描都干净** ⇒ 继续,Core 起得来。
 func TestUserInitiatedUpReVerifiesAndProceedsWhenTheSystemIsClean(t *testing.T) {
+	// 释放要跨一个沉降窗口(拒绝不用),缩短它免得每次跑测试都白等 300ms。
+	restore := coreScanSettle
+	coreScanSettle = time.Millisecond
+	t.Cleanup(func() { coreScanSettle = restore })
+
 	env := newManagerTestEnv(t)
 	env.manager.current = Process{PID: 4242, Uncertain: true}
 	env.manager.uncertainCause = errors.New("Core appeared to be running (PID 4242)")
@@ -1014,15 +1276,15 @@ func TestUserInitiatedUpReVerifiesAndProceedsWhenTheSystemIsClean(t *testing.T) 
 	if got := env.runner.startCount(); got != 1 {
 		t.Fatalf("starts = %d, want 1", got)
 	}
+	if got := env.runner.scanCount(); got != 2 {
+		t.Fatalf("释放只扫了 %d 次 —— 一次干净不足以放行", got)
+	}
 }
 
 // 放宽的另一头:系统说**还有** Core 在跑 ⇒ 照旧拒绝,而且**一个 Core 都不许起**。
 // 起第二个 Core 是这个系统里最坏的结果。
+// (第一次就扫脏 ⇒ 立即拒绝、不沉降,所以这条不需要缩 coreScanSettle。)
 func TestUserInitiatedUpStillRefusesWhenACoreIsStillRunning(t *testing.T) {
-	restore := coreScanSettle
-	coreScanSettle = time.Millisecond
-	t.Cleanup(func() { coreScanSettle = restore })
-
 	env := newManagerTestEnv(t)
 	env.runner.scanResult = []Process{{PID: 4242}}
 	env.manager.current = Process{PID: 4242, Uncertain: true}
@@ -1037,10 +1299,6 @@ func TestUserInitiatedUpStillRefusesWhenACoreIsStillRunning(t *testing.T) {
 
 // 扫不动同样拒绝,同样不起 Core。
 func TestUserInitiatedUpStillRefusesWhenTheScanFails(t *testing.T) {
-	restore := coreScanSettle
-	coreScanSettle = time.Millisecond
-	t.Cleanup(func() { coreScanSettle = restore })
-
 	env := newManagerTestEnv(t)
 	env.runner.scanErr = errors.New("sysctl failed")
 	env.manager.current = Process{Uncertain: true}
@@ -1054,8 +1312,9 @@ func TestUserInitiatedUpStillRefusesWhenTheScanFails(t *testing.T) {
 }
 
 // **启动恢复不许重新求证。** retryDaemonRecovery 每 5 秒重试一次、永不放弃:
-// 把两次扫描 + 300ms 沉降放进去等于一天一万七千轮,正是设计里明写「不许搬进
-// 按时钟驱动的路径」的那条纪律。
+// 把这套求证放进去等于一天一万七千轮,正是设计里明写「不许搬进按时钟驱动的
+// 路径」的那条纪律。(「让它有限次数地自愈瞬时失败」是有价值的后续,但那要
+// 照 maxPathRecoveryAttempts 的形状单独做,不是每轮都做。)
 func TestStartupRecoveryDoesNotReVerifyOwnership(t *testing.T) {
 	env := newManagerTestEnv(t)
 	if err := env.store.SaveDesired(DesiredOn); err != nil {
@@ -1166,11 +1425,9 @@ Expected: 新测试全绿,但 `TestManagerHealthFailureUsesLiveBoundedCleanupAnd
 `manager_test.go` 里改为:
 
 ```go
+// 注:第二次 Up 的重新求证在**第一次扫描**就扫到那个 Core,立即拒绝、不跨沉降
+// 窗口,所以这条测试不需要缩 coreScanSettle。
 func TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnproven(t *testing.T) {
-	restore := coreScanSettle
-	coreScanSettle = time.Millisecond
-	t.Cleanup(func() { coreScanSettle = restore })
-
 	env := newManagerTestEnv(t)
 	env.manager.cleanupTimeout = 20 * time.Millisecond
 	env.health.err = errors.New("Core unhealthy")
@@ -1206,9 +1463,9 @@ func TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnprove
 }
 ```
 
-**同时检查两条相邻的既有测试**(它们的 runner 本来就诚实,应当仍绿,但会慢 300ms):
-- `manager_test.go:~1010` 那条(`newRunner()` 注入了 `ScanRunningCores`:fork 之前干净、fork 之后有 Core)—— 它是「诚实扫描器」的现成范本。若跑得太慢,在该测试里同样把 `coreScanSettle` 调小(用 `t.Cleanup` 还原)。
-- `TestManagerLateLaunchCleanupProofClearsUncertaintyForRetry`(`~1094`)—— 它用的是 `noCoresRunning`,即「如实查过,系统里确实没有 Core」,与它要表达的「fork 清理**已经**被证明」一致,应当仍绿。
+**同时检查两条相邻的既有测试**(它们的 runner 本来就诚实,应当仍绿):
+- `manager_test.go:~1010` 那条(`newRunner()` 注入了 `ScanRunningCores`:fork 之前干净、fork 之后有 Core)—— 它是「诚实扫描器」的现成范本;重新求证在第一次扫描就扫到,立即拒绝,不会变慢。
+- `TestManagerLateLaunchCleanupProofClearsUncertaintyForRetry`(`~1094`)—— 它用的是 `noCoresRunning`,即「如实查过,系统里确实没有 Core」,与它要表达的「fork 清理**已经**被证明」一致,应当仍绿;若它里面有第二次 `Up` 且会走到释放,给它加 `coreScanSettle` 缩短(用 `t.Cleanup` 还原),**只改速度,一个断言都不许动**。
 
 - [ ] **Step 6: 跑绿**
 
@@ -1228,6 +1485,7 @@ Run: gofumpt 检查(看打印内容)
 | `recheckOwnershipUncertain` 的拒绝分支删掉(永远释放) | `TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnproven`、`TestUserInitiatedUpStillRefusesWhenACoreIsStillRunning`、`...WhenTheScanFails` | 改造后的那条测试**仍然**在守它原本那条安全属性 |
 | 把 `!stopped` 里的 `reason == "core_still_running"` 单独放行(只在「确知还在」时放行) | 同上第一条 | 换个角度证明它盯的是「系统说还有」 |
 | **把改造后测试里那句 `env.runner.scanResult = ...` 注掉**(退回默认的「干净机器」) | 那条测试本身必须红 | **注入的扫描器是承重的** —— 它现在绿是因为系统说有 Core,不是因为锁存粘住了 |
+| `confirmNoCoreForRelease` 的循环改成 `attempt < 1`(一次干净就放行) | `TestUserInitiatedUpReVerifiesAndProceedsWhenTheSystemIsClean` 的 `scanCount != 2` 断言 | 两次干净这条纪律在**接线之后**仍然成立,不只是助手内部的事 |
 | `upLocked` 里 `origin == upOriginUser` 改成恒真 | `TestStartupRecoveryDoesNotReVerifyOwnership` | 启动恢复那条路真的没被卷进来 |
 | `recoverLocked` 的调用点改成 `upOriginUser` | 同上 | 分支映射没写反(本仓库出过「分支映射错」的守卫漏洞) |
 | `Up` 的调用点改成 `upOriginStartupRecovery` | `TestUserInitiatedUpReVerifiesAndProceedsWhenTheSystemIsClean` | 反方向也钉住 |
@@ -1243,7 +1501,7 @@ feat(guardian): 用户发起的 Up 重新求证所有权,不再把第一次的�
 
 十五个 uncertain 产地里只有三个真的意味着「有第二个 Core」,其余是一次失败的
 扫描、一次失败的 unlink、或一个可能早就退出了的嫌疑 —— 而它们全都锁死同一扇门。
-现在用户发起的 Up 每次都用 confirmCoreStopped 那套(两次扫描 + 沉降)重新求一遍:
+现在用户发起的 Up 每次都用 confirmNoCoreForRelease 重新求一遍(两次扫描都干净才放行):
 判据一个字没变,只有「确知没有」才释放,扫不动/扫到了/求证失败一律保持拒绝。
 
 启动恢复保留便宜的短路:retryDaemonRecovery 每 5 秒重试且永不放弃,把这套
@@ -1261,14 +1519,14 @@ EOF
 
 ---
 
-### Task 7: `Migrate` 同样改为重新求证
+### Task 8: `Migrate` 同样改为重新求证
 
 **Files:**
 - Modify: `internal/guardian/manager.go:482-485`
 - Test: `internal/guardian/manager_latch_test.go`(追加)
 
 **Interfaces:**
-- Consumes: Task 5 的 `recheckOwnershipUncertain`。
+- Consumes: Task 6 的 `recheckOwnershipUncertain`。
 - Produces: 无新符号。
 
 **背景**:`Migrate` 是 `bx up` 在一台还带 legacy Core 的机器上走的那条路,同样是**用户显式说的 on**。它今天的短路与 `upLocked` 那处一模一样(`uncertainOwnership(m.current, nil)`),漏掉它等于修了一半 —— 而「只修一跳是假绿」是这个仓库反复付过学费的形状(`60b76f3`)。
@@ -1281,6 +1539,11 @@ EOF
 // Migrate 是 bx up 在还带 legacy Core 的机器上走的那条路,同样是用户显式说的 on。
 // 漏掉它就是「只修一跳」——这个仓库为这个形状付过学费(60b76f3)。
 func TestMigrateReVerifiesOwnershipWhenTheSystemIsClean(t *testing.T) {
+	// 释放要跨一个沉降窗口(拒绝不用)。
+	restore := coreScanSettle
+	coreScanSettle = time.Millisecond
+	t.Cleanup(func() { coreScanSettle = restore })
+
 	env := newManagerTestEnv(t)
 	env.manager.current = Process{PID: 4242, Uncertain: true}
 	env.manager.uncertainCause = errors.New("Core appeared to be running (PID 4242)")
@@ -1295,11 +1558,8 @@ func TestMigrateReVerifiesOwnershipWhenTheSystemIsClean(t *testing.T) {
 }
 
 // 另一头:系统说还有 Core 在跑 ⇒ 照旧拒绝,且一个 Core 都不起。
+// (第一次就扫脏 ⇒ 立即拒绝、不沉降。)
 func TestMigrateStillRefusesWhenACoreIsStillRunning(t *testing.T) {
-	restore := coreScanSettle
-	coreScanSettle = time.Millisecond
-	t.Cleanup(func() { coreScanSettle = restore })
-
 	env := newManagerTestEnv(t)
 	env.runner.scanResult = []Process{{PID: 4242}}
 	env.manager.current = Process{PID: 4242, Uncertain: true}
@@ -1336,7 +1596,7 @@ Expected: `TestMigrateReVerifiesOwnershipWhenTheSystemIsClean` FAIL;第二条 PA
 - [ ] **Step 4: 跑绿**
 
 Run: `go test ./internal/guardian -count=1` 与 `go test -race ./internal/guardian -count=1`
-Expected: PASS。**注意**:Task 4 写的 `TestLatchedMigrateRefusalKeepsTheOriginalCause` 现在会走进重新求证 —— 该 env 的 `scanResult` 为零值(干净机器),于是它会**释放**并不再报 uncertain。**这条测试必须改**:给它加 `env.runner.scanResult = []Process{{PID: 4242}}` 与 `coreScanSettle` 缩短,让它在「系统说还有」的前提下继续断言 cause 被带出。这是一次合法的测试改动 —— 它守的属性(cause 不丢)没变,变的是造出该属性的前提。
+Expected: PASS。**注意**:Task 5 写的 `TestLatchedMigrateRefusalKeepsTheOriginalCause` 现在会走进重新求证 —— 该 env 的 `scanResult` 为零值(干净机器),于是它会**释放**并不再报 uncertain。**这条测试必须改**:给它加 `env.runner.scanResult = []Process{{PID: 4242}}`,让它在「系统说还有」的前提下继续断言 cause 被带出(第一次就扫脏,不沉降,不必缩 `coreScanSettle`)。这是一次合法的测试改动 —— 它守的属性(cause 不丢)没变,变的是造出该属性的前提。
 
 - [ ] **Step 5: 全量验证**
 
@@ -1370,7 +1630,7 @@ EOF
 
 ---
 
-### Task 8: 三处消费方文案与行为对齐
+### Task 9: 三处消费方文案与行为对齐
 
 **Files:**
 - Modify: `internal/cli/client.go`(`guardianCodeHints["core_ownership_uncertain"]` 与它上面那段注释)
@@ -1381,10 +1641,10 @@ EOF
 - Test: `internal/cli/cli_test.go`(新增一条钉住 Go 侧文案不再声称「只有 down 能清」)
 
 **Interfaces:**
-- Consumes: Task 6/7 之后的真实行为。
+- Consumes: Task 7/8 之后的真实行为。
 - Produces: 无新符号,只有文案。
 
-**背景**:这条出路的文案**不是**「不存在」,而是**已经过时** —— 它出现在 CLI 的 `guardianCodeHints`、菜单的 `toggleFailureHint`、升级中止文案三处,三处都在说「只有 down 才会清」。Task 6 之后这句话在两个方向上都不再准确:① `bx up` 自己就会重新求证;② 若它**仍然**拒绝,那说明系统里真有一个 Core、或者根本扫不动 —— 此时再跑一遍 down+up 并不会有帮助,该看的是 Guardian 日志。
+**背景**:这条出路的文案**不是**「不存在」,而是**已经过时** —— 它出现在 CLI 的 `guardianCodeHints`、菜单的 `toggleFailureHint`、升级中止文案三处,三处都在说「只有 down 才会清」。Task 7 之后这句话在两个方向上都不再准确:① `bx up` 自己就会重新求证;② 若它**仍然**拒绝,那说明系统里真有一个 Core、或者根本扫不动 —— 此时再跑一遍 down+up 并不会有帮助,该看的是 Guardian 日志。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1446,10 +1706,10 @@ Expected: `toggle-controller` 那个套件 FAIL。
 ```go
 // ownershipUncertainEscapeHint 告诉用户这条判定会怎么解开。
 //
-// 它**不再**是一条只能靠 down 清掉的锁存:用户发起的 up/migrate 每次都会用
-// confirmCoreStopped 重新求证一遍(recheckOwnershipUncertain),确知没有 Core
-// 在跑就自行释放。仍然拒绝就说明系统里真有一个、或者根本扫不动 —— 那时该看的
-// 是 Guardian 日志里那两行普查,不是再跑一遍 down+up。
+// 它**不再**是一条只能靠 down 清掉的锁存:用户发起的 up/migrate 每次都会经
+// recheckOwnershipUncertain 重新求证一遍,两次扫描都干净(确知没有 Core 在跑)
+// 就自行释放。仍然拒绝就说明系统里真有一个、或者根本扫不动 —— 那时该看的是
+// Guardian 日志里那两行普查,不是再跑一遍 down+up。
 const ownershipUncertainEscapeHint = "`sudo bx up` re-verifies this on every attempt; if it still refuses, a Core really is running (or the scan cannot answer) — see guardian_core_scan / guardian_core_still_running in /var/log/bx-guard.err.log"
 ```
 
@@ -1511,12 +1771,12 @@ EOF
 
 ---
 
-### Task 9: 更正 `CLAUDE.md` 里那两条已经不成立的说法
+### Task 10: 更正 `CLAUDE.md` 里那两条已经不成立的说法
 
 **Files:**
 - Modify: `CLAUDE.md`(macOS 那一大段里「**已知限制:所有权不确定是锁存的**……唯一脱身办法是 **`sudo bx down` 再 `sudo bx up`**」那几句)
 
-**Interfaces:** 无代码,不需要测试;但**必须**在改之前把 Task 1–8 的实际行为读一遍,不要凭这份计划的措辞去写文档 —— 计划与代码不一致时以代码为准。
+**Interfaces:** 无代码,不需要测试;但**必须**在改之前把 Task 1–9 的实际行为读一遍,不要凭这份计划的措辞去写文档 —— 计划与代码不一致时以代码为准。
 
 - [ ] **Step 1: 定位**
 
@@ -1527,7 +1787,7 @@ Run: `grep -n "所有权不确定是锁存的" CLAUDE.md`
 
 把「已知限制」那几句替换成(措辞按实际实现校准):
 
-> **锁存已有出口(2026-08-11)**:上面那条「所有权不确定是锁存的、唯一脱身办法是 `sudo bx down` 再 `sudo bx up`」**两半都不再成立,而且其中一半从来就不成立**。① `Down` 从不读 `Uncertain`,它按 `m.current.PID` 分支,三种锁存形状(PID 0 + desired=off / PID 0 + desired=on / 带真实 PID)分别停在提前返回、`runner.Existing` 的同一次失败扫描、`runner.Stop` 开头必然失败的身份校验 —— 全都到不了那句 `m.current = Process{}`。用户报告它「有时管用」,靠的是 CLI 的 `bx down` 失败落到强制拆除、把 Guardian 整个 bootout 掉:**真正管用的一直是杀掉 daemon**。现在 `Down` 在所有出口无条件清掉进门时那一个锁存(但**不清**它自己在 DNS 还原补偿里新造的那个,那会是 fail-open)。② **用户发起**的 `Up`/`Migrate` 不再短路,改为用 `confirmCoreStopped` 那套(两次扫描 + 300ms 沉降 + panic 兜底 + 「runner 不会扫」判没能确认)**重新求证**:判据一个字没变,只有「确知没有」才释放,扫不动/扫到了/求证失败一律保持拒绝。**启动恢复不走这条** —— `retryDaemonRecovery` 每 5 秒重试且永不放弃,把这套纪律搬进按时钟驱动的路径就是一天一万七千轮。③ 锁存不再经 `recoverLocked` 升级成 `recoveryBlocked`(判据与 `hold.go` 对 `ErrMaintenanceHoldUnreadable` 的处置同源):**「开不了」永不许升级成「关不掉」**。④ `finishExistingWatch` 不再产出这条判定 —— OS 已确认进程消失、只是删不掉一个 JSON,那是清理失败不是所有权存疑。**非 darwin 上重新求证是 no-op**(`procscan_other.go` 恒返回错误 ⇒ 恒拒绝),门仍然焊死;谁移植 Guardian 必须先实现 `scanRunningCores`。**真机未验** —— 以上全部由单元测试覆盖,没有人在真机上人为造一个锁存验证 `bx up` 是否真的恢复。设计 `docs/superpowers/specs/2026-08-11-ownership-uncertain-exit-design.md`、计划 `docs/superpowers/plans/2026-08-11-ownership-uncertain-exit.md`。
+> **锁存已有出口(2026-08-11)**:上面那条「所有权不确定是锁存的、唯一脱身办法是 `sudo bx down` 再 `sudo bx up`」**两半都不再成立,而且其中一半从来就不成立**。① `Down` 从不读 `Uncertain`,它按 `m.current.PID` 分支,三种锁存形状(PID 0 + desired=off / PID 0 + desired=on / 带真实 PID)分别停在提前返回、`runner.Existing` 的同一次失败扫描、`runner.Stop` 开头必然失败的身份校验 —— 全都到不了那句 `m.current = Process{}`。用户报告它「有时管用」,靠的是 CLI 的 `bx down` 失败落到强制拆除、把 Guardian 整个 bootout 掉:**真正管用的一直是杀掉 daemon**。现在 `Down` 在所有出口无条件清掉进门时那一个锁存(但**不清**它自己在 DNS 还原补偿里新造的那个,那会是 fail-open)。② **用户发起**的 `Up`/`Migrate` 不再短路,改为 `confirmNoCoreForRelease` **重新求证**:**两次扫描都干净、中间隔一个沉降窗口**才释放,扫到了(哪怕只有一次)/扫不动/runner 不会扫/panic 一律保持拒绝,判据一个字没变。**它与 `Down` 用的 `confirmCoreStopped` 是两个函数、偏置刻意相反**:后者第一次扫干净就算数(怕把正常关闭报成告警),对一次假的「全清」并不比裸扫描强;而释放锁存是准入控制,`cleanupFailedStart` 那个残留(已 fork、`Terminate()` 已发、wait 超时,进程既非僵尸也未消失,而扫描会跳过 argv 读不出的进程)恰恰就是假的全清 —— **把两者「统一」掉就是把双 Core 的门打开**。**启动恢复不走这条** —— `retryDaemonRecovery` 每 5 秒重试且永不放弃,把这套纪律搬进按时钟驱动的路径就是一天一万七千轮;「有限次数地自愈瞬时失败」是刻意留给后续的(照 `maxPathRecoveryAttempts` 的形状)。③ 锁存不再经 `recoverLocked` 升级成 `recoveryBlocked`(判据与 `hold.go` 对 `ErrMaintenanceHoldUnreadable` 的处置同源):**「开不了」永不许升级成「关不掉」**。④ 两处「已证明安全」的产地不再产出这条判定 —— `finishExistingWatch`(OS 确认进程消失)与 `Start` 自己那条 wait goroutine(`waitpid` 已返回,证明更硬),删不掉一个 JSON 是清理失败不是所有权存疑;`Stop`/`Existing` 那几处处置的是可能仍属于活进程的记录,不动。**非 darwin 上重新求证是 no-op**(`procscan_other.go` 恒返回错误 ⇒ 恒拒绝),门仍然焊死;谁移植 Guardian 必须先实现 `scanRunningCores`。**真机未验** —— 以上全部由单元测试覆盖,没有人在真机上人为造一个锁存验证 `bx up` 是否真的恢复。设计 `docs/superpowers/specs/2026-08-11-ownership-uncertain-exit-design.md`、计划 `docs/superpowers/plans/2026-08-11-ownership-uncertain-exit.md`。
 
 - [ ] **Step 3: 交叉检查同段里别的过时句子**
 
@@ -1566,5 +1826,6 @@ EOF
 - [ ] `bash scripts/test-macos-menu.sh`
 - [ ] `git ls-files '*.go' | grep -v 'embedded/assets\|internal/winfw' | xargs "$(go env GOPATH)/bin/gofumpt" -l` —— **打印为空**
 - [ ] `go test ./internal/guardian -run TestReconcile -count=1` **之外**再跑一次不过滤的整包,确认 `TestReconcileOnceNeverClearsTheOwnershipUncertainLatch` 与 `reconcile_loop.go:88-91,147`、`reconcile.go:35-40,168-169` 一行未改(`git diff --stat` 里不该出现这两个文件)
-- [ ] `git log --oneline -9` 复核:9 个提交、每个都有 `Co-Authored-By`、都在 `master` 上
+- [ ] `git log --oneline -10` 复核:10 个提交、每个都有 `Co-Authored-By`、都在 `master` 上
+- [ ] `manager_confirm_test.go` 五条全绿 —— 尤其 `TestConfirmCoreStoppedReScansAfterASettleWindow`:它与 `TestRecheckDoesNotReleaseWhenOnlyTheSecondScanIsClean` 断言的是**同一个扫描脚本下的相反结论**,两条同时绿才证明那两个偏置没有被合并
 - [ ] **真机验收无人执行,必须写进最终汇报**:没有人在真机上人为造一个孤儿标记 / 第三方 `sudo bx run`,验证 `bx up` 是否真的能自己恢复、以及 `bx down` 之后 `bx up` 是否不再被拒。
