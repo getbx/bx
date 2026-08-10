@@ -95,8 +95,19 @@ func decide(in reconcileInput) reconcileDecision {
 	switch in.Desired {
 	case DesiredOn:
 		// 观测到 Core 的控制 socket 确实不应答,才提议起它。
-		// 本期只是**提议**:真授权要等 Uncertain 锁存那一段有解(见设计),
-		// 否则一次瞬时的扫描失败会经由锁存变成永久拒绝。
+		//
+		// **CoreSocket==False 的语义是「socket 没应答」,不是「没有 Core 在跑」。**
+		// observer 在 FetchRuntime 的**任何**错误上都记 False —— 超时、权限、
+		// socket 目录有问题都算。于是一个卡住但活着的 Core 会让这里提议 start_core,
+		// 而那正是 af81632 被回退时的双 Core 入口。
+		//
+		// 两个后果,写在这里免得将来误读:
+		//   - 阶段③a 的 soak 会**高估** start_core 的出现次数,那个计数不能被读成
+		//     「调谐器判断正确」的证据;
+		//   - 阶段③b 真要授权起 Core 时,准入判据是 scanRunningCores(向系统求证
+		//     有没有进程在跑我们的 Core),**不是这条观测**。这条只回答「该不该考虑
+		//     起它」,不回答「起它安不安全」。除此之外还要先解 Uncertain 锁存
+		//     (见设计),否则一次瞬时的扫描失败会经由锁存变成永久拒绝。
 		if in.Observed.CoreSocket == observe.False {
 			add(actionStartCore)
 		}
