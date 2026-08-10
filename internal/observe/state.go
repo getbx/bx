@@ -90,6 +90,18 @@ func (s ObservedState) UnobservableItems() []string {
 // Intent 是用户/agent 声明的意图。观测层只读它,永不改写。
 type Intent struct {
 	Desired string `json:"desired"` // "on" | "off"
+	// Hold 是正在生效的维护挂起(升级等)。非 nil 且未过期时,「保护此刻不在」
+	// 是**预期之内**的,不是分歧。
+	Hold *HoldIntent `json:"maintenance_hold,omitempty"`
+}
+
+// HoldIntent 是 guardian.MaintenanceHoldStatus 在本包里的镜像。
+//
+// 本包不 import internal/guardian:那会把一个只读观测层挂到控制面上,而观测层
+// 存在的全部理由就是不依赖控制面自己的记账。翻译由调用方(internal/cli)做。
+type HoldIntent struct {
+	Reason    string    `json:"reason"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // Believed 是生命周期层的内存信念,原样透出以便与观测对照。

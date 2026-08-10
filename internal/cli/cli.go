@@ -241,6 +241,15 @@ type clientStatusReport struct {
 	// 每一个消费者问的都是「集合里有没有某一条」——空集合与从未声明的答案相同
 	// (都是「没有」),于是「我们根本没问到 Guardian」如实表现为字段缺席。
 	GuardianCapabilities []string `json:"guardian_capabilities,omitempty"`
+
+	// MaintenanceHold 是正在生效的维护挂起。它解释了「desired=on 而保护不在」——
+	// 没有它,一台正在升级的机器与一台坏掉的机器在 bx status 上长得一模一样。
+	//
+	// 缺席有两种意思(「这一版 Guardian 不认识挂起」与「认识、此刻没有」),
+	// 靠 GuardianCapabilities 里的 CapabilityMaintenanceHold 分开 —— 与 Reconcile
+	// 同一机制。渲染层对两者都**什么都不写**:一行常驻的「没有挂起」正是
+	// observerForPlatform 那道门在防的噪声。
+	MaintenanceHold *guardian.MaintenanceHoldStatus `json:"maintenance_hold,omitempty"`
 }
 
 type inspectReport struct {
@@ -4373,8 +4382,14 @@ func attachObservation(report clientStatusReport, status guardian.Status, observ
 	defer cancel()
 	observed := observer(ctx)
 	report.Observed = &observed
+	// 挂起必须传进去:不传的话,一台正在升级的机器会冒出一条「没有保护在跑」的
+	// 假分歧,而 divergence 一旦被训练成噪声,它唯一的价值就没了。
+	intent := observe.Intent{Desired: string(status.Desired)}
+	if hold := status.MaintenanceHold; hold != nil {
+		intent.Hold = &observe.HoldIntent{Reason: hold.Reason, ExpiresAt: hold.ExpiresAt}
+	}
 	report.Divergence = observe.Diverge(
-		observe.Intent{Desired: string(status.Desired)},
+		intent,
 		observed,
 		observe.Believed{
 			Protection: report.ProtectionState,
@@ -4453,6 +4468,7 @@ func assembleClientStatusReportWithCoreForPlatform(core *stats.Report, evidence 
 		RuntimeVersion:       status.RuntimeVersion,
 		Reconcile:            status.Reconcile,
 		GuardianCapabilities: status.Capabilities,
+		MaintenanceHold:      status.MaintenanceHold,
 	}
 }
 
@@ -4472,6 +4488,7 @@ func renderClientStatus(report clientStatusReport) string {
 			fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
 		}
 		writeClientRecovery(&b, report.Recovery)
+		writeClientMaintenanceHold(&b, report)
 		writeClientReconcile(&b, report)
 		return b.String()
 	}
@@ -4487,9 +4504,34 @@ func renderClientStatus(report clientStatusReport) string {
 	}
 	writeClientDNS(&b, report.DNSState, report.DNSService)
 	writeClientRecovery(&b, report.Recovery)
+	writeClientMaintenanceHold(&b, report)
 	writeClientReconcile(&b, report)
 	b.WriteString(stats.Render(*report.Report))
 	return b.String()
+}
+
+// maintenanceHoldStatusPrefix 是那一行的完整行首,含把它对进 Status/Network/DNS
+// 那一列的补白(那一列宽 8)。与 reconcileStatusPrefix 同理由:让「这一行在不在」
+// 的判据是整段行首,而不是一个短到会撞上别处的字。
+const maintenanceHoldStatusPrefix = "  Hold    "
+
+// writeClientMaintenanceHold 解释「用户要保护、此刻却没有」。
+//
+// **没有挂起就一个字都不写。** 一行常驻的「没有挂起」会把这一项训练成噪声,
+// 而它一年里只该出现几分钟 —— 与 observerForPlatform 那道 darwin 门、以及
+// writeClientReconcile 第三态逐字相同的理由。这里刻意**不**按能力声明去写
+// 「这一版不认识挂起」:那句话对每一台旧机器都恒真,正是同一种噪声。
+//
+// 只渲染**正在生效**的那一张:Guardian 发布的就只有它(过期的不进 Status),
+// 所以这一行出现 = 保护此刻被有意压制,不是坏了。
+func writeClientMaintenanceHold(b *strings.Builder, report clientStatusReport) {
+	hold := report.MaintenanceHold
+	if hold == nil {
+		return
+	}
+	fmt.Fprintf(b, "%s维护挂起(%s),%s 后失效 —— 保护此刻被有意压制,desired 仍是 %s\n",
+		maintenanceHoldStatusPrefix, hold.Reason,
+		time.Until(hold.ExpiresAt).Round(time.Second), report.Desired)
 }
 
 func writeClientDNS(b *strings.Builder, state guardian.DNSState, service string) {
