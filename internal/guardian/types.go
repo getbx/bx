@@ -125,7 +125,11 @@ const CapabilityDiagnosticsArchive = "diagnostics_archive"
 // 二者若不分开,CLI 只能在「对每一台机器都常驻一行『尚未观测』」与「对刚起来的
 // 新版一个字都不说」之间二选一 —— 前者正是 observerForPlatform 那道门在防的噪声,
 // 后者则让「循环死了」重新变得看不见。
-const CapabilityReconcileReport = "reconcile-report"
+//
+// 值用下划线,与同一个数组里的 CapabilityDiagnosticsArchive 一致:消费方是
+// **逐字**比对的(apps/macos/BxMenu/Sources/BxMenu/StatusReport.swift),一个数组里
+// 两种写法迟早会有人照着旁边那条抄错。今天还没有消费方依赖它,阶段③b 之后它就是契约。
+const CapabilityReconcileReport = "reconcile_report"
 
 // GuardianCapabilities 是这一版 Guardian 声明支持的能力集合。
 //
@@ -159,7 +163,43 @@ type ReconcileReport struct {
 	// UnchangedRounds 是判断连续多少轮没变。它同时是退避的输入,所以一个持续
 	// 增长的数字意味着「循环活着且这段时间一直是同一个判断」。
 	UnchangedRounds int `json:"unchanged_rounds"`
+	// Unobservable 是这一轮**没能问出来**的观测项(observe.ObservedState.UnobservableItems)。
+	//
+	// **没有它,一台全盲的机器与一台健康的机器发布的是同一份报告。** 判据对
+	// Unknown 一律「什么都不做」,所以三项探测全失败时 Actions 为空、Held 为空、
+	// UnchangedRounds 一路涨 —— 与「跑了、什么差异都没有」逐字节相同,而后者
+	// 正是 soak 想要的结论。这个字段是二者唯一的区别。
+	Unobservable []string `json:"unobservable,omitempty"`
+	// CoreScan 是这一轮**只读**进程扫描的测量结果。见 ReconcileCoreScan ——
+	// 它是测量,不参与判断。
+	CoreScan ReconcileCoreScan `json:"core_scan"`
 }
+
+// ReconcileCoreScan 是一轮里对 looksLikeCore 的**只读**测量。
+//
+// 存在的理由是设计里的第二样交付:looksLikeCore(basename(argv[0])=="bx" &&
+// argv[1]=="run" && uid==0)的误报率**至今从未测量**,而阶段③b 要在它之上再叠
+// 一层准入。它今天只在 Existing/Start/confirmCoreStopped 这三条**改动**路径上被
+// 调用,所以只观察的循环跑上几天也攒不出任何证据。
+//
+// **它绝不参与判断**:decide 的输入一个字段都没加,这里只是把答案记下来。
+type ReconcileCoreScan struct {
+	// Measured 为假时 Cores 无意义。「枚举不出来」不是「一个都没有」——
+	// 与 decideCoreScan 那条 fail-closed 下限同一条原则,只是这里不做拒绝、
+	// 只做记录:把扫描失败记成 0,正好会让误报率算出来偏低,即这份测量的反面。
+	Measured bool `json:"measured"`
+	// Cores 是本轮扫到的、看起来像 Core 的进程数。健康机器上应当恒为 1。
+	Cores int `json:"cores"`
+	// Reason 只在 Measured 为假时非空,说明为什么没测成。
+	Reason string `json:"reason,omitempty"`
+}
+
+// 没能测量时的原因。原样进日志与 JSON,所以是稳定标识符而不是给人看的句子。
+const (
+	coreScanUnsupported = "scan_unsupported"
+	coreScanFailed      = "scan_failed"
+	coreScanPanicked    = "scan_panicked"
+)
 
 // clone 返回一份深拷贝。Status 会被交给 JSON 编码器旁边的任意代码,交出内部
 // 那一份的别名等于把 Manager 的状态开放给调用方去改(与 GuardianCapabilities
@@ -170,6 +210,7 @@ func (r *ReconcileReport) clone() *ReconcileReport {
 	}
 	copied := *r
 	copied.Actions = append([]string(nil), r.Actions...)
+	copied.Unobservable = append([]string(nil), r.Unobservable...)
 	return &copied
 }
 

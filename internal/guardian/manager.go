@@ -342,18 +342,52 @@ func (m *Manager) Status() Status {
 // 恒为 nil —— 与「循环压根没跑」完全无法区分。
 //
 // 时间戳在这里盖,而且没有任何一条分支能绕过它:它是「跑过没跑过」唯一的判据。
-func (m *Manager) recordReconcileRound(decision reconcileDecision, unchanged int) {
+func (m *Manager) recordReconcileRound(round reconcileRound) {
 	report := &ReconcileReport{
 		At:              time.Now(),
-		Held:            decision.Held,
-		UnchangedRounds: unchanged,
+		Held:            round.decision.Held,
+		UnchangedRounds: round.unchanged,
+		Unobservable:    append([]string(nil), round.unobservable...),
+		CoreScan:        round.scan,
 	}
-	for _, action := range decision.Actions {
+	for _, action := range round.decision.Actions {
 		report.Actions = append(report.Actions, string(action))
 	}
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
 	m.reconcileReport = report
+}
+
+// measureRunningCores 向系统求证「有多少个进程看起来像 Core」,**只测量,不判断**。
+//
+// 设计交付的第二样是 looksLikeCore 的真机误报率,而它今天只挂在三条改动路径上
+// (Existing / Start / confirmCoreStopped),只观察的循环再跑多久也攒不出证据。
+// 这里把同一个原语接进循环,但答案只进报告,不进 decide 的输入。
+//
+// 三条纪律,与 confirmCoreStopped 同源:
+//   - **不持 mutation channel。** m.runner 是构造后不再变的字段,取它不需要任何锁;
+//     扫描本身约 900 次 syscall,攥着那把锁去做等于让用户的 up 排在后面。
+//   - **「问不出来」不是「一个都没有」。** 失败一律 Measured=false,绝不记 0 ——
+//     记 0 会让误报率算出来偏低,正好是这份测量的反面。
+//   - **panic 收在这里。** scanRunningCores 对 sysctl 返回的 kinfo 切片做索引运算;
+//     一次 panic 若逃出去,循环这一轮就白跑,而循环是常驻的,撞上罕见输入的机会
+//     随时间累积。
+func (m *Manager) measureRunningCores() (measurement ReconcileCoreScan) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("guardian_reconcile_core_scan_panicked recovered=%v", r)
+			measurement = ReconcileCoreScan{Reason: coreScanPanicked}
+		}
+	}()
+	scanner, ok := m.runner.(coreScanner)
+	if !ok {
+		return ReconcileCoreScan{Reason: coreScanUnsupported}
+	}
+	cores, err := scanner.ScanRunning()
+	if err != nil {
+		return ReconcileCoreScan{Reason: coreScanFailed}
+	}
+	return ReconcileCoreScan{Measured: true, Cores: len(cores)}
 }
 
 func (m *Manager) Up(ctx context.Context) error {

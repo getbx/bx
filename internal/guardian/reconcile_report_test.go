@@ -54,7 +54,7 @@ func TestStatusOmitsReconcileReportUntilARoundHasCompleted(t *testing.T) {
 // 与「循环死了」,而后者正是 Task 2 修复轮 2 抓到的那个洞。
 func TestStatusPublishesACleanReconcileRound(t *testing.T) {
 	env := newManagerTestEnv(t)
-	env.manager.recordReconcileRound(reconcileDecision{}, 7)
+	env.manager.recordReconcileRound(reconcileRound{unchanged: 7})
 	got := env.manager.Status().Reconcile
 	if got == nil {
 		t.Fatal("跑过一轮之后必须发布,哪怕这一轮什么差异都没有")
@@ -94,7 +94,7 @@ func TestStatusPublishesACleanReconcileRound(t *testing.T) {
 // recoverLocked 都是),所以下面补一次裸 setStatus。
 func TestReconcileReportSurvivesAStatusRebuild(t *testing.T) {
 	env := newManagerTestEnv(t)
-	env.manager.recordReconcileRound(reconcileDecision{Held: heldOwnershipUncertain}, 0)
+	env.manager.recordReconcileRound(reconcileRound{decision: reconcileDecision{Held: heldOwnershipUncertain}})
 
 	env.manager.needsAttention(DesiredOn, "core_scan_failed")
 	got := env.manager.Status().Reconcile
@@ -122,7 +122,10 @@ func TestReconcileReportSurvivesAStatusRebuild(t *testing.T) {
 // 编码器旁边的任意代码。
 func TestStatusReconcileReportIsNotAliased(t *testing.T) {
 	env := newManagerTestEnv(t)
-	env.manager.recordReconcileRound(reconcileDecision{Actions: []reconcileAction{actionRestoreDNS}}, 3)
+	env.manager.recordReconcileRound(reconcileRound{
+		decision:  reconcileDecision{Actions: []reconcileAction{actionRestoreDNS}},
+		unchanged: 3,
+	})
 
 	first := env.manager.Status().Reconcile
 	if first == nil || len(first.Actions) != 1 {
@@ -197,9 +200,13 @@ func TestReconcileLoopRecordsEveryRoundIncludingHeldOnes(t *testing.T) {
 		actions   []string
 		unchanged int
 	}{
-		// previous 的初值就是「干净」,所以第 1 轮起就在累计「连续未变」。
-		{round: 1, unchanged: 1},
-		{round: 2, unchanged: 2},
+		// **第 1 轮是一次变化,不是「与初值相同」。** 这些观测是零值
+		// ObservedState,也就是五项全 Unknown —— 一台什么都问不出来的机器。
+		// previous 的初值代表「什么都观测得到、还没测过 Core 进程数」,所以
+		// 「变成全盲」本身就是一次变化,而这正是本轮修复的全部内容:一台失明的
+		// 机器绝不能与一台健康机器发布同一份报告。
+		{round: 1, unchanged: 0},
+		{round: 2, unchanged: 1},
 		{round: 3, held: heldPathRecoveryBusy, unchanged: 0},
 		{round: 4, actions: []string{string(actionRestoreDNS)}, unchanged: 0},
 	} {
@@ -263,7 +270,10 @@ func TestGuardianDeclaresTheReconcileReportCapability(t *testing.T) {
 // 所以「字段在」不等于「消息到了」。
 func TestGuardianStatusEndpointPublishesTheReconcileReport(t *testing.T) {
 	env := newManagerTestEnv(t)
-	env.manager.recordReconcileRound(reconcileDecision{Held: heldOwnershipUncertain}, 5)
+	env.manager.recordReconcileRound(reconcileRound{
+		decision:  reconcileDecision{Held: heldOwnershipUncertain},
+		unchanged: 5,
+	})
 
 	recorder := httptest.NewRecorder()
 	NewLocalAPI(env.manager).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))

@@ -336,7 +336,7 @@ git commit -m "feat(guardian): 只观察的调谐循环 —— 记下它本来�
   - `type ReconcileReport struct { At time.Time; Actions []string; Held string; UnchangedRounds int }`
   - `func (m *Manager) recordReconcileRound(decision reconcileDecision, unchanged int)`
   - `Status.Reconcile *ReconcileReport`(`json:"reconcile,omitempty"`)
-  - 能力串常量 `CapabilityReconcileReport = "reconcile-report"`
+  - 能力串常量 `CapabilityReconcileReport = "reconcile_report"`
 
 ### 这一项唯一真正危险的地方
 
