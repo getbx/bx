@@ -114,3 +114,26 @@ func hasAction(actions []reconcileAction, want reconcileAction) bool {
 	}
 	return false
 }
+
+// desired=off 而 Core 还在应答:提议停掉它。
+//
+// **这条规则此前一条测试都没有** —— 实现者如实报告了这个空缺(brief 的逐字测试块里
+// 没给,他也没自行编造)。而一条没人盯着的规则,与一条不存在的规则,在回归面前
+// 是同一回事。
+func TestDecideProposesStoppingCoreWhenUserWantsOffButCoreAnswers(t *testing.T) {
+	got := decide(reconcileInput{
+		Desired:  DesiredOff,
+		Observed: observe.ObservedState{CoreSocket: observe.True},
+	})
+	if !hasAction(got.Actions, actionStopCore) {
+		t.Fatalf("desired=off 而 Core 还在应答,应当提议停它, got %v", got.Actions)
+	}
+}
+
+// 而 Core 是否在跑「问不出来」时,同样什么都不做 —— 与其它规则同一条纪律。
+func TestDecideDoesNotProposeStoppingCoreOnAnUnknownSocket(t *testing.T) {
+	got := decide(reconcileInput{Desired: DesiredOff}) // CoreSocket 零值 = Unknown
+	if hasAction(got.Actions, actionStopCore) {
+		t.Fatal("问不出 Core 在不在时不许提议停它 —— 观测不到 ≠ 观测到它在")
+	}
+}
