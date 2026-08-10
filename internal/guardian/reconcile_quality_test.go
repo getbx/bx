@@ -243,7 +243,15 @@ func TestCoreScanNeverPassesAFailureOffAsFoundNone(t *testing.T) {
 
 	t.Run("scan_unsupported", func(t *testing.T) {
 		manager, err := NewManager(ManagerOptions{
-			Store:       OpenStore(Paths{Desired: t.TempDir() + "/guardian-state.json"}),
+			// 挂起路径必须给全:缺了它 LoadIntentSnapshot 会报错(Task 1 刻意的),
+			// 于是这个 Manager 每一轮都停在 intent_unreadable 栅栏上。今天
+			// measureRunningCores 跑在 reconcileOnce **之前**,所以本测试的断言
+			// 照样成立 —— 但那是巧合,不是设计:任何将来加在「判断」层面的断言
+			// 都会在一个永久被栅栏挡住的 Manager 上悄悄失去意义。
+			Store: OpenStore(Paths{
+				Desired:         t.TempDir() + "/guardian-state.json",
+				MaintenanceHold: t.TempDir() + "/maintenance-hold.json",
+			}),
 			Runner:      &nonScanningRunner{}, // 刻意不实现 ScanRunning
 			Health:      &fakeHealthGate{},
 			Barrier:     &fakeBarrier{events: &eventLog{}},
