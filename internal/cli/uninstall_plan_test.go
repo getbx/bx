@@ -124,6 +124,25 @@ func TestUninstallPlanRemovesRuntimeStateButKeepsConfig(t *testing.T) {
 	}
 }
 
+// 挂起文件必须随卸载消失,否则它活过卸载重装 —— darwinCoreProcessStatePath 与
+// darwinUpgradeIntentPath 就是为这条教训加进去的。
+//
+// 断言用的是**字面路径**而不是 darwinMaintenanceHoldPath:用常量做 Contains 只能
+// 证明「计划里放了那个常量」,常量本身指错文件照样绿。这条字面量与
+// guardian.TestDefaultStoreMaintenanceHoldPath 里的那条对齐,任一侧改动都会转红。
+func TestUninstallPlanRemovesMaintenanceHoldButKeepsDataDir(t *testing.T) {
+	plan := buildDarwinUninstallPlan(501, "/Users/tester", true)
+	if !slices.Contains(plan.RemovePaths, "/var/lib/bx/maintenance-hold.json") {
+		t.Fatalf("RemovePaths 缺挂起文件: %v", plan.RemovePaths)
+	}
+	if darwinMaintenanceHoldPath != "/var/lib/bx/maintenance-hold.json" {
+		t.Fatalf("darwinMaintenanceHoldPath = %q,与 guardian 默认路径不一致", darwinMaintenanceHoldPath)
+	}
+	if slices.Contains(plan.RemovePaths, darwinDataDirPath) {
+		t.Fatalf("绝不整目录删 /var/lib/bx: %v", plan.RemovePaths)
+	}
+}
+
 // 菜单栏 agent 带 KeepAlive 之后,一次失败的 gui 域 bootout 不再是良性的:job
 // 留在 launchd 里,而卸载紧接着删掉 /Applications/Bx.app,launchd 就会每 ~10s
 // 重拉一个已不存在的二进制刷屏 menu.err.log,直到用户注销——用户却以为卸干净了。
