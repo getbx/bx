@@ -71,10 +71,29 @@ struct ToggleEscapeTests {
         expect(!quitBlockedByFailedTurnOffMessage().isEmpty,
                "不退出必须有一句解释,不能什么都不说")
 
+        // HTTP 200 不等于「保护关掉了」。
+        //
+        // Guardian 现在会在报 off 之前向系统求证还有没有 Core 在跑;求证不了就回 200
+        // 但 protection_state != off、原因写在 last_error 里。把 200 本身当成关掉了,
+        // 菜单就会在一个 Core 还占着 TUN 的时候退出 —— 正是
+        // quitBlockedByFailedTurnOffMessage 存在要防的那个「保护在跑却没有指示灯」。
+        expect(turnOffConfirmedProtectionStopped(protectionState: "off") == true,
+               "Guardian 说 off 才算关掉了")
+        expect(turnOffConfirmedProtectionStopped(protectionState: "needs_attention") == false,
+               "没能确认时不许当成关掉了 —— 那正是要防的无指示灯状态")
+        expect(turnOffConfirmedProtectionStopped(protectionState: "blocked") == false,
+               "屏障还在也不是关掉了")
+        // 空 / nil = 根本没读到状态,同样不是确认。观测不到 ≠ 观测到没有。
+        expect(turnOffConfirmedProtectionStopped(protectionState: "") == false,
+               "读不到状态时不许当成关掉了")
+        expect(turnOffConfirmedProtectionStopped(protectionState: nil) == false,
+               "没有状态时不许当成关掉了")
+
         if failures == 0 {
             print("ToggleEscapeTests passed")
         } else {
             exit(1)
         }
+
     }
 }

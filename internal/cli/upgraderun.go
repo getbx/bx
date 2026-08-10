@@ -106,14 +106,29 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 		case UpgradeStopProtection:
 			io.log("• 停止保护(网络将暂时回到直连)")
 			down, err := io.stopProtection()
-			// 出错时 macOSDownLifecycleFor 返回零值 result,但错误只可能来自
-			// 强制拆除本身 —— 也就是说那条路确实跑过。
 			outcome.Down = down
 			outcome.ForcedTeardown = down.Forced || err != nil
 			if outcome.ForcedTeardown {
 				networkRestored = false
 			}
 			stepErr = err
+			// **Guardian 没能确认保护关掉时,不许继续换二进制。**
+			//
+			// 这条以前漏了:判断只看 down.Forced 与 err,而「200 但
+			// protection_state != off」两者都不满足 —— 于是升级会照常换掉 runtime
+			// 二进制、重启 Guardian,而一个不受管的 Core 还在跑着老二进制、占着 TUN。
+			// 症状要到之后才现:startProtection 撞上 latch 住的
+			// core_ownership_uncertain,而按 CLAUDE.md 那个状态只有 down+up 能解 ——
+			// 一个远比现在中止更难懂的失败。
+			//
+			// 中止是安全的:这是第一步,文件还一个字节都没动。
+			if stepErr == nil && !downConfirmedStopped(down) {
+				stepErr = fmt.Errorf(
+					"Guardian 没能确认保护已经关闭(%s):系统里可能仍有 bx 的 Core 进程在跑。"+
+						"先看 sudo tail -50 /var/log/bx-guard.err.log 确认是哪个进程并处理掉,再重跑升级",
+					downUnconfirmedReason(down),
+				)
+			}
 		case UpgradeInstallFiles:
 			io.log("• 安装新版本文件")
 			outcome.Files, stepErr = io.installFiles()
