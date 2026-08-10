@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -4928,6 +4929,92 @@ func withReconcileCapability(report clientStatusReport) clientStatusReport {
 	return report
 }
 
+// elapsedSecondsPattern 钉的是「印出了一个以秒计的时长」这条性质,不是某个数字。
+var elapsedSecondsPattern = regexp.MustCompile(`最近观测 [0-9hms]+ 前`)
+
+// 这一行必须与 Status / Network / DNS 对进同一列。
+//
+// 那三行的值都从第 10 列起(`Status  ` / `Network ` / `DNS     `,标签补白到 8),
+// 一个 9 字符的标签会让整块状态歪出来一格。判据取**渲染出来的真实行**而不是
+// 常量的长度:标签补白哪天变了,这条也要跟着红。
+//
+// 刻意不含 Recovery:它本来就在第 11 列(`  Recovery `),是本改动之前就存在的
+// 偏差,把它算进来只会让这条测试一出生就红。
+func TestReconcileStatusLineAlignsWithTheOtherStatusColumns(t *testing.T) {
+	report := withReconcileCapability(clientStatusReport{
+		Report:            &stats.Report{TunnelHealthy: true},
+		CoreAvailable:     true,
+		CoreEvidence:      "local_status_socket",
+		ProtectionState:   guardian.ProtectionProtected,
+		NetworkGeneration: "wifi-a",
+		DNSState:          guardian.DNSManaged,
+		DNSService:        "Wi-Fi",
+	})
+	report.Reconcile = &guardian.ReconcileReport{At: time.Now().Add(-time.Minute), UnchangedRounds: 2}
+
+	columns := map[string]int{}
+	for _, line := range strings.Split(renderClientStatus(report), "\n") {
+		label, column, ok := statusValueColumn(line)
+		if !ok {
+			continue
+		}
+		switch label {
+		case "Status", "Network", "DNS", "Loop":
+			columns[label] = column
+		}
+	}
+	if len(columns) != 4 {
+		t.Fatalf("没能在渲染结果里找齐四行 —— 本守卫读不懂现在的代码,请连同它一起重写, got %v\n%s",
+			columns, renderClientStatus(report))
+	}
+	want := columns["DNS"]
+	for label, column := range columns {
+		if column != want {
+			t.Errorf("%s 那一行的值从第 %d 列起,而 DNS 在第 %d 列 —— 整块状态会歪出来:\n%s",
+				label, column, want, renderClientStatus(report))
+		}
+	}
+}
+
+// statusValueColumn 从 `  <标签><补白><值>` 这种行里量出值从第几列开始。
+func statusValueColumn(line string) (label string, column int, ok bool) {
+	if !strings.HasPrefix(line, "  ") {
+		return "", 0, false
+	}
+	body := line[2:]
+	end := strings.Index(body, " ")
+	if end <= 0 {
+		return "", 0, false
+	}
+	rest := body[end:]
+	padding := len(rest) - len(strings.TrimLeft(rest, " "))
+	return body[:end], 2 + end + padding, true
+}
+
+// 判断**刚刚**变干净的那一轮,unchanged 归零 —— 而「连续 0 轮未变」恰恰在
+// 最该说清楚的那一刻最难读:某件事刚被解决掉了。
+func TestRenderClientStatusWordsAFreshlyResolvedRoundDifferently(t *testing.T) {
+	base := withReconcileCapability(clientStatusReport{ProtectionState: guardian.ProtectionProtected})
+	fresh := base
+	fresh.Reconcile = &guardian.ReconcileReport{At: time.Now().Add(-5 * time.Second)}
+	settled := base
+	settled.Reconcile = &guardian.ReconcileReport{At: time.Now().Add(-5 * time.Second), UnchangedRounds: 6}
+
+	freshText := renderClientStatus(fresh)
+	if strings.Contains(freshText, "连续 0 轮未变") {
+		t.Errorf("刚转为无差异的那一轮不该写成「连续 0 轮未变」:\n%s", freshText)
+	}
+	if !strings.Contains(freshText, "无差异") {
+		t.Errorf("它仍然是无差异的一轮,这两个字不能丢:\n%s", freshText)
+	}
+	if got := renderClientStatus(settled); !strings.Contains(got, "连续 6 轮未变") {
+		t.Errorf("连续未变的轮数要照说:\n%s", got)
+	}
+	if freshText == renderClientStatus(settled) {
+		t.Error("「刚转为无差异」与「已经连续 6 轮无差异」渲染成了同一段文字")
+	}
+}
+
 // nil 必须渲染成「尚未观测」,绝不能渲染成无差异 —— 这是本任务唯一真正危险的地方。
 //
 // reconcileDecision 的零值就是一台健康机器的判断,所以「循环从没跑过一轮」与
@@ -4951,8 +5038,17 @@ func TestRenderClientStatusDistinguishesNeverRanFromClean(t *testing.T) {
 			if !strings.Contains(cleanText, "无差异") {
 				t.Errorf("无差异时也必须出现这一行,否则分不清循环活着还是死了:\n%s", cleanText)
 			}
-			if !strings.Contains(cleanText, "37") || !strings.Contains(cleanText, "12s") {
-				t.Errorf("这一行要说清「最近一次是多久前」与「连续多少轮没变」:\n%s", cleanText)
+			// **不钉具体那个数字。** 夹具用 time.Now() 造 At,而渲染在之后
+			// 若干毫秒发生,reconcileElapsed 四舍五入到秒 —— 一台加载中的
+			// CI runner(尤其 -race)跨过 0.5s 就会渲染成 13s,那是测试自己
+			// 的时钟假设错了,不是产品坏了。这里钉**性质**:确实印出了一个
+			// 以秒计的时长;那个映射本身由 TestReconcileElapsedNeverGoesBackwards
+			// 用固定时钟单独钉死。
+			if !elapsedSecondsPattern.MatchString(cleanText) {
+				t.Errorf("这一行要说清「最近一次是多久前」:\n%s", cleanText)
+			}
+			if !strings.Contains(cleanText, "37") {
+				t.Errorf("这一行要说清「连续多少轮没变」:\n%s", cleanText)
 			}
 			// 变异③(把 nil 也渲染成无差异)直接死在这一条上。
 			if strings.Contains(never, "无差异") {
@@ -4971,7 +5067,7 @@ func TestRenderClientStatusSaysNothingWhenGuardianHasNoReconcileLoop(t *testing.
 	for _, branch := range clientStatusRenderBranches() {
 		t.Run(branch.name, func(t *testing.T) {
 			got := renderClientStatus(branch.base)
-			for _, forbidden := range []string{reconcileStatusLabel, "尚未完成第一轮观测", "无差异", "本会提议"} {
+			for _, forbidden := range []string{reconcileStatusPrefix, "尚未完成第一轮观测", "无差异", "本会提议"} {
 				if strings.Contains(got, forbidden) {
 					t.Errorf("对面没声明这条能力时不该出现 %q:\n%s", forbidden, got)
 				}
@@ -5086,7 +5182,7 @@ func TestClientStatusPublishesGuardianReconcileReport(t *testing.T) {
 	if rep.Reconcile == nil || !rep.Reconcile.At.Equal(at) || rep.Reconcile.UnchangedRounds != 4 {
 		t.Fatalf("Guardian 的调谐报告没流到 status 报告上, got %+v", rep.Reconcile)
 	}
-	if !guardianDeclaresCapability(rep.GuardianCapabilities, guardian.CapabilityReconcileReport) {
+	if !slices.Contains(rep.GuardianCapabilities, guardian.CapabilityReconcileReport) {
 		t.Fatalf("能力声明没流过来 —— 没有它就分不清「旧版 Guardian」与「还没跑完第一轮」, got %v",
 			rep.GuardianCapabilities)
 	}

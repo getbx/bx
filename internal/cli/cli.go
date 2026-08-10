@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -4495,8 +4496,16 @@ func writeClientDNS(b *strings.Builder, state guardian.DNSState, service string)
 	fmt.Fprintf(b, "  DNS     %s\n", guardianDNSLabel(state, service))
 }
 
-// reconcileStatusLabel 是那一行的行首标签。
-const reconcileStatusLabel = "Reconcile"
+// reconcileStatusPrefix 是那一行的完整行首,**含把它对进 Status/Network/DNS
+// 那一列的补白**(那一列宽 8:`Status  `/`Network `/`DNS     `)。
+//
+// 标签因此只能用 7 个字符以内的词,`Reconcile` 放不下 —— 挤宽一格会让这一行
+// 在整块状态里歪出来。取 `Loop`:这一行说的正是「那条循环最近一轮看到了什么」,
+// 而「循环」恰恰是它与旁边那份一次性观测(observed/divergence)唯一的区别。
+//
+// 常量带着补白,是为了让「这一行在不在」的测试判据是**整段行首**而不是光秃秃
+// 一个 `Loop` —— 后者短到会撞上别处的字。
+const reconcileStatusPrefix = "  Loop    "
 
 // writeClientReconcile 把 Guardian 那条只观察调谐环的最近一轮判断写成一行。
 //
@@ -4517,7 +4526,7 @@ func writeClientReconcile(b *strings.Builder, report clientStatusReport) {
 	if !ok {
 		return
 	}
-	fmt.Fprintf(b, "  %s %s\n", reconcileStatusLabel, line)
+	b.WriteString(reconcileStatusPrefix + line + "\n")
 }
 
 func clientReconcileLine(report clientStatusReport, now time.Time) (string, bool) {
@@ -4526,7 +4535,7 @@ func clientReconcileLine(report clientStatusReport, now time.Time) (string, bool
 	if round := report.Reconcile; round != nil && !round.At.IsZero() {
 		return reconcileRoundSummary(*round, now), true
 	}
-	if !guardianDeclaresCapability(report.GuardianCapabilities, guardian.CapabilityReconcileReport) {
+	if !slices.Contains(report.GuardianCapabilities, guardian.CapabilityReconcileReport) {
 		return "", false
 	}
 	return "尚未完成第一轮观测", true
@@ -4541,6 +4550,11 @@ func reconcileRoundSummary(round guardian.ReconcileReport, now time.Time) string
 		return prefix + "被 " + round.Held + " 挡住"
 	case len(round.Actions) > 0:
 		return prefix + "本会提议 " + strings.Join(round.Actions, ",")
+	case round.UnchangedRounds == 0:
+		// 干净 + 连续未变轮数为 0 ⇒ 判断**这一轮刚刚变成**干净的(健康机器的第
+		// 一轮就已经是 1,因为循环的 previous 初值就是干净)。写成「连续 0 轮
+		// 未变」在最该说清楚的那一刻反而最难读:某件事刚刚被解决掉了。
+		return prefix + "无差异(本轮刚转为无差异)"
 	default:
 		return prefix + fmt.Sprintf("无差异(连续 %d 轮未变)", round.UnchangedRounds)
 	}
@@ -4556,15 +4570,6 @@ func reconcileElapsed(now, at time.Time) string {
 		elapsed = 0
 	}
 	return elapsed.Round(time.Second).String()
-}
-
-func guardianDeclaresCapability(capabilities []string, want string) bool {
-	for _, capability := range capabilities {
-		if capability == want {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizedGuardianProtectionState(status guardian.Status, platform string) string {
