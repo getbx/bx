@@ -395,7 +395,9 @@ EOF
 
 ### Task 2: 意图快照(desired 与挂起同源读)+ Guardian 自发起 Core 的两条路尊重挂起
 
-**为什么是同一个任务:** 挂起若从磁盘读、`desired` 从内存读,一轮之内就能出现两者互不相干的组合(设计取舍六;`needsAttention` 会把调用方传进来的常量写进 `status.Desired`,`manager.go:1396-1399`)。而这两条路正是「Guardian 自己决定起一个 Core」的全部入口 —— 守卫必须在任何东西武装挂起**之前**就位。
+**为什么是同一个任务:** 挂起若从磁盘读、`desired` 从内存读,一轮之内就能出现两者互不相干的组合(设计取舍六;`needsAttention` 会把调用方传进来的常量写进 `status.Desired`,`manager.go:1396-1399`)。守卫必须在任何东西武装挂起**之前**就位。
+
+**「Guardian 自己发起一个 Core」一共有四条路,本任务只收两条:**`handleUnexpectedExit` 与 `recoverLocked`(启动恢复)。第三条是**活着的 Guardian 抢在强制拆除前面**(由 Task 4 的武装挂起挡住),第四条是 `Manager.Down` 在 DNS 还原失败时的补偿重启(`manager.go:697-699`)—— 后者住在 `Down` 内部、需要那次请求的 maintenance 判据,故随 Task 4 落地。**四条缺一不可**:漏掉任何一条,维护窗口里就仍有一条把 Core 放回半换二进制的路。
 
 **Files:**
 - Modify: `internal/guardian/hold.go`(加 `IntentSnapshot` 与 `LoadIntentSnapshot`)
@@ -434,18 +436,17 @@ func TestUnexpectedCoreExitUnderArmedHoldDoesNotRestartCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	startsBefore := env.runner.startCount()
-	barriersBefore := env.barrier.installCount()
 	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	env.runner.killCurrent(errors.New("core exited")) // 触发 monitor → handleUnexpectedExit
-	env.manager.waitIdle(t)
+	env.events.reset()
+	env.manager.handleUnexpectedExit(env.runner.currentProcess(), errors.New("Core exited"))
 
 	if got := env.runner.startCount(); got != startsBefore {
 		t.Fatalf("挂起期间 Core 被重启了:start = %d, want %d", got, startsBefore)
 	}
-	if got := env.barrier.installCount(); got != barriersBefore {
-		t.Fatalf("挂起期间装了屏障(%d → %d):升级正需要网络可用", barriersBefore, got)
+	if slices.Contains(env.events.snapshot(), "barrier.install") {
+		t.Fatalf("挂起期间装了屏障:升级正需要网络可用。events=%v", env.events.snapshot())
 	}
 }
 
@@ -459,8 +460,7 @@ func TestUnexpectedCoreExitWithExpiredHoldRestartsCore(t *testing.T) {
 	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now().Add(-2*MaintenanceHoldDuration)); err != nil {
 		t.Fatal(err)
 	}
-	env.runner.killCurrent(errors.New("core crashed"))
-	env.manager.waitIdle(t)
+	env.manager.handleUnexpectedExit(env.runner.currentProcess(), errors.New("Core crashed"))
 
 	if got := env.runner.startCount(); got != startsBefore+1 {
 		t.Fatalf("过期挂起仍在压制重启:start = %d, want %d", got, startsBefore+1)
@@ -499,9 +499,9 @@ func TestIntentSnapshotReadFailureDoesNotRestartCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	startsBefore := env.runner.startCount()
+	process := env.runner.currentProcess()
 	env.store.setLoadError(errors.New("permission denied"))
-	env.runner.killCurrent(errors.New("core exited"))
-	env.manager.waitIdle(t)
+	env.manager.handleUnexpectedExit(process, errors.New("Core exited"))
 
 	if got := env.runner.startCount(); got != startsBefore {
 		t.Fatalf("读不出意图时仍重启了 Core:start = %d, want %d", got, startsBefore)
@@ -512,7 +512,15 @@ func TestIntentSnapshotReadFailureDoesNotRestartCore(t *testing.T) {
 }
 ```
 
-> 实现者注意:`env.runner.killCurrent`、`env.runner.startCount`、`env.barrier.installCount`、`env.manager.waitIdle` 若在 `manager_test.go` 里叫别的名字,**用既有的那个**,不要新造平行设施;`newManagerTestEnv` 已在 `internal/guardian/manager_test.go` 里。`env.store` 是 `*recordingDesiredStore`,内嵌 `*Store`,故 `ArmMaintenanceHold` 直接可用 —— 但它的 `Paths` 里还没有 `MaintenanceHold`,**先在 `newManagerTestEnv` 里补上** `MaintenanceHold: filepath.Join(t.TempDir(), "maintenance-hold.json")`。
+> 实现者注意:上面用的全是 `manager_test.go` 里**既有**的设施,别新造平行的一套 ——
+> `newManagerTestEnv(t)`、`env.runner.startCount()`、`env.runner.currentProcess()`、
+> `env.events.snapshot()/reset()`(屏障与 Core 的动作记在这里:`barrier.install`、
+> `barrier.remove`、`core.start`、`core.stop`)、`env.store.setLoadError(err)`。
+> 触发「Core 意外退出」的既有写法就是**直接调** `env.manager.handleUnexpectedExit(process, err)`
+> (见 `manager_test.go:1541,1571,1641`),不要去动 `exits` map。
+> `env.store` 是 `*recordingDesiredStore`,内嵌 `*Store`,故 `ArmMaintenanceHold` 直接可用 ——
+> 但它的 `Paths` 里还没有 `MaintenanceHold`,**先在 `newManagerTestEnv` 里补上**
+> `MaintenanceHold: filepath.Join(t.TempDir(), "maintenance-hold.json")`。
 
 **每条断言由哪一处生产改动供养:**
 - `…UnderArmedHoldDoesNotRestartCore` ← `handleUnexpectedExit` 里新增的 `if intent.HoldArmed { m.current = Process{}; return }`。删掉它 → 红。
@@ -921,13 +929,18 @@ EOF
 
 ---
 
-### Task 4: 升级停机改用挂起 —— 两个写入点一起改,退回规则与无条件销挂起
+### Task 4: 升级停机改用挂起 —— 两个写入点、第四条自发起 Core 的路、退回规则与无条件销挂起
 
 **这是唯一翻转行为的任务。** 它安全,只因为 Task 2/3 已经落地。
 
+**四件事必须同一个提交,理由各不相同:**
+- 两个**写入点**(`Manager.Down` 的 `SaveDesired(DesiredOff)` 与 `forcedMacOSTeardown` 的两次 `persistDesiredOff`)—— 分开落地不会不安全,但会造成一个语义上无法描述的中间态:同一次「升级停保护」经不同分支在盘上留下不同的意图。
+- **第四条自发起 Core 的路**(`manager.go:697-699` 的 DNS 补偿重启)—— 它读的是**这次请求**的 maintenance 判据,而那个判据正是本任务引入的;放到别的任务里它无从判断。
+- **退回规则**与**无条件销挂起** —— 它们是前两件事的安全网,不能晚一步。
+
 **Files:**
 - Modify: `internal/guardian/upgradeintent.go`(改名为挂起词汇,**保留** `?reason=upgrade` 这个线上字面量)
-- Modify: `internal/guardian/manager.go:591-620`(`Down` 的 defer 与 maintenance 判定)、`:710-713`(跳过 `SaveDesired(DesiredOff)`)、`:518-540`(`upLocked` 清挂起)、`:454-464`(`Migrate` 清挂起)
+- Modify: `internal/guardian/manager.go:591-620`(`Down` 的 defer 与 maintenance 判定)、`:692-708`(**DNS 还原失败时的补偿重启 —— 第四条自发起 Core 的路**)、`:710-713`(跳过 `SaveDesired(DesiredOff)`)、`:518-540`(`upLocked` 清挂起)、`:454-464`(`Migrate` 清挂起)
 - Modify: `internal/cli/guardian.go:108-183`(deps 加两个钩子)、`:190-232`(默认接线)、`:461-509`(purpose 贯穿)、`:593-664`(`forcedMacOSTeardown`)
 - Create: `internal/cli/hold_teardown_test.go`
 - Modify: `internal/guardian/manager_test.go` / `localapi_test.go`(新增用例)
@@ -1063,10 +1076,61 @@ func TestUserDownClearsHoldEvenWhenDownFails(t *testing.T) {
 	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	env.dns.failRestore(errors.New("networksetup timed out")) // 让 Down 走失败分支
+	env.dns.restoreErr = errors.New("networksetup timed out") // 让 Down 走失败分支
 	_ = env.manager.Down(context.Background())
 	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
 		t.Fatalf("Down 失败就不销挂起:armed=%v err=%v", armed, err)
+	}
+}
+
+// **Guardian 自发起 Core 的第四条路**:Down 在 DNS 还原失败时的补偿重启
+// (manager.go:697-699)。它的原意是「还原失败了,别把用户停在一个奇怪的中间态」,
+// 而在维护窗口里「把 Core 放回去」放回去的是一个**正换到一半的二进制**。
+func TestMaintenanceDownWithFailedDNSRestoreDoesNotRestartCore(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	startsBefore := env.runner.startCount()
+	env.dns.restoreErr = errors.New("networksetup timed out")
+	env.events.reset()
+
+	if err := env.manager.Down(withMaintenanceStop(context.Background())); err == nil {
+		t.Fatal("DNS 还原失败仍应报错")
+	}
+	if got := env.runner.startCount(); got != startsBefore {
+		t.Fatalf("维护窗口里把 Core 放回去了:start = %d, want %d", got, startsBefore)
+	}
+	// **拆除照常做完。** 少做的只有「重启 Core」那一个动作;屏障是覆盖整个公网的
+	// /2 reject 路由,留下就是整机断网,而拆它从不依赖 Core 在跑(正常的 Down
+	// 成功路径就是这么做的)。
+	if !slices.Contains(env.events.snapshot(), "barrier.remove") {
+		t.Fatalf("屏障没拆 —— 停止不许因为少做一个动作就把用户留在断网里。events=%v", env.events.snapshot())
+	}
+	// 而这次 Down 依然没有改写 desired。
+	if desired, err := env.store.LoadDesired(); err != nil || desired != DesiredOn {
+		t.Fatalf("维护停机改写了 desired:%q err=%v", desired, err)
+	}
+}
+
+// 对照组:**没有**维护标记时这条补偿重启照旧发生 —— 半边输入空间的断言等于
+// 没断言,而这一期不打算削弱那条既有补偿。
+func TestUserDownWithFailedDNSRestoreStillRestartsCore(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	startsBefore := env.runner.startCount()
+	env.dns.restoreErr = errors.New("networksetup timed out")
+
+	if err := env.manager.Down(context.Background()); err == nil {
+		t.Fatal("DNS 还原失败仍应报错")
+	}
+	if got := env.runner.startCount(); got != startsBefore+1 {
+		t.Fatalf("补偿重启被误伤了:start = %d, want %d", got, startsBefore+1)
 	}
 }
 
@@ -1091,6 +1155,8 @@ func TestUpClearsMaintenanceHold(t *testing.T) {
 - `…ForUserClearsHoldEvenWhenStepsFail` ← 清挂起那一步排在 `failures` 收集里、不在任何 `if err == nil` 后面。把它挪到 `if len(failures)==0` 里 → 红。
 - `TestMaintenanceDownLeavesDesiredOnAndKeepsHoldArmed` ← `Manager.Down` 里 `if !maintenance { SaveDesired(DesiredOff) }` 与 defer 里的 `if !maintenance`。任一去掉 → 红。
 - `TestUserDownClearsHoldEvenWhenDownFails` ← defer 里**去掉了** `err == nil` 这个条件。加回来 → 红。
+- `TestMaintenanceDownWithFailedDNSRestoreDoesNotRestartCore` ← `manager.go:697-699` 那次 `startCoreLocked` 外面包的 `if !maintenance`。去掉 → Core 被拉回来,红;把 `removeBarrier` 也一起包进 `if !maintenance` → 屏障那条断言红。
+- `TestUserDownWithFailedDNSRestoreStillRestartsCore` ← 同一处**只**包住了 `startCoreLocked`,而不是把整段补偿删掉。整段删掉 → 红。
 - `TestUpClearsMaintenanceHold` ← `upLocked` 里的 `m.clearMaintenanceHold()`。删掉 → 红。
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -1178,6 +1244,38 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 		}
 	}()
 	...
+```
+
+把 `:695-708`(DNS 还原失败的补偿分支)改成:
+
+```go
+	if restoreErr != nil {
+		restoreErr := fmt.Errorf("restore managed DNS: %w", restoreErr)
+		recoveryCtx, cancelRecovery := context.WithTimeout(ctx, m.restartTimeout)
+		defer cancelRecovery()
+		// **维护挂起期间绝不把 Core 放回去。**
+		//
+		// 这条补偿的原意是「DNS 还原失败了,别把用户停在一个奇怪的中间态」,
+		// 但在维护窗口里「把 Core 放回去」放回去的是一个正换到一半的二进制。
+		// 它是 Guardian 自发起 Core 的**第四条**路,与 handleUnexpectedExit、
+		// recoverLocked、以及活着的 Guardian 抢在强制拆除前面那条同类 ——
+		// 漏掉它就是漏掉四分之一。
+		//
+		// 方向上安全:这是**少做一个动作**,不可能让「停止」依赖别的先成功。
+		// 而屏障照拆 —— 那是覆盖整个公网的 8 条 /2 reject 路由,留下就是整机
+		// 断网,且拆它从不依赖 Core 在跑(正常的 Down 成功路径就是这么做的)。
+		if !maintenance {
+			if _, recoveryErr := m.startCoreLocked(recoveryCtx); recoveryErr != nil {
+				m.needsAttentionUnlessDNSActivationFailure("down_restore_recovery_failed")
+				return errors.Join(restoreErr, recoveryErr)
+			}
+		}
+		if err := m.removeBarrier(recoveryCtx); err != nil {
+			m.needsAttention(DesiredOn, "barrier_remove_failed")
+			return errors.Join(restoreErr, err)
+		}
+		return restoreErr
+	}
 ```
 
 并把 `:710` 改成:
@@ -1331,18 +1429,22 @@ Run: `go test -race ./internal/guardian ./internal/cli -count=1`
 4. `Manager.Down` 的 defer 加回 `err == nil &&` ⇒ `TestUserDownClearsHoldEvenWhenDownFails` 红。
 5. 去掉 `if !maintenance` 包着的 `SaveDesired(DesiredOff)` ⇒ `TestMaintenanceDownLeavesDesiredOn…` 红。
 6. `upLocked` 删掉 `m.clearMaintenanceHold()` ⇒ `TestUpClearsMaintenanceHold` 红。
+7. **DNS 补偿分支那一处要做三个方向的变异**:(a) 去掉 `if !maintenance` ⇒ `TestMaintenanceDownWithFailedDNSRestoreDoesNotRestartCore` 的 startCount 断言红;(b) 把 `removeBarrier` 也包进 `if !maintenance` ⇒ 同一测试的 `barrier.remove` 断言红(证明「少做一个动作」没有顺手多少做一个);(c) 把整段补偿删掉 ⇒ `TestUserDownWithFailedDNSRestoreStillRestartsCore` 红(证明既有补偿没被误伤)。**三个都要跑**:只做 (a) 无法区分「正确地包住了一句」与「粗暴地删掉一段」。
 
 - [ ] **Step 6: 提交**
 
 ```bash
 git add internal/guardian/upgradeintent.go internal/guardian/localapi.go internal/guardian/manager.go internal/cli/guardian.go internal/cli/hold_teardown_test.go internal/guardian/hold_manager_test.go
 git commit -m "$(cat <<'EOF'
-feat: 升级停机改用维护挂起,两个写入点一起改
+feat: 升级停机改用维护挂起,两个写入点与第四条自发起 Core 的路一起改
 
 干净路径(Manager.Down)与逃生路径(forcedMacOSTeardown)都不再把「停下来换
-二进制」写成 desired=off——升级路径上真有两个写入点,漏一个等于没修。挂起写
-失败时退回 desired=off 且拆除照常做完(停止永不依赖别的先成功);用户显式的
-up/down 无条件销挂起,不躲在 err == nil 后面(欠条今天留下陈旧记录的原因)。
+二进制」写成 desired=off——升级路径上真有两个写入点,漏一个等于没修。Down 在
+DNS 还原失败时的补偿重启也认挂起了:那是 Guardian 自发起 Core 的第四条路,
+维护窗口里把 Core 放回去,放回去的是一个正换到一半的二进制;屏障照拆(少做的
+只有重启这一个动作)。挂起写失败时退回 desired=off 且拆除照常做完(停止永不
+依赖别的先成功);用户显式的 up/down 无条件销挂起,不躲在 err == nil 后面
+(欠条今天留下陈旧记录的原因)。
 
 Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
@@ -1574,8 +1676,10 @@ Run: `go test ./internal/guardian -count=1` → PASS
 
 - [ ] **Step 5: 变异验证**
 
-1. 删 `SaveDesired(DesiredOn)` ⇒ 第一条测试的 desired 断言红。
-2. 删 `ArmMaintenanceHold` ⇒ 第一条的 hold 断言 + `TestStartupRecoveryRunsLegacyMigrationFirst` 的 startCount 断言红。
+**1 与 2 必须分开做、分别确认。** 欠条携带的是两半信息(「用户本来要保护」+「此刻别动手」),迁移只恢复其中一半就等于没迁移;一次把两处都改坏,只能证明「有东西坏了」,证明不了两半各自都有人盯着。
+
+1. 删 `SaveDesired(DesiredOn)`(**只删这一处**)⇒ 第一条测试的 desired 断言红,hold 断言仍绿。
+2. 删 `ArmMaintenanceHold`(**只删这一处**)⇒ 第一条的 hold 断言 + `TestStartupRecoveryRunsLegacyMigrationFirst` 的 startCount 断言红,desired 断言仍绿。
 3. 删 `os.Remove` ⇒ 第一条的 Stat 断言红。
 4. `desiredOn := false` 起手 ⇒ `…CorruptLegacy…` 红。
 5. 迁移调用挪到 `recoverLocked` 末尾 ⇒ `TestStartupRecoveryRunsLegacyMigrationFirst` 红。
@@ -2346,11 +2450,11 @@ Expected: 成功(`main.swift` 的 `menuRows(status:dns:)` 调用因默认参数�
 
 - [ ] **Step 5: 变异验证**
 
-1. 把 `expires > now` 改成 `true` ⇒ `runExpiredHoldShowsNoRow` 红。
-2. 去掉 `declaresMaintenanceHold` 那道门 ⇒ `runOldGuardianShowsNoRow` 红。
-3. `mark` 改成 `.bad` ⇒ `MenuRowsTests` 的 `anomalyCount == 0` 红。
-4. `menuRows` 里删掉那次 append ⇒ `MenuRowsTests` 红(证明这一行真的接进去了,不是只存在于一个没人调的函数里)。
-5. **把新套件从 `scripts/test-macos-menu.sh` 里删掉**,确认脚本仍然打印收尾横幅并退 0 —— 这一步是给实现者看的:注册是唯一让它跑起来的东西。做完记得加回去。
+1. **(必做,先做这一条)把 `run_test maintenance-presentation` 那一段从 `scripts/test-macos-menu.sh` 里删掉,重跑 `bash scripts/test-macos-menu.sh`,确认它仍然打印 `macOS menu tests passed` 并退 0 —— 也就是说,一个未注册的新测试文件一次都不会跑,而 CI 全绿。** 亲眼看过这一幕之后再把那一段加回去。这是本仓库反复栽过的那类洞:`Tests/` 下的文件不属于任何 SwiftPM target,`swift build` 编不到它们,脚本是唯一的入口。
+2. 把 `expires > now` 改成 `true` ⇒ `runExpiredHoldShowsNoRow` 红。
+3. 去掉 `declaresMaintenanceHold` 那道门 ⇒ `runOldGuardianShowsNoRow` 红。
+4. `mark` 改成 `.bad` ⇒ `MenuRowsTests` 的 `anomalyCount == 0` 红。
+5. `menuRows` 里删掉那次 append ⇒ `MenuRowsTests` 红(证明这一行真的接进去了,不是只存在于一个没人调的函数里)。
 
 - [ ] **Step 6: 提交**
 
@@ -2377,5 +2481,6 @@ EOF
 3. 挂起窗口里点菜单 Turn Off:`desired` 变 off、挂起消失、菜单显示已关闭。
 4. 挂起窗口里 `sudo bx up`:挂起消失、保护起来。
 5. 把 `/var/lib/bx` 设成只读再跑升级(模拟挂起写失败):必须退回写 `desired=off`,且拆除照常做完、用户网络恢复。
+5b. 挂起窗口里让 DNS 还原失败(升级途中把 `networksetup` 临时挡住):`bx down` 报错,但**不得**有新的 Core 起来(`ps` 看不到第二个 `bx run`),且屏障阻断路由已拆、整机能上网。
 6. 盘上留一张 legacy `upgrade-intent.json` 再重启 Guardian:文件消失、`desired` 变 on、Core 没被立刻起来。
 7. `sudo bx uninstall` 之后 `/var/lib/bx/maintenance-hold.json` 不存在,而 brook/sing-box 二进制与 china 列表还在。
