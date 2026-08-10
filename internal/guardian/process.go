@@ -591,7 +591,20 @@ func (r *ExecCoreRunner) watchExisting(process Process, exit chan<- error) {
 
 func (r *ExecCoreRunner) finishExistingWatch(process Process, exit chan<- error, err error) {
 	if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
-		err = errors.Join(err, uncertainOwnership(process, fmt.Errorf("clear owned Core record after exit: %w", clearErr)))
+		// **OS 已经确认这个进程没了** —— watchExisting 的两个调用点传进来的都是
+		// ErrProcessNotRunning 那一族。失败的只是删一个 JSON 文件。
+		//
+		// 握着「安全」的证明却宣布所有权不确定,是十五个产地里最荒谬的一个:
+		// /var/lib/bx 上任何一次文件系统抖动都能锁死 daemon。与 603b602 当初对
+		// Existing() 的判断同源 —— 清不掉一个陈旧文件不等于所有权存疑,后者是给
+		// 「进程还在但身份不匹配」准备的语义。
+		//
+		// **Stop(:503/:516/:543/:556)与 Existing(:470)不动**:它们处置的是
+		// **可能仍属于活进程**的记录,证明不同。Start 自己那条 wait goroutine
+		// (:217)与本处同源、证明其实更强(waitpid 已经返回),由**下一个 task
+		// 单独一次提交**处理 —— 分开是为了两者能各自独立回退。
+		log.Printf("guardian_stale_core_record_after_exit pid=%d generation=%s clear_failed=%v",
+			process.PID, process.Generation, clearErr)
 	}
 	exit <- err
 	close(exit)
