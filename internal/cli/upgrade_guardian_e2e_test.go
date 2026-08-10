@@ -9,6 +9,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -227,6 +228,109 @@ func TestRunUpgradeKeepsTheIntentAcrossARealGuardianDown(t *testing.T) {
 	// store,而它必须说「要把保护起回来」。欠条曾经是唯一能给出这个答案的东西。
 	if !desiredOnFrom(context.Background(), env.store, "/nonexistent/guardian.sock") {
 		t.Fatal("重跑升级会读到 off —— 一次失败的升级把用户的意图弄丢了")
+	}
+}
+
+// serveLegacyGuardian 是 **d1abe81 那一版** Guardian 在这条线上的行为。
+//
+// 只需要复刻一件事,而那一件事就是 C1:`Manager.Down` **无条件**
+// SaveDesired(DesiredOff)——`?reason=upgrade` 在那一版里只保住升级欠条,从不
+// 抑制那次写入(`git show d1abe81:internal/guardian/manager.go`)。响应里也没有
+// capabilities:那一版根本没有这个概念,而新 CLI 唯一的判据正是它。
+func serveLegacyGuardian(t *testing.T, store *guardian.Store) *guardian.Client {
+	t.Helper()
+	return serveGuardian(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/down" {
+			if err := store.SaveDesired(guardian.DesiredOff); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		}
+		// 旧版的 Status 里没有 Capabilities 字段,解码到新结构体就是 nil ——
+		// 与「声明了能力集但不含 maintenance_hold」刻意区分开的正是这一态。
+		_ = json.NewEncoder(w).Encode(guardian.Status{
+			SchemaVersion: 1,
+			Desired:       guardian.DesiredOff,
+			Phase:         guardian.PhaseIdle,
+			Protection:    guardian.ProtectionOff,
+		})
+	}))
+}
+
+// **过渡升级(新 CLI × 旧 Guardian)不许把用户的意图弄丢。**
+//
+// 这是 C1 的回归用例,而且必须跑在**真的**那条线上:真 unix socket、真
+// guardian.Client、真 Store、真 runUpgrade、真 macOSDownLifecycleFor。替身版
+// (upgraderun_test.go)证明编排会调那个钩子;这里证明钩子接到真 store 上之后,
+// 盘上留下的确实是 on ——「重跑读到 off」这个后果只有在磁盘那一层才看得见。
+//
+// 被删掉的升级欠条曾是唯一能扛住这一跳的东西;删它的理由「停机不再改写 desired」
+// 只对**新** Guardian 成立,而第一次升级面对的一定是旧的那个。
+func TestTransitionUpgradeKeepsTheIntentAgainstAHoldUnawareGuardian(t *testing.T) {
+	env := newUpgradeE2EEnv(t)
+	env.deps.client = serveLegacyGuardian(t, env.store)
+	ctx := context.Background()
+
+	// 第一次:装文件失败(= 任何一次中途夭折的升级)。
+	installFailure := errors.New("bundle 校验失败")
+	installAttempted := false
+	upgrade := func(installErr error) (upgradeOutcome, error) {
+		return runUpgrade(upgradeIO{
+			guardianRunning: func() (bool, error) { return true, nil },
+			// 重跑时读的是**磁盘**,与生产的 upgradeDesiredOn 同一个判据。
+			loadDesiredOn: func() bool { return desiredOnFrom(ctx, env.store, "/nonexistent/guardian.sock") },
+			confirm:       func(string) (bool, error) { return true, nil },
+			stopProtection: func() (macOSDownResult, error) {
+				return macOSDownLifecycleFor(ctx, downPurposeUpgrade, "/etc/bx/config.yaml", env.deps)
+			},
+			reassertDesiredOn: func() error { return env.store.SaveDesired(guardian.DesiredOn) },
+			installFiles: func() (installedFiles, error) {
+				installAttempted = true
+				return installedFiles{Version: "2.0.0"}, installErr
+			},
+			restartGuardian: func() error { return nil },
+			startProtection: func() error { return env.store.SaveDesired(guardian.DesiredOn) },
+			log:             func(string) {},
+		}, true)
+	}
+
+	if _, err := upgrade(installFailure); err == nil {
+		t.Fatal("装文件失败必须报错")
+	}
+	if !installAttempted {
+		t.Fatal("这次升级没走到装文件那一步,这条测试没测到它自称测的东西")
+	}
+	if desired, err := env.store.LoadDesired(); err != nil || desired != guardian.DesiredOn {
+		t.Fatalf("旧 Guardian 写下的 desired=off 没有被写回 on:%q(err=%v)—— 重跑会读到 off,保护永久不再回来", desired, err)
+	}
+
+	// **重跑必须真的把保护起回来。** 这一句才是 C1 的后果本身:
+	// 「读到 off」的直接表现是 upgradeSteps 里根本没有「恢复保护」这一步,
+	// 而升级还会报完成。
+	outcome, err := upgrade(nil)
+	if err != nil {
+		t.Fatalf("重跑升级失败: %v", err)
+	}
+	if !outcome.ProtectionRestored {
+		t.Fatal("重跑读到的意图是 off:升级「成功」结束,机器永久无保护")
+	}
+}
+
+// 前提用例:上面那个 stub 真的会写下 desired=off。
+//
+// 没有它,C1 的回归就是在跟自己商量 —— 一个什么都不写的 stub 会让「写回」那句
+// 断言在**修复被删掉之后照样成立**(盘上本来就是 on)。这里刻意不经 runUpgrade,
+// 因为写回正发生在那一层。
+func TestLegacyGuardianStopReallyWritesDesiredOff(t *testing.T) {
+	env := newUpgradeE2EEnv(t)
+	env.deps.client = serveLegacyGuardian(t, env.store)
+
+	if _, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", env.deps); err != nil {
+		t.Fatalf("停机失败: %v", err)
+	}
+	if desired, err := env.store.LoadDesired(); err != nil || desired != guardian.DesiredOff {
+		t.Fatalf("这个 stub 不像旧 Guardian(它必须无条件写 off):%q(err=%v)", desired, err)
 	}
 }
 
