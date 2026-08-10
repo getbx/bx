@@ -158,10 +158,31 @@ func applyVersionFields(status *Status, options LocalAPIOptions) {
 	status.Capabilities = GuardianCapabilities()
 }
 
+// maintenanceHoldReporter 由能回答「此刻有没有维护挂起」的 controller 实现。
+type maintenanceHoldReporter interface {
+	MaintenanceHoldStatus() *MaintenanceHoldStatus
+}
+
+// attachMaintenanceHold 在**每一个**回 Status 的响应上附挂起:菜单的开关读的是
+// POST /v1/up、/v1/down 的响应,只在 GET 上附等于在最需要它的那一刻恒为空
+// (与 applyVersionFields 那条注释同一个教训)。
+//
+// controller 不实现这个接口时字段保持缺席 —— 与「声明了能力、此刻没有挂起」
+// 长得一样,而那正是对的:能力由 applyVersionFields 无条件声明,说的是
+// 「这一版认识挂起」;某个替身答不出来不该把这句话收回去。
+func attachMaintenanceHold(status *Status, controller Controller) {
+	reporter, ok := controller.(maintenanceHoldReporter)
+	if !ok {
+		return
+	}
+	status.MaintenanceHold = reporter.MaintenanceHoldStatus()
+}
+
 // statusWithVersions 是 mutation/migration handler 回给客户端的那份状态。
 func statusWithVersions(controller Controller, options LocalAPIOptions) Status {
 	status := statusOf(controller)
 	applyVersionFields(&status, options)
+	attachMaintenanceHold(&status, controller)
 	return status
 }
 
@@ -171,6 +192,7 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 	if recoveries == nil {
 		applyVersionFields(&status, options)
 		attachCoreRuntime(&status, options)
+		attachMaintenanceHold(&status, controller)
 		return status
 	}
 	if current, ok := recoveries.(pathRecoveryStatusController); ok {
@@ -192,6 +214,7 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 	}
 	applyVersionFields(&status, options)
 	attachCoreRuntime(&status, options)
+	attachMaintenanceHold(&status, controller)
 	return status
 }
 
