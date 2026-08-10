@@ -80,12 +80,14 @@ func (c *Client) Down(ctx context.Context) (Status, error) {
 	return c.request(ctx, http.MethodPost, "/v1/down", nil)
 }
 
-// DownForUpgrade 停保护,但**保住**升级欠条(upgrade-intent.json)。
+// DownForUpgrade 停保护,但把这一跳标记成**维护**而不是「用户不要保护了」。
 //
-// 升级把「停保护」当作自己的一步,而普通的 Down 会把欠条当成陈旧记录销掉 ——
-// 那张欠条恰恰是升级中途失败后唯一知道「还欠用户一次恢复保护」的东西。
+// 两个后果,缺一不可:desired **不被改写**(用户想要保护,只是此刻不能有),
+// 以及前一秒才武装的那张维护挂起**不被销掉**(它正是拦住新 Guardian 在二进制
+// 换到一半时把 Core 起回来的东西)。普通的 Down 两件都会做。
+//
 // 调用方只有一个:sudo bx app-install 的停保护步骤。用户明确说 off 的每一条路
-// (bx down、菜单 Turn Off)都必须继续用 Down,那才是销账的正确时机。
+// (bx down、菜单 Turn Off)都必须继续用 Down,那才是销挂起的正确时机。
 func (c *Client) DownForUpgrade(ctx context.Context) (Status, error) {
 	return c.request(ctx, http.MethodPost, downForUpgradePath, nil)
 }

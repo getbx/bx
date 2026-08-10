@@ -78,62 +78,21 @@ func (s *Store) SaveDesired(desired DesiredState) error {
 	return writeJSONAtomically(s.paths.Desired, desired)
 }
 
-// UpgradeIntent 是一次升级开始前记下的「用户本来要不要保护开着」。
+// UpgradeIntent 是**已退休**的升级欠条的盘上格式:一次升级开始前记下的
+// 「用户本来要不要保护开着」。
 //
-// 为什么必须落盘:升级第一步(停保护)会把 desired 写成 off,于是**一次中途
-// 失败之后**重跑 app-install,读 desired 只会读到 off,升级计划就不再包含
-// 「恢复保护」—— 重试「成功」了,而机器从此再也不会被保护。
+// 它当初存在的理由是升级第一步(停保护)会把 desired 写成 off,于是一次中途失败
+// 之后重跑 app-install,读 desired 只会读到 off,升级计划就不再包含「恢复保护」。
+// **今天升级停机改为武装维护挂起、一个字节都不动 desired**(见 hold.go),
+// 所以重跑读到的就是用户本来的意图 —— 这正是欠条能被删掉的全部依据。
+//
+// 结构体本身**只为 MigrateLegacyUpgradeIntent 保留**:一台正处在升级中途、跨过
+// 这次切换的机器,盘上还有一张这种文件要被翻译成挂起。写入的那一侧
+// (SaveUpgradeIntent)与合成语义(resolveUpgradeDesiredOn)都已删除,新代码
+// 不许再产生这个文件。
 type UpgradeIntent struct {
 	SchemaVersion int  `json:"schema_version"`
 	DesiredOn     bool `json:"desired_on"`
-}
-
-// LoadUpgradeIntent 返回 (desiredOn, present)。
-//
-// 文件不存在或读不动:没有欠条。文件在、内容却读不懂:**仍算欠条**,且按
-// desired_on=true 处理 —— 这个文件只在 desiredOn=true 时被写出来,所以「存在
-// 但坏了」几乎必然是一张真欠条。往「多恢复一次保护」偏,不往「永远不再保护」
-// 偏:后者正是这个文件存在的原因。
-func (s *Store) LoadUpgradeIntent() (bool, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.paths.UpgradeIntent == "" {
-		return false, false
-	}
-	b, err := os.ReadFile(s.paths.UpgradeIntent)
-	if err != nil {
-		return false, false
-	}
-	var intent UpgradeIntent
-	if err := json.Unmarshal(b, &intent); err != nil || intent.SchemaVersion != 1 {
-		return true, true
-	}
-	return intent.DesiredOn, true
-}
-
-func (s *Store) SaveUpgradeIntent(desiredOn bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.paths.UpgradeIntent == "" {
-		return fmt.Errorf("guardian upgrade intent path required")
-	}
-	if err := os.MkdirAll(filepath.Dir(s.paths.UpgradeIntent), 0o700); err != nil {
-		return fmt.Errorf("create guardian state directory: %w", err)
-	}
-	return writeJSONAtomically(s.paths.UpgradeIntent, UpgradeIntent{SchemaVersion: 1, DesiredOn: desiredOn})
-}
-
-// ClearUpgradeIntent 销账。文件本来就不在不算失败(幂等)。
-func (s *Store) ClearUpgradeIntent() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.paths.UpgradeIntent == "" {
-		return nil
-	}
-	if err := os.Remove(s.paths.UpgradeIntent); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove guardian upgrade intent: %w", err)
-	}
-	return nil
 }
 
 func (s *Store) LoadTransaction() (*Transaction, error) {

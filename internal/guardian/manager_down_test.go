@@ -94,22 +94,23 @@ func TestManagerDownFallsBackToBlockOnlyBarrierWhenServerBypassMissing(t *testin
 	}
 }
 
-// 用户明确关掉保护之后,升级欠条必须销账 —— 而且必须在**菜单走的那条路**上。
+// 用户明确关掉保护之后,维护挂起必须销掉 —— 而且必须在**菜单走的那条路**上。
 //
-// 上一轮把销账挂在 internal/cli 的 macOSDownAction 上,以为菜单的 Turn Off 会
+// 上一轮把这类销账挂在 internal/cli 的 macOSDownAction 上,以为菜单的 Turn Off 会
 // 经过它。它不会:菜单直接连 Guardian socket,POST /v1/down → controller.Down,
 // 全程不碰 CLI(ToggleController 只有在 socket **失败**时才回落到
 // privilegedCLIDown)。于是钩子恰好只在罕见的逃生路径上生效。
 //
 // 这个用例走真实的 LocalAPI handler + 真实的 *Store,证明的是那条路本身:
-// 若销账不在 Manager.Down 里,请求成功而欠条仍在。
-func TestDownOverTheLocalAPISocketClearsTheUpgradeIntent(t *testing.T) {
+// 若销挂起不在 Manager.Down 里,请求成功而挂起仍武装着 —— 而一张武装着的挂起
+// 会让 Guardian 在接下来 15 分钟里拒绝起 Core。
+func TestDownOverTheLocalAPISocketClearsTheMaintenanceHold(t *testing.T) {
 	env := newProtectedManagerTestEnv(t)
-	if err := env.store.SaveUpgradeIntent(true); err != nil {
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, present := env.store.LoadUpgradeIntent(); !present {
-		t.Fatal("test setup: 欠条应当已存在")
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || !armed {
+		t.Fatalf("test setup: 挂起应当已武装 armed=%v err=%v", armed, err)
 	}
 
 	// 菜单栏的 Turn Off 就是这一跳(GuardianClient.turnOff → POST /v1/down)。
@@ -121,44 +122,49 @@ func TestDownOverTheLocalAPISocketClearsTheUpgradeIntent(t *testing.T) {
 		t.Fatalf("POST /v1/down = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	if pending, present := env.store.LoadUpgradeIntent(); present {
-		t.Fatalf("经 socket 关闭保护之后,欠条必须销账(否则下次 Repair 会违背用户意愿开回保护),实际 pending=%v", pending)
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
+		t.Fatalf("经 socket 关闭保护之后挂起必须销掉:armed=%v err=%v", armed, err)
 	}
 }
 
-// 升级自己的那次停保护不得销掉它前一秒才写下的欠条。
+// 升级自己的那次停保护不得销掉它前一秒才武装的挂起,也不得改写 desired。
 //
-// app-install 的顺序是「写欠条 → 停保护 → 换文件 → 重启 Guardian → 起保护」。
-// 上一轮里第二步走的是普通 Down,而 Manager.Down 把每一次成功的关闭都当作
-// 「用户不要保护了」销账 —— 欠条在写下的**下一步**就被删掉,于是换文件一失败,
-// 重试既读到 desired=off 又找不到欠条,「成功」地把机器永久留在无保护状态。
+// app-install 的顺序是「武装挂起 → 停保护 → 换文件 → 重启 Guardian → 起保护」。
+// 第二步若走普通 Down,Manager.Down 会把每一次成功的关闭都当作「用户不要保护了」:
+// 挂起在武装的**下一步**就被删掉,desired 又被写成 off —— 于是换文件一失败,重跑
+// 读到 desired=off,「成功」地把机器永久留在无保护状态;而挂起没了,重启后的新
+// Guardian 还会在二进制换到一半时把 Core 起回来。
 //
 // 两条路都跑真实的 Client → 真实 unix socket → 真实 LocalAPI → 真实
-// Manager.Down → 真实 *Store:标记是否被客户端带上、handler 是否认得、
-// Manager 是否照办,任何一环断了这个用例都会红。
-func TestDownForUpgradeKeepsTheUpgradeIntentThatUserDownClears(t *testing.T) {
+// Manager.Down → 真实 *Store:`?reason=upgrade` 是否被客户端带上、handler 是否
+// 认得、Manager 是否照办,任何一环断了这个用例都会红。**这是那个线上字面量唯一
+// 的端到端证明。**
+func TestDownForUpgradeKeepsTheMaintenanceHoldThatUserDownClears(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		down        func(context.Context, *Client) (Status, error)
-		wantPresent bool
+		wantArmed   bool
+		wantDesired DesiredState
 		why         string
 	}{
 		{
 			name:        "用户明确关闭",
 			down:        func(ctx context.Context, c *Client) (Status, error) { return c.Down(ctx) },
-			wantPresent: false,
-			why:         "用户明确说 off 之后,旧欠条必须销账,否则下次 Repair 会违背用户意愿开回保护",
+			wantArmed:   false,
+			wantDesired: DesiredOff,
+			why:         "用户明确说 off 之后,挂起必须销掉、desired 必须记成 off",
 		},
 		{
 			name:        "升级停保护",
 			down:        func(ctx context.Context, c *Client) (Status, error) { return c.DownForUpgrade(ctx) },
-			wantPresent: true,
-			why:         "升级把停保护当作自己的一步,欠条是中途失败后唯一知道「还欠一次恢复保护」的东西",
+			wantArmed:   true,
+			wantDesired: DesiredOn,
+			why:         "升级把停保护当作自己的一步:挂起要留着拦住新 Guardian,desired 仍是用户的意图",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newProtectedManagerTestEnv(t)
-			if err := env.store.SaveUpgradeIntent(true); err != nil {
+			if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			socketPath := filepath.Join(shortSocketDir(t), "guard.sock")
@@ -176,8 +182,11 @@ func TestDownForUpgradeKeepsTheUpgradeIntentThatUserDownClears(t *testing.T) {
 			if _, err := tc.down(context.Background(), NewClient(socketPath)); err != nil {
 				t.Fatalf("停保护失败: %v", err)
 			}
-			if _, present := env.store.LoadUpgradeIntent(); present != tc.wantPresent {
-				t.Fatalf("停保护之后欠条 present=%v,want %v —— %s", present, tc.wantPresent, tc.why)
+			if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed != tc.wantArmed {
+				t.Fatalf("停保护之后挂起 armed=%v(err=%v),want %v —— %s", armed, err, tc.wantArmed, tc.why)
+			}
+			if desired, err := env.store.LoadDesired(); err != nil || desired != tc.wantDesired {
+				t.Fatalf("停保护之后 desired=%q(err=%v),want %q —— %s", desired, err, tc.wantDesired, tc.why)
 			}
 		})
 	}
@@ -283,22 +292,6 @@ func TestDownStillReportsOffOnAHealthyMachine(t *testing.T) {
 				t.Errorf("干净机器不该留下失败码, got %q", status.LastError)
 			}
 		})
-	}
-}
-
-// Down 失败时不得销账:保护可能还开着,欠条仍然有意义。
-func TestFailedDownKeepsTheUpgradeIntent(t *testing.T) {
-	env := newProtectedManagerTestEnv(t)
-	if err := env.store.SaveUpgradeIntent(true); err != nil {
-		t.Fatal(err)
-	}
-	env.store.setLoadError(errors.New("desired state unreadable"))
-
-	if err := env.manager.Down(context.Background()); err == nil {
-		t.Fatal("test setup: 这一步应当失败")
-	}
-	if _, present := env.store.LoadUpgradeIntent(); !present {
-		t.Fatal("Down 失败时欠条必须留着 —— 保护可能还开着")
 	}
 }
 

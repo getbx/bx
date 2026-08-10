@@ -2,8 +2,6 @@ package cli
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,11 +15,6 @@ type fakeUpgradeIO struct {
 	running    bool
 	runningErr error
 	desiredOn  bool
-
-	saveIntentErr  error
-	clearIntentErr error
-	savedIntent    *bool
-	intentCleared  bool
 
 	confirmAnswer  bool
 	confirmErr     error
@@ -47,16 +40,6 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 		loadDesiredOn: func() bool {
 			f.calls = append(f.calls, "loadDesiredOn")
 			return f.desiredOn
-		},
-		saveIntent: func(desiredOn bool) error {
-			f.calls = append(f.calls, "saveIntent")
-			f.savedIntent = &desiredOn
-			return f.saveIntentErr
-		},
-		clearIntent: func() error {
-			f.calls = append(f.calls, "clearIntent")
-			f.intentCleared = f.clearIntentErr == nil
-			return f.clearIntentErr
 		},
 		confirm: func(prompt string) (bool, error) {
 			f.calls = append(f.calls, "confirm")
@@ -92,34 +75,28 @@ func indexOfCall(calls []string, want string) int {
 	return -1
 }
 
-// 意图必须在停保护之前既读完又落盘。
+// 意图必须在停保护之前读完。
 //
-// 停保护会把 Guardian 的 desired 写成 off,之后再读就永远是 off —— 读晚了,
-// 保护就再也回不来。这条此前只由一句注释保证。
-func TestRunUpgradeReadsAndRecordsIntentBeforeStoppingProtection(t *testing.T) {
+// **退回路径**(挂起写不成时退回写 desired=off,设计取舍三)上停保护仍会把
+// Guardian 的 desired 写成 off,之后再读就永远是 off —— 读晚了,保护就再也回不来。
+// 这条此前只由一句注释保证。
+func TestRunUpgradeReadsIntentBeforeStoppingProtection(t *testing.T) {
 	fake := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
 	if _, err := runUpgrade(fake.io(), false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	load := indexOfCall(fake.calls, "loadDesiredOn")
-	save := indexOfCall(fake.calls, "saveIntent")
 	stop := indexOfCall(fake.calls, "stopProtection")
-	if load < 0 || save < 0 || stop < 0 {
-		t.Fatalf("calls = %v,必须读意图、记欠条、停保护", fake.calls)
+	if load < 0 || stop < 0 {
+		t.Fatalf("calls = %v,必须读意图、停保护", fake.calls)
 	}
 	if load > stop {
 		t.Fatalf("读意图(%d)必须早于停保护(%d),否则读到的永远是 off:%v", load, stop, fake.calls)
 	}
-	if save > stop {
-		t.Fatalf("欠条(%d)必须在停保护(%d)之前落盘,否则中途失败没人知道该起回保护:%v", save, stop, fake.calls)
-	}
-	if fake.savedIntent == nil || !*fake.savedIntent {
-		t.Fatalf("欠条必须记下 desiredOn=true,实际 %v", fake.savedIntent)
-	}
 }
 
-// 中途失败必须把欠条留在盘上 —— 那正是重试唯一的信息来源。
-func TestRunUpgradeKeepsIntentWhenAStepFails(t *testing.T) {
+// 中途失败不得声称保护已恢复 —— 收尾状态只能由**做过的事**导出。
+func TestRunUpgradeReportsNoRestoreWhenAStepFails(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		set  func(*fakeUpgradeIO)
@@ -135,28 +112,10 @@ func TestRunUpgradeKeepsIntentWhenAStepFails(t *testing.T) {
 			if err == nil {
 				t.Fatal("这一步失败必须报错")
 			}
-			if indexOfCall(fake.calls, "clearIntent") >= 0 {
-				t.Fatalf("失败时不得清欠条,否则重试会以为不欠保护:%v", fake.calls)
-			}
 			if outcome.ProtectionRestored {
 				t.Fatal("没起成保护就不能说恢复了")
 			}
 		})
-	}
-}
-
-// 记不下欠条就不要开始 —— 此刻确实一步都没做,那句「状态未变」是真的。
-func TestRunUpgradeRefusesToStartWhenIntentCannotBeRecorded(t *testing.T) {
-	fake := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true, saveIntentErr: errors.New("disk full")}
-	_, err := runUpgrade(fake.io(), false)
-	if err == nil {
-		t.Fatal("记不下欠条必须拒绝开始")
-	}
-	if indexOfCall(fake.calls, "stopProtection") >= 0 {
-		t.Fatalf("拒绝之后不得动手:%v", fake.calls)
-	}
-	if !strings.Contains(err.Error(), "状态未变") {
-		t.Fatalf("此时状态确实未变,应如实说明,实际 = %q", err)
 	}
 }
 
@@ -194,9 +153,6 @@ func TestRunUpgradeDoesNotClaimProtectionItNeverStarted(t *testing.T) {
 	if indexOfCall(fake.calls, "confirm") >= 0 {
 		t.Fatalf("没有保护要停就不该打扰用户:%v", fake.calls)
 	}
-	if !fake.intentCleared {
-		t.Fatal("干净跑完一次应清掉欠条")
-	}
 }
 
 // 取消就是一步都不做。
@@ -206,7 +162,7 @@ func TestRunUpgradeCancelledDoesNothing(t *testing.T) {
 	if err != nil || !outcome.Cancelled {
 		t.Fatalf("取消不该报错,outcome=%+v err=%v", outcome, err)
 	}
-	for _, forbidden := range []string{"saveIntent", "stopProtection", "installFiles", "restartGuardian", "startProtection", "clearIntent"} {
+	for _, forbidden := range []string{"stopProtection", "installFiles", "restartGuardian", "startProtection"} {
 		if indexOfCall(fake.calls, forbidden) >= 0 {
 			t.Fatalf("取消后不得执行 %s:%v", forbidden, fake.calls)
 		}
@@ -252,38 +208,6 @@ func TestRunUpgradeDoesNotClaimUsableNetworkAfterForcedTeardown(t *testing.T) {
 	}
 }
 
-// 欠条落盘/读取/清除的往返,以及「一次失败的升级之后,重试仍知道欠一次保护」。
-func TestUpgradeIntentRoundTripSurvivesAFailedUpgrade(t *testing.T) {
-	store := guardian.OpenStore(guardian.Paths{UpgradeIntent: filepath.Join(t.TempDir(), "upgrade-intent.json")})
-	if _, present := store.LoadUpgradeIntent(); present {
-		t.Fatal("没有文件就不该有欠条")
-	}
-	if err := store.SaveUpgradeIntent(true); err != nil {
-		t.Fatal(err)
-	}
-	pending, present := store.LoadUpgradeIntent()
-	if !present || !pending {
-		t.Fatalf("欠条应为 (true,true),实际 (%v,%v)", pending, present)
-	}
-	// 失败的那次升级已经把 Guardian 的 desired 写成了 off:只看 store 会得出
-	// 「不欠保护」,机器从此再不被保护。
-	if !resolveUpgradeDesiredOn(false, pending, present) {
-		t.Fatal("欠条说 on,重试就必须把保护起回来")
-	}
-	if err := store.ClearUpgradeIntent(); err != nil {
-		t.Fatal(err)
-	}
-	if _, present := store.LoadUpgradeIntent(); present {
-		t.Fatal("清过之后不该还有欠条")
-	}
-	if resolveUpgradeDesiredOn(false, false, false) {
-		t.Fatal("没有欠条、store 也说 off,就不该擅自开保护")
-	}
-	if !resolveUpgradeDesiredOn(true, false, false) {
-		t.Fatal("store 说 on 就是 on")
-	}
-}
-
 // 「问不出来」必须是非零退出,不能和「用户说不」一样静静地成功返回。
 //
 // 生成的 install.sh 在 set -euo pipefail 下紧接着无条件打印「完成」。若这里
@@ -302,7 +226,7 @@ func TestRunUpgradeFailsLoudlyWhenItCannotAsk(t *testing.T) {
 	if !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("必须告诉调用方怎么显式表态,实际 = %q", err)
 	}
-	for _, forbidden := range []string{"saveIntent", "stopProtection", "installFiles"} {
+	for _, forbidden := range []string{"stopProtection", "installFiles"} {
 		if indexOfCall(fake.calls, forbidden) >= 0 {
 			t.Fatalf("没问成就不得动手 %s:%v", forbidden, fake.calls)
 		}
@@ -319,63 +243,6 @@ func TestRunUpgradeExplicitNoIsNotAnError(t *testing.T) {
 	if !outcome.Cancelled {
 		t.Fatal("必须如实标记为取消")
 	}
-}
-
-// 用户明确关掉保护之后,旧欠条必须销账。
-//
-// 否则:升级在装文件那步失败(欠条 desired_on=true 留在盘上)→ 用户决定就这么
-// 关着(或显式 sudo bx down)→ 之后点菜单的 Repair(带 --yes,连问都不问)→
-// 欠条胜出,保护被打开、DNS 与路由被接管,而这与用户最后一次明确指令相反,
-// 还会配一句「保护已按升级前的状态恢复」的假话。
-func TestForgetUpgradeDebtOnExplicitOffClearsTheDebt(t *testing.T) {
-	store := guardian.OpenStore(guardian.Paths{UpgradeIntent: filepath.Join(t.TempDir(), "upgrade-intent.json")})
-	if err := store.SaveUpgradeIntent(true); err != nil {
-		t.Fatal(err)
-	}
-	var warnings []string
-	forgetUpgradeDebtOnExplicitOff(store.ClearUpgradeIntent, func(line string) { warnings = append(warnings, line) })
-	if _, present := store.LoadUpgradeIntent(); present {
-		t.Fatal("用户明确关闭保护之后,欠条必须销账")
-	}
-	if len(warnings) != 0 {
-		t.Fatalf("成功销账不该警告:%v", warnings)
-	}
-	// 抹不掉只警告:停止这条路绝不能因为一个记账文件而失败。
-	forgetUpgradeDebtOnExplicitOff(func() error { return errors.New("read-only fs") }, func(line string) { warnings = append(warnings, line) })
-	if len(warnings) != 1 {
-		t.Fatalf("失败必须留下可见警告,实际 %v", warnings)
-	}
-}
-
-// bx down 的**强制拆除**路径必须销账 —— 这一跳没有类型能替我们检查。
-//
-// 正常路径的销账在 guardian.Manager.Down(见
-// TestDownOverTheLocalAPISocketClearsTheUpgradeIntent,那条才是菜单走的路);
-// 强制拆除时 Guardian 已被 bootout,Manager.Down 从未被调用,只能在这里补。
-func TestMacOSDownActionForgetsTheUpgradeDebt(t *testing.T) {
-	source, err := os.ReadFile("guardian.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := goFuncBody(t, string(source), "macOSDownAction")
-	if !strings.Contains(body, "forgetUpgradeDebtOnExplicitOff(") {
-		t.Fatal("bx down 的强制拆除路径够不到 Manager.Down,必须在这里销掉升级欠条")
-	}
-}
-
-// goFuncBody 截出一个顶层函数的函数体(到下一个 `func ` 为止)。
-func goFuncBody(t *testing.T, text, name string) string {
-	t.Helper()
-	marker := "func " + name + "("
-	start := strings.Index(text, marker)
-	if start < 0 {
-		t.Fatalf("找不到函数 %s", name)
-	}
-	rest := text[start+len(marker):]
-	if next := strings.Index(rest, "\nfunc "); next >= 0 {
-		rest = rest[:next]
-	}
-	return rest
 }
 
 // Guardian 没能确认保护关掉时,升级必须**停在第一步**,不许去换二进制。

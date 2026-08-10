@@ -143,6 +143,28 @@ func TestUninstallPlanRemovesMaintenanceHoldButKeepsDataDir(t *testing.T) {
 	}
 }
 
+// **已退休**的升级欠条也必须随卸载消失,理由换了一个但更硬:没有任何东西再写
+// 它,可 MigrateLegacyUpgradeIntent 仍会读它 —— 一张活过卸载重装的陈旧欠条会被
+// 新装的 Guardian 翻成「desired=on + 一次已武装的挂起」,在一台用户刚刚卸载干净
+// 的机器上把保护开回来。
+//
+// 这条断言此前**根本不存在**:计划以为既有的卸载测试守着它,而
+// TestUninstallPlanRemovesRuntimeStateButKeepsConfig 只查 core-process.json 与
+// guardian-state.json 两个名字 —— 实测把那一行从 RemovePaths 删掉,整个
+// internal/cli 全绿。
+func TestUninstallPlanRemovesLegacyUpgradeIntentFile(t *testing.T) {
+	plan := buildDarwinUninstallPlan(501, "/Users/tester", true)
+	// 字面路径,不用常量:用常量做 Contains 只能证明「计划里放了那个常量」,
+	// 常量本身指错文件照样绿(同挂起那条)。这条与 guardian 的
+	// OpenDefaultStore().UpgradeIntent 对齐。
+	if !slices.Contains(plan.RemovePaths, "/var/lib/bx/upgrade-intent.json") {
+		t.Fatalf("RemovePaths 缺 legacy 升级欠条: %v", plan.RemovePaths)
+	}
+	if darwinUpgradeIntentPath != "/var/lib/bx/upgrade-intent.json" {
+		t.Fatalf("darwinUpgradeIntentPath = %q,与 guardian 默认路径不一致", darwinUpgradeIntentPath)
+	}
+}
+
 // 菜单栏 agent 带 KeepAlive 之后,一次失败的 gui 域 bootout 不再是良性的:job
 // 留在 launchd 里,而卸载紧接着删掉 /Applications/Bx.app,launchd 就会每 ~10s
 // 重拉一个已不存在的二进制刷屏 menu.err.log,直到用户注销——用户却以为卸干净了。

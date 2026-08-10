@@ -39,7 +39,7 @@ func (s *Store) MigrateLegacyUpgradeIntent(now time.Time) (bool, error) {
 		return false, fmt.Errorf("read legacy upgrade intent: %w", err)
 	}
 	// 「存在但坏了 ⇒ 仍算欠条」:这个文件只在 desired_on=true 时被写出来,所以
-	// 「在、却读不懂」几乎必然是一张真欠条(store.go 的 LoadUpgradeIntent 同判)。
+	// 「在、却读不懂」几乎必然是一张真欠条(已退休的 LoadUpgradeIntent 同判)。
 	// 往「多恢复一次保护」偏,不往「永远不再保护」偏。
 	desiredOn := true
 	var intent UpgradeIntent
