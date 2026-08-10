@@ -259,8 +259,10 @@ func TestDownReportDoesNotClaimStoppedWhenGuardianCouldNotConfirm(t *testing.T) 
 			if strings.Contains(joined, "✅") {
 				t.Fatalf("Guardian 没能确认关闭时不许打勾:\n%s", joined)
 			}
-			if !strings.Contains(joined, "bx status") {
-				t.Errorf("要给出下一步(看原因):\n%s", joined)
+			// 下一步必须指向**真的能看到原因**的地方。这条最初写的是 bx status,
+			// 而 bx status 根本不显示 last_error —— 那条断言当时钉住的是一个死胡同。
+			if !strings.Contains(joined, "bx-guard.err.log") {
+				t.Errorf("要给出下一步(而且是真能看到原因的那个):\n%s", joined)
 			}
 		})
 	}
@@ -273,5 +275,52 @@ func TestDownReportStillConfirmsStopWhenGuardianSaysOff(t *testing.T) {
 	})
 	if !strings.Contains(strings.Join(stdout, "\n"), "✅") {
 		t.Fatalf("确认关闭时必须照旧给出肯定答复:\n%s", strings.Join(stdout, "\n"))
+	}
+}
+
+// 进度行与报告不许互相打脸。曾经 macOSDownAction 无条件打
+// 「✓ bx 已停止,网络已恢复」,而紧接着的报告说「没能确认关闭」——
+// 用户在相邻两行里同时读到断言和对它的否认。
+//
+// 这条守的是**它们读同一个判据**,而不是各自判各自的。
+func TestProgressLineAgreesWithTheReport(t *testing.T) {
+	unconfirmed := macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionNeedsAttention}}
+	if downConfirmedStopped(unconfirmed) {
+		t.Fatal("needs_attention 不该被判成「已确认停止」——进度行会因此打出肯定的勾")
+	}
+	confirmed := macOSDownResult{Status: guardian.Status{Protection: guardian.ProtectionOff}}
+	if !downConfirmedStopped(confirmed) {
+		t.Fatal("off 必须判成已确认,否则每次正常停止都会显示「未能确认」")
+	}
+}
+
+// 给用户的理由要用 Guardian 报的失败码,它比 protection_state 具体得多:
+// core_still_running(确知还在)与 core_scan_failed(问不出来)对用户是两件事。
+func TestUnconfirmedReasonPrefersTheGuardianFailureCode(t *testing.T) {
+	result := macOSDownResult{Status: guardian.Status{
+		Protection: guardian.ProtectionNeedsAttention,
+		LastError:  "core_still_running",
+	}}
+	if got := downUnconfirmedReason(result); got != "core_still_running" {
+		t.Fatalf("应优先用失败码, got %q", got)
+	}
+	_, stderr := downReportLines(result)
+	if !strings.Contains(strings.Join(stderr, "\n"), "core_still_running") {
+		t.Errorf("失败码必须出现在给用户的那句话里:\n%s", strings.Join(stderr, "\n"))
+	}
+}
+
+// **不许把用户支进死胡同。** 这里曾写「请执行 bx status 查看原因」,而 bx status
+// 根本不显示 last_error —— 用户照做,什么也看不到。
+func TestUnconfirmedGuidancePointsSomewhereTheAnswerActuallyIs(t *testing.T) {
+	stdout, _ := downReportLines(macOSDownResult{
+		Status: guardian.Status{Protection: guardian.ProtectionNeedsAttention},
+	})
+	joined := strings.Join(stdout, "\n")
+	if !strings.Contains(joined, "bx-guard.err.log") {
+		t.Errorf("要指向真的能看到原因的地方(Guardian 日志):\n%s", joined)
+	}
+	if strings.Contains(joined, "bx status 查看原因") {
+		t.Errorf("bx status 不显示 last_error,别把用户支过去:\n%s", joined)
 	}
 }
