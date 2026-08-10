@@ -822,7 +822,7 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 	}
 	intent, err := m.store.LoadIntentSnapshot(time.Now())
 	if err != nil {
-		m.needsAttention(DesiredOn, "desired_state_read_failed")
+		m.needsAttention(DesiredOn, intentReadFailureCode(err))
 		// **只有 desired 那一半读不出来才堵死后续 mutation。** 挂起读不出来时
 		// 一样 fail-closed(下面一句 return,不起 Core),但 recoveryBlocked 保持
 		// false:一张坏挂起(坏 schema、坏 reason、时钟跳变造出的远期过期)在
@@ -840,14 +840,34 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 	// 起来,新 Guardian 起手就跑启动恢复;desired 保持 on 之后,不认挂起就等于在
 	// 二进制刚换完、CLI 还没走到「恢复保护」那一步时自己先把 Core 起来了。
 	//
+	// **注意这不是本函数里第一个可能起 Core 的地方**:上面的 recoverUpdateLocked
+	// (`:819`)跑在这道检查**之前**,崩在升级中途的机器会在那里回滚并起一个 Core。
+	// 那是**有意不拦**的 —— 它先把快照里的二进制还原回去再启动,起来的不是半换的
+	// 版本;拦住它反而会把一次做了一半的 Guardian 自更新永久卡住,比它可能造成的
+	// 麻烦更糟。见 TestStartupRecoveryStillFinishesAnInFlightUpdateUnderArmedHold,
+	// 别把这条例外「修」成一道栅栏。
+	//
 	// recoveryBlocked **必须置 false**:它为真时 Manager.Down 第一句就返回
 	// errRecoveryIncomplete —— 2026-08-04 那次 71 分钟事故的机制。一次挂起绝不
 	// 允许把关闭的路堵死。
 	if intent.HoldArmed {
-		m.setStatus(Status{SchemaVersion: 1, Desired: desired, Phase: PhaseIdle, Protection: ProtectionOff})
-		m.recoveryBlocked = false
 		log.Printf("guardian_startup_recovery_held reason=%s expires_at=%s",
 			intent.Hold.Reason, intent.Hold.ExpiresAt.Format(time.RFC3339))
+		// 与隔壁 desired==off 那一支同一条纪律:**发 off 之前先问系统**。账本说
+		// 「此刻不该有保护」证明不了「现在没有 Core 在跑」—— legacy Core、另一个
+		// 终端里的 sudo bx run、以及记录丢失的机器,账本里都看不见。
+		//
+		// 今天升级停机走的是隔壁那支(它已经求证);Task 4 把它搬到这一支上来,
+		// 那条求证不能在搬家途中掉在半路 —— 它当初正是为这条路写的。
+		stopped, reason := m.confirmCoreStopped()
+		// 求证的结果只决定「能不能说 off」,不决定「要不要堵死关闭的路」:
+		// 两种情形都必须留 false(见上)。
+		m.recoveryBlocked = false
+		if !stopped {
+			m.needsAttention(desired, reason)
+			return nil
+		}
+		m.setStatus(Status{SchemaVersion: 1, Desired: desired, Phase: PhaseIdle, Protection: ProtectionOff})
 		return nil
 	}
 	if desired == DesiredOff {
@@ -1112,7 +1132,7 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		if !m.barrierProven() {
 			_ = m.installBarrierForRecovery(operationCtx, m.runtime)
 		}
-		m.needsAttention(DesiredOn, "desired_state_read_failed")
+		m.needsAttention(DesiredOn, intentReadFailureCode(err))
 		return
 	}
 	// 维护挂起武装着 ⇒ 这次退出是**别人要求的**,不是崩溃。
