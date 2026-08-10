@@ -642,6 +642,26 @@ func (m *Manager) migrateLegacyIntentOnce() {
 	})
 }
 
+// MaintenanceHoldStatus 现读磁盘。**不缓存、不进 m.status。**
+//
+// 不进 m.status:控制面里一大批路径拿从零构造的 Status 字面量整体替换它
+// (upLocked/downLocked/recoverLocked…),挂起只要并进去就迟早被顺手抹掉 ——
+// 与 reconcileReport 住在外面同一个理由。
+//
+// 不缓存:武装它的是**另一个进程**(CLI),缓存等于发布一个可能已经不成立的事实。
+//
+// 读失败返回 nil(键缺席),**不因此让 /v1/status 失败**:菜单唯一的数据源不许
+// 因为一次读盘失败整个变黑。「读不出来」这件事本身另有去处 —— 真正会因此改变
+// 行为的路径(recoverLocked / handleUnexpectedExit / 调谐环)一律 fail-closed 并
+// 发 intent_unreadable,那才是它该出现的地方。
+func (m *Manager) MaintenanceHoldStatus() *MaintenanceHoldStatus {
+	intent, err := m.store.LoadIntentSnapshot(time.Now())
+	if err != nil || !intent.HoldArmed {
+		return nil
+	}
+	return &MaintenanceHoldStatus{Reason: intent.Hold.Reason, ExpiresAt: intent.Hold.ExpiresAt}
+}
+
 // clearMaintenanceHold 撤销挂起。**只记日志,绝不让调用方失败**:它跑在
 // up/down 这两条路上,而停止不许依赖先成功做成别的事。
 //

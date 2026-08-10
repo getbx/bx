@@ -140,12 +140,30 @@ const CapabilityDiagnosticsArchive = "diagnostics_archive"
 // 两种写法迟早会有人照着旁边那条抄错。今天还没有消费方依赖它,阶段③b 之后它就是契约。
 const CapabilityReconcileReport = "reconcile_report"
 
+// CapabilityMaintenanceHold 表示这一版 Guardian 认识维护挂起,因而
+// Status.MaintenanceHold 这个键**是它会填的**。
+//
+// 与 CapabilityReconcileReport 同一机制、同一理由:消费方要分得开「这一版没有
+// 挂起这个概念」(没声明能力)与「有这个概念,此刻没有挂起」(声明了、键缺席)。
+// 前者下菜单不该说「保护已关闭」,因为它根本不知道是不是维护窗口。
+const CapabilityMaintenanceHold = "maintenance_hold"
+
+// MaintenanceHoldStatus 是**正在生效**的那次挂起,随 Status 发布。
+//
+// 过期的挂起不出现在这里:键缺席的意思是「此刻没有挂起」。它与 MaintenanceHold
+// (盘上那份)刻意分成两个类型 —— 发布出去的这份不带 SchemaVersion,那是存储
+// 格式的事,消费方不该看见,更不该照着它去解盘上的文件。
+type MaintenanceHoldStatus struct {
+	Reason    string    `json:"reason"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // GuardianCapabilities 是这一版 Guardian 声明支持的能力集合。
 //
 // 每次调用都返回新切片:它会被塞进 Status 交给 JSON 编码,共享一份底层数组等于
 // 把一个包级可变状态发布出去。
 func GuardianCapabilities() []string {
-	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport}
+	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold}
 }
 
 // ReconcileReport 是只观察调谐环**最近一轮**的判断,随 Status 一起发布。
@@ -266,6 +284,14 @@ type Status struct {
 	// 毫无意义。「这一版有没有这条循环」由 Capabilities 里的
 	// CapabilityReconcileReport 回答,不靠这个键的有无。
 	Reconcile *ReconcileReport `json:"reconcile,omitempty"`
+
+	// MaintenanceHold 非 nil 表示此刻有一次维护挂起在生效:用户要保护(desired
+	// 仍是 on),但此刻不能有。**omitempty 是契约的一部分**:键缺席 = 没有挂起。
+	// 「这一版认不认识挂起」由 Capabilities 里的 CapabilityMaintenanceHold 回答。
+	//
+	// 一台挂起武装着的机器,在没有这个字段之前与「用户自己关掉了保护」长得一模
+	// 一样 —— 这正是 desired 不再撒谎之后剩下的最后一处含混。
+	MaintenanceHold *MaintenanceHoldStatus `json:"maintenance_hold,omitempty"`
 
 	// LastErrorGeneration is a monotonic counter bumped every time
 	// needsAttention actually runs (see Manager.needsAttention). It exists so
