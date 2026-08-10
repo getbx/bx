@@ -203,6 +203,7 @@ type Manager struct {
 	barrierOwnership       barrierOwnership
 	barrierGeneration      barrierCredential
 	recoveryBlocked        bool
+	legacyIntentOnce       sync.Once
 	recoveryMu             sync.Mutex
 	recoveryContext        context.Context
 	cancelRecovery         context.CancelFunc
@@ -605,6 +606,39 @@ type upgradeIntentStore interface {
 	ClearUpgradeIntent() error
 }
 
+// legacyIntentMigrator 是可选能力:实现了它的 store 才有 legacy 欠条可迁移。
+// 用可选接口是安全的 —— 没实现的只有测试替身,而替身的目录里不会有 legacy 文件。
+type legacyIntentMigrator interface {
+	MigrateLegacyUpgradeIntent(time.Time) (bool, error)
+}
+
+// migrateLegacyIntentOnce 把一台**正处在升级中途**跨过这次切换的机器上留下的
+// legacy 欠条,翻译成「desired=on + 一次已武装的挂起」。
+//
+// **每个进程只跑一遍**:启动恢复有重试循环(daemon.go 的 retryDaemonRecovery),
+// 而一个删不掉的欠条会让每一次重试都重新武装一次挂起 —— 过期时刻跟着刷新,
+// 15 分钟的上限就成了永久压制。
+//
+// **失败只记日志**:迁移做不成时盘上留下的是**今天的**状态(desired=off + 欠条
+// 还在),下一个 Guardian 进程会再试一次;而让启动恢复因此失败会置
+// recoveryBlocked,把 Up 与 Down 双双堵死 —— 那是 2026-08-04 那次事故的机制。
+func (m *Manager) migrateLegacyIntentOnce() {
+	m.legacyIntentOnce.Do(func() {
+		store, ok := m.store.(legacyIntentMigrator)
+		if !ok {
+			return
+		}
+		migrated, err := store.MigrateLegacyUpgradeIntent(time.Now())
+		if err != nil {
+			log.Printf("guardian_legacy_upgrade_intent_migrate_failed err=%v", err)
+			return
+		}
+		if migrated {
+			log.Printf("guardian_legacy_upgrade_intent_migrated hold_reason=%s", HoldReasonLegacyUpgrade)
+		}
+	})
+}
+
 func (m *Manager) forgetUpgradeIntent() {
 	store, ok := m.store.(upgradeIntentStore)
 	if !ok {
@@ -866,6 +900,10 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 		return err
 	}
 	defer m.releaseMutation()
+	// **必须排在读意图之前。** 迁移改的正是这一次要读的那两个文件:反过来的话
+	// recoverLocked 会先按那次失败的升级自己写下的 desired=off 把状态定成 off、
+	// 甚至去还原 DNS,再由迁移把盘改成 on —— 机器与状态两张皮。
+	m.migrateLegacyIntentOnce()
 	if err := m.recoverUpdateLocked(ctx); err != nil {
 		m.recoveryBlocked = true
 		return err

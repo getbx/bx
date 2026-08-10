@@ -1901,18 +1901,23 @@ type managerTestEnv struct {
 	dns     *fakeDNSManager
 	legacy  *fakeLegacyCore
 	events  *eventLog
+	// legacyIntentPath 是这台「机器」上 legacy 升级欠条的位置。暴露出来是为了让
+	// 迁移垫片的测试能真的在盘上放一张欠条 —— 路径藏在字面量里的话,那些测试
+	// 只能改成读 Store 内部,或者干脆平凡地绿。
+	legacyIntentPath string
 }
 
 func newManagerTestEnv(t *testing.T) *managerTestEnv {
 	t.Helper()
 	events := &eventLog{}
+	legacyIntentPath := filepath.Join(t.TempDir(), "upgrade-intent.json")
 	store := &recordingDesiredStore{Store: OpenStore(Paths{
 		Desired:       filepath.Join(t.TempDir(), "guardian-state.json"),
 		Transaction:   filepath.Join(t.TempDir(), "transaction.json"),
 		Receipt:       filepath.Join(t.TempDir(), "receipt.json"),
 		Staging:       filepath.Join(t.TempDir(), "staging"),
 		Snapshots:     filepath.Join(t.TempDir(), "snapshots"),
-		UpgradeIntent: filepath.Join(t.TempDir(), "upgrade-intent.json"),
+		UpgradeIntent: legacyIntentPath,
 		// 挂起路径必须填:Store 在没有它时**报错**而不是答「没有挂起」
 		// (hold.go 的刻意取舍),否则本文件里每一条依赖挂起的断言都会
 		// 平凡地绿 —— 没路径 ⇒ 从不武装 ⇒ 栅栏永不触发。
@@ -1936,7 +1941,11 @@ func newManagerTestEnv(t *testing.T) *managerTestEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &managerTestEnv{manager: manager, store: store, runner: runner, health: health, barrier: barrier, dns: dns, legacy: legacy, events: events}
+	return &managerTestEnv{
+		manager: manager, store: store, runner: runner, health: health,
+		barrier: barrier, dns: dns, legacy: legacy, events: events,
+		legacyIntentPath: legacyIntentPath,
+	}
 }
 
 // assertBarrierRemoved / assertDNSRestored / assertDesiredOffPersisted 断言的是
@@ -2014,9 +2023,10 @@ func (l *eventLog) reset() {
 
 type recordingDesiredStore struct {
 	*Store
-	events  *eventLog
-	mu      sync.Mutex
-	loadErr error
+	events   *eventLog
+	mu       sync.Mutex
+	loadErr  error
+	migrates int
 }
 
 func (s *recordingDesiredStore) LoadDesired() (DesiredState, error) {
@@ -2037,6 +2047,22 @@ func (s *recordingDesiredStore) LoadDesired() (DesiredState, error) {
 // 「替身把错误分类丢了、测试照样绿」。
 func (s *recordingDesiredStore) LoadIntentSnapshot(now time.Time) (IntentSnapshot, error) {
 	return loadIntentSnapshot(s.LoadDesired, s.Store.LoadMaintenanceHold, now)
+}
+
+// MigrateLegacyUpgradeIntent 只数一下**真正跑过几次**,其余原样交给内嵌的
+// *Store —— 迁移的语义(哪两半要恢复、什么时候删文件)不在这里重抄一遍,
+// 那样的替身迟早与生产分叉,而分叉的方向恰好是「测试照样绿」。
+func (s *recordingDesiredStore) MigrateLegacyUpgradeIntent(now time.Time) (bool, error) {
+	s.mu.Lock()
+	s.migrates++
+	s.mu.Unlock()
+	return s.Store.MigrateLegacyUpgradeIntent(now)
+}
+
+func (s *recordingDesiredStore) migrateCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.migrates
 }
 
 func (s *recordingDesiredStore) setLoadError(err error) {
