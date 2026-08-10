@@ -3,6 +3,8 @@ package guardian
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -237,5 +239,56 @@ func TestGuardianDeclaresTheReconcileReportCapability(t *testing.T) {
 	// 新增一条不许挤掉老的:菜单靠 diagnostics_archive 决定要不要给 `bx logs --archive`。
 	if !contains(capabilities, CapabilityDiagnosticsArchive) {
 		t.Fatalf("新能力挤掉了既有能力, got %v", capabilities)
+	}
+}
+
+// **报告必须走完从 Manager 到 bx status 的那一整跳。**
+//
+// 上面所有断言证明的是两件各自成立、但连不起来的事:Manager.Status() 里有这个
+// 字段,以及 CLI 拿到一份报告时会渲染它。中间那一段没人守 ——
+// observableStatus(localapi.go)是 Manager 到客户端**唯一**的通路,而它是逐字段
+// 揉这份 Status 的(Recovery 重置、Protection 按恢复态改写、版本与能力补上)。
+// 在那里插一句 `status.Reconcile = nil`,guardian 与 cli 两套测试**全绿**。
+//
+// 这不是假想:setStatus(manager.go)里就**真的**有一句刻意的
+// `status.Reconcile = nil`,「在一个揉 Status 的函数里把 Reconcile 赋成 nil」
+// 是一行之隔就能抄到的写法;而 observableStatus 恰恰是将来改 Recovery/Protection
+// 的人会动的那个函数。
+//
+// 后果正是这一项存在的理由:报告在路上掉了 ⇒ CLI 看到 nil,而能力由
+// applyVersionFields **恒**声明 ⇒ 永远渲染成「尚未完成第一轮观测」,与一条从没
+// 跑过的循环逐字节相同。soak 会从一台跑了一整天的机器上读到「刚启动」。
+//
+// At 也一并断言:一份 At 为零的报告到了 CLI 那边同样渲染成「还没跑过」,
+// 所以「字段在」不等于「消息到了」。
+func TestGuardianStatusEndpointPublishesTheReconcileReport(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.recordReconcileRound(reconcileDecision{Held: heldOwnershipUncertain}, 5)
+
+	recorder := httptest.NewRecorder()
+	NewLocalAPI(env.manager).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /v1/status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var got Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Reconcile == nil {
+		t.Fatalf("报告没能走到 /v1/status —— CLI 会永远显示「尚未完成第一轮观测」,"+
+			"与一条从没跑过的循环完全一样, body=%s", recorder.Body.String())
+	}
+	if got.Reconcile.At.IsZero() {
+		t.Errorf("At 在路上被抹平了 —— 到了 CLI 那边它同样会渲染成「还没跑过」, body=%s",
+			recorder.Body.String())
+	}
+	if got.Reconcile.Held != heldOwnershipUncertain || got.Reconcile.UnchangedRounds != 5 {
+		t.Errorf("报告的内容在路上变了, got %+v", got.Reconcile)
+	}
+	// 同一份响应里能力必须也在:CLI 的三态判断要两样都到齐才成立。
+	if !contains(got.Capabilities, CapabilityReconcileReport) {
+		t.Errorf("同一份响应里没有能力声明,CLI 分不清「旧版」与「还没跑完第一轮」, got %v",
+			got.Capabilities)
 	}
 }
