@@ -1935,6 +1935,46 @@ func newManagerTestEnv(t *testing.T) *managerTestEnv {
 	return &managerTestEnv{manager: manager, store: store, runner: runner, health: health, barrier: barrier, dns: dns, legacy: legacy, events: events}
 }
 
+// assertBarrierRemoved / assertDNSRestored / assertDesiredOffPersisted 断言的是
+// 「拆除真的做完了」这件**行为**,而不是 Manager 内部走了哪几行:屏障对外只表现为
+// 那一次 Remove 调用与「Guardian 不再认为自己持有屏障」,DNS 表现为那一次 Restore,
+// desired=off 表现为盘上真的读得回 off。
+//
+// 它们存在的理由是「没能确认 Core 已停」这条新分支:那条分支返回的是 nil,
+// 极容易被写成「提前 return、拆除少做一步」——那正是 2026-08-04 事故的形状。
+func (e *managerTestEnv) assertBarrierRemoved(t *testing.T) {
+	t.Helper()
+	if events := e.events.snapshot(); !containsEvent(events, "barrier.remove") {
+		t.Errorf("屏障必须照常拆掉 —— 「没能确认」不是「什么都没做」, events=%v", events)
+	}
+	if e.manager.barrierProven() {
+		t.Error("拆完之后 Guardian 不得仍然认为自己持有屏障")
+	}
+}
+
+// assertDNSRestored 要 e.dns.record 打开(与本文件其余 DNS 事件断言同例)才看得见
+// 那次调用;另外还查一遍**对外发布**的 DNS 状态,因为用户看到的是后者。
+func (e *managerTestEnv) assertDNSRestored(t *testing.T) {
+	t.Helper()
+	if events := e.events.snapshot(); !containsEvent(events, "dns.restore") {
+		t.Errorf("DNS 必须照常还给系统, events=%v", events)
+	}
+	if status := e.manager.Status(); status.DNSState != DNSUnmanaged || status.DNSManaged {
+		t.Errorf("对外发布的 DNS 状态必须是已交还, state=%q managed=%v", status.DNSState, status.DNSManaged)
+	}
+}
+
+func (e *managerTestEnv) assertDesiredOffPersisted(t *testing.T) {
+	t.Helper()
+	desired, err := e.store.LoadDesired()
+	if err != nil {
+		t.Fatalf("读 desired 失败: %v", err)
+	}
+	if desired != DesiredOff {
+		t.Errorf("desired 必须落盘为 off(否则 RunAtLoad+KeepAlive 下次开机把保护带回来), got %q", desired)
+	}
+}
+
 func newProtectedManagerTestEnv(t *testing.T) *managerTestEnv {
 	t.Helper()
 	env := newManagerTestEnv(t)
@@ -2025,6 +2065,11 @@ type fakeCoreRunner struct {
 	stopDeadline           time.Time
 
 	executable string
+
+	// scanResult / scanErr 是 ScanRunning 的答案。**零值 = 一台干净机器**
+	// (系统里没有任何 Core 在跑,扫描本身也没出错),既有用例因此一行不用改。
+	scanResult []Process
+	scanErr    error
 }
 
 func newFakeCoreRunner(events *eventLog) *fakeCoreRunner {
@@ -2198,13 +2243,19 @@ func (r *fakeCoreRunner) Executable() string {
 	return r.executable
 }
 
-// ScanRunning 让这个替身模拟一台**干净机器**:系统里没有任何 Core 在跑。
+// ScanRunning 默认让这个替身模拟一台**干净机器**:系统里没有任何 Core 在跑。
 //
 // 必须实现它,而不是让替身落到 coreScanner 的「求证不了」那一支——
 // confirmCoreStopped 的默认方向是「不能求证就不说 off」,替身若不实现,
 // 每一条既有的 Down 测试都会变成 needs_attention。那不是发现了问题,
 // 只是把新默认值撞在了测试上。
-func (r *fakeCoreRunner) ScanRunning() ([]Process, error) { return nil, nil }
+//
+// 想模拟「还有 Core 在跑」或「扫描失败」,置 scanResult / scanErr。
+func (r *fakeCoreRunner) ScanRunning() ([]Process, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Process(nil), r.scanResult...), r.scanErr
+}
 
 func (r *fakeCoreRunner) SetExecutable(executable string) error {
 	if !filepath.IsAbs(executable) {

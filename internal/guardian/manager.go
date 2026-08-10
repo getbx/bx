@@ -525,8 +525,11 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 			m.needsAttention(DesiredOff, "dns_restore_failed")
 			return fmt.Errorf("restore stale managed DNS: %w", restoreErr)
 		}
-		m.setStatus(Status{SchemaVersion: 1, Desired: DesiredOff, Phase: PhaseIdle, Protection: ProtectionOff})
-		return nil
+		// 这条提前返回的两个前提(盘上的 desired、内存里的 m.current)**都是记账**,
+		// 而记账里没有 legacy 单元起的 Core、没有 sudo bx run 起的 Core,手删过
+		// core-process.json 的机器上更是什么都没有 —— 那些正是「记账说没有、系统里
+		// 却有」的四种情形,一句「已关闭」在那时就是假话。
+		return m.reportStopped("early")
 	}
 
 	process := m.current
@@ -607,6 +610,30 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 	if err := m.removeBarrier(ctx); err != nil {
 		m.needsAttention(DesiredOff, "barrier_remove_failed")
 		return err
+	}
+	// 拆除到这里已经全做完了(屏障拆了、DNS 还了、desired 落盘为 off),剩下的
+	// 只是「能不能说 off」。Stop 成功不等于系统里没有 Core —— 我们只停得掉自己
+	// 记账里那一个。
+	return m.reportStopped("main")
+}
+
+// reportStopped 是 Down 唯一说得出「off」的地方:先向系统求证,证不了就如实说
+// 没能确认。
+//
+// **永不返回 error。** 拆除在调用它之前就已经做完,「没能确认」是一种状态而不是
+// 一次失败 —— 让它变成失败就等于让「停止」依赖别的事先成功,那正是 2026-08-04
+// 用户 71 分钟关不掉保护的形状。
+//
+// hop 只进日志,用来区分是提前返回那条路还是完整拆除那条路;真正指认是哪个进程的
+// 是 confirmCoreStopped 打的 guardian_core_still_running_after_down pids=…
+// —— 判据 looksLikeCore 认的是**任何** root 身份的 `bx run`(包括开发者自己在另一个
+// 终端里调试的那个),不把 PID 落进日志的话,用户只会看到一句没头没尾的「需注意」。
+func (m *Manager) reportStopped(hop string) error {
+	stopped, reason := m.confirmCoreStopped()
+	if !stopped {
+		log.Printf("guardian_down_unconfirmed hop=%s reason=%s", hop, reason)
+		m.needsAttention(DesiredOff, reason)
+		return nil
 	}
 	m.setStatus(Status{SchemaVersion: 1, Desired: DesiredOff, Phase: PhaseIdle, Protection: ProtectionOff})
 	return nil
