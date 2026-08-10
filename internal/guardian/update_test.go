@@ -1696,6 +1696,9 @@ func newUpdateTestEnv(t *testing.T) *updateTestEnv {
 		// 见 newDiskRecoveryTestEnv 的同款注释:启动恢复读的是 desired 与挂起
 		// 的同一次快照,少填这个路径 = 每次恢复都变成「读不出意图」。
 		MaintenanceHold: filepath.Join(root, "maintenance-hold.json"),
+		// 同理:启动恢复第一件事是迁移 legacy 欠条,而没有这个路径时 Store
+		// **报错**而不是答「没有欠条」(holdmigrate.go 的同一条取舍)。
+		UpgradeIntent: filepath.Join(root, "upgrade-intent.json"),
 	}
 	events := &eventLog{}
 	store := &updateTestStore{Store: OpenStore(paths), events: events}
@@ -2631,6 +2634,9 @@ func newDiskRecoveryTestEnv(t *testing.T) *diskRecoveryTestEnv {
 			// 取舍),而启动恢复一次读出 desired 与挂起 —— 少填就变成一次
 			// 「读不出意图」的 fail-closed,与本环境要测的东西无关。
 			MaintenanceHold: filepath.Join(root, "maintenance-hold.json"),
+			// legacy 欠条路径同理:启动恢复第一件事是迁移它,没有路径时
+			// Store 报错而不是答「没有欠条」(holdmigrate.go 的同一条取舍)。
+			UpgradeIntent: filepath.Join(root, "upgrade-intent.json"),
 		},
 		cliPath:        filepath.Join(root, "usr/local/bin/bx"),
 		appPath:        filepath.Join(root, "Applications/Bx.app"),
