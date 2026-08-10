@@ -91,7 +91,16 @@ run_test menu-rows \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/StatusReport.swift" \
   "$MENU/Sources/BxMenu/MenuRows.swift" \
+  "$MENU/Sources/BxMenu/MaintenancePresentation.swift" \
   "$MENU/Tests/MenuRowsTests.swift"
+
+run_test maintenance-presentation \
+  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
+  "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/MenuRows.swift" \
+  "$MENU/Sources/BxMenu/MaintenancePresentation.swift" \
+  "$MENU/Tests/MaintenancePresentationTests.swift"
 
 run_test stopped-diagnosis \
   "$MENU/Sources/BxMenu/StoppedDiagnosis.swift" \

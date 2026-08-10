@@ -32,6 +32,11 @@ struct GuardianStatus: Decodable {
     /// 压根没声明过能力」(旧 Guardian,键缺席),`[]` 是「声明了,一个都没有」。
     /// Go 侧刻意没给这个键加 omitempty 就是为了让这个区分成立。
     let capabilities: [String]?
+    /// 正在生效的那次维护挂起。**nil 有两种来由,必须靠 `capabilities` 分开**:
+    /// 声明了 `maintenance_hold` 能力而键缺席 = 「此刻没有挂起」;没声明能力 =
+    /// 「这一版 Guardian 压根没有挂起这个概念」。后者下菜单不许断言「没有挂起」
+    /// (见 declaresMaintenanceHold)。
+    let maintenanceHold: MaintenanceHold?
 
     enum CodingKeys: String, CodingKey {
         case desired
@@ -45,6 +50,7 @@ struct GuardianStatus: Decodable {
         case coreVersion = "core_version"
         case core
         case capabilities
+        case maintenanceHold = "maintenance_hold"
     }
 
     init(from decoder: Decoder) throws {
@@ -60,6 +66,32 @@ struct GuardianStatus: Decodable {
         coreVersion = try container.decodeIfPresent(String.self, forKey: .coreVersion)
         core = try container.decodeIfPresent(CoreRuntime.self, forKey: .core)
         capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities)
+        maintenanceHold = try container.decodeIfPresent(MaintenanceHold.self, forKey: .maintenanceHold)
+    }
+}
+
+/// Guardian 正在生效的那次维护挂起(`internal/guardian.MaintenanceHoldStatus` 的镜像)。
+///
+/// **两个字段都可选。** Go 侧今天没给它们 omitempty,但那是**生产者当下的选择**,
+/// 不是本结构体能依赖的保证:哪天有人加上,菜单会因为缺一个键而整份 GuardianStatus
+/// 解码失败 → 落到 "Status unreadable" —— 2026-08-06 那个失明 bug 换个层级重演。
+///
+/// `expiresAt` 保持**字符串**:解析放在 MaintenancePresentation.swift 里做,那里
+/// 能对着 Go 真实发出的形状(带小数秒、带数字时区偏移)被测试钉住;在这里解成
+/// Date 会把「时间格式解不动」变成「整份状态解不动」,又是同一个失明。
+struct MaintenanceHold: Decodable {
+    let reason: String?
+    let expiresAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case reason
+        case expiresAt = "expires_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
+        expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt)
     }
 }
 

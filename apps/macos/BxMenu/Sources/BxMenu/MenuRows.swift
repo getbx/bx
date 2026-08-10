@@ -37,8 +37,14 @@ private let notObserved = "Not checked"
 /// 两种情况下 `tunnelHealthy` 都是 Go 侧承诺的零值,拿它画一行 "Tunnel unhealthy ✗"
 /// 就是把「问不出来」伪装成一个自信的坏答案。二者的区别由 menuProtectionVerdict
 /// 用两句不同的告警文案承担(它进菜单正文的 Status 行),这里不重复表达。
-func menuRows(status: GuardianStatus?, dns: String?) -> MenuRowSet {
+func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> MenuRowSet {
     var rows: [MenuRow] = []
+
+    // 维护挂起排在最前:它回答的是「为什么保护是这个样子」,而不是保护的某一项
+    // 指标。没有挂起时它一个字都不占(判定见 maintenanceRow)。
+    if let hold = maintenanceRow(status: status, now: now) {
+        rows.append(hold)
+    }
 
     // ── 阶段③:数据尚未接入,占位但在场 ──
     // 在场是有意的:用户能看见 bx 打算回答哪些问题,以及哪些还没答上。

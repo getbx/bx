@@ -74,6 +74,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private var recoveryGeneration = RecoveryGeneration()
     private var repairVersions: (bundle: String?, runtime: String?, core: String?)?
+    /// Guardian 最近一次**应答并解码成功**的那份报告,只用来问一件事:此刻有没有
+    /// 维护挂起(见 maintenanceRow)。挂起期间 `protection_state` 就是 `off`,
+    /// `BxState.off` 又不带 payload,不留住这份报告菜单就无从分辨「bx 正在自我升级」
+    /// 与「用户把它关了」。Guardian 不应答、或答案解不动时它保持 nil ——
+    /// 「没问到」不许拿一份旧报告冒充。
+    private var maintenanceReport: GuardianStatus?
     /// Guardian 缺 diagnostics_archive 能力时的那条附注(见 outdatedRuntimeNotice)。
     /// nil 有两种来路:声明了能力,或**根本没问到**(Guardian 不应答时 resolve()
     /// 早就返回了)。两种都该让这一行消失 —— 「没问」不该被画成「已确认没问题」
@@ -241,6 +247,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         repairVersions = outcome.repairVersions
         outdatedRuntime = outcome.outdatedRuntime
+        maintenanceReport = outcome.maintenanceReport
         updateIcon()
         rebuildMenu()
         if let snapshot = recoverySnapshot,
@@ -263,6 +270,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let recoverySnapshot: RecoverySnapshot?
         let repairVersions: (bundle: String?, runtime: String?, core: String?)?
         let outdatedRuntime: OutdatedRuntimeNotice?
+        /// 这一次 Guardian 应答并解码成功的报告(见 maintenanceReport)。
+        let maintenanceReport: GuardianStatus?
     }
 
     /// 收集一次状态。**跑在后台线程**(它要拨 Guardian 的 socket、还剩两处 spawn),
@@ -281,6 +290,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var recoverySnapshot = snapshot
         var repairVersions: (bundle: String?, runtime: String?, core: String?)?
         var outdatedRuntime: OutdatedRuntimeNotice?
+        var maintenanceReport: GuardianStatus?
         func resolve() -> BxState {
             let runtimeVersion = unifiedRuntimeVersion()
             // 「CLI 能不能执行」是关于**本机环境**的事实,Guardian 答不上来 —— 但
@@ -319,6 +329,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 recoverySnapshot = nil
                 return .warning("Status unreadable", version: runtimeVersion)
             }
+            // 维护挂起随这份报告一起到,而它在**下面每一个**分支里都要能被说出来:
+            // 升级窗口里状态可能是 .warning("Updating…"),也可能已经是 .off。故落点
+            // 紧挨着「解码成功」,早于任何一次 return —— 挪到某个分支里去,就会有
+            // 一整类状态下菜单再次把「bx 正在自我升级」显示成「你把它关了」。
+            maintenanceReport = report
             if let banner = updatingBanner(phase: report.phase) {
                 recoverySnapshot = nil
                 return .warning(banner, version: runtimeVersion)
@@ -405,7 +420,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             state: resolve(),
             recoverySnapshot: recoverySnapshot,
             repairVersions: repairVersions,
-            outdatedRuntime: outdatedRuntime
+            outdatedRuntime: outdatedRuntime,
+            maintenanceReport: maintenanceReport
         )
     }
 
@@ -601,7 +617,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .notInstalled:
             return "bx: Not Installed"
         case .off:
-            return "bx: Off"
+            // 与表头同一个判定同一份数据(offSubtitle):鼠标悬停是不点开菜单就
+            // 看得到的唯一一句话,让它和菜单里说的不一样毫无道理。
+            return "bx: \(offSubtitle(status: maintenanceReport, now: Date()))"
         }
     }
 
@@ -700,8 +718,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addInfo("Version", bundleVersion)
             }
         case .off:
-            menu.addHeader("bx", subtitle: "Off")
+            // 副标题是这一屏最大的那几个字。维护挂起期间 protection_state 就是
+            // `off`,写死 "Off" 会把「bx 正在自我升级」显示成「你把它关了」——
+            // 判定在 offSubtitle(纯函数,MaintenancePresentationTests 钉着)。
+            menu.addHeader("bx", subtitle: offSubtitle(status: maintenanceReport, now: Date()))
             menu.addInfo("Status", "Not running")
+        }
+        // 挂起在**每一个**状态下都要说出来:它就是「为什么保护不在」的答案。
+        // `.connected` 那一支的数据行已经带出同一行(menuRows 的第一行),这里
+        // 跳过它以免同一句话说两遍。
+        if !stateShowsDataRows, let hold = maintenanceRow(status: maintenanceReport, now: Date()) {
+            menu.addInfo(hold.label, hold.value)
         }
         // 「Guardian 跑的是旧版」是一条**与保护状态并排**的事实,不是一个顶掉它的
         // 状态。此前它被拿来门控整个状态机(见 loadState 里那段),于是升级窗口
@@ -795,6 +822,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .serviceStopped: return .offServiceStopped
             }
         }
+    }
+
+    /// `.connected` 是唯一会把 menuRows 的数据行铺进菜单的状态(见 rebuildMenu 与
+    /// menuRowsNow)。维护挂起那一行两边都要有:在这个状态里它由数据行带出,其余
+    /// 状态里由 rebuildMenu 单独补一行 —— 这个判据就是二者的分界,免得说两遍。
+    private var stateShowsDataRows: Bool {
+        if case .connected = state { return true }
+        return false
     }
 
     private func menuRowsNow() -> MenuRowSet {
