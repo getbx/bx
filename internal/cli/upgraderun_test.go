@@ -20,13 +20,17 @@ type fakeUpgradeIO struct {
 	confirmErr     error
 	confirmPrompts []string
 
-	stopForced bool
-	stopCause  error
-	stopStatus guardian.Status
-	stopErr    error
-	installErr error
-	restartErr error
-	startErr   error
+	stopForced      bool
+	stopCause       error
+	stopStatus      guardian.Status
+	stopHoldFalback error
+	stopErr         error
+	installErr      error
+	restartErr      error
+	startErr        error
+
+	reassertErr   error
+	reassertCalls int
 
 	logs []string
 }
@@ -48,7 +52,17 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 		},
 		stopProtection: func() (macOSDownResult, error) {
 			f.calls = append(f.calls, "stopProtection")
-			return macOSDownResult{Forced: f.stopForced, Cause: f.stopCause, Status: f.stopStatus}, f.stopErr
+			return macOSDownResult{
+				Forced:       f.stopForced,
+				Cause:        f.stopCause,
+				Status:       f.stopStatus,
+				HoldFallback: f.stopHoldFalback,
+			}, f.stopErr
+		},
+		reassertDesiredOn: func() error {
+			f.calls = append(f.calls, "reassertDesiredOn")
+			f.reassertCalls++
+			return f.reassertErr
 		},
 		installFiles: func() (installedFiles, error) {
 			f.calls = append(f.calls, "installFiles")
@@ -287,6 +301,97 @@ func TestRunUpgradeProceedsWhenTheStopWasConfirmed(t *testing.T) {
 	}
 	if indexOfCall(f.calls, "installFiles") < 0 {
 		t.Fatalf("应当换过文件, calls=%v", f.calls)
+	}
+}
+
+// holdAwareStopStatus 是**本版** Guardian 服务这次停机之后回的那份状态:它声明了
+// maintenance_hold,于是 desired 一个字节都没被动过。
+func holdAwareStopStatus() guardian.Status {
+	return guardian.Status{Protection: guardian.ProtectionOff, Capabilities: guardian.GuardianCapabilities()}
+}
+
+// **过渡升级(新 CLI × 旧 Guardian)必须把用户的意图写回盘上。**
+//
+// 旧 Guardian 的 Manager.Down 无条件 SaveDesired(DesiredOff)——`?reason=upgrade`
+// 在那一版里只保住欠条,从不抑制那次写入。而欠条本身已经在这条分支里被删掉,
+// 于是这次升级停机之后盘上是一句自洽的假话:desired=off,没有挂起,没有欠条。
+// 后果不是「这一次升级失败」,是**永久无保护且悄无声息**:中途崩一次,重跑读到
+// off、不再有「恢复保护」这一步,还会报「升级完成」;desired=off 自洽,
+// Diverge 一个字都不说。
+func TestRunUpgradeRestoresIntentWhenTheStopWasServedByAHoldUnawareGuardian(t *testing.T) {
+	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff} // 旧 Guardian:不声明任何能力
+
+	if _, err := runUpgrade(f.io(), false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.reassertCalls != 1 {
+		t.Fatalf("旧 Guardian 服务的停机之后必须把 desired 写回 on,实际调用 %d 次:%v", f.reassertCalls, f.calls)
+	}
+	// **必须早于换二进制。** 崩在装文件那一步的机器,重跑时读到的就是这次写回的值;
+	// 写在末尾等于只覆盖「一切顺利」那条路,而那条路本来就不需要它。
+	reassert, install := indexOfCall(f.calls, "reassertDesiredOn"), indexOfCall(f.calls, "installFiles")
+	if reassert < 0 || install < 0 || reassert > install {
+		t.Fatalf("写回意图(%d)必须早于装文件(%d):%v", reassert, install, f.calls)
+	}
+}
+
+// 本版 Guardian 服务的停机**不许**再写一次 desired:它从来就没被改过,
+// 而多一个写入点就是多一个能撒谎的地方(设计取舍:desired 只由用户改)。
+func TestRunUpgradeLeavesDesiredAloneWhenTheGuardianDeclaresMaintenanceHold(t *testing.T) {
+	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f.stopStatus = holdAwareStopStatus()
+
+	if _, err := runUpgrade(f.io(), false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.reassertCalls != 0 {
+		t.Fatalf("认识挂起的 Guardian 没动过 desired,不该再写一次:%v", f.calls)
+	}
+}
+
+// 一台用户自己关着保护的机器,升级绝不许顺手把它打开 —— 这正是被删掉的那张
+// 欠条当年的活 bug(陈旧欠条压过用户明确的关闭请求)。
+func TestRunUpgradeNeverTurnsProtectionOnForAMachineThatWantsItOff(t *testing.T) {
+	f := &fakeUpgradeIO{running: true, desiredOn: false, confirmAnswer: true}
+	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff}
+
+	if _, err := runUpgrade(f.io(), false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.reassertCalls != 0 {
+		t.Fatalf("desired 本来就是 off,升级不得把它写成 on:%v", f.calls)
+	}
+}
+
+// 停机那一步**自己失败**时更要写回:那正是「中途崩了」的样子,而强制拆除已经
+// 把六步破坏性动作做完、旧 Guardian 也已经写下 off。
+func TestRunUpgradeRestoresIntentEvenWhenTheStopItselfFailed(t *testing.T) {
+	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff}
+	f.stopErr = errors.New("强制拆除未能全部完成")
+
+	if _, err := runUpgrade(f.io(), false); err == nil {
+		t.Fatal("停机失败必须报错")
+	}
+	if f.reassertCalls != 1 {
+		t.Fatalf("停机失败之后同样要写回意图,实际调用 %d 次:%v", f.reassertCalls, f.calls)
+	}
+}
+
+// 写回失败不许静悄悄:那时这台机器就落在 C1 描述的那个状态里,而用户唯一的
+// 线索只能是这一行。
+func TestRunUpgradeWarnsWhenItCannotRestoreTheIntent(t *testing.T) {
+	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff}
+	f.reassertErr = errors.New("read-only file system")
+
+	if _, err := runUpgrade(f.io(), false); err != nil {
+		t.Fatalf("写回失败不该让这次升级整个失败(这一次仍会在末尾起保护): %v", err)
+	}
+	joined := strings.Join(f.logs, "\n")
+	if !strings.Contains(joined, "read-only file system") || !strings.Contains(joined, "sudo bx up") {
+		t.Fatalf("必须说清失败原因与用户的出路:\n%s", joined)
 	}
 }
 

@@ -57,6 +57,12 @@ func appInstallAction(c *urfavecli.Context) error {
 			// (2026-08-08 复审 C1)。
 			return macOSDownLifecycleFor(c.Context, downPurposeUpgrade, configPath, defaultMacOSLifecycleDeps())
 		},
+		// 只有旧 Guardian 服务过这次停机时才会被调到(见
+		// restoreIntentAfterHoldUnawareStop):它写的是**用户的意图**,与升级
+		// 停机武装的那张挂起正交 —— 挂起说「此刻不能有」,这句说「用户要」。
+		reassertDesiredOn: func() error {
+			return guardian.OpenDefaultStore().SaveDesired(guardian.DesiredOn)
+		},
 		installFiles: func() (installedFiles, error) {
 			result, err := install.UnifiedInstall(install.UnifiedInstallOptions{
 				BundlePath:  source,
