@@ -397,7 +397,9 @@ EOF
 
 **为什么是同一个任务:** 挂起若从磁盘读、`desired` 从内存读,一轮之内就能出现两者互不相干的组合(设计取舍六;`needsAttention` 会把调用方传进来的常量写进 `status.Desired`,`manager.go:1396-1399`)。守卫必须在任何东西武装挂起**之前**就位。
 
-**「Guardian 自己发起一个 Core」一共有四条路,本任务只收两条:**`handleUnexpectedExit` 与 `recoverLocked`(启动恢复)。第三条是**活着的 Guardian 抢在强制拆除前面**(由 Task 4 的武装挂起挡住),第四条是 `Manager.Down` 在 DNS 还原失败时的补偿重启(`manager.go:697-699`)—— 后者住在 `Down` 内部、需要那次请求的 maintenance 判据,故随 Task 4 落地。**四条缺一不可**:漏掉任何一条,维护窗口里就仍有一条把 Core 放回半换二进制的路。
+**「Guardian 自己发起一个 Core」一共有四条路,本任务只收两条:**`handleUnexpectedExit` 与 `recoverLocked`(启动恢复)。第三条是**活着的 Guardian 抢在强制拆除前面**(由 Task 4 的武装挂起挡住),第四条是 `Manager.Down` 在 DNS 还原失败时的补偿重启(`manager.go:697-699`)—— 后者住在 `Down` 内部、需要那次请求的 maintenance 判据,故随 Task 4 落地。**这四条缺一不可**:漏掉任何一条,维护窗口里就仍有一条把 Core 放回半换二进制的路。
+
+> **更正(Task 2 复审实测):其实是五条,而第五条是刻意不拦的。** `recoverUpdateLocked`(`manager.go:819`)在快照读取**之前**跑,武装着挂起时照样会起 Core —— 实测:update journal 停在 `rolling_back` + 挂起武装,`Recover` 依旧发出 `install.restore, core.start.v1, health.v1`。**不拦它是对的**:它在起之前先还原快照里的二进制,所以起来的不是半换的东西;拦住反而会把一次没做完的 Guardian 自更新永久搁浅,比它防的事更糟。**但由此推论:「挂起武装 ⇒ Guardian 不会起任何 Core」这条不变量是假的,Task 3/4 不得依赖它。** 该例外由 Task 2 的一条测试专门钉住,免得后来者把它「修」成一道闸。
 
 **Files:**
 - Modify: `internal/guardian/hold.go`(加 `IntentSnapshot` 与 `LoadIntentSnapshot`)
