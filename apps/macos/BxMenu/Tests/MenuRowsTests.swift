@@ -103,6 +103,29 @@ struct MenuRowsTests {
                "没有报告时所有行都应是 unknown")
         expect(none.anomalyCount == 0, "没有报告不等于有异常")
 
+        // 没有挂起时这一行一个字都不占:一行常驻的「没有维护」会把它训练成噪声,
+        // 而它一年里只该出现几分钟(与 Go 侧 writeClientMaintenanceHold 同一理由)。
+        expect(row(set, "Maintenance") == nil, "没有挂起时不许有维护行")
+
+        // 维护挂起在生效:它必须排在最前(它回答的是「为什么保护是这个样子」),
+        // 且**不得**计进异常 —— 一次正常的升级不该让菜单栏图标裂开。
+        // 供养这几条的生产改动:menuRows 开头那次 append(删掉即红)、
+        // maintenanceRow 返回的 `.unknown`(改成 `.bad` 会让 anomalyCount 红)。
+        let iso = ISO8601DateFormatter()
+        let held = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"off",
+         "capabilities":["maintenance_hold"],
+         "maintenance_hold":{"reason":"upgrade","expires_at":"2026-08-10T15:36:03.056964Z"}}
+        """)
+        let paused = menuRows(status: held, dns: nil, now: iso.date(from: "2026-08-10T15:21:33Z")!)
+        expect(paused.rows.first?.label == "Maintenance",
+               "挂起行必须排在最前,实际第一行是 \(String(describing: paused.rows.first?.label))")
+        expect(paused.rows.first?.value.contains("upgrade") == true,
+               "挂起行要说清是什么挂起,实际 \(String(describing: paused.rows.first?.value))")
+        expect(paused.anomalyCount == 0,
+               "维护挂起不是异常,不得让图标裂开,实际 \(paused.anomalyCount)")
+        expect(row(paused, "Latency") != nil, "挂起行是加进来的,不是替换掉原有的数据行")
+
         if failures == 0 { print("MenuRowsTests passed") } else { exit(1) }
     }
 }

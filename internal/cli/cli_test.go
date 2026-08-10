@@ -5510,3 +5510,108 @@ func TestRenderClientStatusNeverPrintsNegativeHoldCountdown(t *testing.T) {
 		t.Fatalf("过期该说清楚:\n%s", out)
 	}
 }
+
+// 菜单里的挂起词汇必须与 Guardian 真的发出来的那份逐字相同。
+//
+// 键名、能力名、来由标识符三样任何一样对不上,后果都不是编译错误也不是异常,
+// 而是**这一行永远不出现**:菜单安静地把一次升级显示成「用户把 bx 关了」。
+// Swift 侧的测试吃的是手写 JSON fixture,它证明不了那份 fixture 与生产同形 ——
+// 那一半只能由 Go 这边、对着生产者自己的结构体来钉。
+func TestMacMenuMaintenanceHoldVocabularyMatchesGuardian(t *testing.T) {
+	presentation, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "MaintenancePresentation.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := `let maintenanceHoldCapability = "` + guardian.CapabilityMaintenanceHold + `"`
+	if !strings.Contains(string(presentation), capability) {
+		t.Errorf("菜单声明的能力名必须与 guardian.CapabilityMaintenanceHold 一致,应出现:%s", capability)
+	}
+	// 来由标识符是**日志里 grep 得到的那个词**,菜单必须原样带出它(人话另加)。
+	// 只检查它出现在源码里就够:翻不翻得成人话由 Swift 侧测试钉,这里钉的是
+	// 「Go 改了标识符,菜单跟着改」。
+	for _, reason := range []string{guardian.HoldReasonUpgrade, guardian.HoldReasonLegacyUpgrade} {
+		if !strings.Contains(string(presentation), `"`+reason+`"`) {
+			t.Errorf("菜单不认识来由 %q —— Go 侧改了标识符而菜单没跟上,那条挂起会显示成一个内部词", reason)
+		}
+	}
+
+	field, ok := reflect.TypeOf(guardian.Status{}).FieldByName("MaintenanceHold")
+	if !ok {
+		t.Fatal("guardian.Status 里找不到 MaintenanceHold 字段 —— 本守卫读不懂现在的代码了")
+	}
+	key := strings.Split(field.Tag.Get("json"), ",")[0]
+	if key == "" {
+		t.Fatal("guardian.Status.MaintenanceHold 没有 JSON 键名")
+	}
+	status, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "GuardianStatus.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `case maintenanceHold = "` + key + `"`; !strings.Contains(string(status), want) {
+		t.Errorf("菜单解的键名与 Guardian 发的对不上,应出现:%s", want)
+	}
+}
+
+// 挂起那一行必须真的接进菜单,而且是在**保护不在**的那些状态里。
+//
+// 判定住在 MaintenancePresentation.swift(MaintenancePresentationTests 钉着),
+// **接线在 main.swift** —— 它要 AppKit,编不进 scripts/test-macos-menu.sh。把
+// rebuildMenu 里那两处调用删掉,Swift 照样编译、整套 Swift 测试照样全绿,而挂起
+// 期间菜单又变回一个普通的「Off / Not running」外加一个可点的 Start Protection:
+// 本任务要修的正是这一屏。
+func TestMacMenuWiresMaintenanceHoldIntoTheOffScreen(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebuild, ok := swiftFunctionBody(string(source), "private func rebuildMenu()")
+	if !ok {
+		t.Fatal("找不到 rebuildMenu 的函数体 —— 本守卫读不懂现在的代码了,先修守卫再往下走")
+	}
+	// 只看代码:注释里解释这条不变量时同样会写到这些名字,而一段注释满足断言
+	// 正是本仓库的守卫被绕过的方式之一。
+	rebuildCode := strings.Join(swiftCodeLines(rebuild), "\n")
+
+	// ① 必须去问挂起,而且问的是**留住的那份报告**。实参写成 nil 会让这一行
+	//    永不出现,却仍然满足「调用了 maintenanceRow」这种只看名字的检查。
+	call := regexp.MustCompile(`maintenanceRow\(status:\s*([A-Za-z_][A-Za-z0-9_.]*)`).FindStringSubmatch(rebuildCode)
+	if call == nil {
+		t.Fatal("rebuildMenu 必须调用 maintenanceRow(status:…) —— 否则挂起期间菜单与「用户自己关的」逐字相同")
+	}
+	carrier := strings.TrimPrefix(call[1], "self.")
+	// `nil` 也是个合法标识符,上面的正则照吃 —— 而这正是「只看名字的检查」被
+	// 满足、行为却完全没接上的那种假绿:实参写 nil,这一行永远不出现。
+	if carrier == "nil" {
+		t.Fatal("rebuildMenu 拿 nil 去问挂起:那一行永远不会出现,等于没接线")
+	}
+	// ② 行的**值**要真的进菜单。只把它算出来再丢掉,是本仓库出现过的假绿形状。
+	if !strings.Contains(rebuildCode, "hold.value") {
+		t.Error("算出来的挂起行必须真的渲染进菜单(它的 value 要出现在 rebuildMenu 里)")
+	}
+	// ③ 表头不许写死 "Off":挂起期间 protection_state 就是 off,写死等于把
+	//    「bx 正在自我升级」显示成「你把它关了」。
+	if strings.Contains(rebuildCode, `subtitle: "Off"`) {
+		t.Error(`.off 的副标题不许写死 "Off" —— 维护挂起与用户主动关闭在这一屏必须分得开(见 offSubtitle)`)
+	}
+	subtitle := regexp.MustCompile(`offSubtitle\(status:\s*([A-Za-z_][A-Za-z0-9_.]*)`).FindStringSubmatch(rebuildCode)
+	if subtitle == nil {
+		t.Fatal("表头副标题必须来自 offSubtitle(status:…)")
+	}
+	if strings.TrimPrefix(subtitle[1], "self.") != carrier {
+		t.Errorf("副标题与挂起行必须问同一份报告,否则会出现「表头说 Paused、下面一行却没有」:%s vs %s",
+			subtitle[1], call[1])
+	}
+
+	// ④ 那份报告必须由**解码成功的那一次**喂进来。载体的名字不写死:上面从调用点
+	//    读出来是什么,这里就要求 loadState 里有 `<它> = report`。名字改了两边一起
+	//    改才过得去,而喂错源(比如喂 nil、或喂一个陈旧字段)当场就红。
+	load, ok := swiftFunctionBody(string(source), "private func loadState(")
+	if !ok {
+		t.Fatal("找不到 loadState 的函数体 —— 本守卫读不懂现在的代码了")
+	}
+	loadCode := strings.Join(swiftCodeLines(load), "\n")
+	feed := regexp.MustCompile(`\b` + regexp.QuoteMeta(carrier) + `\s*=\s*report\b`)
+	if !feed.MatchString(loadCode) {
+		t.Errorf("loadState 必须把解码成功的那份报告存进 %s,否则菜单永远问不到挂起", carrier)
+	}
+}
