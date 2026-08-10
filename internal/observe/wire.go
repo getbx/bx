@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getbx/bx/internal/guardian"
+	"github.com/getbx/bx/internal/barriercidr"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -23,7 +23,9 @@ import (
 func LiveDeps(socketPath string) Deps {
 	runtimeState := cachedRuntimeState(socketPath)
 	return Deps{
-		BarrierCIDRs: guardian.BlockingBarrierCIDRs,
+		// 与 guardian 装屏障时用的是同一个叶子包里的同一份清单。此处刻意不
+		// import guardian:guardian 侧的调谐判据要 import 本包的观测类型。
+		BarrierCIDRs: barriercidr.Blocking,
 		Now:          time.Now,
 		TunName: func() (string, error) {
 			state, err := runtimeState()
