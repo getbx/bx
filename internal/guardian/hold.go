@@ -218,14 +218,24 @@ func loadIntentSnapshot(
 // 路径没配同样报错(与 Arm/Load 一致):一个答不了这个问题的 Store 说「清好了」
 // 是谎。**调用方在拆除路径上必须把这个错误当警告继续做完拆除**,绝不许据此提前
 // 返回 —— 「停止」永远不依赖先成功做成别的事(2026-08-04 那次 71 分钟事故)。
-func (s *Store) ClearMaintenanceHold() error {
+// **第一个返回值是「真的删掉了一张挂起吗」**,而不是「调用成功了吗」。
+//
+// 它不多花一次 syscall:os.Remove 已经把「删掉了」与「本来就没有」分开了
+// (ENOENT 那一支),此前只是算出来又丢掉。有了它,日志才敢说
+// guardian_maintenance_hold_cleared —— 否则那行字会印在每一次 bx up/down 上,
+// 不管盘上有没有挂起,于是 grep 到它什么也证明不了,而这正是 _armed/_expired
+// 两条线花了大力气去避免的噪声训练。
+func (s *Store) ClearMaintenanceHold() (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.paths.MaintenanceHold == "" {
-		return fmt.Errorf("guardian maintenance hold path required")
+		return false, fmt.Errorf("guardian maintenance hold path required")
 	}
-	if err := os.Remove(s.paths.MaintenanceHold); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove maintenance hold: %w", err)
+	if err := os.Remove(s.paths.MaintenanceHold); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("remove maintenance hold: %w", err)
 	}
-	return nil
+	return true, nil
 }

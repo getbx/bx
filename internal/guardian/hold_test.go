@@ -130,8 +130,8 @@ func TestStoreWithoutHoldPathRefusesToAnswer(t *testing.T) {
 	if err == nil || armed || hold != (MaintenanceHold{}) {
 		t.Fatalf("没有路径时读取必须报错而不是答「没有挂起」:hold=%+v armed=%v err=%v", hold, armed, err)
 	}
-	if err := s.ClearMaintenanceHold(); err == nil {
-		t.Fatal("没有路径时清挂起必须报错,不许假装清好了")
+	if removed, err := s.ClearMaintenanceHold(); err == nil || removed {
+		t.Fatalf("没有路径时清挂起必须报错、且不许声称删掉了:removed=%v err=%v", removed, err)
 	}
 }
 
@@ -340,8 +340,8 @@ func TestHoldIOFailuresAreReported(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(stuck.MaintenanceHold, "child"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := OpenStore(stuck).ClearMaintenanceHold(); err == nil {
-		t.Fatal("删不掉挂起必须报错,不许假装清好了")
+	if removed, err := OpenStore(stuck).ClearMaintenanceHold(); err == nil || removed {
+		t.Fatalf("删不掉挂起必须报错、且不许声称删掉了:removed=%v err=%v", removed, err)
 	}
 }
 
@@ -367,14 +367,15 @@ func TestDefaultStoreLegacyUpgradeIntentPath(t *testing.T) {
 // 清挂起是幂等的:文件本来就不在不算失败。它是逃生路径上的一步,不许挑剔。
 func TestClearMaintenanceHoldIsIdempotent(t *testing.T) {
 	s := OpenStore(holdPaths(t.TempDir()))
-	if err := s.ClearMaintenanceHold(); err != nil {
-		t.Fatalf("文件不存在时清挂起不该失败: %v", err)
+	// 幂等的那一次必须**如实说没删掉任何东西**:日志靠这个布尔决定要不要出声。
+	if removed, err := s.ClearMaintenanceHold(); err != nil || removed {
+		t.Fatalf("文件不存在时清挂起该成功且 removed=false:removed=%v err=%v", removed, err)
 	}
 	if err := s.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ClearMaintenanceHold(); err != nil {
-		t.Fatal(err)
+	if removed, err := s.ClearMaintenanceHold(); err != nil || !removed {
+		t.Fatalf("真有一张挂起时必须报 removed=true:removed=%v err=%v", removed, err)
 	}
 	if _, armed, err := s.LoadMaintenanceHold(time.Now()); err != nil || armed {
 		t.Fatalf("清完还武装着:armed=%v err=%v", armed, err)

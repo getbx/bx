@@ -5370,9 +5370,7 @@ func TestClientStatusPassesMaintenanceHoldIntoDiverge(t *testing.T) {
 		func() (stats.Report, error) { return stats.Report{}, errors.New("core unavailable") },
 		func() (guardian.Status, error) { return status, nil },
 		"darwin",
-		func(context.Context) observe.ObservedState {
-			return observe.ObservedState{ObservedAt: now, CoreSocket: observe.False}
-		},
+		liveSilentCoreObservation(now),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -5399,9 +5397,7 @@ func TestClientStatusReportsMissingProtectionOnceTheHoldExpired(t *testing.T) {
 		func() (stats.Report, error) { return stats.Report{}, errors.New("core unavailable") },
 		func() (guardian.Status, error) { return status, nil },
 		"darwin",
-		func(context.Context) observe.ObservedState {
-			return observe.ObservedState{ObservedAt: now, CoreSocket: observe.False}
-		},
+		liveSilentCoreObservation(now),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -5457,5 +5453,60 @@ func TestRenderClientStatusSaysNothingWithoutAMaintenanceHold(t *testing.T) {
 		if out := renderClientStatus(report); strings.Contains(out, "维护挂起") {
 			t.Errorf("%s:没有挂起却写了一行:\n%s", name, out)
 		}
+	}
+}
+
+// liveSilentCoreObservation 造出**生产真的会产生**的那种「Core 不应答」观测。
+//
+// observe.observeCore 在 FetchRuntime 失败时**同时**置 CoreSocket=False 并记一条
+// core_socket 的 ObserveError —— 二者永远成对。只写 CoreSocket=False 的 fixture
+// 是生产产生不了的状态,会让「挂起期间 divergence 为空」在一份不可能出现的输入上
+// 成立,而在真机上根本不成立。
+func liveSilentCoreObservation(now time.Time) func(context.Context) observe.ObservedState {
+	return func(context.Context) observe.ObservedState {
+		return observe.ObservedState{
+			ObservedAt: now,
+			CoreSocket: observe.False,
+			Errors: []observe.ObserveError{{
+				Item: "core_socket",
+				Err:  "dial unix /var/run/bx/core.sock: connect: no such file or directory",
+			}},
+		}
+	}
+}
+
+// legacy_upgrade 不许作为裸标识符出现在用户眼前 —— 但标识符本身也必须留着:
+// 它是 Guardian 日志里 grep 得到的那个词,只印人话用户就没法把两边对上。
+func TestRenderClientStatusExplainsLegacyHoldReasonInWords(t *testing.T) {
+	out := renderClientStatus(clientStatusReport{
+		ProtectionState: guardian.ProtectionOff,
+		Desired:         "on",
+		MaintenanceHold: &guardian.MaintenanceHoldStatus{
+			Reason: guardian.HoldReasonLegacyUpgrade, ExpiresAt: time.Now().Add(3 * time.Minute),
+		},
+	})
+	if !strings.Contains(out, "升级中") {
+		t.Fatalf("legacy_upgrade 只印了裸标识符,用户读不懂:\n%s", out)
+	}
+	if !strings.Contains(out, guardian.HoldReasonLegacyUpgrade) {
+		t.Fatalf("标识符丢了,这一行就与 Guardian 日志对不上:\n%s", out)
+	}
+}
+
+// 一张在渲染那一刻刚好过期的挂起,不许印出负数倒计时 —— 那一行会一边说
+// 「-2s 后失效」一边断言保护是被有意压制的,自相矛盾。
+func TestRenderClientStatusNeverPrintsNegativeHoldCountdown(t *testing.T) {
+	out := renderClientStatus(clientStatusReport{
+		ProtectionState: guardian.ProtectionOff,
+		Desired:         "on",
+		MaintenanceHold: &guardian.MaintenanceHoldStatus{
+			Reason: guardian.HoldReasonUpgrade, ExpiresAt: time.Now().Add(-2 * time.Second),
+		},
+	})
+	if strings.Contains(out, "-2s") || strings.Contains(out, "-1s") {
+		t.Fatalf("印出了负数倒计时:\n%s", out)
+	}
+	if !strings.Contains(out, "刚刚失效") {
+		t.Fatalf("过期该说清楚:\n%s", out)
 	}
 }

@@ -3,6 +3,8 @@ package guardian
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -220,7 +222,10 @@ func TestExplicitUpLogsWhoClearedTheHold(t *testing.T) {
 	}
 	restore()
 	out := logged.String()
-	if !strings.Contains(out, "guardian_maintenance_hold_cleared by="+holdClearedByUp) {
+	// **断言字面量,不是 "by="+holdClearedByUp。** 后者拿常量去证常量:把
+	// holdClearedByUp 改成 "down" 整套测试照样绿,而一个对着 bx up 记 by=down 的
+	// Guardian 会直接发出去。这些词进的是用户手工 grep 的日志,字面量就是契约。
+	if !strings.Contains(out, "guardian_maintenance_hold_cleared by=up") {
 		t.Fatalf("显式 up 销挂起没留痕:%q", out)
 	}
 	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
@@ -239,7 +244,7 @@ func TestExplicitDownLogsWhoClearedTheHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	restore()
-	if out := logged.String(); !strings.Contains(out, "guardian_maintenance_hold_cleared by="+holdClearedByDown) {
+	if out := logged.String(); !strings.Contains(out, "guardian_maintenance_hold_cleared by=down") {
 		t.Fatalf("显式 down 销挂起没留痕:%q", out)
 	}
 }
@@ -262,5 +267,76 @@ func TestMaintenanceDownDoesNotLogAClear(t *testing.T) {
 	}
 	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || !armed {
 		t.Fatalf("维护那次 Down 之后挂起必须还在:armed=%v err=%v", armed, err)
+	}
+}
+
+// 三个 actor 词汇逐字进日志,而用户是手工 grep 它们的。
+//
+// 上面几条断言的是字面量,所以拧错常量会红;这一条补的是另一半 —— 万一将来
+// 有人「统一」成别的拼法(连字符、大写),这里会立刻指出契约变了。
+func TestHoldClearActorVocabularyIsStable(t *testing.T) {
+	for name, got := range map[string]string{
+		"up": holdClearedByUp, "down": holdClearedByDown, "migrate": holdClearedByMigrate,
+	} {
+		if got != name {
+			t.Errorf("actor 词汇变了:想要 %q,实际 %q", name, got)
+		}
+	}
+}
+
+// **盘上本来就没有挂起时,不许说「已清除」。**
+//
+// 销挂起跑在每一次 bx up/down/migrate 上,不管有没有挂起。无条件记一行会让
+// grep 这个词在健康机器上恒有命中,读的人很快学会它什么也不代表 —— 与
+// _armed/_expired 刻意避开的是同一种噪声训练。
+func TestUpWithoutAHoldWritesNoClearedLine(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
+		t.Fatalf("测试前提不成立:这台机器本该没有挂起,armed=%v err=%v", armed, err)
+	}
+	var logged syncBuffer
+	restore := swapGuardianLogOutput(&logged)
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restore()
+	if out := logged.String(); strings.Contains(out, "guardian_maintenance_hold_cleared") {
+		t.Fatalf("本来就没有挂起,不许声称清掉了一张:%q", out)
+	}
+}
+
+// poisonedIntentStore 在**返回错误的同时**交出一份看起来武装着的快照。
+//
+// 这正是一次半解析成功或读到一半被改写的读取的样子。它存在的理由是把
+// TestUnreadableHoldWritesNoLifecycleLine 从「双重保险下的绿」变成真守卫:
+// 真实的 *Store 出错时返回的是零值快照,于是那条断言即使去掉 err 检查也照样绿。
+type poisonedIntentStore struct {
+	DesiredStore
+}
+
+func (s *poisonedIntentStore) LoadIntentSnapshot(now time.Time) (IntentSnapshot, error) {
+	return IntentSnapshot{
+			Desired:   DesiredOn,
+			Hold:      MaintenanceHold{SchemaVersion: 1, Reason: HoldReasonUpgrade, ExpiresAt: now.Add(time.Minute)},
+			HoldArmed: true,
+		},
+		fmt.Errorf("%w: %w", ErrMaintenanceHoldUnreadable, errors.New("unexpected EOF"))
+}
+
+// 读失败时,哪怕快照里装着一张像模像样的挂起,也一个字都不许记。
+//
+// 「读不出来」不是「武装着」,更不是「过期了」——把它记成后者会把排查的人送去
+// 完全相反的方向。这一条钉的是 loadIntentSnapshot 里那道 err 检查本身。
+func TestUnreadableHoldWritesNoLineEvenWhenTheSnapshotLooksArmed(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.store = &poisonedIntentStore{DesiredStore: env.store}
+	var logged syncBuffer
+	restore := swapGuardianLogOutput(&logged)
+	if _, err := env.manager.loadIntentSnapshot(time.Now()); err == nil {
+		t.Fatal("这个替身必须报错,否则测的是别的东西")
+	}
+	restore()
+	if out := logged.String(); strings.Contains(out, "guardian_maintenance_hold") {
+		t.Fatalf("读不出来时不许记任何生命周期行:%q", out)
 	}
 }

@@ -94,13 +94,37 @@ func hasField(list []Divergence, field string) bool {
 	return false
 }
 
-// 维护挂起期间,残留是**预期之内**的:升级正在进行。不告诉 Diverge 就会冒出
-// 一条假分歧,而 divergence 一旦被训练成噪声,它唯一的价值就没了。
+// silentCore 造出**生产真的会产生**的那种「Core 不应答」观测。
+//
+// 这个 helper 存在的理由是一次真实的假绿:observeCore(observer.go)在
+// FetchRuntime 失败时**同时**置 CoreSocket=False **并**记一条 core_socket 的
+// ObserveError —— 二者永远成对。手写 `ObservedState{CoreSocket: False}` 造出的是
+// 一个生产永远产生不了的状态(Errors 为 nil),于是「挂起期间保持安静」这条断言
+// 在一份不可能出现的输入上成立,而在真机上根本不成立。
+// Global Constraints 点名的「fixture 里字段全是零值」就是这一类。
+func silentCore(now time.Time) ObservedState {
+	return ObservedState{
+		ObservedAt: now,
+		CoreSocket: False,
+		Errors: []ObserveError{{
+			Item: "core_socket",
+			Err:  "dial unix /var/run/bx/core.sock: connect: no such file or directory",
+		}},
+	}
+}
+
+// 维护挂起期间必须**完全**安静:升级正在进行,Core 被有意停掉了。
+//
+// 用的是升级真实的形状:desired 保持 on(这正是本期的全部意义),观测是
+// silentCore 那份成对的事实,外加屏障与 DNS 仍在(Core 刚被停,残留还没清)。
 func TestDivergeStaysQuietDuringArmedHold(t *testing.T) {
 	now := time.Now()
+	observed := silentCore(now)
+	observed.BarrierPresent = True
+	observed.DNSManaged = True
 	got := Diverge(
-		Intent{Desired: "off", Hold: &HoldIntent{Reason: "upgrade", ExpiresAt: now.Add(5 * time.Minute)}},
-		ObservedState{ObservedAt: now, BarrierPresent: True, DNSManaged: True, CoreSocket: False},
+		Intent{Desired: "on", Hold: &HoldIntent{Reason: "upgrade", ExpiresAt: now.Add(5 * time.Minute)}},
+		observed,
 		Believed{Protection: "off"},
 	)
 	if len(got) != 0 {
@@ -108,13 +132,33 @@ func TestDivergeStaysQuietDuringArmedHold(t *testing.T) {
 	}
 }
 
+// desired=off 那一支的 !held 门也要有覆盖。
+//
+// **可达性**(reviewer 认为这个组合不可达,实际可达,故留此说明):一台用户已经
+// 关掉保护的机器上跑升级,recordStopIntent 照样武装挂起 —— 于是 desired=off 与
+// 一张武装着的挂起并存。这不是退回路径(退回恰恰发生在武装失败时,那时没有挂起)。
+func TestDivergeStaysQuietAboutResidueWhenDesiredOffUnderHold(t *testing.T) {
+	now := time.Now()
+	got := Diverge(
+		Intent{Desired: "off", Hold: &HoldIntent{Reason: "upgrade", ExpiresAt: now.Add(5 * time.Minute)}},
+		ObservedState{ObservedAt: now, BarrierPresent: True, DNSManaged: True},
+		Believed{Protection: "off"},
+	)
+	if len(got) != 0 {
+		t.Fatalf("挂起期间不该报残留: %+v", got)
+	}
+}
+
 // **同一份输入,只把到期时刻挪到过去** —— 挂起失效之后必须重新说话。
 // 只在一半输入空间上断言的不变量等于没断言。
 func TestDivergeSpeaksUpOnceTheHoldExpires(t *testing.T) {
 	now := time.Now()
+	observed := silentCore(now)
+	observed.BarrierPresent = True
+	observed.DNSManaged = True
 	got := Diverge(
-		Intent{Desired: "off", Hold: &HoldIntent{Reason: "upgrade", ExpiresAt: now.Add(-time.Minute)}},
-		ObservedState{ObservedAt: now, BarrierPresent: True, DNSManaged: True, CoreSocket: False},
+		Intent{Desired: "on", Hold: &HoldIntent{Reason: "upgrade", ExpiresAt: now.Add(-time.Minute)}},
+		observed,
 		Believed{Protection: "off"},
 	)
 	if len(got) == 0 {
@@ -126,11 +170,7 @@ func TestDivergeSpeaksUpOnceTheHoldExpires(t *testing.T) {
 // 欠条让机器看起来是关的,挂起让它看起来是坏的,而它确实是坏的。
 func TestDivergeReportsMissingProtectionWhenDesiredOnAndNoHold(t *testing.T) {
 	now := time.Now()
-	got := Diverge(
-		Intent{Desired: "on"},
-		ObservedState{ObservedAt: now, CoreSocket: False},
-		Believed{Protection: "off"},
-	)
+	got := Diverge(Intent{Desired: "on"}, silentCore(now), Believed{Protection: "off"})
 	if !hasField(got, "core_socket") {
 		t.Fatalf("desired=on 而 Core 不应答,必须报一条分歧: %+v", got)
 	}
@@ -141,11 +181,82 @@ func TestDivergeDoesNotReportMissingProtectionUnderHold(t *testing.T) {
 	now := time.Now()
 	got := Diverge(
 		Intent{Desired: "on", Hold: &HoldIntent{Reason: "upgrade", ExpiresAt: now.Add(time.Minute)}},
-		ObservedState{ObservedAt: now, CoreSocket: False},
+		silentCore(now),
 		Believed{Protection: "off"},
 	)
 	if hasField(got, "core_socket") {
 		t.Fatalf("挂起期间报了假分歧: %+v", got)
+	}
+}
+
+// **一个项最多一行,而且不许自相矛盾。**
+//
+// 生产里 CoreSocket=False 一定伴着一条 core_socket 的 ObserveError,于是过期挂起
+// 这条路上曾同时产出 observed=false(「没有保护在跑」)与 observed=unknown
+// (「该项无法观测」)—— 同一个 field、相反的 observed。下游按 field 计数
+// (Swift 菜单的 anomalyCount)只能重复计数或在 UI 层自己发明去重规则。
+func TestDivergeEmitsOneSelfConsistentRowPerField(t *testing.T) {
+	now := time.Now()
+	got := Diverge(Intent{Desired: "on"}, silentCore(now), Believed{Protection: "off"})
+	seen := map[string]int{}
+	for _, d := range got {
+		seen[d.Field]++
+	}
+	for field, count := range seen {
+		if count > 1 {
+			t.Fatalf("field %q 出了 %d 行,下游按 field 计数会重复计:%+v", field, count, got)
+		}
+	}
+	row := got[0]
+	if row.Field != "core_socket" || row.Observed != "false" {
+		t.Fatalf("赢的该是更具体的那一行(observed=false),实际 %+v", row)
+	}
+	// 「问不出来的原因」是排查的全部价值,合并之后一个字都不许丢。
+	if !strings.Contains(row.Note, "core.sock") {
+		t.Fatalf("合并把观测失败的原因丢了:%+v", row)
+	}
+}
+
+// 同一条规则也修掉一处**既有**的重复:声称 protected 而观测失败时,
+// capture_ok 曾同时出「未观测到劫持」与「该项无法观测」两行。
+func TestDivergeMergesObservationFailureIntoTheProtectedRow(t *testing.T) {
+	got := Diverge(
+		Intent{Desired: "on"},
+		ObservedState{
+			CaptureOK:     Unknown,
+			DNSManaged:    True,
+			TunnelHealthy: True,
+			Errors:        []ObserveError{{Item: "capture_ok", Err: "route: command timed out"}},
+		},
+		Believed{Protection: "protected"},
+	)
+	if len(got) != 1 {
+		t.Fatalf("capture_ok 该只出一行,实际 %+v", got)
+	}
+	if !strings.Contains(got[0].Note, "route: command timed out") {
+		t.Fatalf("合并后原因丢了:%+v", got[0])
+	}
+}
+
+// **挂起只解释得了 core_socket,不解释别的观测失败。**
+//
+// capture_ok / dns_managed / barrier_present 走的是 route 与 networksetup,
+// 与 Core 在不在跑无关。挂起期间把整张 Errors 一律压掉,会让一台 route 坏掉的
+// 机器在最该出声的 15 分钟里完全沉默。
+func TestDivergeStillReportsUnrelatedObservationFailuresUnderHold(t *testing.T) {
+	now := time.Now()
+	observed := silentCore(now)
+	observed.Errors = append(observed.Errors, ObserveError{Item: "capture_ok", Err: "route: command timed out"})
+	got := Diverge(
+		Intent{Desired: "on", Hold: &HoldIntent{Reason: "upgrade", ExpiresAt: now.Add(time.Minute)}},
+		observed,
+		Believed{Protection: "off"},
+	)
+	if hasField(got, "core_socket") {
+		t.Fatalf("挂起解释得了 core_socket,不该报:%+v", got)
+	}
+	if !hasField(got, "capture_ok") {
+		t.Fatalf("挂起解释不了 route 坏掉,必须照报:%+v", got)
 	}
 }
 
@@ -176,7 +287,7 @@ func TestDivergeTreatsHoldExpiringExactlyNowAsExpired(t *testing.T) {
 	now := time.Now()
 	got := Diverge(
 		Intent{Desired: "on", Hold: &HoldIntent{Reason: "upgrade", ExpiresAt: now}},
-		ObservedState{ObservedAt: now, CoreSocket: False},
+		silentCore(now),
 		Believed{Protection: "off"},
 	)
 	if !hasField(got, "core_socket") {

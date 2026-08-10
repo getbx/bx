@@ -4529,9 +4529,38 @@ func writeClientMaintenanceHold(b *strings.Builder, report clientStatusReport) {
 	if hold == nil {
 		return
 	}
-	fmt.Fprintf(b, "%s维护挂起(%s),%s 后失效 —— 保护此刻被有意压制,desired 仍是 %s\n",
-		maintenanceHoldStatusPrefix, hold.Reason,
-		time.Until(hold.ExpiresAt).Round(time.Second), report.Desired)
+	fmt.Fprintf(b, "%s维护挂起(%s),%s —— 保护此刻被有意压制,desired 仍是 %s\n",
+		maintenanceHoldStatusPrefix, maintenanceHoldReasonLabel(hold.Reason),
+		maintenanceHoldRemaining(time.Until(hold.ExpiresAt)), report.Desired)
+}
+
+// maintenanceHoldReasonLabel 把稳定标识符翻成一句人话,**并保留标识符本身**。
+//
+// 两者都要:标识符是 Guardian 日志里 grep 得到的那个词(`reason=legacy_upgrade`),
+// 只印人话会让用户没法把这一行与日志对上;只印标识符则是把内部词汇丢给用户,
+// 「legacy_upgrade」对着屏幕的人什么也不是。未知来由如实只印标识符 —— 编一句
+// 人话出来比不编更糟。
+func maintenanceHoldReasonLabel(reason string) string {
+	labels := map[string]string{
+		guardian.HoldReasonUpgrade:       "升级中",
+		guardian.HoldReasonLegacyUpgrade: "升级中,由旧版升级记录迁移而来",
+	}
+	if label := labels[reason]; label != "" {
+		return label + "," + reason
+	}
+	return reason
+}
+
+// maintenanceHoldRemaining 渲染剩余时间,**下限钳到零**。
+//
+// 剩余时间是渲染那一刻现算的,而挂起是 Guardian 在一次 RPC 之前判定「还武装着」
+// 的;两者之间必然有间隔,挂起恰好在这个窗口里过期时,time.Until 会是负数,于是
+// 这一行会印出「-2s 后失效」并同时断言保护是被有意压制的 —— 一句自相矛盾的话。
+func maintenanceHoldRemaining(remaining time.Duration) string {
+	if remaining <= 0 {
+		return "刚刚失效(保护应随即恢复;若没有,见 sudo tail -50 " + install.GuardianStderrLogPath + ")"
+	}
+	return remaining.Round(time.Second).String() + " 后失效"
 }
 
 func writeClientDNS(b *strings.Builder, state guardian.DNSState, service string) {

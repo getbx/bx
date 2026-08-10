@@ -367,7 +367,7 @@ func TestManagerClearMaintenanceHoldIsBestEffort(t *testing.T) {
 	}
 	// 失败那一行也要说清是**哪条路**在清:排查时「用户点了 Turn On」与「升级
 	// 自己那次停机」是完全不同的两个故事,而盘上看不出区别。
-	if !strings.Contains(logged.String(), "by="+holdClearedByUp) {
+	if !strings.Contains(logged.String(), "by=up") {
 		t.Fatalf("清不掉的那一行没说是谁要清的,实际日志:%q", logged.String())
 	}
 }
