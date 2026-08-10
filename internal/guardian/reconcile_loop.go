@@ -155,12 +155,23 @@ func (m *Manager) runReconcileLoopWithPacing(ctx context.Context, observer recon
 		}
 
 		decision := m.reconcileOnce(ctx, observed)
-		if sameReconcileDecision(previous, decision) {
+		changed := !sameReconcileDecision(previous, decision)
+		if changed {
+			previous = decision
+			unchanged = 0
+		} else {
 			unchanged++
+		}
+		// **每一轮都记,包括没变的那些、以及被栅栏挡住的那些。**
+		//
+		// 日志按「变了才打」是为了不制造噪声,而报告是**状态**不是事件:一份
+		// 只在有差异时才更新的报告,在一台健康机器上会永远停在 nil,而 nil 的
+		// 意思是「循环从没跑过一轮」—— 这正好把本任务要消灭的那个歧义原样搬进
+		// 了 bx status。
+		m.recordReconcileRound(decision, unchanged)
+		if !changed {
 			continue
 		}
-		previous = decision
-		unchanged = 0
 		log.Printf("guardian_reconcile_would actions=%s held=%s observed=%s",
 			formatReconcileActions(decision.Actions), formatHeld(decision.Held), formatObserved(observed))
 	}

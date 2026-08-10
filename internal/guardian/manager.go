@@ -212,6 +212,17 @@ type Manager struct {
 	pathRecoveryResolveOff bool
 	pathRecoveryDrained    chan struct{}
 	pathRecoveryClosed     bool
+	// reconcileReport 是只观察调谐环最近一轮的判断,由 statusMu 保护。
+	//
+	// **刻意住在 m.status 外面。** 控制面里有一大批路径是拿一个从零构造的
+	// Status 字面量整体替换 m.status 的(upLocked/downLocked/recoverLocked…),
+	// 报告只要并进那个结构体,迟早会被其中一条顺手抹掉 —— 而它被抹掉之后
+	// 长的样子恰好是「一轮都没跑过」,也就是本任务要消灭的那句谎话。
+	//
+	// 用 statusMu 而不是 mutation channel:观测路径不许持有那把锁(一整轮观测
+	// 在 darwin 上是 6 次 fork 加约 900 次 syscall,攥着它做等于让用户的 up
+	// 排在后面)。
+	reconcileReport *ReconcileReport
 	// lastErrorGeneration backs Status.LastErrorGeneration (see
 	// nextLastErrorGeneration/needsAttention). atomic rather than guarded by
 	// statusMu because needsAttention can race with concurrent status reads
@@ -318,7 +329,31 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 func (m *Manager) Status() Status {
 	m.statusMu.RLock()
 	defer m.statusMu.RUnlock()
-	return m.status
+	status := m.status
+	// 报告在组装时才附上,不住在 m.status 里(见 Manager.reconcileReport)。
+	status.Reconcile = m.reconcileReport.clone()
+	return status
+}
+
+// recordReconcileRound 记下调谐环刚跑完的这一轮。
+//
+// **每一轮都要记,包括被栅栏挡住的、以及什么差异都没有的那些。** soak 要数的
+// 正是「有多少轮根本没在工作」,而一份只在有差异时才更新的报告在健康机器上
+// 恒为 nil —— 与「循环压根没跑」完全无法区分。
+//
+// 时间戳在这里盖,而且没有任何一条分支能绕过它:它是「跑过没跑过」唯一的判据。
+func (m *Manager) recordReconcileRound(decision reconcileDecision, unchanged int) {
+	report := &ReconcileReport{
+		At:              time.Now(),
+		Held:            decision.Held,
+		UnchangedRounds: unchanged,
+	}
+	for _, action := range decision.Actions {
+		report.Actions = append(report.Actions, string(action))
+	}
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	m.reconcileReport = report
 }
 
 func (m *Manager) Up(ctx context.Context) error {
@@ -1351,6 +1386,11 @@ func (m *Manager) cacheDNSStatus(status DNSStatus) {
 }
 
 func (m *Manager) setStatus(status Status) {
+	// 调谐报告不住在 m.status 里(见 Manager.reconcileReport)。这里显式清掉,
+	// 免得某条「先 m.Status() 取一份、改几个字段再写回」的路径(needsAttention
+	// 就是)把一份快照塞进 m.status,与真正的那一份并存 —— 那样 m.status 里就
+	// 会有一份永远不再更新、却看起来完全正常的陈旧报告。
+	status.Reconcile = nil
 	status.DNSState = m.dnsStatus.State
 	status.DNSManaged = m.dnsStatus.State == DNSManaged
 	status.DNSService = m.dnsStatus.Service
