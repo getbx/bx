@@ -59,6 +59,12 @@ type reconcileInput struct {
 	RecoveryBlocked    bool
 	PathRecoveryBusy   bool
 	OwnershipUncertain bool
+	// MaintenanceHold 是**第四道**栅栏:有人(升级)明确声明了「此刻不该有人
+	// 动手」。它与前三道同类 —— 整轮停摆,而不是一处待收敛的差异。
+	MaintenanceHold bool
+	// IntentUnreadable:desired 或挂起读不出来。**不许塌缩成任何一个具体答案** ——
+	// 按 off 收敛会去停一个用户要的 Core,按 on 收敛会在挂起期间起一个不该起的。
+	IntentUnreadable bool
 }
 
 // reconcileDecision 是一轮判断的产物。
@@ -73,6 +79,11 @@ const (
 	heldRecoveryBlocked    = "recovery_blocked"
 	heldPathRecoveryBusy   = "path_recovery_in_flight"
 	heldOwnershipUncertain = "ownership_uncertain"
+	heldMaintenanceHold    = "maintenance_hold"
+	// heldIntentUnreadable 与 Guardian 对外发布的失败码
+	// (intentReadFailureCode,hold.go)刻意同名:同一件事在日志、状态与
+	// 排查指引里必须叫同一个名字,否则用户拿着日志里的词去查指引会一无所获。
+	heldIntentUnreadable = "intent_unreadable"
 )
 
 // decide 把意图与事实对一次,产出本轮提议做的事。
@@ -134,8 +145,20 @@ func decide(in reconcileInput) reconcileDecision {
 
 // heldBy 返回挡住本轮的那道栅栏的名字,没有则返回空串。
 //
-// 三道分开判、按固定次序报第一道:同时升起时日志里出现哪一个必须是确定的,
+// 五道分开判、按固定次序报第一道:同时升起时日志里出现哪一个必须是确定的,
 // 否则同一个故障每次读到的原因都不一样。
+//
+// **挂起排在既有三道之后,读不出意图排在最后。** 前三道说的是「Guardian 自己
+// 此刻不该动」,挂起说的是「外面有人要求谁都别动」,而「读不出意图」是**没有
+// 答案**而不是一个答案 —— 三种理由的可操作性依次递减,报最靠前的那个对排查最有用。
+//
+// **这个次序只在 decide 收到的那一份输入上成立,不是「生产日志里的全局优先级」。**
+// reconcileOnce 遇到便宜的栅栏(路径恢复 / 挂起 / 读不出意图)就直接短路,
+// 不再去取 mutation channel,于是躲在锁后面的 RecoveryBlocked 与
+// OwnershipUncertain 那一轮**根本没被读出来**,填进来的是 false。这是刻意的
+// (一轮注定跳过的判断不该排在用户的 up 前面),代价是那一轮的 Held 报的是
+// 便宜的那道而不是排位更高的那道。读 soak 日志时别把 Held 当成「当时只有这一道
+// 升起」。
 func heldBy(in reconcileInput) string {
 	switch {
 	case in.RecoveryBlocked:
@@ -144,6 +167,10 @@ func heldBy(in reconcileInput) string {
 		return heldPathRecoveryBusy
 	case in.OwnershipUncertain:
 		return heldOwnershipUncertain
+	case in.MaintenanceHold:
+		return heldMaintenanceHold
+	case in.IntentUnreadable:
+		return heldIntentUnreadable
 	default:
 		return ""
 	}

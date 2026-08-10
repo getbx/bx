@@ -44,12 +44,16 @@ func TestDecideProposesNothingWhenDNSAlreadyRestored(t *testing.T) {
 }
 
 // forEveryDecideInput 穷举 decide 的**全部**输入组合:两种 desired × 五个三态观测
-// × 三道栅栏的开关,共 2×3⁵×2³ = 3888 种。
+// × 五道栅栏的开关,共 2×3⁵×2⁵ = 15552 种。
 //
 // 用穷举而不是挑几个代表性用例,是因为下面两条守卫要断言的是「**没有**哪个输入能
 // 产出 X」—— 而这种全称命题挑用例挑不出来:漏掉的那一格恰好就是将来出问题的那一格。
 // CaptureOK/TunnelHealthy 今天没有任何规则读,照样铺进矩阵:哪天有人给它们加了规则,
 // 这两条守卫自动就覆盖了新规则,不需要谁记得回来补。
+//
+// **新加一道栅栏就必须加进这里的循环。** 否则「栅栏升起时不许夹带动作」这条
+// 全称守卫在新栅栏上是空的 —— 它只会在 false 那一格上被验证,而 false 恰好是
+// 什么都不改变的那一格。
 func forEveryDecideInput(fn func(in reconcileInput)) {
 	states := []observe.Tristate{observe.Unknown, observe.True, observe.False}
 	for _, desired := range []DesiredState{DesiredOn, DesiredOff} {
@@ -61,19 +65,25 @@ func forEveryDecideInput(fn func(in reconcileInput)) {
 							for _, blocked := range []bool{false, true} {
 								for _, pathBusy := range []bool{false, true} {
 									for _, uncertain := range []bool{false, true} {
-										fn(reconcileInput{
-											Desired: desired,
-											Observed: observe.ObservedState{
-												CaptureOK:      capture,
-												BarrierPresent: barrier,
-												DNSManaged:     dns,
-												CoreSocket:     socket,
-												TunnelHealthy:  tunnel,
-											},
-											RecoveryBlocked:    blocked,
-											PathRecoveryBusy:   pathBusy,
-											OwnershipUncertain: uncertain,
-										})
+										for _, hold := range []bool{false, true} {
+											for _, unreadable := range []bool{false, true} {
+												fn(reconcileInput{
+													Desired: desired,
+													Observed: observe.ObservedState{
+														CaptureOK:      capture,
+														BarrierPresent: barrier,
+														DNSManaged:     dns,
+														CoreSocket:     socket,
+														TunnelHealthy:  tunnel,
+													},
+													RecoveryBlocked:    blocked,
+													PathRecoveryBusy:   pathBusy,
+													OwnershipUncertain: uncertain,
+													MaintenanceHold:    hold,
+													IntentUnreadable:   unreadable,
+												})
+											}
+										}
 									}
 								}
 							}
@@ -154,6 +164,8 @@ func TestDecideHoldsOnEveryFence(t *testing.T) {
 		{"recoveryBlocked", reconcileInput{Desired: DesiredOff, Observed: base, RecoveryBlocked: true}, "recovery_blocked"},
 		{"pathRecovery", reconcileInput{Desired: DesiredOff, Observed: base, PathRecoveryBusy: true}, "path_recovery_in_flight"},
 		{"uncertain", reconcileInput{Desired: DesiredOff, Observed: base, OwnershipUncertain: true}, "ownership_uncertain"},
+		{"maintenanceHold", reconcileInput{Desired: DesiredOff, Observed: base, MaintenanceHold: true}, "maintenance_hold"},
+		{"intentUnreadable", reconcileInput{Desired: DesiredOff, Observed: base, IntentUnreadable: true}, "intent_unreadable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := decide(tc.in)
