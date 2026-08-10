@@ -132,7 +132,12 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 	// 注意生产里这一支**一定**伴着一条 core_socket 的 ObserveError:observeCore
 	// 在 FetchRuntime 失败时同时置 False 并记错误(observer.go)。原因由 emit
 	// 并进 note,不另起一行。
-	if intent.Desired == "on" && !held && observed.CoreSocket == False {
+	// **这里刻意不再写一次 `!held`。** 挂起对这一项的豁免由 heldExplains 单点
+	// 拥有(它把 core_socket 预先记进 covered,emit 因此静默丢弃这一行),再写
+	// 一次不改变任何输出 —— 复审实测:去掉那个条件整个包照样全绿,于是这条路上
+	// 只剩一个真正承重的判据,而那正是本行下面这条测试要盯住的东西。
+	// 两处都写,则两处各自都测不到:改坏一处不会有任何东西变红。
+	if intent.Desired == "on" && observed.CoreSocket == False {
 		emit(Divergence{
 			Field:    fieldCoreSocket,
 			Believed: "on",

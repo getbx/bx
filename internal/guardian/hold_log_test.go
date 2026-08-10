@@ -64,6 +64,38 @@ func TestArmedHoldIsLoggedOnceNotOnEveryRead(t *testing.T) {
 	}
 }
 
+// **去重的键是挂起的身份,而 time.Time 的 `==` 比的是内部表示。**
+//
+// sameHold 用 Equal 而不是 ==,注释里写明了理由,但没有任何测试盯着它:把它改成
+// `==`,整个包照样全绿。今天确实不咬人(生产里两次观测都从 JSON 解出来,都不带
+// 单调钟),而它一旦咬人就是本文件全部工作的反面 —— 同一张挂起被判成「换了一张
+// 新的」,于是每一轮重打一行,正好把这条线训练成噪声。
+//
+// 这里造的正是那种输入:同一个时刻,一份带单调钟(time.Now() 算出来的),
+// 一份剥掉了(从盘上解出来的)。
+func TestHoldObserverTreatsTheSameInstantAsTheSameHold(t *testing.T) {
+	now := time.Now()
+	armed := MaintenanceHold{SchemaVersion: 1, Reason: HoldReasonUpgrade, ExpiresAt: now.Add(MaintenanceHoldDuration)}
+	decoded := armed
+	decoded.ExpiresAt = armed.ExpiresAt.Round(0) // 剥掉单调钟,== 于是不相等
+	if armed.ExpiresAt == decoded.ExpiresAt {
+		t.Fatal("测试前提不成立:这两个时刻在 == 下应当不相等,否则这条用例什么都没测")
+	}
+	if !armed.ExpiresAt.Equal(decoded.ExpiresAt) {
+		t.Fatal("测试前提不成立:它们说的必须是同一个时刻")
+	}
+
+	var logged syncBuffer
+	restore := swapGuardianLogOutput(&logged)
+	observer := &holdObserver{}
+	observer.observe(armed, true, now)
+	observer.observe(decoded, true, now)
+	restore()
+	if got := countLines(logged.String(), "guardian_maintenance_hold_armed"); got != 1 {
+		t.Fatalf("同一张挂起被记了 %d 行 —— 去重按内部表示比,而不是按时刻:%q", got, logged.String())
+	}
+}
+
 // **本次改动最重要的一条。** 过期在读取时判,没有定时器、没有事件,在这行字
 // 之前它完全无声;而「升级崩在半路、挂起自己过期了」正是人最需要看到的结局。
 func TestExpiredHoldIsLoggedOnceWhenObserved(t *testing.T) {

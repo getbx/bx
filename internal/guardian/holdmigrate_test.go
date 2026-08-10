@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,17 @@ func legacyIntentPaths(root string) Paths {
 	p := holdPaths(root)
 	p.UpgradeIntent = filepath.Join(root, "upgrade-intent.json")
 	return p
+}
+
+// storeWritesWithRemove 是生产那一组写入动作,只把删除换掉 —— 其余三个仍打在
+// 真 Store 上,好让「盘上留下了什么」这类断言仍然是对真文件的观察。
+func storeWritesWithRemove(s *Store, remove func() error) legacyMigrationWrites {
+	return legacyMigrationWrites{
+		arm:    s.ArmMaintenanceHold,
+		save:   s.SaveDesired,
+		clear:  s.ClearMaintenanceHold,
+		remove: remove,
+	}
 }
 
 // migrateInterruptedUpgrade 摆出一台**正处在升级中途**、跨过这次切换的机器:
@@ -62,6 +74,59 @@ func TestLegacyUpgradeIntentArmsMaintenanceHold(t *testing.T) {
 	}
 	if hold.Reason != HoldReasonLegacyUpgrade {
 		t.Fatalf("reason = %q, want %q", hold.Reason, HoldReasonLegacyUpgrade)
+	}
+}
+
+// **武装挂起必须排在复位 desired 之前,而这个顺序在终态里看不见。**
+//
+// 两种顺序跑完之后盘上一模一样(desired=on + 一张挂起 + 欠条已删),所以上面那
+// 两条各断言一半的用例在**对调之后照样全绿**(复审实测)。差别只存在于崩溃窗口:
+//   - 先武装再复位:崩在中间 ⇒ desired 仍是 off、挂起已武装 ⇒ 没有任何东西会起
+//     Core,下一次启动恢复重跑一遍就补齐。
+//   - 先复位再武装:崩在中间 ⇒ desired=on 而没有挂起 ⇒ 紧接着的 recoverLocked
+//     会忠实地在一台二进制刚换到一半的机器上把 Core 起起来。
+//
+// 观察点因此必须在窗口**内部**:这里记下调用次序,并让第二步失败、看盘上停在
+// 哪一半。
+func TestLegacyMigrationArmsTheHoldBeforeRestoringDesiredOn(t *testing.T) {
+	paths := legacyIntentPaths(t.TempDir())
+	s := OpenStore(paths)
+	if err := s.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.UpgradeIntent, []byte(`{"schema_version":1,"desired_on":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	writes := storeWritesWithRemove(s, func() error { order = append(order, "remove"); return nil })
+	arm, save := writes.arm, writes.save
+	writes.arm = func(reason string, now time.Time) error {
+		order = append(order, "arm")
+		return arm(reason, now)
+	}
+	// 第二步失败 = 崩在窗口里。安全的那一半必须已经落盘。
+	saveFailure := errors.New("read-only file system")
+	writes.save = func(DesiredState) error {
+		order = append(order, "save")
+		_ = save // 生产实现留着不调:这一格要的就是它没写成
+		return saveFailure
+	}
+
+	if _, err := s.migrateLegacyUpgradeIntent(time.Now(), writes); !errors.Is(err, saveFailure) {
+		t.Fatalf("desired 写不成必须报错:err=%v", err)
+	}
+	if len(order) < 2 || order[0] != "arm" || order[1] != "save" {
+		t.Fatalf("顺序 = %v,必须先武装挂起再复位 desired", order)
+	}
+	if _, armed, err := s.LoadMaintenanceHold(time.Now()); err != nil || !armed {
+		t.Fatalf("崩在窗口里时挂起必须已经武装(否则会有人在换到一半的二进制上起 Core):armed=%v err=%v", armed, err)
+	}
+	if slices.Contains(order, "remove") {
+		t.Fatalf("写没成功就把欠条删了,那张欠条永久丢失:%v", order)
+	}
+	if _, err := os.Stat(paths.UpgradeIntent); err != nil {
+		t.Fatalf("欠条必须留在盘上等下一次重试:%v", err)
 	}
 }
 
@@ -225,7 +290,7 @@ func TestUndeletableLegacyIntentDoesNotLeaveAHoldArmed(t *testing.T) {
 	// 用注入的删除器造「删不掉」,而不是 chmod:root 身份下 chmod 拦不住 unlink,
 	// 那种造法会在 CI 的 root 容器里变成假绿(hold_test.go 里同款教训)。
 	removeFailure := errors.New("read-only file system")
-	migration, err := s.migrateLegacyUpgradeIntent(time.Now(), func() error { return removeFailure })
+	migration, err := s.migrateLegacyUpgradeIntent(time.Now(), storeWritesWithRemove(s, func() error { return removeFailure }))
 	if !errors.Is(err, removeFailure) {
 		t.Fatalf("删不掉必须报错(否则日志会说成功):err=%v", err)
 	}
