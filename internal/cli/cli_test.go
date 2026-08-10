@@ -5357,3 +5357,105 @@ func TestClientStatusPublishesReconcileObservationQualityAndCoreScan(t *testing.
 		t.Errorf("那次只读测量在路上掉了 —— 这一期的第二样交付读不到: %s", data)
 	}
 }
+
+// 挂起必须从 Guardian 的 Status 一路传进 Diverge —— 字段存在不等于它被用上了。
+func TestClientStatusPassesMaintenanceHoldIntoDiverge(t *testing.T) {
+	now := time.Now()
+	status := guardian.Status{
+		Desired:         guardian.DesiredOn,
+		Protection:      guardian.ProtectionOff,
+		MaintenanceHold: &guardian.MaintenanceHoldStatus{Reason: "upgrade", ExpiresAt: now.Add(5 * time.Minute)},
+	}
+	report, err := readClientStatusReportWithObserver(
+		func() (stats.Report, error) { return stats.Report{}, errors.New("core unavailable") },
+		func() (guardian.Status, error) { return status, nil },
+		"darwin",
+		func(context.Context) observe.ObservedState {
+			return observe.ObservedState{ObservedAt: now, CoreSocket: observe.False}
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Divergence) != 0 {
+		t.Fatalf("挂起没传进 Diverge,冒出了假分歧: %+v", report.Divergence)
+	}
+	if report.MaintenanceHold == nil || report.MaintenanceHold.Reason != "upgrade" {
+		t.Fatalf("报告里没有挂起: %+v", report.MaintenanceHold)
+	}
+}
+
+// 反向的一半:**同一份输入,只把到期时刻挪到过去**,那条分歧必须现形。
+//
+// 没有它,一个把 intent.Hold 恒填成「永不过期」的实现照样能让上面那条绿 ——
+// 上面测的是「挂起传到了」,这条测的是「传过去的是真的那一张」。
+func TestClientStatusReportsMissingProtectionOnceTheHoldExpired(t *testing.T) {
+	now := time.Now()
+	status := guardian.Status{
+		Desired:    guardian.DesiredOn,
+		Protection: guardian.ProtectionOff,
+	}
+	report, err := readClientStatusReportWithObserver(
+		func() (stats.Report, error) { return stats.Report{}, errors.New("core unavailable") },
+		func() (guardian.Status, error) { return status, nil },
+		"darwin",
+		func(context.Context) observe.ObservedState {
+			return observe.ObservedState{ObservedAt: now, CoreSocket: observe.False}
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, d := range report.Divergence {
+		if d.Field == "core_socket" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("没有挂起时,「用户要保护而 Core 不应答」必须现形: %+v", report.Divergence)
+	}
+	if report.MaintenanceHold != nil {
+		t.Fatalf("没有挂起时不得凭空造一个: %+v", report.MaintenanceHold)
+	}
+}
+
+// 渲染要说清「用户要保护、此刻被维护挂起压着」,不能只画一个 Off。
+// 这一份 Report 为 nil ⇒ 走的是 partial 那一支。
+func TestRenderClientStatusMentionsMaintenanceHold(t *testing.T) {
+	out := renderClientStatus(clientStatusReport{
+		ProtectionState: guardian.ProtectionOff,
+		Desired:         "on",
+		MaintenanceHold: &guardian.MaintenanceHoldStatus{Reason: "upgrade", ExpiresAt: time.Now().Add(3 * time.Minute)},
+	})
+	if !strings.Contains(out, "维护挂起") || !strings.Contains(out, "upgrade") {
+		t.Fatalf("渲染里看不到挂起(partial 分支):\n%s", out)
+	}
+}
+
+// 完整报告那一支同样要写 —— 两支各写一次,漏一支的那种假绿只有这条抓得到。
+func TestRenderClientStatusMentionsMaintenanceHoldOnTheFullReport(t *testing.T) {
+	out := renderClientStatus(clientStatusReport{
+		Report:          &stats.Report{},
+		CoreAvailable:   true,
+		ProtectionState: guardian.ProtectionOff,
+		Desired:         "on",
+		MaintenanceHold: &guardian.MaintenanceHoldStatus{Reason: "legacy_upgrade", ExpiresAt: time.Now().Add(3 * time.Minute)},
+	})
+	if !strings.Contains(out, "维护挂起") || !strings.Contains(out, "legacy_upgrade") {
+		t.Fatalf("渲染里看不到挂起(完整报告分支):\n%s", out)
+	}
+}
+
+// 没有挂起时**一个字都不写**。理由与 observerForPlatform 那道门逐字相同:
+// 一行常驻的「没有挂起」会把这一项训练成噪声,而它一年里只该出现几分钟。
+func TestRenderClientStatusSaysNothingWithoutAMaintenanceHold(t *testing.T) {
+	for name, report := range map[string]clientStatusReport{
+		"partial": {ProtectionState: guardian.ProtectionOff, Desired: "off"},
+		"full":    {Report: &stats.Report{}, CoreAvailable: true, ProtectionState: guardian.ProtectionOff, Desired: "off"},
+	} {
+		if out := renderClientStatus(report); strings.Contains(out, "维护挂起") {
+			t.Errorf("%s:没有挂起却写了一行:\n%s", name, out)
+		}
+	}
+}
