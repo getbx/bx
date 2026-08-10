@@ -712,6 +712,21 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 			m.recoveryBlocked = true
 			return fmt.Errorf("restore stale managed DNS during startup recovery: %w", restoreErr)
 		}
+		// 与 Down 同一条纪律:报 off 之前先问系统。账本说「用户要 off」证明不了
+		// 「现在没有 Core 在跑」—— legacy Core、另一个终端里的 sudo bx run、
+		// 以及记录丢失的机器,账本里都看不见。
+		//
+		// **而且这一跳比 Down 那一跳更要紧**:Guardian 每次重启都会走它,于是它会
+		// 把上一次 Down 好不容易求证出来的判断**抹掉**,换成一句没求证过的 off。
+		stopped, reason := m.confirmCoreStopped()
+		if !stopped {
+			m.needsAttention(DesiredOff, reason)
+			// **recoveryBlocked 必须置 false。** 它为真时 Down 的第一句就返回
+			// errRecoveryIncomplete —— 而那正是 2026-08-04 那次「用户 71 分钟
+			// 关不掉保护」的机制。「没能确认关掉了」绝不能顺带把关闭的路堵死。
+			m.recoveryBlocked = false
+			return nil
+		}
 		m.setStatus(Status{SchemaVersion: 1, Desired: DesiredOff, Phase: PhaseIdle, Protection: ProtectionOff})
 		m.recoveryBlocked = false
 		return nil

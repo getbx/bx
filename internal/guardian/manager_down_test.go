@@ -300,3 +300,59 @@ func TestFailedDownKeepsTheUpgradeIntent(t *testing.T) {
 		t.Fatal("Down 失败时欠条必须留着 —— 保护可能还开着")
 	}
 }
+
+// Recover 在 Guardian **每次重启**时都会跑,而 desired==off 那一支此前只凭账本
+// 就发 ProtectionOff。后果比 Down 那一跳更严重:它会把上一次 Down 好不容易向系统
+// 求证出来的判断**抹掉**,换成一句没求证过的 off —— 诚实的答案不耐重启。
+func TestRecoverDoesNotClaimOffWhileACoreIsStillRunning(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.scanResult = []Process{{PID: 4242}}
+
+	if err := env.manager.Recover(context.Background()); err != nil {
+		t.Fatalf("扫到 Core 不该让启动恢复失败: %v", err)
+	}
+	if got := env.manager.Status().Protection; got == ProtectionOff {
+		t.Fatal("重启后不许只凭账本就说 off —— 那会抹掉上一次求证过的判断")
+	}
+}
+
+// **最要紧的一条**:没能确认时,关闭的路绝不能被堵死。
+//
+// recoveryBlocked 为真时 Manager.Down 的第一句就返回 errRecoveryIncomplete,
+// 而那正是 2026-08-04「用户 71 分钟关不掉保护」的机制。这一期新增的「没能确认」
+// 分支若顺手把它留成 true,就等于用一条新不变量把老不变量撞碎。
+func TestRecoverKeepsShutdownReachableWhenItCannotConfirm(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.scanErr = errors.New("sysctl 挂了")
+
+	if err := env.manager.Recover(context.Background()); err != nil {
+		t.Fatalf("扫描失败不该让启动恢复失败: %v", err)
+	}
+	if env.manager.recoveryBlocked {
+		t.Fatal("「没能确认关掉了」绝不能顺带把关闭的路堵死 —— 那是 71 分钟事故的机制")
+	}
+	// 求证过一次:Down 现在应当仍然可达。
+	if err := env.manager.Down(context.Background()); err != nil {
+		t.Fatalf("恢复之后 Down 必须仍然可用: %v", err)
+	}
+}
+
+// 回归:干净机器上重启后仍然报 off,否则每次开机都是一条告警。
+func TestRecoverStillReportsOffOnAHealthyMachine(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.manager.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.manager.Status().Protection; got != ProtectionOff {
+		t.Fatalf("干净机器重启后必须仍报 off, got %q", got)
+	}
+}
