@@ -46,6 +46,13 @@ func legacyIntentStore(t *testing.T, desired guardian.DesiredState) *guardian.St
 //
 // 断言打在 desiredOnFrom 上而不是 upgradeDesiredOn 上,只因为后者写死了
 // /var/lib/bx —— 那是 root 的目录,测不了。两者之间只隔一次 OpenDefaultStore()。
+//
+// **另一个方向在别处**:一次夭折的**过渡**升级(新 CLI × 旧 Guardian)之后,
+// 把用户的意图找回来的不再是这张欠条,而是停机之后那次 desired=on 的写回 ——
+// 见 TestTransitionUpgradeKeepsTheIntentAgainstAHoldUnawareGuardian(它一路跑到
+// 重跑并断言保护真的被起回来)。Guardian 侧那半(盘上真有欠条时的迁移)由
+// guardian 包的 TestLegacyUpgradeIntentRestoresDesiredOn 及其顺序用例守着。
+// 两个方向都要有人盯:只钉「陈旧欠条不许翻盘」,一个恒 false 的实现照样绿。
 func TestStaleLegacyIntentFileDoesNotTurnProtectionBackOn(t *testing.T) {
 	store := legacyIntentStore(t, guardian.DesiredOff)
 	if desiredOnFrom(context.Background(), store, "/nonexistent/guardian.sock") {
