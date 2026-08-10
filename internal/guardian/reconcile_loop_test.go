@@ -90,6 +90,41 @@ func TestReconcileOnceExecutesNothing(t *testing.T) {
 	}
 }
 
+// **循环唯一的生产入口是 runReconcileLoop,而上面那条测试走的是 WithPacing。**
+//
+// 这不是重复:复审把 `_ = m.restoreDNS(ctx)` 与 `_ = m.store.SaveDesired(DesiredOn)`
+// 放进 runReconcileLoop 的函数体,**整个 internal/guardian 套件照样全绿** ——
+// 本期最重要的那条属性守在了生产根本不调用的那个函数上。那层包装看着只有一行
+// (转调 WithPacing 并注入真实节奏),但「看着只有一行」正是这类洞的长相。
+//
+// ctx 预先取消 ⇒ waitReconcileInterval 立刻返回 ⇒ 一轮都不跑,于是这条测试
+// 覆盖的恰好是包装本身:包装里任何一句副作用都会在这里现形。
+func TestRunReconcileLoopExecutesNothingOnTheProductionEntryPoint(t *testing.T) {
+	env := newManagerTestEnv(t)
+	before := env.mutationCallCounts()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.manager.runReconcileLoop(ctx, func(context.Context) observe.ObservedState {
+			t.Error("ctx 已取消,一轮都不该观测")
+			return observe.ObservedState{}
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		// 生产入口注入的是真实节奏(基础 30s),ctx 已取消时它必须立刻返回而不是先睡。
+		t.Fatal("ctx 已取消时生产入口没有立刻返回")
+	}
+
+	if after := env.mutationCallCounts(); after != before {
+		t.Fatalf("生产入口那层包装里也不许有任何副作用\nbefore=%+v\nafter =%+v", before, after)
+	}
+}
+
 // 观测连续相同就退避:一整轮观测在 darwin 上是 6 次 fork 加约 900 次 syscall,
 // 按拍烧掉它没有意义,而且会让日志变成噪声。
 func TestNextReconcileIntervalBacksOffWhenNothingChanges(t *testing.T) {
@@ -100,12 +135,31 @@ func TestNextReconcileIntervalBacksOffWhenNothingChanges(t *testing.T) {
 	if nextReconcileInterval(10) <= first {
 		t.Error("连续无变化时必须退避")
 	}
-	if got := nextReconcileInterval(1000); got > 10*time.Minute {
-		t.Errorf("退避要有上限,否则真出事时它已经睡死了, got %v", got)
+
+	// **上限必须逐轮扫,不能只抽查一个大轮数。**
+	//
+	// 复审实测:把上限那句 early return 删掉之后,`nextReconcileInterval(1000)`
+	// 返回的是 **0** —— time.Duration 是 int64,轮到第 54 轮就已经翻越 int64
+	// 上界、乘成 0,此后恒 0。于是「只查 got > 10min」的那条抽查在一个**没有上限**
+	// 的实现上照样绿,而且是以最坏的方式绿:它测到的其实是溢出。
+	// 中间那段(第 5 轮 16 分、第 10 轮 8 小时半、第 20 轮 364 天)从来没人看过。
+	//
+	// 逐轮扫、上下界都钉:上界抓「睡死了」,下界抓「溢出成 0 / 回绕成负」——
+	// 后者比睡死更糟,那是按拍烧 6 次 fork。
+	for round := 0; round <= 70; round++ {
+		got := nextReconcileInterval(round)
+		if got < reconcileBaseInterval {
+			t.Fatalf("nextReconcileInterval(%d)=%v < 基础周期 %v —— 溢出或回绕,会变成按拍烧",
+				round, got, reconcileBaseInterval)
+		}
+		if got > reconcileMaxInterval {
+			t.Fatalf("nextReconcileInterval(%d)=%v > 上限 %v —— 真出事时它已经睡死了",
+				round, got, reconcileMaxInterval)
+		}
 	}
 	// 退避必须单调不减:某一轮忽然变短,等于「越是长期没事、越可能突然按拍烧」。
 	previous := first
-	for round := 1; round <= 20; round++ {
+	for round := 1; round <= 70; round++ {
 		got := nextReconcileInterval(round)
 		if got < previous {
 			t.Fatalf("退避不得回缩: nextReconcileInterval(%d)=%v < 上一轮 %v", round, got, previous)
@@ -147,8 +201,11 @@ func TestReconcileOnceYieldsSilentlyWhenMutationsAreBusy(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("拿不到 mutation channel 时必须安静跳过 —— 它却一直等着,这就是会把用户的 up 挤过 60s 预算的那种循环")
 	}
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("放弃得太晚: %v", elapsed)
+	// **上限必须贴着「一次尝试」,不是「别挂死」。** 5 秒的宽限里塞得下 8 次
+	// 200ms 的重试 —— 而「绝不重试」正是这条测试的全部内容:8 次重试就是 8 次
+	// 插进 FIFO 队列,足以把用户那次 up 挤过 60s 预算。
+	if elapsed := time.Since(started); elapsed > 3*reconcileMutationWait {
+		t.Fatalf("放弃得太晚(超过一次尝试的量,像是在重试): %v", elapsed)
 	}
 	if got.Held != heldMutationBusy {
 		t.Fatalf("跳过的理由必须说清是 mutation 忙 —— 否则日志里只剩「什么都没发生」, got %+v", got)
@@ -236,6 +293,12 @@ func TestReconcileOnceNeverClearsTheOwnershipUncertainLatch(t *testing.T) {
 //
 // 顺带这条也是「整条循环跑完一个动作都没执行」的端到端断言 —— reconcileOnce
 // 那条只覆盖单轮。
+//
+// **每一轮的 ObservedAt 都不一样,这是这条测试成立的前提。**
+// 复审实测:所有假观测都用零值 ObservedAt 时,把 observed.ObservedAt 折进
+// 「是否有变化」的比较里,这条测试**照样绿** —— 也就是它分不清「比的是判断」
+// 与「比的是观测」,而后者在生产里意味着每 30 秒一行、永远。真实的 Observe
+// 每轮都会盖一个新时间戳,假观测必须复刻这一点,否则守的是一个不存在的世界。
 func TestReconcileLoopLogsOnlyWhenTheDecisionChanges(t *testing.T) {
 	env := newManagerTestEnv(t)
 	before := env.mutationCallCounts()
@@ -243,23 +306,43 @@ func TestReconcileLoopLogsOnlyWhenTheDecisionChanges(t *testing.T) {
 
 	diverged := observe.ObservedState{DNSManaged: observe.True}
 	converged := observe.ObservedState{DNSManaged: observe.False}
+	stamp := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var mu sync.Mutex
 	round := 0
 	observer := func(context.Context) observe.ObservedState {
+		// **观测期间绝不能有人持着 mutation channel**(Global Constraint:
+		// 一整轮观测在 darwin 上是 6 次 fork 加约 900 次 syscall,攥着那把锁去做
+		// 等于让用户的 up 排在 6 次 fork 后面)。这里现场求证一次:锁若取得到,
+		// 就说明此刻没人持有;取完立刻还回去。
+		select {
+		case <-env.manager.mutation:
+			env.manager.releaseMutation()
+		default:
+			t.Error("观测期间 mutation channel 被持有 —— 用户的 up 会排在整轮观测后面")
+		}
+
 		mu.Lock()
 		defer mu.Unlock()
 		round++
+		// 每轮盖一个不同的时间戳,复刻真实 Observe 的行为(见函数头)。
+		observedAt := stamp.Add(time.Duration(round) * time.Second)
 		switch {
 		case round <= 3:
-			return diverged // 第 1 轮打一行,第 2、3 轮必须静默
+			state := diverged // 第 1 轮打一行,第 2、3 轮必须静默
+			state.ObservedAt = observedAt
+			return state
 		case round <= 5:
-			return converged // 第 4 轮变了,再打一行;第 5 轮静默
+			state := converged // 第 4 轮变了,再打一行;第 5 轮静默
+			state.ObservedAt = observedAt
+			return state
 		default:
 			cancel()
-			return converged
+			state := converged
+			state.ObservedAt = observedAt
+			return state
 		}
 	}
 
@@ -334,6 +417,46 @@ func TestReconcileLoopGoroutineSurvivesAPanic(t *testing.T) {
 	case <-d.reconcileLoopDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("panic 之后那条 goroutine 应当正常收尾,而不是把进程带走")
+	}
+}
+
+// **daemon 真的把循环接上了** —— 行为断言,不是读源码文本。
+//
+// 我在第一版报告里说这件事「只能等组装根变得可测」,那个结论是错的:
+// startRecoveredDaemon 早就可测(已有五条测试往里注入 daemonStarter)。
+// 而这件事**必须**有守卫,理由比一般的接线更硬:本阶段唯一真正的验收是真机
+// soak,而验收方式是数日志里 guardian_reconcile_would 的行数,理想值是 **0**。
+// 循环若悄悄没接上,产出的正是一份干净的日志 —— 一个漏装的循环与一台健康的机器
+// 在这份证据上**完全无法区分**,而人会把它读成「零分歧,可以进③b 授权了」。
+//
+// 这条不跑任何外部命令:循环先睡一个基础周期(30s)再观测,而它在第一次睡眠里
+// 就被 cancel 掉了。
+func TestStartRecoveredDaemonWiresTheReconcileLoop(t *testing.T) {
+	env := newManagerTestEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	daemon, err := startRecoveredDaemon(ctx, DaemonOptions{}, env.manager,
+		func(context.Context, DaemonOptions) (*Daemon, error) { return &Daemon{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if daemon.reconcileLoopDone == nil {
+		t.Fatal("daemon 没有起那条只观察的调谐环 —— 真机 soak 会拿到一份干净日志," +
+			"而干净日志会被读成「零分歧」")
+	}
+
+	// 起来了还不够:它必须**在跑**,而且跟着 ctx 停。一条起了就立刻退出的
+	// goroutine 同样会产出一份干净日志。
+	cancel()
+	select {
+	case <-daemon.reconcileLoopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("调谐环没有随 daemon 的 ctx 停下")
+	}
+	// 顺手收掉背景里的启动恢复,免得它跨测试还在跑。
+	if err := daemon.waitForStartupRecovery(context.Background()); err != nil {
+		t.Fatalf("等待启动恢复收尾: %v", err)
 	}
 }
 
