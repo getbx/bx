@@ -122,12 +122,27 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 			// 一个远比现在中止更难懂的失败。
 			//
 			// 中止是安全的:这是第一步,文件还一个字节都没动。
+			//
+			// **只在「确知还有 Core 在跑」时中止。** 「问不出来」(扫描失败/不支持)
+			// 也让 downConfirmedStopped 为假,但那种情况用户做什么都清不掉:重跑升级
+			// 会撞上同一道闸门,而菜单的 Repair 走的正是 app-install —— 也就是说
+			// 送修复的通道自己被堵死了。那时警告并继续,方向与「停止不许依赖别的
+			// 先成功」一致:不确定不该变成寸步难行。
 			if stepErr == nil && !downConfirmedStopped(down) {
-				stepErr = fmt.Errorf(
-					"Guardian 没能确认保护已经关闭(%s):系统里可能仍有 bx 的 Core 进程在跑。"+
-						"先看 sudo tail -50 /var/log/bx-guard.err.log 确认是哪个进程并处理掉,再重跑升级",
-					downUnconfirmedReason(down),
-				)
+				if reason := downUnconfirmedReason(down); reason == "core_still_running" {
+					stepErr = fmt.Errorf(
+						"Guardian 确认系统里仍有 bx 的 Core 进程在跑(%s):此时换掉二进制会留下一个"+
+							"不受管的旧 Core 占着 TUN,而症状要到之后才现(core_ownership_uncertain,"+
+							"只有 sudo bx down 再 sudo bx up 能解)。"+
+							"先看 sudo tail -50 /var/log/bx-guard.err.log 确认是哪个进程并处理掉,再重跑升级",
+						reason,
+					)
+				} else {
+					io.log(fmt.Sprintf(
+						"! Guardian 没能确认保护已经关闭(%s):继续升级,但升级后若起不来保护,"+
+							"先看 sudo tail -50 /var/log/bx-guard.err.log", reason,
+					))
+				}
 			}
 		case UpgradeInstallFiles:
 			io.log("• 安装新版本文件")

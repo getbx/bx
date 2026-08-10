@@ -422,3 +422,27 @@ func TestRunUpgradeProceedsWhenTheStopWasConfirmed(t *testing.T) {
 		t.Fatalf("应当换过文件, calls=%v", f.calls)
 	}
 }
+
+// 「问不出来」不该把升级堵死。
+//
+// 扫描失败/不支持时用户做什么都清不掉这个状态:重跑升级会撞上同一道闸门,而菜单的
+// Repair 走的正是 app-install —— 送修复的通道自己被堵住了。方向要与「停止不许依赖
+// 别的先成功」一致:不确定不该变成寸步难行。
+func TestRunUpgradeProceedsWithAWarningWhenTheScanItselfFailed(t *testing.T) {
+	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f.stopStatus = guardian.Status{
+		Protection: guardian.ProtectionNeedsAttention,
+		LastError:  "core_scan_failed",
+	}
+
+	if _, err := runUpgrade(f.io(), false); err != nil {
+		t.Fatalf("扫不动不该把升级整个堵死: %v", err)
+	}
+	if indexOfCall(f.calls, "installFiles") < 0 {
+		t.Fatalf("应当继续换文件, calls=%v", f.calls)
+	}
+	joined := strings.Join(f.logs, "\n")
+	if !strings.Contains(joined, "core_scan_failed") {
+		t.Errorf("但必须留下警告说明:\n%s", joined)
+	}
+}

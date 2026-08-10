@@ -156,6 +156,7 @@ func TestRunUpgradeKeepsTheDebtAcrossARealGuardianDown(t *testing.T) {
 	env := newUpgradeE2EEnv(t)
 	installFailure := errors.New("bundle 校验失败")
 
+	installAttempted := false
 	outcome, err := runUpgrade(upgradeIO{
 		guardianRunning: func() (bool, error) { return true, nil },
 		loadDesiredOn:   func() bool { return true },
@@ -165,7 +166,10 @@ func TestRunUpgradeKeepsTheDebtAcrossARealGuardianDown(t *testing.T) {
 		stopProtection: func() (macOSDownResult, error) {
 			return macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", env.deps)
 		},
-		installFiles:    func() (installedFiles, error) { return installedFiles{}, installFailure },
+		installFiles: func() (installedFiles, error) {
+			installAttempted = true
+			return installedFiles{}, installFailure
+		},
 		restartGuardian: func() error { return nil },
 		startProtection: func() error { return nil },
 		log:             func(string) {},
@@ -173,6 +177,13 @@ func TestRunUpgradeKeepsTheDebtAcrossARealGuardianDown(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("装文件失败必须报错")
+	}
+	// **这条测试的全部价值在于它真的走到了装文件那一步。** 少了这句断言,
+	// 一个在更早处中止的升级(例如新加的「保护未确认」闸门)会让下面每一条断言
+	// 都照样成立 —— 报错、ForcedTeardown 为假、desired=off、欠条还在 ——
+	// 而它自称测试的「升级中途失败」根本没发生。复审用探针实测过这个空壳状态。
+	if !installAttempted {
+		t.Fatal("升级应当走到装文件那一步才失败;它在更早处就中止了,这条测试没测到它自称测的东西")
 	}
 	if outcome.ForcedTeardown {
 		t.Fatalf("这次停保护应当走干净路径(Guardian 就在跑),events=%v", env.events)
@@ -220,6 +231,14 @@ func TestExplicitDownStillClearsTheDebtAfterAFailedUpgrade(t *testing.T) {
 // 以下四个桩只负责让 Manager.Down 能跑完 —— Core、健康、屏障、DNS 都与升级欠条
 // 无关,而真做这些事需要 root 和真实网络。欠条那一半全程是真的。
 type stubCoreRunner struct{}
+
+// ScanRunning 让这个替身像一台**干净机器**。
+//
+// 少了它,Manager.Down 会答 200/core_scan_unsupported,而新加的升级闸门会在第一步
+// 就中止 —— 于是这条「用真组件跑一次中途失败」的回归测试变成空壳:installFiles
+// 一次都不会被调到,而它的每一条断言(报错、ForcedTeardown、desired=off、欠条还在)
+// **照样成立**。复审用探针实测过。
+func (stubCoreRunner) ScanRunning() ([]guardian.Process, error) { return nil, nil }
 
 func (stubCoreRunner) Existing(context.Context) (guardian.Process, error) {
 	return guardian.Process{}, nil

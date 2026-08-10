@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -184,6 +186,24 @@ func (d *Daemon) trackStartupRecovery(fn func()) {
 	d.startupRecoveryDone = make(chan struct{})
 	go func() {
 		defer close(d.startupRecoveryDone)
+		// **这条 goroutine 里的 panic 会打死整个 Guardian,而 launchd 的 KeepAlive
+		// 会把它拉起来再跑一遍启动恢复 —— 崩溃循环。**
+		//
+		// Down 没有这个问题:它经 LocalAPI 的 HTTP handler 进来,net/http 会按连接
+		// 兜住。启动恢复这条路上没有任何等价物。
+		//
+		// 具体的可疑面是 scanRunningCores(对 sysctl 返回的 kinfo 切片做索引运算,
+		// 畸形或截断的应答并非不可能),而 recoverLocked 有**三个**入口会走到它:
+		// confirmCoreStopped(desired=off)、runner.Existing 与 runner.Start
+		// (desired=on 那条常见分支)。上一版只在 confirmCoreStopped 里收了一个,
+		// 那是修了一个实例、看起来像修了那类问题。这里收在源头。
+		//
+		// 收掉之后启动恢复失败,由外层的重试循环按退避再试 —— 与其它失败同路。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("guardian_startup_recovery_panicked recovered=%v\n%s", r, debug.Stack())
+			}
+		}()
 		fn()
 	}()
 }

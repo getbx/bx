@@ -1262,7 +1262,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
                 self.refresh(userInitiated: true)
-                completion?(succeeded)
+                // **退出决策一律用 confirmedOff,不用 succeeded。**
+                //
+                // 这里曾写 completion?(succeeded) —— 而 completion 的两个调用方都是退出
+                // 入口,常规那条(点 Quit → quitDisposition == .turnOffNow)正是走这里。
+                // 我上一版只改了排队退出那个罕见分支,于是「200 但 protection_state != off
+                // 时菜单照样退出」在正常路径上原样还在:修了一条路,不是那条路。
+                completion?(action == .turnOff ? confirmedOff : succeeded)
             }
         }
     }
