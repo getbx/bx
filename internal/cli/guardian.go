@@ -736,10 +736,16 @@ func macOSDownAction(c *urfavecli.Context) error {
 		clearUpgradeIntent,
 		func(line string) { fmt.Fprintln(os.Stderr, line) },
 	)
-	if result.Forced {
+	// 进度行也得跟着 Guardian 的判断走。曾经这里无条件打
+	// 「✓ bx 已停止,网络已恢复」,而下面 downReportLines 紧接着说「没能确认关闭」——
+	// 用户在相邻两行里同时读到断言和对它的否认。改一处忘一处,正是这类文案的常见死法。
+	switch {
+	case result.Forced:
 		stepDone("Guardian", "已强制停止 bx")
-	} else {
+	case downConfirmedStopped(result):
 		stepDone("Guardian", "bx 已停止,网络已恢复")
+	default:
+		stepDone("Guardian", "已执行停止,但未能确认")
 	}
 	stdout, stderrLines := downReportLines(result)
 	for _, line := range stderrLines {

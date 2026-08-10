@@ -32,17 +32,40 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 	// needs_attention。那份判断此前只有菜单栏读得到 —— 菜单读 protection_state,
 	// 而这里从不看 result.Status,于是 bx down 照样打印 ✅。
 	// 机制建好而最后一寸没接,等于没建。
-	if protection := result.Status.Protection; protection != "" && protection != guardian.ProtectionOff {
-		stderr = append(stderr, "⚠️  Guardian 没能确认保护已经关闭("+protection+")。")
+	if !downConfirmedStopped(result) {
+		stderr = append(stderr, "⚠️  Guardian 没能确认保护已经关闭("+downUnconfirmedReason(result)+")。")
 		stdout = append(
 			stdout,
 			"拆除步骤已执行完,但系统里可能仍有 bx 的 Core 进程在跑(例如另一个终端里的 sudo bx run,或旧版本残留)。",
-			"请执行 bx status 查看原因;确认无误后可用 sudo bx uninstall 彻底清理。",
+			// **不要让用户去跑一条看不到答案的命令。** 这里曾写「请执行 bx status 查看原因」,
+			// 而 bx status 根本不显示 last_error —— 那是把人支进死胡同。具体 PID 只在
+			// Guardian 日志里(刻意不进 Status:扫到的进程是「疑似」,把第三方 PID 放进
+			// Status 是 7778b53 专门修掉的错)。
+			"具体是哪个进程见:sudo tail -50 /var/log/bx-guard.err.log;确认无误后可用 sudo bx uninstall 彻底清理。",
 		)
 		return stdout, stderr
 	}
 	stdout = append(stdout, "✅ bx 已停止并取消开机自启。")
 	return stdout, stderr
+}
+
+// downConfirmedStopped 报告 Guardian 是否**确认**保护已经关闭。
+//
+// 空 Protection 视为已确认,只是为了让零值 result 仍渲染成干净成功(既有测试钉着
+// 那个形状)。真实的 200 应答一定带 protection_state,所以这条在生产里不可达 ——
+// 但它是「把未知塌缩成好消息」的同一形状,别在别处照抄。
+func downConfirmedStopped(result macOSDownResult) bool {
+	p := result.Status.Protection
+	return p == "" || p == guardian.ProtectionOff
+}
+
+// downUnconfirmedReason 给用户一个能查的理由:优先用 Guardian 报的失败码
+// (core_still_running / core_scan_failed),它比 protection_state 具体得多。
+func downUnconfirmedReason(result macOSDownResult) string {
+	if code := result.Status.LastError; code != "" {
+		return code
+	}
+	return result.Status.Protection
 }
 
 // forcedTeardownReason 说明**为什么**走了强制路径,不带句尾标点 —— 调用方各自
