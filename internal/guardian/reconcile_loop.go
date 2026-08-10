@@ -62,10 +62,11 @@ const (
 // 跑一次」这件只有 Guardian 知道的事复制到了另一个进程里,而那两个数字迟早分叉。
 const ReconcileStaleAfter = 2 * reconcileMaxInterval
 
-// heldMutationBusy 是第四道栅栏的名字。
+// heldMutationBusy 是唯一一道不住在 reconcileInput 里的栅栏。
 //
-// 它不在 reconcileInput 里,是因为另外三道**读**得到,而这一道只能靠**试着取**
-// 才能发现 —— 没有「窥视 channel 是否空闲」这种既准确又无副作用的读法。
+// 别的几道(recovery_blocked / path_recovery / ownership / maintenance_hold /
+// intent_unreadable)都**读**得到,而这一道只能靠**试着取**才能发现 ——
+// 没有「窥视 channel 是否空闲」这种既准确又无副作用的读法。
 const heldMutationBusy = "mutation_busy"
 
 // nextReconcileInterval 按「连续多少轮判断没变」给出下一轮的间隔。
@@ -92,13 +93,27 @@ func nextReconcileInterval(unchangedRounds int) time.Duration {
 // observed 由调用方先取好:观测要 fork 进程,绝不能在 mutation channel 里做。
 func (m *Manager) reconcileOnce(ctx context.Context, observed observe.ObservedState) reconcileDecision {
 	input := reconcileInput{
-		Desired:          m.Status().Desired,
 		Observed:         observed,
 		PathRecoveryBusy: m.pathRecoveryBusy(),
 	}
-	if input.PathRecoveryBusy {
-		// 这道栅栏有自己的锁,不用抢 mutation channel 就读得到。先看它:
-		// 一轮注定要跳过的观测没有任何理由排在用户的 up 前面。
+	// **从磁盘读,不读 m.Status().Desired。** 内存里的 Desired 会被 needsAttention
+	// 写成调用方传进来的常量(manager.go:1470-1473),好几处传的是字面量 DesiredOn
+	// 而磁盘写着 off;而挂起只在磁盘上。两者必须是同一次读出来的 —— 一半读内存
+	// 一半读磁盘,一轮之内就能出现两者互不相干的组合(设计取舍六)。
+	intent, err := m.store.LoadIntentSnapshot(time.Now())
+	if err != nil {
+		// **不许塌缩成 off 或 on。** 读不出来是没有答案,不是某个答案:
+		// 按 off 收敛会去停一个用户要的 Core,按 on 收敛会在维护窗口里起一个
+		// 不该起的。Desired 保持零值 —— 反正栅栏在 decide 的第一句就短路了。
+		input.IntentUnreadable = true
+	} else {
+		input.Desired = intent.Desired
+		input.MaintenanceHold = intent.HoldArmed
+	}
+	if input.PathRecoveryBusy || input.MaintenanceHold || input.IntentUnreadable {
+		// 这几道栅栏不用抢 mutation channel 就读得到(路径恢复有自己的锁,
+		// 另两道来自刚刚那次读盘)。先看它们:一轮注定要跳过的判断没有任何
+		// 理由排在用户的 up 前面。
 		return decide(input)
 	}
 	// 另外两道只有拿到 mutation channel 才读得干净 —— 它们的写方都持着它
