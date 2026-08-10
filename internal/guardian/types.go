@@ -115,12 +115,62 @@ type UpdateAvailability struct {
 // 可能是旧版(此前那次探测正是拿 /usr/local/bin/bx 去问的)。
 const CapabilityDiagnosticsArchive = "diagnostics_archive"
 
+// CapabilityReconcileReport 表示这一版 Guardian 跑着阶段③a 那条只观察的调谐环,
+// 因而 Status.Reconcile 这个字段是**它会填的**。
+//
+// 消费方靠它把两件事分开:
+//   - 「新版 Guardian,循环在跑,只是还没跑完第一轮」⇒ 声明了能力、报告还缺席;
+//   - 「旧版 Guardian(或没有循环的平台)」⇒ 连能力都没声明。
+//
+// 二者若不分开,CLI 只能在「对每一台机器都常驻一行『尚未观测』」与「对刚起来的
+// 新版一个字都不说」之间二选一 —— 前者正是 observerForPlatform 那道门在防的噪声,
+// 后者则让「循环死了」重新变得看不见。
+const CapabilityReconcileReport = "reconcile-report"
+
 // GuardianCapabilities 是这一版 Guardian 声明支持的能力集合。
 //
 // 每次调用都返回新切片:它会被塞进 Status 交给 JSON 编码,共享一份底层数组等于
 // 把一个包级可变状态发布出去。
 func GuardianCapabilities() []string {
-	return []string{CapabilityDiagnosticsArchive}
+	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport}
+}
+
+// ReconcileReport 是只观察调谐环**最近一轮**的判断,随 Status 一起发布。
+//
+// 存在的理由:今天要回答「循环提议过什么」只能 root 去 tail
+// /var/log/bx-guard.log,而真机 soak 是阶段③a 唯一真正的验收 —— 它得能从
+// `bx status` 读到。
+//
+// **At 是这份报告里最重要的字段,而且它的重要性不来自「时间好看」。**
+// reconcileDecision 的零值(无动作、无栅栏)恰恰就是一台**健康机器**的判断,
+// 循环也正是靠这一点在健康机器上保持静默。于是「循环从没跑过一轮」(没挂上、
+// 刚启动、每轮都 panic 被 recover 掉)与「循环跑了、什么差异都没有」在判断值上
+// **完全相同**,而它们在真机上的意义正好相反。区分二者的唯一办法是「有没有
+// 一份带时刻的报告」:一轮都没跑过时 Status.Reconcile 整个为 nil、字段缺席,
+// 而不是发布一份读起来像「一切正常」的零值。
+type ReconcileReport struct {
+	// At 是记下这一轮的时刻。**永远非零**:recordReconcileRound 是唯一的写入口,
+	// 它一定盖时间戳。见类型头。
+	At time.Time `json:"at"`
+	// Actions 是这一轮**本来会做**的事(阶段③a 一项都不会执行)。
+	Actions []string `json:"actions,omitempty"`
+	// Held 非空时 Actions 必为空,内容是被哪道栅栏挡住的。
+	Held string `json:"held,omitempty"`
+	// UnchangedRounds 是判断连续多少轮没变。它同时是退避的输入,所以一个持续
+	// 增长的数字意味着「循环活着且这段时间一直是同一个判断」。
+	UnchangedRounds int `json:"unchanged_rounds"`
+}
+
+// clone 返回一份深拷贝。Status 会被交给 JSON 编码器旁边的任意代码,交出内部
+// 那一份的别名等于把 Manager 的状态开放给调用方去改(与 GuardianCapabilities
+// 不共享底层数组同一条纪律)。
+func (r *ReconcileReport) clone() *ReconcileReport {
+	if r == nil {
+		return nil
+	}
+	copied := *r
+	copied.Actions = append([]string(nil), r.Actions...)
+	return &copied
 }
 
 type Status struct {
@@ -149,6 +199,15 @@ type Status struct {
 	// 还没换掉的旧 Guardian)。omitempty 会把空集合与从未声明压成同一个形状,而
 	// 菜单正是靠这个区分决定要不要提示用户升级。
 	Capabilities []string `json:"capabilities"`
+
+	// Reconcile 是只观察调谐环最近一轮的判断(见 ReconcileReport)。
+	//
+	// **omitempty 在这里是契约的一部分,不是省字节。** 一轮都没跑过时这个键必须
+	// 整个缺席:一份 `{"at":"0001-01-01T00:00:00Z"}` 的零值报告读起来与「跑过、
+	// 什么差异都没有」一模一样,而后者是 soak 想要的结果、前者说明那份干净日志
+	// 毫无意义。「这一版有没有这条循环」由 Capabilities 里的
+	// CapabilityReconcileReport 回答,不靠这个键的有无。
+	Reconcile *ReconcileReport `json:"reconcile,omitempty"`
 
 	// LastErrorGeneration is a monotonic counter bumped every time
 	// needsAttention actually runs (see Manager.needsAttention). It exists so

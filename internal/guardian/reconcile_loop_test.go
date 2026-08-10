@@ -64,8 +64,25 @@ func (e *managerTestEnv) mutationCallCounts() mutationCallCounts {
 		BarrierProof:   manager.barrierOwnership.proof,
 		DNSState:       manager.dnsStatus.State,
 		DNSService:     manager.dnsStatus.Service,
-		Status:         fmt.Sprintf("%+v", manager.Status()),
+		Status:         fmt.Sprintf("%+v", statusWithoutReconcileReport(manager)),
 	}
+}
+
+// statusWithoutReconcileReport 把「本轮判断的报告」从这份快照里摘掉。
+//
+// 两个理由,缺一不可:
+//   - **发布一份判断不是一次改动。** 循环每轮都会 recordReconcileRound(这是
+//     Task 3 的全部内容),报告因此必然在跑完之后与跑之前不同;把它算进「系统
+//     被动过什么」会让这几条守卫在**正确**的实现上变红,进而被人删掉 ——
+//     那才是真正的损失。它改的是 Guardian 自己的内存,不碰系统一根汗毛。
+//   - Status.Reconcile 是指针,%+v 印的是地址,同样内容的两份报告也不相等。
+//
+// 「每一轮都被记下来了」这条正面属性由 TestReconcileLoopRecordsEveryRoundIncludingHeldOnes
+// 单独守,不靠这份快照。
+func statusWithoutReconcileReport(manager *Manager) Status {
+	status := manager.Status()
+	status.Reconcile = nil
+	return status
 }
 
 // **本期的核心约束:一个动作都不许执行。**

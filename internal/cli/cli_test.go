@@ -4891,3 +4891,230 @@ func TestMacMenuQuitDecisionUsesTheConfirmedStopNotJustHTTPSuccess(t *testing.T)
 		t.Fatal("performToggle 里应当有 confirmedOff —— 它是退出决策唯一该看的东西")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 调谐环最近一轮判断的渲染(阶段③a Task 3)
+// ---------------------------------------------------------------------------
+
+// clientStatusRenderBranches 覆盖 renderClientStatus 的**两条**独立路径:
+// Core 不可用的 partial 分支,与完整分支。只在其中一条里加这一行,另一条的
+// 用户就永远看不到它 —— 而 Core 不可用恰恰是最想知道「调谐环还活着吗」的时候。
+func clientStatusRenderBranches() []struct {
+	name string
+	base clientStatusReport
+} {
+	return []struct {
+		name string
+		base clientStatusReport
+	}{
+		{
+			name: "partial",
+			base: clientStatusReport{ProtectionState: guardian.ProtectionProtected},
+		},
+		{
+			name: "full",
+			base: clientStatusReport{
+				Report:          &stats.Report{TunnelHealthy: true},
+				CoreAvailable:   true,
+				CoreEvidence:    "local_status_socket",
+				ProtectionState: guardian.ProtectionProtected,
+			},
+		},
+	}
+}
+
+func withReconcileCapability(report clientStatusReport) clientStatusReport {
+	report.GuardianCapabilities = []string{guardian.CapabilityReconcileReport}
+	return report
+}
+
+// nil 必须渲染成「尚未观测」,绝不能渲染成无差异 —— 这是本任务唯一真正危险的地方。
+//
+// reconcileDecision 的零值就是一台健康机器的判断,所以「循环从没跑过一轮」与
+// 「循环跑了、什么差异都没有」在**判断值上完全相同**;唯一分得开二者的是 At。
+// 二者若渲染成同一段文字,用户拿到的那份「干净」状态就毫无意义 —— 与 Task 2
+// 修复轮 2 抓到的是同一个洞(一个装了但没跑的循环,与一台健康机器,日志一模一样)。
+func TestRenderClientStatusDistinguishesNeverRanFromClean(t *testing.T) {
+	for _, branch := range clientStatusRenderBranches() {
+		t.Run(branch.name, func(t *testing.T) {
+			never := renderClientStatus(withReconcileCapability(branch.base))
+			clean := withReconcileCapability(branch.base)
+			clean.Reconcile = &guardian.ReconcileReport{
+				At:              time.Now().Add(-12 * time.Second),
+				UnchangedRounds: 37,
+			}
+			cleanText := renderClientStatus(clean)
+
+			if never == cleanText {
+				t.Fatal("「从没跑过一轮」与「跑了、无差异」渲染成了同一段文字")
+			}
+			if !strings.Contains(cleanText, "无差异") {
+				t.Errorf("无差异时也必须出现这一行,否则分不清循环活着还是死了:\n%s", cleanText)
+			}
+			if !strings.Contains(cleanText, "37") || !strings.Contains(cleanText, "12s") {
+				t.Errorf("这一行要说清「最近一次是多久前」与「连续多少轮没变」:\n%s", cleanText)
+			}
+			// 变异③(把 nil 也渲染成无差异)直接死在这一条上。
+			if strings.Contains(never, "无差异") {
+				t.Errorf("一轮都没跑过时说「无差异」是一句假话:\n%s", never)
+			}
+			if !strings.Contains(never, "尚未完成第一轮观测") {
+				t.Errorf("Guardian 声明了这条能力却还没有报告 ⇒ 必须明说还没跑完第一轮:\n%s", never)
+			}
+		})
+	}
+}
+
+// 旧 Guardian(没声明这个能力)不该凭空多出一行 —— 与 observerForPlatform 同一条纪律:
+// 字段缺席是诚实的「没问」,而一行常驻的「无法观测」会把这个字段训练成噪声。
+func TestRenderClientStatusSaysNothingWhenGuardianHasNoReconcileLoop(t *testing.T) {
+	for _, branch := range clientStatusRenderBranches() {
+		t.Run(branch.name, func(t *testing.T) {
+			got := renderClientStatus(branch.base)
+			for _, forbidden := range []string{reconcileStatusLabel, "尚未完成第一轮观测", "无差异", "本会提议"} {
+				if strings.Contains(got, forbidden) {
+					t.Errorf("对面没声明这条能力时不该出现 %q:\n%s", forbidden, got)
+				}
+			}
+			// 能力集合非空但**不含**这一条,与整个没声明是同一件事:没有循环。
+			partial := branch.base
+			partial.GuardianCapabilities = []string{guardian.CapabilityDiagnosticsArchive}
+			if other := renderClientStatus(partial); other != got {
+				t.Errorf("能力集合里没有 reconcile-report 时也不该多出任何一行:\n%s", other)
+			}
+		})
+	}
+}
+
+// 报告在,但 At 是零值 —— 那份报告不能当作「跑过一轮」的证据。
+// 零时刻是「从没跑过」的形状,渲染成「最近观测 490000h 前」既荒唐又是一句假话。
+func TestRenderClientStatusTreatsAZeroTimestampAsNeverRan(t *testing.T) {
+	report := withReconcileCapability(clientStatusReport{ProtectionState: guardian.ProtectionProtected})
+	report.Reconcile = &guardian.ReconcileReport{UnchangedRounds: 9}
+	got := renderClientStatus(report)
+	if !strings.Contains(got, "尚未完成第一轮观测") {
+		t.Errorf("At 为零的报告必须按「还没跑过」渲染:\n%s", got)
+	}
+	if strings.Contains(got, "无差异") {
+		t.Errorf("At 为零却报「无差异」,正是本任务要消灭的那句假话:\n%s", got)
+	}
+}
+
+// 提议与栅栏都要说得出口:soak 要读的就是这两样。
+func TestRenderClientStatusShowsProposedActionsAndFences(t *testing.T) {
+	base := withReconcileCapability(clientStatusReport{ProtectionState: guardian.ProtectionProtected})
+	for _, tc := range []struct {
+		name   string
+		report guardian.ReconcileReport
+		want   []string
+		avoid  string
+	}{
+		{
+			name: "proposed",
+			report: guardian.ReconcileReport{
+				At:      time.Now().Add(-90 * time.Second),
+				Actions: []string{"restore_dns", "clear_orphan_barrier"},
+			},
+			want:  []string{"本会提议", "restore_dns", "clear_orphan_barrier"},
+			avoid: "无差异",
+		},
+		{
+			name: "held",
+			report: guardian.ReconcileReport{
+				At:   time.Now().Add(-3 * time.Second),
+				Held: "path_recovery_in_flight",
+			},
+			want:  []string{"path_recovery_in_flight", "挡住"},
+			avoid: "无差异",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := base
+			snapshot := tc.report
+			report.Reconcile = &snapshot
+			got := renderClientStatus(report)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("缺 %q:\n%s", want, got)
+				}
+			}
+			if strings.Contains(got, tc.avoid) {
+				t.Errorf("这一轮不是干净的,不该说 %q:\n%s", tc.avoid, got)
+			}
+		})
+	}
+}
+
+// 「多久以前」不许算成负数或未来:Guardian 与 CLI 是两个进程,时钟回拨、
+// 或者一份刚生成的报告在传输途中被读到,都会让 At 落在 now 之后。
+func TestReconcileElapsedNeverGoesBackwards(t *testing.T) {
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	if got := reconcileElapsed(now, now.Add(time.Minute)); got != "0s" {
+		t.Errorf("未来的时间戳应当收敛成 0s, got %q", got)
+	}
+	if got := reconcileElapsed(now, now.Add(-12*time.Second)); got != "12s" {
+		t.Errorf("reconcileElapsed = %q, want 12s", got)
+	}
+}
+
+// 报告与能力都要从 Guardian 的 Status 一路流到报告结构体、再流到 JSON ——
+// 机器面(agent、菜单)读的是那份 JSON,而 soak 的全部价值就在这一条链上。
+func TestClientStatusPublishesGuardianReconcileReport(t *testing.T) {
+	at := time.Date(2026, 8, 9, 3, 4, 5, 0, time.UTC)
+	rep, err := readClientStatusReportWithObserver(
+		func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
+		func() (guardian.Status, error) {
+			return guardian.Status{
+				Desired:      guardian.DesiredOn,
+				Protection:   guardian.ProtectionProtected,
+				DNSState:     guardian.DNSManaged,
+				DNSManaged:   true,
+				Capabilities: guardian.GuardianCapabilities(),
+				Reconcile: &guardian.ReconcileReport{
+					At:              at,
+					Actions:         []string{"start_core"},
+					UnchangedRounds: 4,
+				},
+			}, nil
+		},
+		"linux",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Reconcile == nil || !rep.Reconcile.At.Equal(at) || rep.Reconcile.UnchangedRounds != 4 {
+		t.Fatalf("Guardian 的调谐报告没流到 status 报告上, got %+v", rep.Reconcile)
+	}
+	if !guardianDeclaresCapability(rep.GuardianCapabilities, guardian.CapabilityReconcileReport) {
+		t.Fatalf("能力声明没流过来 —— 没有它就分不清「旧版 Guardian」与「还没跑完第一轮」, got %v",
+			rep.GuardianCapabilities)
+	}
+	data, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Reconcile *guardian.ReconcileReport `json:"reconcile"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Reconcile == nil || decoded.Reconcile.At.IsZero() || len(decoded.Reconcile.Actions) != 1 {
+		t.Fatalf("`bx status --json` 里的 reconcile 不完整: %s", data)
+	}
+
+	// 反过来:Guardian 没给报告时,JSON 里那个键必须整个缺席 —— 一个
+	// `"reconcile":{"at":"0001-01-01T00:00:00Z"}` 就是一份「跑过、无差异」的假证据。
+	empty, err := json.Marshal(clientStatusReport{ProtectionState: guardian.ProtectionOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(empty, &keys); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := keys["reconcile"]; present {
+		t.Fatalf("没有报告时 reconcile 键必须缺席: %s", empty)
+	}
+}

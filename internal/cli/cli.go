@@ -221,6 +221,25 @@ type clientStatusReport struct {
 	// 差异。刻意不用观测覆盖信念——二者的 diff 本身就是最有价值的诊断信号。
 	Observed   *observe.ObservedState `json:"observed,omitempty"`
 	Divergence []observe.Divergence   `json:"divergence,omitempty"`
+
+	// Reconcile 是 Guardian 那条只观察调谐环**最近一轮**的判断,与上面的一次性
+	// 观测**并列**发布,不是替换它。
+	//
+	// 一次性观测的价值是「你敲命令那一刻的新鲜事实」——bx status 正是出问题时
+	// 最先敲的命令;拿一份最多可能陈旧 10 分钟(退避上限)的缓存去顶替它是退化。
+	// 而循环那份的价值在于时间:它回答的是「这段时间里系统一直是什么样」,
+	// 以及「调谐器一直想做什么」——而后者是阶段③b 授权之前唯一的证据来源。
+	//
+	// 缺席有两种意思,靠 GuardianCapabilities 分开(见 renderClientStatus)。
+	Reconcile *guardian.ReconcileReport `json:"reconcile,omitempty"`
+
+	// GuardianCapabilities 是对面那一版 Guardian 自己声明的能力集合。
+	//
+	// omitempty 在这里是对的,与 guardian.Status.Capabilities 刻意不加 omitempty
+	// 并不矛盾:那一层要分开「声明过、集合是空的」与「压根没声明」,而这一层的
+	// 每一个消费者问的都是「集合里有没有某一条」——空集合与从未声明的答案相同
+	// (都是「没有」),于是「我们根本没问到 Guardian」如实表现为字段缺席。
+	GuardianCapabilities []string `json:"guardian_capabilities,omitempty"`
 }
 
 type inspectReport struct {
@@ -4417,20 +4436,22 @@ func assembleClientStatusReportWithCoreForPlatform(core *stats.Report, evidence 
 		}
 	}
 	return clientStatusReport{
-		Report:            core,
-		CoreAvailable:     core != nil,
-		CoreEvidence:      evidence,
-		Desired:           string(status.Desired),
-		ProtectionState:   protection,
-		NetworkGeneration: status.NetworkGeneration,
-		Recovery:          status.Recovery,
-		DNSState:          status.DNSState,
-		DNSManaged:        status.DNSManaged,
-		DNSService:        status.DNSService,
-		Phase:             string(status.Phase),
-		CoreVersion:       status.CoreVersion,
-		GuardianVersion:   status.GuardianVersion,
-		RuntimeVersion:    status.RuntimeVersion,
+		Report:               core,
+		CoreAvailable:        core != nil,
+		CoreEvidence:         evidence,
+		Desired:              string(status.Desired),
+		ProtectionState:      protection,
+		NetworkGeneration:    status.NetworkGeneration,
+		Recovery:             status.Recovery,
+		DNSState:             status.DNSState,
+		DNSManaged:           status.DNSManaged,
+		DNSService:           status.DNSService,
+		Phase:                string(status.Phase),
+		CoreVersion:          status.CoreVersion,
+		GuardianVersion:      status.GuardianVersion,
+		RuntimeVersion:       status.RuntimeVersion,
+		Reconcile:            status.Reconcile,
+		GuardianCapabilities: status.Capabilities,
 	}
 }
 
@@ -4450,6 +4471,7 @@ func renderClientStatus(report clientStatusReport) string {
 			fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
 		}
 		writeClientRecovery(&b, report.Recovery)
+		writeClientReconcile(&b, report)
 		return b.String()
 	}
 
@@ -4464,12 +4486,85 @@ func renderClientStatus(report clientStatusReport) string {
 	}
 	writeClientDNS(&b, report.DNSState, report.DNSService)
 	writeClientRecovery(&b, report.Recovery)
+	writeClientReconcile(&b, report)
 	b.WriteString(stats.Render(*report.Report))
 	return b.String()
 }
 
 func writeClientDNS(b *strings.Builder, state guardian.DNSState, service string) {
 	fmt.Fprintf(b, "  DNS     %s\n", guardianDNSLabel(state, service))
+}
+
+// reconcileStatusLabel 是那一行的行首标签。
+const reconcileStatusLabel = "Reconcile"
+
+// writeClientReconcile 把 Guardian 那条只观察调谐环的最近一轮判断写成一行。
+//
+// **三态,每一态的理由都不一样,不能合并:**
+//
+//   - 有报告 ⇒ 写一行,**哪怕这一轮什么差异都没有**。静默正是这一项要消灭的
+//     歧义:一个装了但没跑的循环,与一台健康机器,产出的证据一模一样;唯一
+//     分得开二者的是「有没有一份带时刻的报告」,所以那份报告必须说出口。
+//   - 没有报告、但对面声明了这条能力 ⇒ 「尚未完成第一轮观测」。这是新版
+//     Guardian 刚起来的样子(循环先睡一个基础周期再观测),它与「循环死了」
+//     在别处看不出差别,只能由这一行说明。
+//   - 没有报告、也没声明能力(旧版 Guardian,或者根本没有这条循环的平台)
+//     ⇒ **什么都不写**。理由与 observerForPlatform 那道 darwin 门逐字相同:
+//     一行永远存在的「无法观测」会把用户和 agent 训练成忽略这个字段,而那
+//     正好毁掉它唯一的价值。字段缺席是诚实的「没问」。
+func writeClientReconcile(b *strings.Builder, report clientStatusReport) {
+	line, ok := clientReconcileLine(report, time.Now())
+	if !ok {
+		return
+	}
+	fmt.Fprintf(b, "  %s %s\n", reconcileStatusLabel, line)
+}
+
+func clientReconcileLine(report clientStatusReport, now time.Time) (string, bool) {
+	// At 为零的报告不算「跑过一轮」:零时刻正是「从没跑过」的形状,把它渲染成
+	// 「最近观测 490000h 前 · 无差异」既荒唐,又恰好是本任务要消灭的那句假话。
+	if round := report.Reconcile; round != nil && !round.At.IsZero() {
+		return reconcileRoundSummary(*round, now), true
+	}
+	if !guardianDeclaresCapability(report.GuardianCapabilities, guardian.CapabilityReconcileReport) {
+		return "", false
+	}
+	return "尚未完成第一轮观测", true
+}
+
+func reconcileRoundSummary(round guardian.ReconcileReport, now time.Time) string {
+	prefix := fmt.Sprintf("最近观测 %s 前 · ", reconcileElapsed(now, round.At))
+	switch {
+	case round.Held != "":
+		// 被栅栏挡住的一轮**没有做判断**,不是「判断出没有差异」——soak 要数的
+		// 正是这种轮次有多少。
+		return prefix + "被 " + round.Held + " 挡住"
+	case len(round.Actions) > 0:
+		return prefix + "本会提议 " + strings.Join(round.Actions, ",")
+	default:
+		return prefix + fmt.Sprintf("无差异(连续 %d 轮未变)", round.UnchangedRounds)
+	}
+}
+
+// reconcileElapsed 把「多久以前」渲染成人话,并把负数收敛成 0。
+//
+// Guardian 与 CLI 是两个进程:时钟回拨、或者一份刚生成的报告被读到,都会让 At
+// 落在 now 之后,而「-2s 前」只会让人怀疑整份状态。
+func reconcileElapsed(now, at time.Time) string {
+	elapsed := now.Sub(at)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return elapsed.Round(time.Second).String()
+}
+
+func guardianDeclaresCapability(capabilities []string, want string) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizedGuardianProtectionState(status guardian.Status, platform string) string {
