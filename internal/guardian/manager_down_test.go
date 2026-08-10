@@ -137,8 +137,13 @@ func TestDownOverTheLocalAPISocketClearsTheMaintenanceHold(t *testing.T) {
 //
 // 两条路都跑真实的 Client → 真实 unix socket → 真实 LocalAPI → 真实
 // Manager.Down → 真实 *Store:`?reason=upgrade` 是否被客户端带上、handler 是否
-// 认得、Manager 是否照办,任何一环断了这个用例都会红。**这是那个线上字面量唯一
-// 的端到端证明。**
+// 认得、Manager 是否照办,任何一环断了这个用例都会红。
+//
+// (它**不是**那个线上字面量唯一的端到端证明 —— internal/cli 的
+// TestRunUpgradeKeepsTheIntentAcrossARealGuardianDown 也走同一条真实链路,而且它
+// 那句 desired 断言是 Task 4 加的、早于本次删除。把这条用例**改造而不是删掉**
+// 仍然是对的:它是 guardian 包内唯一一条,也是唯一同时钉住挂起与 desired 两个
+// 后果的。)
 func TestDownForUpgradeKeepsTheMaintenanceHoldThatUserDownClears(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
