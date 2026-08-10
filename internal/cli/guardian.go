@@ -448,6 +448,15 @@ type macOSDownResult struct {
 	// renders as "Guardian 未响应", which in this case is simply false —
 	// Guardian answered, we chose the heavier path on purpose.
 	LegacyCore bool
+	// IntentUnrecorded 非 nil 表示这次停机**既没能武装维护挂起、也没能写下
+	// desired=off**(见 recordStopIntent 的退回规则)。保护确实停了,但盘上没有
+	// 任何一句话说明「此刻不该有保护」。
+	//
+	// 它只在**干净路径**上出现:强制路径的 forcedMacOSTeardown 会把同一个错误
+	// 折进自己的 failures 一起汇报,而干净路径根本不调它。字段与返回的 error
+	// 并存,理由与 Forced/Cause 一样 —— 调用方拿零值去渲染时,
+	// downReportLines 会平静地打印「已停止」。
+	IntentUnrecorded error
 }
 
 // macOSDownLifecycleDetailed implements `bx down`'s two paths:
@@ -521,7 +530,11 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 		}
 		status, cleanErr := cleanGuardianDown(ctx, purpose, configPath, deps)
 		if cleanErr == nil {
-			return macOSDownResult{Status: status}, nil
+			// **干净路径是 stop.err 唯一的读者。** forcedMacOSTeardown 会把它
+			// 折进自己的 failures,而这一支根本不调它 —— 不在这里读,那次
+			// 「挂起与 desired=off 都没写成」就一个字都不会留下,而这条路会
+			// 报成功。见 stopIntentFailure。
+			return macOSDownResult{Status: status, IntentUnrecorded: stop.err}, stopIntentFailure(stop)
 		}
 		if err := forcedMacOSTeardown(ctx, stop, deps, cleanErr); err != nil {
 			return macOSDownResult{Forced: true, Cause: cleanErr}, err
@@ -634,6 +647,14 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	//    维护(升级)记的是挂起,用户记的是 desired=off;两者都由
 	//    recordStopIntent 在更早的时候做过一次(它必须早于干净路径,见那边的
 	//    注释),这里再做一次是为了盖住「一次并发的 Up 抢在前面」。
+	//
+	//    **两边对失败的处置刻意不对称,这是有意的:** 挂起写失败进 failures
+	//    (整条拆除报错,升级随之中止),而 desired=off 写失败只进 desiredErr,
+	//    第 6 步再写一次成功就把它清掉。理由是两者补救的余地不同 ——
+	//    desired=off 有第二次机会且那次是权威的(Guardian 已被 bootout,没人能
+	//    覆盖),而挂起没有第二种表达方式:第 1 步与第 6 步写的是同一个文件,
+	//    第 1 步失败几乎必然意味着第 6 步也会失败,报绿等于让升级带着一个
+	//    「没人拦着」的窗口继续往下走。fail-closed 的方向。
 	desiredErr := stop.err
 	if stop.armsHold() {
 		if err := armMaintenanceHold(deps, guardian.HoldReasonUpgrade); err != nil {
@@ -777,6 +798,30 @@ func recordStopIntent(deps macOSLifecycleDeps, purpose downPurpose) stopIntent {
 		return stopIntent{purpose: purpose, fellBack: true, err: persistDesiredOff(deps)}
 	}
 	return stopIntent{purpose: purpose}
+}
+
+// stopIntentFailure 把 recordStopIntent 那次「挂起与 desired=off 都没写成」如实
+// 汇报出去。
+//
+// **它不违反「停止永不依赖别的先成功」:停止此刻已经做完了**(Manager.Down 干净
+// 返回、屏障已拆、DNS 已还)。这里拒绝的不是停止,而是**继续升级** —— 盘上既没有
+// 挂起也没有 desired=off,正是设计取舍三点名的那个新失效模式:下一步
+// restartGuardianForUpgrade 拉起来的新 Guardian 会读到 desired=on 自己把 Core
+// 起回来,而那时二进制正换到一半。退回规则的全部意义就是让这个状态不存在;
+// 两条都写不成时,唯一还剩的处置是别往下走。
+//
+// 用户显式的 down 到不了这里:recordStopIntent 对 downPurposeUser 直接返回,
+// 从不产生 err。
+func stopIntentFailure(stop stopIntent) error {
+	if stop.err == nil {
+		return nil
+	}
+	return fmt.Errorf(
+		"保护已停止,但未能记录停机意图(维护挂起与 desired=off 都没写成): %w\n"+
+			"已中止后续步骤:盘上没有任何一句话说明「此刻不该有保护」,继续换二进制会被自动恢复的保护打断。"+
+			"请检查 /var/lib/bx 是否可写后重试",
+		stop.err,
+	)
 }
 
 // armMaintenanceHold 武装挂起。**钩子缺失是失败**,与 persistDesiredOff 相反:

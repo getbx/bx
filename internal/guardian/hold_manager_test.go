@@ -558,14 +558,17 @@ func TestMigrateClearsMaintenanceHold(t *testing.T) {
 	}
 }
 
-// 启动恢复**绝不许**清挂起。它与用户显式的 up 共用 upLocked,而每一次升级都会
-// 重启 Guardian、跑一遍启动恢复 —— 把销挂起放进 upLocked 里,挂起就会在它最该
-// 生效的那一刻被自己人销掉。
+// 启动恢复**绝不许**清挂起 —— 每一次升级都会重启 Guardian 跑一遍它,而那正是
+// 挂起最该生效的时刻。
 //
-// 这条覆盖的是「挂起已过期」那一格:此时启动恢复会一路走到 upLocked,盘上那张
-// 过期的挂起是不是被顺手删掉无关紧要,要紧的是**没过期的那张不会被走到**。
-// 前一条(TestStartupRecoveryUnderArmedHoldSkipsCoreAndKeepsDownReachable)已经
-// 钉住了武装态下 Core 不被起来;这里补上「文件仍在盘上」这半边。
+// **这条测试证明的是结果,不是机制。** 它对「销挂起被挪进 upLocked」是瞎的:
+// 挂起武装时 recoverLocked 在 `intent.HoldArmed` 那一支就 return 了,压根走不到
+// upLocked(实测:做那个变异本测试仍绿)。它拦得住的是把销挂起挪到 recoverLocked
+// 里、或挪到 Recover 顶上这类改动 —— 也就是「启动恢复结束后挂起还在不在」这个
+// 对外可见的性质本身。
+//
+// 前一条(TestStartupRecoveryUnderArmedHoldSkipsCoreAndKeepsDownReachable)钉住
+// 武装态下 Core 不被起来;这里补上「文件仍在盘上」那半边。
 func TestStartupRecoveryUnderArmedHoldDoesNotClearTheHold(t *testing.T) {
 	env := newManagerTestEnv(t)
 	if err := env.store.SaveDesired(DesiredOn); err != nil {
