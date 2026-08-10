@@ -1,9 +1,12 @@
 package guardian
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,9 +34,9 @@ func migrateInterruptedUpgrade(t *testing.T, now time.Time) (*Store, Paths) {
 	if err := os.WriteFile(paths.UpgradeIntent, []byte(`{"schema_version":1,"desired_on":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	migrated, err := s.MigrateLegacyUpgradeIntent(now)
-	if err != nil || !migrated {
-		t.Fatalf("migrated=%v err=%v", migrated, err)
+	migration, err := s.MigrateLegacyUpgradeIntent(now)
+	if err != nil || !migration.Found {
+		t.Fatalf("migration=%+v err=%v", migration, err)
 	}
 	return s, paths
 }
@@ -76,9 +79,9 @@ func TestLegacyUpgradeIntentFileIsRemovedAfterMigration(t *testing.T) {
 func TestLegacyMigrationIsANoOpWithoutTheLegacyFile(t *testing.T) {
 	paths := legacyIntentPaths(t.TempDir())
 	s := OpenStore(paths)
-	migrated, err := s.MigrateLegacyUpgradeIntent(time.Now())
-	if err != nil || migrated {
-		t.Fatalf("migrated=%v err=%v", migrated, err)
+	migration, err := s.MigrateLegacyUpgradeIntent(time.Now())
+	if err != nil || migration.Found {
+		t.Fatalf("migration=%+v err=%v", migration, err)
 	}
 	if _, armed, err := s.LoadMaintenanceHold(time.Now()); err != nil || armed {
 		t.Fatalf("凭空武装了挂起:armed=%v err=%v", armed, err)
@@ -119,9 +122,12 @@ func TestLegacyUpgradeIntentSayingProtectionWasOffRestoresNothing(t *testing.T) 
 	if err := os.WriteFile(paths.UpgradeIntent, []byte(`{"schema_version":1,"desired_on":false}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	migrated, err := s.MigrateLegacyUpgradeIntent(time.Now())
-	if err != nil || !migrated {
-		t.Fatalf("migrated=%v err=%v", migrated, err)
+	migration, err := s.MigrateLegacyUpgradeIntent(time.Now())
+	if err != nil || !migration.Found {
+		t.Fatalf("migration=%+v err=%v", migration, err)
+	}
+	if migration.RestoredDesiredOn || migration.HoldArmed {
+		t.Fatalf("desired_on=false 的欠条什么都不该恢复:%+v", migration)
 	}
 	if desired, err := s.LoadDesired(); err != nil || desired != DesiredOff {
 		t.Fatalf("欠条说用户本来没开保护,不许替他开:%q err=%v", desired, err)
@@ -140,9 +146,9 @@ func TestLegacyUpgradeIntentSayingProtectionWasOffRestoresNothing(t *testing.T) 
 // 理由要消灭的那种谎;它还会让上面几条断言在有人删掉一行路径赋值之后继续绿。
 func TestLegacyMigrationWithoutConfiguredPathIsAnError(t *testing.T) {
 	paths := holdPaths(t.TempDir()) // 刻意不填 UpgradeIntent
-	migrated, err := OpenStore(paths).MigrateLegacyUpgradeIntent(time.Now())
-	if err == nil || migrated {
-		t.Fatalf("答不了的问题必须报错:migrated=%v err=%v", migrated, err)
+	migration, err := OpenStore(paths).MigrateLegacyUpgradeIntent(time.Now())
+	if err == nil || migration.Found {
+		t.Fatalf("答不了的问题必须报错:migration=%+v err=%v", migration, err)
 	}
 }
 
@@ -192,5 +198,153 @@ func TestLegacyMigrationRunsOnlyOncePerProcess(t *testing.T) {
 	}
 	if got := env.store.migrateCount(); got != 1 {
 		t.Fatalf("迁移跑了 %d 次;每多跑一次都会把挂起的过期时刻往后推一次", got)
+	}
+}
+
+// 删不掉的欠条**不许**留下一张武装着的挂起。
+//
+// 复审抓到的:`os.Remove` 失败时原来只记一行日志就 return true —— 于是
+// migrateLegacyIntentOnce 打印一句「已迁移」的成功日志,而文件还在盘上。
+// 原注释「本次进程只跑这一遍,不会反复刷新过期时间」在**进程内**成立、跨重启
+// 不成立,而跨重启正是「删不掉」这件事的定义。叠加两条既有事实就致命:
+// recoverLocked 在 intent.HoldArmed 那一支直接 return,而调谐器只观察没有执行权
+// —— 一张武装着的挂起压制的是**整个进程生命周期**,不是 15 分钟。净结果是
+// 保护再也回不来,而日志说成功。
+//
+// 处置:删不掉 ⇒ 把挂起撤掉。desired=on 照样恢复(那一半是欠条的全部意义),
+// 而挂起的职责只是「拦住这一次启动」—— 拦不住有尽头的东西就不该拦。
+func TestUndeletableLegacyIntentDoesNotLeaveAHoldArmed(t *testing.T) {
+	paths := legacyIntentPaths(t.TempDir())
+	s := OpenStore(paths)
+	if err := s.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.UpgradeIntent, []byte(`{"schema_version":1,"desired_on":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 用注入的删除器造「删不掉」,而不是 chmod:root 身份下 chmod 拦不住 unlink,
+	// 那种造法会在 CI 的 root 容器里变成假绿(hold_test.go 里同款教训)。
+	removeFailure := errors.New("read-only file system")
+	migration, err := s.migrateLegacyUpgradeIntent(time.Now(), func() error { return removeFailure })
+	if !errors.Is(err, removeFailure) {
+		t.Fatalf("删不掉必须报错(否则日志会说成功):err=%v", err)
+	}
+	if migration.HoldArmed {
+		t.Fatal("删不掉的欠条会在每次重启时重新武装挂起 —— 那是永久压制,不是 15 分钟")
+	}
+	if _, armed, err := s.LoadMaintenanceHold(time.Now()); err != nil || armed {
+		t.Fatalf("盘上不得留下武装着的挂起:armed=%v err=%v", armed, err)
+	}
+	// 而「用户本来要保护」这一半照样要恢复 —— 它不依赖删得掉删不掉。
+	if desired, err := s.LoadDesired(); err != nil || desired != DesiredOn {
+		t.Fatalf("desired 没恢复:%q err=%v", desired, err)
+	}
+}
+
+// 太老的欠条不作数。
+//
+// 复审抓到的:一张陈旧欠条(上一次 bx down 报错留下的,或菜单 Turn Off 失败留下
+// 的——后者根本不经过 CLI)本来只在下一次 app-install 时才咬人;迁移把它提前到
+// **下一次 Guardian 启动**,而升级本身就会重启 Guardian。「把用户明确的 off 翻回
+// on」正是这一整期要消灭的 bug 形状,不能靠「只兼容一个版本」的承诺发货。
+//
+// 24 小时是个宽绰的窗口:一台真的正处在升级中途的机器,那个文件是几分钟前写的。
+// 反方向的代价是安全的 —— 保护不自动恢复,用户自己 bx up。
+func TestStaleLegacyUpgradeIntentIsIgnoredNotObeyed(t *testing.T) {
+	paths := legacyIntentPaths(t.TempDir())
+	s := OpenStore(paths)
+	if err := s.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.UpgradeIntent, []byte(`{"schema_version":1,"desired_on":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-legacyUpgradeIntentMaxAge - time.Hour)
+	if err := os.Chtimes(paths.UpgradeIntent, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	migration, err := s.MigrateLegacyUpgradeIntent(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migration.Found || !migration.Stale {
+		t.Fatalf("过期的欠条必须被认出来并如实报出:%+v", migration)
+	}
+	if desired, err := s.LoadDesired(); err != nil || desired != DesiredOff {
+		t.Fatalf("陈旧欠条把用户明确的 off 翻回了 on:%q err=%v", desired, err)
+	}
+	if _, armed, err := s.LoadMaintenanceHold(time.Now()); err != nil || armed {
+		t.Fatalf("陈旧欠条不该武装挂起:armed=%v err=%v", armed, err)
+	}
+	if _, err := os.Stat(paths.UpgradeIntent); !os.IsNotExist(err) {
+		t.Fatalf("认定作废之后就该删掉,否则每次启动都重判一遍: %v", err)
+	}
+}
+
+// 另一半输入空间:**窗口之内**的欠条照旧完整迁移。
+//
+// 没有这一条,把 legacyUpgradeIntentMaxAge 设成 0(或让判定恒真)会让上面那条
+// 照样绿,而迁移垫片整个失效。
+func TestLegacyUpgradeIntentInsideTheWindowIsStillMigrated(t *testing.T) {
+	paths := legacyIntentPaths(t.TempDir())
+	s := OpenStore(paths)
+	if err := s.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.UpgradeIntent, []byte(`{"schema_version":1,"desired_on":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 年龄写成**绝对值**(一小时前),不是 maxAge 的相对偏移:相对写法会跟着
+	// 常量一起缩水 —— 把 legacyUpgradeIntentMaxAge 改成 0 时它照样绿(实测)。
+	// 一小时也是真实需求的下限:正在升级的机器,那个文件是几分钟前写的。
+	recent := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(paths.UpgradeIntent, recent, recent); err != nil {
+		t.Fatal(err)
+	}
+
+	migration, err := s.MigrateLegacyUpgradeIntent(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migration.Stale || !migration.RestoredDesiredOn || !migration.HoldArmed {
+		t.Fatalf("窗口内的欠条必须两半都恢复:%+v", migration)
+	}
+	if desired, err := s.LoadDesired(); err != nil || desired != DesiredOn {
+		t.Fatalf("desired 没恢复:%q err=%v", desired, err)
+	}
+}
+
+// 迁移在真机上留下的**唯一**痕迹是那行日志,所以它必须说实话。
+//
+// 一张 desired_on=false 的欠条什么都不恢复、也不武装挂起,而原来的日志无条件打
+// 「guardian_legacy_upgrade_intent_migrated hold_reason=legacy_upgrade」。
+func TestMigrationLogDoesNotClaimAHoldItNeverArmed(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.legacyIntentPath, []byte(`{"schema_version":1,"desired_on":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logged bytes.Buffer
+	restore := swapGuardianLogOutput(&logged)
+	if err := env.manager.Recover(context.Background()); err != nil {
+		restore()
+		t.Fatal(err)
+	}
+	restore()
+
+	line := logged.String()
+	if !strings.Contains(line, "guardian_legacy_upgrade_intent_migrated") {
+		t.Fatalf("迁移过就得留痕:%s", line)
+	}
+	// 查 `hold_reason=` 而不是 HoldReasonLegacyUpgrade 本身:后者("legacy_upgrade")
+	// 是日志键 guardian_legacy_upgrade_intent_migrated 的子串,那样断言恒红。
+	if strings.Contains(line, "hold_armed=true") || strings.Contains(line, "hold_reason=") {
+		t.Fatalf("没武装过挂起就不许在日志里说武装了:%s", line)
+	}
+	if !strings.Contains(line, "restored_desired_on=false") {
+		t.Fatalf("也得说清什么都没恢复:%s", line)
 	}
 }

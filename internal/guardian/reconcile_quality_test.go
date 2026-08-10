@@ -251,6 +251,7 @@ func TestCoreScanNeverPassesAFailureOffAsFoundNone(t *testing.T) {
 			Store: OpenStore(Paths{
 				Desired:         t.TempDir() + "/guardian-state.json",
 				MaintenanceHold: t.TempDir() + "/maintenance-hold.json",
+				UpgradeIntent:   t.TempDir() + "/upgrade-intent.json",
 			}),
 			Runner:      &nonScanningRunner{}, // 刻意不实现 ScanRunning
 			Health:      &fakeHealthGate{},

@@ -2052,7 +2052,7 @@ func (s *recordingDesiredStore) LoadIntentSnapshot(now time.Time) (IntentSnapsho
 // MigrateLegacyUpgradeIntent 只数一下**真正跑过几次**,其余原样交给内嵌的
 // *Store —— 迁移的语义(哪两半要恢复、什么时候删文件)不在这里重抄一遍,
 // 那样的替身迟早与生产分叉,而分叉的方向恰好是「测试照样绿」。
-func (s *recordingDesiredStore) MigrateLegacyUpgradeIntent(now time.Time) (bool, error) {
+func (s *recordingDesiredStore) MigrateLegacyUpgradeIntent(now time.Time) (LegacyMigration, error) {
 	s.mu.Lock()
 	s.migrates++
 	s.mu.Unlock()
@@ -2660,6 +2660,11 @@ func TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord(t *testing.T) {
 			Receipt:     filepath.Join(dir, "receipt.json"),
 			Staging:     filepath.Join(dir, "staging"),
 			Snapshots:   filepath.Join(dir, "snapshots"),
+			// 挂起与 legacy 欠条的路径都要给:Store 在缺路径时**报错**而不是
+			// 答「没有」(hold.go / holdmigrate.go 的刻意取舍),半配的替身会让
+			// 依赖它们的断言平凡地绿,也会让每一次 Recover 刷一行迁移失败日志。
+			MaintenanceHold: filepath.Join(dir, "maintenance-hold.json"),
+			UpgradeIntent:   filepath.Join(dir, "upgrade-intent.json"),
 		}),
 		Runner:         runner,
 		Health:         &fakeHealthGate{},

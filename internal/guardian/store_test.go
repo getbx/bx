@@ -240,3 +240,65 @@ func TestTransactionJSONContainsNoClientSecrets(t *testing.T) {
 		}
 	}
 }
+
+// assertAtomicReplace 钉住「整文件原子替换」这条 writeJSONAtomically 的核心契约:
+// 临时文件 + rename,而不是就地截断。
+//
+// **就地截断时,改写一份已有状态中途崩溃会留下半截文件** —— 而这几个文件存在的
+// 意义(记住用户要什么、记住此刻不该有保护)正好被反过来吃掉:一个读不懂的
+// guardian-state.json 会让 LoadDesired 报错 → recoverLocked 置 recoveryBlocked
+// → Manager.Down 永久返回 errRecoveryIncomplete(2026-08-04 那次 71 分钟事故的
+// 机制);一个读不懂的 maintenance-hold.json 会让每一条 fail-closed 的栅栏永久
+// 举着。rename 覆盖会换掉目录项指向的 inode,这里就用 inode 变化钉死「不是就地写」。
+//
+// **这个断言一度只挂在 SaveUpgradeIntent 上,随欠条一起被删掉了**,而
+// writeJSONAtomically 底下还有六个生产调用点。实测:把它换成 os.WriteFile 的
+// 就地截断,`go test ./... -count=1` 全部 32 个包照样绿。
+func assertAtomicReplace(t *testing.T, path string, write func() error) {
+	t.Helper()
+	if err := write(); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := write(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(first, second) {
+		t.Fatal("改写必须走临时文件 + rename(换 inode),就地截断会留下半截文件")
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("不得留下临时文件,实际 %v", names)
+	}
+}
+
+// desired 是这整期要保住的那句话,它的落盘必须是原子的。
+func TestSaveDesiredReplacesFileAtomically(t *testing.T) {
+	root := t.TempDir()
+	// Desired 单独一个目录,好让「不得留下临时文件」这条断言精确到 1 —— 与
+	// update/ 那几个路径混在一起时,数目里混着别人的东西就不是断言了。
+	stateDir := filepath.Join(root, "state")
+	paths := testPaths(root)
+	paths.Desired = filepath.Join(stateDir, "guardian-state.json")
+	store := OpenStore(paths)
+
+	assertAtomicReplace(t, paths.Desired, func() error { return store.SaveDesired(DesiredOn) })
+
+	if desired, err := store.LoadDesired(); err != nil || desired != DesiredOn {
+		t.Fatalf("原子写之后内容仍须正确:%q err=%v", desired, err)
+	}
+}

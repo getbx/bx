@@ -354,6 +354,16 @@ func TestDefaultStoreMaintenanceHoldPath(t *testing.T) {
 	}
 }
 
+// legacy 欠条的默认路径同样必须钉住:它是迁移垫片唯一会去看的地方,而卸载清单
+// 里那条(internal/cli 的 darwinUpgradeIntentPath)靠的是与这一条**字面相等**。
+// 少了它,把这里改成一个错文件名整个仓库照样绿 —— 迁移从此永远找不到欠条,
+// 而卸载删的是另一个文件。
+func TestDefaultStoreLegacyUpgradeIntentPath(t *testing.T) {
+	if got := OpenDefaultStore().paths.UpgradeIntent; got != "/var/lib/bx/upgrade-intent.json" {
+		t.Fatalf("默认 legacy 欠条路径 = %q", got)
+	}
+}
+
 // 清挂起是幂等的:文件本来就不在不算失败。它是逃生路径上的一步,不许挑剔。
 func TestClearMaintenanceHoldIsIdempotent(t *testing.T) {
 	s := OpenStore(holdPaths(t.TempDir()))
@@ -368,5 +378,25 @@ func TestClearMaintenanceHoldIsIdempotent(t *testing.T) {
 	}
 	if _, armed, err := s.LoadMaintenanceHold(time.Now()); err != nil || armed {
 		t.Fatalf("清完还武装着:armed=%v err=%v", armed, err)
+	}
+}
+
+// 挂起的落盘同样必须是整文件原子替换(见 assertAtomicReplace 的注释):一个半截
+// 的 maintenance-hold.json 会让 LoadMaintenanceHold 报错,而每一条消费它的栅栏
+// 都是 fail-closed 的 —— 于是那台机器再也起不来 Core,直到用户自己 up/down。
+func TestArmMaintenanceHoldReplacesFileAtomically(t *testing.T) {
+	root := t.TempDir()
+	// 挂起单独一个目录:ArmMaintenanceHold 自己会 MkdirAll,而「不得留下临时
+	// 文件」这条断言只有在目录里没有别人的东西时才是断言。
+	paths := testPaths(root)
+	paths.MaintenanceHold = filepath.Join(root, "hold", "maintenance-hold.json")
+	store := OpenStore(paths)
+
+	assertAtomicReplace(t, paths.MaintenanceHold, func() error {
+		return store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now())
+	})
+
+	if hold, armed, err := store.LoadMaintenanceHold(time.Now()); err != nil || !armed || hold.Reason != HoldReasonUpgrade {
+		t.Fatalf("原子写之后内容仍须正确:hold=%+v armed=%v err=%v", hold, armed, err)
 	}
 }

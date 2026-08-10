@@ -602,7 +602,7 @@ func (m *Manager) upLocked(ctx context.Context) error {
 // legacyIntentMigrator 是可选能力:实现了它的 store 才有 legacy 欠条可迁移。
 // 用可选接口是安全的 —— 没实现的只有测试替身,而替身的目录里不会有 legacy 文件。
 type legacyIntentMigrator interface {
-	MigrateLegacyUpgradeIntent(time.Time) (bool, error)
+	MigrateLegacyUpgradeIntent(time.Time) (LegacyMigration, error)
 }
 
 // migrateLegacyIntentOnce 把一台**正处在升级中途**跨过这次切换的机器上留下的
@@ -621,13 +621,23 @@ func (m *Manager) migrateLegacyIntentOnce() {
 		if !ok {
 			return
 		}
-		migrated, err := store.MigrateLegacyUpgradeIntent(time.Now())
+		migration, err := store.MigrateLegacyUpgradeIntent(time.Now())
 		if err != nil {
-			log.Printf("guardian_legacy_upgrade_intent_migrate_failed err=%v", err)
+			log.Printf("guardian_legacy_upgrade_intent_migrate_failed found=%v restored_desired_on=%v hold_armed=%v err=%v",
+				migration.Found, migration.RestoredDesiredOn, migration.HoldArmed, err)
 			return
 		}
-		if migrated {
-			log.Printf("guardian_legacy_upgrade_intent_migrated hold_reason=%s", HoldReasonLegacyUpgrade)
+		// 这几行是迁移在真机上留下的**唯一**痕迹,所以它们只许说做过的事。
+		switch {
+		case !migration.Found:
+		case migration.Stale:
+			log.Printf("guardian_legacy_upgrade_intent_stale max_age=%s action=discarded", legacyUpgradeIntentMaxAge)
+		case migration.HoldArmed:
+			log.Printf("guardian_legacy_upgrade_intent_migrated restored_desired_on=%v hold_armed=true hold_reason=%s",
+				migration.RestoredDesiredOn, HoldReasonLegacyUpgrade)
+		default:
+			log.Printf("guardian_legacy_upgrade_intent_migrated restored_desired_on=%v hold_armed=false",
+				migration.RestoredDesiredOn)
 		}
 	})
 }
