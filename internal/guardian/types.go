@@ -28,11 +28,12 @@ const (
 
 type Paths struct {
 	Desired, Transaction, Receipt, Staging, Snapshots string
-	// UpgradeIntent 记录「上一次升级欠用户一次『把保护起回来』」。
-	// 它与 Desired 是兄弟状态、同住 /var/lib/bx,所以由本 Store 拥有:写它的是
-	// app-install,而销它的必须是**每一条**「用户说 off」的路径,那条路径的汇合
-	// 点是 Manager.Down(菜单走 socket → /v1/down → controller.Down;CLI 干净
-	// 路径走 client.Down 到同一个 handler),在 internal/guardian 里。
+	// UpgradeIntent 是**已退休**的升级欠条(/var/lib/bx/upgrade-intent.json)。
+	//
+	// 没有任何代码再写它。留着这个路径只为一件事:
+	// MigrateLegacyUpgradeIntent —— 一台正处在升级中途、跨过这次切换的机器,
+	// 盘上那张旧欠条要被翻成「desired=on + 一次已武装的挂起」再删掉。
+	// 只兼容一个版本;删掉这条读取路径的时机另记。
 	UpgradeIntent string
 	// MaintenanceHold 记录「此刻不该有保护,但用户想要」。
 	//

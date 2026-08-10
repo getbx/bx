@@ -885,17 +885,6 @@ func macOSDownAction(c *urfavecli.Context) error {
 	if err != nil {
 		return err
 	}
-	// 销掉上一次未完成升级留下的欠条,免得下一次 app-install(菜单的 Repair 还
-	// 带 --yes,连问都不问)拿旧欠条把保护打开。
-	//
-	// 干净路径上这件事已经由 guardian.Manager.Down 做过了(所有「说 off」的路径
-	// 都汇合在那里);这里补的是**强制拆除**那条 —— Guardian 不可达时
-	// forcedMacOSTeardown 直接 bootout,Manager.Down 从未被调用,而用户同样明确
-	// 说了「我不要保护」。重复销账是幂等的。
-	forgetUpgradeDebtOnExplicitOff(
-		clearUpgradeIntent,
-		func(line string) { fmt.Fprintln(os.Stderr, line) },
-	)
 	// 进度行也得跟着 Guardian 的判断走。曾经这里无条件打
 	// 「✓ bx 已停止,网络已恢复」,而下面 downReportLines 紧接着说「没能确认关闭」——
 	// 用户在相邻两行里同时读到断言和对它的否认。改一处忘一处,正是这类文案的常见死法。

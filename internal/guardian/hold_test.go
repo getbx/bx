@@ -78,8 +78,8 @@ func TestArmingHoldLeavesDesiredFileByteIdentical(t *testing.T) {
 	}
 }
 
-// 读不动 / 读不懂**不许**塌缩成「没有挂起」—— 那正是 LoadUpgradeIntent
-// (store.go:98-101)与它自己注释相反的那个 bug。
+// 读不动 / 读不懂**不许**塌缩成「没有挂起」—— 那正是已退休的 LoadUpgradeIntent
+// 与它自己注释相反的那个 bug。
 func TestUnreadableHoldIsAnErrorNotSilentlyUnarmed(t *testing.T) {
 	paths := holdPaths(t.TempDir())
 	if err := os.WriteFile(paths.MaintenanceHold, []byte("{not json"), 0o600); err != nil {
@@ -90,8 +90,9 @@ func TestUnreadableHoldIsAnErrorNotSilentlyUnarmed(t *testing.T) {
 	}
 }
 
-// 「没有挂起」与「问不出来」必须在返回值上可分辨 —— 这正是 LoadUpgradeIntent
-// 塌缩掉的那一维(任何 os.ReadFile 错误都被它答成「没有欠条」,包括 EACCES/EIO)。
+// 「没有挂起」与「问不出来」必须在返回值上可分辨 —— 这正是已退休的
+// LoadUpgradeIntent 塌缩掉的那一维(任何 os.ReadFile 错误都被它答成「没有欠条」,
+// 包括 EACCES/EIO)。
 // 拿目录冒充文件造出一个与 uid 无关的 I/O 错误(root 跑测试时 chmod 000 仍可读,
 // 那种造法会在 CI 的 root 容器里变成假绿)。
 //
@@ -115,9 +116,8 @@ func TestMaintenanceHoldAbsenceIsDistinguishableFromReadFailure(t *testing.T) {
 
 // 一个没配挂起路径的 Store **答不了**「有没有挂起」,不许答「没有」。
 //
-// 这不是理论问题:internal/cli/upgraderun_test.go:257,331 就用
-// guardian.OpenStore(guardian.Paths{UpgradeIntent: …}) 造替身,其余路径全空。
-// 拿这种替身写「显式 down 清掉挂起」「有挂起就不起 Core」,在返回 false 的语义下
+// 这不是理论问题:本仓库到处都有 guardian.OpenStore(guardian.Paths{…}) 只填一两个
+// 路径的替身。拿这种替身写「显式 down 清掉挂起」「有挂起就不起 Core」,在返回 false 的语义下
 // 会**空洞地绿**:没路径 ⇒ 从不武装 ⇒ 没得清 ⇒ 栅栏永不触发。三个方法必须一致
 // 报错,让造错的替身当场炸掉而不是给出一个自信的谎。
 func TestStoreWithoutHoldPathRefusesToAnswer(t *testing.T) {

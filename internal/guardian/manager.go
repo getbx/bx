@@ -599,13 +599,6 @@ func (m *Manager) upLocked(ctx context.Context) error {
 	return err
 }
 
-// upgradeIntentStore 是可选能力:实现了它的 store 才有升级欠条可销。
-// 用可选接口而不是塞进 DesiredStore,是为了不逼所有既有实现(含测试替身)
-// 都长出一个它们并不需要的方法。
-type upgradeIntentStore interface {
-	ClearUpgradeIntent() error
-}
-
 // legacyIntentMigrator 是可选能力:实现了它的 store 才有 legacy 欠条可迁移。
 // 用可选接口是安全的 —— 没实现的只有测试替身,而替身的目录里不会有 legacy 文件。
 type legacyIntentMigrator interface {
@@ -637,16 +630,6 @@ func (m *Manager) migrateLegacyIntentOnce() {
 			log.Printf("guardian_legacy_upgrade_intent_migrated hold_reason=%s", HoldReasonLegacyUpgrade)
 		}
 	})
-}
-
-func (m *Manager) forgetUpgradeIntent() {
-	store, ok := m.store.(upgradeIntentStore)
-	if !ok {
-		return
-	}
-	if err := store.ClearUpgradeIntent(); err != nil {
-		log.Printf("guardian_upgrade_intent_clear_failed err=%v", err)
-	}
 }
 
 // clearMaintenanceHold 撤销挂起。**只记日志,绝不让调用方失败**:它跑在
@@ -682,20 +665,17 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 	// 路径走 client.Down 到同一个 handler。挂在 macOSDownAction 上只覆盖后者,
 	// 菜单那条根本不经过 CLI —— 那正是上一轮漏掉的路径。
 	//
-	// **无条件**这一点是从欠条那个活 bug 学来的:forcedMacOSTeardown 即使报告
-	// 失败,六步破坏性动作也已经做完了,而躲在 `err == nil` 后面的销账于是留下
-	// 一条陈旧记录,下一次 app-install(菜单的 Repair 带 --yes)拿它**违背用户
-	// 明确的关闭请求**把保护打开。销不掉只记日志(clearMaintenanceHold 是
-	// best-effort),绝不让「关闭」因为一个记账文件而失败。
+	// **无条件**这一点是从升级欠条那个活 bug 学来的(那个文件已经删掉了,教训
+	// 留着):forcedMacOSTeardown 即使报告失败,六步破坏性动作也已经做完了,
+	// 而躲在 `err == nil` 后面的销账于是留下一条陈旧记录,下一次 app-install
+	// (菜单的 Repair 带 --yes)拿它**违背用户明确的关闭请求**把保护打开。
+	// 销不掉只记日志(clearMaintenanceHold 是 best-effort),绝不让「关闭」
+	// 因为一个记账文件而失败。
 	defer func() {
 		if maintenance {
 			return
 		}
 		m.clearMaintenanceHold()
-		// 欠条那半边照旧只在成功后销(行为不变),Task 6 会连同它一起删掉。
-		if err == nil {
-			m.forgetUpgradeIntent()
-		}
 	}()
 	if m.recoveryBlocked {
 		return errRecoveryIncomplete

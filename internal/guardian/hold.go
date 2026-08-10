@@ -65,9 +65,8 @@ func (s *Store) ArmMaintenanceHold(reason string, now time.Time) error {
 // LoadMaintenanceHold 返回 (挂起, 是否武装, 错误)。
 //
 // **三个返回值不是啰嗦:「没有挂起」「挂起过期了」「问不出来」是三件事。**
-// LoadUpgradeIntent(store.go:92-107)把它们压成两个 bool,于是 EACCES/EIO 与
-// 「文件不在」返回同一个答案 —— 那与它自己 :86-91 的注释正好相反,也正是这份
-// 设计要消灭的读取偏置。
+// 已退休的 LoadUpgradeIntent 把它们压成两个 bool,于是 EACCES/EIO 与「文件不在」
+// 返回同一个答案 —— 那与它自己的注释正好相反,也正是这份设计要消灭的读取偏置。
 //
 // **读取偏置在这里是刻意选的:只有 ENOENT 才是「确知没有挂起」,其余一切读失败
 // 都报错。** 调用方对 err 一律 fail-closed(不起 Core、不收敛),因为挂起说的是
@@ -90,10 +89,9 @@ func (s *Store) LoadMaintenanceHold(now time.Time) (MaintenanceHold, bool, error
 	defer s.mu.Unlock()
 	// 路径没配 **不是**「没有挂起」,是这个 Store 答不了这个问题 —— 与 ENOENT
 	// 完全不同,后者是问过盘、确知没有。返回一个自信的 false 正是本文件存在的
-	// 理由要消灭的那种谎:一个用 guardian.Paths{UpgradeIntent: …} 造出来的替身
-	// (internal/cli/upgraderun_test.go:257,331 就是这么造的)会让「显式 down 清
-	// 挂起」「有挂起就不起 Core」这类测试**空洞地绿** —— 没路径 ⇒ 从不武装 ⇒
-	// 没得清 ⇒ 栅栏永不触发。故与 ArmMaintenanceHold 一致:报错。
+	// 理由要消灭的那种谎:本仓库到处都有只填一两个路径的 guardian.Paths{…} 替身,
+	// 拿它们写「显式 down 清挂起」「有挂起就不起 Core」这类测试会**空洞地绿** ——
+	// 没路径 ⇒ 从不武装 ⇒ 没得清 ⇒ 栅栏永不触发。故与 ArmMaintenanceHold 一致:报错。
 	if s.paths.MaintenanceHold == "" {
 		return MaintenanceHold{}, false, fmt.Errorf("guardian maintenance hold path required")
 	}

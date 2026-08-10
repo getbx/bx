@@ -46,17 +46,15 @@ func appInstallAction(c *urfavecli.Context) error {
 	outcome, err := runUpgrade(upgradeIO{
 		guardianRunning: func() (bool, error) { return install.GuardianLoaded(c.Context) },
 		loadDesiredOn:   func() bool { return upgradeDesiredOn(c.Context) },
-		saveIntent:      saveUpgradeIntent,
-		clearIntent:     clearUpgradeIntent,
 		confirm:         confirmOnTTY,
 		stopProtection: func() (macOSDownResult, error) {
 			// downPurposeUpgrade:这一跳把「停下来换二进制」记成一次**维护
 			// 挂起**,而不是把 desired 改写成 off —— 用户想要保护,只是此刻
 			// 不能有,而磁盘上那句「用户不想要保护」会被任何忠实的调谐器照办。
-			// 它同时保住上一行刚写下的升级欠条:用普通的 Down,Guardian 会把
-			// 这一跳当作「用户不要保护了」立刻销掉挂起与欠条,于是装文件一失败,
-			// 重试既读到 desired=off 又找不到欠条,「成功」地把机器永久留在
-			// 无保护状态(2026-08-08 复审 C1)。
+			// 它同时保住前一步刚武装的那张挂起:用普通的 Down,Guardian 会把
+			// 这一跳当作「用户不要保护了」,立刻销挂起并写 desired=off,于是装
+			// 文件一失败,重跑读到 off,「成功」地把机器永久留在无保护状态
+			// (2026-08-08 复审 C1)。
 			return macOSDownLifecycleFor(c.Context, downPurposeUpgrade, configPath, defaultMacOSLifecycleDeps())
 		},
 		installFiles: func() (installedFiles, error) {
@@ -134,32 +132,37 @@ func configured(configPath string) bool {
 // upgradeDesiredOn 回答「这台机器此刻想不想开着保护」,决定升级末尾要不要把
 // 保护起回来。
 //
-// 两个来源合成(resolveUpgradeDesiredOn):
-//   - 上一次未完成升级留下的欠条(guardian.Store 的 UpgradeIntent)。
-//     **它今天已经不是唯一的依据了**:UpgradeStopProtection 改为武装维护挂起、
-//     不再改写 desired(见 macOSDownLifecycleFor),所以正常情况下重试时读 store
-//     读到的就是 on。欠条仍然管**退回路径** —— 挂起写不成时退回写 desired=off
-//     (设计取舍三),那一格里 store 只会读到 off。Task 6 会连同欠条一起清理。
-//   - Guardian 自己的 desired store(/var/lib/bx/guardian-state.json):那正是
-//     Guardian 开机时据以决定要不要起保护的状态,也是 bx down 写 off 的地方。
-//     文件不存在按 off(Store.LoadDesired 的语义),即从未装过/从未开过。
+// **只有一个来源了:Guardian 自己的 desired store**
+// (/var/lib/bx/guardian-state.json)—— 那正是 Guardian 开机时据以决定要不要起
+// 保护的状态,也是 bx down 写 off 的地方。文件不存在按 off(Store.LoadDesired
+// 的语义),即从未装过/从未开过。
+//
+// 升级欠条(upgrade-intent.json)连同它的 OR 语义已经退休:升级的停机改为武装
+// 维护挂起、一个字节都不动 desired,所以一次中途失败之后重跑读到的就是用户本来
+// 的意图 —— 那正是欠条能被删掉的全部依据。而它带来的危害也随之消失:一张
+// 因为某次拆除报错而留在盘上的陈旧欠条,曾能在下一次 app-install(菜单的 Repair
+// 带 --yes,连问都不问)里压过用户明确的关闭请求把保护打开。
+//
+// 调用点仍必须早于第一步:**退回路径**(挂起写不成时退回写 desired=off,设计
+// 取舍三)照旧会把 desired 记成 off,而在这里读一次就与它先后无关了。
+func upgradeDesiredOn(ctx context.Context) bool {
+	return desiredOnFrom(ctx, guardian.OpenDefaultStore(), guardian.SocketPath)
+}
+
+// desiredOnFrom 是 upgradeDesiredOn 的可测形态。
+//
+// 拆出来只为一件事:upgradeDesiredOn 写死 /var/lib/bx 与默认 socket,而那是
+// root 的目录,「陈旧欠条不再能把保护打开」这条断言在它身上写不出来 ——
+// 只能退化成读源码文本,那类守卫在这个仓库里被绕过太多次了。
 //
 // 只有 store **读失败**(损坏、不可读)时才退而问运行中的 Guardian 控制 socket:
 // 一个正在 Protected 的实例,其意图必然是 on。都问不出来就当 off —— 宁可让用户
 // 自己 sudo bx up,也不要在不知情的情况下替他把保护打开。
-//
-// 调用点仍必须早于第一步:退回路径上 UpgradeStopProtection 照旧会把 desired
-// 记成 off,而在这里读一次就与它先后无关了。
-func upgradeDesiredOn(ctx context.Context) bool {
-	pending, present := loadUpgradeIntent()
-	return resolveUpgradeDesiredOn(guardianDesiredOn(ctx), pending, present)
-}
-
-func guardianDesiredOn(ctx context.Context) bool {
-	if desired, err := guardian.OpenDefaultStore().LoadDesired(); err == nil {
+func desiredOnFrom(ctx context.Context, store *guardian.Store, socketPath string) bool {
+	if desired, err := store.LoadDesired(); err == nil {
 		return desired == guardian.DesiredOn
 	}
-	status, err := guardian.NewClient(guardian.SocketPath).Status(ctx)
+	status, err := guardian.NewClient(socketPath).Status(ctx)
 	if err != nil {
 		return false
 	}

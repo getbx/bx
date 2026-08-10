@@ -37,8 +37,10 @@ const (
 	// 列表一起删掉。
 	darwinCoreProcessStatePath = darwinDataDirPath + "/core-process.json"
 	darwinGuardianStatePath    = darwinDataDirPath + "/guardian-state.json"
-	// 升级欠条(guardian.Paths.UpgradeIntent 的默认路径)。卸载必须清掉,否则
-	// 一张陈旧欠条会活过卸载重装,在下一次 app-install 时把保护打开。
+	// **已退休**的升级欠条(guardian.Paths.UpgradeIntent 的默认路径)。没有任何
+	// 东西再写它,但卸载仍必须清掉 —— 理由换了一个:留下的那张会活过卸载重装,
+	// 被新装 Guardian 的 MigrateLegacyUpgradeIntent 当作真欠条,翻成
+	// 「desired=on + 一次已武装的挂起」,在一台用户刚卸载干净的机器上开回保护。
 	darwinUpgradeIntentPath = darwinDataDirPath + "/upgrade-intent.json"
 	// 维护挂起(guardian.Paths.MaintenanceHold 的默认路径)。卸载必须清掉:一张
 	// 陈旧挂起会活过卸载重装,让新装的 Guardian 在 15 分钟内拒绝起 Core。

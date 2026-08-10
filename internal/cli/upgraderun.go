@@ -17,19 +17,19 @@ type installedFiles struct {
 
 // upgradeIO 是编排里所有会碰到系统的动作。
 //
-// 抽出来是为了让**顺序本身**可测:「desired 必须在停保护之前读完」「欠条必须在
-// 停保护之前落盘」这两条正确性此前只由注释保证 —— 把它们换成常量,整套测试照样
-// 全绿(复审实测)。现在它们由 upgraderun_test.go 里的调用序列钉住。
+// 抽出来是为了让**顺序本身**可测:「desired 必须在停保护之前读完」这条正确性
+// 此前只由注释保证 —— 把它换成常量,整套测试照样全绿(复审实测)。现在它由
+// upgraderun_test.go 里的调用序列钉住。
 type upgradeIO struct {
 	// guardianRunning 报告 Guardian 是否在跑。返回 error 表示**问不出来**,
 	// 由 runUpgrade 按「在跑」处理(fail-closed),绝不压成 false。
 	guardianRunning func() (bool, error)
 	// loadDesiredOn 回答「升级前这台机器想不想开着保护」。
+	//
+	// 它**只问 Guardian 的 desired**:升级的停机改为武装维护挂起、不再改写
+	// desired,所以一次中途失败之后重跑读到的就是用户本来的意图 —— 那正是
+	// 升级欠条(upgrade-intent.json)能被删掉的全部依据。
 	loadDesiredOn func() bool
-	// saveIntent 把上面这个答案落盘,供中途失败后的重试读取。
-	saveIntent func(desiredOn bool) error
-	// clearIntent 抹掉欠条(升级完整做完,或本来就没欠)。
-	clearIntent func() error
 	// confirm 询问用户。返回 (同意, 错误):false+nil 是「用户说不」,
 	// 非 nil error 是「问不出来」—— 后者必须把整条命令带成非零退出,否则调用它的
 	// 脚本会在 set -e 下继续往下走、把「什么都没做」打印成「完成」。
@@ -53,9 +53,8 @@ type upgradeOutcome struct {
 	ProtectionRestored bool
 	// Down 是停保护那一步的完整结果 —— 收尾文案必须能区分强制路径的每一种
 	// 原因(见 forcedTeardownReason),所以这里不把它拆扁。
-	Down             macOSDownResult
-	ForcedTeardown   bool
-	IntentLeftBehind bool
+	Down           macOSDownResult
+	ForcedTeardown bool
 }
 
 func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
@@ -70,7 +69,8 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 		io.log(fmt.Sprintf("! 无法确认 Guardian 是否在运行(%v):按「正在运行」处理,会停保护并重启服务", err))
 	}
 
-	// 意图必须在动手之前读完并落盘。
+	// 意图必须在动手之前读完:退回路径(挂起写不成)上停机仍会写 desired=off,
+	// 读晚了就只能读到那个 off。
 	desiredOn := io.loadDesiredOn()
 	steps := upgradeSteps(running, desiredOn)
 	stopsProtection := stepsContain(steps, UpgradeStopProtection)
@@ -89,13 +89,6 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 		if !agreed {
 			outcome.Cancelled = true
 			return outcome, nil
-		}
-	}
-	if stopsProtection && desiredOn {
-		if err := io.saveIntent(true); err != nil {
-			// 记不下欠条就不要开始:一旦中途失败,没人知道该把保护起回来。
-			// 此刻一步都没做,这句「状态未变」是真的。
-			return outcome, fmt.Errorf("记录升级前的保护状态失败,升级未开始,当前状态未变:%w", err)
 		}
 	}
 
@@ -157,15 +150,12 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 			}
 		}
 		if stepErr != nil {
-			// 欠条**留在盘上**:下一次 app-install 靠它知道还欠一次「起保护」。
+			// **desired 没有被这次升级改写过**(停机武装的是维护挂起),所以重跑
+			// 读到的仍是用户本来的意图;那张挂起也会在 15 分钟后自己失效。
 			return outcome, errors.New(upgradeFailureMessageWithNetwork(step, stepErr, networkRestored))
 		}
 	}
 
-	if err := io.clearIntent(); err != nil {
-		outcome.IntentLeftBehind = true
-		io.log(fmt.Sprintf("! 未能清除升级标记(%v):下次 app-install 会多做一次「恢复保护」,不影响本次结果", err))
-	}
 	return outcome, nil
 }
 
