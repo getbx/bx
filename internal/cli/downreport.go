@@ -28,6 +28,17 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 			result.IntentUnrecorded,
 		))
 	}
+	// 「退回写了 desired=off」同样要自己占一行,理由与上面那条一样,但**它不产生
+	// error**:退回是成功路径的一种(保护干净地停了、升级会照常走完),所以
+	// 没有任何调用方会因为它多说一个字。而它的后果实打实 —— 盘上留下的是
+	// 「用户不想要保护」,而用户其实想要;那正是维护挂起这一期要消灭的谎。
+	if result.HoldFallback != nil {
+		stderr = append(stderr, fmt.Sprintf(
+			"⚠️  未能武装维护挂起(%v),已退回记录 desired=off:升级期间 bx status 会显示「已关闭」而非「维护挂起」;"+
+				"升级结束后保护会被重新打开。",
+			result.HoldFallback,
+		))
+	}
 	if result.Forced {
 		stderr = append(stderr, "⚠️  "+forcedTeardownReason(result)+"。")
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。

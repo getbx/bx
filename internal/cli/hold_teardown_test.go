@@ -416,3 +416,125 @@ func TestForcedTeardownWithoutHoldHookFallsBackToDesiredOff(t *testing.T) {
 		t.Fatal("没有挂起钩子时必须退回今天的行为")
 	}
 }
+
+// **退回规则触发时必须留下痕迹,而且每一条返回路径上都要留。**
+//
+// 退回(挂起写不成 ⇒ 改写 desired=off)是一条**成功**路径:保护干净地停了、
+// 升级照常走完、没有任何 error 产生。正因为不产生 error,不专门报一行的话它
+// 就彻底无声 —— 而它的后果实打实:盘上写着「用户不想要保护」,于是一台正在
+// 升级的机器与一台用户关掉了保护的机器再次长得一模一样,正是这一期要消灭的
+// 那种含混。
+//
+// 逐条路径而不是只测一条:退回发生在所有分支**之前**,而 macOSDownLifecycleFor
+// 有五个 return —— 只填其中几个正是本计划反复抓到的「改动落在旁边」。
+func TestHoldFallbackIsReportedOnEveryDownPath(t *testing.T) {
+	armFailure := errors.New("/var/lib/bx 不可写")
+	for _, tc := range []struct {
+		name    string
+		arrange func(*macOSLifecycleDeps, *holdStubClient)
+		forced  bool
+	}{
+		{
+			name: "干净路径",
+			arrange: func(deps *macOSLifecycleDeps, _ *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return true }
+				deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+			},
+		},
+		{
+			name: "Guardian 不可达 ⇒ 强制拆除",
+			arrange: func(deps *macOSLifecycleDeps, _ *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return false }
+			},
+			forced: true,
+		},
+		{
+			name: "legacy Core 可能在跑 ⇒ 强制拆除",
+			arrange: func(deps *macOSLifecycleDeps, _ *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return true }
+				deps.legacyLoaded = func(context.Context) (bool, error) { return true, nil }
+			},
+			forced: true,
+		},
+		{
+			name: "干净事务失败后回落 ⇒ 强制拆除",
+			arrange: func(deps *macOSLifecycleDeps, client *holdStubClient) {
+				deps.guardianReady = func(context.Context) bool { return true }
+				deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+				client.downErr = errors.New("guardian recovery incomplete")
+			},
+			forced: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := &teardownCalls{}
+			client := &holdStubClient{}
+			deps := teardownDeps(calls, armFailure, nil, nil)
+			deps.client = client
+			tc.arrange(&deps, client)
+
+			result, _ := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", deps)
+			if result.Forced != tc.forced {
+				t.Fatalf("测试前提不成立:Forced = %v,想要 %v(%+v)", result.Forced, tc.forced, result)
+			}
+			if calls.desiredOff == 0 {
+				t.Fatalf("测试前提不成立:这一格本该退回去写 desired=off,实际 %v", calls.order)
+			}
+			if result.HoldFallback == nil {
+				t.Fatalf("退回了却一个字都不说:%+v", result)
+			}
+			if !errors.Is(result.HoldFallback, armFailure) {
+				t.Fatalf("报的不是武装失败的原因,下次还会照样发生:%v", result.HoldFallback)
+			}
+			stdout, stderr := downReportLines(result)
+			if !slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "维护挂起") }) {
+				t.Fatalf("用户看不到这次退回:stdout=%v stderr=%v", stdout, stderr)
+			}
+		})
+	}
+}
+
+// 没退回就一个字都不说 —— 与这一期其余每一条新增输出同一条纪律:
+// 一行常驻的提示会把它训练成噪声。
+func TestNoHoldFallbackMeansNoExtraLine(t *testing.T) {
+	calls := &teardownCalls{}
+	client := &holdStubClient{}
+	deps := teardownDeps(calls, nil, nil, nil)
+	deps.client = client
+	deps.guardianReady = func(context.Context) bool { return true }
+	deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+
+	result, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls.armed) == 0 {
+		t.Fatalf("测试前提不成立:这一格本该武装成功,实际 %v", calls.order)
+	}
+	if result.HoldFallback != nil {
+		t.Fatalf("没退回却报了退回:%v", result.HoldFallback)
+	}
+	_, stderr := downReportLines(result)
+	if slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "维护挂起") }) {
+		t.Fatalf("没退回却多写了一行:%v", stderr)
+	}
+}
+
+// 用户显式的 down 从不退回(recordStopIntent 对 downPurposeUser 直接返回),
+// 所以它永远不该出现这一行 —— 哪怕武装钩子本身是坏的。
+func TestUserDownNeverReportsHoldFallback(t *testing.T) {
+	calls := &teardownCalls{}
+	client := &holdStubClient{}
+	deps := teardownDeps(calls, errors.New("坏钩子"), nil, nil)
+	deps.client = client
+	deps.guardianReady = func(context.Context) bool { return true }
+	deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+
+	result, err := macOSDownLifecycleFor(context.Background(), downPurposeUser, "/etc/bx/config.yaml", deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HoldFallback != nil {
+		t.Fatalf("用户显式的 down 不该谈维护挂起的退回:%v", result.HoldFallback)
+	}
+}

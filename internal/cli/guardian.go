@@ -457,6 +457,20 @@ type macOSDownResult struct {
 	// 并存,理由与 Forced/Cause 一样 —— 调用方拿零值去渲染时,
 	// downReportLines 会平静地打印「已停止」。
 	IntentUnrecorded error
+
+	// HoldFallback 非 nil 表示这次升级停机**没能武装维护挂起,已退回写
+	// desired=off**(见 recordStopIntent 的退回规则),值是武装失败的原因。
+	//
+	// 它与 IntentUnrecorded 是两件事,别合并:那一条说的是「两条都没写成」
+	// (停机意图整个丢了,升级必须中止);这一条说的是「退回成功了」——
+	// 保护干净地停了、升级会照常走完,只是盘上留下的是一句会撒谎的
+	// desired=off。后者不是失败,所以它**不产生 error**;正因为不产生 error,
+	// 不专门报一行的话它就彻底无声。
+	//
+	// 它落在**每一条**返回路径上(macOSDownLifecycleFor 用 defer 统一填),
+	// 因为退回发生在所有分支之前 —— 挑几条填就是这一期反复抓到的
+	// 「改动落在旁边而不是那条路上」。
+	HoldFallback error
 }
 
 // macOSDownLifecycleDetailed implements `bx down`'s two paths:
@@ -486,7 +500,7 @@ func macOSDownLifecycleDetailed(ctx context.Context, configPath string, deps mac
 
 // macOSDownLifecycleFor 是带用途的入口:升级用 downPurposeUpgrade 调它,
 // 其余一律经 macOSDownLifecycleDetailed 走 downPurposeUser。
-func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (macOSDownResult, error) {
+func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath string, deps macOSLifecycleDeps) (result macOSDownResult, err error) {
 	// **意图必须先于任何破坏性动作落盘,干净路径与强制路径都要。**
 	//
 	// 干净路径也不例外:走完 Manager.Down 之后 CLI 紧接着重启 Guardian
@@ -494,6 +508,9 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 	// Core 起回来 —— 而那时二进制正换到一半。武装在这里,那次启动恢复就会看见
 	// 挂起并停手。
 	stop := recordStopIntent(deps, purpose)
+	// **每一条返回路径都要带上退回的事实。** 退回发生在这里,而下面有五个 return;
+	// 挑其中几个填正是这一期反复抓到的那种「改动落在旁边而不是那条路上」。
+	defer func() { result.HoldFallback = stop.holdErr }()
 	if deps.guardianReady != nil && deps.guardianReady(ctx) {
 		// 一个便宜的判定,决定走哪条路 —— 不是启动的活。
 		if mayRun, known := legacyCoreMayBeRunning(ctx, deps); mayRun {
@@ -773,6 +790,14 @@ type stopIntent struct {
 	purpose  downPurpose
 	fellBack bool  // 挂起写不成,已退回 desired=off
 	err      error // 退回之后仍失败(两条都没写成),留给拆除步骤汇报
+	// holdErr 是**武装挂起为什么失败**,在 fellBack 时非 nil。
+	//
+	// 单独留着而不是折进 err:退回**成功**时(挂起没写成、desired=off 写成了)
+	// err 是 nil,于是这次退回在今天一个字都不留 —— 而它的后果实打实:盘上写着
+	// 「用户不想要保护」,一台正在升级的机器因此与一台用户关掉了保护的机器再次
+	// 长得一模一样,正是这一期要消灭的那种含混。挂起失败的原因(多半是
+	// /var/lib/bx 不可写)不写下来,下一次还会照样发生。
+	holdErr error
 }
 
 // armsHold 报告拆除步骤该记哪一种意图。
@@ -795,7 +820,7 @@ func recordStopIntent(deps macOSLifecycleDeps, purpose downPurpose) stopIntent {
 		// 写 on),代价已知且有界;而「既没挂起也没 desired=off」是一个新的
 		// 失效模式:活着的 Guardian 在换二进制时把 Core 重启回来。
 		// 宁可退回一个会撒谎但安全的状态,也不要一个诚实但没人拦着的状态。
-		return stopIntent{purpose: purpose, fellBack: true, err: persistDesiredOff(deps)}
+		return stopIntent{purpose: purpose, fellBack: true, holdErr: err, err: persistDesiredOff(deps)}
 	}
 	return stopIntent{purpose: purpose}
 }

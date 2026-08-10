@@ -345,7 +345,7 @@ func TestManagerClearMaintenanceHoldIsBestEffort(t *testing.T) {
 	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	env.manager.clearMaintenanceHold()
+	env.manager.clearMaintenanceHold(holdClearedByDown)
 	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
 		t.Fatalf("挂起必须被清掉:armed=%v err=%v", armed, err)
 	}
@@ -360,10 +360,15 @@ func TestManagerClearMaintenanceHoldIsBestEffort(t *testing.T) {
 	}
 	var logged bytes.Buffer
 	restore := swapGuardianLogOutput(&logged)
-	env.manager.clearMaintenanceHold()
+	env.manager.clearMaintenanceHold(holdClearedByUp)
 	restore()
 	if !strings.Contains(logged.String(), "guardian_maintenance_hold_clear_failed") {
 		t.Fatalf("清不掉挂起必须落日志,实际日志:%q", logged.String())
+	}
+	// 失败那一行也要说清是**哪条路**在清:排查时「用户点了 Turn On」与「升级
+	// 自己那次停机」是完全不同的两个故事,而盘上看不出区别。
+	if !strings.Contains(logged.String(), "by="+holdClearedByUp) {
+		t.Fatalf("清不掉的那一行没说是谁要清的,实际日志:%q", logged.String())
 	}
 }
 
