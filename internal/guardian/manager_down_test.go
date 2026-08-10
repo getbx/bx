@@ -356,3 +356,40 @@ func TestRecoverStillReportsOffOnAHealthyMachine(t *testing.T) {
 		t.Fatalf("干净机器重启后必须仍报 off, got %q", got)
 	}
 }
+
+type panickingScanner struct{ CoreRunner }
+
+func (panickingScanner) ScanRunning() ([]Process, error) { panic("sysctl 返回了畸形数据") }
+
+// 扫描 panic 不许打死 Guardian。
+//
+// Down 经 HTTP handler 进来,net/http 会兜住;但 Recover 跑在
+// trackStartupRecovery 的裸 goroutine 里 —— 一次 panic 打死整个进程,
+// 而 launchd 的 KeepAlive 会把它拉起来再跑 Recover 再 panic:崩溃循环。
+// 把扫描接进 Recover 的同时,必须把这个失败模式一起收掉。
+func TestConfirmCoreStoppedSurvivesAPanickingScanner(t *testing.T) {
+	m := &Manager{runner: panickingScanner{}}
+	stopped, reason := m.confirmCoreStopped()
+	if stopped {
+		t.Fatal("panic 之后不许声称已关闭")
+	}
+	if reason != "core_scan_failed" {
+		t.Errorf("panic 应收成「没能确认」, got %q", reason)
+	}
+}
+
+// 端到端:Recover 遇上 panic 的扫描器仍然正常返回,且不堵死关闭的路。
+func TestRecoverSurvivesAPanickingScanner(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	env.manager.runner = panickingScanner{CoreRunner: env.runner}
+
+	if err := env.manager.Recover(context.Background()); err != nil {
+		t.Fatalf("扫描 panic 不该让启动恢复失败: %v", err)
+	}
+	if env.manager.recoveryBlocked {
+		t.Fatal("也不该堵死关闭的路")
+	}
+}

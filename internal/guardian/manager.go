@@ -89,7 +89,22 @@ var coreScanSettle = 300 * time.Millisecond
 //
 // **永不返回 error。** 扫描的任何失败模式都不得让 Down 失败 —— 那是 2026-08-04
 // 那条不变量(用户 71 分钟关不掉保护)。它只回答「能不能说 off」,以及为什么不能。
-func (m *Manager) confirmCoreStopped() (bool, string) {
+func (m *Manager) confirmCoreStopped() (stopped bool, reason string) {
+	// **panic 也算一种失败模式,而这一条比别的更要命。**
+	//
+	// Down 经 LocalAPI 的 HTTP handler 进来,net/http 会按连接兜住 panic;
+	// 但 Recover 跑在 trackStartupRecovery 的 goroutine 里,那里只有
+	// `defer close(...)`,没有 recover —— 一次 panic 打死整个 Guardian 进程,
+	// 而 launchd 的 KeepAlive 会把它拉起来,再跑 Recover,再 panic:崩溃循环。
+	//
+	// scanRunningCores 对 sysctl 返回的 kinfo 切片做索引运算,畸形/截断的应答
+	// 并非不可能。把 panic 收成「没能确认」,方向与本函数其余部分一致。
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("guardian_core_scan_panicked recovered=%v", r)
+			stopped, reason = false, "core_scan_failed"
+		}
+	}()
 	scanner, ok := m.runner.(coreScanner)
 	if !ok {
 		return false, "core_scan_unsupported"
