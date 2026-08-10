@@ -420,14 +420,20 @@ func TestReconcileLoopGoroutineSurvivesAPanic(t *testing.T) {
 	}
 }
 
-// **daemon 真的把循环接上了** —— 行为断言,不是读源码文本。
+// **真正的 `*Manager` 满足 reconcileLoopRunner,且 daemon 会给它建那条 goroutine。**
 //
 // 我在第一版报告里说这件事「只能等组装根变得可测」,那个结论是错的:
 // startRecoveredDaemon 早就可测(已有五条测试往里注入 daemonStarter)。
-// 而这件事**必须**有守卫,理由比一般的接线更硬:本阶段唯一真正的验收是真机
-// soak,而验收方式是数日志里 guardian_reconcile_would 的行数,理想值是 **0**。
-// 循环若悄悄没接上,产出的正是一份干净的日志 —— 一个漏装的循环与一台健康的机器
-// 在这份证据上**完全无法区分**,而人会把它读成「零分歧,可以进③b 授权了」。
+//
+// **这一条能证明什么、不能证明什么,必须写清楚**:它用的是真的 Manager,所以
+// 「Manager 的方法被改名/签名改了 ⇒ 类型断言不再成立 ⇒ 生产里循环整个消失」
+// 由它守住。但它**证明不了那条 goroutine 真的跑起来了** —— 复审实测:把
+// trackReconcileLoop 里的 `run(loopCtx)` 整个删掉,reconcileLoopDone 照样会建、
+// 也照样会关(而且是立刻关),这条测试全绿。「起来了就退出」与「一直在跑」
+// 在这条测试眼里一模一样。
+//
+// 那一半由下面的 TestStartRecoveredDaemonKeepsTheReconcileLoopRunningUntilItsContextEnds
+// 守。**两条都要留着**:一条盯真 Manager 的类型,一条盯 goroutine 的执行。
 //
 // 这条不跑任何外部命令:循环先睡一个基础周期(30s)再观测,而它在第一次睡眠里
 // 就被 cancel 掉了。
@@ -442,12 +448,10 @@ func TestStartRecoveredDaemonWiresTheReconcileLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	if daemon.reconcileLoopDone == nil {
-		t.Fatal("daemon 没有起那条只观察的调谐环 —— 真机 soak 会拿到一份干净日志," +
-			"而干净日志会被读成「零分歧」")
+		t.Fatal("daemon 没有给真正的 Manager 起那条只观察的调谐环 —— 真机 soak 会拿到" +
+			"一份干净日志,而干净日志会被读成「零分歧」")
 	}
 
-	// 起来了还不够:它必须**在跑**,而且跟着 ctx 停。一条起了就立刻退出的
-	// goroutine 同样会产出一份干净日志。
 	cancel()
 	select {
 	case <-daemon.reconcileLoopDone:
@@ -458,6 +462,99 @@ func TestStartRecoveredDaemonWiresTheReconcileLoop(t *testing.T) {
 	if err := daemon.waitForStartupRecovery(context.Background()); err != nil {
 		t.Fatalf("等待启动恢复收尾: %v", err)
 	}
+}
+
+// **那条 goroutine 真的进了循环体,而且一直待到 ctx 结束。**
+//
+// 上一条守不住这个:`reconcileLoopDone` 在 goroutine 返回时就关,而「立刻返回」
+// 关得比谁都快 —— 于是一个**空的** goroutine 体在它眼里与一个正常运行的循环完全
+// 一样。而空转的循环正是这一阶段最坏的失效方式,理由已经写在上一条里:
+// **一个装了但没跑的循环,与一台健康的机器,在 soak 的日志证据上完全无法区分。**
+//
+// 判据换成一个**正向信号**:注入一个会在进入 runReconcileLoop 时报到的 controller。
+//   - 报到了 ⇒ goroutine 体确实执行了(空体 / 删接线都收不到这个信号,必红);
+//   - 报到之后它阻塞在 ctx.Done() 上 ⇒ 此刻断言 reconcileLoopDone **仍然开着**
+//     是确定的,不是赛跑出来的:没被调度的 goroutine 不可能报到,所以「没起来」
+//     绝不会被误当成「在跑」;
+//   - cancel 之后两边都收口 ⇒ 传给循环的确实是 daemon 那条 ctx 的子 ctx。
+//
+// **替身绝不调用注入的观测函数**:生产传进来的是 liveReconcileObservation,
+// 调一次就是在宿主上跑 route/networksetup 并连 Core 的控制 socket。这里只断言
+// 它非 nil —— 一个接了 nil 观测器的循环第一轮就会 panic。
+func TestStartRecoveredDaemonKeepsTheReconcileLoopRunningUntilItsContextEnds(t *testing.T) {
+	controller := &reconcileLoopTestController{
+		daemonStartupController: &daemonStartupController{
+			recover: func(context.Context) error { return nil },
+		},
+		entered:  make(chan struct{}),
+		returned: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	daemon, err := startRecoveredDaemon(ctx, DaemonOptions{}, controller,
+		func(context.Context, DaemonOptions) (*Daemon, error) { return &Daemon{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-controller.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("那条 goroutine 从没进过循环体 —— 一个装了但没跑的循环产出的日志," +
+			"与一台健康机器的日志完全一样,而 soak 会把它读成「零分歧」")
+	}
+	if observer := controller.observation(); observer == nil {
+		t.Fatal("循环拿到的观测函数是 nil —— 第一轮就会 panic")
+	}
+	// 此刻替身正阻塞在 ctx.Done() 上,所以「还没收口」是确定的,不是赛跑。
+	select {
+	case <-daemon.reconcileLoopDone:
+		t.Fatal("循环还在跑,reconcileLoopDone 不该已经关闭")
+	default:
+	}
+
+	cancel()
+	select {
+	case <-controller.returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("循环没收到 daemon ctx 的取消 —— 传下去的不是那条 ctx 的子 ctx")
+	}
+	select {
+	case <-daemon.reconcileLoopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("循环退出了,但 daemon 没记下它的收口")
+	}
+	if err := daemon.waitForStartupRecovery(context.Background()); err != nil {
+		t.Fatalf("等待启动恢复收尾: %v", err)
+	}
+}
+
+// reconcileLoopTestController 是一个会**报到**的 recoveringController:
+// 进入 runReconcileLoop 时关 entered,然后一直待到 ctx 结束再关 returned。
+// 生命周期那一半的方法从 daemonStartupController 继承,这里只加循环这一个。
+type reconcileLoopTestController struct {
+	*daemonStartupController
+	mu       sync.Mutex
+	observer reconcileObservation
+	entered  chan struct{}
+	returned chan struct{}
+}
+
+func (c *reconcileLoopTestController) runReconcileLoop(ctx context.Context, observer reconcileObservation) {
+	c.mu.Lock()
+	c.observer = observer
+	c.mu.Unlock()
+	close(c.entered)
+	// **绝不调用 observer**:生产传进来的是真观测,会在宿主上跑外部命令。
+	<-ctx.Done()
+	close(c.returned)
+}
+
+func (c *reconcileLoopTestController) observation() reconcileObservation {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.observer
 }
 
 // logLinesContaining 从抓下来的日志里挑出含某个记号的行。
