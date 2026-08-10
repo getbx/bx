@@ -314,6 +314,23 @@ func quitTerminatesAfterTurnOff(turnedOff: Bool) -> Bool {
     turnedOff
 }
 
+/// Did the turn-off actually put protection into a state where quitting is safe?
+///
+/// An HTTP 200 is not the same answer. Guardian now asks the operating system
+/// whether any Core is still running before it will call protection `off`; when
+/// it cannot confirm that, it answers 200 with `protection_state` set to
+/// something else and the reason in `last_error`. Treating the 200 alone as
+/// success is how the menu would terminate while a Core still owns the TUN —
+/// exactly the "protection running with no indicator at all" state that
+/// `quitBlockedByFailedTurnOffMessage` exists to prevent.
+///
+/// `protectionState` being empty means we never got a body to read, which is
+/// also not a confirmation.
+func turnOffConfirmedProtectionStopped(protectionState: String?) -> Bool {
+    guard let protectionState, !protectionState.isEmpty else { return false }
+    return protectionState == "off"
+}
+
 /// 关不掉因而没有退出时,弹给用户的那句话。
 func quitBlockedByFailedTurnOffMessage() -> String {
     "bx did not stop, so the menu stays. Quitting now would leave protection running " +

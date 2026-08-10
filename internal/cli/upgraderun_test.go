@@ -29,6 +29,7 @@ type fakeUpgradeIO struct {
 
 	stopForced bool
 	stopCause  error
+	stopStatus guardian.Status
 	stopErr    error
 	installErr error
 	restartErr error
@@ -64,7 +65,7 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 		},
 		stopProtection: func() (macOSDownResult, error) {
 			f.calls = append(f.calls, "stopProtection")
-			return macOSDownResult{Forced: f.stopForced, Cause: f.stopCause}, f.stopErr
+			return macOSDownResult{Forced: f.stopForced, Cause: f.stopCause, Status: f.stopStatus}, f.stopErr
 		},
 		installFiles: func() (installedFiles, error) {
 			f.calls = append(f.calls, "installFiles")
@@ -375,4 +376,49 @@ func goFuncBody(t *testing.T, text, name string) string {
 		rest = rest[:next]
 	}
 	return rest
+}
+
+// Guardian 没能确认保护关掉时,升级必须**停在第一步**,不许去换二进制。
+//
+// 这条以前漏了:判断只看 down.Forced 与 err,而「200 但 protection_state != off」
+// 两者都不满足 —— 于是升级会照常换掉 runtime 二进制、重启 Guardian,而一个不受管的
+// Core 还跑着老二进制、占着 TUN。症状要到之后才现:startProtection 撞上 latch 住的
+// core_ownership_uncertain,而那个状态只有 down+up 能解 —— 远比现在中止更难懂。
+func TestRunUpgradeStopsBeforeTouchingFilesWhenTheStopWasUnconfirmed(t *testing.T) {
+	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f.stopStatus = guardian.Status{
+		Protection: guardian.ProtectionNeedsAttention,
+		LastError:  "core_still_running",
+	}
+
+	_, err := runUpgrade(f.io(), false)
+	if err == nil {
+		t.Fatal("没能确认关闭时必须中止升级")
+	}
+	if !strings.Contains(err.Error(), "core_still_running") {
+		t.Errorf("要说清是什么原因:%v", err)
+	}
+	if !strings.Contains(err.Error(), "bx-guard.err.log") {
+		t.Errorf("要指向真能看到是哪个进程的地方:%v", err)
+	}
+	// **文件一个字节都不许动。** 中止之所以安全,正因为它发生在第一步。
+	if i := indexOfCall(f.calls, "installFiles"); i >= 0 {
+		t.Fatalf("不许在保护状态未确认时换二进制, calls=%v", f.calls)
+	}
+	if i := indexOfCall(f.calls, "restartGuardian"); i >= 0 {
+		t.Fatalf("更不许重启 Guardian, calls=%v", f.calls)
+	}
+}
+
+// 回归:Guardian 确认关掉了,升级照常走完。
+func TestRunUpgradeProceedsWhenTheStopWasConfirmed(t *testing.T) {
+	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff}
+
+	if _, err := runUpgrade(f.io(), false); err != nil {
+		t.Fatalf("确认关闭之后升级应照常进行: %v", err)
+	}
+	if indexOfCall(f.calls, "installFiles") < 0 {
+		t.Fatalf("应当换过文件, calls=%v", f.calls)
+	}
 }

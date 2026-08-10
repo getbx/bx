@@ -1198,12 +1198,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             var succeeded = false
+            // confirmedOff 与 succeeded 是**两件事**,只在退出决策上用前者。
+            // succeeded 说的是「这次调用没报错」,它还喂给逃生路径;而退出要问的是
+            // 「保护真的关掉了吗」—— Guardian 现在会在无法向系统求证时回 200 但
+            // protection_state != off。把 200 当成关掉了,菜单就会在 Core 还占着
+            // TUN 的时候退出,留下一个没有任何指示灯的运行中保护。
+            var confirmedOff = false
             var failureCode: String?
             var transportError: String?
             do {
                 let status = action == .turnOn ? try self.guardianClient.turnOn() : try self.guardianClient.turnOff()
                 failureCode = status.lastError
                 succeeded = true
+                if action == .turnOff {
+                    confirmedOff = turnOffConfirmedProtectionStopped(protectionState: status.protectionState)
+                }
             } catch {
                 // Guardian 把失败码写在 500 响应体里,GuardianClient 已经在抛出
                 // 之前把它读出来了 —— 这是 toggleFailureHint 唯一的活水源:200
@@ -1221,6 +1230,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 ) ? .succeeded : .failed
                 if escape == .succeeded {
                     succeeded = true
+                    // 特权 CLI `bx down` 走的是强制拆除:它经 Core 自己的控制 socket
+                    // 请求退出,与那个 Core 由谁拉起来无关 —— 那是这条路能给出的最强确认。
+                    confirmedOff = true
                 }
             }
             DispatchQueue.main.async { [weak self] in
@@ -1245,7 +1257,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                     } else {
                         // 刚落定的就是那次 turnOff:它成了才退出。
-                        self.finishQuit(turnedOff: succeeded)
+                        self.finishQuit(turnedOff: confirmedOff)
                     }
                     return
                 }
