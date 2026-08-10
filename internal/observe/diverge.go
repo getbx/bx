@@ -13,9 +13,31 @@ type Divergence struct {
 	Note     string `json:"note"`
 }
 
+// fieldCoreSocket 是 Core 控制 socket 那一项的名字。它同时出现在观测项、
+// ObserveError.Item 与 Divergence.Field 三处,拼错不会有任何东西变红。
+const fieldCoreSocket = "core_socket"
+
+// heldExplains 列出「有一张维护挂起武装着」这件事**本身就解释得了**的观测项。
+//
+// 只有 core_socket:挂起的语义就是「此刻不该有保护在跑」,于是 Core 的控制
+// socket 拨不通是**预期之内**的,既不是分歧,也不是一次值得报告的观测失败。
+//
+// 刻意**不**把整张 Errors 表在挂起期间一律压掉:capture_ok / dns_managed /
+// barrier_present 的观测走的是 route 与 networksetup,它们与 Core 在不在跑无关,
+// 挂起解释不了它们失败。真那么压,一台升级期间 route 命令坏掉的机器会在 15 分钟
+// 里完全不出声,而那 15 分钟恰恰是最该出声的时候。
+var heldExplains = []string{fieldCoreSocket}
+
 // Diverge 比对意图、观测与信念,产出所有不一致。一致时返回空切片。
 //
 // 刻意不做的事:不修正信念、不改动系统、不排序优先级。它只陈述差异。
+//
+// **一个项最多出一行。** 这不是去重洁癖,是正确性:同一个 field 出两行时,两行的
+// Observed 可以互相矛盾(真实例子:过期挂起下 core_socket 同时报 observed=false
+// 「没有保护在跑」与 observed=unknown「该项无法观测」)。下游按 field 计数
+// (Swift 菜单的 anomalyCount)只能要么重复计数、要么在 UI 层自己发明一条去重
+// 规则 —— 而优先级是这里的判断,不该推给消费方。**更具体的那一行赢**,而
+// 「问不出来」的原因不丢:它被并进那一行的 note 里(见 reasonsByItem)。
 func Diverge(intent Intent, observed ObservedState, believed Believed) []Divergence {
 	var out []Divergence
 
@@ -26,6 +48,27 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 	// (与 guardian.LoadMaintenanceHold 的 `hold.ExpiresAt.After(now)` 同一条边界,
 	// 两边分叉会让 Guardian 说「还武装着」而 bx status 说「过期了」)。
 	held := intent.Hold != nil && intent.Hold.ExpiresAt.After(observed.ObservedAt)
+
+	reasons := reasonsByItem(observed.Errors)
+	// covered 记「这个项已经有交代了」:要么已经出过一行,要么被挂起解释掉了。
+	covered := make(map[string]bool, len(observed.Errors)+4)
+	if held {
+		for _, item := range heldExplains {
+			covered[item] = true
+		}
+	}
+	emit := func(d Divergence) {
+		if covered[d.Field] {
+			return
+		}
+		covered[d.Field] = true
+		// 观测失败的原因并进这一行,而不是另起一行:那个原因是排查的全部价值
+		// (「未观测到劫持」与「未观测到劫持,因为 route 命令超时」不是一回事)。
+		if reason := reasons[d.Field]; reason != "" {
+			d.Note = fmt.Sprintf("%s(该项无法观测:%s)", d.Note, reason)
+		}
+		out = append(out, d)
+	}
 
 	if believed.Protection == "protected" {
 		// 声称已保护时,三项观测必须皆为 True。Unknown 不满足:不确定不等于正常。
@@ -39,7 +82,7 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 			{"tunnel_healthy", observed.TunnelHealthy, "保护状态声称已保护,但未观测到隧道健康"},
 		} {
 			if check.value != True {
-				out = append(out, Divergence{
+				emit(Divergence{
 					Field:    check.field,
 					Believed: "protected",
 					Observed: check.value.String(),
@@ -50,10 +93,13 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 	}
 
 	// 挂起武装期间不谈残留:升级正在进行,屏障与 DNS 接管此刻本来就还在。
-	// 这一支真正会在维护窗口里触发的是**退回路径**(挂起写不成时改写 desired=off)。
+	//
+	// **可达性**(别把它当死代码删掉):一台用户已经关掉保护(desired=off)的机器
+	// 上跑升级,recordStopIntent 照样武装挂起,于是 desired=off 与挂起并存。
+	// 代价是那 15 分钟里真实的残留会被压住 —— 已知取舍,挂起过期即恢复报告。
 	if intent.Desired == "off" && !held {
 		if observed.BarrierPresent == True {
-			out = append(out, Divergence{
+			emit(Divergence{
 				Field:    "barrier_present",
 				Believed: "off",
 				Observed: "true",
@@ -61,7 +107,7 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 			})
 		}
 		if observed.DNSManaged == True {
-			out = append(out, Divergence{
+			emit(Divergence{
 				Field:    "dns_managed",
 				Believed: "off",
 				Observed: "true",
@@ -79,23 +125,42 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 	// 「指控系统坏了」,没问出来就不许指控。写成 `!= True` 会让每一台观测原语
 	// 缺席的机器恒吐一条「没有保护在跑」—— 正是 observerForPlatform 那道门在
 	// 防的噪声。
+	//
+	// 注意生产里这一支**一定**伴着一条 core_socket 的 ObserveError:observeCore
+	// 在 FetchRuntime 失败时同时置 False 并记错误(observer.go)。原因由 emit
+	// 并进 note,不另起一行。
 	if intent.Desired == "on" && !held && observed.CoreSocket == False {
-		out = append(out, Divergence{
-			Field:    "core_socket",
+		emit(Divergence{
+			Field:    fieldCoreSocket,
 			Believed: "on",
 			Observed: "false",
 			Note:     "意图是保护,但 Core 的控制 socket 不应答:此刻没有保护在跑",
 		})
 	}
 
+	// 剩下的观测失败各出一行 —— **只剩没被上面任何一条交代过的那些**。
 	for _, e := range observed.Errors {
-		out = append(out, Divergence{
+		emit(Divergence{
 			Field:    e.Item,
 			Believed: believed.Protection,
 			Observed: "unknown",
-			Note:     fmt.Sprintf("该项无法观测:%s", e.Err),
+			Note:     "该项无法观测",
 		})
 	}
 
 	return out
+}
+
+// reasonsByItem 把观测失败按项名索引,好让它们并进各自那一行。
+//
+// 同一项有多条错误时取第一条:观测每项只跑一次,第二条不会出现;真出现了,
+// 第一条是最靠近失败现场的那条。
+func reasonsByItem(errs []ObserveError) map[string]string {
+	reasons := make(map[string]string, len(errs))
+	for _, e := range errs {
+		if _, exists := reasons[e.Item]; !exists {
+			reasons[e.Item] = e.Err
+		}
+	}
+	return reasons
 }

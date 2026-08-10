@@ -61,7 +61,7 @@ type DesiredStore interface {
 	// 形状;放进接口则由编译器点名每一个实现。
 	LoadIntentSnapshot(time.Time) (IntentSnapshot, error)
 	// ClearMaintenanceHold 由用户显式的 up/down 调用(设计取舍四)。
-	ClearMaintenanceHold() error
+	ClearMaintenanceHold() (bool, error)
 }
 
 type CoreRunner interface {
@@ -682,8 +682,15 @@ func (m *Manager) MaintenanceHoldStatus() *MaintenanceHoldStatus {
 // holdObserver 的 _armed 行回答。它不会变成噪声:它一年只出现在用户显式的
 // up/down/migrate 上,不随任何轮询发生。
 func (m *Manager) clearMaintenanceHold(by string) {
-	if err := m.store.ClearMaintenanceHold(); err != nil {
+	removed, err := m.store.ClearMaintenanceHold()
+	if err != nil {
 		log.Printf("guardian_maintenance_hold_clear_failed by=%s err=%v", by, err)
+		return
+	}
+	// **本来就没有挂起时一个字都不写。** 这条线要能被 grep 当证据用:每一次
+	// bx up/down 都印一行「已清除」,读的人很快就会学会它什么也不代表 ——
+	// 与 _armed/_expired 刻意避开的是同一种噪声训练。
+	if !removed {
 		return
 	}
 	log.Printf("guardian_maintenance_hold_cleared by=%s", by)

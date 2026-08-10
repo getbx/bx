@@ -114,7 +114,10 @@ func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
 	env.deps.armMaintenanceHold = func(reason string) error {
 		return store.ArmMaintenanceHold(reason, time.Now())
 	}
-	env.deps.clearMaintenanceHold = store.ClearMaintenanceHold
+	env.deps.clearMaintenanceHold = func() error {
+		_, err := store.ClearMaintenanceHold()
+		return err
+	}
 	return env
 }
 

@@ -233,7 +233,10 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		armMaintenanceHold: func(reason string) error {
 			return guardian.OpenDefaultStore().ArmMaintenanceHold(reason, time.Now())
 		},
-		clearMaintenanceHold: func() error { return guardian.OpenDefaultStore().ClearMaintenanceHold() },
+		clearMaintenanceHold: func() error {
+			_, err := guardian.OpenDefaultStore().ClearMaintenanceHold()
+			return err
+		},
 		clearBarrierRoutes: func(ctx context.Context) error {
 			return guardian.RemoveBlockingBarrierRoutes(ctx, nil)
 		},

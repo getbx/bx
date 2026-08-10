@@ -125,7 +125,7 @@ func (s *Store) migrateLegacyUpgradeIntent(now time.Time, remove func() error) (
 		// desired=on 那一半保留(它是欠条的全部意义,且不依赖删得掉与否);
 		// 拦不住有尽头的东西就不拦。撤回本身失败只能记日志 —— 没有别的手段了。
 		if result.HoldArmed {
-			if clearErr := s.ClearMaintenanceHold(); clearErr != nil {
+			if _, clearErr := s.ClearMaintenanceHold(); clearErr != nil {
 				log.Printf("guardian_legacy_upgrade_intent_hold_rollback_failed err=%v", clearErr)
 			} else {
 				result.HoldArmed = false
