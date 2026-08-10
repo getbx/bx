@@ -559,6 +559,56 @@ func TestExecCoreRunnerExistingTreatsUnremovableDeadRecordAsNoCore(t *testing.T)
 	}
 }
 
+// OS 已经确认被观察的 Core 没了(watchExisting 的两个调用点传的都是
+// ErrProcessNotRunning 那一族),失败的只是删一个 JSON 文件。握着「安全」的
+// 证明却宣布所有权不确定,等于让 /var/lib/bx 上任何一次文件系统抖动锁死 daemon。
+//
+// 日志接收端用 syncBuffer 而不是裸 bytes.Buffer:这行日志是 watcher goroutine
+// 打的,而 log 的输出目标是全局的(hold_log_test.go 里那条注释记的就是这个坑)。
+func TestAdoptedWatcherCleanupFailureIsNotOwnershipUncertainty(t *testing.T) {
+	runner, _, operations := newRecordedProcessRunner(t)
+	runner.RemoveProcessRecord = func(string) error { return errors.New("record removal failed") }
+	var logs syncBuffer
+	restore := swapGuardianLogOutput(&logs)
+	defer restore()
+
+	process, err := runner.Existing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	process = runner.Watch(process)
+	operations.setAlive(false)
+
+	select {
+	case exitErr := <-process.Exit:
+		if errors.Is(exitErr, ErrProcessOwnershipUncertain) {
+			t.Fatalf("删不掉一份陈旧记录被报成了所有权不确定: %v", exitErr)
+		}
+		if !errors.Is(exitErr, ErrProcessNotRunning) {
+			t.Fatalf("退出原因丢了: %v", exitErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("watcher 没有报告退出")
+	}
+	if !strings.Contains(logs.String(), "guardian_stale_core_record_after_exit") {
+		t.Fatalf("清理失败必须留下线索,日志里没有:\n%s", logs.String())
+	}
+}
+
+// **越界守卫。** Stop 那几处形状相似,但它们证明的东西不同(那是关闭途中对
+// 一份**可能仍属于活进程**的记录的处置),本期一个字不动。这条测试存在的
+// 唯一理由是:上一条的修法很容易被写成「把 uncertainOwnership 从这个文件里
+// 全删掉」。
+func TestStopStillReportsUncertaintyWhenItCannotClearTheRecord(t *testing.T) {
+	runner, process, operations := newRecordedProcessRunner(t)
+	runner.RemoveProcessRecord = func(string) error { return errors.New("record removal failed") }
+	operations.setInspectError(ErrProcessNotRunning)
+
+	if err := runner.Stop(context.Background(), process); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Stop 清不掉记录时 = %v, want 仍然报所有权不确定(本期不动这一处)", err)
+	}
+}
+
 func TestExecCoreRunnerAdoptedWatcherIgnoresInspectionFailure(t *testing.T) {
 	runner, _, operations := newRecordedProcessRunner(t)
 	process, err := runner.Existing(context.Background())
