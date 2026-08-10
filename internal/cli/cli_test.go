@@ -5076,7 +5076,7 @@ func TestRenderClientStatusSaysNothingWhenGuardianHasNoReconcileLoop(t *testing.
 			partial := branch.base
 			partial.GuardianCapabilities = []string{guardian.CapabilityDiagnosticsArchive}
 			if other := renderClientStatus(partial); other != got {
-				t.Errorf("能力集合里没有 reconcile-report 时也不该多出任何一行:\n%s", other)
+				t.Errorf("能力集合里没有 reconcile_report 时也不该多出任何一行:\n%s", other)
 			}
 		})
 	}
@@ -5212,5 +5212,148 @@ func TestClientStatusPublishesGuardianReconcileReport(t *testing.T) {
 	}
 	if _, present := keys["reconcile"]; present {
 		t.Fatalf("没有报告时 reconcile 键必须缺席: %s", empty)
+	}
+}
+
+// **一份停滞的报告不许渲染成一轮正常的观测。**
+//
+// 调谐环的循环体每一轮都会 recover(见 runReconcileRound),而炸掉的那一轮刻意
+// 不写报告 —— 于是一条每轮都 panic 的循环、或者一条彻底死掉的循环,留下的是一份
+// 冻住的报告,内容多半正是「无差异」。照常渲染它,就是把一条死掉的循环写成一台
+// 健康的机器,与本任务要消灭的那句假话完全同形。用户没有理由知道退避上限是多少,
+// 所以必须由这一行说出口。
+func TestRenderClientStatusFlagsAStaleReconcileReport(t *testing.T) {
+	for _, branch := range clientStatusRenderBranches() {
+		t.Run(branch.name, func(t *testing.T) {
+			stale := withReconcileCapability(branch.base)
+			stale.Reconcile = &guardian.ReconcileReport{
+				At:              time.Now().Add(-guardian.ReconcileStaleAfter - time.Minute),
+				UnchangedRounds: 41,
+				CoreScan:        guardian.ReconcileCoreScan{Measured: true, Cores: 1},
+			}
+			got := renderClientStatus(stale)
+			if !strings.Contains(got, "已停滞") {
+				t.Errorf("超过两倍退避上限没更新的报告必须被标出来:\n%s", got)
+			}
+			if strings.Contains(got, "无差异") {
+				t.Errorf("一份冻住的报告不许说「无差异」—— 那正是一条死掉的循环最像健康机器的地方:\n%s", got)
+			}
+
+			// 刚好在窗口内的那一份必须照常渲染:把正常的轮距报成停滞,
+			// 会把这个标记训练成噪声,而噪声会训练人忽略它。
+			fresh := withReconcileCapability(branch.base)
+			fresh.Reconcile = &guardian.ReconcileReport{
+				At:              time.Now().Add(-guardian.ReconcileStaleAfter + time.Minute),
+				UnchangedRounds: 41,
+				CoreScan:        guardian.ReconcileCoreScan{Measured: true, Cores: 1},
+			}
+			if got := renderClientStatus(fresh); strings.Contains(got, "已停滞") {
+				t.Errorf("还在窗口内的报告不该被标成停滞:\n%s", got)
+			}
+		})
+	}
+}
+
+// **一台什么都没问出来的机器,绝不能与一台健康机器渲染成同一段文字。**
+//
+// 判据对每个 Unknown 都「什么都不做」,所以全盲那一轮的 Actions/Held/UnchangedRounds
+// 与健康机器逐字节相同 —— 区别全在 Unobservable 上。这是本分支第四次遇到
+// 「我们从没问过」与「问了、一切正常」长得一样。
+func TestRenderClientStatusSeparatesABlindRoundFromACleanOne(t *testing.T) {
+	base := withReconcileCapability(clientStatusReport{ProtectionState: guardian.ProtectionProtected})
+	at := time.Now().Add(-8 * time.Second)
+	scan := guardian.ReconcileCoreScan{Measured: true, Cores: 1}
+
+	clean := base
+	clean.Reconcile = &guardian.ReconcileReport{At: at, UnchangedRounds: 12, CoreScan: scan}
+	blind := base
+	blind.Reconcile = &guardian.ReconcileReport{
+		At: at, UnchangedRounds: 12, CoreScan: scan,
+		Unobservable: []string{"capture_ok", "dns_managed"},
+	}
+
+	cleanText := renderClientStatus(clean)
+	blindText := renderClientStatus(blind)
+	if cleanText == blindText {
+		t.Fatal("全盲的一轮与干净的一轮渲染成了同一段文字 —— soak 的头条结论会读成「零提议」")
+	}
+	for _, want := range []string{"未观测到", "capture_ok", "dns_managed"} {
+		if !strings.Contains(blindText, want) {
+			t.Errorf("缺 %q:\n%s", want, blindText)
+		}
+	}
+	if strings.Contains(cleanText, "未观测到") {
+		t.Errorf("每一项都问出来了,不该多这一段:\n%s", cleanText)
+	}
+}
+
+// 「扫到 0 个 Core 进程」与「压根没扫成」是两件事:把失败印成 0,
+// 算出来的 looksLikeCore 误报率会偏低 —— 正好是这份测量的反面。
+func TestRenderClientStatusDistinguishesAnUnmeasuredCoreScanFromZeroCores(t *testing.T) {
+	base := withReconcileCapability(clientStatusReport{ProtectionState: guardian.ProtectionProtected})
+	at := time.Now().Add(-6 * time.Second)
+
+	zero := base
+	zero.Reconcile = &guardian.ReconcileReport{At: at, CoreScan: guardian.ReconcileCoreScan{Measured: true}}
+	unmeasured := base
+	unmeasured.Reconcile = &guardian.ReconcileReport{At: at, CoreScan: guardian.ReconcileCoreScan{Reason: "scan_failed"}}
+
+	zeroText := renderClientStatus(zero)
+	unmeasuredText := renderClientStatus(unmeasured)
+	if zeroText == unmeasuredText {
+		t.Fatal("「扫到 0 个」与「没扫成」渲染成了同一段文字")
+	}
+	if !strings.Contains(zeroText, "扫到 0 个") {
+		t.Errorf("测成了就要把数字说出来:\n%s", zeroText)
+	}
+	if !strings.Contains(unmeasuredText, "scan_failed") {
+		t.Errorf("没测成要说清是为什么:\n%s", unmeasuredText)
+	}
+	if strings.Contains(unmeasuredText, "扫到 0 个") {
+		t.Errorf("没测成绝不能印成「扫到 0 个」:\n%s", unmeasuredText)
+	}
+}
+
+// 观测质量与那次只读测量必须走完从 Guardian 到 `bx status --json` 的整一跳:
+// 机器面(agent、菜单、soak 脚本)读的就是这份 JSON。
+func TestClientStatusPublishesReconcileObservationQualityAndCoreScan(t *testing.T) {
+	rep, err := readClientStatusReportWithObserver(
+		func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
+		func() (guardian.Status, error) {
+			return guardian.Status{
+				Desired:      guardian.DesiredOn,
+				Protection:   guardian.ProtectionProtected,
+				Capabilities: guardian.GuardianCapabilities(),
+				Reconcile: &guardian.ReconcileReport{
+					At:           time.Date(2026, 8, 10, 3, 4, 5, 0, time.UTC),
+					Unobservable: []string{"capture_ok", "dns_managed"},
+					CoreScan:     guardian.ReconcileCoreScan{Measured: true, Cores: 2},
+				},
+			}, nil
+		},
+		"linux",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Reconcile *guardian.ReconcileReport `json:"reconcile"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Reconcile == nil {
+		t.Fatalf("报告整个没到: %s", data)
+	}
+	if len(decoded.Reconcile.Unobservable) != 2 {
+		t.Errorf("观测质量在路上掉了 —— 消费方会把一台全盲的机器读成健康机器: %s", data)
+	}
+	if !decoded.Reconcile.CoreScan.Measured || decoded.Reconcile.CoreScan.Cores != 2 {
+		t.Errorf("那次只读测量在路上掉了 —— 这一期的第二样交付读不到: %s", data)
 	}
 }

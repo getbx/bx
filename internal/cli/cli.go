@@ -4543,21 +4543,60 @@ func clientReconcileLine(report clientStatusReport, now time.Time) (string, bool
 
 func reconcileRoundSummary(round guardian.ReconcileReport, now time.Time) string {
 	prefix := fmt.Sprintf("最近观测 %s 前 · ", reconcileElapsed(now, round.At))
+	// **停滞优先于内容。** 一份两倍退避上限都没更新过的报告,说明循环已经停了、
+	// 或者每一轮都在 panic(炸掉的轮次刻意不写报告)。此时照常渲染那一轮的内容,
+	// 等于把一份冻住的快照说成「最近的一轮」——而它的内容多半正是「无差异」,
+	// 也就是把一条死掉的循环渲染成一台健康的机器。用户没有理由知道那个上限,
+	// 所以必须由这一行说出口。
+	if now.Sub(round.At) > guardian.ReconcileStaleAfter {
+		return prefix + "报告已停滞 —— 调谐环可能已停止(查 /var/log/bx-guard.err.log)"
+	}
+	return prefix + reconcileRoundVerdict(round) + reconcileRoundEvidence(round)
+}
+
+// reconcileRoundVerdict 说这一轮判断出了什么。
+func reconcileRoundVerdict(round guardian.ReconcileReport) string {
 	switch {
 	case round.Held != "":
 		// 被栅栏挡住的一轮**没有做判断**,不是「判断出没有差异」——soak 要数的
 		// 正是这种轮次有多少。
-		return prefix + "被 " + round.Held + " 挡住"
+		return "被 " + round.Held + " 挡住"
 	case len(round.Actions) > 0:
-		return prefix + "本会提议 " + strings.Join(round.Actions, ",")
+		return "本会提议 " + strings.Join(round.Actions, ",")
 	case round.UnchangedRounds == 0:
 		// 干净 + 连续未变轮数为 0 ⇒ 判断**这一轮刚刚变成**干净的(健康机器的第
 		// 一轮就已经是 1,因为循环的 previous 初值就是干净)。写成「连续 0 轮
 		// 未变」在最该说清楚的那一刻反而最难读:某件事刚刚被解决掉了。
-		return prefix + "无差异(本轮刚转为无差异)"
+		return "无差异(本轮刚转为无差异)"
 	default:
-		return prefix + fmt.Sprintf("无差异(连续 %d 轮未变)", round.UnchangedRounds)
+		return fmt.Sprintf("无差异(连续 %d 轮未变)", round.UnchangedRounds)
 	}
+}
+
+// reconcileRoundEvidence 附上这一轮的**证据质量**:哪些项根本没问出来,以及那次
+// 只读进程扫描测到了什么。
+//
+// **这不是装饰。** 三项探测全失败时判断恰好等于一台健康机器的判断(Unknown 一律
+// 「什么都不做」),于是上面那句 verdict 会原样写成「无差异(连续 N 轮未变)」——
+// 一台永久失明的机器读起来与一台健康机器一模一样,而 soak 的全部结论就建立在
+// 这个区别上。Core 进程数同理:它是本阶段要测的那个误报率,「测到 1 个」与
+// 「压根没测成」必须分得开。
+func reconcileRoundEvidence(round guardian.ReconcileReport) string {
+	evidence := ""
+	if len(round.Unobservable) > 0 {
+		evidence += fmt.Sprintf(" · %d 项未观测到(%s)",
+			len(round.Unobservable), strings.Join(round.Unobservable, ","))
+	}
+	if round.CoreScan.Measured {
+		evidence += fmt.Sprintf(" · 扫到 %d 个 Core 进程", round.CoreScan.Cores)
+		return evidence
+	}
+	reason := round.CoreScan.Reason
+	if reason == "" {
+		reason = "unknown"
+	}
+	// 「没测成」绝不能渲染成「扫到 0 个」:那是把「问不出来」写成「问过、没有」。
+	return evidence + " · Core 进程未测成(" + reason + ")"
 }
 
 // reconcileElapsed 把「多久以前」渲染成人话,并把负数收敛成 0。

@@ -220,8 +220,20 @@ type reconcileLoopRunner interface {
 }
 
 // trackReconcileLoop 起那条只观察的调谐环,并记下它的结束,好让 Shutdown 叫停它。
-// Must be called at most once per Daemon.
+//
+// **每个 Daemon 至多一条,而且这条由代码强制,不是注释。** 上一版把它写成一句
+// 「Must be called at most once」:第二次调用会覆写 reconcileLoopCancel 与
+// reconcileLoopDone,于是第一条循环失去被叫停的把手、也失去被等到的把手,却仍在
+// 后台按拍观测 —— 一条谁都不知道它还在的循环,正是本项目反复吃亏的那种孤儿
+// (孤儿屏障、孤儿启动标记)。这里选择**拒绝第二次并留住第一条**:第二条从来
+// 没有存在过,而已经在跑的那条依旧受管。
 func (d *Daemon) trackReconcileLoop(ctx context.Context, run func(context.Context)) {
+	if d.reconcileLoopDone != nil {
+		// 这是编程错误,但绝不能用 panic 表达:Guardian 由 launchd 的 KeepAlive
+		// 托管,一次启动路径上的 panic 就是崩溃循环,而用户机器上可能还留着屏障。
+		log.Print("guardian_reconcile_loop_already_running refused=second_loop")
+		return
+	}
 	loopCtx, cancel := context.WithCancel(ctx)
 	d.reconcileLoopCancel = cancel
 	d.reconcileLoopDone = make(chan struct{})
@@ -232,9 +244,13 @@ func (d *Daemon) trackReconcileLoop(ctx context.Context, run func(context.Contex
 		// 机器上可能还留着屏障。理由与 trackStartupRecovery 那条一字不差:
 		// 这里没有 net/http 那样按连接兜底的东西。
 		//
-		// 可疑面是每一轮都要跑的观测(解析 route/networksetup 的输出、连 Core
-		// 的控制 socket)与 decide 之下的一切;而这个循环**永久**运行,不像启动
-		// 恢复只跑一次 —— 撞上罕见输入的机会随时间累积。收在源头,不逐个函数堵。
+		// **这一层是最后一道网,不是主力。** 主力在 runReconcileRound 里:那里
+		// 的 recover 只吞掉**这一轮**,循环照跑(带退避)。收在这一层的后果是
+		// 「第一次 panic 就是循环的终点」—— 循环没了,而最后一份报告冻在
+		// Status 上被 bx status 渲染成一轮干净的观测。
+		//
+		// 留着它,是因为 panic 也可能发生在轮次之外(pacing、waitReconcileInterval,
+		// 或者将来有人往循环骨架里加东西),而那时进程被带走的后果与下面写的一样。
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("guardian_reconcile_loop_panicked recovered=%v\n%s", r, debug.Stack())

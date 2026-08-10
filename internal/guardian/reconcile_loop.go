@@ -3,6 +3,9 @@ package guardian
 import (
 	"context"
 	"log"
+	"runtime/debug"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +51,16 @@ const (
 	// 短:拿不到就跳过这一轮,30 秒后自然还有下一轮。
 	reconcileMutationWait = 200 * time.Millisecond
 )
+
+// ReconcileStaleAfter 是「这份报告已经不新鲜了」的判据,给消费方(CLI/菜单)用。
+//
+// 取退避上限的两倍:上限本身是合法的轮距,一份刚好隔了一个上限的报告完全正常;
+// 两倍则意味着**至少整整一轮没发生过** —— 循环死了、或者每一轮都在 panic
+// (panic 的那一轮刻意不写报告,见 runReconcileRound)。
+//
+// 导出它是因为判据只能有一个:CLI 自己抄一个 20 分钟的常量,就是把「循环多久
+// 跑一次」这件只有 Guardian 知道的事复制到了另一个进程里,而那两个数字迟早分叉。
+const ReconcileStaleAfter = 2 * reconcileMaxInterval
 
 // heldMutationBusy 是第四道栅栏的名字。
 //
@@ -131,50 +144,135 @@ func (m *Manager) runReconcileLoop(ctx context.Context, observer reconcileObserv
 	m.runReconcileLoopWithPacing(ctx, observer, nextReconcileInterval)
 }
 
+// reconcileRound 是一轮的完整产物:判断、这一轮**没能看见**什么、以及那次只读
+// 的进程扫描测到了什么。
+//
+// 判断单独比较是不够的:三项探测全失败时判断恰好等于一台健康机器的判断
+// (Unknown 一律「什么都不做」)。「变没变」必须连观测质量一起比,否则一台
+// 从此永久失明的机器从失明那一刻起一行日志都不会再打。
+type reconcileRound struct {
+	decision     reconcileDecision
+	unobservable []string
+	scan         ReconcileCoreScan
+	unchanged    int
+}
+
 // runReconcileLoopWithPacing 把节奏做成参数,好让循环本身可以在单测里跑完整几轮
 // 而不必真的睡 30 秒。生产只有 runReconcileLoop 一个调用方。
 //
 // **先睡后观测**:Guardian 刚起来时启动恢复正在跑,第一轮判断没有意义。
+//
+// **panic 收在每一轮里,不在整条循环外面。** 上一版把 recover 放在 goroutine 那
+// 一层(daemon.go 的 trackReconcileLoop),于是第一次 panic 就是循环的终点:
+// reconcileLoopDone 关掉、没人重启、而 Status().Reconcile 冻在最后一轮上,
+// `bx status` 把它渲染成一轮干净的观测 —— 一条死掉的循环读起来完全正常。
 func (m *Manager) runReconcileLoopWithPacing(ctx context.Context, observer reconcileObservation, pacing func(int) time.Duration) {
-	// previous 的初值是「无动作、无栅栏」,也就是一台健康机器的判断。于是健康
-	// 机器上这个循环一行日志都不打 —— 真机 soak 要数的正是这个 0。
-	var previous reconcileDecision
-	unchanged := 0
+	// previous 的初值是「无动作、无栅栏、什么都观测得到、还没测过 Core 进程数」,
+	// 也就是一台健康机器**跑起来之后**的第一轮会与之比较的基准。健康机器上这个
+	// 循环因此至多在第一轮打一行(记下那次扫描的基线),此后静默 —— 真机 soak
+	// 要数的正是随后那个 0。而一台起手就失明的机器会立刻打一行,不再是静默。
+	var previous reconcileRound
+	panics := 0
 	for {
-		if !waitReconcileInterval(ctx, pacing(unchanged)) {
+		interval := pacing(previous.unchanged)
+		if panics > 0 {
+			interval = reconcilePanicBackoff(interval, panics)
+		}
+		if !waitReconcileInterval(ctx, interval) {
 			return
 		}
-		observeCtx, cancelObserve := context.WithTimeout(ctx, reconcileObserveTimeout)
-		observed := observer(observeCtx)
-		cancelObserve()
-		if ctx.Err() != nil {
-			// 观测途中开始关机了。**不判断、不打日志**:此刻 acquireMutation
-			// 一定失败,而那会被记成 held=mutation_busy —— 一句假话,并且是
-			// 每次关机都出现的一句假话,正好把这行日志训练成噪声。
+		round, stop, panicked := m.runReconcileRound(ctx, observer, previous, panics)
+		switch {
+		case panicked:
+			// **不记报告。** 一轮炸掉的轮次没有产出判断,发布一份就是编造;而
+			// 让 At 停在上一轮,正是消费方判定「这份报告已停滞」的依据
+			// (ReconcileStaleAfter)。一条永久 panic 的循环因此在 20 分钟内
+			// 会在 bx status 上现形,而不是安静地重试到天荒地老。
+			panics++
+		case stop:
 			return
+		default:
+			panics = 0
+			previous = round
 		}
-
-		decision := m.reconcileOnce(ctx, observed)
-		changed := !sameReconcileDecision(previous, decision)
-		if changed {
-			previous = decision
-			unchanged = 0
-		} else {
-			unchanged++
-		}
-		// **每一轮都记,包括没变的那些、以及被栅栏挡住的那些。**
-		//
-		// 日志按「变了才打」是为了不制造噪声,而报告是**状态**不是事件:一份
-		// 只在有差异时才更新的报告,在一台健康机器上会永远停在 nil,而 nil 的
-		// 意思是「循环从没跑过一轮」—— 这正好把本任务要消灭的那个歧义原样搬进
-		// 了 bx status。
-		m.recordReconcileRound(decision, unchanged)
-		if !changed {
-			continue
-		}
-		log.Printf("guardian_reconcile_would actions=%s held=%s observed=%s",
-			formatReconcileActions(decision.Actions), formatHeld(decision.Held), formatObserved(observed))
 	}
+}
+
+// runReconcileRound 跑一轮:观测 → 只读测量 → 判断 → 记报告 → 变了才打日志。
+//
+// 三个返回值:这一轮的产物、要不要结束整条循环、以及这一轮是不是炸了。
+// panic 时 stop 必为 false —— 一轮炸掉不是停下来的理由,那正是本次修复的全部内容。
+func (m *Manager) runReconcileRound(ctx context.Context, observer reconcileObservation, previous reconcileRound, consecutivePanics int) (round reconcileRound, stop, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			round, stop, panicked = reconcileRound{}, false, true
+			log.Printf("guardian_reconcile_round_panicked consecutive=%d recovered=%v\n%s",
+				consecutivePanics+1, r, debug.Stack())
+		}
+	}()
+
+	observeCtx, cancelObserve := context.WithTimeout(ctx, reconcileObserveTimeout)
+	observed := observer(observeCtx)
+	cancelObserve()
+	if ctx.Err() != nil {
+		// 观测途中开始关机了。**不判断、不打日志**:此刻 acquireMutation
+		// 一定失败,而那会被记成 held=mutation_busy —— 一句假话,并且是
+		// 每次关机都出现的一句假话,正好把这行日志训练成噪声。
+		return reconcileRound{}, true, false
+	}
+
+	// 只读测量,排在取 mutation channel **之前**:它是约 900 次 syscall,
+	// 攥着那把锁去做等于让用户的 up 排在后面(与观测同一条纪律)。
+	round = reconcileRound{
+		unobservable: observed.UnobservableItems(),
+		scan:         m.measureRunningCores(),
+	}
+	round.decision = m.reconcileOnce(ctx, observed)
+	changed := !sameReconcileRound(previous, round)
+	if changed {
+		round.unchanged = 0
+	} else {
+		round.unchanged = previous.unchanged + 1
+	}
+	// **每一轮都记,包括没变的那些、以及被栅栏挡住的那些。**
+	//
+	// 日志按「变了才打」是为了不制造噪声,而报告是**状态**不是事件:一份
+	// 只在有差异时才更新的报告,在一台健康机器上会永远停在 nil,而 nil 的
+	// 意思是「循环从没跑过一轮」—— 这正好把本任务要消灭的那个歧义原样搬进
+	// 了 bx status。
+	m.recordReconcileRound(round)
+	if !changed {
+		return round, false, false
+	}
+	log.Printf("guardian_reconcile_would actions=%s held=%s core_scan=%s observed=%s",
+		formatReconcileActions(round.decision.Actions), formatHeld(round.decision.Held),
+		formatCoreScan(round.scan), formatObserved(observed))
+	return round, false, false
+}
+
+// reconcilePanicBackoff 在连续 panic 时把间隔翻倍,封顶同退避上限。
+//
+// 没有它,一个**确定性**会 panic 的轮次(某个解析函数撞上一种输出格式)就是一台
+// 满速空转的机器:每一轮都 fork 一遍观测、炸一遍、立刻再来。有它则最坏每 10 分钟
+// 一次,而报告停滞会在 bx status 上说明发生了什么。
+//
+// 与 nextReconcileInterval 同形(逐次翻倍 + 命中上限即返回),所以同样不会溢出:
+// time.Duration 是 int64,不设这个早退的实现会在第 54 次翻倍时绕回 0。
+//
+// **绝不返回比 base 更短的间隔**:pacing 已经退避到上限之后再撞上 panic,
+// 「翻倍」若把它拉回上限就成了加速,方向正好反了。
+func reconcilePanicBackoff(base time.Duration, consecutivePanics int) time.Duration {
+	interval := base
+	for round := 0; round < consecutivePanics; round++ {
+		if interval >= reconcileMaxInterval {
+			return interval
+		}
+		interval *= 2
+		if interval >= reconcileMaxInterval {
+			return reconcileMaxInterval
+		}
+	}
+	return interval
 }
 
 // waitReconcileInterval 睡一个周期,ctx 结束则立刻返回 false。
@@ -190,11 +288,27 @@ func waitReconcileInterval(ctx context.Context, interval time.Duration) bool {
 	}
 }
 
-// sameReconcileDecision 判断两轮判断是不是同一件事。
+// sameReconcileRound 判断两轮是不是同一回事:判断、观测质量、Core 进程测量,
+// 三样都相同才算没变。
 //
-// **刻意不比 ObservedState。** 那里面有 ObservedAt,每轮都在变;把它算进去等于
-// 每拍一行日志,正是这条约束要消灭的噪声。判断相同就意味着「本来会做的事」相同,
-// 而那才是这行日志说的内容。
+// **刻意不比 ObservedState 整体。** 那里面有 ObservedAt,每轮都在变;把它算进去
+// 等于每拍一行日志,正是这条约束要消灭的噪声。
+//
+// **但观测质量必须算进来。** 判断相同不代表这两轮是同一回事:三项探测全失败时
+// decide 对每个 Unknown 都「什么都不做」,产出的判断与一台完全健康的机器逐字节
+// 相同。只比判断的那一版,会让一台从此永久失明的机器从失明那一刻起再也不打一行
+// 日志,而 bx status 上写着「无差异(连续 N 轮未变)」——「我们从没问过」与
+// 「问了、一切正常」渲染成同一句话,这个分支上已经犯过三次了。
+//
+// Core 进程测量同理:它是本阶段的第二样交付(looksLikeCore 的误报率),
+// 1 变成 2 正是要抓的那个事件,而不是要压掉的噪声。
+func sameReconcileRound(a, b reconcileRound) bool {
+	return sameReconcileDecision(a.decision, b.decision) &&
+		a.scan == b.scan &&
+		slices.Equal(a.unobservable, b.unobservable)
+}
+
+// sameReconcileDecision 只比「本来会做的事」这一半:动作序列与栅栏。
 func sameReconcileDecision(a, b reconcileDecision) bool {
 	if a.Held != b.Held || len(a.Actions) != len(b.Actions) {
 		return false
@@ -225,21 +339,34 @@ func formatHeld(held string) string {
 	return held
 }
 
+// formatCoreScan 把那次只读测量压成一段。**「没测成」与「测到 0 个」必须写得
+// 不一样**:把扫描失败印成 cores=0 就是把「问不出来」写成「问过、没有」。
+func formatCoreScan(scan ReconcileCoreScan) string {
+	if !scan.Measured {
+		reason := scan.Reason
+		if reason == "" {
+			reason = "unknown"
+		}
+		return "unmeasured:" + reason
+	}
+	return strconv.Itoa(scan.Cores)
+}
+
 // formatObserved 把这一轮的事实压成一行。三态原样透出(true/false/unknown):
 // 把 unknown 印成 false 就是把「没问出来」写成「问过、没有」,而整个
 // internal/observe 就是为了消灭这种谎言存在的。
+//
+// unobservable 取 observe 自己的那份清单(UnobservableItems),不再从 Errors 推:
+// 依赖缺席时一项同样问不出来却一条错误都不留,按 Errors 推会把它印成「全都问到了」。
 func formatObserved(observed observe.ObservedState) string {
 	line := "capture=" + observed.CaptureOK.String() +
 		" barrier=" + observed.BarrierPresent.String() +
 		" dns=" + observed.DNSManaged.String() +
 		" core_socket=" + observed.CoreSocket.String() +
 		" tunnel=" + observed.TunnelHealthy.String()
-	if len(observed.Errors) == 0 {
+	items := observed.UnobservableItems()
+	if len(items) == 0 {
 		return line
-	}
-	items := make([]string, 0, len(observed.Errors))
-	for _, failure := range observed.Errors {
-		items = append(items, failure.Item)
 	}
 	return line + " unobservable=" + strings.Join(items, ",")
 }
