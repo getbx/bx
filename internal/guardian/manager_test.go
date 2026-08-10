@@ -2026,7 +2026,30 @@ type recordingDesiredStore struct {
 	events   *eventLog
 	mu       sync.Mutex
 	loadErr  error
+	clearErr error
 	migrates int
+}
+
+// ClearMaintenanceHold 让「读得出来、却删不掉」这一格可被测到。
+//
+// 真实成因是 /var/lib/bx 不可写(unlink 要的是**父目录**的写权限),而用 chmod
+// 造它在 root 身份下拦不住 unlink —— 那种造法会在 CI 的 root 容器里静静变绿
+// (holdmigrate.go 里同款教训)。把路径换成目录能让 Remove 失败,但读也会跟着
+// 失败,于是测到的是另一格。
+func (s *recordingDesiredStore) ClearMaintenanceHold() (bool, error) {
+	s.mu.Lock()
+	err := s.clearErr
+	s.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	return s.Store.ClearMaintenanceHold()
+}
+
+func (s *recordingDesiredStore) setClearError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearErr = err
 }
 
 func (s *recordingDesiredStore) LoadDesired() (DesiredState, error) {
