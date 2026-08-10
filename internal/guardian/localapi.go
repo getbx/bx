@@ -118,9 +118,10 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 		writeGuardianJSON(w, http.StatusOK, observableStatus(controller, pathRecoveryControllerFor(controller), options))
 	})
 	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations, options, "/v1/up"))
-	// markUpgradeStop 只包 /v1/down:它把「这次停保护是升级自己的一步」翻译进
-	// 请求上下文,Manager.Down 据此保住升级欠条(见 upgradeintent.go)。
-	mux.HandleFunc("/v1/down", markUpgradeStop(mutationHandler(controller, controller.Down, mutations, options, "/v1/down")))
+	// markMaintenanceStop 只包 /v1/down:它把「这次停保护是维护(升级)自己的
+	// 一步」翻译进请求上下文,Manager.Down 据此既不改写 desired、也不销掉那张
+	// 前一秒才武装的维护挂起(见 upgradeintent.go)。
+	mux.HandleFunc("/v1/down", markMaintenanceStop(mutationHandler(controller, controller.Down, mutations, options, "/v1/down")))
 	migrationController, _ := controller.(MigrationController)
 	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations, options))
 	updateController, _ := controller.(UpdateController)

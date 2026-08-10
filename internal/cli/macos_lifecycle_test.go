@@ -1097,6 +1097,13 @@ func TestDefaultMacOSLifecycleDepsWiresEveryForcedTeardownStep(t *testing.T) {
 			deps.forceTeardown != nil, deps.stopCore != nil, deps.clearBarrierRoutes != nil,
 			deps.markDesiredOff != nil, deps.restoreSystemDNS != nil)
 	}
+	// 挂起的两个钩子同样是生产接线的一部分,而漏接它们的后果**是静默的**:
+	// armMaintenanceHold 为 nil 时 recordStopIntent 会退回写 desired=off,于是
+	// 每一次升级都悄悄走回今天那条会撒谎的路,一条测试都不会红。
+	if deps.armMaintenanceHold == nil || deps.clearMaintenanceHold == nil {
+		t.Fatalf("维护挂起挂钩未接全: armMaintenanceHold=%v clearMaintenanceHold=%v",
+			deps.armMaintenanceHold != nil, deps.clearMaintenanceHold != nil)
+	}
 }
 
 func TestMenuLaunchdCommandsUseOnlyCanonicalAndLegacyLabels(t *testing.T) {

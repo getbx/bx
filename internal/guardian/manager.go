@@ -424,6 +424,18 @@ func (m *Manager) Up(ctx context.Context) error {
 	if m.recoveryBlocked {
 		return errRecoveryIncomplete
 	}
+	// 用户显式的动作永远压过挂起(设计取舍四)。放在这里而不是调用方:菜单的
+	// Turn On 走 socket,一行 CLI 都不经过。
+	//
+	// **放在 Up 而不是 upLocked**,理由有两条,方向相反而都必须成立:
+	//   - upLocked 有一条「已经 Protected 就直接返回」的早出口,而那同样是一次
+	//     用户显式的 on;挂在写 desired 那一段之后就漏了它,留下「保护开着而挂起
+	//     还武装着」——此后 Core 一旦退出,handleUnexpectedExit 会 fail-closed
+	//     不把它拉回来,保护在用户以为开着的时候悄悄消失。
+	//   - upLocked 还被**启动恢复**复用(recoverLocked → upLocked),而每一次升级
+	//     都会重启 Guardian、跑一遍启动恢复。销挂起若住在 upLocked 里,挂起就会
+	//     在它最该生效的那一刻被自己人销掉。
+	m.clearMaintenanceHold()
 	return m.upLocked(ctx)
 }
 
@@ -444,6 +456,10 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 	if m.recoveryBlocked {
 		return errRecoveryIncomplete
 	}
+	// 与 Up 同一条规则(设计取舍四):Migrate 是 `bx up` 在一台还带 legacy Core
+	// 的机器上走的那条路,同样是用户显式说的 on。放在所有早出口之前,理由与
+	// Up 那边一字不差。
+	m.clearMaintenanceHold()
 
 	if m.current.Uncertain {
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
@@ -597,7 +613,9 @@ func (m *Manager) forgetUpgradeIntent() {
 // clearMaintenanceHold 撤销挂起。**只记日志,绝不让调用方失败**:它跑在
 // up/down 这两条路上,而停止不许依赖先成功做成别的事。
 //
-// 调用方(用户显式的 up/down)由 Task 4 接上;此刻还没有任何东西武装挂起。
+// 调用方是用户显式的三条路:Up、Migrate(`bx up` 在带 legacy Core 的机器上走的
+// 那条)、以及 Down 的 defer(维护自己的那次 Down 除外)。启动恢复**不在其列**
+// —— 它与 Up 共用 upLocked,而每次升级都会重启 Guardian 跑一遍启动恢复。
 func (m *Manager) clearMaintenanceHold() {
 	if err := m.store.ClearMaintenanceHold(); err != nil {
 		log.Printf("guardian_maintenance_hold_clear_failed err=%v", err)
@@ -611,23 +629,32 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 		return err
 	}
 	defer m.releaseMutation()
-	// 关成了就销掉上一次未完成升级留下的欠条(upgrade-intent.json)。
+	// 一次 map 读,越早越好:关闭是逃生路径,不得因为任何记账逻辑失败或阻塞。
+	//
+	// **升级自己的那次停保护**(POST /v1/down?reason=upgrade)与「用户不要保护了」
+	// 是两件事:app-install 前一秒才武装了一张维护挂起,紧接着就来停保护。不加
+	// 区分的话,挂起在武装的下一步就被自己那次 Down 销掉,而 desired 又被写成
+	// off —— 于是磁盘上写着「用户不想要保护」,一个忠实的调谐器会照办。
+	maintenance := downIsMaintenance(ctx)
+	// 用户明确要关 ⇒ 挂起必须消失,**且与这次 Down 的成败无关**。
 	//
 	// 钩子挂在这里而不是某个调用方,是因为**每一条**「用户说 off」都汇合于此:
 	// 菜单的 Turn Off 走 socket → POST /v1/down → controller.Down;CLI 的干净
 	// 路径走 client.Down 到同一个 handler。挂在 macOSDownAction 上只覆盖后者,
 	// 菜单那条根本不经过 CLI —— 那正是上一轮漏掉的路径。
 	//
-	// 只在成功后销账:Down 失败时保护可能还开着,欠条仍然有意义。销不掉只记日志,
-	// 绝不让「关闭」因为一个记账文件而失败。
-	//
-	// **升级自己的那次停保护除外**(downClearsUpgradeIntent):app-install 前一秒
-	// 才写下欠条,紧接着就来停保护;不加区分就会在写下的下一步把它删掉,于是
-	// 一次中途失败的升级重试时既读到 desired=off 又找不到欠条,「成功」地把机器
-	// 永久留在无保护状态。判据是请求作用域的(POST /v1/down?reason=upgrade),
-	// 因此欠条只写一次、全程不删,没有任何崩溃窗口。
+	// **无条件**这一点是从欠条那个活 bug 学来的:forcedMacOSTeardown 即使报告
+	// 失败,六步破坏性动作也已经做完了,而躲在 `err == nil` 后面的销账于是留下
+	// 一条陈旧记录,下一次 app-install(菜单的 Repair 带 --yes)拿它**违背用户
+	// 明确的关闭请求**把保护打开。销不掉只记日志(clearMaintenanceHold 是
+	// best-effort),绝不让「关闭」因为一个记账文件而失败。
 	defer func() {
-		if err == nil && downClearsUpgradeIntent(ctx) {
+		if maintenance {
+			return
+		}
+		m.clearMaintenanceHold()
+		// 欠条那半边照旧只在成功后销(行为不变),Task 6 会连同它一起删掉。
+		if err == nil {
 			m.forgetUpgradeIntent()
 		}
 	}()
@@ -712,9 +739,22 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 		restoreErr := fmt.Errorf("restore managed DNS: %w", restoreErr)
 		recoveryCtx, cancelRecovery := context.WithTimeout(ctx, m.restartTimeout)
 		defer cancelRecovery()
-		if _, recoveryErr := m.startCoreLocked(recoveryCtx); recoveryErr != nil {
-			m.needsAttentionUnlessDNSActivationFailure("down_restore_recovery_failed")
-			return errors.Join(restoreErr, recoveryErr)
+		// **维护挂起期间绝不把 Core 放回去。**
+		//
+		// 这条补偿的原意是「DNS 还原失败了,别把用户停在一个奇怪的中间态」,
+		// 但在维护窗口里「把 Core 放回去」放回去的是一个正换到一半的二进制。
+		// 它是 Guardian 自发起 Core 的**第四条**路,与 handleUnexpectedExit、
+		// recoverLocked、以及活着的 Guardian 抢在强制拆除前面那条同类 ——
+		// 漏掉它就是漏掉四分之一。
+		//
+		// 方向上安全:这是**少做一个动作**,不可能让「停止」依赖别的先成功。
+		// 而屏障照拆 —— 那是覆盖整个公网的 8 条 /2 reject 路由,留下就是整机
+		// 断网,且拆它从不依赖 Core 在跑(正常的 Down 成功路径就是这么做的)。
+		if !maintenance {
+			if _, recoveryErr := m.startCoreLocked(recoveryCtx); recoveryErr != nil {
+				m.needsAttentionUnlessDNSActivationFailure("down_restore_recovery_failed")
+				return errors.Join(restoreErr, recoveryErr)
+			}
 		}
 		if err := m.removeBarrier(recoveryCtx); err != nil {
 			m.needsAttention(DesiredOn, "barrier_remove_failed")
@@ -723,9 +763,14 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 		return restoreErr
 	}
 
-	if err := m.store.SaveDesired(DesiredOff); err != nil {
-		m.needsAttention(desired, "desired_state_write_failed")
-		return fmt.Errorf("persist disabled state behind barrier: %w", err)
+	// 维护停机**不改写 desired**:用户的意图没有变,变的只是「此刻不能有」。
+	// 那件事由维护挂起表达(CLI 在停机之前已经武装好了)。写下 off 就是在磁盘上
+	// 留一句假话,而任何忠实的调谐器都会照它收敛。
+	if !maintenance {
+		if err := m.store.SaveDesired(DesiredOff); err != nil {
+			m.needsAttention(desired, "desired_state_write_failed")
+			return fmt.Errorf("persist disabled state behind barrier: %w", err)
+		}
 	}
 	if err := m.removeBarrier(ctx); err != nil {
 		m.needsAttention(DesiredOff, "barrier_remove_failed")
