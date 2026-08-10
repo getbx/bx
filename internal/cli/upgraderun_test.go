@@ -32,6 +32,8 @@ type fakeUpgradeIO struct {
 	reassertErr   error
 	reassertCalls int
 
+	stopProtectionWanted []bool
+
 	logs []string
 }
 
@@ -50,8 +52,9 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 			f.confirmPrompts = append(f.confirmPrompts, prompt)
 			return f.confirmAnswer, f.confirmErr
 		},
-		stopProtection: func() (macOSDownResult, error) {
+		stopProtection: func(protectionWanted bool) (macOSDownResult, error) {
 			f.calls = append(f.calls, "stopProtection")
+			f.stopProtectionWanted = append(f.stopProtectionWanted, protectionWanted)
 			return macOSDownResult{
 				Forced:       f.stopForced,
 				Cause:        f.stopCause,
@@ -301,6 +304,28 @@ func TestRunUpgradeProceedsWhenTheStopWasConfirmed(t *testing.T) {
 	}
 	if indexOfCall(f.calls, "installFiles") < 0 {
 		t.Fatalf("应当换过文件, calls=%v", f.calls)
+	}
+}
+
+// **「这台机器此刻要不要保护」必须由停机那一步知道。**
+//
+// 它决定要不要武装维护挂起:一台用户自己关着保护的机器上跑升级,武装出来的挂起
+// 没有任何东西会去清它 —— upgradeSteps(true,false) 里根本没有「恢复保护」这一步,
+// 而销挂起只发生在用户显式的 up/down/migrate 上。于是那 15 分钟里菜单表头写着
+// Paused、bx status 写着「保护此刻被有意压制」,而机器关着只是因为用户想关着。
+//
+// 传的是**升级一开始就读好的那个值**,不是在停机里再读一次:退回路径会在停机
+// 途中把 desired 写成 off,第二次读拿到的就不是用户的意图了。
+func TestRunUpgradePassesTheProtectionIntentIntoTheStop(t *testing.T) {
+	for _, desiredOn := range []bool{true, false} {
+		f := &fakeUpgradeIO{running: true, desiredOn: desiredOn, confirmAnswer: true}
+		f.stopStatus = holdAwareStopStatus()
+		if _, err := runUpgrade(f.io(), false); err != nil {
+			t.Fatalf("desiredOn=%v: %v", desiredOn, err)
+		}
+		if len(f.stopProtectionWanted) != 1 || f.stopProtectionWanted[0] != desiredOn {
+			t.Fatalf("desiredOn=%v:停机那一步收到的是 %v", desiredOn, f.stopProtectionWanted)
+		}
 	}
 }
 

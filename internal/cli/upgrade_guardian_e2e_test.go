@@ -183,8 +183,8 @@ func TestRunUpgradeKeepsTheIntentAcrossARealGuardianDown(t *testing.T) {
 		guardianRunning: func() (bool, error) { return true, nil },
 		loadDesiredOn:   func() bool { return true },
 		confirm:         func(string) (bool, error) { return true, nil },
-		stopProtection: func() (macOSDownResult, error) {
-			return macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", env.deps)
+		stopProtection: func(protectionWanted bool) (macOSDownResult, error) {
+			return macOSDownLifecycleFor(context.Background(), upgradeStopPurpose(protectionWanted), "/etc/bx/config.yaml", env.deps)
 		},
 		installFiles: func() (installedFiles, error) {
 			installAttempted = true
@@ -281,8 +281,8 @@ func TestTransitionUpgradeKeepsTheIntentAgainstAHoldUnawareGuardian(t *testing.T
 			// 重跑时读的是**磁盘**,与生产的 upgradeDesiredOn 同一个判据。
 			loadDesiredOn: func() bool { return desiredOnFrom(ctx, env.store, "/nonexistent/guardian.sock") },
 			confirm:       func(string) (bool, error) { return true, nil },
-			stopProtection: func() (macOSDownResult, error) {
-				return macOSDownLifecycleFor(ctx, downPurposeUpgrade, "/etc/bx/config.yaml", env.deps)
+			stopProtection: func(protectionWanted bool) (macOSDownResult, error) {
+				return macOSDownLifecycleFor(ctx, upgradeStopPurpose(protectionWanted), "/etc/bx/config.yaml", env.deps)
 			},
 			reassertDesiredOn: func() error { return env.store.SaveDesired(guardian.DesiredOn) },
 			installFiles: func() (installedFiles, error) {
@@ -326,7 +326,7 @@ func TestLegacyGuardianStopReallyWritesDesiredOff(t *testing.T) {
 	env := newUpgradeE2EEnv(t)
 	env.deps.client = serveLegacyGuardian(t, env.store)
 
-	if _, err := macOSDownLifecycleFor(context.Background(), downPurposeUpgrade, "/etc/bx/config.yaml", env.deps); err != nil {
+	if _, err := macOSDownLifecycleFor(context.Background(), upgradeStopPurpose(true), "/etc/bx/config.yaml", env.deps); err != nil {
 		t.Fatalf("停机失败: %v", err)
 	}
 	if desired, err := env.store.LoadDesired(); err != nil || desired != guardian.DesiredOff {

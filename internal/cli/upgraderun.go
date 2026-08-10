@@ -41,7 +41,12 @@ type upgradeIO struct {
 	// 带回来(而不是拆成 forced+cause 两个值)是有理由的:强制路径的**原因**不止
 	// 两种,收尾文案要靠 forcedTeardownReason 区分,少带一个字段就会打印出假话。
 	// 那条路是 best-effort,bx down 自己都拒绝断言「网络已还原」。
-	stopProtection func() (macOSDownResult, error)
+	// stopProtection 停保护。参数是「这台机器此刻要不要保护」——**升级一开始
+	// 就读好的那个值**,由它决定这次停机要不要武装维护挂起。
+	//
+	// 不在停机里自己再读一次:退回路径(挂起写不成)会在停机途中把 desired 写成
+	// off,第二次读拿到的就不是用户的意图了。
+	stopProtection func(protectionWanted bool) (macOSDownResult, error)
 	// reassertDesiredOn 把「用户要保护」重新写回盘上。
 	//
 	// **只为过渡升级(新 CLI × 旧 Guardian)存在,而且只在那时跑。** 旧 Guardian
@@ -115,7 +120,7 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 		switch step {
 		case UpgradeStopProtection:
 			io.log("• 停止保护(网络将暂时回到直连)")
-			down, err := io.stopProtection()
+			down, err := io.stopProtection(desiredOn)
 			outcome.Down = down
 			outcome.ForcedTeardown = down.Forced || err != nil
 			if outcome.ForcedTeardown {

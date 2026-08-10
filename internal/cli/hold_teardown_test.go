@@ -321,6 +321,54 @@ func TestForcedTeardownForUpgradeArmsHoldInsteadOfWritingDesiredOff(t *testing.T
 	}
 }
 
+// **一台本来就不要保护的机器,升级不许在它身上武装挂起。**
+//
+// 没有任何东西会去清它:upgradeSteps(running, desiredOn=false) 里根本没有
+// 「恢复保护」这一步,而销挂起只发生在用户显式的 up/down/migrate 上。于是那
+// 15 分钟里菜单表头写着 Paused、bx status 写着「保护此刻被有意压制」,而机器
+// 关着只是因为用户想关着 —— 还会让启动恢复走 HoldArmed 那一支、跳过
+// desired==off 那支的 restoreDNS,把陈旧的托管 DNS 留在系统里。
+func TestUpgradeDownOnAMachineThatWantsProtectionOffArmsNoHold(t *testing.T) {
+	if got := upgradeStopPurpose(false); got != downPurposeUpgradeUnprotected {
+		t.Fatalf("测试前提不成立:protectionWanted=false 应当选 downPurposeUpgradeUnprotected,实际 %v", got)
+	}
+	calls := &teardownCalls{}
+	deps := teardownDeps(calls, nil, nil, nil)
+	if _, err := macOSDownLifecycleFor(context.Background(), upgradeStopPurpose(false), "/etc/bx/config.yaml", deps); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls.armed) != 0 {
+		t.Fatalf("保护本来就关着,不该武装挂起: %v", calls.armed)
+	}
+	// 但拆除照做完:这一步的职责没变。
+	if calls.stopCore == 0 || calls.forceTeardown == 0 || calls.barrier == 0 || calls.dns == 0 {
+		t.Fatalf("破坏性步骤没做完: %+v", calls)
+	}
+	// 也不许顺手当成「用户要关」:那会销掉一张可能存在的挂起、写一次 desired=off
+	// —— 而 desired 只由用户改。
+	if calls.cleared != 0 || calls.desiredOff != 0 {
+		t.Fatalf("升级不是用户显式关闭:cleared=%d desiredOff=%d %v", calls.cleared, calls.desiredOff, calls.order)
+	}
+}
+
+// 干净路径上这条来由同样必须走 DownForUpgrade:普通的 Down 会被 Guardian 当作
+// 「用户不要保护了」——写 desired=off、销挂起,两件都不该发生。
+func TestUpgradeDownOnAnUnprotectedMachineStillUsesTheMaintenanceEndpoint(t *testing.T) {
+	calls := &teardownCalls{}
+	client := &holdStubClient{}
+	deps := teardownDeps(calls, nil, nil, nil)
+	deps.client = client
+	deps.guardianReady = func(context.Context) bool { return true }
+	deps.legacyLoaded = func(context.Context) (bool, error) { return false, nil }
+
+	if _, err := macOSDownLifecycleFor(context.Background(), upgradeStopPurpose(false), "/etc/bx/config.yaml", deps); err != nil {
+		t.Fatal(err)
+	}
+	if client.downForUpgradeCalls != 1 || client.downCalls != 0 {
+		t.Fatalf("走错了端点:DownForUpgrade=%d Down=%d", client.downForUpgradeCalls, client.downCalls)
+	}
+}
+
 // **设计取舍三,逃生路径的不变量**:挂起写失败时退回写 desired=off,
 // 而且六步破坏性动作照常全做完 —— 停止永不依赖别的先成功。
 func TestForcedTeardownFallsBackToDesiredOffWhenHoldWriteFailsAndStillTearsDown(t *testing.T) {

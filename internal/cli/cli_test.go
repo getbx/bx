@@ -5443,6 +5443,36 @@ func TestRenderClientStatusMentionsMaintenanceHoldOnTheFullReport(t *testing.T) 
 	}
 }
 
+// **desired=off 配一张挂起时,那一行必须说出「过期不会恢复保护」。**
+//
+// 这个组合是过渡升级的样子:新 CLI 武装了挂起,而服务那次停机的旧 Guardian
+// 无条件写下了 off。此前这一行只印「desired 仍是 off」——把最要紧的那半句
+// 咽了回去:挂起过期买到的是「不再压制」,不是「自动修好」(设计取舍五),
+// 而盘上写着 off,下次开机也不会恢复。用户需要的是那条出路。
+func TestRenderClientStatusExplainsAHoldOverAnOffIntent(t *testing.T) {
+	out := renderClientStatus(clientStatusReport{
+		ProtectionState: guardian.ProtectionOff,
+		Desired:         "off",
+		MaintenanceHold: &guardian.MaintenanceHoldStatus{Reason: "upgrade", ExpiresAt: time.Now().Add(3 * time.Minute)},
+	})
+	if !strings.Contains(out, "不会自动恢复") || !strings.Contains(out, "sudo bx up") {
+		t.Fatalf("desired=off 时必须说清过期之后没人会把保护起回来,以及出路:\n%s", out)
+	}
+}
+
+// 而 desired=on 那条常态**不许**多这句话:挂起一过期,机器就回到「用户要保护」
+// 那条线上,凭空劝人去跑 sudo bx up 是噪声。
+func TestRenderClientStatusDoesNotTellUsersToRunUpUnderANormalHold(t *testing.T) {
+	out := renderClientStatus(clientStatusReport{
+		ProtectionState: guardian.ProtectionOff,
+		Desired:         "on",
+		MaintenanceHold: &guardian.MaintenanceHoldStatus{Reason: "upgrade", ExpiresAt: time.Now().Add(3 * time.Minute)},
+	})
+	if strings.Contains(out, "sudo bx up") {
+		t.Fatalf("desired=on 的挂起是常态,不该催用户动手:\n%s", out)
+	}
+}
+
 // 没有挂起时**一个字都不写**。理由与 observerForPlatform 那道门逐字相同:
 // 一行常驻的「没有挂起」会把这一项训练成噪声,而它一年里只该出现几分钟。
 func TestRenderClientStatusSaysNothingWithoutAMaintenanceHold(t *testing.T) {

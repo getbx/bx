@@ -88,6 +88,12 @@ func maintenanceRow(status: GuardianStatus?, now: Date) -> MenuRow? {
 ///
 /// 判据直接复用 maintenanceRow(同一个能力门、同一次过期判定):两处各写一遍
 /// 条件,迟早出现「表头说 Paused、下面一行挂起却不显示」这种自相矛盾。
+///
+/// **刻意不看 desired。** 一度考虑过「desired=off 就别说 Paused」,但那个组合
+/// 今天只有一个来源:过渡升级(新 CLI 武装了挂起,服务那次停机的旧 Guardian
+/// 无条件写下 off)—— 那台机器确实正在升级,Paused 是实话。而「用户自己关掉的
+/// 保护」根本不会有挂起:升级一台不要保护的机器不武装挂起(Go 侧
+/// downPurposeUpgradeUnprotected),用户显式的 up/down 一律销挂起。
 func offSubtitle(status: GuardianStatus?, now: Date) -> String {
     maintenanceRow(status: status, now: now) == nil ? "Off" : "Paused"
 }
