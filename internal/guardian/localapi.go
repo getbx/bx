@@ -158,31 +158,44 @@ func applyVersionFields(status *Status, options LocalAPIOptions) {
 	status.Capabilities = GuardianCapabilities()
 }
 
-// maintenanceHoldReporter 由能回答「此刻有没有维护挂起」的 controller 实现。
-type maintenanceHoldReporter interface {
-	MaintenanceHoldStatus() *MaintenanceHoldStatus
+// publishedIntentReporter 由能一次读出**两半意图**的 controller 实现:用户要
+// 什么,以及此刻允不允许有保护。
+type publishedIntentReporter interface {
+	PublishedIntent() (DesiredState, *MaintenanceHoldStatus, bool)
 }
 
-// attachMaintenanceHold 在**每一个**回 Status 的响应上附挂起:菜单的开关读的是
+// attachPublishedIntent 在**每一个**回 Status 的响应上附上这对值:菜单的开关读的是
 // POST /v1/up、/v1/down 的响应,只在 GET 上附等于在最需要它的那一刻恒为空
 // (与 applyVersionFields 那条注释同一个教训)。
 //
-// controller 不实现这个接口时字段保持缺席 —— 与「声明了能力、此刻没有挂起」
+// **desired 与挂起必须一起换。** 只换挂起、让 desired 留在内存里那一份,就是设计
+// 取舍⑥点名禁止的混源发布:内存那份会被 needsAttention 写成调用方传进来的字面量
+// (好几处是 DesiredOn 而磁盘写着 off),于是同一份应答里「挂起说磁盘」「desired
+// 说内存」,下游(bx status 的挂起行、observe.Intent、Diverge)据此得出的结论与
+// 调谐器相反。
+//
+// controller 不实现这个接口时两者都保持原样 —— 与「声明了能力、此刻没有挂起」
 // 长得一样,而那正是对的:能力由 applyVersionFields 无条件声明,说的是
-// 「这一版认识挂起」;某个替身答不出来不该把这句话收回去。
-func attachMaintenanceHold(status *Status, controller Controller) {
-	reporter, ok := controller.(maintenanceHoldReporter)
+// 「这一版认识挂起」;某个替身答不出来不该把这句话收回去。读盘失败(ok=false)
+// 同理:保留信念,不拿磁盘的沉默去覆盖它。
+func attachPublishedIntent(status *Status, controller Controller) {
+	reporter, ok := controller.(publishedIntentReporter)
 	if !ok {
 		return
 	}
-	status.MaintenanceHold = reporter.MaintenanceHoldStatus()
+	desired, hold, read := reporter.PublishedIntent()
+	if !read {
+		return
+	}
+	status.Desired = desired
+	status.MaintenanceHold = hold
 }
 
 // statusWithVersions 是 mutation/migration handler 回给客户端的那份状态。
 func statusWithVersions(controller Controller, options LocalAPIOptions) Status {
 	status := statusOf(controller)
 	applyVersionFields(&status, options)
-	attachMaintenanceHold(&status, controller)
+	attachPublishedIntent(&status, controller)
 	return status
 }
 
@@ -192,7 +205,7 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 	if recoveries == nil {
 		applyVersionFields(&status, options)
 		attachCoreRuntime(&status, options)
-		attachMaintenanceHold(&status, controller)
+		attachPublishedIntent(&status, controller)
 		return status
 	}
 	if current, ok := recoveries.(pathRecoveryStatusController); ok {
@@ -214,7 +227,7 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 	}
 	applyVersionFields(&status, options)
 	attachCoreRuntime(&status, options)
-	attachMaintenanceHold(&status, controller)
+	attachPublishedIntent(&status, controller)
 	return status
 }
 

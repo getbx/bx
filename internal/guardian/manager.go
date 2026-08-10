@@ -646,25 +646,39 @@ func (m *Manager) migrateLegacyIntentOnce() {
 	})
 }
 
-// MaintenanceHoldStatus 现读磁盘。**不缓存、不进 m.status。**
+// PublishedIntent 一次读盘发布**两半意图**:用户要什么(desired),以及此刻允不
+// 允许有保护(挂起)。第三个返回值是「这次读成了吗」。
+//
+// **两者必须同源**(设计取舍⑥)。挂起从磁盘读、desired 从内存读的话,一次应答里
+// 就能出现两者互不相干的组合 —— 而内存那一份已经会撒谎:needsAttention 把调用方
+// 传进来的常量写进 status.Desired(:1597),好几处传的是字面量 DesiredOn 而磁盘
+// 写着 off。发布出去的这对值是下游一切判断的输入(bx status 的挂起行、
+// attachObservation 喂给 observe.Intent 的 Desired、Diverge 的两条分支),于是
+// 调谐器与 Diverge 能在同一台机器的同一瞬间得出相反结论。
+//
+// **读失败返回 ok=false**,由调用方保留内存里那份信念:磁盘的沉默不许把「用户
+// 要保护」抹成 off(Tristate 那条纪律)。而 /v1/status 绝不因此失败 —— 菜单唯一
+// 的数据源不许因为一次读盘失败整个变黑;真正会因此改变行为的路径
+// (recoverLocked / handleUnexpectedExit / 调谐环)一律 fail-closed 并发
+// intent_unreadable,那才是它该出现的地方。
+func (m *Manager) PublishedIntent() (DesiredState, *MaintenanceHoldStatus, bool) {
+	intent, err := m.loadIntentSnapshot(time.Now())
+	if err != nil {
+		return "", nil, false
+	}
+	if !intent.HoldArmed {
+		return intent.Desired, nil, true
+	}
+	return intent.Desired, &MaintenanceHoldStatus{Reason: intent.Hold.Reason, ExpiresAt: intent.Hold.ExpiresAt}, true
+}
+
+// 挂起**现读磁盘、不缓存、不进 m.status**(见 PublishedIntent):
 //
 // 不进 m.status:控制面里一大批路径拿从零构造的 Status 字面量整体替换它
 // (upLocked/downLocked/recoverLocked…),挂起只要并进去就迟早被顺手抹掉 ——
 // 与 reconcileReport 住在外面同一个理由。
 //
 // 不缓存:武装它的是**另一个进程**(CLI),缓存等于发布一个可能已经不成立的事实。
-//
-// 读失败返回 nil(键缺席),**不因此让 /v1/status 失败**:菜单唯一的数据源不许
-// 因为一次读盘失败整个变黑。「读不出来」这件事本身另有去处 —— 真正会因此改变
-// 行为的路径(recoverLocked / handleUnexpectedExit / 调谐环)一律 fail-closed 并
-// 发 intent_unreadable,那才是它该出现的地方。
-func (m *Manager) MaintenanceHoldStatus() *MaintenanceHoldStatus {
-	intent, err := m.loadIntentSnapshot(time.Now())
-	if err != nil || !intent.HoldArmed {
-		return nil
-	}
-	return &MaintenanceHoldStatus{Reason: intent.Hold.Reason, ExpiresAt: intent.Hold.ExpiresAt}
-}
 
 // clearMaintenanceHold 撤销挂起。**只记日志,绝不让调用方失败**:它跑在
 // up/down 这两条路上,而停止不许依赖先成功做成别的事。
