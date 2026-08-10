@@ -27,12 +27,13 @@ var safeLastErrorPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
 
 func OpenDefaultStore() *Store {
 	return OpenStore(Paths{
-		Desired:       guardianStateDirectory + "/guardian-state.json",
-		Transaction:   guardianUpdateDirectory + "/transaction.json",
-		Receipt:       guardianUpdateDirectory + "/receipt.json",
-		Staging:       guardianUpdateDirectory + "/staging",
-		Snapshots:     guardianUpdateDirectory + "/snapshots",
-		UpgradeIntent: guardianStateDirectory + "/upgrade-intent.json",
+		Desired:         guardianStateDirectory + "/guardian-state.json",
+		Transaction:     guardianUpdateDirectory + "/transaction.json",
+		Receipt:         guardianUpdateDirectory + "/receipt.json",
+		Staging:         guardianUpdateDirectory + "/staging",
+		Snapshots:       guardianUpdateDirectory + "/snapshots",
+		UpgradeIntent:   guardianStateDirectory + "/upgrade-intent.json",
+		MaintenanceHold: guardianStateDirectory + "/maintenance-hold.json",
 	})
 }
 

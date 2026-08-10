@@ -34,6 +34,14 @@ type Paths struct {
 	// 点是 Manager.Down(菜单走 socket → /v1/down → controller.Down;CLI 干净
 	// 路径走 client.Down 到同一个 handler),在 internal/guardian 里。
 	UpgradeIntent string
+	// MaintenanceHold 记录「此刻不该有保护,但用户想要」。
+	//
+	// **它绝不进 Desired 那个文件。** guardian-state.json 的内容字面就是 `"on"`
+	// 或 `"off"`(裸 JSON 字符串,没有信封、没有 schema_version、没有迁移机制),
+	// 往里加字段的后果不是「旧版本忽略未知字段」,而是旧 Guardian 的 LoadDesired
+	// 报错 → recoverLocked 置 recoveryBlocked=true → Manager.Down 第一句就返回
+	// errRecoveryIncomplete,**永久**。而升级恰恰是新旧两版共存的那一刻。
+	MaintenanceHold string
 }
 
 type DNSState string
