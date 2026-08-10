@@ -16,4 +16,4 @@ import "errors"
 // requireDaemonPlatform。
 var errCoreScanUnsupported = errors.New("core process scan is only implemented on darwin")
 
-func scanRunningCores() ([]Process, error) { return nil, errCoreScanUnsupported }
+func scanRunningCores(string) ([]Process, error) { return nil, errCoreScanUnsupported }

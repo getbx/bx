@@ -138,7 +138,7 @@ func TestScanRunningCoresFailsWithoutRootPrivileges(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("测试进程以 root 身份运行,无法验证非 root 分支")
 	}
-	_, err := scanRunningCores()
+	_, err := scanRunningCores(coreScanLifecycle)
 	if err == nil {
 		t.Fatal("非 root 调用 scanRunningCores 必须报错——不能默默判定「没有 Core」")
 	}

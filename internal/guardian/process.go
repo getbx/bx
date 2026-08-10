@@ -224,21 +224,39 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 	return process, nil
 }
 
+// 扫描的两种来由。只影响那行普查日志的 reason=,不影响判据本身 —— 两条路
+// 问的是同一个问题、用的是同一个 looksLikeCore。
+const (
+	// coreScanLifecycle:准入与停机确认。由用户动作触发,一天几次,而紧邻它的
+	// guardian_orphan_launch_marker / guardian_no_core_record 是「我放行了一个
+	// Core,因为我认为没有别的 Core 在跑」唯一的记录。
+	coreScanLifecycle = "lifecycle"
+	// coreScanObserve:只观察的调谐循环的每轮测量。稳态约 144 次/天且永久,
+	// 不打标签会把上面那条审计线索淹掉。
+	coreScanObserve = "observe"
+)
+
 // scanCores 向系统求证「有没有进程在跑 Core」。抽出来是为了让
 // resolveOrphanLaunchMarker 与 refuseUnrecordedRunningCore 共用同一个判据
 // (以及同一个可注入点)。
-func (r *ExecCoreRunner) scanCores() ([]Process, error) {
-	scan := r.ScanRunningCores
-	if scan == nil {
-		scan = scanRunningCores
+func (r *ExecCoreRunner) scanCores(reason string) ([]Process, error) {
+	if r.ScanRunningCores != nil {
+		return r.ScanRunningCores()
 	}
-	return scan()
+	return scanRunningCores(reason)
 }
 
 // ScanRunning 把 scanCores 暴露给 Manager:它在报告「已关闭」之前要向系统求证,
 // 而不能只信 /var/lib/bx/core-process.json —— 那份记录里没有 legacy Core、
 // 没有 `sudo bx run` 起的 Core,手删过它的机器上更是什么都没有。
-func (r *ExecCoreRunner) ScanRunning() ([]Process, error) { return r.scanCores() }
+func (r *ExecCoreRunner) ScanRunning() ([]Process, error) { return r.scanCores(coreScanLifecycle) }
+
+// ScanRunningObserved 是只观察的调谐循环那条测量路径。**与 ScanRunning 同一个
+// 判据、同一个注入点**,只是普查日志的 reason 不同 —— 分开是为了让准入审计
+// 那条 grep 不被每轮一次的循环噪声淹没,不是为了让两条路问出不同的答案。
+func (r *ExecCoreRunner) ScanRunningObserved() ([]Process, error) {
+	return r.scanCores(coreScanObserve)
+}
 
 // scannedCorePIDs 把扫到的 PID 拼成诊断文本。**只用于错误文本**——这些进程
 // 是「疑似」而非「已验明的我们的 Core」,绝不得进 Process payload。
@@ -272,7 +290,7 @@ const ownershipUncertainEscapeHint = "run `sudo bx down` then `sudo bx up` to cl
 //
 // 返回的 error 非 nil 表示必须继续 fail-closed。
 func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord, hop string) error {
-	cores, err := r.scanCores()
+	cores, err := r.scanCores(coreScanLifecycle)
 	if err != nil {
 		// 问不出来不等于没有。
 		return uncertainOwnership(
@@ -310,7 +328,7 @@ func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord, hop str
 // 与 resolveOrphanLaunchMarker 同一个判据、同一条 fail-closed 规则:
 // 扫到 Core、或扫不出来,都拒绝。
 func (r *ExecCoreRunner) refuseUnrecordedRunningCore() error {
-	cores, err := r.scanCores()
+	cores, err := r.scanCores(coreScanLifecycle)
 	if err != nil {
 		return uncertainOwnership(Process{Uncertain: true},
 			fmt.Errorf("no Core process record on disk, and scanning for running Cores failed: %w; %s", err, ownershipUncertainEscapeHint))

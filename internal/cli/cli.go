@@ -4564,9 +4564,13 @@ func reconcileRoundVerdict(round guardian.ReconcileReport) string {
 	case len(round.Actions) > 0:
 		return "本会提议 " + strings.Join(round.Actions, ",")
 	case round.UnchangedRounds == 0:
-		// 干净 + 连续未变轮数为 0 ⇒ 判断**这一轮刚刚变成**干净的(健康机器的第
-		// 一轮就已经是 1,因为循环的 previous 初值就是干净)。写成「连续 0 轮
-		// 未变」在最该说清楚的那一刻反而最难读:某件事刚刚被解决掉了。
+		// 干净 + 连续未变轮数为 0 ⇒ 这一轮的判断与上一轮**不同**。写成「连续 0 轮
+		// 未变」在最该说清楚的那一刻反而最难读。
+		//
+		// **注意它有两种来由,措辞必须同时对这两种成立**:一是某件事刚刚被解决掉;
+		// 二是 Guardian 刚起来、这是第一轮(循环的 previous 初值虽然也是「干净」,
+		// 但每轮还带着观测质量与 Core 普查,首轮几乎必然与初值不同)。故这里说
+		// 「刚转为」而不说「刚被解决」—— 后者在开机后的头 30 秒会是一句假话。
 		return "无差异(本轮刚转为无差异)"
 	default:
 		return fmt.Sprintf("无差异(连续 %d 轮未变)", round.UnchangedRounds)

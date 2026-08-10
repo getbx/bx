@@ -80,6 +80,13 @@ type coreScanner interface {
 	ScanRunning() ([]Process, error)
 }
 
+// observingCoreScanner 是同一次求证的「只观察」入口:判据一字不差,只是普查
+// 日志的 reason 不同。可选 —— 实现不了的 runner 落回 coreScanner,答案完全一样,
+// 唯一的差别是那行日志分不出是谁扫的。
+type observingCoreScanner interface {
+	ScanRunningObserved() ([]Process, error)
+}
+
 // coreScanSettle 是两次扫描之间的等待。刚收到 SIGTERM、正在跑 defer 的进程
 // 既不是僵尸(scanRunningCores 已跳过僵尸)也还没消失,扫到它就断言「还在跑」
 // 会把每一次正常关闭都变成告警 —— 而被训练成忽略告警的用户,真出事时也会忽略。
@@ -379,15 +386,28 @@ func (m *Manager) measureRunningCores() (measurement ReconcileCoreScan) {
 			measurement = ReconcileCoreScan{Reason: coreScanPanicked}
 		}
 	}()
-	scanner, ok := m.runner.(coreScanner)
-	if !ok {
+	scan := m.observingCoreScan()
+	if scan == nil {
 		return ReconcileCoreScan{Reason: coreScanUnsupported}
 	}
-	cores, err := scanner.ScanRunning()
+	cores, err := scan()
 	if err != nil {
 		return ReconcileCoreScan{Reason: coreScanFailed}
 	}
 	return ReconcileCoreScan{Measured: true, Cores: len(cores)}
+}
+
+// observingCoreScan 优先取带「只观察」标签的那条入口,取不到就退回通用的。
+// 退回不改变答案,只让那行普查日志分不出是谁扫的 —— 宁可少一个标签,也不能
+// 因为 runner 没实现新接口就把「没测」当成「测到 0 个」。
+func (m *Manager) observingCoreScan() func() ([]Process, error) {
+	if observing, ok := m.runner.(observingCoreScanner); ok {
+		return observing.ScanRunningObserved
+	}
+	if scanner, ok := m.runner.(coreScanner); ok {
+		return scanner.ScanRunning
+	}
+	return nil
 }
 
 func (m *Manager) Up(ctx context.Context) error {
