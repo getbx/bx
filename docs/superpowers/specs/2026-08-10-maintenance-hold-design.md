@@ -210,6 +210,64 @@ Guardian 会在二进制换到一半时装上屏障、fork 一个新 Core。
 方向上也安全 —— 让它认挂起是**少做一个动作**,不可能让「停止」依赖别的先成功,
 不与逃生路径不变量冲突。并进改停机语义的那个任务。
 
+## 整分支复审之后的修正(2026-08-10,以本节为准)
+
+**① 过渡升级(新 CLI × **旧** Guardian)会把用户的意图弄丢 —— 这是本设计删掉
+欠条时漏掉的那一半。** 删欠条的依据是「升级停机不再改写 `desired`」,而那只在
+**新** Guardian 服务那次停机时成立;第一次升级面对的一定是旧的那个,它的
+`Manager.Down` **无条件** `SaveDesired(DesiredOff)`(`git show
+d1abe81:internal/guardian/manager.go`;旧的 `?reason=upgrade` 只保住欠条,从不
+抑制那次写入)。于是停机之后盘上是一句**自洽的**假话:`desired=off`、没有挂起、
+没有欠条 —— `Diverge` 一个字都不说,而一次崩溃就让重跑读到 off:「恢复保护」从
+计划里消失,升级还会报完成 = 永久无保护。
+
+**处置(能力门)**:服务这次停机的 Guardian **没有**声明 `maintenance_hold`
+(或问不出来)时,CLI 在停机之后、**装文件之前**把 `desired=on` 写回去。
+选它而不是继续写一个版本的欠条,理由有三:欠条的读回逻辑正是被这一期删掉的
+(它的 OR 语义带着那个活 bug);写回覆盖的是**整个**窗口(欠条方案只有在新
+Guardian 起来做迁移之后才生效);而 `desired` 本来就该记着「用户要保护」——
+这一步不是新增一种表示法,是把旧 Guardian 刚抹掉的那句话原样写回。
+写不成不产生 error(这一次仍会在末尾起保护),只留一行点名 `sudo bx up`。
+
+**② 升级一台本来就不要保护的机器,不再武装挂起。** `recordStopIntent` 曾无条件
+武装,而 `upgradeSteps(running, desiredOn=false)` 里没有「恢复保护」这一步,销挂起
+又只发生在用户显式的 up/down/migrate 上 —— 那张挂起没有任何东西会去清它。新增
+`downPurposeUpgradeUnprotected`:照常走 `DownForUpgrade`,但既不武装挂起也不写
+`desired=off`(盘上已经是 off,而 `desired` 只由用户改)。**已知取舍**:用户恰好
+在这几秒里点 Turn On 的窄窗口不再有挂起拦着;另一头是替用户写一句他没说过的 off。
+
+**③ `desired` 与挂起必须由 `/v1/status` 一起发布。** 调谐器、`handleUnexpectedExit`、
+`recoverLocked` 都改成了 `LoadIntentSnapshot`,唯独 `statusOf` 没有 —— 实测能拿到
+「内存说 on、磁盘说 off、挂起来自磁盘」的混源应答,正是取舍⑥禁止的组合。现由
+`PublishedIntent()` 一次读盘同时给出两半;读盘失败保留内存里那份信念(磁盘的沉默
+不是「用户不想要保护」),而 `/v1/status` 绝不因此失败。
+
+**④ 挂起清不掉时 `Up`/`Migrate` 拒绝打开保护。** 「读得出来、却删不掉」此前只记
+一行日志,`bx up` 照常报 Protected 而挂起还武装着 —— 此后 Core 一退出,
+`handleUnexpectedExit` 走 `HoldArmed` 那一支**既不重启也不装屏障**,保护在用户
+以为开着的时候退回明文直连。新码 `maintenance_hold_clear_failed`,CLI 侧有出路。
+**方向**:这里拒绝的是**启动**;`Down` 的销挂起仍是 best-effort、只记日志。
+
+**⑤ 反方向(旧 CLI × 新 Guardian)的措辞更正。** 原先说盘上「两句话都没有、今天
+无害」——**不对**。旧 CLI 会写升级欠条,而新 Guardian 的启动恢复(升级本身必然
+触发)会迁移它:武装一张 15 分钟的 `legacy_upgrade` 挂起 + `desired` 复位 on。
+顺利跑完的升级不受影响;**死在末尾那次 `bx up` 之前**的升级,则把「开机自愈」
+换成了「一次开机被压制」,15 分钟后自行结束。
+
+**⑥ 崩溃后的 `desired` 语义变了,记录在案。** `forcedMacOSTeardown` 在
+`armsHold()` 下不再写 `desired=off`,于是**装文件期间断电**留下的是 `desired=on`
+(此前是 `off`)。方向是对的(用户确实想要保护),后果是那台机器下次开机会自己
+把保护起回来 —— 而二进制可能只换了一半。实际风险很低:`installAppBundle` 用
+stage+rename,常见情形下要么全换要么没换;`runtime` 目录按版本落盘,
+`current` 符号链接同样是原子替换。**这一条没有专门的防护,只有记录。**
+
+**⑦ 一张读不出来的挂起会让启动恢复永远重试(5 秒一轮),这是刻意的。**
+`LoadMaintenanceHold` 对坏 schema / 坏 reason / 远期过期一律报错,`recoverLocked`
+因此 fail-closed,而那个文件不会自己变好。安静地放弃等于让机器停在「用户要保护、
+却没有保护」上不出声。**要防的只是被误读成崩溃循环**:崩溃循环里 PID 会变、启动
+横幅重复出现;这一条是同一个进程复读同一个码(`intent_unreadable`),而那个码在
+CLI 侧有自己的出路。理由写在 `retryDaemonRecovery` 的注释里。
+
 ## 风险
 
 **最大的一条:改的是逃生路径。** `forcedMacOSTeardown` 与 `handleUnexpectedExit` 都受

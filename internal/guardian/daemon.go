@@ -707,6 +707,23 @@ func loadGuardianLocalAPIOwnerUID(configPath string) (uint32, error) {
 	return uint32(cfg.OwnerUID), nil
 }
 
+// retryDaemonRecovery 以 100ms→5s 的退避一直重试启动恢复,直到成功或 ctx 结束。
+//
+// **一种输入会让它永远成功不了,值得写下来:一张读不出来的维护挂起。**
+// LoadMaintenanceHold 对坏 schema / 坏 reason / 时钟跳变造出的远期过期一律报错
+// (刻意的:「问不出来」不许塌缩成「没有挂起」),recoverLocked 于是 fail-closed
+// 返回错误,而盘上那个文件不会自己变好 —— 于是这里稳定在 5 秒一轮,每轮由
+// needsAttention 打一行 `guardian_needs_attention code=intent_unreadable`。
+//
+// **这是对的,而且是刻意吵闹的**:出路(删掉那个文件、或跑一次显式的 up/down)
+// 只有用户能做,而安静地放弃等于让机器停在「用户要保护、却没有保护」上不出声。
+// 唯一需要防的是被误读成崩溃循环 —— 两者在日志里长得不一样:
+//   - 崩溃循环:launchd 反复拉起 Guardian,PID 变、启动横幅重复出现。
+//   - 这一条:同一个进程,PID 不变,没有启动横幅,只有那一行码在复读;
+//     而那个码在 CLI 侧有自己的出路(guardianCodeHints 的 intent_unreadable)。
+//
+// 不给它加限次:重试耗尽之后这台机器就再没有任何东西会去看那个文件,而挂起本身
+// 又压不住(它读不出来 ⇒ 谁都不动手),那才是真正的静默死局。
 func retryDaemonRecovery(ctx context.Context, controller recoveringController) {
 	delay := guardianRecoveryRetryInitial
 	for {

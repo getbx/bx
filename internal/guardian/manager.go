@@ -864,7 +864,16 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 		// 方向上安全:这是**少做一个动作**,不可能让「停止」依赖别的先成功。
 		// 而屏障照拆 —— 那是覆盖整个公网的 8 条 /2 reject 路由,留下就是整机
 		// 断网,且拆它从不依赖 Core 在跑(正常的 Down 成功路径就是这么做的)。
-		if !maintenance {
+		if maintenance {
+			// **压制必须留下痕迹,与另外三条路一样。** 别的三条各有自己的一行
+			// (guardian_startup_recovery_held / guardian_core_exit_under_hold /
+			// 调谐环的 guardian_reconcile_would),唯独这一条此前完全无声 ——
+			// 于是「DNS 还原失败了,而 Core 没有像往常那样被放回去」在真机日志里
+			// 没有任何解释,排查的人只会看到一次没有下文的 restore 失败。
+			//
+			// 它不会变成噪声:只有「维护停机」且「DNS 还原失败」同时成立才写。
+			log.Printf("guardian_down_restore_recovery_held reason=maintenance_stop")
+		} else {
 			if _, recoveryErr := m.startCoreLocked(recoveryCtx); recoveryErr != nil {
 				m.needsAttentionUnlessDNSActivationFailure("down_restore_recovery_failed")
 				return errors.Join(restoreErr, recoveryErr)
