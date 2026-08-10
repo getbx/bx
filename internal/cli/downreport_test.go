@@ -168,12 +168,17 @@ func (errReportSentinel) Error() string { return "recovery-incomplete-sentinel" 
 // 本条仍然更强,而且强在两个具体的地方:它查**全部**四条(少一条即红,而硬编码
 // 一条的写法对「少了另外三条」是瞎的),并且在 hints 为空时 t.Fatal 而不是
 // 平凡地通过(「每一条都在里面」对空集合恒真 —— 反极性断言的老陷阱)。
+//
+// **替身用的是 teardownDeps(本包,无 build tag)而不是 newFakeMacOSLifecycleDeps
+// (darwin-tagged)。** 后者会让这个没有 build tag 的文件在 ubuntu/windows 上
+// 编译不过 —— 而 CI 的三平台矩阵正是在那两台机器上跑 `go test ./...`,于是整个
+// internal/cli 在两条腿上根本没跑过。被测的 forcedMacOSTeardown 自己是平台无关的。
 func TestForcedTeardownFailureCarriesTheManualRecoveryCommands(t *testing.T) {
-	f := newFakeMacOSLifecycleDeps()
+	deps := teardownDeps(&teardownCalls{}, nil, nil, nil)
 	boom := errors.New("bootout-refused")
-	f.macOSLifecycleDeps.forceTeardown = func(context.Context) error { return boom }
+	deps.forceTeardown = func(context.Context) error { return boom }
 
-	err := forcedMacOSTeardown(context.Background(), stopIntent{purpose: downPurposeUser}, f.macOSLifecycleDeps, nil)
+	err := forcedMacOSTeardown(context.Background(), stopIntent{purpose: downPurposeUser}, deps, nil)
 	if err == nil {
 		t.Fatal("有步骤失败时必须报错 —— 静默成功会让用户以为网络已经还原")
 	}
@@ -204,11 +209,10 @@ func TestForcedTeardownFailureCarriesTheManualRecoveryCommands(t *testing.T) {
 
 // 干净路径失败导致的回落,原因同样要出现在这条错误里 —— 它解释了「为什么没能干净停下」。
 func TestForcedTeardownFailureAlsoCarriesTheCleanPathCause(t *testing.T) {
-	f := newFakeMacOSLifecycleDeps()
-	f.macOSLifecycleDeps.restoreSystemDNS = func(context.Context) error { return errors.New("dns-stuck") }
+	deps := teardownDeps(&teardownCalls{}, nil, nil, errors.New("dns-stuck"))
 	cause := errors.New("recovery-incomplete")
 
-	err := forcedMacOSTeardown(context.Background(), stopIntent{purpose: downPurposeUser}, f.macOSLifecycleDeps, cause)
+	err := forcedMacOSTeardown(context.Background(), stopIntent{purpose: downPurposeUser}, deps, cause)
 	if err == nil {
 		t.Fatal("有步骤失败时必须报错")
 	}
