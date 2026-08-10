@@ -286,7 +286,14 @@ func TestExecCoreRunnerWaitClearsOwnedRecordBeforePublishingExit(t *testing.T) {
 	}
 }
 
-func TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit(t *testing.T) {
+// waitpid 已经返回 —— 这是「进程确定没了」最强的一种证明。握着它却因为删不掉
+// 一份 JSON 记录就宣布所有权不确定,与 603b602 当初对 Existing() 的判断直接
+// 冲突,而后果是一次文件系统抖动锁死 daemon。
+//
+// 这条测试原名 ...PublishesUncertainExit,编码的正是被推翻的那个行为。**不删,
+// 改断言** —— 它守着的另外两件事(记录不许被静默丢掉、Existing 之后仍能继续)
+// 依然有效。
+func TestExecCoreRunnerRecordRemovalFailureAfterWaitIsNotOwnershipUncertainty(t *testing.T) {
 	dir := t.TempDir()
 	executable := filepath.Join(dir, "bx")
 	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
@@ -302,14 +309,21 @@ func TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit(t *testing.T) 
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.Operations = operations
 	runner.RemoveProcessRecord = func(string) error { return errors.New("record removal failed") }
+	// 与 Watch 那条同理:这行日志由 wait goroutine 打,而 log 的输出目标是全局的。
+	var logs syncBuffer
+	restoreLog := swapGuardianLogOutput(&logs)
+	defer restoreLog()
 
 	process, err := runner.Start(context.Background(), CoreStartOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	started.release()
-	if err := <-process.Exit; !errors.Is(err, ErrProcessOwnershipUncertain) {
-		t.Fatalf("exit error = %v, want uncertain ownership", err)
+	if exitErr := <-process.Exit; errors.Is(exitErr, ErrProcessOwnershipUncertain) {
+		t.Fatalf("waitpid 已经返回,却因为删不掉一份记录报了所有权不确定: %v", exitErr)
+	}
+	if !strings.Contains(logs.String(), "guardian_stale_core_record_after_exit") {
+		t.Fatalf("清理失败必须留下线索,日志里没有:\n%s", logs.String())
 	}
 	if _, err := os.Stat(runner.StatePath); err != nil {
 		t.Fatalf("owned record removed after failed reconciliation: %v", err)

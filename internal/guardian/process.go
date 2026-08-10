@@ -215,7 +215,12 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 	go func() {
 		waitErr := started.Wait()
 		if err := r.removeRecordIfGeneration(process.PID, process.Generation); err != nil {
-			waitErr = errors.Join(waitErr, uncertainOwnership(process, fmt.Errorf("clear owned Core record after exit: %w", err)))
+			// **waitpid 已经返回** —— 进程确定没了,失败的只是删一份 JSON。
+			// 与 finishExistingWatch 同源、证明更硬:那处靠 Inspect 报
+			// ErrProcessNotRunning,这处是内核亲口告诉我们子进程收割完了。
+			// 清不掉一个陈旧文件不等于所有权存疑(603b602 对 Existing() 的判断)。
+			log.Printf("guardian_stale_core_record_after_exit pid=%d generation=%s clear_failed=%v",
+				process.PID, process.Generation, err)
 		}
 		exit <- waitErr
 		close(exit)
