@@ -126,6 +126,30 @@ func TestIntentUnreadableHintNamesTheHoldFile(t *testing.T) {
 	}
 }
 
+// 挂起删不掉时 Up 会拒绝启动(见 TestUpRefusesToTurnProtectionOnWhenTheHoldCannotBeCleared),
+// 而那个码同样必须换来一句可操作的话 —— 响应体刻意不外传原始错误串,用户看不到
+// daemon 写的那句「read-only file system」。
+func TestMaintenanceHoldClearFailedHintNamesTheHoldFile(t *testing.T) {
+	msg := guardianHTTPError("/v1/up", http.StatusInternalServerError,
+		[]byte(`{"error":"guardian operation failed","code":"`+maintenanceHoldClearFailedCode+`"}`)).Error()
+	if !strings.Contains(msg, defaultMaintenanceHoldPath) {
+		t.Fatalf("指引必须点名 %s,实际:%s", defaultMaintenanceHoldPath, msg)
+	}
+}
+
+// **recovery_incomplete 是锁存的,而唯一的出路是 down 再 up。**
+//
+// Up 的第一句就撞上 recoveryBlocked,那句检查排在销挂起之前 —— 于是 `bx up`
+// 既不清挂起也不启动,重跑多少次都一样。Down 会清掉它。没有这句指引,用户手里
+// 只有一个自己解释不了自己的码。
+func TestRecoveryIncompleteHintNamesTheEscape(t *testing.T) {
+	msg := guardianHTTPError("/v1/up", http.StatusInternalServerError,
+		[]byte(`{"error":"guardian operation failed","code":"recovery_incomplete"}`)).Error()
+	if !strings.Contains(msg, "bx down") {
+		t.Fatalf("指引必须说出 down 再 up 这条唯一的出路,实际:%s", msg)
+	}
+}
+
 // 启动恢复也是「Guardian 自己发起 Core」的一条路,而且**每次升级都会走它**
 // (restartGuardianForUpgrade 把 daemon 停掉再拉起来)。它同样必须认挂起。
 //
@@ -515,6 +539,56 @@ func TestUpClearsMaintenanceHold(t *testing.T) {
 	}
 	if _, armed, err := env.store.LoadMaintenanceHold(time.Now()); err != nil || armed {
 		t.Fatalf("bx up 之后挂起还武装着:armed=%v err=%v", armed, err)
+	}
+}
+
+// **清不掉挂起就绝不许把保护打开。**
+//
+// 「读得出来、却删不掉」(/var/lib/bx 不可写)此前只记一行日志:Up 照常走完、
+// 报 Protected,而那张挂起还武装着 —— 此后 Core 一旦退出,handleUnexpectedExit
+// 走 HoldArmed 那一支:**既不重启、也不装屏障**,于是保护在用户以为开着的时候
+// 悄悄退回明文直连。那正是「Up 里销挂起」这件事本身要防的状态。
+//
+// 方向是安全的:这里拒绝的是**启动**,不是停止 —— 「停止永不依赖别的先成功」
+// 那条不变量管的是 Down,而 Down 的销挂起仍然是 best-effort、只记日志。
+func TestUpRefusesToTurnProtectionOnWhenTheHoldCannotBeCleared(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	env.store.setClearError(errors.New("read-only file system"))
+
+	if err := env.manager.Up(context.Background()); err == nil {
+		t.Fatal("清不掉挂起时 Up 必须失败 —— 否则 bx up 会打印一个干净的 Protected")
+	}
+	if got := env.manager.Status().Protection; got == ProtectionProtected {
+		t.Fatal("挂起还武装着,不许报 Protected")
+	}
+	if got := env.runner.startCount(); got != 0 {
+		t.Fatalf("挂起还武装着就把 Core 起来了(start=%d):它一退出就再也不会被拉回来", got)
+	}
+	// 失败必须留下可操作线索:码经响应体到 CLI,再由 guardianCodeHints 翻成出路。
+	if got := env.manager.Status().LastError; got != "maintenance_hold_clear_failed" {
+		t.Fatalf("失败码 = %q, want maintenance_hold_clear_failed", got)
+	}
+}
+
+// Migrate 是 `bx up` 在带 legacy Core 的机器上走的同一件事,同样不许放行。
+func TestMigrateRefusesToTurnProtectionOnWhenTheHoldCannotBeCleared(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	env.store.setClearError(errors.New("read-only file system"))
+
+	err := env.manager.Migrate(context.Background(), MigrationRequest{
+		Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"},
+	})
+	if err == nil {
+		t.Fatal("清不掉挂起时 Migrate 必须失败")
+	}
+	if got := env.manager.Status().Protection; got == ProtectionProtected {
+		t.Fatal("挂起还武装着,不许报 Protected")
 	}
 }
 

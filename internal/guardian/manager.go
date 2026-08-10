@@ -445,7 +445,12 @@ func (m *Manager) Up(ctx context.Context) error {
 	//     最该生效的一刻把它销掉」目前是个假设,不是现存 bug。留着这条理由是因为
 	//     那道 return 属于另一段逻辑,它挪一步这里就成立;别把它当成已被证实的
 	//     事故。
-	m.clearMaintenanceHold(holdClearedByUp)
+	// **清不掉就不许往下走。** 见 clearMaintenanceHold 那条「两条路方向相反」的
+	// 注释:挂起还武装着而保护被打开,是这条路上最坏的组合。
+	if err := m.clearMaintenanceHold(holdClearedByUp); err != nil {
+		m.needsAttention(DesiredOn, maintenanceHoldClearFailedCode)
+		return fmt.Errorf("clear maintenance hold: %w", err)
+	}
 	return m.upLocked(ctx)
 }
 
@@ -469,7 +474,10 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 	// 与 Up 同一条规则(设计取舍四):Migrate 是 `bx up` 在一台还带 legacy Core
 	// 的机器上走的那条路,同样是用户显式说的 on。放在所有早出口之前,理由与
 	// Up 那边一字不差。
-	m.clearMaintenanceHold(holdClearedByMigrate)
+	if err := m.clearMaintenanceHold(holdClearedByMigrate); err != nil {
+		m.needsAttention(DesiredOn, maintenanceHoldClearFailedCode)
+		return fmt.Errorf("clear maintenance hold: %w", err)
+	}
 
 	if m.current.Uncertain {
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
@@ -680,8 +688,16 @@ func (m *Manager) PublishedIntent() (DesiredState, *MaintenanceHoldStatus, bool)
 //
 // 不缓存:武装它的是**另一个进程**(CLI),缓存等于发布一个可能已经不成立的事实。
 
-// clearMaintenanceHold 撤销挂起。**只记日志,绝不让调用方失败**:它跑在
-// up/down 这两条路上,而停止不许依赖先成功做成别的事。
+// clearMaintenanceHold 撤销挂起,**总是记日志**,并把失败原样交回调用方 ——
+// 由调用方按自己那条路的方向决定要不要因此失败。
+//
+// **两条路的方向刻意相反**:
+//   - Down(停止)一律忽略它。「停止永不依赖先成功做成别的事」(2026-08-04 那次
+//     71 分钟事故),一个记账文件不许挡住关保护。
+//   - Up / Migrate(启动)必须因此失败。清不掉的挂起 + 打开的保护是这条路上最坏
+//     的组合:此后 Core 一退出,handleUnexpectedExit 走 HoldArmed 那一支 ——
+//     既不重启也不装屏障,保护在用户以为开着的时候悄悄退回明文直连,而 `bx up`
+//     刚刚打印过一个干净的 Protected。拒绝启动是安全的一头。
 //
 // 调用方是用户显式的三条路:Up、Migrate(`bx up` 在带 legacy Core 的机器上走的
 // 那条)、以及 Down 的 defer(维护自己的那次 Down 除外)。启动恢复**不在其列**
@@ -695,19 +711,20 @@ func (m *Manager) PublishedIntent() (DesiredState, *MaintenanceHoldStatus, bool)
 // 说的是「这条路上的销挂起动作跑过了」,不是「真有一张挂起被删掉了」;后者由
 // holdObserver 的 _armed 行回答。它不会变成噪声:它一年只出现在用户显式的
 // up/down/migrate 上,不随任何轮询发生。
-func (m *Manager) clearMaintenanceHold(by string) {
+func (m *Manager) clearMaintenanceHold(by string) error {
 	removed, err := m.store.ClearMaintenanceHold()
 	if err != nil {
 		log.Printf("guardian_maintenance_hold_clear_failed by=%s err=%v", by, err)
-		return
+		return err
 	}
 	// **本来就没有挂起时一个字都不写。** 这条线要能被 grep 当证据用:每一次
 	// bx up/down 都印一行「已清除」,读的人很快就会学会它什么也不代表 ——
 	// 与 _armed/_expired 刻意避开的是同一种噪声训练。
 	if !removed {
-		return
+		return nil
 	}
 	log.Printf("guardian_maintenance_hold_cleared by=%s", by)
+	return nil
 }
 
 // 撤销挂起的三条用户显式路径。原样进日志,所以是稳定标识符。
@@ -716,6 +733,11 @@ const (
 	holdClearedByDown    = "down"
 	holdClearedByMigrate = "migrate"
 )
+
+// maintenanceHoldClearFailedCode 是「挂起清不掉,因此拒绝打开保护」发布出去的
+// 失败码。它在 CLI 侧的 guardianCodeHints 里有自己的出路(响应体刻意不外传原始
+// 错误串,daemon 写的错误文本用户根本看不到)。
+const maintenanceHoldClearFailedCode = "maintenance_hold_clear_failed"
 
 func (m *Manager) Down(ctx context.Context) (err error) {
 	m.beginPathRecoveryTransition(pathRecoveryTransitionResolveOff)

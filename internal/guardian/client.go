@@ -276,6 +276,17 @@ var guardianCodeHints = map[string]string{
 	// 错误文本用户根本看不到。
 	"intent_unreadable": "维护挂起文件读不出来,保护不会自动恢复:检查 " + defaultMaintenanceHoldPath +
 		"(它只是一次升级的临时标记,可直接删除),再 sudo bx up",
+	// 挂起删不掉(多半是 /var/lib/bx 或那个文件本身不可写)。Guardian **拒绝**
+	// 在这种情况下打开保护:挂起还武装着而保护开着,意味着 Core 一退出就既不
+	// 重启也不装屏障,保护会在用户以为开着的时候悄悄退回明文直连。
+	maintenanceHoldClearFailedCode: "维护挂起删不掉,保护因此没有打开(挂起还在就等于 Core 退出后不会被拉回来):" +
+		"检查 " + defaultMaintenanceHoldPath + " 及其目录是否可写(ls -l /var/lib/bx)," +
+		"必要时 sudo rm -f " + defaultMaintenanceHoldPath + " 后重试 sudo bx up",
+	// recoveryBlocked 是**锁存**的:Up 的第一句就短路,而那句检查排在销挂起
+	// 之前 —— 于是 `bx up` 既不会清挂起也不会启动。Down 会清掉这个状态
+	// (它自己的 defer 也会销挂起),所以出路只有一条,必须写出来。
+	"recovery_incomplete": "上一次启动恢复没能完成,Guardian 把后续操作锁住了(bx up 会在第一句就返回):" +
+		"先 sudo bx down 再 sudo bx up —— 只有 down 会清掉这个锁存状态",
 }
 
 // guardianHTTPError renders a Guardian error response. Every 500 carries the
