@@ -163,6 +163,53 @@ Guardian 会在二进制换到一半时装上屏障、fork 一个新 Core。
 - **不让过期去恢复保护**。见取舍五 —— 那需要③b 授权 `start_core`,而
   `reconcile.go:99-110` 已经写明 `CoreSocket==False` 不是安全的准入判据。
 
+## 写计划时发现的规格缺陷(逐条修正,以本节为准)
+
+计划作者对照代码逐条核过上面的取舍,报回六条。五条是真的规格缺陷,一条我改判。
+
+**① 「`?reason=upgrade` 参数一起消失」是错的。** 取舍四要求「**用户发起**的 up/down
+清掉挂起」,而升级自己的那次 Down 走的是同一个 handler,必须**不**清 —— 两者都需要
+「这次 Down 是不是用户要的」这个请求作用域判据。同理,干净路径的
+`Manager.Down`(`manager.go:710`)也要靠它才知道该不该写 `SaveDesired(DesiredOff)`。
+**修正**:线上判据保留(改名成挂起的词汇),升级窗口里新旧共存的两个方向都退化成
+今天的行为。消失的只有欠条文件与它的 OR 语义。
+(替代方案「有挂起就不清」已排除:那会让用户在升级窗口里点 Turn Off 失效,
+正是取舍四明确拒绝的。)
+
+**② 漏了第三条压制路径:启动恢复。** 取舍二只列了两条停机路径,但
+`restartGuardianForUpgrade` **每次升级都把 Guardian 停掉再拉起**,新 Guardian 起手就跑
+`recoverLocked` —— `desired` 保持 `on` 之后,它会在二进制刚换完、CLI 还没走到
+「恢复保护」时自己把 Core 起来。**修正**:`recoverLocked` 与 `handleUnexpectedExit`
+同批改,且那条分支**必须置 `recoveryBlocked = false`** —— 否则挂起会让 `Manager.Down`
+永久返回 `errRecoveryIncomplete`,用一条新不变量撞碎 2026-08-04 那条。
+
+**③ 迁移垫片按字面实现会丢掉欠条真正携带的信息。** 「读到 legacy 欠条就当作一次
+已武装的挂起」只恢复了「压制」这一半;欠条携带的是「**用户本来要保护**」,而此刻盘上的
+`desired` 正是那次升级自己写下的 `off`。只武装挂起 = 压制 15 分钟然后什么都不恢复,
+恰好丢掉这个文件存在的全部理由。**修正**:迁移做两件事 —— `desired` 复位 `on`
+**加**武装挂起。
+
+**④ 「过期后 `bx status` 会显示一条真实的分歧」在今天的 `Diverge` 里不存在。**
+`diverge.go` 只有两个分支(`believed=protected` 三项必 True、`intent.Desired=="off"`
+残留),没有任何一条会在「desired=on 而保护不在」时说话 —— 我把它当既有行为引用了。
+**修正**:新增 `desired=on && 无挂起 && CoreSocket==False` 这条分支。没有它,
+取舍五承诺的「挂起让机器看起来是坏的」根本不成立。
+(另:我说 `intent.Desired == "off"` 那条会「冒出假分歧」的措辞也不准 —— 挂起期间
+`desired` 保持 `on`,那条不触发;真正会触发的是**退回路径**(取舍三写 `desired=off`)
+加升级窗口里的残留。)
+
+**⑤ 「读不出意图」没有归宿。** 要求两者同源读,却没说读盘失败时调谐器怎么判。
+按 `off` 收敛会去停一个用户要的 Core,按 `on` 收敛会在挂起期间起一个不该起的。
+**修正**:第五道栅栏 `intent_unreadable`,与本仓库「Unknown ≠ False」同一条纪律。
+
+**⑥ `Manager.Down` 在 DNS 还原失败时会把 Core 拉回来(`manager.go:697-699`),
+这条路不看挂起 —— 计划作者留在范围外,我改判进来。** 那是既有的补偿逻辑
+(「还原失败了,把 Core 放回去,别让用户停在一个奇怪的中间态」),而在维护窗口里
+「把 Core 放回去」恰恰是最不该做的事:二进制正换到一半。它与 `handleUnexpectedExit`、
+`recoverLocked` 是**同一类消费者**,漏掉它就是漏掉第四条自发起 Core 的路。
+方向上也安全 —— 让它认挂起是**少做一个动作**,不可能让「停止」依赖别的先成功,
+不与逃生路径不变量冲突。并进改停机语义的那个任务。
+
 ## 风险
 
 **最大的一条:改的是逃生路径。** `forcedMacOSTeardown` 与 `handleUnexpectedExit` 都受
