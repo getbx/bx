@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -391,5 +392,22 @@ func TestRecoverSurvivesAPanickingScanner(t *testing.T) {
 	}
 	if env.manager.recoveryBlocked {
 		t.Fatal("也不该堵死关闭的路")
+	}
+}
+
+// 启动恢复那条 goroutine 里的 panic 必须被收住。
+//
+// 它没有 net/http 那样的兜底,而 Guardian 一死 launchd 的 KeepAlive 就把它拉起来
+// 再跑一遍启动恢复 —— 崩溃循环。可疑面不止一处:recoverLocked 有三个入口会走到
+// scanRunningCores(confirmCoreStopped、runner.Existing、runner.Start),
+// 所以收口必须在 goroutine 源头,而不是逐个函数堵。
+func TestStartupRecoveryGoroutineSurvivesAPanic(t *testing.T) {
+	d := &Daemon{}
+	d.trackStartupRecovery(func() { panic("启动恢复里炸了") })
+
+	select {
+	case <-d.startupRecoveryDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("panic 之后那条 goroutine 应当正常收尾,而不是把进程带走")
 	}
 }

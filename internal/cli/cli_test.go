@@ -4855,3 +4855,39 @@ func TestMacMenuRefreshRunsSubprocessesOffMainThread(t *testing.T) {
 		t.Fatal("loadState 必须在后台队列里调用 —— 它 spawn 四个子进程,其中一个封顶 5 秒")
 	}
 }
+
+// 退出决策必须用 confirmedOff,不能用 succeeded。
+//
+// 两者是**两件事**:succeeded 说「这次调用没报错」,还喂给逃生路径;而退出要问的是
+// 「保护真的关掉了吗」—— Guardian 现在无法向系统求证时会回 200 但
+// protection_state != off。把 200 当成关掉了,菜单就会在一个 Core 还占着 TUN 时退出,
+// 留下「保护在跑却没有任何指示灯」。
+//
+// 判据本身(turnOffConfirmedProtectionStopped)住在可测的 ToggleController.swift 里,
+// 由 Swift 套件钉住。**这里守的是接线** —— 而接线正是上一版出错的地方:
+// confirmedOff 当时只接到了排队退出那个罕见分支,常规那条 completion?(succeeded)
+// 原样没动,于是修了一条路不是那条路,而没有任何测试会红。
+func TestMacMenuQuitDecisionUsesTheConfirmedStopNotJustHTTPSuccess(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(source), "private func performToggle(")
+	if !ok {
+		t.Fatal("找不到 performToggle 的函数体 —— 本守卫读不懂现在的代码,请连同它一起重写")
+	}
+	code := swiftCodeOnly(body)
+	// 每一处把结果交给退出路径的地方,都必须交 confirmedOff。
+	for _, forbidden := range []string{
+		"completion?(succeeded)",
+		"finishQuit(turnedOff: succeeded)",
+	} {
+		if strings.Contains(code, forbidden) {
+			t.Errorf("退出路径不得用 succeeded(`%s`):HTTP 200 不等于保护已关闭,"+
+				"这样菜单会在 Core 还占着 TUN 时退出,留下没有指示灯的运行中保护", forbidden)
+		}
+	}
+	if !strings.Contains(code, "confirmedOff") {
+		t.Fatal("performToggle 里应当有 confirmedOff —— 它是退出决策唯一该看的东西")
+	}
+}
