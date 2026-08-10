@@ -1087,7 +1087,17 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 		return nil
 	}
 	if err := m.upLocked(ctx); err != nil {
-		m.recoveryBlocked = true
+		// **「开不了」永不许升级成「关不掉」。**
+		//
+		// recoveryBlocked 是 Up、Migrate、**Down**(:775)与两个更新入口的第一句
+		// 判断。所有权不确定最容易由一次**瞬时**失败产生(非 root、sysctl 抖动、
+		// readable==0 下限),而 retryDaemonRecovery 会无限重试 Recover —— 一次
+		// 开机时的瞬时失败若把这道栅栏落下,用户就再也关不掉保护,正是 2026-08-04
+		// 那次 71 分钟事故的形状。
+		//
+		// 判据与 hold.go 对 ErrMaintenanceHoldUnreadable 的处置一字不差:
+		// fail-closed 的拒绝照常上报、Core 照常不起,但栅栏不落。
+		m.recoveryBlocked = !errors.Is(err, ErrProcessOwnershipUncertain)
 		return err
 	}
 	m.recoveryBlocked = false

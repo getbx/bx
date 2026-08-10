@@ -96,6 +96,44 @@ func TestDownClearsTheOwnershipLatchEvenWhenRecoveryIsBlocked(t *testing.T) {
 	}
 }
 
+// 启动恢复撞上所有权不确定时,失败照常上报、Core 照常不起 —— 但绝不许把
+// 关闭的路一起堵死。recoveryBlocked 是 Down 的第一句判断,它为真时 Down 直接
+// 返回 errRecoveryIncomplete:那正是 2026-08-04「用户 71 分钟关不掉保护」的机制。
+func TestStartupRecoveryDoesNotBlockShutdownOnUncertainOwnership(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.manager.current = Process{Uncertain: true}
+
+	if err := env.manager.Recover(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Recover = %v, want 所有权不确定(测试前提)", err)
+	}
+	if env.manager.recoveryBlocked {
+		t.Fatal("所有权不确定把 recoveryBlocked 置真了 —— 「开不了」升级成了「关不掉」")
+	}
+	if err := env.manager.Down(context.Background()); errors.Is(err, errRecoveryIncomplete) {
+		t.Fatal("Down 被 recoveryBlocked 挡住 —— 这正是 71 分钟事故的形状")
+	}
+}
+
+// 反向:**别的**失败仍然要置 recoveryBlocked。这条改动只针对所有权不确定
+// 这一种,放宽到全部就是把一道既有的栅栏顺手拆了。
+func TestStartupRecoveryStillBlocksOnOtherUpFailures(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.existingErr = errors.New("inspect recorded Core PID 42: permission denied")
+
+	if err := env.manager.Recover(context.Background()); err == nil {
+		t.Fatal("Recover 应当失败(测试前提)")
+	}
+	if !env.manager.recoveryBlocked {
+		t.Fatal("非所有权类的启动恢复失败不再置 recoveryBlocked —— 这条既有栅栏被顺手拆了")
+	}
+}
+
 // **反向守卫之一:Down 不许清掉它自己刚造出来的那个锁存。**
 //
 // Down 在 DNS 还原失败时会把 Core 放回去(startCoreLocked)。那一步可能刚刚
