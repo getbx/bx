@@ -16,6 +16,7 @@ import (
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/runtimedir"
 	"github.com/getbx/bx/internal/secdir"
 	"github.com/getbx/bx/internal/supervisor"
@@ -60,6 +61,8 @@ type Daemon struct {
 	recoveries          recoveryLifecycle
 	observer            *daemonNetworkObserverLifecycle
 	startupRecoveryDone chan struct{}
+	reconcileLoopCancel context.CancelFunc
+	reconcileLoopDone   chan struct{}
 	shutdownMu          sync.Mutex
 	shutdownStarted     bool
 	shutdownComplete    bool
@@ -208,6 +211,54 @@ func (d *Daemon) trackStartupRecovery(fn func()) {
 	}()
 }
 
+// reconcileLoopRunner 由能跑阶段③a 只观察调谐环的 controller 实现(今天只有
+// *Manager)。做成**可选**接口而不是塞进 recoveringController:daemon 层的一堆
+// 测试替身没有理由为了一个什么都不做的循环各自实现一个空方法,而循环缺席时
+// 正确的行为就是「不跑」。
+type reconcileLoopRunner interface {
+	runReconcileLoop(context.Context, reconcileObservation)
+}
+
+// trackReconcileLoop 起那条只观察的调谐环,并记下它的结束,好让 Shutdown 叫停它。
+// Must be called at most once per Daemon.
+func (d *Daemon) trackReconcileLoop(ctx context.Context, run func(context.Context)) {
+	loopCtx, cancel := context.WithCancel(ctx)
+	d.reconcileLoopCancel = cancel
+	d.reconcileLoopDone = make(chan struct{})
+	go func() {
+		defer close(d.reconcileLoopDone)
+		// **这条 goroutine 里的 panic 会打死整个 Guardian**,而 launchd 的
+		// KeepAlive 会把它拉起来、再起这条循环、再 panic —— 崩溃循环,而且用户
+		// 机器上可能还留着屏障。理由与 trackStartupRecovery 那条一字不差:
+		// 这里没有 net/http 那样按连接兜底的东西。
+		//
+		// 可疑面是每一轮都要跑的观测(解析 route/networksetup 的输出、连 Core
+		// 的控制 socket)与 decide 之下的一切;而这个循环**永久**运行,不像启动
+		// 恢复只跑一次 —— 撞上罕见输入的机会随时间累积。收在源头,不逐个函数堵。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("guardian_reconcile_loop_panicked recovered=%v\n%s", r, debug.Stack())
+			}
+		}()
+		run(loopCtx)
+	}()
+}
+
+// stopReconcileLoop 叫停那条循环。**不等它退出**:它只读、不持有任何锁,也不
+// 改任何状态,没有什么需要等它做完;而它可能正卡在一次外部命令上,让关机去等
+// 一个纯观测,方向正好与「停止永不依赖别的先成功」相反。
+func (d *Daemon) stopReconcileLoop() {
+	if d.reconcileLoopCancel != nil {
+		d.reconcileLoopCancel()
+	}
+}
+
+// liveReconcileObservation 是生产观测:向真实系统现问,不改动任何状态。
+// 与 bx status 用的是同一个 observe.LiveDeps。
+func liveReconcileObservation(ctx context.Context) observe.ObservedState {
+	return observe.Observe(ctx, observe.LiveDeps(supervisor.SockPath))
+}
+
 // waitForStartupRecovery blocks until the tracked startup-recovery goroutine
 // finishes or ctx is done, whichever comes first — it never blocks forever.
 // In the ordinary shutdown path the goroutine is already unwinding by the
@@ -250,6 +301,7 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		if d.observer != nil {
 			d.observer.beginShutdown()
 		}
+		d.stopReconcileLoop()
 	}
 	if d.observer != nil {
 		if err := d.observer.wait(ctx); err != nil {
@@ -466,6 +518,14 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 		return nil, err
 	}
 	daemon.trackStartupRecovery(func() { runStartupRecovery(ctx, controller) })
+	// 阶段③a 的只观察调谐环。**它一个动作都不执行**,只把「本来会做什么」记进
+	// 日志,给阶段③b 的逐项授权攒真机证据(尤其是 looksLikeCore 的误报率 ——
+	// 至今从未测量)。跟着 daemon 的 ctx 停。
+	if loop, ok := controller.(reconcileLoopRunner); ok {
+		daemon.trackReconcileLoop(ctx, func(loopCtx context.Context) {
+			loop.runReconcileLoop(loopCtx, liveReconcileObservation)
+		})
+	}
 	return daemon, nil
 }
 
