@@ -189,6 +189,43 @@ func TestDownClearsOnlyTheEntryLatchWhenItsRestartCreatesAnother(t *testing.T) {
 	}
 }
 
+// **反向守卫之三:进门时那个锁存与还原补偿新造的那个**值完全相同**。**
+//
+// 上一条用 101 与 4242 两个不同的 PID,按值比对认得出来。而**全零**的
+// Process{Uncertain: true} 恰恰是最常见的形状 —— refuseUnrecordedRunningCore、
+// 「read durable launch marker」失败、coreStartEnvironment 失败,三处都产出它。
+// 两个全零锁存逐字节相同,`m.current != latchedOnEntry` 在这里恒假,于是 Down
+// 抹掉的是**新的**那一个。
+//
+// 它不是 fail-open(下一次 Start 照旧向系统重新求证),但本分支特意建的那道
+// 范围守卫在最常见的形状上完全失效 —— 身份必须与载荷无关。
+//
+// 两个锁存都由**同一个**注入错误经 retainUncertain 产出,逐字节相同这件事因此
+// 是产线路径本身造出来的,不是测试摆出来的布景。
+func TestDownKeepsANewLatchWhoseValueEqualsTheEntryLatch(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.startErr = uncertainOwnership(
+		Process{},
+		errors.New("no Core process record on disk, but Core appears to be running"),
+	)
+
+	if err := env.manager.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("测试前提不成立:首次 Up 应当留下一个锁存, got %v", err)
+	}
+	entryLatch := env.manager.current
+	if !entryLatch.Uncertain || entryLatch != (Process{Uncertain: true}) {
+		t.Fatalf("测试前提不成立:进门时的锁存应当是全零那一种, got %+v", entryLatch)
+	}
+	env.dns.restoreErr = errors.New("resolver restore failed")
+
+	if err := env.manager.Down(context.Background()); err == nil {
+		t.Fatal("测试前提不成立:DNS 还原失败 + 重启失败时 Down 应当报错")
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("Down 抹掉了还原补偿新造的那个锁存 —— 它与进门时那个逐字节相同,按值比对认不出来")
+	}
+}
+
 // 锁存之后的错误必须**不比**第一次少信息。今天 upLocked/Migrate 短路时传的是
 // nil cause,于是第二次 bx up 只剩一句「Core process ownership is uncertain」:
 // 没有 PID、没有逃生提示、也看不出是十五个产地里的哪一个。

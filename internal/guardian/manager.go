@@ -289,7 +289,16 @@ type Manager struct {
 	// 与 current 同由 mutation channel 保护。留着它是因为短路(以及后来的
 	// 重新求证)必须报出与第一次同样多的信息:今天传的是 nil,于是用户第二次
 	// 看到的反而是一句没有 PID、没有产地、没有出路的空话。
-	uncertainCause    error
+	uncertainCause error
+	// uncertainSeq 是**当前这个锁存的身份**:每装一次锁存 +1,单调递增,与锁存
+	// 携带的值无关。与 current/uncertainCause 同由 mutation channel 保护。
+	//
+	// 有它是因为按值比对认不出「两个值完全相同的锁存」,而全零的
+	// Process{Uncertain: true} 恰恰是最常见的形状(refuseUnrecordedRunningCore、
+	// 「read durable launch marker」失败、coreStartEnvironment 失败三处都产出它):
+	// Down 的 DNS 还原补偿新造一个全零锁存时,按值比对恒真,于是被清掉的是**新的**
+	// 那一个,而那正是 clearOwnershipLatch 特意要保住的。
+	uncertainSeq      uint64
 	runtime           supervisor.RuntimeState
 	status            Status
 	barrierOwnership  barrierOwnership
@@ -887,8 +896,8 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 	// ExecCoreRunner 在那两跳上照旧向系统求证(resolveOrphanLaunchMarker /
 	// refuseUnrecordedRunningCore / refuseLiveLaunchMarker)。这里去掉的是一个
 	// **记忆**,不是那道判据。
-	latchedOnEntry := m.current
-	defer m.clearOwnershipLatch(latchedOnEntry)
+	latchedOnEntry, latchSeqOnEntry := m.current, m.uncertainSeq
+	defer m.clearOwnershipLatch(latchedOnEntry, latchSeqOnEntry)
 	// 一次 map 读,越早越好:关闭是逃生路径,不得因为任何记账逻辑失败或阻塞。
 	//
 	// **升级自己的那次停保护**(POST /v1/down?reason=upgrade)与「用户不要保护了」
@@ -1444,9 +1453,7 @@ func (m *Manager) handleUnexpectedExit(process Process, exitErr error) {
 		if !m.barrierProven() {
 			_ = m.installBarrierForRecovery(operationCtx, m.runtime)
 		}
-		process.Uncertain = true
-		m.current = process
-		m.uncertainCause = retainedUncertainCause(exitErr)
+		m.latchUncertain(process, exitErr)
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
 		return
 	}
@@ -1537,10 +1544,19 @@ func (m *Manager) reserveCleanup(ctx context.Context) (context.Context, context.
 	return operationCtx, cancel, nil
 }
 
-func (m *Manager) retainUncertain(process Process, cause error) {
+// latchUncertain 是装锁存的**唯一**入口。三处状态(current、uncertainCause、
+// uncertainSeq)必须一起改,而漏改 uncertainSeq 不会有编译错误 —— 它只会让
+// clearOwnershipLatch 把一个别人的锁存当成自己进门时那个清掉。
+func (m *Manager) latchUncertain(process Process, cause error) {
 	process.Uncertain = true
 	m.current = process
 	m.uncertainCause = retainedUncertainCause(cause)
+	m.uncertainSeq++
+}
+
+func (m *Manager) retainUncertain(process Process, cause error) {
+	m.latchUncertain(process, cause)
+	process.Uncertain = true
 	if process.Resolution != nil {
 		go func() {
 			if err, ok := <-process.Resolution; ok && err == nil {
@@ -1560,18 +1576,22 @@ func (m *Manager) retainUncertain(process Process, cause error) {
 // clearOwnershipLatch 清掉**进 Down 那一刻就已经在那儿**的所有权锁存。
 //
 // 只清那一个:Down 在 DNS 还原失败时会经 startCoreLocked 把 Core 放回去,那一步
-// 可能刚落下一个新的锁存 —— 抹掉它就是 fail-open。Process 全部字段都是
-// int/string/bool/chan,是可比较类型,直接按值比对身份。
+// 可能刚落下一个新的锁存 —— 抹掉它就是 fail-open。
 //
-// 第一道 `!latchedOnEntry.Uncertain` 早退在逻辑上被第二道包住(m.current.Uncertain
-// 且 m.current == latchedOnEntry ⇒ latchedOnEntry.Uncertain),因此没有任何测试能
-// 单独把它变红;留着是为了让「只清进门时那一个」这件事在读代码时一眼可见,别把它
-// 当成一道独立的防线。真正被测试盯着的是下面那次按值比对。
-func (m *Manager) clearOwnershipLatch(latchedOnEntry Process) {
+// **身份是 uncertainSeq,不是锁存的值。** 曾经这里比的是 `m.current != latchedOnEntry`
+// (Process 各字段都可比较),而两个全零的 Process{Uncertain: true} 逐字节相同 ——
+// 那恰恰是最常见的形状,于是这道范围守卫在它最该生效的场合恒真、清掉的是新的
+// 那一个。序号由 latchUncertain 单调打上,与载荷无关。
+//
+// 第一道 `!latchedOnEntry.Uncertain` 早退在逻辑上被第二道包住(进门时没有锁存
+// 而现在有 ⇒ 序号必然已经涨过),因此没有任何测试能单独把它变红;留着是为了让
+// 「只清进门时那一个」这件事在读代码时一眼可见,别把它当成一道独立的防线。
+// 真正被测试盯着的是下面那次序号比对。
+func (m *Manager) clearOwnershipLatch(latchedOnEntry Process, seqOnEntry uint64) {
 	if !latchedOnEntry.Uncertain {
 		return
 	}
-	if !m.current.Uncertain || m.current != latchedOnEntry {
+	if !m.current.Uncertain || m.uncertainSeq != seqOnEntry {
 		return
 	}
 	m.current = Process{}
