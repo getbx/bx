@@ -48,7 +48,24 @@ func LiveFactDeps() FactDeps {
 				// 当成事实用就是拿一个没问过的答案冒充观测。
 				return nil, unsupportedDNSError(status.Detail)
 			}
-			return status.Servers, nil
+			if len(status.Servers) > 0 {
+				return status.Servers, nil
+			}
+			// **走到这里几乎必然是目标场景。**
+			//
+			// InspectDNSContext 底下是 `networksetup -getdnsservers`,而它只报
+			// **手动设置**的解析器 —— 一台靠 DHCP 拿 DNS 的 Mac 上它什么都不返回。
+			// 而「靠 DHCP 拿 DNS」恰恰就是 DNS 那条规则的目标场景:第三方 VPN
+			// 装了默认路由却不改系统 DNS(wg-quick 不写 DNS=、Tailscale exit node
+			// 关掉 MagicDNS、公司 route-all VPN 保留 Wi-Fi 的解析器)。
+			//
+			// 没有这个兜底,那条规则**在它唯一该发现问题的机器上永远是「没查」**
+			// —— 设计风险二的镜像:不是恒绿,是恒「没问出来」,而两者一样把这一行
+			// 变成装饰。
+			//
+			// scutil 读不出来就照样返回空+nil:上层把它记成「没问出来」,
+			// 这仍然比编一个答案诚实。
+			return scutilDefaultResolvers(ctx), nil
 		},
 		GuardianStatus:  guardianTunAndProtection,
 		ListVPNServices: listDarwinVPNServices,
