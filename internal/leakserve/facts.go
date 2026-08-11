@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/getbx/bx/internal/leakcheck"
 	"github.com/getbx/bx/internal/tristate"
@@ -42,11 +43,38 @@ type FactDeps struct {
 	ListVPNServices func(ctx context.Context) ([]leakcheck.VPNService, error)
 }
 
-// CollectFacts 采一轮本机事实。
+// DefaultFactsBudget 给整轮本机采集封顶,数字取自 internal/cli 的 observeTimeout
+// (那里的理由一字不差地适用)。
+//
+// **这一轮跑在用户面前**:`bx leakcheck` 要等它采完才打印那个入口 URL,采集期间
+// 屏幕上什么都没有。而单项的上限加起来远不止 5 秒(`scutil --nc` 5s + `scutil
+// --dns` 3s + Guardian 客户端 30s + 每个解析器一次路由查询),一个卡住的
+// Guardian 就能让用户对着空屏等半分钟,然后以为命令挂了。
+//
+// 到点的代价是**那一项变成「没问出来」** —— 这个包对此早有诚实的答案(Unknown,
+// 不是 False),所以超时是安全的那一边;超时**绝不会**被读成「确知没有 v6 路由」
+// 那种能支撑一句 ok 的答案。
+//
+// 已知的一处溢出:`guardianTunAndProtection` 第二跳的 `supervisor.FetchRuntimeState`
+// 不吃 ctx(它自带 3 秒上限),故整轮最坏会超出预算 3 秒。它有界,不会挂住。
+const DefaultFactsBudget = 5 * time.Second
+
+// CollectFacts 采一轮本机事实,整轮封顶 DefaultFactsBudget。
 //
 // **任一项失败只让那一项变成「没问出来」,绝不中断其余项、绝不让调用方失败**
 // (与 internal/observe 同一条纪律)。零值一律读作 Unknown,不读作「没有」。
 func CollectFacts(ctx context.Context, deps FactDeps) leakcheck.LocalFacts {
+	return CollectFactsWithBudget(ctx, deps, DefaultFactsBudget)
+}
+
+// CollectFactsWithBudget 是 CollectFacts 带显式预算的那一版(测试用;budget <= 0
+// 表示不额外封顶,调用方自己的 ctx 说了算)。
+func CollectFactsWithBudget(ctx context.Context, deps FactDeps, budget time.Duration) leakcheck.LocalFacts {
+	if budget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
 	facts := leakcheck.LocalFacts{}
 
 	var services []leakcheck.VPNService

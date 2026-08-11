@@ -282,3 +282,63 @@ func TestUnreachableGuardianDoesNotLetAnotherVPNClaimTheInterface(t *testing.T) 
 		t.Errorf("Guardian 答了话、bx 没有 TUN 时应认出 Work VPN,得到 %q", facts.DefaultRouteV4.Display)
 	}
 }
+
+// **采集有整轮预算,而且到点不许把「没问出来」说成「确知没有」。**
+//
+// 这一轮跑在用户面前:`bx leakcheck` 采完才打印入口 URL,期间屏幕上什么都没有。
+// 单项上限加起来远不止 5 秒(scutil --nc 5s + scutil --dns 3s + Guardian 客户端
+// 30s + 每个解析器一次路由查询),一个卡住的 Guardian 就能让用户对着空屏等半分钟。
+func TestCollectFactsHasAnOverallBudget(t *testing.T) {
+	// 每个依赖都挂到 ctx 被取消为止 —— 这正是「外部命令不回话」的形状。
+	block := func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		// 刻意只等 3 秒:预算失效时四个依赖串起来约 12 秒,足够撞上下面那条
+		// 「整轮不许超过 5 秒」的断言而**不必**让变异验证本身跑上几分钟。
+		case <-time.After(3 * time.Second):
+			return errors.New("这个依赖本该被预算掐掉")
+		}
+	}
+	deps := FactDeps{
+		LookupRoute: func(ctx context.Context, _ string, _ bool) (string, error) {
+			return "", block(ctx)
+		},
+		InspectDNS:      func(ctx context.Context) ([]string, error) { return nil, block(ctx) },
+		GuardianStatus:  func(ctx context.Context) (string, string, error) { return "", "", block(ctx) },
+		ListVPNServices: func(ctx context.Context) ([]leakcheck.VPNService, error) { return nil, block(ctx) },
+	}
+
+	start := time.Now()
+	facts := CollectFactsWithBudget(context.Background(), deps, 150*time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed > 5*time.Second {
+		t.Fatalf("整轮采集等了 %s —— 预算没有生效", elapsed)
+	}
+
+	// **到点的答案必须是 Unknown。** 读成 False 就等于「确知这台机器没有 v6
+	// 默认路由」,而那句话正好能支撑一句 ok —— 超时于是变成了一句好听的假话。
+	if facts.IPv6DefaultPresent != tristate.Unknown {
+		t.Fatalf("预算耗尽时 IPv6DefaultPresent 必须是 Unknown,得到 %v", facts.IPv6DefaultPresent)
+	}
+	if facts.DefaultRouteV4.Known() || facts.DefaultRouteV6.Known() {
+		t.Errorf("超时不该产出「已知」的接口:%+v", facts)
+	}
+	if facts.DNSErr == "" {
+		t.Error("DNS 那项超时也要留下原因")
+	}
+	// 而且它送进 Judge 之后一条 ok 都不许有。
+	for _, f := range leakcheck.Judge(fixedNow(), leakcheck.BrowserReport{}, facts).Findings {
+		if f.Verdict == leakcheck.OK {
+			t.Errorf("超时采到的事实不许判出 ok:%s = %q", f.ID, f.Summary)
+		}
+	}
+}
+
+// 默认预算必须与 internal/cli 的 observeTimeout 同量级,而且远小于 2 分钟硬超时。
+func TestDefaultFactsBudgetIsSane(t *testing.T) {
+	if DefaultFactsBudget <= 0 || DefaultFactsBudget > 10*time.Second {
+		t.Fatalf("默认预算 %s 不合理:必须为正,且远小于 %s 的硬超时",
+			DefaultFactsBudget, DefaultHardTimeout)
+	}
+}
