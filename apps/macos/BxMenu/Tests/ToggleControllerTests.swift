@@ -33,11 +33,20 @@ struct ToggleControllerTests {
                "逾时提示必须说明正常约 3 秒内完成,实际 = \(String(describing: slow))")
 
         // 失败指引:必须与 Go 侧 guardianCodeHints 对齐。
-        // core_ownership_uncertain 是锁存的,唯一出路是 down 再 up —— 不说这句用户无从下手。
+        //
+        // core_ownership_uncertain 不再是「一条只能靠 down 清掉的锁存」:用户发起的
+        // up/migrate 每次都会重新向系统求证(两次扫描都干净才释放),所以「再试一次」
+        // 本身就常常够了;它仍然拒绝就意味着系统里真有一个 Core、或者根本扫不动,
+        // 那时该看的是 Guardian 日志。指引给的是下一步,**不是承诺** —— 一台真有
+        // Core 在跑的机器上,重试与 down+up 都该继续被拒。
         let uncertain = toggleFailureHint(code: "core_ownership_uncertain")
         expect(uncertain != nil, "core_ownership_uncertain 必须有指引")
-        expect(uncertain?.contains("bx down") == true && uncertain?.contains("bx up") == true,
-               "指引必须给出 down 再 up 这条唯一出路,实际 = \(String(describing: uncertain))")
+        expect(uncertain?.contains("every attempt") == true,
+               "指引必须说出新行为:每次 up 都会重新求证,实际 = \(String(describing: uncertain))")
+        expect(uncertain?.contains("bx-guard.err.log") == true,
+               "指引必须把人送到唯一写着完整原因的地方:Guardian 日志,实际 = \(String(describing: uncertain))")
+        expect(uncertain?.contains("latched") == false,
+               "指引还在把它描述成一条靠 down 清掉的锁存,实际 = \(String(describing: uncertain))")
 
         // 未知码、无码、空码都不能编造指引,但也不能崩
         expect(toggleFailureHint(code: nil) == nil, "无码时不得编造指引")

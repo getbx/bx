@@ -285,6 +285,13 @@ func TestRunUpgradeStopsBeforeTouchingFilesWhenTheStopWasUnconfirmed(t *testing.
 	if !strings.Contains(err.Error(), "bx-guard.err.log") {
 		t.Errorf("要指向真能看到是哪个进程的地方:%v", err)
 	}
+	// 中止文案原来附了一句「(core_ownership_uncertain,只有 sudo bx down 再
+	// sudo bx up 能解)」。那句现在是假的:用户发起的 up/migrate 每次都会重新
+	// 向系统求证,而只要那个 Core 还在跑,down+up 一样会被拒。把用户支去做一件
+	// 不管用的事,比不说更坏 —— 他会以为自己已经处理过了。
+	if strings.Contains(err.Error(), "只有 sudo bx down") {
+		t.Errorf("中止文案还在声称 down+up 是唯一出路(而那个 Core 还在跑时它同样会被拒):%v", err)
+	}
 	// **文件一个字节都不许动。** 中止之所以安全,正因为它发生在第一步。
 	if i := indexOfCall(f.calls, "installFiles"); i >= 0 {
 		t.Fatalf("不许在保护状态未确认时换二进制, calls=%v", f.calls)

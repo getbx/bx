@@ -78,8 +78,13 @@ func TestStartForksWithoutRecordWhenNoCoreRunning(t *testing.T) {
 	}
 }
 
-// 拒绝时必须告诉用户怎么脱身:Manager.upLocked/Migrate 在调用 Existing() 之前
-// 就短路在 m.current.Uncertain 上,一次扫描结论会被锁存成永久拒绝。
+// 拒绝时必须告诉用户怎么脱身。
+//
+// 这里断言的是「错误文本带着 ownershipUncertainEscapeHint」这条接线,不是那句话
+// 的字面内容 —— 后者由 TestOwnershipUncertainEscapeHintDescribesReVerification
+// 单独钉住。原来这条测试查的是硬编码的 "sudo bx down",而 2026-08-11 之后那已经
+// 不是出路了(用户发起的 up/migrate 每次都会重新求证);拿常量本身来比,改文案
+// 时这条测试跟着走,而「接线断了」照样红。
 func TestUnrecordedCoreRefusalNamesTheEscape(t *testing.T) {
 	ops := &spawnMarkerOperations{started: newStartTestProcess(84)}
 	runner, _ := newSpawnMarkerRunner(t, ops)
@@ -87,8 +92,8 @@ func TestUnrecordedCoreRefusalNamesTheEscape(t *testing.T) {
 		return []Process{{PID: 4242, Executable: "/usr/local/bin/bx", UID: 0}}, nil
 	}
 	_, err := runner.Start(context.Background(), CoreStartOptions{})
-	if err == nil || !strings.Contains(err.Error(), "sudo bx down") {
-		t.Fatalf("错误必须点名脱身办法(sudo bx down && sudo bx up),实际 = %v", err)
+	if err == nil || !strings.Contains(err.Error(), ownershipUncertainEscapeHint) {
+		t.Fatalf("错误必须点名脱身办法,实际 = %v", err)
 	}
 }
 
