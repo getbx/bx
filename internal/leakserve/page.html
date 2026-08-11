@@ -1,0 +1,149 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>bx leak check</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:40px auto;max-width:44rem;line-height:1.5;color:#111}
+ h1{font-size:1.4rem}
+ .f{border:1px solid #ddd;border-radius:8px;padding:12px 16px;margin:12px 0}
+ .v{font-weight:600;text-transform:uppercase;font-size:.75rem;letter-spacing:.06em}
+ .ok .v{color:#137333} .bad .v{color:#a50e0e} .nc .v{color:#5f6368}
+ pre{background:#f6f6f6;padding:10px;border-radius:6px;overflow-x:auto;font-size:.8rem;white-space:pre-wrap}
+ .disc{background:#fffbe6;border:1px solid #f0e0a0;border-radius:8px;padding:12px 16px}
+ code{font-size:.85rem}
+</style>
+<h1>bx leak check</h1>
+
+<div class="disc">
+  <p><strong>Before anything is sent:</strong> this page will contact the following
+  third parties from your browser. They will see your real exit address.</p>
+  <ul>
+    <li>IPv4 echo: <code>{{.Endpoints.EchoV4}}</code></li>
+    <li>IPv6 echo: <code>{{.Endpoints.EchoV6}}</code></li>
+    <li>STUN (WebRTC): <code>{{.Endpoints.STUN}}</code></li>
+  </ul>
+  <p>Nothing is stored. bx keeps no history of this check.</p>
+  <button id="go">Run the check</button>
+</div>
+
+<div id="out"></div>
+
+<script>
+(function () {
+  // This page is deliberately dumb: it collects, it posts, it renders whatever
+  // bx sends back. It never compares anything, because it never receives the
+  // other half of the evidence (the local routing/DNS facts stay in the bx
+  // process). All judgement lives in Go, where the tests are.
+  var TOKEN = "{{.Token}}";
+  var ECHO4 = "{{.Endpoints.EchoV4}}";
+  var ECHO6 = "{{.Endpoints.EchoV6}}";
+  var STUN  = "{{.Endpoints.STUN}}";
+  var out = document.getElementById("out");
+
+  function text(el, s) { el.textContent = s; }
+
+  function fetchEcho(url) {
+    return fetch(url, { cache: "no-store" })
+      .then(function (r) { return r.text(); })
+      .then(function (t) { return { value: t.trim(), err: "" }; })
+      .catch(function (e) { return { value: "", err: String(e && e.message ? e.message : e) }; });
+  }
+
+  function gatherSrflx() {
+    return new Promise(function (resolve) {
+      var result = { srflx: [], err: "" };
+      var pc;
+      try {
+        pc = new RTCPeerConnection({ iceServers: [{ urls: STUN }] });
+      } catch (e) {
+        result.err = String(e && e.message ? e.message : e);
+        resolve(result);
+        return;
+      }
+      pc.createDataChannel("bx");
+      pc.onicecandidate = function (ev) {
+        if (!ev.candidate || !ev.candidate.candidate) return;
+        var parts = ev.candidate.candidate.split(" ");
+        // a=candidate:<foundation> <comp> <proto> <pri> <ip> <port> typ <type>
+        if (parts.length > 7 && parts[7] === "srflx" && result.srflx.indexOf(parts[4]) < 0) {
+          result.srflx.push(parts[4]);
+        }
+      };
+      pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function (e) {
+        result.err = String(e && e.message ? e.message : e);
+      });
+      var started = Date.now();
+      var timer = setInterval(function () {
+        if (pc.iceGatheringState === "complete" || Date.now() - started > 9000) {
+          clearInterval(timer);
+          try { pc.close(); } catch (e) {}
+          resolve(result);
+        }
+      }, 150);
+    });
+  }
+
+  function render(report) {
+    out.innerHTML = "";
+    var h = document.createElement("h2");
+    text(h, "Results");
+    out.appendChild(h);
+    report.findings.forEach(function (f) {
+      var cls = f.verdict === "ok" ? "ok" : (f.verdict === "bad" ? "bad" : "nc");
+      var box = document.createElement("div");
+      box.className = "f " + cls;
+      var v = document.createElement("div");
+      v.className = "v";
+      text(v, f.verdict);              // already one of ok / bad / not checked
+      var t = document.createElement("strong");
+      text(t, f.title);
+      var s = document.createElement("p");
+      text(s, f.summary);              // already a finished sentence
+      box.appendChild(v); box.appendChild(t); box.appendChild(s);
+      if (f.evidence && f.evidence.length) {
+        var d = document.createElement("details");
+        var sum = document.createElement("summary");
+        text(sum, "Evidence");
+        var pre = document.createElement("pre");
+        text(pre, f.evidence.join("\n"));
+        d.appendChild(sum); d.appendChild(pre);
+        box.appendChild(d);
+      }
+      out.appendChild(box);
+    });
+    if (report.evidence && report.evidence.length) {
+      var d2 = document.createElement("details");
+      var s2 = document.createElement("summary");
+      text(s2, "What bx observed");
+      var pre2 = document.createElement("pre");
+      text(pre2, report.evidence.join("\n"));
+      d2.appendChild(s2); d2.appendChild(pre2);
+      out.appendChild(d2);
+    }
+    var done = document.createElement("p");
+    text(done, "You can close this tab. bx has already shut the local server down.");
+    out.appendChild(done);
+  }
+
+  document.getElementById("go").addEventListener("click", function () {
+    document.getElementById("go").disabled = true;
+    text(out, "Running…");
+    Promise.all([fetchEcho(ECHO4), fetchEcho(ECHO6), gatherSrflx()]).then(function (r) {
+      var payload = {
+        user_agent: navigator.userAgent,
+        exit_v4: r[0].value, exit_v4_err: r[0].err,
+        exit_v6: r[1].value, exit_v6_err: r[1].err,
+        srflx: r[2].srflx, stun_err: r[2].err
+      };
+      return fetch("/report?t=" + encodeURIComponent(TOKEN), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    }).then(function (resp) {
+      return resp.json();
+    }).then(render).catch(function (e) {
+      text(out, "Could not complete the check: " + e + "\nbx will report this as “not checked”.");
+    });
+  });
+})();
+</script>
