@@ -2,6 +2,7 @@ package leakserve
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -162,5 +163,58 @@ func TestPageDataCarriesOnlyTokenAndDisclosure(t *testing.T) {
 			t.Errorf("pageData.%s 的类型是 %s(%s):这正是「页面拿不到原料」这条论证的支点",
 				typ.Field(i).Name, ft, why)
 		}
+	}
+}
+
+// pageScriptFunction 取出页面脚本里一个具名函数的函数体。读不出来必须**响亮
+// 失败** —— 一个读不懂现在代码的守卫,静默放行比没有守卫更糟。
+func pageScriptFunction(t *testing.T, name string) string {
+	t.Helper()
+	head := "function " + name + "("
+	start := strings.Index(pageHTML, head)
+	if start < 0 {
+		t.Fatalf("页面里找不到 %s —— 本守卫读不懂现在的代码,请连同它一起重写", name)
+	}
+	rest := pageHTML[start:]
+	// 函数体缩进两格,收尾就是行首两格加右花括号。
+	end := strings.Index(rest, "\n  }\n")
+	if end < 0 {
+		t.Fatalf("找不到 %s 的收尾 —— 本守卫读不懂现在的代码,请连同它一起重写", name)
+	}
+	return rest[:end]
+}
+
+// **每一个出网探测都必须有自己的上限,而且共用同一个预算。**
+//
+// 这条守卫是 JS 唯一能被 CI 看到的地方(本仓库的测试与变异验证覆盖不到页面)。
+// 没有超时的 fetch 在一台没有 IPv6 的机器上会卡在 OS 的 TCP 超时(macOS 约 75 秒),
+// 而 `Promise.all` 等最慢的那个 —— 整次检测于是被推向 bx 的 2 分钟硬超时,
+// 也就是「浏览器那一半从来没到过」。**一个放弃的探测会说明原因;一个挂住的探测
+// 让整次检测什么都说不出来。**
+func TestPageProbesShareOneBudgetAndCannotHang(t *testing.T) {
+	const decl = "var PROBE_TIMEOUT_MS = "
+	if strings.Count(pageHTML, decl) != 1 {
+		t.Fatalf("页面必须**恰好**声明一次探测预算 %q —— 两份预算会各自漂移", decl)
+	}
+	var budget int
+	if _, err := fmt.Sscanf(pageHTML[strings.Index(pageHTML, decl)+len(decl):], "%d", &budget); err != nil {
+		t.Fatalf("读不出探测预算:%v", err)
+	}
+	if budget <= 0 || budget > 15000 {
+		t.Fatalf("探测预算 %dms 不合理:必须为正,而且要远小于 2 分钟的硬超时", budget)
+	}
+
+	echo := pageScriptFunction(t, "fetchEcho")
+	if !strings.Contains(echo, "AbortController") || !strings.Contains(echo, "signal:") {
+		t.Errorf("fetchEcho 必须给 fetch 带上一个会被 abort 的 signal,否则它没有上限:\n%s", echo)
+	}
+	if !strings.Contains(echo, "PROBE_TIMEOUT_MS") {
+		t.Errorf("fetchEcho 的上限必须来自那个共用预算,不许自带一个数字:\n%s", echo)
+	}
+
+	ice := pageScriptFunction(t, "gatherSrflx")
+	if !strings.Contains(ice, "PROBE_TIMEOUT_MS") {
+		t.Errorf("ICE 收集的上限也必须来自那个共用预算 —— 两个探测各写一个数字,"+
+			"改一个忘改另一个不会有任何报错:\n%s", ice)
 	}
 }
