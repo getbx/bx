@@ -2,6 +2,7 @@ package leakcheck
 
 import (
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,26 +79,63 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 		return f
 	}
 
+	// **回声端返回的必须先是一个地址。**
+	//
+	// `fetch` 对 4xx/5xx 不 reject,所以 Cloudflare 的拦截页、强制门户的登录页、
+	// 429 的 body 会原样成为 ExitV4 —— 而 bx 的用户在 GFW 后面、三个端点全是
+	// Cloudflare 前置的,这不是奇景。拿一张 HTML 去跟 srflx 比必然不等,于是
+	// 这条规则会**在一台完全正常的机器上**喊「WebRTC is bypassing the tunnel」。
+	//
+	// **乱喊狼来了与恒绿是同一条设计风险的两面**(风险二):两者都把这个界面
+	// 训练成装饰。judgeIPv6 早就这么挡了,这里此前一处校验都没有。
+	exit, err := netip.ParseAddr(strings.TrimSpace(browser.ExitV4))
+	if err != nil {
+		f.Summary = "WebRTC could not be compared: the IPv4 echo answered with " +
+			abbreviate(browser.ExitV4) + ", which is not an IP address — the response " +
+			"did not come from the echo service (a captive portal or an error page, most likely)."
+		f.Evidence = append(
+			f.Evidence,
+			"echo v4 answered: "+abbreviate(browser.ExitV4)+"  via "+EchoV4URL,
+			"srflx: "+strings.Join(browser.SRFLX, ", "),
+		)
+		return f
+	}
+	exitAddr := exit.String()
+
 	f.Evidence = append(
 		f.Evidence,
-		"http exit (v4): "+browser.ExitV4+"  via "+EchoV4URL,
+		"http exit (v4): "+exitAddr+"  via "+EchoV4URL,
 		"webrtc srflx: "+strings.Join(browser.SRFLX, ", ")+"  via "+STUNURL,
 	)
 	var mismatched []string
 	for _, candidate := range browser.SRFLX {
-		if candidate != browser.ExitV4 {
+		if strings.TrimSpace(candidate) != exitAddr {
 			mismatched = append(mismatched, candidate)
 		}
 	}
 	if len(mismatched) > 0 {
 		f.Verdict = Bad
 		f.Summary = "WebRTC reached the internet from " + strings.Join(mismatched, ", ") +
-			", but HTTP traffic left from " + browser.ExitV4 + ". WebRTC is bypassing the tunnel."
+			", but HTTP traffic left from " + exitAddr + ". WebRTC is bypassing the tunnel."
 		return f
 	}
 	f.Verdict = OK
-	f.Summary = "WebRTC and HTTP both left from " + browser.ExitV4 + "."
+	f.Summary = "WebRTC and HTTP both left from " + exitAddr + "."
 	return f
+}
+
+// maxQuotedBody 是把第三方返回的原文引进结论时的上限。回声端本该返回一行地址;
+// 走到引用它的那条路上时它已经是别的东西了(拦截页动辄上千字节,而上报体上限
+// 是 1MB),整段贴进终端会把结论本身冲掉。
+const maxQuotedBody = 120
+
+// abbreviate 把要引进结论的第三方原文截短,并把换行压平。
+func abbreviate(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= maxQuotedBody {
+		return strconv.Quote(s)
+	}
+	return strconv.Quote(s[:maxQuotedBody]) + "… (truncated)"
 }
 
 // judgeIPv6 判「v4 走 VPN 而 v6 出口是 ISP」——别的 VPN 最常见的那个漏洞。
@@ -156,8 +194,8 @@ func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 	addr, err := netip.ParseAddr(strings.TrimSpace(browser.ExitV6))
 	if err != nil || addr.Is4() || addr.Is4In6() {
 		f.Summary = "IPv6 could not be checked: the IPv6 echo answered with " +
-			browser.ExitV6 + ", which is not an IPv6 address — the browser did not use IPv6."
-		f.Evidence = append(f.Evidence, "echo v6 answered: "+browser.ExitV6+"  via "+EchoV6URL)
+			abbreviate(browser.ExitV6) + ", which is not an IPv6 address — the browser did not use IPv6."
+		f.Evidence = append(f.Evidence, "echo v6 answered: "+abbreviate(browser.ExitV6)+"  via "+EchoV6URL)
 		return f
 	}
 	f.Evidence = append(

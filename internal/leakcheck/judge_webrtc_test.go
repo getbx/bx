@@ -71,6 +71,37 @@ func TestWebRTCRule(t *testing.T) {
 			browser: BrowserReport{ExitV4: "5.6.7.8", SRFLX: nil},
 			want:    NotChecked,
 		},
+		{
+			// **回声端返回的不是地址。** `fetch` 对 4xx/5xx 不 reject,所以
+			// Cloudflare 的拦截页、强制门户的登录页、429 的 body 都会原样变成
+			// ExitV4 —— 而 bx 的用户在 GFW 后面,三个端点全是 Cloudflare 前置的,
+			// 这不是奇景。
+			//
+			// 拿它跟 srflx 比必然不等,于是这条规则会**在一台完全正常的机器上**
+			// 喊「WebRTC is bypassing the tunnel」。**乱喊狼来了与恒绿是同一条
+			// 设计风险的两面**:两者都把这个界面训练成装饰。
+			name: "v4 回声返回的是一张错误页",
+			browser: BrowserReport{
+				ExitV4: "<!DOCTYPE html><html>error 1015</html>",
+				SRFLX:  []string{"203.0.113.9"},
+			},
+			want:        NotChecked,
+			wantMention: "not an IP address",
+		},
+		{
+			// 同一件事的另一种形状:强制门户返回一段人话。
+			name:        "v4 回声返回一句人话",
+			browser:     BrowserReport{ExitV4: "Access denied", SRFLX: []string{"203.0.113.9"}},
+			want:        NotChecked,
+			wantMention: "not an IP address",
+		},
+		{
+			// 前后有空白的合法地址仍然要认(回声端普遍带一个换行,页面已 trim,
+			// 但判据不该指望上游替它做归一化)。
+			name:    "带空白的合法地址仍然判得了",
+			browser: BrowserReport{ExitV4: " 5.6.7.8 ", SRFLX: []string{"5.6.7.8"}},
+			want:    OK,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := webrtcFinding(t, tc.browser, LocalFacts{})
@@ -81,6 +112,30 @@ func TestWebRTCRule(t *testing.T) {
 				t.Errorf("结论必须出示依据 %q,summary=%q evidence=%v", tc.wantMention, f.Summary, f.Evidence)
 			}
 		})
+	}
+}
+
+// 引用第三方原文时必须截短。真实的 Cloudflare 拦截页是上千字节(上报体上限是
+// 1MB),整段贴进 summary 会把结论本身冲出屏幕 —— 而 `bx leakcheck` 的输出是
+// 终端里一行行读的,`--json` 那份还要给 agent 读。
+func TestWebRTCQuotesAThirdPartyBodyBounded(t *testing.T) {
+	body := "<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head>" +
+		"<body>" + strings.Repeat("Error 1015 Ray ID: 8f0000000000abcd You are being rate limited. ", 40) +
+		"</body></html>"
+	f := webrtcFinding(t, BrowserReport{ExitV4: body, SRFLX: []string{"203.0.113.9"}}, LocalFacts{})
+	if f.Verdict != NotChecked {
+		t.Fatalf("回声端返回拦截页时判定应为 not checked,得到 %s", f.Verdict)
+	}
+	if len(f.Summary) > 400 {
+		t.Errorf("summary 长 %d 字节 —— 第三方原文没有被截短,结论被它冲掉了:%q",
+			len(f.Summary), f.Summary)
+	}
+	if !strings.Contains(f.Summary, "truncated") {
+		t.Errorf("截短了就要说截短了,否则用户以为回声端真的只返回了这么多:%q", f.Summary)
+	}
+	// 换行必须压平:多行原文会把「一条结论一行」的渲染撕开。
+	if strings.Contains(strings.Join(append(f.Evidence, f.Summary), ""), "\n") {
+		t.Errorf("引用的原文里还有换行:%q / %v", f.Summary, f.Evidence)
 	}
 }
 

@@ -43,7 +43,16 @@
 
   function fetchEcho(url) {
     return fetch(url, { cache: "no-store" })
-      .then(function (r) { return r.text(); })
+      .then(function (r) {
+        // fetch does NOT reject on 4xx/5xx. Without this, a Cloudflare
+        // interstitial, a captive-portal login page or a 429 body becomes the
+        // "exit address" and Go compares an HTML document against an ICE
+        // candidate — a false "WebRTC is bypassing the tunnel" on a perfectly
+        // healthy machine. Go rejects non-addresses too; this end turns the
+        // failure into a reason instead of a body.
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.text();
+      })
       .then(function (t) {
         var v = t.trim();
         // An empty body is not an answer. Reporting it as {value:"", err:""}
