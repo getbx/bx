@@ -571,9 +571,13 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 		return fmt.Errorf("clear maintenance hold: %w", err)
 	}
 
-	if m.current.Uncertain {
-		m.needsAttention(DesiredOn, "core_ownership_uncertain")
-		return uncertainOwnership(m.current, m.uncertainCause)
+	// 与 upLocked 同一条规矩、同一个助手:Migrate 是 bx up 在一台还带 legacy Core
+	// 的机器上走的那条路,同样是用户显式说的 on。只改一处就是假绿(60b76f3 的教训)。
+	//
+	// 这里不需要 upOrigin:Migrate 只有用户发起这一个来源(启动恢复走 recoverLocked
+	// → upLocked,永远到不了这儿)。
+	if err := m.recheckOwnershipUncertain("migrate"); err != nil {
+		return err
 	}
 	if m.current.PID != 0 && m.Status().Protection == ProtectionProtected {
 		if err := m.legacy.Remove(); err != nil {

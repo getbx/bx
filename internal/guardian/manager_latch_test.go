@@ -217,8 +217,16 @@ func TestLatchedRefusalKeepsTheOriginalCause(t *testing.T) {
 }
 
 // 迁移入口(bx up 在还带 legacy Core 的机器上走的那条)是同一条规矩。
+//
+// **注入一次「还有 Core 在跑」的扫描是必需的,不是布景。** Migrate 现在与 upLocked
+// 一样先重新求证(见 TestMigrateReVerifiesOwnershipWhenTheSystemIsClean),而
+// newManagerTestEnv 的零值扫描结果是一台干净机器 —— 不注入的话它会**释放**锁存、
+// 干净返回,这条测试就再也造不出「锁存后的拒绝」这个前提了。它守的属性没变
+// (拒绝必须带上当初那个 cause),变的只是造出该属性的前提。
+// (第一次就扫脏 ⇒ 立即拒绝、不沉降,所以这条不需要缩 coreScanSettle。)
 func TestLatchedMigrateRefusalKeepsTheOriginalCause(t *testing.T) {
 	env := newManagerTestEnv(t)
+	env.runner.scanResult = []Process{{PID: 4242}}
 	env.manager.current = Process{PID: 4242, Uncertain: true}
 	env.manager.uncertainCause = errors.New("spawned Core record has a live process whose identity was never verified")
 
@@ -477,6 +485,46 @@ func TestStartupRecoveryDoesNotReVerifyOwnership(t *testing.T) {
 	}
 	if got := env.runner.scanCount(); got != 0 {
 		t.Fatalf("启动恢复扫了 %d 次 —— 它每 5 秒重试一次,永不放弃", got)
+	}
+}
+
+// Migrate 是 bx up 在还带 legacy Core 的机器上走的那条路,同样是用户显式说的 on。
+// 漏掉它就是「只修一跳」——这个仓库为这个形状付过学费(60b76f3)。
+func TestMigrateReVerifiesOwnershipWhenTheSystemIsClean(t *testing.T) {
+	// 释放要跨一个沉降窗口(拒绝不用)。
+	restore := coreScanSettle
+	coreScanSettle = time.Millisecond
+	t.Cleanup(func() { coreScanSettle = restore })
+
+	env := newManagerTestEnv(t)
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+	env.manager.uncertainCause = errors.New("Core appeared to be running (PID 4242)")
+
+	err := env.manager.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}})
+	if errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("扫干净了 Migrate 仍以所有权不确定拒绝: %v", err)
+	}
+	if env.manager.current.Uncertain {
+		t.Fatal("Migrate 没有释放已被求证的锁存")
+	}
+	if got := env.runner.scanCount(); got != 2 {
+		t.Fatalf("释放只扫了 %d 次 —— 一次干净不足以放行", got)
+	}
+}
+
+// 另一头:系统说还有 Core 在跑 ⇒ 照旧拒绝,且一个 Core 都不起。
+// (第一次就扫脏 ⇒ 立即拒绝、不沉降。)
+func TestMigrateStillRefusesWhenACoreIsStillRunning(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.scanResult = []Process{{PID: 4242}}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+
+	err := env.manager.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}})
+	if !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Migrate = %v, want 仍然拒绝", err)
+	}
+	if got := env.runner.startCount(); got != 0 {
+		t.Fatalf("拒绝时起了 %d 个 Core", got)
 	}
 }
 
