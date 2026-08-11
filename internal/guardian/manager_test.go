@@ -1031,6 +1031,8 @@ func TestManagerUpBlocksSameAndReconstructedDaemonAfterUncertainLaunch(t *testin
 	}
 }
 
+// 注:第二次 Up 的重新求证在**第一次扫描**就扫到那个 Core,立即拒绝、不跨沉降
+// 窗口,所以这条测试不需要缩 coreScanSettle。
 func TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnproven(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.manager.cleanupTimeout = 20 * time.Millisecond
@@ -1045,6 +1047,19 @@ func TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnprove
 	if got := env.runner.stopEntryContextError(); got != nil {
 		t.Fatalf("cleanup inherited expired health context: %v", got)
 	}
+
+	// **诚实的扫描器,而不是「粘住」。**
+	//
+	// 这条测试要守的属性是「fork 清理没能证明退出时,不许重试起第二个 Core」。
+	// 它原本靠锁存的短路来表达 —— 而那正是本期要换掉的东西。属性本身没变:
+	// 清理**没能证明**那个进程退出了,所以此刻向系统求证时它就该还在那儿。
+	// 替身的默认扫描结果是「一台干净机器」,拿它当证据等于让重新求证凭空放行。
+	uncertain := env.manager.current
+	if !uncertain.Uncertain || uncertain.PID == 0 {
+		t.Fatal("测试前提不成立:这次失败的启动没有留下带 PID 的锁存")
+	}
+	env.runner.scanResult = []Process{{PID: uncertain.PID}}
+
 	if err := env.manager.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("retry error = %v, want uncertain ownership", err)
 	}
@@ -2133,6 +2148,9 @@ type fakeCoreRunner struct {
 	// (系统里没有任何 Core 在跑,扫描本身也没出错),既有用例因此一行不用改。
 	scanResult []Process
 	scanErr    error
+	// scans 数的是「问过系统几次」。有它才分得清「求证过并且释放了」与
+	// 「压根没去问」——两者在返回值上完全一样。
+	scans int
 }
 
 func newFakeCoreRunner(events *eventLog) *fakeCoreRunner {
@@ -2317,7 +2335,14 @@ func (r *fakeCoreRunner) Executable() string {
 func (r *fakeCoreRunner) ScanRunning() ([]Process, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.scans++
 	return append([]Process(nil), r.scanResult...), r.scanErr
+}
+
+func (r *fakeCoreRunner) scanCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.scans
 }
 
 func (r *fakeCoreRunner) SetExecutable(executable string) error {
