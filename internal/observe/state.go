@@ -5,37 +5,32 @@
 // bootout 后内存记录蒸发,内核里的 /2 reject 路由却留着,整机断网且无人能删)。
 package observe
 
-import "time"
+import (
+	"time"
 
-// Tristate 区分「观测到是」「观测到否」「观测不到」。
-//
-// 零值必须是 Unknown:用 bool 会把"问不出来"压成 false,让未观测的项冒充正常。
-type Tristate uint8
-
-const (
-	Unknown Tristate = iota
-	True
-	False
+	"github.com/getbx/bx/internal/tristate"
 )
 
-func (t Tristate) String() string {
-	switch t {
-	case True:
-		return "true"
-	case False:
-		return "false"
-	default:
-		return "unknown"
-	}
-}
+// Tristate 区分「观测到是」「观测到否」「观测不到」;零值必须是 Unknown。
+//
+// **类型本身住在 internal/tristate 那个叶子包里**,这里只是别名再导出,于是
+// `observe.Tristate` / `observe.Unknown` 这些既有写法一个字都不用改。
+//
+// 沉下去的理由:本包为了做观测要 import install / supervisor,任何**只想要这个
+// 枚举**的包都会被拖进整条依赖链 —— 实测 internal/leakcheck 因此传递依赖了 23 个
+// 内部包(含 install、supervisor、provision、tun、dialer),全部代价只为一个三值
+// 枚举;而它那条「本包不碰控制面」的守卫只查直接 import,于是守卫是绿的、事实
+// 不是。与 internal/barriercidr 当初被拆出去是同一个形状、同一个修法。
+type Tristate = tristate.Tristate
+
+const (
+	Unknown = tristate.Unknown
+	True    = tristate.True
+	False   = tristate.False
+)
 
 // FromBool 把一个确定的布尔判定转成三态。仅在观测成功时使用。
-func FromBool(value bool) Tristate {
-	if value {
-		return True
-	}
-	return False
-}
+func FromBool(value bool) Tristate { return tristate.FromBool(value) }
 
 // ObserveError 记录单项观测为何失败。观测失败不让调用方失败,只让该项为 Unknown。
 type ObserveError struct {

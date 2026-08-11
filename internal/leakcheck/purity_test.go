@@ -4,6 +4,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -48,13 +49,53 @@ func TestLeakcheckPackageStaysPure(t *testing.T) {
 				t.Errorf("%s import 了 %q:本包必须保持纯判据 —— %s", name, path, why)
 			}
 			if strings.HasPrefix(path, "github.com/getbx/bx/internal/") &&
-				path != "github.com/getbx/bx/internal/observe" {
-				t.Errorf("%s import 了 %q:纯判据只允许依赖 internal/observe(三态类型),"+
-					"依赖控制面/安装/监督任何一个包都会把它拖回不可测的位置", name, path)
+				path != allowedInternalDep {
+				t.Errorf("%s import 了 %q:纯判据只允许依赖 %s(三值枚举的叶子包),"+
+					"依赖控制面/安装/监督任何一个包都会把它拖回不可测的位置", name, path, allowedInternalDep)
 			}
 		}
 	}
 	if checked == 0 {
 		t.Fatal("本包一个非测试 .go 文件都没找到:守卫读不懂现在的目录结构,请连同它一起重写")
+	}
+}
+
+// allowedInternalDep 是本包唯一允许的仓库内依赖:一个只放三值枚举、
+// 自己不 import 本仓库任何东西的叶子包。
+const allowedInternalDep = "github.com/getbx/bx/internal/tristate"
+
+// **上面那条只查直接 import,不够 —— 而「不够」这件事是实测出来的。**
+//
+// 本包最初直接 import 的是 internal/observe(当时的白名单项),看起来只有一个
+// 依赖;而 observe 为了做观测要 import install / supervisor,于是 `go list -deps`
+// 实测本包传递依赖了 **23 个内部包**,含 install、supervisor、provision、tun、
+// dialer —— 整个数据面和控制面,全部代价只为一个三值枚举。
+//
+// 也就是说:**守卫是绿的,而它写在注释里的那句话是假的。** 把枚举沉到
+// internal/tristate 之后降到 2 个(本包 + 那个叶子包)。
+//
+// 所以这一条查的是**传递闭包**,不是 import 行。它比上面那条严格得多,也正是
+// 上面那条自以为在守的东西。
+func TestLeakcheckHasNoTransitiveControlPlaneDependency(t *testing.T) {
+	out, err := exec.Command("go", "list", "-deps", ".").Output()
+	if err != nil {
+		t.Fatalf("跑不了 go list,守卫失去意义: %v", err)
+	}
+	var internal []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "github.com/getbx/bx/internal/") {
+			internal = append(internal, line)
+		}
+	}
+	if len(internal) == 0 {
+		t.Fatal("一个内部依赖都没列出来 —— go list 的输出格式变了,守卫已经读不懂它")
+	}
+	for _, dep := range internal {
+		if dep != allowedInternalDep && dep != "github.com/getbx/bx/internal/leakcheck" {
+			t.Errorf("传递依赖了 %q。判据必须留在能被表驱动测试完整覆盖的位置,"+
+				"而一条通往控制面的依赖链会把它拖回「判得对」与「接线对」重新纠缠在一起的地方 ——"+
+				"本仓库的全部事故都在后者。完整依赖:%v", dep, internal)
+		}
 	}
 }

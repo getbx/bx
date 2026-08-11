@@ -1,6 +1,6 @@
 package leakcheck
 
-import "github.com/getbx/bx/internal/observe"
+import "github.com/getbx/bx/internal/tristate"
 
 // BrowserReport 是页面 POST 回来的**原始**观测。全部是字符串:页面不判断、
 // 不归一化、不比较,它只是把看到的东西原样送回来。
@@ -45,10 +45,10 @@ type LocalFacts struct {
 	// DefaultRouteV4/V6:发往公网时内核把包交给谁。
 	DefaultRouteV4 InterfaceRef `json:"default_route_v4"`
 	DefaultRouteV6 InterfaceRef `json:"default_route_v6"`
-	// IPv6DefaultPresent 是**谓词**,所以这里复用 observe.Tristate:零值 Unknown
+	// IPv6DefaultPresent 是**谓词**,所以这里复用 tristate.Tristate:零值 Unknown
 	// 就是「没问出来」,与「问了,确实没有 v6 默认路由」必须分开 —— 后者能支撑
 	// 一句诚实的 ok,前者不能。
-	IPv6DefaultPresent observe.Tristate `json:"ipv6_default_present"`
+	IPv6DefaultPresent tristate.Tristate `json:"ipv6_default_present"`
 	// DNSServers 是系统当前的解析器。
 	DNSServers []string `json:"dns_servers,omitempty"`
 	// DNSServerEgress 是每个解析器地址的出口接口(route 查出来的)。

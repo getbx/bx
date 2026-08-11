@@ -10,7 +10,7 @@ import "time"
 
 // Verdict 是一条结论的三态。**零值必须是 NotChecked。**
 //
-// 刻意不复用 internal/observe.Tristate:那个类型是**谓词**结果(True = 「是」),
+// 刻意不复用 internal/tristate.Tristate:那个类型是**谓词**结果(True = 「是」),
 // 而这里的两极是「好」与「坏」,把「有泄漏」写成 True 会让每个调用点都要先想一下
 // true 是好是坏。零值纪律两者相同,极性不同,所以是两个类型。
 //
