@@ -110,8 +110,26 @@ func guardianTunAndProtection(ctx context.Context) (string, string, error) {
 
 var noRouteRe = regexp.MustCompile(`(?i)no route to host|host is down|not in table|network is unreachable`)
 
+// isNoRouteError 判断这次路由查询的失败是不是「**确知**没有这条路由」。
+//
+// **必须去看 `ExitError.Stderr`。** `darwinRouteLookup` 用的是 `exec.Cmd.Output()`,
+// 而它在子进程非零退出时返回的 `*exec.ExitError` 的 `Error()` 只有一句
+// `"exit status 1"` —— route(1) 那句 `route: writing to routing socket: not in
+// table` 全在 `Stderr` 里。只看 `Error()` 的话,「确知没有」这一支**永远到不了**,
+// 于是 `ipv6_leak` 会在**它唯一该说 ok 的那种机器上**(根本没有 IPv6 的机器)
+// 永久停在 not checked。那是恒绿的镜像:不是撒谎,是把这一行变成装饰。
+//
+// 两种形状都要认:supervisor 那一层今天原样透传 ExitError,将来若把 stderr 包进
+// error 文本,老路也不能失灵。
 func isNoRouteError(err error) bool {
-	return err != nil && noRouteRe.MatchString(err.Error())
+	if err == nil {
+		return false
+	}
+	if noRouteRe.MatchString(err.Error()) {
+		return true
+	}
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && noRouteRe.MatchString(string(exitErr.Stderr))
 }
 
 // scutil --nc list 的行形如:
