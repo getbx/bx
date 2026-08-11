@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
@@ -273,13 +274,21 @@ func scannedCorePIDs(cores []Process) string {
 	return strings.Join(pids, ", ")
 }
 
-// ownershipUncertainEscapeHint 是这条判定唯一的脱身办法。
+// ownershipUncertainEscapeHint 告诉用户这条判定会怎么解开。
 //
-// Manager.upLocked/Migrate 在调用 Existing() 之前就先看 m.current.Uncertain 并
-// 短路返回,所以某一瞬间扫到的第三方 Core 会被**锁存**成永久拒绝:那个进程后来
-// 消失了,bx up 依旧失败且再也不会重新扫描。这一轮刻意不动 manager.go 的生命
-// 周期状态机(风险大于收益,且这种情况罕见),改为让失败自解释。
-const ownershipUncertainEscapeHint = "run `sudo bx down` then `sudo bx up` to clear this latched judgement"
+// 它**不再**是一条只能靠 down 清掉的锁存(2026-08-11):用户发起的 up/migrate 每次
+// 都经 recheckOwnershipUncertain 重新求证一遍,两次扫描都干净(确知没有 Core 在跑)
+// 就自行释放。仍然拒绝就说明系统里真有一个、或者根本扫不动 —— 那时该看的是
+// Guardian 日志里那两行普查,不是再跑一遍 down+up。
+//
+// **不许把重试写成承诺**:非 darwin 上 scanRunningCores 恒返回 errCoreScanUnsupported
+// ⇒ 恒拒绝;一台真有第二个 Core 的机器上重试也本该继续被拒。
+//
+// 它与 guardianCodeHints 那条是两个字符串、两条投递路径(这一句嵌进 daemon 产生的
+// 错误文本、进 Guardian 日志;那一条是 CLI 按失败码翻出来的指引),改一个忘另一个
+// 不会有任何编译错误 —— 由 TestOwnershipUncertainEscapeHintDescribesReVerification
+// 与 TestOwnershipUncertainHintNoLongerClaimsDownIsTheOnlyEscape 分别钉住。
+const ownershipUncertainEscapeHint = "`sudo bx up` re-verifies this on every attempt; if it still refuses, a Core really is running (or the scan cannot answer) — see guardian_core_scan / guardian_core_still_running_on_release in " + install.GuardianStderrLogPath
 
 // resolveOrphanLaunchMarker 判定一个 launching 标记是不是孤儿。
 //

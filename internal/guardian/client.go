@@ -257,19 +257,27 @@ const guardianTroubleshootingHint = "排查:sudo bx doctor;完整原因见 Guard
 // guardianCodeHints carries the per-code next step for failures the generic
 // hint cannot resolve.
 //
-// core_ownership_uncertain is **latched**: Manager.upLocked/Migrate check
-// m.current.Uncertain before Existing() is ever called again, so a scan
-// observation taken at one instant becomes a permanent refusal — if the
-// third-party Core later disappears, `bx up` still fails and never re-scans.
-// Down() clears m.current, which is the only escape. The latch is deliberately
-// left in place (rewiring manager.go's lifecycle state machine is higher risk
-// than the payoff, and the case is rare), so the failure has to explain itself
-// instead. The Guardian response body deliberately withholds the raw error
-// (it may carry paths/links/credentials), which is why the wording lives here
-// on the CLI side rather than in the error text the daemon produces.
+// core_ownership_uncertain is no longer a latch that only Down() clears
+// (2026-08-11). User-initiated Up/Migrate now re-verify on every attempt via
+// Manager.recheckOwnershipUncertain: two clean scans separated by a settle
+// window release the remembered judgement, anything else keeps refusing. So
+// the first thing to tell the user is that retrying is meaningful — and that a
+// refusal which survives a retry means a Core really is running, or the scan
+// cannot answer at all. Neither can be promised: on a machine that genuinely
+// has a second Core, both the retry and down+up are supposed to keep refusing,
+// and off darwin scanning is unsupported so the door stays welded shut.
+//
+// The Guardian response body deliberately withholds the raw error (it may
+// carry paths/links/credentials), which is why the wording lives here on the
+// CLI side rather than in the error text the daemon produces.
 var guardianCodeHints = map[string]string{
-	"core_ownership_uncertain": "若确认没有第二个 Core 在跑,执行 sudo bx down 再 sudo bx up 可清除这条已锁存的判定" +
-		"(Guardian 把「所有权不确定」记在内存里,只有 down 会清)",
+	"core_ownership_uncertain": "Guardian 没能证明系统里没有第二个 bx Core 在跑,于是拒绝再起一个" +
+		"(两个 Core 会争默认路由,先退出的那个用旧快照还原、掀掉另一个的劫持)。" +
+		"每次 sudo bx up 都会重新求证,所以直接重试是有意义的;仍然被拒就说明系统里真有一个 Core、" +
+		"或者根本扫不动 —— 先 sudo tail -50 " + install.GuardianStderrLogPath +
+		" 看是扫到了哪个进程(guardian_core_still_running_on_release / guardian_core_scan)," +
+		"若是另一个终端里的 sudo bx run,退出它再重试。" +
+		"sudo bx down 再 sudo bx up 会让 Guardian 忘掉这条判定,但那个 Core 还跑着时它同样会被拒",
 	// 维护挂起读不出来:Guardian 一律 fail-closed(不起 Core),而保护**不会**
 	// 自己恢复。挂起只是一次升级留下的临时标记,内容读不懂时直接删掉即可 ——
 	// 这条出路必须写在 CLI 侧:响应体刻意不外传原始错误串,daemon 那边写的

@@ -44,9 +44,14 @@ func toggleSlowHint(elapsedSeconds: Int) -> String? {
 /// 与 Go 侧 internal/guardian/client.go 对齐:Guardian 的响应体刻意只回传
 /// 失败码、不外传原始错误串(可能含路径/链接/凭据),所以具体说法必须写
 /// 在客户端。`core_ownership_uncertain` 是 guardianCodeHints 里目前唯一的
-/// 专用条目,且这条判定是锁存的(Manager.upLocked/Migrate 在再次调用
-/// Existing() 之前就先看缓存的 Uncertain 标记)——down 再 up 是唯一出路,
-/// 不说这句用户无从下手。
+/// 专用条目。它**不再**是一条只能靠 down 清掉的锁存(2026-08-11):
+/// Manager.upLocked/Migrate 现在每次都经 recheckOwnershipUncertain 重新向系统
+/// 求证,两次扫描都干净才释放。所以第一句要说的是「再试一次是有意义的」,
+/// 而它仍然拒绝就意味着系统里真有一个 Core、或者根本扫不动 —— 那时唯一写着
+/// 「扫到了谁」的地方是 Guardian 日志。
+///
+/// **两条都不许写成承诺**:一台真有第二个 Core 的机器上,重试与 down+up 都
+/// 本该继续被拒;down+up 只是让 Guardian 忘掉这条判定,不改变系统里的事实。
 ///
 /// `recovery_incomplete`/`guardian_busy` 不在 guardianCodeHints 表里(Go
 /// 侧目前只让它们落回通用的 "sudo bx doctor" 提示),这里补的两条都各自
@@ -206,7 +211,10 @@ func toggleFailureHint(code: String?) -> String? {
     guard let code, !code.isEmpty else { return nil }
     switch code {
     case "core_ownership_uncertain":
-        return "If no second bx is running, run sudo bx down then sudo bx up to clear this latched judgement"
+        return "bx re-checks this on every attempt and still cannot prove no second bx Core is running. " +
+            "Quit any sudo bx run you have open, then try again. " +
+            "sudo bx down then sudo bx up makes Guardian forget the judgement, but it will refuse just the same " +
+            "while a Core really is running — see sudo tail -50 /var/log/bx-guard.err.log for the process it found"
     case "recovery_incomplete":
         return "The menu's direct call has no fallback. Run sudo bx down in Terminal " +
             "(not this toggle again) — the command line forces a teardown when Guardian " +

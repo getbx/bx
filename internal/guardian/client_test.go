@@ -318,3 +318,48 @@ func TestGuardianHTTPErrorNon500StaysPlain(t *testing.T) {
 		t.Errorf("非 500 不应附排查指引,实际:%s", msg)
 	}
 }
+
+// 指引必须描述**现在**的行为。core_ownership_uncertain 已经不是一条靠 down
+// 清掉的锁存了:用户发起的 up/migrate 每次都经 recheckOwnershipUncertain 重新
+// 向系统求证(两次扫描都干净才释放),所以「再试一次」本身就常常够了;它仍然
+// 拒绝就意味着系统里真有一个 Core、或者根本扫不动 —— 该看的是 Guardian 日志。
+//
+// 三条断言各自盯着一句**曾经写在那里、而现在是假的**话:
+//   - 「只有 down」/「已锁存」:旧文案的原文,也是 CLAUDE.md 里被本期推翻的那句;
+//   - 「重新求证」:新行为的核心。没有这句,指引就没说出用户该先做什么;
+//   - Guardian 日志路径:仍然拒绝时唯一写着「扫到了谁」的地方。
+//
+// **不许反过来把「重试一定管用」写死**:非 darwin 上扫描恒不可用 ⇒ 恒拒绝,
+// 而一台真有 Core 在跑的机器上重试也永远该拒绝。指引给的是下一步,不是承诺。
+func TestOwnershipUncertainHintNoLongerClaimsDownIsTheOnlyEscape(t *testing.T) {
+	hint, ok := guardianCodeHints["core_ownership_uncertain"]
+	if !ok {
+		t.Fatal("core_ownership_uncertain 没有指引 —— 这个码最需要指引")
+	}
+	for _, stale := range []string{"只有 down", "已锁存", "唯一"} {
+		if strings.Contains(hint, stale) {
+			t.Errorf("指引还在把它描述成一条靠 down 清掉的锁存(命中 %q): %q", stale, hint)
+		}
+	}
+	if !strings.Contains(hint, "重新求证") {
+		t.Errorf("指引没说出用户该先做的那一步(每次 up 都会重新求证,所以重试有意义): %q", hint)
+	}
+	if !strings.Contains(hint, install.GuardianStderrLogPath) {
+		t.Errorf("指引没有把人送到唯一写着完整原因的地方(Guardian 日志): %q", hint)
+	}
+}
+
+// daemon 侧那句嵌进错误文本的逃生提示是同一条规矩。它与 guardianCodeHints 是
+// 两个字符串、两条投递路径(前者进 Guardian 日志与 CLI 的错误文本,后者是 CLI
+// 按码翻出来的指引),改一个忘另一个不会有任何编译错误。
+func TestOwnershipUncertainEscapeHintDescribesReVerification(t *testing.T) {
+	if strings.Contains(ownershipUncertainEscapeHint, "latched") {
+		t.Errorf("daemon 侧提示还在说这是一条锁存的判定: %q", ownershipUncertainEscapeHint)
+	}
+	if !strings.Contains(ownershipUncertainEscapeHint, "re-verifies") {
+		t.Errorf("daemon 侧提示没说 up 每次都会重新求证: %q", ownershipUncertainEscapeHint)
+	}
+	if !strings.Contains(ownershipUncertainEscapeHint, install.GuardianStderrLogPath) {
+		t.Errorf("daemon 侧提示没有点名 Guardian 日志: %q", ownershipUncertainEscapeHint)
+	}
+}

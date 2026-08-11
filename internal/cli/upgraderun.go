@@ -142,8 +142,9 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 			// 这条以前漏了:判断只看 down.Forced 与 err,而「200 但
 			// protection_state != off」两者都不满足 —— 于是升级会照常换掉 runtime
 			// 二进制、重启 Guardian,而一个不受管的 Core 还在跑着老二进制、占着 TUN。
-			// 症状要到之后才现:startProtection 撞上 latch 住的
-			// core_ownership_uncertain,而按 CLAUDE.md 那个状态只有 down+up 能解 ——
+			// 症状要到之后才现:startProtection 撞上 core_ownership_uncertain,
+			// 而那个状态只要那个不受管的 Core 还占着 TUN 就一直解不开(用户发起的
+			// up 每次都会重新求证,但求证的答案就是「还有一个在跑」)——
 			// 一个远比现在中止更难懂的失败。
 			//
 			// 中止是安全的:这是第一步,文件还一个字节都没动。
@@ -157,8 +158,8 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 				if reason := downUnconfirmedReason(down); reason == "core_still_running" {
 					stepErr = fmt.Errorf(
 						"Guardian 确认系统里仍有 bx 的 Core 进程在跑(%s):此时换掉二进制会留下一个"+
-							"不受管的旧 Core 占着 TUN,而症状要到之后才现(core_ownership_uncertain,"+
-							"只有 sudo bx down 再 sudo bx up 能解)。"+
+							"不受管的旧 Core 占着 TUN,而症状要到之后才现(core_ownership_uncertain —— "+
+							"每次 sudo bx up 都会重新求证,但只要那个 Core 还在跑就一直拒绝)。"+
 							"先看 sudo tail -50 /var/log/bx-guard.err.log 确认是哪个进程并处理掉,再重跑升级",
 						reason,
 					)
