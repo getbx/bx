@@ -4661,7 +4661,7 @@ func reconcileRoundVerdict(round guardian.ReconcileReport) string {
 	case round.Held != "":
 		// 被栅栏挡住的一轮**没有做判断**,不是「判断出没有差异」——soak 要数的
 		// 正是这种轮次有多少。
-		return "被 " + round.Held + " 挡住"
+		return "被 " + round.Held + " 挡住" + heldFenceHint(round.Held)
 	case len(round.Actions) > 0:
 		return "本会提议 " + strings.Join(round.Actions, ",")
 	case round.UnchangedRounds == 0:
@@ -5830,3 +5830,32 @@ const (
 
 // publicIPProbeURLs 是按顺序尝试的出口探测地址。
 var publicIPProbeURLs = []string{publicIPProbeV4URL, "https://ipinfo.io/ip"}
+
+// heldFenceHint 给栅栏名字配一句**下一步**。
+//
+// 栅栏名是给日志与统计脚本用的稳定标识符,不是给人读的。此前
+// `bx status` 只把它原样吐出来 —— 用户看到「被 ownership_uncertain 挡住」,
+// 而那串字既不说明发生了什么,也不说明该做什么。
+//
+// **出路此前只挂在 500 响应上**(guardianCodeHints 是按失败码索引的),也就是说
+// 只有主动去 `sudo bx up` 撞一次墙的人才看得到怎么脱身;被动看状态的人拿到的是
+// 一个术语。而所有权不确定恰恰是那种**用户不主动撞就不知道自己卡住了**的状态:
+// 保护没开、Guardian 在正常应答、status 一切看起来正常,只有这一行在说话。
+//
+// 措辞刻意不承诺:每次 up 都会重新求证,但系统里真有第二个 Core 时它**应该**
+// 继续拒绝。
+func heldFenceHint(held string) string {
+	switch held {
+	case "ownership_uncertain":
+		return "(Guardian 拒绝再起一个 Core。`sudo bx up` 每次都会重新求证;" +
+			"仍被拒就去看 " + install.GuardianStderrLogPath + " 里的 guardian_core_scan)"
+	case "recovery_blocked":
+		return "(启动恢复没做完。`sudo bx down` 仍然可用)"
+	case "intent_unreadable":
+		return "(读不出 /var/lib/bx 里的意图或维护挂起。见 " + install.GuardianStderrLogPath + ")"
+	default:
+		// path_recovery_in_flight / maintenance_hold 都是**过渡态**,自己会结束,
+		// 给「下一步」反而会催人去动手。
+		return ""
+	}
+}
