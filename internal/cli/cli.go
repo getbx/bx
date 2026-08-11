@@ -3196,11 +3196,19 @@ func runBrowserICECheck(ctx context.Context, timeout time.Duration) (browserICER
 	resultCh := make(chan browserICEResult, 1)
 	mux := http.NewServeMux()
 	srv := &http.Server{Handler: mux}
+	gate := newLoopbackGate()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if !gate.allow(w, r, false) {
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, webrtcCheckHTML)
 	})
 	mux.HandleFunc("/result", func(w http.ResponseWriter, r *http.Request) {
+		// requireOrigin=true:回传是**写**入口,伪造它就能让 bx 报「无泄漏」。
+		if !gate.allow(w, r, true) {
+			return
+		}
 		defer r.Body.Close()
 		var result browserICEResult
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&result); err != nil {
@@ -3219,11 +3227,12 @@ func runBrowserICECheck(ctx context.Context, timeout time.Duration) (browserICER
 		return browserICEResult{}, err
 	}
 	defer ln.Close()
+	gate.bindTo(ln.Addr().String())
 	go func() {
 		_ = srv.Serve(ln)
 	}()
 	defer srv.Close()
-	u := "http://" + ln.Addr().String() + "/"
+	u := "http://" + ln.Addr().String() + "/?t=" + gate.token
 	if err := openBrowserURL(ctx, u); err != nil {
 		return browserICEResult{}, err
 	}
@@ -3306,7 +3315,8 @@ const webrtcCheckHTML = `<!doctype html>
   }
   out.textContent = JSON.stringify(result, null, 2);
   try {
-    await fetch('/result', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(result)});
+    const t = new URLSearchParams(location.search).get('t') || '';
+    await fetch('/result?t=' + encodeURIComponent(t), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(result)});
     out.textContent += '\n\nsent to bx';
   } catch (e) {
     out.textContent += '\n\nsend failed: ' + e;
