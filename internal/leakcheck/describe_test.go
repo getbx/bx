@@ -210,3 +210,30 @@ func TestEvidenceCarriesBXTunInterface(t *testing.T) {
 		t.Fatalf("证据清单必须带上 bx 自己的 TUN 接口名,得到:\n%s", joined)
 	}
 }
+
+// **「有没有隧道」是 IPv6 那条指控的前半句。**
+//
+// 判据故意偏向「认成隧道」:漏认一条真隧道的代价是把一条真泄漏说成「查不了」,
+// 而多认一个的代价只是在一台两个地址族走不同接口的机器上少说一句指控。
+// 物理网卡与 loopback 必须**认不出来** —— 认出来这条前半句就又白设了。
+func TestIsTunnelInterface(t *testing.T) {
+	for _, name := range []string{
+		"utun0", "utun11", // bx / Tailscale / WireGuard / 系统 IKEv2
+		"ipsec0",       // 系统集成 IPSec
+		"ppp0",         // L2TP / PPTP
+		"tun0", "tap0", // tuntaposx 那一系
+		"  utun4  ", // 前后空白不该改变判定
+	} {
+		if !IsTunnelInterface(name) {
+			t.Errorf("%q 是一条隧道接口 —— 认不出来,一条真 v6 泄漏就会被说成「查不了」", name)
+		}
+	}
+	for _, name := range []string{
+		"en0", "en1", "bridge0", "lo0", "awdl0", "llw0", "anpi0", "",
+	} {
+		if IsTunnelInterface(name) {
+			t.Errorf("%q 不是隧道 —— 认成隧道,一台没开 VPN 的双宿机器就会被指控"+
+				"「IPv6 绕过了隧道」,而它根本没有隧道", name)
+		}
+	}
+}

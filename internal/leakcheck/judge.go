@@ -217,11 +217,50 @@ func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 			") but the local IPv6 default route was not observed, so it cannot be attributed."
 		return f
 	}
+	// **设计的前提是「v4 走 VPN 而 v6 出口是 ISP」,前半句必须自己成立。**
+	//
+	// 光凭「两个地址族的接口名不一样」就指控,一台**一个 VPN 都没开**的双宿 Mac
+	// 就会被判泄漏:插着坞站、v4 默认路由在只有 v4 的公司有线网口、v6 默认路由
+	// 在 Wi-Fi —— 那是一台正常机器的样子,没有隧道可绕。
+	//
+	// 「有没有隧道」只能从手上这点事实推:v4 默认路由那个接口是 bx 自己的 TUN
+	// (Guardian 报的),或者它长得像一条隧道设备(IsTunnelInterface)。**推不出
+	// 来就说推不出来**,不许把一句判不了的话说成指控 —— 乱喊狼来了与恒绿是同一
+	// 条设计风险的两面。
+	if !isTunnelPath(local) {
+		f.Summary = "IPv4 leaves through " + describeRef(local.DefaultRouteV4) +
+			" and IPv6 through " + describeRef(local.DefaultRouteV6) +
+			" — two different interfaces, but bx found no tunnel on the IPv4 path, " +
+			"so it cannot say IPv6 is bypassing anything. An ordinary dual-homed machine " +
+			"(wired IPv4, Wi-Fi IPv6) looks exactly like this."
+		return f
+	}
+
 	f.Verdict = Bad
 	f.Summary = "IPv4 leaves through " + describeRef(local.DefaultRouteV4) +
 		" but IPv6 reached the internet as " + browser.ExitV6 + " through " +
 		describeRef(local.DefaultRouteV6) + ". IPv6 is bypassing the tunnel."
 	return f
+}
+
+// isTunnelPath 回答「v4 默认路由上有没有一条隧道」。
+//
+// bx 自己那条 TUN 按 Guardian 报的名字**确知**;其余按设备名判(IsTunnelInterface)。
+// 这是「v4 走 VPN 而 v6 是 ISP」那句前半句唯一能落到的事实。
+//
+// 头一支在 darwin 上与设备名那一支重合(bx 的 TUN 就叫 utunN),留着是因为它是
+// **权威**的那一个:采集层今天只有 macOS,而 bx 在 Linux/Windows 上的 TUN 叫
+// `bx0` —— 谁把采集层移过去,这条前半句不该跟着一起失灵。它只会把判定往
+// 「是隧道」推,永远不会多产出一条指控。
+func isTunnelPath(local LocalFacts) bool {
+	name := strings.TrimSpace(local.DefaultRouteV4.Name)
+	if name == "" {
+		return false
+	}
+	if bxTun := strings.TrimSpace(local.BXTunInterface); bxTun != "" && name == bxTun {
+		return true
+	}
+	return IsTunnelInterface(name)
 }
 
 // describeRef 渲染一个接口:能翻成人话就用人话,翻不出就说翻不出。

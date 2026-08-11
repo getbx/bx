@@ -11,6 +11,34 @@ type VPNService struct {
 	Connected bool   `json:"connected"`
 }
 
+// tunnelDevicePrefixes 是 macOS 上「这个接口是一条隧道」的全部形状:
+// utun(bx 自己、Tailscale、WireGuard、Mullvad、系统 IKEv2 都在这里)、
+// ipsec、ppp(L2TP/PPTP 这类系统集成 VPN)、以及 tuntaposx 那一系的 tun/tap。
+var tunnelDevicePrefixes = []string{"utun", "ipsec", "ppp", "tun", "tap"}
+
+// IsTunnelInterface 判断这个接口名看起来是不是一条隧道。
+//
+// **它回答的是「这台机器上有没有隧道可绕」,而不是「哪个 VPN」** —— 后者是
+// DescribeInterface 的事,而且认不出时它老老实实说 Unidentified。这里只需要
+// 前者:没有隧道的时候,「IPv6 绕过了隧道」这句指控在语法上就不成立。
+//
+// **判据故意宽**:偏向「认成隧道」。漏认的代价是把一条真泄漏说成「查不了」;
+// 过度匹配的代价是在一台没有 VPN 的机器上多问一句 —— 而那一句仍然要求两个
+// 地址族走不同接口才会出现。已知限制:一个把物理网卡留作默认路由的用户态代理
+// (bx 自己在 split 模式下不是这样)认不出来,那时这条规则如实说它判不了。
+func IsTunnelInterface(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, prefix := range tunnelDevicePrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // DescribeInterface 把 `utun4` 翻成人话。**翻不出就说翻不出。**
 //
 // 归因只在**唯一确定**时发生:

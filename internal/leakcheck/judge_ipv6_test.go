@@ -149,6 +149,49 @@ func TestIPv6Rule(t *testing.T) {
 			want:        Bad,
 			wantMention: "2001:db8:1::1",
 		},
+		{
+			// **设计的前提是「v4 走 VPN 而 v6 出口是 ISP」,而实现丢了前半句。**
+			//
+			// 一台**一个 VPN 都没开**的双宿 Mac —— 插着坞站、v4 默认路由在有线
+			// 网口(公司网络只有 v4)、v6 默认路由在 Wi-Fi —— 两个接口名不同,
+			// 于是旧实现直接喊「IPv6 is bypassing the tunnel」。没有隧道可绕。
+			name:    "没有任何隧道的双宿机器不许被指控",
+			browser: BrowserReport{ExitV4: "5.6.7.8", ExitV6: "2001:db8:1::1"},
+			local: LocalFacts{
+				DefaultRouteV4:     InterfaceRef{Name: "en0", Display: "en0"},
+				DefaultRouteV6:     InterfaceRef{Name: "en1", Display: "en1"},
+				IPv6DefaultPresent: tristate.True,
+			},
+			want:        NotChecked,
+			wantMention: "no tunnel",
+		},
+		{
+			// bx 自己占着 v4 默认路由、v6 却从物理口出去:这是真泄漏,
+			// 而且是 bx 最该抓到的那一种。上面那条不许把它一并保守掉。
+			name:    "bx 占着 v4 而 v6 从物理口漏出去",
+			browser: BrowserReport{ExitV4: "5.6.7.8", ExitV6: "2001:db8:1::1"},
+			local: LocalFacts{
+				DefaultRouteV4:     InterfaceRef{Name: "utun11", Display: "bx (utun11)"},
+				DefaultRouteV6:     physV6,
+				IPv6DefaultPresent: tristate.True,
+				BXTunInterface:     "utun11",
+			},
+			want:        Bad,
+			wantMention: "bypassing",
+		},
+		{
+			// 系统集成 VPN 走的是 ppp/ipsec 而不是 utun(L2TP、IKEv2)。
+			// 判据只认 utun 会漏掉它们 —— 漏认的代价是一条真泄漏被说成「查不了」。
+			name:    "ppp 上的 VPN 同样算隧道",
+			browser: BrowserReport{ExitV4: "5.6.7.8", ExitV6: "2001:db8:1::1"},
+			local: LocalFacts{
+				DefaultRouteV4:     InterfaceRef{Name: "ppp0", Display: "Work VPN (ppp0)"},
+				DefaultRouteV6:     physV6,
+				IPv6DefaultPresent: tristate.True,
+			},
+			want:        Bad,
+			wantMention: "bypassing",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := ipv6Finding(t, tc.browser, tc.local)
