@@ -1,6 +1,9 @@
 package leakcheck
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // 零值必须是 NotChecked。**这是本包的地基**:一个零值读作 OK 的三态,会让
 // 「页面没跑成」在下游渲染成「一切正常」——设计风险四点名的那种最坏失败。
@@ -57,5 +60,33 @@ func TestAnomalyCountOfEmptyReport(t *testing.T) {
 	}
 	if !rep.GeneratedAt.Equal(fixedTime()) {
 		t.Fatalf("GeneratedAt 必须原样带出注入的时间,得到 %v", rep.GeneratedAt)
+	}
+}
+
+// **报告是只写的,这是一个刻意的决定,不是漏掉了 UnmarshalJSON。**
+//
+// `bx leakcheck --json` 的消费方是 agent / jq,不是 Go;仓库里没有一处把 Report
+// 读回来。而 Verdict 只有 MarshalJSON 这件事在这里必须被钉住,因为它有一个安静的
+// 失败形状:谁将来顺手写一句 json.Unmarshal(data, &rep),得到的会是**一份所有
+// verdict 都读作零值(not checked)的报告**,而 not checked 恰好又是这个功能里
+// 「没问出来」的那一格 —— 一次解码事故会伪装成一次诚实的观测。
+//
+// 现在的行为是**响亮失败**(字符串塞不进 uint8),这条测试就锁住这一点。
+// 将来真要在 Go 里读回它:补 UnmarshalJSON、让它认那三个词、把这条测试换成
+// 一条真正的往返测试(含「未知词必须报错而不是落进 NotChecked」)。
+func TestReportsAreWriteOnlyAndNeverDecodeSilently(t *testing.T) {
+	data, err := json.Marshal(NewReport(fixedTime(), Endpoints(), []Finding{
+		{ID: "a", Verdict: Bad, Summary: "leaking"},
+		{ID: "b", Verdict: OK, Summary: "fine"},
+	}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Report
+	if err := json.Unmarshal(data, &back); err == nil {
+		t.Fatalf("Report 现在能被解码了(%+v)—— 如果这是有意的,请连同 Verdict 的"+
+			"UnmarshalJSON 一起补上并把这条测试换成真正的往返测试;"+
+			"当前的危险在于一份解码失败的报告会读作「全部 not checked」,"+
+			"与一次诚实的「没问出来」逐字节相同", back.Findings)
 	}
 }
