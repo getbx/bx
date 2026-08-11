@@ -843,7 +843,7 @@ func detectPublicIP() string {
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp4", addr)
 	}}
 	cl := &http.Client{Timeout: 5 * time.Second, Transport: tr}
-	for _, u := range []string{"https://api.ipify.org", "https://icanhazip.com"} {
+	for _, u := range publicIPProbeURLs {
 		resp, err := cl.Get(u)
 		if err != nil {
 			continue
@@ -2526,7 +2526,7 @@ func collectNetworkProbe(ctx context.Context) networkProbeResult {
 	result := networkProbeResult{DNSName: "www.google.com"}
 	updates := make(chan func(*networkProbeResult), 3)
 	go func() {
-		ip, err := fetchPublicIP(ctx, "tcp4", "https://api.ipify.org")
+		ip, err := fetchPublicIP(ctx, "tcp4", publicIPProbeV4URL)
 		updates <- func(r *networkProbeResult) {
 			if err != nil {
 				r.IPv4Err = err.Error()
@@ -2536,7 +2536,7 @@ func collectNetworkProbe(ctx context.Context) networkProbeResult {
 		}
 	}()
 	go func() {
-		ip, err := fetchPublicIP(ctx, "tcp6", "https://api64.ipify.org")
+		ip, err := fetchPublicIP(ctx, "tcp6", publicIPProbeV6URL)
 		updates <- func(r *networkProbeResult) {
 			if err != nil {
 				r.IPv6Err = err.Error()
@@ -5797,3 +5797,24 @@ func uninstallAction(c *cli.Context) error {
 	fmt.Println("已卸载 bx 服务")
 	return nil
 }
+
+// 出口探测用的域名。**一个都不许在 china 直连列表里** —— 在列表里的域名,
+// 保护开着时走的是直连,于是探测报出来的是用户真实的 ISP 出口,而不是隧道出口。
+//
+// 后果不是「少一条信息」,是**方向相反的谎**:用户敲 bx doctor 想确认保护有没有
+// 生效,看到自己的真实 IP,得出的结论正好是「bx 在漏」。一个在最需要它的时候
+// 撒谎的诊断。
+//
+// **这个坑踩过两次。** CLAUDE.md 里那条教训正确地点名了 ifconfig.me 与 ip.sb,
+// 却推荐用 api.ipify.org —— 而 ipify.org 同样在列表里(china_domain.txt:6045),
+// 于是那条写错的推荐照着进了代码三处。所以这里不靠「记得选对」,靠
+// TestPublicIPProbeDomainsAreNotChinaDirect 拿**真实的内嵌列表**逐个比对。
+const (
+	publicIPProbeV4URL = "https://icanhazip.com"
+	// v6 用同一个主机名:icanhazip.com 同时有 A 与 AAAA,由 fetchPublicIP 传的
+	// network("tcp6")决定实际走哪个族 —— 比换一个 v6 专用域名少一处要维护的常量。
+	publicIPProbeV6URL = "https://icanhazip.com"
+)
+
+// publicIPProbeURLs 是按顺序尝试的出口探测地址。
+var publicIPProbeURLs = []string{publicIPProbeV4URL, "https://ipinfo.io/ip"}
