@@ -71,7 +71,10 @@ grep -qF "app-install --app-source" "$RELEASE_DIR/install.sh" || fail "install.s
 # 否则非交互调用方无处表态:app-install 问不出来会非零退出,而 install.sh 又不给
 # 任何加 --yes 的途径,升级就成了死路。
 grep -qF 'app-install --app-source "$DIR/Bx.app" $ASSUME_YES' "$RELEASE_DIR/install.sh" || fail "install.sh must forward an opt-in --yes to app-install"
-grep -qF '--yes|-y) ASSUME_YES="--yes"' "$RELEASE_DIR/install.sh" || fail "install.sh must accept --yes"
+# `--` 不能省:模式以 `--` 开头,不加分隔符 grep 会把它当成自己的选项、
+# 打一屏 usage 然后非零退出 —— 于是这条守卫**从来没有真正比对过内容**,
+# 它只是每次都失败。verify 因此从来跑不完,而「跑不完」被当成了别的问题。
+grep -qF -- '--yes|-y) ASSUME_YES="--yes"' "$RELEASE_DIR/install.sh" || fail "install.sh must accept --yes"
 # 用户明确说「不」时 app-install 退出 2;脚本必须据此不再打印「完成」。
 grep -qF 'if [ "$rc" -eq 2 ]' "$RELEASE_DIR/install.sh" || fail "install.sh must branch on the explicit-cancel exit code"
 ! grep -qE 'app-install .*--yes' "$RELEASE_DIR/install.sh" || fail "install.sh must not hardcode --yes"
