@@ -74,6 +74,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private var recoveryGeneration = RecoveryGeneration()
     private var repairVersions: (bundle: String?, runtime: String?, core: String?)?
+    /// 同一时刻只跑一次泄漏检测:每次点击都会起一个新的 loopback 服务,连点会攒
+    /// 一堆,每个都带着自己的 2 分钟超时。
+    private var leakCheckInFlight = false
     /// Guardian 最近一次**应答并解码成功**的那份报告,只用来问一件事:此刻有没有
     /// 维护挂起(见 maintenanceRow)。挂起期间 `protection_state` 就是 `off`,
     /// `BxState.off` 又不带 payload,不留住这份报告菜单就无从分辨「bx 正在自我升级」
@@ -798,6 +801,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 这些状态的主动作已经排在诊断入口之前了,这里不再重复。
             break
         }
+        // Check for leaks 在**每一个**状态下都在场。这是刻意的:这个功能的
+        // 立身之本就是「保护关着也有用」——只在 .connected 里给它,等于把它
+        // 藏在最不需要它的那个状态里(TestMacMenuLeakCheckRunsUnprivileged
+        // 按花括号深度钉住它在顶层)。
+        menu.addAction("Check for leaks ↗", symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
         // 退出入口无条件加一次。**不要挪回上面任何一个 case**:此前它只在
         // .connected/.warning 里,于是 .off/.setupNeeded/.missing/.notInstalled/
         // .updateNeeded 下菜单没有任何退出入口(TestMacMenuQuitActionPresentInEveryState)。
@@ -856,6 +864,31 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func runDoctor() {
         openTerminal("diag=\"$HOME/Library/Logs/bx/diagnostics\"; mkdir -p \"$diag\"; sudo env BX_LOG_ARCHIVE_DIR=\"$diag\" '\(bxPath)' doctor; latest=$(find \"$diag\" -maxdepth 1 -type d -name 'bx-logs-*' | sort | tail -1); if [ -n \"$latest\" ]; then group=$(id -gn); sudo chown -R \"$USER:$group\" \"$latest\" 2>/dev/null || true; open \"$latest\"; fi; echo; read -n 1 -s -r -p 'Press any key to close'")
+    }
+
+    /// 打开泄漏检测。**不提权** —— bx leakcheck 自己会拒绝 root(以 root 跑会让
+    /// 那个 loopback 服务变成 root 进程的端口),提权只会换来一个弹了密码框然后
+    /// 失败的操作。浏览器由 bx 自己打开,菜单只负责起它。
+    ///
+    /// 在后台队列跑:leakcheck 最长等 2 分钟,压在主线程上会把整个菜单冻住
+    /// (阶段①那次 71 分钟的冻结就是这么来的)。
+    @objc private func checkForLeaks() {
+        guard ensureCLIUsable() else { return }
+        if leakCheckInFlight { return }
+        leakCheckInFlight = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let result = self.runBx(["leakcheck"])
+            DispatchQueue.main.async {
+                self.leakCheckInFlight = false
+                if result.code != 0 {
+                    self.showMessage(
+                        "Leak Check Did Not Start",
+                        "bx could not start the leak check. Run `bx leakcheck` in Terminal to see why."
+                    )
+                }
+            }
+        }
     }
 
     @objc private func startBx() {
