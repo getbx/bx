@@ -58,7 +58,7 @@ func TestStaleLegacyIntentFileDoesNotTurnProtectionBackOn(t *testing.T) {
 	if desiredOnFrom(context.Background(), store, "/nonexistent/guardian.sock") {
 		t.Fatal("陈旧欠条把保护打开了 —— 用户明确说过 off")
 	}
-	steps := upgradeSteps(true, false)
+	steps := upgradeSteps(true, false, true)
 	if stepsContain(steps, UpgradeStartProtection) {
 		t.Fatalf("升级计划里不该有「恢复保护」:%v", steps)
 	}

@@ -63,8 +63,20 @@ type upgradeIO struct {
 	reassertDesiredOn func() error
 	installFiles      func() (installedFiles, error)
 	restartGuardian   func() error
-	startProtection   func() error
-	log               func(string)
+	// configUsable 回答「Guardian 现在起得来吗」。
+	//
+	// 判据刻意与 daemon 启动时那一跳同源:它要读 /etc/bx/config.yaml 取 owner_uid,
+	// 读不出或解析不了就直接退出 —— 而 plist 带 KeepAlive=true,于是 bootstrap 一个
+	// 读不到配置的 Guardian 等于制造一个崩溃循环。**「还没跑过 bx setup」是全新安装
+	// 的常态**,所以这不是边角情况。
+	configUsable func() bool
+	// enableGuardian 在全新安装之后把 Guardian 服务拉起来(bootstrap + kickstart)。
+	// 它**不开保护** —— 起来时 desired 还是 off,只是开始服务控制 socket,
+	// 而菜单栏的免密开关全靠那个 socket。幂等:服务已加载且可达时不发任何
+	// launchctl 命令。
+	enableGuardian  func() error
+	startProtection func() error
+	log             func(string)
 }
 
 // upgradeOutcome 描述这次 app-install 实际做了什么,供调用方如实汇报 ——
@@ -94,7 +106,7 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 	// 意图必须在动手之前读完:退回路径(挂起写不成)上停机仍会写 desired=off,
 	// 读晚了就只能读到那个 off。
 	desiredOn := io.loadDesiredOn()
-	steps := upgradeSteps(running, desiredOn)
+	steps := upgradeSteps(running, desiredOn, io.guardianConfigUsable())
 	stopsProtection := stepsContain(steps, UpgradeStopProtection)
 
 	if stopsProtection && !assumeYes {
@@ -176,6 +188,9 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 		case UpgradeRestartGuardian:
 			io.log("• 重启保护服务(使新版本生效)")
 			stepErr = io.restartGuardian()
+		case UpgradeEnableGuardian:
+			io.log("• 启动保护服务(不开启保护)")
+			stepErr = io.enableGuardian()
 		case UpgradeStartProtection:
 			io.log("• 恢复保护")
 			if stepErr = io.startProtection(); stepErr == nil {
@@ -240,4 +255,15 @@ func stepsContain(steps []UpgradeStep, want UpgradeStep) bool {
 		}
 	}
 	return false
+}
+
+// guardianConfigUsable 把「没人告诉我」读成「不可用」。
+//
+// **判错的代价不对称**,与生产接线处那条注释同源:答「能用」而其实不能,会
+// bootstrap 一个起不来的 Guardian,配上 KeepAlive=true 就是崩溃循环;答「不能用」
+// 而其实能,只是菜单栏要等用户敲一次 sudo bx up。所以缺省(测试替身没设这个钩子)
+// 走保守那边 —— 而不是 panic:绝大多数升级测试与这一步无关,让它们全部被迫表态
+// 只会制造噪声,真正需要它的测试自己会把钩子设上。
+func (io upgradeIO) guardianConfigUsable() bool {
+	return io.configUsable != nil && io.configUsable()
 }

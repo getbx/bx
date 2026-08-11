@@ -11,15 +11,59 @@ import (
 	"testing"
 )
 
-// Guardian 没在跑就只装文件 —— 没有运行中的进程要换,也就没有断网的理由。
+// Guardian 没在跑、配置也还不可用(还没跑过 bx setup)就只装文件 ——
+// 没有运行中的进程要换,也就没有断网的理由;而硬把一个读不到配置的 Guardian
+// bootstrap 起来,配上 KeepAlive=true 就是崩溃循环。
 func TestUpgradeStepsWithoutRunningGuardianOnlyInstalls(t *testing.T) {
-	got := upgradeSteps(false, false)
+	got := upgradeSteps(false, false, false)
 	want := []UpgradeStep{UpgradeInstallFiles}
 	if len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("steps = %v, want %v", got, want)
 	}
-	if len(upgradeSteps(false, true)) != 1 {
+	if len(upgradeSteps(false, true, false)) != 1 {
 		t.Fatal("Guardian 没在跑时,desired 是什么都不该多做")
+	}
+}
+
+// **全新安装必须把 Guardian 服务拉起来**,只要配置已经可用。
+//
+// 真机实测(2026-08-10):装完之后 plist 写好了但从没被 bootstrap 过,
+// guardian.sock 要等到第一次 `sudo bx up` 才存在 —— 而菜单栏的免密开关正是连
+// 那个 socket。于是「全新安装 → 点菜单里的 Start Protection」**必然失败**,
+// 且三处都不留痕(Guardian 没起来所以没日志、菜单自己不记失败、403 也不记)。
+// 升级路径一直没这个问题,因为 restartGuardianForUpgrade 会 bootout 再 bootstrap;
+// 也就是说菜单栏第①期的免密开关,在全新安装这条路上从没能工作过。
+//
+// 它**不开保护**:Guardian 起来时 desired 还是 off,只是开始服务控制 socket。
+func TestUpgradeStepsOnFreshInstallStartsGuardianWhenConfigIsUsable(t *testing.T) {
+	for _, desired := range []bool{false, true} {
+		got := upgradeSteps(false, desired, true)
+		want := []UpgradeStep{UpgradeInstallFiles, UpgradeEnableGuardian}
+		if len(got) != len(want) {
+			t.Fatalf("desired=%v steps = %v, want %v", desired, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("desired=%v steps = %v, want %v", desired, got, want)
+			}
+		}
+		// 全新安装绝不开保护 —— 那是用户的决定,README 也是这么承诺的。
+		for _, step := range got {
+			if step == UpgradeStartProtection {
+				t.Fatalf("desired=%v:全新安装不许开启保护, got %v", desired, got)
+			}
+		}
+	}
+}
+
+// 配置还不可用时**绝不**拉 Guardian:daemon 启动要读 /etc/bx/config.yaml 取
+// owner_uid,读不出就退出,而 plist 带 KeepAlive=true —— bootstrap 一个起不来的
+// Guardian 等于让一台刚装好的机器每秒重启它一次,而安装报告说完成。
+func TestUpgradeStepsOnFreshInstallSkipsGuardianWhenConfigIsUnusable(t *testing.T) {
+	for _, step := range upgradeSteps(false, true, false) {
+		if step == UpgradeEnableGuardian {
+			t.Fatal("配置还读不出来时不许 bootstrap Guardian —— KeepAlive 会把它变成崩溃循环")
+		}
 	}
 }
 
@@ -29,7 +73,7 @@ func TestUpgradeStepsWithoutRunningGuardianOnlyInstalls(t *testing.T) {
 // 而不是「路由指向已消失的 TUN、整机断网」—— 对一个翻墙工具,后者意味着用户连
 // 重装包都下不了。
 func TestUpgradeStepsStopProtectionBeforeInstalling(t *testing.T) {
-	steps := upgradeSteps(true, true)
+	steps := upgradeSteps(true, true, true)
 	stop, install := -1, -1
 	for i, s := range steps {
 		switch s {
@@ -49,11 +93,11 @@ func TestUpgradeStepsStopProtectionBeforeInstalling(t *testing.T) {
 
 // 升级前开着,升级后要开回来;原本关着就不要擅自打开。
 func TestUpgradeStepsRestoreDesiredState(t *testing.T) {
-	on := upgradeSteps(true, true)
+	on := upgradeSteps(true, true, true)
 	if on[len(on)-1] != UpgradeStartProtection {
 		t.Fatalf("原本开着,最后一步必须是起保护,实际 %v", on)
 	}
-	for _, s := range upgradeSteps(true, false) {
+	for _, s := range upgradeSteps(true, false, true) {
 		if s == UpgradeStartProtection {
 			t.Fatal("原本关着,不得擅自打开保护")
 		}
@@ -65,7 +109,7 @@ func TestUpgradeStepsRestoreDesiredState(t *testing.T) {
 func TestUpgradeStepsAlwaysRestartGuardianWhenItIsRunning(t *testing.T) {
 	for _, desired := range []bool{true, false} {
 		found := false
-		for _, s := range upgradeSteps(true, desired) {
+		for _, s := range upgradeSteps(true, desired, true) {
 			if s == UpgradeRestartGuardian {
 				found = true
 			}
