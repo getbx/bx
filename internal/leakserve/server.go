@@ -131,11 +131,24 @@ func (s *Server) Close() error {
 // 被复用的,而 token 挡的就是同机别的进程。
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.gate.Allow(w, r, false) {
+		if !s.gate.Allow(w, r, requiresOrigin(r)) {
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requiresOrigin 判定这次请求是不是**写**入口 —— 只有写入口要求 Origin 必须在场。
+//
+// **这条例外不是妥协,是规范**:顶层导航(用户打开页面那一下)按规范不带
+// `Origin`,无条件要求它会让页面自己都打不开 —— 这正是那类「照字面实现安全要求
+// 就把功能砸掉」的条款。而豁免的**理由**是「它是一次导航 GET」,所以判据就写成
+// 方法,而不是写成某个路径:将来多一个写端点,它不该因为没人记得改这里而漏掉。
+//
+// 挡 DNS rebinding 的那一半(Host 逐字比对)与「Origin 在场就必须相符」不受此
+// 影响,它们对**每个**请求无条件生效,由 internal/loopbackgate 执行。
+func requiresOrigin(r *http.Request) bool {
+	return r.Method != http.MethodGet && r.Method != http.MethodHead
 }
 
 func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
