@@ -1,8 +1,11 @@
 package leakcheck
 
 import (
+	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/getbx/bx/internal/tristate"
 )
 
 // 三条结论的 ID。页面与 CLI 都按它们取,固定不变。
@@ -80,12 +83,98 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 	return f
 }
 
+// judgeIPv6 判「v4 走 VPN 而 v6 出口是 ISP」——别的 VPN 最常见的那个漏洞。
+//
+// **有一个坑必须先过**:v6-only 主机名**不保证浏览器真的用了 IPv6**。在 fake-IP
+// DNS 之下(bx 自己就是,别的同类 VPN 也是),`ipv6.icanhazip.com` 会被答一个
+// A 记录,请求实际经隧道走 v4 出去,回声返回的是一个 **IPv4 字面量**。本机实测:
+// 开着 bx 时 `dig ipv6.icanhazip.com` 返回 `198.18.1.7`(bx 的 fake-IP 池)。
+// 所以判据必须先看**回声返回的地址族**;不看的话,一台 bx 工作正常的机器会被
+// 判成 v6 泄漏 —— 对自己的用户误报。
 func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
-	return Finding{
-		ID:      FindingIPv6,
-		Title:   "IPv6 exposure",
-		Verdict: NotChecked,
-		Summary: "No browser report was received.",
+	f := Finding{ID: FindingIPv6, Title: "IPv6 exposure"}
+
+	// 「v4 走 VPN 而 v6 是 ISP」的前半句:v4 归谁必须先知道。
+	if !local.DefaultRouteV4.Known() {
+		f.Summary = "IPv6 could not be judged: the local IPv4 default route was not observed."
+		return f
+	}
+	f.Evidence = append(f.Evidence, "default route (v4): "+describeRef(local.DefaultRouteV4))
+
+	if browser.ExitV6 == "" {
+		// 回声没答上来。这时**本机那一半**决定它是 ok 还是 not checked:
+		// 确知没有 v6 默认路由 = 确实没有 v6 通路(诚实的 ok);
+		// 有 v6 默认路由、或本机 v6 事实压根没问出来 = 没检查。
+		reason := browser.ExitV6Err
+		if reason == "" {
+			reason = "the IPv6 echo returned nothing"
+		}
+		switch local.IPv6DefaultPresent {
+		case tristate.False:
+			f.Verdict = OK
+			f.Summary = "This machine has no IPv6 default route and no IPv6 exit was observed, " +
+				"so there is no IPv6 path to leak through."
+			f.Evidence = append(f.Evidence, "ipv6 default route: none", "echo v6: "+reason)
+		default:
+			f.Summary = "IPv6 could not be checked: " + reason
+			f.Evidence = append(
+				f.Evidence,
+				"ipv6 default route: "+describeRef(local.DefaultRouteV6),
+				"echo v6: "+EchoV6URL,
+			)
+		}
+		return f
+	}
+
+	// **fake-IP 的坑**:v6-only 主机名可能被答成 A 记录,回声于是返回一个 v4
+	// 字面量。那说明浏览器没走 IPv6,判不了 —— 不是 ok,也不是 bad。
+	// v4-mapped(`::ffff:1.2.3.4`)是同一件事换个写法,一并挡在这里;
+	// 解析不出来的串(错误页、被中间设备替换的响应)同样不是答案。
+	addr, err := netip.ParseAddr(strings.TrimSpace(browser.ExitV6))
+	if err != nil || addr.Is4() || addr.Is4In6() {
+		f.Summary = "IPv6 could not be checked: the IPv6 echo answered with " +
+			browser.ExitV6 + ", which is not an IPv6 address — the browser did not use IPv6."
+		f.Evidence = append(f.Evidence, "echo v6 answered: "+browser.ExitV6+"  via "+EchoV6URL)
+		return f
+	}
+	f.Evidence = append(
+		f.Evidence,
+		"ipv6 exit: "+browser.ExitV6+"  via "+EchoV6URL,
+		"default route (v6): "+describeRef(local.DefaultRouteV6),
+	)
+
+	// 同一性按**接口名**判,不按展示名:展示名可能两边都翻不出来(空串),
+	// 拿它做同一性判断会把两个不同接口判成同一个 → 一条真泄漏被说成 ok。
+	if local.DefaultRouteV6.Known() && local.DefaultRouteV6.Name == local.DefaultRouteV4.Name {
+		f.Verdict = OK
+		f.Summary = "IPv6 leaves through the same interface as IPv4 (" +
+			describeRef(local.DefaultRouteV4) + ")."
+		return f
+	}
+	if !local.DefaultRouteV6.Known() {
+		f.Summary = "A public IPv6 exit was observed (" + browser.ExitV6 +
+			") but the local IPv6 default route was not observed, so it cannot be attributed."
+		return f
+	}
+	f.Verdict = Bad
+	f.Summary = "IPv4 leaves through " + describeRef(local.DefaultRouteV4) +
+		" but IPv6 reached the internet as " + browser.ExitV6 + " through " +
+		describeRef(local.DefaultRouteV6) + ". IPv6 is bypassing the tunnel."
+	return f
+}
+
+// describeRef 渲染一个接口:能翻成人话就用人话,翻不出就说翻不出。
+// 归因规则见 describe.go 的 DescribeInterface —— 这里只负责挑 Display 还是 Name。
+func describeRef(ref InterfaceRef) string {
+	switch {
+	case ref.Display != "":
+		return ref.Display
+	case ref.Name != "":
+		return ref.Name
+	case ref.Err != "":
+		return "not observed (" + ref.Err + ")"
+	default:
+		return "not observed"
 	}
 }
 

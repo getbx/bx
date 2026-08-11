@@ -24,10 +24,8 @@ func TestLeakcheckPackageStaysPure(t *testing.T) {
 		t.Fatalf("读不到本包目录,守卫失去意义: %v", err)
 	}
 	banned := map[string]string{
-		"net/http": "起服务/发请求属于 internal/leakserve",
-		"os/exec":  "跑命令属于 internal/leakserve 的事实采集",
-		"net":      "拨号与地址解析都是 I/O;判据只吃已经采到的字符串",
-		"os":       "读环境/读文件会让判据依赖运行环境",
+		"os/exec": "跑命令属于 internal/leakserve 的事实采集",
+		"os":      "读环境/读文件会让判据依赖运行环境",
 	}
 	checked := 0
 	for _, entry := range entries {
@@ -48,6 +46,9 @@ func TestLeakcheckPackageStaysPure(t *testing.T) {
 			if why, bad := banned[path]; bad {
 				t.Errorf("%s import 了 %q:本包必须保持纯判据 —— %s", name, path, why)
 			}
+			if why, bad := bannedNetImport(path); bad {
+				t.Errorf("%s import 了 %q:本包必须保持纯判据 —— %s", name, path, why)
+			}
 			if strings.HasPrefix(path, "github.com/getbx/bx/internal/") &&
 				path != allowedInternalDep {
 				t.Errorf("%s import 了 %q:纯判据只允许依赖 %s(三值枚举的叶子包),"+
@@ -63,6 +64,30 @@ func TestLeakcheckPackageStaysPure(t *testing.T) {
 // allowedInternalDep 是本包唯一允许的仓库内依赖:一个只放三值枚举、
 // 自己不 import 本仓库任何东西的叶子包。
 const allowedInternalDep = "github.com/getbx/bx/internal/tristate"
+
+// bannedNetImport 挡住整棵 `net` 子树,**只留一个明写的例外 `net/netip`**。
+//
+// 原先的黑名单是逐字匹配 `"net"` 与 `"net/http"` 两条,于是 `net/url`、
+// `net/http/httptest` 这些一样会拨号/起服务的包一个都拦不住;而判据真正需要的
+// 那个恰恰是唯一无害的 `net/netip`。**前缀禁 + 明写例外**比逐字黑名单严格,
+// 也让例外可被质疑,而不是靠「黑名单里恰好没写它」这种沉默放行。
+//
+// 为什么 `net/netip` 不违反本包的纯度:它是**纯值类型**(`Addr`/`Prefix` 的解析与
+// 判定),不做名字解析、不拨号、不碰 syscall。实测 `go list -deps net/netip` 的
+// 输出里没有 `net`,也没有 `syscall`/`os` —— 全部是 runtime/strconv/unique 这类。
+// 判据需要它的理由是硬的:「回声返回的到底是不是一个 IPv6 地址」是规则二不误报的
+// 前提(fake-IP 之下会返回 v4 字面量),手写地址解析在 v4-mapped、`::1` 这些形状上
+// 出错的概率远高于它带来的依赖代价。
+func bannedNetImport(path string) (string, bool) {
+	if path != "net" && !strings.HasPrefix(path, "net/") {
+		return "", false
+	}
+	if path == "net/netip" {
+		return "", false
+	}
+	return "整棵 net 子树只允许 net/netip(纯值类型,不拨号不解析名字);" +
+		"起服务/发请求属于 internal/leakserve", true
+}
 
 // **上面那条只查直接 import,不够 —— 而「不够」这件事是实测出来的。**
 //
