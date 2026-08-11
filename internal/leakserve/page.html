@@ -48,6 +48,10 @@
 
   function text(el, s) { el.textContent = s; }
 
+  // EXPIRED marks the one failure the page must describe itself, because bx is
+  // no longer there to describe it.
+  var EXPIRED = "__bx_service_gone__";
+
   function fetchEcho(url) {
     var ctl = new AbortController();
     var giveUp = setTimeout(function () { ctl.abort(); }, PROBE_TIMEOUT_MS);
@@ -171,15 +175,35 @@
         exit_v6: r[1].value, exit_v6_err: r[1].err,
         srflx: r[2].srflx, stun_err: r[2].err
       };
+      // The POST is treated separately from the probes above. This service is
+      // one-shot: it closes after the first report or after its hard timeout, and
+      // the tab outlives it. A tab clicked later posts into a closed port, and the
+      // browser's only word for that is "Failed to fetch".
+      //
+      // Saying "bx will report this as not checked" there would be a lie of the
+      // exact family this feature exists to avoid: bx is not running at all, so it
+      // will report nothing. The page must not make promises for a process that
+      // has already exited.
       return fetch("/report?t=" + encodeURIComponent(TOKEN), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
+      }).catch(function () {
+        throw new Error(EXPIRED);
       });
     }).then(function (resp) {
+      if (!resp.ok) throw new Error(EXPIRED);
       return resp.json();
     }).then(render).catch(function (e) {
-      text(out, "Could not complete the check: " + e + "\nbx will report this as “not checked”.");
+      var why = String(e && e.message ? e.message : e);
+      if (why === EXPIRED) {
+        text(out, "This check has expired.\n\nThe local bx service that opened this page has "
+          + "already closed — it is one-shot and stops after the first result or after two "
+          + "minutes. Nothing was reported, and nothing was stored.\n\nRun bx leakcheck again "
+          + "to start a new one.");
+        return;
+      }
+      text(out, "Could not complete the check: " + why + "\nbx will report this as “not checked”.");
     });
   });
 })();
