@@ -32,6 +32,9 @@ type fakeUpgradeIO struct {
 	reassertErr   error
 	reassertCalls int
 
+	configUsable bool
+	enableErr    error
+
 	stopProtectionWanted []bool
 
 	logs []string
@@ -74,6 +77,11 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 		restartGuardian: func() error {
 			f.calls = append(f.calls, "restartGuardian")
 			return f.restartErr
+		},
+		configUsable: func() bool { return f.configUsable },
+		enableGuardian: func() error {
+			f.calls = append(f.calls, "enableGuardian")
+			return f.enableErr
 		},
 		startProtection: func() error {
 			f.calls = append(f.calls, "startProtection")
@@ -448,5 +456,67 @@ func TestRunUpgradeProceedsWithAWarningWhenTheScanItselfFailed(t *testing.T) {
 	joined := strings.Join(f.logs, "\n")
 	if !strings.Contains(joined, "core_scan_failed") {
 		t.Errorf("但必须留下警告说明:\n%s", joined)
+	}
+}
+
+// 全新安装必须**真的调到**那一步,而不只是把它排进计划里。
+//
+// 纯函数 upgradeSteps 已经有测试钉住计划长什么样,但计划正确而编排漏调,
+// 症状与今天真机上遇到的一模一样:装完之后 guardian.sock 不存在,菜单栏一个
+// 免密开关都点不动,而且三处都不留痕。
+func TestRunUpgradeOnFreshInstallStartsGuardian(t *testing.T) {
+	fake := &fakeUpgradeIO{running: false, desiredOn: true, configUsable: true}
+
+	if _, err := runUpgrade(fake.io(), true); err != nil {
+		t.Fatalf("runUpgrade = %v, want nil", err)
+	}
+
+	install := indexOfCall(fake.calls, "installFiles")
+	enable := indexOfCall(fake.calls, "enableGuardian")
+	if install < 0 || enable < 0 {
+		t.Fatalf("全新安装应当装文件并拉起 Guardian, calls = %v", fake.calls)
+	}
+	if enable < install {
+		t.Fatalf("Guardian 要在文件装好之后才拉起来(否则起的是旧二进制), calls = %v", fake.calls)
+	}
+	// 全新安装绝不开保护 —— 那是用户的决定。
+	if indexOfCall(fake.calls, "startProtection") >= 0 {
+		t.Fatalf("全新安装不许开启保护, calls = %v", fake.calls)
+	}
+	if indexOfCall(fake.calls, "stopProtection") >= 0 {
+		t.Fatalf("没有运行中的 Guardian,不该停任何东西, calls = %v", fake.calls)
+	}
+}
+
+// 配置还读不出来时绝不拉 Guardian:daemon 起不来,而 plist 带 KeepAlive=true,
+// bootstrap 一个起不来的服务等于让机器每秒重启它一次,同时安装报告说完成。
+func TestRunUpgradeOnFreshInstallSkipsGuardianWithoutUsableConfig(t *testing.T) {
+	fake := &fakeUpgradeIO{running: false, desiredOn: true, configUsable: false}
+
+	if _, err := runUpgrade(fake.io(), true); err != nil {
+		t.Fatalf("runUpgrade = %v, want nil", err)
+	}
+	if indexOfCall(fake.calls, "enableGuardian") >= 0 {
+		t.Fatalf("配置不可用时不许 bootstrap Guardian, calls = %v", fake.calls)
+	}
+	if indexOfCall(fake.calls, "installFiles") < 0 {
+		t.Fatalf("文件还是要装的, calls = %v", fake.calls)
+	}
+}
+
+// 拉不起来要如实报错,而且**不许套用「升级未完成」那套话** —— 这台机器上
+// 没有任何东西被停过,网络一直是直连。
+func TestRunUpgradeReportsGuardianStartFailureWithoutClaimingAnUpgradeStopped(t *testing.T) {
+	fake := &fakeUpgradeIO{running: false, desiredOn: true, configUsable: true, enableErr: errors.New("bootstrap 失败")}
+
+	_, err := runUpgrade(fake.io(), true)
+	if err == nil {
+		t.Fatal("拉不起 Guardian 必须报错 —— 静默等于把今天这个 bug 原样留着")
+	}
+	if !strings.Contains(err.Error(), "sudo bx up") {
+		t.Errorf("必须给出可操作的下一步, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "升级未完成") || strings.Contains(err.Error(), "uninstall") {
+		t.Errorf("全新安装失败不该说成升级中断、更不该建议卸载重装, got %q", err.Error())
 	}
 }

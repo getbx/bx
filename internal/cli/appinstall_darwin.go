@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"strconv"
 
+	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	urfavecli "github.com/urfave/cli/v2"
@@ -82,6 +83,14 @@ func appInstallAction(c *urfavecli.Context) error {
 			}, err
 		},
 		restartGuardian: func() error { return restartGuardianForUpgrade(c.Context) },
+		// 判据与 daemon 启动时那一跳同源:它读同一个文件、用同一个解析器。
+		// 判错的代价不对称 —— 判成「能用」而其实不能,会 bootstrap 一个起不来的
+		// Guardian,配上 KeepAlive=true 就是崩溃循环;判成「不能用」而其实能,
+		// 只是菜单栏要等用户敲一次 sudo bx up。故读不出/解析不了一律算不可用。
+		configUsable: func() bool { return guardianConfigUsable(configPath) },
+		enableGuardian: func() error {
+			return install.EnableGuardian()
+		},
 		startProtection: func() error {
 			_, err := macOSUpLifecycle(c.Context, configPath, defaultMacOSLifecycleDeps())
 			return err
@@ -193,4 +202,19 @@ func restartGuardianForUpgrade(ctx context.Context) error {
 		return err
 	}
 	return install.EnableGuardian()
+}
+
+// guardianConfigUsable 回答「Guardian 现在起得来吗」。
+//
+// **它必须与 daemon 启动时那一跳读同一个文件、用同一个解析器**
+// (guardian.loadGuardianLocalAPIOwnerUID → os.ReadFile + config.Parse):
+// 两边一旦漂移,这里说「能起」而那边起不来,就成了一个由 KeepAlive 驱动的
+// 崩溃循环 —— 一台刚装好的机器每秒重启一次 Guardian,而安装报告说完成。
+func guardianConfigUsable(configPath string) bool {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return false
+	}
+	_, err = config.Parse(data)
+	return err == nil
 }

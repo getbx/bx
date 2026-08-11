@@ -18,11 +18,34 @@ const (
 	// 是不够的 —— 一个已在跑的进程不会因此换代码。
 	UpgradeRestartGuardian
 	UpgradeStartProtection
+	// UpgradeEnableGuardian 在**全新安装**之后把 Guardian 服务拉起来。
+	//
+	// 它不开启保护 —— Guardian 起来时 desired 还是 off,它只是开始服务那个
+	// 控制 socket。但没有它,菜单栏一个**免密**的开关都点不动:菜单以普通用户
+	// 身份连 /var/run/bx/guardian.sock,而全新安装只写了 plist、从没 bootstrap 过它,
+	// socket 要等到第一次 `sudo bx up` 才存在。
+	//
+	// **真机实测(2026-08-10)**:装完 22:13:23、菜单 22:13:33 起来、
+	// guardian.sock 到 22:14:57(`sudo bx up` 那一秒)才被创建。用户点
+	// 「Start Protection」必然失败,而且三处都不留痕 —— Guardian 没起来所以没日志,
+	// 菜单自己不记失败,403 按设计也不记(这次还不是 403,是根本连不上)。
+	//
+	// 升级路径一直没有这个问题:restartGuardianForUpgrade 会 bootout 再 bootstrap。
+	// 也就是说菜单栏第①期的免密开关,**在全新安装这条路上从没能工作过**。
+	UpgradeEnableGuardian
 )
 
-func upgradeSteps(guardianRunning bool, desiredOn bool) []UpgradeStep {
+// configUsable 说的是「Guardian 起得来吗」,不是「配置内容对不对」:daemon 启动时
+// 要读 /etc/bx/config.yaml 取 owner_uid,读不出或解析不了就直接退出 —— 而 plist 带
+// KeepAlive=true,于是 bootstrap 一个读不到配置的 Guardian 等于制造一个崩溃循环。
+// 所以「还没跑过 bx setup」的机器上这一步必须跳过,而不是硬拉。
+func upgradeSteps(guardianRunning bool, desiredOn bool, configUsable bool) []UpgradeStep {
 	if !guardianRunning {
 		// 没有运行中的进程要换,也就没有断网的理由。
+		// 但要把 Guardian 拉起来:否则菜单栏连不上那个 socket,一个免密开关都点不动。
+		if configUsable {
+			return []UpgradeStep{UpgradeInstallFiles, UpgradeEnableGuardian}
+		}
 		return []UpgradeStep{UpgradeInstallFiles}
 	}
 	steps := []UpgradeStep{UpgradeStopProtection, UpgradeInstallFiles, UpgradeRestartGuardian}
@@ -116,6 +139,16 @@ func upgradeFailureMessageWithNetwork(step UpgradeStep, err error, networkRestor
 			"停止保护未能全部完成:%v\n"+
 				"新版本文件尚未安装(升级没有开始),但保护已经被停过,网络是否已恢复未经确认——"+
 				"请打开任意网页确认;若仍不通,执行 sudo bx uninstall(保留 /etc/bx 配置)后重新安装。", err,
+		)
+	case UpgradeEnableGuardian:
+		// 这一步只在全新安装那条路上出现:文件都装好了、保护从没开过、网络一直是
+		// 直连。**别套用「升级未完成」那套话** —— 这台机器上没有任何东西被停过。
+		// 失败的后果是具体且有限的:菜单栏的开关点不动(它连的 socket 不存在),
+		// 而命令行的 sudo bx up 自己会再拉一次 Guardian,照样能开起来。
+		return fmt.Sprintf(
+			"新版本文件已装好,但保护服务没能启动:%v\n"+
+				"网络不受影响(一直是直连,保护本来就没开)。菜单栏的开关暂时点不动——"+
+				"执行 sudo bx up 即可开启保护并把服务拉起来;若仍失败,看 sudo tail -50 /var/log/bx-guard.err.log。", err,
 		)
 	default:
 		if !networkRestored {
