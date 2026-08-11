@@ -44,7 +44,15 @@
   function fetchEcho(url) {
     return fetch(url, { cache: "no-store" })
       .then(function (r) { return r.text(); })
-      .then(function (t) { return { value: t.trim(), err: "" }; })
+      .then(function (t) {
+        var v = t.trim();
+        // An empty body is not an answer. Reporting it as {value:"", err:""}
+        // is byte-for-byte what a report that never arrived looks like, and Go
+        // tells those two apart (BrowserReport.Silent) to decide whether an
+        // "ok" is honest. Never let a probe that ran look like one that didn't.
+        if (v === "") return { value: "", err: "the echo returned an empty body" };
+        return { value: v, err: "" };
+      })
       .catch(function (e) { return { value: "", err: String(e && e.message ? e.message : e) }; });
   }
 

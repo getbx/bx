@@ -31,6 +31,20 @@ func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 	return NewReport(now, Endpoints(), findings, collectEvidence(browser, local))
 }
 
+// browserNeverArrived 是「浏览器那一半从来没到过」时的结论。**依赖浏览器的两条
+// 规则共用它**,免得将来只改一处 —— 两条同时被这件事影响,而它们的失败方式一样坏。
+//
+// 措辞刻意不提任何观测:一句「no IPv6 exit was observed」在页面从没联网时是假话,
+// 而它恰恰是用户唯一会读的那一行(设计风险四)。
+func browserNeverArrived(f Finding) Finding {
+	f.Verdict = NotChecked
+	f.Summary = "Not checked: the browser half of this check never arrived. " +
+		"The page was never run to completion — the tab was closed, the browser never " +
+		"opened, or the check timed out. Nothing was contacted, so nothing can be concluded."
+	f.Evidence = append(f.Evidence, "browser report: never arrived")
+	return f
+}
+
 // judgeWebRTC 是这个功能的立身之本那条:STUN 问出来的 server-reflexive 地址
 // 与 HTTP 出口地址不是同一个 → WebRTC 走了隧道之外的路。
 //
@@ -38,6 +52,9 @@ func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 // UDP 被完全阻断、页面被关掉,全部停在 not checked。
 func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 	f := Finding{ID: FindingWebRTC, Title: "WebRTC vs HTTP exit"}
+	if browser.Silent() {
+		return browserNeverArrived(f)
+	}
 
 	// 顺序刻意是「先说没问出来,再说好坏」。任何一半缺席都到不了比较那一步。
 	switch {
@@ -93,6 +110,12 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 // 判成 v6 泄漏 —— 对自己的用户误报。
 func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 	f := Finding{ID: FindingIPv6, Title: "IPv6 exposure"}
+	// **必须排在最前面。** 排在下面那句 ok 之后,一台「bx 开着 ⇒ v6 被 reject
+	// ⇒ IPv6DefaultPresent=False」的真机在页面从没跑过时就会收到
+	// 「no IPv6 exit was observed」—— 一句断言从没发生过的观测的假话。
+	if browser.Silent() {
+		return browserNeverArrived(f)
+	}
 
 	// 「v4 走 VPN 而 v6 是 ISP」的前半句:v4 归谁必须先知道。
 	if !local.DefaultRouteV4.Known() {

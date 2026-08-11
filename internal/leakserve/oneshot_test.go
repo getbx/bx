@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/leakcheck"
+	"github.com/getbx/bx/internal/tristate"
 )
 
 func postReportResponse(t *testing.T, srv *Server, body string) *http.Response {
@@ -131,6 +132,53 @@ func TestHardTimeoutClosesAndYieldsNotChecked(t *testing.T) {
 		}
 	}
 	requirePortClosed(t, srv, "硬超时之后端口仍然接受连接")
+}
+
+// **超时那条路上,本机事实那一半是真的。**
+//
+// 上一条喂的是 `leakcheck.LocalFacts{}`,而生产环境的 Judge 闭包里捕获的是 CLI
+// 采到的真事实(internal/cli/leakcheck.go)。项目所有者的 Mac 上那份事实是:
+// bx 开着 ⇒ v6 被 reject(IPv6DefaultPresent=False)、解析器 127.0.0.1。用零值
+// fixture 时 IPv6 那条在 Unknown 上短路,于是这条路看起来是绿的;喂真形状,
+// 它会判出一句「no IPv6 exit was observed」的 ok —— **而页面一个包都没发过。**
+//
+// 这条测试走的是真的 Listen/Wait,所以它同时钉住了「timedOutReport 用的是那个
+// 带真事实的闭包」这件接线 —— 纯函数层的测试证明不了这一跳。
+func TestHardTimeoutWithRealLocalFactsClaimsNoObservation(t *testing.T) {
+	facts := leakcheck.LocalFacts{
+		DefaultRouteV4:     leakcheck.InterfaceRef{Name: "utun11", Display: "bx (utun11)"},
+		DefaultRouteV6:     leakcheck.InterfaceRef{Err: "no route"},
+		IPv6DefaultPresent: tristate.False,
+		DNSServers:         []string{"127.0.0.1"},
+		DNSServerEgress:    map[string]string{"127.0.0.1": "lo0"},
+		BXTunInterface:     "utun11",
+		BXProtection:       "protected",
+	}
+	srv, err := Listen(Options{
+		Judge: func(b leakcheck.BrowserReport) leakcheck.Report {
+			return leakcheck.Judge(fixedNow(), b, facts)
+		},
+		HardTimeout: 120 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	go srv.Serve()
+
+	report := srv.Wait(context.Background())
+	for _, f := range report.Findings {
+		if f.ID == leakcheck.FindingDNS {
+			continue // 只用本机那一半,浏览器没到不影响它
+		}
+		if f.Verdict != leakcheck.NotChecked {
+			t.Errorf("页面一个包都没发过,%s 必须是 not checked,得到 %s(summary=%q)",
+				f.ID, f.Verdict, f.Summary)
+		}
+		if strings.Contains(f.Summary, "was observed") {
+			t.Errorf("%s 断言了一次从没发生过的观测:%q", f.ID, f.Summary)
+		}
+	}
 }
 
 // ctx 取消与硬超时同理:调用方撤了,口也得关,而且返回的仍是 not checked。
