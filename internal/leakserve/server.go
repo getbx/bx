@@ -159,8 +159,14 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// 页面内容在 Task 12 接上;先给一个占位,让约束测试能跑。
-	_, _ = io.WriteString(w, "<!doctype html><title>bx leak check</title>")
+	// 页面不该被缓存:它带着这一次运行专属的 token。
+	w.Header().Set("Cache-Control", "no-store")
+	// 页面拿到的**全部**东西就是 pageData —— token 与第三方披露。本机事实那一半
+	// 从不下发,「JS 保持愚蠢」靠的是这个,不是靠审 JS 时留神。
+	if err := pageTemplate.Execute(w, pageData{Token: s.gate.Token(), Endpoints: leakcheck.Endpoints()}); err != nil {
+		// 头已经发出去了,这里只能停止写入。
+		return
+	}
 }
 
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
