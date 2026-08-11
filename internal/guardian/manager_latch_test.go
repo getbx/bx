@@ -404,3 +404,95 @@ func TestRecheckDoesNotScanWhenThereIsNoLatch(t *testing.T) {
 		t.Fatalf("没有锁存却扫了 %d 次 —— 每一次正常的 bx up 都在白交这个税", scan.calls)
 	}
 }
+
+// **这次放宽本身**:用户发起的 Up 撞上锁存时,必须重新去问系统,而不是把
+// 第一次的结论钉死。**两次扫描都干净** ⇒ 继续,Core 起得来。
+func TestUserInitiatedUpReVerifiesAndProceedsWhenTheSystemIsClean(t *testing.T) {
+	// 释放要跨一个沉降窗口(拒绝不用),缩短它免得每次跑测试都白等 300ms。
+	restore := coreScanSettle
+	coreScanSettle = time.Millisecond
+	t.Cleanup(func() { coreScanSettle = restore })
+
+	env := newManagerTestEnv(t)
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+	env.manager.uncertainCause = errors.New("Core appeared to be running (PID 4242)")
+
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatalf("重新求证扫干净了,Up 仍然失败: %v", err)
+	}
+	if env.manager.Status().Protection != ProtectionProtected {
+		t.Fatalf("protection = %v, want protected", env.manager.Status().Protection)
+	}
+	if got := env.runner.startCount(); got != 1 {
+		t.Fatalf("starts = %d, want 1", got)
+	}
+	if got := env.runner.scanCount(); got != 2 {
+		t.Fatalf("释放只扫了 %d 次 —— 一次干净不足以放行", got)
+	}
+}
+
+// 放宽的另一头:系统说**还有** Core 在跑 ⇒ 照旧拒绝,而且**一个 Core 都不许起**。
+// 起第二个 Core 是这个系统里最坏的结果。
+// (第一次就扫脏 ⇒ 立即拒绝、不沉降,所以这条不需要缩 coreScanSettle。)
+func TestUserInitiatedUpStillRefusesWhenACoreIsStillRunning(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.scanResult = []Process{{PID: 4242}}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+
+	if err := env.manager.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Up = %v, want 仍然拒绝", err)
+	}
+	if got := env.runner.startCount(); got != 0 {
+		t.Fatalf("拒绝时起了 %d 个 Core —— 两个 Core 争默认路由,先退出的那个用旧快照还原掀掉另一个的劫持", got)
+	}
+}
+
+// 扫不动同样拒绝,同样不起 Core。
+func TestUserInitiatedUpStillRefusesWhenTheScanFails(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.scanErr = errors.New("sysctl failed")
+	env.manager.current = Process{Uncertain: true}
+
+	if err := env.manager.Up(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Up = %v, want 仍然拒绝", err)
+	}
+	if got := env.runner.startCount(); got != 0 {
+		t.Fatalf("扫不动却起了 %d 个 Core", got)
+	}
+}
+
+// **启动恢复不许重新求证。** retryDaemonRecovery 每 5 秒重试一次、永不放弃:
+// 把这套求证放进去等于一天一万七千轮,正是设计里明写「不许搬进按时钟驱动的
+// 路径」的那条纪律。(「让它有限次数地自愈瞬时失败」是有价值的后续,但那要
+// 照 maxPathRecoveryAttempts 的形状单独做,不是每轮都做。)
+func TestStartupRecoveryDoesNotReVerifyOwnership(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.manager.current = Process{Uncertain: true}
+
+	if err := env.manager.Recover(context.Background()); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Recover = %v, want 所有权不确定", err)
+	}
+	if got := env.runner.scanCount(); got != 0 {
+		t.Fatalf("启动恢复扫了 %d 次 —— 它每 5 秒重试一次,永不放弃", got)
+	}
+}
+
+// 调谐器一侧一个字不改:循环仍然**永不**清这个锁存。既有的
+// TestReconcileOnceNeverClearsTheOwnershipUncertainLatch 守着「不清」,
+// 这条补上「也不去扫」——两者威胁模型不同:本期只动**用户发起**的那一半。
+func TestReconcileLoopDoesNotReVerifyOwnership(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.current = Process{Uncertain: true}
+	before := env.runner.scanCount()
+
+	_, uncertain, acquired := env.manager.readMutationFences(context.Background())
+	if !acquired || !uncertain {
+		t.Fatal("测试前提不成立:调谐器这一轮应当看见锁存升起")
+	}
+	if got := env.runner.scanCount(); got != before {
+		t.Fatalf("调谐器读栅栏时扫了 %d 次(之前 %d 次)", got, before)
+	}
+}

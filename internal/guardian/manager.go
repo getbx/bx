@@ -543,7 +543,7 @@ func (m *Manager) Up(ctx context.Context) error {
 		m.needsAttention(DesiredOn, maintenanceHoldClearFailedCode)
 		return fmt.Errorf("clear maintenance hold: %w", err)
 	}
-	return m.upLocked(ctx)
+	return m.upLocked(ctx, upOriginUser)
 }
 
 func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
@@ -647,8 +647,36 @@ func (m *Manager) retainMigrationBarrier(ctx context.Context, barrierContext Bar
 	return nil
 }
 
-func (m *Manager) upLocked(ctx context.Context) error {
-	if m.current.Uncertain {
+// upOrigin 说明「是谁要求打开保护」。**它只影响要不要重新求证所有权**,别的
+// 一律不影响。
+//
+// 做成一个必填参数而不是从调用链上推断,是有意的:重新求证是本期唯一一处
+// 放宽准入的改动,谁能拿到它必须在代码里一眼看得见。将来新增第三个调用点时,
+// 编译器会逼他自己写出 upOriginUser 或 upOriginStartupRecovery —— 而不是
+// 顺手继承一条他没读过的纪律。
+//
+// 用户发起的那条路每次都重新求一遍(设计的核心);启动恢复保留便宜的短路 ——
+// daemon.go 的 retryDaemonRecovery 每 guardianRecoveryRetryMax(5s)重试一次
+// 且永不放弃,把两次扫描 + 300ms 沉降放进去就是一天一万七千轮,违反设计里
+// 「不许把这套纪律搬进任何按时钟驱动的路径」那条。启动恢复原本最坏的后果
+// (锁存升级成 recoveryBlocked 把 Down 堵死)已由 recoverLocked 那处的
+// errors.Is 判据拆掉,所以这条短路今天只是「开不了」,不再是「关不掉」。
+type upOrigin int
+
+const (
+	// upOriginUser:用户显式的 bx up(CLI 或菜单的 Turn On)。重新求证。
+	upOriginUser upOrigin = iota
+	// upOriginStartupRecovery:Guardian 启动时的恢复,由重试循环按时钟驱动。
+	// **不**重新求证。
+	upOriginStartupRecovery
+)
+
+func (m *Manager) upLocked(ctx context.Context, origin upOrigin) error {
+	if origin == upOriginUser {
+		if err := m.recheckOwnershipUncertain("up"); err != nil {
+			return err
+		}
+	} else if m.current.Uncertain {
 		m.needsAttention(DesiredOn, "core_ownership_uncertain")
 		return uncertainOwnership(m.current, m.uncertainCause)
 	}
@@ -1178,7 +1206,7 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 		m.recoveryBlocked = false
 		return nil
 	}
-	if err := m.upLocked(ctx); err != nil {
+	if err := m.upLocked(ctx, upOriginStartupRecovery); err != nil {
 		// **「开不了」永不许升级成「关不掉」。**
 		//
 		// recoveryBlocked 是 Up、Migrate、**Down**(:775)与两个更新入口的第一句
