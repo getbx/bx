@@ -1411,7 +1411,7 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 		found[def.name] = true
 	}
 	for _, name := range []string{
-		"runBx", "cliRuns", "ensureCLIUsable", "setUpBx", "updateBx",
+		"runBx", "cliRuns", "ensureCLIUsable", "setUpBx", "updateBx", "checkForLeaks",
 		"loadState", "refreshUpdateCheck", "diagnoseStopped", "probeCoreControlSocket",
 	} {
 		if !found[name] {
@@ -1452,8 +1452,9 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 				"多一条就等于「谁会 spawn」重新变成没人枚举得全的事",
 		},
 		{
-			pattern: call("runBx("), label: "runBx(", callers: []string{"cliRuns"},
-			why: "唯一正当的 spawn 是动作路径上那次 exec 探测(「装了但跑不起来」只有真执行一次才知道);" +
+			pattern: call("runBx("), label: "runBx(", callers: []string{"cliRuns", "checkForLeaks"},
+			why: "正当的 spawn 有两处:动作路径上那次 exec 探测(「装了但跑不起来」只有真执行" +
+				"一次才知道),以及 Check for leaks 那个用户点击触发的、不提权的 bx leakcheck;" +
 				"轮询路径上的任何 spawn 都是让 UI 变回第三个控制面",
 		},
 		{
@@ -1461,8 +1462,13 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			why: "exec 探测只经这一道闸门对外,否则「谁会 spawn」又变成要手工枚举的事",
 		},
 		{
-			pattern: call("ensureCLIUsable("), label: "ensureCLIUsable(", callers: []string{"setUpBx", "updateBx"},
+			pattern: call("ensureCLIUsable("), label: "ensureCLIUsable(", callers: []string{"setUpBx", "updateBx", "checkForLeaks"},
 			why: "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
+		},
+		{
+			pattern: call("checkForLeaks("), label: "checkForLeaks(", callers: nil,
+			why: "它是 #selector 的菜单入口,只能由用户点击触发,不该被任何代码调用 —— " +
+				"尤其不能被轮询路径调,那会变成每隔几秒起一个 loopback 服务",
 		},
 		{
 			pattern: call("setUpBx("), label: "setUpBx(", callers: nil,
@@ -5643,5 +5649,73 @@ func TestMacMenuWiresMaintenanceHoldIntoTheOffScreen(t *testing.T) {
 	feed := regexp.MustCompile(`\b` + regexp.QuoteMeta(carrier) + `\s*=\s*report\b`)
 	if !feed.MatchString(loadCode) {
 		t.Errorf("loadState 必须把解码成功的那份报告存进 %s,否则菜单永远问不到挂起", carrier)
+	}
+}
+
+// 菜单必须有一个泄漏检测入口,而且它跑的是**不提权**的 bx leakcheck。
+//
+// 这条守卫住在 Go 侧,因为 main.swift 要 AppKit、编不进
+// scripts/test-macos-menu.sh —— 在那里把它改成 runPrivileged 不会有任何编译
+// 错误,也不会有任何 Swift 测试转红。
+//
+// 读不懂 main.swift 时**必须响亮失败**(本文件的守卫被绕过八次,每一次都是
+// 「安静放过」)。
+func TestMacMenuLeakCheckRunsUnprivileged(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := swiftCodeOnly(string(source))
+
+	if !strings.Contains(text, "Check for leaks") {
+		t.Fatal("菜单必须有 Check for leaks 入口项")
+	}
+	body, ok := swiftFunctionBody(text, "private func checkForLeaks(")
+	if !ok {
+		t.Fatal("找不到 checkForLeaks 的函数体 —— 本守卫读不懂现在的 main.swift,请连同它一起重写")
+	}
+	// 判据:必须跑 leakcheck 子命令。
+	if !strings.Contains(body, `"leakcheck"`) {
+		t.Error("checkForLeaks 必须执行 bx leakcheck")
+	}
+	// **绝不提权。** 以 root 跑会让那个 loopback 服务变成 root 进程的端口,
+	// 而 bx leakcheck 自己也会拒绝 —— 用户会看到一个弹了密码框然后失败的操作。
+	for _, forbidden := range []string{"runPrivileged", "osascript", "administrator privileges", "sudo"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("checkForLeaks 不得提权(出现了 %q):bx leakcheck 以 root 跑会被自己拒绝,"+
+				"用户只会看到一个弹了密码框然后失败的操作", forbidden)
+		}
+	}
+	// 必须在后台队列跑:leakcheck 最长 2 分钟,压在主线程上会把整个菜单冻住
+	// ——阶段①那次 71 分钟的冻结就是这么来的。
+	if !strings.Contains(body, "DispatchQueue.global(") {
+		t.Error("checkForLeaks 必须在后台队列执行:leakcheck 最长跑 2 分钟," +
+			"压在主线程上会把菜单冻住")
+	}
+
+	// **入口项必须在每一个状态下都在场。**
+	//
+	// 这一段是变异验证逼出来的:上面那句 `strings.Contains(text, "Check for leaks")`
+	// 只证明这个串在文件里,把 addAction 那一行挪进 `case .connected:` 它照样全绿
+	// (次数还是 1)。而那正好把「保护关着也有用」的功能藏进了只有保护开着才有的
+	// 菜单里 —— 这个功能的立身之本就没了。照 TestMacMenuQuitActionPresentInEveryState
+	// 的形状,按函数体花括号深度断言它在 rebuildMenu() 顶层。
+	menuBody, ok := swiftFunctionBody(text, "private func rebuildMenu()")
+	if !ok {
+		t.Fatal("找不到 rebuildMenu 的函数体 —— 本守卫读不懂现在的 main.swift,请连同它一起重写")
+	}
+	topLevel := 0
+	depth := 0
+	for _, line := range strings.Split(menuBody, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if depth == 0 && !strings.HasPrefix(trimmed, "//") && strings.Contains(trimmed, "Check for leaks") {
+			topLevel++
+		}
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+	}
+	if topLevel != 1 {
+		t.Fatalf("Check for leaks 必须在 rebuildMenu 顶层(不在任何 case/if 里)无条件加一次,"+
+			"实际在顶层出现 %d 次 —— 只在 .connected 里给它,等于把它藏在最不需要它的那个状态里",
+			topLevel)
 	}
 }
