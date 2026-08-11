@@ -32,6 +32,17 @@ const DefaultHardTimeout = 2 * time.Minute
 // maxReportBytes 限制上报体大小。页面上报是几百字节量级。
 const maxReportBytes = 1 << 20
 
+// listenAddress 是这个服务唯一的监听地址,**不可配置**。
+//
+// 可配置的监听地址是这类工具最常见的一个洞:有人为了「在虚拟机/容器里也能开」
+// 把它做成 flag,于是默认之外的每一次使用都在局域网上裸奔。这个服务报告的是
+// 本机网络姿态 —— 那正是最不该对局域网开口的东西。端口交给内核随机分配(`:0`),
+// 固定端口会让「同机其它进程猜到它在哪」变成一件不用猜的事。
+//
+// 注意 `127.0.0.1:0` 与 `:0` 差的不是写法:后者绑通配地址,等于对整个局域网
+// 开口,而它在开发机上的表现与前者一模一样 —— 这个洞不会自己暴露。
+const listenAddress = "127.0.0.1:0"
+
 // Options 是起这个服务需要的全部东西。**刻意小**:见 bind_test.go 里那条
 // 穷举字段名的守卫 —— 尤其不许出现任何形式的监听地址。
 type Options struct {
@@ -58,7 +69,7 @@ type Server struct {
 // Listen 绑定 127.0.0.1 上一个随机端口(约束一)。
 func Listen(opts Options) (*Server, error) {
 	gate := loopbackgate.New()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		return nil, err
 	}
