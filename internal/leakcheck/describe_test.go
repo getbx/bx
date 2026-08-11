@@ -11,8 +11,30 @@ func TestDescribeInterface(t *testing.T) {
 		iface    string
 		services []VPNService
 		bxTun    string
-		want     string
+		// bxTunUnknown 置真 = 「问不出 bx 占着哪个 utun」。默认(零值 false)
+		// 表示问出来了 —— 于是既有用例一个字都不用改,而新增的那条不确定用例
+		// 必须显式表态。
+		bxTunUnknown bool
+		want         string
 	}{
+		{
+			// **问不出 bx 占着哪个 utun 时,一个都不许归属。**
+			//
+			// Guardian 不应答时 bxTun 是空的,而这台机器上恰好只有一个 VPN 连着 ——
+			// 若按「空就当 bx 没有 TUN」处理,bx **自己的** utun 会被贴上别人的名字。
+			// 一个猜测被当成事实报出去,正是「『无法识别』是合法答案,猜不是」禁止的。
+			name:  "问不出 bx 的 TUN 时不许把它认成别人",
+			iface: "utun11", bxTunUnknown: true,
+			services: []VPNService{{Name: "Work VPN", Connected: true}},
+			want:     "Unidentified VPN (utun11)",
+		},
+		{
+			// 反过来:**确知** bx 没有 TUN(保护关着)时,归属别的 VPN 正是主用途。
+			name:  "确知 bx 没有 TUN 时,照常认出别的 VPN",
+			iface: "utun4", bxTun: "",
+			services: []VPNService{{Name: "Work VPN", Connected: true}},
+			want:     "Work VPN (utun4)",
+		},
 		{
 			name:  "bx 自己的 TUN 认得出来",
 			iface: "utun11", bxTun: "utun11",
@@ -88,7 +110,7 @@ func TestDescribeInterface(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := DescribeInterface(tc.iface, tc.services, tc.bxTun); got != tc.want {
+			if got := DescribeInterface(tc.iface, tc.services, tc.bxTun, !tc.bxTunUnknown); got != tc.want {
 				t.Fatalf("DescribeInterface(%q, %+v, %q) = %q,want %q",
 					tc.iface, tc.services, tc.bxTun, got, tc.want)
 			}
