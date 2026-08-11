@@ -677,21 +677,36 @@ func (m *Manager) retainMigrationBarrier(ctx context.Context, barrierContext Bar
 type upOrigin int
 
 const (
+	// upOriginUnspecified 是**零值**,而零值必须是最严格的那一个:准入控制上
+	// 「忘了写」不许等于「按最宽松的来」。放宽准入的是 upOriginUser 那一支
+	// (它会重新求证、可能释放锁存),把它排在 iota 第一位的话,任何零初始化的
+	// 将来调用方(一个 upOrigin 结构体字段、一句 `var o upOrigin`)都会静悄悄
+	// 拿到它 —— 失败方向反了。upLocked 撞见这个值直接拒绝:一次扫描都不做、
+	// 一个 Core 都不起。
+	upOriginUnspecified upOrigin = iota
 	// upOriginUser:用户显式的 bx up(CLI 或菜单的 Turn On)。重新求证。
-	upOriginUser upOrigin = iota
+	upOriginUser
 	// upOriginStartupRecovery:Guardian 启动时的恢复,由重试循环按时钟驱动。
 	// **不**重新求证。
 	upOriginStartupRecovery
 )
 
 func (m *Manager) upLocked(ctx context.Context, origin upOrigin) error {
-	if origin == upOriginUser {
+	switch origin {
+	case upOriginUser:
 		if err := m.recheckOwnershipUncertain("up"); err != nil {
 			return err
 		}
-	} else if m.current.Uncertain {
-		m.needsAttention(DesiredOn, "core_ownership_uncertain")
-		return uncertainOwnership(m.current, m.uncertainCause)
+	case upOriginStartupRecovery:
+		if m.current.Uncertain {
+			m.needsAttention(DesiredOn, "core_ownership_uncertain")
+			return uncertainOwnership(m.current, m.uncertainCause)
+		}
+	default:
+		// 编程错误,不是系统状态:只记日志、不发布失败码(四处消费方的码有各自
+		// 的指引,给它们一个说不出出路的码只会误导)。
+		log.Printf("guardian_up_origin_unspecified origin=%d", int(origin))
+		return fmt.Errorf("refusing to open protection: up origin unspecified (%d)", int(origin))
 	}
 	if m.current.PID != 0 && m.Status().Protection == ProtectionProtected {
 		return nil

@@ -605,8 +605,14 @@ func (r *ExecCoreRunner) watchExisting(process Process, exit chan<- error) {
 
 func (r *ExecCoreRunner) finishExistingWatch(process Process, exit chan<- error, err error) {
 	if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
-		// **OS 已经确认这个进程没了** —— watchExisting 的两个调用点传进来的都是
-		// ErrProcessNotRunning 那一族。失败的只是删一个 JSON 文件。
+		// **两个调用点证明的东西不一样多,但都足以断定这份记录已经陈旧了。**
+		//   ① Inspect 回 ErrProcessNotRunning(:589):OS 权威地确认了这个进程没了;
+		//   ② 身份比对不上(:599):这里的 ErrProcessNotRunning 是**我们自己合成的**
+		//      包装 —— 那个 PID 可能仍然活着,只是它已经不是我们那个 Core 了(PID
+		//      被复用)。证明弱一档:证到的是「**我们的** Core 没了」,不是「那个
+		//      PID 上没有进程」。
+		// 两种情况下失败的都只是删一个 JSON 文件,而这份记录指向的 Core 已经不在;
+		// ② 那个 PID 若真还活着,下一次 Start 会重新 Inspect 它并照旧 fail-closed。
 		//
 		// 握着「安全」的证明却宣布所有权不确定,是十五个产地里最荒谬的一个:
 		// /var/lib/bx 上任何一次文件系统抖动都能锁死 daemon。与 603b602 当初对

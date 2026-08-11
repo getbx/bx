@@ -229,8 +229,16 @@ func TestDownKeepsANewLatchWhoseValueEqualsTheEntryLatch(t *testing.T) {
 // 锁存之后的错误必须**不比**第一次少信息。今天 upLocked/Migrate 短路时传的是
 // nil cause,于是第二次 bx up 只剩一句「Core process ownership is uncertain」:
 // 没有 PID、没有逃生提示、也看不出是十五个产地里的哪一个。
+//
+// **注入一次「还有 Core 在跑」的扫描是必需的,不是布景**(与 Migrate 那条同因):
+// Up 现在每次都经 recheckOwnershipUncertain 重新求证,而 newManagerTestEnv 的零值
+// 扫描结果是一台干净机器 —— 不注入的话第二次 Up 会**释放**锁存、一路走到
+// runner.Start,断言到的是一次**全新的** Start 失败恰好带着同样的文本。那样这条
+// 测试的名字与它证明的东西就不是一回事了(实测:去掉注入后它在「两个消费点的
+// m.uncertainCause 都剥成 nil」这个变异下仍然全绿,而它的 Migrate 兄弟会红)。
 func TestLatchedRefusalKeepsTheOriginalCause(t *testing.T) {
 	env := newManagerTestEnv(t)
+	env.runner.scanResult = []Process{{PID: 4242}}
 	env.runner.startErr = uncertainOwnership(
 		Process{PID: 4242, Uncertain: true},
 		errors.New("no Core process record on disk, but Core appears to be running (PID 4242)"),
@@ -250,6 +258,39 @@ func TestLatchedRefusalKeepsTheOriginalCause(t *testing.T) {
 	}
 	if !strings.Contains(second.Error(), "PID 4242") {
 		t.Fatalf("锁存之后的错误比第一次更少信息 —— 用户第二次看到的反而是一句空话: %q", second.Error())
+	}
+	// **只看错误值会漏掉这一整类**:第二次若不是被锁存拒掉、而是一路走到 Start
+	// 又失败一次,错误文本一模一样,断言照样绿 —— 而在一台 Start 会成功的机器上
+	// 那就是第二个 Core。数 Start 的次数才分得开这两件事。
+	if got := env.runner.startCount(); got != 1 {
+		t.Fatalf("Start 被调用了 %d 次 —— 第二次 Up 应当被锁存拒掉、根本走不到 Start", got)
+	}
+}
+
+// upLocked 的**启动恢复**那一支(不重新求证的那半边)是 uncertainCause 的第二个
+// 消费点,而它此前一条测试都没有:上面那条与 Migrate 那条走的都是
+// recheckOwnershipUncertain,把这一支的 cause 剥成 nil **全套测试照样全绿**(实测)。
+//
+// 它不是死角:retryDaemonRecovery 每 5 秒走一遍,用户在 bx status / Guardian 日志
+// 里看到的正是这条路上产出的那句话。
+func TestStartupRecoveryRefusalKeepsTheOriginalCause(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+	env.manager.uncertainCause = errors.New("no Core process record on disk, but Core appears to be running (PID 4242)")
+
+	err := env.manager.Recover(context.Background())
+	if !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("Recover = %v, want 所有权不确定(测试前提)", err)
+	}
+	if !strings.Contains(err.Error(), "PID 4242") {
+		t.Fatalf("启动恢复那一支的拒绝丢了当初那个 cause: %q", err.Error())
+	}
+	// 顺带钉住这条路**没有**重新求证:它是按时钟驱动的,一天一万七千轮。
+	if got := env.runner.scanCount(); got != 0 {
+		t.Fatalf("启动恢复扫了 %d 次", got)
 	}
 }
 
@@ -503,6 +544,31 @@ func TestUserInitiatedUpStillRefusesWhenTheScanFails(t *testing.T) {
 	}
 	if got := env.runner.startCount(); got != 0 {
 		t.Fatalf("扫不动却起了 %d 个 Core", got)
+	}
+}
+
+// **零值必须响亮地失败。** upOrigin 曾把 upOriginUser —— 重新求证、也就是本期
+// 唯一一处**放宽准入**的那一半 —— 放在 iota 第一位。参数今天是必填的、两个具名
+// 常量也都在,但零初始化的将来调用方(一个 upOrigin 结构体字段、一句
+// `var o upOrigin`)会静悄悄拿到宽松那条路:失败方向反了。起第二个 Core 是这个
+// 系统里最坏的结果,准入控制上「忘了写」绝不许等于「按最宽松的来」。
+func TestUpLockedRefusesAnUnspecifiedOrigin(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+	env.manager.uncertainCause = errors.New("Core appeared to be running (PID 4242)")
+	var origin upOrigin // 零初始化的将来调用方
+
+	if err := env.manager.upLocked(context.Background(), origin); err == nil {
+		t.Fatal("零值 origin 被静默放行了")
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("零值 origin 走了重新求证那条路并释放了锁存 —— 宽松的那一半绝不能是零值")
+	}
+	if got := env.runner.scanCount(); got != 0 {
+		t.Fatalf("零值 origin 触发了 %d 次扫描 —— 它应当在问系统之前就被拒掉", got)
+	}
+	if got := env.runner.startCount(); got != 0 {
+		t.Fatalf("零值 origin 起了 %d 个 Core", got)
 	}
 }
 
