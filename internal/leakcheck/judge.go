@@ -178,13 +178,82 @@ func describeRef(ref InterfaceRef) string {
 	}
 }
 
+// judgeDNS 判「默认路由归 X,而 DNS 解析器在 X 之外」。
+//
+// 措辞是「**可能**绕过」,不是确定的泄漏:解析器在隧道之外确实说明查询明文交给了
+// 局域网/ISP,但它是不是用户在意的那种暴露,得由用户看着证据自己判断。
+// 把可能说成确定,用户会去追一个不存在的问题,然后学会不信这个界面。
+//
+// **它为什么不是一条恒绿的检查**(计划给本任务的既定问题):让它变 bad 的真实输入是
+// 「只装路由、不改系统 DNS 的第三方 VPN」——`wg-quick` 的 `DNS =` 是可选的,
+// Tailscale exit node 关掉 MagicDNS 也是这个形状:默认路由归 utun,而解析器还是
+// 局域网路由器,查询明文交给它。这正是本功能瞄准的场景(「别的 VPN 在跑时也能用」)。
+// 另一边同样可达:bx 自己接管 DNS 时解析器是 127.0.0.1(loopback ⇒ ok),
+// 什么都没开时解析器与默认路由同在 en0(⇒ ok)。三个判定都不是摆设。
 func judgeDNS(browser BrowserReport, local LocalFacts) Finding {
-	return Finding{
-		ID:      FindingDNS,
-		Title:   "DNS path",
-		Verdict: NotChecked,
-		Summary: "Local DNS facts were not observed.",
+	f := Finding{ID: FindingDNS, Title: "DNS path"}
+
+	if local.DNSErr != "" {
+		f.Summary = "DNS could not be checked: " + local.DNSErr
+		f.Evidence = append(f.Evidence, "dns error: "+local.DNSErr)
+		return f
 	}
+	if len(local.DNSServers) == 0 {
+		f.Summary = "DNS could not be checked: no resolver was observed on this machine."
+		return f
+	}
+	if !local.DefaultRouteV4.Known() {
+		f.Summary = "DNS could not be judged: the local IPv4 default route was not observed, " +
+			"so there is nothing to compare the resolvers against."
+		f.Evidence = append(f.Evidence, "resolvers: "+strings.Join(local.DNSServers, ", "))
+		return f
+	}
+
+	route := local.DefaultRouteV4
+	f.Evidence = append(f.Evidence, "default route (v4): "+describeRef(route))
+
+	var outside, unknown []string
+	for _, server := range local.DNSServers {
+		egress, ok := local.DNSServerEgress[server]
+		if !ok || egress == "" {
+			unknown = append(unknown, server)
+			f.Evidence = append(f.Evidence, "resolver "+server+": egress not observed")
+			continue
+		}
+		f.Evidence = append(f.Evidence, "resolver "+server+": via "+egress)
+		if egress == route.Name {
+			continue
+		}
+		// 本机 loopback 上的解析器(bx 自己接管 DNS 时就是这个形状)不算绕过:
+		// 它根本没离开这台机器,真正出网的是 bx,而 bx 就在默认路由上。
+		if isLoopbackResolver(server) {
+			continue
+		}
+		outside = append(outside, server)
+	}
+
+	switch {
+	case len(outside) > 0:
+		f.Verdict = Bad
+		f.Summary = "Resolver(s) " + strings.Join(outside, ", ") +
+			" are reached outside " + describeRef(route) +
+			", which owns the default route. DNS queries may bypass the tunnel."
+	case len(unknown) > 0:
+		f.Summary = "DNS could not be fully checked: the egress interface of " +
+			strings.Join(unknown, ", ") + " was not observed."
+	default:
+		f.Verdict = OK
+		f.Summary = "All resolvers (" + strings.Join(local.DNSServers, ", ") +
+			") are reached through " + describeRef(route) + " or the local machine."
+	}
+	return f
+}
+
+// isLoopbackResolver 判断解析器是不是本机。认不出来的地址返回 false ——
+// 「看不懂的地址」不能当成安全的那一边。
+func isLoopbackResolver(server string) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(server))
+	return err == nil && addr.IsLoopback()
 }
 
 // collectEvidence 在 Task 7 填内容;现在返回 nil,让报告结构先成立。
