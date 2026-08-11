@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 形状一:PID==0(扫描派生的锁存、孤儿 launching 标记)且盘上 desired=off。
@@ -245,5 +246,161 @@ func TestClearingTheLatchAlsoClearsTheRetainedCause(t *testing.T) {
 	}
 	if env.manager.uncertainCause != nil {
 		t.Fatalf("锁存清了但 cause 留着: %v", env.manager.uncertainCause)
+	}
+}
+
+// 系统里确实没有 Core 在跑 ⇒ 释放。这是整条出口存在的理由。
+// **两次扫描都干净才算数** —— 断言 calls==2,而不只是「释放了」。
+func TestRecheckReleasesTheLatchOnlyAfterTwoCleanScans(t *testing.T) {
+	restore := coreScanSettle
+	coreScanSettle = time.Millisecond
+	t.Cleanup(func() { coreScanSettle = restore })
+
+	scan := &scriptedScanner{}
+	env := newManagerTestEnv(t)
+	env.manager.runner = &scannerOnlyRunner{scan: scan}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+	env.manager.uncertainCause = errors.New("Core appears to be running (PID 4242)")
+
+	if err := env.manager.recheckOwnershipUncertain("up"); err != nil {
+		t.Fatalf("两次都扫干净了仍然拒绝: %v", err)
+	}
+	if env.manager.current.Uncertain || env.manager.uncertainCause != nil {
+		t.Fatal("释放之后锁存或 cause 还留着")
+	}
+	if scan.calls != 2 {
+		t.Fatalf("释放只扫了 %d 次 —— 起第二个 Core 是这个系统里最坏的结果,一次扫描不够", scan.calls)
+	}
+}
+
+// **第一次扫干净、第二次扫到了 ⇒ 绝不释放。**
+//
+// 这正是设计点名的那个残留:子进程已 fork、Terminate() 已发、wait 超时,进程
+// 既不是僵尸也还没消失,而 scanRunningCores 会跳过 argv 读不出的进程 ——
+// 一次扫描完全可能给出假的「全清」。这条测试是「一次干净就够了」这个变异的
+// 唯一守卫。
+func TestRecheckDoesNotReleaseWhenOnlyTheFirstScanIsClean(t *testing.T) {
+	restore := coreScanSettle
+	coreScanSettle = time.Millisecond
+	t.Cleanup(func() { coreScanSettle = restore })
+
+	scan := &scriptedScanner{results: [][]Process{nil, {{PID: 4242}}}}
+	env := newManagerTestEnv(t)
+	env.manager.runner = &scannerOnlyRunner{scan: scan}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+
+	err := env.manager.recheckOwnershipUncertain("up")
+	if !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("一次假的「全清」就放行了: %v", err)
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("锁存被一次假的全清清掉了")
+	}
+	if scan.calls != 2 {
+		t.Fatalf("扫了 %d 次 —— 第一次干净之后必须再扫一次才能下结论", scan.calls)
+	}
+}
+
+// **第一次扫到、沉降后干净 ⇒ 同样不释放。**
+//
+// 这条与上一条方向相反,守的是另一个变异:「直接拿 confirmCoreStopped 来用」。
+// confirmCoreStopped 在这个脚本下**会**说 stopped(它的偏置是别把正常关闭报成
+// 告警,对 Down 是对的),而释放锁存是准入控制,偏置必须反过来。既有的
+// TestConfirmCoreStoppedReScansAfterASettleWindow 钉住那一头,这条钉住这一头。
+func TestRecheckDoesNotReleaseWhenOnlyTheSecondScanIsClean(t *testing.T) {
+	restore := coreScanSettle
+	coreScanSettle = time.Millisecond
+	t.Cleanup(func() { coreScanSettle = restore })
+
+	scan := &scriptedScanner{results: [][]Process{{{PID: 4242}}, nil}}
+	env := newManagerTestEnv(t)
+	env.manager.runner = &scannerOnlyRunner{scan: scan}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+
+	if err := env.manager.recheckOwnershipUncertain("up"); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("复用了 Down 那条偏置相反的求证: %v", err)
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("锁存被 Down 那套偏置清掉了")
+	}
+}
+
+// 扫到了 ⇒ 保持拒绝,并且报出**当初**那个 cause 加上**这次**的理由。
+// (第一次就扫脏,立即拒绝、不沉降,所以这条不需要缩 coreScanSettle。)
+func TestRecheckKeepsRefusingWhenACoreIsStillRunning(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.scanResult = []Process{{PID: 4242}}
+	env.manager.current = Process{PID: 4242, Uncertain: true}
+	env.manager.uncertainCause = errors.New("no Core process record on disk, but Core appears to be running (PID 4242)")
+
+	err := env.manager.recheckOwnershipUncertain("up")
+	if !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("系统说还有 Core 在跑,却放行了: %v", err)
+	}
+	if !strings.Contains(err.Error(), "PID 4242") {
+		t.Fatalf("重新求证失败时丢了当初那个 cause: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "core_still_running") {
+		t.Fatalf("重新求证失败时没说清这次是怎么判的: %q", err.Error())
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("拒绝了却把锁存清了")
+	}
+	if env.manager.Status().LastError != "core_ownership_uncertain" {
+		t.Fatalf("对外发布的码变了,四处消费方的指引会全部失效: %q", env.manager.Status().LastError)
+	}
+}
+
+// **扫不动 ≠ 没有。** 最容易瞬时发生的一类,也是最不能塌缩成「放行」的一类。
+func TestRecheckKeepsRefusingWhenTheScanFails(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.runner.scanErr = errors.New("sysctl failed")
+	env.manager.current = Process{Uncertain: true}
+
+	if err := env.manager.recheckOwnershipUncertain("up"); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("扫不动被当成了「没有」: %v", err)
+	}
+	if !env.manager.current.Uncertain {
+		t.Fatal("扫不动却把锁存清了 —— 「问不出来」不等于「安全」")
+	}
+}
+
+// runner 压根不会扫(将来别的平台、以及非 darwin 上的 procscan 桩)⇒ 保持拒绝。
+func TestRecheckKeepsRefusingWhenTheRunnerCannotScan(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.runner = &nonScanningRunner{}
+	env.manager.current = Process{Uncertain: true}
+
+	if err := env.manager.recheckOwnershipUncertain("up"); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("求证不了却放行: %v", err)
+	}
+}
+
+// panic 也是一种失败模式,而且这一条比别的更要命:一次 panic 打死 Guardian,
+// launchd 的 KeepAlive 把它拉起来再 panic —— 崩溃循环。收成「没能确认」,
+// 方向与本函数其余部分一致。
+func TestRecheckSurvivesAPanickingScanner(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.manager.runner = panickingScanner{}
+	env.manager.current = Process{Uncertain: true}
+
+	if err := env.manager.recheckOwnershipUncertain("up"); !errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("panic 之后 = %v, want 仍然拒绝(而不是让 Guardian 崩掉)", err)
+	}
+}
+
+// 没有锁存时**一次扫描都不许做**。两次扫描 + 300ms 沉降是只该发生在
+// 已经锁存的机器上、且由用户动作触发的开销;把它加到每一次 bx up 上,
+// 就是给所有人交税。
+func TestRecheckDoesNotScanWhenThereIsNoLatch(t *testing.T) {
+	scan := &scriptedScanner{}
+	env := newManagerTestEnv(t)
+	env.manager.runner = &scannerOnlyRunner{scan: scan}
+
+	if err := env.manager.recheckOwnershipUncertain("up"); err != nil {
+		t.Fatalf("没有锁存时不该有任何拒绝: %v", err)
+	}
+	if scan.calls != 0 {
+		t.Fatalf("没有锁存却扫了 %d 次 —— 每一次正常的 bx up 都在白交这个税", scan.calls)
 	}
 }
