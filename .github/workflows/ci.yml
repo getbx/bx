@@ -96,6 +96,77 @@ jobs:
           grep -q '^macOS menu tests passed$' /tmp/menu-tests.log \
             || { echo "::error::菜单测试脚本未跑到收尾横幅 —— 可能中途 return 或套件被清空"; exit 1; }
 
+  # 真的装一次,然后问系统「装完之后该是什么样」。
+  #
+  # **这个 job 是为一整类 bug 加的,而那类 bug 单测和复审都抓不到。** 2026-08-10
+  # 真机首装抓到:全新安装写了 launchd plist 却从不 bootstrap 它,于是 guardian.sock
+  # 要等第一次 `sudo bx up` 才存在 —— 而菜单栏那个**免密开关**连的就是那个 socket。
+  # 后果是菜单栏第①期的免密开关**在全新安装这条路上从没能工作过**,而那一期的
+  # 全部目的就是它。三期开发、六轮独立复审、几十次变异验证,全都没碰到它:
+  # **所有测试和所有复审走的都是升级路径**(它会 bootout 再 bootstrap),
+  # 而全新安装那条路在真机之前从没有人完整走过一遍。
+  #
+  # 它不是「写错了一行」,是**一整类场景从没被执行过** —— 那种东西只有真的装一次
+  # 才会现形。同一晚还撞出第二个同族的:verify-macos-release.sh 里一条 grep 的模式
+  # 以 `--` 开头被当成选项,那条守卫**一次都没有真正比对过内容**,而 verify 也因此
+  # 从来跑不完。
+  #
+  # runner 是一次性 VM,装脏了无所谓。这里**不开保护**、不需要 VPS、不需要网络 ——
+  # 只验「全新安装之后系统应该长什么样」,而那恰好就是上面那个 bug 违反的契约。
+  macos-fresh-install:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Package the release
+        run: BX_VERSION=ci-fresh bash scripts/package-macos-release.sh
+
+      # verify 自己也要跑:那条 --yes 守卫此前从来跑不完,而「跑不完」被当成
+      # 别的问题绕过去了很久。
+      - name: Verify the release layout
+        run: BX_VERSION=ci-fresh bash scripts/verify-macos-release.sh
+
+      - name: Install onto a machine that has never had bx
+        run: |
+          set -euo pipefail
+          test ! -e /Applications/Bx.app || { echo "::error::runner 上已经有 Bx.app,这个 job 的前提是全新安装"; exit 1; }
+          cd dist/release/bx-macos-arm64 2>/dev/null || cd dist/release/bx-macos-amd64
+          ./install.sh --yes
+
+      # 这四条就是「全新安装之后该是什么样」的契约。第二条是 2026-08-10 那个 bug。
+      - name: Assert the contract a fresh install must satisfy
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          test -x /usr/local/bin/bx || fail "命令行入口没装上"
+
+          sudo launchctl print system/com.getbx.bx.guard >/dev/null 2>&1 \
+            || fail "Guardian 服务没有被 bootstrap —— 菜单栏的免密开关连的就是它的 socket,这正是 2026-08-10 真机抓到的那个 bug"
+
+          for _ in $(seq 1 20); do
+            [ -S /var/run/bx/guardian.sock ] && break
+            sleep 1
+          done
+          test -S /var/run/bx/guardian.sock \
+            || fail "guardian.sock 不存在 —— 菜单栏连不上,免密开关点不动"
+
+          # **全新安装绝不开启保护**,README 是这么向用户承诺的。
+          state=$(sudo cat /var/lib/bx/guardian-state.json 2>/dev/null || echo '"off"')
+          [ "$state" = '"off"' ] \
+            || fail "全新安装把保护打开了(desired=$state)—— README 承诺的是不启动保护"
+
+      - name: Uninstall leaves no launchd job behind
+        run: |
+          set -euo pipefail
+          sudo /usr/local/bin/bx uninstall --yes || sudo /usr/local/bin/bx uninstall
+          sudo launchctl print system/com.getbx.bx.guard >/dev/null 2>&1 \
+            && { echo "::error::卸载之后 launchd job 还在"; exit 1; } || true
+
   integration:
     runs-on: ubuntu-latest
     steps:
