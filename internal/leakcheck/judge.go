@@ -256,5 +256,34 @@ func isLoopbackResolver(server string) bool {
 	return err == nil && addr.IsLoopback()
 }
 
-// collectEvidence 在 Task 7 填内容;现在返回 nil,让报告结构先成立。
-func collectEvidence(browser BrowserReport, local LocalFacts) []string { return nil }
+// collectEvidence 列出这一轮采到的**原始事实**,两半都在。
+//
+// 「谁占着默认路由」「公网出口是什么」放在这里而**不是**作为结论行,是因为它们
+// 在真机上永远判不出 bad —— 一条恒绿的检查会把整个界面训练成装饰(设计风险二)。
+// 放进证据里,用户照样看得到,只是不冒充结论。
+func collectEvidence(browser BrowserReport, local LocalFacts) []string {
+	value := func(observed, err string) string {
+		switch {
+		case observed != "":
+			return observed
+		case err != "":
+			return "not observed (" + err + ")"
+		default:
+			return "not observed"
+		}
+	}
+	evidence := []string{
+		"http exit (v4): " + value(browser.ExitV4, browser.ExitV4Err) + "  via " + EchoV4URL,
+		"http exit (v6): " + value(browser.ExitV6, browser.ExitV6Err) + "  via " + EchoV6URL,
+		"webrtc srflx: " + value(strings.Join(browser.SRFLX, ", "), browser.STUNErr) + "  via " + STUNURL,
+		"default route (v4): " + describeRef(local.DefaultRouteV4),
+		"default route (v6): " + describeRef(local.DefaultRouteV6),
+		"resolvers: " + value(strings.Join(local.DNSServers, ", "), local.DNSErr),
+		"browser: " + value(browser.UserAgent, ""),
+		// bx 自己那条 TUN 是**归因的依据本身**:用户看到 "bx (utun11)" 时得能在
+		// 这里核对 bx 报的接口确实是 utun11,否则那条归因无从复核。
+		"bx tun interface: " + value(local.BXTunInterface, ""),
+		"bx protection: " + value(local.BXProtection, ""),
+	}
+	return evidence
+}
