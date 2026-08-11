@@ -28,6 +28,7 @@ import (
 	"github.com/getbx/bx/internal/gateway"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/loopbackgate"
 	"github.com/getbx/bx/internal/mcp"
 	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/procredact"
@@ -3196,9 +3197,9 @@ func runBrowserICECheck(ctx context.Context, timeout time.Duration) (browserICER
 	resultCh := make(chan browserICEResult, 1)
 	mux := http.NewServeMux()
 	srv := &http.Server{Handler: mux}
-	gate := newLoopbackGate()
+	gate := loopbackgate.New()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if !gate.allow(w, r, false) {
+		if !gate.Allow(w, r, false) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -3206,7 +3207,7 @@ func runBrowserICECheck(ctx context.Context, timeout time.Duration) (browserICER
 	})
 	mux.HandleFunc("/result", func(w http.ResponseWriter, r *http.Request) {
 		// requireOrigin=true:回传是**写**入口,伪造它就能让 bx 报「无泄漏」。
-		if !gate.allow(w, r, true) {
+		if !gate.Allow(w, r, true) {
 			return
 		}
 		defer r.Body.Close()
@@ -3227,12 +3228,12 @@ func runBrowserICECheck(ctx context.Context, timeout time.Duration) (browserICER
 		return browserICEResult{}, err
 	}
 	defer ln.Close()
-	gate.bindTo(ln.Addr().String())
+	gate.BindTo(ln.Addr().String())
 	go func() {
 		_ = srv.Serve(ln)
 	}()
 	defer srv.Close()
-	u := "http://" + ln.Addr().String() + "/?t=" + gate.token
+	u := "http://" + ln.Addr().String() + "/?t=" + gate.Token()
 	if err := openBrowserURL(ctx, u); err != nil {
 		return browserICEResult{}, err
 	}

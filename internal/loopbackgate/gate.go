@@ -1,4 +1,10 @@
-package cli
+// Package loopbackgate 是本机检测服务的**唯一**一道准入闸门。
+//
+// 它原本长在 internal/cli 里,只服务 `bx webrtc-check --browser`;
+// internal/leakserve 需要同一道闸门,于是它搬到了这里 —— **不是抄一份**。
+// 一道安全闸门有两份实现,就有两份会各自漂移的判据,而漂移是无声的:
+// 两边都还在,两边都还绿,只有一边还对。
+package loopbackgate
 
 import (
 	"crypto/rand"
@@ -7,7 +13,7 @@ import (
 	"net/http"
 )
 
-// loopbackGate 是本地检测服务的准入闸门。
+// Gate 是本地检测服务的准入闸门。
 //
 // **它守的不是「谁能读到数据」,而是「谁能往里写」。** 今天这个服务没有任何端点
 // 吐出机器状态(`GET /` 只返回一个静态页),所以缺闸门的后果不是信息泄漏,是
@@ -28,32 +34,38 @@ import (
 // **`Origin` 只能选择性要求**:顶层导航的 GET 按规范根本不带 `Origin` 头,无条件
 // 要求它会让页面自己都打不开。故 GET 只查 Host,写入口(POST)额外要求 Origin
 // 存在且逐字相符。
-type loopbackGate struct {
+type Gate struct {
 	token string
 	// addr 是监听下来的真实地址(如 `127.0.0.1:53019`)。**必须在 Listen 之后**
-	// 由 bindTo 填 —— 端口是内核给的,构造闸门时还不知道。
+	// 由 BindTo 填 —— 端口是内核给的,构造闸门时还不知道。
 	addr string
 }
 
-func newLoopbackGate() *loopbackGate {
+// New 现生成一份本次运行专属的 token。**它不是「用一次作废」**:页面至少要发
+// 两个请求(取页面 + 回传),用一次作废会让回传永远打不进来。
+func New() *Gate {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		// crypto/rand 失败在实践中意味着系统熵源坏了。**绝不退化成空 token**:
-		// 那会让闸门恒开而外表看不出来。留空串 + bindTo 之后 allow 恒拒,
+		// 那会让闸门恒开而外表看不出来。留空串 + BindTo 之后 Allow 恒拒,
 		// 于是检测失败而不是静默失守。
-		return &loopbackGate{}
+		return &Gate{}
 	}
-	return &loopbackGate{token: base64.RawURLEncoding.EncodeToString(raw)}
+	return &Gate{token: base64.RawURLEncoding.EncodeToString(raw)}
 }
 
-func (g *loopbackGate) bindTo(addr string) { g.addr = addr }
+// BindTo 记下**真实**监听地址。必须在 net.Listen 之后调用。
+func (g *Gate) BindTo(addr string) { g.addr = addr }
 
-// allow 判定这次请求过不过闸。不过闸时它自己写好响应,调用方直接 return。
+// Token 是这次运行的 token,调用方要把它拼进给浏览器的入口 URL。
+func (g *Gate) Token() string { return g.token }
+
+// Allow 判定这次请求过不过闸。不过闸时它自己写好响应,调用方直接 return。
 //
 // requireOrigin 只对**写**入口置真。
-func (g *loopbackGate) allow(w http.ResponseWriter, r *http.Request, requireOrigin bool) bool {
+func (g *Gate) Allow(w http.ResponseWriter, r *http.Request, requireOrigin bool) bool {
 	if g.token == "" || g.addr == "" {
-		// 闸门没建成(熵源失败,或忘了 bindTo)。fail-closed:宁可这次检测做不成,
+		// 闸门没建成(熵源失败,或忘了 BindTo)。fail-closed:宁可这次检测做不成,
 		// 也不要一个看起来在守、实际上谁都放行的闸门。
 		http.Error(w, "leak check gate unavailable", http.StatusServiceUnavailable)
 		return false
