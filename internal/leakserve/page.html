@@ -39,10 +39,23 @@
   var STUN  = "{{.Endpoints.STUN}}";
   var out = document.getElementById("out");
 
+  // Every probe shares one budget. On a machine without IPv6 the connect to the
+  // v6-only echo host sits at the OS TCP timeout (~75s on macOS), and Promise.all
+  // waits for the slowest one — which walks the whole check into bx's 2-minute
+  // hard timeout, i.e. straight into "the browser half never arrived". A probe
+  // that gives up says so; a probe that hangs makes the whole check say nothing.
+  var PROBE_TIMEOUT_MS = 9000;
+
   function text(el, s) { el.textContent = s; }
 
   function fetchEcho(url) {
-    return fetch(url, { cache: "no-store" })
+    var ctl = new AbortController();
+    var giveUp = setTimeout(function () { ctl.abort(); }, PROBE_TIMEOUT_MS);
+    return fetch(url, { cache: "no-store", signal: ctl.signal })
+      .then(function (r) {
+        clearTimeout(giveUp);
+        return r;
+      })
       .then(function (r) {
         // fetch does NOT reject on 4xx/5xx. Without this, a Cloudflare
         // interstitial, a captive-portal login page or a 429 body becomes the
@@ -62,7 +75,14 @@
         if (v === "") return { value: "", err: "the echo returned an empty body" };
         return { value: v, err: "" };
       })
-      .catch(function (e) { return { value: "", err: String(e && e.message ? e.message : e) }; });
+      .catch(function (e) {
+        clearTimeout(giveUp);
+        var why = String(e && e.message ? e.message : e);
+        if (e && e.name === "AbortError") {
+          why = "no answer within " + (PROBE_TIMEOUT_MS / 1000) + "s";
+        }
+        return { value: "", err: why };
+      });
   }
 
   function gatherSrflx() {
@@ -90,7 +110,7 @@
       });
       var started = Date.now();
       var timer = setInterval(function () {
-        if (pc.iceGatheringState === "complete" || Date.now() - started > 9000) {
+        if (pc.iceGatheringState === "complete" || Date.now() - started > PROBE_TIMEOUT_MS) {
           clearInterval(timer);
           try { pc.close(); } catch (e) {}
           resolve(result);
