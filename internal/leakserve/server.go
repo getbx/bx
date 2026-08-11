@@ -181,6 +181,27 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(report)
+	// **拿到结果即关**(约束四)。用户关掉标签页就走人是常态,没有这一步就会
+	// 留一个开着的口。
+	//
+	// 用 goroutine 是因为我们正身处被关的那条连接上;用 Shutdown 而不是 Close
+	// 是因为**「拿到结果」必须是「响应已经写完」** —— Close 会当场掐掉 active
+	// 连接,而这条响应此刻还在 handler 的缓冲里,页面就会拿不到它要渲染的结论。
+	// Shutdown 先关 listener(不再进新连接),再等这条连接回到 idle,那时响应
+	// 已经发完。
+	go s.shutdownAfterResponse()
+}
+
+// gracefulShutdownTimeout 是等响应发完的上限。到点仍未 idle 就硬关 ——
+// **关不掉比迟一点关严重得多**,这个口不许因为某条连接赖着不走就一直挂着。
+const gracefulShutdownTimeout = 5 * time.Second
+
+func (s *Server) shutdownAfterResponse() {
+	ctx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
+	defer cancel()
+	_ = s.http.Shutdown(ctx)
+	// 兜底:Shutdown 超时也要关,而且 listener 要一并关掉。
+	_ = s.Close()
 }
 
 // Wait 等一份上报,或等到硬超时。**超时返回的是「什么都没问出来」的报告**,
@@ -192,8 +213,21 @@ func (s *Server) Wait(ctx context.Context) leakcheck.Report {
 	case report := <-s.reports:
 		return report
 	case <-timer.C:
-		return s.judge(leakcheck.BrowserReport{})
+		// 硬超时:用户关掉标签页就走人是常态,没有这一步就会留一个开着的口。
+		_ = s.Close()
+		return s.timedOutReport()
 	case <-ctx.Done():
-		return s.judge(leakcheck.BrowserReport{})
+		_ = s.Close()
+		return s.timedOutReport()
 	}
+}
+
+// timedOutReport 是「什么都没问出来」的那份报告。
+//
+// **它必须是判出来的,不能是 leakcheck.Report{}。** 零值报告的 Findings 是空的、
+// AnomalyCount 是 0,下游渲染出来就是一句「0 处异常」—— 与「全部检查通过」逐字
+// 相同,而实情是一项都没跑成。这正是设计里的风险四:把「没跑成」渲染成「一切
+// 正常」。让空上报走一遍 Judge,得到的是三条明写着 not checked 的结论。
+func (s *Server) timedOutReport() leakcheck.Report {
+	return s.judge(leakcheck.BrowserReport{})
 }
