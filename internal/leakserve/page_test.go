@@ -218,3 +218,63 @@ func TestPageProbesShareOneBudgetAndCannotHang(t *testing.T) {
 			"改一个忘改另一个不会有任何报错:\n%s", ice)
 	}
 }
+
+// 页面必须把「本机服务已经没了」与别的失败**分开**说。
+//
+// **这是真机用出来的**(2026-08-11):一次 leakcheck 超时自关之后,那个标签页
+// 还开着;用户点「Run the check」,探测都跑完了,而结果 POST 回一个早已关闭的
+// 端口 —— 浏览器对此只有一句 `TypeError: Failed to fetch`,页面照着说
+// 「bx will report this as "not checked"」。
+//
+// **那是假话,而且是这个功能存在的全部意义要消灭的那一类**:bx 根本不在跑,
+// 什么都不会被报告。页面在替一个已经退出的进程做承诺。
+//
+// 一次性是刻意的(拿到结果即关 + 2 分钟硬超时),所以标签页活得比服务久是
+// **常态**,不是边角情况。
+func TestPageDistinguishesAnExpiredServiceFromOtherFailures(t *testing.T) {
+	page := string(pageHTML)
+
+	// **POST 那一处**的失败必须被单独接住,而不是掉进通用文案。
+	//
+	// 只查「页面里出现过 EXPIRED」是不够的 —— 实测:把 POST 后面那个 .catch 拿掉,
+	// EXPIRED 仍然出现在别处(变量声明与 !resp.ok 分支),守卫照样绿。守卫必须钉
+	// 那个**具体的落点**,而不是那个词。
+	post := strings.Index(page, `fetch("/report?t="`)
+	if post < 0 {
+		t.Fatal("找不到回传那次 fetch,这条守卫已经读不懂页面了 —— 请连它一起更新")
+	}
+	// 从 POST 起到它这条表达式收尾(紧接着的 .then)为止。
+	tailAfterPost := page[post:]
+	stop := strings.Index(tailAfterPost, "}).then(")
+	if stop < 0 {
+		t.Fatal("回传那段的形状变了,守卫读不懂 —— 请连它一起更新")
+	}
+	if !strings.Contains(tailAfterPost[:stop], "throw new Error(EXPIRED)") {
+		t.Error("回传失败没有被单独接住 —— 端口已关时浏览器只会说 Failed to fetch," +
+			"而页面会照着通用文案声称「bx will report this as not checked」," +
+			"可 bx 根本不在跑。标签页活得比一次性服务久是常态,不是边角情况")
+	}
+	// 过期分支必须说清三件事:过期了、什么都没上报、怎么重来。
+	for _, must := range []string{
+		"expired",
+		"Nothing was reported",
+		"bx leakcheck again",
+	} {
+		if !strings.Contains(page, must) {
+			t.Errorf("过期文案里缺 %q —— 用户需要知道「什么都没发生」以及「怎么重来」", must)
+		}
+	}
+	// 而且**过期时绝不能**说 bx 会把它记成 not checked:bx 不在跑。
+	idx := strings.Index(page, "This check has expired")
+	if idx < 0 {
+		t.Fatal("找不到过期文案,这条守卫已经读不懂页面了")
+	}
+	tail := page[idx:]
+	end := strings.Index(tail, "return;")
+	if end < 0 {
+		t.Fatal("过期分支的形状变了,守卫读不懂 —— 请连它一起更新")
+	}
+	if strings.Contains(tail[:end], "not checked") {
+		t.Error("过期分支里出现了「not checked」—— bx 根本不在跑,它什么都不会报告")
+	}
+}
