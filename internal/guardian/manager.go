@@ -140,6 +140,93 @@ func (m *Manager) confirmCoreStopped() (stopped bool, reason string) {
 	return true, ""
 }
 
+// confirmNoCoreForRelease 是**释放方向**的求证:能不能允许再起一个 Core?
+//
+// **与 confirmCoreStopped 偏置相反,所以是两个函数。** 那一个回答「能不能对用户
+// 说已关闭」,怕的是把每次正常关闭都报成告警,于是第一次扫脏之后沉降重扫、
+// 第二次干净就算数;**它在第一次扫描就干净时直接返回 true,不沉降、不重扫**,
+// 因此对一次假的「全清」并不比裸扫描强。
+//
+// 而这里问的是准入。假的「全清」在这里的后果是两个 Core 争默认路由、先退出的
+// 那个用旧快照还原掀掉另一个的劫持,于是 bx status 显绿而流量明文直连。设计
+// 自己点名的那个残留(cleanupFailedStart:子进程已 fork、Terminate() 已发、
+// wait 超时,进程既不是僵尸也还没消失,而 scanRunningCores 会跳过 argv 读不出
+// 的进程)恰恰就是一次假的全清。**所以两次都必须干净,中间隔一个沉降窗口。**
+//
+// 代价:一次成功的释放固定多花 coreScanSettle(300ms)。它只发生在已经锁存的
+// 机器上、且由用户动作触发,每次 bx up 至多一次 —— 对这个系统里唯一一个
+// 「判错就是两个 Core」的决定来说很便宜。**拒绝不付这个代价**(第一次扫脏就
+// 立即返回),所以反复重试的用户不会被拖慢。
+//
+// **永不返回 error、永不 panic 出去**:panic 打死 Guardian 会被 launchd 的
+// KeepAlive 拉起来再 panic —— 崩溃循环。收成「没能确认」。
+func (m *Manager) confirmNoCoreForRelease() (released bool, reason string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("guardian_core_scan_panicked_on_release recovered=%v", r)
+			released, reason = false, "core_scan_failed"
+		}
+	}()
+	scanner, ok := m.runner.(coreScanner)
+	if !ok {
+		return false, "core_scan_unsupported"
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			time.Sleep(coreScanSettle)
+		}
+		cores, err := scanner.ScanRunning()
+		switch {
+		case err != nil:
+			log.Printf("guardian_core_scan_failed_on_release attempt=%d err=%v", attempt, err)
+			return false, "core_scan_failed"
+		case len(cores) > 0:
+			log.Printf("guardian_core_still_running_on_release attempt=%d pids=%s", attempt, scannedCorePIDs(cores))
+			return false, "core_still_running"
+		}
+	}
+	return true, ""
+}
+
+// recheckOwnershipUncertain 在**用户显式发起**的 up/migrate 上重新求证所有权,
+// 取代「把第一次的结论钉死」的短路。
+//
+// **判据一个字没变,变的是每次都重新求一遍。** 十五个 uncertain 产地里只有三个
+// 真的意味着「有第二个 Core」:其余要么是一次失败的扫描(最容易瞬时发生)、
+// 要么是一次失败的 unlink、要么是一个可能早就退出了的嫌疑 —— 而它们全都锁死
+// 同一扇门。
+//
+// **只有「确知没有」才释放。** 扫不动、扫到了(哪怕只有两次里的一次)、runner
+// 不会扫、求证本身 panic,一律保持拒绝,fail-closed 一步不让。
+//
+// **非 darwin 上这是个 no-op**:procscan_other.go 的 scanRunningCores 恒返回
+// errCoreScanUnsupported ⇒ confirmNoCoreForRelease 恒 false ⇒ 门仍然焊死。
+// 谁要移植 Guardian,必须先实现 scanRunningCores。
+func (m *Manager) recheckOwnershipUncertain(hop string) error {
+	if !m.current.Uncertain {
+		return nil
+	}
+	released, reason := m.confirmNoCoreForRelease()
+	if !released {
+		log.Printf("guardian_ownership_uncertain_recheck hop=%s released=false reason=%s pid=%d",
+			hop, reason, m.current.PID)
+		m.needsAttention(DesiredOn, "core_ownership_uncertain")
+		return uncertainOwnership(m.current, errors.Join(
+			m.uncertainCause,
+			fmt.Errorf("re-verification did not prove absence (%s)", reason),
+		))
+	}
+	log.Printf("guardian_ownership_uncertain_recheck hop=%s released=true cores_found=0 pid=%d",
+		hop, m.current.PID)
+	// 锁存与它的 cause **必须成对清掉**。留着 cause 不只是脏数据:下一次真正的
+	// 拒绝会经 errors.Join 把这条陈旧的原因一起报出去,把用户指向一个早就不存在
+	// 的进程。这是本文件里第三处成对清理(另两处见 clearOwnershipLatch 与
+	// clearUncertaintyAfterProof)—— 三处必须同步,漏一处不会有编译错误。
+	m.current = Process{}
+	m.uncertainCause = nil
+	return nil
+}
+
 type HealthGate interface {
 	Wait(context.Context, HealthTarget) (supervisor.RuntimeState, error)
 }
