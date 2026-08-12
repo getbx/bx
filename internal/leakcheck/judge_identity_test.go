@@ -120,6 +120,8 @@ func TestEverySectionIsDeclaredOnPurpose(t *testing.T) {
 		FindingLocalAddresses: SectionIdentity,
 		FindingTimezone:       SectionIdentity,
 		FindingRouteEscape:    SectionPath,
+		FindingFingerprint:    SectionIdentity,
+		FindingSurface:        SectionSurface,
 	}
 	report := Judge(fixedTime(), BrowserReport{}, LocalFacts{})
 	if len(report.Findings) != len(want) {

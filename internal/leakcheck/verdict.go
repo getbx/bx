@@ -24,6 +24,12 @@ const (
 	NotChecked Verdict = iota
 	OK
 	Bad
+	// Info:**没有正确答案**的观测。屏幕分辨率、显卡型号、UA —— 它们既不好也不坏,
+	// 只是网站读得到。判成 ok 会说成「安全」,判成 bad 会说成「有问题」,
+	// 而两者都是在给一件事强加一个它没有的极性。
+	//
+	// 它不进任何异常计数(NewReport 只数 Bad),所以加多少条都不会把告警稀释掉。
+	Info
 )
 
 func (v Verdict) String() string {
@@ -32,6 +38,8 @@ func (v Verdict) String() string {
 		return "ok"
 	case Bad:
 		return "bad"
+	case Info:
+		return "info"
 	default:
 		return "not checked"
 	}
@@ -58,13 +66,20 @@ const (
 	SectionPath Section = iota
 	// SectionIdentity:你会不会被单独认出来。bx 大多修不了,但你有权知道。
 	SectionIdentity
+	// SectionSurface:网站读得到什么。**中性,不打勾** —— 这一段里的东西没有
+	// 正确答案,列出来是为了让用户看见自己暴露了什么,而不是评判它。
+	SectionSurface
 )
 
 func (s Section) String() string {
-	if s == SectionIdentity {
+	switch s {
+	case SectionIdentity:
 		return "identity"
+	case SectionSurface:
+		return "surface"
+	default:
+		return "path"
 	}
-	return "path"
 }
 
 // MarshalJSON 让 JSON 里也是词而不是数字 —— 页面直接按它分区。

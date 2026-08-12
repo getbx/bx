@@ -30,7 +30,19 @@ type BrowserReport struct {
 	TraceErr    string `json:"trace_err"`
 	// Timezone 是浏览器自报的 IANA 时区名(`Asia/Shanghai`)。
 	Timezone string `json:"timezone"`
-	STUNErr  string `json:"stun_err"`
+	// CanvasA / CanvasB 是**同一次会话里连画两遍**同一张 canvas 得到的指纹。
+	// 两遍相同 = 浏览器没做任何防护;不同 = 它在加噪(Brave / Tor 那一类)。
+	// **问的是「有没有在防」,不是「指纹是什么」** —— 后者要算唯一性,而没有
+	// 语料库就没有分母,编一个百分比比不报更糟。
+	CanvasA string `json:"canvas_a"`
+	CanvasB string `json:"canvas_b"`
+	// 下面这些没有正确答案,只是网站读得到。它们进 surface 段,永远是 Info。
+	Languages           []string `json:"languages,omitempty"`
+	Screen              string   `json:"screen,omitempty"`
+	HardwareConcurrency string   `json:"hardware_concurrency,omitempty"`
+	DeviceMemory        string   `json:"device_memory,omitempty"`
+	WebGLRenderer       string   `json:"webgl_renderer,omitempty"`
+	STUNErr             string   `json:"stun_err"`
 }
 
 // Empty 判断这份上报里有没有任何**观测结果**。三个 Err 刻意不参与判断:一份

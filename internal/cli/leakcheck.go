@@ -104,13 +104,20 @@ func renderLeakCheckReport(rep leakcheck.Report) []string {
 		// 漏了是 bx 该修的,指纹大多不是。
 		if !shown[f.Section] {
 			shown[f.Section] = true
-			if f.Section == leakcheck.SectionIdentity {
+			switch f.Section {
+			case leakcheck.SectionIdentity:
 				lines = append(lines,
 					"CAN YOU BE SINGLED OUT",
 					"  Mostly not bx's to fix — browser and system traits that can identify",
 					"  you even when nothing leaks.",
 					"")
-			} else {
+			case leakcheck.SectionSurface:
+				lines = append(lines,
+					"WHAT SITES CAN READ",
+					"  Neither good nor bad, and nothing here is a verdict. Listed so you can",
+					"  see what every site gets without asking.",
+					"")
+			default:
 				lines = append(lines,
 					"WHERE YOUR TRAFFIC GOES",
 					"  What bx, or whichever tunnel is carrying this machine, is answerable for.",
