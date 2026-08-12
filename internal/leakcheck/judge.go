@@ -127,7 +127,7 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 		case OwnerBX:
 			f.Summary += "WebRTC is bypassing the tunnel."
 		case OwnerOther:
-			f.Summary += "WebRTC is bypassing the VPN on " + local.DefaultRouteV4.Name + "."
+			f.Summary += "WebRTC is bypassing the VPN on " + describeRef(local.DefaultRouteV4) + "."
 		default:
 			f.Summary += "Those are two different ways out of this machine — " +
 				"whichever one you believe you are using, the other one is also reachable."
@@ -168,11 +168,11 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 func describeOwner(owner TunnelOwner, local LocalFacts) string {
 	switch owner {
 	case OwnerBX:
-		return "the tunnel bx is managing (" + local.DefaultRouteV4.Name + ")"
+		return "the tunnel bx is managing (" + describeRef(local.DefaultRouteV4) + ")"
 	case OwnerOther:
-		return "the VPN on " + local.DefaultRouteV4.Name
+		return "the VPN on " + describeRef(local.DefaultRouteV4)
 	case OwnerNone:
-		return "this machine's own network interface (" + local.DefaultRouteV4.Name + ") — no tunnel"
+		return "this machine's own network interface (" + describeRef(local.DefaultRouteV4) + ") — no tunnel"
 	default:
 		return "an interface that could not be identified"
 	}
@@ -335,14 +335,12 @@ func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 // `bx0` —— 谁把采集层移过去,这条前半句不该跟着一起失灵。它只会把判定往
 // 「是隧道」推,永远不会多产出一条指控。
 func isTunnelPath(local LocalFacts) bool {
-	name := strings.TrimSpace(local.DefaultRouteV4.Name)
-	if name == "" {
+	switch WhoOwnsTheRoute(local) {
+	case OwnerBX, OwnerOther:
+		return true
+	default:
 		return false
 	}
-	if bxTun := strings.TrimSpace(local.BXTunInterface); bxTun != "" && name == bxTun {
-		return true
-	}
-	return IsTunnelInterface(name)
 }
 
 // describeRef 渲染一个接口:能翻成人话就用人话,翻不出就说翻不出。
