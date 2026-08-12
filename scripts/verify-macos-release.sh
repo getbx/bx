@@ -67,6 +67,22 @@ grep -qF "sudo bx uninstall" "$RELEASE_DIR/README.txt" || fail "README missing u
 grep -qF "普通 macOS 用户身份运行" "$RELEASE_DIR/README.txt" || fail "README missing non-root install note"
 
 grep -qF "app-install --app-source" "$RELEASE_DIR/install.sh" || fail "install.sh missing app-install invocation"
+
+# **菜单栏的 bootstrap 必须在 install.sh 里(不提权那一侧),而且必须在 sudo 之后。**
+#
+# bootstrap 是少数必须身处目标 GUI session 的 launchctl 操作。root 直接做必然
+# EIO(5),`asuser` 只是个 workaround —— 2026-08-11 真机升级证明它不可靠:
+# app-install 成功 bootout 了正在跑的菜单栏,随后 asuser+bootstrap 失败,
+# **升级把一个本来好好的菜单栏弄没了**,而安装照样报成功。
+#
+# 这类失败是隐形的(菜单不见了,而所有输出都说完成),所以不能靠「记得加」。
+grep -qF 'launchctl bootstrap "gui/$(id -u)"' "$RELEASE_DIR/install.sh" \
+  || fail "install.sh 没有在用户身份下 bootstrap 菜单栏 —— root 侧的 asuser 不可靠,升级会把菜单弄没"
+# 顺序:必须在那条 sudo 之后,否则 plist 还没被写出来。
+sudo_line=$(grep -n 'sudo .*app-install' "$RELEASE_DIR/install.sh" | head -1 | cut -d: -f1)
+boot_line=$(grep -n 'launchctl bootstrap "gui/\$(id -u)"' "$RELEASE_DIR/install.sh" | head -1 | cut -d: -f1)
+[[ -n "$sudo_line" && -n "$boot_line" && "$boot_line" -gt "$sudo_line" ]] \
+  || fail "菜单 bootstrap 必须排在 app-install 之后(plist 由它写出)"
 # install.sh 刻意不写死 --yes(用户就在终端前,该问就问),但必须把自己的参数透传,
 # 否则非交互调用方无处表态:app-install 问不出来会非零退出,而 install.sh 又不给
 # 任何加 --yes 的途径,升级就成了死路。
