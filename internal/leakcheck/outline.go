@@ -6,6 +6,7 @@ const (
 	ProbeExitV4 = "exit_v4"
 	ProbeExitV6 = "exit_v6"
 	ProbeSRFLX  = "srflx"
+	ProbeTrace  = "trace"
 )
 
 // CheckOutline 是一条结论的**骨架**:它是什么、它吃哪几个浏览器探测。
@@ -44,5 +45,6 @@ func Outline() []CheckOutline {
 		// 一次采集的两半,页面不会为它多发一个包。共用探测名是如实的 ——
 		// 两行确实在等同一件事落定。
 		{ID: FindingLocalAddresses, Title: "Local network addresses", Section: SectionIdentity, Inputs: []string{ProbeSRFLX}},
+		{ID: FindingTimezone, Title: "Clock vs exit location", Section: SectionIdentity, Inputs: []string{ProbeTrace}},
 	}
 }

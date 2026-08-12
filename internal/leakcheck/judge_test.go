@@ -46,8 +46,8 @@ func TestEmptyBrowserReportYieldsNotChecked(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rep := Judge(fixedTime(), BrowserReport{}, tc.local)
 
-			if len(rep.Findings) != 4 {
-				t.Fatalf("结论条数应恒为 4(webrtc / ipv6 / dns / local_addresses),得到 %d",
+			if len(rep.Findings) != 5 {
+				t.Fatalf("结论条数应恒为 5(webrtc / ipv6 / dns / local_addresses / timezone),得到 %d",
 					len(rep.Findings))
 			}
 			// **规则写成一句话,而不是按 fixture 分支**:一条结论只有在**本机那一半
@@ -194,7 +194,7 @@ func TestIPv6StaysUncheckedWhenTheMachineHasV6ButTheBrowserNeverRan(t *testing.T
 func TestFindingIDsAndOrderAreStable(t *testing.T) {
 	rep := Judge(fixedTime(), BrowserReport{}, LocalFacts{})
 	// 顺序即分区顺序:流量路径三条在前,身份段在后。页面按这个顺序摆行。
-	want := []string{FindingWebRTC, FindingIPv6, FindingDNS, FindingLocalAddresses}
+	want := []string{FindingWebRTC, FindingIPv6, FindingDNS, FindingLocalAddresses, FindingTimezone}
 	if len(rep.Findings) != len(want) {
 		t.Fatalf("结论条数应为 %d,得到 %d", len(want), len(rep.Findings))
 	}

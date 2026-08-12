@@ -42,7 +42,7 @@ func TestOutlineMatchesWhatJudgeActuallyEmits(t *testing.T) {
 // 写错一个字符的后果是**静默的**:页面等一个永远不会落定的探测,那一行的进度
 // 就永远停在半路,而没有任何东西会报错。
 func TestOutlineOnlyNamesRealProbes(t *testing.T) {
-	real := map[string]bool{ProbeExitV4: true, ProbeExitV6: true, ProbeSRFLX: true}
+	real := map[string]bool{ProbeExitV4: true, ProbeExitV6: true, ProbeSRFLX: true, ProbeTrace: true}
 	used := map[string]bool{}
 	for _, check := range Outline() {
 		for _, in := range check.Inputs {

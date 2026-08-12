@@ -91,6 +91,7 @@ Neither half alone can tell you whether traffic is leaking.</p>
     <li>IPv4 echo: <code>{{.Endpoints.EchoV4}}</code></li>
     <li>IPv6 echo: <code>{{.Endpoints.EchoV6}}</code></li>
     <li>STUN (WebRTC): <code>{{.Endpoints.STUN}}</code></li>
+    <li>Exit country: <code>{{.Endpoints.Trace}}</code></li>
   </ul>
   <p>Nothing is stored. bx keeps no history of this check.</p>
   <button id="go">Run the check</button>
@@ -116,6 +117,7 @@ Neither half alone can tell you whether traffic is leaking.</p>
   var ECHO4  = "{{.Endpoints.EchoV4}}";
   var ECHO6  = "{{.Endpoints.EchoV6}}";
   var STUN   = "{{.Endpoints.STUN}}";
+  var TRACE  = "{{.Endpoints.Trace}}";
   var CHECKS = {{.ChecksJSON}};
 
   var rowsEl = document.getElementById("rows");
@@ -210,6 +212,32 @@ Neither half alone can tell you whether traffic is leaking.</p>
       });
   }
 
+  // The trace endpoint answers with one `key=value` per line. Only two keys are
+  // read: the address it saw, and the two-letter country. Everything else it
+  // returns is ignored — this page reports what it was told, and Go judges it.
+  function fetchTrace() {
+    return fetch(TRACE, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })
+      .then(function (r) { return r.text(); })
+      .then(function (body) {
+        var out = { ip: "", loc: "", err: "" };
+        body.split("\n").forEach(function (line) {
+          var i = line.indexOf("=");
+          if (i < 0) return;
+          var k = line.slice(0, i), v = line.slice(i + 1).trim();
+          if (k === "ip") out.ip = v;
+          if (k === "loc") out.loc = v;
+        });
+        if (!out.ip && !out.loc) out.err = "the trace endpoint returned nothing usable";
+        probeLanded("trace", !out.err);
+        return out;
+      })
+      .catch(function (e) {
+        var why = String(e && e.message ? e.message : e);
+        probeLanded("trace", false);
+        return { ip: "", loc: "", err: why };
+      });
+  }
+
   function gatherSrflx() {
     return new Promise(function (resolve) {
       var result = { srflx: [], host: [], err: "" };
@@ -284,12 +312,19 @@ Neither half alone can tell you whether traffic is leaking.</p>
   document.getElementById("go").addEventListener("click", function () {
     document.getElementById("go").disabled = true;
     skeleton();
-    Promise.all([fetchEcho(ECHO4, "exit_v4"), fetchEcho(ECHO6, "exit_v6"), gatherSrflx()]).then(function (r) {
+    Promise.all([fetchEcho(ECHO4, "exit_v4"), fetchEcho(ECHO6, "exit_v6"), gatherSrflx(), fetchTrace()]).then(function (r) {
       var payload = {
         user_agent: navigator.userAgent,
         exit_v4: r[0].value, exit_v4_err: r[0].err,
         exit_v6: r[1].value, exit_v6_err: r[1].err,
-        srflx: r[2].srflx, host_candidates: r[2].host, stun_err: r[2].err
+        srflx: r[2].srflx, host_candidates: r[2].host, stun_err: r[2].err,
+        exit_country: r[3].loc, trace_exit_v4: r[3].ip, trace_err: r[3].err,
+        // The IANA zone name is what a site reads, and it is what makes the
+        // contradiction legible: "Asia/Shanghai" says more than "UTC+8".
+        timezone: (function () {
+          try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; }
+          catch (e) { return ""; }
+        })()
       };
       // The POST is treated separately from the probes above. This service is
       // one-shot: it closes after the first report or after its hard timeout, and
