@@ -431,14 +431,22 @@ func fetchCoreRuntime(ctx context.Context) (CoreRuntime, error) {
 	if err != nil {
 		return CoreRuntime{}, err
 	}
-	return CoreRuntime{
+	runtime := CoreRuntime{
 		Reachable:     true,
 		TunnelHealthy: report.TunnelHealthy,
 		LatencyMS:     report.LatencyMS,
 		Server:        report.Server,
 		Transport:     report.Transport,
 		UDPMode:       report.UDPMode,
-	}, nil
+	}
+	// 直连解析器住在 RuntimeState 而不是 stats.Report,所以要多问一跳。
+	//
+	// **它失败不许连累整份状态。** 这一行是锦上添花,而隧道健康、延迟这些是
+	// 菜单的立身之本;问不出来就留空(= 没问出来),绝不编一个值。
+	if state, err := supervisor.FetchRuntimeState(supervisor.SockPath); err == nil {
+		runtime.DNSUpstream = ResolverLabel(state.DNSUpstream, chinaResolverPredicate())
+	}
+	return runtime, nil
 }
 
 func RunDaemon(ctx context.Context, options DaemonOptions) error {

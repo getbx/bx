@@ -103,6 +103,9 @@ type CoreRuntime struct {
 	Server        string `json:"server,omitempty"`
 	Transport     string `json:"transport,omitempty"`
 	UDPMode       string `json:"udp_mode,omitempty"`
+	// DNSUpstream 已渲染成可直接显示的一行(见 ResolverLabel):直连域名的查询
+	// 交给谁。空串表示没问出来 —— **不是「没有上游」**。
+	DNSUpstream string `json:"dns_upstream,omitempty"`
 }
 
 // UpdateAvailability 是「有没有可装的新版」这一个问题的答案,由 Guardian 代查后

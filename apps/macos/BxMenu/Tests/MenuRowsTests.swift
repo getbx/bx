@@ -25,9 +25,24 @@ struct MenuRowsTests {
         let healthy = decode("""
         {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
          "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":390,
-                 "server":"vps","transport":"reality@vps","udp_mode":"hysteria2"}}
+                 "server":"vps","transport":"reality@vps","udp_mode":"hysteria2",
+                 "dns_upstream":"223.5.5.5 \u{1F1E8}\u{1F1F3}"}}
         """)
         let set = menuRows(status: healthy, dns: "127.0.0.1")
+        // 直连解析器:Core 此刻正在用的那个,已由 Go 渲染好(含可证明的国旗)。
+        expect(row(set, "Direct lookups")?.value.contains("223.5.5.5") == true,
+               "直连解析器行,实际 \(String(describing: row(set, "Direct lookups")?.value))")
+
+        // **问不出来时这一行必须整个消失,而不是留一句「未观测」。**
+        // 旧 Guardian 不发布这个键,而那正是升级中途的常态 —— 那时留一行恒定的
+        // "Not checked" 就是刚刚才删掉的那三行占位符换个名字回来。
+        let noUpstream = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":390,
+                 "server":"vps","transport":"reality@vps","udp_mode":"proxy"}}
+        """)
+        expect(row(menuRows(status: noUpstream, dns: "127.0.0.1"), "Direct lookups") == nil,
+               "上游问不出来时不许留一行占位符")
 
         // 阶段②能上的行
         expect(row(set, "Route")?.value.contains("reality") == true,

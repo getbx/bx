@@ -535,6 +535,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			RoutesInstalled: routes.ready(),
 			UDPRequired:     udpRequired,
 			UDPReady:        udpReady,
+			DNSUpstream:     cfg.DNS.China,
 		}
 	}
 	var recoverer pathRecoverer
