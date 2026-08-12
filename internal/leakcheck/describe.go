@@ -14,7 +14,9 @@ type VPNService struct {
 // tunnelDevicePrefixes 是 macOS 上「这个接口是一条隧道」的全部形状:
 // utun(bx 自己、Tailscale、WireGuard、Mullvad、系统 IKEv2 都在这里)、
 // ipsec、ppp(L2TP/PPTP 这类系统集成 VPN)、以及 tuntaposx 那一系的 tun/tap。
-var tunnelDevicePrefixes = []string{"utun", "ipsec", "ppp", "tun", "tap"}
+// **全仓唯一一份。** WhoOwnsTheRoute 与 isTunnelPath 都经 IsTunnelInterface 读它 ——
+// 各写一份时两处会静默漂移,而它们对同一台机器给出的答案必须一致。
+var tunnelDevicePrefixes = []string{"utun", "ipsec", "ppp", "tun", "tap", "wg"}
 
 // IsTunnelInterface 判断这个接口名看起来是不是一条隧道。
 //

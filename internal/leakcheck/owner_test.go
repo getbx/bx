@@ -95,3 +95,34 @@ func TestTunnelOwnerZeroValueIsUnknown(t *testing.T) {
 		t.Fatalf("零值 = %v,必须是 OwnerUnknown", zero)
 	}
 }
+
+// 「这条路上有没有隧道」在这个包里有两个问法:WhoOwnsTheRoute(四态,供 WebRTC
+// 那条用)与 isTunnelPath(二值,供 IPv6 那条用)。**它们对同一台机器必须一致。**
+//
+// 两者本来各自带着一份隧道接口前缀表,已经并成 describe.go 的 IsTunnelInterface
+// 那唯一一份。分叉真正的害处是:同一台机器上 WebRTC 那条说「有隧道」而 IPv6 那条
+// 说「没有」,两条结论当着用户的面自相矛盾。
+//
+// **这条守卫的边界必须说清楚,否则会被当成一个它给不了的保证。** 今天 isTunnelPath
+// 是**调用** WhoOwnsTheRoute 实现的,所以两者按构造就不可能不一致 —— 改动判据
+// (哪怕改错)时两边一起动,这条测试不会红。实测确认过:给 WhoOwnsTheRoute 多认
+// 一种前缀,它照样绿。
+//
+// 它真正挡的是**另一件事**:有人把 isTunnelPath 重新实现成独立的一份,而那份漂了。
+// 这也实测确认过 —— 换成一份自带前缀表、漏了 wg 又多认 zt 的实现,它立刻转红。
+// 判据的正确性由各自的用例守,这条只守「不许再分叉」。
+func TestBothTunnelQuestionsAgree(t *testing.T) {
+	for _, name := range []string{
+		"utun4", "utun11", "tun0", "tap0", "ppp0", "ipsec0", "wg0",
+		"en0", "eth0", "wlan0", "bridge0", "lo0",
+		"zt0", "NordLynx", "", "weird9",
+	} {
+		local := LocalFacts{DefaultRouteV4: InterfaceRef{Name: name}}
+		owner := WhoOwnsTheRoute(local)
+		wantTunnel := owner == OwnerBX || owner == OwnerOther
+		if got := isTunnelPath(local); got != wantTunnel {
+			t.Errorf("接口 %q:WhoOwnsTheRoute=%v(有隧道=%v)而 isTunnelPath=%v —— "+
+				"两条规则会当着用户的面自相矛盾", name, owner, wantTunnel, got)
+		}
+	}
+}

@@ -34,12 +34,12 @@ func (o TunnelOwner) String() string {
 	}
 }
 
-// tunnelIfacePrefixes 是认得出的隧道类接口名。macOS 的 utun(WireGuard / OpenVPN /
-// IKEv2 / 各家商业 VPN 都落在这里)、Linux 的 tun/tap/wg、以及 ppp/ipsec。
-var tunnelIfacePrefixes = []string{"utun", "tun", "tap", "ppp", "ipsec", "wg"}
-
 // physicalIfacePrefixes 是认得出的物理/本机接口名。**这份清单是白名单**,
 // 只有落在它里面的名字才配支撑「你没有隧道」这句话。
+//
+// 隧道那一侧不在这里 —— 它由 describe.go 的 IsTunnelInterface 回答,**全仓唯一
+// 一份**:两处各写一份隧道前缀表时会静默漂移,而 WhoOwnsTheRoute 与 isTunnelPath
+// 对同一台机器必须给出一致的答案。
 var physicalIfacePrefixes = []string{
 	"en", "eth", "wlan", "wl", "bridge", "awdl", "llw", "anpi", "ap", "lo",
 }
@@ -83,7 +83,7 @@ func WhoOwnsTheRoute(local LocalFacts) TunnelOwner {
 	if bx := strings.ToLower(strings.TrimSpace(local.BXTunInterface)); bx != "" && name == bx {
 		return OwnerBX
 	}
-	if hasAnyPrefix(name, tunnelIfacePrefixes) {
+	if IsTunnelInterface(name) {
 		return OwnerOther
 	}
 	if hasAnyPrefix(name, physicalIfacePrefixes) {
