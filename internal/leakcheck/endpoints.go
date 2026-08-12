@@ -43,6 +43,15 @@ type EndpointDisclosure struct {
 // Endpoints 返回这一版要联系的第三方。页面与 CLI 都从这里取,**不各自写一份**:
 // 两处各写一份时,页面上说的与实际请求的会静默分叉,而「事先明说要联系谁」这条
 // 缓解措施正是靠它们一致才成立的。
+// All 按固定顺序返回这次会联系的全部第三方。
+//
+// **调用方不许自己拼这一行。** trace 端点加进来那次,页面(它遍历模板字段)老实列了
+// 四个,而 CLI 的 `Contacted:` 是手写拼接的、还停在三个 —— 少报一个第三方不是排版
+// 问题,是把「联网之前把要联系的人说全」这个用户可见契约打了折。
+func (d EndpointDisclosure) All() []string {
+	return []string{d.EchoV4, d.EchoV6, d.STUN, d.Trace}
+}
+
 func Endpoints() EndpointDisclosure {
 	return EndpointDisclosure{EchoV4: EchoV4URL, EchoV6: EchoV6URL, STUN: STUNURL, Trace: TraceURL}
 }

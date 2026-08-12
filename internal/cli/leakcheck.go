@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/getbx/bx/internal/leakcheck"
@@ -95,7 +96,7 @@ func leakcheckAction(c *cli.Context) error {
 func renderLeakCheckReport(rep leakcheck.Report) []string {
 	lines := []string{
 		"",
-		"Contacted: " + rep.Endpoints.EchoV4 + " , " + rep.Endpoints.EchoV6 + " , " + rep.Endpoints.STUN,
+		"Contacted: " + strings.Join(rep.Endpoints.All(), " , "),
 		"",
 	}
 	shown := map[leakcheck.Section]bool{}
