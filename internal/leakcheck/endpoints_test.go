@@ -21,7 +21,13 @@ func TestEndpointsArePinned(t *testing.T) {
 	if STUNURL != "stun:stun.cloudflare.com:3478" {
 		t.Errorf("STUN 变了:%q", STUNURL)
 	}
+	if TraceURL != "https://www.cloudflare.com/cdn-cgi/trace" {
+		t.Errorf("trace 端点变了:%q", TraceURL)
+	}
 	d := Endpoints()
+	if d.Trace != TraceURL {
+		t.Errorf("Endpoints() 漏带 trace:%+v", d)
+	}
 	if d.EchoV4 != EchoV4URL || d.EchoV6 != EchoV6URL || d.STUN != STUNURL {
 		t.Fatalf("Endpoints() 必须原样带出三个常量,得到 %+v", d)
 	}
@@ -41,7 +47,11 @@ func TestEchoEndpointsAreTwoDistinctHosts(t *testing.T) {
 	if v4.Hostname() == v6.Hostname() {
 		t.Fatalf("v4 与 v6 回声端不能是同一个主机名(%q):双栈主机名问不出 v6 出口", v4.Hostname())
 	}
-	for _, u := range []*url.URL{v4, v6} {
+	trace, err := url.Parse(TraceURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []*url.URL{v4, v6, trace} {
 		if u.Scheme != "https" {
 			t.Errorf("%s 必须是 https:明文回声在路上可被改写,判据就整个失效", u)
 		}
@@ -64,7 +74,7 @@ func TestEchoEndpointsAreNotOnTheChinaDirectList(t *testing.T) {
 		t.Fatal("自检失败:ipify.org 本应在 china 直连列表里(第 6045 行)——" +
 			"若上游列表变了,请更新这条自检,而不是删掉它")
 	}
-	for _, raw := range []string{EchoV4URL, EchoV6URL} {
+	for _, raw := range []string{EchoV4URL, EchoV6URL, TraceURL} {
 		u, err := url.Parse(raw)
 		if err != nil {
 			t.Fatal(err)

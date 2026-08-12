@@ -22,13 +22,22 @@ type BrowserReport struct {
 	// 浏览器把它们换成随机的 `<uuid>.local`,**而「有没有被换掉」本身就是一条
 	// 关于这台机器的事实**:没换掉的那台,局域网结构对每个网站可见。
 	HostCandidates []string `json:"host_candidates"`
-	STUNErr        string   `json:"stun_err"`
+	// ExitCountry / TraceExitV4 来自 TraceURL:出口国家(ISO 3166-1 alpha-2)与
+	// 它看到的出口地址。TraceErr 记这一跳的失败 —— 与其余各项同一条纪律:
+	// **失败与「没跑」在下游必须分得开,而两者都不能变成 ok。**
+	ExitCountry string `json:"exit_country"`
+	TraceExitV4 string `json:"trace_exit_v4"`
+	TraceErr    string `json:"trace_err"`
+	// Timezone 是浏览器自报的 IANA 时区名(`Asia/Shanghai`)。
+	Timezone string `json:"timezone"`
+	STUNErr  string `json:"stun_err"`
 }
 
 // Empty 判断这份上报里有没有任何**观测结果**。三个 Err 刻意不参与判断:一份
 // 三项全失败的上报里,观测结果依然是零。
 func (b BrowserReport) Empty() bool {
-	return b.ExitV4 == "" && b.ExitV6 == "" && len(b.SRFLX) == 0 && len(b.HostCandidates) == 0
+	return b.ExitV4 == "" && b.ExitV6 == "" && len(b.SRFLX) == 0 &&
+		len(b.HostCandidates) == 0 && b.ExitCountry == "" && b.Timezone == ""
 }
 
 // Silent 判断浏览器那一半**从来没到过**:既没有任何观测结果(Empty),也没有
@@ -48,7 +57,7 @@ func (b BrowserReport) Empty() bool {
 // 或 err(空响应体也记成 err),所以真跑过的上报到不了这里 —— 万一到了,
 // 保守成 not checked 也是安全的那一边。
 func (b BrowserReport) Silent() bool {
-	return b.Empty() && b.ExitV4Err == "" && b.ExitV6Err == "" && b.STUNErr == ""
+	return b.Empty() && b.ExitV4Err == "" && b.ExitV6Err == "" && b.STUNErr == "" && b.TraceErr == ""
 }
 
 // InterfaceRef 是一个网络接口,以及它翻成人话之后的名字。

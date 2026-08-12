@@ -20,6 +20,16 @@ const (
 	EchoV4URL = "https://ipv4.icanhazip.com"
 	EchoV6URL = "https://ipv6.icanhazip.com"
 	STUNURL   = "stun:stun.cloudflare.com:3478"
+	// TraceURL 一次请求同时给出**出口地址与出口国家**,身份段那几条要的就是后者。
+	//
+	// 选它的理由:① 一个请求两件事,不必为「国家」再引一个第三方;② 返回体是
+	// `key=value` 逐行的 text/plain,没有 JSON 结构可以在某次改版里换形状;
+	// ③ 2026-08-11 实测带 `Access-Control-Allow-Origin: *`;④ 它与两个回声端
+	// 互为旁证 —— 两个独立第三方对同一个出口的说法本身就是一条可看的证据。
+	//
+	// 落选的:ipapi.co 与 ifconfig.co **都在 china 直连列表里**(踩这个坑的第三次,
+	// 而这次是在选之前用生产那份 DomainSet 逐个比出来的);ipwho.is 实测当场 429。
+	TraceURL = "https://www.cloudflare.com/cdn-cgi/trace"
 )
 
 // EndpointDisclosure 是页面在联网**之前**必须原样显示的第三方清单。
@@ -27,11 +37,12 @@ type EndpointDisclosure struct {
 	EchoV4 string `json:"echo_v4"`
 	EchoV6 string `json:"echo_v6"`
 	STUN   string `json:"stun"`
+	Trace  string `json:"trace"`
 }
 
 // Endpoints 返回这一版要联系的第三方。页面与 CLI 都从这里取,**不各自写一份**:
 // 两处各写一份时,页面上说的与实际请求的会静默分叉,而「事先明说要联系谁」这条
 // 缓解措施正是靠它们一致才成立的。
 func Endpoints() EndpointDisclosure {
-	return EndpointDisclosure{EchoV4: EchoV4URL, EchoV6: EchoV6URL, STUN: STUNURL}
+	return EndpointDisclosure{EchoV4: EchoV4URL, EchoV6: EchoV6URL, STUN: STUNURL, Trace: TraceURL}
 }

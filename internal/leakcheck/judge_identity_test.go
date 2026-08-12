@@ -118,6 +118,7 @@ func TestEverySectionIsDeclaredOnPurpose(t *testing.T) {
 		FindingIPv6:           SectionPath,
 		FindingDNS:            SectionPath,
 		FindingLocalAddresses: SectionIdentity,
+		FindingTimezone:       SectionIdentity,
 	}
 	report := Judge(fixedTime(), BrowserReport{}, LocalFacts{})
 	if len(report.Findings) != len(want) {

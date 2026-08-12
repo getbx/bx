@@ -17,6 +17,8 @@ const (
 	// FindingLocalAddresses 属于身份段:它回答的不是「流量去哪了」,
 	// 而是「网站能不能看见你这台机器在局域网里的样子」。
 	FindingLocalAddresses = "local_addresses"
+	// FindingTimezone 同属身份段:时钟与出口矛盾时,一个字节都没漏也能把人钉住。
+	FindingTimezone = "timezone_vs_exit"
 )
 
 // Judge 把两半事实对起来,产出一组三态结论。**纯函数**:同样的输入永远同样的
@@ -32,6 +34,7 @@ func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 		judgeIPv6(browser, local),
 		judgeDNS(browser, local),
 		judgeLocalAddresses(browser),
+		judgeTimezone(browser),
 	}
 	return NewReport(now, Endpoints(), findings, collectEvidence(browser, local))
 }
