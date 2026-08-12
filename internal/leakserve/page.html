@@ -28,6 +28,10 @@
  /* 机器值一律等宽 —— 「可以自己核对的值」与「bx 写的句子」不该长得一样。 */
  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}
 
+ .sect{margin:30px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--rule)}
+ .sect:first-child{margin-top:0}
+ .sect h2{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;margin:0;color:var(--ink)}
+ .sect p{margin:4px 0 0;font-size:.8rem;color:var(--ink-dim)}
  .disc{background:var(--disc);border:1px solid var(--disc-rule);border-radius:10px;padding:16px 18px;margin-bottom:28px}
  .disc p{margin:0 0 10px}
  .disc ul{margin:0 0 14px;padding-left:1.1rem}
@@ -129,7 +133,22 @@ Neither half alone can tell you whether traffic is leaking.</p>
   // WebRTC 拿到地址还要和 HTTP 出口比才知道漏没漏。绿色只在 bx 判完之后出现。
   function skeleton() {
     rowsEl.innerHTML = "";
+    var shownSection = null;
     CHECKS.forEach(function (c) {
+      // Each section says who is answerable for it, because that differs and the
+      // difference is the point: a leak is bx's problem to fix, a fingerprint
+      // mostly is not. Merging them into one score would produce a number that is
+      // never zero, and a number that is never zero gets ignored.
+      if (c.section !== shownSection) {
+        shownSection = c.section;
+        var head = el("div", "sect");
+        var isIdentity = c.section === "identity";
+        head.appendChild(text(el("h2"), isIdentity ? "Can you be singled out" : "Where your traffic goes"));
+        head.appendChild(text(el("p"), isIdentity
+          ? "Mostly not bx's to fix — these are browser and system traits. Shown because they can identify you even when nothing leaks."
+          : "What bx, or whichever tunnel is carrying this machine, is answerable for."));
+        rowsEl.appendChild(head);
+      }
       var row = el("div", "row");
       row.setAttribute("data-verdict", "pending");
       var feed = el("div", "feed");
@@ -193,7 +212,7 @@ Neither half alone can tell you whether traffic is leaking.</p>
 
   function gatherSrflx() {
     return new Promise(function (resolve) {
-      var result = { srflx: [], err: "" };
+      var result = { srflx: [], host: [], err: "" };
       var pc;
       function done() { probeLanded("srflx", result.srflx.length > 0 && !result.err); resolve(result); }
       try {
@@ -208,8 +227,16 @@ Neither half alone can tell you whether traffic is leaking.</p>
         if (!ev.candidate || !ev.candidate.candidate) return;
         var parts = ev.candidate.candidate.split(" ");
         // a=candidate:<foundation> <comp> <proto> <pri> <ip> <port> typ <type>
-        if (parts.length > 7 && parts[7] === "srflx" && result.srflx.indexOf(parts[4]) < 0) {
+        if (parts.length <= 7) return;
+        if (parts[7] === "srflx" && result.srflx.indexOf(parts[4]) < 0) {
           result.srflx.push(parts[4]);
+        }
+        // typ host is this machine's own address on the local network. Browsers
+        // have replaced it with a random <uuid>.local since 2019 — whether yours
+        // still does is itself a fact about this machine, so it is reported raw
+        // and judged in Go, like everything else here.
+        if (parts[7] === "host" && result.host.indexOf(parts[4]) < 0) {
+          result.host.push(parts[4]);
         }
       };
       pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function (e) {
@@ -262,7 +289,7 @@ Neither half alone can tell you whether traffic is leaking.</p>
         user_agent: navigator.userAgent,
         exit_v4: r[0].value, exit_v4_err: r[0].err,
         exit_v6: r[1].value, exit_v6_err: r[1].err,
-        srflx: r[2].srflx, stun_err: r[2].err
+        srflx: r[2].srflx, host_candidates: r[2].host, stun_err: r[2].err
       };
       // The POST is treated separately from the probes above. This service is
       // one-shot: it closes after the first report or after its hard timeout, and

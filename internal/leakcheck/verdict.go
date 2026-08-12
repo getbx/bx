@@ -42,6 +42,36 @@ func (v Verdict) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + v.String() + `"`), nil
 }
 
+// Section 是一条结论属于哪一段。**分区不是装饰,它决定了哪个数字会驱动告警。**
+//
+// 流量路径那一段 bx 负责,漏了就是坏的;身份那一段 bx 大多修不了,而且在一台普通
+// Chrome 上几乎不可能全绿。两者合成一个总数时那个数永远不为零,于是会被训练成
+// 噪声,连带把真正的泄漏一起淹掉 —— 正是原设计风险二。
+//
+// **零值是 SectionPath,方向是刻意选的。** 漏填时一条身份结论被算进流量异常数,
+// 那是多报;反过来则会让漏填的流量结论不计入告警,那是漏报。代价不对称,零值
+// 站在多报那边。
+type Section uint8
+
+const (
+	// SectionPath:你的流量从哪儿出去。bx(或你正在用的那条隧道)负责。
+	SectionPath Section = iota
+	// SectionIdentity:你会不会被单独认出来。bx 大多修不了,但你有权知道。
+	SectionIdentity
+)
+
+func (s Section) String() string {
+	if s == SectionIdentity {
+		return "identity"
+	}
+	return "path"
+}
+
+// MarshalJSON 让 JSON 里也是词而不是数字 —— 页面直接按它分区。
+func (s Section) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + s.String() + `"`), nil
+}
+
 // Finding 是一条可展开看依据的结论。
 //
 // Evidence 是**必须**的那一半:一个不肯出示依据的检测工具,用户没有理由信它,
@@ -49,6 +79,7 @@ func (v Verdict) MarshalJSON() ([]byte, error) {
 type Finding struct {
 	ID       string   `json:"id"`
 	Title    string   `json:"title"`
+	Section  Section  `json:"section"`
 	Verdict  Verdict  `json:"verdict"`
 	Summary  string   `json:"summary"`
 	Evidence []string `json:"evidence,omitempty"`
@@ -57,26 +88,36 @@ type Finding struct {
 // Report 是一次检测的全部产出。**没有任何字段是 BrowserReport 或 LocalFacts** ——
 // 页面拿到的必须是成品结论,不是可判断的原料(见 Task 12 的守卫)。
 type Report struct {
-	GeneratedAt  time.Time          `json:"generated_at"`
-	Endpoints    EndpointDisclosure `json:"endpoints"`
-	Findings     []Finding          `json:"findings"`
-	Evidence     []string           `json:"evidence,omitempty"`
-	AnomalyCount int                `json:"anomaly_count"`
+	GeneratedAt time.Time          `json:"generated_at"`
+	Endpoints   EndpointDisclosure `json:"endpoints"`
+	Findings    []Finding          `json:"findings"`
+	Evidence    []string           `json:"evidence,omitempty"`
+	// AnomalyCount 只数**流量路径**那一段的 bad。名字保持不变是因为 CLI 摘要
+	// 已经在读它,而它的含义(「有几处真的漏了」)一个字没改。
+	AnomalyCount int `json:"anomaly_count"`
+	// IdentityCount 数身份段的 bad。**单独一个数,永远不并进上面那个。**
+	IdentityCount int `json:"identity_count"`
 }
 
-// NewReport 组装报告并算出异常数。**只数 Bad。**
+// NewReport 组装报告并**按段**算出异常数。只数 Bad。
 func NewReport(now time.Time, endpoints EndpointDisclosure, findings []Finding, evidence []string) Report {
-	anomalies := 0
+	anomalies, identity := 0, 0
 	for _, f := range findings {
-		if f.Verdict == Bad {
+		if f.Verdict != Bad {
+			continue
+		}
+		if f.Section == SectionIdentity {
+			identity++
+		} else {
 			anomalies++
 		}
 	}
 	return Report{
-		GeneratedAt:  now,
-		Endpoints:    endpoints,
-		Findings:     findings,
-		Evidence:     evidence,
-		AnomalyCount: anomalies,
+		GeneratedAt:   now,
+		Endpoints:     endpoints,
+		Findings:      findings,
+		Evidence:      evidence,
+		AnomalyCount:  anomalies,
+		IdentityCount: identity,
 	}
 }

@@ -14,6 +14,9 @@ const (
 	FindingWebRTC = "webrtc_srflx"
 	FindingIPv6   = "ipv6_leak"
 	FindingDNS    = "dns_path"
+	// FindingLocalAddresses 属于身份段:它回答的不是「流量去哪了」,
+	// 而是「网站能不能看见你这台机器在局域网里的样子」。
+	FindingLocalAddresses = "local_addresses"
 )
 
 // Judge 把两半事实对起来,产出一组三态结论。**纯函数**:同样的输入永远同样的
@@ -28,6 +31,7 @@ func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 		judgeWebRTC(browser, local),
 		judgeIPv6(browser, local),
 		judgeDNS(browser, local),
+		judgeLocalAddresses(browser),
 	}
 	return NewReport(now, Endpoints(), findings, collectEvidence(browser, local))
 }
@@ -52,7 +56,7 @@ func browserNeverArrived(f Finding) Finding {
 // 两半都必须在场才比较。**「没拿到 candidate」不是「没有泄漏」** —— STUN 被挡、
 // UDP 被完全阻断、页面被关掉,全部停在 not checked。
 func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
-	f := Finding{ID: FindingWebRTC, Title: "WebRTC vs HTTP exit"}
+	f := Finding{ID: FindingWebRTC, Title: "WebRTC vs HTTP exit", Section: SectionPath}
 	if browser.Silent() {
 		return browserNeverArrived(f)
 	}
@@ -201,7 +205,7 @@ func abbreviate(s string) string {
 // 所以判据必须先看**回声返回的地址族**;不看的话,一台 bx 工作正常的机器会被
 // 判成 v6 泄漏 —— 对自己的用户误报。
 func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
-	f := Finding{ID: FindingIPv6, Title: "IPv6 exposure"}
+	f := Finding{ID: FindingIPv6, Title: "IPv6 exposure", Section: SectionPath}
 
 	// **没有通往 IPv6 互联网的路,就漏不了 IPv6 —— 这一条本机自己就答得了。**
 	//
@@ -371,7 +375,7 @@ func describeRef(ref InterfaceRef) string {
 // 另一边同样可达:bx 自己接管 DNS 时解析器是 127.0.0.1(loopback ⇒ ok),
 // 什么都没开时解析器与默认路由同在 en0(⇒ ok)。三个判定都不是摆设。
 func judgeDNS(browser BrowserReport, local LocalFacts) Finding {
-	f := Finding{ID: FindingDNS, Title: "DNS path"}
+	f := Finding{ID: FindingDNS, Title: "DNS path", Section: SectionPath}
 
 	if local.DNSErr != "" {
 		f.Summary = "DNS could not be checked: " + local.DNSErr

@@ -20,6 +20,10 @@ const (
 type CheckOutline struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
+	// Section 让页面把行分组。**它也必须从 Go 来** —— 页面自己抄一份分组规则时,
+	// 一条结论会出现在它不属于的那一段下面,而那一段的标题正是在向用户说明
+	// 「这一段谁负责」。
+	Section Section `json:"section"`
 	// Inputs 是这条结论要等的浏览器探测。**空表示它只吃本机事实** ——
 	// 那不是缺陷,而是一条有用的信息:DNS 那条根本不需要浏览器,页面照实显示。
 	Inputs []string `json:"inputs"`
@@ -32,9 +36,13 @@ type CheckOutline struct {
 // 结论 —— 两种都是「界面在说一件判据没说过的事」。
 func Outline() []CheckOutline {
 	return []CheckOutline{
-		{ID: FindingWebRTC, Title: "WebRTC vs HTTP exit", Inputs: []string{ProbeSRFLX, ProbeExitV4}},
-		{ID: FindingIPv6, Title: "IPv6 exposure", Inputs: []string{ProbeExitV6}},
+		{ID: FindingWebRTC, Title: "WebRTC vs HTTP exit", Section: SectionPath, Inputs: []string{ProbeSRFLX, ProbeExitV4}},
+		{ID: FindingIPv6, Title: "IPv6 exposure", Section: SectionPath, Inputs: []string{ProbeExitV6}},
 		// 只吃本机事实:默认路由归谁、解析器走哪个接口。浏览器一个包都不用发。
-		{ID: FindingDNS, Title: "DNS path", Inputs: nil},
+		{ID: FindingDNS, Title: "DNS path", Section: SectionPath, Inputs: nil},
+		// **与 WebRTC 那条共用同一次 ICE gathering**:host candidate 和 srflx 是
+		// 一次采集的两半,页面不会为它多发一个包。共用探测名是如实的 ——
+		// 两行确实在等同一件事落定。
+		{ID: FindingLocalAddresses, Title: "Local network addresses", Section: SectionIdentity, Inputs: []string{ProbeSRFLX}},
 	}
 }
