@@ -92,4 +92,12 @@ type LocalFacts struct {
 	// 空串表示 Guardian 没答上话,不表示 bx 没在跑。
 	BXTunInterface string `json:"bx_tun_interface,omitempty"`
 	BXProtection   string `json:"bx_protection,omitempty"`
+	// BXUDPMode / BXUDPTransport 是 bx **此刻正在用**的 UDP 分流配置(经 Guardian
+	// 转发的 Core 运行时值,不是盘上的 config)。
+	//
+	// 它们只用来**解释**一个已经观测到的不一致,绝不用来产生结论:WebRTC 那条
+	// 靠它们把「bx 自己把 UDP 送去了另一条隧道」与「WebRTC 真的漏了」分开,
+	// 而两者在 srflx 那个地址上长得一模一样。
+	BXUDPMode      string `json:"bx_udp_mode,omitempty"`
+	BXUDPTransport string `json:"bx_udp_transport,omitempty"`
 }

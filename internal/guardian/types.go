@@ -103,6 +103,10 @@ type CoreRuntime struct {
 	Server        string `json:"server,omitempty"`
 	Transport     string `json:"transport,omitempty"`
 	UDPMode       string `json:"udp_mode,omitempty"`
+	// UDPTransport 是「UDP 走另一条隧道」那个配置的当前值。泄漏检测靠它把
+	// **bx 自己的按类分流**与**真的漏了**分开 —— 两者在 srflx 那个地址上
+	// 长得一模一样。
+	UDPTransport string `json:"udp_transport,omitempty"`
 	// DNSUpstream 已渲染成可直接显示的一行(见 ResolverLabel):直连域名的查询
 	// 交给谁。空串表示没问出来 —— **不是「没有上游」**。
 	DNSUpstream string `json:"dns_upstream,omitempty"`

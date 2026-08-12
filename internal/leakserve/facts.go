@@ -38,7 +38,7 @@ type FactDeps struct {
 	// **err == nil 的含义是「问出来了」**,不是「bx 有 TUN」:保护关着时 tun 是
 	// 空串而 err 仍是 nil,那是一个确定的答案(bx 现在没有 TUN),归因据此才敢
 	// 把眼前这条 utun 认成别人的。
-	GuardianStatus func(ctx context.Context) (tun string, protection string, err error)
+	GuardianStatus func(ctx context.Context) (BXRuntimeFacts, error)
 	// ListVPNServices 列系统集成 VPN(scutil --nc list)。
 	ListVPNServices func(ctx context.Context) ([]leakcheck.VPNService, error)
 }
@@ -58,6 +58,18 @@ type FactDeps struct {
 // 已知的一处溢出:`guardianTunAndProtection` 第二跳的 `supervisor.FetchRuntimeState`
 // 不吃 ctx(它自带 3 秒上限),故整轮最坏会超出预算 3 秒。它有界,不会挂住。
 const DefaultFactsBudget = 5 * time.Second
+
+// BXRuntimeFacts 是从 Guardian 问来的、关于 bx 自己的运行时事实。
+//
+// **刻意是结构体而不是一串返回值。** 它此前是 `(tun, protection string, err error)`,
+// 再加两个 string 就有四个相邻的同型值 —— 传错位置照样编译,而这类错误在这个
+// 仓库里已经有过先例(serveControl 那串)。按字段名赋值错不了。
+type BXRuntimeFacts struct {
+	TunInterface string
+	Protection   string
+	UDPMode      string
+	UDPTransport string
+}
 
 // CollectFacts 采一轮本机事实,整轮封顶 DefaultFactsBudget。
 //
@@ -88,11 +100,13 @@ func CollectFactsWithBudget(ctx context.Context, deps FactDeps, budget time.Dura
 
 	bxTun, bxTunKnown := "", false
 	if deps.GuardianStatus != nil {
-		tun, protection, err := deps.GuardianStatus(ctx)
+		bx, err := deps.GuardianStatus(ctx)
 		if err == nil {
-			bxTun, bxTunKnown = tun, true
-			facts.BXTunInterface = tun
-			facts.BXProtection = protection
+			bxTun, bxTunKnown = bx.TunInterface, true
+			facts.BXTunInterface = bx.TunInterface
+			facts.BXProtection = bx.Protection
+			facts.BXUDPMode = bx.UDPMode
+			facts.BXUDPTransport = bx.UDPTransport
 		}
 		// Guardian 拨不通不是错误:这个功能的主场景之一就是 bx 没在跑。
 		// 但它**是**「问不出来」:bxTunKnown 保持 false,归因于是不敢把眼前

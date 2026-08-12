@@ -130,6 +130,40 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 		f.Verdict = Bad
 		f.Summary = "WebRTC reached the internet from " + strings.Join(mismatched, ", ") +
 			", but HTTP traffic left from " + exitAddr + ". "
+
+		// **bx 自己的按类分流会长得和泄漏一模一样。**
+		//
+		// `udp.transport` 指向另一台服务器时,UDP 经隧道出去、只是出口是另一台,
+		// 于是 srflx ≠ HTTP 出口 —— 零泄漏。此前这里一律判 bad,对自己的用户
+		// 喊狼来了,而「乱喊狼来了与恒绿是同一条设计风险的两面」。
+		//
+		// **不判 ok 是刻意的**:bx 不知道那台 UDP 服务器的出口地址,所以它分不清
+		// 「srflx 是 hysteria 的出口」与「srflx 是用户的真实 IP」。判 ok 就是把
+		// 一个假阳性换成假阴性,而后者正是这个功能存在的理由。
+		//
+		// 只对 OwnerBX 生效:这份配置描述的是 bx 自己那条隧道,拿它去解释别人的
+		// VPN 就是张冠李戴,代价是把别人的真实泄漏说成「查不了」。
+		if owner == OwnerBX && local.BXUDPTransport != "" {
+			f.Verdict = NotChecked
+			f.Summary += "bx is configured to send UDP through a separate tunnel " +
+				"(udp.transport), so WebRTC leaving from a different address is expected — " +
+				"but bx cannot tell that tunnel's exit apart from your real address, " +
+				"so this cannot be settled either way. To get a definitive answer, " +
+				"remove udp.transport and check again."
+			f.Evidence = append(f.Evidence, "bx udp.transport: "+local.BXUDPTransport)
+			return f
+		}
+
+		switch {
+		case owner == OwnerBX && local.BXUDPMode == "direct-realtime":
+			// 真的以真实 IP 直连,这就是泄漏 —— 但它是配置选的,不是故障,
+			// 措辞要让用户知道该去关哪个开关。
+			f.Summary += "This is what udp.mode=direct-realtime does: it sends all UDP " +
+				"(including QUIC and WebRTC) straight out with your real address, trading " +
+				"anonymity for latency."
+			f.Evidence = append(f.Evidence, "bx udp.mode: direct-realtime")
+			return f
+		}
 		switch owner {
 		case OwnerBX:
 			f.Summary += "WebRTC is bypassing the tunnel."
