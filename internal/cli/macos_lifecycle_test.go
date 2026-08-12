@@ -157,7 +157,7 @@ func TestMacOSUpSummaryIncludesGuardianDNSState(t *testing.T) {
 		DNSManaged: true,
 		DNSService: "Wi-Fi",
 	})
-	if !strings.Contains(got, "Status     Protected") || !strings.Contains(got, "DNS        Wi-Fi managed") {
+	if !strings.Contains(got, "Status     Protected") || !strings.Contains(got, "DNS        Handled by bx (Wi-Fi)") {
 		t.Fatalf("macOS up summary = %q, want protected managed Wi-Fi DNS", got)
 	}
 }

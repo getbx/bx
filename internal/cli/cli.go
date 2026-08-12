@@ -4732,9 +4732,9 @@ func guardianDNSLabel(state guardian.DNSState, service string) string {
 	switch state {
 	case guardian.DNSManaged:
 		if service != "" {
-			return service + " managed"
+			return "Handled by bx (" + service + ")"
 		}
-		return "Managed"
+		return "Handled by bx"
 	case guardian.DNSUnmanaged:
 		return "Not managed"
 	default:
