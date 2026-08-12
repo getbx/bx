@@ -119,6 +119,7 @@ func TestEverySectionIsDeclaredOnPurpose(t *testing.T) {
 		FindingDNS:            SectionPath,
 		FindingLocalAddresses: SectionIdentity,
 		FindingTimezone:       SectionIdentity,
+		FindingRouteEscape:    SectionPath,
 	}
 	report := Judge(fixedTime(), BrowserReport{}, LocalFacts{})
 	if len(report.Findings) != len(want) {

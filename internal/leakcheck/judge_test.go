@@ -46,8 +46,8 @@ func TestEmptyBrowserReportYieldsNotChecked(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rep := Judge(fixedTime(), BrowserReport{}, tc.local)
 
-			if len(rep.Findings) != 5 {
-				t.Fatalf("结论条数应恒为 5(webrtc / ipv6 / dns / local_addresses / timezone),得到 %d",
+			if len(rep.Findings) != 6 {
+				t.Fatalf("结论条数应恒为 6(webrtc / ipv6 / dns / route_escape / local_addresses / timezone),得到 %d",
 					len(rep.Findings))
 			}
 			// **规则写成一句话,而不是按 fixture 分支**:一条结论只有在**本机那一半
@@ -85,8 +85,16 @@ func TestEmptyBrowserReportYieldsNotChecked(t *testing.T) {
 // 是一句假话,而它恰恰是用户唯一会读的那一行。
 func TestSilentBrowserNeverClaimsAnObservation(t *testing.T) {
 	rep := Judge(fixedTime(), BrowserReport{}, bxRunningNoV6Facts())
+	// **「哪些结论不需要浏览器」不在这里手抄一份** —— Outline() 已经声明了
+	// (Inputs 为空 = 只吃本机事实),而那份声明本身由骨架守卫钉着。手抄一份的
+	// 后果是新增一条本地结论时这里要记得跟着改,而漏改的表现是一条完全诚实的
+	// 本地结论被要求去解释一个它根本不依赖的东西。
+	needsBrowser := map[string]bool{}
+	for _, c := range Outline() {
+		needsBrowser[c.ID] = len(c.Inputs) > 0
+	}
 	for _, f := range rep.Findings {
-		if f.ID == FindingDNS {
+		if !needsBrowser[f.ID] {
 			continue
 		}
 		text := f.Summary + " " + strings.Join(f.Evidence, " ")
@@ -194,7 +202,7 @@ func TestIPv6StaysUncheckedWhenTheMachineHasV6ButTheBrowserNeverRan(t *testing.T
 func TestFindingIDsAndOrderAreStable(t *testing.T) {
 	rep := Judge(fixedTime(), BrowserReport{}, LocalFacts{})
 	// 顺序即分区顺序:流量路径三条在前,身份段在后。页面按这个顺序摆行。
-	want := []string{FindingWebRTC, FindingIPv6, FindingDNS, FindingLocalAddresses, FindingTimezone}
+	want := []string{FindingWebRTC, FindingIPv6, FindingDNS, FindingRouteEscape, FindingLocalAddresses, FindingTimezone}
 	if len(rep.Findings) != len(want) {
 		t.Fatalf("结论条数应为 %d,得到 %d", len(want), len(rep.Findings))
 	}

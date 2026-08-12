@@ -1,0 +1,157 @@
+package leakcheck
+
+import (
+	"errors"
+	"net/netip"
+	"strconv"
+	"strings"
+)
+
+// ParseRouteDestination 把 netstat(8) 的目的地简写还原成前缀。
+//
+// netstat 省掉末尾的零字节,也省掉「自然」前缀长度:`10` 是 10.0.0.0/8、
+// `169.254` 是 169.254.0.0/16、`172.16/12` 的地址部分要补足四段。认错一个的后果是
+// 把私网段当公网段报出来,或者反过来漏掉一条真的逃逸路由。
+func ParseRouteDestination(dest string) (netip.Prefix, error) {
+	dest = strings.TrimSpace(dest)
+	if dest == "" {
+		return netip.Prefix{}, errors.New("empty destination")
+	}
+	addrPart, bitsPart, hasBits := strings.Cut(dest, "/")
+	octets := strings.Split(addrPart, ".")
+	if len(octets) == 0 || len(octets) > 4 {
+		return netip.Prefix{}, errors.New("not an IPv4 destination: " + dest)
+	}
+	for _, o := range octets {
+		if o == "" {
+			return netip.Prefix{}, errors.New("not an IPv4 destination: " + dest)
+		}
+		n, err := strconv.Atoi(o)
+		if err != nil || n < 0 || n > 255 {
+			return netip.Prefix{}, errors.New("not an IPv4 destination: " + dest)
+		}
+	}
+	written := len(octets)
+	for len(octets) < 4 {
+		octets = append(octets, "0")
+	}
+	addr, err := netip.ParseAddr(strings.Join(octets, "."))
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	bits := written * 8 // 没写前缀长度时,写了几段就是几段
+	if hasBits {
+		bits, err = strconv.Atoi(bitsPart)
+		if err != nil || bits < 0 || bits > 32 {
+			return netip.Prefix{}, errors.New("bad prefix length in " + dest)
+		}
+	}
+	return netip.PrefixFrom(addr, bits).Masked(), nil
+}
+
+// routeIsBlocking 判断这条路由是在**挡**而不是在**送**。
+//
+// bx 自己的 fail-closed 屏障就是一组 /2 的 reject 路由;把自家的屏障报成逃逸,
+// 是这条检查能犯的最蠢的错。netstat 的标志位里 R=reject、B=blackhole。
+func routeIsBlocking(flags string) bool {
+	return strings.ContainsAny(flags, "RB")
+}
+
+// routeEscapesTunnel 判断这条路由会不会把公网流量从隧道之外送走。
+//
+// **判据的形状由真机决定。** 本机(2026-08-11)路由表里有 108 条公网 /32 经物理
+// 网关,那是 bx 自己的 server bypass(其中就有 VPS 那条)。把它们报成异常,这条
+// 检查在每一台正常工作的机器上都会红,于是被训练成噪声 —— 与恒绿是同一条设计风险。
+//
+// 所以判据是:**单主机(/32)是隧道旁路自己服务器的正常形状,不报;能捕获成片
+// 流量的更宽前缀才报。** 后者恰恰是 TunnelVision(CVE-2024-3661)/ TunnelCrack
+// ServerIP 要的形状 —— 攻击的目的是截走流量,不是一台主机。
+//
+// 前缀必须**比 split-default 更具体**(>1 位)才压得过隧道;`default` 本身在物理
+// 网卡上是 split-default 的常态,不是逃逸。
+func routeEscapesTunnel(entry RouteEntry) (netip.Prefix, bool) {
+	if routeIsBlocking(entry.Flags) || IsTunnelInterface(entry.Interface) {
+		return netip.Prefix{}, false
+	}
+	prefix, err := ParseRouteDestination(entry.Destination)
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	if prefix.Bits() <= 1 || prefix.Bits() >= 32 {
+		return netip.Prefix{}, false
+	}
+	addr := prefix.Addr()
+	if !addr.Is4() || addr.IsPrivate() || addr.IsLoopback() ||
+		addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return netip.Prefix{}, false
+	}
+	// CGNAT:运营商级 NAT,不是公网可路由的目的地。
+	//
+	// **判据必须是「这条路由落在 CGNAT 里」,不是「与 CGNAT 有交集」。** 第一版
+	// 写的是 Overlaps,于是任何盖住 100.64/10 的宽前缀都被静默豁免 —— 包括攻击
+	// 最爱用的 64.0.0.0/2(它覆盖 64.0.0.0–127.255.255.255,自然也盖住 CGNAT)。
+	// 那等于把整条规则在最关键的形状上关掉,而测试当场抓到了。
+	cgnat := netip.MustParsePrefix("100.64.0.0/10")
+	if prefix.Bits() >= cgnat.Bits() && cgnat.Contains(addr) {
+		return netip.Prefix{}, false
+	}
+	return prefix, true
+}
+
+// judgeRouteEscape 找「比隧道的 split-default 更具体、又指向隧道之外」的路由。
+//
+// 这一项**一个包都不用发**:纯本机路由表观测。它也是这套检查里唯一一条能查出
+// TunnelVision / TunnelCrack ServerIP 那类**主动攻击**的规则 —— 别的检查看的是
+// 流量最终从哪儿出去,而这一条看的是有没有人在你的路由表里动了手脚。
+func judgeRouteEscape(local LocalFacts) Finding {
+	f := Finding{ID: FindingRouteEscape, Title: "Routes around the tunnel", Section: SectionPath}
+
+	if local.RoutesErr != "" {
+		f.Summary = "Not checked: the routing table could not be read (" + local.RoutesErr + ")."
+		return f
+	}
+	if len(local.Routes) == 0 {
+		f.Summary = "Not checked: the routing table was not read."
+		return f
+	}
+	switch WhoOwnsTheRoute(local) {
+	case OwnerBX, OwnerOther:
+	default:
+		// 没有隧道就没有「绕过隧道」这回事。判 ok 会被读成「你很安全」。
+		f.Summary = "Not checked: no tunnel is carrying this machine's traffic, " +
+			"so there is nothing for a route to go around."
+		return f
+	}
+
+	var escapes []string
+	hosts := 0
+	for _, entry := range local.Routes {
+		if prefix, ok := routeEscapesTunnel(entry); ok {
+			escapes = append(escapes, prefix.String()+" → "+entry.Interface)
+			continue
+		}
+		if p, err := ParseRouteDestination(entry.Destination); err == nil &&
+			p.Bits() == 32 && !IsTunnelInterface(entry.Interface) && !routeIsBlocking(entry.Flags) &&
+			!p.Addr().IsPrivate() && !p.Addr().IsLoopback() && !p.Addr().IsLinkLocalUnicast() {
+			hosts++
+		}
+	}
+	if hosts > 0 {
+		// 单主机旁路照实说,但不判好坏:它既是每条隧道旁路自己服务器的正常做法,
+		// 也是 TunnelCrack ServerIP 会用的入口 —— 而这两者在路由表里长得一样。
+		f.Evidence = append(f.Evidence, strconv.Itoa(hosts)+
+			" single hosts are routed outside the tunnel (this is how a tunnel reaches its own servers)")
+	}
+	if len(escapes) > 0 {
+		f.Verdict = Bad
+		f.Summary = "Something has installed routes that send whole ranges of the internet " +
+			"around the tunnel: " + strings.Join(escapes, ", ") + ". Traffic to those addresses " +
+			"leaves with your real address. A hostile DHCP server on this network can do exactly " +
+			"this (CVE-2024-3661)."
+		f.Evidence = append(f.Evidence, "escaping routes: "+strings.Join(escapes, ", "))
+		return f
+	}
+	f.Verdict = OK
+	f.Summary = "No route sends whole ranges of the internet around the tunnel."
+	return f
+}
