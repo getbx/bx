@@ -133,9 +133,21 @@ func TestReportTypeCarriesNoRawMaterial(t *testing.T) {
 // 并在模板里注入,上面三条守卫**一条都不会红**(它们守的是 Report 的类型与
 // /report 的响应,不是页面模板拿到的数据)。而那一步正好把判断权交给了这个仓库
 // 测不到的 JS —— Task 12 的全部论证都建立在「页面拿不到原料」上。
-func TestPageDataCarriesOnlyTokenAndDisclosure(t *testing.T) {
+// **ChecksJSON 的论证(2026-08-11 加字段时,被这条守卫当场拦下后写的)**:
+//
+// 它是**结构**,不是原料。内容只有三条结论的 id、标题,以及每条等哪几个浏览器
+// 探测的名字 —— 没有地址、没有接口名、没有任何一条本机观测。页面拿它只能把行
+// 先摆出来并在探测落定时点亮对应的格,**推不出任何结论**;绿色仍然只在 Go 判完
+// 之后由 /report 的响应带来。
+//
+// 反过来问一句更有用:为什么骨架也非得从 Go 来?因为「哪一项吃哪几个探测」是
+// **判据的知识**。页面自己抄一份的话,加第四条规则时要改两个地方,而其中一个
+// (JS)这个仓库测不到 —— 两边悄悄不一致时,页面会摆出一行永远等不到结论的空壳,
+// 或者收到一条没有位置可放的结论,而没有任何东西会红。
+// leakcheck.TestOutlineMatchesWhatJudgeActuallyEmits 拿真实的 Judge 输出钉住这一点。
+func TestPageDataCarriesOnlyTokenDisclosureAndSkeleton(t *testing.T) {
 	typ := reflect.TypeOf(pageData{})
-	want := map[string]bool{"Token": true, "Endpoints": true}
+	want := map[string]bool{"Token": true, "Endpoints": true, "ChecksJSON": true}
 	if typ.NumField() != len(want) {
 		t.Fatalf("pageData 现在有 %d 个字段,守卫只认识 %d 个 —— 加字段请连同这条守卫"+
 			"一起论证:页面多拿到一样原料,判断就可能搬进测不到的 JS 里",
@@ -144,8 +156,9 @@ func TestPageDataCarriesOnlyTokenAndDisclosure(t *testing.T) {
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		if !want[field.Name] {
-			t.Errorf("pageData 多了字段 %q(类型 %s):页面只该拿到 token 与第三方披露,"+
-				"本机事实那一半从不下发", field.Name, field.Type)
+			t.Errorf("pageData 多了字段 %q(类型 %s):页面只该拿到 token、第三方披露与结论骨架,"+
+				"本机事实那一半从不下发 —— 新字段请在上面的注释里论证它为什么不是可判断的原料",
+				field.Name, field.Type)
 		}
 	}
 	// 字段名对了、类型换成原料也一样致命(把 Endpoints 换成 LocalFacts 不会撞上

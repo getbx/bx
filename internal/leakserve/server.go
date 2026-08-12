@@ -15,6 +15,7 @@ package leakserve
 import (
 	"context"
 	"encoding/json"
+	"html/template"
 	"io"
 	"net"
 	"net/http"
@@ -163,7 +164,18 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	// 页面拿到的**全部**东西就是 pageData —— token 与第三方披露。本机事实那一半
 	// 从不下发,「JS 保持愚蠢」靠的是这个,不是靠审 JS 时留神。
-	if err := pageTemplate.Execute(w, pageData{Token: s.gate.Token(), Endpoints: leakcheck.Endpoints()}); err != nil {
+	// 骨架序列化失败不该把页面整个打掉:退化成空数组,页面就只是不摆骨架,
+	// 结论仍然会在 POST 回来时逐条渲染。**绝不塞一份手写的默认骨架** —— 那份
+	// 会与判据不一致,而不一致正是这整个设计要防的事。
+	checks, err := json.Marshal(leakcheck.Outline())
+	if err != nil {
+		checks = []byte("[]")
+	}
+	if err := pageTemplate.Execute(w, pageData{
+		Token:      s.gate.Token(),
+		Endpoints:  leakcheck.Endpoints(),
+		ChecksJSON: template.JS(checks),
+	}); err != nil {
 		// 头已经发出去了,这里只能停止写入。
 		return
 	}
