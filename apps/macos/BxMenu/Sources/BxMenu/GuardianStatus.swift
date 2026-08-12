@@ -121,6 +121,7 @@ struct CoreRuntime: Decodable {
     let server: String?
     let transport: String?
     let udpMode: String?
+    let dnsUpstream: String?
 
     enum CodingKeys: String, CodingKey {
         case reachable
@@ -129,6 +130,7 @@ struct CoreRuntime: Decodable {
         case server
         case transport
         case udpMode = "udp_mode"
+        case dnsUpstream = "dns_upstream"
     }
 
     init(from decoder: Decoder) throws {
@@ -139,5 +141,6 @@ struct CoreRuntime: Decodable {
         server = try container.decodeIfPresent(String.self, forKey: .server)
         transport = try container.decodeIfPresent(String.self, forKey: .transport)
         udpMode = try container.decodeIfPresent(String.self, forKey: .udpMode)
+        dnsUpstream = try container.decodeIfPresent(String.self, forKey: .dnsUpstream)
     }
 }

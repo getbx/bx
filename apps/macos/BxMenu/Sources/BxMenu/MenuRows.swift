@@ -86,6 +86,15 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
         rows.append(MenuRow(label: "DNS", value: notObserved, mark: .unknown))
     }
 
+    // 直连域名的查询交给了谁。**这一行只在问出来时出现** —— 一行恒定的
+    // "Not checked" 正是这个菜单刚删掉三行的理由。
+    //
+    // 它是 Core **此刻正在用**的值,不是 config 文件里的值:有人改了文件时 Core
+    // 仍跑着旧值直到重启,显示文件里的那个就是撒谎。
+    if let upstream = core?.dnsUpstream, !upstream.isEmpty {
+        rows.append(MenuRow(label: "Direct lookups", value: upstream, mark: .ok))
+    }
+
     if let mode = core?.udpMode, !mode.isEmpty {
         rows.append(MenuRow(label: "UDP Relay", value: mode, mark: .ok))
     } else {

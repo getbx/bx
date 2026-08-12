@@ -17,6 +17,12 @@ type RuntimeState struct {
 	RoutesInstalled bool     `json:"routes_installed"`
 	UDPRequired     bool     `json:"udp_required"`
 	UDPReady        bool     `json:"udp_ready"`
+	// DNSUpstream 是 Core **此刻正在用**的直连解析器(config 的 dns.china)。
+	//
+	// **发布运行中的值而不是盘上的值,是有意的。** 有人改了 config 文件时,Core
+	// 仍然跑着旧值直到重启;显示文件里的值而 Core 用着另一个,正是这个仓库一直在
+	// 打的那类谎。两者不一致本身是一条发现,但那要由比较得出,不能靠这里悄悄换源。
+	DNSUpstream string `json:"dns_upstream,omitempty"`
 }
 
 type routeReadiness struct {
