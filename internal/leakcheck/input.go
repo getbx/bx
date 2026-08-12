@@ -17,14 +17,18 @@ type BrowserReport struct {
 	// SRFLX 是 STUN 问出来的 server-reflexive 地址。**只要 srflx。**
 	// host candidate 早被浏览器 mDNS 混淆了(<uuid>.local),按那个年代的做法
 	// 实现会得到一条恒绿的检查,而恒绿比没有更糟。
-	SRFLX   []string `json:"srflx"`
-	STUNErr string   `json:"stun_err"`
+	SRFLX []string `json:"srflx"`
+	// HostCandidates 是同一次 ICE gathering 里的 `typ host` 地址。2019 年之后的
+	// 浏览器把它们换成随机的 `<uuid>.local`,**而「有没有被换掉」本身就是一条
+	// 关于这台机器的事实**:没换掉的那台,局域网结构对每个网站可见。
+	HostCandidates []string `json:"host_candidates"`
+	STUNErr        string   `json:"stun_err"`
 }
 
 // Empty 判断这份上报里有没有任何**观测结果**。三个 Err 刻意不参与判断:一份
 // 三项全失败的上报里,观测结果依然是零。
 func (b BrowserReport) Empty() bool {
-	return b.ExitV4 == "" && b.ExitV6 == "" && len(b.SRFLX) == 0
+	return b.ExitV4 == "" && b.ExitV6 == "" && len(b.SRFLX) == 0 && len(b.HostCandidates) == 0
 }
 
 // Silent 判断浏览器那一半**从来没到过**:既没有任何观测结果(Empty),也没有

@@ -25,6 +25,11 @@ func TestOutlineMatchesWhatJudgeActuallyEmits(t *testing.T) {
 		if outline[i].ID != want.ID {
 			t.Errorf("第 %d 行:骨架 ID = %q,Judge 产出 %q —— 顺序或 ID 漂了", i, outline[i].ID, want.ID)
 		}
+		if outline[i].Section != want.Section {
+			t.Errorf("第 %d 行(%s):骨架分段 = %v,Judge 产出 %v —— 结论会出现在它不属于的"+
+				"那一段标题底下,而那个标题正是在向用户说明这一段谁负责",
+				i, want.ID, outline[i].Section, want.Section)
+		}
 		if outline[i].Title != want.Title {
 			t.Errorf("第 %d 行:骨架标题 = %q,Judge 产出 %q —— 用户会看到标题在结论落地时跳变",
 				i, outline[i].Title, want.Title)

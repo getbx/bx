@@ -64,6 +64,10 @@ func TestReportResponseCarriesFinishedConclusions(t *testing.T) {
 	want := map[string]bool{
 		"generated_at": true, "endpoints": true,
 		"findings": true, "evidence": true, "anomaly_count": true,
+		// identity_count 是**成品结论**(身份段有几条 bad),与 anomaly_count 同类,
+		// 不是可判断的原料。两个数刻意分开:合成一个总数时它永远不为零,
+		// 于是会被训练成噪声,连带把真正的泄漏一起淹掉。
+		"identity_count": true,
 	}
 	for key := range top {
 		if !want[key] {

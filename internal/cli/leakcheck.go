@@ -98,7 +98,25 @@ func renderLeakCheckReport(rep leakcheck.Report) []string {
 		"Contacted: " + rep.Endpoints.EchoV4 + " , " + rep.Endpoints.EchoV6 + " , " + rep.Endpoints.STUN,
 		"",
 	}
+	shown := map[leakcheck.Section]bool{}
 	for _, f := range rep.Findings {
+		// 分段标题在这里也要出 —— 两段的责任人不同,而那个区别正是重点:
+		// 漏了是 bx 该修的,指纹大多不是。
+		if !shown[f.Section] {
+			shown[f.Section] = true
+			if f.Section == leakcheck.SectionIdentity {
+				lines = append(lines,
+					"CAN YOU BE SINGLED OUT",
+					"  Mostly not bx's to fix — browser and system traits that can identify",
+					"  you even when nothing leaks.",
+					"")
+			} else {
+				lines = append(lines,
+					"WHERE YOUR TRAFFIC GOES",
+					"  What bx, or whichever tunnel is carrying this machine, is answerable for.",
+					"")
+			}
+		}
 		// verdict 三态**逐字**打印。只在 bad 时打印它,会让 not checked 从输出里
 		// 消失 —— 那正好读成「一切正常」。
 		lines = append(lines, fmt.Sprintf("[%s] %s", f.Verdict, f.Title))
@@ -121,7 +139,12 @@ func renderLeakCheckReport(rep leakcheck.Report) []string {
 			notChecked++
 		}
 	}
-	lines = append(lines, fmt.Sprintf("%d finding(s) marked bad, %d not checked.", rep.AnomalyCount, notChecked))
+	// **两个数分开报。** 合成一个总数时它永远不为零(一台普通 Chrome 就是不防
+	// 指纹),于是会被训练成噪声,连带把真正的泄漏一起淹掉。
+	lines = append(lines, fmt.Sprintf(
+		"%d leak(s) in the traffic path, %d identifying trait(s), %d not checked.",
+		rep.AnomalyCount, rep.IdentityCount, notChecked,
+	))
 	lines = append(lines, "Nothing was stored: bx keeps no history of this check.")
 	return lines
 }
