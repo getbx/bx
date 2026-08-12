@@ -93,19 +93,24 @@ func unsupportedDNSError(detail string) error {
 //   - Core 可达但问不出它的 TUN ⇒ 报错。**不许退回空串**:那会让「有一条属于
 //     bx 的 utun,只是不知道是哪条」被读成「bx 没有 TUN」,于是 bx 自己的接口
 //     可能被贴上另一个 VPN 的名字。
-func guardianTunAndProtection(ctx context.Context) (string, string, error) {
+func guardianTunAndProtection(ctx context.Context) (BXRuntimeFacts, error) {
 	status, err := guardian.NewClient(guardian.SocketPath).Status(ctx)
 	if err != nil {
-		return "", "", err
+		return BXRuntimeFacts{}, err
 	}
 	if status.Core == nil || !status.Core.Reachable {
-		return "", status.Protection, nil
+		return BXRuntimeFacts{Protection: status.Protection}, nil
 	}
 	state, err := supervisor.FetchRuntimeState(supervisor.SockPath)
 	if err != nil {
-		return "", "", fmt.Errorf("core is running but its TUN name could not be read: %w", err)
+		return BXRuntimeFacts{}, fmt.Errorf("core is running but its TUN name could not be read: %w", err)
 	}
-	return state.TunName, status.Protection, nil
+	return BXRuntimeFacts{
+		TunInterface: state.TunName,
+		Protection:   status.Protection,
+		UDPMode:      status.Core.UDPMode,
+		UDPTransport: status.Core.UDPTransport,
+	}, nil
 }
 
 var noRouteRe = regexp.MustCompile(`(?i)no route to host|host is down|not in table|network is unreachable`)

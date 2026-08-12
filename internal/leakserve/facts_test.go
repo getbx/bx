@@ -53,8 +53,8 @@ func TestCollectFactsHappyPath(t *testing.T) {
 		InspectDNS: func(context.Context) ([]string, error) {
 			return []string{"192.0.2.53"}, nil
 		},
-		GuardianStatus: func(context.Context) (string, string, error) {
-			return "utun11", "off", nil
+		GuardianStatus: func(context.Context) (BXRuntimeFacts, error) {
+			return BXRuntimeFacts{TunInterface: "utun11", Protection: "off"}, nil
 		},
 		ListVPNServices: func(context.Context) ([]leakcheck.VPNService, error) {
 			return []leakcheck.VPNService{{Name: "Work VPN", Connected: true}}, nil
@@ -92,8 +92,8 @@ func TestCollectFactsPartialFailuresStayIsolated(t *testing.T) {
 		InspectDNS: func(context.Context) ([]string, error) {
 			return nil, errors.New("networksetup failed")
 		},
-		GuardianStatus: func(context.Context) (string, string, error) {
-			return "", "", errors.New("dial guardian: no such file")
+		GuardianStatus: func(context.Context) (BXRuntimeFacts, error) {
+			return BXRuntimeFacts{}, errors.New("dial guardian: no such file")
 		},
 		ListVPNServices: func(context.Context) ([]leakcheck.VPNService, error) {
 			return nil, errors.New("scutil failed")
@@ -243,7 +243,9 @@ func TestFailedVPNListingNeverFabricatesAName(t *testing.T) {
 		LookupRoute: func(context.Context, string, bool) (string, error) { return "utun4", nil },
 		// Guardian 答得上话且说 bx 没有 TUN ⇒ 归因会去读服务清单(这正是
 		// 「保护关着,认出别人的 VPN」那条主用途)。
-		GuardianStatus: func(context.Context) (string, string, error) { return "", "off", nil },
+		GuardianStatus: func(context.Context) (BXRuntimeFacts, error) {
+			return BXRuntimeFacts{TunInterface: "", Protection: "off"}, nil
+		},
 		ListVPNServices: func(context.Context) ([]leakcheck.VPNService, error) {
 			return nil, errors.New("scutil failed")
 		},
@@ -262,8 +264,8 @@ func TestFailedVPNListingNeverFabricatesAName(t *testing.T) {
 func TestUnreachableGuardianDoesNotLetAnotherVPNClaimTheInterface(t *testing.T) {
 	deps := FactDeps{
 		LookupRoute: func(context.Context, string, bool) (string, error) { return "utun4", nil },
-		GuardianStatus: func(context.Context) (string, string, error) {
-			return "", "", errors.New("dial guardian: no such file")
+		GuardianStatus: func(context.Context) (BXRuntimeFacts, error) {
+			return BXRuntimeFacts{}, errors.New("dial guardian: no such file")
 		},
 		ListVPNServices: func(context.Context) ([]leakcheck.VPNService, error) {
 			return []leakcheck.VPNService{{Name: "Work VPN", Connected: true}}, nil
@@ -276,7 +278,9 @@ func TestUnreachableGuardianDoesNotLetAnotherVPNClaimTheInterface(t *testing.T) 
 
 	// 反过来:Guardian 答上了话、并且说 bx 没有 TUN(保护关着),那条 utun 就
 	// **确实**是别人的 —— 这正是这个功能的主用途,不许一并保守掉。
-	deps.GuardianStatus = func(context.Context) (string, string, error) { return "", "off", nil }
+	deps.GuardianStatus = func(context.Context) (BXRuntimeFacts, error) {
+		return BXRuntimeFacts{TunInterface: "", Protection: "off"}, nil
+	}
 	facts = CollectFacts(context.Background(), deps)
 	if facts.DefaultRouteV4.Display != "Work VPN (utun4)" {
 		t.Errorf("Guardian 答了话、bx 没有 TUN 时应认出 Work VPN,得到 %q", facts.DefaultRouteV4.Display)
@@ -305,7 +309,7 @@ func TestCollectFactsHasAnOverallBudget(t *testing.T) {
 			return "", block(ctx)
 		},
 		InspectDNS:      func(ctx context.Context) ([]string, error) { return nil, block(ctx) },
-		GuardianStatus:  func(ctx context.Context) (string, string, error) { return "", "", block(ctx) },
+		GuardianStatus:  func(ctx context.Context) (BXRuntimeFacts, error) { return BXRuntimeFacts{}, block(ctx) },
 		ListVPNServices: func(ctx context.Context) ([]leakcheck.VPNService, error) { return nil, block(ctx) },
 	}
 

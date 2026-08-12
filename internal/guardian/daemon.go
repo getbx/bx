@@ -438,6 +438,7 @@ func fetchCoreRuntime(ctx context.Context) (CoreRuntime, error) {
 		Server:        report.Server,
 		Transport:     report.Transport,
 		UDPMode:       report.UDPMode,
+		UDPTransport:  report.UDPTransport,
 	}
 	// 直连解析器住在 RuntimeState 而不是 stats.Report,所以要多问一跳。
 	//
