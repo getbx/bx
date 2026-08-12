@@ -89,6 +89,31 @@ if [ "$rc" -eq 2 ]; then
 elif [ "$rc" -ne 0 ]; then
   exit "$rc"
 fi
+# **菜单栏的 LaunchAgent 由这里 bootstrap,不由上面那条 sudo。**
+#
+# bootstrap 是 launchctl 里少数**必须身处目标 GUI session** 的操作(bootout 与
+# kickstart 不是)。root 进程没有目标用户 GUI 域的 audit session token,直接
+# bootstrap 必然 EIO(5);`launchctl asuser <uid>` 是个 workaround,而 2026-08-11
+# 真机升级证明它**不可靠** —— 那次 app-install 成功 bootout 了正在跑的菜单栏,
+# 随后 asuser+bootstrap 报 `Bootstrap failed: 5: Input/output error`,于是**升级把
+# 一个本来好好的菜单栏弄没了**:launchd 里没有 job、进程也没了,而 plist 与程序
+# 都完好。
+#
+# 而这个脚本本来就以普通用户身份跑(第 5 行明确拒绝 root),它**就在**那个 GUI
+# session 里 —— 这一步天生属于它,不属于那条 sudo。
+#
+# 失败只警告不中止:无 GUI session 的场景(SSH、CI)bootstrap 一定失败,而那时
+# 「文件都装好了」仍然是真的,不该把整个安装判成失败。
+if [ -f "$HOME/Library/LaunchAgents/com.getbx.bx.menu.plist" ]; then
+  if ! launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.getbx.bx.menu.plist" 2>/dev/null; then
+    # 已经加载时 bootstrap 会失败,那是正常的 —— 用 kickstart 兜一下(不带 -k:
+    # 跑着就是 no-op,不闪烁)。两条都失败才提示用户。
+    launchctl kickstart "gui/$(id -u)/com.getbx.bx.menu" 2>/dev/null || {
+      echo "! 菜单栏没能自动启动。手动执行(不要加 sudo):"
+      echo "    launchctl bootstrap gui/$(id -u) $HOME/Library/LaunchAgents/com.getbx.bx.menu.plist"
+    }
+  fi
+fi
 echo "完成。打开菜单栏的 bx 图标继续 Set Up。"
 SCRIPT
 
