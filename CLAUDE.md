@@ -55,10 +55,80 @@ type platform interface {
 `bx blink brook://…`(admin 生成 `blink://`)→ `sudo ./bx setup blink://…`(自装进 `/usr/local/bin/bx` + 释放 brook + 连通检测 + 写 `/etc/bx/config.yaml` + 装 unit,**不启动**)→ `sudo bx up`(systemd enable+start)→ `bx status`。其它:`down`(停+禁自启)、`run`(前台调试)、`uninstall`。
 固定路径:config `/etc/bx/config.yaml`、brook+列表 `/var/lib/bx/`、binary `/usr/local/bin/bx`、socket `/run/bx/core.sock`(bx 自有运行时子目录,不落共享的 `/run` 根,与 darwin `/var/run/bx/` 同构)。
 
+## 泄漏检测(bx 的第二个功能,2026-08-11)
+
+**产品定位由项目所有者定死:「bx 既是检测工具,也是 vpn 就行了」** —— 一个二进制两个功能,
+**不建站、不做 WASM、不做引流漏斗**(提过,被否了:需要的人会自己装)。这条决定同时避开了
+一个会被墙的目标,也保住「单文件零依赖」那个身份。
+
+**两条命令,受众不同,别再合并**:`bx leakcheck`(人用,开本地一次性页面)与
+`bx leak-check`(机器用,非交互 JSON,MCP 与脚本在用,含 Tailscale/ZeroTier/WARP 共存检查与
+`--expected-ip` 主动探测)。`webrtc-check` 与 `leak-check --browser` **已删** —— 前者是
+leakcheck 的真子集(它跟用户填的期望 IP 比,leakcheck 跟实测出口比),后者带着**第二个对
+浏览器开放的本机端口 + 第二份内嵌 HTML 页**:一道安全面有两份实现就有两份要守,而只有一份
+会被想起来。MCP 一侧的 browser/browser_confirmed/browser_timeout 三字段与那道确认门也整块
+摘掉了 —— 浏览器检查要人在屏幕前点一下,**那从来不适合 agent 代劳**,按构造做不到强于运行期拦。
+
+**`bx leakcheck` 拒绝 root、不读 config、不需要 Guardian、不需要 `bx setup`** —— 一个只想查
+自己 Mullvad 的人装完就能用,这是「检测工具」这个定位能成立的前提,改动时别破坏它。
+
+**包**:`leakcheck`(**纯判据**,无 I/O,`purity_test.go` 按前缀禁 net/os/exec 并明写例外)·
+`leakserve`(一次性 loopback 服务 + 页面 + 本机事实采集)·`loopbackgate`(token + 逐字节比
+`Host` + 写操作才要 `Origin`;`Host` 逐字节比对是唯一可靠的 DNS-rebinding 判据)。
+
+**判据分三段,各自计数,绝不合成一个总数**(`Section`):`path`(流量去哪儿,bx 或当前隧道
+负责,进 `AnomalyCount`)· `identity`(会不会被单独认出来,进 `IdentityCount`)· `surface`
+(网站看得到什么,**`Verdict.Info`,没有极性、不进任何计数**)。合成一个数时它永远不为零
+(普通 Chrome 就是不防指纹),于是被训练成噪声、把真正的泄漏一起淹掉。`Section` 零值是
+`SectionPath`:漏填是多报,反过来是漏报,代价不对称。
+
+**八条结论**:WebRTC vs 出口 · IPv6 暴露 · DNS 路径 · **路由被动过手脚(TunnelVision
+CVE-2024-3661 / TunnelCrack ServerIP)** · 内网地址是否被 mDNS 遮掉 · 时钟 vs 出口国 ·
+指纹防护 · 网站看得到什么。骨架(`Outline()`)与 `Judge()` 的 ID/顺序/分段**逐项对上**,由守卫
+钉住;「哪条需要浏览器」由 `Outline().Inputs` 是否为空推导,**不许手抄一份 ID 列表**。
+
+**几条判断上的取舍,改之前先读**:
+- **`WhoOwnsTheRoute` 四态**(bx / 别人的隧道 / 没有隧道 / 没问出来)是一切结论的挂靠点。判据取
+  `route -n get 1.1.1.1` 那一跳(**不是 `default`** —— split-default 下 `default` 仍指物理网关)。
+  接口名分类是**白名单式**:认得出是隧道→有,认得出是物理→没有,**认不出→不知道**;把物理网卡
+  误判成隧道 = 把裸奔的机器说成受保护,是最坏的一种错。隧道前缀表**全仓只有 describe.go 一份**。
+- **规则单边**:不知道有没有隧道就**不许判 ok**,但仍可判 bad。没有隧道时 WebRTC 两半一致
+  **不是好消息**(那是「你的真实 IP 和你的真实 IP 一致」)。
+- **TunnelVision 判据的形状由真机决定**:项目所有者机器上有 106 条公网 `/32` 经物理网关(bx 自己的
+  server bypass)。**单主机不报,更宽的公网前缀才报** —— 后者才是攻击要的(目的是截流量不是一台
+  主机)。reject/blackhole(标志位 R/B)不算逃逸,bx 自己的屏障就是一组 `/2` reject。CGNAT 豁免
+  必须是「**落在** CGNAT 里」不是 `Overlaps` —— 后者会把 `64.0.0.0/2` 这种攻击形状静默放行。
+- **bx 自己的 UDP 分流会长得和泄漏一样**:`udp.transport` 指向另一台服务器时 srflx ≠ HTTP 出口
+  而零泄漏。判 `NotChecked` 而**不是 ok** —— bx 不知道那台 UDP 服务器的出口,判 ok 是把假阳性换成
+  **假阴性**。`udp.mode=direct-realtime` 仍判 bad(真的以真实 IP 直连),只是点名是配置选的。
+  豁免**只对 OwnerBX 生效**,拿 bx 的配置解释别人的 VPN 是张冠李戴。
+- **国旗只在能证明时给**:不带 geoip,只能靠内嵌 china CIDR 证明「在不在中国大陆」;anycast
+  (1.1.1.1/8.8.8.8)让「国家」这个问题本身没有答案。判不出时返回 nil 判据而非恒 false。
+- **指纹那条问「有没有在防」,不问「指纹是什么」**:唯一性没有语料库就没有分母,编一个百分比
+  比不报更糟。判据是同一次会话画两遍 canvas 是否相同。
+
+**端点是用户可见契约**(页面联网前原样显示),换之前过三关守卫:常量钉死 / https / **不在 china
+直连列表**。**这个坑踩过三次**:`ifconfig.me`、`api.ipify.org`(文档自己推荐错的)、以及本轮候选里
+的 `ipapi.co` 与 `ifconfig.co`(选之前用生产那份 `route.DomainSet` 逐个比出来的)。现用
+`ipv4/ipv6.icanhazip.com` + `stun.cloudflare.com` + `www.cloudflare.com/cdn-cgi/trace`(一次请求
+同时给出口 IP 与国家)。
+
+**检测结果不留存**,页面与 CLI 都明说。
+
+**真机未验**:整套(约 1900 行 / 13 个 commit)没有一行上过真机;页面那半的 JS 本仓库一行测试都
+盖不到,`verify.sh` 也管不着。
+
 ## 约定
 
 - **TDD**:先写失败测试→跑红→最小实现→跑绿→提交。纯逻辑测试免 root(用 `t.TempDir()`,不碰真实路由/设备)。
-- **验证命令**:`go build ./... && go vet ./... && go test ./...`;跨平台 `GOOS=darwin/GOARCH=arm64 go build -o /dev/null ./...`。
+- **验证命令**:`bash scripts/verify.sh`(全量 12 步)或 `--quick`(改一行时,跳过 race 与交叉编译)。
+  **判据一律是退出码,不是字符串匹配。** 它的存在是因为 2026-08-11 那轮里同一个根因栽了六次:
+  `go test … | grep …; git commit` 用 `;` 串联(测试红了照样提交)、变异验证 grep `^failed` 而套件
+  打印的是 `FAIL:`(「没转红」被误判成守卫失效)、`head -5` 查 `set -e` 而注释头十几行、`grep -c` 数
+  「出现次数」而它数的是行数、替换串带了不存在的前导 tab 而 `str.replace` 匹配不上时不报错。
+  **别再手敲那一串命令**;`verify.sh` 自己也验过五个方向都会失败,漏一道闸门由 `TestVerifyScriptCoversEveryGate` 钉住。
+  两处 grep 参与判据是**必要**的并已注明:`test-macos-menu.sh` 提前 `exit 0` 时退出码仍是 0(只有收尾
+  横幅抓得住),`gofumpt -l` 输出文件名而退出码恒 0。
 - **提交信息**:中文 conventional commits,结尾带 `Co-Authored-By: Claude …`。在默认分支直接提交(单人项目)。
 - **内嵌资产**:`internal/embedded/assets/brook_linux_{amd64,arm64}`(~30MB)+ `singbox_{linux,darwin}_{amd64,arm64}`(linux ~28MB / darwin ~23MB)是提交进仓库的真二进制,按 GOOS/GOARCH 条件 embed(每构建只嵌匹配的那一个;singbox 经 `embedded_singbox_{amd64,arm64,darwin_amd64,darwin_arm64,other}.go`,**linux+darwin 都内嵌(同 brook 平台覆盖,mac 上 reality/hysteria2 也零依赖即跑)**,windows/其他 arch 走 nil 兜底→下载)。CI `embed-brook.yml`/`embed-singbox.yml` 跟上游 release 自动重嵌。换 arch 要补对应二进制。**缓存键掺内容 hash(已实现)**:`provision.embedCacheKey` = 版本 tag + `sha256(内嵌字节)[:12]`,写进 `.brook-version`/`.singbox-version`;同 tag 重嵌不同字节(如 sing-box 从 `with_utls` 加到 `with_utls,with_quic`)也会失效旧缓存、强制重释放,避免用到陈旧二进制。
   - **sing-box 是「自建静态最小构建」不是官方 release 二进制**:官方 linux 包是 glibc **动态链接 + 56MB 全家桶**(含 tailscale/acme/clash/dhcp,reality 全用不上),违背 bx「静态单文件、零依赖」。故从同一 release tag 源码用 `CGO_ENABLED=0 go build -tags with_utls,with_quic`(REALITY 需 utls;**hysteria2/QUIC 需 with_quic**)自建:**静态**(Alpine/musl 也跑,同 brook)、**~28MB**(官方半体积)、同 revision。CI `embed-singbox.yml` 复刻此构建;改时务必保持 `with_utls,with_quic` 与 `CGO_ENABLED=0`。
