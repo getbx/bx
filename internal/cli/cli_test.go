@@ -1598,8 +1598,8 @@ func TestGuardianDNSLabelMatchesMenuWording(t *testing.T) {
 		service string
 		want    string
 	}{
-		{guardian.DNSManaged, "Wi-Fi", "Wi-Fi managed"},
-		{guardian.DNSManaged, "", "Managed"},
+		{guardian.DNSManaged, "Wi-Fi", "Handled by bx (Wi-Fi)"},
+		{guardian.DNSManaged, "", "Handled by bx"},
 		{guardian.DNSUnmanaged, "", "Not managed"},
 		{guardian.DNSUnmanaged, "Wi-Fi", "Not managed"},
 		{guardian.DNSUnknown, "", "Status unavailable"},
@@ -1616,7 +1616,10 @@ func TestGuardianDNSLabelMatchesMenuWording(t *testing.T) {
 		t.Fatal(err)
 	}
 	swift := string(source)
-	for _, literal := range []string{`"\(service) managed"`, `"Managed"`, `"Not managed"`, `"Status unavailable"`} {
+	// **两个界面必须用同一套措辞**,否则同一台机器在 CLI 与菜单里读起来不一样。
+	// 「Wi-Fi managed」曾让真人读成「DNS 归 Wi-Fi 管」(正好是事实的反面),
+	// 两处一起改成主语是 bx 的写法。
+	for _, literal := range []string{`"Handled by bx (\(service))"`, `"Handled by bx"`, `"Not managed"`, `"Status unavailable"`} {
 		if !strings.Contains(swift, literal) {
 			t.Errorf("StatusPresentation.swift should render DNS with the same wording as the CLI: %s", literal)
 		}
@@ -2312,7 +2315,7 @@ func TestStatusReportIncludesGuardianDNSState(t *testing.T) {
 			t.Fatalf("missing %s: %s", want, data)
 		}
 	}
-	if got := renderClientStatus(rep); !strings.Contains(got, "DNS     Wi-Fi managed") {
+	if got := renderClientStatus(rep); !strings.Contains(got, "DNS     Handled by bx (Wi-Fi)") {
 		t.Fatalf("human status = %q, want managed Wi-Fi DNS", got)
 	}
 }

@@ -24,9 +24,13 @@ func dnsPresentation(state: String?, managed: Bool, service: String?, servers: [
     let suffix = resolvers.isEmpty ? "" : " · \(resolvers)"
     if state == "managed" && managed {
         if let service, !service.isEmpty {
-            return DNSPresentation(allowsProtected: true, label: "\(service) managed", menuWarning: nil)
+            // **「Wi-Fi managed」读起来是「DNS 归 Wi-Fi 管」,而它的本意正相反。**
+            // 真人第一次读到它时问的就是「意思是 dns 不是 bx 管理?」—— 一句会被
+            // 读成反面的状态文案,比不写更糟:它让用户以为保护漏了一块。
+            // 主语必须是 bx,网络服务名退到括号里当限定语。
+            return DNSPresentation(allowsProtected: true, label: "Handled by bx (\(service))", menuWarning: nil)
         }
-        return DNSPresentation(allowsProtected: true, label: "Managed", menuWarning: nil)
+        return DNSPresentation(allowsProtected: true, label: "Handled by bx", menuWarning: nil)
     }
     if state == "unmanaged" {
         return DNSPresentation(
