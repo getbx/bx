@@ -32,7 +32,6 @@ Options:
                             default is a unique mktemp directory.
   --set-system-dns          Temporarily set the active macOS network service DNS to 127.0.0.1.
   --dns-service NAME        Network service to change with --set-system-dns. Default: detected from default route.
-  --webrtc-browser          Run bx webrtc-check with a real browser ICE candidate test.
   --leak-network            Run bx leak-check with explicit outbound IPv4/IPv6/DNS probes.
   --block-v6                Include IPv6 reject route plan. Default: enabled.
   --no-block-v6             Do not include IPv6 reject route plan.
@@ -464,7 +463,6 @@ EXECUTE=0
 BLOCK_V6=1
 SET_SYSTEM_DNS=0
 DNS_SERVICE=""
-WEBRTC_BROWSER=0
 LEAK_NETWORK=0
 RECONNECT_CHECK=0
 NETWORK_TRANSITION_CHECK=0
@@ -495,7 +493,6 @@ while [[ $# -gt 0 ]]; do
     --log-dir) LOG_DIR="${2:-}"; shift 2 ;;
     --set-system-dns) SET_SYSTEM_DNS=1; shift ;;
     --dns-service) DNS_SERVICE="${2:-}"; shift 2 ;;
-    --webrtc-browser) WEBRTC_BROWSER=1; shift ;;
     --leak-network) LEAK_NETWORK=1; shift ;;
     --block-v6) BLOCK_V6=1; shift ;;
     --no-block-v6) BLOCK_V6=0; shift ;;
@@ -588,7 +585,6 @@ fi
   echo "execute=$EXECUTE"
   echo "set_system_dns=$SET_SYSTEM_DNS"
   echo "dns_service=$DNS_SERVICE"
-  echo "webrtc_browser=$WEBRTC_BROWSER"
   echo "leak_network=$LEAK_NETWORK"
   echo "server_bypass=${SERVER_BYPASS[*]}"
   echo "user_bypass=${USER_BYPASS[*]}"
@@ -658,9 +654,6 @@ if [[ "$EXECUTE" != "1" ]]; then
   if [[ "$SET_SYSTEM_DNS" == "1" ]]; then
     execute_hint+=(--set-system-dns)
     [[ -n "$DNS_SERVICE" ]] && execute_hint+=(--dns-service "$DNS_SERVICE")
-  fi
-  if [[ "$WEBRTC_BROWSER" == "1" ]]; then
-    execute_hint+=(--webrtc-browser)
   fi
   printf 'To execute:'
   printf ' %q' "${execute_hint[@]}"
@@ -850,30 +843,19 @@ fi
     done
     sleep 1
   fi
-  echo "probe: webrtc-check"
-  WEBRTC_ARGS=(webrtc-check --json --config "$CONFIG")
+  # webrtc-check 已删(它是 leakcheck 的子集)。这里改用 leak-check ——
+  # 非交互、机器可读,正是这个 testkit 需要的那一半;要浏览器那半请人工敲
+  # `bx leakcheck`,它需要有人在屏幕前点一下。
+  echo "probe: leak-check"
+  WEBRTC_ARGS=(leak-check --json --config "$CONFIG")
   if [[ -n "$DNS_SERVICE" ]]; then
     WEBRTC_ARGS+=(--dns-service "$DNS_SERVICE")
-  fi
-  if [[ "$WEBRTC_BROWSER" == "1" ]]; then
-    WEBRTC_ARGS+=(--browser)
-    for cidr in "${SERVER_BYPASS[@]}"; do
-      expected_ip="$(cidr_host_ip "$cidr")"
-      [[ -n "$expected_ip" ]] && WEBRTC_ARGS+=(--expected-ip "$expected_ip")
-    done
   fi
   "$BX" "${WEBRTC_ARGS[@]}" || true
   echo "probe: leak-check"
   LEAK_ARGS=(leak-check --json --config "$CONFIG")
   if [[ -n "$DNS_SERVICE" ]]; then
     LEAK_ARGS+=(--dns-service "$DNS_SERVICE")
-  fi
-  if [[ "$WEBRTC_BROWSER" == "1" ]]; then
-    LEAK_ARGS+=(--browser)
-    for cidr in "${SERVER_BYPASS[@]}"; do
-      expected_ip="$(cidr_host_ip "$cidr")"
-      [[ -n "$expected_ip" ]] && LEAK_ARGS+=(--expected-ip "$expected_ip")
-    done
   fi
   if [[ "$LEAK_NETWORK" == "1" ]]; then
     LEAK_ARGS+=(--network)

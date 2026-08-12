@@ -28,7 +28,6 @@ import (
 	"github.com/getbx/bx/internal/gateway"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
-	"github.com/getbx/bx/internal/loopbackgate"
 	"github.com/getbx/bx/internal/mcp"
 	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/procredact"
@@ -78,8 +77,7 @@ func New() *cli.App {
 			{Name: "preset", Usage: "应用内置应用可用性规则", Subcommands: presetCommands()},
 			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
 			{Name: "inspect", Usage: "输出 agent 可读诊断包", Flags: inspectFlags(), Action: inspectAction},
-			{Name: "webrtc-check", Usage: "【旧】只看 WebRTC 一项(--browser 会开页面)。要完整判断请用 leakcheck", Flags: webrtcCheckFlags(), Action: webrtcCheckAction},
-			{Name: "leak-check", Usage: "【旧】只看本机那一半的泄漏风险(不开页面;供 MCP 与脚本)。要完整判断请用 leakcheck —— 注意没有连字符", Flags: leakCheckFlags(), Action: leakCheckAction},
+			{Name: "leak-check", Usage: "非交互的机器可读检查(不开页面;供 MCP 与脚本):本机泄漏面 + 其它 VPN 共存 + 可选主动出口探测。人用请敲 leakcheck(没有连字符),它会开页面并把两半事实对起来", Flags: leakCheckFlags(), Action: leakCheckAction},
 			{Name: "leakcheck", Usage: "泄漏检测【推荐】:开浏览器页面,把浏览器那半(WebRTC/公网出口)与本机那半(路由/DNS)对起来 —— 只有两半合起来才判得了泄漏。保护关着、别的 VPN 在跑时照样能用", Flags: leakcheckFlags(), Action: leakcheckAction},
 			{Name: "observe", Usage: "观察一小段运行期状态变化(只读)", Flags: observeFlags(), Action: observeAction},
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
@@ -365,13 +363,6 @@ type networkProbeReport struct {
 	NextActions     []string           `json:"next_actions,omitempty"`
 }
 
-type browserICEResult struct {
-	UserAgent  string   `json:"user_agent,omitempty"`
-	Candidates []string `json:"candidates,omitempty"`
-	IPs        []string `json:"ips,omitempty"`
-	Errors     []string `json:"errors,omitempty"`
-}
-
 type capabilitiesReport struct {
 	SchemaVersion   int                 `json:"schema_version"`
 	Product         string              `json:"product"`
@@ -453,22 +444,9 @@ func reconnectFlags() []cli.Flag {
 	}
 }
 
-func webrtcCheckFlags() []cli.Flag {
-	return []cli.Flag{
-		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
-		&cli.BoolFlag{Name: "browser", Usage: "打开本地浏览器页面,实际收集 WebRTC ICE candidates"},
-		&cli.DurationFlag{Name: "browser-timeout", Value: 20 * time.Second, Usage: "等待浏览器 ICE 结果的最长时间"},
-		&cli.StringSliceFlag{Name: "expected-ip", Usage: "允许出现的代理/VPS 公网 IP(可重复)"},
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
-		&cli.StringFlag{Name: "dns-service", Usage: "macOS 网络服务名(留空自动探测)"},
-	}
-}
-
 func leakCheckFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
-		&cli.BoolFlag{Name: "browser", Usage: "包含真实浏览器 WebRTC ICE candidate 检测"},
-		&cli.DurationFlag{Name: "browser-timeout", Value: 20 * time.Second, Usage: "等待浏览器 ICE 结果的最长时间"},
 		&cli.BoolFlag{Name: "network", Usage: "发起只读外网出口/DNS 探测"},
 		&cli.DurationFlag{Name: "network-timeout", Value: 8 * time.Second, Usage: "等待外网出口/DNS 探测的最长时间"},
 		&cli.StringSliceFlag{Name: "expected-ip", Usage: "允许出现的代理/VPS 公网 IP(可重复)"},
@@ -1607,42 +1585,8 @@ func inspectAction(c *cli.Context) error {
 	return writeJSON(os.Stdout, collectClientInspect(c.String("config"), c.String("target"), c.Duration("timeout"), c.Bool("skip-probe")))
 }
 
-func webrtcCheckAction(c *cli.Context) error {
-	rep := collectWebRTCCheck(c.String("config"), c.String("dns-service"))
-	if c.Bool("browser") {
-		expected := append([]string{}, c.StringSlice("expected-ip")...)
-		expected = appendUnique(expected, expectedWebRTCIPs(c.String("config"))...)
-		ice, err := runBrowserICECheck(c.Context, c.Duration("browser-timeout"))
-		if err != nil {
-			rep.addCheck("browser_ice", "fail", err.Error(), "")
-			rep.Risk = maxRisk(rep.Risk, "high")
-			rep.OK = false
-		} else {
-			applyBrowserICECandidates(&rep, ice, expected)
-		}
-	}
-	if c.Bool("json") {
-		return writeJSON(os.Stdout, rep)
-	}
-	fmt.Println("WebRTC 检查")
-	fmt.Printf("  风险    %s\n", rep.Risk)
-	for _, check := range rep.Checks {
-		if check.Name == "udp_path" || check.Name == "dns" || check.Name == "service" {
-			doctorLine(check.Status, check.Name, check.Detail)
-		}
-	}
-	fmt.Printf("  结论    %s\n", rep.LeakProof)
-	if rep.BrowserVerificationRequired {
-		fmt.Println("  限制    需要浏览器 ICE candidate 才能证明是否真实泄漏")
-	}
-	for _, action := range rep.NextActions {
-		fmt.Printf("  下一步  %s\n", action)
-	}
-	return nil
-}
-
 func leakCheckAction(c *cli.Context) error {
-	rep := collectLeakCheck(c.Context, c.String("config"), c.String("dns-service"), c.Bool("browser"), c.Duration("browser-timeout"), c.Bool("network"), c.Duration("network-timeout"), c.StringSlice("expected-ip"))
+	rep := collectLeakCheck(c.Context, c.String("config"), c.String("dns-service"), c.Bool("network"), c.Duration("network-timeout"), c.StringSlice("expected-ip"))
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, rep)
 	}
@@ -1792,20 +1736,6 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"Read-only.", "Secrets are redacted.", "Status socket failures are reported as data."},
 			},
 			{
-				Command:        "bx webrtc-check --json",
-				Category:       "diagnostics",
-				Summary:        "Assess WebRTC leak risk from bx config, service status, DNS state, and UDP policy.",
-				Stable:         true,
-				RequiresRoot:   false,
-				ChangesSystem:  false,
-				ChangesNetwork: false,
-				ReadsSecrets:   true,
-				Outputs:        []string{"json"},
-				Arguments:      []string{"--json", "--browser", "--browser-timeout <duration>", "--expected-ip <ip>", "--config <path>", "--dns-service <name>"},
-				Examples:       []string{"bx webrtc-check --json", "bx webrtc-check --browser --json --expected-ip <proxy-ip>"},
-				SafeNotes:      []string{"Read-only for system settings.", "Secrets are redacted.", "--browser opens a local 127.0.0.1 test page and collects browser ICE candidates; this is the command that can prove a WebRTC public-IP leak."},
-			},
-			{
 				Command:        "bx leak-check --json",
 				Category:       "diagnostics",
 				Summary:        "Aggregate network-path leak risk from doctor, DNS/UDP state, WebRTC, IPv6, and QUIC posture.",
@@ -1815,8 +1745,8 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				ReadsSecrets:   true,
 				Outputs:        []string{"json"},
-				Arguments:      []string{"--json", "--network", "--network-timeout <duration>", "--browser", "--browser-timeout <duration>", "--expected-ip <ip>", "--config <path>", "--dns-service <name>"},
-				Examples:       []string{"bx leak-check --json", "bx leak-check --network --json --expected-ip <proxy-ip>", "bx leak-check --browser --json --expected-ip <proxy-ip>"},
+				Arguments:      []string{"--json", "--network", "--network-timeout <duration>", "--expected-ip <ip>", "--config <path>", "--dns-service <name>"},
+				Examples:       []string{"bx leak-check --json", "bx leak-check --network --json --expected-ip <proxy-ip>"},
 				SafeNotes:      []string{"Read-only for system settings.", "Default mode does not send outbound probes.", "--network sends outbound IPv4/IPv6/DNS requests to classify the current exit path.", "Scope is network-path leakage only; browser fingerprinting is intentionally out of scope."},
 			},
 			{
@@ -2420,23 +2350,16 @@ func collectWebRTCCheck(configPath, dnsService string) webrtcCheckReport {
 	return rep
 }
 
-func collectLeakCheck(ctx context.Context, configPath, dnsService string, browser bool, browserTimeout time.Duration, network bool, networkTimeout time.Duration, expectedIPs []string) leakCheckReport {
+// collectLeakCheck 是**非交互**的那一半:不开浏览器、不等用户点击,供 MCP 与脚本用。
+//
+// 浏览器那条路已经整个搬去 `bx leakcheck`(internal/leakserve)。此前这里另有一份
+// 内嵌 HTML 页 + 第二个 loopback 服务器,与那边**同一件事两份实现** —— 而一道对
+// 浏览器开放的本机端口有两份实现,就有两份要守的安全面,却只有一份会被想起来。
+func collectLeakCheck(ctx context.Context, configPath, dnsService string, network bool, networkTimeout time.Duration, expectedIPs []string) leakCheckReport {
 	// includePlatformChecks=false:下面已经在顶层跑过一次 collectPlatformChecks(ctx),
 	// 内嵌 doctor 不重复跑,避免同一批探测执行两次、同一条检查出现在 doctor.checks[] 和顶层 checks[] 里。
 	doctor := collectClientDoctorWith(configPath, defaultProbeTarget, 0, true, false)
 	webrtc := collectWebRTCCheck(configPath, dnsService)
-	if browser {
-		expected := append([]string{}, expectedIPs...)
-		expected = appendUnique(expected, expectedWebRTCIPs(configPath)...)
-		ice, err := runBrowserICECheck(context.Background(), browserTimeout)
-		if err != nil {
-			webrtc.addCheck("browser_ice", "fail", err.Error(), "")
-			webrtc.Risk = maxRisk(webrtc.Risk, "high")
-			webrtc.OK = false
-		} else {
-			applyBrowserICECandidates(&webrtc, ice, expected)
-		}
-	}
 	var networkReport *networkProbeReport
 	if network {
 		probeCtx, cancel := context.WithTimeout(ctx, networkTimeout)
@@ -2498,7 +2421,7 @@ func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport, netw
 	})
 	rep.NextActions = appendUnique(rep.NextActions, doctorNextActions(doctor)...)
 	rep.NextActions = appendUnique(rep.NextActions, webrtc.NextActions...)
-	rep.NextActions = appendUnique(rep.NextActions, "bx webrtc-check --browser --json --expected-ip <proxy-ip>")
+	rep.NextActions = appendUnique(rep.NextActions, "bx leakcheck")
 	if network != nil {
 		rep.NextActions = appendUnique(rep.NextActions, network.NextActions...)
 	} else {
@@ -3059,83 +2982,13 @@ func assessWebRTCCheck(cfg *config.Config, status *stats.Report, statusErr error
 		}
 	}
 	rep.addCheck("browser_candidates", "info", "not inspected by this command", "open a WebRTC leak page and compare ICE candidates with this JSON")
-	rep.NextActions = appendUnique(rep.NextActions, "bx webrtc-check --json")
+	rep.NextActions = appendUnique(rep.NextActions, "bx leakcheck")
 	rep.OK = rep.Risk == "low"
 	return rep
 }
 
 func (r *webrtcCheckReport) addCheck(name, status, detail, hint string) {
 	r.Checks = append(r.Checks, checkReport{Name: name, Status: status, Detail: detail, Hint: hint})
-}
-
-func applyBrowserICECandidates(rep *webrtcCheckReport, result browserICEResult, expected []string) {
-	rep.BrowserVerificationRequired = false
-	updateCheck(rep, "browser_candidates", "ok", "inspected by browser ICE test", "")
-	if result.UserAgent != "" {
-		rep.Evidence = append(rep.Evidence, "browser_user_agent: "+result.UserAgent)
-	}
-	if len(result.Errors) > 0 {
-		rep.addCheck("browser_ice", "warn", strings.Join(result.Errors, "; "), "")
-		rep.Risk = maxRisk(rep.Risk, "medium")
-	}
-	ips := uniqueStrings(append(result.IPs, extractCandidateIPs(result.Candidates...)...))
-	if len(result.Candidates) == 0 && len(ips) == 0 {
-		rep.addCheck("browser_ice", "warn", "no ICE candidates returned", "try again with the target browser open")
-		rep.Risk = maxRisk(rep.Risk, "medium")
-		rep.LeakProof = "not_proven"
-		rep.OK = false
-		return
-	}
-	rep.addCheck("browser_ice", "ok", fmt.Sprintf("%d candidates, %d IPs", len(result.Candidates), len(ips)), "")
-	expectedSet := stringSet(expected)
-	hasExpectedPublic := len(expectedSet) > 0
-	var publicLeaks, expectedPublic, privateIPs []string
-	for _, ip := range ips {
-		parsed := net.ParseIP(ip)
-		if parsed == nil {
-			continue
-		}
-		if isIgnoredCandidateIP(parsed) {
-			continue
-		}
-		if isPrivateCandidateIP(parsed) {
-			privateIPs = append(privateIPs, ip)
-			continue
-		}
-		if expectedSet[ip] {
-			expectedPublic = append(expectedPublic, ip)
-		} else {
-			publicLeaks = append(publicLeaks, ip)
-		}
-	}
-	if len(publicLeaks) > 0 {
-		proof := "unexpected_public_ip_detected"
-		hint := "public IP is not in expected proxy/VPS IPs; may be another proxy exit or the real network path"
-		if !hasExpectedPublic {
-			proof = "public_ip_detected_without_expected"
-			hint = "public IP appeared in WebRTC ICE candidates; pass --expected-ip <proxy-ip> to classify it"
-		}
-		rep.addCheck("browser_unexpected_public_ip", "fail", strings.Join(publicLeaks, ", "), hint)
-		rep.Risk = maxRisk(rep.Risk, "high")
-		rep.LeakProof = proof
-		rep.OK = false
-		return
-	}
-	if len(privateIPs) > 0 {
-		rep.addCheck("browser_local_ip", "warn", strings.Join(privateIPs, ", "), "browser exposed local network candidates")
-		rep.Risk = maxRisk(rep.Risk, "medium")
-		rep.LeakProof = "local_network_candidate_detected"
-		rep.OK = false
-		return
-	}
-	detail := "no unexpected public IP in browser ICE candidates"
-	if len(expectedPublic) > 0 {
-		detail += "; expected public IP: " + strings.Join(expectedPublic, ", ")
-		rep.addCheck("browser_expected_public_ip", "ok", strings.Join(expectedPublic, ", "), "")
-	}
-	rep.addCheck("browser_public_ip", "ok", detail, "")
-	rep.LeakProof = "no_public_leak_detected"
-	rep.OK = rep.Risk == "low"
 }
 
 func extractCandidateIPs(candidates ...string) []string {
@@ -3189,63 +3042,6 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-func runBrowserICECheck(ctx context.Context, timeout time.Duration) (browserICEResult, error) {
-	if timeout <= 0 {
-		timeout = 20 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	resultCh := make(chan browserICEResult, 1)
-	mux := http.NewServeMux()
-	srv := &http.Server{Handler: mux}
-	gate := loopbackgate.New()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if !gate.Allow(w, r, false) {
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, webrtcCheckHTML)
-	})
-	mux.HandleFunc("/result", func(w http.ResponseWriter, r *http.Request) {
-		// requireOrigin=true:回传是**写**入口,伪造它就能让 bx 报「无泄漏」。
-		if !gate.Allow(w, r, true) {
-			return
-		}
-		defer r.Body.Close()
-		var result browserICEResult
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&result); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		select {
-		case resultCh <- result:
-		default:
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"ok":true}`)
-	})
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return browserICEResult{}, err
-	}
-	defer ln.Close()
-	gate.BindTo(ln.Addr().String())
-	go func() {
-		_ = srv.Serve(ln)
-	}()
-	defer srv.Close()
-	u := "http://" + ln.Addr().String() + "/?t=" + gate.Token()
-	if err := openBrowserURL(ctx, u); err != nil {
-		return browserICEResult{}, err
-	}
-	select {
-	case result := <-resultCh:
-		return result, nil
-	case <-ctx.Done():
-		return browserICEResult{}, fmt.Errorf("browser ICE check timed out after %s; opened %s", timeout, u)
-	}
-}
-
 func openBrowserURL(ctx context.Context, u string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -3265,67 +3061,6 @@ func openBrowserURL(ctx context.Context, u string) error {
 	}
 	return nil
 }
-
-const webrtcCheckHTML = `<!doctype html>
-<meta charset="utf-8">
-<title>bx WebRTC check</title>
-<body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:40px;line-height:1.45">
-<h1>bx WebRTC check</h1>
-<p>Running local ICE candidate test. You can close this tab after bx returns.</p>
-<pre id="out">starting...</pre>
-<script>
-(async function(){
-  const out = document.getElementById('out');
-  const result = { user_agent: navigator.userAgent, candidates: [], ips: [], errors: [] };
-  const ipRe = /(?:^|[\s])((?:\d{1,3}\.){3}\d{1,3}|[a-f0-9:]{2,})(?:[\s]|$)/ig;
-  function addCandidate(c) {
-    if (!c) return;
-    result.candidates.push(c);
-    let m;
-    while ((m = ipRe.exec(c)) !== null) {
-      if (!result.ips.includes(m[1])) result.ips.push(m[1]);
-    }
-  }
-  try {
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        {urls: 'stun:stun.l.google.com:19302'},
-        {urls: 'stun:stun.cloudflare.com:3478'}
-      ]
-    });
-    pc.createDataChannel('bx');
-    pc.onicecandidate = ev => {
-      if (ev.candidate) addCandidate(ev.candidate.candidate);
-    };
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await new Promise(resolve => {
-      const started = Date.now();
-      const timer = setInterval(() => {
-        if (pc.iceGatheringState === 'complete' || Date.now() - started > 9000) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, 150);
-    });
-    if (pc.localDescription && pc.localDescription.sdp) {
-      pc.localDescription.sdp.split('\n').filter(l => l.startsWith('a=candidate:')).forEach(addCandidate);
-    }
-    pc.close();
-  } catch (e) {
-    result.errors.push(String(e && e.message ? e.message : e));
-  }
-  out.textContent = JSON.stringify(result, null, 2);
-  try {
-    const t = new URLSearchParams(location.search).get('t') || '';
-    await fetch('/result?t=' + encodeURIComponent(t), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(result)});
-    out.textContent += '\n\nsent to bx';
-  } catch (e) {
-    out.textContent += '\n\nsend failed: ' + e;
-  }
-})();
-</script>
-</body>`
 
 func expectedWebRTCIPs(configPath string) []string {
 	cfg, err := loadConfig(configPath)
