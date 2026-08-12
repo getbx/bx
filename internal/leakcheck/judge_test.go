@@ -49,10 +49,18 @@ func TestEmptyBrowserReportYieldsNotChecked(t *testing.T) {
 			if len(rep.Findings) != 3 {
 				t.Fatalf("结论条数应恒为 3(webrtc / ipv6 / dns),得到 %d", len(rep.Findings))
 			}
+			// **规则写成一句话,而不是按 fixture 分支**:一条结论只有在**本机那一半
+			// 也答不了它**的时候才因为浏览器缺席而变成 not checked。
+			//
+			// DNS 只吃本机事实;IPv6 在「确知没有通往 v6 互联网的路」时同样只吃
+			// 本机事实 —— 没有路就漏不出去,回声说什么都不改变它。把它们一并压成
+			// not checked 是朝反方向撒谎(明明查过)。
+			settledLocally := map[string]bool{
+				FindingDNS:  true,
+				FindingIPv6: tc.local.IPv6DefaultPresent == tristate.False,
+			}
 			for _, f := range rep.Findings {
-				if f.ID == FindingDNS {
-					// DNS 只用本机那一半,浏览器没到不影响它 —— 把它一并压成
-					// not checked 是朝反方向撒谎(明明查过)。
+				if settledLocally[f.ID] {
 					continue
 				}
 				if f.Verdict != NotChecked {
@@ -81,14 +89,26 @@ func TestSilentBrowserNeverClaimsAnObservation(t *testing.T) {
 			continue
 		}
 		text := f.Summary + " " + strings.Join(f.Evidence, " ")
+		// **这一半对每一条结论都成立,与它判成什么无关。** 浏览器没联网,
+		// 就没有任何一条结论可以引用一次浏览器观测 —— 这是 Critical 真正守的东西。
 		for _, forbidden := range []string{"was observed", "no IPv6 exit"} {
 			if strings.Contains(text, forbidden) {
 				t.Errorf("%s 在浏览器那一半从没到过时出现了 %q —— 那是在断言一次"+
 					"从没发生过的观测:%q", f.ID, forbidden, text)
 			}
 		}
+		// **而这一半只对「确实需要浏览器」的结论成立。**
+		//
+		// 2026-08-11 用户指出:本机确知没有通往 IPv6 互联网的路,这件事本身就
+		// 排除了 IPv6 泄漏 —— 回声说什么都不改变它。那种 ok 是**纯本机观测**
+		// 支撑的,措辞里没有、也不需要「浏览器从没到过」这句话。
+		// 原来这条守卫把两件事捆在一起,于是一条完全诚实的本地结论也被要求
+		// 去解释一个它根本不依赖的东西。
+		if f.Verdict != NotChecked {
+			continue
+		}
 		if !strings.Contains(strings.ToLower(text), "never") {
-			t.Errorf("%s 必须说清「浏览器那一半从来没到过」,得到 %q", f.ID, text)
+			t.Errorf("%s 判成 not checked 就必须说清「浏览器那一半从来没到过」,得到 %q", f.ID, text)
 		}
 	}
 }
@@ -126,11 +146,45 @@ func TestMissingBrowserHalfStillNotChecked(t *testing.T) {
 	}
 	rep := Judge(fixedTime(), BrowserReport{}, local)
 	for _, f := range rep.Findings {
-		if f.ID == FindingDNS {
-			continue // DNS 只用本机那一半,由 Task 6 单独覆盖
+		switch f.ID {
+		case FindingDNS:
+			// 只用本机那一半,由 Task 6 单独覆盖。
+		case FindingIPv6:
+			// **本机确知没有通往 IPv6 互联网的路,这条就判得了** —— 而且判得对:
+			// 没有路就漏不出去,回声说什么都不改变它。要求它也变成 not checked,
+			// 等于让一条完全由本机证据支撑的结论去等一个它不需要的东西,而 IPv6
+			// 那行会在**每一台关掉 v6 的机器上恒为「没查」** —— 恒绿的镜像。
+			if f.Verdict != OK {
+				t.Errorf("确知没有 v6 通路时应当给出本机可支撑的 ok,得到 %s(%q)", f.Verdict, f.Summary)
+			}
+		default:
+			if f.Verdict != NotChecked {
+				t.Errorf("%s 缺了浏览器那一半就必须是 not checked,得到 %s", f.ID, f.Verdict)
+			}
 		}
-		if f.Verdict != NotChecked {
-			t.Errorf("%s 缺了浏览器那一半就必须是 not checked,得到 %s", f.ID, f.Verdict)
+	}
+}
+
+// **反过来的那一半:本机有 v6 通路时,缺了浏览器就绝不许说 ok。**
+//
+// 上一条放宽了「确知没有 v6」那一支,这一条守住它没有被放宽过头 —— 机器上有
+// v6 默认路由时,漏没漏只有把两半对起来才知道,而浏览器那半根本没到。
+func TestIPv6StaysUncheckedWhenTheMachineHasV6ButTheBrowserNeverRan(t *testing.T) {
+	for _, present := range []tristate.Tristate{tristate.True, tristate.Unknown} {
+		local := LocalFacts{
+			DefaultRouteV4:     InterfaceRef{Name: "en0"},
+			DefaultRouteV6:     InterfaceRef{Name: "en0"},
+			IPv6DefaultPresent: present,
+		}
+		rep := Judge(fixedTime(), BrowserReport{}, local)
+		for _, f := range rep.Findings {
+			if f.ID != FindingIPv6 {
+				continue
+			}
+			if f.Verdict != NotChecked {
+				t.Errorf("IPv6DefaultPresent=%v 且浏览器没到过时必须是 not checked,得到 %s(%q)",
+					present, f.Verdict, f.Summary)
+			}
 		}
 	}
 }
