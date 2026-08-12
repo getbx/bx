@@ -39,6 +39,9 @@ type FactDeps struct {
 	// 空串而 err 仍是 nil,那是一个确定的答案(bx 现在没有 TUN),归因据此才敢
 	// 把眼前这条 utun 认成别人的。
 	GuardianStatus func(ctx context.Context) (BXRuntimeFacts, error)
+	// ListRoutes 返回本机 IPv4 路由表的原始条目(netstat -rn -f inet)。
+	// **只采不判**:TunnelVision 那条规则住在 leakcheck 里。
+	ListRoutes func(ctx context.Context) ([]leakcheck.RouteEntry, error)
 	// ListVPNServices 列系统集成 VPN(scutil --nc list)。
 	ListVPNServices func(ctx context.Context) ([]leakcheck.VPNService, error)
 }
@@ -90,6 +93,16 @@ func CollectFactsWithBudget(ctx context.Context, deps FactDeps, budget time.Dura
 	facts := leakcheck.LocalFacts{}
 
 	var services []leakcheck.VPNService
+	if deps.ListRoutes != nil {
+		routes, err := deps.ListRoutes(ctx)
+		if err != nil {
+			// 读不出来要留痕:那一条结论据此说 not checked,而不是悄悄说「没发现」。
+			facts.RoutesErr = err.Error()
+		} else {
+			facts.Routes = routes
+		}
+	}
+
 	if deps.ListVPNServices != nil {
 		if list, err := deps.ListVPNServices(ctx); err == nil {
 			services = list

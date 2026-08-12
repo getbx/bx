@@ -73,6 +73,13 @@ type InterfaceRef struct {
 // Known 表示这一项确实观测到了一个接口。
 func (r InterfaceRef) Known() bool { return r.Name != "" && r.Err == "" }
 
+// RouteEntry 是路由表里的一行,**原样**记录,不归一化不判断。
+type RouteEntry struct {
+	Destination string `json:"destination"`
+	Interface   string `json:"interface"`
+	Flags       string `json:"flags"`
+}
+
 // LocalFacts 是只有本机能看到的那一半。全部只读采集,采不到就留空并记 Err。
 type LocalFacts struct {
 	// DefaultRouteV4/V6:发往公网时内核把包交给谁。
@@ -100,4 +107,8 @@ type LocalFacts struct {
 	// 而两者在 srflx 那个地址上长得一模一样。
 	BXUDPMode      string `json:"bx_udp_mode,omitempty"`
 	BXUDPTransport string `json:"bx_udp_transport,omitempty"`
+	// Routes 是本机 IPv4 路由表的原始条目。**只采,不判** —— 判断在 judgeRouteEscape。
+	// RoutesErr 非空表示没读出来,与「读出来了、是空的」必须分开。
+	Routes    []RouteEntry `json:"routes,omitempty"`
+	RoutesErr string       `json:"routes_err,omitempty"`
 }

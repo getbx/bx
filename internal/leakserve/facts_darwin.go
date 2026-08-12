@@ -68,6 +68,7 @@ func LiveFactDeps() FactDeps {
 			return scutilDefaultResolvers(ctx), nil
 		},
 		GuardianStatus:  guardianTunAndProtection,
+		ListRoutes:      listDarwinRoutes,
 		ListVPNServices: listDarwinVPNServices,
 	}
 }
@@ -111,6 +112,40 @@ func guardianTunAndProtection(ctx context.Context) (BXRuntimeFacts, error) {
 		UDPMode:      status.Core.UDPMode,
 		UDPTransport: status.Core.UDPTransport,
 	}, nil
+}
+
+// listDarwinRoutes 读 IPv4 路由表。**只读**,一个字节都不改。
+//
+// 只取前四列(Destination / Gateway / Flags / Netif),而且跳过 ARP 缓存那类
+// 克隆条目(标志里带 W)—— 一台正常机器上它们能有上百条,全带进来只会把证据区
+// 冲掉,而它们从不是逃逸路由(那是邻居,不是转发)。
+func listDarwinRoutes(parent context.Context) ([]leakcheck.RouteEntry, error) {
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "netstat", "-rn", "-f", "inet").Output()
+	if err != nil {
+		return nil, err
+	}
+	var entries []leakcheck.RouteEntry
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[0] == "Destination" || fields[0] == "Internet:" {
+			continue
+		}
+		flags := fields[2]
+		if strings.Contains(flags, "W") {
+			continue
+		}
+		entries = append(entries, leakcheck.RouteEntry{
+			Destination: fields[0], Interface: fields[3], Flags: flags,
+		})
+	}
+	if len(entries) == 0 {
+		// 一台开着机的 Mac 不可能没有路由。空表意味着我们没读懂输出,
+		// 而「读不懂」必须报错 —— 报成「没发现逃逸路由」正是恒绿。
+		return nil, errors.New("netstat returned no routes this parser understood")
+	}
+	return entries, nil
 }
 
 var noRouteRe = regexp.MustCompile(`(?i)no route to host|host is down|not in table|network is unreachable`)

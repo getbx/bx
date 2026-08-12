@@ -41,6 +41,8 @@ func Outline() []CheckOutline {
 		{ID: FindingIPv6, Title: "IPv6 exposure", Section: SectionPath, Inputs: []string{ProbeExitV6}},
 		// 只吃本机事实:默认路由归谁、解析器走哪个接口。浏览器一个包都不用发。
 		{ID: FindingDNS, Title: "DNS path", Section: SectionPath, Inputs: nil},
+		// 同样只吃本机事实:纯路由表观测,一个包都不用发。
+		{ID: FindingRouteEscape, Title: "Routes around the tunnel", Section: SectionPath, Inputs: nil},
 		// **与 WebRTC 那条共用同一次 ICE gathering**:host candidate 和 srflx 是
 		// 一次采集的两半,页面不会为它多发一个包。共用探测名是如实的 ——
 		// 两行确实在等同一件事落定。
