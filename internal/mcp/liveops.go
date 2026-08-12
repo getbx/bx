@@ -131,10 +131,9 @@ func (o *liveOps) Inspect(in InspectIn) (JSONCommandOut, error) {
 	return runBXJSONCommand(inspectArgs(o.configPath, in))
 }
 
+// LeakCheck 是**非交互**的那一半 —— 它不会打开任何界面,所以也不需要「请用户确认」
+// 那道门。浏览器那半住在 `bx leakcheck`,要人在屏幕前点一下才产生数据。
 func (o *liveOps) LeakCheck(in LeakCheckIn) (JSONCommandOut, error) {
-	if out, blocked := browserConfirmationRequired(in); blocked {
-		return out, nil
-	}
 	return runBXJSONCommand(leakCheckArgs(o.configPath, in))
 }
 
@@ -146,13 +145,6 @@ func (o *liveOps) Observe(in ObserveIn) (JSONCommandOut, error) {
 // surfaces. It neither changes bx nor probes externally unless explicitly
 // requested through CheckIn.Network or CheckIn.Browser.
 func (o *liveOps) Check(in CheckIn) (CheckOut, error) {
-	if in.Browser && !in.BrowserConfirmed {
-		return CheckOut{}, ToolError{
-			Code:        CodeConfirmationRequired,
-			Message:     "browser WebRTC check requires user confirmation",
-			Remediation: "ask the user to confirm opening the local browser page, then call bx_check with browser_confirmed=true",
-		}
-	}
 	inspect, err := o.Inspect(InspectIn{SkipProbe: true})
 	if err != nil {
 		return CheckOut{}, err
@@ -166,12 +158,10 @@ func (o *liveOps) Check(in CheckIn) (CheckOut, error) {
 		return CheckOut{}, err
 	}
 	out := CheckOut{Inspect: inspect, Observe: observe, Risk: "low"}
-	if in.Network || in.Browser {
+	if in.Network {
 		leak, err := o.LeakCheck(LeakCheckIn{
-			Network:          in.Network,
-			Browser:          in.Browser,
-			BrowserConfirmed: in.BrowserConfirmed,
-			ExpectedIPs:      in.ExpectedIPs,
+			Network:     in.Network,
+			ExpectedIPs: in.ExpectedIPs,
 		})
 		if err != nil {
 			return CheckOut{}, err
@@ -239,12 +229,6 @@ func leakCheckArgs(configPath string, in LeakCheckIn) []string {
 	if strings.TrimSpace(in.NetworkTimeout) != "" {
 		args = append(args, "--network-timeout", in.NetworkTimeout)
 	}
-	if in.Browser {
-		args = append(args, "--browser")
-	}
-	if strings.TrimSpace(in.BrowserTimeout) != "" {
-		args = append(args, "--browser-timeout", in.BrowserTimeout)
-	}
 	for _, ip := range in.ExpectedIPs {
 		if strings.TrimSpace(ip) != "" {
 			args = append(args, "--expected-ip", ip)
@@ -265,28 +249,6 @@ func observeArgs(in ObserveIn) []string {
 		args = append(args, "--scenario", in.Scenario)
 	}
 	return args
-}
-
-func browserConfirmationRequired(in LeakCheckIn) (JSONCommandOut, bool) {
-	if !in.Browser || in.BrowserConfirmed {
-		return JSONCommandOut{}, false
-	}
-	return JSONCommandOut{
-		OK:    false,
-		Error: "browser WebRTC leak check requires user confirmation before opening a local browser page",
-		Hint:  "ask the user to confirm, then call bx_leak_check with browser=true and browser_confirmed=true",
-		TestSteps: []string{
-			"Tell the user bx will open a local 127.0.0.1 WebRTC test page.",
-			"Ask the user to confirm this visible browser action.",
-			"Call bx_leak_check with browser=true, browser_confirmed=true, and expected_ips set to acceptable proxy/VPS exits.",
-			"Compare json.webrtc.leak_proof and json.checks against the expected exit IPs.",
-		},
-		Recommendations: []string{
-			"Use network=true first for a non-browser exit-path check.",
-			"Pass every acceptable proxy/VPS public IP in expected_ips to avoid false positives.",
-			"If WebRTC reports unexpected_public_ip_detected, inspect bx_logs and active VPN/network-extension paths before changing routes.",
-		},
-	}, true
 }
 
 func runBXJSONCommand(args []string) (JSONCommandOut, error) {

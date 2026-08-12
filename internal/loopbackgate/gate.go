@@ -1,6 +1,6 @@
 // Package loopbackgate 是本机检测服务的**唯一**一道准入闸门。
 //
-// 它原本长在 internal/cli 里,只服务 `bx webrtc-check --browser`;
+// 它原本长在 internal/cli 里,只服务当时那条 `--browser` 检查(那条路已删,见 leakserve);
 // internal/leakserve 需要同一道闸门,于是它搬到了这里 —— **不是抄一份**。
 // 一道安全闸门有两份实现,就有两份会各自漂移的判据,而漂移是无声的:
 // 两边都还在,两边都还绿,只有一边还对。

@@ -141,7 +141,7 @@ Windows 的 `bx.exe` 是**自包含单文件**——wintun.dll、sing-box、broo
 > `bx setup` 贴兼容档链接会提示弱点并建议 server 端换 REALITY(不止 GFW——Claude/OpenAI/Google 等也对弱协议出口 IP 做风控)。
 > 全程 fail-closed 不泄漏。详见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
 
-WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md](docs/leak-surfaces.md)。出口路径检测可用 `bx leak-check --network --json --expected-ip <proxy-ip>`；真实 WebRTC 检测可用 `bx webrtc-check --browser --json --expected-ip <proxy-ip>`。macOS 上,`bx leak-check` 也会只读检查 Tailscale/ZeroTier/WARP/WireGuard/OpenVPN/Clash/Surge/mihomo 这类额外通道是否与 bx 正常共存；Tailscale 会额外做 bootstrap 旁路,避免它重连时被 bx 抢走控制面流量。
+WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md](docs/leak-surfaces.md)。完整检测敲 `bx leakcheck`（开本地页面，把浏览器那半与本机那半对起来）；脚本/agent 用 `bx leak-check --network --json --expected-ip <proxy-ip>`（不开页面）。macOS 上,`bx leak-check` 也会只读检查 Tailscale/ZeroTier/WARP/WireGuard/OpenVPN/Clash/Surge/mihomo 这类额外通道是否与 bx 正常共存；Tailscale 会额外做 bootstrap 旁路,避免它重连时被 bx 抢走控制面流量。
 
 `bx status` 是运行期面板。macOS 上 daemon 会轻量只读监测 Tailscale 路由、系统代理和已连接的 VPN 服务；如果 bx 启动后又出现其他通道,status 会显示 `提醒`,菜单栏也可用同一份 JSON 变成需要注意的状态。
 
@@ -379,12 +379,10 @@ sudo bx server shares --json
 | `bx capabilities` | 输出机器可读能力清单 |
 | `bx doctor` | 诊断客户端配置、服务状态和链接连通性 |
 | `bx doctor --json` | 输出客户端机器可读诊断 |
-| `bx leak-check --json` | 聚合网络路径泄漏风险诊断 |
+| `bx leakcheck` | **泄漏检测（推荐）**：开本地页面，把浏览器那半（WebRTC/出口/指纹）与本机那半（路由/DNS）对起来。bx 关着、别的 VPN 在跑时照样能用 |
+| `bx leak-check --json` | 非交互的机器可读检查（不开页面；供 MCP 与脚本） |
 | `bx leak-check --network --json --expected-ip <ip>` | 主动探测 IPv4/IPv6/DNS 出口并判断是否符合预期 |
-| `bx leak-check --browser --json --expected-ip <ip>` | 包含浏览器 WebRTC 真测的泄漏风险诊断 |
 | `bx observe --json --duration 30s --scenario video` | 观察短窗口内连接、分流、UDP 阻断和流量变化 |
-| `bx webrtc-check --json` | 输出 WebRTC 泄漏风险诊断 |
-| `bx webrtc-check --browser --json --expected-ip <ip>` | 打开本地测试页,真实收集浏览器 ICE candidates 并判断公网 IP 是否符合预期 |
 | `bx logs` | 查看客户端日志 |
 | `bx logs --json` | 输出 agent 可读的客户端日志文本、错误和提示 |
 | `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist/macos/Bx.app` |

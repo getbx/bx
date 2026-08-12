@@ -13,7 +13,7 @@
 # Machine-readable bx summary:
 #   bx leak-check --network --json --expected-ip <EXPECTED_EXIT_IP>
 # WebRTC/STUN needs a real browser. Use:
-#   bx webrtc-check --browser --json --expected-ip <EXPECTED_EXIT_IP>
+#   bx leakcheck
 
 set -u
 EXPECT="${1:-}"
@@ -55,5 +55,5 @@ case "$fip" in
 esac
 
 echo "== summary: $pass pass, $fail fail =="
-echo "Reminder: run 'bx leak-check --network --json --expected-ip <EXPECTED_EXIT_IP>' for machine-readable exit checks, 'bx webrtc-check --browser --json --expected-ip <EXPECTED_EXIT_IP>' for browser WebRTC, or scripts/open-privacy-checks.sh --yes for third-party reference pages."
+echo "Reminder: run 'bx leak-check --network --json --expected-ip <EXPECTED_EXIT_IP>' for machine-readable exit checks, 'bx leakcheck' for the full browser+local check, or scripts/open-privacy-checks.sh --yes for third-party reference pages."
 [ "$fail" -eq 0 ]

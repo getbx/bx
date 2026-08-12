@@ -52,13 +52,12 @@ type InspectIn struct {
 	Timeout   string `json:"timeout,omitempty" jsonschema:"optional probe timeout, e.g. 8s"`
 }
 
+// LeakCheckIn 刻意**没有 browser 选项**:浏览器那半要人在屏幕前点一下才产生数据,
+// 那从来就不适合由 agent 代劳。人用 `bx leakcheck`,它会开页面并把两半事实对起来。
 type LeakCheckIn struct {
-	Network          bool     `json:"network,omitempty" jsonschema:"send outbound IPv4/IPv6/DNS probes"`
-	Browser          bool     `json:"browser,omitempty" jsonschema:"open local browser page for WebRTC ICE candidates"`
-	BrowserConfirmed bool     `json:"browser_confirmed,omitempty" jsonschema:"must be true after user confirms opening a local browser page"`
-	ExpectedIPs      []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs"`
-	NetworkTimeout   string   `json:"network_timeout,omitempty" jsonschema:"optional network probe timeout, e.g. 8s"`
-	BrowserTimeout   string   `json:"browser_timeout,omitempty" jsonschema:"optional browser ICE timeout, e.g. 20s"`
+	Network        bool     `json:"network,omitempty" jsonschema:"send outbound IPv4/IPv6/DNS probes"`
+	ExpectedIPs    []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs"`
+	NetworkTimeout string   `json:"network_timeout,omitempty" jsonschema:"optional network probe timeout, e.g. 8s"`
 }
 
 type JSONCommandOut struct {
@@ -80,13 +79,11 @@ type ObserveIn struct {
 // CheckIn controls the optional verification portions of the safe check
 // bundle. With zero values it only inspects bx and samples its local counters.
 type CheckIn struct {
-	Network          bool     `json:"network,omitempty" jsonschema:"perform opt-in outbound egress and DNS probes"`
-	Browser          bool     `json:"browser,omitempty" jsonschema:"perform opt-in browser WebRTC ICE check"`
-	BrowserConfirmed bool     `json:"browser_confirmed,omitempty" jsonschema:"must be true after user confirms opening the local browser page"`
-	ExpectedIPs      []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs for optional network checks"`
-	Duration         string   `json:"duration,omitempty" jsonschema:"local observation window, default 15s"`
-	Interval         string   `json:"interval,omitempty" jsonschema:"local observation sample interval"`
-	Scenario         string   `json:"scenario,omitempty" jsonschema:"general, video, or realtime"`
+	Network     bool     `json:"network,omitempty" jsonschema:"perform opt-in outbound egress and DNS probes"`
+	ExpectedIPs []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs for optional network checks"`
+	Duration    string   `json:"duration,omitempty" jsonschema:"local observation window, default 15s"`
+	Interval    string   `json:"interval,omitempty" jsonschema:"local observation sample interval"`
+	Scenario    string   `json:"scenario,omitempty" jsonschema:"general, video, or realtime"`
 }
 
 type CheckOut struct {

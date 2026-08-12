@@ -56,19 +56,28 @@ func TestAppHasVersion(t *testing.T) {
 	if !commandHasSubcommand(preset, "ls") || !commandHasSubcommand(preset, "show") || !commandHasSubcommand(preset, "apply") {
 		t.Fatalf("preset subcommands = %+v, want ls/show/apply", preset.Subcommands)
 	}
-	if !appHasCommand(app, "webrtc-check") {
-		t.Fatal("app should expose bx webrtc-check")
-	}
-	webrtc := findAppCommand(app, "webrtc-check")
-	if !commandHasFlag(webrtc, "browser") || !commandHasFlag(webrtc, "expected-ip") {
-		t.Fatal("webrtc-check should expose --browser and --expected-ip")
+	// **`webrtc-check` 已经删掉,而这条断言翻了面。**
+	//
+	// 它的能力是 `leakcheck` 的真子集:它拿 ICE candidate 跟一个**用户自己填的**
+	// 期望 IP 比,而 leakcheck 跟**实测的 HTTP 出口**比 —— 后者严格更强,而且不需要
+	// 用户先知道正确答案。留着它的代价是第二个对浏览器开放的本机端口、第二份内嵌
+	// HTML 页:一道安全面有两份实现,就有两份要守,却只有一份会被想起来。
+	if appHasCommand(app, "webrtc-check") {
+		t.Fatal("webrtc-check 又回来了 —— 它是 leakcheck 的子集,而它带回来的是第二个" +
+			"对浏览器开放的本机端口")
 	}
 	if !appHasCommand(app, "leak-check") {
 		t.Fatal("app should expose bx leak-check")
 	}
 	leak := findAppCommand(app, "leak-check")
-	if !commandHasFlag(leak, "json") || !commandHasFlag(leak, "browser") || !commandHasFlag(leak, "expected-ip") || !commandHasFlag(leak, "network") || !commandHasFlag(leak, "network-timeout") {
-		t.Fatal("leak-check should expose --json, --browser, --expected-ip, --network and --network-timeout")
+	if !commandHasFlag(leak, "json") || !commandHasFlag(leak, "expected-ip") || !commandHasFlag(leak, "network") || !commandHasFlag(leak, "network-timeout") {
+		t.Fatal("leak-check should expose --json, --expected-ip, --network and --network-timeout")
+	}
+	// **`leak-check` 不该再能开浏览器。** 它是非交互的那一半(MCP 与脚本在用),
+	// 而浏览器那半整个搬去了 `bx leakcheck` —— 留着 --browser 就是留着第二个对
+	// 浏览器开放的本机端口,以及第二份要守的安全面。
+	if commandHasFlag(leak, "browser") || commandHasFlag(leak, "browser-timeout") {
+		t.Fatal("leak-check 又能开浏览器了 —— 那条路住在 leakcheck,一份就够")
 	}
 	observe := findAppCommand(app, "observe")
 	if observe == nil || !commandHasFlag(observe, "json") || !commandHasFlag(observe, "duration") || !commandHasFlag(observe, "interval") {
@@ -2701,72 +2710,6 @@ func TestWebRTCCheckHighRiskForDirectUDP(t *testing.T) {
 	}
 }
 
-func TestApplyBrowserICECandidatesDetectsUnexpectedPublicIP(t *testing.T) {
-	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
-	applyBrowserICECandidates(&rep, browserICEResult{
-		Candidates: []string{
-			"candidate:1 1 udp 2122260223 203.0.113.10 55000 typ srflx raddr 192.168.1.5 rport 55000",
-		},
-	}, []string{"203.0.113.20"})
-	if rep.OK || rep.Risk != "high" || rep.LeakProof != "unexpected_public_ip_detected" {
-		t.Fatalf("browser candidates should detect unexpected public IP: %+v", rep)
-	}
-	if got := findCheck(rep.Checks, "browser_unexpected_public_ip"); got.Status != "fail" || !strings.Contains(got.Detail, "203.0.113.10") || strings.Contains(got.Hint, "real public IP") {
-		t.Fatalf("browser_unexpected_public_ip = %+v, want unexpected public IP without real-IP overclaim", got)
-	}
-}
-
-func TestApplyBrowserICECandidatesAllowsExpectedProxyIP(t *testing.T) {
-	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
-	applyBrowserICECandidates(&rep, browserICEResult{
-		Candidates: []string{
-			"candidate:1 1 udp 2122260223 203.0.113.20 55000 typ srflx",
-		},
-	}, []string{"203.0.113.20"})
-	if !rep.OK || rep.Risk != "low" || rep.LeakProof != "no_public_leak_detected" {
-		t.Fatalf("expected proxy IP should be accepted: %+v", rep)
-	}
-	if got := findCheck(rep.Checks, "browser_expected_public_ip"); got.Status != "ok" || !strings.Contains(got.Detail, "203.0.113.20") {
-		t.Fatalf("browser_expected_public_ip = %+v, want expected proxy IP", got)
-	}
-}
-
-func TestApplyBrowserICECandidatesWithoutExpectedIPCannotProveSafety(t *testing.T) {
-	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
-	applyBrowserICECandidates(&rep, browserICEResult{
-		Candidates: []string{
-			"candidate:1 1 udp 2122260223 203.0.113.10 55000 typ srflx",
-		},
-	}, nil)
-	if rep.OK || rep.Risk != "high" || rep.LeakProof != "public_ip_detected_without_expected" {
-		t.Fatalf("public IP without expectation should be inconclusive/high: %+v", rep)
-	}
-}
-
-func TestApplyBrowserICECandidatesFlagsLANAddress(t *testing.T) {
-	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
-	applyBrowserICECandidates(&rep, browserICEResult{
-		Candidates: []string{
-			"candidate:1 1 udp 2122260223 192.168.50.18 55000 typ host",
-		},
-	}, nil)
-	if rep.OK || rep.Risk != "medium" || rep.LeakProof != "local_network_candidate_detected" {
-		t.Fatalf("LAN candidate should be medium risk: %+v", rep)
-	}
-}
-
-func TestApplyBrowserICECandidatesIgnoresUnspecifiedAddress(t *testing.T) {
-	rep := webrtcCheckReport{Risk: "low", LeakProof: "not_proven", BrowserVerificationRequired: true}
-	applyBrowserICECandidates(&rep, browserICEResult{
-		Candidates: []string{
-			"candidate:1 1 udp 2122260223 0.0.0.0 9 typ host",
-		},
-	}, nil)
-	if !rep.OK || rep.Risk != "low" || rep.LeakProof != "no_public_leak_detected" {
-		t.Fatalf("0.0.0.0 should not count as leak: %+v", rep)
-	}
-}
-
 func TestAssembleLeakCheckReportAggregatesNetworkRisks(t *testing.T) {
 	doctor := doctorReport{Kind: "client", Version: "test", SecretsRedacted: true}
 	doctor.addCheck("service_active", "ok", "active", "")
@@ -3123,13 +3066,10 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !inspect.Stable || inspect.RequiresRoot || inspect.ChangesSystem || inspect.ChangesNetwork || !inspect.ReadsSecrets {
 		t.Fatalf("unexpected inspect capability: %+v", inspect)
 	}
-	webrtc := findCapability(rep.Commands, "bx webrtc-check --json")
-	if !webrtc.Stable || webrtc.RequiresRoot || webrtc.ChangesSystem || webrtc.ChangesNetwork || !webrtc.ReadsSecrets {
-		t.Fatalf("unexpected webrtc-check capability: %+v", webrtc)
-	}
-	notes := strings.Join(webrtc.SafeNotes, " ")
-	if !strings.Contains(notes, "ICE candidates") || !strings.Contains(notes, "prove a WebRTC public-IP leak") {
-		t.Fatalf("webrtc-check should describe browser ICE proof capability: %+v", webrtc)
+	// 能力清单里也不该再有它 —— 一个 agent 照着清单去调一个不存在的命令,
+	// 得到的是「unknown command」,而它本可以直接被告知去用 leakcheck。
+	if found := findCapability(rep.Commands, "bx webrtc-check --json"); found.Command != "" {
+		t.Fatalf("能力清单里仍然宣传着已删掉的 webrtc-check: %+v", found)
 	}
 	leak := findCapability(rep.Commands, "bx leak-check --json")
 	if !leak.Stable || leak.RequiresRoot || leak.ChangesSystem || leak.ChangesNetwork || !leak.ReadsSecrets {

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -155,7 +156,7 @@ func TestCheckToolRunsTheSafeDefaultBundle(t *testing.T) {
 	if len(ops.calls) != 1 || ops.calls[0] != "check" {
 		t.Fatalf("calls=%v want [check]", ops.calls)
 	}
-	if ops.checkIn.Network || ops.checkIn.Browser || ops.checkIn.Duration != "" {
+	if ops.checkIn.Network || ops.checkIn.Duration != "" {
 		t.Fatalf("zero-value check must not opt in to external probes: %+v", ops.checkIn)
 	}
 }
@@ -180,18 +181,25 @@ func TestInspectArgsDefaultToNoOutboundProbe(t *testing.T) {
 	}
 }
 
-func TestLeakCheckBrowserRequiresConfirmation(t *testing.T) {
-	out, blocked := browserConfirmationRequired(LeakCheckIn{Browser: true})
-	if !blocked || out.OK || !strings.Contains(out.Hint, "browser_confirmed") || len(out.TestSteps) == 0 || len(out.Recommendations) == 0 {
-		t.Fatalf("confirmation result = %+v blocked=%v, want blocked guidance", out, blocked)
-	}
-	_, blocked = browserConfirmationRequired(LeakCheckIn{Browser: true, BrowserConfirmed: true})
-	if blocked {
-		t.Fatal("browser_confirmed=true should allow browser leak check")
-	}
-	args := leakCheckArgs("/etc/bx/config.yaml", LeakCheckIn{Browser: true, BrowserConfirmed: true})
-	if !stringSliceContains(args, "--browser") {
-		t.Fatalf("leak check args = %v, want --browser after confirmation", args)
+// **MCP 这一侧不许有「打开浏览器」这个选项。**
+//
+// 它此前有 browser / browser_confirmed 两个字段,外加一道运行期的确认门。那道门
+// 现在不需要了 —— 浏览器那半整个搬去了 `bx leakcheck`,而它要人在屏幕前点一下才
+// 产生数据,那从来就不适合由 agent 代劳。**按构造做不到,比运行期拦一下更强。**
+//
+// 这条守卫留下来的理由是:上一版那道门是有人专门写的,而删掉它之后,谁把字段加
+// 回来就不会再有任何东西拦着。它钉的是**能力的缺席**,不是某段代码的存在。
+func TestMCPCannotOpenABrowser(t *testing.T) {
+	for _, typ := range []any{LeakCheckIn{}, CheckIn{}} {
+		v := reflect.TypeOf(typ)
+		for i := 0; i < v.NumField(); i++ {
+			name := strings.ToLower(v.Field(i).Name)
+			if strings.Contains(name, "browser") {
+				t.Errorf("%s 又有了 %s 字段 —— agent 不该能让 bx 打开界面;"+
+					"浏览器那半住在 `bx leakcheck`,它需要人点一下",
+					v.Name(), v.Field(i).Name)
+			}
+		}
 	}
 }
 
