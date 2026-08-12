@@ -23,6 +23,7 @@ struct GuardianStatus: Decodable {
     let dnsState: String?
     let dnsManaged: Bool?
     let dnsService: String?
+    let dnsServers: [String]?
     let coreVersion: String?
     /// nil == Guardian 没接 CoreRuntime provider(压根没问过 Core)。
     /// 非 nil 时再看 `.reachable`——那才是「问了但 Core 没答」与「答了」的分界。
@@ -47,6 +48,7 @@ struct GuardianStatus: Decodable {
         case dnsState = "dns_state"
         case dnsManaged = "dns_managed"
         case dnsService = "dns_service"
+        case dnsServers = "dns_servers"
         case coreVersion = "core_version"
         case core
         case capabilities
@@ -63,6 +65,7 @@ struct GuardianStatus: Decodable {
         dnsState = try container.decodeIfPresent(String.self, forKey: .dnsState)
         dnsManaged = try container.decodeIfPresent(Bool.self, forKey: .dnsManaged)
         dnsService = try container.decodeIfPresent(String.self, forKey: .dnsService)
+        dnsServers = try container.decodeIfPresent([String].self, forKey: .dnsServers)
         coreVersion = try container.decodeIfPresent(String.self, forKey: .coreVersion)
         core = try container.decodeIfPresent(CoreRuntime.self, forKey: .core)
         capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities)

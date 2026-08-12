@@ -1895,6 +1895,7 @@ func (m *Manager) cacheDNSStatus(status DNSStatus) {
 	m.dnsStatus = DNSStatus{
 		State:   normalizedDNSState(status.State),
 		Service: status.Service,
+		Servers: append([]string(nil), status.Servers...),
 	}
 }
 
@@ -1907,6 +1908,7 @@ func (m *Manager) setStatus(status Status) {
 	status.DNSState = m.dnsStatus.State
 	status.DNSManaged = m.dnsStatus.State == DNSManaged
 	status.DNSService = m.dnsStatus.Service
+	status.DNSServers = append([]string(nil), m.dnsStatus.Servers...)
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
 	// setStatus replaces m.status wholesale, and the vast majority of call
