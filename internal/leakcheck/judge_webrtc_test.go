@@ -16,12 +16,24 @@ func webrtcFinding(t *testing.T, browser BrowserReport, local LocalFacts) Findin
 	return Finding{}
 }
 
+// tunnelOwnedByBX 是一份「bx 的 TUN 正在承载公网流量」的本机事实。
+func tunnelOwnedByBX() LocalFacts {
+	return LocalFacts{
+		DefaultRouteV4: InterfaceRef{Name: "utun11"},
+		BXTunInterface: "utun11",
+	}
+}
+
 func TestWebRTCRule(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		browser     BrowserReport
 		want        Verdict
 		wantMention string // summary 里必须出现的关键字符串
+		// local 只在用例真的走到「谁在管这条路」那一步时才填。**刻意没有隐式默认** ——
+		// 一个「零值自动算作有隧道」的默认会让「没有隧道时不许判 ok」那条规则
+		// 在这张表里整体失效,而表里恰好有两个 ok 用例。
+		local LocalFacts
 	}{
 		{
 			// 核心那条:srflx 与 HTTP 出口不是同一个地址 = WebRTC 走了别的路。
@@ -42,6 +54,8 @@ func TestWebRTCRule(t *testing.T) {
 			browser:     BrowserReport{ExitV4: "5.6.7.8", SRFLX: []string{"5.6.7.8"}},
 			want:        OK,
 			wantMention: "5.6.7.8",
+			// 一致要算好消息,**前提是先有一条隧道可绕**。
+			local: tunnelOwnedByBX(),
 		},
 		{
 			// STUN 被挡。**这不是 ok。**「没拿到 candidate」不等于「没有泄漏」。
@@ -101,10 +115,11 @@ func TestWebRTCRule(t *testing.T) {
 			name:    "带空白的合法地址仍然判得了",
 			browser: BrowserReport{ExitV4: " 5.6.7.8 ", SRFLX: []string{"5.6.7.8"}},
 			want:    OK,
+			local:   tunnelOwnedByBX(),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := webrtcFinding(t, tc.browser, LocalFacts{})
+			f := webrtcFinding(t, tc.browser, tc.local)
 			if f.Verdict != tc.want {
 				t.Fatalf("判定应为 %s,得到 %s(summary=%q)", tc.want, f.Verdict, f.Summary)
 			}

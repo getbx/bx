@@ -113,15 +113,69 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 			mismatched = append(mismatched, candidate)
 		}
 	}
+	// **谁在管这条路,决定了这两半一致时能不能算好消息。**
+	owner := WhoOwnsTheRoute(local)
+	f.Evidence = append(f.Evidence, "public traffic leaves via: "+describeOwner(owner, local))
+
 	if len(mismatched) > 0 {
+		// 不一致仍然判 bad,**与归谁管无关**:两条路出口不同本身就是观测到的事实,
+		// 不依赖隧道是否存在。规则是单边的 —— ok 需要前提,bad 不需要。
 		f.Verdict = Bad
 		f.Summary = "WebRTC reached the internet from " + strings.Join(mismatched, ", ") +
-			", but HTTP traffic left from " + exitAddr + ". WebRTC is bypassing the tunnel."
+			", but HTTP traffic left from " + exitAddr + ". "
+		switch owner {
+		case OwnerBX:
+			f.Summary += "WebRTC is bypassing the tunnel."
+		case OwnerOther:
+			f.Summary += "WebRTC is bypassing the VPN on " + local.DefaultRouteV4.Name + "."
+		default:
+			f.Summary += "Those are two different ways out of this machine — " +
+				"whichever one you believe you are using, the other one is also reachable."
+		}
 		return f
 	}
-	f.Verdict = OK
-	f.Summary = "WebRTC and HTTP both left from " + exitAddr + "."
+
+	switch owner {
+	case OwnerBX, OwnerOther:
+		f.Verdict = OK
+		f.Summary = "WebRTC and HTTP both left from " + exitAddr + ", through " +
+			describeOwner(owner, local) + "."
+		if owner == OwnerOther {
+			// **免责声明进证据区,不进结论句。** 结论句只说这条发现本身;
+			// 而「这条隧道不是我建的、我看不到它怎么配的」是关于本工具能力边界的话。
+			f.Evidence = append(f.Evidence,
+				"this tunnel was not set up by bx, so its configuration is not visible here")
+		}
+	case OwnerNone:
+		// **没有隧道时,「没有绕过隧道」不是好消息。**
+		f.Verdict = NotChecked
+		f.Summary = "There is no tunnel to bypass: WebRTC and HTTP both left from " +
+			exitAddr + ", which is this machine's own address on the internet."
+	default:
+		f.Verdict = NotChecked
+		f.Summary = "WebRTC and HTTP both left from " + exitAddr + ", but it could not be " +
+			"determined whether any tunnel is carrying this machine's traffic — so this " +
+			"agreement does not by itself mean anything is protected."
+	}
 	return f
+}
+
+// describeOwner 把「谁在管这条路」翻成结论句里能直接用的一截。
+//
+// OwnerOther 带上接口名:用法二里用户要认出的正是**他自己那条 VPN**,而接口名是
+// 这个工具唯一能给出的、属于那条隧道的标识 —— 它是谁家的产品、怎么配的,本工具
+// 一无所知,也不假装知道。
+func describeOwner(owner TunnelOwner, local LocalFacts) string {
+	switch owner {
+	case OwnerBX:
+		return "the tunnel bx is managing (" + local.DefaultRouteV4.Name + ")"
+	case OwnerOther:
+		return "the VPN on " + local.DefaultRouteV4.Name
+	case OwnerNone:
+		return "this machine's own network interface (" + local.DefaultRouteV4.Name + ") — no tunnel"
+	default:
+		return "an interface that could not be identified"
+	}
 }
 
 // maxQuotedBody 是把第三方返回的原文引进结论时的上限。回声端本该返回一行地址;

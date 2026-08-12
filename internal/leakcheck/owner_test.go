@@ -1,0 +1,97 @@
+package leakcheck
+
+import "testing"
+
+// 「谁在管这条路」是这个功能所有结论的挂靠点,所以它的四态必须逐个钉住。
+//
+// **判据取自「一个公网包实际从哪个接口离开」**(采集器问的是 route -n get 1.1.1.1),
+// 不是 `default` 路由 —— bx 用 split-default(0/1 + 128/1),真正的 default 仍指着
+// 物理网关,问 default 会在 bx 开着时报出物理网卡。别家 VPN 大多也用同一招。
+func TestWhoOwnsTheRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		local LocalFacts
+		want  TunnelOwner
+	}{
+		{
+			name: "出口接口就是 bx 的 TUN",
+			local: LocalFacts{
+				DefaultRouteV4: InterfaceRef{Name: "utun11"},
+				BXTunInterface: "utun11",
+			},
+			want: OwnerBX,
+		},
+		{
+			name: "出口接口是隧道类,但不是 bx 的 —— 用法二:拿 bx 检测别的 VPN",
+			local: LocalFacts{
+				DefaultRouteV4: InterfaceRef{Name: "utun4"},
+				BXTunInterface: "utun11",
+			},
+			want: OwnerOther,
+		},
+		{
+			name: "出口接口是隧道类,而 bx 根本没在跑",
+			local: LocalFacts{
+				DefaultRouteV4: InterfaceRef{Name: "utun4"},
+			},
+			want: OwnerOther,
+		},
+		{
+			name:  "出口接口是物理网卡 —— 没有任何隧道",
+			local: LocalFacts{DefaultRouteV4: InterfaceRef{Name: "en0"}},
+			want:  OwnerNone,
+		},
+		{
+			name:  "出口接口没问出来",
+			local: LocalFacts{DefaultRouteV4: InterfaceRef{Err: "route lookup failed"}},
+			want:  OwnerUnknown,
+		},
+		{
+			name:  "压根没采集",
+			local: LocalFacts{},
+			want:  OwnerUnknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := WhoOwnsTheRoute(tc.local); got != tc.want {
+				t.Errorf("WhoOwnsTheRoute = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// **认不出的接口名必须落在 Unknown,绝不落在 None。**
+//
+// 两个方向的代价不对称。判成 OwnerNone(「你没有隧道」)而实际上有,是虚惊;
+// 判成 OwnerOther / OwnerBX(「有隧道在管」)而实际上没有,是**把一台裸奔的机器
+// 说成受保护** —— 与 ipify 那次同一类的、方向相反的谎。
+//
+// 而 OwnerNone 本身也不是白给的:它会让页面说出「你看到的就是你自己的地址」。
+// 所以它只发给**认得出是物理接口**的名字,认不出的一律 Unknown。
+func TestUnrecognisedInterfaceNamesNeverBecomeNoTunnel(t *testing.T) {
+	for _, name := range []string{"", "wg-quick-mullvad", "NordLynx", "zt0", "weird9"} {
+		got := WhoOwnsTheRoute(LocalFacts{DefaultRouteV4: InterfaceRef{Name: name}})
+		if got == OwnerNone {
+			t.Errorf("接口 %q 判成了 OwnerNone —— 认不出的名字不许支撑「你没有隧道」这句话", name)
+		}
+	}
+}
+
+// 反过来:认得出的隧道接口名要真的认得出。漏认一个的后果是把一条**别人的**隧道
+// 说成「没有隧道」,而用法二整个建立在认得出别人的隧道之上。
+func TestKnownTunnelInterfacesAreRecognised(t *testing.T) {
+	for _, name := range []string{"utun4", "tun0", "tap0", "ppp0", "ipsec0", "wg0"} {
+		if got := WhoOwnsTheRoute(LocalFacts{DefaultRouteV4: InterfaceRef{Name: name}}); got != OwnerOther {
+			t.Errorf("接口 %q → %v,want OwnerOther —— 用法二靠它认出别人的隧道", name, got)
+		}
+	}
+}
+
+// 零值必须是 Unknown,与 Verdict / Tristate 同一条纪律:**没问出来是零值,
+// 而不是某个具体答案**。
+func TestTunnelOwnerZeroValueIsUnknown(t *testing.T) {
+	var zero TunnelOwner
+	if zero != OwnerUnknown {
+		t.Fatalf("零值 = %v,必须是 OwnerUnknown", zero)
+	}
+}
