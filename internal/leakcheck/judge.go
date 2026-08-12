@@ -178,7 +178,7 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 		case OwnerBX:
 			f.Summary += "WebRTC is bypassing the tunnel."
 		case OwnerOther:
-			f.Summary += "WebRTC is bypassing the VPN on " + describeRef(local.DefaultRouteV4) + "."
+			f.Summary += "WebRTC is bypassing " + describeRef(local.DefaultRouteV4) + "."
 		default:
 			f.Summary += "Those are two different ways out of this machine — " +
 				"whichever one you believe you are using, the other one is also reachable."
@@ -217,13 +217,14 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 // 这个工具唯一能给出的、属于那条隧道的标识 —— 它是谁家的产品、怎么配的,本工具
 // 一无所知,也不假装知道。
 func describeOwner(owner TunnelOwner, local LocalFacts) string {
+	// **接口名已经含了归属,外面不许再包一层。** describeRef 走 DescribeInterface,
+	// 而后者本来就把 utun0 翻成「bx (utun0)」、把别人的翻成「Work VPN (utun4)」。
+	// 真机上第一版打出来的是 `the tunnel bx is managing (bx (utun0))`。
 	switch owner {
-	case OwnerBX:
-		return "the tunnel bx is managing (" + describeRef(local.DefaultRouteV4) + ")"
-	case OwnerOther:
-		return "the VPN on " + describeRef(local.DefaultRouteV4)
+	case OwnerBX, OwnerOther:
+		return describeRef(local.DefaultRouteV4)
 	case OwnerNone:
-		return "this machine's own network interface (" + describeRef(local.DefaultRouteV4) + ") — no tunnel"
+		return describeRef(local.DefaultRouteV4) + " — no tunnel"
 	default:
 		return "an interface that could not be identified"
 	}
