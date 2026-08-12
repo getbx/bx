@@ -3,10 +3,11 @@ package leakcheck
 // 浏览器那半的探测项。页面用它们标记「哪一个探测刚落定」;Go 用它们
 // 声明每条结论吃哪几个探测。**两边用同一组常量**,免得页面自己抄一份。
 const (
-	ProbeExitV4 = "exit_v4"
-	ProbeExitV6 = "exit_v6"
-	ProbeSRFLX  = "srflx"
-	ProbeTrace  = "trace"
+	ProbeExitV4  = "exit_v4"
+	ProbeExitV6  = "exit_v6"
+	ProbeSRFLX   = "srflx"
+	ProbeTrace   = "trace"
+	ProbeSurface = "surface"
 )
 
 // CheckOutline 是一条结论的**骨架**:它是什么、它吃哪几个浏览器探测。
@@ -48,5 +49,7 @@ func Outline() []CheckOutline {
 		// 两行确实在等同一件事落定。
 		{ID: FindingLocalAddresses, Title: "Local network addresses", Section: SectionIdentity, Inputs: []string{ProbeSRFLX}},
 		{ID: FindingTimezone, Title: "Clock vs exit location", Section: SectionIdentity, Inputs: []string{ProbeTrace}},
+		{ID: FindingFingerprint, Title: "Fingerprint defences", Section: SectionIdentity, Inputs: []string{ProbeSurface}},
+		{ID: FindingSurface, Title: "What sites can read", Section: SectionSurface, Inputs: []string{ProbeSurface}},
 	}
 }

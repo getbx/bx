@@ -22,6 +22,10 @@ const (
 	// FindingRouteEscape 属于流量路径段,而且是唯一一条能查出**主动攻击**的规则:
 	// 别的检查看流量最终从哪儿出去,它看有没有人动了你的路由表。
 	FindingRouteEscape = "route_escape"
+	// FindingFingerprint 问「浏览器有没有在防指纹」,不问「指纹是什么」。
+	FindingFingerprint = "fingerprint_defence"
+	// FindingSurface 只列举网站读得到什么。**永远是 Info,没有极性。**
+	FindingSurface = "browser_surface"
 )
 
 // Judge 把两半事实对起来,产出一组三态结论。**纯函数**:同样的输入永远同样的
@@ -39,6 +43,8 @@ func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 		judgeRouteEscape(local),
 		judgeLocalAddresses(browser),
 		judgeTimezone(browser),
+		judgeFingerprint(browser),
+		judgeSurface(browser),
 	}
 	return NewReport(now, Endpoints(), findings, collectEvidence(browser, local))
 }

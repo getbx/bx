@@ -62,6 +62,9 @@
  .row[data-verdict="ok"] .state,.row[data-verdict="ok"] .mark{color:var(--ok)}
  .row[data-verdict="bad"] .state,.row[data-verdict="bad"] .mark{color:var(--bad)}
  .row[data-verdict="bad"] .say{color:var(--ink)}
+ /* info has no polarity on purpose: a screen size is neither safe nor unsafe.
+    Colouring it would hand it a verdict the judge deliberately withheld. */
+ .row[data-verdict="info"] .state,.row[data-verdict="info"] .mark{color:var(--ink-dim)}
 
  details{margin-top:10px}
  summary{cursor:pointer;font-size:.8rem;color:var(--ink-dim);width:fit-content}
@@ -144,11 +147,17 @@ Neither half alone can tell you whether traffic is leaking.</p>
       if (c.section !== shownSection) {
         shownSection = c.section;
         var head = el("div", "sect");
-        var isIdentity = c.section === "identity";
-        head.appendChild(text(el("h2"), isIdentity ? "Can you be singled out" : "Where your traffic goes"));
-        head.appendChild(text(el("p"), isIdentity
-          ? "Mostly not bx's to fix — these are browser and system traits. Shown because they can identify you even when nothing leaks."
-          : "What bx, or whichever tunnel is carrying this machine, is answerable for."));
+        var titles = {
+          path: ["Where your traffic goes",
+                 "What bx, or whichever tunnel is carrying this machine, is answerable for."],
+          identity: ["Can you be singled out",
+                     "Mostly not bx's to fix — browser and system traits that can identify you even when nothing leaks."],
+          surface: ["What sites can read",
+                    "Neither good nor bad, and nothing here is a verdict. Listed so you can see what every site gets without asking."]
+        };
+        var t = titles[c.section] || titles.path;
+        head.appendChild(text(el("h2"), t[0]));
+        head.appendChild(text(el("p"), t[1]));
         rowsEl.appendChild(head);
       }
       var row = el("div", "row");
@@ -238,6 +247,42 @@ Neither half alone can tell you whether traffic is leaking.</p>
       });
   }
 
+  // Read the same canvas twice in one session. Identical both times means the
+  // browser is not defending; different means it adds noise (Brave/Tor do).
+  // **The question is whether it defends, not what the fingerprint is** —
+  // uniqueness needs a corpus we do not have, and an invented percentage would
+  // look more like a conclusion than anything else on this page.
+  function drawCanvas() {
+    try {
+      var c = document.createElement("canvas");
+      c.width = 200; c.height = 40;
+      var g = c.getContext("2d");
+      if (!g) return "";
+      g.textBaseline = "top";
+      g.font = "14px 'Arial'";
+      g.fillStyle = "#f60"; g.fillRect(0, 0, 100, 20);
+      g.fillStyle = "#069"; g.fillText("bx leak check \u2691", 2, 15);
+      return c.toDataURL();
+    } catch (e) { return ""; }
+  }
+
+  function gatherSurface() {
+    var out = { a: "", b: "", screen: "", langs: [], cores: "", memory: "", gpu: "" };
+    try {
+      out.a = drawCanvas();
+      out.b = drawCanvas();
+      out.screen = String(screen.width) + "x" + String(screen.height);
+      out.langs = (navigator.languages || []).slice(0, 6);
+      if (navigator.hardwareConcurrency) out.cores = String(navigator.hardwareConcurrency);
+      if (navigator.deviceMemory) out.memory = String(navigator.deviceMemory);
+      var gl = document.createElement("canvas").getContext("webgl");
+      var dbg = gl && gl.getExtension("WEBGL_debug_renderer_info");
+      if (dbg) out.gpu = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "");
+    } catch (e) {}
+    probeLanded("surface", out.a !== "" || out.screen !== "");
+    return out;
+  }
+
   function gatherSrflx() {
     return new Promise(function (resolve) {
       var result = { srflx: [], host: [], err: "" };
@@ -289,7 +334,11 @@ Neither half alone can tell you whether traffic is leaking.</p>
       row.setAttribute("data-verdict", f.verdict);
       text(row.querySelector(".state"), f.verdict);
       text(row.querySelector(".say"), f.summary);
-      text(row.querySelector(".mark"), f.verdict === "ok" ? "✓" : (f.verdict === "bad" ? "✕" : "–"));
+      var glyph = "–";
+      if (f.verdict === "ok") glyph = "✓";
+      else if (f.verdict === "bad") glyph = "✕";
+      else if (f.verdict === "info") glyph = "·";
+      text(row.querySelector(".mark"), glyph);
       var old = row.querySelector("details");
       if (old) old.remove();
       if (f.evidence && f.evidence.length) {
@@ -312,6 +361,9 @@ Neither half alone can tell you whether traffic is leaking.</p>
   document.getElementById("go").addEventListener("click", function () {
     document.getElementById("go").disabled = true;
     skeleton();
+    // Local, instant, no network — gathered before the probes so the surface
+    // rows land immediately rather than waiting on a third party.
+    var SURFACE = gatherSurface();
     Promise.all([fetchEcho(ECHO4, "exit_v4"), fetchEcho(ECHO6, "exit_v6"), gatherSrflx(), fetchTrace()]).then(function (r) {
       var payload = {
         user_agent: navigator.userAgent,
@@ -321,6 +373,10 @@ Neither half alone can tell you whether traffic is leaking.</p>
         exit_country: r[3].loc, trace_exit_v4: r[3].ip, trace_err: r[3].err,
         // The IANA zone name is what a site reads, and it is what makes the
         // contradiction legible: "Asia/Shanghai" says more than "UTC+8".
+        canvas_a: SURFACE.a, canvas_b: SURFACE.b,
+        screen: SURFACE.screen, languages: SURFACE.langs,
+        hardware_concurrency: SURFACE.cores, device_memory: SURFACE.memory,
+        webgl_renderer: SURFACE.gpu,
         timezone: (function () {
           try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; }
           catch (e) { return ""; }
