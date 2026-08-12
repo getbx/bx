@@ -41,10 +41,10 @@ func (m dnsManager) Restore(ctx context.Context) (DNSStatus, error) {
 
 func guardianDNSStatus(status install.DNSStatus, err error) DNSStatus {
 	if err != nil {
-		return DNSStatus{State: DNSUnknown, Service: status.Service}
+		return DNSStatus{State: DNSUnknown, Service: status.Service, Servers: status.Servers}
 	}
 	if status.Enabled {
-		return DNSStatus{State: DNSManaged, Service: status.Service}
+		return DNSStatus{State: DNSManaged, Service: status.Service, Servers: status.Servers}
 	}
-	return DNSStatus{State: DNSUnmanaged, Service: status.Service}
+	return DNSStatus{State: DNSUnmanaged, Service: status.Service, Servers: status.Servers}
 }

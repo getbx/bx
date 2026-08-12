@@ -12,7 +12,22 @@ struct StatusPresentationTests {
         expect(managedNoService.allowsProtected, "managed without service allows Protected")
         expect(managedNoService.label == "Managed", "managed without service label")
 
+        // **没被接管时必须说出现在是谁在解析。** 那是用户唯一能据以行动的值,
+        // 而它此前一个字都没显示过。已接管那一支刻意不显示 —— 判据本身就是
+        // servers == ["127.0.0.1"],显示它等于永远打印同一个常数。
+        let unmanagedWithServers = dnsPresentation(state: "unmanaged", managed: false, service: nil,
+                                                   servers: ["192.168.1.1"])
+        expect(unmanagedWithServers.label.contains("192.168.1.1"),
+               "未接管时行内必须带出真实解析器,实际 \(unmanagedWithServers.label)")
+        expect(unmanagedWithServers.menuWarning?.contains("192.168.1.1") == true,
+               "未接管的告警必须带出真实解析器,实际 \(String(describing: unmanagedWithServers.menuWarning))")
+        // 问不出解析器时措辞必须原样退回去 —— 不许留一个空的 " · " 尾巴,
+        // 那读起来像「解析器是空的」,而真相是「没问出来」。
         let unmanaged = dnsPresentation(state: "unmanaged", managed: false, service: nil)
+        let managedWithServers = dnsPresentation(state: "managed", managed: true, service: "Wi-Fi",
+                                                 servers: ["127.0.0.1"])
+        expect(!managedWithServers.label.contains("127.0.0.1"),
+               "已接管那一支不该打印恒定的 127.0.0.1,实际 \(managedWithServers.label)")
         expect(!unmanaged.allowsProtected, "unmanaged is attention")
         expect(unmanaged.label == "Not managed", "unmanaged label")
         expect(unmanaged.menuWarning == "DNS not managed", "unmanaged warning")

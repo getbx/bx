@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/getbx/bx/internal/install"
@@ -27,7 +28,10 @@ func TestDNSManagerMapsInstallEnabledStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if managed != (DNSStatus{State: DNSManaged, Service: "Wi-Fi"}) {
+	// **解析器地址必须一路带出来。** 它是 install 层一直采着、却从没发布过的字段,
+	// 而菜单在 DNS **没被接管**时要显示的正是它。只比 State/Service 时,
+	// 中途把它掉了不会有任何测试转红。
+	if !reflect.DeepEqual(managed, DNSStatus{State: DNSManaged, Service: "Wi-Fi", Servers: []string{"127.0.0.1"}}) {
 		t.Fatalf("EnsureManaged() = %+v, want managed Wi-Fi", managed)
 	}
 
@@ -35,7 +39,7 @@ func TestDNSManagerMapsInstallEnabledStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unmanaged != (DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}) {
+	if !reflect.DeepEqual(unmanaged, DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi", Servers: []string{"1.1.1.1"}}) {
 		t.Fatalf("Inspect() = %+v, want unmanaged Wi-Fi", unmanaged)
 	}
 
@@ -43,7 +47,7 @@ func TestDNSManagerMapsInstallEnabledStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored != (DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi"}) {
+	if !reflect.DeepEqual(restored, DNSStatus{State: DNSUnmanaged, Service: "Wi-Fi", Servers: []string{"1.1.1.1"}}) {
 		t.Fatalf("Restore() = %+v, want unmanaged Wi-Fi", restored)
 	}
 }

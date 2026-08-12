@@ -38,16 +38,21 @@ struct MenuRowsTests {
                "UDP 中继行,实际 \(String(describing: row(set, "UDP Relay")?.value))")
         expect(row(set, "DNS")?.mark == .ok, "DNS 已知时应为 ok")
 
-        // 阶段③的行:必须在场、必须是 unknown、必须不算异常
-        for pending in ["Exit Location", "IPv6 Leak", "WebRTC"] {
-            guard let r = row(set, pending) else {
-                expect(false, "\(pending) 行必须在场(阶段③点亮),现在缺席"); continue
-            }
-            expect(r.mark == .unknown, "\(pending) 在阶段②必须是 unknown,实际 \(r.mark)")
-            expect(r.value == "Not checked", "\(pending) 的占位文案应为「未观测」,实际 \(r.value)")
+        // **一台全部答上话的机器,不该有任何一行是「未观测」。**
+        //
+        // 这条守卫是翻过来的:它此前断言 Exit Location / IPv6 Leak / WebRTC 三行
+        // 必须在场且恒为 "Not checked"。真机上用户看到的是三行空值,问的是
+        // 「出口位置应该有值吧?」—— 占位行读起来是坏了,不是路线图,而恒「未检测」
+        // 与恒绿是同一种失败:它宣传了一个不存在的能力。
+        //
+        // 现在钉的是**规则**而不是那三个名字:一行只有在这次真的没问出来时才配说
+        // "Not checked"。谁再加一行永远答不上来的占位符,这里就会红。
+        for r in set.rows where r.value == "Not checked" {
+            expect(false, "「\(r.label)」在一台全部答上话的机器上仍是「未观测」——" +
+                          "那不是一项检查,是占位符在冒充检查")
         }
         expect(set.anomalyCount == 0,
-               "全部正常 + 三行未观测时异常数必须为 0,实际 \(set.anomalyCount) —— 未观测不是异常")
+               "全部正常时异常数必须为 0,实际 \(set.anomalyCount) —— 未观测不是异常")
 
         // 隧道不健康是真异常
         let unhealthy = decode("""

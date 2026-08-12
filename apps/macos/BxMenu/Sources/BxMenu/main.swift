@@ -411,7 +411,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let dns = dnsPresentation(
                 state: report.dnsState,
                 managed: report.dnsManaged ?? false,
-                service: report.dnsService
+                service: report.dnsService,
+                servers: report.dnsServers ?? []
             )
             guard dns.allowsProtected else {
                 recoverySnapshot = recoverySnapshotSurvivingWarning(recoverySnapshot)
@@ -686,6 +687,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 menu.addInfo(row.label, row.value + suffix)
             }
+            // 版本号与上面那组分开:上面回答「我的连接现在怎么样」,版本回答
+            // 「我装的是哪一版」。混在一起时它读起来像连接的一项指标。
+            menu.addItem(.separator())
             menu.addInfo("Version", version)
         case .warning(let message, let version):
             menu.addHeader("bx", subtitle: "Needs Attention")

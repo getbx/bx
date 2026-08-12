@@ -56,6 +56,10 @@ const (
 type DNSStatus struct {
 	State   DNSState
 	Service string
+	// Servers 是系统此刻实际配置的解析器地址。install.DNSStatus 一直采着它,
+	// 只是从没发布出去 —— 于是菜单只能说「谁在管」,说不出「现在是谁」,
+	// 而后者恰恰在**没被接管**时才是用户要看的那个值。
+	Servers []string
 }
 
 type DNSManager interface {
@@ -264,6 +268,7 @@ type Status struct {
 	DNSState          DNSState         `json:"dns_state"`
 	DNSManaged        bool             `json:"dns_managed"`
 	DNSService        string           `json:"dns_service,omitempty"`
+	DNSServers        []string         `json:"dns_servers,omitempty"`
 	// Core 只在 LocalAPIOptions 注入了取数函数时才填(既有调用方不受影响、
 	// 也不凭空造字段)。取不到时仍会填,但 Reachable=false、其余字段零值。
 	Core *CoreRuntime `json:"core,omitempty"`
