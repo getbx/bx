@@ -1,17 +1,84 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>bx leak check</title>
 <style>
- body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:40px auto;max-width:44rem;line-height:1.5;color:#111}
- h1{font-size:1.4rem}
- .f{border:1px solid #ddd;border-radius:8px;padding:12px 16px;margin:12px 0}
- .v{font-weight:600;text-transform:uppercase;font-size:.75rem;letter-spacing:.06em}
- .ok .v{color:#137333} .bad .v{color:#a50e0e} .nc .v{color:#5f6368}
- pre{background:#f6f6f6;padding:10px;border-radius:6px;overflow-x:auto;font-size:.8rem;white-space:pre-wrap}
- .disc{background:#fffbe6;border:1px solid #f0e0a0;border-radius:8px;padding:12px 16px}
- code{font-size:.85rem}
+ /* 深浅两套只换 token,组件一律走 token —— 不在媒体查询里给组件写第二遍样式。 */
+ :root{
+   --ground:#FBFAF8; --raise:#FFFFFF; --ink:#1A1D21; --ink-dim:#5D5A55;
+   --rule:#E4E1DB; --ok:#0F6E4C; --bad:#B3261E; --idle:#9A948C;
+   --disc:#FFFCF0; --disc-rule:#E8DFC0;
+ }
+ @media (prefers-color-scheme: dark){
+   :root{
+     --ground:#16181B; --raise:#1D2024; --ink:#E9E7E3; --ink-dim:#A39E97;
+     --rule:#2E3238; --ok:#5FD3A0; --bad:#F2837B; --idle:#75706A;
+     --disc:#231F14; --disc-rule:#4A4025;
+   }
+ }
+ *{box-sizing:border-box}
+ body{
+   font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+   background:var(--ground); color:var(--ink);
+   margin:0; padding:40px 20px 64px;
+ }
+ main{max-width:46rem;margin:0 auto}
+ h1{font-size:1.15rem;font-weight:600;letter-spacing:-.01em;margin:0 0 4px}
+ .sub{color:var(--ink-dim);margin:0 0 28px}
+ /* 机器值一律等宽 —— 「可以自己核对的值」与「bx 写的句子」不该长得一样。 */
+ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}
+
+ .disc{background:var(--disc);border:1px solid var(--disc-rule);border-radius:10px;padding:16px 18px;margin-bottom:28px}
+ .disc p{margin:0 0 10px}
+ .disc ul{margin:0 0 14px;padding-left:1.1rem}
+ .disc li{margin:2px 0}
+ button{
+   font:inherit;font-weight:560;color:var(--ground);background:var(--ink);
+   border:0;border-radius:7px;padding:9px 18px;cursor:pointer;
+ }
+ button:disabled{opacity:.4;cursor:default}
+ button:focus-visible{outline:2px solid var(--ok);outline-offset:2px}
+
+ /* ── 签名:每一行显示它在等哪几半证据 ──────────────────────────
+    左边一列小格 = 这条结论的输入。探测落定就点亮一格,bx 判完整行才上色。
+    用户于是看见「证据在到齐」,而不是一个转圈的图标 —— 而两半合起来才判得了,
+    正是这个功能与纯网页检测的区别。 */
+ .row{border-top:1px solid var(--rule);padding:18px 0;display:grid;grid-template-columns:auto 1fr;gap:16px}
+ .row:last-of-type{border-bottom:1px solid var(--rule)}
+ .feed{display:flex;flex-direction:column;gap:5px;padding-top:3px;align-items:center;width:34px}
+ .cell{width:9px;height:9px;border-radius:2px;border:1.5px solid var(--idle);background:transparent}
+ .cell[data-got="yes"]{background:var(--idle);border-color:var(--idle)}
+ .cell[data-got="no"]{border-style:dashed}
+ .local{font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;color:var(--idle);writing-mode:vertical-rl;transform:rotate(180deg)}
+ .mark{font-size:1rem;line-height:1;margin-top:4px;color:var(--idle)}
+
+ .name{font-weight:600;margin:0}
+ .state{font-size:.66rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--idle);margin:2px 0 6px}
+ .say{margin:0;color:var(--ink-dim)}
+ .row[data-verdict="ok"] .state,.row[data-verdict="ok"] .mark{color:var(--ok)}
+ .row[data-verdict="bad"] .state,.row[data-verdict="bad"] .mark{color:var(--bad)}
+ .row[data-verdict="bad"] .say{color:var(--ink)}
+
+ details{margin-top:10px}
+ summary{cursor:pointer;font-size:.8rem;color:var(--ink-dim);width:fit-content}
+ summary:focus-visible{outline:2px solid var(--ok);outline-offset:2px}
+ pre{
+   background:var(--raise);border:1px solid var(--rule);border-radius:7px;
+   padding:10px 12px;margin:8px 0 0;overflow-x:auto;
+   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.78rem;
+   white-space:pre-wrap;word-break:break-word;color:var(--ink-dim);
+ }
+ .tail{margin-top:26px;color:var(--ink-dim);font-size:.86rem;white-space:pre-wrap}
+ @media (prefers-reduced-motion:no-preference){
+   .cell{transition:background .18s ease,border-color .18s ease}
+   .mark,.state{transition:color .18s ease}
+ }
 </style>
+
+<main>
 <h1>bx leak check</h1>
+<p class="sub">Two halves of the evidence: what your browser reveals, and what bx sees on this machine.
+Neither half alone can tell you whether traffic is leaking.</p>
 
 <div class="disc">
   <p><strong>Before anything is sent:</strong> this page will contact the following
@@ -25,7 +92,9 @@
   <button id="go">Run the check</button>
 </div>
 
-<div id="out"></div>
+<div id="rows"></div>
+<div id="tail" class="tail"></div>
+</main>
 
 <script>
 (function () {
@@ -33,58 +102,91 @@
   // bx sends back. It never compares anything, because it never receives the
   // other half of the evidence (the local routing/DNS facts stay in the bx
   // process). All judgement lives in Go, where the tests are.
-  var TOKEN = "{{.Token}}";
-  var ECHO4 = "{{.Endpoints.EchoV4}}";
-  var ECHO6 = "{{.Endpoints.EchoV6}}";
-  var STUN  = "{{.Endpoints.STUN}}";
-  var out = document.getElementById("out");
+  //
+  // **The row skeleton also comes from Go** (CHECKS). "Which probe feeds which
+  // conclusion" is the judge's knowledge; a copy here would have to be kept in
+  // step by hand, and this repo's tests cannot see JS — so a drift would be
+  // silent. What arrives is structure only: ids, titles, probe names. Nothing
+  // in it can be judged.
+  var TOKEN  = "{{.Token}}";
+  var ECHO4  = "{{.Endpoints.EchoV4}}";
+  var ECHO6  = "{{.Endpoints.EchoV6}}";
+  var STUN   = "{{.Endpoints.STUN}}";
+  var CHECKS = {{.ChecksJSON}};
 
-  // Every probe shares one budget. On a machine without IPv6 the connect to the
-  // v6-only echo host sits at the OS TCP timeout (~75s on macOS), and Promise.all
-  // waits for the slowest one — which walks the whole check into bx's 2-minute
-  // hard timeout, i.e. straight into "the browser half never arrived". A probe
-  // that gives up says so; a probe that hangs makes the whole check say nothing.
+  var rowsEl = document.getElementById("rows");
+  var tailEl = document.getElementById("tail");
   var PROBE_TIMEOUT_MS = 9000;
-
-  function text(el, s) { el.textContent = s; }
-
-  // EXPIRED marks the one failure the page must describe itself, because bx is
-  // no longer there to describe it.
   var EXPIRED = "__bx_service_gone__";
+  var cells = {};   // probe name -> [cell elements]
+  var rowEls = {};  // finding id  -> row element
 
-  function fetchEcho(url) {
+  function text(el, s) { el.textContent = s; return el; }
+  function el(tag, cls) { var n = document.createElement(tag); if (cls) n.className = cls; return n; }
+
+  // 骨架先摆出来,每一行标明它在等什么。**这不是判断**:一格亮起只说明
+  // 「那个探测落定了」,而不是「那一项没问题」—— 一次成功的探测本身不是结论,
+  // WebRTC 拿到地址还要和 HTTP 出口比才知道漏没漏。绿色只在 bx 判完之后出现。
+  function skeleton() {
+    rowsEl.innerHTML = "";
+    CHECKS.forEach(function (c) {
+      var row = el("div", "row");
+      row.setAttribute("data-verdict", "pending");
+      var feed = el("div", "feed");
+      if (c.inputs && c.inputs.length) {
+        c.inputs.forEach(function (p) {
+          var cell = el("div", "cell");
+          cell.title = p;
+          feed.appendChild(cell);
+          (cells[p] = cells[p] || []).push(cell);
+        });
+      } else {
+        // 不吃浏览器探测。照实说 —— 这一项根本不需要联网就能答。
+        feed.appendChild(text(el("div", "local"), "local"));
+      }
+      var mark = text(el("div", "mark"), "·");
+      feed.appendChild(mark);
+      var body = el("div");
+      body.appendChild(text(el("p", "name"), c.title));
+      body.appendChild(text(el("p", "state"), "checking"));
+      body.appendChild(text(el("p", "say"), c.inputs && c.inputs.length ? "Waiting for the browser half." : "Judged from this machine alone."));
+      row.appendChild(feed); row.appendChild(body);
+      rowsEl.appendChild(row);
+      rowEls[c.id] = row;
+    });
+  }
+
+  function probeLanded(name, ok) {
+    (cells[name] || []).forEach(function (c) { c.setAttribute("data-got", ok ? "yes" : "no"); });
+  }
+
+  function fetchEcho(url, probe) {
     var ctl = new AbortController();
     var giveUp = setTimeout(function () { ctl.abort(); }, PROBE_TIMEOUT_MS);
     return fetch(url, { cache: "no-store", signal: ctl.signal })
-      .then(function (r) {
-        clearTimeout(giveUp);
-        return r;
-      })
+      .then(function (r) { clearTimeout(giveUp); return r; })
       .then(function (r) {
         // fetch does NOT reject on 4xx/5xx. Without this, a Cloudflare
         // interstitial, a captive-portal login page or a 429 body becomes the
         // "exit address" and Go compares an HTML document against an ICE
         // candidate — a false "WebRTC is bypassing the tunnel" on a perfectly
-        // healthy machine. Go rejects non-addresses too; this end turns the
-        // failure into a reason instead of a body.
+        // healthy machine.
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.text();
       })
       .then(function (t) {
         var v = t.trim();
         // An empty body is not an answer. Reporting it as {value:"", err:""}
-        // is byte-for-byte what a report that never arrived looks like, and Go
-        // tells those two apart (BrowserReport.Silent) to decide whether an
-        // "ok" is honest. Never let a probe that ran look like one that didn't.
+        // is byte-for-byte what a report that never arrived looks like.
         if (v === "") return { value: "", err: "the echo returned an empty body" };
+        probeLanded(probe, true);
         return { value: v, err: "" };
       })
       .catch(function (e) {
         clearTimeout(giveUp);
         var why = String(e && e.message ? e.message : e);
-        if (e && e.name === "AbortError") {
-          why = "no answer within " + (PROBE_TIMEOUT_MS / 1000) + "s";
-        }
+        if (e && e.name === "AbortError") why = "no answer within " + (PROBE_TIMEOUT_MS / 1000) + "s";
+        probeLanded(probe, false);
         return { value: "", err: why };
       });
   }
@@ -93,11 +195,12 @@
     return new Promise(function (resolve) {
       var result = { srflx: [], err: "" };
       var pc;
+      function done() { probeLanded("srflx", result.srflx.length > 0 && !result.err); resolve(result); }
       try {
         pc = new RTCPeerConnection({ iceServers: [{ urls: STUN }] });
       } catch (e) {
         result.err = String(e && e.message ? e.message : e);
-        resolve(result);
+        done();
         return;
       }
       pc.createDataChannel("bx");
@@ -117,58 +220,44 @@
         if (pc.iceGatheringState === "complete" || Date.now() - started > PROBE_TIMEOUT_MS) {
           clearInterval(timer);
           try { pc.close(); } catch (e) {}
-          resolve(result);
+          done();
         }
       }, 150);
     });
   }
 
-  function render(report) {
-    out.innerHTML = "";
-    var h = document.createElement("h2");
-    text(h, "Results");
-    out.appendChild(h);
-    report.findings.forEach(function (f) {
-      var cls = f.verdict === "ok" ? "ok" : (f.verdict === "bad" ? "bad" : "nc");
-      var box = document.createElement("div");
-      box.className = "f " + cls;
-      var v = document.createElement("div");
-      v.className = "v";
-      text(v, f.verdict);              // already one of ok / bad / not checked
-      var t = document.createElement("strong");
-      text(t, f.title);
-      var s = document.createElement("p");
-      text(s, f.summary);              // already a finished sentence
-      box.appendChild(v); box.appendChild(t); box.appendChild(s);
+  // 结论**逐条**贴回它自己那一行。Go 给什么就显示什么,一个字不改。
+  function apply(report) {
+    (report.findings || []).forEach(function (f) {
+      var row = rowEls[f.id];
+      if (!row) return;  // 骨架与结论对不上由 Go 侧的守卫钉住,这里只是不炸。
+      row.setAttribute("data-verdict", f.verdict);
+      text(row.querySelector(".state"), f.verdict);
+      text(row.querySelector(".say"), f.summary);
+      text(row.querySelector(".mark"), f.verdict === "ok" ? "✓" : (f.verdict === "bad" ? "✕" : "–"));
+      var old = row.querySelector("details");
+      if (old) old.remove();
       if (f.evidence && f.evidence.length) {
-        var d = document.createElement("details");
-        var sum = document.createElement("summary");
-        text(sum, "Evidence");
-        var pre = document.createElement("pre");
-        text(pre, f.evidence.join("\n"));
-        d.appendChild(sum); d.appendChild(pre);
-        box.appendChild(d);
+        var d = el("details");
+        d.appendChild(text(el("summary"), "Evidence"));
+        d.appendChild(text(el("pre"), f.evidence.join("\n")));
+        row.lastChild.appendChild(d);
       }
-      out.appendChild(box);
     });
+    tailEl.innerHTML = "";
     if (report.evidence && report.evidence.length) {
-      var d2 = document.createElement("details");
-      var s2 = document.createElement("summary");
-      text(s2, "What bx observed");
-      var pre2 = document.createElement("pre");
-      text(pre2, report.evidence.join("\n"));
-      d2.appendChild(s2); d2.appendChild(pre2);
-      out.appendChild(d2);
+      var d2 = el("details");
+      d2.appendChild(text(el("summary"), "Everything bx observed"));
+      d2.appendChild(text(el("pre"), report.evidence.join("\n")));
+      tailEl.appendChild(d2);
     }
-    var done = document.createElement("p");
-    text(done, "You can close this tab. bx has already shut the local server down.");
-    out.appendChild(done);
+    tailEl.appendChild(text(el("p"), "You can close this tab. bx has already shut the local server down."));
   }
 
   document.getElementById("go").addEventListener("click", function () {
     document.getElementById("go").disabled = true;
-    text(out, "Running…");
-    Promise.all([fetchEcho(ECHO4), fetchEcho(ECHO6), gatherSrflx()]).then(function (r) {
+    skeleton();
+    Promise.all([fetchEcho(ECHO4, "exit_v4"), fetchEcho(ECHO6, "exit_v6"), gatherSrflx()]).then(function (r) {
       var payload = {
         user_agent: navigator.userAgent,
         exit_v4: r[0].value, exit_v4_err: r[0].err,
@@ -194,16 +283,16 @@
     }).then(function (resp) {
       if (!resp.ok) throw new Error(EXPIRED);
       return resp.json();
-    }).then(render).catch(function (e) {
+    }).then(apply).catch(function (e) {
       var why = String(e && e.message ? e.message : e);
       if (why === EXPIRED) {
-        text(out, "This check has expired.\n\nThe local bx service that opened this page has "
+        text(tailEl, "This check has expired.\n\nThe local bx service that opened this page has "
           + "already closed — it is one-shot and stops after the first result or after two "
           + "minutes. Nothing was reported, and nothing was stored.\n\nRun bx leakcheck again "
           + "to start a new one.");
         return;
       }
-      text(out, "Could not complete the check: " + why + "\nbx will report this as “not checked”.");
+      text(tailEl, "Could not complete the check: " + why + "\nbx will report this as “not checked”.");
     });
   });
 })();
