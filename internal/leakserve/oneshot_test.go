@@ -167,16 +167,35 @@ func TestHardTimeoutWithRealLocalFactsClaimsNoObservation(t *testing.T) {
 	go srv.Serve()
 
 	report := srv.Wait(context.Background())
+	// **这条守卫真正守的是措辞,不是判定** —— Critical 的原话是
+	// 「no IPv6 exit was observed 断言了一次从没发生过的观测」。所以下面这一句
+	// **对每一条结论都成立,与它判成什么无关**:页面一个包都没发过,就没有任何
+	// 一条结论可以引用一次浏览器观测。
 	for _, f := range report.Findings {
-		if f.ID == leakcheck.FindingDNS {
-			continue // 只用本机那一半,浏览器没到不影响它
+		if strings.Contains(f.Summary, "was observed") {
+			t.Errorf("%s 断言了一次从没发生过的观测:%q", f.ID, f.Summary)
+		}
+	}
+	// 判定这一半只对**本机那半答不了**的结论成立。
+	//
+	// DNS 与 IPv6 在这个 fixture 上都由本机事实独立答得了(解析器在本机;
+	// IPv6DefaultPresent=False ⇒ 没有通往 v6 互联网的路 ⇒ 漏不出去),
+	// 把它们压成 not checked 是朝反方向撒谎 —— 明明查过。
+	settledLocally := map[string]bool{leakcheck.FindingDNS: true, leakcheck.FindingIPv6: true}
+	for _, f := range report.Findings {
+		if settledLocally[f.ID] {
+			continue
 		}
 		if f.Verdict != leakcheck.NotChecked {
 			t.Errorf("页面一个包都没发过,%s 必须是 not checked,得到 %s(summary=%q)",
 				f.ID, f.Verdict, f.Summary)
 		}
-		if strings.Contains(f.Summary, "was observed") {
-			t.Errorf("%s 断言了一次从没发生过的观测:%q", f.ID, f.Summary)
+	}
+	// 而 IPv6 那条在这个 fixture 上必须给出**本机可支撑的 ok**:
+	// 变成 not checked 就说明那条本地判据又被浏览器缺席拖下水了。
+	for _, f := range report.Findings {
+		if f.ID == leakcheck.FindingIPv6 && f.Verdict != leakcheck.OK {
+			t.Errorf("确知没有 v6 通路时应给出本机可支撑的 ok,得到 %s(%q)", f.Verdict, f.Summary)
 		}
 	}
 }

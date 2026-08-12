@@ -55,7 +55,11 @@ func TestIPv6Rule(t *testing.T) {
 		},
 		{
 			// 这台机器压根没有 v6:既没有 v6 默认路由,回声也失败。
-			// 这是一句**诚实的 ok** —— 两半都观测到了,结论是没有 v6 通路。
+			// 这是一句**诚实的 ok** —— 没有通往 v6 互联网的路,就漏不出去。
+			//
+			// 钉的是**证据行**而不是那句话的措辞:结论必须出示它凭什么这么说,
+			// 而 prose 会随可读性调整(2026-08-11 就改过一次)。钉字面措辞的
+			// 结果是改一句更准确的话都要撞红,而它守的东西一点没变。
 			name:    "根本没有 IPv6",
 			browser: BrowserReport{ExitV4: "5.6.7.8", ExitV6Err: "load failed"},
 			local: LocalFacts{
@@ -63,7 +67,7 @@ func TestIPv6Rule(t *testing.T) {
 				IPv6DefaultPresent: tristate.False,
 			},
 			want:        OK,
-			wantMention: "no IPv6",
+			wantMention: "ipv6 default route: none",
 		},
 		{
 			// 回声失败,但本机确实**有** v6 默认路由 —— 那就是没问出来,不是没漏。

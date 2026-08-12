@@ -148,9 +148,37 @@ func abbreviate(s string) string {
 // 判成 v6 泄漏 —— 对自己的用户误报。
 func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 	f := Finding{ID: FindingIPv6, Title: "IPv6 exposure"}
-	// **必须排在最前面。** 排在下面那句 ok 之后,一台「bx 开着 ⇒ v6 被 reject
-	// ⇒ IPv6DefaultPresent=False」的真机在页面从没跑过时就会收到
-	// 「no IPv6 exit was observed」—— 一句断言从没发生过的观测的假话。
+
+	// **没有通往 IPv6 互联网的路,就漏不了 IPv6 —— 这一条本机自己就答得了。**
+	//
+	// 它排在最前面,因为它**不依赖浏览器那一半**:确知没有 v6 默认路由,
+	// 就没有任何 v6 流量出得去,回声说什么都不改变这个结论。
+	//
+	// 此前这条判断埋在「回声没答上来」那一支里,于是回声**答上来了**的时候反而
+	// 判不出来:真机(2026-08-11)上 bx 开着、v6 被 reject,而浏览器拿到了一个
+	// v6 出口,规则要把它归属到某个本地接口、归不上,就报 not checked ——
+	// 一台**根本不可能漏 v6** 的机器上什么都没说。
+	//
+	// 那个 v6 出口不矛盾,它只是不属于这台机器:v6-only 主机名被 fake-IP DNS 用
+	// A 记录答了,浏览器走 v4 进隧道,**服务器**再用它自己的 IPv6 去连回声端。
+	// 所以下面把它作为证据**解释掉**,而不是拿它去质疑一个本机已经确定的事实。
+	//
+	// 措辞只说本机观测到的东西 —— 不提「没看到 v6 出口」,那在浏览器没跑时是
+	// 一句断言从未发生的观测的假话(2026-08-11 整枝复审的 Critical 就是它)。
+	if local.IPv6DefaultPresent == tristate.False {
+		f.Verdict = OK
+		f.Summary = "This machine has no route to the IPv6 internet, so nothing can leak over IPv6."
+		f.Evidence = append(f.Evidence, "ipv6 default route: none")
+		if browser.ExitV6 != "" {
+			f.Evidence = append(f.Evidence,
+				"ipv6 exit seen by "+EchoV6URL+": "+browser.ExitV6,
+				"that address belongs to whatever your traffic passes through, not to this machine — "+
+					"this machine has no IPv6 route of its own")
+		}
+		return f
+	}
+
+	// 浏览器那一半从没到过,而本机也没能确定「没有 v6 通路」—— 什么都不能说。
 	if browser.Silent() {
 		return browserNeverArrived(f)
 	}
