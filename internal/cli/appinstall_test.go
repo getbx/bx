@@ -28,7 +28,10 @@ func TestMenuInstallerPassesYesAndWarnsAboutTheOutage(t *testing.T) {
 	// repairBx:删掉 Install 那句告知,Repair 的同一句会滑进窗口,测试照样绿
 	// (复审实测,当时只剩 27 字节余量),于是 GUI 用户点 Install bx… 断网前
 	// 一个字的警告都看不到 —— 而 --yes 又跳过了本可兜住的 CLI 提示。
-	for _, fn := range []string{"installBx", "repairBx"} {
+	// **指向躯体所在的那个函数。** installBx 现在只剩一行转调(躯体在 beginInstall
+	// 里),那是为了让首次引导走同一条路而不必调用 #selector 入口。守卫钉的性质
+	// 一个字没变:真正弹出确认框的那段代码必须说明会断网。
+	for _, fn := range []string{"beginInstall", "repairBx"} {
 		body := swiftFuncBody(t, text, fn)
 		if !strings.Contains(body, "network drops") {
 			t.Fatalf("%s 的确认文案必须说明会断网(GUI 用户看不到 CLI 的提示)", fn)

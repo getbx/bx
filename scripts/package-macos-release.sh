@@ -133,9 +133,15 @@ SCRIPT
 cat > "$RELEASE_DIR/README.txt" <<TXT
 bx macOS $ARCH release ($VERSION)
 
-安装(两种方式任选其一):
-  1. 将 Bx.app 拖到 /Applications,双击打开后点 "Install bx..."。
-  2. 运行 ./install.sh(等价于上一步,命令行方式)。
+安装(推荐用 .dmg):
+  1. 打开 bx-macos-ARCH.dmg,把 Bx.app 拖进 Applications,双击打开 —— 它会主动
+     引导你完成安装与设置,全程不用开终端。
+  2. 或者:将本目录里的 Bx.app 拖到 /Applications,双击打开后点 "Install bx..."。
+  3. 或者:运行 ./install.sh(等价,命令行方式)。
+
+首次打开时 macOS 会说「无法验证开发者」——bx 目前没有 Apple 开发者签名。
+放行方式:系统设置 → 隐私与安全性 → 往下找到 bx 那一条 → 点「仍要打开」。
+(这与「已损坏,应移到废纸篓」不是一回事;后者说明包被改动过,不要放行。)
 
 安装做了什么:
   将 Bx.app 装到 /Applications,并把 App 内嵌的 bx-cli 安装为系统 bx 命令、
@@ -164,6 +170,29 @@ Notes:
 TXT
 
 chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh"
+
+# **给整个 bundle 签名 —— 没有证书时也要签。**
+#
+# Go 的链接器会给它产出的二进制自动打一个 ad-hoc 签名,但那只签了**二进制**,
+# 没签 bundle:装配好的 Bx.app 里 Contents/Resources 下还塞了 bx-cli / bx-bridge /
+# release.json,它们不在任何签名的覆盖范围里。后果实测(2026-08-13,macOS 26.5.2):
+#
+#   codesign --verify  →  code has no resources but signature indicates they must be present
+#
+# **那不是「不受信任」,是「无效」** —— 而这两者对用户是天差地别的两个弹窗:
+#   签名无效  →  「已损坏,应移到废纸篓」,**没有任何放行入口**;
+#   签名有效但不受信任 → 「无法验证开发者」,系统设置 → 隐私与安全性 里有 Open Anyway。
+#
+# ad-hoc 签整个 bundle 不需要任何证书,而它正好把前者变成后者。有 Developer ID 时
+# 把 BX_CODESIGN_IDENTITY 设成那个身份即可(之后还要 notarytool 公证,那是另一步)。
+SIGN_IDENTITY="${BX_CODESIGN_IDENTITY:--}"
+echo "Signing Bx.app (identity: $SIGN_IDENTITY)..."
+codesign --force --deep --sign "$SIGN_IDENTITY" "$RELEASE_DIR/Bx.app"
+# **签完必须验。** 一个签失败却继续打包的脚本,产出的正是上面那个「已损坏」。
+codesign --verify --deep --strict "$RELEASE_DIR/Bx.app" || {
+  echo "签名验证失败 —— 这个包会让用户看到「已损坏,应移到废纸篓」,而那条路没有放行入口" >&2
+  exit 1
+}
 
 (
   cd "$DIST_ROOT"

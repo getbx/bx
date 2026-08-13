@@ -109,3 +109,35 @@ func scopeAfter(t *testing.T, source, marker string, span int) string {
 	}
 	return source[i:end]
 }
+
+// **首次引导必须真的接在启动路径上,而且要排在刷新之后。**
+//
+// 此前双击 Bx.app 之后什么都不发生:菜单栏冒出一个小图标,而没有任何东西告诉用户
+// 下一步该点哪里 —— 一个从 dmg 里拖进来的普通用户到这里就卡住了。
+//
+// main.swift 编不进 Swift 测试套件,所以这条接线只能在源码层钉。判定本身
+// (问不问、问哪个)住在 FirstRun.swift,由 FirstRunTests 覆盖。
+func TestMacMenuRunsFirstRunGuidanceAfterTheFirstRefresh(t *testing.T) {
+	path := filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读不到 %s:%v —— 守卫失去意义,必须响亮失败", path, err)
+	}
+	source := string(raw)
+
+	launch := scopeAfter(t, source, "func applicationDidFinishLaunching", 700)
+	if !strings.Contains(launch, "runFirstRunGuidance()") {
+		t.Error("启动路径没有调用 runFirstRunGuidance —— 双击之后又会变回「什么都不发生」")
+	}
+	// **顺序是承重的**:没刷新过就不知道自己处在哪一步,那时问出来的一定是错的那个。
+	refreshAt := strings.Index(launch, "refresh(userInitiated: false)")
+	guidanceAt := strings.Index(launch, "runFirstRunGuidance()")
+	if refreshAt < 0 || guidanceAt < 0 || guidanceAt < refreshAt {
+		t.Errorf("引导必须排在首次 refresh 之后(refresh@%d guidance@%d)—— "+
+			"没刷新过就不知道自己处在哪一步", refreshAt, guidanceAt)
+	}
+	// 判定不许搬回 main.swift:那里编不进测试套件。
+	if strings.Contains(source, "func firstRunAction(") {
+		t.Error("firstRunAction 被搬进了 main.swift —— 那里编不进 Swift 测试套件")
+	}
+}
