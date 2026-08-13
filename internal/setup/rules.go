@@ -214,3 +214,80 @@ func writeConfigRoot(path string, doc *yaml.Node) error {
 	}
 	return nil
 }
+
+// ApplyGroup 整组打开或关掉一批规则,**一次写盘**。
+//
+// 逐条调用 AddRule/RemoveRule 也能做到,但那会在中途留下半开半关的配置;
+// 而且中途失败时用户看到的是一个既不是原样、也不是目标的状态。
+//
+// **不对称之处是刻意的**:
+//   - 打开:已存在的跳过(幂等,用户会重复点)。
+//   - 关掉:组里本来就没装的**不算失败** —— 单条 RemoveRule 对「不存在」如实
+//     报错是对的(用户明确点了那一行),而整组关闭时组里本来就可能只装了一半,
+//     那时报错会让一次完全正常的操作看起来失败了。
+//
+// 校验在**动盘之前全部做完**:半开的组比不开更难解释。
+func ApplyGroup(path, kind string, patterns []string, enable bool) error {
+	if err := validateKind(kind); err != nil {
+		return err
+	}
+	clean := make([]string, 0, len(patterns))
+	seen := map[string]bool{}
+	for _, raw := range patterns {
+		p, err := ValidateRulePattern(raw)
+		if err != nil {
+			return err
+		}
+		if !seen[p] {
+			seen[p] = true
+			clean = append(clean, p)
+		}
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	root, doc, err := loadConfigRoot(path)
+	if err != nil {
+		return err
+	}
+	if enable {
+		list := findOrCreateRuleList(root, kind)
+		present := map[string]bool{}
+		for _, node := range list.Content {
+			present[strings.ToLower(strings.TrimSpace(node.Value))] = true
+		}
+		for _, p := range clean {
+			if present[p] {
+				continue
+			}
+			list.Content = append(list.Content, &yaml.Node{
+				Kind: yaml.ScalarNode, Tag: "!!str", Value: p, Style: quoteStyleFor(p),
+			})
+		}
+		return writeConfigRoot(path, doc)
+	}
+
+	rules := mappingValue(root, "rules")
+	if rules == nil || rules.Kind != yaml.SequenceNode {
+		return nil // 没有 rules 段 = 这一组本来就没开,关掉它不是失败
+	}
+	drop := map[string]bool{}
+	for _, p := range clean {
+		drop[p] = true
+	}
+	for _, entry := range rules.Content {
+		list := mappingValue(entry, kind)
+		if list == nil || list.Kind != yaml.SequenceNode {
+			continue
+		}
+		kept := list.Content[:0]
+		for _, node := range list.Content {
+			if drop[strings.ToLower(strings.TrimSpace(node.Value))] {
+				continue
+			}
+			kept = append(kept, node)
+		}
+		list.Content = kept
+	}
+	return writeConfigRoot(path, doc)
+}
