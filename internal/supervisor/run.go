@@ -440,7 +440,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
 	// tailscale 那组旁路与「切到哪台服务器」无关,启动时算一次,之后每轮刷新原样带上
 	// (重探一次失败就会在下次 rehijack 时悄悄缩小 tailscale 共存旁路)。
-	tailscaleBypass := tailscaleBootstrapBypassCIDRs(ctx, direct)
+	// 启动时抓一次;抓不到就用内置兜底表,并由后台循环一直重试直到拿到权威答案。
+	// **开机自启那一刻网络往往还没好**,而此前这里抓不到就永远停在兜底表。
+	tailscaleBypass := newTailscaleBypassSource(tailscaleBootstrapBypassCIDRs(ctx, direct))
+	go tailscaleBypass.Run(ctx, func(c context.Context) ([]string, error) {
+		return tailscaleDERPBypassCIDRs(c, direct)
+	})
 	// bypass 那一套的**组合**全在 wireBypass 里(可测):store 是全进程唯一那份
 	// 「什么必须绕开隧道」,liveMutator(rehijack)、livePathRecoverer(Wi-Fi 切换后
 	// 自动重装旁路)、刷新与 RuntimeState 全都读写它。各自留一份启动时的冻结拷贝
@@ -453,7 +458,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		configPath:    opts.ConfigPath,
 		serverStatics: serverStatic,
 		staticA:       staticA,
-		extraCIDRs:    tailscaleBypass,
+		extraCIDRs:    tailscaleBypass.CIDRs,
 		// 与 Dialer 同一个国内 DNS + 防环直连。**绝不能**换成系统解析器:
 		// 刷新发生在 DNS 已交给 bx 之后,系统解析器此刻就是 bx 自己,新服务器
 		// (还没有静态 A)会被回一个 198.18/15 的 fake IP。
