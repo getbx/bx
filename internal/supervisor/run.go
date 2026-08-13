@@ -25,6 +25,7 @@ import (
 	bxdns "github.com/getbx/bx/internal/dns"
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/fakeip"
+	"github.com/getbx/bx/internal/overlay"
 	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/socks5"
@@ -349,9 +350,28 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		log.Printf("本地 DNS 已监听: udp://%s", dnsListener.LocalAddr())
 	}
 
+	// 先问「机器上还跑着哪些 overlay」——下面的 split-DNS 与后面的中继旁路都要用它。
+	presentOverlays := detectOverlayTenants()
+
 	// split-DNS:匹配域名转发到内网 DNS 解析,真实 IP 注册进 splitDirect 强制直连。
-	if len(cfg.DNS.Split) > 0 {
+	//
+	// **在跑的 overlay 租户自带一组 split**(见 internal/overlay):Tailscale 的
+	// `*.ts.net` 只有它自己的 MagicDNS 解析器答得出来。此前 bx 把这些域名放进
+	// fakeip_filter(不分配假 IP)却仍然转给国内 DNS —— 那里没有答案,于是
+	// **知道一半比两边都不知道更糟**:不特殊对待反而会拿到假 IP 经隧道走。
+	//
+	// 只对**在跑**的租户生效:解析器是租户自己起的进程,它没跑时把查询送过去
+	// 只会挂住。用户在 config 里写的 split 排在后面,因此可以覆盖同名后缀。
+	overlaySplit := overlay.SplitRoutes(presentOverlays)
+	if len(cfg.DNS.Split) > 0 || len(overlaySplit) > 0 {
 		var routes []bxdns.SplitRoute
+		for _, r := range overlaySplit {
+			routes = append(routes, bxdns.SplitRoute{
+				Match:  route.NewDomainSet([]string{"*." + r.Suffix, r.Suffix}),
+				Server: r.Resolver,
+			})
+			log.Printf("overlay 共存:*.%s 交给 %s 解析", r.Suffix, r.Resolver)
+		}
 		for _, r := range cfg.DNS.Split {
 			routes = append(routes, bxdns.SplitRoute{
 				Match:  route.NewDomainSet(r.Domains),
@@ -442,10 +462,20 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// (重探一次失败就会在下次 rehijack 时悄悄缩小 tailscale 共存旁路)。
 	// 启动时抓一次;抓不到就用内置兜底表,并由后台循环一直重试直到拿到权威答案。
 	// **开机自启那一刻网络往往还没好**,而此前这里抓不到就永远停在兜底表。
-	tailscaleBypass := newTailscaleBypassSource(tailscaleBootstrapBypassCIDRs(ctx, direct))
-	go tailscaleBypass.Run(ctx, func(c context.Context) ([]string, error) {
-		return tailscaleDERPBypassCIDRs(c, direct)
-	})
+	// 在跑的租户各自的中继兜底地址与 Tailscale 的 DERP 旁路合并成同一份。
+	// **ZeroTier 的根节点此前一条旁路都没有** —— 隧道 fail-closed 时它连根都连不上。
+	tailscaleBypass := newTailscaleBypassSource(mergeBypassCIDRs(
+		tailscaleBootstrapBypassCIDRs(ctx, direct),
+		overlay.BypassCIDRs(presentOverlays),
+	))
+
+	// **租户旁路必须并进抓取结果,不能只并进初值。** 循环成功时是**整份替换**
+	// (刻意如此:兜底 IP 会过期,留着是泄漏面),而它抓的只有 DERP —— 只并初值的话,
+	// 第一次成功就会把 ZeroTier 的根节点旁路丢掉,而且是静默的。
+	go tailscaleBypass.Run(ctx, overlayAwareBypassFetch(
+		func(c context.Context) ([]string, error) { return tailscaleDERPBypassCIDRs(c, direct) },
+		overlay.BypassCIDRs(presentOverlays),
+	))
 	// bypass 那一套的**组合**全在 wireBypass 里(可测):store 是全进程唯一那份
 	// 「什么必须绕开隧道」,liveMutator(rehijack)、livePathRecoverer(Wi-Fi 切换后
 	// 自动重装旁路)、刷新与 RuntimeState 全都读写它。各自留一份启动时的冻结拷贝

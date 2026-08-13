@@ -128,3 +128,56 @@ func TestBypassSourceHandsOutCopies(t *testing.T) {
 		t.Fatal("调用方改了返回值,内部状态跟着变了 —— 必须返回拷贝")
 	}
 }
+
+// **一次成功的 DERP 抓取不许丢掉别的租户的旁路。**
+//
+// 这是**接线层**的坑,判据层看不见:decideBypassUpdate 成功时整份替换(刻意如此 ——
+// 兜底 IP 会过期,留着是泄漏面),而抓取只覆盖 Tailscale 的 DERP。租户旁路
+// (ZeroTier 根节点)若只并进**初值**,第一次成功就会被静默替换掉,而 ZeroTier
+// 从此连根节点都连不上,且没有任何日志会说这件事。
+//
+// **这条用例测的是生产用的那个函数**,不是一份手抄的等价闭包。实测确认过:
+// 当它还是 run.go 里的匿名闭包时,把合并去掉编译得过、整套测试全绿。
+func TestFetchCarriesOtherTenantsBypassNotJustTheSeed(t *testing.T) {
+	tenantBypass := []string{"104.194.8.134/32"} // ZeroTier 根节点
+	fetch := overlayAwareBypassFetch(
+		func(context.Context) ([]string, error) { return []string{"198.51.100.7/32"}, nil },
+		tenantBypass,
+	)
+
+	got, err := fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var haveTenant, haveDERP bool
+	for _, c := range got {
+		switch c {
+		case tenantBypass[0]:
+			haveTenant = true
+		case "198.51.100.7/32":
+			haveDERP = true
+		}
+	}
+	if !haveTenant {
+		t.Errorf("抓取结果丢了 ZeroTier 根节点旁路:%v —— 只并初值会被整份替换掉", got)
+	}
+	if !haveDERP {
+		t.Errorf("抓取结果丢了 DERP 旁路:%v", got)
+	}
+}
+
+// 抓取失败必须**原样上报错误**,不能把租户旁路当成一次「成功」的答案交出去 ——
+// 那会让 decideBypassUpdate 以为拿到了权威答案,退避立刻推进长周期,重试等于没做。
+func TestFetchReportsFailureInsteadOfReturningTenantBypassAlone(t *testing.T) {
+	fetch := overlayAwareBypassFetch(
+		func(context.Context) ([]string, error) { return nil, errors.New("network is unreachable") },
+		[]string{"104.194.8.134/32"},
+	)
+	got, err := fetch(context.Background())
+	if err == nil {
+		t.Fatalf("抓取失败却报成功,返回 %v", got)
+	}
+	if len(got) != 0 {
+		t.Errorf("失败时不该返回任何地址,得到 %v", got)
+	}
+}
