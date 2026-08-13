@@ -489,8 +489,15 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 		if transportInfo != nil {
 			active, list, udp = transportInfo()
 		}
+		// 配置路径取自 Core 自己的运行时状态 —— 发布**它此刻在用的**那个文件,
+		// 不是某处猜出来的默认值(与 DNSUpstream 同一条纪律)。
+		var configPath string
+		if runtime != nil {
+			configPath = runtime().ConfigPath
+		}
 		return stats.Report{
 			Snapshot:      c.Snapshot(),
+			ConfigPath:    configPath,
 			Server:        server,
 			SocksAddr:     t.SocksAddr(),
 			TunnelHealthy: ts.Up,
