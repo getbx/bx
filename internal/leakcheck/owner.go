@@ -83,8 +83,13 @@ func WhoOwnsTheRoute(local LocalFacts) TunnelOwner {
 	if bx := strings.ToLower(strings.TrimSpace(local.BXTunInterface)); bx != "" && name == bx {
 		return OwnerBX
 	}
-	if IsTunnelInterface(name) {
+	if interfaceLooksLikeTunnel(local.InterfaceKinds, ref.Name) {
 		return OwnerOther
+	}
+	switch local.InterfaceKinds[strings.TrimSpace(ref.Name)] {
+	case InterfacePhysical, InterfaceLoopback:
+		// 内核直接说了它是广播段/回环 —— 比名字白名单硬。
+		return OwnerNone
 	}
 	if hasAnyPrefix(name, physicalIfacePrefixes) {
 		return OwnerNone

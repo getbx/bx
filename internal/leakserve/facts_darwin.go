@@ -67,10 +67,11 @@ func LiveFactDeps() FactDeps {
 			// 这仍然比编一个答案诚实。
 			return scutilDefaultResolvers(ctx), nil
 		},
-		GuardianStatus:  guardianTunAndProtection,
-		ListOverlays:    listOverlayTenants,
-		ListRoutes:      listDarwinRoutes,
-		ListVPNServices: listDarwinVPNServices,
+		GuardianStatus:     guardianTunAndProtection,
+		ListInterfaceKinds: listInterfaceKinds,
+		ListOverlays:       listOverlayTenants,
+		ListRoutes:         listDarwinRoutes,
+		ListVPNServices:    listDarwinVPNServices,
 	}
 }
 

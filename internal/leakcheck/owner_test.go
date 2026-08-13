@@ -146,3 +146,38 @@ func TestBXsOwnLinuxTunIsRecognisedAsATunnel(t *testing.T) {
 		t.Fatalf("Guardian 报了 bx0 却判成 %v", got)
 	}
 }
+
+// **证据不对称,判据也必须不对称。**
+//
+// `pointtopoint` 是可靠的正证据;`broadcast` 不是可靠的负证据 —— Linux 的 IFF_TAP
+// 是二层设备,内核眼里就是一段以太网,而 TAP 模式的 OpenVPN 确实在把流量运走。
+// 早先让 broadcast 压过名字,与「名字表不能退休」这句话自相矛盾:tap0 会被判成
+// 物理网卡,名字表根本没机会说话。
+func TestBroadcastIsNotProofThatSomethingIsNotATunnel(t *testing.T) {
+	// TAP 模式的 VPN:内核说广播段,名字说隧道 —— 名字赢。
+	tap := LocalFacts{
+		DefaultRouteV4: InterfaceRef{Name: "tap0"},
+		InterfaceKinds: map[string]InterfaceKind{"tap0": InterfacePhysical},
+	}
+	if got := WhoOwnsTheRoute(tap); got != OwnerOther {
+		t.Errorf("tap0 判成 %v —— TAP 模式的 VPN 在内核眼里就是以太网,"+
+			"广播段不能当作「它不是隧道」的证据", got)
+	}
+	// 名字也不像隧道时,内核说广播段就够了。
+	eth := LocalFacts{
+		DefaultRouteV4: InterfaceRef{Name: "enp3s0"},
+		InterfaceKinds: map[string]InterfaceKind{"enp3s0": InterfacePhysical},
+	}
+	if got := WhoOwnsTheRoute(eth); got != OwnerNone {
+		t.Errorf("enp3s0 判成 %v,want OwnerNone", got)
+	}
+	// 回环两边都可靠,直接否掉 —— 哪怕名字前缀撞上(`lo` 不在隧道表里,
+	// 这里用一个故意撞名的例子)。
+	weird := LocalFacts{
+		DefaultRouteV4: InterfaceRef{Name: "tunlo"},
+		InterfaceKinds: map[string]InterfaceKind{"tunlo": InterfaceLoopback},
+	}
+	if got := WhoOwnsTheRoute(weird); got == OwnerOther || got == OwnerBX {
+		t.Errorf("内核说是回环却判成隧道:%v", got)
+	}
+}

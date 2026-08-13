@@ -166,3 +166,29 @@ func TestRouteEscapeNeedsNothingFromTheBrowser(t *testing.T) {
 		t.Fatalf("判定 = %v,want Bad —— 这一项不需要浏览器", f.Verdict)
 	}
 }
+
+// **「这是不是一条隧道」在这个包里只能有一个答案。**
+//
+// 真 Linux 容器里当场看到的后果:一条名字表不认识的隧道(实验里叫 bxprobe0),
+// 它**自己的子网路由**被报成「有人把公网流量从隧道外面送走」—— 因为
+// WhoOwnsTheRoute 已经改成先问内核、而这里还在用名字判据,同一个接口两个答案。
+//
+// 内核说它是点对点设备,这条路由就是隧道自己的,不是逃逸。
+func TestATunnelsOwnSubnetIsNotAnEscapeEvenIfItsNameIsUnknown(t *testing.T) {
+	local := LocalFacts{
+		DefaultRouteV4: InterfaceRef{Name: "nordlynx"},
+		InterfaceKinds: map[string]InterfaceKind{
+			"nordlynx": InterfaceTunnel,
+			"eth0":     InterfacePhysical,
+		},
+		Routes: []RouteEntry{
+			{Destination: "0.0.0.0/1", Interface: "nordlynx"},
+			// 隧道自己的子网(TEST-NET-2,bx 默认就用这一段)。
+			{Destination: "198.51.100.0/30", Interface: "nordlynx"},
+		},
+	}
+	f := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"}, local)
+	if f.Verdict != OK {
+		t.Fatalf("隧道自己的子网被报成逃逸:%v %q", f.Verdict, f.Summary)
+	}
+}

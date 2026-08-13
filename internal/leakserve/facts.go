@@ -42,6 +42,9 @@ type FactDeps struct {
 	// ListRoutes 返回本机 IPv4 路由表的原始条目(netstat -rn -f inet)。
 	// **只采不判**:TunnelVision 那条规则住在 leakcheck 里。
 	ListRoutes func(ctx context.Context) ([]leakcheck.RouteEntry, error)
+	// ListInterfaceKinds 问内核每个接口是什么(点对点 / 广播 / 回环)。
+	// **比名字硬**,而且跨平台一致 —— 名字表连 bx 自己的 bx0 都漏过。
+	ListInterfaceKinds func() map[string]leakcheck.InterfaceKind
 	// ListOverlays 返回此刻在跑的 overlay 网络名(tailscale / zerotier …)。
 	// 纯 Go(接口名 + 地址),不 exec。
 	ListOverlays func() []string
@@ -96,6 +99,10 @@ func CollectFactsWithBudget(ctx context.Context, deps FactDeps, budget time.Dura
 	facts := leakcheck.LocalFacts{}
 
 	var services []leakcheck.VPNService
+	if deps.ListInterfaceKinds != nil {
+		facts.InterfaceKinds = deps.ListInterfaceKinds()
+	}
+
 	if deps.ListOverlays != nil {
 		facts.OverlayTenants = deps.ListOverlays()
 	}

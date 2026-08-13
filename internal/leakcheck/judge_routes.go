@@ -90,8 +90,12 @@ func ParseRouteDestination(dest string) (netip.Prefix, error) {
 //
 // 前缀必须**比 split-default 更具体**(>1 位)才压得过隧道;`default` 本身在物理
 // 网卡上是 split-default 的常态,不是逃逸。
-func routeEscapesTunnel(entry RouteEntry) (netip.Prefix, bool) {
-	if entry.Blocking || entry.Scoped || IsTunnelInterface(entry.Interface) {
+func routeEscapesTunnel(entry RouteEntry, kinds map[string]InterfaceKind) (netip.Prefix, bool) {
+	// **「这是不是一条隧道」在这个包里只能有一个答案。** 此前这里用名字判据,而
+	// WhoOwnsTheRoute / ClassifyTunnels 已经改成先问内核 —— 于是同一个接口在两处
+	// 得到不同答案。真 Linux 容器里当场看到的后果:一条名字表不认识的隧道
+	// (bxprobe0),它**自己的子网路由**被报成「有人把公网流量从隧道外面送走」。
+	if entry.Blocking || entry.Scoped || interfaceLooksLikeTunnel(kinds, entry.Interface) {
 		return netip.Prefix{}, false
 	}
 	prefix, err := ParseRouteDestination(entry.Destination)
@@ -139,12 +143,12 @@ func judgeRouteEscape(local LocalFacts) Finding {
 	var escapes []string
 	hosts := 0
 	for _, entry := range local.Routes {
-		if prefix, ok := routeEscapesTunnel(entry); ok {
+		if prefix, ok := routeEscapesTunnel(entry, local.InterfaceKinds); ok {
 			escapes = append(escapes, prefix.String()+" → "+entry.Interface)
 			continue
 		}
 		if p, err := ParseRouteDestination(entry.Destination); err == nil &&
-			p.Bits() == 32 && !IsTunnelInterface(entry.Interface) && !entry.Blocking &&
+			p.Bits() == 32 && !interfaceLooksLikeTunnel(local.InterfaceKinds, entry.Interface) && !entry.Blocking &&
 			!p.Addr().IsPrivate() && !p.Addr().IsLoopback() && !p.Addr().IsLinkLocalUnicast() {
 			hosts++
 		}
