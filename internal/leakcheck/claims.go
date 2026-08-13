@@ -20,14 +20,48 @@ type TunnelClaim struct {
 // 与 routeEscapesTunnel 共用同一套排除项(私网 / CGNAT / loopback / link-local /
 // 组播),**因为那是同一个问题的两面**:那边问「有没有人把公网流量从隧道外面送走」,
 // 这边问「有没有别的隧道把公网流量收走」。
+// nonPublicRanges 是**整段都不是公网可路由目的地**的地址块。
+//
+// 判据必须是「这个前缀**落在**其中一段里」,不是「它的网络地址长得像其中一段」——
+// 后者是 `Overlaps` 那类错误的另一种写法,而这里踩过一次更隐蔽的版本(见下)。
+var nonPublicRanges = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),      // RFC1122「本网络」
+	netip.MustParsePrefix("10.0.0.0/8"),     // RFC1918
+	netip.MustParsePrefix("172.16.0.0/12"),  // RFC1918
+	netip.MustParsePrefix("192.168.0.0/16"), // RFC1918
+	netip.MustParsePrefix("100.64.0.0/10"),  // CGNAT
+	netip.MustParsePrefix("127.0.0.0/8"),    // loopback
+	netip.MustParsePrefix("169.254.0.0/16"), // link-local
+	netip.MustParsePrefix("224.0.0.0/4"),    // 组播
+	netip.MustParsePrefix("240.0.0.0/4"),    // 保留
+}
+
+// isPublicPrefix 判断一个前缀是不是公网可路由空间。
+//
+// **`0.0.0.0/2` 是公网,而它一度被静默放过。** 早先这里写的是
+// `addr.IsUnspecified()` —— 那个判断本意是排除 `0.0.0.0` 这个**主机地址**,却作用在
+// 前缀的**网络地址**上,于是 0.0.0.0/1、/2、/3 全被否掉,而它们覆盖 1.0.0.0/8、
+// 8.8.8.8 这些实打实的公网。后果分两处,都不小:TunnelVision 那条会漏掉
+// `0.0.0.0/2` —— **那正是它唯一要抓的形状**;隧道分类会把只 claim `0.0.0.0/1` 的
+// 全隧道 VPN 当成叠加。
+//
+// 这个洞是一次变异**没有**转红时查出来的,不是读代码读出来的。
+//
+// 与 routeEscapesTunnel 共用同一个判据,因为那是同一个问题的两面:那边问「有没有人
+// 把公网流量从隧道外面送走」,这边问「有没有别的隧道把公网流量收走」。
 func isPublicPrefix(prefix netip.Prefix) bool {
 	addr := prefix.Addr()
-	if !addr.Is4() || addr.IsPrivate() || addr.IsLoopback() ||
-		addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() {
+	if !addr.Is4() {
 		return false
 	}
-	cgnat := netip.MustParsePrefix("100.64.0.0/10")
-	return !(prefix.Bits() >= cgnat.Bits() && cgnat.Contains(addr))
+	for _, block := range nonPublicRanges {
+		// 只有**整个前缀都落在**非公网块里才不算公网。一个更宽的前缀(0.0.0.0/2)
+		// 盖住某个非公网块(0.0.0.0/8)不影响它仍然覆盖大量公网。
+		if prefix.Bits() >= block.Bits() && block.Contains(addr) {
+			return false
+		}
+	}
+	return true
 }
 
 // ClassifyTunnels 按**行为**给别的隧道分类,不按产品名。

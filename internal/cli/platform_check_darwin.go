@@ -18,6 +18,13 @@ func collectPlatformChecks(ctx context.Context) []checkReport {
 	if check := darwinZeroTierCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
+	// **行为在前**:路由表能确定回答「有没有别的隧道在抢公网流量」,
+	// 而下面那份产品清单只能回答「谁装了/在跑」。
+	if routes, err := darwinCommand(ctx, "netstat", "-rn", "-f", "inet"); err == nil {
+		checks = append(checks, darwinTunnelClaimChecks(routes, darwinBXTunName(ctx))...)
+	} else {
+		checks = append(checks, darwinTunnelClaimChecks("", "")...)
+	}
 	checks = append(checks, darwinCompetingTunnelChecks(ctx)...)
 	return checks
 }
@@ -111,6 +118,15 @@ type darwinProcessDetector struct {
 	hint     string
 }
 
+// darwinCompetingTunnelChecks 回答「谁装了/在跑」,**不回答「谁在抢」** ——
+// 后者由 darwinTunnelClaimChecks 从路由表得出。
+//
+// **它此前的措辞全是猜测**(「may create another tunnel」「verify its routes do not
+// bypass bx」),让用户去查一件 bx 自己查得到的事。而产品名本来也分不出类:同一个
+// 产品会随配置在叠加与竞争之间翻转(Tailscale 的 exit node、WireGuard 的 AllowedIPs)。
+//
+// 留着它的唯一理由:**进程在跑但还没连上时路由表里什么都没有** —— 那时这份清单是
+// 唯一的线索。所以措辞改成如实说「它在跑」,并指向路由表要答案。
 func darwinCompetingTunnelChecks(parent context.Context) []checkReport {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
@@ -121,22 +137,22 @@ func darwinCompetingTunnelChecks(parent context.Context) []checkReport {
 			name:     "warp",
 			patterns: []string{"Cloudflare WARP", "CloudflareWARP", "warp-svc"},
 			status:   "info",
-			detail:   "Cloudflare WARP detected; it may create another tunnel when connected",
-			hint:     "if traffic behaves oddly, disconnect WARP or run bx check --full",
+			detail:   "Cloudflare WARP is running",
+			hint:     "whether it is taking traffic is answered by tunnel_claims (the routing table), not by this line",
 		},
 		{
 			name:     "wireguard",
 			patterns: []string{"WireGuard"},
 			status:   "info",
-			detail:   "WireGuard detected; active tunnels are managed outside bx",
-			hint:     "if WireGuard is connected, verify its routes do not bypass bx",
+			detail:   "WireGuard is running",
+			hint:     "whether it is taking traffic is answered by tunnel_claims (the routing table); a WireGuard tunnel is only a competitor when its AllowedIPs cover public space",
 		},
 		{
 			name:     "openvpn",
 			patterns: []string{"OpenVPN", "openvpn"},
 			status:   "info",
-			detail:   "OpenVPN detected; active tunnels are managed outside bx",
-			hint:     "if OpenVPN is connected, verify its routes do not bypass bx",
+			detail:   "OpenVPN is running",
+			hint:     "whether it is taking traffic is answered by tunnel_claims (the routing table); a split-tunnel OpenVPN coexists with bx",
 		},
 	} {
 		if darwinAnyProcessDetected(ctx, detector.patterns) {
@@ -182,7 +198,7 @@ func darwinPacketTunnelCheck(ctx context.Context) checkReport {
 			Name:   "packet_tunnel",
 			Status: "warn",
 			Detail: "macOS VPN service connected: " + name,
-			Hint:   "verify this VPN is intentional; it may create a path outside bx",
+			Hint:   "whether it is taking public traffic is answered by tunnel_claims (the routing table); a split-tunnel VPN coexists with bx",
 		}
 	}
 	return checkReport{}
