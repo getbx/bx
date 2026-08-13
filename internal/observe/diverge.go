@@ -61,6 +61,11 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 		if covered[d.Field] {
 			return
 		}
+		// 这个平台上根本不成立的问题不产生分歧 —— 否则每台健康的机器恒报一条,
+		// 而那会把 divergence 训练成噪声。
+		if observed.notApplicable(d.Field) {
+			return
+		}
 		covered[d.Field] = true
 		// 观测失败的原因并进这一行,而不是另起一行:那个原因是排查的全部价值
 		// (「未观测到劫持」与「未观测到劫持,因为 route 命令超时」不是一回事)。

@@ -4107,30 +4107,66 @@ func TestClientStatusFlagsResidueWhenDesiredOff(t *testing.T) {
 // 不带来任何新事实(tunnel_healthy 本就取自同一个控制 socket,已在扁平字段里),
 // 却让 divergence 恒非空——每次 bx status 都吐 5 条「该项无法观测」。那会把
 // divergence 训练成用户和 agent 学会忽略的噪声,正好毁掉它唯一的价值。
+// **观测只附在原语真的存在的平台上,而「恒定噪声」是不附的真正理由。**
+//
+// 这条守卫原本禁 linux 与 windows,理由写作「原语不存在」。linux 那一半已经不成立:
+// supervisor.LookupRoute 三平台都有了(2026-08-13 归位),capture 与 barrier 在那里
+// 问得出来,core_socket 与 tunnel_healthy 本来就走控制 socket;唯一不成立的
+// dns_managed 由 observe.NotApplicable 显式声明,不会变成每次调用都吐一条的
+// 「无法观测」—— 那正是当初拒绝附观测的理由。
+//
+// **windows 仍然不附,而理由换了**:那边的采集刚补上、**真机未验**,
+// 而一条没验证过的观测比没有观测更坏 —— 它会直接进 `bx status --json` 的 divergence。
 func TestObservationOnlyAttachedWherePrimitivesExist(t *testing.T) {
-	for _, platform := range []string{"linux", "windows"} {
-		t.Run(platform, func(t *testing.T) {
-			if observerForPlatform(platform) != nil {
-				t.Errorf("%s 上不得附观测:原语不存在,只会产出恒定噪声", platform)
-			}
-		})
+	if observerForPlatform("windows") != nil {
+		t.Error("windows 上暂不附观测:那边的采集真机未验,一条没验证过的观测比没有观测更坏")
 	}
-	if observerForPlatform("darwin") == nil {
-		t.Error("darwin 上必须附观测——本期全部价值都在这里")
+	for _, platform := range []string{"darwin", "linux"} {
+		if observerForPlatform(platform) == nil {
+			t.Errorf("%s 上必须附观测:原语齐了", platform)
+		}
+	}
+}
+
+// **不适用的项必须被显式声明,而不是留成 Unknown。**
+//
+// 这是上一条能成立的前提:Linux 上 bx 不改系统 DNS(它在 TUN 里拦 UDP:53),
+// 若把 dns_managed 留成 Unknown,每台健康的 Linux 机器每次观测都会吐一条永久
+// divergence —— 而满屏「无法观测」会把 divergence 训练成用户和 agent 学会忽略的
+// 东西,正好毁掉它唯一的价值。
+func TestPlatformsWithoutSystemDNSTakeoverDeclareItNotApplicable(t *testing.T) {
+	if got := observe.NotApplicableForPlatform("darwin"); len(got) != 0 {
+		t.Errorf("darwin 上系统 DNS 接管是真的,不该标成不适用:%v", got)
+	}
+	for _, goos := range []string{"linux", "windows"} {
+		got := observe.NotApplicableForPlatform(goos)
+		var sawDNS bool
+		for _, item := range got {
+			if item == "dns_managed" {
+				sawDNS = true
+			}
+		}
+		if !sawDNS {
+			t.Errorf("%s 上 bx 不接管系统 DNS,dns_managed 必须标成不适用,得到 %v", goos, got)
+		}
 	}
 }
 
 // 平台不支持时,报告里宁可没有 observed,也不能有一份「全 Unknown + 满屏
 // 无法观测」的观测:字段缺席是诚实的「没问」,后者是把静态平台限制伪装成
 // 每次调用都新发生的差异。
+// 不附观测的平台必须**一个字都不发布** —— 既不发 observed 也不发 divergence。
+//
+// 例子从 linux 换成 windows:linux 现在附了观测(原语齐了),而**性质没变** ——
+// 变的只是哪个平台还没轮到。
 func TestClientStatusOmitsObservationOnUnsupportedPlatform(t *testing.T) {
 	rep, err := readClientStatusReportWithObserver(
 		func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
 		func() (guardian.Status, error) {
 			return guardian.Status{Desired: guardian.DesiredOn, Protection: guardian.ProtectionProtected}, nil
 		},
-		"linux",
-		observerForPlatform("linux"),
+		"windows",
+		observerForPlatform("windows"),
 	)
 	if err != nil {
 		t.Fatal(err)

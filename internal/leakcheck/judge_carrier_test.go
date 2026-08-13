@@ -85,7 +85,8 @@ func TestCarrierRule(t *testing.T) {
 // 泄漏;但内核是按 metric 挑的,对方重连或改 metric 就可能悄悄接管。这件事值得
 // 说,不值得报红 —— 报红会和另外几条「流量确实从 VPS 出去」的结论当面打架。
 func TestASecondClaimantIsReportedWithoutChangingTheVerdict(t *testing.T) {
-	local := carrierFacts("utun11", "utun11",
+	local := carrierFacts(
+		"utun11", "utun11",
 		RouteEntry{Destination: "0/1", Interface: "utun11"},
 		RouteEntry{Destination: "0/1", Interface: "utun4"},
 		RouteEntry{Destination: "128.0/1", Interface: "utun4"},
