@@ -38,44 +38,24 @@ type Router struct {
 	GlobalProxy   bool       // 全局模式:跳过 china 判定,除用户 direct 规则外一律走代理
 }
 
-// Decide 按优先级判定。返回 NeedResolve 表示有域名但未命中,
-// 上层应解析出 IP 后调用 DecideIP。
+// Decide 按优先级判定。
+//
+// **注意:它从不返回 NeedResolve。** 未命中任何列表的域名直接判 Proxy
+// (见 Explain 里的说明:不再拿可能被污染的国内 DNS 做 geoip)。dialer 里
+// 那个 `dec == route.NeedResolve` 分支因此是死代码 —— 常量与分支都保留着,
+// 但谁也别指望它会被走到。
+//
+// **它是 Explain 的薄壳,不是第二份判据。** 判定逻辑只有 explain.go 那一份;
+// 需要知道「是哪条规则做的」时直接用 Explain。
 func (r *Router) Decide(m Meta) Decision {
-	if m.Domain != "" {
-		switch {
-		case r.UserProxy != nil && r.UserProxy.Match(m.Domain):
-			return Proxy
-		case r.UserDirect != nil && r.UserDirect.Match(m.Domain):
-			return Direct
-		case !r.GlobalProxy && r.ChinaDomain != nil && r.ChinaDomain.Match(m.Domain):
-			return Direct
-		default:
-			// 未命中任何列表:默认走代理。
-			// 不再用(可能被污染的)国内 DNS 做 geoip,避免境外域名被误判
-			// 直连而泄漏真实 IP。裸 IP 连接仍走 DecideIP 的 geoip。
-			return Proxy
-		}
-	}
-	if m.IP.IsValid() {
-		return r.DecideIP(m.IP)
-	}
-	return Proxy // 信息不足时保守走代理
+	dec, _ := r.Explain(m)
+	return dec
 }
 
 // DecideIP 仅按 IP 判定:用户 proxy 网段 > 用户 direct 网段 > 私网 > geoip-cn > 默认代理。
+//
+// 同样是 ExplainIP 的薄壳。
 func (r *Router) DecideIP(ip netip.Addr) Decision {
-	if r.UserProxyIP != nil && r.UserProxyIP.Contains(ip) {
-		return Proxy
-	}
-	if r.UserDirectIP != nil && r.UserDirectIP.Contains(ip) {
-		return Direct
-	}
-	// 私网/docker/link-local:用户未显式覆盖时一律直连(不受 global 影响)。
-	if r.PrivateDirect != nil && r.PrivateDirect.Contains(ip) {
-		return Direct
-	}
-	if !r.GlobalProxy && r.ChinaCIDR != nil && r.ChinaCIDR.Contains(ip) {
-		return Direct
-	}
-	return Proxy
+	dec, _ := r.ExplainIP(ip)
+	return dec
 }

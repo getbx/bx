@@ -36,12 +36,27 @@ type Resolver interface {
 	Resolve(ctx context.Context, domain string) (netip.Addr, error)
 }
 
-// DecisionCounter 按分流决策计数(由 stats.Counters 实现)。
+// DecisionCounter 按分流**决策与结果**计数(由 stats.Counters 实现)。
+//
+// **结果那一半是后加的,而且刻意加进同一个接口而不是做成可选断言。**
+// 可选断言意味着「实现里没有就静默不计」—— 一个悄悄不工作的计数器,
+// 与没有这个功能在输出上完全一样(都是 0),而它恰恰是用来发现「有东西
+// 在悄悄失败」的。放进接口,编译器会逼每个实现表态。
 type DecisionCounter interface {
 	Proxy()
 	Direct()
 	Blocked()
 	UDPBlocked()
+
+	// DirectFailed / ProxyFailed 记一次拨号失败。bx 就在数据面上,
+	// 这些失败它每一次都看见 —— 此前只打进 debug 日志然后扔掉。
+	DirectFailed()
+	ProxyFailed()
+
+	// RuleAttempt / RuleFailure 把判定与失败归因到**做出判定的那条规则**。
+	// 用户规则传原文(config 里那一行),内建列表传空串。
+	RuleAttempt(source, rule string)
+	RuleFailure(source, rule string)
 }
 
 // Dialer 把 Router 决策落到实际拨号。
@@ -231,10 +246,12 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 	}
 
 	var dec route.Decision
+	var why route.Reason
 	if m.Domain == "" && d.SplitDirect != nil && d.SplitDirect.Contains(m.IP) {
 		dec = route.Direct // split 解析出的内网真实 IP:强制直连,跳过 Router
+		why = route.Reason{Source: route.SourceSplitDNS}
 	} else {
-		dec = rt.Decide(m)
+		dec, why = rt.Explain(m)
 	}
 
 	// 2) 未命中域名:用国内 DNS 解析后按 IP 二次判定
@@ -243,9 +260,10 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		ip, err := d.Resolver.Resolve(ctx, m.Domain)
 		if err != nil {
 			dec = route.Proxy // 解析失败保守走代理
+			why = route.Reason{Source: route.SourceDefault}
 		} else {
 			resolved = ip
-			dec = rt.DecideIP(ip)
+			dec, why = rt.ExplainIP(ip)
 		}
 	}
 
@@ -254,6 +272,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 	case route.Direct:
 		if d.Stats != nil {
 			d.Stats.Direct()
+			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 		}
 		var target string
 		if m.Domain != "" {
@@ -261,6 +280,9 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			if !ip.IsValid() {
 				r, err := d.Resolver.Resolve(ctx, m.Domain)
 				if err != nil {
+					// **解析不出来也是这条规则的失败。** 少算它会让一条把域名
+					// 逼向坏解析器的规则看起来毫无问题。
+					d.recordFailure(route.Direct, why)
 					return nil, err
 				}
 				ip = r
@@ -273,6 +295,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		conn, err := d.Direct.DialContext(ctx, network(m.UDP), target)
 		if err != nil {
 			debugf("dial direct failed: target=%s err=%v", target, err)
+			d.recordFailure(route.Direct, why)
 		}
 		return conn, err
 
@@ -285,6 +308,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		}
 		if d.Stats != nil {
 			d.Stats.Proxy()
+			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 		}
 		host := m.Domain
 		if host == "" {
@@ -295,6 +319,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		conn, err := tr.Proxy.DialContext(ctx, network(m.UDP), target)
 		if err != nil {
 			debugf("dial proxy failed: target=%s err=%v", target, err)
+			d.recordFailure(route.Proxy, why)
 		}
 		return conn, err
 
@@ -304,4 +329,23 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		}
 		return nil, ErrBlocked
 	}
+}
+
+// recordFailure 记一次拨号失败:总数一份,按规则归因一份。
+//
+// 两份都要:总数回答「现在整体坏得厉害吗」,归因回答「该改哪一行」。
+// 只有前者时用户看得见有问题却找不到源头 —— 那正是这次 Steam 排查的处境。
+func (d *Dialer) recordFailure(dec route.Decision, why route.Reason) {
+	if d.Stats == nil {
+		return
+	}
+	switch dec {
+	case route.Direct:
+		d.Stats.DirectFailed()
+	case route.Proxy:
+		d.Stats.ProxyFailed()
+	default:
+		return
+	}
+	d.Stats.RuleFailure(why.Source.String(), why.Rule)
 }

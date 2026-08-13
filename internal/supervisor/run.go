@@ -562,6 +562,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	runtimeState := func() RuntimeState {
 		udpRequired, udpReady := udpRuntimeReadiness(cfg.UDP.Mode, lt.Healthy, udpHealthy)
 		return RuntimeState{
+			ConfigPath:      opts.ConfigPath,
 			Version:         version.Version,
 			PID:             os.Getpid(),
 			TunName:         tunH.Name,

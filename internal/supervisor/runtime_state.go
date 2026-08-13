@@ -7,10 +7,14 @@ import (
 
 // RuntimeState is the non-secret handoff contract consumed by Guardian.
 type RuntimeState struct {
-	Version         string   `json:"version"`
-	PID             int      `json:"pid"`
-	TunName         string   `json:"tun_name"`
-	SocksAddr       string   `json:"socks_addr"`
+	Version   string `json:"version"`
+	PID       int    `json:"pid"`
+	TunName   string `json:"tun_name"`
+	SocksAddr string `json:"socks_addr"`
+	// ConfigPath 是 Core **此刻在用**的配置文件(与 DNSUpstream 同一条纪律:
+	// 发布运行中的值,不是盘上的值)。点名一条坏规则时要告诉用户去哪改,
+	// 而 stats 是叶子包、不该自己猜一份路径常量。
+	ConfigPath      string   `json:"config_path,omitempty"`
 	ServerBypass    []string `json:"server_bypass"`
 	TunnelHealthy   bool     `json:"tunnel_healthy"`
 	DNSListening    bool     `json:"dns_listening"`

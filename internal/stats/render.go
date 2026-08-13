@@ -23,6 +23,10 @@ type Report struct {
 	Transports   []string  `json:"transports,omitempty"`    // 多传输容灾列表(>1 时,有序优先级)
 	UDPTransport string    `json:"udp_transport,omitempty"` // UDP 专用传输(按类分流)
 	Warnings     []Warning `json:"warnings,omitempty"`      // 运行期网络共存告警(只读检测)
+	// ConfigPath 是**正在使用的**配置文件路径,由 supervisor 从 Options 填。
+	// 点名一条坏规则时要告诉用户去哪改;stats 是叶子包,不该自己猜一份路径常量
+	// (那会与 cli 那份 build-tagged 的默认值悄悄漂开)。
+	ConfigPath string `json:"config_path,omitempty"`
 }
 
 // Warning 是 bx status 的轻量运行期告警,用于提示其他通道/系统代理等共存风险。
@@ -83,8 +87,35 @@ func Render(r Report) string {
 		fmt.Fprintf(&b, "  %s", r.UDPNote)
 	}
 	fmt.Fprintln(&b)
+	// **失败与判定分开报,而且只在真有失败时才占一行。**
+	// bx 就在数据面上,这些失败它每一次都看见 —— 此前只打进 debug 日志然后扔掉,
+	// 于是「direct 26186」里藏着几千条秒失败的连接,而 status 一个字都不说。
+	if r.DirectFailed > 0 || r.ProxyFailed > 0 {
+		fmt.Fprintf(&b, "  失败    代理 %d  直连 %d\n", r.ProxyFailed, r.DirectFailed)
+	}
 	fmt.Fprintf(&b, "  分流    代理 %.1f%% / 直连 %.1f%%\n", ratio, 100-ratio)
 	fmt.Fprintf(&b, "  流量    ↑ %s   ↓ %s\n", humanBytes(r.BytesUp), humanBytes(r.BytesDown))
+	// 点名成片失败的用户规则。**一切正常时这里一个字都不打** ——
+	// 那是它不被训练成噪声的前提。
+	if failing := r.FailingRules(); len(failing) > 0 {
+		for i, rule := range failing {
+			label := "规则"
+			if i > 0 {
+				label = ""
+			}
+			pct := float64(rule.Failures) / float64(rule.Attempts) * 100
+			fmt.Fprintf(&b, "  %-6s%s  %s %d 条,失败 %d(%.0f%%)\n",
+				label, rule.Rule, ruleActionLabel(rule.Source), rule.Attempts, rule.Failures, pct)
+		}
+		where := r.ConfigPath
+		if where == "" {
+			where = "配置文件"
+		}
+		// 续行与上面的规则名对齐:用同一个标签宽度构造,不手数空格
+		// (手数的那个版本差了一格,而这种错没有任何测试会红)。
+		fmt.Fprintf(&b, "  %-6s↑ 这条路已经不通;改 %s 的 rules 后 bx down && bx up\n", "", where)
+	}
+
 	for i, w := range r.Warnings {
 		label := "提醒"
 		if i > 0 {
@@ -140,4 +171,16 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// ruleActionLabel 说明这条规则把连接**逼去了哪**,用户据此判断改它的后果。
+func ruleActionLabel(source string) string {
+	switch source {
+	case "user_direct", "user_direct_ip":
+		return "强制直连"
+	case "user_proxy", "user_proxy_ip":
+		return "强制走隧道"
+	default:
+		return "命中"
+	}
 }
