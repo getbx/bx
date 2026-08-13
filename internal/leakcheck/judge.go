@@ -196,6 +196,18 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 			// 而「这条隧道不是我建的、我看不到它怎么配的」是关于本工具能力边界的话。
 			f.Evidence = append(f.Evidence,
 				"this tunnel was not set up by bx, so its configuration is not visible here")
+			// **先说可观测的行为,再给产品线索。**
+			//
+			// 「utun4 claim 了 0.0.0.0/1 和 128.0.0.0/1」是事实,任何产品做这件事
+			// 都一样;「你可能开了 Tailscale exit node」只是线索。把线索当分类依据,
+			// 就会在「WireGuard 配了 AllowedIPs=0.0.0.0/0」那种情形下完全错过 ——
+			// 而那是同一种行为。
+			for _, claim := range competingTunnels(local) {
+				f.Evidence = append(f.Evidence,
+					claim.Interface+" has claimed public address space ("+
+						strings.Join(claim.Prefixes, ", ")+") — that is a full-tunnel VPN's "+
+						"behaviour, whatever product it belongs to")
+			}
 			f.Evidence = append(f.Evidence, tenantSuspicion(local)...)
 		}
 	case OwnerNone:
@@ -213,6 +225,10 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 }
 
 // tenantSuspicion 在「默认路由归别人」时点名最可能的嫌疑。
+//
+// **它是线索,不是分类。** 分类由 ClassifyTunnels 按行为做出 —— 产品名什么都没告诉
+// 你(同一个产品会随配置在租户与竞争者之间翻转),这里只是把用户已经知道自己在跑的
+// 东西和眼前的现象连起来,省掉他自己去猜。
 //
 // **用户最容易踩、而 bx 此前完全认不出的情形:Tailscale 开了 exit node。** 那一刻它
 // 要默认路由,从「租户」变成「竞争者」—— 而用户仍然觉得「这俩本来就该共存」,
