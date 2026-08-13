@@ -102,6 +102,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         configureMenu()
         // 启动那一次不可能撞上在途刷新,补跑与否无意义;标 false 以免被读成用户动作。
         refresh(userInitiated: false)
+        // **刷完才知道自己处在哪一步,所以引导排在这之后。** 判定住在 FirstRun.swift
+        // (那里编得进测试套件),这里只负责把它变成两个弹框。
+        runFirstRunGuidance()
         refreshUpdateCheck()
         rescheduleRefreshTimer(menuOpen: false)
         updateTimer = commonModeTimer(every: 24 * 60 * 60, tolerance: 60) { [weak self] in
@@ -936,7 +939,45 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         performToggle(.turnOn)
     }
 
+    /// 首次启动时主动开口。
+    ///
+    /// **在此之前,双击 Bx.app 之后什么都不发生** —— 菜单栏冒出一个小图标,而没有
+    /// 任何东西告诉用户下一步该点哪里。一个从 dmg 里拖进来的普通用户到这里就卡住了。
+    ///
+    /// 判定(问不问、问哪个)住在 FirstRun.swift,这里只负责把它变成弹框 ——
+    /// main.swift 编不进 Swift 测试套件,凡是能搬出去的判断都不该留在这里。
+    private func runFirstRunGuidance() {
+        switch firstRunAction(state: menuStateKind(), alreadyOfferedSetup: hasOfferedSetup) {
+        case .none:
+            return
+        case .offerInstall:
+            beginInstall()
+        case .offerSetup:
+            // **先记下再问。** 反过来的话,用户在弹框上点了取消、而写标记那一步没走到
+            // (崩溃、被强退),下次登录会再弹一次 —— 而「只问一次」正是这一支的全部约定。
+            hasOfferedSetup = true
+            beginSetup()
+        }
+    }
+
+    /// hasOfferedSetup 记住「装好没配」那个引导已经问过了。
+    ///
+    /// 存在 UserDefaults 而不是内存:那个状态下 app 是登录项,每次开机都会起来,
+    /// 而每次登录弹一个框是骚扰。用户拒绝之后菜单里那一项一直都在,不会失去入口。
+    private var hasOfferedSetup: Bool {
+        get { UserDefaults.standard.bool(forKey: "bx.offeredSetup") }
+        set { UserDefaults.standard.set(newValue, forKey: "bx.offeredSetup") }
+    }
+
+    /// setUpBx 是菜单项的 #selector 入口 —— **只由 AppKit 在用户点击时调用**。
+    /// 躯体在 beginSetup 里,好让首次引导也能走同一条路而不必调用这个选择器:
+    /// 「选择器只由用户点击触发」是一条能被读者一眼验证的声明,给它开例外的代价
+    /// 是下一个人必须重新验证它还成不成立。
     @objc private func setUpBx() {
+        beginSetup()
+    }
+
+    private func beginSetup() {
         // 这是「CLI 在不在、跑不跑得起来」真正有意义的地方:下面那条 AppleScript
         // 会去执行它,而执行之前先弹一个授权框。轮询路径不再替这里探路(那是每几秒
         // 一次 spawn),所以在**要用它的那一刻**问一次 —— 让用户输完密码才被告知
@@ -959,7 +1000,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh(userInitiated: true)
     }
 
+    /// installBx 是菜单项的 #selector 入口 —— 只由 AppKit 在用户点击时调用。
     @objc private func installBx() {
+        beginInstall()
+    }
+
+    private func beginInstall() {
         runEmbeddedInstaller(
             confirmTitle: "Install bx?",
             // 断网这句必须出现在这里:菜单调用走 osascript,CLI 的确认提示进了
@@ -1000,6 +1046,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSApp.terminate(nil)
             } else {
                 refresh(userInitiated: true)
+                // 装完顺手接上下一步:此前用户得自己想到「再去菜单里点 Set Up」。
+                runFirstRunGuidance()
             }
         } else {
             showFailure("Install Failed", "bx could not complete the installation.")

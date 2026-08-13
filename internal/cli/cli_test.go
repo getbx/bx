@@ -1010,7 +1010,12 @@ func TestMacMenuActionPathProbesTheCLIByExecutingIt(t *testing.T) {
 	// 每一条会 shell out 到 /usr/local/bin/bx 的动作,都必须先过这道闸门。
 	// (Install/Repair 走的是 bundle 里的 Contents/Resources/bx-cli,有它自己的
 	// isExecutableFile 前置检查,不在此列。)
-	for _, action := range []string{"private func setUpBx(", "private func updateBx("} {
+	// **指向躯体所在的那个函数,而不是选择器。** setUpBx / installBx 现在只剩一行
+	// 转调(躯体在 beginSetup / beginInstall 里),那是为了让首次引导走同一条路而
+	// 不必调用 #selector 入口 —— 「选择器只由用户点击触发」是一条读者一眼能验证的
+	// 声明,不该为一个新调用方开例外。本守卫钉的性质一个字没变:真要 shell out 的
+	// 那段代码必须先过闸门。
+	for _, action := range []string{"private func beginSetup(", "private func updateBx("} {
 		body, ok := swiftFunctionBody(text, action)
 		if !ok {
 			t.Fatalf("找不到 %s", action)
@@ -1471,7 +1476,7 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			why: "exec 探测只经这一道闸门对外,否则「谁会 spawn」又变成要手工枚举的事",
 		},
 		{
-			pattern: call("ensureCLIUsable("), label: "ensureCLIUsable(", callers: []string{"setUpBx", "updateBx", "checkForLeaks"},
+			pattern: call("ensureCLIUsable("), label: "ensureCLIUsable(", callers: []string{"beginSetup", "updateBx", "checkForLeaks"},
 			why: "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
 		},
 		{
@@ -1482,6 +1487,23 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 		{
 			pattern: call("setUpBx("), label: "setUpBx(", callers: nil,
 			why: "它是 #selector 的菜单入口,只能由用户点击触发,不该被任何代码调用",
+		},
+		{
+			// **首次引导要走同一条路,而办法是搬躯体、不是给选择器开例外。**
+			//
+			// 「选择器只由用户点击触发」是一条读者一眼能验证的声明;给它加一个
+			// 「除了首次引导」的例外,代价是下一个人每次读到都得重新确认那个例外
+			// 还成不成立。所以 setUpBx / installBx 只剩一行转调,躯体在 beginSetup /
+			// beginInstall 里,两个入口都调它。
+			//
+			// 这不是放宽:beginSetup 在**任何** spawn 之前先弹确认框并要用户粘贴链接,
+			// 而且它只出现在启动那一次与用户点击那一次,不在轮询路径上。
+			pattern: call("beginSetup("), label: "beginSetup(", callers: []string{"setUpBx", "runFirstRunGuidance"},
+			why: "首次引导与菜单点击共用一条路;别的地方调它就意味着有第三条通向提权命令的路径",
+		},
+		{
+			pattern: call("beginInstall("), label: "beginInstall(", callers: []string{"installBx", "runFirstRunGuidance"},
+			why: "同上",
 		},
 		{
 			pattern: call("updateBx("), label: "updateBx(", callers: nil,

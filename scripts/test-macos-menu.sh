@@ -22,6 +22,10 @@ run_test status-presentation \
 run_test update-presentation \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Tests/UpdatePresentationTests.swift"
+run_test first-run \
+  "$MENU/Sources/BxMenu/FirstRun.swift" \
+  "$MENU/Sources/BxMenu/ToggleController.swift" \
+  "$MENU/Tests/FirstRunTests.swift"
 run_test recovery-presentation \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
