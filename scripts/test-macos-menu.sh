@@ -36,6 +36,7 @@ run_test guardian-client \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Tests/GuardianClientTests.swift"
 run_test instance-gate \
   "$MENU/Sources/BxMenu/InstanceGate.swift" \
@@ -56,6 +57,7 @@ run_test guardian-status \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Tests/GuardianStatusTests.swift"
 run_test guardian-client-timeout \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
@@ -63,6 +65,7 @@ run_test guardian-client-timeout \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Tests/GuardianClientTimeoutTests.swift"
 run_test toggle-controller \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
@@ -82,6 +85,7 @@ run_test guardian-failure-code \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
   "$MENU/Tests/GuardianFailureCodeTests.swift"
 
@@ -110,6 +114,13 @@ run_test stopped-diagnosis \
   "$MENU/Sources/BxMenu/StoppedDiagnosis.swift" \
   "$MENU/Tests/StoppedDiagnosisTests.swift"
 
+run_test rules-model \
+  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
+  "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/RulesModel.swift" \
+  "$MENU/Tests/RulesModelTests.swift"
+
 run_test menu-cadence \
   "$MENU/Sources/BxMenu/MenuCadence.swift" \
   "$MENU/Tests/MenuCadenceTests.swift"
@@ -120,6 +131,7 @@ run_test guardian-status-fields \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Tests/GuardianStatusFieldsTests.swift"
 
 echo "macOS menu tests passed"

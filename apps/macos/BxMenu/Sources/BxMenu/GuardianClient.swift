@@ -20,11 +20,16 @@ enum GuardianEndpoint {
     case turnOff
     case status
     case updateCheck
+    case listRules
+    /// 改一条规则。**它只写配置,不重启任何东西** —— 生效要 `bx down && bx up`,
+    /// 而那是一次断网,必须是用户单独的、显式的一下。
+    case changeRule(action: String, kind: String, pattern: String)
 
     var expectedStatus: Int {
         switch self {
         case .requestRecovery: return 202
-        case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck: return 200
+        case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule:
+            return 200
         }
     }
 
@@ -33,6 +38,8 @@ enum GuardianEndpoint {
         case .requestRecovery, .currentRecovery, .status: return guardianDefaultTimeout
         case .turnOn, .turnOff: return guardianMutationTimeout
         case .updateCheck: return guardianUpdateCheckTimeout
+        // 只是读写一个小 YAML 文件,不做网络 I/O。
+        case .listRules, .changeRule: return guardianDefaultTimeout
         }
     }
 }
@@ -178,6 +185,22 @@ struct GuardianClient {
         try perform(endpoint: .updateCheck, as: UpdateCheck.self)
     }
 
+    func listRules() throws -> RuleList {
+        try perform(endpoint: .listRules, as: RuleList.self)
+    }
+
+    /// 加/删一条规则,并返回改动**之后**的完整列表。
+    ///
+    /// 返回新列表而不是一个 ok:界面据此重画,不必自己推演改动后的状态 ——
+    /// 推演出来的状态与盘上真实的状态漂开,正是这个仓库反复栽的形状。
+    @discardableResult
+    func changeRule(action: String, kind: RuleKind, pattern: String) throws -> RuleList {
+        try perform(
+            endpoint: .changeRule(action: action, kind: kind.rawValue, pattern: pattern),
+            as: RuleList.self
+        )
+    }
+
     /// 单一出口:生产 `init()` 让每个端点用自己的 `timeout`(`overrideTimeout == nil`);
     /// 测试用 `init(connectSocket:ioTimeout:clock:)` 注入的值始终优先。
     /// `perform` 与测试都必须经它取超时,不许各自重算 `overrideTimeout ?? endpoint.timeout`
@@ -261,6 +284,18 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         method = "GET"
         path = "/v1/update-check"
         body = nil
+    case .listRules:
+        method = "GET"
+        path = "/v1/rules"
+        body = nil
+    case let .changeRule(action, kind, pattern):
+        method = "POST"
+        path = "/v1/rules"
+        // **用 JSONSerialization 而不是字符串插值。** 规则文本来自用户输入,
+        // 手拼 JSON 会让一个引号或反斜杠改变请求的结构。服务端另有一道校验,
+        // 但客户端不该先把畸形请求发出去。
+        let payload: [String: String] = ["action": action, "kind": kind, "pattern": pattern]
+        body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
     }
 
     var requestText = "\(method) \(path) HTTP/1.1\r\nHost: local\r\nAccept: application/json\r\nConnection: close\r\n"

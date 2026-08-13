@@ -283,6 +283,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         repairVersions = outcome.repairVersions
         outdatedRuntime = outcome.outdatedRuntime
         maintenanceReport = outcome.maintenanceReport
+        // 这一轮没读到就保留上一轮的:菜单打开的瞬间闪成 "Could not read rules"
+        // 再闪回来,比慢一拍更糟。真读不到时(第一次就失败)它本来就是 nil。
+        if let fresh = outcome.rules {
+            lastRules = fresh
+        }
         updateIcon()
         rebuildMenu()
         if let snapshot = recoverySnapshot,
@@ -307,6 +312,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let outdatedRuntime: OutdatedRuntimeNotice?
         /// 这一次 Guardian 应答并解码成功的报告(见 maintenanceReport)。
         let maintenanceReport: GuardianStatus?
+        /// 这一次读到的规则。**nil 表示没读到**,与「一条规则都没有」是两回事 ——
+        /// 后者会让菜单摆出一个空列表,用户据此以为自己从没配过规则。
+        let rules: RuleList?
     }
 
     /// 收集一次状态。**跑在后台线程**(它要拨 Guardian 的 socket、还剩两处 spawn),
@@ -326,6 +334,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var repairVersions: (bundle: String?, runtime: String?, core: String?)?
         var outdatedRuntime: OutdatedRuntimeNotice?
         var maintenanceReport: GuardianStatus?
+        var rules: RuleList?
         func resolve() -> BxState {
             let runtimeVersion = unifiedRuntimeVersion()
             // 「CLI 能不能执行」是关于**本机环境**的事实,Guardian 答不上来 —— 但
@@ -452,12 +461,20 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             return .connected(report, version: version ?? "unknown", dns: dns.label)
         }
+        let state = resolve()
+        // 规则只在这一版 Guardian 声明了这个能力时才去读 —— 旧版会回 404,
+        // 而那会让每一轮刷新都白拨一次 socket。读失败保持 nil(= 没读到),
+        // **绝不退化成空列表**。
+        if rulesEditingAvailable(capabilities: maintenanceReport?.capabilities) {
+            rules = try? GuardianClient().listRules()
+        }
         return RefreshOutcome(
-            state: resolve(),
+            state: state,
             recoverySnapshot: recoverySnapshot,
             repairVersions: repairVersions,
             outdatedRuntime: outdatedRuntime,
-            maintenanceReport: maintenanceReport
+            maintenanceReport: maintenanceReport,
+            rules: rules
         )
     }
 
@@ -662,6 +679,158 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 就地重填菜单项。**不建新 NSMenu**(见 configureMenu),这样重填会落在用户
     /// 正看着的那个菜单上,而不是下一次打开才生效的另一个对象上。只读缓存状态,
     /// 不 spawn 子进程,因此放在菜单显示前的路径上也是安全的。
+    /// 上一次读到的规则。nil 表示**没读到**,与「一条规则都没有」是两回事 ——
+    /// 后者会让用户以为自己从没配过规则。
+    private var lastRules: RuleList?
+
+    /// 「Routing Rules」子菜单。
+    ///
+    /// **这里只做摆放,不做判断**:哪些行、什么顺序、副标题写什么,全部由
+    /// RulesModel 的纯函数决定(main.swift 在 CI 里编都不编,判断放这儿等于没测)。
+    private func rulesSubmenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Routing Rules", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        guard let rules = lastRules else {
+            // 读不到就说读不到。摆一个空列表等于告诉用户「你没有规则」。
+            let failed = NSMenuItem(title: "Could not read rules", action: nil, keyEquivalent: "")
+            failed.isEnabled = false
+            submenu.addItem(failed)
+            item.submenu = submenu
+            return item
+        }
+        let rows = ruleRows(from: rules, failing: maintenanceReport?.core?.failingRules ?? [])
+        if rows.isEmpty {
+            let empty = NSMenuItem(title: "No custom rules", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            submenu.addItem(empty)
+        }
+        for (index, row) in rows.enumerated() {
+            let entry = NSMenuItem(
+                title: row.pattern,
+                action: #selector(removeRuleFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            entry.target = self
+            entry.tag = index
+            entry.toolTip = row.kind.actionLabel
+            if let detail = row.detail {
+                // 失败的那条把原因摆在标题里 —— 副标题在 NSMenu 里不可靠,
+                // 而这一行正是用户打开这个菜单的原因。
+                entry.attributedTitle = failingRuleTitle(row.pattern, detail: detail)
+            }
+            submenu.addItem(entry)
+        }
+        submenu.addItem(.separator())
+        let add = NSMenuItem(title: "Add Rule…", action: #selector(addRuleFromMenu), keyEquivalent: "")
+        add.target = self
+        submenu.addItem(add)
+        let note = NSMenuItem(title: "Changes apply after reconnecting", action: nil, keyEquivalent: "")
+        note.isEnabled = false
+        submenu.addItem(note)
+        item.submenu = submenu
+        menuRuleRows = rows
+        return item
+    }
+
+    /// 界面上那几行的当前快照,供 tag 反查(NSMenuItem 只能带一个 Int)。
+    private var menuRuleRows: [RuleRow] = []
+
+    private func failingRuleTitle(_ pattern: String, detail: String) -> NSAttributedString {
+        let title = NSMutableAttributedString(
+            string: pattern + "\n",
+            attributes: [.font: NSFont.menuFont(ofSize: 0)]
+        )
+        title.append(NSAttributedString(
+            string: detail,
+            attributes: [
+                .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.systemRed,
+            ]
+        ))
+        return title
+    }
+
+    @objc private func removeRuleFromMenu(_ sender: NSMenuItem) {
+        guard sender.tag >= 0, sender.tag < menuRuleRows.count else { return }
+        let row = menuRuleRows[sender.tag]
+        let alert = NSAlert()
+        alert.messageText = "Remove \(row.pattern)?"
+        alert.informativeText = row.kind == .direct
+            ? "Traffic for this domain will go through the tunnel again."
+            : "Traffic for this domain will follow the normal routing rules again."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        applyRuleChange(action: "remove", kind: row.kind, pattern: row.pattern)
+    }
+
+    @objc private func addRuleFromMenu() {
+        let alert = NSAlert()
+        alert.messageText = "Add a routing rule"
+        alert.informativeText = "Enter a domain, for example *.example.com"
+        let field = NSTextField(frame: NSRect(x: 0, y: 26, width: 260, height: 24))
+        field.placeholderString = "*.example.com"
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        picker.addItems(withTitles: ["Bypass the tunnel (direct)", "Force through the tunnel (proxy)"])
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 52))
+        box.addSubview(field)
+        box.addSubview(picker)
+        alert.accessoryView = box
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // 客户端先验一遍,好在用户敲完的当下就说话。**服务端仍会再验**,
+        // 那才是权威 —— 这一道只是为了不让人点了保存、断了一次网才发现写错。
+        if let problem = validateRulePattern(field.stringValue) {
+            let complaint = NSAlert()
+            complaint.messageText = "That rule cannot be used"
+            complaint.informativeText = problem
+            complaint.runModal()
+            return
+        }
+        let kind: RuleKind = picker.indexOfSelectedItem == 0 ? .direct : .proxy
+        applyRuleChange(action: "add", kind: kind, pattern: normalizedRulePattern(field.stringValue))
+    }
+
+    /// 落一次规则改动。**它不重启 bx** —— 生效要 down/up,那是一次断网,
+    /// 必须是用户单独的、显式的一下。这里只提示,并把「现在就重连」摆出来。
+    private func applyRuleChange(action: String, kind: RuleKind, pattern: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try GuardianClient().changeRule(action: action, kind: kind, pattern: pattern) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let list):
+                    self.lastRules = list
+                    self.rebuildMenu()
+                    self.offerReconnectAfterRuleChange(action: action, pattern: pattern)
+                case .failure(let error):
+                    let alert = NSAlert()
+                    alert.messageText = "Could not change the rule"
+                    // 失败必须说得出下一步 —— 服务端只回失败码,完整原因在
+                    // Guardian 日志里(与本仓库其它失败路径同一条纪律)。
+                    alert.informativeText = "\(error.localizedDescription)\n\n"
+                        + "See /var/log/bx-guard.err.log for the full reason."
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
+    private func offerReconnectAfterRuleChange(action: String, pattern: String) {
+        let alert = NSAlert()
+        alert.messageText = action == "add" ? "Added \(pattern)" : "Removed \(pattern)"
+        // **必须说这句。** bx 不热重载配置;不说,用户会以为已经生效,
+        // 然后在问题依旧时把这一步排除掉 —— 而那正是真正的原因。
+        alert.informativeText = "bx applies routing rules when it reconnects. "
+            + "Until then, traffic keeps following the old rules."
+        alert.addButton(withTitle: "Reconnect Now")
+        alert.addButton(withTitle: "Later")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        reconnectBx()
+    }
+
     private func rebuildMenu() {
         guard let menu = statusItem.menu else { return }
         menu.removeAllItems()
@@ -854,6 +1023,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 立身之本就是「保护关着也有用」——只在 .connected 里给它,等于把它
         // 藏在最不需要它的那个状态里(TestMacMenuLeakCheckRunsUnprivileged
         // 按花括号深度钉住它在顶层)。
+        // 规则入口:只在这一版 Guardian 声明了 rules 能力时出现。**能力键缺席 =
+        // 旧版**,少了这个判断用户会对着一个每次点都 404 的按钮,而 404 在菜单上
+        // 根本表达不出来(rulesEditingAvailable 是纯函数,判据由 Swift 套件钉住)。
+        // 能力清单取自 maintenanceReport —— 它就是「上一次拿到的完整 /v1/status」
+        // (在任何分支之前落定)。**不另存一份副本**:两份会漂,而漂开时菜单会
+        // 按一份的能力去画、按另一份的数据去填。
+        if rulesEditingAvailable(capabilities: maintenanceReport?.capabilities) {
+            menu.addItem(rulesSubmenuItem())
+        }
         menu.addAction("Check for leaks ↗", symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
         // 退出入口无条件加一次。**不要挪回上面任何一个 case**:此前它只在
         // .connected/.warning 里,于是 .off/.setupNeeded/.missing/.notInstalled/
