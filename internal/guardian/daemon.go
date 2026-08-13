@@ -512,19 +512,7 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 // the synchronous version used on failure, just triggered from the
 // background goroutine instead of inline.
 func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller recoveringController, start daemonStarter) (*Daemon, error) {
-	localAPIOptions := LocalAPIOptions{
-		OwnerUID:        options.LocalAPIOwnerUID,
-		GuardianVersion: version.Version,
-		RuntimeVersion: func() string {
-			info, _, err := runtimedir.Current(runtimedir.Root)
-			if err != nil {
-				return ""
-			}
-			return info.Version
-		},
-		CoreRuntime: fetchCoreRuntime,
-		UpdateCheck: options.UpdateCheck,
-	}
+	localAPIOptions := localAPIOptionsFor(options)
 	options.Handler = NewLocalAPI(controller, localAPIOptions)
 	options.OwnerUID = 0
 	if options.networkObserver == nil {
@@ -791,4 +779,28 @@ func (l systemLegacyCoreLifecycle) Remove() error {
 		remove = install.RemoveLegacyCoreUnit
 	}
 	return remove()
+}
+
+// localAPIOptionsFor 把 daemon 的配置翻译成 LocalAPI 的配置。
+//
+// **抽出来是为了让接线本身可测。** 这个仓库全部的事故都在组装根上:判据写对了
+// 而某个字段没接上,于是功能整个不工作而所有单测照样绿。组装根进不去测试,
+// 抽成纯函数就进得去了(与 internal/observe、reconcile 的 decide 同一手法)。
+func localAPIOptionsFor(options DaemonOptions) LocalAPIOptions {
+	return LocalAPIOptions{
+		OwnerUID:        options.LocalAPIOwnerUID,
+		GuardianVersion: version.Version,
+		RuntimeVersion: func() string {
+			info, _, err := runtimedir.Current(runtimedir.Root)
+			if err != nil {
+				return ""
+			}
+			return info.Version
+		},
+		CoreRuntime: fetchCoreRuntime,
+		UpdateCheck: options.UpdateCheck,
+		// /v1/rules 改的就是这个文件 —— 与 Core 启动用的、与 owner_uid 读出来的
+		// 是**同一个路径**,不另猜一份(两处漂开会让菜单改了 A 而 Core 读 B)。
+		ConfigPath: options.ConfigPath,
+	}
 }
