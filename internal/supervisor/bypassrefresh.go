@@ -27,8 +27,10 @@ type bypassRefreshDeps struct {
 	// setStaticA 把静态 DNS 那一半推给 dns.Server(可空,单测常留空)。
 	setStaticA func(map[string][]netip.Addr)
 	// extraCIDRs 是与「切到哪台服务器」无关的旁路(tailscale 共存那组)。
-	// 每轮刷新原样带上,**不重新探测** —— 重探一次失败就会在下次 rehijack
-	// 时悄悄缩小 tailscale 旁路,而这跟本次切换毫无关系。
+	// **每轮现读**:它由后台重试循环维护(tailscaleBypassSource),失败时保留上一份、
+	// 绝不缩小(decideBypassUpdate)。此前这里是一份冻结切片,理由是「重探一次失败
+	// 就会悄悄缩小旁路」—— 那条担心是对的,但用「永不重探」去满足它,代价是开机自启
+	// 抓不到 DERP map 时兜底表会一直用到下次重启。现在担心由 decideBypassUpdate 承担。
 	extraCIDRs func() []string
 	fakeipCIDR string
 	timeout    time.Duration
@@ -184,8 +186,11 @@ type bypassWiringParams struct {
 	// staticA 是发布给 DNS 的静态表,**已经**合并过用户 hosts 覆盖。
 	// 它与 serverStatics 刻意分开传:一个是「谁能穿过屏障」,一个是「谁有静态答案」,
 	// 从后者推前者正是 a8c670f 引入的那个洞。
-	staticA    map[string][]netip.Addr
-	extraCIDRs []string
+	staticA map[string][]netip.Addr
+	// extraCIDRs 是**活的**:tailscale 那组中继旁路在启动时抓不到就退回内置兜底表,
+	// 而后台会一直重试。冻结成一份切片正是原来的缺陷 —— 开机自启时网络往往还没好,
+	// 于是那份兜底表会一直用到下次重启。
+	extraCIDRs func() []string
 	// resolver 必须是防环解析器(国内 DNS + DirectDialer),**绝不能**是系统解析器:
 	// 刷新发生在 DNS 已交给 bx 之后,系统解析器此刻就是 bx 自己。
 	resolver   dialer.Resolver
@@ -206,12 +211,17 @@ type bypassWiring struct {
 // 没有任何东西盯着 —— 而本轮两个 Critical(经 bx 自己的 fake-IP DNS 解析、
 // 屏障开口混进用户 hosts 覆盖)**都是接线错误**,不是单元错误。
 func wireBypass(p bypassWiringParams) bypassWiring {
+	extraNow := func() []string {
+		if p.extraCIDRs == nil {
+			return nil
+		}
+		return p.extraCIDRs()
+	}
 	store := newBypassStore(
-		mergeBypassCIDRs(addrsToCIDRs(flattenServerAddrs(p.serverStatics)), p.extraCIDRs),
+		mergeBypassCIDRs(addrsToCIDRs(flattenServerAddrs(p.serverStatics)), extraNow()),
 		p.staticA,
 		p.serverStatics,
 	)
-	extra := append([]string(nil), p.extraCIDRs...)
 	refresh := newBypassRefresher(bypassRefreshDeps{
 		configPath: p.configPath,
 		resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
@@ -219,7 +229,7 @@ func wireBypass(p bypassWiringParams) bypassWiring {
 		},
 		store:      store,
 		setStaticA: p.setStaticA,
-		extraCIDRs: func() []string { return extra },
+		extraCIDRs: extraNow,
 		fakeipCIDR: p.fakeipCIDR,
 	})
 	return bypassWiring{

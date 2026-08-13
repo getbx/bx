@@ -164,10 +164,14 @@ TUN 自己的地址也刻意选在 `198.51.100.1/30`(TEST-NET-2)避开 docker �
 保证你主动连 peer 能通。`tailscale.com` / `ts.net` 不分配 fake-IP。启动时抓一次 DERP 中继地址
 加进旁路,让 Tailscale 的中继流量绕开隧道(抓不到用内置兜底表)。
 
-**已知限制**:① DERP 旁路**只在 bx 启动时算一次**,开机自启时若网络还没好就只剩内置兜底表,
-且不会重试;② `*.ts.net` 这类 MagicDNS 名字 bx 的上游解析器答不出来,需要自己配
-`dns.split: [{domains: ["*.ts.net"], server: "100.100.100.100"}]`;③ 系统 DNS 是 bx 与
+**已知限制**:① `*.ts.net` 这类 MagicDNS 名字 bx 的上游解析器答不出来;需要自己配
+`dns.split: [{domains: ["*.ts.net"], server: "100.100.100.100"}]`;② 系统 DNS 是 bx 与
 Tailscale 两个写入者在抢,谁后启动谁生效。
+
+DERP 旁路抓不到时(开机自启那一刻网络常常还没好)会先用内置兜底表,并在后台按退避一直重试
+到拿到权威答案;失败绝不缩小已有旁路。**新集合在下一次路由重装时生效**(切服务器、Wi-Fi
+切换触发的路径恢复、或下次启动)—— bx 不会为此自动重装路由,那会为一次后台改进拓宽
+「先拆后装」的直连窗口。
 
 WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md](docs/leak-surfaces.md)。完整检测敲 `bx leakcheck`（开本地页面，把浏览器那半与本机那半对起来）；脚本/agent 用 `bx leak-check --network --json --expected-ip <proxy-ip>`（不开页面）。macOS 上,`bx leak-check` 也会只读检查 Tailscale/ZeroTier/WARP/WireGuard/OpenVPN/Clash/Surge/mihomo 这类额外通道是否与 bx 正常共存；Tailscale 会额外做 bootstrap 旁路,避免它重连时被 bx 抢走控制面流量。
 
