@@ -27,7 +27,7 @@ func specDels(specs []darwinRouteSpec) map[string]bool {
 // 两个 /1 的 -reject 盖全量(回 EHOSTUNREACH 逼 v4 回落);link-local/ULA/组播/loopback
 // 因有更具体的 on-link/本地路由按最长前缀自动直连,无需显式 carve-out。v4 行为零回归。
 func TestDarwinRouteSpecsBlocksV6(t *testing.T) {
-	specs := darwinRouteSpecs("utun5", "192.168.1.1",
+	specs := darwinRouteSpecs("utun5", "192.168.1.1", "",
 		[]string{"10.0.0.0/8"}, []string{"1.2.3.4/32"}, nil, true)
 	adds := specAdds(specs)
 	dels := specDels(specs)
@@ -60,7 +60,7 @@ func TestDarwinRouteSpecsBlocksV6(t *testing.T) {
 // 因此被丢。tailscale 的 100.64/10 比 split-default 的 0/1 更具体,按最长前缀自然抢赢,故
 // bx 在 macOS 不该认领 CGNAT —— darwinDirectCIDRs 不含 100.64/10,其余私网段直连零回归。
 func TestDarwinDoesNotClaimCGNAT(t *testing.T) {
-	specs := darwinRouteSpecs("utun5", "192.168.1.1", darwinDirectCIDRs, nil, nil, false)
+	specs := darwinRouteSpecs("utun5", "192.168.1.1", "", darwinDirectCIDRs, nil, nil, false)
 	adds := specAdds(specs)
 	if adds["-n add -net 100.64.0.0/10 192.168.1.1"] {
 		t.Error("macOS 不应把 CGNAT 100.64.0.0/10 route 到物理网关(会和 tailscale overlay 同前缀冲突)")
@@ -78,7 +78,7 @@ func TestDarwinDoesNotClaimCGNAT(t *testing.T) {
 
 // v6 禁用时(blockV6=false),不产任何 -inet6 路由(不连累 v4),v4 split-default 仍在。
 func TestDarwinRouteSpecsSkipsV6WhenDisabled(t *testing.T) {
-	specs := darwinRouteSpecs("utun5", "192.168.1.1",
+	specs := darwinRouteSpecs("utun5", "192.168.1.1", "",
 		[]string{"10.0.0.0/8"}, nil, nil, false)
 	for _, s := range specs {
 		if strings.Contains(strings.Join(s.add, " "), "-inet6") {
@@ -153,7 +153,7 @@ func TestDarwinCoreAdoptsAndOwnsPreinstalledServerBypass(t *testing.T) {
 	}
 
 	specs := darwinRouteSpecsWithHandoff(
-		"utun5", "192.168.1.1", nil, []string{"1.2.3.4/32"}, nil, false,
+		"utun5", "192.168.1.1", "", nil, []string{"1.2.3.4/32"}, nil, false,
 		[]string{"1.2.3.4/32"},
 	)
 	owned, err := applyDarwinRouteSpecs(specs, run)
@@ -200,7 +200,7 @@ func TestDarwinCoreDoesNotAdoptUnauthorizedServerBypassCollision(t *testing.T) {
 		return errors.New("unsupported route command")
 	}
 
-	specs := darwinRouteSpecs("utun5", "192.168.1.1", nil, []string{"1.2.3.4/32"}, nil, false)
+	specs := darwinRouteSpecs("utun5", "192.168.1.1", "", nil, []string{"1.2.3.4/32"}, nil, false)
 	owned, err := applyDarwinRouteSpecs(specs, run)
 	if err == nil {
 		t.Fatal("ordinary Core start adopted an unauthorized server bypass collision")
@@ -234,7 +234,7 @@ func TestDarwinCoreDoesNotAdoptUnownedDuplicateRoute(t *testing.T) {
 		}
 		return nil
 	}
-	specs := darwinRouteSpecs("utun5", "192.168.1.1", nil, nil, nil, false)
+	specs := darwinRouteSpecs("utun5", "192.168.1.1", "", nil, nil, nil, false)
 	if _, err := applyDarwinRouteSpecs(specs, run); err == nil {
 		t.Fatal("Core adopted a duplicate route outside the Guardian server handoff")
 	}
