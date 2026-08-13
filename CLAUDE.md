@@ -167,7 +167,56 @@ direct 与 proxy 里,语义相反);读不到就说读不到,不摆空列表;改�
 探测隧道外面(泄漏检测工具定期发不受保护的流量,新增出站 + 假阳性极便宜)。
 **被动观测(系统已经知道的事实)优于主动探测**,这是这一整件事的形状。
 
-**真机未验**:计数要在真流量下跑一段才知道形状;菜单要重装才能看到。
+**真机已验(2026-08-13,项目所有者的 Mac)**:结果计数第一次上真机就**逼出了一个
+一直存在的严重 bug** —— 见下条。
+
+## macOS 的 DirectDialer 一直到不了公网(2026-08-13,真机已验)
+
+`DirectDialer` 用 `IP_BOUND_IF` 绑物理网卡防环,而**它只查该接口的 scoped 路由表**。
+macOS 只在有**多个活跃网络服务**时才装 per-interface scoped default;单服务(只有
+Wi-Fi)的机器上 `default` 的标志是 `GLOBAL`,scoped 表里根本没有它。
+
+真机实证:`route -n get -ifscope en0 8.8.8.8` → **`not in table`**;
+`bound-en0 udp 223.5.5.5:53` → **`network is unreachable`**;而
+`bound-en0 tcp <VPS>:443` → **通**(bx 自己装了那条 /32 的 en0 路由)。
+
+**后果:所有用户 direct 规则全部 ENETUNREACH,而隧道毫发无伤** —— 因为隧道的
+server bypass 恰好是一条显式 en0 路由。**这一直是坏的,只是 bx 从来数不出失败**,
+所以没有人知道;结果计数上线的第一分钟就把它显形:`*.qq.com 1291 条,失败 1289`、
+`*.icloud.com 6/6`、`*.push.apple.com 6/6`。(排查 Steam 时我曾归因到「用户的规则把
+它逼上了一条不通的路」—— 方向对,**根因判浅了一层**:不通的不是那条网络,
+是 bx 自己的直连器。)
+
+**修法**:`Hijack` 顺手给物理接口装一条 scoped 默认路由(`route add -ifscope <dev>
+default <gw>`)。它**只进 scoped 表、不碰全局表**,隧道的 `0/1`+`128/1` 照旧压过一切 ——
+只有显式用了 `IP_BOUND_IF` 的 socket(恰好就是 bx 自己的直连/解析/socks)会用到它。
+不削弱 kill-switch:那是 Dialer 里的判定,不是路由属性。
+
+**这条路由必须「可选」,而且装失败时不许进待删列表** —— 后半句是要害:多服务的
+Mac 上系统自己就有一条同款,`route add` 以 "File exists" 失败,若记进待删列表,
+拆除时就会 `route delete -ifscope en0 default` **删掉系统自己的那条**,打断用户的网络
+而 bx 无从恢复。为此 `darwinRouteSpec` 加了 `optional`;非可选的路由(split-default
+那些是保护本身)失败仍然中止并回滚。
+
+**真机验收**:`direct/direct_failed` 从 `1322/1308` 变成 `45/0`,十条用户规则全部
+零失败(`*.qq.com` 17/0、`*.icloud.com` 11/0、`*.icloud-content.com` 15/0)。
+**注意区分两种错误**:`network is unreachable` 是路由问题,`i/o timeout` 是目标不应答 ——
+验收时探针里有一个百度 IP 是后者,与本修复无关。
+
+**升级会把机器停在「保护已关、文件已换、服务没起」(同日,真机已验)**:
+`launchctl kickstart -k … : exit status 113: Could not find service`。**根因是竞态,
+不是 launchctl 用错了**:`bootout` 返回时服务还没真的从域里消失,紧接着
+`EnableGuardian` 问 `Loaded()` 看到一个正在拆除中的服务 → 判 active=true →
+计划里**只剩 kickstart、跳过了 bootstrap** → 等它真跑时服务已经没了。修在源头
+(bootout 等标签真的消失,约 3 秒上限,**等不到也不报错** —— 停止路径不许因为别的事
+没做成而失败);纵深防御是 kickstart 报「找不到服务」时补一次完整加载序列再试
+(判据 `launchdLabelAbsent` 早就有,只是这条路上没用上),**只补一次,别的失败一律
+如实上报**。真机验收:同一台机器上次升级必落 113,修复后 `重启保护服务 → 恢复保护 →
+✓ 升级完成` 干净通过。
+
+**仍未解**:统一安装里菜单栏 LaunchAgent 经 `launchctl asuser 501 launchctl bootstrap
+gui/501 …` 仍报 `EIO(5)`。文档此前把这个 EIO 归因到「上一次统一安装残留的 plist」,
+本次是从 root 经 `asuser` 走的、仍然失败 —— **那条归因不完整**,待查。
 
 ## 约定
 
