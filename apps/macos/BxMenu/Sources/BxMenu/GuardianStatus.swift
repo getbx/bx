@@ -114,6 +114,28 @@ struct MaintenanceHold: Decodable {
 ///
 /// `reachable = false` 时 Go 侧承诺其余字段全为零值——这里不额外校验,只如实
 /// 解码;菜单侧判断健康与否必须先看 `reachable`,不能拿 `tunnelHealthy` 直接冒充。
+/// 一条用户规则的去向。与 Guardian `/v1/rules` 的 `kind` 同一套取值。
+enum RuleKind: String, Codable, CaseIterable {
+    case direct
+    case proxy
+
+    /// 说明这条规则把流量**逼去哪**,用户据此判断删掉它的后果。
+    var actionLabel: String {
+        switch self {
+        case .direct: return "Bypasses the tunnel"
+        case .proxy: return "Forced through the tunnel"
+        }
+    }
+}
+
+/// 一条正在成片失败的规则(来自 `/v1/status` 的 core.failing_rules)。
+struct FailingRule: Decodable, Equatable {
+    let kind: RuleKind
+    let rule: String
+    let attempts: Int
+    let failures: Int
+}
+
 struct CoreRuntime: Decodable {
     let reachable: Bool?
     let tunnelHealthy: Bool?
@@ -122,6 +144,10 @@ struct CoreRuntime: Decodable {
     let transport: String?
     let udpMode: String?
     let dnsUpstream: String?
+    /// 正在**成片失败**的用户规则。空 = 没有值得报的(判据在 Core 侧的
+    /// stats.FailingRules:同时看绝对数与比例),**不是**「没问出来」——
+    /// 后者由 reachable 表达。
+    let failingRules: [FailingRule]
 
     enum CodingKeys: String, CodingKey {
         case reachable
@@ -131,6 +157,7 @@ struct CoreRuntime: Decodable {
         case transport
         case udpMode = "udp_mode"
         case dnsUpstream = "dns_upstream"
+        case failingRules = "failing_rules"
     }
 
     init(from decoder: Decoder) throws {
@@ -142,5 +169,7 @@ struct CoreRuntime: Decodable {
         transport = try container.decodeIfPresent(String.self, forKey: .transport)
         udpMode = try container.decodeIfPresent(String.self, forKey: .udpMode)
         dnsUpstream = try container.decodeIfPresent(String.self, forKey: .dnsUpstream)
+        // 缺席 = 空,不是解码失败:旧 Core 没有这个字段,而菜单必须照常工作。
+        failingRules = (try? container.decodeIfPresent([FailingRule].self, forKey: .failingRules)) ?? []
     }
 }

@@ -1177,7 +1177,13 @@ func TestMenuGuardianPathsAreServedByTheDaemon(t *testing.T) {
 		t.Fatal("找不到 enum GuardianEndpoint —— 本守卫读不懂现在的代码,请连同它一起重写")
 	}
 	// `case .x:` 那些是 switch 的分支(带点),不是端点声明,`\w` 不匹配点故自然排除。
-	endpoints := regexp.MustCompile(`(?m)^\s*case\s+\w+\s*$`).FindAllString(enumBody, -1)
+	//
+	// 关联值那一段 `(\([^)]*\))?` 是后加的:`case changeRule(action: String, …)`
+	// 是一个**端点**,而第一版正则只认光秃秃的 case,于是它被漏数 —— 表现为
+	// 「7 个端点 8 条 path」。守卫如设计那样响亮失败了(而不是静默缩水),
+	// 但要注意它数的是**声明**,不变量仍然是「每个端点在 guardianRequest 里
+	// 恰好赋值一次 path」。
+	endpoints := regexp.MustCompile(`(?m)^\s*case\s+\w+(\([^)]*\))?\s*$`).FindAllString(enumBody, -1)
 	if len(requested) != len(endpoints) || len(endpoints) == 0 {
 		t.Fatalf("GuardianEndpoint 有 %d 个端点,却只解析出 %d 条 `path = \"…\"` —— "+
 			"本守卫对差额里的那些路径是失明的,请连同它一起重写(响亮失败,不是静默缩水)",

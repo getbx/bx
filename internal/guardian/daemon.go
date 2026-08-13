@@ -19,6 +19,7 @@ import (
 	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/runtimedir"
 	"github.com/getbx/bx/internal/secdir"
+	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/getbx/bx/internal/version"
 )
@@ -439,6 +440,7 @@ func fetchCoreRuntime(ctx context.Context) (CoreRuntime, error) {
 		Transport:     report.Transport,
 		UDPMode:       report.UDPMode,
 		UDPTransport:  report.UDPTransport,
+		FailingRules:  failingRulesFrom(report),
 	}
 	// 直连解析器住在 RuntimeState 而不是 stats.Report,所以要多问一跳。
 	//
@@ -803,4 +805,28 @@ func localAPIOptionsFor(options DaemonOptions) LocalAPIOptions {
 		// 是**同一个路径**,不另猜一份(两处漂开会让菜单改了 A 而 Core 读 B)。
 		ConfigPath: options.ConfigPath,
 	}
+}
+
+// failingRulesFrom 把 Core 的规则归因翻译成菜单能直接显示的形状。
+//
+// **只翻译用户规则**(stats.FailingRules 已经保证了这一点):内建列表没有
+// 「哪一行」可点名,用户也改不了,把它摆进规则编辑界面只会让人对着一个
+// 自己动不了的东西干瞪眼。
+func failingRulesFrom(report stats.Report) []FailingRule {
+	var out []FailingRule
+	for _, r := range report.FailingRules() {
+		kind := ""
+		switch r.Source {
+		case "user_direct", "user_direct_ip":
+			kind = "direct"
+		case "user_proxy", "user_proxy_ip":
+			kind = "proxy"
+		default:
+			// 认不出的来源不报 —— 界面按 kind 去和列表里那一行对齐,
+			// 对不上的行显示出来只会让用户找一条不存在的规则。
+			continue
+		}
+		out = append(out, FailingRule{Kind: kind, Rule: r.Rule, Attempts: r.Attempts, Failures: r.Failures})
+	}
+	return out
 }

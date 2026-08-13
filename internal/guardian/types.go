@@ -110,6 +110,22 @@ type CoreRuntime struct {
 	// DNSUpstream 已渲染成可直接显示的一行(见 ResolverLabel):直连域名的查询
 	// 交给谁。空串表示没问出来 —— **不是「没有上游」**。
 	DNSUpstream string `json:"dns_upstream,omitempty"`
+	// FailingRules 是**正在成片失败**的用户规则。空 = 没有值得报的
+	// (判据在 stats.FailingRules:同时看绝对数与比例)。
+	//
+	// 它是规则编辑界面存在的理由:列出规则本身没什么价值(用户自己写的),
+	// 有价值的是「这一条把 8113 条连接逼上了一条不通的路」—— 那点名了该删哪一行。
+	FailingRules []FailingRule `json:"failing_rules,omitempty"`
+}
+
+// FailingRule 是一条正在成片失败的用户规则。
+type FailingRule struct {
+	// Kind 是 direct / proxy —— 与 /v1/rules 的 kind 同一套取值,
+	// 好让界面把它和列表里那一行对上。
+	Kind     string `json:"kind"`
+	Rule     string `json:"rule"`
+	Attempts int64  `json:"attempts"`
+	Failures int64  `json:"failures"`
 }
 
 // UpdateAvailability 是「有没有可装的新版」这一个问题的答案,由 Guardian 代查后
