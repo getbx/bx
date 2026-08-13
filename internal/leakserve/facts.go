@@ -45,6 +45,9 @@ type FactDeps struct {
 	// ListInterfaceKinds 问内核每个接口是什么(点对点 / 广播 / 回环)。
 	// **比名字硬**,而且跨平台一致 —— 名字表连 bx 自己的 bx0 都漏过。
 	ListInterfaceKinds func() map[string]leakcheck.InterfaceKind
+	// ListInterfaceAddrs 问内核每个接口自己持有哪些地址 —— on-link 豁免靠它区分
+	// 「本机确实在这个网段里」与「有人往路由表里塞了这个网段」。
+	ListInterfaceAddrs func() map[string][]string
 	// ListOverlays 返回此刻在跑的 overlay 网络名(tailscale / zerotier …)。
 	// 纯 Go(接口名 + 地址),不 exec。
 	ListOverlays func() []string
@@ -101,6 +104,9 @@ func CollectFactsWithBudget(ctx context.Context, deps FactDeps, budget time.Dura
 	var services []leakcheck.VPNService
 	if deps.ListInterfaceKinds != nil {
 		facts.InterfaceKinds = deps.ListInterfaceKinds()
+	}
+	if deps.ListInterfaceAddrs != nil {
+		facts.InterfaceAddrs = deps.ListInterfaceAddrs()
 	}
 
 	if deps.ListOverlays != nil {

@@ -69,6 +69,7 @@ func LiveFactDeps() FactDeps {
 		},
 		GuardianStatus:     guardianTunAndProtection,
 		ListInterfaceKinds: listInterfaceKinds,
+		ListInterfaceAddrs: listInterfaceAddrs,
 		ListOverlays:       listOverlayTenants,
 		ListRoutes:         listDarwinRoutes,
 		ListVPNServices:    listDarwinVPNServices,

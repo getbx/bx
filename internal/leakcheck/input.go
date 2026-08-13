@@ -169,6 +169,13 @@ type LocalFacts struct {
 	//
 	// 翻译在采集层做,不在这里:本包的纯度守卫禁止 import net。
 	InterfaceKinds map[string]InterfaceKind `json:"interface_kinds,omitempty"`
+	// InterfaceAddrs 是每个接口自己持有的地址。
+	//
+	// **它是 on-link 豁免能成立的前提。** 「这段挂在这条线上」的真正判据不是
+	// 「没有下一跳」——RFC 3442 的 option 121 允许 router 为 0.0.0.0,装出来的正是
+	// 一条没有下一跳的 `64.0.0.0/2 dev eth0 scope link`;RA 注入的 v6 前缀同样没有。
+	// 真正的直连子网,本机在里面**有地址**。
+	InterfaceAddrs map[string][]string `json:"interface_addrs,omitempty"`
 	// Routes 是本机 IPv4 路由表的原始条目。**只采,不判** —— 判断在 judgeRouteEscape。
 	// RoutesErr 非空表示没读出来,与「读出来了、是空的」必须分开。
 	Routes    []RouteEntry `json:"routes,omitempty"`

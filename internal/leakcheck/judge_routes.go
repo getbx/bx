@@ -90,13 +90,12 @@ func ParseRouteDestination(dest string) (netip.Prefix, error) {
 //
 // 前缀必须**比 split-default 更具体**(>1 位)才压得过隧道;`default` 本身在物理
 // 网卡上是 split-default 的常态,不是逃逸。
-func routeEscapesTunnel(entry RouteEntry, kinds map[string]InterfaceKind) (netip.Prefix, bool) {
+func routeEscapesTunnel(entry RouteEntry, kinds map[string]InterfaceKind, addrs map[string][]string) (netip.Prefix, bool) {
 	// **「这是不是一条隧道」在这个包里只能有一个答案。** 此前这里用名字判据,而
 	// WhoOwnsTheRoute / ClassifyTunnels 已经改成先问内核 —— 于是同一个接口在两处
 	// 得到不同答案。真 Linux 容器里当场看到的后果:一条名字表不认识的隧道
 	// (bxprobe0),它**自己的子网路由**被报成「有人把公网流量从隧道外面送走」。
-	if entry.Blocking || entry.Scoped || entry.OnLink ||
-		interfaceLooksLikeTunnel(kinds, entry.Interface) {
+	if entry.Blocking || entry.Scoped || interfaceLooksLikeTunnel(kinds, entry.Interface) {
 		return netip.Prefix{}, false
 	}
 	prefix, err := ParseRouteDestination(entry.Destination)
@@ -114,6 +113,17 @@ func routeEscapesTunnel(entry RouteEntry, kinds map[string]InterfaceKind) (netip
 	// 隧道外面送走」。此前两处各写一份,而其中一份的 `IsUnspecified()` 让
 	// `0.0.0.0/2` —— 攻击最爱用的宽度之一 —— 被静默放过。
 	if !isPublicPrefix(prefix) {
+		return netip.Prefix{}, false
+	}
+	// **on-link 只有在这个接口自己持有该网段里的地址时才算「直连」。**
+	//
+	// 只看「没有下一跳」是不够的:RFC 3442 的 option 121 允许 router 为 0.0.0.0,
+	// dhclient 装出来的正是一条没有下一跳的 `64.0.0.0/2 dev eth0 scope link`;
+	// RA 注入的 v6 前缀(`proto ra`)同样没有。上一版据此豁免,等于把这条规则
+	// **唯一要抓的两种形态**都放走了。
+	//
+	// 问不出接口地址时豁免不生效:宁可多报一条,也不放走注入路由。
+	if entry.OnLink && interfaceOwnsAddressIn(addrs[entry.Interface], prefix) {
 		return netip.Prefix{}, false
 	}
 	return prefix, true
@@ -147,7 +157,7 @@ func judgeRouteEscape(local LocalFacts) Finding {
 	var escapes []string
 	hosts := 0
 	for _, entry := range local.Routes {
-		if prefix, ok := routeEscapesTunnel(entry, local.InterfaceKinds); ok {
+		if prefix, ok := routeEscapesTunnel(entry, local.InterfaceKinds, local.InterfaceAddrs); ok {
 			escapes = append(escapes, prefix.String()+" → "+entry.Interface)
 			continue
 		}
@@ -175,4 +185,31 @@ func judgeRouteEscape(local LocalFacts) Finding {
 	f.Verdict = OK
 	f.Summary = "No route sends whole ranges of the internet around the tunnel."
 	return f
+}
+
+// interfaceOwnsAddressIn 判断这个接口是否持有该前缀里的地址。
+//
+// 真正的直连子网,本机在里面有地址;注入进来的网段里没有。这是把「VPS 的公网
+// LAN 网段」与「option 121 / RA 注入的网段」分开的唯一可观测判据 —— 两者在路由表里
+// 都是「没有下一跳」。
+func interfaceOwnsAddressIn(addrs []string, prefix netip.Prefix) bool {
+	for _, raw := range addrs {
+		raw = strings.TrimSpace(raw)
+		// 采集器给的可能是 `203.0.113.7/24`(带前缀长度)也可能是光地址,
+		// 两种都要认 —— 只认一种会让豁免在半数平台上恒盲。
+		if prefixed, err := netip.ParsePrefix(raw); err == nil {
+			if prefix.Contains(prefixed.Addr()) {
+				return true
+			}
+			continue
+		}
+		addr, err := netip.ParseAddr(raw)
+		if err != nil {
+			continue
+		}
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }

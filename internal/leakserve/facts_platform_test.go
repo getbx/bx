@@ -31,6 +31,7 @@ func TestLiveFactDepsAreWiredOnThisPlatform(t *testing.T) {
 		{"InspectDNS", deps.InspectDNS != nil},
 		{"ListRoutes", deps.ListRoutes != nil},
 		{"ListInterfaceKinds", deps.ListInterfaceKinds != nil},
+		{"ListInterfaceAddrs", deps.ListInterfaceAddrs != nil},
 		{"ListOverlays", deps.ListOverlays != nil},
 		{"GuardianStatus", deps.GuardianStatus != nil},
 	} {

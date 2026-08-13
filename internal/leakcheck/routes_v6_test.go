@@ -166,13 +166,18 @@ func TestIPv6EscapeRoutesAreNotSkippedByTheIPv4HostCutoff(t *testing.T) {
 // 物理接口、公网前缀,于是被报成 CVE-2024-3661。**那会在每一台这样的机器上恒红**,
 // 而 VPS / 路由器 / NAS 正是 bx 明确支持的部署形态。
 //
-// 判据:on-link(没有网关)的路由描述的是「这段就挂在这个接口上」,不是「发往这里
-// 的包交给某个下一跳」——注入攻击要的是后者。
+// 判据:on-link(没有网关)且**这个接口自己持有该网段里的地址**,才说明「这段就挂在
+// 这条线上」。光看「没有网关」不够 —— 见下一条用例:option 121 与 RA 注入的路由
+// 同样没有网关,而第一版据此豁免,把这条规则唯一要抓的东西放走了。
 func TestOnLinkPublicSubnetsAreNotReportedAsInjectedRoutes(t *testing.T) {
 	local := LocalFacts{
 		DefaultRouteV4: InterfaceRef{Name: "utun11"},
 		BXTunInterface: "utun11",
 		InterfaceKinds: map[string]InterfaceKind{"utun11": InterfaceTunnel, "eth0": InterfacePhysical},
+		// `203.0.113.0/24 dev eth0 proto kernel scope link` 这种路由**按定义**是内核
+		// 从接口地址推导出来的 —— 真机上不可能只有路由而没有地址。第一版的 fixture
+		// 少了这一栏,于是它证明的是一个真机上不存在的形状。
+		InterfaceAddrs: map[string][]string{"eth0": {"203.0.113.7/24"}},
 		Routes: []RouteEntry{
 			{Destination: "0/1", Interface: "utun11"},
 			{Destination: "203.0.113.0/24", Interface: "eth0", OnLink: true},
@@ -186,5 +191,54 @@ func TestOnLinkPublicSubnetsAreNotReportedAsInjectedRoutes(t *testing.T) {
 	local.Routes[1] = RouteEntry{Destination: "203.0.113.0/24", Interface: "eth0"}
 	if g := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"}, local); g.Verdict != Bad {
 		t.Fatalf("经网关的公网网段没被抓到:%v %q", g.Verdict, g.Summary)
+	}
+}
+
+// **on-link 豁免不许把注入路由一起豁免掉 —— 而它上一版正是这么做的。**
+//
+// RFC 3442 的 option 121 允许 router 为 0.0.0.0,dhclient/NetworkManager 会把它装成
+// `64.0.0.0/2 dev eth0 scope link`(**没有 via**);RA 注入的 v6 前缀同样是
+// `2001:db8::/64 dev eth0 proto ra`(没有 via)。上一版只看「有没有下一跳」,
+// 于是这两种最常见的注入形态**全部被跳过** —— 一个为了修 VPS 误报而加的豁免,
+// 把这条规则唯一要抓的东西放走了。
+//
+// 判据收窄:on-link 只有在**这个接口自己确实持有该网段里的地址**时才算「这段挂在
+// 这条线上」。VPS 那个误报仍然被修掉(它的 eth0 确实有 203.0.113.7),
+// 而注入的网段里没有本机地址,照报。
+func TestOnLinkExemptionRequiresTheInterfaceToOwnAnAddressInThatPrefix(t *testing.T) {
+	base := func(routes ...RouteEntry) LocalFacts {
+		return LocalFacts{
+			DefaultRouteV4: InterfaceRef{Name: "utun11"},
+			BXTunInterface: "utun11",
+			InterfaceKinds: map[string]InterfaceKind{"utun11": InterfaceTunnel, "eth0": InterfacePhysical},
+			InterfaceAddrs: map[string][]string{"eth0": {"203.0.113.7", "fe80::1"}},
+			Routes:         append([]RouteEntry{{Destination: "0/1", Interface: "utun11"}}, routes...),
+		}
+	}
+
+	// 真的直连子网:本机在里面有地址 —— 不报(VPS 那个误报)。
+	if f := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"},
+		base(RouteEntry{Destination: "203.0.113.0/24", Interface: "eth0", OnLink: true})); f.Verdict != OK {
+		t.Errorf("本机确实持有该网段地址,不该报:%v %q", f.Verdict, f.Summary)
+	}
+
+	// **option 121 的 on-link 注入**:本机在 64.0.0.0/2 里没有任何地址 —— 必须报。
+	if f := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"},
+		base(RouteEntry{Destination: "64.0.0.0/2", Interface: "eth0", OnLink: true})); f.Verdict != Bad {
+		t.Errorf("on-link 注入的 /2 没被抓到:%v %q —— 那正是 CVE-2024-3661 的形态之一", f.Verdict, f.Summary)
+	}
+
+	// **RA 注入的 v6 前缀**同样没有 via,同样必须报。
+	if f := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"},
+		base(RouteEntry{Destination: "2001:db8::/64", Interface: "eth0", OnLink: true})); f.Verdict != Bad {
+		t.Errorf("RA 注入的 v6 /64 没被抓到:%v %q", f.Verdict, f.Summary)
+	}
+
+	// 接口地址问不出来时:**不许拿豁免当默认** —— 问不出来就按「不是直连」处理,
+	// 宁可多报一条也不放走注入路由。
+	blind := base(RouteEntry{Destination: "64.0.0.0/2", Interface: "eth0", OnLink: true})
+	blind.InterfaceAddrs = nil
+	if f := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"}, blind); f.Verdict != Bad {
+		t.Errorf("接口地址问不出来时豁免不该生效:%v %q", f.Verdict, f.Summary)
 	}
 }
