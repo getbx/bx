@@ -45,6 +45,7 @@ func darwinTunnelClaimChecks(netstatOut, bxTun string) []checkReport {
 			// Linux 根本没有它们,在那边合成一串假 flags 才是撒谎。
 			Blocking: strings.ContainsAny(fields[2], "RB"),
 			Scoped:   strings.Contains(fields[2], "I"),
+			OnLink:   !strings.Contains(fields[2], "G"),
 		})
 	}
 

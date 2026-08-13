@@ -165,6 +165,10 @@ func darwinRouteBlocking(flags string) bool { return strings.ContainsAny(flags, 
 // 不排除就是六条误报。
 func darwinRouteScoped(flags string) bool { return strings.Contains(flags, "I") }
 
+// darwinRouteOnLink:标志里没有 G(RTF_GATEWAY)就是直连 —— 这段挂在这条线上,
+// 而不是「发往这里的包交给某个下一跳」。注入攻击要的是后者。
+func darwinRouteOnLink(flags string) bool { return !strings.Contains(flags, "G") }
+
 func parseDarwinRoutes(out, defaultDest string) []leakcheck.RouteEntry {
 	var entries []leakcheck.RouteEntry
 	for _, line := range strings.Split(out, "\n") {
@@ -184,6 +188,7 @@ func parseDarwinRoutes(out, defaultDest string) []leakcheck.RouteEntry {
 			Destination: dest, Interface: fields[3], Flags: flags,
 			Blocking: darwinRouteBlocking(flags),
 			Scoped:   darwinRouteScoped(flags),
+			OnLink:   darwinRouteOnLink(flags),
 		})
 	}
 	return entries

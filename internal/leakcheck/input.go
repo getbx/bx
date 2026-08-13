@@ -118,6 +118,12 @@ type RouteEntry struct {
 	// flag 字母,而 Linux 根本没有那些字母 —— 在 Linux 上合成一串假 flags 去迁就
 	// 它,就是把平台差异伪装成一个共同事实。谁知道那个平台,谁负责翻译。
 	Scoped bool `json:"scoped,omitempty"`
+	// OnLink:这段地址**直接挂在这个接口上**(没有下一跳网关)。
+	//
+	// 它不是「有人把发往这里的包交给了别处」,而是「这段就在这条线上」——
+	// 而注入攻击(DHCP option 121 / RA)要的恰恰是前者。不区分的话,一台 LAN 上
+	// 带公网网段的 VPS/路由器会被恒报成 CVE-2024-3661,而那正是 bx 明确支持的部署形态。
+	OnLink bool `json:"on_link,omitempty"`
 }
 
 // LocalFacts 是只有本机能看到的那一半。全部只读采集,采不到就留空并记 Err。

@@ -29,8 +29,8 @@ func judgeCarrier(local LocalFacts) Finding {
 	carrier := describeRef(local.DefaultRouteV4)
 	f.Evidence = append(f.Evidence, "public traffic leaves via: "+carrier)
 
-	// bx 有没有 TUN,决定同一个观测是好消息还是坏消息。
-	bxRunning := strings.TrimSpace(local.BXTunInterface) != ""
+	// bx 在不在跑,决定同一个观测是好消息还是坏消息。
+	bxRunning := bxLooksRunning(local)
 
 	if owner == OwnerBX {
 		f.Verdict = OK
@@ -51,19 +51,22 @@ func judgeCarrier(local LocalFacts) Finding {
 	}
 
 	if !bxRunning {
-		// bx 没在跑 —— 如实说谁在拿,不评判。这是检测别的 VPN 那个用法的常态。
+		// **走到这里只意味着「没有证据表明 bx 在跑」,措辞不许说成「它没在跑」。**
+		// 检测别的 VPN 那个用法里这确实是常态,但同一个空值也可能来自
+		// 「Guardian 没答上话」——见 bxLooksRunning。
 		f.Verdict = Info
 		if owner == OwnerNone {
 			f.Summary = "No tunnel is carrying this machine's traffic — it leaves directly through " +
-				carrier + ". bx is not running."
+				carrier + "."
 		} else {
 			f.Summary = "Your public traffic is carried by " + carrier +
-				", which bx is not managing. bx is not running, so this is expected."
+				", which bx is not managing. No sign of bx carrying traffic on this machine."
 		}
 		return f
 	}
 
 	// **本次要补的洞:bx 在跑,却不是它在管。**
+	//
 	f.Verdict = Bad
 	if owner == OwnerNone {
 		f.Summary = "bx is running (" + local.BXTunInterface + "), but public traffic is not " +
@@ -76,4 +79,27 @@ func judgeCarrier(local LocalFacts) Finding {
 		"the one carrying this traffic."
 	f.Evidence = append(f.Evidence, tenantSuspicion(local)...)
 	return f
+}
+
+// bxLooksRunning 判断有没有证据表明 bx 此刻在跑。
+//
+// **不能只看 BXTunInterface。** input.go 明写着空的 TUN 名「不表示 bx 没在跑」——
+// 采集层在「core is running but its TUN name could not be read」那一支返回错误,
+// 于是 TUN 名与保护状态一起变空。早先这里用 `BXTunInterface != ""` 当判据,
+// 于是在那一支上说出「bx is not running, so this is expected」,而 bx 明明在跑。
+//
+// 保护状态答上来了就用它;两个都问不出来时返回 false,而**那一支的措辞不许断言
+// 「bx 没在跑」**,只能说「没有证据表明它在拿这台机器的流量」。
+func bxLooksRunning(local LocalFacts) bool {
+	if strings.TrimSpace(local.BXTunInterface) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(local.BXProtection)) {
+	case "", "off", "unknown":
+		return false
+	default:
+		// Guardian 报了一个非 off 的保护状态(protected / needs_attention …)——
+		// 那就是 bx 在跑的证据,哪怕 TUN 名字没读出来。
+		return true
+	}
 }

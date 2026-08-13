@@ -109,3 +109,39 @@ func TestCarrierNeedsNothingFromTheBrowser(t *testing.T) {
 		t.Fatalf("判定 = %v,want Bad —— 这一项不需要浏览器", f.Verdict)
 	}
 }
+
+// **「Guardian 没答上话」不是「bx 没在跑」——而这条结论此前正是这么推的。**
+//
+// `guardianTunAndProtection` 在「core is running but its TUN name could not be read」
+// 那一支返回错误,于是 BXTunInterface 与 BXProtection 都是空的;而 input.go 明写着
+// 空的 BXTunInterface「不表示 bx 没在跑」。此前 judge_carrier 用
+// `BXTunInterface != ""` 当作「bx 在跑」,于是在那一支上说出
+// 「bx is not running, so this is expected」—— 而 bx 明明在跑。
+//
+// 保护状态答上来了就用它;两个都问不出来才说不知道 —— **而那时不许断言 bx 没在跑**。
+func TestCarrierDoesNotClaimBXIsStoppedFromAnEmptyTunName(t *testing.T) {
+	// Guardian 说保护开着,但 TUN 名字没读出来。
+	local := LocalFacts{
+		DefaultRouteV4: InterfaceRef{Name: "utun4"},
+		BXProtection:   "protected",
+		InterfaceKinds: map[string]InterfaceKind{"utun4": InterfaceTunnel},
+	}
+	f := identityFinding(t, FindingCarrier, BrowserReport{}, local)
+	joined := strings.ToLower(f.Summary + " " + strings.Join(f.Evidence, " "))
+	if strings.Contains(joined, "not running") {
+		t.Errorf("保护状态说开着,却断言 bx 没在跑:%q", f.Summary)
+	}
+	if f.Verdict == Info {
+		t.Errorf("保护开着而流量归别人管,这不是「预期之内」:%v %q", f.Verdict, f.Summary)
+	}
+
+	// 两个都问不出来:不许朝任何一边断言。
+	silent := LocalFacts{
+		DefaultRouteV4: InterfaceRef{Name: "utun4"},
+		InterfaceKinds: map[string]InterfaceKind{"utun4": InterfaceTunnel},
+	}
+	g := identityFinding(t, FindingCarrier, BrowserReport{}, silent)
+	if strings.Contains(strings.ToLower(g.Summary), "not running") {
+		t.Errorf("什么都没问出来却断言 bx 没在跑:%q", g.Summary)
+	}
+}
