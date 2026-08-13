@@ -150,6 +150,25 @@ Windows 的 `bx.exe` 是**自包含单文件**——wintun.dll、sing-box、broo
 > `bx setup` 贴兼容档链接会提示弱点并建议 server 端换 REALITY(不止 GFW——Claude/OpenAI/Google 等也对弱协议出口 IP 做风控)。
 > 全程 fail-closed 不泄漏。详见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
 
+### 与 Docker / Tailscale 共存
+
+**Docker**:`10/8`、`172.16/12`、`192.168/16` 在任何模式下恒直连(Linux 上由 `pref 150` 送主表,
+交 `docker0`/`br-*` on-link 投递),所以**宿主访问容器、端口映射、容器间通信永不进隧道**;
+TUN 自己的地址也刻意选在 `198.51.100.1/30`(TEST-NET-2)避开 docker 的地址池。
+
+**容器出公网的流量会经 bx 代理** —— Linux host 模式下劫持规则不限定来源,转发流量一并接管。
+这是有意保留的行为(容器白捡代理),并由 `TestContainerEgressIsHijackedBecauseTheCatchAllHasNoSourceFilter`
+钉住:谁给那条规则加上来源限定,容器就会静默失去代理、从物理网卡裸奔。
+
+**Tailscale**:`100.64/10` 恒直连;Linux 上还会先把它送进 Tailscale 自己的路由表(table 52),
+保证你主动连 peer 能通。`tailscale.com` / `ts.net` 不分配 fake-IP。启动时抓一次 DERP 中继地址
+加进旁路,让 Tailscale 的中继流量绕开隧道(抓不到用内置兜底表)。
+
+**已知限制**:① DERP 旁路**只在 bx 启动时算一次**,开机自启时若网络还没好就只剩内置兜底表,
+且不会重试;② `*.ts.net` 这类 MagicDNS 名字 bx 的上游解析器答不出来,需要自己配
+`dns.split: [{domains: ["*.ts.net"], server: "100.100.100.100"}]`;③ 系统 DNS 是 bx 与
+Tailscale 两个写入者在抢,谁后启动谁生效。
+
 WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md](docs/leak-surfaces.md)。完整检测敲 `bx leakcheck`（开本地页面，把浏览器那半与本机那半对起来）；脚本/agent 用 `bx leak-check --network --json --expected-ip <proxy-ip>`（不开页面）。macOS 上,`bx leak-check` 也会只读检查 Tailscale/ZeroTier/WARP/WireGuard/OpenVPN/Clash/Surge/mihomo 这类额外通道是否与 bx 正常共存；Tailscale 会额外做 bootstrap 旁路,避免它重连时被 bx 抢走控制面流量。
 
 `bx status` 是运行期面板。macOS 上 daemon 会轻量只读监测 Tailscale 路由、系统代理和已连接的 VPN 服务；如果 bx 启动后又出现其他通道,status 会显示 `提醒`,菜单栏也可用同一份 JSON 变成需要注意的状态。
