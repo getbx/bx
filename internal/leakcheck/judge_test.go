@@ -46,8 +46,8 @@ func TestEmptyBrowserReportYieldsNotChecked(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rep := Judge(fixedTime(), BrowserReport{}, tc.local)
 
-			if len(rep.Findings) != 8 {
-				t.Fatalf("结论条数应恒为 8(路径 4 + 身份 3 + 可见面 1),得到 %d", len(rep.Findings))
+			if len(rep.Findings) != 9 {
+				t.Fatalf("结论条数应恒为 9(路径 5 + 身份 3 + 可见面 1),得到 %d", len(rep.Findings))
 			}
 			// **规则写成一句话,而不是按 fixture 分支**:一条结论只有在**本机那一半
 			// 也答不了它**的时候才因为浏览器缺席而变成 not checked。
@@ -55,12 +55,21 @@ func TestEmptyBrowserReportYieldsNotChecked(t *testing.T) {
 			// DNS 只吃本机事实;IPv6 在「确知没有通往 v6 互联网的路」时同样只吃
 			// 本机事实 —— 没有路就漏不出去,回声说什么都不改变它。把它们一并压成
 			// not checked 是朝反方向撒谎(明明查过)。
+			// **「哪些结论需要浏览器」不在这里手抄** —— Outline() 已经声明了
+			// (Inputs 为空 = 只吃本机事实),而手抄的那份每加一条本地结论都要
+			// 记得跟着改,漏改的表现是「一条完全诚实的本地结论被要求去解释一个
+			// 它根本不依赖的东西」。这是同一条教训在本文件的第二处。
+			needsBrowser := map[string]bool{}
+			for _, c := range Outline() {
+				needsBrowser[c.ID] = len(c.Inputs) > 0
+			}
+			// IPv6 是例外:它**声明**要浏览器,但本机确知没有 v6 通路时它自己就
+			// 答得了 —— 没有路就漏不出去,回声说什么都不改变它。
 			settledLocally := map[string]bool{
-				FindingDNS:  true,
 				FindingIPv6: tc.local.IPv6DefaultPresent == tristate.False,
 			}
 			for _, f := range rep.Findings {
-				if settledLocally[f.ID] {
+				if !needsBrowser[f.ID] || settledLocally[f.ID] {
 					continue
 				}
 				if f.Verdict != NotChecked {
@@ -166,6 +175,10 @@ func TestMissingBrowserHalfStillNotChecked(t *testing.T) {
 				t.Errorf("确知没有 v6 通路时应当给出本机可支撑的 ok,得到 %s(%q)", f.Verdict, f.Summary)
 			}
 		default:
+			if !browserBackedFindings()[f.ID] {
+				// 只吃本机事实的结论(Outline 里 Inputs 为空)本来就不该等浏览器。
+				continue
+			}
 			if f.Verdict != NotChecked {
 				t.Errorf("%s 缺了浏览器那一半就必须是 not checked,得到 %s", f.ID, f.Verdict)
 			}
@@ -203,7 +216,7 @@ func TestFindingIDsAndOrderAreStable(t *testing.T) {
 	// 顺序即分区顺序:流量路径三条在前,身份段在后。页面按这个顺序摆行。
 	// 顺序即分区顺序:流量路径 → 身份可识别性 → 网站看得到什么。页面按它摆行。
 	want := []string{
-		FindingWebRTC, FindingIPv6, FindingDNS, FindingRouteEscape,
+		FindingCarrier, FindingWebRTC, FindingIPv6, FindingDNS, FindingRouteEscape,
 		FindingLocalAddresses, FindingTimezone, FindingFingerprint,
 		FindingSurface,
 	}
@@ -226,4 +239,16 @@ func TestJudgeCarriesEndpointDisclosure(t *testing.T) {
 	if rep.Endpoints != Endpoints() {
 		t.Fatalf("报告必须带出 Endpoints(),得到 %+v", rep.Endpoints)
 	}
+}
+
+// browserBackedFindings 从 Outline() 推导「哪些结论依赖浏览器那一半」。
+//
+// **不手抄一份 ID 列表。** 手抄的那份每加一条本地结论都要记得跟着改,而漏改的表现
+// 是一条完全诚实的本地结论被要求去解释一个它根本不依赖的东西。
+func browserBackedFindings() map[string]bool {
+	needs := map[string]bool{}
+	for _, c := range Outline() {
+		needs[c.ID] = len(c.Inputs) > 0
+	}
+	return needs
 }
