@@ -114,6 +114,7 @@ func TestAnomalyCountCoversOnlyTheTrafficPath(t *testing.T) {
 // 而这条守卫让「漏填」根本走不到那一步:新增一条结论时必须来这里登记它属于哪段。
 func TestEverySectionIsDeclaredOnPurpose(t *testing.T) {
 	want := map[string]Section{
+		FindingCarrier:        SectionPath,
 		FindingWebRTC:         SectionPath,
 		FindingIPv6:           SectionPath,
 		FindingDNS:            SectionPath,

@@ -38,6 +38,8 @@ type CheckOutline struct {
 // 结论 —— 两种都是「界面在说一件判据没说过的事」。
 func Outline() []CheckOutline {
 	return []CheckOutline{
+		// 只吃本机事实:路由表说了算,浏览器一个包都不用发。
+		{ID: FindingCarrier, Title: "Who carries your traffic", Section: SectionPath, Inputs: nil},
 		{ID: FindingWebRTC, Title: "WebRTC vs HTTP exit", Section: SectionPath, Inputs: []string{ProbeSRFLX, ProbeExitV4}},
 		{ID: FindingIPv6, Title: "IPv6 exposure", Section: SectionPath, Inputs: []string{ProbeExitV6}},
 		// 只吃本机事实:默认路由归谁、解析器走哪个接口。浏览器一个包都不用发。

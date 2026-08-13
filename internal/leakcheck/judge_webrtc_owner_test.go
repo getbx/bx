@@ -74,14 +74,25 @@ func TestWebRTCMismatchIsBadRegardlessOfWhoOwnsTheRoute(t *testing.T) {
 
 // **措辞不许冒认 bx 的功劳。** 别人的隧道在管时,结论不能说成 bx 干的 ——
 // 「拿 bx 检测别的 VPN」这个用法里,用户要读到的是关于**他自己那条 VPN** 的判断。
+//
+// **判据钉的是「冒认」,不是「提到 bx」。** 第一版禁的是光秃秃的 `bx `,于是连一句
+// 诚实的「bx is not running」都被禁掉 —— 而那正是 traffic_carrier 在这种局面下最该
+// 说的话(bx 没在跑,所以别人的 VPN 拿着流量不是问题)。禁拼法不禁语义,是这个仓库
+// 反复栽过的形状;这里禁的是「说 bx 在承载/在管这条流量」。
 func TestWebRTCDoesNotCreditBXForSomebodyElsesTunnel(t *testing.T) {
 	report := Judge(time.Now(),
 		BrowserReport{ExitV4: "203.0.113.9", SRFLX: []string{"203.0.113.9"}},
 		LocalFacts{DefaultRouteV4: InterfaceRef{Name: "utun4"}})
 
 	for _, f := range report.Findings {
-		if strings.Contains(strings.ToLower(f.Summary), "bx ") {
-			t.Errorf("%s 的结论提到了 bx,而这条路归别人管:%q", f.ID, f.Summary)
+		lowered := strings.ToLower(f.Summary)
+		for _, credit := range []string{
+			"carried by bx", "bx is carrying", "bx is managing",
+			"through bx", "tunnel bx is",
+		} {
+			if strings.Contains(lowered, credit) {
+				t.Errorf("%s 把别人的隧道说成了 bx 的功劳(%q):%q", f.ID, credit, f.Summary)
+			}
 		}
 	}
 }

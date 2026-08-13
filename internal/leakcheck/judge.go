@@ -22,6 +22,8 @@ const (
 	// FindingRouteEscape 属于流量路径段,而且是唯一一条能查出**主动攻击**的规则:
 	// 别的检查看流量最终从哪儿出去,它看有没有人动了你的路由表。
 	FindingRouteEscape = "route_escape"
+	// FindingCarrier 回答「谁在拿你的流量」。**纯本机,不吃浏览器。**
+	FindingCarrier = "traffic_carrier"
 	// FindingFingerprint 问「浏览器有没有在防指纹」,不问「指纹是什么」。
 	FindingFingerprint = "fingerprint_defence"
 	// FindingSurface 只列举网站读得到什么。**永远是 Info,没有极性。**
@@ -37,6 +39,7 @@ const (
 // 用户照样看得到,只是不冒充结论。
 func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 	findings := []Finding{
+		judgeCarrier(local),
 		judgeWebRTC(browser, local),
 		judgeIPv6(browser, local),
 		judgeDNS(browser, local),

@@ -181,9 +181,18 @@ func TestHardTimeoutWithRealLocalFactsClaimsNoObservation(t *testing.T) {
 	// DNS 与 IPv6 在这个 fixture 上都由本机事实独立答得了(解析器在本机;
 	// IPv6DefaultPresent=False ⇒ 没有通往 v6 互联网的路 ⇒ 漏不出去),
 	// 把它们压成 not checked 是朝反方向撒谎 —— 明明查过。
-	settledLocally := map[string]bool{leakcheck.FindingDNS: true, leakcheck.FindingIPv6: true}
+	// **「哪些结论依赖浏览器」从 Outline() 推导,不手抄。** 这是同一条教训的第四处:
+	// 手抄的那份每加一条只吃本机事实的结论都要记得跟着改,而漏改的表现是「一条完全
+	// 诚实的本地结论被要求去解释一个它根本不依赖的东西」。
+	needsBrowser := map[string]bool{}
+	for _, c := range leakcheck.Outline() {
+		needsBrowser[c.ID] = len(c.Inputs) > 0
+	}
+	// IPv6 是例外:它**声明**要浏览器,但这个 fixture 上本机确知没有 v6 通路
+	// (IPv6DefaultPresent=False ⇒ 漏不出去),于是它自己就答得了。
+	settledLocally := map[string]bool{leakcheck.FindingIPv6: true}
 	for _, f := range report.Findings {
-		if settledLocally[f.ID] {
+		if !needsBrowser[f.ID] || settledLocally[f.ID] {
 			continue
 		}
 		if f.Verdict != leakcheck.NotChecked {
