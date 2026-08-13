@@ -77,6 +77,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 同一时刻只跑一次泄漏检测:每次点击都会起一个新的 loopback 服务,连点会攒
     /// 一堆,每个都带着自己的 2 分钟超时。
     private var leakCheckInFlight = false
+    /// 本轮菜单里,更新入口是否已经由版本行承担。每次 rebuildMenu 开头复位。
+    private var updateShownInVersionRow = false
     /// Guardian 最近一次**应答并解码成功**的那份报告,只用来问一件事:此刻有没有
     /// 维护挂起(见 maintenanceRow)。挂起期间 `protection_state` 就是 `off`,
     /// `BxState.off` 又不带 payload,不留住这份报告菜单就无从分辨「bx 正在自我升级」
@@ -633,6 +635,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func rebuildMenu() {
         guard let menu = statusItem.menu else { return }
         menu.removeAllItems()
+        // 每轮复位:漏了它,某一轮出现过的版本行会让此后所有轮次的页脚都不再
+        // 显示更新入口 —— 一个只在特定顺序下才出现、且完全静默的缺失。
+        updateShownInVersionRow = false
         if let inFlight = toggleInFlight {
             let elapsed = Int(Date().timeIntervalSince(inFlight.startedAt))
             menu.addHeader("bx", subtitle: inFlight.action == .turnOn ? "Connecting" : "Disconnecting")
@@ -676,8 +681,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch state {
         case .connected(_, let version, _):
             menu.addHeader("bx", subtitle: "Connected")
-            menu.addInfo("Status", "Protected")
-            menu.addInfo("Network changes", "Automatically recovers safely after network changes")
+            // **这里曾经有 `Status: Protected` 与 `Network changes: …` 两行,已删。**
+            //
+            // 前者是三重重复:图标的形状、标题栏那句 "Connected"、再加这一行,说的是
+            // 同一件事。后者是一个**永远不变的常量串** —— 它是安慰文案不是状态,
+            // 与刚删掉的三行占位符是同一类:一行永远说同一句话的东西不是信息。
+            //
+            // `.warning` 那一支的 Status 行**留着**:那里装的是原因(Repair Required /
+            // DNS not managed),图标说不出来。
             for row in menuRowsNow().rows {
                 let suffix: String
                 switch row.mark {
@@ -690,7 +701,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 版本号与上面那组分开:上面回答「我的连接现在怎么样」,版本回答
             // 「我装的是哪一版」。混在一起时它读起来像连接的一项指标。
             menu.addItem(.separator())
-            menu.addInfo("Version", version)
+            addVersionRow(to: menu, version: version)
         case .warning(let message, let version):
             menu.addHeader("bx", subtitle: "Needs Attention")
             menu.addInfo("Status", message)
@@ -705,7 +716,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     menu.addInfo("Core", core)
                 }
             } else if let version {
-                menu.addInfo("Version", version)
+                // 与 .connected 同一条版本行:有新版时它自己就是更新入口。
+                addVersionRow(to: menu, version: version)
             }
         case .updateNeeded(let message, let version):
             menu.addHeader("bx", subtitle: "Update Required")
@@ -750,7 +762,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addInfo("Last operation failed", failure)
         }
         menu.addItem(.separator())
-        if let title = menuUpdateActionTitle(check: updateCheck) {
+        // **每个状态只留一个更新入口。** 有版本行的状态(connected / warning)里,
+        // 更新已经由那一行自己承担了;此前这里再加一条 "Update bx…",与它上面
+        // 几行的版本号说的是同一件事。
+        if !updateShownInVersionRow, let title = menuUpdateActionTitle(check: updateCheck) {
             menu.addAction(title, symbol: "arrow.down.circle", target: self, action: #selector(updateBx))
             menu.addItem(.separator())
         }
@@ -842,6 +857,27 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var stateShowsDataRows: Bool {
         if case .connected = state { return true }
         return false
+    }
+
+    /// 版本行。**有新版时它自己变成更新入口**,文字先把话说完,颜色只做强化。
+    ///
+    /// 只靠颜色不行:菜单项被鼠标划过时会反色,提示恰好在用户要点它的那一刻消失;
+    /// 判定与措辞住在 UpdatePresentation.swift(那里编得进测试套件),这里只负责画。
+    private func addVersionRow(to menu: NSMenu, version: String) {
+        let title = versionRowTitle(current: version, check: updateCheck)
+        guard versionRowOffersUpdate(check: updateCheck) else {
+            menu.addInfo(title)
+            return
+        }
+        updateShownInVersionRow = true
+        let item = NSMenuItem(title: title, action: #selector(updateBx), keyEquivalent: "")
+        item.target = self
+        item.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: title)
+        item.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [.foregroundColor: NSColor.controlAccentColor]
+        )
+        menu.addItem(item)
     }
 
     private func menuRowsNow() -> MenuRowSet {
@@ -1674,6 +1710,14 @@ private extension NSMenu {
         addItem(item)
         addItem(NSMenuItem(title: subtitle, action: nil, keyEquivalent: ""))
         addItem(.separator())
+    }
+
+    /// 整行文本已经拼好时用这个(版本行的措辞由 UpdatePresentation 决定,
+    /// 不是「标签: 值」两段式)。
+    func addInfo(_ title: String) {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        addItem(item)
     }
 
     func addInfo(_ label: String, _ value: String) {

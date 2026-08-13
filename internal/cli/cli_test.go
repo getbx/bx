@@ -1715,17 +1715,19 @@ func swiftFunctionBody(source, signature string) (string, bool) {
 	return "", false
 }
 
-func TestMacMenuAndReadmeDescribeAutomaticSafeNetworkRecovery(t *testing.T) {
-	menu, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "main.swift"))
-	if err != nil {
-		t.Fatal(err)
-	}
+// 「网络变化后会自动安全恢复」这件事必须被告知用户 —— 但**告知的地方是 README,
+// 不是菜单**。
+//
+// 这条守卫原先还要求菜单里出现同一句话。那一行是个**永远不变的常量串**:它描述的是
+// 一项能力,而菜单是状态面,一行永远说同一句话的东西在那里不是信息(与之前删掉的
+// 三行占位符同一类)。项目所有者看着真机菜单直接指了出来:「这是默认的…也不需要写」。
+//
+// 断言因此从「两处都要有」收成「README 要有」。**能力仍然被守着,只是守在它该在的
+// 那一处** —— 而不是把一句话钉在两个界面上,其中一个还不适合它。
+func TestReadmeDescribesAutomaticSafeNetworkRecovery(t *testing.T) {
 	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !strings.Contains(string(menu), "Automatically recovers safely after network changes") {
-		t.Fatal("macOS menu should describe automatic safe recovery after network changes")
 	}
 	for _, want := range []string{"网络变化后自动安全恢复", "`bx reconnect`", "troubleshooting", "绝不回落直连"} {
 		if !strings.Contains(string(readme), want) {
