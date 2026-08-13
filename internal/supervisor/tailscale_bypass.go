@@ -272,3 +272,27 @@ func (s *tailscaleBypassSource) Run(ctx context.Context, fetch func(context.Cont
 		}
 	}
 }
+
+// overlayAwareBypassFetch 造出重试循环要用的那个抓取函数:抓 DERP,**并上其它在跑的
+// 租户的中继旁路**。
+//
+// **它被从组装根里提出来,就是为了能被测。** 这一步的正确性不在判据里而在接线里:
+// decideBypassUpdate 成功时整份替换(刻意如此 —— 兜底 IP 会过期,留着是泄漏面),
+// 而抓取只覆盖 Tailscale 的 DERP。租户旁路若只并进**初值**,第一次成功抓取就会把它
+// 静默替换掉,ZeroTier 从此连根节点都连不上。
+//
+// 留在 run.go 里当匿名闭包时,这个错误编译得过、全套测试全绿 —— 实测确认过。
+func overlayAwareBypassFetch(
+	derpFetch func(context.Context) ([]string, error),
+	overlayBypass []string,
+) func(context.Context) ([]string, error) {
+	return func(ctx context.Context) ([]string, error) {
+		derp, err := derpFetch(ctx)
+		if err != nil {
+			// 失败原样上报:让 decideBypassUpdate 保留上一份,而不是把租户旁路
+			// 当成一次「成功」的答案发布出去 —— 那会把退避立刻推进长周期。
+			return nil, err
+		}
+		return mergeBypassCIDRs(derp, overlayBypass), nil
+	}
+}
