@@ -24,11 +24,14 @@ enum GuardianEndpoint {
     /// 改一条规则。**它只写配置,不重启任何东西** —— 生效要 `bx down && bx up`,
     /// 而那是一次断网,必须是用户单独的、显式的一下。
     case changeRule(action: String, kind: String, pattern: String)
+    /// 整组打开或关掉。组开关**只动这一组名下的域名**,用户手写的规则不受影响。
+    case changeRuleGroup(action: String, group: String)
 
     var expectedStatus: Int {
         switch self {
         case .requestRecovery: return 202
-        case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule:
+        case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule,
+             .changeRuleGroup:
             return 200
         }
     }
@@ -39,7 +42,7 @@ enum GuardianEndpoint {
         case .turnOn, .turnOff: return guardianMutationTimeout
         case .updateCheck: return guardianUpdateCheckTimeout
         // 只是读写一个小 YAML 文件,不做网络 I/O。
-        case .listRules, .changeRule: return guardianDefaultTimeout
+        case .listRules, .changeRule, .changeRuleGroup: return guardianDefaultTimeout
         }
     }
 }
@@ -193,6 +196,16 @@ struct GuardianClient {
     ///
     /// 返回新列表而不是一个 ok:界面据此重画,不必自己推演改动后的状态 ——
     /// 推演出来的状态与盘上真实的状态漂开,正是这个仓库反复栽的形状。
+    /// 整组打开或关掉。**只动这一组名下的域名**,用户手写的规则不受影响
+    /// (判据在服务端的 preset.Classify;客户端不存第二份清单)。
+    @discardableResult
+    func changeRuleGroup(name: String, enable: Bool) throws -> RuleList {
+        try perform(
+            endpoint: .changeRuleGroup(action: enable ? "enable_group" : "disable_group", group: name),
+            as: RuleList.self
+        )
+    }
+
     @discardableResult
     func changeRule(action: String, kind: RuleKind, pattern: String) throws -> RuleList {
         try perform(
@@ -295,6 +308,11 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         // 手拼 JSON 会让一个引号或反斜杠改变请求的结构。服务端另有一道校验,
         // 但客户端不该先把畸形请求发出去。
         let payload: [String: String] = ["action": action, "kind": kind, "pattern": pattern]
+        body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+    case let .changeRuleGroup(action, group):
+        method = "POST"
+        path = "/v1/rules"
+        let payload: [String: String] = ["action": action, "group": group]
         body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
     }
 

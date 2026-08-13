@@ -108,6 +108,65 @@ struct RulesModelTests {
         expect(old?.core?.failingRules.isEmpty == true, "旧 Core 的应答把菜单弄挂了")
     }
 
+    /// **归因按组汇总,而不是逐条列域名。** 十行域名对普通用户没有意义,
+    /// 「Steam 相关的走不通」有 —— 这是这一版整个改动的理由。
+    static func testGroupRowsAggregateFailuresAndPutBrokenGroupsFirst() {
+        let list = RuleList(groups: [
+            RuleGroup(name: "apple", title: "Apple 服务", summary: "Apple 系统服务",
+                      state: .on, installed: 6, total: 6, domains: ["*.icloud.com", "*.apple.com"]),
+            RuleGroup(name: "gaming", title: "Steam / 游戏", state: .on, installed: 5, total: 5,
+                      domains: ["*.steamstatic.com", "*.steamcontent.com"]),
+        ])
+        let rows = ruleGroupRows(from: list, failing: [
+            FailingRule(kind: .direct, rule: "*.steamstatic.com", attempts: 800, failures: 800),
+            FailingRule(kind: .direct, rule: "*.steamcontent.com", attempts: 200, failures: 200),
+        ])
+        expect(rows.first?.group.name == "gaming", "坏掉的组没排最前:\(rows.map(\.group.name))")
+        expect(rows.first?.failing == 2, "组内失败规则数不对:\(String(describing: rows.first?.failing))")
+        expect(rows.first?.detail.contains("1000") == true,
+               "失败总数没汇总到组上:\(String(describing: rows.first?.detail))")
+        // 好的那一组**不许**说失败。
+        let apple = rows.first { $0.group.name == "apple" }
+        expect(apple?.failing == 0, "好的组被标成失败")
+        expect(apple?.detail.contains("failed") == false, "好的组在说失败:\(apple?.detail ?? "")")
+    }
+
+    /// **半装的组要看得出来是半装的。** 画成「开」用户会以为那几条在生效。
+    static func testPartialGroupIsVisiblyPartial() {
+        let list = RuleList(groups: [
+            RuleGroup(name: "apple", title: "Apple 服务", state: .partial, installed: 2, total: 6),
+        ])
+        let row = ruleGroupRows(from: list, failing: [])[0]
+        expect(row.isMixed, "半装的组没被标成 mixed")
+        expect(!row.isOn, "半装的组被当成全开")
+        expect(row.detail.contains("2") && row.detail.contains("6"),
+               "副标题没说清装了几条:\(row.detail)")
+    }
+
+    /// 认不出的 state 落到 partial —— **三态里唯一不撒谎的那个**。
+    /// 说「装了一部分」在任何情况下都不构成一句关于生效与否的断言。
+    static func testUnknownGroupStateFallsBackToPartial() {
+        let json = Data(#"{"groups":[{"name":"x","title":"X","state":"brand-new-state"}]}"#.utf8)
+        guard let list = try? JSONDecoder().decode(RuleList.self, from: json) else {
+            expect(false, "没见过的 state 让整份应答解不出来了 —— 旧菜单会因此瞎掉")
+            return
+        }
+        expect(list.groups.first?.state == .partial, "没见过的 state 没落到 partial")
+    }
+
+    /// 失败只算**这一组名下**的域名:同一次泄漏不该在三个组里各报一遍。
+    static func testFailuresAreNotCountedAgainstUnrelatedGroups() {
+        let list = RuleList(groups: [
+            RuleGroup(name: "apple", title: "A", state: .on, domains: ["*.icloud.com"]),
+            RuleGroup(name: "gaming", title: "G", state: .on, domains: ["*.steamstatic.com"]),
+        ])
+        let rows = ruleGroupRows(from: list, failing: [
+            FailingRule(kind: .direct, rule: "*.steamstatic.com", attempts: 10, failures: 10),
+        ])
+        let apple = rows.first { $0.group.name == "apple" }
+        expect(apple?.failing == 0, "别的组的失败算到了 apple 头上")
+    }
+
     static func testRequiresRestartAbsenceIsNotFalse() {
     // 服务端恒为 true;键缺席意味着「这一版没说」,与「不需要重启」是两回事。
     let quiet = try! JSONDecoder().decode(RuleList.self, from: Data(#"{"direct":["a.com"]}"#.utf8))
@@ -122,6 +181,10 @@ struct RulesModelTests {
         testRuleRowsAreCaseInsensitiveWhenMatching()
         testValidateRulePatternRejectsWhatWouldBreakTheConfig()
         testRulesEditingHiddenOnOlderGuardian()
+        testGroupRowsAggregateFailuresAndPutBrokenGroupsFirst()
+        testPartialGroupIsVisiblyPartial()
+        testUnknownGroupStateFallsBackToPartial()
+        testFailuresAreNotCountedAgainstUnrelatedGroups()
         testFailingRulesArriveFromTheRealStatusShape()
         testMissingListsDecodeAsEmptyNotAsError()
         testRequiresRestartAbsenceIsNotFalse()

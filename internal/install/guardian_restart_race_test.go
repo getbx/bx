@@ -55,7 +55,8 @@ func TestEnableRecoversWhenKickstartFindsNoService(t *testing.T) {
 		loaded: map[string]bool{guardianLaunchdLabel: true}, // 拆除中,看起来还在
 		runErr: map[string]error{
 			"kickstart -k system/" + guardianLaunchdLabel: errors.New(
-				`exit status 113: Could not find service "com.getbx.bx.guard" in domain for system`),
+				`exit status 113: Could not find service "com.getbx.bx.guard" in domain for system`,
+			),
 		},
 	}
 	// 第一次 kickstart 失败之后,服务确实不在了 —— 兜底必须重新 bootstrap。

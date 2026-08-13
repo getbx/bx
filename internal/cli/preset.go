@@ -7,58 +7,24 @@ import (
 	"strings"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/preset"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/urfave/cli/v2"
 )
 
-type appPreset struct {
-	Name    string
-	Summary string
-	Direct  []string
-}
+// appPreset / appPresets 现在只是 internal/preset 那份**唯一清单**的别名。
+//
+// 挪走的理由:菜单要按组显示与开关规则,而菜单经 Guardian 说话 —— 两边必须读
+// 同一份。留在 internal/cli 里的话 guardian 引不到(会成环),而复制一份就会漂。
+type appPreset = preset.Preset
 
-var appPresets = map[string]appPreset{
-	"gaming": {
-		Name:    "gaming",
-		Summary: "游戏更新/CDN 可用性;当前聚焦 Steam 更新与下载 CDN",
-		Direct: []string{
-			"client-update.akamai.steamstatic.com",
-			"steamcdn-a.akamaihd.net",
-			"media.steampowered.com",
-			"*.steamcontent.com",
-			"*.steamstatic.com",
-		},
-	},
-	"apple": {
-		Name:    "apple",
-		Summary: "Apple 系统服务、Game Center、Arcade、iCloud 同步可用性",
-		Direct: []string{
-			"*.apple.com",
-			"*.icloud.com",
-			"*.icloud-content.com",
-			"*.mzstatic.com",
-			"*.aaplimg.com",
-			"*.cdn-apple.com",
-		},
-	},
-	"china-cdn": {
-		Name:    "china-cdn",
-		Summary: "国内 App/视频/电商 CDN 可用性;只含品牌自控域",
-		Direct: []string{
-			"*.alicdn.com",
-			"*.taobao.com",
-			"*.tmall.com",
-			"*.jd.com",
-			"*.bilibili.com",
-			"*.bilivideo.com",
-			"*.douyin.com",
-			"*.douyinpic.com",
-			"*.byteimg.com",
-			"*.weixin.qq.com",
-			"*.qq.com",
-		},
-	},
-}
+var appPresets = func() map[string]appPreset {
+	out := map[string]appPreset{}
+	for _, p := range preset.All() {
+		out[p.Name] = p
+	}
+	return out
+}()
 
 func presetCommands() []*cli.Command {
 	return []*cli.Command{

@@ -1,21 +1,78 @@
 import Foundation
 
+/// 一组规则在配置里的状态。**三态,不是布尔。**
+///
+/// 真实配置里一组常常只装了一半(用户手工删过几条,或者 preset 后来加了新域名)。
+/// 把半装的组画成「开」,用户会以为那几条在生效;画成「关」更糟。
+enum RuleGroupState: String, Decodable {
+    case on, off, partial
+}
+
+/// 界面上的一组。
+struct RuleGroup: Decodable, Equatable {
+    let name: String
+    let title: String
+    var summary: String = ""
+    let state: RuleGroupState
+    var installed: Int = 0
+    var total: Int = 0
+    /// 这一组的完整域名清单,由服务端发下来。**不在客户端存第二份** ——
+    /// 两份清单漂开时,界面会把失败标到错误的组上,或者标不上而看起来一切正常。
+    var domains: [String] = []
+
+    enum CodingKeys: String, CodingKey {
+        case name, title, summary, state, installed, total, domains
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        title = try c.decode(String.self, forKey: .title)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        // 认不出的状态按 partial 处理:那是三态里**唯一不会撒谎**的一个 ——
+        // 说「装了一部分」在任何情况下都不构成一句关于生效与否的断言。
+        state = (try? c.decode(RuleGroupState.self, forKey: .state)) ?? .partial
+        installed = try c.decodeIfPresent(Int.self, forKey: .installed) ?? 0
+        total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
+        domains = try c.decodeIfPresent([String].self, forKey: .domains) ?? []
+    }
+
+    init(name: String, title: String, summary: String = "", state: RuleGroupState,
+         installed: Int = 0, total: Int = 0, domains: [String] = []) {
+        self.name = name; self.title = title; self.summary = summary
+        self.state = state; self.installed = installed; self.total = total
+        self.domains = domains
+    }
+}
+
 /// GET /v1/rules 的应答。
 struct RuleList: Decodable, Equatable {
     var direct: [String] = []
     var proxy: [String] = []
+    var groups: [RuleGroup] = []
+    /// 不属于任何组的规则(用户手写的)。**组开关绝不能碰它们。**
+    var custom: [String] = []
+    /// 配置文件路径,供「在 Finder 中显示」。空 = 服务端没给(旧 Guardian)。
+    var configPath: String = ""
     /// 服务端恒为 true。**键缺席读作 nil,不读作 false** —— 那意味着
     /// 「这一版 Guardian 没说」,与「不需要重启」是两回事。
     var requiresRestart: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case direct, proxy
+        case direct, proxy, groups, custom
+        case configPath = "config_path"
         case requiresRestart = "requires_restart"
     }
 
-    init(direct: [String] = [], proxy: [String] = [], requiresRestart: Bool? = nil) {
+    init(
+        direct: [String] = [], proxy: [String] = [], groups: [RuleGroup] = [],
+        custom: [String] = [], configPath: String = "", requiresRestart: Bool? = nil
+    ) {
         self.direct = direct
         self.proxy = proxy
+        self.groups = groups
+        self.custom = custom
+        self.configPath = configPath
         self.requiresRestart = requiresRestart
     }
 
@@ -26,6 +83,9 @@ struct RuleList: Decodable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         direct = try container.decodeIfPresent([String].self, forKey: .direct) ?? []
         proxy = try container.decodeIfPresent([String].self, forKey: .proxy) ?? []
+        groups = try container.decodeIfPresent([RuleGroup].self, forKey: .groups) ?? []
+        custom = try container.decodeIfPresent([String].self, forKey: .custom) ?? []
+        configPath = try container.decodeIfPresent(String.self, forKey: .configPath) ?? ""
         requiresRestart = try container.decodeIfPresent(Bool.self, forKey: .requiresRestart)
     }
 }
@@ -111,4 +171,51 @@ func normalizedRulePattern(_ raw: String) -> String {
 func rulesEditingAvailable(capabilities: [String]?) -> Bool {
     guard let capabilities else { return false }
     return capabilities.contains("rules")
+}
+
+/// 一组在界面上要显示的那一行。
+struct RuleGroupRow: Equatable {
+    let group: RuleGroup
+    /// 这一组名下正在成片失败的规则数(0 = 没有值得报的)。
+    let failing: Int
+    /// 这一组名下失败的连接总数,用来说人话。
+    let failures: Int
+
+    var isOn: Bool { group.state == .on }
+    /// 半装的组要在界面上**看得出来**是半装的。
+    var isMixed: Bool { group.state == .partial }
+
+    /// 副标题。**没问题时只说规模,不说废话**;有问题时说人话,不摆域名。
+    var detail: String {
+        if failing > 0 {
+            return "\(failures) connections failed — these sites are not reachable this way"
+        }
+        if isMixed {
+            return "\(group.installed) of \(group.total) rules installed"
+        }
+        return group.summary.isEmpty ? "\(group.total) rules" : group.summary
+    }
+}
+
+/// 把组、失败归因合成界面要显示的行。
+///
+/// **归因按组汇总,而不是逐条列域名** —— 十行域名对普通用户没有意义,
+/// 「Steam 相关的走不通」有。
+func ruleGroupRows(from list: RuleList, failing: [FailingRule]) -> [RuleGroupRow] {
+    var rows: [RuleGroupRow] = []
+    for group in list.groups {
+        let members = Set(group.domains.map { $0.lowercased() })
+        var count = 0
+        var failures = 0
+        for rule in failing where rule.kind == .direct && members.contains(rule.rule.lowercased()) {
+            count += 1
+            failures += rule.failures
+        }
+        rows.append(RuleGroupRow(group: group, failing: count, failures: failures))
+    }
+    // 有问题的排最前 —— 用户打开这个窗口十有八九是因为有东西坏了。
+    return rows.sorted { lhs, rhs in
+        if (lhs.failing > 0) != (rhs.failing > 0) { return lhs.failing > 0 }
+        return lhs.group.title < rhs.group.title
+    }
 }

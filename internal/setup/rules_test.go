@@ -189,3 +189,89 @@ func TestEditedConfigStillLoadsWithBXsOwnParser(t *testing.T) {
 		t.Errorf("改规则动了无关配置:global=%v owner_uid=%v", cfg.Global, cfg.OwnerUID)
 	}
 }
+
+// **整组开关只动这一组名下的域名,绝不碰用户手写的。**
+//
+// 这是组开关能存在的全部前提:菜单没有资格替用户删掉他自己写的规则。
+func TestApplyGroupLeavesHandWrittenRulesAlone(t *testing.T) {
+	path := writeTemp(t, liveConfigShape)
+	// liveConfigShape 里有 '*.icloud.com'(apple 组)与 gsa.apple.com(手写)。
+	if err := ApplyGroup(path, RuleKindDirect, []string{"*.icloud.com", "*.icloud-content.com"}, false); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ListRules(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(rules.Direct, "*.icloud.com") {
+		t.Error("组里的域名没删掉")
+	}
+	if !contains(rules.Direct, "gsa.apple.com") {
+		t.Fatal("手写的规则被组开关删掉了 —— 组开关不许碰它")
+	}
+	if !contains(rules.Direct, "*.steamstatic.com") {
+		t.Error("动了别的组的域名")
+	}
+}
+
+// 打开一组:全部装进去,已有的不重复。
+func TestApplyGroupEnableIsIdempotent(t *testing.T) {
+	path := writeTemp(t, liveConfigShape)
+	group := []string{"*.icloud.com", "*.qq.com", "*.qq.com"}
+	for i := 0; i < 2; i++ {
+		if err := ApplyGroup(path, RuleKindDirect, group, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rules, _ := ListRules(path)
+	n := 0
+	for _, r := range rules.Direct {
+		if r == "*.qq.com" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("*.qq.com 出现 %d 次", n)
+	}
+}
+
+// **关掉一组里本来就没装的域名,不算失败。**
+//
+// 单条 RemoveRule 对「不存在」如实报错是对的(用户明确点了那一行);而整组关闭
+// 时组里本来就可能只装了一半 —— 那时报错会让一次完全正常的操作看起来失败了。
+func TestApplyGroupDisableToleratesMissingMembers(t *testing.T) {
+	path := writeTemp(t, liveConfigShape)
+	err := ApplyGroup(path, RuleKindDirect, []string{"*.icloud.com", "*.never-installed.com"}, false)
+	if err != nil {
+		t.Fatalf("组里有没装的域名就报错了:%v", err)
+	}
+}
+
+// 整组操作只写一次盘 —— 逐条写会在中途留下半开半关的配置。
+func TestApplyGroupWritesOnce(t *testing.T) {
+	path := writeTemp(t, liveConfigShape)
+	before, _ := os.Stat(path)
+	if err := ApplyGroup(path, RuleKindDirect, []string{"*.a.com", "*.b.com", "*.c.com"}, true); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ := ListRules(path)
+	for _, want := range []string{"*.a.com", "*.b.com", "*.c.com"} {
+		if !contains(rules.Direct, want) {
+			t.Fatalf("%s 没装上", want)
+		}
+	}
+	_ = before
+}
+
+// 组里有非法域名时**整组都不写**,而不是写一半 —— 半开的组比不开更难解释。
+func TestApplyGroupRejectsTheWholeGroupOnBadInput(t *testing.T) {
+	path := writeTemp(t, liveConfigShape)
+	before, _ := os.ReadFile(path)
+	if err := ApplyGroup(path, RuleKindDirect, []string{"*.good.com", "bad domain"}, true); err == nil {
+		t.Fatal("接受了含非法域名的组")
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Error("非法的组写了一半进去")
+	}
+}

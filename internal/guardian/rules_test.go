@@ -2,6 +2,7 @@ package guardian
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -80,8 +81,17 @@ func TestRulesRoundTripThroughTheEndpoint(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/rules", nil), 501, true))
 	body := w.Body.String()
-	if !strings.Contains(body, "*.qq.com") || strings.Contains(body, "steamstatic") {
-		t.Fatalf("读回来的规则不对:%s", body)
+	// **判据是 direct 列表本身,不是整个响应体的子串。**
+	// 应答现在还带着每一组的**完整域名目录**(供界面把失败归因对到组上),
+	// 于是 `*.steamstatic.com` 作为「可选项」必然出现在响应里 —— 而它作为
+	// 「已安装的规则」应当消失。第一版拿整体子串当判据,分不开这两件事。
+	var got rulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("解不出应答:%v %s", err, body)
+	}
+	installed := strings.Join(got.Direct, " ")
+	if !strings.Contains(installed, "*.qq.com") || strings.Contains(installed, "steamstatic") {
+		t.Fatalf("读回来的直连规则不对:%v", got.Direct)
 	}
 	// **改完必须明说要重启才生效。** bx 不热重载;不说这句,用户会以为已经生效,
 	// 然后在问题依旧时排除掉这一步 —— 而那正是真正的原因。
@@ -140,4 +150,95 @@ func TestRulesCapabilityIsDeclared(t *testing.T) {
 		}
 	}
 	t.Fatalf("能力清单里没有 %q:%v", CapabilityRules, GuardianCapabilities())
+}
+
+// **按组发布,而且是三态。**
+//
+// 界面上一个勾选框只有开/关两态,而真实配置里一组常常**只装了一半**(用户手工
+// 删过几条、或者 preset 后来加了新域名)。把半装的组画成「开」,用户会以为
+// 那几条在生效;画成「关」更糟。三态是唯一诚实的表达。
+func TestRulesEndpointPublishesGroupsWithThreeStates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "server: bx://x\nrules:\n    - direct:\n" +
+		"        - '*.icloud.com'\n" + // apple 组:只装了一部分
+		"        - '*.steamstatic.com'\n" +
+		"        - '*.steamcontent.com'\n" +
+		"        - client-update.akamai.steamstatic.com\n" +
+		"        - steamcdn-a.akamaihd.net\n" +
+		"        - media.steampowered.com\n" + // gaming 组:全装了
+		"        - gsa.apple.com\n" // 手写的
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	rulesHandler(path, 501)(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/rules", nil), 501, true))
+
+	var got rulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("解不出应答:%v %s", err, w.Body.String())
+	}
+	states := map[string]string{}
+	for _, g := range got.Groups {
+		states[g.Name] = g.State
+		if g.Title == "" {
+			t.Errorf("组 %q 没有给人看的标题", g.Name)
+		}
+	}
+	if states["gaming"] != "on" {
+		t.Errorf("gaming 全装了却是 %q", states["gaming"])
+	}
+	if states["apple"] != "partial" {
+		t.Errorf("apple 只装了一部分却是 %q —— 半装的组画成开或关都是撒谎", states["apple"])
+	}
+	if states["china-cdn"] != "off" {
+		t.Errorf("china-cdn 一条没装却是 %q", states["china-cdn"])
+	}
+	// **手写的规则必须单独列出来**,否则界面无从知道哪些不该被组开关碰。
+	if len(got.Custom) != 1 || got.Custom[0] != "gsa.apple.com" {
+		t.Fatalf("自定义 = %v,want [gsa.apple.com]", got.Custom)
+	}
+	// 配置路径要发布出去 —— 「在 Finder 中显示」靠它,而菜单不该自己猜一份。
+	if got.ConfigPath != path {
+		t.Errorf("config_path = %q, want %q", got.ConfigPath, path)
+	}
+}
+
+// 整组开关走同一个端点。
+func TestRulesEndpointTogglesWholeGroups(t *testing.T) {
+	path := rulesTestConfig(t)
+	handler := rulesHandler(path, 501)
+	post := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		handler(w, withPeer(httptest.NewRequest(http.MethodPost, "/v1/rules", strings.NewReader(body)), 501, true))
+		return w
+	}
+	if w := post(`{"action":"enable_group","group":"apple"}`); w.Code != http.StatusOK {
+		t.Fatalf("开组 = %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(post(`{"action":"disable_group","group":"gaming"}`).Body.String(), `"name":"gaming"`) {
+		t.Error("关组之后没有回完整列表")
+	}
+	w := httptest.NewRecorder()
+	handler(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/rules", nil), 501, true))
+	var got rulesResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	for _, g := range got.Groups {
+		if g.Name == "apple" && g.State != "on" {
+			t.Errorf("apple 没开成:%q", g.State)
+		}
+		if g.Name == "gaming" && g.State != "off" {
+			t.Errorf("gaming 没关成:%q", g.State)
+		}
+	}
+}
+
+// 认不出的组名要报错,别静默什么都不做 —— 静默会让界面显示成功而配置没变。
+func TestUnknownGroupIsRejected(t *testing.T) {
+	handler := rulesHandler(rulesTestConfig(t), 501)
+	w := httptest.NewRecorder()
+	handler(w, withPeer(httptest.NewRequest(http.MethodPost, "/v1/rules",
+		strings.NewReader(`{"action":"enable_group","group":"not-a-preset"}`)), 501, true))
+	if w.Code == http.StatusOK {
+		t.Fatal("接受了不存在的组名")
+	}
 }
