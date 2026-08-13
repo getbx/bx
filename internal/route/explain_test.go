@@ -59,9 +59,15 @@ func TestDecideAgreesWithExplainOnEveryInput(t *testing.T) {
 	for _, global := range []bool{false, true} {
 		r.GlobalProxy = global
 		for _, m := range []Meta{
-			{Domain: "x.p.com"}, {Domain: "x.d.com"}, {Domain: "x.cn.com"}, {Domain: "x.org"},
-			{IP: mustAddr("203.0.113.9")}, {IP: mustAddr("1.2.3.4")},
-			{IP: mustAddr("10.0.0.1")}, {IP: mustAddr("8.8.8.8")}, {},
+			{Domain: "x.p.com"},
+			{Domain: "x.d.com"},
+			{Domain: "x.cn.com"},
+			{Domain: "x.org"},
+			{IP: mustAddr("203.0.113.9")},
+			{IP: mustAddr("1.2.3.4")},
+			{IP: mustAddr("10.0.0.1")},
+			{IP: mustAddr("8.8.8.8")},
+			{},
 		} {
 			want, _ := r.Explain(m)
 			if got := r.Decide(m); got != want {

@@ -52,6 +52,11 @@ type LocalAPIOptions struct {
 	// it lives in internal/cli, and Guardian must not grow a second copy.
 	// Nil means the endpoint answers 501 — "not wired" is not "no update".
 	UpdateCheck func(context.Context) (UpdateAvailability, error)
+	// ConfigPath backs /v1/rules. Empty means "not wired" — the endpoint then
+	// answers 501 rather than an empty rule list, because "nobody told me
+	// where the config is" and "you have no rules" are different answers and
+	// the menu must not render the second when it got the first.
+	ConfigPath string
 }
 
 // coreRuntimeFetchTimeout bounds how long observableStatus waits on
@@ -130,6 +135,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	mux.HandleFunc("/v1/update-check", updateCheckHandler(newUpdateCheckCache(options.UpdateCheck), options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(controller, pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
+	mux.HandleFunc("/v1/rules", rulesHandler(options.ConfigPath, options.OwnerUID))
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
 	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries}
