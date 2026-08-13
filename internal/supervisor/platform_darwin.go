@@ -98,7 +98,7 @@ func boundIfDialer(ifIndex int) *net.Dialer {
 // Hijack 给 utun 配地址,装 split-default 把默认流量劫进 utun,
 // 服务器/用户/私网段经物理网关旁路。返回还原闭包(删路由 + 关 utun)。
 func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (func(), error) {
-	gw, _, err := defaultRouteDarwin()
+	gw, physicalDev, err := defaultRouteDarwin()
 	if err != nil {
 		return nil, fmt.Errorf("探测默认网关: %w", err)
 	}
@@ -116,7 +116,7 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 	//    v6(内核启用时)fail-closed reject 全局 v6(纯构造见 darwinRouteSpecs)。
 	blockV6 := ipv6HostEnabled()
 	handoff := parseGuardianBypassHandoff(os.Getenv(guardianBypassHandoffEnv))
-	specs := darwinRouteSpecsWithHandoff(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, blockV6, handoff)
+	specs := darwinRouteSpecsWithHandoff(t.Name, gw, physicalDev, darwinDirectCIDRs, serverBypass, userBypass, blockV6, handoff)
 
 	var done []darwinRouteSpec // 已加路由,用于对称还原(只管路由;TUN 关闭归 Run 的 closeTUN)
 	cleanup := func() {
@@ -147,7 +147,7 @@ func runDarwinRouteCommand(args ...string) error {
 // darwin 的 Hijack teardown 本就只删路由(设备归 Run 的 closeTUN),故无删设备风险。
 // 未真机验证(compile-only),与 Hijack 的真机待办一并验。
 func (darwinPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
-	gw, _, err := defaultRouteDarwin()
+	gw, physicalDev, err := defaultRouteDarwin()
 	if err != nil {
 		return fmt.Errorf("探测默认网关: %w", err)
 	}
@@ -156,10 +156,15 @@ func (darwinPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []str
 		ip = ip[:i]
 	}
 	_ = runCmdQuiet("ifconfig", t.Name, "inet", ip, ip, "up") // 幂等
-	specs := darwinRouteSpecs(t.Name, gw, darwinDirectCIDRs, serverBypass, userBypass, ipv6HostEnabled())
+	specs := darwinRouteSpecs(t.Name, gw, physicalDev, darwinDirectCIDRs, serverBypass, userBypass, ipv6HostEnabled())
 	for _, s := range specs {
 		_ = runCmdQuiet("route", s.del...) // 尽力清旧
 		if err := runCmd("route", s.add...); err != nil {
+			if s.optional {
+				// 可选路由(scoped 默认)装不上不影响保护 —— 见 darwinRouteSpec.optional。
+				log.Printf("可选路由未装上(跳过):route %s: %v", strings.Join(s.add, " "), err)
+				continue
+			}
 			return fmt.Errorf("route %s: %w", strings.Join(s.add, " "), err)
 		}
 	}

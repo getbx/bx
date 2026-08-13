@@ -189,13 +189,46 @@ func enableGuardianWithControl(ctx context.Context, control guardianLaunchdContr
 		return fmt.Errorf("inspect Guardian launchd service: %w", err)
 	}
 	isReady := ready != nil && ready()
-	for _, args := range guardianEnableCommands(active, isReady) {
-		if err := control.Run(ctx, args...); err != nil {
-			if loaded, statusErr := control.Loaded(ctx, guardianLaunchdLabel); statusErr == nil && loaded {
-				return nil
-			}
+	if err := runGuardianEnablePlan(ctx, control, guardianEnableCommands(active, isReady)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// runGuardianEnablePlan 执行一套 launchctl 计划,并在**「找不到服务」**这一种失败上
+// 自己走出来。
+//
+// 那个错误只有一个含义:我们以为服务还在域里,而它已经不在了(bootout 的拆除
+// 刚刚完成)。正确的处置是补一次完整的 bootstrap 再试,而不是中止整个升级 ——
+// 中止的代价是机器停在「保护已关、文件已换、服务没起」,用户只能自己发现并
+// 手动 `sudo bx up`(2026-08-13 真机事故)。
+//
+// **别的失败一律如实上报**:把真故障吞成静默重试,是用一个更难查的问题换掉一个好查的。
+func runGuardianEnablePlan(ctx context.Context, control guardianLaunchdControl, plan [][]string) error {
+	for _, args := range plan {
+		err := control.Run(ctx, args...)
+		if err == nil {
+			continue
+		}
+		// 已经起来了就算成功(命令报错但结果对)。
+		if loaded, statusErr := control.Loaded(ctx, guardianLaunchdLabel); statusErr == nil && loaded {
+			return nil
+		}
+		if !launchdLabelAbsent([]byte(err.Error())) {
 			return fmt.Errorf("launch Guardian with launchctl %s: %w", strings.Join(args, " "), err)
 		}
+		// 服务不在域里 —— 补一次完整的加载序列。**只补一次**:再失败就是真的
+		// 起不来,那时报错比无限重试有用。
+		for _, retry := range guardianEnableCommands(false, false) {
+			if retryErr := control.Run(ctx, retry...); retryErr != nil {
+				if loaded, statusErr := control.Loaded(ctx, guardianLaunchdLabel); statusErr == nil && loaded {
+					return nil
+				}
+				return fmt.Errorf("launch Guardian with launchctl %s (after %s reported no such service): %w",
+					strings.Join(retry, " "), strings.Join(args, " "), retryErr)
+			}
+		}
+		return nil
 	}
 	return nil
 }
@@ -210,7 +243,30 @@ func BootoutGuardian(ctx context.Context) error {
 	return bootoutGuardianWithControl(ctx, execGuardianLaunchdControl{})
 }
 
+// bootoutLabelPollInterval / bootoutLabelPollAttempts 界定「等标签真的消失」等多久。
+//
+// 真机上 launchd 拆掉一个 KeepAlive 服务通常在几百毫秒内完成;上限约 3 秒,
+// 超过就往下走 —— **停止路径不许因为等不到而失败**(2026-08-04 那次 71 分钟事故)。
+const (
+	bootoutLabelPollInterval = 150 * time.Millisecond
+	bootoutLabelPollAttempts = 20
+)
+
 func bootoutGuardianWithControl(ctx context.Context, control guardianLaunchdControl) error {
+	return bootoutGuardianWithControlAndWait(ctx, control, func() {
+		time.Sleep(bootoutLabelPollInterval)
+	})
+}
+
+// bootoutGuardianWithControlAndWait 停掉 Guardian,并**等到标签真的从域里消失**。
+//
+// 不等的后果是一次真机事故(2026-08-13):`bootout` 返回时服务还在拆,紧接着
+// EnableGuardian 问 `Loaded()` 得到 true → 计划里只剩 kickstart、跳过了 bootstrap
+// → 等它真跑时服务已经没了 → `Could not find service`,升级中止在「保护已关、
+// 文件已换、服务没起」,机器裸奔且只能手动 `sudo bx up`。
+//
+// sleep 由调用方注入,好让测试不真的睡。
+func bootoutGuardianWithControlAndWait(ctx context.Context, control guardianLaunchdControl, wait func()) error {
 	loaded, err := control.Loaded(ctx, guardianLaunchdLabel)
 	if err != nil {
 		return fmt.Errorf("inspect Guardian launchd service: %w", err)
@@ -223,6 +279,18 @@ func bootoutGuardianWithControl(ctx context.Context, control guardianLaunchdCont
 			return nil
 		}
 		return fmt.Errorf("bootout Guardian launchd service: %w", err)
+	}
+	// 等标签真的消失。**等不到不报错**:停止这条路上任何一步都不得因为别的事
+	// 没做成而失败;剩下的交给 enable 那边的兜底。
+	for i := 0; i < bootoutLabelPollAttempts; i++ {
+		if ctx.Err() != nil {
+			return nil
+		}
+		stillLoaded, err := control.Loaded(ctx, guardianLaunchdLabel)
+		if err != nil || !stillLoaded {
+			return nil
+		}
+		wait()
 	}
 	return nil
 }

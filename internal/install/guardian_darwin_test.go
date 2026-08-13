@@ -377,11 +377,18 @@ type fakeGuardianLaunchdControl struct {
 	statusErr map[string]error
 	runErr    map[string]error
 	calls     []string
+	// loadedAfterFailure 让 fake 表达真机上那个竞态:命令失败之后,服务确实
+	// 已经不在域里了。非 nil 时,第一次 Run 失败后 Loaded 改用这张表。
+	loadedAfterFailure map[string]bool
+	sawFailure         bool
 }
 
 func (f *fakeGuardianLaunchdControl) Loaded(_ context.Context, label string) (bool, error) {
 	if err := f.statusErr[label]; err != nil {
 		return false, err
+	}
+	if f.sawFailure && f.loadedAfterFailure != nil {
+		return f.loadedAfterFailure[label], nil
 	}
 	return f.loaded[label], nil
 }
@@ -389,7 +396,26 @@ func (f *fakeGuardianLaunchdControl) Loaded(_ context.Context, label string) (bo
 func (f *fakeGuardianLaunchdControl) Run(_ context.Context, args ...string) error {
 	call := strings.Join(args, " ")
 	f.calls = append(f.calls, call)
-	return f.runErr[call]
+	// **bootstrap 成功之后 kickstart 就不该再报「找不到服务」** —— 服务已经
+	// 被装进域里了。fake 少了这一步就不真实:它会让一次本该成功的重试也失败,
+	// 把「修好了」测成「没修好」。
+	if len(args) > 0 && args[0] == "bootstrap" && f.runErr[call] == nil {
+		for key := range f.runErr {
+			if strings.HasPrefix(key, "kickstart") {
+				delete(f.runErr, key)
+			}
+		}
+		if f.loaded == nil {
+			f.loaded = map[string]bool{}
+		}
+		f.loaded[guardianLaunchdLabel] = true
+		f.loadedAfterFailure = nil
+	}
+	err := f.runErr[call]
+	if err != nil {
+		f.sawFailure = true
+	}
+	return err
 }
 
 // Guardian 日志里有服务器 IP、bypass 网段和完整错误串(可能含路径/链接/凭据)。
