@@ -30,7 +30,17 @@ func judgeCarrier(local LocalFacts) Finding {
 	f.Evidence = append(f.Evidence, "public traffic leaves via: "+carrier)
 
 	// bx 在不在跑,决定同一个观测是好消息还是坏消息。
-	bxRunning := bxLooksRunning(local)
+	running := bxRunningVerdict(local)
+
+	// **过渡态先答不了,而且要早于 OwnerBX 那一支。** starting / recovering 时
+	// 路由可能已经指向 TUN 而隧道还没起来,此刻打绿勾与喊泄漏一样没有依据。
+	if running == runningUnknown {
+		f.Verdict = NotChecked
+		f.Summary = "bx is in a transitional state (" +
+			strings.ToLower(strings.TrimSpace(local.BXProtection)) +
+			"), so whether it should be carrying this traffic cannot be judged yet."
+		return f
+	}
 
 	if owner == OwnerBX {
 		f.Verdict = OK
@@ -50,10 +60,10 @@ func judgeCarrier(local LocalFacts) Finding {
 		return f
 	}
 
-	if !bxRunning {
+	if running == notRunning {
 		// **走到这里只意味着「没有证据表明 bx 在跑」,措辞不许说成「它没在跑」。**
 		// 检测别的 VPN 那个用法里这确实是常态,但同一个空值也可能来自
-		// 「Guardian 没答上话」——见 bxLooksRunning。
+		// 「Guardian 没答上话」——见 bxRunningVerdict。
 		f.Verdict = Info
 		if owner == OwnerNone {
 			f.Summary = "No tunnel is carrying this machine's traffic — it leaves directly through " +
@@ -69,37 +79,73 @@ func judgeCarrier(local LocalFacts) Finding {
 	//
 	f.Verdict = Bad
 	if owner == OwnerNone {
-		f.Summary = "bx is running (" + local.BXTunInterface + "), but public traffic is not " +
+		f.Summary = "bx is running" + bxWhere(local) + ", but public traffic is not " +
 			"entering its tunnel at all — it leaves directly through " + carrier +
 			". Whatever bx reports about itself, this traffic is not protected."
 		return f
 	}
-	f.Summary = "bx is running (" + local.BXTunInterface + "), but your public traffic is " +
+	f.Summary = "bx is running" + bxWhere(local) + ", but your public traffic is " +
 		"carried by " + carrier + " instead. Whatever bx reports about itself, it is not " +
 		"the one carrying this traffic."
 	f.Evidence = append(f.Evidence, tenantSuspicion(local)...)
 	return f
 }
 
-// bxLooksRunning 判断有没有证据表明 bx 此刻在跑。
+// runningState 是「bx 此刻应不应该在承载公网流量」的三态。
 //
-// **不能只看 BXTunInterface。** input.go 明写着空的 TUN 名「不表示 bx 没在跑」——
-// 采集层在「core is running but its TUN name could not be read」那一支返回错误,
-// 于是 TUN 名与保护状态一起变空。早先这里用 `BXTunInterface != ""` 当判据,
-// 于是在那一支上说出「bx is not running, so this is expected」,而 bx 明明在跑。
+// 本包刻意不引 observe.Tristate:那个包做 I/O,而 purity 守卫禁止判据依赖运行环境。
+type runningState int
+
+const (
+	// 零值是「没问出来」—— 与本仓库 Verdict / Tristate 同一条纪律。
+	runningUnknown runningState = iota
+	isRunning
+	notRunning
+)
+
+func (r runningState) String() string {
+	switch r {
+	case isRunning:
+		return "running"
+	case notRunning:
+		return "not running"
+	default:
+		return "unknown"
+	}
+}
+
+// bxRunningVerdict 判断此刻有没有证据表明 bx **应当正在承载公网流量**。
 //
-// 保护状态答上来了就用它;两个都问不出来时返回 false,而**那一支的措辞不许断言
-// 「bx 没在跑」**,只能说「没有证据表明它在拿这台机器的流量」。
-func bxLooksRunning(local LocalFacts) bool {
+// 三态,不是二值 —— 与本包其它判据同一条纪律:认不出来的输入不许被替它选一边。
+//
+// 白名单而不是黑名单:黑名单会把将来新增的任何状态值默认算成「在跑」,而这条结论
+// (「bx 在跑,但流量没走它」)误报的代价是让用户学会忽略它。
+func bxRunningVerdict(local LocalFacts) runningState {
+	// TUN 名读得出来 = Core 可达且报得出自己的接口,这是最硬的证据,压过状态字符串。
 	if strings.TrimSpace(local.BXTunInterface) != "" {
-		return true
+		return isRunning
 	}
 	switch strings.ToLower(strings.TrimSpace(local.BXProtection)) {
-	case "", "off", "unknown":
-		return false
+	case "protected", "blocked", "needs_attention":
+		// 三者都意味着「保护本该是开着的」。blocked 尤其:kill-switch 生效时
+		// **更不该**有公网流量漏出去,此刻发现流量在走别的路是最严重的那种。
+		return isRunning
+	case "off", "":
+		return notRunning
 	default:
-		// Guardian 报了一个非 off 的保护状态(protected / needs_attention …)——
-		// 那就是 bx 在跑的证据,哪怕 TUN 名字没读出来。
-		return true
+		// starting / recovering 是过渡态,几秒后自己会变;别的值是这一版没见过的。
+		// 两类都不判 —— 在一个正在启动的系统上喊「流量没走隧道」是噪声。
+		return runningUnknown
 	}
+}
+
+// bxWhere 给出 bx 的接口名,**没有名字时给空串而不是一对空括号**。
+//
+// 走到这里而 TUN 名为空是常态不是边角:那正是 Core 不可达、只剩 Guardian
+// 报得出保护状态的那条路。上一版在那条路上拼出的是字面的 `bx is running ()`。
+func bxWhere(local LocalFacts) string {
+	if name := strings.TrimSpace(local.BXTunInterface); name != "" {
+		return " (" + name + ")"
+	}
+	return ""
 }

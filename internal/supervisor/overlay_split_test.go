@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"strings"
@@ -113,5 +114,61 @@ func TestBypassFetchSkipsDERPWhenTailscaleIsAbsent(t *testing.T) {
 	}
 	if errNoTailscaleForBypass == nil {
 		t.Fatal("需要一个哨兵错误,让循环把「没抓」当成一次未成功而不是权威答案")
+	}
+}
+
+// **「Tailscale 不在这台机器上」不是抓取失败,而 ZeroTier 的旁路不许被它连累。**
+//
+// overlay_signals.go 里那句注释写的就是「这次没抓,不是失败」,而代码把它当成
+// 失败往上抛:overlayAwareBypassFetch 一见 error 就 `return nil, err`,租户兜底
+// 那一半根本走不到。后果是**一台只跑 ZeroTier 的机器,中继旁路永远装不上** ——
+// 而重试循环还会一直重试同一个必然失败的抓取,把退避推到长周期。
+//
+// 注释与代码分叉时,分叉本身就是缺陷;这条钉的是代码那一侧。
+func TestAbsentTailscaleStillPublishesOtherTenantsBypass(t *testing.T) {
+	fetch := overlayAwareBypassFetch(
+		func(context.Context) ([]string, error) { return nil, errNoTailscaleForBypass },
+		func() []string { return []string{"104.194.8.134/32"} }, // ZeroTier 的兜底根
+	)
+	got, err := fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Tailscale 不在场被当成了失败:%v —— ZeroTier 的旁路会因此永远装不上", err)
+	}
+	if len(got) != 1 || got[0] != "104.194.8.134/32" {
+		t.Fatalf("租户兜底没被发布:%v", got)
+	}
+}
+
+// 反过来:**真的抓取失败仍然必须如实上报**,否则 decideBypassUpdate 会把一次失败
+// 当成「成功地得到了一个更短的答案」,把已经装好的 DERP 旁路撤掉。
+func TestRealFetchFailureIsStillReportedAsFailure(t *testing.T) {
+	boom := errors.New("dial controlplane.tailscale.com: timeout")
+	fetch := overlayAwareBypassFetch(
+		func(context.Context) ([]string, error) { return nil, boom },
+		func() []string { return []string{"104.194.8.134/32"} },
+	)
+	if _, err := fetch(context.Background()); !errors.Is(err, boom) {
+		t.Fatalf("真实抓取失败被吞了:%v —— 那会让已装好的旁路被一次超时撤掉", err)
+	}
+}
+
+// **有冒号没端口的写法必须落回 53,而不是拼出一个拨不通的地址。**
+//
+// `10.0.13.23:` 会让 SplitHostPort 成功返回 port=""。上一版要求 port 非空才走
+// 这一支,于是它掉进兜底分支,把整个 `10.0.13.23:` 当主机名再拼一次端口,
+// 得到 `10.0.13.23::53` —— 而且是静默的:那个租户的整个命名空间从此全部超时。
+func TestNormalizeDNSServerAddrHandlesColonWithoutPort(t *testing.T) {
+	for in, want := range map[string]string{
+		"10.0.13.23":      "10.0.13.23:53",
+		"10.0.13.23:":     "10.0.13.23:53",
+		"10.0.13.23:5353": "10.0.13.23:5353",
+		"100.100.100.100": "100.100.100.100:53",
+		"[fd7a::1]":       "[fd7a::1]:53",
+		"[fd7a::1]:53":    "[fd7a::1]:53",
+		"":                "",
+	} {
+		if got := normalizeDNSServerAddr(in); got != want {
+			t.Errorf("normalizeDNSServerAddr(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

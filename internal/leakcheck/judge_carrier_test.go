@@ -145,3 +145,61 @@ func TestCarrierDoesNotClaimBXIsStoppedFromAnEmptyTunName(t *testing.T) {
 		t.Errorf("什么都没问出来却断言 bx 没在跑:%q", g.Summary)
 	}
 }
+
+// **「bx 在不在跑」的判据方向,以及它的第三态。**
+//
+// 上一版是**黑名单**:保护状态不是 ""/off/unknown 就算在跑。三处错:
+//
+//	① 方向错。真正会走到这个分支的情形只有一种 —— 采集器只在
+//	   `Core == nil || !Core.Reachable` 时返回「有保护状态、无 TUN 名」
+//	   (Core 可达时读得出 TUN 名;读不出时返回的是 error,两个字段都空)。
+//	   也就是说这个分支恰好在 **Core 不可达**时说「bx 在跑」。
+//	② 过渡态被当成稳态。starting / recovering 只持续几秒,而这条结论
+//	   (「bx 在跑,但流量没走它」)在那几秒里字面为真却毫无意义 —— 它正在起来。
+//	③ 未来新增的状态值一律落进「在跑」。黑名单对没见过的值总是选一边,
+//	   而这里两边都可能错。
+//
+// 改成白名单 + 第三态:认得出且意味着「此刻应当在承载流量」才算在跑;
+// 过渡态与认不出的值都判 not checked,不硬选一边。
+func TestBXRunningVerdictIsAWhitelistWithAThirdState(t *testing.T) {
+	for _, tc := range []struct {
+		protection string
+		want       runningState
+	}{
+		{"protected", isRunning},
+		{"blocked", isRunning}, // kill-switch 生效:此刻更不该有公网流量漏出去
+		{"needs_attention", isRunning},
+		{"off", notRunning},
+		{"", notRunning},
+		{"starting", runningUnknown}, // 过渡态:几秒后自己会变
+		{"recovering", runningUnknown},
+		{"hibernating", runningUnknown}, // 将来新增的值 —— 不许替它选一边
+	} {
+		t.Run(tc.protection, func(t *testing.T) {
+			got := bxRunningVerdict(LocalFacts{BXProtection: tc.protection})
+			if got != tc.want {
+				t.Errorf("bxRunningVerdict(%q) = %v, want %v", tc.protection, got, tc.want)
+			}
+		})
+	}
+	// TUN 名读得出来,那是 Core 可达的直接证据,压过一切状态字符串。
+	if got := bxRunningVerdict(LocalFacts{BXTunInterface: "utun11", BXProtection: "starting"}); got != isRunning {
+		t.Errorf("读得出 TUN 名却判 %v —— 那是 Core 可达的直接证据", got)
+	}
+}
+
+// **结论里不许出现空括号。** 走到「有保护状态、无 TUN 名」那条路时,
+// 上一版拼出来的是字面的 `bx is running (), but ...` —— 而那正是这个分支
+// 唯一会发生的情形,不是边角。
+func TestCarrierSummaryNeverShowsEmptyParentheses(t *testing.T) {
+	for _, local := range []LocalFacts{
+		{BXProtection: "protected", DefaultRouteV4: InterfaceRef{Name: "en0"}},
+		{BXProtection: "needs_attention", DefaultRouteV4: InterfaceRef{Name: "utun4"}},
+		{BXTunInterface: "utun11", DefaultRouteV4: InterfaceRef{Name: "en0"}},
+	} {
+		f := identityFinding(t, FindingCarrier, BrowserReport{ExitV4: "203.0.113.9"}, local)
+		if strings.Contains(f.Summary, "()") {
+			t.Errorf("结论里出现空括号:%q", f.Summary)
+		}
+	}
+}

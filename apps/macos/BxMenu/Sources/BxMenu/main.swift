@@ -233,7 +233,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 编译器强制每个调用点当场表态。裸 `refresh()` 另有 Go 守卫兜(CI 不编 Swift)。
     private func refresh(userInitiated: Bool, then completion: (() -> Void)? = nil) {
         // 上一次还没回来就丢掉这一次:排队只会堆出一串拿到时已作废的刷新。
-        guard refreshGate.begin(userInitiated: userInitiated) else { return }
+        //
+        // **但回调不许跟着丢。** 被丢掉的是那次**采集**(它确实多余,在途那次
+        // 马上就会带回新数据),不是调用方要在数据落地之后做的那件事。首次引导
+        // 就是这么没的:启动时它排在别的刷新后面,gate 一挡,那个 completion
+        // 连同整个功能一起消失,而 refreshGate.end() 的补跑不带回调、补不回来。
+        guard refreshGate.begin(userInitiated: userInitiated) else {
+            if let completion { pendingRefreshCompletions.append(completion) }
+            return
+        }
         let inFlight = reconnectInFlight
         let snapshot = recoverySnapshot
         let generation = recoveryGeneration.value
@@ -245,8 +253,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // **落地之后才回调。** refresh 是异步的:紧跟在它后面读 state 读到的
                 // 是上一轮(启动时就是初始值),而首次引导正是靠 state 决定问哪一个。
                 completion?()
+                // 在途这次带回的数据同样是新的,被挡掉的调用方等的就是它。
+                self?.drainPendingRefreshCompletions()
             }
         }
+    }
+
+    /// 因 refreshGate 被挡掉、但仍欠着的回调。**只在主线程碰。**
+    private var pendingRefreshCompletions: [() -> Void] = []
+
+    /// 跑完所有欠着的回调。**先清空再跑** —— 回调里可能又发起一次 refresh,
+    /// 那次若也被挡就会往这个数组里再塞一个,边跑边清会漏掉它或无限循环。
+    private func drainPendingRefreshCompletions() {
+        let pending = pendingRefreshCompletions
+        pendingRefreshCompletions = []
+        for completion in pending { completion() }
     }
 
     /// 把后台收集到的结果落定。只在主线程调用。

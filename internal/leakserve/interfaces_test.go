@@ -2,6 +2,7 @@ package leakserve
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/getbx/bx/internal/leakcheck"
@@ -56,5 +57,28 @@ func TestListInterfaceKindsRecognisesThisMachine(t *testing.T) {
 	}
 	if physical == 0 {
 		t.Errorf("没认出任何物理接口:%v", kinds)
+	}
+}
+
+// 「有没有下一跳」的判据 —— Windows 那条路由采集里唯一的逻辑,而那份代码在这台
+// 开发机上编都编不了,更别说跑。抽出来是为了让它至少有一次能被执行到。
+func TestRouteIsOnLink(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"0.0.0.0", true},
+		{"::", true},
+		{"192.168.1.1", false},
+		{"fe80::1", false},
+		{"", false}, // 读不出来的 sockaddr —— 不许换成豁免
+	} {
+		var addr netip.Addr
+		if tc.in != "" {
+			addr = netip.MustParseAddr(tc.in)
+		}
+		if got := routeIsOnLink(addr); got != tc.want {
+			t.Errorf("routeIsOnLink(%q) = %v, want %v", tc.in, got, tc.want)
+		}
 	}
 }

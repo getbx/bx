@@ -290,6 +290,13 @@ func overlayAwareBypassFetch(
 ) func(context.Context) ([]string, error) {
 	return func(ctx context.Context) ([]string, error) {
 		derp, err := derpFetch(ctx)
+		// **「这个租户不在这台机器上」不是抓取失败。** 它是一个完整而正确的答案:
+		// 关于 Tailscale 的那一份是空的。把它当失败往上抛,会连坐掉**别的**租户
+		// 的兜底旁路 —— 一台只跑 ZeroTier 的机器因此永远装不上中继旁路,
+		// 而重试循环还在一遍遍重试一个必然失败的抓取。
+		if errors.Is(err, errNoTailscaleForBypass) {
+			derp, err = nil, nil
+		}
 		if err != nil {
 			// 失败原样上报:让 decideBypassUpdate 保留上一份,而不是把租户旁路
 			// 当成一次「成功」的答案发布出去 —— 那会把退避立刻推进长周期。

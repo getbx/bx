@@ -29,6 +29,7 @@ func LiveFactDeps() FactDeps {
 		InspectDNS:         linuxResolvers,
 		ListRoutes:         listLinuxRoutes,
 		ListInterfaceKinds: listInterfaceKinds,
+		ListInterfaceAddrs: listInterfaceAddrs,
 		ListOverlays:       listOverlayTenants,
 		GuardianStatus: func(context.Context) (BXRuntimeFacts, error) {
 			state, err := supervisor.FetchRuntimeState(supervisor.SockPath)

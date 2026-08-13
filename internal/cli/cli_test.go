@@ -4772,7 +4772,10 @@ func TestMacMenuAlwaysReleasesRefreshGate(t *testing.T) {
 	if !strings.Contains(guardLine, "guard ") && !strings.Contains(guardLine, "if ") {
 		t.Fatalf("refresh 必须在 begin 返回 false 时早退,实际那一行 = %q", guardLine)
 	}
-	if strings.Contains(refresh, "refreshGate.end()") {
+	// **看代码,不看注释。** 这条守卫此前是裸文本匹配,于是 refresh 里一句
+	// 解释「refreshGate.end() 的补跑不带回调」的注释就把它弄红了 —— 守卫钉住的
+	// 是散文而不是行为。本仓库反复栽的是反方向(注释兜绿),但根因是同一个。
+	if strings.Contains(stripSwiftLineComments(refresh), "refreshGate.end()") {
 		t.Fatal("refresh 自己不得 end:被闸门挡回去的那一次没占住闸门,替别人放掉等于允许两次采集并行")
 	}
 }
@@ -5724,4 +5727,21 @@ func TestMacMenuLeakCheckRunsUnprivileged(t *testing.T) {
 			"实际在顶层出现 %d 次 —— 只在 .connected 里给它,等于把它藏在最不需要它的那个状态里",
 			topLevel)
 	}
+}
+
+// stripSwiftLineComments 去掉 Swift 源码里的 `//` 行注释(含文档注释 `///`)。
+//
+// 守卫要判的是代码做了什么,注释里出现某个调用不算做了它。**刻意不处理字符串
+// 字面量里的 `//`**(如 URL):那会把这个辅助函数变成一个需要自己被测试的解析器,
+// 而本仓库的守卫恰恰不该有自己的复杂度。今天没有调用点受此影响。
+func stripSwiftLineComments(src string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return out.String()
 }

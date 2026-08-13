@@ -361,7 +361,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// **知道一半比两边都不知道更糟**:不特殊对待反而会拿到假 IP 经隧道走。
 	//
 	// 只对**在跑**的租户生效:解析器是租户自己起的进程,它没跑时把查询送过去
-	// 只会挂住。用户在 config 里写的 split 排在后面,因此可以覆盖同名后缀。
+	// 只会挂住。**用户在 config 里写的 split 排在前面**(见下),同名后缀以用户为准。
 	overlaySplit := overlay.SplitRoutes(presentOverlays)
 	if len(cfg.DNS.Split) > 0 || len(overlaySplit) > 0 {
 		var routes []bxdns.SplitRoute
@@ -895,7 +895,14 @@ func normalizeDNSServerAddr(server string) string {
 	if server == "" {
 		return server
 	}
-	if host, port, err := net.SplitHostPort(server); err == nil && port != "" {
+	if host, port, err := net.SplitHostPort(server); err == nil {
+		// **`10.0.13.23:`(有冒号没端口)要落回默认端口,不能掉进下面那一支。**
+		// 掉下去会把整个 `10.0.13.23:` 当主机名再拼一次端口,得到 `10.0.13.23::53`
+		// —— 一个谁也拨不通的地址,而且它是**静默**的:解析器就此对这个租户
+		// 的命名空间全部超时,而日志里没有任何东西说这是个畸形配置。
+		if port == "" {
+			port = "53"
+		}
 		return net.JoinHostPort(host, port)
 	}
 	return net.JoinHostPort(strings.Trim(server, "[]"), "53")

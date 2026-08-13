@@ -40,6 +40,7 @@ func LiveFactDeps() FactDeps {
 		InspectDNS:         windowsResolvers,
 		ListRoutes:         listWindowsRoutes,
 		ListInterfaceKinds: listInterfaceKinds,
+		ListInterfaceAddrs: listInterfaceAddrs,
 		ListOverlays:       listOverlayTenants,
 		GuardianStatus: func(context.Context) (BXRuntimeFacts, error) {
 			state, err := supervisor.FetchRuntimeState(supervisor.SockPath)
@@ -127,6 +128,10 @@ func listWindowsRoutes(context.Context) ([]leakcheck.RouteEntry, error) {
 				// **Windows 上没有 reject 路由这个形状**:bx 的 v6 fail-closed 是把
 				// ::/1+8000::/1 劫进 TUN(见 windows_routes.go),不是装 unreachable。
 				// 合成一个假的 Blocking 才是撒谎。
+				//
+				// OnLink 必须设:不设的后果是每台开了原生 IPv6 的 Windows 机器上,
+				// 物理网卡那条 on-link /64 都被报成注入路由。
+				OnLink: routeIsOnLink(row.NextHop.Addr()),
 			})
 		}
 	}
