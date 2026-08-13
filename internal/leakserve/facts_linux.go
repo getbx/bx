@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/getbx/bx/internal/leakcheck"
@@ -43,40 +42,30 @@ func LiveFactDeps() FactDeps {
 	}
 }
 
-// linuxRouteLookup 问「发往 dest 的包交给哪个接口」。
+// linuxRouteLookup 委托给 supervisor.LookupRoute。
 //
-// **必须用 `ip route get`,不能读 main 表。** bx 在 Linux 上靠 ip rule 策略路由分流
-// (table 100 + pref 200),而 `ip route show` 默认只列 main 表 —— 读它会在 bx 正常
-// 工作时报出物理网卡,把一台受保护的机器说成没受保护。
-func linuxRouteLookup(parent context.Context, dest string, ipv6 bool) (string, error) {
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
-	defer cancel()
-	args := []string{"route", "get", dest}
-	if ipv6 {
-		args = append([]string{"-6"}, args...)
-	}
-	out, err := exec.CommandContext(ctx, "ip", args...).CombinedOutput()
+// **原语只留一份。** 这个问题(发往 X 的包交给谁)在 darwin 上早就住在 supervisor 里,
+// observe 与 guardian 都用它;Linux 上再写一份,就是同一个问题两个实现 —— 而这个
+// 仓库刚因为「同一个判据两份」连着吃了两个洞(CGNAT 的 Overlaps、公网判定的
+// IsUnspecified)。
+//
+// Reject → ErrNoRoute 的翻译与 darwin 那份**逐字相同**:内核明说这条路被 reject
+// (bx 自己的 v6 屏障就是这个形状)是**确知**没有通路,不是问不出来。
+func linuxRouteLookup(ctx context.Context, dest string, ipv6 bool) (string, error) {
+	selection, err := supervisor.LookupRoute(ctx, dest, ipv6)
 	if err != nil {
-		if isNoRouteOutput(string(out)) {
-			// **确知没有这条路由**,与「问不出来」必须分开:IPv6 那条规则据此才敢
-			// 给出一句诚实的 ok。
+		if errors.Is(err, supervisor.ErrNoRouteToDestination) {
 			return "", ErrNoRoute
 		}
 		return "", err
 	}
-	if iface := parseLinuxRouteGetInterface(string(out)); iface != "" {
-		return iface, nil
-	}
-	if isNoRouteOutput(string(out)) {
+	if selection.Reject {
 		return "", ErrNoRoute
 	}
-	return "", errors.New("ip route get returned no device")
-}
-
-func isNoRouteOutput(out string) bool {
-	lowered := strings.ToLower(out)
-	return strings.Contains(lowered, "network is unreachable") ||
-		strings.Contains(lowered, "no route to host")
+	if selection.Interface == "" {
+		return "", errors.New("route lookup returned no interface")
+	}
+	return selection.Interface, nil
 }
 
 // linuxResolvers 读 /etc/resolv.conf。**纯文件读,不 exec** —— 少一次 fork,
