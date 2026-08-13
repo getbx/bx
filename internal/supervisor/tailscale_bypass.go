@@ -282,9 +282,11 @@ func (s *tailscaleBypassSource) Run(ctx context.Context, fetch func(context.Cont
 // 静默替换掉,ZeroTier 从此连根节点都连不上。
 //
 // 留在 run.go 里当匿名闭包时,这个错误编译得过、全套测试全绿 —— 实测确认过。
+// overlayBypass 是**函数不是切片**:租户可能晚于 bx 启动,而这个循环是唯一每隔一段
+// 时间就重新问一次的地方。冻结成切片,晚到的 ZeroTier 就永远拿不到根节点旁路。
 func overlayAwareBypassFetch(
 	derpFetch func(context.Context) ([]string, error),
-	overlayBypass []string,
+	overlayBypass func() []string,
 ) func(context.Context) ([]string, error) {
 	return func(ctx context.Context) ([]string, error) {
 		derp, err := derpFetch(ctx)
@@ -293,6 +295,10 @@ func overlayAwareBypassFetch(
 			// 当成一次「成功」的答案发布出去 —— 那会把退避立刻推进长周期。
 			return nil, err
 		}
-		return mergeBypassCIDRs(derp, overlayBypass), nil
+		var extra []string
+		if overlayBypass != nil {
+			extra = overlayBypass()
+		}
+		return mergeBypassCIDRs(derp, extra), nil
 	}
 }
