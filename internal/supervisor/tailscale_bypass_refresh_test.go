@@ -142,7 +142,7 @@ func TestFetchCarriesOtherTenantsBypassNotJustTheSeed(t *testing.T) {
 	tenantBypass := []string{"104.194.8.134/32"} // ZeroTier 根节点
 	fetch := overlayAwareBypassFetch(
 		func(context.Context) ([]string, error) { return []string{"198.51.100.7/32"}, nil },
-		tenantBypass,
+		func() []string { return tenantBypass },
 	)
 
 	got, err := fetch(context.Background())
@@ -171,7 +171,7 @@ func TestFetchCarriesOtherTenantsBypassNotJustTheSeed(t *testing.T) {
 func TestFetchReportsFailureInsteadOfReturningTenantBypassAlone(t *testing.T) {
 	fetch := overlayAwareBypassFetch(
 		func(context.Context) ([]string, error) { return nil, errors.New("network is unreachable") },
-		[]string{"104.194.8.134/32"},
+		func() []string { return []string{"104.194.8.134/32"} },
 	)
 	got, err := fetch(context.Background())
 	if err == nil {
@@ -179,5 +179,42 @@ func TestFetchReportsFailureInsteadOfReturningTenantBypassAlone(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("失败时不该返回任何地址,得到 %v", got)
+	}
+}
+
+// **租户旁路必须每轮现测,不能冻结。**
+//
+// 租户可能晚于 bx 启动(用户先开 bx 再开 ZeroTier 是常态),而这个循环是唯一每隔
+// 一段时间就重新问一次的地方。冻结成一份切片,晚到的 ZeroTier 就永远拿不到根节点
+// 旁路 —— 而且完全静默。
+func TestFetchReDetectsTenantsEachRound(t *testing.T) {
+	tenants := []string{} // 启动时一个都没有
+	fetch := overlayAwareBypassFetch(
+		func(context.Context) ([]string, error) { return []string{"198.51.100.7/32"}, nil },
+		func() []string { return tenants },
+	)
+
+	first, err := fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("启动时没有租户,不该有额外旁路:%v", first)
+	}
+
+	// ZeroTier 现在起来了。
+	tenants = []string{"104.194.8.134/32"}
+	second, err := fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var have bool
+	for _, c := range second {
+		if c == "104.194.8.134/32" {
+			have = true
+		}
+	}
+	if !have {
+		t.Fatalf("晚到的租户没被后来的抓取带上:%v —— 冻结成切片就是这个后果", second)
 	}
 }

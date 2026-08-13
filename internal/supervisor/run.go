@@ -474,7 +474,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 第一次成功就会把 ZeroTier 的根节点旁路丢掉,而且是静默的。
 	go tailscaleBypass.Run(ctx, overlayAwareBypassFetch(
 		func(c context.Context) ([]string, error) { return tailscaleDERPBypassCIDRs(c, direct) },
-		overlay.BypassCIDRs(presentOverlays),
+		// **每轮现测**:租户可能晚于 bx 启动。旁路这一半自愈得了(新值在下一次
+		// 路由重装时生效);DNS split 那一半不行,由 lateTenantWarning 如实报出来。
+		func() []string { return overlay.BypassCIDRs(detectOverlayTenants()) },
 	))
 	// bypass 那一套的**组合**全在 wireBypass 里(可测):store 是全进程唯一那份
 	// 「什么必须绕开隧道」,liveMutator(rehijack)、livePathRecoverer(Wi-Fi 切换后
