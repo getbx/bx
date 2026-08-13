@@ -196,6 +196,7 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 			// 而「这条隧道不是我建的、我看不到它怎么配的」是关于本工具能力边界的话。
 			f.Evidence = append(f.Evidence,
 				"this tunnel was not set up by bx, so its configuration is not visible here")
+			f.Evidence = append(f.Evidence, tenantSuspicion(local)...)
 		}
 	case OwnerNone:
 		// **没有隧道时,「没有绕过隧道」不是好消息。**
@@ -209,6 +210,32 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 			"agreement does not by itself mean anything is protected."
 	}
 	return f
+}
+
+// tenantSuspicion 在「默认路由归别人」时点名最可能的嫌疑。
+//
+// **用户最容易踩、而 bx 此前完全认不出的情形:Tailscale 开了 exit node。** 那一刻它
+// 要默认路由,从「租户」变成「竞争者」—— 而用户仍然觉得「这俩本来就该共存」,
+// 于是完全不知道发生了什么。此前 bx 只说「一条 utunN 上不是 bx 的隧道在管」,
+// 不会把它和用户明知在跑的 Tailscale 联系起来。
+//
+// **措辞是怀疑不是断言。** 在 macOS 上 bx 与 Tailscale 都叫 utunN,靠接口名分不开;
+// 那条隧道也可能是第三个 VPN,而一口咬定会让用户去关一个根本没占路由的东西 ——
+// 与 DescribeInterface 那条「『无法识别』是合法答案,猜不是」同源。
+//
+// 共存正常时这个函数不会被调用(只在 OwnerOther 那一支),这也是刻意的:
+// 共存是用户的默认预期,正常时说话只会让他以为出了事。
+func tenantSuspicion(local LocalFacts) []string {
+	var out []string
+	for _, name := range local.OverlayTenants {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		out = append(out, name+" is also running on this machine — if you turned on "+
+			"a "+name+" exit node, that would explain why it, and not bx, is carrying "+
+			"this traffic")
+	}
+	return out
 }
 
 // describeOwner 把「谁在管这条路」翻成结论句里能直接用的一截。

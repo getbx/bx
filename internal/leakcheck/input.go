@@ -119,6 +119,13 @@ type LocalFacts struct {
 	// 而两者在 srflx 那个地址上长得一模一样。
 	BXUDPMode      string `json:"bx_udp_mode,omitempty"`
 	BXUDPTransport string `json:"bx_udp_transport,omitempty"`
+	// OverlayTenants 是此刻在跑的 overlay 网络名(tailscale / zerotier …)。
+	//
+	// **它只用来解释一个已经观测到的事实,绝不用来产生结论。** 用户对 VPN 与 overlay
+	// 的心理模型不同:两个 VPN 一起跑他预期冲突,bx 加 Tailscale 他预期「本来就该
+	// 共存」。所以共存正常时 bx 不该提它;只有共存被打破时(默认路由被别人拿走),
+	// 才用它去点名最可能的嫌疑。
+	OverlayTenants []string `json:"overlay_tenants,omitempty"`
 	// Routes 是本机 IPv4 路由表的原始条目。**只采,不判** —— 判断在 judgeRouteEscape。
 	// RoutesErr 非空表示没读出来,与「读出来了、是空的」必须分开。
 	Routes    []RouteEntry `json:"routes,omitempty"`

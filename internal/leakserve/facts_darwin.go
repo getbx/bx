@@ -68,6 +68,7 @@ func LiveFactDeps() FactDeps {
 			return scutilDefaultResolvers(ctx), nil
 		},
 		GuardianStatus:  guardianTunAndProtection,
+		ListOverlays:    listOverlayTenants,
 		ListRoutes:      listDarwinRoutes,
 		ListVPNServices: listDarwinVPNServices,
 	}
