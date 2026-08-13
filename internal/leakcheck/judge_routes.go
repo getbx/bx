@@ -80,19 +80,11 @@ func routeEscapesTunnel(entry RouteEntry) (netip.Prefix, bool) {
 	if prefix.Bits() <= 1 || prefix.Bits() >= 32 {
 		return netip.Prefix{}, false
 	}
-	addr := prefix.Addr()
-	if !addr.Is4() || addr.IsPrivate() || addr.IsLoopback() ||
-		addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() {
-		return netip.Prefix{}, false
-	}
-	// CGNAT:运营商级 NAT,不是公网可路由的目的地。
-	//
-	// **判据必须是「这条路由落在 CGNAT 里」,不是「与 CGNAT 有交集」。** 第一版
-	// 写的是 Overlaps,于是任何盖住 100.64/10 的宽前缀都被静默豁免 —— 包括攻击
-	// 最爱用的 64.0.0.0/2(它覆盖 64.0.0.0–127.255.255.255,自然也盖住 CGNAT)。
-	// 那等于把整条规则在最关键的形状上关掉,而测试当场抓到了。
-	cgnat := netip.MustParsePrefix("100.64.0.0/10")
-	if prefix.Bits() >= cgnat.Bits() && cgnat.Contains(addr) {
+	// **公网判定与 ClassifyTunnels 共用一个函数**(isPublicPrefix)。同一个问题的
+	// 两面:那边问「有没有别的隧道把公网流量收走」,这边问「有没有人把公网流量从
+	// 隧道外面送走」。此前两处各写一份,而其中一份的 `IsUnspecified()` 让
+	// `0.0.0.0/2` —— 攻击最爱用的宽度之一 —— 被静默放过。
+	if !isPublicPrefix(prefix) {
 		return netip.Prefix{}, false
 	}
 	return prefix, true
