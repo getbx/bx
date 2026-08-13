@@ -120,33 +120,76 @@ func guardianTunAndProtection(ctx context.Context) (BXRuntimeFacts, error) {
 // 只取前四列(Destination / Gateway / Flags / Netif),而且跳过 ARP 缓存那类
 // 克隆条目(标志里带 W)—— 一台正常机器上它们能有上百条,全带进来只会把证据区
 // 冲掉,而它们从不是逃逸路由(那是邻居,不是转发)。
+// routeFamily 是要读的一张路由表,以及该表里 `default` 的含义。
+type routeFamily struct {
+	flag  string // netstat -f 的参数
+	deflt string // 这张表里 `default` 对应的前缀
+}
+
+// routeFamilies:**两个地址族都要读。**
+//
+// 只读 v4 的话,一条抢走全部 v6 流量的隧道**一个字都不会被说出来** —— 而
+// TunnelVision 有 v6 版本(RA / DHCPv6 注入路由)。提成具名变量是为了让这件事
+// 能被测:留在 exec 那一侧时,删掉 inet6 那一行编译得过、整套测试全绿(实测)。
+var routeFamilies = []routeFamily{
+	{flag: "inet", deflt: "0.0.0.0/0"},
+	{flag: "inet6", deflt: "::/0"},
+}
+
 func listDarwinRoutes(parent context.Context) ([]leakcheck.RouteEntry, error) {
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "netstat", "-rn", "-f", "inet").Output()
-	if err != nil {
-		return nil, err
-	}
+
 	var entries []leakcheck.RouteEntry
-	for _, line := range strings.Split(string(out), "\n") {
+	var firstErr error
+	for _, family := range routeFamilies {
+		out, err := exec.CommandContext(ctx, "netstat", "-rn", "-f", family.flag).Output()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		entries = append(entries, parseDarwinRoutes(string(out), family.deflt)...)
+	}
+	if len(entries) == 0 {
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		// 一台开着机的 Mac 不可能没有路由。空表意味着我们没读懂输出,
+		// 而「读不懂」必须报错 —— 报成「没发现逃逸路由」正是恒绿。
+		return nil, errors.New("netstat returned no routes this parser understood")
+	}
+	return entries, nil
+}
+
+// parseDarwinRoutes 取前四列(Destination / Gateway / Flags / Netif)。
+//
+// **`default` 在这里就归一化掉**,因为它的含义随地址族而变(v4 是 0.0.0.0/0、
+// v6 是 ::/0)—— 只有读表的人知道自己读的是哪一张,判据层不该去猜。
+//
+// 跳过 ARP/邻居缓存那类克隆条目(flags 带 W):一台正常机器上它们能有上百条,
+// 全带进来只会把证据区冲掉,而它们从不是转发路由。
+func parseDarwinRoutes(out, defaultDest string) []leakcheck.RouteEntry {
+	var entries []leakcheck.RouteEntry
+	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 4 || fields[0] == "Destination" || fields[0] == "Internet:" {
+		if len(fields) < 4 || fields[0] == "Destination" || fields[0] == "Internet:" || fields[0] == "Internet6:" {
 			continue
 		}
 		flags := fields[2]
 		if strings.Contains(flags, "W") {
 			continue
 		}
+		dest := fields[0]
+		if dest == "default" {
+			dest = defaultDest
+		}
 		entries = append(entries, leakcheck.RouteEntry{
-			Destination: fields[0], Interface: fields[3], Flags: flags,
+			Destination: dest, Interface: fields[3], Flags: flags,
 		})
 	}
-	if len(entries) == 0 {
-		// 一台开着机的 Mac 不可能没有路由。空表意味着我们没读懂输出,
-		// 而「读不懂」必须报错 —— 报成「没发现逃逸路由」正是恒绿。
-		return nil, errors.New("netstat returned no routes this parser understood")
-	}
-	return entries, nil
+	return entries
 }
 
 var noRouteRe = regexp.MustCompile(`(?i)no route to host|host is down|not in table|network is unreachable`)
