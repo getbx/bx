@@ -17,6 +17,35 @@ func ParseRouteDestination(dest string) (netip.Prefix, error) {
 	if dest == "" {
 		return netip.Prefix{}, errors.New("empty destination")
 	}
+	// **zone 后缀必须剥掉。** v6 表里 `fe80::%en0/64` 是最常见的一类,带着 `%en0`
+	// 解析必失败 —— 于是整条链路本地路由被静默丢掉,而丢掉的东西不会有人发现。
+	if i := strings.IndexByte(dest, '%'); i >= 0 {
+		if j := strings.IndexByte(dest[i:], '/'); j >= 0 {
+			dest = dest[:i] + dest[i+j:]
+		} else {
+			dest = dest[:i]
+		}
+	}
+	// v6 与点分十进制的形状完全不同,先按标准写法试一次。
+	if strings.Contains(dest, ":") {
+		if prefix, err := netip.ParsePrefix(dest); err == nil {
+			return prefix.Masked(), nil
+		}
+		addr, err := netip.ParseAddr(dest)
+		if err != nil {
+			return netip.Prefix{}, errors.New("not an address: " + dest)
+		}
+		return netip.PrefixFrom(addr, addr.BitLen()), nil
+	}
+	if strings.Contains(dest, "/") && strings.Count(dest, ".") == 3 {
+		if prefix, err := netip.ParsePrefix(dest); err == nil {
+			return prefix.Masked(), nil
+		}
+	}
+
+	// 剩下是 netstat 的 v4 简写:省掉末尾零字节,也省掉「自然」前缀长度。
+	// `10` 是 10.0.0.0/8、`169.254` 是 169.254.0.0/16、`172.16/12` 要补足四段。
+	// 认错一个的后果是把私网段当公网段报出来,或反过来漏掉一条真的逃逸路由。
 	addrPart, bitsPart, hasBits := strings.Cut(dest, "/")
 	octets := strings.Split(addrPart, ".")
 	if len(octets) == 0 || len(octets) > 4 {
@@ -57,6 +86,16 @@ func routeIsBlocking(flags string) bool {
 	return strings.ContainsAny(flags, "RB")
 }
 
+// routeIsInterfaceScoped 判断这条路由是不是 RTF_IFSCOPE(macOS flags 里的 `I`)。
+//
+// **作用域路由只对已经绑定到该接口的流量生效,不参与一般流量的竞争。** 真机
+// (macOS)的 v6 表里有六条 `default via fe80::%utunN` 分别挂在 utun1..utun6 上,
+// 全带 I —— 那是系统自己的东西。不排除它们,一台完全正常的 Mac 上会冒出六条
+// 「另一条隧道抢走了公网空间」,而假告警比没有告警更糟。
+func routeIsInterfaceScoped(flags string) bool {
+	return strings.Contains(flags, "I")
+}
+
 // routeEscapesTunnel 判断这条路由会不会把公网流量从隧道之外送走。
 //
 // **判据的形状由真机决定。** 本机(2026-08-11)路由表里有 108 条公网 /32 经物理
@@ -70,7 +109,8 @@ func routeIsBlocking(flags string) bool {
 // 前缀必须**比 split-default 更具体**(>1 位)才压得过隧道;`default` 本身在物理
 // 网卡上是 split-default 的常态,不是逃逸。
 func routeEscapesTunnel(entry RouteEntry) (netip.Prefix, bool) {
-	if routeIsBlocking(entry.Flags) || IsTunnelInterface(entry.Interface) {
+	if routeIsBlocking(entry.Flags) || routeIsInterfaceScoped(entry.Flags) ||
+		IsTunnelInterface(entry.Interface) {
 		return netip.Prefix{}, false
 	}
 	prefix, err := ParseRouteDestination(entry.Destination)

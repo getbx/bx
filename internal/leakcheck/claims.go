@@ -49,8 +49,21 @@ var nonPublicRanges = []netip.Prefix{
 //
 // 与 routeEscapesTunnel 共用同一个判据,因为那是同一个问题的两面:那边问「有没有人
 // 把公网流量从隧道外面送走」,这边问「有没有别的隧道把公网流量收走」。
+// globalUnicastV6 是 v6 的公网可路由空间。v6 反过来用**白名单**:全球单播只有这一段,
+// 而「不是它」的东西(链路本地 / ULA / 组播 / loopback)零散得多,列黑名单容易漏。
+var globalUnicastV6 = netip.MustParsePrefix("2000::/3")
+
 func isPublicPrefix(prefix netip.Prefix) bool {
 	addr := prefix.Addr()
+	if addr.Is6() && !addr.Is4In6() {
+		// **`::/0` 与 `::/1` 是公网**:它们覆盖 2000::/3,正是抢流量的形状。
+		// 判据是「这个前缀与全球单播有交集」,而不是「它落在全球单播里」——
+		// 与 v4 那边方向相反,因为 v6 这里用的是白名单。
+		if prefix.Bits() <= globalUnicastV6.Bits() {
+			return prefix.Overlaps(globalUnicastV6)
+		}
+		return globalUnicastV6.Contains(addr)
+	}
 	if !addr.Is4() {
 		return false
 	}
@@ -88,6 +101,13 @@ func ClassifyTunnels(local LocalFacts) []TunnelClaim {
 		}
 		if routeIsBlocking(entry.Flags) {
 			// 阻断路由不是 claim:它没有把流量收走,而是把它扔掉。
+			// (bx 自己的 v6 屏障就是一对 reject 的 ::/1 + 8000::/1。)
+			continue
+		}
+		if routeIsInterfaceScoped(entry.Flags) {
+			// 作用域路由只对已经绑定到该接口的流量生效,不参与一般流量的竞争。
+			// 真机 macOS 的 v6 表里有六条这样的 default 挂在 utun1..utun6 上 ——
+			// 不排除就是六条误报。
 			continue
 		}
 		prefix, err := ParseRouteDestination(entry.Destination)
