@@ -41,6 +41,10 @@ func darwinTunnelClaimChecks(netstatOut, bxTun string) []checkReport {
 		}
 		local.Routes = append(local.Routes, leakcheck.RouteEntry{
 			Destination: fields[0], Interface: fields[3], Flags: fields[2],
+			// **平台标志由知道那个平台的人翻译。** 判据层不解析 flag 字母 ——
+			// Linux 根本没有它们,在那边合成一串假 flags 才是撒谎。
+			Blocking: strings.ContainsAny(fields[2], "RB"),
+			Scoped:   strings.Contains(fields[2], "I"),
 		})
 	}
 

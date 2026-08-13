@@ -1,9 +1,9 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 package leakserve
 
-// LiveFactDeps 在非 darwin 上一个能力都没有:本机事实的原语(route -n get /
-// networksetup / scutil)目前只有 macOS 实现。
+// LiveFactDeps 在 darwin / linux 之外一个能力都没有:本机事实的原语目前只有
+// 那两个平台有实现。
 //
 // **返回空 FactDeps 是诚实的**:CollectFacts 会产出一份「什么都不知道」的事实,
 // Judge 于是只会输出 not checked。伪造几个返回零值的函数填进去才是撒谎 ——

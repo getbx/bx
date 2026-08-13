@@ -120,21 +120,6 @@ func guardianTunAndProtection(ctx context.Context) (BXRuntimeFacts, error) {
 // 只取前四列(Destination / Gateway / Flags / Netif),而且跳过 ARP 缓存那类
 // 克隆条目(标志里带 W)—— 一台正常机器上它们能有上百条,全带进来只会把证据区
 // 冲掉,而它们从不是逃逸路由(那是邻居,不是转发)。
-// routeFamily 是要读的一张路由表,以及该表里 `default` 的含义。
-type routeFamily struct {
-	flag  string // netstat -f 的参数
-	deflt string // 这张表里 `default` 对应的前缀
-}
-
-// routeFamilies:**两个地址族都要读。**
-//
-// 只读 v4 的话,一条抢走全部 v6 流量的隧道**一个字都不会被说出来** —— 而
-// TunnelVision 有 v6 版本(RA / DHCPv6 注入路由)。提成具名变量是为了让这件事
-// 能被测:留在 exec 那一侧时,删掉 inet6 那一行编译得过、整套测试全绿(实测)。
-var routeFamilies = []routeFamily{
-	{flag: "inet", deflt: "0.0.0.0/0"},
-	{flag: "inet6", deflt: "::/0"},
-}
 
 func listDarwinRoutes(parent context.Context) ([]leakcheck.RouteEntry, error) {
 	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
@@ -170,6 +155,15 @@ func listDarwinRoutes(parent context.Context) ([]leakcheck.RouteEntry, error) {
 //
 // 跳过 ARP/邻居缓存那类克隆条目(flags 带 W):一台正常机器上它们能有上百条,
 // 全带进来只会把证据区冲掉,而它们从不是转发路由。
+// darwinRouteBlocking:R=reject、B=blackhole —— 这条路由把流量扔掉,不是送走。
+// bx 自己的 fail-closed 屏障就是这种。
+func darwinRouteBlocking(flags string) bool { return strings.ContainsAny(flags, "RB") }
+
+// darwinRouteScoped:I=RTF_IFSCOPE —— 只对已绑定到该接口的流量生效,不参与一般
+// 流量的竞争。真机 macOS 的 v6 表里有六条这样的 default 挂在 utun1..utun6 上,
+// 不排除就是六条误报。
+func darwinRouteScoped(flags string) bool { return strings.Contains(flags, "I") }
+
 func parseDarwinRoutes(out, defaultDest string) []leakcheck.RouteEntry {
 	var entries []leakcheck.RouteEntry
 	for _, line := range strings.Split(out, "\n") {
@@ -187,6 +181,8 @@ func parseDarwinRoutes(out, defaultDest string) []leakcheck.RouteEntry {
 		}
 		entries = append(entries, leakcheck.RouteEntry{
 			Destination: dest, Interface: fields[3], Flags: flags,
+			Blocking: darwinRouteBlocking(flags),
+			Scoped:   darwinRouteScoped(flags),
 		})
 	}
 	return entries
