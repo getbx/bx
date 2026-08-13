@@ -39,6 +39,29 @@ var tunnelDevicePrefixes = []string{
 // 过度匹配的代价是在一台没有 VPN 的机器上多问一句 —— 而那一句仍然要求两个
 // 地址族走不同接口才会出现。已知限制:一个把物理网卡留作默认路由的用户态代理
 // (bx 自己在 split 模式下不是这样)认不出来,那时这条规则如实说它判不了。
+// interfaceLooksLikeTunnel 先问内核,名字补它答不了的部分。
+//
+// **判据刻意不对称,因为证据本身就不对称**(2026-08-12 两平台实测):
+//
+//   - `pointtopoint` 是**可靠的正证据**:macOS 的 utun、Linux 的 IFF_TUN 都是它,
+//     而且不会因为产品换个名字就失效 —— 名字表连 bx 自己的 bx0 都漏过。
+//   - `broadcast` **不是可靠的负证据**:Linux 的 IFF_TAP 是二层设备,内核眼里就是
+//     一段以太网,与物理网卡无法区分 —— 而 TAP 模式的 OpenVPN 确实在把流量运走。
+//     所以广播段不下结论,交给名字表(`tap` 在表里)。
+//   - `loopback` 两边都可靠,直接否掉。
+//
+// 早先这里让 broadcast 也压过名字,那与「名字表因此不能退休」这句话自相矛盾:
+// tap0 会被判成物理网卡,名字表根本没机会说话。**变异测试没转红时查出来的。**
+func interfaceLooksLikeTunnel(kinds map[string]InterfaceKind, name string) bool {
+	switch kinds[strings.TrimSpace(name)] {
+	case InterfaceTunnel:
+		return true
+	case InterfaceLoopback:
+		return false
+	}
+	return IsTunnelInterface(name)
+}
+
 func IsTunnelInterface(name string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" {

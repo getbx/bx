@@ -96,7 +96,7 @@ func ClassifyTunnels(local LocalFacts) []TunnelClaim {
 
 	for _, entry := range local.Routes {
 		iface := strings.ToLower(strings.TrimSpace(entry.Interface))
-		if iface == "" || iface == bxTun || !IsTunnelInterface(iface) {
+		if iface == "" || iface == bxTun || !interfaceLooksLikeTunnel(local.InterfaceKinds, entry.Interface) {
 			continue
 		}
 		if entry.Blocking {

@@ -85,6 +85,22 @@ type InterfaceRef struct {
 // Known 表示这一项确实观测到了一个接口。
 func (r InterfaceRef) Known() bool { return r.Name != "" && r.Err == "" }
 
+// InterfaceKind 是内核对一个接口的说法。零值是 InterfaceUnknown —— 与本包其余
+// 各处同一条纪律:**没问出来是零值,不是某个具体答案**。
+type InterfaceKind uint8
+
+const (
+	InterfaceUnknown InterfaceKind = iota
+	// InterfaceTunnel:点对点设备。macOS 的 utun、Linux 的 IFF_TUN 都是这个
+	// (2026-08-12 两平台实测)。
+	InterfaceTunnel
+	// InterfacePhysical:广播段。以太网、Wi-Fi,**以及 Linux 的 IFF_TAP** ——
+	// TAP 是二层设备,内核眼里它就是一段以太网,标志上与物理网卡无法区分。
+	// 这正是名字表不能退休的原因。
+	InterfacePhysical
+	InterfaceLoopback
+)
+
 // RouteEntry 是路由表里的一行,**原样**记录,不归一化不判断。
 type RouteEntry struct {
 	Destination string `json:"destination"`
@@ -138,6 +154,15 @@ type LocalFacts struct {
 	// 共存」。所以共存正常时 bx 不该提它;只有共存被打破时(默认路由被别人拿走),
 	// 才用它去点名最可能的嫌疑。
 	OverlayTenants []string `json:"overlay_tenants,omitempty"`
+	// InterfaceKinds 是内核对每个接口的说法,由采集层从 net.Flags 翻译而来。
+	//
+	// **它比名字硬。** 名字判据是按 macOS 命名建的,连 bx 自己在 Linux/Windows 上的
+	// bx0 都不认识 —— 真 Linux 容器里当场看到的后果是「一台受保护的机器上,路由逃逸
+	// 那条报『没有隧道在管』」。而 pointtopoint 这个标志跨平台一致(实测:macOS 的
+	// utun、Linux 的 IFF_TUN 都是它)。
+	//
+	// 翻译在采集层做,不在这里:本包的纯度守卫禁止 import net。
+	InterfaceKinds map[string]InterfaceKind `json:"interface_kinds,omitempty"`
 	// Routes 是本机 IPv4 路由表的原始条目。**只采,不判** —— 判断在 judgeRouteEscape。
 	// RoutesErr 非空表示没读出来,与「读出来了、是空的」必须分开。
 	Routes    []RouteEntry `json:"routes,omitempty"`

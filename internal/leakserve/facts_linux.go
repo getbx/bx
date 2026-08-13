@@ -26,10 +26,11 @@ import (
 //   - 系统集成 VPN 列表(scutil --nc)没有 Linux 对应物 —— 留空,而不是编一个。
 func LiveFactDeps() FactDeps {
 	return FactDeps{
-		LookupRoute:  linuxRouteLookup,
-		InspectDNS:   linuxResolvers,
-		ListRoutes:   listLinuxRoutes,
-		ListOverlays: listOverlayTenants,
+		LookupRoute:        linuxRouteLookup,
+		InspectDNS:         linuxResolvers,
+		ListRoutes:         listLinuxRoutes,
+		ListInterfaceKinds: listInterfaceKinds,
+		ListOverlays:       listOverlayTenants,
 		GuardianStatus: func(context.Context) (BXRuntimeFacts, error) {
 			state, err := supervisor.FetchRuntimeState(supervisor.SockPath)
 			if err != nil {
