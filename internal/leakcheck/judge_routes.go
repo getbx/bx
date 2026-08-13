@@ -95,14 +95,18 @@ func routeEscapesTunnel(entry RouteEntry, kinds map[string]InterfaceKind) (netip
 	// WhoOwnsTheRoute / ClassifyTunnels 已经改成先问内核 —— 于是同一个接口在两处
 	// 得到不同答案。真 Linux 容器里当场看到的后果:一条名字表不认识的隧道
 	// (bxprobe0),它**自己的子网路由**被报成「有人把公网流量从隧道外面送走」。
-	if entry.Blocking || entry.Scoped || interfaceLooksLikeTunnel(kinds, entry.Interface) {
+	if entry.Blocking || entry.Scoped || entry.OnLink ||
+		interfaceLooksLikeTunnel(kinds, entry.Interface) {
 		return netip.Prefix{}, false
 	}
 	prefix, err := ParseRouteDestination(entry.Destination)
 	if err != nil {
 		return netip.Prefix{}, false
 	}
-	if prefix.Bits() <= 1 || prefix.Bits() >= 32 {
+	// **上下界按地址族取。** `>= 32` 是照 v4 写的(那里 /32 是单主机);v6 收进来
+	// 之后,任何比 /31 更具体的目的地都会在到达公网判定之前被丢掉 —— 而 RA /
+	// DHCPv6 注入的正是 /48、/56、/64,也就是说 v6 那半一条都抓不到。
+	if prefix.Bits() <= 1 || prefix.Bits() >= prefix.Addr().BitLen() {
 		return netip.Prefix{}, false
 	}
 	// **公网判定与 ClassifyTunnels 共用一个函数**(isPublicPrefix)。同一个问题的

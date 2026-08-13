@@ -101,10 +101,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ensureLoginItemIfCanonical()
         configureMenu()
         // 启动那一次不可能撞上在途刷新,补跑与否无意义;标 false 以免被读成用户动作。
-        refresh(userInitiated: false)
-        // **刷完才知道自己处在哪一步,所以引导排在这之后。** 判定住在 FirstRun.swift
-        // (那里编得进测试套件),这里只负责把它变成两个弹框。
-        runFirstRunGuidance()
+        // **引导必须在刷新落地之后跑,而不是紧跟其后。** refresh 把采集扔到后台队列,
+        // 结果稍后才在主线程写回 state —— 早先写在下一行,读到的是初始值
+        // (.off),于是 firstRunAction 永远落到 default、引导**从来不触发**,
+        // 而那正是这个功能的全部意义。判定住在 FirstRun.swift(编得进测试套件)。
+        refresh(userInitiated: false) { [weak self] in
+            self?.runFirstRunGuidance()
+        }
         refreshUpdateCheck()
         rescheduleRefreshTimer(menuOpen: false)
         updateTimer = commonModeTimer(every: 24 * 60 * 60, tolerance: 60) { [weak self] in
@@ -228,7 +231,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 撞上在途的一次就被丢掉且不补,菜单要到下一个自然拍才纠正(关闭档最长 30 秒)——
     /// 没有任何报错。给了默认值,新加的调用点会默默落进「不补跑」那一档;不给,
     /// 编译器强制每个调用点当场表态。裸 `refresh()` 另有 Go 守卫兜(CI 不编 Swift)。
-    private func refresh(userInitiated: Bool) {
+    private func refresh(userInitiated: Bool, then completion: (() -> Void)? = nil) {
         // 上一次还没回来就丢掉这一次:排队只会堆出一串拿到时已作废的刷新。
         guard refreshGate.begin(userInitiated: userInitiated) else { return }
         let inFlight = reconnectInFlight
@@ -239,6 +242,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let outcome = self.loadState(reconnectInFlight: inFlight, snapshot: snapshot)
             DispatchQueue.main.async { [weak self] in
                 self?.applyRefresh(outcome, capturedGeneration: generation)
+                // **落地之后才回调。** refresh 是异步的:紧跟在它后面读 state 读到的
+                // 是上一轮(启动时就是初始值),而首次引导正是靠 state 决定问哪一个。
+                completion?()
             }
         }
     }
@@ -1045,9 +1051,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Bx.app"))
                 NSApp.terminate(nil)
             } else {
-                refresh(userInitiated: true)
-                // 装完顺手接上下一步:此前用户得自己想到「再去菜单里点 Set Up」。
-                runFirstRunGuidance()
+                // 同样要等刷新落地:否则读到的是**装之前**的状态,于是刚装完又弹一次
+                // 「Install bx?」。
+                refresh(userInitiated: true) { [weak self] in
+                    self?.runFirstRunGuidance()
+                }
             }
         } else {
             showFailure("Install Failed", "bx could not complete the installation.")

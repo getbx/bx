@@ -27,7 +27,7 @@ bx leak-check --browser --json --expected-ip <proxy-or-vps-ip>
 Command:
 
 ```bash
-bx webrtc-check --browser --json --expected-ip <proxy-or-vps-ip>
+bx leakcheck
 ```
 
 This opens a local `127.0.0.1` page, asks the browser to gather ICE candidates, and returns the result to bx. It can distinguish:
@@ -41,11 +41,11 @@ Important: an unexpected public IP is not automatically the machine's real ISP I
 
 ### DNS takeover
 
-`bx doctor --json`, `bx dns status`, and `bx webrtc-check --json` report whether macOS system DNS is pointed at bx. During `bx up` on macOS, bx switches system DNS to `127.0.0.1` and restores it on `bx down`.
+`bx doctor --json`, `bx dns status`, and `bx leak-check --json` report whether macOS system DNS is pointed at bx. During `bx up` on macOS, bx switches system DNS to `127.0.0.1` and restores it on `bx down`.
 
 ### UDP policy
 
-`bx status --json`, `bx doctor --json`, and `bx webrtc-check --json` report whether non-DNS UDP is:
+`bx status --json`, `bx doctor --json`, and `bx leak-check --json` report whether non-DNS UDP is:
 
 - `proxy`: relayed through bx, preferred for WebRTC/Meet.
 - `block`: fail-closed; safer but realtime apps may degrade.
@@ -63,7 +63,7 @@ QUIC uses UDP. With `udp.mode: proxy`, bx should relay it; with `block`, it is s
 
 ### System proxy bypass
 
-Apps that ignore system proxy settings are why bx uses TUN/DNS capture instead of only configuring a proxy. Still, browser extensions, app-level VPNs, or another network extension can create a different path. `bx webrtc-check --browser` helps catch this for browser UDP.
+Apps that ignore system proxy settings are why bx uses TUN/DNS capture instead of only configuring a proxy. Still, browser extensions, app-level VPNs, or another network extension can create a different path. `bx leakcheck` helps catch this for browser UDP — it opens a local page and compares the WebRTC exit against the HTTP exit.
 
 On macOS, overlay networks such as Tailscale and ZeroTier are treated as coexisting network extensions, not as traffic bx should own. bx keeps Tailscale control/MagicDNS domains out of fake-IP by default and routes Tailscale bootstrap/controlplane IPv4 addresses outside the bx tunnel, so Tailscale can build its own `100.64/10` overlay route. `bx leak-check` reports when Tailscale appears installed but that overlay route is missing, because in that state bx's split-default route can catch `100.x` traffic before Tailscale has recovered.
 

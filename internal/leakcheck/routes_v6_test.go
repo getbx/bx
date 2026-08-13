@@ -121,3 +121,70 @@ func TestATunnelTakingAllIPv6IsDetected(t *testing.T) {
 		t.Fatalf("抢走全部 v6 的隧道没被认出来:%+v", claims)
 	}
 }
+
+// **v6 的逃逸路由是 /48、/56、/64 —— 而它们此前全被跳过。**
+//
+// routeEscapesTunnel 的上界 `Bits() >= 32` 是照 v4 写的(v4 的 /32 是单主机)。
+// v6 收进来之后,任何比 /31 更具体的目的地都在到达 isPublicPrefix 之前就被丢掉,
+// 而 RA / DHCPv6 注入的正是这个宽度 —— 也就是说「补上 v6 覆盖」那次改动,
+// 对 TunnelVision 的 v6 形态**一条都没抓到**。审查抓到的。
+func TestIPv6EscapeRoutesAreNotSkippedByTheIPv4HostCutoff(t *testing.T) {
+	for _, dest := range []string{"2001:db8::/48", "2001:db8::/56", "2001:db8:1::/64"} {
+		local := LocalFacts{
+			DefaultRouteV4: InterfaceRef{Name: "utun11"},
+			BXTunInterface: "utun11",
+			InterfaceKinds: map[string]InterfaceKind{"utun11": InterfaceTunnel, "en0": InterfacePhysical},
+			Routes: []RouteEntry{
+				{Destination: "0/1", Interface: "utun11"},
+				{Destination: dest, Interface: "en0"},
+			},
+		}
+		f := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"}, local)
+		if f.Verdict != Bad {
+			t.Errorf("%s 经物理网卡逃逸没被抓到:%v %q", dest, f.Verdict, f.Summary)
+		}
+	}
+	// v6 的单地址(/128)仍然是「单主机」,与 v4 的 /32 同类 —— 不报。
+	local := LocalFacts{
+		DefaultRouteV4: InterfaceRef{Name: "utun11"},
+		BXTunInterface: "utun11",
+		InterfaceKinds: map[string]InterfaceKind{"utun11": InterfaceTunnel, "en0": InterfacePhysical},
+		Routes: []RouteEntry{
+			{Destination: "0/1", Interface: "utun11"},
+			{Destination: "2001:db8::1/128", Interface: "en0"},
+		},
+	}
+	if f := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"}, local); f.Verdict != OK {
+		t.Errorf("v6 单地址旁路被报成逃逸:%v %q", f.Verdict, f.Summary)
+	}
+}
+
+// **直连子网不是「有人注入了路由」。**
+//
+// 一台 LAN 上带公网网段的 VPS/路由器,主表里有
+// `203.0.113.0/24 dev eth0 proto kernel scope link` —— 24 位、非阻断、非作用域、
+// 物理接口、公网前缀,于是被报成 CVE-2024-3661。**那会在每一台这样的机器上恒红**,
+// 而 VPS / 路由器 / NAS 正是 bx 明确支持的部署形态。
+//
+// 判据:on-link(没有网关)的路由描述的是「这段就挂在这个接口上」,不是「发往这里
+// 的包交给某个下一跳」——注入攻击要的是后者。
+func TestOnLinkPublicSubnetsAreNotReportedAsInjectedRoutes(t *testing.T) {
+	local := LocalFacts{
+		DefaultRouteV4: InterfaceRef{Name: "utun11"},
+		BXTunInterface: "utun11",
+		InterfaceKinds: map[string]InterfaceKind{"utun11": InterfaceTunnel, "eth0": InterfacePhysical},
+		Routes: []RouteEntry{
+			{Destination: "0/1", Interface: "utun11"},
+			{Destination: "203.0.113.0/24", Interface: "eth0", OnLink: true},
+		},
+	}
+	f := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"}, local)
+	if f.Verdict != OK {
+		t.Fatalf("直连的公网子网被报成注入路由:%v %q —— 每台这样的 VPS 都会恒红", f.Verdict, f.Summary)
+	}
+	// 反面:同一个网段**带网关**就是真的逃逸(那正是 DHCP option 121 的形状)。
+	local.Routes[1] = RouteEntry{Destination: "203.0.113.0/24", Interface: "eth0"}
+	if g := identityFinding(t, FindingRouteEscape, BrowserReport{ExitV4: "203.0.113.9"}, local); g.Verdict != Bad {
+		t.Fatalf("经网关的公网网段没被抓到:%v %q", g.Verdict, g.Summary)
+	}
+}

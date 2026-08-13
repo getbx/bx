@@ -843,16 +843,6 @@ fi
     done
     sleep 1
   fi
-  # webrtc-check 已删(它是 leakcheck 的子集)。这里改用 leak-check ——
-  # 非交互、机器可读,正是这个 testkit 需要的那一半;要浏览器那半请人工敲
-  # `bx leakcheck`,它需要有人在屏幕前点一下。
-  echo "probe: leak-check"
-  WEBRTC_ARGS=(leak-check --json --config "$CONFIG")
-  if [[ -n "$DNS_SERVICE" ]]; then
-    WEBRTC_ARGS+=(--dns-service "$DNS_SERVICE")
-  fi
-  "$BX" "${WEBRTC_ARGS[@]}" || true
-  echo "probe: leak-check"
   LEAK_ARGS=(leak-check --json --config "$CONFIG")
   if [[ -n "$DNS_SERVICE" ]]; then
     LEAK_ARGS+=(--dns-service "$DNS_SERVICE")

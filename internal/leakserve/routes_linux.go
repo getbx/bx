@@ -53,10 +53,17 @@ func parseLinuxRoutes(out, defaultDest string) []leakcheck.RouteEntry {
 			dest = defaultDest
 		}
 		iface := ""
+		onLink := true
 		for i := 0; i+1 < len(fields); i++ {
-			if fields[i] == "dev" {
-				iface = fields[i+1]
-				break
+			switch fields[i] {
+			case "dev":
+				if iface == "" {
+					iface = fields[i+1]
+				}
+			case "via":
+				// 有下一跳就不是直连 —— 而注入攻击(DHCP option 121)装的正是带
+				// 下一跳的路由。没有 via 的那些是「这段挂在这条线上」。
+				onLink = false
 			}
 		}
 		if iface == "" {
@@ -65,7 +72,7 @@ func parseLinuxRoutes(out, defaultDest string) []leakcheck.RouteEntry {
 			continue
 		}
 		entries = append(entries, leakcheck.RouteEntry{
-			Destination: dest, Interface: iface, Blocking: blocking,
+			Destination: dest, Interface: iface, Blocking: blocking, OnLink: onLink,
 			// Linux 没有 RTF_IFSCOPE 这个概念 —— **不合成一个假的**。
 		})
 	}

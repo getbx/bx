@@ -4,6 +4,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -107,5 +108,22 @@ func TestProductListStoppedSpeculating(t *testing.T) {
 	// 反面:必须指向那个权威答案,否则用户不知道去哪看。
 	if !strings.Contains(source, "tunnel_claims") {
 		t.Error("产品清单没有指向 tunnel_claims —— 用户只知道「它在跑」,不知道下一步看哪")
+	}
+}
+
+// **删掉的命令不许留在文档里。** 用户照着文档敲会得到「command not found」,
+// 而那比没有文档更糟:他会以为自己装坏了。
+func TestDocsDoNotReferenceDeletedCommands(t *testing.T) {
+	for _, rel := range []string{
+		filepath.Join("..", "..", "README.md"),
+		filepath.Join("..", "..", "docs", "leak-surfaces.md"),
+	} {
+		raw, err := os.ReadFile(rel)
+		if err != nil {
+			t.Fatalf("读不到 %s:%v —— 守卫失去意义,必须响亮失败", rel, err)
+		}
+		if strings.Contains(string(raw), "webrtc-check") {
+			t.Errorf("%s 仍在教用户敲 `bx webrtc-check`,而那个命令已经删了", rel)
+		}
 	}
 }

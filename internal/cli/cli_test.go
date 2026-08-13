@@ -4467,7 +4467,10 @@ func TestMacMenuRefreshCallsDeclareUserIntent(t *testing.T) {
 	if strings.Contains(text, "func refresh(userInitiated: Bool = ") {
 		t.Fatal("userInitiated 不得有默认值:新加的调用点会默默落进「不补跑」那一档,而漏传是静默失败")
 	}
-	if !strings.Contains(text, "func refresh(userInitiated: Bool)") {
+	// **钉第一个参数,不钉整个签名。** 后面可以再加带默认值的参数(现在有一个
+	// `then completion:`,首次引导靠它等刷新落地),而本守卫要守的只有一条:
+	// userInitiated 必须由每个调用点显式写出来 —— 漏传是静默失败。
+	if !strings.Contains(text, "func refresh(userInitiated: Bool") {
 		t.Fatal("找不到 refresh(userInitiated:) 的声明")
 	}
 	for i, line := range strings.Split(text, "\n") {

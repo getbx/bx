@@ -365,18 +365,22 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	overlaySplit := overlay.SplitRoutes(presentOverlays)
 	if len(cfg.DNS.Split) > 0 || len(overlaySplit) > 0 {
 		var routes []bxdns.SplitRoute
-		for _, r := range overlaySplit {
-			routes = append(routes, bxdns.SplitRoute{
-				Match:  route.NewDomainSet([]string{"*." + r.Suffix, r.Suffix}),
-				Server: r.Resolver,
-			})
-			log.Printf("overlay 共存:*.%s 交给 %s 解析", r.Suffix, r.Resolver)
-		}
+		// **用户的规则排在前面。** matchSplit 取**第一个**命中的路由,所以顺序就是
+		// 优先级 —— 早先这里把 overlay 那组放在前面并写着「用户可以覆盖」,那句话
+		// 与代码正好相反:用户为 ts.net 配的解析器会被硬编码的那个静默遮蔽。
 		for _, r := range cfg.DNS.Split {
 			routes = append(routes, bxdns.SplitRoute{
 				Match:  route.NewDomainSet(r.Domains),
 				Server: r.Server,
 			})
+		}
+		for _, r := range overlaySplit {
+			server := normalizeDNSServerAddr(r.Resolver)
+			routes = append(routes, bxdns.SplitRoute{
+				Match:  route.NewDomainSet(overlaySplitPatterns(r.Suffix)),
+				Server: server,
+			})
+			log.Printf("overlay 共存:*.%s 交给 %s 解析", r.Suffix, server)
 		}
 		dnsSrv.SetSplit(routes, bxdns.NewUDPForwarder(plat.DirectDialer()), splitDirect)
 		log.Printf("split-DNS 已启用:%d 条规则", len(routes))
@@ -458,34 +462,30 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	go mutEng.Run(ctx)
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
-	// tailscale 那组旁路与「切到哪台服务器」无关,启动时算一次,之后每轮刷新原样带上
-	// (重探一次失败就会在下次 rehijack 时悄悄缩小 tailscale 共存旁路)。
-	// 启动时抓一次;抓不到就用内置兜底表,并由后台循环一直重试直到拿到权威答案。
-	// **开机自启那一刻网络往往还没好**,而此前这里抓不到就永远停在兜底表。
-	// 在跑的租户各自的中继兜底地址与 Tailscale 的 DERP 旁路合并成同一份。
-	// **ZeroTier 的根节点此前一条旁路都没有** —— 隧道 fail-closed 时它连根都连不上。
-	tailscaleBypass := newTailscaleBypassSource(mergeBypassCIDRs(
-		tailscaleBootstrapBypassCIDRs(ctx, direct),
-		overlay.BypassCIDRs(presentOverlays),
-	))
-
-	// **租户旁路必须并进抓取结果,不能只并进初值。** 循环成功时是**整份替换**
-	// (刻意如此:兜底 IP 会过期,留着是泄漏面),而它抓的只有 DERP —— 只并初值的话,
-	// 第一次成功就会把 ZeroTier 的根节点旁路丢掉,而且是静默的。
+	//
+	// 中继旁路只给**确实在跑**的 overlay 装;抓不到就先用兜底表,由后台循环一直
+	// 重试(开机自启那一刻网络往往还没好,而早先抓不到就永远停在兜底表)。
+	//
+	// **写死的公网 IP 是一种泄漏面**:地址被回收给别人之后,那条旁路仍在,于是发往
+	// 陌生人的流量绕过隧道、带着真实源地址出去。这条规矩是 internal/overlay 为
+	// ZeroTier 的兜底表立的,而 Tailscale 的 DERP 表此前**没有**执行它 —— 一台从没
+	// 装过 Tailscale 的机器照样会被装上十条(抓不到 DERP map 时)或整张 DERP 节点表。
+	// 昨天去掉 darwin 门之后,那个影响面还扩到了 Linux 与 Windows。
+	//
+	// 当初不门控的理由是「会让『开机时抓不到就永远停在兜底表』更糟」,而那个缺口
+	// 已经由重试循环补上了:租户晚于 bx 启动时,下一轮探测就会看见它。
+	tailscaleBypass := newTailscaleBypassSource(initialOverlayBypass(ctx, direct, presentOverlays))
 	go tailscaleBypass.Run(ctx, overlayAwareBypassFetch(
-		func(c context.Context) ([]string, error) { return tailscaleDERPBypassCIDRs(c, direct) },
-		// **每轮现测**:租户可能晚于 bx 启动。旁路这一半自愈得了(新值在下一次
-		// 路由重装时生效);DNS split 那一半不行,由 lateTenantWarning 如实报出来。
+		func(c context.Context) ([]string, error) {
+			// **每轮现测**:租户可能晚于 bx 启动。没有 Tailscale 就不抓 DERP map,
+			// 也就不会给一台与它无关的机器装上那些 /32。
+			if !overlayPresent(detectOverlayTenants(), "tailscale") {
+				return nil, errNoTailscaleForBypass
+			}
+			return tailscaleDERPBypassCIDRs(c, direct)
+		},
 		func() []string { return overlay.BypassCIDRs(detectOverlayTenants()) },
 	))
-	// bypass 那一套的**组合**全在 wireBypass 里(可测):store 是全进程唯一那份
-	// 「什么必须绕开隧道」,liveMutator(rehijack)、livePathRecoverer(Wi-Fi 切换后
-	// 自动重装旁路)、刷新与 RuntimeState 全都读写它。各自留一份启动时的冻结拷贝
-	// 正是静默成环的来源。
-	//
-	// serverStatics 与 staticA 分开传是**要紧的**:前者(合并用户 hosts 覆盖之前)
-	// 决定 Guardian 屏障给谁开口、也是刷新的保留基准,后者是 DNS 静态表。
-	// 从后者推前者会把用户 hosts 里的任意 IPv4 打进屏障。
 	bypassWire := wireBypass(bypassWiringParams{
 		configPath:    opts.ConfigPath,
 		serverStatics: serverStatic,
@@ -882,4 +882,26 @@ func (d *dnsResolver) ResolveAll(ctx context.Context, domain string) ([]netip.Ad
 		out = append(out, ip.Unmap())
 	}
 	return out, nil
+}
+
+// normalizeDNSServerAddr 给解析器地址补上默认端口。
+//
+// **config.Parse 会给 dns.split[].server 做这件事,而 overlay 那条路绕过了它。**
+// 不补的后果不是「少个端口」:DialContext 直接报 `missing port in address`,
+// Respond 把它变成 SERVFAIL,于是在任何检测到 Tailscale 的机器上,**每一次
+// ts.net 查询都失败** —— 正好是这个功能要修的那件事。
+func normalizeDNSServerAddr(server string) string {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return server
+	}
+	if host, port, err := net.SplitHostPort(server); err == nil && port != "" {
+		return net.JoinHostPort(host, port)
+	}
+	return net.JoinHostPort(strings.Trim(server, "[]"), "53")
+}
+
+// overlaySplitPatterns 把一个后缀变成 DomainSet 认得的模式:后缀本身与它的子域。
+func overlaySplitPatterns(suffix string) []string {
+	return []string{"*." + suffix, suffix}
 }

@@ -125,19 +125,32 @@ func TestMacMenuRunsFirstRunGuidanceAfterTheFirstRefresh(t *testing.T) {
 	}
 	source := string(raw)
 
-	launch := scopeAfter(t, source, "func applicationDidFinishLaunching", 700)
+	launch := scopeAfter(t, source, "func applicationDidFinishLaunching", 900)
 	if !strings.Contains(launch, "runFirstRunGuidance()") {
 		t.Error("启动路径没有调用 runFirstRunGuidance —— 双击之后又会变回「什么都不发生」")
 	}
-	// **顺序是承重的**:没刷新过就不知道自己处在哪一步,那时问出来的一定是错的那个。
-	refreshAt := strings.Index(launch, "refresh(userInitiated: false)")
-	guidanceAt := strings.Index(launch, "runFirstRunGuidance()")
-	if refreshAt < 0 || guidanceAt < 0 || guidanceAt < refreshAt {
-		t.Errorf("引导必须排在首次 refresh 之后(refresh@%d guidance@%d)—— "+
-			"没刷新过就不知道自己处在哪一步", refreshAt, guidanceAt)
+	// **必须在刷新的完成回调里,不是紧跟在它后面。**
+	//
+	// 这条守卫第一版钉的是「排在 refresh 之后」,而那个判据本身是错的:refresh 把
+	// 采集扔到后台队列,结果稍后才在主线程写回 state。紧跟其后读到的是初始值,
+	// firstRunAction 永远落到 default,**引导从来不触发** —— 而那正是这个功能的
+	// 全部意义。审查抓到的,不是测试抓到的。
+	if !strings.Contains(launch, "refresh(userInitiated: false) {") {
+		t.Error("引导没有挂在 refresh 的完成回调上 —— refresh 是异步的," +
+			"紧跟其后读到的是上一轮(启动时就是初始值)的 state,引导会永远不触发")
 	}
 	// 判定不许搬回 main.swift:那里编不进测试套件。
 	if strings.Contains(source, "func firstRunAction(") {
 		t.Error("firstRunAction 被搬进了 main.swift —— 那里编不进 Swift 测试套件")
+	}
+	// 装完那一步同理:读到装之前的状态就会刚装完又弹一次「Install bx?」。
+	// **按函数切,不按字节窗口切。** 第一版用了 1400 字节的窗口,而目标恰好落在
+	// 窗口外一点点 —— 固定窗口的脆弱正是本仓库记过的那条教训。
+	installer, ok := swiftFunctionBody(swiftCodeOnly(source), "private func runEmbeddedInstaller(")
+	if !ok {
+		t.Fatal("找不到 runEmbeddedInstaller —— 守卫读不懂现在的代码了,请连同它一起改")
+	}
+	if !strings.Contains(installer, "refresh(userInitiated: true) {") {
+		t.Error("装完之后的引导没有挂在刷新的完成回调上 —— 会读到装之前的状态,重复弹安装框")
 	}
 }
