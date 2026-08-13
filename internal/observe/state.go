@@ -49,6 +49,26 @@ type ObservedState struct {
 	CoreSocket       Tristate       `json:"core_socket"`
 	TunnelHealthy    Tristate       `json:"tunnel_healthy"`
 	Errors           []ObserveError `json:"errors,omitempty"`
+	// NotApplicable 是**这个平台上根本不成立的问题**,由采集方声明。
+	//
+	// 它与 Unknown 是两回事,而此前只有后者可表达:Linux 上 bx 不改系统 DNS
+	// (它在 TUN 里拦 UDP:53),于是 `dns_managed` 那个问题在那里不成立 ——
+	// 报 False 像「明明受保护却说没接管」一样撒谎,报 Unknown 则会让每一台健康的
+	// Linux 机器每次观测都吐一条永久 divergence。而满屏「无法观测」会把 divergence
+	// 训练成用户和 agent 学会忽略的东西,正好毁掉它唯一的价值。
+	//
+	// **不适用的项不进 UnobservableItems,也不产生 divergence;真正没问出来的照旧报。**
+	NotApplicable []string `json:"not_applicable,omitempty"`
+}
+
+// notApplicable 判断某一项在这个平台上是否根本不成立。
+func (s ObservedState) notApplicable(item string) bool {
+	for _, na := range s.NotApplicable {
+		if na == item {
+			return true
+		}
+	}
+	return false
 }
 
 // UnobservableItems 返回这一轮**没能问出来**的项的名字,固定次序。
@@ -75,7 +95,7 @@ func (s ObservedState) UnobservableItems() []string {
 		{"core_socket", s.CoreSocket},
 		{"tunnel_healthy", s.TunnelHealthy},
 	} {
-		if check.value == Unknown {
+		if check.value == Unknown && !s.notApplicable(check.item) {
 			items = append(items, check.item)
 		}
 	}

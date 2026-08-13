@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -60,7 +61,30 @@ func LiveDeps(socketPath string) Deps {
 			}
 			return DNSResult{Servers: status.Servers, Enabled: status.Enabled}, nil
 		},
+		// **声明这个平台上不成立的问题。**
+		//
+		// Linux 上 bx 不改系统 DNS —— 它在 TUN 里拦 UDP:53(见 tun/engine.go)。
+		// 「系统 DNS 归不归 bx」在那里根本不是正确的问题:报 False 像「明明受保护却
+		// 说没接管」一样撒谎,报 Unknown 会让每台健康机器每次观测都吐一条永久
+		// divergence,而那会把 divergence 训练成噪声。
+		//
+		// 其余四项在 Linux 上都问得出来:capture 与 barrier 走 supervisor.LookupRoute
+		// (2026-08-13 归位,三平台都有),core_socket 与 tunnel_healthy 走控制 socket。
+		NotApplicable: NotApplicableForPlatform(runtime.GOOS),
 	}
+}
+
+// notApplicableForPlatform 列出该平台上根本不成立的观测项。
+//
+// **它按平台而不是按「能不能问出来」分。** 后者是 Unknown 的语义;这里说的是
+// 「这个问题在这个平台上没有意义」——两者对用户的含义完全不同,而把前者伪装成
+// 后者正是本包存在的理由的反面。
+func NotApplicableForPlatform(goos string) []string {
+	if goos == "darwin" {
+		return nil
+	}
+	// bx 只在 macOS 上接管系统 DNS(networksetup);别处靠 TUN 拦截。
+	return []string{"dns_managed"}
 }
 
 func unsupportedDNSError(detail string) error {

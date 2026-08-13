@@ -4069,11 +4069,23 @@ func readClientStatusReport() (clientStatusReport, error) {
 // 字段里了。那种噪声会把 divergence 训练成用户和 agent 学会忽略的东西,
 // 正好毁掉它唯一的价值。字段缺席是诚实的「没问」;满屏「无法观测」则是把静态
 // 平台限制伪装成每次调用都新发生的差异。
+// observerForPlatform 决定哪些平台附上观测层。
+//
+// **原来只有 darwin,理由是「别处一个观测原语都没有」——那个理由已经不成立了。**
+// supervisor.LookupRoute 三平台都有(2026-08-13 归位),于是 capture / barrier 在
+// Linux 上问得出来,core_socket 与 tunnel_healthy 本来就走控制 socket。
+// 唯一不成立的 dns_managed 由 observe.NotApplicable 显式声明,不会变成每次调用
+// 都吐一条的「无法观测」——那正是当初拒绝在别处附观测的理由。
+//
+// Windows 暂不附:那边的 leakcheck 采集刚补上、且**真机未验**,而观测层一旦附上就
+// 进 `bx status --json` 的 divergence,一条没验证过的观测比没有观测更坏。
 func observerForPlatform(platform string) observation {
-	if platform != "darwin" {
+	switch platform {
+	case "darwin", "linux":
+		return liveObservation
+	default:
 		return nil
 	}
-	return liveObservation
 }
 
 // liveObservation 是生产观测:向真实系统现问,不改动任何状态。

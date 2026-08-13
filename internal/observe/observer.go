@@ -34,6 +34,12 @@ type Deps struct {
 	InspectDNS   func(ctx context.Context) (DNSResult, error)
 	FetchRuntime func() (RuntimeResult, error)
 	Now          func() time.Time
+	// NotApplicable 是**这个平台上根本不成立的观测项**,由接线方声明。
+	//
+	// 它不是「问不出来」(那是 Unknown 的语义):Linux 上 bx 不改系统 DNS,
+	// 于是「系统 DNS 归不归 bx」在那里不是正确的问题。两者对用户的含义完全不同,
+	// 而把前者伪装成后者会让每台健康机器每次观测都吐一条永久 divergence。
+	NotApplicable []string
 }
 
 // captureProbes 是用于判定劫持是否生效的探测目的地。两个地址分别落在
@@ -45,15 +51,26 @@ var captureProbes = []string{"1.1.1.1", "129.1.1.1"}
 // 它绝不改动系统,绝不因某项失败而中断:任一项出错即记为 Unknown 并附原因,
 // 继续观测其余项。这是刻意的——观测失败不该让保护中断,也不该让调用方失败。
 func Observe(ctx context.Context, deps Deps) ObservedState {
-	state := ObservedState{}
+	state := ObservedState{NotApplicable: append([]string(nil), deps.NotApplicable...)}
 	if deps.Now != nil {
 		state.ObservedAt = deps.Now()
 	}
 
-	state.CaptureOK, state.CaptureInterface = observeCapture(ctx, deps, &state)
-	state.BarrierPresent = observeBarrier(ctx, deps, &state)
-	state.DNSManaged, state.DNSServers = observeDNS(ctx, deps, &state)
-	state.CoreSocket, state.TunnelHealthy = observeCore(deps, &state)
+	// **不适用的项不去问。** 问了只会在每一轮的 Errors 里留下同一条永久记录
+	// (「本平台不支持 DNS 接管观测」),而那与满屏「无法观测」是同一种噪声:
+	// 把一个静态的平台事实伪装成每次调用都新发生的失败。
+	if !state.notApplicable("capture_ok") {
+		state.CaptureOK, state.CaptureInterface = observeCapture(ctx, deps, &state)
+	}
+	if !state.notApplicable("barrier_present") {
+		state.BarrierPresent = observeBarrier(ctx, deps, &state)
+	}
+	if !state.notApplicable("dns_managed") {
+		state.DNSManaged, state.DNSServers = observeDNS(ctx, deps, &state)
+	}
+	if !state.notApplicable("core_socket") && !state.notApplicable("tunnel_healthy") {
+		state.CoreSocket, state.TunnelHealthy = observeCore(deps, &state)
+	}
 
 	return state
 }
