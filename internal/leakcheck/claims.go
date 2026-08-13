@@ -99,12 +99,12 @@ func ClassifyTunnels(local LocalFacts) []TunnelClaim {
 		if iface == "" || iface == bxTun || !IsTunnelInterface(iface) {
 			continue
 		}
-		if routeIsBlocking(entry.Flags) {
+		if entry.Blocking {
 			// 阻断路由不是 claim:它没有把流量收走,而是把它扔掉。
 			// (bx 自己的 v6 屏障就是一对 reject 的 ::/1 + 8000::/1。)
 			continue
 		}
-		if routeIsInterfaceScoped(entry.Flags) {
+		if entry.Scoped {
 			// 作用域路由只对已经绑定到该接口的流量生效,不参与一般流量的竞争。
 			// 真机 macOS 的 v6 表里有六条这样的 default 挂在 utun1..utun6 上 ——
 			// 不排除就是六条误报。

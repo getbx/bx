@@ -126,3 +126,23 @@ func TestBothTunnelQuestionsAgree(t *testing.T) {
 		}
 	}
 }
+
+// **bx 自己在 Linux / Windows 上的 TUN 叫 bx0,而这张表原本不认识它。**
+//
+// 真 Linux 容器里当场看到的后果:默认路由是 bx0,WhoOwnsTheRoute 判成「认不出」,
+// 于是路由逃逸那条报「没有隧道在管」—— 一台受保护的机器上,那条检查整个失效。
+//
+// Guardian 只在 darwin 跑,所以 Linux 上 BXTunInterface 常常是空的(问不到保护状态),
+// 名字判据是那时唯一的依据。
+func TestBXsOwnLinuxTunIsRecognisedAsATunnel(t *testing.T) {
+	local := LocalFacts{DefaultRouteV4: InterfaceRef{Name: "bx0"}}
+	if got := WhoOwnsTheRoute(local); got == OwnerUnknown || got == OwnerNone {
+		t.Fatalf("bx0 判成 %v —— 那是 bx 自己在 Linux/Windows 上的 TUN,"+
+			"认不出它会让整条路由分析在受保护的机器上失效", got)
+	}
+	// Guardian 报得出名字时,它当然是 OwnerBX。
+	local.BXTunInterface = "bx0"
+	if got := WhoOwnsTheRoute(local); got != OwnerBX {
+		t.Fatalf("Guardian 报了 bx0 却判成 %v", got)
+	}
+}

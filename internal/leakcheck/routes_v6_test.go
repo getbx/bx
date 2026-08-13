@@ -84,8 +84,8 @@ func TestInterfaceScopedRoutesAreNotClaims(t *testing.T) {
 	local := LocalFacts{
 		BXTunInterface: "utun0",
 		Routes: []RouteEntry{
-			{Destination: "::/0", Interface: "utun1", Flags: "UGcIg"},
-			{Destination: "::/0", Interface: "utun2", Flags: "UGcIg"},
+			{Destination: "::/0", Interface: "utun1", Flags: "UGcIg", Scoped: true},
+			{Destination: "::/0", Interface: "utun2", Flags: "UGcIg", Scoped: true},
 		},
 	}
 	if got := ClassifyTunnels(local); len(got) != 0 {
@@ -98,8 +98,8 @@ func TestBXsIPv6BarrierIsNotAClaim(t *testing.T) {
 	local := LocalFacts{
 		BXTunInterface: "utun0",
 		Routes: []RouteEntry{
-			{Destination: "::/1", Interface: "lo0", Flags: "UGRScg"},
-			{Destination: "8000::/1", Interface: "lo0", Flags: "UGRSc"},
+			{Destination: "::/1", Interface: "lo0", Flags: "UGRScg", Blocking: true},
+			{Destination: "8000::/1", Interface: "lo0", Flags: "UGRSc", Blocking: true},
 		},
 	}
 	if got := ClassifyTunnels(local); len(got) != 0 {

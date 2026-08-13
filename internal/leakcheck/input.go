@@ -89,7 +89,19 @@ func (r InterfaceRef) Known() bool { return r.Name != "" && r.Err == "" }
 type RouteEntry struct {
 	Destination string `json:"destination"`
 	Interface   string `json:"interface"`
-	Flags       string `json:"flags"`
+	// Flags 是平台原样的标志串,**只作证据出示给人看**,判据不解析它。
+	Flags string `json:"flags,omitempty"`
+	// Blocking:这条路由把流量**扔掉**而不是送走(darwin 的 R/B 标志、
+	// Linux 的 unreachable/blackhole/prohibit)。bx 自己的 fail-closed 屏障就是
+	// 这种,把它当成「有人在抢」是这套检查能犯的最蠢的错。
+	Blocking bool `json:"blocking,omitempty"`
+	// Scoped:接口作用域路由(darwin 的 RTF_IFSCOPE),只对已绑定到该接口的流量
+	// 生效,不参与一般流量的竞争。
+	//
+	// **Blocking / Scoped 由采集层判定,不由判据层。** 此前判据直接匹配 darwin 的
+	// flag 字母,而 Linux 根本没有那些字母 —— 在 Linux 上合成一串假 flags 去迁就
+	// 它,就是把平台差异伪装成一个共同事实。谁知道那个平台,谁负责翻译。
+	Scoped bool `json:"scoped,omitempty"`
 }
 
 // LocalFacts 是只有本机能看到的那一半。全部只读采集,采不到就留空并记 Err。

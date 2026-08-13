@@ -16,7 +16,18 @@ type VPNService struct {
 // ipsec、ppp(L2TP/PPTP 这类系统集成 VPN)、以及 tuntaposx 那一系的 tun/tap。
 // **全仓唯一一份。** WhoOwnsTheRoute 与 isTunnelPath 都经 IsTunnelInterface 读它 ——
 // 各写一份时两处会静默漂移,而它们对同一台机器给出的答案必须一致。
-var tunnelDevicePrefixes = []string{"utun", "ipsec", "ppp", "tun", "tap", "wg"}
+var tunnelDevicePrefixes = []string{
+	"utun", "ipsec", "ppp", "tun", "tap", "wg",
+	// **bx 自己在 Linux / Windows 上的 TUN 就叫 bx0**,而这张表原本是按 macOS
+	// 命名建的,一个字母都没有它。后果在真 Linux 容器里当场看到:默认路由是 bx0,
+	// 而 WhoOwnsTheRoute 判成「认不出」→ 路由逃逸那条报「没有隧道在管」——
+	// 一台受保护的机器上,这条检查整个失效。
+	//
+	// 名字判据的局限在这里也暴露无遗:它认得 macOS 的每一种,却不认得自家的。
+	// 更好的判据是问内核要接口特征(tun 设备带 point-to-point 标志),
+	// 那是下一步;在那之前,至少别把自己漏掉。
+	"bx",
+}
 
 // IsTunnelInterface 判断这个接口名看起来是不是一条隧道。
 //

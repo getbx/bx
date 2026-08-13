@@ -78,24 +78,6 @@ func ParseRouteDestination(dest string) (netip.Prefix, error) {
 	return netip.PrefixFrom(addr, bits).Masked(), nil
 }
 
-// routeIsBlocking 判断这条路由是在**挡**而不是在**送**。
-//
-// bx 自己的 fail-closed 屏障就是一组 /2 的 reject 路由;把自家的屏障报成逃逸,
-// 是这条检查能犯的最蠢的错。netstat 的标志位里 R=reject、B=blackhole。
-func routeIsBlocking(flags string) bool {
-	return strings.ContainsAny(flags, "RB")
-}
-
-// routeIsInterfaceScoped 判断这条路由是不是 RTF_IFSCOPE(macOS flags 里的 `I`)。
-//
-// **作用域路由只对已经绑定到该接口的流量生效,不参与一般流量的竞争。** 真机
-// (macOS)的 v6 表里有六条 `default via fe80::%utunN` 分别挂在 utun1..utun6 上,
-// 全带 I —— 那是系统自己的东西。不排除它们,一台完全正常的 Mac 上会冒出六条
-// 「另一条隧道抢走了公网空间」,而假告警比没有告警更糟。
-func routeIsInterfaceScoped(flags string) bool {
-	return strings.Contains(flags, "I")
-}
-
 // routeEscapesTunnel 判断这条路由会不会把公网流量从隧道之外送走。
 //
 // **判据的形状由真机决定。** 本机(2026-08-11)路由表里有 108 条公网 /32 经物理
@@ -109,8 +91,7 @@ func routeIsInterfaceScoped(flags string) bool {
 // 前缀必须**比 split-default 更具体**(>1 位)才压得过隧道;`default` 本身在物理
 // 网卡上是 split-default 的常态,不是逃逸。
 func routeEscapesTunnel(entry RouteEntry) (netip.Prefix, bool) {
-	if routeIsBlocking(entry.Flags) || routeIsInterfaceScoped(entry.Flags) ||
-		IsTunnelInterface(entry.Interface) {
+	if entry.Blocking || entry.Scoped || IsTunnelInterface(entry.Interface) {
 		return netip.Prefix{}, false
 	}
 	prefix, err := ParseRouteDestination(entry.Destination)
@@ -163,7 +144,7 @@ func judgeRouteEscape(local LocalFacts) Finding {
 			continue
 		}
 		if p, err := ParseRouteDestination(entry.Destination); err == nil &&
-			p.Bits() == 32 && !IsTunnelInterface(entry.Interface) && !routeIsBlocking(entry.Flags) &&
+			p.Bits() == 32 && !IsTunnelInterface(entry.Interface) && !entry.Blocking &&
 			!p.Addr().IsPrivate() && !p.Addr().IsLoopback() && !p.Addr().IsLinkLocalUnicast() {
 			hosts++
 		}

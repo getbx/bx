@@ -107,8 +107,8 @@ func TestRouteEscapeRule(t *testing.T) {
 			name: "reject / blackhole 路由不是逃逸,它们是在挡",
 			local: withRoutes(
 				RouteEntry{Destination: "0/1", Interface: "utun11", Flags: "UScg"},
-				RouteEntry{Destination: "64.0/2", Interface: "lo0", Flags: "UGSRc"},
-				RouteEntry{Destination: "192.0/2", Interface: "lo0", Flags: "UGSBc"},
+				RouteEntry{Destination: "64.0/2", Interface: "lo0", Flags: "UGSRc", Blocking: true},
+				RouteEntry{Destination: "192.0/2", Interface: "lo0", Flags: "UGSBc", Blocking: true},
 			),
 			want: OK,
 		},
