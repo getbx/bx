@@ -7,12 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-
-	updatepkg "github.com/getbx/bx/internal/update"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+
+	updatepkg "github.com/getbx/bx/internal/update"
 )
 
 // **`uname -m` 认不出来时必须硬失败。**
@@ -50,6 +50,41 @@ func TestReleaseArchFromUname(t *testing.T) {
 				t.Fatalf("%q → %q,%v;want %q", tc.uname, got, err, tc.want)
 			}
 		})
+	}
+}
+
+// **真机输出:链接是带单引号的,而且有两条(主 + UDP)。**
+//
+// 2026-08-14 第一次对真 VPS 跑 deploy 时,前面每一步都成功,唯独最后取链接失败 ——
+// 我的 fixture 用的是裸 `bx://…`,而 `bx server install` 打的是可直接复制的
+// 一整条命令:`sudo bx setup 'bx://AAA' --udp 'bx://BBB'`。**假 fixture 被真机
+// 一次跑就打穿了。** 这份用真实输出。
+func TestClientLinksFromRealInstallOutput(t *testing.T) {
+	real := `✅ bx server 已安装(协议 reality)。下一步:sudo bx server start
+如果 VPS 启用了防火墙,请放行 TCP 443(ufw + 云安全组都要); ufw: sudo ufw allow 443/tcp
+🔀 reality(TCP/隐蔽)+ hysteria2(UDP/加速)就绪。客户端一条命令配齐:
+  sudo bx setup 'bx://MAIN' --udp 'bx://UDP'`
+
+	main, udp, err := clientLinksFromInstallOutput(real)
+	if err != nil {
+		t.Fatalf("真机输出里认不出链接:%v", err)
+	}
+	if main != "bx://MAIN" {
+		t.Errorf("主链接 = %q,单引号没剥掉?", main)
+	}
+	if udp != "bx://UDP" {
+		t.Errorf("UDP 链接 = %q —— 远端给了两条,漏掉第二条会让 UDP 走主传输", udp)
+	}
+}
+
+// 只有一条链接时 UDP 为空,不许把主链接复制一份当 UDP。
+func TestClientLinksWithoutUDP(t *testing.T) {
+	main, udp, err := clientLinksFromInstallOutput("  sudo bx setup 'bx://ONLY'")
+	if err != nil || main != "bx://ONLY" {
+		t.Fatalf("main=%q err=%v", main, err)
+	}
+	if udp != "" {
+		t.Fatalf("凭空多出一条 UDP 链接:%q", udp)
 	}
 }
 
@@ -301,4 +336,92 @@ func makeTarGzWithBx(t *testing.T, content []byte) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+// **谁下载、谁验证,是两件事。**
+//
+// 真机实测(2026-08-14,142.111.173.173):同一个 27.6MB 的 GitHub 资产,
+// VPS 直下 **8.36 MB/s**(~3 秒),而本机经隧道绕美国再回来只有 **17 KB/s**
+// (~27 分钟)—— 差 490 倍。**「本机环境已知可用」在可靠性上成立,在吞吐上
+// 正好相反**,因为 VPS 本来就在目的地那一侧。
+//
+// 于是:签名清单在本机取(小、验签),大文件让远端自己下,**用本机拿到的
+// 校验和在远端核对**。远端下不动就回落到本机下载 + scp。
+func TestRemoteFetchPlanPrefersTheServerThenFallsBack(t *testing.T) {
+	asset := updatepkg.Asset{Platform: "linux/amd64", Name: "bx_linux_amd64.tar.gz", SHA256: "abc123"}
+
+	// 远端能下:走远端,而且**必须带上本机拿到的校验和**去核对。
+	cmd := remoteFetchCommand("v0.2.7", asset)
+	for _, want := range []string{"bx_linux_amd64.tar.gz", "v0.2.7", "abc123", "sha256sum"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("远端下载命令缺 %q —— 少了校验和就等于让服务器自己说自己下对了:%s", want, cmd)
+		}
+	}
+	// 校验和不符时远端命令必须**失败**,而不是留下一个坏文件继续往下走。
+	if !strings.Contains(cmd, "exit 1") && !strings.Contains(cmd, "||") {
+		t.Errorf("远端校验失败时没有硬失败:%s", cmd)
+	}
+}
+
+// **远端下载失败要回落,但校验失败绝不回落。**
+//
+// 前者是「这台机器连不上 GitHub」——换条路是对的;后者是「拿到的东西不对」,
+// 换条路再拿一遍只会掩盖问题。
+func TestDeployFallsBackOnFetchFailureButNotOnChecksumFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		remoteErr  string
+		wantFallbk bool
+	}{
+		{"远端没有 curl", "curl: command not found", true},
+		{"远端连不上", "curl: (6) Could not resolve host", true},
+		{"远端超时", "curl: (28) Operation timed out", true},
+		{"校验和不符", "bx: checksum mismatch", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldFallBackToLocalUpload(errors.New(tc.remoteErr)); got != tc.wantFallbk {
+				t.Fatalf("回落判定 = %v, want %v(%q)", got, tc.wantFallbk, tc.remoteErr)
+			}
+		})
+	}
+}
+
+// **装完的服务器要真的够得到 —— 防火墙是最后一道,而它默认关着。**
+//
+// 真机(2026-08-14,Ubuntu 24.04):`bx server install` 装完、systemd 起来了、
+// sing-box 在 443 上 TCP+UDP 都 LISTEN,而 **ufw 默认 `deny (incoming)` 且没有
+// 443 规则** —— 服务器在跑,外面进不来。`bx server install` 只打了一句提示,
+// 而一条声称「一条命令装好」的路径把最后一道留给用户去读提示,等于没装好。
+//
+// **UDP 也要放行**:hysteria2 走 QUIC/UDP,只开 TCP 会让 UDP 那半静默失效。
+func TestFirewallCommandOpensBothProtocols(t *testing.T) {
+	cmd := remoteFirewallCommand(443)
+	// **断言真正的动作,不是那句 echo 文案。**
+	//
+	// 第一版查的是「命令里有没有 443/udp」—— 而收尾那句
+	// `echo 'bx: ufw 已放行 443/tcp 与 443/udp'` 里就有这个串,于是把 udp 那条
+	// allow 整行删掉仍然全绿(变异验证当场发现)。判据钉在了旁边的东西上。
+	var allows []string
+	for _, line := range strings.Split(cmd, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "ufw allow ") {
+			allows = append(allows, trimmed)
+		}
+	}
+	if len(allows) != 2 {
+		t.Fatalf("ufw allow 只有 %d 条,want 2(TCP + UDP):%v", len(allows), allows)
+	}
+	joined := strings.Join(allows, " | ")
+	for _, want := range []string{"443/tcp", "443/udp"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("没有真的放行 %q —— hysteria2 走 UDP,只开 TCP 会让它静默失效:%s", want, joined)
+		}
+	}
+	// **ufw 不存在或没启用时必须安静通过**,不能让一条没装防火墙的机器部署失败。
+	if !strings.Contains(cmd, "command -v ufw") {
+		t.Errorf("没有先判断 ufw 在不在:%s", cmd)
+	}
+	// 非默认端口要跟着走。
+	if alt := remoteFirewallCommand(9999); !strings.Contains(alt, "9999/tcp") || strings.Contains(alt, "443") {
+		t.Errorf("换端口时没跟上:%s", alt)
+	}
 }

@@ -32,8 +32,11 @@ type deployOptions struct {
 // 全由用户自己的 ssh 客户端处理。上一轮关于「留不留凭据」的争论,在这一层
 // 根本不存在 —— 我们从来没有拿到过它。
 type deployDeps struct {
-	run              func(name string, args ...string) (string, error)
-	fetchBinary      func(arch string) (localPath string, err error)
+	run         func(name string, args ...string) (string, error)
+	fetchBinary func(arch string) (localPath string, err error)
+	// remoteFetch 让远端自己把二进制取到 remoteUploadPaths 的临时路径。
+	// nil = 不试远端,直接本机下载(测试与降级用)。
+	remoteFetch      func(host, arch string) error
 	writeLocalConfig func(link string) error
 }
 
@@ -95,12 +98,33 @@ func remoteInstallCommand(opts deployOptions) string {
 // **取不到就硬失败,并把远端的原话原样交出去。** 在没拿到链接的情况下继续,
 // 会写出一份没有服务器的本机配置,而用户以为部署成功了。
 func clientLinkFromInstallOutput(out string) (string, error) {
+	main, _, err := clientLinksFromInstallOutput(out)
+	return main, err
+}
+
+// clientLinksFromInstallOutput 取出主链接与(如果有的)UDP 链接。
+//
+// **必须剥掉引号**:`bx server install` 打的是一条可直接复制的命令
+// (`sudo bx setup 'bx://AAA' --udp 'bx://BBB'`),链接是带单引号的。
+// 真机第一次跑就是栽在这里 —— 我的 fixture 用的是裸链接。
+//
+// **两条都要**:远端同时给了 reality(TCP)与 hysteria2(UDP),漏掉第二条会让
+// UDP 退回主传输,白白丢掉那条 QUIC 加速。
+func clientLinksFromInstallOutput(out string) (main, udp string, err error) {
+	var links []string
 	for _, field := range strings.Fields(out) {
+		field = strings.Trim(field, "'\"`")
 		if strings.HasPrefix(field, "bx://") {
-			return field, nil
+			links = append(links, field)
 		}
 	}
-	return "", fmt.Errorf("远端没有给出 bx:// 客户端链接;它说的是:\n%s", strings.TrimSpace(out))
+	if len(links) == 0 {
+		return "", "", fmt.Errorf("远端没有给出 bx:// 客户端链接;它说的是:\n%s", strings.TrimSpace(out))
+	}
+	if len(links) > 1 {
+		return links[0], links[1], nil
+	}
+	return links[0], "", nil
 }
 
 // runServerDeploy 执行一次部署。
@@ -119,13 +143,35 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	if err != nil {
 		return err
 	}
-	local, err := deps.fetchBinary(arch)
-	if err != nil {
-		return fmt.Errorf("准备 linux/%s 的 bx 二进制:%w", arch, err)
-	}
 	upload, final := remoteUploadPaths()
-	if _, err := deps.run("scp", local, opts.Host+":"+upload); err != nil {
-		return fmt.Errorf("上传二进制:%w", err)
+	// **先让远端自己下。** 它就在目的地那一侧:真机实测 8.36 MB/s,
+	// 而本机经隧道只有 17 KB/s(差 490 倍)。校验和仍然来自本机验过签的清单。
+	if deps.remoteFetch != nil {
+		err := deps.remoteFetch(opts.Host, arch)
+		switch {
+		case err == nil:
+			fmt.Println("• 远端已自行取到二进制并核对通过")
+		case !shouldFallBackToLocalUpload(err):
+			// 校验和不符 —— **绝不回落**。换条路再拿一遍只会掩盖问题。
+			return fmt.Errorf("远端校验失败:%w", err)
+		default:
+			fmt.Printf("• 远端取不到(%v),改由本机下载后上传\n", err)
+			local, ferr := deps.fetchBinary(arch)
+			if ferr != nil {
+				return fmt.Errorf("准备 linux/%s 的 bx 二进制:%w", arch, ferr)
+			}
+			if _, serr := deps.run("scp", local, opts.Host+":"+upload); serr != nil {
+				return fmt.Errorf("上传二进制:%w", serr)
+			}
+		}
+	} else {
+		local, ferr := deps.fetchBinary(arch)
+		if ferr != nil {
+			return fmt.Errorf("准备 linux/%s 的 bx 二进制:%w", arch, ferr)
+		}
+		if _, serr := deps.run("scp", local, opts.Host+":"+upload); serr != nil {
+			return fmt.Errorf("上传二进制:%w", serr)
+		}
 	}
 	if _, err := deps.run("ssh", opts.Host,
 		fmt.Sprintf("chmod +x %s && mv %s %s", shellSingleQuoted(upload), shellSingleQuoted(upload), shellSingleQuoted(final))); err != nil {
@@ -135,11 +181,37 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	if err != nil {
 		return fmt.Errorf("远端安装失败:%w\n%s", err, strings.TrimSpace(out))
 	}
-	link, err := clientLinkFromInstallOutput(out)
+	main, udp, err := clientLinksFromInstallOutput(out)
 	if err != nil {
 		return err
 	}
-	return deps.writeLocalConfig(link)
+	// **放行防火墙。** 真机上 Ubuntu 24.04 的 ufw 默认 `deny (incoming)`:
+	// 服务装好了、端口 LISTEN 了,而外面进不来。`bx server install` 只打了一句
+	// 提示,而一条声称「一条命令装好」的路径把最后一道留给用户去读提示,
+	// 等于没装好。UDP 也要开 —— hysteria2 走 QUIC。
+	port := opts.Port
+	if port <= 0 {
+		port = 443
+	}
+	fwOut, err := deps.run("ssh", opts.Host, remoteFirewallCommand(port))
+	switch {
+	case err != nil:
+		fmt.Printf("⚠ 未能自动放行防火墙端口 %d,若外部连不上请手动开:%v\n", port, err)
+	case strings.TrimSpace(fwOut) != "":
+		// **改了别人的防火墙就要说出来。** 静默修改系统状态,用户既无从复核也
+		// 无从撤销 —— 而这条命令的其余每一步都会打一行。
+		fmt.Printf("• %s\n", strings.TrimSpace(fwOut))
+	default:
+		fmt.Println("• 远端没有启用 ufw,未改动防火墙(若有云安全组,记得放行该端口)")
+	}
+	// 装完就启动 —— 一条命令该留下一台**在跑**的服务器,而不是一台装好没开的。
+	if _, err := deps.run("ssh", opts.Host, shellSingleQuoted(final)+" server start"); err != nil {
+		fmt.Printf("⚠ 远端服务未能自动启动,登上去跑一次 `bx server start` 即可:%v\n", err)
+	}
+	if udp != "" {
+		return deps.writeLocalConfig(main + " --udp " + udp)
+	}
+	return deps.writeLocalConfig(main)
 }
 
 // shellSingleQuoted 把一段文本包成 POSIX shell 的单引号字面量。
@@ -170,6 +242,7 @@ func serverDeployAction(c *cli.Context) error {
 	fmt.Printf("• 目标 %s(bx 不经手你的 SSH 凭据 —— 密码/密钥/agent 全由系统 ssh 处理)\n", host)
 	return runServerDeploy(opts, deployDeps{
 		run:              runDeployCommand,
+		remoteFetch:      remoteFetchBinary,
 		fetchBinary:      fetchLinuxBinary,
 		writeLocalConfig: applyDeployedLink,
 	})
@@ -264,13 +337,14 @@ func sha256Sum(data []byte) []byte {
 // applyDeployedLink 把远端给出的链接写进本机配置。
 func applyDeployedLink(link string) error {
 	fmt.Println("• 远端已就绪,客户端链接已取到")
+	// link 可能是「主链接 --udp UDP链接」的组合,原样交给 bx setup。
 	if os.Geteuid() != 0 {
 		// **不偷偷提权。** 写 /etc/bx 要 root,而这条命令的其余部分不需要 ——
 		// 让一条只做 ssh 的命令中途弹密码框是坏意外。把下一步原样给出来。
-		fmt.Printf("\n下一步(需要 root):\n  sudo bx setup %s\n  sudo bx up\n", link)
+		fmt.Printf("\n下一步(需要 root):\n  sudo bx setup %s\n  sudo bx up\n", quoteSetupArgs(link))
 		return nil
 	}
-	fmt.Printf("\n下一步:\n  bx setup %s\n  bx up\n", link)
+	fmt.Printf("\n下一步:\n  bx setup %s\n  bx up\n", quoteSetupArgs(link))
 	return nil
 }
 
@@ -301,4 +375,87 @@ func verifyAssetBytes(data []byte, asset updatepkg.Asset) error {
 		return fmt.Errorf("%s 校验和不符(清单 %s,实际 %s)—— 拒绝上传", asset.Name, want, got)
 	}
 	return nil
+}
+
+// remoteFetchCommand 让远端自己把二进制拉下来,并用**本机验过签的清单里那个
+// 校验和**当场核对。
+//
+// 真机实测(2026-08-14):同一个 27.6MB 资产,VPS 直下 8.36 MB/s,本机经隧道
+// 17 KB/s —— 差 490 倍。让远端下是因为它就在目的地那一侧;校验和仍然来自本机,
+// 因为供应链的权威必须留在管理员手里(远端自己算自己的哈希毫无意义)。
+func remoteFetchCommand(tag string, asset updatepkg.Asset) string {
+	url := repoReleaseDL + "/" + tag + "/" + asset.Name
+	upload, _ := remoteUploadPaths()
+	tarball := upload + ".tar.gz"
+	return strings.Join([]string{
+		"set -e",
+		"curl -fsSL --retry 2 -o " + shellSingleQuoted(tarball) + " " + shellSingleQuoted(url),
+		// 校验和不符就**硬失败并删掉**:留着一个坏文件比没有更危险。
+		`printf '%s  %s\n' ` + shellSingleQuoted(asset.SHA256) + " " + shellSingleQuoted(tarball) +
+			" | sha256sum -c - || { rm -f " + shellSingleQuoted(tarball) + "; echo 'bx: checksum mismatch' >&2; exit 1; }",
+		"tar -xzf " + shellSingleQuoted(tarball) + " -O bx > " + shellSingleQuoted(upload),
+		"rm -f " + shellSingleQuoted(tarball),
+	}, "\n")
+}
+
+// shouldFallBackToLocalUpload 判断远端那次失败该不该回落到「本机下载 + scp」。
+//
+// **取不到东西**(没 curl、连不上、超时)→ 换条路是对的。
+// **拿到的东西不对**(校验和不符)→ **绝不回落**:换条路再拿一遍只会掩盖问题,
+// 而问题可能是有人在中间换了文件。
+func shouldFallBackToLocalUpload(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !strings.Contains(strings.ToLower(err.Error()), "checksum mismatch")
+}
+
+// remoteFetchBinary 让远端自己下载并核对二进制。
+func remoteFetchBinary(host, arch string) error {
+	client := &http.Client{Transport: stallSafeTransport()}
+	tag, err := latestReleaseTag(client)
+	if err != nil {
+		return fmt.Errorf("查最新版本:%w", err)
+	}
+	manifest, err := verifiedReleaseManifest(client, tag)
+	if err != nil {
+		return fmt.Errorf("校验发布清单:%w", err)
+	}
+	asset, err := linuxAssetFor(manifest, arch)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("• 让远端自行取 %s(%s),校验和由本机的签名清单提供\n", asset.Name, tag)
+	out, err := runDeployCommand("ssh", host, remoteFetchCommand(tag, asset))
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// quoteSetupArgs 把「主链接 --udp UDP链接」渲染成可直接粘贴的一行。
+func quoteSetupArgs(combined string) string {
+	parts := strings.Fields(combined)
+	for i, p := range parts {
+		if strings.HasPrefix(p, "bx://") {
+			parts[i] = shellSingleQuoted(p)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// remoteFirewallCommand 放行隧道端口。
+//
+// **ufw 不在或没启用时安静通过** —— 一台没装防火墙的机器不该因此部署失败。
+// TCP 与 UDP 都要:reality 走 TCP,hysteria2 走 QUIC/UDP,只开一半会让另一半
+// 静默失效(而 bx status 那时仍会显示主隧道健康)。
+func remoteFirewallCommand(port int) string {
+	p := fmt.Sprintf("%d", port)
+	return strings.Join([]string{
+		"if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | head -1 | grep -q active; then",
+		"  ufw allow " + p + "/tcp >/dev/null || true",
+		"  ufw allow " + p + "/udp >/dev/null || true",
+		"  echo 'bx: ufw 已放行 " + p + "/tcp 与 " + p + "/udp'",
+		"fi",
+	}, "\n")
 }
