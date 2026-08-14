@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/getbx/bx/internal/runtimedir"
 )
@@ -695,20 +696,31 @@ func ShowLogs(service string, lines int, follow bool) error {
 		lines = 100
 	}
 	if runtime.GOOS == "darwin" && service == ServiceName {
-		paths := existingPaths(launchdStdoutPath, launchdStderrPath)
-		if len(paths) == 0 {
-			return fmt.Errorf("未找到 bx 日志文件(%s, %s);服务可能尚未启动", launchdStdoutPath, launchdStderrPath)
+		// **与 TailLogs 用同一份来源。** 上一版两个函数各自写死了一对 legacy
+		// 路径,于是修好其中一个之后另一个照旧读陈旧文件 —— 同一个问题两个
+		// 实现,而只有一个被改到(2026-08-14 当场撞上)。
+		moment := time.Now()
+		sources := clientLogSources(statLogFile, moment)
+		if len(sources) == 0 {
+			return fmt.Errorf("未找到 bx 日志文件;服务可能尚未启动")
 		}
-		args := []string{"-n", fmt.Sprint(lines)}
 		if follow {
-			args = append(args, "-f")
+			// -f 只跟**活着的那一份**:跟一个三周没动过的文件毫无意义,
+			// 而 tail -f 多文件会把两者的输出交错到无法阅读。
+			live := sources[0]
+			fmt.Println(logSourceHeader(live, moment))
+			cmd := exec.Command("tail", "-n", fmt.Sprint(lines), "-f", live.Path)
+			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("tail -f %s: %w", live.Path, err)
+			}
+			return nil
 		}
-		args = append(args, paths...)
-		cmd := exec.Command("tail", args...)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("tail %s: %w", strings.Join(args, " "), err)
+		text, err := tailDarwinClientLogs(lines, statLogFile, func() time.Time { return moment })
+		if err != nil {
+			return err
 		}
+		fmt.Print(text)
 		return nil
 	}
 	args := []string{"-u", service, "--no-pager", "-n", fmt.Sprint(lines)}
@@ -730,16 +742,7 @@ func TailLogs(service string, lines int) (string, error) {
 		lines = 100
 	}
 	if runtime.GOOS == "darwin" && service == ServiceName {
-		paths := existingPaths(launchdStdoutPath, launchdStderrPath)
-		if len(paths) == 0 {
-			return "", fmt.Errorf("未找到 bx 日志文件(服务可能尚未启动)")
-		}
-		args := append([]string{"-n", fmt.Sprint(lines)}, paths...)
-		out, err := exec.Command("tail", args...).CombinedOutput()
-		if err != nil {
-			return string(out), fmt.Errorf("tail: %w", err)
-		}
-		return string(out), nil
+		return tailDarwinClientLogs(lines, statLogFile, time.Now)
 	}
 	out, err := exec.Command("journalctl", "-u", service, "--no-pager", "-n", fmt.Sprint(lines)).CombinedOutput()
 	if err != nil {
@@ -749,9 +752,15 @@ func TailLogs(service string, lines int) (string, error) {
 }
 
 // ClientLogPaths returns the raw client log files used by macOS launchd.
+// ClientLogPaths 是「Core 的日志在哪」。
+//
+// **Guardian 的两份排在前面**:今天的架构里 Core 是 Guardian 的子进程,写的是
+// bx-guard.*;bx.log / bx.err.log 是 legacy launchd 时代的路径,在现役安装上
+// 通常是一份很久没动过的遗留。上一版只报后者,于是 `bx logs` 与诊断包给出的
+// 都是陈旧内容(2026-08-14 真机,把排查带进了沟里)。
 func ClientLogPaths() []string {
 	if runtime.GOOS == "darwin" {
-		return []string{launchdStdoutPath, launchdStderrPath}
+		return clientLogCandidates()
 	}
 	return nil
 }
@@ -1205,4 +1214,29 @@ func launchdState(action string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// tailDarwinClientLogs 按「最近写过的在前」逐个 tail,并在每份前面标明
+// **哪个文件、多久之前写的**。
+//
+// 自己拼表头而不是让 `tail` 打:单文件时 tail 根本不打表头,而那正是用户
+// 最容易误以为「这就是当前日志」的情形。
+func tailDarwinClientLogs(lines int, stat func(string) (time.Time, bool), now func() time.Time) (string, error) {
+	moment := now()
+	sources := clientLogSources(stat, moment)
+	if len(sources) == 0 {
+		return "", fmt.Errorf("未找到 bx 日志文件(服务可能尚未启动)")
+	}
+	var out strings.Builder
+	for _, source := range sources {
+		out.WriteString(logSourceHeader(source, moment))
+		out.WriteByte('\n')
+		raw, err := exec.Command("tail", "-n", fmt.Sprint(lines), source.Path).CombinedOutput()
+		out.Write(raw)
+		if err != nil {
+			fmt.Fprintf(&out, "(读取失败:%v)\n", err)
+		}
+		out.WriteByte('\n')
+	}
+	return out.String(), nil
 }
