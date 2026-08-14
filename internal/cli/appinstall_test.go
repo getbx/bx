@@ -143,3 +143,38 @@ func TestAppInstallExitsWithTheCancelCodeOnExplicitNo(t *testing.T) {
 		t.Fatalf("取消必须以退出码 2 结束(install.sh 据此不再打印「完成」),实际分支 = %q", branch)
 	}
 }
+
+// **`/dev/null` 不是终端 —— 而上一版判据说它是。**
+//
+// 旧实现查的是 `Stat().Mode()&os.ModeCharDevice`,而 /dev/null 与 /dev/zero
+// 都是字符设备(实测 mode `Dcrw-rw-rw-`)。后果有两处,都是真的:
+//
+//   - `bx server deploy` 在无终端环境里给 ssh 加 `-t`,每条远端命令都吐一句
+//     "Pseudo-terminal will not be allocated…"(2026-08-14 真机实测)
+//   - `confirmPrompt` 把 /dev/null 当成可交互的终端去问用户 —— 在 CI、cron、
+//     以及任何把 stdin 接到 /dev/null 的地方,它会「问」一个没人能回答的问题
+func TestStdinIsTerminalRejectsCharacterDevicesThatAreNotTerminals(t *testing.T) {
+	for _, path := range []string{"/dev/null", "/dev/zero"} {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Skipf("%s 打不开:%v", path, err)
+		}
+		got := fdIsTerminal(f)
+		f.Close()
+		if got {
+			t.Errorf("%s 被判成了终端 —— 它只是个字符设备", path)
+		}
+	}
+	// 普通文件与 nil 也不是终端。
+	tmp, err := os.CreateTemp(t.TempDir(), "notty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tmp.Close()
+	if fdIsTerminal(tmp) {
+		t.Error("普通文件被判成了终端")
+	}
+	if fdIsTerminal(nil) {
+		t.Error("nil 被判成了终端")
+	}
+}
