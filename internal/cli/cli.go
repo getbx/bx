@@ -388,6 +388,7 @@ type commandCapability struct {
 
 func serverCommands() []*cli.Command {
 	return []*cli.Command{
+		{Name: "deploy", Usage: "从本机把 bx server 装到一台 VPS 上(走系统 ssh,bx 不经手凭据)", ArgsUsage: "<user@host>", Flags: serverDeployFlags(), Action: serverDeployAction},
 		{Name: "install", Usage: "安装 bx server 服务", Flags: serverInstallFlags(), Action: serverInstallAction},
 		{Name: "link", Usage: "生成客户端 bx:// 链接", Flags: serverLinkFlags(), Action: serverLinkAction},
 		{Name: "share", Usage: "分享给一个人", ArgsUsage: "<name>", Flags: serverShareFlags(), Action: serverShareAction},

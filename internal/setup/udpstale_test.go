@@ -68,7 +68,8 @@ func TestStaleUDPTransportStaysQuietWhenItCannotTell(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, stale := StaleUDPTransport(
-				TransportsBefore{Server: tc.oldServer, UDPTransport: tc.oldUDP}, tc.newServer); stale {
+				TransportsBefore{Server: tc.oldServer, UDPTransport: tc.oldUDP}, tc.newServer,
+			); stale {
 				t.Fatal("解析不出来却报了「陈旧」")
 			}
 		})

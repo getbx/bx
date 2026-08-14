@@ -48,7 +48,8 @@ func TestTransportChangeStaysQuietAboutADeliberateSeparateUDPServer(t *testing.T
 func TestTransportChangeShowsTheServerMove(t *testing.T) {
 	lines := strings.Join(transportChangeLines(
 		setup.TransportsBefore{Server: "vless://u@1.1.1.1:443"},
-		[]string{"vless://u@2.2.2.2:443"}, ""), "\n")
+		[]string{"vless://u@2.2.2.2:443"}, "",
+	), "\n")
 	if !strings.Contains(lines, "→") {
 		t.Errorf("没报出主传输的变更:\n%s", lines)
 	}
