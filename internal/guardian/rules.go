@@ -98,11 +98,28 @@ func serveRuleList(w http.ResponseWriter, configPath string) {
 	grouped, custom := preset.Classify(rules.Direct)
 	groups := make([]ruleGroup, 0, len(preset.All()))
 	for _, p := range preset.All() {
-		installed := len(grouped[p.Name])
+		// **分开数「在用的」与「退役的」。** 一组的 Direct 全装了、却还留着退役
+		// 域名时,显示成 on 等于告诉用户「这一组就是现在这样」,而实际上里面还有
+		// 我们主动废弃的规则在把流量送错方向。
+		live, stale := 0, 0
+		liveSet := map[string]bool{}
+		for _, d := range p.Direct {
+			liveSet[strings.ToLower(strings.TrimSpace(d))] = true
+		}
+		for _, rule := range grouped[p.Name] {
+			if liveSet[strings.ToLower(strings.TrimSpace(rule))] {
+				live++
+				continue
+			}
+			stale++
+		}
 		groups = append(groups, ruleGroup{
 			Name: p.Name, Title: p.Title, Summary: p.Summary,
-			State: groupState(installed, len(p.Direct)), Installed: installed, Total: len(p.Direct),
-			Domains: append([]string(nil), p.Direct...),
+			State:     groupState(live, len(p.Direct), stale),
+			Installed: live, Total: len(p.Direct),
+			// 把**全部**认领的域名发下来(含退役的):界面要把失败归因对到组上,
+			// 而一条退役规则正在成片失败恰恰是最该被看见的。
+			Domains: append([]string(nil), p.AllDomains()...),
 		})
 	}
 	writeGuardianJSON(w, http.StatusOK, rulesResponse{
@@ -140,7 +157,14 @@ func applyRuleChange(w http.ResponseWriter, r *http.Request, configPath string) 
 			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "rules_unknown_group"})
 			return
 		}
-		err = setup.ApplyGroup(configPath, setup.RuleKindDirect, p.Direct, req.Action == "enable_group")
+		if req.Action == "enable_group" {
+			// **只装在用的。** 装回退役域名等于撤销掉那次演进。
+			err = setup.ApplyGroup(configPath, setup.RuleKindDirect, p.Direct, true)
+		} else {
+			// 关掉时连退役的一起清 —— 否则它们永远留在配置里,而界面对
+			// 「自定义」规则只显示不给开关,用户根本删不掉。
+			err = setup.ApplyGroup(configPath, setup.RuleKindDirect, p.AllDomains(), false)
+		}
 	default:
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "rules_unknown_action"})
 		return
@@ -155,11 +179,18 @@ func applyRuleChange(w http.ResponseWriter, r *http.Request, configPath string) 
 }
 
 // groupState 把「装了几条 / 一共几条」压成界面那一行的三态。
-func groupState(installed, total int) string {
+// groupState 把「在用的装了几条 / 一共几条 / 还留着几条退役的」压成界面那一行的三态。
+//
+// **留着退役域名时一律 partial**,哪怕在用的全装齐了:显示成 on 等于断言
+// 「这一组就是现在的样子」,而事实上里面还有我们主动废弃的规则在生效。
+// partial 会促使用户关一次再开,那正好清掉它们。
+func groupState(live, total, stale int) string {
 	switch {
-	case total == 0 || installed == 0:
+	case stale > 0:
+		return "partial"
+	case total == 0 || live == 0:
 		return "off"
-	case installed >= total:
+	case live >= total:
 		return "on"
 	default:
 		return "partial"

@@ -15,7 +15,7 @@ func TestClassifySeparatesPresetDomainsFromHandWrittenOnes(t *testing.T) {
 	// 项目所有者真机上那份配置的形状(2026-08-13)。
 	rules := []string{
 		"*.icloud.com", "*.icloud-content.com", // apple 组
-		"*.qq.com", // china-cdn 组
+		"*.qq.com",                                // china-cdn 组
 		"*.steamstatic.com", "*.steamcontent.com", // gaming 组
 		"gsa.apple.com", "idmsa.apple.com", // 手写的,不在任何 preset 里
 	}
@@ -93,5 +93,58 @@ func TestNoDomainBelongsToTwoPresets(t *testing.T) {
 			}
 			owner[key] = p.Name
 		}
+	}
+}
+
+// **preset 会演进,而演进不许把用户配置里的旧域名变成孤儿。**
+//
+// 真实场景(2026-08-13):`gaming` 组原本含 `*.steamstatic.com`,后来发现它把
+// **商店页图片**和**游戏下载**混成一条规则 —— 同一个页面的 HTML 走隧道、图片走
+// 直连,正是当初图片全裂的机制。于是把它从组里拿掉。
+//
+// 但用户配置里那一条**还在**。若 Classify 不再认它属于本组,它就会掉进「自定义」,
+// 而界面对自定义规则**只显示不给开关**(那是用户手写的,菜单没资格删)——
+// 于是一条我们主动废弃的规则,静默留在那里继续把流量送错方向,谁也删不掉。
+//
+// Retired 就是为此:**enable 不装它,disable 仍然清它,Classify 仍然认它是本组的。**
+func TestRetiredDomainsStayOwnedByTheirPreset(t *testing.T) {
+	grouped, custom := Classify([]string{"*.steamstatic.com", "media.steampowered.com", "*.steamcontent.com"})
+	if len(custom) != 0 {
+		t.Fatalf("退役域名掉进了自定义:%v —— 组开关将永远删不掉它们", custom)
+	}
+	if len(grouped["gaming"]) != 3 {
+		t.Fatalf("gaming 组 = %v,want 3 条(含 2 条退役)", grouped["gaming"])
+	}
+}
+
+// **打开一组不许把退役域名装回去** —— 那等于撤销掉这次演进。
+func TestEnableNeverInstallsRetiredDomains(t *testing.T) {
+	p, ok := Lookup("gaming")
+	if !ok {
+		t.Fatal("找不到 gaming")
+	}
+	for _, d := range p.Direct {
+		for _, r := range p.Retired {
+			if strings.EqualFold(d, r) {
+				t.Errorf("%q 同时在 Direct 与 Retired 里", d)
+			}
+		}
+	}
+	// Steam 的商店/库/社区图必须**不在** Direct 里:它们和 store 页面同属一个页面,
+	// 分走两条路会让区域判定和图片加载各自为政。
+	for _, d := range p.Direct {
+		if strings.Contains(strings.ToLower(d), "steamstatic.com") && strings.HasPrefix(d, "*") {
+			t.Errorf("通配的 *.steamstatic.com 又回到了 Direct 里:%q —— "+
+				"它把商店图片和客户端更新混成一条规则", d)
+		}
+	}
+}
+
+// AllDomains 是「这一组认领的全部域名」,disable 与 Classify 都用它。
+func TestAllDomainsCoversBothLiveAndRetired(t *testing.T) {
+	p, _ := Lookup("gaming")
+	all := p.AllDomains()
+	if len(all) != len(p.Direct)+len(p.Retired) {
+		t.Fatalf("AllDomains = %d 条,want %d", len(all), len(p.Direct)+len(p.Retired))
 	}
 }
