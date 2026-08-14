@@ -968,6 +968,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if rulesEditingAvailable(capabilities: maintenanceReport?.capabilities) {
             menu.addAction("Routing Rules…", symbol: "arrow.triangle.branch", target: self, action: #selector(openRulesWindow))
         }
+        // **换配置的入口。** 此前只有「还没配置」那个状态里有 Set Up bx…,
+        // 配好之后再也找不到它 —— 换服务器只能开终端(2026-08-14 项目所有者提出)。
+        // 叫 Replace 而不是 Switch 是刻意的:它是替换一份配置,不是从列表里挑一台。
+        menu.addAction("Replace Configuration…", symbol: "arrow.triangle.2.circlepath",
+                       target: self, action: #selector(replaceConfiguration))
         menu.addAction("Check for leaks ↗", symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
         // 退出入口无条件加一次。**不要挪回上面任何一个 case**:此前它只在
         // .connected/.warning 里,于是 .off/.setupNeeded/.missing/.notInstalled/
@@ -1116,6 +1121,43 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 是下一个人必须重新验证它还成不成立。
     @objc private func setUpBx() {
         beginSetup()
+    }
+
+    /// 换掉当前配置(换服务器)。
+    ///
+    /// **与首次配置共用同一条路**(校验、提权、写配置),只是结尾从「要不要启动」
+    /// 换成「重连使其生效」,并且换之前把**出口会从哪变到哪**摆出来。
+    @objc private func replaceConfiguration() {
+        guard ensureCLIUsable() else { return }
+        let current = maintenanceReport?.core?.server
+        guard let link = promptForClientLink(
+            title: "Replace Configuration",
+            hint: "Paste the bx link you were given.",
+            confirmTitle: "Continue"
+        ) else { return }
+
+        let origin: ReplaceLinkOrigin =
+            clipboardCandidateLink(NSPasteboard.general.string(forType: .string)) == link ? .clipboard : .typed
+        let confirm = NSAlert()
+        confirm.messageText = "Change where your traffic leaves?"
+        confirm.informativeText = replaceConfigurationMessage(currentServer: current, pastedFrom: origin)
+        confirm.addButton(withTitle: "Replace")
+        confirm.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        guard runPrivileged("'\(bxPath)' setup \(shellSingleQuoted(link))") else {
+            showFailure("Replace Failed", "bx kept its previous configuration.")
+            refresh(userInitiated: true)
+            return
+        }
+        // 配置不热重载 —— 不重连的话用户会以为已经换过去了(这正是 2026-08-06
+        // 那次「以为换了服务器其实没换」的形状)。
+        if !runPrivileged("'\(bxPath)' down") || !runPrivileged("'\(bxPath)' up") {
+            showFailure("Reconnect Failed",
+                        "The new configuration is saved, but bx did not come back up. Try Turn On from the menu.")
+        }
+        refresh(userInitiated: true)
     }
 
     private func beginSetup() {
@@ -1638,16 +1680,26 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return error == nil
     }
 
-    private func promptForClientLink() -> String? {
+    private func promptForClientLink(
+        title: String = "Set Up bx",
+        hint: String = "Paste your bx link.",
+        confirmTitle: String = "Set Up"
+    ) -> String? {
         let alert = NSAlert()
-        alert.messageText = "Set Up bx"
-        alert.informativeText = "Paste your bx link."
-        alert.addButton(withTitle: "Set Up")
+        alert.messageText = title
+        alert.informativeText = hint
+        alert.addButton(withTitle: confirmTitle)
         alert.addButton(withTitle: "Cancel")
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
         field.placeholderString = "bx://..."
+        // **预填剪贴板。** 用户十有八九刚从聊天窗口复制过来;这是各家客户端的
+        // 默认行为,没有它会被当成缺陷。预填而不是直接用 —— 他要看得见自己在装什么。
+        if let candidate = clipboardCandidateLink(NSPasteboard.general.string(forType: .string)) {
+            field.stringValue = candidate
+        }
         alert.accessoryView = field
+        NSApp.activate(ignoringOtherApps: true)
 
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let link = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)

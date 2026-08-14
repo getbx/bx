@@ -1482,8 +1482,12 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			why: "exec 探测只经这一道闸门对外,否则「谁会 spawn」又变成要手工枚举的事",
 		},
 		{
-			pattern: call("ensureCLIUsable("), label: "ensureCLIUsable(", callers: []string{"beginSetup", "updateBx", "checkForLeaks"},
-			why: "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
+			// replaceConfiguration 是 2026-08-14 加的第四条 shell-out 动作(换服务器:
+			// setup + down + up)。**它必须显式登记在这里** —— 这条守卫的价值就在于
+			// 每新增一条通向 spawn 的路都要有人当场承认。
+			pattern: call("ensureCLIUsable("), label: "ensureCLIUsable(",
+			callers: []string{"beginSetup", "updateBx", "checkForLeaks", "replaceConfiguration"},
+			why:     "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
 		},
 		{
 			pattern: call("checkForLeaks("), label: "checkForLeaks(", callers: nil,
