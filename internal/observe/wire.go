@@ -61,6 +61,22 @@ func LiveDeps(socketPath string) Deps {
 			}
 			return DNSResult{Servers: status.Servers, Enabled: status.Enabled}, nil
 		},
+		// 「bx 自己的直连出得去吗」。只读地问内核,不发包 —— 见
+		// supervisor.DirectEgressReachable。非 darwin 上恒返回「不适用」,
+		// 由 NotApplicableForPlatform 声明,这里不接线。
+		DirectEgress: func(ctx context.Context) (Tristate, error) {
+			reachable, known, err := supervisor.DirectEgressReachable(ctx)
+			if err != nil {
+				return Unknown, err
+			}
+			if !known {
+				return Unknown, nil
+			}
+			if reachable {
+				return True, nil
+			}
+			return False, nil
+		},
 		// **声明这个平台上不成立的问题。**
 		//
 		// Linux 上 bx 不改系统 DNS —— 它在 TUN 里拦 UDP:53(见 tun/engine.go)。
@@ -84,7 +100,9 @@ func NotApplicableForPlatform(goos string) []string {
 		return nil
 	}
 	// bx 只在 macOS 上接管系统 DNS(networksetup);别处靠 TUN 拦截。
-	return []string{"dns_managed"}
+	// direct_egress 同理:`IP_BOUND_IF` 那套 scoped 路由语义是 macOS 特有的,
+	// Linux 用 SO_MARK、Windows 用 IP_UNICAST_IF,都不经 scoped 路由表。
+	return []string{"dns_managed", "direct_egress"}
 }
 
 func unsupportedDNSError(detail string) error {

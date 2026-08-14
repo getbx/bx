@@ -30,6 +30,10 @@ func TestDarwinUnderlayPlanChangesOnlyExactBypasses(t *testing.T) {
 		"route -n change -net 192.168.0.0/16 192.168.1.1",
 		"route -n change -net 192.200.0.101/32 192.168.1.1",
 		"route -n change -net 203.0.113.9/32 192.168.1.1",
+		// scoped 默认路由:先删(主命令)、再删旧网卡、再按新网关加回来。
+		// 它不是旁路,是让 IP_BOUND_IF 找得到出口的那一条 —— 换网后不重装,
+		// bx 自己的直连会整个失效(2026-08-13 真机实证)。
+		"route -n delete -ifscope en1 default",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("underlay change commands = %#v, want %#v", got, want)
@@ -64,10 +68,22 @@ func TestDarwinUnderlayPlanDoesNotTrustForgedEqualGeneration(t *testing.T) {
 	if len(plan) == 0 {
 		t.Fatal("forged equal generation suppressed required bypass rebind")
 	}
+	// **判据是「不许引用陈旧网关」,不是「每条命令都以新网关结尾」。**
+	//
+	// 后者是个代理指标:scoped 默认路由那组要先删旧网卡上的那条(命令里根本不带
+	// 网关),它并不违反本测试要守的性质 —— 删掉一条指向已消失网关的路由,
+	// 正是我们要的。按性质写,而不是按形状写。
+	sawNewGateway := false
 	for _, command := range darwinUnderlayCommandTexts(plan) {
-		if !strings.HasSuffix(command, "192.168.1.1") {
+		if strings.Contains(command, "192.168.50.2") {
 			t.Fatalf("forged generation planned stale gateway command: %q", command)
 		}
+		if strings.HasSuffix(command, "192.168.1.1") {
+			sawNewGateway = true
+		}
+	}
+	if !sawNewGateway {
+		t.Fatal("没有任何一条命令指向新网关 —— 上面那条禁令可以靠「什么都不做」满足")
 	}
 }
 
