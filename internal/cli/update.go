@@ -231,7 +231,12 @@ func downloadBytesContext(ctx context.Context, client *http.Client, url string) 
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, fmt.Errorf("下载 %s 返回 %d", url, resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	// **停滞时限,不是总时限。** client 上那个 90 秒的总 Timeout 覆盖整个请求
+	// 含读完 body,于是一个 33MB 的包实际要求「全程 375 KB/s 不掉」——
+	// 慢一点的网络必然失败,而用户看到的只是一句
+	// `context deadline exceeded (…while reading body)`(2026-08-14 真机)。
+	// 现在只问「还在不在动」:慢的网络会慢慢下完,真断了的照样很快失败。
+	return io.ReadAll(newStallTimeoutReader(resp.Body, downloadStallTimeout))
 }
 
 func verifiedReleaseManifest(client *http.Client, tag string) (updatepkg.Manifest, error) {
@@ -295,7 +300,10 @@ func checkLatestReleaseAvailability(ctx context.Context) (guardian.UpdateAvailab
 }
 
 func updateAction(c *cli.Context) error {
-	client := &http.Client{Timeout: 90 * time.Second}
+	// **不设总 Timeout。** 它会把「网络慢」判成「更新失败」——见 downloadBytesContext。
+	// 停滞判定由 newStallTimeoutReader 负责;连接建立与首字节由 Transport 自己的
+	// 超时兜住,而那些是「连不上」,与「下得慢」是两回事。
+	client := &http.Client{Transport: stallSafeTransport()}
 	cur := version.Version
 
 	// 损坏的统一布局(runtime/current 产物在但健康检查不过)必须在任何网络 I/O
@@ -665,4 +673,15 @@ func buildGuardianUpdateRequest(txid, fromVersion string, pkg updatepkg.MacOSPac
 		AssetSHA256:   packageSHA,
 		PackagePath:   packagePath,
 	}
+}
+
+// stallSafeTransport 是给大文件下载用的 Transport。
+//
+// **它有连接层的超时,但没有总时限**:连不上、TLS 握不了手、服务端迟迟不给
+// 响应头,这些都该很快失败;而「下得慢」不该失败 —— 后者由停滞判定负责。
+func stallSafeTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	transport.TLSHandshakeTimeout = 20 * time.Second
+	return transport
 }

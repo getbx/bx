@@ -130,6 +130,17 @@ func ensureMacOSMenuRunningWithDeps(ctx context.Context, uid int, forceReload bo
 		if err := deps.control.Run(ctx, args...); err != nil {
 			return actionable(fmt.Errorf("launchctl %s: %w", strings.Join(args, " "), err))
 		}
+		// **bootout 之后要等标签真的消失,再往下走。**
+		//
+		// `launchctl bootout` 返回时 launchd 还没卸完,而紧接着的 `bootstrap`
+		// 撞上一个仍在册的 job 会拿到 `EIO(5): Input/output error` —— launchd
+		// 这个错误码出了名的没信息量,真机上连着两次安装都栽在这里(2026-08-14)。
+		// 与 Guardian 那个竞态同源(2026-08-13 修过),这条当时没跟上。
+		//
+		// **等不到不报错**:继续尝试 bootstrap,它失败时带的提示比在这里放弃有用。
+		if len(args) > 0 && args[0] == "bootout" {
+			waitMenuLabelUnloaded(ctx, deps, args[len(args)-1])
+		}
 	}
 	currentLoaded, err = deps.control.Loaded(ctx, currentDomainLabel)
 	if err != nil {
@@ -252,4 +263,31 @@ func (execMenuLaunchdControl) Run(ctx context.Context, args ...string) error {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// menuUnloadPoll* 界定「等标签消失」等多久。真机上 launchd 卸掉一个菜单栏
+// LaunchAgent 通常在几百毫秒内完成;上限约 2 秒,超过就往下走。
+const (
+	menuUnloadPollInterval = 100 * time.Millisecond
+	menuUnloadPollAttempts = 20
+)
+
+// waitMenuLabelUnloaded 轮询到标签真的不在册为止。
+//
+// **判据是问内核,不是睡固定时长** —— 后者既可能不够,也在正常情况下白等。
+func waitMenuLabelUnloaded(ctx context.Context, deps menuBootstrapDeps, domainLabel string) {
+	for i := 0; i < menuUnloadPollAttempts; i++ {
+		if ctx.Err() != nil {
+			return
+		}
+		loaded, err := deps.control.Loaded(ctx, domainLabel)
+		if err != nil || !loaded {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(menuUnloadPollInterval):
+		}
+	}
 }
