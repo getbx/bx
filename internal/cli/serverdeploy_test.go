@@ -425,3 +425,180 @@ func TestFirewallCommandOpensBothProtocols(t *testing.T) {
 		t.Errorf("换端口时没跟上:%s", alt)
 	}
 }
+
+// **只有 sudo 用户的人今天会撞到一句没有指引的 `Permission denied`。**
+//
+// `PermitRootLogin prohibit-password` 是 Debian/Ubuntu 的默认值 —— 项目所有者
+// 第一次给我那台 VPS 时就是这个状态(2026-08-14)。deploy 却假定以 root 登录。
+//
+// **判据是问远端 `id -u`,不是让用户自己记得加 --sudo** —— 他多半不知道要加。
+func TestNeedsSudoFromRemoteID(t *testing.T) {
+	for _, tc := range []struct {
+		out  string
+		sudo bool
+		bad  bool
+	}{
+		{out: "0", sudo: false},
+		{out: " 0\n", sudo: false},
+		{out: "1000", sudo: true},
+		{out: "1000\n", sudo: true},
+		{out: "", bad: true},
+		{out: "bash: id: command not found", bad: true},
+	} {
+		got, err := needsSudo(tc.out)
+		if tc.bad {
+			if err == nil {
+				t.Errorf("%q 应当报错,却得到 sudo=%v", tc.out, got)
+			}
+			continue
+		}
+		if err != nil || got != tc.sudo {
+			t.Errorf("needsSudo(%q) = %v,%v;want %v", tc.out, got, err, tc.sudo)
+		}
+	}
+}
+
+// **`sudo` 前缀对多行脚本只作用于第一条命令 —— 这是这件事的要害。**
+//
+// 远端要跑的是带 `set -e`、重定向、管道的多行脚本(下载+校验+解包)。
+// 简单地在前面加 "sudo " 会让后面每一条都以普通用户身份跑,而失败方式极其
+// 难查:文件下下来了、校验过了,却写不进 /usr/local/bin。
+func TestRemoteScriptWrapsTheWholeScriptUnderSudo(t *testing.T) {
+	script := "set -e\ncurl -o /tmp/x https://example.com\nmv /tmp/x /usr/local/bin/bx"
+
+	plain := remoteScript(script, false)
+	if plain != script {
+		t.Errorf("非 sudo 时不该改写脚本:%q", plain)
+	}
+
+	wrapped := remoteScript(script, true)
+	if !strings.HasPrefix(wrapped, "sudo sh -c ") {
+		t.Fatalf("没有把整段脚本交给一个 sudo 的 shell:%s", wrapped)
+	}
+	// 整段必须**在同一对引号里** —— 否则后面几行会掉到 sudo 之外。
+	body := strings.TrimPrefix(wrapped, "sudo sh -c ")
+	if !strings.HasPrefix(body, "'") || !strings.HasSuffix(body, "'") {
+		t.Fatalf("脚本没被整段引起来:%s", body)
+	}
+	for _, line := range strings.Split(script, "\n") {
+		if !strings.Contains(body, line) {
+			t.Errorf("脚本里的 %q 掉在了 sudo 之外", line)
+		}
+	}
+	// **真的丢给 shell 跑一遍**,确认包完之后仍然是一段完整可解析的东西。
+	out, err := exec.Command("sh", "-c", "printf %s "+body).Output()
+	if err != nil {
+		t.Fatalf("包完之后 shell 解析不了:%v", err)
+	}
+	if string(out) != script {
+		t.Fatalf("脚本经 shell 之后变了:\n%q\n%q", string(out), script)
+	}
+}
+
+// sudo 可能要问密码,而问密码需要 TTY。
+func TestSSHGetsATTYWhenSudoIsNeeded(t *testing.T) {
+	withSudo := sshArgsFor("user@host", true, true)
+	if !containsArg(withSudo, "-t") {
+		t.Errorf("需要 sudo 却没要 TTY,密码提示会出不来:%v", withSudo)
+	}
+	if plain := sshArgsFor("root@host", false, true); containsArg(plain, "-t") {
+		t.Errorf("root 登录不必占用 TTY:%v", plain)
+	}
+	// **本地没有 TTY 时不许硬要。** 真机实测:`ssh -t` 在无终端环境里会打一句
+	// "Pseudo-terminal will not be allocated…" 然后照跑 —— 噪声之外还给人
+	// 一种「出错了」的错觉。
+	if noTTY := sshArgsFor("user@host", true, false); containsArg(noTTY, "-t") {
+		t.Errorf("本地没有终端却硬要 TTY:%v", noTTY)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// **每一条远端命令都要走同一个 sudo 包装。**
+//
+// 散在各调用点就会有某一条忘了包,而那条的失败方式极难查:前面每步都成功,
+// 只有写文件那一步失败。这条测试逐条检查真实的调用序列。
+func TestEveryRemoteCommandGoesThroughSudoWhenNeeded(t *testing.T) {
+	var calls [][]string
+	err := runServerDeploy(deployOptions{Host: "u@h", Protocol: "reality"}, deployDeps{
+		run: func(name string, args ...string) (string, error) {
+			calls = append(calls, append([]string{name}, args...))
+			switch {
+			case len(args) > 0 && strings.Contains(strings.Join(args, " "), "id -u"):
+				return "1000\nx86_64\n", nil // 非 root
+			case name == "scp":
+				return "", nil
+			}
+			return "sudo bx setup 'bx://MAIN'", nil
+		},
+		remoteFetch:      func(string, string, bool, bool) error { return nil },
+		fetchBinary:      func(string) (string, error) { return "/tmp/bx", nil },
+		writeLocalConfig: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("部署失败:%v", err)
+	}
+	var unwrapped []string
+	for _, c := range calls {
+		if c[0] != "ssh" {
+			continue
+		}
+		joined := strings.Join(c, " ")
+		// 探测那一条是在知道 uid 之前跑的,按定义不能包 sudo。
+		if strings.Contains(joined, "id -u") {
+			continue
+		}
+		if !strings.Contains(joined, "sudo sh -c") {
+			unwrapped = append(unwrapped, joined)
+		}
+	}
+	if len(unwrapped) > 0 {
+		t.Fatalf("非 root 时有 %d 条远端命令没走 sudo:\n%s", len(unwrapped), strings.Join(unwrapped, "\n"))
+	}
+}
+
+// root 登录时**不许**平白包一层 sudo(有些精简镜像根本没装 sudo)。
+func TestRootLoginDoesNotWrapInSudo(t *testing.T) {
+	var sawSudo bool
+	_ = runServerDeploy(deployOptions{Host: "root@h"}, deployDeps{
+		run: func(name string, args ...string) (string, error) {
+			if strings.Contains(strings.Join(args, " "), "sudo") {
+				sawSudo = true
+			}
+			if strings.Contains(strings.Join(args, " "), "id -u") {
+				return "0\nx86_64\n", nil
+			}
+			return "sudo bx setup 'bx://MAIN'", nil
+		},
+		remoteFetch:      func(string, string, bool, bool) error { return nil },
+		fetchBinary:      func(string) (string, error) { return "/tmp/bx", nil },
+		writeLocalConfig: func(string) error { return nil },
+	})
+	if sawSudo {
+		t.Fatal("root 登录却包了 sudo —— 精简镜像可能根本没装它")
+	}
+}
+
+// 「主链接 --udp UDP链接」要能拆回两半 —— 传给 `bx setup` 时它们是两个参数。
+func TestSplitDeployedLink(t *testing.T) {
+	main, udp := splitDeployedLink("bx://MAIN --udp bx://UDP")
+	if main != "bx://MAIN" || udp != "bx://UDP" {
+		t.Fatalf("main=%q udp=%q", main, udp)
+	}
+	main, udp = splitDeployedLink("bx://ONLY")
+	if main != "bx://ONLY" || udp != "" {
+		t.Fatalf("单链接被拆错:main=%q udp=%q", main, udp)
+	}
+	// **绝不能把主链接当成 UDP 用**(那会让 TCP 和 UDP 都走同一条,
+	// 而用户以为自己有按类分流)。
+	if _, udp := splitDeployedLink("bx://A bx://B"); udp != "" {
+		t.Fatalf("没有 --udp 标记却认出了 UDP 链接:%q", udp)
+	}
+}

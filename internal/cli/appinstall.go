@@ -74,10 +74,11 @@ func confirmationAccepted(answer string) bool {
 	}
 }
 
+// stdinIsTerminal 判断 stdin 是不是**真的终端**。
+//
+// 曾经判的是「字符设备」,而 `/dev/null` 与 `/dev/zero` 都是字符设备 ——
+// 于是在 CI、cron、以及任何把 stdin 接到 /dev/null 的地方,这个函数返回 true:
+// 一个非交互环境被当成可以向用户提问的终端。见 fdIsTerminal。
 func stdinIsTerminal() bool {
-	info, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return fdIsTerminal(os.Stdin)
 }

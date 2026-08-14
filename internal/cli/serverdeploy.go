@@ -32,11 +32,13 @@ type deployOptions struct {
 // 全由用户自己的 ssh 客户端处理。上一轮关于「留不留凭据」的争论,在这一层
 // 根本不存在 —— 我们从来没有拿到过它。
 type deployDeps struct {
-	run         func(name string, args ...string) (string, error)
+	run func(name string, args ...string) (string, error)
+	// hasTTY 决定要不要给 ssh 加 -t(只有 sudo 可能问密码时才需要)。
+	hasTTY      bool
 	fetchBinary func(arch string) (localPath string, err error)
 	// remoteFetch 让远端自己把二进制取到 remoteUploadPaths 的临时路径。
 	// nil = 不试远端,直接本机下载(测试与降级用)。
-	remoteFetch      func(host, arch string) error
+	remoteFetch      func(host, arch string, sudo, hasTTY bool) error
 	writeLocalConfig func(link string) error
 }
 
@@ -135,19 +137,42 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	if strings.TrimSpace(opts.Host) == "" {
 		return fmt.Errorf("缺目标主机(形如 root@1.2.3.4)")
 	}
-	unameOut, err := deps.run("ssh", opts.Host, "uname -m")
+	// 一次往返同时问「我是谁」和「什么架构」—— 两个都决定后面怎么做。
+	probe, err := deps.run("ssh", opts.Host, "id -u; uname -m")
 	if err != nil {
 		return fmt.Errorf("连不上 %s:%w", opts.Host, err)
 	}
-	arch, err := releaseArchFromUname(unameOut)
+	idLine, unameLine, ok := strings.Cut(strings.TrimSpace(probe), "\n")
+	if !ok {
+		return fmt.Errorf("远端的探测输出读不懂:%q", strings.TrimSpace(probe))
+	}
+	sudo, err := needsSudo(idLine)
 	if err != nil {
 		return err
+	}
+	arch, err := releaseArchFromUname(unameLine)
+	if err != nil {
+		return err
+	}
+	if sudo {
+		fmt.Println("• 远端不是 root,后续命令走 sudo")
+		if !deps.hasTTY {
+			// 没有终端就问不了密码 —— 与其让它挂住或吐一句无关的错误,
+			// 不如提前说清楚。
+			fmt.Println("  (当前没有终端,sudo 若需要密码会失败;那时请配 NOPASSWD 或在终端里重跑)")
+		}
+	}
+	// runRemote 把「要不要 sudo」「要不要 TTY」收在一处 —— 散在各调用点就会
+	// 有某一条忘了包,而那条的失败方式极难查(前面都成功,只有写文件那步失败)。
+	runRemote := func(script string) (string, error) {
+		args := append(sshArgsFor(opts.Host, sudo, deps.hasTTY), remoteScript(script, sudo))
+		return deps.run("ssh", args...)
 	}
 	upload, final := remoteUploadPaths()
 	// **先让远端自己下。** 它就在目的地那一侧:真机实测 8.36 MB/s,
 	// 而本机经隧道只有 17 KB/s(差 490 倍)。校验和仍然来自本机验过签的清单。
 	if deps.remoteFetch != nil {
-		err := deps.remoteFetch(opts.Host, arch)
+		err := deps.remoteFetch(opts.Host, arch, sudo, deps.hasTTY)
 		switch {
 		case err == nil:
 			fmt.Println("• 远端已自行取到二进制并核对通过")
@@ -173,11 +198,11 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 			return fmt.Errorf("上传二进制:%w", serr)
 		}
 	}
-	if _, err := deps.run("ssh", opts.Host,
-		fmt.Sprintf("chmod +x %s && mv %s %s", shellSingleQuoted(upload), shellSingleQuoted(upload), shellSingleQuoted(final))); err != nil {
+	if _, err := runRemote(fmt.Sprintf("chmod +x %s && mv %s %s",
+		shellSingleQuoted(upload), shellSingleQuoted(upload), shellSingleQuoted(final))); err != nil {
 		return fmt.Errorf("就位二进制:%w", err)
 	}
-	out, err := deps.run("ssh", opts.Host, remoteInstallCommand(opts))
+	out, err := runRemote(remoteInstallCommand(opts))
 	if err != nil {
 		return fmt.Errorf("远端安装失败:%w\n%s", err, strings.TrimSpace(out))
 	}
@@ -193,7 +218,7 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	if port <= 0 {
 		port = 443
 	}
-	fwOut, err := deps.run("ssh", opts.Host, remoteFirewallCommand(port))
+	fwOut, err := runRemote(remoteFirewallCommand(port))
 	switch {
 	case err != nil:
 		fmt.Printf("⚠ 未能自动放行防火墙端口 %d,若外部连不上请手动开:%v\n", port, err)
@@ -205,7 +230,7 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 		fmt.Println("• 远端没有启用 ufw,未改动防火墙(若有云安全组,记得放行该端口)")
 	}
 	// 装完就启动 —— 一条命令该留下一台**在跑**的服务器,而不是一台装好没开的。
-	if _, err := deps.run("ssh", opts.Host, shellSingleQuoted(final)+" server start"); err != nil {
+	if _, err := runRemote(shellSingleQuoted(final) + " server start"); err != nil {
 		fmt.Printf("⚠ 远端服务未能自动启动,登上去跑一次 `bx server start` 即可:%v\n", err)
 	}
 	if udp != "" {
@@ -242,6 +267,7 @@ func serverDeployAction(c *cli.Context) error {
 	fmt.Printf("• 目标 %s(bx 不经手你的 SSH 凭据 —— 密码/密钥/agent 全由系统 ssh 处理)\n", host)
 	return runServerDeploy(opts, deployDeps{
 		run:              runDeployCommand,
+		hasTTY:           stdinIsTerminal(),
 		remoteFetch:      remoteFetchBinary,
 		fetchBinary:      fetchLinuxBinary,
 		writeLocalConfig: applyDeployedLink,
@@ -337,15 +363,50 @@ func sha256Sum(data []byte) []byte {
 // applyDeployedLink 把远端给出的链接写进本机配置。
 func applyDeployedLink(link string) error {
 	fmt.Println("• 远端已就绪,客户端链接已取到")
-	// link 可能是「主链接 --udp UDP链接」的组合,原样交给 bx setup。
+	main, udp := splitDeployedLink(link)
+
+	// **不偷偷提权。** 写 /etc/bx 要 root,而这条命令的其余部分不需要 ——
+	// 让一条只做 ssh 的命令中途弹密码框是坏意外。
 	if os.Geteuid() != 0 {
-		// **不偷偷提权。** 写 /etc/bx 要 root,而这条命令的其余部分不需要 ——
-		// 让一条只做 ssh 的命令中途弹密码框是坏意外。把下一步原样给出来。
 		fmt.Printf("\n下一步(需要 root):\n  sudo bx setup %s\n  sudo bx up\n", quoteSetupArgs(link))
 		return nil
 	}
-	fmt.Printf("\n下一步:\n  bx setup %s\n  bx up\n", quoteSetupArgs(link))
+
+	// **重新执行我们自己的 `bx setup`,不复制它那条路径。**
+	// setup 还要做连通探测、装服务、设自启;把那些抄一遍必然会漂,
+	// 而这个仓库全部的事故都在这种「同一件事两个实现」上。
+	self, err := os.Executable()
+	if err != nil {
+		fmt.Printf("\n下一步:\n  bx setup %s\n  bx up\n", quoteSetupArgs(link))
+		return nil
+	}
+	args := []string{"setup", main}
+	if udp != "" {
+		args = append(args, "--udp", udp)
+	}
+	fmt.Println("• 写本机配置(bx setup)…")
+	cmd := exec.Command(self, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("写本机配置失败:%w(可手动跑 bx setup %s)", err, quoteSetupArgs(link))
+	}
+	fmt.Println("\n✅ 部署完成。下一步:sudo bx up")
 	return nil
+}
+
+// splitDeployedLink 把「主链接 --udp UDP链接」拆回两半。
+func splitDeployedLink(combined string) (main, udp string) {
+	fields := strings.Fields(combined)
+	for i := 0; i < len(fields); i++ {
+		switch {
+		case fields[i] == "--udp" && i+1 < len(fields):
+			udp = fields[i+1]
+			i++
+		case strings.HasPrefix(fields[i], "bx://") && main == "":
+			main = fields[i]
+		}
+	}
+	return main, udp
 }
 
 func serverDeployFlags() []cli.Flag {
@@ -411,7 +472,7 @@ func shouldFallBackToLocalUpload(err error) bool {
 }
 
 // remoteFetchBinary 让远端自己下载并核对二进制。
-func remoteFetchBinary(host, arch string) error {
+func remoteFetchBinary(host, arch string, sudo, hasTTY bool) error {
 	client := &http.Client{Transport: stallSafeTransport()}
 	tag, err := latestReleaseTag(client)
 	if err != nil {
@@ -426,7 +487,8 @@ func remoteFetchBinary(host, arch string) error {
 		return err
 	}
 	fmt.Printf("• 让远端自行取 %s(%s),校验和由本机的签名清单提供\n", asset.Name, tag)
-	out, err := runDeployCommand("ssh", host, remoteFetchCommand(tag, asset))
+	args := append(sshArgsFor(host, sudo, hasTTY), remoteScript(remoteFetchCommand(tag, asset), sudo))
+	out, err := runDeployCommand("ssh", args...)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
 	}
@@ -459,3 +521,58 @@ func remoteFirewallCommand(port int) string {
 		"fi",
 	}, "\n")
 }
+
+// needsSudo 从远端 `id -u` 的输出判断要不要 sudo。
+//
+// **问远端,不是让用户记得加 `--sudo`** —— 他多半不知道要加。
+// `PermitRootLogin prohibit-password` 是 Debian/Ubuntu 的默认值,只有 sudo
+// 用户的人今天会撞到一句没有指引的 `Permission denied`(2026-08-14 真机)。
+//
+// 解析不出来时报错而不是猜:猜 root 会让每条命令都失败,猜 sudo 会在真 root
+// 的机器上多要一次不存在的密码。
+func needsSudo(idOutput string) (bool, error) {
+	uid := strings.TrimSpace(idOutput)
+	if uid == "" {
+		return false, errors.New("远端没有回报 uid(`id -u` 没有输出)")
+	}
+	switch uid {
+	case "0":
+		return false, nil
+	}
+	for _, r := range uid {
+		if r < '0' || r > '9' {
+			return false, fmt.Errorf("远端 `id -u` 的输出不像一个 uid:%q", uid)
+		}
+	}
+	return true, nil
+}
+
+// remoteScript 把一段(可能多行的)脚本交给远端执行,必要时整段包进 sudo。
+//
+// **要害在「整段」。** 简单地在前面加 "sudo " 只作用于第一条命令,后面每一条
+// 都会以普通用户身份跑 —— 而失败方式极难查:文件下下来了、校验过了,
+// 却写不进 /usr/local/bin。
+func remoteScript(script string, sudo bool) string {
+	if !sudo {
+		return script
+	}
+	return "sudo sh -c " + shellSingleQuoted(script)
+}
+
+// sshArgsFor 是连这台机器要带的 ssh 参数。
+//
+// **需要 sudo 时要一个 TTY**:sudo 可能要问密码,而没有 TTY 时那个提示出不来,
+// 表现是命令莫名其妙地挂住或失败。
+func sshArgsFor(host string, sudo, hasTTY bool) []string {
+	// **本地没有 TTY 时不许硬要。** `ssh -t` 在没有终端的环境里只会打一句
+	// "Pseudo-terminal will not be allocated because stdin is not a terminal"
+	// 然后照跑 —— 噪声之外还给人一种「出错了」的错觉(2026-08-14 真机实测)。
+	// 真正需要 TTY 的只有「sudo 要问密码」那一种,而那种情形本来就得有终端。
+	if sudo && hasTTY {
+		return []string{"-t", host}
+	}
+	return []string{host}
+}
+
+// (「有没有终端」用 appinstall.go 里那份现成的 stdinIsTerminal —— 同一个问题
+// 不该有第二个实现,那正是这个仓库反复栽的形状。)
