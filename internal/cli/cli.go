@@ -4881,21 +4881,41 @@ func archiveClientLogsWithReason(root, reason string) (string, error) {
 	if err := persistRecoverySnapshot(filepath.Join(dir, "recovery.json"), recovery); err != nil {
 		return "", err
 	}
-	for _, src := range install.ClientLogPaths() {
-		if err := copyIfExists(src, filepath.Join(dir, filepath.Base(src))); err != nil {
-			return "", err
+	// **一个文件读不到,绝不让整个诊断包失败。**
+	//
+	// 这条教训 Guardian 日志那侧早就学过(见下),而客户端这侧还是
+	// `return "", err`。ClientLogPaths 现在含 Guardian 的两条(0600 root-only,
+	// 那才是当前 Core 在写的),于是非 root 跑 `bx doctor` 时整个归档直接失败 ——
+	// 一个在最需要它的时候拒绝工作的诊断工具。
+	// **按源路径去重,不按文件名。** ClientLogPaths 与 guardianArchiveLogPaths
+	// 在生产上指向同一批绝对路径(两边都含 Guardian 的两条),按文件名去重会把
+	// 后一份**指向别处**的同名文件一起吞掉。
+	seen := map[string]bool{}
+	collectArchiveLog := func(src string) {
+		if seen[src] {
+			return
 		}
+		seen[src] = true
+		dst := filepath.Join(dir, filepath.Base(src))
+		if err := copyIfExists(src, dst); err != nil {
+			_ = os.Remove(dst)
+			_ = os.WriteFile(dst+".unavailable.txt", []byte(err.Error()+"\n"), 0o600)
+			return
+		}
+		// 同名的前一份可能留下过占位说明(比如 0600 的那份读不到,而另一条
+		// 路径指向的同名文件读得到)——成功之后把它清掉,免得诊断包里同时
+		// 有内容和一句「读不到」。
+		_ = os.Remove(dst + ".unavailable.txt")
+	}
+	for _, src := range install.ClientLogPaths() {
+		collectArchiveLog(src)
 	}
 	// Guardian 日志(0600 root-only)才有 Guardian 失败的完整原因;Core 日志
 	// 对一次 `bx up` 500 可能一个字都没写——事故里翻诊断包只拿到陈旧 Core
 	// 日志就是这么来的。但非 root 归档读不到它属正常,只留说明,绝不让整个
 	// 诊断包因此失败。
 	for _, src := range guardianArchiveLogPaths() {
-		dst := filepath.Join(dir, filepath.Base(src))
-		if err := copyIfExists(src, dst); err != nil {
-			_ = os.Remove(dst)
-			_ = os.WriteFile(dst+".unavailable.txt", []byte(err.Error()+"\n"), 0o600)
-		}
+		collectArchiveLog(src)
 	}
 	return dir, nil
 }
