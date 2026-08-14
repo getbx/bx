@@ -15,7 +15,11 @@ type Preset struct {
 	Name string
 	// Summary 是给人看的一句话。
 	Summary string
-	// Title 是界面上那一行的名字(比 Name 好读)。
+	// Title 是界面上那个**标签**的名字。
+	//
+	// **短到能当标签用。** 上一版是「Steam 下载(游戏本体 / 更新 / 云存档)」——
+	// 那不是标签,是一句说明。界面里一整列这样的标题会让开关面板读起来像说明书。
+	// 解释归 Summary(`bx preset show` 用),界面不显示它。
 	Title  string
 	Direct []string
 	// Retired 是这一组**曾经装过、现在不再装**的域名。
@@ -39,7 +43,7 @@ func (p Preset) AllDomains() []string {
 
 var all = map[string]Preset{
 	"gaming": {
-		Title: "Steam 下载(游戏本体 / 更新 / 云存档)",
+		Title: "Steam",
 		Name:  "gaming",
 		Summary: "只含**纯字节**:游戏文件、客户端更新、云存档/创意工坊。" +
 			"商店与社区页面**刻意不在其中** —— 它们的 HTML 走隧道,图片若走直连," +
@@ -58,7 +62,7 @@ var all = map[string]Preset{
 		},
 	},
 	"apple": {
-		Title:   "Apple 服务",
+		Title:   "Apple",
 		Name:    "apple",
 		Summary: "Apple 系统服务、Game Center、Arcade、iCloud 同步可用性",
 		Direct: []string{
@@ -71,7 +75,7 @@ var all = map[string]Preset{
 		},
 	},
 	"china-cdn": {
-		Title:   "国内 App / CDN",
+		Title:   "China CDN",
 		Name:    "china-cdn",
 		Summary: "国内 App/视频/电商 CDN 可用性;只含品牌自控域",
 		Direct: []string{

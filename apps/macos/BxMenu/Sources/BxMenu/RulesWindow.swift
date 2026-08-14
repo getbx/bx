@@ -88,9 +88,9 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             view.removeFromSuperview()
         }
 
-        stack.addArrangedSubview(heading("Which traffic skips the tunnel"))
-        stack.addArrangedSubview(caption(
-            "Turning a group off sends that traffic through the tunnel instead."))
+        // **只有一行说明,而且它说的是这个窗口是什么。** 上一版每一组下面都挂着
+        // 一整段解释(那是设计笔记,不是界面文案),读起来像说明书而不是开关。
+        stack.addArrangedSubview(heading("Direct — skips the tunnel"))
 
         for row in rows {
             stack.addArrangedSubview(groupView(row))
@@ -98,11 +98,9 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
 
         if !custom.isEmpty {
             stack.addArrangedSubview(separator())
-            stack.addArrangedSubview(heading("Your own rules"))
-            // **只显示,不给开关。** 这些是用户手写的,菜单没有资格替他删。
-            stack.addArrangedSubview(caption(
-                "\(custom.count) rule\(custom.count == 1 ? "" : "s") you added yourself. "
-                    + "bx never changes these — edit the config file to change them."))
+            // **只显示,不给开关** —— 这些是用户手写的,菜单没有资格替他删。
+            // 那句道理不必写在界面上:没有勾选框本身就说明了。
+            stack.addArrangedSubview(heading("Your own"))
             stack.addArrangedSubview(caption(custom.joined(separator: "   ")))
         }
 
@@ -113,7 +111,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             stack.addArrangedSubview(reveal)
             stack.addArrangedSubview(caption(configPath))
         }
-        let note = caption("Changes take effect the next time bx reconnects.")
+        let note = caption("Changes apply after reconnecting.")
         footer = note
         stack.addArrangedSubview(note)
     }
@@ -131,11 +129,14 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         toggle.state = row.isOn ? .on : (row.isMixed ? .mixed : .off)
         box.addArrangedSubview(toggle)
 
-        let detail = caption(row.detail)
-        if row.failing > 0 {
-            detail.textColor = .systemRed
+        // **没话说就什么都不加。** 一行空的副标题与一行凑数的解释同样糟。
+        if let text = row.detail {
+            let detail = caption(text)
+            if row.failing > 0 {
+                detail.textColor = .systemRed
+            }
+            box.addArrangedSubview(detail)
         }
-        box.addArrangedSubview(detail)
         return box
     }
 

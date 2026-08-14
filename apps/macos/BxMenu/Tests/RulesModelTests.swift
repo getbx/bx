@@ -123,12 +123,12 @@ struct RulesModelTests {
         ])
         expect(rows.first?.group.name == "gaming", "坏掉的组没排最前:\(rows.map(\.group.name))")
         expect(rows.first?.failing == 2, "组内失败规则数不对:\(String(describing: rows.first?.failing))")
-        expect(rows.first?.detail.contains("1000") == true,
+        expect(rows.first?.detail?.contains("1000") == true,
                "失败总数没汇总到组上:\(String(describing: rows.first?.detail))")
-        // 好的那一组**不许**说失败。
+        // 好的那一组**一个字都不说**。
         let apple = rows.first { $0.group.name == "apple" }
         expect(apple?.failing == 0, "好的组被标成失败")
-        expect(apple?.detail.contains("failed") == false, "好的组在说失败:\(apple?.detail ?? "")")
+        expect(apple?.detail == nil, "好的组还在说话:\(apple?.detail ?? "")")
     }
 
     /// **半装的组要看得出来是半装的。** 画成「开」用户会以为那几条在生效。
@@ -139,8 +139,8 @@ struct RulesModelTests {
         let row = ruleGroupRows(from: list, failing: [])[0]
         expect(row.isMixed, "半装的组没被标成 mixed")
         expect(!row.isOn, "半装的组被当成全开")
-        expect(row.detail.contains("2") && row.detail.contains("6"),
-               "副标题没说清装了几条:\(row.detail)")
+        expect(row.detail?.contains("2") == true && row.detail?.contains("6") == true,
+               "副标题没说清装了几条:\(row.detail ?? "")")
     }
 
     /// 认不出的 state 落到 partial —— **三态里唯一不撒谎的那个**。
@@ -175,7 +175,68 @@ struct RulesModelTests {
     expect(spoken.requiresRestart == true, "requires_restart 没解出来")
 }
 
+    /// **标签式:名字要短,而且不解释。**
+    ///
+    /// 项目所有者的原话:「tag 类似于 github 里面那种标签感觉即可。然后解释也略多,
+    /// 不说人话。宁愿不要解释。」上一版每一组都挂着我写给开发者看的整段说明
+    /// (「只含纯字节:游戏文件、客户端更新…商店与社区页面刻意不在其中」),
+    /// 那是设计笔记,不是界面文案。
+    ///
+    /// 现在:**没问题的组一个字都不说**;有话说时只说数字。
+    static func testHealthyGroupSaysNothing() {
+        let rows = ruleGroupRows(from: RuleList(groups: [
+            RuleGroup(name: "apple", title: "Apple",
+                      summary: "Apple 系统服务、Game Center、Arcade、iCloud 同步可用性",
+                      state: .on, installed: 6, total: 6),
+        ]), failing: [])
+        expect(rows[0].detail == nil,
+               "健康的组还在解释自己:\(rows[0].detail ?? "")")
+    }
+
+    /// 半装的组只报数字,不解释「半装」是什么意思。
+    static func testPartialGroupShowsOnlyTheCount() {
+        let rows = ruleGroupRows(from: RuleList(groups: [
+            RuleGroup(name: "apple", title: "Apple", state: .partial, installed: 2, total: 6),
+        ]), failing: [])
+        guard let detail = rows[0].detail else {
+            expect(false, "半装的组什么都没说")
+            return
+        }
+        expect(detail.contains("2") && detail.contains("6"), "没报数字:\(detail)")
+        expect(detail.count <= 12, "半装那行太长了(\(detail.count) 字符):\(detail)")
+    }
+
+    /// 出问题的组只说「多少条失败」—— 那是唯一要用户行动的信息。
+    static func testFailingGroupSaysOnlyWhatMatters() {
+        let rows = ruleGroupRows(from: RuleList(groups: [
+            RuleGroup(name: "gaming", title: "Steam", state: .on, installed: 4, total: 4,
+                      domains: ["*.steamcontent.com"]),
+        ]), failing: [
+            FailingRule(kind: .direct, rule: "*.steamcontent.com", attempts: 900, failures: 900),
+        ])
+        guard let detail = rows[0].detail else {
+            expect(false, "坏掉的组什么都没说")
+            return
+        }
+        expect(detail.contains("900"), "没说失败了多少条:\(detail)")
+        expect(detail.count <= 24, "失败那行太长了(\(detail.count) 字符):\(detail)")
+    }
+
+    /// **标题必须短到能当标签用。** 长标题会把这个窗口变回一份说明书。
+    static func testGroupTitlesAreShortEnoughToBeTags() {
+        for group in ["apple", "gaming", "china-cdn"] {
+            let title = presetTitleForTest(group)
+            expect(!title.isEmpty, "\(group) 没有标题")
+            expect(title.count <= 12, "\(group) 的标题当不了标签(\(title.count) 字符):\(title)")
+            expect(!title.contains("("), "\(group) 的标题里塞了括号说明:\(title)")
+        }
+    }
+
     static func main() {
+        testHealthyGroupSaysNothing()
+        testPartialGroupShowsOnlyTheCount()
+        testFailingGroupSaysOnlyWhatMatters()
+        testGroupTitlesAreShortEnoughToBeTags()
         testRuleRowsPutFailingRulesFirst()
         testRuleRowsMatchFailuresByKindNotJustName()
         testRuleRowsAreCaseInsensitiveWhenMatching()
@@ -197,5 +258,17 @@ struct RulesModelTests {
             FileHandle.standardError.write(Data("\(failures) failure(s)\n".utf8))
             exit(1)
         }
+    }
+}
+
+/// presetTitleForTest 是 Go 侧 internal/preset 那份标题的镜像,供 Swift 套件断言
+/// 「短到能当标签」。**Go 侧另有一条同样的守卫** —— 两边都钉,是因为标题是
+/// 界面文案,而界面在这两个语言里各有一半。
+func presetTitleForTest(_ name: String) -> String {
+    switch name {
+    case "apple": return "Apple"
+    case "gaming": return "Steam"
+    case "china-cdn": return "China CDN"
+    default: return ""
     }
 }
