@@ -2,7 +2,37 @@ import Foundation
 
 @main
 struct UpdatePresentationTests {
+    /// **失败时必须说出真正的原因 —— 它就在菜单自己刚读过的那份日志里。**
+    ///
+    /// 真机(2026-08-14):用户点 Update,转圈两分钟,然后只看到
+    /// "bx could not complete the update. Run Doctor for details." ——
+    /// 而日志里写着 `download stalled: no data received…`。
+    static func testUpdateFailureDetailSurfacesTheRealReason() {
+        let log = Data("""
+        ⏳ 下载完整 macOS 包 bx-macos-arm64.tar.gz…
+        2026/08/14 06:30:31 download stalled: no data received for a while — check the network and try again
+        """.utf8)
+        guard let detail = updateFailureDetail(log) else {
+            expect(false, "有原因却没取出来")
+            return
+        }
+        expect(detail.contains("stalled"), "取到的不是失败原因:\(detail)")
+        // Go 的 log 时间戳对用户没有意义。
+        expect(!detail.contains("2026/08/14"), "时间戳没剥掉:\(detail)")
+        // 进度行不是原因。
+        expect(!detail.contains("⏳"), "把进度行当成了原因:\(detail)")
+    }
+
+    /// 取不到就返回 nil —— **编一句比不说更糟**。
+    static func testUpdateFailureDetailStaysSilentWhenThereIsNothingToSay() {
+        expect(updateFailureDetail(Data()) == nil, "空日志编出了原因")
+        expect(updateFailureDetail(Data("⏳ 下载中…\n\n".utf8)) == nil, "只有进度行时编出了原因")
+        expect(updateFailureDetail(Data(#"{"phase":"done"}"#.utf8)) == nil, "把 JSON 当成了给人读的原因")
+    }
+
     static func main() {
+        testUpdateFailureDetailSurfacesTheRealReason()
+        testUpdateFailureDetailStaysSilentWhenThereIsNothingToSay()
         let available = UpdateCheck(current: "v0.1.0", latest: "v0.2.0", available: true, verified: true)
         expect(updateActionTitle(for: available) == "Update bx…", "verified update is actionable")
 

@@ -95,3 +95,45 @@ func versionRowOffersUpdate(check: UpdateCheck?) -> Bool {
     guard let check else { return false }
     return check.available && check.verified
 }
+
+/// 从更新日志里取出**能告诉用户发生了什么**的那一行。
+///
+/// 真机(2026-08-14):菜单跑完 `bx update --json`、**读到了日志、解析了它**,
+/// 然后只报一句 "bx could not complete the update. Run Doctor for details." ——
+/// 而日志里就写着 `download stalled: no data received…`。**原因在它手里,被扔掉了。**
+///
+/// 取最后一条非空、且不是进度行的内容:更新器把进度打成 `⏳ …`,而失败原因
+/// 总是在最后。取不到就返回 nil —— 编一句比不说更糟。
+func updateFailureDetail(_ logData: Data) -> String? {
+    guard let text = String(data: logData, encoding: .utf8) else { return nil }
+    for raw in text.split(separator: "\n").reversed() {
+        var line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if line.isEmpty || line.hasPrefix("⏳") {
+            continue
+        }
+        // 更新器的错误行带 Go 的 log 前缀(`2026/08/14 06:30:31 …`),
+        // 那对用户没有意义。
+        line = strippedLogTimestamp(line)
+        if line.isEmpty {
+            continue
+        }
+        // 一整行 JSON 不是给人读的(`--json` 成功时打的就是它)。
+        if line.hasPrefix("{") {
+            continue
+        }
+        return line
+    }
+    return nil
+}
+
+/// 去掉 `2026/08/14 06:30:31 ` 这样的 Go log 前缀。
+func strippedLogTimestamp(_ line: String) -> String {
+    let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
+    guard parts.count == 3,
+          parts[0].count == 10, parts[0].filter({ $0 == "/" }).count == 2,
+          parts[1].count == 8, parts[1].filter({ $0 == ":" }).count == 2
+    else {
+        return line
+    }
+    return String(parts[2]).trimmingCharacters(in: .whitespaces)
+}

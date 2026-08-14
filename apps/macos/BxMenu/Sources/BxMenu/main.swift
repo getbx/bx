@@ -763,6 +763,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 每轮复位:漏了它,某一轮出现过的版本行会让此后所有轮次的页脚都不再
         // 显示更新入口 —— 一个只在特定顺序下才出现、且完全静默的缺失。
         updateShownInVersionRow = false
+        if let startedAt = updateInFlight {
+            let elapsed = Int(Date().timeIntervalSince(startedAt))
+            menu.addHeader("bx", subtitle: "Updating")
+            // 说清"在做什么"与"过了多久" —— 一个沉默的转圈光标与卡死无从区分。
+            menu.addInfo("Status", "Downloading and installing… \(elapsed)s")
+            menu.addPlainText("This can take a few minutes on a slow connection.")
+            menu.addItem(.separator())
+            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
+            return
+        }
         if let inFlight = toggleInFlight {
             let elapsed = Int(Date().timeIntervalSince(inFlight.startedAt))
             menu.addHeader("bx", subtitle: inFlight.action == .turnOn ? "Connecting" : "Disconnecting")
@@ -1376,10 +1386,32 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         let command = "'\(bxPath)' update --json > \(shellSingleQuoted(logPath)) 2>&1"
-        _ = runPrivileged(command)
-        // bx exits non-zero on rollback but still prints valid JSON; always inspect the log.
-        guard let logData = FileManager.default.contents(atPath: logPath) else {
-            showFailure("Update Failed", "bx could not complete the update. Run Doctor for details.")
+        // **跑在后台队列。** 上一版在主线程上同步等 `bx update` 跑完 —— 那是一次
+        // 几十 MB 的下载,真机上转了两分钟菜单全程无响应,用户以为要强制退出
+        // (2026-08-14)。与阶段①把开关异步化是同一条理由:任何可能慢的动作都
+        // 不许占着主线程,否则菜单连"我在做什么"都说不出来。
+        updateInFlight = Date()
+        rebuildMenu()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            _ = self?.runPrivileged(command)
+            // bx exits non-zero on rollback but still prints valid JSON; always inspect the log.
+            let logData = FileManager.default.contents(atPath: logPath)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.updateInFlight = nil
+                self.finishUpdate(logData: logData)
+            }
+        }
+    }
+
+    /// 更新正在跑的开始时刻。非 nil 时菜单显示进度行 —— 一个什么都不说的
+    /// 转圈光标与"卡死了"在用户眼里没有区别。
+    private var updateInFlight: Date?
+
+    private func finishUpdate(logData: Data?) {
+        rebuildMenu()
+        guard let logData else {
+            showFailure("Update Failed", updateFailureMessage(nil))
             return
         }
         switch parseUpdateOutcome(logData) {
@@ -1390,8 +1422,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .rolledBack:
             showMessage("Update Rolled Back", updateRolledBackMessage)
         case .failed:
-            showFailure("Update Failed", "bx could not complete the update. Run Doctor for details.")
+            // **把真正的原因说出来。** 它就在这份刚读过的日志里 —— 上一版
+            // 读到了、解析了,然后只报一句"Run Doctor for details"。
+            showFailure("Update Failed", updateFailureMessage(updateFailureDetail(logData)))
         }
+    }
+
+    private func updateFailureMessage(_ detail: String?) -> String {
+        guard let detail, !detail.isEmpty else {
+            return "bx could not complete the update. Run Doctor to collect diagnostics."
+        }
+        return detail + "\n\nRun Doctor to collect diagnostics."
     }
 
     @objc private func quitBx() {
