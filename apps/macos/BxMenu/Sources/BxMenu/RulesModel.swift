@@ -185,15 +185,19 @@ struct RuleGroupRow: Equatable {
     /// 半装的组要在界面上**看得出来**是半装的。
     var isMixed: Bool { group.state == .partial }
 
-    /// 副标题。**没问题时只说规模,不说废话**;有问题时说人话,不摆域名。
-    var detail: String {
+    /// 副标题。**没话说就不说** —— nil,而不是一句凑数的解释。
+    ///
+    /// 上一版每一组都挂着一整段说明(那是我写给开发者看的设计笔记),
+    /// 于是这个窗口读起来像说明书而不是开关。现在只有两种情况会说话:
+    /// 有东西在失败(要行动),或者装了一半(状态本身含混)。
+    var detail: String? {
         if failing > 0 {
-            return "\(failures) connections failed — these sites are not reachable this way"
+            return "\(failures) failed"
         }
         if isMixed {
-            return "\(group.installed) of \(group.total) rules installed"
+            return "\(group.installed)/\(group.total)"
         }
-        return group.summary.isEmpty ? "\(group.total) rules" : group.summary
+        return nil
     }
 }
 

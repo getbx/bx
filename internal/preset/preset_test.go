@@ -148,3 +148,25 @@ func TestAllDomainsCoversBothLiveAndRetired(t *testing.T) {
 		t.Fatalf("AllDomains = %d 条,want %d", len(all), len(p.Direct)+len(p.Retired))
 	}
 }
+
+// **标题短到能当标签用。**
+//
+// 项目所有者的原话:「tag 类似于 github 里面那种标签感觉即可。然后解释也略多,
+// 不说人话。宁愿不要解释。」上一版 gaming 的标题是
+// 「Steam 下载(游戏本体 / 更新 / 云存档)」—— 那不是标签,是一句说明,
+// 而一整列这样的标题会让开关面板读起来像说明书。
+//
+// 解释仍然留在 Summary(`bx preset show` 用),**界面不显示它**。
+func TestPresetTitlesAreShortEnoughToBeTags(t *testing.T) {
+	for _, p := range All() {
+		runes := []rune(p.Title)
+		if len(runes) > 12 {
+			t.Errorf("%s 的标题当不了标签(%d 字):%q", p.Name, len(runes), p.Title)
+		}
+		for _, bad := range []string{"(", "(", "、", "/"} {
+			if strings.Contains(p.Title, bad) {
+				t.Errorf("%s 的标题里塞了说明(含 %q):%q", p.Name, bad, p.Title)
+			}
+		}
+	}
+}
