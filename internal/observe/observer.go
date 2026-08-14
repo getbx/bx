@@ -33,6 +33,15 @@ type Deps struct {
 	LookupRoute  func(ctx context.Context, destination string, ipv6 bool) (RouteResult, error)
 	InspectDNS   func(ctx context.Context) (DNSResult, error)
 	FetchRuntime func() (RuntimeResult, error)
+	// DirectEgress 回答「bx 自己的直连出得去吗」。
+	//
+	// 它是**只读**的:问内核「作用域到物理网卡时,一个公网地址有没有路由」,
+	// 不发包也不拨号。存在的理由是一次真机故障连着出现两次:保护 Protected、
+	// 劫持生效、屏障正常、隧道健康 —— 而 bx 自己的直连一条都出不去,
+	// 所有用户 direct 规则 100% 失败,而观测层四项全绿、答不出这件事。
+	//
+	// nil = 没接线(那些平台上这个问题不成立,由 NotApplicable 声明)。
+	DirectEgress func(ctx context.Context) (Tristate, error)
 	Now          func() time.Time
 	// NotApplicable 是**这个平台上根本不成立的观测项**,由接线方声明。
 	//
@@ -64,6 +73,7 @@ func Observe(ctx context.Context, deps Deps) ObservedState {
 	}
 	if !state.notApplicable("barrier_present") {
 		state.BarrierPresent = observeBarrier(ctx, deps, &state)
+		state.DirectEgressOK = observeDirectEgress(ctx, deps, &state)
 	}
 	if !state.notApplicable("dns_managed") {
 		state.DNSManaged, state.DNSServers = observeDNS(ctx, deps, &state)
@@ -153,4 +163,21 @@ func observeCore(deps Deps, state *ObservedState) (socket, tunnel Tristate) {
 		return False, Unknown
 	}
 	return True, FromBool(result.TunnelHealthy)
+}
+
+// observeDirectEgress 问「bx 自己的直连出得去吗」。
+//
+// 没接线时返回 Unknown 而不是 True:**没问过不等于答案是好的** —— 与本包
+// 其余观测同一条纪律。那些平台上这个问题不成立时,由 NotApplicable 声明,
+// 而不是靠这里编一个答案。
+func observeDirectEgress(ctx context.Context, deps Deps, state *ObservedState) Tristate {
+	if deps.DirectEgress == nil {
+		return Unknown
+	}
+	value, err := deps.DirectEgress(ctx)
+	if err != nil {
+		state.Errors = append(state.Errors, ObserveError{Item: "direct_egress", Err: err.Error()})
+		return Unknown
+	}
+	return value
 }

@@ -25,6 +25,7 @@ func healthyObservation(at time.Time) observe.ObservedState {
 		DNSManaged:     observe.False,
 		CoreSocket:     observe.False,
 		TunnelHealthy:  observe.False,
+		DirectEgressOK: observe.False,
 	}
 }
 
@@ -37,6 +38,7 @@ func blindObservation(at time.Time) observe.ObservedState {
 			{Item: "barrier_present", Err: "route -n get: timeout"},
 			{Item: "dns_managed", Err: "networksetup: timeout"},
 			{Item: "core_socket", Err: "dial: no such file"},
+			{Item: "direct_egress", Err: "route -n get -ifscope: timeout"},
 		},
 	}
 }

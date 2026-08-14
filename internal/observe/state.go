@@ -40,15 +40,19 @@ type ObserveError struct {
 
 // ObservedState 是某一时刻向系统现问得到的事实,不含任何记忆。
 type ObservedState struct {
-	ObservedAt       time.Time      `json:"observed_at"`
-	CaptureInterface string         `json:"capture_interface,omitempty"`
-	CaptureOK        Tristate       `json:"capture_ok"`
-	BarrierPresent   Tristate       `json:"barrier_present"`
-	DNSServers       []string       `json:"dns_servers,omitempty"`
-	DNSManaged       Tristate       `json:"dns_managed"`
-	CoreSocket       Tristate       `json:"core_socket"`
-	TunnelHealthy    Tristate       `json:"tunnel_healthy"`
-	Errors           []ObserveError `json:"errors,omitempty"`
+	ObservedAt       time.Time `json:"observed_at"`
+	CaptureInterface string    `json:"capture_interface,omitempty"`
+	CaptureOK        Tristate  `json:"capture_ok"`
+	BarrierPresent   Tristate  `json:"barrier_present"`
+	DNSServers       []string  `json:"dns_servers,omitempty"`
+	DNSManaged       Tristate  `json:"dns_managed"`
+	CoreSocket       Tristate  `json:"core_socket"`
+	TunnelHealthy    Tristate  `json:"tunnel_healthy"`
+	// DirectEgressOK 是「bx 自己的直连出得去吗」。**它与隧道健康正交**:
+	// 真机上出现过隧道满速而直连全死(IP_BOUND_IF 找不到 scoped 路由),
+	// 那时其余四项全绿,只有这一项能说出问题。
+	DirectEgressOK Tristate       `json:"direct_egress"`
+	Errors         []ObserveError `json:"errors,omitempty"`
 	// NotApplicable 是**这个平台上根本不成立的问题**,由采集方声明。
 	//
 	// 它与 Unknown 是两回事,而此前只有后者可表达:Linux 上 bx 不改系统 DNS
@@ -94,6 +98,7 @@ func (s ObservedState) UnobservableItems() []string {
 		{"dns_managed", s.DNSManaged},
 		{"core_socket", s.CoreSocket},
 		{"tunnel_healthy", s.TunnelHealthy},
+		{"direct_egress", s.DirectEgressOK},
 	} {
 		if check.value == Unknown && !s.notApplicable(check.item) {
 			items = append(items, check.item)

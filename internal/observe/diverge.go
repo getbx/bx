@@ -17,6 +17,8 @@ type Divergence struct {
 // ObserveError.Item 与 Divergence.Field 三处,拼错不会有任何东西变红。
 const fieldCoreSocket = "core_socket"
 
+const fieldDirectEgress = "direct_egress"
+
 // heldExplains 列出「有一张维护挂起武装着」这件事**本身就解释得了**的观测项。
 //
 // 只有 core_socket:挂起的语义就是「此刻不该有保护在跑」,于是 Core 的控制
@@ -142,6 +144,19 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 	// 一次不改变任何输出 —— 复审实测:去掉那个条件整个包照样全绿,于是这条路上
 	// 只剩一个真正承重的判据,而那正是本行下面这条测试要盯住的东西。
 	// 两处都写,则两处各自都测不到:改坏一处不会有任何东西变红。
+	// **保护开着而 bx 自己的直连出不去。** 与隧道健康正交:真机上出现过隧道满速、
+	// 劫持生效、屏障正常,而所有用户 direct 规则 100% 失败(IP_BOUND_IF 找不到
+	// scoped 路由)—— 那时其余四项全绿,只有这一条说得出问题。
+	if intent.Desired == "on" && observed.DirectEgressOK == False &&
+		!observed.notApplicable(fieldDirectEgress) {
+		emit(Divergence{
+			Field:    fieldDirectEgress,
+			Believed: "on",
+			Observed: "false",
+			Note: "意图是保护,但 bx 自己的直连出不去:每一条 direct rule" +
+				"(用户规则 / china 列表)都会失败,而隧道看起来一切正常",
+		})
+	}
 	if intent.Desired == "on" && observed.CoreSocket == False {
 		emit(Divergence{
 			Field:    fieldCoreSocket,

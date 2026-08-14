@@ -43,10 +43,10 @@ func TestTristateZeroValueIsUnknown(t *testing.T) {
 // 「我们从没问过」与「问了、一切正常」在下游读起来一模一样。
 func TestUnobservableItemsNamesEveryProbeThatCouldNotBeAnswered(t *testing.T) {
 	var blind ObservedState
-	want := []string{"capture_ok", "barrier_present", "dns_managed", "core_socket", "tunnel_healthy"}
+	want := []string{"capture_ok", "barrier_present", "dns_managed", "core_socket", "tunnel_healthy", "direct_egress"}
 	got := blind.UnobservableItems()
 	if len(got) != len(want) {
-		t.Fatalf("五项全 Unknown 时必须五项全报, got %v", got)
+		t.Fatalf("%d 项全 Unknown 时必须全报, got %v", len(want), got)
 	}
 	for index := range want {
 		if got[index] != want[index] {
@@ -56,7 +56,7 @@ func TestUnobservableItemsNamesEveryProbeThatCouldNotBeAnswered(t *testing.T) {
 
 	full := ObservedState{
 		CaptureOK: True, BarrierPresent: False, DNSManaged: True,
-		CoreSocket: True, TunnelHealthy: False,
+		CoreSocket: True, TunnelHealthy: False, DirectEgressOK: True,
 	}
 	if items := full.UnobservableItems(); len(items) != 0 {
 		t.Errorf("每一项都问出来了,不该报「未观测」, got %v", items)
@@ -70,8 +70,8 @@ func TestUnobservableItemsNamesEveryProbeThatCouldNotBeAnswered(t *testing.T) {
 	// 依赖缺席(Deps 某个函数为 nil)一条 Errors 都不会留,却同样问不出来 ——
 	// 按 Errors 推的实现会把这一轮印成「全都问到了」。
 	partial := Observe(context.Background(), Deps{Now: func() time.Time { return time.Unix(0, 0) }})
-	if items := partial.UnobservableItems(); len(items) != 5 {
-		t.Errorf("一个依赖都没接时五项全都问不出来, got %v (errors=%v)", items, partial.Errors)
+	if items := partial.UnobservableItems(); len(items) != 6 {
+		t.Errorf("一个依赖都没接时每一项都问不出来, got %v (errors=%v)", items, partial.Errors)
 	}
 }
 
