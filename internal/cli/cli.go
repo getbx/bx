@@ -3375,30 +3375,54 @@ func decideSetupDisposition(configExists, force bool) setupDisposition {
 // 只说「已更新」不够:用户此前正是在看不出配置有没有真的改的情况下,以为自己换了
 // 服务器而实际没换。链接自带凭据,故一律经 redactLink 打码。
 func reportTransportChange(before setup.TransportsBefore, links []string, udpTransport string) {
+	for _, line := range transportChangeLines(before, links, udpTransport) {
+		fmt.Println(line)
+	}
+}
+
+// transportChangeLines 是「换传输之后告诉用户什么」的**全部判断**。
+//
+// 抽成纯函数是因为这里有一条不显眼但会静默废掉 UDP 的判定(见 StaleUDPTransport),
+// 而 reportTransportChange 直接 Println,测试进不去。
+func transportChangeLines(before setup.TransportsBefore, links []string, udpTransport string) []string {
+	var out []string
 	oldMain := before.Server
 	if oldMain == "" && len(before.Transports) > 0 {
 		oldMain = before.Transports[0]
 	}
 	newMain := links[0]
 	if oldMain == newMain {
-		fmt.Printf("• 主传输不变:%s\n", redactLink(newMain))
+		out = append(out, fmt.Sprintf("• 主传输不变:%s", redactLink(newMain)))
 	} else {
-		fmt.Printf("• 主传输:%s → %s\n", redactLink(oldMain), redactLink(newMain))
+		out = append(out, fmt.Sprintf("• 主传输:%s → %s", redactLink(oldMain), redactLink(newMain)))
 	}
 	if len(links) > 1 {
-		fmt.Printf("• 容灾传输共 %d 条\n", len(links))
+		out = append(out, fmt.Sprintf("• 容灾传输共 %d 条", len(links)))
 	}
 	switch {
 	case udpTransport == "":
 		if before.UDPTransport != "" {
-			fmt.Printf("• UDP 传输保持不变:%s\n", redactLink(before.UDPTransport))
+			// **这里是那个静默陷阱。** 「保持不变」听起来无害,而如果这条 UDP
+			// 传输本来跟旧服务器同机,它现在指着一台不属于你的机器:
+			// UDP 健康检查失败 → fail-closed 全阻断 → 网页能开、语音和 QUIC 全废,
+			// 而 bx status 显示 Protected(主隧道确实健康)。
+			if host, stale := setup.StaleUDPTransport(before, newMain); stale {
+				out = append(out,
+					fmt.Sprintf("⚠ UDP 传输仍指向旧服务器 %s —— 它跟着上一台机器走的,现在那台已经不是你的出口了", host),
+					"  后果:UDP(微信语音、QUIC、NTP)会被 fail-closed 全部阻断,而 bx status 仍显示 Protected",
+					"  处置:带上新服务器的 UDP 链接重跑 `bx setup <bx://…> --udp <hysteria2://…>`,",
+					"        或者从 /etc/bx/config.yaml 里删掉 udp.transport 这一行(UDP 会改走主传输)")
+			} else {
+				out = append(out, fmt.Sprintf("• UDP 传输保持不变:%s", redactLink(before.UDPTransport)))
+			}
 		}
 	case before.UDPTransport == udpTransport:
-		fmt.Printf("• UDP 传输不变:%s\n", redactLink(udpTransport))
+		out = append(out, fmt.Sprintf("• UDP 传输不变:%s", redactLink(udpTransport)))
 	default:
-		fmt.Printf("• UDP 传输:%s → %s\n", redactLink(before.UDPTransport), redactLink(udpTransport))
+		out = append(out, fmt.Sprintf("• UDP 传输:%s → %s", redactLink(before.UDPTransport), redactLink(udpTransport)))
 	}
-	fmt.Println("• 配置里的其余设置(分流策略、模式、列表等)未改动")
+	out = append(out, "• 配置里的其余设置(分流策略、模式、列表等)未改动")
+	return out
 }
 
 // checkSetupArgs 拒绝多余的位置参数。

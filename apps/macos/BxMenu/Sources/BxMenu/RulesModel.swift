@@ -223,3 +223,57 @@ func ruleGroupRows(from list: RuleList, failing: [FailingRule]) -> [RuleGroupRow
         return lhs.group.title < rhs.group.title
     }
 }
+
+/// 换配置前给用户看的那句话。
+///
+/// **显示事实,不做告诫。** 一个讲道理的确认框只会被点穿,而且会训练出用在
+/// 下一个真正要紧的框上的点穿反射。「你的出口将从 A 变成 B」是可核对的、
+/// 具体的,用户读完能自己判断;「切换服务器有风险哦」不是。
+///
+/// 认不出旧出口时只说新的 —— **不编一个「未知」当作对照**。
+func replaceConfigurationMessage(currentServer: String?, pastedFrom: ReplaceLinkOrigin) -> String {
+    var lines: [String] = []
+    if let current = currentServer, !current.isEmpty {
+        lines.append("Your traffic leaves from \(current) today.")
+    }
+    lines.append("After this change it will leave from the server in the link you just provided.")
+    switch pastedFrom {
+    case .clipboard:
+        lines.append("The link was read from your clipboard.")
+    case .typed:
+        break
+    }
+    lines.append("bx reconnects to apply it.")
+    return lines.joined(separator: "\n\n")
+}
+
+/// 链接是从哪来的。**剪贴板那一路要说出来** —— 用户该知道自己正在装的是
+/// 刚刚复制的那条东西,而不是别的什么。
+enum ReplaceLinkOrigin {
+    case clipboard
+    case typed
+}
+
+/// 剪贴板里那段文本能不能当成一条 bx 链接用。
+///
+/// 用户十有八九刚从聊天窗口复制过来,预填省掉一次粘贴 —— 这是行业默认行为
+/// (Windows 托盘、各家客户端都做),不是加分项。
+func clipboardCandidateLink(_ raw: String?) -> String? {
+    guard let raw else { return nil }
+    let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty, text.count < 8192 else { return nil }
+    // 只吃**单行**:多行文本多半是聊天记录,把整段塞进输入框只会让人困惑。
+    guard !text.contains("\n") else { return nil }
+    return looksLikeClientLinkText(text) ? text : nil
+}
+
+/// 认得出的客户端链接前缀。与 CLI 侧 `tunnel.IsClientLink` 同一套取值。
+func looksLikeClientLinkText(_ text: String) -> Bool {
+    let lowered = text.lowercased()
+    for prefix in ["bx://", "blink://", "vless://", "hysteria2://", "hy2://", "trojan://", "ss://", "vmess://", "brook://"] {
+        if lowered.hasPrefix(prefix) {
+            return true
+        }
+    }
+    return false
+}

@@ -232,7 +232,48 @@ struct RulesModelTests {
         }
     }
 
+    /// **换配置的确认框显示事实,不讲道理。**
+    ///
+    /// 项目所有者的立场:用户可以有很多躺着的节点,但换出口是件要看清楚的事。
+    /// 而真正的防线是**让他看见出口要变**,不是让他多点两下或者读一段告诫。
+    static func testReplaceMessageShowsTheExitChangeNotALecture() {
+        let text = replaceConfigurationMessage(currentServer: "166.1.190.123", pastedFrom: .clipboard)
+        expect(text.contains("166.1.190.123"), "没说现在的出口是哪:\(text)")
+        expect(text.lowercased().contains("clipboard"), "没说链接是从剪贴板来的:\(text)")
+        // 不许出现空泛的风险告诫 —— 那种句子只会被点穿。
+        for lecture in ["risk", "dangerous", "be careful", "are you sure"] {
+            expect(!text.lowercased().contains(lecture), "混进了空泛的告诫(\(lecture)):\(text)")
+        }
+    }
+
+    /// 认不出当前出口时**只说新的**,不编一个「未知」当对照。
+    static func testReplaceMessageOmitsTheOldServerWhenUnknown() {
+        let text = replaceConfigurationMessage(currentServer: nil, pastedFrom: .typed)
+        expect(!text.lowercased().contains("unknown"), "编了一个「未知」出口:\(text)")
+        expect(!text.lowercased().contains("clipboard"), "没从剪贴板来却说了剪贴板:\(text)")
+        expect(text.contains("reconnect"), "没说要重连才生效:\(text)")
+    }
+
+    /// 剪贴板预填:像链接才吃,多行不吃。
+    static func testClipboardCandidateOnlyTakesASingleLinkLine() {
+        expect(clipboardCandidateLink("  bx://abc  ") == "bx://abc", "没吃掉合法链接周围的空白")
+        expect(clipboardCandidateLink("vless://u@1.2.3.4:443") != nil, "裸链接也该认")
+        // **样例必须以链接开头**,否则前缀检查会顺带把它挡掉,这条断言就测不到
+        // 「多行」那道闸门(变异验证当场发现:把多行检查改成恒真,仍然全绿)。
+        // 而且链接在前、后面跟着一句话,正是从聊天窗口整段复制的真实形状。
+        expect(clipboardCandidateLink("bx://abc\n这是我给你的链接,记得装") == nil,
+               "多行文本被当成了链接 —— 那多半是聊天记录")
+        expect(clipboardCandidateLink("这是我给你的链接\nbx://abc") == nil,
+               "链接不在开头时也不该吃")
+        expect(clipboardCandidateLink("随便一句话") == nil, "把普通文本当成了链接")
+        expect(clipboardCandidateLink(nil) == nil, "空剪贴板")
+        expect(clipboardCandidateLink(String(repeating: "bx://", count: 4000)) == nil, "超长文本没挡住")
+    }
+
     static func main() {
+        testReplaceMessageShowsTheExitChangeNotALecture()
+        testReplaceMessageOmitsTheOldServerWhenUnknown()
+        testClipboardCandidateOnlyTakesASingleLinkLine()
         testHealthyGroupSaysNothing()
         testPartialGroupShowsOnlyTheCount()
         testFailingGroupSaysOnlyWhatMatters()
