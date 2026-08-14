@@ -87,11 +87,10 @@ func TestApplyPresetToConfigNoop(t *testing.T) {
 server: brook://server?server=example.com%3A443&password=pw
 rules:
   - direct:
-      - client-update.akamai.steamstatic.com
-      - steamcdn-a.akamaihd.net
-      - media.steampowered.com
       - "*.steamcontent.com"
-      - "*.steamstatic.com"
+      - steamcdn-a.akamaihd.net
+      - client-update.akamai.steamstatic.com
+      - "*.steamusercontent.com"
 `
 	if err := os.WriteFile(path, []byte(in), 0o600); err != nil {
 		t.Fatal(err)

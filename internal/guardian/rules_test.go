@@ -14,7 +14,10 @@ import (
 func rulesTestConfig(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	body := "server: bx://x\nglobal: true\nrules:\n    - direct:\n        - '*.steamstatic.com'\n"
+	// 用**在用的**域名,不用退役的:后者会让每个用到这个 fixture 的用例都顺带
+	// 在测「留着退役规则」,而那是 TestRetiredDomainsAreCleanedUpButNeverReinstalled
+	// 专门在测的事。
+	body := "server: bx://x\nglobal: true\nrules:\n    - direct:\n        - '*.steamcontent.com'\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +78,7 @@ func TestRulesRoundTripThroughTheEndpoint(t *testing.T) {
 	if w := post(`{"action":"add","kind":"direct","pattern":"*.qq.com"}`); w.Code != http.StatusOK {
 		t.Fatalf("加规则 = %d %s", w.Code, w.Body.String())
 	}
-	if w := post(`{"action":"remove","kind":"direct","pattern":"*.steamstatic.com"}`); w.Code != http.StatusOK {
+	if w := post(`{"action":"remove","kind":"direct","pattern":"*.steamcontent.com"}`); w.Code != http.StatusOK {
 		t.Fatalf("删规则 = %d %s", w.Code, w.Body.String())
 	}
 	w := httptest.NewRecorder()
@@ -90,7 +93,7 @@ func TestRulesRoundTripThroughTheEndpoint(t *testing.T) {
 		t.Fatalf("解不出应答:%v %s", err, body)
 	}
 	installed := strings.Join(got.Direct, " ")
-	if !strings.Contains(installed, "*.qq.com") || strings.Contains(installed, "steamstatic") {
+	if !strings.Contains(installed, "*.qq.com") || strings.Contains(installed, "steamcontent") {
 		t.Fatalf("读回来的直连规则不对:%v", got.Direct)
 	}
 	// **改完必须明说要重启才生效。** bx 不热重载;不说这句,用户会以为已经生效,
@@ -161,11 +164,10 @@ func TestRulesEndpointPublishesGroupsWithThreeStates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	body := "server: bx://x\nrules:\n    - direct:\n" +
 		"        - '*.icloud.com'\n" + // apple 组:只装了一部分
-		"        - '*.steamstatic.com'\n" +
 		"        - '*.steamcontent.com'\n" +
-		"        - client-update.akamai.steamstatic.com\n" +
 		"        - steamcdn-a.akamaihd.net\n" +
-		"        - media.steampowered.com\n" + // gaming 组:全装了
+		"        - client-update.akamai.steamstatic.com\n" +
+		"        - '*.steamusercontent.com'\n" + // gaming 组:全装了(新清单)
 		"        - gsa.apple.com\n" // 手写的
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -240,5 +242,78 @@ func TestUnknownGroupIsRejected(t *testing.T) {
 		strings.NewReader(`{"action":"enable_group","group":"not-a-preset"}`)), 501, true))
 	if w.Code == http.StatusOK {
 		t.Fatal("接受了不存在的组名")
+	}
+}
+
+// **退役域名:打开不装,关掉要清,而且它们在场时这一组不许显示成「完全打开」。**
+//
+// 显示成「on」等于告诉用户「这一组就是现在这样」,而实际上里面还留着两条我们
+// 主动废弃的规则,正把商店图片送去直连 —— 那正是这次要修的东西。
+func TestRetiredDomainsAreCleanedUpButNeverReinstalled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "server: bx://x\nrules:\n    - direct:\n" +
+		"        - '*.steamcontent.com'\n" +
+		"        - steamcdn-a.akamaihd.net\n" +
+		"        - client-update.akamai.steamstatic.com\n" +
+		"        - '*.steamusercontent.com'\n" + // Direct 全装了
+		"        - '*.steamstatic.com'\n" + // 退役的,还留着
+		"        - media.steampowered.com\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := rulesHandler(path, 501)
+
+	read := func() rulesResponse {
+		w := httptest.NewRecorder()
+		handler(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/rules", nil), 501, true))
+		var got rulesResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("解不出应答:%v", err)
+		}
+		return got
+	}
+	gaming := func(r rulesResponse) ruleGroup {
+		for _, g := range r.Groups {
+			if g.Name == "gaming" {
+				return g
+			}
+		}
+		t.Fatal("没有 gaming 组")
+		return ruleGroup{}
+	}
+
+	// Direct 全装了,但退役的还在 —— **不许显示成 on**。
+	if state := gaming(read()).State; state != "partial" {
+		t.Fatalf("留着退役规则却显示成 %q —— 用户会以为这一组已经是现在的样子", state)
+	}
+
+	// 关掉:退役的也要一起清干净。
+	w := httptest.NewRecorder()
+	handler(w, withPeer(httptest.NewRequest(http.MethodPost, "/v1/rules",
+		strings.NewReader(`{"action":"disable_group","group":"gaming"}`)), 501, true))
+	if w.Code != http.StatusOK {
+		t.Fatalf("关组失败:%d %s", w.Code, w.Body.String())
+	}
+	after := read()
+	for _, rule := range after.Direct {
+		if strings.Contains(rule, "steam") {
+			t.Errorf("关组之后还留着 %q —— 退役域名没被清掉", rule)
+		}
+	}
+
+	// 再打开:**只装在用的,退役的绝不装回去** —— 装回去等于撤销这次演进。
+	w = httptest.NewRecorder()
+	handler(w, withPeer(httptest.NewRequest(http.MethodPost, "/v1/rules",
+		strings.NewReader(`{"action":"enable_group","group":"gaming"}`)), 501, true))
+	reopened := read()
+	joined := strings.Join(reopened.Direct, " ")
+	if strings.Contains(joined, "*.steamstatic.com") || strings.Contains(joined, "media.steampowered.com") {
+		t.Fatalf("退役域名被装回去了:%v", reopened.Direct)
+	}
+	if !strings.Contains(joined, "*.steamcontent.com") || !strings.Contains(joined, "*.steamusercontent.com") {
+		t.Fatalf("在用的域名没装上:%v", reopened.Direct)
+	}
+	if state := gaming(reopened).State; state != "on" {
+		t.Errorf("清理干净又全装上了,却显示成 %q", state)
 	}
 }
