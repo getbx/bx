@@ -10,9 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/getbx/bx/internal/setup"
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/install"
@@ -475,6 +478,7 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 		BarrierContext:  BarrierContext{BlockIPv6: true},
 		GatewayProvider: GatewayProviderFunc(DiscoverDefaultGateway),
 		CoreVersion:     version.Version,
+		Throughput:      throughputRecorderFor(options.ConfigPath),
 	})
 	if err != nil {
 		return err
@@ -829,4 +833,34 @@ func failingRulesFrom(report stats.Report) []FailingRule {
 		out = append(out, FailingRule{Kind: kind, Rule: r.Rule, Attempts: r.Attempts, Failures: r.Failures})
 	}
 	return out
+}
+
+// throughputRecorderFor 造出「记一次吞吐观测」那个闭包。
+//
+// **抽成纯粹的接线函数是刻意的** —— 这个仓库全部的事故都在组装根上,而组装根
+// 单测进不去。它拿两件事:当前那台叫什么(配置里的 current)、Core 此刻观测到的
+// 峰值(控制面),两者都拿到了才记。
+//
+// 没有配置路径就返回 nil:那时循环里那一步是空操作,而不是每 30 秒往日志里
+// 打一行「记不了」。
+func throughputRecorderFor(configPath string) func() {
+	if strings.TrimSpace(configPath) == "" {
+		return nil
+	}
+	return func() {
+		_, current, err := setup.ListServers(configPath)
+		if err != nil || strings.TrimSpace(current) == "" {
+			// 单服务器配置(还没有 servers 清单)就没有名字可挂 —— 安静跳过,
+			// 那是正常状态,不是故障。
+			return
+		}
+		report, err := supervisor.FetchStatusReport(supervisor.SockPath)
+		if err != nil || report.PeakBPS <= 0 || report.PeakAt.IsZero() {
+			// Core 没在跑,或者这段时间没人用它传东西。**都不是可记的观测。**
+			return
+		}
+		if err := recordThroughput(DefaultThroughputHistoryPath, current, report.PeakBPS, report.PeakAt); err != nil {
+			log.Printf("guardian_throughput_record_failed server=%q err=%v", current, err)
+		}
+	}
 }

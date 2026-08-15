@@ -242,6 +242,9 @@ func (m *Manager) runReconcileRound(ctx context.Context, observer reconcileObser
 		unobservable: observed.UnobservableItems(),
 		scan:         m.measureRunningCores(),
 	}
+	// 同一类:向系统问一个事实,把答案记下来。**不改任何系统状态**,
+	// 也不进 round(它不是判断的一部分,不该驱动 change-only 日志)。
+	m.recordThroughputObservation()
 	round.decision = m.reconcileOnce(ctx, observed)
 	changed := !sameReconcileRound(previous, round)
 	if changed {

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/setup"
@@ -25,9 +26,13 @@ type serverEntry struct {
 	Current bool   `json:"current"`
 	// Probe 只在这次请求做过探测时出现。**键缺席 = 没测过**,不是「测了没通」。
 	Probe *probeReport `json:"probe,omitempty"`
-	// PeakBPS 是观测到的峰值吞吐,**只有当前那台会有**(吞吐是被动观测,
-	// 没在用的服务器没有产生过流量)。0/缺席 = 没观测到,**不是「跑不动」**。
+	// PeakBPS 是观测到的峰值吞吐。当前那台来自 Core 的实时观测,其余来自历史。
+	// 0/缺席 = 从来没观测到过,**不是「跑不动」**。
 	PeakBPS int64 `json:"peak_bps,omitempty"`
+	// PeakAgeSeconds 是那次观测有多久了。**它和 PeakBPS 必须成对出现** ——
+	// 一个不带年龄的历史数字读起来像现状,而所有者同意存历史的前提正是
+	// 「界面上要标出来这是以前的」。0 = 就是现在(当前那台的实时观测)。
+	PeakAgeSeconds int64 `json:"peak_age_seconds,omitempty"`
 }
 
 // probeReport 是一台的探测结论。
@@ -133,7 +138,12 @@ func serveServerList(w http.ResponseWriter, configPath string, throughput throug
 		return
 	}
 	entries := serverEntries(list, current)
-	attachThroughput(entries, throughput)
+	// 历史读不出来不影响清单:它是诊断数据,而清单是功能。
+	past, herr := loadThroughputState(DefaultThroughputHistoryPath)
+	if herr != nil {
+		log.Printf("guardian_throughput_history_unreadable err=%v", herr)
+	}
+	attachThroughput(entries, throughput, past.Servers, time.Now())
 	writeGuardianJSON(w, http.StatusOK, serversResponse{
 		Servers:    entries,
 		Current:    current,
@@ -296,12 +306,27 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 	})
 }
 
-// attachThroughput 把观测到的峰值吞吐挂到**当前**那台上。
+// attachThroughput 给每台挂上吞吐:当前那台用实时观测,其余用历史。
 //
-// **只挂当前那台,而且只在真观测到的时候挂。** 吞吐是被动观测:没在用的服务器
-// 没有产生过流量,给它一个数就是编;而 0 会被读成「跑不动」,与「这段时间没人
-// 用它传东西」是两回事。
-func attachThroughput(entries []serverEntry, throughput throughputReader) {
+// **历史必须带年龄。** 所有者同意存历史(「以前的值没事」)的前提正是界面上
+// 要标出来这是以前的 —— 一个不带年龄的历史数字读起来像现状。
+//
+// **实时的那份压过历史**:两者都在时,当前那台显示的是此刻,年龄为 0。
+func attachThroughput(entries []serverEntry, throughput throughputReader, history map[string]throughputEntry, now time.Time) {
+	for i := range entries {
+		past, ok := history[entries[i].Name]
+		if !ok || past.PeakBPS <= 0 || past.ObservedAt.IsZero() {
+			continue
+		}
+		age := now.Sub(past.ObservedAt)
+		if age < 0 {
+			// 时钟被改过。**宁可不报年龄也不报一个负的** —— 负的年龄会让
+			// 界面说出「-3 小时前」,而用户从此不信这一栏里的任何数字。
+			continue
+		}
+		entries[i].PeakBPS = past.PeakBPS
+		entries[i].PeakAgeSeconds = int64(age / time.Second)
+	}
 	if throughput == nil {
 		return
 	}
@@ -312,6 +337,7 @@ func attachThroughput(entries []serverEntry, throughput throughputReader) {
 	for i := range entries {
 		if entries[i].Current {
 			entries[i].PeakBPS = bps
+			entries[i].PeakAgeSeconds = 0
 			return
 		}
 	}

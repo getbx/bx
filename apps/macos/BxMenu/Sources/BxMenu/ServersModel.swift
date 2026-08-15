@@ -48,11 +48,15 @@ struct ServerEntry: Decodable, Equatable {
     /// 观测到的峰值吞吐(字节/秒)。**只有当前那台会有** —— 吞吐是被动观测,
     /// 没在用的服务器没有产生过流量。0 = 没观测到,**不是「跑不动」**。
     var peakBPS: Int = 0
+    /// 那次观测有多久了。**和 peakBPS 成对** —— 一个不带年龄的历史数字读起来
+    /// 像现状,而存历史的前提正是界面要标出来这是以前的。0 = 就是现在。
+    var peakAgeSeconds: Int = 0
 
     enum CodingKeys: String, CodingKey {
         case name, host, current, probe
         case udpHost = "udp_host"
         case peakBPS = "peak_bps"
+        case peakAgeSeconds = "peak_age_seconds"
     }
 
     init(from decoder: Decoder) throws {
@@ -63,12 +67,13 @@ struct ServerEntry: Decodable, Equatable {
         current = try c.decodeIfPresent(Bool.self, forKey: .current) ?? false
         probe = try c.decodeIfPresent(ProbeReport.self, forKey: .probe)
         peakBPS = try c.decodeIfPresent(Int.self, forKey: .peakBPS) ?? 0
+        peakAgeSeconds = try c.decodeIfPresent(Int.self, forKey: .peakAgeSeconds) ?? 0
     }
 
     init(name: String, host: String = "", udpHost: String = "", current: Bool = false,
-         probe: ProbeReport? = nil, peakBPS: Int = 0) {
+         probe: ProbeReport? = nil, peakBPS: Int = 0, peakAgeSeconds: Int = 0) {
         self.name = name; self.host = host; self.udpHost = udpHost; self.current = current
-        self.probe = probe; self.peakBPS = peakBPS
+        self.probe = probe; self.peakBPS = peakBPS; self.peakAgeSeconds = peakAgeSeconds
     }
 }
 
@@ -151,7 +156,9 @@ struct ServerRow: Equatable {
     /// 不是一次测速,也不是承诺。
     var throughputLine: String? {
         guard entry.peakBPS > 0 else { return nil }
-        return "peak \(humanBytesPerSecond(entry.peakBPS))"
+        let rate = "peak \(humanBytesPerSecond(entry.peakBPS))"
+        guard let age = relativeAge(seconds: entry.peakAgeSeconds) else { return rate }
+        return "\(rate) · \(age)"
     }
 
     /// 探测那一段。**没测过就一个字都不说** —— 一行「未测试」在每台后面重复,
@@ -259,4 +266,20 @@ func humanBytesPerSecond(_ bps: Int) -> String {
         return String(format: "%.0f kB/s", Double(bps) / 1_000)
     }
     return "\(bps) B/s"
+}
+
+/// 「多久以前」。**返回 nil 表示「就是现在」** —— 那时不该在界面上写一个
+/// 「0 秒前」,它只会让人怀疑这个数字是不是坏的。
+///
+/// 门槛取两分钟:菜单每 2 秒拉一次,而当前那台的观测年龄恒为 0;历史那些
+/// 至少隔着一轮调谐环(30 秒起)。两分钟以内的差别对用户没有意义。
+func relativeAge(seconds: Int) -> String? {
+    guard seconds >= 120 else { return nil }
+    if seconds < 3600 {
+        return "\(seconds / 60)m ago"
+    }
+    if seconds < 86_400 {
+        return "\(seconds / 3600)h ago"
+    }
+    return "\(seconds / 86_400)d ago"
 }

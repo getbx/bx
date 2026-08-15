@@ -195,6 +195,32 @@ struct ServersModelTests {
         expect(humanBytesPerSecond(3_100_000) == "3.1 MB/s", "3100000 的写法不对")
     }
 
+    // **历史数字必须带年龄。** 不带年龄的历史读起来像现状 —— 而存历史的前提
+    // 正是界面要标出来这是以前的。
+    static func testHistoricalThroughputShowsItsAge() {
+        let row = ServerRow(entry: ServerEntry(name: "a", host: "h",
+                                               peakBPS: 8_000_000, peakAgeSeconds: 7200))
+        let line = row.throughputLine ?? ""
+        expect(line.contains("8.0 MB/s"), "数值不对:\(line)")
+        expect(line.contains("2h ago"), "没标出这是以前的:\(line)")
+    }
+
+    // **「就是现在」不写「0 秒前」** —— 它只会让人怀疑这个数字是不是坏的。
+    static func testFreshThroughputHasNoAgeSuffix() {
+        let row = ServerRow(entry: ServerEntry(name: "a", host: "h", peakBPS: 3_100_000))
+        let line = row.throughputLine ?? ""
+        expect(!line.contains("ago"), "刚观测到的却带了年龄:\(line)")
+        expect(line == "peak 3.1 MB/s", "文案不对:\(line)")
+    }
+
+    static func testRelativeAge() {
+        expect(relativeAge(seconds: 0) == nil, "0 秒该是 nil")
+        expect(relativeAge(seconds: 119) == nil, "两分钟以内该是 nil")
+        expect(relativeAge(seconds: 120) == "2m ago", "2 分钟不对")
+        expect(relativeAge(seconds: 7200) == "2h ago", "2 小时不对")
+        expect(relativeAge(seconds: 259_200) == "3d ago", "3 天不对")
+    }
+
     static func main() {
         testServerListDecodesWhatGuardianSends()
         testServerSwitchingNeedsTheCapability()
@@ -212,6 +238,9 @@ struct ServersModelTests {
         testThroughputStaysSilentWhenNotObserved()
         testThroughputSaysPeak()
         testUnitsMatchTheGoSide()
+        testHistoricalThroughputShowsItsAge()
+        testFreshThroughputHasNoAgeSuffix()
+        testRelativeAge()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 一个没被脚本登记的套件
         // 退出码也是 0(本仓库实测栽过)。
         if failures == 0 {
