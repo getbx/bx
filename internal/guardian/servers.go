@@ -18,14 +18,14 @@ import (
 // 与 `bx server use` 用的是同一份。这个仓库反复栽在「同一件事两份实现,一份改了
 // 另一份没改,而两边测试都绿」上,所以这里只做 HTTP 与配置写盘。
 
-type serverEntry struct {
+type ServerEntry struct {
 	Name    string `json:"name"`
 	Host    string `json:"host"`
 	Port    int    `json:"port,omitempty"`
 	UDPHost string `json:"udp_host,omitempty"`
 	Current bool   `json:"current"`
 	// Probe 只在这次请求做过探测时出现。**键缺席 = 没测过**,不是「测了没通」。
-	Probe *probeReport `json:"probe,omitempty"`
+	Probe *ProbeReport `json:"probe,omitempty"`
 	// PeakBPS 是观测到的峰值吞吐。当前那台来自 Core 的实时观测,其余来自历史。
 	// 0/缺席 = 从来没观测到过,**不是「跑不动」**。
 	PeakBPS int64 `json:"peak_bps,omitempty"`
@@ -35,18 +35,18 @@ type serverEntry struct {
 	PeakAgeSeconds int64 `json:"peak_age_seconds,omitempty"`
 }
 
-// probeReport 是一台的探测结论。
+// ProbeReport 是一台的探测结论。
 //
 // **Reachable 与 RTTMS 分开,而且 RTT 带 omitempty。** 把「没通」表达成 0 毫秒
 // 会让界面显示一个漂亮的零 —— 零值读起来像一切正常,这个仓库反复禁止过。
-type probeReport struct {
+type ProbeReport struct {
 	Reachable bool   `json:"reachable"`
 	RTTMS     int64  `json:"rtt_ms,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
 
-type serversResponse struct {
-	Servers    []serverEntry `json:"servers"`
+type ServerListResponse struct {
+	Servers    []ServerEntry `json:"servers"`
 	Current    string        `json:"current"`
 	ConfigPath string        `json:"config_path"`
 }
@@ -144,7 +144,7 @@ func serveServerList(w http.ResponseWriter, configPath string, throughput throug
 		log.Printf("guardian_throughput_history_unreadable err=%v", herr)
 	}
 	attachThroughput(entries, throughput, past.Servers, time.Now())
-	writeGuardianJSON(w, http.StatusOK, serversResponse{
+	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
 		Servers:    entries,
 		Current:    current,
 		ConfigPath: configPath,
@@ -155,8 +155,8 @@ func serveServerList(w http.ResponseWriter, configPath string, throughput throug
 //
 // 链接是凭据(里面有 uuid / 密码)。菜单要显示的是「流量从哪出去」,而那是主机;
 // 把整条链接送到一个 uid 501 的进程里,只是为了渲染一行字,不值得。
-func serverEntries(list []config.Server, current string) []serverEntry {
-	entries := make([]serverEntry, 0, len(list))
+func serverEntries(list []config.Server, current string) []ServerEntry {
+	entries := make([]ServerEntry, 0, len(list))
 	for _, s := range list {
 		// 必须用会解 bx:// 壳的那份判据:配置里存的是换壳链接,
 		// 直接问 tunnel.ServerHost 会得到整串 base64(真机实测)。
@@ -170,7 +170,7 @@ func serverEntries(list []config.Server, current string) []serverEntry {
 				udp = uh
 			}
 		}
-		entries = append(entries, serverEntry{
+		entries = append(entries, ServerEntry{
 			Name: s.Name, Host: host, Port: setup.LinkPort(s.Link), UDPHost: udp,
 			Current: strings.EqualFold(strings.TrimSpace(s.Name), strings.TrimSpace(current)),
 		})
@@ -255,7 +255,7 @@ func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string
 	log.Printf("guardian_server_added name=%q current=%q", name, current)
 	// 回完整清单而不是一个 ok:界面据此重画,不必自己推演改动后的状态 ——
 	// 推演出来的状态与盘上真实的状态漂开,正是这个仓库反复栽的形状。
-	writeGuardianJSON(w, http.StatusOK, serversResponse{
+	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
 		Servers: serverEntries(list, current), Current: current, ConfigPath: configPath,
 	})
 }
@@ -286,7 +286,7 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 	for i := range entries {
 		host, port := entries[i].Host, entries[i].Port
 		if host == "" {
-			entries[i].Probe = &probeReport{Error: "链接解析不出主机"}
+			entries[i].Probe = &ProbeReport{Error: "链接解析不出主机"}
 			continue
 		}
 		result, err := probe(host, port)
@@ -294,14 +294,14 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 			// Core 不可达 / 这一版不支持 —— 那是「没问出来」,**不是「不可达」**。
 			// 判成不可达会把一台好服务器标成红的。
 			log.Printf("guardian_server_probe_failed host=%s err=%v", host, err)
-			entries[i].Probe = &probeReport{Error: "没能测(bx 没在跑?)"}
+			entries[i].Probe = &ProbeReport{Error: "没能测(bx 没在跑?)"}
 			continue
 		}
-		entries[i].Probe = &probeReport{
+		entries[i].Probe = &ProbeReport{
 			Reachable: result.Reachable, RTTMS: result.RTTMS, Error: result.Error,
 		}
 	}
-	writeGuardianJSON(w, http.StatusOK, serversResponse{
+	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
 		Servers: entries, Current: current, ConfigPath: configPath,
 	})
 }
@@ -312,7 +312,7 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 // 要标出来这是以前的 —— 一个不带年龄的历史数字读起来像现状。
 //
 // **实时的那份压过历史**:两者都在时,当前那台显示的是此刻,年龄为 0。
-func attachThroughput(entries []serverEntry, throughput throughputReader, history map[string]throughputEntry, now time.Time) {
+func attachThroughput(entries []ServerEntry, throughput throughputReader, history map[string]throughputEntry, now time.Time) {
 	for i := range entries {
 		past, ok := history[entries[i].Name]
 		if !ok || past.PeakBPS <= 0 || past.ObservedAt.IsZero() {
