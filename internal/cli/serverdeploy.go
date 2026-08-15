@@ -368,7 +368,7 @@ func applyDeployedLink(link string) error {
 	// **不偷偷提权。** 写 /etc/bx 要 root,而这条命令的其余部分不需要 ——
 	// 让一条只做 ssh 的命令中途弹密码框是坏意外。
 	if os.Geteuid() != 0 {
-		fmt.Printf("\n下一步(需要 root):\n  sudo bx setup %s\n  sudo bx up\n", quoteSetupArgs(link))
+		fmt.Printf("\n下一步(需要 root):\n  %s\n  sudo bx up\n", setupCommandLine(main, udp))
 		return nil
 	}
 
@@ -377,18 +377,22 @@ func applyDeployedLink(link string) error {
 	// 而这个仓库全部的事故都在这种「同一件事两个实现」上。
 	self, err := os.Executable()
 	if err != nil {
-		fmt.Printf("\n下一步:\n  bx setup %s\n  bx up\n", quoteSetupArgs(link))
+		fmt.Printf("\n下一步:\n  %s\n  bx up\n", setupCommandLine(main, udp))
 		return nil
 	}
-	args := []string{"setup", main}
+	// **flag 必须在链接之前。** urfave/cli 遇到第一个位置参数就停止解析 flag,
+	// 写成 `setup <链接> --udp <值>` 会让 --udp 被当成位置参数 —— bx 自己的
+	// checkSetupArgs 会当场拒绝(2026-08-14 真机撞到)。
+	args := []string{"setup"}
 	if udp != "" {
 		args = append(args, "--udp", udp)
 	}
+	args = append(args, main)
 	fmt.Println("• 写本机配置(bx setup)…")
 	cmd := exec.Command(self, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("写本机配置失败:%w(可手动跑 bx setup %s)", err, quoteSetupArgs(link))
+		return fmt.Errorf("写本机配置失败:%w(可手动跑 %s)", err, setupCommandLine(main, udp))
 	}
 	fmt.Println("\n✅ 部署完成。下一步:sudo bx up")
 	return nil
@@ -493,17 +497,6 @@ func remoteFetchBinary(host, arch string, sudo, hasTTY bool) error {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
 	}
 	return nil
-}
-
-// quoteSetupArgs 把「主链接 --udp UDP链接」渲染成可直接粘贴的一行。
-func quoteSetupArgs(combined string) string {
-	parts := strings.Fields(combined)
-	for i, p := range parts {
-		if strings.HasPrefix(p, "bx://") {
-			parts[i] = shellSingleQuoted(p)
-		}
-	}
-	return strings.Join(parts, " ")
 }
 
 // remoteFirewallCommand 放行隧道端口。

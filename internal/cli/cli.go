@@ -889,7 +889,7 @@ func encodedClientLinks(cfg serverConfig) (main string, udp string) {
 
 func setupCommand(main, udp string) string {
 	if udp != "" {
-		return fmt.Sprintf("sudo bx setup '%s' --udp '%s'", main, udp)
+		return setupCommandLine(main, udp)
 	}
 	return fmt.Sprintf("sudo bx setup '%s'", main)
 }
@@ -3411,7 +3411,7 @@ func transportChangeLines(before setup.TransportsBefore, links []string, udpTran
 				out = append(out,
 					fmt.Sprintf("⚠ UDP 传输仍指向旧服务器 %s —— 它跟着上一台机器走的,现在那台已经不是你的出口了", host),
 					"  后果:UDP(微信语音、QUIC、NTP)会被 fail-closed 全部阻断,而 bx status 仍显示 Protected",
-					"  处置:带上新服务器的 UDP 链接重跑 `bx setup <bx://…> --udp <hysteria2://…>`,",
+					"  处置:带上新服务器的 UDP 链接重跑 `bx setup --udp <hysteria2://…> <bx://…>`(**flag 必须在链接之前**),",
 					"        或者从 /etc/bx/config.yaml 里删掉 udp.transport 这一行(UDP 会改走主传输)")
 			} else {
 				out = append(out, fmt.Sprintf("• UDP 传输保持不变:%s", redactLink(before.UDPTransport)))
@@ -5650,4 +5650,20 @@ func heldFenceHint(held string) string {
 		// 给「下一步」反而会催人去动手。
 		return ""
 	}
+}
+
+// setupCommandLine 渲染一条**可以直接粘贴**的 bx setup 命令。
+//
+// **只有一处渲染,因为顺序是会咬人的。** urfave/cli 沿用 Go flag 语义:遇到
+// 第一个位置参数就停止解析 flag,于是 `bx setup '<链接>' --udp '<值>'` 里的
+// --udp 会被当成位置参数。bx 有一道守卫(checkSetupArgs)专门拒绝这种写法,
+// 而 bx 自己曾在三处**生成**它 —— 包括 `bx server install` 与 `bx server deploy`
+// 打给用户的下一步(2026-08-14 真机:照着敲直接被拒)。
+func setupCommandLine(main, udp string) string {
+	parts := []string{"sudo bx setup"}
+	if strings.TrimSpace(udp) != "" {
+		parts = append(parts, "--udp", "'"+udp+"'")
+	}
+	parts = append(parts, "'"+main+"'")
+	return strings.Join(parts, " ")
 }

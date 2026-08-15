@@ -3719,14 +3719,18 @@ func TestSetupCommandQuotesLinks(t *testing.T) {
 	if got := setupCommand(main, ""); got != "sudo bx setup 'bx://main'" {
 		t.Fatalf("setupCommand main = %q", got)
 	}
-	if got := setupCommand(main, udp); got != "sudo bx setup 'bx://main' --udp 'bx://udp'" {
+	// **flag 必须在链接之前。** 这条断言此前钉的是相反的顺序 —— 也就是把一个
+	// bx 自己会拒绝的命令钉成了「正确」:urfave/cli 遇到第一个位置参数就停止
+	// 解析 flag,`setup '<链接>' --udp '<值>'` 里的 --udp 会被当成位置参数,
+	// 而 checkSetupArgs 专门拒绝它(2026-08-14 真机:照着敲直接被拒)。
+	if got := setupCommand(main, udp); got != "sudo bx setup --udp 'bx://udp' 'bx://main'" {
 		t.Fatalf("setupCommand udp = %q", got)
 	}
 }
 
 func TestInviteTextIsUserFriendly(t *testing.T) {
 	out := inviteText("alice", "bx://main", "bx://udp")
-	for _, want := range []string{"bx invite: alice", "给用户", "菜单栏 App", "bx://main", "UDP: bx://udp", "sudo bx setup 'bx://main' --udp 'bx://udp'", "sudo bx up"} {
+	for _, want := range []string{"bx invite: alice", "给用户", "菜单栏 App", "bx://main", "UDP: bx://udp", "sudo bx setup --udp 'bx://udp' 'bx://main'", "sudo bx up"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("invite text missing %q:\n%s", want, out)
 		}
