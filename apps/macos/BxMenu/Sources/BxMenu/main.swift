@@ -288,6 +288,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let fresh = outcome.rules {
             lastRules = fresh
         }
+        if let fresh = outcome.servers {
+            lastServers = fresh
+            serversWindow.refreshIfVisible(rows: serverRows(from: fresh), probe: exitIPProbe)
+        }
         updateIcon()
         rebuildMenu()
         if let snapshot = recoverySnapshot,
@@ -315,6 +319,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         /// 这一次读到的规则。**nil 表示没读到**,与「一条规则都没有」是两回事 ——
         /// 后者会让菜单摆出一个空列表,用户据此以为自己从没配过规则。
         let rules: RuleList?
+        /// 这一次读到的服务器清单。**nil 表示没读到**,同上。
+        let servers: ServerList?
     }
 
     /// 收集一次状态。**跑在后台线程**(它要拨 Guardian 的 socket、还剩两处 spawn),
@@ -335,6 +341,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var outdatedRuntime: OutdatedRuntimeNotice?
         var maintenanceReport: GuardianStatus?
         var rules: RuleList?
+        var servers: ServerList?
         func resolve() -> BxState {
             let runtimeVersion = unifiedRuntimeVersion()
             // 「CLI 能不能执行」是关于**本机环境**的事实,Guardian 答不上来 —— 但
@@ -468,13 +475,18 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if rulesEditingAvailable(capabilities: maintenanceReport?.capabilities) {
             rules = try? GuardianClient().listRules()
         }
+        // 同上:能力键缺席 = 旧版 Guardian 没有这个端点,别每轮白拨一次 socket。
+        if serverSwitchingAvailable(capabilities: maintenanceReport?.capabilities) {
+            servers = try? GuardianClient().listServers()
+        }
         return RefreshOutcome(
             state: state,
             recoverySnapshot: recoverySnapshot,
             repairVersions: repairVersions,
             outdatedRuntime: outdatedRuntime,
             maintenanceReport: maintenanceReport,
-            rules: rules
+            rules: rules,
+            servers: servers
         )
     }
 
@@ -682,6 +694,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 上一次读到的规则。nil 表示**没读到**,与「一条规则都没有」是两回事 ——
     /// 后者会让用户以为自己从没配过规则。
     private var lastRules: RuleList?
+    private var lastServers: ServerList?
+    /// 出口 IP 探测的当前状态。**默认是 .unknown(「没查过」),不是某个地址** ——
+    /// 与这个仓库里 Tristate 同一条纪律。
+    private var exitIPProbe: ExitIPProbe = .unknown
 
     /// 规则窗口。**窗口而不是子菜单**:菜单每 2 秒 removeAllItems() 重建一次,
     /// 而进子菜单再点一项通常超过 2 秒 —— 真机上就是这么变成"点了没反应"的。
@@ -712,6 +728,104 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             custom: rules.custom,
             configPath: rules.configPath
         )
+    }
+
+    /// 服务器窗口。窗口而不是子菜单,理由同 rulesWindow。
+    private lazy var serversWindow: ServersWindowController = {
+        let controller = ServersWindowController()
+        controller.onSwitch = { [weak self] name, host in
+            self?.confirmAndSwitchServer(name: name, host: host)
+        }
+        controller.onCheckExitIP = { [weak self] in
+            self?.checkExitIP()
+        }
+        return controller
+    }()
+
+    @objc private func openServersWindow() {
+        guard let servers = lastServers else {
+            let alert = NSAlert()
+            alert.messageText = "Servers are not available"
+            alert.informativeText = "bx could not read its configuration. "
+                + "See /var/log/bx-guard.err.log for the reason."
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+            return
+        }
+        serversWindow.show(rows: serverRows(from: servers), probe: exitIPProbe)
+    }
+
+    /// 换服务器 —— **先确认再换**。
+    ///
+    /// 换出口是有后果的事(正在登录的会话、风控、正在下载的东西),这正是项目
+    /// 所有者拒绝自动容灾的理由:自动切会在用户不知情时换掉出口 IP。既然选择由
+    /// 人来做,那就必须让人先看见后果。
+    private func confirmAndSwitchServer(name: String, host: String) {
+        let alert = NSAlert()
+        alert.messageText = "Switch server?"
+        alert.informativeText = serverSwitchConfirmMessage(name: name, host: host)
+        alert.addButton(withTitle: "Switch")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // 换过去之后旧的探测结果就作废了 —— 留着它会让用户读到上一台的出口。
+        exitIPProbe = .unknown
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try GuardianClient().switchServer(name: name) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let outcome):
+                    let alert = NSAlert()
+                    // **热切没成功时不许说「已切换」** —— 判据在 ServersModel 的
+                    // 纯函数里,由 Swift 套件钉住。
+                    alert.messageText = outcome.applied ? "Switched" : "Saved, but not applied yet"
+                    alert.informativeText = serverSwitchOutcomeMessage(result: outcome)
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                case .failure(let error):
+                    let alert = NSAlert()
+                    alert.messageText = "Could not switch server"
+                    alert.informativeText = "\(error.localizedDescription)\n\n"
+                        + "See /var/log/bx-guard.err.log for the full reason."
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                }
+                // 用户刚做完动作,这一次刷新不许被丢掉。
+                self.refresh(userInitiated: true)
+            }
+        }
+    }
+
+    /// 「现在从哪出去」。
+    ///
+    /// **这一次请求由菜单自己发,不是 Guardian 发。** 菜单以普通用户身份跑,它的
+    /// 流量和浏览器走同一条路 —— 那才是「网站看到的是什么」这个问题的忠实答案;
+    /// 而让一个 root 守护进程多长一条对外请求的能力,换不来更准的结果。
+    ///
+    /// 端点用 icanhazip:它是这个仓库为泄漏检测选定的那一个,已经过「不在 china
+    /// 直连列表里」那道守卫 —— 用一个在列表里的域名(ipify 就栽过)会让探测走直连,
+    /// 报出用户真实的 ISP 出口,方向正好相反。
+    private func checkExitIP() {
+        guard exitIPProbe != .checking else { return }
+        exitIPProbe = .checking
+        serversWindow.refreshIfVisible(rows: serverRows(from: lastServers ?? ServerList()), probe: exitIPProbe)
+
+        var request = URLRequest(url: URL(string: "https://ipv4.icanhazip.com")!)
+        request.timeoutInterval = 10
+        // 不要缓存:用户点它就是要一个**现在**的答案。
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
+            let parsed = data.flatMap { parseExitIPResponse(String(decoding: $0, as: UTF8.self)) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // 解不出来就是「没问出来」,**绝不编一个地址**。
+                self.exitIPProbe = parsed.map { ExitIPProbe.address($0) } ?? .failed
+                self.serversWindow.refreshIfVisible(
+                    rows: serverRows(from: self.lastServers ?? ServerList()), probe: self.exitIPProbe)
+            }
+        }.resume()
     }
 
     /// 整组打开或关掉。
@@ -967,6 +1081,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 按一份的能力去画、按另一份的数据去填。
         if rulesEditingAvailable(capabilities: maintenanceReport?.capabilities) {
             menu.addAction("Routing Rules…", symbol: "arrow.triangle.branch", target: self, action: #selector(openRulesWindow))
+        }
+        // 服务器入口:同样只在 Guardian 声明了这个能力时出现。旧版没有
+        // /v1/servers,画出来的按钮每次点都失败,而用户看不出为什么。
+        if serverSwitchingAvailable(capabilities: maintenanceReport?.capabilities) {
+            menu.addAction("Servers…", symbol: "globe", target: self, action: #selector(openServersWindow))
         }
         // **换配置的入口。** 此前只有「还没配置」那个状态里有 Set Up bx…,
         // 配好之后再也找不到它 —— 换服务器只能开终端(2026-08-14 项目所有者提出)。

@@ -17,8 +17,10 @@ func TestRenderServerList(t *testing.T) {
 	// fixture 全用裸链接 —— 于是真机上整串 base64 被当成主机名打给了用户,
 	// 而测试全绿(2026-08-14)。
 	list := []config.Server{
-		{Name: "hk", Link: blink.Encode("vless://u@1.1.1.1:443?security=reality"),
-			UDP: blink.Encode("hysteria2://p@1.1.1.1:443")},
+		{
+			Name: "hk", Link: blink.Encode("vless://u@1.1.1.1:443?security=reality"),
+			UDP: blink.Encode("hysteria2://p@1.1.1.1:443"),
+		},
 		{Name: "us", Link: "vless://u@2.2.2.2:443?security=reality"},
 	}
 	out := renderServerList(list, "us")

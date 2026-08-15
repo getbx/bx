@@ -68,7 +68,11 @@ gofumpt_check() {
 	local bin="$(go env GOPATH)/bin/gofumpt"
 	[ -x "$bin" ] || { echo "gofumpt 未安装:go install mvdan.cc/gofumpt@latest"; return 1; }
 	local drift
-	drift="$(git ls-files '*.go' | grep -v '^internal/embedded/assets/' | grep -v '^internal/winfw/' | xargs "$bin" -l)"
+	# **`--others` 不能省。** 只问 `git ls-files` 就只看得见**已跟踪**的文件,
+	# 于是一个新文件在它最需要被检查的那一次(提交之前)是隐形的,提交之后才
+	# 头一回被看见 —— 实测栽过:本轮两个新测试文件带着格式漂移过了这道闸门,
+	# 提交之后的下一次 verify 才转红。
+	drift="$(git ls-files --cached --others --exclude-standard '*.go' | grep -v '^internal/embedded/assets/' | grep -v '^internal/winfw/' | xargs "$bin" -l)"
 	[ -z "$drift" ] || { echo "以下文件未格式化,请跑 gofumpt -w:"; echo "$drift"; return 1; }
 }
 step "gofumpt (no drift)" gofumpt_check

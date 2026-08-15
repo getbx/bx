@@ -1,6 +1,9 @@
 package supervisor
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // 本文件是「换服务器」的编排,**cli 与 guardian 共用**。
 //
@@ -39,4 +42,44 @@ func SwitchServer(deps SwitchDeps, name, link, udp string) error {
 			"请立刻 `sudo bx down && sudo bx up` 让配置里的选择落定", name, err)
 	}
 	return nil
+}
+
+// LiveSwitchDeps 是接到真 Core 上的那四步。
+func LiveSwitchDeps() SwitchDeps {
+	return SwitchDeps{
+		Arm: func(link, udp string) error {
+			_, err := SetServerControl(SockPath, link, udp)
+			return err
+		},
+		// **验证是「新隧道健康」,不是「命令没报错」。** 换过去之后隧道起不来
+		// 才是这次切换真正的失败,而那要等健康检查跑一轮。
+		Healthy: func() bool { return tunnelHealthyWithin(switchVerifyTimeout) },
+		Commit: func() error {
+			_, err := CommitControl(SockPath)
+			return err
+		},
+		Rollback: func() error {
+			_, err := RollbackControl(SockPath)
+			return err
+		},
+	}
+}
+
+// switchVerifyTimeout 是等新隧道变健康的上限。
+//
+// 比死手的窗口短:必须在死手动手之前得出结论,否则我们的「确认」会撞上
+// 它的「还原」,而两者谁先谁后是掷骰子。
+const switchVerifyTimeout = 12 * time.Second
+
+func tunnelHealthyWithin(limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for {
+		if rep, err := FetchStatusReport(SockPath); err == nil && rep.TunnelHealthy {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
