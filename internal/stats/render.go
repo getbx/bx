@@ -103,6 +103,11 @@ func Render(r Report) string {
 	}
 	fmt.Fprintf(&b, "  分流    代理 %.1f%% / 直连 %.1f%%\n", ratio, 100-ratio)
 	fmt.Fprintf(&b, "  流量    ↑ %s   ↓ %s\n", humanBytes(r.BytesUp), humanBytes(r.BytesDown))
+	// UDP 那条路的一句话。**一切正常时一个字都不打。**
+	// 它此前完全隐形:UDP 不问 router,于是既没有规则归因,失败也一次都没被数过。
+	if notice := r.UDPNotice(); notice != "" {
+		fmt.Fprintf(&b, "  %-6s%s\n", "UDP", notice)
+	}
 	// 点名成片失败的用户规则。**一切正常时这里一个字都不打** ——
 	// 那是它不被训练成噪声的前提。
 	if failing := r.FailingRules(); len(failing) > 0 {

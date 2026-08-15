@@ -134,3 +134,116 @@ func TestProxyDialFailureIsCountedToo(t *testing.T) {
 		t.Errorf("内建来源也要归因(只是没有规则原文可点名):%v", counter.failures)
 	}
 }
+
+// **UDP 的失败此前一次都没被数过。**
+//
+// recordFailure 只在 TCP 那三条路上可达,而 UDP 分支在 DialContext 顶部就短路了。
+// 于是一条 UDP 传输哪怕每次拨号都失败,`bx status` 也是一片安静:proxy 计数照涨
+// (判定确实发生了),failed 恒为 0 —— 正是「结果计数」这件事要消灭的处境,
+// 只不过上一轮把 UDP 这半边漏掉了。
+func TestUDPProxyDialFailureIsCounted(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{GlobalProxy: true})
+	d.SetTransport(&Transport{Proxy: failingDialer{err: errors.New("no route")}, Healthy: func() bool { return true }})
+
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("203.0.113.9"), Port: 443, UDP: true}); err == nil {
+		t.Fatal("拨号应当失败")
+	}
+	if counter.proxy != 1 {
+		t.Errorf("判定没记上:proxy=%d", counter.proxy)
+	}
+	if counter.pFail != 1 {
+		t.Fatalf("UDP 失败没被数:proxy_failed=%d —— 一条每次都失败的 UDP 路径在 status 里隐形", counter.pFail)
+	}
+	if len(counter.failures) != 1 || counter.failures[0] != "udp_proxy_fallback|" {
+		t.Errorf("失败没归因到来源:%v", counter.failures)
+	}
+}
+
+// **归因到「模式」,因为 UDP 根本不问 router。**
+//
+// proxy 模式下所有 UDP 一律走隧道,没有「命中了哪条规则」可归。但它必须归到
+// 某个东西 —— 否则 status 里那几百条 proxy 连接凭空出现、无从解释。
+func TestUDPDecisionsAreAttributedToTheirMode(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{GlobalProxy: true})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+	d.SetUDPTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("203.0.113.9"), Port: 443, UDP: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(counter.attempts) != 1 || counter.attempts[0] != "udp_proxy|" {
+		t.Fatalf("判定没归因:%v", counter.attempts)
+	}
+}
+
+// **回落必须能被看见。**
+//
+// 专用 UDP 传输挂掉时 bx 静默退回主传输 —— 通路保住了(那是对的),而用户白白
+// 失去了 QUIC 加速档,且此前没有任何地方说得出这件事正在发生。两种来源必须分开,
+// 否则「一直在回落」与「一直好好的」在 status 里逐字节相同。
+func TestUDPFallbackIsCountedSeparatelyFromTheDedicatedTransport(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{GlobalProxy: true})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+	// 专用 UDP 传输不健康 → 回落主传输。
+	d.SetUDPTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return false }})
+
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("203.0.113.9"), Port: 443, UDP: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(counter.attempts) != 1 || counter.attempts[0] != "udp_proxy_fallback|" {
+		t.Fatalf("回落没有单独记:%v —— 「一直在回落」与「一直好好的」会长得一模一样", counter.attempts)
+	}
+}
+
+// direct-realtime 那条路同样要数:它以**真实 IP** 直连,失败在那里最值得被看见。
+// 解析失败也算 —— 此前它直接 return,一次都没被数过。
+func TestUDPDirectRealtimeFailuresAreCounted(t *testing.T) {
+	t.Run("拨号失败", func(t *testing.T) {
+		counter := &recordingCounter{}
+		d := &Dialer{
+			Resolver: fixedResolver{}, Direct: failingDialer{err: errors.New("host unreachable")},
+			Stats: counter, UDPMode: "direct-realtime",
+		}
+		d.SetRouter(&route.Router{GlobalProxy: true})
+		d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+
+		if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("203.0.113.9"), Port: 443, UDP: true}); err == nil {
+			t.Fatal("拨号应当失败")
+		}
+		if counter.dFail != 1 {
+			t.Fatalf("direct_failed = %d, want 1", counter.dFail)
+		}
+		if len(counter.failures) != 1 || counter.failures[0] != "udp_direct_realtime|" {
+			t.Errorf("失败没归因:%v", counter.failures)
+		}
+	})
+
+	t.Run("解析失败", func(t *testing.T) {
+		counter := &recordingCounter{}
+		d := &Dialer{
+			Resolver: failingResolver{}, Direct: okDialer{},
+			Stats: counter, UDPMode: "direct-realtime",
+		}
+		d.SetRouter(&route.Router{GlobalProxy: true})
+		d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+
+		if _, err := d.Dial(context.Background(), route.Meta{Domain: "example.com", Port: 443, UDP: true}); err == nil {
+			t.Fatal("解析应当失败")
+		}
+		if counter.dFail != 1 {
+			t.Fatalf("解析失败没被数:direct_failed = %d", counter.dFail)
+		}
+	})
+}
+
+type failingResolver struct{}
+
+func (failingResolver) Resolve(context.Context, string) (netip.Addr, error) {
+	return netip.Addr{}, errors.New("no such host")
+}

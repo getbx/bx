@@ -192,11 +192,15 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			}
 			if d.Stats != nil {
 				d.Stats.Direct()
+				d.Stats.RuleAttempt(udpSourceDirectRealtime, "")
 			}
 			ip := m.IP
 			if m.Domain != "" {
 				resolved, err := d.Resolver.Resolve(ctx, m.Domain)
 				if err != nil {
+					// 解析失败也是这条路的失败。**此前它直接返回,一次都没被数过** ——
+					// 一条每次都解析不出来的 UDP 路径在 bx status 里完全隐形。
+					d.recordUDPFailure(route.Direct, udpSourceDirectRealtime)
 					return nil, err
 				}
 				ip = resolved
@@ -208,16 +212,22 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			}
 			target := net.JoinHostPort(ip.String(), strconv.Itoa(int(m.Port)))
 			debugf("udp direct-realtime: ip=%s target=%s", m.IP, target)
-			return d.Direct.DialContext(ctx, "udp", target)
+			conn, err := d.Direct.DialContext(ctx, "udp", target)
+			if err != nil {
+				d.recordUDPFailure(route.Direct, udpSourceDirectRealtime)
+			}
+			return conn, err
 		}
 		if d.UDPMode == "proxy" {
 			// 按类分流:UDP 优先走专用传输(hysteria);它未设或不健康 → 回落主传输(reality)。
 			// hys2 与主传输去的是同一台 VPS、同一条加密隧道,故回落它 ≠ 回落直连、不泄漏——
 			// killswitch 真正要防的是回落直连暴露真实 IP。hys2 是纯加速档:好用时走它、挂了
 			// 自动退到 reality 保通路,绝不黑洞 UDP。只有主传输也挂,下面的 killswitch 才 Block。
-			utr := udpTransport
+			// **回落要留痕。** 专用 UDP 传输挂掉时这里静默退回主传输 —— 通路保住了,
+			// 而用户白白失去了 QUIC 加速档,且此前没有任何地方说得出这件事正在发生。
+			utr, source := udpTransport, udpSourceProxy
 			if utr == nil || utr.Healthy == nil || !utr.Healthy() {
-				utr = tr
+				utr, source = tr, udpSourceProxyFallback
 			}
 			if d.killswitchBlocks(utr) {
 				if d.Stats != nil {
@@ -228,6 +238,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			}
 			if d.Stats != nil {
 				d.Stats.Proxy()
+				d.Stats.RuleAttempt(source, "")
 			}
 			host := m.Domain
 			if host == "" {
@@ -235,7 +246,11 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			}
 			target := net.JoinHostPort(host, strconv.Itoa(int(m.Port)))
 			debugf("udp proxy: ip=%s domain=%q target=%s", m.IP, m.Domain, target)
-			return utr.Proxy.DialContext(ctx, "udp", target)
+			conn, err := utr.Proxy.DialContext(ctx, "udp", target)
+			if err != nil {
+				d.recordUDPFailure(route.Proxy, source)
+			}
+			return conn, err
 		}
 		if d.Stats != nil {
 			d.Stats.Blocked()
@@ -329,6 +344,38 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		}
 		return nil, ErrBlocked
 	}
+}
+
+// UDP 的三条来源。
+//
+// **UDP 根本不问 router**(见 DialContext 里 m.UDP 那段:proxy 模式下所有 UDP
+// 一律走隧道),所以它没有「命中了哪条规则」可归因。但它必须归因到**某个东西** ——
+// 否则 `bx status` 里那几百条 proxy 连接凭空出现、无从解释,而这正是「结果计数」
+// 这件事要消灭的处境。归到「模式」是这条路上唯一诚实的答案。
+const (
+	udpSourceProxy          = "udp_proxy"
+	udpSourceProxyFallback  = "udp_proxy_fallback"
+	udpSourceDirectRealtime = "udp_direct_realtime"
+)
+
+// recordUDPFailure 记一次 UDP 拨号失败。
+//
+// **UDP 的失败此前一次都没被数过** —— recordFailure 只在 TCP 那三条路上可达,
+// 而 UDP 分支在 DialContext 顶部就短路了。于是一条 UDP 传输哪怕每次拨号都失败,
+// `bx status` 里也是一片安静:proxy 计数照涨(判定发生了),failed 恒为 0。
+func (d *Dialer) recordUDPFailure(dec route.Decision, source string) {
+	if d.Stats == nil {
+		return
+	}
+	switch dec {
+	case route.Direct:
+		d.Stats.DirectFailed()
+	case route.Proxy:
+		d.Stats.ProxyFailed()
+	default:
+		return
+	}
+	d.Stats.RuleFailure(source, "")
 }
 
 // recordFailure 记一次拨号失败:总数一份,按规则归因一份。
