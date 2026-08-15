@@ -168,6 +168,33 @@ struct ServersModelTests {
         expect(list.servers[1].probe?.rttMS == 0, "rtt 缺席却不是 0")
     }
 
+    // **没观测到吞吐就一个字都不说。**「0 B/s」读起来像这条隧道死了,而真相是
+    // 这段时间没人用它传东西 —— 一台没人用的和一台被打满到爬的,在计数上都安静。
+    static func testThroughputStaysSilentWhenNotObserved() {
+        let row = ServerRow(entry: ServerEntry(name: "a", host: "h"))
+        expect(row.throughputLine == nil, "没观测到却说了话:\(row.throughputLine ?? "")")
+        expect(!row.detail.contains("B/s"), "detail 里混进了吞吐:\(row.detail)")
+    }
+
+    // 措辞是 peak 不是 speed:这是**已经发生过的流量**里最快的那一秒,
+    // 不是一次测速,也不是承诺。
+    static func testThroughputSaysPeak() {
+        let row = ServerRow(entry: ServerEntry(name: "a", host: "h", peakBPS: 3_100_000))
+        let line = row.throughputLine ?? ""
+        expect(line.hasPrefix("peak "), "没说清楚这是峰值:\(line)")
+        expect(line.contains("3.1 MB/s"), "数值不对:\(line)")
+    }
+
+    // 单位必须与 Go 侧 stats.HumanBPS 一致(十进制)。两边不一致的话,同一个数
+    // 在 `bx status` 与菜单里会显示成两个值。
+    static func testUnitsMatchTheGoSide() {
+        expect(humanBytesPerSecond(0) == "0 B/s", "0 的写法不对")
+        expect(humanBytesPerSecond(999) == "999 B/s", "999 的写法不对")
+        expect(humanBytesPerSecond(1_000) == "1 kB/s", "1000 的写法不对")
+        expect(humanBytesPerSecond(125_000) == "125 kB/s", "125000 的写法不对")
+        expect(humanBytesPerSecond(3_100_000) == "3.1 MB/s", "3100000 的写法不对")
+    }
+
     static func main() {
         testServerListDecodesWhatGuardianSends()
         testServerSwitchingNeedsTheCapability()
@@ -182,6 +209,9 @@ struct ServersModelTests {
         testProbeLineSaysMillisecondsOrWhyNot()
         testUnreachableNeverRendersAsZeroMilliseconds()
         testProbeDecodesFromGuardian()
+        testThroughputStaysSilentWhenNotObserved()
+        testThroughputSaysPeak()
+        testUnitsMatchTheGoSide()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 一个没被脚本登记的套件
         // 退出码也是 0(本仓库实测栽过)。
         if failures == 0 {

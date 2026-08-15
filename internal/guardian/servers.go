@@ -25,6 +25,9 @@ type serverEntry struct {
 	Current bool   `json:"current"`
 	// Probe 只在这次请求做过探测时出现。**键缺席 = 没测过**,不是「测了没通」。
 	Probe *probeReport `json:"probe,omitempty"`
+	// PeakBPS 是观测到的峰值吞吐,**只有当前那台会有**(吞吐是被动观测,
+	// 没在用的服务器没有产生过流量)。0/缺席 = 没观测到,**不是「跑不动」**。
+	PeakBPS int64 `json:"peak_bps,omitempty"`
 }
 
 // probeReport 是一台的探测结论。
@@ -76,6 +79,19 @@ func liveServerProbe(host string, port int) (supervisor.ProbeResult, error) {
 	return supervisor.ProbeControl(supervisor.SockPath, host, port)
 }
 
+// throughputReader 报「**当前**那台观测到的峰值吞吐」。0 = 没观测到。
+type throughputReader func() (bps int64, ok bool)
+
+// liveThroughput 从 Core 的状态里取。**只有当前那台有这个数**,因为吞吐是
+// 被动观测 —— 没在用的服务器没有产生过流量,凭空给它一个数就是编。
+func liveThroughput() (int64, bool) {
+	rep, err := supervisor.FetchStatusReport(supervisor.SockPath)
+	if err != nil || rep.PeakBPS <= 0 {
+		return 0, false
+	}
+	return rep.PeakBPS, true
+}
+
 // liveServerSwitch 接到真 Core 上。
 func liveServerSwitch(name, link, udp string) error {
 	return supervisor.SwitchServer(supervisor.LiveSwitchDeps(), name, link, udp)
@@ -85,7 +101,7 @@ func liveServerSwitch(name, link, udp string) error {
 //
 // **授权与 /v1/up、/v1/rules 同一道门。** 换服务器会改变出口 IP,是与开关保护
 // 同一量级的动作;而菜单以 owner 身份跑,取一致才用得上。
-func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher, probe serverProber) http.HandlerFunc {
+func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher, probe serverProber, throughput throughputReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !authorizeOwnerPeer(r.Context(), ownerUID) {
 			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "servers require owner or root peer"})
@@ -99,7 +115,7 @@ func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher,
 		}
 		switch r.Method {
 		case http.MethodGet:
-			serveServerList(w, configPath)
+			serveServerList(w, configPath, throughput)
 		case http.MethodPost:
 			applyServerSwitch(w, r, configPath, switchTo, probe)
 		default:
@@ -108,7 +124,7 @@ func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher,
 	}
 }
 
-func serveServerList(w http.ResponseWriter, configPath string) {
+func serveServerList(w http.ResponseWriter, configPath string, throughput throughputReader) {
 	list, current, err := setup.ListServers(configPath)
 	if err != nil {
 		// 完整原因只进 Guardian 日志:配置里有服务器链接,而链接就是凭据。
@@ -116,8 +132,10 @@ func serveServerList(w http.ResponseWriter, configPath string) {
 		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
 		return
 	}
+	entries := serverEntries(list, current)
+	attachThroughput(entries, throughput)
 	writeGuardianJSON(w, http.StatusOK, serversResponse{
-		Servers:    serverEntries(list, current),
+		Servers:    entries,
 		Current:    current,
 		ConfigPath: configPath,
 	})
@@ -276,4 +294,25 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 	writeGuardianJSON(w, http.StatusOK, serversResponse{
 		Servers: entries, Current: current, ConfigPath: configPath,
 	})
+}
+
+// attachThroughput 把观测到的峰值吞吐挂到**当前**那台上。
+//
+// **只挂当前那台,而且只在真观测到的时候挂。** 吞吐是被动观测:没在用的服务器
+// 没有产生过流量,给它一个数就是编;而 0 会被读成「跑不动」,与「这段时间没人
+// 用它传东西」是两回事。
+func attachThroughput(entries []serverEntry, throughput throughputReader) {
+	if throughput == nil {
+		return
+	}
+	bps, ok := throughput()
+	if !ok || bps <= 0 {
+		return
+	}
+	for i := range entries {
+		if entries[i].Current {
+			entries[i].PeakBPS = bps
+			return
+		}
+	}
 }
