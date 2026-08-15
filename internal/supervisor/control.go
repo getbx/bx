@@ -514,6 +514,11 @@ func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, serve
 
 func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), shutdown func(), ownerUID uint32, recoverer pathRecoverer, probeDial probeDialer) (io.Closer, error) {
 	guard := startNetworkGuard(ctx)
+	// **吞吐要按固定节拍采样,不能搭在读状态那条路上。**
+	// 读状态的间隔由调用方决定(菜单开着 2 秒、关着 30 秒、CLI 一次就走),
+	// 而峰值是一个「有没有在那一秒看到」的问题 —— 采样疏了就整个错过。
+	rate := &stats.RateMeter{}
+	go sampleThroughput(ctx, c, rate)
 	report := func() stats.Report {
 		ts := t.Stats()
 		var active, udp string
@@ -535,8 +540,17 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 		if liveServer != "" {
 			reportServer = liveServer
 		}
+		peakBPS, peakAt, havePeak := rate.PeakBPS(time.Now())
+		if !havePeak {
+			// **没观测到就一个字都不发。** 0 会被读成「这条隧道跑不动」,
+			// 而真相是「这段时间没人用它传东西」。
+			peakBPS = 0
+			peakAt = time.Time{}
+		}
 		return stats.Report{
 			Snapshot:      c.Snapshot(),
+			PeakBPS:       peakBPS,
+			PeakAt:        peakAt,
 			ConfigPath:    configPath,
 			Server:        reportServer,
 			SocksAddr:     t.SocksAddr(),
@@ -572,4 +586,22 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 	}
 	go srv.Serve(ln) //nolint:errcheck
 	return ln, nil
+}
+
+// sampleThroughput 按固定节拍把累计字节数喂给速率计。
+//
+// 一秒一拍、一个 goroutine、随 ctx 结束 —— 它只读两个 atomic,代价可以忽略,
+// 而换来的是「这条隧道实际跑多快」这个 bx 本来就看得见、却一直扔掉的事实。
+func sampleThroughput(ctx context.Context, c *stats.Counters, rate *stats.RateMeter) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			snap := c.Snapshot()
+			rate.Observe(now, snap.BytesUp, snap.BytesDown)
+		}
+	}
 }

@@ -45,10 +45,14 @@ struct ServerEntry: Decodable, Equatable {
     /// 这一次测的结果。**nil = 没测过**,与「测了没通」是两回事 —— 后者会让
     /// 一台从没测过的服务器显示成红的。
     var probe: ProbeReport?
+    /// 观测到的峰值吞吐(字节/秒)。**只有当前那台会有** —— 吞吐是被动观测,
+    /// 没在用的服务器没有产生过流量。0 = 没观测到,**不是「跑不动」**。
+    var peakBPS: Int = 0
 
     enum CodingKeys: String, CodingKey {
         case name, host, current, probe
         case udpHost = "udp_host"
+        case peakBPS = "peak_bps"
     }
 
     init(from decoder: Decoder) throws {
@@ -58,12 +62,13 @@ struct ServerEntry: Decodable, Equatable {
         udpHost = try c.decodeIfPresent(String.self, forKey: .udpHost) ?? ""
         current = try c.decodeIfPresent(Bool.self, forKey: .current) ?? false
         probe = try c.decodeIfPresent(ProbeReport.self, forKey: .probe)
+        peakBPS = try c.decodeIfPresent(Int.self, forKey: .peakBPS) ?? 0
     }
 
     init(name: String, host: String = "", udpHost: String = "", current: Bool = false,
-         probe: ProbeReport? = nil) {
+         probe: ProbeReport? = nil, peakBPS: Int = 0) {
         self.name = name; self.host = host; self.udpHost = udpHost; self.current = current
-        self.probe = probe
+        self.probe = probe; self.peakBPS = peakBPS
     }
 }
 
@@ -135,7 +140,18 @@ struct ServerRow: Equatable {
             parts.append("UDP → \(entry.udpHost)")
         }
         if let line = probeLine { parts.append(line) }
+        if let line = throughputLine { parts.append(line) }
         return parts.joined(separator: "   ")
+    }
+
+    /// 吞吐那一段。**没观测到就一个字都不说** —— 「0 B/s」读起来像这条隧道
+    /// 死了,而真相是这段时间没人用它传东西。
+    ///
+    /// 措辞是「peak」不是「speed」:这是**已经发生过的流量**里最快的那一秒,
+    /// 不是一次测速,也不是承诺。
+    var throughputLine: String? {
+        guard entry.peakBPS > 0 else { return nil }
+        return "peak \(humanBytesPerSecond(entry.peakBPS))"
     }
 
     /// 探测那一段。**没测过就一个字都不说** —— 一行「未测试」在每台后面重复,
@@ -229,4 +245,18 @@ func parseExitIPResponse(_ body: String) -> String? {
         else { return nil }
     }
     return text
+}
+
+/// 与 Go 侧 stats.HumanBPS 同一套单位:**十进制**(MB = 10^6)。
+///
+/// 用户拿这个数去跟宽带套餐、跟别的测速工具比,那些全是十进制。两边不一致的话,
+/// 同一个数在 `bx status` 与菜单里显示成两个值。
+func humanBytesPerSecond(_ bps: Int) -> String {
+    if bps >= 1_000_000 {
+        return String(format: "%.1f MB/s", Double(bps) / 1_000_000)
+    }
+    if bps >= 1_000 {
+        return String(format: "%.0f kB/s", Double(bps) / 1_000)
+    }
+    return "\(bps) B/s"
 }

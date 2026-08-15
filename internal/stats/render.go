@@ -3,6 +3,7 @@ package stats
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Report 是 bx status 的线材格式:计数快照 + 隧道信息。
@@ -13,11 +14,18 @@ type Report struct {
 	SocksAddr     string `json:"socks_addr"`
 	TunnelHealthy bool   `json:"tunnel_healthy"`
 	LatencyMS     int64  `json:"latency_ms"`
-	Restarts      int    `json:"restarts"`
-	Mode          string `json:"mode,omitempty"` // 分流模式:split | global | router
-	UDPMode       string `json:"udp_mode"`
-	UDPNote       string `json:"udp_note,omitempty"`
-	MutationState string `json:"mutation_state,omitempty"`
+	// PeakBPS 是**观测到的**最高吞吐(上下行合计),0 = 这段时间没观测到。
+	//
+	// **0 与「跑不动」是两回事**,消费方必须分得开:一台整天没人用的服务器
+	// 和一台带宽被打满到爬的服务器,在这里都是安静的 —— 只有前者是正常的。
+	// 靠 PeakAt 缺席来表达「没观测到」(与本仓库里 Tristate 同一条纪律)。
+	PeakBPS       int64     `json:"peak_bps,omitempty"`
+	PeakAt        time.Time `json:"peak_at,omitempty"`
+	Restarts      int       `json:"restarts"`
+	Mode          string    `json:"mode,omitempty"` // 分流模式:split | global | router
+	UDPMode       string    `json:"udp_mode"`
+	UDPNote       string    `json:"udp_note,omitempty"`
+	MutationState string    `json:"mutation_state,omitempty"`
 
 	Transport    string    `json:"transport,omitempty"`     // 当前活跃传输 scheme@host(容灾后反映实际)
 	Transports   []string  `json:"transports,omitempty"`    // 多传输容灾列表(>1 时,有序优先级)
