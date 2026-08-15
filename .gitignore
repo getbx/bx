@@ -1,4 +1,5 @@
 /bx
+/dist.noindex/
 /dist/
 .bx-test-logs/
 .bx-log-archives/
