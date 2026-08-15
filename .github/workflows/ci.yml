@@ -134,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e /Applications/Bx.app || { echo "::error::runner 上已经有 Bx.app,这个 job 的前提是全新安装"; exit 1; }
-          cd dist/release/bx-macos-arm64 2>/dev/null || cd dist/release/bx-macos-amd64
+          cd dist.noindex/release/bx-macos-arm64 2>/dev/null || cd dist.noindex/release/bx-macos-amd64
           ./install.sh --yes
 
       # 这四条就是「全新安装之后该是什么样」的契约。第二条是 2026-08-10 那个 bug。

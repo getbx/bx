@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH="${BX_ARCH:-arm64}"
 VERSION="${BX_VERSION:-dev}"
 RELEASE_NAME="bx-macos-$ARCH"
-DIST_ROOT="${BX_RELEASE_DIR:-$ROOT/dist/release}"
+DIST_ROOT="${BX_RELEASE_DIR:-$ROOT/dist.noindex/release}"
 RELEASE_DIR="$DIST_ROOT/$RELEASE_NAME"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -23,14 +23,22 @@ esac
 
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
-touch "$RELEASE_DIR/.metadata_never_index"
+# **不要在这里 touch .metadata_never_index。**
+#
+# 那个文件只在**卷根目录**生效;放在一个普通目录里 Spotlight 照样索引 ——
+# 这台开发机上实测过:文件在,而 dist/macos-arm64/Bx.app 仍然被 mdfind 找得到。
+# 后果不只是噪声:在 Spotlight 里搜 "bx" 会出来五个 Bx.app,而点开构建产物里
+# 那个,跑的是一份陈旧的菜单二进制,对着当前的 Guardian。
+#
+# 真正生效的机制是**目录名以 .noindex 结尾**(Xcode 的 DerivedData 就是这么做的),
+# 所以全部构建产物都落在 dist.noindex/ 下面。
 
 echo "Building bx for darwin/$ARCH..."
 GOOS=darwin GOARCH="$ARCH" go build -trimpath -ldflags "-X github.com/getbx/bx/internal/version.Version=$VERSION" -o "$RELEASE_DIR/bx" "$ROOT"
 
 echo "Packaging menu bar app..."
-BX_ARCH="$ARCH" BX_VERSION="$VERSION" BX_DIST_DIR="$ROOT/dist/macos-$ARCH" "$ROOT/scripts/package-macos-menu.sh" >/dev/null
-ditto "$ROOT/dist/macos-$ARCH/Bx.app" "$RELEASE_DIR/Bx.app"
+BX_ARCH="$ARCH" BX_VERSION="$VERSION" BX_DIST_DIR="$ROOT/dist.noindex/macos-$ARCH" "$ROOT/scripts/package-macos-menu.sh" >/dev/null
+ditto "$ROOT/dist.noindex/macos-$ARCH/Bx.app" "$RELEASE_DIR/Bx.app"
 
 echo "Embedding release assets into Bx.app..."
 RESOURCES="$RELEASE_DIR/Bx.app/Contents/Resources"
@@ -201,6 +209,25 @@ codesign --verify --deep --strict "$RELEASE_DIR/Bx.app" || {
   shasum -a 256 "$RELEASE_NAME.tar.gz" > SHA256SUMS
 )
 
+# **dmg 必须在这里生成。**
+#
+# README.txt 第一行就写着「安装(推荐用 .dmg)」,而在此之前**没有任何地方调用过
+# package-macos-dmg.sh** —— 那个脚本写好了、放在那儿、一次都没被跑过。于是每一个
+# 拿到这个包的人都被指向一个不存在的文件。
+#
+# 接在这里而不是让人另外敲一条:一条「推荐路径」如果需要额外一步才存在,
+# 那它就不是推荐路径。
+echo "Building .dmg..."
+BX_ARCH="$ARCH" BX_VERSION="$VERSION" BX_RELEASE_DIR="$DIST_ROOT" "$ROOT/scripts/package-macos-dmg.sh"
+
+(
+  cd "$DIST_ROOT"
+  # 校验和覆盖 dmg 与 tar.gz 两样 —— 只覆盖一半的清单比没有清单更糟:
+  # 它看起来像是全都核对过了。
+  shasum -a 256 "$RELEASE_NAME.tar.gz" "$RELEASE_NAME.dmg" > SHA256SUMS
+)
+
 echo "Built: $RELEASE_DIR"
 echo "Archive: $DIST_ROOT/$RELEASE_NAME.tar.gz"
+echo "Disk image: $DIST_ROOT/$RELEASE_NAME.dmg"
 echo "Checksums: $DIST_ROOT/SHA256SUMS"

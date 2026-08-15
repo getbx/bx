@@ -262,3 +262,67 @@ func TestMacMenuNeverProbesServersOnATimer(t *testing.T) {
 		t.Error("那唯一的调用点不是窗口按钮的回调")
 	}
 }
+
+// **构建产物不许被 Spotlight 索引。**
+//
+// 真机上实测的后果:搜 "bx" 出来五个 Bx.app,四个是 dist 下的构建产物 ——
+// 而点开其中一个,跑的是一份陈旧的菜单二进制,对着当前的 Guardian。那不是噪声,
+// 是一条会真的坏事的路。
+//
+// `.metadata_never_index` 只在**卷根目录**生效;同一台机器上那个文件在、目录
+// 照样被索引。macOS 真正认的是**目录名以 .noindex 结尾**。这条守卫钉住两件事:
+// 产物落在 .noindex 下,且那个失效的机制没有被重新引入。
+func TestBuildArtifactsStayOutOfSpotlight(t *testing.T) {
+	for _, name := range []string{
+		"package-macos-release.sh", "package-macos-menu.sh",
+		"package-macos-dmg.sh", "verify-macos-release.sh",
+	} {
+		path := filepath.Join("..", "..", "scripts", name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("读不到 %s:%v —— 守卫已经失效,先修守卫", name, err)
+		}
+		text := string(data)
+		if strings.Contains(text, `touch "$`) && strings.Contains(text, ".metadata_never_index\"") {
+			t.Errorf("%s 又用回了 .metadata_never_index —— 它对非卷根目录不生效", name)
+		}
+		// 凡是提到 dist 的地方都必须是 dist.noindex。
+		for _, line := range strings.Split(text, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "#") {
+				continue // 注释里可以谈论旧路径
+			}
+			if strings.Contains(line, "dist/") {
+				t.Errorf("%s 仍然把产物放进会被索引的 dist/:%s", name, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// **README 承诺的安装方式必须真的被生成出来。**
+//
+// 在此之前 README.txt 第一行写着「安装(推荐用 .dmg)」,而 package-macos-dmg.sh
+// **一次都没有被调用过** —— 脚本写好了、放在那儿、没人跑。于是每一个拿到这个包的
+// 人都被指向一个不存在的文件。
+func TestReleasePackagingActuallyBuildsTheDMGItRecommends(t *testing.T) {
+	path := filepath.Join("..", "..", "scripts", "package-macos-release.sh")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读不到打包脚本:%v —— 守卫已经失效,先修守卫", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "推荐用 .dmg") {
+		t.Fatal("README 文案变了 —— 守卫已经失效,先修守卫")
+	}
+	// **必须剥掉注释再判。** 第一版直接在全文里找 "package-macos-dmg.sh",
+	// 而调用点上方那段解释性注释里正好提到了它 —— 于是把调用整行删掉,守卫
+	// 照样绿。「断言被代码自己的注释兜绿」是本仓库记录过的形状,这里当场又栽了一次。
+	var code []string
+	for _, line := range strings.Split(text, "\n") {
+		if trimmed := strings.TrimSpace(line); !strings.HasPrefix(trimmed, "#") {
+			code = append(code, line)
+		}
+	}
+	if !strings.Contains(strings.Join(code, "\n"), "package-macos-dmg.sh") {
+		t.Fatal("README 推荐 .dmg,而打包脚本从不生成它 —— 用户被指向一个不存在的文件")
+	}
+}

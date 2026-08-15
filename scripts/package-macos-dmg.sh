@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH="${BX_ARCH:-arm64}"
 VERSION="${BX_VERSION:-dev}"
 RELEASE_NAME="bx-macos-$ARCH"
-DIST_ROOT="${BX_RELEASE_DIR:-$ROOT/dist/release}"
+DIST_ROOT="${BX_RELEASE_DIR:-$ROOT/dist.noindex/release}"
 RELEASE_DIR="$DIST_ROOT/$RELEASE_NAME"
 DMG="$DIST_ROOT/$RELEASE_NAME.dmg"
 
