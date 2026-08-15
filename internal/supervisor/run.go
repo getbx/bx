@@ -561,8 +561,15 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	runtimeBypass := bypassWire.runtimeServerBypass
 	runtimeState := func() RuntimeState {
 		udpRequired, udpReady := udpRuntimeReadiness(cfg.UDP.Mode, lt.Healthy, udpHealthy)
+		liveHost := serverHost
+		if swapper != nil {
+			if h, err := serverHostFromLink(swapper.currentLink()); err == nil && h != "" {
+				liveHost = h
+			}
+		}
 		return RuntimeState{
 			ConfigPath:      opts.ConfigPath,
+			ServerHost:      liveHost,
 			Version:         version.Version,
 			PID:             os.Getpid(),
 			TunName:         tunH.Name,
@@ -617,20 +624,23 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			}
 		}
 	}
-	// status 用的传输信息:active 动态(从 swapper 当前链接,容灾后反映实际),容灾列表/UDP 静态。
+	// status 用的传输信息。**主传输与 UDP 都实时读各自的 swapper。**
+	//
+	// 上一版 UDP 是启动时冻结的(注释还写着「UDP 静态」)—— 那在只有自动容灾
+	// (只换主传输)时说得过去,而 `SetServer` 是两个槽一起换:热切之后 status
+	// 会报一个错的 UDP 出口(2026-08-14 真机)。容灾列表仍是静态的,它本来就
+	// 只是一份优先级清单,不随切换变化。
 	var transportLabels []string
 	if len(cfg.Transports) > 1 {
 		for _, l := range cfg.Transports {
 			transportLabels = append(transportLabels, transportLabel(l))
 		}
 	}
-	udpLabel := ""
+	var udpForInfo *transportSwapper
 	if udpEnabled {
-		udpLabel = transportLabel(cfg.UDP.Transport)
+		udpForInfo = udpSwapper
 	}
-	transportInfo := func() (string, []string, string) {
-		return transportLabel(swapper.currentLink()), transportLabels, udpLabel
-	}
+	transportInfo := transportInfoFrom(swapper, udpForInfo, transportLabels)
 	// rebuildRouter 从「当前」配置重建 router:ConfigPath 非空则重读配置文件拿最新 rules
 	// (含 bx direct/proxy 的运行期改动),否则回退启动快照 cfg;china 列表用落盘最新。
 	// reloadRouter 与 china 列表刷新共用它——否则刷新会拿启动时的陈旧 rules 覆盖掉热加的白名单
@@ -912,4 +922,24 @@ func normalizeDNSServerAddr(server string) string {
 // overlaySplitPatterns 把一个后缀变成 DomainSet 认得的模式:后缀本身与它的子域。
 func overlaySplitPatterns(suffix string) []string {
 	return []string{"*." + suffix, suffix}
+}
+
+// transportInfoFrom 组出 status 要的三样:当前主传输、容灾清单、当前 UDP 传输。
+//
+// **两个 swapper 都实时读。** 抽出来是因为它原本长在 Run() 里 —— 那个组装根
+// 测试进不去,而这个仓库全部的事故都在那种够不着的地方。
+func transportInfoFrom(main, udp *transportSwapper, labels []string) func() (string, []string, string) {
+	return func() (string, []string, string) {
+		active := ""
+		if main != nil {
+			active = transportLabel(main.currentLink())
+		}
+		udpLabel := ""
+		if udp != nil {
+			// 没有专用 UDP 传输时留空 —— **不拿主传输冒充**,那会让用户以为
+			// 自己配了按类分流。
+			udpLabel = transportLabel(udp.currentLink())
+		}
+		return active, labels, udpLabel
+	}
 }

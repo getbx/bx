@@ -11,6 +11,12 @@ type RuntimeState struct {
 	PID       int    `json:"pid"`
 	TunName   string `json:"tun_name"`
 	SocksAddr string `json:"socks_addr"`
+	// ServerHost 是**此刻**主传输指向的服务器主机。
+	//
+	// 与 ConfigPath 同一条纪律:发布运行中的值。启动时算一次的那个版本在
+	// `bx server use` 热切之后会报旧服务器(2026-08-14 真机:出口已经是 166,
+	// 而 status 的「节点」还写着 195)。
+	ServerHost string `json:"server_host,omitempty"`
 	// ConfigPath 是 Core **此刻在用**的配置文件(与 DNSUpstream 同一条纪律:
 	// 发布运行中的值,不是盘上的值)。点名一条坏规则时要告诉用户去哪改,
 	// 而 stats 是叶子包、不该自己猜一份路径常量。
