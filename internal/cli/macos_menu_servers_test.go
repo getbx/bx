@@ -159,3 +159,60 @@ func TestMacMenuExitIPProbeUsesTheVettedEndpointAndValidatesTheAnswer(t *testing
 		t.Error("解不出来时没有落到 .failed —— 「没问出来」不许被说成某个具体答案")
 	}
 }
+
+// **部署表单不许经手 SSH 凭据。**
+//
+// 这是 `bx server deploy` 从第一天起的设计(密码/密钥/agent/known_hosts 全归系统
+// ssh),GUI 不该把它推翻。菜单是 LSUIElement 应用、没有 TTY —— 真在 app 里收
+// 密码,就等于既推翻了那条设计,又要自己保管一个我们没有能力保管的东西。
+//
+// 守卫钉的是**语义**:交给 Terminal 的那段脚本必须由 deployScriptText 生成,
+// 而这个函数体里不许出现任何收密码的迹象。
+func TestMacMenuDeployNeverHandlesSSHCredentials(t *testing.T) {
+	body, ok := swiftFunctionBody(menuMainSwiftSource(t),
+		"private func handOffDeployToTerminal(_ target: DeployTarget)")
+	if !ok {
+		t.Fatal("读不出 handOffDeployToTerminal 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(body, "deployScriptText(target)") {
+		t.Error("交给 Terminal 的不是 deployScriptText 生成的脚本 —— " +
+			"手拼一条命令会绕过那个纯函数里的引号转义")
+	}
+	for _, smell := range []string{
+		"password", "Password", "passphrase", "sshpass",
+		"SSH_ASKPASS", "secureTextField", "NSSecureTextField",
+	} {
+		if strings.Contains(body, smell) {
+			t.Errorf("部署路径里出现了 %q —— bx 不经手 SSH 凭据", smell)
+		}
+	}
+	// 整个菜单 app 里都不许有密码输入框:这条比上面那条宽,挡的是「换个函数
+	// 再收一次」。
+	if strings.Contains(menuMainSwiftSource(t), "NSSecureTextField") {
+		t.Error("菜单里出现了密码输入框")
+	}
+}
+
+// 临时脚本里有目标主机与登录名,权限必须是 0700。
+//
+// 它落在 /tmp,那是**所有用户都能读**的目录 —— 默认权限会把「这台 Mac 的主人
+// 在管理哪几台机器、用什么登录名」交给本机任何一个进程。
+func TestMacMenuDeployScriptIsNotWorldReadable(t *testing.T) {
+	body, ok := swiftFunctionBody(menuMainSwiftSource(t),
+		"private func handOffDeployToTerminal(_ target: DeployTarget)")
+	if !ok {
+		t.Fatal("读不出 handOffDeployToTerminal 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(body, "0o700") {
+		t.Error("临时脚本没有收紧到 0700 —— 它落在 /tmp,里面有目标主机与登录名")
+	}
+	write := strings.Index(body, "write(toFile:")
+	open := strings.Index(body, "NSWorkspace.shared.open(")
+	perm := strings.Index(body, "posixPermissions")
+	if write < 0 || open < 0 || perm < 0 {
+		t.Fatal("读不出写盘 / 收权限 / 打开这三步 —— 守卫已经失效,先修守卫")
+	}
+	if !(write < perm && perm < open) {
+		t.Errorf("顺序不对(写=%d 收权限=%d 打开=%d)—— 必须先收紧再交出去", write, perm, open)
+	}
+}

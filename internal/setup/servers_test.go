@@ -171,3 +171,65 @@ current: beta
 		t.Fatalf("清单=%d", len(list))
 	}
 }
+
+// **加一台不等于换过去。**
+//
+// 刚部署好一台新 VPS 不构成「把我的出口换到那里」的请求 —— 换出口是有后果的事
+// (登录态、风控、正在下载的东西),项目所有者明确要求它必须是人显式的一下,
+// 这也正是自动容灾被否掉的理由。顺手改 current,就是用另一个入口把它偷偷做了。
+func TestAddServerDoesNotStealTheCurrentExit(t *testing.T) {
+	path := writeTemp(t, "servers:\n"+
+		"    - name: tokyo\n      link: vless://a@203.0.113.10:443\n"+
+		"current: tokyo\n")
+
+	added, err := AddServer(path, "osaka", "vless://b@203.0.113.20:443", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !added {
+		t.Fatal("没报告成新加的一台")
+	}
+	list, current, err := ListServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current != "tokyo" {
+		t.Fatalf("current 被改成了 %q —— 加一台把用户的出口换掉了", current)
+	}
+	if len(list) != 2 {
+		t.Fatalf("清单长度 = %d, want 2", len(list))
+	}
+	// 更新同名的那一台也一样不许改 current。
+	if _, err := AddServer(path, "osaka", "vless://c@203.0.113.21:443", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, current, _ = ListServers(path); current != "tokyo" {
+		t.Fatalf("更新一台之后 current 变成了 %q", current)
+	}
+}
+
+// 但**一份清单必须有一台在用**:本来就没有 current 时,新加的那台就是 current,
+// 否则配置指向一个空名字,下次启动直接起不来。
+func TestAddServerFillsAnEmptyCurrent(t *testing.T) {
+	path := writeTemp(t, "global: true\n")
+	if _, err := AddServer(path, "tokyo", "vless://a@203.0.113.10:443", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, current, _ := ListServers(path); current != "tokyo" {
+		t.Fatalf("current = %q,空清单加第一台之后它必须有值", current)
+	}
+}
+
+// UpsertServer 仍然会把 current 换过去 —— 它服务的是 `bx setup`(「用这一台」),
+// 与 AddServer 是两个意图。合并它们会让其中一个悄悄改变行为。
+func TestUpsertStillSwitchesBecauseThatIsItsJob(t *testing.T) {
+	path := writeTemp(t, "servers:\n"+
+		"    - name: tokyo\n      link: vless://a@203.0.113.10:443\n"+
+		"current: tokyo\n")
+	if _, err := UpsertServer(path, "osaka", "vless://b@203.0.113.20:443", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, current, _ := ListServers(path); current != "osaka" {
+		t.Fatalf("current = %q, want osaka", current)
+	}
+}

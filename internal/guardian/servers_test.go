@@ -258,3 +258,87 @@ func TestServersCapabilityIsDeclared(t *testing.T) {
 	}
 	t.Fatalf("能力清单里没有 %q:%v", CapabilityServers, GuardianCapabilities())
 }
+
+// **加一台不许把出口换过去。** 部署完一台新 VPS 不构成「换到那里」的请求;
+// 换出口要用户在清单里显式点一下。这条守卫钉的正是那个副作用。
+func TestServerAddDoesNotChangeTheCurrentExit(t *testing.T) {
+	path := serversTestConfig(t)
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t))(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "add", Name: "nagoya",
+		Link: "vless://" + serversTestUUID + "@203.0.113.30:443?security=reality",
+	}), 501, true))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d:%s", w.Code, w.Body.String())
+	}
+	list, current, err := setup.ListServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current != "tokyo" {
+		t.Fatalf("加一台之后 current 变成了 %q —— 用户的出口被偷偷换掉了", current)
+	}
+	if len(list) != 3 {
+		t.Fatalf("清单长度 = %d, want 3", len(list))
+	}
+	// 应答回的是**改动之后的完整清单**,界面据此重画,不必自己推演。
+	var got serversResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Servers) != 3 || got.Current != "tokyo" {
+		t.Fatalf("应答不是改动后的完整清单:%+v", got)
+	}
+	// 加进来的链接同样不许回传给菜单 —— 它是凭据。
+	if strings.Contains(w.Body.String(), serversTestUUID) {
+		t.Errorf("应答里出现了链接凭据:%s", w.Body.String())
+	}
+}
+
+// 加一台**绝不热切**:noSwitch 会在被调用时 t.Fatal。这条断言由那个替身承担,
+// 单独写出来是为了让意图可读 —— 热切是「换过去」的一部分,不是「加进来」的。
+func TestServerAddNeverHotSwitches(t *testing.T) {
+	w := httptest.NewRecorder()
+	serversHandler(serversTestConfig(t), 501, noSwitch(t))(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "add", Name: "nagoya", Link: "vless://x@203.0.113.30:443",
+	}), 501, true))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d", w.Code)
+	}
+}
+
+// 坏输入在写盘之前挡掉,并且**如实报错** —— 静默成功会让界面显示「已添加」而
+// 配置一个字节没变。
+func TestServerAddRejectsBadInput(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  serversRequest
+	}{
+		{"没有名字", serversRequest{Action: "add", Link: "vless://x@203.0.113.30:443"}},
+		{"没有链接", serversRequest{Action: "add", Name: "nagoya"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := serversTestConfig(t)
+			before, _ := os.ReadFile(path)
+			w := httptest.NewRecorder()
+			serversHandler(path, 501, noSwitch(t))(w, withPeer(postServersJSON(t, tc.req), 501, true))
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("状态码 = %d, want 400", w.Code)
+			}
+			after, _ := os.ReadFile(path)
+			if string(before) != string(after) {
+				t.Fatal("被拒绝的请求改动了盘上的配置")
+			}
+		})
+	}
+}
+
+func postServersJSON(t *testing.T, req serversRequest) *http.Request {
+	t.Helper()
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return httptest.NewRequest(http.MethodPost, "/v1/servers", strings.NewReader(string(body)))
+}

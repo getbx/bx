@@ -125,6 +125,10 @@ run_test rules-model \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Tests/RulesModelTests.swift"
 
+run_test deploy-model \
+  "$MENU/Sources/BxMenu/DeployModel.swift" \
+  "$MENU/Tests/DeployModelTests.swift"
+
 run_test servers-model \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Tests/ServersModelTests.swift"
