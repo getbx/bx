@@ -389,7 +389,14 @@ type commandCapability struct {
 func serverCommands() []*cli.Command {
 	return []*cli.Command{
 		// 客户端那一半:在已配好的几台之间**由用户自己**选(不是自动容灾)。
-		{Name: "list", Usage: "列出已配置的服务器,并标出当前在用的那台", Flags: ruleBaseFlags(), Action: serverListAction},
+		{
+			Name:  "list",
+			Usage: "列出已配置的服务器,并标出当前在用的那台",
+			// --test 会往隧道**外面**发包(每台一次 TCP 握手),所以它是
+			// 显式的一下,不是默认行为。
+			Flags:  append(ruleBaseFlags(), &cli.BoolFlag{Name: "test", Usage: "顺便测一遍延迟与可达性(会往隧道外面发包)"}),
+			Action: serverListAction,
+		},
 		{Name: "use", Usage: "切换到清单里的另一台(先热切,切不动才需要重启)", ArgsUsage: "<name>", Flags: ruleBaseFlags(), Action: serverUseAction},
 		{Name: "rm", Usage: "从清单里删掉一台(不能删当前在用的)", ArgsUsage: "<name>", Flags: ruleBaseFlags(), Action: serverRemoveAction},
 		{Name: "deploy", Usage: "从本机把 bx server 装到一台 VPS 上(走系统 ssh,bx 不经手凭据)", ArgsUsage: "<user@host>", Flags: serverDeployFlags(), Action: serverDeployAction},

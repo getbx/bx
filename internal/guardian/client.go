@@ -377,3 +377,62 @@ func (c *Client) AddServer(ctx context.Context, name, link, udp string) error {
 	}
 	return nil
 }
+
+// ListServers 取服务器清单(含吞吐历史)。
+//
+// **CLI 经 Guardian 拿,而不是自己读盘**:吞吐历史是 0600 root 的,而
+// `bx server list` 常常以普通用户跑;更要紧的是,两处各读一份就会各渲染一份,
+// 而菜单与 CLI 对同一台服务器说不同的话正是这个仓库反复栽的形状。
+func (c *Client) ListServers(ctx context.Context) (ServerListResponse, error) {
+	return c.serversRequest(ctx, http.MethodGet, nil)
+}
+
+// ProbeServers 逐台量一次直连往返时间,返回带结论的完整清单。
+//
+// 探测走在隧道外面,所以它只该由用户显式触发(`bx server list --test`)。
+func (c *Client) ProbeServers(ctx context.Context) (ServerListResponse, error) {
+	payload, err := json.Marshal(serversRequest{Action: "probe"})
+	if err != nil {
+		return ServerListResponse{}, err
+	}
+	return c.serversRequest(ctx, http.MethodPost, payload)
+}
+
+func (c *Client) serversRequest(ctx context.Context, method string, payload []byte) (ServerListResponse, error) {
+	client := c.HTTPClient
+	if client == nil {
+		client = guardianHTTPClient(c.SocketPath)
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		defer transport.CloseIdleConnections()
+	}
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://local/v1/servers", body)
+	if err != nil {
+		return ServerListResponse{}, err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		var dialErr *guardianDialError
+		if errors.As(err, &dialErr) {
+			return ServerListResponse{}, &UnavailableError{Err: dialErr.err}
+		}
+		return ServerListResponse{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		return ServerListResponse{}, guardianHTTPError("/v1/servers", response.StatusCode, raw)
+	}
+	var out ServerListResponse
+	if err := json.NewDecoder(response.Body).Decode(&out); err != nil {
+		return ServerListResponse{}, err
+	}
+	return out, nil
+}

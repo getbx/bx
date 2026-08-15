@@ -112,7 +112,7 @@ func TestServerListMarksTheCurrentOne(t *testing.T) {
 		w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
 	)
 
-	var got serversResponse
+	var got ServerListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestServerAddDoesNotChangeTheCurrentExit(t *testing.T) {
 		t.Fatalf("清单长度 = %d, want 3", len(list))
 	}
 	// 应答回的是**改动之后的完整清单**,界面据此重画,不必自己推演。
-	var got serversResponse
+	var got ServerListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestProbeFailureIsNotReportedAsUnreachable(t *testing.T) {
 			return supervisor.ProbeResult{}, errTestHotSwitch
 		}, nil)(w, withPeer(postServersJSON(t, serversRequest{Action: "probe"}), 501, true))
 
-	var got serversResponse
+	var got ServerListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestOneServerFailingDoesNotSinkTheRest(t *testing.T) {
 			return supervisor.ProbeResult{Host: host, Port: port, Reachable: true, RTTMS: 42}, nil
 		}, nil)(w, withPeer(postServersJSON(t, serversRequest{Action: "probe"}), 501, true))
 
-	var got serversResponse
+	var got ServerListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestProbeReportsWhenNotWired(t *testing.T) {
 // 断言永远成立 —— 测的是 omitempty,不是这个函数。而当前那台恰好排第一,
 // 「给所有人都挂上」同样观察不到差别。两个坑都是「测试测的是相邻的东西」。
 func TestThroughputOnlyLandsOnTheCurrentServer(t *testing.T) {
-	entries := []serverEntry{
+	entries := []ServerEntry{
 		{Name: "tokyo"},
 		{Name: "osaka", Current: true},
 		{Name: "nagoya"},
@@ -481,7 +481,7 @@ func TestNoThroughputObservationWritesNothing(t *testing.T) {
 		{"观测到负数", func() (int64, bool) { return -1, true }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			entries := []serverEntry{{Name: "tokyo", Current: true, PeakBPS: 7}}
+			entries := []ServerEntry{{Name: "tokyo", Current: true, PeakBPS: 7}}
 			attachThroughput(entries, tc.throughput, nil, thBase)
 			if entries[0].PeakBPS != 7 {
 				t.Fatalf("没有观测却动了那个值:%d", entries[0].PeakBPS)
@@ -493,7 +493,7 @@ func TestNoThroughputObservationWritesNothing(t *testing.T) {
 // **历史必须带年龄。** 所有者同意存历史(「以前的值没事」)的前提正是界面上要
 // 标出来这是以前的 —— 一个不带年龄的历史数字读起来像现状。
 func TestHistoricalThroughputCarriesItsAge(t *testing.T) {
-	entries := []serverEntry{{Name: "tokyo", Current: true}, {Name: "osaka"}}
+	entries := []ServerEntry{{Name: "tokyo", Current: true}, {Name: "osaka"}}
 	history := map[string]throughputEntry{
 		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
 	}
@@ -510,7 +510,7 @@ func TestHistoricalThroughputCarriesItsAge(t *testing.T) {
 
 // 当前那台的**实时**观测压过历史,年龄归零。
 func TestLiveThroughputOverridesHistoryForTheCurrentServer(t *testing.T) {
-	entries := []serverEntry{{Name: "tokyo", Current: true}}
+	entries := []ServerEntry{{Name: "tokyo", Current: true}}
 	history := map[string]throughputEntry{
 		"tokyo": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
 	}
@@ -527,7 +527,7 @@ func TestLiveThroughputOverridesHistoryForTheCurrentServer(t *testing.T) {
 // 时钟被改过时**宁可不报也不报一个负的年龄** —— 「-3 小时前」会让用户从此
 // 不信这一栏里的任何数字。
 func TestNegativeAgeIsDroppedNotShown(t *testing.T) {
-	entries := []serverEntry{{Name: "osaka"}}
+	entries := []ServerEntry{{Name: "osaka"}}
 	history := map[string]throughputEntry{
 		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(time.Hour)},
 	}
