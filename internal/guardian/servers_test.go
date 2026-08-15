@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -536,5 +537,87 @@ func TestNegativeAgeIsDroppedNotShown(t *testing.T) {
 	if entries[0].PeakBPS != 0 || entries[0].PeakAgeSeconds != 0 {
 		t.Fatalf("未来时刻的观测被报了出来:%d bps / %d 秒",
 			entries[0].PeakBPS, entries[0].PeakAgeSeconds)
+	}
+}
+
+// **两次切换不许交错。**
+//
+// 一次切换是「写配置 → 武装 → 等隧道健康 → 确认」四步、最长二十几秒。交错的
+// 后果不只是乱序,而是**验证验错了对象**:A 武装 B、B 武装 C 之后,A 那句
+// 「隧道健康吗」问到的是 C 的隧道,于是 A 确认了 C,再对用户说「已切到 B」。
+//
+// 这是 2026-08-15 review 抓到的 —— 两边(菜单与 Guardian)当时都没有任何守卫,
+// 而菜单在那二十几秒里窗口一直开着,再点一下就撞上。
+func TestConcurrentSwitchesAreRejectedNotInterleaved(t *testing.T) {
+	path := serversTestConfig(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var concurrent atomic.Int32
+	handler := serversHandler(path, 501, func(name, link, udp string) error {
+		if concurrent.Add(1) > 1 {
+			t.Errorf("两次切换同时在跑 —— 第二次会验证第一次武装的那条隧道")
+		}
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		// **绝不无限阻塞。** 第一版写的是裸 `<-release`,于是守卫失效时(两次
+		// 切换真的并发)主协程卡在第二次调用里、永远走不到 close(release) ——
+		// 测试挂死而不是干净转红,CI 要等十分钟超时才知道出了事。
+		// 一个在失败时挂住的测试,比没有测试更难用。
+		select {
+		case <-release:
+		case <-time.After(2 * time.Second):
+		}
+		concurrent.Add(-1)
+		return nil
+	}, nil, nil)
+
+	first := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		handler(w, withPeer(postServers(t, "osaka"), 501, true))
+		first <- w.Code
+	}()
+	<-entered // 第一次已经进到热切那一步
+
+	second := httptest.NewRecorder()
+	handler(second, withPeer(postServers(t, "tokyo"), 501, true))
+	// **立刻拒绝,不排队**:排队会让出口在接下来一分钟里自己跳好几次。
+	if second.Code != http.StatusConflict {
+		t.Fatalf("第二次切换状态码 = %d, want 409", second.Code)
+	}
+	if !strings.Contains(second.Body.String(), "servers_switch_busy") {
+		t.Errorf("没说清是忙:%s", second.Body.String())
+	}
+	close(release)
+	if code := <-first; code != http.StatusOK {
+		t.Fatalf("第一次切换被连累了:%d", code)
+	}
+}
+
+// 一次结束之后必须能再切 —— 锁不许泄漏(defer 没写就会永久拒绝)。
+func TestSwitchLockIsReleased(t *testing.T) {
+	path := serversTestConfig(t)
+	handler := serversHandler(path, 501, func(name, link, udp string) error { return nil }, nil, nil)
+	for i := 0; i < 3; i++ {
+		w := httptest.NewRecorder()
+		handler(w, withPeer(postServers(t, "osaka"), 501, true))
+		if w.Code != http.StatusOK {
+			t.Fatalf("第 %d 次切换 = %d —— 锁泄漏了", i+1, w.Code)
+		}
+	}
+}
+
+// 热切失败时锁同样要放开(那条路是提前 return 的分支)。
+func TestSwitchLockIsReleasedAfterFailure(t *testing.T) {
+	path := serversTestConfig(t)
+	handler := serversHandler(path, 501, func(name, link, udp string) error { return errTestHotSwitch }, nil, nil)
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		handler(w, withPeer(postServers(t, "osaka"), 501, true))
+		if w.Code != http.StatusOK {
+			t.Fatalf("第 %d 次 = %d", i+1, w.Code)
+		}
 	}
 }

@@ -116,3 +116,48 @@ func TestDecodeLinkUnwrapsBxShell(t *testing.T) {
 		t.Fatalf("空白没去掉:%q", got)
 	}
 }
+
+// **每一种链接都要解得出端口,而不只是 vless。**
+//
+// 这条是 2026-08-15 review 时补的,补的是一个真 bug:第一版 LinkPort 自己
+// url.Parse,于是 vmess、legacy ss、brook 三种全返回 0(而 LinkHost 对它们都
+// 解得出来)。探测于是跑去测 443,把一台跑在 5443 上的健康服务器报成不可达 ——
+// 而 **brook 正是本项目的默认传输**。
+//
+// 当时的守卫只用了 vless 链接,所以它一直绿。**「测试测的是相邻的东西」**,
+// 这次的形状是「只测了最容易的那种输入」。
+func TestLinkPortCoversEveryScheme(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		link string
+		want int
+	}{
+		{"vless", "vless://uuid@203.0.113.10:9999?security=reality", 9999},
+		{"hysteria2", "hysteria2://pw@203.0.113.10:8443", 8443},
+		{"trojan", "trojan://pw@203.0.113.10:7443", 7443},
+		{"ss SIP002", "ss://YWVzLTI1Ni1nY206cGFzcw==@203.0.113.10:6443", 6443},
+		{"ss legacy base64", "ss://YWVzLTI1Ni1nY206cGFzc0AyMDMuMC4xMTMuMTA6NjQ0Mw==", 6443},
+		{"vmess", "vmess://eyJ2IjoiMiIsInBzIjoieCIsImFkZCI6IjIwMy4wLjExMy4xMCIsInBvcnQiOiI1NDQzIiwiaWQiOiJ1dWlkIiwibmV0IjoidGNwIn0=", 5443},
+		{"brook", "brook://server?password=x&server=203.0.113.10%3A4443", 4443},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := LinkPort(tc.link); got != tc.want {
+				t.Fatalf("LinkPort = %d, want %d —— 探测会去测错端口,把健康服务器报成不可达", got, tc.want)
+			}
+			// 换壳之后必须仍然解得出来:配置里存的就是换壳的。
+			if got := LinkPort(blink.Encode(tc.link)); got != tc.want {
+				t.Fatalf("换壳后 LinkPort = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// **解不出来必须是 0,不是一个编出来的默认值。**
+// 「链接里没写端口」与「我们没解出来」是两件事,只有调用方知道哪件更要紧。
+func TestLinkPortReportsZeroWhenItCannotTell(t *testing.T) {
+	for _, link := range []string{"", "   ", "不是链接", "vless://uuid@203.0.113.10", "%%%"} {
+		if got := LinkPort(link); got != 0 {
+			t.Errorf("LinkPort(%q) = %d,解不出来时必须是 0", link, got)
+		}
+	}
+}

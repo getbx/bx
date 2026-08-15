@@ -374,3 +374,31 @@ func TestMacMenuUninstallInvokesTheSystemCLIWithNoBogusFlags(t *testing.T) {
 		t.Fatal("没等确认就提权卸载了")
 	}
 }
+
+// **一次只许有一次切换在飞。**
+//
+// 一次切换是「写配置 → 武装 → 等隧道健康 → 确认」四步、最长二十几秒,而窗口
+// 在那期间一直开着 —— 再点一下是很自然的动作。服务端也会拒(409),菜单这一道
+// 是为了不让用户撞上一个他看不懂的失败。
+//
+// **必须在弹确认框之前就挡住**:挡在后面的话,用户会看到一个确认框、点了确认、
+// 然后什么都没发生。
+func TestMacMenuRefusesASecondSwitchWhileOneIsInFlight(t *testing.T) {
+	body, ok := swiftFunctionBody(menuMainSwiftSource(t),
+		"private func confirmAndSwitchServer(name: String, host: String)")
+	if !ok {
+		t.Fatal("读不出 confirmAndSwitchServer 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	guardAt := strings.Index(body, "guard !switchInFlight else { return }")
+	confirm := strings.Index(body, "alert.runModal() == .alertFirstButtonReturn")
+	if guardAt < 0 {
+		t.Fatal("没有在飞守卫 —— 用户能在二十几秒的窗口里再点一次")
+	}
+	if confirm >= 0 && guardAt > confirm {
+		t.Error("守卫在确认框之后 —— 用户会看到确认框、点了确认、然后什么都没发生")
+	}
+	// 标志位必须被放开,否则第一次之后永远切不了。
+	if !strings.Contains(body, "self.switchInFlight = false") {
+		t.Error("没有放开在飞标志 —— 第一次切换之后就再也切不了了")
+	}
+}

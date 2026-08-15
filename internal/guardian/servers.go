@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/getbx/bx/internal/config"
@@ -178,7 +179,29 @@ func serverEntries(list []config.Server, current string) []ServerEntry {
 	return entries
 }
 
+// switchInFlight 串行化换服务器。
+//
+// **一次切换不是原子的**:它是「写配置 → 武装 → 等隧道健康 → 确认」四步、
+// 最长二十几秒。两次交错的后果不只是乱序,而是**验证验错了对象**:
+// A 武装 B、B 武装 C 之后,A 那句「隧道健康吗」问到的是 C 的隧道,于是 A 确认了
+// C,再对用户说「已切到 B」—— 正是这一整轮在消灭的那种谎。
+//
+// **用独立的锁,不用 up/down 那个 mutation channel**:后者会让一次切换把
+// `bx down` 挡在门外二十几秒,而「停止路径不许依赖/等待别的事」是这个项目用
+// 一次 71 分钟的事故换来的规矩。
+//
+// **抢不到就立刻拒绝,不排队**:排队会让用户连点几下之后,出口在接下来一分钟里
+// 自己跳好几次。
+var switchInFlight sync.Mutex
+
 func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string, switchTo serverSwitcher, probe serverProber) {
+	if !switchInFlight.TryLock() {
+		log.Printf("guardian_server_switch_rejected reason=busy")
+		writeGuardianJSON(w, http.StatusConflict, map[string]string{"code": "servers_switch_busy"})
+		return
+	}
+	defer switchInFlight.Unlock()
+
 	var req serversRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_bad_request"})
