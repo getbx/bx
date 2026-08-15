@@ -374,7 +374,78 @@ func (d *Dialer) udpRuleOverride(m route.Meta) (route.Decision, route.Reason, bo
 	if why.Source.IsUserRule() || why.Source == route.SourcePrivate {
 		return dec, why, true
 	}
+	d.countUDPCounterfactual(m, why)
 	return 0, route.Reason{}, false
+}
+
+// UDP 的**反事实**计数:如果让 china 列表也对 UDP 生效(即那个被搁置的选项),
+// 有多少连接会从隧道改走直连?
+//
+// **注意这几行与判定行住在同一张表里,而它们不是判定。** 同一条 UDP 连接会贡献
+// 两行:一行 udp_proxy* (它实际走了哪儿),一行 udp_would_flip_*/udp_no_change
+// (如果换个规矩它会走哪儿)。**两类行不许相加** —— 相加得到的是连接数的两倍。
+// 消费方按 Source 前缀各取各的(见 stats.UDPStats 的 default: continue)。
+//
+// **这几个桶只计数,不改变任何行为。** 它们存在是为了让那个决定有数据可依,
+// 而不是靠推测 —— 这个仓库里凡是「听起来显然」而没人去量的判断,后来都错了。
+//
+// **代价为零**:Explain 每条 UDP 本来就调了(上面那一句),完整判定算出来之后
+// 只留下用户规则与私网两类,其余原本直接丢弃。这里只是把丢掉的那半记下来。
+const (
+	// udpWouldFlipDomain:有域名且命中 china 域名列表。
+	udpWouldFlipDomain = "udp_would_flip_domain"
+	// udpWouldFlipCIDR:没有域名、地址是真实公网 IP 且命中 china CIDR。
+	udpWouldFlipCIDR = "udp_would_flip_cidr"
+	// udpUndecidable:没有域名,而地址落在 fake-IP 段里 —— **判不出来**。
+	//
+	// 这一桶是要害。无域名时 Explain 走 ExplainIP,而 fake IP 既不在 china CIDR
+	// 也不在私网段,会落进「默认」。把它折进「不受影响」就是把「问不出来」报成
+	// 一个具体答案 —— 而它恰恰会让影响面被系统性低估。
+	udpUndecidable = "udp_undecidable"
+	// udpNoChange:其余(境外、默认)。**必须也记**,否则上面几个数没有分母。
+	udpNoChange = "udp_no_change"
+)
+
+func (d *Dialer) countUDPCounterfactual(m route.Meta, why route.Reason) {
+	if d.Stats == nil {
+		return
+	}
+	// **不能直接把 d.Fake 传进去。** 它是 *fakeip.Pool;为 nil 时装进接口会得到
+	// 一个「非 nil 的接口值包着一个 nil 指针」,于是被调方那句 `pool != nil`
+	// 为真、随即在解引用时 panic。Go 里最经典的那个坑,而它在这里的后果是
+	// **没有 fake-IP 的部署一发 UDP 就崩**。
+	var pool fakeIPRange
+	if d.Fake != nil {
+		pool = d.Fake
+	}
+	d.Stats.RuleAttempt(udpCounterfactualBucket(m, why, pool), "")
+}
+
+// udpCounterfactualBucket 是**纯判定**,单独抽出来是为了逐种输入可测 ——
+// 尤其是「判不出来」那一桶,它按构造在生产里最难造出来,也最容易被写错。
+//
+// pool 可为 nil(没有 fake-IP 时):那时地址就是真实地址,不存在判不出来。
+func udpCounterfactualBucket(m route.Meta, why route.Reason, pool fakeIPRange) string {
+	if m.Domain != "" {
+		if why.Source == route.SourceChinaDomain {
+			return udpWouldFlipDomain
+		}
+		return udpNoChange
+	}
+	// 没有域名:先问这个地址是不是一个我们本该认识、却反查不到的 fake IP。
+	if pool != nil && m.IP.IsValid() && pool.Contains(m.IP) {
+		return udpUndecidable
+	}
+	if why.Source == route.SourceChinaCIDR {
+		return udpWouldFlipCIDR
+	}
+	return udpNoChange
+}
+
+// fakeIPRange 只要「这个地址归不归 fake-IP 池管」这一个问题。
+// 收窄成一个单方法接口,是为了让判定在单测里造得出来。
+type fakeIPRange interface {
+	Contains(netip.Addr) bool
 }
 
 // dialUDPByRule 按用户规则(或私网不变量)拨一条 UDP。

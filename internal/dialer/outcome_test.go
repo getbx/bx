@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 
@@ -175,7 +176,9 @@ func TestUDPDecisionsAreAttributedToTheirMode(t *testing.T) {
 	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("203.0.113.9"), Port: 443, UDP: true}); err != nil {
 		t.Fatal(err)
 	}
-	if len(counter.attempts) != 1 || counter.attempts[0] != "udp_proxy|" {
+	// **查找而不是断言「恰好一行」**:同一条 UDP 还会额外记一行反事实
+	// (udp_would_flip_* / udp_no_change),那是另一类行,不是判定。
+	if !containsAttempt(counter.attempts, "udp_proxy|") {
 		t.Fatalf("判定没归因:%v", counter.attempts)
 	}
 }
@@ -196,8 +199,11 @@ func TestUDPFallbackIsCountedSeparatelyFromTheDedicatedTransport(t *testing.T) {
 	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("203.0.113.9"), Port: 443, UDP: true}); err != nil {
 		t.Fatal(err)
 	}
-	if len(counter.attempts) != 1 || counter.attempts[0] != "udp_proxy_fallback|" {
+	if !containsAttempt(counter.attempts, "udp_proxy_fallback|") {
 		t.Fatalf("回落没有单独记:%v —— 「一直在回落」与「一直好好的」会长得一模一样", counter.attempts)
+	}
+	if containsAttempt(counter.attempts, "udp_proxy|") {
+		t.Fatalf("回落同时也记成了正常走加速档:%v", counter.attempts)
 	}
 }
 
@@ -379,3 +385,124 @@ func TestChinaListStillDoesNotApplyToUDP(t *testing.T) {
 		t.Fatalf("china 列表把 UDP 送去了直连(direct=%d)—— 那是一个单独的决定,不该搭这趟车", counter.direct)
 	}
 }
+
+func containsAttempt(attempts []string, want string) bool {
+	for _, a := range attempts {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// **「判不出来」那一桶不许被折进「不受影响」。**
+//
+// 无域名时 Explain 走 ExplainIP,而 fake IP 既不在 china CIDR 也不在私网段,
+// 会落进「默认」——看起来就像「这条不受影响」。折进去的后果是把影响面**系统性
+// 低估**,而这份测量存在的全部意义就是不靠推测。
+func TestUDPCounterfactualBuckets(t *testing.T) {
+	fake := fakeRange{netip.MustParsePrefix("198.18.0.0/15")}
+	for _, tc := range []struct {
+		name string
+		meta route.Meta
+		why  route.Reason
+		pool fakeIPRange
+		want string
+	}{
+		{
+			name: "有域名且命中 china 域名列表 → 会改走直连",
+			meta: route.Meta{Domain: "im.qq.com"},
+			why:  route.Reason{Source: route.SourceChinaDomain},
+			pool: fake, want: udpWouldFlipDomain,
+		},
+		{
+			name: "有域名但没命中 → 不受影响",
+			meta: route.Meta{Domain: "example.org"},
+			why:  route.Reason{Source: route.SourceDefault},
+			pool: fake, want: udpNoChange,
+		},
+		{
+			name: "无域名 + 真实公网 IP 命中 china CIDR → 会改走直连",
+			meta: route.Meta{IP: netip.MustParseAddr("223.5.5.5")},
+			why:  route.Reason{Source: route.SourceChinaCIDR},
+			pool: fake, want: udpWouldFlipCIDR,
+		},
+		{
+			name: "无域名 + 地址在 fake-IP 段里 → 判不出来",
+			meta: route.Meta{IP: netip.MustParseAddr("198.18.0.7")},
+			why:  route.Reason{Source: route.SourceDefault},
+			pool: fake, want: udpUndecidable,
+		},
+		{
+			name: "无域名 + 真实公网 IP 没命中 → 不受影响",
+			meta: route.Meta{IP: netip.MustParseAddr("203.0.113.9")},
+			why:  route.Reason{Source: route.SourceDefault},
+			pool: fake, want: udpNoChange,
+		},
+		{
+			name: "没有 fake-IP 池:地址就是真实地址,不存在判不出来",
+			meta: route.Meta{IP: netip.MustParseAddr("223.5.5.5")},
+			why:  route.Reason{Source: route.SourceChinaCIDR},
+			pool: nil, want: udpWouldFlipCIDR,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := udpCounterfactualBucket(tc.meta, tc.why, tc.pool); got != tc.want {
+				t.Fatalf("桶 = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// **没有 fake-IP 的部署一发 UDP 就不许崩。**
+//
+// d.Fake 是 *fakeip.Pool;为 nil 时若直接装进接口,会得到「非 nil 的接口值包着
+// 一个 nil 指针」,于是判定里那句 `pool != nil` 为真、随即解引用 panic。
+// Go 里最经典的那个坑,而它在这里的后果是整条 UDP 路径当场崩溃 —— 本轮真的踩了。
+func TestUDPCounterfactualSurvivesANilFakeIPPool(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{GlobalProxy: true})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+
+	// d.Fake 保持 nil —— 不设 fake-IP 的部署。
+	if _, err := d.Dial(context.Background(), route.Meta{
+		IP: netip.MustParseAddr("203.0.113.9"), Port: 443, UDP: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !containsAttempt(counter.attempts, udpNoChange+"|") {
+		t.Fatalf("反事实没记上:%v", counter.attempts)
+	}
+}
+
+// 反事实计数**必须每条 UDP 都记**,否则那几个数没有分母 ——
+// 「会改走直连的有 300 条」在不知道总数时说明不了任何事。
+func TestEveryUDPConnectionGetsACounterfactualBucket(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+
+	for i := 0; i < 3; i++ {
+		if _, err := d.Dial(context.Background(), route.Meta{
+			IP: netip.MustParseAddr("203.0.113.9"), Port: 443, UDP: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buckets int
+	for _, a := range counter.attempts {
+		if strings.HasPrefix(a, "udp_would_flip") || strings.HasPrefix(a, "udp_no_change") ||
+			strings.HasPrefix(a, "udp_undecidable") {
+			buckets++
+		}
+	}
+	if buckets != 3 {
+		t.Fatalf("3 条连接只记了 %d 个反事实桶 —— 那几个数会没有分母:%v", buckets, counter.attempts)
+	}
+}
+
+type fakeRange struct{ prefix netip.Prefix }
+
+func (f fakeRange) Contains(ip netip.Addr) bool { return f.prefix.Contains(ip) }
