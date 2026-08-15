@@ -11,6 +11,8 @@ private let guardianMutationTimeout: TimeInterval = 75
 // Go 侧 updateCheckTimeout = 20 秒(这条查询要跟 GitHub 往返)。客户端必须比它长,
 // 否则拿到的永远是自己的超时,而服务端那个上限一次都不会生效。
 private let guardianUpdateCheckTimeout: TimeInterval = 30
+// Go 侧 switchVerifyTimeout = 12 秒,外面还包着武装与确认两次控制面往返。
+private let guardianSwitchServerTimeout: TimeInterval = 45
 private let guardianMaximumTimeout: TimeInterval = TimeInterval(Int32.max) / 1_000
 
 enum GuardianEndpoint {
@@ -26,12 +28,15 @@ enum GuardianEndpoint {
     case changeRule(action: String, kind: String, pattern: String)
     /// 整组打开或关掉。组开关**只动这一组名下的域名**,用户手写的规则不受影响。
     case changeRuleGroup(action: String, group: String)
+    case listServers
+    /// 换到清单里的另一台。**服务端会等新隧道健康才确认**,所以它慢。
+    case switchServer(name: String)
 
     var expectedStatus: Int {
         switch self {
         case .requestRecovery: return 202
         case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule,
-             .changeRuleGroup:
+             .changeRuleGroup, .listServers, .switchServer:
             return 200
         }
     }
@@ -42,7 +47,11 @@ enum GuardianEndpoint {
         case .turnOn, .turnOff: return guardianMutationTimeout
         case .updateCheck: return guardianUpdateCheckTimeout
         // 只是读写一个小 YAML 文件,不做网络 I/O。
-        case .listRules, .changeRule, .changeRuleGroup: return guardianDefaultTimeout
+        case .listRules, .changeRule, .changeRuleGroup, .listServers: return guardianDefaultTimeout
+        // 服务端要武装 → 等新隧道健康(上限 12 秒)→ 确认。客户端必须比那条链
+        // 更长,否则拿到的永远是自己的超时,而切换其实还在进行 —— 用户会看到
+        // 一句失败,然后出口在几秒后自己变了。
+        case .switchServer: return guardianSwitchServerTimeout
         }
     }
 }
@@ -192,6 +201,16 @@ struct GuardianClient {
         try perform(endpoint: .listRules, as: RuleList.self)
     }
 
+    func listServers() throws -> ServerList {
+        try perform(endpoint: .listServers, as: ServerList.self)
+    }
+
+    /// 换服务器。返回的 `applied` 区分「已生效」与「只写了配置」——
+    /// **合成一个 ok 会让菜单说「已切换」而流量还从原来那台出去。**
+    func switchServer(name: String) throws -> ServerSwitchResult {
+        try perform(endpoint: .switchServer(name: name), as: ServerSwitchResult.self)
+    }
+
     /// 加/删一条规则,并返回改动**之后**的完整列表。
     ///
     /// 返回新列表而不是一个 ok:界面据此重画,不必自己推演改动后的状态 ——
@@ -314,6 +333,16 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         path = "/v1/rules"
         let payload: [String: String] = ["action": action, "group": group]
         body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+    case .listServers:
+        method = "GET"
+        path = "/v1/servers"
+        body = nil
+    case let .switchServer(name):
+        method = "POST"
+        path = "/v1/servers"
+        // 与 changeRule 同一条纪律:用 JSONSerialization,不手拼 —— 名字来自
+        // 配置文件,一个引号就能改变请求的结构。
+        body = (try? JSONSerialization.data(withJSONObject: ["name": name])) ?? Data("{}".utf8)
     }
 
     var requestText = "\(method) \(path) HTTP/1.1\r\nHost: local\r\nAccept: application/json\r\nConnection: close\r\n"

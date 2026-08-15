@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/setup"
@@ -55,7 +54,7 @@ func serverUseAction(c *cli.Context) error {
 	// **解壳再交给 Core。** 它只认内层链接;喂换壳的进去它解析不出主机、
 	// 装不了 bypass,于是正确地拒绝切换(以免成环),而用户看到的是一句
 	// 关于 base64 的错误。
-	hotErr := supervisor.SwitchServer(liveSwitchDeps(), target.Name,
+	hotErr := supervisor.SwitchServer(supervisor.LiveSwitchDeps(), target.Name,
 		setup.DecodeLink(target.Link), setup.DecodeLink(target.UDP))
 	fmt.Print(switchOutcomeMessage(target.Name, host, hotErr))
 	return nil
@@ -125,44 +124,4 @@ func switchOutcomeMessage(name, host string, hotErr error) string {
 		"  配置里的选择已经落定,执行下面两条即可用上:\n"+
 		"    sudo bx down\n"+
 		"    sudo bx up\n", name, host, hotErr)
-}
-
-// liveSwitchDeps 是接到真 Core 上的那四步。
-func liveSwitchDeps() supervisor.SwitchDeps {
-	return supervisor.SwitchDeps{
-		Arm: func(link, udp string) error {
-			_, err := supervisor.SetServerControl(supervisor.SockPath, link, udp)
-			return err
-		},
-		// **验证是「新隧道健康」,不是「命令没报错」。** 换过去之后隧道起不来
-		// 才是这次切换真正的失败,而那要等健康检查跑一轮。
-		Healthy: func() bool { return tunnelHealthyWithin(switchVerifyTimeout) },
-		Commit: func() error {
-			_, err := supervisor.CommitControl(supervisor.SockPath)
-			return err
-		},
-		Rollback: func() error {
-			_, err := supervisor.RollbackControl(supervisor.SockPath)
-			return err
-		},
-	}
-}
-
-// switchVerifyTimeout 是等新隧道变健康的上限。
-//
-// 比死手的窗口短:必须在死手动手之前得出结论,否则我们的「确认」会撞上
-// 它的「还原」,而两者谁先谁后是掷骰子。
-const switchVerifyTimeout = 12 * time.Second
-
-func tunnelHealthyWithin(limit time.Duration) bool {
-	deadline := time.Now().Add(limit)
-	for {
-		if rep, err := supervisor.FetchStatusReport(supervisor.SockPath); err == nil && rep.TunnelHealthy {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
 }

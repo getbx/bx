@@ -180,6 +180,11 @@ const CapabilityMaintenanceHold = "maintenance_hold"
 // 少了它而菜单照样把编辑界面画出来,用户会对着一个每次点都失败的按钮。
 const CapabilityRules = "rules"
 
+// CapabilityServers 表示这一版 Guardian 提供 /v1/servers(列清单 + 换一台)。
+// **键缺席 = 旧版 Guardian**:菜单据此决定要不要画出服务器入口,否则用户对着
+// 一个每次点都失败的按钮 —— 与 CapabilityRules 同一机制同一理由。
+const CapabilityServers = "servers"
+
 // MaintenanceHoldStatus 是**正在生效**的那次挂起,随 Status 发布。
 //
 // 过期的挂起不出现在这里:键缺席的意思是「此刻没有挂起」。它与 MaintenanceHold
@@ -195,7 +200,7 @@ type MaintenanceHoldStatus struct {
 // 每次调用都返回新切片:它会被塞进 Status 交给 JSON 编码,共享一份底层数组等于
 // 把一个包级可变状态发布出去。
 func GuardianCapabilities() []string {
-	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules}
+	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers}
 }
 
 // ReconcileReport 是只观察调谐环**最近一轮**的判断,随 Status 一起发布。

@@ -136,6 +136,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(controller, pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/rules", rulesHandler(options.ConfigPath, options.OwnerUID))
+	mux.HandleFunc("/v1/servers", serversHandler(options.ConfigPath, options.OwnerUID, liveServerSwitch))
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
 	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries}
