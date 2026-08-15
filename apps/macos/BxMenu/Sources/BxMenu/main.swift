@@ -698,6 +698,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 出口 IP 探测的当前状态。**默认是 .unknown(「没查过」),不是某个地址** ——
     /// 与这个仓库里 Tristate 同一条纪律。
     private var exitIPProbe: ExitIPProbe = .unknown
+    /// 有一次换服务器正在飞。见 confirmAndSwitchServer。
+    private var switchInFlight = false
 
     /// 规则窗口。**窗口而不是子菜单**:菜单每 2 秒 removeAllItems() 重建一次,
     /// 而进子菜单再点一项通常超过 2 秒 —— 真机上就是这么变成"点了没反应"的。
@@ -847,6 +849,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 所有者拒绝自动容灾的理由:自动切会在用户不知情时换掉出口 IP。既然选择由
     /// 人来做,那就必须让人先看见后果。
     private func confirmAndSwitchServer(name: String, host: String) {
+        // **一次只许有一次切换在飞。** 服务端也会拒(409 servers_switch_busy),
+        // 这里挡一道只是为了不让用户撞上一个他看不懂的失败:窗口在那二十几秒里
+        // 一直开着,再点一下是很自然的动作。
+        guard !switchInFlight else { return }
         let alert = NSAlert()
         alert.messageText = "Switch server?"
         alert.informativeText = serverSwitchConfirmMessage(name: name, host: host)
@@ -857,10 +863,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // 换过去之后旧的探测结果就作废了 —— 留着它会让用户读到上一台的出口。
         exitIPProbe = .unknown
+        switchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try GuardianClient().switchServer(name: name) }
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.switchInFlight = false
                 switch result {
                 case .success(let outcome):
                     let alert = NSAlert()
