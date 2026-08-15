@@ -95,3 +95,24 @@ func wrapForTest(t *testing.T, link string) string {
 	t.Helper()
 	return blink.Encode(link)
 }
+
+// **配置里存的是 bx:// 换壳,而 Core 只认内层链接。**
+//
+// 真机(2026-08-14):把换壳链接直接交给 /v0/server,它解析不出主机、装不了
+// bypass,于是正确地拒绝了切换(以免成环)—— 而用户看到的是一句关于 base64
+// 的错误。每个把链接交给 Core 的地方都要先过 DecodeLink。
+func TestDecodeLinkUnwrapsBxShell(t *testing.T) {
+	inner := "vless://u@1.2.3.4:443?security=reality"
+	if got := DecodeLink(blink.Encode(inner)); got != inner {
+		t.Fatalf("换壳没解开:%q", got)
+	}
+	if got := DecodeLink(inner); got != inner {
+		t.Fatalf("裸链接被改动了:%q", got)
+	}
+	if got := DecodeLink(""); got != "" {
+		t.Fatalf("空串:%q", got)
+	}
+	if got := DecodeLink("  " + inner + "  "); got != inner {
+		t.Fatalf("空白没去掉:%q", got)
+	}
+}

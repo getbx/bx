@@ -48,6 +48,27 @@ func StaleUDPTransport(before TransportsBefore, newServer string) (host string, 
 	return oldUDPHost, true
 }
 
+// DecodeLink 把 bx:// 换壳解开,返回内层传输链接;不是换壳的原样返回。
+//
+// **Core 的 /v0/server 只认内层链接**:喂换壳的进去,它解析不出主机、装不了
+// bypass,于是(正确地)拒绝切换以免成环 —— 而调用方看到的是一句关于
+// base64 的错误(2026-08-14 真机)。配置里存的都是换壳的,所以每个把链接
+// 交给 Core 的地方都要先过这里。
+func DecodeLink(link string) string {
+	link = strings.TrimSpace(link)
+	if inner, err := blink.Decode(link); err == nil {
+		return inner
+	}
+	return link
+}
+
+// LinkHost 取一条链接的服务器主机,**认 bx:// 换壳**。
+//
+// 导出是因为 CLI 侧渲染服务器清单要用同一份判据:只认裸链接的话,
+// 配置里那些 bx:// 会让 tunnel.ServerHost 退化成「当作裸 host:port」,
+// 把整串 base64 当主机名打给用户(2026-08-14 真机上就是这么显示的)。
+func LinkHost(link string) (string, bool) { return linkHost(link) }
+
 // linkHost 取一条链接的服务器主机,认 bx:// 换壳。
 //
 // 认换壳是必需的:用户手里的几乎全是 bx://,只认裸链接等于这条判据永不触发。

@@ -491,14 +491,22 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 		}
 		// 配置路径取自 Core 自己的运行时状态 —— 发布**它此刻在用的**那个文件,
 		// 不是某处猜出来的默认值(与 DNSUpstream 同一条纪律)。
-		var configPath string
+		var configPath, liveServer string
 		if runtime != nil {
-			configPath = runtime().ConfigPath
+			rs := runtime()
+			configPath = rs.ConfigPath
+			// **热切之后「节点」必须跟着变。** 启动时那个值在 `bx server use`
+			// 之后会指向旧服务器,而出口早已换了 —— status 说的与实际不符。
+			liveServer = rs.ServerHost
+		}
+		reportServer := server
+		if liveServer != "" {
+			reportServer = liveServer
 		}
 		return stats.Report{
 			Snapshot:      c.Snapshot(),
 			ConfigPath:    configPath,
-			Server:        server,
+			Server:        reportServer,
 			SocksAddr:     t.SocksAddr(),
 			TunnelHealthy: ts.Up,
 			LatencyMS:     ts.LatencyMS,
