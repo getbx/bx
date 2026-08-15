@@ -434,7 +434,7 @@ sudo bx server shares --json
 | `sudo bx reconnect` | 安全重连传输:替代传输健康后切换,不中断 TUN、路由或 DNS |
 | `bx update --check --json` | 只读检查已签名 release,供菜单栏或自动化读取 |
 | `sudo bx update` | 校验已签名 release 并原子替换 CLI;macOS 统一安装(Bx.app)下走统一在线更新(保护开启经 Guardian fail-closed 事务、失败自动回滚,保护关闭直接文件级升级) |
-| `sudo bx direct add <domain>` | 将域名加入直连白名单,会与 proxy 规则互斥清理 |
+| `sudo bx direct add <domain>` | 将域名加入直连白名单(**TCP 与 UDP 都生效**),会与 proxy 规则互斥清理 |
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |
 | `sudo bx proxy add <domain>` | 强制域名走隧道,会与 direct 规则互斥清理 |
 | `sudo bx proxy rm <domain>` | 从强制隧道列表移除域名 |
