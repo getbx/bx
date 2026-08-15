@@ -1573,6 +1573,14 @@ func doctorAction(c *cli.Context) (err error) {
 	} else {
 		doctorLine("ok", "status socket", "reachable")
 	}
+	// 数据面的成败。**doctor 一直只答得出「装没装好」** —— 而人在出问题时敲的
+	// 正是 doctor,那时最该看到的是「流量到底成不成、哪条规则在成片失败」。
+	for _, check := range doctorOutcomeChecks(supervisor.FetchStatusReport(statusSocketPath())) {
+		doctorLine(check.Status, check.Name, check.Detail)
+		if check.Hint != "" {
+			doctorLine("hint", check.Name, check.Hint)
+		}
+	}
 	if runtime.GOOS == "darwin" {
 		guardianStatus, guardianErr := readGuardianStatus()
 		if guardianErr != nil {
