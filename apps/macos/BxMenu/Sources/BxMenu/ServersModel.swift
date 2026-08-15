@@ -5,6 +5,32 @@ import Foundation
 /// 判断放这里、摆放放 ServersWindow —— `main.swift` 与 AppKit 那一半在 CI 里编都不编,
 /// 逻辑放那边等于没测(本仓库反复记录过的形状)。
 
+/// 一台的探测结论。
+///
+/// **reachable 与 rttMS 分开,而且 rtt 缺席读作 0 而不是「很快」。** 把「没通」
+/// 表达成 0 毫秒会让界面显示一个漂亮的零 —— 零值读起来像一切正常。
+struct ProbeReport: Decodable, Equatable {
+    var reachable: Bool = false
+    var rttMS: Int = 0
+    var error: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case reachable, error
+        case rttMS = "rtt_ms"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        reachable = try c.decodeIfPresent(Bool.self, forKey: .reachable) ?? false
+        rttMS = try c.decodeIfPresent(Int.self, forKey: .rttMS) ?? 0
+        error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
+    }
+
+    init(reachable: Bool = false, rttMS: Int = 0, error: String = "") {
+        self.reachable = reachable; self.rttMS = rttMS; self.error = error
+    }
+}
+
 /// 清单里的一台。
 ///
 /// **这里没有 `link` 字段,而且不该有。** 链接是凭据(uuid / 密码),服务端刻意
@@ -16,9 +42,12 @@ struct ServerEntry: Decodable, Equatable {
     /// UDP 单独走的那台(空 = 跟主传输同一台)。
     var udpHost: String = ""
     var current: Bool = false
+    /// 这一次测的结果。**nil = 没测过**,与「测了没通」是两回事 —— 后者会让
+    /// 一台从没测过的服务器显示成红的。
+    var probe: ProbeReport?
 
     enum CodingKeys: String, CodingKey {
-        case name, host, current
+        case name, host, current, probe
         case udpHost = "udp_host"
     }
 
@@ -28,10 +57,13 @@ struct ServerEntry: Decodable, Equatable {
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
         udpHost = try c.decodeIfPresent(String.self, forKey: .udpHost) ?? ""
         current = try c.decodeIfPresent(Bool.self, forKey: .current) ?? false
+        probe = try c.decodeIfPresent(ProbeReport.self, forKey: .probe)
     }
 
-    init(name: String, host: String = "", udpHost: String = "", current: Bool = false) {
+    init(name: String, host: String = "", udpHost: String = "", current: Bool = false,
+         probe: ProbeReport? = nil) {
         self.name = name; self.host = host; self.udpHost = udpHost; self.current = current
+        self.probe = probe
     }
 }
 
@@ -102,7 +134,26 @@ struct ServerRow: Equatable {
         if !entry.udpHost.isEmpty, entry.udpHost != entry.host {
             parts.append("UDP → \(entry.udpHost)")
         }
+        if let line = probeLine { parts.append(line) }
         return parts.joined(separator: "   ")
+    }
+
+    /// 探测那一段。**没测过就一个字都不说** —— 一行「未测试」在每台后面重复,
+    /// 是墙纸不是信息。
+    var probeLine: String? {
+        guard let probe = entry.probe else { return nil }
+        if probe.reachable { return "\(probe.rttMS) ms" }
+        // **失败必须说出原因。** 一个光秃秃的红叉让用户无从判断是服务器关了、
+        // 还是自己这条网络的问题。
+        return probe.error.isEmpty ? "unreachable" : probe.error
+    }
+
+    /// 这一行要不要标红。**只有「测过而且没通」才标** —— 没测过不标,
+    /// 「没能测」(bx 没在跑)也不标:把那两种画成红的,等于把一台好服务器
+    /// 说成坏的。
+    var probeFailed: Bool {
+        guard let probe = entry.probe else { return false }
+        return !probe.reachable
     }
 
     /// 能不能点它切过去。当前那台不能点(点了是空操作,而空操作看起来像坏了);

@@ -2,6 +2,8 @@ package setup
 
 import (
 	"net/netip"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/getbx/bx/internal/blink"
@@ -113,4 +115,35 @@ func looksLikeHost(host string) bool {
 	}
 	// 光是一串点或横杠不算主机名。
 	return strings.ContainsAny(host, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+}
+
+// LinkPort 取一条链接的服务器端口,**认 bx:// 换壳**;取不到就报 0。
+//
+// 探测要连的是「服务器真正在听的那个口」。**猜一个 443 会把一台跑在 9999 上的
+// 服务器测成不可达**,而用户看到的是一台好机器被标成红的 —— 比不测更糟。
+// 取不到时返回 0,由调用方决定怎么办(今天是回落 443 并把用到的口报出去)。
+func LinkPort(link string) int {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return 0
+	}
+	if inner, err := blink.Decode(link); err == nil {
+		link = inner
+	}
+	host, err := tunnel.ServerHost(link)
+	if err != nil || strings.TrimSpace(host) == "" {
+		return 0
+	}
+	// ServerHost 只给主机,端口要自己从 authority 里取。各家链接的 authority
+	// 形状不同(vless/hysteria2/trojan 是 user@host:port,ss/vmess 是 base64),
+	// 所以先解壳再交给 url.Parse —— 解不出来就老实返回 0。
+	u, err := url.Parse(link)
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
 }

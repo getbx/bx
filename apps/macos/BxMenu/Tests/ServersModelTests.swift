@@ -123,6 +123,51 @@ struct ServersModelTests {
     }
 
 
+    // **没测过 ≠ 测了没通。** probe 键缺席时一个字都不说 —— 一行「未测试」在每台
+    // 后面重复是墙纸;而把它画成红的,等于把一台好服务器说成坏的。
+    static func testUntestedServersSaySilentlyNothing() {
+        let row = ServerRow(entry: ServerEntry(name: "tokyo", host: "203.0.113.10"))
+        expect(row.probeLine == nil, "没测过却说了话:\(row.probeLine ?? "")")
+        expect(!row.probeFailed, "没测过却被标成失败")
+        expect(row.detail == "203.0.113.10", "detail 里混进了探测:\(row.detail)")
+    }
+
+    // 测通了报毫秒;测不通报**原因**,不是一个光秃秃的红叉 —— 用户要分得清
+    // 「服务器关了」和「我这条网络的问题」。
+    static func testProbeLineSaysMillisecondsOrWhyNot() {
+        let ok = ServerRow(entry: ServerEntry(name: "a", host: "h", probe: ProbeReport(reachable: true, rttMS: 42)))
+        expect(ok.probeLine == "42 ms", "通了却没报毫秒:\(ok.probeLine ?? "")")
+        expect(!ok.probeFailed, "通了却被标成失败")
+
+        let bad = ServerRow(entry: ServerEntry(name: "b", host: "h",
+                                               probe: ProbeReport(reachable: false, error: "超时(没有应答)")))
+        expect(bad.probeLine == "超时(没有应答)", "没说原因:\(bad.probeLine ?? "")")
+        expect(bad.probeFailed, "没通却没被标成失败")
+    }
+
+    // **「没通」不许显示成 0 ms。** 零值读起来像一切正常 —— 这是这个仓库反复
+    // 禁止的那种谎,而它在这里的具体形状就是「0 毫秒,真快」。
+    static func testUnreachableNeverRendersAsZeroMilliseconds() {
+        let row = ServerRow(entry: ServerEntry(name: "b", host: "h", probe: ProbeReport(reachable: false)))
+        let line = row.probeLine ?? ""
+        expect(!line.contains("0 ms"), "没通却显示成 0 ms:\(line)")
+        expect(line == "unreachable", "没有原因时的兜底文案不对:\(line)")
+    }
+
+    // 探测结论能从 Guardian 的应答里解出来,且 rtt 缺席读作 0(不是「很快」)。
+    static func testProbeDecodesFromGuardian() {
+        let json = """
+        {"servers":[{"name":"a","host":"h","probe":{"reachable":true,"rtt_ms":7}},
+                    {"name":"b","host":"h2","probe":{"reachable":false,"error":"连不上"}}]}
+        """
+        guard let list = try? JSONDecoder().decode(ServerList.self, from: Data(json.utf8)) else {
+            fail("解不出带探测结论的清单"); return
+        }
+        expect(list.servers[0].probe?.rttMS == 7, "rtt 没解出来")
+        expect(list.servers[1].probe?.reachable == false, "第二台的结论不对")
+        expect(list.servers[1].probe?.rttMS == 0, "rtt 缺席却不是 0")
+    }
+
     static func main() {
         testServerListDecodesWhatGuardianSends()
         testServerSwitchingNeedsTheCapability()
@@ -133,6 +178,10 @@ struct ServersModelTests {
         testMissingAppliedIsNotSuccess()
         testExitIPLineNeverInventsAnAnswer()
         testExitIPResponseIsValidated()
+        testUntestedServersSaySilentlyNothing()
+        testProbeLineSaysMillisecondsOrWhyNot()
+        testUnreachableNeverRendersAsZeroMilliseconds()
+        testProbeDecodesFromGuardian()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 一个没被脚本登记的套件
         // 退出码也是 0(本仓库实测栽过)。
         if failures == 0 {

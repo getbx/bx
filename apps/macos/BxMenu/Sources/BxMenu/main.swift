@@ -778,8 +778,55 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onCheckExitIP = { [weak self] in
             self?.checkExitIP()
         }
+        controller.onProbe = { [weak self] in
+            self?.probeServers()
+        }
         return controller
     }()
+
+    /// 逐台量「从这台 Mac 直连过去多远」。
+    ///
+    /// **走的是 Core 的直连拨号器**(经 Guardian 转)。bx 开着的时候一个普通
+    /// socket 会被 TUN 抓走、经**当前**那条隧道绕出去,量到的是
+    /// 「你 → 当前服务器 → 目标」—— 那个数字对「该换哪一台」毫无意义,而且
+    /// 它看起来完全正常。
+    ///
+    /// **只在用户点的时候发。** 探测走在隧道外面,会让网络上看得见这台机器
+    /// 联系过那几个地址;绝不做后台定时探测(与 2026-08-13 否掉菜单栏那行常驻
+    /// 红字同一条理由:被动观测优于主动探测)。
+    private func probeServers() {
+        guard !serversWindow.probing else { return }
+        serversWindow.probing = true
+        serversWindow.refreshIfVisible(rows: serverRows(from: lastServers ?? ServerList()), probe: exitIPProbe)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try GuardianClient().probeServers() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.serversWindow.probing = false
+                switch result {
+                case .success(let list):
+                    // 带着探测结论的完整清单直接顶替缓存 —— 界面据此重画,
+                    // 不必自己把结论并回去(推演出来的状态与真实状态漂开,
+                    // 正是这个仓库反复栽的形状)。
+                    self.lastServers = list
+                    self.serversWindow.refreshIfVisible(rows: serverRows(from: list), probe: self.exitIPProbe)
+                case .failure(let error):
+                    // **测不成不许把服务器画成红的。** 保持上一轮的清单原样,
+                    // 只说这次没测成 —— 把「没问出来」画成「不可达」,等于把
+                    // 一台好服务器说成坏的。
+                    self.serversWindow.refreshIfVisible(
+                        rows: serverRows(from: self.lastServers ?? ServerList()), probe: self.exitIPProbe)
+                    let alert = NSAlert()
+                    alert.messageText = "Could not test the servers"
+                    alert.informativeText = "\(error.localizedDescription)\n\n"
+                        + "Testing needs bx to be running: it measures from outside the tunnel, "
+                        + "which only bx itself can do."
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                }
+            }
+        }
+    }
 
     @objc private func openServersWindow() {
         guard let servers = lastServers else {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/setup"
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 // 两台服务器,链接里带一个**看得出来的凭据**(uuid)—— 下面有一条守卫专门
@@ -43,7 +44,7 @@ func noSwitch(t *testing.T) serverSwitcher {
 
 // 与 /v1/up、/v1/rules 同一道门。换服务器会改变出口 IP,是同一量级的动作。
 func TestServersEndpointRequiresOwnerOrRoot(t *testing.T) {
-	handler := serversHandler(serversTestConfig(t), 501, noSwitch(t))
+	handler := serversHandler(serversTestConfig(t), 501, noSwitch(t), nil)
 	for _, tc := range []struct {
 		name string
 		uid  uint32
@@ -68,7 +69,7 @@ func TestServersEndpointRequiresOwnerOrRoot(t *testing.T) {
 // ownerUID 未配置时退化成 root-only —— 绝不因为「没配」就放宽。
 func TestServersEndpointStaysRootOnlyWithoutOwner(t *testing.T) {
 	w := httptest.NewRecorder()
-	serversHandler(serversTestConfig(t), 0, noSwitch(t))(
+	serversHandler(serversTestConfig(t), 0, noSwitch(t), nil)(
 		w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
 	)
 	if w.Code != http.StatusForbidden {
@@ -83,7 +84,7 @@ func TestServersEndpointStaysRootOnlyWithoutOwner(t *testing.T) {
 // 的完整字节**,不是某个字段 —— 加一个 `link` 字段不会有编译错误。
 func TestServerListNeverShipsTheLinkItself(t *testing.T) {
 	w := httptest.NewRecorder()
-	serversHandler(serversTestConfig(t), 501, noSwitch(t))(
+	serversHandler(serversTestConfig(t), 501, noSwitch(t), nil)(
 		w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
 	)
 
@@ -106,7 +107,7 @@ func TestServerListNeverShipsTheLinkItself(t *testing.T) {
 
 func TestServerListMarksTheCurrentOne(t *testing.T) {
 	w := httptest.NewRecorder()
-	serversHandler(serversTestConfig(t), 501, noSwitch(t))(
+	serversHandler(serversTestConfig(t), 501, noSwitch(t), nil)(
 		w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
 	)
 
@@ -134,7 +135,7 @@ func TestServerSwitchWritesConfigBeforeHotSwitching(t *testing.T) {
 	handler := serversHandler(path, 501, func(name, link, udp string) error {
 		_, currentWhenSwitched, _ = setup.ListServers(path)
 		return nil
-	})
+	}, nil)
 	w := httptest.NewRecorder()
 	handler(w, withPeer(postServers(t, "osaka"), 501, true))
 
@@ -166,7 +167,7 @@ func TestServerSwitchHandsCoreTheDecodedLink(t *testing.T) {
 	handler := serversHandler(path, 501, func(name, link, udp string) error {
 		handed = link
 		return nil
-	})
+	}, nil)
 	handler(httptest.NewRecorder(), withPeer(postServers(t, "b"), 501, true))
 	if handed != inner {
 		t.Fatalf("交给 Core 的是 %q,want 解过壳的 %q", handed, inner)
@@ -179,7 +180,7 @@ func TestServerSwitchReportsWhenOnlyTheConfigChanged(t *testing.T) {
 	path := serversTestConfig(t)
 	handler := serversHandler(path, 501, func(name, link, udp string) error {
 		return errTestHotSwitch
-	})
+	}, nil)
 	w := httptest.NewRecorder()
 	handler(w, withPeer(postServers(t, "osaka"), 501, true))
 
@@ -207,7 +208,7 @@ func TestServerSwitchReportsWhenOnlyTheConfigChanged(t *testing.T) {
 func TestServerSwitchRejectsUnknownName(t *testing.T) {
 	path := serversTestConfig(t)
 	w := httptest.NewRecorder()
-	serversHandler(path, 501, noSwitch(t))(w, withPeer(postServers(t, "nagoya"), 501, true))
+	serversHandler(path, 501, noSwitch(t), nil)(w, withPeer(postServers(t, "nagoya"), 501, true))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("状态码 = %d, want 400", w.Code)
 	}
@@ -220,7 +221,7 @@ func TestServerSwitchRejectsUnknownName(t *testing.T) {
 // 用户据此以为自己没配过服务器(与 /v1/rules 同一条纪律)。
 func TestServersEndpointReportsWhenNotWired(t *testing.T) {
 	w := httptest.NewRecorder()
-	serversHandler("", 501, noSwitch(t))(
+	serversHandler("", 501, noSwitch(t), nil)(
 		w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
 	)
 	if w.Code != http.StatusNotImplemented {
@@ -264,7 +265,7 @@ func TestServersCapabilityIsDeclared(t *testing.T) {
 func TestServerAddDoesNotChangeTheCurrentExit(t *testing.T) {
 	path := serversTestConfig(t)
 	w := httptest.NewRecorder()
-	serversHandler(path, 501, noSwitch(t))(w, withPeer(postServersJSON(t, serversRequest{
+	serversHandler(path, 501, noSwitch(t), nil)(w, withPeer(postServersJSON(t, serversRequest{
 		Action: "add", Name: "nagoya",
 		Link: "vless://" + serversTestUUID + "@203.0.113.30:443?security=reality",
 	}), 501, true))
@@ -300,7 +301,7 @@ func TestServerAddDoesNotChangeTheCurrentExit(t *testing.T) {
 // 单独写出来是为了让意图可读 —— 热切是「换过去」的一部分,不是「加进来」的。
 func TestServerAddNeverHotSwitches(t *testing.T) {
 	w := httptest.NewRecorder()
-	serversHandler(serversTestConfig(t), 501, noSwitch(t))(w, withPeer(postServersJSON(t, serversRequest{
+	serversHandler(serversTestConfig(t), 501, noSwitch(t), nil)(w, withPeer(postServersJSON(t, serversRequest{
 		Action: "add", Name: "nagoya", Link: "vless://x@203.0.113.30:443",
 	}), 501, true))
 	if w.Code != http.StatusOK {
@@ -322,7 +323,7 @@ func TestServerAddRejectsBadInput(t *testing.T) {
 			path := serversTestConfig(t)
 			before, _ := os.ReadFile(path)
 			w := httptest.NewRecorder()
-			serversHandler(path, 501, noSwitch(t))(w, withPeer(postServersJSON(t, tc.req), 501, true))
+			serversHandler(path, 501, noSwitch(t), nil)(w, withPeer(postServersJSON(t, tc.req), 501, true))
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("状态码 = %d, want 400", w.Code)
 			}
@@ -341,4 +342,96 @@ func postServersJSON(t *testing.T, req serversRequest) *http.Request {
 		t.Fatal(err)
 	}
 	return httptest.NewRequest(http.MethodPost, "/v1/servers", strings.NewReader(string(body)))
+}
+
+// **「没能测」不是「不可达」。**
+//
+// Core 不在跑、或这一版不支持探测,都会让 probe 报错。把它判成不可达会**把一台
+// 好服务器标成红的**,而用户据此去换服务器 —— 与 ipify 那次同一类、方向相反的错。
+func TestProbeFailureIsNotReportedAsUnreachable(t *testing.T) {
+	w := httptest.NewRecorder()
+	serversHandler(serversTestConfig(t), 501, noSwitch(t),
+		func(host string, port int) (supervisor.ProbeResult, error) {
+			return supervisor.ProbeResult{}, errTestHotSwitch
+		})(w, withPeer(postServersJSON(t, serversRequest{Action: "probe"}), 501, true))
+
+	var got serversResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range got.Servers {
+		if entry.Probe == nil {
+			t.Fatalf("%s 没有结论 —— 键缺席读作「没测过」,而我们确实测了", entry.Name)
+		}
+		if entry.Probe.Reachable {
+			t.Errorf("%s 测失败却报成可达", entry.Name)
+		}
+		if entry.Probe.Error == "" {
+			t.Errorf("%s 没说为什么没测成", entry.Name)
+		}
+		if entry.Probe.RTTMS != 0 {
+			t.Errorf("%s 没测成却带了 RTT", entry.Name)
+		}
+	}
+	// 原始错误串不外传。
+	if strings.Contains(w.Body.String(), errTestHotSwitch.Error()) {
+		t.Errorf("原始错误串泄漏进了响应体:%s", w.Body.String())
+	}
+}
+
+// 一台失败不影响其余 —— 与 internal/observe「任一项观测失败即记为 Unknown 并
+// 附原因,绝不中断其余项」同源。
+func TestOneServerFailingDoesNotSinkTheRest(t *testing.T) {
+	w := httptest.NewRecorder()
+	serversHandler(serversTestConfig(t), 501, noSwitch(t),
+		func(host string, port int) (supervisor.ProbeResult, error) {
+			if host == "203.0.113.10" {
+				return supervisor.ProbeResult{}, errTestHotSwitch
+			}
+			return supervisor.ProbeResult{Host: host, Port: port, Reachable: true, RTTMS: 42}, nil
+		})(w, withPeer(postServersJSON(t, serversRequest{Action: "probe"}), 501, true))
+
+	var got serversResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Servers) != 2 {
+		t.Fatalf("清单长度 = %d", len(got.Servers))
+	}
+	if got.Servers[0].Probe == nil || got.Servers[0].Probe.Reachable {
+		t.Errorf("第一台应当是失败的:%+v", got.Servers[0].Probe)
+	}
+	if got.Servers[1].Probe == nil || !got.Servers[1].Probe.Reachable || got.Servers[1].Probe.RTTMS != 42 {
+		t.Errorf("第二台的结论被第一台连累了:%+v", got.Servers[1].Probe)
+	}
+}
+
+// **探测要用链接里那个端口。** 猜一个 443 会把跑在 9999 上的服务器测成不可达,
+// 而用户看到的是一台好机器被标成红的 —— 比不测更糟。
+func TestProbeUsesThePortFromTheLink(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "servers:\n    - name: odd\n      link: vless://x@203.0.113.10:9999?security=reality\ncurrent: odd\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var probed int
+	serversHandler(path, 501, noSwitch(t), func(host string, port int) (supervisor.ProbeResult, error) {
+		probed = port
+		return supervisor.ProbeResult{Reachable: true, RTTMS: 1}, nil
+	})(httptest.NewRecorder(), withPeer(postServersJSON(t, serversRequest{Action: "probe"}), 501, true))
+
+	if probed != 9999 {
+		t.Fatalf("测的是 %d 口,而链接里写的是 9999", probed)
+	}
+}
+
+// 没接线时说「没接线」,不摆一堆红叉。
+func TestProbeReportsWhenNotWired(t *testing.T) {
+	w := httptest.NewRecorder()
+	serversHandler(serversTestConfig(t), 501, noSwitch(t), nil)(
+		w, withPeer(postServersJSON(t, serversRequest{Action: "probe"}), 501, true),
+	)
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("状态码 = %d, want 501", w.Code)
+	}
 }

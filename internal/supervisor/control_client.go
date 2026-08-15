@@ -317,3 +317,35 @@ func doControlRequest(client *http.Client, req *http.Request, path string) (stri
 func RehijackControl(sockPath string) (string, error) {
 	return postControlBody(sockPath, "/v0/rehijack", nil)
 }
+
+// ProbeControl 让 Core 用它的**直连**拨号器量一次到某台服务器的往返时间。
+//
+// 客户端超时必须比服务端的 probeTimeout(8 秒)长,否则拿到的永远是自己的超时,
+// 而服务端那个上限一次都不会生效 —— 与菜单对 /v1/update-check 同一条纪律。
+func ProbeControl(sockPath, host string, port int) (ProbeResult, error) {
+	client := controlHTTPClient(sockPath)
+	client.Timeout = probeTimeout + 4*time.Second
+	defer client.CloseIdleConnections()
+	body, err := json.Marshal(ProbeRequest{Host: host, Port: port})
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	resp, err := client.Post("http://local/v0/probe", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var out controlResponse
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		if out.Error != "" {
+			return ProbeResult{}, fmt.Errorf("控制面 /v0/probe 返回 %d: %s", resp.StatusCode, out.Error)
+		}
+		return ProbeResult{}, fmt.Errorf("控制面 /v0/probe 返回 %d", resp.StatusCode)
+	}
+	var result ProbeResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ProbeResult{}, err
+	}
+	return result, nil
+}
