@@ -57,3 +57,15 @@ func (p *Pool) Domain(ip netip.Addr) (string, bool) {
 	d, ok := p.ip2d[ip]
 	return d, ok
 }
+
+// Contains 判断这个地址是不是**本池负责的那段**里的。
+//
+// 与 Domain 是两个问题:Domain 回答「我给谁发过这个地址」,Contains 回答
+// 「这个地址本来就该是我发的」。两者不一致(在段里但反查不到)意味着一次
+// **丢失的映射** —— 池重建过、或者应用攥着一个上一轮的地址。
+//
+// 调用方需要分得开这一态:把「在段里但认不出来」与「一个真实的公网 IP」混作
+// 一谈,就等于把「问不出来」报成一个具体答案。
+func (p *Pool) Contains(ip netip.Addr) bool {
+	return p.prefix.Contains(ip)
+}
