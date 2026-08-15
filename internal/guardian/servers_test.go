@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/setup"
@@ -450,7 +451,7 @@ func TestThroughputOnlyLandsOnTheCurrentServer(t *testing.T) {
 		{Name: "osaka", Current: true},
 		{Name: "nagoya"},
 	}
-	attachThroughput(entries, func() (int64, bool) { return 3_100_000, true })
+	attachThroughput(entries, func() (int64, bool) { return 3_100_000, true }, nil, thBase)
 
 	if entries[1].PeakBPS != 3_100_000 {
 		t.Errorf("当前那台没拿到吞吐:%d", entries[1].PeakBPS)
@@ -481,10 +482,59 @@ func TestNoThroughputObservationWritesNothing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entries := []serverEntry{{Name: "tokyo", Current: true, PeakBPS: 7}}
-			attachThroughput(entries, tc.throughput)
+			attachThroughput(entries, tc.throughput, nil, thBase)
 			if entries[0].PeakBPS != 7 {
 				t.Fatalf("没有观测却动了那个值:%d", entries[0].PeakBPS)
 			}
 		})
+	}
+}
+
+// **历史必须带年龄。** 所有者同意存历史(「以前的值没事」)的前提正是界面上要
+// 标出来这是以前的 —— 一个不带年龄的历史数字读起来像现状。
+func TestHistoricalThroughputCarriesItsAge(t *testing.T) {
+	entries := []serverEntry{{Name: "tokyo", Current: true}, {Name: "osaka"}}
+	history := map[string]throughputEntry{
+		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
+	}
+	attachThroughput(entries, nil, history, thBase)
+
+	if entries[1].PeakBPS != 8_000_000 {
+		t.Fatalf("历史没挂上:%d", entries[1].PeakBPS)
+	}
+	if entries[1].PeakAgeSeconds != int64(2*time.Hour/time.Second) {
+		t.Fatalf("年龄 = %d 秒,want 7200 —— 不带年龄的历史数字读起来像现状",
+			entries[1].PeakAgeSeconds)
+	}
+}
+
+// 当前那台的**实时**观测压过历史,年龄归零。
+func TestLiveThroughputOverridesHistoryForTheCurrentServer(t *testing.T) {
+	entries := []serverEntry{{Name: "tokyo", Current: true}}
+	history := map[string]throughputEntry{
+		"tokyo": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
+	}
+	attachThroughput(entries, func() (int64, bool) { return 1_000_000, true }, history, thBase)
+
+	if entries[0].PeakBPS != 1_000_000 {
+		t.Fatalf("实时观测没有压过历史:%d", entries[0].PeakBPS)
+	}
+	if entries[0].PeakAgeSeconds != 0 {
+		t.Fatalf("实时观测却带了年龄 %d 秒", entries[0].PeakAgeSeconds)
+	}
+}
+
+// 时钟被改过时**宁可不报也不报一个负的年龄** —— 「-3 小时前」会让用户从此
+// 不信这一栏里的任何数字。
+func TestNegativeAgeIsDroppedNotShown(t *testing.T) {
+	entries := []serverEntry{{Name: "osaka"}}
+	history := map[string]throughputEntry{
+		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(time.Hour)},
+	}
+	attachThroughput(entries, nil, history, thBase)
+
+	if entries[0].PeakBPS != 0 || entries[0].PeakAgeSeconds != 0 {
+		t.Fatalf("未来时刻的观测被报了出来:%d bps / %d 秒",
+			entries[0].PeakBPS, entries[0].PeakAgeSeconds)
 	}
 }

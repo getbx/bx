@@ -25,6 +25,11 @@ const (
 	// defaultMaintenanceHoldPath 同时被 OpenDefaultStore 与 intent_unreadable 的
 	// 排查指引引用 —— 指引若把用户送去一个不存在的路径,等于没有指引。
 	defaultMaintenanceHoldPath = guardianStateDirectory + "/maintenance-hold.json"
+
+	// DefaultThroughputHistoryPath 是按服务器记的吞吐历史。**导出**是因为
+	// 卸载那一侧也要点名删它(逐文件删,绝不整目录删 /var/lib/bx —— 那会把
+	// brook/sing-box 二进制与 china 列表一起删掉,603b602 的教训)。
+	DefaultThroughputHistoryPath = guardianStateDirectory + "/throughput-history.json"
 )
 
 var safeLastErrorPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)

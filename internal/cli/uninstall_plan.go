@@ -45,6 +45,9 @@ const (
 	// 维护挂起(guardian.Paths.MaintenanceHold 的默认路径)。卸载必须清掉:一张
 	// 陈旧挂起会活过卸载重装,让新装的 Guardian 在 15 分钟内拒绝起 Core。
 	darwinMaintenanceHoldPath = darwinDataDirPath + "/maintenance-hold.json"
+	// 按服务器记的吞吐历史。留下它不会造成任何危险(纯诊断数据),但卸载之后
+	// 重装会看到一份指向已经不存在的服务器名的历史 —— 卸载应当卸干净。
+	darwinThroughputHistoryPath = darwinDataDirPath + "/throughput-history.json"
 )
 
 // buildDarwinUninstallPlan 构造完整卸载计划。
@@ -67,6 +70,7 @@ func buildDarwinUninstallPlan(consoleUID int, consoleHome string, unifiedLayout 
 			darwinGuardianStatePath,
 			darwinUpgradeIntentPath,
 			darwinMaintenanceHoldPath,
+			darwinThroughputHistoryPath,
 		},
 		KeepPaths: []string{darwinConfigDirPath, darwinDataDirPath},
 	}

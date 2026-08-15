@@ -248,14 +248,16 @@ type LegacyCoreLifecycle interface {
 }
 
 type ManagerOptions struct {
-	Store            DesiredStore
-	Runner           CoreRunner
-	Health           HealthGate
-	Barrier          Barrier
-	DNS              DNSManager
-	Legacy           LegacyCoreLifecycle
-	BarrierContext   BarrierContext
-	GatewayProvider  GatewayProvider
+	Store           DesiredStore
+	Runner          CoreRunner
+	Health          HealthGate
+	Barrier         Barrier
+	DNS             DNSManager
+	Legacy          LegacyCoreLifecycle
+	BarrierContext  BarrierContext
+	GatewayProvider GatewayProvider
+	// Throughput 记一次吞吐观测。可为 nil = 不记(测试、或没有配置路径的部署)。
+	Throughput       func()
 	CoreVersion      string
 	RestartTimeout   time.Duration
 	CleanupTimeout   time.Duration
@@ -265,6 +267,9 @@ type ManagerOptions struct {
 }
 
 type Manager struct {
+	// throughput 记一次吞吐观测(见 recordThroughputObservation)。
+	// nil = 没接线(测试、或没有配置路径的部署)—— 那时循环里那一步是空操作。
+	throughput       func()
 	mutation         chan struct{}
 	updateOperation  chan struct{}
 	statusMu         sync.RWMutex
@@ -402,6 +407,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	}
 	recoveryContext, cancelRecovery := context.WithCancel(context.Background())
 	m := &Manager{
+		throughput:            options.Throughput,
 		mutation:              make(chan struct{}, 1),
 		updateOperation:       make(chan struct{}, 1),
 		store:                 options.Store,
@@ -475,6 +481,25 @@ func (m *Manager) recordReconcileRound(round reconcileRound) {
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
 	m.reconcileReport = report
+}
+
+// recordThroughputObservation 把「当前那台此刻观测到的峰值吞吐」记进历史。
+//
+// **这是观测,不是动作。** 调谐环本期一个动作都不执行,而这件事与它已经在做的
+// measureRunningCores 是同一类:向系统问一个事实,把答案记下来。它不改任何系统
+// 状态、不碰路由/DNS/Core,decide 的动作集合一个字都没变(那由穷举全部输入的
+// 白名单守卫钉着)。
+//
+// 挂在这个循环上,是因为它是 Guardian 里**唯一一个不依赖界面、按时钟持续跑**的
+// 东西。挂在 /v1/servers 那条读路径上的话,只有用户打开服务器窗口时才会积累历史,
+// 而他打开窗口正是为了看历史。
+//
+// 失败只记日志:一份诊断数据绝不该让任何东西失败。
+func (m *Manager) recordThroughputObservation() {
+	if m.throughput == nil {
+		return
+	}
+	m.throughput()
 }
 
 // measureRunningCores 向系统求证「有多少个进程看起来像 Core」,**只测量,不判断**。

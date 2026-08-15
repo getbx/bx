@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/guardian"
 )
 
 func TestBuildDarwinUninstallPlanUnified(t *testing.T) {
@@ -228,4 +230,19 @@ func TestBootoutAlreadyGoneIsNotAFailure(t *testing.T) {
 	if launchctlBootoutAlreadyGone([]string{"launchctl", "bootout", "system/com.getbx.bx.guard"}, -1) {
 		t.Error("拿不到退出码时不得假定服务不存在")
 	}
+}
+
+// 新增的 Guardian 状态文件必须进卸载清单。
+//
+// **判据是「guardian 声明的默认路径」,不是一个抄过来的字面量** —— 两处各写
+// 一份路径,改一处忘改另一处不会有编译错误,而后果是卸载之后重装看到一份
+// 指向已经不存在的服务器名的历史。
+func TestUninstallRemovesTheThroughputHistory(t *testing.T) {
+	plan := buildDarwinUninstallPlan(501, "/Users/someone", true)
+	for _, path := range plan.RemovePaths {
+		if path == guardian.DefaultThroughputHistoryPath {
+			return
+		}
+	}
+	t.Fatalf("卸载计划里没有 %s:%v", guardian.DefaultThroughputHistoryPath, plan.RemovePaths)
 }
