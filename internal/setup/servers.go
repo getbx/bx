@@ -55,6 +55,21 @@ func SetCurrentServer(path, name string) error {
 // 首次调用时若配置还是旧式的 `server:` + `udp.transport:`,先把旧的迁成 servers[0] ——
 // 用户手里绝大多数是那种,加第二台时不该要求他先手工改格式。
 func UpsertServer(path, name, link, udp string) (added bool, err error) {
+	return addServer(path, name, link, udp, true)
+}
+
+// AddServer 把一台加进清单,**但不动 current** —— 除非清单本来就没有 current
+// (一份清单必须有一台在用,否则下次启动直接起不来)。
+//
+// 它与 UpsertServer 的区别只有这一条,而这一条是要害:刚部署好一台新 VPS
+// **不构成**「把我的出口换过去」的请求。换出口是有后果的事(登录态、风控、
+// 正在下载的东西),项目所有者明确要求它必须是人显式的一下 —— 这也正是自动
+// 容灾被否掉的理由。顺手把 current 改掉,就是用另一个入口把它偷偷做了。
+func AddServer(path, name, link, udp string) (added bool, err error) {
+	return addServer(path, name, link, udp, false)
+}
+
+func addServer(path, name, link, udp string, makeCurrent bool) (added bool, err error) {
 	if err := config.ValidateServerName(name); err != nil {
 		return false, err
 	}
@@ -97,11 +112,15 @@ func UpsertServer(path, name, link, udp string) (added bool, err error) {
 		} else {
 			removeKey(entry, "udp")
 		}
-		setScalar(root, "current", scalarValue(mappingValue(entry, "name")))
+		if makeCurrent || strings.TrimSpace(scalarValue(mappingValue(root, "current"))) == "" {
+			setScalar(root, "current", scalarValue(mappingValue(entry, "name")))
+		}
 		return false, writeConfigRoot(path, doc)
 	}
 	list.Content = append(list.Content, serverNode(name, link, udp))
-	setScalar(root, "current", name)
+	if makeCurrent || strings.TrimSpace(scalarValue(mappingValue(root, "current"))) == "" {
+		setScalar(root, "current", name)
+	}
 	return true, writeConfigRoot(path, doc)
 }
 

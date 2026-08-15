@@ -730,6 +730,45 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
     }
 
+    /// 部署表单。
+    private lazy var deployWindow: DeployWindowController = {
+        let controller = DeployWindowController()
+        controller.onRun = { [weak self] target in
+            self?.handOffDeployToTerminal(target)
+        }
+        return controller
+    }()
+
+    @objc private func openDeployWindow() {
+        deployWindow.show()
+    }
+
+    /// 把部署命令交给 Terminal 去跑。
+    ///
+    /// **不在 app 里执行,是因为 bx 一行 SSH 凭据都不经手。** 菜单是 LSUIElement
+    /// 应用,没有 TTY —— ssh 要问密码时无处可问;真在 app 里收密码,就等于把
+    /// 「凭据全归系统 ssh」这条设计推翻。写一个临时脚本再 open 它,是**不需要
+    /// 自动化权限**的那条路(AppleScript `do script` 会弹「BxMenu 想要控制
+    /// 终端」),而且脚本内容与表单上显示的完全一致,用户可以自己打开看。
+    private func handOffDeployToTerminal(_ target: DeployTarget) {
+        let script = deployScriptText(target)
+        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("bx-deploy.command")
+        do {
+            try script.write(toFile: path, atomically: true, encoding: .utf8)
+            // 只有自己能读能执行:这个文件里有目标主机与登录名。
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Could not start the installer"
+            alert.informativeText = "\(error.localizedDescription)\n\n"
+                + "You can run this yourself in Terminal:\n\(deployCommandLine(target))"
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+            return
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
     /// 服务器窗口。窗口而不是子菜单,理由同 rulesWindow。
     private lazy var serversWindow: ServersWindowController = {
         let controller = ServersWindowController()
@@ -1086,6 +1125,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // /v1/servers,画出来的按钮每次点都失败,而用户看不出为什么。
         if serverSwitchingAvailable(capabilities: maintenanceReport?.capabilities) {
             menu.addAction("Servers…", symbol: "globe", target: self, action: #selector(openServersWindow))
+            menu.addAction("Set Up a New Server…", symbol: "plus.circle", target: self, action: #selector(openDeployWindow))
         }
         // **换配置的入口。** 此前只有「还没配置」那个状态里有 Set Up bx…,
         // 配好之后再也找不到它 —— 换服务器只能开终端(2026-08-14 项目所有者提出)。

@@ -336,3 +336,44 @@ func guardianHTTPClient(socketPath string) *http.Client {
 		}},
 	}
 }
+
+// AddServer 把一台服务器加进清单,**不动 current**(见 addServerEntry)。
+//
+// 它存在的理由是 `bx server deploy`:部署完一台新 VPS 之后要把它记下来,而写
+// /etc/bx/config.yaml 要 root —— deploy 跑在用户身份下。经 Guardian 走,是**唯一
+// 一条不用中途弹提权框的路**;而 Guardian 那一侧的门是 authorizeOwnerPeer,
+// 与菜单换服务器同一道。
+func (c *Client) AddServer(ctx context.Context, name, link, udp string) error {
+	payload, err := json.Marshal(map[string]string{
+		"action": "add", "name": name, "link": link, "udp": udp,
+	})
+	if err != nil {
+		return err
+	}
+	client := c.HTTPClient
+	if client == nil {
+		client = guardianHTTPClient(c.SocketPath)
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		defer transport.CloseIdleConnections()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://local/v1/servers", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(req)
+	if err != nil {
+		var dialErr *guardianDialError
+		if errors.As(err, &dialErr) {
+			return &UnavailableError{Err: dialErr.err}
+		}
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		return guardianHTTPError("/v1/servers", response.StatusCode, body)
+	}
+	return nil
+}

@@ -31,7 +31,12 @@ type serversResponse struct {
 }
 
 type serversRequest struct {
-	Name string `json:"name"`
+	// Action 空 = 换到 Name 那一台(这个端点最初唯一的动作,保持兼容)。
+	// "add" = 把一台加进清单,**不动 current**。
+	Action string `json:"action,omitempty"`
+	Name   string `json:"name"`
+	Link   string `json:"link,omitempty"`
+	UDP    string `json:"udp,omitempty"`
 }
 
 type switchResponse struct {
@@ -130,6 +135,10 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 		return
 	}
 	uid, _ := peerUIDFrom(r.Context())
+	if strings.EqualFold(strings.TrimSpace(req.Action), "add") {
+		addServerEntry(w, req, configPath, uid)
+		return
+	}
 	// 谁把出口换到了哪台,留痕。这是必须可审计的一类改动。
 	log.Printf("guardian_server_switch_requested name=%q uid=%d", req.Name, uid)
 
@@ -168,4 +177,31 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 	}
 	log.Printf("guardian_server_switch_applied name=%q host=%s uid=%d", target.Name, host, uid)
 	writeGuardianJSON(w, http.StatusOK, switchResponse{Name: target.Name, Host: host, Applied: true})
+}
+
+// addServerEntry 把一台加进清单。
+//
+// **它不动 current,也不热切任何东西。** 刚部署好一台新 VPS 不构成「把我的出口
+// 换过去」的请求;换出口要用户在清单里显式点一下(见 applyServerSwitch)。
+// 链接不写进日志 —— 它就是凭据。
+func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string, uid uint32) {
+	name := strings.TrimSpace(req.Name)
+	log.Printf("guardian_server_add_requested name=%q uid=%d has_udp=%t", name, uid, strings.TrimSpace(req.UDP) != "")
+	if _, err := setup.AddServer(configPath, name, strings.TrimSpace(req.Link), strings.TrimSpace(req.UDP)); err != nil {
+		log.Printf("guardian_server_add_failed name=%q err=%v", name, err)
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_add_failed"})
+		return
+	}
+	list, current, err := setup.ListServers(configPath)
+	if err != nil {
+		log.Printf("guardian_servers_read_failed path=%s err=%v", configPath, err)
+		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
+		return
+	}
+	log.Printf("guardian_server_added name=%q current=%q", name, current)
+	// 回完整清单而不是一个 ok:界面据此重画,不必自己推演改动后的状态 ——
+	// 推演出来的状态与盘上真实的状态漂开,正是这个仓库反复栽的形状。
+	writeGuardianJSON(w, http.StatusOK, serversResponse{
+		Servers: serverEntries(list, current), Current: current, ConfigPath: configPath,
+	})
 }

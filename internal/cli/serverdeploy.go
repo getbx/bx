@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/getbx/bx/internal/guardian"
 	updatepkg "github.com/getbx/bx/internal/update"
 	"github.com/urfave/cli/v2"
 )
@@ -24,6 +27,8 @@ type deployOptions struct {
 	Port     int
 	// Force 透传给远端的 `bx server install --force`。
 	Force bool
+	// Name 非空时,装好之后把它加进本机服务器清单(经 Guardian,**不改 current**)。
+	Name string
 }
 
 // deployDeps 把所有会碰外界的东西注入进来,好让判定可测。
@@ -263,6 +268,7 @@ func serverDeployAction(c *cli.Context) error {
 		SNI:      c.String("sni"),
 		Port:     c.Int("port"),
 		Force:    c.Bool("force"),
+		Name:     strings.TrimSpace(c.String("name")),
 	}
 	fmt.Printf("• 目标 %s(bx 不经手你的 SSH 凭据 —— 密码/密钥/agent 全由系统 ssh 处理)\n", host)
 	return runServerDeploy(opts, deployDeps{
@@ -270,7 +276,7 @@ func serverDeployAction(c *cli.Context) error {
 		hasTTY:           stdinIsTerminal(),
 		remoteFetch:      remoteFetchBinary,
 		fetchBinary:      fetchLinuxBinary,
-		writeLocalConfig: applyDeployedLink,
+		writeLocalConfig: func(link string) error { return applyDeployedLink(link, opts.Name) },
 	})
 }
 
@@ -361,9 +367,22 @@ func sha256Sum(data []byte) []byte {
 }
 
 // applyDeployedLink 把远端给出的链接写进本机配置。
-func applyDeployedLink(link string) error {
+//
+// name 非空时走「加进清单」那条路(经 Guardian,不提权、**不改 current**);
+// 为空则维持原状:root 就 `bx setup`,非 root 就打印下一步。
+func applyDeployedLink(link, name string) error {
 	fmt.Println("• 远端已就绪,客户端链接已取到")
 	main, udp := splitDeployedLink(link)
+
+	if strings.TrimSpace(name) != "" {
+		if err := addDeployedServer(name, main, udp); err == nil {
+			return nil
+		} else {
+			// **加不进去不是致命的** —— 机器已经装好了,链接就在眼前。
+			// 报清楚原因,再退回原来那条「你自己敲一条」的路。
+			fmt.Printf("⚠ 没能自动加进服务器清单:%v\n", err)
+		}
+	}
 
 	// **不偷偷提权。** 写 /etc/bx 要 root,而这条命令的其余部分不需要 ——
 	// 让一条只做 ssh 的命令中途弹密码框是坏意外。
@@ -398,6 +417,24 @@ func applyDeployedLink(link string) error {
 	return nil
 }
 
+// addDeployedServer 经 Guardian 把新装好的这台加进清单。
+//
+// **不改 current。** 刚装好一台不等于要换过去 —— 换出口是有后果的事,必须是
+// 用户在清单里显式的一下(见 setup.AddServer)。
+//
+// 走 Guardian 而不是直接写文件,是因为 /etc/bx/config.yaml 要 root 而 deploy
+// 跑在用户身份下;Guardian 那一侧的门是 authorizeOwnerPeer,与菜单换服务器同一道。
+func addDeployedServer(name, main, udp string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := guardian.NewClient(guardian.SocketPath).AddServer(ctx, name, main, udp); err != nil {
+		return err
+	}
+	fmt.Printf("✓ 已加进服务器清单:%s(当前在用的那台没有变)\n", name)
+	fmt.Printf("  要换过去:bx server use %s\n", name)
+	return nil
+}
+
 // splitDeployedLink 把「主链接 --udp UDP链接」拆回两半。
 func splitDeployedLink(combined string) (main, udp string) {
 	fields := strings.Fields(combined)
@@ -419,6 +456,8 @@ func serverDeployFlags() []cli.Flag {
 		&cli.StringFlag{Name: "sni", Usage: "reality/hysteria2 借用的真站(默认 www.cloudflare.com)"},
 		&cli.IntFlag{Name: "port", Usage: "监听端口(默认 443)"},
 		&cli.BoolFlag{Name: "force", Usage: "覆盖远端已存在的 server 配置"},
+		// **给了名字就自动加进清单,但不换过去。** 换出口要用户在清单里显式点一下。
+		&cli.StringFlag{Name: "name", Usage: "装好后用这个名字加进本机服务器清单(不会切换当前出口)"},
 	}
 }
 
