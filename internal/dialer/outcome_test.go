@@ -247,3 +247,135 @@ type failingResolver struct{}
 func (failingResolver) Resolve(context.Context, string) (netip.Addr, error) {
 	return netip.Addr{}, errors.New("no such host")
 }
+
+// **加一条直连规则,是一句「这些流量不要经过隧道」的指令。**
+//
+// bx 此前只对 TCP 照办,对 UDP 当没听见,而且不说 —— 且 `udp.mode` 默认就是
+// proxy,所以这影响每一个用默认配置的人;Apple/iCloud/Steam/微信这些最常见的
+// 直连目标恰恰重度用 QUIC。
+func TestUserDirectRuleAppliesToUDP(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{
+		GlobalProxy: true,
+		UserDirect:  route.NewDomainSet([]string{"*.steamcontent.com"}),
+	})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "cdn.steamcontent.com", Port: 443, UDP: true}); err != nil {
+		t.Fatal(err)
+	}
+	if counter.proxy != 0 {
+		t.Fatalf("强制直连的域名,UDP 仍然走了隧道(proxy=%d)", counter.proxy)
+	}
+	if counter.direct != 1 {
+		t.Fatalf("没走直连:direct=%d", counter.direct)
+	}
+	// **归因用真实的规则来源**,这样用户那条 config 里的规则连 UDP 的成败一起
+	// 认领 —— 点名到的是他改得了的那一行。
+	if len(counter.attempts) != 1 || counter.attempts[0] != "user_direct|*.steamcontent.com" {
+		t.Fatalf("没归因到那条规则:%v", counter.attempts)
+	}
+}
+
+// **私网恒直连,UDP 也不例外。** 这条不是取舍,是本项目明写的不变量;
+// 违反它的后果是局域网 UDP(mDNS、AirPlay、打印机、SMB 发现)被送进隧道。
+func TestPrivateAddressesStayDirectForUDP(t *testing.T) {
+	private, err := route.NewCIDRSet(route.DefaultPrivateCIDRs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{GlobalProxy: true, PrivateDirect: private})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+
+	for _, addr := range []string{"192.168.1.20", "10.0.0.5", "172.17.0.2"} {
+		counter.proxy, counter.direct = 0, 0
+		if _, err := d.Dial(context.Background(), route.Meta{
+			IP: netip.MustParseAddr(addr), Port: 5353, UDP: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if counter.proxy != 0 {
+			t.Errorf("%s 的 UDP 被送进了隧道 —— 违反「私网恒直连」", addr)
+		}
+	}
+}
+
+// **用户点名走隧道的域名,在 direct-realtime 模式下也必须走隧道。**
+//
+// 那个模式让所有 UDP 以真实 IP 出去 —— 包括用户明确标了强制走隧道的域名,
+// 而那是直接违背一条显式指令的泄漏。这个方向的修复是**减少**泄漏。
+func TestUserProxyRuleSurvivesDirectRealtimeMode(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "direct-realtime"}
+	d.SetRouter(&route.Router{UserProxy: route.NewDomainSet([]string{"*.private.example"})})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "a.private.example", Port: 443, UDP: true}); err != nil {
+		t.Fatal(err)
+	}
+	if counter.direct != 0 {
+		t.Fatalf("强制走隧道的域名以真实 IP 直连了(direct=%d)", counter.direct)
+	}
+	if counter.proxy != 1 {
+		t.Fatalf("没走隧道:proxy=%d", counter.proxy)
+	}
+}
+
+// **用户点名走隧道 + 隧道挂了 = 阻断,绝不回落直连。** 与 TCP 同一条 kill-switch。
+func TestUserProxyUDPFailsClosedWhenTunnelIsDown(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{
+		Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter,
+		UDPMode: "direct-realtime", Killswitch: true,
+	}
+	d.SetRouter(&route.Router{UserProxy: route.NewDomainSet([]string{"*.private.example"})})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return false }})
+
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "a.private.example", Port: 443, UDP: true}); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("隧道挂了却没有阻断:err=%v direct=%d", err, counter.direct)
+	}
+	if counter.direct != 0 {
+		t.Fatal("回落成了直连 —— 真实 IP 泄漏")
+	}
+}
+
+// **用户点名直连的域名不受 kill-switch 约束。** kill-switch 防的是隧道挂掉时
+// *回落*直连,而这里是用户点名要直连 —— 与 TCP 的直连同理。
+func TestUserDirectUDPIsNotBlockedByKillswitch(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{
+		Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter,
+		UDPMode: "proxy", Killswitch: true,
+	}
+	d.SetRouter(&route.Router{
+		GlobalProxy: true,
+		UserDirect:  route.NewDomainSet([]string{"*.steamcontent.com"}),
+	})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return false }})
+
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "cdn.steamcontent.com", Port: 443, UDP: true}); err != nil {
+		t.Fatalf("用户点名直连却被阻断:%v", err)
+	}
+	if counter.direct != 1 {
+		t.Fatalf("没走直连:direct=%d", counter.direct)
+	}
+}
+
+// **china 列表刻意不在此列。** 它是 bx 塞进去的 12165 条默认,用户没有逐条看过;
+// 把它的作用域从 TCP 悄悄扩到 UDP,等于一次性把一大批流量推到真实 IP 上出去。
+func TestChinaListStillDoesNotApplyToUDP(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{ChinaDomain: route.NewDomainSet([]string{"*.qq.com"})})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "im.qq.com", Port: 443, UDP: true}); err != nil {
+		t.Fatal(err)
+	}
+	if counter.direct != 0 {
+		t.Fatalf("china 列表把 UDP 送去了直连(direct=%d)—— 那是一个单独的决定,不该搭这趟车", counter.direct)
+	}
+}

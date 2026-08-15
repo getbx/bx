@@ -179,6 +179,20 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 	}
 
 	if m.UDP {
+		// **先问 router 一次。** UDP 此前在这里就短路了,于是两件事被跳过:
+		//
+		// ① 用户自己写的 direct/proxy 规则 —— 加一条直连是一句「这些流量不要
+		//    经过隧道」的指令,而 bx 只对 TCP 照办、对 UDP 当没听见,且不说。
+		//    Apple/iCloud/Steam/微信这些最常见的直连目标恰恰重度用 QUIC。
+		// ② **「私网恒直连」这条不变量** —— 局域网 UDP(mDNS、AirPlay、打印机、
+		//    SMB 发现)被送进了隧道。这一条不是取舍,是 bug。
+		//
+		// **china 列表与默认行为刻意不在此列**:那是 bx 塞进去的 12165 条默认,
+		// 用户没有逐条看过;把它的作用域从 TCP 悄悄扩到 UDP,等于一次性把一大批
+		// 流量推到真实 IP 上出去。那要单独决定,不搭这趟车。
+		if dec, why, ok := d.udpRuleOverride(m); ok {
+			return d.dialUDPByRule(ctx, m, dec, why, tr, udpTransport)
+		}
 		if d.UDPMode == "direct-realtime" {
 			// 隧道挂 + kill-switch:直连 UDP 的「牺牲匿名换低延迟」只在代理正常工作时被接受。
 			// 隧道不健康时整体隐私态已降级,宁可 fail-closed 断 UDP,也不暴露真实 IP。
@@ -200,7 +214,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 				if err != nil {
 					// 解析失败也是这条路的失败。**此前它直接返回,一次都没被数过** ——
 					// 一条每次都解析不出来的 UDP 路径在 bx status 里完全隐形。
-					d.recordUDPFailure(route.Direct, udpSourceDirectRealtime)
+					d.recordUDPFailure(route.Direct, udpSourceDirectRealtime, "")
 					return nil, err
 				}
 				ip = resolved
@@ -214,7 +228,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			debugf("udp direct-realtime: ip=%s target=%s", m.IP, target)
 			conn, err := d.Direct.DialContext(ctx, "udp", target)
 			if err != nil {
-				d.recordUDPFailure(route.Direct, udpSourceDirectRealtime)
+				d.recordUDPFailure(route.Direct, udpSourceDirectRealtime, "")
 			}
 			return conn, err
 		}
@@ -248,7 +262,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			debugf("udp proxy: ip=%s domain=%q target=%s", m.IP, m.Domain, target)
 			conn, err := utr.Proxy.DialContext(ctx, "udp", target)
 			if err != nil {
-				d.recordUDPFailure(route.Proxy, source)
+				d.recordUDPFailure(route.Proxy, source, "")
 			}
 			return conn, err
 		}
@@ -346,6 +360,85 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 	}
 }
 
+// udpRuleOverride 问 router:这条 UDP 有没有被**用户规则**或**私网不变量**点名。
+//
+// 返回 false 表示没有 —— 那时仍由 udp.mode 决定(隧道 / 真实 IP 直连 / 阻断)。
+// 判据刻意只认这两类:`IsUserRule` 是用户自己下的判断,`SourcePrivate` 是本项目
+// 明写的不变量;china 列表与默认落在外面。
+func (d *Dialer) udpRuleOverride(m route.Meta) (route.Decision, route.Reason, bool) {
+	r := d.router.Load()
+	if r == nil {
+		return 0, route.Reason{}, false
+	}
+	dec, why := r.Explain(m)
+	if why.Source.IsUserRule() || why.Source == route.SourcePrivate {
+		return dec, why, true
+	}
+	return 0, route.Reason{}, false
+}
+
+// dialUDPByRule 按用户规则(或私网不变量)拨一条 UDP。
+//
+// **归因用真实的规则来源,不另造一个 udp_ 前缀**:这样用户那条 config 里的规则
+// 在 `bx status` 里连 UDP 的成败一起认领 —— 点名到的是他改得了的那一行,而
+// 「同一条规则的 TCP 与 UDP 分列两处」只会让人以为有两个问题。
+func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Decision, why route.Reason, tr, udpTransport *Transport) (net.Conn, error) {
+	if dec == route.Direct {
+		// **直连不受 kill-switch 约束**,与 TCP 的直连同理:kill-switch 防的是
+		// 隧道挂掉时**回落**直连泄漏真实 IP,而这里是用户点名要直连。
+		if d.Stats != nil {
+			d.Stats.Direct()
+			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
+		}
+		ip := m.IP
+		if m.Domain != "" {
+			resolved, err := d.Resolver.Resolve(ctx, m.Domain)
+			if err != nil {
+				d.recordUDPFailure(route.Direct, why.Source.String(), why.Rule)
+				return nil, err
+			}
+			ip = resolved
+		}
+		target := net.JoinHostPort(ip.String(), strconv.Itoa(int(m.Port)))
+		debugf("udp direct by rule: source=%s rule=%q target=%s", why.Source, why.Rule, target)
+		conn, err := d.Direct.DialContext(ctx, "udp", target)
+		if err != nil {
+			d.recordUDPFailure(route.Direct, why.Source.String(), why.Rule)
+		}
+		return conn, err
+	}
+
+	// 用户点名走隧道:**fail-closed**。这一条在 udp.mode=direct-realtime 下尤其
+	// 要紧 —— 那个模式让所有 UDP 以真实 IP 出去,包括用户明确标了强制走隧道的
+	// 域名,而那是直接违背一条显式指令的泄漏。
+	utr := udpTransport
+	if utr == nil || utr.Healthy == nil || !utr.Healthy() {
+		utr = tr
+	}
+	if d.killswitchBlocks(utr) {
+		if d.Stats != nil {
+			d.Stats.Blocked()
+			d.Stats.UDPBlocked()
+		}
+		return nil, ErrBlocked
+	}
+	if d.Stats != nil {
+		d.Stats.Proxy()
+		d.Stats.RuleAttempt(why.Source.String(), why.Rule)
+	}
+	host := m.Domain
+	if host == "" {
+		host = m.IP.String()
+	}
+	target := net.JoinHostPort(host, strconv.Itoa(int(m.Port)))
+	debugf("udp proxy by rule: source=%s rule=%q target=%s", why.Source, why.Rule, target)
+	conn, err := utr.Proxy.DialContext(ctx, "udp", target)
+	if err != nil {
+		d.recordUDPFailure(route.Proxy, why.Source.String(), why.Rule)
+	}
+	return conn, err
+}
+
 // UDP 的三条来源。
 //
 // **UDP 根本不问 router**(见 DialContext 里 m.UDP 那段:proxy 模式下所有 UDP
@@ -363,7 +456,7 @@ const (
 // **UDP 的失败此前一次都没被数过** —— recordFailure 只在 TCP 那三条路上可达,
 // 而 UDP 分支在 DialContext 顶部就短路了。于是一条 UDP 传输哪怕每次拨号都失败,
 // `bx status` 里也是一片安静:proxy 计数照涨(判定发生了),failed 恒为 0。
-func (d *Dialer) recordUDPFailure(dec route.Decision, source string) {
+func (d *Dialer) recordUDPFailure(dec route.Decision, source, rule string) {
 	if d.Stats == nil {
 		return
 	}
@@ -375,7 +468,7 @@ func (d *Dialer) recordUDPFailure(dec route.Decision, source string) {
 	default:
 		return
 	}
-	d.Stats.RuleFailure(source, "")
+	d.Stats.RuleFailure(source, rule)
 }
 
 // recordFailure 记一次拨号失败:总数一份,按规则归因一份。
