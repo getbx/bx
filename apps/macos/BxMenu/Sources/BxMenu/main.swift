@@ -1174,6 +1174,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addAction("Servers…", symbol: "globe", target: self, action: #selector(openServersWindow))
             menu.addAction("Set Up a New Server…", symbol: "plus.circle", target: self, action: #selector(openDeployWindow))
         }
+        // 卸载入口。**只在装过的时候出现**(没装就没什么可卸),但它必须存在于
+        // 其余每一个状态里 —— 想删掉 bx 的人,最可能正处在「它出问题了」那几个
+        // 状态,而那正是此前一个卸载入口都没有的地方。
+        if cliIsInstalled() {
+            menu.addItem(.separator())
+            menu.addAction(UninstallPresentation.actionTitle, symbol: "trash", target: self, action: #selector(uninstallBx))
+        }
         // **换配置的入口。** 此前只有「还没配置」那个状态里有 Set Up bx…,
         // 配好之后再也找不到它 —— 换服务器只能开终端(2026-08-14 项目所有者提出)。
         // 叫 Replace 而不是 Switch 是刻意的:它是替换一份配置,不是从列表里挑一台。
@@ -1402,6 +1409,31 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             confirmMessage: "bx will install its command line tool and background protection service. macOS will ask for administrator authorization. If protection is already running, it is stopped and restarted to complete the upgrade — your network drops for a few seconds. On a fresh install, protection is not started until you set up and turn it on.",
             confirmButton: "Install"
         )
+    }
+
+    /// 卸载。**这个入口存在的理由是堵掉「拖进废纸篓」那条路** —— 那样只删界面,
+    /// 而 Guardian 仍以 root 在跑、保护仍然开着,用户刚好删掉了唯一能关掉它的东西。
+    @objc private func uninstallBx() {
+        let alert = NSAlert()
+        alert.messageText = UninstallPresentation.confirmTitle
+        alert.informativeText = UninstallPresentation.confirmMessage
+        alert.addButton(withTitle: UninstallPresentation.confirmButton)
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // **用系统里那个 bx,不是 app 内嵌的那份。** 卸载要停 launchd 服务、
+        // 拆路由 —— 那是系统上正在跑的那一套的事;而内嵌那份属于这个 bundle,
+        // 它马上就要被删掉了。
+        // **不带 --yes**:`bx uninstall` 根本没有这个 flag(它只要求 root,不问确认),
+        // 而 urfave/cli 遇到未知 flag 会直接失败 —— 失败在 osascript 里,用户看到的
+        // 只是「卸载没成功」而完全不知道为什么。确认已经在上面那个 NSAlert 里拿到了。
+        let succeeded = runPrivileged("\(shellSingleQuoted(bxPath)) uninstall")
+        if UninstallPresentation.shouldQuitAfter(uninstallSucceeded: succeeded) {
+            NSApp.terminate(nil)
+            return
+        }
+        showFailure(UninstallPresentation.failureTitle, UninstallPresentation.failureMessage)
     }
 
     @objc private func repairBx() {
