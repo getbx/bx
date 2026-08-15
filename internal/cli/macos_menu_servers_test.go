@@ -326,3 +326,51 @@ func TestReleasePackagingActuallyBuildsTheDMGItRecommends(t *testing.T) {
 		t.Fatal("README 推荐 .dmg,而打包脚本从不生成它 —— 用户被指向一个不存在的文件")
 	}
 }
+
+// **菜单必须有一个卸载入口。**
+//
+// 在此之前一个都没有:于是一个想删掉 bx 的普通用户,唯一显而易见的动作是把
+// Bx.app 拖进废纸篓 —— 而那**只删掉界面**。Guardian 仍以 root 在跑、保护仍然
+// 开着、DNS 与路由仍然被接管,而他刚好删掉了唯一能关掉它的那个东西;此后只剩
+// 终端一条路,没有终端的人就卡在那里。这是「关不掉」那一类里最容易发生的一种。
+func TestMacMenuOffersAWayToUninstall(t *testing.T) {
+	body, ok := swiftFunctionBody(menuMainSwiftSource(t), "private func rebuildMenu()")
+	if !ok {
+		t.Fatal("读不出 rebuildMenu() 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(body, "#selector(uninstallBx)") {
+		t.Fatal("菜单里没有卸载入口 —— 用户只剩「拖进废纸篓」那条会把自己锁住的路")
+	}
+}
+
+// **卸载走系统里那个 bx,而且不许带 `bx uninstall` 没有的 flag。**
+//
+// ① 内嵌那份属于这个 bundle,而 bundle 马上就要被删掉;要停 launchd 服务、
+//
+//	拆路由的是系统上正在跑的那一套。
+//
+// ② `bx uninstall` 没有 --yes(它只要求 root,不问确认),而 urfave/cli 遇到
+//
+//	未知 flag 直接失败 —— 失败在 osascript 里,用户看到的只是「没成功」,
+//	完全不知道为什么。**第一版就写错成 --yes,是查了 CLI 定义才发现的。**
+func TestMacMenuUninstallInvokesTheSystemCLIWithNoBogusFlags(t *testing.T) {
+	body, ok := swiftFunctionBody(menuMainSwiftSource(t), "private func uninstallBx()")
+	if !ok {
+		t.Fatal("读不出 uninstallBx() 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(body, "shellSingleQuoted(bxPath)") {
+		t.Error("没有用系统里那个 bx —— 内嵌那份随 bundle 一起会被删掉")
+	}
+	if strings.Contains(body, "uninstall --") {
+		t.Error("给 `bx uninstall` 带了 flag —— 它一个都不接受,会在 osascript 里静默失败")
+	}
+	// 确认必须在提权之前。
+	confirm := strings.Index(body, "alert.runModal() == .alertFirstButtonReturn")
+	run := strings.Index(body, "runPrivileged(")
+	if confirm < 0 || run < 0 {
+		t.Fatal("读不出确认或提权那两步 —— 守卫已经失效,先修守卫")
+	}
+	if run < confirm {
+		t.Fatal("没等确认就提权卸载了")
+	}
+}

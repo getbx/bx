@@ -69,6 +69,26 @@ struct InstallPresentationTests {
         expect(quitBxConfirmMessage.contains("Bx.app"), "quit confirm names the app to reopen")
         expect(quitBxConfirmMessage.contains("stop protecting"), "quit confirm still states protection stops")
 
+        // **卸载的确认必须说清三件事**:会停掉保护、会删掉什么、以及**什么被保留**。
+        // 最后一件最容易漏而最要紧:用户在决定「删了以后还装得回来吗」——
+        // 连接配置留着意味着重装不用重新贴链接,这句话直接改变他会不会点确认。
+        expect(UninstallPresentation.confirmMessage.lowercased().contains("stop protection"),
+               "uninstall confirm says protection stops")
+        expect(UninstallPresentation.confirmMessage.contains("connection settings are kept"),
+               "uninstall confirm says settings survive")
+        expect(UninstallPresentation.confirmMessage.lowercased().contains("administrator"),
+               "uninstall confirm warns about the authorization prompt")
+
+        // **失败了不许退出。** 退出会把唯一的指示灯藏起来,而保护可能还开着 ——
+        // 与「关不掉就不退出」同一条规矩。
+        expect(UninstallPresentation.shouldQuitAfter(uninstallSucceeded: true), "quit after a successful uninstall")
+        expect(!UninstallPresentation.shouldQuitAfter(uninstallSucceeded: false),
+               "a failed uninstall must not hide the only indicator")
+
+        // 失败文案要给出**不依赖菜单**的那条出路 —— 菜单此刻可能已经半残。
+        expect(UninstallPresentation.failureMessage.contains("sudo bx uninstall"),
+               "uninstall failure offers the terminal escape")
+
         if failures > 0 { exit(1) }
         print("InstallPresentationTests passed")
     }
