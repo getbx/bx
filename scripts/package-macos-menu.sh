@@ -45,6 +45,30 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 install -m 0755 "$MENU_BINARY" "$MACOS_DIR/BxMenu"
 
+# **图标。** 在此之前 Bx.app 一个图标都没有 —— Resources 里没有 .icns,
+# Info.plist 里连 CFBundleIconFile 都没有,于是 Finder / Launchpad / Spotlight
+# 全都画那个灰色占位方块。一个既没签名又没图标的 app,在普通用户眼里与恶意软件
+# 没有区别,而这条恰恰是「小白也能装」那条路上最先被看见的一步。
+#
+# 源图是 winres/icon1024.png(与 Windows 图标同一个真相源 winres/gen-icons.py,
+# 同一个字体 —— 两个平台上必须是同一个标)。转换只用 macOS 自带的 sips/iconutil,
+# 不引入任何依赖。
+ICON_SRC="$ROOT/winres/icon1024.png"
+if [ ! -f "$ICON_SRC" ]; then
+  echo "缺 $ICON_SRC —— 跑 python3 winres/gen-icons.py 重新生成" >&2
+  exit 1
+fi
+ICONSET="$(mktemp -d)/AppIcon.iconset"
+mkdir -p "$ICONSET"
+# Apple 要的那一组尺寸。**16 与 32 必须单独出**:从 1024 一路缩到 16 会糊,
+# 而 16 正是 Spotlight 结果里那一格。
+for spec in "16:16x16" "32:16x16@2x" "32:32x32" "64:32x32@2x"             "128:128x128" "256:128x128@2x" "256:256x256" "512:256x256@2x"             "512:512x512" "1024:512x512@2x"; do
+  px="${spec%%:*}"; name="${spec#*:}"
+  sips -z "$px" "$px" "$ICON_SRC" --out "$ICONSET/icon_$name.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$RESOURCES_DIR/AppIcon.icns"
+rm -rf "$(dirname "$ICONSET")"
+
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -56,6 +80,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>bx</string>
   <key>CFBundleExecutable</key>
   <string>BxMenu</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleInfoDictionaryVersion</key>

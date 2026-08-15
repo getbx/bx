@@ -38,6 +38,24 @@ file "$RELEASE_DIR/Bx.app/Contents/MacOS/BxMenu" | grep -q "Mach-O.*$MACH_ARCH" 
 
 plutil -lint "$RELEASE_DIR/Bx.app/Contents/Info.plist" >/dev/null
 plutil -extract NSAppleEventsUsageDescription raw "$RELEASE_DIR/Bx.app/Contents/Info.plist" >/dev/null || fail "Info.plist missing Apple Events usage description"
+
+# **图标必须真的在包里,而且 plist 要指向它。**
+#
+# 少了它,Finder / Launchpad / Spotlight 全画那个灰色占位方块 —— 一个既没签名
+# 又没图标的 app,在普通用户眼里与恶意软件没有区别。两样都验:文件在但 plist
+# 没指过去,或 plist 指了而文件不在,表现完全一样(都是没图标)。
+[[ -f "$RESOURCES/AppIcon.icns" ]] || fail "missing Bx.app/Contents/Resources/AppIcon.icns"
+[[ "$(plutil -extract CFBundleIconFile raw "$RELEASE_DIR/Bx.app/Contents/Info.plist" 2>/dev/null)" == "AppIcon" ]] \
+  || fail "Info.plist CFBundleIconFile must be AppIcon"
+# **1024 那一档要在。** 少了它 Retina 的 Dock 会拿 512 放大,糊给用户看。
+iconutil -l "$RESOURCES/AppIcon.icns" 2>/dev/null | grep -q "512x512@2x" \
+  || sips -g pixelWidth "$RESOURCES/AppIcon.icns" >/dev/null 2>&1 \
+  || fail "AppIcon.icns unreadable"
+
+# **dmg 必须真的被生成出来。** README.txt 第一行就写着「推荐用 .dmg」,而在
+# 2026-08-15 之前 package-macos-dmg.sh 一次都没被调用过 —— 每个拿到包的人都被
+# 指向一个不存在的文件。
+[[ -f "$DIST_ROOT/$RELEASE_NAME.dmg" ]] || fail "missing $RELEASE_NAME.dmg (README recommends it)"
 tar -tzf "$ARCHIVE" >/dev/null
 
 python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$RESOURCES/release.json" || fail "release.json is not valid JSON"
