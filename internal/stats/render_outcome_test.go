@@ -95,3 +95,34 @@ func TestRenderDegradesGracefullyWithoutAConfigPath(t *testing.T) {
 		t.Errorf("路径缺失时打出了残缺的句子:\n%s", out)
 	}
 }
+
+// **算出来了还得有人打印。**
+//
+// 这个仓库栽过一模一样的一次:调谐环的报告在 Manager 里有、CLI 拿到能渲染,
+// 却没人证明它走完了 /v1/status 那一跳(插一句 `status.Reconcile = nil`,两个包
+// 全绿)。UDPNotice 的纯函数已经被单独钉住了,这条钉的是**它到得了用户眼前**。
+func TestStatusPrintsTheUDPNotice(t *testing.T) {
+	report := Report{Snapshot: Snapshot{
+		Proxy: 100,
+		Rules: []RuleOutcome{
+			{Source: "udp_proxy", Attempts: 10},
+			{Source: "udp_proxy_fallback", Attempts: 90},
+		},
+	}}
+	out := Render(report)
+	if !strings.Contains(out, "UDP") || !strings.Contains(out, "90") {
+		t.Fatalf("UDP 那句话没进 status:\n%s", out)
+	}
+}
+
+// 反面:正常时那一行不许出现 —— 否则上面那条可以靠「永远打印」满足,
+// 而这一栏会变成墙纸。
+func TestStatusOmitsTheUDPNoticeWhenHealthy(t *testing.T) {
+	report := Report{Snapshot: Snapshot{
+		Proxy: 100,
+		Rules: []RuleOutcome{{Source: "udp_proxy", Attempts: 500}},
+	}}
+	if out := Render(report); strings.Contains(out, "加速档") {
+		t.Fatalf("一切正常却打了 UDP 那一行:\n%s", out)
+	}
+}

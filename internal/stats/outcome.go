@@ -1,6 +1,9 @@
 package stats
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+)
 
 // maxTrackedRules 是纯防御性上限。
 //
@@ -116,4 +119,73 @@ func (s Snapshot) FailingRules() []RuleOutcome {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Failures > out[j].Failures })
 	return out
+}
+
+// UDP 那三条来源的名字。**与 internal/dialer 里的常量必须一致** ——
+// 这是唯一一处跨包按字符串对齐的地方,由 TestUDPSourceNamesMatchTheDialer 钉住。
+const (
+	udpSourceProxy          = "udp_proxy"
+	udpSourceProxyFallback  = "udp_proxy_fallback"
+	udpSourceDirectRealtime = "udp_direct_realtime"
+)
+
+// UDPOutcome 把 UDP 那几条来源汇总成一句能行动的话所需的数字。
+//
+// **UDP 根本不问 router**,所以它没有「命中了哪条规则」;归因到模式是这条路上
+// 唯一诚实的答案。而在此之前它连模式都没有 —— status 里那几百条 proxy 连接
+// 凭空出现、无从解释。
+type UDPOutcome struct {
+	// Dedicated 是走专用 UDP 传输(hysteria2 加速档)的次数。
+	Dedicated int64
+	// Fallback 是加速档不健康、退回主传输的次数。**它单独一份是要点**:
+	// 合进 Dedicated 的话,「一直在回落」与「一直好好的」在输出里逐字节相同。
+	Fallback int64
+	// DirectRealtime 是以真实 IP 直连的次数(udp.mode=direct-realtime)。
+	DirectRealtime int64
+	// Failures 是上面三者的失败合计。
+	Failures int64
+}
+
+// UDPStats 汇总快照里的 UDP 来源。
+func (s Snapshot) UDPStats() UDPOutcome {
+	var out UDPOutcome
+	for _, r := range s.Rules {
+		switch r.Source {
+		case udpSourceProxy:
+			out.Dedicated += r.Attempts
+		case udpSourceProxyFallback:
+			out.Fallback += r.Attempts
+		case udpSourceDirectRealtime:
+			out.DirectRealtime += r.Attempts
+		default:
+			continue
+		}
+		out.Failures += r.Failures
+	}
+	return out
+}
+
+// UDPNotice 给出 UDP 这条路上**值得说的那句话**;没什么可说时返回空串。
+//
+// **一切正常时一个字都不打**,这是它不被训练成噪声的前提(与失败规则那一段
+// 同一条纪律)。门槛也取同一套:绝对数 ≥5 且比例 ≥50% —— 1/1 失败是 100%
+// 但什么也说明不了,而启动那一瞬的几次回落同样不值得占一行。
+func (s Snapshot) UDPNotice() string {
+	u := s.UDPStats()
+	total := u.Dedicated + u.Fallback + u.DirectRealtime
+	if total <= 0 {
+		return ""
+	}
+	// 回落优先说:它有一个明确的动作(去看那台 UDP 服务器),而且用户完全
+	// 感知不到 —— 通路是好的,只是慢。
+	if u.Fallback >= ruleReportMinFailures &&
+		float64(u.Fallback)/float64(u.Dedicated+u.Fallback) >= ruleReportMinFailRate {
+		return fmt.Sprintf("UDP 加速档没在用:%d/%d 条回落到了主传输(那台 UDP 服务器不健康)",
+			u.Fallback, u.Dedicated+u.Fallback)
+	}
+	if u.Failures >= ruleReportMinFailures &&
+		float64(u.Failures)/float64(total) >= ruleReportMinFailRate {
+		return fmt.Sprintf("UDP 拨号大量失败:%d/%d 条", u.Failures, total)
+	}
+	return ""
 }

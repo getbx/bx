@@ -1,6 +1,9 @@
 package stats
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -115,5 +118,82 @@ func TestRuleOutcomesAreConcurrencySafe(t *testing.T) {
 		if r.Rule == "*.steamstatic.com" && (r.Attempts != 50 || r.Failures != 50) {
 			t.Fatalf("并发下计数丢失:%+v", r)
 		}
+	}
+}
+
+// **跨包按字符串对齐的地方只有这一处**,而两边漂开的后果是彻底静默:
+// 计数照记,汇总却一条都匹配不上,输出与「UDP 完全正常」逐字节相同。
+func TestUDPSourceNamesMatchTheDialer(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "dialer", "dialer.go"))
+	if err != nil {
+		t.Fatalf("读不到 dialer.go:%v", err)
+	}
+	for _, name := range []string{udpSourceProxy, udpSourceProxyFallback, udpSourceDirectRealtime} {
+		if !strings.Contains(string(source), `"`+name+`"`) {
+			t.Errorf("dialer 里没有来源 %q —— 汇总会一条都匹配不上,而输出与「一切正常」一模一样", name)
+		}
+	}
+}
+
+// **回落必须被说出来。** 通路是好的、只是慢,用户完全感知不到;而它有一个
+// 明确的动作:去看那台 UDP 服务器。
+func TestUDPNoticeReportsSilentFallback(t *testing.T) {
+	snap := Snapshot{Rules: []RuleOutcome{
+		{Source: udpSourceProxy, Attempts: 10},
+		{Source: udpSourceProxyFallback, Attempts: 90},
+	}}
+	notice := snap.UDPNotice()
+	if !strings.Contains(notice, "90") || !strings.Contains(notice, "加速档") {
+		t.Fatalf("没说清回落:%q", notice)
+	}
+}
+
+// **一切正常时一个字都不打** —— 这是它不被训练成噪声的前提。
+func TestUDPNoticeIsSilentWhenHealthy(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		snap Snapshot
+	}{
+		{"没有 UDP 流量", Snapshot{}},
+		{"全走加速档", Snapshot{Rules: []RuleOutcome{{Source: udpSourceProxy, Attempts: 500}}}},
+		{"启动那几次回落", Snapshot{Rules: []RuleOutcome{
+			{Source: udpSourceProxy, Attempts: 500}, {Source: udpSourceProxyFallback, Attempts: 3},
+		}}},
+		{"零星失败", Snapshot{Rules: []RuleOutcome{
+			{Source: udpSourceProxy, Attempts: 500, Failures: 4},
+		}}},
+		{"1/1 失败(100% 但说明不了任何事)", Snapshot{Rules: []RuleOutcome{
+			{Source: udpSourceProxy, Attempts: 1, Failures: 1},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if notice := tc.snap.UDPNotice(); notice != "" {
+				t.Errorf("正常却说了话:%q", notice)
+			}
+		})
+	}
+}
+
+// 大量失败要报,而且要给出分母 —— 光一个「失败很多」用户无从判断严重程度。
+func TestUDPNoticeReportsWidespreadFailure(t *testing.T) {
+	snap := Snapshot{Rules: []RuleOutcome{
+		{Source: udpSourceProxy, Attempts: 100, Failures: 80},
+	}}
+	notice := snap.UDPNotice()
+	if !strings.Contains(notice, "80") || !strings.Contains(notice, "100") {
+		t.Fatalf("没给出分子分母:%q", notice)
+	}
+}
+
+// UDP 的来源**不许被当成用户规则点名**:用户在 config 里搜不到 `udp_proxy`,
+// 那条「改哪一行」的指引会把他送去一个不存在的地方。
+func TestUDPSourcesAreNeverNamedAsUserRules(t *testing.T) {
+	snap := Snapshot{Rules: []RuleOutcome{
+		{Source: udpSourceProxy, Attempts: 100, Failures: 100},
+		{Source: udpSourceProxyFallback, Attempts: 100, Failures: 100},
+		{Source: udpSourceDirectRealtime, Attempts: 100, Failures: 100},
+	}}
+	if failing := snap.FailingRules(); len(failing) != 0 {
+		t.Fatalf("UDP 来源被当成用户规则点名了:%+v", failing)
 	}
 }
