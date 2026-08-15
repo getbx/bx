@@ -216,3 +216,49 @@ func TestMacMenuDeployScriptIsNotWorldReadable(t *testing.T) {
 		t.Errorf("顺序不对(写=%d 收权限=%d 打开=%d)—— 必须先收紧再交出去", write, perm, open)
 	}
 }
+
+// **测不成不许把服务器画成红的。**
+//
+// 探测失败最常见的原因是 bx 没在跑(直连拨号器在 Core 手里)。把那种情况画成
+// 「不可达」,等于把一整排好服务器说成坏的,而用户据此去换服务器 —— 与 ipify
+// 那次同一类、方向相反的错。失败分支必须保持上一轮的清单原样。
+func TestMacMenuProbeFailureDoesNotPaintServersRed(t *testing.T) {
+	body, ok := swiftFunctionBody(menuMainSwiftSource(t), "private func probeServers()")
+	if !ok {
+		t.Fatal("读不出 probeServers() 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	failure := strings.Index(body, "case .failure(let error):")
+	if failure < 0 {
+		t.Fatal("读不出失败分支 —— 守卫已经失效,先修守卫")
+	}
+	tail := body[failure:]
+	// 失败分支重画时用的必须是**缓存**(lastServers),而不是任何新数据。
+	if !strings.Contains(tail, "rows: serverRows(from: self.lastServers ?? ServerList())") {
+		t.Error("失败分支没有保持上一轮的清单原样 —— 一次测不成会把界面清空或标红")
+	}
+	if strings.Contains(tail, "self.lastServers =") {
+		t.Error("失败分支改写了缓存 —— 「没问出来」被写成了一个具体答案")
+	}
+}
+
+// 探测**只在用户点的时候发**:它走在隧道外面,会让网络上看得见这台机器联系过
+// 那几个地址。绝不挂在任何定时器上(与 2026-08-13 否掉菜单栏常驻红字同一条理由:
+// 一个隐私工具不该定期发不受保护的流量去确认不受保护的路还通)。
+func TestMacMenuNeverProbesServersOnATimer(t *testing.T) {
+	source := menuMainSwiftSource(t)
+	body, ok := swiftFunctionBody(source, "private func loadState(reconnectInFlight: Bool, snapshot: RecoverySnapshot?)")
+	if !ok {
+		t.Fatal("读不出 loadState 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if strings.Contains(body, "probeServers()") {
+		t.Fatal("轮询路径里发起了探测 —— 那是定期向隧道外面发包")
+	}
+	// 唯一的调用点必须挂在窗口那个按钮的回调上。
+	callers := strings.Count(source, "self?.probeServers()") + strings.Count(source, "self.probeServers()")
+	if callers != 1 {
+		t.Errorf("probeServers 有 %d 个调用点,应当只有「用户点了 Test All」那一个", callers)
+	}
+	if !strings.Contains(source, "controller.onProbe = { [weak self] in") {
+		t.Error("那唯一的调用点不是窗口按钮的回调")
+	}
+}

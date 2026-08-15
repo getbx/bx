@@ -13,6 +13,8 @@ private let guardianMutationTimeout: TimeInterval = 75
 private let guardianUpdateCheckTimeout: TimeInterval = 30
 // Go 侧 switchVerifyTimeout = 12 秒,外面还包着武装与确认两次控制面往返。
 private let guardianSwitchServerTimeout: TimeInterval = 45
+// Go 侧 probeTimeout = 8 秒/台,串行。
+private let guardianProbeTimeout: TimeInterval = 60
 private let guardianMaximumTimeout: TimeInterval = TimeInterval(Int32.max) / 1_000
 
 enum GuardianEndpoint {
@@ -29,6 +31,8 @@ enum GuardianEndpoint {
     /// 整组打开或关掉。组开关**只动这一组名下的域名**,用户手写的规则不受影响。
     case changeRuleGroup(action: String, group: String)
     case listServers
+    /// 逐台量一次直连往返时间。**服务端串行地测**,所以清单越长它越慢。
+    case probeServers
     /// 换到清单里的另一台。**服务端会等新隧道健康才确认**,所以它慢。
     case switchServer(name: String)
 
@@ -36,7 +40,7 @@ enum GuardianEndpoint {
         switch self {
         case .requestRecovery: return 202
         case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule,
-             .changeRuleGroup, .listServers, .switchServer:
+             .changeRuleGroup, .listServers, .switchServer, .probeServers:
             return 200
         }
     }
@@ -52,6 +56,9 @@ enum GuardianEndpoint {
         // 更长,否则拿到的永远是自己的超时,而切换其实还在进行 —— 用户会看到
         // 一句失败,然后出口在几秒后自己变了。
         case .switchServer: return guardianSwitchServerTimeout
+        // 服务端每台最多 8 秒、且是串行的。给到 60 秒够测七八台;比它短的话
+        // 拿到的是自己的超时,而服务端那边还在测。
+        case .probeServers: return guardianProbeTimeout
         }
     }
 }
@@ -205,6 +212,13 @@ struct GuardianClient {
         try perform(endpoint: .listServers, as: ServerList.self)
     }
 
+    /// 测一遍所有服务器,返回**带探测结论的完整清单**。
+    ///
+    /// 探测走在隧道外面,所以这只在用户点「Test」时发生 —— 绝不做后台定时探测。
+    func probeServers() throws -> ServerList {
+        try perform(endpoint: .probeServers, as: ServerList.self)
+    }
+
     /// 换服务器。返回的 `applied` 区分「已生效」与「只写了配置」——
     /// **合成一个 ok 会让菜单说「已切换」而流量还从原来那台出去。**
     func switchServer(name: String) throws -> ServerSwitchResult {
@@ -333,6 +347,10 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         path = "/v1/rules"
         let payload: [String: String] = ["action": action, "group": group]
         body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+    case .probeServers:
+        method = "POST"
+        path = "/v1/servers"
+        body = (try? JSONSerialization.data(withJSONObject: ["action": "probe"])) ?? Data("{}".utf8)
     case .listServers:
         method = "GET"
         path = "/v1/servers"

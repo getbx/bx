@@ -675,7 +675,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
 		refresh := func(requiredLinks []string) (bool, error) { return refreshServerBypass(ctx, requiredLinks) }
-		return serveControlWithPathRecovery(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, refresh, cancel, uint32(cfg.OwnerUID), recoverer)
+		return serveControlWithPathRecovery(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, refresh, cancel, uint32(cfg.OwnerUID), recoverer, direct)
 	})
 	if err != nil {
 		return err

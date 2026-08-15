@@ -16,6 +16,11 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     var onSwitch: ((String, String) -> Void)?
     /// 用户点了「测一下现在从哪出去」。
     var onCheckExitIP: (() -> Void)?
+    /// 用户点了「Test All」—— 逐台量直连往返时间。
+    var onProbe: (() -> Void)?
+
+    /// 正在测。按钮禁掉,免得连点几次发出几串探测。
+    var probing = false
 
     private var probe: ExitIPProbe = .unknown
 
@@ -102,6 +107,17 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
             stack.addArrangedSubview(serverView(row))
         }
 
+        let test = NSButton(title: probing ? "Testing…" : "Test All",
+                            target: self, action: #selector(probeAll))
+        test.bezelStyle = .rounded
+        test.isEnabled = !probing
+        stack.addArrangedSubview(test)
+        // **说清楚这一下会发包,而且是在隧道外面发的。** 它是这个界面唯一一个
+        // 会主动联网的动作,用户有权在按之前知道。
+        stack.addArrangedSubview(caption(
+            "Measures the round trip from this Mac to each server, outside the tunnel. "
+            + "Nothing is measured until you press it."))
+
         stack.addArrangedSubview(separator())
         let line = caption(exitIPLine(probe))
         stack.addArrangedSubview(line)
@@ -128,7 +144,11 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
             title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
         }
         label.addArrangedSubview(title)
-        label.addArrangedSubview(caption("   " + row.detail))
+        let detail = caption("   " + row.detail)
+        if row.probeFailed {
+            detail.textColor = .systemRed
+        }
+        label.addArrangedSubview(detail)
         box.addArrangedSubview(label)
 
         if row.isSelectable {
@@ -149,6 +169,10 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
 
     @objc private func checkExitIP() {
         onCheckExitIP?()
+    }
+
+    @objc private func probeAll() {
+        onProbe?()
     }
 
     private func heading(_ text: String) -> NSTextField {
