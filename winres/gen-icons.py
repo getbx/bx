@@ -5,7 +5,7 @@
       internal/tray/icons/{protected,warning,failed,off}.ico(各含 16/20/24/32)
 改完重生成 .syso: go generate ./...
 """
-import math, os
+import glob, math, os
 from PIL import Image, ImageDraw, ImageFont
 
 SS = 8  # 超采样
@@ -16,16 +16,34 @@ COLORS = {
     "red":   (239, 68, 68, 255),
     "grey":  (148, 156, 164, 255),
 }
+# 字体决定那个 "b" 的形状,也就是决定这个标长什么样。
+# **找不到就必须响亮失败** —— 原来的 load_default() 回落会画出一个位图字体的
+# 小 "b",在 1024 上糊成一团,而脚本照样退出 0、图标照样被打进安装包。
+# 一个静默产出坏结果的回落,比报错糟得多。
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+]
+# macOS 上没有 DejaVu,但装了 matplotlib 的话它自带一份 —— 用同一个字体
+# 才能保证两个平台上的标是同一个标。
+FONT_GLOBS = [
+    os.path.expanduser("~/.local/share/uv/tools/*/lib/python*/site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans-Bold.ttf"),
+    "/usr/local/lib/python*/site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans-Bold.ttf",
+    os.path.expanduser("~/**/site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans-Bold.ttf"),
 ]
 
 def _font(px):
     for p in FONT_CANDIDATES:
         if os.path.exists(p):
             return ImageFont.truetype(p, px)
-    return ImageFont.load_default()
+    for pattern in FONT_GLOBS:
+        found = sorted(glob.glob(pattern, recursive=True))
+        if found:
+            return ImageFont.truetype(found[0], px)
+    raise SystemExit(
+        "找不到 DejaVuSans-Bold.ttf —— 拒绝用回落字体画图标。\n"
+        "字体决定这个标长什么样;换一个字体等于悄悄换掉品牌标识。\n"
+        "装一个:pip install matplotlib(它自带这份字体),或把路径加进 FONT_CANDIDATES。")
 
 def _heater_shield(dr, box, fill):
     x0, y0, x1, y1 = box
@@ -65,6 +83,8 @@ def render(color, size):
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     render("green", 256).save(os.path.join(root, "winres", "icon.png"))
+    # 1024 供 macOS 的 .icns(Retina 下 Dock 会用到 512@2x)。
+    render("green", 1024).save(os.path.join(root, "winres", "icon1024.png"))
     render("green", 32).save(os.path.join(root, "winres", "icon16.png"))
     ico_dir = os.path.join(root, "internal", "tray", "icons")
     sizes = [16, 20, 24, 32]

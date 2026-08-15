@@ -22,6 +22,13 @@ case "$ARCH" in
 esac
 
 rm -rf "$RELEASE_DIR"
+# **上一次的产物必须先删掉。**
+#
+# 只删 RELEASE_DIR 是不够的:tar.gz / dmg / SHA256SUMS 落在它的**上一层**,
+# 于是某一步失败或被跳过时,校验器会找到上一次成功留下的那一份、照样放行。
+# 变异验证当场证实了这一点 —— 去掉生成 dmg 那一步,verify 仍然全绿。
+# 陈旧产物能盖住这次的缺失,是发布流程里最不该有的一种绿灯。
+rm -f "$DIST_ROOT/$RELEASE_NAME.tar.gz" "$DIST_ROOT/$RELEASE_NAME.dmg" "$DIST_ROOT/SHA256SUMS"
 mkdir -p "$RELEASE_DIR"
 # **不要在这里 touch .metadata_never_index。**
 #
