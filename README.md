@@ -441,6 +441,9 @@ sudo bx server shares --json
 | `bx preset ls` | 列出内置应用可用性预设 |
 | `bx preset show <name>` | 查看预设将加入的直连域名 |
 | `sudo bx preset apply <name>` | 显式应用预设并在运行时热加载 |
+| `bx egress add <name> <socks5>` | 加一个具名出口(mesh 用不了时的退路;地址必须是 loopback) |
+| `bx egress route <name> <cidr>` | 把一个网段交给该出口(**白名单**,只有写出来的走它) |
+| `bx egress ls` / `bx egress rm <name>` | 查看 / 删除(rm 连同它的网段一起删) |
 | `bx dns status` | 查看 macOS DNS 接管状态 |
 | `sudo bx dns on` | 手动将 macOS 系统 DNS 切到 bx |
 | `sudo bx dns off` | 恢复 bx 保存的 macOS 原始 DNS |
@@ -479,14 +482,26 @@ VPS)上开 subnet router 即可,而 **bx 不挡它**(私网地址不绑物理网
 
 只有在 mesh 用不了时(内网穿不出去)才用这个:
 
+命令(不必手改 YAML):
+
+```
+bx egress add office 127.0.0.1:1080     # ssh -D 1080 -J <vps> <内网那台> 开的
+bx egress route office 10.84.0.0/16     # 白名单:只有写出来的网段走它
+bx egress ls
+bx egress rm office                     # 连同交给它的网段一起删
+sudo bx down && sudo bx up              # 改动在重连后生效
+```
+
+写进配置长这样:
+
 ```yaml
 egress:
   - name: office
-    socks5: 127.0.0.1:1080      # 例如 `ssh -D 1080 -J <vps> <内网那台>` 开的
+    socks5: 127.0.0.1:1080
 
 rules:
   - via: office
-    cidr: ['10.84.0.0/16']      # 白名单:只有写出来的网段走它
+    cidr: ['10.84.0.0/16']
 ```
 
 几条定死的语义:

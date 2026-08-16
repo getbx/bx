@@ -116,6 +116,7 @@ func New() *cli.App {
 				Action: appInstallAction,
 			},
 			{Name: "uninstall", Usage: "卸载客户端服务", Action: uninstallAction},
+			{Name: "egress", Usage: "具名出口:把点名的网段交给一条已有的隧道(mesh 用不了时的退路)", Subcommands: egressCommands()},
 		},
 	}
 }
