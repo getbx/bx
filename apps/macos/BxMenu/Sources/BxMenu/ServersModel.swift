@@ -140,7 +140,14 @@ struct ServerRow: Equatable {
     /// 流量从哪出去。UDP 走另一台时必须单独标出来,否则 UDP 会静默走别的出口。
     var detail: String {
         var parts: [String] = []
-        parts.append(entry.host.isEmpty ? "Link could not be parsed" : entry.host)
+        // **名字与主机相同时只显示一次。** 名字多半是从链接里的主机推出来的
+        // (bx setup 不给 --name 时就是这样),于是同一个串被并排写了两遍 ——
+        // 真机截图上就是 `195.133.192.92   195.133.192.92`。
+        if entry.host.isEmpty {
+            parts.append("Link could not be parsed")
+        } else if entry.host != entry.name {
+            parts.append(entry.host)
+        }
         if !entry.udpHost.isEmpty, entry.udpHost != entry.host {
             parts.append("UDP → \(entry.udpHost)")
         }

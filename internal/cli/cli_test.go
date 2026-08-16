@@ -115,8 +115,21 @@ func TestMacMenuReconnectDoesNotCycleProtection(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	if !strings.Contains(text, "menu.addAction(\"Troubleshoot: Reconnect\"") {
-		t.Fatal("macOS menu should expose Reconnect only as troubleshooting")
+	// **钉语义,不钉标签。** 上一版查的是字面量 "Troubleshoot: Reconnect",
+	// 于是一次纯粹的改名(那个前缀对普通用户是行话)把它打红了 —— 而它本来
+	// 要守的是「重连不许被实现成一次 down+up」,与标签叫什么无关。
+	if !strings.Contains(text, "#selector(reconnectBx)") {
+		t.Fatal("macOS menu should expose a reconnect action")
+	}
+	body, ok := swiftFunctionBody(text, "@objc private func reconnectBx()")
+	if !ok {
+		t.Fatal("could not locate reconnectBx —— 守卫已经失效,先修守卫")
+	}
+	for _, cycling := range []string{"turnOffBx", "turnOnBx", "/v1/down", "/v1/up"} {
+		if strings.Contains(body, cycling) {
+			t.Fatalf("重连被实现成了一次开关循环(%s)—— 那会断网,而重连的全部意义"+
+				"是不断网地换掉传输", cycling)
+		}
 	}
 	if !strings.Contains(text, "func reconnectBx()") {
 		t.Fatal("macOS menu should implement reconnect action")
@@ -4231,10 +4244,20 @@ func TestMacMenuPutsConstructiveActionBeforeDiagnostics(t *testing.T) {
 	if !ok {
 		t.Fatal("could not locate rebuildMenu in main.swift")
 	}
-	firstDiagnostic := strings.Index(body, `"View Logs"`)
-	if firstDiagnostic < 0 {
-		t.Fatal("rebuildMenu should still offer View Logs")
+	// **只看状态分支那一段。** 恢复浮层里也有一个同名的日志项,而那条路会提前
+	// return —— 它与「先给动作、再给诊断」这条顺序无关。上一版靠两处标签不同
+	// (View Guardian Logs / View Logs)碰巧避开了它,一次合理的合并就把守卫
+	// 指到了错的那个。
+	switchAt := strings.Index(body, "switch state {")
+	if switchAt < 0 {
+		t.Fatal("could not locate the state switch —— 守卫已经失效,先修守卫")
 	}
+	tail := body[switchAt:]
+	firstDiagnostic := strings.Index(tail, `"Open Logs"`)
+	if firstDiagnostic < 0 {
+		t.Fatal("rebuildMenu should still offer the logs action")
+	}
+	body = tail
 	for _, action := range []string{`"Start Protection"`, `"Set Up bx..."`, `"Install bx…"`} {
 		at := strings.Index(body, action)
 		if at < 0 {

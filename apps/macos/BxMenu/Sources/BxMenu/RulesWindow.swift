@@ -57,7 +57,10 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        let clip = NSView()
+        // **必须是翻转坐标系。** NSView 默认原点在左下,于是文档视图比可视区
+        // 小时内容会**沉到窗口底部** —— 真机截图上那一大片空白就是这么来的,
+        // 它看起来像刻意的留白,其实是坐标系。
+        let clip = FlippedView()
         clip.translatesAutoresizingMaskIntoConstraints = false
         clip.addSubview(stack)
         scroll.documentView = clip
