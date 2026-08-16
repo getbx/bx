@@ -72,14 +72,18 @@ func judgeLocalAddresses(browser BrowserReport) Finding {
 // **判据只做到大区(IANA 时区名的第一段)这一层**,而且 ok 的措辞必须说清楚这一点:
 // 出口在美国、时钟在 America/Sao_Paulo 是同一个大区而显然仍是矛盾。一句
 // 「一切正常」会让用户以为这件事已经查完了。
-func judgeTimezone(browser BrowserReport) Finding {
+func judgeTimezone(browser BrowserReport, local LocalFacts) Finding {
 	f := Finding{ID: FindingTimezone, Title: "Clock vs exit location", Section: SectionIdentity}
 	if browser.Silent() {
 		return browserNeverArrived(f)
 	}
 
 	country := strings.ToUpper(strings.TrimSpace(browser.ExitCountry))
-	zone := strings.TrimSpace(browser.Timezone)
+	zone, zoneFrom := strings.TrimSpace(browser.Timezone), "browser"
+	if zone == "" {
+		// 回落到系统时区:本机读得到,不需要浏览器到过。
+		zone, zoneFrom = strings.TrimSpace(local.SystemTimezone), "system"
+	}
 	switch {
 	case country == "":
 		reason := browser.TraceErr
@@ -90,7 +94,7 @@ func judgeTimezone(browser BrowserReport) Finding {
 		f.Evidence = append(f.Evidence, "trace: "+TraceURL)
 		return f
 	case zone == "":
-		f.Summary = "Not checked: the browser did not report a time zone."
+		f.Summary = "Not checked: neither the browser nor this machine reported a time zone."
 		return f
 	}
 
@@ -100,13 +104,13 @@ func judgeTimezone(browser BrowserReport) Finding {
 		f.Summary = "Not checked: this exit looks like it is in " + country +
 			", and bx does not carry a time-zone region for that country, so the two " +
 			"cannot be compared."
-		f.Evidence = append(f.Evidence, "exit country: "+country, "browser time zone: "+zone)
+		f.Evidence = append(f.Evidence, "exit country: "+country, zoneFrom+" time zone: "+zone)
 		return f
 	}
 
 	area, _, _ := strings.Cut(zone, "/")
 	f.Evidence = append(f.Evidence,
-		"browser time zone: "+zone,
+		zoneFrom+" time zone: "+zone,
 		"exit country: "+country+"  via "+TraceURL,
 		"time-zone regions valid for "+country+": "+strings.Join(areas, ", "))
 
@@ -141,13 +145,16 @@ func judgeTimezone(browser BrowserReport) Finding {
 // surface 段是「网站看得到什么」,中性、不判 —— 语言本身确实属于那里(它已经
 // 在那儿列着了)。但**语言与出口国不符**不是一个中性事实:它是一条把你从这个
 // 出口的其他人里挑出来的线索,和时钟那条完全同型。
-func judgeLanguage(browser BrowserReport) Finding {
+func judgeLanguage(browser BrowserReport, local LocalFacts) Finding {
 	f := Finding{ID: FindingLanguage, Title: "Language vs exit location", Section: SectionIdentity}
 	if browser.Silent() {
 		return browserNeverArrived(f)
 	}
 	country := strings.ToUpper(strings.TrimSpace(browser.ExitCountry))
-	primary := primaryLanguage(browser.Languages)
+	primary, langFrom := primaryLanguage(browser.Languages), "browser"
+	if primary == "" {
+		primary, langFrom = primaryLanguage(local.SystemLanguages), "system"
+	}
 	switch {
 	case country == "":
 		reason := browser.TraceErr
@@ -157,17 +164,17 @@ func judgeLanguage(browser BrowserReport) Finding {
 		f.Summary = "Not checked: " + reason + ", so there is nothing to compare the language against."
 		return f
 	case primary == "":
-		f.Summary = "Not checked: the browser did not report a language."
+		f.Summary = "Not checked: neither the browser nor this machine reported a language."
 		return f
 	}
 	expected, known := countryLanguages[country]
 	if !known {
 		f.Summary = "Not checked: this exit looks like it is in " + country +
 			", and bx does not carry a language list for that country, so the two cannot be compared."
-		f.Evidence = append(f.Evidence, "exit country: "+country, "browser language: "+primary)
+		f.Evidence = append(f.Evidence, "exit country: "+country, langFrom+" language: "+primary)
 		return f
 	}
-	f.Evidence = append(f.Evidence, "exit country: "+country, "browser language: "+primary)
+	f.Evidence = append(f.Evidence, "exit country: "+country, langFrom+" language: "+primary)
 	// **英语一律放过** —— 见上面的说明。
 	if primary == "en" {
 		f.Verdict = OK

@@ -141,6 +141,16 @@ type LocalFacts struct {
 	// 少一个键 = 那个解析器的去向没问出来。
 	DNSServerEgress map[string]string `json:"dns_server_egress,omitempty"`
 	DNSErr          string            `json:"dns_err,omitempty"`
+
+	// 系统的时区与语言。**本机读得到,不需要浏览器** —— 有了它们,「时钟/语言
+	// vs 出口国」这两条在 `bx leak-check`(非交互那条)里也答得出来,而不是
+	// 永远显示「没查」。
+	//
+	// **浏览器的值优先。** 网站看到的是浏览器报的那个,系统值只是它的来源;
+	// 两者可以不同(浏览器语言是单独设的)。所以系统值是**回落**,而且结论里
+	// 要说清这次用的是哪一个 —— 拿系统值去断言「网站看到的是这个」是在冒认。
+	SystemTimezone  string   `json:"system_timezone,omitempty"`
+	SystemLanguages []string `json:"system_languages,omitempty"`
 	// BXTunInterface / BXProtection 来自 Guardian 的 /v1/status(普通用户可读)。
 	// 空串表示 Guardian 没答上话,不表示 bx 没在跑。
 	BXTunInterface string `json:"bx_tun_interface,omitempty"`
