@@ -991,7 +991,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addPlainText(quitQueuedStatusText())
             } else if let hint = toggleSlowHint(elapsedSeconds: elapsed) {
                 menu.addPlainText(hint)
-                menu.addAction("View Guardian Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+                menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
             }
             menu.addItem(.separator())
             menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
@@ -1007,7 +1007,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
             if presentation.isRunning {
                 menu.addAction(
-                    "Troubleshoot: Reconnect",
+                    "Reconnect",
                     symbol: "arrow.clockwise",
                     target: self,
                     action: #selector(reconnectBx),
@@ -1015,9 +1015,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 )
             } else if snapshot.state == "failed" {
                 menu.addAction("Details", symbol: "info.circle", target: self, action: #selector(showRecoveryDetails))
-                menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+                menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
             } else {
-                menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+                menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             }
             return
         }
@@ -1130,16 +1130,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         switch state {
         case .setupNeeded:
-            menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
-            menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+            menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+            menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
         case .missing, .updateNeeded, .notInstalled:
-            menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+            menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
         case .off:
-            menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
-            menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+            menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+            menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
         case .connected, .warning:
-            menu.addAction("View Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
-            menu.addAction("Run Doctor", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+            menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+            menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
         }
         switch state {
         case .connected, .warning:
@@ -1150,14 +1150,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         switch state {
         case .connected:
-            menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
         case .warning("Repair Required", _):
             menu.addAction(repairActionTitle, symbol: "wrench.and.screwdriver", target: self, action: #selector(repairBx))
-            menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
         case .warning:
-            menu.addAction("Troubleshoot: Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
         case .off, .updateNeeded, .setupNeeded, .missing, .notInstalled:
             // 这些状态的主动作已经排在诊断入口之前了,这里不再重复。
@@ -1182,19 +1182,23 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addAction("Servers…", symbol: "globe", target: self, action: #selector(openServersWindow))
             menu.addAction("Set Up a New Server…", symbol: "plus.circle", target: self, action: #selector(openDeployWindow))
         }
-        // 卸载入口。**只在装过的时候出现**(没装就没什么可卸),但它必须存在于
-        // 其余每一个状态里 —— 想删掉 bx 的人,最可能正处在「它出问题了」那几个
-        // 状态,而那正是此前一个卸载入口都没有的地方。
-        if cliIsInstalled() {
-            menu.addItem(.separator())
-            menu.addAction(UninstallPresentation.actionTitle, symbol: "trash", target: self, action: #selector(uninstallBx))
-        }
         // **换配置的入口。** 此前只有「还没配置」那个状态里有 Set Up bx…,
         // 配好之后再也找不到它 —— 换服务器只能开终端(2026-08-14 项目所有者提出)。
         // 叫 Replace 而不是 Switch 是刻意的:它是替换一份配置,不是从列表里挑一台。
         menu.addAction("Replace Configuration…", symbol: "arrow.triangle.2.circlepath",
                        target: self, action: #selector(replaceConfiguration))
         menu.addAction("Check for leaks ↗", symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
+        // 卸载入口。**只在装过的时候出现**(没装就没什么可卸),但它必须存在于
+        // 其余每一个状态里 —— 想删掉 bx 的人,最可能正处在「它出问题了」那几个
+        // 状态,而那正是此前一个卸载入口都没有的地方。
+        //
+        // **位置在最底部、紧邻 Quit。** 上一版把它放在 Replace Configuration
+        // 与 Check for leaks **上面** —— 一个破坏性动作夹在常点的项目中间,
+        // 手滑的代价是把整套保护卸掉。破坏性的东西归到底部,这是菜单的通例。
+        if cliIsInstalled() {
+            menu.addItem(.separator())
+            menu.addAction(UninstallPresentation.actionTitle, symbol: "trash", target: self, action: #selector(uninstallBx))
+        }
         // 退出入口无条件加一次。**不要挪回上面任何一个 case**:此前它只在
         // .connected/.warning 里,于是 .off/.setupNeeded/.missing/.notInstalled/
         // .updateNeeded 下菜单没有任何退出入口(TestMacMenuQuitActionPresentInEveryState)。
@@ -1617,7 +1621,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             snapshot.recoveryID.isEmpty ? nil : "Recovery: \(snapshot.recoveryID)",
             "Stage: \(snapshot.stage)",
         ].compactMap { $0 }.joined(separator: "\n")
-        alert.addButton(withTitle: "Run Doctor")
+        alert.addButton(withTitle: "Check for Problems")
         alert.addButton(withTitle: "OK")
         if alert.runModal() == .alertFirstButtonReturn {
             runDoctor()
@@ -1985,7 +1989,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = "\(message) Run Doctor to collect diagnostics."
-        alert.addButton(withTitle: "Run Doctor")
+        alert.addButton(withTitle: "Check for Problems")
         alert.addButton(withTitle: "OK")
         if alert.runModal() == .alertFirstButtonReturn {
             runDoctor()
@@ -2095,7 +2099,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 动作路径的统一前置检查:CLI 在不在、跑不跑得起来。
-    /// 用 showMessage 而不是 showFailure —— 后者的 "Run Doctor" 要跑的正是这个
+    /// 用 showMessage 而不是 showFailure —— 后者的 "Check for Problems" 要跑的正是这个
     /// 跑不起来的二进制。
     private func ensureCLIUsable() -> Bool {
         guard cliIsInstalled() else {
