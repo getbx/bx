@@ -118,6 +118,34 @@ CVE-2024-3661 / TunnelCrack ServerIP)** · 内网地址是否被 mDNS 遮掉 · 
 **真机未验**:整套(约 1900 行 / 13 个 commit)没有一行上过真机;页面那半的 JS 本仓库一行测试都
 盖不到,`verify.sh` 也管不着。
 
+## 真机验收(2026-08-16,项目所有者的 Mac)—— 一次升级把一大批「未验」清掉
+
+`install.sh` 升级路径全程正常(停保护 → 换文件 → 重启 Guardian → 恢复保护),
+`go run ./cmd/bx-acceptance` 五项 PASS。**这批东西第一次上真机就没出事**,
+而验收器本身在升级**之前**那次跑就已经证明了自己:它当场报出「缺 servers 能力、
+/v1/servers 404」—— 跑着的还是升级前那个 Guardian(文件换了、进程没换)。
+`能力声明` 是这份报告里唯一能证明进程真的换了的信号,版本号不能。
+
+**同一次验收还抓到一个正在发生的故障**:`*.qq.com 55/68 失败`、
+`*.push.apple.com 175/333`,而 `route -n get -ifscope en0 8.8.8.8` 是
+`not in table` —— 8-13 那个 DirectDialer 故障的同一签名,**路由是启动之后丢的**
+(早上那次跑还是 `直连 446(失败 0)`)。全程 status 显示 Protected、隧道健康:
+这个故障对所有既有信号都隐形。`down && up` 之后 scoped 路由回来
+(`gateway 192.168.50.2 / en0`),直连恢复 `26/失败 0`。根因已修(见
+`internal/supervisor/egress_repair.go`):重装那条路由的触发条件从「记账里的
+underlay 变了」改成「去问内核那条路由还在不在」。
+
+**UDP 反事实计数的第一批真机数据**(`bx status --json | jq '.rules[] |
+select(.source|startswith("udp_"))'`):`udp_no_change 75`、`udp_proxy 72`、
+`udp_proxy_fallback 3`,而 **`udp_would_flip_*` 与 `udp_undecidable` 都是 0**。
+两条结论:① 让 china 列表也对 UDP 生效(那个被搁置的选项 B),就目前流量
+**一条都不会改变**;② 「大部分 UDP 没有域名可判」这个担心**不成立** ——
+fake-IP 反查全部命中。样本约 150 条,要跑几天再定论。
+
+**仍未验**:吞吐历史(需 15 分钟以上运行 + 真实流量)、换服务器的 commit-confirmed
+路径(要真切一次、会改出口 IP)、菜单栏那几个窗口(要人在屏幕前点)、
+装新 VPS 的表单(要一台空 VPS)、UDP 遵守 direct 规则(要一份升级前的基线)。
+
 ## 规则可观测与可编辑(2026-08-13)
 
 一次真实排查暴露的空洞:用户 config 里 `'*.steamstatic.com'` 一类的强制直连规则,
