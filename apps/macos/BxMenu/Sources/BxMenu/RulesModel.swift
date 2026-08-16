@@ -203,19 +203,6 @@ struct RuleGroupRow: Equatable {
     }
 }
 
-/// 顶部那句话。**只有真有东西坏了才出现** —— 人打开这个窗口十有八九就是因为
-/// 有东西working,而它此前埋在第三行的一个红色小字里。
-///
-/// 正常时返回 nil:一句永远在的「一切正常」是墙纸,而墙纸会训练人忽略这块地方。
-func rulesHeadline(_ rows: [RuleGroupRow]) -> String? {
-    let broken = rows.filter { $0.failing > 0 }
-    if broken.isEmpty { return nil }
-    if broken.count == 1 {
-        return "\(broken[0].group.title) isn't working"
-    }
-    return "\(broken.count) groups aren't working"
-}
-
 /// 把组、失败归因合成界面要显示的行。
 ///
 /// **归因按组汇总,而不是逐条列域名** —— 十行域名对普通用户没有意义,

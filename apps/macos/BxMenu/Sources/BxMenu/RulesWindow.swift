@@ -80,6 +80,20 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         return window
     }
 
+    /// **这个窗口只有三样东西:开关、你自己写的、以及去看配置。**
+    ///
+    /// 上一版还有标题行、顶部告警、页脚说明、完整路径和分隔线 —— 而它们各自
+    /// 都在重复别处已经说过的话:
+    ///
+    ///   · 顶部「Apple isn't working」与那一行的红色 `6 failed` 是同一件事
+    ///   · 「Changes apply when you reconnect」是常驻的,而**改完本来就会弹
+    ///     一次提示**(offerReconnectAfterRuleChange),所以它一年到头只是
+    ///     在占地方
+    ///   · 两块内容一个带勾选框、一个是灰色等宽字,已经分得清,不需要小标题
+    ///   · 路径没人会去手打,按钮就是干这个的
+    ///
+    /// 删掉之后剩下的每一行都在回答一个问题:哪些开着、我自己写了什么、
+    /// 怎么去改。**分隔靠留白,不靠线**。
     private func render(rows: [RuleGroupRow], custom: [String], configPath: String) {
         guard let stack else { return }
         for view in stack.arrangedSubviews {
@@ -87,25 +101,14 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             view.removeFromSuperview()
         }
 
-        // **坏消息排最上面。** 人打开这个窗口十有八九就是因为有东西working,
-        // 而它此前埋在某一组下面的一行红色小字里。正常时这里一个字都没有 ——
-        // 一句永远在的「一切正常」是墙纸。
-        if let headline = rulesHeadline(rows) {
-            let warn = NSTextField(labelWithString: headline)
-            warn.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-            warn.textColor = .systemRed
-            stack.addArrangedSubview(warn)
-        }
-
-        stack.addArrangedSubview(sectionTitle("Skip the tunnel"))
         for row in rows {
             stack.addArrangedSubview(groupRow(row))
         }
 
         if !custom.isEmpty {
-            stack.addArrangedSubview(sectionTitle("Your own"))
-            // **一行一条。** 上一版把它们用空格拼成一段,规则一多就是一堵墙。
-            // 这些是只读的(菜单没有资格替用户删他手写的规则),所以只排版、不给控件。
+            // 只读:菜单没有资格替用户删他手写的规则,而**没有勾选框本身就说明了
+            // 这一点** —— 不必再写一句「这些不能改」。
+            stack.addArrangedSubview(gap())
             for pattern in custom {
                 let label = NSTextField(labelWithString: pattern)
                 label.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
@@ -114,25 +117,21 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             }
         }
 
-        // **页脚收成两行。** 上一版是「按钮 / 路径 / 说明」三样各占一行、彼此平级,
-        // 于是最不重要的东西占了最多的地方。
-        stack.addArrangedSubview(separator())
-        stack.addArrangedSubview(caption("Changes apply when you reconnect."))
         if !configPath.isEmpty {
-            let row = NSStackView()
-            row.orientation = .horizontal
-            row.alignment = .centerY
-            row.spacing = 8
-            let path = caption(configPath)
-            path.lineBreakMode = .byTruncatingMiddle
-            path.preferredMaxLayoutWidth = 260
-            row.addArrangedSubview(path)
-            let reveal = NSButton(title: "Show", target: self, action: #selector(revealConfig))
+            stack.addArrangedSubview(gap())
+            let reveal = NSButton(title: "Show Config", target: self, action: #selector(revealConfig))
             reveal.bezelStyle = .rounded
             reveal.controlSize = .small
-            row.addArrangedSubview(reveal)
-            stack.addArrangedSubview(row)
+            stack.addArrangedSubview(reveal)
         }
+    }
+
+    /// 一段留白。**分隔靠它,不靠分隔线** —— 三五行内容之间画线是给长文档用的。
+    private func gap() -> NSView {
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        return spacer
     }
 
     /// 一组一行:左边勾选框,**右边一列状态**。
@@ -162,12 +161,6 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         return box
     }
 
-    private func sectionTitle(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        label.textColor = .secondaryLabelColor
-        return label
-    }
 
     @objc private func toggleGroup(_ sender: NSButton) {
         guard let name = sender.identifier?.rawValue else { return }
@@ -182,17 +175,5 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         onRevealConfig?()
     }
 
-    private func caption(_ text: String) -> NSTextField {
-        let label = NSTextField(wrappingLabelWithString: text)
-        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        label.textColor = .secondaryLabelColor
-        label.preferredMaxLayoutWidth = 370
-        return label
-    }
 
-    private func separator() -> NSView {
-        let line = NSBox()
-        line.boxType = .separator
-        return line
-    }
 }

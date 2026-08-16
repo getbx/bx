@@ -270,29 +270,6 @@ struct RulesModelTests {
         expect(clipboardCandidateLink(String(repeating: "bx://", count: 4000)) == nil, "超长文本没挡住")
     }
 
-    // **坏消息排最上面,而且正常时一个字都没有。**
-    //
-    // 人打开这个窗口十有八九就是因为有东西不通,而它此前埋在某一组下面的一行
-    // 红色小字里。反过来,一句永远在的「一切正常」是墙纸 —— 墙纸会训练人
-    // 忽略这块地方,而那正好毁掉它唯一的价值。
-    static func testHeadlineOnlySpeaksWhenSomethingIsBroken() {
-        let healthy = [RuleGroupRow(group: RuleGroup(name: "apple", title: "Apple", state: .on), failing: 0, failures: 0)]
-        expect(rulesHeadline(healthy) == nil, "一切正常却说了话:\(rulesHeadline(healthy) ?? "")")
-
-        let one = [
-            RuleGroupRow(group: RuleGroup(name: "apple", title: "Apple", state: .on), failing: 2, failures: 30),
-            RuleGroupRow(group: RuleGroup(name: "gaming", title: "Steam", state: .on), failing: 0, failures: 0),
-        ]
-        // 只有一组坏时**点名到组**,比「1 组不通」有用:用户直接知道该看哪儿。
-        expect(rulesHeadline(one) == "Apple isn't working", "单组没点名:\(rulesHeadline(one) ?? "")")
-
-        let many = [
-            RuleGroupRow(group: RuleGroup(name: "apple", title: "Apple", state: .on), failing: 2, failures: 30),
-            RuleGroupRow(group: RuleGroup(name: "gaming", title: "Steam", state: .on), failing: 1, failures: 9),
-        ]
-        expect(rulesHeadline(many) == "2 groups aren't working", "多组数不对:\(rulesHeadline(many) ?? "")")
-    }
-
     static func main() {
         testReplaceMessageShowsTheExitChangeNotALecture()
         testReplaceMessageOmitsTheOldServerWhenUnknown()
@@ -315,7 +292,6 @@ struct RulesModelTests {
         testRequiresRestartAbsenceIsNotFalse()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」,
         // 而一个根本没被脚本登记的套件退出码也是 0(本仓库实测栽过)。
-        testHeadlineOnlySpeaksWhenSomethingIsBroken()
         if failures == 0 {
             print("RulesModelTests passed")
         }
