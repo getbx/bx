@@ -89,6 +89,15 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         return window
     }
 
+    /// **一台一行,两个按钮,没有别的。**
+    ///
+    /// 与 Routing Rules 同一次清理:上一版有标题行(「Your traffic leaves from」——
+    /// 一个叫 Servers 的窗口里说这句是废话)、每台占两行、`Test All` 下面挂着
+    /// 一整段解释(那是设计笔记不是界面文案)、还有一条分隔线加一行常驻的
+    /// 「Exit IP: not checked」。
+    ///
+    /// 「测出口会走隧道外面」这条**信息本身是要紧的**(它关系到隐私),但它属于
+    /// 按钮的 tooltip,不属于一段常驻正文 —— 常驻的东西会被读一次然后永远忽略。
     private func render(rows: [ServerRow]) {
         guard let stack else { return }
         for view in stack.arrangedSubviews {
@@ -97,66 +106,86 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         }
 
         if rows.isEmpty {
-            stack.addArrangedSubview(heading("No servers configured"))
-            stack.addArrangedSubview(caption("Add one with: bx setup --name <name> '<link>'"))
+            let empty = NSTextField(labelWithString: "No servers yet")
+            stack.addArrangedSubview(empty)
+            stack.addArrangedSubview(hint("bx setup --name <name> '<link>'"))
             return
         }
 
-        stack.addArrangedSubview(heading("Your traffic leaves from"))
         for row in rows {
             stack.addArrangedSubview(serverView(row))
         }
 
-        let test = NSButton(title: probing ? "Testing…" : "Test All",
-                            target: self, action: #selector(probeAll))
+        stack.addArrangedSubview(gap())
+        let buttons = NSStackView()
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        let test = NSButton(title: probing ? "Testing…" : "Test", target: self, action: #selector(probeAll))
         test.bezelStyle = .rounded
+        test.controlSize = .small
         test.isEnabled = !probing
-        stack.addArrangedSubview(test)
-        // **说清楚这一下会发包,而且是在隧道外面发的。** 它是这个界面唯一一个
-        // 会主动联网的动作,用户有权在按之前知道。
-        stack.addArrangedSubview(caption(
-            "Measures the round trip from this Mac to each server, outside the tunnel. "
-            + "Nothing is measured until you press it."))
+        // 那条要紧但不该常驻的话,挂在这里。
+        test.toolTip = "Measures the round trip from this Mac to each server, outside the tunnel."
+        buttons.addArrangedSubview(test)
 
-        stack.addArrangedSubview(separator())
-        let line = caption(exitIPLine(probe))
-        stack.addArrangedSubview(line)
-        let check = NSButton(title: "Check Exit IP", target: self, action: #selector(checkExitIP))
+        let check = NSButton(title: "Exit IP", target: self, action: #selector(checkExitIP))
         check.bezelStyle = .rounded
-        // 探测进行中就禁掉,免得用户连点几次发出一串请求。
+        check.controlSize = .small
         check.isEnabled = probe != .checking
-        stack.addArrangedSubview(check)
+        check.toolTip = "Asks a public service where your traffic appears to come from."
+        buttons.addArrangedSubview(check)
+        stack.addArrangedSubview(buttons)
+
+        // **只在有话说时才有这一行。** 「not checked」是常态不是信息。
+        if probe != .unknown {
+            stack.addArrangedSubview(hint(exitIPLine(probe)))
+        }
     }
 
+    private func gap() -> NSView {
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        return spacer
+    }
+
+    private func hint(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
+    /// 一台一行:名字 + 出口 + 指标,右边是 Use。
+    ///
+    /// 上一版把出口与指标缩进到第二行 —— 与 Routing Rules 一样的毛病,
+    /// 一屏里全是参差不齐的留白。
     private func serverView(_ row: ServerRow) -> NSView {
         let box = NSStackView()
         box.orientation = .horizontal
-        box.alignment = .centerY
+        box.alignment = .firstBaseline
         box.spacing = 10
 
-        let label = NSStackView()
-        label.orientation = .vertical
-        label.alignment = .leading
-        label.spacing = 2
-        // 当前那台用实心圆点标出来 —— 与 CLI 的 `●` 同一个符号,两处一致。
         let title = NSTextField(labelWithString: (row.isCurrent ? "● " : "   ") + row.name)
         if row.isCurrent {
             title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
         }
-        label.addArrangedSubview(title)
-        let detail = caption("   " + row.detail)
+        box.addArrangedSubview(title)
+
+        let detail = hint(row.detail)
         if row.probeFailed {
             detail.textColor = .systemRed
         }
-        label.addArrangedSubview(detail)
-        box.addArrangedSubview(label)
+        detail.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        box.addArrangedSubview(detail)
 
         if row.isSelectable {
             let use = NSButton(title: "Use", target: self, action: #selector(switchTo(_:)))
             use.bezelStyle = .rounded
-            // 名字与出口主机都挂在按钮上,好让确认文案说得出「换到哪」。
+            use.controlSize = .small
             use.identifier = NSUserInterfaceItemIdentifier(row.name)
             use.toolTip = row.entry.host
+            use.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             box.addArrangedSubview(use)
         }
         return box
@@ -175,23 +204,6 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         onProbe?()
     }
 
-    private func heading(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-        return label
-    }
 
-    private func caption(_ text: String) -> NSTextField {
-        let label = NSTextField(wrappingLabelWithString: text)
-        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        label.textColor = .secondaryLabelColor
-        label.preferredMaxLayoutWidth = 370
-        return label
-    }
 
-    private func separator() -> NSView {
-        let line = NSBox()
-        line.boxType = .separator
-        return line
-    }
 }

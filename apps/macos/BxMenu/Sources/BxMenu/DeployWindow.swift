@@ -45,31 +45,30 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        stack.addArrangedSubview(caption(
-            "bx installs itself on a VPS you already own, over ssh."))
-
-        let host = field(placeholder: "1.2.3.4  or  my-vps (an ssh_config alias)")
+        // **占位符已经说明了每个框是什么**,上面再加一行标签是说两遍。
+        // 三个框、每个一句占位符,比「标签 + 空框」少一半行数而信息一样多。
+        let host = field(placeholder: "Server address — 1.2.3.4 or an ssh_config alias")
         hostField = host
-        stack.addArrangedSubview(label("Server address"))
         stack.addArrangedSubview(host)
 
-        let user = field(placeholder: "root")
+        let user = field(placeholder: "SSH login")
         user.stringValue = "root"
         userField = user
-        stack.addArrangedSubview(label("SSH login"))
         stack.addArrangedSubview(user)
 
-        let name = field(placeholder: "tokyo  (optional)")
+        let name = field(placeholder: "Name it in your list (optional)")
         nameField = name
-        stack.addArrangedSubview(label("Name it in your list"))
         stack.addArrangedSubview(name)
-        // **说清楚它不会换出口。** 装好一台不等于用它 —— 这与自动容灾被否掉
-        // 是同一条理由,而用户在这个表单上最容易以为「装完就切过去了」。
+        // **这一行留着,而且是两个事实合成一行。**
+        //
+        // 「装好一台不等于用它」是用户在这个表单上最容易搞错的;
+        // 「bx 看不到你的密码」是一次**安全披露** —— 我一度把它挪进按钮的
+        // tooltip,那是错的:装饰可以删,披露不行,而 tooltip 要悬停才看得到。
+        // 合成一行之后既没多占地方,两件事也都还在。
         stack.addArrangedSubview(caption(
-            "Added to your list when it finishes. Your current exit does not change."))
+            "Your current exit does not change. bx never sees your SSH password."))
 
-        stack.addArrangedSubview(separator())
-        stack.addArrangedSubview(label("Will run"))
+        stack.addArrangedSubview(gap())
         let preview = caption("")
         preview.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
         // 用户看得见将要执行的那条命令 —— 一个会 ssh 到别人机器上装东西的动作,
@@ -77,7 +76,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         preview.isSelectable = true
         self.preview = preview
         stack.addArrangedSubview(preview)
-        stack.addArrangedSubview(caption(deployCredentialNote))
+
 
         let problem = caption("")
         problem.textColor = .systemRed
@@ -86,6 +85,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
 
         let run = NSButton(title: "Open in Terminal", target: self, action: #selector(run))
         run.bezelStyle = .rounded
+        run.toolTip = deployCredentialNote
         run.keyEquivalent = "\r"
         stack.addArrangedSubview(run)
 
@@ -134,10 +134,11 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         updatePreview()
     }
 
-    private func label(_ text: String) -> NSTextField {
-        let field = NSTextField(labelWithString: text)
-        field.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
-        return field
+    private func gap() -> NSView {
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        return spacer
     }
 
     private func caption(_ text: String) -> NSTextField {
@@ -155,11 +156,6 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         return field
     }
 
-    private func separator() -> NSView {
-        let line = NSBox()
-        line.boxType = .separator
-        return line
-    }
 }
 
 extension DeployWindowController: NSTextFieldDelegate {}
