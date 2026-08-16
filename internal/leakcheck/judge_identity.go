@@ -125,3 +125,82 @@ func judgeTimezone(browser BrowserReport) Finding {
 		"you out even though nothing leaked."
 	return f
 }
+
+// judgeLanguage 拿浏览器报的语言与出口国比。**与 judgeTimezone 是同一类**:
+// 一个字节都没漏,也能把你和这个出口的其余用户分开。
+//
+// ## 判据刻意宽松,而且只在能证明时才判
+//
+//   - 出口国问不出来 → 不判(与「国旗只在能证明时给」同一条纪律)
+//   - 表里没有那个国家 → 不判,并说明是 bx 不带那份数据,不是用户有问题
+//   - **英语一律放过**:它是网上的通用语,从任何出口报 en 都不扎眼。把它判成
+//     不符会让一大批完全正常的人天天看到红字,而红字看多了就没人看了。
+//
+// ## 为什么它进身份段而不是 surface 段
+//
+// surface 段是「网站看得到什么」,中性、不判 —— 语言本身确实属于那里(它已经
+// 在那儿列着了)。但**语言与出口国不符**不是一个中性事实:它是一条把你从这个
+// 出口的其他人里挑出来的线索,和时钟那条完全同型。
+func judgeLanguage(browser BrowserReport) Finding {
+	f := Finding{ID: FindingLanguage, Title: "Language vs exit location", Section: SectionIdentity}
+	if browser.Silent() {
+		return browserNeverArrived(f)
+	}
+	country := strings.ToUpper(strings.TrimSpace(browser.ExitCountry))
+	primary := primaryLanguage(browser.Languages)
+	switch {
+	case country == "":
+		reason := browser.TraceErr
+		if reason == "" {
+			reason = "the exit country was not observed"
+		}
+		f.Summary = "Not checked: " + reason + ", so there is nothing to compare the language against."
+		return f
+	case primary == "":
+		f.Summary = "Not checked: the browser did not report a language."
+		return f
+	}
+	expected, known := countryLanguages[country]
+	if !known {
+		f.Summary = "Not checked: this exit looks like it is in " + country +
+			", and bx does not carry a language list for that country, so the two cannot be compared."
+		f.Evidence = append(f.Evidence, "exit country: "+country, "browser language: "+primary)
+		return f
+	}
+	f.Evidence = append(f.Evidence, "exit country: "+country, "browser language: "+primary)
+	// **英语一律放过** —— 见上面的说明。
+	if primary == "en" {
+		f.Verdict = OK
+		f.Summary = "Your browser asks for English, which is unremarkable from any exit."
+		return f
+	}
+	for _, want := range expected {
+		if primary == want {
+			f.Verdict = OK
+			f.Summary = "Your browser asks for " + primary + ", which fits an exit in " + country + "."
+			return f
+		}
+	}
+	f.Verdict = Bad
+	f.Summary = "Your browser asks for " + primary + " while your traffic leaves from " + country +
+		". Nothing leaked, but that combination is uncommon, and it separates you from the other " +
+		"people using this exit. Adding the local language to your browser's language list makes it blend in."
+	return f
+}
+
+// primaryLanguage 取第一条语言的**主标签**(zh-CN → zh)。
+//
+// 只看第一条:那是网站真正拿去决定内容的那个,而后面几条是回落。
+func primaryLanguage(languages []string) string {
+	for _, raw := range languages {
+		tag := strings.TrimSpace(raw)
+		if tag == "" {
+			continue
+		}
+		if i := strings.IndexAny(tag, "-_"); i > 0 {
+			tag = tag[:i]
+		}
+		return strings.ToLower(tag)
+	}
+	return ""
+}

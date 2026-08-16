@@ -120,6 +120,7 @@ func TestEverySectionIsDeclaredOnPurpose(t *testing.T) {
 		FindingDNS:            SectionPath,
 		FindingLocalAddresses: SectionIdentity,
 		FindingTimezone:       SectionIdentity,
+		FindingLanguage:       SectionIdentity,
 		FindingRouteEscape:    SectionPath,
 		FindingFingerprint:    SectionIdentity,
 		FindingSurface:        SectionSurface,

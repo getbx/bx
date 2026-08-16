@@ -51,6 +51,7 @@ func Outline() []CheckOutline {
 		// 两行确实在等同一件事落定。
 		{ID: FindingLocalAddresses, Title: "Local network addresses", Section: SectionIdentity, Inputs: []string{ProbeSRFLX}},
 		{ID: FindingTimezone, Title: "Clock vs exit location", Section: SectionIdentity, Inputs: []string{ProbeTrace}},
+		{ID: FindingLanguage, Title: "Language vs exit location", Section: SectionIdentity, Inputs: []string{ProbeTrace}},
 		{ID: FindingFingerprint, Title: "Fingerprint defences", Section: SectionIdentity, Inputs: []string{ProbeSurface}},
 		{ID: FindingSurface, Title: "What sites can read", Section: SectionSurface, Inputs: []string{ProbeSurface}},
 	}
