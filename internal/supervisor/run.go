@@ -584,6 +584,28 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			DNSUpstream:     cfg.DNS.China,
 		}
 	}
+	// 具名出口:每个配置一个 SOCKS5 拨号器。
+	//
+	// **走普通 dialer,不走 DirectDialer** —— 出口在 loopback(config 加载期强制),
+	// 而 macOS 的 DirectDialer 会 IP_BOUND_IF 绑物理网卡,绑后反而连不上 127/8
+	// (与连本机 brook socks5 那处同一个坑,run.go 上面已经踩过一次)。
+	if len(cfg.Egress) > 0 {
+		egresses := make(map[string]dialer.ContextDialer, len(cfg.Egress))
+		for _, e := range cfg.Egress {
+			d, derr := socksProxy(e.Socks5, &net.Dialer{Timeout: 10 * time.Second})
+			if derr != nil {
+				// **接不上就不接,绝不放一个坏的进去**:dialVia 对「没有这个出口」
+				// 的处置是阻断,而那正是我们要的 —— 而一个连不上的拨号器会让
+				// 每条连接都走完超时才失败。
+				log.Printf("具名出口 %q 接线失败(该网段将被阻断,不会回落直连): %v", e.Name, derr)
+				continue
+			}
+			egresses[e.Name] = d
+			log.Printf("具名出口 %q → %s", e.Name, e.Socks5)
+		}
+		d.SetEgresses(egresses)
+	}
+
 	// **直连出口的自愈。** 路径恢复只在**换网**时重装那条 scoped 默认路由
 	// (darwinUnderlayPlan 头一句就按 underlayGeneration 短路),而它会因为别的
 	// 原因消失 —— 真机上就发生过:早上直连 446/失败 0,傍晚 *.qq.com 55/68 失败,

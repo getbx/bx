@@ -28,6 +28,13 @@ type DNS struct {
 type Rule struct {
 	Direct []string `yaml:"direct"`
 	Proxy  []string `yaml:"proxy"`
+	// Via 把这一条交给一个具名出口(egress[].name)。**白名单**:只有写进
+	// CIDR 的网段会走它,没有任何推断(见 internal/config/egress.go)。
+	Via string `yaml:"via"`
+	// CIDR 是走该出口的网段。**只收网段,不收域名** —— 第一版刻意如此:
+	// 域名要先解析,而内网域名多半只有内网 DNS 答得出,那是 dns.split 的活,
+	// 两件事混在一起会让「为什么没生效」变成一个三层的问题。
+	CIDR []string `yaml:"cidr"`
 }
 
 type Lists struct {
@@ -76,21 +83,23 @@ type Config struct {
 	//
 	// 只支持「一个域名 → 一个 IPv4 字面量」。通配符/多值/CNAME 的语义需要单独
 	// 想清楚,现在加进来只会造成误解。
-	Hosts         map[string]string `yaml:"hosts"`
-	Lists         Lists             `yaml:"lists"`
-	UDP           UDP               `yaml:"udp"`
-	Brook         string            `yaml:"brook"`          // 可选调试入口;空=用内嵌传输
-	BrookURL      string            `yaml:"brook_url"`      // brook 传输:仅无内嵌 arch(windows/其他)兜底,下载 brook 的地址;空=按版本派生官方 release
-	BrookSHA256   string            `yaml:"brook_sha256"`   // 下载兜底时的校验(设了 brook_url 才用,强烈建议)
-	DataDir       string            `yaml:"data_dir"`       // 运行期数据目录;空=默认(linux/darwin /var/lib/bx、windows C:\ProgramData\bx)
-	Bypass        []string          `yaml:"bypass"`         // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
-	Global        bool              `yaml:"global"`         // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
-	Mode          string            `yaml:"mode"`           // host(默认,劫持本机出站) | router(只劫持 LAN 转发流量)
-	Router        Router            `yaml:"router"`         // 仅 mode=router 生效
-	HTTPProxy     string            `yaml:"http_proxy"`     // 非空:额外开 HTTP 代理(如 127.0.0.1:7890),给只认 HTTP_PROXY 的应用(tailscaled 控制面)
-	SingboxURL    string            `yaml:"singbox_url"`    // reality 传输:仅无内嵌 arch 兜底用,下载 sing-box 的地址(linux amd64/arm64 已内嵌,无需设)
-	SingboxSHA256 string            `yaml:"singbox_sha256"` // 下载兜底时的校验(设了 singbox_url 才用,强烈建议)
-	SingboxBin    string            `yaml:"singbox_bin"`    // 可选:直接指定本地 sing-box 路径(优先级最高,压过内嵌)
+	Hosts       map[string]string `yaml:"hosts"`
+	Lists       Lists             `yaml:"lists"`
+	UDP         UDP               `yaml:"udp"`
+	Brook       string            `yaml:"brook"`        // 可选调试入口;空=用内嵌传输
+	BrookURL    string            `yaml:"brook_url"`    // brook 传输:仅无内嵌 arch(windows/其他)兜底,下载 brook 的地址;空=按版本派生官方 release
+	BrookSHA256 string            `yaml:"brook_sha256"` // 下载兜底时的校验(设了 brook_url 才用,强烈建议)
+	DataDir     string            `yaml:"data_dir"`     // 运行期数据目录;空=默认(linux/darwin /var/lib/bx、windows C:\ProgramData\bx)
+	Bypass      []string          `yaml:"bypass"`       // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
+	// Egress 是具名出口清单。空 = 没有这个功能在用(绝大多数配置)。
+	Egress        []Egress `yaml:"egress"`
+	Global        bool     `yaml:"global"`         // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
+	Mode          string   `yaml:"mode"`           // host(默认,劫持本机出站) | router(只劫持 LAN 转发流量)
+	Router        Router   `yaml:"router"`         // 仅 mode=router 生效
+	HTTPProxy     string   `yaml:"http_proxy"`     // 非空:额外开 HTTP 代理(如 127.0.0.1:7890),给只认 HTTP_PROXY 的应用(tailscaled 控制面)
+	SingboxURL    string   `yaml:"singbox_url"`    // reality 传输:仅无内嵌 arch 兜底用,下载 sing-box 的地址(linux amd64/arm64 已内嵌,无需设)
+	SingboxSHA256 string   `yaml:"singbox_sha256"` // 下载兜底时的校验(设了 singbox_url 才用,强烈建议)
+	SingboxBin    string   `yaml:"singbox_bin"`    // 可选:直接指定本地 sing-box 路径(优先级最高,压过内嵌)
 }
 
 // Router 是网关模式参数:只代理「源在 lan_cidrs 内」的转发流量。
@@ -200,6 +209,14 @@ func Parse(b []byte) (*Config, error) {
 		} else if port == "" {
 			r.Server = net.JoinHostPort(host, "53") // 形如 "10.0.13.23:" 的空端口也补 :53
 		}
+	}
+	// 具名出口:加载期把话说死。一个悄悄没生效的出口规则,表现与「配错地址」、
+	// 与「内网真的不通」在用户眼里完全一样。
+	if err := ValidateEgresses(c.Egress); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if err := validateEgressRules(c.Rules, c.Egress); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
 	}
 	if c.DataDir == "" {
 		c.DataDir = DefaultDataDir

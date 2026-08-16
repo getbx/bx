@@ -28,8 +28,11 @@ var DefaultPrivateV6CIDRs = []string{
 
 // Router 是纯逻辑分流脑。所有字段由上层从配置构建后注入。
 type Router struct {
-	UserDirect    *DomainSet // 用户强制直连域名
-	UserProxy     *DomainSet // 用户强制代理域名
+	UserDirect *DomainSet // 用户强制直连域名
+	UserProxy  *DomainSet // 用户强制代理域名
+	// UserEgress 把点名的网段交给具名出口。**白名单,且优先级最高** ——
+	// 它压过「私网恒直连」,而那正是这个功能存在的理由(见 ExplainIP)。
+	UserEgress    *EgressSet
 	UserDirectIP  *CIDRSet   // 用户强制直连网段
 	UserProxyIP   *CIDRSet   // 用户强制代理网段(可选)
 	PrivateDirect *CIDRSet   // 内建私网/docker 直连段(DefaultPrivateCIDRs)
@@ -58,4 +61,17 @@ func (r *Router) Decide(m Meta) Decision {
 func (r *Router) DecideIP(ip netip.Addr) Decision {
 	dec, _ := r.ExplainIP(ip)
 	return dec
+}
+
+// EgressFor 回答「这个地址归哪个具名出口」;不归任何出口时返回空串。
+//
+// 导出是因为 dialer 要在 split-DNS 那条短路**之前**问它:两者会撞(split 拿到
+// 内网真实 IP 之后会被判成直连、送去本地网卡),而用户显式点名的白名单是全局
+// 最强的一条声明,必须先说话。
+func (r *Router) EgressFor(ip netip.Addr) string {
+	if r == nil || r.UserEgress == nil {
+		return ""
+	}
+	name, _ := r.UserEgress.Lookup(ip)
+	return name
 }
