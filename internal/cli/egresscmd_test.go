@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestEgressAddTakesPositionalArgsNotRequiredFlags(t *testing.T) {
 // 一个空列表加一句用法,会让人以为这就是访问内网的正路;而绝大多数情况下
 // Tailscale 才是,且 bx 不挡它。
 func TestEmptyEgressListPointsAtMeshFirst(t *testing.T) {
-	out := renderEgressList(nil)
+	out := renderEgressList(nil, nil)
 	if !strings.Contains(out, "mesh") {
 		t.Errorf("没提 mesh 才是首选:\n%s", out)
 	}
@@ -51,7 +52,7 @@ func TestEmptyEgressListPointsAtMeshFirst(t *testing.T) {
 // **配了出口却没给它网段 = 它什么都不做,必须说出来。**
 // 不说的话用户会以为配好了,然后去查一个根本没生效的功能。
 func TestEgressWithoutRoutesSaysItDoesNothing(t *testing.T) {
-	out := renderEgressList([]setup.EgressEntry{{Name: "office", Socks5: "127.0.0.1:1080"}})
+	out := renderEgressList([]setup.EgressEntry{{Name: "office", Socks5: "127.0.0.1:1080"}}, map[string]bool{"office": true})
 	if !strings.Contains(out, "什么都不做") {
 		t.Errorf("没说清它现在不生效:\n%s", out)
 	}
@@ -63,3 +64,46 @@ func TestEgressChangesSayReconnect(t *testing.T) {
 		t.Fatalf("没告诉用户怎么让它生效:%q", egressRestartHint)
 	}
 }
+
+// **「不在听」必须说出来。**
+//
+// 那条 `ssh -D` 断掉是这个功能最常见的故障,而它对所有别的信号都是隐形的:
+// 隧道健康、status 显示 Protected,只有走那几个网段的连接在失败。
+func TestEgressListShowsWhenTheSocksIsDown(t *testing.T) {
+	entries := []setup.EgressEntry{{Name: "office", Socks5: "127.0.0.1:1080", CIDR: []string{"10.84.0.0/16"}}}
+	down := renderEgressList(entries, map[string]bool{"office": false})
+	if !strings.Contains(down, "连不上") {
+		t.Fatalf("没说它连不上:\n%s", down)
+	}
+	if !strings.Contains(down, "SOCKS5") {
+		t.Errorf("没指向真正的原因:\n%s", down)
+	}
+	up := renderEgressList(entries, map[string]bool{"office": true})
+	if strings.Contains(up, "连不上") {
+		t.Fatalf("在听却说连不上:\n%s", up)
+	}
+}
+
+// 探测**逐个都做**,而且判据就是「拨得通」——一个漏测的出口会以「在听」显示,
+// 那是这一栏里最坏的一种错。
+func TestEgressProbeAsksEveryOne(t *testing.T) {
+	var asked []string
+	alive := probeEgresses([]setup.EgressEntry{
+		{Name: "a", Socks5: "127.0.0.1:1"},
+		{Name: "b", Socks5: "127.0.0.1:2"},
+	}, func(addr string) error {
+		asked = append(asked, addr)
+		if addr == "127.0.0.1:2" {
+			return errTestProbe
+		}
+		return nil
+	})
+	if len(asked) != 2 {
+		t.Fatalf("只问了 %d 个:%v", len(asked), asked)
+	}
+	if !alive["a"] || alive["b"] {
+		t.Fatalf("结论不对:%+v", alive)
+	}
+}
+
+var errTestProbe = errors.New("connection refused")

@@ -124,6 +124,23 @@ func Render(r Report) string {
 		if where == "" {
 			where = "配置文件"
 		}
+		// **出口失败要给出口的下一步,不是「改 rules」。**
+		//
+		// 具名出口失败最常见的原因是那条 `ssh -D` 断了 —— 规则完全正确。
+		// 照旧建议改规则,会把人指向删掉一条对的规则,而问题原样留着。
+		// (与 doctor 里 direct_egress 那处同一个形状、同一条纪律。)
+		if egressFailing(failing) {
+			fmt.Fprintf(&b, "  %-6s↑ 那条出口连不上(开着的 SOCKS5 断了?),先恢复它;改配置用 bx egress\n", "")
+			for i, w := range r.Warnings {
+				label := "提醒"
+				if i > 0 {
+					label = ""
+				}
+				fmt.Fprintf(&b, "  %-6s %s\n", label, warningText(w))
+			}
+			fmt.Fprint(&b, recoveryHint(r))
+			return b.String()
+		}
 		// 续行与上面的规则名对齐:用同一个标签宽度构造,不手数空格
 		// (手数的那个版本差了一格,而这种错没有任何测试会红)。
 		fmt.Fprintf(&b, "  %-6s↑ 这条路已经不通;改 %s 的 rules 后 bx down && bx up\n", "", where)
@@ -193,7 +210,25 @@ func ruleActionLabel(source string) string {
 		return "强制直连"
 	case "user_proxy", "user_proxy_ip":
 		return "强制走隧道"
+	case "user_egress":
+		return "交给出口"
 	default:
 		return "命中"
 	}
+}
+
+// egressFailing 判断这批失败里**全是**具名出口。
+//
+// 「全是」而不是「有」:两类混在一起时,改规则那句指引对另一半仍然成立,
+// 而漏掉它会让用户找不到真正该改的那一行。
+func egressFailing(failing []RuleOutcome) bool {
+	if len(failing) == 0 {
+		return false
+	}
+	for _, r := range failing {
+		if r.Source != "user_egress" {
+			return false
+		}
+	}
+	return true
 }
