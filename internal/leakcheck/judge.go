@@ -48,8 +48,8 @@ func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 		judgeDNS(browser, local),
 		judgeRouteEscape(local),
 		judgeLocalAddresses(browser),
-		judgeTimezone(browser),
-		judgeLanguage(browser),
+		judgeTimezone(browser, local),
+		judgeLanguage(browser, local),
 		judgeFingerprint(browser),
 		judgeSurface(browser),
 	}

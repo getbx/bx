@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
 	"strings"
 	"time"
 
@@ -100,6 +101,10 @@ func CollectFactsWithBudget(ctx context.Context, deps FactDeps, budget time.Dura
 		defer cancel()
 	}
 	facts := leakcheck.LocalFacts{}
+	// 系统的时区与语言。**本机就读得到,不需要浏览器** —— 有了它们,
+	// 「时钟/语言 vs 出口国」这两条在非交互的 `bx leak-check` 里也答得出来。
+	facts.SystemTimezone = systemTimezone()
+	facts.SystemLanguages = systemLanguages()
 
 	var services []leakcheck.VPNService
 	if deps.ListInterfaceKinds != nil {
@@ -225,4 +230,38 @@ func lookupInterface(ctx context.Context, deps FactDeps, dest string, ipv6 bool,
 		Name:    iface,
 		Display: leakcheck.DescribeInterface(iface, services, bxTun, bxTunKnown),
 	}, nil
+}
+
+// systemTimezone 读系统时区的 IANA 名字(如 Asia/Shanghai)。
+//
+// **纯 stdlib,不 exec。** time.Local 就是内核/环境告诉进程的那个;
+// 读不出来(某些容器里是 "Local")时返回空串 —— 与 Tristate 同一条纪律:
+// 宁可少答一项,也不编一个。
+func systemTimezone() string {
+	name := time.Local.String()
+	// "Local" / "UTC" 这类不是地区名,拿它去跟国家比毫无意义。
+	if name == "" || name == "Local" || !strings.Contains(name, "/") {
+		return ""
+	}
+	return name
+}
+
+// systemLanguages 读系统语言。
+//
+// **只读环境变量,不 exec `defaults`。** 这个工具的卖点之一是它不需要提权、
+// 也不该在用户机器上乱跑命令;而从终端跑起来时 LANG/LC_ALL 几乎总是有的。
+// 读不出来就返回 nil,判定那边会如实说「没查」。
+func systemLanguages() []string {
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		raw := strings.TrimSpace(os.Getenv(key))
+		if raw == "" || strings.EqualFold(raw, "C") || strings.EqualFold(raw, "POSIX") {
+			continue
+		}
+		// zh_CN.UTF-8 → zh_CN(编码不是语言的一部分)
+		if i := strings.IndexByte(raw, '.'); i > 0 {
+			raw = raw[:i]
+		}
+		return []string{raw}
+	}
+	return nil
 }
