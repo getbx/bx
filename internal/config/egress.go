@@ -128,3 +128,12 @@ func validateEgressRules(rules []Rule, egresses []Egress) error {
 	}
 	return nil
 }
+
+// ValidateEgressCIDR 校验一条交给出口的网段。导出给 CLI 用 —— **判据只有一份**,
+// CLI 自己写一套会与加载期漂开,而漂开的后果是命令收下了一份 bx 起不来的配置。
+func ValidateEgressCIDR(cidr string) error {
+	if _, err := netip.ParsePrefix(strings.TrimSpace(cidr)); err != nil {
+		return fmt.Errorf("cidr %q 不是合法网段(要写成 10.84.0.0/16 这种)", cidr)
+	}
+	return nil
+}
