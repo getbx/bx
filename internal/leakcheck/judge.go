@@ -19,6 +19,9 @@ const (
 	FindingLocalAddresses = "local_addresses"
 	// FindingTimezone 同属身份段:时钟与出口矛盾时,一个字节都没漏也能把人钉住。
 	FindingTimezone = "timezone_vs_exit"
+	// FindingLanguage 同属身份段,与 FindingTimezone 同型:浏览器报的语言与
+	// 出口国不符时,一个字节都没漏也能把你从这个出口的其他人里挑出来。
+	FindingLanguage = "language_vs_exit"
 	// FindingRouteEscape 属于流量路径段,而且是唯一一条能查出**主动攻击**的规则:
 	// 别的检查看流量最终从哪儿出去,它看有没有人动了你的路由表。
 	FindingRouteEscape = "route_escape"
@@ -46,6 +49,7 @@ func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 		judgeRouteEscape(local),
 		judgeLocalAddresses(browser),
 		judgeTimezone(browser),
+		judgeLanguage(browser),
 		judgeFingerprint(browser),
 		judgeSurface(browser),
 	}

@@ -46,8 +46,8 @@ func TestEmptyBrowserReportYieldsNotChecked(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rep := Judge(fixedTime(), BrowserReport{}, tc.local)
 
-			if len(rep.Findings) != 9 {
-				t.Fatalf("结论条数应恒为 9(路径 5 + 身份 3 + 可见面 1),得到 %d", len(rep.Findings))
+			if len(rep.Findings) != 10 {
+				t.Fatalf("结论条数应恒为 10(路径 5 + 身份 4 + 可见面 1),得到 %d", len(rep.Findings))
 			}
 			// **规则写成一句话,而不是按 fixture 分支**:一条结论只有在**本机那一半
 			// 也答不了它**的时候才因为浏览器缺席而变成 not checked。
@@ -217,7 +217,7 @@ func TestFindingIDsAndOrderAreStable(t *testing.T) {
 	// 顺序即分区顺序:流量路径 → 身份可识别性 → 网站看得到什么。页面按它摆行。
 	want := []string{
 		FindingCarrier, FindingWebRTC, FindingIPv6, FindingDNS, FindingRouteEscape,
-		FindingLocalAddresses, FindingTimezone, FindingFingerprint,
+		FindingLocalAddresses, FindingTimezone, FindingLanguage, FindingFingerprint,
 		FindingSurface,
 	}
 	if len(rep.Findings) != len(want) {
