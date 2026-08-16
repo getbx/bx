@@ -126,3 +126,39 @@ func TestStatusOmitsTheUDPNoticeWhenHealthy(t *testing.T) {
 		t.Fatalf("一切正常却打了 UDP 那一行:\n%s", out)
 	}
 }
+
+// **出口失败要给出口的下一步,不是「改 rules」。**
+//
+// 具名出口失败最常见的原因是那条 `ssh -D` 断了 —— 规则完全正确。照旧建议
+// 改规则,会把人指向删掉一条对的规则,而问题原样留着(与 doctor 里
+// direct_egress 那处同一个形状)。
+func TestStatusGivesEgressAdviceForEgressFailures(t *testing.T) {
+	out := Render(Report{ConfigPath: "/etc/bx/config.yaml", Snapshot: Snapshot{
+		Proxy: 20, ProxyFailed: 20,
+		Rules: []RuleOutcome{{Source: "user_egress", Rule: "office", Attempts: 20, Failures: 20}},
+	}})
+	if !strings.Contains(out, "office") {
+		t.Fatalf("没点名那个出口:\n%s", out)
+	}
+	if strings.Contains(out, "改 /etc/bx/config.yaml 的 rules") {
+		t.Errorf("出口连不上却建议改规则 —— 会让用户删掉一条对的规则:\n%s", out)
+	}
+	if !strings.Contains(out, "SOCKS5") {
+		t.Errorf("没指向真正的原因:\n%s", out)
+	}
+}
+
+// **两类混在一起时,改规则那句仍然要给** —— 它对另一半成立,
+// 漏掉会让用户找不到真正该改的那一行。
+func TestStatusKeepsRuleAdviceWhenBothKindsFail(t *testing.T) {
+	out := Render(Report{ConfigPath: "/etc/bx/config.yaml", Snapshot: Snapshot{
+		Direct: 20, DirectFailed: 20, Proxy: 20, ProxyFailed: 20,
+		Rules: []RuleOutcome{
+			{Source: "user_egress", Rule: "office", Attempts: 20, Failures: 20},
+			{Source: "user_direct", Rule: "*.qq.com", Attempts: 20, Failures: 20},
+		},
+	}})
+	if !strings.Contains(out, "改 /etc/bx/config.yaml 的 rules") {
+		t.Errorf("混合失败时丢掉了改规则那句:\n%s", out)
+	}
+}

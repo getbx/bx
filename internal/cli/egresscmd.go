@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/getbx/bx/internal/setup"
 	"github.com/urfave/cli/v2"
@@ -51,9 +53,37 @@ func egressListAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Print(renderEgressList(list))
+	fmt.Print(renderEgressList(list, probeEgresses(list, dialLoopback)))
 	return nil
 }
+
+// probeEgresses 逐个问「这个出口现在在听吗」。
+//
+// **这里主动探测是合理的,而别处不是。** 项目的规矩是「被动观测优于主动探测」,
+// 那条规矩针对的是**定时**、**对外**的探测(泄漏面 + 假阳性)。这里是:用户
+// 敲了 `bx egress ls` 明确要一个「现在」的答案,而且目标是 **loopback** ——
+// 零泄漏、零成本、微秒级。
+//
+// 而它回答的正是最常见的那个故障:那条 `ssh -D` 断了。
+func probeEgresses(list []setup.EgressEntry, dial func(string) error) map[string]bool {
+	alive := make(map[string]bool, len(list))
+	for _, e := range list {
+		alive[e.Name] = dial(e.Socks5) == nil
+	}
+	return alive
+}
+
+func dialLoopback(addr string) error {
+	conn, err := net.DialTimeout("tcp", addr, egressProbeTimeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// egressProbeTimeout —— loopback 上连不上是立刻返回的(RST),给 300ms 只是
+// 防一个卡住的监听器把命令挂住。
+const egressProbeTimeout = 300 * time.Millisecond
 
 func egressAddAction(c *cli.Context) error {
 	name := strings.TrimSpace(c.Args().Get(0))
@@ -104,7 +134,7 @@ const egressRestartHint = "  改动在重连后生效:sudo bx down && sudo bx up
 //
 // **没有出口时说人话,并且说清它不是首选** —— 一个空列表加一句用法,会让人
 // 以为这就是访问内网的正路;而绝大多数情况下 Tailscale 才是。
-func renderEgressList(list []setup.EgressEntry) string {
+func renderEgressList(list []setup.EgressEntry, alive map[string]bool) string {
 	if len(list) == 0 {
 		return "没有配置具名出口。\n\n" +
 			"它是「Tailscale 之类的 mesh 用不了」时的退路 —— 能用 mesh 就先用 mesh\n" +
@@ -116,7 +146,14 @@ func renderEgressList(list []setup.EgressEntry) string {
 	var b strings.Builder
 	b.WriteString("具名出口:\n")
 	for _, e := range list {
-		fmt.Fprintf(&b, "  %-16s %s\n", e.Name, e.Socks5)
+		// **状态只有两态,而且「不在听」要说人话。**
+		// 这是最常见的故障(那条 ssh -D 断了),而它对所有别的信号都是隐形的:
+		// 隧道健康、status 显示 Protected,只有走那几个网段的连接在失败。
+		state := "在听"
+		if !alive[e.Name] {
+			state = "连不上 —— 开着的 SOCKS5 断了?"
+		}
+		fmt.Fprintf(&b, "  %-16s %-22s %s\n", e.Name, e.Socks5, state)
 		if len(e.CIDR) == 0 {
 			// **没有网段 = 这个出口什么都不做。** 说出来,否则用户会以为配好了。
 			b.WriteString("    (还没有交给它任何网段 —— 它现在什么都不做)\n")
