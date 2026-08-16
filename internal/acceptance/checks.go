@@ -166,6 +166,18 @@ func serverListCheck(f Facts) Check {
 const throughputMinUptime = 15 * time.Minute
 
 func throughputCheck(f Facts) Check {
+	// **Core 不在跑就没有答案,不是没做对。**
+	//
+	// 吞吐要 Core 观测、调谐环记录 —— Core 不在的机器上按构造攒不出任何东西,
+	// 而「跑了这么久还是空的」是一句冤枉话。这份报告的全部价值在于它说的每一句
+	// 都作数;冤枉一次,人就再也不信它了。
+	//
+	// 两种形状都会误判(2026-08-15 review 实测):socket 残留而 mtime 很旧,
+	// 算出一个很长的运行时长;以及 socket 根本不在,运行时长问不出来而按规矩
+	// 「不豁免」—— 于是两条路都通向 Fail。
+	if f.ReportErr != nil {
+		return unknown("吞吐历史", "Core 没在跑,这段时间攒不出吞吐")
+	}
 	if f.ThroughputErr != nil {
 		if f.CoreUptime > 0 && f.CoreUptime < throughputMinUptime {
 			return unknown("吞吐历史", fmt.Sprintf("才跑了 %s,还没到攒得出数据的时候", f.CoreUptime.Round(time.Minute)))

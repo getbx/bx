@@ -1575,7 +1575,9 @@ func doctorAction(c *cli.Context) (err error) {
 	}
 	// 数据面的成败。**doctor 一直只答得出「装没装好」** —— 而人在出问题时敲的
 	// 正是 doctor,那时最该看到的是「流量到底成不成、哪条规则在成片失败」。
-	for _, check := range doctorOutcomeChecks(supervisor.FetchStatusReport(statusSocketPath())) {
+	// 直连出不出得去,决定上面那些失败该归因到谁 —— 见 failingRuleHint。
+	// 观测只在 darwin 有原语,别的平台返回 Unknown,而 Unknown 维持原样。
+	for _, check := range doctorOutcomeChecks(doctorTrafficFacts(c.Context)) {
 		doctorLine(check.Status, check.Name, check.Detail)
 		if check.Hint != "" {
 			doctorLine("hint", check.Name, check.Hint)
