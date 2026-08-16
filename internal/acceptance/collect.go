@@ -3,7 +3,6 @@ package acceptance
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"time"
 
@@ -70,6 +69,3 @@ func coreUptime() time.Duration {
 	}
 	return elapsed
 }
-
-// ErrNotSupported 说明这个平台上没有可问的对象(Guardian 只在 darwin 跑)。
-var ErrNotSupported = errors.New("acceptance: 这台机器上没有 Guardian 可问")

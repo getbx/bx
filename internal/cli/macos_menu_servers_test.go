@@ -341,6 +341,26 @@ func TestMacMenuOffersAWayToUninstall(t *testing.T) {
 	if !strings.Contains(body, "#selector(uninstallBx)") {
 		t.Fatal("菜单里没有卸载入口 —— 用户只剩「拖进废纸篓」那条会把自己锁住的路")
 	}
+	// **按花括号深度钉住它在 switch 之外。**
+	//
+	// 只查「存在」抓不到「挪回某个 case 里」—— 挪进去之后出现次数还是 1,而
+	// 卸载入口会在 .off / .missing / .setupNeeded 那几个状态下消失。**想删掉 bx
+	// 的人最可能正处在那几个状态**,那正是这个入口存在的理由。
+	// (退出项被同样的形状咬过一次:TestMacMenuQuitActionPresentInEveryState。)
+	//
+	// 允许深度 1:它包在 `if cliIsInstalled()` 里,那是刻意的(没装就没什么可卸)。
+	depth, outside := 0, 0
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if depth <= 1 && !strings.HasPrefix(trimmed, "//") && strings.Contains(trimmed, "#selector(uninstallBx)") {
+			outside++
+		}
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+	}
+	if outside != 1 {
+		t.Fatalf("卸载入口必须在 switch 之外(最多包一层 cliIsInstalled 判断),"+
+			"实际在那个深度出现 %d 次 —— 挪进某个 case 会让它在最需要它的状态里消失", outside)
+	}
 }
 
 // **卸载走系统里那个 bx,而且不许带 `bx uninstall` 没有的 flag。**

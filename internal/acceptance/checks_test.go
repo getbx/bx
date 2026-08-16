@@ -275,3 +275,37 @@ func TestUnknownUptimeDoesNotExcuseFailures(t *testing.T) {
 	}
 	t.Fatal("没有吞吐历史这一条")
 }
+
+// **Core 没在跑的机器不许被判失败。**
+//
+// 吞吐要 Core 观测、调谐环记录 —— Core 不在的机器上按构造攒不出任何东西,
+// 而「跑了这么久还是空的」是一句冤枉话。这份报告的全部价值在于它说的每一句
+// 都作数;冤枉一次,人就再也不信它了。
+//
+// 2026-08-15 review 实测两种形状都会误判:socket 残留而 mtime 很旧(算出一个
+// 很长的运行时长),以及 socket 根本不在(运行时长问不出来 → 按规矩不豁免)。
+func TestCoreDownIsNotBlamedForAnEmptyThroughputHistory(t *testing.T) {
+	for _, uptime := range []time.Duration{24 * time.Hour, 0} {
+		checks := Run(Facts{
+			Status:     guardian.Status{Capabilities: RequiredCapabilities},
+			ReportErr:  errors.New("dial core.sock: no such file"),
+			CoreUptime: uptime,
+		})
+		var found bool
+		for _, c := range checks {
+			if c.Name != "吞吐历史" {
+				continue
+			}
+			found = true
+			if c.Verdict == Fail {
+				t.Errorf("uptime=%v:Core 没在跑却判 Fail(%q)—— 一句冤枉话", uptime, c.Detail)
+			}
+			if !strings.Contains(c.Why, "Core 没在跑") {
+				t.Errorf("uptime=%v:没说清是 Core 不在:%q", uptime, c.Why)
+			}
+		}
+		if !found {
+			t.Fatal("没有吞吐历史这一条")
+		}
+	}
+}

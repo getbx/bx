@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/stats"
 )
 
@@ -14,7 +15,7 @@ import (
 // 少了这一行,一台 Core 没在跑的机器与一台完全健康的机器,在 doctor 的这一段里
 // 逐字节相同 —— 与本仓库 Tristate 同一条纪律。
 func TestDoctorSaysWhenItCouldNotAsk(t *testing.T) {
-	checks := doctorOutcomeChecks(stats.Report{}, errors.New("dial unix: connection refused"))
+	checks := doctorOutcomeChecks(trafficFacts{Err: errors.New("dial unix: connection refused")})
 	if len(checks) != 1 {
 		t.Fatalf("问不出来时给了 %d 行:%+v", len(checks), checks)
 	}
@@ -35,9 +36,9 @@ func TestDoctorSaysWhenItCouldNotAsk(t *testing.T) {
 // 墙纸;doctor 是人主动问「哪里不对」时跑的,那时「直连 45 条、0 失败」是有价值的
 // 答案 —— 排查最耗时的一步正是排除。
 func TestDoctorReportsHealthyTrafficWithNumbers(t *testing.T) {
-	checks := doctorOutcomeChecks(stats.Report{Snapshot: stats.Snapshot{
+	checks := doctorOutcomeChecks(trafficFacts{Report: stats.Report{Snapshot: stats.Snapshot{
 		Direct: 45, Proxy: 300,
-	}}, nil)
+	}}})
 	if len(checks) != 1 || checks[0].Status != "ok" {
 		t.Fatalf("健康机器上给了 %+v", checks)
 	}
@@ -53,7 +54,7 @@ func TestDoctorReportsHealthyTrafficWithNumbers(t *testing.T) {
 // 这就是 2026-08-13 那个 bug 被抓住的形状:`*.qq.com 1291 条,失败 1289`。
 // 它当时只出现在 status 里,而人在出问题时敲的是 doctor。
 func TestDoctorNamesFailingUserRules(t *testing.T) {
-	checks := doctorOutcomeChecks(stats.Report{
+	checks := doctorOutcomeChecks(trafficFacts{Report: stats.Report{
 		ConfigPath: "/etc/bx/config.yaml",
 		Snapshot: stats.Snapshot{
 			Direct: 1291, DirectFailed: 1289,
@@ -61,7 +62,7 @@ func TestDoctorNamesFailingUserRules(t *testing.T) {
 				{Source: "user_direct", Rule: "*.qq.com", Attempts: 1291, Failures: 1289},
 			},
 		},
-	}, nil)
+	}})
 	if len(checks) < 2 {
 		t.Fatalf("没点名那条规则:%+v", checks)
 	}
@@ -87,11 +88,11 @@ func TestDoctorNamesFailingUserRules(t *testing.T) {
 // 关机、域名过期、网络抖动),而那既不是 bx 的问题也不是用户能处置的。更糟的是
 // 会出现「总状态 warn 而下面一条都没有」—— 用户看着一个警告,找不到它在说什么。
 func TestDoctorDoesNotWarnOnBackgroundFailures(t *testing.T) {
-	checks := doctorOutcomeChecks(stats.Report{Snapshot: stats.Snapshot{
+	checks := doctorOutcomeChecks(trafficFacts{Report: stats.Report{Snapshot: stats.Snapshot{
 		Direct: 5000, DirectFailed: 40, Proxy: 9000, ProxyFailed: 60,
 		// 没有任何一条规则过点名门槛。
 		Rules: []stats.RuleOutcome{{Source: "china_domain", Attempts: 5000, Failures: 40}},
-	}}, nil)
+	}}})
 	if len(checks) != 1 {
 		t.Fatalf("零星失败却多报了几行:%+v", checks)
 	}
@@ -108,13 +109,13 @@ func TestDoctorDoesNotWarnOnBackgroundFailures(t *testing.T) {
 // UDP 那句话要到得了 doctor —— 它是这条路上唯一带明确动作的信号
 // (去看那台 UDP 服务器)。
 func TestDoctorSurfacesTheUDPNotice(t *testing.T) {
-	checks := doctorOutcomeChecks(stats.Report{Snapshot: stats.Snapshot{
+	checks := doctorOutcomeChecks(trafficFacts{Report: stats.Report{Snapshot: stats.Snapshot{
 		Proxy: 100,
 		Rules: []stats.RuleOutcome{
 			{Source: "udp_proxy", Attempts: 10},
 			{Source: "udp_proxy_fallback", Attempts: 90},
 		},
-	}}, nil)
+	}}})
 	var found bool
 	for _, c := range checks {
 		if c.Name == "udp" && strings.Contains(c.Detail, "加速档") {
@@ -160,8 +161,75 @@ func mustReadRepoFile(t *testing.T, name string) string {
 // 没在跑的机器会被报成一切正常。这条守卫钉的就是那个形式。
 func TestDoctorTrafficWiringCannotDropTheError(t *testing.T) {
 	source := mustReadRepoFile(t, "cli.go")
-	const wired = "doctorOutcomeChecks(supervisor.FetchStatusReport(statusSocketPath()))"
+	const wired = "doctorOutcomeChecks(doctorTrafficFacts(c.Context))"
 	if !strings.Contains(source, wired) {
 		t.Fatalf("doctor 的流量接线不再是那个单表达式 —— 「问不出来」会被压成一个具体答案")
+	}
+}
+
+// **直连出不去时,不许把锅甩给用户的规则。**
+//
+// 这是 2026-08-15 在项目所有者机器上当场看到的:`*.qq.com 51/64 失败`、
+// `*.icloud.com 31/244`、`*.push.apple.com 159/317` —— 而 `route -n get
+// -ifscope en0 8.8.8.8` 是 `not in table`。规则完全正确,坏的是 bx 自己的
+// 直连器(macOS 上那条 scoped 默认路由不见了)。
+//
+// 照旧建议「改 rules」的后果是:用户去删掉一条**正确**的规则,问题原样留着 ——
+// 一个在最需要它的时候把人指向错误方向的诊断,比不给建议更糟。
+func TestDoctorDoesNotBlameRulesWhenDirectEgressIsDown(t *testing.T) {
+	facts := trafficFacts{
+		Report: stats.Report{
+			ConfigPath: "/etc/bx/config.yaml",
+			Snapshot: stats.Snapshot{
+				Direct: 64, DirectFailed: 51,
+				Rules: []stats.RuleOutcome{{Source: "user_direct", Rule: "*.qq.com", Attempts: 64, Failures: 51}},
+			},
+		},
+		DirectEgress: observe.False,
+	}
+	var named, egress *checkReport
+	for i, c := range doctorOutcomeChecks(facts) {
+		switch c.Name {
+		case "failing rule":
+			named = &doctorOutcomeChecks(facts)[i]
+		case "direct egress":
+			egress = &doctorOutcomeChecks(facts)[i]
+		}
+	}
+	if named == nil {
+		t.Fatal("没点名那条规则")
+	}
+	if strings.Contains(named.Hint, "改 /etc/bx/config.yaml") {
+		t.Errorf("直连出不去却建议改规则 —— 用户会删掉一条正确的规则:%q", named.Hint)
+	}
+	if !strings.Contains(named.Hint, "不是你的规则") {
+		t.Errorf("没说清不是规则的问题:%q", named.Hint)
+	}
+	if egress == nil {
+		t.Fatal("没有单独说一句直连出不去 —— 它是上面那些失败的共同原因")
+	}
+}
+
+// **只有明确观测到 False 才改口。** 把「没问出来」当成「就是它」,是反过来的
+// 同一个错:一台规则真的写错了的机器上,用户会被告知「不是你的规则」。
+func TestDoctorKeepsTheRuleHintWhenEgressIsUnknown(t *testing.T) {
+	for _, egress := range []observe.Tristate{observe.Unknown, observe.True} {
+		facts := trafficFacts{
+			Report: stats.Report{
+				ConfigPath: "/etc/bx/config.yaml",
+				Snapshot: stats.Snapshot{
+					Rules: []stats.RuleOutcome{{Source: "user_direct", Rule: "*.bad.example", Attempts: 20, Failures: 20}},
+				},
+			},
+			DirectEgress: egress,
+		}
+		for _, c := range doctorOutcomeChecks(facts) {
+			if c.Name == "failing rule" && !strings.Contains(c.Hint, "/etc/bx/config.yaml") {
+				t.Errorf("egress=%v 时不该改口:%q", egress, c.Hint)
+			}
+			if c.Name == "direct egress" {
+				t.Errorf("egress=%v 却报了直连出不去", egress)
+			}
+		}
 	}
 }

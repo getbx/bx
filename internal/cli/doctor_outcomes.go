@@ -1,9 +1,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"runtime"
+	"time"
 
+	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/stats"
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 // `bx doctor` 一直只答得出「装没装好」——**对「流量到底成不成」一个字都不说**。
@@ -29,7 +34,24 @@ import (
 // (`core.answering ?? false` 把三态压回二值)。收 error 之后,生产调用点就是
 // `doctorOutcomeChecks(supervisor.FetchStatusReport(path))` 那一个表达式 ——
 // Go 的多返回值直接当实参列表,想撒谎得先把它拆成两句,而那是看得见的。
-func doctorOutcomeChecks(report stats.Report, err error) []checkReport {
+// trafficFacts 是这一段要的全部事实。
+//
+// **打包成一个结构体,是为了让接线保持「一个表达式」那个性质。**
+// 上一版是 doctorOutcomeChecks(supervisor.FetchStatusReport(path)) —— Go 的
+// 多返回值直接当实参列表,于是「问不出来」在结构上传不丢。加第三个参数会把它
+// 拆成两句,而拆开之后就能写 `…, nil, …` 把错误悄悄丢掉(守卫当场抓到了这次
+// 改动,守卫是对的)。改成 doctorOutcomeChecks(doctorTrafficFacts(ctx)),
+// 那个性质就回来了。
+type trafficFacts struct {
+	Report stats.Report
+	Err    error
+	// DirectEgress 是「bx 自己的直连出不出得去」。三态,零值 Unknown ——
+	// 问不出来时不许倒向任何一边(见 failingRuleHint 为什么这很要紧)。
+	DirectEgress observe.Tristate
+}
+
+func doctorOutcomeChecks(f trafficFacts) []checkReport {
+	report, err, directEgress := f.Report, f.Err, f.DirectEgress
 	if err != nil {
 		// **「问不出来」不是「一切正常」。** 没有这一行的话,一台 Core 没在跑的
 		// 机器与一台完全健康的机器,在 doctor 的这一段里逐字节相同。
@@ -52,7 +74,16 @@ func doctorOutcomeChecks(report stats.Report, err error) []checkReport {
 			Name:   "failing rule",
 			Status: "fail",
 			Detail: fmt.Sprintf("%s:%d 条里失败 %d(%.0f%%)", rule.Rule, rule.Attempts, rule.Failures, pct),
-			Hint:   failingRuleHint(report.ConfigPath),
+			Hint:   failingRuleHint(report.ConfigPath, directEgress),
+		})
+	}
+	// **直连出不去时,单独说一句。** 它是上面那些失败的**共同原因**,
+	// 而不是又一条并列的坏消息。
+	if directEgress == observe.False {
+		checks = append(checks, checkReport{
+			Name: "direct egress", Status: "fail",
+			Detail: "bx 自己的直连出不去(scoped 默认路由不见了)",
+			Hint:   directEgressHint,
 		})
 	}
 	if notice := report.UDPNotice(); notice != "" {
@@ -77,10 +108,53 @@ func outcomeStatus(report stats.Report) string {
 	return "ok"
 }
 
-func failingRuleHint(configPath string) string {
+// failingRuleHint 给出下一步 —— **而下一步取决于坏的是谁**。
+//
+// 直连出不去时,失败的**不是这条规则**:bx 自己的直连器到不了公网(macOS 上
+// 那条 scoped 默认路由不见了),于是每一条 direct 规则都在失败。此时若照旧建议
+// 「改 rules」,用户会去删掉一条**完全正确**的规则,而问题原样留着 ——
+// 一个在最需要它的时候把人指向错误方向的诊断,比不给建议更糟。
+//
+// **只有明确观测到 False 才改口。** Unknown(没观测到 / 非 darwin)时维持原样:
+// 把「没问出来」当成「就是它」,是反过来的同一个错。
+func failingRuleHint(configPath string, directEgress observe.Tristate) string {
+	if directEgress == observe.False {
+		return directEgressHint
+	}
 	where := configPath
 	if where == "" {
 		where = "配置文件"
 	}
 	return fmt.Sprintf("这条路已经不通;改 %s 的 rules 后 sudo bx down && sudo bx up", where)
 }
+
+// directEgressHint 是那条真正的下一步。**不提改规则** —— 规则是好的。
+const directEgressHint = "不是你的规则:bx 自己的直连出不去,每一条 direct rule 都会失败。" +
+	"重装路由:sudo bx down && sudo bx up"
+
+// doctorTrafficFacts 一次问齐:流量成败,以及直连出不出得去。
+func doctorTrafficFacts(ctx context.Context) trafficFacts {
+	report, err := supervisor.FetchStatusReport(statusSocketPath())
+	return trafficFacts{Report: report, Err: err, DirectEgress: doctorDirectEgress(ctx)}
+}
+
+// doctorDirectEgress 问一次「bx 自己的直连出不出得去」。
+//
+// **观测失败一律 Unknown**,绝不倒向任何一边:判成 False 会让一台正常机器上
+// 正确的「改规则」建议被换掉;判成 True 会让这次诊断继续把系统故障说成用户
+// 的配置问题。
+func doctorDirectEgress(ctx context.Context) observe.Tristate {
+	if observerForDoctor == nil {
+		return observe.Unknown
+	}
+	ctx, cancel := context.WithTimeout(ctx, doctorObserveTimeout)
+	defer cancel()
+	return observerForDoctor(ctx).DirectEgressOK
+}
+
+// doctorObserveTimeout 与 bx status 那边同值同理由:宁可少答一项,
+// 也不能让一次观测把 doctor 挂住 —— 它是出问题时最先敲的命令之一。
+const doctorObserveTimeout = 5 * time.Second
+
+// observerForDoctor 可为 nil = 这个平台没有观测原语(见 observerForPlatform)。
+var observerForDoctor = observerForPlatform(runtime.GOOS)
