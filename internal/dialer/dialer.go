@@ -468,6 +468,15 @@ type fakeIPRange interface {
 // 在 `bx status` 里连 UDP 的成败一起认领 —— 点名到的是他改得了的那一行,而
 // 「同一条规则的 TCP 与 UDP 分列两处」只会让人以为有两个问题。
 func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Decision, why route.Reason, tr, udpTransport *Transport) (net.Conn, error) {
+	// **具名出口:UDP 与 TCP 必须走同一条路。**
+	//
+	// 少了这一段,UDP 会落到下面的「走隧道」分支 —— 同一条规则在 TCP 上交给出口、
+	// 在 UDP 上交给主隧道,而主隧道那头去连 10.84.3.239 要么失败、要么撞上**它那侧
+	// 网络里同 IP 的另一台机器**。那正是这个功能明确设计要防的「连错机器」,
+	// 从 UDP 这道门进来了(2026-08-16 自审抓到)。
+	if dec == route.Via {
+		return d.dialVia(ctx, m, why, strconv.Itoa(int(m.Port)))
+	}
 	if dec == route.Direct {
 		// **直连不受 kill-switch 约束**,与 TCP 的直连同理:kill-switch 防的是
 		// 隧道挂掉时**回落**直连泄漏真实 IP,而这里是用户点名要直连。

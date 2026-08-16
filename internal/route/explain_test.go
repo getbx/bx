@@ -55,6 +55,10 @@ func TestDecideAgreesWithExplainOnEveryInput(t *testing.T) {
 		ChinaDomain:   NewDomainSet([]string{"cn.com"}),
 		ChinaCIDR:     mustCIDR([]string{"1.2.3.0/24"}),
 		PrivateDirect: mustCIDR(DefaultPrivateCIDRs),
+		// **具名出口必须进这份 fixture。** 少了它,Via 那条路在这条守卫里一次都
+		// 不会被走到 —— 而这条守卫存在的全部意义就是「Decide 与 Explain 不许分叉」,
+		// 一个不被覆盖的分支正是最容易分叉的地方(2026-08-16 自审补)。
+		UserEgress: mustEgressFixture(t, [2]string{"office", "10.84.0.0/16"}),
 	}
 	for _, global := range []bool{false, true} {
 		r.GlobalProxy = global
@@ -107,6 +111,15 @@ func mustCIDR(cidrs []string) *CIDRSet {
 	set, err := NewCIDRSet(cidrs)
 	if err != nil {
 		panic(err)
+	}
+	return set
+}
+
+func mustEgressFixture(t *testing.T, pairs ...[2]string) *EgressSet {
+	t.Helper()
+	set, err := NewEgressSet(pairs)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return set
 }
