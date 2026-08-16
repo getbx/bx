@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -583,6 +584,17 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			DNSUpstream:     cfg.DNS.China,
 		}
 	}
+	// **直连出口的自愈。** 路径恢复只在**换网**时重装那条 scoped 默认路由
+	// (darwinUnderlayPlan 头一句就按 underlayGeneration 短路),而它会因为别的
+	// 原因消失 —— 真机上就发生过:早上直连 446/失败 0,傍晚 *.qq.com 55/68 失败,
+	// 而 `route -n get -ifscope en0 8.8.8.8` 是 not in table。
+	// 这个循环去问内核,不信记账。只在 Hijack 真的装了路由时才跑。
+	if !opts.NoHijack && runtime.GOOS == "darwin" {
+		egressTicker := time.NewTicker(egressCheckInterval)
+		defer egressTicker.Stop()
+		go watchDirectEgress(ctx, DirectEgressReachable, liveEgressRepair, egressTicker.C)
+	}
+
 	var recoverer pathRecoverer
 	if provider, ok := plat.(interface{ Underlay() underlayManager }); ok && !opts.NoHijack {
 		underlay := provider.Underlay()
