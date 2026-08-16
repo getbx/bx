@@ -46,6 +46,21 @@ func BuildRouter(cfg *config.Config, chinaDomain, chinaCIDR []string) (*route.Ro
 	if err != nil {
 		return nil, err
 	}
+	// 具名出口的白名单。**只收 rules 里带 via 的那几条**,没有任何推断。
+	var egressPairs [][2]string
+	for _, rule := range cfg.Rules {
+		via := strings.TrimSpace(rule.Via)
+		if via == "" {
+			continue
+		}
+		for _, c := range rule.CIDR {
+			egressPairs = append(egressPairs, [2]string{via, strings.TrimSpace(c)})
+		}
+	}
+	egressSet, err := route.NewEgressSet(egressPairs)
+	if err != nil {
+		return nil, err
+	}
 
 	return &route.Router{
 		UserDirect:    route.NewDomainSet(directDoms),
@@ -53,6 +68,7 @@ func BuildRouter(cfg *config.Config, chinaDomain, chinaCIDR []string) (*route.Ro
 		UserDirectIP:  directIP,
 		UserProxyIP:   proxyIP,
 		PrivateDirect: privateIP,
+		UserEgress:    egressSet,
 		ChinaDomain:   route.NewDomainSet(chinaDomain),
 		ChinaCIDR:     cnIP,
 	}, nil

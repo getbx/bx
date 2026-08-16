@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/route"
+	"github.com/getbx/bx/internal/splitdns"
 )
 
 // recordingCounter 记下数据面报上来的每一次决策与结果。
@@ -506,3 +507,146 @@ func TestEveryUDPConnectionGetsACounterfactualBucket(t *testing.T) {
 type fakeRange struct{ prefix netip.Prefix }
 
 func (f fakeRange) Contains(ip netip.Addr) bool { return f.prefix.Contains(ip) }
+
+func viaRouter(t *testing.T) *route.Router {
+	t.Helper()
+	private, err := route.NewCIDRSet(route.DefaultPrivateCIDRs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := route.NewEgressSet([][2]string{{"office", "10.84.0.0/16"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &route.Router{PrivateDirect: private, UserEgress: set}
+}
+
+// **这是整个功能的落点**:点名的网段交给具名出口,而不是被「私网恒直连」
+// 送去本地网卡(那台机器不在这边的局域网)。
+func TestViaSendsWhitelistedCIDRToTheNamedEgress(t *testing.T) {
+	counter := &recordingCounter{}
+	var dialed string
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter}
+	d.SetRouter(viaRouter(t))
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+	d.SetEgresses(map[string]ContextDialer{"office": recordingDialer{addr: &dialed}})
+
+	if _, err := d.Dial(context.Background(), route.Meta{
+		IP: netip.MustParseAddr("10.84.3.239"), Port: 80,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if dialed != "10.84.3.239:80" {
+		t.Fatalf("出口收到的是 %q", dialed)
+	}
+	if !containsAttempt(counter.attempts, "user_egress|office") {
+		t.Fatalf("没归因到那条出口规则:%v", counter.attempts)
+	}
+	if counter.direct != 0 {
+		t.Fatal("同时还走了一次直连")
+	}
+}
+
+// **出口不通时阻断,绝不回落直连。**
+//
+// 理由不是防泄漏,是**防连错机器**:10.84.3.239 回落直连,在别人家 Wi-Fi 上会
+// 连到那个网络里同 IP 的另一台机器 —— 比连不上糟得多,因为你不会发现。
+func TestViaNeverFallsBackToDirect(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		egresses map[string]ContextDialer
+	}{
+		{"出口没接线", nil},
+		{"出口名字对不上", map[string]ContextDialer{"other": okDialer{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			counter := &recordingCounter{}
+			d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter}
+			d.SetRouter(viaRouter(t))
+			d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+			if tc.egresses != nil {
+				d.SetEgresses(tc.egresses)
+			}
+			_, err := d.Dial(context.Background(), route.Meta{
+				IP: netip.MustParseAddr("10.84.3.239"), Port: 80,
+			})
+			if !errors.Is(err, ErrBlocked) {
+				t.Fatalf("err = %v, want ErrBlocked", err)
+			}
+			if counter.direct != 0 {
+				t.Fatal("回落成了直连 —— 会连到别人网络里同 IP 的另一台机器")
+			}
+		})
+	}
+}
+
+// **不受 kill-switch 约束。** 出口在 loopback,与主隧道无关;主隧道挂了不该
+// 连累内网访问。
+func TestViaIsUnaffectedByTheKillswitch(t *testing.T) {
+	var dialed string
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Killswitch: true}
+	d.SetRouter(viaRouter(t))
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return false }})
+	d.SetEgresses(map[string]ContextDialer{"office": recordingDialer{addr: &dialed}})
+
+	if _, err := d.Dial(context.Background(), route.Meta{
+		IP: netip.MustParseAddr("10.84.3.239"), Port: 80,
+	}); err != nil {
+		t.Fatalf("主隧道挂了却连累了内网访问:%v", err)
+	}
+	if dialed != "10.84.3.239:80" {
+		t.Fatalf("出口收到的是 %q", dialed)
+	}
+}
+
+// **具名出口压过 split-DNS 的短路。**
+//
+// 两者会撞:dns.split 拿到内网真实 IP 后把它登记进 SplitDirect,而那条短路会把
+// 连接判成**直连** —— 送去本地网卡,而那台机器不在这边的局域网。用户显式点名的
+// 白名单是全局最强的一条声明,必须先说话。
+func TestViaBeatsTheSplitDNSShortcut(t *testing.T) {
+	split := splitdns.NewSet()
+	split.Add(netip.MustParseAddr("10.84.3.239"))
+	var dialed string
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, SplitDirect: split}
+	d.SetRouter(viaRouter(t))
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+	d.SetEgresses(map[string]ContextDialer{"office": recordingDialer{addr: &dialed}})
+
+	if _, err := d.Dial(context.Background(), route.Meta{
+		IP: netip.MustParseAddr("10.84.3.239"), Port: 80,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if dialed != "10.84.3.239:80" {
+		t.Fatalf("split-DNS 的短路抢走了它(出口收到 %q)", dialed)
+	}
+}
+
+// 白名单之外一个字都不受影响 —— 绝大多数配置根本不用这个功能。
+func TestViaLeavesEverythingElseAlone(t *testing.T) {
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter}
+	d.SetRouter(viaRouter(t))
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+	d.SetEgresses(map[string]ContextDialer{"office": failingDialer{err: errors.New("不该被用到")}})
+
+	for _, addr := range []string{"192.168.1.20", "10.0.0.5", "172.17.0.2"} {
+		if _, err := d.Dial(context.Background(), route.Meta{
+			IP: netip.MustParseAddr(addr), Port: 80,
+		}); err != nil {
+			t.Fatalf("%s 被卷进了出口:%v", addr, err)
+		}
+	}
+	if counter.direct != 3 {
+		t.Fatalf("direct = %d, want 3 —— 白名单之外的私网地址必须照旧直连", counter.direct)
+	}
+}
+
+type recordingDialer struct{ addr *string }
+
+func (r recordingDialer) DialContext(_ context.Context, _, address string) (net.Conn, error) {
+	*r.addr = address
+	c, _ := net.Pipe()
+	return c, nil
+}

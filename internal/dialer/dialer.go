@@ -68,7 +68,9 @@ type Dialer struct {
 	Direct     ContextDialer // 直连
 	Killswitch bool
 	Stats      DecisionCounter // 可空:决策计数
-	UDPMode    string          // proxy(默认,走隧道), direct-realtime(直连真实 IP), block
+	// egresses 是具名出口的拨号器。**原子整份替换**,见 SetEgresses。
+	egresses atomic.Pointer[map[string]ContextDialer]
+	UDPMode  string // proxy(默认,走隧道), direct-realtime(直连真实 IP), block
 	// SplitDirect 可空:split-DNS 解析出的内网真实 IP 集,命中即强制直连(绕 Router)。
 	SplitDirect *splitdns.Set
 
@@ -276,10 +278,19 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 
 	var dec route.Decision
 	var why route.Reason
-	if m.Domain == "" && d.SplitDirect != nil && d.SplitDirect.Contains(m.IP) {
+	switch {
+	// **具名出口排在最前,连 split-DNS 的短路也压过。**
+	//
+	// 两者会撞:用 dns.split 拿到内网真实 IP 之后,那个 IP 被登记进 SplitDirect,
+	// 而这里的短路会把它判成**直连** —— 送去本地网卡,而那台机器不在这边的局域网。
+	// 用户显式点名的白名单是全局最强的一条声明,它必须先说话。
+	case m.IP.IsValid() && rt.EgressFor(m.IP) != "":
+		dec = route.Via
+		why = route.Reason{Source: route.SourceUserEgress, Rule: rt.EgressFor(m.IP)}
+	case m.Domain == "" && d.SplitDirect != nil && d.SplitDirect.Contains(m.IP):
 		dec = route.Direct // split 解析出的内网真实 IP:强制直连,跳过 Router
 		why = route.Reason{Source: route.SourceSplitDNS}
-	} else {
+	default:
 		dec, why = rt.Explain(m)
 	}
 
@@ -298,6 +309,9 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 
 	port := strconv.Itoa(int(m.Port))
 	switch dec {
+	case route.Via:
+		return d.dialVia(ctx, m, why, port)
+
 	case route.Direct:
 		if d.Stats != nil {
 			d.Stats.Direct()
@@ -540,6 +554,72 @@ func (d *Dialer) recordUDPFailure(dec route.Decision, source, rule string) {
 		return
 	}
 	d.Stats.RuleFailure(source, rule)
+}
+
+// dialVia 把这条连接交给一个具名出口。
+//
+// ## 三条与主隧道不同的语义,每一条都是刻意的
+//
+// **① 不受 kill-switch 约束。** 出口在 loopback(config 加载期强制),与主隧道
+// 无关 —— 主隧道挂了不该连累内网访问,它俩本来就是两回事。
+//
+// **② 出口不通时阻断,绝不回落直连。** 这里的理由不是防泄漏,是**防连错机器**:
+// 10.84.3.239 回落直连,在别人家 Wi-Fi 上会连到那个网络里同 IP 的另一台机器。
+// 那比连不上糟得多 —— 连不上你知道要修,连错了你不知道。
+//
+// **③ 域名原样交给出口,不在本地解析。** 内网域名多半只有内网 DNS 答得出;
+// 本地解析出来的地址是错的(或者根本解析不出)。SOCKS5 支持按域名连接,让出口
+// 那一侧去解析才是对的。
+func (d *Dialer) dialVia(ctx context.Context, m route.Meta, why route.Reason, port string) (net.Conn, error) {
+	eg := d.egressFor(why.Rule)
+	if eg == nil {
+		// 出口没接上(配置里有、运行时没有)。**阻断而不是回落** —— 见 ②。
+		if d.Stats != nil {
+			d.Stats.Blocked()
+			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
+			d.Stats.RuleFailure(why.Source.String(), why.Rule)
+		}
+		debugf("dial via blocked: egress=%q 未接线", why.Rule)
+		return nil, ErrBlocked
+	}
+	if d.Stats != nil {
+		d.Stats.Proxy()
+		d.Stats.RuleAttempt(why.Source.String(), why.Rule)
+	}
+	host := m.Domain
+	if host == "" {
+		host = m.IP.String()
+	}
+	target := net.JoinHostPort(host, port)
+	debugf("dial via: egress=%q target=%s udp=%v", why.Rule, target, m.UDP)
+	conn, err := eg.DialContext(ctx, network(m.UDP), target)
+	if err != nil {
+		debugf("dial via failed: egress=%q target=%s err=%v", why.Rule, target, err)
+		if d.Stats != nil {
+			d.Stats.ProxyFailed()
+			d.Stats.RuleFailure(why.Source.String(), why.Rule)
+		}
+	}
+	return conn, err
+}
+
+// egressFor 取具名出口的拨号器;没有就返回 nil(调用方阻断,不回落)。
+func (d *Dialer) egressFor(name string) ContextDialer {
+	set := d.egresses.Load()
+	if set == nil {
+		return nil
+	}
+	return (*set)[name]
+}
+
+// SetEgresses 装上具名出口。**原子换整份**,与 SetRouter/SetTransport 同一手法:
+// 热重载时半份新半份旧,会让一条连接按新规则判定、却交给已经不存在的旧出口。
+func (d *Dialer) SetEgresses(byName map[string]ContextDialer) {
+	copied := make(map[string]ContextDialer, len(byName))
+	for k, v := range byName {
+		copied[k] = v
+	}
+	d.egresses.Store(&copied)
 }
 
 // recordFailure 记一次拨号失败:总数一份,按规则归因一份。

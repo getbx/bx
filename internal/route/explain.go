@@ -23,6 +23,8 @@ const (
 	// SourceSplitDNS 是 split-DNS 解析出的内网真实 IP —— 它绕过 Router,
 	// 由 dialer 直接判直连,故 Router 自己永远不会产出这个值。
 	SourceSplitDNS
+	// SourceUserEgress 是用户点名交给具名出口的网段(白名单)。
+	SourceUserEgress
 )
 
 func (s Source) String() string {
@@ -43,6 +45,8 @@ func (s Source) String() string {
 		return "china_cidr"
 	case SourceSplitDNS:
 		return "split_dns"
+	case SourceUserEgress:
+		return "user_egress"
 	default:
 		return "default"
 	}
@@ -54,7 +58,7 @@ func (s Source) String() string {
 // 只有用户改得了 —— 而那正是需要点名到具体哪一行的场合。
 func (s Source) IsUserRule() bool {
 	switch s {
-	case SourceUserProxy, SourceUserDirect, SourceUserProxyIP, SourceUserDirectIP:
+	case SourceUserProxy, SourceUserDirect, SourceUserProxyIP, SourceUserDirectIP, SourceUserEgress:
 		return true
 	}
 	return false
@@ -98,6 +102,17 @@ func (r *Router) Explain(m Meta) (Decision, Reason) {
 
 // ExplainIP 与 DecideIP 判定完全相同,DecideIP 是它的薄壳。
 func (r *Router) ExplainIP(ip netip.Addr) (Decision, Reason) {
+	// **具名出口排在最前,压过「私网恒直连」。**
+	//
+	// 这是刻意的,也是这个功能存在的全部理由:用户要访问的 10.84.3.239 落在
+	// 10/8 里,而那条不变量会把它送去本地网卡 —— 那台机器不在这边的局域网。
+	// 只有用户**逐条写出来**的网段才走到这里(白名单),docker / LAN / SSH
+	// 一个都不受影响。
+	if r.UserEgress != nil {
+		if name, ok := r.UserEgress.Lookup(ip); ok {
+			return Via, Reason{Source: SourceUserEgress, Rule: name}
+		}
+	}
 	if r.UserProxyIP != nil && r.UserProxyIP.Contains(ip) {
 		return Proxy, Reason{Source: SourceUserProxyIP}
 	}
