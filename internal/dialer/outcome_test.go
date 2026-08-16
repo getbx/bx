@@ -650,3 +650,55 @@ func (r recordingDialer) DialContext(_ context.Context, _, address string) (net.
 	c, _ := net.Pipe()
 	return c, nil
 }
+
+// **同一条规则,UDP 与 TCP 必须走同一条路。**
+//
+// 少了这一段,UDP 会落到「走隧道」分支 —— 而主隧道那头去连 10.84.3.239,
+// 要么失败、要么撞上**它那侧网络里同 IP 的另一台机器**。那正是这个功能
+// 明确设计要防的「连错机器」,只是从 UDP 这道门进来(2026-08-16 自审抓到)。
+func TestViaAppliesToUDPToo(t *testing.T) {
+	set, err := route.NewEgressSet([][2]string{{"office", "10.84.0.0/16"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var egressGot, mainGot string
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{UserEgress: set})
+	d.SetTransport(&Transport{Proxy: recordingDialer{addr: &mainGot}, Healthy: func() bool { return true }})
+	d.SetEgresses(map[string]ContextDialer{"office": recordingDialer{addr: &egressGot}})
+
+	if _, err := d.Dial(context.Background(), route.Meta{
+		IP: netip.MustParseAddr("10.84.3.239"), Port: 53, UDP: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if mainGot != "" {
+		t.Fatalf("UDP 走了主隧道(%q)—— 同一条规则两种行为", mainGot)
+	}
+	if egressGot != "10.84.3.239:53" {
+		t.Fatalf("出口收到的是 %q", egressGot)
+	}
+}
+
+// UDP 也必须 fail-closed:出口没接上时阻断,绝不回落到主隧道或直连。
+func TestViaUDPFailsClosedToo(t *testing.T) {
+	set, err := route.NewEgressSet([][2]string{{"office", "10.84.0.0/16"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mainGot string
+	counter := &recordingCounter{}
+	d := &Dialer{Resolver: fixedResolver{}, Direct: okDialer{}, Stats: counter, UDPMode: "proxy"}
+	d.SetRouter(&route.Router{UserEgress: set})
+	d.SetTransport(&Transport{Proxy: recordingDialer{addr: &mainGot}, Healthy: func() bool { return true }})
+	// 刻意不 SetEgresses
+
+	if _, err := d.Dial(context.Background(), route.Meta{
+		IP: netip.MustParseAddr("10.84.3.239"), Port: 53, UDP: true,
+	}); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("err = %v, want ErrBlocked", err)
+	}
+	if mainGot != "" || counter.direct != 0 {
+		t.Fatalf("回落了(主隧道 %q / direct %d)", mainGot, counter.direct)
+	}
+}
