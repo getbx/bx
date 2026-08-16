@@ -11,7 +11,6 @@ import AppKit
 final class RulesWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var stack: NSStackView?
-    private var footer: NSTextField?
 
     /// 用户拨动了一个组开关。参数是组名与目标状态。
     var onToggleGroup: ((String, Bool) -> Void)?
@@ -88,39 +87,63 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             view.removeFromSuperview()
         }
 
-        // **只有一行说明,而且它说的是这个窗口是什么。** 上一版每一组下面都挂着
-        // 一整段解释(那是设计笔记,不是界面文案),读起来像说明书而不是开关。
-        stack.addArrangedSubview(heading("Direct — skips the tunnel"))
+        // **坏消息排最上面。** 人打开这个窗口十有八九就是因为有东西working,
+        // 而它此前埋在某一组下面的一行红色小字里。正常时这里一个字都没有 ——
+        // 一句永远在的「一切正常」是墙纸。
+        if let headline = rulesHeadline(rows) {
+            let warn = NSTextField(labelWithString: headline)
+            warn.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+            warn.textColor = .systemRed
+            stack.addArrangedSubview(warn)
+        }
 
+        stack.addArrangedSubview(sectionTitle("Skip the tunnel"))
         for row in rows {
-            stack.addArrangedSubview(groupView(row))
+            stack.addArrangedSubview(groupRow(row))
         }
 
         if !custom.isEmpty {
-            stack.addArrangedSubview(separator())
-            // **只显示,不给开关** —— 这些是用户手写的,菜单没有资格替他删。
-            // 那句道理不必写在界面上:没有勾选框本身就说明了。
-            stack.addArrangedSubview(heading("Your own"))
-            stack.addArrangedSubview(caption(custom.joined(separator: "   ")))
+            stack.addArrangedSubview(sectionTitle("Your own"))
+            // **一行一条。** 上一版把它们用空格拼成一段,规则一多就是一堵墙。
+            // 这些是只读的(菜单没有资格替用户删他手写的规则),所以只排版、不给控件。
+            for pattern in custom {
+                let label = NSTextField(labelWithString: pattern)
+                label.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+                label.textColor = .secondaryLabelColor
+                stack.addArrangedSubview(label)
+            }
         }
 
+        // **页脚收成两行。** 上一版是「按钮 / 路径 / 说明」三样各占一行、彼此平级,
+        // 于是最不重要的东西占了最多的地方。
         stack.addArrangedSubview(separator())
+        stack.addArrangedSubview(caption("Changes apply when you reconnect."))
         if !configPath.isEmpty {
-            let reveal = NSButton(title: "Show Config File…", target: self, action: #selector(revealConfig))
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 8
+            let path = caption(configPath)
+            path.lineBreakMode = .byTruncatingMiddle
+            path.preferredMaxLayoutWidth = 260
+            row.addArrangedSubview(path)
+            let reveal = NSButton(title: "Show", target: self, action: #selector(revealConfig))
             reveal.bezelStyle = .rounded
-            stack.addArrangedSubview(reveal)
-            stack.addArrangedSubview(caption(configPath))
+            reveal.controlSize = .small
+            row.addArrangedSubview(reveal)
+            stack.addArrangedSubview(row)
         }
-        let note = caption("Changes apply after reconnecting.")
-        footer = note
-        stack.addArrangedSubview(note)
     }
 
-    private func groupView(_ row: RuleGroupRow) -> NSView {
+    /// 一组一行:左边勾选框,**右边一列状态**。
+    ///
+    /// 上一版是勾选框下面缩进一行小字,而那行小字多半是空的 —— 于是一屏里全是
+    /// 参差不齐的留白,正是「太丑」的来源。右对齐之后眼睛只需要扫一列。
+    private func groupRow(_ row: RuleGroupRow) -> NSView {
         let box = NSStackView()
-        box.orientation = .vertical
-        box.alignment = .leading
-        box.spacing = 2
+        box.orientation = .horizontal
+        box.alignment = .firstBaseline
+        box.spacing = 8
 
         let toggle = NSButton(checkboxWithTitle: row.group.title, target: self, action: #selector(toggleGroup(_:)))
         toggle.identifier = NSUserInterfaceItemIdentifier(row.group.name)
@@ -128,16 +151,22 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         toggle.allowsMixedState = row.isMixed
         toggle.state = row.isOn ? .on : (row.isMixed ? .mixed : .off)
         box.addArrangedSubview(toggle)
+        box.setHuggingPriority(.defaultLow, for: .horizontal)
 
-        // **没话说就什么都不加。** 一行空的副标题与一行凑数的解释同样糟。
-        if let text = row.detail {
-            let detail = caption(text)
-            if row.failing > 0 {
-                detail.textColor = .systemRed
-            }
-            box.addArrangedSubview(detail)
-        }
+        let trailing = NSTextField(labelWithString: row.trailing ?? "")
+        trailing.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        trailing.textColor = row.failing > 0 ? .systemRed : .secondaryLabelColor
+        trailing.alignment = .right
+        trailing.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        box.addArrangedSubview(trailing)
         return box
+    }
+
+    private func sectionTitle(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        return label
     }
 
     @objc private func toggleGroup(_ sender: NSButton) {
@@ -151,12 +180,6 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
 
     @objc private func revealConfig() {
         onRevealConfig?()
-    }
-
-    private func heading(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-        return label
     }
 
     private func caption(_ text: String) -> NSTextField {

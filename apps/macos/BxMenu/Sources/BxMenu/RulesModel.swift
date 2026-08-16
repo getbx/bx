@@ -185,12 +185,14 @@ struct RuleGroupRow: Equatable {
     /// 半装的组要在界面上**看得出来**是半装的。
     var isMixed: Bool { group.state == .partial }
 
-    /// 副标题。**没话说就不说** —— nil,而不是一句凑数的解释。
+    /// 行尾那一列。**没话说就不说** —— nil,而不是一句凑数的解释。
     ///
-    /// 上一版每一组都挂着一整段说明(那是我写给开发者看的设计笔记),
-    /// 于是这个窗口读起来像说明书而不是开关。现在只有两种情况会说话:
-    /// 有东西在失败(要行动),或者装了一半(状态本身含混)。
-    var detail: String? {
+    /// 从「勾选框下面缩进一行小字」改成**右对齐的一列**:竖着堆是上一版显得乱的
+    /// 根源 —— 每组占两行、而第二行多半是空的,于是一屏里全是参差不齐的留白。
+    /// 一组一行、状态右对齐之后,眼睛只需要扫一列。
+    ///
+    /// 只有两种情况会说话:有东西在失败(要行动),或者装了一半(状态本身含混)。
+    var trailing: String? {
         if failing > 0 {
             return "\(failures) failed"
         }
@@ -199,6 +201,19 @@ struct RuleGroupRow: Equatable {
         }
         return nil
     }
+}
+
+/// 顶部那句话。**只有真有东西坏了才出现** —— 人打开这个窗口十有八九就是因为
+/// 有东西working,而它此前埋在第三行的一个红色小字里。
+///
+/// 正常时返回 nil:一句永远在的「一切正常」是墙纸,而墙纸会训练人忽略这块地方。
+func rulesHeadline(_ rows: [RuleGroupRow]) -> String? {
+    let broken = rows.filter { $0.failing > 0 }
+    if broken.isEmpty { return nil }
+    if broken.count == 1 {
+        return "\(broken[0].group.title) isn't working"
+    }
+    return "\(broken.count) groups aren't working"
 }
 
 /// 把组、失败归因合成界面要显示的行。
