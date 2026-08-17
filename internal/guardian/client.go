@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/getbx/bx/internal/install"
@@ -70,6 +71,21 @@ func NewClientWithTimeout(socketPath string, timeout time.Duration) *Client {
 
 func (c *Client) Status(ctx context.Context) (Status, error) {
 	return c.request(ctx, http.MethodGet, "/v1/status", nil)
+}
+
+// WatchMaxHold 导出 statuswatch.go 里那个未导出的 watchMaxHold(服务端长轮询
+// 挂住的上限),供包外调用方(如 bx status --watch)钉住「客户端超时必须比
+// 服务端上限长」这条不等式——否则拿到的永远是自己的超时,服务端那个上限
+// 一次都不会生效。
+const WatchMaxHold = watchMaxHold
+
+// StatusWatch 是 Status 的长轮询形态:Guardian 在自己的代际号与 generation
+// 不同时立刻应答,相同则挂住到它变了或服务端超时(见 WatchMaxHold)。
+//
+// query 直接拼在 path 上——request 只做 "http://local"+path,本包没有
+// url.Values 那一层。
+func (c *Client) StatusWatch(ctx context.Context, generation uint64) (Status, error) {
+	return c.request(ctx, http.MethodGet, "/v1/status?wait="+strconv.FormatUint(generation, 10), nil)
 }
 
 func (c *Client) Up(ctx context.Context) (Status, error) {
