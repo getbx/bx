@@ -43,6 +43,17 @@ struct StatusWatchTests {
         expect(menuWatchBackstopSeconds >= 30,
                "兜底轮询 \(menuWatchBackstopSeconds) 秒太密 —— 它只是「watch 哑了」的保险,不是取数据的手段")
 
-        exit(failures == 0 ? 0 : 1)
+        // 第二道防线:「代际号没变」那一支的 floor 延迟必须是正数,否则一台
+        // 声明了能力却仍然秒回的服务端会把这个循环烧到满速——与 CLI 侧
+        // watchIdleDelay 同一个角色(见 StatusWatch.swift 里
+        // menuWatchIdleDelaySeconds 的注释)。
+        expect(menuWatchIdleDelaySeconds > 0,
+               "menuWatchIdleDelaySeconds 必须是正数,否则「代际号没变」那一支会满速空转")
+
+        // **本仓库另外 20 个 Swift 测试套件全部以 `X passed` 收尾**,唯独这一条
+        // 此前没有——那是个具体的漏洞,不是风格差异:`test-macos-menu.sh`
+        // 提前 `exit 0` 时退出码仍是 0,只有这行收尾横幅能证明「这个套件真的
+        // 跑到了最后一行」而不是「这个套件的调用整段消失了」。
+        if failures == 0 { print("StatusWatchTests passed") } else { exit(1) }
     }
 }
