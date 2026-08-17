@@ -240,7 +240,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 「控制面架构诊断」一节)。这里只负责「什么时候该去刷」。
     ///
     /// 服务端返回的代际号与请求的相同 = 只是挂住到了它自己的 25 秒上限、什么
-    /// 都没变,直接再等一轮,不必触发一次刷新去重新问一遍已经知道没变的答案。
+    /// 都没变,直接再等一轮,不必触发一次刷新去重新问一遍已经知道没变的答案——
+    /// 但这一等要先付 `menuWatchIdleDelaySeconds` 这个 floor(第二道防线,
+    /// 见其注释),否则一台绕过了能力门控或声明能力却仍秒回的服务端会把
+    /// 这个循环烧到满速。
     private func runWatchLoop() {
         var consecutiveFailures = 0
         while true {
@@ -249,7 +252,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let status = try guardianClient.statusWatch(generation: requested)
                 consecutiveFailures = 0
                 let observed = status.statusGeneration ?? requested
-                guard observed != requested else { continue }
+                guard observed != requested else {
+                    // 第二道防线(见 menuWatchIdleDelaySeconds 的注释):一台
+                    // 声明了能力却仍然秒回、代际号没推进的服务端,不加这个
+                    // floor 就会把这个分支烧到满速——只在这一支生效,代际号
+                    // 真的变了要立刻走下面那条落定路径,不许被这个下限拖慢。
+                    Thread.sleep(forTimeInterval: menuWatchIdleDelaySeconds)
+                    continue
+                }
                 watchGeneration = observed
                 DispatchQueue.main.async { [weak self] in
                     self?.refresh(userInitiated: false)

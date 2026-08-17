@@ -38,6 +38,26 @@ func watchIsAvailable(capabilities: [String]?) -> Bool {
     return capabilities.contains("status_watch")
 }
 
+/// 「服务端应答了、但代际号没变」那一支的 floor 延迟。
+///
+/// **这是第二道防线,不是主要机制**——主要机制是 `watchIsAvailable` 那道能力
+/// 门控。一台真正认得 `wait=` 的服务端应该已经挂住到最多服务端的 25 秒上限
+/// (`guardianStatusWatchTimeout` 注释里的那个数)才回,所以这个 floor 正常
+/// 情况下不会真的被等到。它兜的是「第一道门被绕过,或者对面明明声明了
+/// `status_watch` 能力却仍然回一份没有代际号推进的应答」这种理论上不该发生、
+/// 但不该让客户端付出满速空转代价的情形。
+///
+/// **它不是推测性的**——CLI 侧 `bx status --watch`(`internal/cli/statuswatch.go`
+/// 的 `watchIdleDelay`)在真机上撞到过同一个坑:对一台不认 `wait=` 的旧
+/// Guardian,GET /v1/status 秒回、响应里连 status_generation 字段都没有,
+/// 解出来是零值,与起始 generation 0 恰好相等,「未变化」分支被命中,没有
+/// floor 就会以满速一直打本机 unix socket(真机实测 CPU 常驻 26%~46%、
+/// 吞吐上千次/秒)。菜单这一侧走的是同一份协议,却在此之前只有第一道门,
+/// 没有第二道——同一份契约的两个消费方,防线不该不一致。
+///
+/// 数值与 CLI 侧的 `watchIdleDelay`(1 秒)同源,取一致。
+let menuWatchIdleDelaySeconds: TimeInterval = 1
+
 /// 连续第 n 次失败之后该等多久。n == 0(刚成功)不等。
 ///
 /// **先判轮次再算乘法**:先乘后钳会在极大轮次上溢出。
