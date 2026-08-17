@@ -5642,6 +5642,47 @@ func TestMacMenuMaintenanceHoldVocabularyMatchesGuardian(t *testing.T) {
 	}
 }
 
+// watch 那两个手抄串(能力名、代际号 JSON 键)必须与 Guardian 真的发出来的那份
+// 逐字相同 —— 与 TestMacMenuMaintenanceHoldVocabularyMatchesGuardian 同一形状,
+// 同一个坑:任何一个对不上,后果都不是编译错误,而是安静地走错路。
+//
+// **两条失效模式都是静默的**:能力名漂移 ⇒ `watchIsAvailable` 永远判 false
+// (即便这一版 Guardian 真的支持 watch)⇒ 菜单悄悄退回 30 秒轮询,原来那个
+// bug 复活;JSON 键漂移 ⇒ `statusGeneration` 解出来恒为 nil ⇒ 撞上
+// `runWatchLoop` 里「这一版没有 watch 概念」那一支,同样退回轮询——两者外观
+// 相同,都不报错,只有真机撞上 watch 从没生效过才会被人发现。
+//
+// TestMacMenuWatchLoopUsesCapabilityGateAndExistingApplyPath(下方)只钉住
+// main.swift 没有手抄第二份判据、经由 watchIsAvailable/statusWatch 这两个
+// 名字间接引用 —— 它证明不了 StatusWatch.swift 和 GuardianStatus.swift 里
+// 那两个字面量本身是不是抄对了,这条测试补的正是这一半。
+func TestMacMenuStatusWatchVocabularyMatchesGuardian(t *testing.T) {
+	watch, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "StatusWatch.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := `capabilities.contains("` + guardian.CapabilityStatusWatch + `")`
+	if !strings.Contains(string(watch), capability) {
+		t.Errorf("菜单声明要比对的能力名必须与 guardian.CapabilityStatusWatch 一致,应出现:%s", capability)
+	}
+
+	field, ok := reflect.TypeOf(guardian.Status{}).FieldByName("StatusGeneration")
+	if !ok {
+		t.Fatal("guardian.Status 里找不到 StatusGeneration 字段 —— 本守卫读不懂现在的代码了")
+	}
+	key := strings.Split(field.Tag.Get("json"), ",")[0]
+	if key == "" {
+		t.Fatal("guardian.Status.StatusGeneration 没有 JSON 键名")
+	}
+	status, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "GuardianStatus.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `case statusGeneration = "` + key + `"`; !strings.Contains(string(status), want) {
+		t.Errorf("菜单解的代际号键名与 Guardian 发的对不上,应出现:%s", want)
+	}
+}
+
 // 挂起那一行必须真的接进菜单,而且是在**保护不在**的那些状态里。
 //
 // 判定住在 MaintenancePresentation.swift(MaintenancePresentationTests 钉着),
