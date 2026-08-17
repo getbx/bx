@@ -422,8 +422,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var repairVersions: (bundle: String?, runtime: String?, core: String?)?
         var outdatedRuntime: OutdatedRuntimeNotice?
         var maintenanceReport: GuardianStatus?
-        var rules: RuleList?
-        var servers: ServerList?
+        // 恒 nil:rules/servers 已改按需拉(见下方 fetchRulesOnDemand /
+        // fetchServersOnDemand),这条刷新路径不再碰它们。字段仍在
+        // `RefreshOutcome` 里是因为 nil 有意义(「这一轮没读到」),
+        // applyRefresh 那段「保留上一轮」的逻辑仍然依赖它。
+        let rules: RuleList? = nil
+        let servers: ServerList? = nil
         func resolve() -> BxState {
             let runtimeVersion = unifiedRuntimeVersion()
             // 「CLI 能不能执行」是关于**本机环境**的事实,Guardian 答不上来 —— 但
@@ -551,16 +555,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return .connected(report, version: version ?? "unknown", dns: dns.label)
         }
         let state = resolve()
-        // 规则只在这一版 Guardian 声明了这个能力时才去读 —— 旧版会回 404,
-        // 而那会让每一轮刷新都白拨一次 socket。读失败保持 nil(= 没读到),
-        // **绝不退化成空列表**。
-        if rulesEditingAvailable(capabilities: maintenanceReport?.capabilities) {
-            rules = try? GuardianClient().listRules()
-        }
-        // 同上:能力键缺席 = 旧版 Guardian 没有这个端点,别每轮白拨一次 socket。
-        if serverSwitchingAvailable(capabilities: maintenanceReport?.capabilities) {
-            servers = try? GuardianClient().listServers()
-        }
+        // 规则与服务器**不在刷新路径里拉了**——图标不依赖它们(menuRowsNow 一个
+        // 字都不碰 rules/servers),而每次刷新都带上会让 Guardian 各多读并
+        // YAML 解析一遍 /etc/bx/config.yaml。轮询时代这是浪费;watch 时代刷新
+        // 变成「每次状态变化都有一次」,带着它就会变成更糟。改为按需:见
+        // fetchRulesOnDemand / fetchServersOnDemand,分别在打开规则子菜单 /
+        // 服务器窗口时才拨。这里两个局部量维持 nil,`RefreshOutcome` 的字段
+        // 保留(「这一轮没读到就保留上一轮的」那段逻辑仍然有用),只是这条路径
+        // 恒不写入。
         return RefreshOutcome(
             state: state,
             recoverySnapshot: recoverySnapshot,
@@ -798,20 +800,43 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
 
     @objc private func openRulesWindow() {
-        guard let rules = lastRules else {
-            let alert = NSAlert()
-            alert.messageText = "Routing rules are not available"
-            alert.informativeText = "bx could not read its configuration. "
-                + "See /var/log/bx-guard.err.log for the reason."
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
-            return
+        fetchRulesOnDemand()
+    }
+
+    /// 按需拉一次规则。**只在用户真的要看规则时拨** ——
+    /// 图标不依赖它(menuRowsNow 一个字都不碰 rules),而每次拨都让一个 root
+    /// 守护进程读并 YAML 解析一遍 /etc/bx/config.yaml。
+    ///
+    /// 在轮询时代这是浪费;watch 时代刷新变成「每次状态变化都有一次」,
+    /// 带着它就会变成更糟。
+    ///
+    /// **拨号在后台队列,结果回主线程落定**——与 applyGroupChange/probeServers
+    /// 同一个已有模式,不阻塞主线程一秒。读不到就照既有逻辑说读不到
+    /// (保留 `lastRules` 原样,可能仍是 nil),**不摆一个空列表**。
+    private func fetchRulesOnDemand() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fetched = try? GuardianClient().listRules()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let fetched {
+                    self.lastRules = fetched
+                }
+                guard let rules = self.lastRules else {
+                    let alert = NSAlert()
+                    alert.messageText = "Routing rules are not available"
+                    alert.informativeText = "bx could not read its configuration. "
+                        + "See /var/log/bx-guard.err.log for the reason."
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                    return
+                }
+                self.rulesWindow.show(
+                    rows: ruleGroupRows(from: rules, failing: self.maintenanceReport?.core?.failingRules ?? []),
+                    custom: rules.custom,
+                    configPath: rules.configPath
+                )
+            }
         }
-        rulesWindow.show(
-            rows: ruleGroupRows(from: rules, failing: maintenanceReport?.core?.failingRules ?? []),
-            custom: rules.custom,
-            configPath: rules.configPath
-        )
     }
 
     /// 部署表单。
@@ -913,16 +938,34 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openServersWindow() {
-        guard let servers = lastServers else {
-            let alert = NSAlert()
-            alert.messageText = "Servers are not available"
-            alert.informativeText = "bx could not read its configuration. "
-                + "See /var/log/bx-guard.err.log for the reason."
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
-            return
+        fetchServersOnDemand()
+    }
+
+    /// 按需拉一次服务器清单。理由与 fetchRulesOnDemand 相同——图标不依赖它,
+    /// 每次拨都让 Guardian 多读并解析一遍 config.yaml。
+    ///
+    /// 拨号在后台队列,结果回主线程落定。读不到就保留 `lastServers` 原样
+    /// (可能仍是 nil,照既有逻辑说读不到),不摆一个空列表。
+    private func fetchServersOnDemand() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fetched = try? GuardianClient().listServers()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let fetched {
+                    self.lastServers = fetched
+                }
+                guard let servers = self.lastServers else {
+                    let alert = NSAlert()
+                    alert.messageText = "Servers are not available"
+                    alert.informativeText = "bx could not read its configuration. "
+                        + "See /var/log/bx-guard.err.log for the reason."
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                    return
+                }
+                self.serversWindow.show(rows: serverRows(from: servers), probe: self.exitIPProbe)
+            }
         }
-        serversWindow.show(rows: serverRows(from: servers), probe: exitIPProbe)
     }
 
     /// 换服务器 —— **先确认再换**。
