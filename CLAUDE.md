@@ -542,6 +542,19 @@ ufw 不在/未启用时安静通过;**改动会打给用户看**(静默改别人
   打印的是 `FAIL:`(「没转红」被误判成守卫失效)、`head -5` 查 `set -e` 而注释头十几行、`grep -c` 数
   「出现次数」而它数的是行数、替换串带了不存在的前导 tab 而 `str.replace` 匹配不上时不报错。
   **别再手敲那一串命令**;`verify.sh` 自己也验过五个方向都会失败,漏一道闸门由 `TestVerifyScriptCoversEveryGate` 钉住。
+  **一个会偶发红的闸门比没有闸门更糟**,因为它训练人去重跑 —— 而重跑正是「判据是
+  退出码」这条纪律唯一的解毒方式。2026-08-17 抓到并修掉一个:`internal/socks5` 的
+  `TestDialerUDPAssociateRelaysDatagrams` 在 1500 次里失败 4 次,根因是 UDP ASSOCIATE
+  的客户端 socket 绑的是**双栈通配** `[::]`,而 relay 是 IPv4 —— 服务端明明写成功了
+  (14 字节、err=nil、28µs),客户端两秒收不到。**内核层面为什么会漏投这个跨族环回包
+  至今未查清**,但修法不依赖它:一个 SOCKS5 客户端只跟一个 relay 说话,socket 就该绑在
+  **relay 所在的地址族**上(`78edafa`,改后 0/1500)。守卫钉的是**修法的机制**而不是那个
+  flake ——「IPv4 relay ⇒ 本地址是 IPv4」是确定性的,而 1/375 的失败率跑一遍抓不到。
+  **同一个文件里还有第二个、独立的间歇失败源没修**:`serveTCP`/`serveUDP` 是活过测试
+  函数的 goroutine,而它们在里面调 `t.Errorf` —— 测试返回之后再调会让 Go panic
+  (`Log in goroutine after Test… has completed`)。今天只修了被点名的那个丢弃
+  `WriteTo` 错误的地方(改成经 `t.Cleanup` 排空的 channel)。谁下次看到这个包偶发红,
+  先查这一条,别以为跨族那个已经修完了就没别的了。
   两处 grep 参与判据是**必要**的并已注明:`test-macos-menu.sh` 提前 `exit 0` 时退出码仍是 0(只有收尾
   横幅抓得住),`gofumpt -l` 输出文件名而退出码恒 0。
 - **提交信息**:中文 conventional commits,结尾带 `Co-Authored-By: Claude …`。在默认分支直接提交(单人项目)。
