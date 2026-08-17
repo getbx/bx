@@ -1542,6 +1542,69 @@ func TestUpSummaryDowngradesForErrorSeverityWarnings(t *testing.T) {
 	}
 }
 
+// 真实场景:configWarnings(含 risky_direct_rule 这条安全结论)在
+// supervisor/control.go 里被 append 在 guard.warnings() 之后,即列表最后一个。
+// renderUpSummary 若只打第一条,只要有任何共存 advisory(Tailscale/系统代理/
+// 其他 packet tunnel)在跑,这条安全告警就会被系统性地吞掉——而且 .Hint 那句
+// "bx direct rm '<rule>'"(点名安全问题的下一步)从来没被打过,即使它是唯一
+// 显示的那条。这条测试把第二条告警的 Hint 当回归锚点。
+func TestUpSummaryShowsAllWarningsIncludingHints(t *testing.T) {
+	report := stats.Report{
+		TunnelHealthy: true, LatencyMS: 18, UDPMode: "proxy",
+		Warnings: []stats.Warning{
+			{Name: "tailscale", Severity: "warn", Detail: "macOS VPN service active: Tailscale"},
+			{
+				Name: "risky_direct_rule", Severity: "warn",
+				Detail: "direct rule '*.s3.amazonaws.com' covers a public-cloud platform",
+				Hint:   "bx direct rm '*.s3.amazonaws.com'",
+			},
+		},
+	}
+	got := renderUpSummary(report, protectedGuardianStatus())
+	if !strings.Contains(got, "Tailscale") {
+		t.Errorf("第一条告警丢失,实际 =\n%s", got)
+	}
+	if !strings.Contains(got, "public-cloud platform") {
+		t.Errorf("第二条(安全)告警丢失,实际 =\n%s", got)
+	}
+	if !strings.Contains(got, "bx direct rm '*.s3.amazonaws.com'") {
+		t.Errorf("第二条告警的 Hint 丢失(它是唯一告诉用户下一步该干什么的内容),实际 =\n%s", got)
+	}
+}
+
+// 一条告警自带 Hint 时,渲染出的那一行必须包含它——单独钉住 .Hint 不再被丢弃,
+// 与「有几条告警」这条正交(单条也要过)。
+func TestUpSummaryWarningLineIncludesHint(t *testing.T) {
+	report := stats.Report{
+		TunnelHealthy: true, LatencyMS: 18, UDPMode: "proxy",
+		Warnings: []stats.Warning{{
+			Name: "risky_direct_rule", Severity: "warn",
+			Detail: "direct rule covers an open-subdomain platform",
+			Hint:   "bx direct rm '<rule>'",
+		}},
+	}
+	got := renderUpSummary(report, protectedGuardianStatus())
+	if !strings.Contains(got, "bx direct rm '<rule>'") {
+		t.Errorf("告警的 Hint 应出现在渲染输出里,实际 =\n%s", got)
+	}
+}
+
+// 多条告警只应打一次 "Warning" 标签(与 bx status 面板"提醒"只打一次同一条纪律),
+// 续行留空对齐,不是每条都重复标签词。
+func TestUpSummaryWarningLabelPrintedOnce(t *testing.T) {
+	report := stats.Report{
+		TunnelHealthy: true, LatencyMS: 18, UDPMode: "proxy",
+		Warnings: []stats.Warning{
+			{Name: "tailscale", Severity: "warn", Detail: "macOS VPN service active: Tailscale"},
+			{Name: "risky_direct_rule", Severity: "warn", Detail: "direct rule covers a public-cloud platform"},
+		},
+	}
+	got := renderUpSummary(report, protectedGuardianStatus())
+	if n := strings.Count(got, "Warning"); n != 1 {
+		t.Errorf("Warning 标签应只出现一次,实际出现 %d 次,输出 =\n%s", n, got)
+	}
+}
+
 // protectedGuardianStatus 构造一个在 darwin 上也真正算 protected 的 Guardian 状态:
 // normalizedGuardianProtectionState 在 macOS 上额外要求 DNS 接管证据,缺了它会被
 // 正确降级成 needs_attention,那样就测不到告警严重度这条分支了。

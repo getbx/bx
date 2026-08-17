@@ -136,7 +136,7 @@ func Render(r Report) string {
 				if i > 0 {
 					label = ""
 				}
-				fmt.Fprintf(&b, "  %-6s %s\n", label, warningText(w))
+				fmt.Fprintf(&b, "  %-6s %s\n", label, WarningText(w))
 			}
 			fmt.Fprint(&b, recoveryHint(r))
 			return b.String()
@@ -151,13 +151,19 @@ func Render(r Report) string {
 		if i > 0 {
 			label = ""
 		}
-		fmt.Fprintf(&b, "  %-6s %s\n", label, warningText(w))
+		fmt.Fprintf(&b, "  %-6s %s\n", label, WarningText(w))
 	}
 	fmt.Fprint(&b, recoveryHint(r))
 	return b.String()
 }
 
-func warningText(w Warning) string {
+// WarningText composes a Warning's displayable line: Detail (or Name as
+// fallback when Detail is empty) plus, if present, the actionable Hint.
+// Exported so cli's up-summary and stats' status panel share one
+// composition instead of each growing its own (this repo's recurring
+// defect shape: one safety-adjacent thing, two implementations, only one
+// remembered).
+func WarningText(w Warning) string {
 	detail := strings.TrimSpace(w.Detail)
 	if detail == "" {
 		detail = w.Name
