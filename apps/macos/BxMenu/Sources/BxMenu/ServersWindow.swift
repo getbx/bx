@@ -24,6 +24,12 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
 
     private var probe: ExitIPProbe = .unknown
 
+    /// 窗口是否开着。**供环境刷新路径判断「有没有人在看」**——rules/servers 改
+    /// 按需拉之后,这是唯一能回答「要不要为这个窗口拉一次新数据」的信号:窗口关着
+    /// 就不拨(按需的本意),窗口开着就说明有人正盯着,这时按需拉一次不是违背
+    /// 按需,是它的本意。
+    var isVisible: Bool { window?.isVisible ?? false }
+
     func show(rows: [ServerRow], probe: ExitIPProbe) {
         let window = ensureWindow()
         self.probe = probe

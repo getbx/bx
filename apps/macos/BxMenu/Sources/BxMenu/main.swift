@@ -365,14 +365,28 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // capabilities 刚到手,若这一版 Guardian 声明了 status_watch 且循环还没
         // 起,就在这里转入 watch——引导序列的后半段(前半段是这次 refresh 本身)。
         startWatchLoopIfAvailable()
-        // 这一轮没读到就保留上一轮的:菜单打开的瞬间闪成 "Could not read rules"
-        // 再闪回来,比慢一拍更糟。真读不到时(第一次就失败)它本来就是 nil。
+        // rules/servers 已经改按需拉(fetchRulesOnDemand/fetchServersOnDemand),
+        // `outcome.rules`/`.servers` 现在恒为 nil ——这两个 `if let` 今天永远不会
+        // 执行。留着不删是防御性的:一旦哪天刷新路径又长出一条真的写它们的支线
+        // (比如某个界面确实需要跟着环境刷新),这里「不覆盖」的语义能保证半路
+        // 失败的一次不会用 nil 抹掉已经取到的数据,不必重新推一遍这条纪律。
         if let fresh = outcome.rules {
             lastRules = fresh
         }
         if let fresh = outcome.servers {
             lastServers = fresh
-            serversWindow.refreshIfVisible(rows: serverRows(from: fresh), probe: exitIPProbe)
+        }
+        // 服务器窗口的实时更新曾经就藏在上面那个已经死掉的分支里
+        // (`outcome.servers` 恒 nil,`refreshIfVisible` 从此再也不会被这条路调用)——
+        // 于是打开着的服务器窗口会冻在打开那一刻,直到用户关掉重开、或恰好触发
+        // probeServers/checkExitIP/一次切换。改为按窗口可见性触发:
+        // **窗口关着 = 没人在看,不拨**(这个 task 要保住的收益,没人看时不再
+        // 每次刷新都解析一遍 config);**窗口开着 = 有人正盯着**,这时候按需拉
+        // 一次 servers 正是「按需」的本意,不是违背它。`forceShow: false` 让它
+        // 用 `refreshIfVisible` 就地重画,不会像 `openServersWindow` 那样抢焦点
+        // 弹出窗口。
+        if serversWindow.isVisible {
+            fetchServersOnDemand(forceShow: false)
         }
         updateIcon()
         rebuildMenu()
@@ -784,6 +798,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var exitIPProbe: ExitIPProbe = .unknown
     /// 有一次换服务器正在飞。见 confirmAndSwitchServer。
     private var switchInFlight = false
+    /// 有一次按需拉规则/服务器正在飞。与 `probing`/`switchInFlight` 同一个模式。
+    ///
+    /// **服务器这边不是可选的**:`fetchServersOnDemand` 现在不止由菜单点击触发,
+    /// 服务器窗口开着时每一次 `applyRefresh` 都会调它一次——watch 时代刷新是
+    /// 事件驱动的、可能连着来,没有这个守卫,重叠的取数会真的发生(旧的还没回来,
+    /// 新的又拨了一次)。规则这边只由菜单点击触发,理论上够不到重叠,这里一并加
+    /// 是为了与 `probing`/`switchInFlight` 保持同一个模式,不是因为发现了具体的
+    /// 竞态。
+    private var rulesFetchInFlight = false
+    private var serversFetchInFlight = false
 
     /// 规则窗口。**窗口而不是子菜单**:菜单每 2 秒 removeAllItems() 重建一次,
     /// 而进子菜单再点一项通常超过 2 秒 —— 真机上就是这么变成"点了没反应"的。
@@ -813,11 +837,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// **拨号在后台队列,结果回主线程落定**——与 applyGroupChange/probeServers
     /// 同一个已有模式,不阻塞主线程一秒。读不到就照既有逻辑说读不到
     /// (保留 `lastRules` 原样,可能仍是 nil),**不摆一个空列表**。
+    ///
+    /// **`rulesFetchInFlight` 守卫**:只在这一个菜单点击处触发,双击/连点是唯一
+    /// 可能重叠的场景,守卫防的是那个。
     private func fetchRulesOnDemand() {
+        guard !rulesFetchInFlight else { return }
+        rulesFetchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fetched = try? GuardianClient().listRules()
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.rulesFetchInFlight = false
                 if let fetched {
                     self.lastRules = fetched
                 }
@@ -938,7 +968,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openServersWindow() {
-        fetchServersOnDemand()
+        fetchServersOnDemand(forceShow: true)
     }
 
     /// 按需拉一次服务器清单。理由与 fetchRulesOnDemand 相同——图标不依赖它,
@@ -946,15 +976,31 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///
     /// 拨号在后台队列,结果回主线程落定。读不到就保留 `lastServers` 原样
     /// (可能仍是 nil,照既有逻辑说读不到),不摆一个空列表。
-    private func fetchServersOnDemand() {
+    ///
+    /// **两个调用方,两种呈现,由 `forceShow` 区分**:
+    /// - `forceShow: true`(用户点了「Servers…」)—— 用 `show()` 弹出/前置窗口,
+    ///   读不到就用 `NSAlert` 明说读不到。
+    /// - `forceShow: false`(`applyRefresh` 在服务器窗口**已经开着**时按需刷一次)
+    ///   —— 用 `refreshIfVisible` 就地重画,**不抢焦点、不弹 NSAlert**:每次环境
+    ///   刷新都 `NSApp.activate` 会把窗口推到用户面前、把弹一次 alert 变成弹
+    ///   很多次,而这条路径本就只在窗口已经可见时才会被触发。
+    ///
+    /// **`serversFetchInFlight` 守卫是必需的,不是可选的**:窗口开着时它跟着
+    /// 每一次刷新触发,而 watch 时代刷新是事件驱动、可能连着来的——没有这个
+    /// 守卫,上一次还没回来、下一次又拨了一次的重叠会真的发生。
+    private func fetchServersOnDemand(forceShow: Bool) {
+        guard !serversFetchInFlight else { return }
+        serversFetchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fetched = try? GuardianClient().listServers()
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.serversFetchInFlight = false
                 if let fetched {
                     self.lastServers = fetched
                 }
                 guard let servers = self.lastServers else {
+                    guard forceShow else { return }
                     let alert = NSAlert()
                     alert.messageText = "Servers are not available"
                     alert.informativeText = "bx could not read its configuration. "
@@ -963,7 +1009,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     alert.runModal()
                     return
                 }
-                self.serversWindow.show(rows: serverRows(from: servers), probe: self.exitIPProbe)
+                if forceShow {
+                    self.serversWindow.show(rows: serverRows(from: servers), probe: self.exitIPProbe)
+                } else {
+                    self.serversWindow.refreshIfVisible(rows: serverRows(from: servers), probe: self.exitIPProbe)
+                }
             }
         }
     }
