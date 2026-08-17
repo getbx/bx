@@ -550,11 +550,22 @@ ufw 不在/未启用时安静通过;**改动会打给用户看**(静默改别人
   至今未查清**,但修法不依赖它:一个 SOCKS5 客户端只跟一个 relay 说话,socket 就该绑在
   **relay 所在的地址族**上(`78edafa`,改后 0/1500)。守卫钉的是**修法的机制**而不是那个
   flake ——「IPv4 relay ⇒ 本地址是 IPv4」是确定性的,而 1/375 的失败率跑一遍抓不到。
-  **同一个文件里还有第二个、独立的间歇失败源没修**:`serveTCP`/`serveUDP` 是活过测试
-  函数的 goroutine,而它们在里面调 `t.Errorf` —— 测试返回之后再调会让 Go panic
-  (`Log in goroutine after Test… has completed`)。今天只修了被点名的那个丢弃
-  `WriteTo` 错误的地方(改成经 `t.Cleanup` 排空的 channel)。谁下次看到这个包偶发红,
-  先查这一条,别以为跨族那个已经修完了就没别的了。
+  **同一个文件里第二个、独立的间歇失败源也已修(2026-08-17)**:`serveTCP`/`serveUDP` 是
+  活过测试函数的 goroutine,而它们在里面调 `t.Errorf`(以及 `t.Helper()`,同样是测试
+  完成后不该调的 `*testing.T` 方法)—— 测试返回之后再调 `t.Errorf` 会让 Go panic
+  (`Log in goroutine after Test… has completed`)。当时只修了被点名的那一处丢弃
+  `WriteTo` 错误的地方(经 `t.Cleanup` 排空的 channel);现在把同一套机制推广到两个
+  goroutine 里全部诊断点(读握手/版本/方法/请求/地址、写方法回复/写 ASSOCIATE 回复、
+  解析/构造 UDP 数据报……一律经 `s.reportf` 排队成 `error`),并加一个 `sync.WaitGroup`
+  让 `t.Cleanup` **先等两个 goroutine 真正退出、再排空 channel 逐条 `t.Errorf`**——
+  否则会有「goroutine 还没来得及把错误塞进 channel,Cleanup 已经查过一遍」的竞态,
+  origin 那版靠 `select+default` 单次不阻塞查询本就吃这个亏。`t.Helper()` 从两个
+  goroutine 里整个删掉:它们不再直接调 `t.Errorf`,标记 helper 帧对它们已没有意义。
+  **教训是通用的、留着**:任何活过测试函数的 goroutine,一旦持有 `*testing.T` 并调用
+  它的任何方法(不止 `Errorf`/`Fatalf`,`Helper`/`Log` 同样算),就是一颗定时炸弹 ——
+  正确的形状始终是「goroutine 只把错误递给一个 channel,由测试(或 `t.Cleanup`)
+  自己的 goroutine 在还没标记完成时把它转成 `t.Errorf`」,一份机制,别为下一个诊断点
+  另开一条路。
   两处 grep 参与判据是**必要**的并已注明:`test-macos-menu.sh` 提前 `exit 0` 时退出码仍是 0(只有收尾
   横幅抓得住),`gofumpt -l` 输出文件名而退出码恒 0。
 - **提交信息**:中文 conventional commits,结尾带 `Co-Authored-By: Claude …`。在默认分支直接提交(单人项目)。

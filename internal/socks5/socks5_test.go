@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -127,7 +128,8 @@ type fakeServer struct {
 	tcp       net.Listener
 	udp       net.PacketConn
 	datagrams chan fakeDatagram
-	writeErrs chan error
+	errs      chan error
+	wg        sync.WaitGroup
 }
 
 type fakeDatagram struct {
@@ -168,27 +170,50 @@ func newFakeServerOn(t *testing.T, host string) *fakeServer {
 		tcp:       tcp,
 		udp:       udp,
 		datagrams: make(chan fakeDatagram, 4),
-		writeErrs: make(chan error, 4),
+		// Sized generously above the handful of diagnostics either
+		// goroutine can possibly queue in one test run (see reportf):
+		// large enough that the sends in reportf never block, so
+		// s.wg.Wait() below can never deadlock on a full channel.
+		errs: make(chan error, 16),
 	}
+	s.wg.Add(2)
 	t.Cleanup(func() {
 		tcp.Close()
 		udp.Close()
-		// Surface a discarded write error to the test body's goroutine
-		// (safe: t.Cleanup runs before the test is marked complete),
-		// instead of silently dropping it the way this test used to.
-		select {
-		case err := <-s.writeErrs:
-			t.Errorf("udp write to client failed: %v", err)
-		default:
+		// serveTCP/serveUDP can still be mid-iteration here (e.g. a
+		// test that never reads the relayed reply returns while
+		// serveUDP is still building/sending it). Wait for both to
+		// actually exit before touching s.errs, so every reportf call
+		// they make is guaranteed to have already happened -- and only
+		// then replay them through t.Errorf, on this goroutine, before
+		// the test is marked complete. Calling t.Errorf directly from
+		// those goroutines would panic ("Log in goroutine after
+		// TestXxx has completed") once they outlive the test, which is
+		// exactly what closing tcp/udp above makes them do.
+		s.wg.Wait()
+		close(s.errs)
+		for err := range s.errs {
+			t.Errorf("fake socks5 server: %v", err)
 		}
 	})
-	go s.serveTCP(t)
-	go s.serveUDP(t)
+	go s.serveTCP()
+	go s.serveUDP()
 	return s
 }
 
-func (s *fakeServer) serveTCP(t *testing.T) {
-	t.Helper()
+// reportf queues a diagnostic from serveTCP or serveUDP. It must never call
+// any *testing.T method itself (including t.Helper(), which is exactly as
+// unsafe here as t.Errorf: both are calls into a *testing.T that this
+// goroutine can make after the test function has already returned). The
+// t.Cleanup callback in newFakeServerOn is what turns these back into
+// t.Errorf, on the test goroutine, after waiting for both server goroutines
+// to finish.
+func (s *fakeServer) reportf(format string, args ...any) {
+	s.errs <- fmt.Errorf(format, args...)
+}
+
+func (s *fakeServer) serveTCP() {
+	defer s.wg.Done()
 	c, err := s.tcp.Accept()
 	if err != nil {
 		return
@@ -196,41 +221,41 @@ func (s *fakeServer) serveTCP(t *testing.T) {
 	defer c.Close()
 	buf := make([]byte, 512)
 	if _, err := io.ReadFull(c, buf[:2]); err != nil {
-		t.Errorf("read greeting: %v", err)
+		s.reportf("read greeting: %v", err)
 		return
 	}
 	if buf[0] != 5 {
-		t.Errorf("bad version %d", buf[0])
+		s.reportf("bad version %d", buf[0])
 		return
 	}
 	if _, err := io.ReadFull(c, buf[:int(buf[1])]); err != nil {
-		t.Errorf("read methods: %v", err)
+		s.reportf("read methods: %v", err)
 		return
 	}
 	if _, err := c.Write([]byte{5, 0}); err != nil {
-		t.Errorf("write method: %v", err)
+		s.reportf("write method: %v", err)
 		return
 	}
 
 	if _, err := io.ReadFull(c, buf[:4]); err != nil {
-		t.Errorf("read request: %v", err)
+		s.reportf("read request: %v", err)
 		return
 	}
 	if !bytes.Equal(buf[:4], []byte{5, 3, 0, 1}) {
-		t.Errorf("request prefix = %v, want UDP associate IPv4", buf[:4])
+		s.reportf("request prefix = %v, want UDP associate IPv4", buf[:4])
 		return
 	}
 	if _, err := io.ReadFull(c, buf[:6]); err != nil {
-		t.Errorf("read request addr: %v", err)
+		s.reportf("read request addr: %v", err)
 		return
 	}
 	reply, err := udpAssociateReply(s.udp.LocalAddr())
 	if err != nil {
-		t.Errorf("build udp associate reply: %v", err)
+		s.reportf("build udp associate reply: %v", err)
 		return
 	}
 	if _, err := c.Write(reply); err != nil {
-		t.Errorf("write reply: %v", err)
+		s.reportf("write reply: %v", err)
 		return
 	}
 	_, _ = c.Read(buf[:1])
@@ -255,8 +280,8 @@ func udpAssociateReply(addr net.Addr) ([]byte, error) {
 	return append(reply, byte(udpAddr.Port>>8), byte(udpAddr.Port)), nil
 }
 
-func (s *fakeServer) serveUDP(t *testing.T) {
-	t.Helper()
+func (s *fakeServer) serveUDP() {
+	defer s.wg.Done()
 	buf := make([]byte, 2048)
 	for {
 		n, from, err := s.udp.ReadFrom(buf)
@@ -265,24 +290,17 @@ func (s *fakeServer) serveUDP(t *testing.T) {
 		}
 		target, payload, err := parseUDPDatagram(buf[:n])
 		if err != nil {
-			t.Errorf("parse udp datagram: %v", err)
+			s.reportf("parse udp datagram: %v", err)
 			return
 		}
 		s.datagrams <- fakeDatagram{target: target, payload: append([]byte(nil), payload...)}
 		resp, err := buildUDPDatagram(target, []byte("pong"))
 		if err != nil {
-			t.Errorf("build udp datagram: %v", err)
+			s.reportf("build udp datagram: %v", err)
 			return
 		}
 		if _, err := s.udp.WriteTo(resp, from); err != nil {
-			// Do not call t.Errorf here: this goroutine can outlive the
-			// test function, and Log/Errorf after the test has completed
-			// panics. Hand the error to the test-goroutine cleanup in
-			// newFakeServerOn instead.
-			select {
-			case s.writeErrs <- err:
-			default:
-			}
+			s.reportf("write udp reply: %v", err)
 		}
 	}
 }
