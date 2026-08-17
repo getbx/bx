@@ -185,6 +185,15 @@ const CapabilityRules = "rules"
 // 一个每次点都失败的按钮 —— 与 CapabilityRules 同一机制同一理由。
 const CapabilityServers = "servers"
 
+// CapabilityStatusWatch 表示这一版 Guardian 的 GET /v1/status 认 `wait=<generation>`
+// 长轮询,于是客户端可以在状态真的变了的那一刻收到,而不是靠一个轮询常量。
+//
+// 菜单**靠这个键决定走 watch 还是降级轮询,绝不去试拨** ——
+// 旧 Guardian 会忽略未知 query 参数、回一份普通应答,而那与「立刻返回因为状态
+// 变了」在客户端看来一模一样,于是 watch 循环会退化成一个满速轮询。
+// (与 /v1/rules、/v1/servers 同一条门控纪律。)
+const CapabilityStatusWatch = "status_watch"
+
 // MaintenanceHoldStatus 是**正在生效**的那次挂起,随 Status 发布。
 //
 // 过期的挂起不出现在这里:键缺席的意思是「此刻没有挂起」。它与 MaintenanceHold
@@ -200,7 +209,7 @@ type MaintenanceHoldStatus struct {
 // 每次调用都返回新切片:它会被塞进 Status 交给 JSON 编码,共享一份底层数组等于
 // 把一个包级可变状态发布出去。
 func GuardianCapabilities() []string {
-	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers}
+	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityStatusWatch}
 }
 
 // ReconcileReport 是只观察调谐环**最近一轮**的判断,随 Status 一起发布。
