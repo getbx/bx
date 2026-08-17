@@ -509,10 +509,10 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // transportInfo(可空)返回当前活跃传输标签、容灾列表、UDP 专用传输标签,供 status 呈现;
 // active 动态(容灾后反映实际),list/udp 多为静态配置。
 func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, shutdown func(), ownerUID uint32) (io.Closer, error) {
-	return serveControlWithPathRecovery(ctx, c, t, server, mode, udpMode, transportInfo, runtime, eng, mut, reload, nil, shutdown, ownerUID, nil, nil)
+	return serveControlWithPathRecovery(ctx, c, t, server, mode, udpMode, transportInfo, runtime, eng, mut, reload, nil, shutdown, ownerUID, nil, nil, nil)
 }
 
-func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), shutdown func(), ownerUID uint32, recoverer pathRecoverer, probeDial probeDialer) (io.Closer, error) {
+func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), shutdown func(), ownerUID uint32, recoverer pathRecoverer, probeDial probeDialer, configWarnings []stats.Warning) (io.Closer, error) {
 	guard := startNetworkGuard(ctx)
 	// **吞吐要按固定节拍采样,不能搭在读状态那条路上。**
 	// 读状态的间隔由调用方决定(菜单开着 2 秒、关着 30 秒、CLI 一次就走),
@@ -563,7 +563,10 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 			Transport:     active,
 			Transports:    list,
 			UDPTransport:  udp,
-			Warnings:      guard.warnings(),
+			// 配置派生的告警(危险直连规则)在 Run 里算好一次传进来 ——
+			// **不在读状态那条路上重算**:菜单每 2 秒拉一次,而配置在运行期不变
+			// (bx 不热重载),重算既浪费又会让 status 说出 Core 此刻并没有在用的那份配置。
+			Warnings: append(guard.warnings(), configWarnings...),
 		}
 	}
 	if err := secdir.Ensure(filepath.Dir(SockPath), os.Geteuid(), 0o755); err != nil {
