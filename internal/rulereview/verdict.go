@@ -50,7 +50,10 @@ func (c Class) String() string {
 	}
 }
 
-// MarshalJSON 让 JSON 里是词而不是 0/1/2/3 —— agent 与 MCP 直接按它分类。
+// MarshalJSON 让 JSON 里是词而不是 0/1/2/3。**今天没有任何东西序列化 Finding/Report**
+// (bx doctor --json 消费的是 internal/cli 翻出来的 doctorFinding/checkReport,不是
+// 这里的 Class/Finding/Report 本身)——这个方法与上面的 json tag 是为将来那个 agent/MCP
+// 直接读 rulereview 的表面准备的,今天不可达。
 func (c Class) MarshalJSON() ([]byte, error) { return []byte(`"` + c.String() + `"`), nil }
 
 // Finding 是一条可核对的结论。

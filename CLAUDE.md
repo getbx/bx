@@ -203,7 +203,12 @@ direct 与 proxy 里,语义相反);读不到就说读不到,不摆空列表;改�
 **判据只长在一条路上是这个仓库反复出现的形状,这次照做**:`internal/rulereview`
 是纯判据包(无 net/os/exec,`purity_test.go` 按 AST 钉住),给定 `direct`/`proxy`
 两张表 + `Global` + china `DomainSet`,产出一组分类结论;`bx doctor`(文本与
-`--json` 两条路径)与 `bx status` 常驻面板**各自消费同一个 `Review`**,不各写一份。
+`--json` 两条路径)与 `bx status` 常驻面板**都调用同一个 `rulereview.Review`**,
+判定只有一份。**但 `Input` 的组装写了两遍**:`internal/cli/rulereview.go` 的
+`buildRuleReviewInput` 摊平 `Direct`/`Proxy` 两张表并接内建 china 列表;
+`internal/supervisor/riskyrules.go` 里是一份内联的组装,**只摊平了 `Direct`**,
+`Proxy` 与 `China` 整个没填——`bx status` 只要危险那一类,原样够用(§见下),
+但这不是「共用一份」,是两份组装各自服务各自的调用方。
 
 **四类各自计数,永远不合成一个总数**(`Report` 没有 `TotalCount`,与 leakcheck 的
 path/identity/surface 三分同一条纪律):`ClassRisky`(公有云/开放子域直连,去匿名化
