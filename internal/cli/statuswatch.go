@@ -75,8 +75,24 @@ func watchBackoff(consecutiveFailures int) time.Duration {
 // 只读、不改任何东西:不联网(只连本机 unix socket)、不写配置、不做任何
 // mutation 调用。
 func statusWatchLoop(ctx context.Context, out io.Writer, asJSON bool) error {
-	client := guardian.NewClient(guardian.SocketPath)
+	client := newStatusWatchClient()
 	return statusWatchLoopWith(ctx, out, asJSON, client.Status, client.StatusWatch, watchBackoff, watchIdleDelay)
+}
+
+// newStatusWatchClient builds the Guardian client statusWatchLoop actually
+// uses for its long-poll calls.
+//
+// **Must use watchClientTimeout, not guardian.NewClient's bare default.**
+// guardian.NewClient leaves HTTPClient nil; Client.request then falls back to
+// guardianHTTPClient(socketPath) per call, which hardwires Timeout: 30*time.Second
+// (client.go, guardianHTTPClient) — shorter than the 40s watchClientTimeout is
+// meant to provide, and shorter than watchMaxHold(25s)'s intended margin gets
+// eaten into. guardian.NewClientWithTimeout is the established pattern for this
+// exact problem (see guardian.go, servercmd.go, update.go): it sets
+// client.HTTPClient.Timeout explicitly so the constant above actually governs
+// the call instead of silently losing to the 30s fallback.
+func newStatusWatchClient() *guardian.Client {
+	return guardian.NewClientWithTimeout(guardian.SocketPath, watchClientTimeout)
 }
 
 // requireStatusWatchCapability 是进入 watch 循环前的**第一道、也是主要的**
