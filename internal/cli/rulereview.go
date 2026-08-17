@@ -90,13 +90,7 @@ func ruleReviewDoctorLines(rep rulereview.Report) []doctorFinding {
 		})
 	}
 	if rep.BuiltinListChecked {
-		if n := rep.ShadowedByBuiltinCount; n > 0 {
-			out = append(out, doctorFinding{
-				Status: "info",
-				Key:    "covered by builtin list",
-				Value:  summarizeClass(rep, rulereview.ClassShadowedByBuiltinList, n, "条与内建 china 列表相关"),
-			})
-		}
+		out = append(out, builtinListLines(rep)...)
 	} else if rep.BuiltinSkipReason != "" {
 		// **「没查」不许静默。** 它与「查了没有」在用户眼里长得一样,
 		// 而两者的差别正是这个功能最贵的那个教训。
@@ -153,14 +147,68 @@ func riskyRuleFinding(rep rulereview.Report) *doctorFinding {
 	}
 }
 
-// summarizeClass 打出「N 条 + 前三条点名」。全部列出来会把 doctor 淹掉,
-// 一条不点名又等于没说 —— 折中是给数字 + 够他去配置里搜的那几条原文。
+// summarizeClass 打出「N 条 + 前三条点名」,不区分 Kind —— 除
+// ClassShadowedByBuiltinList 外的三类里,同一类的话对 direct/proxy 都成立
+// (冗余就是冗余、失效就是失效,不看它在哪张表),混在一条不会混淆语义。
 func summarizeClass(rep rulereview.Report, class rulereview.Class, n int, tail string) string {
-	var names []string
+	var findings []rulereview.Finding
 	for _, f := range rep.Findings {
-		if f.Class != class {
-			continue
+		if f.Class == class {
+			findings = append(findings, f)
 		}
+	}
+	return summarizeFindings(findings, n, tail)
+}
+
+// builtinListLines 把 ClassShadowedByBuiltinList 按 **Kind** 拆成两条独立的行。
+//
+// **这是 Finding 1 的修复所在。** review.go 的 shadowedByBuiltinFindings 早就对
+// direct/proxy 两支写了意思相反的 Summary(direct:「删了没影响」;proxy:「这是
+// 生效中的例外,删了会改变流量」),但此前渲染层把两支的 finding 全塞进同一次
+// summarizeClass 调用、同一个 Key——那句相反的话被扔进了从不打印的 Summary 字段,
+// 一份只有 proxy 例外的配置读到的是跟「可以安全删除」同一种版式的一行。
+//
+// **两个计数各自独立、绝不合并到一起呈现**:rulereview.Report.ShadowedByBuiltinCount
+// 本身就是两支的和(判据只按 Class 计数,不认识 Kind,这是 rulereview 包的既有
+// 判定,本函数不改它),这里在渲染层按 Kind 重新分组——这是渲染层的职责,不是
+// 判据的职责。
+func builtinListLines(rep rulereview.Report) []doctorFinding {
+	var out []doctorFinding
+	if direct := classKindFindings(rep, rulereview.ClassShadowedByBuiltinList, "direct"); len(direct) > 0 {
+		out = append(out, doctorFinding{
+			Status: "info",
+			Key:    "covered by builtin list",
+			Value:  summarizeFindings(direct, len(direct), "条与内建 china 列表相关,删掉不改变任何流量"),
+		})
+	}
+	if proxy := classKindFindings(rep, rulereview.ClassShadowedByBuiltinList, "proxy"); len(proxy) > 0 {
+		out = append(out, doctorFinding{
+			Status: "info",
+			Key:    "builtin list exception",
+			Value: summarizeFindings(proxy, len(proxy),
+				"条把内建 china 列表判直连的域名扳回隧道——这是生效中的例外,删掉会改变流量"),
+		})
+	}
+	return out
+}
+
+// classKindFindings 按 Class 与 Kind 两个维度筛选,顺序与 rep.Findings 一致。
+func classKindFindings(rep rulereview.Report, class rulereview.Class, kind string) []rulereview.Finding {
+	var out []rulereview.Finding
+	for _, f := range rep.Findings {
+		if f.Class == class && f.Kind == kind {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// summarizeFindings 是 summarizeClass 与 builtinListLines 共用的格式化核心:
+// 「N 条 + 前三条点名」。全部列出来会把 doctor 淹掉,一条不点名又等于没说 ——
+// 折中是给数字 + 够他去配置里搜的那几条原文。
+func summarizeFindings(findings []rulereview.Finding, n int, tail string) string {
+	var names []string
+	for _, f := range findings {
 		names = append(names, fmt.Sprintf("%s ← %s", f.Rule, f.CoveredBy))
 		if len(names) == 3 {
 			break
