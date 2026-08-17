@@ -287,7 +287,22 @@ func (r *ReconcileReport) clone() *ReconcileReport {
 }
 
 type Status struct {
-	SchemaVersion     int              `json:"schema_version"`
+	SchemaVersion int `json:"schema_version"`
+
+	// StatusGeneration 是**内容派生**的单调计数器:Guardian 每次发现自己发布的
+	// Status(减去易变字段的投影,见 statusDigest)与上一次不同,它就 +1。
+	//
+	// 客户端把手上这个值经 `GET /v1/status?wait=<gen>` 发回来,Guardian 在
+	// `current != wait` 时立刻应答、相同则挂住。**比较用 `!=` 而不是 `>`**:
+	// Guardian 重启后这个计数器从头开始,`>` 会让客户端手上那个较大的值
+	// 永久挂住。
+	//
+	// **刻意没有 omitempty。** 键缺席 = 这一版 Guardian 没有 watch 这个概念
+	// (升级窗口里的旧 Guardian);键在而值为 0 = 有这个概念、还没发布过。
+	// 两者对客户端意味着不同的行为(降级轮询 vs 正常 watch),而 omitempty 会
+	// 把它们压成同一个形状(与 Capabilities 同一条纪律)。
+	StatusGeneration uint64 `json:"status_generation"`
+
 	Desired           DesiredState     `json:"desired"`
 	Phase             Phase            `json:"phase"`
 	CorePID           int              `json:"core_pid,omitempty"`
