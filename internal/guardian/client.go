@@ -88,6 +88,60 @@ func (c *Client) StatusWatch(ctx context.Context, generation uint64) (Status, er
 	return c.request(ctx, http.MethodGet, "/v1/status?wait="+strconv.FormatUint(generation, 10), nil)
 }
 
+// StatusCapabilities 发一次**不带 wait=**的 GET /v1/status(这一路绝不长轮询、
+// 绝不挂住),同时回答两件事:解码出的 Status,以及 JSON 顶层对象里
+// "capabilities" 这个键**是否出现过**。
+//
+// 为什么要分开报:Status.Capabilities 故意不带 `omitempty`(好让「这一版从没
+// 声明过能力」与「声明了、但是空或不含某一项」在协议里分得开),但这个区分
+// 只活在线上的原始字节里——一旦解码进 Status 结构体,JSON 的 `null`、缺席的
+// 键、和 `[]` 这三种会塌缩成同一个可观察结果:该 slice 字段要么是 nil
+// (null 与缺席都是 nil,无法互相区分),要么是非 nil 的空 slice(`[]`),
+// 三者 `len()` 全是 0。需要「这个键到底出现过没有」的调用方(bx status
+// --watch 的能力门控就是——旧 Guardian 的 Status 结构体里压根没这个字段,
+// 键因而缺席;而一个声明了空 capabilities 的新 Guardian,键是出现过的)
+// 得在信息被压扁之前,直接看一眼原始 JSON 对象的键,故这里额外解一遍
+// map[string]json.RawMessage。
+func (c *Client) StatusCapabilities(ctx context.Context) (Status, bool, error) {
+	client := c.HTTPClient
+	if client == nil {
+		client = guardianHTTPClient(c.SocketPath)
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		defer transport.CloseIdleConnections()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://local/v1/status", nil)
+	if err != nil {
+		return Status{}, false, err
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return Status{}, false, err
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		return Status{}, false, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return Status{}, false, guardianHTTPError("/v1/status", response.StatusCode, raw)
+	}
+	var status Status
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return Status{}, false, err
+	}
+	status.Recovery = redactRecoverySnapshot(status.Recovery)
+	if status.NetworkGeneration == "" {
+		status.NetworkGeneration = status.Recovery.Generation
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return Status{}, false, err
+	}
+	_, declared := fields["capabilities"]
+	return status, declared, nil
+}
+
 func (c *Client) Up(ctx context.Context) (Status, error) {
 	return c.request(ctx, http.MethodPost, "/v1/up", nil)
 }
