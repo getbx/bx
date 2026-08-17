@@ -402,7 +402,7 @@ func TestMigrationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 		migrateErr:           errors.New("inspect recorded Core PID 5129: boom"),
 		migrateSetsLastError: "legacy_core_migration_pending",
 	}
-	handler := migrationHandler(controller, controller, newAcceptedMutations(), LocalAPIOptions{})
+	handler := migrationHandler(controller, controller, newAcceptedMutations(), LocalAPIOptions{}, nil)
 
 	rec := httptest.NewRecorder()
 	handler(rec, rootMigrationRequest(t))
@@ -433,7 +433,7 @@ func TestMigrationHandlerOmitsStaleCodeWhenLastErrorUnchanged(t *testing.T) {
 		migrateErr: errors.New("migration admission failed"),
 		// migrateSetsLastError intentionally left empty.
 	}
-	handler := migrationHandler(controller, controller, newAcceptedMutations(), LocalAPIOptions{})
+	handler := migrationHandler(controller, controller, newAcceptedMutations(), LocalAPIOptions{}, nil)
 
 	rec := httptest.NewRecorder()
 	handler(rec, rootMigrationRequest(t))
