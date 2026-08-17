@@ -52,6 +52,23 @@ func TestRiskyRuleHintUsesARealSubcommand(t *testing.T) {
 	}
 }
 
+// **嵌套括号。** internal/stats/render.go 的 warningText 把每条 Warning 的 Hint
+// 套一层括号(`detail + " (" + hint + ")"`);这条 hint 曾自己也以括号收尾
+// (`(改完要 bx down && bx up)`),套出来的是
+// `… (bx direct rm '*.myqcloud.com'(改完要 bx down && bx up))` —— 圆括号嵌套两层,
+// 人读起来数不清哪个括号对哪个。走真实的 stats.Render,不是自己拼一遍渲染逻辑。
+func TestRiskyRuleHintRendersWithoutNestedParens(t *testing.T) {
+	cfg := &config.Config{Rules: []config.Rule{{Direct: []string{"*.myqcloud.com"}}}}
+	ws := riskyRuleWarnings(cfg)
+	if len(ws) != 1 {
+		t.Fatalf("前置断言失败:want 1 条告警,got %d", len(ws))
+	}
+	out := stats.Render(stats.Report{TunnelHealthy: true, Warnings: ws})
+	if strings.Contains(out, "((") || strings.Contains(out, "))") {
+		t.Fatalf("渲染出了嵌套括号,人读不清哪个括号对哪个:\n%s", out)
+	}
+}
+
 // 干净配置一条都不发。
 func TestNoRiskyRuleNoWarning(t *testing.T) {
 	cfg := &config.Config{Rules: []config.Rule{{Direct: []string{"*.qq.com"}}}}
