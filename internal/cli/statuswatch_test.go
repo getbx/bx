@@ -50,10 +50,34 @@ func TestWatchBackoffGrowsThenCaps(t *testing.T) {
 // 永远是自己的超时,而服务端那个上限一次都不会生效(switchServer/probeServers
 // 的注释里已经踩过并写下过同一个坑)。guardian.watchMaxHold 本身未导出,
 // client.go 里补了一个导出别名 guardian.WatchMaxHold 专供这条不等式使用。
+//
+// **这条测试曾经只比较两个常量**(watchClientTimeout 与 guardian.WatchMaxHold),
+// 而 statusWatchLoop 实际构造 client 用的是 guardian.NewClient(guardian.SocketPath)
+// ——那条路径把 HTTPClient 留 nil,Client.request per-call 现造
+// guardianHTTPClient(socketPath),它硬编码 Timeout: 30*time.Second
+// (client.go:guardianHTTPClient),比 40s 的 watchClientTimeout 短、也比不上
+// watchClientTimeout 想要保证的「必须 > 25s」的余量本意仍然满足(30>25),
+// 使得这条断言纵使为真也没有约束到任何实际生效的行为:调高 watchMaxHold 到
+// 30s,每次 watch 调用都会先撞在客户端自己的 30s 超时上死掉,而这条测试仍然
+// 全绿。改为直接观察 statusWatchLoop 真正会用的那个 client(newStatusWatchClient,
+// 与生产代码同一构造路径)的 HTTPClient.Timeout ——这样常量漂移、或者构造函数
+// 被改回 guardian.NewClient,都会让这条测试如实转红。
 func TestWatchClientTimeoutExceedsServerHold(t *testing.T) {
-	if watchClientTimeout <= guardian.WatchMaxHold {
-		t.Fatalf("watchClientTimeout=%v 必须大于 guardian.WatchMaxHold=%v,"+
-			"否则服务端的挂住上限永远不会被触发", watchClientTimeout, guardian.WatchMaxHold)
+	client := newStatusWatchClient()
+	if client.HTTPClient == nil {
+		t.Fatalf("newStatusWatchClient() 返回的 client.HTTPClient 是 nil —— 这意味着它" +
+			"落回了 guardian.NewClient 的默认路径,每次调用会现造一个硬编码 30s 超时的" +
+			"http.Client(guardianHTTPClient),而不是 watchClientTimeout(40s)")
+	}
+	effective := client.HTTPClient.Timeout
+	if effective != watchClientTimeout {
+		t.Fatalf("newStatusWatchClient() 的 HTTPClient.Timeout=%v,与 watchClientTimeout=%v 不一致 —— "+
+			"statusWatchLoop 实际会用到的超时和这个包里声明的常量必须是同一个数",
+			effective, watchClientTimeout)
+	}
+	if effective <= guardian.WatchMaxHold {
+		t.Fatalf("newStatusWatchClient() 实际生效的超时=%v 必须大于 guardian.WatchMaxHold=%v,"+
+			"否则服务端的挂住上限永远不会被触发", effective, guardian.WatchMaxHold)
 	}
 }
 
