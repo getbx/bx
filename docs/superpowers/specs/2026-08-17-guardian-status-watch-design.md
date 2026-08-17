@@ -70,11 +70,23 @@ publish(status)  →  取投影 digest  →  与上一次发布的投影比
 - 与 `internal/observe`、Core 所有权进程扫描同一条原则:**不信自己的记账,
   去问系统**。这里「问」= 重算一遍 Status 再比。
 
-广播点(只是 `poke()`,无数据、可漏):`/v1/up`、`/v1/down` 的 mutation handler
-落定之后;Core 意外退出的处理路径;路径恢复的状态迁移。
+**广播点只有两个:`/v1/up` 与 `/v1/down` 的 mutation handler 落定之后。**
 
-**重算兵底只在有订阅者时才跑。** 没人 watch 时这套东西的开销**精确为零** ——
-没有 goroutine、没有 ticker。
+刻意不在 Core 意外退出、路径恢复迁移那些地方也 poke —— 那些逻辑住在 `Manager`
+里,要把 publisher 穿进去,而**换来的只是把 3 秒缩短到 0**。既然按上面的设计
+广播只是加速器,那两处就让它们走兵底:Core 挂了,指示灯 3 秒内变。
+
+选 up/down 是因为那是**用户正站在旁边等反馈**的两处 —— 也正是这个 bug 的原始
+现场。
+
+**重算兵底不需要独立的 goroutine 或订阅者计数**:每个 parked 的 waiter 自己的
+`select` 里带一个 3 秒分支,醒来重算一次、代际号没变就继续挂。于是「没人 watch
+时开销精确为零」是构造出来的,不是维护出来的 —— 没有 ticker 的生命周期要管。
+
+多个 waiter 各自 3 秒重算会重复计算(`compute` 里有一次 Core socket 往返),
+故 `publish` 内部**合并**:距上次重算不足一个兵底间隔就直接返回缓存。
+`poke` 绕过合并(真事件要立刻见效)。没有这一条,任何本地进程都能开一百条
+watch 把 Core 往返放大一百倍 —— `/v1/status` 是无鉴权的读端点。
 
 ### 二、投影(digest)—— 这一节是本设计最危险的地方
 
@@ -83,7 +95,22 @@ publish(status)  →  取投影 digest  →  与上一次发布的投影比
 | 字段 | 为什么易变 |
 |---|---|
 | `Core.LatencyMS` | 每次健康探测都抖:390 → 412 → 388 |
-| `Core.FailingRules[].Attempts` / `.Failures` | 每条连接都在涨 |
+| `Core.FailingRules[].Attempts` / `.Failures` | 每条连接都在涨。**只零掉计数,保留 `Kind`/`Rule`** —— 「这条规则开始成片失败」是真事件,「它又多失败了 3 次」不是 |
+| `Reconcile.At` | `recordReconcileRound` 是唯一写入口且**每轮都盖时间戳**,不排除它 watch 会跟着调谐环每 30 秒到 10 分钟触发。只排 `At`:`Actions`/`Held` 变了是真事件 |
+| `Recovery.UpdatedAt` | 恢复进行中每次轮询都换。只排它:`State`/`Stage`/`Attempt`/`ErrorCode` 变了都是真事件,而菜单那个「Connecting — N 秒」计数器本来由它自己的本地 `toggleTicker` 驱动,不靠推送走字 |
+| `StatusGeneration` 自己 | 进了投影就每次 bump 都让下一次比对不同,永久自激 |
+
+反过来有一个**必须留在投影里、而且它证明了兵底不是可选项**的:`MaintenanceHold`
+到期时从非 nil 变 nil,而**没有任何广播点会在到期那一刻 poke** —— 挂起是读取时
+判过期的(沿用 `internal/toolkeys` 那个不设定时器的先例)。那一跳只能由兵底
+重算发现。
+
+**深拷贝是承重的,不是讲究。** `Status` 里 `Core`/`Reconcile` 是指针、
+`FailingRules` 是切片:复制 `Status` 只复制切片头,在「副本」里把元素的计数清零
+**改的是同一个底层数组**,于是真正发布出去的那份 `Status` 里计数变成 0。
+一个会污染它所要度量的东西的 digest 函数,比没有 digest 更糟。
+(`GuardianCapabilities()` 头上那句注释 ——「每次调用都返回新切片:共享一份底层
+数组等于把一个包级可变状态发布出去」—— 说的是同一条纪律。)
 
 **「重算整个 Status、逐字节比、变了就吐」这版实现会让 watch 几乎每次重算都触发,
 比今天 30 秒轮询严格更差。** 这个坑在单测里发现不了(测试里 latency 是固定
@@ -119,7 +146,12 @@ GET /v1/status?wait=<generation>[&timeout=<seconds>]
 - `current != wait` ⇒ **立刻**返回 200 + 完整 `Status`。
 - 相同 ⇒ 挂住,直到:代际号变(返回新 `Status`)、超时(返回 200 + 当前
   `Status`,代际号不变 —— 这一条同时充当**通道活着的证据**)、或 Guardian 关机。
-- 不带 `wait` ⇒ 与今天的 `/v1/status` **逐字节相同**,老客户端一个字都不用改。
+- 不带 `wait` ⇒ 行为与今天相同(立刻返回当前 `Status`),**但应答多一个
+  `status_generation` 键** —— 客户端得先有一个代际号才能发回来。这不是「逐字节
+  相同」,是**结构上向后兼容**:Swift 侧全部字段走 `decodeIfPresent` +
+  显式 `CodingKeys`(`GuardianStatus.swift`),Go 侧 `json.Decode` 默认忽略未知键,
+  两边都不会因为多一个键而失败。**有一条测试专门钉这个**,因为「加个字段而已」
+  正是会顺手把旧客户端弄坏的那类改动。
 
 **为什么是 `!=` 而不是 `>`**:Guardian 重启后代际号从头开始。客户端手上是 57,
 新 Guardian 在 3 —— `current > 57` 为假,请求会**永久挂住**。`!=` 立刻返回。
