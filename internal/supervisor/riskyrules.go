@@ -37,7 +37,12 @@ func riskyRuleWarnings(cfg *config.Config) []stats.Warning {
 			Detail:   fmt.Sprintf("直连白名单里的 %s 是公有云/开放子域平台:任何人都能注册它的子域,用一个子域让你的真实 IP 暴露", f.Rule),
 			// bx direct rm(不是 remove —— 那是这条 hint 上一版的笔误,命令本身
 			// 不存在,见 directCommands();用户照着敲会得到一句 usage 错误)。
-			Hint: fmt.Sprintf("bx direct rm '%s'(改完要 bx down && bx up)", f.Rule),
+			//
+			// **不用括号收尾。** internal/stats/render.go 的 warningText 会把整条
+			// hint 再套一层括号(`detail + " (" + hint + ")"`),hint 自己若也用
+			// 括号收尾就会渲染出 `(...(改完要 bx down && bx up))` 这种嵌套 ——
+			// 人读不清哪个括号对哪个。用分号分隔两个分句,渲染出来只有外层那一层。
+			Hint: fmt.Sprintf("bx direct rm '%s'；改完要 bx down && bx up", f.Rule),
 		})
 	}
 	return out
