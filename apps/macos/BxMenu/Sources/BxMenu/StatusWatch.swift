@@ -67,3 +67,24 @@ func watchBackoffSeconds(consecutiveFailures: Int) -> TimeInterval {
     let delay = pow(2.0, Double(consecutiveFailures - 1))
     return min(delay, watchBackoffMaxSeconds)
 }
+
+/// 一个按需取数的 in-flight 守卫,该不该拦住**这一次**调用。
+///
+/// **两种失败的代价不对称,这是判据。** 重叠取数的代价是一次多余的本机 unix
+/// socket 往返(亚秒级,已判定无害)。拦住一次显式动作的代价是「用户点了菜单
+/// 项、窗口没出现、没有 alert,什么都没发生」——点了没反应。这两种代价不该用
+/// 同一条规则去权衡。
+///
+/// 所以:**`explicit == true` 永不被拦**,不管有没有一次取数正在飞;只有
+/// `explicit == false`(环境刷新那一路,不是用户直接点出来的)才会在已有一次
+/// 在飞时被拦住——拦的目的仅仅是不让连着来的环境刷新叠起来,漏一次的代价只是
+/// 晚一拍,不是「什么都没发生」。
+///
+/// 用在 `main.swift` 的服务器窗口上:那是这个仓库里**唯一**一个 in-flight 标志
+/// 被「显式打开」(点菜单项)与「环境刷新」(窗口已可见时跟着状态变化再拉一次)
+/// 两条路共用的地方。两条路共用同一个布尔标志、却只用一条 `guard !flag` 去判,
+/// 曾经把这个不对称判反——环境刷新设的标志会把紧跟着来的显式打开也拦住,这就
+/// 是那次回归的机制,不是「运气不好撞上」。
+func shouldSuppressFetch(inFlight: Bool, explicit: Bool) -> Bool {
+    inFlight && !explicit
+}

@@ -365,7 +365,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // capabilities 刚到手,若这一版 Guardian 声明了 status_watch 且循环还没
         // 起,就在这里转入 watch——引导序列的后半段(前半段是这次 refresh 本身)。
         startWatchLoopIfAvailable()
-        // rules/servers 已经改按需拉(fetchRulesOnDemand/fetchServersOnDemand),
+        // rules/servers 已经改按需拉(fetchRulesOnDemand/fetchServersOnDemand,
+        // 另外 applyGroupChange 换规则组之后也会直接顶替 lastRules),
         // `outcome.rules`/`.servers` 现在恒为 nil ——这两个 `if let` 今天永远不会
         // 执行。留着不删是防御性的:一旦哪天刷新路径又长出一条真的写它们的支线
         // (比如某个界面确实需要跟着环境刷新),这里「不覆盖」的语义能保证半路
@@ -800,12 +801,22 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var switchInFlight = false
     /// 有一次按需拉规则/服务器正在飞。与 `probing`/`switchInFlight` 同一个模式。
     ///
-    /// **服务器这边不是可选的**:`fetchServersOnDemand` 现在不止由菜单点击触发,
-    /// 服务器窗口开着时每一次 `applyRefresh` 都会调它一次——watch 时代刷新是
-    /// 事件驱动的、可能连着来,没有这个守卫,重叠的取数会真的发生(旧的还没回来,
-    /// 新的又拨了一次)。规则这边只由菜单点击触发,理论上够不到重叠,这里一并加
-    /// 是为了与 `probing`/`switchInFlight` 保持同一个模式,不是因为发现了具体的
-    /// 竞态。
+    /// **服务器这边不是可选的**:`fetchServersOnDemand` 现在不止由菜单点击触发
+    /// (`forceShow: true`),服务器窗口开着时每一次 `applyRefresh` 也会调它一次
+    /// (`forceShow: false`)——watch 时代刷新是事件驱动的、可能连着来,没有这个
+    /// 守卫,重叠的取数会真的发生(旧的还没回来,新的又拨了一次)。
+    ///
+    /// **但这个标志被两条路共用,拦截判据必须只压其中一条**(见
+    /// `shouldSuppressFetch`,`StatusWatch.swift`):环境刷新那一路(`forceShow:
+    /// false`)在已有一次在飞时被拦是安全的,漏一次最多晚一拍;而显式点击那一路
+    /// (`forceShow: true`)绝不能被这个标志拦——拦住的后果是用户点了「Servers…」,
+    /// 窗口没出现、没有 alert、什么都没发生。这曾经是一次真实的回归(点开窗口
+    /// 前一刻恰好撞上一次环境刷新在飞,`guard !serversFetchInFlight` 直接把显式
+    /// 打开吞掉),按上面这条不对称改掉。
+    ///
+    /// 规则这边只由菜单点击触发,没有环境刷新这一路,不存在这个不对称,继续用
+    /// 简单的 `guard !rulesFetchInFlight`——一并加这个标志纯粹是为了与
+    /// `probing`/`switchInFlight` 保持同一个模式,不是因为发现了具体的竞态。
     private var rulesFetchInFlight = false
     private var serversFetchInFlight = false
 
@@ -988,8 +999,18 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// **`serversFetchInFlight` 守卫是必需的,不是可选的**:窗口开着时它跟着
     /// 每一次刷新触发,而 watch 时代刷新是事件驱动、可能连着来的——没有这个
     /// 守卫,上一次还没回来、下一次又拨了一次的重叠会真的发生。
+    ///
+    /// **但拦截判据不是裸的 `guard !serversFetchInFlight`**——那条曾经的写法
+    /// 让环境刷新设的标志把紧跟着来的显式打开也拦住(点了「Servers…」,窗口
+    /// 没出现、没有 alert,什么都没发生,是一次真实的回归)。判据抽在
+    /// `shouldSuppressFetch`(`StatusWatch.swift`,已表驱动测过四种组合):
+    /// 只拦 `forceShow: false` 那一路,`forceShow: true` 永不被这个标志拦——
+    /// 显式动作即便撞上一次仍在飞的环境刷新也会照常继续(代价至多是一次多余的
+    /// 本机 socket 往返,判定无害)。显式那一路仍然会**设置**这个标志(见下方
+    /// `serversFetchInFlight = true`),只是不会**被它拦**——这样它自己发起的
+    /// 取数也能防住后续环境刷新的重叠。
     private func fetchServersOnDemand(forceShow: Bool) {
-        guard !serversFetchInFlight else { return }
+        guard !shouldSuppressFetch(inFlight: serversFetchInFlight, explicit: forceShow) else { return }
         serversFetchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fetched = try? GuardianClient().listServers()

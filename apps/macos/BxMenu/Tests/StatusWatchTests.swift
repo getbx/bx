@@ -50,6 +50,23 @@ struct StatusWatchTests {
         expect(menuWatchIdleDelaySeconds > 0,
                "menuWatchIdleDelaySeconds 必须是正数,否则「代际号没变」那一支会满速空转")
 
+        // shouldSuppressFetch:两种失败的代价不对称(重叠取数 vs. 显式动作
+        // 点了没反应),表驱动测四种组合,钉住「explicit 永不被拦」这条不对称
+        // ——这条判据曾经被裸的 `guard !flag` 判反,让环境刷新设的标志把紧跟着
+        // 来的显式打开也拦住(main.swift 的 fetchServersOnDemand)。
+        let suppressCases: [(inFlight: Bool, explicit: Bool, expected: Bool, why: String)] = [
+            (false, false, false, "没有取数在飞时,环境刷新不该被拦"),
+            (false, true, false, "没有取数在飞时,显式动作当然不该被拦"),
+            (true, false, true, "有一次在飞时,环境刷新应当被拦——防的是连着来的刷新叠起来"),
+            (true, true, false, "有一次在飞时,显式动作仍然不许被拦——拦住的后果是点了没反应"),
+        ]
+        for testCase in suppressCases {
+            let got = shouldSuppressFetch(inFlight: testCase.inFlight, explicit: testCase.explicit)
+            expect(got == testCase.expected,
+                   "shouldSuppressFetch(inFlight: \(testCase.inFlight), explicit: \(testCase.explicit)) "
+                       + "= \(got),期望 \(testCase.expected) —— \(testCase.why)")
+        }
+
         // **本仓库另外 20 个 Swift 测试套件全部以 `X passed` 收尾**,唯独这一条
         // 此前没有——那是个具体的漏洞,不是风格差异:`test-macos-menu.sh`
         // 提前 `exit 0` 时退出码仍是 0,只有这行收尾横幅能证明「这个套件真的
