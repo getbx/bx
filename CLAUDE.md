@@ -359,6 +359,30 @@ rules/servers)。轮询时代这只是浪费;**watch 时代刷新从「每 30 �
 落定,读不到就照既有逻辑说读不到(保留 `lastRules`/`lastServers` 原样),
 **不摆一个空列表**。
 
+**这条改动本身踩过一次回归,已修:服务器窗口的实时更新不能直接删掉。**
+改按需拉之前,`applyRefresh` 里 `if let fresh = outcome.servers { … ;
+serversWindow.refreshIfVisible(…) }` 是**唯一**一条「环境刷新(轮询/watch)
+更新一个已经打开的服务器窗口」的路径——`ServersWindow.swift` 自己没有定时器。
+`loadState` 改成恒传 `servers: nil` 之后这一支永远不会执行,后果是打开服务器
+窗口不关它就冻在打开那一刻,直到用户关掉重开、或恰好触发
+probeServers/checkExitIP/一次切换。**规则窗口不受影响**——`RulesWindowController`
+本来就没有这条环境刷新路径,只由 `applyGroupChange` 驱动,所以没给它加同款逻辑。
+修法是按**窗口可见性**触发,而不是恢复无条件取数:`applyRefresh` 现在在
+`serversWindow.isVisible` 时调 `fetchServersOnDemand(forceShow: false)`——
+窗口关着就不拨(这个 task 要保住的收益,没人看时不再每次刷新都解析一遍
+config);窗口开着就说明有人正盯着,这时候按需拉一次正是「按需」的本意,不是
+违背它,这个 task 要消掉的是「没人看的时候还每 2 秒解析两遍 config」,不是
+「有人正盯着的时候也不给他更新」。`forceShow` 区分两种呈现:`true`(用户点了
+「Servers…」)用 `show()` 弹出/前置窗口、读不到就用 `NSAlert` 明说;`false`
+(环境刷新、窗口已可见)用 `refreshIfVisible` 就地重画,不抢焦点、不弹 alert
+(否则每次刷新都 `NSApp.activate` 或弹一次 alert)。**这个改动也把
+`fetchServersOnDemand` 的 in-flight 守卫从「可选」变成「必需」**:窗口开着时
+它会跟着每一次刷新触发,watch 时代刷新是事件驱动、可能连着来,没有守卫上一次
+没回来、下一次又拨的重叠会真的发生(`serversFetchInFlight`,与 `probing`/
+`switchInFlight` 同一个模式)。`fetchRulesOnDemand` 只由菜单点击触发,理论上
+够不到重叠,仍一并加了 `rulesFetchInFlight`,纯粹是为了与既有的
+`probing`/`switchInFlight` 保持同一个模式,不是发现了具体竞态。
+
 **真机未验**(除 `bx status --watch` 本身,那是唯一已可用的只读验证手段):
 **「投影够不够安静」只能真机验**——单测里 latency 是固定 fixture,测不出吵不吵;
 `bx status --watch` 挂一段、稳态下应当几乎不吐,是本设计唯一真正的验收。
