@@ -139,6 +139,7 @@ run_test servers-model \
 
 run_test menu-cadence \
   "$MENU/Sources/BxMenu/MenuCadence.swift" \
+  "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Tests/MenuCadenceTests.swift"
 
 run_test guardian-status-fields \

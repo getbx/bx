@@ -16,7 +16,22 @@ struct MenuCadenceTests {
         let closed = menuPollInterval(menuOpen: false)
 
         expect(open < closed, "菜单打开时必须刷得更勤,实际 open=\(open) closed=\(closed)")
-        expect(closed >= 20, "菜单关着时只有图标要更新,间隔应显著放宽,实际 \(closed) 秒")
+
+        // **这条守卫的旧措辞把因果说反了。** 它原本写的是「菜单关着时只有图标
+        // 要更新,间隔应显著放宽」—— 而菜单关着的时候,**图标恰恰是唯一在被读
+        // 的东西**。用「没人在看数据行」当理由去放宽间隔,放宽掉的正是唯一有人
+        // 在看的那一样;项目所有者看到的现象就是「敲完 bx down 图标不变,点一下
+        // 才变」。
+        //
+        // 30 秒本身没有被改小:延迟由 watch(StatusWatch.swift)消掉,而这个
+        // 常量只在**旧 Guardian 不支持 watch** 时作为降级路径生效。它的理由
+        // 现在是「降级路径要保持既有行为」,不再是那句被证伪的话。
+        expect(closed == 30, "无 watch 时的降级轮询应保持既有的 30 秒,实际 \(closed) 秒")
+
+        // 兜底轮询与关闭档轮询是**两件不同的东西**:前者在 watch 健康时也照跑,
+        // 是「watch 已经哑了」的保险;后者是完全没有 watch 时的取数手段。
+        expect(menuWatchBackstopSeconds > closed,
+               "兜底轮询(\(menuWatchBackstopSeconds) 秒)不该比降级轮询(\(closed) 秒)还密 —— 它不是取数据的手段")
 
         // status --json 在 macOS 上整轮观测封顶 5 秒;间隔不得低于它,
         // 否则上一次还没回来下一次就发起了,等于常驻满占空比。

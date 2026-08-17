@@ -7,9 +7,19 @@ import Foundation
 /// 间隔比它还短就会出现上一次未回、下一次已发起。
 let menuPollOpenSeconds: TimeInterval = 2
 
-/// 菜单关着时的刷新间隔。此时只有菜单栏图标需要更新,没人在读数据行。
+/// 菜单关着时的刷新间隔。**这是降级路径,不是稳态。**
 ///
-/// 原实现无论有没有人看都固定 5 秒 spawn 两个进程,是纯浪费。
+/// 曾经这个常量的理由是「菜单关着时只有图标要更新,没人在读数据行,间隔可以
+/// 显著放宽」—— 那句话把因果说反了:菜单关着的时候,图标恰恰是**唯一**在被
+/// 读的东西。真正让「敲完 `bx down` 图标当场变」成立的是 watch(见
+/// `StatusWatch.swift`,能力门控的长轮询,状态一变就当场推回来),不是把这个
+/// 常量调小。
+///
+/// 现在它只在**这一版 Guardian 不支持 watch**(旧版、或能力探测失败)时,
+/// 作为纯定时轮询的间隔生效 —— 30 秒本身没有改小,理由变成了「降级路径要
+/// 保持既有行为」。与它相邻但不是同一件事的是 `menuWatchBackstopSeconds`
+/// (`StatusWatch.swift`):那个在 watch **健康**时也照跑,是「watch 已经哑了」
+/// 的保险,不是取数据的手段,数值必须比这里更松。
 let menuPollClosedSeconds: TimeInterval = 30
 
 func menuPollInterval(menuOpen: Bool) -> TimeInterval {
