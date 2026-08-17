@@ -49,6 +49,17 @@ type statusPublisher struct {
 	shutdown     chan struct{}
 }
 
+// newStatusPublisher 构造一个 statusPublisher。
+//
+// **compute 必须自带上限。** 它在持有 p.mu 时被同步调用(见 recomputeLocked)——
+// 一个无界的 compute 会把关机检测拖到它返回为止:beginShutdown 唤醒的是 parked
+// 在 select 里的 waiter,救不了正卡在 compute() 里的那一个,而卡在 compute()
+// 里也会挡住其它 goroutine 的 current()/poke()/wait()(它们都要先拿到同一把锁)。
+// 今天生产的 compute 走 observableStatus → attachCoreRuntime,后者有
+// coreRuntimeFetchTimeout = time.Second(internal/guardian/localapi.go:66)当上限,
+// 所以最坏情形是约 1 秒关机延迟,不是无界挂死 —— 但这是调用方今天恰好提供的
+// 保证,不是这一层强制的:换一个无界的 compute 进来会静默打破「停止路径不许
+// 因为别的事没做完而变慢」这条不变量。
 func newStatusPublisher(compute func() Status) *statusPublisher {
 	return &statusPublisher{
 		compute:  compute,
@@ -83,6 +94,9 @@ func (p *statusPublisher) recomputeLocked(force bool) {
 	if !force && !p.computedAt.IsZero() && time.Since(p.computedAt) < watchRecomputeInterval {
 		return
 	}
+	// 持锁调用。compute 必须自带上限(见 newStatusPublisher 的注释)——
+	// 这里没有超时包装,是因为加一层会引出「重算失败时发布什么」这个设计问题,
+	// 不是这一轮该决定的。
 	status := p.compute()
 	p.computedAt = time.Now()
 
@@ -95,16 +109,30 @@ func (p *statusPublisher) recomputeLocked(force bool) {
 		digest = ""
 	}
 	if err == nil && digest == p.digest {
-		p.status = status
+		p.setStatusLocked(status)
 		return
 	}
 	p.digest = digest
 	p.generation++
-	status.StatusGeneration = p.generation
-	p.status = status
+	p.setStatusLocked(status)
 	// 广播:close 当前这一条,换一条新的。
 	close(p.changed)
 	p.changed = make(chan struct{})
+}
+
+// setStatusLocked 是**唯一**写 p.status 的地方(recomputeLocked 的两条分支都
+// 经它),所以「盖代际号」不是一个要在每条分支里各记一遍的步骤,而是写
+// p.status 这件事本身自带的:调用方连「忘了盖」这个选项都没有。
+//
+// compute() 不填 StatusGeneration(这是 publisher 的专职),而 unchanged 分支
+// 直接把 compute() 的返回值当结果 —— 若不经这里统一盖,稳态下(绝大多数重算
+// 都在 unchanged 分支)发布出去的会一直是 status_generation: 0。那不只是字段
+// 错:Task 3 的 handler 直接把 current() 的 Status 序列化成 JSON,客户端读到 0
+// 就会回发 wait=0,服务端拿真实代际号一比"不同"就立刻返回 —— 长轮询退化成
+// 满速轮询,比原来 30 秒定时轮询更差,而这正是设计文档点名要避免的失效模式。
+func (p *statusPublisher) setStatusLocked(status Status) {
+	status.StatusGeneration = p.generation
+	p.status = status
 }
 
 // wait 是长轮询的核心。
