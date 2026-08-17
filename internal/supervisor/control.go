@@ -512,14 +512,20 @@ func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, serve
 	return serveControlWithPathRecovery(ctx, c, t, server, mode, udpMode, transportInfo, runtime, eng, mut, reload, nil, shutdown, ownerUID, nil, nil, nil)
 }
 
-func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), shutdown func(), ownerUID uint32, recoverer pathRecoverer, probeDial probeDialer, configWarnings []stats.Warning) (io.Closer, error) {
-	guard := startNetworkGuard(ctx)
-	// **吞吐要按固定节拍采样,不能搭在读状态那条路上。**
-	// 读状态的间隔由调用方决定(菜单开着 2 秒、关着 30 秒、CLI 一次就走),
-	// 而峰值是一个「有没有在那一秒看到」的问题 —— 采样疏了就整个错过。
-	rate := &stats.RateMeter{}
-	go sampleThroughput(ctx, c, rate)
-	report := func() stats.Report {
+// newStatusReporter 组装 report 闭包:把计数器快照、隧道状态、运行时状态、
+// network guard 告警与配置派生告警(configWarnings)拼成一份 stats.Report。
+//
+// **单独成一个具名函数,是为了让它能在不建 socket、不需要 root 的情况下被直接
+// 调用测试。** serveControlWithPathRecovery 本身要在 SockPath(darwin
+// `/var/run/bx`、linux `/run/bx`)下经 secdir.Ensure 建目录再 net.Listen ——
+// SockPath 是编译期常量,不是可注入的测试缝,把它改成可覆盖的变量是一次比
+// 「configWarnings 有没有到达 Report.Warnings」这个问题大得多的重构。本机以
+// 非 root 身份实测过:`mkdir /var/run/bx-probe` → `Permission denied`(uid=501)。
+// 这个提取是不碰 SockPath、不需要 root 就能验证生产代码真的把 configWarnings
+// 拼进了 Warnings 字段的唯一办法——TestStatusReporterIncludesBothGuardAndConfigWarnings
+// (control_reporter_test.go)直接调用它,不是重新拼一遍它的逻辑。
+func newStatusReporter(c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, guard *networkGuard, rate *stats.RateMeter, configWarnings []stats.Warning) func() stats.Report {
+	return func() stats.Report {
 		ts := t.Stats()
 		var active, udp string
 		var list []string
@@ -569,6 +575,16 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 			Warnings: append(guard.warnings(), configWarnings...),
 		}
 	}
+}
+
+func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), shutdown func(), ownerUID uint32, recoverer pathRecoverer, probeDial probeDialer, configWarnings []stats.Warning) (io.Closer, error) {
+	guard := startNetworkGuard(ctx)
+	// **吞吐要按固定节拍采样,不能搭在读状态那条路上。**
+	// 读状态的间隔由调用方决定(菜单开着 2 秒、关着 30 秒、CLI 一次就走),
+	// 而峰值是一个「有没有在那一秒看到」的问题 —— 采样疏了就整个错过。
+	rate := &stats.RateMeter{}
+	go sampleThroughput(ctx, c, rate)
+	report := newStatusReporter(c, t, server, mode, udpMode, transportInfo, runtime, guard, rate, configWarnings)
 	if err := secdir.Ensure(filepath.Dir(SockPath), os.Geteuid(), 0o755); err != nil {
 		return nil, fmt.Errorf("准备控制 socket 目录: %w", err)
 	}
