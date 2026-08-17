@@ -95,6 +95,20 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var breathPhase: Double = 0
     /// 一次刷新未回时挡掉下一次(丢弃,不排队)。规则在 `RefreshGate`,这里只照做。
     private var refreshGate = RefreshGate()
+    /// 菜单此刻开着还是关着。**只用于 watch 起跑那一刻**判断该不该立刻换成兜底
+    /// 间隔 —— 菜单开合本身仍由 `menuWillOpen`/`menuDidClose` 直接传参调用
+    /// `rescheduleRefreshTimer`,不经这个属性绕一道。
+    private var menuIsOpen = false
+    /// 长轮询循环专属的后台串行队列。**不用 `.global()`**:那是并发队列,而这里
+    /// 只该有一个循环在跑,用专属队列让这件事从命名上就清楚。
+    private let watchQueue = DispatchQueue(label: "com.getbx.bx.menu.statuswatch")
+    /// watch 循环是否已经起来。**只在主线程读写,只会从 false 变成 true 一次**——
+    /// 循环本身此后永远跑着(直到进程退出),没有需要停止的路径。
+    private var watchLoopRunning = false
+    /// watch 循环此刻已知的代际号。**起跑前那一次赋值发生在主线程,经
+    /// `watchQueue.async` 建立的 happens-before 关系保证安全;此后只有
+    /// `watchQueue` 上的 `runWatchLoop` 读写它,主线程再也不碰。**
+    private var watchGeneration: UInt64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         enforceSingleInstance()
@@ -190,10 +204,63 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `NSEventTrackingRunLoopMode`,`Timer.scheduledTimer` 只进 `.default`,
     /// 于是打开档那 2 秒一次在菜单开着的时候一次都不会触发(实测 0 次 vs
     /// `.default` 下同样一秒 10 次)——正是它唯一该干活的时候。
+    ///
+    /// **watch 起来之后,只有「菜单关着」这一档换成 `menuWatchBackstopSeconds`。**
+    /// 那一档此后只是「watch 是不是哑了」的保险,不再是取数据的手段(见
+    /// StatusWatch.swift 里 `menuWatchBackstopSeconds` 的注释)。「菜单开着」的
+    /// 2 秒档**不受影响**:用户此刻正在看数据行,而且 rules/servers 今天仍靠
+    /// 这一拍的常规 `refresh` 带回(Task 6 才改成按需拉),watch 只管 status 那半。
     private func rescheduleRefreshTimer(menuOpen: Bool) {
         timer?.invalidate()
-        timer = commonModeTimer(every: menuPollInterval(menuOpen: menuOpen)) { [weak self] in
+        let interval = (!menuOpen && watchLoopRunning) ? menuWatchBackstopSeconds : menuPollInterval(menuOpen: menuOpen)
+        timer = commonModeTimer(every: interval) { [weak self] in
             self?.refresh(userInitiated: false)
+        }
+    }
+
+    /// 引导序列的后半段:capabilities 到手之后,声明了 `status_watch` 才转入
+    /// watch 循环。**绝不试拨**——判据只有 `watchIsAvailable`,不手抄字符串比较
+    /// (见 StatusWatch.swift)。只会成功起跑一次:`watchLoopRunning` 一旦置
+    /// true,循环体本身永远不停(直到进程退出),不需要停止的路径。
+    private func startWatchLoopIfAvailable() {
+        guard !watchLoopRunning, watchIsAvailable(capabilities: maintenanceReport?.capabilities) else { return }
+        watchLoopRunning = true
+        watchGeneration = maintenanceReport?.statusGeneration ?? 0
+        // 兜底轮询从这一刻起可能换挡(见 rescheduleRefreshTimer 的注释),按
+        // 菜单此刻的开合状态重排一次,而不是等下一次 menuWillOpen/menuDidClose。
+        rescheduleRefreshTimer(menuOpen: menuIsOpen)
+        watchQueue.async { [weak self] in
+            self?.runWatchLoop()
+        }
+    }
+
+    /// 长轮询循环。**每一轮结果都经既有的 `refresh(userInitiated:)` →
+    /// `loadState` → `applyRefresh` 落定**,不新写一条状态落定路径——那会变成
+    /// 第二个控制面,而这个仓库的架构诊断整篇讲的就是这件事(见 CLAUDE.md
+    /// 「控制面架构诊断」一节)。这里只负责「什么时候该去刷」。
+    ///
+    /// 服务端返回的代际号与请求的相同 = 只是挂住到了它自己的 25 秒上限、什么
+    /// 都没变,直接再等一轮,不必触发一次刷新去重新问一遍已经知道没变的答案。
+    private func runWatchLoop() {
+        var consecutiveFailures = 0
+        while true {
+            let requested = watchGeneration
+            do {
+                let status = try guardianClient.statusWatch(generation: requested)
+                consecutiveFailures = 0
+                let observed = status.statusGeneration ?? requested
+                guard observed != requested else { continue }
+                watchGeneration = observed
+                DispatchQueue.main.async { [weak self] in
+                    self?.refresh(userInitiated: false)
+                }
+            } catch {
+                consecutiveFailures += 1
+                let backoff = watchBackoffSeconds(consecutiveFailures: consecutiveFailures)
+                if backoff > 0 {
+                    Thread.sleep(forTimeInterval: backoff)
+                }
+            }
         }
     }
 
@@ -204,6 +271,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
         rescheduleRefreshTimer(menuOpen: true)
         // 异步:数据回来后就地更新已经展开的这个菜单。
         //
@@ -216,6 +284,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
         rescheduleRefreshTimer(menuOpen: false)
     }
 
@@ -283,6 +352,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         repairVersions = outcome.repairVersions
         outdatedRuntime = outcome.outdatedRuntime
         maintenanceReport = outcome.maintenanceReport
+        // capabilities 刚到手,若这一版 Guardian 声明了 status_watch 且循环还没
+        // 起,就在这里转入 watch——引导序列的后半段(前半段是这次 refresh 本身)。
+        startWatchLoopIfAvailable()
         // 这一轮没读到就保留上一轮的:菜单打开的瞬间闪成 "Could not read rules"
         // 再闪回来,比慢一拍更糟。真读不到时(第一次就失败)它本来就是 nil。
         if let fresh = outcome.rules {

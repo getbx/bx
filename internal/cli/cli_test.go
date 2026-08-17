@@ -1203,7 +1203,15 @@ func TestMenuGuardianPathsAreServedByTheDaemon(t *testing.T) {
 			len(endpoints), len(requested))
 	}
 	for _, match := range requested {
-		if !served[match[1]] {
+		// http.ServeMux 只按路径路由,查询串不参与匹配(`/v1/status?wait=…`
+		// 与 `/v1/status` 在服务端是同一条路由)——statusWatch 那一支的 path
+		// 带着字面量插值 `\(generation)`,不剥掉查询串就会去比对一个从没被
+		// 注册过、也不会被注册的字符串,把这条本来对的路径误判成没接上。
+		route := match[1]
+		if idx := strings.Index(route, "?"); idx >= 0 {
+			route = route[:idx]
+		}
+		if !served[route] {
 			t.Errorf("菜单请求 %s,而 Guardian 没有注册这条路由:未知路径的应答是 404 text/plain,"+
 				"在客户端表现为 .contentType 而不是 .socket —— 菜单会永久停在 \"Status unreadable\","+
 				"既不落到 diagnoseStopped,也没有任何一台机器能自己走出来", match[1])
@@ -5781,4 +5789,21 @@ func stripSwiftLineComments(src string) string {
 		out.WriteByte('\n')
 	}
 	return out.String()
+}
+
+// main.swift 的 watch 接线只能靠读源码守住。**守语义,不守拼法。**
+//
+// 钉两件事:① 循环必须经既有的 applyRefresh 落定状态(新写一条落定路径就是
+// 第二个控制面);② 能力门控必须是 watchIsAvailable,不是某处手抄的字符串比较。
+//
+// **这条守卫弱于它想守的东西**:它证明的是「判据没有被手抄第二份」,不是
+// 「循环真的跑起来了」。后者只能真机点一遍。
+func TestMacMenuWatchLoopUsesCapabilityGateAndExistingApplyPath(t *testing.T) {
+	source := menuMainSwiftSource(t)
+	if !strings.Contains(source, "watchIsAvailable(capabilities:") {
+		t.Error("watch 的启用判据不是 watchIsAvailable —— 手抄一份字符串比较会与 StatusWatch.swift 漂开,而那一份才有测试")
+	}
+	if strings.Contains(source, `contains("status_watch")`) {
+		t.Error("main.swift 里直接比对了 \"status_watch\" 字面量 —— 判据只该有一份,在 StatusWatch.swift")
+	}
 }
