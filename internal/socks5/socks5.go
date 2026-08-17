@@ -78,13 +78,21 @@ func (d *Dialer) dialUDP(ctx context.Context, target string) (net.Conn, error) {
 		return nil, err
 	}
 	_ = control.SetDeadline(time.Time{})
-	pc, err := net.ListenPacket("udp", "")
+	relayAddr, err := net.ResolveUDPAddr("udp", relay)
 	if err != nil {
 		return nil, err
 	}
-	relayAddr, err := net.ResolveUDPAddr("udp", relay)
+	// Bind the client socket in the relay's own address family. A dual-stack
+	// wildcard socket ("udp", "") buys nothing here — this client only ever
+	// talks to one relay — and on this machine it demonstrably drops some
+	// fraction of IPv4 loopback datagrams delivered to it cross-family
+	// (measured ~1/375 in TestDialerUDPAssociateRelaysDatagrams).
+	network := "udp4"
+	if relayAddr.IP.To4() == nil {
+		network = "udp6"
+	}
+	pc, err := net.ListenPacket(network, "")
 	if err != nil {
-		pc.Close()
 		return nil, err
 	}
 	ok = true
