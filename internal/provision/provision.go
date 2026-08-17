@@ -78,12 +78,23 @@ func EnsureBrook(dataDir, override string, brookBytes []byte, version, url, sha2
 	return target, nil
 }
 
+// ChinaDomainPath 返回 dataDir 下 china 直连域名列表应落盘的路径 —— EnsureLists
+// 写这个文件、supervisor 运行期(run.go 的 domainOverride 未设置时)也读这个文件。
+//
+// 谁想知道「Core 此刻实际会读哪个 china 域名列表文件」(如 bx doctor 的规则体检,
+// internal/cli/rulereview.go 的 buildRuleReviewInput),复用这个,不许手编第二份
+// filepath.Join(dataDir, "china_domain.txt") —— 两处各写一份路径拼接,其中一处
+// 改了文件名而另一处没跟上,就是又一次「读错了输入」。
+func ChinaDomainPath(dataDir string) string {
+	return filepath.Join(dataDir, "china_domain.txt")
+}
+
 // EnsureLists 确保 china 列表存在(缺失才从内嵌快照解压;已存在的可能是刷新过的新版,不覆盖)。
 func EnsureLists(dataDir string, domainBytes, cidrBytes []byte) (domainPath, cidrPath string, err error) {
 	if err = os.MkdirAll(dataDir, 0o755); err != nil {
 		return "", "", err
 	}
-	domainPath = filepath.Join(dataDir, "china_domain.txt")
+	domainPath = ChinaDomainPath(dataDir)
 	cidrPath = filepath.Join(dataDir, "china_cidr4.txt")
 	if _, e := os.Stat(domainPath); os.IsNotExist(e) {
 		if err = atomicWrite(domainPath, domainBytes, 0o644); err != nil {

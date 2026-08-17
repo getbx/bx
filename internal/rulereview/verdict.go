@@ -84,6 +84,17 @@ type Report struct {
 	BuiltinListChecked bool `json:"builtin_list_checked"`
 	// BuiltinSkipReason 在没查时说明为什么(global / 用户换了自己的列表 / 列表读不到)。
 	BuiltinSkipReason string `json:"builtin_skip_reason,omitempty"`
+
+	// BuiltinListSource 在 BuiltinListChecked=true 时说明比对用的是哪一份列表
+	// (Core 实时在用的那个文件、用户在 lists.china_domain 指的那个、还是回落用的
+	// 内嵌快照)。「已被内建列表覆盖」不说清是哪一份内建列表,正是 wrong-reference-
+	// object 那类事故的形状:判据本身没错,读错了输入。空字符串表示调用方没有
+	// 经由 internal/cli 那条组装路径(如测试直接手写 Report)。
+	BuiltinListSource string `json:"builtin_list_source,omitempty"`
+	// BuiltinListFallback 标记这次比对**没能读到 Core 实际使用的列表,回落成了
+	// 内嵌快照**。单独一个 bool 而不是让消费方去解析 BuiltinListSource 的文字 ——
+	// 前者是代码判断用的信号,后者是给人看的措辞,混在一起就是又一次「判据读错输入」。
+	BuiltinListFallback bool `json:"builtin_list_fallback,omitempty"`
 }
 
 // NewReport 组装报告并**按类**计数。

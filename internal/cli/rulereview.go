@@ -2,9 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/rulereview"
 )
@@ -20,25 +22,72 @@ type doctorFinding struct {
 
 // buildRuleReviewInput 把一份 config 摊成体检的原料。
 //
-// **两处容易读错的字段,都由测试钉着:**
-//  1. global 取 cfg.Global(yaml `global:`)。cfg.Mode 是另一个东西,取值只有
-//     host|router;spec 当天的真机 bug 就是拿错列表比,而拿错 mode 是同一形状。
-//  2. 用户在 lists.china_domain 里换了自己的列表时,内嵌那份**不是**参照物 ——
-//     那时不比,并说清为什么。拿错参照物会指着一条实际没被覆盖的规则说「可以删」。
-func buildRuleReviewInput(cfg *config.Config, china []byte) rulereview.Input {
+// **china 列表参照物的解析必须和 Core 用的是同一套算法**(wrong-reference-object
+// 修复,2026-08-17)。此前这里恒用编译进二进制的内嵌快照——但 Core 真正比对的
+// 从来不是它,是 provision.EnsureLists 落盘、internal/supervisor 定时经隧道刷新的
+// dataDir/china_domain.txt(用户在 lists.china_domain 指了自己的文件时,是那个
+// 文件,见 internal/supervisor/run.go 的 domainOverride)。若上游从列表里**删掉**
+// 一个域名,内嵌快照仍带着它,拿它比就会指着一条**仍然生效**的手写规则说「已被
+// 内建列表覆盖,可以删」——这是「判据没错、读错了输入」那类事故,而不是新判据。
+//
+// 三种结局,报告里都能分清用的是哪一份(见 ruleReviewDoctorLines/builtinListLines):
+//  1. 读到 Core 实际会用的那个文件(用户没设 lists.china_domain 时是 dataDir 下的
+//     默认路径,设了就是那个路径)⇒ 用它比,报告点名这是「Core 当前实际使用的」。
+//  2. **默认路径**读不到(非 root 进不去 /var/lib/bx,或 Core 从没跑过 provision)
+//     ⇒ 回落内嵌快照,报告明说「回落」——一份可能过期的快照仍然有用,但用户必须
+//     能识别它可能过期,不能被当成等价于实时数据(这条由 ChinaFallback 单独携带,
+//     不靠解析 ChinaSource 的措辞)。
+//  3. **用户在 lists.china_domain 指定的**路径读不到 ⇒ 不比,说明为什么。这里
+//     刻意不回落内嵌快照——那是拿用户明确换掉的参照物硬凑数,不是「可能过期的
+//     同一份东西」,这是 review 抓到的两处 wrong-reference-object 里的另一处。
+//
+// **另一处容易读错的字段,由测试钉着**:global 取 cfg.Global(yaml `global:`)。
+// cfg.Mode 是另一个东西,取值只有 host|router;spec 当天的真机 bug 就是拿错列表
+// 比,而拿错 mode 是同一形状。
+func buildRuleReviewInput(cfg *config.Config, embeddedChina []byte) rulereview.Input {
 	in := rulereview.Input{GlobalProxy: cfg.Global}
 	for _, r := range cfg.Rules {
 		in.Direct = append(in.Direct, r.Direct...)
 		in.Proxy = append(in.Proxy, r.Proxy...)
 	}
+
+	dataDir := cfg.DataDir
+	if dataDir == "" {
+		dataDir = config.DefaultDataDir
+	}
+	override := cfg.Lists.ChinaDomain != ""
+	path := provision.ChinaDomainPath(dataDir)
+	if override {
+		path = cfg.Lists.ChinaDomain
+	}
+
+	raw, readErr := os.ReadFile(path)
 	switch {
-	case cfg.Lists.ChinaDomain != "":
-		in.ChinaSkipReason = fmt.Sprintf("你在 lists.china_domain 指了自己的列表(%s),"+
-			"内嵌那份不是参照物,这一类没有比对", cfg.Lists.ChinaDomain)
-	case len(china) == 0:
-		in.ChinaSkipReason = "拿不到内建 china 列表,这一类没有比对"
+	case readErr == nil:
+		in.China = route.NewDomainSet(chinaDomainPatterns(raw))
+		if override {
+			in.ChinaSource = fmt.Sprintf("你在 lists.china_domain 指的列表(%s)", path)
+		} else {
+			in.ChinaSource = fmt.Sprintf("Core 当前实际使用的 china 列表(%s)", path)
+		}
+	case override:
+		// **不回落。** 用户明确换掉了参照物,内嵌快照不是它的可信代用品。
+		in.ChinaSkipReason = fmt.Sprintf(
+			"你在 lists.china_domain 指了自己的列表(%s),读不到(%v),这一类没有比对",
+			path, readErr,
+		)
+	case len(embeddedChina) == 0:
+		in.ChinaSkipReason = fmt.Sprintf(
+			"Core 实际使用的列表(%s)读不到(%v),也没有内嵌快照可回落,这一类没有比对",
+			path, readErr,
+		)
 	default:
-		in.China = route.NewDomainSet(chinaDomainPatterns(china))
+		in.China = route.NewDomainSet(chinaDomainPatterns(embeddedChina))
+		in.ChinaFallback = true
+		in.ChinaSource = fmt.Sprintf(
+			"内嵌快照(读不到 Core 实际使用的列表 %s:%v,已回落,可能与 Core 此刻用的不一致)",
+			path, readErr,
+		)
 	}
 	return in
 }
@@ -90,6 +139,19 @@ func ruleReviewDoctorLines(rep rulereview.Report) []doctorFinding {
 		})
 	}
 	if rep.BuiltinListChecked {
+		if rep.BuiltinListFallback {
+			// **回落必须被点名,不许静默。** 「查了、用的是可能过期的内嵌快照」
+			// 与「查了、用的是 Core 此刻实际在用的列表」在下面 builtinListLines
+			// 那两行的版式上长得一样(都是 info、都是「删掉不改变流量」),用户
+			// 没法从版式本身分辨哪一种——必须单独说一句,而不是只指望
+			// builtinListSourceSuffix 缀在别的行尾(那句在零 finding 时根本不会
+			// 出现,而「查了但比对基准可能过期」这件事跟有没有 finding 无关)。
+			out = append(out, doctorFinding{
+				Status: "info",
+				Key:    "builtin list source",
+				Value:  "china 列表比对回落到了内嵌快照,不是 Core 此刻实际使用的那一份:" + rep.BuiltinListSource,
+			})
+		}
 		out = append(out, builtinListLines(rep)...)
 	} else if rep.BuiltinSkipReason != "" {
 		// **「没查」不许静默。** 它与「查了没有」在用户眼里长得一样,
@@ -178,7 +240,7 @@ func builtinListLines(rep rulereview.Report) []doctorFinding {
 		out = append(out, doctorFinding{
 			Status: "info",
 			Key:    "covered by builtin list",
-			Value:  summarizeFindings(direct, len(direct), "条与内建 china 列表相关,删掉不改变任何流量"),
+			Value:  summarizeFindings(direct, len(direct), "条与内建 china 列表相关,删掉不改变任何流量") + builtinListSourceSuffix(rep),
 		})
 	}
 	if proxy := classKindFindings(rep, rulereview.ClassShadowedByBuiltinList, "proxy"); len(proxy) > 0 {
@@ -186,10 +248,25 @@ func builtinListLines(rep rulereview.Report) []doctorFinding {
 			Status: "info",
 			Key:    "builtin list exception",
 			Value: summarizeFindings(proxy, len(proxy),
-				"条把内建 china 列表判直连的域名扳回隧道——这是生效中的例外,删掉会改变流量"),
+				"条把内建 china 列表判直连的域名扳回隧道——这是生效中的例外,删掉会改变流量") + builtinListSourceSuffix(rep),
 		})
 	}
 	return out
+}
+
+// builtinListSourceSuffix 把「这次比对用的是哪一份列表」钉进每一条 finding 的文本里
+// —— 一句「已被内建列表覆盖」不说清是哪一份内建列表,正是 wrong-reference-object
+// 这次要消灭的歧义(见 buildRuleReviewInput 顶部注释)。文本路径与 --json 路径
+// 共用同一份 doctorFinding.Value(ruleReviewDoctorLines 顶部的既有纪律),故这里
+// 加一次两侧就都带上,不需要分别改。
+//
+// BuiltinListSource 为空(如测试直接手写 rulereview.NewReport(...) 而不经
+// buildRuleReviewInput)时不加缀,不产出一句指向虚无的「依据:」。
+func builtinListSourceSuffix(rep rulereview.Report) string {
+	if rep.BuiltinListSource == "" {
+		return ""
+	}
+	return "(依据:" + rep.BuiltinListSource + ")"
 }
 
 // classKindFindings 按 Class 与 Kind 两个维度筛选,顺序与 rep.Findings 一致。

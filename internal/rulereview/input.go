@@ -22,11 +22,24 @@ type Input struct {
 	// 而那台机器是 global —— 那 22 条全都在干活,照着删会让 22 个域名改走隧道。
 	GlobalProxy bool
 
-	// China 是内建 china 直连列表。nil = 没拿到(调用方没读到,或刻意不比)。
+	// China 是拿来比对的 china 直连列表。nil = 没拿到(调用方没读到,或刻意不比)。
 	// **nil 与「比了没命中」必须分得开**,由 ChinaSkipReason 说明。
+	//
+	// **调用方负责保证 China 就是「Core 实际会用的那份」或它的可信代用品** ——
+	// 本包不知道也不该知道文件在哪、谁在读它,只认调用方摆在这里的内容 +
+	// ChinaSource/ChinaFallback 里带的说明。
 	China *route.DomainSet
 	// ChinaSkipReason 在 China 为 nil 或被 GlobalProxy 压制时给出人话理由。
 	ChinaSkipReason string
+	// ChinaSource 说明 China 字段的内容来自哪里(如「Core 当前实际使用的 china
+	// 列表(/var/lib/bx/china_domain.txt)」或「内嵌快照(回落)」),供报告点名
+	// 用户可以核对。**只在 China != nil 时有意义**;由调用方(internal/cli)填,
+	// 本包不产出、只透传进 Report。
+	ChinaSource string
+	// ChinaFallback 标记 China 并非「Core 实际会用的那份」本身,而是读不到它之后
+	// 回落的代用品(如内嵌快照)——即便回落合理、值得报,用户也必须能分清
+	// 「查了、用的是实时数据」与「查了、用的是可能过期的快照」,不能靠猜。
+	ChinaFallback bool
 }
 
 // normalizeRule 把一条规则化成可比对的域名形式,与 route.NewDomainSet 的处理一致:
