@@ -20,6 +20,7 @@ func Review(in Input) Report {
 	findings = append(findings, riskyFindings(direct)...)
 	findings = append(findings, shadowedByUserFindings("direct", direct)...)
 	findings = append(findings, shadowedByUserFindings("proxy", proxy)...)
+	findings = append(findings, overriddenFindings(direct, proxy)...)
 
 	return NewReport(findings, false, in.ChinaSkipReason)
 }
@@ -69,6 +70,44 @@ func shadowedByUserFindings(kind string, rules []domainRule) []Finding {
 			Rule:      r.raw,
 			Class:     ClassShadowedByUserRule,
 			Summary:   "已被你自己更宽的一条覆盖,删掉它不会改变任何流量的去向。",
+			CoveredBy: covering,
+		})
+	}
+	return out
+}
+
+// overriddenFindings 找出**被另一张表压住、于是从来没生效过**的规则。
+//
+// **只有一个方向。** route.Router.Explain 先查 UserProxy 再查 UserDirect
+// (internal/route/explain.go:78),中间没有任何按具体程度排序的步骤,所以:
+//
+//	· direct 规则被更宽的 proxy 规则吃掉 ⇒ 它永远拿不到 Direct 判定;
+//	· proxy 规则**不会**被更宽的 direct 规则吃掉 —— 它先被查到,照样生效。
+//
+// 把方向搞反的后果不是少报一条,是叫用户删掉一条正在工作的强制走隧道规则,
+// 也就是把流量从隧道里赶出去。这个顺序**不许靠读代码断言** ——
+// internal/supervisor/ruleprecedence_test.go 用真的 route.Router 证明它。
+func overriddenFindings(direct, proxy []domainRule) []Finding {
+	if len(proxy) == 0 {
+		return nil
+	}
+	raw := make([]string, 0, len(proxy))
+	for _, p := range proxy {
+		raw = append(raw, p.raw)
+	}
+	proxySet := route.NewDomainSet(raw)
+
+	var out []Finding
+	for _, d := range direct {
+		covering, ok := proxySet.MatchRule(d.norm)
+		if !ok {
+			continue
+		}
+		out = append(out, Finding{
+			Kind:      "direct",
+			Rule:      d.raw,
+			Class:     ClassOverriddenByOppositeKind,
+			Summary:   "被 proxy 表里更宽的一条压住,从来没有生效过——bx 先查 proxy 再查 direct,没有「更具体的优先」。要它生效就得收窄或删掉压住它的那一条。",
 			CoveredBy: covering,
 		})
 	}

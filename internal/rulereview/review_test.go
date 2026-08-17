@@ -124,3 +124,56 @@ func TestShadowByUserRuleAppliesToProxyTableToo(t *testing.T) {
 		t.Errorf("Kind = %q, want proxy", rep.Findings[0].Kind)
 	}
 }
+
+// route.Router.Explain 的顺序是 UserProxy → UserDirect → ChinaDomain → 默认,
+// **没有「更具体的规则优先」这回事**。于是 proxy 里一条 *.apple.com 会把 direct 里
+// 的 ocsp.apple.com 整个吃掉:用户以为他给 OCSP 开了直连,实际上一次都没走过。
+//
+// 这一类与「冗余」的区别不在删不删得掉(都能删),而在要说的话完全不同:
+// 那一类是「重复了」,这一类是「你以为它在工作,它没有」。
+func TestDirectRuleOverriddenByBroaderProxyRule(t *testing.T) {
+	rep := Review(Input{
+		Direct: []string{"ocsp.apple.com"},
+		Proxy:  []string{"*.apple.com"},
+	})
+
+	if rep.OverriddenCount != 1 {
+		t.Fatalf("OverriddenCount = %d, want 1;findings=%+v", rep.OverriddenCount, rep.Findings)
+	}
+	f := rep.Findings[0]
+	if f.Class != ClassOverriddenByOppositeKind {
+		t.Errorf("Class = %v, want ClassOverriddenByOppositeKind", f.Class)
+	}
+	if f.Kind != "direct" || f.Rule != "ocsp.apple.com" || f.CoveredBy != "*.apple.com" {
+		t.Errorf("finding 指错了对象:%+v", f)
+	}
+	// 计数绝不合并:同一条不许既算冗余又算失效。
+	if rep.ShadowedByUserCount != 0 {
+		t.Errorf("ShadowedByUserCount = %d,这一类被并进了同表冗余", rep.ShadowedByUserCount)
+	}
+}
+
+// **反方向不成立。** proxy 先查,所以一条 proxy 规则不会被更宽的 direct 规则压住 ——
+// 它照样生效。把方向搞反会让报告叫用户删掉一条正在工作的强制走隧道规则,
+// 那是把流量从隧道里赶出去。
+func TestProxyRuleIsNotOverriddenByBroaderDirectRule(t *testing.T) {
+	rep := Review(Input{
+		Direct: []string{"*.apple.com"},
+		Proxy:  []string{"ocsp.apple.com"},
+	})
+	if rep.OverriddenCount != 0 {
+		t.Fatalf("方向搞反了 —— proxy 规则被报成失效:%+v", rep.Findings)
+	}
+}
+
+// 同一个域名同时写进两张表(手改 YAML 才会有;policy.apply 加一边会删另一边):
+// proxy 赢,direct 那条从来没工作过。
+func TestSameDomainInBothTablesReportsTheDirectOneDead(t *testing.T) {
+	rep := Review(Input{Direct: []string{"*.qq.com"}, Proxy: []string{"*.qq.com"}})
+	if rep.OverriddenCount != 1 {
+		t.Fatalf("OverriddenCount = %d, want 1:%+v", rep.OverriddenCount, rep.Findings)
+	}
+	if rep.Findings[0].Kind != "direct" {
+		t.Errorf("被判失效的应该是 direct 那条,got %q", rep.Findings[0].Kind)
+	}
+}
