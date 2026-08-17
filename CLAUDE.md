@@ -198,6 +198,49 @@ direct 与 proxy 里,语义相反);读不到就说读不到,不摆空列表;改�
 **真机已验(2026-08-13,项目所有者的 Mac)**:结果计数第一次上真机就**逼出了一个
 一直存在的严重 bug** —— 见下条。
 
+## 规则体检(静态那一半,2026-08-17)
+
+**判据只长在一条路上是这个仓库反复出现的形状,这次照做**:`internal/rulereview`
+是纯判据包(无 net/os/exec,`purity_test.go` 按 AST 钉住),给定 `direct`/`proxy`
+两张表 + `Global` + china `DomainSet`,产出一组分类结论;`bx doctor`(文本与
+`--json` 两条路径)与 `bx status` 常驻面板**各自消费同一个 `Review`**,不各写一份。
+
+**四类各自计数,永远不合成一个总数**(`Report` 没有 `TotalCount`,与 leakcheck 的
+path/identity/surface 三分同一条纪律):`ClassRisky`(公有云/开放子域直连,去匿名化
+风险,零值)、`ClassShadowedByUserRule`(被自己同表更宽的一条盖住,模式无关)、
+`ClassOverriddenByOppositeKind`(被**另一张表**里更宽的一条压住,**从来没有生效
+过** —— `route.Router` 先查 proxy 再查 direct,没有「更具体优先」这回事)、
+`ClassShadowedByBuiltinList`(被内建 china 列表覆盖,**依赖 mode**)。
+
+**`ClassOverriddenByOppositeKind` 是比 spec 多出来的一类**:动笔时发现「同表冗余」
+的判据罩不住「跨表压制」这种更隐蔽的形状(用户以为一条 direct 规则在工作,其实
+从没生效过),补了这一类,由 `internal/supervisor/ruleprecedence_test.go` 用**真
+Router**(不是判据自己的推断)背书——两者独立成文,判定分歧会被测试当场抓到。
+
+**两个 mode 陷阱,都是真机撞出来的**:① 门读的是 **`cfg.Global`,不是
+`cfg.Mode`**(后者取值只有 `host|router`,与 global/split 无关)——spec 写完当天
+拿项目所有者的真实 24 条规则跑,报出 22 条「被 china 列表覆盖」,而他的机器是
+global、china 列表整个不生效,那 22 条全在干活,照着删会让 22 个域名改走隧道。
+判据没错,错在没读 mode;现在**只压制 `ClassShadowedByBuiltinList` 这一类**,另
+三类模式无关、一条都不少。② **proxy 规则命中 china 列表不是冗余,是生效中的
+例外**——`Explain` 先查 `UserProxy` 再轮到内建列表,两支措辞刻意相反,说反了就是
+叫用户删掉一条正在把流量拉回隧道的规则。「没查」与「查了没有」分得开
+(`BuiltinListChecked` 刻意无 `omitempty` + `BuiltinSkipReason`):global 下报
+「0 条冗余」是一句自洽的假话,必须报「未检查」。
+
+**`bx status` 只发危险那一类,severity=warn**:冗余与失效是建议、对任何成熟配置
+都不为零,放进常驻面板会变墙纸、把真正要紧的这一条一起淹掉(与项目所有者否掉
+「Direct rules: N unreachable」常驻红字同一条判断);它们留在 `bx doctor` 里,
+那是诊断命令。severity 取 `warn` 不是 `error`——`11338a0` 之后只有 `error` 会把
+总状态降级成 `Needs Attention`,一条配置建议不该让工作正常的机器显示需注意,
+那正是 Tailscale 共存 advisory 当初犯的错。该告警在 `Run()` 里算好一次传进
+`serveControlWithPathRecovery`(第 18 个形参),不在读状态那条路上重算——菜单每
+2 秒拉一次,而配置在运行期不变(bx 不热重载)。
+
+**第 2 条(死规则)与第 4 条(缺失规则)未做**:硬前置是跨重启累计的按规则计数
+(`stats.Counters` 在 Core,而 Linux/Windows 没有 Guardian 驱动持久化范例),
+按什么键、多久算「死」都未决,另立 spec。
+
 ## macOS 的 DirectDialer 一直到不了公网(2026-08-13,真机已验)
 
 `DirectDialer` 用 `IP_BOUND_IF` 绑物理网卡防环,而**它只查该接口的 scoped 路由表**。
