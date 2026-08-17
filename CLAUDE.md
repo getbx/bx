@@ -280,6 +280,94 @@ global、china 列表整个不生效,那 22 条全在干活,照着删会让 22 �
   就永不生效**的危险规则(同名同时在 proxy 里)仍会得到常驻告警。方向是过度告警,
   刻意接受。
 
+## Guardian 状态 watch(2026-08-17,真机未验,除 `bx status --watch` 外)
+
+起因:菜单栏图标最长要等 **30 秒**才跟上 `bx up`/`bx down` 的真实结果——关闭档
+轮询间隔是常量,而 CLI 没有任何通道通知菜单。项目所有者否掉了「把 30 秒改成
+3 秒」这类小修小补,换成 `GET /v1/status?wait=<generation>` 长轮询。
+
+**代际号由内容派生,广播只是叫醒**:单一发布点 `statusPublisher`
+(`internal/guardian/statuswatch.go`)每次重算 `Status`,取它的**投影** digest
+与上一次比,不同才 `generation++`;`generation` **不由任何调用点直接递增**。
+广播(`poke`)不携带任何数据,只是「现在就重算,别等下一个兵底拍」——
+`close(p.changed)` 换一条新 channel 是 Go 标准的广播手法。这意味着**一次广播
+不可能是错的**,漏一个的代价只是慢到下一个兵底拍(3 秒),不是永久错过。
+
+**投影 = 整个 `Status` 减一张排除名单,不是一份白名单**(`statusdigest.go`)。
+方向刻意选择「默认参与」:新加一个易变字段会让 watch 疯狂触发——吵、当场看得见;
+默认不参与则是菜单静默地不再对新信号反应,只有用户抱怨才会被发现。两种失效
+不对称,选吵的那边(与 `Class` 零值取 `ClassRisky`、`leakcheck.Section` 零值取
+`SectionPath` 同一条纪律)。排除名单共五条,每条都要写明为什么易变:
+`StatusGeneration` 自己(进投影会永久自激)、`Core.LatencyMS`(每次探测都抖)、
+`Core.FailingRules[].Attempts`/`.Failures`(每条连接都在涨,只清计数、保留
+`Kind`/`Rule`)、`Reconcile.At`(每轮调谐都盖时间戳,不排除会跟着 30 秒–10 分钟
+的调谐环触发)、`Recovery.UpdatedAt`(恢复中每次轮询都换,菜单自己的「Connecting
+— N 秒」计数器另有本地驱动,不靠它)。守卫是一条反射遍历 `Status` 全部字段的
+测试,逐个改动断言「不在排除名单里就必须让投影变」——它抓不到的是「新加的易变
+字段」这一半,那只能真机看。
+
+**深拷贝是承重的,不是讲究**:`FailingRules` 是切片,复制 `Status` 只复制切片头;
+在「副本」里把元素计数清零改的是同一个底层数组,于是**真正发布出去的**那份
+`Status` 计数也变成 0——一个污染它所要度量的东西的 digest,比没有更糟。修法是
+`make` 一条新切片再 `copy` 再清零(与 `GuardianCapabilities()` 头上「每次调用都
+返回新切片」同一条纪律)。
+
+**代际号比较用 `!=` 而不是 `>`**(服务端 `statuswatch.go` 的 `wait()`、Go CLI
+`internal/cli/statuswatch.go`、Swift `main.swift` 的 `runWatchLoop` 三处一致)。
+`>` 在 Guardian 重启后会永久挂住:客户端手上是 57,新 Guardian 从 3 开始,
+`3 > 57` 恒假。`!=` 立刻返回;唯一剩下的窗口是重启后代际号恰好落在客户端手上
+那个数(小计数器,真会发生),那次请求挂到超时——但超时返回的 `Status` 是当前
+真相,最坏后果是一次延迟,不是错误数据,故不加 boot id(YAGNI:兜底轮询已覆盖)。
+
+**关机必须唤醒 parked 的 watch,不许让它们拖住 shutdown**:`Daemon.Shutdown`
+先对 mutations/recoveries/observer 调 `beginShutdown()`,**再** `server.Shutdown`
+(后者会等在跑的 handler 返回,一个挂 25 秒的 watch 会让 Guardian 关机慢 25 秒)。
+`statusPublisher.beginShutdown()` close 一个 `shutdown` channel,`wait()` 的
+`select` 里带这一支立刻返回当前 `Status`。这条纪律的直接理由是这个项目在
+「关机慢」上真的栽过——2026-08-04 那次路径恢复卡在 attempt 178、持续 71 分钟、
+用户全程无法关闭保护(见上文「macOS」一节)——watch 只是同一条不变量的新消费方:
+**停止路径不许因为别的事没做完而变慢或失败。**
+
+**只有两个广播点:`/v1/up` 与 `/v1/down` 的 mutation handler 落定之后**
+(`internal/guardian/localapi.go` 的 `mutationHandler`,两条路由共用同一个
+handler 函数)。刻意不在 Core 意外退出、路径恢复迁移那些地方也 poke——那些逻辑
+住在 `Manager` 里,要把 publisher 穿进去,换来的只是把 3 秒兵底缩短到 0;
+选 up/down 是因为那是**用户正站在旁边等反馈**的两处,也正是这个 bug 的原始现场。
+
+**兜底轮询与 watch 的健康判断无关,而且刻意如此**(`StatusWatch.swift` 的
+`menuWatchBackstopSeconds = 60`)。watch 有一类失效是静默的(连接半开、循环
+自己死掉),此时没有任何东西会报错,菜单就停在最后一次收到的状态上而看起来
+完全正常;一个被 watch 自己的健康判断影响的兜底,在那个判断错的时候恰好也是
+坏的——所以它是个常量,watch 健康时也照跑。**它与 Task 6 引入的
+`menuPollClosedSeconds`(30 秒)是两件不同的东西**:后者只在这一版 Guardian
+**不支持** watch 时作为纯轮询间隔生效(降级路径,行为不变);前者在 watch
+**健康**时也照跑,是「watch 已经哑了」的保险,不是取数据的手段——两个常量
+必须保持 `backstop > closed`,否则「保险」比「正常降级」还密,`MenuCadenceTests`
+钉着这个大小关系而不是任一个具体数值。
+
+**`bx status --watch`(`internal/cli/statuswatch.go`)是这个功能唯一的只读真机
+验证手段**:它让人在不动网络、不重装菜单的前提下,亲眼看到「敲 `bx down`
+的那一瞬间 watch 就吐了一份新 `Status`」;菜单那一半的验证要重装 App。
+
+**顺手做的清理(Task 6)**:今天一次刷新曾是 3 次 socket 往返
+(`/v1/status`+`/v1/rules`+`/v1/servers`),后两者各读并 YAML 解析一遍
+`/etc/bx/config.yaml`,而图标只依赖 `/v1/status`(`menuRowsNow` 一个字都不碰
+rules/servers)。轮询时代这只是浪费;**watch 时代刷新从「每 30 秒一次」变成
+「每次状态变化都有一次」,带着它反而可能让总开销上升**——于是它从可选变成
+承重。现改为按需:`openRulesWindow`/`openServersWindow` 触发
+`fetchRulesOnDemand`/`fetchServersOnDemand`,拨号在后台队列、结果回主线程
+落定,读不到就照既有逻辑说读不到(保留 `lastRules`/`lastServers` 原样),
+**不摆一个空列表**。
+
+**真机未验**(除 `bx status --watch` 本身,那是唯一已可用的只读验证手段):
+**「投影够不够安静」只能真机验**——单测里 latency 是固定 fixture,测不出吵不吵;
+`bx status --watch` 挂一段、稳态下应当几乎不吐,是本设计唯一真正的验收。
+Guardian 关机耗时没有变长(升级路径上量一次)。`main.swift` 的 watch 循环编不进
+Swift 测试套件,Go 侧守卫只证明判据没被手抄第二份,正确性最终靠真机点一遍。
+Linux/Windows 不在范围内(Guardian 只在 darwin 跑,Windows 托盘另有自己的
+3 秒 spawn 轮询,不受影响)。设计 `docs/superpowers/specs/2026-08-17-guardian-status-watch-design.md`、
+计划 `docs/superpowers/plans/2026-08-17-guardian-status-watch.md`。
+
 ## macOS 的 DirectDialer 一直到不了公网(2026-08-13,真机已验)
 
 `DirectDialer` 用 `IP_BOUND_IF` 绑物理网卡防环,而**它只查该接口的 scoped 路由表**。
