@@ -102,8 +102,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 长轮询循环专属的后台串行队列。**不用 `.global()`**:那是并发队列,而这里
     /// 只该有一个循环在跑,用专属队列让这件事从命名上就清楚。
     private let watchQueue = DispatchQueue(label: "com.getbx.bx.menu.statuswatch")
-    /// watch 循环是否已经起来。**只在主线程读写,只会从 false 变成 true 一次**——
-    /// 循环本身此后永远跑着(直到进程退出),没有需要停止的路径。
+    /// watch 循环是否已经起来。**只在主线程读写。** 正常情况下只会从 false 变成
+    /// true 一次,循环本身此后永远跑着(直到进程退出)。唯一的例外是服务端应答里
+    /// 没有 `status_generation` 键 —— 这一版 Guardian 没有 watch 这个概念(字段
+    /// 自己的文档注释就是这么写的),此时 `runWatchLoop` 会退出并把这个标志翻回
+    /// false,下一次 `applyRefresh`(经既有轮询节奏)会自然地重新判断要不要
+    /// 起跑(见 `runWatchLoop` 里 `status.statusGeneration` 为 nil 的分支)。
     private var watchLoopRunning = false
     /// watch 循环此刻已知的代际号。**起跑前那一次赋值发生在主线程,经
     /// `watchQueue.async` 建立的 happens-before 关系保证安全;此后只有
@@ -251,7 +255,23 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 let status = try guardianClient.statusWatch(generation: requested)
                 consecutiveFailures = 0
-                let observed = status.statusGeneration ?? requested
+                guard let observed = status.statusGeneration else {
+                    // status_generation 缺席意味着这一版 Guardian 没有 watch 这个
+                    // 概念(字段自己的文档注释,GuardianStatus.swift),不是「这一
+                    // 轮没变」。`?? requested` 曾经把两者混成一件事:观测值恒等于
+                    // 请求值,永远命中下面「未变化」那一支,困在一个 1 Hz 的
+                    // menuWatchIdleDelaySeconds 轮询里、图标要等到
+                    // menuWatchBackstopSeconds(60 秒)兜底才会被修正 —— 比这个
+                    // 功能要取代的 30 秒轮询还差。老实地退出循环、把
+                    // watchLoopRunning 翻回 false,退回今天的轮询节奏——与 CLI
+                    // 侧硬门(requireStatusWatchCapability)给的降级路径一致。
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.watchLoopRunning = false
+                        self.rescheduleRefreshTimer(menuOpen: self.menuIsOpen)
+                    }
+                    return
+                }
                 guard observed != requested else {
                     // 第二道防线(见 menuWatchIdleDelaySeconds 的注释):一台
                     // 声明了能力却仍然秒回、代际号没推进的服务端,不加这个
@@ -262,11 +282,31 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 watchGeneration = observed
                 DispatchQueue.main.async { [weak self] in
-                    self?.refresh(userInitiated: false)
+                    // userInitiated: true —— 一次 watch 事件是一个不重复的、
+                    // 「结果必须尽快出现」的时刻,与用户直接点击同一类(见
+                    // RefreshGate.begin 的文档注释)。若传 false,一旦这次刷新
+                    // 撞上已经在飞的一次而被丢弃,菜单不会补跑:watchGeneration
+                    // 已经推进到新值,循环下一轮 wait 的就是它,不会再收到一次
+                    // 「变了」的广播——不像定时器每隔几秒自己会再来一拍,这一次
+                    // 事件错过就是永久错过,直到下一次真的状态变化或 60 秒兜底。
+                    self?.refresh(userInitiated: true)
                 }
             } catch {
                 consecutiveFailures += 1
                 let backoff = watchBackoffSeconds(consecutiveFailures: consecutiveFailures)
+                // Guardian 消失是一个会改变「该显示什么」的事件(bootout、崩溃、
+                // 升级窗口),不能把纠正拖到下一次成功的长轮询或 60 秒兜底——那正
+                // 是本条修复要解决的问题:此前这个分支什么都不做,图标停在最后
+                // 一次成功状态上直到兜底才被拉回来,比它替换掉的 30 秒轮询还差。
+                //
+                // **每次失败都刷新,不只是第一次,但这不是在打一个死 socket 的
+                // 满速循环**:退避本身已经把重试间隔拉开(1s → 2s → 4s → … 封顶
+                // 30s),这里只是搭上这趟已经在走的车 —— 没有另开一条独立定时器
+                // 或立即重试。RefreshGate 还会在一次刷新仍在飞时丢弃重叠的那次,
+                // 是又一层节流。
+                DispatchQueue.main.async { [weak self] in
+                    self?.refresh(userInitiated: false)
+                }
                 if backoff > 0 {
                     Thread.sleep(forTimeInterval: backoff)
                 }
