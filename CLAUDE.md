@@ -345,6 +345,42 @@ handler 函数)。刻意不在 Core 意外退出、路径恢复迁移那些地�
 必须保持 `backstop > closed`,否则「保险」比「正常降级」还密,`MenuCadenceTests`
 钉着这个大小关系而不是任一个具体数值。
 
+**绝不「试着拨一下看看」——能力门控是这条协议能不能安全退化的分水岭**
+(`requireStatusWatchCapability`,`internal/cli/statuswatch.go`;菜单侧
+`watchIsAvailable`,`StatusWatch.swift`)。旧 Guardian 会忽略它不认识的 `wait`
+query 参数、对任何请求都秒回一份没有 `status_generation` 键的普通应答;客户端
+无从区分「立刻返回是因为状态真的变了」与「这版根本不支持长轮询,每次都是这样
+立刻返回」。**这不是纸面推演,是真机撞上的事故**:`bx status --watch` 顶着一台
+这样的旧 Guardian 跑起来时,解出的代际号恒为 0、与客户端起始值 0 恰好相等,
+「未变化」分支被命中且没有任何错误可供退避介入——真机实测本机 unix socket
+常驻 CPU **26%~46%**、吞吐**上千次/秒**。判据是 `status.Capabilities == nil`
+而不是 `len(status.Capabilities) == 0`——`Status.Capabilities` 刻意不带
+`omitempty`,前者是「这版从没声明过任何能力」,后者是「声明了、这一项还没
+上线」,两者都要拒绝但要分开报,只是同一件事的两种「没有」。门被绕过时还留了
+第二道防线:`watchIdleDelay`/`menuWatchIdleDelaySeconds`(1 秒 floor),给
+「秒回但代际号没推进」的分支兜底,把最坏情形从满速空转降级成 1Hz 轮询——理论
+上能力门控生效之后这道防线再不会在生产里被触发,留着是因为防线不该只有一层。
+
+**`shouldSuppressFetch` 与「显式 vs 环境」的不对称**(`StatusWatch.swift`)——
+上面「顺手做的清理(Task 6)」把服务器窗口的刷新改成按需拉之后,
+`fetchServersOnDemand` 的 `forceShow: true`(用户点「Servers…」)与
+`forceShow: false`(环境刷新在窗口已可见时按需重拉)共用同一个
+`serversFetchInFlight`,而最初的拦截判据是裸的 `guard !serversFetchInFlight`——
+环境刷新设的标志会把紧跟着来的显式打开也拦住:窗口没出现、没有 alert,
+**点了没反应**,是那一轮修复自己引入的新回归。两种失败的代价不对称:重叠取数
+的代价是一次多余的本机 socket 往返(已判定无害);拦住一次显式动作的代价是
+「用户点了菜单项、什么都没发生」。判据因此改为只压环境刷新那一路——
+`explicit == true` 永不被拦,只有 `explicit == false` 才可能被已有一次在飞的
+取数拦住。规则窗口只有显式这一路,没有这个不对称,继续用原来裸的 guard,
+不受影响。
+
+**空闲开销不是处处为零**:每个 parked 的 waiter 自带一个 3 秒兵底,每次醒来都要
+重算一遍 `observableStatus`(一次 Core round trip + 两次小的磁盘读),菜单常驻
+时约 **20 次/分钟**的重算,对照它取代的 30 秒轮询(约 2 次/分钟)是一个数量级
+的上升——「没人 watch 时开销精确为零」这句话只对**没有订阅者**的情形成立,
+菜单一开着就不是这个情形。真机 soak 除了数 watch 触发了几次,也该顺手采样
+Guardian 的 CPU。
+
 **`bx status --watch`(`internal/cli/statuswatch.go`)是这个功能唯一的只读真机
 验证手段**:它让人在不动网络、不重装菜单的前提下,亲眼看到「敲 `bx down`
 的那一瞬间 watch 就吐了一份新 `Status`」;菜单那一半的验证要重装 App。
