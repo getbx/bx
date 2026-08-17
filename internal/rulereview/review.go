@@ -29,6 +29,8 @@ func Review(in Input) Report {
 	// 压制的**只有这一类**:另外三类模式无关,一条都不许少。
 	checked := false
 	skip := in.ChinaSkipReason
+	source := ""
+	fallback := false
 	switch {
 	case in.GlobalProxy:
 		skip = "global 模式下内建 china 列表整个不生效,这一类没有比对"
@@ -39,11 +41,16 @@ func Review(in Input) Report {
 	default:
 		checked = true
 		skip = ""
+		source = in.ChinaSource
+		fallback = in.ChinaFallback
 		findings = append(findings, shadowedByBuiltinFindings("direct", direct, in.China)...)
 		findings = append(findings, shadowedByBuiltinFindings("proxy", proxy, in.China)...)
 	}
 
-	return NewReport(findings, checked, skip)
+	rep := NewReport(findings, checked, skip)
+	rep.BuiltinListSource = source
+	rep.BuiltinListFallback = fallback
+	return rep
 }
 
 // shadowedByBuiltinFindings 找出已经被内建 china 直连列表覆盖的手写规则。

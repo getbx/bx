@@ -62,6 +62,198 @@ func TestUserSuppliedChinaListDisablesTheBuiltinComparison(t *testing.T) {
 	}
 }
 
+// **wrong-reference-object 修复的核心断言。** Core 实际比对的是 dataDir 下落盘、
+// 经隧道刷新的 china_domain.txt,不是编进二进制的内嵌快照——两者可能不同(上游
+// 删掉一个域名,快照仍带着它)。当那个文件**读得到**时,必须用它比,而不是恒用
+// 内嵌快照;且报告要点名用的是"Core 当前实际使用的"那一份,不是含糊的"内建列表"。
+func TestBuildRuleReviewInputUsesCoresLiveChinaListWhenReadable(t *testing.T) {
+	dir := t.TempDir() // 绝不碰 /var/lib/bx —— 注入路径全由测试自己造
+	if err := os.WriteFile(filepath.Join(dir, "china_domain.txt"), []byte("live-only.example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 内嵌快照刻意**不含** live-only.example,证明比对确实用的是 live 文件、
+	// 不是内嵌快照(用同一个域名两边都有的话,分不清到底比的是哪一份)。
+	staleEmbedded := []byte("embedded-only.example\n")
+
+	cfg := &config.Config{
+		DataDir: dir,
+		Rules:   []config.Rule{{Direct: []string{"*.live-only.example"}}},
+	}
+	in := buildRuleReviewInput(cfg, staleEmbedded)
+	if in.China == nil {
+		t.Fatal("China == nil —— live 文件读得到,不该落到没比对")
+	}
+	if in.ChinaFallback {
+		t.Fatal("ChinaFallback = true,而 live 文件读得到,根本没回落")
+	}
+	if !strings.Contains(in.ChinaSource, "Core 当前实际使用") || !strings.Contains(in.ChinaSource, dir) {
+		t.Fatalf("ChinaSource 没说清用的是 Core 实时列表: %q", in.ChinaSource)
+	}
+
+	rep := rulereview.Review(in)
+	if !rep.BuiltinListChecked {
+		t.Fatal("BuiltinListChecked = false")
+	}
+	if rep.BuiltinListFallback {
+		t.Fatal("Report.BuiltinListFallback = true —— 没有回落")
+	}
+
+	lines := ruleReviewDoctorLines(rep)
+	var found bool
+	for _, l := range lines {
+		if l.Key != "covered by builtin list" {
+			continue
+		}
+		found = true
+		if !strings.Contains(l.Value, "*.live-only.example") {
+			t.Errorf("没点名到规则原文: %q", l.Value)
+		}
+		// 三:finding 文本必须点名用的是哪一份列表。
+		if !strings.Contains(l.Value, "依据") || !strings.Contains(l.Value, "Core 当前实际使用") {
+			t.Errorf("finding 文本没说清用的是哪份列表: %q", l.Value)
+		}
+	}
+	if !found {
+		t.Fatal("live-only.example 命中了 live 文件,却没有产出 covered-by-builtin-list 这一行")
+	}
+}
+
+// **中间态:读不到 Core 的实时列表(非 root,或 Core 从没跑过 provision)时回落到
+// 内嵌快照,而且必须明说回落了。** 一份可能过期的快照仍然有用(总比不比强),
+// 但"查了、用的是实时数据"与"查了、用的是可能过期的快照"必须让用户分得清——
+// 这正是这次修复要解决的不对称:静默回落会让"covered"这个结论看起来和用
+// live 列表算出来的一模一样。
+func TestBuildRuleReviewInputFallsBackToEmbeddedWhenCoreListUnreadable(t *testing.T) {
+	dir := t.TempDir() // 没有 china_domain.txt —— 模拟 Core 从没 provision 过
+	embeddedChina := []byte("fallback-only.example\n")
+
+	cfg := &config.Config{
+		DataDir: dir,
+		Rules:   []config.Rule{{Direct: []string{"*.fallback-only.example"}}},
+	}
+	in := buildRuleReviewInput(cfg, embeddedChina)
+	if in.China == nil {
+		t.Fatal("China == nil —— 该回落到内嵌快照,不该整个跳过比对")
+	}
+	if !in.ChinaFallback {
+		t.Fatal("ChinaFallback = false —— live 文件读不到,这就是回落")
+	}
+	if in.ChinaSource == "" {
+		t.Fatal("ChinaSource 为空 —— 回落也要说清楚回落到了什么")
+	}
+
+	rep := rulereview.Review(in)
+	if !rep.BuiltinListChecked {
+		t.Fatal("BuiltinListChecked = false —— 回落之后仍然比了")
+	}
+	if !rep.BuiltinListFallback {
+		t.Fatal("Report.BuiltinListFallback = false —— 没有把回落状态透传给报告")
+	}
+
+	lines := ruleReviewDoctorLines(rep)
+	var sawFallbackNotice bool
+	for _, l := range lines {
+		if l.Key == "builtin list source" && strings.Contains(l.Value, "回落") {
+			sawFallbackNotice = true
+		}
+	}
+	if !sawFallbackNotice {
+		t.Fatalf("回落发生了,却没有一行说「回落」:%+v", lines)
+	}
+}
+
+// **第三种结局:用户自己指定的列表读不到,不回落、不比,只说明为什么。**
+// 回落内嵌快照在这里是错的——那是拿用户明确换掉的参照物硬凑数,不是
+// "可能过期的同一份东西"。
+func TestBuildRuleReviewInputUserOverrideUnreadableDoesNotFallBack(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist.txt")
+	embeddedChina := []byte("embedded.example\n")
+
+	cfg := &config.Config{
+		DataDir: dir,
+		Lists:   config.Lists{ChinaDomain: missing},
+		Rules:   []config.Rule{{Direct: []string{"*.embedded.example"}}},
+	}
+	in := buildRuleReviewInput(cfg, embeddedChina)
+	if in.China != nil {
+		t.Fatal("China != nil —— 用户换了自己的列表且读不到,不该回落内嵌快照")
+	}
+	if in.ChinaFallback {
+		t.Fatal("ChinaFallback = true —— 用户覆盖的情形不许标成回落(那会暗示比过)")
+	}
+	if in.ChinaSkipReason == "" {
+		t.Fatal("不比却没说为什么")
+	}
+	if !strings.Contains(in.ChinaSkipReason, missing) {
+		t.Errorf("ChinaSkipReason 没点名是哪个路径读不到: %q", in.ChinaSkipReason)
+	}
+
+	rep := rulereview.Review(in)
+	if rep.BuiltinListChecked {
+		t.Fatal("BuiltinListChecked = true —— 用户覆盖且读不到时不该比")
+	}
+
+	lines := ruleReviewDoctorLines(rep)
+	var said bool
+	for _, l := range lines {
+		if l.Key == "builtin list check" && strings.Contains(l.Value, missing) {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatalf("没查却没说清是哪个用户指定的路径读不到:%+v", lines)
+	}
+}
+
+// **用户指定的列表读得到时,必须真的拿它比**——「解析成 Core 实际会用的路径」
+// 这条规则对用户覆盖和默认路径一视同仁,不是只对默认路径生效。这是三种结局之外
+// 容易漏掉的第四种组合(读得到 + 有覆盖),此前没有测试专门盯着它。
+func TestBuildRuleReviewInputUsesUserOverrideChinaListWhenReadable(t *testing.T) {
+	dir := t.TempDir()
+	overridePath := filepath.Join(dir, "my-own-list.txt")
+	if err := os.WriteFile(overridePath, []byte("override-only.example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 内嵌快照与默认路径都刻意留空/不含这个域名,证明命中的确实是用户指定的文件。
+	embeddedChina := []byte("embedded-only.example\n")
+
+	cfg := &config.Config{
+		DataDir: t.TempDir(), // 默认路径下没有 china_domain.txt,避免误判成走了默认路径
+		Lists:   config.Lists{ChinaDomain: overridePath},
+		Rules:   []config.Rule{{Direct: []string{"*.override-only.example"}}},
+	}
+	in := buildRuleReviewInput(cfg, embeddedChina)
+	if in.China == nil {
+		t.Fatal("China == nil —— 用户指定的列表读得到,不该跳过比对")
+	}
+	if in.ChinaFallback {
+		t.Fatal("ChinaFallback = true —— 用户指定的列表读得到,根本没有回落")
+	}
+	if !strings.Contains(in.ChinaSource, "lists.china_domain") || !strings.Contains(in.ChinaSource, overridePath) {
+		t.Fatalf("ChinaSource 没说清用的是用户自己指定的列表: %q", in.ChinaSource)
+	}
+
+	rep := rulereview.Review(in)
+	if !rep.BuiltinListChecked {
+		t.Fatal("BuiltinListChecked = false —— 用户指定的列表读得到,该比")
+	}
+
+	lines := ruleReviewDoctorLines(rep)
+	var found bool
+	for _, l := range lines {
+		if l.Key == "covered by builtin list" && strings.Contains(l.Value, "*.override-only.example") {
+			found = true
+			if !strings.Contains(l.Value, overridePath) {
+				t.Errorf("finding 文本没点名用的是用户自己那份列表: %q", l.Value)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("override-only.example 命中了用户指定的列表,却没有产出 covered-by-builtin-list 这一行")
+	}
+}
+
 // rules[] 有多个条目时要全部摊平(与 setup.ListRules 的语义一致)。
 func TestBuildRuleReviewInputFlattensEveryRulesEntry(t *testing.T) {
 	cfg := &config.Config{Rules: []config.Rule{
