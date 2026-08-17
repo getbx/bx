@@ -22,7 +22,55 @@ func Review(in Input) Report {
 	findings = append(findings, shadowedByUserFindings("proxy", proxy)...)
 	findings = append(findings, overriddenFindings(direct, proxy)...)
 
-	return NewReport(findings, false, in.ChinaSkipReason)
+	// **global 下 china 列表整个不生效**,那时「被它覆盖」这个结论是错的 ——
+	// spec 写完当天的真机实测报出 22 条,而那 22 条全都在干活。
+	// 读的是 config.Global,不是 config.Mode(后者只有 host|router)。
+	//
+	// 压制的**只有这一类**:另外三类模式无关,一条都不许少。
+	checked := false
+	skip := in.ChinaSkipReason
+	switch {
+	case in.GlobalProxy:
+		skip = "global 模式下内建 china 列表整个不生效,这一类没有比对"
+	case in.China == nil:
+		if skip == "" {
+			skip = "没拿到内建 china 列表,这一类没有比对"
+		}
+	default:
+		checked = true
+		skip = ""
+		findings = append(findings, shadowedByBuiltinFindings("direct", direct, in.China)...)
+		findings = append(findings, shadowedByBuiltinFindings("proxy", proxy, in.China)...)
+	}
+
+	return NewReport(findings, checked, skip)
+}
+
+// shadowedByBuiltinFindings 找出已经被内建 china 直连列表覆盖的手写规则。
+//
+// 调用方负责保证这一类该不该跑(见 Review 的 gating)——本函数不认识 mode。
+func shadowedByBuiltinFindings(kind string, rules []domainRule, china *route.DomainSet) []Finding {
+	var out []Finding
+	for _, r := range rules {
+		covering, ok := china.MatchRule(r.norm)
+		if !ok {
+			continue
+		}
+		summary := "已在内建 china 直连列表里,这条手写的没有额外作用。"
+		if kind == "proxy" {
+			// proxy 规则命中 china 列表不是冗余 —— 它是**故意的例外**:
+			// 用户就是要把一个内建列表判直连的域名扳回隧道。说反了会让他删掉它。
+			summary = "内建 china 列表把它判为直连,而你这条把它扳回隧道——这是生效中的例外,不是冗余。"
+		}
+		out = append(out, Finding{
+			Kind:      kind,
+			Rule:      r.raw,
+			Class:     ClassShadowedByBuiltinList,
+			Summary:   summary,
+			CoveredBy: covering,
+		})
+	}
+	return out
 }
 
 // riskyFindings 只看 direct 表:DirectRisk 的整个语义是「把它放进**直连**白名单

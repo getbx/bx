@@ -1,6 +1,11 @@
 package rulereview
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/getbx/bx/internal/route"
+)
 
 // 起因就是这一条:项目所有者的配置里有 *.myqcloud.com,而 policy.DirectRisk 全仓
 // 只有 bx direct add 一个调用点 —— 不管它是绕过守卫直接改 YAML 加的,还是守卫上线
@@ -175,5 +180,103 @@ func TestSameDomainInBothTablesReportsTheDirectOneDead(t *testing.T) {
 	}
 	if rep.Findings[0].Kind != "direct" {
 		t.Errorf("被判失效的应该是 direct 那条,got %q", rep.Findings[0].Kind)
+	}
+}
+
+// 非 global 下,被内建 china 列表覆盖的手写规则确实没有作用。
+func TestShadowedByBuiltinChinaList(t *testing.T) {
+	china := route.NewDomainSet([]string{"qq.com", "taobao.com"})
+	rep := Review(Input{Direct: []string{"*.qq.com", "example.org"}, China: china})
+
+	if rep.ShadowedByBuiltinCount != 1 {
+		t.Fatalf("ShadowedByBuiltinCount = %d, want 1:%+v", rep.ShadowedByBuiltinCount, rep.Findings)
+	}
+	if !rep.BuiltinListChecked {
+		t.Error("BuiltinListChecked = false,而这一轮明明比过了")
+	}
+	f := rep.Findings[0]
+	if f.Class != ClassShadowedByBuiltinList || f.Rule != "*.qq.com" {
+		t.Errorf("finding 不对:%+v", f)
+	}
+	if f.CoveredBy != "qq.com" {
+		t.Errorf("CoveredBy = %q, want %q(内建列表里那一行的原文)", f.CoveredBy, "qq.com")
+	}
+}
+
+// **这是本功能最贵的一条测试。**
+//
+// spec 写完当天的真机实测:拿生产的 route.DomainSet + 内嵌 china 列表跑项目所有者
+// 的 24 条规则,报出 22 条「被 china 列表覆盖」——而他的机器是 **global**,
+// china 列表整个不生效,那 22 条全都在干活。照着删会让 22 个域名改走隧道。
+//
+// 判据本身没错,错在没读 mode。而且要读的是 config.Global,**不是 config.Mode**
+// (后者取值只有 host|router,与这件事无关)。
+func TestGlobalModeSuppressesEveryBuiltinListFinding(t *testing.T) {
+	china := route.NewDomainSet(ownerRulesChinaListFixture())
+	in := Input{Direct: ownerRulesFixture(), China: china}
+
+	split := Review(in)
+	if split.ShadowedByBuiltinCount == 0 {
+		t.Fatal("fixture 在非 global 下一条都没报 —— 这条测试失去了它要守的东西,请修 fixture")
+	}
+
+	in.GlobalProxy = true
+	global := Review(in)
+
+	if global.ShadowedByBuiltinCount != 0 {
+		t.Fatalf("global 下报出了 %d 条「被 china 列表覆盖」—— 那些规则全都在干活,"+
+			"照着删会把 %d 个域名改走隧道。这正是 spec 当天被真机抓到的那个 bug",
+			global.ShadowedByBuiltinCount, global.ShadowedByBuiltinCount)
+	}
+	// **不是「零条」,是「没查」。** 两者必须分得开,否则报告在说一句自洽的假话。
+	if global.BuiltinListChecked {
+		t.Error("global 下 BuiltinListChecked 仍是 true —— 「没查」被报成了「查了没有」")
+	}
+	if global.BuiltinSkipReason == "" {
+		t.Error("没查却不说为什么 —— 用户无从判断这份报告漏了什么")
+	}
+	// 模式无关的那三类一条都不许少。
+	if global.ShadowedByUserCount != split.ShadowedByUserCount {
+		t.Errorf("global 把模式无关的同表冗余也压掉了:%d vs %d",
+			global.ShadowedByUserCount, split.ShadowedByUserCount)
+	}
+	if global.RiskyCount != split.RiskyCount {
+		t.Errorf("global 把安全告警也压掉了:%d vs %d", global.RiskyCount, split.RiskyCount)
+	}
+}
+
+// 拿不到列表(调用方读不到、或用户用 lists.china_domain 换了自己的一份)时同样是
+// 「没查」,而不是「零条」。
+func TestNilChinaListIsNotChecked(t *testing.T) {
+	rep := Review(Input{
+		Direct:          []string{"*.qq.com"},
+		ChinaSkipReason: "你在 lists.china_domain 里换了自己的列表,内建那份不作数",
+	})
+	if rep.BuiltinListChecked {
+		t.Error("没有列表却报成查过了")
+	}
+	if rep.ShadowedByBuiltinCount != 0 {
+		t.Errorf("没有列表却报出了 %d 条", rep.ShadowedByBuiltinCount)
+	}
+	if rep.BuiltinSkipReason == "" {
+		t.Error("理由被吞掉了")
+	}
+}
+
+// proxy 规则命中 china 列表**不是冗余**:Explain 先查 UserProxy,内建列表轮不到,
+// 那条规则正在工作。两支说同一句话,就是叫用户删掉一条正在把流量拉回隧道的规则。
+func TestProxyRuleHittingChinaListIsCalledAnException(t *testing.T) {
+	china := route.NewDomainSet([]string{"qq.com"})
+	rep := Review(Input{Proxy: []string{"*.qq.com"}, China: china})
+
+	if rep.ShadowedByBuiltinCount != 1 {
+		t.Fatalf("want 1 条:%+v", rep.Findings)
+	}
+	s := rep.Findings[0].Summary
+	if !strings.Contains(s, "例外") {
+		t.Errorf("proxy 那一支没有说清它是生效中的例外,got %q", s)
+	}
+	if strings.Contains(s, "没有额外作用") {
+		t.Errorf("proxy 那一支照抄了 direct 的措辞 —— 会让用户删掉一条正在工作的规则:%q", s)
 	}
 }
