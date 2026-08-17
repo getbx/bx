@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,5 +165,105 @@ func TestDoctorSurfacesRiskyRuleOnBothPaths(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("bx doctor --json 里一个字都没提那条危险直连规则 —— 接线没接上")
+	}
+}
+
+// **回归 review finding**:policy.DirectRisk 的名单有 19 个域
+// (aliyuncs/myqcloud/amazonaws/cloudfront/github.io…),配置里同时有两条危险直连
+// 完全现实。此前的实现按每条 finding 各调一次 rep.addCheck(同一个 name),
+// --json 里会出现**多个同名** checkReport;ruleReviewCheckName 的注释自己写的
+// 就是「agent 与 MCP 按名字取」,按名字取的消费方只会拿到其中一条,静默丢掉
+// 其余的安全结论 —— 一个去匿名化风险被静默丢掉,方向正好是这个功能要防的
+// 那个错误的反面。
+//
+// 断言:同名 check 恰好一条,且它的 Detail 里两条规则都点到了名。
+func TestDoctorJSONMergesMultipleRiskyRulesIntoOneNamedCheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := "server: brook://example.com:9999?password=x\n" +
+		"rules:\n  - direct:\n      - '*.myqcloud.com'\n      - '*.aliyuncs.com'\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := collectClientDoctorWith(path, "", time.Second, true, false)
+
+	wantName := ruleReviewCheckName("risky direct rule")
+	var matches []checkReport
+	for _, c := range rep.Checks {
+		if c.Name == wantName {
+			matches = append(matches, c)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("同名 check %q 出现 %d 次,想要恰好 1 次"+
+			"(按名字取的消费方会静默丢掉除一条之外的全部危险规则):%+v",
+			wantName, len(matches), matches)
+	}
+	for _, rule := range []string{"*.myqcloud.com", "*.aliyuncs.com"} {
+		if !strings.Contains(matches[0].Detail, rule) {
+			t.Errorf("合并后的 Detail 里丢了 %q: %q", rule, matches[0].Detail)
+		}
+	}
+	if matches[0].Status != "warn" {
+		t.Errorf("Status = %q, want warn", matches[0].Status)
+	}
+}
+
+// captureStdout 把 fn 执行期间写往 os.Stdout 的内容整个捕获回来。
+// doctorLine 直接 fmt.Printf 到 os.Stdout(全局变量),测试期间原地替换即可,
+// 不需要给 doctorAction 单独开一个可注入 writer 的口子。
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	os.Stdout = old
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return buf.String()
+}
+
+// 同一个 review finding,文本路径这一侧:doctorAction 把 ruleReviewDoctorLines
+// 的每一条按 doctorLine(status, key, value) 打一行,合并后仍必须**两条规则都
+// 出现在输出里**——只打第一条的话,用户会以为按提示删掉那一条就完了。
+//
+// 这里真的跑一遍 bx doctor(经 New() 装配的完整 App,与命令行用户看到的路径
+// 一致),不是直接调 ruleReviewDoctorLines——后者已经被上面那条 JSON 测试
+// 和这条共用同一份判据的事实覆盖了;这条要证明的是**渲染那一层没有偷偷截断**。
+func TestDoctorTextPathListsEveryRiskyRuleNotJustTheFirst(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := "server: brook://example.com:9999?password=x\n" +
+		"rules:\n  - direct:\n      - '*.myqcloud.com'\n      - '*.aliyuncs.com'\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 隔离诊断归档:doctorAction 非 --json 路径会 defer 一次日志归档,
+	// 默认目标是系统路径(/Library/Logs/bx/diagnostics),测试环境下大概率
+	// 没权限,失败本身不影响断言(只打到 stderr),但改到 t.TempDir() 更干净、
+	// 不依赖真实系统目录是否可写。
+	t.Setenv("BX_LOG_ARCHIVE_DIR", filepath.Join(dir, "archive"))
+
+	out := captureStdout(t, func() {
+		app := New()
+		if err := app.Run([]string{"bx", "doctor", "--config", path, "--skip-probe"}); err != nil {
+			t.Fatalf("bx doctor: %v", err)
+		}
+	})
+
+	for _, rule := range []string{"*.myqcloud.com", "*.aliyuncs.com"} {
+		if !strings.Contains(out, rule) {
+			t.Errorf("文本路径的输出里丢了 %q(只给第一条会让用户以为删掉那一条就完了):\n%s", rule, out)
+		}
 	}
 }

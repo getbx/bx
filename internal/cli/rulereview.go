@@ -43,7 +43,11 @@ func buildRuleReviewInput(cfg *config.Config, china []byte) rulereview.Input {
 	return in
 }
 
-// chinaDomainPatterns 按 supervisor 侧 readLines 的同一规则拆行:去空白、跳注释与空行。
+// chinaDomainPatterns 按行拆开内嵌 china 列表。**这里不是照抄 supervisor 的
+// readLines**(它其实什么都不过滤,只是原样按行切开)——真正的先例是
+// route.NewDomainSet:它自己也会 TrimSpace/跳注释/跳空行/去 `*.` 前缀。这里提前做
+// 一遍是为了让这个函数本身可读、可单测(看得出「一行一条,# 是注释」这条约定),
+// 与 NewDomainSet 内部那份重复但无害。
 func chinaDomainPatterns(raw []byte) []string {
 	var out []string
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -61,20 +65,14 @@ func chinaDomainPatterns(raw []byte) []string {
 // **干净就一个字都不说。** 只在真有问题时才占地方,是这套东西不被训练成噪声的前提
 // (与按规则失败计数同一条纪律)。唯一的例外是「没查」——那必须说,因为静默的
 // 「没查」与「没问题」在用户眼里长得一模一样。
+//
+// **文本路径与 JSON 路径共用这一份判据** —— doctorAction 与 collectClientDoctorWith
+// 都只是拿这个函数的返回值分别渲染,不许为了保住某一侧的呈现分叉成两条判断逻辑。
 func ruleReviewDoctorLines(rep rulereview.Report) []doctorFinding {
 	var out []doctorFinding
 
-	for _, f := range rep.Findings {
-		if f.Class != rulereview.ClassRisky {
-			continue
-		}
-		// 安全结论,warn 而不是 info,并且点名到配置里那一行的原文。
-		out = append(out, doctorFinding{
-			Status: "warn",
-			Key:    "risky direct rule",
-			Value:  fmt.Sprintf("%s —— %s", f.Rule, f.Summary),
-			Hint:   fmt.Sprintf("bx direct remove '%s'(改完要 bx down && bx up)", f.Rule),
-		})
+	if f := riskyRuleFinding(rep); f != nil {
+		out = append(out, *f)
 	}
 
 	if n := rep.OverriddenCount; n > 0 {
@@ -109,6 +107,50 @@ func ruleReviewDoctorLines(rep rulereview.Report) []doctorFinding {
 		})
 	}
 	return out
+}
+
+// riskyRuleFinding 把全部危险直连 finding 合并成**恰好一条** doctorFinding。
+//
+// **不是每条 finding 一行** —— policy.DirectRisk 的名单有 19 个域
+// (aliyuncs/myqcloud/amazonaws/cloudfront/github.io…),配置里同时有两条危险直连
+// 完全现实。ruleReviewCheckName 的整个存在理由是「agent 与 MCP 按名字取」,如果
+// 每条 finding 各产出一条同名 check,--json 路径会对 rep.addCheck 同一个名字调
+// 多次,产生多个同名 checkReport —— 按名字取的消费方(这是 JSON 路径唯一的读者)
+// 只会拿到其中一条,静默丢掉其余的安全结论。一个去匿名化风险被静默丢掉,
+// 方向正好是这个功能要防的那个错误的反面。
+//
+// **详情不截断,不同于 summarizeClass 的「前三条 + 等 N 条」**——那是给冗余/覆盖
+// 这类「建议」用的折中(全列出来会把 doctor 淹掉);这一类是**安全结论**,少报一条
+// 等于没报那一条。hint 同理:必须能一次处理全部规则,不能只给第一条的命令——
+// 那会让用户以为删掉那一条就完了。
+func riskyRuleFinding(rep rulereview.Report) *doctorFinding {
+	var rules []string
+	summary := ""
+	for _, f := range rep.Findings {
+		if f.Class != rulereview.ClassRisky {
+			continue
+		}
+		rules = append(rules, f.Rule)
+		if summary == "" {
+			summary = f.Summary
+		}
+	}
+	if len(rules) == 0 {
+		return nil
+	}
+	quoted := make([]string, len(rules))
+	for i, r := range rules {
+		quoted[i] = "'" + r + "'"
+	}
+	return &doctorFinding{
+		Status: "warn",
+		Key:    "risky direct rule",
+		Value: fmt.Sprintf("%d 条直连规则命中危险名单:%s —— %s",
+			len(rules), strings.Join(rules, "、"), summary),
+		// bx direct rm(不是 remove —— 那是这条 hint 上一版的笔误,命令本身
+		// 不存在)接受多个域名一次处理,一条命令覆盖全部规则。
+		Hint: fmt.Sprintf("bx direct rm %s(改完要 bx down && bx up)", strings.Join(quoted, " ")),
+	}
 }
 
 // summarizeClass 打出「N 条 + 前三条点名」。全部列出来会把 doctor 淹掉,
