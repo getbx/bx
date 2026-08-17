@@ -96,36 +96,21 @@ func TestRiskyRuleWarningIsModeIndependent(t *testing.T) {
 	}
 }
 
-// **接线守卫。** 判据全对而没人把它接进 status,与没有这个功能在输出上完全一样。
-// 这里不查源码文本 —— 那类守卫在本仓库被绕过过八次 —— 而是断言 Run 传下去的那个
-// 参数确实到了 Report.Warnings 里。
+// **前一版接线守卫已删,理由记在这里而不是悄悄消失。**
 //
-// 走真的 serveControlWithPathRecovery 太重(要 socket、要 engine),所以退一步:
-// 断言 report 组装那一步把 configWarnings 并进了 guard 的告警。若将来 report 的
-// 组装被重构,这条测试读不懂它就必须 t.Fatal,而不是静默放行。
-func TestConfigWarningsReachTheStatusReport(t *testing.T) {
-	guardWarnings := []stats.Warning{{Name: "tailscale", Severity: "warn"}}
-	configWarnings := riskyRuleWarnings(&config.Config{
-		Rules: []config.Rule{{Direct: []string{"*.myqcloud.com"}}},
-	})
-	if len(configWarnings) != 1 {
-		t.Fatalf("前置断言失败:riskyRuleWarnings 没产出告警,这条守卫会为错误的理由通过")
-	}
-
-	merged := append(append([]stats.Warning(nil), guardWarnings...), configWarnings...)
-	if len(merged) != 2 {
-		t.Fatalf("合并后 %d 条,want 2", len(merged))
-	}
-	var sawRisky, sawGuard bool
-	for _, w := range merged {
-		switch w.Name {
-		case "risky_direct_rule":
-			sawRisky = true
-		case "tailscale":
-			sawGuard = true
-		}
-	}
-	if !sawRisky || !sawGuard {
-		t.Fatalf("合并把一边吃掉了:risky=%v guard=%v", sawRisky, sawGuard)
-	}
-}
+// 这里原有 TestConfigWarningsReachTheStatusReport,自称断言「Run 传下去的那个
+// 参数确实到了 Report.Warnings 里」,但它在测试函数内部自己 `append` 了一遍
+// guardWarnings 与 configWarnings,断言的是那个局部变量 `merged` —— 它一次都
+// 没有调用生产代码里真正组装 stats.Report 的那段逻辑。把 control.go 里
+// `append(guard.warnings(), configWarnings...)` 改回 `guard.warnings()`,
+// 那条测试原样通过、绿灯,而 bx status 会静默丢失整个「危险直连规则」告警通道
+// ——一个自称证明接线、实际什么都没证明的测试,比没有测试更糟。
+//
+// 现在的替代品是 control_reporter_test.go 的
+// TestStatusReporterIncludesBothGuardAndConfigWarnings:它调用的是生产代码
+// 里真正组装 report 的具名函数 newStatusReporter(从 serveControlWithPathRecovery
+// 内联的匿名函数提出来的,逻辑完全相同,不是重新拼一遍),不是自己在测试里
+// 重复一遍 append 逻辑。走真的 serveControlWithPathRecovery(要在 SockPath 常量
+// 指向的 /var/run/bx 或 /run/bx 下建 socket)本机以非 root 身份实测会
+// permission denied,这是选择提取 newStatusReporter 而不是直接调用
+// serveControlWithPathRecovery 的原因。
