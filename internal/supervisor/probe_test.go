@@ -174,8 +174,8 @@ func TestProbeIsWiredToTheDirectDialer(t *testing.T) {
 		t.Fatal("读不出那一行 —— 守卫已经失效,先修守卫")
 	}
 	line := text[call : call+end]
-	// 最后一个实参就是 probeDial。
-	if !strings.Contains(line, "recoverer, direct)") {
+	// probeDial 是 recoverer 之后那个实参(最后一个实参是 configWarnings)。
+	if !strings.Contains(line, "recoverer, direct, riskyRuleWarnings(cfg))") {
 		t.Fatalf("探测拨号器不是 direct —— 量到的会是「你 → 当前服务器 → 目标」:\n  %s", line)
 	}
 }
