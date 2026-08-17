@@ -191,7 +191,7 @@ func TestMutationHandlerReturnsFailureCodeAndLogs(t *testing.T) {
 			controller.simulateNeedsAttention("core_ownership_uncertain")
 			return errors.New("inspect recorded Core PID 5129: boom")
 		},
-		newAcceptedMutations(), LocalAPIOptions{}, "/v1/up")
+		newAcceptedMutations(), LocalAPIOptions{}, "/v1/up", newTestStatusPublisher())
 
 	rec := httptest.NewRecorder()
 	handler(rec, rootMutationRequest(t))
@@ -228,7 +228,7 @@ func TestMutationHandlerReturnsCodeOnRepeatedIdenticalFailure(t *testing.T) {
 		controller.simulateNeedsAttention("core_ownership_uncertain")
 		return errors.New("inspect recorded Core PID 5129: boom")
 	}
-	handler := mutationHandler(controller, failingMutate, newAcceptedMutations(), LocalAPIOptions{}, "/v1/up")
+	handler := mutationHandler(controller, failingMutate, newAcceptedMutations(), LocalAPIOptions{}, "/v1/up", newTestStatusPublisher())
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		rec := httptest.NewRecorder()
@@ -287,7 +287,7 @@ func TestMutationHandlerOmitsStaleOrEmptyCodeWhenLastErrorUnchanged(t *testing.T
 			defer restore()
 
 			controller := &fakeController{status: Status{LastError: tt.before}}
-			handler := mutationHandler(controller, tt.mutate(controller), newAcceptedMutations(), LocalAPIOptions{}, "/v1/up")
+			handler := mutationHandler(controller, tt.mutate(controller), newAcceptedMutations(), LocalAPIOptions{}, "/v1/up", newTestStatusPublisher())
 
 			rec := httptest.NewRecorder()
 			handler(rec, rootMutationRequest(t))
@@ -310,6 +310,13 @@ func TestMutationHandlerOmitsStaleOrEmptyCodeWhenLastErrorUnchanged(t *testing.T
 // 内部构造的初始状态一致,供直接调用 mutationHandler/updateHandler 的测试使用。
 func newAcceptedMutations() *acceptedMutations {
 	return &acceptedMutations{accepting: true, drained: make(chan struct{})}
+}
+
+// newTestStatusPublisher 构造一个 statusPublisher,供直接调用 mutationHandler
+// 的测试满足其现在必填的 watch 形参。这些测试都走失败路径(mutate 返回 err),
+// 从不触达 poke,所以 compute 用什么都无所谓——但形参必填、不认 nil。
+func newTestStatusPublisher() *statusPublisher {
+	return newStatusPublisher(func() Status { return Status{} })
 }
 
 // rootRecoveryRequest 构造一个带 root peer 凭据(uid==0)的 /v1/recoveries POST
@@ -1131,6 +1138,13 @@ func (c *fakeController) Up(ctx context.Context) error {
 
 func (c *fakeController) Down(context.Context) error {
 	c.downCalls++
+	if c.downErr == nil {
+		// 真实 Manager.Down 的语义:成功即把保护关掉。statusPublisher 的代际号
+		// 由内容派生,一个不改变任何东西的替身 Down 会让「poke 接上了没有」
+		// 这条测试测不出来——见 TestDownPokesTheStatusGeneration。
+		c.status.Protection = ProtectionOff
+		c.status.Desired = DesiredOff
+	}
 	return c.downErr
 }
 
@@ -1311,7 +1325,7 @@ func TestMutationHandlerNamesRecoveryIncompleteAndBusyFailures(t *testing.T) {
 
 			// LastError 停留在一条更早的、不相关的失败上,且这次调用不会更新它。
 			controller := &fakeController{status: Status{LastError: "stale_unrelated_code"}}
-			handler := mutationHandler(controller, func(context.Context) error { return tt.err }, newAcceptedMutations(), LocalAPIOptions{}, "/v1/up")
+			handler := mutationHandler(controller, func(context.Context) error { return tt.err }, newAcceptedMutations(), LocalAPIOptions{}, "/v1/up", newTestStatusPublisher())
 
 			rec := httptest.NewRecorder()
 			handler(rec, rootMutationRequest(t))

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -89,6 +90,9 @@ type localAPI struct {
 	mutations      *acceptedMutations
 	recoveries     recoveryLifecycle
 	pathRecoveries pathRecoveryLifecycle
+	// watch 是 Status 与代际号的唯一发布点。parked 的 watch 请求由
+	// beginShutdown 唤醒 —— 见那个方法。
+	watch *statusPublisher
 }
 
 type recoveryLifecycle interface {
@@ -114,19 +118,35 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 		options = provided[0]
 	}
 	mutations := &acceptedMutations{accepting: true, drained: make(chan struct{})}
+	// **Status 的唯一发布点。** 连不带 wait 的那条路也走它 —— 否则应答里的
+	// status_generation 与 watch 那条路发布的会是两个互不相干的数,而客户端
+	// 正是拿前者发回给后者的。
+	watch := newStatusPublisher(func() Status {
+		return observableStatus(controller, pathRecoveryControllerFor(controller), options)
+	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		writeGuardianJSON(w, http.StatusOK, observableStatus(controller, pathRecoveryControllerFor(controller), options))
+		// 读不懂的 wait **当成「没带」**:当成 0 会让每次请求都立刻返回
+		// (= 满速轮询),回 4xx/5xx 会让菜单以为 Guardian 坏了。立刻返回一次
+		// 当前状态最无害 —— 客户端拿到真代际号之后自然会用对。
+		clientGen, parked := parseWatchGeneration(r)
+		if !parked {
+			status, _ := watch.current()
+			writeGuardianJSON(w, http.StatusOK, status)
+			return
+		}
+		status, _ := watch.wait(r.Context(), clientGen, parseWatchTimeout(r))
+		writeGuardianJSON(w, http.StatusOK, status)
 	})
-	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations, options, "/v1/up"))
+	mux.HandleFunc("/v1/up", mutationHandler(controller, controller.Up, mutations, options, "/v1/up", watch))
 	// markMaintenanceStop 只包 /v1/down:它把「这次停保护是维护(升级)自己的
 	// 一步」翻译进请求上下文,Manager.Down 据此既不改写 desired、也不销掉那张
 	// 前一秒才武装的维护挂起(见 upgradeintent.go)。
-	mux.HandleFunc("/v1/down", markMaintenanceStop(mutationHandler(controller, controller.Down, mutations, options, "/v1/down")))
+	mux.HandleFunc("/v1/down", markMaintenanceStop(mutationHandler(controller, controller.Down, mutations, options, "/v1/down", watch)))
 	migrationController, _ := controller.(MigrationController)
 	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations, options))
 	updateController, _ := controller.(UpdateController)
@@ -139,7 +159,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	mux.HandleFunc("/v1/servers", serversHandler(options.ConfigPath, options.OwnerUID, liveServerSwitch, liveServerProbe, liveThroughput))
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
-	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries}
+	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries, watch: watch}
 }
 
 func pathRecoveryControllerFor(controller Controller) PathRecoveryController {
@@ -630,6 +650,13 @@ func (a *localAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (a *localAPI) beginShutdown() {
 	a.mutations.stopAccepting()
+	// **parked 的 watch 必须立刻放开。** server.Shutdown 会等在跑的 handler
+	// 返回,而这个方法正是在 server.Shutdown 之前被 Daemon.Shutdown 调的
+	// (daemon.go:319)。不唤醒它们,升级时 Guardian 关机会慢到 25 秒 ——
+	// 而这个项目在「关机慢」上栽过 71 分钟。
+	if a.watch != nil {
+		a.watch.beginShutdown()
+	}
 }
 
 func (a *localAPI) waitForMutations(ctx context.Context) error {
@@ -669,7 +696,7 @@ func (a *localAPI) waitForRecoveries(ctx context.Context) error {
 //
 // 两行都只有 uid / 端点 / 时间 / 成败这些非敏感字段。原始错误仍然只在
 // guardian_mutation_failed 那行里(见下),响应体照旧只带失败码。
-func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations, options LocalAPIOptions, endpoint string) http.HandlerFunc {
+func mutationHandler(controller Controller, mutate func(context.Context) error, mutations *acceptedMutations, options LocalAPIOptions, endpoint string, watch *statusPublisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -707,6 +734,9 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 		}
 		log.Printf("guardian_mutation_result endpoint=%s uid=%d outcome=ok elapsed=%s",
 			endpoint, uid, time.Since(started).Round(time.Millisecond))
+		// **广播点。** 用户正站在旁边等反馈:up/down 成功后立刻重算并唤醒任何
+		// parked 的 watch,而不是让它们等下一个兵底拍(最长 3 秒)。
+		watch.poke()
 		// 版本字段必须一起回:`bx up` 只看这一个响应,不会再补一次 GET /v1/status。
 		writeGuardianJSON(w, http.StatusOK, statusWithVersions(controller, options))
 	}
@@ -756,4 +786,46 @@ func writeGuardianJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// parseWatchGeneration 取出 `wait` 参数。第二个返回值 = 「这是一次长轮询」。
+//
+// 缺席或读不懂都返回 false(当成普通 GET),理由见调用点。
+func parseWatchGeneration(r *http.Request) (uint64, bool) {
+	raw := r.URL.Query().Get("wait")
+	if raw == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+// parseWatchTimeout 取出可选的 `timeout`(秒),并钳进服务端允许的区间。
+func parseWatchTimeout(r *http.Request) time.Duration {
+	raw := r.URL.Query().Get("timeout")
+	if raw == "" {
+		return watchMaxHold
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil {
+		return watchMaxHold
+	}
+	return clampWatchTimeout(time.Duration(seconds) * time.Second)
+}
+
+// clampWatchTimeout 把客户端要求的挂住时长钳进 [watchMinHold, watchMaxHold]。
+//
+// **上限不能交给客户端决定**:它同时是 Guardian 关机可能被拖住的上限。
+// 下限不能是 0:那会让 watch 退化成满速轮询。
+func clampWatchTimeout(d time.Duration) time.Duration {
+	if d < watchMinHold {
+		return watchMinHold
+	}
+	if d > watchMaxHold {
+		return watchMaxHold
+	}
+	return d
 }
