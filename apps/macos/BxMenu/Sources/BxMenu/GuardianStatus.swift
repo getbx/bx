@@ -38,6 +38,10 @@ struct GuardianStatus: Decodable {
     /// 「这一版 Guardian 压根没有挂起这个概念」。后者下菜单不许断言「没有挂起」
     /// (见 declaresMaintenanceHold)。
     let maintenanceHold: MaintenanceHold?
+    /// Guardian 的内容派生代际号。**nil = 这一版没有 watch 这个概念**
+    /// (键缺席),不是 0。判「支不支持 watch」要看 capabilities,不看这个键 ——
+    /// 与 maintenanceHold 同一条纪律。
+    let statusGeneration: UInt64?
 
     enum CodingKeys: String, CodingKey {
         case desired
@@ -53,6 +57,7 @@ struct GuardianStatus: Decodable {
         case core
         case capabilities
         case maintenanceHold = "maintenance_hold"
+        case statusGeneration = "status_generation"
     }
 
     init(from decoder: Decoder) throws {
@@ -70,6 +75,7 @@ struct GuardianStatus: Decodable {
         core = try container.decodeIfPresent(CoreRuntime.self, forKey: .core)
         capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities)
         maintenanceHold = try container.decodeIfPresent(MaintenanceHold.self, forKey: .maintenanceHold)
+        statusGeneration = try container.decodeIfPresent(UInt64.self, forKey: .statusGeneration)
     }
 }
 

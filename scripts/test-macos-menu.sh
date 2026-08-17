@@ -37,6 +37,7 @@ run_test guardian-client \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Tests/GuardianClientTests.swift"
 run_test instance-gate \
@@ -59,6 +60,7 @@ run_test guardian-status \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Tests/GuardianStatusTests.swift"
 run_test guardian-client-timeout \
@@ -68,6 +70,7 @@ run_test guardian-client-timeout \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Tests/GuardianClientTimeoutTests.swift"
 run_test toggle-controller \
@@ -89,6 +92,7 @@ run_test guardian-failure-code \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
   "$MENU/Tests/GuardianFailureCodeTests.swift"
@@ -144,7 +148,13 @@ run_test guardian-status-fields \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
+  "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Tests/GuardianStatusFieldsTests.swift"
+
+run_test status-watch \
+  "$MENU/Sources/BxMenu/MenuCadence.swift" \
+  "$MENU/Sources/BxMenu/StatusWatch.swift" \
+  "$MENU/Tests/StatusWatchTests.swift"
 
 echo "macOS menu tests passed"

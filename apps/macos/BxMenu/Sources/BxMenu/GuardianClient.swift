@@ -35,12 +35,14 @@ enum GuardianEndpoint {
     case probeServers
     /// 换到清单里的另一台。**服务端会等新隧道健康才确认**,所以它慢。
     case switchServer(name: String)
+    /// 长轮询:Guardian 在自己的代际号与 generation 不同时立刻应答,相同则挂住。
+    case statusWatch(generation: UInt64)
 
     var expectedStatus: Int {
         switch self {
         case .requestRecovery: return 202
         case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule,
-             .changeRuleGroup, .listServers, .switchServer, .probeServers:
+             .changeRuleGroup, .listServers, .switchServer, .probeServers, .statusWatch:
             return 200
         }
     }
@@ -59,6 +61,9 @@ enum GuardianEndpoint {
         // 服务端每台最多 8 秒、且是串行的。给到 60 秒够测七八台;比它短的话
         // 拿到的是自己的超时,而服务端那边还在测。
         case .probeServers: return guardianProbeTimeout
+        // 服务端最长挂 25 秒。客户端必须更长,否则拿到的永远是自己的超时,
+        // 而服务端那个上限一次都不会生效。
+        case .statusWatch: return guardianStatusWatchTimeout
         }
     }
 }
@@ -225,6 +230,13 @@ struct GuardianClient {
         try perform(endpoint: .switchServer(name: name), as: ServerSwitchResult.self)
     }
 
+    /// 长轮询一次。**只有 `watchIsAvailable(capabilities:)` 判定这一版 Guardian
+    /// 支持时才该调用它** —— 旧 Guardian 会把 `wait` 当成未知 query 参数忽略掉、
+    /// 立刻回一份普通应答,调用方会把它误读成「刚变了」。
+    func statusWatch(generation: UInt64) throws -> GuardianStatus {
+        try perform(endpoint: .statusWatch(generation: generation), as: GuardianStatus.self)
+    }
+
     /// 加/删一条规则,并返回改动**之后**的完整列表。
     ///
     /// 返回新列表而不是一个 ok:界面据此重画,不必自己推演改动后的状态 ——
@@ -361,6 +373,12 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         // 与 changeRule 同一条纪律:用 JSONSerialization,不手拼 —— 名字来自
         // 配置文件,一个引号就能改变请求的结构。
         body = (try? JSONSerialization.data(withJSONObject: ["name": name])) ?? Data("{}".utf8)
+    case let .statusWatch(generation):
+        method = "GET"
+        // generation 是 UInt64,插值不引入注入面 —— 与 changeRule 那里用
+        // JSONSerialization 的理由不冲突:那里的输入是用户写的任意文本。
+        path = "/v1/status?wait=\(generation)"
+        body = nil
     }
 
     var requestText = "\(method) \(path) HTTP/1.1\r\nHost: local\r\nAccept: application/json\r\nConnection: close\r\n"
