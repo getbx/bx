@@ -176,13 +176,13 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          go run ./scripts/sign-update-manifest.go --version "$version" --out dist.noindex/bx-update.json \
-            --asset linux/amd64:dist.noindex/bx_linux_amd64.tar.gz \
-            --asset linux/arm64:dist.noindex/bx_linux_arm64.tar.gz \
-            --asset darwin/amd64:dist.noindex/bx_darwin_amd64.tar.gz \
-            --asset darwin/arm64:dist.noindex/bx_darwin_arm64.tar.gz \
-            --package darwin/amd64:dist.noindex/bx-macos-amd64.tar.gz \
-            --package darwin/arm64:dist.noindex/bx-macos-arm64.tar.gz
+          go run ./scripts/sign-update-manifest.go --version "$version" --out dist/bx-update.json \
+            --asset linux/amd64:dist/bx_linux_amd64.tar.gz \
+            --asset linux/arm64:dist/bx_linux_arm64.tar.gz \
+            --asset darwin/amd64:dist/bx_darwin_amd64.tar.gz \
+            --asset darwin/arm64:dist/bx_darwin_arm64.tar.gz \
+            --package darwin/amd64:dist/bx-macos-amd64.tar.gz \
+            --package darwin/arm64:dist/bx-macos-arm64.tar.gz
           cd dist
           sha256sum *.tar.gz *.zip bx-update.json bx-update.json.sig > SHA256SUMS
 
@@ -190,4 +190,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          files: dist.noindex/*
+          files: dist/*
