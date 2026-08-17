@@ -28,6 +28,30 @@ func TestRiskyRuleWarningNamesTheRule(t *testing.T) {
 	}
 }
 
+// hint 里的子命令必须真实存在。`bx direct remove` 曾经是这条 hint 上一版的笔误
+// (命令本身不存在,只有 ls/add/rm),用户照着敲会得到一句 usage 错误 —— 而它是
+// 这条安全结论唯一附带的动作,给一个不存在的命令比不给更糟(用户会以为是自己
+// 敲错了)。
+//
+// 不断言 hint 整句字面等于某个字符串:那种测试和缺陷本身一样脆,命令改名/措辞
+// 调整照样绿。也不去 import internal/cli 取真实子命令名来比对 ——
+// internal/supervisor 不该依赖 internal/cli(方向反了,cli 是消费方)。折中是
+// 断言不含错的那个词、含对的那个词,两句都改错时测试仍能抓住。
+func TestRiskyRuleHintUsesARealSubcommand(t *testing.T) {
+	cfg := &config.Config{Rules: []config.Rule{{Direct: []string{"*.myqcloud.com"}}}}
+	ws := riskyRuleWarnings(cfg)
+	if len(ws) != 1 {
+		t.Fatalf("前置断言失败:want 1 条告警,got %d", len(ws))
+	}
+	hint := ws[0].Hint
+	if strings.Contains(hint, "direct remove") {
+		t.Errorf("hint 用了不存在的子命令 `direct remove`:%q", hint)
+	}
+	if !strings.Contains(hint, "direct rm") {
+		t.Errorf("hint 没有指向真实存在的 `direct rm`:%q", hint)
+	}
+}
+
 // 干净配置一条都不发。
 func TestNoRiskyRuleNoWarning(t *testing.T) {
 	cfg := &config.Config{Rules: []config.Rule{{Direct: []string{"*.qq.com"}}}}

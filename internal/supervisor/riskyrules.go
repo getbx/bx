@@ -35,7 +35,9 @@ func riskyRuleWarnings(cfg *config.Config) []stats.Warning {
 			Name:     "risky_direct_rule",
 			Severity: "warn",
 			Detail:   fmt.Sprintf("直连白名单里的 %s 是公有云/开放子域平台:任何人都能注册它的子域,用一个子域让你的真实 IP 暴露", f.Rule),
-			Hint:     fmt.Sprintf("bx direct remove '%s',然后 bx down && bx up", f.Rule),
+			// bx direct rm(不是 remove —— 那是这条 hint 上一版的笔误,命令本身
+			// 不存在,见 directCommands();用户照着敲会得到一句 usage 错误)。
+			Hint: fmt.Sprintf("bx direct rm '%s'(改完要 bx down && bx up)", f.Rule),
 		})
 	}
 	return out

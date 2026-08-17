@@ -234,7 +234,7 @@ global、china 列表整个不生效,那 22 条全在干活,照着删会让 22 �
 那是诊断命令。severity 取 `warn` 不是 `error`——`11338a0` 之后只有 `error` 会把
 总状态降级成 `Needs Attention`,一条配置建议不该让工作正常的机器显示需注意,
 那正是 Tailscale 共存 advisory 当初犯的错。该告警在 `Run()` 里算好一次传进
-`serveControlWithPathRecovery`(第 18 个形参),不在读状态那条路上重算——菜单每
+`serveControlWithPathRecovery`(第 17 个形参),不在读状态那条路上重算——菜单每
 2 秒拉一次,而配置在运行期不变(bx 不热重载)。
 
 **第 2 条(死规则)与第 4 条(缺失规则)未做**:硬前置是跨重启累计的按规则计数
