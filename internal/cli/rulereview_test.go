@@ -122,6 +122,112 @@ func TestNotCheckedBuiltinListSaysSo(t *testing.T) {
 	}
 }
 
+// **Finding 1 的核心回归。** ClassShadowedByBuiltinList 对 direct/proxy 两支写的是
+// 两句意思相反的话(review.go 的 shadowedByBuiltinFindings):direct 命中是「删了没
+// 影响」,proxy 命中是「这是生效中的例外,删了会改变流量」。而渲染层此前把两支的
+// finding 全塞进同一个 summarizeClass 调用、同一个 Key("covered by builtin list"),
+// Summary 里那句相反的话从没被打印过 —— 一份只有 proxy 例外的配置(如 bilibili.com/
+// hdslb.com 两条 proxy 规则)读到的是跟「可以安全删除」同一种版式的一行。
+//
+// 这里刻意只断言两条 proxy 命中都出现、且没有落进 direct 专用的 key,不检查具体
+// 措辞字面 —— 那样改错了措辞照样通过没有意义,但 Key 分离是判据完整性的底线。
+func TestProxyOnlyBuiltinListHitsAreFiledAsExceptionsNotSafeToDelete(t *testing.T) {
+	rep := rulereview.NewReport([]rulereview.Finding{
+		{
+			Kind: "proxy", Rule: "*.bilibili.com", Class: rulereview.ClassShadowedByBuiltinList,
+			Summary:   "内建 china 列表把它判为直连,而你这条把它扳回隧道——这是生效中的例外,不是冗余。",
+			CoveredBy: "bilibili.com",
+		},
+		{
+			Kind: "proxy", Rule: "*.hdslb.com", Class: rulereview.ClassShadowedByBuiltinList,
+			Summary:   "内建 china 列表把它判为直连,而你这条把它扳回隧道——这是生效中的例外,不是冗余。",
+			CoveredBy: "hdslb.com",
+		},
+	}, true, "")
+
+	lines := ruleReviewDoctorLines(rep)
+
+	// **必须没有**「covered by builtin list」这一行——那是 direct 专用,意思是
+	// 「删掉没有影响」;这份配置只有 proxy 例外,一条都不该落进那个 key。
+	for _, l := range lines {
+		if l.Key == "covered by builtin list" {
+			t.Fatalf("proxy 命中被归进了 direct 那一支(可安全删除),"+
+				"把两条生效中的例外说成了冗余:%+v", l)
+		}
+	}
+
+	var found bool
+	for _, l := range lines {
+		if !strings.Contains(l.Value, "*.bilibili.com") {
+			continue
+		}
+		found = true
+		if l.Key != "builtin list exception" {
+			t.Errorf("proxy 命中的 Key = %q, want %q", l.Key, "builtin list exception")
+		}
+		if !strings.Contains(l.Value, "*.hdslb.com") {
+			t.Errorf("两条 proxy 命中应该合并在同一行,不是各占一行:%q", l.Value)
+		}
+		if strings.Contains(l.Value, "删掉不改变") || strings.Contains(l.Value, "没有额外作用") {
+			t.Errorf("proxy 那一行用了「可以安全删除」的措辞——会让用户删掉一条正在把流量拉回"+
+				"隧道的规则(bilibili.com 会因此改走直连):%q", l.Value)
+		}
+	}
+	if !found {
+		t.Fatal("proxy 命中的两条规则在 doctor 输出里一个字都没提")
+	}
+}
+
+// 同一个域名同时出现在 direct 与 proxy 两张表(review.go 的 fixture 就是这个形状:
+// *.myqcloud.com 既在 direct 里被判「删了没影响」,也可能在别的配置里以 proxy 形式
+// 被判「生效中的例外」)——两条 finding 必须落进**两条独立的行**、**两个独立的
+// 计数**、以及(--json 路径)**两个不同的 check name**,不许合并成一行也不许共用
+// 同一个 check name(check name 撞了,agent/MCP 按名字取只会拿到其中一条,
+// 55ef8ea 就是这个形状,只是那次撞的是 ClassRisky)。
+func TestBuiltinListHitsSplitByKindIntoTwoLinesAndTwoCheckNames(t *testing.T) {
+	rep := rulereview.NewReport([]rulereview.Finding{
+		{
+			Kind: "direct", Rule: "*.myqcloud.com", Class: rulereview.ClassShadowedByBuiltinList,
+			Summary:   "已在内建 china 直连列表里,这条手写的没有额外作用。",
+			CoveredBy: "myqcloud.com",
+		},
+		{
+			Kind: "proxy", Rule: "*.myqcloud.com", Class: rulereview.ClassShadowedByBuiltinList,
+			Summary:   "内建 china 列表把它判为直连,而你这条把它扳回隧道——这是生效中的例外,不是冗余。",
+			CoveredBy: "myqcloud.com",
+		},
+	}, true, "")
+
+	lines := ruleReviewDoctorLines(rep)
+	var direct, proxy *doctorFinding
+	for i := range lines {
+		switch lines[i].Key {
+		case "covered by builtin list":
+			direct = &lines[i]
+		case "builtin list exception":
+			proxy = &lines[i]
+		}
+	}
+	if direct == nil {
+		t.Fatalf("direct 命中没有落进「covered by builtin list」这一行:%+v", lines)
+	}
+	if proxy == nil {
+		t.Fatalf("proxy 命中没有落进「builtin list exception」这一行:%+v", lines)
+	}
+	if direct.Value == proxy.Value {
+		t.Fatalf("两行的文本完全相同——split 没有生效:%q", direct.Value)
+	}
+	if direct.Status != "info" || proxy.Status != "info" {
+		t.Errorf("两行都应是 info(建议,不是安全告警):direct=%q proxy=%q", direct.Status, proxy.Status)
+	}
+
+	nameDirect := ruleReviewCheckName(direct.Key)
+	nameProxy := ruleReviewCheckName(proxy.Key)
+	if nameDirect == nameProxy {
+		t.Fatalf("两条 check 用了同一个名字 %q —— --json 消费方按名字取,会静默丢掉一条", nameDirect)
+	}
+}
+
 // **接线守卫。** 判据全对而没人调用,与没有这个功能在输出上完全一样 ——
 // 本仓库反复栽在这一点上(阶段③a 那次:goroutine 体空转,而断言只证明 channel 会关)。
 //
