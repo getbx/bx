@@ -643,6 +643,7 @@ func logsFlags() []cli.Flag {
 func statusFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
+		&cli.BoolFlag{Name: "watch", Usage: "挂住等状态变化,每次变化打印一次(Ctrl-C 退出;只读,不改任何东西)"},
 	}
 }
 
@@ -4089,6 +4090,9 @@ func linkAction(c *cli.Context) error {
 }
 
 func statusAction(c *cli.Context) error {
+	if c.Bool("watch") {
+		return statusWatchLoop(c.Context, os.Stdout, c.Bool("json"))
+	}
 	rep, err := readClientStatusReport()
 	if err != nil {
 		if c.Bool("json") {
