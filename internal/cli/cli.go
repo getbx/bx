@@ -4653,8 +4653,12 @@ func renderUpSummary(rep stats.Report, statuses ...guardian.Status) string {
 	if len(statuses) > 0 {
 		fmt.Fprintf(&b, "  DNS        %s\n", guardianDNSLabel(statuses[0].DNSState, statuses[0].DNSService))
 	}
-	if len(rep.Warnings) > 0 {
-		fmt.Fprintf(&b, "  Warning    %s\n", rep.Warnings[0].Detail)
+	for i, w := range rep.Warnings {
+		label := "Warning"
+		if i > 0 {
+			label = ""
+		}
+		fmt.Fprintf(&b, "  %-11s%s\n", label, stats.WarningText(w))
 	}
 	return b.String()
 }
