@@ -148,7 +148,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	// 前一秒才武装的维护挂起(见 upgradeintent.go)。
 	mux.HandleFunc("/v1/down", markMaintenanceStop(mutationHandler(controller, controller.Down, mutations, options, "/v1/down", watch)))
 	migrationController, _ := controller.(MigrationController)
-	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations, options))
+	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations, options, watch))
 	updateController, _ := controller.(UpdateController)
 	mux.HandleFunc("/v1/update", updateHandler(controller, updateController, mutations))
 	pathRecoveryController, _ := controller.(PathRecoveryController)
@@ -219,10 +219,23 @@ func attachPublishedIntent(status *Status, controller Controller) {
 }
 
 // statusWithVersions 是 mutation/migration handler 回给客户端的那份状态。
-func statusWithVersions(controller Controller, options LocalAPIOptions) Status {
+//
+// **StatusGeneration 由 watch 补,不是这里现算的。** publisher 才是「代际号
+// 由内容派生」那条纪律唯一的记账处(statuswatch.go),这里只是原样把它此刻
+// 已经发布的那个数字抄过来——不重新计算、不重新决定要不要 bump。字段没有
+// `omitempty`,「存在但是 0」按它自己的文档注释意味着「这一版有 watch 这个
+// 概念、只是还没发布过」;不补这一步,up/down/migrate 的响应会一直是这句假话,
+// 即便 mutationHandler 在组装这份响应之前刚刚调用过 watch.poke()、确确实实
+// 发布过一次。watch 为 nil(测试替身、或调用方压根没有 watch 概念)时保持原样
+// 的零值,不伪造一个从没发布过的代际号。
+func statusWithVersions(controller Controller, options LocalAPIOptions, watch *statusPublisher) Status {
 	status := statusOf(controller)
 	applyVersionFields(&status, options)
 	attachPublishedIntent(&status, controller)
+	if watch != nil {
+		_, generation := watch.current()
+		status.StatusGeneration = generation
+	}
 	return status
 }
 
@@ -579,7 +592,7 @@ func updateHandler(controller Controller, updater UpdateController, mutations *a
 	}
 }
 
-func migrationHandler(controller Controller, migration MigrationController, mutations *acceptedMutations, options LocalAPIOptions) http.HandlerFunc {
+func migrationHandler(controller Controller, migration MigrationController, mutations *acceptedMutations, options LocalAPIOptions, watch *statusPublisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -628,7 +641,7 @@ func migrationHandler(controller Controller, migration MigrationController, muta
 			writeGuardianJSON(w, http.StatusInternalServerError, failureResponseBody(before, controller.Status(), err))
 			return
 		}
-		writeGuardianJSON(w, http.StatusOK, statusWithVersions(controller, options))
+		writeGuardianJSON(w, http.StatusOK, statusWithVersions(controller, options, watch))
 	}
 }
 
@@ -738,7 +751,8 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 		// parked 的 watch,而不是让它们等下一个兵底拍(最长 3 秒)。
 		watch.poke()
 		// 版本字段必须一起回:`bx up` 只看这一个响应,不会再补一次 GET /v1/status。
-		writeGuardianJSON(w, http.StatusOK, statusWithVersions(controller, options))
+		// 代际号同理:poke() 刚发布过,statusWithVersions 把它原样抄进这份响应。
+		writeGuardianJSON(w, http.StatusOK, statusWithVersions(controller, options, watch))
 	}
 }
 

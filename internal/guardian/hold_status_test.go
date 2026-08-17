@@ -128,7 +128,7 @@ func TestMutationResponsesCarryMaintenanceHoldField(t *testing.T) {
 	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	status := statusWithVersions(env.manager, LocalAPIOptions{})
+	status := statusWithVersions(env.manager, LocalAPIOptions{}, nil)
 	if status.MaintenanceHold == nil {
 		t.Fatal("statusWithVersions 没附挂起:菜单的 Turn Off 只看得到这份响应")
 	}

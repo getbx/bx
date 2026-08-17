@@ -150,6 +150,66 @@ func statusGenerationVia(t *testing.T, api http.Handler) uint64 {
 	return status.StatusGeneration
 }
 
+// mutation 应答**自己**带的 status_generation 不该是 0。
+//
+// **与 TestDownPokesTheStatusGeneration 不同的地方**:那条测的是「poke 之后紧跟
+// 一次独立的 GET /v1/status 能看到新代际号」——证明的是 poke 接上了 publisher。
+// 这条测的是 POST /v1/down **这次响应自己的 body**——`statusWithVersions` today
+// 走的是 `statusOf(controller)` 这条与 publisher 完全不相干的路径,从不给
+// `StatusGeneration` 赋值,于是它停在 Go 零值 0。字段没有 `omitempty`,「存在
+// 但是 0」按字段自己的文档注释意味着「这一版有 watch 这个概念、只是还没发布
+// 过」——而这次响应组装之前,同一个 handler 刚刚调用过 watch.poke()、确确实实
+// 发布过一次。今天没有消费方读这个字段,但从一次开关响应里播种一次 watch 正是
+// 显然的下一步,不该让它从一个假的"还没发布过"起跑。
+func TestDownResponseItselfCarriesTheStatusGeneration(t *testing.T) {
+	api := newTestLocalAPI(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/down", strings.NewReader("{}"))
+	api.ServeHTTP(rec, withTestOwnerPeer(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/v1/down 回了 %d: %s", rec.Code, rec.Body.String())
+	}
+	var status Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("解码: %v", err)
+	}
+	if status.StatusGeneration == 0 {
+		t.Fatalf("/v1/down 应答自己的 status_generation 是 0 —— 这次响应组装之前 " +
+			"watch.poke() 已经真的发布过一次,不该回一个「还没发布过」的假象")
+	}
+}
+
+// /v1/migrate 与 /v1/up、/v1/down 共用同一条 statusWithVersions 出口,同一条
+// 纪律。migrate 本身不是广播点(设计明确只有 up/down 是),但它的应答同样不该
+// 撒谎说「从没发布过」——publisher 早在 Guardian 起跑、第一次任意一条路径碰到
+// 它的时候就已经发布过。
+func TestMigrateResponseItselfCarriesTheStatusGeneration(t *testing.T) {
+	controller := &fakeController{
+		status: Status{SchemaVersion: 1, Desired: DesiredOn, Phase: PhaseCommitted, Protection: ProtectionProtected},
+	}
+	api := NewLocalAPI(controller)
+	// 先拨一次 /v1/status,确保 publisher 在这台假 Guardian 上至少发布过一次
+	// (与真实 Guardian 的自然状态一致:generation 从 1 开始,不会恒为 0)。
+	statusGenerationVia(t, api)
+
+	body := `{"gateway":"192.168.1.1","server_bypass":["10.0.0.1/32"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/migrate", strings.NewReader(body))
+	api.ServeHTTP(rec, withTestOwnerPeer(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/v1/migrate 回了 %d: %s", rec.Code, rec.Body.String())
+	}
+	var status Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("解码: %v", err)
+	}
+	if status.StatusGeneration == 0 {
+		t.Fatalf("/v1/migrate 应答自己的 status_generation 是 0 —— 应当带上 publisher " +
+			"此刻已经发布过的那个代际号,而不是 statusOf(controller) 这条与 publisher " +
+			"不相干的路径留下的零值")
+	}
+}
+
 // **关机接线守卫。** localAPI.beginShutdown 必须唤醒任何 parked 的长轮询请求 ——
 // http.Server.Shutdown 会等在跑的 handler 返回,而 Daemon.Shutdown 正是在
 // server.Shutdown **之前**调用 mutations.beginShutdown()(daemon.go:319,
