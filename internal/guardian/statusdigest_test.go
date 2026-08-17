@@ -16,7 +16,7 @@ func representativeStatus() Status {
 	return Status{
 		SchemaVersion:     1,
 		Desired:           DesiredOn,
-		Phase:             Phase("protected"),
+		Phase:             PhaseCommitted,
 		CorePID:           4321,
 		CoreVersion:       "0.3.0",
 		Protection:        ProtectionProtected,
@@ -44,22 +44,49 @@ func representativeStatus() Status {
 		MaintenanceHold: &MaintenanceHoldStatus{Reason: "upgrade", ExpiresAt: at},
 		// LastErrorGeneration 是 Status 结构体里 brief fixture 原文没填的字段
 		// (grep `type Status struct` 核对后补的):它是内部一致性计数器,
-		// json:"-" 使它天生不进对外契约、不可能参与投影 —— 见下方
-		// digestExclusions 里同名条目的理由。这里给非零值只是遵循「fixture
-		// 每个字段都非零」的纪律,对这个字段本身的测试结果没有影响。
+		// json:"-" 使它天生不进 JSON 编码,因此天生不可能参与靠 json.Marshal
+		// 实现的投影 —— 这条测试的反射循环按 json 标签自动跳过它(见下方
+		// TestEveryStatusFieldParticipatesInTheDigest 里的 skipJSONIgnoredField),
+		// 不需要进 digestExclusions。这里给非零值只是遵循「fixture 每个字段
+		// 都非零」的纪律,对这个字段本身的测试结果没有影响。
 		LastErrorGeneration: 7,
 	}
 }
 
-// digestExclusions 是**顶层**字段的排除名单。值是理由 —— 一条没有理由的排除,
-// 下一个人无从判断它还该不该在名单里。
+// digestExclusions 是**顶层**字段的排除名单,**只装易变字段**——那些
+// statusDigest 里靠一行代码(比如 `s.StatusGeneration = 0`)主动清掉、
+// 因为它们持续在变的字段。值是理由 —— 一条没有理由的排除,下一个人无从判断
+// 它还该不该在名单里。
 //
-// 嵌套的易变字段(Core.LatencyMS 等)不在这里,由
+// **`json:"-"` 那一类字段不进这张名单**,由下面反射循环里的
+// skipJSONIgnoredField 按标签自动识别、跳过。二者是两个不同的问题:名单回答
+// 「这个字段为什么易变」,而 `json:"-"` 是「这个字段按构造就不可能出现在
+// json.Marshal 的输出里」—— 前者需要 statusDigest 里有对应代码才成立(是
+// **我们的选择**),后者零行代码就成立(是**语言保证**)。把二者混进同一张
+// 名单,会要求有人在增删 json:"-" 标签时手动同步维护名单条目 —— 那正是
+// 这个投影设计成「整个 Status 减一张名单」所要避免的手工簿记。
+//
+// 嵌套的易变字段(Core.LatencyMS 等)也不在这里,由
 // TestVolatileNestedFieldsDoNotMoveTheDigest 单独钉。
 var digestExclusions = map[string]string{
 	"StatusGeneration": "代际号自己进投影就会让每次 bump 都让下一次比对不同,永久自激",
-	"LastErrorGeneration": "json:\"-\" 使它天生不进 JSON 编码,不可能参与靠 json.Marshal " +
-		"实现的投影;它是内部一致性计数器(见类型定义头注释),本就不是对外契约的一部分",
+}
+
+// skipJSONIgnoredField 报告一个顶层字段是否被 `json:"-"` 标记为绝不编码。
+//
+// **判据是 tag == "-",不是 strings.HasPrefix(tag, "-")。** `json:"-,"`
+// 在 encoding/json 里表示「字段名字面就叫 -」,那种字段**是会被编码的**;
+// 用前缀判断会把一个真正参与投影的字段静默跳过,而那正是这条守卫存在的
+// 理由。
+//
+// **为什么这样比进 digestExclusions 更好,而不是等价的另一种写法**:它
+// 自我纠正 —— 谁哪天去掉某个字段的 json:"-" 标签,那个字段就自动开始被
+// json.Marshal 编码、自动开始参与投影,反射测试照样要求它要么移动投影、
+// 要么被显式加进 digestExclusions 并写明「为什么易变」。没有一个需要记得
+// 删除或新增的名单条目 —— 判据锚在标签本身,不是锚在某个人记不记得更新
+// 一张表。
+func skipJSONIgnoredField(field reflect.StructField) bool {
+	return field.Tag.Get("json") == "-"
 }
 
 // **本测试是整个 watch 功能里最重要的一条。**
@@ -84,6 +111,13 @@ func TestEveryStatusFieldParticipatesInTheDigest(t *testing.T) {
 	}
 	for i := range typ.NumField() {
 		field := typ.Field(i)
+		if skipJSONIgnoredField(field) {
+			// 静默跳过字段的守卫,和一个静默排除字段的实现,是同一个问题 ——
+			// 所以这条跳过本身要留痕。
+			t.Logf("跳过 Status.%s:json:\"-\" 使它按构造不会出现在 json.Marshal 的"+
+				"输出里,不需要(也不可能通过)本条守卫检验", field.Name)
+			continue
+		}
 		mutated := representativeStatus()
 		mutateFieldForDigest(t, field.Name, reflect.ValueOf(&mutated).Elem().Field(i))
 
