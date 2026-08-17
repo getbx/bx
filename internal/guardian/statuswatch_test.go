@@ -51,6 +51,54 @@ func TestVolatileChangeDoesNotMoveTheGeneration(t *testing.T) {
 	}
 }
 
+// Status.StatusGeneration 必须与 current() 单独返回的那个 uint64 一致 ——
+// 这一条盯的是 unchanged 分支:compute() 不填 StatusGeneration,若 recomputeLocked
+// 只在 changed 分支盖代际号,稳态下(绝大多数重算都是 unchanged)发布出去的
+// Status 会一直带 status_generation: 0。Task 3 的 handler 直接把这个 Status
+// 序列化成 JSON,客户端读到 0 就会回发 wait=0,长轮询因此退化成满速轮询。
+func TestUnchangedStatusStillCarriesTheCurrentGeneration(t *testing.T) {
+	p := newStatusPublisher(representativeStatus) // 内容恒定,每次重算都落 unchanged 分支
+	_, gen := p.current()
+	if gen == 0 {
+		t.Fatalf("初始代际号是 0,测试前提不成立(应从 1 起)")
+	}
+
+	p.poke()                    // 绕过合并窗口,强制重算 —— current() 会被合并挡住、根本进不了 recomputeLocked 的主体
+	status, gen2 := p.current() // 第二次:内容没变,走 unchanged 分支
+	if gen2 != gen {
+		t.Fatalf("两次 current() 的代际号不同(%d vs %d),测试前提不成立", gen, gen2)
+	}
+	if status.StatusGeneration != gen2 {
+		t.Fatalf("unchanged 分支返回的 Status.StatusGeneration=%d,与 current() 单独返回的代际号 %d 不一致 —— "+
+			"客户端会拿到 status_generation:%d、回发 wait=%d,而服务端真实代际号是 %d,"+
+			"两者一比\"不同\"就立刻返回,长轮询退化成满速轮询",
+			status.StatusGeneration, gen2, status.StatusGeneration, status.StatusGeneration, gen2)
+	}
+}
+
+// 同上,但盯 changed 分支:内容变化之后,Status.StatusGeneration 也必须与
+// 单独返回的代际号一致(这一条本来就该过,补上是为了让两条分支对称受测)。
+func TestChangedStatusCarriesTheNewGeneration(t *testing.T) {
+	var version atomic.Int64
+	p := newStatusPublisher(func() Status {
+		s := representativeStatus()
+		s.CoreVersion = "v" + string(rune('a'+version.Load()))
+		return s
+	})
+	_, before := p.current()
+
+	version.Add(1)
+	p.poke() // 绕过合并窗口,强制重算(否则紧跟着的 current() 会命中缓存,测不到 changed 分支)
+	status, after := p.current()
+	if after == before {
+		t.Fatalf("内容变了但代际号没动(仍是 %d),测试前提不成立", before)
+	}
+	if status.StatusGeneration != after {
+		t.Fatalf("changed 分支返回的 Status.StatusGeneration=%d,与 current() 单独返回的代际号 %d 不一致",
+			status.StatusGeneration, after)
+	}
+}
+
 // 客户端手上的代际号与当前不同 ⇒ **立刻**返回,一秒都不挂。
 func TestWaitReturnsImmediatelyWhenGenerationDiffers(t *testing.T) {
 	p := newStatusPublisher(representativeStatus)
@@ -125,18 +173,26 @@ func TestWaitParksAndWakesOnPoke(t *testing.T) {
 	}
 }
 
-// 超时 ⇒ 返回当前 Status,代际号**不变**。这一条同时是「通道还活着」的证据。
+// 超时 ⇒ 返回当前 Status,代际号**不变**。这一条同时是「通道还活着」的证据,
+// 并且直接验证 watchMinHold 的钳位:传入的 timeout(300ms)比 watchMinHold(1s)
+// 短,若钳位生效,实际耗时应接近 watchMinHold 而不是接近 300ms —— 只断言
+// ">=200ms" 无论钳没钳、钳到哪个值都会通过,验证不到钳位本身。
 func TestWaitTimesOutWithUnchangedGeneration(t *testing.T) {
 	p := newStatusPublisher(representativeStatus)
 	_, gen := p.current()
 
 	start := time.Now()
 	_, got := p.wait(context.Background(), gen, 300*time.Millisecond)
+	elapsed := time.Since(start)
 	if got != gen {
 		t.Fatalf("超时返回的代际号是 %d,want %d(不变)", got, gen)
 	}
-	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
-		t.Fatalf("只挂了 %v,比要求的超时短", elapsed)
+	lower := watchMinHold - 200*time.Millisecond
+	upper := watchMinHold + 700*time.Millisecond
+	if elapsed < lower || elapsed > upper {
+		t.Fatalf("耗时 %v,不在 [%v,%v] 区间 —— timeout=300ms 应被钳到 watchMinHold=%v,"+
+			"这条断言直接验证钳位钳到了正确的值,而不是随便找一个比 300ms 短的下限",
+			elapsed, lower, upper, watchMinHold)
 	}
 }
 
