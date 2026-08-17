@@ -76,11 +76,12 @@ func watchBackoff(consecutiveFailures int) time.Duration {
 // mutation 调用。
 func statusWatchLoop(ctx context.Context, out io.Writer, asJSON bool) error {
 	client := guardian.NewClient(guardian.SocketPath)
-	return statusWatchLoopWith(ctx, out, asJSON, client.StatusCapabilities, client.StatusWatch, watchBackoff, watchIdleDelay)
+	return statusWatchLoopWith(ctx, out, asJSON, client.Status, client.StatusWatch, watchBackoff, watchIdleDelay)
 }
 
 // requireStatusWatchCapability 是进入 watch 循环前的**第一道、也是主要的**
-// 一道门:拨一次不带 `wait=` 的 /v1/status,确认对面这一版 Guardian 声明过
+// 一道门:拨一次既有的、不带 `wait=` 的 Client.Status(client.go:72,四个既有
+// 调用点都在用的普通方法),确认对面这一版 Guardian 声明过
 // CapabilityStatusWatch,再决定要不要进循环。
 //
 // **绝不「试着拨一下看看」**:旧 Guardian 会忽略它不认识的 `wait` 查询参数、
@@ -91,18 +92,36 @@ func statusWatchLoop(ctx context.Context, out io.Writer, asJSON bool) error {
 // 防线,不是替代品)。既有代码在 /v1/rules、/v1/servers 的能力门控上已经踩过
 // 并写明了同样的理由,这里取一致。
 //
+// **判据是 status.Capabilities == nil,不是 len(status.Capabilities) == 0**,
+// 这个区别是这道门唯一站得住脚的地方,值得写清楚:
+//
+//   - `Status.Capabilities []string` **刻意不带 `omitempty`**——这个标签选择
+//     本身就是为了在协议里保住「这一版从没声明过任何能力」与「声明了,可能
+//     是空的」两种状态的区分。
+//   - Go 的 `encoding/json` 恰好把这个区分原样保留到解码后的值上:JSON 里
+//     capabilities 键**缺席**、或者响应体整个是 `{}`,都会让这个字段停在
+//     它的零值 `nil`;而 `"capabilities":[]` 会被解码成**非 nil**、长度为 0
+//     的切片。`null` 在理论上也会解码成 nil(与「缺席」不可区分),但
+//     `applyVersionFields`(localapi.go)无条件把 `GuardianCapabilities()`
+//     那个固定的非 nil 切片赋给这个字段,全仓没有任何路径会真的发出
+//     `"capabilities":null`,这条边界情形今天不可达。
+//   - 于是 `status.Capabilities != nil` 恰好就是「这一版声明过 capabilities」
+//     该有的判据,而 `len()==0` 会把「键缺席」与「声明了、恰好列表为空」
+//     混成同一个结果——那正是这道门要分开报的两种「没有」,判据选错就等于
+//     把两条分支撞成一句话。
+//
 // **两种「没有」都要拒绝,但要分开报**(哪怕两条分支的处置动作相同——拒绝、
 // 非零退出):
-//   - capabilities 键**整个缺席**:这一版 Guardian 从没声明过任何能力
-//     (Status 结构体里压根没有这个字段),不是「声明了、没有 status_watch」。
-//   - capabilities 键**出现但不含 status_watch**(空数组或有别的能力但没有
+//   - `Capabilities == nil`:这一版 Guardian 从没声明过任何能力,不是
+//     「声明了、没有 status_watch」。
+//   - `Capabilities` 非 nil 但不含 status_watch(空数组或有别的能力但没有
 //     这一项):这一版声明过能力,只是这一项还没上线。
 //
 // 两者都必须拒绝进入循环,理由相同(客户端确认不了对面支不支持长轮询),但
-// 报给用户的话要分开——键缺席意味着「这版本比能力声明这个概念本身还老」,
-// 通常暗示离得更远;而键存在但缺一项通常意味着只差一次小版本升级。
-func requireStatusWatchCapability(ctx context.Context, probe func(context.Context) (guardian.Status, bool, error)) error {
-	status, declared, err := probe(ctx)
+// 报给用户的话要分开——nil 意味着「这版本比能力声明这个概念本身还老」,
+// 通常暗示离得更远;而非 nil 但缺一项通常意味着只差一次小版本升级。
+func requireStatusWatchCapability(ctx context.Context, probe func(context.Context) (guardian.Status, error)) error {
+	status, err := probe(ctx)
 	if err != nil {
 		return fmt.Errorf("watch 无法确认这一版 Guardian 是否支持长轮询(探测 /v1/status 失败):%w", err)
 	}
@@ -110,7 +129,7 @@ func requireStatusWatchCapability(ctx context.Context, probe func(context.Contex
 	if version == "" {
 		version = "unknown"
 	}
-	if !declared {
+	if status.Capabilities == nil {
 		return fmt.Errorf(
 			"这一版 Guardian(guardian_version=%s)从未声明过 capabilities 字段,"+
 				"无法确认是否支持长轮询;为避免退化成满速空转轮询,拒绝进入 --watch。"+
@@ -128,7 +147,7 @@ func requireStatusWatchCapability(ctx context.Context, probe func(context.Contex
 	return nil
 }
 
-// statusWatchLoopWith 是 statusWatchLoop 的可注入核心:probeCapabilities、
+// statusWatchLoopWith 是 statusWatchLoop 的可注入核心:probeStatus、
 // watch、backoff、idleDelay 都是参数,好让循环本身(能力门控、打印时机、
 // 心跳静默、失败重试、代际号推进、不变化响应的节流)免 root、免真实 socket、
 // 免真实等待地单测——与本包 readClientStatusReportWithObserver 同一个套路
@@ -137,12 +156,12 @@ func statusWatchLoopWith(
 	ctx context.Context,
 	out io.Writer,
 	asJSON bool,
-	probeCapabilities func(context.Context) (guardian.Status, bool, error),
+	probeStatus func(context.Context) (guardian.Status, error),
 	watch func(context.Context, uint64) (guardian.Status, error),
 	backoff func(int) time.Duration,
 	idleDelay time.Duration,
 ) error {
-	if err := requireStatusWatchCapability(ctx, probeCapabilities); err != nil {
+	if err := requireStatusWatchCapability(ctx, probeStatus); err != nil {
 		return err
 	}
 	var generation uint64

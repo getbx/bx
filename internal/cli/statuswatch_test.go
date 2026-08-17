@@ -15,14 +15,14 @@ import (
 )
 
 // capabilityGateOpen 是各条循环行为测试(打印时机/心跳静默/失败重试/节流)
-// 共用的 probeCapabilities 桩:声明支持 status_watch,让能力门控直接放行,
-// 好让那些测试继续只关心门后面的逻辑。门本身由
-// TestRequireStatusWatchCapability* 与 TestStatusWatchLoopRejectsWhen* 单独测。
-func capabilityGateOpen(context.Context) (guardian.Status, bool, error) {
+// 共用的 probeStatus 桩:声明支持 status_watch(非 nil 且含
+// CapabilityStatusWatch),让能力门控直接放行,好让那些测试继续只关心门
+// 后面的逻辑。门本身由 TestRequireStatusWatchCapability* 单独测。
+func capabilityGateOpen(context.Context) (guardian.Status, error) {
 	return guardian.Status{
 		GuardianVersion: "test",
 		Capabilities:    []string{guardian.CapabilityStatusWatch},
-	}, true, nil
+	}, nil
 }
 
 // 退避:连续失败要越等越久,但有上限 —— 无上限的指数退避在 int64 上会溢出回绕
@@ -278,14 +278,15 @@ func TestStatusWatchLoopThrottlesInstantUnchangedResponses(t *testing.T) {
 	}
 }
 
-// **能力门控,情形一:capabilities 键整个缺席**(旧 Guardian,Status 结构体
-// 里压根没有这个字段)。必须拒绝进入循环、返回非零(错误),而且**一次 watch
-// 调用都不该发生**——门控要在第一次长轮询调用之前就拦下来,不是拦一次之后
-// 再放行。错误信息要点名"从未声明过 capabilities",不能只说一句"不支持"。
+// **能力门控,情形一:Capabilities 是 nil**(旧 Guardian,响应里
+// capabilities 键整个缺席,或响应体压根是 `{}`)。必须拒绝进入循环、返回
+// 非零(错误),而且**一次 watch 调用都不该发生**——门控要在第一次长轮询
+// 调用之前就拦下来,不是拦一次之后再放行。错误信息要点名"从未声明过
+// capabilities",不能只说一句"不支持"。
 func TestRequireStatusWatchCapabilityRejectsAbsentKey(t *testing.T) {
 	ctx := context.Background()
-	probe := func(context.Context) (guardian.Status, bool, error) {
-		return guardian.Status{GuardianVersion: "0.9.0-old"}, false, nil
+	probe := func(context.Context) (guardian.Status, error) {
+		return guardian.Status{GuardianVersion: "0.9.0-old"}, nil // Capabilities 零值 = nil
 	}
 	var watchCalls int
 	watch := func(context.Context, uint64) (guardian.Status, error) {
@@ -295,7 +296,7 @@ func TestRequireStatusWatchCapabilityRejectsAbsentKey(t *testing.T) {
 	var buf bytes.Buffer
 	err := statusWatchLoopWith(ctx, &buf, false, probe, watch, func(int) time.Duration { return 0 }, 0)
 	if err == nil {
-		t.Fatal("statusWatchLoopWith 返回 nil,want 非 nil 错误(能力键缺席必须拒绝)")
+		t.Fatal("statusWatchLoopWith 返回 nil,want 非 nil 错误(Capabilities 为 nil 必须拒绝)")
 	}
 	if watchCalls != 0 {
 		t.Errorf("watch 被调用了 %d 次,want 0 —— 门控必须在第一次长轮询调用之前就拦下来", watchCalls)
@@ -305,17 +306,17 @@ func TestRequireStatusWatchCapabilityRejectsAbsentKey(t *testing.T) {
 		t.Errorf("错误信息没有点名对面的 guardian_version,实际:%q", msg)
 	}
 	if !strings.Contains(msg, "从未声明") {
-		t.Errorf("键缺席时错误信息应说明「从未声明过 capabilities」,实际:%q", msg)
+		t.Errorf("Capabilities 为 nil 时错误信息应说明「从未声明过 capabilities」,实际:%q", msg)
 	}
 }
 
-// **能力门控,情形二:capabilities 键出现,但不含 status_watch**(声明过
-// 别的能力,或者是空数组)。同样必须拒绝、非零、零次 watch 调用,但措辞要与
-// 情形一不同——这一版声明过能力,只是这一项还没有,不是"从未声明"。
+// **能力门控,情形二:Capabilities 非 nil,但不含 status_watch**(声明过
+// 别的能力)。同样必须拒绝、非零、零次 watch 调用,但措辞要与情形一不同——
+// 这一版声明过能力,只是这一项还没有,不是"从未声明"。
 func TestRequireStatusWatchCapabilityRejectsMissingStatusWatch(t *testing.T) {
 	ctx := context.Background()
-	probe := func(context.Context) (guardian.Status, bool, error) {
-		return guardian.Status{GuardianVersion: "1.2.0", Capabilities: []string{"rules", "servers"}}, true, nil
+	probe := func(context.Context) (guardian.Status, error) {
+		return guardian.Status{GuardianVersion: "1.2.0", Capabilities: []string{"rules", "servers"}}, nil
 	}
 	var watchCalls int
 	watch := func(context.Context, uint64) (guardian.Status, error) {
@@ -342,13 +343,54 @@ func TestRequireStatusWatchCapabilityRejectsMissingStatusWatch(t *testing.T) {
 	}
 }
 
+// **专门钉住 nil 判据 vs len()==0 判据的差别**:Capabilities 是非 nil 的
+// 空切片(`"capabilities":[]` 解码出来的形状)—— 与情形一的 nil 是 Go 里两个
+// 不同的可观察值,即使 len() 恰好都是 0。这一情形理应落进"声明了但缺
+// status_watch"那一支,而不是"从未声明"那一支。
+//
+// 若判据被错误地写成 len(status.Capabilities)==0,这条测试会失败(会命中
+// "从未声明"分支、断言 !strings.Contains(msg,"从未声明") 就会红)——这正是
+// 选 nil 判据而不是 len 判据的存在性证明。手工变异验证过(见 task 报告):
+// 把 requireStatusWatchCapability 里的判据从 `== nil` 改成 `len(...)==0`,
+// 唯独这条测试会失败,另外两条(TestRequireStatusWatchCapabilityRejects
+// AbsentKey / RejectsMissingStatusWatch)都不受影响地继续通过——因为它们用
+// 的输入(真 nil、或非空的 ["rules","servers"])两种判据算出来的布尔值恰好
+// 一样,不足以证明选对了判据。
+func TestRequireStatusWatchCapabilityDistinguishesEmptyFromNilCapabilities(t *testing.T) {
+	ctx := context.Background()
+	probe := func(context.Context) (guardian.Status, error) {
+		return guardian.Status{GuardianVersion: "1.3.0", Capabilities: []string{}}, nil
+	}
+	var watchCalls int
+	watch := func(context.Context, uint64) (guardian.Status, error) {
+		watchCalls++
+		return guardian.Status{}, nil
+	}
+	var buf bytes.Buffer
+	err := statusWatchLoopWith(ctx, &buf, false, probe, watch, func(int) time.Duration { return 0 }, 0)
+	if err == nil {
+		t.Fatal("statusWatchLoopWith 返回 nil,want 非 nil 错误(空列表仍然不含 status_watch,必须拒绝)")
+	}
+	if watchCalls != 0 {
+		t.Errorf("watch 被调用了 %d 次,want 0", watchCalls)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "status_watch") {
+		t.Errorf("错误信息应点名缺的能力 status_watch,实际:%q", msg)
+	}
+	if strings.Contains(msg, "从未声明") {
+		t.Errorf("Capabilities 是非 nil 的空切片,意味着「声明过」,不该说成「从未声明」"+
+			"——这正是 nil 判据存在的理由(换成 len()==0 判据,这条测试会失败),实际:%q", msg)
+	}
+}
+
 // 探测本身失败(比如 Guardian 干脆连不上)也要拒绝、非零、零次 watch 调用——
 // 这与"探测成功但没有这个能力"是不同的失败原因,但处置(拒绝进入循环)一样。
 func TestRequireStatusWatchCapabilityRejectsProbeError(t *testing.T) {
 	ctx := context.Background()
 	probeErr := errors.New("dial unix: no such file or directory")
-	probe := func(context.Context) (guardian.Status, bool, error) {
-		return guardian.Status{}, false, probeErr
+	probe := func(context.Context) (guardian.Status, error) {
+		return guardian.Status{}, probeErr
 	}
 	var watchCalls int
 	watch := func(context.Context, uint64) (guardian.Status, error) {
