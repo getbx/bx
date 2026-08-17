@@ -246,6 +246,40 @@ global、china 列表整个不生效,那 22 条全在干活,照着删会让 22 �
 (`stats.Counters` 在 Core,而 Linux/Windows 没有 Guardian 驱动持久化范例),
 按什么键、多久算「死」都未决,另立 spec。
 
+**这一支上「静默丢弃」出现了四次,形状每次相同,值得先读再动这块代码**:
+① 多条危险规则各打一条同名 JSON check(`rule_risky_direct_rule`),而那个名字的
+设计意图就是稳定查找键 —— 按名字取的消费方静默丢掉除一条之外的全部安全结论;
+② hint 指向不存在的 `bx direct remove`(真名 `rm`),而它是这条常驻安全告警唯一
+附带的动作;③ `ClassShadowedByBuiltinList` 对 direct 与 proxy 算出两句**相反**的
+话(冗余 vs **生效中的例外**)并有测试守着,而渲染层把 `Kind` 与 `Summary` 整个
+丢掉 —— 那句 proxy 措辞是**被绿色测试守着的死代码**,一份只有生效中 proxy 例外的
+配置会读到与「删掉不改变任何流量」共用标题的一行;④ `bx status` 那半的接线守卫
+在测试里自己 `append` 一遍再断言那个局部变量,把 `control.go` 的合并改回
+`guard.warnings()` 全仓照样绿。
+**共同机制:测试与生产读的不是同一条路** —— 判据层的测试读判据,渲染层没人读;
+守卫在测试里重造一遍生产的表达式,于是它守的是自己那一份。四条都已修,④ 的修法
+是把内联闭包抽成 `newStatusReporter` 这个可测的缝(路 1「真起 HTTP server」实测
+非 root 不可行:`secdir.Ensure` 要 `MkdirAll` 到 `/var/run`)。
+
+**已知缺口(都不影响今天的输出,但改这块前要知道)**:
+- **`renderUpSummary`(`internal/cli/cli.go`)只显示 `Warnings[0].Detail`**,而
+  `configWarnings` 是**追加在最后**的 —— 任何共存 advisory(如 Tailscale)在场时,
+  `sudo bx up` 那句摘要就系统性地丢掉这条安全告警。`bx status` 本身没问题
+  (`stats.Render` 遍历全部)。修法是把 `[0]` 换成循环,但「摘要该显示几条」是产品决定。
+- `control.go` 把 `configWarnings` 传进 `newStatusReporter` 的**那一跳仍无测试**:
+  实测改成 `nil`,整个 `internal/supervisor` 照样绿。净覆盖比修之前强(以前一行
+  生产代码都没跑到),但那个没被测到的跳数是**被挪走了,不是被消掉了**。
+- `builtinListLines` 按 `Kind` 字面量分支,第三个/空 `Kind` 会让该类在两条路径上
+  静默消失而 `ShadowedByBuiltinCount` 仍在计数。今天不可达(`review.go` 只传
+  `direct`/`proxy`),但没有测试断言「该类每条 finding 都落进恰好一条线」。
+- 内建列表比对用的是**内嵌快照**(`embedded.ChinaDomain()`),而 Core 读的是
+  `/var/lib/bx/china_domain.txt`(经隧道刷新)。上游删掉某个域时,doctor 会把一条
+  仍然生效的手写规则说成「已被覆盖」。同一类「参照物错了」的隐患,代码已为
+  `lists.china_domain` 挡过一次,这一层还没挡。
+- `riskyRuleWarnings` 只填 `Input.Direct`,不填 `Proxy`/`China` —— 于是一条**本身
+  就永不生效**的危险规则(同名同时在 proxy 里)仍会得到常驻告警。方向是过度告警,
+  刻意接受。
+
 ## macOS 的 DirectDialer 一直到不了公网(2026-08-13,真机已验)
 
 `DirectDialer` 用 `IP_BOUND_IF` 绑物理网卡防环,而**它只查该接口的 scoped 路由表**。
