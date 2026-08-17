@@ -149,6 +149,10 @@ GET /v1/status?wait=<generation>[&timeout=<seconds>]
 - 不带 `wait` ⇒ 立刻返回当前 `Status`,**但有两处与今天不同**:
 
   ① **应答多一个 `status_generation` 键** —— 客户端得先有一个代际号才能发回来。
+  这一条**不是「逐字节相同」,是结构上向后兼容**:Swift 侧全部字段走
+  `decodeIfPresent` + 显式 `CodingKeys`(`GuardianStatus.swift`),Go 侧
+  `json.Decode` 默认忽略未知键,两边都不会因为多一个键而失败。**有一条测试专门
+  钉这个**,因为「加个字段而已」正是会顺手把旧客户端弄坏的那类改动。
 
   ② **它不再总是新算的。** 这条路也走 publisher(否则普通应答里的代际号与 watch
   那条路发布的会是两个互不相干的数,而客户端正是拿前者发回给后者的),于是它吃到
@@ -159,11 +163,7 @@ GET /v1/status?wait=<generation>[&timeout=<seconds>]
   poke 绕过合并,所以敲完命令再 `bx status` 拿到的是新值。落在这 3 秒窗口里的只有
   「不经广播的变化」(Core 意外退出、路径恢复迁移、挂起到期),而那几类**本来就已经
   按设计接受了最长一个兵底间隔的延迟**。换句话说这个窗口没有引入新的延迟类别,
-  只是让普通 GET 与 watch 看到同一份缓存。这不是「逐字节
-  相同」,是**结构上向后兼容**:Swift 侧全部字段走 `decodeIfPresent` +
-  显式 `CodingKeys`(`GuardianStatus.swift`),Go 侧 `json.Decode` 默认忽略未知键,
-  两边都不会因为多一个键而失败。**有一条测试专门钉这个**,因为「加个字段而已」
-  正是会顺手把旧客户端弄坏的那类改动。
+  只是让普通 GET 与 watch 看到同一份缓存。
 
 **为什么是 `!=` 而不是 `>`**:Guardian 重启后代际号从头开始。客户端手上是 57,
 新 Guardian 在 3 —— `current > 57` 为假,请求会**永久挂住**。`!=` 立刻返回。
