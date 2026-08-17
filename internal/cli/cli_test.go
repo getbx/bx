@@ -5848,3 +5848,47 @@ func TestMacMenuWatchLoopUsesCapabilityGateAndExistingApplyPath(t *testing.T) {
 		t.Error("main.swift 里直接比对了 \"status_watch\" 字面量 —— 判据只该有一份,在 StatusWatch.swift")
 	}
 }
+
+// runWatchLoop 的三处行为在最终整枝复审里各补了一个洞,只能靠读源码守住 ——
+// main.swift 编不进 Swift 测试套件(见上一条测试的注释)。
+//
+//  1. catch 分支曾经只计数 + 退避 + continue,**从不刷新**:Guardian 消失时图标
+//     停在最后一次收到的状态上,直到 60 秒兜底才被拉回来 —— 比这个功能要取代的
+//     30 秒轮询还差。现在必须在失败时也发起一次 refresh。
+//  2. `status.statusGeneration ?? requested` 曾经把「这一版没有 watch 概念
+//     (键缺席)」悄悄读成「这一轮没变」,从此困在 1Hz 轮询里、图标最长滞后
+//     60 秒。现在必须显式处理 nil(guard let),不得把它兜成 requested。
+//  3. 代际号真的推进后发起的那次 refresh 必须是 userInitiated: true —— 传
+//     false 时若撞上 RefreshGate 里已经在飞的一次刷新会被丢弃且不补跑,而
+//     watchGeneration 已经前进到新值,这次变化不会被再广播一遍(不像定时器,
+//     错过一拍下一拍自然会补)。
+func TestMacMenuWatchLoopRefreshesOnFailureAndHonoursAbsentGeneration(t *testing.T) {
+	source := menuMainSwiftSource(t)
+	body, ok := swiftFunctionBody(source, "private func runWatchLoop()")
+	if !ok {
+		t.Fatal("找不到 runWatchLoop 的函数体 —— 本守卫读不懂现在的代码了,先修守卫再往下走")
+	}
+	if strings.Contains(body, "statusGeneration ?? requested") {
+		t.Error("runWatchLoop 仍在用 `status.statusGeneration ?? requested` 兜底 —— " +
+			"这会把「这一版 Guardian 没有 watch 概念(键缺席)」悄悄读成「这一轮没变」，" +
+			"应改为 guard let 显式处理 nil")
+	}
+	if !strings.Contains(body, "guard let observed = status.statusGeneration") {
+		t.Error("runWatchLoop 必须对 status.statusGeneration 做 guard let,显式处理它是 nil 的情形")
+	}
+	catchIdx := strings.Index(body, "} catch {")
+	if catchIdx < 0 {
+		t.Fatal("runWatchLoop 里找不到 catch 分支 —— 本守卫读不懂现在的代码了,先修守卫再往下走")
+	}
+	successBody := body[:catchIdx]
+	catchBody := body[catchIdx:]
+	if !strings.Contains(catchBody, "refresh(userInitiated:") {
+		t.Error("runWatchLoop 的 catch 分支必须发起一次 refresh —— 否则 Guardian 消失时" +
+			"图标要等到 60 秒兜底才会被修正,比它取代的 30 秒轮询还差")
+	}
+	if !strings.Contains(successBody, "refresh(userInitiated: true)") {
+		t.Error("runWatchLoop 代际号真的推进后必须以 userInitiated: true 发起 refresh —— " +
+			"见 RefreshGate.begin 的文档注释:watch 事件与用户动作同属「一次性、不重复」" +
+			"的场合,传 false 会让它在撞上 in-flight 刷新时被永久丢弃")
+	}
+}
