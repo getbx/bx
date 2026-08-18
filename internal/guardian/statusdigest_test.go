@@ -200,6 +200,7 @@ func TestVolatileNestedFieldsDoNotMoveTheDigest(t *testing.T) {
 		{"Core.FailingRules[].Attempts", func(s *Status) { s.Core.FailingRules[0].Attempts = 12345 }, "每条连接都在涨"},
 		{"Core.FailingRules[].Failures", func(s *Status) { s.Core.FailingRules[0].Failures = 12344 }, "每条连接都在涨"},
 		{"Reconcile.At", func(s *Status) { s.Reconcile.At = time.Now() }, "recordReconcileRound 每轮都盖时间戳"},
+		{"Reconcile.UnchangedRounds", func(s *Status) { s.Reconcile.UnchangedRounds++ }, "2026-08-17 真机 10 分钟 soak 实测:protection/desired 全程未变,watch 仍在 30s→10min 退避阶梯上精确唤醒 4 次;抓到的 status 15→16 diff 只剩 at 与 unchanged_rounds —— 循环自己数「又跑了一轮」被当成了「有什么变了」"},
 		{"Recovery.UpdatedAt", func(s *Status) { s.Recovery.UpdatedAt = time.Now() }, "恢复进行中每次轮询都换"},
 	}
 	for _, tc := range cases {
@@ -232,6 +233,68 @@ func TestANewFailingRuleMovesTheDigest(t *testing.T) {
 	}
 	if got == baseline {
 		t.Error("多了一条成片失败的规则而投影没变 —— 只该零掉计数,不该把整条规则也排除掉")
+	}
+}
+
+// TestOneReconcileRoundDoesNotMoveTheDigest 是 2026-08-17 真机 soak 那个具体故障的
+// 回归守卫,不是一个合成的单字段探针。
+//
+// soak 逮到的不是「单独改 UnchangedRounds」——那件事从来不会单独发生。一次
+// recordReconcileRound 调用**同时**盖新的 At 与递增 UnchangedRounds(状态
+// 15→16 抓到的 diff 逐字节就是这两个字段一起动、其余不动)。只测「单独改
+// UnchangedRounds 不移动投影」测不出「两个一起改是否仍不移动」这种情况——
+// 如果哪天两处排除各自实现成互相依赖的写法(比如一个在另一个非零时才生效),
+// 单字段测试会绿而这条真实场景会红。
+func TestOneReconcileRoundDoesNotMoveTheDigest(t *testing.T) {
+	baseline, err := statusDigest(representativeStatus())
+	if err != nil {
+		t.Fatalf("基准投影: %v", err)
+	}
+	s := representativeStatus()
+	// 模拟 recordReconcileRound 真实做的事:两个字段一起动。
+	s.Reconcile.At = s.Reconcile.At.Add(30 * time.Second)
+	s.Reconcile.UnchangedRounds++
+	got, err := statusDigest(s)
+	if err != nil {
+		t.Fatalf("投影: %v", err)
+	}
+	if got != baseline {
+		t.Error("一轮「什么都没变」的 reconcile(At 前进、UnchangedRounds 加一)移动了投影 —— " +
+			"watch 会在机器完全静止时跟着调谐环每 30 秒到 10 分钟触发一次,永久唤醒,这正是真机 " +
+			"soak 十分钟里抓到的那四次")
+	}
+}
+
+// 上面两条排除不能把整个 Reconcile 判定成「不参与」—— Actions/Held/
+// Unobservable 各自变化仍必须移动投影,否则调谐环真正想报的事件(要做什么 /
+// 被什么栅栏挡住 / 观测瞎了哪一项)会跟着 At/UnchangedRounds 一起被静默吞掉。
+// 没有这条测试,一次「干脆排除整个 ReconcileReport」的简化会让上面两条测试
+// 全绿、而这才是真正的回归。
+func TestReconcileSignalFieldsStillMoveTheDigest(t *testing.T) {
+	baseline, err := statusDigest(representativeStatus())
+	if err != nil {
+		t.Fatalf("基准投影: %v", err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*Status)
+	}{
+		{"Actions", func(s *Status) { s.Reconcile.Actions = append(s.Reconcile.Actions, "restore_dns") }},
+		{"Held", func(s *Status) { s.Reconcile.Held = "maintenance_hold" }},
+		{"Unobservable", func(s *Status) { s.Reconcile.Unobservable = append(s.Reconcile.Unobservable, "capture_ok") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := representativeStatus()
+			tc.mutate(&s)
+			got, err := statusDigest(s)
+			if err != nil {
+				t.Fatalf("投影: %v", err)
+			}
+			if got == baseline {
+				t.Errorf("改了 Reconcile.%s 而投影没变 —— 这是真事件,不该被 At/UnchangedRounds 的排除连累", tc.name)
+			}
+		})
 	}
 }
 

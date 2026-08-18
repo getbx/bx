@@ -52,8 +52,17 @@ func statusDigest(s Status) (string, error) {
 		report := *s.Reconcile
 		// recordReconcileRound 是唯一写入口且**每轮都盖时间戳**。不排除它,
 		// watch 会跟着调谐环每 30 秒到 10 分钟触发一次。
-		// 只排 At:Actions/Held 变了是真事件。
+		// 只排 At 与 UnchangedRounds:Actions/Held/Unobservable/CoreScan 变了
+		// 是真事件。
 		report.At = time.Time{}
+		// UnchangedRounds 与 At 是同一类东西的两面 —— **循环又跑了一轮的标记,
+		// 不是「有什么变了」的信号**。它每轮都涨(也驱动退避本身),不排除它
+		// 与不排除 At 是同一个错误:2026-08-17 真机 10 分钟 soak 抓到 4 次唤醒,
+		// 三个连续代际里 protection/desired 全程未变,唯一移动投影的字段就是它
+		// (状态 15→16 的 diff 只剩 at 与 unchanged_rounds),间隔精确对上调谐环
+		// 30s→10min 的退避阶梯 —— watch 在「观测到没有变化」这件事本身上被
+		// 重新触发了。
+		report.UnchangedRounds = 0
 		s.Reconcile = &report
 	}
 
