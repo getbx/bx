@@ -205,7 +205,31 @@ func riskyRuleFinding(rep rulereview.Report) *doctorFinding {
 			len(rules), strings.Join(rules, "、"), summary),
 		// bx direct rm(不是 remove —— 那是这条 hint 上一版的笔误,命令本身
 		// 不存在)接受多个域名一次处理,一条命令覆盖全部规则。
-		Hint: fmt.Sprintf("bx direct rm %s(改完要 bx down && bx up)", strings.Join(quoted, " ")),
+		//
+		// **两条命令都带 sudo,理由不对称,分开说:**
+		//
+		// `direct rm` **必须**带:editRuleAction(internal/cli/direct.go)对
+		// 配置路径直接 os.ReadFile/os.WriteFile,不做任何自提权、也不经
+		// Guardian 的 /v1/rules 走 peer-cred 鉴权——它就是个普通文件读写。
+		// 而 `/etc/bx/config.yaml` 是 `sudo bx setup` 建的,模式 0600 属主
+		// root(真机验证,2026-08-17)。不带 sudo 复制粘贴这条命令必得
+		// permission denied,用户会以为自己敲错了命令而不是缺权限。
+		//
+		// `down`/`up` **不总是需要,但仍然加**:在 macOS 上它们经 Guardian 的
+		// `/v1/up`、`/v1/down`(mutationHandler + authorizeOwnerPeer,
+		// internal/guardian/localapi.go)鉴权,配置了 owner_uid(`sudo bx setup`
+		// 时从 SUDO_UID 自动捕获,见 internal/setup/setup.go
+		// ownerUIDFromEnv)的机器上以该用户身份跑不需要 root。但这条 hint 是
+		// 跨平台共用的同一份文本:**Linux/Windows 上 upAction/downAction 根本
+		// 不经 Guardian,直接 systemctl/SCM 操作服务,始终需要 root**;macOS
+		// 上若 owner_uid 未配置(没走 `sudo bx setup`,如直接以 root 登录跑
+		// setup),Guardian 的鉴权退化成 root-only,同样需要 sudo。多数机器
+		// (Linux 是本项目的主平台)不带会直接 permission denied,与
+		// `direct rm` 是同一类 bug;多带的代价只是 macOS 已配置 owner 的机器上
+		// 一次不必要的密码提示——不对称,故两条命令都印 sudo。这与
+		// editRuleAction 自己在同一文件里的既有措辞一致(未运行时的提示已经写的
+		// 是「下次 sudo bx up 时生效」)。
+		Hint: fmt.Sprintf("sudo bx direct rm %s(改完要 sudo bx down && sudo bx up)", strings.Join(quoted, " ")),
 	}
 }
 

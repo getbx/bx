@@ -33,6 +33,12 @@ func TestRiskyRuleWarningNamesTheRule(t *testing.T) {
 // 这条安全结论唯一附带的动作,给一个不存在的命令比不给更糟(用户会以为是自己
 // 敲错了)。
 //
+// 同一形状的第二个坑(2026-08-17 真机抓到):子命令名对了,但
+// `/etc/bx/config.yaml` 是 `sudo bx setup` 建的 0600 root 文件,而
+// `bx direct rm` 走 editRuleAction 直接 os.WriteFile,不自提权。非 root
+// 用户(`bx status` 本身不需要 root,大多数会照着 hint 敲的正是这类用户)
+// 照抄不带 sudo 的命令一样 permission denied,一样会以为自己敲错了。
+//
 // 不断言 hint 整句字面等于某个字符串:那种测试和缺陷本身一样脆,命令改名/措辞
 // 调整照样绿。也不去 import internal/cli 取真实子命令名来比对 ——
 // internal/supervisor 不该依赖 internal/cli(方向反了,cli 是消费方)。折中是
@@ -49,6 +55,23 @@ func TestRiskyRuleHintUsesARealSubcommand(t *testing.T) {
 	}
 	if !strings.Contains(hint, "direct rm") {
 		t.Errorf("hint 没有指向真实存在的 `direct rm`:%q", hint)
+	}
+	// editRuleAction 直接写 /etc/bx/config.yaml(0600 root,sudo bx setup 建的),
+	// 不带 sudo 复制粘贴必得 permission denied——用户会以为自己敲错命令而不是
+	// 缺权限。真机验证见 2026-08-17。
+	if !strings.Contains(hint, "sudo bx direct rm") {
+		t.Errorf("hint 没有带 sudo,而 bx direct rm 需要 root 才能写 /etc/bx/config.yaml:%q", hint)
+	}
+	// down/up 也要带:这条 hint 跨平台共用,Linux/Windows 上 up/down 从不经
+	// Guardian 的 owner-uid 鉴权、始终需要 root;macOS 上未配置 owner_uid 时
+	// 同样退化成 root-only。本项目主平台是 Linux,不带 sudo 在那里必定
+	// permission denied——与 direct rm 同一类 bug,不能因为它在 macOS 已配置
+	// owner 的机器上不必要就不加。
+	if !strings.Contains(hint, "sudo bx down") {
+		t.Errorf("hint 的 down 没有带 sudo(Linux/Windows 上必须、macOS 未配置 owner 时也必须):%q", hint)
+	}
+	if !strings.Contains(hint, "sudo bx up") {
+		t.Errorf("hint 的 up 没有带 sudo(Linux/Windows 上必须、macOS 未配置 owner 时也必须):%q", hint)
 	}
 }
 
