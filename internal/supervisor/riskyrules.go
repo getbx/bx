@@ -42,7 +42,26 @@ func riskyRuleWarnings(cfg *config.Config) []stats.Warning {
 			// hint 再套一层括号(`detail + " (" + hint + ")"`),hint 自己若也用
 			// 括号收尾就会渲染出 `(...(改完要 bx down && bx up))` 这种嵌套 ——
 			// 人读不清哪个括号对哪个。用分号分隔两个分句,渲染出来只有外层那一层。
-			Hint: fmt.Sprintf("bx direct rm '%s'；改完要 bx down && bx up", f.Rule),
+			//
+			// **两条命令都带 sudo,理由不对称,分开说(与 internal/cli/rulereview.go
+			// 的 riskyRuleFinding 同一份分析,措辞按各自站点保留):**
+			//
+			// `direct rm` **必须**带:editRuleAction(internal/cli/direct.go)对
+			// /etc/bx/config.yaml 直接 os.ReadFile/os.WriteFile,不自提权、也不经
+			// Guardian 鉴权——`sudo bx setup` 建的这份文件是 0600 属主 root(真机
+			// 验证,2026-08-17,`bx status` 非 root 用户跑得动、照着这条 hint 敲的
+			// `bx direct rm` 却 permission denied)。
+			//
+			// `down`/`up` **不总是需要,但仍然加**:macOS 上经 Guardian `/v1/up`、
+			// `/v1/down`(authorizeOwnerPeer)鉴权,owner_uid 配置了(`sudo bx
+			// setup` 时从 SUDO_UID 自动捕获)的机器上不需要 root。但这条 hint 跨
+			// 平台共用同一份文本:**Linux/Windows 上 upAction/downAction 根本不经
+			// Guardian,直接 systemctl/SCM,始终需要 root**;macOS 上 owner_uid
+			// 未配置时也退化成 root-only。本项目的主平台是 Linux,不带 sudo 在那
+			// 里必定 permission denied,与 `direct rm` 是同一类 bug;多带的代价
+			// 只是 macOS 已配置 owner 的机器上一次不必要的密码提示——不对称,
+			// 两条都印 sudo。
+			Hint: fmt.Sprintf("sudo bx direct rm '%s'；改完要 sudo bx down && sudo bx up", f.Rule),
 		})
 	}
 	return out

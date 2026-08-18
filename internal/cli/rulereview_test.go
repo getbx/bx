@@ -565,3 +565,37 @@ func TestDoctorTextPathListsEveryRiskyRuleNotJustTheFirst(t *testing.T) {
 		}
 	}
 }
+
+// **真机抓到的缺陷(2026-08-17)**:riskyRuleFinding 的 Hint 点名了真实存在的子
+// 命令(`direct rm`,不是笔误的 `direct remove`),但没带 sudo——editRuleAction
+// (internal/cli/direct.go)对 `/etc/bx/config.yaml` 直接 os.ReadFile/
+// os.WriteFile,不自提权、也不走 Guardian 的 peer-cred 鉴权。而这份配置是
+// `sudo bx setup` 建的,0600 属主 root(项目所有者机器上真机验证:`bx doctor`
+// 非 root 跑得动、照着 hint 敲的 `bx direct rm` 却 permission denied)。跟
+// TestRiskyRuleHintUsesARealSubcommand(internal/supervisor/riskyrules_test.go)
+// 断言同一个子命令名的思路——只钉性质(带 sudo、点名真实子命令),不钉整句
+// 字面量,命令措辞调整时不会跟着变红。
+func TestRiskyRuleFindingHintNeedsSudo(t *testing.T) {
+	rep := rulereview.Report{Findings: []rulereview.Finding{
+		{Kind: "direct", Rule: "*.myqcloud.com", Class: rulereview.ClassRisky, Summary: "公有云开放子域"},
+	}}
+	f := riskyRuleFinding(rep)
+	if f == nil {
+		t.Fatal("前置断言失败:命中 ClassRisky 却没产出 finding")
+	}
+	if !strings.Contains(f.Hint, "sudo bx direct rm") {
+		t.Errorf("hint 没有带 sudo,而 bx direct rm 需要 root 才能写 /etc/bx/config.yaml:%q", f.Hint)
+	}
+	// down/up 也要带:这条 hint 跨平台共用,Linux/Windows 上从不经 Guardian 的
+	// owner-uid 鉴权、始终需要 root;macOS 上未配置 owner_uid 时同样退化成
+	// root-only。本项目主平台是 Linux,漏了会在那里必定 permission denied。
+	if !strings.Contains(f.Hint, "sudo bx down") {
+		t.Errorf("hint 的 down 没有带 sudo:%q", f.Hint)
+	}
+	if !strings.Contains(f.Hint, "sudo bx up") {
+		t.Errorf("hint 的 up 没有带 sudo:%q", f.Hint)
+	}
+	if strings.Contains(f.Hint, "direct remove") {
+		t.Errorf("hint 用了不存在的子命令 `direct remove`:%q", f.Hint)
+	}
+}
