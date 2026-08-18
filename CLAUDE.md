@@ -297,11 +297,13 @@ global、china 列表整个不生效,那 22 条全在干活,照着删会让 22 �
 方向刻意选择「默认参与」:新加一个易变字段会让 watch 疯狂触发——吵、当场看得见;
 默认不参与则是菜单静默地不再对新信号反应,只有用户抱怨才会被发现。两种失效
 不对称,选吵的那边(与 `Class` 零值取 `ClassRisky`、`leakcheck.Section` 零值取
-`SectionPath` 同一条纪律)。排除名单共五条,每条都要写明为什么易变:
+`SectionPath` 同一条纪律)。排除名单共六条,每条都要写明为什么易变:
 `StatusGeneration` 自己(进投影会永久自激)、`Core.LatencyMS`(每次探测都抖)、
 `Core.FailingRules[].Attempts`/`.Failures`(每条连接都在涨,只清计数、保留
 `Kind`/`Rule`)、`Reconcile.At`(每轮调谐都盖时间戳,不排除会跟着 30 秒–10 分钟
-的调谐环触发)、`Recovery.UpdatedAt`(恢复中每次轮询都换,菜单自己的「Connecting
+的调谐环触发)、`Reconcile.UnchangedRounds`(与 `At` 同一类东西的两面——循环
+又跑了一轮的记账,不是「有什么变了」的信号,2026-08-17 真机 soak 补的一条,
+详见下文)、`Recovery.UpdatedAt`(恢复中每次轮询都换,菜单自己的「Connecting
 — N 秒」计数器另有本地驱动,不靠它)。守卫是一条反射遍历 `Status` 全部字段的
 测试,逐个改动断言「不在排除名单里就必须让投影变」——它抓不到的是「新加的易变
 字段」这一半,那只能真机看。
@@ -430,14 +432,48 @@ config);窗口开着就说明有人正盯着,这时候按需拉一次正是「�
 够不到重叠,仍一并加了 `rulesFetchInFlight`,纯粹是为了与既有的
 `probing`/`switchInFlight` 保持同一个模式,不是发现了具体竞态。
 
-**真机未验**(除 `bx status --watch` 本身,那是唯一已可用的只读验证手段):
-**「投影够不够安静」只能真机验**——单测里 latency 是固定 fixture,测不出吵不吵;
-`bx status --watch` 挂一段、稳态下应当几乎不吐,是本设计唯一真正的验收。
+**「投影够不够安静」已真机验,而且第一次就没通过**:2026-08-17 项目所有者的
+Mac 上挂 `bx status --watch` 跑了 10 分钟只读 soak(保护开着、状态不动),
+稳态下本该几乎不吐,实测却 **4 次唤醒**(18:01→18:05→18:06→18:07→18:09)。
+截三个连续代际的 `Status` 逐字节 diff,`protection`/`desired` 全程未变;
+decisive 的一次(15→16)diff 只剩 `at` 与 `unchanged_rounds` 两个字段(`at`
+早已排除、不该单独移动投影),间隔精确对上调谐环 30s→10min 的退避阶梯——
+**watch 在「调谐环观测到什么都没变」这件事本身上被重新触发了**。根因是
+`ReconcileReport.UnchangedRounds`(它自己就是「连续多少轮没变」的计数器,
+每轮调谐都涨,同时也是退避的输入)没有跟着 `Reconcile.At` 一起进排除名单——
+两者是同一类东西的两面:**循环又跑了一轮的标记,不是「有什么变了」的信号**,
+`recordReconcileRound` 每轮同时盖两个字段,排一个不排另一个就是留了半个洞。
+修法(`statusdigest.go`)是把 `UnchangedRounds` 与 `At` 一起清零;`Actions`/
+`Held`/`Unobservable`/`CoreScan` 不动——它们是调谐环真正想报的信号(要做
+什么/被什么栅栏挡住/观测瞎了哪一项),不能被这次修复连累着一起排除掉,由
+`TestReconcileSignalFieldsStillMoveTheDigest` 单独钉住。回归守卫用的是**真实
+观测到的场景**而非合成探针:`TestOneReconcileRoundDoesNotMoveTheDigest` 模拟
+一次真实 reconcile 轮次(`At` 前进 **且** `UnchangedRounds` 加一,与
+`recordReconcileRound` 同款),证明两个字段一起动也不移动投影——单独测
+「只改 `UnchangedRounds`」测不出「两处排除互相依赖」这种写法上的回归。
+
+**这次跳过的窟窿,结构上今天仍然存在**:反射守卫
+`TestEveryStatusFieldParticipatesInTheDigest` 只走 `Status` **顶层**字段,逼着
+「新加一个顶层字段默认参与投影」成立;但 `Core`/`Reconcile`/`Recovery`
+**内部**哪些字段易变,靠的是 `TestVolatileNestedFieldsDoNotMoveTheDigest`
+里手写的一张 case 列表,没有任何守卫会因为「某个嵌套字段没被这张列表提到」
+而报错——`UnchangedRounds` 就是被漏看的那一个,没人为它写过一行判断,直到
+真机 soak 把它显形。往后谁在 `ReconcileReport`/`CoreRuntime`/
+`RecoverySnapshot` 里加字段,必须自己想清楚它是「真事件」还是「循环又跑了
+一轮的记账」,因为没有任何测试会替他问这个问题。一个廉价但没做的加固:让
+`TestVolatileNestedFieldsDoNotMoveTheDigest` 反过来跑一遍反射(对
+`Core`/`Reconcile`/`Recovery` 三个指针字段各自展开子字段,逐个变异,断言
+「不在 case 列表里就必须移动投影或在 `digestExclusions` 式的嵌套排除表里
+写明理由」)——形状与顶层守卫完全对称,只是把遍历的根从 `Status` 换成这
+三个子结构;没做是因为这次只是补一个已知的洞,不是把嵌套层的整个排除机制
+重新设计一遍,留给下一次专门评估。
+
 Guardian 关机耗时没有变长(升级路径上量一次)。`main.swift` 的 watch 循环编不进
-Swift 测试套件,Go 侧守卫只证明判据没被手抄第二份,正确性最终靠真机点一遍。
-Linux/Windows 不在范围内(Guardian 只在 darwin 跑,Windows 托盘另有自己的
-3 秒 spawn 轮询,不受影响)。设计 `docs/superpowers/specs/2026-08-17-guardian-status-watch-design.md`、
-计划 `docs/superpowers/plans/2026-08-17-guardian-status-watch.md`。
+Swift 测试套件,Go 侧守卫只证明判据没被手抄第二份,菜单那一半的静默性仍未真机
+验(重装 App 才能点)。Linux/Windows 不在范围内(Guardian 只在 darwin 跑,
+Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
+`docs/superpowers/specs/2026-08-17-guardian-status-watch-design.md`、计划
+`docs/superpowers/plans/2026-08-17-guardian-status-watch.md`。
 
 ## macOS 的 DirectDialer 一直到不了公网(2026-08-13,真机已验)
 
