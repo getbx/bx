@@ -16,6 +16,8 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 type darwinRouteEventSource struct{}
@@ -200,14 +202,32 @@ func darwinObserverInterfacePrefixes(interfaceName string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("observe interface %q addresses: %w", interfaceName, err)
 	}
+	prefixes, err := darwinObserverPrefixTexts(addresses)
+	if err != nil {
+		return nil, fmt.Errorf("observe interface %q address: %w", interfaceName, err)
+	}
+	return prefixes, nil
+}
+
+// darwinObserverPrefixTexts 是这份指纹里唯一有判断的一段,抽出来才测得到 ——
+// 上面那层要一个真的网卡,测试进不去,而这个仓库全部的事故都在测试进不去的地方。
+//
+// **规范化不自己写**:它调 supervisor.CanonicalUnderlayPrefix,与执行侧共用同一个
+// 定义。此前这里是一句 `prefix.Masked().String()`,与执行侧各写一份,于是「同网段
+// 换个 IP」在两边都被读成「什么都没变」。
+func darwinObserverPrefixTexts(addresses []net.Addr) ([]string, error) {
 	prefixes := make([]string, 0, len(addresses))
 	seen := make(map[string]struct{}, len(addresses))
 	for _, address := range addresses {
 		prefix, err := darwinObserverPrefix(address)
 		if err != nil {
-			return nil, fmt.Errorf("observe interface %q address: %w", interfaceName, err)
+			return nil, err
 		}
-		text := prefix.Masked().String()
+		canonical, err := supervisor.CanonicalUnderlayPrefix(prefix)
+		if err != nil {
+			return nil, err
+		}
+		text := canonical.String()
 		if _, ok := seen[text]; ok {
 			continue
 		}
