@@ -115,7 +115,11 @@ func TestMetaFromID_TCP(t *testing.T) {
 
 	got := metaFromID(id, false)
 
-	want := route.Meta{IP: netip.AddrFrom4([4]byte{1, 2, 3, 4}), Port: 443, UDP: false}
+	// SrcPort 取自 id.RemotePort(应用侧端口,Local* 才是目的地)——见
+	// internal/tun/engine_integration_test.go 里的
+	// TestEngine_TCP_MetaCarriesApplicationSourcePort,那条测试用真 netstack
+	// 钉住这条关系,这里只是同一份实现在单元测试层面的直接验证。
+	want := route.Meta{IP: netip.AddrFrom4([4]byte{1, 2, 3, 4}), Port: 443, UDP: false, SrcPort: 51000}
 	if got != want {
 		t.Fatalf("metaFromID = %+v, want %+v", got, want)
 	}

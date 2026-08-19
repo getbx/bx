@@ -123,3 +123,34 @@ func mustEgressFixture(t *testing.T, pairs ...[2]string) *EgressSet {
 	}
 	return set
 }
+
+// Meta 是连接元数据,不是判据全集。SrcPort 只为应用归因存在,一旦它能影响判定,
+// 「用户看到的分流」和「bx 实际执行的分流」就有了第二个变量。
+func TestExplainIgnoresSrcPort(t *testing.T) {
+	r := &Router{
+		UserDirect:    NewDomainSet([]string{"*.qq.com"}),
+		ChinaDomain:   NewDomainSet([]string{"example.cn"}),
+		ChinaCIDR:     mustCIDR([]string{"1.2.3.0/24"}),
+		PrivateDirect: mustCIDR(DefaultPrivateCIDRs),
+	}
+	bases := []Meta{
+		{Domain: "a.qq.com"},
+		{Domain: "example.cn"},
+		{Domain: "claude.ai"},
+		{IP: netip.MustParseAddr("1.2.3.4")},
+		{IP: netip.MustParseAddr("192.168.1.5")},
+		{IP: netip.MustParseAddr("8.8.8.8"), UDP: true},
+	}
+	for _, base := range bases {
+		want, wantWhy := r.Explain(base)
+		for _, port := range []uint16{0, 1, 443, 51234, 65535} {
+			m := base
+			m.SrcPort = port
+			got, gotWhy := r.Explain(m)
+			if got != want || gotWhy != wantWhy {
+				t.Fatalf("%+v 在 SrcPort=%d 时判定变了: %v/%+v -> %v/%+v",
+					base, port, want, wantWhy, got, gotWhy)
+			}
+		}
+	}
+}
