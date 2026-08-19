@@ -158,8 +158,16 @@ func TestDarwinUnderlayPlanRejectsUnsafeBypasses(t *testing.T) {
 }
 
 func TestUnderlaySnapshotCanonicalizationAndGeneration(t *testing.T) {
-	first := mustUnderlaySnapshot(t, " en0 ", "::ffff:192.168.50.2", "192.168.50.27/24", "10.0.0.9/8", "192.168.50.0/24")
-	second := mustUnderlaySnapshot(t, "en0", "192.168.50.2", "192.168.50.0/24", "10.0.0.0/8")
+	// 这条钉的是规范化的其余全部性质:网卡名去空白、网关 4in6 解映射、重复前缀
+	// 去重、排序、指纹 16 位十六进制。
+	//
+	// **它以前还钉着「v4 前缀抹掉主机位」,那一条已被刻意推翻**(2026-08-19:
+	// 抹掉主机位使同网段换 IP 成为「什么都没变」,恢复永不触发,隧道死在一个
+	// 不存在的源地址上)。去重因此改用一条真正重复的前缀来演示,而不是借
+	// 「.27/24 与 .0/24 会塌成同一条」—— 后者在今天是两条不同的路径身份。
+	// v4 保留主机位 / v6 仍抹掉,各由 underlay_test.go 的两条测试单独钉住。
+	first := mustUnderlaySnapshot(t, " en0 ", "::ffff:192.168.50.2", "192.168.50.27/24", "10.0.0.9/8", "192.168.50.27/24")
+	second := mustUnderlaySnapshot(t, "en0", "192.168.50.2", "192.168.50.27/24", "10.0.0.9/8")
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("canonical snapshots differ: %#v != %#v", first, second)
 	}

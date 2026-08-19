@@ -76,6 +76,16 @@ func canonicalUnderlaySnapshot(interfaceName string, gateway netip.Addr, localCI
 	}, nil
 }
 
+// CanonicalUnderlayPrefix 是「一个本机地址在物理路径身份里长什么样」的**唯一**定义。
+//
+// 导出是因为 guardian 的 NetworkObserver 需要算同一个指纹来决定要不要发起恢复,
+// 而它此前手抄了一份 —— 两份判据从不互相比对,任何一方单独改动都静默生效
+// (2026-08-19:supervisor 侧修好了保留主机位,而观测者那份仍在 Masked(),
+// 结果是恢复根本不会被请求,执行侧改得再对也轮不到它跑)。
+func CanonicalUnderlayPrefix(prefix netip.Prefix) (netip.Prefix, error) {
+	return canonicalUnderlayPrefix(prefix)
+}
+
 func canonicalUnderlayPrefix(prefix netip.Prefix) (netip.Prefix, error) {
 	if !prefix.IsValid() {
 		return netip.Prefix{}, fmt.Errorf("invalid local underlay prefix %q", prefix)
@@ -85,6 +95,19 @@ func canonicalUnderlayPrefix(prefix netip.Prefix) (netip.Prefix, error) {
 			return netip.Prefix{}, fmt.Errorf("invalid mapped IPv4 underlay prefix %q", prefix)
 		}
 		prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
+	}
+	// **IPv4 保留主机位。** 这个字段唯一的消费者是 underlayGeneration —— 它不驱动
+	// 任何一条路由,它就是「我此刻在哪条物理路径上」这个身份本身。而对 bx 来说,
+	// 本机的 IPv4 地址**是**那个身份的一部分:传输子进程的 socket 绑在它上面,
+	// server bypass 那条 /32 也是按它选源。抹掉主机位,同一网段换个 IP 就成了
+	// 「什么都没变」,于是 NetworkObserver 不请求恢复、darwinUnderlayPlan 直接短路,
+	// 而隧道已经死在一个不存在的源地址上(2026-08-19 真机,详见 underlay_test.go)。
+	//
+	// **IPv6 仍然只取网段。** macOS 的临时地址按天轮换,让它进指纹等于每天定时
+	// 重建一次隧道;而 bx 的 v6 是 fail-closed 阻断的,v6 主机位对出口选路毫无影响。
+	// 两个方向不对称是刻意的,由 underlay_test.go 的两条测试各自钉住。
+	if prefix.Addr().Is4() {
+		return prefix, nil
 	}
 	return prefix.Masked(), nil
 }

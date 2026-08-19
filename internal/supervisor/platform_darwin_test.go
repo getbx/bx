@@ -31,7 +31,9 @@ func TestDarwinUnderlayObserveCanonicalizesPhysicalPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := mustUnderlaySnapshot(t, "en0", "192.168.50.2", "192.168.50.0/24", "2001:db8::/64")
+	// v4 带着主机位出来 —— Observe 的产物就是恢复触发判据的输入,抹掉 .27 会让
+	// 同网段换 IP 在这一层就已经不可见了。v6 仍只留网段(临时地址按天轮换)。
+	want := mustUnderlaySnapshot(t, "en0", "192.168.50.2", "192.168.50.27/24", "2001:db8::/64")
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("underlay snapshot = %#v, want %#v", got, want)
 	}
