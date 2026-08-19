@@ -42,4 +42,12 @@ type Meta struct {
 	IP     netip.Addr
 	Port   uint16
 	UDP    bool
+
+	// SrcPort 是**应用侧** socket 的本地端口(gVisor 的 id.RemotePort)。
+	//
+	// **它不是判据。** 加它只为让应用归因能跟 macOS 的 pcblist 对上 ——
+	// 那张表按 lport 索引。Router 对它必须完全不敏感,由
+	// TestExplainIgnoresSrcPort 钉住:按源端口分流会让「用户看到的分流」
+	// 和「bx 实际执行的分流」出现第二个变量。
+	SrcPort uint16
 }

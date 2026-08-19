@@ -54,6 +54,16 @@ func (d *captureDialer) lastMeta(t *testing.T) route.Meta {
 	return d.metas[len(d.metas)-1]
 }
 
+// snapshot 返回目前记录到的全部 Meta 的副本 —— 拷贝而非直接返回底层切片,
+// 避免测试断言期间与仍可能追加写入的 Dial 产生数据竞争。
+func (d *captureDialer) snapshot() []route.Meta {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]route.Meta, len(d.metas))
+	copy(out, d.metas)
+	return out
+}
+
 // newClientStack 起一个最简客户端协议栈,通过 link 把所有流量发往引擎侧。
 func newClientStack(t *testing.T, link stack.LinkEndpoint, addr tcpip.Address) *stack.Stack {
 	t.Helper()
@@ -72,6 +82,77 @@ func newClientStack(t *testing.T, link stack.LinkEndpoint, addr tcpip.Address) *
 	s.SetRouteTable([]tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: nicID}})
 	t.Cleanup(s.Close)
 	return s
+}
+
+// testClient 打包一次「引擎 + 客户端协议栈」经 pipe 链路互联的建栈,供多条
+// 测试共用同一套连通方式(照抄自 TestEngine_TCP_DialerReceivesDestination /
+// TestEngine_UDP_DialerReceivesDestination 原先各自重复的 setup)。
+type testClient struct {
+	eng    *Engine
+	stack  *stack.Stack
+	dialer *captureDialer
+}
+
+// newTestClient 起一对经 pipe 链路端点互联的引擎协议栈与客户端协议栈。
+func newTestClient(t *testing.T, dialer *captureDialer) (*testClient, func()) {
+	t.Helper()
+	const mtu = 1500
+	engineLink, clientLink := pipe.New("", "", mtu)
+
+	eng, err := New(engineLink, dialer, mtu)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	clientStack := newClientStack(t, clientLink, tcpip.AddrFrom4([4]byte{10, 0, 0, 2}))
+
+	c := &testClient{eng: eng, stack: clientStack, dialer: dialer}
+	return c, func() { eng.Close() }
+}
+
+// connectTCP 以给定源端口经引擎向 dstIP:dstPort 发起 TCP 连接,并等待引擎侧
+// Dialer 被调用(即该连接已被引擎捕获)。srcPort 为 0 时由协议栈自动分配临时端口。
+func (c *testClient) connectTCP(t *testing.T, srcPort uint16, dstIP netip.Addr, dstPort uint16) *gonet.TCPConn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	laddr := tcpip.FullAddress{Port: srcPort}
+	raddr := tcpip.FullAddress{Addr: tcpip.AddrFrom4(dstIP.As4()), Port: dstPort}
+	conn, err := gonet.DialTCPWithBind(ctx, c.stack, laddr, raddr, ipv4.ProtocolNumber)
+	if err != nil {
+		t.Fatalf("通过引擎拨号失败: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	select {
+	case <-c.dialer.peers:
+	case <-time.After(2 * time.Second):
+		t.Fatal("引擎未在超时内调用 Dialer")
+	}
+	return conn
+}
+
+// connectUDP 同 connectTCP,但走 UDP,并写一个字节让引擎捕获该流(UDP 无
+// 握手,不主动发包引擎侧永远看不到这条连接)。
+func (c *testClient) connectUDP(t *testing.T, srcPort uint16, dstIP netip.Addr, dstPort uint16) *gonet.UDPConn {
+	t.Helper()
+	laddr := tcpip.FullAddress{Port: srcPort}
+	raddr := tcpip.FullAddress{Addr: tcpip.AddrFrom4(dstIP.As4()), Port: dstPort}
+	conn, err := gonet.DialUDP(c.stack, &laddr, &raddr, ipv4.ProtocolNumber)
+	if err != nil {
+		t.Fatalf("DialUDP: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if _, err := conn.Write([]byte("q")); err != nil {
+		t.Fatalf("udp write: %v", err)
+	}
+
+	select {
+	case <-c.dialer.peers:
+	case <-time.After(2 * time.Second):
+		t.Fatal("引擎未在超时内捕获 UDP 连接")
+	}
+	return conn
 }
 
 func TestEngine_TCP_DialerReceivesDestination(t *testing.T) {
@@ -103,7 +184,12 @@ func TestEngine_TCP_DialerReceivesDestination(t *testing.T) {
 	}
 
 	got := dialer.lastMeta(t)
-	want := route.Meta{IP: netip.AddrFrom4([4]byte{1, 2, 3, 4}), Port: 80}
+	// SrcPort 由协议栈自动分配(未显式绑定),故从实际建立的连接读回来比对,
+	// 而不是硬编码一个值 —— 这条测试要守的是「目的地」,SrcPort 只需如实等于
+	// 客户端真正用的那个临时端口(见 TestEngine_TCP_MetaCarriesApplicationSourcePort
+	// 才是专门钉 SrcPort 语义的测试)。
+	localPort := conn.LocalAddr().(*net.TCPAddr).Port
+	want := route.Meta{IP: netip.AddrFrom4([4]byte{1, 2, 3, 4}), Port: 80, SrcPort: uint16(localPort)}
 	if got != want {
 		t.Fatalf("Meta = %+v, want %+v", got, want)
 	}
@@ -139,7 +225,9 @@ func TestEngine_UDP_DialerReceivesDestination(t *testing.T) {
 	}
 
 	got := dialer.lastMeta(t)
-	want := route.Meta{IP: netip.AddrFrom4([4]byte{1, 2, 3, 4}), Port: 53, UDP: true}
+	// 同上一条 TCP 测试:SrcPort 由协议栈自动分配,从实际连接读回来比对。
+	localPort := conn.LocalAddr().(*net.UDPAddr).Port
+	want := route.Meta{IP: netip.AddrFrom4([4]byte{1, 2, 3, 4}), Port: 53, UDP: true, SrcPort: uint16(localPort)}
 	if got != want {
 		t.Fatalf("Meta = %+v, want %+v", got, want)
 	}
@@ -291,5 +379,47 @@ func TestEngineTCPTuningApplied(t *testing.T) {
 	}
 	if bool(delay) {
 		t.Error("Nagle 应关(交互低延迟)")
+	}
+}
+
+// TUN 引擎看到的 id.RemotePort 必须就是应用侧 socket 的本地端口 —— 整个应用归因
+// 靠它跟 macOS 的 pcblist(按 lport 索引)对上。这条关系此前只是推理:metaFromID
+// 用 id.Local* 当目的地,于是 Remote* "应该"是应用侧。做到界面才发现对不上,代价
+// 是整条链白写,所以第一步就钉死它。
+func TestEngine_TCP_MetaCarriesApplicationSourcePort(t *testing.T) {
+	const wantSrcPort = 51234
+
+	dialer := newCaptureDialer()
+	// 照抄 TestEngine_TCP_DialerReceivesDestination 的建栈与注入方式,
+	// 唯一的区别是客户端源端口用 wantSrcPort 这个确定值。
+	client, cleanup := newTestClient(t, dialer)
+	defer cleanup()
+	client.connectTCP(t, wantSrcPort, netip.MustParseAddr("198.18.0.7"), 443)
+
+	metas := dialer.snapshot()
+	if len(metas) != 1 {
+		t.Fatalf("Dial 次数 = %d, want 1", len(metas))
+	}
+	if got := metas[0].SrcPort; got != wantSrcPort {
+		t.Fatalf("Meta.SrcPort = %d, want %d —— join 键不成立,应用归因整条链无从对上", got, wantSrcPort)
+	}
+}
+
+// UDP 那半同样要钉住 —— 腾讯会议的媒体流是 UDP,漏掉它等于漏掉这个功能
+// 最初的用例。
+func TestEngine_UDP_MetaCarriesApplicationSourcePort(t *testing.T) {
+	const wantSrcPort = 51234
+
+	dialer := newCaptureDialer()
+	client, cleanup := newTestClient(t, dialer)
+	defer cleanup()
+	client.connectUDP(t, wantSrcPort, netip.MustParseAddr("198.18.0.7"), 443)
+
+	metas := dialer.snapshot()
+	if len(metas) != 1 {
+		t.Fatalf("Dial 次数 = %d, want 1", len(metas))
+	}
+	if got := metas[0].SrcPort; got != wantSrcPort {
+		t.Fatalf("Meta.SrcPort = %d, want %d —— join 键不成立,应用归因整条链无从对上", got, wantSrcPort)
 	}
 }

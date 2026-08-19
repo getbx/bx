@@ -374,9 +374,10 @@ func writeAll(dst net.Conn, b []byte, onWrite func(int64)) (int64, error) {
 // 对 TUN 入站连接,LocalAddress/LocalPort 是程序要连的目标。
 func metaFromID(id stack.TransportEndpointID, udp bool) route.Meta {
 	return route.Meta{
-		IP:   addrToNetip(id.LocalAddress),
-		Port: id.LocalPort,
-		UDP:  udp,
+		IP:      addrToNetip(id.LocalAddress),
+		Port:    id.LocalPort,
+		UDP:     udp,
+		SrcPort: id.RemotePort, // 应用侧端口:Local* 是目的地,Remote* 是发起方
 	}
 }
 
