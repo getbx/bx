@@ -4,10 +4,12 @@ package tun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getbx/bx/internal/route"
@@ -73,6 +75,17 @@ type Engine struct {
 	dialer Dialer
 	dns    DNSResponder // 可空:非空时 UDP:53 由它就地应答(fake-IP)
 	stats  ConnCounter  // 可空:活跃连接 + 上下行字节计数
+
+	// idleTimeout 可空(零值走 defaultIdleTimeout);只有测试会设它 ——
+	// 生产里等真实的 5 分钟没法测,而这条超时的语义正是缺陷所在。
+	idleTimeout time.Duration
+}
+
+func (e *Engine) idle() time.Duration {
+	if e.idleTimeout > 0 {
+		return e.idleTimeout
+	}
+	return defaultIdleTimeout
 }
 
 // Option 配置 Engine。
@@ -231,6 +244,12 @@ func (e *Engine) serveDNS(conn net.Conn) {
 // local→upstream 记为上行,upstream→local 记为下行。
 // 任一方向读到 EOF 就半关闭对端的写,两个方向都结束后关闭两端。
 func (e *Engine) relay(local, upstream net.Conn, initial []byte) {
+	// **空闲是整条连接的属性,不是某一个方向的。** 两个方向共用这一份活跃时刻:
+	// 任一方向有过流量,另一方向的超时就跟着续期。各计各的会让 SSE(纯服务端
+	// 推送,客户端方向按构造永远静默)在第一个周期就被自己人 FIN 掉,WebSocket
+	// 只要客户端不主动 ping 也一样 —— 而它防的那件事(两头都挂死的连接泄漏
+	// goroutine/fd)一个字没变,由 relay_idle_test.go 两条测试各自钉住。
+	activity := newRelayActivity()
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -247,15 +266,15 @@ func (e *Engine) relay(local, upstream net.Conn, initial []byte) {
 		if e.stats != nil {
 			onWrite = e.stats.AddUp
 		}
-		copyOneWay(upstream, local, defaultIdleTimeout, onWrite)
+		copyOneWay(upstream, local, e.idle(), activity, onWrite)
 	}()
 	go func() {
 		defer wg.Done()
 		if e.stats != nil {
-			copyOneWay(local, upstream, defaultIdleTimeout, e.stats.AddDown)
+			copyOneWay(local, upstream, e.idle(), activity, e.stats.AddDown)
 			return
 		}
-		copyOneWay(local, upstream, defaultIdleTimeout, nil)
+		copyOneWay(local, upstream, e.idle(), activity, nil)
 	}()
 	wg.Wait()
 	local.Close()
@@ -266,23 +285,58 @@ func (e *Engine) relay(local, upstream net.Conn, initial []byte) {
 // 防止挂死(half-open)连接永久泄漏 goroutine/fd。
 const defaultIdleTimeout = 5 * time.Minute
 
-// copyOneWay 把 src 转发到 dst,每次读写刷新空闲超时;返回转发字节数。
+// relayActivity 是一条连接上「最后一次有数据流动」的时刻,**两个方向共用一份**。
+type relayActivity struct{ last atomic.Int64 }
+
+func newRelayActivity() *relayActivity {
+	a := &relayActivity{}
+	a.mark()
+	return a
+}
+
+func (a *relayActivity) mark() { a.last.Store(time.Now().UnixNano()) }
+
+// deadline 是「若此刻之后再无任何流动,就该收尾」的时刻。读超时按它设,
+// 于是另一个方向刚搬过数据时,这一边会自动续期。
+func (a *relayActivity) deadline(idle time.Duration) time.Time {
+	return time.Unix(0, a.last.Load()).Add(idle)
+}
+
+func (a *relayActivity) expired(idle time.Duration) bool {
+	return !time.Now().Before(a.deadline(idle))
+}
+
+// isRelayTimeout 分辨「读超时」与真正的连接错误。**只有前者可以续期重来** ——
+// 把 EOF/RST 也当成可续期的,连接就永远收不了尾,正好把空闲超时防的那个泄漏
+// 变成必然。
+func isRelayTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// copyOneWay 把 src 转发到 dst,每次读写刷新**整条连接**的活跃时刻;返回转发字节数。
 // onWrite 非空时会在每次成功写入后调用,用于实时刷新流量统计。
-func copyOneWay(dst, src net.Conn, idle time.Duration, onWrite func(int64)) int64 {
+func copyOneWay(dst, src net.Conn, idle time.Duration, activity *relayActivity, onWrite func(int64)) int64 {
 	var total int64
 	buf := make([]byte, 32*1024)
 	for {
-		_ = src.SetReadDeadline(time.Now().Add(idle))
+		_ = src.SetReadDeadline(activity.deadline(idle))
 		n, rerr := src.Read(buf)
 		if n > 0 {
+			activity.mark()
 			_ = dst.SetWriteDeadline(time.Now().Add(idle))
 			written, werr := writeAll(dst, buf[:n], onWrite)
 			total += written
 			if werr != nil {
 				break
 			}
+			activity.mark()
 		}
 		if rerr != nil {
+			// 本方向读超时,但另一个方向刚搬过数据 —— 连接活着,续期重来。
+			if isRelayTimeout(rerr) && !activity.expired(idle) {
+				continue
+			}
 			break
 		}
 	}
