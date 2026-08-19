@@ -16,7 +16,7 @@ func TestCopyOneWay_IdleTimeout(t *testing.T) {
 	src, _ := net.Pipe() // 对端永不写,src.Read 将一直阻塞直到空闲超时
 	dst, _ := net.Pipe()
 	done := make(chan int64, 1)
-	go func() { done <- copyOneWay(dst, src, 80*time.Millisecond, nil) }()
+	go func() { done <- copyOneWay(dst, src, 80*time.Millisecond, newRelayActivity(), nil) }()
 
 	select {
 	case n := <-done:
@@ -39,7 +39,7 @@ func TestCopyOneWay_ReportsBytesAsWritten(t *testing.T) {
 	reported := make(chan int64, 1)
 	done := make(chan int64, 1)
 	go func() {
-		done <- copyOneWay(dstWriter, srcReader, time.Second, func(n int64) {
+		done <- copyOneWay(dstWriter, srcReader, time.Second, newRelayActivity(), func(n int64) {
 			reported <- n
 		})
 	}()
@@ -79,7 +79,7 @@ func TestCopyOneWay_StreamsIncrementally(t *testing.T) {
 	defer dstReader.Close()
 	defer dstWriter.Close()
 
-	go copyOneWay(dstWriter, srcReader, 5*time.Second, nil)
+	go copyOneWay(dstWriter, srcReader, 5*time.Second, newRelayActivity(), nil)
 
 	chunks := []string{"data: tok1\n\n", "data: tok2\n\n", "data: tok3\n\n"}
 	go func() {
