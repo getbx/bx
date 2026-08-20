@@ -14,6 +14,29 @@ type darwinAppSource struct{}
 
 func newAppSource() appSource { return darwinAppSource{} }
 
+// pcbTable 是 pcbTables 里的一项:一个 sysctl mib 名字 + 它对应的协议标记。
+type pcbTable struct {
+	mib   string
+	isUDP bool
+}
+
+// pcbTables 是 mib 与 isUDP 的**一一对应表** —— TCP 表的每条记录归到
+// UDP:false,UDP 表的每条归到 UDP:true。这两个表各自的端口空间互不相干:
+// 同一个数字完全可能同时被一个 TCP socket 和一个 UDP socket 占用,若把它们
+// 写进同一个键(裸 uint16),后写入的协议会静默覆盖先写入的那个 —— 是结构性
+// 碰撞而非 TOCTOU。
+//
+// **这张表任何一项写反(比如 UDP 那行的 isUDP 误写成 false)都会让所有 UDP
+// 流量被静默归到 TCP 键上**,而这在界面上完全看不出来 —— 用户只会看到一个
+// 应用名,不会看到两个协议的归因被悄悄合并。表提升为包级具名变量,单独由
+// appsource_darwin_test.go 的 TestPCBTablesTagProtocolCorrectly 钉住,不依赖
+// 任何 syscall(与 internal/guardian/procscan.go 的 decideCoreScan 同一个
+// 手法:syscall 那一半单测造不出来,能测的部分单独抽出来测)。
+var pcbTables = [...]pcbTable{
+	{"net.inet.tcp.pcblist_n", false},
+	{"net.inet.udp.pcblist_n", true},
+}
+
 // OwnersByPort 读一次 TCP + UDP 的 pcblist,把 (端口,协议) join 成应用显示名。
 //
 // 真机实测(2026-08-19):两张表读+解析共 451µs~1.5ms,产出 ~243 条映射;
@@ -38,18 +61,7 @@ func (darwinAppSource) OwnersByPort() (map[appattr.PortKey]string, error) {
 		return v
 	}
 
-	// mib 与 isUDP **一一对应**:TCP 表的每条记录归到 UDP:false,UDP 表的每条
-	// 归到 UDP:true。这两个表各自的端口空间互不相干 —— 同一个数字完全可能
-	// 同时被一个 TCP socket 和一个 UDP socket 占用,若把它们写进同一个键(裸
-	// uint16),后写入的协议会静默覆盖先写入的那个,是结构性碰撞而非 TOCTOU。
-	tables := [...]struct {
-		mib   string
-		isUDP bool
-	}{
-		{"net.inet.tcp.pcblist_n", false},
-		{"net.inet.udp.pcblist_n", true},
-	}
-	for _, tbl := range tables {
+	for _, tbl := range pcbTables {
 		raw, err := unix.SysctlRaw(tbl.mib)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", tbl.mib, err)
