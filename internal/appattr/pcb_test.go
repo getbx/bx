@@ -1,6 +1,7 @@
 package appattr
 
 import (
+	"encoding/binary"
 	"os"
 	"testing"
 )
@@ -62,14 +63,16 @@ func TestParsePcbListRejectsTruncatedInput(t *testing.T) {
 }
 
 // TestParsePcbListMatchesGoldenRecords 钉住 fixture 里若干条记录的确切四元组
-// (LocalPort/RemotePort/LastPID/EPID),而不是「解析没崩」这种弱断言。
+// (LocalPort/RemotePort/LastPID/EPID)。
 //
-// 存在的必要性:前三条测试只验证了「块遍历没有走飞」与「LastPID 大体上非零」,
-// 对 EPID(so_e_pid,偏移 72)完全没有覆盖——把 offSoEPID 改成任何仍落在块内
-// 的错误偏移(比如误设成与 offSoLastPID 相同的 68,或 so_gencnt 的偏移),
-// 前三条测试会全绿。EPID 不是无关紧要的字段:它是「替谁干活」,Task 3 的
-// ChooseOwner 委托规则直接建在这个偏移上,选错偏移会让委托规则用一个
-// 看似合理、实则是别的字段的值做判断。
+// **这条测试与下面的 TestParsePcbListOffsetsAreIsolated 各守一半,缺一不可**:
+// 本测试证明的是「真实内核在这份布局下,这四个字段的具体取值是什么」——它挡得住
+// 真实存在的布局陷阱(8 字节对齐、pid 偏移),因为它用的是真机字节而不是猜测。
+// 但它挡不住偏移隔离:这份 fixture 里 EPID 全为 0(见下方诚实记录),而复审
+// 逐 4 字节扫描发现块内偏移 44/52/56/60/80/96 上真实数据**恰好也是全零**——
+// 若 offSoEPID 被误设成这几个偏移中任意一个,本测试依然全绿,那是这份 fixture
+// 零值分布的巧合,不是「offSoEPID=72 是对的」的证明。偏移隔离由
+// TestParsePcbListOffsetsAreIsolated 的合成数据负责,那份数据里没有任何巧合的零值。
 //
 // 记录按 ParsePcbList 返回顺序用下标钉死(该顺序由 fixture 字节本身决定,是
 // 确定性的);选取时覆盖了不同 LastPID、不同 RemotePort(443 与其余)、
@@ -113,5 +116,87 @@ func TestParsePcbListMatchesGoldenRecords(t *testing.T) {
 		if got != want {
 			t.Errorf("pcbs[%d] = %+v, want %+v", idx, got, want)
 		}
+	}
+}
+
+// TestParsePcbListOffsetsAreIsolated 用合成数据把「四个字段各自读的是不同偏移」
+// 这件事跟 fixture 的具体字节脱钩验证。
+//
+// **为什么它必须和 TestParsePcbListMatchesGoldenRecords 分开存在**:golden 测试
+// 用真机字节,能证明真实内核布局(那部分只能靠真机、合成数据编不出来);但
+// 真机字节里恰好有一堆全零区域(EPID 全为 0,偏移 44/52/56/60/80/96 上也是
+// 巧合的全零)—— 一个字段读错偏移、读到另一片全零区域,golden 测试完全看不出来。
+// 本测试反过来:构造一个 XSO_SOCKET 块,让块内**每一个 4 字节字都是互不相同的
+// 非零哨兵值**,这样任何字段读错偏移都会读到一个跟期望值不同的哨兵,必然失败。
+// 它证明不了真实内核布局是否如此(那要靠上面那条),但补上了 golden 测试因为
+// 零值巧合而遮住的盲点。两条测试各证明一半,合起来才完整。
+func TestParsePcbListOffsetsAreIsolated(t *testing.T) {
+	const (
+		wantLocalPort  = 4041
+		wantRemotePort = 8080
+
+		// 这两个偏移**刻意硬编码**成字面量 68/72,不引用生产代码里的
+		// offSoLastPID/offSoEPID 常量 —— 如果引用的是同一个常量,一旦那两个
+		// 常量被改坏(变异测试正是这么做的),期望值会跟着一起改坏,变异就
+		// 抓不到了。这两个数字来自 pcb.go 顶部注释里「实测得来」的
+		// [68] so_last_pid [72] so_e_pid。
+		correctLastPIDOffset = 68
+		correctEPIDOffset    = 72
+	)
+
+	// xinpgen 头(真实大小 24 字节):ParsePcbList 只读前 4 字节的 xig_len 作为
+	// 第一个块的起始偏移,其余字段不解析,填 0 即可。
+	header := make([]byte, 24)
+	binary.NativeEndian.PutUint32(header[0:4], 24)
+
+	// XSO_INPCB 块:xi_len(4) xi_kind(4) xi_inpp(8,未用) inp_fport(2)
+	// inp_lport(2) + 4 字节保留位凑成 8 对齐的 24 字节,端口用网络字节序。
+	// 端口偏移与生产代码 blk[16:18]/blk[18:20] 对应,同样验证在内。
+	inpcb := make([]byte, 24)
+	binary.NativeEndian.PutUint32(inpcb[0:4], 24)
+	binary.NativeEndian.PutUint32(inpcb[4:8], kindInpcb)
+	binary.BigEndian.PutUint16(inpcb[16:18], wantRemotePort)
+	binary.BigEndian.PutUint16(inpcb[18:20], wantLocalPort)
+
+	// XSO_SOCKET 块:104 字节(8 对齐,含 xso_len/xso_kind 两个头字 + 24 个
+	// 数据字)。从字节偏移 8 起,每个 4 字节字填一个各不相同的哨兵值
+	// (第 wordOff 字节处的字 = wordOff/4+1),一路盖过 44/52/56/60/72/80/96
+	// 这些真机 fixture 上恰好是零的偏移 —— 这里它们全部非零且互不相同。
+	const socketLen = 104
+	socket := make([]byte, socketLen)
+	binary.NativeEndian.PutUint32(socket[0:4], socketLen)
+	binary.NativeEndian.PutUint32(socket[4:8], kindSocket)
+	for wordOff := 8; wordOff+4 <= socketLen; wordOff += 4 {
+		sentinel := uint32(wordOff/4 + 1)
+		binary.NativeEndian.PutUint32(socket[wordOff:wordOff+4], sentinel)
+	}
+
+	raw := append(append(append([]byte{}, header...), inpcb...), socket...)
+
+	pcbs, err := ParsePcbList(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pcbs) != 1 {
+		t.Fatalf("解出 %d 条,want 1 —— 合成数据只装了一条记录", len(pcbs))
+	}
+	got := pcbs[0]
+
+	wantLastPID := int32(correctLastPIDOffset/4 + 1)
+	wantEPID := int32(correctEPIDOffset/4 + 1)
+
+	if got.LocalPort != wantLocalPort {
+		t.Errorf("LocalPort = %d, want %d", got.LocalPort, wantLocalPort)
+	}
+	if got.RemotePort != wantRemotePort {
+		t.Errorf("RemotePort = %d, want %d", got.RemotePort, wantRemotePort)
+	}
+	if got.LastPID != wantLastPID {
+		t.Errorf("LastPID = %d, want %d(偏移 %d 处的哨兵值)——偏移取错了",
+			got.LastPID, wantLastPID, correctLastPIDOffset)
+	}
+	if got.EPID != wantEPID {
+		t.Errorf("EPID = %d, want %d(偏移 %d 处的哨兵值)——偏移取错了",
+			got.EPID, wantEPID, correctEPIDOffset)
 	}
 }
