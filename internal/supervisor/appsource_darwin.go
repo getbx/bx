@@ -14,15 +14,15 @@ type darwinAppSource struct{}
 
 func newAppSource() appSource { return darwinAppSource{} }
 
-// OwnersByPort 读一次 TCP + UDP 的 pcblist,把源端口 join 成应用显示名。
+// OwnersByPort 读一次 TCP + UDP 的 pcblist,把 (端口,协议) join 成应用显示名。
 //
 // 真机实测(2026-08-19):两张表读+解析共 451µs~1.5ms,产出 ~243 条映射;
 // 再解 45 个不同 PID 的进程名约 330µs。所以整个函数可以按秒级频率调用。
 //
 // **必须以 root 跑** —— kern.procargs2 读 root 进程要权限,非 root 会让所有
 // 系统守护进程的名字变成空串。Core 本身就是 root,菜单(uid 501)不行。
-func (darwinAppSource) OwnersByPort() (map[uint16]string, error) {
-	owners := map[uint16]string{}
+func (darwinAppSource) OwnersByPort() (map[appattr.PortKey]string, error) {
+	owners := map[appattr.PortKey]string{}
 	names := map[int32]string{}
 	aliveCache := map[int32]bool{}
 	alive := func(pid int32) bool {
@@ -38,14 +38,25 @@ func (darwinAppSource) OwnersByPort() (map[uint16]string, error) {
 		return v
 	}
 
-	for _, mib := range [...]string{"net.inet.tcp.pcblist_n", "net.inet.udp.pcblist_n"} {
-		raw, err := unix.SysctlRaw(mib)
+	// mib 与 isUDP **一一对应**:TCP 表的每条记录归到 UDP:false,UDP 表的每条
+	// 归到 UDP:true。这两个表各自的端口空间互不相干 —— 同一个数字完全可能
+	// 同时被一个 TCP socket 和一个 UDP socket 占用,若把它们写进同一个键(裸
+	// uint16),后写入的协议会静默覆盖先写入的那个,是结构性碰撞而非 TOCTOU。
+	tables := [...]struct {
+		mib   string
+		isUDP bool
+	}{
+		{"net.inet.tcp.pcblist_n", false},
+		{"net.inet.udp.pcblist_n", true},
+	}
+	for _, tbl := range tables {
+		raw, err := unix.SysctlRaw(tbl.mib)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", mib, err)
+			return nil, fmt.Errorf("read %s: %w", tbl.mib, err)
 		}
 		pcbs, err := appattr.ParsePcbList(raw)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", mib, err)
+			return nil, fmt.Errorf("parse %s: %w", tbl.mib, err)
 		}
 		for _, pcb := range pcbs {
 			pid, ok := appattr.ChooseOwner(pcb, alive)
@@ -57,8 +68,10 @@ func (darwinAppSource) OwnersByPort() (map[uint16]string, error) {
 				name = appattr.DisplayName(executablePathOf(pid))
 				names[pid] = name
 			}
+			// 空名字与「端口不在 map 里」是同一件事的两种写法 —— 都读作
+			// unknown,故这里干脆不写入,省得下游还要再判断一次空串。
 			if name != "" {
-				owners[pcb.LocalPort] = name
+				owners[appattr.PortKey{Port: pcb.LocalPort, UDP: tbl.isUDP}] = name
 			}
 		}
 	}

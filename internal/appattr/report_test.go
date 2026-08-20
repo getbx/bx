@@ -12,8 +12,10 @@ func TestAggregateSplitsOneAppAcrossPaths(t *testing.T) {
 		{SrcPort: 1, Path: PathTunnel, Source: "default"},
 		{SrcPort: 2, Path: PathDirect, Source: "user_direct", Rule: "*.qq.com"},
 	}
-	owners := map[uint16]string{1: "Google Chrome", 2: "Google Chrome"}
-	got := Aggregate(records, owners, map[uint16]int64{1: 100, 2: 5}, map[uint16]int64{1: 900, 2: 45})
+	owners := map[PortKey]string{{Port: 1, UDP: false}: "Google Chrome", {Port: 2, UDP: false}: "Google Chrome"}
+	got := Aggregate(records, owners,
+		map[PortKey]int64{{Port: 1, UDP: false}: 100, {Port: 2, UDP: false}: 5},
+		map[PortKey]int64{{Port: 1, UDP: false}: 900, {Port: 2, UDP: false}: 45})
 
 	want := Report{Groups: []Group{
 		{Path: PathTunnel, Rows: []AppRow{{App: "Google Chrome", Conns: 1, BytesUp: 100, BytesDown: 900}}},
@@ -32,7 +34,7 @@ func TestAggregateKeepsUnknownAsItsOwnRowInsideItsPath(t *testing.T) {
 		{SrcPort: 1, Path: PathTunnel, Source: "default"},
 		{SrcPort: 2, Path: PathTunnel, Source: "default"},
 	}
-	owners := map[uint16]string{1: "Slack"} // 2 号端口查不出来
+	owners := map[PortKey]string{{Port: 1, UDP: false}: "Slack"} // 2 号端口查不出来
 	got := Aggregate(records, owners, nil, nil)
 
 	tunnel := got.Groups[0]
@@ -68,8 +70,9 @@ func TestAggregateSortsRowsByBytesThenName(t *testing.T) {
 	records := []ConnRecord{
 		{SrcPort: 1, Path: PathTunnel}, {SrcPort: 2, Path: PathTunnel}, {SrcPort: 3, Path: PathTunnel},
 	}
-	owners := map[uint16]string{1: "Aardvark", 2: "Zebra", 3: "Middle"}
-	got := Aggregate(records, owners, map[uint16]int64{1: 1, 2: 1000, 3: 500}, nil)
+	owners := map[PortKey]string{{Port: 1, UDP: false}: "Aardvark", {Port: 2, UDP: false}: "Zebra", {Port: 3, UDP: false}: "Middle"}
+	got := Aggregate(records, owners,
+		map[PortKey]int64{{Port: 1, UDP: false}: 1, {Port: 2, UDP: false}: 1000, {Port: 3, UDP: false}: 500}, nil)
 	if got.Groups[0].Rows[0].App != "Zebra" || got.Groups[0].Rows[2].App != "Aardvark" {
 		t.Fatalf("排序错了: %#v", got.Groups[0].Rows)
 	}
@@ -84,12 +87,62 @@ func TestAggregateCountsEachPortsBytesOnce(t *testing.T) {
 		{SrcPort: 7, Path: PathTunnel},
 		{SrcPort: 7, Path: PathTunnel},
 	}
-	got := Aggregate(records, map[uint16]string{7: "Slack"}, map[uint16]int64{7: 100}, map[uint16]int64{7: 900})
+	got := Aggregate(records,
+		map[PortKey]string{{Port: 7, UDP: false}: "Slack"},
+		map[PortKey]int64{{Port: 7, UDP: false}: 100},
+		map[PortKey]int64{{Port: 7, UDP: false}: 900})
 	row := got.Groups[0].Rows[0]
 	if row.Conns != 3 {
 		t.Fatalf("Conns = %d, want 3(连接数按记录数算)", row.Conns)
 	}
 	if row.BytesUp != 100 || row.BytesDown != 900 {
 		t.Fatalf("字节 = %d/%d, want 100/900(每个端口只计一次,不是乘以记录数)", row.BytesUp, row.BytesDown)
+	}
+}
+
+// 核心回归:TCP 与 UDP 端口空间相互独立,同一个数字完全可能同时被一个 TCP
+// socket 和一个 UDP socket 占用。owners/bytesUp/bytesDown 必须按 (端口,协议)
+// 联合键分别归因,任何把两者合并成同一个 uint16 键的实现都会让后写入的那个
+// 协议静默覆盖先写入的归因 —— 这不是本测试要验证的实现细节,而是它存在的理由。
+func TestAggregateKeepsTCPAndUDPPortsApart(t *testing.T) {
+	records := []ConnRecord{
+		{SrcPort: 443, UDP: false, Path: PathTunnel}, // TCP:443 属于 Chrome
+		{SrcPort: 443, UDP: true, Path: PathTunnel},  // UDP:443(QUIC)属于 quic-app
+	}
+	owners := map[PortKey]string{
+		{Port: 443, UDP: false}: "Google Chrome",
+		{Port: 443, UDP: true}:  "quic-app",
+	}
+	bytesUp := map[PortKey]int64{
+		{Port: 443, UDP: false}: 10,
+		{Port: 443, UDP: true}:  20,
+	}
+	bytesDown := map[PortKey]int64{
+		{Port: 443, UDP: false}: 100,
+		{Port: 443, UDP: true}:  200,
+	}
+	got := Aggregate(records, owners, bytesUp, bytesDown)
+
+	rows := got.Groups[0].Rows
+	if len(rows) != 2 {
+		t.Fatalf("tunnel 组 %d 行, want 2(TCP:443 与 UDP:443 必须分成两行), got %#v", len(rows), rows)
+	}
+	byApp := map[string]AppRow{}
+	for _, r := range rows {
+		byApp[r.App] = r
+	}
+	chrome, ok := byApp["Google Chrome"]
+	if !ok {
+		t.Fatalf("Google Chrome(TCP:443)那一行不见了: %#v", rows)
+	}
+	if chrome.BytesUp != 10 || chrome.BytesDown != 100 {
+		t.Fatalf("Google Chrome 字节 = %d/%d, want 10/100(不能被 UDP:443 覆盖或合并)", chrome.BytesUp, chrome.BytesDown)
+	}
+	quic, ok := byApp["quic-app"]
+	if !ok {
+		t.Fatalf("quic-app(UDP:443)那一行不见了: %#v", rows)
+	}
+	if quic.BytesUp != 20 || quic.BytesDown != 200 {
+		t.Fatalf("quic-app 字节 = %d/%d, want 20/200(不能被 TCP:443 覆盖或合并)", quic.BytesUp, quic.BytesDown)
 	}
 }

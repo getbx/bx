@@ -14,10 +14,22 @@ const (
 // 组数浮动会让渲染层错位。
 var orderedPaths = [...]Path{PathTunnel, PathDirect, PathBlocked}
 
+// PortKey 是 owners/bytesUp/bytesDown 三张 map 的 join 键。
+//
+// **不能只用端口号** —— TCP 与 UDP 是两个独立的端口空间,同一个数字完全可能
+// 同时被一个 TCP socket 和一个 UDP socket 占用(内核层面它们互不相干)。只用
+// uint16 当键会让后写入的那个协议**静默覆盖**先写入的归因:不是两次读之间状态
+// 变化的 TOCTOU,而是结构性碰撞 —— 即便两次 sysctl 原子瞬时完成,碰撞依然发生。
+type PortKey struct {
+	Port uint16
+	UDP  bool
+}
+
 // ConnRecord 是数据面记下的一条连接:只有源端口和判定,没有应用身份 ——
 // 身份是后台 worker 事后 join 出来的。
 type ConnRecord struct {
 	SrcPort uint16
+	UDP     bool // 与 route.Meta.UDP 同源;决定 join 时落在 PortKey 的哪一半
 	Path    Path
 	Source  string // route.Reason.Source 的字符串形式
 	Rule    string // 用户规则原文;内建列表为空
@@ -56,17 +68,18 @@ const maxRulesPerRow = 3
 // 这个倒序遍历有一个连带效果:Rules 字段的收集顺序变成了「最后出现」而不是
 // 「首次出现」(brief 原意是按时间正序去重取前 3 条)。这不影响任何断言,但
 // 顺序确实是倒序,不要误当成按时间正序在收集。
-func Aggregate(records []ConnRecord, owners map[uint16]string, bytesUp, bytesDown map[uint16]int64) Report {
+func Aggregate(records []ConnRecord, owners map[PortKey]string, bytesUp, bytesDown map[PortKey]int64) Report {
 	type key struct {
 		path Path
 		app  string
 	}
 	acc := map[key]*AppRow{}
 	seenRule := map[key]map[string]bool{}
-	counted := make(map[uint16]bool, len(records))
+	counted := make(map[PortKey]bool, len(records))
 	for i := len(records) - 1; i >= 0; i-- { // 倒序:最近的记录先拿到这个端口的字节
 		rec := records[i]
-		k := key{path: rec.Path, app: owners[rec.SrcPort]} // 查不到 → 空串 = unknown
+		pk := PortKey{Port: rec.SrcPort, UDP: rec.UDP}
+		k := key{path: rec.Path, app: owners[pk]} // 查不到 → 空串 = unknown
 		row := acc[k]
 		if row == nil {
 			row = &AppRow{App: k.app}
@@ -74,10 +87,10 @@ func Aggregate(records []ConnRecord, owners map[uint16]string, bytesUp, bytesDow
 			seenRule[k] = map[string]bool{}
 		}
 		row.Conns++
-		if !counted[rec.SrcPort] {
-			counted[rec.SrcPort] = true
-			row.BytesUp += bytesUp[rec.SrcPort]
-			row.BytesDown += bytesDown[rec.SrcPort]
+		if !counted[pk] {
+			counted[pk] = true
+			row.BytesUp += bytesUp[pk]
+			row.BytesDown += bytesDown[pk]
 		}
 		if rec.Rule != "" && !seenRule[k][rec.Rule] && len(row.Rules) < maxRulesPerRow {
 			seenRule[k][rec.Rule] = true
