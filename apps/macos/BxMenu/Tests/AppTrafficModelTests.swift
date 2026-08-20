@@ -36,15 +36,30 @@ struct AppTrafficModelTests {
         expect(tunnel?.rows.first?.rules == [], "缺席的 rules 没有落成空数组:\(String(describing: tunnel?.rows.first?.rules))")
     }
 
-    // 完全没有 rows 键(而不是空数组)也必须解成空数组 —— 服务端 omitempty 会让
-    // rows 整个缺席,不只是序列化成 []。
-    static func testDecodesGroupWithEntirelyMissingRowsKey() {
+    // 真实线上形状:Go 端 `Rows []AppRow json:"rows"`(**没有** omitempty),
+    // 值为 nil 时序列化成字面 `null`,这个键不会整个消失。这条测的是
+    // 「rows 为 null 时按空处理」,不是「rows 键缺席」——那是两种不同的输入,
+    // 只是 Swift 的 decodeIfPresent 恰好对两者走同一条返回路径,不能因为
+    // 恰好都通过就拿一个代替另一个来验证契约。
+    static func testDecodesGroupWithNullRows() {
+        let json = """
+        { "subscribed": true, "report": { "groups": [ { "path": "direct", "rows": null } ] } }
+        """
+        guard let report = decode(json) else { return }
+        let direct = report.report.groups.first { $0.path == .direct }
+        expect(direct?.rows == [], "null 的 rows 没有落成空数组")
+    }
+
+    // 防御性用例,**生产不会出现这个形状**(Go 端 `rows` 没有 omitempty,键
+    // 恒在)。留着是为了兜住万一契约将来改动、或者别的调用方喂进一份手写的
+    // 不完整 JSON——不能与上面那条真实形状的测试混为一谈。
+    static func testDecodesGroupToleratesEntirelyMissingRowsKeyDefensively() {
         let json = """
         { "subscribed": true, "report": { "groups": [ { "path": "direct" } ] } }
         """
         guard let report = decode(json) else { return }
         let direct = report.report.groups.first { $0.path == .direct }
-        expect(direct?.rows == [], "缺席的 rows 键没有落成空数组")
+        expect(direct?.rows == [], "缺席的 rows 键没有落成空数组(防御性兜底)")
     }
 
     // report.error 缺席(正常情况)必须解成空串,不能整个解码失败。
@@ -164,7 +179,8 @@ struct AppTrafficModelTests {
 
     static func main() {
         testDecodesReportWithMissingRowsArray()
-        testDecodesGroupWithEntirelyMissingRowsKey()
+        testDecodesGroupWithNullRows()
+        testDecodesGroupToleratesEntirelyMissingRowsKeyDefensively()
         testDecodesReportWithMissingErrorKey()
         testGroupsKeepTunnelDirectBlockedOrder()
         testUnknownAppRendersAsExplicitLabel()
