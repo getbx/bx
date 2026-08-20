@@ -14,11 +14,19 @@ struct AppTrafficRow: Decodable, Equatable {
     let bytesDown: Int64
     let rules: [String]
 
+    /// 这一行的**代表**可执行路径,空串 = 问不出来(unknown 行、或 Core 侧读
+    /// kern.procargs2 失败)。唯一的用途是取图标;**空串时不许画占位** ——
+    /// 一格空白的占位图不是「没有图标」,是「这个应用的图标长这样」。
+    ///
+    /// Go 侧是 omitempty,所以这个键**经常整个缺席**,必须 decodeIfPresent。
+    let execPath: String
+
     enum CodingKeys: String, CodingKey {
         case app, conns
         case bytesUp = "bytes_up"
         case bytesDown = "bytes_down"
         case rules
+        case execPath = "exec_path"
     }
 
     /// **必须手写。** 服务端对 `rules` 用 omitempty——一条规则都没有命中是
@@ -31,14 +39,17 @@ struct AppTrafficRow: Decodable, Equatable {
         bytesUp = try c.decode(Int64.self, forKey: .bytesUp)
         bytesDown = try c.decode(Int64.self, forKey: .bytesDown)
         rules = try c.decodeIfPresent([String].self, forKey: .rules) ?? []
+        execPath = try c.decodeIfPresent(String.self, forKey: .execPath) ?? ""
     }
 
-    init(app: String, conns: Int, bytesUp: Int64, bytesDown: Int64, rules: [String] = []) {
+    init(app: String, conns: Int, bytesUp: Int64, bytesDown: Int64, rules: [String] = [],
+         execPath: String = "") {
         self.app = app
         self.conns = conns
         self.bytesUp = bytesUp
         self.bytesDown = bytesDown
         self.rules = rules
+        self.execPath = execPath
     }
 }
 
@@ -113,8 +124,32 @@ struct AppTrafficReport: Decodable, Equatable {
     /// 免得渲染层自己去猜「现在该显示哪个」。
     enum Row: Equatable {
         case sectionHeader(String)
-        case entry(app: String, detail: String)
+        case entry(Entry)
         case notice(String)
+    }
+
+    /// 界面上的一条应用记录,**字段是分开的,不是一句散文**。
+    ///
+    /// 上一版把它拼成 `1 connection · 48 B up · 48 B down · your rule: …`,
+    /// 于是两行之间没法比大小 —— 一屏参差不齐的散文正是「感觉 iStat 做得更好」
+    /// 的那一半。分开之后窗口才能把它们摆成右对齐的列;列的定义在
+    /// `appTrafficColumnTitles`/`appTrafficNumericColumns`,窗口只照着摆。
+    ///
+    /// 全是**已经格式化好的字符串**:格式化(单位、每秒、没有速率时那一横)是
+    /// 判断,判断归纯模型;窗口那半在 CI 里编不了,放过去等于没测。
+    struct Entry: Equatable {
+        let app: String
+        /// 取图标用;空串 = 不画图标(不是画一个空白占位)。
+        let execPath: String
+        let conns: String
+        /// **速率与累计并存,两个都要**:速率答「现在多快」,累计答「一共多少」。
+        /// 没有前一份快照时速率是 `appTrafficRateUnavailable`,不是 0。
+        let upRate: String
+        let downRate: String
+        let upTotal: String
+        let downTotal: String
+        /// 用户自己写的那条规则的原文;空串 = 内建列表判的,用户改不了、不提。
+        let rule: String
     }
 
     /// 组固定顺序(tunnel / direct / blocked),渲染层照抄这个顺序摆。
@@ -137,7 +172,7 @@ struct AppTrafficReport: Decodable, Equatable {
     /// ③ 采集着、没错误、三组全空——这才是真的「现在没有连接」。
     /// 把任意两句合并,就是把「没在采集」或「没查到」悄悄说成「没有流量」,
     /// 那是一句自洽的假话。
-    func rows() -> [Row] {
+    func rows(rates: [AppTrafficRateKey: AppTrafficRate] = [:]) -> [Row] {
         guard subscribed else {
             return [.notice("Not collecting app traffic right now.")]
         }
@@ -153,10 +188,9 @@ struct AppTrafficReport: Decodable, Equatable {
             guard let group = byPath[path], !group.rows.isEmpty else { continue }
             out.append(.sectionHeader(AppTrafficReport.sectionTitle(for: path)))
             for row in group.rows {
-                out.append(.entry(
-                    app: row.app.isEmpty ? "Unknown app" : row.app,
-                    detail: AppTrafficReport.detail(for: row)
-                ))
+                out.append(.entry(AppTrafficReport.entry(
+                    for: row, path: path,
+                    rate: rates[AppTrafficRateKey(path: path, app: row.app)])))
             }
         }
         guard !out.isEmpty else {
@@ -165,7 +199,7 @@ struct AppTrafficReport: Decodable, Equatable {
         return out
     }
 
-    /// 一条应用记录的副标题。
+    /// 把一行报告折成界面上那一行的**各个格子**。
     ///
     /// **`rules` 有话说时才占地方。** 服务端只在**用户自己写的规则**命中时填它
     /// (命中内建 china 列表时给空串,见 `appattr.ConnRecord.Rule`),所以它天然
@@ -173,15 +207,135 @@ struct AppTrafficReport: Decodable, Equatable {
     /// 无差别地给每一行都加一句会让它变成墙纸(与项目所有者否掉「Direct rules:
     /// N unreachable」常驻红字同一条判断);反过来,把它整个丢掉就是把「你的
     /// Steam 之所以直连,是因为你自己写的 *.steamstatic.com」这条唯一的归因扔掉。
+    /// 内建列表判的那些行 `rule` 是空串,窗口那一格就留空 —— 说成 rule 会让用户
+    /// 去找一条配置文件里根本不存在的行。
     ///
-    /// 措辞点名「your rule」:内建列表的判定用户改不了,说成「rule」会让他去
-    /// 找一条配置文件里根本不存在的行。
-    private static func detail(for row: AppTrafficRow) -> String {
-        let conns = "\(row.conns) connection\(row.conns == 1 ? "" : "s")"
-        let base = "\(conns) · \(formatByteCount(row.bytesUp)) up · \(formatByteCount(row.bytesDown)) down"
-        guard !row.rules.isEmpty else { return base }
-        return "\(base) · your rule: \(row.rules.joined(separator: ", "))"
+    /// **rate 为 nil 不是 0**:那一格渲染成 `appTrafficRateUnavailable`,见
+    /// `AppTrafficRateTracker` 头上那段。
+    private static func entry(for row: AppTrafficRow, path: AppTrafficPath,
+                              rate: AppTrafficRate?) -> Entry {
+        Entry(
+            app: row.app.isEmpty ? "Unknown app" : row.app,
+            // unknown 行按构造没有路径(Core 侧那一行的 owner 是零值),这里不用
+            // 再判一次 —— 但也不去替它编一个。
+            execPath: row.execPath,
+            conns: "\(row.conns)",
+            upRate: formatRate(rate?.bytesUpPerSecond),
+            downRate: formatRate(rate?.bytesDownPerSecond),
+            upTotal: formatByteCount(row.bytesUp),
+            downTotal: formatByteCount(row.bytesDown),
+            rule: row.rules.joined(separator: ", ")
+        )
     }
+}
+
+/// 速率表的键:**(组, 应用名)**,不是光一个应用名。
+///
+/// 同一个应用同时出现在两组是常态(Chrome 一半直连一半走隧道,那正是这个窗口
+/// 存在的理由),只按名字做键会把两组的字节混成一个谁也不是的速率。
+struct AppTrafficRateKey: Hashable {
+    let path: AppTrafficPath
+    let app: String
+}
+
+/// 每秒字节数。**只在两帧都观测到同一个键时才存在** —— 没有就是没有,不是 0。
+struct AppTrafficRate: Equatable {
+    let bytesUpPerSecond: Double
+    let bytesDownPerSecond: Double
+}
+
+/// 由**相邻两次快照做差**得出速率。
+///
+/// **为什么不是让服务端发速率**:窗口每 5 秒拉一次,前后两份快照就是一对现成的
+/// 观测,做差不需要改协议、不需要 Core 侧多记一份状态。代价是第一帧没有速率 ——
+/// 而那正是下面这条纪律要守的东西。
+///
+/// **第一帧不许编造速率。** 显示 0 是在说「此刻没有流量」(一句它没查过的话);
+/// 拿累计值除以一个猜来的时长更糟,那个时长是编的。同一条纪律还管着另外三种
+/// 「说不好」的情形,它们**一律不给速率**而不是给 0:
+///   ① 上一帧没有这个键(应用刚出现)—— 它的累计值里可能含着订阅之前就建好的
+///      连接(种子),那不是这几秒传的;
+///   ② 累计值往回走 —— 环形缓冲丢最旧的记录时真的会发生,那不是「没传」,是
+///      「这两帧之间发生了什么我说不好」;
+///   ③ 两帧时间戳相同 —— 除以零。
+///
+/// 与 `internal/observe` 的 Tristate、`leakcheck` 的 NotChecked 同一条:
+/// 「没问出来」不许被压成一个看起来正常的值。
+struct AppTrafficRateTracker {
+    private struct Counters {
+        let up: Int64
+        let down: Int64
+    }
+
+    private var previous: [AppTrafficRateKey: Counters] = [:]
+    private var previousAt: Date?
+
+    /// 吃进一份快照,返回**这一拍**能算出来的全部速率(算不出来的键不出现)。
+    mutating func ingest(_ report: AppTrafficReport, at now: Date) -> [AppTrafficRateKey: AppTrafficRate] {
+        var current: [AppTrafficRateKey: Counters] = [:]
+        for group in report.report.groups {
+            for row in group.rows {
+                current[AppTrafficRateKey(path: group.path, app: row.app)] =
+                    Counters(up: row.bytesUp, down: row.bytesDown)
+            }
+        }
+        defer {
+            previous = current
+            previousAt = now
+        }
+        // 第一帧,或者两帧同一瞬间:没有可用的时长,就没有速率。
+        guard let previousAt, now.timeIntervalSince(previousAt) > 0 else { return [:] }
+        let elapsed = now.timeIntervalSince(previousAt)
+        var out: [AppTrafficRateKey: AppTrafficRate] = [:]
+        for (key, now) in current {
+            guard let before = previous[key] else { continue } // 刚出现的应用
+            guard now.up >= before.up, now.down >= before.down else { continue } // 计数倒退
+            out[key] = AppTrafficRate(
+                bytesUpPerSecond: Double(now.up - before.up) / elapsed,
+                bytesDownPerSecond: Double(now.down - before.down) / elapsed)
+        }
+        return out
+    }
+}
+
+/// 速率那一格在**没有速率可报**时显示的东西。
+///
+/// 一个破折号,不是 `0 B/s` —— 后者是一句断言(「此刻没有流量」),而这里的事实
+/// 是「还没有第二份快照可以跟它做差」。
+let appTrafficRateUnavailable = "—"
+
+/// 把每秒字节数渲染成一格;nil = 没有速率。
+func formatRate(_ bytesPerSecond: Double?) -> String {
+    guard let bytesPerSecond else { return appTrafficRateUnavailable }
+    return formatByteCount(Int64(bytesPerSecond.rounded())) + "/s"
+}
+
+/// 列标题。**第 0 列是图标,没有标题**(标题栏那一格留空)。
+///
+/// 标题只出现一次(在整张表最上面),不是每组重复一遍 —— 三组各来一行标题会把
+/// 这个窗口变成一屏表头。
+let appTrafficColumnTitles = ["", "App", "Conns", "Up/s", "Down/s", "Up", "Down", "Rule"]
+
+/// 哪几列是数字列 —— 也就是**必须右对齐**的那几列。
+///
+/// 判据住在这里而不是窗口里,是为了让它可测:窗口那半在 CI 里编不了。窗口的义务
+/// 只有一条 —— 遍历这个下标表,把每一列摆成 trailing;由 Go 侧的文本守卫钉住。
+///
+/// 图标列(0)、应用名列(1)、规则列(最后一列,变长文本)不在其中。
+let appTrafficNumericColumns = [2, 3, 4, 5, 6]
+
+/// 从可执行路径回到用户认得的那个 **.app 包**。
+///
+/// `NSWorkspace.icon(forFile:)` 对 `…/Contents/MacOS/Slack` 给的是通用可执行文件
+/// 图标 —— 一整列长一个样,等于没有图标。取**最外层**的 `.app`:Chrome 的 helper
+/// 嵌在外层包里(`…/Google Chrome.app/…/Google Chrome Helper.app/…`),取里层会得到
+/// 一个用户没见过的图标。
+///
+/// 不是 app bundle 的普通可执行文件(ssh、node)原样返回,由系统给它一个通用图标。
+/// **空串原样返回** —— 不给一个不存在的路径编出一个存在的来。
+func appIconPath(forExecutable execPath: String) -> String {
+    guard let range = execPath.range(of: ".app/") else { return execPath }
+    return String(execPath[execPath.startIndex..<range.lowerBound]) + ".app"
 }
 
 /// 简单的、跟 locale 无关的字节数格式化 —— 只为这个纯模型服务,不依赖
@@ -250,6 +404,23 @@ let appTrafficSubscriptionTTLSeconds: TimeInterval = 30
 /// 「近似」会被读成「四舍五入」,所以这句话必须同时点明来源(端口复用),
 /// 那是用户发现数字对不上时唯一能自洽的解释。
 let appTrafficApproximateNote = "Byte counts are approximate (ports get reused)."
+
+/// 界面底部的第二句小字:**订阅之前就已经建好的连接,分组可能少一个**。
+///
+/// 来源是一条已知的近似(spec 与 CLAUDE.md 各有记档,另有一条测试钉住当前行为):
+/// 窗口打开那一刻,Core 把当时还活着的连接作为种子播进缓冲,而种子**把一个 socket
+/// 上并存的多条流压成了一条** —— 于是同一条连接,窗口打开**之前**建立的只会出现
+/// 在一个组里,打开**之后**建立的会正确出现在两个组里。
+///
+/// 这件事此前有三份记档和一条测试,唯独用户看不到 —— 而它恰好落在这个窗口最初
+/// 的用例上(开会开到一半打开窗口,看腾讯会议走哪)。
+///
+/// **措辞只陈述观测得到的事实,不断言原因**(与 `appTrafficStaleNotice` 那句
+/// 「Protection may be off.」同一条纪律):说的是「可能只出现在一个组里」,
+/// 不是「因为种子把并存的流压平了」—— 后者是实现细节,而且对着一个只想知道
+/// 「我的会议走没走隧道」的人说等于没说。
+let appTrafficPreexistingNote =
+    "Connections already open when this window opened may appear in only one section."
 
 /// 连续失败多少次之后,就不再把手上那份快照当作「此刻的事实」。
 ///
