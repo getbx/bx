@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 const guardianMutationTimeout = time.Minute
@@ -157,6 +159,11 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/rules", rulesHandler(options.ConfigPath, options.OwnerUID))
 	mux.HandleFunc("/v1/servers", serversHandler(options.ConfigPath, options.OwnerUID, liveServerSwitch, liveServerProbe, liveThroughput))
+	// supervisor.SockPath 是 Core 控制面固定的 unix socket 路径(与
+	// fetchCoreRuntime/throughputRecorderFor 用的是同一个常量,不另猜一份)——
+	// 与 /v1/rules 的 ConfigPath 不同,这里没有「按部署而变」的路径,故不经
+	// DaemonOptions 转一手,直接在这里挂上。
+	mux.HandleFunc("/v1/apps", appsHandler(supervisor.SockPath, options.OwnerUID))
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
 	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries, watch: watch}
