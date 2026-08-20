@@ -23,6 +23,17 @@ import AppKit
 /// **这个文件只做摆放。** 哪些行、副标题写什么、三种「空」各自说哪一句,全在
 /// AppTrafficModel 的纯函数 `rows()` 里(AppKit 这一半在 CI 里编不了,判断放
 /// 这儿等于没测)。
+/// 横向挤压顺序,**从最先让位到最后让位**。
+///
+/// 三档必须**严格递增**:规则原文(变长、会截断)< 应用名(有上界但不小)
+/// < 数字列(这次改动买到的东西,不许被挤扁)。上一版应用名与数字列同为默认的
+/// 750,于是「谁让位」由 Auto Layout 在同优先级里任选 —— 一个不确定的布局。
+/// 方向由 Go 侧的守卫钉住(只钉常量存在钉不住方向,把两个数字对调不会有任何
+/// 东西转红)。
+let rulePriority = NSLayoutConstraint.Priority(250)
+let appNamePriority = NSLayoutConstraint.Priority(500)
+let numberPriority = NSLayoutConstraint.Priority(750)
+
 final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var stack: NSStackView?
@@ -50,12 +61,19 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     var isVisible: Bool { window?.isVisible ?? false }
 
     func show(report: AppTrafficReport) {
+        // **只有「此前没开着」才是一份新订阅的第一帧。**
+        // 窗口已经开着时用户再点一次菜单项走的也是这条路(forceShow: true),
+        // 而此刻 Core 侧的订阅与累计计数是**连续的** —— 无条件重置跟踪器会让
+        // 速率列白白退回一整拍的破折号,用户看到的是「我点了一下,数字反而没了」。
+        let wasVisible = window?.isVisible ?? false
         let window = ensureWindow()
         self.report = report
         staleNotice = nil
-        // 打开窗口 = 一份新订阅的第一帧。**第一帧没有速率**,而且不许编一个:
+        // 新开一扇窗 = 新订阅的第一帧。**第一帧没有速率**,而且不许编一个:
         // 见 AppTrafficRateTracker 头上那段。
-        rateTracker = AppTrafficRateTracker()
+        if !wasVisible {
+            rateTracker = AppTrafficRateTracker()
+        }
         rates = rateTracker.ingest(report, at: Date())
         render()
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
@@ -101,7 +119,12 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
             // 八列(图标 + 应用名 + 五个数字列 + 规则原文)摆得下的宽度;
             // 上一版是 460,那时一行是一句散文。
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
-            styleMask: [.titled, .closable],
+            // **`.resizable` 是承重的,不是讲究。** 最后一列是规则原文(变长文本、
+            // 会截断),而这个窗口既不横向滚动(clip 的宽度锚死在 scroll 上)、
+            // 也没有别的地方能读到全文 —— 少了它,一条被截断的规则就**永久不可见**,
+            // 而上一版那句散文是整行读得到的。第二条出路是那一格的 toolTip,见
+            // `rule(_:)`;两条都留着,一条是发现得了的(拖宽),一条是不用改布局的。
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -240,12 +263,12 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     private func cells(for entry: AppTrafficReport.Entry) -> [NSView] {
         [
             icon(for: entry) ?? NSGridCell.emptyContentView,
-            NSTextField(labelWithString: entry.app),
-            hint(entry.conns),
-            hint(entry.upRate),
-            hint(entry.downRate),
-            hint(entry.upTotal),
-            hint(entry.downTotal),
+            appName(entry.app),
+            number(entry.conns),
+            number(entry.upRate),
+            number(entry.downRate),
+            number(entry.upTotal),
+            number(entry.downTotal),
             rule(entry.rule),
         ]
     }
@@ -274,10 +297,37 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
 
     /// 规则原文那一格:变长文本,放在最后一列,长了就截断 —— 它不许把数字列
     /// 挤出窗口(数字列是这次改动要买的东西)。
+    ///
+    /// **凡是会截断的格子,必须同时给出看全的办法。** 这个窗口不横向滚动,
+    /// 截断之后那段文字就再没有别的地方能读到;`toolTip` 是不用改布局的那条出路
+    /// (另一条是把窗口拖宽,见 `styleMask` 里的 `.resizable`)。
     private func rule(_ text: String) -> NSTextField {
         let label = hint(text)
         label.lineBreakMode = .byTruncatingTail
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.setContentCompressionResistancePriority(rulePriority, for: .horizontal)
+        label.toolTip = text.isEmpty ? nil : text
+        return label
+    }
+
+    /// 一个数字格。**压缩阻力显式设成最高的一档** —— 数字列是这次改动买到的
+    /// 东西,不许被任何变长文本挤扁。
+    private func number(_ text: String) -> NSTextField {
+        let label = hint(text)
+        label.setContentCompressionResistancePriority(numberPriority, for: .horizontal)
+        return label
+    }
+
+    /// 应用名那一格。**阻力低于数字列、高于规则列。**
+    ///
+    /// 上一版它是默认的 750,与五个数字格**同为一档** —— 规则列被压到零之后,
+    /// 谁再让位由 Auto Layout 在同优先级里任选,而 `Microsoft Teams (work or
+    /// school)` 这类名字长度有真实上界但不小。挤压顺序必须是确定的:
+    /// **规则原文最先让位,其次应用名,数字列最后。**
+    private func appName(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(appNamePriority, for: .horizontal)
+        label.toolTip = text.isEmpty ? nil : text
         return label
     }
 

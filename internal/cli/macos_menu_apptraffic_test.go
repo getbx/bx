@@ -554,7 +554,10 @@ func TestMacMenuAppTrafficHeartbeatCannotOutliveItsWindow(t *testing.T) {
 // 英文的字面拼法上:换措辞不该让守卫红(内容由 Swift 套件钉住),而把它从视图树
 // 里摘掉必须红。
 func TestMacMenuAppTrafficWindowSaysByteCountsAreApproximate(t *testing.T) {
-	window := stripSwiftComments(menuAppTrafficWindowSource(t))
+	// **这条守卫本来有同一个洞**:`hint("appTrafficApproximateNote")` 这个字面量
+	// 会满足它,而小字仍然不在窗口上。同一个根因修一处漏两处是这个仓库的老形状,
+	// 所以这里跟着改到只剩代码的那一份。
+	window := menuAppTrafficWindowCode(t)
 	args := swiftCallArguments(window, "addArrangedSubview")
 	if len(args) == 0 {
 		t.Fatal("在 AppTrafficWindow.swift 里一次 addArrangedSubview 都没解析出来 —— " +
@@ -572,12 +575,7 @@ func TestMacMenuAppTrafficWindowSaysByteCountsAreApproximate(t *testing.T) {
 			"界面把一笔近似账显示成了精确账(共解析出 %d 次 addArrangedSubview)", len(args))
 	}
 	// 常量必须来自纯模型那一份,窗口里不许再抄一句自己的。
-	model, err := os.ReadFile(filepath.Join(
-		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "AppTrafficModel.swift"))
-	if err != nil {
-		t.Fatalf("读不到 AppTrafficModel.swift:%v —— 守卫已经失效,先修守卫", err)
-	}
-	if !strings.Contains(string(model), "let appTrafficApproximateNote") {
+	if !strings.Contains(menuAppTrafficModelCode(t), "let appTrafficApproximateNote") {
 		t.Fatal("appTrafficApproximateNote 不在纯模型里 —— 那句话就没有任何 Swift 测试盯着")
 	}
 	// **窗口不许自己造一份零值报告。** `AppTrafficReport(subscribed: false)` 渲染
@@ -902,6 +900,27 @@ func menuAppTrafficModelSource(t *testing.T) string {
 	return string(source)
 }
 
+// menuAppTrafficWindowCode 返回**只剩代码**的窗口源码:注释剥掉、字符串字面量
+// 抹白(`blankSwiftStringLiterals` 逐字节保住偏移,所以在它上面算出来的下标可以
+// 直接用来切它自己)。
+//
+// **本文件头上那句「抹白是全部结构化扫描器的前置」此前只兑现了一半**:找结构那半
+// (数花括号/数圆括号)在抹白副本上做,而随后的**内容判定**——`strings.Index`、
+// `body[gate:use]`、`window[loop:end]`——全部落回原串,于是一行
+// `let _ = "xPlacement .trailing"` 就能架空右对齐那条,`let _ = "execPath …
+// return nil"` 能架空图标的空路径门(后者会让路径为空的行去取一个不存在路径的
+// 图标)。**审查在隔离副本里实跑绕过成功。** 现在整条路只用这一个入口。
+func menuAppTrafficWindowCode(t *testing.T) string {
+	t.Helper()
+	return blankSwiftStringLiterals(stripSwiftComments(menuAppTrafficWindowSource(t)))
+}
+
+// menuAppTrafficModelCode 同上,给纯模型那一份。
+func menuAppTrafficModelCode(t *testing.T) string {
+	t.Helper()
+	return blankSwiftStringLiterals(stripSwiftComments(menuAppTrafficModelSource(t)))
+}
+
 // **图标是这次改动收益最大的一件事,而它整个住在 AppKit 那一半** —— 没有任何
 // Swift 测试能看见它被画出来没有。
 //
@@ -913,7 +932,7 @@ func menuAppTrafficModelSource(t *testing.T) string {
 //  3. 图标取的是 `.app` 包(appIconPath,纯函数、已测),不是包里那个可执行
 //     文件 —— 对后者取图标一整列长一个样,等于没有图标。
 func TestMacMenuAppTrafficWindowDrawsAppIcons(t *testing.T) {
-	window := stripSwiftComments(menuAppTrafficWindowSource(t))
+	window := menuAppTrafficWindowCode(t)
 	body, ok := swiftFunctionBody(window, "private func icon(for entry: AppTrafficReport.Entry) -> NSView?")
 	if !ok {
 		t.Fatal("读不出 icon(for:) 的函数体 —— 守卫已经失效,先修守卫")
@@ -958,7 +977,7 @@ func TestMacMenuAppTrafficWindowDrawsAppIcons(t *testing.T) {
 //     「没有退回散文」的判据 —— 把七个格子拼成一句话塞进一个 label,字段名照样
 //     全部出现在源码里,只有这个计数会掉下来。
 func TestMacMenuAppTrafficNumbersAreRightAligned(t *testing.T) {
-	window := stripSwiftComments(menuAppTrafficWindowSource(t))
+	window := menuAppTrafficWindowCode(t)
 	loop, _, ok := swiftBlockRange(window, "for index in appTrafficNumericColumns")
 	if !ok {
 		t.Fatal("窗口没有遍历 appTrafficNumericColumns —— 右对齐要么没做,要么手抄了" +
@@ -970,7 +989,7 @@ func TestMacMenuAppTrafficNumbersAreRightAligned(t *testing.T) {
 		t.Errorf("数字列没有被摆成右对齐(循环体:%q)", strings.TrimSpace(inLoop))
 	}
 
-	titles, ok := swiftBracketedLiteral(menuAppTrafficModelSource(t), "let appTrafficColumnTitles")
+	titles, ok := swiftBracketedLiteral(menuAppTrafficModelCode(t), "let appTrafficColumnTitles")
 	if !ok {
 		t.Fatal("读不出 appTrafficColumnTitles —— 守卫已经失效,先修守卫")
 	}
@@ -998,30 +1017,69 @@ func TestMacMenuAppTrafficNumbersAreRightAligned(t *testing.T) {
 
 // **速率必须真的被算出来并传进渲染层。**
 //
-// 判据两条:窗口每读到一份报告就推进一拍(`ingest`),以及 `rows(...)` 收到的是
-// 那一拍的结果 —— 一个算了却没人用的速率表与没有速率完全一样。
+// **这条守卫的第一版拦不住它要拦的那件事。** 判据曾是
+// `strings.Contains(arg, "rates")`,于是下面两种写法**四条守卫全绿**:
+//
+//	_ = rateTracker.ingest(report, at: Date())   // 丢弃返回值
+//	stack.addArrangedSubview(grid(for: report.rows(rates: [:])))  // 标签里就有 "rates"
+//
+// 而它们产生的失效恰好是这个功能唯一一条「只有真机能发现」的:**速率列永远是
+// 破折号,而窗口看起来完全正常**(数据在更新、行在变、没有任何报错)。触发它的
+// 也不是对抗性写法,是一次**看起来完全无辜的重构** —— 丢弃一个没人读的返回值。
+//
+// 现在的判据是两条,都不认拼法只认位置:
+//  1. **每一次** `rateTracker.ingest(...)` 的结果都被赋给同一个存储属性,且那个
+//     属性不是 `_`;
+//  2. `rows(...)` 的实参就是那个属性**光秃秃的一次取值** —— 不是空字典,也不是
+//     任何别的表达式。
 //
 // 第一帧不许编造速率那一条**不在这里**:它是判断,住在 AppTrafficRateTracker 里,
 // 由 Swift 套件钉住。这里只钉「接线接上了」。
 func TestMacMenuAppTrafficWindowFeedsRatesIntoRendering(t *testing.T) {
-	window := stripSwiftComments(menuAppTrafficWindowSource(t))
-	if !strings.Contains(window, "rateTracker.ingest(") {
+	window := menuAppTrafficWindowCode(t)
+	calls := regexp.MustCompile(`rateTracker\.ingest\s*\(`).FindAllString(window, -1)
+	if len(calls) == 0 {
 		t.Fatal("窗口从不推进速率跟踪器 —— 那一列永远是「没有速率」")
 	}
+	assigns := regexp.MustCompile(
+		`(?m)^\s*(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:self\.)?rateTracker\.ingest\s*\(`,
+	).FindAllStringSubmatch(window, -1)
+	if len(assigns) != len(calls) {
+		t.Fatalf("有 %d 次 rateTracker.ingest(...),而只有 %d 次把结果赋给了什么 —— "+
+			"丢掉一个返回值不会有任何编译错误,而后果是速率列永远是破折号、"+
+			"窗口看起来完全正常", len(calls), len(assigns))
+	}
+	target := assigns[0][1]
+	for _, a := range assigns {
+		if a[1] == "_" {
+			t.Fatal("rateTracker.ingest(...) 的结果被丢进了 `_` —— 速率算了没人存," +
+				"那一列永远是破折号而窗口看起来完全正常")
+		}
+		if a[1] != target {
+			t.Fatalf("ingest 的结果被存进了不止一个地方(%q 与 %q)—— 守卫无从知道"+
+				"哪一个才是渲染层读的那个,先修守卫或收敛成一个属性", target, a[1])
+		}
+	}
+
 	args := swiftCallArguments(window, ".rows")
 	if len(args) == 0 {
 		t.Fatal("解析不出 rows(...) 的调用 —— 守卫读不懂现在的代码了,先修守卫")
 	}
 	fed := false
 	for _, arg := range args {
-		if strings.Contains(arg, "rates") {
+		// 实参必须是**光秃秃的一次取值**:`rates: [:]`(空字典)、
+		// `rates: rates.isEmpty ? [:] : rates` 这类写法都要红。
+		v := strings.TrimSpace(arg)
+		v = strings.TrimSpace(strings.TrimPrefix(v, "rates:"))
+		v = strings.TrimPrefix(v, "self.")
+		if v == target {
 			fed = true
 			break
 		}
 	}
 	if !fed {
-		t.Errorf("rows(...) 没有收到速率表(解析出 %d 次调用)—— 算出来没人用,"+
-			"界面上与没有速率完全一样", len(args))
+		t.Errorf("rows(...) 的实参不是那个存着 ingest 结果的属性(%q)—— 算出来没人用,"+
+			"界面上与没有速率完全一样;解析到的实参是 %q", target, args)
 	}
 }
 
@@ -1035,7 +1093,7 @@ func TestMacMenuAppTrafficWindowFeedsRatesIntoRendering(t *testing.T) {
 // 判据与那句「近似值」同一条:**必须出现在某一次 addArrangedSubview 的实参里**。
 // 「文件里出现过这个标识符」证明不了它被画出来(`let _ = note` 就能满足)。
 func TestMacMenuAppTrafficWindowSaysPreexistingConnectionsMayShowInOneSection(t *testing.T) {
-	window := stripSwiftComments(menuAppTrafficWindowSource(t))
+	window := menuAppTrafficWindowCode(t)
 	args := swiftCallArguments(window, "addArrangedSubview")
 	if len(args) == 0 {
 		t.Fatal("在 AppTrafficWindow.swift 里一次 addArrangedSubview 都没解析出来 —— " +
@@ -1053,7 +1111,123 @@ func TestMacMenuAppTrafficWindowSaysPreexistingConnectionsMayShowInOneSection(t 
 			"addArrangedSubview 的实参里 —— 这个已知缺口对用户仍然是不可见的"+
 			"(共解析出 %d 次 addArrangedSubview)", len(args))
 	}
-	if !strings.Contains(menuAppTrafficModelSource(t), "let appTrafficPreexistingNote") {
+	if !strings.Contains(menuAppTrafficModelCode(t), "let appTrafficPreexistingNote") {
 		t.Fatal("appTrafficPreexistingNote 不在纯模型里 —— 那句话就没有任何 Swift 测试盯着")
+	}
+}
+
+// **凡是会截断的格子,必须同时给出看全的办法。**
+//
+// 三件事合起来会让规则原文**永久不可见**:窗口 styleMask 没有 `.resizable`、
+// clip 的宽度锚死在 scroll 上(排除了横向滚动)、规则列是唯一设了低压缩阻力 +
+// `byTruncatingTail` 的一列。而**上一版是一句散文,整行读得到** —— 这一小块上
+// 那会是净退化,不是取舍。
+//
+// 两条出路各钉一条:`toolTip`(不用改布局)与 `.resizable`(看得见、拖一下就有)。
+func TestMacMenuAppTrafficTruncatedRuleCanStillBeReadInFull(t *testing.T) {
+	window := menuAppTrafficWindowCode(t)
+	body, ok := swiftFunctionBody(window, "private func rule(_ text: String) -> NSTextField")
+	if !ok {
+		t.Fatal("读不出 rule(_:) 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(body, "byTruncatingTail") {
+		t.Fatal("规则列不再截断了?这条守卫的前提变了 —— 回来重写它,别让它静默通过")
+	}
+	if !strings.Contains(body, "toolTip") {
+		t.Error("规则原文会被截断,而那一格没有 toolTip —— 这个窗口不横向滚动," +
+			"截断之后那段文字再没有任何地方能读到;上一版那句散文是整行读得到的")
+	}
+	if !regexp.MustCompile(`styleMask:\s*\[[^\]]*\.resizable`).MatchString(window) {
+		t.Error("窗口不可缩放 —— 拖宽是「把被截断的那一列看全」的另一条出路," +
+			"少了它,这一格的全文就只剩 toolTip 一条路")
+	}
+}
+
+// **挤压顺序必须是确定的:规则原文最先让位,其次应用名,数字列最后。**
+//
+// 上一版应用名格与五个数字格的压缩阻力**同为默认的 750** —— 规则列压到零之后,
+// 谁再让位由 Auto Layout 在同优先级里任选,而 `Microsoft Teams (work or school)`
+// 这类名字长度有真实上界但不小。数字列是这次改动买到的东西,不许被挤扁。
+//
+// **钉的是方向,不是三个常量存在。** 只查常量在不在,把两个数字对调不会有任何
+// 东西转红;而「哪一格用哪一档」同样承重 —— 阶梯定义得再对,格子照旧走 `hint(...)`
+// 的话它一档都没用上。后半条由 `appTrafficNumericColumns`(纯模型那一份)驱动,
+// 不手抄下标。
+func TestMacMenuAppTrafficSqueezeOrderIsDeterministic(t *testing.T) {
+	window := menuAppTrafficWindowCode(t)
+	priority := func(name string) int {
+		m := regexp.MustCompile(
+			`let\s+` + regexp.QuoteMeta(name) + `\s*=\s*NSLayoutConstraint\.Priority\((\d+)\)`,
+		).FindStringSubmatch(window)
+		if m == nil {
+			t.Fatalf("读不出 %s 的优先级数值 —— 守卫已经失效,先修守卫", name)
+		}
+		v, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatalf("%s 的优先级不是一个字面数字:%v —— 守卫无从比较方向", name, err)
+		}
+		return v
+	}
+	rule, appName, number := priority("rulePriority"), priority("appNamePriority"), priority("numberPriority")
+	if !(rule < appName && appName < number) {
+		t.Errorf("挤压顺序不是严格递增(rule=%d appName=%d number=%d)—— "+
+			"两档相等就意味着「谁让位」由 Auto Layout 任选,那是一个不确定的布局",
+			rule, appName, number)
+	}
+
+	cells, ok := swiftFunctionBody(window, "private func cells(for entry: AppTrafficReport.Entry) -> [NSView]")
+	if !ok {
+		t.Fatal("读不出 cells(for:) 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	literal, ok := swiftBracketedLiteral(cells, "")
+	if !ok {
+		t.Fatal("cells(for:) 里没有一个格子数组 —— 守卫读不懂现在的代码了")
+	}
+	elements := swiftArrayElements(literal)
+	numeric, ok := swiftBracketedLiteral(menuAppTrafficModelCode(t), "let appTrafficNumericColumns")
+	if !ok {
+		t.Fatal("读不出 appTrafficNumericColumns —— 守卫已经失效,先修守卫")
+	}
+	indexes := swiftArrayElements(numeric)
+	if len(indexes) == 0 {
+		t.Fatal("appTrafficNumericColumns 解出来是空的 —— 守卫读不懂现在的代码了")
+	}
+	for _, raw := range indexes {
+		i, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil {
+			t.Fatalf("appTrafficNumericColumns 里的 %q 不是数字 —— 守卫读不懂了", raw)
+		}
+		if i < 0 || i >= len(elements) {
+			t.Fatalf("数字列下标 %d 越出了一行的 %d 个格子", i, len(elements))
+		}
+		if !strings.Contains(elements[i], "number(") {
+			t.Errorf("第 %d 列是数字列,但那一格不走 number(...)(是 %q)—— "+
+				"阶梯定义得再对,格子不用它就一档都没用上", i, strings.TrimSpace(elements[i]))
+		}
+	}
+	if !strings.Contains(elements[len(elements)-1], "rule(") {
+		t.Errorf("最后一格不是规则原文(是 %q)—— 那句「变长文本留在末尾」不成立了",
+			strings.TrimSpace(elements[len(elements)-1]))
+	}
+	// 应用名恰好占一格,且**不在数字列里、也不是最后一格** —— 不手抄「它是第 1 列」。
+	named := 0
+	for i, element := range elements {
+		if !strings.Contains(element, "appName(") {
+			continue
+		}
+		named++
+		if i == len(elements)-1 {
+			t.Errorf("应用名跑到了最后一格(第 %d 格)—— 那一格是规则原文的位置", i)
+		}
+		for _, raw := range indexes {
+			if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && n == i {
+				t.Errorf("第 %d 格既是数字列又走 appName(...) —— 那一格会拿到"+
+					"比数字列更低的阻力,数字反而先被挤扁", i)
+			}
+		}
+	}
+	if named != 1 {
+		t.Errorf("走 appName(...) 的格子有 %d 个,应当恰好 1 个 —— "+
+			"0 个意味着应用名又回到了与数字列同一档(谁让位由 Auto Layout 任选)", named)
 	}
 }
