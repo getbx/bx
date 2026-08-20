@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,15 +11,25 @@ import (
 )
 
 // blockRunner 是永不自行退出的假子进程(Kill 前 Wait 一直阻塞)。
-type blockRunner struct{ done chan struct{} }
+//
+// **Kill 必须是幂等的,而且不能靠「先查再关」实现。** 真的会有两个 goroutine
+// 同时调它:`Tunnel.runOnce` 的 defer 与测试自己 `defer udpTun.Stop()`,而
+// `select { case <-done: default: close(done) }` 是一次经典的 check-then-act ——
+// 两边都能通过 default 分支、都去 close,于是 `panic: close of closed channel`
+// 打死整个测试二进制。**实测 200 轮里复现一次**(`go test -race -count=200
+// -run TestAttachUDPCompanion`),而它在全量 `verify.sh` 里表现为**随机一次红**。
+//
+// 这条修的是**机制**不是那次偶发:`sync.Once` 让「只关一次」成为确定的,
+// 与本仓库那条纪律一致 —— 一个会偶发红的闸门比没有闸门更糟,因为它训练人去重跑,
+// 而重跑正是「判据是退出码」这条纪律唯一的解毒方式。
+type blockRunner struct {
+	done chan struct{}
+	once sync.Once
+}
 
 func (b *blockRunner) Wait() error { <-b.done; return nil }
 func (b *blockRunner) Kill() error {
-	select {
-	case <-b.done:
-	default:
-		close(b.done)
-	}
+	b.once.Do(func() { close(b.done) })
 	return nil
 }
 
