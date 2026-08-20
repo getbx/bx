@@ -224,7 +224,16 @@ func appTrafficAvailable(capabilities: [String]?) -> Bool {
 /// 惰性结算。窗口关掉就没有人再拉,订阅在一个 TTL 内自己过期、采集停掉、
 /// 缓冲清空 —— 「没人看时开销精确为零」就是这么成立的,不需要一条退订路径
 /// (菜单被强杀时也没人来退订,而 TTL 一视同仁)。
-let appTrafficRefreshSeconds: TimeInterval = 3
+/// **5 秒不是「越勤越好」里挑的一个数,是两个下界之间的取值。** 上界是订阅
+/// TTL(必须留出数倍余量,否则订阅会在两次刷新之间过期);下界是**代价** ——
+/// 每一拍都让 root 侧的 Core 跑一次 `OwnersByPort()`(两张 pcblist + 逐 PID
+/// 解名)。3 秒对 TTL 是 10 倍余量,比续期真正需要的密一个数量级;5 秒仍有
+/// 6 倍余量,开销减半,而界面上看不出区别。
+///
+/// **上下界都由守卫钉住**(`TestMenuAppTrafficRefreshIntervalMatchesTheGoTTL`):
+/// 只钉上界会让「为了更跟手」调到 0.5 秒这种改动一路绿灯,而 root 侧的扫描
+/// 频率翻十倍。
+let appTrafficRefreshSeconds: TimeInterval = 5
 
 /// Core 侧 `appTrafficTTL`。**跨语言手抄的一个数**(Go 侧未导出,Swift 拿不到),
 /// 只用来在测试里钉住上面那个间隔留了足够余量;它变了这边不会红,与
@@ -238,3 +247,24 @@ let appTrafficSubscriptionTTLSeconds: TimeInterval = 30
 /// 「近似」会被读成「四舍五入」,所以这句话必须同时点明来源(端口复用),
 /// 那是用户发现数字对不上时唯一能自洽的解释。
 let appTrafficApproximateNote = "Byte counts are approximate (ports get reused)."
+
+/// 连续失败多少次之后,就不再把手上那份快照当作「此刻的事实」。
+///
+/// 3 次 × `appTrafficRefreshSeconds` ≈ 15 秒 —— 短到用户还记得自己刚做了什么,
+/// 长到一次瞬时失败(Guardian 正忙、Core 刚重启)不会让界面闪一下。
+let appTrafficStaleAfterFailures = 3
+
+/// 连续失败到一定次数之后要盖在窗口上的那句话;还没到就返回 nil。
+///
+/// **窗口静默冻在上一份快照上是这个界面最坏的失效模式。** 那份快照读起来是
+/// 「这些应用**此刻**正在走隧道」,而此刻保护可能已经被关掉了 —— 与 watch
+/// 那条记过的失效模式同一形状:静默失效时界面停在最后一次收到的状态上,
+/// 看起来完全正常。
+///
+/// 措辞刻意只说**观测到的事实**(拉不到了、显示的是上一份),对原因只给一句
+/// 可能性而不断言 —— bx 在这条路上分不清「保护被关了」「Guardian 正忙」
+/// 「Core 刚重启」,断言其中一个就是编一个自己没查过的答案。
+func appTrafficStaleNotice(consecutiveFailures: Int) -> String? {
+    guard consecutiveFailures >= appTrafficStaleAfterFailures else { return nil }
+    return "Not updating — this is the last report bx could read. Protection may be off."
+}

@@ -203,9 +203,33 @@ struct AppTrafficModelTests {
     // Swift 这一侧留了余量,证明不了 Go 那边真的是 30 —— 与
     // guardianStatusWatchTimeout 注释里记下的是同一个局限。
     static func testRefreshIntervalStaysWellInsideTheSubscriptionTTL() {
-        expect(appTrafficRefreshSeconds > 0, "刷新间隔必须为正,否则定时器不会触发")
-        expect(appTrafficRefreshSeconds * 3 < appTrafficSubscriptionTTLSeconds,
+        expect(appTrafficRefreshSeconds * 3 <= appTrafficSubscriptionTTLSeconds,
                "刷新间隔 \(appTrafficRefreshSeconds)s 对 TTL \(appTrafficSubscriptionTTLSeconds)s 没有余量")
+        // **下界同样是判据。** 每一拍都让 root 侧跑一次 OwnersByPort()(两张
+        // pcblist + 逐 PID 解名)。只钉上界,「为了更跟手」调到 0.5 秒这种改动
+        // 会一路绿灯而扫描频率翻十倍。
+        expect(appTrafficRefreshSeconds >= 2,
+               "刷新间隔 \(appTrafficRefreshSeconds)s 太密 —— 每一拍都是一次 root 侧全量端口扫描")
+    }
+
+    // 连续失败到一定次数就必须在界面上说「这不是此刻的事实」。
+    //
+    // 静默冻在上一份快照上是这个界面最坏的失效模式:那份快照读起来是「这些应用
+    // 此刻正在走隧道」,而此刻保护可能已经被关掉了。
+    static func testStaleNoticeOnlyAppearsAfterRepeatedFailures() {
+        expect(appTrafficStaleNotice(consecutiveFailures: 0) == nil, "一次都没失败却报了陈旧")
+        expect(appTrafficStaleNotice(consecutiveFailures: appTrafficStaleAfterFailures - 1) == nil,
+               "还没到门槛就报陈旧 —— 一次瞬时失败会让界面闪一下")
+        guard let notice = appTrafficStaleNotice(consecutiveFailures: appTrafficStaleAfterFailures) else {
+            expect(false, "到了门槛却没有陈旧提示 —— 窗口会静默冻在上一份快照上")
+            return
+        }
+        expect(notice.lowercased().contains("not updating"),
+               "陈旧提示没说清「不再更新了」:\(notice)")
+        // **不许断言原因。** bx 在这条路上分不清「保护被关了」「Guardian 正忙」
+        // 「Core 刚重启」,断言其中一个就是编一个自己没查过的答案。
+        expect(notice.contains("may be"),
+               "陈旧提示把一个没查过的原因说成了结论:\(notice)")
     }
 
     // 界面上那句「字节数是近似值」不是可选的:端口复用会让残留字节算到新连接
@@ -274,6 +298,7 @@ struct AppTrafficModelTests {
         testApproximateNoteSaysWhichNumbersAreApproximate()
         testDetailNamesTheUserRuleThatDecidedIt()
         testDetailSaysNothingAboutRulesWhenTheBuiltinListDecided()
+        testStaleNoticeOnlyAppearsAfterRepeatedFailures()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」。
         if failures == 0 {
             print("AppTrafficModelTests passed")
