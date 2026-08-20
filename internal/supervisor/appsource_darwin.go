@@ -44,9 +44,9 @@ var pcbTables = [...]pcbTable{
 //
 // **必须以 root 跑** —— kern.procargs2 读 root 进程要权限,非 root 会让所有
 // 系统守护进程的名字变成空串。Core 本身就是 root,菜单(uid 501)不行。
-func (darwinAppSource) OwnersByPort() (map[appattr.PortKey]string, error) {
-	owners := map[appattr.PortKey]string{}
-	names := map[int32]string{}
+func (darwinAppSource) OwnersByPort() (map[appattr.PortKey]appattr.Owner, error) {
+	owners := map[appattr.PortKey]appattr.Owner{}
+	byPID := map[int32]appattr.Owner{}
 	aliveCache := map[int32]bool{}
 	alive := func(pid int32) bool {
 		if v, ok := aliveCache[pid]; ok {
@@ -75,15 +75,20 @@ func (darwinAppSource) OwnersByPort() (map[appattr.PortKey]string, error) {
 			if !ok {
 				continue // 查不出的端口**不进 map**,上层据此判 unknown
 			}
-			name, cached := names[pid]
+			owner, cached := byPID[pid]
 			if !cached {
-				name = appattr.DisplayName(executablePathOf(pid))
-				names[pid] = name
+				// **路径与显示名同源同一次读**:显示名本来就是从这条路径推出来的
+				// (`DisplayName`),从前它读完就被丢掉,于是菜单侧只有文字没有
+				// 图标。这里把它留下 —— 见 appattr.Owner 头上那段「刻意的信息面
+				// 扩大」。
+				exec := executablePathOf(pid)
+				owner = appattr.Owner{Name: appattr.DisplayName(exec), ExecPath: exec}
+				byPID[pid] = owner
 			}
 			// 空名字与「端口不在 map 里」是同一件事的两种写法 —— 都读作
 			// unknown,故这里干脆不写入,省得下游还要再判断一次空串。
-			if name != "" {
-				owners[appattr.PortKey{Port: pcb.LocalPort, UDP: tbl.isUDP}] = name
+			if owner.Name != "" {
+				owners[appattr.PortKey{Port: pcb.LocalPort, UDP: tbl.isUDP}] = owner
 			}
 		}
 	}

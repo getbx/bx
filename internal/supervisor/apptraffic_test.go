@@ -15,17 +15,32 @@ import (
 // 计数带锁:并发那条测试会从多个 goroutine 走到这里,不加锁 -race 会红,
 // 而那种红是测试自己的缺陷,会把真正的竞态淹掉。
 type fakeAppSource struct {
-	mu     sync.Mutex
-	owners map[appattr.PortKey]string
-	err    error
-	calls  int
+	mu sync.Mutex
+	// owners 只有显示名,execPaths 是可选的第二半 —— 绝大多数用例不关心路径
+	// (它只喂图标),保持原来一眼看得懂的形状。
+	owners    map[appattr.PortKey]string
+	execPaths map[appattr.PortKey]string
+	err       error
+	calls     int
 }
 
-func (f *fakeAppSource) OwnersByPort() (map[appattr.PortKey]string, error) {
+func (f *fakeAppSource) OwnersByPort() (map[appattr.PortKey]appattr.Owner, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	return f.owners, f.err
+	if f.err != nil {
+		// **报错时返回 nil map,不是空 map** —— 与非 darwin 桩同一条纪律:
+		// 空 map 会被读成「查过了,一个应用都没有」。
+		return nil, f.err
+	}
+	if f.owners == nil {
+		return nil, nil
+	}
+	out := make(map[appattr.PortKey]appattr.Owner, len(f.owners))
+	for k, name := range f.owners {
+		out[k] = appattr.Owner{Name: name, ExecPath: f.execPaths[k]}
+	}
+	return out, nil
 }
 
 func (f *fakeAppSource) callCount() int {
@@ -786,5 +801,31 @@ func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
 	}
 	if len(fresh.Groups[0].Rows) != 1 || len(fresh.Groups[1].Rows) != 1 {
 		t.Fatalf("订阅后建立的两条流 tunnel=%#v direct=%#v, want 各一行", fresh.Groups[0].Rows, fresh.Groups[1].Rows)
+	}
+}
+
+// 可执行路径必须一路穿到报告里 —— 菜单侧的图标只认路径。
+//
+// **这一条钉的是「穿过去了」,不是「谁当代表」**:代表值的选法由
+// appattr.Aggregate 自己的测试守着,在这里再断言一次就是第二份判据。
+func TestAppTrafficReportsCarryExecutablePaths(t *testing.T) {
+	src := &fakeAppSource{
+		owners:    map[appattr.PortKey]string{tcpKey(7): "Slack"},
+		execPaths: map[appattr.PortKey]string{tcpKey(7): "/Applications/Slack.app/Contents/MacOS/Slack"},
+	}
+	tr := NewAppTraffic(src, time.Now)
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+
+	report, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := report.Groups[0].Rows
+	if len(rows) != 1 {
+		t.Fatalf("tunnel 组 %d 行, want 1", len(rows))
+	}
+	if rows[0].ExecPath != "/Applications/Slack.app/Contents/MacOS/Slack" {
+		t.Fatalf("ExecPath = %q —— 路径在 Core 侧就被丢掉了,菜单画不出图标", rows[0].ExecPath)
 	}
 }
