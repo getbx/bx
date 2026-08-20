@@ -61,7 +61,7 @@ func TestRelayDoesNotHalfCloseWhileTheOtherDirectionIsActive(t *testing.T) {
 	relayDone := make(chan struct{})
 	go func() {
 		defer close(relayDone)
-		engine.relay(localSide, upstreamSide, nil)
+		engine.relay(localSide, upstreamSide, nil, 0, false)
 	}()
 
 	// 服务端探测:relay 何时给我们发 FIN(读到 EOF)。
@@ -137,7 +137,7 @@ func TestRelayStillTearsDownWhenBothDirectionsAreSilent(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		engine.relay(localSide, upstreamSide, nil)
+		engine.relay(localSide, upstreamSide, nil, 0, false)
 	}()
 
 	select {

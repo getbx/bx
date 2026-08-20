@@ -1,0 +1,280 @@
+package dialer
+
+import (
+	"context"
+	"net/netip"
+	"sync"
+	"testing"
+
+	"github.com/getbx/bx/internal/appattr"
+	"github.com/getbx/bx/internal/route"
+)
+
+// appCall 是 AppRecorder 收到的一次记录。**udp 必须一起记下来** ——
+// 把它写死成 false 不会有编译错误,而后果是所有 UDP 流量被归到 TCP 键上,
+// 界面上只看得到一个应用名、看不到冲突。
+type appCall struct {
+	srcPort uint16
+	udp     bool
+	path    appattr.Path
+	source  string
+	rule    string
+}
+
+type fakeAppRecorder struct {
+	mu    sync.Mutex
+	calls []appCall
+}
+
+func (f *fakeAppRecorder) Record(srcPort uint16, udp bool, path appattr.Path, source, rule string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, appCall{srcPort, udp, path, source, rule})
+}
+
+func (f *fakeAppRecorder) only(t *testing.T) appCall {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.calls) != 1 {
+		t.Fatalf("记了 %d 次, want 1: %+v", len(f.calls), f.calls)
+	}
+	return f.calls[0]
+}
+
+// newAppDialer 造一个带用户规则的 Dialer:
+// *.qq.com 强制直连、*.openai.com 强制走隧道,与 newTestDialer 同构但带归因器。
+func newAppDialer(t *testing.T, healthy bool) (*Dialer, *fakeAppRecorder) {
+	t.Helper()
+	rec := &fakeAppRecorder{}
+	priv, err := route.NewCIDRSet(route.DefaultPrivateCIDRs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Dialer{
+		Resolver:    fixedResolver{},
+		Direct:      okDialer{},
+		Killswitch:  true,
+		AppRecorder: rec,
+		UDPMode:     "proxy",
+	}
+	d.SetRouter(&route.Router{
+		UserProxy:     route.NewDomainSet([]string{"*.openai.com"}),
+		UserDirect:    route.NewDomainSet([]string{"*.qq.com"}),
+		PrivateDirect: priv,
+	})
+	d.SetTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return healthy }})
+	return d, rec
+}
+
+// 应用归因是**旁观者**:它拿到判定结果,但绝不影响判定。这条同时钉住
+// 「记了」和「记的是判定实际走的那条路」。
+func TestDialerRecordsPathAndRuleForAppAttribution(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "a.qq.com", Port: 443, SrcPort: 51234}); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.only(t)
+	want := appCall{51234, false, appattr.PathDirect, "user_direct", "*.qq.com"}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+func TestDialerRecordsTunnelPathForProxiedTCP(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "api.openai.com", Port: 443, SrcPort: 40001}); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.only(t)
+	want := appCall{40001, false, appattr.PathTunnel, "user_proxy", "*.openai.com"}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+// kill-switch 挡掉的连接必须进 blocked 组 —— 它直接回答「为什么这个 App
+// 一开 bx 就废了」,而这个问题今天完全没有答案。
+func TestDialerRecordsBlockedConnections(t *testing.T) {
+	d, rec := newAppDialer(t, false) // 隧道不健康
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "api.openai.com", Port: 443, SrcPort: 40002}); err != ErrBlocked {
+		t.Fatalf("应被 kill-switch 阻断, got %v", err)
+	}
+	got := rec.only(t)
+	want := appCall{40002, false, appattr.PathBlocked, "user_proxy", "*.openai.com"}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+// —— 下面全部是 UDP。漏掉 UDP 分支正好会漏掉腾讯会议的媒体流,
+// 也就是这个功能最初的用例。
+
+func TestDialerRecordsUDPDirectByUserRule(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "meeting.qq.com", Port: 8000, UDP: true, SrcPort: 51001}); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.only(t)
+	want := appCall{51001, true, appattr.PathDirect, "user_direct", "*.qq.com"}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+func TestDialerRecordsUDPProxyByUserRule(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "x.openai.com", Port: 443, UDP: true, SrcPort: 51002}); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.only(t)
+	want := appCall{51002, true, appattr.PathTunnel, "user_proxy", "*.openai.com"}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+func TestDialerRecordsUDPBlockedByUserRuleWhenTunnelDown(t *testing.T) {
+	d, rec := newAppDialer(t, false)
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "x.openai.com", Port: 443, UDP: true, SrcPort: 51003}); err != ErrBlocked {
+		t.Fatalf("应 fail-closed, got %v", err)
+	}
+	got := rec.only(t)
+	want := appCall{51003, true, appattr.PathBlocked, "user_proxy", "*.openai.com"}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+func TestDialerRecordsUDPPrivateDirect(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	m := route.Meta{IP: netip.MustParseAddr("192.168.1.7"), Port: 5353, UDP: true, SrcPort: 51004}
+	if _, err := d.Dial(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.only(t)
+	want := appCall{51004, true, appattr.PathDirect, "private", ""}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+// udp.mode=proxy 这条**没有规则可归因**的路也必须记 —— 否则 bx status 里
+// 那几百条 UDP 连接凭空出现。同时钉住:反事实计数(countUDPCounterfactual)
+// **不许**再记第二条,它不是判定。
+func TestDialerRecordsUDPProxyModeOnceOnly(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	m := route.Meta{IP: netip.MustParseAddr("198.18.0.9"), Port: 443, UDP: true, SrcPort: 51005}
+	if _, err := d.Dial(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.only(t)
+	// 没配 UDP 专用传输 → 回落主传输,来源是 fallback 那一档(生产行为,不是笔误)。
+	want := appCall{51005, true, appattr.PathTunnel, udpSourceProxyFallback, ""}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+func TestDialerRecordsUDPProxyModeBlockedWhenTunnelDown(t *testing.T) {
+	d, rec := newAppDialer(t, false)
+	m := route.Meta{IP: netip.MustParseAddr("198.18.0.9"), Port: 443, UDP: true, SrcPort: 51006}
+	if _, err := d.Dial(context.Background(), m); err != ErrBlocked {
+		t.Fatalf("应 fail-closed, got %v", err)
+	}
+	got := rec.only(t)
+	want := appCall{51006, true, appattr.PathBlocked, udpSourceProxyFallback, ""}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+func TestDialerRecordsUDPDirectRealtime(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	d.UDPMode = "direct-realtime"
+	m := route.Meta{IP: netip.MustParseAddr("198.18.0.9"), Port: 3478, UDP: true, SrcPort: 51007}
+	if _, err := d.Dial(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.only(t)
+	want := appCall{51007, true, appattr.PathDirect, udpSourceDirectRealtime, ""}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+func TestDialerRecordsUDPDirectRealtimeBlockedWhenTunnelDown(t *testing.T) {
+	d, rec := newAppDialer(t, false)
+	d.UDPMode = "direct-realtime"
+	m := route.Meta{IP: netip.MustParseAddr("198.18.0.9"), Port: 3478, UDP: true, SrcPort: 51008}
+	if _, err := d.Dial(context.Background(), m); err != ErrBlocked {
+		t.Fatalf("应 fail-closed, got %v", err)
+	}
+	got := rec.only(t)
+	want := appCall{51008, true, appattr.PathBlocked, udpSourceDirectRealtime, ""}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+func TestDialerRecordsUDPModeBlock(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	d.UDPMode = "block"
+	m := route.Meta{IP: netip.MustParseAddr("198.18.0.9"), Port: 443, UDP: true, SrcPort: 51009}
+	if _, err := d.Dial(context.Background(), m); err != ErrBlocked {
+		t.Fatalf("应阻断, got %v", err)
+	}
+	got := rec.only(t)
+	want := appCall{51009, true, appattr.PathBlocked, udpSourceModeBlock, ""}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+// 具名出口:走的是另一条隧道,但仍然不是直连 —— 归到 tunnel 组。
+func TestDialerRecordsViaEgress(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	eg, err := route.NewEgressSet([][2]string{{"office", "10.84.3.0/24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.SetRouter(&route.Router{UserEgress: eg})
+	d.SetEgresses(map[string]ContextDialer{"office": okDialer{}})
+	m := route.Meta{IP: netip.MustParseAddr("10.84.3.239"), Port: 22, SrcPort: 51010}
+	if _, err := d.Dial(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.only(t)
+	want := appCall{51010, false, appattr.PathTunnel, "user_egress", "office"}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+func TestDialerRecordsViaEgressBlockedWhenUnwired(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	eg, err := route.NewEgressSet([][2]string{{"office", "10.84.3.0/24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.SetRouter(&route.Router{UserEgress: eg})
+	m := route.Meta{IP: netip.MustParseAddr("10.84.3.239"), Port: 22, SrcPort: 51011}
+	if _, err := d.Dial(context.Background(), m); err != ErrBlocked {
+		t.Fatalf("出口没接线应阻断, got %v", err)
+	}
+	got := rec.only(t)
+	want := appCall{51011, false, appattr.PathBlocked, "user_egress", "office"}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
+// 没接归因器时不许 panic —— AppRecorder 可空是这个功能的隐私前提
+// (没人订阅时数据面一个字都不记)。
+func TestDialerWithoutAppRecorderDoesNotPanic(t *testing.T) {
+	d, _ := newAppDialer(t, true)
+	d.AppRecorder = nil
+	if _, err := d.Dial(context.Background(), route.Meta{Domain: "a.qq.com", Port: 443, SrcPort: 1}); err != nil {
+		t.Fatal(err)
+	}
+}

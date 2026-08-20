@@ -69,12 +69,29 @@ type ConnCounter interface {
 	AddDown(n int64)
 }
 
+// ByteAttributor 把转发的字节按**应用侧源端口**记账。可空。
+//
+// 用源端口而不是连接对象:端口是 uint16,记账端可以用定长表做到无锁 O(1);
+// 代价是端口复用带来的近似(由记账端在见到新连接时清账缓解)。
+//
+// udp 是**独立形参**,而不是让 tun 去拼一个 (端口,协议) 结构体:漏填一个
+// 结构体字段没有编译错误(零值就是 false),而 TCP 与 UDP 的端口空间相互
+// 独立,归错了在界面上完全看不出来 —— 只会看到一个应用名,看不到冲突。
+// 附带好处是 internal/tun 不必 import internal/appattr。
+type ByteAttributor interface {
+	AddUp(srcPort uint16, udp bool, n int64)
+	AddDown(srcPort uint16, udp bool, n int64)
+}
+
 // Engine 是 TUN 引擎:在 link 上跑 netstack,终结 TCP/UDP 并交给 Dialer。
 type Engine struct {
 	stack  *stack.Stack
 	dialer Dialer
 	dns    DNSResponder // 可空:非空时 UDP:53 由它就地应答(fake-IP)
 	stats  ConnCounter  // 可空:活跃连接 + 上下行字节计数
+	// bytes 可空:按 (源端口,协议) 的应用流量归因。与 stats 是两码事 ——
+	// stats 是全局总量,这里是**谁的**流量。
+	bytes ByteAttributor
 
 	// idleTimeout 可空(零值走 defaultIdleTimeout);只有测试会设它 ——
 	// 生产里等真实的 5 分钟没法测,而这条超时的语义正是缺陷所在。
@@ -96,6 +113,18 @@ func WithDNS(r DNSResponder) Option { return func(e *Engine) { e.dns = r } }
 
 // WithStats 接上连接/字节计数器。
 func WithStats(c ConnCounter) Option { return func(e *Engine) { e.stats = c } }
+
+// WithByteAttribution 接上按源端口的字节归因。
+func WithByteAttribution(b ByteAttributor) Option { return func(e *Engine) { e.bytes = b } }
+
+// ByteAttributorOf 报告引擎当前接的字节归因器。
+//
+// **它是给组装根的测试开的窗口**:run.go 那一跳(dialer 与 engine 必须拿到
+// 同一个 *AppTraffic 实例)住在 internal/supervisor,从那里看不见这个未导出
+// 字段;没有这个窗口,那条不变量就只能靠读源码文本去守,而那类守卫在这个
+// 仓库被攻破过八次。两个不同实例会让连接记录和字节账对不上,而两边各自看
+// 起来都正常。
+func ByteAttributorOf(e *Engine) ByteAttributor { return e.bytes }
 
 // New 在给定 link 端点上建引擎(测试用 channel/pipe,生产用 fdbased TUN)。
 // 返回后即开始服务:netstack 收到新连接会回调 Dialer。
@@ -203,7 +232,7 @@ func (e *Engine) handleConn(local net.Conn, m route.Meta) {
 		e.stats.ConnOpen()
 		defer e.stats.ConnClose()
 	}
-	e.relay(local, upstream, initial)
+	e.relay(local, upstream, initial, m.SrcPort, m.UDP)
 }
 
 func (e *Engine) readInitial(conn net.Conn, m route.Meta) []byte {
@@ -243,7 +272,7 @@ func (e *Engine) serveDNS(conn net.Conn) {
 // relay 在 local↔upstream 间双向转发并计量字节:
 // local→upstream 记为上行,upstream→local 记为下行。
 // 任一方向读到 EOF 就半关闭对端的写,两个方向都结束后关闭两端。
-func (e *Engine) relay(local, upstream net.Conn, initial []byte) {
+func (e *Engine) relay(local, upstream net.Conn, initial []byte, srcPort uint16, udp bool) {
 	// **空闲是整条连接的属性,不是某一个方向的。** 两个方向共用这一份活跃时刻:
 	// 任一方向有过流量,另一方向的超时就跟着续期。各计各的会让 SSE(纯服务端
 	// 推送,客户端方向按构造永远静默)在第一个周期就被自己人 FIN 掉,WebSocket
@@ -252,33 +281,58 @@ func (e *Engine) relay(local, upstream net.Conn, initial []byte) {
 	activity := newRelayActivity()
 	var wg sync.WaitGroup
 	wg.Add(2)
+	// **两个方向用同一套组装。** 上行那半原先只在 e.stats != nil 时才有
+	// onWrite 闭包,而字节归因不该跟着 stats 的有无走:照抄那个形状会让
+	// 「没接 stats 但有人订阅应用视图」时上行恒为 0,而下行是好的 ——
+	// 界面上读起来就是「这个应用只在下载」,一句没人会去质疑的假话。
+	up := e.writeHook(srcPort, udp, true)
+	down := e.writeHook(srcPort, udp, false)
 	go func() {
 		defer wg.Done()
 		if len(initial) > 0 {
 			if _, err := upstream.Write(initial); err != nil {
 				return
 			}
-			if e.stats != nil {
-				e.stats.AddUp(int64(len(initial)))
+			// 首包不经 copyOneWay,得自己记 —— 漏掉它,每条 TCP 连接的
+			// TLS ClientHello / HTTP 请求头都不进账。
+			if up != nil {
+				up(int64(len(initial)))
 			}
 		}
-		var onWrite func(int64)
-		if e.stats != nil {
-			onWrite = e.stats.AddUp
-		}
-		copyOneWay(upstream, local, e.idle(), activity, onWrite)
+		copyOneWay(upstream, local, e.idle(), activity, up)
 	}()
 	go func() {
 		defer wg.Done()
-		if e.stats != nil {
-			copyOneWay(local, upstream, e.idle(), activity, e.stats.AddDown)
-			return
-		}
-		copyOneWay(local, upstream, e.idle(), activity, nil)
+		copyOneWay(local, upstream, e.idle(), activity, down)
 	}()
 	wg.Wait()
 	local.Close()
 	upstream.Close()
+}
+
+// writeHook 把「全局字节统计」与「按源端口的应用归因」合成一个 onWrite 闭包。
+// 两者都没接时返回 nil,copyOneWay 便一次调用都不做(没人看时开销为零)。
+func (e *Engine) writeHook(srcPort uint16, udp bool, up bool) func(int64) {
+	stats, bytes := e.stats, e.bytes
+	if stats == nil && bytes == nil {
+		return nil
+	}
+	return func(n int64) {
+		if stats != nil {
+			if up {
+				stats.AddUp(n)
+			} else {
+				stats.AddDown(n)
+			}
+		}
+		if bytes != nil {
+			if up {
+				bytes.AddUp(srcPort, udp, n)
+			} else {
+				bytes.AddDown(srcPort, udp, n)
+			}
+		}
+	}
 }
 
 // defaultIdleTimeout 是单向转发的空闲超时:超过该时长无数据则收尾,
