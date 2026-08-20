@@ -158,4 +158,8 @@ run_test status-watch \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Tests/StatusWatchTests.swift"
 
+run_test app-traffic-model \
+  "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
+  "$MENU/Tests/AppTrafficModelTests.swift"
+
 echo "macOS menu tests passed"
