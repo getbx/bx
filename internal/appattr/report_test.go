@@ -12,7 +12,7 @@ func TestAggregateSplitsOneAppAcrossPaths(t *testing.T) {
 		{SrcPort: 1, Path: PathTunnel, Source: "default"},
 		{SrcPort: 2, Path: PathDirect, Source: "user_direct", Rule: "*.qq.com"},
 	}
-	owners := map[PortKey]string{{Port: 1, UDP: false}: "Google Chrome", {Port: 2, UDP: false}: "Google Chrome"}
+	owners := namedOwners(map[PortKey]string{{Port: 1, UDP: false}: "Google Chrome", {Port: 2, UDP: false}: "Google Chrome"})
 	got := Aggregate(records, owners,
 		map[PortKey]int64{{Port: 1, UDP: false}: 100, {Port: 2, UDP: false}: 5},
 		map[PortKey]int64{{Port: 1, UDP: false}: 900, {Port: 2, UDP: false}: 45})
@@ -34,7 +34,7 @@ func TestAggregateKeepsUnknownAsItsOwnRowInsideItsPath(t *testing.T) {
 		{SrcPort: 1, Path: PathTunnel, Source: "default"},
 		{SrcPort: 2, Path: PathTunnel, Source: "default"},
 	}
-	owners := map[PortKey]string{{Port: 1, UDP: false}: "Slack"} // 2 号端口查不出来
+	owners := namedOwners(map[PortKey]string{{Port: 1, UDP: false}: "Slack"}) // 2 号端口查不出来
 	got := Aggregate(records, owners, nil, nil)
 
 	tunnel := got.Groups[0]
@@ -70,7 +70,7 @@ func TestAggregateSortsRowsByBytesThenName(t *testing.T) {
 	records := []ConnRecord{
 		{SrcPort: 1, Path: PathTunnel}, {SrcPort: 2, Path: PathTunnel}, {SrcPort: 3, Path: PathTunnel},
 	}
-	owners := map[PortKey]string{{Port: 1, UDP: false}: "Aardvark", {Port: 2, UDP: false}: "Zebra", {Port: 3, UDP: false}: "Middle"}
+	owners := namedOwners(map[PortKey]string{{Port: 1, UDP: false}: "Aardvark", {Port: 2, UDP: false}: "Zebra", {Port: 3, UDP: false}: "Middle"})
 	got := Aggregate(records, owners,
 		map[PortKey]int64{{Port: 1, UDP: false}: 1, {Port: 2, UDP: false}: 1000, {Port: 3, UDP: false}: 500}, nil)
 	if got.Groups[0].Rows[0].App != "Zebra" || got.Groups[0].Rows[2].App != "Aardvark" {
@@ -88,7 +88,7 @@ func TestAggregateCountsEachPortsBytesOnce(t *testing.T) {
 		{SrcPort: 7, Path: PathTunnel},
 	}
 	got := Aggregate(records,
-		map[PortKey]string{{Port: 7, UDP: false}: "Slack"},
+		namedOwners(map[PortKey]string{{Port: 7, UDP: false}: "Slack"}),
 		map[PortKey]int64{{Port: 7, UDP: false}: 100},
 		map[PortKey]int64{{Port: 7, UDP: false}: 900})
 	row := got.Groups[0].Rows[0]
@@ -109,10 +109,10 @@ func TestAggregateKeepsTCPAndUDPPortsApart(t *testing.T) {
 		{SrcPort: 443, UDP: false, Path: PathTunnel}, // TCP:443 属于 Chrome
 		{SrcPort: 443, UDP: true, Path: PathTunnel},  // UDP:443(QUIC)属于 quic-app
 	}
-	owners := map[PortKey]string{
+	owners := namedOwners(map[PortKey]string{
 		{Port: 443, UDP: false}: "Google Chrome",
 		{Port: 443, UDP: true}:  "quic-app",
-	}
+	})
 	bytesUp := map[PortKey]int64{
 		{Port: 443, UDP: false}: 10,
 		{Port: 443, UDP: true}:  20,
@@ -167,7 +167,7 @@ func TestAggregateAttributesReusedPortBytesToTheMostRecentRecord(t *testing.T) {
 		{SrcPort: 5000, Path: PathDirect, Source: "user_direct", Rule: "*.qq.com"}, // 旧
 		{SrcPort: 5000, Path: PathTunnel, Source: "default"},                       // 新
 	}
-	owners := map[PortKey]string{{Port: 5000, UDP: false}: "Slack"}
+	owners := namedOwners(map[PortKey]string{{Port: 5000, UDP: false}: "Slack"})
 	got := Aggregate(records, owners,
 		map[PortKey]int64{{Port: 5000, UDP: false}: 100},
 		map[PortKey]int64{{Port: 5000, UDP: false}: 900})
@@ -183,4 +183,78 @@ func TestAggregateAttributesReusedPortBytesToTheMostRecentRecord(t *testing.T) {
 	if direct.Rows[0].BytesUp != 0 || direct.Rows[0].BytesDown != 0 {
 		t.Fatalf("旧记录不该分到任何字节,得到 %d/%d", direct.Rows[0].BytesUp, direct.Rows[0].BytesDown)
 	}
+}
+
+// **图标要的是路径,报告此前只有显示名。** `NSWorkspace.icon(forFile:)` 认路径,
+// 而 owners 那张表本来就是从可执行路径推出显示名的(`DisplayName`)—— 路径当时
+// 被丢掉了,于是菜单侧只能画纯文字。
+//
+// 这条钉住的是「**代表值**」这个语义:AppRow 是按 (路径, 应用名) 聚合的,同一个
+// 显示名可能来自多个 PID(Chrome 的 helper 进程各有各的可执行路径),ExecPath
+// 只保证是其中**某一个**,不是全集。断言因此是「非空且属于贡献者之一」,不是
+// 某个具体值 —— 断言具体值等于把「谁是代表」这个无关紧要的选择钉成契约。
+func TestAggregateCarriesARepresentativeExecutablePath(t *testing.T) {
+	records := []ConnRecord{
+		{SrcPort: 1, Path: PathTunnel, Source: "default"},
+		{SrcPort: 2, Path: PathTunnel, Source: "default"},
+	}
+	owners := map[PortKey]Owner{
+		{Port: 1}: {Name: "Google Chrome", ExecPath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"},
+		{Port: 2}: {Name: "Google Chrome", ExecPath: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"},
+	}
+	got := Aggregate(records, owners, nil, nil)
+	rows := got.Groups[0].Rows
+	if len(rows) != 1 {
+		t.Fatalf("tunnel 组 %d 行, want 1", len(rows))
+	}
+	if rows[0].ExecPath != owners[PortKey{Port: 1}].ExecPath &&
+		rows[0].ExecPath != owners[PortKey{Port: 2}].ExecPath {
+		t.Fatalf("ExecPath = %q,既不是两个贡献端口里的哪一个 —— 菜单侧据此画图标", rows[0].ExecPath)
+	}
+}
+
+// 有一个贡献端口带路径就必须带出来:代表值可以是任意一个,但「明明有却空着」
+// 会让那一行无声地失去图标,而这正是加这个字段要买的东西。
+func TestAggregatePrefersAContributingPathOverEmptiness(t *testing.T) {
+	records := []ConnRecord{
+		{SrcPort: 1, Path: PathDirect, Source: "china"},
+		{SrcPort: 2, Path: PathDirect, Source: "china"},
+	}
+	owners := map[PortKey]Owner{
+		{Port: 1}: {Name: "Safari"}, // 路径读不出来(kern.procargs2 可能失败)
+		{Port: 2}: {Name: "Safari", ExecPath: "/Applications/Safari.app/Contents/MacOS/Safari"},
+	}
+	got := Aggregate(records, owners, nil, nil)
+	rows := got.Groups[1].Rows
+	if len(rows) != 1 {
+		t.Fatalf("direct 组 %d 行, want 1", len(rows))
+	}
+	if rows[0].ExecPath != "/Applications/Safari.app/Contents/MacOS/Safari" {
+		t.Fatalf("ExecPath = %q —— 有贡献端口带着路径,这一行却空着", rows[0].ExecPath)
+	}
+}
+
+// unknown 那一行不许凭空长出路径:它整个存在的意义就是「问不出来是谁」。
+func TestAggregateGivesUnknownRowsNoExecutablePath(t *testing.T) {
+	records := []ConnRecord{{SrcPort: 9, Path: PathTunnel, Source: "default"}}
+	got := Aggregate(records, map[PortKey]Owner{}, nil, nil)
+	rows := got.Groups[0].Rows
+	if len(rows) != 1 || rows[0].App != "" {
+		t.Fatalf("want 一行 unknown, got %#v", rows)
+	}
+	if rows[0].ExecPath != "" {
+		t.Fatalf("unknown 那一行带了路径 %q", rows[0].ExecPath)
+	}
+}
+
+// namedOwners 把「端口 → 显示名」这种老写法升成 Owner。
+//
+// 绝大多数用例不关心可执行路径(它只喂图标),让它们保持原来一眼看得懂的形状;
+// 关心路径的那几条直接写 map[PortKey]Owner 字面量。
+func namedOwners(m map[PortKey]string) map[PortKey]Owner {
+	out := make(map[PortKey]Owner, len(m))
+	for k, name := range m {
+		out[k] = Owner{Name: name}
+	}
+	return out
 }

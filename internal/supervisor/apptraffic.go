@@ -12,12 +12,15 @@ import (
 
 // appSource 现问系统「哪个端口属于哪个应用」。**注入点** —— 测试用假的。
 type appSource interface {
-	// OwnersByPort 现问内核一次,返回 (端口,协议) → 应用显示名。
+	// OwnersByPort 现问内核一次,返回 (端口,协议) → 应用身份(显示名 + 可执行路径)。
 	// 键必须是 appattr.PortKey 而不是裸 uint16 —— TCP 与 UDP 端口空间相互独立,
 	// 同一个数字可能同时被两个协议占用,合并成一个键会让后写入的那个协议静默
 	// 覆盖先写入的归因。
 	// 查不出应用的端口**不出现在 map 里**(调用方据此判 unknown)。
-	OwnersByPort() (map[appattr.PortKey]string, error)
+	//
+	// 值是 appattr.Owner 而不是两张平行的 map[PortKey]string:两张同型的 map
+	// 相邻排在参数表里,位置调换会静默编译通过 —— 这个仓库不缺这种形状的事故。
+	OwnersByPort() (map[appattr.PortKey]appattr.Owner, error)
 }
 
 var errAppSourceUnsupported = errors.New("app attribution is only available on macOS")
