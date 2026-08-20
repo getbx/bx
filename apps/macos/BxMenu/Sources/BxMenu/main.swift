@@ -429,6 +429,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if serversWindow.isVisible {
             fetchServersOnDemand(forceShow: false)
         }
+        // 应用流量同理:**窗口关着就不拨**(没人看时开销为零,也不在这台机器上
+        // 留下你开过什么应用的记录);窗口开着说明有人正盯着,跟着状态变化再拉
+        // 一次是「按需」的本意。心跳定时器管的是稳态节拍,这一路管的是「状态刚
+        // 变了」那一刻 —— 两者都过同一个在飞守卫,叠不起来。
+        if appTrafficWindow.isVisible {
+            fetchAppTrafficOnDemand(forceShow: false)
+        }
         updateIcon()
         rebuildMenu()
         if let snapshot = recoverySnapshot,
@@ -1022,6 +1029,100 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fetchServersOnDemand(forceShow: true)
     }
 
+    /// 应用流量悬浮窗。**窗口是订阅的载体**:开着才拉、拉才采集,关掉之后没有
+    /// 人再续期,Core 侧的订阅在一个 TTL(30 秒)内自己过期、采集停掉、缓冲清空。
+    private lazy var appTrafficWindow: AppTrafficWindowController = {
+        let controller = AppTrafficWindowController()
+        controller.onClose = { [weak self] in
+            self?.stopAppTrafficTimer()
+        }
+        return controller
+    }()
+
+    /// 有一次按需拉应用流量正在飞。与 `serversFetchInFlight` 同一个模式,而且
+    /// 与它一样**不是可选的**:窗口开着时既有心跳定时器、又有环境刷新会触发,
+    /// 而 watch 时代刷新是事件驱动、可能连着来。
+    private var appTrafficFetchInFlight = false
+
+    /// 窗口开着时的心跳。**只在窗口开着的时候存在**(见 startAppTrafficTimer)。
+    private var appTrafficTimer: Timer?
+
+    @objc private func openAppTrafficWindow() {
+        // 显式那一路:弹出窗口,读不到就明说。
+        fetchAppTrafficOnDemand(forceShow: true)
+        // 心跳与窗口同生共死。这里就起,不等第一次应答 —— 第一次拉取失败
+        // (Guardian 忙、Core 刚重启)不该让这个窗口从此再也不更新。
+        startAppTrafficTimer()
+    }
+
+    /// 窗口开着时每隔 `appTrafficRefreshSeconds` 拉一次。
+    ///
+    /// **它同时是订阅的心跳**:Core 侧采集订阅靠每一次拉取续期(30 秒 TTL),
+    /// 间隔必须明显短于 TTL,否则订阅会在两次刷新之间过期 —— 窗口开着而界面
+    /// 反复跳回「Not collecting app traffic right now.」,且每次续上都从零计数
+    /// (那条余量由 Swift 套件钉住)。
+    ///
+    /// 单靠 `applyRefresh` 那一路不够:watch 时代稳态下状态可以很久不变,而
+    /// 兜底轮询是 60 秒 —— 比 TTL 还长,订阅会在两拍之间断掉。
+    ///
+    /// **必须是 commonModeTimer**:`Timer.scheduledTimer` 只进 `.default`,而
+    /// 菜单展开期间主 runloop 在 `NSEventTrackingRunLoopMode`,实测一次都不触发。
+    private func startAppTrafficTimer() {
+        guard appTrafficTimer == nil else { return }
+        appTrafficTimer = commonModeTimer(every: appTrafficRefreshSeconds) { [weak self] in
+            self?.fetchAppTrafficOnDemand(forceShow: false)
+        }
+    }
+
+    /// 停掉心跳。**窗口一关就必须调它** —— 窗口关了而定时器还在跑,订阅就永远
+    /// 续着,采集也就永远开着,而界面上看不出任何异常。
+    private func stopAppTrafficTimer() {
+        appTrafficTimer?.invalidate()
+        appTrafficTimer = nil
+    }
+
+    /// 按需拉一次应用流量报告。
+    ///
+    /// **两个调用方,两种呈现,由 `forceShow` 区分**(与 fetchServersOnDemand
+    /// 同一个形状):`true` 是用户点了菜单项 —— `show()` 弹出窗口,读不到就用
+    /// `NSAlert` 明说;`false` 是心跳与环境刷新 —— `refreshIfVisible` 就地重画,
+    /// 不抢焦点、不弹 alert(每 3 秒 `NSApp.activate` 一次会让这台 Mac 没法用)。
+    ///
+    /// **拦截判据不是裸的 `guard !appTrafficFetchInFlight`**:那条写法会让心跳
+    /// 设的标志把紧跟着来的显式打开也拦住 —— 用户点了菜单项,窗口没出现、没有
+    /// alert,什么都没发生。这在服务器窗口上是一次真实的回归,判据抽在
+    /// `shouldSuppressFetch`(`StatusWatch.swift`,已表驱动测过四种组合):
+    /// 只拦 `forceShow: false` 那一路,显式那一路仍然**设置**这个标志、但永远
+    /// 不会**被它拦**。
+    private func fetchAppTrafficOnDemand(forceShow: Bool) {
+        guard !shouldSuppressFetch(inFlight: appTrafficFetchInFlight, explicit: forceShow) else { return }
+        appTrafficFetchInFlight = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fetched = try? GuardianClient().appTraffic()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.appTrafficFetchInFlight = false
+                guard let fetched else {
+                    // **读不到就说读不到,不摆一个空报告** —— 一份 subscribed:false
+                    // 的假报告会把「没问出来」显示成「没在采集」,而那是两件事。
+                    guard forceShow else { return }
+                    let alert = NSAlert()
+                    alert.messageText = "App traffic is not available"
+                    alert.informativeText = "bx could not read the per-app report. "
+                        + "See /var/log/bx-guard.err.log for the reason."
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                    return
+                }
+                if forceShow {
+                    self.appTrafficWindow.show(report: fetched)
+                } else {
+                    self.appTrafficWindow.refreshIfVisible(report: fetched)
+                }
+            }
+        }
+    }
+
     /// 按需拉一次服务器清单。理由与 fetchRulesOnDemand 相同——图标不依赖它,
     /// 每次拨都让 Guardian 多读并解析一遍 config.yaml。
     ///
@@ -1417,6 +1518,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if serverSwitchingAvailable(capabilities: maintenanceReport?.capabilities) {
             menu.addAction("Servers…", symbol: "globe", target: self, action: #selector(openServersWindow))
             menu.addAction("Set Up a New Server…", symbol: "plus.circle", target: self, action: #selector(openDeployWindow))
+        }
+        // 应用流量入口:同样只在 Guardian 声明了 apps 能力时出现。旧版没有
+        // /v1/apps,画出来的菜单项每次点都 404,而 404 在菜单上根本表达不出来
+        // —— 用户只会看到「点了没反应」。**绝不「试着拨一下看看」**:旧
+        // Guardian 与「支持但此刻没数据」在客户端看来必须分得开(status watch
+        // 那次真机实测过绕过门的代价:CPU 常驻 26%~46%、吞吐上千次/秒)。
+        if appTrafficAvailable(capabilities: maintenanceReport?.capabilities) {
+            menu.addAction("Traffic by App…", symbol: "chart.bar.doc.horizontal",
+                           target: self, action: #selector(openAppTrafficWindow))
         }
         // **换配置的入口。** 此前只有「还没配置」那个状态里有 Set Up bx…,
         // 配好之后再也找不到它 —— 换服务器只能开终端(2026-08-14 项目所有者提出)。

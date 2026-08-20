@@ -177,6 +177,89 @@ struct AppTrafficModelTests {
         }
     }
 
+
+    // 能力门控的判据。**旧 Guardian 不认识 /v1/apps,会回 404** —— 而客户端
+    // 无从区分「这版不支持」与「这版支持但此刻没数据」,所以绝不「试着拨一下
+    // 看看」(status watch 那次真机实测过绕过门的代价:CPU 常驻 26%~46%、
+    // 吞吐上千次/秒)。
+    //
+    // **nil 与 [] 是两件事**:nil 是「这版压根没声明过能力」(旧版,键缺席),
+    // [] 是「声明了、一个都没有」。两者都不开这个入口,但不是同一件事 ——
+    // GuardianStatus.capabilities 刻意保留了这个区分。
+    static func testCapabilityGate() {
+        expect(!appTrafficAvailable(capabilities: nil), "能力未声明(旧版)却判成可用")
+        expect(!appTrafficAvailable(capabilities: []), "空能力集却判成可用")
+        expect(!appTrafficAvailable(capabilities: ["rules", "servers"]), "别的能力却开了这个入口")
+        expect(appTrafficAvailable(capabilities: ["rules", "apps"]), "声明了 apps 却判成不可用")
+    }
+
+    // 刷新间隔必须**明显**短于订阅 TTL。
+    //
+    // 订阅是靠每一次拉取续期的(Core 侧 appTrafficTTL = 30 秒,惰性结算)。
+    // 间隔一旦逼近 TTL,订阅就会在两次刷新之间过期:窗口开着,界面却反复跳回
+    // 「Not collecting app traffic right now.」,而且每次续上都从零开始计数。
+    //
+    // **这一对数字是跨语言手抄的**(Go 侧 appTrafficTTL 未导出),这条只能钉住
+    // Swift 这一侧留了余量,证明不了 Go 那边真的是 30 —— 与
+    // guardianStatusWatchTimeout 注释里记下的是同一个局限。
+    static func testRefreshIntervalStaysWellInsideTheSubscriptionTTL() {
+        expect(appTrafficRefreshSeconds > 0, "刷新间隔必须为正,否则定时器不会触发")
+        expect(appTrafficRefreshSeconds * 3 < appTrafficSubscriptionTTLSeconds,
+               "刷新间隔 \(appTrafficRefreshSeconds)s 对 TTL \(appTrafficSubscriptionTTLSeconds)s 没有余量")
+    }
+
+    // 界面上那句「字节数是近似值」不是可选的:端口复用会让残留字节算到新连接
+    // 头上,spec 明写「界面不该把它显示成精确账」。
+    static func testApproximateNoteSaysWhichNumbersAreApproximate() {
+        expect(appTrafficApproximateNote.contains("approximate"),
+               "那句小字没说这些数是近似的:\(appTrafficApproximateNote)")
+        expect(appTrafficApproximateNote.lowercased().contains("byte"),
+               "那句小字没点明说的是字节数:\(appTrafficApproximateNote)")
+        // 点明**为什么**近似 —— 只说「近似」会被读成「四舍五入」,而真实原因
+        // 是端口复用,那是用户看到数字对不上时唯一能自洽的解释。
+        expect(appTrafficApproximateNote.lowercased().contains("port"),
+               "那句小字没说清近似的来源(端口复用):\(appTrafficApproximateNote)")
+    }
+
+    // `rules` 非空 = 这一行是**用户自己写的规则**决定的(命中内建 china 列表时
+    // 服务端给空)。那正是唯一可行动的那一半:用户能去改的只有自己写的规则。
+    // 所以有话说时才占地方,没话说时一个字都不加。
+    static func testDetailNamesTheUserRuleThatDecidedIt() {
+        let report = AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
+            AppTrafficGroup(path: .direct, rows: [
+                AppTrafficRow(app: "Steam", conns: 2, bytesUp: 1, bytesDown: 2, rules: ["*.steamstatic.com"]),
+            ]),
+        ]))
+        let rows = report.rows()
+        guard case .entry(_, let detail)? = rows.first(where: {
+            if case .entry = $0 { return true }
+            return false
+        }) else {
+            expect(false, "没有渲染出应用行")
+            return
+        }
+        expect(detail.contains("*.steamstatic.com"),
+               "没有点名那条用户规则,用户无从知道该去改哪一行:\(detail)")
+    }
+
+    static func testDetailSaysNothingAboutRulesWhenTheBuiltinListDecided() {
+        let report = AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
+            AppTrafficGroup(path: .direct, rows: [
+                AppTrafficRow(app: "Safari", conns: 2, bytesUp: 1, bytesDown: 2),
+            ]),
+        ]))
+        let rows = report.rows()
+        guard case .entry(_, let detail)? = rows.first(where: {
+            if case .entry = $0 { return true }
+            return false
+        }) else {
+            expect(false, "没有渲染出应用行")
+            return
+        }
+        expect(!detail.lowercased().contains("rule"),
+               "没有用户规则可点名时仍然提了规则 —— 那会让内建判定看起来像用户配的:\(detail)")
+    }
+
     static func main() {
         testDecodesReportWithMissingRowsArray()
         testDecodesGroupWithNullRows()
@@ -186,6 +269,11 @@ struct AppTrafficModelTests {
         testUnknownAppRendersAsExplicitLabel()
         testThreeEmptyStatesRenderDifferently()
         testAllEmptyGroupsRenderAsGenuinelyEmpty()
+        testCapabilityGate()
+        testRefreshIntervalStaysWellInsideTheSubscriptionTTL()
+        testApproximateNoteSaysWhichNumbersAreApproximate()
+        testDetailNamesTheUserRuleThatDecidedIt()
+        testDetailSaysNothingAboutRulesWhenTheBuiltinListDecided()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」。
         if failures == 0 {
             print("AppTrafficModelTests passed")
