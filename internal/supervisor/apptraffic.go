@@ -23,6 +23,16 @@ var errAppSourceUnsupported = errors.New("app attribution is only available on m
 
 // appTrafficTTL 是订阅的存活期。菜单被强杀、窗口进程崩溃时不会有人来退订,
 // 而「没人看的时候开销精确为零」是这个设计的隐私前提 —— 不能靠对方守规矩来保证。
+//
+// **TTL 是惰性结算的,没有定时器。** 过期只在 Subscribe/Record/AddUp/AddDown/
+// Snapshot 中任一个被调用时才由 expiredLocked 就地判定并清空缓冲。所以严格说,
+// 订阅者消失之后若真的再没有任何一次调用,那批记录会在内存里留过 30 秒 ——
+// spec 里「没人看的时候开销精确为零」这句话在那一小段窗口里不成立。
+//
+// 实际上 Record 是全网每条连接都要走的路径,真正的静默几乎不可能发生;
+// 不加定时器是刻意的(它会把「没人看时零开销」变成「没人看时也有个 goroutine
+// 在滴答」,与 internal/toolkeys 那个唯一的持久化过期先例同一手法)。
+// 但边界写在这里:代码里声称的性质,要么做到,要么如实写明边界。
 const appTrafficTTL = 30 * time.Second
 
 // appTrafficMaxRecords 是环形缓冲容量。满了就丢最旧的:界面显示的是「此刻的
@@ -196,6 +206,13 @@ func (t *AppTraffic) Snapshot() (appattr.Report, bool, error) {
 }
 
 // liveRecordsLocked 把环形缓冲摊平成时间序。调用者必须持有 t.mu。
+//
+// **这里的顺序是承重的,不是整洁问题。** Record 在端口复用时只清字节账、不删
+// 旧的 ConnRecord,所以同一个键在一个窗口里可以有好几条记录并存;而
+// appattr.Aggregate 按倒序遍历、只把字节记给该键**最近**的那条 —— 两个 append
+// 对调就等于把「最近」判反,那笔字节会记到上一个应用/上一条路径头上。
+// 由 TestAppTrafficKeepsTimeOrderAcrossRingBoundaries 用可区分的 owners 钉住
+// (只比总条数的测试对顺序完全不敏感)。
 func (t *AppTraffic) liveRecordsLocked() []appattr.ConnRecord {
 	if !t.wrapped {
 		return append([]appattr.ConnRecord(nil), t.records[:t.next]...)
