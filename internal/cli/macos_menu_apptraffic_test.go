@@ -119,6 +119,22 @@ func stripSwiftComments(src string) string {
 //
 // 注释也一并抹掉(而不是删掉),是因为删会挪动偏移;这里要的恰恰是偏移不变。
 // 换行原样保留,行结构不受影响。
+//
+// **两处已知局限,退化方向都是假绿**(漏抹的结构字符会让扫描器多吞代码,
+// 于是「某某在某个块里」这类判据会被一段它其实管不着的源码满足)。两条都
+// **今天不活跃** —— 三个被扫的文件(main.swift / AppTrafficWindow.swift /
+// GuardianClient.swift)里都不存在这种形状 —— 但写在这里是因为下一个人加一行
+// 就可能踩到,而**一句只说了一半的局限声明比不说更糟:他会以为这已经被想过了**:
+//
+//	① **不认原始字符串** `#"…"#` / `#"""…"""#`。碰上它会退化成「按第一个 `"`
+//	   起算」,于是 `#"a"# + "("` 这种写法里的括号可能漏抹。
+//	   (GuardianClient.swift 里有 `#"…"#`,但不在任何做括号扫描的判据经过的
+//	   位置;真要扫到它所在的块,这条就会活过来。)
+//
+//	② **不认字符串插值里嵌套的字符串**:`"…\(f("}"))…"`。扫描把 `\(` 当成普通的
+//	   两字符转义对(对 `\"`、`\n`、`\u` 是对的),而 Swift 的 `\(...)` 是有自己
+//	   词法规则的可执行代码 —— 插值里的 `"` 会提前把「字符串」闭合,嵌套字面量里
+//	   的括号/花括号就此漏出来没被抹。
 func blankSwiftStringLiterals(src string) string {
 	out := []byte(src)
 	n := len(src)
@@ -652,8 +668,30 @@ func TestMacMenuMarksAppTrafficStaleWhenItCannotRefresh(t *testing.T) {
 		t.Fatalf("陈旧提示不是把纯模型算出来的 notice 原样送进窗口 —— "+
 			"手写文案会让那个纯函数与它的全部断言变成死代码:%s", strings.TrimSpace(shown))
 	}
-	// 送显示这一步必须在那个 `if let` 的花括号里 —— 挪进 else 或塞进一个恒假的
-	// 分支,存在性检查一样看不出来。
+	// **而且这一整条判定必须直接长在失败分支上,不许被任何额外的条件包着。**
+	// 上面两条判据都不关心它被什么包着:把整条 `if let notice = … { … }` 裹进一个
+	// `if false { }`,ask 正则照样匹配、区间照样取得到、markStaleIfVisible 的出现
+	// 次数照样是 1 —— 横幅却永不出现。判据取花括号深度:从失败分支开头数到那一句
+	// 必须是 0。
+	//
+	// 这不只是防蓄意破坏:横幅必须在**每一次**失败上都算一遍,把它包进
+	// `if forceShow` 之类的真条件同样是 bug(心跳那一路是 forceShow: false,
+	// 而窗口开着时正是它在失败)。
+	nesting := 0
+	for _, c := range []byte(blankSwiftStringLiterals(failure[:askAt[0]])) {
+		switch c {
+		case '{':
+			nesting++
+		case '}':
+			nesting--
+		}
+	}
+	if nesting != 0 {
+		t.Fatalf("陈旧判定被 %d 层额外的花括号包着 —— 裹进一个 `if false { }`(或任何"+
+			"别的条件)都会让横幅永不出现,而这一步必须在每一次失败上都发生", nesting)
+	}
+	// 送显示这一步必须在那个 `if let` 的花括号里 —— 挪进 else 一样看不出来;
+	// 另起一个死分支再调一次,则由「恰好一次」抓住。
 	if strings.Count(failure, "markStaleIfVisible(") != 1 {
 		t.Errorf("markStaleIfVisible 在失败分支里出现 %d 次 —— 只许有那唯一一次,"+
 			"多出来的那次可能挂在别的条件上", strings.Count(failure, "markStaleIfVisible("))
