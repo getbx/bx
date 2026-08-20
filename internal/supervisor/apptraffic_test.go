@@ -465,3 +465,73 @@ func TestAppTrafficConcurrentRecordAndSnapshot(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// **UDP 一个 socket 服务多个对端,那些流属于同一个应用,字节必须累加。**
+//
+// gVisor 的 UDP forwarder 按 5 元组建流(已核对上游 forwarder.go:CreateEndpoint
+// 注册的是完整 TransportEndpointID),而应用侧源端口是固定的:一个腾讯会议
+// socket 打 STUN + TURN + 多个 peer 就产生 N 条流 ⇒ N 次 Record ⇒ 同一个
+// PortKey。若照 TCP 那样「每次 Record 都清账」,**每来一条新流就把这个端口
+// 已攒的字节抹掉** —— 表现是字节数系统性偏低而连接数完全正常,没有任何一处
+// 报错,而它恰好命中这个功能最初的用例。
+func TestAppTrafficAccumulatesBytesAcrossUDPFlowsOnTheSamePort(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{udpKey(9): "Tencent Meeting"}}
+	tr := NewAppTraffic(src, time.Now)
+	tr.Subscribe()
+
+	// 一个 socket、三条流(STUN / TURN / peer),字节交替到账。
+	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "")
+	tr.AddUp(9, true, 100)
+	tr.AddDown(9, true, 200)
+	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "")
+	tr.AddUp(9, true, 30)
+	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "")
+	tr.AddDown(9, true, 7)
+
+	report, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var up, down int64
+	for _, g := range report.Groups {
+		for _, row := range g.Rows {
+			up += row.BytesUp
+			down += row.BytesDown
+		}
+	}
+	if up != 130 || down != 207 {
+		t.Fatalf("UDP 多流累加 up=%d down=%d, want 130/207 —— 新流把已攒的字节抹掉了", up, down)
+	}
+}
+
+// 反过来也要钉:UDP 那侧新建一条流,不许把**同号 TCP 端口**的账清掉。
+// 与 TestAppTrafficPortReuseDoesNotClearTheOtherProtocol 互为镜像 ——
+// 那条只证明了 TCP 不碰 UDP。
+func TestAppTrafficUDPFlowDoesNotClearTheTCPAccount(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{
+		tcpKey(11): "Slack",
+		udpKey(11): "Tencent Meeting",
+	}}
+	tr := NewAppTraffic(src, time.Now)
+	tr.Subscribe()
+
+	tr.Record(11, false, appattr.PathTunnel, "default", "")
+	tr.AddUp(11, false, 400)
+	tr.Record(11, true, appattr.PathTunnel, "udp_proxy", "") // UDP 侧的新流
+	tr.AddUp(11, true, 6)
+
+	report, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for _, row := range report.Groups[0].Rows {
+		got[row.App] = row.BytesUp
+	}
+	if got["Slack"] != 400 {
+		t.Fatalf("UDP 新流把同号 TCP 端口的账清了: %#v", got)
+	}
+	if got["Tencent Meeting"] != 6 {
+		t.Fatalf("UDP 侧的账不对: %#v", got)
+	}
+}

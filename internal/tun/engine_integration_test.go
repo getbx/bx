@@ -91,15 +91,18 @@ type testClient struct {
 	eng    *Engine
 	stack  *stack.Stack
 	dialer *captureDialer
+	// peer 是最近一次连接里 upstream 的对端。字节归因那两条测试要往它读写 ——
+	// 只有真的搬过字节,handleConn → relay 那一跳才会被走到。
+	peer net.Conn
 }
 
 // newTestClient 起一对经 pipe 链路端点互联的引擎协议栈与客户端协议栈。
-func newTestClient(t *testing.T, dialer *captureDialer) (*testClient, func()) {
+func newTestClient(t *testing.T, dialer *captureDialer, opts ...Option) (*testClient, func()) {
 	t.Helper()
 	const mtu = 1500
 	engineLink, clientLink := pipe.New("", "", mtu)
 
-	eng, err := New(engineLink, dialer, mtu)
+	eng, err := New(engineLink, dialer, mtu, opts...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -125,7 +128,8 @@ func (c *testClient) connectTCP(t *testing.T, srcPort uint16, dstIP netip.Addr, 
 	t.Cleanup(func() { conn.Close() })
 
 	select {
-	case <-c.dialer.peers:
+	case p := <-c.dialer.peers:
+		c.peer = p
 	case <-time.After(2 * time.Second):
 		t.Fatal("引擎未在超时内调用 Dialer")
 	}
@@ -148,7 +152,8 @@ func (c *testClient) connectUDP(t *testing.T, srcPort uint16, dstIP netip.Addr, 
 	}
 
 	select {
-	case <-c.dialer.peers:
+	case p := <-c.dialer.peers:
+		c.peer = p
 	case <-time.After(2 * time.Second):
 		t.Fatal("引擎未在超时内捕获 UDP 连接")
 	}

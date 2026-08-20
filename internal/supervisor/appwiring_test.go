@@ -77,6 +77,15 @@ func TestAppAttributionIsWiredInExactlyOnePlace(t *testing.T) {
 							assigns = append(assigns, fn.Name.Name)
 						}
 					}
+				case *ast.KeyValueExpr:
+					// **复合字面量是第二种赋值形状,漏掉它这条守卫就形同虚设**:
+					// run.go 里 `&dialer.Dialer{...}` 就在 wireAppAttribution 调用点
+					// 二十行外,在那里加一行 `AppRecorder: 别的东西` 是 KeyValueExpr、
+					// 不是 AssignStmt,只认后者的守卫完全看不见它,而它自称证明的
+					// 「没有第二条绕过它的路径」就不成立了。
+					if key, ok := node.Key.(*ast.Ident); ok && key.Name == "AppRecorder" {
+						assigns = append(assigns, fn.Name.Name)
+					}
 				case *ast.CallExpr:
 					sel, ok := node.Fun.(*ast.SelectorExpr)
 					if ok && sel.Sel.Name == "WithByteAttribution" {
