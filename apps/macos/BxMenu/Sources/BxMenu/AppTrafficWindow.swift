@@ -127,7 +127,13 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     /// 各自该说哪一句已经在纯模型里定死并测过,这里再判一次就是第二份判据。
     private func render() {
         guard let stack else { return }
-        let report = self.report ?? AppTrafficReport(subscribed: false)
+        // **没有报告就什么都不画。** 上一版在这里用零值兜底
+        // (`?? AppTrafficReport(subscribed: false)`),而那份零值渲染出来的正是
+        // "Not collecting app traffic right now." —— 恰恰是拨号失败分支明令禁止
+        // 的那句话:「没问出来」与「没在采集」是两件事,替 Core 回答一个它没被
+        // 问过的问题就是编一句自洽的假话。今天三个调用点都保证有报告,这条
+        // guard 是不让下一个调用点把那句谎话带回来。
+        guard let report else { return }
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()

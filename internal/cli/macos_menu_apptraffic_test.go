@@ -101,6 +101,105 @@ func stripSwiftComments(src string) string {
 	return out.String()
 }
 
+// blankSwiftStringLiterals 把字符串字面量与注释的**内容**抹成空格,保留定界符,
+// 并且**逐字节保住偏移** —— 返回串与入参等长,任何在它上面算出来的下标都可以直接
+// 拿回原串去切。
+//
+// **这是本文件全部结构化扫描器(数花括号、数圆括号)的前置。** `stripSwiftComments`
+// 刻意保留字符串内容,于是每一个数括号的扫描器都会把**字面量里的括号**当成结构:
+//
+//	stack.addArrangedSubview(hint("("))
+//	let _ = appTrafficApproximateNote      // 小字从窗口消失
+//	stack.addArrangedSubview(hint(")"))    // 而守卫全绿
+//
+// 第一个字面量里的 `(` 让深度停在 1,第二个里的 `)` 才让它归零,于是「第一次调用的
+// 实参」把中间整段源码都吞了进去 —— **假绿**。反向同样成立:菜单标签里一个 `}`
+// 会让好几条守卫**假红**,而一个会莫名其妙红的闸门比没有闸门更糟(本仓库对此有
+// 明确记录),它会被下一个人删掉。
+//
+// 注释也一并抹掉(而不是删掉),是因为删会挪动偏移;这里要的恰恰是偏移不变。
+// 换行原样保留,行结构不受影响。
+func blankSwiftStringLiterals(src string) string {
+	out := []byte(src)
+	n := len(src)
+	blank := func(i int) {
+		if out[i] != '\n' {
+			out[i] = ' '
+		}
+	}
+	for i := 0; i < n; {
+		switch {
+		case src[i] == '"' && i+2 < n && src[i+1] == '"' && src[i+2] == '"':
+			i += 3
+			for i+2 < n && !(src[i] == '"' && src[i+1] == '"' && src[i+2] == '"') {
+				blank(i)
+				i++
+			}
+			if i+2 < n {
+				i += 3
+			} else {
+				for ; i < n; i++ {
+					blank(i)
+				}
+			}
+		case src[i] == '"':
+			i++
+			for i < n {
+				if src[i] == '\\' && i+1 < n {
+					blank(i)
+					blank(i + 1)
+					i += 2
+					continue
+				}
+				if src[i] == '"' {
+					i++
+					break
+				}
+				// 未闭合的字面量不许吃掉整个文件:单行字符串到换行为止。
+				if src[i] == '\n' {
+					break
+				}
+				blank(i)
+				i++
+			}
+		case src[i] == '/' && i+1 < n && src[i+1] == '/':
+			blank(i)
+			blank(i + 1)
+			i += 2
+			for i < n && src[i] != '\n' {
+				blank(i)
+				i++
+			}
+		case src[i] == '/' && i+1 < n && src[i+1] == '*':
+			depth := 0
+			for i < n {
+				if src[i] == '/' && i+1 < n && src[i+1] == '*' {
+					depth++
+					blank(i)
+					blank(i + 1)
+					i += 2
+					continue
+				}
+				if src[i] == '*' && i+1 < n && src[i+1] == '/' {
+					depth--
+					blank(i)
+					blank(i + 1)
+					i += 2
+					if depth == 0 {
+						break
+					}
+					continue
+				}
+				blank(i)
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return string(out)
+}
+
 func menuAppTrafficWindowSource(t *testing.T) string {
 	t.Helper()
 	source, err := os.ReadFile(filepath.Join(
@@ -118,18 +217,21 @@ func menuAppTrafficWindowSource(t *testing.T) string {
 // 上面那条判据照样成立(审查在隔离副本里实测全绿,菜单项对每一版 Guardian 都
 // 无条件画出)。要证明「被它管着」,就得真的去看它管的那段。
 func swiftBlockRange(source, marker string) (int, int, bool) {
-	start := strings.Index(source, marker)
+	// **数花括号一律在抹白副本上做**(见 blankSwiftStringLiterals):
+	// 一句 `_ = "{"` 放进门里就能把配平推歪,原样重开被这条守卫堵住的绕法。
+	scan := blankSwiftStringLiterals(source)
+	start := strings.Index(scan, marker)
 	if start < 0 {
 		return 0, 0, false
 	}
-	open := strings.Index(source[start:], "{")
+	open := strings.Index(scan[start:], "{")
 	if open < 0 {
 		return 0, 0, false
 	}
 	open += start
 	depth := 0
-	for i := open; i < len(source); i++ {
-		switch source[i] {
+	for i := open; i < len(scan); i++ {
+		switch scan[i] {
 		case '{':
 			depth++
 		case '}':
@@ -150,19 +252,23 @@ func swiftBlockRange(source, marker string) (int, int, bool) {
 // (审查实测全绿)。要证明它被画出来,判据只能是「它出现在某一次
 // addArrangedSubview 的实参里」。
 func swiftCallArguments(source, callee string) []string {
+	// 同上:**圆括号也只在抹白副本上数**。`hint("(")` 里那个括号不是结构,
+	// 把它当结构会让一次调用的实参吞掉后面整段源码(假绿),或者让一个合法的
+	// 标签里带 `)` 的改动莫名其妙转红(假红)。
+	scan := blankSwiftStringLiterals(source)
 	var out []string
-	for _, idx := range regexp.MustCompile(regexp.QuoteMeta(callee)+`\s*\(`).FindAllStringIndex(source, -1) {
-		open := strings.IndexByte(source[idx[0]:idx[1]], '(') + idx[0]
+	for _, idx := range regexp.MustCompile(regexp.QuoteMeta(callee)+`\s*\(`).FindAllStringIndex(scan, -1) {
+		open := strings.IndexByte(scan[idx[0]:idx[1]], '(') + idx[0]
 		depth := 0
-		for i := open; i < len(source); i++ {
-			switch source[i] {
+		for i := open; i < len(scan); i++ {
+			switch scan[i] {
 			case '(':
 				depth++
 			case ')':
 				depth--
 				if depth == 0 {
 					out = append(out, source[open+1:i])
-					i = len(source)
+					i = len(scan)
 				}
 			}
 		}
@@ -231,22 +337,35 @@ func TestMacMenuOnlyFetchesAppTrafficWhileWindowVisible(t *testing.T) {
 	source := stripSwiftComments(menuMainSwiftSource(t))
 	defs := swiftFunctionDefs(source)
 
-	// ① 端点本身只能从一个函数里被碰到。
+	// ① 拨号本身只能从一个函数里长出来。
+	//
+	// **锚在「真的是拨号」的两个形状上,不是整词 `appTraffic`。** 后者论证今天
+	// 成立,但最可能的下一个改动(缓存上一次报告)就会撞上它:
+	// `private var appTraffic: AppTrafficReport?` 会被指控成「守卫读不懂代码」,
+	// 一个纯访问器会被指控成「直接拨了 /v1/apps」。**一条会对合法新代码假红的
+	// 守卫会被下一个人删掉**,那等于没有守卫。
+	scan := blankSwiftStringLiterals(source)
+	dialShapes := []*regexp.Regexp{
+		regexp.MustCompile(`\.appTraffic\s*\(`),              // GuardianClient().appTraffic()
+		regexp.MustCompile(`GuardianEndpoint\.appTraffic\b`), // 直接构造端点
+	}
 	dials := 0
-	for _, match := range regexp.MustCompile(`\bappTraffic\b`).FindAllStringIndex(source, -1) {
-		fn := enclosingSwiftFunc(defs, match[0])
-		if fn == "" {
-			t.Fatalf("偏移 %d 处碰了 appTraffic 端点,却不在任何函数体内 —— "+
-				"守卫读不懂现在的代码了,先修守卫", match[0])
+	for _, shape := range dialShapes {
+		for _, match := range shape.FindAllStringIndex(scan, -1) {
+			fn := enclosingSwiftFunc(defs, match[0])
+			if fn == "" {
+				t.Fatalf("偏移 %d 处拨了 /v1/apps,却不在任何函数体内 —— "+
+					"守卫读不懂现在的代码了,先修守卫", match[0])
+			}
+			if fn != "fetchAppTrafficOnDemand" {
+				t.Errorf("%s 里直接拨了 /v1/apps —— 拨号只许从 fetchAppTrafficOnDemand 长出来,"+
+					"否则「窗口关着就不拨」这条不变量在别处被绕开了", fn)
+			}
+			dials++
 		}
-		if fn != "fetchAppTrafficOnDemand" {
-			t.Errorf("%s 里直接拨了 /v1/apps —— 拨号只许从 fetchAppTrafficOnDemand 长出来,"+
-				"否则「窗口关着就不拨」这条不变量在别处被绕开了", fn)
-		}
-		dials++
 	}
 	if dials == 0 {
-		t.Fatal("main.swift 里一次都没碰过 appTraffic 端点 —— 守卫已经失效,先修守卫")
+		t.Fatal("main.swift 里一次都没拨过 /v1/apps —— 守卫已经失效,先修守卫")
 	}
 
 	// ② 那个拨号函数只能被这三处调用。
@@ -428,6 +547,15 @@ func TestMacMenuAppTrafficWindowSaysByteCountsAreApproximate(t *testing.T) {
 	if !strings.Contains(string(model), "let appTrafficApproximateNote") {
 		t.Fatal("appTrafficApproximateNote 不在纯模型里 —— 那句话就没有任何 Swift 测试盯着")
 	}
+	// **窗口不许自己造一份零值报告。** `AppTrafficReport(subscribed: false)` 渲染
+	// 出来的正是 "Not collecting app traffic right now." —— 而那句话是
+	// fetchAppTrafficOnDemand 的失败分支明令禁止的那一句(「读不到就说读不到,
+	// 不摆一个空报告」:「没问出来」与「没在采集」是两件事)。没有报告就什么都
+	// 不画,别替 Core 回答一个它没被问过的问题。
+	if strings.Contains(window, "AppTrafficReport(subscribed: false)") {
+		t.Error("窗口用零值伪造了一份空报告 —— 它会显示「没在采集」,而事实可能只是" +
+			"「这一次没问出来」,那是两件不同的事")
+	}
 }
 
 // **显式打开永不被在飞标志拦住。**
@@ -502,12 +630,33 @@ func TestMacMenuMarksAppTrafficStaleWhenItCannotRefresh(t *testing.T) {
 	if !strings.Contains(failure, "appTrafficConsecutiveFailures += 1") {
 		t.Error("失败没有被计数 —— 界面无从知道自己已经连着几次没拉到了")
 	}
-	if !strings.Contains(failure, "appTrafficStaleNotice(") {
-		t.Fatal("失败分支没有去问「该不该标陈旧」—— 窗口会静默冻在上一份快照上," +
-			"而那份快照读起来是「这些应用此刻正在走隧道」")
+	// **实参必须是光秃秃的一次取值**(与同一文件里那道能力门同一条纪律):
+	// 写死 `consecutiveFailures: 0` 会让横幅永不出现,而存在性检查照样全绿。
+	ask := regexp.MustCompile(
+		`if let notice = appTrafficStaleNotice\(\s*consecutiveFailures: self\.appTrafficConsecutiveFailures\)`)
+	if !ask.MatchString(failure) {
+		t.Fatal("失败分支没有拿**当前**失败计数去问「该不该标陈旧」—— " +
+			"写死一个常量就让横幅永不出现,而窗口会静默冻在上一份快照上," +
+			"那份快照读起来是「这些应用此刻正在走隧道」")
 	}
-	if !strings.Contains(failure, "markStaleIfVisible(") {
-		t.Fatal("陈旧提示没有被送进窗口 —— 判定算出来了却没人显示")
+	// **显示的必须就是纯模型算出来的那一句。** 手写一个串会让纯模型那半连同它
+	// 的全部 Swift 断言变成死代码,而窗口上写着另一份没人测过的文案
+	// (「判据只长在一条路上」)。
+	askAt := ask.FindStringIndex(failure)
+	noticeStart, noticeEnd, ok := swiftBlockRange(failure[askAt[0]:], "if let notice =")
+	if !ok {
+		t.Fatal("读不出 `if let notice = …` 那个块 —— 守卫已经失效,先修守卫")
+	}
+	shown := failure[askAt[0]+noticeStart : askAt[0]+noticeEnd]
+	if !strings.Contains(shown, "markStaleIfVisible(notice)") {
+		t.Fatalf("陈旧提示不是把纯模型算出来的 notice 原样送进窗口 —— "+
+			"手写文案会让那个纯函数与它的全部断言变成死代码:%s", strings.TrimSpace(shown))
+	}
+	// 送显示这一步必须在那个 `if let` 的花括号里 —— 挪进 else 或塞进一个恒假的
+	// 分支,存在性检查一样看不出来。
+	if strings.Count(failure, "markStaleIfVisible(") != 1 {
+		t.Errorf("markStaleIfVisible 在失败分支里出现 %d 次 —— 只许有那唯一一次,"+
+			"多出来的那次可能挂在别的条件上", strings.Count(failure, "markStaleIfVisible("))
 	}
 	// 成功必须清零,且清零要发生在把新数据画上去之前/同一路上。
 	success := body[failEnd:]
@@ -585,4 +734,51 @@ func swiftTimeIntervalConstant(t *testing.T, source, name string) (int, bool) {
 		return 0, false
 	}
 	return value, true
+}
+
+// **一层间接不许重开「窗口关着就不拨」那道门。**
+//
+// 上一条守卫锚在 main.swift 里的拨号形状上,而那只封住了**一个文件**:在
+// `GuardianClient.swift` 里加一句 `func apps() throws -> AppTrafficReport { try
+// appTraffic() }`,再从 main.swift 的任意函数调 `GuardianClient().apps()`,
+// 端点词一次都不出现在 main.swift 里 —— 整套测试全绿(审查实测)。
+//
+// 最便宜的闭合法在**客户端这一侧**:`/v1/apps` 只有一个到达点,而那个到达点
+// 不许被同文件里的任何函数调用。于是想拨这个端点,只能从 main.swift 调
+// `GuardianClient().appTraffic()`,也就必然撞上上一条守卫。
+func TestMenuAppTrafficClientExposesExactlyOneWayIn(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(
+		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "GuardianClient.swift"))
+	if err != nil {
+		t.Fatalf("读不到 GuardianClient.swift:%v —— 守卫已经失效,先修守卫", err)
+	}
+	source := string(raw)
+	scan := blankSwiftStringLiterals(source)
+	defs := swiftFunctionDefs(source)
+
+	// ① 端点只被送进 perform 一次,而且就在那个同名方法里。
+	sends := regexp.MustCompile(`perform\(endpoint: \.appTraffic\b`).FindAllStringIndex(scan, -1)
+	if len(sends) != 1 {
+		t.Fatalf("`perform(endpoint: .appTraffic` 出现 %d 次,应当恰好一次 —— "+
+			"多一个入口就是多一条绕开「窗口关着就不拨」的路", len(sends))
+	}
+	if fn := enclosingSwiftFunc(defs, sends[0][0]); fn != "appTraffic" {
+		t.Fatalf("送出 /v1/apps 的是 %q,不是那个同名方法 —— 守卫读不懂现在的代码了,先修守卫", fn)
+	}
+
+	// ② 同文件里没有任何函数去调它。一个包装方法(`func apps() { try
+	// appTraffic() }`)会让 main.swift 那条链的证明整个失效 —— 与 `typealias
+	// CommandRunner = Process` 让 spawn 那条链失效是同一个形状。
+	for _, match := range regexp.MustCompile(`\bappTraffic\s*\(`).FindAllStringIndex(scan, -1) {
+		if match[0] >= 5 && source[match[0]-5:match[0]] == "func " {
+			continue // 定义行自身
+		}
+		fn := enclosingSwiftFunc(defs, match[0])
+		if fn == "" {
+			t.Fatalf("偏移 %d 处调了 appTraffic(),却不在任何函数体内 —— "+
+				"守卫读不懂现在的代码了,先修守卫", match[0])
+		}
+		t.Errorf("%s 里包了一层 appTraffic() —— 包装方法会让 main.swift 那条"+
+			"「拨号只能从 fetchAppTrafficOnDemand 长出来」的证明整个失效", fn)
+	}
 }
