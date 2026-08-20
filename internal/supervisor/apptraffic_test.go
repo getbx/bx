@@ -326,6 +326,90 @@ func TestAppTrafficRingBufferDropsOldestWhenFull(t *testing.T) {
 	}
 }
 
+// **环形缓冲摊平出来的必须是真正的时间序。**
+//
+// Record 在端口复用时只清**字节账**,不删旧的 ConnRecord —— 所以同一个键在一个
+// 30 秒窗口里被复用多次时,缓冲里会**同时存在好几条**该键的记录。而
+// appattr.Aggregate 的字节归属规则是「同一个键最近的那条记录赢」(倒序遍历 +
+// counted 去重),于是那笔字节记到哪个应用/哪一组,**完全取决于
+// liveRecordsLocked 返回的是不是真正的时间序**。
+//
+// 上一版的 TestAppTrafficRingBufferDropsOldestWhenFull 守不住这件事:它用空的
+// owners map,所有记录都塌进同一行 unknown,只比 Conns 总数 —— 把两个 append
+// 对调之后它照样绿。这是这个仓库反复栽的同一个形状:守卫钉住的是缺陷旁边的东西。
+//
+// 这里让**同一个端口**先后走过两条不同的路(direct → tunnel),字节只在最后那条
+// 之后加,于是「哪条记录幸存/哪条最新」变成可判定的:字节必须落在 tunnel 组。
+func TestAppTrafficKeepsTimeOrderAcrossRingBoundaries(t *testing.T) {
+	const n = appTrafficMaxRecords
+	cases := []struct {
+		name  string
+		total int
+	}{
+		{"没绕圈(差一条写满)", n - 1},
+		{"刚好写满", n},
+		{"刚绕过一条", n + 1},
+		{"绕过两圈半", n*2 + n/2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+			tr := NewAppTraffic(src, time.Now)
+			tr.Subscribe()
+
+			// directAt 挑在「还能活到最后」的位置上:它之后还会写 n-9 条,
+			// 少于缓冲容量 n,所以这条旧记录必然幸存 —— 否则测的就只是
+			// 「被覆盖掉了」而不是顺序。
+			directAt := tc.total - n + 8
+			if directAt < 0 {
+				directAt = 0
+			}
+			for i := 0; i < tc.total; i++ {
+				switch {
+				case i == tc.total-1:
+					tr.Record(7, false, appattr.PathTunnel, "default", "")
+					tr.AddUp(7, false, 1000) // 只在**最新**那条之后加账
+				case i == directAt:
+					tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com")
+				default:
+					// 填充走 blocked 组,不污染要断言的那两组;端口从 8 起,
+					// 永远躲开 7。
+					tr.Record(uint16(i%60000)+8, false, appattr.PathBlocked, "builtin", "")
+				}
+			}
+
+			report, _, err := tr.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			tunnel, direct := report.Groups[0], report.Groups[1]
+			if len(tunnel.Rows) != 1 || tunnel.Rows[0].App != "Slack" {
+				t.Fatalf("tunnel 组应恰有 Slack 一行: %#v", tunnel.Rows)
+			}
+			if len(direct.Rows) != 1 || direct.Rows[0].App != "Slack" {
+				t.Fatalf("direct 组应恰有 Slack 一行(旧记录必须幸存): %#v", direct.Rows)
+			}
+			if tunnel.Rows[0].BytesUp != 1000 {
+				t.Fatalf("字节应记给**最新**那条(tunnel),得到 tunnel=%d direct=%d —— 摊平出来的不是时间序",
+					tunnel.Rows[0].BytesUp, direct.Rows[0].BytesUp)
+			}
+			if direct.Rows[0].BytesUp != 0 {
+				t.Fatalf("旧记录不该拿到字节,得到 %d", direct.Rows[0].BytesUp)
+			}
+			// 顺带钉住容量:写满之后总条数稳定在 n,一条不多一条不少。
+			var conns int
+			for _, g := range report.Groups {
+				for _, row := range g.Rows {
+					conns += row.Conns
+				}
+			}
+			if want := min(tc.total, n); conns != want {
+				t.Fatalf("总条数应为 %d,得到 %d", want, conns)
+			}
+		})
+	}
+}
+
 // 竞态:热路径(数据面多 goroutine)与 Snapshot(控制面)同时跑。
 // 这条测试的价值全在 -race 下 —— 没有它,-race 只是在几条串行测试上空转。
 func TestAppTrafficConcurrentRecordAndSnapshot(t *testing.T) {
