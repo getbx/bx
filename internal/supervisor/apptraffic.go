@@ -60,14 +60,27 @@ type liveConn struct {
 // AppTraffic 按 (源端口,协议) 记账。**归因、字节账与历史只在有人订阅时才攒**,
 // 而**活连接表任何时候都维护**。
 //
-// **未订阅时的代价不是零,是每条连接两次 map 操作**(建连一次、关闭一次)——
-// 不是每个包一次。这个代价是 2026-08-20 那个真机 bug 换来的:Record 只在建连
-// 那一刻被调用,于是订阅之前就已经建好的连接永远不会出现在窗口里,而长连接
-// (会议媒体流、WebSocket、SSH)恰恰全是这种。窗口打开时用这张表播种,才看得见
-// 「已经在跑的东西」。
+// **未订阅时的代价不是零**:每条连接**两次全局锁获取 + 四次 map 操作**
+// (建连时 Record 读改写一次,关闭时 ConnClosed 读删一次)—— 是每条连接一次,
+// **不是每个包一次**,而那把锁与 addBytes 是同一把全局锁。这个代价是 2026-08-20
+// 那个真机 bug 换来的:Record 只在建连那一刻被调用,于是订阅之前就已经建好的
+// 连接永远不会出现在窗口里,而长连接(会议媒体流、WebSocket、SSH)恰恰全是
+// 这种。窗口打开时用这张表播种,才看得见「已经在跑的东西」。
 //
 // **热路径仍然不做归因**:问内核、解进程名全部发生在 Snapshot 里;字节记账
 // (AddUp/AddDown,每次转发写都要走)仍由一次 atomic 读挡在锁外。
+//
+// **已知缺口:种子把一个 socket 上并存的 N 条流压成一条,而新记录不会。**
+// live 按 PortKey 记,同键最后写入者胜(见 Record),seedFromLiveLocked 每键只
+// 发一条记录。于是一个会议 socket 同时打 STUN(可能直连)+ TURN(可能走隧道)时:
+// **订阅前**建立的只会出现在**一个**组里、连接数恒为 1;**订阅后**建立的则正确地
+// 出现在**两个**组里、连接数为 N。同一个事实,按窗口打开时机给出不同答案 ——
+// 而「腾讯会议为什么绕一圈」恰恰是这个功能要回答的问题。
+// 今天刻意不修:相对修复前(**完全看不见**)这仍是巨大改善,用户的用例答得出来、
+// 只是少一个组;真修不便宜 —— ConnClosed(port, udp) 无从知道该减哪一档,要把键
+// 重新设计成能分辨同一 socket 上的不同流。当前行为由
+// TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket **明确钉住**
+// (那条测试断言的是「这是已知行为」,不是「这样是对的」)。
 //
 // 三态刻意分开,一条都不许合并:「没人在看」/「在看但问不出来」/「在看且
 // 确实没有连接」。把后两者压成一份空报告,读起来就是句自洽的假话。
@@ -122,7 +135,14 @@ func (t *AppTraffic) Subscribe() {
 }
 
 // seedFromLiveLocked 把此刻所有活连接作为记录塞进刚建好的环形缓冲。
-// 调用者必须持有 t.mu,且 records 必须已经是新的一份。
+// 调用者必须持有 t.mu,且 records 必须已经是新的一份(**此时 t.active 还是
+// false**,种子先于置位发生 —— 见 appendRecordLocked 的契约注释)。
+//
+// **种子不做容量限制,活连接超过 appTrafficMaxRecords(4096)时它自己就会把
+// 缓冲绕满**,最早那批种子被后来的种子挤掉。这是刻意的:环形缓冲的语义本就是
+// 「满了丢最旧的」,给种子单开一条截断规则只会多出一种要解释的行为。真机量级
+// 是 66 条活连接(62 倍余量),但这个前提写在这里,别默认它永远成立 ——
+// 一旦 ConnClosed 那条边界破了,泄漏出来的陈旧种子会先在这里显形(见 ConnClosed)。
 //
 // 排序只为让输出确定:map 迭代顺序随机,而 liveRecordsLocked 的顺序是承重的
 // (Aggregate 按倒序把字节记给最近那条记录)。种子彼此的键互不相同,顺序其实
@@ -223,7 +243,9 @@ func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source,
 	})
 }
 
-// appendRecordLocked 往环形缓冲写一条。调用者必须持有 t.mu 且已确认在采集中。
+// appendRecordLocked 往环形缓冲写一条。调用者必须持有 t.mu,且 t.records 必须
+// 是有效的一份 —— **不是「t.active 为真」**:seedFromLiveLocked 在 Subscribe 里
+// 置位 active **之前**就调它(缓冲刚 make 出来,种子先进去,再对外宣布在采集)。
 func (t *AppTraffic) appendRecordLocked(rec appattr.ConnRecord) {
 	t.records[t.next] = rec
 	t.next++
@@ -232,8 +254,13 @@ func (t *AppTraffic) appendRecordLocked(rec appattr.ConnRecord) {
 	}
 }
 
-// ConnClosed 报告一条连接结束。**这是活连接表唯一的边界** —— 少了它,一台跑着
-// 的机器上那张表会单调增长到 OOM,而报告仍然完全正确、没有任何一处会报错。
+// ConnClosed 报告一条连接结束。**这是活连接表唯一的边界。**
+//
+// **它不会涨到 OOM,别那么写** —— 键是 appattr.PortKey{uint16, bool},硬上限
+// 131072 条、约 10–15MB,泄漏满了也就到此为止。**真正的后果发作得更早,而且更糟**:
+// 陈旧条目累积到几千条之后,seedFromLiveLocked 一次就能把 4096 格的环形缓冲填满
+// 并绕圈,**新记录被自己的陈旧种子挤掉** —— 报告从「正确但残缺」退化成「错的」,
+// 而仍然没有任何一处会报错。
 //
 // 由 tun 引擎在 handleConn 里 defer 调用,**且必须 defer 在拨号之前**:判定
 // (Record)发生在 Dial 内部,kill-switch Block 这类失败同样会留下一条活连接

@@ -328,7 +328,9 @@ func (e *Engine) relay(local, upstream net.Conn, initial []byte, srcPort uint16,
 }
 
 // writeHook 把「全局字节统计」与「按源端口的应用归因」合成一个 onWrite 闭包。
-// 两者都没接时返回 nil,copyOneWay 便一次调用都不做(没人看时开销为零)。
+// 两者都没接时返回 nil,copyOneWay 便一次调用都不做。**说的是「都没接线」,
+// 不是「没人在看」** —— 生产里 e.bytes 恒非 nil(wireAppAttribution 总会接),
+// 「没人订阅」由 AppTraffic.addBytes 自己那一句 atomic 读挡掉。
 func (e *Engine) writeHook(srcPort uint16, udp bool, up bool) func(int64) {
 	stats, bytes := e.stats, e.bytes
 	if stats == nil && bytes == nil {
