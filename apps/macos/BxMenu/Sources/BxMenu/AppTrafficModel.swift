@@ -165,9 +165,22 @@ struct AppTrafficReport: Decodable, Equatable {
         return out
     }
 
+    /// 一条应用记录的副标题。
+    ///
+    /// **`rules` 有话说时才占地方。** 服务端只在**用户自己写的规则**命中时填它
+    /// (命中内建 china 列表时给空串,见 `appattr.ConnRecord.Rule`),所以它天然
+    /// 稀疏,而且恰好是唯一可行动的那一半:用户能去改的只有自己写的那几行。
+    /// 无差别地给每一行都加一句会让它变成墙纸(与项目所有者否掉「Direct rules:
+    /// N unreachable」常驻红字同一条判断);反过来,把它整个丢掉就是把「你的
+    /// Steam 之所以直连,是因为你自己写的 *.steamstatic.com」这条唯一的归因扔掉。
+    ///
+    /// 措辞点名「your rule」:内建列表的判定用户改不了,说成「rule」会让他去
+    /// 找一条配置文件里根本不存在的行。
     private static func detail(for row: AppTrafficRow) -> String {
         let conns = "\(row.conns) connection\(row.conns == 1 ? "" : "s")"
-        return "\(conns) · \(formatByteCount(row.bytesUp)) up · \(formatByteCount(row.bytesDown)) down"
+        let base = "\(conns) · \(formatByteCount(row.bytesUp)) up · \(formatByteCount(row.bytesDown)) down"
+        guard !row.rules.isEmpty else { return base }
+        return "\(base) · your rule: \(row.rules.joined(separator: ", "))"
     }
 }
 
@@ -187,3 +200,41 @@ func formatByteCount(_ n: Int64) -> String {
     }
     return String(format: "%.1f %@", value, units[unitIndex])
 }
+
+/// 这一版 Guardian 提不提供 /v1/apps。
+///
+/// **绝不「试着拨一下看看」**:旧 Guardian 不认识这条路径,回的是 404 —— 而
+/// 客户端无从区分「这版不支持」与「这版支持但此刻没数据」,画出来的菜单项每次
+/// 点都失败,而 404 在菜单上根本表达不出来。
+///
+/// **nil 与 [] 是两件事**:nil 是「这版压根没声明过能力」(旧版,键缺席),
+/// [] 是「声明了、一个都没有」。两者都不开这个入口,但不是同一件事,而
+/// `GuardianStatus.capabilities` 刻意保留了这个区分。
+///
+/// 判据与 `rulesEditingAvailable` / `serverSwitchingAvailable` 同源;能力名
+/// 与 Go 侧 `guardian.CapabilityApps` 手抄对齐(跨语言,没有守卫能同时钉住两边)。
+func appTrafficAvailable(capabilities: [String]?) -> Bool {
+    guard let capabilities else { return false }
+    return capabilities.contains("apps")
+}
+
+/// 窗口开着时的心跳间隔。
+///
+/// **它同时是订阅的续期节拍**:Core 侧的采集订阅靠每一次拉取续期,TTL 30 秒、
+/// 惰性结算。窗口关掉就没有人再拉,订阅在一个 TTL 内自己过期、采集停掉、
+/// 缓冲清空 —— 「没人看时开销精确为零」就是这么成立的,不需要一条退订路径
+/// (菜单被强杀时也没人来退订,而 TTL 一视同仁)。
+let appTrafficRefreshSeconds: TimeInterval = 3
+
+/// Core 侧 `appTrafficTTL`。**跨语言手抄的一个数**(Go 侧未导出,Swift 拿不到),
+/// 只用来在测试里钉住上面那个间隔留了足够余量;它变了这边不会红,与
+/// `guardianStatusWatchTimeout` 那一对是同一个局限。
+let appTrafficSubscriptionTTLSeconds: TimeInterval = 30
+
+/// 界面底部那句免责声明。
+///
+/// **不是可选的。** 归因把字节数记在源端口上,而端口会被复用 —— 上一条连接的
+/// 残留字节会算到新连接头上。spec 明写「界面不该把它显示成精确账」:只说
+/// 「近似」会被读成「四舍五入」,所以这句话必须同时点明来源(端口复用),
+/// 那是用户发现数字对不上时唯一能自洽的解释。
+let appTrafficApproximateNote = "Byte counts are approximate (ports get reused)."

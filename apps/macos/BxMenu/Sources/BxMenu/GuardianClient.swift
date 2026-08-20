@@ -37,12 +37,18 @@ enum GuardianEndpoint {
     case switchServer(name: String)
     /// 长轮询:Guardian 在自己的代际号与 generation 不同时立刻应答,相同则挂住。
     case statusWatch(generation: UInt64)
+    /// 一份应用流量归因报告。**这一次拉取同时给 Core 的采集订阅续期**(30 秒
+    /// TTL,惰性结算)—— 所以「不拉」等价于「不采集」,窗口关掉之后不需要任何
+    /// 退订路径。**只有 `appTrafficAvailable(capabilities:)` 判定这一版 Guardian
+    /// 支持时才该调用它**:旧 Guardian 不认识 /v1/apps,回的是 404,而那与
+    /// 「支持但此刻没数据」在客户端看来必须分得开。
+    case appTraffic
 
     var expectedStatus: Int {
         switch self {
         case .requestRecovery: return 202
         case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule,
-             .changeRuleGroup, .listServers, .switchServer, .probeServers, .statusWatch:
+             .changeRuleGroup, .listServers, .switchServer, .probeServers, .statusWatch, .appTraffic:
             return 200
         }
     }
@@ -54,6 +60,8 @@ enum GuardianEndpoint {
         case .updateCheck: return guardianUpdateCheckTimeout
         // 只是读写一个小 YAML 文件,不做网络 I/O。
         case .listRules, .changeRule, .changeRuleGroup, .listServers: return guardianDefaultTimeout
+        // 只是把 Core 已经聚合好的一份快照转发出来,不做网络 I/O。
+        case .appTraffic: return guardianDefaultTimeout
         // 服务端要武装 → 等新隧道健康(上限 12 秒)→ 确认。客户端必须比那条链
         // 更长,否则拿到的永远是自己的超时,而切换其实还在进行 —— 用户会看到
         // 一句失败,然后出口在几秒后自己变了。
@@ -217,6 +225,18 @@ struct GuardianClient {
         try perform(endpoint: .listServers, as: ServerList.self)
     }
 
+    /// 取一份应用流量归因报告,**同时给采集订阅续期**。
+    ///
+    /// 三态(没人订阅 / 订阅了但问不出来 / 订阅了且确实没有连接)由
+    /// `AppTrafficReport` 原样解出,这一层不合并也不压平 —— 合成一句话就是把
+    /// 「没在采集」说成「没有流量」这样一句自洽的假话。
+    ///
+    /// **调用前必须过 `appTrafficAvailable(capabilities:)` 那道能力门**,理由
+    /// 见 `GuardianEndpoint.appTraffic`。
+    func appTraffic() throws -> AppTrafficReport {
+        try perform(endpoint: .appTraffic, as: AppTrafficReport.self)
+    }
+
     /// 测一遍所有服务器,返回**带探测结论的完整清单**。
     ///
     /// 探测走在隧道外面,所以这只在用户点「Test」时发生 —— 绝不做后台定时探测。
@@ -366,6 +386,10 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
     case .listServers:
         method = "GET"
         path = "/v1/servers"
+        body = nil
+    case .appTraffic:
+        method = "GET"
+        path = "/v1/apps"
         body = nil
     case let .switchServer(name):
         method = "POST"
