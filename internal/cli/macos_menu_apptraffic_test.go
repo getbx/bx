@@ -837,3 +837,223 @@ func TestMenuAppTrafficClientExposesExactlyOneWayIn(t *testing.T) {
 			"「拨号只能从 fetchAppTrafficOnDemand 长出来」的证明整个失效", fn)
 	}
 }
+
+// swiftArrayElements 把一段 `[a, b, c]` 字面量拆成**顶层**元素。
+//
+// 只在深度 0 的逗号处切:`[f(x, y), g]` 是两个元素不是三个。方括号/圆括号/
+// 花括号都要配平,字符串照例先抹白 —— 一个标题里的逗号不是结构。
+func swiftArrayElements(literal string) []string {
+	scan := blankSwiftStringLiterals(literal)
+	var out []string
+	depth, start := 0, 0
+	for i := 0; i < len(scan); i++ {
+		switch scan[i] {
+		case '[', '(', '{':
+			depth++
+		case ']', ')', '}':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, strings.TrimSpace(literal[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	if tail := strings.TrimSpace(literal[start:]); tail != "" {
+		out = append(out, tail)
+	}
+	return out
+}
+
+// swiftBracketedLiteral 返回 marker 之后第一对方括号里的内容。
+func swiftBracketedLiteral(source, marker string) (string, bool) {
+	scan := blankSwiftStringLiterals(source)
+	start := strings.Index(scan, marker)
+	if start < 0 {
+		return "", false
+	}
+	open := strings.IndexByte(scan[start:], '[')
+	if open < 0 {
+		return "", false
+	}
+	open += start
+	depth := 0
+	for i := open; i < len(scan); i++ {
+		switch scan[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return source[open+1 : i], true
+			}
+		}
+	}
+	return "", false
+}
+
+func menuAppTrafficModelSource(t *testing.T) string {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join(
+		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "AppTrafficModel.swift"))
+	if err != nil {
+		t.Fatalf("读不到 AppTrafficModel.swift:%v —— 守卫已经失效,先修守卫", err)
+	}
+	return string(source)
+}
+
+// **图标是这次改动收益最大的一件事,而它整个住在 AppKit 那一半** —— 没有任何
+// Swift 测试能看见它被画出来没有。
+//
+// 判据是三条**语义**,不是「文件里出现过 NSWorkspace」:
+//  1. 取图标之前先看过路径,而且路径为空时**什么都不返回**(不画占位:一格空白
+//     的占位图不是「没有图标」,是「这个应用的图标长这样」);
+//  2. 那个图标真的进了一行的格子里 —— 一个没人调用的 icon(for:) 与没有图标在
+//     界面上完全一样;
+//  3. 图标取的是 `.app` 包(appIconPath,纯函数、已测),不是包里那个可执行
+//     文件 —— 对后者取图标一整列长一个样,等于没有图标。
+func TestMacMenuAppTrafficWindowDrawsAppIcons(t *testing.T) {
+	window := stripSwiftComments(menuAppTrafficWindowSource(t))
+	body, ok := swiftFunctionBody(window, "private func icon(for entry: AppTrafficReport.Entry) -> NSView?")
+	if !ok {
+		t.Fatal("读不出 icon(for:) 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	gate := strings.Index(body, "execPath")
+	use := strings.Index(body, "NSWorkspace")
+	if gate < 0 {
+		t.Fatal("取图标之前没有看过可执行路径 —— 路径为空的那些行会去取一个不存在路径的图标")
+	}
+	if use < 0 {
+		t.Fatal("icon(for:) 里没有取系统图标 —— 那这个窗口还是纯文字")
+	}
+	if gate > use {
+		t.Fatalf("先取了图标才去看路径(gate=%d use=%d)—— 空路径那一路已经把图标画出来了", gate, use)
+	}
+	if !strings.Contains(body[gate:use], "return nil") {
+		t.Error("路径为空时没有直接返回「没有图标」—— 那一格会变成一个空白占位," +
+			"而空白占位不是「没有图标」,是「这个应用的图标长这样」")
+	}
+	if !strings.Contains(body, "appIconPath") {
+		t.Error("图标取的不是 .app 包(没经过 appIconPath)—— 对包里的可执行文件取图标" +
+			"拿到的是通用图标,一整列长一个样")
+	}
+	cells, ok := swiftFunctionBody(window, "private func cells(for entry: AppTrafficReport.Entry) -> [NSView]")
+	if !ok {
+		t.Fatal("读不出 cells(for:) 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(cells, "icon(") {
+		t.Error("一行的格子里没有图标 —— 一个没人调用的 icon(for:) 与没有图标完全一样")
+	}
+}
+
+// **数字必须排成右对齐的列。**
+//
+// 上一版每行是一句散文(`1 connection · 48 B up · 48 B down · …`),两行之间没法
+// 比大小 —— 那正是「感觉 iStat 做得更好」里最实的一半。
+//
+// 判据同样是语义:
+//  1. 哪几列是数字列由纯模型说了算(`appTrafficNumericColumns`),窗口遍历它、
+//     把每一列摆成 trailing —— 钉的是这个循环体,不是某个字面下标;
+//  2. **一列一格**:cells(for:) 返回的顶层元素数必须等于列标题数。这一条才是
+//     「没有退回散文」的判据 —— 把七个格子拼成一句话塞进一个 label,字段名照样
+//     全部出现在源码里,只有这个计数会掉下来。
+func TestMacMenuAppTrafficNumbersAreRightAligned(t *testing.T) {
+	window := stripSwiftComments(menuAppTrafficWindowSource(t))
+	loop, _, ok := swiftBlockRange(window, "for index in appTrafficNumericColumns")
+	if !ok {
+		t.Fatal("窗口没有遍历 appTrafficNumericColumns —— 右对齐要么没做,要么手抄了" +
+			"一份下标表(那份表就再没有任何测试盯着)")
+	}
+	_, end, _ := swiftBlockRange(window, "for index in appTrafficNumericColumns")
+	inLoop := window[loop:end]
+	if !strings.Contains(inLoop, "xPlacement") || !strings.Contains(inLoop, ".trailing") {
+		t.Errorf("数字列没有被摆成右对齐(循环体:%q)", strings.TrimSpace(inLoop))
+	}
+
+	titles, ok := swiftBracketedLiteral(menuAppTrafficModelSource(t), "let appTrafficColumnTitles")
+	if !ok {
+		t.Fatal("读不出 appTrafficColumnTitles —— 守卫已经失效,先修守卫")
+	}
+	wantColumns := len(swiftArrayElements(titles))
+	if wantColumns < 4 {
+		t.Fatalf("只解出 %d 个列标题 —— 守卫读不懂现在的代码了", wantColumns)
+	}
+	cells, ok := swiftFunctionBody(window, "private func cells(for entry: AppTrafficReport.Entry) -> [NSView]")
+	if !ok {
+		t.Fatal("读不出 cells(for:) 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	literal, ok := swiftBracketedLiteral(cells, "")
+	if !ok {
+		t.Fatal("cells(for:) 里没有一个格子数组 —— 守卫读不懂现在的代码了")
+	}
+	if got := len(swiftArrayElements(literal)); got != wantColumns {
+		t.Errorf("一行摆了 %d 个格子,而列有 %d 个 —— 一列一格才对得齐;"+
+			"把几格拼成一句散文塞进一个 label 正是这一条要拦的", got, wantColumns)
+	}
+	if !strings.Contains(window, "NSGridView(numberOfColumns: appTrafficColumnTitles.count") {
+		t.Error("表格的列数不是从 appTrafficColumnTitles 来的 —— 手抄一个数字," +
+			"加一列时它不会跟着变,而没有任何东西会红")
+	}
+}
+
+// **速率必须真的被算出来并传进渲染层。**
+//
+// 判据两条:窗口每读到一份报告就推进一拍(`ingest`),以及 `rows(...)` 收到的是
+// 那一拍的结果 —— 一个算了却没人用的速率表与没有速率完全一样。
+//
+// 第一帧不许编造速率那一条**不在这里**:它是判断,住在 AppTrafficRateTracker 里,
+// 由 Swift 套件钉住。这里只钉「接线接上了」。
+func TestMacMenuAppTrafficWindowFeedsRatesIntoRendering(t *testing.T) {
+	window := stripSwiftComments(menuAppTrafficWindowSource(t))
+	if !strings.Contains(window, "rateTracker.ingest(") {
+		t.Fatal("窗口从不推进速率跟踪器 —— 那一列永远是「没有速率」")
+	}
+	args := swiftCallArguments(window, ".rows")
+	if len(args) == 0 {
+		t.Fatal("解析不出 rows(...) 的调用 —— 守卫读不懂现在的代码了,先修守卫")
+	}
+	fed := false
+	for _, arg := range args {
+		if strings.Contains(arg, "rates") {
+			fed = true
+			break
+		}
+	}
+	if !fed {
+		t.Errorf("rows(...) 没有收到速率表(解析出 %d 次调用)—— 算出来没人用,"+
+			"界面上与没有速率完全一样", len(args))
+	}
+}
+
+// **那句「窗口打开之前建立的连接可能只出现在一个组里」不是可选的。**
+//
+// 它是一条已知近似的用户可见面:种子把一个 socket 上并存的多条流压成一条,于是
+// 同一条连接,窗口打开**之前**建立的只会出现在一个组里、打开**之后**建立的会
+// 正确出现在两个组里。这件事此前有三份记档和一条测试,唯独用户看不到 —— 而它
+// 恰好落在这个窗口最初的用例上(开会开到一半打开窗口看会议走哪)。
+//
+// 判据与那句「近似值」同一条:**必须出现在某一次 addArrangedSubview 的实参里**。
+// 「文件里出现过这个标识符」证明不了它被画出来(`let _ = note` 就能满足)。
+func TestMacMenuAppTrafficWindowSaysPreexistingConnectionsMayShowInOneSection(t *testing.T) {
+	window := stripSwiftComments(menuAppTrafficWindowSource(t))
+	args := swiftCallArguments(window, "addArrangedSubview")
+	if len(args) == 0 {
+		t.Fatal("在 AppTrafficWindow.swift 里一次 addArrangedSubview 都没解析出来 —— " +
+			"守卫读不懂现在的代码了,先修守卫")
+	}
+	shown := false
+	for _, arg := range args {
+		if strings.Contains(arg, "appTrafficPreexistingNote") {
+			shown = true
+			break
+		}
+	}
+	if !shown {
+		t.Fatalf("那句「窗口打开之前的连接可能只出现在一个组里」没有出现在任何一次 "+
+			"addArrangedSubview 的实参里 —— 这个已知缺口对用户仍然是不可见的"+
+			"(共解析出 %d 次 addArrangedSubview)", len(args))
+	}
+	if !strings.Contains(menuAppTrafficModelSource(t), "let appTrafficPreexistingNote") {
+		t.Fatal("appTrafficPreexistingNote 不在纯模型里 —— 那句话就没有任何 Swift 测试盯着")
+	}
+}

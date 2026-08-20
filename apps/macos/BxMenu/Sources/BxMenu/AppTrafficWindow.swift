@@ -33,6 +33,14 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     private var report: AppTrafficReport?
     private var staleNotice: String?
 
+    /// 速率由**相邻两次快照做差**得来(判据全在 AppTrafficRateTracker 里,
+    /// 这里只负责在每一次真的读到报告时喂它一拍)。
+    ///
+    /// **窗口一关就整个重置**:关掉窗口意味着订阅在一个 TTL 内过期、Core 侧缓冲
+    /// 清空,下次打开累计值从零重来 —— 跨越那一刀去做差没有任何意义。
+    private var rateTracker = AppTrafficRateTracker()
+    private var rates: [AppTrafficRateKey: AppTrafficRate] = [:]
+
     /// 用户关掉了窗口。**接线方必须据此停掉心跳** —— 窗口关了而定时器还在跑,
     /// 订阅就永远续着,而界面上看不出任何异常。
     var onClose: (() -> Void)?
@@ -45,6 +53,10 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
         let window = ensureWindow()
         self.report = report
         staleNotice = nil
+        // 打开窗口 = 一份新订阅的第一帧。**第一帧没有速率**,而且不许编一个:
+        // 见 AppTrafficRateTracker 头上那段。
+        rateTracker = AppTrafficRateTracker()
+        rates = rateTracker.ingest(report, at: Date())
         render()
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
         // 用户以为"点了没反应"。
@@ -59,6 +71,9 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
         self.report = report
         // 拉到了就是拉到了 —— 一次成功抹掉陈旧标记,不留一句会自我永存的警告。
         staleNotice = nil
+        // **只在真的读到报告时才推进一拍。** 失败那几拍不喂它,于是下一次成功时
+        // 的时长会自动把那几拍算进去 —— 那才是这两份快照之间真实流逝的时间。
+        rates = rateTracker.ingest(report, at: Date())
         render()
     }
 
@@ -73,13 +88,19 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        // 订阅会在一个 TTL 内过期、Core 侧缓冲清空,下次打开累计值从零重来。
+        // 留着上一份快照做差会得到一个横跨那一刀的假速率。
+        rateTracker = AppTrafficRateTracker()
+        rates = [:]
         onClose?()
     }
 
     private func ensureWindow() -> NSWindow {
         if let window { return window }
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
+            // 八列(图标 + 应用名 + 五个数字列 + 规则原文)摆得下的宽度;
+            // 上一版是 460,那时一行是一句散文。
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -153,14 +174,16 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
             stack.addArrangedSubview(gap())
         }
 
-        for row in report.rows() {
-            switch row {
-            case .sectionHeader(let title):
-                stack.addArrangedSubview(header(title))
-            case .entry(let app, let detail):
-                stack.addArrangedSubview(entry(app: app, detail: detail))
-            case .notice(let text):
-                stack.addArrangedSubview(NSTextField(labelWithString: text))
+        let rows = report.rows(rates: rates)
+        // 有应用行就摆成一张表(数字右对齐、跨组对得上);三种「空」那几句
+        // 说明没有列可对齐,原样一行一行摆。
+        if rows.contains(where: { if case .entry = $0 { return true }; return false }) {
+            stack.addArrangedSubview(grid(for: rows))
+        } else {
+            for row in rows {
+                if case .notice(let text) = row {
+                    stack.addArrangedSubview(NSTextField(labelWithString: text))
+                }
             }
         }
 
@@ -170,32 +193,98 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
         // AppTrafficModel 的常量里,由 Swift 套件钉住。
         stack.addArrangedSubview(gap())
         stack.addArrangedSubview(hint(appTrafficApproximateNote))
+        // **第二句小字同样不是可选的。** 窗口打开之前就已经建好的连接由种子播进
+        // 缓冲,而种子把一个 socket 上并存的多条流压成一条 —— 于是它们只会出现在
+        // 一个组里。这件事此前有三份记档和一条测试,唯独用户看不到,而它恰好落在
+        // 这个窗口最初的用例上(开会开到一半打开窗口看会议走哪)。措辞只陈述观测
+        // 得到的现象、不断言原因,与那句「Protection may be off.」同一条纪律;
+        // 那句话本身住在 AppTrafficModel 的常量里,由 Swift 套件钉住。
+        stack.addArrangedSubview(hint(appTrafficPreexistingNote))
+    }
+
+    /// 把应用行摆成一张表:**数字列右对齐,跨组对得上大小**。
+    ///
+    /// 上一版每行是一句散文(`1 connection · 48 B up · 48 B down · …`),两行之间
+    /// 没法比大小 —— 那正是「感觉 iStat 做得更好」里最实的一半。
+    ///
+    /// **哪几列是数字列由纯模型说了算**(`appTrafficNumericColumns`):判据放在
+    /// 这个文件里就没有任何测试能读到它,AppKit 这一半在 CI 里编不了。
+    private func grid(for rows: [AppTrafficReport.Row]) -> NSView {
+        let grid = NSGridView(numberOfColumns: appTrafficColumnTitles.count, rows: 0)
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 5
+        grid.columnSpacing = 14
+        // 列标题只出现一次(整张表最上面),不是每组重复一遍 —— 三组各来一行
+        // 表头会把这个窗口变成一屏表头。
+        grid.addRow(with: appTrafficColumnTitles.map { columnTitle($0) })
+
+        for row in rows {
+            switch row {
+            case .sectionHeader(let title):
+                let cells = grid.addRow(with: [header(title)])
+                cells.mergeCells(in: NSRange(location: 0, length: appTrafficColumnTitles.count))
+            case .entry(let entry):
+                grid.addRow(with: cells(for: entry))
+            case .notice:
+                continue // 说明行不进表格(它没有列可对齐)
+            }
+        }
+
+        for index in appTrafficNumericColumns {
+            grid.column(at: index).xPlacement = .trailing
+        }
+        return grid
+    }
+
+    /// 一行的八个格子。顺序必须与 `appTrafficColumnTitles` 一一对应。
+    private func cells(for entry: AppTrafficReport.Entry) -> [NSView] {
+        [
+            icon(for: entry) ?? NSGridCell.emptyContentView,
+            NSTextField(labelWithString: entry.app),
+            hint(entry.conns),
+            hint(entry.upRate),
+            hint(entry.downRate),
+            hint(entry.upTotal),
+            hint(entry.downTotal),
+            rule(entry.rule),
+        ]
+    }
+
+    /// 应用图标。**路径为空就返回 nil,不画占位** —— 一格空白的占位图不是
+    /// 「没有图标」,是「这个应用的图标长这样」,那是另一句话;那一行就退化成
+    /// 没有图标的一行。
+    ///
+    /// 取的是 `.app` 包而不是包里那个可执行文件(`appIconPath`,纯函数、已测):
+    /// 对后者取图标拿到的是通用可执行文件图标,一整列长一个样,等于没有图标。
+    private func icon(for entry: AppTrafficReport.Entry) -> NSView? {
+        guard !entry.execPath.isEmpty else { return nil }
+        let image = NSWorkspace.shared.icon(forFile: appIconPath(forExecutable: entry.execPath))
+        image.size = NSSize(width: 16, height: 16)
+        let view = NSImageView(image: image)
+        view.imageScaling = .scaleProportionallyDown
+        return view
+    }
+
+    private func columnTitle(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        label.textColor = .tertiaryLabelColor
+        return label
+    }
+
+    /// 规则原文那一格:变长文本,放在最后一列,长了就截断 —— 它不许把数字列
+    /// 挤出窗口(数字列是这次改动要买的东西)。
+    private func rule(_ text: String) -> NSTextField {
+        let label = hint(text)
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return label
     }
 
     private func header(_ title: String) -> NSTextField {
         let label = NSTextField(labelWithString: title)
         label.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
         return label
-    }
-
-    /// 一个应用一行:名字在左,连接数与字节数在右。
-    ///
-    /// 与 Servers/Routing Rules 同一次清理的结论:不要把副标题缩到第二行,
-    /// 一屏参差不齐的留白比信息本身更抢眼。
-    private func entry(app: String, detail: String) -> NSView {
-        let box = NSStackView()
-        box.orientation = .horizontal
-        box.alignment = .firstBaseline
-        box.spacing = 10
-
-        let title = NSTextField(labelWithString: app)
-        title.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        box.addArrangedSubview(title)
-
-        let sub = hint(detail)
-        sub.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        box.addArrangedSubview(sub)
-        return box
     }
 
     private func gap() -> NSView {

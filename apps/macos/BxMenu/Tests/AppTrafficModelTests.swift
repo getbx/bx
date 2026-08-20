@@ -114,7 +114,7 @@ struct AppTrafficModelTests {
         """
         guard let report = decode(json) else { return }
         let entries = report.rows().compactMap { row -> String? in
-            if case let .entry(app, _) = row { return app }
+            if case let .entry(entry) = row { return entry.app }
             return nil
         }
         expect(entries.count == 1, "没有渲染出这一行")
@@ -254,16 +254,9 @@ struct AppTrafficModelTests {
                 AppTrafficRow(app: "Steam", conns: 2, bytesUp: 1, bytesDown: 2, rules: ["*.steamstatic.com"]),
             ]),
         ]))
-        let rows = report.rows()
-        guard case .entry(_, let detail)? = rows.first(where: {
-            if case .entry = $0 { return true }
-            return false
-        }) else {
-            expect(false, "没有渲染出应用行")
-            return
-        }
-        expect(detail.contains("*.steamstatic.com"),
-               "没有点名那条用户规则,用户无从知道该去改哪一行:\(detail)")
+        guard let entry = firstEntry(report.rows()) else { return }
+        expect(entry.rule.contains("*.steamstatic.com"),
+               "没有点名那条用户规则,用户无从知道该去改哪一行:\(entry.rule)")
     }
 
     static func testDetailSaysNothingAboutRulesWhenTheBuiltinListDecided() {
@@ -272,16 +265,224 @@ struct AppTrafficModelTests {
                 AppTrafficRow(app: "Safari", conns: 2, bytesUp: 1, bytesDown: 2),
             ]),
         ]))
-        let rows = report.rows()
-        guard case .entry(_, let detail)? = rows.first(where: {
-            if case .entry = $0 { return true }
-            return false
-        }) else {
-            expect(false, "没有渲染出应用行")
+        guard let entry = firstEntry(report.rows()) else { return }
+        // 没有用户规则可点名时**那一格是空的** —— 编一句「(built-in list)」
+        // 会让内建判定看起来像用户配的,而用户去配置文件里根本找不到它。
+        expect(entry.rule.isEmpty,
+               "没有用户规则可点名时仍然填了规则格:\(entry.rule)")
+    }
+
+
+    // ===== 2026-08-20:图标 / 速率 / 列对齐 / 缺口提示 =====
+
+    // exec_path 是 omitempty 的:问不出路径时整个键缺席,那是**正常状态**
+    // (unknown 行、kern.procargs2 读失败),不能让整份应答解码失败。
+    static func testDecodesExecPathAndToleratesItsAbsence() {
+        let json = """
+        {
+          "subscribed": true,
+          "report": {
+            "groups": [
+              { "path": "tunnel", "rows": [
+                { "app": "Slack", "conns": 1, "bytes_up": 1, "bytes_down": 2,
+                  "exec_path": "/Applications/Slack.app/Contents/MacOS/Slack" },
+                { "app": "", "conns": 1, "bytes_up": 0, "bytes_down": 0 }
+              ] }
+            ]
+          }
+        }
+        """
+        guard let report = decode(json) else { return }
+        let rows = report.report.groups.first { $0.path == .tunnel }?.rows ?? []
+        expect(rows.count == 2, "行数不对:\(rows.count)")
+        expect(rows.first?.execPath == "/Applications/Slack.app/Contents/MacOS/Slack",
+               "exec_path 没解出来:\(String(describing: rows.first?.execPath))")
+        expect(rows.last?.execPath == "", "缺席的 exec_path 没落成空串 —— 那一行会去取一个不存在路径的图标")
+    }
+
+    // **第一帧不许编造速率。** 速率是相邻两次快照做差得到的,第一份快照没有前一份,
+    // 就是没有速率 —— 显示 0 是在说「此刻没有流量」(一句它没查过的话),
+    // 拿累计值除以一个猜来的时长则更糟。
+    static func testFirstSnapshotProducesNoRatesAtAll() {
+        var tracker = AppTrafficRateTracker()
+        let report = oneRow(path: .tunnel, app: "Slack", up: 1_000_000, down: 2_000_000)
+        let rates = tracker.ingest(report, at: Date(timeIntervalSince1970: 100))
+        expect(rates.isEmpty, "第一帧就给出了速率(凭空造的):\(rates)")
+    }
+
+    // 相邻两帧做差 —— 这是速率唯一诚实的来源。
+    static func testRateComesFromTheDeltaBetweenTwoSnapshots() {
+        var tracker = AppTrafficRateTracker()
+        _ = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 1000, down: 2000),
+                           at: Date(timeIntervalSince1970: 100))
+        let rates = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 6000, down: 2000),
+                                   at: Date(timeIntervalSince1970: 105))
+        let key = AppTrafficRateKey(path: .tunnel, app: "Slack")
+        guard let rate = rates[key] else {
+            expect(false, "第二帧没有算出速率:\(rates)")
             return
         }
-        expect(!detail.lowercased().contains("rule"),
-               "没有用户规则可点名时仍然提了规则 —— 那会让内建判定看起来像用户配的:\(detail)")
+        expect(rate.bytesUpPerSecond == 1000, "上行速率 \(rate.bytesUpPerSecond) != (6000-1000)/5")
+        // 没有变化就是 0,而这个 0 是**量出来的**,与第一帧那个「没有」不是一回事。
+        expect(rate.bytesDownPerSecond == 0, "下行没变化却不是 0:\(rate.bytesDownPerSecond)")
+    }
+
+    // 键是 (组, 应用名)。同一个应用同时在两组里是常态(Chrome 一半直连一半走隧道),
+    // 只按名字做键会把两组的字节混在一起,算出一个谁也不是的速率。
+    static func testRateKeyIsGroupAndApp() {
+        var tracker = AppTrafficRateTracker()
+        func frame(_ tunnelUp: Int64, _ directUp: Int64) -> AppTrafficReport {
+            AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
+                AppTrafficGroup(path: .tunnel, rows: [
+                    AppTrafficRow(app: "Chrome", conns: 1, bytesUp: tunnelUp, bytesDown: 0),
+                ]),
+                AppTrafficGroup(path: .direct, rows: [
+                    AppTrafficRow(app: "Chrome", conns: 1, bytesUp: directUp, bytesDown: 0),
+                ]),
+            ]))
+        }
+        _ = tracker.ingest(frame(0, 0), at: Date(timeIntervalSince1970: 0))
+        let rates = tracker.ingest(frame(10, 50), at: Date(timeIntervalSince1970: 10))
+        expect(rates[AppTrafficRateKey(path: .tunnel, app: "Chrome")]?.bytesUpPerSecond == 1,
+               "tunnel 组的速率不对:\(rates)")
+        expect(rates[AppTrafficRateKey(path: .direct, app: "Chrome")]?.bytesUpPerSecond == 5,
+               "direct 组的速率不对:\(rates)")
+    }
+
+    // 两帧之间**新出现**的应用没有速率:它上一帧根本不存在,累计值里可能含着
+    // 订阅之前就建好的连接(种子),拿它当「这几秒传的」就是编。
+    static func testAppThatAppearsBetweenFramesGetsNoRate() {
+        var tracker = AppTrafficRateTracker()
+        _ = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 10, down: 10),
+                           at: Date(timeIntervalSince1970: 0))
+        let rates = tracker.ingest(
+            AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
+                AppTrafficGroup(path: .tunnel, rows: [
+                    AppTrafficRow(app: "Slack", conns: 1, bytesUp: 10, bytesDown: 10),
+                    AppTrafficRow(app: "Zoom", conns: 1, bytesUp: 999_999, bytesDown: 0),
+                ]),
+            ])), at: Date(timeIntervalSince1970: 5))
+        expect(rates[AppTrafficRateKey(path: .tunnel, app: "Zoom")] == nil,
+               "刚出现的应用被算出了速率:\(rates)")
+        expect(rates[AppTrafficRateKey(path: .tunnel, app: "Slack")] != nil,
+               "上一帧就在的应用反而没有速率:\(rates)")
+    }
+
+    // 累计值**会往回走**:环形缓冲丢最旧的记录,一个应用的累计字节因此可能变小。
+    // 那不是「速率为 0」,是「这两帧之间发生了什么我说不好」—— 不给速率。
+    static func testCounterGoingBackwardsYieldsNoRateRatherThanZero() {
+        var tracker = AppTrafficRateTracker()
+        _ = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 5000, down: 5000),
+                           at: Date(timeIntervalSince1970: 0))
+        let rates = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 100, down: 5000),
+                                   at: Date(timeIntervalSince1970: 5))
+        expect(rates[AppTrafficRateKey(path: .tunnel, app: "Slack")] == nil,
+               "累计值倒退却给出了速率:\(rates)")
+    }
+
+    // 两帧时间戳相同(理论上的时钟回拨/同一瞬间)不许除以零。
+    static func testZeroElapsedProducesNoRates() {
+        var tracker = AppTrafficRateTracker()
+        let at = Date(timeIntervalSince1970: 42)
+        _ = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 0, down: 0), at: at)
+        let rates = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 100, down: 0), at: at)
+        expect(rates.isEmpty, "零时长也算出了速率(除以零):\(rates)")
+    }
+
+    // 界面上:没有速率的那一格必须是一句「没有」,不能是 0 —— 与上面那条同一件事,
+    // 只是这一半发生在渲染层。
+    static func testEntryShowsNoRatePlaceholderOnTheFirstFrame() {
+        let report = oneRow(path: .tunnel, app: "Slack", up: 4096, down: 8192)
+        guard let entry = firstEntry(report.rows()) else { return }
+        expect(entry.upRate == appTrafficRateUnavailable,
+               "第一帧的上行速率被渲染成了 \(entry.upRate)")
+        expect(entry.downRate == appTrafficRateUnavailable,
+               "第一帧的下行速率被渲染成了 \(entry.downRate)")
+        expect(!entry.upRate.contains("0 B"), "没有速率被显示成了 0")
+        // **累计值不许因为有了速率就删掉**:速率答「现在多快」,累计答「一共多少」。
+        expect(entry.upTotal.contains("4.0 KB"), "累计上行没了:\(entry.upTotal)")
+        expect(entry.downTotal.contains("8.0 KB"), "累计下行没了:\(entry.downTotal)")
+        expect(entry.conns == "1", "连接数没有单独成列:\(entry.conns)")
+    }
+
+    static func testEntryShowsRateWhenItIsKnown() {
+        let report = oneRow(path: .tunnel, app: "Slack", up: 4096, down: 8192)
+        let rates = [AppTrafficRateKey(path: .tunnel, app: "Slack"):
+                        AppTrafficRate(bytesUpPerSecond: 2048, bytesDownPerSecond: 0)]
+        guard let entry = firstEntry(report.rows(rates: rates)) else { return }
+        expect(entry.upRate.contains("2.0 KB") && entry.upRate.hasSuffix("/s"),
+               "速率没有按每秒渲染:\(entry.upRate)")
+        expect(entry.downRate == "0 B/s", "量出来的 0 被渲染成了「没有」:\(entry.downRate)")
+    }
+
+    // unknown 行没有路径,渲染层据此**不画图标**(而不是画一个空白占位)。
+    static func testEntryCarriesTheExecutablePathForTheIcon() {
+        let report = AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
+            AppTrafficGroup(path: .tunnel, rows: [
+                AppTrafficRow(app: "Slack", conns: 1, bytesUp: 0, bytesDown: 0,
+                              execPath: "/Applications/Slack.app/Contents/MacOS/Slack"),
+            ]),
+        ]))
+        guard let entry = firstEntry(report.rows()) else { return }
+        expect(entry.execPath == "/Applications/Slack.app/Contents/MacOS/Slack",
+               "可执行路径没有传到渲染层:\(entry.execPath)")
+    }
+
+    // 图标要的是 **.app 包**,不是包里那个可执行文件 —— 对后者取图标拿到的是
+    // 一个通用的可执行文件图标,一整列都长一个样,等于没有图标。
+    static func testIconPathClimbsToTheApplicationBundle() {
+        expect(appIconPath(forExecutable: "/Applications/Slack.app/Contents/MacOS/Slack")
+                == "/Applications/Slack.app",
+               "没有回到 .app 包:\(appIconPath(forExecutable: "/Applications/Slack.app/Contents/MacOS/Slack"))")
+        // helper 进程嵌在外层包里:取**最外层**那个 .app,那才是用户认得的图标。
+        let helper = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"
+        expect(appIconPath(forExecutable: helper) == "/Applications/Google Chrome.app",
+               "helper 没有回到最外层的包:\(appIconPath(forExecutable: helper))")
+        // 不是 app bundle 的普通可执行文件原样返回(ssh、node 之类)。
+        expect(appIconPath(forExecutable: "/usr/bin/ssh") == "/usr/bin/ssh",
+               "普通可执行文件的路径被改了")
+        expect(appIconPath(forExecutable: "") == "", "空路径不该被造出一个路径来")
+    }
+
+    // 列的定义住在纯模型里,窗口只照着摆。**右对齐的判据也在这儿** ——
+    // 图标列、应用名列、规则列(变长文本)不在数字列里,其余全在。
+    static func testNumericColumnsCoverEveryNumberAndNothingElse() {
+        expect(appTrafficColumnTitles.count == 8, "列数变了:\(appTrafficColumnTitles)")
+        expect(!appTrafficNumericColumns.contains(0), "图标列被当成数字列右对齐了")
+        expect(!appTrafficNumericColumns.contains(1), "应用名列被右对齐了")
+        expect(!appTrafficNumericColumns.contains(appTrafficColumnTitles.count - 1),
+               "规则列(变长文本)被右对齐了")
+        expect(appTrafficNumericColumns.count == appTrafficColumnTitles.count - 3,
+               "有数字列没被右对齐:\(appTrafficNumericColumns) vs \(appTrafficColumnTitles)")
+        expect(appTrafficNumericColumns.allSatisfy { $0 >= 0 && $0 < appTrafficColumnTitles.count },
+               "数字列下标越界:\(appTrafficNumericColumns)")
+    }
+
+    // 那句缺口提示:**只陈述观测得到的事实,不断言原因** —— 与陈旧提示同一条
+    // 纪律(bx 分不清是保护被关了还是 Guardian 正忙,断言其中一个就是编答案)。
+    static func testPreexistingConnectionsNoteStatesTheObservationOnly() {
+        let note = appTrafficPreexistingNote.lowercased()
+        expect(note.contains("already open"), "没说清是哪一批连接:\(appTrafficPreexistingNote)")
+        expect(note.contains("one section") || note.contains("one group"),
+               "没说清观测到的现象(只出现在一个组里):\(appTrafficPreexistingNote)")
+        expect(note.contains("may"), "把一个有条件的现象说成了必然:\(appTrafficPreexistingNote)")
+        expect(note != appTrafficApproximateNote, "两句小字重复了")
+    }
+
+    static func oneRow(path: AppTrafficPath, app: String, up: Int64, down: Int64) -> AppTrafficReport {
+        AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
+            AppTrafficGroup(path: path, rows: [
+                AppTrafficRow(app: app, conns: 1, bytesUp: up, bytesDown: down),
+            ]),
+        ]))
+    }
+
+    static func firstEntry(_ rows: [AppTrafficReport.Row]) -> AppTrafficReport.Entry? {
+        for row in rows {
+            if case let .entry(entry) = row { return entry }
+        }
+        expect(false, "没有渲染出应用行")
+        return nil
     }
 
     static func main() {
@@ -298,6 +499,19 @@ struct AppTrafficModelTests {
         testApproximateNoteSaysWhichNumbersAreApproximate()
         testDetailNamesTheUserRuleThatDecidedIt()
         testDetailSaysNothingAboutRulesWhenTheBuiltinListDecided()
+        testDecodesExecPathAndToleratesItsAbsence()
+        testFirstSnapshotProducesNoRatesAtAll()
+        testRateComesFromTheDeltaBetweenTwoSnapshots()
+        testRateKeyIsGroupAndApp()
+        testAppThatAppearsBetweenFramesGetsNoRate()
+        testCounterGoingBackwardsYieldsNoRateRatherThanZero()
+        testZeroElapsedProducesNoRates()
+        testEntryShowsNoRatePlaceholderOnTheFirstFrame()
+        testEntryShowsRateWhenItIsKnown()
+        testEntryCarriesTheExecutablePathForTheIcon()
+        testIconPathClimbsToTheApplicationBundle()
+        testNumericColumnsCoverEveryNumberAndNothingElse()
+        testPreexistingConnectionsNoteStatesTheObservationOnly()
         testStaleNoticeOnlyAppearsAfterRepeatedFailures()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」。
         if failures == 0 {
