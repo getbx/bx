@@ -60,6 +60,20 @@ type LocalAPIOptions struct {
 	// where the config is" and "you have no rules" are different answers and
 	// the menu must not render the second when it got the first.
 	ConfigPath string
+	// AppsSockPath backs /v1/apps — the unix socket Guardian dials to reach
+	// Core's app-traffic-attribution report. Empty falls back to
+	// supervisor.SockPath (the production constant), so daemon.go/
+	// localAPIOptionsFor never has to change and production behaviour is
+	// identical either way.
+	//
+	// **它存在的唯一理由是让 NewLocalAPI 的接线本身可测。** CoreRuntime 字段
+	// 就是同一个先例:fetchCoreRuntime 内部同样硬编码 supervisor.SockPath、
+	// 生产里那个值也从来不变,但仍然做成了可注入字段——「值是否随部署变化」
+	// 从来不是这个仓库决定要不要经 LocalAPIOptions 转手的判据。没有这个字段,
+	// 「成功转发」那条路径就只能绕开 NewLocalAPI、直调 appsHandler 来测,
+	// 验证的是 appsHandler 本身,不是「NewLocalAPI 正确接上了它」这件事——
+	// 而组装根上的接线错误正是这个仓库反复栽的形状。
+	AppsSockPath string
 }
 
 // coreRuntimeFetchTimeout bounds how long observableStatus waits on
@@ -159,11 +173,16 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/rules", rulesHandler(options.ConfigPath, options.OwnerUID))
 	mux.HandleFunc("/v1/servers", serversHandler(options.ConfigPath, options.OwnerUID, liveServerSwitch, liveServerProbe, liveThroughput))
-	// supervisor.SockPath 是 Core 控制面固定的 unix socket 路径(与
-	// fetchCoreRuntime/throughputRecorderFor 用的是同一个常量,不另猜一份)——
-	// 与 /v1/rules 的 ConfigPath 不同,这里没有「按部署而变」的路径,故不经
-	// DaemonOptions 转一手,直接在这里挂上。
-	mux.HandleFunc("/v1/apps", appsHandler(supervisor.SockPath, options.OwnerUID))
+	// options.AppsSockPath 空串时回落到 supervisor.SockPath(Core 控制面固定
+	// 的 unix socket 路径,与 fetchCoreRuntime/throughputRecorderFor 用的是
+	// 同一个常量)。字段本身只为一件事存在:让「NewLocalAPI 真的接上了
+	// appsHandler」这条组装根可测——生产里 daemon.go 从不设置它,行为与直接
+	// 硬编码常量完全相同。
+	appsSockPath := options.AppsSockPath
+	if appsSockPath == "" {
+		appsSockPath = supervisor.SockPath
+	}
+	mux.HandleFunc("/v1/apps", appsHandler(appsSockPath, options.OwnerUID))
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
 	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries, watch: watch}
