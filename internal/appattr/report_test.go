@@ -146,3 +146,41 @@ func TestAggregateKeepsTCPAndUDPPortsApart(t *testing.T) {
 		t.Fatalf("quic-app 字节 = %d/%d, want 20/200(不能被 TCP:443 覆盖或合并)", quic.BytesUp, quic.BytesDown)
 	}
 }
+
+// **倒序遍历是承重的,这一条钉的就是它。**
+//
+// 端口复用时,同一个 PortKey 会在 records 里出现多次、且可能分属不同的路径与
+// 应用;counted 让字节只计一次,而**倒序**决定了那一次落在谁头上 —— 规则是
+// 「同一个键最近的那条记录赢」(records 是时间序,下标越大越新)。改成正序,
+// 字节会落到那个已经关掉的旧连接头上,界面于是把「Slack 正在走隧道下载」
+// 报成「Slack 在直连」。
+//
+// 这条测试之所以必须住在 **appattr 自己的包里**:改成正序时,全仓唯一会转红的
+// 是 internal/supervisor 的 TestAppTrafficKeepsTimeOrderAcrossRingBoundaries,
+// 而 `go test ./internal/appattr/` 全绿 —— 只改这个包的人会看到绿灯放行。
+// (这正是 CLAUDE.md 里反复记的那个形状:守卫钉住的是缺陷旁边的东西,或者
+// 干脆住在别的包里。)
+func TestAggregateAttributesReusedPortBytesToTheMostRecentRecord(t *testing.T) {
+	// 5000 号端口先被一条直连连接用过,关掉之后被一条走隧道的连接复用;
+	// 字节账是这个端口在窗口里的总量,按规则应全部记给**最近**那条(tunnel)。
+	records := []ConnRecord{
+		{SrcPort: 5000, Path: PathDirect, Source: "user_direct", Rule: "*.qq.com"}, // 旧
+		{SrcPort: 5000, Path: PathTunnel, Source: "default"},                       // 新
+	}
+	owners := map[PortKey]string{{Port: 5000, UDP: false}: "Slack"}
+	got := Aggregate(records, owners,
+		map[PortKey]int64{{Port: 5000, UDP: false}: 100},
+		map[PortKey]int64{{Port: 5000, UDP: false}: 900})
+
+	tunnel, direct := got.Groups[0], got.Groups[1]
+	if len(tunnel.Rows) != 1 || len(direct.Rows) != 1 {
+		t.Fatalf("两条记录应分成两组各一行:tunnel=%#v direct=%#v", tunnel.Rows, direct.Rows)
+	}
+	if tunnel.Rows[0].BytesUp != 100 || tunnel.Rows[0].BytesDown != 900 {
+		t.Fatalf("字节应记给**最近**那条记录(tunnel),得到 tunnel=%d/%d direct=%d/%d —— Aggregate 不再倒序遍历",
+			tunnel.Rows[0].BytesUp, tunnel.Rows[0].BytesDown, direct.Rows[0].BytesUp, direct.Rows[0].BytesDown)
+	}
+	if direct.Rows[0].BytesUp != 0 || direct.Rows[0].BytesDown != 0 {
+		t.Fatalf("旧记录不该分到任何字节,得到 %d/%d", direct.Rows[0].BytesUp, direct.Rows[0].BytesDown)
+	}
+}
