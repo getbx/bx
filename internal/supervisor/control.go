@@ -592,18 +592,6 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 	return closer, nil
 }
 
-// serveControl 在 SockPath 上跑控制面 HTTP server,替换旧的 serveStats。
-// c: 统计计数器;t: 隧道(满足 tunnelStatser);server/udpMode: 配置字符串;eng: 引擎;mut: 改动执行器。
-// transportInfo(可空)返回当前活跃传输标签、容灾列表、UDP 专用传输标签,供 status 呈现;
-// active 动态(容灾后反映实际),list/udp 多为静态配置。
-func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, shutdown func(), ownerUID uint32) (io.Closer, error) {
-	return serveControlWithPathRecovery(ctx, controlServeOptions{
-		Counters: c, Tunnel: t, Server: server, Mode: mode, UDPMode: udpMode,
-		TransportInfo: transportInfo, Runtime: runtime, Engine: eng, Mutator: mut,
-		Reload: reload, Shutdown: shutdown, OwnerUID: ownerUID,
-	})
-}
-
 // newStatusReporter 组装 report 闭包:把计数器快照、隧道状态、运行时状态、
 // network guard 告警与配置派生告警(configWarnings)拼成一份 stats.Report。
 //
@@ -671,12 +659,13 @@ func newStatusReporter(c *stats.Counters, t tunnelStatser, server, mode, udpMode
 
 // controlServeOptions 打包 serveControlWithPathRecovery 的全部依赖(ctx 除外,
 // 按惯例留作独立的第一个形参)。**同一个理由,不用位置参数**:这个函数曾是
-// 17 个位置参数,审查指出这正是「静默传错一个 nil」的形状本身——旧的
-// serveControl 包装函数在位置上传了三个 `nil`(refreshBypass/recoverer/
-// probeDial),多一个字段(本轮的 AppTraffic)就会变成第 18 个位置、第四个
-// 挨着写的 nil,谁也分不清哪个 nil 对应哪个依赖。换成具名字段后,`serveControl`
-// 那三个字段干脆**不写**(零值),读代码的人一眼看出它是「哪些能力这个部署
-// 没有」而不是在数三个逗号数到第几个。
+// 17 个位置参数,审查指出这正是「静默传错一个 nil」的形状本身——本仓库曾有
+// 一个叫 serveControl 的瘦包装函数,在位置上传了三个 `nil`(refreshBypass/
+// recoverer/probeDial),多一个字段(本轮的 AppTraffic)就会变成第 18 个位置、
+// 第四个挨着写的 nil,谁也分不清哪个 nil 对应哪个依赖。**该函数复审确认全仓
+// 零引用、零测试(比"被绿色测试守着的死代码"更坏),修复轮 2 已整个删除**——
+// 它承载的「哪些能力这个部署没有」这份信息,现在由 controlServeOptions 的
+// 字段零值 + 字段名本身表达得更清楚,不需要一个没人调用的包装函数来演示。
 type controlServeOptions struct {
 	Counters       *stats.Counters
 	Tunnel         tunnelStatser
