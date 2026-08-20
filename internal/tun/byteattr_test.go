@@ -1,11 +1,16 @@
 package tun
 
 import (
+	"context"
+	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/getbx/bx/internal/route"
 )
 
 // byteCall 是字节归因收到的一次记账。**udp 必须一起记** —— TCP 与 UDP 的
@@ -18,9 +23,17 @@ type byteCall struct {
 	up      bool
 }
 
+// portKey 是一次「连接结束」通知。归因侧的活连接表按 (端口,协议) 记账,
+// 协议维度漏掉就会把 TCP 的条目当成 UDP 的删掉(或反过来)。
+type portKey struct {
+	srcPort uint16
+	udp     bool
+}
+
 type fakeByteAttributor struct {
-	mu    sync.Mutex
-	calls []byteCall
+	mu     sync.Mutex
+	calls  []byteCall
+	closed []portKey
 }
 
 func (f *fakeByteAttributor) AddUp(srcPort uint16, udp bool, n int64) {
@@ -33,6 +46,18 @@ func (f *fakeByteAttributor) AddDown(srcPort uint16, udp bool, n int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, byteCall{srcPort, udp, n, false})
+}
+
+func (f *fakeByteAttributor) ConnClosed(srcPort uint16, udp bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = append(f.closed, portKey{srcPort, udp})
+}
+
+func (f *fakeByteAttributor) closedKeys() []portKey {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]portKey(nil), f.closed...)
 }
 
 // total 把某一方向的字节加总。分次写入会拆成多次回调,断言总数而不是次数。
@@ -320,4 +345,64 @@ func TestEngineAttributesUDPBytesToTheConnectionSourcePort(t *testing.T) {
 	if len(downUDP) != 1 || !downUDP[true] {
 		t.Fatalf("下行协议维度 = %v, want 只有 udp=true", downUDP)
 	}
+}
+
+// ==== 连接结束通知(2026-08-20) ====
+//
+// 归因侧要维护一张「此刻还开着的连接」表,好让窗口打开时看得见**已经在跑**的
+// 长连接。那张表的唯一边界就是这条通知:少了它,表会随机器运行时间单调增长,
+// 而报告仍然完全正确、没有任何一处会报错。
+
+func TestEngineReportsConnectionCloseToTheByteAttributor(t *testing.T) {
+	const wantSrcPort = 51236
+	attr := &fakeByteAttributor{}
+	dialer := newCaptureDialer()
+	client, cleanup := newTestClient(t, dialer, WithByteAttribution(attr))
+	defer cleanup()
+
+	conn := client.connectTCP(t, wantSrcPort, netip.MustParseAddr("198.18.0.7"), 443)
+	if got := attr.closedKeys(); len(got) != 0 {
+		t.Fatalf("连接还开着就报了结束: %#v", got)
+	}
+	// 两端都关,relay 的两个方向才会同时收尾(只关一端时另一方向要等空闲超时)。
+	conn.Close()
+	client.peer.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		got := attr.closedKeys()
+		if len(got) == 1 && got[0] == (portKey{wantSrcPort, false}) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("连接结束通知 = %#v, want 恰好一条 {%d,tcp}", got, wantSrcPort)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// **拨号失败的连接也必须报结束。** 判定(Record)发生在 Dial 内部,kill-switch
+// 把一条连接判成 Block 时 Dial 返回错误,而那条连接**已经进了活连接表**。
+// 把通知 defer 在拨号成功之后,这类连接的条目就永远没人删 —— 而被 Block 的
+// 连接恰恰可能非常多(隧道挂掉时全网都是)。
+func TestEngineReportsConnectionCloseWhenDialFails(t *testing.T) {
+	const wantSrcPort = 51237
+	attr := &fakeByteAttributor{}
+	engine := &Engine{dialer: failingDialer{}, bytes: attr, idleTimeout: time.Second}
+
+	appSide, localSide := tcpPair(t)
+	defer appSide.Close()
+	// UDP 元数据:readInitial 对 UDP 直接返回 nil,不必等那 500ms 的读超时。
+	engine.handleConn(localSide, route.Meta{SrcPort: wantSrcPort, UDP: true, Port: 443})
+
+	got := attr.closedKeys()
+	if len(got) != 1 || got[0] != (portKey{wantSrcPort, true}) {
+		t.Fatalf("拨号失败后的结束通知 = %#v, want 恰好一条 {%d,udp}", got, wantSrcPort)
+	}
+}
+
+type failingDialer struct{}
+
+func (failingDialer) Dial(context.Context, route.Meta) (net.Conn, error) {
+	return nil, errors.New("kill-switch: blocked")
 }

@@ -419,8 +419,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	d.SetRouter(router)
 
 	// 应用流量归因:**同一个实例**同时接 dialer(记判定)与 engine(记字节),
-	// 见 wireAppAttribution 上的注释。它默认不工作 —— 没人订阅时热路径只做
-	// 一次 atomic 读,这是「没人看的时候开销精确为零」这条隐私前提的落点。
+	// 见 wireAppAttribution 上的注释。没人订阅时它**不问内核、不记字节、不攒
+	// 历史**(字节记账那条路径由一次 atomic 读挡在锁外),只维护一张活连接表 ——
+	// 那张表是「窗口打开时看得见已经在跑的连接」的前提,代价是每条连接两次 map
+	// 操作,详见 apptraffic.go 上 AppTraffic 的类型注释。
 	appTraffic := NewAppTraffic(newAppSource(), nil)
 	appAttribution := wireAppAttribution(d, appTraffic)
 

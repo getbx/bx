@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,16 +23,16 @@ type appSource interface {
 var errAppSourceUnsupported = errors.New("app attribution is only available on macOS")
 
 // appTrafficTTL 是订阅的存活期。菜单被强杀、窗口进程崩溃时不会有人来退订,
-// 而「没人看的时候开销精确为零」是这个设计的隐私前提 —— 不能靠对方守规矩来保证。
+// 而「没人看时不问内核、不记字节、不攒历史」是这个设计的隐私前提 —— 不能靠
+// 对方守规矩来保证。
 //
 // **TTL 是惰性结算的,没有定时器。** 过期只在 Subscribe/Record/AddUp/AddDown/
 // Snapshot 中任一个被调用时才由 expiredLocked 就地判定并清空缓冲。所以严格说,
-// 订阅者消失之后若真的再没有任何一次调用,那批记录会在内存里留过 30 秒 ——
-// spec 里「没人看的时候开销精确为零」这句话在那一小段窗口里不成立。
+// 订阅者消失之后若真的再没有任何一次调用,那批记录会在内存里留过 30 秒。
 //
 // 实际上 Record 是全网每条连接都要走的路径,真正的静默几乎不可能发生;
-// 不加定时器是刻意的(它会把「没人看时零开销」变成「没人看时也有个 goroutine
-// 在滴答」,与 internal/toolkeys 那个唯一的持久化过期先例同一手法)。
+// 不加定时器是刻意的(它会变成「没人看时也有个 goroutine 在滴答」,
+// 与 internal/toolkeys 那个唯一的持久化过期先例同一手法)。
 // 但边界写在这里:代码里声称的性质,要么做到,要么如实写明边界。
 const appTrafficTTL = 30 * time.Second
 
@@ -39,11 +40,34 @@ const appTrafficTTL = 30 * time.Second
 // 分流构成」,几万条之前的连接对它没有意义,而无界缓冲会在订阅期间无限长。
 const appTrafficMaxRecords = 4096
 
-// AppTraffic 按 (源端口,协议) 记账,并且**只在有人订阅时**才工作。
+// liveConn 是一条**此刻还开着**的连接在活连接表里的样子:只有判定,没有应用
+// 身份 —— 身份是 Snapshot 时才去问内核的,这是「未订阅时也维护这张表」在隐私上
+// 仍然成立的原因(表里是端口和判定,不是「你开过什么应用」)。
 //
-// **热路径只做两件事**:一次 atomic 读判断有没有人在看,以及(有人看时)
-// 往环形缓冲写一条记录 / 给两张字节表之一加个数。归因(问内核、解进程名)
-// 全部发生在 Snapshot 里,不在拨号或转发路径上。
+// refs 是同键并存的流数,**UDP 需要它**:一个应用 socket 打 STUN + TURN + 多个
+// peer,gVisor 按 5 元组建流 ⇒ 同一个源端口上有 N 条并存的流、N 次 Record。
+// 不记数就会「第一条流关掉时把整条 socket 从活连接表里抹掉」,于是种子看不见
+// 一个还在灌媒体流的会议 —— 正是这次修复要消灭的那种盲区。
+// TCP 侧 refs 通常恒为 1,但它也顺手兜住了「旧连接的 ConnClosed 晚于新连接的
+// Record 到达」这个真实竞态(裸 delete 会把刚建好的那条抹掉)。
+type liveConn struct {
+	path   appattr.Path
+	source string
+	rule   string
+	refs   int
+}
+
+// AppTraffic 按 (源端口,协议) 记账。**归因、字节账与历史只在有人订阅时才攒**,
+// 而**活连接表任何时候都维护**。
+//
+// **未订阅时的代价不是零,是每条连接两次 map 操作**(建连一次、关闭一次)——
+// 不是每个包一次。这个代价是 2026-08-20 那个真机 bug 换来的:Record 只在建连
+// 那一刻被调用,于是订阅之前就已经建好的连接永远不会出现在窗口里,而长连接
+// (会议媒体流、WebSocket、SSH)恰恰全是这种。窗口打开时用这张表播种,才看得见
+// 「已经在跑的东西」。
+//
+// **热路径仍然不做归因**:问内核、解进程名全部发生在 Snapshot 里;字节记账
+// (AddUp/AddDown,每次转发写都要走)仍由一次 atomic 读挡在锁外。
 //
 // 三态刻意分开,一条都不许合并:「没人在看」/「在看但问不出来」/「在看且
 // 确实没有连接」。把后两者压成一份空报告,读起来就是句自洽的假话。
@@ -51,9 +75,9 @@ type AppTraffic struct {
 	src appSource
 	now func() time.Time
 
-	// active 是热路径唯一要读的东西。它先于 t.mu 被读,未订阅时热路径**连锁
-	// 都不碰** —— 数据面每条连接、每次转发都会走这里,拿一把全局锁去发现
-	// 「没人在看」本身就是这个设计要消灭的开销。
+	// active 让**字节记账**在未订阅时连锁都不碰 —— 那条路径是每次转发写一次,
+	// 比 Record 热几个数量级,拿一把全局锁去发现「没人在看」正是要消灭的开销。
+	// Record/ConnClosed 不再读它:活连接表无条件维护。
 	active atomic.Bool
 
 	mu      sync.Mutex
@@ -63,13 +87,16 @@ type AppTraffic struct {
 	wrapped bool // 是否已经绕过一圈
 	bytesUp map[appattr.PortKey]int64
 	bytesDn map[appattr.PortKey]int64
+	// live 是「此刻还开着的连接」。**不随订阅生灭** —— 它的边界是 ConnClosed,
+	// 不是 TTL;跟着订阅清空就等于回到那个只看得见新连接的 bug。
+	live map[appattr.PortKey]liveConn
 }
 
 func NewAppTraffic(src appSource, now func() time.Time) *AppTraffic {
 	if now == nil {
 		now = time.Now
 	}
-	return &AppTraffic{src: src, now: now}
+	return &AppTraffic{src: src, now: now, live: map[appattr.PortKey]liveConn{}}
 }
 
 // Subscribe 开启或续期采集。菜单每次拉取都会调它。
@@ -85,9 +112,42 @@ func (t *AppTraffic) Subscribe() {
 		t.next, t.wrapped = 0, false
 		t.bytesUp = make(map[appattr.PortKey]int64)
 		t.bytesDn = make(map[appattr.PortKey]int64)
+		// **只在一次订阅**开始时播种,续期时不播。菜单每 5 秒调一次 Subscribe,
+		// 每次都播会让同一条连接每 5 秒多算一次:界面上连接数随时间线性膨胀,
+		// 而没有任何一处报错。
+		t.seedFromLiveLocked()
 	}
 	t.expires = t.now().Add(appTrafficTTL)
 	t.active.Store(true)
+}
+
+// seedFromLiveLocked 把此刻所有活连接作为记录塞进刚建好的环形缓冲。
+// 调用者必须持有 t.mu,且 records 必须已经是新的一份。
+//
+// 排序只为让输出确定:map 迭代顺序随机,而 liveRecordsLocked 的顺序是承重的
+// (Aggregate 按倒序把字节记给最近那条记录)。种子彼此的键互不相同,顺序其实
+// 不影响任何数字,但一份随机顺序的输出会让将来任何一条顺序相关的断言变成 flake。
+func (t *AppTraffic) seedFromLiveLocked() {
+	keys := make([]appattr.PortKey, 0, len(t.live))
+	for k := range t.live {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].UDP != keys[j].UDP {
+			return !keys[i].UDP
+		}
+		return keys[i].Port < keys[j].Port
+	})
+	for _, k := range keys {
+		c := t.live[k]
+		t.appendRecordLocked(appattr.ConnRecord{
+			SrcPort: k.Port,
+			UDP:     k.UDP,
+			Path:    c.path,
+			Source:  c.source,
+			Rule:    c.rule,
+		})
+	}
 }
 
 // expiredLocked 报告「此刻不在采集」,并在 TTL 刚过期时就地停掉采集、清空缓冲。
@@ -112,15 +172,22 @@ func (t *AppTraffic) expiredLocked() bool {
 // UDP 字段没有编译错误(零值就是 false),后果是所有连接都被当成 TCP 归因,
 // 而界面上只会看到一个应用名、看不到冲突。形参漏传则编译不过。
 func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source, rule string) {
-	if !t.active.Load() {
-		return
-	}
+	key := appattr.PortKey{Port: srcPort, UDP: udp}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// **活连接表无条件维护,未订阅时也写。** 这是这次修复付出的新代价,也是
+	// 它唯一能起作用的地方:窗口是在连接建好之后才打开的,那一刻若表里没有
+	// 这条连接,它就永远看不见了(见类型注释上的真机 bug)。
+	// 表里只有端口与判定,没有应用名 —— 隐私前提不受影响。
+	c := t.live[key]
+	c.path, c.source, c.rule = path, source, rule
+	c.refs++
+	t.live[key] = c
+
 	if t.expiredLocked() {
 		return
 	}
-	key := appattr.PortKey{Port: srcPort, UDP: udp}
 	// **端口复用时清账,这两行是承重的 —— 但只对 TCP。**
 	//
 	// 下游 appattr.Aggregate 按键全局去重、只把字节记给该键**最近**的那条
@@ -147,17 +214,55 @@ func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source,
 		delete(t.bytesUp, key)
 		delete(t.bytesDn, key)
 	}
-	t.records[t.next] = appattr.ConnRecord{
+	t.appendRecordLocked(appattr.ConnRecord{
 		SrcPort: srcPort,
 		UDP:     udp,
 		Path:    path,
 		Source:  source,
 		Rule:    rule,
-	}
+	})
+}
+
+// appendRecordLocked 往环形缓冲写一条。调用者必须持有 t.mu 且已确认在采集中。
+func (t *AppTraffic) appendRecordLocked(rec appattr.ConnRecord) {
+	t.records[t.next] = rec
 	t.next++
 	if t.next == len(t.records) {
 		t.next, t.wrapped = 0, true
 	}
+}
+
+// ConnClosed 报告一条连接结束。**这是活连接表唯一的边界** —— 少了它,一台跑着
+// 的机器上那张表会单调增长到 OOM,而报告仍然完全正确、没有任何一处会报错。
+//
+// 由 tun 引擎在 handleConn 里 defer 调用,**且必须 defer 在拨号之前**:判定
+// (Record)发生在 Dial 内部,kill-switch Block 这类失败同样会留下一条活连接
+// 记录,放到拨号成功之后才 defer,那些记录永远没人删。
+//
+// 多调一次是安全的(键不存在即无操作,refs 见底即删),这是防御性的:引擎侧
+// 只要有一条路径重复 defer,这里也不能把表算成负数。
+func (t *AppTraffic) ConnClosed(srcPort uint16, udp bool) {
+	key := appattr.PortKey{Port: srcPort, UDP: udp}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	c, ok := t.live[key]
+	if !ok {
+		return
+	}
+	c.refs--
+	if c.refs <= 0 {
+		delete(t.live, key)
+		return
+	}
+	t.live[key] = c
+}
+
+// liveSize 报告活连接表的条目数。**测试专用的白盒窗口** —— 「表不许无界增长」
+// 这条不变量在报告里完全看不见(报告仍然正确),只能直接看表的大小。
+func (t *AppTraffic) liveSize() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.live)
 }
 
 func (t *AppTraffic) AddUp(srcPort uint16, udp bool, n int64) {
