@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/getbx/bx/internal/appattr"
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/splitdns"
@@ -59,6 +60,21 @@ type DecisionCounter interface {
 	RuleFailure(source, rule string)
 }
 
+// AppRecorder 收下「这条连接被判成了什么」,交给上层按 (源端口,协议) 归因到应用。
+//
+// **它是旁观者** —— 拿到判定结果,绝不参与判定(route.Meta.SrcPort 不进 Explain,
+// 由 route 侧的 TestExplainIgnoresSrcPort 钉住)。按源端口分流会让「用户看到的
+// 分流」和「bx 实际执行的分流」出现第二个变量。
+//
+// udp 是**独立形参**而不是让调用方拼 appattr.PortKey:拼结构体时漏填 UDP 字段
+// 没有编译错误(零值就是 false),后果是所有 UDP 流量被归到 TCP 键上,而界面上
+// 只会看到一个应用名、看不到冲突;漏传一个形参则编译不过。
+//
+// 可空:没人订阅时上层自己短路,这里只做 nil 保护。
+type AppRecorder interface {
+	Record(srcPort uint16, udp bool, path appattr.Path, source, rule string)
+}
+
 // Dialer 把 Router 决策落到实际拨号。
 type Dialer struct {
 	router     atomic.Pointer[route.Router]
@@ -68,6 +84,8 @@ type Dialer struct {
 	Direct     ContextDialer // 直连
 	Killswitch bool
 	Stats      DecisionCounter // 可空:决策计数
+	// AppRecorder 可空:应用流量归因(只在有人订阅时才真的记)。
+	AppRecorder AppRecorder
 	// egresses 是具名出口的拨号器。**原子整份替换**,见 SetEgresses。
 	egresses atomic.Pointer[map[string]ContextDialer]
 	UDPMode  string // proxy(默认,走隧道), direct-realtime(直连真实 IP), block
@@ -203,6 +221,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 					d.Stats.Blocked()
 					d.Stats.UDPBlocked()
 				}
+				d.recordApp(m, appattr.PathBlocked, udpSourceDirectRealtime, "")
 				debugf("udp direct-realtime blocked (killswitch, tunnel down): ip=%s port=%d", m.IP, m.Port)
 				return nil, ErrBlocked
 			}
@@ -210,6 +229,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 				d.Stats.Direct()
 				d.Stats.RuleAttempt(udpSourceDirectRealtime, "")
 			}
+			d.recordApp(m, appattr.PathDirect, udpSourceDirectRealtime, "")
 			ip := m.IP
 			if m.Domain != "" {
 				resolved, err := d.Resolver.Resolve(ctx, m.Domain)
@@ -250,12 +270,14 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 					d.Stats.Blocked()
 					d.Stats.UDPBlocked()
 				}
+				d.recordApp(m, appattr.PathBlocked, source, "")
 				return nil, ErrBlocked // 主传输也挂 → fail-closed(仍绝不回落直连)
 			}
 			if d.Stats != nil {
 				d.Stats.Proxy()
 				d.Stats.RuleAttempt(source, "")
 			}
+			d.recordApp(m, appattr.PathTunnel, source, "")
 			host := m.Domain
 			if host == "" {
 				host = m.IP.String()
@@ -272,6 +294,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			d.Stats.Blocked()
 			d.Stats.UDPBlocked()
 		}
+		d.recordApp(m, appattr.PathBlocked, udpSourceModeBlock, "")
 		debugf("udp blocked: ip=%s domain=%q port=%d", m.IP, m.Domain, m.Port)
 		return nil, ErrBlocked
 	}
@@ -317,6 +340,7 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			d.Stats.Direct()
 			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 		}
+		d.recordApp(m, appattr.PathDirect, why.Source.String(), why.Rule)
 		var target string
 		if m.Domain != "" {
 			ip := resolved
@@ -347,12 +371,14 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 			if d.Stats != nil {
 				d.Stats.Blocked()
 			}
+			d.recordApp(m, appattr.PathBlocked, why.Source.String(), why.Rule)
 			return nil, ErrBlocked
 		}
 		if d.Stats != nil {
 			d.Stats.Proxy()
 			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 		}
+		d.recordApp(m, appattr.PathTunnel, why.Source.String(), why.Rule)
 		host := m.Domain
 		if host == "" {
 			host = m.IP.String()
@@ -370,6 +396,10 @@ func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []by
 		if d.Stats != nil {
 			d.Stats.Blocked()
 		}
+		// **今天到不了这里** —— Explain/ExplainIP 从不返回 route.Block。
+		// 仍然记:这个分支存在的意义就是「将来真有人让 Router 判 Block」,
+		// 而那一天最不该发生的事,是被阻断的连接在应用视图里凭空消失。
+		d.recordApp(m, appattr.PathBlocked, why.Source.String(), why.Rule)
 		return nil, ErrBlocked
 	}
 }
@@ -432,6 +462,9 @@ func (d *Dialer) countUDPCounterfactual(m route.Meta, why route.Reason) {
 	if d.Fake != nil {
 		pool = d.Fake
 	}
+	// **这里刻意没有 recordApp。** 反事实不是判定 —— 同一条连接已经在下面
+	// 真正的分支里被记过一次;在这里再记一条,应用视图里每条 UDP 连接都会
+	// 变成两条,而其中一条描述的是一个没有发生的世界。
 	d.Stats.RuleAttempt(udpCounterfactualBucket(m, why, pool), "")
 }
 
@@ -484,6 +517,7 @@ func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Deci
 			d.Stats.Direct()
 			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 		}
+		d.recordApp(m, appattr.PathDirect, why.Source.String(), why.Rule)
 		ip := m.IP
 		if m.Domain != "" {
 			resolved, err := d.Resolver.Resolve(ctx, m.Domain)
@@ -514,12 +548,14 @@ func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Deci
 			d.Stats.Blocked()
 			d.Stats.UDPBlocked()
 		}
+		d.recordApp(m, appattr.PathBlocked, why.Source.String(), why.Rule)
 		return nil, ErrBlocked
 	}
 	if d.Stats != nil {
 		d.Stats.Proxy()
 		d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 	}
+	d.recordApp(m, appattr.PathTunnel, why.Source.String(), why.Rule)
 	host := m.Domain
 	if host == "" {
 		host = m.IP.String()
@@ -543,6 +579,10 @@ const (
 	udpSourceProxy          = "udp_proxy"
 	udpSourceProxyFallback  = "udp_proxy_fallback"
 	udpSourceDirectRealtime = "udp_direct_realtime"
+	// udpSourceModeBlock 是 udp.mode=block 下被丢掉的那一档。它没有对应的
+	// RuleAttempt(那条路上没有「尝试」可言),但**必须有归因** —— 「为什么
+	// 这个 App 一开 bx 就废了」正是这一档最常见的答案。
+	udpSourceModeBlock = "udp_block"
 )
 
 // recordUDPFailure 记一次 UDP 拨号失败。
@@ -588,6 +628,7 @@ func (d *Dialer) dialVia(ctx context.Context, m route.Meta, why route.Reason, po
 			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 			d.Stats.RuleFailure(why.Source.String(), why.Rule)
 		}
+		d.recordApp(m, appattr.PathBlocked, why.Source.String(), why.Rule)
 		debugf("dial via blocked: egress=%q 未接线", why.Rule)
 		return nil, ErrBlocked
 	}
@@ -595,6 +636,9 @@ func (d *Dialer) dialVia(ctx context.Context, m route.Meta, why route.Reason, po
 		d.Stats.Proxy()
 		d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 	}
+	// 具名出口不是主隧道,但也**不是直连** —— 归到 tunnel 组是这三档里唯一
+	// 诚实的答案(把它记成 direct 会让用户以为这些流量裸奔出去了)。
+	d.recordApp(m, appattr.PathTunnel, why.Source.String(), why.Rule)
 	host := m.Domain
 	if host == "" {
 		host = m.IP.String()
@@ -629,6 +673,17 @@ func (d *Dialer) SetEgresses(byName map[string]ContextDialer) {
 		copied[k] = v
 	}
 	d.egresses.Store(&copied)
+}
+
+// recordApp 把一次判定交给应用归因(可空则什么都不做)。
+//
+// **取 m.UDP 而不是写死 false**:写死不会有编译错误,也不会让任何既有测试转红,
+// 而后果是所有 UDP 流量被记到 TCP 的端口键上 —— 界面上只会看到一个应用名,
+// 看不到冲突。由 apprecorder_test.go 里那一批 UDP 用例逐条钉住。
+func (d *Dialer) recordApp(m route.Meta, path appattr.Path, source, rule string) {
+	if d.AppRecorder != nil {
+		d.AppRecorder.Record(m.SrcPort, m.UDP, path, source, rule)
+	}
 }
 
 // recordFailure 记一次拨号失败:总数一份,按规则归因一份。

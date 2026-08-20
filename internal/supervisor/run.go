@@ -418,6 +418,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	d.SetTransport(&dialer.Transport{Proxy: proxyDialer, Healthy: tun0.Healthy})
 	d.SetRouter(router)
 
+	// 应用流量归因:**同一个实例**同时接 dialer(记判定)与 engine(记字节),
+	// 见 wireAppAttribution 上的注释。它默认不工作 —— 没人订阅时热路径只做
+	// 一次 atomic 读,这是「没人看的时候开销精确为零」这条隐私前提的落点。
+	appTraffic := NewAppTraffic(newAppSource(), nil)
+	appAttribution := wireAppAttribution(d, appTraffic)
+
 	// 按类分流:UDP 专用传输(如 hysteria,QUIC 对丢包/高 RTT 更快)与主传输并行。
 	// UDP proxy 走它;不变量保住——它挂时 UDP fail-closed Block(dialer.SetUDPTransport),绝不回落。
 	// best-effort:UDP companion 是"锦上添花"的速度档,绝不阻塞主隧道(reality)把 TUN 拉起
@@ -446,7 +452,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 路由器模式:把网关参数交给 Hijack,只劫持 LAN 转发流量。
 	tunH.RouterMode = cfg.Mode == "router"
 	tunH.LANCIDRs = cfg.Router.LANCIDRs
-	eng, err := tun.New(link, d, opts.MTU, tun.WithDNS(dnsSrv), tun.WithStats(counters))
+	eng, err := tun.New(link, d, opts.MTU, tun.WithDNS(dnsSrv), tun.WithStats(counters), appAttribution)
 	if err != nil {
 		return fmt.Errorf("启动引擎: %w", err)
 	}
