@@ -68,22 +68,55 @@ func TestAppTrafficDoesNothingWhileUnsubscribed(t *testing.T) {
 	}
 }
 
-// 上一条测试钉的是「没攒下数据」,而**热路径连锁都不该碰**这件事它证明不了:
-// 把 Record 开头那句 atomic 短路删掉,锁内那道 expiredLocked 仍会拦住写入,
-// 于是那条测试照样绿。这里用白盒手法把这件事变成可判定的:测试自己占住
-// t.mu,未订阅时的 Record/AddUp/AddDown 必须立刻返回;一旦它们去抢锁就会
-// 卡住,超时即红。
+// **这条测试原来断言的是「未订阅时 Record 连 t.mu 都不碰」,那个断言在
+// 2026-08-20 之后不再成立,而且不成立是刻意的。** Record 现在无条件维护活连接
+// 表(未订阅时也写),所以它必然要抢锁 —— 原来那条断言只能靠削弱修复来满足,
+// 于是它被换成「未订阅时到底不该做哪些事」这个仍然为真、也仍然值得守的性质。
+//
+// 换句话说:未订阅时的代价从「一次 atomic 读」变成了「每条连接两次 map 操作」
+// (建连一次 Record、关闭一次 ConnClosed),**不是每个包一次** —— 字节记账那条
+// 路径(AddUp/AddDown,每次转发写都要走)仍然被一次 atomic 读挡在锁外,由下面
+// 的白盒断言钉住。
+//
+// 三件未订阅时不许发生的事,逐条断言:① 不问内核(不调 appSource);
+// ② 不记字节(bytesUp/bytesDn 保持 nil);③ 不攒历史(records 保持 nil)。
+// 这三条正是隐私前提的实质内容,「零开销」只是它当初的实现手段。
+func TestAppTrafficDoesNotAttributeOrAccrueWhileUnsubscribed(t *testing.T) {
+	src := &fakeAppSource{}
+	tr := NewAppTraffic(src, time.Now)
+
+	for i := 0; i < 100; i++ {
+		tr.Record(uint16(i), false, appattr.PathTunnel, "default", "")
+		tr.AddUp(uint16(i), false, 10)
+		tr.AddDown(uint16(i), false, 20)
+	}
+	if src.callCount() != 0 {
+		t.Errorf("未订阅时问了 %d 次内核 —— 一次都不该问", src.callCount())
+	}
+	tr.mu.Lock()
+	if tr.records != nil {
+		t.Errorf("未订阅时攒下了历史: %d 条", len(tr.records))
+	}
+	if tr.bytesUp != nil || tr.bytesDn != nil {
+		t.Errorf("未订阅时开了字节表: up=%v dn=%v", tr.bytesUp, tr.bytesDn)
+	}
+	tr.mu.Unlock()
+}
+
+// **字节记账**那半仍然连锁都不碰,这一条不能跟着 Record 一起放弃:它挂在
+// copyOneWay 的 onWrite 上,整机每一次转发写都会走,而 Record 只是每条连接一次。
+// 白盒手法:测试自己占住 t.mu,未订阅时的 AddUp/AddDown 必须立刻返回;一旦它们
+// 去抢锁就会卡住,超时即红。
 //
 // 失败时**刻意不解锁**:解了锁那个 goroutine 会带着 nil 缓冲往下走并 panic,
 // 把一条清晰的断言失败变成一堆栈噪声。goroutine 停在锁上,进程退出即回收。
-func TestAppTrafficHotPathTakesNoLockWhileUnsubscribed(t *testing.T) {
+func TestAppTrafficByteAccountingTakesNoLockWhileUnsubscribed(t *testing.T) {
 	src := &fakeAppSource{}
 	tr := NewAppTraffic(src, time.Now)
 
 	tr.mu.Lock()
 	done := make(chan struct{})
 	go func() {
-		tr.Record(7, false, appattr.PathTunnel, "default", "")
 		tr.AddUp(7, false, 10)
 		tr.AddDown(7, false, 20)
 		close(done)
@@ -92,7 +125,7 @@ func TestAppTrafficHotPathTakesNoLockWhileUnsubscribed(t *testing.T) {
 	case <-done:
 		tr.mu.Unlock()
 	case <-time.After(2 * time.Second):
-		t.Error("未订阅时热路径仍去抢 t.mu —— 少了那道 atomic 短路")
+		t.Error("未订阅时字节记账仍去抢 t.mu —— 少了那道 atomic 短路")
 	}
 }
 
@@ -162,8 +195,8 @@ func TestAppTrafficKeepsTCPAndUDPPortsApart(t *testing.T) {
 	}
 }
 
-// 订阅带 TTL:菜单被强杀时没人来退订,而「没人看的时候开销精确为零」是这个
-// 设计的隐私前提 —— 不能靠对方守规矩来保证。
+// 订阅带 TTL:菜单被强杀时没人来退订,而「没人看时不问内核、不记字节、不攒
+// 历史」是这个设计的隐私前提 —— 不能靠对方守规矩来保证。
 func TestAppTrafficSubscriptionExpiresAndClearsBuffers(t *testing.T) {
 	now := time.Unix(1000, 0)
 	clock := func() time.Time { return now }
@@ -205,6 +238,10 @@ func TestAppTrafficResubscribeAfterExpiryStartsClean(t *testing.T) {
 	tr.Subscribe()
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
 	tr.AddUp(7, false, 4242)
+	// **这一行是 2026-08-20 补的,而且是承重的**:续订时活连接表会给新缓冲播种,
+	// 所以「上一轮的残留」必须是一条**真的已经结束**的连接,否则这条测试断言的
+	// 就不是残留、而是「还开着的连接不许出现」——那正好与本次修复相反。
+	tr.ConnClosed(7, false)
 
 	now = now.Add(appTrafficTTL + time.Second)
 	tr.Subscribe() // 中间没有任何一次 Snapshot
@@ -533,5 +570,164 @@ func TestAppTrafficUDPFlowDoesNotClearTheTCPAccount(t *testing.T) {
 	}
 	if got["Tencent Meeting"] != 6 {
 		t.Fatalf("UDP 侧的账不对: %#v", got)
+	}
+}
+
+// ==== 2026-08-20:真机暴露的缺陷 —— 订阅之前就已经建好的连接看不见 ====
+//
+// 现象:项目所有者打开窗口只看到 2 个应用,而 `bx status` 同时报 66 条活跃连接。
+// 根因是 Record 只在 dialer 建连的那一刻被调用,于是**订阅之前建好的连接从来
+// 没有被 Record 过**,窗口只看得见「打开它之后新拨的连接」。后果最重的正是长
+// 连接(会议媒体流、WebSocket、SSH、Colima 隧道):建连一次跑几小时,全在盲区。
+//
+// **十二轮审查没抓到它,因为所有测试都是「先订阅、再造连接」** —— 测试输入让
+// 缺陷不可见。下面这几条测试的形状(先建连、后订阅)就是那个缺失的形状。
+
+// 订阅**之前**建立、订阅时仍然活着的连接,必须出现在报告里。
+func TestAppTrafficSeedsSubscriptionWithConnectionsOpenedBeforeIt(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{
+		tcpKey(7):  "腾讯会议",
+		udpKey(19): "腾讯会议",
+	}}
+	tr := NewAppTraffic(src, time.Now)
+
+	// 会议已经开到一半:两条连接早就建好了,此刻才有人打开窗口。
+	tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com")
+	tr.Record(19, true, appattr.PathTunnel, "default", "")
+
+	tr.Subscribe()
+
+	report, subscribed, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !subscribed {
+		t.Fatal("订阅了却报 subscribed=false")
+	}
+	tunnel, direct := report.Groups[0], report.Groups[1]
+	if len(tunnel.Rows) != 1 || tunnel.Rows[0].App != "腾讯会议" || tunnel.Rows[0].Conns != 1 {
+		t.Fatalf("tunnel 组 = %#v,want 订阅前那条 UDP 长连接被种子带进来", tunnel.Rows)
+	}
+	if len(direct.Rows) != 1 || direct.Rows[0].App != "腾讯会议" || direct.Rows[0].Conns != 1 {
+		t.Fatalf("direct 组 = %#v,want 订阅前那条 TCP 长连接被种子带进来", direct.Rows)
+	}
+	// 判定原文也要跟着种子进来 —— 只带端口的话界面上会显示一条没有归因的行,
+	// 而「为什么走这条路」正是这个功能要回答的问题。
+	if len(direct.Rows[0].Rules) != 1 || direct.Rows[0].Rules[0] != "*.qq.com" {
+		t.Fatalf("种子丢了规则原文: %#v", direct.Rows[0].Rules)
+	}
+}
+
+// 订阅**之前**建立、且**在订阅之前就关掉**的连接,不得出现 —— 种子发布的是
+// 「此刻还活着的」,不是「历史上出现过的」。少了这一条,活连接表就会变成一份
+// 跨订阅留存的历史记录,那既不准也违反「不留存」。
+func TestAppTrafficDoesNotSeedConnectionsClosedBeforeSubscribe(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Safari"}}
+	tr := NewAppTraffic(src, time.Now)
+
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.ConnClosed(7, false)
+
+	tr.Subscribe()
+	report, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range report.Groups {
+		if len(g.Rows) != 0 {
+			t.Fatalf("订阅前就关掉的连接进了报告: %s %#v", g.Path, g.Rows)
+		}
+	}
+}
+
+// **活连接表不许无界增长。** 它是这次修复付出的新代价:未订阅时也要维护,
+// 所以它的唯一边界就是「连接关闭时删掉」。少了那一步,一台跑着的机器上这张
+// 表会随时间单调增长到 OOM,而**任何一条既有测试都不会红** —— 报告仍然正确,
+// 内存增长在测试里不可见。
+func TestAppTrafficLiveTableDropsClosedConnections(t *testing.T) {
+	tr := NewAppTraffic(&fakeAppSource{}, time.Now)
+
+	const n = 5000
+	for i := 0; i < n; i++ {
+		port := uint16(1024 + i%40000)
+		tr.Record(port, false, appattr.PathTunnel, "default", "")
+		tr.Record(port, true, appattr.PathDirect, "china_domain", "")
+		tr.ConnClosed(port, false)
+		tr.ConnClosed(port, true)
+	}
+	if got := tr.liveSize(); got != 0 {
+		t.Fatalf("开关 %d 轮之后活连接表还剩 %d 条 —— 关闭时没有删", n, got)
+	}
+
+	// UDP 一个源端口会有多条并存的流(STUN/TURN/多 peer),refs 记数必须配平:
+	// 三开三关之后归零,三开两关之后仍在(还有一条流活着)。
+	tr.Record(19, true, appattr.PathTunnel, "default", "")
+	tr.Record(19, true, appattr.PathTunnel, "default", "")
+	tr.Record(19, true, appattr.PathTunnel, "default", "")
+	tr.ConnClosed(19, true)
+	tr.ConnClosed(19, true)
+	if got := tr.liveSize(); got != 1 {
+		t.Fatalf("同端口三条 UDP 流关掉两条后表大小 = %d, want 1(还有一条活着)", got)
+	}
+	tr.ConnClosed(19, true)
+	if got := tr.liveSize(); got != 0 {
+		t.Fatalf("最后一条 UDP 流关掉后表大小 = %d, want 0", got)
+	}
+	// 多关一次不许把表算成负数、也不许 panic(防御性:引擎那一侧只要有一条路径
+	// 重复 defer,这里就会被多调一次)。
+	tr.ConnClosed(19, true)
+	if got := tr.liveSize(); got != 0 {
+		t.Fatalf("多余的 ConnClosed 之后表大小 = %d, want 0", got)
+	}
+}
+
+// 种子只在**一次订阅开始时**播一次。菜单每 5 秒拉一次、每次都调 Subscribe 续期,
+// 续期时再播一遍种子就会让同一条连接每 5 秒多算一次 —— 界面上表现为连接数随时间
+// 线性膨胀,而没有任何一处报错。
+func TestAppTrafficSeedIsNotReplayedOnRenewal(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := NewAppTraffic(src, time.Now)
+
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Subscribe()
+	tr.Subscribe()
+	tr.Subscribe()
+
+	report, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel := report.Groups[0]
+	if len(tunnel.Rows) != 1 || tunnel.Rows[0].Conns != 1 {
+		t.Fatalf("三次续期后 tunnel 组 = %#v,want 那条连接只算一次", tunnel.Rows)
+	}
+}
+
+// 种子进来的记录与订阅之后的新记录不许重复计数:同一条连接不能既在种子里、
+// 又因为后来的某次调用再算一遍。**端口复用是另一回事** —— 订阅后同一个端口
+// 上真的又建了一条新连接,那本来就是两条,必须都算。
+func TestAppTrafficSeedAndFreshRecordsDoNotDoubleCount(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{
+		tcpKey(7): "Slack",
+		tcpKey(8): "Google Chrome",
+	}}
+	tr := NewAppTraffic(src, time.Now)
+
+	tr.Record(7, false, appattr.PathTunnel, "default", "") // 订阅前建立,始终活着
+	tr.Subscribe()
+	tr.Record(8, false, appattr.PathTunnel, "default", "") // 订阅后新建
+
+	report, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel := report.Groups[0]
+	if len(tunnel.Rows) != 2 {
+		t.Fatalf("tunnel 组 = %#v,want 两行(种子一条 + 新建一条)", tunnel.Rows)
+	}
+	for _, row := range tunnel.Rows {
+		if row.Conns != 1 {
+			t.Fatalf("%s 连接数 = %d, want 1 —— 同一条连接被算了两次", row.App, row.Conns)
+		}
 	}
 }

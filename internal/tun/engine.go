@@ -81,9 +81,15 @@ type ConnCounter interface {
 // 结构体字段没有编译错误(零值就是 false),而 TCP 与 UDP 的端口空间相互
 // 独立,归错了在界面上完全看不出来 —— 只会看到一个应用名,看不到冲突。
 // 附带好处是 internal/tun 不必 import internal/appattr。
+//
+// ConnClosed 报告一条连接结束。归因侧靠它维护「此刻还开着的连接」表 —— 那张表
+// 让窗口在打开的那一刻就看得见**已经在跑**的长连接(会议媒体流、WebSocket、
+// SSH),而不是只看得见打开之后新拨的连接。**它是那张表唯一的边界**:少了它,
+// 表会随机器运行时间单调增长,而报告仍然完全正确、没有任何一处会报错。
 type ByteAttributor interface {
 	AddUp(srcPort uint16, udp bool, n int64)
 	AddDown(srcPort uint16, udp bool, n int64)
+	ConnClosed(srcPort uint16, udp bool)
 }
 
 // Engine 是 TUN 引擎:在 link 上跑 netstack,终结 TCP/UDP 并交给 Dialer。
@@ -219,6 +225,14 @@ func (e *Engine) handleConn(local net.Conn, m route.Meta) {
 		e.serveDNS(local)
 		return
 	}
+	// **必须 defer 在拨号之前。** 判定(Dialer 内部的 recordApp)与活连接表的
+	// 写入都发生在 Dial 里,而拨号失败(kill-switch Block、直连不通)一样会留下
+	// 一条活连接记录;放到拨号成功之后才 defer,那些记录永远没人删 —— 隧道挂掉
+	// 时被 Block 的连接恰恰是最多的。
+	if e.bytes != nil {
+		defer e.bytes.ConnClosed(m.SrcPort, m.UDP)
+	}
+
 	initial := e.readInitial(local, m)
 	var upstream net.Conn
 	var err error
