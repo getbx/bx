@@ -465,6 +465,11 @@ func TestAppTrafficConcurrentRecordAndSnapshot(t *testing.T) {
 				tr.Record(port, udp, appattr.PathTunnel, "default", "")
 				tr.AddUp(port, udp, 3)
 				tr.AddDown(port, udp, 7)
+				// ConnClosed 与 Record 走的是同一张活连接表、同一把锁,而它
+				// **只在这条测试里**会与 Subscribe 的种子遍历真正并发 ——
+				// 种子在锁内遍历 live,ConnClosed 在锁内改它。少了这一行,
+				// -race 从来没有覆盖过这条新路径。
+				tr.ConnClosed(port, udp)
 			}
 		}(w)
 	}
@@ -640,10 +645,14 @@ func TestAppTrafficDoesNotSeedConnectionsClosedBeforeSubscribe(t *testing.T) {
 	}
 }
 
-// **活连接表不许无界增长。** 它是这次修复付出的新代价:未订阅时也要维护,
-// 所以它的唯一边界就是「连接关闭时删掉」。少了那一步,一台跑着的机器上这张
-// 表会随时间单调增长到 OOM,而**任何一条既有测试都不会红** —— 报告仍然正确,
-// 内存增长在测试里不可见。
+// **活连接表不许泄漏。** 它是这次修复付出的新代价:未订阅时也要维护,所以
+// 它的唯一边界就是「连接关闭时删掉」。少了那一步,**任何一条既有测试都不会红**
+// —— 报告仍然正确,泄漏在测试里不可见。
+//
+// **后果不是 OOM。** 键是 PortKey{uint16, bool},硬上限 131072 条、约 10–15MB,
+// 泄漏满了就到此为止。真正的后果发作得更早也更糟:陈旧条目攒到几千条之后,
+// 一次 Subscribe 的种子就能把 4096 格的环形缓冲填满并绕圈,**新记录被自己的
+// 陈旧种子挤掉** —— 报告从「正确但残缺」退化成「错的」。
 func TestAppTrafficLiveTableDropsClosedConnections(t *testing.T) {
 	tr := NewAppTraffic(&fakeAppSource{}, time.Now)
 
@@ -729,5 +738,53 @@ func TestAppTrafficSeedAndFreshRecordsDoNotDoubleCount(t *testing.T) {
 		if row.Conns != 1 {
 			t.Fatalf("%s 连接数 = %d, want 1 —— 同一条连接被算了两次", row.App, row.Conns)
 		}
+	}
+}
+
+// **已知缺口,这条测试断言的是「这是已知行为」,不是「这样是对的」。**
+//
+// 活连接表按 PortKey 记,同键最后写入者胜;种子每键只发一条记录。于是一个会议
+// socket 同时打 STUN(直连)+ TURN(走隧道)时:
+// 订阅**前**建立 ⇒ 只出现在**一个**组里(最后写入的那条判定),连接数 1;
+// 订阅**后**建立 ⇒ 正确地出现在**两个**组里,连接数各 1。
+// 同一个事实,按窗口打开时机给出不同答案 —— 而「腾讯会议为什么绕一圈」正是这个
+// 功能要回答的问题。今天不修的理由写在 AppTraffic 的类型注释里(相对修复前的
+// 「完全看不见」这仍是巨大改善;真修要把键重新设计成能分辨同一 socket 上的不同流,
+// 因为 ConnClosed(port, udp) 无从知道该减哪一档)。
+//
+// 钉住它是因为**它今天一个字都没被记录**,那样的话下一个人会把它当成新 bug 重查
+// 一遍;而一旦有人真的去修,这条测试会立刻转红,提醒他连同注释与 spec 一起改。
+func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{udpKey(9): "Tencent Meeting"}}
+
+	// (一) 订阅前建立的两条流 —— 种子压成一条。
+	before := NewAppTraffic(src, time.Now)
+	before.Record(9, true, appattr.PathDirect, "china_domain", "") // STUN 直连
+	before.Record(9, true, appattr.PathTunnel, "udp_proxy", "")    // TURN 走隧道
+	before.Subscribe()
+	seeded, _, err := before.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel, direct := seeded.Groups[0], seeded.Groups[1]
+	if len(tunnel.Rows) != 1 || tunnel.Rows[0].Conns != 1 {
+		t.Fatalf("种子的 tunnel 组 = %#v, want 一行一条(最后写入的那条判定)", tunnel.Rows)
+	}
+	if len(direct.Rows) != 0 {
+		t.Fatalf("种子的 direct 组 = %#v, want 空 —— 当前实现每键只发一条记录", direct.Rows)
+	}
+
+	// (二) 同样两条流、订阅**之后**建立 —— 两个组都在。两段的输入完全一样,
+	// 差别只有 Subscribe 的位置,这正是那个「按时机给出不同答案」的形状。
+	after := NewAppTraffic(src, time.Now)
+	after.Subscribe()
+	after.Record(9, true, appattr.PathDirect, "china_domain", "")
+	after.Record(9, true, appattr.PathTunnel, "udp_proxy", "")
+	fresh, _, err := after.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh.Groups[0].Rows) != 1 || len(fresh.Groups[1].Rows) != 1 {
+		t.Fatalf("订阅后建立的两条流 tunnel=%#v direct=%#v, want 各一行", fresh.Groups[0].Rows, fresh.Groups[1].Rows)
 	}
 }

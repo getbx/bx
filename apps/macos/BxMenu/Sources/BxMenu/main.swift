@@ -429,8 +429,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if serversWindow.isVisible {
             fetchServersOnDemand(forceShow: false)
         }
-        // 应用流量同理:**窗口关着就不拨**(没人看时开销为零,也不在这台机器上
-        // 留下你开过什么应用的记录);窗口开着说明有人正盯着,跟着状态变化再拉
+        // 应用流量同理:**窗口关着就不拨**(没人看时 Core 不问内核、不记字节、
+        // 不攒历史,也不在这台机器上留下你开过什么应用的记录 —— 注意不是「开销
+        // 精确为零」,那句旧说法 2026-08-20 之后不再成立,Core 侧仍要维护一张
+        // 活连接表);窗口开着说明有人正盯着,跟着状态变化再拉
         // 一次是「按需」的本意。心跳定时器管的是稳态节拍,这一路管的是「状态刚
         // 变了」那一刻 —— 两者都过同一个在飞守卫,叠不起来。
         if appTrafficWindow.isVisible {
