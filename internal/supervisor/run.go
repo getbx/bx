@@ -715,7 +715,27 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	closer, err := requireControlSocket(func() (io.Closer, error) {
 		refresh := func(requiredLinks []string) (bool, error) { return refreshServerBypass(ctx, requiredLinks) }
-		return serveControlWithPathRecovery(ctx, counters, lt, serverHost, proxyMode(global, cfg.Mode), cfg.UDP.Mode, transportInfo, runtimeState, mutEng, mut, reloadRouter, refresh, cancel, uint32(cfg.OwnerUID), recoverer, direct, riskyRuleWarnings(cfg))
+		return serveControlWithPathRecovery(ctx, controlServeOptions{
+			Counters:      counters,
+			Tunnel:        lt,
+			Server:        serverHost,
+			Mode:          proxyMode(global, cfg.Mode),
+			UDPMode:       cfg.UDP.Mode,
+			TransportInfo: transportInfo,
+			Runtime:       runtimeState,
+			Engine:        mutEng,
+			Mutator:       mut,
+			Reload:        reloadRouter,
+			RefreshBypass: refresh,
+			Shutdown:      cancel,
+			OwnerUID:      uint32(cfg.OwnerUID),
+			Recoverer:     recoverer,
+			ProbeDial:     direct,
+			// 应用流量归因:接上真实的 *AppTraffic,GET /v0/apps 才不会恒 501。
+			// 这是本轮修复的要害——之前只加了端点本身,没有从 Run 把它接进来。
+			ConfigWarnings: riskyRuleWarnings(cfg),
+			AppTraffic:     appTraffic,
+		})
 	})
 	if err != nil {
 		return err

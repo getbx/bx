@@ -274,8 +274,89 @@ func TestControlAppsReportsSourceErrorAsDataNotFault(t *testing.T) {
 	}
 }
 
+// controlMuxOptionsFromServe 是 serveControlWithPathRecovery(要 root socket,
+// 测不了)与 newControlMuxFull 之间那一跳纯字段翻译。这里直接调用它、逐字段
+// 核对,专门堵「controlServeOptions 加了新字段,这一跳的翻译却漏写」这类
+// 事故——编译器对漏写的结构体字段完全沉默,AppTraffic 正是本轮要修的那个
+// 真实先例(Task 8 加完端点,run.go 却没把 appTraffic 接进 controlServeOptions/
+// controlMuxOptions 这条链)。
+func TestControlMuxOptionsFromServeCarriesEveryField(t *testing.T) {
+	eng := &fakeControlEngine{}
+	mut := &fakeMutator{}
+	recoverer := &scriptedPathRecoverer{}
+	probeDial := &fakeProbeDialer{}
+	at := NewAppTraffic(&fakeAppSource{}, nil)
+	report := func() stats.Report { return stats.Report{Server: "carried-report"} }
+
+	var reloadCalled, refreshCalled, shutdownCalled bool
+	opts := controlServeOptions{
+		Engine:        eng,
+		Runtime:       func() RuntimeState { return RuntimeState{ServerHost: "carried-runtime"} },
+		Mutator:       mut,
+		Reload:        func() error { reloadCalled = true; return nil },
+		RefreshBypass: func([]string) (bool, error) { refreshCalled = true; return false, nil },
+		OwnerUID:      7,
+		Shutdown:      func() { shutdownCalled = true },
+		Recoverer:     recoverer,
+		ProbeDial:     probeDial,
+		AppTraffic:    at,
+	}
+
+	got := controlMuxOptionsFromServe(opts, report, 4242)
+
+	if got.Engine != eng {
+		t.Error("Engine 没搬过来")
+	}
+	if got.Mutator != mut {
+		t.Error("Mutator 没搬过来")
+	}
+	if got.Recoverer != recoverer {
+		t.Error("Recoverer 没搬过来")
+	}
+	if got.ProbeDial != probeDial {
+		t.Error("ProbeDial 没搬过来")
+	}
+	if got.AppTraffic != at {
+		t.Error("AppTraffic 没搬过来 —— GET /v0/apps 会恒 501")
+	}
+	if got.OwnerUID != 7 {
+		t.Errorf("OwnerUID = %d, want 7", got.OwnerUID)
+	}
+	if got.ProcessPID != 4242 {
+		t.Errorf("ProcessPID = %d, want 4242(调用方传入的值,不是 opts 里的字段)", got.ProcessPID)
+	}
+	if got.Report == nil || got.Report().Server != "carried-report" {
+		t.Error("Report 没搬过来")
+	}
+	if got.Runtime == nil || got.Runtime().ServerHost != "carried-runtime" {
+		t.Error("Runtime 没搬过来")
+	}
+	if got.Reload == nil {
+		t.Fatal("Reload 没搬过来")
+	}
+	got.Reload()
+	if !reloadCalled {
+		t.Error("Reload 搬过来的不是同一个闭包")
+	}
+	if got.RefreshBypass == nil {
+		t.Fatal("RefreshBypass 没搬过来")
+	}
+	got.RefreshBypass(nil)
+	if !refreshCalled {
+		t.Error("RefreshBypass 搬过来的不是同一个闭包")
+	}
+	if got.Shutdown == nil {
+		t.Fatal("Shutdown 没搬过来")
+	}
+	got.Shutdown()
+	if !shutdownCalled {
+		t.Error("Shutdown 搬过来的不是同一个闭包")
+	}
+}
+
 // 没接线(appTraffic==nil)回 501,不是空报告 —— 与 handleProbe/handlePathRecovery
-// 的「没接线不是测不通」同一条纪律。
+// 的「没接线不是测不通」同一条纪律。**不只查状态码**——501 是不是真的说清了
+// 「没接线」这句措辞,此前只靠读代码背书,现在断言响应体里那句话确实在。
 func TestControlAppsNotImplementedWhenNil(t *testing.T) {
 	h := newControlMuxWithAppTraffic(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, nopMutator{}, 0, nil)
 	srv := httptest.NewServer(h)
@@ -287,6 +368,56 @@ func TestControlAppsNotImplementedWhenNil(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var got controlResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Error, "unavailable") {
+		t.Fatalf("501 没说清「没接线」:error=%q", got.Error)
+	}
+}
+
+// POST /v0/apps 应 405 —— 这是只读端点,与 TestControlStatusRejectsPost 同一模式。
+func TestControlAppsRejectsPost(t *testing.T) {
+	at := NewAppTraffic(&fakeAppSource{}, nil)
+	h := newControlMuxWithAppTraffic(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, nopMutator{}, 0, at)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v0/apps")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("apps POST 应 405,得 %d", resp.StatusCode)
+	}
+}
+
+// `subscribe` 只认字面 `"1"` 才续订 —— `0`/`true`/无值这几种「看起来像开」的
+// 输入都必须**不**续订,否则「显式关闭」会被误当成「开启」。用
+// fakeAppSource.callCount 而不是响应体来判断,因为未订阅与已过期都会返回
+// subscribed=false、三组齐全的空报告,响应体本身分不出「到底有没有调
+// Subscribe」;calls 计数是 appSource 有没有真的被问过的唯一证据。
+func TestControlAppsSubscribeOnlyAcceptsLiteralOne(t *testing.T) {
+	for _, q := range []string{"subscribe=0", "subscribe=true", "subscribe", "subscribe="} {
+		t.Run(q, func(t *testing.T) {
+			src := &fakeAppSource{owners: map[appattr.PortKey]string{}}
+			at := NewAppTraffic(src, nil)
+			h := newControlMuxWithAppTraffic(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, nopMutator{}, 0, at)
+			srv := httptest.NewServer(h)
+			defer srv.Close()
+
+			resp, err := http.Get(srv.URL + "/v0/apps?" + q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got AppTrafficResponse
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if got.Subscribed {
+				t.Fatalf("?%s 不该续订,却报 subscribed=true", q)
+			}
+		})
 	}
 }
 

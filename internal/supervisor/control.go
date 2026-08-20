@@ -119,22 +119,57 @@ func newControlMuxWithPathRecovery(eng controlEngine, report func() stats.Report
 }
 
 func newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer) http.Handler {
-	return newControlMuxFull(eng, report, runtime, mut, reload, nil, ownerUID, processPID, shutdown, recoverer, nil, nil)
+	return newControlMuxFull(controlMuxOptions{
+		Engine: eng, Report: report, Runtime: runtime, Mutator: mut, Reload: reload,
+		OwnerUID: ownerUID, ProcessPID: processPID, Shutdown: shutdown, Recoverer: recoverer,
+	})
 }
 
 // newControlMuxWithAppTraffic 是测试专用的便捷入口 —— 只暴露本包需要的形参,
 // 其余(runtime/refreshBypass/processPID/shutdown/recoverer/probeDial)按生产
-// 未接线的默认值传 nil/0,与 newControlMuxWithPathRecovery 同一手法。
+// 未接线的默认值传零值,与 newControlMuxWithPathRecovery 同一手法。
 func newControlMuxWithAppTraffic(eng controlEngine, report func() stats.Report, mut mutator, ownerUID uint32, appTraffic *AppTraffic) http.Handler {
-	return newControlMuxFull(eng, report, nil, mut, nil, nil, ownerUID, 0, nil, nil, nil, appTraffic)
+	return newControlMuxFull(controlMuxOptions{
+		Engine: eng, Report: report, Mutator: mut, OwnerUID: ownerUID, AppTraffic: appTraffic,
+	})
+}
+
+// controlMuxOptions 打包 newControlMuxFull 的全部依赖。**不用位置参数**——
+// 这个构造函数是控制面 mux 唯一真正的组装点,历史上每加一个能力(runtime/
+// shutdown/path-recovery/probe/appTraffic……)就在参数列表末尾追加一个位置参数,
+// 到 appTraffic 已经是第 12 个;审查指出再加就是第 13 个,而这个仓库的事故
+// 反复发生在组装根上——位置参数一多,调用点漏传或错位一个 nil 编译器完全
+// 看不出来(`newControlMuxFull(eng, report, runtime, mut, reload, refreshBypass,
+// ownerUID, processPID, shutdown, recoverer, probeDial, nil)` 这种调用,少一个逗号
+// 或错一个位置,类型系统未必能拦住同类型的两个 nil 参数)。具名字段把「传错
+// 位置」的错误从运行期行为差异变成了不存在(打错字段名是编译错误,漏填字段
+// 是零值且看得见字段名)。
+type controlMuxOptions struct {
+	Engine        controlEngine
+	Report        func() stats.Report
+	Runtime       func() RuntimeState
+	Mutator       mutator
+	Reload        func() error // 重读配置 rules 并热重建 router;可空
+	RefreshBypass func(requiredLinks []string) (changed bool, err error)
+	OwnerUID      uint32
+	ProcessPID    int
+	Shutdown      func()
+	Recoverer     pathRecoverer // 可空 = 该部署不支持路径恢复
+	ProbeDial     probeDialer   // 可空 = 该部署不支持探测(端点回 501)
+	AppTraffic    *AppTraffic   // 可空 = 该部署没有接线(端点回 501)
 }
 
 // newControlMuxFull 是唯一真正构造 controlServer 的地方;上面几个包装只是历史调用点的
-// 便捷入口(refreshBypass 传 nil = 不支持刷新)。
-func newControlMuxFull(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer, probeDial probeDialer, appTraffic *AppTraffic) http.Handler {
-	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, refreshBypass: refreshBypass, ownerUID: ownerUID, processPID: processPID, shutdown: shutdown, probeDial: probeDial, appTraffic: appTraffic}
-	if recoverer != nil {
-		cs.pathRecovery = newPathRecoveryOperation(recoverer)
+// 便捷入口(RefreshBypass 留零值 = 不支持刷新)。
+func newControlMuxFull(opts controlMuxOptions) http.Handler {
+	cs := &controlServer{
+		eng: opts.Engine, report: opts.Report, runtime: opts.Runtime, mut: opts.Mutator,
+		reload: opts.Reload, refreshBypass: opts.RefreshBypass, ownerUID: opts.OwnerUID,
+		processPID: opts.ProcessPID, shutdown: opts.Shutdown, probeDial: opts.ProbeDial,
+		appTraffic: opts.AppTraffic,
+	}
+	if opts.Recoverer != nil {
+		cs.pathRecovery = newPathRecoveryOperation(opts.Recoverer)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/status", cs.handleStatus)
@@ -562,7 +597,11 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // transportInfo(可空)返回当前活跃传输标签、容灾列表、UDP 专用传输标签,供 status 呈现;
 // active 动态(容灾后反映实际),list/udp 多为静态配置。
 func serveControl(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, shutdown func(), ownerUID uint32) (io.Closer, error) {
-	return serveControlWithPathRecovery(ctx, c, t, server, mode, udpMode, transportInfo, runtime, eng, mut, reload, nil, shutdown, ownerUID, nil, nil, nil)
+	return serveControlWithPathRecovery(ctx, controlServeOptions{
+		Counters: c, Tunnel: t, Server: server, Mode: mode, UDPMode: udpMode,
+		TransportInfo: transportInfo, Runtime: runtime, Engine: eng, Mutator: mut,
+		Reload: reload, Shutdown: shutdown, OwnerUID: ownerUID,
+	})
 }
 
 // newStatusReporter 组装 report 闭包:把计数器快照、隧道状态、运行时状态、
@@ -630,14 +669,62 @@ func newStatusReporter(c *stats.Counters, t tunnelStatser, server, mode, udpMode
 	}
 }
 
-func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, eng controlEngine, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), shutdown func(), ownerUID uint32, recoverer pathRecoverer, probeDial probeDialer, configWarnings []stats.Warning) (io.Closer, error) {
+// controlServeOptions 打包 serveControlWithPathRecovery 的全部依赖(ctx 除外,
+// 按惯例留作独立的第一个形参)。**同一个理由,不用位置参数**:这个函数曾是
+// 17 个位置参数,审查指出这正是「静默传错一个 nil」的形状本身——旧的
+// serveControl 包装函数在位置上传了三个 `nil`(refreshBypass/recoverer/
+// probeDial),多一个字段(本轮的 AppTraffic)就会变成第 18 个位置、第四个
+// 挨着写的 nil,谁也分不清哪个 nil 对应哪个依赖。换成具名字段后,`serveControl`
+// 那三个字段干脆**不写**(零值),读代码的人一眼看出它是「哪些能力这个部署
+// 没有」而不是在数三个逗号数到第几个。
+type controlServeOptions struct {
+	Counters       *stats.Counters
+	Tunnel         tunnelStatser
+	Server         string
+	Mode           string
+	UDPMode        string
+	TransportInfo  func() (string, []string, string)
+	Runtime        func() RuntimeState
+	Engine         controlEngine
+	Mutator        mutator
+	Reload         func() error
+	RefreshBypass  func([]string) (bool, error)
+	Shutdown       func()
+	OwnerUID       uint32
+	Recoverer      pathRecoverer
+	ProbeDial      probeDialer
+	ConfigWarnings []stats.Warning
+	// AppTraffic 是应用流量归因采集器,接进控制面才能让 GET /v0/apps 真的
+	// 发布报告(而不是恒 501)。留零值 = 该部署没有接线。
+	AppTraffic *AppTraffic
+}
+
+// controlMuxOptionsFromServe 把 serveControlWithPathRecovery 收到的依赖翻译成
+// newControlMuxFull 要的 controlMuxOptions。**单独抽成一个纯函数**,理由与
+// newStatusReporter(上面)完全相同——serveControlWithPathRecovery 本身要在
+// SockPath 下建 unix socket,非 root 测不了;而 opts.AppTraffic(以及其余每
+// 一个字段)有没有真的搬到 controlMuxOptions 里,是一次纯粹的字段翻译,没有
+// 理由绑死在需要 root 的那条路径上。少翻译一个字段(例如漏写 AppTraffic:
+// opts.AppTraffic)编译器不会报错——这正是当初把 appTraffic 传进
+// controlServeOptions、却在这一跳漏接的那类事故,由
+// TestControlMuxOptionsFromServeCarriesEveryField 直接调用本函数钉住。
+func controlMuxOptionsFromServe(opts controlServeOptions, report func() stats.Report, processPID int) controlMuxOptions {
+	return controlMuxOptions{
+		Engine: opts.Engine, Report: report, Runtime: opts.Runtime, Mutator: opts.Mutator,
+		Reload: opts.Reload, RefreshBypass: opts.RefreshBypass, OwnerUID: opts.OwnerUID,
+		ProcessPID: processPID, Shutdown: opts.Shutdown, Recoverer: opts.Recoverer,
+		ProbeDial: opts.ProbeDial, AppTraffic: opts.AppTraffic,
+	}
+}
+
+func serveControlWithPathRecovery(ctx context.Context, opts controlServeOptions) (io.Closer, error) {
 	guard := startNetworkGuard(ctx)
 	// **吞吐要按固定节拍采样,不能搭在读状态那条路上。**
 	// 读状态的间隔由调用方决定(菜单开着 2 秒、关着 30 秒、CLI 一次就走),
 	// 而峰值是一个「有没有在那一秒看到」的问题 —— 采样疏了就整个错过。
 	rate := &stats.RateMeter{}
-	go sampleThroughput(ctx, c, rate)
-	report := newStatusReporter(c, t, server, mode, udpMode, transportInfo, runtime, guard, rate, configWarnings)
+	go sampleThroughput(ctx, opts.Counters, rate)
+	report := newStatusReporter(opts.Counters, opts.Tunnel, opts.Server, opts.Mode, opts.UDPMode, opts.TransportInfo, opts.Runtime, guard, rate, opts.ConfigWarnings)
 	if err := secdir.Ensure(filepath.Dir(SockPath), os.Geteuid(), 0o755); err != nil {
 		return nil, fmt.Errorf("准备控制 socket 目录: %w", err)
 	}
@@ -649,9 +736,7 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		// appTraffic 留 nil —— 生产接线是另一个 task 的范围(本 task 只加端点本身),
-		// 未接线时 /v0/apps 按既有纪律回 501,不冒充一份空报告。
-		Handler:           newControlMuxFull(eng, report, runtime, mut, reload, refreshBypass, ownerUID, os.Getpid(), shutdown, recoverer, probeDial, nil),
+		Handler:           newControlMuxFull(controlMuxOptionsFromServe(opts, report, os.Getpid())),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
