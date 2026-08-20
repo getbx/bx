@@ -1354,25 +1354,29 @@ type swiftFunc struct {
 // enclosingSwiftFunc 的调用点):任何落在所有函数体之外的命中都要响亮报错,
 // 而不是被当成「不存在」静默放过。
 func swiftFunctionDefs(source string) []swiftFunc {
+	// 与 swiftFunctionBody 同一条:**扫描在抹白副本上做**,偏移逐字节不变,故
+	// enclosingSwiftFunc 拿到的区间对原串照样成立。注释与字符串里的 `func x(`
+	// 不再被当成定义,它们里面的花括号也不再参与配平。
+	scan := blankSwiftStringLiterals(source)
 	var defs []swiftFunc
 	pattern := regexp.MustCompile(`\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
-	for _, match := range pattern.FindAllStringSubmatchIndex(source, -1) {
+	for _, match := range pattern.FindAllStringSubmatchIndex(scan, -1) {
 		name := source[match[2]:match[3]]
-		open := strings.Index(source[match[1]:], "{")
+		open := strings.Index(scan[match[1]:], "{")
 		if open < 0 {
 			continue
 		}
 		open += match[1]
 		depth := 0
-		for i := open; i < len(source); i++ {
-			switch source[i] {
+		for i := open; i < len(scan); i++ {
+			switch scan[i] {
 			case '{':
 				depth++
 			case '}':
 				depth--
 				if depth == 0 {
 					defs = append(defs, swiftFunc{name: name, start: open + 1, end: i})
-					i = len(source)
+					i = len(scan)
 				}
 			}
 		}
@@ -1744,18 +1748,24 @@ func TestMacMenuWarningsDropGreenRecoverySnapshot(t *testing.T) {
 
 // swiftFunctionBody returns the brace-balanced body of the named Swift function.
 func swiftFunctionBody(source, signature string) (string, bool) {
-	start := strings.Index(source, signature)
+	// **配平只在抹白副本上数**(blankSwiftStringLiterals,offset 逐字节保持不变)。
+	// 字符串字面量与注释里的花括号不是结构:菜单标签里一个 `}` 会让这个扫描器
+	// 提前收尾(**假红**,而一个会莫名其妙红的闸门会被下一个人删掉),而一句
+	// `_ = "{"` 塞进任何一个被守着的块里就能把配平推歪(**假绿**)。
+	// 切片仍从原串取,调用方拿到的文本一个字节没变。
+	scan := blankSwiftStringLiterals(source)
+	start := strings.Index(scan, signature)
 	if start < 0 {
 		return "", false
 	}
-	open := strings.Index(source[start:], "{")
+	open := strings.Index(scan[start:], "{")
 	if open < 0 {
 		return "", false
 	}
 	open += start
 	depth := 0
-	for i := open; i < len(source); i++ {
-		switch source[i] {
+	for i := open; i < len(scan); i++ {
+		switch scan[i] {
 		case '{':
 			depth++
 		case '}':
