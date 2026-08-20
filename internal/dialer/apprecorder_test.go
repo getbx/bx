@@ -51,11 +51,16 @@ func newAppDialer(t *testing.T, healthy bool) (*Dialer, *fakeAppRecorder) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// **Stats 必须挂上,而且这一条是承重的。** countUDPCounterfactual 第一句是
+	// `if d.Stats == nil { return }` —— 不挂 Stats,那整段反事实代码在测试里根本
+	// 不执行,于是「反事实不许再记第二条」这条断言(only(t) 要求恰好一条)就
+	// 什么也守不住:把 recordApp 加回反事实那一行,全套测试照样绿。
 	d := &Dialer{
 		Resolver:    fixedResolver{},
 		Direct:      okDialer{},
 		Killswitch:  true,
 		AppRecorder: rec,
+		Stats:       noopCounter{},
 		UDPMode:     "proxy",
 	}
 	d.SetRouter(&route.Router{
@@ -231,6 +236,23 @@ func TestDialerRecordsUDPModeBlock(t *testing.T) {
 	}
 }
 
+// **udp_proxy(非 fallback)那一档在真机数据里是主力**(udp_proxy 72 vs
+// udp_proxy_fallback 3),而它与 fallback 只差一个健康的 UDP 专用传输。
+// 没有这条用例时,把两条 source 记反不会有任何测试转红。
+func TestDialerRecordsUDPProxyModeWithDedicatedTransport(t *testing.T) {
+	d, rec := newAppDialer(t, true)
+	d.SetUDPTransport(&Transport{Proxy: okDialer{}, Healthy: func() bool { return true }})
+	m := route.Meta{IP: netip.MustParseAddr("198.18.0.9"), Port: 443, UDP: true, SrcPort: 51012}
+	if _, err := d.Dial(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.only(t)
+	want := appCall{51012, true, appattr.PathTunnel, udpSourceProxy, ""}
+	if got != want {
+		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
+	}
+}
+
 // 具名出口:走的是另一条隧道,但仍然不是直连 —— 归到 tunnel 组。
 func TestDialerRecordsViaEgress(t *testing.T) {
 	d, rec := newAppDialer(t, true)
@@ -278,3 +300,16 @@ func TestDialerWithoutAppRecorderDoesNotPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// noopCounter 是 DecisionCounter 的空实现:这一批测试只关心归因,不关心计数,
+// 但**必须让计数那条路真的执行**(见 newAppDialer 里的注释)。
+type noopCounter struct{}
+
+func (noopCounter) Proxy()                  {}
+func (noopCounter) Direct()                 {}
+func (noopCounter) Blocked()                {}
+func (noopCounter) UDPBlocked()             {}
+func (noopCounter) DirectFailed()           {}
+func (noopCounter) ProxyFailed()            {}
+func (noopCounter) RuleAttempt(_, _ string) {}
+func (noopCounter) RuleFailure(_, _ string) {}

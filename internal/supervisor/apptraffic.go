@@ -121,17 +121,32 @@ func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source,
 		return
 	}
 	key := appattr.PortKey{Port: srcPort, UDP: udp}
-	// **端口复用时清账,这两行是承重的。**
+	// **端口复用时清账,这两行是承重的 —— 但只对 TCP。**
 	//
 	// 下游 appattr.Aggregate 按键全局去重、只把字节记给该键**最近**的那条
 	// 记录 —— 这个设计之所以成立,正是因为上游在端口被复用的这一刻就把旧账
 	// 清空了:于是「这个键的字节」永远只反映当前这条连接,不存在「该分给旧
 	// 连接多少」这个问题。
 	//
-	// 去掉这两行,Aggregate 的数字会变错,而 internal/appattr 的测试一条都
+	// 去掉 TCP 那半,Aggregate 的数字会变错,而 internal/appattr 的测试一条都
 	// 抓不到 —— 它拿到的是外部传入的 map,无从知道上游有没有清账。
-	delete(t.bytesUp, key)
-	delete(t.bytesDn, key)
+	//
+	// **两种协议的语义在这里是相反的,别统一。**
+	//   TCP:一个源端口同时只有一条活连接,同键再来一条 ⇒ 旧连接已终结,清账正确。
+	//   UDP:一个 socket 服务多个对端 —— gVisor 的 forwarder 按 5 元组建流,
+	//        一个应用 socket 打 STUN + TURN + 多个 peer 就产生 N 条流、N 次
+	//        Record,而它们**属于同一个 socket、同一个应用**。照 TCP 那样清,
+	//        每来一条新流就把这个端口已攒的字节抹掉:字节数系统性偏低而连接数
+	//        完全正常,没有任何一处报错 —— 恰好命中腾讯会议的媒体流,也就是
+	//        这个功能最初的用例。
+	//
+	// **已知代价**:某天一个 UDP 端口真被不同应用先后复用时,旧账会算给新应用。
+	// 相比「媒体流字节系统性偏低」,这个方向的误差小得多、也罕见得多(UDP 端口
+	// 在一个 30 秒的订阅窗口里换主人,要比一个会议 socket 同时打多个对端少见)。
+	if !udp {
+		delete(t.bytesUp, key)
+		delete(t.bytesDn, key)
+	}
 	t.records[t.next] = appattr.ConnRecord{
 		SrcPort: srcPort,
 		UDP:     udp,
