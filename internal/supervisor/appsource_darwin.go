@@ -1,0 +1,82 @@
+//go:build darwin
+
+package supervisor
+
+import (
+	"bytes"
+	"fmt"
+
+	"github.com/getbx/bx/internal/appattr"
+	"golang.org/x/sys/unix"
+)
+
+type darwinAppSource struct{}
+
+func newAppSource() appSource { return darwinAppSource{} }
+
+// OwnersByPort 读一次 TCP + UDP 的 pcblist,把源端口 join 成应用显示名。
+//
+// 真机实测(2026-08-19):两张表读+解析共 451µs~1.5ms,产出 ~243 条映射;
+// 再解 45 个不同 PID 的进程名约 330µs。所以整个函数可以按秒级频率调用。
+//
+// **必须以 root 跑** —— kern.procargs2 读 root 进程要权限,非 root 会让所有
+// 系统守护进程的名字变成空串。Core 本身就是 root,菜单(uid 501)不行。
+func (darwinAppSource) OwnersByPort() (map[uint16]string, error) {
+	owners := map[uint16]string{}
+	names := map[int32]string{}
+	aliveCache := map[int32]bool{}
+	alive := func(pid int32) bool {
+		if v, ok := aliveCache[pid]; ok {
+			return v
+		}
+		// kill(pid, 0):ESRCH 才是「不存在」。EPERM 说明进程活着但不归我们管
+		// (Core 是 root,实际不会遇到),仍算活着 —— 与 Guardian 那边
+		// ErrProcessNotRunning 的判据同源:只有明确的 ESRCH 才判死。
+		err := unix.Kill(int(pid), 0)
+		v := err == nil || err == unix.EPERM
+		aliveCache[pid] = v
+		return v
+	}
+
+	for _, mib := range [...]string{"net.inet.tcp.pcblist_n", "net.inet.udp.pcblist_n"} {
+		raw, err := unix.SysctlRaw(mib)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", mib, err)
+		}
+		pcbs, err := appattr.ParsePcbList(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", mib, err)
+		}
+		for _, pcb := range pcbs {
+			pid, ok := appattr.ChooseOwner(pcb, alive)
+			if !ok {
+				continue // 查不出的端口**不进 map**,上层据此判 unknown
+			}
+			name, cached := names[pid]
+			if !cached {
+				name = appattr.DisplayName(executablePathOf(pid))
+				names[pid] = name
+			}
+			if name != "" {
+				owners[pcb.LocalPort] = name
+			}
+		}
+	}
+	return owners, nil
+}
+
+// executablePathOf 读 kern.procargs2 的第一段(可执行路径)。
+// 布局与 guardian/procscan_darwin.go 的 parseProcArgs 相同:
+// [4 字节 argc][可执行路径 NUL]…
+func executablePathOf(pid int32) string {
+	raw, err := unix.SysctlRaw("kern.procargs2", int(pid))
+	if err != nil || len(raw) < 4 {
+		return ""
+	}
+	rest := raw[4:]
+	end := bytes.IndexByte(rest, 0)
+	if end <= 0 {
+		return ""
+	}
+	return string(rest[:end])
+}
