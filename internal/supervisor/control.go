@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/getbx/bx/internal/appattr"
 	"github.com/getbx/bx/internal/confirm"
 	"github.com/getbx/bx/internal/secdir"
 	"github.com/getbx/bx/internal/stats"
@@ -71,6 +72,20 @@ type controlServer struct {
 	processPID   int
 	shutdown     func()
 	pathRecovery *pathRecoveryOperation
+	// appTraffic 是应用流量归因的采集器。可为 nil = 该部署没有接线
+	// (与 probeDial/pathRecovery 同一条纪律),此时 /v0/apps 回 501
+	// 而不是一份看起来正常的空报告。
+	appTraffic *AppTraffic
+}
+
+// AppTrafficResponse 是 GET /v0/apps 的响应体。三态刻意分开发布:
+// Subscribed 区分「没人在看」与「在看」,Error 非空时 Report 是
+// Snapshot 报错那一路的零值(Groups==nil)—— 消费方必须先判 Error
+// 再碰 Report,不许把两者合并成一份「看起来正常」的空报告。
+type AppTrafficResponse struct {
+	Subscribed bool           `json:"subscribed"`
+	Report     appattr.Report `json:"report"`
+	Error      string         `json:"error,omitempty"`
 }
 
 func stateName(s confirm.State) string {
@@ -104,13 +119,20 @@ func newControlMuxWithPathRecovery(eng controlEngine, report func() stats.Report
 }
 
 func newControlMuxWithRuntimeAndShutdownAndPathRecovery(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer) http.Handler {
-	return newControlMuxFull(eng, report, runtime, mut, reload, nil, ownerUID, processPID, shutdown, recoverer, nil)
+	return newControlMuxFull(eng, report, runtime, mut, reload, nil, ownerUID, processPID, shutdown, recoverer, nil, nil)
+}
+
+// newControlMuxWithAppTraffic 是测试专用的便捷入口 —— 只暴露本包需要的形参,
+// 其余(runtime/refreshBypass/processPID/shutdown/recoverer/probeDial)按生产
+// 未接线的默认值传 nil/0,与 newControlMuxWithPathRecovery 同一手法。
+func newControlMuxWithAppTraffic(eng controlEngine, report func() stats.Report, mut mutator, ownerUID uint32, appTraffic *AppTraffic) http.Handler {
+	return newControlMuxFull(eng, report, nil, mut, nil, nil, ownerUID, 0, nil, nil, nil, appTraffic)
 }
 
 // newControlMuxFull 是唯一真正构造 controlServer 的地方;上面几个包装只是历史调用点的
 // 便捷入口(refreshBypass 传 nil = 不支持刷新)。
-func newControlMuxFull(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer, probeDial probeDialer) http.Handler {
-	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, refreshBypass: refreshBypass, ownerUID: ownerUID, processPID: processPID, shutdown: shutdown, probeDial: probeDial}
+func newControlMuxFull(eng controlEngine, report func() stats.Report, runtime func() RuntimeState, mut mutator, reload func() error, refreshBypass func([]string) (bool, error), ownerUID uint32, processPID int, shutdown func(), recoverer pathRecoverer, probeDial probeDialer, appTraffic *AppTraffic) http.Handler {
+	cs := &controlServer{eng: eng, report: report, runtime: runtime, mut: mut, reload: reload, refreshBypass: refreshBypass, ownerUID: ownerUID, processPID: processPID, shutdown: shutdown, probeDial: probeDial, appTraffic: appTraffic}
 	if recoverer != nil {
 		cs.pathRecovery = newPathRecoveryOperation(recoverer)
 	}
@@ -126,6 +148,7 @@ func newControlMuxFull(eng controlEngine, report func() stats.Report, runtime fu
 	mux.HandleFunc("/v0/path-recovery", cs.handlePathRecovery)
 	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
 	mux.HandleFunc("/v0/reload", cs.handleReload)
+	mux.HandleFunc("/v0/apps", cs.handleApps)
 	mux.HandleFunc("/v0/probe", cs.handleProbe)
 	mux.HandleFunc("/v0/shutdown", cs.handleShutdown)
 	return mux
@@ -241,6 +264,36 @@ func (cs *controlServer) handleReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, controlResponse{Status: "ok", State: "reloaded"})
+}
+
+// handleApps 发布应用流量归因报告(只读)。`?subscribe=1` 时先续期订阅
+// 再取快照 —— 消费方每次拉取都会带上它,同时兼具续期作用(30 秒 TTL)。
+//
+// **三态必须分开发布,不许合并成一份空报告**:没人订阅 / 订阅了但问不出来 /
+// 订阅了且确实没有连接,是三种不同的事实。Snapshot 报错时返回的是零值
+// Report(Groups==nil)——这里必须**先判 err 再碰 report**,否则会把「没查
+// 出来」发布成「查过、一个应用都没有」这句自洽的假话。
+func (cs *controlServer) handleApps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
+		return
+	}
+	if cs.appTraffic == nil {
+		// 「没接线」不是「没有应用」—— 与 handleProbe/handlePathRecovery 同一条纪律。
+		writeJSON(w, http.StatusNotImplemented, controlResponse{Status: "error", Error: "app attribution unavailable"})
+		return
+	}
+	if r.URL.Query().Get("subscribe") == "1" {
+		cs.appTraffic.Subscribe()
+	}
+	report, subscribed, err := cs.appTraffic.Snapshot()
+	if err != nil {
+		// 「问不出来」是数据,不是服务端故障:仍是 200,report 字段原样透传
+		// Snapshot 给的零值,绝不额外拼一份看起来正常的空报告。
+		writeJSON(w, http.StatusOK, AppTrafficResponse{Subscribed: subscribed, Report: report, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, AppTrafficResponse{Subscribed: subscribed, Report: report})
 }
 
 type shutdownRequest struct {
@@ -596,7 +649,9 @@ func serveControlWithPathRecovery(ctx context.Context, c *stats.Counters, t tunn
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler:           newControlMuxFull(eng, report, runtime, mut, reload, refreshBypass, ownerUID, os.Getpid(), shutdown, recoverer, probeDial),
+		// appTraffic 留 nil —— 生产接线是另一个 task 的范围(本 task 只加端点本身),
+		// 未接线时 /v0/apps 按既有纪律回 501,不冒充一份空报告。
+		Handler:           newControlMuxFull(eng, report, runtime, mut, reload, refreshBypass, ownerUID, os.Getpid(), shutdown, recoverer, probeDial, nil),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {

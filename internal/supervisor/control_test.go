@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/appattr"
 	"github.com/getbx/bx/internal/confirm"
 	"github.com/getbx/bx/internal/stats"
 )
@@ -178,6 +179,114 @@ func TestControlCapabilitiesAdvertisesSafeReconnect(t *testing.T) {
 	}
 	if err := json.NewDecoder(w.Body).Decode(&out); err != nil || !out.SafeReconnect {
 		t.Fatalf("out=%+v err=%v", out, err)
+	}
+}
+
+// 「没订阅」「订阅了但问不出来」「订阅了且确实没连接」是三种不同的状态,
+// 不许合并成一个空列表 —— 空列表读作「一条都没有」是句自洽的假话。
+func TestControlAppsDistinguishesUnsubscribedFromEmpty(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{}}
+	at := NewAppTraffic(src, nil)
+	h := newControlMuxWithAppTraffic(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, nopMutator{}, 0, at)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	// 未订阅:subscribed=false,但组数仍须齐全(消费方按下标取组)。
+	resp, err := http.Get(srv.URL + "/v0/apps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got AppTrafficResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("未订阅时 status=%d", resp.StatusCode)
+	}
+	if got.Subscribed {
+		t.Fatal("未订阅却报 subscribed=true")
+	}
+	if len(got.Report.Groups) != 3 {
+		t.Fatalf("未订阅时组数应恒为 3,got %d", len(got.Report.Groups))
+	}
+	if got.Error != "" {
+		t.Fatalf("未订阅不该有 error: %q", got.Error)
+	}
+
+	// subscribe=1 之后:subscribed=true 且 groups 恒为三组(此刻没有连接,
+	// 而不是「没在采集」)。
+	resp, err = http.Get(srv.URL + "/v0/apps?subscribe=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = AppTrafficResponse{}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("订阅后 status=%d", resp.StatusCode)
+	}
+	if !got.Subscribed {
+		t.Fatal("订阅了却报 subscribed=false")
+	}
+	if len(got.Report.Groups) != 3 {
+		t.Fatalf("订阅后组数应恒为 3,got %d", len(got.Report.Groups))
+	}
+	if got.Error != "" {
+		t.Fatalf("订阅了且能问出来时不该有 error: %q", got.Error)
+	}
+}
+
+// appSource 报错:HTTP 200 + subscribed=true + error 非空(不是 500,因为
+// 「问不出来」是数据,不是服务端故障),且**绝不**用三组齐全的空报告冒充
+// 「查过、一个应用都没有」—— Snapshot 出错时返回的是零值 Report(Groups==nil),
+// 这里必须原样透传,不许先摸一下 Report 再决定。
+func TestControlAppsReportsSourceErrorAsDataNotFault(t *testing.T) {
+	src := &fakeAppSource{err: errors.New("问不出来")}
+	at := NewAppTraffic(src, nil)
+	at.Subscribe()
+	h := newControlMuxWithAppTraffic(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, nopMutator{}, 0, at)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v0/apps?subscribe=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("appSource 报错也应是 200,got %d", resp.StatusCode)
+	}
+	var got AppTrafficResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Subscribed {
+		t.Fatal("订阅了却报 subscribed=false")
+	}
+	if got.Error == "" {
+		t.Fatal("appSource 报错时 error 字段不能为空")
+	}
+	if len(got.Report.Groups) != 0 {
+		t.Fatalf("appSource 报错时不许伪造出三组齐全的空报告,got %d groups", len(got.Report.Groups))
+	}
+}
+
+// 没接线(appTraffic==nil)回 501,不是空报告 —— 与 handleProbe/handlePathRecovery
+// 的「没接线不是测不通」同一条纪律。
+func TestControlAppsNotImplementedWhenNil(t *testing.T) {
+	h := newControlMuxWithAppTraffic(&fakeControlEngine{}, func() stats.Report { return stats.Report{} }, nopMutator{}, 0, nil)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/v0/apps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }
 

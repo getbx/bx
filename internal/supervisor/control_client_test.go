@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/appattr"
 	"github.com/getbx/bx/internal/stats"
 )
 
@@ -67,6 +68,72 @@ func TestFetchStatusReportNonOK(t *testing.T) {
 	_, err = FetchStatusReport(sockPath)
 	if err == nil {
 		t.Fatal("期望 non-200 返回 error")
+	}
+}
+
+// TestFetchAppTrafficAlwaysSubscribes 验证 FetchAppTraffic 总是带 subscribe=1
+// (设计前提是「消费方每次拉取都会带上它」,不带会让采集在两次拉取的间隙过期),
+// 并端到端验证三态字段(subscribed/report/error)原样透传、不做任何合并。
+func TestFetchAppTrafficAlwaysSubscribes(t *testing.T) {
+	var gotMethod, gotPath, gotQuery string
+	sock := startControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
+		writeJSON(w, http.StatusOK, AppTrafficResponse{
+			Subscribed: true,
+			Report:     appattr.Report{Groups: []appattr.Group{{Path: appattr.PathTunnel}, {Path: appattr.PathDirect}, {Path: appattr.PathBlocked}}},
+		})
+	})
+
+	got, err := FetchAppTraffic(sock)
+	if err != nil {
+		t.Fatalf("FetchAppTraffic: %v", err)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/v0/apps" {
+		t.Fatalf("got %s %s, want GET /v0/apps", gotMethod, gotPath)
+	}
+	if gotQuery != "subscribe=1" {
+		t.Fatalf("query=%q, want subscribe=1(消费方每次拉取都要带,兼续期)", gotQuery)
+	}
+	if !got.Subscribed {
+		t.Fatal("服务端报了 subscribed=true,客户端却读到 false")
+	}
+	if len(got.Report.Groups) != 3 {
+		t.Fatalf("组数应恒为 3,got %d", len(got.Report.Groups))
+	}
+	if got.Error != "" {
+		t.Fatalf("服务端没报错,客户端却读到 error=%q", got.Error)
+	}
+}
+
+// TestFetchAppTrafficPropagatesErrorField 验证「订阅了但问不出来」这一态
+// (HTTP 200 + subscribed=true + error 非空)原样透传给调用方,不当成失败。
+func TestFetchAppTrafficPropagatesErrorField(t *testing.T) {
+	sock := startControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, AppTrafficResponse{Subscribed: true, Error: "问不出来"})
+	})
+
+	got, err := FetchAppTraffic(sock)
+	if err != nil {
+		t.Fatalf("appSource 报错不该让客户端返回 transport error: %v", err)
+	}
+	if !got.Subscribed {
+		t.Fatal("subscribed 应为 true")
+	}
+	if got.Error != "问不出来" {
+		t.Fatalf("error=%q, want 原样透传", got.Error)
+	}
+	if len(got.Report.Groups) != 0 {
+		t.Fatalf("appSource 报错时不该有三组齐全的空报告,got %d groups", len(got.Report.Groups))
+	}
+}
+
+func TestFetchAppTrafficNonOK(t *testing.T) {
+	sock := startControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not implemented", http.StatusNotImplemented)
+	})
+	_, err := FetchAppTraffic(sock)
+	if err == nil {
+		t.Fatal("期望非 200 返回 error")
 	}
 }
 

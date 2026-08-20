@@ -93,6 +93,36 @@ func fetchRuntimeState(ctx context.Context, sockPath string) (RuntimeState, erro
 	return state, nil
 }
 
+// FetchAppTraffic 经控制面 GET /v0/apps(HTTP over unix socket)取一份应用流量
+// 归因报告。**总是带 `?subscribe=1`** —— apptraffic.go 的设计前提是「消费方每次
+// 拉取都会带上它」(订阅同时兼具 30 秒 TTL 续期),不带这个参数会让采集在
+// 两次拉取的间隙悄悄过期。
+//
+// 三态原样透传给调用方(subscribed/report/error),**不在这里合并或改写** ——
+// AppTrafficResponse.Error 非空时 Report 是零值(Groups==nil),由调用方
+// 自己先判 Error 再碰 Report,与控制面 handler 那侧同一条纪律。
+func FetchAppTraffic(sockPath string) (AppTrafficResponse, error) {
+	client := controlHTTPClient(sockPath)
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequest(http.MethodGet, "http://local/v0/apps?subscribe=1", nil)
+	if err != nil {
+		return AppTrafficResponse{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return AppTrafficResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return AppTrafficResponse{}, fmt.Errorf("控制面 /v0/apps 返回 %d", resp.StatusCode)
+	}
+	var out AppTrafficResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return AppTrafficResponse{}, err
+	}
+	return out, nil
+}
+
 // ShutdownControl asks the matching Core process to cancel its own Run context.
 func ShutdownControl(ctx context.Context, sockPath string, expectedPID int) error {
 	if expectedPID <= 0 {
