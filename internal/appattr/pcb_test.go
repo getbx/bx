@@ -60,3 +60,58 @@ func TestParsePcbListRejectsTruncatedInput(t *testing.T) {
 		t.Fatal("截断输入必须报错 —— 悄悄返回空列表会被读成「没有连接」")
 	}
 }
+
+// TestParsePcbListMatchesGoldenRecords 钉住 fixture 里若干条记录的确切四元组
+// (LocalPort/RemotePort/LastPID/EPID),而不是「解析没崩」这种弱断言。
+//
+// 存在的必要性:前三条测试只验证了「块遍历没有走飞」与「LastPID 大体上非零」,
+// 对 EPID(so_e_pid,偏移 72)完全没有覆盖——把 offSoEPID 改成任何仍落在块内
+// 的错误偏移(比如误设成与 offSoLastPID 相同的 68,或 so_gencnt 的偏移),
+// 前三条测试会全绿。EPID 不是无关紧要的字段:它是「替谁干活」,Task 3 的
+// ChooseOwner 委托规则直接建在这个偏移上,选错偏移会让委托规则用一个
+// 看似合理、实则是别的字段的值做判断。
+//
+// 记录按 ParsePcbList 返回顺序用下标钉死(该顺序由 fixture 字节本身决定,是
+// 确定性的);选取时覆盖了不同 LastPID、不同 RemotePort(443 与其余)、
+// RemotePort=0 的监听态 socket、以及 LastPID=1(launchd)这种边界值。
+//
+// **诚实记录**:这份 fixture 采集时机器上没有任何被委托的 socket——209 条
+// 记录里 EPID 全部为 0(用一次性程序遍历过,见 task-2-report.md 的修复记录)。
+// 所以下面全部 8 条记录的 EPID 都断言为 0;EPID 非零的路径这份 fixture 挡不住,
+// 由 Task 3(ChooseOwner)针对委托场景另写的单元测试覆盖。这条测试证明的是
+// 「EPID 这个字段本身读的是正确的偏移、且在无委托时稳定读到 0」,不是
+// 「EPID 能正确读出非零值」。
+func TestParsePcbListMatchesGoldenRecords(t *testing.T) {
+	pcbs, err := ParsePcbList(loadFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	golden := map[int]PCB{
+		0:   {LocalPort: 53220, RemotePort: 443, LastPID: 10737, EPID: 0},
+		14:  {LocalPort: 53183, RemotePort: 5223, LastPID: 42556, EPID: 0},
+		35:  {LocalPort: 53092, RemotePort: 5228, LastPID: 1459, EPID: 0},
+		58:  {LocalPort: 51718, RemotePort: 27036, LastPID: 2942, EPID: 0},
+		82:  {LocalPort: 50294, RemotePort: 8080, LastPID: 25998, EPID: 0},
+		107: {LocalPort: 8000, RemotePort: 0, LastPID: 1498, EPID: 0},
+		141: {LocalPort: 53, RemotePort: 0, LastPID: 1421, EPID: 0},
+		166: {LocalPort: 22, RemotePort: 0, LastPID: 1, EPID: 0},
+	}
+
+	maxIdx := 0
+	for idx := range golden {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	if len(pcbs) <= maxIdx {
+		t.Fatalf("解出 %d 条,不够覆盖下标 %d —— fixture 是否被替换了?", len(pcbs), maxIdx)
+	}
+
+	for idx, want := range golden {
+		got := pcbs[idx]
+		if got != want {
+			t.Errorf("pcbs[%d] = %+v, want %+v", idx, got, want)
+		}
+	}
+}
