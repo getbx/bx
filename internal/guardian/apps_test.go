@@ -238,6 +238,40 @@ func TestNewLocalAPIWiresAppsEndpoint(t *testing.T) {
 	}
 }
 
+// **这是本轮复审要买到的东西**:成功转发路径必须经 NewLocalAPI 本身被验证,
+// 不能只靠直调 appsHandler(sock, …)——后者验证的是 appsHandler 这个函数,
+// 不是「NewLocalAPI 正确把 options.AppsSockPath 接给了它」这件事。没有
+// AppsSockPath 之前,这条路径只能绕开 NewLocalAPI 去测,而组装根上的接线
+// 错误正是这个仓库反复栽的形状(CLAUDE.md)。
+func TestNewLocalAPIForwardsAppsThroughAppsSockPath(t *testing.T) {
+	want := supervisor.AppTrafficResponse{
+		Subscribed: true,
+		Report: appattr.Report{Groups: []appattr.Group{
+			{Path: appattr.PathTunnel, Rows: []appattr.AppRow{{App: "Chrome", Conns: 2, BytesUp: 5, BytesDown: 6}}},
+			{Path: appattr.PathDirect},
+			{Path: appattr.PathBlocked},
+		}},
+	}
+	sock := startAppsControlSocket(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSONForTest(w, want)
+	})
+	controller := &fakeController{}
+	handler := NewLocalAPI(controller, LocalAPIOptions{OwnerUID: 501, AppsSockPath: sock})
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/apps", nil), 501, true))
+	if w.Code != http.StatusOK {
+		t.Fatalf("经 NewLocalAPI 转发 = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var got supervisor.AppTrafficResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("解不出应答:%v %s", err, w.Body.String())
+	}
+	if !got.Subscribed || len(got.Report.Groups) != 3 || got.Report.Groups[0].Rows[0].App != "Chrome" {
+		t.Fatalf("got %+v, want %+v — NewLocalAPI 没有把 options.AppsSockPath 正确接给 appsHandler", got, want)
+	}
+}
+
 // Client.AppTraffic 经 GET /v1/apps 取报告,三态原样解出。
 func TestClientAppTrafficDecodesResponse(t *testing.T) {
 	want := supervisor.AppTrafficResponse{

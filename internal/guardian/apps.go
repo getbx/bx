@@ -16,8 +16,11 @@ import (
 //
 // sockPath 空串是「没接线」的信号,与 rulesHandler 的 configPath 同一条纪律:
 // 「没接线」不是「没有应用」——空报告会让菜单显示「一个应用都没有」,而事实是
-// 这条链没接上。生产环境里它恒为 supervisor.SockPath(见 NewLocalAPI 的注册),
-// 只有测试会传别的值或空串。
+// 这条链没接上。NewLocalAPI 在 options.AppsSockPath 为空时会回落到
+// supervisor.SockPath 再传进来,所以生产里此刻恒非空;但这个分支**不是测试
+// 脚手架**——AppsSockPath 是 LocalAPIOptions 上一个真实存在的可覆盖字段,
+// 将来任何一个显式把它留空的调用方(例如某个不支持应用归因的构建)都会
+// 真的走到这里、真的收到 501,而不是靠单测直调 appsHandler("", …) 才够得到。
 //
 // **三态原样透传,这一层绝不合并或压平**:supervisor.FetchAppTraffic 已经把
 // 「没人订阅」/「订阅了但问不出来」/「订阅了且确实没连接」三种情形分开发布在
@@ -31,7 +34,9 @@ func appsHandler(sockPath string, ownerUID uint32) http.HandlerFunc {
 			return
 		}
 		if sockPath == "" {
-			// 「没接线」不是「没有应用」—— 与 rulesHandler 同源。
+			// 真实分支,不是死代码:见函数头注释——AppsSockPath 是可覆盖字段,
+			// 显式留空即走到这里,回 501 而非一份看起来正常的空报告
+			// (与 rulesHandler 同源)。
 			writeGuardianJSON(w, http.StatusNotImplemented, map[string]string{"error": "apps unavailable: no core socket"})
 			return
 		}
