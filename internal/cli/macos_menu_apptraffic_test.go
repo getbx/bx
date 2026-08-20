@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -110,6 +111,65 @@ func menuAppTrafficWindowSource(t *testing.T) string {
 	return string(source)
 }
 
+// swiftBlockRange 返回 marker 之后那一对花括号里内容的字节区间。
+//
+// **它存在的理由**:「selector 之前最近的那个 if 是能力判据」证明不了 selector
+// 在那个 if 的**花括号里** —— `if gate { }` 后面紧跟一句无条件的 addAction,
+// 上面那条判据照样成立(审查在隔离副本里实测全绿,菜单项对每一版 Guardian 都
+// 无条件画出)。要证明「被它管着」,就得真的去看它管的那段。
+func swiftBlockRange(source, marker string) (int, int, bool) {
+	start := strings.Index(source, marker)
+	if start < 0 {
+		return 0, 0, false
+	}
+	open := strings.Index(source[start:], "{")
+	if open < 0 {
+		return 0, 0, false
+	}
+	open += start
+	depth := 0
+	for i := open; i < len(source); i++ {
+		switch source[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return open + 1, i, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// swiftCallArguments 返回源码里每一次 `callee(...)` 调用的**实参文本**(按圆括号
+// 配平取,故容得下 `f(g(x))` 这种嵌套)。
+//
+// **它存在的理由**:「文件里出现过这个标识符」与「这个标识符真的被画出来了」是
+// 两件事 —— `let _ = appTrafficApproximateNote` 能满足前者而小字从窗口消失
+// (审查实测全绿)。要证明它被画出来,判据只能是「它出现在某一次
+// addArrangedSubview 的实参里」。
+func swiftCallArguments(source, callee string) []string {
+	var out []string
+	for _, idx := range regexp.MustCompile(regexp.QuoteMeta(callee)+`\s*\(`).FindAllStringIndex(source, -1) {
+		open := strings.IndexByte(source[idx[0]:idx[1]], '(') + idx[0]
+		depth := 0
+		for i := open; i < len(source); i++ {
+			switch source[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					out = append(out, source[open+1:i])
+					i = len(source)
+				}
+			}
+		}
+	}
+	return out
+}
+
 // **能力门控,绝不「试着拨一下看看」。**
 //
 // 旧 Guardian 不认识 /v1/apps,会回 404 —— 而客户端无从区分「这版不支持」与
@@ -118,39 +178,38 @@ func menuAppTrafficWindowSource(t *testing.T) string {
 // 任何错误可供退避介入,真机实测本机 unix socket 常驻 CPU 26%~46%、吞吐上千
 // 次/秒。
 //
-// 判据必须是 appTrafficAvailable(它认的是 "apps" 这个键),不是别的能力判据 ——
-// 用 rulesEditingAvailable 会在「装了带规则、不带应用归因的那一版」上把入口画
-// 出来,而那正是这道门要挡的情形。
+// **判据是「菜单项在那个 if 的花括号里」,不是「它前面最近的 if 是那一句」。**
+// 后者是本仓库既有 servers/rules 守卫的写法,而审查实测它可以被留成空壳:
+//
+//	if appTrafficAvailable(capabilities: …) { }
+//	menu.addAction("Traffic by App…", …, action: #selector(openAppTrafficWindow))
+//
+// 全绿,菜单项对每一版 Guardian 无条件画出。
 func TestMacMenuGatesAppTrafficOnCapability(t *testing.T) {
 	body, ok := swiftFunctionBody(stripSwiftComments(menuMainSwiftSource(t)), "private func rebuildMenu()")
 	if !ok {
 		t.Fatal("读不出 rebuildMenu() 的函数体 —— 守卫已经失效,先修守卫")
 	}
 	const action = "#selector(openAppTrafficWindow)"
-	idx := strings.Index(body, action)
-	if idx < 0 {
+	hits := regexp.MustCompile(regexp.QuoteMeta(action)).FindAllStringIndex(body, -1)
+	if len(hits) == 0 {
 		t.Fatal("rebuildMenu() 里没有 Traffic by App 入口 —— 用户在菜单里看不到这个窗口")
-	}
-	// 往回找**最近**的一个 if,它必须就是这个能力判据。固定字节窗口在本仓库被
-	// 邻近函数满足过,所以这里找的是「包着它的那个条件」,不是「附近有没有出现
-	// 过这个字符串」。
-	before := body[:idx]
-	gate := strings.LastIndex(before, "if appTrafficAvailable(")
-	other := strings.LastIndex(before, "if ")
-	if gate < 0 || gate != other {
-		t.Fatalf("Traffic by App 入口不是由 appTrafficAvailable 直接门控的 —— "+
-			"最近的条件在 %d,能力判据在 %d", other, gate)
 	}
 	// 实参必须是**光秃秃的一次取值**。`capabilities: report?.capabilities ?? []`
 	// 这类写法会把「这版压根没声明过能力」压成「声明了、一个都没有」,两者在
 	// 这道门上结论相同、在别处不同,而漂开的那天没有任何东西会红。
-	gateLine := body[gate:]
-	if end := strings.IndexByte(gateLine, '\n'); end >= 0 {
-		gateLine = gateLine[:end]
+	const gate = "if appTrafficAvailable(capabilities: maintenanceReport?.capabilities) {"
+	start, end, ok := swiftBlockRange(body, gate)
+	if !ok {
+		t.Fatalf("找不到能力门 %q —— 菜单项要么没有门控,要么实参不是那一次光秃秃的取值", gate)
 	}
-	if !regexp.MustCompile(`if appTrafficAvailable\(capabilities: maintenanceReport\?\.capabilities\) \{`).
-		MatchString(gateLine) {
-		t.Errorf("能力实参不是 maintenanceReport?.capabilities 这一次光秃秃的取值:%s", gateLine)
+	// **每一处**入口都必须落在那个门的花括号里。只查第一处会让「门后面再加一句
+	// 无条件的 addAction」照样全绿。
+	for _, hit := range hits {
+		if hit[0] < start || hit[1] > end {
+			t.Fatalf("偏移 %d 处的 Traffic by App 入口在能力门的花括号**之外** —— "+
+				"它对每一版 Guardian 都会被画出来,而旧版每次点都是 404", hit[0])
+		}
 	}
 }
 
@@ -158,15 +217,39 @@ func TestMacMenuGatesAppTrafficOnCapability(t *testing.T) {
 //
 // 这是这个功能要买到的收益:没人看时开销精确为零,而且不在这台机器上留下「你
 // 开过什么应用」的记录。订阅是靠每一次拉取续期的(Core 侧 30 秒 TTL,惰性
-// 结算),所以「不拨」等价于「不采集」—— 反过来,任何一条不看窗口可见性就拨的
-// 路径,都会让 Core 永远开着采集。
+// 结算),所以「不拨」等价于「不采集」。
+//
+// **锚在类型级入口上,不是包装函数名上。** 上一版白名单锚的是
+// `fetchAppTrafficOnDemand(`,而审查在别处直接写
+// `DispatchQueue.global().async { _ = try? GuardianClient().appTraffic() }`,
+// 整套测试全绿 —— 那是「禁拼法而非禁语义」的教科书形状。真正只有一个的是
+// **端点本身**:凡是 main.swift 里以整词提到 `appTraffic` 的地方(`.appTraffic()`
+// 调用、`GuardianEndpoint.appTraffic`),都必须落在那一个拨号函数里。
+// (`appTrafficWindow` / `appTrafficTimer` / `appTrafficAvailable` 这些后面接着
+// 单词字符,`\b` 天然排除;`fetchAppTrafficOnDemand` 里是大写 A,不匹配。)
 func TestMacMenuOnlyFetchesAppTrafficWhileWindowVisible(t *testing.T) {
 	source := stripSwiftComments(menuMainSwiftSource(t))
 	defs := swiftFunctionDefs(source)
 
-	// ① 全部调用点必须落在白名单里。**从调用点倒着锁,不是枚举「刷新路径有哪些
-	// 函数」** —— 后者每加一个 helper 都要有人记得回来改,而漏掉不会有任何症状
-	// (spawn 那条链就是这么被攻破的)。
+	// ① 端点本身只能从一个函数里被碰到。
+	dials := 0
+	for _, match := range regexp.MustCompile(`\bappTraffic\b`).FindAllStringIndex(source, -1) {
+		fn := enclosingSwiftFunc(defs, match[0])
+		if fn == "" {
+			t.Fatalf("偏移 %d 处碰了 appTraffic 端点,却不在任何函数体内 —— "+
+				"守卫读不懂现在的代码了,先修守卫", match[0])
+		}
+		if fn != "fetchAppTrafficOnDemand" {
+			t.Errorf("%s 里直接拨了 /v1/apps —— 拨号只许从 fetchAppTrafficOnDemand 长出来,"+
+				"否则「窗口关着就不拨」这条不变量在别处被绕开了", fn)
+		}
+		dials++
+	}
+	if dials == 0 {
+		t.Fatal("main.swift 里一次都没碰过 appTraffic 端点 —— 守卫已经失效,先修守卫")
+	}
+
+	// ② 那个拨号函数只能被这三处调用。
 	allowed := map[string]bool{
 		"openAppTrafficWindow": true, // 用户显式点菜单项
 		"applyRefresh":         true, // 环境刷新,且必须先判窗口可见
@@ -194,45 +277,117 @@ func TestMacMenuOnlyFetchesAppTrafficWhileWindowVisible(t *testing.T) {
 		t.Fatal("一个 fetchAppTrafficOnDemand 调用点都没有 —— 守卫已经失效,先修守卫")
 	}
 
-	// ② 环境刷新那一路必须先判窗口可见。**最近的那个 if 就得是它**。
+	// ③ 环境刷新那一路的**每一处**都必须在窗口可见性判断的花括号里。
+	// 只查第一处会让「门控之后再加一句裸的 fetchAppTrafficOnDemand」照样全绿。
 	refresh, ok := swiftFunctionBody(source, "private func applyRefresh(_ outcome: RefreshOutcome, capturedGeneration: Int)")
 	if !ok {
 		t.Fatal("读不出 applyRefresh 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	idx := strings.Index(refresh, "fetchAppTrafficOnDemand(")
-	if idx < 0 {
+	hits := regexp.MustCompile(`fetchAppTrafficOnDemand\(`).FindAllStringIndex(refresh, -1)
+	if len(hits) == 0 {
 		t.Fatal("applyRefresh 里没有按需刷新应用流量 —— 打开着的窗口会冻在打开那一刻")
 	}
-	before := refresh[:idx]
-	gate := strings.LastIndex(before, "if appTrafficWindow.isVisible {")
-	other := strings.LastIndex(before, "if ")
-	if gate < 0 || gate != other {
-		t.Fatalf("环境刷新那一路不是由 appTrafficWindow.isVisible 直接门控的 —— "+
-			"最近的条件在 %d,可见性判据在 %d", other, gate)
+	start, end, ok := swiftBlockRange(refresh, "if appTrafficWindow.isVisible {")
+	if !ok {
+		t.Fatal("applyRefresh 里没有 `if appTrafficWindow.isVisible {` —— " +
+			"环境刷新会在没人看的时候也拨,而拨就是让 Core 采集")
 	}
-	if !strings.Contains(refresh[idx:], "fetchAppTrafficOnDemand(forceShow: false)") {
+	for _, hit := range hits {
+		if hit[0] < start || hit[1] > end {
+			t.Fatalf("偏移 %d 处的按需刷新在窗口可见性判断的花括号**之外** —— "+
+				"窗口关着也会拨", hit[0])
+		}
+	}
+	if !strings.Contains(refresh[start:end], "fetchAppTrafficOnDemand(forceShow: false)") {
 		t.Error("环境刷新那一路没有用 forceShow: false —— 它会每次都抢焦点把窗口推到用户面前")
 	}
+}
 
-	// ③ 心跳定时器必须随窗口关闭停掉。窗口关了而定时器还在跑,订阅就永远续着,
-	// 「关掉就完全停」这句话就是假的 —— 而界面上看不出任何异常。
-	start, ok := swiftFunctionBody(source, "private func startAppTrafficTimer()")
+// **心跳不许活得比它的窗口长。**(修复审查的 Critical。)
+//
+// 窗口是靠 `show(report:)` 才被创建的(`ensureWindow()` 只在 show 里跑)。上一版
+// 在菜单点击处**无条件**起心跳,于是首拉失败时:窗口从来没被创建 ⇒
+// `windowWillClose` 永不触发 ⇒ `onClose` → `stopAppTrafficTimer()` 永不被调用 ⇒
+// 每 5 秒一次失败拨号、永久,而失败分支静默 return,界面上一点痕迹都没有。
+//
+// **而它恰好发生在最常见的探索场景**:菜单项在 `.off` 状态下照样在场(能力来自
+// Guardian 的静态清单,与 Core 死活无关)—— 保护关着时点一下就正好走到这条路,
+// 后果是每分钟十几次拨号 + 十几行 guardian_apps_fetch_failed,直到菜单进程被杀;
+// 若 Core 之后起来了,订阅会被永久续期、采集永远开着而没有任何窗口。
+func TestMacMenuAppTrafficHeartbeatCannotOutliveItsWindow(t *testing.T) {
+	source := stripSwiftComments(menuMainSwiftSource(t))
+	defs := swiftFunctionDefs(source)
+
+	// 心跳只能从拨号函数的成功分支里起。
+	starts := 0
+	for _, match := range regexp.MustCompile(`startAppTrafficTimer\(`).FindAllStringIndex(source, -1) {
+		if match[0] >= 5 && source[match[0]-5:match[0]] == "func " {
+			continue
+		}
+		fn := enclosingSwiftFunc(defs, match[0])
+		if fn == "" {
+			t.Fatalf("偏移 %d 处的 startAppTrafficTimer 调用不在任何函数体内 —— "+
+				"守卫读不懂现在的代码了,先修守卫", match[0])
+		}
+		if fn != "fetchAppTrafficOnDemand" {
+			t.Errorf("%s 里起了心跳 —— 只有拨号成功、窗口真的开出来之后才许起,"+
+				"否则首拉失败会留下一个永远停不下来、也没有窗口可关的定时器", fn)
+		}
+		starts++
+	}
+	if starts == 0 {
+		t.Fatal("一个 startAppTrafficTimer 调用点都没有 —— 守卫已经失效,先修守卫")
+	}
+
+	body, ok := swiftFunctionBody(source, "private func fetchAppTrafficOnDemand(forceShow: Bool)")
 	if !ok {
-		t.Fatal("读不出 startAppTrafficTimer 的函数体 —— 守卫已经失效,先修守卫")
+		t.Fatal("读不出 fetchAppTrafficOnDemand 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	if !strings.Contains(start, "commonModeTimer(") {
-		t.Error("心跳不是 commonModeTimer 建的 —— Timer.scheduledTimer 只进 .default,菜单展开期间一次都不触发")
+	show := strings.Index(body, "appTrafficWindow.show(report:")
+	start := strings.Index(body, "startAppTrafficTimer()")
+	if show < 0 || start < 0 {
+		t.Fatal("读不出 show / 起心跳这两步 —— 守卫已经失效,先修守卫")
 	}
-	stop, ok := swiftFunctionBody(source, "private func stopAppTrafficTimer()")
+	if start < show {
+		t.Fatal("心跳起在 show 之前 —— show 是窗口唯一的创建点,起在它之前就可能" +
+			"留下一个没有窗口的心跳,而 onClose 永远不会来停它")
+	}
+	// 失败分支必须自己把心跳停掉:那条路上没有窗口,谁也不会替它停。
+	stop, stopEnd, ok := swiftBlockRange(body, "if !self.appTrafficWindow.isVisible {")
+	if !ok {
+		t.Fatal("失败分支没有 `if !self.appTrafficWindow.isVisible {` —— " +
+			"首拉失败会留下一个永远跑下去、界面上完全看不见的心跳")
+	}
+	if !strings.Contains(body[stop:stopEnd], "stopAppTrafficTimer()") {
+		t.Fatal("窗口不可见时没有停掉心跳 —— 首拉失败会让它每 5 秒拨一次,永久")
+	}
+
+	// 用户点菜单项那一处**不许**自己起心跳(上一版的 bug 原样)。
+	open, ok := swiftFunctionBody(source, "private func openAppTrafficWindow()")
+	if !ok {
+		t.Fatal("读不出 openAppTrafficWindow 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if strings.Contains(open, "startAppTrafficTimer(") {
+		t.Fatal("菜单点击处无条件起了心跳 —— 拉取失败时窗口根本没被创建," +
+			"onClose 永不触发,心跳永远停不下来")
+	}
+
+	// 停心跳的机制本身,以及窗口关闭时那一跳。
+	stopBody, ok := swiftFunctionBody(source, "private func stopAppTrafficTimer()")
 	if !ok {
 		t.Fatal("读不出 stopAppTrafficTimer 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	if !strings.Contains(stop, "invalidate()") || !strings.Contains(stop, "appTrafficTimer = nil") {
+	if !strings.Contains(stopBody, "invalidate()") || !strings.Contains(stopBody, "appTrafficTimer = nil") {
 		t.Error("stopAppTrafficTimer 没有真的把定时器停掉并清空")
 	}
-	// 窗口关闭的回调必须接到它上面。
-	closeWiring := regexp.MustCompile(`controller\.onClose = \{[^}]*stopAppTrafficTimer\(\)`)
-	if !closeWiring.MatchString(source) {
+	startBody, ok := swiftFunctionBody(source, "private func startAppTrafficTimer()")
+	if !ok {
+		t.Fatal("读不出 startAppTrafficTimer 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(startBody, "commonModeTimer(") {
+		t.Error("心跳不是 commonModeTimer 建的 —— Timer.scheduledTimer 只进 .default,菜单展开期间一次都不触发")
+	}
+	if !regexp.MustCompile(`controller\.onClose = \{[^}]*stopAppTrafficTimer\(\)`).MatchString(source) {
 		t.Fatal("窗口关闭没有停掉心跳 —— 窗口关了、采集还开着,而界面上看不出任何异常")
 	}
 }
@@ -240,27 +395,29 @@ func TestMacMenuOnlyFetchesAppTrafficWhileWindowVisible(t *testing.T) {
 // **界面上必须写明字节数是近似值。**
 //
 // 端口复用会让残留字节算到新连接头上,spec 明写「界面不该把它显示成精确账」。
-// 这句话属于窗口本身:一个只在 CLI 里说、界面上不说的免责声明等于没说。
 //
-// 守卫锚在**常量标识符**上而不是那句英文的字面拼法 —— 换个措辞不该让守卫红,
-// 而把整行删掉必须红。那句话的内容由 Swift 套件钉住
-// (testApproximateNoteSaysWhichNumbersAreApproximate)。
+// **判据是「它出现在某一次 addArrangedSubview 的实参里」**,不是「文件里出现过
+// 这个标识符」—— 后者被审查实测绕过:把那一行换成 `let _ =
+// appTrafficApproximateNote`,小字从窗口消失而守卫全绿。锚在常量标识符而不是那句
+// 英文的字面拼法上:换措辞不该让守卫红(内容由 Swift 套件钉住),而把它从视图树
+// 里摘掉必须红。
 func TestMacMenuAppTrafficWindowSaysByteCountsAreApproximate(t *testing.T) {
 	window := stripSwiftComments(menuAppTrafficWindowSource(t))
-	idx := strings.Index(window, "appTrafficApproximateNote")
-	if idx < 0 {
-		t.Fatal("悬浮窗里没有那句「字节数是近似值」的小字 —— " +
-			"界面把一笔近似账显示成了精确账")
+	args := swiftCallArguments(window, "addArrangedSubview")
+	if len(args) == 0 {
+		t.Fatal("在 AppTrafficWindow.swift 里一次 addArrangedSubview 都没解析出来 —— " +
+			"守卫读不懂现在的代码了,先修守卫")
 	}
-	// 光提到它不算数:必须真的摆进那个窗口的视图树里。
-	if !regexp.MustCompile(`appTrafficApproximateNote`).MatchString(window) ||
-		!strings.Contains(window, "addArrangedSubview") {
-		t.Fatal("那句小字没有被摆进视图树 —— 守卫已经失效,先修守卫")
+	shown := false
+	for _, arg := range args {
+		if strings.Contains(arg, "appTrafficApproximateNote") {
+			shown = true
+			break
+		}
 	}
-	tail := window[idx:]
-	head := window[:idx]
-	if !strings.Contains(head, "addArrangedSubview") && !strings.Contains(tail, "addArrangedSubview") {
-		t.Error("那句小字没有出现在任何一次 addArrangedSubview 附近 —— 它没有被真的显示出来")
+	if !shown {
+		t.Fatalf("那句「字节数是近似值」的小字没有出现在任何一次 addArrangedSubview 的实参里 —— "+
+			"界面把一笔近似账显示成了精确账(共解析出 %d 次 addArrangedSubview)", len(args))
 	}
 	// 常量必须来自纯模型那一份,窗口里不许再抄一句自己的。
 	model, err := os.ReadFile(filepath.Join(
@@ -319,4 +476,113 @@ func TestMacMenuAppTrafficExplicitOpenIsNeverSuppressed(t *testing.T) {
 	if !strings.Contains(body, "refreshIfVisible(") || !strings.Contains(body, ".show(") {
 		t.Error("两条呈现路径没有分开(show / refreshIfVisible)—— 环境刷新会每次都抢焦点")
 	}
+}
+
+// **拉不到的时候窗口不许假装那是此刻的事实。**
+//
+// 窗口开着时 bx 被关掉、Core 重启、Guardian 正忙 —— 上一版的失败分支
+// (`guard forceShow else { return }`)静默返回,窗口一直显示上一份快照,而那份
+// 快照读起来是「这些应用**此刻**正在走隧道」。与 CLAUDE.md 记的 watch 失效模式
+// 同一条:静默失效时界面停在最后一次收到的状态上而看起来完全正常。
+//
+// 门槛与措辞住在纯模型的 appTrafficStaleNotice 里(Swift 套件钉住),这条守卫钉
+// 的是**这里真的去问了它、并且成功时把计数清零**——不清零的话,一次瞬时失败之后
+// 那句话会永远挂着,而它挂着的时候数据其实是新的。
+func TestMacMenuMarksAppTrafficStaleWhenItCannotRefresh(t *testing.T) {
+	source := stripSwiftComments(menuMainSwiftSource(t))
+	body, ok := swiftFunctionBody(source, "private func fetchAppTrafficOnDemand(forceShow: Bool)")
+	if !ok {
+		t.Fatal("读不出 fetchAppTrafficOnDemand 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	fail, failEnd, ok := swiftBlockRange(body, "guard let fetched else {")
+	if !ok {
+		t.Fatal("读不出失败分支 —— 守卫已经失效,先修守卫")
+	}
+	failure := body[fail:failEnd]
+	if !strings.Contains(failure, "appTrafficConsecutiveFailures += 1") {
+		t.Error("失败没有被计数 —— 界面无从知道自己已经连着几次没拉到了")
+	}
+	if !strings.Contains(failure, "appTrafficStaleNotice(") {
+		t.Fatal("失败分支没有去问「该不该标陈旧」—— 窗口会静默冻在上一份快照上," +
+			"而那份快照读起来是「这些应用此刻正在走隧道」")
+	}
+	if !strings.Contains(failure, "markStaleIfVisible(") {
+		t.Fatal("陈旧提示没有被送进窗口 —— 判定算出来了却没人显示")
+	}
+	// 成功必须清零,且清零要发生在把新数据画上去之前/同一路上。
+	success := body[failEnd:]
+	if !strings.Contains(success, "appTrafficConsecutiveFailures = 0") {
+		t.Fatal("成功之后没有把失败计数清零 —— 一次瞬时失败之后那句「已陈旧」会永远挂着," +
+			"而它挂着的时候数据其实是新的")
+	}
+}
+
+// **订阅 TTL 不许在 Go 与 Swift 各写一份。**
+//
+// `appTrafficSubscriptionTTLSeconds` 是 `internal/supervisor/apptraffic.go` 里
+// `appTrafficTTL` 的手抄 —— 正是本仓库反复栽的「判据抄两份」形状。而这条守卫本来
+// 就在读 Swift 源码,把两个数当场比对,跨语言那道缝就此关死。
+//
+// 不做的代价很具体:Go 那边把 TTL 调到 ≤9 秒,没有任何东西转红,而窗口开着会
+// 周期性跳回 `Not collecting app traffic right now.` 并把计数清零 —— 正是心跳
+// 要防的那个现象。
+//
+// **上下界一起钉。** 上界(间隔 × 3 ≤ TTL)保证订阅不会在两次刷新之间过期;
+// 下界(间隔 ≥ 2 秒)保证没人为了「更跟手」把它调到 0.5 秒 —— 每一拍都是一次
+// root 侧 `OwnersByPort()`(两张 pcblist + 逐 PID 解名)。
+func TestMenuAppTrafficRefreshIntervalMatchesTheGoTTL(t *testing.T) {
+	goSource, err := os.ReadFile(filepath.Join("..", "..", "internal", "supervisor", "apptraffic.go"))
+	if err != nil {
+		t.Fatalf("读不到 internal/supervisor/apptraffic.go:%v —— 守卫已经失效,先修守卫", err)
+	}
+	goMatch := regexp.MustCompile(`(?m)^const appTrafficTTL = (\d+) \* time\.Second`).
+		FindStringSubmatch(string(goSource))
+	if goMatch == nil {
+		t.Fatal("在 apptraffic.go 里解不出 appTrafficTTL —— 守卫读不懂现在的代码了,先修守卫")
+	}
+	goTTL, err := strconv.Atoi(goMatch[1])
+	if err != nil || goTTL <= 0 {
+		t.Fatalf("appTrafficTTL 解出来是 %q —— 守卫已经失效,先修守卫", goMatch[1])
+	}
+
+	swiftSource, err := os.ReadFile(filepath.Join(
+		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "AppTrafficModel.swift"))
+	if err != nil {
+		t.Fatalf("读不到 AppTrafficModel.swift:%v —— 守卫已经失效,先修守卫", err)
+	}
+	swiftTTL, ok := swiftTimeIntervalConstant(t, string(swiftSource), "appTrafficSubscriptionTTLSeconds")
+	if !ok {
+		t.Fatal("在 AppTrafficModel.swift 里解不出 appTrafficSubscriptionTTLSeconds —— 守卫已经失效,先修守卫")
+	}
+	interval, ok := swiftTimeIntervalConstant(t, string(swiftSource), "appTrafficRefreshSeconds")
+	if !ok {
+		t.Fatal("在 AppTrafficModel.swift 里解不出 appTrafficRefreshSeconds —— 守卫已经失效,先修守卫")
+	}
+
+	if swiftTTL != goTTL {
+		t.Fatalf("Swift 侧记的订阅 TTL 是 %d 秒,Go 侧 appTrafficTTL 是 %d 秒 —— "+
+			"两份判据已经漂开,窗口会周期性跳回「没在采集」并把计数清零", swiftTTL, goTTL)
+	}
+	if interval*3 > goTTL {
+		t.Errorf("刷新间隔 %d 秒对 TTL %d 秒没有余量 —— 订阅会在两次刷新之间过期", interval, goTTL)
+	}
+	if interval < 2 {
+		t.Errorf("刷新间隔 %d 秒太密 —— 每一拍都让 root 侧跑一次全量端口扫描", interval)
+	}
+}
+
+// swiftTimeIntervalConstant 读一个 `let NAME: TimeInterval = N` 的整数值。
+// 解不出来时**响亮失败**(而不是当作 0 悄悄通过),理由与本文件其余守卫一致。
+func swiftTimeIntervalConstant(t *testing.T, source, name string) (int, bool) {
+	t.Helper()
+	match := regexp.MustCompile(`(?m)^let ` + regexp.QuoteMeta(name) + `: TimeInterval = (\d+)$`).
+		FindStringSubmatch(source)
+	if match == nil {
+		return 0, false
+	}
+	value, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }

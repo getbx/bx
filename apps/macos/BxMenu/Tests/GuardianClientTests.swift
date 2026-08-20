@@ -17,6 +17,41 @@ struct GuardianClientTests {
         try run("strict HTTP framing", testStrictHTTPFraming)
         try run("update check round trip", testUpdateCheckRoundTrip)
         try run("status round trip", testStatusRoundTrip)
+        try run("app traffic round trip", testAppTrafficRoundTrip)
+    }
+
+    /// `/v1/apps` 走一次**真实的 socket 往返**。
+    ///
+    /// 与 update-check / status 那两条同一个理由:一个只测枚举属性的端点,路径
+    /// 打错字要到真机才炸 —— 而这个端点打错字的表现最不像 bug:Guardian 的 mux
+    /// 对未知路径回 404,客户端抛错,菜单的失败分支静默 return,用户看到的是
+    /// 「点了菜单项、弹一句读不到」,而每一版 Guardian 都会这样。
+    ///
+    /// 三态里的每一态都要真的解出来:`subscribed` 与 `error` 是两个**分开发布**
+    /// 的事实,合并成一份看起来正常的空报告就是把「没在采集」说成「没有流量」。
+    private static func testAppTrafficRoundTrip() throws {
+        let body = #"""
+        {"subscribed":true,"report":{"groups":[\#
+        {"path":"tunnel","rows":[{"app":"Safari","conns":2,"bytes_up":10,"bytes_down":20}]},\#
+        {"path":"direct","rows":null},\#
+        {"path":"blocked","rows":[]}]}}
+        """#
+        let fixture = try fixtureClient(response: response(status: 200, body: body))
+        let report = try GuardianClient(connectSocket: { fixture.clientSocket }).appTraffic()
+        expect(report.subscribed, "app traffic 解码出 subscribed")
+        expect(report.error.isEmpty, "error 键缺席必须解成空串,而不是让整个应答解码失败")
+        expect(report.report.groups.count == 3, "三组都要在:\(report.report.groups.count)")
+        expect(report.report.groups.first?.rows.first?.app == "Safari", "解码出应用名")
+        let request = try readRequest(fixture.serverFD)
+        expect(request.hasPrefix("GET /v1/apps HTTP/1.1\r\n"), "fixed app traffic path")
+        expect(request.hasSuffix("\r\n\r\n"), "app traffic has no request body")
+
+        // 旧 Guardian 不认识这条路径 —— 404 必须抛错,绝不能被解成一份
+        // 「订阅着、什么都没有」的空报告(那是能力门控之外的第二道保险)。
+        let missing = try fixtureClient(response: response(status: 404, body: "not found"))
+        expectThrows("404 app traffic throws instead of answering") {
+            _ = try GuardianClient(connectSocket: { missing.clientSocket }).appTraffic()
+        }
     }
 
     private static func run(_ label: String, _ body: () throws -> Void) throws {

@@ -23,6 +23,12 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var stack: NSStackView?
 
+    /// 最后一次真的读到的报告,以及此刻该不该说它已经不是「现在」了。
+    /// **两者必须一起存**:陈旧提示要盖在那份快照上重画,而不是把快照丢掉 ——
+    /// 丢掉它就只剩一句「读不到」,用户连刚才看到的那几行都找不回来。
+    private var report: AppTrafficReport?
+    private var staleNotice: String?
+
     /// 用户关掉了窗口。**接线方必须据此停掉心跳** —— 窗口关了而定时器还在跑,
     /// 订阅就永远续着,而界面上看不出任何异常。
     var onClose: (() -> Void)?
@@ -33,7 +39,9 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
 
     func show(report: AppTrafficReport) {
         let window = ensureWindow()
-        render(report: report)
+        self.report = report
+        staleNotice = nil
+        render()
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
         // 用户以为"点了没反应"。
         NSApp.activate(ignoringOtherApps: true)
@@ -44,7 +52,20 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     /// 刷新把一个用户没打开的窗口弹出来,也不要在这条路上抢焦点。
     func refreshIfVisible(report: AppTrafficReport) {
         guard let window, window.isVisible else { return }
-        render(report: report)
+        self.report = report
+        // 拉到了就是拉到了 —— 一次成功抹掉陈旧标记,不留一句会自我永存的警告。
+        staleNotice = nil
+        render()
+    }
+
+    /// 连着几次拉不到之后,在窗口顶上盖一句「这不是此刻的事实」。
+    ///
+    /// **不清空那几行数据**:用户要的是「刚才看到的还在,只是别再当它是现在」。
+    /// 判据(几次算陈旧、那句话怎么说)住在 AppTrafficModel 的纯函数里。
+    func markStaleIfVisible(_ notice: String) {
+        guard let window, window.isVisible else { return }
+        staleNotice = notice
+        render()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -104,11 +125,22 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
 
     /// 按 `rows()` 给的行摆。**顺序与内容一个字都不重新判断** —— 三种「空」
     /// 各自该说哪一句已经在纯模型里定死并测过,这里再判一次就是第二份判据。
-    private func render(report: AppTrafficReport) {
+    private func render() {
         guard let stack else { return }
+        let report = self.report ?? AppTrafficReport(subscribed: false)
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()
+        }
+
+        // 陈旧提示排在**最上面**:它改变的是下面每一行该怎么读,摆在底部等于
+        // 让用户先把一份过期快照读成事实、再发现它过期了。
+        if let staleNotice {
+            let banner = NSTextField(labelWithString: staleNotice)
+            banner.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            banner.textColor = .systemOrange
+            stack.addArrangedSubview(banner)
+            stack.addArrangedSubview(gap())
         }
 
         for row in report.rows() {

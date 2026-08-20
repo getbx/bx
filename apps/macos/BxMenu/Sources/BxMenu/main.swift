@@ -1044,15 +1044,26 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 而 watch 时代刷新是事件驱动、可能连着来。
     private var appTrafficFetchInFlight = false
 
-    /// 窗口开着时的心跳。**只在窗口开着的时候存在**(见 startAppTrafficTimer)。
+    /// 窗口开着时的心跳。**只在窗口真的开出来之后才存在**(见
+    /// fetchAppTrafficOnDemand 的成功分支与 openAppTrafficWindow 的注释)。
     private var appTrafficTimer: Timer?
+
+    /// 连着多少次没拉到。**成功一次就清零。** 到门槛之后在窗口上盖一句「这不是
+    /// 此刻的事实」—— 静默冻在上一份快照上,是这个界面最坏的失效模式:那份快照
+    /// 读起来是「这些应用此刻正在走隧道」,而此刻保护可能已经被关掉了。
+    private var appTrafficConsecutiveFailures = 0
 
     @objc private func openAppTrafficWindow() {
         // 显式那一路:弹出窗口,读不到就明说。
+        //
+        // **心跳不在这里起。** 它只能在窗口**真的开出来**之后起(见
+        // fetchAppTrafficOnDemand 的成功分支):窗口是靠 show(report:) 才被创建的,
+        // 首拉失败时根本没有窗口 —— 于是 windowWillClose 永不触发、onClose 永不
+        // 被调用,而心跳会永远跑下去。那不是理论上的角落:菜单项在 .off 状态下
+        // 照样在场(能力来自 Guardian 的静态清单,与 Core 死活无关),保护关着时
+        // 点一下就正好走到这条路,后果是每分钟十几次失败拨号 + 十几行
+        // guardian_apps_fetch_failed,永久,而界面上一点痕迹都没有。
         fetchAppTrafficOnDemand(forceShow: true)
-        // 心跳与窗口同生共死。这里就起,不等第一次应答 —— 第一次拉取失败
-        // (Guardian 忙、Core 刚重启)不该让这个窗口从此再也不更新。
-        startAppTrafficTimer()
     }
 
     /// 窗口开着时每隔 `appTrafficRefreshSeconds` 拉一次。
@@ -1103,6 +1114,18 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self else { return }
                 self.appTrafficFetchInFlight = false
                 guard let fetched else {
+                    self.appTrafficConsecutiveFailures += 1
+                    // **心跳只能活在一个真的开着的窗口旁边。** 首拉失败时窗口
+                    // 从来没被创建过,onClose 永远不会来停它 —— 这里必须自己停,
+                    // 否则它每 5 秒拨一次、永久,而界面上一点痕迹都没有。
+                    if !self.appTrafficWindow.isVisible {
+                        self.stopAppTrafficTimer()
+                    }
+                    // 窗口还开着:不清空那几行,只盖一句「别再把它当成现在」。
+                    if let notice = appTrafficStaleNotice(
+                        consecutiveFailures: self.appTrafficConsecutiveFailures) {
+                        self.appTrafficWindow.markStaleIfVisible(notice)
+                    }
                     // **读不到就说读不到,不摆一个空报告** —— 一份 subscribed:false
                     // 的假报告会把「没问出来」显示成「没在采集」,而那是两件事。
                     guard forceShow else { return }
@@ -1114,8 +1137,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     alert.runModal()
                     return
                 }
+                self.appTrafficConsecutiveFailures = 0
                 if forceShow {
                     self.appTrafficWindow.show(report: fetched)
+                    // **心跳在这里起,不在菜单点击处起** —— show 是窗口唯一的
+                    // 创建点,起在它之后才保证「有心跳 ⇒ 有窗口 ⇒ 关窗口能停掉它」。
+                    self.startAppTrafficTimer()
                 } else {
                     self.appTrafficWindow.refreshIfVisible(report: fetched)
                 }
