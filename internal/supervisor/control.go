@@ -47,7 +47,7 @@ type controlResponse struct {
 }
 
 // ctxConnKey 用于在 http.Server.ConnContext 中把 net.Conn 塞入 request context,
-// 供 requireOwnerOrRoot 做 peer-cred 鉴权。
+// 供 requireOwnerPeer 做 peer-cred 鉴权(改动类路由与 /v0/apps 共用)。
 type ctxConnKey struct{}
 
 type controlServer struct {
@@ -304,6 +304,16 @@ func (cs *controlServer) handleReload(w http.ResponseWriter, r *http.Request) {
 // handleApps 发布应用流量归因报告(只读)。`?subscribe=1` 时先续期订阅
 // 再取快照 —— 消费方每次拉取都会带上它,同时兼具续期作用(30 秒 TTL)。
 //
+// **这个只读端点也要过 peer-cred 门(requireOwnerPeer),与改动类同一份判据。**
+// 控制 socket 是 0666(serveControlWithPathRecovery 里那句 os.Chmod),而本端点
+// ① 发布的是实时的「哪个应用在走隧道/直连/被拦」清单(含应用名、连接数、
+// 字节量、命中的用户规则原文),② 带副作用 —— 一句 `?subscribe=1` 就能无限期
+// 把采集打开(每次拉取都续 30 秒 TTL)。没有这道门时,Guardian 那一层刻意加的
+// authorizeOwnerPeer 就不是真正的边界,它下面一层是敞开的:本机任何 uid 的任何
+// 进程一句 curl --unix-socket 即可绕过。**授权在「没接线」之前** —— 端点接没
+// 接线本身也是信息,不该发给未授权的 peer。
+// 生产里唯一的消费方是 Guardian(root),门不影响它;CLI 没有消费方。
+//
 // **三态必须分开发布,不许合并成一份空报告**:没人订阅 / 订阅了但问不出来 /
 // 订阅了且确实没有连接,是三种不同的事实。Snapshot 报错时返回的是零值
 // Report(Groups==nil)——这里必须**先判 err 再碰 report**,否则会把「没查
@@ -311,6 +321,9 @@ func (cs *controlServer) handleReload(w http.ResponseWriter, r *http.Request) {
 func (cs *controlServer) handleApps(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
+		return
+	}
+	if !cs.requireOwnerPeer(w, r) {
 		return
 	}
 	if cs.appTraffic == nil {
@@ -375,23 +388,39 @@ func (cs *controlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rep)
 }
 
-// requireOwnerOrRoot 对 mutation 路由做 peer-cred 鉴权:授权 root 或配置的业主 uid(③-1);
-// unix 连接时检查;非 unix(如 httptest TCP)放行。
+// requireOwnerOrRoot 对 mutation 路由做鉴权:先卡死方法(改动类只收 POST),
+// 再走共用的 peer-cred 判据。
 func (cs *controlServer) requireOwnerOrRoot(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
 		return false
 	}
+	return cs.requireOwnerPeer(w, r)
+}
+
+// requireOwnerPeer 是这个控制面 peer-cred 判据的**唯一**落点:授权 root 或
+// 配置的业主 uid(③-1);unix 连接时检查,非 unix(如 httptest TCP)放行。
+//
+// **与方法门刻意分开**,因为不是所有需要授权的路由都是 POST —— GET /v0/apps
+// 带副作用(?subscribe=1 会开采集并续 TTL)且发布的是实时的应用级隐私数据,
+// 同样要过这道门。抽出来而不是在 handleApps 里另写一份,是因为这个仓库反复
+// 栽在「判据抄两份」上(见 CLAUDE.md:route.Explain/Decide、leakcheck、
+// rulereview 三处都是同一条纪律)——两份判据里只会有一份被后来的人改到。
+//
+// 非 darwin/linux 上 peerCredSupported=false ⇒ peerCredUID 恒 (0,false) ⇒
+// authorizeMutation 恒 false ⇒ fail-closed 拒绝,与仓库既有纪律一致。
+func (cs *controlServer) requireOwnerPeer(w http.ResponseWriter, r *http.Request) bool {
 	conn, _ := r.Context().Value(ctxConnKey{}).(net.Conn)
 	if conn == nil {
-		// 无 unix conn(如 httptest TCP):放行,peer-cred 鉴权由 authorizeMutation 单测覆盖。
+		// 无 unix conn(如 httptest TCP):放行,peer-cred 鉴权由 authorizeMutation 单测
+		// 与走真实 unix socket 的 TestControlAppsOverRealUnixSocketHonoursOwnerUID 覆盖。
 		return true
 	}
 	uid, gotUID := peerCredUID(conn)
 	if !authorizeMutation(uid, gotUID, cs.ownerUID) {
-		msg := "改动类命令需 root 或业主"
+		msg := "此命令需 root 或业主"
 		if !peerCredSupported {
-			msg = "此平台暂不支持 peer-cred,改动类已拒绝;macOS daemon 待实现 LOCAL_PEERCRED"
+			msg = "此平台暂不支持 peer-cred,已拒绝"
 		}
 		writeJSON(w, http.StatusForbidden, controlResponse{Status: "error", Error: msg})
 		return false
