@@ -185,6 +185,11 @@ const CapabilityRules = "rules"
 // 一个每次点都失败的按钮 —— 与 CapabilityRules 同一机制同一理由。
 const CapabilityServers = "servers"
 
+// CapabilityApps 表示这一版 Guardian 提供 /v1/apps(应用流量归因报告)。
+// **键缺席 = 旧版 Guardian**,与 CapabilityRules/CapabilityServers 同一机制:
+// 菜单据此决定要不要画出这个功能入口,否则用户对着一个每次点都失败的按钮。
+const CapabilityApps = "apps"
+
 // CapabilityStatusWatch 表示这一版 Guardian 的 GET /v1/status 认 `wait=<generation>`
 // 长轮询,于是客户端可以在状态真的变了的那一刻收到,而不是靠一个轮询常量。
 //
@@ -209,7 +214,7 @@ type MaintenanceHoldStatus struct {
 // 每次调用都返回新切片:它会被塞进 Status 交给 JSON 编码,共享一份底层数组等于
 // 把一个包级可变状态发布出去。
 func GuardianCapabilities() []string {
-	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityStatusWatch}
+	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityStatusWatch, CapabilityApps}
 }
 
 // ReconcileReport 是只观察调谐环**最近一轮**的判断,随 Status 一起发布。

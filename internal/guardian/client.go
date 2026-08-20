@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 type Client struct {
@@ -449,6 +450,41 @@ func (c *Client) serversRequest(ctx context.Context, method string, payload []by
 	var out ServerListResponse
 	if err := json.NewDecoder(response.Body).Decode(&out); err != nil {
 		return ServerListResponse{}, err
+	}
+	return out, nil
+}
+
+// AppTraffic 取一份应用流量归因报告(GET /v1/apps)。授权门与规则/服务器同一道
+// (authorizeOwnerPeer),三态(没人订阅 / 订阅了但问不出来 / 订阅了且确实没有
+// 连接)原样透传 —— 与 Guardian 那一侧同一条纪律,这里不重新判断、不重新聚合。
+func (c *Client) AppTraffic(ctx context.Context) (supervisor.AppTrafficResponse, error) {
+	client := c.HTTPClient
+	if client == nil {
+		client = guardianHTTPClient(c.SocketPath)
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		defer transport.CloseIdleConnections()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://local/v1/apps", nil)
+	if err != nil {
+		return supervisor.AppTrafficResponse{}, err
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		var dialErr *guardianDialError
+		if errors.As(err, &dialErr) {
+			return supervisor.AppTrafficResponse{}, &UnavailableError{Err: dialErr.err}
+		}
+		return supervisor.AppTrafficResponse{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		return supervisor.AppTrafficResponse{}, guardianHTTPError("/v1/apps", response.StatusCode, raw)
+	}
+	var out supervisor.AppTrafficResponse
+	if err := json.NewDecoder(response.Body).Decode(&out); err != nil {
+		return supervisor.AppTrafficResponse{}, err
 	}
 	return out, nil
 }
