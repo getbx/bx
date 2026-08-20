@@ -1837,7 +1837,11 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
   1. 打开悬浮窗,确认三组都在、腾讯会议出现在预期的组里。
   2. 关掉窗口,`sudo lsof -p $(pgrep -f 'bx run') | wc -l` 与 CPU 占用应回落;30 秒后再开,数据从零开始。
   3. 拔掉网线/关 Wi-Fi 制造 kill-switch 阻断,确认 BLOCKED 组出现内容。
-  4. 确认 `unknown` 行占比不高(高说明 worker 太慢,那是要修的信号,不是要藏的数字)。
+  4. 确认**开窗后 10 秒内** `unknown` 行占比不高。**只在这个窗口里量** ——
+     报告是自打开窗口以来的累计(records 与字节表不按时间裁剪,而 owners 是
+     此刻还开着的 socket 的快照),所以 unknown 占比随窗口打开时长**单调增长
+     是预期行为**,不是「worker 太慢」;拿一个开了十分钟的窗口去量这一条必然
+     误报,而且会把人引向错的根因。
 - [ ] **把「真机未验」写进 CLAUDE.md**,直到上面四条跑过。
 
 ---
