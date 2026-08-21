@@ -67,6 +67,18 @@ func InReportWindow(rec ConnRecord, now time.Time) bool {
 	return !rec.At.Before(now.Add(-ReportWindow))
 }
 
+// Dest 是这个包的**第二次**刻意信息面扩大(第一次是上面 Owner 的 ExecPath)。
+// 目的地(域名或裸 IP)比可执行路径更敏感 —— 一份目的地列表接近「这台机器在
+// 访问什么」。发布面与 ExecPath 完全一致:Core 控制 socket → Guardian owner 门
+// → 菜单那个窗口,不进 `bx status --json`、不进日志、不进诊断包,由
+// publication_test.go 里独立的 destPublicationAllowlist 守住(与 ExecPath 那张表
+// 刻意不合并 —— 两次扩大的理由、边界、白名单成员都不同,合并会让任何一方的
+// 放宽悄悄带上另一方)。
+//
+// 为什么值得担这份风险:订阅之前就建好的长连接(会议媒体流、WebSocket、SSH、
+// 常驻守护进程)只靠 Subscribe() 播种才看得见,不带目的地的话,恰恰是最该被
+// 检查的那几条连接答不出「它在连谁」——那会把这个 task 自己的用例弄丢。
+
 // ConnRecord 是数据面记下的一条连接:源端口 + 判定 + 产生时刻,应用身份是
 // 后台 resolver 事后填回来的。
 type ConnRecord struct {
@@ -75,6 +87,11 @@ type ConnRecord struct {
 	Path    Path
 	Source  string // route.Reason.Source 的字符串形式
 	Rule    string // 用户规则原文;内建列表为空
+
+	// Dest 是这条连接连的是谁:域名优先,没有域名就落回裸 IP 字面量,两者都没有
+	// 就是空串。不带 json tag —— 它不单独发布,只经 Aggregate 聚合进 AppRow.Dests
+	// 之后才离开这个包。见 report.go 顶部关于「第二次信息面扩大」的说明。
+	Dest string
 
 	// At 是这条记录产生的时刻(建连那一刻,或订阅播种那一刻)。
 	// 报告只覆盖最近 ReportWindow;没有它,报告就是「自打开窗口以来的累计」。
@@ -123,6 +140,15 @@ type AppRow struct {
 	// 这一点由 TestZeroRateSerializesButUnavailableRateIsAbsent 钉住。
 	BytesUpRate   *float64 `json:"bytes_up_rate,omitempty"`
 	BytesDownRate *float64 `json:"bytes_down_rate,omitempty"`
+
+	// Dests 是这一行**最近**连过的目的地,去重、最多 maxDestsPerRow 条,
+	// 「最近」由 Aggregate 倒序遍历自然得出(与 Rules 同一手法)。
+	Dests []string `json:"dests,omitempty"`
+	// DestsMore 是超出 maxDestsPerRow、没能列出来的**去重后**目的地条数。
+	// **它是承重的,不是装饰**:一个应用连了 23 个域名而界面只显示 8 个又不说
+	// 还有 15 个,读者会以为它只连了 8 个 —— 而「连了很多个地方」本身就是这个
+	// 功能要显形的信号。
+	DestsMore int `json:"dests_more,omitempty"`
 }
 
 type Group struct {
@@ -134,7 +160,10 @@ type Report struct {
 	Groups []Group `json:"groups"`
 }
 
-const maxRulesPerRow = 3
+const (
+	maxRulesPerRow = 3
+	maxDestsPerRow = 8
+)
 
 // AggregateInput 是 Aggregate 的入参。**这是唯一的入口** —— 没有为了少改测试
 // 而留一个旧签名的薄壳:本仓库反复栽在「同一个判定有两份」上。
@@ -184,6 +213,7 @@ func Aggregate(in AggregateInput) Report {
 	}
 	acc := map[key]*accRow{}
 	seenRule := map[key]map[string]bool{}
+	seenDest := map[key]map[string]bool{}
 	counted := make(map[PortKey]bool, len(in.Records))
 	for i := len(in.Records) - 1; i >= 0; i-- { // 倒序:最近的记录先拿到这个端口的字节
 		rec := in.Records[i]
@@ -201,6 +231,7 @@ func Aggregate(in AggregateInput) Report {
 			row = &accRow{AppRow: AppRow{App: k.app}}
 			acc[k] = row
 			seenRule[k] = map[string]bool{}
+			seenDest[k] = map[string]bool{}
 		}
 		// 代表路径:第一个带路径的贡献端口胜出(倒序遍历 ⇒ 通常是最近的那条)。
 		// **不覆盖已有值** —— 谁当代表无所谓,但「明明有贡献端口带着路径,这一行
@@ -232,6 +263,21 @@ func Aggregate(in AggregateInput) Report {
 		if rec.Rule != "" && !seenRule[k][rec.Rule] && len(row.Rules) < maxRulesPerRow {
 			seenRule[k][rec.Rule] = true
 			row.Rules = append(row.Rules, rec.Rule)
+		}
+		// **目的地按行去重,不是按端口只算一次**——同一行内不同目的地各占一条,
+		// 与字节/速率那个按 PortKey 去重的 counted 是两件不同的事,别混用。
+		// 空 Dest 不进列表、也不计入 DestsMore:它不是「一个没列出来的目的地」,
+		// 是「这条连接没有目的地可报」。
+		if rec.Dest != "" && !seenDest[k][rec.Dest] {
+			seenDest[k][rec.Dest] = true
+			// **满了之后继续数,别 break。** 只是不再 append —— DestsMore 要数
+			// 出「还有多少去重后的目的地没被列出来」,break 会让它恒为 0 而没有
+			// 任何测试或界面看得出来。
+			if len(row.Dests) < maxDestsPerRow {
+				row.Dests = append(row.Dests, rec.Dest)
+			} else {
+				row.DestsMore++
+			}
 		}
 	}
 

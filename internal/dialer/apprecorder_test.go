@@ -19,6 +19,7 @@ type appCall struct {
 	path    appattr.Path
 	source  string
 	rule    string
+	dest    string
 }
 
 type fakeAppRecorder struct {
@@ -26,10 +27,10 @@ type fakeAppRecorder struct {
 	calls []appCall
 }
 
-func (f *fakeAppRecorder) Record(srcPort uint16, udp bool, path appattr.Path, source, rule string) {
+func (f *fakeAppRecorder) Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, appCall{srcPort, udp, path, source, rule})
+	f.calls = append(f.calls, appCall{srcPort, udp, path, source, rule, dest})
 }
 
 func (f *fakeAppRecorder) only(t *testing.T) appCall {
@@ -80,7 +81,7 @@ func TestDialerRecordsPathAndRuleForAppAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.only(t)
-	want := appCall{51234, false, appattr.PathDirect, "user_direct", "*.qq.com"}
+	want := appCall{51234, false, appattr.PathDirect, "user_direct", "*.qq.com", "a.qq.com"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -92,7 +93,7 @@ func TestDialerRecordsTunnelPathForProxiedTCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.only(t)
-	want := appCall{40001, false, appattr.PathTunnel, "user_proxy", "*.openai.com"}
+	want := appCall{40001, false, appattr.PathTunnel, "user_proxy", "*.openai.com", "api.openai.com"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -106,7 +107,7 @@ func TestDialerRecordsBlockedConnections(t *testing.T) {
 		t.Fatalf("应被 kill-switch 阻断, got %v", err)
 	}
 	got := rec.only(t)
-	want := appCall{40002, false, appattr.PathBlocked, "user_proxy", "*.openai.com"}
+	want := appCall{40002, false, appattr.PathBlocked, "user_proxy", "*.openai.com", "api.openai.com"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -121,7 +122,7 @@ func TestDialerRecordsUDPDirectByUserRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.only(t)
-	want := appCall{51001, true, appattr.PathDirect, "user_direct", "*.qq.com"}
+	want := appCall{51001, true, appattr.PathDirect, "user_direct", "*.qq.com", "meeting.qq.com"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -133,7 +134,7 @@ func TestDialerRecordsUDPProxyByUserRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.only(t)
-	want := appCall{51002, true, appattr.PathTunnel, "user_proxy", "*.openai.com"}
+	want := appCall{51002, true, appattr.PathTunnel, "user_proxy", "*.openai.com", "x.openai.com"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -145,7 +146,7 @@ func TestDialerRecordsUDPBlockedByUserRuleWhenTunnelDown(t *testing.T) {
 		t.Fatalf("应 fail-closed, got %v", err)
 	}
 	got := rec.only(t)
-	want := appCall{51003, true, appattr.PathBlocked, "user_proxy", "*.openai.com"}
+	want := appCall{51003, true, appattr.PathBlocked, "user_proxy", "*.openai.com", "x.openai.com"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -158,7 +159,7 @@ func TestDialerRecordsUDPPrivateDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.only(t)
-	want := appCall{51004, true, appattr.PathDirect, "private", ""}
+	want := appCall{51004, true, appattr.PathDirect, "private", "", "192.168.1.7"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -175,7 +176,7 @@ func TestDialerRecordsUDPProxyModeOnceOnly(t *testing.T) {
 	}
 	got := rec.only(t)
 	// 没配 UDP 专用传输 → 回落主传输,来源是 fallback 那一档(生产行为,不是笔误)。
-	want := appCall{51005, true, appattr.PathTunnel, udpSourceProxyFallback, ""}
+	want := appCall{51005, true, appattr.PathTunnel, udpSourceProxyFallback, "", "198.18.0.9"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -188,7 +189,7 @@ func TestDialerRecordsUDPProxyModeBlockedWhenTunnelDown(t *testing.T) {
 		t.Fatalf("应 fail-closed, got %v", err)
 	}
 	got := rec.only(t)
-	want := appCall{51006, true, appattr.PathBlocked, udpSourceProxyFallback, ""}
+	want := appCall{51006, true, appattr.PathBlocked, udpSourceProxyFallback, "", "198.18.0.9"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -202,7 +203,7 @@ func TestDialerRecordsUDPDirectRealtime(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.only(t)
-	want := appCall{51007, true, appattr.PathDirect, udpSourceDirectRealtime, ""}
+	want := appCall{51007, true, appattr.PathDirect, udpSourceDirectRealtime, "", "198.18.0.9"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -216,7 +217,7 @@ func TestDialerRecordsUDPDirectRealtimeBlockedWhenTunnelDown(t *testing.T) {
 		t.Fatalf("应 fail-closed, got %v", err)
 	}
 	got := rec.only(t)
-	want := appCall{51008, true, appattr.PathBlocked, udpSourceDirectRealtime, ""}
+	want := appCall{51008, true, appattr.PathBlocked, udpSourceDirectRealtime, "", "198.18.0.9"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -230,7 +231,7 @@ func TestDialerRecordsUDPModeBlock(t *testing.T) {
 		t.Fatalf("应阻断, got %v", err)
 	}
 	got := rec.only(t)
-	want := appCall{51009, true, appattr.PathBlocked, udpSourceModeBlock, ""}
+	want := appCall{51009, true, appattr.PathBlocked, udpSourceModeBlock, "", "198.18.0.9"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -247,7 +248,7 @@ func TestDialerRecordsUDPProxyModeWithDedicatedTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.only(t)
-	want := appCall{51012, true, appattr.PathTunnel, udpSourceProxy, ""}
+	want := appCall{51012, true, appattr.PathTunnel, udpSourceProxy, "", "198.18.0.9"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -267,7 +268,7 @@ func TestDialerRecordsViaEgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.only(t)
-	want := appCall{51010, false, appattr.PathTunnel, "user_egress", "office"}
+	want := appCall{51010, false, appattr.PathTunnel, "user_egress", "office", "10.84.3.239"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -285,7 +286,7 @@ func TestDialerRecordsViaEgressBlockedWhenUnwired(t *testing.T) {
 		t.Fatalf("出口没接线应阻断, got %v", err)
 	}
 	got := rec.only(t)
-	want := appCall{51011, false, appattr.PathBlocked, "user_egress", "office"}
+	want := appCall{51011, false, appattr.PathBlocked, "user_egress", "office", "10.84.3.239"}
 	if got != want {
 		t.Fatalf("记的内容不对: got %+v want %+v", got, want)
 	}
@@ -298,6 +299,42 @@ func TestDialerWithoutAppRecorderDoesNotPanic(t *testing.T) {
 	d.AppRecorder = nil
 	if _, err := d.Dial(context.Background(), route.Meta{Domain: "a.qq.com", Port: 443, SrcPort: 1}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// —— 下面三条直接测 recordApp 的目的地选值,不经过 Dial —— 域名优先、
+// 没有域名回落裸 IP、两者都没有报空串。
+
+func TestRecordAppPrefersDomainOverIP(t *testing.T) {
+	rec := &fakeAppRecorder{}
+	d := &Dialer{AppRecorder: rec}
+	m := route.Meta{Domain: "api.openai.com", IP: netip.MustParseAddr("198.18.0.9"), SrcPort: 1}
+	d.recordApp(m, appattr.PathTunnel, "user_proxy", "*.openai.com")
+	got := rec.only(t)
+	if got.dest != "api.openai.com" {
+		t.Fatalf("dest = %q, want 域名优先于 IP", got.dest)
+	}
+}
+
+func TestRecordAppFallsBackToTheLiteralIP(t *testing.T) {
+	rec := &fakeAppRecorder{}
+	d := &Dialer{AppRecorder: rec}
+	m := route.Meta{IP: netip.MustParseAddr("198.18.0.9"), SrcPort: 1}
+	d.recordApp(m, appattr.PathDirect, "private", "")
+	got := rec.only(t)
+	if got.dest != "198.18.0.9" {
+		t.Fatalf("dest = %q, want 回落到裸 IP 字面量", got.dest)
+	}
+}
+
+func TestRecordAppReportsNoDestinationWhenItHasNeither(t *testing.T) {
+	rec := &fakeAppRecorder{}
+	d := &Dialer{AppRecorder: rec}
+	m := route.Meta{SrcPort: 1}
+	d.recordApp(m, appattr.PathBlocked, "private", "")
+	got := rec.only(t)
+	if got.dest != "" {
+		t.Fatalf("dest = %q, want 空串(既无域名也无有效 IP)", got.dest)
 	}
 }
 

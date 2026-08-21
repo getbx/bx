@@ -472,3 +472,100 @@ func TestZeroRateSerializesButUnavailableRateIsAbsent(t *testing.T) {
 		t.Fatalf("没有速率时 bytes_up_rate 键不该出现,got %s", buf2)
 	}
 }
+
+// ---- 目的地(2026-08-20)----
+
+// 同一行内同一个目的地连了多次,Dests 只应出现一次 —— 与 Rules 的去重同一手法。
+func TestAggregateDedupesDestinationsPerRow(t *testing.T) {
+	records := []ConnRecord{
+		{SrcPort: 1, Path: PathTunnel, Dest: "api.openai.com"},
+		{SrcPort: 2, Path: PathTunnel, Dest: "api.openai.com"},
+	}
+	got := Aggregate(AggregateInput{
+		Records: records,
+		Owners:  namedOwners(map[PortKey]string{{Port: 1}: "Chrome", {Port: 2}: "Chrome"}),
+	})
+	row := got.Groups[0].Rows[0]
+	if row.Conns != 2 {
+		t.Fatalf("Conns = %d, want 2", row.Conns)
+	}
+	if !reflect.DeepEqual(row.Dests, []string{"api.openai.com"}) {
+		t.Fatalf("Dests = %#v, want 去重成一条", row.Dests)
+	}
+	if row.DestsMore != 0 {
+		t.Fatalf("DestsMore = %d, want 0(重复的目的地不算「没列出来的」)", row.DestsMore)
+	}
+}
+
+// 超过 maxDestsPerRow 个不同目的地:Dests 恰好截到上限,DestsMore 数出**去重后**
+// 剩下的条数 —— 同一个目的地连 100 次不算 100 个目的地被漏列。
+func TestAggregateCountsDestinationsBeyondTheCap(t *testing.T) {
+	var records []ConnRecord
+	owners := map[PortKey]Owner{}
+	// 11 个不同目的地,每个各自的端口 + 额外一条重复(不该影响 DestsMore)。
+	for i := 0; i < 11; i++ {
+		port := uint16(100 + i)
+		records = append(records, ConnRecord{SrcPort: port, Path: PathTunnel, Dest: domainFor(i)})
+		owners[PortKey{Port: port}] = Owner{Name: "Chrome"}
+	}
+	// 重复访问 domainFor(0) 一次,走一个新端口(否则会被按端口去重的字节逻辑
+	// 影响 Conns,但目的地去重与端口无关,这里只关心 Dests/DestsMore)。
+	records = append(records, ConnRecord{SrcPort: 200, Path: PathTunnel, Dest: domainFor(0)})
+	owners[PortKey{Port: 200}] = Owner{Name: "Chrome"}
+
+	got := Aggregate(AggregateInput{Records: records, Owners: owners})
+	row := got.Groups[0].Rows[0]
+	if len(row.Dests) != maxDestsPerRow {
+		t.Fatalf("Dests 长度 = %d, want %d(恰好截到上限)", len(row.Dests), maxDestsPerRow)
+	}
+	// 11 个去重后的目的地,8 个进了 Dests,剩下 3 个应计入 DestsMore
+	// (那条重复的 domainFor(0) 不算新目的地,不增加这个数)。
+	if row.DestsMore != 3 {
+		t.Fatalf("DestsMore = %d, want 3(去重后剩下的条数,不含重复访问)", row.DestsMore)
+	}
+}
+
+func domainFor(i int) string {
+	return string(rune('a'+i)) + ".example.com"
+}
+
+// 空 Dest 既不进 Dests、也不计入 DestsMore —— 它不是「一个没列出来的目的地」,
+// 是「这条连接没有目的地可报」。
+func TestAggregateIgnoresEmptyDestinations(t *testing.T) {
+	records := []ConnRecord{
+		{SrcPort: 1, Path: PathTunnel, Dest: ""},
+		{SrcPort: 2, Path: PathTunnel, Dest: ""},
+	}
+	got := Aggregate(AggregateInput{
+		Records: records,
+		Owners:  namedOwners(map[PortKey]string{{Port: 1}: "Chrome", {Port: 2}: "Chrome"}),
+	})
+	row := got.Groups[0].Rows[0]
+	if len(row.Dests) != 0 {
+		t.Fatalf("Dests = %#v, want 空(没有一条记录带目的地)", row.Dests)
+	}
+	if row.DestsMore != 0 {
+		t.Fatalf("DestsMore = %d, want 0", row.DestsMore)
+	}
+}
+
+// Aggregate 倒序遍历 records(下标从大到小,「最近的先看」),Dests 因此要把
+// 最近连过的目的地排在前面 —— 与 Rules 的收集顺序同一手法。
+func TestAggregateKeepsTheMostRecentDestinationsFirst(t *testing.T) {
+	records := []ConnRecord{
+		{SrcPort: 1, Path: PathTunnel, Dest: "oldest.example.com"},
+		{SrcPort: 2, Path: PathTunnel, Dest: "middle.example.com"},
+		{SrcPort: 3, Path: PathTunnel, Dest: "newest.example.com"},
+	}
+	got := Aggregate(AggregateInput{
+		Records: records,
+		Owners: namedOwners(map[PortKey]string{
+			{Port: 1}: "Chrome", {Port: 2}: "Chrome", {Port: 3}: "Chrome",
+		}),
+	})
+	row := got.Groups[0].Rows[0]
+	want := []string{"newest.example.com", "middle.example.com", "oldest.example.com"}
+	if !reflect.DeepEqual(row.Dests, want) {
+		t.Fatalf("Dests = %#v, want %#v(最近的先进)", row.Dests, want)
+	}
+}
