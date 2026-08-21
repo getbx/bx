@@ -106,6 +106,23 @@ type AppRow struct {
 	// omitempty:问不出路径(unknown 行、或 kern.procargs2 读失败)时整个键缺席,
 	// 与「查过了、是空串」不必区分 —— 两者对图标绘制是同一件事:不画。
 	ExecPath string `json:"exec_path,omitempty"`
+
+	// BytesUpRate/BytesDownRate 是这一行**此刻**的速率(每秒字节数),由服务端
+	// 按端口做差算出(见 DiffPortRates)。**不是客户端拿相邻两次报告的行做差**
+	// ——那是这个字段取代的旧做法:60 秒滚动窗口下,一行的累计字节会因为记录
+	// 滑出窗口而下降,客户端把"变小"误读成"计数器复位"从而显示成破折号,
+	// 而什么都没出错。按端口做差没有这个歧义:端口从采样里消失就是**不贡献**,
+	// 不是复位。
+	//
+	// **用指针,不用 float64。** 0 B/s(应用在,但这一拍没有字节增量)与
+	// 「还没有速率可报」(还没采到第二次样)是两件不同的事,压成同一个 0
+	// 会让界面把"不知道"显示成"闲着"。指针 + omitempty 让"不知道"表现为
+	// **键缺席**,与本仓库 `status_generation`、`BuiltinListChecked` 同一条纪律。
+	//
+	// **`omitempty` 对指针只看 nil,指向 0 的指针照样会被序列化** ——
+	// 这一点由 TestZeroRateSerializesButUnavailableRateIsAbsent 钉住。
+	BytesUpRate   *float64 `json:"bytes_up_rate,omitempty"`
+	BytesDownRate *float64 `json:"bytes_down_rate,omitempty"`
 }
 
 type Group struct {
@@ -119,42 +136,69 @@ type Report struct {
 
 const maxRulesPerRow = 3
 
-// Aggregate 把连接记录、端口→应用名、按端口的字节数折成三组报告。
+// AggregateInput 是 Aggregate 的入参。**这是唯一的入口** —— 没有为了少改测试
+// 而留一个旧签名的薄壳:本仓库反复栽在「同一个判定有两份」上。
+//
+// 本分支刚把 `serveControlWithPathRecovery` 的 17 个位置参数换成
+// `controlServeOptions`;Aggregate 原有 4 个位置参数,这次要加 3 个,再往下就
+// 不可读了,照同一个先例改成结构体。
+type AggregateInput struct {
+	Records   []ConnRecord
+	Owners    map[PortKey]Owner
+	BytesUp   map[PortKey]int64
+	BytesDown map[PortKey]int64
+	RateUp    map[PortKey]float64
+	RateDown  map[PortKey]float64
+
+	// RatesReady 是个显式的 bool,**不是「map 为 nil 就是不可用」的约定**:
+	// 一份可用但全空的速率(所有端口这一拍都没传东西)与「还没得到速率」是
+	// 两回事 —— 这正是本仓库「『没查』与『查了没有』要分得开」那条纪律。
+	// false ⇒ 每一行的两个速率字段都是 nil。
+	RatesReady bool
+}
+
+// Aggregate 把连接记录、端口→应用名、按端口的字节数与速率折成三组报告。
 //
 // **同一个应用可以同时出现在多组** —— Chrome 一部分域名直连、一部分走隧道是常态,
 // 压成一行「混合」会把最有用的那一半信息扔掉。
 //
-// **每个源端口的字节只计一次。** 同一个端口在记录里出现 N 次(端口复用:旧连接
-// 关了,新连接拿到同一个端口)不代表字节要乘以 N —— 端口复用本就是这份数据里
-// 已知有界的近似来源,重复计入会把它放大成不可控误差。为此按**倒序**遍历
-// records(下标从大到小,也就是「最近的记录先看」),用 counted 记住哪些端口
-// 已经计过字节,只在端口第一次被倒序遇到时计入。
+// **每个源端口的字节(与速率)只计一次。** 同一个端口在记录里出现 N 次(端口
+// 复用:旧连接关了,新连接拿到同一个端口)不代表字节要乘以 N —— 端口复用本就
+// 是这份数据里已知有界的近似来源,重复计入会把它放大成不可控误差。为此按
+// **倒序**遍历 records(下标从大到小,也就是「最近的记录先看」),用 counted
+// 记住哪些端口已经计过字节,只在端口第一次被倒序遇到时计入 —— **速率复用
+// 同一个 counted 去重**,不另开一遍循环。
 //
 // 这个倒序遍历有一个连带效果:Rules 字段的收集顺序变成了「最后出现」而不是
 // 「首次出现」(brief 原意是按时间正序去重取前 3 条)。这不影响任何断言,但
 // 顺序确实是倒序,不要误当成按时间正序在收集。
-func Aggregate(records []ConnRecord, owners map[PortKey]Owner, bytesUp, bytesDown map[PortKey]int64) Report {
+func Aggregate(in AggregateInput) Report {
 	type key struct {
 		path Path
 		app  string
 	}
-	acc := map[key]*AppRow{}
+	type accRow struct {
+		AppRow
+		rateUp   float64
+		rateDown float64
+	}
+	acc := map[key]*accRow{}
 	seenRule := map[key]map[string]bool{}
-	counted := make(map[PortKey]bool, len(records))
-	for i := len(records) - 1; i >= 0; i-- { // 倒序:最近的记录先拿到这个端口的字节
-		rec := records[i]
+	counted := make(map[PortKey]bool, len(in.Records))
+	for i := len(in.Records) - 1; i >= 0; i-- { // 倒序:最近的记录先拿到这个端口的字节
+		rec := in.Records[i]
 		pk := PortKey{Port: rec.SrcPort, UDP: rec.UDP}
 		// **先用记录里存着的归因,查不到才回落到现查的 map。**
 		// 顺序反过来(无条件现查)就等于把这一版的修复整个撤销:连接关掉之后
 		// owners 里再也没有那个端口,一条本来已经解析出来的记录会塌回 unknown。
 		owner := rec.Owner
 		if owner.Name == "" {
-			owner = owners[pk] // 还没解析出来的,给一次最后的机会;仍查不到 → unknown
+			owner = in.Owners[pk] // 还没解析出来的,给一次最后的机会;仍查不到 → unknown
 		}
 		k := key{path: rec.Path, app: owner.Name} // 空名字 = unknown
 		row := acc[k]
 		if row == nil {
-			row = &AppRow{App: k.app}
+			row = &accRow{AppRow: AppRow{App: k.app}}
 			acc[k] = row
 			seenRule[k] = map[string]bool{}
 		}
@@ -167,8 +211,12 @@ func Aggregate(records []ConnRecord, owners map[PortKey]Owner, bytesUp, bytesDow
 		row.Conns++
 		if !counted[pk] {
 			counted[pk] = true
-			row.BytesUp += bytesUp[pk]
-			row.BytesDown += bytesDown[pk]
+			row.BytesUp += in.BytesUp[pk]
+			row.BytesDown += in.BytesDown[pk]
+			if in.RatesReady {
+				row.rateUp += in.RateUp[pk]
+				row.rateDown += in.RateDown[pk]
+			}
 		}
 		if rec.Rule != "" && !seenRule[k][rec.Rule] && len(row.Rules) < maxRulesPerRow {
 			seenRule[k][rec.Rule] = true
@@ -180,9 +228,16 @@ func Aggregate(records []ConnRecord, owners map[PortKey]Owner, bytesUp, bytesDow
 	for _, p := range orderedPaths {
 		var rows []AppRow
 		for k, row := range acc {
-			if k.path == p {
-				rows = append(rows, *row)
+			if k.path != p {
+				continue
 			}
+			out := row.AppRow
+			if in.RatesReady {
+				up, down := row.rateUp, row.rateDown
+				out.BytesUpRate = &up
+				out.BytesDownRate = &down
+			}
+			rows = append(rows, out)
 		}
 		sort.Slice(rows, func(i, j int) bool {
 			bi := rows[i].BytesUp + rows[i].BytesDown
@@ -195,4 +250,38 @@ func Aggregate(records []ConnRecord, owners map[PortKey]Owner, bytesUp, bytesDow
 		report.Groups = append(report.Groups, Group{Path: p, Rows: rows})
 	}
 	return report
+}
+
+// DiffPortRates 把两次按端口的字节快照做差,折成每秒速率。
+//
+// **按端口做差,而不是按聚合后的行做差,是这个 task 存在的全部理由。** 报告
+// 语义是 60 秒滚动窗口,一行的累计字节会因为记录滑出窗口而下降;客户端此前
+// 拿相邻两次报告的行做差,把"变小"误读成"计数器复位",于是那一格不停闪成
+// 破折号,而什么都没出错。端口从这次样本里消失 ⇒ 它这一拍**不贡献**,不是
+// 「复位」—— 按端口做差没有这个歧义。
+//
+// 四条规则:
+//  1. key 在 cur、不在 prev ⇒ delta = cur[k](新端口,字节全是这一拍攒的)。
+//  2. 两边都有且 cur >= prev ⇒ delta = cur - prev。
+//  3. 两边都有但 cur < prev ⇒ 计数器复位(TCP 端口复用时上游把该键的账整个
+//     删掉,新连接从 0 重新攒),delta = cur。
+//  4. key 在 prev、不在 cur ⇒ **不贡献,跳过**。不是复位,不是负数,不是 0
+//     值写入 —— 这一条是这个函数存在的理由。
+//
+// elapsed <= 0 返回 nil:没有区间就没有速率,不许拿一个近似的分母硬算。
+func DiffPortRates(prev, cur map[PortKey]int64, elapsed time.Duration) map[PortKey]float64 {
+	if elapsed <= 0 {
+		return nil
+	}
+	seconds := elapsed.Seconds()
+	out := make(map[PortKey]float64, len(cur))
+	for k, c := range cur {
+		p, ok := prev[k]
+		delta := c
+		if ok && c >= p {
+			delta = c - p
+		}
+		out[k] = float64(delta) / seconds
+	}
+	return out
 }
