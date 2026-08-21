@@ -446,12 +446,12 @@ func (t *AppTraffic) trimByteAccountsLocked(alive map[appattr.PortKey]bool) {
 // **第一段临界区内**(紧跟 trimLocked 之后)调用 —— 采样绝不在 Snapshot 里
 // 发生,见 AppTraffic 类型注释里「速率」那一节。
 //
-// - `rateBaseAt` 是零值 ⇒ 这是第一次采样,只拍一份基线、记下 now、返回
-//   (还没有第二份样本可以做差,速率还不能报)。
-// - 距上一份基线不到 rateSampleInterval ⇒ 什么都不做(resolver 250ms 一拍,
-//   比采样区间密得多,大多数拍子在这里直接跳过)。
-// - 否则:用 appattr.DiffPortRates 把当前字节账与基线做差、rateReady=true,
-//   再把当前字节账**复制**成新基线。
+//   - `rateBaseAt` 是零值 ⇒ 这是第一次采样,只拍一份基线、记下 now、返回
+//     (还没有第二份样本可以做差,速率还不能报)。
+//   - 距上一份基线不到 rateSampleInterval ⇒ 什么都不做(resolver 250ms 一拍,
+//     比采样区间密得多,大多数拍子在这里直接跳过)。
+//   - 否则:用 appattr.DiffPortRates 把当前字节账与基线做差、rateReady=true,
+//     再把当前字节账**复制**成新基线。
 func (t *AppTraffic) sampleRatesLocked(now time.Time) {
 	if t.rateBaseAt.IsZero() {
 		t.rateBaseUp = copyPortBytes(t.bytesUp)

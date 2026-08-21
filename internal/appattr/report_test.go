@@ -15,9 +15,11 @@ func TestAggregateSplitsOneAppAcrossPaths(t *testing.T) {
 		{SrcPort: 2, Path: PathDirect, Source: "user_direct", Rule: "*.qq.com"},
 	}
 	owners := namedOwners(map[PortKey]string{{Port: 1, UDP: false}: "Google Chrome", {Port: 2, UDP: false}: "Google Chrome"})
-	got := Aggregate(AggregateInput{Records: records, Owners: owners,
+	got := Aggregate(AggregateInput{
+		Records: records, Owners: owners,
 		BytesUp:   map[PortKey]int64{{Port: 1, UDP: false}: 100, {Port: 2, UDP: false}: 5},
-		BytesDown: map[PortKey]int64{{Port: 1, UDP: false}: 900, {Port: 2, UDP: false}: 45}})
+		BytesDown: map[PortKey]int64{{Port: 1, UDP: false}: 900, {Port: 2, UDP: false}: 45},
+	})
 
 	want := Report{Groups: []Group{
 		{Path: PathTunnel, Rows: []AppRow{{App: "Google Chrome", Conns: 1, BytesUp: 100, BytesDown: 900}}},
@@ -73,8 +75,10 @@ func TestAggregateSortsRowsByBytesThenName(t *testing.T) {
 		{SrcPort: 1, Path: PathTunnel}, {SrcPort: 2, Path: PathTunnel}, {SrcPort: 3, Path: PathTunnel},
 	}
 	owners := namedOwners(map[PortKey]string{{Port: 1, UDP: false}: "Aardvark", {Port: 2, UDP: false}: "Zebra", {Port: 3, UDP: false}: "Middle"})
-	got := Aggregate(AggregateInput{Records: records, Owners: owners,
-		BytesUp: map[PortKey]int64{{Port: 1, UDP: false}: 1, {Port: 2, UDP: false}: 1000, {Port: 3, UDP: false}: 500}})
+	got := Aggregate(AggregateInput{
+		Records: records, Owners: owners,
+		BytesUp: map[PortKey]int64{{Port: 1, UDP: false}: 1, {Port: 2, UDP: false}: 1000, {Port: 3, UDP: false}: 500},
+	})
 	if got.Groups[0].Rows[0].App != "Zebra" || got.Groups[0].Rows[2].App != "Aardvark" {
 		t.Fatalf("排序错了: %#v", got.Groups[0].Rows)
 	}
@@ -172,9 +176,11 @@ func TestAggregateAttributesReusedPortBytesToTheMostRecentRecord(t *testing.T) {
 		{SrcPort: 5000, Path: PathTunnel, Source: "default"},                       // 新
 	}
 	owners := namedOwners(map[PortKey]string{{Port: 5000, UDP: false}: "Slack"})
-	got := Aggregate(AggregateInput{Records: records, Owners: owners,
+	got := Aggregate(AggregateInput{
+		Records: records, Owners: owners,
 		BytesUp:   map[PortKey]int64{{Port: 5000, UDP: false}: 100},
-		BytesDown: map[PortKey]int64{{Port: 5000, UDP: false}: 900}})
+		BytesDown: map[PortKey]int64{{Port: 5000, UDP: false}: 900},
+	})
 
 	tunnel, direct := got.Groups[0], got.Groups[1]
 	if len(tunnel.Rows) != 1 || len(direct.Rows) != 1 {
