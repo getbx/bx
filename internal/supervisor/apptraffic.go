@@ -57,6 +57,18 @@ const appResolveInterval = 250 * time.Millisecond
 // rateSampleInterval 是速率的采样区间。resolver 每 250ms 一拍,这里按**时间**
 // 判断该不该采样(不是数够 8 拍就采)—— 时间才是速率的分母,数拍子在某一拍被
 // 拖慢时会让分母与实际区间对不上。
+//
+// **修复轮 1 更正(brief 原话写错了一半,别再照抄)**:brief 说这次改动
+// "顺带消掉三个既有问题:第一帧没有速率、关掉窗口重开白白重置、以及…闪烁"。
+// **冷启动的第一帧仍然是破折号,没有被这次改动消掉** —— 菜单点开窗口那一刻
+// 是"同一次拉取里 Subscribe() 紧接着 Snapshot()",而 sampleRatesLocked
+// 只由后台 resolver 驱动、每 250ms 才跑一拍,第一拍只能拍到基线(见
+// sampleRatesLocked 里 `rateBaseAt.IsZero()` 分支),要等第二拍(约
+// rateSampleInterval 之后)才有数。真正被这次改动消掉的是"**关掉窗口、在
+// 30 秒 TTL 内重新打开**"这一种——旧的客户端 AppTrafficRateTracker 会把
+// 这种重开也当成新的第一帧、白白清一次;现在只有全新订阅(TTL 已过期)才
+// 重置速率状态,续期(TTL 内的重新 Subscribe)不重置(见 Subscribe 里的
+// 分支注释)。真机验收时**别把"第一帧还是破折号"当成回归**。
 const rateSampleInterval = 2 * time.Second
 
 // bufferedRecord 是环形缓冲里的一格:一条记录 + 一个**永不复用**的序号。
@@ -535,6 +547,17 @@ func (t *AppTraffic) expiredLocked() bool {
 	t.active.Store(false)
 	t.records, t.bytesUp, t.bytesDn = nil, nil, nil
 	t.next, t.wrapped = 0, false
+	// **修复轮 1(复审抓到):速率状态必须跟着清,不能只清字节账。**
+	// 「没人看时不问内核、不记字节、不攒历史」这条隐私前提就靠这个函数的
+	// 前几行(records/bytesUp/bytesDn 置 nil)撑住;rateBaseUp/rateBaseDn/
+	// rateUp/rateDn/rateBaseAt 是同一类东西(按端口的字节总账 + 按端口的
+	// 速率),漏清等于留了一条不受这条不变量约束的状态——不是泄露、不影响
+	// 正确性(下一次全新 Subscribe 会重置它),但与"代码声称的性质要么做到、
+	// 要么写明边界"这条不符。
+	t.rateBaseUp, t.rateBaseDn = nil, nil
+	t.rateBaseAt = time.Time{}
+	t.rateUp, t.rateDn = nil, nil
+	t.rateReady = false
 	return true
 }
 

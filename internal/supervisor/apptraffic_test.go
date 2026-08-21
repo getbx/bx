@@ -250,6 +250,63 @@ func TestAppTrafficSubscriptionExpiresAndClearsBuffers(t *testing.T) {
 	}
 }
 
+// **修复轮 1(复审抓到)**:TTL 过期时 `expiredLocked` 只清了
+// `records`/`bytesUp`/`bytesDn`,速率的五个字段(`rateBaseUp`/`rateBaseDn`/
+// `rateBaseAt`/`rateUp`/`rateDn`/`rateReady`)原样留在内存里,直到下一次
+// 全新 Subscribe。「没人看时不问内核、不记字节、不攒历史」这条隐私前提就是
+// 靠 expiredLocked 清空那几个字段撑住的——按端口的字节总账与按端口的速率是
+// 同一类东西,漏清就是留了一条不受这条不变量约束的状态。这条测试直接钉住
+// 过期之后这几个字段都是零值/nil(白盒断言,同包可以直接访问)。
+func TestAppTrafficSubscriptionExpiryClearsRateState(t *testing.T) {
+	now := time.Unix(1000, 0)
+	clock := func() time.Time { return now }
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := newAppTrafficNoResolver(src, clock)
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.AddUp(7, false, 1000)
+	tr.resolveOnce() // 拍基线,确保有真实状态可清
+
+	now = now.Add(rateSampleInterval + time.Second)
+	tr.AddUp(7, false, 2000)
+	tr.resolveOnce() // 做出一份就绪的速率,确保 rateReady/rateUp/rateDn 非零值
+
+	tr.mu.Lock()
+	readyBeforeExpiry := tr.rateReady
+	tr.mu.Unlock()
+	if !readyBeforeExpiry {
+		t.Fatal("测试前提不成立:过期前速率还没就绪")
+	}
+
+	now = now.Add(appTrafficTTL + time.Second)
+	if _, subscribed, err := tr.Snapshot(); err != nil {
+		t.Fatal(err)
+	} else if subscribed {
+		t.Fatal("TTL 过期后仍报 subscribed=true")
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.rateBaseUp != nil {
+		t.Errorf("过期后 rateBaseUp 没有清空: %#v", tr.rateBaseUp)
+	}
+	if tr.rateBaseDn != nil {
+		t.Errorf("过期后 rateBaseDn 没有清空: %#v", tr.rateBaseDn)
+	}
+	if !tr.rateBaseAt.IsZero() {
+		t.Errorf("过期后 rateBaseAt 没有清零: %v", tr.rateBaseAt)
+	}
+	if tr.rateUp != nil {
+		t.Errorf("过期后 rateUp 没有清空: %#v", tr.rateUp)
+	}
+	if tr.rateDn != nil {
+		t.Errorf("过期后 rateDn 没有清空: %#v", tr.rateDn)
+	}
+	if tr.rateReady {
+		t.Error("过期后 rateReady 仍为 true")
+	}
+}
+
 // 过期之后**没人调过 Snapshot** 就来了新订阅:续期不许把上一轮的残留带进来。
 // 这条形状只有在 Subscribe 自己先结算一次过期时才成立 —— 若 Subscribe 只看
 // active 标志就续期,旧缓冲会原样活下去,而那正是「关掉窗口再打开,看到的
@@ -1126,6 +1183,18 @@ func TestAppTrafficRatesNeedTwoSamples(t *testing.T) {
 // Snapshot 不是消耗性的 —— 连调两次,第二次的速率必须与第一次相同。
 // 做差(消耗一拍的增量)只发生在 sampleRatesLocked 里,而它只由后台 resolver
 // 驱动;Snapshot 只读地把手上那份速率复制出去。
+//
+// **修复轮 1(复审抓到):上一版这条测试拦不住它命名的那件事。** 两次
+// Snapshot 之间时钟冻结不动、字节也不变,于是即便真的把 `sampleRatesLocked`
+// 插进 Snapshot(复审的变异),它看到的 `elapsed` 恒为 0(< rateSampleInterval)
+// 直接 no-op —— 缺陷不可见,`go test -run TestAppTraffic` 全绿。
+//
+// 现在的做法:①在两次 Snapshot 之间把时钟推进超过 rateSampleInterval、
+// 且改动字节账 —— 若 Snapshot 真的偷偷调了 sampleRatesLocked,它会在第二次
+// Snapshot 时用新的字节账重新做一次差,算出一个与第一次**不同**的速率;
+// ②白盒断言 `rateBaseAt`/`rateBaseUp`/`rateBaseDn` 在两次 Snapshot 之间
+// **逐值不变** —— 这是比"最终速率数字凑巧相同"更直接的证据:Snapshot 完全
+// 没有碰过采样状态,而不是"碰了但算出来一样"。
 func TestAppTrafficSnapshotDoesNotConsumeTheRateDelta(t *testing.T) {
 	now := time.Unix(1000, 0)
 	clock := func() time.Time { return now }
@@ -1134,27 +1203,54 @@ func TestAppTrafficSnapshotDoesNotConsumeTheRateDelta(t *testing.T) {
 	tr.Subscribe()
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
 	tr.AddUp(7, false, 1000)
-	tr.resolveOnce() // 拍基线
+	tr.resolveOnce() // 拍基线:{7:1000} @ t0
 
-	now = now.Add(rateSampleInterval + time.Second)
-	tr.AddUp(7, false, 4000) // 累计到 5000
-	tr.resolveOnce()         // 做差:得到一份非零速率
+	now = now.Add(rateSampleInterval + time.Second) // t1
+	tr.AddUp(7, false, 3000)                        // 累计到 4000
+	tr.resolveOnce()                                // 做差:(4000-1000)/interval,基线重拍成 {7:4000} @ t1
 
 	first, _, err := tr.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	tr.mu.Lock()
+	baseAtAfterFirst := tr.rateBaseAt
+	baseUpAfterFirst := tr.rateBaseUp[tcpKey(7)]
+	tr.mu.Unlock()
+
+	// **两次 Snapshot 之间**推进时钟、改字节账 —— 若 Snapshot 偷偷重新采样,
+	// 这一步足够让它看到 elapsed >= rateSampleInterval 并拿新字节账重新做差,
+	// 算出一个与 first 不同的值;若 Snapshot 真的只读,这一切对它不可见。
+	now = now.Add(rateSampleInterval + time.Second) // t2
+	tr.AddUp(7, false, 5000)                        // 累计到 9000(只有 Record/AddUp 在改账,resolveOnce 没有再跑)
+
 	second, _, err := tr.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	tr.mu.Lock()
+	baseAtAfterSecond := tr.rateBaseAt
+	baseUpAfterSecond := tr.rateBaseUp[tcpKey(7)]
+	tr.mu.Unlock()
+
+	if !baseAtAfterSecond.Equal(baseAtAfterFirst) {
+		t.Fatalf("Snapshot 推进了采样基线的时间戳:第一次之后 %v,第二次之后 %v",
+			baseAtAfterFirst, baseAtAfterSecond)
+	}
+	if baseUpAfterSecond != baseUpAfterFirst {
+		t.Fatalf("Snapshot 改动了采样基线的字节账:第一次之后 %v,第二次之后 %v",
+			baseUpAfterFirst, baseUpAfterSecond)
+	}
+
 	r1 := first.Groups[0].Rows[0].BytesUpRate
 	r2 := second.Groups[0].Rows[0].BytesUpRate
 	if r1 == nil || r2 == nil {
 		t.Fatalf("速率没有算出来:r1=%v r2=%v", r1, r2)
 	}
 	if *r1 != *r2 {
-		t.Fatalf("Snapshot 消耗了速率的增量:第一次 %v,第二次 %v", *r1, *r2)
+		t.Fatalf("Snapshot 消耗了速率的增量(或偷偷重新采样了):第一次 %v,第二次 %v", *r1, *r2)
 	}
 }
 

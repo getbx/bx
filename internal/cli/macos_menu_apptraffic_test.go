@@ -1036,6 +1036,20 @@ func TestMacMenuAppTrafficNumbersAreRightAligned(t *testing.T) {
 // 文件、同一个函数,但那条钉的是格子**数目**,这条钉的是这两个格子**是谁**)。
 func TestMacMenuAppTrafficWindowFeedsRatesIntoRendering(t *testing.T) {
 	window := menuAppTrafficWindowCode(t)
+
+	// **修复轮 1(复审抓到):净覆盖真的掉了一处** —— 旧版守卫里
+	// `swiftCallArguments(window, ".rows")` 配的那句 `t.Fatal` 顺带证明了
+	// 「窗口真的去问纯模型要行」,而只钉 cells(for:) 的这一版完全没接手这一跳:
+	// 复审实测把 `let rows = report.rows()` 换成
+	// `let rows: [AppTrafficReport.Row] = []`,`swift build` 通过、
+	// `go test ./internal/cli -run TestMacMenu` 退出码 0 —— 窗口从此永远渲染
+	// 一份空行,而没有任何东西报错。补回这一条:`rows(...)` 的调用必须真的
+	// 存在(不是「文件里出现过 rows 这个词」——`swiftCallArguments` 只解析
+	// 真正的函数调用形状)。
+	if len(swiftCallArguments(window, ".rows")) == 0 {
+		t.Fatal("窗口没有调用 report.rows() —— 数据永远渲染成空,而不会有任何报错")
+	}
+
 	cells, ok := swiftFunctionBody(window, "private func cells(for entry: AppTrafficReport.Entry) -> [NSView]")
 	if !ok {
 		t.Fatal("读不出 cells(for:) 的函数体 —— 守卫已经失效,先修守卫")
