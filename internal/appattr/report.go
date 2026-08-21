@@ -213,6 +213,17 @@ func Aggregate(in AggregateInput) Report {
 			counted[pk] = true
 			row.BytesUp += in.BytesUp[pk]
 			row.BytesDown += in.BytesDown[pk]
+			// **已知的、有界的近似(修复轮 1 补记,不改设计):`in.RateUp[pk]`
+			// 对一个 map 里没有的键返回零值 0,不是「没有」。** 一个端口若是
+			// 在上一次采样**之后**才开始有流量(还没被下一次 sampleRatesLocked
+			// 采到),它这一拍就会拿到 0、渲染成 `0 B/s`,而不是"这个端口的
+			// 速率还不知道"——这与本功能反复强调的"nil ≠ 0"在**端口粒度**上
+			// 不一致(行粒度仍然一致:RatesReady=false 时整行是 nil,这里说的
+			// 是 RatesReady=true 时单个端口的边缘情况)。上界只有一个采样区间
+			// `rateSampleInterval`(2 秒)——真机上它长得跟真的空闲一模一样,
+			// 用户分不出这两种"0"。不修,因为要修就要在 AppRow 粒度之下再带
+			// 一层「这个端口有没有被采到」的标记,收益(消掉一个 2 秒窗口内的
+			// 视觉误差)配不上那份复杂度。
 			if in.RatesReady {
 				row.rateUp += in.RateUp[pk]
 				row.rateDown += in.RateDown[pk]
