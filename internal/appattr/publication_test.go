@@ -107,7 +107,7 @@ func TestExecutablePathHasExactlyOnePublicationPath(t *testing.T) {
 	}
 }
 
-// destPublicationAllowlist 是**允许提到目的地(域名/裸 IP)的全部位置** ——
+// destPublicationAllowlist 是**允许提到目的地发布面的全部位置** ——
 // 这是这个包的**第二次**刻意信息面扩大(第一次是上面的 execPathPublicationAllowlist)。
 //
 // 目的地比可执行路径更敏感:一份目的地列表接近「这台机器在访问什么」。发布面与
@@ -116,54 +116,44 @@ func TestExecutablePathHasExactlyOnePublicationPath(t *testing.T) {
 // 关于「第二次信息面扩大」的说明。
 //
 // **不与 execPathPublicationAllowlist 合并成一张表**:两次扩大的理由、边界、
-// 白名单成员都不同(`internal/dialer/dialer.go` 是目的地的生产者,但它跟 ExecPath
-// 毫无关系;反过来 `internal/supervisor/appsource_darwin.go` 是 ExecPath 的生产者,
-// 但它不产生目的地)。合并之后任何一方的放宽都会静默地把另一方也放宽。
+// 白名单成员都不同,合并之后任何一方的放宽都会静默地把另一方也放宽。
 //
-// `internal/route` 里的文件不进来 —— `route.Meta.Domain` 早就在那儿,不是这次
-// 新发布的东西;这张表只扫 `Dest`/`Dests`/`dest`/`dests`/`dests_more` 这几个
-// **本次新增**的标识符,别扫 `Domain`(那会把整个路由包和 DNS 包拖进来,守卫
-// 立刻变成墙纸)。
+// **这条守卫扫的是「发布面」,不是「这个词出现过」。** 真正离开 Core 的是
+// `AppRow.Dests`、json 标签 `"dests"`/`dests_more`,以及将来 Swift 侧的
+// `destsMore` —— 这几个复数/连字形态在本仓库是独一无二的,扫它们不会误伤任何
+// 无关代码。
 //
-// **扫描按「单词」而不是子串匹配**(见下面 destWordPattern):`Dest`/`dest` 若按
-// 子串扫会命中仓库里大量与本功能无关的既有代码(`Destination`、`DestPort`、
-// `AppDestination` 这类网络路由/安装目标路径,和「应用连了谁」毫无关系)。按单词
-// 边界扫仍然会命中一批**真正无关**的既有代码(见下面标了「不相关」的条目)——
-// 那些用的是同一个词「目的地」但说的是路由/安装,不是这个功能;它们进白名单只是
-// 因为文本扫描分不出语境,不代表它们值得被当成信息面扩大来审。
+// **单数 `Dest`/`dest` 刻意不在扫描范围内,这是一个明确的取舍,不是遗漏**:
+// 那是本仓库里一个通用词,已经被路由目的地前缀(`internal/supervisor/
+// windows_routes.go` 的 `winRoute.Dest`)、路由表查询(`internal/leakserve` 的
+// `LookupRoute(ctx, dest, ipv6)`)、安装目标路径(`internal/install/
+// unified_darwin.go` 的 `AppDestination`)这类既有代码合法占用。第一版守卫扫了
+// 单数形式,结果 19 个命中里 12 个是这些无关文件、只能标「不相关」塞进白名单 ——
+// 那正是这条守卫要防的失效本身:一张 12/19 都是「不相关」的白名单,读者学到的
+// 是「往里加一行就行」,而不是回来读这段注释。收窄之后,`internal/dialer/
+// dialer.go` 里 `recordApp` 选值用的那个 `dest` 形参、`internal/supervisor/
+// apptraffic.go` 里 live 表的 `dest` 字段,都**不会**被这条守卫扫到 —— 它们是
+// 生产者内部的局部变量/字段名,不构成发布;它们真要泄漏,泄的形式是
+// `rec.Dest`/结构体字面量把值带出去,那时候值早已经过了 `AppRow.Dests` 这道
+// 发布面,已经被这条守卫盯着。
+//
+// 这不削弱这条守卫要拦的危险形状:将来某个人把 `appattr.Report` 整个 `%+v`
+// 进一行诊断日志、或者顺手把它塞进一个新的只读端点 —— 两种情形都会带着
+// `Dests`/`dests` 一起出现,照样会被扫到。
 var destPublicationAllowlist = map[string]string{
 	"internal/appattr/report.go":             "字段定义 + 聚合(去重、封顶、DestsMore)",
 	"internal/appattr/report_test.go":        "上面那条的测试",
 	"internal/appattr/publication_test.go":   "这条守卫自己",
-	"internal/dialer/dialer.go":              "唯一的生产者:recordApp 从 route.Meta 选值",
-	"internal/dialer/apprecorder_test.go":    "上面那条的测试",
-	"internal/supervisor/apptraffic.go":      "live 表持有目的地 + 播种",
-	"internal/supervisor/apptraffic_test.go": "端到端穿过 Snapshot 的测试(含播种用例)",
-
-	// —— 以下与本功能无关,只是文本扫描分不出「应用连了谁」和「路由/安装的
-	// 目的地」是两件事:两者都用「dest」这个词。列在这里是为了让扫描范围保持
-	// 全仓(不给 internal/route 之外的包开路径级豁免),而不是因为它们构成
-	// 信息面扩大。
-	"internal/install/unified_darwin.go":         "不相关:App bundle 安装目标路径(AppDestination)",
-	"internal/leakcheck/judge_routes.go":         "不相关:路由目的地 CIDR 解析(ParseRouteDestination)",
-	"internal/leakcheck/routes_v6_test.go":       "不相关:上面那条的测试",
-	"internal/leakserve/facts.go":                "不相关:LookupRoute(ctx, dest, ipv6) 路由查询",
-	"internal/leakserve/facts_darwin.go":         "不相关:同上,darwin 实现",
-	"internal/leakserve/facts_linux.go":          "不相关:同上,linux 实现",
-	"internal/leakserve/facts_test.go":           "不相关:同上的测试",
-	"internal/leakserve/facts_windows.go":        "不相关:同上,windows 实现",
-	"internal/leakserve/routes_linux.go":         "不相关:路由表解析(Destination 字段)",
-	"internal/supervisor/platform_windows.go":    "不相关:Windows 路由的目的地前缀(netip.Prefix)",
-	"internal/supervisor/windows_routes.go":      "不相关:Windows 路由计划里的 Dest 字段(路由 CIDR)",
-	"internal/supervisor/windows_routes_test.go": "不相关:上面那条的测试",
+	"internal/supervisor/apptraffic_test.go": "端到端穿过 Snapshot 的测试(断言 row.Dests)",
 }
 
-// destWordPattern 按**单词边界**匹配,不做子串扫描 —— `Dest`/`dest` 若按子串扫
-// 会命中 `Destination`/`DestPort`/`AppDestination` 这类与本功能完全无关的既有
-// 标识符,把守卫变成对着整个仓库网络代码报警的墙纸。单词边界仍然会命中一批
-// **真正无关**的既有代码(见 destPublicationAllowlist 里标了「不相关」的条目)——
-// 那是文本扫描分不出语境的代价,已经过白名单显式承认,不是漏网。
-var destWordPattern = regexp.MustCompile(`\b(Dest|Dests|dest|dests|dests_more)\b`)
+// destWordPattern 只认发布面会实际出现的复数/连字形态 —— 不是单词边界版的
+// `Dest`/`dest`。见上面 destPublicationAllowlist 头上的说明:扫单数会拖进十几个
+// 与本功能无关的既有代码(路由目的地前缀、路由表查询、安装目标路径),把白名单
+// 变成墙纸。`Dests`/`DestsMore`/`destsMore` 走单词边界,`"dests"` 要求带引号
+// (只认 json 标签那种写法),`dests_more` 走单词边界(下划线是 \w 的一部分,
+// 不会被 `Dests` 那半提前截断)。
+var destWordPattern = regexp.MustCompile(`\bDests\b|\bDestsMore\b|\bdestsMore\b|"dests"|\bdests_more\b`)
 
 // 目的地不许长出第二条发布路径。
 func TestDestinationHasExactlyOnePublicationPath(t *testing.T) {
@@ -209,10 +199,10 @@ func TestDestinationHasExactlyOnePublicationPath(t *testing.T) {
 	if len(found) == 0 {
 		t.Fatal("一处目的地都没扫到 —— 守卫读不到源码了,先修守卫")
 	}
-	// 生产者必须在场:少了它们说明扫描范围塌了,而不是发布面变干净了。
+	// 定义与端到端消费必须在场:少了它们说明扫描范围塌了,而不是发布面变干净了。
 	for _, required := range []string{
-		"internal/dialer/dialer.go",
-		"internal/supervisor/apptraffic.go",
+		"internal/appattr/report.go",
+		"internal/supervisor/apptraffic_test.go",
 	} {
 		if !found[required] {
 			t.Fatalf("连 %s 都没扫到 —— 守卫的扫描范围塌了,先修守卫", required)
@@ -220,10 +210,11 @@ func TestDestinationHasExactlyOnePublicationPath(t *testing.T) {
 	}
 	for rel := range found {
 		if _, ok := destPublicationAllowlist[rel]; !ok {
-			t.Errorf("%s 提到了目的地,而它不在发布面白名单里 —— "+
-				"这是一次信息面扩大(一份目的地列表接近「这台机器在访问什么」)。"+
-				"先读 internal/appattr/report.go 里 ConnRecord 头上那段,想清楚再把自己"+
-				"加进 destPublicationAllowlist:加进来可以,悄悄加不行。", rel)
+			t.Errorf("%s 提到了目的地发布面(Dests/DestsMore/dests_more),而它不在"+
+				"白名单里 —— 这是一次信息面扩大(一份目的地列表接近「这台机器在访问"+
+				"什么」)。先读 internal/appattr/publication_test.go 里"+
+				"destPublicationAllowlist 头上那段,想清楚再把自己加进去:"+
+				"加进来可以,悄悄加不行。", rel)
 		}
 	}
 }
