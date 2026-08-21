@@ -298,6 +298,17 @@ func (t *AppTraffic) pendingResolvesLocked() []pendingResolve {
 //
 // 只写当初挑出来的那批、且此刻仍然没有归因的格子:期间被裁掉的记录序号对不上
 // 自动跳过,期间被新记录覆盖的格子序号也不同 —— 这正是序号存在的理由。
+//
+// **已知代价:端口在「挑键 → 问内核」这段窗口里被真实复用时,新主人的名字会被
+// 写到旧连接那条记录上,而且此后不再纠正**(下游 appattr.Aggregate 无条件优先用
+// rec.Owner)。与 UDP 那条清账近似(见 Record)属同一家族,都是「一个端口先后
+// 属于两个应用」在按端口 join 时的固有歧义,这里记下来是因为它不该被误当成 bug。
+//
+// **粘性是刻意的,别为了「能自我纠正」把它去掉。** 归因写进记录正是这个功能的
+// 全部理由:连接活不过一次内核查询时,现查必然是 unknown,而 unknown 曾经是这块
+// 界面上占比最高的一行。而且旧的「每次 Snapshot 现查」并不纠正到真相 —— 端口
+// 换了主人时它给出同一个错名字,端口空了时它退回 unknown;拿一个错名字换一个
+// 「不知道」不是收益。窗口本身也比旧路径小一个量级(250ms 一拍 vs 5s 一次)。
 func (t *AppTraffic) applyOwnersLocked(pending []pendingResolve, owners map[appattr.PortKey]appattr.Owner) {
 	resolved := make(map[uint64]appattr.Owner, len(pending))
 	for _, p := range pending {
