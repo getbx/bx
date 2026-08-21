@@ -300,116 +300,64 @@ struct AppTrafficModelTests {
         expect(rows.last?.execPath == "", "缺席的 exec_path 没落成空串 —— 那一行会去取一个不存在路径的图标")
     }
 
-    // **第一帧不许编造速率。** 速率是相邻两次快照做差得到的,第一份快照没有前一份,
-    // 就是没有速率 —— 显示 0 是在说「此刻没有流量」(一句它没查过的话),
-    // 拿累计值除以一个猜来的时长则更糟。
-    static func testFirstSnapshotProducesNoRatesAtAll() {
-        var tracker = AppTrafficRateTracker()
-        let report = oneRow(path: .tunnel, app: "Slack", up: 1_000_000, down: 2_000_000)
-        let rates = tracker.ingest(report, at: Date(timeIntervalSince1970: 100))
-        expect(rates.isEmpty, "第一帧就给出了速率(凭空造的):\(rates)")
-    }
-
-    // 相邻两帧做差 —— 这是速率唯一诚实的来源。
-    static func testRateComesFromTheDeltaBetweenTwoSnapshots() {
-        var tracker = AppTrafficRateTracker()
-        _ = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 1000, down: 2000),
-                           at: Date(timeIntervalSince1970: 100))
-        let rates = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 6000, down: 2000),
-                                   at: Date(timeIntervalSince1970: 105))
-        let key = AppTrafficRateKey(path: .tunnel, app: "Slack")
-        guard let rate = rates[key] else {
-            expect(false, "第二帧没有算出速率:\(rates)")
-            return
+    // **速率现在由服务端按端口做差算出、随行一起发下来**(`bytes_up_rate`/
+    // `bytes_down_rate`),不再是客户端拿相邻两次快照做差
+    // (`AppTrafficRateTracker`,已删)。这两个键是 omitempty 的:还没有速率
+    // 可报时(第一次采样之前)整个缺席,不能让整份应答解码失败;而键**在**
+    // 时,哪怕值是 0(应用在,但这一拍没有字节增量),也必须解出一个非 nil
+    // 的 Double —— 与「键缺席」是两件不同的事。
+    static func testDecodesRateFieldsAndToleratesTheirAbsence() {
+        let json = """
+        {
+          "subscribed": true,
+          "report": {
+            "groups": [
+              { "path": "tunnel", "rows": [
+                { "app": "Slack", "conns": 1, "bytes_up": 1, "bytes_down": 2,
+                  "bytes_up_rate": 2048, "bytes_down_rate": 0 },
+                { "app": "Zoom", "conns": 1, "bytes_up": 0, "bytes_down": 0 }
+              ] }
+            ]
+          }
         }
-        expect(rate.bytesUpPerSecond == 1000, "上行速率 \(rate.bytesUpPerSecond) != (6000-1000)/5")
-        // 没有变化就是 0,而这个 0 是**量出来的**,与第一帧那个「没有」不是一回事。
-        expect(rate.bytesDownPerSecond == 0, "下行没变化却不是 0:\(rate.bytesDownPerSecond)")
+        """
+        guard let report = decode(json) else { return }
+        let rows = report.report.groups.first { $0.path == .tunnel }?.rows ?? []
+        expect(rows.count == 2, "行数不对:\(rows.count)")
+        expect(rows.first?.bytesUpRate == 2048, "非零速率没解出来:\(String(describing: rows.first?.bytesUpRate))")
+        // **量出来的 0 必须是非 nil 的 0,不是「没有」。**
+        expect(rows.first?.bytesDownRate == 0, "指向 0 的速率没解出来,得到 \(String(describing: rows.first?.bytesDownRate))")
+        expect(rows.last?.bytesUpRate == nil, "缺席的 bytes_up_rate 没有落成 nil —— 会被渲染层当成量出来的 0")
+        expect(rows.last?.bytesDownRate == nil, "缺席的 bytes_down_rate 没有落成 nil")
     }
 
-    // 键是 (组, 应用名)。同一个应用同时在两组里是常态(Chrome 一半直连一半走隧道),
-    // 只按名字做键会把两组的字节混在一起,算出一个谁也不是的速率。
-    static func testRateKeyIsGroupAndApp() {
-        var tracker = AppTrafficRateTracker()
-        func frame(_ tunnelUp: Int64, _ directUp: Int64) -> AppTrafficReport {
-            AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
-                AppTrafficGroup(path: .tunnel, rows: [
-                    AppTrafficRow(app: "Chrome", conns: 1, bytesUp: tunnelUp, bytesDown: 0),
-                ]),
-                AppTrafficGroup(path: .direct, rows: [
-                    AppTrafficRow(app: "Chrome", conns: 1, bytesUp: directUp, bytesDown: 0),
-                ]),
-            ]))
-        }
-        _ = tracker.ingest(frame(0, 0), at: Date(timeIntervalSince1970: 0))
-        let rates = tracker.ingest(frame(10, 50), at: Date(timeIntervalSince1970: 10))
-        expect(rates[AppTrafficRateKey(path: .tunnel, app: "Chrome")]?.bytesUpPerSecond == 1,
-               "tunnel 组的速率不对:\(rates)")
-        expect(rates[AppTrafficRateKey(path: .direct, app: "Chrome")]?.bytesUpPerSecond == 5,
-               "direct 组的速率不对:\(rates)")
-    }
-
-    // 两帧之间**新出现**的应用没有速率:它上一帧根本不存在,累计值里可能含着
-    // 订阅之前就建好的连接(种子),拿它当「这几秒传的」就是编。
-    static func testAppThatAppearsBetweenFramesGetsNoRate() {
-        var tracker = AppTrafficRateTracker()
-        _ = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 10, down: 10),
-                           at: Date(timeIntervalSince1970: 0))
-        let rates = tracker.ingest(
-            AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
-                AppTrafficGroup(path: .tunnel, rows: [
-                    AppTrafficRow(app: "Slack", conns: 1, bytesUp: 10, bytesDown: 10),
-                    AppTrafficRow(app: "Zoom", conns: 1, bytesUp: 999_999, bytesDown: 0),
-                ]),
-            ])), at: Date(timeIntervalSince1970: 5))
-        expect(rates[AppTrafficRateKey(path: .tunnel, app: "Zoom")] == nil,
-               "刚出现的应用被算出了速率:\(rates)")
-        expect(rates[AppTrafficRateKey(path: .tunnel, app: "Slack")] != nil,
-               "上一帧就在的应用反而没有速率:\(rates)")
-    }
-
-    // 累计值**会往回走**:环形缓冲丢最旧的记录,一个应用的累计字节因此可能变小。
-    // 那不是「速率为 0」,是「这两帧之间发生了什么我说不好」—— 不给速率。
-    static func testCounterGoingBackwardsYieldsNoRateRatherThanZero() {
-        var tracker = AppTrafficRateTracker()
-        _ = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 5000, down: 5000),
-                           at: Date(timeIntervalSince1970: 0))
-        let rates = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 100, down: 5000),
-                                   at: Date(timeIntervalSince1970: 5))
-        expect(rates[AppTrafficRateKey(path: .tunnel, app: "Slack")] == nil,
-               "累计值倒退却给出了速率:\(rates)")
-    }
-
-    // 两帧时间戳相同(理论上的时钟回拨/同一瞬间)不许除以零。
-    static func testZeroElapsedProducesNoRates() {
-        var tracker = AppTrafficRateTracker()
-        let at = Date(timeIntervalSince1970: 42)
-        _ = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 0, down: 0), at: at)
-        let rates = tracker.ingest(oneRow(path: .tunnel, app: "Slack", up: 100, down: 0), at: at)
-        expect(rates.isEmpty, "零时长也算出了速率(除以零):\(rates)")
-    }
-
-    // 界面上:没有速率的那一格必须是一句「没有」,不能是 0 —— 与上面那条同一件事,
-    // 只是这一半发生在渲染层。
-    static func testEntryShowsNoRatePlaceholderOnTheFirstFrame() {
+    // 界面上:没有速率的那一格必须是一句「没有」(破折号),不能是 0。
+    // `oneRow` 默认不带速率(还没有第二次采样之前的正常状态)。
+    static func testEntryShowsNoRatePlaceholderWhenTheKeyIsAbsent() {
         let report = oneRow(path: .tunnel, app: "Slack", up: 4096, down: 8192)
         guard let entry = firstEntry(report.rows()) else { return }
         expect(entry.upRate == appTrafficRateUnavailable,
-               "第一帧的上行速率被渲染成了 \(entry.upRate)")
+               "缺席的速率被渲染成了 \(entry.upRate)")
         expect(entry.downRate == appTrafficRateUnavailable,
-               "第一帧的下行速率被渲染成了 \(entry.downRate)")
+               "缺席的速率被渲染成了 \(entry.downRate)")
         expect(!entry.upRate.contains("0 B"), "没有速率被显示成了 0")
-        // **累计值不许因为有了速率就删掉**:速率答「现在多快」,累计答「一共多少」。
+        // **累计值不许因为没有速率就跟着消失**:速率答「现在多快」,累计答「一共多少」。
         expect(entry.upTotal.contains("4.0 KB"), "累计上行没了:\(entry.upTotal)")
         expect(entry.downTotal.contains("8.0 KB"), "累计下行没了:\(entry.downTotal)")
         expect(entry.conns == "1", "连接数没有单独成列:\(entry.conns)")
     }
 
-    static func testEntryShowsRateWhenItIsKnown() {
-        let report = oneRow(path: .tunnel, app: "Slack", up: 4096, down: 8192)
-        let rates = [AppTrafficRateKey(path: .tunnel, app: "Slack"):
-                        AppTrafficRate(bytesUpPerSecond: 2048, bytesDownPerSecond: 0)]
-        guard let entry = firstEntry(report.rows(rates: rates)) else { return }
+    // 键**在**、值是 0 —— 必须渲染成格式化后的 0,不是破折号。这一条与上一条
+    // 一起才覆盖 nil/0 的两半;只测其中一半会让将来有人把这两种状态合并回去
+    // 而没有任何测试转红。
+    static func testEntryShowsFormattedZeroWhenTheRateIsKnownToBeZero() {
+        let report = AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
+            AppTrafficGroup(path: .tunnel, rows: [
+                AppTrafficRow(app: "Slack", conns: 1, bytesUp: 4096, bytesDown: 8192,
+                              bytesUpRate: 2048, bytesDownRate: 0),
+            ]),
+        ]))
+        guard let entry = firstEntry(report.rows()) else { return }
         expect(entry.upRate.contains("2.0 KB") && entry.upRate.hasSuffix("/s"),
                "速率没有按每秒渲染:\(entry.upRate)")
         expect(entry.downRate == "0 B/s", "量出来的 0 被渲染成了「没有」:\(entry.downRate)")
@@ -500,14 +448,9 @@ struct AppTrafficModelTests {
         testDetailNamesTheUserRuleThatDecidedIt()
         testDetailSaysNothingAboutRulesWhenTheBuiltinListDecided()
         testDecodesExecPathAndToleratesItsAbsence()
-        testFirstSnapshotProducesNoRatesAtAll()
-        testRateComesFromTheDeltaBetweenTwoSnapshots()
-        testRateKeyIsGroupAndApp()
-        testAppThatAppearsBetweenFramesGetsNoRate()
-        testCounterGoingBackwardsYieldsNoRateRatherThanZero()
-        testZeroElapsedProducesNoRates()
-        testEntryShowsNoRatePlaceholderOnTheFirstFrame()
-        testEntryShowsRateWhenItIsKnown()
+        testDecodesRateFieldsAndToleratesTheirAbsence()
+        testEntryShowsNoRatePlaceholderWhenTheKeyIsAbsent()
+        testEntryShowsFormattedZeroWhenTheRateIsKnownToBeZero()
         testEntryCarriesTheExecutablePathForTheIcon()
         testIconPathClimbsToTheApplicationBundle()
         testNumericColumnsCoverEveryNumberAndNothingElse()

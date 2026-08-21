@@ -1015,71 +1015,51 @@ func TestMacMenuAppTrafficNumbersAreRightAligned(t *testing.T) {
 	}
 }
 
-// **速率必须真的被算出来并传进渲染层。**
+// **速率必须真的从 Entry 流进渲染出来的格子里。**
 //
-// **这条守卫的第一版拦不住它要拦的那件事。** 判据曾是
-// `strings.Contains(arg, "rates")`,于是下面两种写法**四条守卫全绿**:
+// **这条守卫此前钉的是另一套机制,已经随 2026-08-20 那次改动整个撤销。**
+// 速率曾经由菜单自己的 `AppTrafficRateTracker` 拿相邻两次报告的行做差得出
+// (60 秒滚动窗口下这套算法本身就是错的:一行的累计字节会因为记录滑出窗口
+// 而下降,客户端把"变小"误读成"计数器复位"从而显示成破折号,而什么都没
+// 出错 —— 这正是这次改动存在的理由)。现在速率由**服务端**按端口做差算出
+// (`appattr.DiffPortRates`),`AppTrafficRow` 解码时就带着
+// `bytesUpRate`/`bytesDownRate`,`AppTrafficModel.swift` 的 `entry(for:)`
+// 直接读它们格式化成 `Entry.upRate`/`downRate` —— 那一半只依赖 Foundation,
+// 由真正编译执行的 Swift 套件覆盖(`testDecodesRateFieldsAndToleratesTheirAbsence`
+// / `testEntryShowsNoRatePlaceholderWhenTheKeyIsAbsent` /
+// `testEntryShowsFormattedZeroWhenTheRateIsKnownToBeZero`),不再需要这里的
+// 文本守卫去证明"算出来了"。
 //
-//	_ = rateTracker.ingest(report, at: Date())   // 丢弃返回值
-//	stack.addArrangedSubview(grid(for: report.rows(rates: [:])))  // 标签里就有 "rates"
-//
-// 而它们产生的失效恰好是这个功能唯一一条「只有真机能发现」的:**速率列永远是
-// 破折号,而窗口看起来完全正常**(数据在更新、行在变、没有任何报错)。触发它的
-// 也不是对抗性写法,是一次**看起来完全无辜的重构** —— 丢弃一个没人读的返回值。
-//
-// 现在的判据是两条,都不认拼法只认位置:
-//  1. **每一次** `rateTracker.ingest(...)` 的结果都被赋给同一个存储属性,且那个
-//     属性不是 `_`;
-//  2. `rows(...)` 的实参就是那个属性**光秃秃的一次取值** —— 不是空字典,也不是
-//     任何别的表达式。
-//
-// 第一帧不许编造速率那一条**不在这里**:它是判断,住在 AppTrafficRateTracker 里,
-// 由 Swift 套件钉住。这里只钉「接线接上了」。
+// 这里只剩 AppKit 那一半接不接得上:`cells(for:)` 的格子数组里必须真的塞了
+// `entry.upRate`/`entry.downRate`,而不是漏掉、或者被别的表达式顶替
+// (与 `TestMacMenuAppTrafficNumbersAreRightAligned` 钉「一列一格」同一个
+// 文件、同一个函数,但那条钉的是格子**数目**,这条钉的是这两个格子**是谁**)。
 func TestMacMenuAppTrafficWindowFeedsRatesIntoRendering(t *testing.T) {
 	window := menuAppTrafficWindowCode(t)
-	calls := regexp.MustCompile(`rateTracker\.ingest\s*\(`).FindAllString(window, -1)
-	if len(calls) == 0 {
-		t.Fatal("窗口从不推进速率跟踪器 —— 那一列永远是「没有速率」")
+	cells, ok := swiftFunctionBody(window, "private func cells(for entry: AppTrafficReport.Entry) -> [NSView]")
+	if !ok {
+		t.Fatal("读不出 cells(for:) 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	assigns := regexp.MustCompile(
-		`(?m)^\s*(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:self\.)?rateTracker\.ingest\s*\(`,
-	).FindAllStringSubmatch(window, -1)
-	if len(assigns) != len(calls) {
-		t.Fatalf("有 %d 次 rateTracker.ingest(...),而只有 %d 次把结果赋给了什么 —— "+
-			"丢掉一个返回值不会有任何编译错误,而后果是速率列永远是破折号、"+
-			"窗口看起来完全正常", len(calls), len(assigns))
+	literal, ok := swiftBracketedLiteral(cells, "")
+	if !ok {
+		t.Fatal("cells(for:) 里没有一个格子数组 —— 守卫读不懂现在的代码了")
 	}
-	target := assigns[0][1]
-	for _, a := range assigns {
-		if a[1] == "_" {
-			t.Fatal("rateTracker.ingest(...) 的结果被丢进了 `_` —— 速率算了没人存," +
-				"那一列永远是破折号而窗口看起来完全正常")
+	elements := swiftArrayElements(literal)
+	const wantUp, wantDown = "number(entry.upRate)", "number(entry.downRate)"
+	var sawUp, sawDown bool
+	for _, e := range elements {
+		if e == wantUp {
+			sawUp = true
 		}
-		if a[1] != target {
-			t.Fatalf("ingest 的结果被存进了不止一个地方(%q 与 %q)—— 守卫无从知道"+
-				"哪一个才是渲染层读的那个,先修守卫或收敛成一个属性", target, a[1])
+		if e == wantDown {
+			sawDown = true
 		}
 	}
-
-	args := swiftCallArguments(window, ".rows")
-	if len(args) == 0 {
-		t.Fatal("解析不出 rows(...) 的调用 —— 守卫读不懂现在的代码了,先修守卫")
+	if !sawUp {
+		t.Errorf("cells(for:) 的格子数组里没有 %q —— 上行速率算出来也没人显示,得到 %#v", wantUp, elements)
 	}
-	fed := false
-	for _, arg := range args {
-		// 实参必须是**光秃秃的一次取值**:`rates: [:]`(空字典)、
-		// `rates: rates.isEmpty ? [:] : rates` 这类写法都要红。
-		v := strings.TrimSpace(arg)
-		v = strings.TrimSpace(strings.TrimPrefix(v, "rates:"))
-		v = strings.TrimPrefix(v, "self.")
-		if v == target {
-			fed = true
-			break
-		}
-	}
-	if !fed {
-		t.Errorf("rows(...) 的实参不是那个存着 ingest 结果的属性(%q)—— 算出来没人用,"+
-			"界面上与没有速率完全一样;解析到的实参是 %q", target, args)
+	if !sawDown {
+		t.Errorf("cells(for:) 的格子数组里没有 %q —— 下行速率算出来也没人显示,得到 %#v", wantDown, elements)
 	}
 }
 

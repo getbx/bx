@@ -21,17 +21,34 @@ struct AppTrafficRow: Decodable, Equatable {
     /// Go 侧是 omitempty,所以这个键**经常整个缺席**,必须 decodeIfPresent。
     let execPath: String
 
+    /// 这一行**此刻**的速率(每秒字节数),由服务端按端口做差算出
+    /// (`appattr.DiffPortRates`)。**不是客户端拿相邻两次报告的行做差** ——
+    /// 那是这个字段取代的旧做法(`AppTrafficRateTracker`,已删):60 秒滚动
+    /// 窗口下,一行的累计字节会因为记录滑出窗口而下降,客户端把"变小"误读成
+    /// "计数器复位"从而显示成破折号,而什么都没出错。
+    ///
+    /// nil = 还没有速率可报(第一次采样之前,或这次报告根本还没就绪);
+    /// 指向 0 的值 = 量出来的 0(应用在,但这一拍没有字节增量)。两者不是
+    /// 同一件事,压成同一个 0 会让界面把"不知道"显示成"闲着"。
+    let bytesUpRate: Double?
+    let bytesDownRate: Double?
+
     enum CodingKeys: String, CodingKey {
         case app, conns
         case bytesUp = "bytes_up"
         case bytesDown = "bytes_down"
         case rules
         case execPath = "exec_path"
+        case bytesUpRate = "bytes_up_rate"
+        case bytesDownRate = "bytes_down_rate"
     }
 
     /// **必须手写。** 服务端对 `rules` 用 omitempty——一条规则都没有命中是
     /// 完全正常的状态,这个键会整个缺席。合成的 Decodable 不认默认值,会让
     /// 这种正常状态直接解码失败(RulesModel 那次就是这么被抓到的)。
+    /// `bytes_up_rate`/`bytes_down_rate` 同样是 omitempty(见 Go 侧
+    /// AppRow),键缺席 ⇒ nil ⇒ 渲染成 appTrafficRateUnavailable,**不要**
+    /// 给它们写属性默认值再指望合成的 Decodable。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         app = try c.decode(String.self, forKey: .app)
@@ -40,16 +57,20 @@ struct AppTrafficRow: Decodable, Equatable {
         bytesDown = try c.decode(Int64.self, forKey: .bytesDown)
         rules = try c.decodeIfPresent([String].self, forKey: .rules) ?? []
         execPath = try c.decodeIfPresent(String.self, forKey: .execPath) ?? ""
+        bytesUpRate = try c.decodeIfPresent(Double.self, forKey: .bytesUpRate)
+        bytesDownRate = try c.decodeIfPresent(Double.self, forKey: .bytesDownRate)
     }
 
     init(app: String, conns: Int, bytesUp: Int64, bytesDown: Int64, rules: [String] = [],
-         execPath: String = "") {
+         execPath: String = "", bytesUpRate: Double? = nil, bytesDownRate: Double? = nil) {
         self.app = app
         self.conns = conns
         self.bytesUp = bytesUp
         self.bytesDown = bytesDown
         self.rules = rules
         self.execPath = execPath
+        self.bytesUpRate = bytesUpRate
+        self.bytesDownRate = bytesDownRate
     }
 }
 
@@ -172,7 +193,7 @@ struct AppTrafficReport: Decodable, Equatable {
     /// ③ 采集着、没错误、三组全空——这才是真的「现在没有连接」。
     /// 把任意两句合并,就是把「没在采集」或「没查到」悄悄说成「没有流量」,
     /// 那是一句自洽的假话。
-    func rows(rates: [AppTrafficRateKey: AppTrafficRate] = [:]) -> [Row] {
+    func rows() -> [Row] {
         guard subscribed else {
             return [.notice("Not collecting app traffic right now.")]
         }
@@ -188,9 +209,7 @@ struct AppTrafficReport: Decodable, Equatable {
             guard let group = byPath[path], !group.rows.isEmpty else { continue }
             out.append(.sectionHeader(AppTrafficReport.sectionTitle(for: path)))
             for row in group.rows {
-                out.append(.entry(AppTrafficReport.entry(
-                    for: row, path: path,
-                    rate: rates[AppTrafficRateKey(path: path, app: row.app)])))
+                out.append(.entry(AppTrafficReport.entry(for: row)))
             }
         }
         guard !out.isEmpty else {
@@ -210,91 +229,23 @@ struct AppTrafficReport: Decodable, Equatable {
     /// 内建列表判的那些行 `rule` 是空串,窗口那一格就留空 —— 说成 rule 会让用户
     /// 去找一条配置文件里根本不存在的行。
     ///
-    /// **rate 为 nil 不是 0**:那一格渲染成 `appTrafficRateUnavailable`,见
-    /// `AppTrafficRateTracker` 头上那段。
-    private static func entry(for row: AppTrafficRow, path: AppTrafficPath,
-                              rate: AppTrafficRate?) -> Entry {
+    /// **rate 为 nil 不是 0**:那一格渲染成 `appTrafficRateUnavailable`。速率
+    /// 现在由**服务端**按端口做差算出、随行一起发下来(`row.bytesUpRate`/
+    /// `row.bytesDownRate`),不再需要客户端拿相邻两次报告做差 —— 也就不再需要
+    /// 单独的速率表或按 (组, 应用名) 的键。
+    private static func entry(for row: AppTrafficRow) -> Entry {
         Entry(
             app: row.app.isEmpty ? "Unknown app" : row.app,
             // unknown 行按构造没有路径(Core 侧那一行的 owner 是零值),这里不用
             // 再判一次 —— 但也不去替它编一个。
             execPath: row.execPath,
             conns: "\(row.conns)",
-            upRate: formatRate(rate?.bytesUpPerSecond),
-            downRate: formatRate(rate?.bytesDownPerSecond),
+            upRate: formatRate(row.bytesUpRate),
+            downRate: formatRate(row.bytesDownRate),
             upTotal: formatByteCount(row.bytesUp),
             downTotal: formatByteCount(row.bytesDown),
             rule: row.rules.joined(separator: ", ")
         )
-    }
-}
-
-/// 速率表的键:**(组, 应用名)**,不是光一个应用名。
-///
-/// 同一个应用同时出现在两组是常态(Chrome 一半直连一半走隧道,那正是这个窗口
-/// 存在的理由),只按名字做键会把两组的字节混成一个谁也不是的速率。
-struct AppTrafficRateKey: Hashable {
-    let path: AppTrafficPath
-    let app: String
-}
-
-/// 每秒字节数。**只在两帧都观测到同一个键时才存在** —— 没有就是没有,不是 0。
-struct AppTrafficRate: Equatable {
-    let bytesUpPerSecond: Double
-    let bytesDownPerSecond: Double
-}
-
-/// 由**相邻两次快照做差**得出速率。
-///
-/// **为什么不是让服务端发速率**:窗口每 5 秒拉一次,前后两份快照就是一对现成的
-/// 观测,做差不需要改协议、不需要 Core 侧多记一份状态。代价是第一帧没有速率 ——
-/// 而那正是下面这条纪律要守的东西。
-///
-/// **第一帧不许编造速率。** 显示 0 是在说「此刻没有流量」(一句它没查过的话);
-/// 拿累计值除以一个猜来的时长更糟,那个时长是编的。同一条纪律还管着另外三种
-/// 「说不好」的情形,它们**一律不给速率**而不是给 0:
-///   ① 上一帧没有这个键(应用刚出现)—— 它的累计值里可能含着订阅之前就建好的
-///      连接(种子),那不是这几秒传的;
-///   ② 累计值往回走 —— 环形缓冲丢最旧的记录时真的会发生,那不是「没传」,是
-///      「这两帧之间发生了什么我说不好」;
-///   ③ 两帧时间戳相同 —— 除以零。
-///
-/// 与 `internal/observe` 的 Tristate、`leakcheck` 的 NotChecked 同一条:
-/// 「没问出来」不许被压成一个看起来正常的值。
-struct AppTrafficRateTracker {
-    private struct Counters {
-        let up: Int64
-        let down: Int64
-    }
-
-    private var previous: [AppTrafficRateKey: Counters] = [:]
-    private var previousAt: Date?
-
-    /// 吃进一份快照,返回**这一拍**能算出来的全部速率(算不出来的键不出现)。
-    mutating func ingest(_ report: AppTrafficReport, at now: Date) -> [AppTrafficRateKey: AppTrafficRate] {
-        var current: [AppTrafficRateKey: Counters] = [:]
-        for group in report.report.groups {
-            for row in group.rows {
-                current[AppTrafficRateKey(path: group.path, app: row.app)] =
-                    Counters(up: row.bytesUp, down: row.bytesDown)
-            }
-        }
-        defer {
-            previous = current
-            previousAt = now
-        }
-        // 第一帧,或者两帧同一瞬间:没有可用的时长,就没有速率。
-        guard let previousAt, now.timeIntervalSince(previousAt) > 0 else { return [:] }
-        let elapsed = now.timeIntervalSince(previousAt)
-        var out: [AppTrafficRateKey: AppTrafficRate] = [:]
-        for (key, now) in current {
-            guard let before = previous[key] else { continue } // 刚出现的应用
-            guard now.up >= before.up, now.down >= before.down else { continue } // 计数倒退
-            out[key] = AppTrafficRate(
-                bytesUpPerSecond: Double(now.up - before.up) / elapsed,
-                bytesDownPerSecond: Double(now.down - before.down) / elapsed)
-        }
-        return out
     }
 }
 

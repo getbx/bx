@@ -44,14 +44,6 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     private var report: AppTrafficReport?
     private var staleNotice: String?
 
-    /// 速率由**相邻两次快照做差**得来(判据全在 AppTrafficRateTracker 里,
-    /// 这里只负责在每一次真的读到报告时喂它一拍)。
-    ///
-    /// **窗口一关就整个重置**:关掉窗口意味着订阅在一个 TTL 内过期、Core 侧缓冲
-    /// 清空,下次打开累计值从零重来 —— 跨越那一刀去做差没有任何意义。
-    private var rateTracker = AppTrafficRateTracker()
-    private var rates: [AppTrafficRateKey: AppTrafficRate] = [:]
-
     /// 用户关掉了窗口。**接线方必须据此停掉心跳** —— 窗口关了而定时器还在跑,
     /// 订阅就永远续着,而界面上看不出任何异常。
     var onClose: (() -> Void)?
@@ -61,20 +53,9 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     var isVisible: Bool { window?.isVisible ?? false }
 
     func show(report: AppTrafficReport) {
-        // **只有「此前没开着」才是一份新订阅的第一帧。**
-        // 窗口已经开着时用户再点一次菜单项走的也是这条路(forceShow: true),
-        // 而此刻 Core 侧的订阅与累计计数是**连续的** —— 无条件重置跟踪器会让
-        // 速率列白白退回一整拍的破折号,用户看到的是「我点了一下,数字反而没了」。
-        let wasVisible = window?.isVisible ?? false
         let window = ensureWindow()
         self.report = report
         staleNotice = nil
-        // 新开一扇窗 = 新订阅的第一帧。**第一帧没有速率**,而且不许编一个:
-        // 见 AppTrafficRateTracker 头上那段。
-        if !wasVisible {
-            rateTracker = AppTrafficRateTracker()
-        }
-        rates = rateTracker.ingest(report, at: Date())
         render()
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
         // 用户以为"点了没反应"。
@@ -89,9 +70,6 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
         self.report = report
         // 拉到了就是拉到了 —— 一次成功抹掉陈旧标记,不留一句会自我永存的警告。
         staleNotice = nil
-        // **只在真的读到报告时才推进一拍。** 失败那几拍不喂它,于是下一次成功时
-        // 的时长会自动把那几拍算进去 —— 那才是这两份快照之间真实流逝的时间。
-        rates = rateTracker.ingest(report, at: Date())
         render()
     }
 
@@ -106,10 +84,6 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // 订阅会在一个 TTL 内过期、Core 侧缓冲清空,下次打开累计值从零重来。
-        // 留着上一份快照做差会得到一个横跨那一刀的假速率。
-        rateTracker = AppTrafficRateTracker()
-        rates = [:]
         onClose?()
     }
 
@@ -197,7 +171,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
             stack.addArrangedSubview(gap())
         }
 
-        let rows = report.rows(rates: rates)
+        let rows = report.rows()
         // 有应用行就摆成一张表(数字右对齐、跨组对得上);三种「空」那几句
         // 说明没有列可对齐,原样一行一行摆。
         if rows.contains(where: { if case .entry = $0 { return true }; return false }) {
