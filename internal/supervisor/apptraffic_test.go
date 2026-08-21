@@ -1099,3 +1099,135 @@ func (t *AppTraffic) recordedOwnerName(key appattr.PortKey) bool {
 	}
 	return false
 }
+
+// ---- 速率(2026-08-20,服务端按端口做差)----
+
+// 只采过一次样(拍基线)不许给出速率 —— 还没有第二份样本可以做差。
+func TestAppTrafficRatesNeedTwoSamples(t *testing.T) {
+	now := time.Unix(1000, 0)
+	clock := func() time.Time { return now }
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := newAppTrafficNoResolver(src, clock)
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.AddUp(7, false, 100)
+
+	tr.resolveOnce() // 第一拍:只拍基线,记下 now,还不能报速率
+
+	rep, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rep.Groups[0].Rows[0].BytesUpRate; got != nil {
+		t.Fatalf("只采过一次样却给出了速率:%v", *got)
+	}
+}
+
+// Snapshot 不是消耗性的 —— 连调两次,第二次的速率必须与第一次相同。
+// 做差(消耗一拍的增量)只发生在 sampleRatesLocked 里,而它只由后台 resolver
+// 驱动;Snapshot 只读地把手上那份速率复制出去。
+func TestAppTrafficSnapshotDoesNotConsumeTheRateDelta(t *testing.T) {
+	now := time.Unix(1000, 0)
+	clock := func() time.Time { return now }
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := newAppTrafficNoResolver(src, clock)
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.AddUp(7, false, 1000)
+	tr.resolveOnce() // 拍基线
+
+	now = now.Add(rateSampleInterval + time.Second)
+	tr.AddUp(7, false, 4000) // 累计到 5000
+	tr.resolveOnce()         // 做差:得到一份非零速率
+
+	first, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r1 := first.Groups[0].Rows[0].BytesUpRate
+	r2 := second.Groups[0].Rows[0].BytesUpRate
+	if r1 == nil || r2 == nil {
+		t.Fatalf("速率没有算出来:r1=%v r2=%v", r1, r2)
+	}
+	if *r1 != *r2 {
+		t.Fatalf("Snapshot 消耗了速率的增量:第一次 %v,第二次 %v", *r1, *r2)
+	}
+}
+
+// **两半都要断言**:全新订阅(过期之后重新 Subscribe)必须重置速率状态,
+// 而续期(还在 TTL 内再调一次 Subscribe,菜单每 5 秒调一次)绝不许重置 ——
+// 续期也重置的话,速率会永远处在「还没攒够两次采样」的状态,那一格永远是
+// 破折号。
+func TestAppTrafficResubscribeResetsRatesButRenewalDoesNot(t *testing.T) {
+	now := time.Unix(1000, 0)
+	clock := func() time.Time { return now }
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := newAppTrafficNoResolver(src, clock)
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.AddUp(7, false, 1000)
+	tr.resolveOnce() // 拍基线
+
+	now = now.Add(rateSampleInterval + time.Second)
+	tr.AddUp(7, false, 2000)
+	tr.resolveOnce() // 速率就绪
+
+	tr.mu.Lock()
+	readyBeforeRenewal := tr.rateReady
+	tr.mu.Unlock()
+	if !readyBeforeRenewal {
+		t.Fatal("测试前提不成立:续期前速率还没就绪")
+	}
+
+	// 续期:还在 TTL 内,active 仍为 true —— 不许重置。
+	tr.Subscribe()
+	tr.mu.Lock()
+	stillReady := tr.rateReady
+	tr.mu.Unlock()
+	if !stillReady {
+		t.Fatal("续期把速率状态重置了 —— 速率会永远处在「还没攒够两次采样」")
+	}
+
+	// 让它整个过期,再重新订阅 —— 这才是全新订阅,必须重置。
+	now = now.Add(appTrafficTTL + time.Second)
+	tr.Subscribe()
+	tr.mu.Lock()
+	readyAfterFreshSubscribe := tr.rateReady
+	tr.mu.Unlock()
+	if readyAfterFreshSubscribe {
+		t.Fatal("全新订阅之后速率状态没有被重置")
+	}
+}
+
+// **基线必须是复制,不能是引用。** 拍完基线之后再 AddBytes,下一次采样必须
+// 算出非零速率 —— 若基线存的是引用,它会跟着 bytesUp 一起被 AddUp 原地改
+// 掉,做出来的差永远是 0(而界面上「速率一直是 0」看起来完全正常)。
+func TestAppTrafficRateBaselineIsACopy(t *testing.T) {
+	now := time.Unix(1000, 0)
+	clock := func() time.Time { return now }
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := newAppTrafficNoResolver(src, clock)
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.AddUp(7, false, 1000)
+
+	tr.resolveOnce() // 拍基线
+
+	tr.AddUp(7, false, 5000) // 基线拍完之后又来了字节
+
+	now = now.Add(rateSampleInterval + time.Second)
+	tr.resolveOnce() // 做差
+
+	rep, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rate := rep.Groups[0].Rows[0].BytesUpRate
+	if rate == nil || *rate == 0 {
+		t.Fatalf("基线看起来存的是引用而不是复制 —— 做出来的差恒为 0,got %v", rate)
+	}
+}

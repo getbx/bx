@@ -54,6 +54,11 @@ const appTrafficTTL = 30 * time.Second
 // 且只在**有人开着窗口**时发生。没有待解析的记录时这一拍连内核都不问。
 const appResolveInterval = 250 * time.Millisecond
 
+// rateSampleInterval 是速率的采样区间。resolver 每 250ms 一拍,这里按**时间**
+// 判断该不该采样(不是数够 8 拍就采)—— 时间才是速率的分母,数拍子在某一拍被
+// 拖慢时会让分母与实际区间对不上。
+const rateSampleInterval = 2 * time.Second
+
 // bufferedRecord 是环形缓冲里的一格:一条记录 + 一个**永不复用**的序号。
 //
 // 序号是给后台 resolver 写回用的:它在放锁期间去问内核,回来时缓冲可能已经被
@@ -146,6 +151,21 @@ type AppTraffic struct {
 	// live 是「此刻还开着的连接」。**不随订阅生灭** —— 它的边界是 ConnClosed,
 	// 不是 TTL;跟着订阅清空就等于回到那个只看得见新连接的 bug。
 	live map[appattr.PortKey]liveConn
+
+	// ---- 速率(2026-08-20,服务端按端口做差)----
+	//
+	// **采样只在 resolver 那一拍发生,绝不在 Snapshot 里。** Snapshot 现有的
+	// 写回(applyOwnersLocked)是**单调**的——只填空白,调几次结果都一样;而
+	// 做差是**消耗性**的:谁先读走这一拍的增量,后来者就只剩下剩下的那点。
+	// 两个消费方同时在拉(菜单窗口 + 任何别的读者)会让**两边都报出大约一半
+	// 的真实速率,而且没有任何一处会报错**。resolver 本来就在订阅期间每 250ms
+	// 滴答一次,而那正是需要速率的时候。
+	rateBaseUp map[appattr.PortKey]int64
+	rateBaseDn map[appattr.PortKey]int64
+	rateBaseAt time.Time
+	rateUp     map[appattr.PortKey]float64
+	rateDn     map[appattr.PortKey]float64
+	rateReady  bool
 }
 
 func NewAppTraffic(src appSource, now func() time.Time) *AppTraffic {
@@ -177,6 +197,13 @@ func (t *AppTraffic) Subscribe() {
 		// 每次都播会让同一条连接每 5 秒多算一次:界面上连接数随时间线性膨胀,
 		// 而没有任何一处报错。
 		t.seedFromLiveLocked()
+		// **只在这个分支(全新订阅)里重置速率状态。** 续期那一路绝不重置 ——
+		// 菜单每 5 秒调一次 Subscribe,续期也重置的话速率永远处在「还没攒够
+		// 两次采样」的状态,那一格永远是破折号。
+		t.rateBaseUp, t.rateBaseDn = nil, nil
+		t.rateBaseAt = time.Time{}
+		t.rateUp, t.rateDn = nil, nil
+		t.rateReady = false
 	}
 	t.expires = t.now().Add(appTrafficTTL)
 	t.active.Store(true)
@@ -254,7 +281,9 @@ func (t *AppTraffic) resolveOnce() bool {
 		t.mu.Unlock()
 		return false
 	}
-	t.trimLocked(t.now())
+	now := t.now()
+	t.trimLocked(now)
+	t.sampleRatesLocked(now)
 	pending := t.pendingResolvesLocked()
 	t.mu.Unlock()
 
@@ -411,6 +440,50 @@ func (t *AppTraffic) trimByteAccountsLocked(alive map[appattr.PortKey]bool) {
 		}
 		delete(t.bytesDn, k)
 	}
+}
+
+// sampleRatesLocked 拍一次速率采样。调用者必须持有 t.mu,由 resolveOnce 在
+// **第一段临界区内**(紧跟 trimLocked 之后)调用 —— 采样绝不在 Snapshot 里
+// 发生,见 AppTraffic 类型注释里「速率」那一节。
+//
+// - `rateBaseAt` 是零值 ⇒ 这是第一次采样,只拍一份基线、记下 now、返回
+//   (还没有第二份样本可以做差,速率还不能报)。
+// - 距上一份基线不到 rateSampleInterval ⇒ 什么都不做(resolver 250ms 一拍,
+//   比采样区间密得多,大多数拍子在这里直接跳过)。
+// - 否则:用 appattr.DiffPortRates 把当前字节账与基线做差、rateReady=true,
+//   再把当前字节账**复制**成新基线。
+func (t *AppTraffic) sampleRatesLocked(now time.Time) {
+	if t.rateBaseAt.IsZero() {
+		t.rateBaseUp = copyPortBytes(t.bytesUp)
+		t.rateBaseDn = copyPortBytes(t.bytesDn)
+		t.rateBaseAt = now
+		return
+	}
+	elapsed := now.Sub(t.rateBaseAt)
+	if elapsed < rateSampleInterval {
+		return
+	}
+	t.rateUp = appattr.DiffPortRates(t.rateBaseUp, t.bytesUp, elapsed)
+	t.rateDn = appattr.DiffPortRates(t.rateBaseDn, t.bytesDn, elapsed)
+	t.rateReady = true
+	// **必须复制 map,不能存引用** —— bytesUp/bytesDn 会被后续的 Record/AddUp/
+	// AddDown 原地改,存引用等于基线跟着当前值一起走,做出来的差恒为 0(而
+	// 界面上「速率一直是 0」看起来完全正常,不会有任何东西报错)。这与 Task 1
+	// 那次 FailingRules 浅拷贝是同一个形状。
+	t.rateBaseUp = copyPortBytes(t.bytesUp)
+	t.rateBaseDn = copyPortBytes(t.bytesDn)
+	t.rateBaseAt = now
+}
+
+// copyPortBytes 深拷贝一张按端口记的字节账。nil 输入产出一张空 map(而不是
+// nil)—— 调用方(sampleRatesLocked 的基线)不需要区分「从未记过账」与
+// 「记过、但现在是空的」,拷贝一份可以安全比较即可。
+func copyPortBytes(m map[appattr.PortKey]int64) map[appattr.PortKey]int64 {
+	out := make(map[appattr.PortKey]int64, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // seedFromLiveLocked 把此刻所有活连接作为记录塞进刚建好的环形缓冲。
@@ -613,7 +686,7 @@ func (t *AppTraffic) Snapshot() (appattr.Report, bool, error) {
 		t.mu.Unlock()
 		// 没人在看时也给出**三组齐全**的空报告:消费方按下标取组,
 		// 组数浮动会让渲染层错位。
-		return appattr.Aggregate(nil, nil, nil, nil), false, nil
+		return appattr.Aggregate(appattr.AggregateInput{}), false, nil
 	}
 	t.trimLocked(t.now())
 	records := t.liveRecordsLocked()
@@ -626,6 +699,18 @@ func (t *AppTraffic) Snapshot() (appattr.Report, bool, error) {
 	for k, v := range t.bytesDn {
 		dn[k] = v
 	}
+	// **只读地带出速率。** Snapshot 不推进基线、不改 rateReady —— 那是
+	// sampleRatesLocked(由 resolveOnce 在后台每 250ms 一拍时调用)的事;
+	// 这里只把此刻手上那份速率复制一份出去,谁读都不消耗它。
+	rateUp := make(map[appattr.PortKey]float64, len(t.rateUp))
+	for k, v := range t.rateUp {
+		rateUp[k] = v
+	}
+	rateDn := make(map[appattr.PortKey]float64, len(t.rateDn))
+	for k, v := range t.rateDn {
+		rateDn[k] = v
+	}
+	ratesReady := t.rateReady
 	t.mu.Unlock()
 
 	owners, err := t.src.OwnersByPort()
@@ -645,7 +730,15 @@ func (t *AppTraffic) Snapshot() (appattr.Report, bool, error) {
 		}
 		t.mu.Unlock()
 	}
-	return appattr.Aggregate(records, owners, up, dn), true, nil
+	return appattr.Aggregate(appattr.AggregateInput{
+		Records:    records,
+		Owners:     owners,
+		BytesUp:    up,
+		BytesDown:  dn,
+		RateUp:     rateUp,
+		RateDown:   rateDn,
+		RatesReady: ratesReady,
+	}), true, nil
 }
 
 // liveRecordsLocked 把环形缓冲摊平成时间序。调用者必须持有 t.mu。
