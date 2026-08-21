@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"errors"
+	"log"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -39,13 +40,39 @@ var errAppSourceUnsupported = errors.New("app attribution is only available on m
 // 但边界写在这里:代码里声称的性质,要么做到,要么如实写明边界。
 const appTrafficTTL = 30 * time.Second
 
+// appResolveInterval 是后台归因的节拍。
+//
+// **归因必须提前到连接还开着的时候做,这是 2026-08-20 那个真机 bug 的修法。**
+// 在它之前 OwnersByPort 全仓只在 Snapshot 里被调一次(菜单每 5 秒拉一次),
+// 于是**任何活不过一次刷新的连接,在被归因之前 socket 就没了** —— 内核里查不到
+// 那个端口,结构性地落进 unknown。真机截图上 unknown 是最大的一行(16 条连接),
+// **而且是唯一有真实速率的一行**(959 B/s 上 / 1.8 KB/s 下):速率不为零就说明
+// 新的 unknown 还在源源不断进来,不是陈旧累积。
+//
+// 250ms 的取法:比 5 秒快 20 倍,足以罩住绝大多数短连接;而每一拍的代价是**最多**
+// 一次 OwnersByPort(两次 sysctl,真机实测 451µs~1.5ms)—— 约 0.6% 一个核,
+// 且只在**有人开着窗口**时发生。没有待解析的记录时这一拍连内核都不问。
+const appResolveInterval = 250 * time.Millisecond
+
+// bufferedRecord 是环形缓冲里的一格:一条记录 + 一个**永不复用**的序号。
+//
+// 序号是给后台 resolver 写回用的:它在放锁期间去问内核,回来时缓冲可能已经被
+// 裁剪、重排过,**按下标写回会写到别人头上**。按序号写回则「这条记录已经不在了」
+// 自动退化成「找不到,跳过」。序号住在这一层而不是 appattr.ConnRecord 里 ——
+// 那是纯判据的输入,不该带缓冲的记账。
+type bufferedRecord struct {
+	rec appattr.ConnRecord
+	seq uint64
+}
+
 // appTrafficMaxRecords 是环形缓冲容量。满了就丢最旧的:界面显示的是「此刻的
 // 分流构成」,几万条之前的连接对它没有意义,而无界缓冲会在订阅期间无限长。
 const appTrafficMaxRecords = 4096
 
 // liveConn 是一条**此刻还开着**的连接在活连接表里的样子:只有判定,没有应用
-// 身份 —— 身份是 Snapshot 时才去问内核的,这是「未订阅时也维护这张表」在隐私上
-// 仍然成立的原因(表里是端口和判定,不是「你开过什么应用」)。
+// 身份 —— 身份是**订阅期间**才去问内核的(后台 resolver 每 250ms 一拍 + Snapshot
+// 那次最后的现查),这是「未订阅时也维护这张表」在隐私上仍然成立的原因
+// (表里是端口和判定,不是「你开过什么应用」)。
 //
 // refs 是同键并存的流数,**UDP 需要它**:一个应用 socket 打 STUN + TURN + 多个
 // peer,gVisor 按 5 元组建流 ⇒ 同一个源端口上有 N 条并存的流、N 次 Record。
@@ -70,8 +97,12 @@ type liveConn struct {
 // 连接永远不会出现在窗口里,而长连接(会议媒体流、WebSocket、SSH)恰恰全是
 // 这种。窗口打开时用这张表播种,才看得见「已经在跑的东西」。
 //
-// **热路径仍然不做归因**:问内核、解进程名全部发生在 Snapshot 里;字节记账
-// (AddUp/AddDown,每次转发写都要走)仍由一次 atomic 读挡在锁外。
+// **热路径仍然不做归因**:问内核、解进程名发生在**订阅期间的后台 resolver**
+// (每 250ms 一拍,见 appResolveInterval)与 Snapshot 那次最后的现查里,一次都
+// 不在拨号或转发路径上;字节记账(AddUp/AddDown,每次转发写都要走)仍由一次
+// atomic 读挡在锁外。
+// (**这句话在 2026-08-20 之前是「全部发生在 Snapshot 里」** —— 那正是 unknown
+// 结构性膨胀的主因:活不过一次 5 秒刷新的连接,在被归因之前 socket 就没了。)
 //
 // **已知缺口:种子把一个 socket 上并存的 N 条流压成一条,而新记录不会。**
 // live 按 PortKey 记,同键最后写入者胜(见 Record),seedFromLiveLocked 每键只
@@ -96,13 +127,22 @@ type AppTraffic struct {
 	// Record/ConnClosed 不再读它:活连接表无条件维护。
 	active atomic.Bool
 
+	// resolveInterval 是后台 resolver 的节拍;**0 = 不起后台 resolver**。
+	// 生产由 NewAppTraffic 设成 appResolveInterval;测试里把它设成 0,是因为
+	// 一个自己滴答的 goroutine 会让「问了几次内核」这类断言变成掷骰子,而
+	// **一个偶发红的闸门比没有闸门更糟**。
+	resolveInterval time.Duration
+
 	mu      sync.Mutex
 	expires time.Time
-	records []appattr.ConnRecord
-	next    int  // 环形缓冲写指针
-	wrapped bool // 是否已经绕过一圈
-	bytesUp map[appattr.PortKey]int64
-	bytesDn map[appattr.PortKey]int64
+	records []bufferedRecord
+	seq     uint64 // 单调递增,永不复用 —— 见 bufferedRecord
+	next    int    // 环形缓冲写指针
+	wrapped bool   // 是否已经绕过一圈
+	// resolverRunning 防止续期时重复起 goroutine(菜单每 5 秒调一次 Subscribe)。
+	resolverRunning bool
+	bytesUp         map[appattr.PortKey]int64
+	bytesDn         map[appattr.PortKey]int64
 	// live 是「此刻还开着的连接」。**不随订阅生灭** —— 它的边界是 ConnClosed,
 	// 不是 TTL;跟着订阅清空就等于回到那个只看得见新连接的 bug。
 	live map[appattr.PortKey]liveConn
@@ -112,7 +152,12 @@ func NewAppTraffic(src appSource, now func() time.Time) *AppTraffic {
 	if now == nil {
 		now = time.Now
 	}
-	return &AppTraffic{src: src, now: now, live: map[appattr.PortKey]liveConn{}}
+	return &AppTraffic{
+		src:             src,
+		now:             now,
+		resolveInterval: appResolveInterval,
+		live:            map[appattr.PortKey]liveConn{},
+	}
 }
 
 // Subscribe 开启或续期采集。菜单每次拉取都会调它。
@@ -124,7 +169,7 @@ func (t *AppTraffic) Subscribe() {
 	// 「关掉窗口再打开,显示的还是上次那批数字」。
 	t.expiredLocked()
 	if !t.active.Load() {
-		t.records = make([]appattr.ConnRecord, appTrafficMaxRecords)
+		t.records = make([]bufferedRecord, appTrafficMaxRecords)
 		t.next, t.wrapped = 0, false
 		t.bytesUp = make(map[appattr.PortKey]int64)
 		t.bytesDn = make(map[appattr.PortKey]int64)
@@ -135,6 +180,226 @@ func (t *AppTraffic) Subscribe() {
 	}
 	t.expires = t.now().Add(appTrafficTTL)
 	t.active.Store(true)
+	// 续期这一路也要裁:菜单每 5 秒调一次 Subscribe,而两次 Snapshot 之间
+	// 缓冲照样在长。裁剪自己带早退,没有可裁时不付任何代价。
+	t.trimLocked(t.now())
+	t.startResolverLocked()
+}
+
+// startResolverLocked 起后台归因循环。调用者必须持有 t.mu。
+//
+// **只在订阅期间跑**:未订阅时不问内核是这个设计的隐私前提,一个自己滴答的
+// goroutine 会把它悄悄破掉而界面上完全看不出来。循环自己发现 TTL 过期就退出。
+func (t *AppTraffic) startResolverLocked() {
+	if t.resolverRunning || t.resolveInterval <= 0 {
+		return
+	}
+	t.resolverRunning = true
+	go t.runResolver(t.resolveInterval)
+}
+
+// runResolver 是后台归因循环。
+//
+// 退出时清 resolverRunning。**「正要退出」与「已经清掉标志」之间有一个微秒级的
+// 窗口**:恰好落在里面的一次 Subscribe 会看到 true 而不起新循环,后果是这一轮
+// 归因少跑到下一次续期(菜单 5 秒一次)—— 慢一拍,不是错。刻意不为它加第二把
+// 锁:代价与收益不成比例。
+func (t *AppTraffic) runResolver(interval time.Duration) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	defer func() {
+		t.mu.Lock()
+		t.resolverRunning = false
+		t.mu.Unlock()
+	}()
+	for range tick.C {
+		if !t.resolveTick() {
+			return
+		}
+	}
+}
+
+// resolveTick 跑一拍并把 panic 收在**这一拍之内**。
+//
+// 这是个活在 Core 里的裸 goroutine:一次 panic 打死的是 Core,也就是打死保护本身。
+// 与阶段③a 那条「recover 必须在循环之内、不能在 for 之外」同一条 —— recover 写在
+// 循环外面,一次 panic 就永久结束了循环,而外面完全看不出来。
+func (t *AppTraffic) resolveTick() (keepGoing bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("apptraffic: 后台归因 panic(已隔离,下一拍继续): %v", r)
+			keepGoing = true
+		}
+	}()
+	return t.resolveOnce()
+}
+
+// pendingResolve 是一条「还没解析出归因」的记录的身份:序号 + 要查的键。
+type pendingResolve struct {
+	seq uint64
+	key appattr.PortKey
+}
+
+// resolveOnce 跑一拍后台归因。返回 false 表示订阅已经结束、循环该退出了。
+//
+// **绝不许持着 t.mu 去调 OwnersByPort。** 它是两次 sysctl(真机实测
+// 451µs~1.5ms),而 t.mu 是整机每条连接、每次转发写都要过的那把**全局**锁 ——
+// 持锁去问内核就是每 250 毫秒把整机的记账阻塞一次。形状是固定的:
+// **持锁挑出待解析的键 → 放锁 → 问内核 → 重新持锁按序号写回**(期间被裁掉的
+// 记录,序号找不到,自动跳过)。由 TestAppTrafficResolverTakesNoLockWhileAskingTheKernel
+// 用「让 appSource 自己去抢 t.mu」钉住。
+func (t *AppTraffic) resolveOnce() bool {
+	t.mu.Lock()
+	if t.expiredLocked() {
+		t.mu.Unlock()
+		return false
+	}
+	t.trimLocked(t.now())
+	pending := t.pendingResolvesLocked()
+	t.mu.Unlock()
+
+	if len(pending) == 0 {
+		return true // 没有待解析的就不问内核 —— 空闲时这一拍的代价是零
+	}
+	owners, err := t.src.OwnersByPort()
+	if err != nil || len(owners) == 0 {
+		// 问不出来就这一拍不填。**不许把「没查出来」写成一个空 Owner** ——
+		// 那会让这条记录此后再也不被重试,把一次瞬时失败变成永久 unknown。
+		return true
+	}
+	t.mu.Lock()
+	if !t.expiredLocked() {
+		t.applyOwnersLocked(pending, owners)
+	}
+	t.mu.Unlock()
+	return true
+}
+
+// pendingResolvesLocked 挑出所有还没解析出归因的记录。调用者必须持有 t.mu。
+//
+// 不必按时间序:调用方只拿它去查内核,顺序不影响任何结果,而排一次序要多一次
+// 4096 格的复制、每秒四次。
+func (t *AppTraffic) pendingResolvesLocked() []pendingResolve {
+	out := make([]pendingResolve, 0, 16)
+	for i := 0; i < t.filledLocked(); i++ {
+		br := t.records[i]
+		if br.rec.Owner.Name != "" {
+			continue
+		}
+		out = append(out, pendingResolve{
+			seq: br.seq,
+			key: appattr.PortKey{Port: br.rec.SrcPort, UDP: br.rec.UDP},
+		})
+	}
+	return out
+}
+
+// applyOwnersLocked 把查回来的归因**按序号**写进记录。调用者必须持有 t.mu。
+//
+// 只写当初挑出来的那批、且此刻仍然没有归因的格子:期间被裁掉的记录序号对不上
+// 自动跳过,期间被新记录覆盖的格子序号也不同 —— 这正是序号存在的理由。
+func (t *AppTraffic) applyOwnersLocked(pending []pendingResolve, owners map[appattr.PortKey]appattr.Owner) {
+	resolved := make(map[uint64]appattr.Owner, len(pending))
+	for _, p := range pending {
+		if o, ok := owners[p.key]; ok && o.Name != "" {
+			resolved[p.seq] = o
+		}
+	}
+	if len(resolved) == 0 {
+		return
+	}
+	for i := 0; i < t.filledLocked(); i++ {
+		if t.records[i].rec.Owner.Name != "" {
+			continue
+		}
+		if o, ok := resolved[t.records[i].seq]; ok {
+			t.records[i].rec.Owner = o
+		}
+	}
+}
+
+// filledLocked 报告环形缓冲里有多少格是有效的。调用者必须持有 t.mu。
+func (t *AppTraffic) filledLocked() int {
+	if t.wrapped {
+		return len(t.records)
+	}
+	return t.next
+}
+
+// trimLocked 把报告窗口之外的记录裁掉,并让字节账**跟着**裁。
+// 调用者必须持有 t.mu。
+//
+// **两件事必须一起做。** 只裁记录、不裁字节账,那张 map 仍然只涨不落:一笔一分钟
+// 前就该消失的账会一直挂着,某天端口被复用时(UDP 刻意不清账)整个算给下一个
+// 应用。所谓「滚动窗口」滚一半,等于没滚。
+//
+// **还开着的连接不按时间裁。** 窗口问的是「此刻谁在连谁」,而一条开了两小时还在
+// 灌流的会议媒体流恰恰是最该被看见的那种;只按时间裁会让长连接在开窗 60 秒后
+// 集体消失 —— 那正是 2026-08-20 那个真机 bug(长连接全在盲区)换一种方式复发。
+func (t *AppTraffic) trimLocked(now time.Time) {
+	if t.records == nil {
+		return
+	}
+	ordered := t.orderedBufferedLocked()
+	// **早退的判据只看时间,不看活性。** 记录按时间序,最旧的一条还在窗口内
+	// ⇒ 全都在窗口内。若这里改成「最旧的一条留得住吗」,一条位置在前、因为
+	// 还开着而留住的长连接会让它后面所有该裁的记录一起逃过裁剪。
+	if len(ordered) == 0 || appattr.InReportWindow(ordered[0].rec, now) {
+		return
+	}
+	kept := make([]bufferedRecord, 0, len(ordered))
+	alive := make(map[appattr.PortKey]bool, len(ordered))
+	for _, br := range ordered {
+		if !t.keepRecordLocked(br.rec, now) {
+			continue
+		}
+		kept = append(kept, br)
+		alive[appattr.PortKey{Port: br.rec.SrcPort, UDP: br.rec.UDP}] = true
+	}
+	if len(kept) == len(ordered) {
+		return // 全都留住了(前面那些是还开着的长连接),不付重写的代价
+	}
+	for i := range t.records {
+		t.records[i] = bufferedRecord{} // 清干净,别让被裁掉的记录被字符串引用吊住
+	}
+	copy(t.records, kept)
+	t.next, t.wrapped = len(kept), false
+	if t.next == len(t.records) {
+		t.next, t.wrapped = 0, true
+	}
+	t.trimByteAccountsLocked(alive)
+}
+
+// keepRecordLocked 判定一条记录是否还该留在报告里。调用者必须持有 t.mu。
+func (t *AppTraffic) keepRecordLocked(rec appattr.ConnRecord, now time.Time) bool {
+	if appattr.InReportWindow(rec, now) {
+		return true
+	}
+	_, stillOpen := t.live[appattr.PortKey{Port: rec.SrcPort, UDP: rec.UDP}]
+	return stillOpen
+}
+
+// trimByteAccountsLocked 删掉「窗口内已经没有任何记录、且连接也不在开着」的
+// 那些端口的字节账。调用者必须持有 t.mu。
+func (t *AppTraffic) trimByteAccountsLocked(alive map[appattr.PortKey]bool) {
+	for k := range t.bytesUp {
+		if alive[k] {
+			continue
+		}
+		if _, open := t.live[k]; open {
+			continue
+		}
+		delete(t.bytesUp, k)
+	}
+	for k := range t.bytesDn {
+		if alive[k] {
+			continue
+		}
+		if _, open := t.live[k]; open {
+			continue
+		}
+		delete(t.bytesDn, k)
+	}
 }
 
 // seedFromLiveLocked 把此刻所有活连接作为记录塞进刚建好的环形缓冲。
@@ -250,7 +515,11 @@ func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source,
 // 是有效的一份 —— **不是「t.active 为真」**:seedFromLiveLocked 在 Subscribe 里
 // 置位 active **之前**就调它(缓冲刚 make 出来,种子先进去,再对外宣布在采集)。
 func (t *AppTraffic) appendRecordLocked(rec appattr.ConnRecord) {
-	t.records[t.next] = rec
+	// **时间戳在这里盖,不让调用方填。** 漏填的零值时间会让记录一产生就落在
+	// 窗口外并被立刻裁掉,而那是完全静默的 —— 界面上只是「没有这条连接」。
+	rec.At = t.now()
+	t.seq++
+	t.records[t.next] = bufferedRecord{rec: rec, seq: t.seq}
 	t.next++
 	if t.next == len(t.records) {
 		t.next, t.wrapped = 0, true
@@ -335,7 +604,9 @@ func (t *AppTraffic) Snapshot() (appattr.Report, bool, error) {
 		// 组数浮动会让渲染层错位。
 		return appattr.Aggregate(nil, nil, nil, nil), false, nil
 	}
+	t.trimLocked(t.now())
 	records := t.liveRecordsLocked()
+	pending := t.pendingResolvesLocked()
 	up := make(map[appattr.PortKey]int64, len(t.bytesUp))
 	for k, v := range t.bytesUp {
 		up[k] = v
@@ -352,6 +623,17 @@ func (t *AppTraffic) Snapshot() (appattr.Report, bool, error) {
 		// 「查过了,一个应用都没有」,而这里的事实是「没查出来」。
 		return appattr.Report{}, true, err
 	}
+	// **把这次现查的结果也存回记录里。** 这一跳是「归因存在记录里」那条修复
+	// 的一部分:一条在本次快照与下次快照之间关掉的连接,下次就查不到主人了,
+	// 而它此刻明明已经被解析出来。records 已经复制走,所以本次报告不受影响,
+	// 受益的是下一次。
+	if len(pending) > 0 && len(owners) > 0 {
+		t.mu.Lock()
+		if !t.expiredLocked() {
+			t.applyOwnersLocked(pending, owners)
+		}
+		t.mu.Unlock()
+	}
 	return appattr.Aggregate(records, owners, up, dn), true, nil
 }
 
@@ -364,10 +646,20 @@ func (t *AppTraffic) Snapshot() (appattr.Report, bool, error) {
 // 由 TestAppTrafficKeepsTimeOrderAcrossRingBoundaries 用可区分的 owners 钉住
 // (只比总条数的测试对顺序完全不敏感)。
 func (t *AppTraffic) liveRecordsLocked() []appattr.ConnRecord {
-	if !t.wrapped {
-		return append([]appattr.ConnRecord(nil), t.records[:t.next]...)
+	ordered := t.orderedBufferedLocked()
+	out := make([]appattr.ConnRecord, 0, len(ordered))
+	for _, br := range ordered {
+		out = append(out, br.rec)
 	}
-	out := make([]appattr.ConnRecord, 0, len(t.records))
+	return out
+}
+
+// orderedBufferedLocked 把环形缓冲摊平成时间序(连着序号)。调用者必须持有 t.mu。
+func (t *AppTraffic) orderedBufferedLocked() []bufferedRecord {
+	if !t.wrapped {
+		return append([]bufferedRecord(nil), t.records[:t.next]...)
+	}
+	out := make([]bufferedRecord, 0, len(t.records))
 	out = append(out, t.records[t.next:]...)
 	return append(out, t.records[:t.next]...)
 }

@@ -22,12 +22,20 @@ type fakeAppSource struct {
 	execPaths map[appattr.PortKey]string
 	err       error
 	calls     int
+
+	// whileAnswering 在「正在回答内核那一问」的当口被调一次。**唯一的用途是
+	// 从里面去抢 t.mu**:调用方若持着那把锁来问内核,这里就会死锁,超时即红。
+	// 与 TestAppTrafficByteAccountingTakesNoLockWhileUnsubscribed 同一手法。
+	whileAnswering func()
 }
 
 func (f *fakeAppSource) OwnersByPort() (map[appattr.PortKey]appattr.Owner, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.whileAnswering != nil {
+		f.whileAnswering()
+	}
 	if f.err != nil {
 		// **报错时返回 nil map,不是空 map** —— 与非 darwin 桩同一条纪律:
 		// 空 map 会被读成「查过了,一个应用都没有」。
@@ -59,7 +67,7 @@ func udpKey(p uint16) appattr.PortKey { return appattr.PortKey{Port: p, UDP: tru
 // 不是基准 —— 基准不会让 CI 转红。
 func TestAppTrafficDoesNothingWhileUnsubscribed(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 
 	for i := 0; i < 1000; i++ {
 		tr.Record(uint16(i), false, appattr.PathTunnel, "default", "")
@@ -99,7 +107,7 @@ func TestAppTrafficDoesNothingWhileUnsubscribed(t *testing.T) {
 // 这三条正是隐私前提的实质内容,「零开销」只是它当初的实现手段。
 func TestAppTrafficDoesNotAttributeOrAccrueWhileUnsubscribed(t *testing.T) {
 	src := &fakeAppSource{}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 
 	for i := 0; i < 100; i++ {
 		tr.Record(uint16(i), false, appattr.PathTunnel, "default", "")
@@ -128,7 +136,7 @@ func TestAppTrafficDoesNotAttributeOrAccrueWhileUnsubscribed(t *testing.T) {
 // 把一条清晰的断言失败变成一堆栈噪声。goroutine 停在锁上,进程退出即回收。
 func TestAppTrafficByteAccountingTakesNoLockWhileUnsubscribed(t *testing.T) {
 	src := &fakeAppSource{}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 
 	tr.mu.Lock()
 	done := make(chan struct{})
@@ -150,7 +158,7 @@ func TestAppTrafficRecordsAndAggregatesWhileSubscribed(t *testing.T) {
 		tcpKey(7): "Slack",
 		tcpKey(8): "Google Chrome",
 	}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
@@ -184,7 +192,7 @@ func TestAppTrafficKeepsTCPAndUDPPortsApart(t *testing.T) {
 		tcpKey(7): "Slack",
 		udpKey(7): "Tencent Meeting",
 	}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
@@ -217,7 +225,7 @@ func TestAppTrafficSubscriptionExpiresAndClearsBuffers(t *testing.T) {
 	now := time.Unix(1000, 0)
 	clock := func() time.Time { return now }
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
-	tr := NewAppTraffic(src, clock)
+	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
 
@@ -250,7 +258,7 @@ func TestAppTrafficResubscribeAfterExpiryStartsClean(t *testing.T) {
 	now := time.Unix(1000, 0)
 	clock := func() time.Time { return now }
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
-	tr := NewAppTraffic(src, clock)
+	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
 	tr.AddUp(7, false, 4242)
@@ -280,7 +288,7 @@ func TestAppTrafficResubscribeAfterExpiryStartsClean(t *testing.T) {
 // 新应用头上。这是 spec 里承认的近似,但至少要做这一层缓解。
 func TestAppTrafficResetsByteCountersOnPortReuse(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
@@ -306,7 +314,7 @@ func TestAppTrafficPortReuseDoesNotClearTheOtherProtocol(t *testing.T) {
 		tcpKey(7): "Slack",
 		udpKey(7): "Tencent Meeting",
 	}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
 	tr.Record(7, true, appattr.PathTunnel, "default", "")
@@ -333,7 +341,7 @@ func TestAppTrafficPortReuseDoesNotClearTheOtherProtocol(t *testing.T) {
 // appSource 失败要如实上报,不许退化成「一个应用都没有」。
 func TestAppTrafficReportsSourceFailureRatherThanEmptyReport(t *testing.T) {
 	src := &fakeAppSource{err: errAppSourceUnsupported}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
 
@@ -357,7 +365,7 @@ func TestAppTrafficReportsSourceFailureRatherThanEmptyReport(t *testing.T) {
 // 几万条之前的连接对它没有意义,而无界缓冲会在订阅期间一直长。
 func TestAppTrafficRingBufferDropsOldestWhenFull(t *testing.T) {
 	src := &fakeAppSource{}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
 	const extra = 10
@@ -407,7 +415,7 @@ func TestAppTrafficKeepsTimeOrderAcrossRingBoundaries(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
-			tr := NewAppTraffic(src, time.Now)
+			tr := newAppTrafficNoResolver(src, time.Now)
 			tr.Subscribe()
 
 			// directAt 挑在「还能活到最后」的位置上:它之后还会写 n-9 条,
@@ -467,7 +475,7 @@ func TestAppTrafficKeepsTimeOrderAcrossRingBoundaries(t *testing.T) {
 // 这条测试的价值全在 -race 下 —— 没有它,-race 只是在几条串行测试上空转。
 func TestAppTrafficConcurrentRecordAndSnapshot(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -534,7 +542,7 @@ func TestAppTrafficConcurrentRecordAndSnapshot(t *testing.T) {
 // 报错,而它恰好命中这个功能最初的用例。
 func TestAppTrafficAccumulatesBytesAcrossUDPFlowsOnTheSamePort(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{udpKey(9): "Tencent Meeting"}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
 	// 一个 socket、三条流(STUN / TURN / peer),字节交替到账。
@@ -570,7 +578,7 @@ func TestAppTrafficUDPFlowDoesNotClearTheTCPAccount(t *testing.T) {
 		tcpKey(11): "Slack",
 		udpKey(11): "Tencent Meeting",
 	}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
 	tr.Record(11, false, appattr.PathTunnel, "default", "")
@@ -610,7 +618,7 @@ func TestAppTrafficSeedsSubscriptionWithConnectionsOpenedBeforeIt(t *testing.T) 
 		tcpKey(7):  "腾讯会议",
 		udpKey(19): "腾讯会议",
 	}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 
 	// 会议已经开到一半:两条连接早就建好了,此刻才有人打开窗口。
 	tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com")
@@ -644,7 +652,7 @@ func TestAppTrafficSeedsSubscriptionWithConnectionsOpenedBeforeIt(t *testing.T) 
 // 跨订阅留存的历史记录,那既不准也违反「不留存」。
 func TestAppTrafficDoesNotSeedConnectionsClosedBeforeSubscribe(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Safari"}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
 	tr.ConnClosed(7, false)
@@ -670,7 +678,7 @@ func TestAppTrafficDoesNotSeedConnectionsClosedBeforeSubscribe(t *testing.T) {
 // 一次 Subscribe 的种子就能把 4096 格的环形缓冲填满并绕圈,**新记录被自己的
 // 陈旧种子挤掉** —— 报告从「正确但残缺」退化成「错的」。
 func TestAppTrafficLiveTableDropsClosedConnections(t *testing.T) {
-	tr := NewAppTraffic(&fakeAppSource{}, time.Now)
+	tr := newAppTrafficNoResolver(&fakeAppSource{}, time.Now)
 
 	const n = 5000
 	for i := 0; i < n; i++ {
@@ -711,7 +719,7 @@ func TestAppTrafficLiveTableDropsClosedConnections(t *testing.T) {
 // 线性膨胀,而没有任何一处报错。
 func TestAppTrafficSeedIsNotReplayedOnRenewal(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
 	tr.Subscribe()
@@ -736,7 +744,7 @@ func TestAppTrafficSeedAndFreshRecordsDoNotDoubleCount(t *testing.T) {
 		tcpKey(7): "Slack",
 		tcpKey(8): "Google Chrome",
 	}}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 
 	tr.Record(7, false, appattr.PathTunnel, "default", "") // 订阅前建立,始终活着
 	tr.Subscribe()
@@ -774,7 +782,7 @@ func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{udpKey(9): "Tencent Meeting"}}
 
 	// (一) 订阅前建立的两条流 —— 种子压成一条。
-	before := NewAppTraffic(src, time.Now)
+	before := newAppTrafficNoResolver(src, time.Now)
 	before.Record(9, true, appattr.PathDirect, "china_domain", "") // STUN 直连
 	before.Record(9, true, appattr.PathTunnel, "udp_proxy", "")    // TURN 走隧道
 	before.Subscribe()
@@ -792,7 +800,7 @@ func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
 
 	// (二) 同样两条流、订阅**之后**建立 —— 两个组都在。两段的输入完全一样,
 	// 差别只有 Subscribe 的位置,这正是那个「按时机给出不同答案」的形状。
-	after := NewAppTraffic(src, time.Now)
+	after := newAppTrafficNoResolver(src, time.Now)
 	after.Subscribe()
 	after.Record(9, true, appattr.PathDirect, "china_domain", "")
 	after.Record(9, true, appattr.PathTunnel, "udp_proxy", "")
@@ -814,7 +822,7 @@ func TestAppTrafficReportsCarryExecutablePaths(t *testing.T) {
 		owners:    map[appattr.PortKey]string{tcpKey(7): "Slack"},
 		execPaths: map[appattr.PortKey]string{tcpKey(7): "/Applications/Slack.app/Contents/MacOS/Slack"},
 	}
-	tr := NewAppTraffic(src, time.Now)
+	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 	tr.Record(7, false, appattr.PathTunnel, "default", "")
 
@@ -829,4 +837,265 @@ func TestAppTrafficReportsCarryExecutablePaths(t *testing.T) {
 	if rows[0].ExecPath != "/Applications/Slack.app/Contents/MacOS/Slack" {
 		t.Fatalf("ExecPath = %q —— 路径在 Core 侧就被丢掉了,菜单画不出图标", rows[0].ExecPath)
 	}
+}
+
+// ---- 滚动窗口 + 后台归因(2026-08-20)----
+
+// newAppTrafficNoResolver 构造一个**不带后台 resolver** 的 AppTraffic。
+//
+// 后台 resolver 每 250ms 问一次内核,会让「调了几次 appSource」「快照里有几行」
+// 这类断言变成掷骰子 —— **一个偶发红的闸门比没有闸门更糟**(它训练人去重跑)。
+// 所以默认关掉,要验后台那半的测试自己开(见下面三条)。
+func newAppTrafficNoResolver(src appSource, now func() time.Time) *AppTraffic {
+	tr := NewAppTraffic(src, now)
+	tr.resolveInterval = 0
+	return tr
+}
+
+// renewUntil 模拟菜单的行为:每 5 秒调一次 Subscribe 续期,把假时钟推到 until。
+// **续期而不是重新订阅** —— 重新订阅会重建缓冲,那样什么都测不到。
+func renewUntil(tr *AppTraffic, at *time.Time, until time.Time) {
+	for at.Before(until) {
+		*at = at.Add(5 * time.Second)
+		tr.Subscribe()
+	}
+}
+
+// **报告只覆盖最近 60 秒。** 窗口外的记录不进报告,窗口内的进。
+//
+// 这是「unknown 只涨不落」的直接修法:一条早已结束、永远查不回主人的连接,
+// 过了窗口就不该再占着界面。
+func TestAppTrafficDropsRecordsOlderThanTheReportWindow(t *testing.T) {
+	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{}}
+	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
+
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.ConnClosed(7, false) // 短连接:建完就关,此后永远查不回主人
+
+	renewUntil(tr, &at, at.Add(70*time.Second))
+
+	// 窗口内又来一条,证明缓冲本身没被整个清掉。
+	tr.Record(8, false, appattr.PathDirect, "china", "")
+	tr.ConnClosed(8, false)
+
+	rep, subscribed, err := tr.Snapshot()
+	if err != nil || !subscribed {
+		t.Fatalf("续期之后不该掉订阅:subscribed=%v err=%v", subscribed, err)
+	}
+	if n := len(rep.Groups[0].Rows); n != 0 {
+		t.Fatalf("70 秒前那条连接还在 tunnel 组里(%d 行)—— 报告没有按时间裁剪,"+
+			"unknown 会一直只涨不落:%#v", n, rep.Groups[0].Rows)
+	}
+	if n := len(rep.Groups[1].Rows); n != 1 || rep.Groups[1].Rows[0].Conns != 1 {
+		t.Fatalf("窗口内那条连接被误裁了:%#v", rep.Groups[1].Rows)
+	}
+}
+
+// **记录被裁掉之后,它那个端口的字节账也必须一起裁掉。**
+//
+// 只裁一半的后果不是「总量偏大」这么轻:UDP 刻意不在端口复用时清账(一个会议
+// socket 服务多个对端),于是一笔一分钟前就该消失的账会整个算到下一个拿到这个
+// 端口的应用头上。用 UDP 正是因为它是唯一能把这个缺陷显形的协议。
+func TestAppTrafficDropsByteAccountWhenItsRecordsLeaveTheWindow(t *testing.T) {
+	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{udpKey(7): "Zoom"}}
+	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
+
+	tr.Subscribe()
+	tr.Record(7, true, appattr.PathTunnel, "default", "")
+	tr.AddUp(7, true, 1000)
+	tr.AddDown(7, true, 2000)
+	tr.ConnClosed(7, true)
+
+	renewUntil(tr, &at, at.Add(70*time.Second))
+	tr.Snapshot() // 触发一次裁剪
+
+	tr.mu.Lock()
+	up, dn := len(tr.bytesUp), len(tr.bytesDn)
+	tr.mu.Unlock()
+	if up != 0 || dn != 0 {
+		t.Errorf("记录裁掉了而字节表还留着 %d/%d 条 —— 滚动窗口只滚了一半", up, dn)
+	}
+
+	// 行为上的后果:同一个 UDP 端口被下一个应用拿到时,不该继承那笔旧账。
+	tr.Record(7, true, appattr.PathTunnel, "default", "")
+	rep, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := rep.Groups[0].Rows
+	if len(rows) != 1 {
+		t.Fatalf("tunnel 组该有 1 行,得 %#v", rows)
+	}
+	if rows[0].BytesUp != 0 || rows[0].BytesDown != 0 {
+		t.Fatalf("新连接继承了一分钟前那笔账:up=%d down=%d",
+			rows[0].BytesUp, rows[0].BytesDown)
+	}
+}
+
+// **还开着的连接不许被时间裁掉。**
+//
+// 窗口问的是「此刻谁在连谁」,而一条开了两小时还在灌流的会议媒体流恰恰是最该
+// 被看见的那种。只按时间裁会让长连接在开窗 60 秒后集体消失 —— 那正是
+// 2026-08-20 那个真机 bug(长连接全在盲区)换一种方式复发。
+func TestAppTrafficKeepsRecordsOfConnectionsThatAreStillOpen(t *testing.T) {
+	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "ssh"}}
+	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
+
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "") // 不 ConnClosed:长连接
+	tr.AddUp(7, false, 500)
+
+	renewUntil(tr, &at, at.Add(5*time.Minute))
+
+	rep, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := rep.Groups[0].Rows
+	if len(rows) != 1 || rows[0].App != "ssh" {
+		t.Fatalf("开了五分钟还开着的连接从报告里消失了:%#v", rows)
+	}
+	if rows[0].BytesUp != 500 {
+		t.Errorf("还开着的连接,字节账被裁掉了:up=%d", rows[0].BytesUp)
+	}
+}
+
+// **本次修复的核心证据:归因在连接关闭之前就完成,并且存进记录里。**
+//
+// 老形状是「读取时现查」(OwnersByPort 全仓只在 Snapshot 里被调、5 秒一次),
+// 于是任何活不过一次刷新的连接在被归因之前 socket 就没了,结构性地落进 unknown。
+// 这里用确定的一拍 resolveOnce 代替后台 goroutine,把那一拍与「连接随后关闭」
+// 的先后关系钉死。
+func TestAppTrafficResolverAttributesBeforeTheSocketDisappears(t *testing.T) {
+	src := &fakeAppSource{
+		owners:    map[appattr.PortKey]string{tcpKey(7): "Slack"},
+		execPaths: map[appattr.PortKey]string{tcpKey(7): "/Applications/Slack.app/Contents/MacOS/Slack"},
+	}
+	tr := newAppTrafficNoResolver(src, time.Now)
+
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.AddUp(7, false, 42)
+
+	tr.resolveOnce() // 后台 resolver 的一拍:连接还开着,归因拿得到
+
+	// 连接关掉,内核里再也查不到这个端口 —— 现查必然是 unknown。
+	tr.ConnClosed(7, false)
+	src.mu.Lock()
+	src.owners, src.execPaths = map[appattr.PortKey]string{}, nil
+	src.mu.Unlock()
+
+	rep, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := rep.Groups[0].Rows
+	if len(rows) != 1 {
+		t.Fatalf("tunnel 组该有 1 行,得 %#v", rows)
+	}
+	if rows[0].App != "Slack" {
+		t.Fatalf("连接一关归因就丢了(App=%q)—— 归因没有存进记录里,"+
+			"这正是短连接全部塌进 unknown 的原因", rows[0].App)
+	}
+	if rows[0].ExecPath == "" {
+		t.Error("可执行路径没跟着存进记录 —— 那一行会无声地失去图标")
+	}
+}
+
+// **resolver 绝不许持着 t.mu 去问内核。**
+//
+// OwnersByPort 是两次 sysctl(真机实测 451µs~1.5ms),而 t.mu 是整机每条连接、
+// 每次转发写都要过的那把全局锁 —— 持锁去问就是每 250 毫秒把整机的记账阻塞一次。
+// 白盒手法与 TestAppTrafficByteAccountingTakesNoLockWhileUnsubscribed 同款:
+// 让被注入的 appSource 在被调用时自己去抢 t.mu,resolver 若持着锁就死锁,超时即红。
+func TestAppTrafficResolverTakesNoLockWhileAskingTheKernel(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := newAppTrafficNoResolver(src, time.Now)
+	src.whileAnswering = func() {
+		tr.mu.Lock()
+		tr.mu.Unlock() //nolint:staticcheck // 只为证明这把锁此刻是拿得到的
+	}
+
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+
+	done := make(chan struct{})
+	go func() {
+		tr.resolveOnce()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		// 刻意不解锁也不 Fatal:那个 goroutine 停在锁上,进程退出即回收。
+		t.Error("resolver 持着 t.mu 去问内核 —— 每 250ms 会把整机的记账阻塞一次")
+	}
+}
+
+// **未订阅时后台 resolver 一次都不许跑。**
+//
+// 「没人看时不问内核、不记字节、不攒历史」是这个设计的隐私前提;一个自己滴答的
+// goroutine 会把它悄悄破掉,而界面上完全看不出来。
+func TestAppTrafficResolverDoesNotRunWhileUnsubscribed(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := NewAppTraffic(src, time.Now) // 刻意用生产构造器:后台 resolver 是开着的
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+
+	time.Sleep(4 * appResolveInterval) // 够跑好几拍
+	if n := src.callCount(); n != 0 {
+		t.Fatalf("没人订阅,后台 resolver 却问了 %d 次内核", n)
+	}
+}
+
+// 后台 resolver 在订阅期间**真的在跑**(不是只有 resolveOnce 那条手动路径),
+// 且 TTL 过期之后**停下来**。
+//
+// 判据是「记录里真的被填上了 Owner」而不是「goroutine 起来了」——
+// 这个仓库反复栽在「守卫钉住的是缺陷旁边的东西」上(证明 channel 存在 ≠
+// goroutine 跑过)。轮询 + 宽超时,不用固定 sleep 去猜时序。
+func TestAppTrafficBackgroundResolverRunsWhileSubscribedAndStopsAfterTTL(t *testing.T) {
+	at := time.Now()
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := NewAppTraffic(src, func() time.Time { return at })
+
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "")
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !tr.recordedOwnerName(tcpKey(7)) {
+		if time.Now().After(deadline) {
+			t.Fatal("订阅期间后台 resolver 没有把归因填进记录 —— 它根本没在跑")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// TTL 过期 ⇒ 循环必须停。用 appSource 的调用数当证据:停下来之后它不再涨。
+	at = at.Add(appTrafficTTL + time.Second)
+	tr.Record(9, false, appattr.PathTunnel, "default", "") // 触发一次惰性结算
+	time.Sleep(4 * appResolveInterval)
+	before := src.callCount()
+	time.Sleep(6 * appResolveInterval)
+	if after := src.callCount(); after != before {
+		t.Fatalf("订阅过期之后 resolver 还在问内核(%d → %d)", before, after)
+	}
+}
+
+// recordedOwnerName 报告环形缓冲里某个键**已经存下**归因了没有。
+//
+// **白盒窗口是刻意的**:后台 resolver 有没有真的跑过,从 Snapshot 的输出上看不
+// 出来 —— Snapshot 自己也会做最后一次现查,两条路径给出同一份报告。要证明的是
+// 「归因存进了记录」这件事本身,那只能直接看记录。
+func (t *AppTraffic) recordedOwnerName(key appattr.PortKey) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, br := range t.orderedBufferedLocked() {
+		if br.rec.SrcPort == key.Port && br.rec.UDP == key.UDP && br.rec.Owner.Name != "" {
+			return true
+		}
+	}
+	return false
 }
