@@ -71,8 +71,12 @@ type DecisionCounter interface {
 // 只会看到一个应用名、看不到冲突;漏传一个形参则编译不过。
 //
 // 可空:没人订阅时上层自己短路,这里只做 nil 保护。
+//
+// dest 是这次判定连的是谁(域名或裸 IP 字面量),由 recordApp 从 route.Meta 里
+// 选出来,**不带端口** —— 端口回答「怎么连」,拼进去会让同一域名的 443/80 变成
+// 两个不同目的地,把去重打散。
 type AppRecorder interface {
-	Record(srcPort uint16, udp bool, path appattr.Path, source, rule string)
+	Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string)
 }
 
 // Dialer 把 Router 决策落到实际拨号。
@@ -680,9 +684,20 @@ func (d *Dialer) SetEgresses(byName map[string]ContextDialer) {
 // **取 m.UDP 而不是写死 false**:写死不会有编译错误,也不会让任何既有测试转红,
 // 而后果是所有 UDP 流量被记到 TCP 的端口键上 —— 界面上只会看到一个应用名,
 // 看不到冲突。由 apprecorder_test.go 里那一批 UDP 用例逐条钉住。
+//
+// **目的地只在这一处选,15 个调用点一个都不用碰。** 优先级:
+//  1. m.Domain 非空 ⇒ 用域名(fake-IP 反查回来的那个,或用户 hosts 覆盖钉的那个)。
+//  2. 否则 m.IP 有效 ⇒ 用它的字面量。**裸 IP 回落而不是留空是有理由的**——
+//     不查 DNS、写死 IP 直连,恰恰是「偷偷连服务器」最典型的形状;留空会让
+//     最可疑的这一类在界面上什么都不显示。
+//  3. 否则空串(两者都没有,报告不了目的地)。
 func (d *Dialer) recordApp(m route.Meta, path appattr.Path, source, rule string) {
 	if d.AppRecorder != nil {
-		d.AppRecorder.Record(m.SrcPort, m.UDP, path, source, rule)
+		dest := m.Domain
+		if dest == "" && m.IP.IsValid() {
+			dest = m.IP.String()
+		}
+		d.AppRecorder.Record(m.SrcPort, m.UDP, path, source, rule, dest)
 	}
 }
 

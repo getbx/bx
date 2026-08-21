@@ -101,7 +101,14 @@ type liveConn struct {
 	path   appattr.Path
 	source string
 	rule   string
-	refs   int
+	// dest 是这个端口眼下连的是谁(域名或裸 IP,见 appattr.ConnRecord.Dest)。
+	// **它跟 path/source/rule 一样是「后写入者胜」,而这与 refs 计数的语义在
+	// 已知缺口那一条上会撞在一起**:同一个源端口先后连过多个目的地时(种子把
+	// 同一个 socket 上并存的多条流压成一条,见类型头上的已知缺口注释),live
+	// 表里只留得住**最后一个** dest —— 播种出来的那一条记录只报得出最近连的
+	// 那一个目的地,不是全部。不是新的近似,是既有近似的自然延伸。
+	dest string
+	refs int
 }
 
 // AppTraffic 按 (源端口,协议) 记账。**归因、字节账与历史只在有人订阅时才攒**,
@@ -530,6 +537,7 @@ func (t *AppTraffic) seedFromLiveLocked() {
 			Path:    c.path,
 			Source:  c.source,
 			Rule:    c.rule,
+			Dest:    c.dest,
 		})
 	}
 }
@@ -566,7 +574,7 @@ func (t *AppTraffic) expiredLocked() bool {
 // udp 单独作为形参而不是让调用方自己拼 appattr.PortKey:拼结构体时漏填
 // UDP 字段没有编译错误(零值就是 false),后果是所有连接都被当成 TCP 归因,
 // 而界面上只会看到一个应用名、看不到冲突。形参漏传则编译不过。
-func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source, rule string) {
+func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string) {
 	key := appattr.PortKey{Port: srcPort, UDP: udp}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -574,9 +582,15 @@ func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source,
 	// **活连接表无条件维护,未订阅时也写。** 这是这次修复付出的新代价,也是
 	// 它唯一能起作用的地方:窗口是在连接建好之后才打开的,那一刻若表里没有
 	// 这条连接,它就永远看不见了(见类型注释上的真机 bug)。
-	// 表里只有端口与判定,没有应用名 —— 隐私前提不受影响。
+	//
+	// **2026-08-20 加了 dest 之后这句话必须改写**(表里以前只有端口与判定,
+	// 没有应用名,那句话现在是假话):表里只装**当前还开着的连接**,连接一关
+	// (ConnClosed)就删,全内存、不落盘、不进日志 —— 它回答的是「此刻在连
+	// 什么」,不是一份历史记录。目的地(域名或裸 IP)与应用身份不是一回事:
+	// 应用名仍然只在订阅期间才由后台 resolver 现问内核填回来,这张表本身
+	// 从不知道「你开的是哪个应用」。
 	c := t.live[key]
-	c.path, c.source, c.rule = path, source, rule
+	c.path, c.source, c.rule, c.dest = path, source, rule, dest
 	c.refs++
 	t.live[key] = c
 
@@ -615,6 +629,7 @@ func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source,
 		Path:    path,
 		Source:  source,
 		Rule:    rule,
+		Dest:    dest,
 	})
 }
 

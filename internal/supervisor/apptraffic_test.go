@@ -70,7 +70,7 @@ func TestAppTrafficDoesNothingWhileUnsubscribed(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 
 	for i := 0; i < 1000; i++ {
-		tr.Record(uint16(i), false, appattr.PathTunnel, "default", "")
+		tr.Record(uint16(i), false, appattr.PathTunnel, "default", "", "")
 		tr.AddUp(uint16(i), false, 10)
 		tr.AddDown(uint16(i), false, 20)
 	}
@@ -110,7 +110,7 @@ func TestAppTrafficDoesNotAttributeOrAccrueWhileUnsubscribed(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 
 	for i := 0; i < 100; i++ {
-		tr.Record(uint16(i), false, appattr.PathTunnel, "default", "")
+		tr.Record(uint16(i), false, appattr.PathTunnel, "default", "", "")
 		tr.AddUp(uint16(i), false, 10)
 		tr.AddDown(uint16(i), false, 20)
 	}
@@ -161,10 +161,10 @@ func TestAppTrafficRecordsAndAggregatesWhileSubscribed(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 100)
 	tr.AddDown(7, false, 900)
-	tr.Record(8, false, appattr.PathDirect, "user_direct", "*.qq.com")
+	tr.Record(8, false, appattr.PathDirect, "user_direct", "*.qq.com", "")
 
 	report, subscribed, err := tr.Snapshot()
 	if err != nil {
@@ -195,9 +195,9 @@ func TestAppTrafficKeepsTCPAndUDPPortsApart(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 11)
-	tr.Record(7, true, appattr.PathTunnel, "default", "")
+	tr.Record(7, true, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, true, 22)
 
 	report, _, err := tr.Snapshot()
@@ -227,7 +227,7 @@ func TestAppTrafficSubscriptionExpiresAndClearsBuffers(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 
 	now = now.Add(appTrafficTTL + time.Second)
 	report, subscribed, err := tr.Snapshot()
@@ -244,7 +244,7 @@ func TestAppTrafficSubscriptionExpiresAndClearsBuffers(t *testing.T) {
 	}
 
 	// 过期之后再记的东西也不许被攒下来。
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	if _, _, _ = tr.Snapshot(); src.callCount() != 0 {
 		t.Fatalf("过期后仍调了 %d 次 appSource", src.callCount())
 	}
@@ -263,7 +263,7 @@ func TestAppTrafficSubscriptionExpiryClearsRateState(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 1000)
 	tr.resolveOnce() // 拍基线,确保有真实状态可清
 
@@ -317,7 +317,7 @@ func TestAppTrafficResubscribeAfterExpiryStartsClean(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 4242)
 	// **这一行是 2026-08-20 补的,而且是承重的**:续订时活连接表会给新缓冲播种,
 	// 所以「上一轮的残留」必须是一条**真的已经结束**的连接,否则这条测试断言的
@@ -348,9 +348,9 @@ func TestAppTrafficResetsByteCountersOnPortReuse(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 1000)
-	tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com") // 同端口,新连接
+	tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com", "") // 同端口,新连接
 	tr.AddUp(7, false, 5)
 
 	report, _, _ := tr.Snapshot()
@@ -374,9 +374,9 @@ func TestAppTrafficPortReuseDoesNotClearTheOtherProtocol(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
-	tr.Record(7, true, appattr.PathTunnel, "default", "")
+	tr.Record(7, true, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, true, 500)
-	tr.Record(7, false, appattr.PathTunnel, "default", "") // TCP 侧的新连接
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "") // TCP 侧的新连接
 	tr.AddUp(7, false, 3)
 
 	report, _, err := tr.Snapshot()
@@ -400,7 +400,7 @@ func TestAppTrafficReportsSourceFailureRatherThanEmptyReport(t *testing.T) {
 	src := &fakeAppSource{err: errAppSourceUnsupported}
 	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 
 	report, subscribed, err := tr.Snapshot()
 	if err == nil {
@@ -427,7 +427,7 @@ func TestAppTrafficRingBufferDropsOldestWhenFull(t *testing.T) {
 
 	const extra = 10
 	for i := 0; i < appTrafficMaxRecords+extra; i++ {
-		tr.Record(uint16(i%60000+1), false, appattr.PathTunnel, "default", "")
+		tr.Record(uint16(i%60000+1), false, appattr.PathTunnel, "default", "", "")
 	}
 	report, _, err := tr.Snapshot()
 	if err != nil {
@@ -485,14 +485,14 @@ func TestAppTrafficKeepsTimeOrderAcrossRingBoundaries(t *testing.T) {
 			for i := 0; i < tc.total; i++ {
 				switch {
 				case i == tc.total-1:
-					tr.Record(7, false, appattr.PathTunnel, "default", "")
+					tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 					tr.AddUp(7, false, 1000) // 只在**最新**那条之后加账
 				case i == directAt:
-					tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com")
+					tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com", "")
 				default:
 					// 填充走 blocked 组,不污染要断言的那两组;端口从 8 起,
 					// 永远躲开 7。
-					tr.Record(uint16(i%60000)+8, false, appattr.PathBlocked, "builtin", "")
+					tr.Record(uint16(i%60000)+8, false, appattr.PathBlocked, "builtin", "", "")
 				}
 			}
 
@@ -543,7 +543,7 @@ func TestAppTrafficConcurrentRecordAndSnapshot(t *testing.T) {
 			for i := 0; i < 2000; i++ {
 				port := uint16((w*2000+i)%60000 + 1)
 				udp := i%2 == 0
-				tr.Record(port, udp, appattr.PathTunnel, "default", "")
+				tr.Record(port, udp, appattr.PathTunnel, "default", "", "")
 				tr.AddUp(port, udp, 3)
 				tr.AddDown(port, udp, 7)
 				// ConnClosed 与 Record 走的是同一张活连接表、同一把锁,而它
@@ -603,12 +603,12 @@ func TestAppTrafficAccumulatesBytesAcrossUDPFlowsOnTheSamePort(t *testing.T) {
 	tr.Subscribe()
 
 	// 一个 socket、三条流(STUN / TURN / peer),字节交替到账。
-	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "")
+	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "", "")
 	tr.AddUp(9, true, 100)
 	tr.AddDown(9, true, 200)
-	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "")
+	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "", "")
 	tr.AddUp(9, true, 30)
-	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "")
+	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "", "")
 	tr.AddDown(9, true, 7)
 
 	report, _, err := tr.Snapshot()
@@ -638,9 +638,9 @@ func TestAppTrafficUDPFlowDoesNotClearTheTCPAccount(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
-	tr.Record(11, false, appattr.PathTunnel, "default", "")
+	tr.Record(11, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(11, false, 400)
-	tr.Record(11, true, appattr.PathTunnel, "udp_proxy", "") // UDP 侧的新流
+	tr.Record(11, true, appattr.PathTunnel, "udp_proxy", "", "") // UDP 侧的新流
 	tr.AddUp(11, true, 6)
 
 	report, _, err := tr.Snapshot()
@@ -678,8 +678,8 @@ func TestAppTrafficSeedsSubscriptionWithConnectionsOpenedBeforeIt(t *testing.T) 
 	tr := newAppTrafficNoResolver(src, time.Now)
 
 	// 会议已经开到一半:两条连接早就建好了,此刻才有人打开窗口。
-	tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com")
-	tr.Record(19, true, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com", "")
+	tr.Record(19, true, appattr.PathTunnel, "default", "", "")
 
 	tr.Subscribe()
 
@@ -704,6 +704,32 @@ func TestAppTrafficSeedsSubscriptionWithConnectionsOpenedBeforeIt(t *testing.T) 
 	}
 }
 
+// 目的地也要跟着种子进来 —— 这是这个 task 里唯一只有播种路径才覆盖得到的用例:
+// 订阅之前就建好的长连接(会议媒体流、WebSocket、SSH)恰恰是最该被检查「它在连谁」
+// 的那几条,不带目的地就把这个 task 自己的用例弄丢了。
+func TestAppTrafficSeedCarriesTheDestination(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "腾讯会议"}}
+	tr := newAppTrafficNoResolver(src, time.Now)
+
+	// 会议已经开到一半:连接早就建好了,此刻才有人打开窗口。
+	tr.Record(7, false, appattr.PathDirect, "user_direct", "*.qq.com", "meeting.tencent.com")
+
+	tr.Subscribe()
+
+	report, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct := report.Groups[1]
+	if len(direct.Rows) != 1 {
+		t.Fatalf("direct 组 = %#v, want 恰好一行", direct.Rows)
+	}
+	row := direct.Rows[0]
+	if len(row.Dests) != 1 || row.Dests[0] != "meeting.tencent.com" {
+		t.Fatalf("种子丢了目的地: %#v", row.Dests)
+	}
+}
+
 // 订阅**之前**建立、且**在订阅之前就关掉**的连接,不得出现 —— 种子发布的是
 // 「此刻还活着的」,不是「历史上出现过的」。少了这一条,活连接表就会变成一份
 // 跨订阅留存的历史记录,那既不准也违反「不留存」。
@@ -711,7 +737,7 @@ func TestAppTrafficDoesNotSeedConnectionsClosedBeforeSubscribe(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Safari"}}
 	tr := newAppTrafficNoResolver(src, time.Now)
 
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.ConnClosed(7, false)
 
 	tr.Subscribe()
@@ -740,8 +766,8 @@ func TestAppTrafficLiveTableDropsClosedConnections(t *testing.T) {
 	const n = 5000
 	for i := 0; i < n; i++ {
 		port := uint16(1024 + i%40000)
-		tr.Record(port, false, appattr.PathTunnel, "default", "")
-		tr.Record(port, true, appattr.PathDirect, "china_domain", "")
+		tr.Record(port, false, appattr.PathTunnel, "default", "", "")
+		tr.Record(port, true, appattr.PathDirect, "china_domain", "", "")
 		tr.ConnClosed(port, false)
 		tr.ConnClosed(port, true)
 	}
@@ -751,9 +777,9 @@ func TestAppTrafficLiveTableDropsClosedConnections(t *testing.T) {
 
 	// UDP 一个源端口会有多条并存的流(STUN/TURN/多 peer),refs 记数必须配平:
 	// 三开三关之后归零,三开两关之后仍在(还有一条流活着)。
-	tr.Record(19, true, appattr.PathTunnel, "default", "")
-	tr.Record(19, true, appattr.PathTunnel, "default", "")
-	tr.Record(19, true, appattr.PathTunnel, "default", "")
+	tr.Record(19, true, appattr.PathTunnel, "default", "", "")
+	tr.Record(19, true, appattr.PathTunnel, "default", "", "")
+	tr.Record(19, true, appattr.PathTunnel, "default", "", "")
 	tr.ConnClosed(19, true)
 	tr.ConnClosed(19, true)
 	if got := tr.liveSize(); got != 1 {
@@ -778,7 +804,7 @@ func TestAppTrafficSeedIsNotReplayedOnRenewal(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, time.Now)
 
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.Subscribe()
 	tr.Subscribe()
 	tr.Subscribe()
@@ -803,9 +829,9 @@ func TestAppTrafficSeedAndFreshRecordsDoNotDoubleCount(t *testing.T) {
 	}}
 	tr := newAppTrafficNoResolver(src, time.Now)
 
-	tr.Record(7, false, appattr.PathTunnel, "default", "") // 订阅前建立,始终活着
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "") // 订阅前建立,始终活着
 	tr.Subscribe()
-	tr.Record(8, false, appattr.PathTunnel, "default", "") // 订阅后新建
+	tr.Record(8, false, appattr.PathTunnel, "default", "", "") // 订阅后新建
 
 	report, _, err := tr.Snapshot()
 	if err != nil {
@@ -840,8 +866,8 @@ func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
 
 	// (一) 订阅前建立的两条流 —— 种子压成一条。
 	before := newAppTrafficNoResolver(src, time.Now)
-	before.Record(9, true, appattr.PathDirect, "china_domain", "") // STUN 直连
-	before.Record(9, true, appattr.PathTunnel, "udp_proxy", "")    // TURN 走隧道
+	before.Record(9, true, appattr.PathDirect, "china_domain", "", "") // STUN 直连
+	before.Record(9, true, appattr.PathTunnel, "udp_proxy", "", "")    // TURN 走隧道
 	before.Subscribe()
 	seeded, _, err := before.Snapshot()
 	if err != nil {
@@ -859,8 +885,8 @@ func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
 	// 差别只有 Subscribe 的位置,这正是那个「按时机给出不同答案」的形状。
 	after := newAppTrafficNoResolver(src, time.Now)
 	after.Subscribe()
-	after.Record(9, true, appattr.PathDirect, "china_domain", "")
-	after.Record(9, true, appattr.PathTunnel, "udp_proxy", "")
+	after.Record(9, true, appattr.PathDirect, "china_domain", "", "")
+	after.Record(9, true, appattr.PathTunnel, "udp_proxy", "", "")
 	fresh, _, err := after.Snapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -881,7 +907,7 @@ func TestAppTrafficReportsCarryExecutablePaths(t *testing.T) {
 	}
 	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 
 	report, _, err := tr.Snapshot()
 	if err != nil {
@@ -928,13 +954,13 @@ func TestAppTrafficDropsRecordsOlderThanTheReportWindow(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
 
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.ConnClosed(7, false) // 短连接:建完就关,此后永远查不回主人
 
 	renewUntil(tr, &at, at.Add(70*time.Second))
 
 	// 窗口内又来一条,证明缓冲本身没被整个清掉。
-	tr.Record(8, false, appattr.PathDirect, "china", "")
+	tr.Record(8, false, appattr.PathDirect, "china", "", "")
 	tr.ConnClosed(8, false)
 
 	rep, subscribed, err := tr.Snapshot()
@@ -961,7 +987,7 @@ func TestAppTrafficDropsByteAccountWhenItsRecordsLeaveTheWindow(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
 
 	tr.Subscribe()
-	tr.Record(7, true, appattr.PathTunnel, "default", "")
+	tr.Record(7, true, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, true, 1000)
 	tr.AddDown(7, true, 2000)
 	tr.ConnClosed(7, true)
@@ -977,7 +1003,7 @@ func TestAppTrafficDropsByteAccountWhenItsRecordsLeaveTheWindow(t *testing.T) {
 	}
 
 	// 行为上的后果:同一个 UDP 端口被下一个应用拿到时,不该继承那笔旧账。
-	tr.Record(7, true, appattr.PathTunnel, "default", "")
+	tr.Record(7, true, appattr.PathTunnel, "default", "", "")
 	rep, _, err := tr.Snapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -1003,7 +1029,7 @@ func TestAppTrafficKeepsRecordsOfConnectionsThatAreStillOpen(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
 
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "") // 不 ConnClosed:长连接
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "") // 不 ConnClosed:长连接
 	tr.AddUp(7, false, 500)
 
 	renewUntil(tr, &at, at.Add(5*time.Minute))
@@ -1035,7 +1061,7 @@ func TestAppTrafficResolverAttributesBeforeTheSocketDisappears(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 42)
 
 	tr.resolveOnce() // 后台 resolver 的一拍:连接还开着,归因拿得到
@@ -1078,7 +1104,7 @@ func TestAppTrafficResolverTakesNoLockWhileAskingTheKernel(t *testing.T) {
 	}
 
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 
 	done := make(chan struct{})
 	go func() {
@@ -1100,7 +1126,7 @@ func TestAppTrafficResolverTakesNoLockWhileAskingTheKernel(t *testing.T) {
 func TestAppTrafficResolverDoesNotRunWhileUnsubscribed(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := NewAppTraffic(src, time.Now) // 刻意用生产构造器:后台 resolver 是开着的
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 
 	time.Sleep(4 * appResolveInterval) // 够跑好几拍
 	if n := src.callCount(); n != 0 {
@@ -1120,7 +1146,7 @@ func TestAppTrafficBackgroundResolverRunsWhileSubscribedAndStopsAfterTTL(t *test
 	tr := NewAppTraffic(src, func() time.Time { return at })
 
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 
 	deadline := time.Now().Add(5 * time.Second)
 	for !tr.recordedOwnerName(tcpKey(7)) {
@@ -1132,7 +1158,7 @@ func TestAppTrafficBackgroundResolverRunsWhileSubscribedAndStopsAfterTTL(t *test
 
 	// TTL 过期 ⇒ 循环必须停。用 appSource 的调用数当证据:停下来之后它不再涨。
 	at = at.Add(appTrafficTTL + time.Second)
-	tr.Record(9, false, appattr.PathTunnel, "default", "") // 触发一次惰性结算
+	tr.Record(9, false, appattr.PathTunnel, "default", "", "") // 触发一次惰性结算
 	time.Sleep(4 * appResolveInterval)
 	before := src.callCount()
 	time.Sleep(6 * appResolveInterval)
@@ -1166,7 +1192,7 @@ func TestAppTrafficRatesNeedTwoSamples(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 100)
 
 	tr.resolveOnce() // 第一拍:只拍基线,记下 now,还不能报速率
@@ -1201,7 +1227,7 @@ func TestAppTrafficSnapshotDoesNotConsumeTheRateDelta(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 1000)
 	tr.resolveOnce() // 拍基线:{7:1000} @ t0
 
@@ -1264,7 +1290,7 @@ func TestAppTrafficResubscribeResetsRatesButRenewalDoesNot(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 1000)
 	tr.resolveOnce() // 拍基线
 
@@ -1308,7 +1334,7 @@ func TestAppTrafficRateBaselineIsACopy(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 1000)
 
 	tr.resolveOnce() // 拍基线
