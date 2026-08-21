@@ -1,6 +1,7 @@
 package appattr
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -14,9 +15,9 @@ func TestAggregateSplitsOneAppAcrossPaths(t *testing.T) {
 		{SrcPort: 2, Path: PathDirect, Source: "user_direct", Rule: "*.qq.com"},
 	}
 	owners := namedOwners(map[PortKey]string{{Port: 1, UDP: false}: "Google Chrome", {Port: 2, UDP: false}: "Google Chrome"})
-	got := Aggregate(records, owners,
-		map[PortKey]int64{{Port: 1, UDP: false}: 100, {Port: 2, UDP: false}: 5},
-		map[PortKey]int64{{Port: 1, UDP: false}: 900, {Port: 2, UDP: false}: 45})
+	got := Aggregate(AggregateInput{Records: records, Owners: owners,
+		BytesUp:   map[PortKey]int64{{Port: 1, UDP: false}: 100, {Port: 2, UDP: false}: 5},
+		BytesDown: map[PortKey]int64{{Port: 1, UDP: false}: 900, {Port: 2, UDP: false}: 45}})
 
 	want := Report{Groups: []Group{
 		{Path: PathTunnel, Rows: []AppRow{{App: "Google Chrome", Conns: 1, BytesUp: 100, BytesDown: 900}}},
@@ -36,7 +37,7 @@ func TestAggregateKeepsUnknownAsItsOwnRowInsideItsPath(t *testing.T) {
 		{SrcPort: 2, Path: PathTunnel, Source: "default"},
 	}
 	owners := namedOwners(map[PortKey]string{{Port: 1, UDP: false}: "Slack"}) // 2 号端口查不出来
-	got := Aggregate(records, owners, nil, nil)
+	got := Aggregate(AggregateInput{Records: records, Owners: owners})
 
 	tunnel := got.Groups[0]
 	if len(tunnel.Rows) != 2 {
@@ -55,7 +56,7 @@ func TestAggregateKeepsUnknownAsItsOwnRowInsideItsPath(t *testing.T) {
 
 // 三组永远都在,即使为空 —— 消费方按下标取组,组数浮动会让渲染层错位。
 func TestAggregateAlwaysEmitsAllThreeGroupsInOrder(t *testing.T) {
-	got := Aggregate(nil, nil, nil, nil)
+	got := Aggregate(AggregateInput{})
 	want := []Path{PathTunnel, PathDirect, PathBlocked}
 	if len(got.Groups) != 3 {
 		t.Fatalf("组数 = %d, want 3", len(got.Groups))
@@ -72,8 +73,8 @@ func TestAggregateSortsRowsByBytesThenName(t *testing.T) {
 		{SrcPort: 1, Path: PathTunnel}, {SrcPort: 2, Path: PathTunnel}, {SrcPort: 3, Path: PathTunnel},
 	}
 	owners := namedOwners(map[PortKey]string{{Port: 1, UDP: false}: "Aardvark", {Port: 2, UDP: false}: "Zebra", {Port: 3, UDP: false}: "Middle"})
-	got := Aggregate(records, owners,
-		map[PortKey]int64{{Port: 1, UDP: false}: 1, {Port: 2, UDP: false}: 1000, {Port: 3, UDP: false}: 500}, nil)
+	got := Aggregate(AggregateInput{Records: records, Owners: owners,
+		BytesUp: map[PortKey]int64{{Port: 1, UDP: false}: 1, {Port: 2, UDP: false}: 1000, {Port: 3, UDP: false}: 500}})
 	if got.Groups[0].Rows[0].App != "Zebra" || got.Groups[0].Rows[2].App != "Aardvark" {
 		t.Fatalf("排序错了: %#v", got.Groups[0].Rows)
 	}
@@ -88,10 +89,12 @@ func TestAggregateCountsEachPortsBytesOnce(t *testing.T) {
 		{SrcPort: 7, Path: PathTunnel},
 		{SrcPort: 7, Path: PathTunnel},
 	}
-	got := Aggregate(records,
-		namedOwners(map[PortKey]string{{Port: 7, UDP: false}: "Slack"}),
-		map[PortKey]int64{{Port: 7, UDP: false}: 100},
-		map[PortKey]int64{{Port: 7, UDP: false}: 900})
+	got := Aggregate(AggregateInput{
+		Records:   records,
+		Owners:    namedOwners(map[PortKey]string{{Port: 7, UDP: false}: "Slack"}),
+		BytesUp:   map[PortKey]int64{{Port: 7, UDP: false}: 100},
+		BytesDown: map[PortKey]int64{{Port: 7, UDP: false}: 900},
+	})
 	row := got.Groups[0].Rows[0]
 	if row.Conns != 3 {
 		t.Fatalf("Conns = %d, want 3(连接数按记录数算)", row.Conns)
@@ -122,7 +125,7 @@ func TestAggregateKeepsTCPAndUDPPortsApart(t *testing.T) {
 		{Port: 443, UDP: false}: 100,
 		{Port: 443, UDP: true}:  200,
 	}
-	got := Aggregate(records, owners, bytesUp, bytesDown)
+	got := Aggregate(AggregateInput{Records: records, Owners: owners, BytesUp: bytesUp, BytesDown: bytesDown})
 
 	rows := got.Groups[0].Rows
 	if len(rows) != 2 {
@@ -169,9 +172,9 @@ func TestAggregateAttributesReusedPortBytesToTheMostRecentRecord(t *testing.T) {
 		{SrcPort: 5000, Path: PathTunnel, Source: "default"},                       // 新
 	}
 	owners := namedOwners(map[PortKey]string{{Port: 5000, UDP: false}: "Slack"})
-	got := Aggregate(records, owners,
-		map[PortKey]int64{{Port: 5000, UDP: false}: 100},
-		map[PortKey]int64{{Port: 5000, UDP: false}: 900})
+	got := Aggregate(AggregateInput{Records: records, Owners: owners,
+		BytesUp:   map[PortKey]int64{{Port: 5000, UDP: false}: 100},
+		BytesDown: map[PortKey]int64{{Port: 5000, UDP: false}: 900}})
 
 	tunnel, direct := got.Groups[0], got.Groups[1]
 	if len(tunnel.Rows) != 1 || len(direct.Rows) != 1 {
@@ -203,7 +206,7 @@ func TestAggregateCarriesARepresentativeExecutablePath(t *testing.T) {
 		{Port: 1}: {Name: "Google Chrome", ExecPath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"},
 		{Port: 2}: {Name: "Google Chrome", ExecPath: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"},
 	}
-	got := Aggregate(records, owners, nil, nil)
+	got := Aggregate(AggregateInput{Records: records, Owners: owners})
 	rows := got.Groups[0].Rows
 	if len(rows) != 1 {
 		t.Fatalf("tunnel 组 %d 行, want 1", len(rows))
@@ -225,7 +228,7 @@ func TestAggregatePrefersAContributingPathOverEmptiness(t *testing.T) {
 		{Port: 1}: {Name: "Safari"}, // 路径读不出来(kern.procargs2 可能失败)
 		{Port: 2}: {Name: "Safari", ExecPath: "/Applications/Safari.app/Contents/MacOS/Safari"},
 	}
-	got := Aggregate(records, owners, nil, nil)
+	got := Aggregate(AggregateInput{Records: records, Owners: owners})
 	rows := got.Groups[1].Rows
 	if len(rows) != 1 {
 		t.Fatalf("direct 组 %d 行, want 1", len(rows))
@@ -238,7 +241,7 @@ func TestAggregatePrefersAContributingPathOverEmptiness(t *testing.T) {
 // unknown 那一行不许凭空长出路径:它整个存在的意义就是「问不出来是谁」。
 func TestAggregateGivesUnknownRowsNoExecutablePath(t *testing.T) {
 	records := []ConnRecord{{SrcPort: 9, Path: PathTunnel, Source: "default"}}
-	got := Aggregate(records, map[PortKey]Owner{}, nil, nil)
+	got := Aggregate(AggregateInput{Records: records, Owners: map[PortKey]Owner{}})
 	rows := got.Groups[0].Rows
 	if len(rows) != 1 || rows[0].App != "" {
 		t.Fatalf("want 一行 unknown, got %#v", rows)
@@ -306,7 +309,7 @@ func TestAggregateUsesTheOwnerStoredOnTheRecord(t *testing.T) {
 			Owner: Owner{Name: "Slack", ExecPath: "/Applications/Slack.app/Contents/MacOS/Slack"},
 		},
 	}
-	rep := Aggregate(records, map[PortKey]Owner{}, map[PortKey]int64{{Port: 7}: 100}, nil)
+	rep := Aggregate(AggregateInput{Records: records, Owners: map[PortKey]Owner{}, BytesUp: map[PortKey]int64{{Port: 7}: 100}})
 	rows := rep.Groups[0].Rows
 	if len(rows) != 1 {
 		t.Fatalf("tunnel 组该有 1 行,得 %d 行:%#v", len(rows), rows)
@@ -324,8 +327,142 @@ func TestAggregateUsesTheOwnerStoredOnTheRecord(t *testing.T) {
 // 解析的那些(以及 Snapshot 那次最后的尝试)靠这条路。两条路都要在。
 func TestAggregateFallsBackToTheFreshOwnersMap(t *testing.T) {
 	records := []ConnRecord{{SrcPort: 7, Path: PathTunnel, Source: "default"}}
-	rep := Aggregate(records, map[PortKey]Owner{{Port: 7}: {Name: "Chrome"}}, nil, nil)
+	rep := Aggregate(AggregateInput{Records: records, Owners: map[PortKey]Owner{{Port: 7}: {Name: "Chrome"}}})
 	if got := rep.Groups[0].Rows[0].App; got != "Chrome" {
 		t.Fatalf("记录里没存 Owner 时该回落到现查的 map,得 %q", got)
+	}
+}
+
+// ---- 速率(2026-08-20,服务端按端口做差)----
+
+// 规则 4,**这个函数存在的理由**:一个端口从这次样本里消失,它这一拍不贡献,
+// 不是复位、不是负数、不是 0 值写入。60 秒滚动窗口下这种消失天天发生(记录
+// 滑出窗口),按聚合行做差会把它误读成"计数器复位"从而显示破折号 —— 按端口
+// 做差没有这个歧义:消失的端口在输出 map 里干脆不出现。
+func TestDiffPortRatesTreatsAVanishedPortAsNoContribution(t *testing.T) {
+	prev := map[PortKey]int64{{Port: 1}: 100, {Port: 2}: 500}
+	cur := map[PortKey]int64{{Port: 1}: 150} // 2 号端口这一拍消失了
+	got := DiffPortRates(prev, cur, 2*time.Second)
+	if _, ok := got[PortKey{Port: 2}]; ok {
+		t.Fatalf("消失的端口不该出现在速率表里,得到 %#v", got)
+	}
+	if got[PortKey{Port: 1}] != 25 { // (150-100)/2s
+		t.Fatalf("端口 1 的速率 = %v, want 25", got[PortKey{Port: 1}])
+	}
+}
+
+// 规则 3:cur < prev 是计数器复位(TCP 端口复用清账),delta = cur,不是负数。
+func TestDiffPortRatesTreatsACounterResetAsAllNew(t *testing.T) {
+	prev := map[PortKey]int64{{Port: 1}: 1000}
+	cur := map[PortKey]int64{{Port: 1}: 40} // 端口复用,账被清空重新攒
+	got := DiffPortRates(prev, cur, 2*time.Second)
+	if got[PortKey{Port: 1}] != 20 { // 40/2s,不是 (40-1000)/2s
+		t.Fatalf("计数器复位没有按「delta=cur」处理,得到 %v", got[PortKey{Port: 1}])
+	}
+}
+
+// 规则 1:key 只在 cur 里(新端口),字节全是这一拍攒的。
+func TestDiffPortRatesCountsANewPortEntirely(t *testing.T) {
+	cur := map[PortKey]int64{{Port: 9}: 200}
+	got := DiffPortRates(nil, cur, 2*time.Second)
+	if got[PortKey{Port: 9}] != 100 { // 200/2s
+		t.Fatalf("新端口的速率 = %v, want 100", got[PortKey{Port: 9}])
+	}
+}
+
+// elapsed <= 0 不许拿一个近似的分母硬算,直接返回 nil。
+func TestDiffPortRatesWithoutAnIntervalYieldsNothing(t *testing.T) {
+	cur := map[PortKey]int64{{Port: 1}: 100}
+	if got := DiffPortRates(nil, cur, 0); got != nil {
+		t.Fatalf("elapsed=0 时该返回 nil,得到 %#v", got)
+	}
+	if got := DiffPortRates(nil, cur, -time.Second); got != nil {
+		t.Fatalf("elapsed<0 时该返回 nil,得到 %#v", got)
+	}
+}
+
+// 同一个端口在窗口里出现两条记录(端口复用)时,速率与字节数用同一个 counted
+// 去重,只算一次 —— 不是按记录数重复累加。
+func TestAggregateCountsEachPortsRateOnce(t *testing.T) {
+	records := []ConnRecord{
+		{SrcPort: 7, Path: PathTunnel},
+		{SrcPort: 7, Path: PathTunnel},
+	}
+	rep := Aggregate(AggregateInput{
+		Records:    records,
+		Owners:     namedOwners(map[PortKey]string{{Port: 7}: "Slack"}),
+		RateUp:     map[PortKey]float64{{Port: 7}: 1000},
+		RateDown:   map[PortKey]float64{{Port: 7}: 2000},
+		RatesReady: true,
+	})
+	row := rep.Groups[0].Rows[0]
+	if row.BytesUpRate == nil || *row.BytesUpRate != 1000 {
+		t.Fatalf("上行速率算重了或没算:%#v", row.BytesUpRate)
+	}
+	if row.BytesDownRate == nil || *row.BytesDownRate != 2000 {
+		t.Fatalf("下行速率算重了或没算:%#v", row.BytesDownRate)
+	}
+}
+
+// RatesReady=false ⇒ 两个速率字段都必须是 nil,不管 RateUp/RateDown 里有什么。
+func TestAggregateOmitsRatesWhenNotReady(t *testing.T) {
+	records := []ConnRecord{{SrcPort: 7, Path: PathTunnel}}
+	rep := Aggregate(AggregateInput{
+		Records:    records,
+		Owners:     namedOwners(map[PortKey]string{{Port: 7}: "Slack"}),
+		RateUp:     map[PortKey]float64{{Port: 7}: 999},
+		RateDown:   map[PortKey]float64{{Port: 7}: 999},
+		RatesReady: false,
+	})
+	row := rep.Groups[0].Rows[0]
+	if row.BytesUpRate != nil || row.BytesDownRate != nil {
+		t.Fatalf("RatesReady=false 却带出了速率:%#v", row)
+	}
+}
+
+// **指向 0 的指针照样会被序列化,与 nil 是两件不同的事。** omitempty 对指针
+// 只看 nil —— 这一点必须有测试钉住,否则将来有人把字段改成值类型时没有任何
+// 东西会红。0 B/s(应用在但这一拍没传东西)与「还没有速率可报」压成同一个 0
+// 会让界面把"不知道"显示成"闲着"。
+func TestZeroRateSerializesButUnavailableRateIsAbsent(t *testing.T) {
+	rep := Aggregate(AggregateInput{
+		Records:    []ConnRecord{{SrcPort: 7, Path: PathTunnel}},
+		Owners:     namedOwners(map[PortKey]string{{Port: 7}: "Slack"}),
+		RateUp:     map[PortKey]float64{}, // 这个端口这一拍没有条目 ⇒ 累加成 0
+		RateDown:   map[PortKey]float64{},
+		RatesReady: true,
+	})
+	row := rep.Groups[0].Rows[0]
+	if row.BytesUpRate == nil || *row.BytesUpRate != 0 {
+		t.Fatalf("RatesReady=true 时的 0 速率应该是指向 0 的指针,得到 %#v", row.BytesUpRate)
+	}
+	buf, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("marshal 失败: %v", err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(buf, &decoded); err != nil {
+		t.Fatalf("unmarshal 失败: %v", err)
+	}
+	if v, ok := decoded["bytes_up_rate"]; !ok || string(v) != "0" {
+		t.Fatalf("指向 0 的指针没有被序列化成 0,got present=%v value=%s", ok, v)
+	}
+
+	// nil 那一半:RatesReady=false 时键必须整个缺席,不是 null。
+	repUnready := Aggregate(AggregateInput{
+		Records: []ConnRecord{{SrcPort: 7, Path: PathTunnel}},
+		Owners:  namedOwners(map[PortKey]string{{Port: 7}: "Slack"}),
+	})
+	rowUnready := repUnready.Groups[0].Rows[0]
+	buf2, err := json.Marshal(rowUnready)
+	if err != nil {
+		t.Fatalf("marshal 失败: %v", err)
+	}
+	var decoded2 map[string]json.RawMessage
+	if err := json.Unmarshal(buf2, &decoded2); err != nil {
+		t.Fatalf("unmarshal 失败: %v", err)
+	}
+	if _, ok := decoded2["bytes_up_rate"]; ok {
+		t.Fatalf("没有速率时 bytes_up_rate 键不该出现,got %s", buf2)
 	}
 }
