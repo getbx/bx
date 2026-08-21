@@ -9,6 +9,66 @@ import (
 	"testing"
 )
 
+// scanRepoFor 从仓库根遍历全部 .go/.swift 源码文件,对每个文件的内容跑一次
+// match,返回命中文件(相对仓库根)的集合。
+//
+// **两条覆盖发布面的守卫**(execPathPublicationAllowlist/destPublicationAllowlist)
+// 除了「匹配那一句」和各自的白名单表之外,WalkDir、目录跳过(.git/.build/
+// .superpowers/dist)、后缀过滤(.go/.swift)逐字重复过 —— 抽成这一个函数,免得
+// 将来有人给一条守卫加 `.m` 后缀或加一条 vendor 排除,另一条静默留在旧行为上。
+// 本仓库记档过这个根因:「同一个根因修一处漏两处」。
+//
+// **两张白名单表本身不合并**——brief 禁止的是合并表,不是合并遍历;两次信息面
+// 扩大的理由、边界、成员都不同,合并表会让任一方的放宽静默带上另一方。
+//
+// 遇错直接 `t.Fatalf`:两个调用点都是「守卫读不到源码就立刻失败」,没有谁需要
+// 把这个错误继续往上传。
+func scanRepoFor(t *testing.T, match func(body []byte) bool) map[string]bool {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("定位不到仓库根,守卫失去意义:%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("仓库根上没有 go.mod(%s):%v —— 守卫扫错了地方", root, err)
+	}
+	found := map[string]bool{}
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			// 隐藏目录(.git/.build/.superpowers)与构建产物里会有源码副本,
+			// 它们不是发布面。
+			if path != root && (strings.HasPrefix(name, ".") || name == "dist") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, ".swift") {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !match(body) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		found[filepath.ToSlash(rel)] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("遍历仓库失败,守卫失去意义:%v", err)
+	}
+	return found
+}
+
 // execPathPublicationAllowlist 是**允许提到可执行路径的全部位置**。
 //
 // `AppRow.ExecPath` 是一次刻意的信息面扩大(见 report.go 里 `Owner` 头上那段):
@@ -41,49 +101,11 @@ var execPathPublicationAllowlist = map[string]string{
 
 // 可执行路径不许长出第二条发布路径。
 func TestExecutablePathHasExactlyOnePublicationPath(t *testing.T) {
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("定位不到仓库根,守卫失去意义:%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		t.Fatalf("仓库根上没有 go.mod(%s):%v —— 守卫扫错了地方", root, err)
-	}
-	found := map[string]bool{}
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if d.IsDir() {
-			// 隐藏目录(.git/.build/.superpowers)与构建产物里会有源码副本,
-			// 它们不是发布面。
-			if path != root && (strings.HasPrefix(name, ".") || name == "dist") {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, ".swift") {
-			return nil
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
+	found := scanRepoFor(t, func(body []byte) bool {
 		text := string(body)
-		if !strings.Contains(text, "ExecPath") && !strings.Contains(text, "exec_path") &&
-			!strings.Contains(text, "execPath") {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		found[filepath.ToSlash(rel)] = true
-		return nil
+		return strings.Contains(text, "ExecPath") || strings.Contains(text, "exec_path") ||
+			strings.Contains(text, "execPath")
 	})
-	if err != nil {
-		t.Fatalf("遍历仓库失败,守卫失去意义:%v", err)
-	}
 	// 一个都没扫到 = 守卫扫空了,不是「没有泄漏」。
 	if len(found) == 0 {
 		t.Fatal("一处可执行路径都没扫到 —— 守卫读不到源码了,先修守卫")
@@ -119,7 +141,7 @@ func TestExecutablePathHasExactlyOnePublicationPath(t *testing.T) {
 // 白名单成员都不同,合并之后任何一方的放宽都会静默地把另一方也放宽。
 //
 // **这条守卫扫的是「发布面」,不是「这个词出现过」。** 真正离开 Core 的是
-// `AppRow.Dests`、json 标签 `"dests"`/`dests_more`,以及将来 Swift 侧的
+// `AppRow.Dests`、json 标签 `dests`/`dests_more`,以及将来 Swift 侧的
 // `destsMore` —— 这几个复数/连字形态在本仓库是独一无二的,扫它们不会误伤任何
 // 无关代码。
 //
@@ -150,52 +172,21 @@ var destPublicationAllowlist = map[string]string{
 // destWordPattern 只认发布面会实际出现的复数/连字形态 —— 不是单词边界版的
 // `Dest`/`dest`。见上面 destPublicationAllowlist 头上的说明:扫单数会拖进十几个
 // 与本功能无关的既有代码(路由目的地前缀、路由表查询、安装目标路径),把白名单
-// 变成墙纸。`Dests`/`DestsMore`/`destsMore` 走单词边界,`"dests"` 要求带引号
-// (只认 json 标签那种写法),`dests_more` 走单词边界(下划线是 \w 的一部分,
-// 不会被 `Dests` 那半提前截断)。
-var destWordPattern = regexp.MustCompile(`\bDests\b|\bDestsMore\b|\bdestsMore\b|"dests"|\bdests_more\b`)
+// 变成墙纸。`Dests`/`DestsMore`/`destsMore` 走单词边界,`dests_more` 走单词边界
+// (下划线是 \w 的一部分,不会被 `Dests` 那半提前截断)。
+//
+// **`dests` 走裸单词边界,不再要求带引号。** 修复轮 2 复审实测:只认带引号的
+// `"dests"` 会漏掉 Swift 消费者按本仓库既有风格写的
+// `enum CodingKeys { case app, conns, dests }`(键名与属性同名时不写字符串,
+// `AppTrafficModel.swift:37` 就是这个写法)——这恰是 Task 4 最可能踩的近路,
+// 而当时的模式对它视而不见。放宽成裸单词边界之后,已实测**全仓扫描结果不变**
+// (仍然只有下面这 4 个文件,一个新的无关命中都没有),故直接放宽模式而不是只在
+// 注释里写边界。
+var destWordPattern = regexp.MustCompile(`\bDests\b|\bDestsMore\b|\bdestsMore\b|\bdests\b|\bdests_more\b`)
 
 // 目的地不许长出第二条发布路径。
 func TestDestinationHasExactlyOnePublicationPath(t *testing.T) {
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("定位不到仓库根,守卫失去意义:%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		t.Fatalf("仓库根上没有 go.mod(%s):%v —— 守卫扫错了地方", root, err)
-	}
-	found := map[string]bool{}
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if d.IsDir() {
-			if path != root && (strings.HasPrefix(name, ".") || name == "dist") {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, ".swift") {
-			return nil
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if !destWordPattern.Match(body) {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		found[filepath.ToSlash(rel)] = true
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("遍历仓库失败,守卫失去意义:%v", err)
-	}
+	found := scanRepoFor(t, destWordPattern.Match)
 	if len(found) == 0 {
 		t.Fatal("一处目的地都没扫到 —— 守卫读不到源码了,先修守卫")
 	}

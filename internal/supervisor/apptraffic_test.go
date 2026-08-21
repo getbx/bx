@@ -161,7 +161,11 @@ func TestAppTrafficRecordsAndAggregatesWhileSubscribed(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 	tr.Subscribe()
 
-	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
+	// dest 非空 —— 唯一断言 row.Dests 的另一条测试(SeedCarriesTheDestination)
+	// 走的是播种那条路(Subscribe 之前 Record);这里覆盖的是**主路**:已订阅之后
+	// 才建立的连接。两条路径共用同一个 appendRecordLocked,但只测播种会让主路
+	// 上 Dest 传递漏了也没有任何测试转红。
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "chat.slack.com")
 	tr.AddUp(7, false, 100)
 	tr.AddDown(7, false, 900)
 	tr.Record(8, false, appattr.PathDirect, "user_direct", "*.qq.com", "")
@@ -176,6 +180,9 @@ func TestAppTrafficRecordsAndAggregatesWhileSubscribed(t *testing.T) {
 	tunnel := report.Groups[0]
 	if len(tunnel.Rows) != 1 || tunnel.Rows[0].App != "Slack" || tunnel.Rows[0].BytesDown != 900 {
 		t.Fatalf("tunnel 组不对: %#v", tunnel.Rows)
+	}
+	if len(tunnel.Rows[0].Dests) != 1 || tunnel.Rows[0].Dests[0] != "chat.slack.com" {
+		t.Fatalf("已订阅之后新建的连接丢了目的地: %#v", tunnel.Rows[0].Dests)
 	}
 	direct := report.Groups[1]
 	if len(direct.Rows) != 1 || direct.Rows[0].App != "Google Chrome" {
@@ -893,6 +900,37 @@ func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
 	}
 	if len(fresh.Groups[0].Rows) != 1 || len(fresh.Groups[1].Rows) != 1 {
 		t.Fatalf("订阅后建立的两条流 tunnel=%#v direct=%#v, want 各一行", fresh.Groups[0].Rows, fresh.Groups[1].Rows)
+	}
+}
+
+// liveConn.dest 是「后写入者胜」——同一个源端口先后连过多个目的地时,live 表
+// 只留得住**最后一个**,种子于是只报得出最近连的那一个,不是全部。
+//
+// **这条钉的是「这是已知行为」,不是「这样是对的」**,与
+// TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket 同一性质:真修需要把
+// 键重新设计成能分辨同一 socket 上的不同目的地(与并发流被压成一条是同一个
+// 已知缺口的另一面),今天不做。
+func TestAppTrafficSeedOnlyCarriesTheLastDestination(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "腾讯会议"}}
+	tr := newAppTrafficNoResolver(src, time.Now)
+
+	// 订阅前,同一个源端口先后「连过」两个不同的目的地(该端口被复用,或
+	// liveConn.dest 被后一次 Record 覆盖 —— 两种真实场景都会走到这里)。
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "first.example.com")
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "second.example.com")
+
+	tr.Subscribe()
+	report, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel := report.Groups[0]
+	if len(tunnel.Rows) != 1 {
+		t.Fatalf("tunnel 组 = %#v, want 恰好一行", tunnel.Rows)
+	}
+	row := tunnel.Rows[0]
+	if len(row.Dests) != 1 || row.Dests[0] != "second.example.com" {
+		t.Fatalf("Dests = %#v, want 只剩最后写入的那个目的地(已知行为,不是理想行为)", row.Dests)
 	}
 }
 
