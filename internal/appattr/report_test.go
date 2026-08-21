@@ -497,6 +497,31 @@ func TestAggregateDedupesDestinationsPerRow(t *testing.T) {
 	}
 }
 
+// 目的地按**行**去重,不是按端口只算一次 —— 与字节/速率那个按 PortKey 去重的
+// counted 是两件不同的事,不能混用。一个会议 socket 在同一个 UDP 源端口上打
+// STUN + TURN + 多个 peer 时(gVisor 按 5 元组建流 ⇒ 同一个 PortKey 上 N 次
+// Record、N 个不同 Dest),若误把目的地去重也挂在按端口去重的门上,这一行会
+// 只显示 1 个目的地、DestsMore=0,而真实是 N 个 —— 这正是本功能最初要回答的
+// 用例本身(「腾讯会议在连谁」),界面上却完全看不出异常。
+func TestAggregateKeepsMultipleDestinationsOnOneSourcePort(t *testing.T) {
+	records := []ConnRecord{
+		{SrcPort: 9, UDP: true, Path: PathTunnel, Dest: "stun.example.com"},
+		{SrcPort: 9, UDP: true, Path: PathTunnel, Dest: "turn.example.com"},
+	}
+	got := Aggregate(AggregateInput{
+		Records: records,
+		Owners:  namedOwners(map[PortKey]string{{Port: 9, UDP: true}: "腾讯会议"}),
+	})
+	row := got.Groups[0].Rows[0]
+	if row.Conns != 2 {
+		t.Fatalf("Conns = %d, want 2(同一源端口上两条并存的流)", row.Conns)
+	}
+	want := []string{"turn.example.com", "stun.example.com"} // 倒序:最近的先进
+	if !reflect.DeepEqual(row.Dests, want) {
+		t.Fatalf("Dests = %#v, want %#v(同一源端口上并存的多个目的地都要保留,不能被按端口去重吞掉)", row.Dests, want)
+	}
+}
+
 // 超过 maxDestsPerRow 个不同目的地:Dests 恰好截到上限,DestsMore 数出**去重后**
 // 剩下的条数 —— 同一个目的地连 100 次不算 100 个目的地被漏列。
 func TestAggregateCountsDestinationsBeyondTheCap(t *testing.T) {
