@@ -3,6 +3,7 @@ package appattr
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestAggregateSplitsOneAppAcrossPaths(t *testing.T) {
@@ -257,4 +258,74 @@ func namedOwners(m map[PortKey]string) map[PortKey]Owner {
 		out[k] = Owner{Name: name}
 	}
 	return out
+}
+
+// ---- 报告窗口(2026-08-20)----
+
+// 窗口边界必须是「now - ReportWindow 之后(含)」。**边界上那一条要留住** ——
+// 判反了会让每次刷新都恰好丢掉一条最旧的记录,而那种丢法在界面上完全看不出来。
+func TestInReportWindowKeepsOnlyRecentRecords(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		at   time.Time
+		want bool
+	}{
+		{"刚刚", now, true},
+		{"窗口内", now.Add(-ReportWindow + time.Second), true},
+		{"正好在边界上", now.Add(-ReportWindow), true},
+		{"刚出窗口", now.Add(-ReportWindow - time.Millisecond), false},
+		{"远远出窗口", now.Add(-10 * time.Minute), false},
+	}
+	for _, c := range cases {
+		got := InReportWindow(ConnRecord{At: c.at}, now)
+		if got != c.want {
+			t.Errorf("%s: InReportWindow=%v,想要 %v", c.name, got, c.want)
+		}
+	}
+}
+
+// 窗口长度是个**产品决定**,不是随手取的数:报告回答的是「此刻谁在连谁」。
+// 钉住它是为了让改动它的人先去读那段注释,而不是顺手调一个常量。
+func TestReportWindowIsOneMinute(t *testing.T) {
+	if ReportWindow != time.Minute {
+		t.Fatalf("报告窗口是 %v —— 它是产品决定(「此刻谁在连谁」),"+
+			"改之前先读 report.go 里 ReportWindow 头上那段", ReportWindow)
+	}
+}
+
+// **本次修复的核心证据**:归因存在记录里,连接关掉之后它仍然在。
+//
+// owners map 是**读取那一刻**现问内核得到的「还开着的 socket」快照 —— 这里
+// 刻意传空,模拟「那条连接已经关了、端口再也查不到主人」。记录里存着 Owner
+// 的那一条必须仍然算在 Slack 头上,而不是塌进 unknown。
+func TestAggregateUsesTheOwnerStoredOnTheRecord(t *testing.T) {
+	records := []ConnRecord{
+		{
+			SrcPort: 7, Path: PathTunnel, Source: "default",
+			Owner: Owner{Name: "Slack", ExecPath: "/Applications/Slack.app/Contents/MacOS/Slack"},
+		},
+	}
+	rep := Aggregate(records, map[PortKey]Owner{}, map[PortKey]int64{{Port: 7}: 100}, nil)
+	rows := rep.Groups[0].Rows
+	if len(rows) != 1 {
+		t.Fatalf("tunnel 组该有 1 行,得 %d 行:%#v", len(rows), rows)
+	}
+	if rows[0].App != "Slack" {
+		t.Fatalf("连接关掉之后归因就丢了(App=%q)—— 记录里存的 Owner 没被用上,"+
+			"这正是短连接全部塌进 unknown 的原因", rows[0].App)
+	}
+	if rows[0].ExecPath == "" {
+		t.Error("记录里存着可执行路径,聚合之后却空了 —— 那一行会无声地失去图标")
+	}
+}
+
+// 记录里**没有** Owner 时仍然回落到现查的 owners map:后台 resolver 还没来得及
+// 解析的那些(以及 Snapshot 那次最后的尝试)靠这条路。两条路都要在。
+func TestAggregateFallsBackToTheFreshOwnersMap(t *testing.T) {
+	records := []ConnRecord{{SrcPort: 7, Path: PathTunnel, Source: "default"}}
+	rep := Aggregate(records, map[PortKey]Owner{{Port: 7}: {Name: "Chrome"}}, nil, nil)
+	if got := rep.Groups[0].Rows[0].App; got != "Chrome" {
+		t.Fatalf("记录里没存 Owner 时该回落到现查的 map,得 %q", got)
+	}
 }

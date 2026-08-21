@@ -1,6 +1,9 @@
 package appattr
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 type Path string
 
@@ -41,14 +44,49 @@ type Owner struct {
 	ExecPath string
 }
 
-// ConnRecord 是数据面记下的一条连接:只有源端口和判定,没有应用身份 ——
-// 身份是后台 worker 事后 join 出来的。
+// ReportWindow 是报告覆盖的时间窗:只算**最近这么久**发生的事。
+//
+// **这是一个产品决定,不是随手取的数。** 窗口回答的问题是「**此刻**谁在连谁」。
+// 在它之前报告的语义是「自打开窗口以来的累计」,而 owners 是读取那一刻现问内核
+// 得到的「还开着的 socket」快照 —— 两者合起来让每一条已经关掉的连接永远查不回
+// 主人,`unknown` 于是只涨不落。真机上它是最大的一行,而且**带着真实速率**
+// (959 B/s 上 / 1.8 KB/s 下):速率不为零就说明新的 unknown 还在源源不断进来,
+// 不是陈旧累积。
+//
+// 60 秒的取法:够长,长到一次刷新(5 秒)之间的抖动看不出来、也容得下一条刚
+// 结束的连接留在界面上被看见;够短,短到一分钟前就结束的事不再占着「此刻」。
+// **改它之前先想清楚窗口回答的是哪个问题**,而不是「多大合适」。
+const ReportWindow = time.Minute
+
+// InReportWindow 报告一条记录是否还落在报告窗口内。
+//
+// **now 由调用方传** —— 本包是纯判据,自己读时钟会让「窗口边界对不对」变成一个
+// 只能靠 sleep 去验的东西。边界上那一条**留住**:判反了会让每次刷新恰好丢掉一条
+// 最旧的记录,而那种丢法在界面上完全看不出来。
+func InReportWindow(rec ConnRecord, now time.Time) bool {
+	return !rec.At.Before(now.Add(-ReportWindow))
+}
+
+// ConnRecord 是数据面记下的一条连接:源端口 + 判定 + 产生时刻,应用身份是
+// 后台 resolver 事后填回来的。
 type ConnRecord struct {
 	SrcPort uint16
 	UDP     bool // 与 route.Meta.UDP 同源;决定 join 时落在 PortKey 的哪一半
 	Path    Path
 	Source  string // route.Reason.Source 的字符串形式
 	Rule    string // 用户规则原文;内建列表为空
+
+	// At 是这条记录产生的时刻(建连那一刻,或订阅播种那一刻)。
+	// 报告只覆盖最近 ReportWindow;没有它,报告就是「自打开窗口以来的累计」。
+	At time.Time
+
+	// Owner 是**事后**由后台 resolver 填回来的应用身份,不是数据面记下的
+	// (热路径不做归因,那是这个设计的前提)。零值 = 还没解析出来。
+	//
+	// **存在记录里、而不是读取时现查,是 2026-08-20 这一版的要点**:连接一关,
+	// 内核里那个端口就查不到主人了,现查必然退化成 unknown —— 而「活不过一次
+	// 5 秒刷新」的短连接**全是**这种,它们结构性地填满了 unknown 那一行。
+	Owner Owner
 }
 
 type AppRow struct {
@@ -106,7 +144,13 @@ func Aggregate(records []ConnRecord, owners map[PortKey]Owner, bytesUp, bytesDow
 	for i := len(records) - 1; i >= 0; i-- { // 倒序:最近的记录先拿到这个端口的字节
 		rec := records[i]
 		pk := PortKey{Port: rec.SrcPort, UDP: rec.UDP}
-		owner := owners[pk]                       // 查不到 → 零值 = unknown
+		// **先用记录里存着的归因,查不到才回落到现查的 map。**
+		// 顺序反过来(无条件现查)就等于把这一版的修复整个撤销:连接关掉之后
+		// owners 里再也没有那个端口,一条本来已经解析出来的记录会塌回 unknown。
+		owner := rec.Owner
+		if owner.Name == "" {
+			owner = owners[pk] // 还没解析出来的,给一次最后的机会;仍查不到 → unknown
+		}
 		k := key{path: rec.Path, app: owner.Name} // 空名字 = unknown
 		row := acc[k]
 		if row == nil {
