@@ -321,7 +321,7 @@ func swiftCallArguments(source, callee string) []string {
 //
 // 全绿,菜单项对每一版 Guardian 无条件画出。
 func TestMacMenuGatesAppTrafficOnCapability(t *testing.T) {
-	body, ok := swiftFunctionBody(stripSwiftComments(menuMainSwiftSource(t)), "private func rebuildMenu()")
+	body, ok := swiftFunctionBody(menuMainSwiftCode(t), "private func rebuildMenu()")
 	if !ok {
 		t.Fatal("读不出 rebuildMenu() 的函数体 —— 守卫已经失效,先修守卫")
 	}
@@ -367,7 +367,7 @@ func TestMacMenuGatesAppTrafficOnCapability(t *testing.T) {
 // (`appTrafficWindow` / `appTrafficTimer` / `appTrafficAvailable` 这些后面接着
 // 单词字符,`\b` 天然排除;`fetchAppTrafficOnDemand` 里是大写 A,不匹配。)
 func TestMacMenuOnlyFetchesAppTrafficWhileWindowVisible(t *testing.T) {
-	source := stripSwiftComments(menuMainSwiftSource(t))
+	source := menuMainSwiftCode(t)
 	defs := swiftFunctionDefs(source)
 
 	// ① 拨号本身只能从一个函数里长出来。
@@ -467,7 +467,7 @@ func TestMacMenuOnlyFetchesAppTrafficWhileWindowVisible(t *testing.T) {
 // 后果是每分钟十几次拨号 + 十几行 guardian_apps_fetch_failed,直到菜单进程被杀;
 // 若 Core 之后起来了,订阅会被永久续期、采集永远开着而没有任何窗口。
 func TestMacMenuAppTrafficHeartbeatCannotOutliveItsWindow(t *testing.T) {
-	source := stripSwiftComments(menuMainSwiftSource(t))
+	source := menuMainSwiftCode(t)
 	defs := swiftFunctionDefs(source)
 
 	// 心跳只能从拨号函数的成功分支里起。
@@ -599,7 +599,7 @@ func TestMacMenuAppTrafficWindowSaysByteCountsAreApproximate(t *testing.T) {
 // 判据抽在 shouldSuppressFetch(StatusWatch.swift,已表驱动测过四种组合),
 // 这条守卫钉的是**这里真的调了它、而且实参没被做手脚**。
 func TestMacMenuAppTrafficExplicitOpenIsNeverSuppressed(t *testing.T) {
-	source := stripSwiftComments(menuMainSwiftSource(t))
+	source := menuMainSwiftCode(t)
 	body, ok := swiftFunctionBody(source, "private func fetchAppTrafficOnDemand(forceShow: Bool)")
 	if !ok {
 		t.Fatal("读不出 fetchAppTrafficOnDemand 的函数体 —— 守卫已经失效,先修守卫")
@@ -648,7 +648,7 @@ func TestMacMenuAppTrafficExplicitOpenIsNeverSuppressed(t *testing.T) {
 // 的是**这里真的去问了它、并且成功时把计数清零**——不清零的话,一次瞬时失败之后
 // 那句话会永远挂着,而它挂着的时候数据其实是新的。
 func TestMacMenuMarksAppTrafficStaleWhenItCannotRefresh(t *testing.T) {
-	source := stripSwiftComments(menuMainSwiftSource(t))
+	source := menuMainSwiftCode(t)
 	body, ok := swiftFunctionBody(source, "private func fetchAppTrafficOnDemand(forceShow: Bool)")
 	if !ok {
 		t.Fatal("读不出 fetchAppTrafficOnDemand 的函数体 —— 守卫已经失效,先修守卫")
@@ -910,6 +910,21 @@ func menuAppTrafficModelSource(t *testing.T) string {
 // `let _ = "xPlacement .trailing"` 就能架空右对齐那条,`let _ = "execPath …
 // return nil"` 能架空图标的空路径门(后者会让路径为空的行去取一个不存在路径的
 // 图标)。**审查在隔离副本里实跑绕过成功。** 现在整条路只用这一个入口。
+// menuMainSwiftCode 是**读 main.swift 的全部结构化扫描器的唯一入口**,与窗口那半的
+// menuAppTrafficWindowCode 同构:先剥注释,**再把字符串字面量的内容抹白(保住每一个
+// 字节偏移)**。
+//
+// **抹白这一半此前漏了,双向都被实测坐实过**(2026-08-22 全分支复审):
+//   假绿 —— 删掉真的 `self.appTrafficFetchInFlight = false`、留一行同名字符串字面量,
+//           守卫全绿;而真实后果是 in-flight 标志永久锁死,窗口拉一次之后**再也不
+//           刷新、且没有任何报错**,正是那条守卫存在的理由。
+//   假红 —— 在 rebuildMenu() 里加一行完全无辜的字符串字面量,守卫转红并 blame 错地方。
+// **假红是更坏的那一半**:一条会对无辜代码转红的守卫,会被下一个人删掉,那等于没有守卫。
+func menuMainSwiftCode(t *testing.T) string {
+	t.Helper()
+	return blankSwiftStringLiterals(stripSwiftComments(menuMainSwiftSource(t)))
+}
+
 func menuAppTrafficWindowCode(t *testing.T) string {
 	t.Helper()
 	return blankSwiftStringLiterals(stripSwiftComments(menuAppTrafficWindowSource(t)))

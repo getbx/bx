@@ -85,7 +85,16 @@ func TestMacMenuDroppedTheConstantRows(t *testing.T) {
 		t.Error("`.warning` 的 Status 行不见了 —— 那一行装的是原因(Repair Required / " +
 			"DNS not managed),图标说不出来;删掉它用户就只剩一个「有点不对劲」的图标")
 	}
-	rebuild := scopeAfter(t, source, "private func rebuildMenu() {", 400)
+	// **不用固定字节窗口取 rebuildMenu。** `scopeAfter` 的 span 是个常数,而这里
+	// 要守的那一句在函数体里的位置会随任何一次无关的插入往后挪 —— 在 rebuildMenu
+	// 开头加一行完全无辜的代码就能把它挤出 400 字节之外,守卫**假红**并 blame
+	// 错地方(2026-08-22 实测撞到)。恒红的守卫会被下一个人删掉,那等于没有守卫。
+	// `swiftFunctionBody` 取的是配平后的**整个**函数体,且在抹白副本上数括号,
+	// 不受长度与字符串字面量影响。
+	rebuild, ok := swiftFunctionBody(source, "private func rebuildMenu()")
+	if !ok {
+		t.Fatal("读不出 rebuildMenu() 的函数体 —— 这条守卫已经读不懂它要守的东西,请连同它一起改")
+	}
 	if !strings.Contains(rebuild, "updateShownInVersionRow = false") {
 		t.Error("updateShownInVersionRow 没有在 rebuildMenu 开头复位 —— 漏掉它,某一轮" +
 			"出现过版本行之后,此后所有轮次的页脚都不再显示更新入口,而且完全静默")
