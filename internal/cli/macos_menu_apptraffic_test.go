@@ -956,12 +956,37 @@ func TestMacMenuAppTrafficWindowDrawsAppIcons(t *testing.T) {
 		t.Error("图标取的不是 .app 包(没经过 appIconPath)—— 对包里的可执行文件取图标" +
 			"拿到的是通用图标,一整列长一个样")
 	}
+	// **图标不再单独占一格**(2026-08-20 起它与名字同住第一格),所以这里是两跳:
+	// cells(for:) 用 appCell(...),而 appCell(...) 里真的取了图标**并把它放进
+	// 视图树**。少了后半句,一句 `_ = icon(for: entry)` 就能让守卫全绿而那一列
+	// 一个图标都没有 —— 那正是本文件上一次被攻破的形状(丢弃返回值)。
 	cells, ok := swiftFunctionBody(window, "private func cells(for entry: AppTrafficReport.Entry) -> [NSView]")
 	if !ok {
 		t.Fatal("读不出 cells(for:) 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	if !strings.Contains(cells, "icon(") {
-		t.Error("一行的格子里没有图标 —— 一个没人调用的 icon(for:) 与没有图标完全一样")
+	if !strings.Contains(cells, "appCell(") {
+		t.Error("一行的第一格不是 appCell(...) —— 图标与名字合住的那一格没被用上")
+	}
+	appCell, ok := swiftFunctionBody(window, "private func appCell(_ entry: AppTrafficReport.Entry) -> NSView")
+	if !ok {
+		t.Fatal("读不出 appCell(_:) 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(appCell, "icon(") {
+		t.Error("应用名那一格里没有图标 —— 一个没人调用的 icon(for:) 与没有图标完全一样")
+	}
+	// **判据是「取到的那个值真的被放进了视图树」,不是「附近出现过 addArrangedSubview」。**
+	// 后者是假的:名字那一句本来就在同一个函数体里紧随其后,于是把整段换成
+	// `_ = icon(for: entry)` 照样全绿(写这条守卫时实测过,当场就绿)。所以先取出
+	// `if let X = icon(for:` 绑定的那个名字,再要求它被 addArrangedSubview 收走 ——
+	// 绑定名怎么改都行(钉语义不钉拼法),但那个值必须有人用。
+	bind := regexp.MustCompile(`if\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:self\.)?icon\s*\(`).FindStringSubmatch(appCell)
+	if bind == nil {
+		t.Fatal("appCell 里找不到「把 icon(for:) 的结果绑给一个名字」这一句 —— " +
+			"守卫读不懂现在的代码了,先修守卫(别删)")
+	}
+	if !strings.Contains(appCell, "addArrangedSubview("+bind[1]+")") {
+		t.Errorf("取到的图标 %q 没有被放进视图树 —— 丢弃返回值不会有编译错误,"+
+			"而那一列会一个图标都没有,窗口看起来完全正常", bind[1])
 	}
 }
 
@@ -1204,9 +1229,12 @@ func TestMacMenuAppTrafficSqueezeOrderIsDeterministic(t *testing.T) {
 			strings.TrimSpace(elements[len(elements)-1]))
 	}
 	// 应用名恰好占一格,且**不在数字列里、也不是最后一格** —— 不手抄「它是第 1 列」。
+	//
+	// 判据锚在 `appCell(` 而不是 `appName(`:2026-08-20 起图标与名字合住一格,
+	// 名字那一句退到了 appCell 的函数体里(下面单独钉)。
 	named := 0
 	for i, element := range elements {
-		if !strings.Contains(element, "appName(") {
+		if !strings.Contains(element, "appCell(") {
 			continue
 		}
 		named++
@@ -1221,7 +1249,20 @@ func TestMacMenuAppTrafficSqueezeOrderIsDeterministic(t *testing.T) {
 		}
 	}
 	if named != 1 {
-		t.Errorf("走 appName(...) 的格子有 %d 个,应当恰好 1 个 —— "+
-			"0 个意味着应用名又回到了与数字列同一档(谁让位由 Auto Layout 任选)", named)
+		t.Errorf("走 appCell(...) 的格子有 %d 个,应当恰好 1 个 —— "+
+			"0 个意味着应用名那一格没走那条路,阶梯里给它的那一档就一点用没有", named)
+	}
+	// 那一档阻力必须真的落在应用名这一格上。**只钉常量存在钉不住这件事** ——
+	// 常量在文件里、而这一格用的是默认 750,与数字列同档,谁让位由 Auto Layout 任选。
+	appCellBody, ok := swiftFunctionBody(window, "private func appCell(_ entry: AppTrafficReport.Entry) -> NSView")
+	if !ok {
+		t.Fatal("读不出 appCell(_:) 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(appCellBody, "appName(") {
+		t.Error("appCell 里没有走 appName(...) —— 名字那一格拿不到它那一档阻力")
+	}
+	if !strings.Contains(appCellBody, "appNamePriority") {
+		t.Error("appCell 没有把 appNamePriority 设到那一格上 —— 它会退回默认的 750," +
+			"与数字列同档,谁先让位由 Auto Layout 任选")
 	}
 }
