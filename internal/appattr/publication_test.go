@@ -77,20 +77,25 @@ func scanRepoFor(t *testing.T, match func(body []byte) bool) map[string]bool {
 // 今天的发布面**恰好只有一条**:Core 控制 socket → Guardian 的 owner 门 → 菜单
 // 那个窗口;它不进 `bx status --json`、不进日志、不进诊断包。
 //
-// **这条守卫不是冲着「有人故意转发」去的。** 危险形状是将来某个人把
-// `appattr.Report` 整个 `%+v` 进一行诊断日志、或者顺手把它塞进一个新的只读端点
-// —— 每一步单看都合理,而「发布面扩大靠 review」在这个仓库是已知的弱环(本功能
-// 自己的守卫在一支上被绕过八次)。多一处就红,红了就逼作者回来读那段字段注释,
-// 想清楚再把自己加进这张表 —— **加进来是可以的,悄悄加不行。**
+// **这条守卫不是冲着「有人故意转发」去的。** 危险形状是将来某个人顺手把它塞进
+// 一个新的只读端点、或者在一个新地方开始处理这些字段 —— 每一步单看都合理,而
+// 「发布面扩大靠 review」在这个仓库是已知的弱环(本功能自己的守卫在一支上被绕过
+// 八次)。多一处就红,红了就逼作者回来读那段字段注释,想清楚再把自己加进这张表
+// —— **加进来是可以的,悄悄加不行。**
+//
+// **它拦不住什么,写清楚**:把 `appattr.Report` 整个 `%+v` 进一行日志,按字段名
+// 是扫不出来的(那些名字是运行期产生的,源码里一个字符都没有)。此前这段注释
+// 声称能拦住那种情形,2026-08-22 的全分支复审实测证伪了。那条威胁改由下面的
+// `TestAppTrafficReportTypesHaveAKnownSetOfHandlers` 从**类型名**这个抓手兜住。
 //
 // 形状照 `TestPublicIPProbeDomainsAreNotChinaDirect`:拿真实的树逐个比对,
 // 读不动就响亮失败。
 var execPathPublicationAllowlist = map[string]string{
 	"internal/appattr/owner.go":                               "DisplayName 的形参:把路径**换成**显示名,它不发布路径",
-	"internal/appattr/owner_test.go":                          "上面那条的测试",
 	"internal/appattr/report.go":                              "字段定义 + 聚合(代表值的选法)",
 	"internal/appattr/report_test.go":                         "上面那条的测试",
 	"internal/appattr/publication_test.go":                    "这条守卫自己",
+	"internal/appattr/purity_test.go":                         "纯度禁令里解释「为什么本包不许 import log」时点了这个字段的名",
 	"internal/supervisor/appsource_darwin.go":                 "唯一的生产者:与显示名同源同一次读",
 	"internal/supervisor/apptraffic_test.go":                  "端到端穿过 Snapshot 的测试",
 	"internal/cli/macos_menu_apptraffic_test.go":              "菜单侧图标接线的文本守卫",
@@ -159,9 +164,15 @@ func TestExecutablePathHasExactlyOnePublicationPath(t *testing.T) {
 // `rec.Dest`/结构体字面量把值带出去,那时候值早已经过了 `AppRow.Dests` 这道
 // 发布面,已经被这条守卫盯着。
 //
-// 这不削弱这条守卫要拦的危险形状:将来某个人把 `appattr.Report` 整个 `%+v`
-// 进一行诊断日志、或者顺手把它塞进一个新的只读端点 —— 两种情形都会带着
-// `Dests`/`dests` 一起出现,照样会被扫到。
+// 这条守卫拦得住的:有人顺手把目的地塞进一个新的只读端点、或者在一个新地方
+// 开始处理 `Dests`/`dests` —— 那些都会带着这几个标识符一起出现。
+//
+// **它拦不住的,写清楚**:把 `appattr.Report` 整个 `%+v` 进一行诊断日志。那些
+// 字段名是**运行期**产生的,源码里一个字符都没有,按标识符扫描必然全绿 ——
+// 2026-08-22 的全分支复审实测证伪过这里此前那句相反的断言(在 handleApps 里加
+// 一行 `log.Printf("apps: %+v", report)`,三条守卫全部 PASS)。那条威胁改由
+// `TestAppTrafficReportTypesHaveAKnownSetOfHandlers` 从**类型名**这个抓手兜住:
+// 不论用什么格式动词,泄漏都得先拿到这些类型的值。
 var destPublicationAllowlist = map[string]string{
 	"internal/appattr/report.go":             "字段定义 + 聚合(去重、封顶、DestsMore)",
 	"internal/appattr/report_test.go":        "上面那条的测试",
@@ -214,6 +225,73 @@ func TestDestinationHasExactlyOnePublicationPath(t *testing.T) {
 				"什么」)。先读 internal/appattr/publication_test.go 里"+
 				"destPublicationAllowlist 头上那段,想清楚再把自己加进去:"+
 				"加进来可以,悄悄加不行。", rel)
+		}
+	}
+}
+
+// reportTypeAllowlist 是**允许接触整份应用流量报告(而不只是某个字段)的全部位置**。
+//
+// 它存在的理由是上面两条守卫**拦不住它们自己点名的那个威胁**(2026-08-22 全分支
+// 复审实测坐实):两处注释都写着「危险形状是将来某个人把 appattr.Report 整个
+// `%+v` 进一行诊断日志」,而 `%+v` 的字段名是**运行期**产生的 —— 源码里一个
+// `ExecPath`/`Dests` 字符都没有,按标识符扫描的守卫全绿。实测:在
+// internal/supervisor/control.go 的 handleApps 里加一行
+// `log.Printf("apps: %+v", report)`(会把全部应用名、完整可执行路径、目的地域名
+// 写进 /var/log/bx.log),三条守卫**全部 PASS**。
+//
+// 这条守卫换一个抓手:不扫字段名,扫**类型名**。任何一个新文件开始接触
+// `appattr.Report` / `AppRow` / `ConnRecord` / `AppTrafficResponse`,都会红一次,
+// 逼作者回来读这段 —— 因为**每一种泄漏,不论用什么格式动词,都得先拿到这些类型
+// 的值**。它挡不住已在白名单里的文件后来自己加一行 `%+v`(那需要类型信息,文本
+// 扫描做不到),但它把「新增一个接触点」这件事变成必须显式声明的。
+//
+// **别把它与上面两张表合并**:三者的抓手不同(字段名 / 字段名 / 类型名),
+// 白名单成员也不同;合并之后任一方的放宽会静默连累另外两个。
+var reportTypeAllowlist = map[string]string{
+	"internal/appattr/report.go":                             "类型定义本身",
+	"internal/appattr/report_test.go":                        "上面那条的测试",
+	"internal/appattr/publication_test.go":                   "这条守卫自己",
+	"internal/supervisor/apptraffic.go":                      "生产者:攒记录、聚合成 Report",
+	"internal/supervisor/apptraffic_test.go":                 "上面那条的测试",
+	"internal/supervisor/control.go":                         "Core 侧 /v0/apps:装进 AppTrafficResponse 发出去",
+	"internal/supervisor/control_test.go":                    "上面那条的测试",
+	"internal/supervisor/appsource_darwin.go":                "端口→应用名,喂给聚合",
+	"internal/supervisor/appsource_other.go":                 "同上,非 darwin 桩",
+	"internal/supervisor/appsource_test.go":                  "上面两条的测试",
+	"internal/guardian/apps.go":                              "Guardian /v1/apps:原样转发,不拆开重装",
+	"internal/guardian/apps_test.go":                         "上面那条的测试",
+	"internal/guardian/client.go":                            "Guardian 客户端:取回那份应答",
+	"internal/supervisor/control_client.go":                  "FetchAppTraffic:Guardian 侧取 Core 那份应答",
+	"internal/supervisor/control_client_test.go":             "上面那条的测试",
+	"apps/macos/BxMenu/Sources/BxMenu/AppTrafficModel.swift": "唯一的界面消费者(解码整份报告)",
+	"internal/dialer/dialer.go":                              "只用 appattr.Path 这个枚举,不碰报告体",
+	"internal/dialer/apprecorder_test.go":                    "上面那条的测试",
+	"internal/tun/engine.go":                                 "只用 appattr.Path/ByteAttributor,不碰报告体",
+	"internal/tun/engine_test.go":                            "上面那条的测试",
+	"internal/tun/engine_integration_test.go":                "同上",
+}
+
+// 整份报告不许长出第二个接触点。
+func TestAppTrafficReportTypesHaveAKnownSetOfHandlers(t *testing.T) {
+	pattern := regexp.MustCompile(`\bappattr\.(Report|AppRow|ConnRecord|Group)\b|\bAppTrafficResponse\b`)
+	found := scanRepoFor(t, func(body []byte) bool { return pattern.Match(body) })
+	if len(found) == 0 {
+		t.Fatal("一处报告类型都没扫到 —— 守卫读不到源码了,先修守卫")
+	}
+	for _, required := range []string{
+		"internal/supervisor/control.go",
+		"internal/guardian/apps.go",
+	} {
+		if !found[required] {
+			t.Fatalf("连 %s 都没扫到 —— 守卫的扫描范围塌了,先修守卫", required)
+		}
+	}
+	for rel := range found {
+		if _, ok := reportTypeAllowlist[rel]; !ok {
+			t.Errorf("%s 开始接触整份应用流量报告,而它不在 reportTypeAllowlist 里 —— "+
+				"报告里有完整可执行路径与目的地域名。**每一种泄漏都得先拿到这些类型的值**,"+
+				"包括那种按字段名扫不出来的 `%%+v` 进日志。先读这张表头上那段,"+
+				"想清楚再把自己加进去:加进来可以,悄悄加不行。", rel)
 		}
 	}
 }

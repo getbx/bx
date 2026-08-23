@@ -29,6 +29,12 @@ func TestAppattrPackageStaysPure(t *testing.T) {
 		"net/http":         "判据不许联网",
 		"syscall":          "系统调用属于 appsource_darwin.go,不属于判据",
 		"golang.org/x/sys": "同上 —— 前缀匹配,x/sys/unix 也在内",
+		// **「不进日志」是这个包两次信息面扩大的边界条件之一**,而它此前不在
+		// 禁令里。本包持有 ExecPath(完整可执行路径:安装位置、用户名、装了什么)
+		// 与 Dest(目的地域名:这台机器在访问什么);两处字段注释都把「不进日志」
+		// 写成了发布面的一部分。写日志不落在「不读文件、不联网、不跑命令」这句
+		// 话里,但它是这个包最现实的泄漏出口。
+		"log": "本包持有 ExecPath 与 Dest,「不进日志」是它们发布面的边界条件",
 	}
 	checked := 0
 	for _, entry := range entries {
