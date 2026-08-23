@@ -148,16 +148,16 @@ func TestExplainIgnoresSrcPort(t *testing.T) {
 		PrivateDirect: mustCIDR(DefaultPrivateCIDRs),
 	}
 	bases := []Meta{
-		{Domain: "a.example.com"},                          // UserProxy(最高优先级)
-		{Domain: "a.qq.com"},                               // UserDirect
-		{Domain: "example.cn"},                             // ChinaDomain
-		{Domain: "claude.ai"},                              // default
-		{IP: netip.MustParseAddr("203.0.113.7")},           // UserProxyIP
-		{IP: netip.MustParseAddr("198.51.100.7")},          // UserDirectIP
-		{IP: netip.MustParseAddr("10.84.3.239")},           // UserEgress(压过私网)
-		{IP: netip.MustParseAddr("1.2.3.4")},               // ChinaCIDR
-		{IP: netip.MustParseAddr("192.168.1.5")},           // PrivateDirect
-		{IP: netip.MustParseAddr("8.8.8.8"), UDP: true},    // default
+		{Domain: "a.example.com"},                       // UserProxy(最高优先级)
+		{Domain: "a.qq.com"},                            // UserDirect
+		{Domain: "example.cn"},                          // ChinaDomain
+		{Domain: "claude.ai"},                           // default
+		{IP: netip.MustParseAddr("203.0.113.7")},        // UserProxyIP
+		{IP: netip.MustParseAddr("198.51.100.7")},       // UserDirectIP
+		{IP: netip.MustParseAddr("10.84.3.239")},        // UserEgress(压过私网)
+		{IP: netip.MustParseAddr("1.2.3.4")},            // ChinaCIDR
+		{IP: netip.MustParseAddr("192.168.1.5")},        // PrivateDirect
+		{IP: netip.MustParseAddr("8.8.8.8"), UDP: true}, // default
 	}
 	// 每一条 base 必须真的命中它注释里说的那一层 —— 否则这张表看起来齐全,
 	// 实际仍有分支没被走到(那正是这次要修的那种失效)。

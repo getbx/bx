@@ -915,10 +915,12 @@ func menuAppTrafficModelSource(t *testing.T) string {
 // 字节偏移)**。
 //
 // **抹白这一半此前漏了,双向都被实测坐实过**(2026-08-22 全分支复审):
-//   假绿 —— 删掉真的 `self.appTrafficFetchInFlight = false`、留一行同名字符串字面量,
-//           守卫全绿;而真实后果是 in-flight 标志永久锁死,窗口拉一次之后**再也不
-//           刷新、且没有任何报错**,正是那条守卫存在的理由。
-//   假红 —— 在 rebuildMenu() 里加一行完全无辜的字符串字面量,守卫转红并 blame 错地方。
+//
+//	假绿 —— 删掉真的 `self.appTrafficFetchInFlight = false`、留一行同名字符串字面量,
+//	        守卫全绿;而真实后果是 in-flight 标志永久锁死,窗口拉一次之后**再也不
+//	        刷新、且没有任何报错**,正是那条守卫存在的理由。
+//	假红 —— 在 rebuildMenu() 里加一行完全无辜的字符串字面量,守卫转红并 blame 错地方。
+//
 // **假红是更坏的那一半**:一条会对无辜代码转红的守卫,会被下一个人删掉,那等于没有守卫。
 func menuMainSwiftCode(t *testing.T) string {
 	t.Helper()
