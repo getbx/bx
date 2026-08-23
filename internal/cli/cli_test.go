@@ -5902,3 +5902,59 @@ func TestMacMenuWatchLoopRefreshesOnFailureAndHonoursAbsentGeneration(t *testing
 			"的场合,传 false 会让它在撞上 in-flight 刷新时被永久丢弃")
 	}
 }
+
+// **这句提示只在一种组合下出现,别的失败一个字都不多说。**
+//
+// 起因是一次真实排查:酒店/咖啡店 Wi-Fi 下 `bx down && bx up` 成了必修课,而
+// 家里的 Wi-Fi 重连从来不用。Guardian 日志(2026-08-18 16:39–16:42)坐实了机制:
+// recovery-3 连续 20 次 attempt **全部**停在 stage=transport_health、
+// error_code=transport_unavailable,重试 11 分钟后放弃;直到底层指纹再变一次,
+// recovery-4 才 943ms 一次成功。
+//
+// 判据窄是刻意的:一条到处都出现的提示会被训练成墙纸,而它要提醒的事一年遇不到
+// 几次(与项目所有者否掉「Direct rules: N unreachable」常驻红字同一条判断)。
+func TestCaptiveNetworkHintOnlyFiresOnANetworkChangeThatCannotReachTheServer(t *testing.T) {
+	hit := guardian.RecoverySnapshot{
+		Reason: "underlay_changed", ErrorCode: "transport_unavailable",
+	}
+	if captiveNetworkHint(hit) == "" {
+		t.Error("换网络之后够不着服务器 —— 这正是那句提示唯一该出现的场合")
+	}
+	for _, miss := range []guardian.RecoverySnapshot{
+		{Reason: "manual", ErrorCode: "transport_unavailable"},        // 用户自己点的重连,不是换网络
+		{Reason: "underlay_changed", ErrorCode: "capture_invalid"},    // 路由那半就没成
+		{Reason: "underlay_changed", ErrorCode: "verification_failed"},
+		{Reason: "underlay_changed", ErrorCode: ""},                   // 成功的恢复
+		{},
+	} {
+		if got := captiveNetworkHint(miss); got != "" {
+			t.Errorf("%+v 不该带这句提示,却给了:%q", miss, got)
+		}
+	}
+}
+
+// 提示必须**先给不用关保护的那条路**,并且**保留退路**、**不把原因说死**。
+//
+// 三条都是承重的:① 私网恒直连,网关上的门户页在 bx 开着时通常够得着 —— 门户弹不
+// 出来是因为发现机制(DNS + HTTP 重定向)被接管了,不是那条路被堵死;先试它能省掉
+// 一次「关掉保护」。② 那一条**真机未验**,所以 down/up 的退路不许删。③ bx 分不清
+// 「强制门户」与「服务器真挂了」,断言其中一个就是编答案。
+func TestCaptiveNetworkHintLeadsWithTheNoDisableRouteAndKeepsTheFallback(t *testing.T) {
+	hint := captiveNetworkHint(guardian.RecoverySnapshot{
+		Reason: "underlay_changed", ErrorCode: "transport_unavailable",
+	})
+	gateway := strings.Index(hint, "route -n get default")
+	teardown := strings.Index(hint, "bx down")
+	if gateway < 0 {
+		t.Fatal("没有给出网关那条路 —— 用户只剩「关掉保护」一个选择")
+	}
+	if teardown < 0 {
+		t.Fatal("没有保留 down/up 退路 —— 网关那条路真机未验,不能当成一定管用")
+	}
+	if gateway > teardown {
+		t.Errorf("先让用户关保护、再提网关(%d > %d)—— 顺序反了,第一步应当是不用关的那条", gateway, teardown)
+	}
+	if !strings.Contains(hint, "常常") {
+		t.Error("把原因说死了 —— bx 分不清强制门户与服务器真挂了,只能给可能性")
+	}
+}

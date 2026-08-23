@@ -149,7 +149,7 @@ func recoveryPresentation(for snapshot: RecoverySnapshot) -> RecoveryPresentatio
         return RecoveryPresentation(
             title: title,
             indicator: .red,
-            shortReason: recoveryFailureReason(snapshot.lastErrorCode),
+            shortReason: recoveryFailureReason(snapshot),
             showsSuccessAlert: false
         )
     default:
@@ -196,8 +196,24 @@ private func recoveryStageReason(_ stage: String) -> String {
     }
 }
 
-private func recoveryFailureReason(_ code: String?) -> String {
-    switch code {
+private func recoveryFailureReason(_ snapshot: RecoverySnapshot) -> String {
+    // **刚换过网络、而隧道够不着服务器 —— 这一种单独说话。**
+    //
+    // 起因是一次真实排查:酒店/咖啡店 Wi-Fi 下 `bx down && bx up` 成了必修课,而
+    // 家里的 Wi-Fi 重连从来不用。Guardian 日志(2026-08-18)坐实了机制:换网络触发
+    // 的恢复连续 20 次全部停在 transport_health,重试 11 分钟后放弃。真正卡住人的
+    // 是**强制门户够不着** —— bx 接管了 DNS、境外流量走隧道被 kill-switch 拦下,
+    // 于是酒店网关根本没看见你的请求,那个「点击同意」的页面永远不会弹出来。
+    //
+    // 判据窄是刻意的(reason 与 error code 两个都要对):一条到处都出现的提示会被
+    // 训练成墙纸,而它要提醒的事一年遇不到几次。措辞只给可能性(`often`),不断言
+    // 这就是门户 —— bx 分不清「门户」与「服务器真挂了」,与 `Protection may be off.`
+    // 同一条纪律。完整的做法(先试网关、再退到 down/up)在 `bx status` 里,菜单这
+    // 一行放不下。
+    if snapshot.reason == "underlay_changed" && snapshot.lastErrorCode == "transport_unavailable" {
+        return "Can't reach the server — cafés and hotels often need sign-in first"
+    }
+    switch snapshot.lastErrorCode {
     case "capture_invalid":
         return "Protected path changed"
     case "capture_missing":
