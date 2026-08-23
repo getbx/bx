@@ -1061,6 +1061,81 @@ func TestAppTrafficDropsByteAccountWhenItsRecordsLeaveTheWindow(t *testing.T) {
 // 窗口问的是「此刻谁在连谁」,而一条开了两小时还在灌流的会议媒体流恰恰是最该
 // 被看见的那种。只按时间裁会让长连接在开窗 60 秒后集体消失 —— 那正是
 // 2026-08-20 那个真机 bug(长连接全在盲区)换一种方式复发。
+// **裁剪的早退判据只许看时间,不许看活性。**
+//
+// 记录按时间序,最旧的一条还在窗口内 ⇒ 全都在。若改成「最旧的那一条留得住吗」,
+// 一条位置在前、因为**还开着**而留住的长连接会让它**后面所有**该裁的记录一起
+// 逃过裁剪。生产代码的注释里写着这句话,而在全分支复审之前它只活在注释里:
+// 把判据换成那个错误形式,两个包全绿。
+func TestAppTrafficTrimEarlyExitLooksOnlyAtTime(t *testing.T) {
+	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := &fakeAppSource{}
+	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
+
+	tr.Subscribe()
+	// 最旧的一条属于一个**还开着**的连接(错误的早退判据会在它身上返回 true
+	// 并当场 return),它后面跟着一批早该被裁掉的、已经关掉的连接。
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "") // 不关闭
+	at = at.Add(time.Second)
+	for i := 0; i < 3; i++ {
+		tr.Record(uint16(100+i), false, appattr.PathDirect, "default", "", "")
+		tr.ConnClosed(uint16(100+i), false)
+	}
+	if got := tr.bufferedSize(); got != 4 {
+		t.Fatalf("前置条件不成立:应有 4 条,实际 %d", got)
+	}
+
+	renewUntil(tr, &at, at.Add(5*time.Minute))
+
+	// 那三条关掉的必须被裁掉;只剩长连接那一条。
+	if got := tr.bufferedSize(); got != 1 {
+		t.Fatalf("早退判据看了活性:最旧那条长连接把它后面 %d 条该裁的记录一起放走了", got)
+	}
+}
+
+// **一个还开着的端口,不许把它的全部历史记录一起豁免掉。**
+//
+// 活性豁免的键是 PortKey,而一个 UDP socket 上可以先后有很多条流(gVisor 按
+// 5 元组建流:一个会议 socket 打 STUN + TURN + 多个 peer)。逐条豁免的话,只要
+// 该端口上还有**任意**一条流开着,它在整个订阅期内产生过的每一条记录都逃过时间
+// 裁剪 —— 报告悄悄退回「自订阅以来的累计」,而滚动窗口存在的全部理由就是消灭
+// 那个语义。全分支复审用真探针实测过:一条常驻 UDP 流 + 每 5 秒建关一条同端口
+// 新流,跑 30 分钟 ⇒ Conns=361,而窗口内本该约 13(TCP 对照组正确)。
+//
+// **既有的那条测试抓不到它** —— 它只有一条连接,于是「留住那一条」与「留住全部
+// 历史」在输出上完全一样。又一次「测试输入让待守属性不可见」。
+func TestAppTrafficCapsOutOfWindowRecordsPerLivePort(t *testing.T) {
+	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{{Port: 9, UDP: true}: "Meeting"}}
+	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
+
+	tr.Subscribe()
+	// 同一个 UDP 源端口上先后建立四条流,其中一条**不关闭**(常驻媒体流)。
+	tr.Record(9, true, appattr.PathTunnel, "default", "", "stun.example.com") // 常驻,不 ConnClosed
+	for i := 0; i < 3; i++ {
+		tr.Record(9, true, appattr.PathTunnel, "default", "", "turn.example.com")
+		tr.ConnClosed(9, true)
+	}
+	if got := tr.bufferedSize(); got != 4 {
+		t.Fatalf("前置条件不成立:缓冲里应有 4 条记录,实际 %d", got)
+	}
+
+	// 全部记录都过期(窗口 60 秒),但那个端口上还有一条流开着。
+	renewUntil(tr, &at, at.Add(5*time.Minute))
+
+	if got := tr.bufferedSize(); got != 1 {
+		t.Fatalf("一个还开着的端口把 %d 条过期记录全留下了 —— 报告退回了「自订阅以来的累计」", got)
+	}
+	rep, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := rep.Groups[0].Rows
+	if len(rows) != 1 || rows[0].Conns != 1 {
+		t.Fatalf("还开着的那条流应当恰好留下一条记录:%#v", rows)
+	}
+}
+
 func TestAppTrafficKeepsRecordsOfConnectionsThatAreStillOpen(t *testing.T) {
 	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "ssh"}}
@@ -1133,6 +1208,36 @@ func TestAppTrafficResolverAttributesBeforeTheSocketDisappears(t *testing.T) {
 // 每次转发写都要过的那把全局锁 —— 持锁去问就是每 250 毫秒把整机的记账阻塞一次。
 // 白盒手法与 TestAppTrafficByteAccountingTakesNoLockWhileUnsubscribed 同款:
 // 让被注入的 appSource 在被调用时自己去抢 t.mu,resolver 若持着锁就死锁,超时即红。
+// **`Snapshot` 那条路同样不许持锁问内核 —— 它此前没有守卫。**
+//
+// 上面那条只钉 `resolveOnce`。而 `Snapshot` 自己的注释也声称「问内核那一步不持锁」,
+// 它还是菜单每 5 秒必走的路 —— 全分支复审实测:把 `Snapshot` 的 Unlock 挪到
+// `OwnersByPort()` 之后(持全局锁做两次 sysctl,真机 451µs~1.5ms),三个包全绿。
+// 判据与手法都是现成的,只是少了一份。
+func TestAppTrafficSnapshotTakesNoLockWhileAskingTheKernel(t *testing.T) {
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
+	tr := newAppTrafficNoResolver(src, time.Now)
+	src.whileAnswering = func() {
+		tr.mu.Lock()
+		tr.mu.Unlock() //nolint:staticcheck // 只为证明这把锁此刻是拿得到的
+	}
+
+	tr.Subscribe()
+	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
+
+	done := make(chan struct{})
+	go func() {
+		_, _, _ = tr.Snapshot()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		// 刻意不解锁也不 Fatal:那个 goroutine 停在锁上,进程退出即回收。
+		t.Error("Snapshot 持着 t.mu 去问内核 —— 菜单每 5 秒就把整机的记账阻塞一次")
+	}
+}
+
 func TestAppTrafficResolverTakesNoLockWhileAskingTheKernel(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, time.Now)

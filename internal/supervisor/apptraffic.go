@@ -408,12 +408,40 @@ func (t *AppTraffic) trimLocked(now time.Time) {
 	}
 	kept := make([]bufferedRecord, 0, len(ordered))
 	alive := make(map[appattr.PortKey]bool, len(ordered))
-	for _, br := range ordered {
-		if !t.keepRecordLocked(br.rec, now) {
-			continue
+	// **倒序遍历,同一个还开着的端口只留最近的那一条过期记录。**
+	//
+	// 活性豁免的键是 PortKey,而一个 UDP socket 上可以有很多条流先后建立
+	// (gVisor 按 5 元组建流:一个会议 socket 打 STUN + TURN + 多个 peer)。
+	// 逐条豁免的话,只要该端口上还有**任意**一条流开着,它在整个订阅期内产生过
+	// 的每一条历史记录都逃过时间裁剪 —— 报告退回「自订阅以来的累计」,而这正是
+	// 滚动窗口要消灭的语义。实测(30 分钟,一条常驻 UDP 流 + 每 5 秒建关一条同
+	// 端口新流):`Conns=361`,而窗口内本该约 13;TCP 对照组正确(refs 恒为 1)。
+	// 更远的后果与 ConnClosed 头上那段同形:约 5.7 小时后这些历史记录填满
+	// 4096 格环形缓冲,**新记录被自己的历史挤掉**,而没有任何一处报错。
+	//
+	// 只留最近一条,长连接照样看得见(那是豁免的全部目的),而累积被按端口封顶。
+	// 代价是**同一个 socket 上并存的多条流,过期之后只剩一条** —— 与种子那条
+	// 已知缺口(TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket)同一个
+	// 形状、同一个理由,不是新引入的近似。
+	seenOpen := make(map[appattr.PortKey]bool, len(ordered))
+	for i := len(ordered) - 1; i >= 0; i-- {
+		br := ordered[i]
+		pk := appattr.PortKey{Port: br.rec.SrcPort, UDP: br.rec.UDP}
+		if !appattr.InReportWindow(br.rec, now) {
+			if _, open := t.live[pk]; !open {
+				continue
+			}
+			if seenOpen[pk] {
+				continue // 这个端口的过期记录已经留过一条了
+			}
+			seenOpen[pk] = true
 		}
 		kept = append(kept, br)
-		alive[appattr.PortKey{Port: br.rec.SrcPort, UDP: br.rec.UDP}] = true
+		alive[pk] = true
+	}
+	// kept 是倒着攒的,翻回时间序 —— 顺序是承重的(Aggregate 靠倒序取「最近」)。
+	for l, r := 0, len(kept)-1; l < r; l, r = l+1, r-1 {
+		kept[l], kept[r] = kept[r], kept[l]
 	}
 	if len(kept) == len(ordered) {
 		return // 全都留住了(前面那些是还开着的长连接),不付重写的代价
@@ -427,15 +455,6 @@ func (t *AppTraffic) trimLocked(now time.Time) {
 		t.next, t.wrapped = 0, true
 	}
 	t.trimByteAccountsLocked(alive)
-}
-
-// keepRecordLocked 判定一条记录是否还该留在报告里。调用者必须持有 t.mu。
-func (t *AppTraffic) keepRecordLocked(rec appattr.ConnRecord, now time.Time) bool {
-	if appattr.InReportWindow(rec, now) {
-		return true
-	}
-	_, stillOpen := t.live[appattr.PortKey{Port: rec.SrcPort, UDP: rec.UDP}]
-	return stillOpen
 }
 
 // trimByteAccountsLocked 删掉「窗口内已经没有任何记录、且连接也不在开着」的
@@ -684,6 +703,17 @@ func (t *AppTraffic) liveSize() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.live)
+}
+
+// bufferedSize 报告环形缓冲里有多少条记录。**测试专用的白盒窗口。**
+//
+// 与 liveSize 同一个理由:「一个还开着的端口不许把它的全部历史记录一起豁免掉」
+// 这条不变量在报告里几乎看不见 —— 多留下来的那些记录本身都是真的、聚合出来的
+// 行也都对,只是数字一路涨,而涨到什么程度算错没有一个界面上的判据。直接数。
+func (t *AppTraffic) bufferedSize() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.filledLocked()
 }
 
 func (t *AppTraffic) AddUp(srcPort uint16, udp bool, n int64) {
