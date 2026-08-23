@@ -1283,3 +1283,58 @@ func TestMacMenuAppTrafficSqueezeOrderIsDeterministic(t *testing.T) {
 			"与数字列同档,谁先让位由 Auto Layout 任选")
 	}
 }
+
+// **「打开 Wi-Fi 登录页」这个按钮不许碰保护状态。**
+//
+// 它存在的全部理由就是给一条**不用关掉 bx** 的出路:咖啡馆/酒店的强制门户靠劫持
+// DNS + 拦 HTTP 重定向弹登录页,而 bx 开着时那两条都被接管,页面永远弹不出来;
+// 但网关本身是私网、一直是直连的,所以直接打开 http://<网关> 通常就能登录。
+//
+// 被否掉的那个「登录此网络」入口是**另一件事**:那个要关掉保护,把最危险的动作
+// 包装成小事,而自动重新武装是一个可能悄悄违约的承诺。两者只差一个字面上的相似,
+// 后果差很远 —— 所以这条守卫钉的是「这个动作体里不出现任何关闭保护的东西」。
+//
+// 三条判据都锚在语义位置上,不在拼法上:
+//  1. 菜单项由 recoveryLooksLikeCaptiveNetwork 门控(不是无条件出现);
+//  2. 动作体把 route 的输出交给纯函数 wifiSignInURL,自己不拼地址;
+//  3. 动作体里**没有**任何关闭保护的调用。
+func TestMacMenuWiFiSignInNeverTouchesProtection(t *testing.T) {
+	source := menuMainSwiftCode(t)
+
+	rebuild, ok := swiftFunctionBody(source, "private func rebuildMenu()")
+	if !ok {
+		t.Fatal("读不出 rebuildMenu() 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	item := strings.Index(rebuild, "openWiFiSignIn")
+	if item < 0 {
+		t.Fatal("菜单里没有「打开 Wi-Fi 登录页」这一项 —— 用户只剩关掉保护一条路")
+	}
+	gate := strings.LastIndex(rebuild[:item], "recoveryLooksLikeCaptiveNetwork")
+	if gate < 0 {
+		t.Error("那个菜单项没有被 recoveryLooksLikeCaptiveNetwork 门控 —— " +
+			"一个到处出现的按钮会被训练成墙纸,而它要提醒的事一年遇不到几次")
+	}
+
+	body, ok := swiftFunctionBody(source, "@objc private func openWiFiSignIn()")
+	if !ok {
+		t.Fatal("读不出 openWiFiSignIn() 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(body, "wifiSignInURL(fromRouteOutput:") {
+		t.Error("动作体没有把 route 的输出交给 wifiSignInURL —— 那个纯函数是" +
+			"「只许打开私网地址」这条安全判断的唯一落点;自己拼地址就绕过了它," +
+			"而网关若是公网 IP,打开它就是隧道外的一个明文请求")
+	}
+	// **这一条是这个按钮存在的前提。** 它一旦碰了保护,就变成了被否掉的那个设计。
+	for _, forbidden := range []struct{ needle, why string }{
+		{"/v1/down", "直接调了关闭保护的端点"},
+		{"turnOff", "走了关闭保护那条路"},
+		{"\"down\"", "spawn 了 bx down"},
+		{"performToggle", "走了开关保护的通道"},
+	} {
+		if strings.Contains(body, forbidden.needle) {
+			t.Errorf("openWiFiSignIn %s(%q)—— 这个按钮的全部理由就是**不用**关掉保护;"+
+				"它一旦碰了保护,就变成了那个被明确否掉的设计(把最危险的动作包装成小事,"+
+				"外加一个可能悄悄违约的自动重新武装)", forbidden.why, forbidden.needle)
+		}
+	}
+}

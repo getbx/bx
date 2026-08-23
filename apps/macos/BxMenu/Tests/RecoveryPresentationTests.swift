@@ -37,6 +37,35 @@ struct RecoveryPresentationTests {
         expect(blocked.indicator == .red, "blocked 仍然是失败")
         expect(blocked.shortReason == "Protected transport unavailable", "blocked 的失败原因")
 
+        // —— 「打开 Wi-Fi 登录页」那个按钮的判据。
+        //
+        // **只接受私网地址是一条安全判断**:网关若是公网 IP(某些网络确实如此),
+        // 打开它就是在隧道外发一个明文 HTTP 请求 —— 那正是 bx 要防的事。
+        // 宁可不给这个按钮,也不给一个会漏的按钮。
+        let routeOutput = """
+           route to: default
+        destination: default
+               mask: default
+            gateway: 192.168.50.1
+          interface: en0
+        """
+        expect(wifiSignInURL(fromRouteOutput: routeOutput)?.absoluteString == "http://192.168.50.1/",
+               "私网网关没能拼出登录页地址:\(String(describing: wifiSignInURL(fromRouteOutput: routeOutput)))")
+        expect(wifiSignInURL(fromRouteOutput: "gateway: 8.8.8.8") == nil,
+               "公网网关给出了按钮 —— 点下去就是隧道外的一个明文请求")
+        expect(wifiSignInURL(fromRouteOutput: "gateway: 2001:db8::1") == nil,
+               "v6 网关给出了按钮,而 bx 的 v6 是 fail-closed 阻断的,那是个打不开的按钮")
+        expect(wifiSignInURL(fromRouteOutput: "interface: en0") == nil, "没有网关却给了按钮")
+        expect(wifiSignInURL(fromRouteOutput: "") == nil, "空输出给了按钮")
+        // 私网各段都要认(酒店常见 CGNAT 与 172.16/12),而相邻的公网段不许放行。
+        for ok in ["10.0.0.1", "192.168.1.1", "172.16.0.1", "172.31.255.254", "100.64.0.1", "169.254.1.1"] {
+            expect(isPrivateIPv4(ok), "\(ok) 应当被认作私网")
+        }
+        for bad in ["172.15.0.1", "172.32.0.1", "100.63.0.1", "100.128.0.1", "8.8.8.8",
+                    "1.2.3", "1.2.3.4.5", "256.1.1.1", "10.0.0.-1", "10.0.0.a", ""] {
+            expect(!isPrivateIPv4(bad), "\(bad) 不该被认作私网")
+        }
+
         // 换网络之后够不着服务器 —— 单独说话(酒店/咖啡店 Wi-Fi 的强制门户)。
         // 判据是 reason 与 error code **两个都要对**:一条到处出现的提示会被训练
         // 成墙纸,而它要提醒的事一年遇不到几次。

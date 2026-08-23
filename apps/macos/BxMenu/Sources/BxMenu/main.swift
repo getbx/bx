@@ -1380,6 +1380,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     enabled: false
                 )
             } else if snapshot.state == "failed" {
+                // **这个网络看起来要先登录 —— 给一个不用关掉保护的出路。**
+                //
+                // 咖啡馆/酒店 Wi-Fi 的强制门户靠劫持 DNS + 拦 HTTP 重定向弹登录页,
+                // 而 bx 开着时那两条都被接管了,于是网关根本没看见你的请求、页面永远
+                // 弹不出来。但**网关本身是私网、一直是直连的**(kill-switch 只拦
+                // Proxy 判定),所以直接打开 http://<网关> 通常就能登录 —— 不用
+                // `bx down`、没有 fail-open 窗口、没有要守的承诺。
+                //
+                // 这与被否掉的那个「登录此网络」入口是两回事:那个要**关掉保护**,
+                // 而它把最危险的动作包装成小事、且自动重新武装是个可能悄悄违约的
+                // 承诺。这一个只是打开一个 URL。
+                if recoveryLooksLikeCaptiveNetwork(snapshot) {
+                    menu.addAction("Open Wi-Fi Sign-In Page", symbol: "wifi.exclamationmark",
+                                   target: self, action: #selector(openWiFiSignIn))
+                }
                 menu.addAction("Details", symbol: "info.circle", target: self, action: #selector(showRecoveryDetails))
                 menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
             } else {
@@ -1983,6 +1998,63 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return "needs_attention"
         default:
             return nil
+        }
+    }
+
+    /// 问一次内核「默认路由的网关是谁」。**这是 main.swift 里第三个、也是唯一一个
+    /// 只读的进程出口**,由 TestMacMenuSpawnsGoThroughOneDoor 的清单显式认可。
+    ///
+    /// 为什么它值得占一个名额:替代方案要么是让菜单自己解析 `NET_RT_DUMP` 路由表
+    /// (一大段 C interop,判据反而更难看见),要么是把网关经 Guardian 的 wire 格式
+    /// 发上来(要动协议 + 能力声明,而它只服务这一个按钮)。跑 `/sbin/route -n get
+    /// default` 是**只读**的,不提权、不改任何东西,且只在**用户点了那一下**时发生
+    /// —— 与 `ensureCLIUsable` 同一类,不在每 2 秒的轮询路径上。
+    ///
+    /// 拿到的字符串原样交给纯函数 `wifiSignInURL(fromRouteOutput:)` 判定,这里
+    /// 不做任何解析 —— 「只许打开私网地址」那条安全判断必须住在测得到的地方。
+    private func readDefaultRouteOffMainThread(_ completion: @escaping (String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/sbin/route")
+            process.arguments = ["-n", "get", "default"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                completion(String(data: data, encoding: .utf8) ?? "")
+            } catch {
+                completion("")
+            }
+        }
+    }
+
+    /// 打开这个网络的登录页(强制门户)。**不改变保护状态。**
+    ///
+    /// 判据全在纯函数 `wifiSignInURL(fromRouteOutput:)` 里(它只接受私网地址 ——
+    /// 网关若是公网 IP,打开它就是隧道外的一个明文请求);这里只负责问一次内核、
+    /// 把结果喂给它、再交给系统浏览器。
+    ///
+    /// **spawn 在动作路径上,不在轮询路径上** —— 与 `ensureCLIUsable` 同一类:
+    /// 每 2 秒跑一次 `route` 是浪费,用户点一下跑一次不是。
+    @objc private func openWiFiSignIn() {
+        readDefaultRouteOffMainThread { output in
+            let url = wifiSignInURL(fromRouteOutput: output)
+            DispatchQueue.main.async {
+                guard let url else {
+                    // **读不到就说读不到,不摆一个猜出来的地址。** 网关是公网 IP 时
+                    // 也走这一支:那种情况下打开它会在隧道外发一个明文请求。
+                    let alert = NSAlert()
+                    alert.messageText = "Couldn't find this network's sign-in page"
+                    alert.informativeText = "bx couldn't read a private gateway address for this "
+                        + "network. Turn bx off, sign in with your browser, then turn it back on."
+                    alert.runModal()
+                    return
+                }
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 

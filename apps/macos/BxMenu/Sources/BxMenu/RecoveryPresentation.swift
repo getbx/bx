@@ -210,7 +210,7 @@ private func recoveryFailureReason(_ snapshot: RecoverySnapshot) -> String {
     // 这就是门户 —— bx 分不清「门户」与「服务器真挂了」,与 `Protection may be off.`
     // 同一条纪律。完整的做法(先试网关、再退到 down/up)在 `bx status` 里,菜单这
     // 一行放不下。
-    if snapshot.reason == "underlay_changed" && snapshot.lastErrorCode == "transport_unavailable" {
+    if recoveryLooksLikeCaptiveNetwork(snapshot) {
         return "Can't reach the server — cafés and hotels often need sign-in first"
     }
     switch snapshot.lastErrorCode {
@@ -236,5 +236,64 @@ private func recoveryFailureReason(_ snapshot: RecoverySnapshot) -> String {
         return "Protection verification failed"
     default:
         return "Recovery failed"
+    }
+}
+
+/// 这次失败**看起来**像「这个网络要先登录」(咖啡馆/酒店 Wi-Fi 的强制门户)。
+///
+/// 判据窄到只有一种组合:`underlay_changed`(换网络触发的恢复)且
+/// `transport_unavailable`(路由那半已经重绑成功、卡在传输健康那一步 —— Rebind 排在
+/// transport_health 之前,走到这个码就说明路由没问题)。别的失败不给这句话:一条到处
+/// 出现的提示会被训练成墙纸,而它要提醒的事一年遇不到几次。
+///
+/// **只是「看起来像」。** bx 分不清「强制门户」与「服务器真挂了 / 运营商在拦」,
+/// 措辞与这里的函数名都按可能性写,不断言。
+func recoveryLooksLikeCaptiveNetwork(_ snapshot: RecoverySnapshot) -> Bool {
+    snapshot.reason == "underlay_changed" && snapshot.lastErrorCode == "transport_unavailable"
+}
+
+/// 从 `route -n get default` 的输出里取出网关,拼成登录页的地址。
+///
+/// **为什么这条路不用关掉保护**:私网恒直连(`route.DefaultPrivateCIDRs`,kill-switch
+/// 只拦 Proxy 判定),而网关通常还在本网段、按最长前缀根本不会进 TUN。门户之所以弹
+/// 不出来,是**发现机制**(DNS 劫持 + HTTP 重定向)被 bx 接管了,不是那条路被堵死。
+/// 由 `TestPrivateStaysDirectWhileTheTunnelIsDownButPublicIsBlocked`(Go 侧,带对照组)
+/// 钉住这个前提。
+///
+/// **只接受私网地址,这是一条安全判断不是洁癖。** 网关若是公网 IP(某些网络确实如此),
+/// 打开它就是在隧道外发一个明文 HTTP 请求 —— 那正是 bx 存在的理由要防的事。宁可
+/// 不给这个按钮,也不给一个会漏的按钮。
+func wifiSignInURL(fromRouteOutput output: String) -> URL? {
+    var gateway: String?
+    for line in output.split(separator: "\n") {
+        let parts = line.split(separator: ":", maxSplits: 1)
+        guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == "gateway" else { continue }
+        gateway = parts[1].trimmingCharacters(in: .whitespaces)
+    }
+    guard let gateway, isPrivateIPv4(gateway) else { return nil }
+    return URL(string: "http://\(gateway)/")
+}
+
+/// 是不是 RFC1918 / CGNAT / link-local 的 IPv4 字面量。
+///
+/// 手写解析而不是借 Foundation:这一段是安全判断,判据必须看得见、测得到。
+/// IPv6 一律不接受 —— bx 的 v6 是 fail-closed 阻断的,给一个 v6 地址等于给一个
+/// 打不开的按钮。
+func isPrivateIPv4(_ text: String) -> Bool {
+    let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+    guard parts.count == 4 else { return false }
+    var octets: [Int] = []
+    for part in parts {
+        guard !part.isEmpty, part.count <= 3, part.allSatisfy(\.isNumber),
+              let value = Int(part), value >= 0, value <= 255 else { return false }
+        octets.append(value)
+    }
+    switch (octets[0], octets[1]) {
+    case (10, _): return true
+    case (192, 168): return true
+    case (172, 16...31): return true
+    case (100, 64...127): return true // CGNAT:酒店网络常见,仍然不是公网
+    case (169, 254): return true      // link-local
+    default: return false
     }
 }
