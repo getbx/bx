@@ -1476,7 +1476,13 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			// 事的三种写法,查字面量只挡得住第一种(复审用后两种各绕过一次)。
 			// `\b` 让 `ProcessInfo` 这类前缀相同的标识符不被误伤。
 			pattern: regexp.MustCompile(`\bProcess\b`), label: "Process 类型",
-			callers: []string{"runBx", "runPrivilegedScriptOffMainThread"},
+			// readDefaultRouteOffMainThread 跑的是 `/sbin/route -n get default`
+			// (**只读**,不提权、不改任何东西),给「打开 Wi-Fi 登录页」那个按钮
+			// 取网关。它只在用户点那一下时发生,不在轮询路径上。
+			// **加进这份清单是刻意的,不是绕过**:替代方案要么让菜单自己解析
+			// NET_RT_DUMP(一大段 C interop,判据反而更难看见),要么把网关经
+			// Guardian 的 wire 格式发上来(要动协议 + 能力声明,只为一个按钮)。
+			callers: []string{"runBx", "runPrivilegedScriptOffMainThread", "readDefaultRouteOffMainThread"},
 			why:     "进程创建的出口必须是可枚举的一小撮。多一个没人盯着的,上面整条链的证明就绕过去了",
 		},
 		{
@@ -5943,6 +5949,12 @@ func TestCaptiveNetworkHintLeadsWithTheNoDisableRouteAndKeepsTheFallback(t *test
 	hint := captiveNetworkHint(guardian.RecoverySnapshot{
 		Reason: "underlay_changed", ErrorCode: "transport_unavailable",
 	})
+	// **菜单那条路必须排在最前** —— 它是给普通用户的答案,命令行不是。
+	if menu := strings.Index(hint, "Open Wi-Fi Sign-In Page"); menu < 0 {
+		t.Error("没有指向菜单里那个按钮 —— 让用户敲命令行不该是主要答案")
+	} else if cmd := strings.Index(hint, "route -n get default"); cmd >= 0 && menu > cmd {
+		t.Errorf("命令行排在菜单按钮前面(%d > %d)—— 顺序反了", menu, cmd)
+	}
 	gateway := strings.Index(hint, "route -n get default")
 	teardown := strings.Index(hint, "bx down")
 	if gateway < 0 {

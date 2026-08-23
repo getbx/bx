@@ -2,6 +2,7 @@ package dialer
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -467,5 +468,78 @@ func TestDialProxyUDPNoUDPTransportUsesPrimary(t *testing.T) {
 	}
 	if px.lastNetwork != "udp" {
 		t.Fatalf("无专用 UDP 传输应走主传输, got %q", px.lastNetwork)
+	}
+}
+
+// **隧道挂掉时,私网仍然直连 —— 酒店门户那条路的承重前提。**
+//
+// 起因是一次真实排查:酒店/咖啡店 Wi-Fi 下必须 `bx down && bx up`。真正卡住人的是
+// 强制门户够不着 —— bx 接管 DNS、境外流量走隧道被 kill-switch 拦下,于是网关根本
+// 没看见你的请求、不会重定向,那个「点击同意」的页面永远弹不出来。
+//
+// 而**网关本身**是私网地址。若私网在隧道挂掉时仍然直连,那就存在一条不用关掉保护
+// 的出路:直接访问 `http://<网关>`。这条测试就是那个前提本身 —— 它若不成立,
+// 「打开 Wi-Fi 登录页」那个入口整个没有意义。
+//
+// **对照组是必需的**:只断言「私网通了」证明不了什么 —— kill-switch 压根没武装时
+// 它也通。所以同一个 Dialer、同一次不健康,公网目的地必须被 Block。
+func TestPrivateStaysDirectWhileTheTunnelIsDownButPublicIsBlocked(t *testing.T) {
+	private, err := route.NewCIDRSet(route.DefaultPrivateCIDRs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	px, dr := &recordDialer{}, &recordDialer{}
+	d := &Dialer{Direct: dr, Killswitch: true}
+	d.SetTransport(&Transport{Proxy: px, Healthy: func() bool { return false }}) // 隧道挂了
+	d.SetRouter(&route.Router{PrivateDirect: private})
+
+	// ① 网关(私网)—— 必须走直连,不受 kill-switch 约束。
+	gateway := route.Meta{IP: netip.MustParseAddr("192.168.1.1"), Port: 80}
+	if _, err := d.Dial(context.Background(), gateway); err != nil {
+		t.Fatalf("隧道挂掉时连不上网关 —— 「不用关 bx 就能打开门户页」这条路不成立:%v", err)
+	}
+	if dr.lastAddr != "192.168.1.1:80" {
+		t.Fatalf("网关没有走直连拨号器(got %q)", dr.lastAddr)
+	}
+
+	// ② 对照组:同一次不健康,公网目的地必须被拦 —— 否则上面那条只是说明
+	// kill-switch 压根没武装,证明不了任何事。
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("93.184.216.34"), Port: 443}); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("隧道挂掉而公网没有被 kill-switch 拦下(err=%v)—— 对照组不成立,"+
+			"上面那条私网断言什么也证明不了", err)
+	}
+	if px.lastAddr != "" {
+		t.Errorf("隧道挂掉却还是走了代理:%q", px.lastAddr)
+	}
+}
+
+// **隧道健康一回来,数据面立刻自己恢复 —— 不需要任何人来「重新武装」。**
+//
+// 这条回答的是酒店那个排查里的第二个问题:门户满足之后,还需不需要 `bx down &&
+// bx up`?判据在这里:kill-switch 是**每次拨号现问一遍** `Healthy()`,不是一个
+// 记下来的状态。所以隧道自己重连成功的那一刻,下一条连接就通了。
+//
+// (隧道进程**会不会**重连是 internal/tunnel 的事,它自带 socks5 健康检查 + 指数
+// 退避重连、并有自己的测试;这里钉的是「它一旦回来,dialer 这一侧不会把人继续
+// 拦在门外」——若 kill-switch 把不健康记成了一个粘住的状态,那就是一条真缺口。)
+func TestProxyResumesTheMomentTunnelHealthReturns(t *testing.T) {
+	healthy := false
+	px, dr := &recordDialer{}, &recordDialer{}
+	d := &Dialer{Direct: dr, Killswitch: true}
+	d.SetTransport(&Transport{Proxy: px, Healthy: func() bool { return healthy }})
+	d.SetRouter(&route.Router{}) // 空路由:域名未命中任何列表 ⇒ 默认走代理
+
+	target := route.Meta{Domain: "example.com", Port: 443}
+	if _, err := d.Dial(context.Background(), target); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("隧道不健康时没有被 kill-switch 拦下(err=%v)—— 前置条件不成立", err)
+	}
+
+	healthy = true // 隧道自己重连上了,没有任何外部干预
+	if _, err := d.Dial(context.Background(), target); err != nil {
+		t.Fatalf("隧道恢复健康之后仍然拨不出去 —— kill-switch 把不健康记成了粘住的状态,"+
+			"那意味着门户登录完之后还必须 bx down && bx up:%v", err)
+	}
+	if px.lastAddr != "example.com:443" {
+		t.Errorf("恢复之后没有走代理:%q", px.lastAddr)
 	}
 }

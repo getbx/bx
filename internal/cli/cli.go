@@ -4612,9 +4612,10 @@ func captiveNetworkHint(recovery guardian.RecoverySnapshot) string {
 		return ""
 	}
 	return "          这个网络连不上服务器。咖啡馆/酒店 Wi-Fi 常常要先在浏览器里登录。\n" +
-		"          先试(不用关 bx,私网是直连的):\n" +
-		"            open \"http://$(route -n get default | awk '/gateway:/{print $2}')\"\n" +
-		"          门户页打不开或登录后仍不通,再:sudo bx down → 登录 → sudo bx up\n"
+		"          先用菜单栏的「Open Wi-Fi Sign-In Page」——**不用关掉 bx**\n" +
+		"          (网关是私网、一直直连;弹不出登录页是因为 DNS 与重定向被 bx 接管了)。\n" +
+		"          已经在终端里的话:open \"http://$(route -n get default | awk '/gateway:/{print $2}')\"\n" +
+		"          登录页打不开、或登录后仍不通,再:sudo bx down → 登录 → sudo bx up\n"
 }
 
 func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {
