@@ -5921,10 +5921,10 @@ func TestCaptiveNetworkHintOnlyFiresOnANetworkChangeThatCannotReachTheServer(t *
 		t.Error("换网络之后够不着服务器 —— 这正是那句提示唯一该出现的场合")
 	}
 	for _, miss := range []guardian.RecoverySnapshot{
-		{Reason: "manual", ErrorCode: "transport_unavailable"},        // 用户自己点的重连,不是换网络
-		{Reason: "underlay_changed", ErrorCode: "capture_invalid"},    // 路由那半就没成
+		{Reason: "manual", ErrorCode: "transport_unavailable"},     // 用户自己点的重连,不是换网络
+		{Reason: "underlay_changed", ErrorCode: "capture_invalid"}, // 路由那半就没成
 		{Reason: "underlay_changed", ErrorCode: "verification_failed"},
-		{Reason: "underlay_changed", ErrorCode: ""},                   // 成功的恢复
+		{Reason: "underlay_changed", ErrorCode: ""}, // 成功的恢复
 		{},
 	} {
 		if got := captiveNetworkHint(miss); got != "" {
