@@ -818,6 +818,54 @@ AppKit 代码本仓库一行测试都盖不到(只有 `swift build` 证明能编
 没有待解析记录时那一拍连内核都不问;报告不再答得出「开窗以来一共多少」。
 **真机未验** —— 以上全部由单元测试 + 六处变异验证覆盖。
 
+## 强制门户(酒店/咖啡店 Wi-Fi)—— 诊断已坐实,修法刻意只做一半(2026-08-23)
+
+现象:酒店与星巴克的 Wi-Fi 下 `bx down && bx up` 是必修课,家里/别处的 Wi-Fi 重连
+从来不用。**Guardian 日志坐实**(2026-08-18 16:39–16:42):`recovery-3` 连续 20 次
+attempt **全部**停在 `stage=transport_health` / `transport_unavailable`,duration
+479s→672s,重试 11 分钟后放弃;直到底层指纹再变一次,`recovery-4` 才 943ms 一次成功。
+
+**根因不是重试不够,是够不着门户。** 强制门户靠劫持 DNS + 拦截 HTTP 重定向把你弹到
+登录页;而 bx 开着时 DNS 归 bx、境外域名拿到 fake-IP 走隧道、隧道不健康 ⇒ kill-switch
+Block —— **酒店网关根本没看见你的请求**,所以不会重定向,macOS 自己那个
+`captive.apple.com` 探测同样被挡。全仓 grep:**bx 里没有任何强制门户的概念**。
+家里没有门户,所以从来不发生。
+
+**几条排查时确立、改这块之前要知道的事实**:
+- `Rebind` 排在 `transport_health` **之前**,且失败**不回滚**(`r.previous = next` 也
+  已经推进)。所以走到 `transport_unavailable` 就说明**路由那半已经修好了**。
+- `transportSet.Recover` 失败是 `abort(candidate)` —— 它准备一个**新**隧道,不健康就
+  丢掉,**原隧道原封不动还在跑**,而它自带 socks5 健康检查 + 指数退避重连。
+  ⇒ 门户一旦被满足,**大概率不需要路径恢复插手**。(**真机未验**,见下。)
+- 路径恢复是**纯边沿触发**:`NetworkObserver.checkGeneration` 里
+  `current == *previous` 就 return,没有任何电平触发(没有「隧道已经不健康很久了,
+  再试一次」)。`maxPathRecoveryAttempts=20` 耗尽后 `shouldRetryPathRecovery` 恒 false。
+
+**「放弃后自愈」刻意没做,理由是证据而不是偏好**:全部历史日志里 **40 次失败
+100% 落在 `transport_health`**(另有 2 次 `recovery_canceled`,那一类本就不重试),
+**一次都没有在 rebind 之前耗尽过** —— 也就是说「路由没修好才重新武装」这个设计在这
+台机器上一次都不会触发。在 71 分钟事故的现场加一段没有证据表明会被用到的代码,是拿
+真实风险换假想收益。**要做也只做「耗尽在 rebind 之前」那一支**,别退回无条件重试:
+那次事故的机制正是每轮新起一个隧道进程。
+
+**「登录此网络」菜单入口刻意没做。** 它技术上**不**新增能力(`/v1/down` 自 2026-08-07
+起对 owner 免密),但:① 它把最危险的动作包装成一件网络范围内的小事,人会在不是门户的
+场合也去点;② **自动重新武装是一个可能悄悄违约的承诺**(菜单被杀 / 机器睡眠 / 定时器
+被取消),比诚实的 `bx down` 更糟 —— 后者不制造「我还被保护着」这个期待。真正会构成
+**新旁路原语**的是「按目的地开口子」(允许明文到 X),那个不做。
+
+**已做的是给信息**(`captiveNetworkHint` in `internal/cli/cli.go` + 菜单
+`recoveryFailureReason`):判据窄到只有 `reason=underlay_changed` **且**
+`error_code=transport_unavailable` 这一种组合(到处出现的提示会被训练成墙纸);措辞
+只给可能性(「常常要」/`often`),不断言这就是门户 —— bx 分不清「门户」与「服务器真
+挂了」。**第一步刻意不是「关掉 bx」**:私网恒直连(`route.DefaultPrivateCIDRs`,不受
+kill-switch 影响),网关上的门户页在 bx 开着时通常够得着 —— 弹不出来的是**发现机制**,
+不是那条路被堵死。down/up 的退路一并保留,顺序由测试钉住。
+
+**两件仍在推理、未验证的事**,由 `scripts/captive-probe.sh` 现场取证(只读):
+① 网关上的门户页在 bx 开着时到底够不够得着;② 门户满足之后隧道会不会**自己**回来。
+②的答案决定「放弃后自愈」到底要不要做 —— 若隧道不自愈,那才是真缺口。
+
 ## macOS 的 DirectDialer 一直到不了公网(2026-08-13,真机已验)
 
 `DirectDialer` 用 `IP_BOUND_IF` 绑物理网卡防环,而**它只查该接口的 scoped 路由表**。
