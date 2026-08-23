@@ -174,6 +174,7 @@ var destPublicationAllowlist = map[string]string{
 	// socket → Guardian 的 owner 门 → 这一个窗口,不进 `bx status --json`、
 	// 不进日志、不进诊断包。
 	"apps/macos/BxMenu/Sources/BxMenu/AppTrafficModel.swift": "唯一的消费者:解码 dests/dests_more,算摘要与 toolTip",
+	"apps/macos/BxMenu/Tests/AppTrafficModelTests.swift":     "上面那条的测试(解码、摘要、toolTip、按目的地搜索)",
 }
 
 // destWordPattern 只认发布面会实际出现的复数/连字形态 —— 不是单词边界版的
