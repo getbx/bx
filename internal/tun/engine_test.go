@@ -3,6 +3,9 @@ package tun
 import (
 	"net"
 	"net/netip"
+	"os"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -27,6 +30,62 @@ func TestCopyOneWay_IdleTimeout(t *testing.T) {
 		t.Fatal("空闲超时未触发:copyOneWay 未及时返回(连接会泄漏)")
 	}
 }
+
+// **一个「看起来像超时」但**不是**我们那个 deadline 的错误,不许被续期。**
+//
+// `net.Error.Timeout()` 比「我设的 deadline 到了」宽:`syscall.ETIMEDOUT`
+// (TCP 重传耗尽 —— 连接真死了)与 `context.DeadlineExceeded` 都满足它。把真死的
+// upstream 判成可续期之后,循环只剩「下一次读恰好返回 EOF/RST」这一条出路,而那是
+// 一条没写在任何地方的内核假设。全分支复审量过代价:**300ms 内 757 万次 Read,
+// 一个核跑满,不打一行日志、界面完全正常** —— 这条失效唯一的信号是风扇。
+//
+// 这里让 src 每次都**立刻**返回一个 Timeout()==true 的错误(远早于 deadline),
+// 同时让另一个方向持续保持活跃(activity 一直在被 mark),于是「整条连接空闲」
+// 那半永远为假 —— 只有「这真的是我那个 deadline 吗」这一半救得了它。
+func TestCopyOneWay_DoesNotSpinOnATimeoutThatIsNotOurDeadline(t *testing.T) {
+	src := &instantTimeoutConn{}
+	dst, _ := net.Pipe()
+	defer dst.Close()
+	activity := newRelayActivity()
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() { // 另一个方向一直在搬数据
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				activity.mark()
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	done := make(chan int64, 1)
+	go func() { done <- copyOneWay(dst, src, time.Hour, activity, nil) }()
+	select {
+	case <-done:
+		if got := src.reads.Load(); got > 100 {
+			t.Errorf("收尾前空转了 %d 次读 —— 判据认的是「像超时」而不是「我的 deadline 到了」", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("一个真死的连接被当成可续期,copyOneWay 空转不返回(已读 %d 次)", src.reads.Load())
+	}
+}
+
+// instantTimeoutConn 的 Read 立刻返回一个 Timeout()==true 的错误 —— 模拟
+// syscall.ETIMEDOUT 经 net.OpError 冒上来的形状,而不是我们自己的 deadline。
+type instantTimeoutConn struct {
+	net.Conn
+	reads atomic.Int64
+}
+
+func (c *instantTimeoutConn) Read([]byte) (int, error) {
+	c.reads.Add(1)
+	return 0, &net.OpError{Op: "read", Err: os.NewSyscallError("read", syscall.ETIMEDOUT)}
+}
+func (c *instantTimeoutConn) SetReadDeadline(time.Time) error { return nil }
+func (c *instantTimeoutConn) Close() error                    { return nil }
 
 func TestCopyOneWay_ReportsBytesAsWritten(t *testing.T) {
 	srcReader, srcWriter := net.Pipe()
