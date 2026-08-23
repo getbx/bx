@@ -393,14 +393,22 @@ struct AppTrafficModelTests {
     }
 
     // 列的定义住在纯模型里,窗口只照着摆。**右对齐的判据也在这儿** ——
-    // 图标列、应用名列、规则列(变长文本)不在数字列里,其余全在。
+    // 应用名列、规则列(变长文本)不在数字列里,其余全在。
+    //
+    // **图标不再单独占一列**(2026-08-20 起它住在应用名那一格里),于是数字列的
+    // 下标全部往前挪了一位。这一处是那次改动里最容易静默出错的地方:下标错位
+    // 不会有任何编译错误,现象只是右对齐落在错的列上 —— 所以这里逐条钉死,
+    // 而不是只数个数。
     static func testNumericColumnsCoverEveryNumberAndNothingElse() {
-        expect(appTrafficColumnTitles.count == 8, "列数变了:\(appTrafficColumnTitles)")
-        expect(!appTrafficNumericColumns.contains(0), "图标列被当成数字列右对齐了")
-        expect(!appTrafficNumericColumns.contains(1), "应用名列被右对齐了")
+        expect(appTrafficColumnTitles == ["App", "Conns", "Up/s", "Down/s", "Up", "Down", "Rule"],
+               "列变了:\(appTrafficColumnTitles)")
+        expect(!appTrafficColumnTitles.contains(""), "又出现了一个没有标题的列 —— 图标列回来了?")
+        expect(!appTrafficNumericColumns.contains(0), "应用名列被右对齐了")
         expect(!appTrafficNumericColumns.contains(appTrafficColumnTitles.count - 1),
                "规则列(变长文本)被右对齐了")
-        expect(appTrafficNumericColumns.count == appTrafficColumnTitles.count - 3,
+        expect(appTrafficNumericColumns == [1, 2, 3, 4, 5],
+               "数字列的下标不对(图标列去掉后必须整体前移一位):\(appTrafficNumericColumns)")
+        expect(appTrafficNumericColumns.count == appTrafficColumnTitles.count - 2,
                "有数字列没被右对齐:\(appTrafficNumericColumns) vs \(appTrafficColumnTitles)")
         expect(appTrafficNumericColumns.allSatisfy { $0 >= 0 && $0 < appTrafficColumnTitles.count },
                "数字列下标越界:\(appTrafficNumericColumns)")
