@@ -34,9 +34,23 @@ let rulePriority = NSLayoutConstraint.Priority(250)
 let appNamePriority = NSLayoutConstraint.Priority(500)
 let numberPriority = NSLayoutConstraint.Priority(750)
 
-final class AppTrafficWindowController: NSObject, NSWindowDelegate {
+final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private var window: NSWindow?
     private var stack: NSStackView?
+
+    /// 搜索框。**它在 `ensureWindow()` 里创建一次,住在每次刷新都会被拆掉重填的
+    /// 那棵树(`stack`)之外。**
+    ///
+    /// 这一条是承重的,不是整洁问题:`render()` 每次刷新都把 `stack` 的
+    /// arrangedSubviews 全部拆掉重建,而报告 5 秒一拍。搜索框若长在那棵树里,
+    /// 用户打了两个字就会在下一次刷新时连同**焦点和已输入的文字**一起消失,
+    /// 而现象只是「输入没反应」—— 窗口看起来完全正常,没有任何报错。
+    private var searchField: NSSearchField?
+
+    /// 当前查询串。存在这里(而不是每次去问搜索框)是因为重建时要读它,
+    /// 而判据本身住在纯模型 `AppTrafficReport.rows(query:)` 里 —— 这个文件只
+    /// 负责把它传进去。
+    private var query = ""
 
     /// 最后一次真的读到的报告,以及此刻该不该说它已经不是「现在」了。
     /// **两者必须一起存**:陈旧提示要盖在那份快照上重画,而不是把快照丢掉 ——
@@ -90,8 +104,8 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
     private func ensureWindow() -> NSWindow {
         if let window { return window }
         let window = NSWindow(
-            // 八列(图标 + 应用名 + 五个数字列 + 规则原文)摆得下的宽度;
-            // 上一版是 460,那时一行是一句散文。
+            // 七列(应用名 + 五个数字列 + 规则原文)摆得下的宽度。图标不再单独
+            // 占一列 —— 它搬进了应用名那一格。上一版是 460,那时一行是一句散文。
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
             // **`.resizable` 是承重的,不是讲究。** 最后一列是规则原文(变长文本、
             // 会截断),而这个窗口既不横向滚动(clip 的宽度锚死在 scroll 上)、
@@ -127,12 +141,24 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
         clip.addSubview(stack)
         scroll.documentView = clip
 
+        // **搜索框在这里创建一次,不在 render() 里** —— 见 `searchField` 头上那段。
+        let search = NSSearchField()
+        search.translatesAutoresizingMaskIntoConstraints = false
+        search.placeholderString = "Filter by app, destination, or rule"
+        search.sendsSearchStringImmediately = true
+        search.delegate = self
+        self.searchField = search
+
         guard let content = window.contentView else { return window }
+        content.addSubview(search)
         content.addSubview(scroll)
         NSLayoutConstraint.activate([
+            search.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
+            search.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
+            search.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: content.topAnchor),
+            scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 8),
             scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
@@ -171,7 +197,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
             stack.addArrangedSubview(gap())
         }
 
-        let rows = report.rows()
+        let rows = report.rows(query: query)
         // 有应用行就摆成一张表(数字右对齐、跨组对得上);三种「空」那几句
         // 说明没有列可对齐,原样一行一行摆。
         if rows.contains(where: { if case .entry = $0 { return true }; return false }) {
@@ -222,6 +248,12 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
                 cells.mergeCells(in: NSRange(location: 0, length: appTrafficColumnTitles.count))
             case .entry(let entry):
                 grid.addRow(with: cells(for: entry))
+            case .emptySection(let text):
+                // 「这一组在当前过滤下没有匹配」。**组标题仍然在**(上一分支已经
+                // 发过),这一行只是说明它为什么空着 —— 让标题自己消失会让读者
+                // 分不清「这个组没有匹配」与「这个组本来就是空的」。
+                let cells = grid.addRow(with: [hint(text)])
+                cells.mergeCells(in: NSRange(location: 0, length: appTrafficColumnTitles.count))
             case .notice:
                 continue // 说明行不进表格(它没有列可对齐)
             }
@@ -233,11 +265,12 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
         return grid
     }
 
-    /// 一行的八个格子。顺序必须与 `appTrafficColumnTitles` 一一对应。
+    /// 一行的七个格子。顺序必须与 `appTrafficColumnTitles` 一一对应。
+    ///
+    /// **图标不再单独占一格** —— 它和名字一起住在第一格里(`appCell`)。
     private func cells(for entry: AppTrafficReport.Entry) -> [NSView] {
         [
-            icon(for: entry) ?? NSGridCell.emptyContentView,
-            appName(entry.app),
+            appCell(entry),
             number(entry.conns),
             number(entry.upRate),
             number(entry.downRate),
@@ -245,6 +278,54 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate {
             number(entry.downTotal),
             rule(entry.rule),
         ]
+    }
+
+    /// 应用名那一格:**图标 + 名字**,名字下面(有目的地时)再加一行暗色小字。
+    ///
+    /// **图标住在这一格里,不再单独占一列。** 上一版那个图标列被真机截图撑到
+    /// ~350pt、把规则列挤没了;搬进来消灭的不是那一次的宽度,是「图标列宽」
+    /// 这一整类问题 —— Finder、活动监视器都是这么排的。
+    ///
+    /// 第二行是目的地摘要(第一条 + `+N`)。**摘要为 nil 就整行不加**,不是留一行
+    /// 空白 —— 一行空白读作「这个应用没连任何地方」,那是另一句话。完整清单在
+    /// toolTip 里,与规则列同一条纪律:凡是会截断的格子必须同时给出看全的办法。
+    private func appCell(_ entry: AppTrafficReport.Entry) -> NSView {
+        let title = NSStackView()
+        title.orientation = .horizontal
+        title.alignment = .centerY
+        title.spacing = 6
+        if let icon = icon(for: entry) {
+            title.addArrangedSubview(icon)
+        }
+        title.addArrangedSubview(appName(entry.app))
+
+        let cell = NSStackView()
+        cell.orientation = .vertical
+        cell.alignment = .leading
+        cell.spacing = 1
+        cell.translatesAutoresizingMaskIntoConstraints = false
+        cell.addArrangedSubview(title)
+        if let summary = entry.destSummary {
+            let line = hint(summary)
+            line.textColor = .tertiaryLabelColor
+            line.lineBreakMode = .byTruncatingTail
+            // 摘要跟规则原文同一档压缩阻力:它是这一格里最先该让位的东西,
+            // 名字和数字列都不许被它挤。
+            line.setContentCompressionResistancePriority(rulePriority, for: .horizontal)
+            line.toolTip = entry.destTooltip.isEmpty ? nil : entry.destTooltip
+            cell.addArrangedSubview(line)
+        }
+        cell.setContentCompressionResistancePriority(appNamePriority, for: .horizontal)
+        cell.toolTip = entry.destTooltip.isEmpty ? nil : entry.destTooltip
+        return cell
+    }
+
+    /// 搜索框内容变了:**只重画,不去拉新数据**。报告 5 秒一拍自己会来,而每敲
+    /// 一个键就拨一次本机 socket 既无必要、也会把「按需取数」那条纪律弄脏。
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSSearchField, field === searchField else { return }
+        query = field.stringValue
+        render()
     }
 
     /// 应用图标。**路径为空就返回 nil,不画占位** —— 一格空白的占位图不是

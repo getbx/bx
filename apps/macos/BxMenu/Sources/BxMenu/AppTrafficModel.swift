@@ -33,6 +33,15 @@ struct AppTrafficRow: Decodable, Equatable {
     let bytesUpRate: Double?
     let bytesDownRate: Double?
 
+    /// 这一行**最近**连过的目的地,去重、最多 8 条(与 Go 侧
+    /// `appattr.maxDestsPerRow` 同一个上限,这里不重抄那个数字,只解码结果)。
+    /// omitempty:一条目的地都没有(这一行还没连过任何地方,或问不出来)时
+    /// 键整个缺席,必须落成空数组,不能让整份应答解码失败。
+    let dests: [String]
+    /// 超出上限、没能列出来的**去重后**目的地条数。omitempty:0 时键缺席——
+    /// 「没有更多」与「问不出来」都落成 0,窗口那半不需要区分。
+    let destsMore: Int
+
     enum CodingKeys: String, CodingKey {
         case app, conns
         case bytesUp = "bytes_up"
@@ -41,14 +50,17 @@ struct AppTrafficRow: Decodable, Equatable {
         case execPath = "exec_path"
         case bytesUpRate = "bytes_up_rate"
         case bytesDownRate = "bytes_down_rate"
+        case dests
+        case destsMore = "dests_more"
     }
 
     /// **必须手写。** 服务端对 `rules` 用 omitempty——一条规则都没有命中是
     /// 完全正常的状态,这个键会整个缺席。合成的 Decodable 不认默认值,会让
     /// 这种正常状态直接解码失败(RulesModel 那次就是这么被抓到的)。
     /// `bytes_up_rate`/`bytes_down_rate` 同样是 omitempty(见 Go 侧
-    /// AppRow),键缺席 ⇒ nil ⇒ 渲染成 appTrafficRateUnavailable,**不要**
-    /// 给它们写属性默认值再指望合成的 Decodable。
+    /// AppRow),键缺席 ⇒ nil ⇒ 渲染成 appTrafficRateUnavailable;`dests`/
+    /// `dests_more` 也是 omitempty,键缺席 ⇒ 空数组 / 0。**不要**给它们写
+    /// 属性默认值再指望合成的 Decodable。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         app = try c.decode(String.self, forKey: .app)
@@ -59,10 +71,13 @@ struct AppTrafficRow: Decodable, Equatable {
         execPath = try c.decodeIfPresent(String.self, forKey: .execPath) ?? ""
         bytesUpRate = try c.decodeIfPresent(Double.self, forKey: .bytesUpRate)
         bytesDownRate = try c.decodeIfPresent(Double.self, forKey: .bytesDownRate)
+        dests = try c.decodeIfPresent([String].self, forKey: .dests) ?? []
+        destsMore = try c.decodeIfPresent(Int.self, forKey: .destsMore) ?? 0
     }
 
     init(app: String, conns: Int, bytesUp: Int64, bytesDown: Int64, rules: [String] = [],
-         execPath: String = "", bytesUpRate: Double? = nil, bytesDownRate: Double? = nil) {
+         execPath: String = "", bytesUpRate: Double? = nil, bytesDownRate: Double? = nil,
+         dests: [String] = [], destsMore: Int = 0) {
         self.app = app
         self.conns = conns
         self.bytesUp = bytesUp
@@ -71,6 +86,8 @@ struct AppTrafficRow: Decodable, Equatable {
         self.execPath = execPath
         self.bytesUpRate = bytesUpRate
         self.bytesDownRate = bytesDownRate
+        self.dests = dests
+        self.destsMore = destsMore
     }
 }
 
@@ -147,6 +164,12 @@ struct AppTrafficReport: Decodable, Equatable {
         case sectionHeader(String)
         case entry(Entry)
         case notice(String)
+        /// 一个组在**当前过滤**下没有匹配。**只在有查询串时才发这一行** ——
+        /// 没有过滤时的空组保持原有行为(整个跳过,连标题都不发),别顺手改。
+        ///
+        /// 三个分组的标题永远都在,过滤时也不消失:分组随着输入一个个消失再
+        /// 出现,读者无从判断「这个组里没有匹配」与「这个组本来就是空的」。
+        case emptySection(String)
     }
 
     /// 界面上的一条应用记录,**字段是分开的,不是一句散文**。
@@ -171,6 +194,16 @@ struct AppTrafficReport: Decodable, Equatable {
         let downTotal: String
         /// 用户自己写的那条规则的原文;空串 = 内建列表判的,用户改不了、不提。
         let rule: String
+        /// 应用名格下面那一行暗色小字:第一条目的地 + 其余去重后的条数
+        /// (`+N`,N = `dests.count - 1 + destsMore`,N 为 0 时不写 `+0`)。
+        /// **nil = 没有目的地,这一行不加**(不是留一行空白 —— 空串会让窗口
+        /// 画出一行空白)。判据全在 `AppTrafficReport.destSummary`,窗口只把
+        /// 算好的字符串塞进 label。
+        let destSummary: String?
+        /// 完整目的地清单,给 toolTip 用(整格):每行一条 `dests`,
+        /// `destsMore > 0` 时末尾加一行 `…and N more`。没有目的地时是空串——
+        /// 与规则列同一惯例,窗口那半对空串不设 toolTip。
+        let destTooltip: String
     }
 
     /// 组固定顺序(tunnel / direct / blocked),渲染层照抄这个顺序摆。
@@ -193,13 +226,19 @@ struct AppTrafficReport: Decodable, Equatable {
     /// ③ 采集着、没错误、三组全空——这才是真的「现在没有连接」。
     /// 把任意两句合并,就是把「没在采集」或「没查到」悄悄说成「没有流量」,
     /// 那是一句自洽的假话。
-    func rows() -> [Row] {
+    ///
+    /// `query` 为空串(默认)时**与今天完全相同的行序列**——空组照旧整个跳过,
+    /// 不发 `emptySection`;非空时按应用名 / 目的地 / 规则原文过滤,组标题
+    /// 永远都在,过滤后没有匹配的组补一条 `.emptySection`(而不是让标题自己
+    /// 消失,那会让读者分不清「这个组没有匹配」与「这个组本来就是空的」)。
+    func rows(query: String = "") -> [Row] {
         guard subscribed else {
             return [.notice("Not collecting app traffic right now.")]
         }
         guard error.isEmpty else {
             return [.notice("Couldn't read app traffic: \(error)")]
         }
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let byPath = Dictionary(
             report.groups.map { ($0.path, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -207,15 +246,36 @@ struct AppTrafficReport: Decodable, Equatable {
         var out: [Row] = []
         for path in AppTrafficReport.order {
             guard let group = byPath[path], !group.rows.isEmpty else { continue }
+            let matched = needle.isEmpty ? group.rows : group.rows.filter { Self.matches($0, needle: needle) }
             out.append(.sectionHeader(AppTrafficReport.sectionTitle(for: path)))
-            for row in group.rows {
-                out.append(.entry(AppTrafficReport.entry(for: row)))
+            if matched.isEmpty {
+                // 只有 needle 非空时才可能走到这里(上面的 guard 已经保证
+                // group.rows 本身非空,needle 为空时 matched == group.rows)。
+                out.append(.emptySection("No matches"))
+            } else {
+                for row in matched {
+                    out.append(.entry(AppTrafficReport.entry(for: row)))
+                }
             }
         }
         guard !out.isEmpty else {
             return [.notice("No app traffic seen yet.")]
         }
         return out
+    }
+
+    /// 搜索框的匹配判据:应用名、任一目的地、任一规则原文,命中其一即可,
+    /// 大小写不敏感(`needle` 由调用方先 trim 再转小写)。
+    ///
+    /// **目的地参与匹配是刻意的**:输入一个域名就能反查「谁在连它」,这是
+    /// 「某些 app 偷偷连别的服务器」这个用例的另一半。**匹配要看全部目的地,
+    /// 不只看界面上显示的第一条**——只匹配显示出来的那条会让搜索结果与用户
+    /// 看到的对不上,而那种不一致没有任何提示。
+    private static func matches(_ row: AppTrafficRow, needle: String) -> Bool {
+        if displayName(row.app).lowercased().contains(needle) { return true }
+        if row.dests.contains(where: { $0.lowercased().contains(needle) }) { return true }
+        if row.rules.contains(where: { $0.lowercased().contains(needle) }) { return true }
+        return false
     }
 
     /// 把一行报告折成界面上那一行的**各个格子**。
@@ -235,7 +295,7 @@ struct AppTrafficReport: Decodable, Equatable {
     /// 单独的速率表或按 (组, 应用名) 的键。
     private static func entry(for row: AppTrafficRow) -> Entry {
         Entry(
-            app: row.app.isEmpty ? "Unknown app" : row.app,
+            app: displayName(row.app),
             // unknown 行按构造没有路径(Core 侧那一行的 owner 是零值),这里不用
             // 再判一次 —— 但也不去替它编一个。
             execPath: row.execPath,
@@ -244,8 +304,49 @@ struct AppTrafficReport: Decodable, Equatable {
             downRate: formatRate(row.bytesDownRate),
             upTotal: formatByteCount(row.bytesUp),
             downTotal: formatByteCount(row.bytesDown),
-            rule: row.rules.joined(separator: ", ")
+            rule: row.rules.joined(separator: ", "),
+            destSummary: destSummary(dests: row.dests, destsMore: row.destsMore),
+            destTooltip: destTooltip(dests: row.dests, destsMore: row.destsMore)
         )
+    }
+
+    /// 空串 app 是 unknown,渲染成一句人话,不是空白行——搜索框按应用名匹配
+    /// 时用的也是这个同一份显示名,免得「显示的是 Unknown app,搜 unknown 却
+    /// 搜不到」这种对不上的情况。
+    private static func displayName(_ app: String) -> String {
+        app.isEmpty ? "Unknown app" : app
+    }
+
+    /// 应用名格下面那一行暗色小字:第一条目的地 + 其余去重后的条数。
+    ///
+    /// `remaining` = 未显示出来的目的地条数 = `dests.count - 1`(那一份列表里
+    /// 除了已经显示的第一条之外还有几条)+ `destsMore`(超出上限、连列表里都
+    /// 没放的条数)。**`+N` 是承重的,不是装饰**:一个应用连了 1 个地方和
+    /// 连了 23 个地方是完全不同的两件事,这正是「偷偷连别的服务器」最直接的
+    /// 信号,所以 N 只在真的 > 0 时才写(0 就不写 `+0`)。
+    ///
+    /// **nil = 没有目的地,这一行不加** —— 不是留一行空白,那是另一句话。
+    static func destSummary(dests: [String], destsMore: Int) -> String? {
+        guard let first = dests.first else { return nil }
+        let remaining = dests.count - 1 + destsMore
+        guard remaining > 0 else { return first }
+        return "\(first) +\(remaining)"
+    }
+
+    /// 完整目的地清单,给 toolTip 用:一行一条 `dests`,`destsMore > 0` 时
+    /// 末尾加一行 `…and N more`。与规则列同一条纪律(「凡是会截断的格子必须
+    /// 同时给出看全的办法」,这个窗口不横向滚动)——`+N` 那一行本身就是被
+    /// 摘要压缩过的,toolTip 是唯一能看到完整清单的地方。
+    ///
+    /// 没有目的地时是空串,不是某种「没有」的占位文案:窗口那半对空串的既有
+    /// 惯例是不设 toolTip(见 `rule(_:)`/`appName(_:)`),这里保持一致。
+    static func destTooltip(dests: [String], destsMore: Int) -> String {
+        guard !dests.isEmpty else { return "" }
+        var lines = dests
+        if destsMore > 0 {
+            lines.append("…and \(destsMore) more")
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -261,19 +362,23 @@ func formatRate(_ bytesPerSecond: Double?) -> String {
     return formatByteCount(Int64(bytesPerSecond.rounded())) + "/s"
 }
 
-/// 列标题。**第 0 列是图标,没有标题**(标题栏那一格留空)。
+/// 列标题。**图标不再单独占一列** —— 图标搬进应用名那一格(与名字同一个
+/// `NSStackView`),消灭的是「图标列宽」这一整类问题:上一版那一列被真机截图
+/// 撑到 ~350pt,把规则列挤没了。Finder、活动监视器都是把图标和名字放在同一格里。
 ///
 /// 标题只出现一次(在整张表最上面),不是每组重复一遍 —— 三组各来一行标题会把
 /// 这个窗口变成一屏表头。
-let appTrafficColumnTitles = ["", "App", "Conns", "Up/s", "Down/s", "Up", "Down", "Rule"]
+let appTrafficColumnTitles = ["App", "Conns", "Up/s", "Down/s", "Up", "Down", "Rule"]
 
 /// 哪几列是数字列 —— 也就是**必须右对齐**的那几列。
 ///
 /// 判据住在这里而不是窗口里,是为了让它可测:窗口那半在 CI 里编不了。窗口的义务
 /// 只有一条 —— 遍历这个下标表,把每一列摆成 trailing;由 Go 侧的文本守卫钉住。
 ///
-/// 图标列(0)、应用名列(1)、规则列(最后一列,变长文本)不在其中。
-let appTrafficNumericColumns = [2, 3, 4, 5, 6]
+/// **图标列去掉之后,下标全部往前挪了一位** —— 这是这个改动里最容易静默出错
+/// 的一处:下标错位不会有任何编译错误,现象只是「右对齐落在错的列上」。
+/// 应用名列(0)、规则列(最后一列,变长文本)不在其中。
+let appTrafficNumericColumns = [1, 2, 3, 4, 5]
 
 /// 从可执行路径回到用户认得的那个 **.app 包**。
 ///
