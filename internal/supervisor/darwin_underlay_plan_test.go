@@ -166,8 +166,14 @@ func TestUnderlaySnapshotCanonicalizationAndGeneration(t *testing.T) {
 	// 不存在的源地址上)。去重因此改用一条真正重复的前缀来演示,而不是借
 	// 「.27/24 与 .0/24 会塌成同一条」—— 后者在今天是两条不同的路径身份。
 	// v4 保留主机位 / v6 仍抹掉,各由 underlay_test.go 的两条测试单独钉住。
+	// **两次的前缀顺序必须不同**,否则 canonicalUnderlaySnapshot 里那句
+	// `sort.Slice` 不被任何东西验证 —— 全分支复审实测:把它换成 no-op,整包全绿。
+	// 失败场景很具体:`iface.Addrs()` 两次返回同一组地址但顺序不同(IPv6 临时
+	// 地址轮换替换掉表里某一项之后最常见)⇒ 指纹翻动而**什么都没变** ⇒ 观测者
+	// 发一次 underlay_changed ⇒ livePathRecoverer 无条件重建隧道 ⇒ **每一条
+	// SSE/WebSocket 被掐断**,正是这一支另一半修复要消灭的那个症状。
 	first := mustUnderlaySnapshot(t, " en0 ", "::ffff:192.168.50.2", "192.168.50.27/24", "10.0.0.9/8", "192.168.50.27/24")
-	second := mustUnderlaySnapshot(t, "en0", "192.168.50.2", "192.168.50.27/24", "10.0.0.9/8")
+	second := mustUnderlaySnapshot(t, "en0", "192.168.50.2", "10.0.0.9/8", "192.168.50.27/24")
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("canonical snapshots differ: %#v != %#v", first, second)
 	}

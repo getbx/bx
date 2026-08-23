@@ -46,8 +46,12 @@ func TestDarwinObserverPrefixTextsCollapseIPv6PrivacyAddresses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// **顺序刻意与上面相反。** 这条测试顺带是 `sort.Strings(prefixes)` 唯一的
+	// 守卫:两次输入顺序相同的话,把那句排序删掉整包照样绿(全分支复审实测)。
+	// 而 `iface.Addrs()` 返回顺序变化正是 v6 临时地址轮换时最常见的情形 ——
+	// 不排序就会让「什么都没变」翻动指纹、白白重建一次隧道、掐断全部长连接。
 	after, err := darwinObserverPrefixTexts([]net.Addr{
-		ipNet(t, "192.168.50.38/24"), ipNet(t, "2001:db8:1:2::eeee/64"),
+		ipNet(t, "2001:db8:1:2::eeee/64"), ipNet(t, "192.168.50.38/24"),
 	})
 	if err != nil {
 		t.Fatal(err)

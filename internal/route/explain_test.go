@@ -127,19 +127,51 @@ func mustEgressFixture(t *testing.T, pairs ...[2]string) *EgressSet {
 // Meta 是连接元数据,不是判据全集。SrcPort 只为应用归因存在,一旦它能影响判定,
 // 「用户看到的分流」和「bx 实际执行的分流」就有了第二个变量。
 func TestExplainIgnoresSrcPort(t *testing.T) {
+	// **每一张表都要有内容,每一条分支都要有输入。**
+	//
+	// 这个 fixture 原本把 UserProxy / UserProxyIP / UserDirectIP / UserEgress
+	// 四张表全留成 nil,于是 Explain/ExplainIP 里那四条分支一次都没走到。全分支
+	// 复审实测:把 SrcPort 判据塞进 **UserProxy 命中**那一支(`if m.SrcPort >=
+	// 49152 { return Direct, ... }`),整包**全绿**。
+	//
+	// 而那恰好是最坏的一条:用户写了 `proxy: '*.example.com'` 的域名会在临时端口段
+	// 上悄悄改走直连、**泄漏真实 IP**,而 `bx status` 报的 Reason 仍然是 user_proxy。
+	// 「守卫钉住的是缺陷旁边的东西」在这一支上的第八次。
 	r := &Router{
+		UserProxy:     NewDomainSet([]string{"*.example.com"}),
 		UserDirect:    NewDomainSet([]string{"*.qq.com"}),
+		UserProxyIP:   mustCIDR([]string{"203.0.113.0/24"}),
+		UserDirectIP:  mustCIDR([]string{"198.51.100.0/24"}),
+		UserEgress:    mustEgressFixture(t, [2]string{"lab", "10.84.0.0/16"}),
 		ChinaDomain:   NewDomainSet([]string{"example.cn"}),
 		ChinaCIDR:     mustCIDR([]string{"1.2.3.0/24"}),
 		PrivateDirect: mustCIDR(DefaultPrivateCIDRs),
 	}
 	bases := []Meta{
-		{Domain: "a.qq.com"},
-		{Domain: "example.cn"},
-		{Domain: "claude.ai"},
-		{IP: netip.MustParseAddr("1.2.3.4")},
-		{IP: netip.MustParseAddr("192.168.1.5")},
-		{IP: netip.MustParseAddr("8.8.8.8"), UDP: true},
+		{Domain: "a.example.com"},                          // UserProxy(最高优先级)
+		{Domain: "a.qq.com"},                               // UserDirect
+		{Domain: "example.cn"},                             // ChinaDomain
+		{Domain: "claude.ai"},                              // default
+		{IP: netip.MustParseAddr("203.0.113.7")},           // UserProxyIP
+		{IP: netip.MustParseAddr("198.51.100.7")},          // UserDirectIP
+		{IP: netip.MustParseAddr("10.84.3.239")},           // UserEgress(压过私网)
+		{IP: netip.MustParseAddr("1.2.3.4")},               // ChinaCIDR
+		{IP: netip.MustParseAddr("192.168.1.5")},           // PrivateDirect
+		{IP: netip.MustParseAddr("8.8.8.8"), UDP: true},    // default
+	}
+	// 每一条 base 必须真的命中它注释里说的那一层 —— 否则这张表看起来齐全,
+	// 实际仍有分支没被走到(那正是这次要修的那种失效)。
+	wantSources := []Source{
+		SourceUserProxy, SourceUserDirect, SourceChinaDomain, SourceDefault,
+		SourceUserProxyIP, SourceUserDirectIP, SourceUserEgress,
+		SourceChinaCIDR, SourcePrivate, SourceDefault,
+	}
+	for i, base := range bases {
+		if _, why := r.Explain(base); why.Source != wantSources[i] {
+			t.Fatalf("第 %d 条输入没有命中预期的那一层:want %v got %v —— "+
+				"fixture 与它自己的注释对不上,这条守卫覆盖不到它以为覆盖的分支",
+				i, wantSources[i], why.Source)
+		}
 	}
 	for _, base := range bases {
 		want, wantWhy := r.Explain(base)
