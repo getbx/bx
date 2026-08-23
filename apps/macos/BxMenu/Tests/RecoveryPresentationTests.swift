@@ -3,6 +3,40 @@ import Foundation
 @main
 struct RecoveryPresentationTests {
     static func main() {
+        // —— 真机抓到的那个 bug(2026-08-22):`bx down` 拆路由 ⇒ 底层变化 ⇒
+        // NetworkObserver 请求一次路径恢复 ⇒ desired 此刻是 off ⇒ Guardian 记下
+        // 一条 `ignored`/`off` 快照并**故意什么都不做**。它一直留到被覆盖为止,
+        // 于是紧接着的 `bx up` 之后仍在,而菜单把它渲染成 **Blocked / Recovery
+        // failed** —— 在一台 `bx status` 报 Protected、隧道健康的机器上。
+        // 后果不止难看:恢复浮层会把 Turn Off / Traffic by App / 退出全部挤掉。
+        let ignored = recoverySnapshot(state: "ignored", stage: "off", reason: "underlay_changed")
+        expect(
+            recoverySnapshotForDisplay(ignored, allowsTerminalSuccess: false) == nil,
+            "ignored 是 Guardian 说「我故意什么都没做」,不该占着界面"
+        )
+        expect(
+            recoverySnapshotForDisplay(ignored, allowsTerminalSuccess: true) == nil,
+            "allowsTerminalSuccess 只放行 succeeded,不该顺带把 ignored 也放进来"
+        )
+        expect(visibleStatusRecovery(ignored) == nil, "状态栏那条路也要滤掉 ignored")
+
+        // **认不出来的 state 不许被说成「失败」。** 这条钉的是那个 `default` 分支
+        // 本身:只把 ignored 过滤掉是治一个实例,把 default 留在「失败」上,下一个
+        // Swift 这边没列举到的 Go 状态会原样重演同一个假告警。
+        let unknown = recoveryPresentation(for: recoverySnapshot(state: "some_future_state", stage: "off"))
+        expect(unknown.indicator == .yellow, "没认出来的状态不是红色 —— 红色带着一个它给不出的断言")
+        expect(unknown.title == "Recovery", "没认出来的状态不许宣告 Reconnect Failed / Blocked")
+        expect(
+            unknown.shortReason == "Unrecognized recovery state (some_future_state)",
+            "得把实际的 state 名字打出来,否则看到的人无从查起"
+        )
+        // 真失败仍然要红,别为了修上面那条把这条一起放走。
+        let blocked = recoveryPresentation(
+            for: recoverySnapshot(state: "blocked", stage: "blocked", errorCode: "transport_unavailable")
+        )
+        expect(blocked.indicator == .red, "blocked 仍然是失败")
+        expect(blocked.shortReason == "Protected transport unavailable", "blocked 的失败原因")
+
         let accepted = recoveryPresentation(for: recoverySnapshot(state: "accepted", stage: "queued"))
         expect(accepted.title == "Reconnecting", "accepted title")
         expect(accepted.indicator == .yellow, "accepted indicator")

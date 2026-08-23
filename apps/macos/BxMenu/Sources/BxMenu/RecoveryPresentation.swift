@@ -67,7 +67,27 @@ func recoverySnapshotForDisplay(
     _ snapshot: RecoverySnapshot,
     allowsTerminalSuccess: Bool
 ) -> RecoverySnapshot? {
-    if snapshot.state == "idle" || (snapshot.state == "succeeded" && !allowsTerminalSuccess) {
+    // `ignored` 是 Guardian 说「我**故意**什么都没做」——请求进来时 desired=off,
+    // 于是那次恢复被丢掉(internal/guardian/path_recovery.go 三处
+    // `State = "ignored"` / `Stage = "off"`)。它与 `idle` 同类:一条不该occupy
+    // 界面的终态。
+    //
+    // **不过滤它会产生一句彻头彻尾的假话,而且是在真机上被抓到的**:
+    // `bx down` 会拆掉路由 ⇒ 底层网络变化 ⇒ NetworkObserver 请求一次路径恢复
+    // ⇒ desired 此刻是 off ⇒ 记下一条 ignored 快照。它一直留到有别的东西覆盖
+    // 为止,于是**紧接着的 `bx up` 之后它还在**;而 `recoveryPresentation` 的
+    // switch 只认 accepted/running/succeeded、其余一律当失败,`reason` 又恰好是
+    // `underlay_changed` ⇒ 菜单在一台 `bx status` 报 Protected、隧道健康的机器上
+    // 显示 **Blocked / Recovery failed**。
+    //
+    // 后果不止于难看:恢复浮层建完 header/Status/Recovery 与一个动作项就
+    // `return`,于是 Turn Off、Traffic by App、退出**全部消失** —— 保护开着,
+    // 而用户从菜单里找不到任何出口。那正是这个项目为 2026-08-04 那次 71 分钟
+    // 事故立下的规矩要防的形状。
+    if snapshot.state == "idle" || snapshot.state == "ignored" {
+        return nil
+    }
+    if snapshot.state == "succeeded" && !allowsTerminalSuccess {
         return nil
     }
     return snapshot
@@ -124,12 +144,32 @@ func recoveryPresentation(for snapshot: RecoverySnapshot) -> RecoveryPresentatio
             shortReason: nil,
             showsSuccessAlert: false
         )
-    default:
+    case "failed", "blocked":
         let title = snapshot.reason == "underlay_changed" ? "Blocked" : "Reconnect Failed"
         return RecoveryPresentation(
             title: title,
             indicator: .red,
             shortReason: recoveryFailureReason(snapshot.lastErrorCode),
+            showsSuccessAlert: false
+        )
+    default:
+        // **认不出来的 state 不许被说成「失败」。**
+        //
+        // 这个 switch 原本是 `default:` 直接落红 —— 于是任何一个 Swift 这边没
+        // 列举到的 Go 状态都被当成失败宣告出去。`ignored` 就是这么在一台完全
+        // 健康的机器上被渲染成 **Blocked / Recovery failed** 的(它现在已在
+        // `recoverySnapshotForDisplay` 里被过滤掉,但那只治了一个实例;把
+        // `default` 留在「失败」上,下一个新状态会原样重演)。
+        //
+        // 与本仓库 `observe.Tristate`、`leakcheck.NotChecked` 同一条:**「没认出来」
+        // 是第三种答案,不是那两种里更坏的那一个。** 用黄色而不是红色,因为
+        // 红色会连带一个它给不出的断言(失败原因);而**把实际的 state 名字打出来**
+        // 是刻意的 —— 一条正常时永不出现的路径一旦出现,它本身就是信号,而它得
+        // 让看到的人有东西可查。
+        return RecoveryPresentation(
+            title: "Recovery",
+            indicator: .yellow,
+            shortReason: "Unrecognized recovery state (\(snapshot.state))",
             showsSuccessAlert: false
         )
     }
