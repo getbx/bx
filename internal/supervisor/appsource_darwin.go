@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/getbx/bx/internal/appattr"
@@ -52,11 +53,18 @@ func (darwinAppSource) OwnersByPort() (map[appattr.PortKey]appattr.Owner, error)
 		if v, ok := aliveCache[pid]; ok {
 			return v
 		}
-		// kill(pid, 0):ESRCH 才是「不存在」。EPERM 说明进程活着但不归我们管
-		// (Core 是 root,实际不会遇到),仍算活着 —— 与 Guardian 那边
-		// ErrProcessNotRunning 的判据同源:只有明确的 ESRCH 才判死。
+		// kill(pid, 0):**只有明确的 ESRCH 才判「不存在」**,与 Guardian 那边
+		// ErrProcessNotRunning 的判据同源。EPERM 说明进程活着但不归我们管
+		// (Core 是 root,实际不会遇到),算活着;**任何别的错误也算活着** ——
+		// 「问不出来」不是「死了」。
+		//
+		// 这里此前写成 `err == nil || err == unix.EPERM`,也就是「除 nil/EPERM
+		// 之外一律判死」—— 与它自己引用的那条 fail-closed 纪律**方向相反**。
+		// 今天两者等价(sig 0 只可能回这两个 errno),但默认方向错了:一旦将来
+		// 冒出第三种 errno,委托方会被静默判死、那条连接落进 unknown,而界面上
+		// 完全看不出来。用 errors.Is 而不是 `==`,与仓库其它处一致。
 		err := unix.Kill(int(pid), 0)
-		v := err == nil || err == unix.EPERM
+		v := !errors.Is(err, unix.ESRCH)
 		aliveCache[pid] = v
 		return v
 	}
