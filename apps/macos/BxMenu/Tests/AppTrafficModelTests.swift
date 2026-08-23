@@ -363,6 +363,137 @@ struct AppTrafficModelTests {
         expect(entry.downRate == "0 B/s", "量出来的 0 被渲染成了「没有」:\(entry.downRate)")
     }
 
+    // —— 搜索(2026-08-20)。判据住在纯模型里,窗口只把查询串传进来。
+
+    private static func searchReport() -> AppTrafficReport {
+        AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
+            AppTrafficGroup(path: .tunnel, rows: [
+                AppTrafficRow(app: "Slack", conns: 1, bytesUp: 0, bytesDown: 0,
+                              dests: ["chat.slack.com", "edge.slack.com"]),
+            ]),
+            AppTrafficGroup(path: .direct, rows: [
+                AppTrafficRow(app: "WeChat", conns: 1, bytesUp: 0, bytesDown: 0,
+                              rules: ["*.qq.com"], dests: ["short.weixin.qq.com"]),
+            ]),
+            // **「存在但为空」的组是承重的 fixture,不是凑数。** 无过滤时它必须
+            // 被整个跳过(连标题都不发);少了它,「没有过滤时不该出现
+            // emptySection」那条断言就没有任何输入能触发 —— 恒真的断言与没有
+            // 断言在输出上完全一样。
+            AppTrafficGroup(path: .blocked, rows: []),
+        ]))
+    }
+
+    private static func apps(_ rows: [AppTrafficReport.Row]) -> [String] {
+        rows.compactMap { if case .entry(let e) = $0 { return e.app } else { return nil } }
+    }
+
+    private static func hasEmptySection(_ rows: [AppTrafficReport.Row]) -> Bool {
+        rows.contains { if case .emptySection = $0 { return true } else { return false } }
+    }
+
+    // 空查询 ⇒ 与今天完全相同的行序列,**且不发 emptySection**。
+    // 两半都要断言:只测「空查询照旧」测不出「无过滤时的空组也补了一行」。
+    static func testEmptyQueryChangesNothing() {
+        let report = searchReport()
+        expect(report.rows(query: "") == report.rows(), "空查询改变了行序列")
+        expect(!hasEmptySection(report.rows(query: "")), "没有过滤时不该出现 emptySection")
+    }
+
+    static func testFiltersByAppName() {
+        expect(apps(searchReport().rows(query: "slack")) == ["Slack"], "按应用名过滤不对")
+    }
+
+    // **目的地参与匹配是刻意的**:输入一个域名反查「谁在连它」,这是「某些 app
+    // 偷偷连别的服务器」这个用例的另一半。注意 `edge.slack.com` 是那一行的
+    // **第二条**目的地 —— 界面上只显示第一条,而匹配必须看全部,否则搜索结果
+    // 与用户看到的对不上,而那种不一致没有任何提示。
+    static func testFiltersByDestinationIncludingOnesNotShown() {
+        expect(apps(searchReport().rows(query: "edge.slack.com")) == ["Slack"],
+               "没显示出来的那条目的地不参与匹配")
+        expect(apps(searchReport().rows(query: "weixin")) == ["WeChat"], "按目的地过滤不对")
+    }
+
+    static func testFiltersByRuleText() {
+        expect(apps(searchReport().rows(query: "*.qq.com")) == ["WeChat"], "按规则原文过滤不对")
+    }
+
+    static func testQueryIsTrimmedAndCaseInsensitive() {
+        expect(apps(searchReport().rows(query: "  SLACK  ")) == ["Slack"],
+               "查询串没有 trim 或没有忽略大小写")
+    }
+
+    // **组标题过滤时也不消失**,没有匹配的组补一条 emptySection —— 分组随着输入
+    // 一个个消失再出现,读者无从判断「这个组里没有匹配」与「这个组本来就是空的」。
+    static func testSectionsStayAndSayWhenTheyHaveNoMatch() {
+        let rows = searchReport().rows(query: "slack")
+        let headers = rows.compactMap { if case .sectionHeader(let t) = $0 { return t } else { return nil } }
+        expect(headers.count == 2, "过滤之后组标题少了:\(headers)")
+        expect(hasEmptySection(rows), "没有匹配的那一组没有说明自己为什么空着")
+    }
+
+    // —— 目的地摘要与 toolTip(2026-08-20)。
+
+    static func testDestSummaryCountsEverythingNotShown() {
+        expect(AppTrafficReport.destSummary(dests: ["a.com"], destsMore: 0) == "a.com",
+               "只有一条目的地时不该写 +0")
+        // 列表里还有 2 条没显示 + 上限之外还有 15 条 ⇒ +17。**漏掉 destsMore
+        // 是这里最容易犯的错**,而它恰好让「连了很多个地方」这个信号消失。
+        expect(AppTrafficReport.destSummary(dests: ["a.com", "b.com", "c.com"], destsMore: 15) == "a.com +17",
+               "+N 少算了:\(String(describing: AppTrafficReport.destSummary(dests: ["a.com", "b.com", "c.com"], destsMore: 15)))")
+    }
+
+    // **nil 不是空串。** 空串会让窗口画出一行空白,而一行空白读作「这个应用
+    // 没连任何地方」—— 那是另一句话。
+    static func testDestSummaryIsNilWithoutDestinations() {
+        expect(AppTrafficReport.destSummary(dests: [], destsMore: 0) == nil,
+               "没有目的地时摘要不是 nil")
+    }
+
+    static func testDestTooltipListsEveryDestination() {
+        expect(AppTrafficReport.destTooltip(dests: ["a.com", "b.com"], destsMore: 0) == "a.com\nb.com",
+               "toolTip 没有一行一条")
+        expect(AppTrafficReport.destTooltip(dests: ["a.com"], destsMore: 3).hasSuffix("…and 3 more"),
+               "超出上限的那几条在 toolTip 里没有交代")
+        expect(!AppTrafficReport.destTooltip(dests: ["a.com"], destsMore: 0).contains("more"),
+               "没有更多时不该写「and 0 more」")
+        expect(AppTrafficReport.destTooltip(dests: [], destsMore: 0).isEmpty,
+               "没有目的地时 toolTip 该是空串(窗口据此不设 toolTip)")
+    }
+
+    // 目的地要真的从解码一路走到 Entry —— 只测那两个纯函数,接不上也不会红。
+    static func testEntryCarriesTheDestinationSummary() {
+        let report = AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
+            AppTrafficGroup(path: .tunnel, rows: [
+                AppTrafficRow(app: "Slack", conns: 1, bytesUp: 0, bytesDown: 0,
+                              dests: ["chat.slack.com", "edge.slack.com"], destsMore: 4),
+            ]),
+        ]))
+        guard let entry = firstEntry(report.rows()) else { return }
+        expect(entry.destSummary == "chat.slack.com +5", "摘要没接到 Entry 上:\(String(describing: entry.destSummary))")
+        expect(entry.destTooltip.contains("edge.slack.com"), "toolTip 没接到 Entry 上")
+    }
+
+    static func testDecodesDestinationsAndToleratesTheirAbsence() {
+        let json = """
+        {
+          "subscribed": true,
+          "report": { "groups": [ { "path": "tunnel", "rows": [
+            { "app": "Slack", "conns": 1, "bytes_up": 0, "bytes_down": 0,
+              "dests": ["chat.slack.com"], "dests_more": 2 },
+            { "app": "Safari", "conns": 1, "bytes_up": 0, "bytes_down": 0 }
+          ] } ] }
+        }
+        """
+        guard let report = decode(json) else { return }
+        let rows = report.report.groups.first?.rows ?? []
+        expect(rows.count == 2, "行数不对")
+        expect(rows.first?.dests == ["chat.slack.com"], "dests 没解出来")
+        expect(rows.first?.destsMore == 2, "dests_more 没解出来")
+        // 键缺席 ⇒ 空数组 / 0,**不是整份应答解码失败**。
+        expect(rows.last?.dests == [], "缺席的 dests 没有落成空数组")
+        expect(rows.last?.destsMore == 0, "缺席的 dests_more 没有落成 0")
+    }
+
     // unknown 行没有路径,渲染层据此**不画图标**(而不是画一个空白占位)。
     static func testEntryCarriesTheExecutablePathForTheIcon() {
         let report = AppTrafficReport(subscribed: true, report: AppTrafficReportBody(groups: [
@@ -463,6 +594,17 @@ struct AppTrafficModelTests {
         testIconPathClimbsToTheApplicationBundle()
         testNumericColumnsCoverEveryNumberAndNothingElse()
         testPreexistingConnectionsNoteStatesTheObservationOnly()
+        testEmptyQueryChangesNothing()
+        testFiltersByAppName()
+        testFiltersByDestinationIncludingOnesNotShown()
+        testFiltersByRuleText()
+        testQueryIsTrimmedAndCaseInsensitive()
+        testSectionsStayAndSayWhenTheyHaveNoMatch()
+        testDestSummaryCountsEverythingNotShown()
+        testDestSummaryIsNilWithoutDestinations()
+        testDestTooltipListsEveryDestination()
+        testEntryCarriesTheDestinationSummary()
+        testDecodesDestinationsAndToleratesTheirAbsence()
         testStaleNoticeOnlyAppearsAfterRepeatedFailures()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」。
         if failures == 0 {
