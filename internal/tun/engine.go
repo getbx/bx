@@ -393,7 +393,8 @@ func copyOneWay(dst, src net.Conn, idle time.Duration, activity *relayActivity, 
 	var total int64
 	buf := make([]byte, 32*1024)
 	for {
-		_ = src.SetReadDeadline(activity.deadline(idle))
+		deadline := activity.deadline(idle)
+		_ = src.SetReadDeadline(deadline)
 		n, rerr := src.Read(buf)
 		if n > 0 {
 			activity.mark()
@@ -407,7 +408,20 @@ func copyOneWay(dst, src net.Conn, idle time.Duration, activity *relayActivity, 
 		}
 		if rerr != nil {
 			// 本方向读超时,但另一个方向刚搬过数据 —— 连接活着,续期重来。
-			if isRelayTimeout(rerr) && !activity.expired(idle) {
+			//
+			// **续期的判据是「我自己设的那个 deadline 真的到了」,不是「这个错误
+			// 看起来像超时」。** `net.Error.Timeout()` 比前者宽:`syscall.ETIMEDOUT`
+			// (TCP 重传耗尽 —— 连接**真死了**)与 `context.DeadlineExceeded` 都
+			// 满足它。把一个真死的 upstream 判成「可续期」之后,这个循环就只剩
+			// 「下一次读恰好返回 EOF/RST」这一条出路 —— 而那是一条没写在任何地方的
+			// 内核假设。全分支复审量过代价:让读持续返回这类错误、同时另一方向保持
+			// 活跃,**300ms 内 757 万次 Read(一个核跑满),不打一行日志、界面完全正常**。
+			//
+			// `!time.Now().Before(deadline)` 把它收窄成一句可证的话:只有走到我们
+			// 亲手设的那个时刻,才算「空闲到点了」。早于它返回的任何超时类错误都是
+			// 别的东西,一律收尾。另一半 `!activity.expired(idle)` 仍然管着「整条
+			// 连接是不是真的空闲」,两条缺一不可。
+			if isRelayTimeout(rerr) && !time.Now().Before(deadline) && !activity.expired(idle) {
 				continue
 			}
 			break
