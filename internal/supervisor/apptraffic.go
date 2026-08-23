@@ -705,6 +705,14 @@ func (t *AppTraffic) liveSize() int {
 	return len(t.live)
 }
 
+// highestSeq 报告最近一次分配出去的记录序号。**测试专用的白盒窗口** ——
+// 「序号跨订阅单调」这条不变量在报告里完全看不见(序号从不外发),只能直接看。
+func (t *AppTraffic) highestSeq() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.seq
+}
+
 // bufferedSize 报告环形缓冲里有多少条记录。**测试专用的白盒窗口。**
 //
 // 与 liveSize 同一个理由:「一个还开着的端口不许把它的全部历史记录一起豁免掉」

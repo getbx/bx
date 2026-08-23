@@ -1061,6 +1061,48 @@ func TestAppTrafficDropsByteAccountWhenItsRecordsLeaveTheWindow(t *testing.T) {
 // 窗口问的是「此刻谁在连谁」,而一条开了两小时还在灌流的会议媒体流恰恰是最该
 // 被看见的那种。只按时间裁会让长连接在开窗 60 秒后集体消失 —— 那正是
 // 2026-08-20 那个真机 bug(长连接全在盲区)换一种方式复发。
+// **序号跨订阅单调,`Subscribe` 不许重置它。**
+//
+// resolver 的写回是「持锁挑键 → 放锁问内核 → 持锁按序号写回」。放锁那段窗口里
+// TTL 可能过期、又来一次全新订阅(缓冲重建、种子重播)。序号若从 1 重来,回来的
+// `applyOwnersLocked` 会把**上一轮**查到的归因按序号写到**新一轮**的种子记录上
+// —— 张冠李戴的应用名,而界面上完全看不出来(那一行有名字、有字节、有速率)。
+//
+// 当前代码是对的(全仓没有 `t.seq = 0`),但在全分支复审之前没有任何东西钉住它:
+// 在新订阅分支里加一句 `t.seq = 0`,整包全绿。
+func TestAppTrafficSequenceNumbersNeverRestart(t *testing.T) {
+	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := &fakeAppSource{}
+	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
+
+	tr.Subscribe()
+	// **先攒够序号,并且全部关掉。** 只记一条是不够的:重置之后种子与新记录会
+	// 立刻把序号推回 1、2,而 `2 > 1` 恰好仍然成立 —— 那样这条测试就是假的
+	// (第一版就是这么写的,变异实测全绿)。攒到 5 且活连接表为空,重置之后
+	// 最多只能走到 1,比 5 小,缺陷才显形。
+	for port := uint16(1); port <= 5; port++ {
+		tr.Record(port, false, appattr.PathTunnel, "default", "", "")
+		tr.ConnClosed(port, false)
+	}
+	first := tr.highestSeq()
+	if first < 5 {
+		t.Fatalf("前置条件不成立:序号只走到 %d,不足以让重置显形", first)
+	}
+	if tr.liveSize() != 0 {
+		t.Fatalf("前置条件不成立:活连接表非空(%d),种子会把序号推上去而掩盖重置", tr.liveSize())
+	}
+
+	// 让订阅过期,再全新订阅一次(缓冲重建、种子重播)。
+	at = at.Add(2 * appTrafficTTL)
+	tr.Subscribe()
+	tr.Record(8, false, appattr.PathDirect, "default", "", "")
+
+	if second := tr.highestSeq(); second <= first {
+		t.Fatalf("序号跨订阅回退了(%d -> %d)—— resolver 放锁期间的写回会按序号"+
+			"写到别人的记录上,应用名张冠李戴而界面看不出来", first, second)
+	}
+}
+
 // **裁剪的早退判据只许看时间,不许看活性。**
 //
 // 记录按时间序,最旧的一条还在窗口内 ⇒ 全都在。若改成「最旧的那一条留得住吗」,
