@@ -4583,7 +4583,38 @@ func writeClientRecovery(b *strings.Builder, recovery guardian.RecoverySnapshot)
 			fmt.Fprintf(b, " error_code=%s", recovery.ErrorCode)
 		}
 		fmt.Fprintln(b)
+		if hint := captiveNetworkHint(recovery); hint != "" {
+			fmt.Fprint(b, hint)
+		}
 	}
+}
+
+// captiveNetworkHint 在「刚换过网络、而隧道够不着服务器」时给一句可行动的提示。
+//
+// **判据只有一条组合,刻意窄**:`reason=underlay_changed`(换网络触发的恢复)
+// 且 `error_code=transport_unavailable`(路由已经重绑成功、卡在传输健康那一步 ——
+// Rebind 排在 transport_health 之前,所以走到这个错误码就说明路由那半没问题)。
+// 别的失败码不给这句话:一条到处都出现的提示会被训练成墙纸,而它要提醒的那件事
+// 一年也遇不到几次。
+//
+// **措辞只陈述观测到的事实,原因只给可能性**(「常常要」而不是「需要」)——
+// bx 分不清「这是强制门户」与「服务器真的挂了 / 运营商在拦」,断言其中一个就是
+// 编答案。与 leakcheck 那句 `Protection may be off.`、以及归因窗口那句陈旧提示
+// 同一条纪律。
+//
+// **为什么第一步不是「关掉 bx」**:私网恒直连(route.DefaultPrivateCIDRs,不受
+// kill-switch 影响),所以网关上的门户页在 bx 开着时通常就够得着 —— 门户之所以
+// 弹不出来,是因为**发现机制**(DNS 劫持 + HTTP 重定向)被 bx 接管了,不是那条路
+// 被堵死了。先试网关能省掉一次「关掉保护」。**这一条真机未验**,所以后面仍然
+// 保留 down/up 那条退路,而不是把它说成一定管用。
+func captiveNetworkHint(recovery guardian.RecoverySnapshot) string {
+	if recovery.Reason != "underlay_changed" || recovery.ErrorCode != "transport_unavailable" {
+		return ""
+	}
+	return "          这个网络连不上服务器。咖啡馆/酒店 Wi-Fi 常常要先在浏览器里登录。\n" +
+		"          先试(不用关 bx,私网是直连的):\n" +
+		"            open \"http://$(route -n get default | awk '/gateway:/{print $2}')\"\n" +
+		"          门户页打不开或登录后仍不通,再:sudo bx down → 登录 → sudo bx up\n"
 }
 
 func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {

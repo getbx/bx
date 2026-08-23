@@ -37,6 +37,28 @@ struct RecoveryPresentationTests {
         expect(blocked.indicator == .red, "blocked 仍然是失败")
         expect(blocked.shortReason == "Protected transport unavailable", "blocked 的失败原因")
 
+        // 换网络之后够不着服务器 —— 单独说话(酒店/咖啡店 Wi-Fi 的强制门户)。
+        // 判据是 reason 与 error code **两个都要对**:一条到处出现的提示会被训练
+        // 成墙纸,而它要提醒的事一年遇不到几次。
+        let captive = recoveryPresentation(for: recoverySnapshot(
+            state: "failed", stage: "transport_health",
+            errorCode: "transport_unavailable", reason: "underlay_changed"))
+        expect(captive.shortReason?.contains("sign-in") == true,
+               "换网络之后够不着服务器,没有提示可能要登录:\(String(describing: captive.shortReason))")
+        expect(captive.indicator == .red, "它仍然是一次真失败,不许降级")
+        // 同一个错误码、但**不是**换网络触发的(用户自己点的重连)⇒ 不给这句话。
+        let manual = recoveryPresentation(for: recoverySnapshot(
+            state: "failed", stage: "transport_health",
+            errorCode: "transport_unavailable", reason: "manual"))
+        expect(manual.shortReason == "Protected transport unavailable",
+               "手动重连失败被安上了门户的说法:\(String(describing: manual.shortReason))")
+        // 换网络触发、但别的失败码 ⇒ 也不给。
+        let otherCode = recoveryPresentation(for: recoverySnapshot(
+            state: "failed", stage: "observe",
+            errorCode: "capture_invalid", reason: "underlay_changed"))
+        expect(otherCode.shortReason == "Protected path changed",
+               "别的失败码被安上了门户的说法:\(String(describing: otherCode.shortReason))")
+
         let accepted = recoveryPresentation(for: recoverySnapshot(state: "accepted", stage: "queued"))
         expect(accepted.title == "Reconnecting", "accepted title")
         expect(accepted.indicator == .yellow, "accepted indicator")
