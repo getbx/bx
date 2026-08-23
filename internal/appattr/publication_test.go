@@ -167,6 +167,13 @@ var destPublicationAllowlist = map[string]string{
 	"internal/appattr/report_test.go":        "上面那条的测试",
 	"internal/appattr/publication_test.go":   "这条守卫自己",
 	"internal/supervisor/apptraffic_test.go": "端到端穿过 Snapshot 的测试(断言 row.Dests)",
+
+	// —— 菜单侧的消费者。**2026-08-22 这条守卫真的拦了一次**:目的地渲染上菜单
+	// 时它当场转红,作者因此回来读了上面那段、再把自己加进来 —— 那正是这张表
+	// 想要的效果(加进来可以,悄悄加不行)。发布面没有变宽:仍然是 Core 控制
+	// socket → Guardian 的 owner 门 → 这一个窗口,不进 `bx status --json`、
+	// 不进日志、不进诊断包。
+	"apps/macos/BxMenu/Sources/BxMenu/AppTrafficModel.swift": "唯一的消费者:解码 dests/dests_more,算摘要与 toolTip",
 }
 
 // destWordPattern 只认发布面会实际出现的复数/连字形态 —— 不是单词边界版的
