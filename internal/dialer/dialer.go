@@ -77,7 +77,14 @@ type DecisionCounter interface {
 // 选出来,**不带端口** —— 端口回答「怎么连」,拼进去会让同一域名的 443/80 变成
 // 两个不同目的地,把去重打散。
 type AppRecorder interface {
-	Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string)
+	// Record 收下这次判定,返回**这条流**的 ID(单调递增、永不复用)。
+	//
+	// **返回 ID 而不是让释放按 (端口,协议) 找,是承重的**:同一个源端口上可以有
+	// N 条并存的流(UDP socket 打 STUN + TURN + 多个 peer,gVisor 按 5 元组建流),
+	// 按端口释放就无从知道该减哪一条。那正是「种子把一个 socket 上并存的 N 条流
+	// 压成一条」那个已知缺口当初修不了的原因 —— 释放改挂到拨号返回的 conn 自己
+	// 身上之后,它拿得到自己那条流的 ID,障碍随之消失。
+	Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string) uint64
 	// ConnClosed 报告这条连接结束,归因侧据此维护「此刻还开着的连接」表。
 	//
 	// **它与 Record 成对,而且这一对现在住在同一个包里** —— 释放此前是**调用方**
@@ -90,8 +97,16 @@ type AppRecorder interface {
 	// **直接扩接口而不是做成可选类型断言**:「实现里没有就静默不计」的释放者
 	// 与没有这个功能在输出上完全一样(活连接表只增不减),而它恰恰是用来维护
 	// 那张表的(与 stats.DecisionCounter 同一条判断)。
-	ConnClosed(srcPort uint16, udp bool)
+	ConnClosed(flowID uint64)
 }
+
+// flowSlot 是一次拨号里「记下的那条流的 ID」的回传槽位。
+//
+// **零值 0 读作「这条路径没有记账」**,而不是「第 0 条流」:flowSeq 从 1 起发号,
+// 所以 0 永远不是一个真实的 ID。分不开这两者的话,一条没记账的拨号会去释放一个
+// 不存在的条目 —— 今天无害(ID 不存在即无操作),但它会让「记了几次就该释放
+// 几次」这条不变量在测试里表达不出来。
+type flowSlot struct{ id uint64 }
 
 // appTrackedConn 把「释放活连接表条目」挂在 conn 自己的 Close 上。
 //
@@ -223,22 +238,26 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 // 地释放。单一漏斗是必需的:dialInner 有十几个 return,逐个包会漏,而漏掉的
 // 那一个正是「记了账没人释放」。
 func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []byte) (net.Conn, error) {
-	conn, err := d.dialInner(ctx, m, initial)
-	if d.AppRecorder == nil {
-		// 没人订阅应用视图时的常态:没记账就没有账要平,不包这一层。
+	// flow 是这一次拨号记下的那条流的 ID。**由记账那一刻发出、经这个槽位回到
+	// 这里**,而不是让释放按 (端口,协议) 去找:同一个源端口上可以有 N 条并存的
+	// 流,按端口释放无从知道该减哪一条。
+	var flow flowSlot
+	conn, err := d.dialInner(ctx, m, initial, &flow)
+	if d.AppRecorder == nil || flow.id == 0 {
+		// 没人订阅应用视图、或这条路径压根没记账:没有账要平,不包这一层。
 		return conn, err
 	}
-	rec, srcPort, udp := d.AppRecorder, m.SrcPort, m.UDP
+	rec, id := d.AppRecorder, flow.id
 	if err != nil || conn == nil {
 		// **被 kill-switch 拦下的连接已经进了表,而拨号返回错误。** 隧道挂掉时
 		// 这类连接恰恰最多;少了这一支,它们的条目永远没人删。
-		rec.ConnClosed(srcPort, udp)
+		rec.ConnClosed(id)
 		return conn, err
 	}
-	return &appTrackedConn{Conn: conn, release: func() { rec.ConnClosed(srcPort, udp) }}, nil
+	return &appTrackedConn{Conn: conn, release: func() { rec.ConnClosed(id) }}, nil
 }
 
-func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (net.Conn, error) {
+func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, flow *flowSlot) (net.Conn, error) {
 	rt := d.router.Load()
 	tr, udpTransport := d.loadTransportGeneration()
 	if tr == nil {
@@ -272,7 +291,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (n
 		// 用户没有逐条看过;把它的作用域从 TCP 悄悄扩到 UDP,等于一次性把一大批
 		// 流量推到真实 IP 上出去。那要单独决定,不搭这趟车。
 		if dec, why, ok := d.udpRuleOverride(m); ok {
-			return d.dialUDPByRule(ctx, m, dec, why, tr, udpTransport)
+			return d.dialUDPByRule(ctx, m, dec, why, tr, udpTransport, flow)
 		}
 		if d.UDPMode == "direct-realtime" {
 			// 隧道挂 + kill-switch:直连 UDP 的「牺牲匿名换低延迟」只在代理正常工作时被接受。
@@ -282,7 +301,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (n
 					d.Stats.Blocked()
 					d.Stats.UDPBlocked()
 				}
-				d.recordApp(m, appattr.PathBlocked, udpSourceDirectRealtime, "")
+				d.recordApp(flow, m, appattr.PathBlocked, udpSourceDirectRealtime, "")
 				debugf("udp direct-realtime blocked (killswitch, tunnel down): ip=%s port=%d", m.IP, m.Port)
 				return nil, ErrBlocked
 			}
@@ -290,7 +309,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (n
 				d.Stats.Direct()
 				d.Stats.RuleAttempt(udpSourceDirectRealtime, "")
 			}
-			d.recordApp(m, appattr.PathDirect, udpSourceDirectRealtime, "")
+			d.recordApp(flow, m, appattr.PathDirect, udpSourceDirectRealtime, "")
 			ip := m.IP
 			if m.Domain != "" {
 				resolved, err := d.Resolver.Resolve(ctx, m.Domain)
@@ -331,14 +350,14 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (n
 					d.Stats.Blocked()
 					d.Stats.UDPBlocked()
 				}
-				d.recordApp(m, appattr.PathBlocked, source, "")
+				d.recordApp(flow, m, appattr.PathBlocked, source, "")
 				return nil, ErrBlocked // 主传输也挂 → fail-closed(仍绝不回落直连)
 			}
 			if d.Stats != nil {
 				d.Stats.Proxy()
 				d.Stats.RuleAttempt(source, "")
 			}
-			d.recordApp(m, appattr.PathTunnel, source, "")
+			d.recordApp(flow, m, appattr.PathTunnel, source, "")
 			host := m.Domain
 			if host == "" {
 				host = m.IP.String()
@@ -355,7 +374,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (n
 			d.Stats.Blocked()
 			d.Stats.UDPBlocked()
 		}
-		d.recordApp(m, appattr.PathBlocked, udpSourceModeBlock, "")
+		d.recordApp(flow, m, appattr.PathBlocked, udpSourceModeBlock, "")
 		debugf("udp blocked: ip=%s domain=%q port=%d", m.IP, m.Domain, m.Port)
 		return nil, ErrBlocked
 	}
@@ -394,14 +413,14 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (n
 	port := strconv.Itoa(int(m.Port))
 	switch dec {
 	case route.Via:
-		return d.dialVia(ctx, m, why, port)
+		return d.dialVia(ctx, m, why, port, flow)
 
 	case route.Direct:
 		if d.Stats != nil {
 			d.Stats.Direct()
 			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 		}
-		d.recordApp(m, appattr.PathDirect, why.Source.String(), why.Rule)
+		d.recordApp(flow, m, appattr.PathDirect, why.Source.String(), why.Rule)
 		var target string
 		if m.Domain != "" {
 			ip := resolved
@@ -432,14 +451,14 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (n
 			if d.Stats != nil {
 				d.Stats.Blocked()
 			}
-			d.recordApp(m, appattr.PathBlocked, why.Source.String(), why.Rule)
+			d.recordApp(flow, m, appattr.PathBlocked, why.Source.String(), why.Rule)
 			return nil, ErrBlocked
 		}
 		if d.Stats != nil {
 			d.Stats.Proxy()
 			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 		}
-		d.recordApp(m, appattr.PathTunnel, why.Source.String(), why.Rule)
+		d.recordApp(flow, m, appattr.PathTunnel, why.Source.String(), why.Rule)
 		host := m.Domain
 		if host == "" {
 			host = m.IP.String()
@@ -460,7 +479,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (n
 		// **今天到不了这里** —— Explain/ExplainIP 从不返回 route.Block。
 		// 仍然记:这个分支存在的意义就是「将来真有人让 Router 判 Block」,
 		// 而那一天最不该发生的事,是被阻断的连接在应用视图里凭空消失。
-		d.recordApp(m, appattr.PathBlocked, why.Source.String(), why.Rule)
+		d.recordApp(flow, m, appattr.PathBlocked, why.Source.String(), why.Rule)
 		return nil, ErrBlocked
 	}
 }
@@ -561,7 +580,7 @@ type fakeIPRange interface {
 // **归因用真实的规则来源,不另造一个 udp_ 前缀**:这样用户那条 config 里的规则
 // 在 `bx status` 里连 UDP 的成败一起认领 —— 点名到的是他改得了的那一行,而
 // 「同一条规则的 TCP 与 UDP 分列两处」只会让人以为有两个问题。
-func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Decision, why route.Reason, tr, udpTransport *Transport) (net.Conn, error) {
+func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Decision, why route.Reason, tr, udpTransport *Transport, flow *flowSlot) (net.Conn, error) {
 	// **具名出口:UDP 与 TCP 必须走同一条路。**
 	//
 	// 少了这一段,UDP 会落到下面的「走隧道」分支 —— 同一条规则在 TCP 上交给出口、
@@ -569,7 +588,7 @@ func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Deci
 	// 网络里同 IP 的另一台机器**。那正是这个功能明确设计要防的「连错机器」,
 	// 从 UDP 这道门进来了(2026-08-16 自审抓到)。
 	if dec == route.Via {
-		return d.dialVia(ctx, m, why, strconv.Itoa(int(m.Port)))
+		return d.dialVia(ctx, m, why, strconv.Itoa(int(m.Port)), flow)
 	}
 	if dec == route.Direct {
 		// **直连不受 kill-switch 约束**,与 TCP 的直连同理:kill-switch 防的是
@@ -578,7 +597,7 @@ func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Deci
 			d.Stats.Direct()
 			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 		}
-		d.recordApp(m, appattr.PathDirect, why.Source.String(), why.Rule)
+		d.recordApp(flow, m, appattr.PathDirect, why.Source.String(), why.Rule)
 		ip := m.IP
 		if m.Domain != "" {
 			resolved, err := d.Resolver.Resolve(ctx, m.Domain)
@@ -609,14 +628,14 @@ func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Deci
 			d.Stats.Blocked()
 			d.Stats.UDPBlocked()
 		}
-		d.recordApp(m, appattr.PathBlocked, why.Source.String(), why.Rule)
+		d.recordApp(flow, m, appattr.PathBlocked, why.Source.String(), why.Rule)
 		return nil, ErrBlocked
 	}
 	if d.Stats != nil {
 		d.Stats.Proxy()
 		d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 	}
-	d.recordApp(m, appattr.PathTunnel, why.Source.String(), why.Rule)
+	d.recordApp(flow, m, appattr.PathTunnel, why.Source.String(), why.Rule)
 	host := m.Domain
 	if host == "" {
 		host = m.IP.String()
@@ -680,7 +699,7 @@ func (d *Dialer) recordUDPFailure(dec route.Decision, source, rule string) {
 // **③ 域名原样交给出口,不在本地解析。** 内网域名多半只有内网 DNS 答得出;
 // 本地解析出来的地址是错的(或者根本解析不出)。SOCKS5 支持按域名连接,让出口
 // 那一侧去解析才是对的。
-func (d *Dialer) dialVia(ctx context.Context, m route.Meta, why route.Reason, port string) (net.Conn, error) {
+func (d *Dialer) dialVia(ctx context.Context, m route.Meta, why route.Reason, port string, flow *flowSlot) (net.Conn, error) {
 	eg := d.egressFor(why.Rule)
 	if eg == nil {
 		// 出口没接上(配置里有、运行时没有)。**阻断而不是回落** —— 见 ②。
@@ -689,7 +708,7 @@ func (d *Dialer) dialVia(ctx context.Context, m route.Meta, why route.Reason, po
 			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
 			d.Stats.RuleFailure(why.Source.String(), why.Rule)
 		}
-		d.recordApp(m, appattr.PathBlocked, why.Source.String(), why.Rule)
+		d.recordApp(flow, m, appattr.PathBlocked, why.Source.String(), why.Rule)
 		debugf("dial via blocked: egress=%q 未接线", why.Rule)
 		return nil, ErrBlocked
 	}
@@ -699,7 +718,7 @@ func (d *Dialer) dialVia(ctx context.Context, m route.Meta, why route.Reason, po
 	}
 	// 具名出口不是主隧道,但也**不是直连** —— 归到 tunnel 组是这三档里唯一
 	// 诚实的答案(把它记成 direct 会让用户以为这些流量裸奔出去了)。
-	d.recordApp(m, appattr.PathTunnel, why.Source.String(), why.Rule)
+	d.recordApp(flow, m, appattr.PathTunnel, why.Source.String(), why.Rule)
 	host := m.Domain
 	if host == "" {
 		host = m.IP.String()
@@ -748,13 +767,13 @@ func (d *Dialer) SetEgresses(byName map[string]ContextDialer) {
 //     不查 DNS、写死 IP 直连,恰恰是「偷偷连服务器」最典型的形状;留空会让
 //     最可疑的这一类在界面上什么都不显示。
 //  3. 否则空串(两者都没有,报告不了目的地)。
-func (d *Dialer) recordApp(m route.Meta, path appattr.Path, source, rule string) {
+func (d *Dialer) recordApp(flow *flowSlot, m route.Meta, path appattr.Path, source, rule string) {
 	if d.AppRecorder != nil {
 		dest := m.Domain
 		if dest == "" && m.IP.IsValid() {
 			dest = m.IP.String()
 		}
-		d.AppRecorder.Record(m.SrcPort, m.UDP, path, source, rule, dest)
+		flow.id = d.AppRecorder.Record(m.SrcPort, m.UDP, path, source, rule, dest)
 	}
 }
 

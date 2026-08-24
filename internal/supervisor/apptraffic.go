@@ -80,6 +80,11 @@ const rateSampleInterval = 2 * time.Second
 type bufferedRecord struct {
 	rec appattr.ConnRecord
 	seq uint64
+	// flow 是产生这条记录的那条流的 ID(见 AppTraffic.live)。**它让「还开着的
+	// 连接不按时间裁」这条豁免精确到流,而不是到端口** —— 按端口豁免时,同一个
+	// socket 上并存的多条流在过期之后会被压成一条(与种子那个已知缺口同形)。
+	// 它是缓冲自己的记账,不进 appattr.ConnRecord —— 那是纯判据的输入。
+	flow uint64
 }
 
 // appTrafficMaxRecords 是环形缓冲容量。满了就丢最旧的:界面显示的是「此刻的
@@ -91,13 +96,22 @@ const appTrafficMaxRecords = 4096
 // 那次最后的现查),这是「未订阅时也维护这张表」在隐私上仍然成立的原因
 // (表里是端口和判定,不是「你开过什么应用」)。
 //
-// refs 是同键并存的流数,**UDP 需要它**:一个应用 socket 打 STUN + TURN + 多个
-// peer,gVisor 按 5 元组建流 ⇒ 同一个源端口上有 N 条并存的流、N 次 Record。
-// 不记数就会「第一条流关掉时把整条 socket 从活连接表里抹掉」,于是种子看不见
-// 一个还在灌媒体流的会议 —— 正是这次修复要消灭的那种盲区。
-// TCP 侧 refs 通常恒为 1,但它也顺手兜住了「旧连接的 ConnClosed 晚于新连接的
-// Record 到达」这个真实竞态(裸 delete 会把刚建好的那条抹掉)。
+// **一条流一个条目,键是不复用的 flowID(2026-08-24)。** 此前是「按 PortKey 记 +
+// refs 计数」,于是一个应用 socket 打 STUN + TURN + 多个 peer 时(gVisor 按 5 元组
+// 建流 ⇒ 同一个源端口上 N 条并存的流)N 条流被压成一条,种子每键只发得出一条 ——
+// 同一个事实按窗口打开时机给出不同答案,而那恰好落在这个窗口最初的用例上
+// (腾讯会议同时打 STUN 与 TURN)。
+//
+// 当初没这么做,是因为释放那一端 `ConnClosed(port, udp)` **无从知道该减哪一档**;
+// 2026-08-24 把释放挂到拨号返回的 conn 自己身上之后,那个障碍消失了 —— 释放拿得到
+// 它自己那条流的 ID。
+//
+// 不复用的单调 ID 顺带按构造兜住了「旧连接的 ConnClosed 晚于新连接的 Record
+// 到达」这个真实竞态:两条流本来就是两个条目,迟到的那次删除删的是它自己那条。
 type liveConn struct {
+	// key 是这条流的 (源端口,协议)。**主表按 flowID 记,所以键要跟着条目走** ——
+	// 播种与「这个端口还开着吗」都要用到它。
+	key    appattr.PortKey
 	path   appattr.Path
 	source string
 	rule   string
@@ -108,7 +122,6 @@ type liveConn struct {
 	// 表里只留得住**最后一个** dest —— 播种出来的那一条记录只报得出最近连的
 	// 那一个目的地,不是全部。不是新的近似,是既有近似的自然延伸。
 	dest string
-	refs int
 }
 
 // AppTraffic 按 (源端口,协议) 记账。**归因、字节账与历史只在有人订阅时才攒**,
@@ -128,17 +141,16 @@ type liveConn struct {
 // (**这句话在 2026-08-20 之前是「全部发生在 Snapshot 里」** —— 那正是 unknown
 // 结构性膨胀的主因:活不过一次 5 秒刷新的连接,在被归因之前 socket 就没了。)
 //
-// **已知缺口:种子把一个 socket 上并存的 N 条流压成一条,而新记录不会。**
-// live 按 PortKey 记,同键最后写入者胜(见 Record),seedFromLiveLocked 每键只
-// 发一条记录。于是一个会议 socket 同时打 STUN(可能直连)+ TURN(可能走隧道)时:
-// **订阅前**建立的只会出现在**一个**组里、连接数恒为 1;**订阅后**建立的则正确地
-// 出现在**两个**组里、连接数为 N。同一个事实,按窗口打开时机给出不同答案 ——
-// 而「腾讯会议为什么绕一圈」恰恰是这个功能要回答的问题。
-// 今天刻意不修:相对修复前(**完全看不见**)这仍是巨大改善,用户的用例答得出来、
-// 只是少一个组;真修不便宜 —— ConnClosed(port, udp) 无从知道该减哪一档,要把键
-// 重新设计成能分辨同一 socket 上的不同流。当前行为由
-// TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket **明确钉住**
-// (那条测试断言的是「这是已知行为」,不是「这样是对的」)。
+// **「种子把一个 socket 上并存的 N 条流压成一条」这个已知缺口 2026-08-24 已经
+// 补上。** 此前 live 按 PortKey 记、同键最后写入者胜,种子每键只发一条,于是一个
+// 会议 socket 同时打 STUN(可能直连)+ TURN(可能走隧道)时:订阅前建立的只出现
+// 在一个组里,订阅后建立的正确地出现在两个组里 —— 同一个事实按窗口打开时机给出
+// 不同答案,而「腾讯会议为什么绕一圈」恰恰是这个功能要回答的问题。
+// 当初判定「真修不便宜」的理由是 `ConnClosed(port, udp)` 无从知道该减哪一档;
+// 释放改挂到拨号返回的 conn 自己身上之后(dialer.appTrackedConn),它拿得到自己
+// 那条流的 ID,那个障碍随之消失 —— **一条流一个条目**,种子每条流发一条记录。
+// 同一块补齐的还有裁剪那半:活性豁免从「按端口封顶一条」改成「按流封顶一条」,
+// 否则并存的流在过期之后仍会被压成一条。
 //
 // 三态刻意分开,一条都不许合并:「没人在看」/「在看但问不出来」/「在看且
 // 确实没有连接」。把后两者压成一份空报告,读起来就是句自洽的假话。
@@ -167,9 +179,17 @@ type AppTraffic struct {
 	resolverRunning bool
 	bytesUp         map[appattr.PortKey]int64
 	bytesDn         map[appattr.PortKey]int64
-	// live 是「此刻还开着的连接」。**不随订阅生灭** —— 它的边界是 ConnClosed,
-	// 不是 TTL;跟着订阅清空就等于回到那个只看得见新连接的 bug。
-	live map[appattr.PortKey]liveConn
+	// live 是「此刻还开着的连接」,**一条流一个条目**。不随订阅生灭 —— 它的
+	// 边界是 ConnClosed,不是 TTL;跟着订阅清空就等于回到那个只看得见新连接的 bug。
+	live map[uint64]liveConn
+	// flowSeq 发流 ID:单调递增、永不复用(与 bufferedRecord.seq 同一条纪律)。
+	// 复用会让一次迟到的 ConnClosed 删掉一条恰好拿到同一个号的新流。
+	flowSeq uint64
+	// liveByPort 是「这个端口上还开着几条流」。**它是索引不是真相** ——
+	// 真相在 live 里,这张表只为让三处「这个端口还开着吗」的查询保持 O(1)
+	// (裁剪与字节账各一处,每次 Snapshot/resolver 拍都要走)。
+	// 两张表必须同增同减,由 liveSize 与「开关 N 轮后两张表都回落到 0」钉住。
+	liveByPort map[appattr.PortKey]int
 
 	// ---- 速率(2026-08-20,服务端按端口做差)----
 	//
@@ -195,7 +215,8 @@ func NewAppTraffic(src appSource, now func() time.Time) *AppTraffic {
 		src:             src,
 		now:             now,
 		resolveInterval: appResolveInterval,
-		live:            map[appattr.PortKey]liveConn{},
+		live:            map[uint64]liveConn{},
+		liveByPort:      map[appattr.PortKey]int{},
 	}
 }
 
@@ -419,22 +440,22 @@ func (t *AppTraffic) trimLocked(now time.Time) {
 	// 更远的后果与 ConnClosed 头上那段同形:约 5.7 小时后这些历史记录填满
 	// 4096 格环形缓冲,**新记录被自己的历史挤掉**,而没有任何一处报错。
 	//
-	// 只留最近一条,长连接照样看得见(那是豁免的全部目的),而累积被按端口封顶。
-	// 代价是**同一个 socket 上并存的多条流,过期之后只剩一条** —— 与种子那条
-	// 已知缺口(TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket)同一个
-	// 形状、同一个理由,不是新引入的近似。
-	seenOpen := make(map[appattr.PortKey]bool, len(ordered))
+	// 只留最近一条,长连接照样看得见(那是豁免的全部目的),而累积被封顶。
+	// **封顶到「流」而不是「端口」(2026-08-24)**:按端口封顶时,同一个 socket 上
+	// 并存的多条流在过期之后会被压成一条 —— 与种子那个已知缺口同形。活连接表
+	// 改成一条流一个条目之后,这里跟着精确到流,那个近似整个消失。
+	seenOpen := make(map[uint64]bool, len(ordered))
 	for i := len(ordered) - 1; i >= 0; i-- {
 		br := ordered[i]
 		pk := appattr.PortKey{Port: br.rec.SrcPort, UDP: br.rec.UDP}
 		if !appattr.InReportWindow(br.rec, now) {
-			if _, open := t.live[pk]; !open {
+			if _, open := t.live[br.flow]; !open {
 				continue
 			}
-			if seenOpen[pk] {
-				continue // 这个端口的过期记录已经留过一条了
+			if seenOpen[br.flow] {
+				continue // 这条流的过期记录已经留过一条了
 			}
-			seenOpen[pk] = true
+			seenOpen[br.flow] = true
 		}
 		kept = append(kept, br)
 		alive[pk] = true
@@ -464,7 +485,7 @@ func (t *AppTraffic) trimByteAccountsLocked(alive map[appattr.PortKey]bool) {
 		if alive[k] {
 			continue
 		}
-		if _, open := t.live[k]; open {
+		if t.liveByPort[k] > 0 {
 			continue
 		}
 		delete(t.bytesUp, k)
@@ -473,7 +494,7 @@ func (t *AppTraffic) trimByteAccountsLocked(alive map[appattr.PortKey]bool) {
 		if alive[k] {
 			continue
 		}
-		if _, open := t.live[k]; open {
+		if t.liveByPort[k] > 0 {
 			continue
 		}
 		delete(t.bytesDn, k)
@@ -538,26 +559,33 @@ func copyPortBytes(m map[appattr.PortKey]int64) map[appattr.PortKey]int64 {
 // (Aggregate 按倒序把字节记给最近那条记录)。种子彼此的键互不相同,顺序其实
 // 不影响任何数字,但一份随机顺序的输出会让将来任何一条顺序相关的断言变成 flake。
 func (t *AppTraffic) seedFromLiveLocked() {
-	keys := make([]appattr.PortKey, 0, len(t.live))
-	for k := range t.live {
-		keys = append(keys, k)
+	ids := make([]uint64, 0, len(t.live))
+	for id := range t.live {
+		ids = append(ids, id)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].UDP != keys[j].UDP {
-			return !keys[i].UDP
+	// 排序只为让输出确定。**同一个端口上的多条流按 flowID 排** —— 它单调递增,
+	// 于是同键的种子顺序与它们当初被 Record 的顺序一致,而 Aggregate 是按倒序
+	// 把字节记给该键最近那条记录的。
+	sort.Slice(ids, func(i, j int) bool {
+		a, b := t.live[ids[i]], t.live[ids[j]]
+		if a.key.UDP != b.key.UDP {
+			return !a.key.UDP
 		}
-		return keys[i].Port < keys[j].Port
+		if a.key.Port != b.key.Port {
+			return a.key.Port < b.key.Port
+		}
+		return ids[i] < ids[j]
 	})
-	for _, k := range keys {
-		c := t.live[k]
+	for _, id := range ids {
+		c := t.live[id]
 		t.appendRecordLocked(appattr.ConnRecord{
-			SrcPort: k.Port,
-			UDP:     k.UDP,
+			SrcPort: c.key.Port,
+			UDP:     c.key.UDP,
 			Path:    c.path,
 			Source:  c.source,
 			Rule:    c.rule,
 			Dest:    c.dest,
-		})
+		}, id)
 	}
 }
 
@@ -593,7 +621,7 @@ func (t *AppTraffic) expiredLocked() bool {
 // udp 单独作为形参而不是让调用方自己拼 appattr.PortKey:拼结构体时漏填
 // UDP 字段没有编译错误(零值就是 false),后果是所有连接都被当成 TCP 归因,
 // 而界面上只会看到一个应用名、看不到冲突。形参漏传则编译不过。
-func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string) {
+func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string) uint64 {
 	key := appattr.PortKey{Port: srcPort, UDP: udp}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -608,13 +636,13 @@ func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source,
 	// 什么」,不是一份历史记录。目的地(域名或裸 IP)与应用身份不是一回事:
 	// 应用名仍然只在订阅期间才由后台 resolver 现问内核填回来,这张表本身
 	// 从不知道「你开的是哪个应用」。
-	c := t.live[key]
-	c.path, c.source, c.rule, c.dest = path, source, rule, dest
-	c.refs++
-	t.live[key] = c
+	t.flowSeq++
+	flowID := t.flowSeq
+	t.live[flowID] = liveConn{key: key, path: path, source: source, rule: rule, dest: dest}
+	t.liveByPort[key]++
 
 	if t.expiredLocked() {
-		return
+		return flowID
 	}
 	// **端口复用时清账,这两行是承重的 —— 但只对 TCP。**
 	//
@@ -649,52 +677,56 @@ func (t *AppTraffic) Record(srcPort uint16, udp bool, path appattr.Path, source,
 		Source:  source,
 		Rule:    rule,
 		Dest:    dest,
-	})
+	}, flowID)
+	return flowID
 }
 
 // appendRecordLocked 往环形缓冲写一条。调用者必须持有 t.mu,且 t.records 必须
 // 是有效的一份 —— **不是「t.active 为真」**:seedFromLiveLocked 在 Subscribe 里
 // 置位 active **之前**就调它(缓冲刚 make 出来,种子先进去,再对外宣布在采集)。
-func (t *AppTraffic) appendRecordLocked(rec appattr.ConnRecord) {
+func (t *AppTraffic) appendRecordLocked(rec appattr.ConnRecord, flow uint64) {
 	// **时间戳在这里盖,不让调用方填。** 漏填的零值时间会让记录一产生就落在
 	// 窗口外并被立刻裁掉,而那是完全静默的 —— 界面上只是「没有这条连接」。
 	rec.At = t.now()
 	t.seq++
-	t.records[t.next] = bufferedRecord{rec: rec, seq: t.seq}
+	t.records[t.next] = bufferedRecord{rec: rec, seq: t.seq, flow: flow}
 	t.next++
 	if t.next == len(t.records) {
 		t.next, t.wrapped = 0, true
 	}
 }
 
-// ConnClosed 报告一条连接结束。**这是活连接表唯一的边界。**
+// ConnClosed 释放 Record 发出的那一条流。**这是活连接表唯一的边界。**
 //
-// **它不会涨到 OOM,别那么写** —— 键是 appattr.PortKey{uint16, bool},硬上限
-// 131072 条、约 10–15MB,泄漏满了也就到此为止。**真正的后果发作得更早,而且更糟**:
-// 陈旧条目累积到几千条之后,seedFromLiveLocked 一次就能把 4096 格的环形缓冲填满
-// 并绕圈,**新记录被自己的陈旧种子挤掉** —— 报告从「正确但残缺」退化成「错的」,
-// 而仍然没有任何一处会报错。
+// **参数是 flowID 而不是 (端口,协议),这一点是承重的**:同一个源端口上可以有
+// N 条并存的流(UDP socket 打 STUN + TURN + 多个 peer),按端口释放就无从知道
+// 该减哪一条 —— 那正是「种子把并存的流压成一条」那个缺口当初修不了的原因。
+// 释放挂在拨号返回的 conn 自己身上(dialer.appTrackedConn),它拿得到自己那条
+// 流的 ID。
 //
-// 由 tun 引擎在 handleConn 里 defer 调用,**且必须 defer 在拨号之前**:判定
-// (Record)发生在 Dial 内部,kill-switch Block 这类失败同样会留下一条活连接
-// 记录,放到拨号成功之后才 defer,那些记录永远没人删。
+// **表不会涨到 OOM,别那么写** —— 但真正的后果发作得更早、也更糟:陈旧条目
+// 累积到几千条之后,seedFromLiveLocked 一次就能把 4096 格的环形缓冲填满并绕圈,
+// **新记录被自己的陈旧种子挤掉** —— 报告从「正确但残缺」退化成「错的」,而仍然
+// 没有任何一处会报错。
 //
-// 多调一次是安全的(键不存在即无操作,refs 见底即删),这是防御性的:引擎侧
-// 只要有一条路径重复 defer,这里也不能把表算成负数。
-func (t *AppTraffic) ConnClosed(srcPort uint16, udp bool) {
-	key := appattr.PortKey{Port: srcPort, UDP: udp}
+// 多调一次是安全的(ID 不存在即无操作),这是防御性的:调用方只要有一条路径
+// 重复释放,这里也不能把索引算成负数。ID 单调递增、永不复用,所以重复释放
+// 绝不会误伤另一条流。
+func (t *AppTraffic) ConnClosed(flowID uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	c, ok := t.live[key]
+	c, ok := t.live[flowID]
 	if !ok {
 		return
 	}
-	c.refs--
-	if c.refs <= 0 {
-		delete(t.live, key)
-		return
+	delete(t.live, flowID)
+	// 索引跟着减。**减到 0 就删键**,否则 liveByPort 自己会变成第二个只增不减
+	// 的表 —— 它的条目比 live 便宜得多,但「不许无界增长」这条对它一样成立。
+	if n := t.liveByPort[c.key] - 1; n > 0 {
+		t.liveByPort[c.key] = n
+	} else {
+		delete(t.liveByPort, c.key)
 	}
-	t.live[key] = c
 }
 
 // liveSize 报告活连接表的条目数。**测试专用的白盒窗口** —— 「表不许无界增长」
@@ -703,6 +735,15 @@ func (t *AppTraffic) liveSize() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.live)
+}
+
+// livePortIndexSize 报告端口索引的条目数。**测试专用的白盒窗口** ——
+// 索引与活连接表必须同增同减;它只增不减的话就是第二个泄漏源,而报告完全
+// 看不出来(索引只影响裁剪判断,不影响任何输出的数字)。
+func (t *AppTraffic) livePortIndexSize() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.liveByPort)
 }
 
 // highestSeq 报告最近一次分配出去的记录序号。**测试专用的白盒窗口** ——

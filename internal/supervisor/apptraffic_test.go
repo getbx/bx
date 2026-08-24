@@ -324,12 +324,12 @@ func TestAppTrafficResubscribeAfterExpiryStartsClean(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Slack"}}
 	tr := newAppTrafficNoResolver(src, clock)
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
+	flow := tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 4242)
 	// **这一行是 2026-08-20 补的,而且是承重的**:续订时活连接表会给新缓冲播种,
 	// 所以「上一轮的残留」必须是一条**真的已经结束**的连接,否则这条测试断言的
 	// 就不是残留、而是「还开着的连接不许出现」——那正好与本次修复相反。
-	tr.ConnClosed(7, false)
+	tr.ConnClosed(flow)
 
 	now = now.Add(appTrafficTTL + time.Second)
 	tr.Subscribe() // 中间没有任何一次 Snapshot
@@ -550,14 +550,14 @@ func TestAppTrafficConcurrentRecordAndSnapshot(t *testing.T) {
 			for i := 0; i < 2000; i++ {
 				port := uint16((w*2000+i)%60000 + 1)
 				udp := i%2 == 0
-				tr.Record(port, udp, appattr.PathTunnel, "default", "", "")
+				flow := tr.Record(port, udp, appattr.PathTunnel, "default", "", "")
 				tr.AddUp(port, udp, 3)
 				tr.AddDown(port, udp, 7)
 				// ConnClosed 与 Record 走的是同一张活连接表、同一把锁,而它
 				// **只在这条测试里**会与 Subscribe 的种子遍历真正并发 ——
 				// 种子在锁内遍历 live,ConnClosed 在锁内改它。少了这一行,
 				// -race 从来没有覆盖过这条新路径。
-				tr.ConnClosed(port, udp)
+				tr.ConnClosed(flow)
 			}
 		}(w)
 	}
@@ -744,8 +744,7 @@ func TestAppTrafficDoesNotSeedConnectionsClosedBeforeSubscribe(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "Safari"}}
 	tr := newAppTrafficNoResolver(src, time.Now)
 
-	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
-	tr.ConnClosed(7, false)
+	tr.ConnClosed(tr.Record(7, false, appattr.PathTunnel, "default", "", ""))
 
 	tr.Subscribe()
 	report, _, err := tr.Snapshot()
@@ -773,32 +772,42 @@ func TestAppTrafficLiveTableDropsClosedConnections(t *testing.T) {
 	const n = 5000
 	for i := 0; i < n; i++ {
 		port := uint16(1024 + i%40000)
-		tr.Record(port, false, appattr.PathTunnel, "default", "", "")
-		tr.Record(port, true, appattr.PathDirect, "china_domain", "", "")
-		tr.ConnClosed(port, false)
-		tr.ConnClosed(port, true)
+		tcp := tr.Record(port, false, appattr.PathTunnel, "default", "", "")
+		udp := tr.Record(port, true, appattr.PathDirect, "china_domain", "", "")
+		tr.ConnClosed(tcp)
+		tr.ConnClosed(udp)
 	}
 	if got := tr.liveSize(); got != 0 {
 		t.Fatalf("开关 %d 轮之后活连接表还剩 %d 条 —— 关闭时没有删", n, got)
 	}
 
-	// UDP 一个源端口会有多条并存的流(STUN/TURN/多 peer),refs 记数必须配平:
-	// 三开三关之后归零,三开两关之后仍在(还有一条流活着)。
-	tr.Record(19, true, appattr.PathTunnel, "default", "", "")
-	tr.Record(19, true, appattr.PathTunnel, "default", "", "")
-	tr.Record(19, true, appattr.PathTunnel, "default", "", "")
-	tr.ConnClosed(19, true)
-	tr.ConnClosed(19, true)
+	// UDP 一个源端口会有多条并存的流(STUN/TURN/多 peer),**一条流一个条目**,
+	// 配平必须逐条成立:三开三关之后归零,三开两关之后还剩一条。
+	f1 := tr.Record(19, true, appattr.PathTunnel, "default", "", "")
+	f2 := tr.Record(19, true, appattr.PathTunnel, "default", "", "")
+	f3 := tr.Record(19, true, appattr.PathTunnel, "default", "", "")
+	if f1 == f2 || f2 == f3 || f1 == f3 {
+		t.Fatalf("同一个端口上的三条流拿到了重复的 ID(%d/%d/%d)—— "+
+			"释放就会误伤另一条流", f1, f2, f3)
+	}
+	tr.ConnClosed(f1)
+	tr.ConnClosed(f2)
 	if got := tr.liveSize(); got != 1 {
 		t.Fatalf("同端口三条 UDP 流关掉两条后表大小 = %d, want 1(还有一条活着)", got)
 	}
-	tr.ConnClosed(19, true)
+	tr.ConnClosed(f3)
 	if got := tr.liveSize(); got != 0 {
 		t.Fatalf("最后一条 UDP 流关掉后表大小 = %d, want 0", got)
 	}
-	// 多关一次不许把表算成负数、也不许 panic(防御性:引擎那一侧只要有一条路径
-	// 重复 defer,这里就会被多调一次)。
-	tr.ConnClosed(19, true)
+	// **索引也要回落到 0。** 它是第二张表,只增不减的话就是第二个泄漏源,
+	// 而报告完全看不出来(它只影响裁剪判断)。
+	if got := tr.livePortIndexSize(); got != 0 {
+		t.Fatalf("端口索引还剩 %d 条 —— 它与活连接表必须同增同减", got)
+	}
+	// 多关一次不许把表算成负数、也不许 panic(防御性:调用方只要有一条路径
+	// 重复释放,这里就会被多调一次)。ID 永不复用,所以重复释放也绝不会误伤
+	// 另一条流。
+	tr.ConnClosed(f3)
 	if got := tr.liveSize(); got != 0 {
 		t.Fatalf("多余的 ConnClosed 之后表大小 = %d, want 0", got)
 	}
@@ -868,7 +877,7 @@ func TestAppTrafficSeedAndFreshRecordsDoNotDoubleCount(t *testing.T) {
 //
 // 钉住它是因为**它今天一个字都没被记录**,那样的话下一个人会把它当成新 bug 重查
 // 一遍;而一旦有人真的去修,这条测试会立刻转红,提醒他连同注释与 spec 一起改。
-func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
+func TestAppTrafficSeedKeepsConcurrentFlowsOnOneSocketApart(t *testing.T) {
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{udpKey(9): "Tencent Meeting"}}
 
 	// (一) 订阅前建立的两条流 —— 种子压成一条。
@@ -882,10 +891,11 @@ func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
 	}
 	tunnel, direct := seeded.Groups[0], seeded.Groups[1]
 	if len(tunnel.Rows) != 1 || tunnel.Rows[0].Conns != 1 {
-		t.Fatalf("种子的 tunnel 组 = %#v, want 一行一条(最后写入的那条判定)", tunnel.Rows)
+		t.Fatalf("种子的 tunnel 组 = %#v, want 一行一条(TURN 那条流)", tunnel.Rows)
 	}
-	if len(direct.Rows) != 0 {
-		t.Fatalf("种子的 direct 组 = %#v, want 空 —— 当前实现每键只发一条记录", direct.Rows)
+	if len(direct.Rows) != 1 || direct.Rows[0].Conns != 1 {
+		t.Fatalf("种子的 direct 组 = %#v, want 一行一条(STUN 那条流)—— "+
+			"同一个 socket 上并存的两条流不该被压成一条", direct.Rows)
 	}
 
 	// (二) 同样两条流、订阅**之后**建立 —— 两个组都在。两段的输入完全一样,
@@ -903,35 +913,62 @@ func TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket(t *testing.T) {
 	}
 }
 
-// liveConn.dest 是「后写入者胜」——同一个源端口先后连过多个目的地时,live 表
-// 只留得住**最后一个**,种子于是只报得出最近连的那一个,不是全部。
+// 目的地:一条流一个条目之后,「同一个端口上的两个目的地」分成了**两种场景,
+// 各有各的正确答案** —— 而在此之前它们塌成同一句「只留得住最后一个」。
 //
-// **这条钉的是「这是已知行为」,不是「这样是对的」**,与
-// TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket 同一性质:真修需要把
-// 键重新设计成能分辨同一 socket 上的不同目的地(与并发流被压成一条是同一个
-// 已知缺口的另一面),今天不做。
-func TestAppTrafficSeedOnlyCarriesTheLastDestination(t *testing.T) {
-	src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "腾讯会议"}}
-	tr := newAppTrafficNoResolver(src, time.Now)
+// 这条测试因此有两半,两半的输入几乎一样、只差一次 ConnClosed:
+//   - 并存:两条流同时开着 ⇒ 两个目的地都该报出来。
+//   - 复用:前一条先关掉、端口被后一条接手 ⇒ 只该报后一个(前一个已经不存在了)。
+//
+// 少了「复用」那一半,一个「永远报全部历史目的地」的实现照样全绿,而那是把
+// 一张「此刻在连什么」的表悄悄变成了一份历史记录 —— 它的隐私性质完全不同。
+func TestAppTrafficSeedReportsConcurrentDestinationsButNotReusedOnes(t *testing.T) {
+	dests := func(t *testing.T, tr *AppTraffic) []string {
+		t.Helper()
+		report, _, err := tr.Snapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tunnel := report.Groups[0]
+		if len(tunnel.Rows) != 1 {
+			t.Fatalf("tunnel 组 = %#v, want 恰好一行(同一个应用)", tunnel.Rows)
+		}
+		return tunnel.Rows[0].Dests
+	}
 
-	// 订阅前,同一个源端口先后「连过」两个不同的目的地(该端口被复用,或
-	// liveConn.dest 被后一次 Record 覆盖 —— 两种真实场景都会走到这里)。
-	tr.Record(7, false, appattr.PathTunnel, "default", "", "first.example.com")
-	tr.Record(7, false, appattr.PathTunnel, "default", "", "second.example.com")
+	t.Run("并存的两条流报两个目的地", func(t *testing.T) {
+		src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "腾讯会议"}}
+		tr := newAppTrafficNoResolver(src, time.Now)
+		tr.Record(7, false, appattr.PathTunnel, "default", "", "first.example.com")
+		tr.Record(7, false, appattr.PathTunnel, "default", "", "second.example.com")
+		tr.Subscribe()
 
-	tr.Subscribe()
-	report, _, err := tr.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	tunnel := report.Groups[0]
-	if len(tunnel.Rows) != 1 {
-		t.Fatalf("tunnel 组 = %#v, want 恰好一行", tunnel.Rows)
-	}
-	row := tunnel.Rows[0]
-	if len(row.Dests) != 1 || row.Dests[0] != "second.example.com" {
-		t.Fatalf("Dests = %#v, want 只剩最后写入的那个目的地(已知行为,不是理想行为)", row.Dests)
-	}
+		got := dests(t, tr)
+		if len(got) != 2 {
+			t.Fatalf("Dests = %#v, want 两个都在 —— 两条流同时开着", got)
+		}
+		want := map[string]bool{"first.example.com": true, "second.example.com": true}
+		for _, d := range got {
+			if !want[d] {
+				t.Fatalf("Dests = %#v,出现了不该有的 %q", got, d)
+			}
+		}
+	})
+
+	t.Run("端口被复用只报接手的那一个", func(t *testing.T) {
+		src := &fakeAppSource{owners: map[appattr.PortKey]string{tcpKey(7): "腾讯会议"}}
+		tr := newAppTrafficNoResolver(src, time.Now)
+		first := tr.Record(7, false, appattr.PathTunnel, "default", "", "first.example.com")
+		tr.ConnClosed(first) // 前一条先结束,端口空出来
+		tr.Record(7, false, appattr.PathTunnel, "default", "", "second.example.com")
+		tr.Subscribe()
+
+		got := dests(t, tr)
+		if len(got) != 1 || got[0] != "second.example.com" {
+			t.Fatalf("Dests = %#v, want 只有接手的那一个 —— 活连接表回答的是"+
+				"「此刻在连什么」,不是一份历史记录", got)
+		}
+	})
 }
 
 // 可执行路径必须一路穿到报告里 —— 菜单侧的图标只认路径。
@@ -992,14 +1029,12 @@ func TestAppTrafficDropsRecordsOlderThanTheReportWindow(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
 
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
-	tr.ConnClosed(7, false) // 短连接:建完就关,此后永远查不回主人
+	tr.ConnClosed(tr.Record(7, false, appattr.PathTunnel, "default", "", "")) // 短连接:建完就关,此后永远查不回主人
 
 	renewUntil(tr, &at, at.Add(70*time.Second))
 
 	// 窗口内又来一条,证明缓冲本身没被整个清掉。
-	tr.Record(8, false, appattr.PathDirect, "china", "", "")
-	tr.ConnClosed(8, false)
+	tr.ConnClosed(tr.Record(8, false, appattr.PathDirect, "china", "", ""))
 
 	rep, subscribed, err := tr.Snapshot()
 	if err != nil || !subscribed {
@@ -1025,10 +1060,10 @@ func TestAppTrafficDropsByteAccountWhenItsRecordsLeaveTheWindow(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
 
 	tr.Subscribe()
-	tr.Record(7, true, appattr.PathTunnel, "default", "", "")
+	udpFlow := tr.Record(7, true, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, true, 1000)
 	tr.AddDown(7, true, 2000)
-	tr.ConnClosed(7, true)
+	tr.ConnClosed(udpFlow)
 
 	renewUntil(tr, &at, at.Add(70*time.Second))
 	tr.Snapshot() // 触发一次裁剪
@@ -1081,8 +1116,7 @@ func TestAppTrafficSequenceNumbersNeverRestart(t *testing.T) {
 	// (第一版就是这么写的,变异实测全绿)。攒到 5 且活连接表为空,重置之后
 	// 最多只能走到 1,比 5 小,缺陷才显形。
 	for port := uint16(1); port <= 5; port++ {
-		tr.Record(port, false, appattr.PathTunnel, "default", "", "")
-		tr.ConnClosed(port, false)
+		tr.ConnClosed(tr.Record(port, false, appattr.PathTunnel, "default", "", ""))
 	}
 	first := tr.highestSeq()
 	if first < 5 {
@@ -1120,8 +1154,7 @@ func TestAppTrafficTrimEarlyExitLooksOnlyAtTime(t *testing.T) {
 	tr.Record(7, false, appattr.PathTunnel, "default", "", "") // 不关闭
 	at = at.Add(time.Second)
 	for i := 0; i < 3; i++ {
-		tr.Record(uint16(100+i), false, appattr.PathDirect, "default", "", "")
-		tr.ConnClosed(uint16(100+i), false)
+		tr.ConnClosed(tr.Record(uint16(100+i), false, appattr.PathDirect, "default", "", ""))
 	}
 	if got := tr.bufferedSize(); got != 4 {
 		t.Fatalf("前置条件不成立:应有 4 条,实际 %d", got)
@@ -1137,16 +1170,20 @@ func TestAppTrafficTrimEarlyExitLooksOnlyAtTime(t *testing.T) {
 
 // **一个还开着的端口,不许把它的全部历史记录一起豁免掉。**
 //
-// 活性豁免的键是 PortKey,而一个 UDP socket 上可以先后有很多条流(gVisor 按
-// 5 元组建流:一个会议 socket 打 STUN + TURN + 多个 peer)。逐条豁免的话,只要
-// 该端口上还有**任意**一条流开着,它在整个订阅期内产生过的每一条记录都逃过时间
-// 裁剪 —— 报告悄悄退回「自订阅以来的累计」,而滚动窗口存在的全部理由就是消灭
-// 那个语义。全分支复审用真探针实测过:一条常驻 UDP 流 + 每 5 秒建关一条同端口
-// 新流,跑 30 分钟 ⇒ Conns=361,而窗口内本该约 13(TCP 对照组正确)。
+// 一个 UDP socket 上可以先后有很多条流(gVisor 按 5 元组建流:一个会议 socket
+// 打 STUN + TURN + 多个 peer)。逐条豁免的话,只要该端口上还有**任意**一条流
+// 开着,它在整个订阅期内产生过的每一条记录都逃过时间裁剪 —— 报告悄悄退回
+// 「自订阅以来的累计」,而滚动窗口存在的全部理由就是消灭那个语义。全分支复审
+// 用真探针实测过:一条常驻 UDP 流 + 每 5 秒建关一条同端口新流,跑 30 分钟 ⇒
+// Conns=361,而窗口内本该约 13(TCP 对照组正确)。
 //
 // **既有的那条测试抓不到它** —— 它只有一条连接,于是「留住那一条」与「留住全部
 // 历史」在输出上完全一样。又一次「测试输入让待守属性不可见」。
-func TestAppTrafficCapsOutOfWindowRecordsPerLivePort(t *testing.T) {
+//
+// **2026-08-24 起封顶到「流」而不是「端口」**:已经关掉的流整条不再豁免,还开着
+// 的流各留最近一条(见下一条测试)。这条测试的场景在两种封顶下答案相同 —— 它
+// 守的是那个上界,不是键的粒度。
+func TestAppTrafficCapsOutOfWindowRecordsPerLiveFlow(t *testing.T) {
 	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	src := &fakeAppSource{owners: map[appattr.PortKey]string{{Port: 9, UDP: true}: "Meeting"}}
 	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
@@ -1155,8 +1192,7 @@ func TestAppTrafficCapsOutOfWindowRecordsPerLivePort(t *testing.T) {
 	// 同一个 UDP 源端口上先后建立四条流,其中一条**不关闭**(常驻媒体流)。
 	tr.Record(9, true, appattr.PathTunnel, "default", "", "stun.example.com") // 常驻,不 ConnClosed
 	for i := 0; i < 3; i++ {
-		tr.Record(9, true, appattr.PathTunnel, "default", "", "turn.example.com")
-		tr.ConnClosed(9, true)
+		tr.ConnClosed(tr.Record(9, true, appattr.PathTunnel, "default", "", "turn.example.com"))
 	}
 	if got := tr.bufferedSize(); got != 4 {
 		t.Fatalf("前置条件不成立:缓冲里应有 4 条记录,实际 %d", got)
@@ -1216,13 +1252,13 @@ func TestAppTrafficResolverAttributesBeforeTheSocketDisappears(t *testing.T) {
 	tr := newAppTrafficNoResolver(src, time.Now)
 
 	tr.Subscribe()
-	tr.Record(7, false, appattr.PathTunnel, "default", "", "")
+	resolvedFlow := tr.Record(7, false, appattr.PathTunnel, "default", "", "")
 	tr.AddUp(7, false, 42)
 
 	tr.resolveOnce() // 后台 resolver 的一拍:连接还开着,归因拿得到
 
 	// 连接关掉,内核里再也查不到这个端口 —— 现查必然是 unknown。
-	tr.ConnClosed(7, false)
+	tr.ConnClosed(resolvedFlow)
 	src.mu.Lock()
 	src.owners, src.execPaths = map[appattr.PortKey]string{}, nil
 	src.mu.Unlock()
@@ -1536,5 +1572,37 @@ func TestAppTrafficRateBaselineIsACopy(t *testing.T) {
 	rate := rep.Groups[0].Rows[0].BytesUpRate
 	if rate == nil || *rate == 0 {
 		t.Fatalf("基线看起来存的是引用而不是复制 —— 做出来的差恒为 0,got %v", rate)
+	}
+}
+
+// **同一个 socket 上并存的多条流,过期之后各留一条,不再被压成一条。**
+//
+// 这是活连接表改成「一条流一个条目」之后新得到的能力,也是那个已知缺口的最后
+// 一块:此前活性豁免按端口封顶一条,于是一个会议 socket 同时打 STUN(直连)与
+// TURN(隧道)时,过期之后只剩其中一条 —— 报告里那个应用会从两个组里少掉一个,
+// 而窗口看起来完全正常。
+func TestAppTrafficKeepsOneOutOfWindowRecordPerConcurrentFlow(t *testing.T) {
+	at := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	src := &fakeAppSource{owners: map[appattr.PortKey]string{udpKey(9): "腾讯会议"}}
+	tr := newAppTrafficNoResolver(src, func() time.Time { return at })
+	tr.Subscribe()
+
+	// 同一个 UDP 源端口上两条**并存**的流,判定不同(STUN 直连 / TURN 走隧道),
+	// 两条都不关闭。
+	tr.Record(9, true, appattr.PathDirect, "china_domain", "", "stun.example.com")
+	tr.Record(9, true, appattr.PathTunnel, "udp_proxy", "", "turn.example.com")
+
+	// 推过窗口(每 5 秒续订一次,别让订阅自己先过期):两条记录都过期了,
+	// 而两条流都还开着。
+	renewUntil(tr, &at, at.Add(appattr.ReportWindow+10*time.Second))
+
+	report, _, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Groups[0].Rows) != 1 || len(report.Groups[1].Rows) != 1 {
+		t.Fatalf("过期之后 tunnel=%#v direct=%#v, want 两组各一行 —— "+
+			"同一个 socket 上并存的两条流不该被压成一条",
+			report.Groups[0].Rows, report.Groups[1].Rows)
 	}
 }
