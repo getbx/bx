@@ -276,9 +276,12 @@ global、china 列表整个不生效,那 22 条全在干活,照着删会让 22 �
   「已知缺口」会把下一个人送去找一个不存在的 bug,并让他对这份清单的其余部分
   也打折扣。**清单里的每一条都该是今天仍然成立的事实**;修完就回来划掉它,
   与「只清点名的那一句、不清同一句话的其它副本」是同一条纪律的两面。
-- `builtinListLines` 按 `Kind` 字面量分支,第三个/空 `Kind` 会让该类在两条路径上
-  静默消失而 `ShadowedByBuiltinCount` 仍在计数。今天不可达(`review.go` 只传
-  `direct`/`proxy`),但没有测试断言「该类每条 finding 都落进恰好一条线」。
+- ~~`builtinListLines` 按 `Kind` 字面量分支,第三个/空 `Kind` 会静默消失~~
+  **已修**:不认识的 Kind 现在单独占一条措辞保守的线(既有两句话方向相反,而对
+  分不出方向的 finding 只报事实不给建议);守卫钉的是「计数 == 落进渲染线的条数」
+  而不是「认得这两个字面量」—— 后者会随新增 Kind 一起被改绿,前者不会。
+  收口靠 `classFindingsExcludingKinds` 与 `classKindFindings` 配成一对,
+  「每条 finding 落进恰好一条线」由构造保证。
 - 内建列表比对用的是**内嵌快照**(`embedded.ChinaDomain()`),而 Core 读的是
   `/var/lib/bx/china_domain.txt`(经隧道刷新)。上游删掉某个域时,doctor 会把一条
   仍然生效的手写规则说成「已被覆盖」。同一类「参照物错了」的隐患,代码已为
