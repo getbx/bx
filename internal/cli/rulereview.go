@@ -275,6 +275,42 @@ func builtinListLines(rep rulereview.Report) []doctorFinding {
 				"条把内建 china 列表判直连的域名扳回隧道——这是生效中的例外,删掉会改变流量") + builtinListSourceSuffix(rep),
 		})
 	}
+	// **不认识的 Kind 不许静默丢弃。**
+	//
+	// 上面两条线按 Kind 的字面量分支,而 `NewReport` 的计数走的是 Class、**根本
+	// 不看 Kind** —— 一条 Kind 为空、或将来多出第三种 Kind 的 finding 会让计数
+	// 照涨而两条线一条都不匹配:它在文本与 --json 两条路径上**同时静默消失**,
+	// 用户看到「N 条与内建列表相关」而下面只列出 N-1 条,没有任何一处报错。
+	//
+	// 今天不可达(review.go 只产出 direct/proxy),但「今天不可达」不是「不会发生」
+	// —— 这一支存在的意义是:谁加了第三种 Kind,会立刻在输出里看见它,而不是让它
+	// 悄悄少一行。措辞刻意保守:两句话的方向相反(删掉不改变流量 / 删掉会改变
+	// 流量),对一条我们分不出方向的 finding,只报事实不给建议。
+	if rest := classFindingsExcludingKinds(rep, rulereview.ClassShadowedByBuiltinList, "direct", "proxy"); len(rest) > 0 {
+		out = append(out, doctorFinding{
+			Status: "info",
+			Key:    "builtin list (kind unknown)",
+			Value: summarizeFindings(rest, len(rest),
+				"条与内建 china 列表相关,但它们所在的表未知——请核对再决定是否改动") + builtinListSourceSuffix(rep),
+		})
+	}
+	return out
+}
+
+// classFindingsExcludingKinds 取某一类里 Kind **不在**给定集合中的 finding。
+// 它与 classKindFindings 是同一件事的两面:后者按名单收,这里按名单排除,
+// 于是「每条 finding 都落进恰好一条线」是由构造保证的,不靠人去对表。
+func classFindingsExcludingKinds(rep rulereview.Report, class rulereview.Class, kinds ...string) []rulereview.Finding {
+	known := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		known[k] = true
+	}
+	var out []rulereview.Finding
+	for _, f := range rep.Findings {
+		if f.Class == class && !known[f.Kind] {
+			out = append(out, f)
+		}
+	}
 	return out
 }
 

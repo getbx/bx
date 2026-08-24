@@ -599,3 +599,34 @@ func TestRiskyRuleFindingHintNeedsSudo(t *testing.T) {
 		t.Errorf("hint 用了不存在的子命令 `direct remove`:%q", f.Hint)
 	}
 }
+
+// **`ClassShadowedByBuiltinList` 的每一条 finding 都必须落进恰好一条渲染线。**
+//
+// `builtinListLines` 按 `Kind` 的**字面量**分支(只认 "direct" 与 "proxy"),而
+// `NewReport` 的计数走的是 `Class`、**根本不看 Kind** —— 于是一条 Kind 为空、或
+// 将来多出第三种 Kind 的 finding 会:计数照涨(`ShadowedByBuiltinCount`),而两条
+// 渲染线**一条都不匹配** ⇒ 它在文本与 --json 两条路径上**同时静默消失**。
+// 用户看到的是「N 条与内建列表相关」而下面只列出 N-1 条,没有任何一处报错。
+//
+// 今天不可达(`review.go` 只产出 direct/proxy),所以这条守卫钉的是**将来**:
+// 谁加第三种 Kind、或让 Kind 漏填,会在这里被拦下,而不是在某个用户的 doctor
+// 输出里少一行。判据刻意是「计数 == 落进渲染线的条数」而不是「认得这两个字面量」
+// —— 后者会随着新增 Kind 一起被改绿,前者不会。
+func TestEveryBuiltinListFindingLandsOnExactlyOneLine(t *testing.T) {
+	for _, kind := range []string{"direct", "proxy", "", "egress"} {
+		rep := rulereview.NewReport([]rulereview.Finding{{
+			Class: rulereview.ClassShadowedByBuiltinList,
+			Kind:  kind,
+			Rule:  "*.example.com",
+		}}, true, "")
+
+		if rep.ShadowedByBuiltinCount != 1 {
+			t.Fatalf("kind=%q:前置条件不成立,计数 = %d", kind, rep.ShadowedByBuiltinCount)
+		}
+		lines := builtinListLines(rep)
+		if len(lines) != 1 {
+			t.Errorf("kind=%q:计数说有 1 条,而渲染出 %d 条 —— 这条 finding 在文本与 "+
+				"--json 两条路径上同时静默消失,用户看到「1 条」而下面一条都没有", kind, len(lines))
+		}
+	}
+}
