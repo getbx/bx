@@ -261,34 +261,30 @@ global、china 列表整个不生效,那 22 条全在干活,照着删会让 22 �
 是把内联闭包抽成 `newStatusReporter` 这个可测的缝(路 1「真起 HTTP server」实测
 非 root 不可行:`secdir.Ensure` 要 `MkdirAll` 到 `/var/run`)。
 
-**已知缺口(都不影响今天的输出,但改这块前要知道)**:
-- ~~`renderUpSummary` 只显示 `Warnings[0].Detail`~~ **已修,且有守卫**
-  (`TestUpSummaryShowsAllWarningsIncludingHints`):它遍历全部告警,第二条的
-  `.Hint` 也打。2026-08-24 变异复核:改回 `Warnings[0].Detail` ⇒ 当场红,报
-  「第二条(安全)告警丢失」。
-- ~~`control.go` 把 `configWarnings` 传进 `newStatusReporter` 的那一跳仍无测试~~
-  **已修**(`3d58914`):组装那一半抽成 `controlMuxOptionsForServe`(不碰 socket),
-  两条测试分别走**反射默认参与**(新字段自动被覆盖)与**位置参数顺序**
-  (`newStatusReporter` 有 10 个位置参数,server/mode/udpMode 是连着三个 string,
-  换位不会有编译错误)。三条变异实测全红。
+**已知缺口(改这块前要知道)**:
 
-  **这两条曾在这里躺了一段时间,而它们指向的问题早已修好** —— 一条过时的
-  「已知缺口」会把下一个人送去找一个不存在的 bug,并让他对这份清单的其余部分
-  也打折扣。**清单里的每一条都该是今天仍然成立的事实**;修完就回来划掉它,
-  与「只清点名的那一句、不清同一句话的其它副本」是同一条纪律的两面。
-- ~~`builtinListLines` 按 `Kind` 字面量分支,第三个/空 `Kind` 会静默消失~~
-  **已修**:不认识的 Kind 现在单独占一条措辞保守的线(既有两句话方向相反,而对
-  分不出方向的 finding 只报事实不给建议);守卫钉的是「计数 == 落进渲染线的条数」
-  而不是「认得这两个字面量」—— 后者会随新增 Kind 一起被改绿,前者不会。
-  收口靠 `classFindingsExcludingKinds` 与 `classKindFindings` 配成一对,
-  「每条 finding 落进恰好一条线」由构造保证。
-- 内建列表比对用的是**内嵌快照**(`embedded.ChinaDomain()`),而 Core 读的是
-  `/var/lib/bx/china_domain.txt`(经隧道刷新)。上游删掉某个域时,doctor 会把一条
-  仍然生效的手写规则说成「已被覆盖」。同一类「参照物错了」的隐患,代码已为
-  `lists.china_domain` 挡过一次,这一层还没挡。
-- `riskyRuleWarnings` 只填 `Input.Direct`,不填 `Proxy`/`China` —— 于是一条**本身
-  就永不生效**的危险规则(同名同时在 proxy 里)仍会得到常驻告警。方向是过度告警,
-  刻意接受。
+> **2026-08-24 逐条复核过一遍,五条里四条已经过时** —— `renderUpSummary` 只显示
+> `Warnings[0]`(早已改成遍历且有守卫,变异复核过)、`configWarnings` 那一跳无测试
+> (`3d58914` 关上)、`builtinListLines` 的 Kind 静默消失(`60550bf` 修掉)、内建列表
+> 用内嵌快照(2026-08-17 的 wrong-reference-object 修复早就让它读 Core 那份、三种
+> 结局分得清)。
+>
+> **一份四分之三是假的缺口清单,比没有清单更糟** —— 它把下一个人送去找不存在的
+> bug,并让他对剩下那条也打折扣。这不是记档懒,是**清单没有守卫**:代码有测试盯着,
+> 而「关于代码的陈述」没有。**修完就回来划掉**,与「只清点名的那一句、不清同一句话
+> 的其它副本」是同一条纪律的两面;拿不准某条还成不成立时,**先去代码里核一遍再动手**,
+> 别按清单直接开修。
+
+- `riskyRuleWarnings` 对一条**本身就永不生效**的危险规则(同名同时在 proxy 里)
+  仍会发常驻告警。方向是过度告警,刻意接受:漏报的代价是真实 IP 暴露,多报只是
+  提醒了一条不生效的规则,**不对称**。
+  **这条的机制此前记错了,2026-08-24 探针实测更正**:原文说「因为只填了
+  `Input.Direct`,没填 `Proxy`/`China`」,暗示填了就不会告警 —— **假的**。
+  `ClassRisky` 是**独立判**的:把 Proxy 也填进 Input,Review 照样产出那条 risky,
+  只是**额外**多一条 `overridden_by_opposite_kind`,而后者本来就会被过滤掉。
+  也就是说填不填 Proxy,这条告警一个字都不会变。真正的原因是「这条规则危不危险」
+  与「这条规则生不生效」是两个独立的问题。由
+  `TestRiskyClassIsJudgedIndependentlyOfWhetherTheRuleEverFires` 钉住。
 
 ## Guardian 状态 watch(2026-08-17,真机未验,除 `bx status --watch` 外)
 

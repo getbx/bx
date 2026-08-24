@@ -5,135 +5,75 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/config"
-	"github.com/getbx/bx/internal/stats"
 )
 
-func TestRiskyRuleWarningNamesTheRule(t *testing.T) {
-	cfg := &config.Config{Rules: []config.Rule{{Direct: []string{"*.myqcloud.com", "*.qq.com"}}}}
-	ws := riskyRuleWarnings(cfg)
-	if len(ws) != 1 {
-		t.Fatalf("want 1 条告警,got %d: %+v", len(ws), ws)
-	}
-	w := ws[0]
-	if !strings.Contains(w.Detail, "*.myqcloud.com") {
-		t.Errorf("没点名到规则原文:%q", w.Detail)
-	}
-	// **必须是 warn 不是 error。** error 会把总状态降级成 Needs Attention,
-	// 而这是一条配置建议,不是保护失效 —— 那正是 advisory 拉低总状态那个 bug。
-	if w.Severity != "warn" {
-		t.Errorf("Severity = %q, want warn", w.Severity)
-	}
-	if w.Hint == "" {
-		t.Error("没有给出下一步 —— 一条没有附带动作的常驻告警会变成墙纸")
-	}
-}
-
-// hint 里的子命令必须真实存在。`bx direct remove` 曾经是这条 hint 上一版的笔误
-// (命令本身不存在,只有 ls/add/rm),用户照着敲会得到一句 usage 错误 —— 而它是
-// 这条安全结论唯一附带的动作,给一个不存在的命令比不给更糟(用户会以为是自己
-// 敲错了)。
+// **常驻面板只发危险那一类,别的类一条都不许漏出来。**
 //
-// 同一形状的第二个坑(2026-08-17 真机抓到):子命令名对了,但
-// `/etc/bx/config.yaml` 是 `sudo bx setup` 建的 0600 root 文件,而
-// `bx direct rm` 走 editRuleAction 直接 os.WriteFile,不自提权。非 root
-// 用户(`bx status` 本身不需要 root,大多数会照着 hint 敲的正是这类用户)
-// 照抄不带 sudo 的命令一样 permission denied,一样会以为自己敲错了。
+// 冗余与失效是**建议**,对任何成熟配置都不为零,放进常驻面板会变墙纸、把真正
+// 要紧的那条一起淹掉(与项目所有者否掉「Direct rules: N unreachable」常驻红字
+// 同一条判断)。它们留在 `bx doctor` 里,那是诊断命令。
 //
-// 不断言 hint 整句字面等于某个字符串:那种测试和缺陷本身一样脆,命令改名/措辞
-// 调整照样绿。也不去 import internal/cli 取真实子命令名来比对 ——
-// internal/supervisor 不该依赖 internal/cli(方向反了,cli 是消费方)。折中是
-// 断言不含错的那个词、含对的那个词,两句都改错时测试仍能抓住。
-func TestRiskyRuleHintUsesARealSubcommand(t *testing.T) {
-	cfg := &config.Config{Rules: []config.Rule{{Direct: []string{"*.myqcloud.com"}}}}
-	ws := riskyRuleWarnings(cfg)
-	if len(ws) != 1 {
-		t.Fatalf("前置断言失败:want 1 条告警,got %d", len(ws))
-	}
-	hint := ws[0].Hint
-	if strings.Contains(hint, "direct remove") {
-		t.Errorf("hint 用了不存在的子命令 `direct remove`:%q", hint)
-	}
-	if !strings.Contains(hint, "direct rm") {
-		t.Errorf("hint 没有指向真实存在的 `direct rm`:%q", hint)
-	}
-	// editRuleAction 直接写 /etc/bx/config.yaml(0600 root,sudo bx setup 建的),
-	// 不带 sudo 复制粘贴必得 permission denied——用户会以为自己敲错命令而不是
-	// 缺权限。真机验证见 2026-08-17。
-	if !strings.Contains(hint, "sudo bx direct rm") {
-		t.Errorf("hint 没有带 sudo,而 bx direct rm 需要 root 才能写 /etc/bx/config.yaml:%q", hint)
-	}
-	// down/up 也要带:这条 hint 跨平台共用,Linux/Windows 上 up/down 从不经
-	// Guardian 的 owner-uid 鉴权、始终需要 root;macOS 上未配置 owner_uid 时
-	// 同样退化成 root-only。本项目主平台是 Linux,不带 sudo 在那里必定
-	// permission denied——与 direct rm 同一类 bug,不能因为它在 macOS 已配置
-	// owner 的机器上不必要就不加。
-	if !strings.Contains(hint, "sudo bx down") {
-		t.Errorf("hint 的 down 没有带 sudo(Linux/Windows 上必须、macOS 未配置 owner 时也必须):%q", hint)
-	}
-	if !strings.Contains(hint, "sudo bx up") {
-		t.Errorf("hint 的 up 没有带 sudo(Linux/Windows 上必须、macOS 未配置 owner 时也必须):%q", hint)
-	}
-}
-
-// **嵌套括号。** internal/stats/render.go 的 warningText 把每条 Warning 的 Hint
-// 套一层括号(`detail + " (" + hint + ")"`);这条 hint 曾自己也以括号收尾
-// (`(改完要 bx down && bx up)`),套出来的是
-// `… (bx direct rm '*.myqcloud.com'(改完要 bx down && bx up))` —— 圆括号嵌套两层,
-// 人读起来数不清哪个括号对哪个。走真实的 stats.Render,不是自己拼一遍渲染逻辑。
-func TestRiskyRuleHintRendersWithoutNestedParens(t *testing.T) {
-	cfg := &config.Config{Rules: []config.Rule{{Direct: []string{"*.myqcloud.com"}}}}
-	ws := riskyRuleWarnings(cfg)
-	if len(ws) != 1 {
-		t.Fatalf("前置断言失败:want 1 条告警,got %d", len(ws))
-	}
-	out := stats.Render(stats.Report{TunnelHealthy: true, Warnings: ws})
-	if strings.Contains(out, "((") || strings.Contains(out, "))") {
-		t.Fatalf("渲染出了嵌套括号,人读不清哪个括号对哪个:\n%s", out)
-	}
-}
-
-// 干净配置一条都不发。
-func TestNoRiskyRuleNoWarning(t *testing.T) {
-	cfg := &config.Config{Rules: []config.Rule{{Direct: []string{"*.qq.com"}}}}
-	if ws := riskyRuleWarnings(cfg); len(ws) != 0 {
-		t.Fatalf("干净配置发了 %d 条告警:%+v", len(ws), ws)
-	}
-}
-
-// **status 只发危险那一类。** 冗余是建议、对任何成熟配置都不为零,
-// 放进常驻面板会变墙纸,把真正要紧的那一条一起淹掉。
-func TestStatusWarningsCarryOnlyTheRiskyClass(t *testing.T) {
+// 输入刻意挑成**同时产出两类**的:两条 s3 规则里,后一条被前一条覆盖 ⇒ Review
+// 产出 3 条 finding(2 risky + 1 shadowed_by_user_rule)。**只用单条规则的输入
+// 测不出这个过滤器** —— 那时 Review 只产出一条 risky,把整个过滤器删掉结果也不变
+// (第一版就是这么写的,变异实测全绿:守卫钉住的是缺陷旁边的东西)。
+func TestRiskyRuleWarningsPublishOnlyTheRiskyClass(t *testing.T) {
 	cfg := &config.Config{Rules: []config.Rule{{
-		Direct: []string{"*.apple.com", "ocsp.apple.com"}, // 一条同表冗余 + 无危险
+		Direct: []string{"*.s3.amazonaws.com", "bucket.s3.amazonaws.com"},
 	}}}
-	if ws := riskyRuleWarnings(cfg); len(ws) != 0 {
-		t.Fatalf("冗余那一类漏进了 status:%+v", ws)
+
+	got := riskyRuleWarnings(cfg)
+	if len(got) != 2 {
+		t.Fatalf("告警数 = %d,想要 2(两条 risky;那条 shadowed_by_user_rule 不该"+
+			"出现在常驻面板里)—— 实际 %+v", len(got), got)
+	}
+	for _, w := range got {
+		if w.Name != "risky_direct_rule" {
+			t.Errorf("常驻面板漏出了非危险类的告警:%+v", w)
+		}
+		if w.Severity != "warn" {
+			t.Errorf("severity = %q,必须是 warn —— error 会把一台工作正常的机器"+
+				"降级成 Needs Attention(11338a0 的教训)", w.Severity)
+		}
 	}
 }
 
-// global 不影响这一类 —— 危险直连与分流模式无关。
-func TestRiskyRuleWarningIsModeIndependent(t *testing.T) {
-	cfg := &config.Config{Global: true, Rules: []config.Rule{{Direct: []string{"*.myqcloud.com"}}}}
-	if len(riskyRuleWarnings(cfg)) != 1 {
-		t.Fatal("global 下危险直连告警被压掉了 —— 它与分流模式无关")
+// 对照组:没有危险规则时**一条都不许有**。
+//
+// 少了它,一个「恒产出告警」的实现也会通过上面那条 —— 而一条恒亮的常驻告警
+// 就是墙纸。这条用的输入会产出一条 shadowed_by_user_rule、零条 risky。
+func TestRiskyRuleWarningsStaySilentWhenNothingIsRisky(t *testing.T) {
+	cfg := &config.Config{Rules: []config.Rule{{
+		Direct: []string{"*.example.com", "a.example.com"},
+	}}}
+	if got := riskyRuleWarnings(cfg); len(got) != 0 {
+		t.Errorf("没有危险规则却产出了 %d 条告警:%+v —— 常驻告警一旦恒亮就是墙纸", len(got), got)
 	}
 }
 
-// **前一版接线守卫已删,理由记在这里而不是悄悄消失。**
+// **一条本身永不生效的危险规则仍然会告警 —— 而原因不是「没填 Proxy」。**
 //
-// 这里原有 TestConfigWarningsReachTheStatusReport,自称断言「Run 传下去的那个
-// 参数确实到了 Report.Warnings 里」,但它在测试函数内部自己 `append` 了一遍
-// guardWarnings 与 configWarnings,断言的是那个局部变量 `merged` —— 它一次都
-// 没有调用生产代码里真正组装 stats.Report 的那段逻辑。把 control.go 里
-// `append(guard.warnings(), configWarnings...)` 改回 `guard.warnings()`,
-// 那条测试原样通过、绿灯,而 bx status 会静默丢失整个「危险直连规则」告警通道
-// ——一个自称证明接线、实际什么都没证明的测试,比没有测试更糟。
+// CLAUDE.md 曾把这条记成「`riskyRuleWarnings` 只填 `Input.Direct`,于是同名规则
+// 同时在 proxy 里时仍会告警;方向是过度告警,刻意接受」。**机制说错了**(2026-08-24
+// 探针实测):`ClassRisky` 是**独立判**的 —— 就算把 Proxy 也填进 Input,Review 照样
+// 产出那条 risky,只是**额外**多一条 `overridden_by_opposite_kind`,而后者本来就会
+// 被这里的过滤器丢掉。也就是说填不填 Proxy,这条告警**一个字都不会变**。
 //
-// 现在的替代品是 control_reporter_test.go 的
-// TestStatusReporterIncludesBothGuardAndConfigWarnings:它调用的是生产代码
-// 里真正组装 report 的具名函数 newStatusReporter(从 serveControlWithPathRecovery
-// 内联的匿名函数提出来的,逻辑完全相同,不是重新拼一遍),不是自己在测试里
-// 重复一遍 append 逻辑。走真的 serveControlWithPathRecovery(要在 SockPath 常量
-// 指向的 /var/run/bx 或 /run/bx 下建 socket)本机以非 root 身份实测会
-// permission denied,这是选择提取 newStatusReporter 而不是直接调用
-// serveControlWithPathRecovery 的原因。
+// 结论没变(过度告警、刻意接受),但**理由变了**:它不来自输入没填全,来自
+// 「这条规则危不危险」与「这条规则生不生效」是两个独立的问题。要真的抑制它,
+// 得让 riskyRuleWarnings 去查同一条 rule 有没有 overridden finding —— 而那正是
+// 不该做的:漏报的代价是真实 IP 暴露,多报只是提醒了一条不生效的规则,不对称。
+func TestRiskyClassIsJudgedIndependentlyOfWhetherTheRuleEverFires(t *testing.T) {
+	cfg := &config.Config{Rules: []config.Rule{{
+		// Router 先查 proxy 再查 direct ⇒ 这条 direct 规则从来不会生效。
+		Direct: []string{"*.s3.amazonaws.com"},
+		Proxy:  []string{"*.s3.amazonaws.com"},
+	}}}
+	got := riskyRuleWarnings(cfg)
+	if len(got) != 1 {
+		t.Fatalf("告警数 = %d,想要 1 —— 过度告警是刻意的方向", len(got))
+	}
+	if !strings.Contains(got[0].Detail, "*.s3.amazonaws.com") {
+		t.Errorf("告警没点名是哪一条规则:%q —— 不点名用户无从下手", got[0].Detail)
+	}
+}
