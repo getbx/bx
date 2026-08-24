@@ -1,7 +1,20 @@
 package leakcheck
 
 // 浏览器那半的探测项。页面用它们标记「哪一个探测刚落定」;Go 用它们
-// 声明每条结论吃哪几个探测。**两边用同一组常量**,免得页面自己抄一份。
+// 声明每条结论吃哪几个探测。
+//
+// **这里曾经写着「两边用同一组常量,免得页面自己抄一份」—— 那是假话。**
+// 页面拿到的骨架(`CHECKS[].inputs`)确实来自这几个常量,但页面自己调用
+// `probeLanded("srflx", …)` / `fetchEcho(ECHO4, "exit_v4")` 用的是**手抄的
+// 字面量**:`leakserve.pageData` 里根本没有这几个常量(那份字段集合由
+// `TestPageDataCarriesOnlyTokenAndDisclosure` 穷举钉住)。
+//
+// 漂移的后果是静默的:`skeleton()` 按 `c.inputs` 建 `cells`,而 `probeLanded`
+// 按页面那份查表 —— 对不上时 `cells[name]` 是 undefined,
+// `(cells[name] || []).forEach` 什么也不做,那一格**永远停在「还在等」**,
+// 而这里的测试照样绿(它们用的是常量),页面也不知道 Go 改过名。
+// 现由 `leakserve.TestPageProbeNamesMatchTheGoConstants` **双向**钉住:页面用的
+// 每个名字都必须是真常量,每个常量都必须在页面里被用到。改名字要改两处。
 const (
 	ProbeExitV4  = "exit_v4"
 	ProbeExitV6  = "exit_v6"

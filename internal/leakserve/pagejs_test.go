@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/leakcheck"
 )
 
 // —— 页面里那段纯解析 JS 的守卫(2026-08-24)——
@@ -276,8 +278,14 @@ func TestPageJSNeverAssertsThatAProbeLanded(t *testing.T) {
 // probeLandedArgs 取出每一次 probeLanded 调用的**第二个**实参原文。
 // 读不懂就让调用方响亮失败,不静默返回空列表(空列表会让上面那条守卫自动通过)。
 func probeLandedArgs(t *testing.T, src string) []string {
+	return callArgN(t, src, "probeLanded", 1)
+}
+
+// callArgN 取出每一次 `fn(...)` 调用的第 n 个实参原文(n 从 0 起)。
+// 读不懂就让调用方响亮失败,不静默返回空列表 —— 空列表会让上层守卫自动通过。
+func callArgN(t *testing.T, src, fn string, n int) []string {
 	t.Helper()
-	const call = "probeLanded("
+	call := fn + "("
 	var out []string
 	for i := 0; ; {
 		j := strings.Index(src[i:], call)
@@ -285,7 +293,8 @@ func probeLandedArgs(t *testing.T, src string) []string {
 			return out
 		}
 		start := i + j + len(call)
-		depth, comma, end := 0, -1, -1
+		depth, end := 0, -1
+		var commas []int
 		for k := start; k < len(src); k++ {
 			switch src[k] {
 			case '(', '[':
@@ -299,8 +308,8 @@ func probeLandedArgs(t *testing.T, src string) []string {
 			case ']':
 				depth--
 			case ',':
-				if depth == 0 && comma < 0 {
-					comma = k
+				if depth == 0 {
+					commas = append(commas, k)
 				}
 			}
 			if end >= 0 {
@@ -308,7 +317,7 @@ func probeLandedArgs(t *testing.T, src string) []string {
 			}
 		}
 		if end < 0 {
-			t.Fatalf("在偏移 %d 处的 probeLanded 调用没有闭合括号 —— 守卫读不懂它", start)
+			t.Fatalf("在偏移 %d 处的 %s 调用没有闭合括号 —— 守卫读不懂它", start, fn)
 		}
 		// 只收真正的**调用**:定义那一行 `function probeLanded(name, ok)` 的第二个
 		// 形参恰好也是个标识符,把它算进来会让计数变松。
@@ -317,9 +326,96 @@ func probeLandedArgs(t *testing.T, src string) []string {
 		// 把尾空格去掉了,带空格的那版**永远不成立**,于是定义行一直被当成一次调用。
 		// 它此前无害只是因为旧判据只认字面量 true 与 .landed,而形参名 `ok` 两个
 		// 都不是;判据一收紧它就当场显形。
-		if comma > 0 && comma < end && !strings.HasSuffix(strings.TrimSpace(src[:i+j]), "function") {
-			out = append(out, src[comma+1:end])
+		if !strings.HasSuffix(strings.TrimSpace(src[:i+j]), "function") {
+			lo, hi := start, end
+			if n > 0 {
+				if len(commas) < n {
+					i = end
+					continue
+				}
+				lo = commas[n-1] + 1
+			}
+			if len(commas) >= n+1 {
+				hi = commas[n]
+			}
+			if lo <= hi {
+				out = append(out, src[lo:hi])
+			}
 		}
 		i = end
 	}
+}
+
+// **探测名是一条跨语言契约,而在 2026-08-24 之前没有任何东西在核对它。**
+//
+// `internal/leakcheck/outline.go` 头上那句「**两边用同一组常量**,免得页面自己抄
+// 一份」曾经是**假话**:页面拿到的 `CHECKS`(骨架)里的 inputs 确实来自 Go 常量,
+// 但页面自己调用 `probeLanded("srflx", …)` / `fetchEcho(ECHO4, "exit_v4")` 用的是
+// **手抄的字面量** —— `pageData` 里根本没有这几个常量(由
+// TestPageDataCarriesOnlyTokenAndDisclosure 穷举钉住)。
+//
+// 漂移的后果是**静默的**:`skeleton()` 按 `c.inputs`(Go 那份)建 `cells`,而
+// `probeLanded` 按页面那份查表 —— 对不上时 `cells[name]` 是 undefined,
+// `(cells[name] || []).forEach` 什么也不做,那一格于是**永远停在「还在等」**,
+// 而 Go 侧全部测试照样绿(它们用的是常量),页面侧也不知道 Go 改过名。
+//
+// 两个方向都要查:
+//   - 页面用的每一个名字都必须是真的常量(写错一个字符 ⇒ 那一格永不点亮);
+//   - 每一个常量都必须在页面里被用到(没人点亮 ⇒ 同样是永远等下去的那一格)。
+func TestPageProbeNamesMatchTheGoConstants(t *testing.T) {
+	page := stripJSComments(pageSource(t))
+
+	names := map[string]bool{}
+	for _, arg := range callArgN(t, page, "probeLanded", 0) {
+		if lit, ok := jsStringLiteral(arg); ok {
+			names[lit] = true
+		}
+	}
+	// fetchEcho 的探测名在**调用点**上,不在 probeLanded 那一行(那里传的是形参)。
+	for _, arg := range callArgN(t, page, "fetchEcho", 1) {
+		if lit, ok := jsStringLiteral(arg); ok {
+			names[lit] = true
+		}
+	}
+	if len(names) == 0 {
+		t.Fatal("页面里一个探测名字面量都没解析出来 —— 守卫读不懂现在的写法了,先修守卫")
+	}
+
+	real := map[string]bool{
+		leakcheck.ProbeExitV4: true, leakcheck.ProbeExitV6: true,
+		leakcheck.ProbeSRFLX: true, leakcheck.ProbeTrace: true,
+		leakcheck.ProbeSurface: true,
+	}
+	for name := range names {
+		if !real[name] {
+			t.Errorf("页面用了探测名 %q,而 Go 侧没有这个常量 —— "+
+				"cells[%q] 是 undefined,那一格永远停在「还在等」,两侧都不会报错", name, name)
+		}
+	}
+	for name := range real {
+		if !names[name] {
+			t.Errorf("常量 %q 在页面里没人点亮 —— 骨架会为它摆出一格,而那一格"+
+				"永远等不到落定", name)
+		}
+	}
+}
+
+// jsStringLiteral 把一个实参原文解成 JS 字符串字面量。不是字面量(变量、表达式)
+// 就返回 false —— 那种实参这条守卫管不了,交给它自己的调用点去查。
+func jsStringLiteral(arg string) (string, bool) {
+	s := strings.TrimSpace(arg)
+	if len(s) < 2 {
+		return "", false
+	}
+	q := s[0]
+	if (q != '"' && q != '\'') || s[len(s)-1] != q {
+		return "", false
+	}
+	inner := s[1 : len(s)-1]
+	if strings.ContainsRune(inner, rune(q)) || strings.Contains(inner, "\\") {
+		// 带转义的字面量本守卫不解 —— 探测名是简单标识符,出现转义说明写法变了,
+		// 与其猜,不如让它落到「不是字面量」而由上面的双向计数抓住。
+		return "", false
+	}
+	return inner, true
 }
