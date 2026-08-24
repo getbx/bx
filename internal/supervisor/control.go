@@ -735,7 +735,24 @@ func controlMuxOptionsFromServe(opts controlServeOptions, report func() stats.Re
 	}
 }
 
-func serveControlWithPathRecovery(ctx context.Context, opts controlServeOptions) (io.Closer, error) {
+// controlMuxOptionsForServe 是 serveControlWithPathRecovery 的**组装那一半**,
+// 单独抽出来只为一件事:让它可测。
+//
+// 它上下两跳早就各有覆盖(`controlMuxOptionsFromServe` 有逐字段单测,
+// `run.go → opts` 有文本守卫),**唯独这几行自己没有** —— 而两轮复审各实测过一次:
+// 把 `opts.ConfigWarnings` 换成 nil、或在这一跳丢掉 `AppTraffic`,
+// `internal/supervisor` 与 `internal/cli` **两个包都绿**。后者的生产后果是
+// `/v0/apps` 变成永久 501:菜单那个窗口一个应用都不显示,而没有任何报错。
+//
+// 「这个仓库全部的事故都在组装根上」是本仓库自己的立论,而这正是一个组装根。
+//
+// **`newStatusReporter` 有 10 个位置参数,其中 server/mode/udpMode 是连着三个
+// string** —— 换位不会有任何编译错误,而症状是 `bx status` 里三个字段互相串台。
+// TestControlMuxOptionsForServeCarriesEveryField 用三个互不相同的值把顺序钉住。
+//
+// 不碰 socket、不碰 /var/run —— 那一半仍留在 serveControlWithPathRecovery 里,
+// 它非 root 测不了(secdir.Ensure 要 MkdirAll 到 /var/run)。
+func controlMuxOptionsForServe(ctx context.Context, opts controlServeOptions, pid int) controlMuxOptions {
 	guard := startNetworkGuard(ctx)
 	// **吞吐要按固定节拍采样,不能搭在读状态那条路上。**
 	// 读状态的间隔由调用方决定(菜单开着 2 秒、关着 30 秒、CLI 一次就走),
@@ -743,6 +760,11 @@ func serveControlWithPathRecovery(ctx context.Context, opts controlServeOptions)
 	rate := &stats.RateMeter{}
 	go sampleThroughput(ctx, opts.Counters, rate)
 	report := newStatusReporter(opts.Counters, opts.Tunnel, opts.Server, opts.Mode, opts.UDPMode, opts.TransportInfo, opts.Runtime, guard, rate, opts.ConfigWarnings)
+	return controlMuxOptionsFromServe(opts, report, pid)
+}
+
+func serveControlWithPathRecovery(ctx context.Context, opts controlServeOptions) (io.Closer, error) {
+	muxOpts := controlMuxOptionsForServe(ctx, opts, os.Getpid())
 	if err := secdir.Ensure(filepath.Dir(SockPath), os.Geteuid(), 0o755); err != nil {
 		return nil, fmt.Errorf("准备控制 socket 目录: %w", err)
 	}
@@ -754,7 +776,7 @@ func serveControlWithPathRecovery(ctx context.Context, opts controlServeOptions)
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	srv := &http.Server{
-		Handler:           newControlMuxFull(controlMuxOptionsFromServe(opts, report, os.Getpid())),
+		Handler:           newControlMuxFull(muxOpts),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
