@@ -89,6 +89,26 @@ eq(bxParseCandidate(null), null, "null 不抛异常");
 eq(bxParseCandidate("  candidate:1 1  udp   100 1.2.3.4 60000 typ srflx  "),
    {typ: "srflx", address: "1.2.3.4"}, "多余空白不错位");
 
+// —— bxEchoOutcome ——
+// **这一条是本轮修的那个 bug 的守卫。** 空 body 那一支此前既不报 landed=true
+// 也不报 landed=false(早退跳过了那一行),于是格子永远停在「还在等」的样子,
+// 而报告其实已经发出并渲染完了。
+eq(bxEchoOutcome("203.0.113.9\n"), {value: "203.0.113.9", err: "", landed: true},
+   "正常 echo:去掉换行、算落地");
+eq(bxEchoOutcome(""), {value: "", err: "the echo returned an empty body", landed: false},
+   "空 body 必须 landed=false —— 不报极性会让格子停在「还在等」");
+eq(bxEchoOutcome("   \n\t "), {value: "", err: "the echo returned an empty body", landed: false},
+   "只有空白也算空 body");
+eq(bxEchoOutcome(null), {value: "", err: "the echo returned an empty body", landed: false},
+   "null 不抛异常");
+// IPv6 与前后空白
+eq(bxEchoOutcome("  2001:db8::1  "), {value: "2001:db8::1", err: "", landed: true},
+   "IPv6 与前后空白");
+// **有值就是落地了,哪怕内容看起来不像 IP** —— 判定在 Go 里,这里只报「拿到了
+// 一个非空的答案」。在这里按 IP 形状筛,等于把一条结论悄悄变成「没检查」。
+eq(bxEchoOutcome("<html>nope</html>"), {value: "<html>nope</html>", err: "", landed: true},
+   "非 IP 内容也算落地(判定在 Go 里)");
+
 if (failures > 0) { console.error(`\n${failures} 条断言失败`); process.exit(1); }
 console.log("page js tests passed");
 JS

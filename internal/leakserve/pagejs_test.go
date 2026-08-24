@@ -185,3 +185,90 @@ func stripJSComments(src string) string {
 	}
 	return out.String()
 }
+
+// **「落地了」必须是从答案里挣来的,绝不能直接断言。**
+//
+// 这条守卫钉的是 2026-08-24 修掉的那个 bug 的**形状**,不是它的一个实例:
+// `fetchEcho` 的空 body 分支早退时跳过了 `probeLanded`,而 `.catch` 只对 throw
+// 生效 —— 于是那个格子永远停在「还在等」的样子(`data-got` 缺席既不是 yes 也
+// 不是 no),挨着一份已经发出并渲染完的报告。
+//
+// 判据是**不对称的,而这个不对称是要点**:
+//   - 第二个实参写成字面量 `true` 一律禁 —— 那是在没看答案的情况下宣布探针
+//     落地了,正是上面那个 bug 的一般形式。
+//   - 字面量 `false` **允许**:它只出现在 `.catch` 里,那里什么都没到达,
+//     说「没落地」不是对内容的判断,是对「一次异常」的如实陈述。
+//
+// 另一半同样承重:必须真的有人把纯函数算出的 `landed` 传进去。少了这一句,
+// 把 `probeLanded(probe, o.landed)` 改回 `probeLanded(probe, true)` 之后
+// node 那边测的 `bxEchoOutcome` 照样全绿 —— 被测的极性根本没接到界面上,
+// 而这个仓库为「守卫钉住的是缺陷旁边的东西」栽过六次。
+func TestPageJSNeverAssertsThatAProbeLanded(t *testing.T) {
+	page := stripJSComments(pageSource(t))
+	calls := probeLandedArgs(t, page)
+	if len(calls) < 4 {
+		t.Fatalf("只解析出 %d 处 probeLanded 调用,少得反常 —— 守卫可能读不懂现在的写法了,先修守卫", len(calls))
+	}
+	wired := false
+	for _, arg := range calls {
+		got := strings.TrimSpace(arg)
+		if got == "true" {
+			t.Errorf("probeLanded 的第二个实参是字面量 true —— " +
+				"「落地了」必须从答案里算出来。字面量 false 可以(那只出现在 catch 里," +
+				"什么都没到达),true 不行:那正是空 body 那个 bug 的一般形式")
+		}
+		if strings.Contains(got, ".landed") {
+			wired = true
+		}
+	}
+	if !wired {
+		t.Error("没有一处 probeLanded 用的是纯函数算出的 .landed —— " +
+			"node 那边测的极性没接到界面上,测了等于没测")
+	}
+}
+
+// probeLandedArgs 取出每一次 probeLanded 调用的**第二个**实参原文。
+// 读不懂就让调用方响亮失败,不静默返回空列表(空列表会让上面那条守卫自动通过)。
+func probeLandedArgs(t *testing.T, src string) []string {
+	t.Helper()
+	const call = "probeLanded("
+	var out []string
+	for i := 0; ; {
+		j := strings.Index(src[i:], call)
+		if j < 0 {
+			return out
+		}
+		start := i + j + len(call)
+		depth, comma, end := 0, -1, -1
+		for k := start; k < len(src); k++ {
+			switch src[k] {
+			case '(', '[':
+				depth++
+			case ')':
+				if depth == 0 {
+					end = k
+				} else {
+					depth--
+				}
+			case ']':
+				depth--
+			case ',':
+				if depth == 0 && comma < 0 {
+					comma = k
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			t.Fatalf("在偏移 %d 处的 probeLanded 调用没有闭合括号 —— 守卫读不懂它", start)
+		}
+		// 只收真正的**调用**:定义那一行 `function probeLanded(name, ok)` 的第二个
+		// 形参恰好也叫得出名字,把它算进来会让「至少四处」这条计数变松。
+		if comma > 0 && comma < end && !strings.HasSuffix(strings.TrimSpace(src[:i+j]), "function ") {
+			out = append(out, src[comma+1:end])
+		}
+		i = end
+	}
+}

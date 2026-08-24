@@ -182,6 +182,21 @@ Neither half alone can tell you whether traffic is leaking.</p>
     if (!parts[4]) return null;
     return { typ: parts[7], address: parts[4] };
   }
+
+  // bxEchoOutcome 判一次 echo 应答的**结论**:值、错误、以及「这个探针落地了没有」。
+  //
+  // **三者一起算,是这个函数存在的理由。** 此前它们分散在 fetchEcho 的三个分支里
+  // 各写各的,而空 body 那一支**两个 probeLanded 都没调**(早退跳过了成功那一行,
+  // 而 .catch 只对 throw 生效)—— 后果是那个格子永远停在「还在等」的样子
+  // (data-got 缺席既不是 yes 也不是 no),而报告其实已经发出并渲染完了:一个
+  // 看起来仍在进行中的探针,挨着一份已经出结论的报告。
+  //
+  // 空 body 不是答案 —— 把它报成 {value:"", err:""} 与「报告从没到达」逐字节相同。
+  function bxEchoOutcome(bodyText) {
+    var v = String(bodyText == null ? "" : bodyText).trim();
+    if (v === "") return { value: "", err: "the echo returned an empty body", landed: false };
+    return { value: v, err: "", landed: true };
+  }
   // ==== BX-PURE-END ====
 
   function text(el, s) { el.textContent = s; return el; }
@@ -259,12 +274,11 @@ Neither half alone can tell you whether traffic is leaking.</p>
         return r.text();
       })
       .then(function (t) {
-        var v = t.trim();
-        // An empty body is not an answer. Reporting it as {value:"", err:""}
-        // is byte-for-byte what a report that never arrived looks like.
-        if (v === "") return { value: "", err: "the echo returned an empty body" };
-        probeLanded(probe, true);
-        return { value: v, err: "" };
+        // 结论(值 / 错误 / 落地与否)一次算完 —— 三者分开算过一次,而那一版
+        // 的空 body 分支两个 probeLanded 都没调,格子于是永远停在「还在等」。
+        var o = bxEchoOutcome(t);
+        probeLanded(probe, o.landed);
+        return { value: o.value, err: o.err };
       })
       .catch(function (e) {
         clearTimeout(giveUp);
