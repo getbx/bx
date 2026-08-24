@@ -4576,8 +4576,25 @@ func clientProtectionLabel(protection string) string {
 	return label
 }
 
+// writeClientRecovery 渲染路径恢复那一行。
+//
+// **`ignored` 与 `idle` 一样不占地方。** `ignored` 是 Guardian 说「我**故意**什么
+// 都没做」—— 请求进来时 desired=off,于是那次恢复被丢掉(internal/guardian/
+// path_recovery.go 三处 `State = "ignored"` / `Stage = "off"`)。它诚实,但它说的是
+// 一个**已经过去的**时刻:`bx down` 会拆掉路由 ⇒ 底层网络变化 ⇒ 观测者请求一次恢复
+// ⇒ desired 此刻是 off ⇒ 记下一条 ignored。它一直留到被别的东西覆盖为止,于是
+// **紧接着的 `bx up` 之后它还在**,`bx status` 便一直显示
+// `Recovery recovery-N stage=off attempt=1` —— 一条永远不会变的行,而用户看到
+// 「Recovery」这个词第一反应是「出什么事了」。
+//
+// 菜单侧 2026-08-22 已经这么过滤了(`recoverySnapshotForDisplay` 里 idle 与
+// ignored 同一支)。**这里补齐的是同一个字段的第二个消费方** —— 两个消费方对
+// 同一份状态给出不同的画面,本身就是一种会误导人的不一致。
+//
+// **过滤只发生在呈现层,状态本身一个字节不动**:Guardian 那份 `ignored` 仍然在,
+// `bx status --json` 里也仍然发布(机器读的那条路不该被人眼的取舍裁剪)。
 func writeClientRecovery(b *strings.Builder, recovery guardian.RecoverySnapshot) {
-	if recovery.State != "" && recovery.State != "idle" {
+	if recovery.State != "" && recovery.State != "idle" && recovery.State != "ignored" {
 		fmt.Fprintf(b, "  Recovery %s stage=%s attempt=%d", recovery.ID, recovery.Stage, recovery.Attempt)
 		if recovery.ErrorCode != "" {
 			fmt.Fprintf(b, " error_code=%s", recovery.ErrorCode)

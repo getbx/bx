@@ -5970,3 +5970,40 @@ func TestCaptiveNetworkHintLeadsWithTheNoDisableRouteAndKeepsTheFallback(t *test
 		t.Error("把原因说死了 —— bx 分不清强制门户与服务器真挂了,只能给可能性")
 	}
 }
+
+// **`ignored` 与 `idle` 一样不该出现在 `bx status` 里,而 `failed` 必须出现。**
+//
+// `ignored` 是 Guardian 说「我**故意**什么都没做」(请求进来时 desired=off)。
+// 每一次 `bx down` 都会产生一条:拆路由 ⇒ 底层变化 ⇒ 观测者请求恢复 ⇒ 被忽略。
+// 它一直留到被覆盖为止,于是**紧接着的 `bx up` 之后仍然在**,`bx status` 便永远
+// 显示一行 `Recovery recovery-N stage=off attempt=1` —— 而用户看到「Recovery」
+// 第一反应是「出什么事了」。菜单侧 2026-08-22 已经这么过滤了,这里补齐的是
+// **同一个字段的第二个消费方**:两个消费方对同一份状态给出不同画面,本身就是
+// 一种会误导人的不一致。
+//
+// **对照组是必需的**:只断言「ignored 不显示」证明不了什么 —— 一个什么都不渲染的
+// 实现也能通过。所以同一张表里 failed/running 必须仍然出现。
+func TestClientRecoveryHidesDeliberateNoOpsButNotRealOnes(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		shown bool
+		why   string
+	}{
+		{"ignored", false, "Guardian 故意什么都没做,而且那是一个已经过去的时刻"},
+		{"idle", false, "本来就没有恢复在进行"},
+		{"", false, "零值 = 这版 Guardian 没有这个概念"},
+		{"failed", true, "真失败必须看得见"},
+		{"running", true, "正在恢复必须看得见"},
+		{"accepted", true, "已受理必须看得见"},
+		{"succeeded", true, "刚成功也该让用户看到一次"},
+	} {
+		var b strings.Builder
+		writeClientRecovery(&b, guardian.RecoverySnapshot{
+			ID: "recovery-7", State: tc.state, Stage: "off", Attempt: 1,
+		})
+		got := strings.Contains(b.String(), "recovery-7")
+		if got != tc.shown {
+			t.Errorf("state=%q 显示=%v,想要 %v —— %s(输出 %q)", tc.state, got, tc.shown, tc.why, b.String())
+		}
+	}
+}
