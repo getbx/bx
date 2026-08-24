@@ -347,13 +347,20 @@ func TestEngineAttributesUDPBytesToTheConnectionSourcePort(t *testing.T) {
 	}
 }
 
-// ==== 连接结束通知(2026-08-20) ====
+// ==== 引擎必须关掉它从 Dialer 拿到的那条 conn(2026-08-24) ====
 //
 // 归因侧要维护一张「此刻还开着的连接」表,好让窗口打开时看得见**已经在跑**的
-// 长连接。那张表的唯一边界就是这条通知:少了它,表会随机器运行时间单调增长,
-// 而报告仍然完全正确、没有任何一处会报错。
+// 长连接。那张表的边界曾经是 ByteAttributor.ConnClosed,由 handleConn 一条
+// defer 调用;2026-08-24 挪进了 dialer:拨号返回的 conn 自带释放,Close 时触发。
+//
+// **搬家之后,这里剩下的那一半责任是承重的**:释放骑在 Close 上,所以「引擎
+// 真的会关掉那条 conn」从一个显然的实现细节变成了活连接表正确性的前提。
+// relay 哪天不再关 upstream,表就只增不减,而报告仍然完全正确、没有任何一处
+// 会报错 —— 与它取代的那条通知是同一种无声失效,只是换了个住处。
+// 释放本身(恰好一次、重复 Close 只算一次、拨号失败就地释放)由
+// internal/dialer/apprelease_test.go 钉住,不在这里重复。
 
-func TestEngineReportsConnectionCloseToTheByteAttributor(t *testing.T) {
+func TestEngineClosesTheUpstreamConnSoTheDialerCanRelease(t *testing.T) {
 	const wantSrcPort = 51236
 	attr := &fakeByteAttributor{}
 	dialer := newCaptureDialer()
@@ -361,8 +368,8 @@ func TestEngineReportsConnectionCloseToTheByteAttributor(t *testing.T) {
 	defer cleanup()
 
 	conn := client.connectTCP(t, wantSrcPort, netip.MustParseAddr("198.18.0.7"), 443)
-	if got := attr.closedKeys(); len(got) != 0 {
-		t.Fatalf("连接还开着就报了结束: %#v", got)
+	if dialer.upstreamClosed() {
+		t.Fatal("连接还开着,引擎就把 upstream 关了")
 	}
 	// 两端都关,relay 的两个方向才会同时收尾(只关一端时另一方向要等空闲超时)。
 	conn.Close()
@@ -370,34 +377,32 @@ func TestEngineReportsConnectionCloseToTheByteAttributor(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		got := attr.closedKeys()
-		if len(got) == 1 && got[0] == (portKey{wantSrcPort, false}) {
+		if dialer.upstreamClosed() {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("连接结束通知 = %#v, want 恰好一条 {%d,tcp}", got, wantSrcPort)
+			t.Fatalf("relay 结束了却没关掉 upstream —— 活连接表的释放骑在这次 Close 上," +
+				"不关它,表就只增不减而没有任何一处会报错")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-// **拨号失败的连接也必须报结束。** 判定(Record)发生在 Dial 内部,kill-switch
-// 把一条连接判成 Block 时 Dial 返回错误,而那条连接**已经进了活连接表**。
-// 把通知 defer 在拨号成功之后,这类连接的条目就永远没人删 —— 而被 Block 的
-// 连接恰恰可能非常多(隧道挂掉时全网都是)。
-func TestEngineReportsConnectionCloseWhenDialFails(t *testing.T) {
-	const wantSrcPort = 51237
+// 拨号失败时引擎拿不到 conn,所以它无从关也无需关 —— 释放由 Dialer 就地做掉
+// (见 TestDialReleasesInPlaceWhenItReturnsAnError)。这里钉住的是引擎**不会
+// 因此 panic 或漏关本地那一端**:被 kill-switch 判 Block 的连接在隧道挂掉时
+// 可能非常多,每条漏一个 fd 就是一次真实的资源泄漏。
+func TestEngineClosesTheLocalSideWhenDialFails(t *testing.T) {
 	attr := &fakeByteAttributor{}
 	engine := &Engine{dialer: failingDialer{}, bytes: attr, idleTimeout: time.Second}
 
 	appSide, localSide := tcpPair(t)
 	defer appSide.Close()
 	// UDP 元数据:readInitial 对 UDP 直接返回 nil,不必等那 500ms 的读超时。
-	engine.handleConn(localSide, route.Meta{SrcPort: wantSrcPort, UDP: true, Port: 443})
+	engine.handleConn(localSide, route.Meta{SrcPort: 51237, UDP: true, Port: 443})
 
-	got := attr.closedKeys()
-	if len(got) != 1 || got[0] != (portKey{wantSrcPort, true}) {
-		t.Fatalf("拨号失败后的结束通知 = %#v, want 恰好一条 {%d,udp}", got, wantSrcPort)
+	if err := localSide.Close(); err == nil {
+		t.Fatal("拨号失败后本地那一端还开着 —— 每条被 Block 的连接漏一个 fd")
 	}
 }
 

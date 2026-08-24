@@ -26,9 +26,10 @@ import (
 
 // captureDialer 记录每次 Dial 的 Meta,并把引擎侧连接的对端交给 test。
 type captureDialer struct {
-	mu    sync.Mutex
-	metas []route.Meta
-	peers chan net.Conn // test 侧拿到 upstream 的对端(用于断言字节转发)
+	mu        sync.Mutex
+	metas     []route.Meta
+	peers     chan net.Conn // test 侧拿到 upstream 的对端(用于断言字节转发)
+	upstreams []*closeWatchConn
 }
 
 func newCaptureDialer() *captureDialer {
@@ -41,7 +42,49 @@ func (d *captureDialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error
 	d.mu.Unlock()
 	engineSide, testSide := net.Pipe()
 	d.peers <- testSide
-	return engineSide, nil
+	// 包一层记「引擎有没有关掉它」。活连接表的释放骑在这次 Close 上
+	// (2026-08-24 从引擎的 defer 挪进了 dialer),所以这不是实现细节,
+	// 是那张表正确性的前提。
+	tracked := &closeWatchConn{Conn: engineSide}
+	d.mu.Lock()
+	d.upstreams = append(d.upstreams, tracked)
+	d.mu.Unlock()
+	return tracked, nil
+}
+
+// upstreamClosed 报告引擎是否已经关掉它拿到的**全部** upstream。
+// 一条都没拨过时返回 false —— 「还没有连接」不是「都关好了」。
+func (d *captureDialer) upstreamClosed() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.upstreams) == 0 {
+		return false
+	}
+	for _, c := range d.upstreams {
+		if !c.isClosed() {
+			return false
+		}
+	}
+	return true
+}
+
+type closeWatchConn struct {
+	net.Conn
+	mu     sync.Mutex
+	closed bool
+}
+
+func (c *closeWatchConn) Close() error {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func (c *closeWatchConn) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 func (d *captureDialer) lastMeta(t *testing.T) route.Meta {

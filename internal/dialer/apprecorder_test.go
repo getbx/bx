@@ -23,8 +23,17 @@ type appCall struct {
 }
 
 type fakeAppRecorder struct {
-	mu    sync.Mutex
-	calls []appCall
+	mu     sync.Mutex
+	calls  []appCall
+	closed []releaseCall
+}
+
+// ConnClosed 记下一次释放。与 Record 成对 —— 两者住在同一个接口里,是为了让
+// 「记了账没人释放」在编译期就不成立。
+func (f *fakeAppRecorder) ConnClosed(srcPort uint16, udp bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = append(f.closed, releaseCall{srcPort, udp})
 }
 
 func (f *fakeAppRecorder) Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string) {

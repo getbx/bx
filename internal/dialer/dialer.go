@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 
 	"github.com/getbx/bx/internal/appattr"
@@ -77,6 +78,41 @@ type DecisionCounter interface {
 // 两个不同目的地,把去重打散。
 type AppRecorder interface {
 	Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string)
+	// ConnClosed 报告这条连接结束,归因侧据此维护「此刻还开着的连接」表。
+	//
+	// **它与 Record 成对,而且这一对现在住在同一个包里** —— 释放此前是**调用方**
+	// 的事(tun.Engine.handleConn 里一条 defer),写在里面、释放在外面。今天只有
+	// 一个调用方且它是对的,但任何新调用方忘了配一条都**不会有编译错误、不会有
+	// 测试转红**:陈旧条目攒到几千条之后,一次 Subscribe 的种子就能把 4096 格的
+	// 环形缓冲填满并绕圈,新记录被自己的陈旧种子挤掉 —— 报告从「正确但残缺」
+	// 退化成「错的」,而仍然没有任何一处会报错。
+	//
+	// **直接扩接口而不是做成可选类型断言**:「实现里没有就静默不计」的释放者
+	// 与没有这个功能在输出上完全一样(活连接表只增不减),而它恰恰是用来维护
+	// 那张表的(与 stats.DecisionCounter 同一条判断)。
+	ConnClosed(srcPort uint16, udp bool)
+}
+
+// appTrackedConn 把「释放活连接表条目」挂在 conn 自己的 Close 上。
+//
+// **嵌入 net.Conn,不逐个转发方法。** relay 的空闲超时整套建立在
+// SetReadDeadline/SetWriteDeadline 上,漏掉一个不会报错、只是连接再也不会因
+// 空闲而结束,goroutine 与 fd 一起泄漏而界面上什么都看不出。
+// (热路径 copyOneWay 是手写的 Read/Write 循环、没有 io.Copy,所以包一层
+// 不会静默丢掉 ReaderFrom/WriterTo 快路径 —— 这一点动手前核过。)
+type appTrackedConn struct {
+	net.Conn
+	release func()
+	once    sync.Once
+}
+
+// Close 释放**恰好一次**。重复 Close 在 net.Conn 上是合法的,而 relay 与调用方
+// 各关一次是常见形状;释放两次会让 refs 提前归零,把一条**还开着**的连接从
+// 活连接表里抹掉。
+func (c *appTrackedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.release)
+	return err
 }
 
 // Dialer 把 Router 决策落到实际拨号。
@@ -181,7 +217,28 @@ func (d *Dialer) Dial(ctx context.Context, m route.Meta) (net.Conn, error) {
 }
 
 // DialWithInitial 可用 TCP 首包中的 TLS SNI / HTTP Host 为未知 fake-IP 恢复域名。
+//
+// **它是薄壳,判定全在 dialInner 里。** 这一层只做一件事:把活连接表的释放
+// 绑到返回值的生命周期上 —— 拿到 conn 就包一层、Close 时释放,返回错误就
+// 地释放。单一漏斗是必需的:dialInner 有十几个 return,逐个包会漏,而漏掉的
+// 那一个正是「记了账没人释放」。
 func (d *Dialer) DialWithInitial(ctx context.Context, m route.Meta, initial []byte) (net.Conn, error) {
+	conn, err := d.dialInner(ctx, m, initial)
+	if d.AppRecorder == nil {
+		// 没人订阅应用视图时的常态:没记账就没有账要平,不包这一层。
+		return conn, err
+	}
+	rec, srcPort, udp := d.AppRecorder, m.SrcPort, m.UDP
+	if err != nil || conn == nil {
+		// **被 kill-switch 拦下的连接已经进了表,而拨号返回错误。** 隧道挂掉时
+		// 这类连接恰恰最多;少了这一支,它们的条目永远没人删。
+		rec.ConnClosed(srcPort, udp)
+		return conn, err
+	}
+	return &appTrackedConn{Conn: conn, release: func() { rec.ConnClosed(srcPort, udp) }}, nil
+}
+
+func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte) (net.Conn, error) {
 	rt := d.router.Load()
 	tr, udpTransport := d.loadTransportGeneration()
 	if tr == nil {
