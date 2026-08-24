@@ -24,10 +24,7 @@ import (
 // 返回错误时就地释放。
 
 // releaseCall 是一次 ConnClosed。
-type releaseCall struct {
-	srcPort uint16
-	udp     bool
-}
+type releaseCall struct{ flowID uint64 }
 
 func (f *fakeAppRecorder) releases() []releaseCall {
 	f.mu.Lock()
@@ -53,8 +50,8 @@ func TestDialDoesNotReleaseUntilTheConnIsClosed(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("关闭后释放了 %d 次, want 1: %+v", len(got), got)
 	}
-	if got[0].srcPort != 51234 || got[0].udp {
-		t.Fatalf("释放的键是 %+v,与记账那一次不是同一个键 —— 配平不成立", got[0])
+	if got[0].flowID != rec.onlyIssued(t) {
+		t.Fatalf("释放的是流 %d,而记账那一次发的是 %d —— 配平不成立", got[0].flowID, rec.onlyIssued(t))
 	}
 }
 
@@ -73,8 +70,8 @@ func TestDialReleasesInPlaceWhenItReturnsAnError(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("阻断路径释放了 %d 次, want 1: %+v", len(got), got)
 	}
-	if got[0].srcPort != 4321 {
-		t.Fatalf("释放的键是 %+v,与记账那一次不是同一个键", got[0])
+	if got[0].flowID != rec.onlyIssued(t) {
+		t.Fatalf("释放的是流 %d,而记账那一次发的是 %d", got[0].flowID, rec.onlyIssued(t))
 	}
 }
 

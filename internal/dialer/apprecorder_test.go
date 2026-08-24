@@ -26,20 +26,38 @@ type fakeAppRecorder struct {
 	mu     sync.Mutex
 	calls  []appCall
 	closed []releaseCall
+	nextID uint64
+	issued []uint64
 }
 
 // ConnClosed 记下一次释放。与 Record 成对 —— 两者住在同一个接口里,是为了让
 // 「记了账没人释放」在编译期就不成立。
-func (f *fakeAppRecorder) ConnClosed(srcPort uint16, udp bool) {
+func (f *fakeAppRecorder) ConnClosed(flowID uint64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.closed = append(f.closed, releaseCall{srcPort, udp})
+	f.closed = append(f.closed, releaseCall{flowID})
 }
 
-func (f *fakeAppRecorder) Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string) {
+func (f *fakeAppRecorder) Record(srcPort uint16, udp bool, path appattr.Path, source, rule, dest string) uint64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, appCall{srcPort, udp, path, source, rule, dest})
+	// 从 1 起发号:0 是「没记账」,与生产侧 flowSeq 同一条约定。
+	f.nextID++
+	f.issued = append(f.issued, f.nextID)
+	return f.nextID
+}
+
+// onlyIssued 是「这次拨号发出的那一个流 ID」。与 only(t) 同一条纪律:恰好一个,
+// 否则响亮失败 —— 一次拨号记两笔账而只释放一笔,正是配平不成立的那种形状。
+func (f *fakeAppRecorder) onlyIssued(t *testing.T) uint64 {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.issued) != 1 {
+		t.Fatalf("发了 %d 个流 ID, want 1: %v", len(f.issued), f.issued)
+	}
+	return f.issued[0]
 }
 
 func (f *fakeAppRecorder) only(t *testing.T) appCall {
@@ -318,7 +336,7 @@ func TestRecordAppPrefersDomainOverIP(t *testing.T) {
 	rec := &fakeAppRecorder{}
 	d := &Dialer{AppRecorder: rec}
 	m := route.Meta{Domain: "api.openai.com", IP: netip.MustParseAddr("198.18.0.9"), SrcPort: 1}
-	d.recordApp(m, appattr.PathTunnel, "user_proxy", "*.openai.com")
+	d.recordApp(&flowSlot{}, m, appattr.PathTunnel, "user_proxy", "*.openai.com")
 	got := rec.only(t)
 	if got.dest != "api.openai.com" {
 		t.Fatalf("dest = %q, want 域名优先于 IP", got.dest)
@@ -329,7 +347,7 @@ func TestRecordAppFallsBackToTheLiteralIP(t *testing.T) {
 	rec := &fakeAppRecorder{}
 	d := &Dialer{AppRecorder: rec}
 	m := route.Meta{IP: netip.MustParseAddr("198.18.0.9"), SrcPort: 1}
-	d.recordApp(m, appattr.PathDirect, "private", "")
+	d.recordApp(&flowSlot{}, m, appattr.PathDirect, "private", "")
 	got := rec.only(t)
 	if got.dest != "198.18.0.9" {
 		t.Fatalf("dest = %q, want 回落到裸 IP 字面量", got.dest)
@@ -340,7 +358,7 @@ func TestRecordAppReportsNoDestinationWhenItHasNeither(t *testing.T) {
 	rec := &fakeAppRecorder{}
 	d := &Dialer{AppRecorder: rec}
 	m := route.Meta{SrcPort: 1}
-	d.recordApp(m, appattr.PathBlocked, "private", "")
+	d.recordApp(&flowSlot{}, m, appattr.PathBlocked, "private", "")
 	got := rec.only(t)
 	if got.dest != "" {
 		t.Fatalf("dest = %q, want 空串(既无域名也无有效 IP)", got.dest)
