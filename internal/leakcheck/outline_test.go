@@ -75,3 +75,78 @@ func TestDNSNeedsNothingFromTheBrowser(t *testing.T) {
 		}
 	}
 }
+
+// **结论的集合不许随输入变化。**
+//
+// 上面那条守卫拿的是真的 Judge 输出,但只喂了**一种**输入(全零)。Judge 今天是
+// 一个无条件的固定字面量,所以那一种就够 —— **而「够是因为实现恰好是无条件的」
+// 正是「测试输入让待守属性不可见」的形状**,这个仓库为它栽过六次。谁哪天写一句
+// `if browser.Silent() { 少发一条 }`,上面那条照样绿:全零输入正好走那一支,而
+// Outline() 也是照着它对齐的。
+//
+// 后果不是「不好看」:页面按骨架把行先摆出来,再按 ID 塞结论。少一条就是一行
+// **永远等不到结论的空壳**,而页面那半对认不出的 ID 是 `if (!row) return;` ——
+// 静默丢弃。两头都不会报错。
+//
+// 输入刻意覆盖三种真实形状:浏览器从没到过、全都拿到了、拿到了但每一跳都报错。
+func TestJudgeAlwaysEmitsTheSameConclusionsWhateverTheInput(t *testing.T) {
+	cases := []struct {
+		name    string
+		browser BrowserReport
+		local   LocalFacts
+	}{
+		{name: "浏览器从没到过"},
+		{
+			name: "全都拿到了",
+			browser: BrowserReport{
+				UserAgent: "probe/1", ExitV4: "203.0.113.9", ExitV6: "2001:db8::1",
+				SRFLX: []string{"203.0.113.9"}, HostCandidates: []string{"3f1a.local"},
+				ExitCountry: "US", TraceExitV4: "203.0.113.9", Timezone: "Asia/Shanghai",
+			},
+		},
+		{
+			name: "每一跳都报错",
+			browser: BrowserReport{
+				UserAgent: "probe/1",
+				ExitV4Err: "no answer within 9s", ExitV6Err: "no answer within 9s",
+				TraceErr: "the trace endpoint returned nothing usable",
+			},
+		},
+	}
+
+	want := Outline()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Judge(time.Now(), tc.browser, tc.local).Findings
+			if len(got) != len(want) {
+				t.Fatalf("产出 %d 条结论,骨架有 %d 行 —— 页面会摆出空壳,或有一条结论"+
+					"没有位置可放而被页面静默丢弃", len(got), len(want))
+			}
+			for i := range want {
+				if got[i].ID != want[i].ID {
+					t.Errorf("第 %d 条:ID = %q,骨架是 %q —— 结论集合随输入变了",
+						i, got[i].ID, want[i].ID)
+				}
+				if got[i].Section != want[i].Section {
+					t.Errorf("第 %d 条(%s):分段 = %v,骨架是 %v —— 结论会出现在它不属于的"+
+						"那一段标题底下", i, got[i].ID, got[i].Section, want[i].Section)
+				}
+			}
+		})
+	}
+}
+
+// 结论条数是**用户可见的契约**(页面先摆骨架、每一行都在等一条结论),而
+// CLAUDE.md 一度把它记成 8 条,实际是 10 条 —— 少记的两条是 traffic_carrier 与
+// language_vs_exit。一份说少了的清单会让下一个人以为某条结论不存在。
+//
+// **这条守卫钉的是数字本身,不是某几个 ID。** 加减一条结论时它会红一次,那正是
+// 提醒去把记档改对的时刻;只钉 ID 列表的话,加一条新结论不会红,而记档继续说 10。
+func TestOutlineHasTheDocumentedNumberOfConclusions(t *testing.T) {
+	const documented = 10
+	if got := len(Outline()); got != documented {
+		t.Fatalf("结论有 %d 条,而记档写的是 %d 条 —— 改了条数就去把 CLAUDE.md 与"+
+			" spec 里那个数字一起改掉;一份说少了的清单会让下一个人以为某条结论不存在",
+			got, documented)
+	}
+}
