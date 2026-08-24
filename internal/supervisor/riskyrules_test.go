@@ -77,3 +77,47 @@ func TestRiskyClassIsJudgedIndependentlyOfWhetherTheRuleEverFires(t *testing.T) 
 		t.Errorf("告警没点名是哪一条规则:%q —— 不点名用户无从下手", got[0].Detail)
 	}
 }
+
+// **这条常驻安全告警唯一附带的动作,必须是一条真敲得动的命令。**
+//
+// 它已经错过两次,而两次都没有任何测试拦下来:
+//   - 一次指向不存在的 `bx direct remove`(真名是 `rm`)——照着敲得到「未知子命令」;
+//   - 一次漏了 `sudo` —— 照着复制粘贴必得 permission denied,因为
+//     `bx direct rm` 直接 os.WriteFile 改 /etc/bx/config.yaml,而那份文件是
+//     `sudo bx setup` 建的 0600 属主 root。
+//
+// **一条点名了安全问题却给不出下一步的告警,比不告警更糟**:用户照着做、失败、
+// 于是不再相信这条告警,而问题原样留在那里。
+//
+// cli 那半有同名思路的守卫(internal/cli 的 TestRiskyRuleFindingHintNeedsSudo),
+// **而这一半此前完全裸奔** —— 两处各自拼一句 hint,只守一处等于只守一半。
+//
+// 判据只钉**性质**(带 sudo、点名真实子命令、规则原文带引号),不钉整句字面量:
+// 措辞调整时不该跟着变红。
+func TestRiskyRuleHintUsesARealSubcommand(t *testing.T) {
+	cfg := &config.Config{Rules: []config.Rule{{
+		Direct: []string{"*.s3.amazonaws.com"},
+	}}}
+	got := riskyRuleWarnings(cfg)
+	if len(got) != 1 {
+		t.Fatalf("告警数 = %d,想要 1 —— 这条测试要看的是它的 hint:%+v", len(got), got)
+	}
+	hint := got[0].Hint
+
+	if !strings.Contains(hint, "sudo bx direct rm") {
+		t.Errorf("hint 没有 `sudo bx direct rm`:%q —— 少了 sudo 就是 permission denied"+
+			"(那份 config 是 0600 属主 root),而子命令写错就是「未知子命令」", hint)
+	}
+	// `remove` 是那次笔误的原文,专门钉住它不许回来。
+	if strings.Contains(hint, "direct remove") {
+		t.Errorf("hint 又出现了 `direct remove`:%q —— 真名是 `rm`,这条命令敲下去会失败", hint)
+	}
+	// 规则原文带 `*`,不加引号在 shell 里会被展开成当前目录下的文件名。
+	if !strings.Contains(hint, "'*.s3.amazonaws.com'") {
+		t.Errorf("hint 里的规则原文没带引号:%q —— 带 `*` 的规则不加引号会被 shell 展开", hint)
+	}
+	// 改完必须重连才生效(bx 不热重载),不说等于让用户以为改完就好了。
+	if !strings.Contains(hint, "bx down") || !strings.Contains(hint, "bx up") {
+		t.Errorf("hint 没说改完要重连:%q —— bx 不热重载,不说等于让用户以为改完就生效了", hint)
+	}
+}

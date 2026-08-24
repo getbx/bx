@@ -18,7 +18,7 @@ var pageTemplate = template.Must(template.New("leakcheck").Parse(pageHTML))
 // 没有 LocalFacts,「srflx ≠ 出口」这类结论在页面里不可能算得出来——缺的不是
 // 代码,是数据。判断只可能发生在 Go 里,而那是这个仓库测得到的地方。
 //
-// 字段集合由 page_test.go 的 TestPageDataCarriesOnlyTokenAndDisclosure 穷举钉住。
+// 字段集合由 page_test.go 的 TestPageDataCarriesOnlyTokenDisclosureAndSkeleton 穷举钉住。
 type pageData struct {
 	Token     string
 	Endpoints leakcheck.EndpointDisclosure
