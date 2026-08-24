@@ -262,13 +262,20 @@ global、china 列表整个不生效,那 22 条全在干活,照着删会让 22 �
 非 root 不可行:`secdir.Ensure` 要 `MkdirAll` 到 `/var/run`)。
 
 **已知缺口(都不影响今天的输出,但改这块前要知道)**:
-- **`renderUpSummary`(`internal/cli/cli.go`)只显示 `Warnings[0].Detail`**,而
-  `configWarnings` 是**追加在最后**的 —— 任何共存 advisory(如 Tailscale)在场时,
-  `sudo bx up` 那句摘要就系统性地丢掉这条安全告警。`bx status` 本身没问题
-  (`stats.Render` 遍历全部)。修法是把 `[0]` 换成循环,但「摘要该显示几条」是产品决定。
-- `control.go` 把 `configWarnings` 传进 `newStatusReporter` 的**那一跳仍无测试**:
-  实测改成 `nil`,整个 `internal/supervisor` 照样绿。净覆盖比修之前强(以前一行
-  生产代码都没跑到),但那个没被测到的跳数是**被挪走了,不是被消掉了**。
+- ~~`renderUpSummary` 只显示 `Warnings[0].Detail`~~ **已修,且有守卫**
+  (`TestUpSummaryShowsAllWarningsIncludingHints`):它遍历全部告警,第二条的
+  `.Hint` 也打。2026-08-24 变异复核:改回 `Warnings[0].Detail` ⇒ 当场红,报
+  「第二条(安全)告警丢失」。
+- ~~`control.go` 把 `configWarnings` 传进 `newStatusReporter` 的那一跳仍无测试~~
+  **已修**(`3d58914`):组装那一半抽成 `controlMuxOptionsForServe`(不碰 socket),
+  两条测试分别走**反射默认参与**(新字段自动被覆盖)与**位置参数顺序**
+  (`newStatusReporter` 有 10 个位置参数,server/mode/udpMode 是连着三个 string,
+  换位不会有编译错误)。三条变异实测全红。
+
+  **这两条曾在这里躺了一段时间,而它们指向的问题早已修好** —— 一条过时的
+  「已知缺口」会把下一个人送去找一个不存在的 bug,并让他对这份清单的其余部分
+  也打折扣。**清单里的每一条都该是今天仍然成立的事实**;修完就回来划掉它,
+  与「只清点名的那一句、不清同一句话的其它副本」是同一条纪律的两面。
 - `builtinListLines` 按 `Kind` 字面量分支,第三个/空 `Kind` 会让该类在两条路径上
   静默消失而 `ShadowedByBuiltinCount` 仍在计数。今天不可达(`review.go` 只传
   `direct`/`proxy`),但没有测试断言「该类每条 finding 都落进恰好一条线」。
