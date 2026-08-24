@@ -130,6 +130,60 @@ Neither half alone can tell you whether traffic is leaking.</p>
   var cells = {};   // probe name -> [cell elements]
   var rowEls = {};  // finding id  -> row element
 
+  // ==== BX-PURE-BEGIN ====
+  // 这一段是**纯解析**:没有 DOM、没有网络、没有计时器,只把字符串变成结构。
+  //
+  // 它单独划出来,是因为这个仓库此前对这半个文件**一行测试都盖不到** ——
+  // 上面那段注释自己写着「this repo's tests cannot see JS — so a drift would be
+  // silent」。而这两个函数恰好是整页最承重的两处:一个决定 WebRTC 那条结论看不看
+  // 得见你的公网出口,另一个决定出口 IP 与国家。它们解析错了不会报错,只会让结论
+  // 悄悄变成「没检查」或者一个错的 IP —— **对一个泄漏检测工具,静默的假阴性是最坏
+  // 的一种失效**。
+  //
+  // 纪律与 internal/leakcheck 的 purity_test.go 同源:区段内不许出现 document /
+  // window / fetch / setTimeout 之类的东西,由 Go 侧守卫按标识符钉住;
+  // scripts/test-page-js.sh 把这段原样抽出来交给 node 跑断言。
+  // **别把判定搬进来** —— 判定仍然全在 Go 里,这里只做「字符串 → 结构」。
+
+  // bxParseTrace 解析 cloudflare 的 /cdn-cgi/trace 应答(每行 key=value)。
+  // 只取 ip 与 loc 两项;其余行原样忽略。值做 trim,所以 CRLF 换行不会把 "\r"
+  // 带进结果。
+  function bxParseTrace(body) {
+    var out = { ip: "", loc: "" };
+    String(body == null ? "" : body).split("\n").forEach(function (line) {
+      var i = line.indexOf("=");
+      if (i < 0) return;
+      var k = line.slice(0, i).trim();
+      var v = line.slice(i + 1).trim();
+      if (k === "ip") out.ip = v;
+      else if (k === "loc") out.loc = v;
+    });
+    return out;
+  }
+
+  // bxParseCandidate 从一条 ICE candidate 里取出 {typ, address}。认不出就返回 null。
+  //
+  // 语法(RFC 8839):前 8 个词的位置是固定的 ——
+  //   candidate:<foundation> <comp> <proto> <pri> <address> <port> typ <type> [...]
+  // 所以 address 恒在下标 4、type 恒在下标 7。**同时校验下标 6 确实是字面量
+  // "typ"**:少了这一句,一条形状意外的 candidate 会让下标 7 上那个词被当成类型
+  // 直接采信,于是一个不是 srflx 的地址被报成公网出口 —— 认不出来时返回 null
+  // (「没看到」)永远好过采信一个错的结构。
+  //
+  // **地址原样返回,不做「像不像 IP」的过滤。** host 候选自 2019 起被浏览器换成
+  // 随机的 <uuid>.local,而「你的浏览器还给不给真地址」本身就是一条要报告的事实;
+  // 在这里按 IP 形状筛掉它,等于把一条结论悄悄变成「没检查」。判定在 Go 里。
+  function bxParseCandidate(line) {
+    var raw = String(line == null ? "" : line).trim();
+    if (!raw) return null;
+    var parts = raw.split(/\s+/);
+    if (parts.length <= 7) return null;
+    if (parts[6] !== "typ") return null;
+    if (!parts[4]) return null;
+    return { typ: parts[7], address: parts[4] };
+  }
+  // ==== BX-PURE-END ====
+
   function text(el, s) { el.textContent = s; return el; }
   function el(tag, cls) { var n = document.createElement(tag); if (cls) n.className = cls; return n; }
 
@@ -228,14 +282,8 @@ Neither half alone can tell you whether traffic is leaking.</p>
     return fetch(TRACE, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })
       .then(function (r) { return r.text(); })
       .then(function (body) {
-        var out = { ip: "", loc: "", err: "" };
-        body.split("\n").forEach(function (line) {
-          var i = line.indexOf("=");
-          if (i < 0) return;
-          var k = line.slice(0, i), v = line.slice(i + 1).trim();
-          if (k === "ip") out.ip = v;
-          if (k === "loc") out.loc = v;
-        });
+        var parsed = bxParseTrace(body);
+        var out = { ip: parsed.ip, loc: parsed.loc, err: "" };
         if (!out.ip && !out.loc) out.err = "the trace endpoint returned nothing usable";
         probeLanded("trace", !out.err);
         return out;
@@ -298,18 +346,17 @@ Neither half alone can tell you whether traffic is leaking.</p>
       pc.createDataChannel("bx");
       pc.onicecandidate = function (ev) {
         if (!ev.candidate || !ev.candidate.candidate) return;
-        var parts = ev.candidate.candidate.split(" ");
-        // a=candidate:<foundation> <comp> <proto> <pri> <ip> <port> typ <type>
-        if (parts.length <= 7) return;
-        if (parts[7] === "srflx" && result.srflx.indexOf(parts[4]) < 0) {
-          result.srflx.push(parts[4]);
+        var c = bxParseCandidate(ev.candidate.candidate);
+        if (!c) return;
+        if (c.typ === "srflx" && result.srflx.indexOf(c.address) < 0) {
+          result.srflx.push(c.address);
         }
         // typ host is this machine's own address on the local network. Browsers
         // have replaced it with a random <uuid>.local since 2019 — whether yours
         // still does is itself a fact about this machine, so it is reported raw
         // and judged in Go, like everything else here.
-        if (parts[7] === "host" && result.host.indexOf(parts[4]) < 0) {
-          result.host.push(parts[4]);
+        if (c.typ === "host" && result.host.indexOf(c.address) < 0) {
+          result.host.push(c.address);
         }
       };
       pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function (e) {

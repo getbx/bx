@@ -96,6 +96,19 @@ jobs:
           grep -q '^macOS menu tests passed$' /tmp/menu-tests.log \
             || { echo "::error::菜单测试脚本未跑到收尾横幅 —— 可能中途 return 或套件被清空"; exit 1; }
 
+      # leakcheck 页面里那段纯解析 JS。与上面 Swift 那两步同一条理由:Go 测试
+      # 进不去那半边,而它包含整页最承重的两个解析(WebRTC 那条结论看不看得见
+      # 你的公网出口、出口 IP 与国家)。node 在 runner 上预装,不需要 setup-node。
+      #
+      # **放在 macos-app 这个 job 里跑一次就够** —— 那段 JS 与平台无关,三个
+      # runner 各跑一遍只是重复;而放在这里能与 page.html 的其它守卫同时红。
+      - name: Run leakcheck page js tests
+        run: |
+          set -o pipefail
+          bash scripts/test-page-js.sh | tee /tmp/page-js.log
+          grep -q '^page js tests passed$' /tmp/page-js.log \
+            || { echo "::error::页面 JS 测试脚本未跑到收尾横幅 —— 可能中途 exit 或断言块被清空"; exit 1; }
+
   # 真的装一次,然后问系统「装完之后该是什么样」。
   #
   # **这个 job 是为一整类 bug 加的,而那类 bug 单测和复审都抓不到。** 2026-08-10
