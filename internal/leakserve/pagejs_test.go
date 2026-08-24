@@ -352,7 +352,7 @@ func callArgN(t *testing.T, src, fn string, n int) []string {
 // 一份」曾经是**假话**:页面拿到的 `CHECKS`(骨架)里的 inputs 确实来自 Go 常量,
 // 但页面自己调用 `probeLanded("srflx", …)` / `fetchEcho(ECHO4, "exit_v4")` 用的是
 // **手抄的字面量** —— `pageData` 里根本没有这几个常量(由
-// TestPageDataCarriesOnlyTokenAndDisclosure 穷举钉住)。
+// TestPageDataCarriesOnlyTokenDisclosureAndSkeleton 穷举钉住)。
 //
 // 漂移的后果是**静默的**:`skeleton()` 按 `c.inputs`(Go 那份)建 `cells`,而
 // `probeLanded` 按页面那份查表 —— 对不上时 `cells[name]` 是 undefined,

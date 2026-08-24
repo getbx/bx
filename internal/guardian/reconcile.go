@@ -30,7 +30,7 @@ import "github.com/getbx/bx/internal/observe"
 //     有恢复的通路。这个系统里别的失误用户都还能自救,唯独一条被留下的 /2 reject
 //     让用户连修复包都下不了。手写路径里它至少还绑在一次用户显式请求上;放进一个
 //     按时钟驱动的循环,就是每一拍重掷一次这个骰子。故判据只提议**删**孤儿屏障,
-//     永远不提议装。TestDecideNeverProposesInstallingABarrier 盯着这一条。
+//     永远不提议装。TestDecideNeverProposesAnythingOutsideTheAuthorizedSet 盯着这一条。
 //
 // 三、**所有权不确定(OwnershipUncertain)是栅栏,不是待收敛的差异。**
 //     它是 Guardian 的 fail-closed 拒绝:扫描到一个可能是 Core 的进程、或者压根
