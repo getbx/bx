@@ -222,7 +222,6 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         // 这个窗口最初的用例上(开会开到一半打开窗口看会议走哪)。措辞只陈述观测
         // 得到的现象、不断言原因,与那句「Protection may be off.」同一条纪律;
         // 那句话本身住在 AppTrafficModel 的常量里,由 Swift 套件钉住。
-        stack.addArrangedSubview(hint(appTrafficPreexistingNote))
     }
 
     /// 把应用行摆成一张表:**数字列右对齐,跨组对得上大小**。

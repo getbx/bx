@@ -400,15 +400,22 @@ Guardian  /v1/apps            新增,authorizeOwnerPeer(与 /v1/rules、/v1/up �
   键重新设计成能分辨同一 socket 上的不同流。当前行为由
   `TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket` 明确钉住(断言的是
   「这是已知行为」,不是「这样是对的」)。
-  **2026-08-20 补:这个缺口现在对用户可见了。** 此前它只有三份记档和一条测试,
-  而一个开会开到一半打开窗口的人拿到的仍然是「腾讯会议在走隧道」这一半答案、
-  且无从知道另一半被折叠了。窗口底部现在有第二句小字
+  **2026-08-20 补:这个缺口现在对用户可见了**,窗口底部加了第二句小字
   (`appTrafficPreexistingNote`):「Connections already open when this window
-  opened may appear in only one section.」—— **只陈述观测得到的现象,不断言原因**
-  (与 `appTrafficStaleNotice` 那句「Protection may be off.」同一条纪律:说「因为
-  种子把并存的流压平了」既是实现细节,对一个只想知道「我的会议走没走隧道」的人
-  也等于没说)。判据是「它出现在某一次 `addArrangedSubview` 的实参里」,不是
-  「文件里出现过这个标识符」。
+  opened may appear in only one section.」
+  **2026-08-24 补:缺口本身已经修掉,那句小字也随之删除。** 活连接表改成一条流
+  一个条目之后,订阅前建立的并存流会正确地出现在各自的组里 —— **那句话变成了
+  假话**,而一句假的准确性声明比没有更糟:它让用户对一份其实更可信的数据打折扣,
+  还会把下一个人送去找一个不存在的 bug(与本项目那份「四分之三是假的缺口清单」
+  同一个教训)。
+  **同一次改动让另一个一直存在的近似露了出来**:并存的多条流共享一份字节账,而
+  `appattr.Aggregate` 把它整个记给该端口最近的那条记录 —— 拆成两行之后,字节全在
+  其中一行、另一行是 0。这在合成一行的时代根本看不见。故「字节数是近似值」那句
+  改写成两个理由都说:「Byte counts are approximate: ports get reused, and an app
+  listed in two sections may show all its bytes on one side.」措辞仍然**只陈述
+  观测得到的现象、不解释实现**(与 `appTrafficStaleNotice` 那句「Protection may
+  be off.」同一条纪律)。判据仍是「它出现在某一次 `addArrangedSubview` 的实参
+  里」,不是「文件里出现过这个标识符」,另加一条守卫钉住那句假话不许回来。
 - **活连接表泄漏的后果不是 OOM,是报告变错(2026-08-20)。** 键是
   `PortKey{uint16, bool}`,硬上限 131072 条、约 10–15MB。真正的后果发作得更早:
   陈旧条目攒到几千条之后,一次 `Subscribe` 的种子就能把 4096 格的环形缓冲填满
