@@ -118,6 +118,15 @@ TunnelCrack ServerIP)** ‖ `local_addresses` 内网地址是否被 mDNS 遮掉 
 - **指纹那条问「有没有在防」,不问「指纹是什么」**:唯一性没有语料库就没有分母,编一个百分比
   比不报更糟。判据是同一次会话画两遍 canvas 是否相同。
 
+**探测名是一条跨语言契约,而它一度只由一句假话「守着」(2026-08-24 补上)**:
+`leakcheck.Probe*` 常量与页面里 `probeLanded("srflx", …)` / `fetchEcho(…, "exit_v4")`
+那几个**手抄字面量**必须一致。`outline.go` 头上原本写着「两边用同一组常量,免得页面
+自己抄一份」—— 而 `pageData` 里根本没有这几个常量,页面确实自己抄了一份。漂移的后果
+是静默的:`skeleton()` 按 Go 那份建 `cells`,`probeLanded` 按页面那份查表,对不上时
+`(cells[name] || []).forEach` 什么也不做,那一格**永远停在「还在等」**,而两侧测试都绿。
+现由 `leakserve.TestPageProbeNamesMatchTheGoConstants` **双向**钉住(页面用的每个名字
+都是真常量 + 每个常量都在页面里被用到),三条变异各咬中一个方向。
+
 **端点是用户可见契约**(页面联网前原样显示),换之前过三关守卫:常量钉死 / https / **不在 china
 直连列表**。**这个坑踩过三次**:`ifconfig.me`、`api.ipify.org`(文档自己推荐错的)、以及本轮候选里
 的 `ipapi.co` 与 `ifconfig.co`(选之前用生产那份 `route.DomainSet` 逐个比出来的)。现用
