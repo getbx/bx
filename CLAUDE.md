@@ -82,10 +82,21 @@ leakcheck 的真子集(它跟用户填的期望 IP 比,leakcheck 跟实测出口
 (普通 Chrome 就是不防指纹),于是被训练成噪声、把真正的泄漏一起淹掉。`Section` 零值是
 `SectionPath`:漏填是多报,反过来是漏报,代价不对称。
 
-**八条结论**:WebRTC vs 出口 · IPv6 暴露 · DNS 路径 · **路由被动过手脚(TunnelVision
-CVE-2024-3661 / TunnelCrack ServerIP)** · 内网地址是否被 mDNS 遮掉 · 时钟 vs 出口国 ·
-指纹防护 · 网站看得到什么。骨架(`Outline()`)与 `Judge()` 的 ID/顺序/分段**逐项对上**,由守卫
-钉住;「哪条需要浏览器」由 `Outline().Inputs` 是否为空推导,**不许手抄一份 ID 列表**。
+**十条结论**(此前这里写的是「八条」,**漏了头尾两条**,2026-08-24 按 `Outline()` 实测更正):
+`traffic_carrier` 谁在承载你的流量 · `webrtc_srflx` WebRTC vs 出口 · `ipv6_leak` IPv6 暴露 ·
+`dns_path` DNS 路径 · `route_escape` **路由被动过手脚(TunnelVision CVE-2024-3661 /
+TunnelCrack ServerIP)** ‖ `local_addresses` 内网地址是否被 mDNS 遮掉 · `timezone_vs_exit`
+时钟 vs 出口国 · `language_vs_exit` 语言 vs 出口国 · `fingerprint_defence` 指纹防护 ‖
+`browser_surface` 网站看得到什么。(`‖` 是分段边界:path 5 条、identity 4 条、surface 1 条。)
+骨架(`Outline()`)与 `Judge()` 的 ID/顺序/分段**逐项对上**,由守卫钉住;「哪条需要浏览器」由
+`Outline().Inputs` 是否为空推导,**不许手抄一份 ID 列表**。
+**条数本身也由守卫钉住**(`TestOutlineHasTheDocumentedNumberOfConclusions`)——
+加减一条结论时它会红一次,那正是回来把这个数字改对的时刻;而一份说少了的清单会让下一个人
+以为某条结论不存在。**另有一条钉住「结论集合不随输入变化」**:页面按骨架先摆行、再按 ID
+塞结论,而页面对认不出的 ID 是 `if (!row) return;`(静默丢弃)—— 少一条就是一行永远等不到
+结论的空壳,两头都不报错。原来那条守卫只喂全零输入,**而「够是因为实现恰好是无条件的」正是
+「测试输入让待守属性不可见」的形状**;变异实测:让 Judge 只在浏览器**到了**时少发一条,
+旧守卫全绿、新守卫在两个非零输入上转红。
 
 **几条判断上的取舍,改之前先读**:
 - **`WhoOwnsTheRoute` 四态**(bx / 别人的隧道 / 没有隧道 / 没问出来)是一切结论的挂靠点。判据取
