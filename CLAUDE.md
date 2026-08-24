@@ -636,9 +636,23 @@ defer 里删除,`Subscribe()` 把当时全部活连接作为记录播进新建�
   上的不同流(`ConnClosed(port, udp)` 无从知道该减哪一档)。当前行为由
   `TestAppTrafficSeedCollapsesConcurrentFlowsOnOneSocket` **明确钉住** ——
   那条测试断言的是「这是已知行为」,不是「这样是对的」;真去修它会立刻转红。
-- **待办(方向已定,别记成别的)**:让配平**按构造**成立 —— 在 `dialer` 里把
-  返回的 `net.Conn` 包一层、`Close` 时释放,失败返回时就地释放。这样任何新调用方
-  都不必记得配一条 `ConnClosed`。**不要**改成「把 `len(live)` 发布进 `/v0/apps`
+- **已做(2026-08-24):配平按构造成立。** `ConnClosed` 从 `tun.ByteAttributor`
+  挪到 `dialer.AppRecorder` —— **谁记账谁释放**。`DialWithInitial` 变成薄壳,
+  判定全在 `dialInner` 里,壳只做一件事:拿到 conn 就包一层(`appTrackedConn`,
+  `Close` 时经 `sync.Once` 释放),返回错误就地释放。**单一漏斗是必需的**:
+  `dialInner` 有十几个 return,逐个包会漏,而漏掉的那一个正是「记了账没人释放」。
+  引擎那条 defer 一并删掉 —— 留着就是双重释放,refs 提前归零会把一条**还开着**
+  的连接从表里抹掉。**接口直接扩而不是可选类型断言**(与 `stats.DecisionCounter`
+  同一条:「实现里没有就静默不计」的释放者与没有这个功能在输出上完全一样)。
+  **搬家换来的代价要记住**:释放现在骑在 `Close` 上,于是「relay 真的会关掉
+  upstream」从一个显然的实现细节变成了活连接表正确性的**前提** —— 由
+  `TestEngineClosesTheUpstreamConnSoTheDialerCanRelease` 单独钉住(变异验证:
+  删掉 `upstream.Close()` 即转红)。包装层**嵌入** `net.Conn` 而不逐个转发方法:
+  吞掉一个 `SetReadDeadline` 不会报错,只是连接再也不会因空闲而结束,goroutine
+  与 fd 一起泄漏而界面上什么都看不出;热路径 `copyOneWay` 是手写 Read/Write
+  循环、没有 `io.Copy`,所以包一层不丢 `ReaderFrom` 快路径 —— 这一点动手前核过。
+  五条变异各咬中一条测试:错误路径不释放 / 重复 Close 释放两次 / Close 不释放 /
+  包装层吞掉 deadline / relay 不关 upstream。**不要**改成「把 `len(live)` 发布进 `/v0/apps`
   或 `bx status --json`」:那恰好在错的地方可见(`/v0/apps` 只在**有人订阅时**
   可读,而泄漏正是在**没人看的时候**累积),且一个没有阈值的常驻数字会变墙纸
   (与项目所有者否掉「Direct rules: N unreachable」同一条判断)。

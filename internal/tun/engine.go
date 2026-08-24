@@ -82,14 +82,15 @@ type ConnCounter interface {
 // 独立,归错了在界面上完全看不出来 —— 只会看到一个应用名,看不到冲突。
 // 附带好处是 internal/tun 不必 import internal/appattr。
 //
-// ConnClosed 报告一条连接结束。归因侧靠它维护「此刻还开着的连接」表 —— 那张表
-// 让窗口在打开的那一刻就看得见**已经在跑**的长连接(会议媒体流、WebSocket、
-// SSH),而不是只看得见打开之后新拨的连接。**它是那张表唯一的边界**:少了它,
-// 表会随机器运行时间单调增长,而报告仍然完全正确、没有任何一处会报错。
+// **这里刻意没有 ConnClosed。** 活连接表的释放曾经住在这个接口上、由
+// handleConn 一条 defer 调用 —— 记账在 Dialer 里、释放在引擎里,写在里面、
+// 释放在外面。2026-08-24 挪进了 dialer.AppRecorder:拨号返回的 conn 包一层,
+// Close 时释放,返回错误就地释放。**谁记账谁释放,配对因此是本地的、编译期
+// 成立的**,新调用方不必记得配一条(忘了不会有编译错误也不会有测试转红,
+// 而后果是陈旧条目挤掉新记录,报告从「残缺」退化成「错的」且无一处报错)。
 type ByteAttributor interface {
 	AddUp(srcPort uint16, udp bool, n int64)
 	AddDown(srcPort uint16, udp bool, n int64)
-	ConnClosed(srcPort uint16, udp bool)
 }
 
 // Engine 是 TUN 引擎:在 link 上跑 netstack,终结 TCP/UDP 并交给 Dialer。
@@ -225,14 +226,9 @@ func (e *Engine) handleConn(local net.Conn, m route.Meta) {
 		e.serveDNS(local)
 		return
 	}
-	// **必须 defer 在拨号之前。** 判定(Dialer 内部的 recordApp)与活连接表的
-	// 写入都发生在 Dial 里,而拨号失败(kill-switch Block、直连不通)一样会留下
-	// 一条活连接记录;放到拨号成功之后才 defer,那些记录永远没人删 —— 隧道挂掉
-	// 时被 Block 的连接恰恰是最多的。
-	if e.bytes != nil {
-		defer e.bytes.ConnClosed(m.SrcPort, m.UDP)
-	}
-
+	// **这里曾经有一条 defer e.bytes.ConnClosed(…)。** 它现在住在 Dialer 里:
+	// 拨号返回的 conn 自带释放(Close 时)、返回错误时就地释放。留着这一条会
+	// 变成**双重释放** —— refs 提前归零,把一条还开着的连接从活连接表里抹掉。
 	initial := e.readInitial(local, m)
 	var upstream net.Conn
 	var err error
