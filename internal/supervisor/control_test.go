@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1036,5 +1037,92 @@ func TestSetServerSerializesConcurrentBypassRefresh(t *testing.T) {
 	<-second
 	if overlapped.Load() {
 		t.Fatal("两次刷新出现了重叠")
+	}
+}
+
+// **组装根那一跳:两轮复审各点过一次,至今没有任何测试。**
+//
+// `controlMuxOptionsForServe` 上下两跳早就各有覆盖(`controlMuxOptionsFromServe`
+// 有逐字段单测、`run.go → opts` 有文本守卫),唯独它自己那几行没有。复审实测:
+// 把 `opts.ConfigWarnings` 换成 nil、或在这一跳丢掉 `AppTraffic`,
+// `internal/supervisor` 与 `internal/cli` **两个包都绿** —— 而后者的生产后果是
+// `/v0/apps` 变成永久 501,菜单那个应用流量窗口一个应用都不显示、没有任何报错。
+//
+// 判据分两半,各钉一件事:
+//   - 这一条走**反射**、**默认参与**:构造一个所有字段都非零的入参,断言产出的
+//     每一个字段也非零。新加字段自动被覆盖 —— 与 statusdigest 的排除名单同一条
+//     纪律(漏填是多报、反过来是漏报,代价不对称)。
+//   - 下面那条钉 `newStatusReporter` 的 **10 个位置参数**,尤其连着三个 string。
+func TestControlMuxOptionsForServeCarriesEveryField(t *testing.T) {
+	at := NewAppTraffic(&fakeAppSource{}, nil)
+	opts := controlServeOptions{
+		Counters:       &stats.Counters{},
+		Tunnel:         fakeReporterTunnel{},
+		Server:         "carried-server",
+		Mode:           "carried-mode",
+		UDPMode:        "carried-udp",
+		TransportInfo:  func() (string, []string, string) { return "t", []string{"t"}, "u" },
+		Runtime:        func() RuntimeState { return RuntimeState{ServerHost: "carried-runtime"} },
+		Engine:         &fakeControlEngine{},
+		Mutator:        &fakeMutator{},
+		Reload:         func() error { return nil },
+		RefreshBypass:  func([]string) (bool, error) { return false, nil },
+		Shutdown:       func() {},
+		OwnerUID:       7,
+		Recoverer:      &scriptedPathRecoverer{},
+		ProbeDial:      &fakeProbeDialer{},
+		ConfigWarnings: []stats.Warning{{Name: "carried-warning", Severity: "warn"}},
+		AppTraffic:     at,
+	}
+
+	got := controlMuxOptionsForServe(context.Background(), opts, 4242)
+
+	v := reflect.ValueOf(got)
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		name := v.Type().Field(i).Name
+		if f.IsZero() {
+			t.Errorf("%s 在这一跳上丢了 —— 编译器对漏填的结构体字段完全沉默,"+
+				"而这一跳的两侧各有测试、它自己没有(两轮复审各点过一次)", name)
+		}
+	}
+}
+
+// **`newStatusReporter` 的 10 个位置参数里,server/mode/udpMode 是连着三个 string。**
+//
+// 换位不会有任何编译错误,症状是 `bx status` 里三个字段互相串台 —— 而没有人会
+// 对着一份 status 输出逐字核对它们的对应关系。这里用三个互不相同的值把顺序钉死,
+// 顺带钉住 `ConfigWarnings` 真的到了报告里(复审实测:换成 nil,两个包全绿)。
+func TestControlMuxOptionsForServeWiresTheReporterInTheRightOrder(t *testing.T) {
+	opts := controlServeOptions{
+		Counters:       &stats.Counters{},
+		Tunnel:         fakeReporterTunnel{},
+		Server:         "the-server",
+		Mode:           "the-mode",
+		UDPMode:        "the-udp-mode",
+		Runtime:        func() RuntimeState { return RuntimeState{} },
+		ConfigWarnings: []stats.Warning{{Name: "the-warning", Severity: "warn"}},
+	}
+
+	rep := controlMuxOptionsForServe(context.Background(), opts, 1).Report()
+
+	if rep.Server != "the-server" {
+		t.Errorf("Server = %q,想要 the-server —— 三个 string 参数换了位", rep.Server)
+	}
+	if rep.Mode != "the-mode" {
+		t.Errorf("Mode = %q,想要 the-mode —— 三个 string 参数换了位", rep.Mode)
+	}
+	if rep.UDPMode != "the-udp-mode" {
+		t.Errorf("UDPMode = %q,想要 the-udp-mode —— 三个 string 参数换了位", rep.UDPMode)
+	}
+	var found bool
+	for _, w := range rep.Warnings {
+		if w.Name == "the-warning" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ConfigWarnings 没到报告里(warnings=%#v)—— 它在这一跳被换成 nil "+
+			"时,supervisor 与 cli 两个包都不会红", rep.Warnings)
 	}
 }
