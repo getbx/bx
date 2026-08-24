@@ -109,6 +109,36 @@ eq(bxEchoOutcome("  2001:db8::1  "), {value: "2001:db8::1", err: "", landed: tru
 eq(bxEchoOutcome("<html>nope</html>"), {value: "<html>nope</html>", err: "", landed: true},
    "非 IP 内容也算落地(判定在 Go 里)");
 
+// —— bxTraceOutcome ——
+eq(bxTraceOutcome("ip=203.0.113.9\nloc=US\n"),
+   {ip: "203.0.113.9", loc: "US", err: "", landed: true}, "trace 两项都在");
+// 只有 loc 也算落地:少一项是缺一半答案,不是没答案
+eq(bxTraceOutcome("loc=JP\n"), {ip: "", loc: "JP", err: "", landed: true}, "trace 只有 loc");
+// **强制门户 / 拦截页会以 200 返回 HTML** —— 解析出来两项皆空,必须是没落地。
+// 报成落地等于把一次没拿到答案的探测说成拿到了。
+eq(bxTraceOutcome("<html><body>Sign in to continue</body></html>"),
+   {ip: "", loc: "", err: "the trace endpoint returned nothing usable", landed: false},
+   "拦截页(200 但不是 key=value)不算落地");
+eq(bxTraceOutcome(""),
+   {ip: "", loc: "", err: "the trace endpoint returned nothing usable", landed: false},
+   "空 body 不算落地");
+
+// —— bxSrflxLanded ——
+eq(bxSrflxLanded({srflx: ["203.0.113.5"], host: [], err: ""}), true, "拿到 srflx = 落地");
+// **只看 srflx,不看 host。** 把 host 也算落地,会让一次「WebRTC 被禁/被挡」的
+// 探测显示成已完成,而 Go 那边拿到空的 srflx 列表 —— 界面说查过了、判据说没查过。
+eq(bxSrflxLanded({srflx: [], host: ["3f1a.local"], err: ""}), false, "只有 host 不算落地");
+eq(bxSrflxLanded({srflx: [], host: [], err: ""}), false, "什么都没有");
+eq(bxSrflxLanded({srflx: ["203.0.113.5"], host: [], err: "boom"}), false, "有错就不算落地");
+eq(bxSrflxLanded(null), false, "null 不抛异常");
+
+// —— bxSurfaceLanded ——
+eq(bxSurfaceLanded({a: "abc", screen: ""}), true, "canvas 有值");
+// canvas 被指纹防护挡掉是**要报告的事实**,不是「这一段没跑成」——屏幕尺寸还在
+eq(bxSurfaceLanded({a: "", screen: "1512x982"}), true, "canvas 空但屏幕在");
+eq(bxSurfaceLanded({a: "", screen: ""}), false, "两项都空才算没跑成");
+eq(bxSurfaceLanded(null), false, "null 不抛异常");
+
 if (failures > 0) { console.error(`\n${failures} 条断言失败`); process.exit(1); }
 console.log("page js tests passed");
 JS

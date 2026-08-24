@@ -197,6 +197,42 @@ Neither half alone can tell you whether traffic is leaking.</p>
     if (v === "") return { value: "", err: "the echo returned an empty body", landed: false };
     return { value: v, err: "", landed: true };
   }
+
+  // bxTraceOutcome 判一次 trace 应答的结论。与 bxEchoOutcome 同一个形状:
+  // 值、错误、落地与否**一起算**,免得三者分散在几个分支里各写各的。
+  //
+  // **落地的判据是「至少拿到了 ip 或 loc 其中之一」**,不是「HTTP 成功了」——
+  // 强制门户与 Cloudflare 拦截页都会以 200 返回一段和 key=value 毫无关系的
+  // HTML,那种应答解析出来两项皆空,报成「落地」等于把一次没拿到答案的探测
+  // 说成拿到了。
+  function bxTraceOutcome(body) {
+    var p = bxParseTrace(body);
+    if (!p.ip && !p.loc) {
+      return { ip: "", loc: "", err: "the trace endpoint returned nothing usable", landed: false };
+    }
+    return { ip: p.ip, loc: p.loc, err: "", landed: true };
+  }
+
+  // bxSrflxLanded 判 WebRTC 那次探测有没有拿到答案。
+  //
+  // **只看 srflx,不看 host。** srflx 是「STUN 服务器看到的你的公网地址」,
+  // 也是这条结论唯一要问的东西;host 候选是本机地址(2019 年起多被换成
+  // <uuid>.local),它到了并不代表公网那半到了。把 host 也算成落地,会让一次
+  // 「WebRTC 被禁/被挡」的探测显示成已完成,而 Go 那边拿到空的 srflx 列表 ——
+  // **界面说查过了,判据说没查过**,这正是这个功能最不该出现的那种矛盾。
+  function bxSrflxLanded(result) {
+    if (!result) return false;
+    if (result.err) return false;
+    return !!(result.srflx && result.srflx.length > 0);
+  }
+
+  // bxSurfaceLanded 判本机那半(canvas / 屏幕 / 语言…)采到没有。
+  // 判据是两项**代表值**任一非空:canvas 可能被指纹防护整个挡掉(那本身就是
+  // 要报告的事实),而屏幕尺寸几乎总在;两个都空才说明这一整段没跑成。
+  function bxSurfaceLanded(surface) {
+    if (!surface) return false;
+    return surface.a !== "" || surface.screen !== "";
+  }
   // ==== BX-PURE-END ====
 
   function text(el, s) { el.textContent = s; return el; }
@@ -296,11 +332,9 @@ Neither half alone can tell you whether traffic is leaking.</p>
     return fetch(TRACE, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })
       .then(function (r) { return r.text(); })
       .then(function (body) {
-        var parsed = bxParseTrace(body);
-        var out = { ip: parsed.ip, loc: parsed.loc, err: "" };
-        if (!out.ip && !out.loc) out.err = "the trace endpoint returned nothing usable";
-        probeLanded("trace", !out.err);
-        return out;
+        var o = bxTraceOutcome(body);
+        probeLanded("trace", o.landed);
+        return { ip: o.ip, loc: o.loc, err: o.err };
       })
       .catch(function (e) {
         var why = String(e && e.message ? e.message : e);
@@ -341,7 +375,7 @@ Neither half alone can tell you whether traffic is leaking.</p>
       var dbg = gl && gl.getExtension("WEBGL_debug_renderer_info");
       if (dbg) out.gpu = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "");
     } catch (e) {}
-    probeLanded("surface", out.a !== "" || out.screen !== "");
+    probeLanded("surface", bxSurfaceLanded(out));
     return out;
   }
 
@@ -349,7 +383,7 @@ Neither half alone can tell you whether traffic is leaking.</p>
     return new Promise(function (resolve) {
       var result = { srflx: [], host: [], err: "" };
       var pc;
-      function done() { probeLanded("srflx", result.srflx.length > 0 && !result.err); resolve(result); }
+      function done() { probeLanded("srflx", bxSrflxLanded(result)); resolve(result); }
       try {
         pc = new RTCPeerConnection({ iceServers: [{ urls: STUN }] });
       } catch (e) {

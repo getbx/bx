@@ -72,37 +72,74 @@ func TestPageJSPureRegionHasNoBrowserOrIODependencies(t *testing.T) {
 	}
 }
 
-// **区段里定义的每一个函数,页面都必须真的在用。**
+// **区段里定义的每一个函数,都必须从区段外面**可达**。**
 //
 // 这条是本文件里最要紧的一条:一个被测试盖住、而生产路径上没人调用的纯函数,
 // 与没有测试**在输出上完全一样**,而它看起来更让人放心 —— 这个仓库为
 // 「守卫钉住的是缺陷旁边的东西」栽过六次,这正是那个形状。
+//
+// **判据是「可达」而不是「被外面直接调用」**(2026-08-24 改)。第一版要求直接调用,
+// 而那会逼出一个坏的分解:纯函数之间互相组合恰恰是对的(bxTraceOutcome 调
+// bxParseTrace),按直接调用判会把这种写法判成假红,于是下一个人要么把组合拆开、
+// 要么把守卫删掉 —— 两条路都比现在差。可达性是那个真正要守的性质:从页面的
+// 生产路径出发,顺着调用能不能走到它。
 func TestPageJSCallsEveryPureFunctionItDefines(t *testing.T) {
-	region := pureRegion(t)
+	region := stripJSComments(pureRegion(t))
 	page := pageSource(t)
-	outside := strings.Replace(page, region, "", 1)
+	outside := stripJSComments(strings.Replace(page, pureRegion(t), "", 1))
 
-	var defined []string
-	for _, line := range strings.Split(region, "\n") {
-		line = strings.TrimSpace(line)
+	defined := map[string]string{} // 函数名 -> 函数体(粗略取到下一个定义为止)
+	var order []string
+	lines := strings.Split(region, "\n")
+	cur := ""
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
 		const kw = "function "
-		if !strings.HasPrefix(line, kw) {
-			continue
+		if strings.HasPrefix(trimmed, kw) {
+			name := trimmed[len(kw):]
+			if i := strings.Index(name, "("); i >= 0 {
+				name = name[:i]
+			}
+			if name != "" {
+				cur = name
+				defined[cur] = ""
+				order = append(order, cur)
+				continue
+			}
 		}
-		name := line[len(kw):]
-		if i := strings.Index(name, "("); i >= 0 {
-			name = name[:i]
-		}
-		if name != "" {
-			defined = append(defined, name)
+		if cur != "" {
+			defined[cur] += line + "\n"
 		}
 	}
-	if len(defined) == 0 {
+	if len(order) == 0 {
 		t.Fatal("BX-PURE 区段里一个函数都没解析出来 —— 守卫读不懂现在的写法了,先修守卫")
 	}
-	for _, name := range defined {
-		if !strings.Contains(outside, name+"(") {
-			t.Errorf("%s 在区段里定义了,页面别处却从不调用它 —— "+
+
+	// 从外面直接调到的那些开始,顺着区段内部的调用往下走。
+	reachable := map[string]bool{}
+	var queue []string
+	for _, name := range order {
+		if strings.Contains(outside, name+"(") {
+			reachable[name] = true
+			queue = append(queue, name)
+		}
+	}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		for _, other := range order {
+			if reachable[other] || other == name {
+				continue
+			}
+			if strings.Contains(defined[name], other+"(") {
+				reachable[other] = true
+				queue = append(queue, other)
+			}
+		}
+	}
+	for _, name := range order {
+		if !reachable[name] {
+			t.Errorf("%s 在区段里定义了,而从页面的生产路径**走不到它** —— "+
 				"一个没人调用而测试盖着的函数,与没有测试在输出上完全一样", name)
 		}
 	}
@@ -209,21 +246,30 @@ func TestPageJSNeverAssertsThatAProbeLanded(t *testing.T) {
 	if len(calls) < 4 {
 		t.Fatalf("只解析出 %d 处 probeLanded 调用,少得反常 —— 守卫可能读不懂现在的写法了,先修守卫", len(calls))
 	}
-	wired := false
+	// **每一处「落地了」都必须来自纯区段。** 2026-08-24 起四个探针
+	// (echo / trace / srflx / surface)全部转过来了,所以判据从「至少有一处」
+	// 收紧成「每一处都是」—— 前者在三处内联表达式旁边照样绿,而那三处恰恰是
+	// 没有任何测试盯着的地方。
+	fromPure := 0
 	for _, arg := range calls {
 		got := strings.TrimSpace(arg)
-		if got == "true" {
-			t.Errorf("probeLanded 的第二个实参是字面量 true —— " +
-				"「落地了」必须从答案里算出来。字面量 false 可以(那只出现在 catch 里," +
-				"什么都没到达),true 不行:那正是空 body 那个 bug 的一般形式")
-		}
-		if strings.Contains(got, ".landed") {
-			wired = true
+		switch {
+		case got == "false":
+			// 允许:只出现在 catch 里,什么都没到达。说「没落地」不是对内容的
+			// 判断,是对一次异常的如实陈述。
+		case strings.Contains(got, ".landed") || strings.HasPrefix(got, "bx"):
+			// 来自纯区段(直接返回的 landed,或一个 bxXxxLanded 判据)。
+			fromPure++
+		default:
+			t.Errorf("probeLanded 的第二个实参是 %q —— 「落地了」必须在 BX-PURE "+
+				"区段里算出来(那里有 node 的断言盯着)。内联一个表达式在这里,"+
+				"它就回到了没有任何测试覆盖的状态;字面量 true 更是直接断言,"+
+				"正是空 body 那个 bug 的一般形式", got)
 		}
 	}
-	if !wired {
-		t.Error("没有一处 probeLanded 用的是纯函数算出的 .landed —— " +
-			"node 那边测的极性没接到界面上,测了等于没测")
+	if fromPure < 4 {
+		t.Errorf("只有 %d 处 probeLanded 用的是纯区段算出的极性,想要至少 4 处"+
+			"(echo / trace / srflx / surface)—— 少的那个探针的极性没人测", fromPure)
 	}
 }
 
@@ -265,8 +311,13 @@ func probeLandedArgs(t *testing.T, src string) []string {
 			t.Fatalf("在偏移 %d 处的 probeLanded 调用没有闭合括号 —— 守卫读不懂它", start)
 		}
 		// 只收真正的**调用**:定义那一行 `function probeLanded(name, ok)` 的第二个
-		// 形参恰好也叫得出名字,把它算进来会让「至少四处」这条计数变松。
-		if comma > 0 && comma < end && !strings.HasSuffix(strings.TrimSpace(src[:i+j]), "function ") {
+		// 形参恰好也是个标识符,把它算进来会让计数变松。
+		//
+		// **判据是 HasSuffix(…, "function") 而不是 "function "** —— TrimSpace 已经
+		// 把尾空格去掉了,带空格的那版**永远不成立**,于是定义行一直被当成一次调用。
+		// 它此前无害只是因为旧判据只认字面量 true 与 .landed,而形参名 `ok` 两个
+		// 都不是;判据一收紧它就当场显形。
+		if comma > 0 && comma < end && !strings.HasSuffix(strings.TrimSpace(src[:i+j]), "function") {
 			out = append(out, src[comma+1:end])
 		}
 		i = end
