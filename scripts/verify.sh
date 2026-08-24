@@ -111,6 +111,22 @@ else
 	skip "swift build + menu suites" "非 macOS"
 fi
 
+# leakcheck 页面里那段**纯解析** JS。Go 测试进不去那半边,与 Swift 同一个形状:
+# 单独一个运行器,这里挂闸门。跨平台跑(node 在三个 CI runner 上都预装)。
+#
+# **两个条件都要满足,理由与上面 menu_tests 那段一字不差**:退出码证明「没失败」,
+# 收尾横幅证明「真跑过」—— 脚本被清空或提前 exit 0 时只有横幅抓得住。
+if command -v node >/dev/null 2>&1; then
+	page_js_tests() {
+		bash scripts/test-page-js.sh || return 1
+		bash scripts/test-page-js.sh 2>/dev/null | grep -q '^page js tests passed$' \
+			|| { echo "页面 JS 测试脚本未跑到收尾横幅 —— 可能中途 exit 或断言块被清空"; return 1; }
+	}
+	step "leakcheck page js" page_js_tests
+else
+	skip "leakcheck page js" "node 未安装"
+fi
+
 echo
 if [ "$failed" -ne 0 ]; then
 	echo "✗ verify FAILED — $failed step(s)"
