@@ -545,15 +545,21 @@ struct AppTrafficModelTests {
                "数字列下标越界:\(appTrafficNumericColumns)")
     }
 
-    // 那句缺口提示:**只陈述观测得到的事实,不断言原因** —— 与陈旧提示同一条
-    // 纪律(bx 分不清是保护被关了还是 Guardian 正忙,断言其中一个就是编答案)。
-    static func testPreexistingConnectionsNoteStatesTheObservationOnly() {
-        let note = appTrafficPreexistingNote.lowercased()
-        expect(note.contains("already open"), "没说清是哪一批连接:\(appTrafficPreexistingNote)")
-        expect(note.contains("one section") || note.contains("one group"),
-               "没说清观测到的现象(只出现在一个组里):\(appTrafficPreexistingNote)")
-        expect(note.contains("may"), "把一个有条件的现象说成了必然:\(appTrafficPreexistingNote)")
-        expect(note != appTrafficApproximateNote, "两句小字重复了")
+    // 「字节数是近似值」那句:**两个理由都要说出来**,因为用户会分别撞到它们 ——
+    // 端口复用,以及「同一个应用在两个组里,字节全在其中一行、另一行是 0」。
+    // 后者在并存的流被拆成两行之后才看得见(2026-08-24),而一个显示 0 B 却明明
+    // 有活连接的行,不说明白就会被读成「这条流是闲的」。
+    //
+    // 措辞仍然**只陈述观测得到的现象、不解释实现**(与陈旧提示那句
+    // 「Protection may be off.」同一条纪律):说的是「可能全算在一边」,不是
+    // 「因为 Aggregate 把整份端口账记给了最近那条记录」。
+    static func testApproximateNoteNamesBothReasons() {
+        let note = appTrafficApproximateNote.lowercased()
+        expect(note.contains("approximate"), "没说这是近似值:\(appTrafficApproximateNote)")
+        expect(note.contains("reus"), "没提端口复用这个理由:\(appTrafficApproximateNote)")
+        expect(note.contains("two sections") || note.contains("two groups"),
+               "没提「同一个应用在两个组里」那个理由 —— 而那正是 0 B 那一行的来源:\(appTrafficApproximateNote)")
+        expect(note.contains("may"), "把一个有条件的现象说成了必然:\(appTrafficApproximateNote)")
     }
 
     static func oneRow(path: AppTrafficPath, app: String, up: Int64, down: Int64) -> AppTrafficReport {
@@ -593,7 +599,7 @@ struct AppTrafficModelTests {
         testEntryCarriesTheExecutablePathForTheIcon()
         testIconPathClimbsToTheApplicationBundle()
         testNumericColumnsCoverEveryNumberAndNothingElse()
-        testPreexistingConnectionsNoteStatesTheObservationOnly()
+        testApproximateNoteNamesBothReasons()
         testEmptyQueryChangesNothing()
         testFiltersByAppName()
         testFiltersByDestinationIncludingOnesNotShown()

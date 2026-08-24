@@ -1119,16 +1119,22 @@ func TestMacMenuAppTrafficWindowFeedsRatesIntoRendering(t *testing.T) {
 	}
 }
 
-// **那句「窗口打开之前建立的连接可能只出现在一个组里」不是可选的。**
+// **那句「字节数是近似值」不是可选的,而且它现在扛着两件事。**
 //
-// 它是一条已知近似的用户可见面:种子把一个 socket 上并存的多条流压成一条,于是
-// 同一条连接,窗口打开**之前**建立的只会出现在一个组里、打开**之后**建立的会
-// 正确出现在两个组里。这件事此前有三份记档和一条测试,唯独用户看不到 —— 而它
-// 恰好落在这个窗口最初的用例上(开会开到一半打开窗口看会议走哪)。
+// 它是这个窗口上唯一一句关于数据准确性的声明:① 按源端口记账,端口复用时旧账
+// 可能算到新连接头上;② 同一个 socket 上并存的多条流共享一份字节账,而
+// appattr.Aggregate 把它整个记给该端口最近的那条记录 —— 于是一个应用同时出现在
+// 两个组里时,字节全在其中一行、另一行是 0。**② 是 2026-08-24 把并存的流拆成
+// 两行之后才看得见的**,一个显示 0 B 却明明有活连接的行,不说明白就会被读成
+// 「这条流是闲的」。
 //
-// 判据与那句「近似值」同一条:**必须出现在某一次 addArrangedSubview 的实参里**。
-// 「文件里出现过这个标识符」证明不了它被画出来(`let _ = note` 就能满足)。
-func TestMacMenuAppTrafficWindowSaysPreexistingConnectionsMayShowInOneSection(t *testing.T) {
+// (此前这里还守着第二句「订阅前建立的连接可能只出现在一个组里」。**那句话在
+// 并存的流被拆开之后就是假的了,已删** —— 一句假的准确性声明比没有更糟:它让
+// 用户对一份其实更可信的数据打折扣,还会把下一个人送去找一个不存在的 bug。)
+//
+// 判据:**必须出现在某一次 addArrangedSubview 的实参里**。「文件里出现过这个
+// 标识符」证明不了它被画出来(`let _ = note` 就能满足)。
+func TestMacMenuAppTrafficWindowShowsTheApproximateNote(t *testing.T) {
 	window := menuAppTrafficWindowCode(t)
 	args := swiftCallArguments(window, "addArrangedSubview")
 	if len(args) == 0 {
@@ -1137,18 +1143,22 @@ func TestMacMenuAppTrafficWindowSaysPreexistingConnectionsMayShowInOneSection(t 
 	}
 	shown := false
 	for _, arg := range args {
-		if strings.Contains(arg, "appTrafficPreexistingNote") {
+		if strings.Contains(arg, "appTrafficApproximateNote") {
 			shown = true
 			break
 		}
 	}
 	if !shown {
-		t.Fatalf("那句「窗口打开之前的连接可能只出现在一个组里」没有出现在任何一次 "+
-			"addArrangedSubview 的实参里 —— 这个已知缺口对用户仍然是不可见的"+
-			"(共解析出 %d 次 addArrangedSubview)", len(args))
+		t.Fatalf("那句「字节数是近似值」没有出现在任何一次 addArrangedSubview 的实参里 —— "+
+			"这个窗口上唯一一句准确性声明对用户是不可见的(共解析出 %d 次 addArrangedSubview)", len(args))
 	}
-	if !strings.Contains(menuAppTrafficModelCode(t), "let appTrafficPreexistingNote") {
-		t.Fatal("appTrafficPreexistingNote 不在纯模型里 —— 那句话就没有任何 Swift 测试盯着")
+	if !strings.Contains(menuAppTrafficModelCode(t), "let appTrafficApproximateNote") {
+		t.Fatal("appTrafficApproximateNote 不在纯模型里 —— 那句话就没有任何 Swift 测试盯着")
+	}
+	// 那句假话不许回来。
+	if strings.Contains(menuAppTrafficModelCode(t), "appTrafficPreexistingNote") ||
+		strings.Contains(window, "appTrafficPreexistingNote") {
+		t.Fatal("appTrafficPreexistingNote 回来了 —— 并存的流已经不会被压成一条,那句话是假的")
 	}
 }
 
