@@ -3,6 +3,7 @@ package rulereview
 import (
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/getbx/bx/internal/route"
 )
@@ -36,6 +37,28 @@ type Input struct {
 	// 用户可以核对。**只在 China != nil 时有意义**;由调用方(internal/cli)填,
 	// 本包不产出、只透传进 Report。
 	ChinaSource string
+	// —— 死规则那一类的原料(2026-08-24)——
+	//
+	// **本包不 import stats**(纯度守卫只许依赖 route 与 policy),所以这里用
+	// 本包自己的 RuleKey/RuleCounts,由 internal/cli 负责从 stats 那边转换。
+
+	// History 是**跨重启累计**的按规则计数。
+	//
+	// **nil = 拿不到**(Core 没在跑 / 读不出 / schema 不认),那时死规则这一类是
+	// **没查**而不是「零条」—— 两者的差别正是这个功能最贵的那个教训。
+	History map[RuleKey]RuleCounts
+	// HistoryUptime 是 Core **累计在跑**的时长(门槛一)。
+	HistoryUptime time.Duration
+	// HistoryDecisions 是全局累计判定数,含内建列表命中(门槛二)。
+	HistoryDecisions int64
+	// HistoryVersions 是这段累积跨过的 bx 版本数,报告要说出来让用户打折。
+	HistoryVersions int
+	// HistoryOverflowed:按规则跟踪的表满过 ⇒ 「没有条目」不等于「没命中」
+	// ⇒ **整类没查**。这是这一类里最要紧的一道门。
+	HistoryOverflowed bool
+	// HistorySkipReason 在 History 为 nil 时说明为什么。
+	HistorySkipReason string
+
 	// ChinaFallback 标记 China 并非「Core 实际会用的那份」本身,而是读不到它之后
 	// 回落的代用品(如内嵌快照)——即便回落合理、值得报,用户也必须能分清
 	// 「查了、用的是实时数据」与「查了、用的是可能过期的快照」,不能靠猜。
@@ -98,4 +121,20 @@ func domainRules(list []string) []domainRule {
 		out = append(out, domainRule{raw: raw, norm: n})
 	}
 	return out
+}
+
+// RuleKey 与 stats 那边的 ruleKey 同形(判定层 + 规则原文),但**是本包自己的
+// 类型** —— 纯判据包不许依赖 stats。转换由 internal/cli 做。
+type RuleKey struct {
+	// Source 是做出判定的那一层,取值与 route.Source.String() 一致
+	// (user_direct / user_proxy / china_domain / …)。
+	Source string
+	// Rule 是配置里那一行的原文;内建列表命中时为空。
+	Rule string
+}
+
+// RuleCounts 是一条规则的**累计**尝试与失败次数。
+type RuleCounts struct {
+	Attempts int64
+	Failures int64
 }

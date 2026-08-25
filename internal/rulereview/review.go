@@ -47,9 +47,20 @@ func Review(in Input) Report {
 		findings = append(findings, shadowedByBuiltinFindings("proxy", proxy, in.China)...)
 	}
 
+	// 死规则:三道门槛全过才判,任何一道问不出来就整类不判 ——
+	// 判错的后果是用户删掉一条天天在工作的规则。
+	deadChecked, deadSkip := deadGate(in)
+	if deadChecked {
+		findings = append(findings, deadFindings("direct", "user_direct", direct, in)...)
+		findings = append(findings, deadFindings("proxy", "user_proxy", proxy, in)...)
+	}
+
 	rep := NewReport(findings, checked, skip)
 	rep.BuiltinListSource = source
 	rep.BuiltinListFallback = fallback
+	rep.DeadChecked = deadChecked
+	rep.DeadSkipReason = deadSkip
+	rep.DeadVersionsSpanned = in.HistoryVersions
 	return rep
 }
 
