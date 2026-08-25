@@ -34,7 +34,7 @@ func deadGate(in Input) (bool, string) {
 		if why == "" {
 			why = "拿不到跨重启累计的按规则计数"
 		}
-		return false, "没有累计历史,这一类没有判断:" + why
+		return false, why
 	}
 	if in.HistoryOverflowed {
 		// **这道门最要紧。** 表满之后新规则不再被记,于是「历史里没有这条」与

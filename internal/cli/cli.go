@@ -1553,7 +1553,9 @@ func doctorAction(c *cli.Context) (err error) {
 				if !c.Bool("skip-probe") {
 					doctorProbe(cfg.Server, c.String("target"), c.Duration("timeout"))
 				}
-				for _, l := range ruleReviewDoctorLines(rulereview.Review(buildRuleReviewInput(cfg, embedded.ChinaDomain()))) {
+				for _, l := range ruleReviewDoctorLines(rulereview.Review(buildRuleReviewInput(cfg, embedded.ChinaDomain(), func() (stats.Report, error) {
+					return supervisor.FetchStatusReport(statusSocketPath())
+				}))) {
 					doctorLine(l.Status, l.Key, l.Value)
 					if l.Hint != "" {
 						doctorLine("hint", l.Key, l.Hint)
@@ -2274,7 +2276,9 @@ func collectClientDoctorWith(configPath, target string, timeout time.Duration, s
 				if !skipProbe {
 					rep.addReport(probeCheck(cfg.Server, target, timeout))
 				}
-				for _, l := range ruleReviewDoctorLines(rulereview.Review(buildRuleReviewInput(cfg, embedded.ChinaDomain()))) {
+				for _, l := range ruleReviewDoctorLines(rulereview.Review(buildRuleReviewInput(cfg, embedded.ChinaDomain(), func() (stats.Report, error) {
+					return supervisor.FetchStatusReport(statusSocketPath())
+				}))) {
 					rep.addCheck(ruleReviewCheckName(l.Key), l.Status, l.Value, l.Hint)
 				}
 			}

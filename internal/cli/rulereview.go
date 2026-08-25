@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/getbx/bx/internal/stats"
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/provision"
@@ -44,8 +47,45 @@ type doctorFinding struct {
 // **另一处容易读错的字段,由测试钉着**:global 取 cfg.Global(yaml `global:`)。
 // cfg.Mode 是另一个东西,取值只有 host|router;spec 当天的真机 bug 就是拿错列表
 // 比,而拿错 mode 是同一形状。
-func buildRuleReviewInput(cfg *config.Config, embeddedChina []byte) rulereview.Input {
+// coreRuleHistory 从 Core 的状态报告里取跨重启累计历史。
+//
+// **Core 没在跑不是错误,是常态**(体检本来就常在保护关着时跑)—— 那时返回 nil
+// 历史 + 一句人话理由,死规则那一类于是显示「未检查」而不是「零条」。
+// **判据不许把「问不出来」读成「查过了,没有」**,这是这个功能最贵的那个教训。
+func coreRuleHistory(fetch func() (stats.Report, error)) (map[rulereview.RuleKey]rulereview.RuleCounts, time.Duration, int64, int, bool, string) {
+	rep, err := fetch()
+	if err != nil {
+		return nil, 0, 0, 0, false, fmt.Sprintf("Core 没在跑或控制面读不到(%v),没有累计历史", err)
+	}
+	h := rep.RuleHistory
+	if h == nil {
+		return nil, 0, 0, 0, false, "这一版 Core 没有发布累计历史"
+	}
+	if h.SkipReason != "" {
+		return nil, 0, 0, 0, false, h.SkipReason
+	}
+	// **转换住在这里,不在 rulereview 里** —— 那个包的纯度守卫不许它 import stats。
+	out := make(map[rulereview.RuleKey]rulereview.RuleCounts, len(h.Rules))
+	for _, r := range h.Rules {
+		k := rulereview.RuleKey{Source: r.Source, Rule: r.Rule}
+		c := out[k]
+		c.Attempts += r.Attempts
+		c.Failures += r.Failures
+		out[k] = c
+	}
+	return out, time.Duration(h.UptimeSeconds) * time.Second, h.Decisions, len(h.Versions), h.Overflowed, ""
+}
+
+func buildRuleReviewInput(cfg *config.Config, embeddedChina []byte, fetchStatus func() (stats.Report, error)) rulereview.Input {
 	in := rulereview.Input{GlobalProxy: cfg.Global}
+	if fetchStatus != nil {
+		in.History, in.HistoryUptime, in.HistoryDecisions, in.HistoryVersions,
+			in.HistoryOverflowed, in.HistorySkipReason = coreRuleHistory(fetchStatus)
+	} else {
+		// **nil fetcher 是「这条路上没人问过 Core」,不是「Core 没在跑」。**
+		// 两者都通向「未检查」,但理由不同,而这份报告的价值全在理由上。
+		in.HistorySkipReason = "这条路径没有读 Core 的累计历史"
+	}
 	for _, r := range cfg.Rules {
 		in.Direct = append(in.Direct, r.Direct...)
 		in.Proxy = append(in.Proxy, r.Proxy...)
@@ -117,6 +157,13 @@ func chinaDomainPatterns(raw []byte) []string {
 //
 // **文本路径与 JSON 路径共用这一份判据** —— doctorAction 与 collectClientDoctorWith
 // 都只是拿这个函数的返回值分别渲染,不许为了保住某一侧的呈现分叉成两条判断逻辑。
+// deadRulesCheckName 是死规则那一行的 check 名。
+//
+// **单独一个常量**:这一支已经因为同名 check 静默丢过一次安全结论 —— check 名的
+// 整个存在理由是「按名字取」,重名会让消费方只拿到其中一条。仓库级重名守卫
+// TestDoctorReportHasNoDuplicateCheckNames 盯着这件事。
+const deadRulesCheckName = "dead rules"
+
 func ruleReviewDoctorLines(rep rulereview.Report) []doctorFinding {
 	var out []doctorFinding
 
@@ -138,6 +185,33 @@ func ruleReviewDoctorLines(rep rulereview.Report) []doctorFinding {
 			Value:  summarizeClass(rep, rulereview.ClassShadowedByUserRule, n, "条被你自己更宽的一条覆盖,删掉不改变任何流量"),
 		})
 	}
+	// —— 死规则 ——
+	//
+	// **「没查」也要说。** 这一类没查的情况比别的类多得多(Core 没在跑 / 跟踪表
+	// 满过 / 门槛还没到),静默缺席会让用户以为体检查过了这一项、而且没发现问题。
+	if rep.DeadChecked {
+		if n := rep.DeadCount; n > 0 {
+			value := summarizeClass(rep, rulereview.ClassDead, n, "条规则累计从未命中过一次")
+			// **跨了几个版本要说出来**,让用户对这份累计打折 —— 中间可能有几版的
+			// 计数行为并不一致。
+			if v := rep.DeadVersionsSpanned; v > 1 {
+				value += fmt.Sprintf("(这份累计跨了 %d 个 bx 版本,可酌情打折)", v)
+			}
+			out = append(out, doctorFinding{
+				Status: "info",
+				Key:    deadRulesCheckName,
+				Value:  value,
+				Hint:   "删之前先确认那个域名你确实不再访问;删规则用 sudo bx direct rm '<规则>',改完要 sudo bx down && sudo bx up",
+			})
+		}
+	} else if rep.DeadSkipReason != "" {
+		out = append(out, doctorFinding{
+			Status: "info",
+			Key:    deadRulesCheckName,
+			Value:  "未检查:" + rep.DeadSkipReason,
+		})
+	}
+
 	if rep.BuiltinListChecked {
 		if rep.BuiltinListFallback {
 			// **回落必须被点名,不许静默。** 「查了、用的是可能过期的内嵌快照」
@@ -346,7 +420,17 @@ func classKindFindings(rep rulereview.Report, class rulereview.Class, kind strin
 func summarizeFindings(findings []rulereview.Finding, n int, tail string) string {
 	var names []string
 	for _, f := range findings {
-		names = append(names, fmt.Sprintf("%s ← %s", f.Rule, f.CoveredBy))
+		// **CoveredBy 为空时不许留一个悬空的箭头。** 死规则那一类没有「被谁盖住」
+		// 这回事(它只是从没被用到),无条件拼 `← ` 会打出
+		// `*.a.example ← 、*.b.example ← ` —— 用户看到的是一句没写完的话。
+		//
+		// 这个 bug 是**肉眼看输出**抓到的:测试断言的是「这一行含规则原文」,
+		// 而它含了,于是全绿。断言「说了什么」与「说得像句人话」是两件事。
+		if f.CoveredBy == "" {
+			names = append(names, f.Rule)
+		} else {
+			names = append(names, fmt.Sprintf("%s ← %s", f.Rule, f.CoveredBy))
+		}
 		if len(names) == 3 {
 			break
 		}
