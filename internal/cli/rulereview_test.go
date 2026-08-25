@@ -22,7 +22,7 @@ func TestBuildRuleReviewInputReadsGlobalNotMode(t *testing.T) {
 		Mode:   "host", // **无关字段**,放在这里正是为了钉住别把它当 global 读
 		Rules:  []config.Rule{{Direct: []string{"*.qq.com"}, Proxy: []string{"*.google.com"}}},
 	}
-	in := buildRuleReviewInput(cfg, embedded.ChinaDomain())
+	in := buildRuleReviewInput(cfg, embedded.ChinaDomain(), nil)
 
 	if !in.GlobalProxy {
 		t.Fatal("GlobalProxy = false,而 cfg.Global = true —— 读错字段就是 spec 当天那个 bug")
@@ -38,7 +38,7 @@ func TestBuildRuleReviewInputReadsGlobalNotMode(t *testing.T) {
 // config.Mode = "router" 与 global/split 无关,绝不能被当成 global。
 func TestRouterModeIsNotGlobal(t *testing.T) {
 	cfg := &config.Config{Mode: "router", Rules: []config.Rule{{Direct: []string{"*.qq.com"}}}}
-	if buildRuleReviewInput(cfg, embedded.ChinaDomain()).GlobalProxy {
+	if buildRuleReviewInput(cfg, embedded.ChinaDomain(), nil).GlobalProxy {
 		t.Fatal("mode=router 被当成了 global —— 那是另一个字段(host|router)")
 	}
 }
@@ -50,7 +50,7 @@ func TestUserSuppliedChinaListDisablesTheBuiltinComparison(t *testing.T) {
 		Lists: config.Lists{ChinaDomain: "/var/lib/bx/my-list.txt"},
 		Rules: []config.Rule{{Direct: []string{"*.qq.com"}}},
 	}
-	in := buildRuleReviewInput(cfg, embedded.ChinaDomain())
+	in := buildRuleReviewInput(cfg, embedded.ChinaDomain(), nil)
 	if in.China != nil {
 		t.Fatal("用户换了自己的列表,却仍拿内嵌那份去比 —— 参照物是错的")
 	}
@@ -79,7 +79,7 @@ func TestBuildRuleReviewInputUsesCoresLiveChinaListWhenReadable(t *testing.T) {
 		DataDir: dir,
 		Rules:   []config.Rule{{Direct: []string{"*.live-only.example"}}},
 	}
-	in := buildRuleReviewInput(cfg, staleEmbedded)
+	in := buildRuleReviewInput(cfg, staleEmbedded, nil)
 	if in.China == nil {
 		t.Fatal("China == nil —— live 文件读得到,不该落到没比对")
 	}
@@ -131,7 +131,7 @@ func TestBuildRuleReviewInputFallsBackToEmbeddedWhenCoreListUnreadable(t *testin
 		DataDir: dir,
 		Rules:   []config.Rule{{Direct: []string{"*.fallback-only.example"}}},
 	}
-	in := buildRuleReviewInput(cfg, embeddedChina)
+	in := buildRuleReviewInput(cfg, embeddedChina, nil)
 	if in.China == nil {
 		t.Fatal("China == nil —— 该回落到内嵌快照,不该整个跳过比对")
 	}
@@ -175,7 +175,7 @@ func TestBuildRuleReviewInputUserOverrideUnreadableDoesNotFallBack(t *testing.T)
 		Lists:   config.Lists{ChinaDomain: missing},
 		Rules:   []config.Rule{{Direct: []string{"*.embedded.example"}}},
 	}
-	in := buildRuleReviewInput(cfg, embeddedChina)
+	in := buildRuleReviewInput(cfg, embeddedChina, nil)
 	if in.China != nil {
 		t.Fatal("China != nil —— 用户换了自己的列表且读不到,不该回落内嵌快照")
 	}
@@ -223,7 +223,7 @@ func TestBuildRuleReviewInputUsesUserOverrideChinaListWhenReadable(t *testing.T)
 		Lists:   config.Lists{ChinaDomain: overridePath},
 		Rules:   []config.Rule{{Direct: []string{"*.override-only.example"}}},
 	}
-	in := buildRuleReviewInput(cfg, embeddedChina)
+	in := buildRuleReviewInput(cfg, embeddedChina, nil)
 	if in.China == nil {
 		t.Fatal("China == nil —— 用户指定的列表读得到,不该跳过比对")
 	}
@@ -260,7 +260,7 @@ func TestBuildRuleReviewInputFlattensEveryRulesEntry(t *testing.T) {
 		{Direct: []string{"a.com"}},
 		{Direct: []string{"b.com"}, Proxy: []string{"c.com"}},
 	}}
-	in := buildRuleReviewInput(cfg, nil)
+	in := buildRuleReviewInput(cfg, nil, nil)
 	if len(in.Direct) != 2 || len(in.Proxy) != 1 {
 		t.Fatalf("摊平不完整:Direct=%v Proxy=%v", in.Direct, in.Proxy)
 	}
