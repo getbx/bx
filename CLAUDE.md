@@ -132,6 +132,15 @@ TunnelCrack ServerIP)** ‖ `local_addresses` 内网地址是否被 mDNS 遮掉 
 的 `ipapi.co` 与 `ifconfig.co`(选之前用生产那份 `route.DomainSet` 逐个比出来的)。现用
 `ipv4/ipv6.icanhazip.com` + `stun.cloudflare.com` + `www.cloudflare.com/cdn-cgi/trace`(一次请求
 同时给出口 IP 与国家)。
+**三关 2026-08-24 逐条实测确认都在,而且都不靠记忆**:`TestEndpointsArePinned`(常量
+逐个钉死)、同文件里那段 scheme 断言(v4/v6/trace 必须 https —— 明文回声在路上可被
+改写,判据就整个失效)、`TestEchoEndpointsAreNotOnTheChinaDirectList`(拿**真实内嵌
+列表 + 生产 `DomainSet`**,并带一条「列表里确实有东西能命中」的自检防假绿)。
+`internal/cli` 那半由 `TestPublicIPProbeDomainsAreNotChinaDirect` 同法守住。
+**同一次复核修掉一条更坏的注释**:`endpoints_test.go` 里写着「同一个坑**今天还活在**
+`internal/cli` 的 `collectNetworkProbe` 里」—— 那个说法已经过期(现用 `icanhazip.com` /
+`ipinfo.io`)。**一条声称某个 bug 仍然活着的注释,比一条普通的陈旧注释更坏**:它会派
+下一个人去修一个不存在的东西,或者让他连带不再相信旁边那些还成立的话。
 
 **检测结果不留存**,页面与 CLI 都明说。
 
@@ -1093,10 +1102,21 @@ ufw 不在/未启用时安静通过;**改动会打给用户看**(静默改别人
 送去了真站,根本没连那台 VPS);改用 `nc -z` 同样无效(经 SOCKS5 时本地握手就算
 成功,**必定关闭的 12345/54321 一样「通」**)。**要外部视角就得真有一台外部机器。**
 
-**已知缺口**:`applyDeployedLink` 只打印下一步命令,不自动写本机配置(自动写要么
-偷偷提权、要么把 setup 整条路径复制一遍);deploy 假定以 root 登录,而
-`PermitRootLogin prohibit-password` 是 Debian/Ubuntu 默认值,只有 sudo 用户的人
-今天会撞到一句没有指引的 `Permission denied` —— 待补 `--sudo`。
+**~~已知缺口~~(2026-08-24 逐条复核,两条都已经不成立)**:
+
+- ~~`applyDeployedLink` 只打印下一步命令,不自动写本机配置~~ —— 给了服务器名时它
+  **会**自动写进清单(`addDeployedServer`);只在**写失败 / 没给名字 / 非 root**
+  三种情况下才退回「你自己敲一条」。那条退路保留的理由仍然成立并写在代码里:
+  **不偷偷提权** —— 写 `/etc/bx` 要 root,而这条命令的其余部分不需要,让一条只做
+  ssh 的命令中途弹密码框是坏意外。写失败也不算致命:机器已经装好了、链接就在眼前,
+  报清楚原因再退回那条路即可。
+- ~~deploy 假定以 root 登录,待补 `--sudo`~~ —— 已做,而且**不是加一个标志,是自动
+  探测**:`needsSudo` 读远端 `id -u`(空输出、非数字都如实报错,不猜),非 0 就把
+  **整段**脚本包进 sudo。`remoteScript` 的注释点出了要害:简单地在前面加一个
+  `sudo ` 只作用于**第一条**命令,后面每条仍是普通用户 —— 失败方式极难查(文件下
+  下来了、校验过了,却写不进 `/usr/local/bin`)。没有 TTY 时会预先说明 sudo 若要
+  密码会失败。五条测试覆盖(uid 解析 / 整段包裹 / 需要 sudo 时给 `-t` /
+  每条远程命令都走 sudo / root 登录不包)。
 
 ## 约定
 
