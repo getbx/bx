@@ -26,6 +26,20 @@ type Counters struct {
 	// (每条连接一到两次),远低于收发包。
 	ruleMu sync.Mutex
 	rules  map[ruleKey]*RuleOutcome
+
+	// —— 死规则判据的两个门槛输入(2026-08-24)——
+	//
+	// decisions 是**全局**累计判定数,**含内建列表命中**。它衡量「这台机器有没有
+	// 真的被用过」;只数用户规则会让流量几乎全走内建列表的机器永远达不到门槛,
+	// 于是死规则这一类静默地从不生效。
+	//
+	// **它不在 ruleMu 保护的那张表里,是刻意的**:那张表有 256 条上限,而这个数
+	// 不该受上限影响 —— 表满恰恰是机器最忙的时候。
+	decisions atomic.Int64
+	// ruleOverflow 记「按规则跟踪的表满过」。**一旦为真就不再转假** ——
+	// 表满之后可能有规则从没被记过,而它们在表里的样子与「记了、从没命中」
+	// 一模一样;清掉这个标志会让「没有条目」被当成「没命中」。
+	ruleOverflow atomic.Bool
 }
 
 func (c *Counters) ConnOpen()       { c.active.Add(1) }
