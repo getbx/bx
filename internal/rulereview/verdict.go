@@ -35,6 +35,12 @@ const (
 	// ClassShadowedByBuiltinList:被内建 china 直连列表覆盖。**依赖 mode** ——
 	// global 下 china 列表整个不生效,那时这个结论是错的(见 Review 的 gating)。
 	ClassShadowedByBuiltinList
+	// ClassDead:这条规则**从来没有命中过一次** —— 不是「本次运行 0 次」,而是
+	// 跨重启累计到足够久、足够多次判定之后仍然一次都没有。
+	//
+	// **加在最后,零值仍然是 ClassRisky。** 顺序是有意义的:插在中间会让所有
+	// 已落盘的 JSON 里的数字含义整体平移一位。
+	ClassDead
 )
 
 func (c Class) String() string {
@@ -45,6 +51,8 @@ func (c Class) String() string {
 		return "overridden_by_opposite_kind"
 	case ClassShadowedByBuiltinList:
 		return "shadowed_by_builtin_list"
+	case ClassDead:
+		return "dead"
 	default:
 		return "risky_direct"
 	}
@@ -91,6 +99,21 @@ type Report struct {
 	// object 那类事故的形状:判据本身没错,读错了输入。空字符串表示调用方没有
 	// 经由 internal/cli 那条组装路径(如测试直接手写 Report)。
 	BuiltinListSource string `json:"builtin_list_source,omitempty"`
+	// DeadCount 是「从来没命中过」的规则条数。**与上面四个并列,永不相加** ——
+	// Report 没有 TotalCount,理由见 Class 的注释。
+	DeadCount int `json:"dead_count"`
+	// DeadChecked 区分「查了,没有」与「根本没查」。**刻意无 omitempty**,
+	// 与 BuiltinListChecked 同一条:键缺席会被读成 false 而理由不明。
+	//
+	// 这一类没查的情况比别的类多得多:三道门槛任一没到、历史拿不到、跟踪表满过,
+	// 都是「还不能下结论」而不是「查过了,没有」。
+	DeadChecked bool `json:"dead_checked"`
+	// DeadSkipReason 在没查时说明为什么。
+	DeadSkipReason string `json:"dead_skip_reason,omitempty"`
+	// DeadVersionsSpanned 是这段累计跨过的 bx 版本数,让用户对它打折 ——
+	// 跨了很多个版本的累计,中间可能有几版的计数行为并不一致。
+	DeadVersionsSpanned int `json:"dead_versions_spanned,omitempty"`
+
 	// BuiltinListFallback 标记这次比对**没能读到 Core 实际使用的列表,回落成了
 	// 内嵌快照**。单独一个 bool 而不是让消费方去解析 BuiltinListSource 的文字 ——
 	// 前者是代码判断用的信号,后者是给人看的措辞,混在一起就是又一次「判据读错输入」。
@@ -108,6 +131,8 @@ func NewReport(findings []Finding, builtinChecked bool, builtinSkipReason string
 			rep.OverriddenCount++
 		case ClassShadowedByBuiltinList:
 			rep.ShadowedByBuiltinCount++
+		case ClassDead:
+			rep.DeadCount++
 		default:
 			rep.RiskyCount++
 		}
