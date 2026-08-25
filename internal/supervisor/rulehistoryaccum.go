@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/getbx/bx/internal/stats"
@@ -73,6 +74,17 @@ type ruleHistoryAccumulator struct {
 	prevRules     []stats.RuleOutcome
 	prevDecisions int64
 	lastAt        time.Time
+
+	// mu 只护下面这两个「发布用」的字段:控制面每次 status 都读它们,而 flush
+	// 在另一条 goroutine 上写。
+	mu sync.Mutex
+	// published 是**最近一次合并出来的**那份历史。发布它而不是每次 status 都读盘:
+	// status 是出问题时最先敲的命令,不该在它的路径上加一次磁盘 I/O。
+	published ruleHistory
+	// loadErr 记最近一次读盘失败的原因。非空时发布的数字是**重新开始累计之后**
+	// 的,不是全部历史 —— 判据必须知道这件事,否则会拿一份年轻的累计当全部,
+	// 门槛「还没到」是对的,但它给不出原因。
+	loadErr string
 }
 
 func newRuleHistoryAccumulator(path string, counters *stats.Counters, version string,
@@ -91,7 +103,9 @@ func newRuleHistoryAccumulator(path string, counters *stats.Counters, version st
 func (a *ruleHistoryAccumulator) flush() error {
 	now := a.now()
 	prev, err := loadRuleHistory(a.path)
+	loadErr := ""
 	if err != nil {
+		loadErr = err.Error()
 		log.Printf("规则历史读不出来,当空重新累计: %v", err)
 	}
 
@@ -114,7 +128,46 @@ func (a *ruleHistoryAccumulator) flush() error {
 		return err
 	}
 	a.prevRules, a.prevDecisions, a.lastAt = cur, decisions, now
+
+	a.mu.Lock()
+	a.published, a.loadErr = next, loadErr
+	a.mu.Unlock()
 	return nil
+}
+
+// snapshot 是发布给控制面的那一份。
+//
+// **从没成功 flush 过时返回 nil** —— nil 是「这台机器还没有累计历史可报」,
+// 与「累计为 0」是两件事。返回一个零值结构会让消费方读成「跑了 0 秒、0 次判定」,
+// 而那正好是判据用来说「门槛还没到」的形状 —— 两种完全不同的情况会给出同一句话。
+func (a *ruleHistoryAccumulator) snapshot() *stats.RuleHistorySnapshot {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.published.UpdatedAt.IsZero() {
+		return nil
+	}
+	out := &stats.RuleHistorySnapshot{
+		UptimeSeconds: a.published.UptimeSeconds,
+		Decisions:     a.published.Decisions,
+		Overflowed:    a.published.Overflowed,
+		UpdatedAt:     a.published.UpdatedAt,
+		SkipReason:    a.loadErr,
+	}
+	// **每次都复制,不共享底层数组。** 消费方拿到之后会被 JSON 编码、也可能被
+	// 别的代码改;共享的话下一次 flush 就在改一份已经发出去的东西。
+	// (与 GuardianCapabilities 头上「每次调用都返回新切片」同一条纪律。)
+	if len(a.published.Versions) > 0 {
+		out.Versions = append([]string(nil), a.published.Versions...)
+	}
+	if len(a.published.Entries) > 0 {
+		out.Rules = make([]stats.RuleOutcome, 0, len(a.published.Entries))
+		for _, e := range a.published.Entries {
+			out.Rules = append(out.Rules, stats.RuleOutcome{
+				Source: e.Source, Rule: e.Rule, Attempts: e.Attempts, Failures: e.Failures,
+			})
+		}
+	}
+	return out
 }
 
 // runRuleHistoryLoop 周期 flush,ctx 取消时**再 flush 一次**,然后 close(done)。
@@ -131,6 +184,12 @@ func (a *ruleHistoryAccumulator) flush() error {
 func runRuleHistoryLoop(ctx context.Context, interval time.Duration, a *ruleHistoryAccumulator, done chan<- struct{}) {
 	if done != nil {
 		defer close(done)
+	}
+	// **启动即刷一次**(与 refreshLoop 同款)。两个理由:① 盘上可能已经攒了十几天,
+	// 不先读进来的话,Core 起来后的头一个周期里 `bx status` 会说「没有累计历史」,
+	// 而那是假话;② 路径写不了要早点在日志里显形,别等到第一个周期。
+	if err := a.flush(); err != nil {
+		log.Printf("首次写规则历史失败: %v", err)
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()

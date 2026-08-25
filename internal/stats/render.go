@@ -10,10 +10,21 @@ import (
 // Guardian 的非秘密交接状态由 supervisor.RuntimeState 单独承载,避免改变 /v0/status 契约。
 type Report struct {
 	Snapshot
-	Server        string `json:"server"`
-	SocksAddr     string `json:"socks_addr"`
-	TunnelHealthy bool   `json:"tunnel_healthy"`
-	LatencyMS     int64  `json:"latency_ms"`
+	// RuleHistory 是**跨重启累计**的按规则计数,与 Snapshot 里 Rules[] 的
+	// 「本次运行」计数**并列发布,绝不合并**。
+	//
+	// **合并会毁掉这个功能唯一想说的那句话**:「0 次」在本次运行里什么也说明不了
+	// (一台刚重连的机器上每条规则都是 0 次),而死规则判据要的恰恰是累计值。
+	// 两个数并排放着,读的人一眼就知道自己在看哪一个;合成一个数之后,那个区别
+	// 再也表达不出来。
+	//
+	// **nil = 这一版 Core 没有这个概念,或者历史读不出来** —— 与「累计为 0」是
+	// 两件事,故用指针 + omitempty,不能用零值结构代替。
+	RuleHistory   *RuleHistorySnapshot `json:"rule_history,omitempty"`
+	Server        string               `json:"server"`
+	SocksAddr     string               `json:"socks_addr"`
+	TunnelHealthy bool                 `json:"tunnel_healthy"`
+	LatencyMS     int64                `json:"latency_ms"`
 	// PeakBPS 是**观测到的**最高吞吐(上下行合计),0 = 这段时间没观测到。
 	//
 	// **0 与「跑不动」是两回事**,消费方必须分得开:一台整天没人用的服务器
@@ -237,4 +248,27 @@ func egressFailing(failing []RuleOutcome) bool {
 		}
 	}
 	return true
+}
+
+// RuleHistorySnapshot 是跨重启累计的按规则计数,经控制 socket 发布。
+//
+// 它是**发布形状**,不是盘上那份的镜像:盘上还记着 TrackingLimit 这类只有写入侧
+// 用得着的东西,而消费方要的是「累计了多久、多少次判定、跨了几个版本、可不可信」。
+type RuleHistorySnapshot struct {
+	Rules []RuleOutcome `json:"rules,omitempty"`
+	// UptimeSeconds 是 Core **累计在跑**的时长,不是「距首次见到这条规则过了多久」。
+	UptimeSeconds int64 `json:"uptime_seconds"`
+	// Decisions 是全局累计判定数,**含内建列表命中**。
+	Decisions int64 `json:"decisions"`
+	// Versions 是这段累积跨过的版本(去重有序),让读的人对累计打折。
+	Versions []string `json:"versions,omitempty"`
+	// Overflowed 为真时,「某条规则没有条目」不再等于「它没命中过」——
+	// 判据据此把死规则整类标为「没查」,而不是把它们全判死。
+	//
+	// **刻意无 omitempty**:false 与「这一版没有这个字段」必须分得开。
+	Overflowed bool      `json:"overflowed"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	// SkipReason 非空表示这份历史此刻不可用(读不出、schema 不认)。
+	// 有它就别拿上面的数字下判断 —— 那几个数是重新开始累计之后的,不是全部历史。
+	SkipReason string `json:"skip_reason,omitempty"`
 }

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/stats"
@@ -46,7 +47,10 @@ func TestStatusReporterIncludesBothGuardAndConfigWarnings(t *testing.T) {
 	}
 
 	reporter := newStatusReporter(&stats.Counters{}, fakeReporterTunnel{}, "vless://host:443", "split", "proxy",
-		nil, nil, guard, &stats.RateMeter{}, configWarnings)
+		nil, nil, guard, &stats.RateMeter{}, configWarnings,
+		// 这条测试看的是告警那条路;累计历史给一个「没有」的提供者即可 ——
+		// **但它必须传**,漏传编不过,那正是这个必填形参存在的理由。
+		func() *stats.RuleHistorySnapshot { return nil })
 
 	rep := reporter()
 
@@ -77,10 +81,57 @@ func TestStatusReporterWithNoConfigWarningsKeepsGuardWarnings(t *testing.T) {
 	guard.value.Store([]stats.Warning{{Name: "tailscale", Severity: "warn"}})
 
 	reporter := newStatusReporter(&stats.Counters{}, fakeReporterTunnel{}, "vless://host:443", "split", "proxy",
-		nil, nil, guard, &stats.RateMeter{}, nil)
+		nil, nil, guard, &stats.RateMeter{}, nil,
+		func() *stats.RuleHistorySnapshot { return nil })
 
 	rep := reporter()
 	if len(rep.Warnings) != 1 || rep.Warnings[0].Name != "tailscale" {
 		t.Fatalf("Warnings = %+v, want 仅 guard 的一条", rep.Warnings)
+	}
+}
+
+// —— 跨重启累计历史必须真的到达 Report(2026-08-24)——
+//
+// 形状与上面那条一样:调**生产代码真正调用的那个** newStatusReporter,不重拼一遍
+// 它的逻辑。这条钉的是「接线接上了」,而接线正是本仓库全部事故的所在地。
+func TestStatusReporterPublishesRuleHistory(t *testing.T) {
+	at := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	want := &stats.RuleHistorySnapshot{
+		UptimeSeconds: 1_209_600, Decisions: 25_000,
+		Versions:  []string{"0.3.0", "0.4.0"},
+		UpdatedAt: at,
+		Rules:     []stats.RuleOutcome{{Source: "user_direct", Rule: "*.qq.com", Attempts: 12}},
+	}
+	reporter := newStatusReporter(&stats.Counters{}, fakeReporterTunnel{}, "vless://host:443", "split", "proxy",
+		nil, nil, &networkGuard{}, &stats.RateMeter{}, nil,
+		func() *stats.RuleHistorySnapshot { return want })
+
+	rep := reporter()
+	if rep.RuleHistory == nil {
+		t.Fatal("累计历史没到达 Report —— 死规则判据拿不到它要的那个数,整条功能静默失效")
+	}
+	if rep.RuleHistory.Decisions != 25_000 || rep.RuleHistory.UptimeSeconds != 1_209_600 {
+		t.Errorf("发布出去的不是注入的那份:%+v", rep.RuleHistory)
+	}
+	if len(rep.RuleHistory.Rules) != 1 || rep.RuleHistory.Rules[0].Rule != "*.qq.com" {
+		t.Errorf("按规则的累计没跟着走:%+v", rep.RuleHistory.Rules)
+	}
+	// **并列发布,绝不合并**:本次运行那份(Snapshot.Rules)与累计那份是两个数。
+	if len(rep.Snapshot.Rules) != 0 {
+		t.Errorf("累计历史污染了「本次运行」那份计数:%+v", rep.Snapshot.Rules)
+	}
+}
+
+// **提供者返回 nil 时,Report.RuleHistory 必须是 nil,不是零值结构。**
+//
+// 零值会被消费方读成「累计 0 次、跑了 0 秒」—— 而那正好是判据用来说「门槛还没到」
+// 的形状。于是「这一版 Core 没有这个概念 / 历史读不出来」与「机器刚装好」会给出
+// 同一句话,而前者需要的是「没查」,后者需要的是「再等等」。
+func TestStatusReporterKeepsRuleHistoryNilWhenThereIsNone(t *testing.T) {
+	reporter := newStatusReporter(&stats.Counters{}, fakeReporterTunnel{}, "vless://host:443", "split", "proxy",
+		nil, nil, &networkGuard{}, &stats.RateMeter{}, nil,
+		func() *stats.RuleHistorySnapshot { return nil })
+	if rep := reporter(); rep.RuleHistory != nil {
+		t.Fatalf("没有历史时发布了 %+v —— nil 与「累计为 0」必须分得开", rep.RuleHistory)
 	}
 }
