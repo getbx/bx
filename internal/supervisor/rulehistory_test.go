@@ -334,3 +334,64 @@ func TestWaitingForTheFinalFlushIsBounded(t *testing.T) {
 		t.Fatalf("等了 %s —— 收尾写盘卡住时,关闭必须照样走下去", elapsed)
 	}
 }
+
+// **还没成功写过盘时,发布的是 nil,不是零值结构。**
+//
+// 零值会被消费方读成「累计 0 秒、0 次判定」—— 而那正好是判据用来说「门槛还没到」
+// 的形状。于是「这台机器还没有累计历史」与「有历史、只是还年轻」会给出同一句话,
+// 而前者该说的是「没查」。
+func TestAccumulatorPublishesNothingBeforeItEverFlushed(t *testing.T) {
+	a := newRuleHistoryAccumulator(filepath.Join(t.TempDir(), ruleHistoryFile),
+		&stats.Counters{}, "v", func() map[string]bool { return nil }, time.Now)
+	if got := a.snapshot(); got != nil {
+		t.Fatalf("一次都没 flush 过就发布了 %+v —— nil 与「累计为 0」必须分得开", got)
+	}
+}
+
+// 读盘失败时,发布的那份要带 SkipReason:上面那几个数是**重新开始累计之后**的,
+// 不是全部历史。判据据此说「没查」,而不是拿一份年轻的累计去比门槛。
+func TestAccumulatorReportsWhyTheHistoryIsUntrustworthy(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ruleHistoryFile)
+	// schema 不认 ⇒ loadRuleHistory 报错,而 flush 仍然照常写一份新的。
+	if err := os.WriteFile(p, []byte(`{"schema_version":999}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &stats.Counters{}
+	c.RuleAttempt("user_direct", "a.com")
+	a := newRuleHistoryAccumulator(p, c, "v",
+		func() map[string]bool { return map[string]bool{"a.com": true} }, time.Now)
+	if err := a.flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	got := a.snapshot()
+	if got == nil {
+		t.Fatal("flush 成功之后仍然发布 nil")
+	}
+	if got.SkipReason == "" {
+		t.Error("历史读不出来却没说原因 —— 判据会把一份刚重新开始的累计当成全部历史")
+	}
+}
+
+// 快照不许与内部状态共享底层数组:消费方拿到之后会被 JSON 编码、也可能被别的
+// 代码改,而下一次 flush 会继续写那份内部状态。
+func TestSnapshotDoesNotShareItsSlices(t *testing.T) {
+	p := filepath.Join(t.TempDir(), ruleHistoryFile)
+	c := &stats.Counters{}
+	c.RuleAttempt("user_direct", "a.com")
+	a := newRuleHistoryAccumulator(p, c, "0.4.0",
+		func() map[string]bool { return map[string]bool{"a.com": true} }, time.Now)
+	if err := a.flush(); err != nil {
+		t.Fatal(err)
+	}
+	got := a.snapshot()
+	if len(got.Rules) == 0 || len(got.Versions) == 0 {
+		t.Fatalf("这条测试的前提不成立(拿到的快照是空的):%+v", got)
+	}
+	got.Rules[0].Attempts = 999999
+	got.Versions[0] = "tampered"
+	again := a.snapshot()
+	if again.Rules[0].Attempts == 999999 || again.Versions[0] == "tampered" {
+		t.Fatal("快照与内部状态共享底层数组 —— 消费方改一下就污染了还要继续累计的那份")
+	}
+}

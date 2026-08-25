@@ -633,7 +633,17 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // 这个提取是不碰 SockPath、不需要 root 就能验证生产代码真的把 configWarnings
 // 拼进了 Warnings 字段的唯一办法——TestStatusReporterIncludesBothGuardAndConfigWarnings
 // (control_reporter_test.go)直接调用它,不是重新拼一遍它的逻辑。
-func newStatusReporter(c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, guard *networkGuard, rate *stats.RateMeter, configWarnings []stats.Warning) func() stats.Report {
+func newStatusReporter(c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, guard *networkGuard, rate *stats.RateMeter, configWarnings []stats.Warning,
+	// history 给出跨重启累计的按规则计数。**必填,不认 nil provider** ——
+	// 漏传就编不过,那是接线正确的唯一硬凭据。(编译器只证明**实参被传了**、
+	// 不证明它**被用了**,所以另有一条走真 reporter 的测试盯着后半句。)
+	history func() *stats.RuleHistorySnapshot,
+) func() stats.Report {
+	if history == nil {
+		// 传 nil 是编程错误,不是运行期情况。**当场 panic 好过静默发布 nil** ——
+		// 后者会让死规则那一类永远显示「没查」,而没有任何一处会说为什么。
+		panic("newStatusReporter: history provider 必填")
+	}
 	return func() stats.Report {
 		ts := t.Stats()
 		var active, udp string
@@ -663,7 +673,10 @@ func newStatusReporter(c *stats.Counters, t tunnelStatser, server, mode, udpMode
 			peakAt = time.Time{}
 		}
 		return stats.Report{
-			Snapshot:      c.Snapshot(),
+			Snapshot: c.Snapshot(),
+			// **与 Snapshot.Rules 并列,绝不合并。** 那一份是「本次运行」,
+			// 这一份是「跨重启累计」——「0 次」在前者里什么也说明不了。
+			RuleHistory:   history(),
 			PeakBPS:       peakBPS,
 			PeakAt:        peakAt,
 			ConfigPath:    configPath,
@@ -712,6 +725,10 @@ type controlServeOptions struct {
 	Recoverer      pathRecoverer
 	ProbeDial      probeDialer
 	ConfigWarnings []stats.Warning
+	// RuleHistory 给出跨重启累计的按规则计数。**必填** —— newStatusReporter 对
+	// nil provider 直接 panic:静默发布 nil 会让死规则那一类永远显示「没查」,
+	// 而没有任何一处会说为什么。
+	RuleHistory func() *stats.RuleHistorySnapshot
 	// AppTraffic 是应用流量归因采集器,接进控制面才能让 GET /v0/apps 真的
 	// 发布报告(而不是恒 501)。留零值 = 该部署没有接线。
 	AppTraffic *AppTraffic
@@ -759,7 +776,7 @@ func controlMuxOptionsForServe(ctx context.Context, opts controlServeOptions, pi
 	// 而峰值是一个「有没有在那一秒看到」的问题 —— 采样疏了就整个错过。
 	rate := &stats.RateMeter{}
 	go sampleThroughput(ctx, opts.Counters, rate)
-	report := newStatusReporter(opts.Counters, opts.Tunnel, opts.Server, opts.Mode, opts.UDPMode, opts.TransportInfo, opts.Runtime, guard, rate, opts.ConfigWarnings)
+	report := newStatusReporter(opts.Counters, opts.Tunnel, opts.Server, opts.Mode, opts.UDPMode, opts.TransportInfo, opts.Runtime, guard, rate, opts.ConfigWarnings, opts.RuleHistory)
 	return controlMuxOptionsFromServe(opts, report, pid)
 }
 

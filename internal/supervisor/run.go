@@ -706,6 +706,45 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			filepath.Join(cfg.DataDir, "china_cidr4.txt"),
 			global)
 	}
+	// 按规则计数的**跨重启累计**:周期把本次运行的增量并进 DataDir 下那份历史。
+	//
+	// **它不看隧道健康,也不看 global/split 模式** —— 累计时长是「Core 在跑的
+	// 时长」,而规则在隧道挂着时一样被判定;把那些时间排除掉等于悄悄降低门槛。
+	//
+	// 剪孤儿用的是**此刻**配置里的规则,不是启动快照:`bx direct/proxy` 会在运行期
+	// 热加规则,拿启动那一刻的快照会把新加的当孤儿剪掉。读不出配置时**返回 nil**,
+	// 而 pruneRuleHistory 对 nil 表会把所有带 Rule 的条目当孤儿剪光 —— 所以这里
+	// 读失败时**退回启动快照**,宁可少剪也不要误剪(误剪的是累计,剪掉就回不来了)。
+	currentRules := func() map[string]bool {
+		rules := cfg.Rules // 兜底:读不出当前配置时用启动快照
+		if opts.ConfigPath != "" {
+			if nb, err := os.ReadFile(opts.ConfigPath); err == nil {
+				if ncfg, err := config.Parse(nb); err == nil {
+					rules = ncfg.Rules
+				}
+			}
+		}
+		out := map[string]bool{}
+		for _, r := range rules {
+			for _, d := range r.Direct {
+				out[d] = true
+			}
+			for _, pr := range r.Proxy {
+				out[pr] = true
+			}
+		}
+		return out
+	}
+	acc := newRuleHistoryAccumulator(
+		filepath.Join(cfg.DataDir, ruleHistoryFile),
+		counters, version.Version, currentRules, time.Now,
+	)
+	historyDone := make(chan struct{})
+	go runRuleHistoryLoop(ctx, ruleHistoryInterval, acc, historyDone)
+	// **等最后那次写盘,但只等一个很短的上限。** 不等的话 Run 返回后进程可能
+	// 先退出,那次写静默不发生 —— 而它带着自上一拍以来最长一个周期的增量。
+	defer waitRuleHistoryFlush(historyDone)
+
 	// reloadRouter(bx direct/proxy → /v0/reload):重建 router 原子换入,不断隧道、不碰 TUN/路由。
 	// global 用启动值(改 mode/global 需重劫持,不在此列;这里只热更用户分流规则)。
 	reloadRouter := func() error {
@@ -735,6 +774,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			Recoverer:      recoverer,
 			ProbeDial:      direct,
 			ConfigWarnings: riskyRuleWarnings(cfg),
+			// 跨重启累计的按规则计数。**与本次运行那份并列发布,绝不合并** ——
+			// 「0 次」在本次运行里什么也说明不了。
+			RuleHistory: acc.snapshot,
 			// 应用流量归因:接上真实的 *AppTraffic,GET /v0/apps 才不会恒 501。
 			// 这是本轮修复的要害——之前只加了端点本身,没有从 Run 把它接进来。
 			AppTraffic: appTraffic,
@@ -765,47 +807,6 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			teardown()
 		}()
 		log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。")
-	}
-
-	// 按规则计数的**跨重启累计**:周期把本次运行的增量并进 DataDir 下那份历史。
-	//
-	// **它不看隧道健康,也不看 global/split 模式** —— 累计时长是「Core 在跑的
-	// 时长」,而规则在隧道挂着时一样被判定;把那些时间排除掉等于悄悄降低门槛。
-	//
-	// 剪孤儿用的是**此刻**配置里的规则,不是启动快照:`bx direct/proxy` 会在运行期
-	// 热加规则,拿启动那一刻的快照会把新加的当孤儿剪掉。读不出配置时**返回 nil**,
-	// 而 pruneRuleHistory 对 nil 表会把所有带 Rule 的条目当孤儿剪光 —— 所以这里
-	// 读失败时**退回启动快照**,宁可少剪也不要误剪(误剪的是累计,剪掉就回不来了)。
-	{
-		currentRules := func() map[string]bool {
-			rules := cfg.Rules // 兜底:读不出当前配置时用启动快照
-			if opts.ConfigPath != "" {
-				if nb, err := os.ReadFile(opts.ConfigPath); err == nil {
-					if ncfg, err := config.Parse(nb); err == nil {
-						rules = ncfg.Rules
-					}
-				}
-			}
-			out := map[string]bool{}
-			for _, r := range rules {
-				for _, d := range r.Direct {
-					out[d] = true
-				}
-				for _, pr := range r.Proxy {
-					out[pr] = true
-				}
-			}
-			return out
-		}
-		acc := newRuleHistoryAccumulator(
-			filepath.Join(cfg.DataDir, ruleHistoryFile),
-			counters, version.Version, currentRules, time.Now,
-		)
-		historyDone := make(chan struct{})
-		go runRuleHistoryLoop(ctx, ruleHistoryInterval, acc, historyDone)
-		// **等最后那次写盘,但只等一个很短的上限。** 不等的话 Run 返回后进程可能
-		// 先退出,那次写静默不发生 —— 而它带着自上一拍以来最长一个周期的增量。
-		defer waitRuleHistoryFlush(historyDone)
 	}
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载

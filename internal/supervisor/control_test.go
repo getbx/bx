@@ -1073,6 +1073,9 @@ func TestControlMuxOptionsForServeCarriesEveryField(t *testing.T) {
 		ProbeDial:      &fakeProbeDialer{},
 		ConfigWarnings: []stats.Warning{{Name: "carried-warning", Severity: "warn"}},
 		AppTraffic:     at,
+		RuleHistory: func() *stats.RuleHistorySnapshot {
+			return &stats.RuleHistorySnapshot{Decisions: 1}
+		},
 	}
 
 	got := controlMuxOptionsForServe(context.Background(), opts, 4242)
@@ -1102,6 +1105,9 @@ func TestControlMuxOptionsForServeWiresTheReporterInTheRightOrder(t *testing.T) 
 		UDPMode:        "the-udp-mode",
 		Runtime:        func() RuntimeState { return RuntimeState{} },
 		ConfigWarnings: []stats.Warning{{Name: "the-warning", Severity: "warn"}},
+		// 这条测试看的是形参顺序;累计历史给一个「没有」的提供者即可 ——
+		// **但它必须传**,newStatusReporter 对 nil provider 直接 panic。
+		RuleHistory: func() *stats.RuleHistorySnapshot { return nil },
 	}
 
 	rep := controlMuxOptionsForServe(context.Background(), opts, 1).Report()
