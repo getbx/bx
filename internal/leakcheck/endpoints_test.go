@@ -59,8 +59,17 @@ func TestEchoEndpointsAreTwoDistinctHosts(t *testing.T) {
 }
 
 // **这条测试是为一个真实发生过的错误写的。** 项目拿 ifconfig.me 当出口探测,
-// 而它本就在直连列表里,于是「漏直连」是自摆乌龙。同一个坑今天还活在
-// internal/cli 的 collectNetworkProbe 里(api.ipify.org,而 ipify.org 在列表里)。
+// 而它本就在直连列表里,于是「漏直连」是自摆乌龙。同一个坑后来在
+// internal/cli 的出口探测里**又犯了一次**(`api.ipify.org`,而 `ipify.org` 在
+// 列表第 6045 行)—— 那次是文档自己推荐错了域名,推荐照着进了代码。
+// **两处今天都已修好,而且都不再靠记忆**:那边是
+// `TestPublicIPProbeDomainsAreNotChinaDirect`(同样拿真实内嵌列表 + 生产
+// `DomainSet` 逐个比),现用 `icanhazip.com` / `ipinfo.io`;这边是本条测试。
+//
+// (此前这里写的是「同一个坑**今天还活在** internal/cli 里」—— 2026-08-24
+// 复核发现那个说法已经过期。**一条声称某个 bug 仍然活着的注释,比一条普通
+// 的陈旧注释更坏**:它会派下一个人去修一个不存在的东西,或者让他连带不再
+// 相信旁边那些还成立的话。)
 //
 // 判据用的就是生产环境那一份 DomainSet 与那一份内嵌列表 —— 不是抄一份规则。
 func TestEchoEndpointsAreNotOnTheChinaDirectList(t *testing.T) {
