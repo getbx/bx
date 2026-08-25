@@ -41,6 +41,15 @@ func (c *Counters) bump(source, rule string, failed bool) {
 	if source == "" {
 		return
 	}
+	if !failed {
+		// **只有 attempt 算一次判定。** failed 那一路跟在同一次连接的 attempt
+		// 之后,数两次会让门槛虚高一倍。
+		//
+		// **递增排在下面那条「表满就返回」之前**:全局判定数不该受按规则跟踪的
+		// 256 上限影响 —— 表满是机器最忙的时候,那时停止计数会让门槛在最该达到
+		// 的时候反而更难达到。
+		c.decisions.Add(1)
+	}
 	key := ruleKey{source: source, rule: rule}
 	c.ruleMu.Lock()
 	defer c.ruleMu.Unlock()
@@ -52,6 +61,8 @@ func (c *Counters) bump(source, rule string, failed bool) {
 		// 上限只挡**新增**:已在跟踪的规则继续正常计数,不会因为撞了上限
 		// 就把已有的观测冻住 —— 那会让一条正在失败的规则悄悄停止上报。
 		if len(c.rules) >= maxTrackedRules {
+			// 留痕:此后「这条规则没有条目」不再等于「它没命中过」。
+			c.ruleOverflow.Store(true)
 			return
 		}
 		entry = &RuleOutcome{Source: source, Rule: rule}
@@ -189,3 +200,18 @@ func (s Snapshot) UDPNotice() string {
 	}
 	return ""
 }
+
+// Decisions 是全局累计判定数(**含内建列表命中**)。见 Counters.decisions。
+func (c *Counters) Decisions() int64 { return c.decisions.Load() }
+
+// RuleTrackingOverflowed 报告按规则跟踪的表有没有满过。
+//
+// **为真时,「某条规则没有条目」不再等于「它没命中过」** —— 它可能是撞上限被
+// 挡在门外的那些之一。死规则判据据此把整类标为「没查」,而不是把它们全判死。
+func (c *Counters) RuleTrackingOverflowed() bool { return c.ruleOverflow.Load() }
+
+// TrackedRuleLimit 是按规则跟踪的条数上限。
+//
+// 导出它是为了让写盘那一侧把「这份历史是在什么上限下攒出来的」一起记下来:
+// 上限将来若调整,旧历史的 Overflowed 才解释得清。
+func (c *Counters) TrackedRuleLimit() int { return maxTrackedRules }

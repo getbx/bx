@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,5 +196,62 @@ func TestUDPSourcesAreNeverNamedAsUserRules(t *testing.T) {
 	}}
 	if failing := snap.FailingRules(); len(failing) != 0 {
 		t.Fatalf("UDP 来源被当成用户规则点名了:%+v", failing)
+	}
+}
+
+// —— 死规则判据的两个门槛输入(2026-08-24)——
+
+// 全局判定数衡量「这台机器有没有真的被用过」,所以**内建列表命中也要数**。
+// 只数用户规则会让流量几乎全走内建列表的机器永远达不到门槛,于是死规则这一类
+// 静默地从不生效 —— 那是这个仓库反复出现的失效形状。
+func TestDecisionsCountsBuiltinHitsToo(t *testing.T) {
+	var c Counters
+	c.RuleAttempt("user_direct", "*.qq.com")
+	c.RuleAttempt("china_domain", "")
+	c.RuleAttempt("china_domain", "")
+	if got := c.Decisions(); got != 3 {
+		t.Fatalf("Decisions() = %d, want 3(含两次内建命中)", got)
+	}
+}
+
+// 失败不是一次新的判定 —— RuleFailure 跟在 RuleAttempt 之后,数两次会让门槛虚高。
+func TestFailuresDoNotDoubleCountDecisions(t *testing.T) {
+	var c Counters
+	c.RuleAttempt("user_direct", "a.com")
+	c.RuleFailure("user_direct", "a.com")
+	if got := c.Decisions(); got != 1 {
+		t.Fatalf("Decisions() = %d, want 1", got)
+	}
+}
+
+// 跟踪表满过要留下痕迹 —— 之后「没有条目」不许被读成「没命中」。
+func TestRuleTrackingOverflowIsObservable(t *testing.T) {
+	var c Counters
+	if c.RuleTrackingOverflowed() {
+		t.Fatal("空计数器不该报溢出")
+	}
+	for i := 0; i < maxTrackedRules+5; i++ {
+		c.RuleAttempt("user_direct", fmt.Sprintf("r%d.com", i))
+	}
+	if !c.RuleTrackingOverflowed() {
+		t.Fatalf("插了 %d 条(上限 %d)却没报溢出", maxTrackedRules+5, maxTrackedRules)
+	}
+}
+
+// **表满之后那些判定仍然要计入 Decisions。**
+//
+// 计划没写这一条,实现时定的:Decisions 衡量「这台机器有没有被用过」,而按规则
+// 跟踪的 256 上限是个**实现细节**。表满恰恰是机器最忙的时候,那时停止计数会让
+// 门槛在最该达到的时候反而更难达到 —— 一台忙到撑爆跟踪表的机器,永远等不到
+// 死规则判据生效。
+func TestDecisionsKeepCountingAfterTheRuleTableIsFull(t *testing.T) {
+	var c Counters
+	const extra = 5
+	for i := 0; i < maxTrackedRules+extra; i++ {
+		c.RuleAttempt("user_direct", fmt.Sprintf("r%d.com", i))
+	}
+	if got, want := c.Decisions(), int64(maxTrackedRules+extra); got != want {
+		t.Fatalf("Decisions() = %d, want %d —— 表满之后的判定被丢掉了,"+
+			"而跟踪上限是实现细节,不该影响「这台机器被用过多少」", got, want)
 	}
 }
