@@ -116,8 +116,15 @@ linux 没有任何东西会去装/拉起它(systemd unit 由 `bx up` 写,指向 
 `scripts/run-netns-tests.sh` 在 Colima 特权容器跑):
 
 - 新 `internal/guardian/harness*_netns_linux_test.go`(tag `integration`),
-  在 netns 里直接调 `RunDaemon`(容器内是 root;Core 可执行路径指向测试编译的
-  bx 或注入的假 Core —— 计划阶段定,倾向真 `bx run --no-hijack` 起真数据面);
+  在 netns 里直接调 `RunDaemon`(容器内是 root)。**Core 用替身,不用真 bx run
+  ——初稿「倾向真数据面」被两个事实推翻(2026-08-29)**:supervisor 台子的假
+  隧道靠 `Options.BuildTunnel` 进程内注入,而 RunDaemon 经真 ExecCoreRunner
+  **spawn 子进程**,注入缝跨不过 exec;netns 里没有外网,真 bx run 永远到不了
+  tunnel healthy。替身(`fakecore_test.go`)满足 Guardian 对 Core 的全部观测面
+  (控制 socket /v0/runtime+/v0/shutdown、loopback SOCKS5 探针应答、拷成 `bx`
+  以 `bx run` spawn 让 scanRunningCores 认得出),契约由
+  `TestFakeCoreSatisfiesTheRealHealthChecker` 直接钉在**生产的**
+  HealthChecker.Wait 上 —— 协议/字段/探针三层漂移在 darwin 单测当场红;
 - 首批五条断言(每条都要变异验证):① Up 之后屏障不在、Core 在跑、
   `/v1/status` 报 protected;② Down 之后 pref-120 rule + table 90 全量在位、
   公网 unreachable、bypass 可达;③ 杀 Core 后 `handleUnexpectedExit` 自动重启
