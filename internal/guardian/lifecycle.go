@@ -22,12 +22,16 @@ import (
 //   - scanRunningCores:ExecCoreRunner 的注入钩子无参,经转发会丢
 //     reason=lifecycle|observe 审计标签;
 //   - inspectProcess:process_unix.go 已覆盖 Linux,无缝可画;
-//   - NewDNSManager / LegacyCore:平台差异住在 internal/install,不在 guardian;
+//   - LegacyCore:平台差异住在 internal/install,不在 guardian;
 //   - RemoveBlockingBarrierRoutes:CLI 逃生口专用,按不变量独立于 daemon。
+//
+// (NewDNSManager 原也在排除名单 —— 当时平台差异确实只住在 install;linux 的
+// 「无需接管」语义在 guardian 这一层出现后,它成了真缝,2026-08-29 进清单。)
 type lifecyclePlatform struct {
 	RequireDaemon      func() error
 	NewBarrier         func(CommandRunner) Barrier
 	DiscoverGateway    func(context.Context) (string, error)
+	NewDNSManager      func(service string) DNSManager
 	NewNetworkObserver func(networkRecoveryRequester) daemonNetworkObserver
 	PeerCredentials    func(net.Conn) (uint32, bool)
 }
@@ -37,6 +41,7 @@ func newLifecyclePlatform() lifecyclePlatform {
 		RequireDaemon:      requireDaemonPlatform,
 		NewBarrier:         NewBarrier,
 		DiscoverGateway:    DiscoverDefaultGateway,
+		NewDNSManager:      newPlatformDNSManager,
 		NewNetworkObserver: newPlatformNetworkObserver,
 		PeerCredentials:    localPeerCredentials,
 	}

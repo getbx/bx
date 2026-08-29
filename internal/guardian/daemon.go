@@ -416,10 +416,6 @@ func coreExecutable(selfExecutable func() (string, error), evalSymlinks func(str
 	return path
 }
 
-func systemDNSManager() DNSManager {
-	return NewDNSManager("")
-}
-
 // fetchCoreRuntime is the CoreRuntime provider wired into LocalAPIOptions so
 // GET /v1/status can fold the Core's own statistics into Guardian's
 // response, instead of leaving the menu to spawn `bx status` itself for
@@ -477,7 +473,7 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 		Runner:          runner,
 		Health:          HealthChecker{},
 		Barrier:         platform.NewBarrier(nil),
-		DNS:             systemDNSManager(),
+		DNS:             platform.NewDNSManager(""),
 		Legacy:          systemLegacyCoreLifecycle{},
 		BarrierContext:  BarrierContext{BlockIPv6: true},
 		GatewayProvider: GatewayProviderFunc(platform.DiscoverGateway),

@@ -42,18 +42,24 @@ type platform interface {
 **加一个平台 = 加一个 `platform_<os>.go` 实现这 3 个方法 + `paths_<os>.go`,core 不动。** TUN 生命周期(closeTUN)由 Run 用 defer 接管,Hijack 只管路由。
 
 - **Guardian 侧的平台缝自 2026-08-29 起有清单**:`internal/guardian/lifecycle.go` 的
-  `lifecyclePlatform`(RequireDaemon/NewBarrier/DiscoverGateway/NewNetworkObserver/
-  PeerCredentials 五个构造器字段),daemon 组装只经它选平台,反射 `validate()` +
+  `lifecyclePlatform`(RequireDaemon/NewBarrier/DiscoverGateway/NewDNSManager/
+  NewNetworkObserver/PeerCredentials 六个构造器字段),daemon 组装只经它选平台,反射 `validate()` +
   三平台 CI 腿各一条行为测试钉住「清单无洞且接的是本平台那份」。**`scanRunningCores`
   刻意不在清单里**(注入钩子无参,转发丢 reason= 审计标签,缝留在编译期自由函数);
   `RemoveBlockingBarrierRoutes` 也不在(CLI 逃生口专用,独立于 daemon)。给 Linux
   移植 Guardian 时照 lifecycle.go 的字段清单供货,procscan/peercred/barrier 各加
-  `_linux.go`,`requireDaemonPlatform` 最后放开——顺序不许反。**前两块已供货
-  (2026-08-29)**:`procscan_linux.go`(/proc 树扫描,纯 I/O 半无 tag、fixture
-  三腿可测,root 门槛的理由换成 hidepid 致盲)与 `peercred_linux.go`
-  (SO_PEERCRED);**barrier/network_observer/DNS 与 daemon 门未动,linux 上
-  Guardian 仍起不来**——这是刻意的中间态,焊死语义只对 darwin/linux 之外保留
-  原话。终局路线见
+  `_linux.go`,`requireDaemonPlatform` 最后放开——顺序不许反。**供货进度
+  (2026-08-29)**:`procscan_linux.go`(/proc 树,纯 I/O 半无 tag、fixture 三腿
+  可测,root 门槛理由换成 hidepid 致盲)· `peercred_linux.go`(SO_PEERCRED)·
+  **barrier**(`barrier_iproute.go` 纯计划 + `barrier_linux.go` 执行器:pref-120
+  rule + table 90 + **throw 私网 carve**——linux rule 命中即终止查找,darwin 主表
+  最长前缀救私网那条语义必须用 throw 亲手移植,/2 覆盖全空间;pref 120>100 保住
+  bx 打标出站的结构性逃逸、<150/200 压过劫持;网关经 `supervisor.LinuxDefaultRoute`
+  复用 metric 感知解析,不许手抄)· **DNS**(`DNSNotNeeded` 第四态:「本平台无
+  此事」≠「该接管没接管」,manager 两道门放行它、菜单 dns_managed 如实 false)·
+  **observer** 显式 nil(不装假观测)。**只剩 daemon 门未开 + netns harness 未接,
+  linux 上 Guardian 仍起不来**——刻意的中间态,`lifecycle_linux_test` 钉住
+  「供货≠开门」。焊死语义只对 darwin/linux 之外保留原话。终局路线见
   `docs/superpowers/specs/2026-08-29-control-plane-endgame-design.md`。
 
 ## 防环 / 安全不变量(改动时务必保住)

@@ -755,9 +755,9 @@ func TestSystemDNSManagerPropagatesCancellationToAutoDetectedRestore(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	called := false
-	dns, ok := systemDNSManager().(dnsManager)
+	dns, ok := newLifecyclePlatform().NewDNSManager("").(dnsManager)
 	if !ok {
-		t.Fatalf("system DNS manager type = %T, want dnsManager", systemDNSManager())
+		t.Fatalf("system DNS manager type = %T, want dnsManager", newLifecyclePlatform().NewDNSManager(""))
 	}
 	dns.restore = func(got context.Context, service string) (install.DNSStatus, error) {
 		called = true
