@@ -41,6 +41,16 @@ type platform interface {
 ```
 **加一个平台 = 加一个 `platform_<os>.go` 实现这 3 个方法 + `paths_<os>.go`,core 不动。** TUN 生命周期(closeTUN)由 Run 用 defer 接管,Hijack 只管路由。
 
+- **Guardian 侧的平台缝自 2026-08-29 起有清单**:`internal/guardian/lifecycle.go` 的
+  `lifecyclePlatform`(RequireDaemon/NewBarrier/DiscoverGateway/NewNetworkObserver/
+  PeerCredentials 五个构造器字段),daemon 组装只经它选平台,反射 `validate()` +
+  三平台 CI 腿各一条行为测试钉住「清单无洞且接的是本平台那份」。**`scanRunningCores`
+  刻意不在清单里**(注入钩子无参,转发丢 reason= 审计标签,缝留在编译期自由函数);
+  `RemoveBlockingBarrierRoutes` 也不在(CLI 逃生口专用,独立于 daemon)。给 Linux
+  移植 Guardian 时照 lifecycle.go 的字段清单供货,procscan/peercred/barrier 各加
+  `_linux.go`,`requireDaemonPlatform` 最后放开——顺序不许反。终局路线见
+  `docs/superpowers/specs/2026-08-29-control-plane-endgame-design.md`。
+
 ## 防环 / 安全不变量(改动时务必保住)
 
 - **kill-switch 一以贯之**:隧道挂 → Proxy 决策 Block,绝不降级直连漏 IP。

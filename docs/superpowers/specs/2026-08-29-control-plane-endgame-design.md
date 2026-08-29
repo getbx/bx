@@ -97,8 +97,16 @@ type lifecyclePlatform interface {
 }
 ```
 
-方法数以抽取时实测为准,原则只有一条:**每个方法是一个意图,不是一次
-系统调用的转发**。
+原则只有一条:**每个方法是一个意图,不是一次系统调用的转发**。
+
+> **2026-08-29 实施落账(`docs/superpowers/plans/2026-08-29-lifecycle-platform-seam.md`)**:
+> 实测后草图按事实修正——清单是**构造器不是动词**(SpawnCore/StopCore 已住在
+> ExecCoreRunner 的 ProcessOperations 缝里,ManageDNS/Barrier 已是接口),选择机制
+> 保持**编译期**(与数据面同构,两个恒等的 per-OS 构造器文件会谎报选择发生地)。
+> `scanRunningCores` 刻意不进清单:注入钩子无参,转发会丢 reason=lifecycle|observe
+> 审计标签;第 3 步 Linux 直接加 procscan_linux.go。成品:`internal/guardian/lifecycle.go`
+> 五字段清单 + 反射 validate + 三平台 CI 腿行为测试;daemon 组装五处直呼全部改经清单,
+> darwin 测试一个断言未动全绿。
 
 **行为保真纪律(这一步的全部风险所在)**:抽取时 darwin 行为一行不改,既有
 darwin 测试**原样全绿、一个断言不动**——这是「没削弱保护」的判据,与 `e7e413c`
