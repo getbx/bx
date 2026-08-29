@@ -386,8 +386,24 @@ func TestReconcileLoopLogsOnlyWhenTheDecisionChanges(t *testing.T) {
 	if strings.Contains(lines[1], string(actionRestoreDNS)) {
 		t.Errorf("差异消失那一行不该还挂着旧动作, got %q", lines[1])
 	}
-	if after := env.mutationCallCounts(); after != before {
-		t.Fatalf("整条循环跑完,一个动作都不许执行\nbefore=%+v\nafter =%+v", before, after)
+	// **③b(2026-08-29)对这半条断言的刻意反转,记档**:③a 时代这里断言
+	// 「一个动作都不许执行」;现在 desired=off + DNSManaged=True 的三轮里,
+	// 被授权的 restore_dns 每轮执行一次(观测被脚本钉死在「仍残留」上,
+	// 真机上第一次成功后下一轮观测就会翻转)。要守的属性变成两半:
+	// 执行的**只有**授权动作、次数与残留轮数一致 —— 多了是失控,少了是
+	// 授权没接线。
+	after := env.mutationCallCounts()
+	restores := strings.Count(after.Events, "dns.restore") - strings.Count(before.Events, "dns.restore")
+	if restores != 3 {
+		t.Fatalf("三轮残留应执行三次 restore_dns,got %d\nevents=%s", restores, after.Events)
+	}
+	for _, banned := range []string{"barrier.remove", "barrier.install", "core.start", "core.stop", "barrier.clear_orphan"} {
+		if strings.Count(after.Events, banned) != strings.Count(before.Events, banned) {
+			t.Fatalf("未授权/未提议的动作被执行了: %s\nevents=%s", banned, after.Events)
+		}
+	}
+	if after.CoreStarts != before.CoreStarts || after.CoreStops != before.CoreStops {
+		t.Fatalf("Core 生命周期不许被循环碰\nbefore=%+v\nafter =%+v", before, after)
 	}
 }
 

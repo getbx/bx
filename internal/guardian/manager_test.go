@@ -1920,6 +1920,11 @@ type managerTestEnv struct {
 	// 迁移垫片的测试能真的在盘上放一张欠条 —— 路径藏在字面量里的话,那些测试
 	// 只能改成读 Store 内部,或者干脆平凡地绿。
 	legacyIntentPath string
+
+	// 孤儿屏障清理替身的计数与注入失败(阶段③b 执行器)。
+	orphanBarrierMu       sync.Mutex
+	orphanBarrierCount    int
+	clearOrphanBarrierErr error
 }
 
 func newManagerTestEnv(t *testing.T) *managerTestEnv {
@@ -1956,11 +1961,30 @@ func newManagerTestEnv(t *testing.T) *managerTestEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &managerTestEnv{
+	env := &managerTestEnv{
 		manager: manager, store: store, runner: runner, health: health,
 		barrier: barrier, dns: dns, legacy: legacy, events: events,
 		legacyIntentPath: legacyIntentPath,
 	}
+	// 孤儿屏障清理换成替身:生产默认(NewManager 里)是包级
+	// RemoveBlockingBarrierRoutes,它会真的 exec route/ip —— 纯逻辑测试
+	// 不碰真实路由,这条纪律在这里落点。
+	manager.clearOrphanBarrier = env.clearOrphanBarrierForTest
+	return env
+}
+
+func (e *managerTestEnv) clearOrphanBarrierForTest(context.Context) error {
+	e.orphanBarrierMu.Lock()
+	defer e.orphanBarrierMu.Unlock()
+	e.orphanBarrierCount++
+	e.events.add("barrier.clear_orphan")
+	return e.clearOrphanBarrierErr
+}
+
+func (e *managerTestEnv) orphanBarrierClears() int {
+	e.orphanBarrierMu.Lock()
+	defer e.orphanBarrierMu.Unlock()
+	return e.orphanBarrierCount
 }
 
 // assertBarrierRemoved / assertDNSRestored / assertDesiredOffPersisted 断言的是

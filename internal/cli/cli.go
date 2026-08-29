@@ -4464,7 +4464,27 @@ func reconcileRoundSummary(round guardian.ReconcileReport, now time.Time) string
 	if now.Sub(round.At) > guardian.ReconcileStaleAfter {
 		return prefix + "报告已停滞 —— 调谐环可能已停止(查 /var/log/bx-guard.err.log)"
 	}
-	return prefix + reconcileRoundVerdict(round) + reconcileRoundEvidence(round)
+	return prefix + reconcileRoundVerdict(round) + reconcileRoundEvidence(round) + reconcileRoundExecution(round)
+}
+
+// reconcileRoundExecution 说上一轮实际执行了什么(③b 起才有)。
+// 没执行就一个字不写 —— 健康机器的常态是 nil,这一段与整个面板同一条纪律。
+// skipped 的措辞刻意不长得像故障:那是让路(用户的 up/down 优先、或槽内复核
+// 发现意图变了),不是出了事。
+func reconcileRoundExecution(round guardian.ReconcileReport) string {
+	executed := round.Executed
+	if executed == nil {
+		return ""
+	}
+	segment := " · 上轮执行 " + executed.Action
+	switch executed.Outcome {
+	case "ok":
+		return segment + "(成功)"
+	case "skipped":
+		return segment + "(让路: " + executed.Error + ")"
+	default:
+		return segment + "(失败: " + executed.Error + ")"
+	}
 }
 
 // reconcileRoundVerdict 说这一轮判断出了什么。

@@ -656,6 +656,30 @@ Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 `docs/superpowers/specs/2026-08-17-guardian-status-watch-design.md`、计划
 `docs/superpowers/plans/2026-08-17-guardian-status-watch.md`。
 
+## 调谐环第一批执行权(阶段③b,2026-08-29,真机未验)
+
+**授权面只有 `desired=off` 的两个清理动作**(`restore_dns`/`clear_orphan_barrier`,
+白名单在 `internal/guardian/reconcile_execute.go`,内容由
+`TestExecutableWhitelistIsExactlyTheOffCleanupPair` 钉死 —— 穷举守卫只测名单**外**
+的动作,名单越大它测得越少,扩名单必须有意识地改到这条测试上)。`stop_core` 观察态
+的理由写死:desired=off + socket 应答最常见来源是 **`sudo bx run` 调试路径**,每
+30 秒杀一次调试进程的调谐器是敌意软件;`start_core` 照 ③a 原文(双 Core 入口)。
+五条执行纪律(spec `2026-08-29-stage3b-cleanup-actions-design.md`):mutation 槽
+**try-acquire 不排队**(FIFO 里硬等会把用户的 up 挤过预算)、**槽内复核意图**
+(决策与拿到槽之间用户可能刚好 up,`preconditions_changed` 让路)、**一轮至多一个**
+(第二个动作是按执行前的陈旧观测提议的)、**失败不放弃靠退避限频**(「连败 N 次
+就停」是手写补偿时代的形状 —— 停了残留永久无人管)、**动作全部复用既有原语**
+(清屏障 = 逃生口同款 `RemoveBlockingBarrierRoutes`,经 Manager 字段注入 ——
+包级函数会让单测真 exec route/ip;DNS = `m.restoreDNS` 带状态发布)。
+`Executed` 与 `Actions` 并列进报告绝不合并,statusdigest 嵌套穷举守卫逼它选边
+(signals);CLI 渲染「上轮执行 …(成功/失败/让路)」,让路措辞刻意不像故障。
+**变异验证自己抓到一条空转断言**:fakeDNSManager 默认不记事件(mutationCallCounts
+里那句记档的陷阱),「同轮不执行第二个」的断言没打开 record 就是假绿 —— 变异 3
+落上仍全绿才显形;另两个假阴性是编译失败被数成 0 与 zsh 把 `===` 当参数展开,
+**凡变异「全绿」先查落没落上**这条老纪律又付了一次学费。
+**真机验收(未做)**:关保护后手工 `networksetup` 设 127.0.0.1 或造一条孤儿
+pref 路由,看循环在退避窗口内清掉并在 `bx status` 显示「上轮执行」。
+
 ## 按应用看分流(2026-08-19,**整套真机未验**)
 
 起因是一次真实排查:项目所有者报「腾讯会议开着 bx 会绕一圈」。根因很浅 ——

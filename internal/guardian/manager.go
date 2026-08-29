@@ -270,27 +270,30 @@ type ManagerOptions struct {
 type Manager struct {
 	// throughput 记一次吞吐观测(见 recordThroughputObservation)。
 	// nil = 没接线(测试、或没有配置路径的部署)—— 那时循环里那一步是空操作。
-	throughput       func()
-	mutation         chan struct{}
-	updateOperation  chan struct{}
-	statusMu         sync.RWMutex
-	store            DesiredStore
-	runner           CoreRunner
-	health           HealthGate
-	barrier          Barrier
-	dns              DNSManager
-	dnsStatus        DNSStatus
-	legacy           LegacyCoreLifecycle
-	barrierContext   BarrierContext
-	gatewayProvider  GatewayProvider
-	coreVersion      string
-	restartTimeout   time.Duration
-	cleanupTimeout   time.Duration
-	updates          updateStore
-	updatePaths      Paths
-	updatePreparer   UpdatePreparer
-	guardianProtocol int
-	current          Process
+	throughput      func()
+	mutation        chan struct{}
+	updateOperation chan struct{}
+	statusMu        sync.RWMutex
+	store           DesiredStore
+	runner          CoreRunner
+	health          HealthGate
+	barrier         Barrier
+	dns             DNSManager
+	// clearOrphanBarrier 是 ③b 执行器清孤儿屏障的原语,默认
+	// RemoveBlockingBarrierRoutes(见 NewManager),测试注入替身。
+	clearOrphanBarrier func(context.Context) error
+	dnsStatus          DNSStatus
+	legacy             LegacyCoreLifecycle
+	barrierContext     BarrierContext
+	gatewayProvider    GatewayProvider
+	coreVersion        string
+	restartTimeout     time.Duration
+	cleanupTimeout     time.Duration
+	updates            updateStore
+	updatePaths        Paths
+	updatePreparer     UpdatePreparer
+	guardianProtocol   int
+	current            Process
 	// uncertainCause 是把 current 锁成 Uncertain 的**那一次**拒绝的原因。
 	// 与 current 同由 mutation channel 保护。留着它是因为短路(以及后来的
 	// 重新求证)必须报出与第一次同样多的信息:今天传的是 nil,于是用户第二次
@@ -408,13 +411,18 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	}
 	recoveryContext, cancelRecovery := context.WithCancel(context.Background())
 	m := &Manager{
-		throughput:            options.Throughput,
-		mutation:              make(chan struct{}, 1),
-		updateOperation:       make(chan struct{}, 1),
-		store:                 options.Store,
-		runner:                options.Runner,
-		health:                options.Health,
-		barrier:               options.Barrier,
+		throughput:      options.Throughput,
+		mutation:        make(chan struct{}, 1),
+		updateOperation: make(chan struct{}, 1),
+		store:           options.Store,
+		runner:          options.Runner,
+		health:          options.Health,
+		barrier:         options.Barrier,
+		// 孤儿屏障清理的默认实现是逃生口同款的 ownership-free 原语;测试替换
+		// 这个字段(包级函数会真的 exec route/ip,纯逻辑测试不碰真实路由)。
+		clearOrphanBarrier: func(ctx context.Context) error {
+			return RemoveBlockingBarrierRoutes(ctx, nil)
+		},
 		dns:                   options.DNS,
 		dnsStatus:             DNSStatus{State: DNSUnknown},
 		legacy:                options.Legacy,
@@ -478,6 +486,10 @@ func (m *Manager) recordReconcileRound(round reconcileRound) {
 	}
 	for _, action := range round.decision.Actions {
 		report.Actions = append(report.Actions, string(action))
+	}
+	if round.executed != nil {
+		executed := *round.executed // 深拷贝:发布出去的报告不许与循环共享可变体
+		report.Executed = &executed
 	}
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
