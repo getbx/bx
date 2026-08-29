@@ -1,5 +1,43 @@
 import Foundation
 
+/// 拉取(规则/服务器)失败时弹窗的说明文案。**只陈述观测到的事实,原因只给
+/// 可能性** —— 与「Protection may be off.」同一条纪律。
+///
+/// 上一版对**任何**失败都断言「bx could not read its configuration」并把人支去
+/// /var/log/bx-guard.err.log:2026-08-29 生产 Mac 上真的弹了一次,而当时
+/// /v1/rules 实测 200 —— 那次失败是暂时性的(超时/连接),guardian 日志里根本
+/// 不会有它,「配置读不出来」是编出来的原因。编一个原因比不给原因更糟:用户
+/// 会去修一个不存在的配置问题,还会连带不再相信那个日志指引。
+///
+/// 指路 guardian 日志**只在 HTTP 500 时成立**:按「故障可观测性不变量」,只有
+/// 500 的完整原因会被 Guardian 写进自己的日志;403 按设计不记,客户端侧失败
+/// (连接不上/超时/答不完整)发生在到达 Guardian 之前,日志里没有那一次。
+///
+/// 刻意吃已抽取的事实而不是 Error:本文件被多个测试套件独立编译,引用
+/// GuardianClientError 会把 GuardianClient.swift 拖进每份源文件清单。
+func guardianFetchFailureInfo(httpStatus: Int?, failureCode: String?, describedError: String?) -> String {
+    if let status = httpStatus {
+        if status == 500 {
+            var info = "bx answered with an error (HTTP 500"
+            if let code = failureCode, !code.isEmpty {
+                info += ", code=\(code)"
+            }
+            info += "). See /var/log/bx-guard.err.log for the reason."
+            return info
+        }
+        var info = "bx answered HTTP \(status)"
+        if let code = failureCode, !code.isEmpty {
+            info += " (code=\(code))"
+        }
+        info += "."
+        return info
+    }
+    if let described = describedError, !described.isEmpty {
+        return "The menu could not fetch this from bx: \(described)"
+    }
+    return "The menu could not fetch this from bx, and the reason was not recorded."
+}
+
 /// 一组规则在配置里的状态。**三态,不是布尔。**
 ///
 /// 真实配置里一组常常只装了一半(用户手工删过几条,或者 preset 后来加了新域名)。
