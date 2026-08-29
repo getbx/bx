@@ -39,7 +39,9 @@ import "github.com/getbx/bx/internal/observe"
 //     af81632 被回退时那个双 Core 风险的入口。它和 recoveryBlocked、正在进行的
 //     路径恢复一样:本轮什么都不做,并说清是被哪道栅栏挡住的。
 
-// reconcileAction 是一项**被提议**的动作的名字。本期没有任何一项会被执行。
+// reconcileAction 是一项**被提议**的动作的名字。③a 一项都不执行;③b 起
+// desired=off 的两个清理动作有执行权(白名单在 reconcile_execute.go,
+// **执行权的授予只发生在那份白名单里,不在这里**)。
 type reconcileAction string
 
 const (
@@ -128,7 +130,8 @@ func decide(in reconcileInput) reconcileDecision {
 
 	case DesiredOff:
 		// 用户要关,而这三样还挂在系统上,就是残留。顺序按「先停源头、再拆它
-		// 留下的东西」排,只影响日志可读性 —— 本期一项都不会被执行。
+		// 留下的东西」排 —— ③b 起后两项会被执行(一轮至多一个),stop_core
+		// 仍观察态(sudo bx run 调试路径,见 ③b spec)。
 		if in.Observed.CoreSocket == observe.True {
 			add(actionStopCore)
 		}

@@ -39,8 +39,11 @@ func representativeStatus() Status {
 			UDPTransport: "hysteria2://x", DNSUpstream: "223.5.5.5",
 			FailingRules: []FailingRule{{Kind: "direct", Rule: "*.qq.com", Attempts: 100, Failures: 99}},
 		},
-		Capabilities:    []string{CapabilityRules},
-		Reconcile:       &ReconcileReport{At: at, Actions: []string{"start_core"}},
+		Capabilities: []string{CapabilityRules},
+		Reconcile: &ReconcileReport{
+			At: at, Actions: []string{"start_core"},
+			Executed: &ReconcileExecution{Action: "restore_dns", Outcome: "failed", Error: "boom"},
+		},
 		MaintenanceHold: &MaintenanceHoldStatus{Reason: "upgrade", ExpiresAt: at},
 		// LastErrorGeneration 是 Status 结构体里 brief fixture 原文没填的字段
 		// (grep `type Status struct` 核对后补的):它是内部一致性计数器,

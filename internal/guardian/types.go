@@ -240,7 +240,8 @@ type ReconcileReport struct {
 	// At 是记下这一轮的时刻。**永远非零**:recordReconcileRound 是唯一的写入口,
 	// 它一定盖时间戳。见类型头。
 	At time.Time `json:"at"`
-	// Actions 是这一轮**本来会做**的事(阶段③a 一项都不会执行)。
+	// Actions 是这一轮的提议。③b 起其中被授权的至多一项会被执行,结果在
+	// Executed 里 —— 两个字段并列,「提议了什么」与「做了什么」不合并。
 	Actions []string `json:"actions,omitempty"`
 	// Held 非空时 Actions 必为空,内容是被哪道栅栏挡住的。
 	//
@@ -265,6 +266,19 @@ type ReconcileReport struct {
 	// CoreScan 是这一轮**只读**进程扫描的测量结果。见 ReconcileCoreScan ——
 	// 它是测量,不参与判断。
 	CoreScan ReconcileCoreScan `json:"core_scan"`
+	// Executed 是上一轮实际执行的动作(阶段③b 起,仅 desired=off 的清理
+	// 动作有执行权,白名单见 reconcile_execute.go)。nil = 这一轮没有执行
+	// 任何东西 —— 健康机器的常态。
+	Executed *ReconcileExecution `json:"executed,omitempty"`
+}
+
+// ReconcileExecution 是一次调谐执行的结果。Outcome 三值:ok / failed /
+// skipped(skipped 的 Error 说明为什么 —— mutation_busy 或
+// preconditions_changed,两者都不是故障,是让路)。
+type ReconcileExecution struct {
+	Action  string `json:"action"`
+	Outcome string `json:"outcome"`
+	Error   string `json:"error,omitempty"`
 }
 
 // ReconcileCoreScan 是一轮里对 looksLikeCore 的**只读**测量。

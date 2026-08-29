@@ -12,20 +12,18 @@ import (
 	"github.com/getbx/bx/internal/observe"
 )
 
-// 本文件是阶段③a 的调谐环:周期性地把「用户要什么」与「系统实际是什么」对一次,
-// **把「我本来会做什么」记进日志,然后什么都不做。**
-//
-// 为什么要有一个什么都不做的循环:控制面至今没有调谐环,五条手写的补偿路径是它
-// 的替代品。判据(reconcile.go 的 decide)是新写的,而它依赖的观测在真机上从没
-// 连续跑过 —— `looksLikeCore` 的误报率至今**从未测量**。让它先跑一段只说不做的
-// 日子,是唯一能在授权动手之前拿到误报率的办法。阶段③b 才逐项开授权。
+// 本文件是调谐环:周期性地把「用户要什么」与「系统实际是什么」对一次。
+// 阶段③a(2026-08-09)它只说不做;**阶段③b(2026-08-29)起,desired=off 的
+// 两个清理动作有执行权**(白名单与五条执行纪律见 reconcile_execute.go 与
+// 2026-08-29-stage3b-cleanup-actions-design.md),start/stop core 仍观察态。
 //
 // 三件事在这里是硬性的:
 //
-//   - **一个动作都不执行。** 本文件不碰任何 mutating hook(barrier/dns/runner/store)。
-//     这条由行为断言守住(TestReconcileOnceExecutesNothing 与
-//     TestReconcileLoopLogsOnlyWhenTheDecisionChanges 比对替身上的调用),
-//     不是源码文本匹配 —— 本仓库的文本守卫上一轮被绕过了八次。
+//   - **判定(reconcileOnce)永远只读;执行只经 executeReconcileAction 的
+//     白名单。** 白名单外的动作一个都不执行(TestReconcileOnceExecutesNothing
+//     守判定侧,TestReconcileExecutionRefusesEveryUnauthorizedAction 穷举
+//     执行侧),断言打在替身调用上而不是源码文本 —— 本仓库的文本守卫上一轮
+//     被绕过了八次。
 //   - **观测不许持有 mutation channel。** 一整轮观测在 darwin 上是 6 次进程 fork
 //     (capture 2、barrier 1、DNS 3)加约 900 次 syscall。观测在循环里做完,
 //     reconcileOnce 只拿着已经取到的那份事实去读栅栏 —— 它接一个
@@ -169,7 +167,9 @@ type reconcileRound struct {
 	decision     reconcileDecision
 	unobservable []string
 	scan         ReconcileCoreScan
-	unchanged    int
+	// executed 是本轮实际执行的动作结果(③b);nil = 没执行任何东西。
+	executed  *ReconcileExecution
+	unchanged int
 }
 
 // runReconcileLoopWithPacing 把节奏做成参数,好让循环本身可以在单测里跑完整几轮
@@ -246,6 +246,9 @@ func (m *Manager) runReconcileRound(ctx context.Context, observer reconcileObser
 	// 也不进 round(它不是判断的一部分,不该驱动 change-only 日志)。
 	m.recordThroughputObservation()
 	round.decision = m.reconcileOnce(ctx, observed)
+	// 执行(③b):至多一个被授权的动作,槽内复核后动手,结果进本轮记录。
+	// 执行完不重判 —— 下一轮先重新观测,按新事实再说。
+	round.executed = m.executeReconcileAction(ctx, round.decision)
 	changed := !sameReconcileRound(previous, round)
 	if changed {
 		round.unchanged = 0
@@ -323,7 +326,10 @@ func waitReconcileInterval(ctx context.Context, interval time.Duration) bool {
 func sameReconcileRound(a, b reconcileRound) bool {
 	return sameReconcileDecision(a.decision, b.decision) &&
 		a.scan == b.scan &&
-		slices.Equal(a.unobservable, b.unobservable)
+		slices.Equal(a.unobservable, b.unobservable) &&
+		// 执行结果也参与比较:failed→ok 是要打一行的转折;同样的失败反复
+		// 出现则与判断一起进退避 —— 失败重试的限频正来自这里。
+		sameReconcileExecution(a.executed, b.executed)
 }
 
 // sameReconcileDecision 只比「本来会做的事」这一半:动作序列与栅栏。

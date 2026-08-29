@@ -74,6 +74,11 @@ var nestedDigestSignals = []string{
 	"Reconcile.CoreScan.Measured",
 	"Reconcile.CoreScan.Cores",
 	"Reconcile.CoreScan.Reason",
+	// ③b 的执行结果是**真事件**:调谐器动了手(或失败了),菜单该醒。
+	// 同样的失败反复出现时字段值不变,不会自激。
+	"Reconcile.Executed.Action",
+	"Reconcile.Executed.Outcome",
+	"Reconcile.Executed.Error",
 	"Recovery.ID",
 	"Recovery.State",
 	"Recovery.Stage",
