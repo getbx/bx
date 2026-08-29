@@ -42,23 +42,37 @@
 **linux 机制:专用表 + 更高优先级的 rule。**
 
 ```
-ip rule add pref 50 table 90            # pref 50 < supervisor 的 150/200,屏障永远先查
+ip rule add pref 120 table 90            # pref 120:在 fwmark(100) 之后、私网(149/150)与全量(200) 之前
 table 90 内容:
   <server bypass /32> via <gw>          # 隧道能建立(与 darwin bypass 同语义)
+  throw <route.DefaultPrivateCIDRs 各段># 私网 carve-out:停查本表、落回后续 rule
   unreachable <barriercidr 各 /2 块>    # 公网全量阻断(与 darwin -reject 同语义)
-  (v6 启用时)ip -6 同构一份
+  (v6 启用时)ip -6 同构一份(throw 用 DefaultPrivateV6CIDRs)
 ```
 
-表 90 未命中即落到后续 rule(linux rule 语义天然给出「私网恒直连」——
-主表/table 100 接手),与 darwin「主表最长前缀让私网自动通过」同构。
+> **初稿在这里有一个被实测证伪的假设,改之前必读**:初稿写「表 90 未命中即
+> 落到后续 rule,linux rule 语义天然给出私网恒直连」——**假的**。barriercidr
+> 那四条 `/2` 覆盖**整个** v4 空间(0/64/128/192 各 /2),私网地址一定命中;
+> darwin 上救它的是**同一张主表里的连接路由按最长前缀获胜**,而 linux 的 rule
+> 命中即终止查找,跨 rule 没有最长前缀可言。**`throw` 路由是那个语义的忠实
+> 移植**:表内最长前缀让 throw(私网段,长于 /2)先于 unreachable 命中,
+> throw = 停查本表、继续后续 rule ⇒ 私网落回 main/table-100,恒直连保住。
+> 私网清单**必须**引用 `route.DefaultPrivateCIDRs`/`DefaultPrivateV6CIDRs`
+> (数据面那份唯一清单),不许手抄第二份。
 
 **必须逐条对齐的语义清单**(计划阶段每条一个 netns 断言):
-- 屏障在位时,公网 v4/v6 全 unreachable,**Core 跑着也一样**(pref 50 压过 150/200);
+- 屏障在位时,公网 v4/v6 全 unreachable,**Core 跑着也一样**(pref 120 压过 150/200);
+- **pref 取 120 而不是压过一切的 50,是 darwin 语义的忠实移植而不是放水**:
+  darwin 上 bx 自身出站(IP_BOUND_IF)走 scoped 表、**结构上就逃过**主表的 /2
+  reject;linux 的对应物是 supervisor 的 pref-100 fwmark 规则(SO_MARK 0x162,
+  只有 bx 自己打标)。屏障排在 100 之后,bx 的打标流量(过渡窗口里 Core 解析
+  china DNS、重建隧道)不被自家屏障堵死——压到 100 之前的话,server 域名冷启动
+  解析会死锁在自己的屏障上,而 darwin 从来没有这个行为;
 - server bypass 经物理网关可达(隧道能重建);
 - 私网(`route.DefaultPrivateCIDRs` 那些段)不受影响;
 - Remove 逐条对称拆除,不 flush 别人的表;
 - `RemoveBlockingBarrierRoutes`(逃生口那份)linux 版一并供货 ——
-  哪怕逃生口今天只在 darwin CLI 生命周期里被调,**孤儿 pref-50 rule 在 netns
+  哪怕逃生口今天只在 darwin CLI 生命周期里被调,**孤儿 pref-120 rule 在 netns
   里同样能打死连通**,清理原语必须与安装原语同批出现,不许先欠着。
 
 **观测半边不跟着做**:`internal/observe` 问「屏障在不在位」是 darwin 命令,
@@ -105,7 +119,7 @@ linux 没有任何东西会去装/拉起它(systemd unit 由 `bx up` 写,指向 
   在 netns 里直接调 `RunDaemon`(容器内是 root;Core 可执行路径指向测试编译的
   bx 或注入的假 Core —— 计划阶段定,倾向真 `bx run --no-hijack` 起真数据面);
 - 首批五条断言(每条都要变异验证):① Up 之后屏障不在、Core 在跑、
-  `/v1/status` 报 protected;② Down 之后 pref-50 rule + table 90 全量在位、
+  `/v1/status` 报 protected;② Down 之后 pref-120 rule + table 90 全量在位、
   公网 unreachable、bypass 可达;③ 杀 Core 后 `handleUnexpectedExit` 自动重启
   且期间扫描普查日志可见;④ 孤儿 launch marker + 真 Core 在跑 ⇒ Up 拒绝
   (fail-closed 三连的 linux 首验);⑤ 调谐环一轮之后 `Reconcile.At` 有值且
@@ -124,8 +138,10 @@ linux 没有任何东西会去装/拉起它(systemd unit 由 `bx up` 写,指向 
 - **屏障优先级语义是全案最险的一处**:pref 选错或 rule/table 泄漏,在 netns 里
   是断言红,在将来的生产 linux 上是「屏障被 Core 绕过」——所以对齐清单每条
   单独断言、Remove 对称性单独断言,且逃生口清理与安装同批。
-- `PlanBarrier` 拆语义/渲染两层时 darwin 行为保真:与 lifecycle 抽取同一纪律,
-  darwin 既有测试一个断言不动;渲染层拆出后 darwin 命令逐字节等价
-  (golden 比对既有 `PlanBarrier` 输出)。
+- darwin 行为保真的实现选择(实施时定,记档):**darwin `PlanBarrier` 一行不动**,
+  linux 计划器(`PlanBarrierLinux` 一族)与它共读同一份语义源
+  (`validateBarrierContext` + `barriercidr` + `route.DefaultPrivateCIDRs`),
+  防漂移由**跨计划器语义对齐测试**钉住(两边提取出的 bypass/reject 网段集合
+  必须相等)——比抽一层中间表示少动 darwin 一行,保真代价为零。
 - netns 里跑 RunDaemon 要 root + 会写 `/var/lib/bx`/`/run/bx` —— mount ns 里
   tmpfs 盖住,沿用 supervisor 台子的隔离参照(问 `/proc/1/ns/*`,不信环境变量)。
