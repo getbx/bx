@@ -887,6 +887,27 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fetchRulesOnDemand()
     }
 
+    /// 把一次 Guardian 拉取失败折成弹窗说明:抽事实、留痕,措辞由纯函数
+    /// guardianFetchFailureInfo(RulesModel.swift,可测)决定。
+    ///
+    /// **留痕在这里做**(stderr → launchd 的 menu.err.log):`try?` 时代这类
+    /// 失败在任何地方都没有记录 —— 2026-08-29 生产 Mac 弹过一次,事后连
+    /// 「当时是哪种失败」都无从考证。「失败必须留下可操作线索」。
+    private func fetchFailureAlertInfo(_ error: Error?, what: String) -> String {
+        var httpStatus: Int?
+        var failureCode: String?
+        if let clientError = error as? GuardianClientError,
+            case let .status(status, code) = clientError {
+            httpStatus = status
+            failureCode = code
+        }
+        let described = error?.localizedDescription
+        FileHandle.standardError.write(
+            Data("bx-menu \(what) fetch failed: \(described ?? "reason not recorded")\n".utf8))
+        return guardianFetchFailureInfo(
+            httpStatus: httpStatus, failureCode: failureCode, describedError: described)
+    }
+
     /// 按需拉一次规则。**只在用户真的要看规则时拨** ——
     /// 图标不依赖它(menuRowsNow 一个字都不碰 rules),而每次拨都让一个 root
     /// 守护进程读并 YAML 解析一遍 /etc/bx/config.yaml。
@@ -904,7 +925,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !rulesFetchInFlight else { return }
         rulesFetchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let fetched = try? GuardianClient().listRules()
+            let fetched: RuleList?
+            let fetchError: Error?
+            do {
+                fetched = try GuardianClient().listRules()
+                fetchError = nil
+            } catch {
+                fetched = nil
+                fetchError = error
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.rulesFetchInFlight = false
@@ -914,8 +943,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let rules = self.lastRules else {
                     let alert = NSAlert()
                     alert.messageText = "Routing rules are not available"
-                    alert.informativeText = "bx could not read its configuration. "
-                        + "See /var/log/bx-guard.err.log for the reason."
+                    alert.informativeText = self.fetchFailureAlertInfo(fetchError, what: "rules")
                     NSApp.activate(ignoringOtherApps: true)
                     alert.runModal()
                     return
@@ -1183,7 +1211,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !shouldSuppressFetch(inFlight: serversFetchInFlight, explicit: forceShow) else { return }
         serversFetchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let fetched = try? GuardianClient().listServers()
+            let fetched: ServerList?
+            let fetchError: Error?
+            do {
+                fetched = try GuardianClient().listServers()
+                fetchError = nil
+            } catch {
+                fetched = nil
+                fetchError = error
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.serversFetchInFlight = false
@@ -1194,8 +1230,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     guard forceShow else { return }
                     let alert = NSAlert()
                     alert.messageText = "Servers are not available"
-                    alert.informativeText = "bx could not read its configuration. "
-                        + "See /var/log/bx-guard.err.log for the reason."
+                    alert.informativeText = self.fetchFailureAlertInfo(fetchError, what: "servers")
                     NSApp.activate(ignoringOtherApps: true)
                     alert.runModal()
                     return

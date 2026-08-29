@@ -270,6 +270,48 @@ struct RulesModelTests {
         expect(clipboardCandidateLink(String(repeating: "bx://", count: 4000)) == nil, "超长文本没挡住")
     }
 
+    // 2026-08-29 生产 Mac 上的一次真实弹窗促成的两条:菜单此前对**任何**拉取
+    // 失败都断言「bx could not read its configuration」并把人支去 guardian 日志,
+    // 而当时 /v1/rules 实测 200 —— 失败是暂时性的(超时/连接),guardian 日志里
+    // **根本不会有**那一次。编一个原因比不给原因更糟:用户会去修一个不存在的
+    // 配置问题。
+    static func testFetchFailureInfoOnlyBlamesTheLogWhenTheLogHasTheAnswer() {
+        // 500:Guardian 按纪律把完整原因写进了自己的日志,这时候才许指路。
+        let server = guardianFetchFailureInfo(httpStatus: 500, failureCode: "rules_unreadable", describedError: nil)
+        expect(server.contains("bx-guard.err.log"),
+               "500 的原因在 guardian 日志里,文案必须指路:\(server)")
+        expect(server.contains("rules_unreadable"),
+               "失败码是唯一可检索的线索,不许丢:\(server)")
+
+        // 非 500 的 HTTP 应答(403/503):按设计不写日志,指路是白跑。
+        let denied = guardianFetchFailureInfo(httpStatus: 403, failureCode: nil, describedError: nil)
+        expect(!denied.contains("bx-guard.err.log"),
+               "403 不进 guardian 日志,不许把人支过去:\(denied)")
+        expect(denied.contains("403"), "状态码本身就是线索,要说:\(denied)")
+
+        // 到不了 Guardian(连接失败/超时):失败发生在路上,日志里没有这一次。
+        let unreachable = guardianFetchFailureInfo(httpStatus: nil, failureCode: nil,
+                                                   describedError: "Guardian connection failed (61).")
+        expect(!unreachable.contains("bx-guard.err.log"),
+               "客户端侧失败不进 guardian 日志,不许指路:\(unreachable)")
+        expect(unreachable.contains("Guardian connection failed (61)."),
+               "真实错误描述是唯一线索,必须原样带上:\(unreachable)")
+    }
+
+    static func testFetchFailureInfoNeverInventsAConfigProblem() {
+        // 「could not read its configuration」是上一版编出来的原因 —— 三种失败
+        // 形态下都不许再出现:文案只陈述观测到的事实。
+        for info in [
+            guardianFetchFailureInfo(httpStatus: 500, failureCode: nil, describedError: nil),
+            guardianFetchFailureInfo(httpStatus: 403, failureCode: nil, describedError: nil),
+            guardianFetchFailureInfo(httpStatus: nil, failureCode: nil, describedError: "timed out"),
+            guardianFetchFailureInfo(httpStatus: nil, failureCode: nil, describedError: nil),
+        ] {
+            expect(!info.lowercased().contains("configuration"),
+                   "文案在断言一个没观测到的原因:\(info)")
+        }
+    }
+
     static func main() {
         testReplaceMessageShowsTheExitChangeNotALecture()
         testReplaceMessageOmitsTheOldServerWhenUnknown()
@@ -290,6 +332,8 @@ struct RulesModelTests {
         testFailingRulesArriveFromTheRealStatusShape()
         testMissingListsDecodeAsEmptyNotAsError()
         testRequiresRestartAbsenceIsNotFalse()
+        testFetchFailureInfoOnlyBlamesTheLogWhenTheLogHasTheAnswer()
+        testFetchFailureInfoNeverInventsAConfigProblem()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」,
         // 而一个根本没被脚本登记的套件退出码也是 0(本仓库实测栽过)。
         if failures == 0 {
