@@ -1,13 +1,14 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 package guardian
 
 import "errors"
 
-// errCoreScanUnsupported 让非 darwin 平台一律 fail-closed:
-// 这套标记机制在实践中只有 macOS 用得到(Guardian 只有 darwin 实体,
-// `daemon.go` 里 `requireDaemonPlatform()` 在构造 ExecCoreRunner 之前就挡住了
-// 别的平台),在别处放宽没有收益,只有风险。
+// errCoreScanUnsupported 让 darwin/linux 之外的平台一律 fail-closed:
+// darwin 是生产实现,linux 自 2026-08-29 起有 /proc 实现(procscan_linux.go,
+// 为 netns 集成台跑真 Guardian 供货);其余平台在
+// `daemon.go` 里 `requireDaemonPlatform()` 在构造 ExecCoreRunner 之前就挡住了,
+// 在别处放宽没有收益,只有风险。
 //
 // **移植警告**:这个桩不再是「不改行为」。fork 前的三条路——launching 标记、
 // 无记录——现在都要向系统求证,而本桩恒返回错误 = 恒 uncertain,于是

@@ -281,8 +281,8 @@ func scannedCorePIDs(cores []Process) string {
 // 就自行释放。仍然拒绝就说明系统里真有一个、或者根本扫不动 —— 那时该看的是
 // Guardian 日志里那两行普查,不是再跑一遍 down+up。
 //
-// **不许把重试写成承诺**:非 darwin 上 scanRunningCores 恒返回 errCoreScanUnsupported
-// ⇒ 恒拒绝;一台真有第二个 Core 的机器上重试也本该继续被拒。
+// **不许把重试写成承诺**:darwin/linux 之外 scanRunningCores 恒返回
+// errCoreScanUnsupported ⇒ 恒拒绝;一台真有第二个 Core 的机器上重试也本该继续被拒。
 //
 // 它与 guardianCodeHints 那条是两个字符串、两条投递路径(这一句嵌进 daemon 产生的
 // 错误文本、进 Guardian 日志;那一条是 CLI 按失败码翻出来的指引),改一个忘另一个

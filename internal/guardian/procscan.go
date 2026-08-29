@@ -1,6 +1,31 @@
 package guardian
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+)
+
+// looksLikeCore 判定一个进程是不是 bx 的 Core。darwin 与 linux 的扫描共用这
+// 一份判据——「什么算 Core」只有一个答案,两个平台各写一份就会静默分歧。
+//
+// **刻意不依赖具体可执行路径。** 更新之后旧版 Core 跑在 runtime/<旧版本>/bx 下,
+// 用「路径 == 当前 Core 路径」做判据会漏认它,于是起第二个 Core——正是 af81632
+// 被回退的那个双 Core 风险。
+//
+// 也刻意偏向过度匹配:多认一个的后果是拒绝启动(安全),漏认一个是灾难。用户手工
+// `sudo bx run` 会被认出来,而那本来就是一个 Core,认出来是对的。
+func looksLikeCore(executable string, argv []string, uid int) bool {
+	if uid != 0 {
+		return false
+	}
+	if len(argv) < 2 || argv[1] != "run" {
+		return false
+	}
+	if filepath.Base(executable) == "bx" {
+		return true
+	}
+	return filepath.Base(argv[0]) == "bx"
+}
 
 // procStatZombie 是 BSD/Darwin `struct extern_proc.p_stat` 的 SZOMB。
 // x/sys/unix 没有导出这个常量(实测 v0.45.0 无 unix.SZOMB),故在此固定。

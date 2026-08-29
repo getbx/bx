@@ -199,9 +199,10 @@ func (m *Manager) confirmNoCoreForRelease() (released bool, reason string) {
 // **只有「确知没有」才释放。** 扫不动、扫到了(哪怕只有两次里的一次)、runner
 // 不会扫、求证本身 panic,一律保持拒绝,fail-closed 一步不让。
 //
-// **非 darwin 上这是个 no-op**:procscan_other.go 的 scanRunningCores 恒返回
-// errCoreScanUnsupported ⇒ confirmNoCoreForRelease 恒 false ⇒ 门仍然焊死。
-// 谁要移植 Guardian,必须先实现 scanRunningCores。
+// **darwin/linux 之外这是个 no-op**:procscan_other.go 的 scanRunningCores 恒
+// 返回 errCoreScanUnsupported ⇒ confirmNoCoreForRelease 恒 false ⇒ 门仍然焊死。
+// linux 自 2026-08-29 起有 /proc 实现(procscan_linux.go),这条门在 linux 上
+// 与 darwin 同规则。谁要移植 Guardian 到别的平台,必须先实现 scanRunningCores。
 func (m *Manager) recheckOwnershipUncertain(hop string) error {
 	if !m.current.Uncertain {
 		return nil
