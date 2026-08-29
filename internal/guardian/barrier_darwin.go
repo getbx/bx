@@ -109,19 +109,3 @@ func (darwinRunner) Output(ctx context.Context, command Command) ([]byte, error)
 	}
 	return output, nil
 }
-
-type commandOutputError struct {
-	err    error
-	output string
-}
-
-func (e commandOutputError) Error() string {
-	if e.output == "" {
-		return e.err.Error()
-	}
-	return e.err.Error() + ": " + e.output
-}
-
-func (e commandOutputError) Unwrap() error {
-	return e.err
-}

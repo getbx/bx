@@ -47,6 +47,25 @@ type barrierRoute struct {
 	del Command
 }
 
+// commandOutputError 把命令的退出错误与它的输出并成一条可读错误。
+// darwin(route)与 linux(ip)的 runner 共用 —— 容错判据认的是输出里的措辞,
+// 裸 exit status 什么也判不了。
+type commandOutputError struct {
+	err    error
+	output string
+}
+
+func (e commandOutputError) Error() string {
+	if e.output == "" {
+		return e.err.Error()
+	}
+	return e.err.Error() + ": " + e.output
+}
+
+func (e commandOutputError) Unwrap() error {
+	return e.err
+}
+
 // 网段字面量下沉到 internal/barriercidr 这个叶子包,让只读观测层能引用同一份
 // 清单而不必 import guardian(guardian 侧的调谐判据要反过来 import observe)。
 // 这里仍保留包内的两个变量名,barrier 的其余代码与既有测试一字未改。
