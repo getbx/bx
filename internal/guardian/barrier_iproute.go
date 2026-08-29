@@ -1,8 +1,25 @@
 package guardian
 
 import (
+	"strings"
+
 	"github.com/getbx/bx/internal/route"
 )
+
+// linux 执行器的容错判据(与 darwin 的 isRouteAlreadyExists/isRouteNotInTable
+// 同构):装到已存在的是幂等,删到不存在的是幂等,**别的一律如实上报** ——
+// 「Operation not permitted」这类真实失败被容错吞掉,屏障就是装了个寂寞而
+// 调用方以为 fail-closed 已就位。busybox 与 iproute2 的「不存在」措辞不同
+// (No such process / No such file or directory),两个都认,harness 在 busybox 里跑。
+func isIPRouteExists(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "file exists")
+}
+
+func isIPRouteMissing(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such process") ||
+		strings.Contains(msg, "no such file or directory")
+}
 
 // linux 屏障计划器(纯函数,无 build tag:计划在哪个 OS 上都该可测)。
 // 设计与逐条语义对齐清单见 docs/superpowers/specs/2026-08-29-guardian-linux-adapter-design.md。

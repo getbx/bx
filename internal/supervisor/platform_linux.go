@@ -293,6 +293,14 @@ func (n *netConf) routeDown() {
 	}
 }
 
+// LinuxDefaultRoute 把 metric 感知的默认路由解析暴露给 Guardian 的 linux
+// 屏障(DiscoverDefaultGateway)。多 WAN 选错 metric 把隧道走上烂路的教训
+// (Mudi,SIM+wifi 双默认)只修在 parseDefaultRoute 这一份里 —— 消费方不许
+// 手抄第二份解析,这个导出就是为了堵住那条抄写的路。
+func LinuxDefaultRoute() (gateway, device string, err error) {
+	return defaultRoute()
+}
+
 // defaultRoute 解析当前 IPv4 默认路由的网关与出口设备。
 func defaultRoute() (gw, dev string, err error) {
 	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()

@@ -1,12 +1,15 @@
 package guardian
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/getbx/bx/internal/barriercidr"
 	"github.com/getbx/bx/internal/route"
 )
+
+var errFake = errors.New("exit status 2")
 
 // linux 屏障计划器的测试无 build tag:计划是纯函数,三条 CI 腿都该证明它。
 // 语义背景(spec 2026-08-29-guardian-linux-adapter-design.md):darwin 屏障赢
@@ -204,6 +207,40 @@ func TestPlanBarrierReleaseLinuxDisarmsAndClearsOwnTable(t *testing.T) {
 	}
 	if _, err := PlanBarrierReleaseLinux(linuxBarrierCtx(), []string{"not-a-cidr"}); err == nil {
 		t.Fatal("坏 transferred 输入必须响亮报错")
+	}
+}
+
+// 容错判据认的是 RTNETLINK 的措辞(与 darwin 认 route 的措辞同构):
+// 装到已存在的是幂等,删到不存在的是幂等,别的一律如实上报。
+// busybox 与 iproute2 的措辞略有差别(No such process / No such file or
+// directory),两个都要认 —— harness 跑在 busybox 里。
+func TestLinuxRouteToleranceRecognizesRTNETLINKWording(t *testing.T) {
+	exists := []string{
+		"RTNETLINK answers: File exists",
+		"ip: RTNETLINK answers: File exists",
+	}
+	for _, msg := range exists {
+		if !isIPRouteExists(commandOutputError{err: errFake, output: msg}) {
+			t.Fatalf("%q 应被认作「已存在」", msg)
+		}
+	}
+	missing := []string{
+		"RTNETLINK answers: No such process",
+		"ip: RTNETLINK answers: No such file or directory",
+	}
+	for _, msg := range missing {
+		if !isIPRouteMissing(commandOutputError{err: errFake, output: msg}) {
+			t.Fatalf("%q 应被认作「不存在」", msg)
+		}
+	}
+	for _, msg := range []string{
+		"RTNETLINK answers: Operation not permitted", // 非 root:真实失败,必须上报
+		"Cannot find device \"eth9\"",
+	} {
+		e := commandOutputError{err: errFake, output: msg}
+		if isIPRouteExists(e) || isIPRouteMissing(e) {
+			t.Fatalf("%q 是真实失败,不许被容错吞掉", msg)
+		}
 	}
 }
 
