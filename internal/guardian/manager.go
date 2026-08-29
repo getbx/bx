@@ -1399,7 +1399,10 @@ func (m *Manager) ensureDNSManaged(ctx context.Context, runtimeState supervisor.
 	if err != nil {
 		return m.failDNSActivation(ctx, runtimeState, "dns_verification_failed", fmt.Errorf("verify managed DNS: %w", err))
 	}
-	if status.State != DNSManaged {
+	// NotNeeded 与 Managed 一样放行:前者是「本平台无此事」(linux 数据面
+	// 自己管),不是接管失败。Unmanaged/Unknown 仍然失败 —— darwin 上该接管
+	// 而没接管就是故障,这条语义一分不放。
+	if status.State != DNSManaged && status.State != DNSNotNeeded {
 		return m.failDNSActivation(ctx, runtimeState, "dns_verification_failed", fmt.Errorf("verify managed DNS: state is %q", status.State))
 	}
 	return nil
@@ -1429,7 +1432,7 @@ func (m *Manager) failDNSActivation(ctx context.Context, runtimeState supervisor
 }
 
 func (m *Manager) setProtectedStatus(phase Phase, pid int, version, lastError string) error {
-	if m.dnsStatus.State != DNSManaged {
+	if m.dnsStatus.State != DNSManaged && m.dnsStatus.State != DNSNotNeeded {
 		return fmt.Errorf("cannot publish protected status with DNS state %q", m.dnsStatus.State)
 	}
 	m.setStatus(Status{

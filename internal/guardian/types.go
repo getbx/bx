@@ -51,6 +51,12 @@ const (
 	DNSUnknown   DNSState = "unknown"
 	DNSManaged   DNSState = "managed"
 	DNSUnmanaged DNSState = "unmanaged"
+	// DNSNotNeeded:本平台没有「DNS 接管」这件事(linux:数据面整机劫持 +
+	// engine 拦 UDP:53,resolv.conf 一个字不碰)。它与 Unmanaged(该接管而
+	// 没接管,darwin 上是故障)语义相反,折进任何既有态都是撒谎:折进
+	// Managed 是伪造绿灯,折进 Unmanaged 让健康的 linux 机器 Up 恒失败,
+	// 折进 Unknown 把「查了,无此事」说成「没查」。
+	DNSNotNeeded DNSState = "not_needed"
 )
 
 type DNSStatus struct {
@@ -382,7 +388,7 @@ func (s Status) MarshalJSON() ([]byte, error) {
 
 func normalizedDNSState(state DNSState) DNSState {
 	switch state {
-	case DNSManaged, DNSUnmanaged, DNSUnknown:
+	case DNSManaged, DNSUnmanaged, DNSUnknown, DNSNotNeeded:
 		return state
 	default:
 		return DNSUnknown
