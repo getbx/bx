@@ -21,6 +21,20 @@ func isIPRouteMissing(err error) bool {
 		strings.Contains(msg, "no such file or directory")
 }
 
+// isIPv6FamilyUnsupported:内核整族没有 v6(ipv6.disable=1,VPS 与 netns 环境
+// 常见)。**只许对 -6 命令容错**:没有 v6 的内核上,v6 阻断要挡的东西按构造
+// 不存在,跳过不是 fail-open;而放到 v4 命令上它就会吞掉真实失败。少了这条
+// 容错,teardown 里排在前面的 -6 命令会让 v4 的 pref-120 rule 永远清不掉 ——
+// 逃生口对着一台黑洞机器恒失败(2026-08-29 code review 抓到;supervisor 的
+// linux Hijack 用 /proc/net/if_inet6 探测干的是同一件事)。
+func isIPv6FamilyUnsupported(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "address family not supported")
+}
+
+func commandIsIPv6(c Command) bool {
+	return len(c.Args) > 0 && c.Args[0] == "-6"
+}
+
 // linux 屏障计划器(纯函数,无 build tag:计划在哪个 OS 上都该可测)。
 // 设计与逐条语义对齐清单见 docs/superpowers/specs/2026-08-29-guardian-linux-adapter-design.md。
 //

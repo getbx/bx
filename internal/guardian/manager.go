@@ -1426,7 +1426,13 @@ func (m *Manager) restoreDNS(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if status.State != DNSUnmanaged {
+	// NotNeeded 与 Unmanaged 一样是干净的还原后状态:linux 的 Restore 如实答
+	// 「本平台无此事」。这是 DNSNotNeeded 的**第三道门** —— 前两道
+	// (ensureDNSManaged/setProtectedStatus)教了而这里漏掉时,linux 的整条
+	// 停止路径会失败于 dns_restore_failed,启动恢复更会把 recoveryBlocked
+	// 锁上 —— 正是 71 分钟事故「开不了升级成关不掉」的机制(2026-08-29
+	// code review 抓到,当时 dns_notneeded_test 只测了 Up/Inspect 没测 Restore)。
+	if status.State != DNSUnmanaged && status.State != DNSNotNeeded {
 		return fmt.Errorf("DNS restore left state %q", status.State)
 	}
 	return nil

@@ -35,6 +35,19 @@ func TestUpSucceedsWhenDNSNeedsNoTakeoverOnThisPlatform(t *testing.T) {
 	}
 }
 
+// **停止路径的那道门**:linux 的 Restore 如实答 NotNeeded,restoreDNS 不许把
+// 它当失败 —— 漏掉这道门,linux 的 Down 恒失败、启动恢复把 recoveryBlocked
+// 锁上(「开不了升级成关不掉」的机制)。2026-08-29 code review 抓到:第四态
+// 教了两道门漏了第三道,而本文件当时恰好只测 Up/Inspect 没测 Restore ——
+// 测试输入让缺陷不可见的又一例。
+func TestRestoreDNSAcceptsNotNeededAsCleanlyRestored(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.dns.restoreResults = []fakeDNSResult{{status: DNSStatus{State: DNSNotNeeded}}}
+	if err := env.manager.restoreDNS(context.Background()); err != nil {
+		t.Fatalf("NotNeeded 的还原被当成失败: %v", err)
+	}
+}
+
 // darwin 的既有语义一分不放:Unmanaged(该接管而没接管)仍然是验证失败。
 // 这条与 manager_test.go 里既有的 dns_verification_failed 断言互为表里 ——
 // 那边守「坏状态仍失败」,这边守「第四态不经过那条失败路径」。

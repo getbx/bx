@@ -76,3 +76,43 @@ func TestLinuxBarrierRemovalPathsTolerateMissingEntries(t *testing.T) {
 		t.Fatalf("逃生口没有跑完全部清理命令: %v", runner.ran)
 	}
 }
+
+// ipv6.disable=1 的内核(VPS 与 netns 环境常见):每条 -6 命令都报 address
+// family not supported。装/拆/逃生口都必须照常走完 v4 的部分 —— 没有这条
+// 豁免时,teardown 里排在前面的 -6 命令会让 v4 的 pref-120 rule 永远清不掉,
+// 逃生口对着一台黑洞机器恒失败(2026-08-29 code review)。v6 缺席的内核上
+// 无 v6 可堵,跳过不是 fail-open。
+func TestLinuxBarrierSurvivesV6DisabledKernel(t *testing.T) {
+	v6Down := func() *scriptedIPRunner {
+		r := &scriptedIPRunner{fail: map[string]string{}}
+		for _, plan := range [][]Command{
+			func() []Command { a, _, c, _ := PlanBarrierLinux(linuxExecCtx()); return append(a, c...) }(),
+			PlanLinuxBarrierCleanup(),
+		} {
+			for _, c := range plan {
+				if commandIsIPv6(c) {
+					r.fail[c.String()] = "RTNETLINK answers: Address family not supported by protocol"
+				}
+			}
+		}
+		return r
+	}
+
+	if err := NewBarrier(v6Down()).Install(context.Background(), linuxExecCtx()); err != nil {
+		t.Fatalf("v6 缺席的内核上 Install 不该失败: %v", err)
+	}
+	if err := NewBarrier(v6Down()).Remove(context.Background(), linuxExecCtx()); err != nil {
+		t.Fatalf("v6 缺席的内核上 Remove 不该失败: %v", err)
+	}
+	runner := v6Down()
+	if err := RemoveBlockingBarrierRoutes(context.Background(), runner); err != nil {
+		t.Fatalf("v6 缺席的内核上逃生口不该失败: %v", err)
+	}
+	// 豁免只对 -6:v4 命令上同样的措辞仍是真实失败。
+	runner = &scriptedIPRunner{fail: map[string]string{
+		"ip rule del pref 120 table 90": "RTNETLINK answers: Address family not supported by protocol",
+	}}
+	if err := RemoveBlockingBarrierRoutes(context.Background(), runner); err == nil {
+		t.Fatal("v4 命令的失败被 v6 豁免吞掉了")
+	}
+}

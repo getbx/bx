@@ -887,12 +887,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fetchRulesOnDemand()
     }
 
-    /// 把一次 Guardian 拉取失败折成弹窗说明:抽事实、留痕,措辞由纯函数
-    /// guardianFetchFailureInfo(RulesModel.swift,可测)决定。
-    ///
-    /// **留痕在这里做**(stderr → launchd 的 menu.err.log):`try?` 时代这类
-    /// 失败在任何地方都没有记录 —— 2026-08-29 生产 Mac 弹过一次,事后连
-    /// 「当时是哪种失败」都无从考证。「失败必须留下可操作线索」。
+    /// 在**失败点**留痕(stderr → launchd 的 menu.err.log)。留痕必须住在
+    /// catch 里而不是弹窗文案的构造里:有旧缓存兜着时不弹窗、服务器窗口的
+    /// 环境刷新(forceShow=false)也不弹窗 —— 把留痕挂在弹窗上,这两类失败
+    /// 就又回到 `try?` 时代的零记录(2026-08-29 code review 抓到,而那正是
+    /// 这批改动自称要堵的洞)。
+    private func logGuardianFetchFailure(_ what: String, _ error: Error) {
+        FileHandle.standardError.write(
+            Data("bx-menu \(what) fetch failed: \(error.localizedDescription)\n".utf8))
+    }
+
+    /// 把一次 Guardian 拉取失败折成弹窗说明:只抽事实,措辞由纯函数
+    /// guardianFetchFailureInfo(RulesModel.swift,可测)决定。留痕不在这里 ——
+    /// 见 logGuardianFetchFailure。
     private func fetchFailureAlertInfo(_ error: Error?, what: String) -> String {
         var httpStatus: Int?
         var failureCode: String?
@@ -901,11 +908,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             httpStatus = status
             failureCode = code
         }
-        let described = error?.localizedDescription
-        FileHandle.standardError.write(
-            Data("bx-menu \(what) fetch failed: \(described ?? "reason not recorded")\n".utf8))
         return guardianFetchFailureInfo(
-            httpStatus: httpStatus, failureCode: failureCode, describedError: described)
+            httpStatus: httpStatus, failureCode: failureCode,
+            describedError: error?.localizedDescription)
     }
 
     /// 按需拉一次规则。**只在用户真的要看规则时拨** ——
@@ -933,6 +938,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 fetched = nil
                 fetchError = error
+                self?.logGuardianFetchFailure("rules", error)
             }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -1219,6 +1225,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 fetched = nil
                 fetchError = error
+                self?.logGuardianFetchFailure("servers", error)
             }
             DispatchQueue.main.async {
                 guard let self else { return }

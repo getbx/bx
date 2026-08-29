@@ -32,6 +32,13 @@ func dnsPresentation(state: String?, managed: Bool, service: String?, servers: [
         }
         return DNSPresentation(allowsProtected: true, label: "Handled by bx", menuWarning: nil)
     }
+    // not_needed:本平台没有「DNS 接管」这件事(linux 数据面自己管)。菜单今天
+    // 只在 darwin 跑、按构造收不到它,但这份函数是 CLI guardianDNSLabel 的字面
+    // 孪生 —— 孪生缺一类,下一个平台接上菜单时它会落进「Status unavailable」,
+    // 把「查了,无此事」说成「没查」。
+    if state == "not_needed" {
+        return DNSPresentation(allowsProtected: true, label: "Handled by bx (data plane)", menuWarning: nil)
+    }
     if state == "unmanaged" {
         return DNSPresentation(
             allowsProtected: false,
