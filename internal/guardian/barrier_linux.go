@@ -34,8 +34,8 @@ func NewBarrier(runner CommandRunner) Barrier {
 // DiscoverDefaultGateway 复用 supervisor 那份 **metric 感知**的默认路由解析
 // (supervisor.LinuxDefaultRoute)。多 WAN 选错 metric 把隧道走上烂路的教训
 // (Mudi,SIM+wifi 双默认)只修在那一份里,这里不许手抄第二份解析。
-func DiscoverDefaultGateway(_ context.Context) (string, error) {
-	gateway, _, err := supervisor.LinuxDefaultRoute()
+func DiscoverDefaultGateway(ctx context.Context) (string, error) {
+	gateway, _, err := supervisor.LinuxDefaultRoute(ctx)
 	if err != nil {
 		return "", fmt.Errorf("discover default gateway: %w", err)
 	}
@@ -85,9 +85,15 @@ func RemoveBlockingBarrierRoutes(ctx context.Context, runner CommandRunner) erro
 
 func (b linuxBarrier) run(ctx context.Context, planned []Command, tolerated func(error) bool) error {
 	for _, command := range planned {
-		if err := b.runner.Run(ctx, command); err != nil && !tolerated(err) {
-			return fmt.Errorf("run %s: %w", command.String(), err)
+		err := b.runner.Run(ctx, command)
+		if err == nil || tolerated(err) {
+			continue
 		}
+		// v6 整族缺席只豁免 -6 命令(判据与范围的理由见 isIPv6FamilyUnsupported)。
+		if commandIsIPv6(command) && isIPv6FamilyUnsupported(err) {
+			continue
+		}
+		return fmt.Errorf("run %s: %w", command.String(), err)
 	}
 	return nil
 }

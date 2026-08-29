@@ -27,10 +27,17 @@ const (
 	reconcileExecutedOK      = "ok"
 	reconcileExecutedFailed  = "failed"
 	reconcileExecutedSkipped = "skipped"
-	// reconcileSkipPreconditions:拿到槽之后复核发现意图/栅栏变了 —— 决策与
+	// reconcileSkipPreconditions:拿到槽之后复核发现意图变了 —— 决策与
 	// 执行之间用户可能刚好 up,按陈旧决策拆用户刚要起来的东西是本文件最不可
-	// 犯的错。这不是故障,是让路。
+	// 犯的错。这不是故障,是让路。栅栏升起与意图读不出各用自己的名字
+	// (heldBy 的产出),不折进这一个 —— intent_unreadable 是真故障,
+	// 折进「让路」就把它渲染成永远的良性。
 	reconcileSkipPreconditions = "preconditions_changed"
+	// reconcileExecuteFailedCode:发布面只带失败码 —— Executed 进 Status、
+	// Status 走 0666 的本机 socket,原始错误串(命令行 + 命令输出,可能含
+	// 路径)只进 Guardian 日志。「响应体只带失败码」是记档不变量,这里不开
+	// 第三个例外。
+	reconcileExecuteFailedCode = "execute_failed"
 	// reconcileExecuteTimeout 给一次执行封顶。执行期间持着 mutation 槽,
 	// 用户的 up/down 最坏等这么久 —— 与一次真实 down 的量级相当。
 	reconcileExecuteTimeout = 20 * time.Second
@@ -62,29 +69,48 @@ func (m *Manager) executeReconcileAction(ctx context.Context, decision reconcile
 	if !ok {
 		return nil
 	}
-	result := m.executeUnderMutationSlot(ctx, action)
-	log.Printf("guardian_reconcile_executed action=%s outcome=%s err=%s",
-		result.Action, result.Outcome, formatExecutionError(result.Error))
+	result, detail := m.executeUnderMutationSlot(ctx, action)
+	// 完整原因(可能含命令行与命令输出)只进 Guardian 日志;发布面上的
+	// result.Error 是稳定的码。
+	log.Printf("guardian_reconcile_executed action=%s outcome=%s code=%s detail=%s",
+		result.Action, result.Outcome, formatExecutionError(result.Error), formatExecutionError(detail))
 	return result
 }
 
-func (m *Manager) executeUnderMutationSlot(ctx context.Context, action reconcileAction) *ReconcileExecution {
+// executeUnderMutationSlot 在互斥槽内复核并执行。第二个返回值是**只进日志**
+// 的完整失败原因(发布面上 result.Error 只有码)。
+func (m *Manager) executeUnderMutationSlot(ctx context.Context, action reconcileAction) (*ReconcileExecution, string) {
 	// try-acquire,**不排队**:channel 的唤醒是 FIFO 的,硬等会把用户那次
 	// `bx up` 挤过预算(与 readMutationFences 同一条纪律、同一个时限)。
 	acquireCtx, cancel := context.WithTimeout(ctx, reconcileMutationWait)
 	defer cancel()
 	if err := m.acquireMutation(acquireCtx); err != nil {
-		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedSkipped, Error: heldMutationBusy}
+		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedSkipped, Error: heldMutationBusy}, ""
 	}
 	defer m.releaseMutation()
 
-	// 槽内复核:决策用的意图是槽外读的,拿到槽之前用户可能刚好 up/武装了
-	// 挂起/锁存升起。授权的两个动作都只对 desired=off 成立,任何一项对不上
-	// 就整轮放弃 —— 下一轮按新事实从头判。
+	// 槽内复核经 **heldBy 本尊**,不手抄栅栏清单:决策与拿到槽之间任何一道
+	// 栅栏都可能升起(路径恢复不走 mutation 槽,它有自己的锁 —— 手抄清单
+	// 漏掉它,清理就会与一次在飞的路由手术并发写路由表;将来加第六道栅栏,
+	// 手抄清单也不会跟着长)。skipped 的 Error 就是栅栏名,
+	// intent_unreadable 因此保住自己的名字 —— 它是真故障,不折进「让路」。
+	input := reconcileInput{
+		PathRecoveryBusy:   m.pathRecoveryBusy(),
+		RecoveryBlocked:    m.recoveryBlocked,
+		OwnershipUncertain: m.current.Uncertain,
+	}
 	intent, err := m.loadIntentSnapshot(time.Now())
-	if err != nil || intent.Desired != DesiredOff || intent.HoldArmed ||
-		m.recoveryBlocked || m.current.Uncertain {
-		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedSkipped, Error: reconcileSkipPreconditions}
+	if err != nil {
+		input.IntentUnreadable = true
+	} else {
+		input.Desired = intent.Desired
+		input.MaintenanceHold = intent.HoldArmed
+	}
+	if held := heldBy(input); held != "" {
+		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedSkipped, Error: held}, ""
+	}
+	if input.Desired != DesiredOff {
+		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedSkipped, Error: reconcileSkipPreconditions}, ""
 	}
 
 	execCtx, cancelExec := context.WithTimeout(ctx, reconcileExecuteTimeout)
@@ -101,9 +127,9 @@ func (m *Manager) executeUnderMutationSlot(ctx context.Context, action reconcile
 		runErr = m.restoreDNS(execCtx)
 	}
 	if runErr != nil {
-		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedFailed, Error: runErr.Error()}
+		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedFailed, Error: reconcileExecuteFailedCode}, runErr.Error()
 	}
-	return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedOK}
+	return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedOK}, ""
 }
 
 func formatExecutionError(err string) string {

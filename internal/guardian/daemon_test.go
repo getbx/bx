@@ -755,9 +755,12 @@ func TestSystemDNSManagerPropagatesCancellationToAutoDetectedRestore(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	called := false
-	dns, ok := newLifecyclePlatform().NewDNSManager("").(dnsManager)
+	// 直接构造 NewDNSManager(""),不经平台缝:这条测试测的是 install 适配层的
+	// 取消传播,而平台缝在 linux 上返回 dataPlaneDNSManager —— 经缝取会让
+	// ubuntu CI 腿恒红(2026-08-29 code review 抓到)。
+	dns, ok := NewDNSManager("").(dnsManager)
 	if !ok {
-		t.Fatalf("system DNS manager type = %T, want dnsManager", newLifecyclePlatform().NewDNSManager(""))
+		t.Fatalf("system DNS manager type = %T, want dnsManager", NewDNSManager(""))
 	}
 	dns.restore = func(got context.Context, service string) (install.DNSStatus, error) {
 		called = true

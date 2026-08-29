@@ -151,6 +151,7 @@ func TestReconcileExecutionRechecksIntentUnderTheSlot(t *testing.T) {
 // 「连败 N 次就停」是手写补偿时代的形状 —— 停了之后残留永久无人管。
 func TestReconcileExecutionReportsFailureAndTheLoopRetries(t *testing.T) {
 	env := newManagerTestEnv(t)
+	logs := captureGuardianLog(t)
 	env.clearOrphanBarrierErr = errors.New("route: operation not permitted")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -188,7 +189,16 @@ func TestReconcileExecutionReportsFailureAndTheLoopRetries(t *testing.T) {
 	if report == nil || report.Executed == nil || report.Executed.Outcome != reconcileExecutedFailed {
 		t.Fatalf("失败必须如实进报告: %+v", report)
 	}
-	if !strings.Contains(report.Executed.Error, "not permitted") {
-		t.Fatalf("失败原因不许丢: %+v", report.Executed)
+	// **发布面只带码**:Status 走 0666 socket,原始错误串(命令行/命令输出)
+	// 只进 Guardian 日志 ——「响应体只带失败码」的记档不变量,这里不开例外。
+	if report.Executed.Error != reconcileExecuteFailedCode {
+		t.Fatalf("发布面上只许是失败码,got %+v", report.Executed)
+	}
+	if strings.Contains(report.Executed.Error, "not permitted") {
+		t.Fatalf("原始错误串漏进了发布面: %+v", report.Executed)
+	}
+	// 完整原因必须在日志里 —— 只删不移就是把线索弄丢。
+	if lines := logLinesContaining(logs, "not permitted"); len(lines) == 0 {
+		t.Fatal("完整失败原因必须进 Guardian 日志")
 	}
 }

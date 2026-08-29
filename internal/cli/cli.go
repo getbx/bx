@@ -4483,7 +4483,9 @@ func reconcileRoundExecution(round guardian.ReconcileReport) string {
 	case "skipped":
 		return segment + "(让路: " + executed.Error + ")"
 	default:
-		return segment + "(失败: " + executed.Error + ")"
+		// Error 是稳定的失败码(发布面不带原始错误串),完整原因在 Guardian
+		// 日志里 —— 不指路的话这个码就是死胡同。
+		return segment + "(失败: " + executed.Error + ",详见 /var/log/bx-guard.err.log)"
 	}
 }
 
@@ -4569,6 +4571,11 @@ func guardianDNSLabel(state guardian.DNSState, service string) string {
 		return "Handled by bx"
 	case guardian.DNSUnmanaged:
 		return "Not managed"
+	case guardian.DNSNotNeeded:
+		// linux:数据面整机劫持自己管 DNS,没有「接管」这件事。主语仍是 bx
+		// (「Wi-Fi managed」被读反的教训),落进 default 的「Status
+		// unavailable」则是把「查了,无此事」说成「没查」。
+		return "Handled by bx (data plane)"
 	default:
 		return "Status unavailable"
 	}
@@ -4686,6 +4693,11 @@ func guardianDNSDoctorCheck(status guardian.Status) checkReport {
 		detail += " service=" + status.DNSService
 	}
 	if state == guardian.DNSManaged && status.DNSManaged {
+		return checkReport{Name: "guardian_dns", Status: "ok", Detail: detail}
+	}
+	// NotNeeded 是健康态(linux:数据面自己管,dns_managed 如实为 false)——
+	// 判 fail 并提示 sudo bx up,是在一台完全健康的机器上教用户白跑一趟。
+	if state == guardian.DNSNotNeeded {
 		return checkReport{Name: "guardian_dns", Status: "ok", Detail: detail}
 	}
 	return checkReport{

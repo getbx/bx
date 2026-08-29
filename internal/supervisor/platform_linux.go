@@ -7,6 +7,7 @@
 package supervisor
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -297,8 +298,16 @@ func (n *netConf) routeDown() {
 // 屏障(DiscoverDefaultGateway)。多 WAN 选错 metric 把隧道走上烂路的教训
 // (Mudi,SIM+wifi 双默认)只修在 parseDefaultRoute 这一份里 —— 消费方不许
 // 手抄第二份解析,这个导出就是为了堵住那条抄写的路。
-func LinuxDefaultRoute() (gateway, device string, err error) {
-	return defaultRoute()
+//
+// **必须吃 ctx**:调用方在停止路径上(Down 解析网关),一次挂死的
+// `ip route show` 不带 ctx 就是整条停止路径跟着挂 ——「停止路径不许因为
+// 别的事没做完而变慢或失败」。
+func LinuxDefaultRoute(ctx context.Context) (gateway, device string, err error) {
+	out, err := exec.CommandContext(ctx, "ip", "-4", "route", "show", "default").Output()
+	if err != nil {
+		return "", "", err
+	}
+	return parseDefaultRoute(string(out))
 }
 
 // defaultRoute 解析当前 IPv4 默认路由的网关与出口设备。

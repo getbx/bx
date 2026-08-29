@@ -244,6 +244,21 @@ func TestLinuxRouteToleranceRecognizesRTNETLINKWording(t *testing.T) {
 	}
 }
 
+// v6 整族缺席(ipv6.disable=1)的判据与范围:错误措辞认得出,且 -6 的判定
+// 只看第一个实参 —— 它决定这条豁免够不着任何 v4 命令。
+func TestIPv6FamilyToleranceIsScopedToV6Commands(t *testing.T) {
+	afnosupport := commandOutputError{err: errFake, output: "ip: RTNETLINK answers: Address family not supported by protocol"}
+	if !isIPv6FamilyUnsupported(afnosupport) {
+		t.Fatal("v6 缺席的措辞没被认出")
+	}
+	if !commandIsIPv6(Command{Name: "ip", Args: []string{"-6", "rule", "del", "pref", "120", "table", "90"}}) {
+		t.Fatal("-6 命令没被认出")
+	}
+	if commandIsIPv6(Command{Name: "ip", Args: []string{"rule", "del", "pref", "120", "table", "90"}}) {
+		t.Fatal("v4 命令被当成了 -6 —— 豁免会吞掉 v4 的真实失败")
+	}
+}
+
 // 逃生口清理:无 ctx、可无条件跑 —— 解除两条 rule + flush 自己的专用表。
 // 孤儿 pref-120 rule 与 darwin 的孤儿 /2 一样能打死连通,清理原语必须与
 // 安装原语同批存在。
