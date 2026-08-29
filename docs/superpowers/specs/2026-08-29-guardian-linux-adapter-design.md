@@ -71,6 +71,12 @@ table 90 内容:
 - server bypass 经物理网关可达(隧道能重建);
 - 私网(`route.DefaultPrivateCIDRs` 那些段)不受影响;
 - Remove 逐条对称拆除,不 flush 别人的表;
+- **v6 整族缺席(ipv6.disable=1)不许连累 v4**:-6 命令对「address family
+  not supported」豁免(v6 缺席的内核上无 v6 可堵,跳过不是 fail-open;
+  豁免严格限 -6 命令,v4 上同样措辞仍是真实失败)—— 2026-08-29 review
+  抓到:没有它,teardown 里 v6 先行会让 v4 的 pref-120 rule 永远清不掉,
+  逃生口对着黑洞机器恒失败。supervisor 的 Hijack 用 /proc/net/if_inet6
+  探测干同一件事,屏障侧选错误措辞豁免是因为计划器是纯函数、不做 I/O;
 - `RemoveBlockingBarrierRoutes`(逃生口那份)linux 版一并供货 ——
   哪怕逃生口今天只在 darwin CLI 生命周期里被调,**孤儿 pref-120 rule 在 netns
   里同样能打死连通**,清理原语必须与安装原语同批出现,不许先欠着。

@@ -64,7 +64,14 @@ var executableActions = map[reconcileAction]bool{
    `Executed {Action, Outcome, Error}`(上一轮执行了什么、成没成)。
    statusdigest 的嵌套穷举守卫会逼着这些新字段在
    exclusions/signals 里选边 —— Executed 是**真事件**,进 signals
-   (它变了菜单就该醒);失败细节字符串若含时间戳则拆开,不许整字段排除。
+   (它变了菜单就该醒)。
+   > **2026-08-29 review 落账**:`Error` 字段**只发稳定失败码**
+   > (`execute_failed` / 栅栏名 / `preconditions_changed`),原始错误串
+   > (命令行+命令输出)只进 Guardian 日志 —— Status 走 0666 socket,
+   > 「响应体只带失败码」的记档不变量不开第三个例外。初稿让 Error 带
+   > 原文,review 抓到后改掉;槽内复核也从手抄四道栅栏改成走 `heldBy`
+   > 本尊(手抄漏了 path_recovery_in_flight,且 intent_unreadable 被
+   > 折进「让路」—— 两条都是 review 发现)。
 4. **失败不升级、不放弃、靠退避自然重试**:动作失败记进报告,残留还在 ⇒
    下一轮照旧提议 ⇒ 退避阶梯(30s→10min)天然限频。不设「连败 N 次就停」——
    停了之后残留永久无人管,而那正是手写补偿时代的形状;10 分钟一次的可见
