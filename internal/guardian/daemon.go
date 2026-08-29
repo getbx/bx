@@ -147,7 +147,7 @@ func StartDaemon(ctx context.Context, options DaemonOptions) (*Daemon, error) {
 	}
 	credentials := options.PeerCredentials
 	if credentials == nil {
-		credentials = localPeerCredentials
+		credentials = newLifecyclePlatform().PeerCredentials
 	}
 	handler := options.Handler
 	var observer *daemonNetworkObserverLifecycle
@@ -456,7 +456,11 @@ func fetchCoreRuntime(ctx context.Context) (CoreRuntime, error) {
 }
 
 func RunDaemon(ctx context.Context, options DaemonOptions) error {
-	if err := requireDaemonPlatform(); err != nil {
+	platform := newLifecyclePlatform()
+	if err := platform.validate(); err != nil {
+		return err
+	}
+	if err := platform.RequireDaemon(); err != nil {
 		return err
 	}
 	if os.Geteuid() != 0 {
@@ -472,11 +476,11 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 		Store:           OpenDefaultStore(),
 		Runner:          runner,
 		Health:          HealthChecker{},
-		Barrier:         NewBarrier(nil),
+		Barrier:         platform.NewBarrier(nil),
 		DNS:             systemDNSManager(),
 		Legacy:          systemLegacyCoreLifecycle{},
 		BarrierContext:  BarrierContext{BlockIPv6: true},
-		GatewayProvider: GatewayProviderFunc(DiscoverDefaultGateway),
+		GatewayProvider: GatewayProviderFunc(platform.DiscoverGateway),
 		CoreVersion:     version.Version,
 		Throughput:      throughputRecorderFor(options.ConfigPath),
 	})
@@ -522,7 +526,7 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 	options.Handler = NewLocalAPI(controller, localAPIOptions)
 	options.OwnerUID = 0
 	if options.networkObserver == nil {
-		options.networkObserver = newPlatformNetworkObserver(controller)
+		options.networkObserver = newLifecyclePlatform().NewNetworkObserver(controller)
 	}
 	options.networkObserverDesired = func() DesiredState {
 		return controller.Status().Desired
