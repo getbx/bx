@@ -1275,6 +1275,29 @@ goroutine dump)、**可断言**(顺序是数据)。
 照不到;真正吃这条顺序的是 darwin 的 split-default。别把台子的绿读成
 「顺序有背书」。
 
+## 后台工人登记册:一个 goroutine 的 panic 不再打死整机(2026-08-30,真机未验)
+
+`Run` 里六个长命 goroutine 此前是裸 `go f(ctx)`、**零个 `recover()`**。
+裸 goroutine 的 panic 不会被 `Run` 的 defer 接住 —— Go 当场终止进程,而
+**别的 goroutine 的 defer 一个都不会跑**:进程没了而内核里的 ip rule /
+策略路由**还在**,整机流量指向一个已经不存在的 TUN。现全部经
+`internal/supervisor/workers.go` 的 `workerRegistry.start` 启动(具名 +
+panic 收在自己那一层)。
+
+**六个工人一律 recover-and-continue,是逐个想过的结论不是图省事**:
+mutation-engine 死 ⇒ 切服务器不工作 · tailscale-bypass 死 ⇒ 旁路停在兜底表 ·
+transport-failover 死 ⇒ 不再自动切备(**kill-switch 仍在**) ·
+direct-egress-repair 死 ⇒ 直连出口不再自愈(2026-08-13 那个 bug 会回来) ·
+rule-history 死 ⇒ 历史停止累计 · china-list-refresh 死 ⇒ 列表不再更新。
+六件里没有一件值得用「一台受保护的机器断网」来换。**但代价写明了**:炸掉的
+工人就此不再跑,那是一次**静默降级** —— 所以它不只打日志,还记成数据
+(`panickedNames`),让「少了哪个后台循环」答得出来。
+
+**守卫判据取 AST 不取文本**(`TestRunLaunchesNoBareGoroutines`:`Run` 函数体
+内真实的 `GoStmt`)—— 注释里、字符串里、别的函数里的 `go ` 都不算。变异实测:
+塞回一个裸 `go mutEng.Run(ctx)` **能编译**(说明它是真实可能的改动)且守卫
+转红。读不出 `func Run` 时它**响亮失败**而不是静默放行。
+
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,
