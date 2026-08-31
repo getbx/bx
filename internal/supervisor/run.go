@@ -265,6 +265,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 一个没有 TUN 也没有原路由的状态里。
 	teardowns := &teardownLedger{}
 	defer teardowns.unwind()
+	// 后台工人登记册(workers.go):下面每一个长命 goroutine 都经它启动。
+	// 裸 `go f(ctx)` 里的 panic 不会被上面那个 defer 接住 —— 它当场打死整个
+	// 进程,而内核里的 ip rule / 策略路由**还在**,机器就此指向一个不存在的
+	// TUN。六个工人没有一件事值得那个代价,逐个理由写在 workers.go 头上。
+	workers := &workerRegistry{}
 	teardowns.push("停止传输", func() {
 		if liveTransports != nil {
 			liveTransports.Stop()
@@ -477,7 +482,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			log.Printf("死手自动回滚:已还原到 last-known-good")
 		}
 	})
-	go mutEng.Run(ctx)
+	workers.start(ctx, "mutation-engine", mutEng.Run)
 
 	// 控制面 socket + pidfile(取代旧 serveStats,HTTP over unix socket)
 	//
@@ -493,17 +498,19 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 当初不门控的理由是「会让『开机时抓不到就永远停在兜底表』更糟」,而那个缺口
 	// 已经由重试循环补上了:租户晚于 bx 启动时,下一轮探测就会看见它。
 	tailscaleBypass := newTailscaleBypassSource(initialOverlayBypass(ctx, direct, presentOverlays))
-	go tailscaleBypass.Run(ctx, overlayAwareBypassFetch(
-		func(c context.Context) ([]string, error) {
-			// **每轮现测**:租户可能晚于 bx 启动。没有 Tailscale 就不抓 DERP map,
-			// 也就不会给一台与它无关的机器装上那些 /32。
-			if !overlayPresent(detectOverlayTenants(), "tailscale") {
-				return nil, errNoTailscaleForBypass
-			}
-			return tailscaleDERPBypassCIDRs(c, direct)
-		},
-		func() []string { return overlay.BypassCIDRs(detectOverlayTenants()) },
-	))
+	workers.start(ctx, "tailscale-bypass", func(c context.Context) {
+		tailscaleBypass.Run(c, overlayAwareBypassFetch(
+			func(c context.Context) ([]string, error) {
+				// **每轮现测**:租户可能晚于 bx 启动。没有 Tailscale 就不抓 DERP map,
+				// 也就不会给一台与它无关的机器装上那些 /32。
+				if !overlayPresent(detectOverlayTenants(), "tailscale") {
+					return nil, errNoTailscaleForBypass
+				}
+				return tailscaleDERPBypassCIDRs(c, direct)
+			},
+			func() []string { return overlay.BypassCIDRs(detectOverlayTenants()) },
+		))
+	})
 	bypassWire := wireBypass(bypassWiringParams{
 		configPath:    opts.ConfigPath,
 		serverStatics: serverStatic,
@@ -555,9 +562,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 多传输自动容灾(reality 主 / brook 备…):后台监健康,持续不健康→按优先级 swapTo 备选,
 	// 全程 fail-closed;防抖(滞回+冷静期+全挂不切)。单传输跳过(由 kill-switch 接管)。
 	if len(cfg.Transports) > 1 {
-		go swapper.runFailover(ctx, cfg.Transports,
-			failoverPolicy{failoverAfter: 25 * time.Second, cooldown: 60 * time.Second},
-			5*time.Second)
+		workers.start(ctx, "transport-failover", func(c context.Context) {
+			swapper.runFailover(c, cfg.Transports,
+				failoverPolicy{failoverAfter: 25 * time.Second, cooldown: 60 * time.Second},
+				5*time.Second)
+		})
 		log.Printf("多传输容灾已启用:%d 个传输,主=%s", len(cfg.Transports), transportLabel(cfg.Transports[0]))
 	}
 	routes := &routeReadiness{}
@@ -631,7 +640,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if !opts.NoHijack && runtime.GOOS == "darwin" {
 		egressTicker := time.NewTicker(egressCheckInterval)
 		teardowns.push("停止直连出口探测", egressTicker.Stop)
-		go watchDirectEgress(ctx, DirectEgressReachable, liveEgressRepair, egressTicker.C)
+		workers.start(ctx, "direct-egress-repair", func(c context.Context) {
+			watchDirectEgress(c, DirectEgressReachable, liveEgressRepair, egressTicker.C)
+		})
 	}
 
 	var recoverer pathRecoverer
@@ -748,7 +759,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		counters, version.Version, currentRules, time.Now,
 	)
 	historyDone := make(chan struct{})
-	go runRuleHistoryLoop(ctx, ruleHistoryInterval, acc, historyDone)
+	workers.start(ctx, "rule-history", func(c context.Context) {
+		runRuleHistoryLoop(c, ruleHistoryInterval, acc, historyDone)
+	})
 	// **等最后那次写盘,但只等一个很短的上限。** 不等的话 Run 返回后进程可能
 	// 先退出,那次写静默不发生 —— 而它带着自上一拍以来最长一个周期的增量。
 	teardowns.push("等规则历史写盘", func() { waitRuleHistoryFlush(historyDone) })
@@ -819,22 +832,24 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
 	if !global && cfg.Lists.AutoUpdateEnabled() && !listsOverridden {
-		go refreshLoop(ctx, cfg.Lists.RefreshInterval(), lt.Healthy, func() error {
-			px, err := socksProxy(lt.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
-			if err != nil {
-				return err
-			}
-			if err := fetchLists(ctx, proxyHTTPClient(px), cfg.DataDir); err != nil {
-				return err
-			}
-			// 经 rebuildRouter 重读配置(而非启动快照 cfg):否则刷新会用陈旧 rules
-			// 覆盖掉 bx direct/proxy 热加的白名单,悄悄回退用户改动。
-			nr, err := rebuildRouter()
-			if err != nil {
-				return err
-			}
-			d.SetRouter(nr)
-			return nil
+		workers.start(ctx, "china-list-refresh", func(c context.Context) {
+			refreshLoop(c, cfg.Lists.RefreshInterval(), lt.Healthy, func() error {
+				px, err := socksProxy(lt.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
+				if err != nil {
+					return err
+				}
+				if err := fetchLists(c, proxyHTTPClient(px), cfg.DataDir); err != nil {
+					return err
+				}
+				// 经 rebuildRouter 重读配置(而非启动快照 cfg):否则刷新会用陈旧 rules
+				// 覆盖掉 bx direct/proxy 热加的白名单,悄悄回退用户改动。
+				nr, err := rebuildRouter()
+				if err != nil {
+					return err
+				}
+				d.SetRouter(nr)
+				return nil
+			})
 		})
 		log.Printf("china 列表自动刷新已启用: 间隔=%s", cfg.Lists.RefreshInterval())
 	}
