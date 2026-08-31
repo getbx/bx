@@ -1249,6 +1249,32 @@ ufw 不在/未启用时安静通过;**改动会打给用户看**(静默改别人
   密码会失败。五条测试覆盖(uid 解析 / 整段包裹 / 需要 sudo 时给 `-t` /
   每条远程命令都走 sudo / root 登录不包)。
 
+## 拆除台账:Run 的还原顺序变成数据(2026-08-30,真机未验)
+
+`Run` 的九处有序 `defer` 改走 `internal/supervisor/teardown.go` 的
+`teardownLedger`。**动它的理由不是好看**:defer 是同步的,一步拆除挂住,它
+后面的每一步都不会跑,只有关机 watchdog 强制退出兜底 —— 而强制退出会把
+**剩下的还原全部跳过**(run.go 那条 watchdog 的注释里早就点名了嫌疑:
+`eng.Close`/`tun0.Stop`)。台账给出 defer 给不了的三件:**逐步限时**
+(一步挂住只损失那一步)、**命名与记录**(关机时查得出卡在哪,此前只有一份
+goroutine dump)、**可断言**(顺序是数据)。
+
+**三条不许动的细节**:
+- **LIFO 一字不改**:后获取的先释放 —— 路由还原必须排在关 TUN 之前;
+- **`defer teardowns.unwind()` 的位置承重**:落在第一个系统资源之前。混着
+  来(一半 defer 一半台账)会把两者的相对顺序悄悄颠倒;迁移前后逐条比对过
+  `signal.Stop → 台账(11 步)→ cancel` 与原状一致;
+- **超时的 goroutine 是放生不是杀掉**(Go 杀不掉),所以「超时」只等于
+  「它没在预算内做完」,不等于「那件事没做成」—— 日志措辞按这个来。
+- 单步预算与 `shutdownGrace` 留三倍余量,由
+  `TestTeardownStepBudgetLeavesRoomBeforeTheShutdownWatchdog` 钉住:一步挂住
+  绝不该把 watchdog 逼出来。watchdog **不许删**,它兜的是台账之外的挂点。
+
+**一条要记住的判据边界**:FIFO 变异下**单测转红而集成台照样绿** ——
+顺序性质由单测背书,不是台子。linux 的 `ip rule del` 不依赖 TUN 还在,台子
+照不到;真正吃这条顺序的是 darwin 的 split-default。别把台子的绿读成
+「顺序有背书」。
+
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,
