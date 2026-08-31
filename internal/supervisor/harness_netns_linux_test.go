@@ -12,285 +12,66 @@ package supervisor
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/netnsguard"
 	"github.com/getbx/bx/internal/socks5"
 	"github.com/getbx/bx/internal/tunnel"
-	"golang.org/x/sys/unix"
 )
 
 // ---------------------------------------------------------------------------
 // 隔离
 // ---------------------------------------------------------------------------
+//
+// **隔离机制已下沉到 internal/netnsguard(2026-08-30)**,guardian 的台子要用
+// 同一套。它写错的后果不是测试红,是把 tmpfs 盖在宿主真实的 /run 上、删掉宿主
+// bx 的控制 socket —— 这种判据只能有一份,各抄一份就是给那个后果开两次机会。
+// 全部推导(为什么不是线程级 unshare、为什么外层参照取 /proc/1、为什么 mnt 与
+// net 同等重要)原样搬进了那个包。
 
 const (
-	// harnessIsolatedEnv 非空即表示"本进程已经在台子的独立 namespace 里",
-	// 用来终止 re-exec 递归。
-	harnessIsolatedEnv = "BX_HARNESS_ISOLATED"
-
 	// 假上行:空 netns 里只有一个 down 的 lo,而 Hijack 要 defaultRoute() 探到默认网关,
 	// server bypass 路由也要 via 它。用 TEST-NET-3,与 TUN 的 TEST-NET-2、fake-IP 的
 	// 198.18/15 都不冲突。
 	harnessUplinkDev = "bxup0"
 	harnessGateway   = "203.0.113.1"
 	harnessUplinkIP  = "203.0.113.2/24"
-
-	harnessChildTimeout = 3 * time.Minute
 )
 
 // runtimeMountPoint 是台子要盖 tmpfs 的那个目录,由 RuntimeDir 推导而非写死:
 // 运行期路径若哪天搬家,隔离必须跟着搬,否则台子会退回去动宿主真实的 /run/bx。
 var runtimeMountPoint = filepath.Dir(RuntimeDir)
 
-// isolatedNamespaces 是台子要求独占的那几种 namespace。
-//
-// **mnt 与 net 同等重要,不是陪衬**:少了 mnt,tmpfs 会盖在宿主真实的 /run 上,
-// control.go 的 os.Remove(SockPath) 删的就是宿主 bx 的控制 socket。
-var isolatedNamespaces = []string{"net", "mnt"}
-
-// cloneFlagFor 把 namespace 名映射到真实的 clone flag 常量名。
-// 排查的人会照着这句话去改代码,所以它必须是真名 —— mnt 对应的是 CLONE_NEWNS,
-// 不存在 CLONE_NEWMNT。
-func cloneFlagFor(ns string) string {
-	if ns == "mnt" {
-		return "CLONE_NEWNS"
-	}
-	return "CLONE_NEW" + strings.ToUpper(ns)
-}
-
-// harnessOuterNSEnv 是父进程用来传递外层 namespace 标识的环境变量名。
-// 子进程据此证明自己**真的**换了这套 namespace,而不是 Cloneflags 被静默忽略、
-// 或者有人手工设了 harnessIsolatedEnv 就让台子在宿主 namespace 里开工。
-func harnessOuterNSEnv(ns string) string {
-	return "BX_HARNESS_OUTER_" + strings.ToUpper(ns) + "NS"
-}
-
 // enterIsolatedNetns 让本测试在一套**整进程**独占的 net + mount namespace 里运行。
-//
-// 为什么不是 brief 里那份 `runtime.LockOSThread() + unix.Unshare(...)`:unshare 只作用于
-// **调用它的那一个线程**,而 Run() 是重度并发的。本机实测(privileged busybox 容器,
-// 一个先热身出 8 个 M 的探针程序):锁线程 unshare 之后新起的 50 个 goroutine,
-// 50/50 全部落在**外层** netns。也就是说 Run() 的 ip 命令、TUN 的 ioctl、监听 socket
-// 会打在外面;mount namespace 同理,control.go 监听前那句 os.Remove(SockPath) 会删掉
-// 宿主真实的 /run/bx/core.sock —— 正是 brief 点名要避免的那个灾难,而线程级 unshare
-// 恰恰防不住它。
-//
-// 故改为把测试二进制在 CLONE_NEWNET|CLONE_NEWNS 下重新 exec 一份:子进程从单线程起步,
-// 它此后创建的每一个线程都继承这套 namespace。namespace 随子进程退出销毁,宿主零残留。
 func enterIsolatedNetns(t *testing.T) {
 	t.Helper()
-	if os.Getenv(harnessIsolatedEnv) != "" {
-		prepareIsolatedNamespaces(t)
-		return
-	}
-	if os.Geteuid() != 0 {
-		t.Skip("需要 root(在特权容器或 CI 里跑:scripts/run-netns-tests.sh)")
-	}
-	if _, err := exec.LookPath("ip"); err != nil {
-		t.Skip("缺 ip 命令(iproute2)")
-	}
-	rerunInNewNamespaces(t) // 不返回:内部以 t.Skip/t.Fatal 结束本测试
+	netnsguard.Enter(t, netnsguard.Options{
+		MountPoint:  runtimeMountPoint,
+		HiddenPaths: []string{SockPath},
+		Uplink: netnsguard.Uplink{
+			Dev: harnessUplinkDev, Addr: harnessUplinkIP, Gateway: harnessGateway,
+		},
+	})
 }
 
-// rerunInNewNamespaces 在新 net+mount namespace 里重跑当前这一个测试,并把子进程的
-// 输出原样转述出来。子进程失败 → 本测试失败;子进程成功 → 本测试 Skip(断言都在子进程里跑过了)。
-func rerunInNewNamespaces(t *testing.T) {
-	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("定位测试二进制: %v", err)
-	}
-	env := append(os.Environ(), harnessIsolatedEnv+"=1")
-	for _, ns := range isolatedNamespaces {
-		id, err := os.Readlink("/proc/self/ns/" + ns)
-		if err != nil {
-			t.Fatalf("读当前 %s namespace: %v", ns, err)
-		}
-		env = append(env, harnessOuterNSEnv(ns)+"="+id)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), harnessChildTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(
-		ctx, exe,
-		"-test.run", "^"+regexp.QuoteMeta(t.Name())+"$",
-		"-test.v",
-		"-test.count=1",
-	)
-	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWNET | syscall.CLONE_NEWNS,
-		Pdeathsig:  syscall.SIGKILL, // 父进程被 go test 超时打死时,子进程不留下来占着 TUN
-	}
-	out, runErr := cmd.CombinedOutput()
-	t.Logf("独立 net+mount namespace 子进程输出:\n%s", indentLines(string(out)))
-	if runErr != nil {
-		t.Fatalf("子进程里的 %s 失败: %v", t.Name(), runErr)
-	}
-	// 退出码 0 不等于跑过了:被 -test.run 过滤掉、或自己 Skip 掉,退出码同样是 0。
-	// 这条断言让"台子其实没跑"没法伪装成绿灯。
-	if !bytes.Contains(out, []byte("--- PASS: "+t.Name())) {
-		t.Fatalf("子进程退出码为 0 却没有 %s 的 PASS 行 —— 它可能被跳过或根本没跑:\n%s", t.Name(), out)
-	}
-	t.Skip("断言已在子进程的独立 net+mount namespace 内跑完(输出见上)")
-}
-
-func indentLines(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	for i, l := range lines {
-		lines[i] = "  | " + l
-	}
-	return strings.Join(lines, "\n")
-}
-
-// prepareIsolatedNamespaces 在子进程内把 namespace 布置成台子需要的样子。
-func prepareIsolatedNamespaces(t *testing.T) {
-	t.Helper()
-	assertProcessWideIsolation(t)
-
-	// 让本 mount ns 的挂载不外泄到宿主。
-	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
-		t.Fatalf("把根挂载改私有: %v", err)
-	}
-	// /run 换成 tmpfs:SockPath 与 core.pid 就此落在一次性文件系统里,
-	// 宿主上正在跑的 bx 完全看不见,也不会被 control.go 的 os.Remove 掉。
-	//
-	// 挂载点得先存在(busybox 镜像里没有 /run)。注意 **MS_PRIVATE 挡的是挂载传播,
-	// 不是文件写入** —— 新 mount namespace 看到的仍是同一个底层文件系统,这里 MkdirAll
-	// 建出来的目录是真的落在盘上的。故只在缺失时建,并在收尾时卸载 + 删掉,不留痕。
-	if _, err := os.Stat(runtimeMountPoint); os.IsNotExist(err) {
-		if err := os.MkdirAll(runtimeMountPoint, 0o755); err != nil {
-			t.Fatalf("建 %s 挂载点: %v", runtimeMountPoint, err)
-		}
-		t.Cleanup(func() {
-			_ = unix.Unmount(runtimeMountPoint, 0)
-			_ = os.Remove(runtimeMountPoint) // 只删我们建的那个空目录;非空/不存在都会失败而无害
-		})
-	}
-	if err := unix.Mount("tmpfs", runtimeMountPoint, "tmpfs", 0, ""); err != nil {
-		t.Fatalf("在 %s 挂 tmpfs: %v", runtimeMountPoint, err)
-	}
-	// 注意这条断言证明的是"台子看不见宿主的 socket",**不能**用来证明隔离生效
-	//(漏掉 CLONE_NEWNS 时它照样通过,因为 socket 是被自己的 tmpfs 盖住的)。
-	// 真正证明隔离的是上面的 assertProcessWideIsolation。
-	if _, err := os.Stat(SockPath); err == nil {
-		t.Fatalf("tmpfs 挂上之后 %s 仍然可见 —— 隔离没生效", SockPath)
-	}
-
-	mustIP(t, "link", "set", "lo", "up")
-	// 假上行 + 默认路由:Hijack 的 defaultRoute() 在只有 lo 的 netns 里必然失败。
-	// dummy 设备不发任何包,网关也不需要真的存在(路由表接受 on-link 网关)。
-	mustIP(t, "link", "add", harnessUplinkDev, "type", "dummy")
-	mustIP(t, "addr", "add", harnessUplinkIP, "dev", harnessUplinkDev)
-	mustIP(t, "link", "set", harnessUplinkDev, "up")
-	mustIP(t, "route", "add", "default", "via", harnessGateway, "dev", harnessUplinkDev)
-}
-
-// assertProcessWideIsolation 证明隔离**既真的换过**、又是**整进程**的。
-//
-// 两条缺一不可,而且对 net 和 mnt 都要查:
-//   - 换没换(与父进程传来的外层标识比):Cloneflags 少写一个、或者有人手工设了
-//     harnessIsolatedEnv 直接跑,进程会安安静静地留在宿主 namespace 里。少了 mnt 这半边,
-//     漏掉 CLONE_NEWNS 的台子会把 tmpfs 盖在**宿主真实的 /run** 上、把宿主 bx 的控制
-//     socket 删掉,然后报绿 —— 下面那条 os.Stat(SockPath) 的不可见断言此时**恰恰会通过**,
-//     因为 socket 正是被自己的 tmpfs 盖住/删掉的。
-//   - 是不是整进程(逐线程比):线程级 unshare 下本进程会有线程留在外层 namespace,
-//     而 Run() 的 goroutine 恰好就跑在那些线程上。
-//
-// 外层标识**缺席即 fatal**,不是"跳过这一条":缺席只可能发生在没有经过
-// rerunInNewNamespaces 的路径上,而那正是最需要拦住的情形。
-func assertProcessWideIsolation(t *testing.T) {
-	t.Helper()
-	for _, ns := range isolatedNamespaces {
-		self, err := os.Readlink("/proc/self/ns/" + ns)
-		if err != nil {
-			t.Fatalf("读 %s namespace: %v", ns, err)
-		}
-		// 外层参照必须**不可伪造**。它此前来自父进程写进环境变量的 id ——
-		// 复审把那一行改成写死的假 id、同时去掉 CLONE_NEWNS,台子照样 PASS,
-		// 跑完把外层的 /run 用 tmpfs 盖住、宿主的 core.sock 删掉:正是本守卫要防的那件事。
-		// 更糟的是下面那条「socket 不可见」的检查会**确认错的东西** —— 它通过恰恰
-		// 因为 tmpfs 把宿主的 socket 藏起来了。信自己的记账而不去问内核,是这个项目
-		// 在别处反复点名的反模式,这里不能再犯。
-		//
-		// /proc/1 永远在外层:容器里 PID 1 是父进程(它不进新 namespace),裸机上是 init。
-		// 子进程伪造不了它。
-		//
-		// 注意:将来若给 Cloneflags 加上 CLONE_NEWPID,/proc/1 就变成子进程自己、
-		// self == outer,本守卫会**响亮失败** —— 方向是安全的,但届时要连它一起重写。
-		outer, err := os.Readlink("/proc/1/ns/" + ns)
-		if err != nil {
-			t.Fatalf("读 PID 1 的 %s namespace(外层参照): %v", ns, err)
-		}
-		if outer == self {
-			t.Fatalf("没有真的换 %s namespace:仍与 PID 1 同在 %s(Cloneflags 少了 %s?)",
-				ns, self, cloneFlagFor(ns))
-		}
-		// 父进程传来的那份保留为冗余交叉核对:两者不一致说明有人在中间做了手脚。
-		if declared := os.Getenv(harnessOuterNSEnv(ns)); declared != "" && declared != outer {
-			t.Fatalf("父进程声称的外层 %s namespace 是 %s,而 PID 1 实际在 %s —— 对不上",
-				ns, declared, outer)
-		}
-		entries, err := os.ReadDir("/proc/self/task")
-		if err != nil {
-			t.Fatalf("枚举本进程线程: %v", err)
-		}
-		for _, e := range entries {
-			link := filepath.Join("/proc/self/task", e.Name(), "ns", ns)
-			got, err := os.Readlink(link)
-			if err != nil {
-				continue // 线程可能刚退出;不因此判失败
-			}
-			if got != self {
-				t.Fatalf("线程 %s 的 %s namespace 是 %s,与进程的 %s 不一致 —— 隔离不是整进程的",
-					e.Name(), ns, got, self)
-			}
-		}
-	}
-}
-
-// ipOut 在当前 netns 执行 ip 命令并返回其输出(基线比对用)。
+// ipOut/ipQuiet 是本包沿用的旧名,转调共享实现 —— 台子里几十处调用点
+// 不必跟着改名,而判据仍然只有一份。
 func ipOut(t *testing.T, args ...string) string {
 	t.Helper()
-	out, err := ipRun(args...)
-	if err != nil {
-		t.Fatalf("ip %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
-	return out
+	return netnsguard.MustIP(t, args...)
 }
 
-// ipQuiet 与 ipOut 问的是同一个内核,但**不吃 *testing.T**。
-//
-// 它给的是假隧道工厂里那个观测点用的,而工厂跑在 swapTo 自己的 goroutine 上 ——
-// 从非测试 goroutine 调 t.Fatalf **不做它看起来做的事**:那只会标记失败并结束
-// 那一个 goroutine,测试本体照常往下跑,而 swapTo 就此永远等不到返回。
-// 故失败在这里不是控制流,而是**数据**:原样并进返回值,让读到它的断言消息自解释。
-func ipQuiet(args ...string) (string, error) {
-	out, err := ipRun(args...)
-	if err != nil {
-		return out, fmt.Errorf("ip %s: %w\n%s", strings.Join(args, " "), err, out)
-	}
-	return out, nil
-}
-
-func ipRun(args ...string) (string, error) {
-	out, err := exec.Command("ip", args...).CombinedOutput()
-	return string(out), err
-}
+func ipQuiet(args ...string) (string, error) { return netnsguard.IPQuiet(args...) }
 
 // ---------------------------------------------------------------------------
 // 假隧道
