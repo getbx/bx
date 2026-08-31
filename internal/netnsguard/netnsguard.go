@@ -36,6 +36,14 @@ const (
 	isolatedEnv = "BX_HARNESS_ISOLATED"
 
 	childTimeout = 3 * time.Minute
+
+	// childTestTimeout 必须**短于** childTimeout,而且要短于调用方给整套测试
+	// 的 -test.timeout。理由是诊断:子进程被父进程的 context 掐死(SIGKILL)
+	// 时什么都不会打印,而父进程正卡在 CombinedOutput 上 —— 于是一次子进程里
+	// 的死锁表现为「父进程超时 + 零输出」,连它挂在哪一行都看不到(2026-08-30
+	// 变异实测)。让子进程先撞自己的 -test.timeout,它会打出完整的 goroutine
+	// 栈,父进程再把那份栈原样转述出来。
+	childTestTimeout = 90 * time.Second
 )
 
 // isolatedNamespaces 是台子要求独占的那几种 namespace。
@@ -121,13 +129,35 @@ func rerun(t *testing.T) {
 		"-test.run", "^"+regexp.QuoteMeta(t.Name())+"$",
 		"-test.v",
 		"-test.count=1",
+		"-test.timeout", childTestTimeout.String(),
 	)
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWNET | syscall.CLONE_NEWNS,
 		Pdeathsig:  syscall.SIGKILL, // 父进程被 go test 超时打死时,子进程不留下来占着 TUN
 	}
-	out, runErr := cmd.CombinedOutput()
+	// **输出走临时文件,不走管道。** `CombinedOutput`(以及任何把 Stdout 设成
+	// 非 *os.File 的写法)会建一个管道并起 goroutine 拷贝,而 `Wait` 要等那个
+	// 拷贝读到 EOF —— 管道被**孙进程**继承时,子进程早已退出而 EOF 永远不来,
+	// 父进程就此挂死。台子里的孙进程是真实存在的:被测编排会 spawn Core。
+	//
+	// 2026-08-30 变异实测:子进程死锁时父进程表现为「超时 + 零输出」,连子进程
+	// 自己打的 goroutine 栈都拿不到 —— 一次失败没有任何可行动的线索。
+	// *os.File 不建管道也不起拷贝 goroutine,Wait 在子进程退出的那一刻就返回,
+	// 孙进程持不持有它都一样。
+	outFile, err := os.CreateTemp("", "netnsguard-child-*.log")
+	if err != nil {
+		t.Fatalf("建子进程输出文件: %v", err)
+	}
+	defer os.Remove(outFile.Name())
+	defer outFile.Close()
+	cmd.Stdout = outFile
+	cmd.Stderr = outFile
+	runErr := cmd.Run()
+	out, readErr := os.ReadFile(outFile.Name())
+	if readErr != nil {
+		t.Fatalf("读子进程输出: %v", readErr)
+	}
 	t.Logf("独立 net+mount namespace 子进程输出:\n%s", IndentLines(string(out)))
 	if runErr != nil {
 		t.Fatalf("子进程里的 %s 失败: %v", t.Name(), runErr)
