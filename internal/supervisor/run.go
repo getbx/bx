@@ -258,7 +258,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	var swapper, udpSwapper *transportSwapper
 	var liveTransports *liveTransportSet
 	var udpLT *liveTunnel
-	defer func() {
+	// **拆除台账从这里开始接管**(teardown.go)。位置是承重的:它必须落在
+	// 第一个要还原的系统资源**之前** —— 比它更早的 defer(cancel 等)仍由
+	// 语言机制在台账之后跑,与迁移前的相对顺序一致;它之后的每一个资源都进
+	// 台账,彼此仍是 LIFO。混着来会把顺序悄悄颠倒,而顺序错了就是把机器留在
+	// 一个没有 TUN 也没有原路由的状态里。
+	teardowns := &teardownLedger{}
+	defer teardowns.unwind()
+	teardowns.push("停止传输", func() {
 		if liveTransports != nil {
 			liveTransports.Stop()
 			return
@@ -267,7 +274,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			udpLT.get().Stop()
 		}
 		lt.get().Stop()
-	}()
+	})
 	log.Printf("bx 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
 	healthTimeout := opts.HealthTimeout
 	if healthTimeout <= 0 {
@@ -286,7 +293,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		if err != nil {
 			return fmt.Errorf("监听固定 HTTP 代理: %w", err)
 		}
-		defer auxiliary.Close()
+		teardowns.push("关闭辅助代理", func() { _ = auxiliary.Close() })
 	}
 
 	serverHost, err := serverHostFromLink(cfg.Server)
@@ -346,7 +353,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		if err != nil {
 			return err
 		}
-		defer dnsListener.Close()
+		teardowns.push("关闭 DNS 监听", func() { _ = dnsListener.Close() })
 		dnsListening = true
 		log.Printf("本地 DNS 已监听: udp://%s", dnsListener.LocalAddr())
 	}
@@ -451,7 +458,8 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("建 TUN: %w", err)
 	}
-	defer closeTUN() // Run 任何提前返回都会关 TUN(停 pump、移除设备),不泄漏
+	// Run 任何提前返回都会关 TUN(停 pump、移除设备),不泄漏。
+	teardowns.push("关闭 TUN", closeTUN)
 	// 路由器模式:把网关参数交给 Hijack,只劫持 LAN 转发流量。
 	tunH.RouterMode = cfg.Mode == "router"
 	tunH.LANCIDRs = cfg.Router.LANCIDRs
@@ -459,7 +467,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("启动引擎: %w", err)
 	}
-	defer eng.Close()
+	teardowns.push("关闭引擎", func() { _ = eng.Close() })
 
 	// commit-confirmed 引擎:挂进守护进程,接 9a 真快照器;onRevert 大声记日志。
 	mutEng := newMutationEngine(NewSystemSnapshotter(), 240*time.Second, time.Now, func(reverted bool, err error) {
@@ -622,7 +630,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 这个循环去问内核,不信记账。只在 Hijack 真的装了路由时才跑。
 	if !opts.NoHijack && runtime.GOOS == "darwin" {
 		egressTicker := time.NewTicker(egressCheckInterval)
-		defer egressTicker.Stop()
+		teardowns.push("停止直连出口探测", egressTicker.Stop)
 		go watchDirectEgress(ctx, DirectEgressReachable, liveEgressRepair, egressTicker.C)
 	}
 
@@ -743,7 +751,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	go runRuleHistoryLoop(ctx, ruleHistoryInterval, acc, historyDone)
 	// **等最后那次写盘,但只等一个很短的上限。** 不等的话 Run 返回后进程可能
 	// 先退出,那次写静默不发生 —— 而它带着自上一拍以来最长一个周期的增量。
-	defer waitRuleHistoryFlush(historyDone)
+	teardowns.push("等规则历史写盘", func() { waitRuleHistoryFlush(historyDone) })
 
 	// reloadRouter(bx direct/proxy → /v0/reload):重建 router 原子换入,不断隧道、不碰 TUN/路由。
 	// global 用启动值(改 mode/global 需重劫持,不在此列;这里只热更用户分流规则)。
@@ -785,10 +793,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer closer.Close()
-	defer os.Remove(SockPath)
+	teardowns.push("关闭控制面", func() { _ = closer.Close() })
+	teardowns.push("移除控制 socket", func() { _ = os.Remove(SockPath) })
 	if err := os.WriteFile(PidPath, []byte(itoa(os.Getpid())), 0o644); err == nil {
-		defer os.Remove(PidPath)
+		teardowns.push("移除 pid 文件", func() { _ = os.Remove(PidPath) })
 	}
 
 	// 6) 劫持默认路由(含 bypass 保 SSH + 服务器防环)。
@@ -802,10 +810,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			return fmt.Errorf("配置路由: %w", err)
 		}
 		routes.set(true)
-		defer func() {
+		teardowns.push("还原默认路由", func() {
 			routes.set(false)
 			teardown()
-		}()
+		})
 		log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。")
 	}
 
@@ -848,9 +856,17 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	case <-ctx.Done():
 		log.Printf("ctx 取消,还原中…")
 	}
-	// 关机 watchdog:还原已触发,下面的 defer 链若卡住超过 shutdownGrace(已知罕见 timing 竞态:
-	// 疑 eng.Close/tun0.Stop),dump goroutine + 强制退出 —— 保证死手/信号一定终止进程,并捕获卡点根因。
+	// 关机 watchdog:还原已触发,下面的拆除若整体卡住超过 shutdownGrace,
+	// dump goroutine + 强制退出 —— 保证死手/信号一定终止进程,并捕获卡点根因。
 	// 正常关机远快于 grace,watchdog 随进程退出自然作废、不触发。
+	//
+	// **它的角色自 2026-08-30 起变轻了,但不许删**:拆除已改由 teardownLedger
+	// 逐步限时(teardown.go),单步挂住只损失那一步,曾经点名的嫌疑
+	// (eng.Close/tun0.Stop)因此不再能堵住其余还原。watchdog 兜的是剩下的那
+	// 一类:台账本身之外的挂点(比如上面某个尚未进台账的 defer),以及「多步都慢」
+	// 的累加。单步预算与 grace 的关系由
+	// TestTeardownStepBudgetLeavesRoomBeforeTheShutdownWatchdog 钉住 ——
+	// 一步挂住绝不该把 watchdog 逼出来,因为它会跳过剩下的还原。
 	armShutdownWatchdog(shutdownGrace, dumpAndExit)
 	return nil
 }

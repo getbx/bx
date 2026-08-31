@@ -117,6 +117,19 @@ func TestTeardownLedgerUnwindsOnlyOnce(t *testing.T) {
 	}
 }
 
+// 单步预算与关机 grace 的关系是承重的,而它横跨两个文件(teardown.go 与
+// shutdown.go),没有编译器会替谁检查。
+//
+// **一步挂住绝不该把关机 watchdog 逼出来**:watchdog 会 dump goroutine 并
+// **强制退出整个进程**,剩下的还原全部跳过 —— 那正是这次改动要消灭的后果。
+// 留三倍余量,是给「一步挂住 + 其余各自花点时间」这种真实组合的空间。
+func TestTeardownStepBudgetLeavesRoomBeforeTheShutdownWatchdog(t *testing.T) {
+	if teardownDefaultBudget*3 > shutdownGrace {
+		t.Fatalf("单步预算 %v 相对关机 grace %v 太大:一步挂住就可能把 watchdog 逼出来,"+
+			"而它会强制退出、跳过剩下的还原", teardownDefaultBudget, shutdownGrace)
+	}
+}
+
 // 空台账拆除是平凡成功 —— Run 在很早的地方就可能返回(配置错、隧道起不来),
 // 那时一个资源都没拿到。
 func TestTeardownLedgerHandlesNothingToDo(t *testing.T) {
