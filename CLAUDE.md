@@ -48,8 +48,23 @@ type platform interface {
   刻意不在清单里**(注入钩子无参,转发丢 reason= 审计标签,缝留在编译期自由函数);
   `RemoveBlockingBarrierRoutes` 也不在(CLI 逃生口专用,独立于 daemon)。给 Linux
   移植 Guardian 时照 lifecycle.go 的字段清单供货,procscan/peercred/barrier 各加
-  `_linux.go`,`requireDaemonPlatform` 最后放开——顺序不许反。**供货进度
-  (2026-08-29)**:`procscan_linux.go`(/proc 树,纯 I/O 半无 tag、fixture 三腿
+  `_linux.go`,`requireDaemonPlatform` 最后放开——顺序不许反。**2026-08-30 全部
+  供货完毕、门已开**(`daemon_linux.go`),前置是每一块都有 netns 断言背书:
+  屏障四条打在 `ip route get` 的**判决**上(装屏障前先取基线,否则「装上之后
+  不通」在一台本来就不通的机器上同样成立)、Manager 四条打在真 spawn 的进程上
+  (Up 后 procscan 认得出、Down 报成功之前进程真的没了、系统已有 Core 时第二个
+  Manager 被拒而第一个毫发无伤)、外加真 `RunDaemon` 起来并答出 `/v1/status`。
+  **开门不改变 linux 产品形态**:生产 linux 仍是 systemd 直管 supervisor,
+  没有任何东西会去装或拉起 Guardian —— 那句承诺由**没有调用方**保证,不由这道
+  门保证。隔离机制在 `internal/netnsguard`(supervisor 与 guardian 共用一份:
+  写错的后果是把 tmpfs 盖在宿主真实的 /run 上、删掉宿主 bx 的控制 socket)。
+  **两处只有变异才逼得出来的台子缺陷,记住形状**:① 子进程 re-exec 不传
+  `-test.timeout` 时继承 10 分钟默认值,比父进程的还长,于是子进程里的死锁
+  表现为「父进程超时 + 零输出」;② `CombinedOutput` 要等管道 EOF,而管道被
+  **孙进程**(被测编排 spawn 的 Core)继承 —— 子进程死了 EOF 永远不来,父进程
+  挂死。改走临时文件(`*os.File` 不建管道、不起拷贝 goroutine)之后,同一个
+  变异从「2.5 分钟超时无线索」变成「15 秒干净红 + 断言直指双 Core」。
+  **旧供货进度(2026-08-29)**:`procscan_linux.go`(/proc 树,纯 I/O 半无 tag、fixture 三腿
   可测,root 门槛理由换成 hidepid 致盲)· `peercred_linux.go`(SO_PEERCRED)·
   **barrier**(`barrier_iproute.go` 纯计划 + `barrier_linux.go` 执行器:pref-120
   rule + table 90 + **throw 私网 carve**——linux rule 命中即终止查找,darwin 主表

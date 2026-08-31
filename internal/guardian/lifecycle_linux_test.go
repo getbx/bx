@@ -4,7 +4,6 @@ package guardian
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
@@ -17,12 +16,25 @@ func (r *recordingBarrierRunner) Run(_ context.Context, c Command) error {
 	return nil
 }
 
-// linux 清单的中间态,两半都要钉住:barrier/procscan/peercred 已供货,
-// 但 DNS 与 observer 未齐 —— **门必须还是关的**。「供货一块就顺手开门」正是
-// CLAUDE.md 里「requireDaemonPlatform 最后放开,顺序不许反」要防的那个动作。
-func TestLifecyclePlatformLinuxGateStaysShutWhileSupplyIsPartial(t *testing.T) {
-	if err := newLifecyclePlatform().RequireDaemon(); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("linux 门在供货齐之前必须保持关闭,got %v", err)
+// **这条断言 2026-08-30 被刻意翻过来了,记档在此。**
+//
+// 它原本钉的是中间态:「barrier/procscan/peercred 已供货但 DNS 与 observer
+// 未齐 ⇒ 门必须还是关的」,防的是「供货一块就顺手开门」。现在六块全部到位、
+// 每一块都有 netns 断言背书(屏障四条打在 `ip route get` 的判决上、Manager
+// 四条打在真 spawn 的进程上),门按 CLAUDE.md 的移植纪律**最后**开 ——
+// 于是同一条测试改成钉住相反的一面:门开着,而且清单必须仍然完整。
+//
+// **翻转它不等于放宽任何东西**:门开着只让 `bx guardian` 在 linux 跑得起来,
+// 而生产 linux 没有任何东西会去装或拉起它(systemd unit 指向 `bx run`)。
+// 「产品形态不变」由没有调用方保证,不由这道门保证。
+func TestLifecyclePlatformLinuxGateIsOpenNowThatEveryPieceIsSupplied(t *testing.T) {
+	if err := newLifecyclePlatform().RequireDaemon(); err != nil {
+		t.Fatalf("六块全部供货且有台子背书之后,linux 门该开着,got %v", err)
+	}
+	// 门开了,清单完整就更是硬性的:少一个字段,使用点是 nil deref,
+	// 而 Guardian 在 KeepAlive 下 panic 就是崩溃循环。
+	if err := newLifecyclePlatform().validate(); err != nil {
+		t.Fatalf("门开着而清单有洞: %v", err)
 	}
 }
 
