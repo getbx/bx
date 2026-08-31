@@ -218,7 +218,11 @@ jobs:
             TestHarnessSwitchBetweenKnownServersDoesNotTouchRoutes \
             TestHarnessSwitchToNewServerInstallsBypassBeforeSwappingTransport \
             TestHarnessRefusesSwitchWhenTargetUnresolvable \
-            TestHarnessBarrierCarveOutFollowsCurrentServerOnly ; do
+            TestHarnessBarrierCarveOutFollowsCurrentServerOnly \
+            TestHarnessLinuxBarrierBlocksPublicButKeepsPrivateAndBypass \
+            TestHarnessLinuxBarrierCarvesEveryDeclaredPrivateBlock \
+            TestHarnessLinuxBarrierRemoveLeavesNothingBehind \
+            TestHarnessLinuxEscapeHatchClearsOrphanBarrier ; do
             grep -qF -- "| --- PASS: $name " /tmp/itest.log \
               || { echo "::error::集成台断言 $name 没有在子 namespace 里跑过(被 SKIP?改名?删了?)—— runner 可能缺 CAP_SYS_ADMIN 或 iproute2"; exit 1; }
           done
