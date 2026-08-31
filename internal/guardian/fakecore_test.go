@@ -60,9 +60,36 @@ func serveFakeCoreControl(sockPath string, state func() supervisor.RuntimeState)
 	mux.HandleFunc("/v0/runtime", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(state())
 	})
+	// **协作关闭照抄真 Core 的契约,一件不少**(supervisor/control.go 的
+	// handleShutdown):校验 expected_pid、写 JSON、**显式 Flush**、再触发关闭。
+	//   - expected_pid 不匹配必须回 409:Guardian 送错 PID 时不许把一个不认识
+	//     的 Core 关掉。替身放过它,台子就测不到「Guardian 有没有送对 PID」;
+	//   - Flush 是承重的:少了它,进程退出时应答还在 buffer 里,客户端读到 EOF
+	//     ——「Core 拒绝关闭」与「Core 关了但没说话」在 Guardian 眼里是两种
+	//     处置,而后者会让一次成功的 Down 报成 core_stop_failed(实测)。
 	var once bool
-	mux.HandleFunc("/v0/shutdown", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+	mux.HandleFunc("/v0/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ExpectedPID int `json:"expected_pid"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.ExpectedPID <= 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "expected_pid is required"})
+			return
+		}
+		if request.ExpectedPID != state().PID {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status": "error",
+				"error":  "expected PID does not match Core PID",
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "state": "shutting_down"})
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
 		if !once {
 			once = true
 			close(shutdown)
@@ -189,21 +216,42 @@ func TestFakeCoreShutdownEndpointFires(t *testing.T) {
 	}
 	t.Cleanup(stop)
 
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", sockPath)
-		},
-	}}
-	resp, err := client.Post("http://local/v0/shutdown", "", nil)
-	if err != nil {
-		t.Fatal(err)
+	// 走**生产的**客户端(supervisor.ShutdownControl),而不是自己拼一个请求:
+	// 替身与生产的契约漂移要在这里就红,不是等集成台。
+	if err := supervisor.ShutdownControl(context.Background(), sockPath, os.Getpid()); err != nil {
+		t.Fatalf("协作关闭: %v", err)
 	}
-	resp.Body.Close()
 	select {
 	case <-shutdown:
 	case <-time.After(2 * time.Second):
 		t.Fatal("/v0/shutdown 没有触发退出信号")
+	}
+}
+
+// PID 不匹配必须被拒(真 Core 回 409)——Guardian 送错 PID 时,不许把一个
+// 它并不认识的 Core 关掉。
+func TestFakeCoreShutdownRefusesMismatchedPID(t *testing.T) {
+	dir, err := os.MkdirTemp("", "bxfc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sockPath := filepath.Join(dir, "core.sock")
+	shutdown, stop, err := serveFakeCoreControl(sockPath, func() supervisor.RuntimeState {
+		return fakeCoreRuntimeState(os.Getpid(), "127.0.0.1:1")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+
+	if err := supervisor.ShutdownControl(context.Background(), sockPath, os.Getpid()+1); err == nil {
+		t.Fatal("PID 对不上却接受了关闭请求")
+	}
+	select {
+	case <-shutdown:
+		t.Fatal("PID 对不上的请求触发了退出信号")
+	default:
 	}
 }
 
@@ -224,6 +272,10 @@ func runFakeCoreMain() {
 	sockPath := os.Getenv("BX_GUARDIAN_FAKE_CORE_SOCK")
 	if sockPath == "" {
 		sockPath = supervisor.SockPath
+	}
+	// 运行期目录在台子里是新挂的 tmpfs,里面什么都没有。
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o755); err != nil {
+		os.Exit(3)
 	}
 	_ = os.Remove(sockPath)
 	socksListener, err := net.Listen("tcp", "127.0.0.1:0")
