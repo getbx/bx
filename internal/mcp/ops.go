@@ -19,6 +19,14 @@ type Ops interface {
 	// 六个字段,之后 Guardian 那半长出十几个键而投影没跟上 —— 漏掉的字段
 	// 不会有任何东西报错,agent 只是安静地看不见。原样转发就没有这个病。
 	Protection() (JSONCommandOut, error)
+	// Apps 报告「哪个应用走哪条路」。**采样一小段**而不是拉一次:控制面
+	// /v0/apps 的第一次调用只是订阅,采集从那一刻才开始,拉完就返回必然是
+	// 空报告 —— 而空报告与「真的没有连接」在输出上完全一样。
+	//
+	// **它不带可执行路径**:那是一次记档在案的信息面扩大,今天的发布面只有
+	// 菜单窗口一条(internal/appattr/publication_test.go)。agent 要回答的是
+	// 「哪个应用走哪条路」,不是「它装在哪儿」。
+	Apps(AppsIn) (JSONCommandOut, error)
 	Check(CheckIn) (CheckOut, error)
 	Logs(LogsIn) (LogsOut, error)
 	ApplyPolicy(PolicyApplyIn) (PolicyApplyOut, error)
@@ -62,6 +70,10 @@ type InspectIn struct {
 
 // LeakCheckIn 刻意**没有 browser 选项**:浏览器那半要人在屏幕前点一下才产生数据,
 // 那从来就不适合由 agent 代劳。人用 `bx leakcheck`,它会开页面并把两半事实对起来。
+type AppsIn struct {
+	For string `json:"for,omitempty" jsonschema:"sampling window, e.g. 8s; the report cannot answer about traffic outside it"`
+}
+
 type LeakCheckIn struct {
 	Network        bool     `json:"network,omitempty" jsonschema:"send outbound IPv4/IPv6/DNS probes"`
 	ExpectedIPs    []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs"`

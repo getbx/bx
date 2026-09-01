@@ -152,6 +152,18 @@ func (o *liveOps) Protection() (JSONCommandOut, error) {
 
 func protectionArgs() []string { return []string{"status", "--json"} }
 
+func (o *liveOps) Apps(in AppsIn) (JSONCommandOut, error) {
+	return runBXJSONCommand(appsArgs(in))
+}
+
+func appsArgs(in AppsIn) []string {
+	args := []string{"apps", "--json"}
+	if strings.TrimSpace(in.For) != "" {
+		args = append(args, "--for", in.For)
+	}
+	return args
+}
+
 // Check composes the existing read-only inspection and local observation
 // surfaces. It neither changes bx nor probes externally unless explicitly
 // requested through CheckIn.Network or CheckIn.Browser.
