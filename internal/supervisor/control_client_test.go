@@ -534,3 +534,56 @@ func TestSetTransportControlBadJSON(t *testing.T) {
 		t.Fatal("200 OK + 非 JSON 回包,应返回 decode 错误,而非沉默成功")
 	}
 }
+
+// **非 200 时也必须把 State 带回去。**
+//
+// 控制面对「没有可确认的改动」返回 409,而 State 里如实写着是 `reverted`
+// (死手到点自动还原了)还是 `idle`(从没武装过)—— 这两件事对调用方的含义
+// 完全相反:前者是「你的改动没了,而且是在你不在场时没的」,后者是「你调错了」。
+// postControl 此前在错误路径上 `return "", err`,**这个区分就死在这里**,
+// 下游只好把它压成一句「控制面返回 409」。
+func TestPostControlKeepsTheStateWhenTheCallIsRejected(t *testing.T) {
+	// 不用 t.TempDir():它把测试名嵌进路径,而 unix socket 路径在 macOS 上有
+	// ~104 字节上限,长测试名会让 bind 报 invalid argument。
+	dir, err := os.MkdirTemp("", "bxctl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sockPath := filepath.Join(dir, "bx.sock")
+	ln, lnErr := net.Listen("unix", sockPath)
+	if lnErr != nil {
+		t.Fatal(lnErr)
+	}
+	defer ln.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/commit", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(controlResponse{Status: "error", Error: "nothing to commit", State: "reverted"})
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln) //nolint:errcheck
+	defer srv.Close()
+
+	state, err := CommitControl(sockPath)
+	if err == nil {
+		t.Fatal("409 应当返回 error")
+	}
+	if state != "reverted" {
+		t.Errorf("被拒时 State 丢了:%q,应当是 reverted", state)
+	}
+}
+
+// 连不上控制面时 State 必须是空串 —— 「没问出来」不许被读成任何一种状态。
+// 下游正是靠这个区分来决定该不该报「隧道/进程有问题」。
+func TestPostControlReportsNoStateWhenItCannotReachTheSocket(t *testing.T) {
+	state, err := CommitControl(filepath.Join(t.TempDir(), "absent.sock"))
+	if err == nil {
+		t.Fatal("连不上应当返回 error")
+	}
+	if state != "" {
+		t.Errorf("连不上却报了状态 %q —— 那是编出来的", state)
+	}
+}

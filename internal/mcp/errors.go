@@ -21,6 +21,7 @@ const (
 	CodeConfirmationRequired Code = "CONFIRMATION_REQUIRED"
 	CodeDeadmanReverted      Code = "DEADMAN_REVERTED"
 	CodeAlreadyCommitted     Code = "ALREADY_COMMITTED"
+	CodeNothingToCommit      Code = "NOTHING_TO_COMMIT"
 	CodeNothingToRollback    Code = "NOTHING_TO_ROLLBACK"
 	CodeNotImplemented       Code = "NOT_IMPLEMENTED"
 )
