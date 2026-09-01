@@ -495,12 +495,23 @@ func (d *Dialer) udpRuleOverride(m route.Meta) (route.Decision, route.Reason, bo
 	if r == nil {
 		return 0, route.Reason{}, false
 	}
-	dec, why := r.Explain(m)
-	if why.Source.IsUserRule() || why.Source == route.SourcePrivate {
+	dec, why, ok := udpRuleOverrideDecision(r, m)
+	if ok {
 		return dec, why, true
 	}
 	d.countUDPCounterfactual(m, why)
 	return 0, route.Reason{}, false
+}
+
+// udpRuleOverrideDecision 是上面那个判据的**纯**形式:同样的答案,不记任何账。
+//
+// 剥出来是因为 (*Dialer).Explain 要问同一个问题而**绝不能有副作用** ——
+// udpRuleOverride 在不命中时会调 countUDPCounterfactual,让 explain 走那条路
+// 等于拿一条根本没发生的连接去污染反事实计数,而那份计数正是用来决定
+// 「让 china 列表也对 UDP 生效」这个搁置选项的依据。
+func udpRuleOverrideDecision(r *route.Router, m route.Meta) (route.Decision, route.Reason, bool) {
+	dec, why := r.Explain(m)
+	return dec, why, why.Source.IsUserRule() || why.Source == route.SourcePrivate
 }
 
 // UDP 的**反事实**计数:如果让 china 列表也对 UDP 生效(即那个被搁置的选项),
