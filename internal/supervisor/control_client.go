@@ -178,6 +178,31 @@ func SupportsSafeReconnect(sockPath string) (bool, error) {
 	return out.SafeReconnect, nil
 }
 
+// decodeControlResponse 读一次控制面应答,**成败两条路都返回 State**。
+//
+// 此前 postControl / postControlBody / doControlRequest 里有三份逐字重复的
+// 拷贝,而它们在错误路径上一律 `return "", err` —— 于是 409 带回来的 State
+// (reverted / committed / idle)在这里被丢掉,而那正是「你的改动被死手自动
+// 回滚了」与「你根本没武装过」的唯一区分。三份合成一份,漂移在构造上不可能。
+//
+// 解不开 body 时不覆盖状态码:一个返回 HTML 错误页的 409,报「控制面返回 409」
+// 比报「invalid character '<'」有用。连不上 socket 那条路根本到不了这里,
+// 于是 State 保持空串 —— **「没问出来」不许被读成任何一种状态**。
+func decodeControlResponse(resp *http.Response, path string) (string, error) {
+	var out controlResponse
+	decodeErr := json.NewDecoder(resp.Body).Decode(&out)
+	if resp.StatusCode != http.StatusOK {
+		if out.Error != "" {
+			return out.State, fmt.Errorf("控制面 %s 返回 %d: %s", path, resp.StatusCode, out.Error)
+		}
+		return out.State, fmt.Errorf("控制面 %s 返回 %d", path, resp.StatusCode)
+	}
+	if decodeErr != nil {
+		return "", decodeErr
+	}
+	return out.State, nil
+}
+
 func postControl(sockPath, path string) (string, error) {
 	client := controlHTTPClient(sockPath)
 	defer client.CloseIdleConnections()
@@ -186,17 +211,7 @@ func postControl(sockPath, path string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-	var out controlResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		if out.Error != "" {
-			return "", fmt.Errorf("控制面 %s 返回 %d: %s", path, resp.StatusCode, out.Error)
-		}
-		return "", fmt.Errorf("控制面 %s 返回 %d", path, resp.StatusCode)
-	}
-	return out.State, nil
+	return decodeControlResponse(resp, path)
 }
 
 func CommitControl(sockPath string) (string, error) {
@@ -230,17 +245,7 @@ func postControlBody(sockPath, path string, body any) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-	var out controlResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil && resp.StatusCode == http.StatusOK {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		if out.Error != "" {
-			return "", fmt.Errorf("控制面 %s 返回 %d: %s", path, resp.StatusCode, out.Error)
-		}
-		return "", fmt.Errorf("控制面 %s 返回 %d", path, resp.StatusCode)
-	}
-	return out.State, nil
+	return decodeControlResponse(resp, path)
 }
 
 func SetTransportControl(sockPath, link string) (string, error) {
@@ -331,17 +336,7 @@ func doControlRequest(client *http.Client, req *http.Request, path string) (stri
 		return "", err
 	}
 	defer resp.Body.Close()
-	var out controlResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		if out.Error != "" {
-			return "", fmt.Errorf("控制面 %s 返回 %d: %s", path, resp.StatusCode, out.Error)
-		}
-		return "", fmt.Errorf("控制面 %s 返回 %d", path, resp.StatusCode)
-	}
-	return out.State, nil
+	return decodeControlResponse(resp, path)
 }
 
 func RehijackControl(sockPath string) (string, error) {

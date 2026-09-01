@@ -33,10 +33,22 @@ func isRoot() bool { return os.Geteuid() == 0 }
 
 // liveOps 把 Ops 绑到现有 internal 逻辑。
 type liveOps struct {
-	configPath     string
+	configPath string
+	// coreSock 覆盖 Core 控制 socket 的位置,**只给测试用**;空串走
+	// supervisor.SockPath(它是 const,顶不掉)。有这个缝才谈得上断言
+	// 「Commit/Rollback 真的按 state 分派了码」—— 这个仓库反复栽的正是
+	// 「判据有测试、接线没有」。
+	coreSock       string
 	recoveryClient guardianRecoveryClient
 	recoveryWait   func(context.Context, time.Duration) error
 	recoveryPolls  int
+}
+
+func (o *liveOps) sock() string {
+	if o.coreSock != "" {
+		return o.coreSock
+	}
+	return supervisor.SockPath
 }
 
 // NewLiveOps 构造绑定现有逻辑的 Ops。
@@ -566,23 +578,15 @@ func (o *liveOps) Rehijack() error {
 }
 
 func (o *liveOps) Commit() error {
-	if _, err := supervisor.CommitControl(supervisor.SockPath); err != nil {
-		return ToolError{
-			Code:        CodeTunnelUnhealthy,
-			Message:     "commit 控制 socket 调用失败: " + err.Error(),
-			Remediation: "确认 bx 正在运行;必要时查 bx status / bx logs",
-		}
-	}
-	return nil
+	// **state 是承重的,不许丢。** 控制面对「没有可确认的改动」回 409,而 state
+	// 说清了是死手回滚了、已经确认过、还是从没武装过 —— 三件事对 agent 含义
+	// 完全不同。这里此前写的是 `if _, err :=`,把答案扔在地上,然后把三种情况
+	// 一律贴成「隧道不健康,确认 bx 正在运行」。
+	state, err := supervisor.CommitControl(o.sock())
+	return mutationOutcome(mutationCommit, state, err)
 }
 
 func (o *liveOps) Rollback() error {
-	if _, err := supervisor.RollbackControl(supervisor.SockPath); err != nil {
-		return ToolError{
-			Code:        CodeTunnelUnhealthy,
-			Message:     "rollback 控制 socket 调用失败: " + err.Error(),
-			Remediation: "确认 bx 正在运行;必要时查 bx status / bx logs",
-		}
-	}
-	return nil
+	state, err := supervisor.RollbackControl(o.sock())
+	return mutationOutcome(mutationRollback, state, err)
 }
