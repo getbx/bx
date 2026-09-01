@@ -71,8 +71,18 @@ func proxyMode(global bool, mode string) string {
 // 与 proxyMode 共用同一套模式判定(它给 status 用、这个给日志用),两处措辞
 // 对得上;四种组合各有各的话,由 TestTakeoverSummaryIsDistinctPerMode 钉住 ——
 // 两种模式塌成同一句,就意味着有一种在被另一种的描述冒名顶替。
-func takeoverSummary(global bool, mode string) string {
-	split := "中国 IP 直连,其余走 bx 隧道。"
+// listsOverridden 为真 = 用户用自己的表替掉了内建/刷新那张(config `lists.*`
+// 或 CLI flag)。**它必须进这句话**:两种来源的行为可能差很远,而日志一模一样
+// 时用户无从分辨此刻按哪张表在分流。global 下它不影响措辞 —— 那个模式根本不
+// 加载任何列表,提一张不存在的表本身就是误导。
+func takeoverSummary(global bool, mode string, listsOverridden bool) string {
+	// split 那半也要说全:直连的**不只**是列表命中的那些,用户 direct 规则
+	// (`rules:` 里的 kind: direct)同样在直连,而且优先级更高 —— 只提列表
+	// 会让人以为自己加的那几条没生效。
+	split := "中国 IP 与用户 direct 规则直连,其余走 bx 隧道。"
+	if listsOverridden {
+		split = "自定义直连列表与用户 direct 规则直连,其余走 bx 隧道。"
+	}
 	if global {
 		// 与 proxyMode 那行「除内网/用户 direct 外一切走代理」是同一句话。
 		split = "除内网与用户 direct 规则外,一切走 bx 隧道。"
@@ -853,7 +863,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			routes.set(false)
 			teardown()
 		})
-		log.Printf("%s", takeoverSummary(global, cfg.Mode))
+		log.Printf("%s", takeoverSummary(global, cfg.Mode, listsOverridden))
 	}
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
