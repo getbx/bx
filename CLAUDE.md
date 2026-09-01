@@ -1400,6 +1400,49 @@ split 路由)**已经在独立函数里**,剩下的是纯粘合 —— 把粘合
 china 列表与它的两个路径**留在相位内** —— 此前是四个只在二十行内被用到的局部
 变量,而组装根的每个局部变量都是一次「它后面还会被谁改」的阅读负担。
 
+## 日志:一句良性的话刷了 43 万行(2026-09-01,真机诊断,修复真机未验)
+
+`/var/log/bx-guard.err.log` 长到 **100MB 且从无轮转**。逐条查下来,**99% 与
+Guardian 无关**:435,128 行是同一句 sing-box 的 `network: missing default
+interface`,约 2 次/秒、不停;Guardian 自己那几千行(`guardian_core_scan` 2764、
+`network_recovery` 207、`guardian_reconcile_would` 117……)全埋在底下。
+
+**那句话在 bx 的配置下是良性的**:全仓一处 `auto_detect_interface` /
+`bind_interface` 都没有 —— bx 从不让 sing-box 去探接口,出站靠系统路由表
+(server bypass 那条 /32 走物理网关)。sing-box 的网络管理器无条件启动、探不到
+就报一句然后继续,**它报的这件事 bx 压根不用**。所以缺陷整个在 bx 这一侧。
+
+**两个根因,各修一处**:
+- `internal/tunnel/stderr.go` 无条件转发子进程的每一行。既有的
+  `maxStderrLineLength` 挡不住这个形状 —— 它挡的是「一行很长」,而这里是
+  「一行很短、重复很多次」。现按行折叠:窗口内同一行只写一次,**重复次数跟着
+  下一次写入(或子进程退出时的 flush)一起报出来**。少了那个数,「刷了 43 万次」
+  在日志里与「出现过一次」完全一样,而后者不值得看,前者就是事故本身。环形缓冲
+  (健康检查失败时的诊断出口)**不受影响**,压缩的只是日志那一份。
+- `internal/guardian/corelog.go`:Core 此前继承 Guardian 的 stdout/stderr,
+  两个进程挤进同一个文件。现在 Core 写自己的 `/var/log/bx.log`,bx-guard.* 只
+  剩 Guardian 自己的话。**轮转的判据放在每次 spawn,是刻意的** —— Core 只在
+  两次 spawn 之间写它,所以永远不需要给一个**正在被写**的 fd 做轮转。
+
+**「给正在被写的 fd 做轮转」在 macOS 上做不干净,别再提 newsyslog**:launchd
+持有 Guardian 的 stderr fd,newsyslog 把文件 rename 之后写入会跟着进归档文件,
+于是审计线索被悄悄写进一个即将被删掉的文件里。**那比一个大文件糟得多**:大
+文件至少还看得见。唯一干净的做法是让写的人自己开文件(dup2 或 `log.SetOutput`)。
+
+**已知缺口(刻意没做)**:Guardian **自己**那份日志仍无轮转,现约 15MB/年
+(此前它被 sing-box 那 99% 掩盖着,看不出来)。要修就得在 daemon 启动路径上做
+fd 手术,而那是本仓库明写「全部事故都在组装根」的地方,且**无法在不升级真机的
+前提下验证**。按「在事故现场加一段没有证据表明会被用到的代码,是拿真实风险换
+假想收益」这条,先不做。
+
+**清掉那 100MB 要用截断不是删除**:launchd 与 Guardian 都持着那个 fd,`rm`
+一个字节都不会释放(直到 Guardian 重启),而 `sudo : > /var/log/bx-guard.err.log`
+就地截断、fd 仍然有效(O_APPEND)。
+
+**真机未验**:以上全部由单元测试 + 十二处变异覆盖,没有人升级过。升级后要盯
+的只有一件事:`/var/log/bx.log` 开始长而 `bx-guard.err.log` 基本不动 ——
+反过来就是接线没生效。
+
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,
