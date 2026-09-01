@@ -459,10 +459,18 @@ func TestSecureGuardianLogsAtCreatesRootOnlyFiles(t *testing.T) {
 }
 
 // 安装 Guardian 单元时顺带收紧日志权限,不能只在某条罕见路径上做。
-func TestGuardianLogPathsCoverBothLaunchdLogs(t *testing.T) {
+//
+// **Core 那份必须一起收紧**:2026-09-01 把 Core 的输出从 Guardian 的
+// stdout/stderr 分了出来,而它装的是同样的东西 —— 服务器 IP 与 116 条 bypass
+// 网段。分家时漏掉它,等于把 2026-08-05 那次 0644→0600 的收紧悄悄退回去,
+// 而唯一的迹象是一个新文件的权限位。
+func TestGuardianLogPathsCoverEveryLogTheArchitectureWrites(t *testing.T) {
 	paths := GuardianLogPaths()
-	want := []string{"/var/log/bx-guard.log", "/var/log/bx-guard.err.log"}
+	want := []string{"/var/log/bx-guard.log", "/var/log/bx-guard.err.log", "/var/log/bx.log"}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("GuardianLogPaths() = %v, want %v", paths, want)
+	}
+	if CoreLogPath() == "" {
+		t.Fatal("darwin 上 Core 必须有自己的日志路径,否则它又会继承 Guardian 的")
 	}
 }
