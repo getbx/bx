@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/getbx/bx/internal/preset"
+	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/setup"
 )
 
@@ -23,6 +24,10 @@ type rulesResponse struct {
 	// ConfigPath 供界面提供「在 Finder 中显示」。发布出去而不是让菜单自己猜,
 	// 与 stats.Report.ConfigPath 同一条纪律。
 	ConfigPath string `json:"config_path,omitempty"`
+	// Review 是 Guardian 自己做的规则体检(rulereview.go)。**刻意不是
+	// omitempty 之外的形状**:nil = 「这一版没做/读不到配置」,而一份**空**
+	// 报告是「查过了、没有问题」—— 两者压成同一个东西正是这个功能最贵的教训。
+	Review *rulereview.Report `json:"review,omitempty"`
 	// RequiresRestart 恒为 true,而且**刻意不是 omitempty**:
 	// bx 不热重载配置,改完必须 `bx down && bx up`。菜单不说这句话,用户会以为
 	// 已经生效,然后在问题依旧时把这一步排除掉 —— 而那正是真正的原因。
@@ -128,6 +133,7 @@ func serveRuleList(w http.ResponseWriter, configPath string) {
 		Groups:          groups,
 		Custom:          custom,
 		ConfigPath:      configPath,
+		Review:          reviewRulesAt(configPath, nil),
 		RequiresRestart: true,
 	})
 }

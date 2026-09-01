@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
@@ -187,6 +188,13 @@ type RuleList struct {
 	// /etc/bx/config.yaml 的答案冒名顶替 —— 判据没错、读错了输入,
 	// 与 buildRuleReviewInput 头上那段 wrong-reference-object 警告同一形状。
 	ConfigPath string `json:"config_path"`
+	// Review 是 **Guardian 自己算的**规则体检。它有 root,读得到配置与 Core
+	// 实际在用的那张 china 列表,所以给得出完整的四类;客户端自己算只能给三类
+	// (无从知道用户有没有指定自己的列表)。
+	//
+	// **nil 与空报告是两件事**:nil = 这一版没做 / 配置读不到 =「没查」;
+	// 空报告 = 查过了、没有问题。压成同一个东西正是这个功能最贵的教训。
+	Review *rulereview.Report `json:"review"`
 }
 
 // Rules 读 GET /v1/rules。

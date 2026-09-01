@@ -8,6 +8,8 @@
 // 都在后者。
 package rulereview
 
+import "encoding/json"
+
 // Class 是一条结论属于哪一类。**四类各自计数,永远不合成一个总数。**
 //
 // 合成一个数时,它对任何一份成熟配置都不为零(手写规则被更宽的一条盖住是常态),
@@ -63,6 +65,37 @@ func (c Class) String() string {
 // 这里的 Class/Finding/Report 本身)——这个方法与上面的 json tag 是为将来那个 agent/MCP
 // 直接读 rulereview 的表面准备的,今天不可达。
 func (c Class) MarshalJSON() ([]byte, error) { return []byte(`"` + c.String() + `"`), nil }
+
+// UnmarshalJSON 让 Go 侧读得回来。**2026-08-31 起这条路是真的**:Guardian 有
+// root(读得到配置、读得到 Core 实际在用的那张 china 列表),它算完把报告发在
+// /v1/rules 上,非 root 的 `bx doctor` 与 agent 读它 —— 上面那句「今天不可达」
+// 因此不再成立。
+//
+// **认不出的词落到 ClassRisky,不报错**,两处判断各有理由:
+//   - 不报错:一个新版 Guardian 发来一类旧版 CLI 不认识的结论,不该让**整份**
+//     报告读不出来 —— 那会把「有几条建议」变成「什么都没有」;
+//   - 落到 risky:与零值那条刻意的不对称同向。多报一条安全告警是可接受的,
+//     反过来(把一条去匿名化风险降级成「可以删的冗余」)会让人删掉一条真正
+//     危险的规则。代价不对称,方向就该固定。
+func (c *Class) UnmarshalJSON(raw []byte) error {
+	var word string
+	if err := json.Unmarshal(raw, &word); err != nil {
+		return err
+	}
+	switch word {
+	case "shadowed_by_user_rule":
+		*c = ClassShadowedByUserRule
+	case "overridden_by_opposite_kind":
+		*c = ClassOverriddenByOppositeKind
+	case "shadowed_by_builtin_list":
+		*c = ClassShadowedByBuiltinList
+	case "dead":
+		*c = ClassDead
+	default:
+		*c = ClassRisky
+	}
+	return nil
+}
 
 // Finding 是一条可核对的结论。
 //

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/stats"
-	"github.com/getbx/bx/internal/supervisor"
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/guardian"
@@ -30,55 +29,14 @@ type doctorFinding struct {
 //
 // global 取自控制 socket 的模式标签,不是猜的 —— 拿错 mode 与拿错 china 列表
 // 是同一形状的事故(rulereview.Input.GlobalProxy 的注释里记着那次真机 bug)。
-var guardianRulesForDoctor = func() (direct, proxy []string, global bool, configPath string, err error) {
+var guardianRulesForDoctor = func() (review *rulereview.Report, configPath string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	list, err := guardian.NewClient(guardian.SocketPath).Rules(ctx)
 	if err != nil {
-		return nil, nil, false, "", err
+		return nil, "", err
 	}
-	// 模式读不到不是致命的:global 只影响已经被跳过的那一类,按 false 继续
-	// 好过整块放弃 —— 但**不许假装读到了**,故 err 一并带回给调用方判断。
-	if rep, statusErr := supervisor.FetchStatusReport(statusSocketPath()); statusErr == nil {
-		global = strings.HasPrefix(rep.Mode, "global") || strings.HasPrefix(rep.Mode, "router-global")
-	}
-	return list.Direct, list.Proxy, global, list.ConfigPath, nil
-}
-
-// ruleReviewInputFromGuardianRules 是**配置读不出来时**的那条路:规则从
-// Guardian 的 /v1/rules 来(它对业主开放,读的正是同一个 /etc/bx/config.yaml,
-// 只是它有 root),global 从控制 socket 的模式来,累计历史仍从 Core 来。
-//
-// **它与 buildRuleReviewInput 是两条路而不是两份判据**:判定全在
-// rulereview.Review 里,这里只组装原料。之所以不复用那一个,是因为
-// **china 那一半必须不一样** —— 见下。
-//
-// **china 那一类诚实跳过,不许凑数。** Guardian 给得出规则,给不出
-// `lists.china_domain`:用户可能指了自己的列表,而拿默认列表去比正是
-// buildRuleReviewInput 头上那段长注释警告的 wrong-reference-object 事故
-// (判据没错、读错了输入,然后指着一条仍然生效的规则说「可以删」)。
-// 代价是这条路少一类;收益是另外三类 + 死规则**第一次对非 root 的 agent
-// 可见**,而此前是一条都没有。
-//
-// **真正的终局形状是 Guardian 自己做体检并发布**(它有 root,读得到配置、
-// 读得到 Core 实际在用的那张 china 列表)—— 那样这一类也不必跳过。今天不做:
-// 它要往 Status 里加字段、进 statusdigest 分类、并处理每次 status 读都重算
-// 一遍 12k 域名的代价,是单独一期。
-func ruleReviewInputFromGuardianRules(direct, proxy []string, global bool, fetchStatus func() (stats.Report, error)) rulereview.Input {
-	in := rulereview.Input{
-		Direct:      append([]string(nil), direct...),
-		Proxy:       append([]string(nil), proxy...),
-		GlobalProxy: global,
-		ChinaSkipReason: "配置文件读不到(非 root),规则改经 Guardian 取得;" +
-			"而 Guardian 那条路给不出你是否指定了自己的 china 列表,故这一类没有比对",
-	}
-	if fetchStatus != nil {
-		in.History, in.HistoryUptime, in.HistoryDecisions, in.HistoryVersions,
-			in.HistoryOverflowed, in.HistorySkipReason = rulereviewsrc.CoreRuleHistory(fetchStatus)
-	} else {
-		in.HistorySkipReason = "这条路径没有读 Core 的累计历史"
-	}
-	return in
+	return list.Review, list.ConfigPath, nil
 }
 
 // ruleReviewDoctorLines 把体检报告翻成 doctor 的行。
