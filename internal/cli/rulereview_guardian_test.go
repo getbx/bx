@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/rulereview"
-	"github.com/getbx/bx/internal/stats"
 )
 
 // 规则体检对 agent 不可见,而根因不是「没做」,是**被 root 挡住了**。
@@ -25,77 +24,16 @@ import (
 // **修法是换一条被授权的路,不是第二个真相源**:Guardian 的 /v1/rules 对业主
 // 开放(authorizeOwnerPeer),它读的正是同一个 /etc/bx/config.yaml,只是它有 root。
 
-// **china 那一类必须诚实地跳过。** Guardian 的 /v1/rules 给得出规则,给不出
-// `lists.china_domain` —— 用户可能指了自己的列表,而拿默认列表去比正是
-// buildRuleReviewInput 头上那段长注释警告的 wrong-reference-object 事故:
-// 判据没错,读错了输入,然后指着一条**仍然生效**的规则说「可以删」。
-func TestGuardianSourcedInputSkipsTheBuiltinListClassHonestly(t *testing.T) {
-	in := ruleReviewInputFromGuardianRules([]string{"*.a.com"}, nil, false, nil)
-	if in.China != nil {
-		t.Fatal("这条路上无从确认 Core 实际在用哪张 china 列表,不许拿默认的去比")
-	}
-	if in.ChinaSkipReason == "" {
-		t.Fatal("跳过必须给理由 —— 「没查」与「查了没有」分不开正是这个功能最贵的教训")
-	}
-	if !strings.Contains(in.ChinaSkipReason, "config") && !strings.Contains(in.ChinaSkipReason, "配置") {
-		t.Fatalf("理由没说清是因为读不到配置: %q", in.ChinaSkipReason)
-	}
-}
-
-// 另外三类与 china 无关,一条都不许少 —— 这正是这条路仍然值得存在的理由。
-func TestGuardianSourcedInputStillFindsTheModeIndependentClasses(t *testing.T) {
-	// 同一条原文同时在 direct 与 proxy:proxy 更宽 ⇒ direct 那条从没生效过。
-	in := ruleReviewInputFromGuardianRules([]string{"*.a.com"}, []string{"*.a.com"}, false, nil)
-	rep := rulereview.Review(in)
-	var kinds []string
-	for _, f := range rep.Findings {
-		kinds = append(kinds, string(f.Class))
-	}
-	if len(rep.Findings) == 0 {
-		t.Fatal("跨表压制这一类没被判出来 —— 它与 china 列表无关,不该受影响")
-	}
-	joined := strings.Join(kinds, ",")
-	if !strings.Contains(joined, string(rulereview.ClassOverriddenByOppositeKind)) {
-		t.Fatalf("findings = %v, want 含跨表压制", kinds)
-	}
-}
-
-// global 必须如实带过去:它决定 builtin 那一类要不要判(这里已跳过),也进报告。
-// **它取自控制 socket 的模式,不是猜的** —— 拿错 mode 与拿错列表是同一形状的事故。
-func TestGuardianSourcedInputCarriesGlobalThrough(t *testing.T) {
-	if in := ruleReviewInputFromGuardianRules(nil, nil, true, nil); !in.GlobalProxy {
-		t.Fatal("global 没带过去")
-	}
-	if in := ruleReviewInputFromGuardianRules(nil, nil, false, nil); in.GlobalProxy {
-		t.Fatal("非 global 被当成了 global")
-	}
-}
-
-// 死规则那一类靠 Core 的跨重启累计历史,而**它走的是 0666 的控制 socket,
-// 非 root 读得到** —— 这条路上不该顺手把它一起丢掉。
-func TestGuardianSourcedInputStillReadsCoreRuleHistory(t *testing.T) {
-	in := ruleReviewInputFromGuardianRules(nil, nil, false, func() (stats.Report, error) {
-		return stats.Report{RuleHistory: &stats.RuleHistorySnapshot{
-			UptimeSeconds: 1234, Decisions: 5678, Versions: []string{"dev"},
-		}}, nil
-	})
-	if in.HistoryUptime == 0 || in.HistoryDecisions == 0 {
-		t.Fatalf("累计历史没带过来: uptime=%v decisions=%d", in.HistoryUptime, in.HistoryDecisions)
-	}
-	if in.HistorySkipReason != "" {
-		t.Fatalf("读到了历史却还写着跳过理由: %q", in.HistorySkipReason)
-	}
-}
-
-// Core 没在跑是常态(体检本来就常在保护关着时跑):不报错,如实说没有历史。
-func TestGuardianSourcedInputTreatsMissingCoreAsNotChecked(t *testing.T) {
-	in := ruleReviewInputFromGuardianRules(nil, nil, false, func() (stats.Report, error) {
-		return stats.Report{}, errors.New("dial: no such file")
-	})
-	if in.HistorySkipReason == "" {
-		t.Fatal("Core 读不到时必须给理由,而不是静默当成「查过了、没有」")
-	}
-}
+// **这一段 2026-08-31 被整体取代,记档在此。**
+//
+// 早先这条路是「客户端拿 Guardian 的规则、自己算」,只能给三类 —— china 那一类
+// 诚实跳过,因为客户端无从知道用户有没有指定自己的列表(拿默认表去比就是
+// wrong-reference-object)。当天稍晚改成 **Guardian 自己算**:它有 root,读得到
+// 配置与 Core 实际在用的那张 china 列表,四类一个不少。
+//
+// 于是那五条针对客户端简化组装的判据测试连同被测函数一起退场 —— 它们守的
+// 那件事(「诚实跳过」)不再是这条路的行为。判据现在由
+// internal/guardian/rulereview_test.go 守着,接线由下面几条守着。
 
 // **接线守卫。** 上面几条测的是判据,而这个仓库全部事故都在接线:
 // 判据写好了、doctor 那条路上没人调,与没写完全一样,且不会有任何东西报错。
@@ -108,9 +46,15 @@ func TestDoctorFallsBackToGuardianWhenConfigIsUnreadable(t *testing.T) {
 	// 退路只对**权限**失败生效,且 Guardian 必须读的是同一个文件 —— 故这里
 	// 造一个真实存在、但读不动的配置,并让替身报出同一个路径。
 	cfgPath := unreadableConfigForTest(t)
-	guardianRulesForDoctor = func() ([]string, []string, bool, string, error) {
-		// 同一条原文同时在两张表 ⇒ 跨表压制,与 china 列表无关,必然判得出来。
-		return []string{"*.a.com"}, []string{"*.a.com"}, false, cfgPath, nil
+	guardianRulesForDoctor = func() (*rulereview.Report, string, error) {
+		// **用真 Review 造 fixture,不手搓 Report。** 手搓的那份只填了
+		// Findings 而没有各类计数,渲染层于是一个字都不说 —— 一份生产里不可能
+		// 出现的输入,会让这条守卫测的是另一件事(本仓库记档过的「fixture
+		// 真实性是承重的」)。
+		report := rulereview.Review(rulereview.Input{
+			Direct: []string{"*.a.com"}, Proxy: []string{"*.a.com"},
+		})
+		return &report, cfgPath, nil
 	}
 
 	rep := collectClientDoctorWith(cfgPath, "", 0, true, false)
@@ -129,8 +73,8 @@ func TestDoctorFallsBackToGuardianWhenConfigIsUnreadable(t *testing.T) {
 func TestDoctorSaysSoWhenNeitherConfigNorGuardianCanBeRead(t *testing.T) {
 	previous := guardianRulesForDoctor
 	t.Cleanup(func() { guardianRulesForDoctor = previous })
-	guardianRulesForDoctor = func() ([]string, []string, bool, string, error) {
-		return nil, nil, false, "", errors.New("dial guardian: no such file")
+	guardianRulesForDoctor = func() (*rulereview.Report, string, error) {
+		return nil, "", errors.New("dial guardian: no such file")
 	}
 
 	rep := collectClientDoctorWith(unreadableConfigForTest(t), "", 0, true, false)
@@ -156,8 +100,8 @@ func TestDoctorNamesWhatIsStillMissingOnTheGuardianPath(t *testing.T) {
 	previous := guardianRulesForDoctor
 	t.Cleanup(func() { guardianRulesForDoctor = previous })
 	cfgPath := unreadableConfigForTest(t)
-	guardianRulesForDoctor = func() ([]string, []string, bool, string, error) {
-		return []string{"*.a.com"}, nil, false, cfgPath, nil
+	guardianRulesForDoctor = func() (*rulereview.Report, string, error) {
+		return &rulereview.Report{}, cfgPath, nil
 	}
 
 	rep := collectClientDoctorWith(cfgPath, "", 0, true, false)
@@ -199,9 +143,9 @@ func TestDoctorDoesNotUseGuardianWhenConfigIsSimplyMissing(t *testing.T) {
 	previous := guardianRulesForDoctor
 	t.Cleanup(func() { guardianRulesForDoctor = previous })
 	called := false
-	guardianRulesForDoctor = func() ([]string, []string, bool, string, error) {
+	guardianRulesForDoctor = func() (*rulereview.Report, string, error) {
 		called = true
-		return []string{"*.a.com"}, nil, false, "/nonexistent/bx/config.yaml", nil
+		return &rulereview.Report{}, "/nonexistent/bx/config.yaml", nil
 	}
 
 	rep := collectClientDoctorWith("/nonexistent/bx/config.yaml", "", 0, true, false)
@@ -218,8 +162,8 @@ func TestDoctorDoesNotUseGuardianWhenConfigIsSimplyMissing(t *testing.T) {
 func TestDoctorRefusesGuardianAnswerAboutADifferentFile(t *testing.T) {
 	previous := guardianRulesForDoctor
 	t.Cleanup(func() { guardianRulesForDoctor = previous })
-	guardianRulesForDoctor = func() ([]string, []string, bool, string, error) {
-		return []string{"*.a.com"}, nil, false, "/etc/bx/config.yaml", nil
+	guardianRulesForDoctor = func() (*rulereview.Report, string, error) {
+		return &rulereview.Report{}, "/etc/bx/config.yaml", nil
 	}
 
 	cfgPath := unreadableConfigForTest(t)

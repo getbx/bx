@@ -2261,12 +2261,17 @@ func collectClientDoctorWith(configPath, target string, timeout time.Duration, s
 		//   ② Guardian 读的**必须是同一个文件**:`--config /somewhere/else`
 		//      被一份来自 /etc/bx/config.yaml 的答案冒名顶替,是 wrong-reference-
 		//      object 的又一处 —— 判据没错、读错了输入。
-		direct, proxy, global, guardianPath, rulesErr := guardianRulesForDoctor()
+		review, guardianPath, rulesErr := guardianRulesForDoctor()
 		if rulesErr == nil && !errors.Is(err, fs.ErrPermission) {
 			rulesErr = errors.New("配置不是因为权限读不到,不走 Guardian 退路")
 		}
 		if rulesErr == nil && guardianPath != cfgPath {
 			rulesErr = fmt.Errorf("Guardian 读的是 %s,与要问的 %s 不是同一个文件", guardianPath, cfgPath)
+		}
+		if rulesErr == nil && review == nil {
+			// **nil 不是空报告。** Guardian 连上了、却没算(旧版本,或它自己也
+			// 读不到配置)—— 那时渲染一份空报告就是把「没查」说成「都很健康」。
+			rulesErr = errors.New("这一版 Guardian 没有发布规则体检")
 		}
 		if rulesErr != nil {
 			rep.addCheck("config_readable", "fail", err.Error(), "sudo bx setup <client-link>")
@@ -2281,10 +2286,11 @@ func collectClientDoctorWith(configPath, target string, timeout time.Duration, s
 			rep.addCheck("config_readable", "info",
 				err.Error()+";规则已改经 Guardian 读取(业主授权,无需 root);"+
 					"其余依赖配置的检查(权限/解析/server link/udp 策略)本次缺席,要它们请用 sudo", "")
-			for _, l := range ruleReviewDoctorLines(rulereview.Review(
-				ruleReviewInputFromGuardianRules(direct, proxy, global, func() (stats.Report, error) {
-					return supervisor.FetchStatusReport(statusSocketPath())
-				}))) {
+			// **体检是 Guardian 算的,不是这里重算。** 它有 root,读得到配置与
+			// Core 实际在用的那张 china 列表,所以给得出完整四类;客户端自己
+			// 算只能给三类(无从知道用户有没有指定自己的列表)。判据仍然只有
+			// 一份 —— 两边都是 rulereview.Review,组装都是 rulereviewsrc。
+			for _, l := range ruleReviewDoctorLines(*review) {
 				rep.addCheck(ruleReviewCheckName(l.Key), l.Status, l.Value, l.Hint)
 			}
 		}
