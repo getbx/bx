@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -2247,7 +2248,45 @@ func collectClientDoctorWith(configPath, target string, timeout time.Duration, s
 	rep.addCheck("config", "info", cfgPath, "")
 	b, err := os.ReadFile(cfgPath)
 	if err != nil {
-		rep.addCheck("config_readable", "fail", err.Error(), "sudo bx setup <client-link>")
+		// **配置读不到不等于什么都查不了。** /etc/bx/config.yaml 是 0600
+		// root-only,而 agent 按设计以业主身份免 sudo 跑 —— 此前这里整块跳过,
+		// 于是规则体检对 agent 等于不存在,而它拿到的信号是一个读起来像
+		// 「bx 坏了」的 ok:false。Guardian 的 /v1/rules 对业主开放,读的正是
+		// 同一个文件:同一份真相,换一条被授权的路。
+		// **两个条件缺一不可。**
+		//   ① 只对**权限**失败退路:文件根本不存在是「这台机器没 setup 过」,
+		//      那是真问题,拿 Guardian 的答案盖住它就是掩盖故障(既有测试
+		//      TestClientDoctorJSONReport 当场抓到过这个错)。
+		//   ② Guardian 读的**必须是同一个文件**:`--config /somewhere/else`
+		//      被一份来自 /etc/bx/config.yaml 的答案冒名顶替,是 wrong-reference-
+		//      object 的又一处 —— 判据没错、读错了输入。
+		direct, proxy, global, guardianPath, rulesErr := guardianRulesForDoctor()
+		if rulesErr == nil && !errors.Is(err, fs.ErrPermission) {
+			rulesErr = errors.New("配置不是因为权限读不到,不走 Guardian 退路")
+		}
+		if rulesErr == nil && guardianPath != cfgPath {
+			rulesErr = fmt.Errorf("Guardian 读的是 %s,与要问的 %s 不是同一个文件", guardianPath, cfgPath)
+		}
+		if rulesErr != nil {
+			rep.addCheck("config_readable", "fail", err.Error(), "sudo bx setup <client-link>")
+		} else {
+			// 两条路都试过、其中一条成了 —— 不许再报 fail 把整份报告拖成
+			// ok:false(那是会被训练成忽略的假警报),但也**不许说成 ok**:
+			// 这个进程确实读不到那个文件,别的依赖它的检查仍然缺席。
+			// **说清还缺什么**:规则体检补回来了,但权限/解析/server link/udp 策略
+			// 那几条仍然依赖直接读文件,本次没跑。不点名的话 ok:true 会被读成
+			// 「全都查过且没问题」——「没查」与「查了没有」分不开,是这份报告
+			// 最不能犯的错。
+			rep.addCheck("config_readable", "info",
+				err.Error()+";规则已改经 Guardian 读取(业主授权,无需 root);"+
+					"其余依赖配置的检查(权限/解析/server link/udp 策略)本次缺席,要它们请用 sudo", "")
+			for _, l := range ruleReviewDoctorLines(rulereview.Review(
+				ruleReviewInputFromGuardianRules(direct, proxy, global, func() (stats.Report, error) {
+					return supervisor.FetchStatusReport(statusSocketPath())
+				}))) {
+				rep.addCheck(ruleReviewCheckName(l.Key), l.Status, l.Value, l.Hint)
+			}
+		}
 	} else {
 		rep.addCheck("config_readable", "ok", "yes", "")
 		if modeCheck(cfgPath, 0o600) {

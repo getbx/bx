@@ -174,6 +174,62 @@ func (c *Client) CurrentRecovery(ctx context.Context) (RecoverySnapshot, error) 
 	return c.recoveryRequest(ctx, http.MethodGet, "/v1/recoveries/current", nil, http.StatusOK)
 }
 
+// RuleList 是 GET /v1/rules 的规则那一半。
+//
+// **只带 Direct/Proxy,不带 groups/custom**:那两样是给菜单分组显示用的派生物,
+// 而这个客户端的消费方(bx doctor 的规则体检)要的是原文两张表。少发一样就少
+// 一份会漂移的拷贝。
+type RuleList struct {
+	Direct []string `json:"direct"`
+	Proxy  []string `json:"proxy"`
+	// ConfigPath 是 Guardian **实际读的那个文件**。调用方必须拿它与自己要问的
+	// 路径比对:否则 `--config /somewhere/else` 会被一份来自
+	// /etc/bx/config.yaml 的答案冒名顶替 —— 判据没错、读错了输入,
+	// 与 buildRuleReviewInput 头上那段 wrong-reference-object 警告同一形状。
+	ConfigPath string `json:"config_path"`
+}
+
+// Rules 读 GET /v1/rules。
+//
+// **它存在的理由是 root 那道墙**:/etc/bx/config.yaml 是 0600 root-only,而
+// MCP 的前提是 agent 以业主身份免 sudo 操作 bx —— 非 root 的 bx doctor 因此
+// 读不到配置,整块规则体检被静默跳过。这个端点走 authorizeOwnerPeer(业主即可),
+// 读的正是同一个文件,只是 Guardian 有 root:**同一份真相,换一条被授权的路。**
+func (c *Client) Rules(ctx context.Context) (RuleList, error) {
+	client := c.HTTPClient
+	if client == nil {
+		client = guardianHTTPClient(c.SocketPath)
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		defer transport.CloseIdleConnections()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://local/v1/rules", nil)
+	if err != nil {
+		return RuleList{}, err
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RuleList{}, ctxErr
+		}
+		var dialErr *guardianDialError
+		if errors.As(err, &dialErr) {
+			return RuleList{}, &UnavailableError{Err: dialErr.err}
+		}
+		return RuleList{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		return RuleList{}, guardianHTTPError("/v1/rules", response.StatusCode, body)
+	}
+	var list RuleList
+	if err := json.NewDecoder(response.Body).Decode(&list); err != nil {
+		return RuleList{}, err
+	}
+	return list, nil
+}
+
 func (c *Client) recoveryRequest(ctx context.Context, method, path string, body io.Reader, expectedStatus int) (RecoverySnapshot, error) {
 	client := c.HTTPClient
 	if client == nil {
