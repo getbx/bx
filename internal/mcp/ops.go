@@ -11,6 +11,14 @@ type Ops interface {
 	Inspect(InspectIn) (JSONCommandOut, error)
 	LeakCheck(LeakCheckIn) (JSONCommandOut, error)
 	Observe(ObserveIn) (JSONCommandOut, error)
+	// Protection 报告 Guardian 那一侧的**意图 / 事实 / 差异**:desired(用户
+	// 要什么)、observed(系统实际是什么)、divergence(二者之差)、reconcile
+	// (调谐环报告)、recovery、protection_state。
+	//
+	// **它刻意返回 JSONCommandOut 而不是一个结构体**:bx_status 当年手挑了
+	// 六个字段,之后 Guardian 那半长出十几个键而投影没跟上 —— 漏掉的字段
+	// 不会有任何东西报错,agent 只是安静地看不见。原样转发就没有这个病。
+	Protection() (JSONCommandOut, error)
 	Check(CheckIn) (CheckOut, error)
 	Logs(LogsIn) (LogsOut, error)
 	ApplyPolicy(PolicyApplyIn) (PolicyApplyOut, error)
