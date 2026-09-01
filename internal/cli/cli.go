@@ -82,6 +82,7 @@ func New() *cli.App {
 			{Name: "leak-check", Usage: "非交互的机器可读检查(不开页面;供 MCP 与脚本):本机泄漏面 + 其它 VPN 共存 + 可选主动出口探测。人用请敲 leakcheck(没有连字符),它会开页面并把两半事实对起来", Flags: leakCheckFlags(), Action: leakCheckAction},
 			{Name: "leakcheck", Usage: "泄漏检测【推荐】:开浏览器页面,把浏览器那半(WebRTC/公网出口)与本机那半(路由/DNS)对起来 —— 只有两半合起来才判得了泄漏。保护关着、别的 VPN 在跑时照样能用", Flags: leakcheckFlags(), Action: leakcheckAction},
 			{Name: "observe", Usage: "观察一小段运行期状态变化(只读)", Flags: observeFlags(), Action: observeAction},
+			{Name: "apps", Usage: "按应用看分流:哪个应用走隧道、哪个直连、哪个被拦(只读,采样一小段)", Flags: appsFlags(), Action: appsAction},
 			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
 			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
 			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
