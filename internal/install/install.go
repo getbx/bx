@@ -53,9 +53,21 @@ const (
 // (SecureGuardianLogs); launchd itself would create them 0644.
 func GuardianLogPaths() []string {
 	if runtime.GOOS == "darwin" {
-		return []string{GuardianStdoutLogPath, GuardianStderrLogPath}
+		return []string{GuardianStdoutLogPath, GuardianStderrLogPath, CoreLogPath()}
 	}
 	return nil
+}
+
+// CoreLogPath 是 Guardian 起的那个 Core 自己的日志,空串表示本平台不单开。
+//
+// 沿用 legacy launchd 时代的 /var/log/bx.log 是刻意的:`bx logs` 与诊断包早就
+// 认得这个路径,而它们挑「活着的那一份」靠的是修改时间不是写死的优先级
+// (见 logsources.go),所以换回来之后不需要改任何消费方。
+func CoreLogPath() string {
+	if runtime.GOOS == "darwin" {
+		return launchdStdoutPath
+	}
+	return ""
 }
 
 // BinPath 是 bx 自身安装到 PATH 的规范位置(OS-aware,见 paths_{windows,other}.go)。

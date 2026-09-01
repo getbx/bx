@@ -25,9 +25,13 @@ func logSourceIsStale(mod, now time.Time) bool {
 
 // clientLogCandidates 是 macOS 上可能存在的 Core 日志,**活着的排在前面**。
 //
-// Guardian 架构下 Core 是 Guardian 的子进程,写的是 bx-guard.*;
-// bx.log / bx.err.log 是 legacy launchd 时代直接起 Core 时的路径。
-// 后者在今天的安装上通常是一份三周前的遗留 —— 而 `bx logs` 一直只读它。
+// **2026-09-01 起 Core 又写回 bx.log 了**:此前它继承 Guardian 的 stdout/stderr,
+// 于是两个进程挤进 bx-guard.*,而 Core 转发的传输子进程输出占了那个文件的 99%,
+// 把 Guardian 自己的审计线索埋掉(见 guardian.openCoreLog)。bx-guard.* 现在
+// 只剩 Guardian 自己的话。
+//
+// 三个路径全部保留为候选,并且**哪个是活着的那一个由修改时间决定、不由这份
+// 顺序决定** —— 跨版本升级时机器上什么组合都可能有,写死优先级就是在猜。
 func clientLogCandidates() []string {
 	return []string{
 		GuardianStdoutLogPath,

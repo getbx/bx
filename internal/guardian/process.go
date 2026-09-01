@@ -921,13 +921,37 @@ func retainedUncertainCause(err error) error {
 	return err
 }
 
-type osProcessOperations struct{}
+type osProcessOperations struct {
+	// logPath 覆盖 Core 日志的位置,**只给测试用**;空串走 install.CoreLogPath()。
+	// 有这个缝才谈得上断言「Start 真的用了 openCoreLog」—— 而这个仓库反复栽的
+	// 正是「判据有测试、接线没有」。
+	logPath string
+}
 
-func (osProcessOperations) Start(executable string, args, environment []string) (StartedProcess, error) {
+func (o osProcessOperations) coreLogPath() string {
+	if o.logPath != "" {
+		return o.logPath
+	}
+	return install.CoreLogPath()
+}
+
+func (o osProcessOperations) Start(executable string, args, environment []string) (StartedProcess, error) {
 	cmd := exec.Command(executable, args...)
 	cmd.Env = environment
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Core 写自己的日志,不继承 Guardian 的。**这不是整洁,是可观测性**:
+	// 真机 2026-09-01,bx-guard.err.log 里 99% 是 Core 转发的传输子进程输出,
+	// Guardian 自己那几千行审计线索(guardian_core_scan —— 「我允许了一个 Core
+	// 启动,因为我认为没有别的 Core 在跑」)被埋在底下。
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if out, err := openCoreLog(o.coreLogPath(), coreLogMaxBytes); err == nil {
+		cmd.Stdout, cmd.Stderr = out, out
+		// 子进程在 Start 里已经拿到自己的 fd 副本,父进程这一份留着没用。
+		defer out.Close()
+	} else if o.coreLogPath() != "" {
+		// 该开却开不出来:退回继承(**日志绝不许挡住 Core 启动**,保护比日志
+		// 重要),但要留一行 —— 否则下一个人会对着一个空的 bx.log 找原因。
+		log.Printf("guardian_core_log_unavailable path=%s err=%v", o.coreLogPath(), err)
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
