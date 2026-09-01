@@ -19,7 +19,7 @@ import (
 // 这与本仓库反复记的「关于代码的陈述」是同一类失效,只是这次的读者是用户。
 
 func TestTakeoverSummaryNeverClaimsChinaDirectInGlobalMode(t *testing.T) {
-	got := takeoverSummary(true, "host")
+	got := takeoverSummary(true, "host", false)
 	if strings.Contains(got, "中国 IP 直连") {
 		t.Fatalf("global 模式下 china 列表根本不加载,不许说中国 IP 直连: %q", got)
 	}
@@ -30,10 +30,37 @@ func TestTakeoverSummaryNeverClaimsChinaDirectInGlobalMode(t *testing.T) {
 	}
 }
 
-func TestTakeoverSummaryStillDescribesSplitModeCorrectly(t *testing.T) {
-	got := takeoverSummary(false, "host")
-	if !strings.Contains(got, "中国 IP 直连") {
-		t.Fatalf("split 模式下这句话是真的,不该被这次修复连累掉: %q", got)
+// split 那句原文有两处不严谨(项目所有者 2026-08-31 指出):
+//   - 没说这个「中国」是从哪儿来的 —— 内建/刷新来的表,还是用户自己指定的表?
+//     两者行为可能差很远,而日志一模一样;
+//   - 只提「中国 IP」,漏了**用户 direct 规则也在直连** —— 用户会以为
+//     `*.mycompany.com` 那类没生效。
+func TestTakeoverSummarySplitNamesTheListSourceAndUserRules(t *testing.T) {
+	builtin := takeoverSummary(false, "host", false)
+	if !strings.Contains(builtin, "中国") {
+		t.Fatalf("内建列表这一支该说清按什么直连: %q", builtin)
+	}
+	if !strings.Contains(builtin, "direct") {
+		t.Fatalf("用户 direct 规则也在直连,不许漏: %q", builtin)
+	}
+
+	custom := takeoverSummary(false, "host", true)
+	if strings.Contains(custom, "中国") {
+		t.Fatalf("用了自定义列表就不该再自称按「中国」分流: %q", custom)
+	}
+	if !strings.Contains(custom, "自定义") {
+		t.Fatalf("自定义列表这一支没说清列表来源: %q", custom)
+	}
+	if builtin == custom {
+		t.Fatal("两种列表来源的播报塌成了同一句 —— 用户无从分辨此刻按哪张表分流")
+	}
+}
+
+// global 不受列表来源影响:那个模式下 china 列表整个不加载,两支必须一模一样,
+// 否则等于暗示存在一张此刻并不存在的表。
+func TestTakeoverSummaryGlobalIgnoresListSource(t *testing.T) {
+	if takeoverSummary(true, "host", false) != takeoverSummary(true, "host", true) {
+		t.Fatal("global 下列表来源不该影响播报 —— 那个模式根本不加载列表")
 	}
 }
 
@@ -41,7 +68,7 @@ func TestTakeoverSummaryStillDescribesSplitModeCorrectly(t *testing.T) {
 // 会让人以为这台路由器自己的出站也走了隧道。
 func TestTakeoverSummaryDistinguishesRouterMode(t *testing.T) {
 	for _, global := range []bool{false, true} {
-		got := takeoverSummary(global, "router")
+		got := takeoverSummary(global, "router", false)
 		if strings.Contains(got, "全局接管") {
 			t.Fatalf("router 模式(global=%v)不该说全局接管: %q", global, got)
 		}
@@ -50,7 +77,7 @@ func TestTakeoverSummaryDistinguishesRouterMode(t *testing.T) {
 		}
 	}
 	// router + global:分流方式仍是 global,那一半也要说对。
-	if got := takeoverSummary(true, "router"); strings.Contains(got, "中国 IP 直连") {
+	if got := takeoverSummary(true, "router", false); strings.Contains(got, "中国 IP 直连") {
 		t.Fatalf("router-global 仍然不该说中国 IP 直连: %q", got)
 	}
 }
@@ -63,7 +90,7 @@ func TestTakeoverSummaryIsDistinctPerMode(t *testing.T) {
 		global bool
 		mode   string
 	}{{false, "host"}, {true, "host"}, {false, "router"}, {true, "router"}} {
-		got := takeoverSummary(c.global, c.mode)
+		got := takeoverSummary(c.global, c.mode, false)
 		key := proxyMode(c.global, c.mode)
 		if prev, dup := seen[got]; dup {
 			t.Fatalf("%s 与 %s 的播报是同一句:%q", key, prev, got)
