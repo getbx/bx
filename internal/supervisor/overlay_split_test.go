@@ -4,10 +4,9 @@ import (
 	"context"
 	"errors"
 	"net"
-	"os"
-	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/overlay"
 )
 
@@ -62,27 +61,17 @@ func TestOverlaySplitPatternsCoverSuffixAndSubdomains(t *testing.T) {
 	}
 }
 
-// **顺序即优先级,而这条只能在接线层钉。**
+// **TestUserSplitRulesArePrependedBeforeOverlayOnes 2026-08-31 退场,记档在此。**
 //
-// matchSplit 取第一个命中的路由;用户在 config 里写的必须排在 overlay 那组**前面**。
-// 这件事不在任何纯函数里,只在 run.go 那几行里 —— 而本仓库这一轮反复栽在同一处:
-// 判据对、接线错。读源码是这里唯一够得着的办法。
-func TestUserSplitRulesArePrependedBeforeOverlayOnes(t *testing.T) {
-	raw, err := os.ReadFile("run.go")
-	if err != nil {
-		t.Fatalf("读不到 run.go:%v —— 守卫失去意义,必须响亮失败", err)
-	}
-	source := string(raw)
-	userAt := strings.Index(source, "for _, r := range cfg.DNS.Split {")
-	overlayAt := strings.Index(source, "for _, r := range overlaySplit {")
-	if userAt < 0 || overlayAt < 0 {
-		t.Fatalf("找不到那两个循环(user@%d overlay@%d)—— 守卫读不懂现在的代码了", userAt, overlayAt)
-	}
-	if userAt > overlayAt {
-		t.Error("overlay 的 split 排在了用户配置前面 —— matchSplit 取第一个命中的," +
-			"于是用户为同一后缀配的解析器被硬编码的那个静默遮蔽")
-	}
-}
+// 它比较两个 for 循环在 run.go 里出现的位置,并且自己写着「这件事不在任何纯
+// 函数里,读源码是这里唯一够得着的办法」—— **那句话当时是真的,同时也是一份
+// 待办**。判据现已抽成 buildSplitRoutes(splitbrain.go),由下面那条
+// TestSplitRoutesPutUserRulesFirst 从行为上钉住(变异实测:把 overlay 排到
+// 用户前面,它当场转红)。
+//
+// 顺带一提它退场的方式:两个循环一搬走,它自己就以「找不到那两个循环 ——
+// 守卫读不懂现在的代码了」响亮失败,而不是安静地继续通过。**一条读源码的
+// 守卫至少该有这个自觉**,这一点它做对了。
 
 // **没有 Tailscale 的机器上,一条 DERP /32 都不许装。**
 //
@@ -170,5 +159,53 @@ func TestNormalizeDNSServerAddrHandlesColonWithoutPort(t *testing.T) {
 		if got := normalizeDNSServerAddr(in); got != want {
 			t.Errorf("normalizeDNSServerAddr(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// **顺序即优先级,现在由一个纯函数带着,而不是靠读源码。**
+//
+// 上面那条守卫(TestUserSplitRulesArePrependedBeforeOverlayOnes,2026-08-31
+// 退场)写着「这件事不在任何纯函数里,读源码是这里唯一够得着的办法」—— 那句话
+// 在当时是真的,而它同时也是一份**待办**:把接线里的判据抽出来,守卫就不必再
+// 猜源码。抽出来之后判据是行为:同一个后缀同时被用户与 overlay 配置时,
+// 排在前面的必须是用户那条(matchSplit 取第一个命中的)。
+func TestSplitRoutesPutUserRulesFirst(t *testing.T) {
+	routes := buildSplitRoutes(
+		[]config.SplitRule{{Domains: []string{"ts.net"}, Server: "10.0.0.1:53"}},
+		[]overlay.SplitRoute{{Suffix: "ts.net", Resolver: "100.100.100.100"}},
+	)
+	if len(routes) != 2 {
+		t.Fatalf("两边各一条,应当得到 2 条: %+v", routes)
+	}
+	// 第一条必须是用户那条 —— 否则用户为 ts.net 配的解析器被硬编码的那个静默遮蔽。
+	if routes[0].Server != "10.0.0.1:53" {
+		t.Fatalf("第一条不是用户的规则(server=%q)—— matchSplit 取第一个命中的,"+
+			"用户配置会被 overlay 那条遮蔽", routes[0].Server)
+	}
+	if !routes[1].Match.Match("host.ts.net") {
+		t.Fatalf("overlay 那条没覆盖子域: %+v", routes[1])
+	}
+}
+
+// overlay 的解析器地址要补端口(它给的是裸 IP),而用户写的原样用 ——
+// 用户可能故意指了非 53 端口。
+func TestSplitRoutesNormalizeOnlyTheOverlayResolver(t *testing.T) {
+	routes := buildSplitRoutes(
+		[]config.SplitRule{{Domains: []string{"corp.example"}, Server: "10.0.0.1:5353"}},
+		[]overlay.SplitRoute{{Suffix: "ts.net", Resolver: "100.100.100.100"}},
+	)
+	if routes[0].Server != "10.0.0.1:5353" {
+		t.Fatalf("用户写的端口被改了: %q", routes[0].Server)
+	}
+	if routes[1].Server != "100.100.100.100:53" {
+		t.Fatalf("overlay 的裸 IP 没补端口: %q", routes[1].Server)
+	}
+}
+
+// 两边都空时不该产出任何路由 —— 调用方据此决定要不要启用 split-DNS,
+// 一条空规则会让它启用一个什么都不匹配的转发器。
+func TestSplitRoutesAreEmptyWhenNeitherSideHasRules(t *testing.T) {
+	if routes := buildSplitRoutes(nil, nil); len(routes) != 0 {
+		t.Fatalf("两边都空却产出了 %d 条", len(routes))
 	}
 }

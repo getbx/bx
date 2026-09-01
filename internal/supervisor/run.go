@@ -170,39 +170,20 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 卡在与本次传输无关的 brook 下载上。china 列表仍按需在下面 EnsureLists。
 	global := cfg.Global || opts.Global
 
-	// 1) 分流脑(global 模式不需要 china 列表)
-	var chinaDomain, chinaCIDR []string
-	var domainPath, cidrPath string
-	var listsOverridden bool
-	if !global {
-		dp, cp, err := provision.EnsureLists(cfg.DataDir, embedded.ChinaDomain(), embedded.ChinaCIDR())
-		if err != nil {
-			log.Printf("准备 china 列表失败(降级空列表,等刷新补): %v", err)
-		}
-		domainPath, cidrPath = dp, cp
-		// 列表路径覆盖优先级:CLI flag > config lists.* > 内嵌/刷新快照
-		domainOverride := firstNonEmpty(opts.ChinaDomainPath, cfg.Lists.ChinaDomain)
-		cidrOverride := firstNonEmpty(opts.ChinaCIDRPath, cfg.Lists.ChinaCIDR)
-		if domainOverride != "" {
-			domainPath = domainOverride
-		}
-		if cidrOverride != "" {
-			cidrPath = cidrOverride
-		}
-		listsOverridden = domainOverride != "" || cidrOverride != ""
-		chinaDomain = readLines(domainPath)
-		chinaCIDR = readLines(cidrPath)
-	}
-	router, err := BuildRouter(cfg, chinaDomain, chinaCIDR)
+	// 1) 分流脑(global 模式不需要 china 列表)。相位抽在 splitbrain.go ——
+	// 它的两条关键关系(global 不读列表、CLI flag 压过 config)在那里可以被
+	// 直接断言,而长在这个 700 行的函数体里时只能靠读代码确认。
+	brain, err := buildSplitBrain(cfg, opts)
 	if err != nil {
-		return fmt.Errorf("构建分流脑: %w", err)
+		return err
 	}
-	router.GlobalProxy = global
+	router := brain.Router
+	listsOverridden := brain.ListsOverridden
 	mode := "分流(中国直连/其余代理)"
 	if global {
 		mode = "全局(除内网/用户 direct 外一切走代理)"
 	}
-	log.Printf("分流脑就绪: 模式=%s china_domain=%d china_cidr=%d", mode, len(chinaDomain), len(chinaCIDR))
+	log.Printf("分流脑就绪: 模式=%s china_domain=%d china_cidr=%d", mode, brain.DomainCount, brain.CIDRCount)
 
 	// 2) 隧道:按 server link 的 scheme 选传输(brook | reality),数据面不变。
 	// buildTunnel 由 link 建隧道(含按需 sing-box 准备),供启动与 Slice 2b 运行期换隧道复用。
@@ -413,23 +394,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 只会挂住。**用户在 config 里写的 split 排在前面**(见下),同名后缀以用户为准。
 	overlaySplit := overlay.SplitRoutes(presentOverlays)
 	if len(cfg.DNS.Split) > 0 || len(overlaySplit) > 0 {
-		var routes []bxdns.SplitRoute
-		// **用户的规则排在前面。** matchSplit 取**第一个**命中的路由,所以顺序就是
-		// 优先级 —— 早先这里把 overlay 那组放在前面并写着「用户可以覆盖」,那句话
-		// 与代码正好相反:用户为 ts.net 配的解析器会被硬编码的那个静默遮蔽。
-		for _, r := range cfg.DNS.Split {
-			routes = append(routes, bxdns.SplitRoute{
-				Match:  route.NewDomainSet(r.Domains),
-				Server: r.Server,
-			})
-		}
+		// **顺序即优先级**,判据在 buildSplitRoutes(splitbrain.go):用户的规则
+		// 排在 overlay 那组前面,由行为断言钉住 —— 此前它只由一条比较两个 for
+		// 循环在 run.go 里出现位置的源码守卫钉着。
+		routes := buildSplitRoutes(cfg.DNS.Split, overlaySplit)
 		for _, r := range overlaySplit {
-			server := normalizeDNSServerAddr(r.Resolver)
-			routes = append(routes, bxdns.SplitRoute{
-				Match:  route.NewDomainSet(overlaySplitPatterns(r.Suffix)),
-				Server: server,
-			})
-			log.Printf("overlay 共存:*.%s 交给 %s 解析", r.Suffix, server)
+			log.Printf("overlay 共存:*.%s 交给 %s 解析", r.Suffix, normalizeDNSServerAddr(r.Resolver))
 		}
 		dnsSrv.SetSplit(routes, bxdns.NewUDPForwarder(plat.DirectDialer()), splitDirect)
 		log.Printf("split-DNS 已启用:%d 条规则", len(routes))
