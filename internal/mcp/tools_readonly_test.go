@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -189,6 +191,48 @@ func TestInspectArgsDefaultToNoOutboundProbe(t *testing.T) {
 //
 // 这条守卫留下来的理由是:上一版那道门是有人专门写的,而删掉它之后,谁把字段加
 // 回来就不会再有任何东西拦着。它钉的是**能力的缺席**,不是某段代码的存在。
+// 上一条守卫盯的是**字段**,而 agent 唯一读得到的是**工具描述那句话** ——
+// 两者是两回事,2026-08-31 实测:字段早就删干净了,描述里却还写着
+// 「browser=true requires browser_confirmed=true after user confirmation」,
+// 教 agent 去传两个根本不存在的参数。
+//
+// **对 agent 撒谎比对人撒谎更糟**:人读到不对会去看代码,agent 会照着描述
+// 构造调用,然后拿到一个它无从理解的 schema 错误。这与本仓库反复记的
+// 「关于代码的陈述」同类,只是读者换成了机器。
+//
+// 判据是**描述与 schema 必须一致**:凡描述里提到的参数名,结构体里必须真有
+// 那个字段 —— 反过来不要求(不是每个字段都值得在一句话里点名)。
+func TestMCPToolDescriptionsDoNotNameParametersThatDoNotExist(t *testing.T) {
+	fields := map[string]bool{}
+	for _, typ := range []any{LeakCheckIn{}, CheckIn{}, InspectIn{}, ObserveIn{}, LogsIn{}} {
+		v := reflect.TypeOf(typ)
+		for i := 0; i < v.NumField(); i++ {
+			tag := v.Field(i).Tag.Get("json")
+			name := strings.Split(tag, ",")[0]
+			if name != "" && name != "-" {
+				fields[name] = true
+			}
+		}
+	}
+	source, err := os.ReadFile("tools_readonly.go")
+	if err != nil {
+		// 读不懂现在的代码时响亮失败 —— 一条认不出目标的守卫与没有守卫一样,
+		// 但它看起来更让人放心。
+		t.Fatalf("读 tools_readonly.go: %v", err)
+	}
+	// 只查那几个**曾经存在过、现已删除**的参数名:它们是最容易在描述里留下
+	// 残影的一类,而通用的「任何 snake_case 词都必须是字段」会把 outbound、
+	// network-path 这类普通英文词也当成参数名,制造假红。
+	for _, retired := range []string{"browser_confirmed", "browser_timeout"} {
+		if bytes.Contains(source, []byte(retired)) && !fields[retired] {
+			t.Errorf("工具描述里还写着已删除的参数 %q —— agent 会照着它构造调用", retired)
+		}
+	}
+	if bytes.Contains(source, []byte("browser=true")) && !fields["browser"] {
+		t.Error("工具描述里还写着 browser=true,而 schema 里没有 browser 字段")
+	}
+}
+
 func TestMCPCannotOpenABrowser(t *testing.T) {
 	for _, typ := range []any{LeakCheckIn{}, CheckIn{}} {
 		v := reflect.TypeOf(typ)

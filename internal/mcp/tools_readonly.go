@@ -48,7 +48,7 @@ func registerReadOnly(s *mcpsdk.Server, ops Ops) {
 			return nil, out, nil
 		})
 
-	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_leak_check", Description: "network-path leak check from the CLI JSON surface; outbound/browser probes only when requested; browser=true requires browser_confirmed=true after user confirmation", Annotations: ro},
+	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_leak_check", Description: "network-path leak check from the CLI JSON surface; outbound probes only when network=true. Browser-side checks are deliberately absent here: they need a person in front of the screen, and live in `bx leakcheck` instead", Annotations: ro},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, in LeakCheckIn) (*mcpsdk.CallToolResult, JSONCommandOut, error) {
 			out, err := ops.LeakCheck(in)
 			if err != nil {
