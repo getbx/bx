@@ -2,11 +2,13 @@ package tunnel
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"log"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -16,6 +18,20 @@ const (
 	// maxStderrLineLength 防止子进程用一行超长输出刷爆日志。
 	maxStderrLineLength = 512
 	redactedPlaceholder = "<redacted>"
+	// stderrRepeatWindow 是同一行的最小重复写入间隔。
+	//
+	// 真机 2026-09-01:sing-box 以约 2 次/秒无限重复 `network: missing default
+	// interface`(在 bx 的配置下良性 —— 全仓没有一处 auto_detect_interface,
+	// bx 从不让它去探接口),几周里写出 435,128 行、把 Guardian 自己那几千行
+	// 真日志埋在 99% 的噪声底下。**单行截断挡不住这个形状**:它挡的是「一行
+	// 很长」,而这里是「一行很短、重复很多次」。
+	stderrRepeatWindow = time.Minute
+	// stderrDistinctTracked 是抑制表的条目上限。
+	//
+	// 表满不是折叠失效的理由,而是**折叠对这种形状本来就无能为力**:每行都不同
+	// 的输出(带连接 ID 那种)去重去不掉任何东西。此时宁可照常写日志,也不拿
+	// 一个无界增长的 map 去换日志体积。
+	stderrDistinctTracked = 64
 )
 
 // stderrSink 收集一个传输子进程的 stderr。
@@ -27,16 +43,26 @@ const (
 type stderrSink struct {
 	label   string
 	secrets []string
+	// now 是给测试的时钟缝。折叠的判据是「距上次写这一行过了多久」,
+	// 而一条要靠 sleep 才测得到的判据等于没有测试。
+	now func() time.Time
 
-	mu     sync.Mutex
-	recent []string
+	mu      sync.Mutex
+	recent  []string
+	repeats map[string]*repeatState
+}
+
+// repeatState 记一行「上次写进日志是什么时候」与「此后折了多少次」。
+type repeatState struct {
+	lastLogged time.Time
+	folded     int
 }
 
 // newStderrSink 建一个汇聚器。secrets 里的每个串会在**写日志之前**被抹掉——
 // 日志本身就是泄露面。空白串会被忽略:strings.ReplaceAll(line, "", x) 会在每个
 // 字符之间插入 x,把整行变成垃圾。
 func newStderrSink(label string, secrets ...string) *stderrSink {
-	sink := &stderrSink{label: label}
+	sink := &stderrSink{label: label, now: time.Now, repeats: map[string]*repeatState{}}
 	for _, secret := range secrets {
 		if strings.TrimSpace(secret) == "" {
 			continue
@@ -53,6 +79,79 @@ func (s *stderrSink) consume(r io.Reader) {
 	for scanner.Scan() {
 		s.writeLine(scanner.Text())
 	}
+	// 子进程退出时把还没报出去的折叠计数补一笔。少了它,一个刷了十万次然后
+	// 退出的子进程在日志里只留下**一行** —— 而那正是最该被看见的形状。
+	s.flush()
+}
+
+// flush 把抑制表里所有待报的折叠计数写出去并清空表。
+func (s *stderrSink) flush() {
+	s.mu.Lock()
+	pending := s.drainFoldedLocked(func(*repeatState) bool { return true })
+	s.mu.Unlock()
+	s.emit(pending)
+}
+
+// drainFoldedLocked 摘掉 keep 选中的条目,返回它们里待报的折叠说明。
+// **调用方必须持锁**;日志写在锁外(写日志是 I/O,不该压在这把锁里)。
+func (s *stderrSink) drainFoldedLocked(match func(*repeatState) bool) []string {
+	var pending []string
+	for line, st := range s.repeats {
+		if !match(st) {
+			continue
+		}
+		if st.folded > 0 {
+			pending = append(pending, foldNotice(line, st.folded))
+		}
+		delete(s.repeats, line)
+	}
+	return pending
+}
+
+func (s *stderrSink) emit(lines []string) {
+	for _, line := range lines {
+		log.Printf("%s: %s", s.label, line)
+	}
+}
+
+func foldNotice(line string, folded int) string {
+	return fmt.Sprintf("%s [同一行重复 %d 次已折叠]", line, folded)
+}
+
+// admit 判断这一行现在该不该写进日志。
+//
+// 返回的 text 为空表示折叠掉了。**折叠永远不丢信息**:重复次数会跟着下一次
+// 写入(或 flush)一起报出来 —— 少了那个数,「一句话刷了 43 万次」在日志里
+// 与「这句话出现过一次」完全一样,而后者不值得看,前者就是事故本身。
+func (s *stderrSink) admit(line string) (text string, evicted []string) {
+	now := s.now()
+	st, tracked := s.repeats[line]
+	if tracked {
+		if now.Sub(st.lastLogged) < stderrRepeatWindow {
+			st.folded++
+			return "", nil
+		}
+		folded := st.folded
+		st.lastLogged, st.folded = now, 0
+		if folded > 0 {
+			return foldNotice(line, folded), nil
+		}
+		return line, nil
+	}
+
+	if len(s.repeats) >= stderrDistinctTracked {
+		// 先清掉已经过窗口的条目(它们对折叠已无作用),把它们欠的计数报出去。
+		evicted = s.drainFoldedLocked(func(st *repeatState) bool {
+			return now.Sub(st.lastLogged) >= stderrRepeatWindow
+		})
+	}
+	if len(s.repeats) >= stderrDistinctTracked {
+		// 表仍满 = 这个子进程正在吐每行都不同的输出,折叠对它无能为力。
+		// 照常写日志,但不占表 —— 见 stderrDistinctTracked 的注释。
+		return line, evicted
+	}
+	s.repeats[line] = &repeatState{lastLogged: now}
+	return line, evicted
 }
 
 func (s *stderrSink) writeLine(line string) {
@@ -68,13 +167,19 @@ func (s *stderrSink) writeLine(line string) {
 	for _, secret := range s.secrets {
 		line = strings.ReplaceAll(line, secret, redactedPlaceholder)
 	}
-	log.Printf("%s: %s", s.label, line)
-
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	// 环形缓冲**不受折叠影响**:它是诊断出口(健康检查失败时要看的最近几行),
+	// 压缩的只是写进日志的那一份。
 	s.recent = append(s.recent, line)
 	if len(s.recent) > recentStderrLines {
 		s.recent = s.recent[len(s.recent)-recentStderrLines:]
+	}
+	text, evicted := s.admit(line)
+	s.mu.Unlock()
+
+	s.emit(evicted)
+	if text != "" {
+		log.Printf("%s: %s", s.label, text)
 	}
 }
 
