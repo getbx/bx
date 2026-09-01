@@ -2,9 +2,11 @@ package tunnel
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 传输子进程的 stderr 此前被直接丢进 /dev/null(6 处 exec.Command 都没设过
@@ -165,5 +167,112 @@ func TestTunnelStderrEmptyWithoutRunner(t *testing.T) {
 		func(string) (int64, error) { return 0, nil })
 	if got := tun.RecentStderr(); len(got) != 0 {
 		t.Errorf("无子进程时 RecentStderr() = %q, want 空", got)
+	}
+}
+
+// —— 重复折叠 ——
+//
+// 真机 2026-09-01:`/var/log/bx-guard.err.log` 长到 **100MB 且从无轮转**,其中
+// **435,128 行是同一句话**:sing-box 的 `network: missing default interface`,
+// 约 2 次/秒、不停。那句话在 bx 的配置下**是良性的** —— 全仓没有一处
+// auto_detect_interface/bind_interface,bx 从不让 sing-box 去探接口,出站靠系统
+// 路由表。于是缺陷整个在这一侧:**一条恒定不变的良性消息被无条件转发了几周**,
+// 把 Guardian 自己那几千行真日志(guardian_core_scan、needs_attention……)埋在
+// 99% 的噪声底下。
+
+// 同一行反复出现时,窗口内只写一次。
+// 环形缓冲**不受影响** —— 它是诊断出口(健康检查失败时要看的那几行),压缩的
+// 只是写进日志的那一份。
+func TestStderrSinkFoldsAFloodOfIdenticalLines(t *testing.T) {
+	restore := captureLog(t)
+	sink := newStderrSink("singbox")
+	frozen := time.Now()
+	sink.now = func() time.Time { return frozen }
+
+	for i := 0; i < 1000; i++ {
+		sink.writeLine("network: missing default interface")
+	}
+	logged := restore()
+
+	if n := strings.Count(logged, "missing default interface"); n != 1 {
+		t.Errorf("同一行在窗口内写了 %d 次日志,应当只写 1 次", n)
+	}
+	if got := len(sink.RecentStderr()); got != recentStderrLines {
+		t.Errorf("环形缓冲被折叠连累了:%d 行,应当仍是 %d", got, recentStderrLines)
+	}
+}
+
+// 折叠必须**报出折了多少次**。
+// 少了这个数,「一句话刷了 43 万次」在日志里与「这句话出现过一次」完全一样 ——
+// 而那两者是完全不同的两件事,后者不值得看,前者是本次事故本身。
+func TestStderrSinkReportsHowManyItFolded(t *testing.T) {
+	restore := captureLog(t)
+	sink := newStderrSink("singbox")
+	at := time.Now()
+	sink.now = func() time.Time { return at }
+
+	for i := 0; i < 500; i++ {
+		sink.writeLine("network: missing default interface")
+	}
+	at = at.Add(stderrRepeatWindow + time.Second)
+	sink.writeLine("network: missing default interface")
+	logged := restore()
+
+	if !strings.Contains(logged, "499") {
+		t.Errorf("没有报出折叠次数(应含 499):\n%s", logged)
+	}
+}
+
+// **不同的行一条都不许丢。** 折叠是压缩,不是采样 —— 它把重复次数变成一个数字,
+// 但绝不能让一条从没出现过的消息静默消失。
+func TestStderrSinkNeverFoldsDistinctLines(t *testing.T) {
+	restore := captureLog(t)
+	sink := newStderrSink("singbox")
+	frozen := time.Now()
+	sink.now = func() time.Time { return frozen }
+
+	for i := 0; i < 40; i++ {
+		sink.writeLine(fmt.Sprintf("distinct failure %d", i))
+	}
+	logged := restore()
+
+	for i := 0; i < 40; i++ {
+		if !strings.Contains(logged, fmt.Sprintf("distinct failure %d", i)) {
+			t.Fatalf("第 %d 行被折叠吞掉了", i)
+		}
+	}
+}
+
+// 子进程退出(管道 EOF)时,还没报出去的折叠计数必须补一笔。
+// 否则一个刷了十万次然后退出的子进程,在日志里只留下**一行**,而那正是最该
+// 被看见的形状。
+func TestStderrSinkFlushesPendingFoldCountAtEOF(t *testing.T) {
+	restore := captureLog(t)
+	sink := newStderrSink("singbox")
+	frozen := time.Now()
+	sink.now = func() time.Time { return frozen }
+
+	sink.consume(strings.NewReader(strings.Repeat("same line\n", 300)))
+	logged := restore()
+
+	if !strings.Contains(logged, "299") {
+		t.Errorf("EOF 时没有补报折叠计数(应含 299):\n%s", logged)
+	}
+}
+
+// 抑制表必须有上限。子进程若吐出**每行都不同**的输出(例如带连接 ID),
+// 表会无界增长 —— 那是拿内存泄漏换日志体积,不划算。
+func TestStderrSinkRepeatTableStaysBounded(t *testing.T) {
+	restore := captureLog(t)
+	defer restore()
+	sink := newStderrSink("singbox")
+	frozen := time.Now()
+	sink.now = func() time.Time { return frozen }
+
+	for i := 0; i < stderrDistinctTracked*20; i++ {
+		sink.writeLine(fmt.Sprintf("conn %d failed", i))
+	}
+	if got := len(sink.repeats); got > stderrDistinctTracked {
+		t.Errorf("抑制表涨到 %d 条,上限是 %d", got, stderrDistinctTracked)
 	}
 }
