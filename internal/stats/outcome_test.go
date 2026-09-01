@@ -2,11 +2,11 @@ package stats
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/getbx/bx/internal/udpsource"
 )
 
 // **决策不等于结果。**
@@ -122,16 +122,33 @@ func TestRuleOutcomesAreConcurrencySafe(t *testing.T) {
 	}
 }
 
-// **跨包按字符串对齐的地方只有这一处**,而两边漂开的后果是彻底静默:
-// 计数照记,汇总却一条都匹配不上,输出与「UDP 完全正常」逐字节相同。
-func TestUDPSourceNamesMatchTheDialer(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("..", "dialer", "dialer.go"))
-	if err != nil {
-		t.Fatalf("读不到 dialer.go:%v", err)
-	}
-	for _, name := range []string{udpSourceProxy, udpSourceProxyFallback, udpSourceDirectRealtime} {
-		if !strings.Contains(string(source), `"`+name+`"`) {
-			t.Errorf("dialer 里没有来源 %q —— 汇总会一条都匹配不上,而输出与「一切正常」一模一样", name)
+// **TestUDPSourceNamesMatchTheDialer 2026-08-31 退场,记档在此。**
+//
+// 它读 dialer.go 的源码,检查那几个来源名字符串在不在。守的事情是对的 ——
+// 这几个字符串是记账一侧(dialer)与汇总一侧(stats)之间唯一按字面对齐的
+// 东西,漂开的后果彻底静默:计数照记、汇总一条都匹配不上,而输出与「UDP
+// 完全正常」逐字节相同。
+//
+// 但它守的是「**两份拷贝还一样**」,而正确的做法是让它们**没法不一样**:
+// 清单下沉到 internal/udpsource(不 import 本仓库任何东西的叶子包),两边
+// 共读同一份 —— 与 internal/barriercidr 同一个先例、同一个理由。漂移在
+// 构造上不可能之后,那条守卫没有东西可守了。
+//
+// 下面这条取代它:钉住两边**确实来自同一个来源**,而不是「两份字面量恰好
+// 相等」。谁把任何一边改回自己的字面量,它当场转红。
+func TestUDPSourceNamesComeFromTheSharedLeafPackage(t *testing.T) {
+	for _, pair := range []struct {
+		local  string
+		shared string
+	}{
+		{udpSourceProxy, udpsource.Proxy},
+		{udpSourceProxyFallback, udpsource.ProxyFallback},
+		{udpSourceDirectRealtime, udpsource.DirectRealtime},
+	} {
+		if pair.local != pair.shared {
+			t.Fatalf("%q 与叶子包里的 %q 不一致 —— 有人把它改回了自己的字面量,"+
+				"而漂开的后果是汇总一条都匹配不上,输出与「一切正常」一模一样",
+				pair.local, pair.shared)
 		}
 	}
 }

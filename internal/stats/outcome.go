@@ -3,6 +3,8 @@ package stats
 import (
 	"fmt"
 	"sort"
+
+	"github.com/getbx/bx/internal/udpsource"
 )
 
 // maxTrackedRules 是纯防御性上限。
@@ -135,9 +137,10 @@ func (s Snapshot) FailingRules() []RuleOutcome {
 // UDP 那三条来源的名字。**与 internal/dialer 里的常量必须一致** ——
 // 这是唯一一处跨包按字符串对齐的地方,由 TestUDPSourceNamesMatchTheDialer 钉住。
 const (
-	udpSourceProxy          = "udp_proxy"
-	udpSourceProxyFallback  = "udp_proxy_fallback"
-	udpSourceDirectRealtime = "udp_direct_realtime"
+	// 与 dialer 共读 internal/udpsource 那一份 —— 见该包头上那段。
+	udpSourceProxy          = udpsource.Proxy
+	udpSourceProxyFallback  = udpsource.ProxyFallback
+	udpSourceDirectRealtime = udpsource.DirectRealtime
 )
 
 // UDPOutcome 把 UDP 那几条来源汇总成一句能行动的话所需的数字。

@@ -15,6 +15,7 @@ import (
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/splitdns"
+	"github.com/getbx/bx/internal/udpsource"
 )
 
 // ErrBlocked 表示连接被 kill-switch 或 Block 决策拦截。
@@ -656,13 +657,14 @@ func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Deci
 // 否则 `bx status` 里那几百条 proxy 连接凭空出现、无从解释,而这正是「结果计数」
 // 这件事要消灭的处境。归到「模式」是这条路上唯一诚实的答案。
 const (
-	udpSourceProxy          = "udp_proxy"
-	udpSourceProxyFallback  = "udp_proxy_fallback"
-	udpSourceDirectRealtime = "udp_direct_realtime"
-	// udpSourceModeBlock 是 udp.mode=block 下被丢掉的那一档。它没有对应的
-	// RuleAttempt(那条路上没有「尝试」可言),但**必须有归因** —— 「为什么
-	// 这个 App 一开 bx 就废了」正是这一档最常见的答案。
-	udpSourceModeBlock = "udp_block"
+	// **来源名住在 internal/udpsource,两边共读同一份。** 它们是 dialer 与
+	// stats 之间唯一按字面对齐的东西,漂开的后果彻底静默(计数照记、汇总一条
+	// 都匹配不上,而输出与「UDP 完全正常」逐字节相同)。此前两边各有一份逐字
+	// 重复的常量,靠一条读源码的守卫盯着;现在漂移在构造上不可能。
+	udpSourceProxy          = udpsource.Proxy
+	udpSourceProxyFallback  = udpsource.ProxyFallback
+	udpSourceDirectRealtime = udpsource.DirectRealtime
+	udpSourceModeBlock      = udpsource.ModeBlock
 )
 
 // recordUDPFailure 记一次 UDP 拨号失败。
