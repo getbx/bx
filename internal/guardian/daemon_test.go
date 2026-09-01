@@ -18,30 +18,18 @@ import (
 	"github.com/getbx/bx/internal/install"
 )
 
-// TestRunDaemonDoesNotDiscoverGatewayAtStartup is a static regression guard:
-// RunDaemon must not require a default gateway before the socket exists.
-// Another VPN can legitimately own the default route via a point-to-point
-// utun (no gateway) without that blocking the Guardian daemon from starting;
-// the gateway is only an operation-time dependency for planning a barrier
-// with server-bypass routes (see barrierContextForRuntime in manager.go).
-func TestRunDaemonDoesNotDiscoverGatewayAtStartup(t *testing.T) {
-	if _, err := os.Stat("daemon_darwin.go"); err == nil {
-		data, readErr := os.ReadFile("daemon_darwin.go")
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		if strings.Contains(string(data), "discoverDaemonGateway") {
-			t.Fatal("discoverDaemonGateway must be gone: gateway is an operation-time dependency")
-		}
-	}
-	data, err := os.ReadFile("daemon.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "discoverDaemonGateway") {
-		t.Fatal("RunDaemon must not call discoverDaemonGateway at startup")
-	}
-}
+// **TestRunDaemonDoesNotDiscoverGatewayAtStartup 2026-08-31 退场,记档在此。**
+//
+// 它钉的是「daemon.go 里不许出现 discoverDaemonGateway 这个名字」。理由是真的:
+// 别的 VPN 可以合法地用点对点 utun 占着默认路由(没有网关),那不该挡住 Guardian
+// 起来 —— 网关只是**操作期**的依赖。
+//
+// 但它只防得住**那一个名字**。变异实测(把 `platform.DiscoverGateway` 塞进
+// RunDaemon 的启动路径)它一声不吭地全绿,而行为版
+// TestHarnessRunDaemonStartsWithoutADefaultRoute(在一个**没有默认路由**的
+// netns 里真起 daemon)当场转红,消息直指根因。
+//
+// 这是「守卫钉住的是缺陷旁边的东西」的又一例:名字不是那件事,行为才是。
 
 func TestDaemonNetworkObserverFollowsDesiredState(t *testing.T) {
 	var desiredMu sync.Mutex

@@ -69,6 +69,7 @@ var retiredTestNames = map[string]string{
 	"TestRunTakesRuntimeBypassFromWiringNotAFrozenSlice": "已由集成台(-tags integration,真 Run + 真 netns + 真路由表)接手,逐条变异实测后退场;bypassrefresh_test.go 里那段退场说明记着经过",
 	"TestRunWiresLiveMutatorToLiveBypassStore":           "同上,一并退场",
 	"TestNoPackageWritesToLiveMutatorStore":              "同上,一并退场",
+	"TestRunDaemonDoesNotDiscoverGatewayAtStartup":       "只禁一个函数名(discoverDaemonGateway),而换条路径去探网关它照样全绿(变异实测);由 TestHarnessRunDaemonStartsWithoutADefaultRoute 接手 —— 在没有默认路由的 netns 里真起 daemon,防的是那件事而不是那个名字",
 	"TestConfigWarningsReachTheStatusReport":             "它自己在测试函数里 append 一遍再断言那个局部变量,一次都没调用生产的组装逻辑;被 TestStatusReporterIncludesBothGuardAndConfigWarnings 取代,注释里点名它是在讲这段经过",
 }
 
