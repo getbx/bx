@@ -1316,6 +1316,90 @@ rule-history 死 ⇒ 历史停止累计 · china-list-refresh 死 ⇒ 列表不�
 塞回一个裸 `go mutEng.Run(ctx)` **能编译**(说明它是真实可能的改动)且守卫
 转红。读不出 `func Run` 时它**响亮失败**而不是静默放行。
 
+## AI-native 诊断面(2026-08-31)—— agent 看得见什么
+
+**起点是一次实测而不是设想**:agent 经 `bx_inspect` 拿到的 status 是 Core 的
+`stats.Report`,而 `bx status --json` 比它**多 16 个键** —— desired、observed、
+divergence、reconcile、protection_state、recovery、dns_state…… **全部是 Guardian
+那半**。也就是说这套控制面架构最核心的洞见「意图 / 事实 / 差异」,agent 一个字
+都看不到:它答得出「隧道健康、延迟 293ms」,答不出「bx 以为自己开着,而系统说
+劫持没生效」。
+
+**根因是 `bx_status` 手挑了六个字段**,之后 Guardian 那半长出十几个键而投影没
+跟上 —— 漏掉的字段不会有任何东西报错。所以新工具一律**不再手挑**:
+
+- **`bx_protection`**:原样转发 `bx status --json` 的信封(与 `bx_inspect` 同
+  模式),由一条按**返回类型**判定的测试钉住(手写结构体即红)。真 MCP server
+  端到端验过:16 个字段全部到达。
+- **`bx apps` / `bx_apps`**(`internal/cli/apps.go`):「哪个应用走哪条路」第一次
+  离开菜单窗口。**必须采样一个窗口**(默认 6 秒)—— `/v0/apps?subscribe=1` 的
+  第一次调用只是订阅,采集从那一刻才开始,拉完就返回必然是空报告,而空报告与
+  「真的没有连接」在输出上完全一样。「订阅没成」与「订阅了但确实没有连接」分开报。
+  **刻意不带可执行路径**:那是记档在案的信息面扩大,agent 要回答的是「哪个应用
+  走哪条路」不是「它装在哪儿」;守卫从**行为**兜(判据打在序列化后的字节上,
+  变异验证过),两张发布面白名单**显式加入并写明理由** —— 守卫拦住过我一次,
+  而它要的动作正是「想清楚再把自己加进去」。
+- **规则体检对非 root 可见**:此前 `config_readable: fail` ⇒ 整个 config 分支
+  跳过 ⇒ 体检根本没跑,而 agent 按设计以业主身份免 sudo 跑。修法是**换一条被
+  授权的路,不是第二个真相源**:Guardian 的 `/v1/rules` 走 owner 门、读的正是
+  同一个文件。退路有**两道门,都是既有测试逼出来的**:只对 `fs.ErrPermission`
+  生效(配置**不存在**是「没 setup 过」这个真问题,拿 Guardian 的答案盖住它是
+  掩盖故障),且 Guardian 报的 `config_path` 必须与要问的路径相同(否则
+  `--config 别的路径` 被一份来自 `/etc/bx/config.yaml` 的答案冒名顶替)。
+- **体检本身改由 Guardian 算**(`internal/guardian/rulereview.go`):它有 root,
+  读得到配置**与 Core 实际在用的那张 china 列表**,所以给得出完整四类;客户端
+  自己算只能给三类(无从知道用户有没有指定自己的列表)。组装下沉
+  `internal/rulereviewsrc`,判定仍在 `rulereview.Review` —— 两个消费方共用一份。
+  `Class` 因此补了 `UnmarshalJSON`(`MarshalJSON` 的注释原本写着「今天不可达」,
+  已更正):认不出的词**不报错**(否则整份报告读不出来)且落到 `ClassRisky`
+  (与零值那条刻意的不对称同向)。
+  **`nil` 与空报告分开,三处各写一遍** —— 真机当场兑现:跑着的是旧 Guardian
+  (不发 review),CLI 报「这一版 Guardian 没有发布规则体检」而不是「你的规则
+  都很健康」。
+
+## 读源码的守卫:三种处置(2026-08-31)
+
+全仓真正读源码的测试函数 **60 → 57**,而**这个数字本身比想象的诚实得多**:
+其中 **38 条是 Swift 菜单守卫**(Go 测试编不了 Swift、`main.swift` 也进不了
+Swift 测试 target),**3 条是纯度守卫**(按 AST 禁 net/os/exec,**本该存在**,
+不是变通)。剩下十几条 Go 守卫里,多数守的是**否定命题**(「不存在第二条接线」)
+或**不可调用的函数**(要出网),结构上无法行为化 —— **它们该留着**。
+
+退役的三条各代表一种处置,值得对照:
+
+| 守卫 | 处置 | 判据 |
+|---|---|---|
+| `TestRunDaemonDoesNotDiscoverGatewayAtStartup` | **换行为版** | 它只禁一个函数名;变异实测(改走 `platform.DiscoverGateway`)它全绿,而在**没有默认路由的 netns** 里真起 daemon 当场转红 |
+| `TestUserSplitRulesArePrependedBeforeOverlayOnes` | **抽纯函数** | 它自己写着「读源码是这里唯一够得着的办法」—— 那是真的,同时是一份待办;判据抽成 `buildSplitRoutes` 后成为行为断言 |
+| `TestUDPSourceNamesMatchTheDialer` | **根治** | 它守的是「两份拷贝还一样」;清单下沉 `internal/udpsource` 叶子包后**漂移在构造上不可能**(与 `internal/barriercidr` 同一先例) |
+
+第三种最好 —— **它让守卫失业**,而不是让守卫更聪明。
+
+**一个值得记的细节**:split 那条在两个 for 循环被搬走的那一刻,以「找不到那两个
+循环 —— 守卫读不懂现在的代码了」**响亮失败**而不是安静通过。一条读源码的守卫
+最坏的失效是锚点漂了还绿着,它在最需要的时候恰好不可达;这一条做对了。
+
+**尚未做、且刻意不在无人监督时开的**:Swift 那 38 条的根治办法(把
+`BxState`/`resolve()` 搬进能编译进测试套件的 `MenuState.swift`)。实测
+`resolve()` 是**嵌套在另一个函数里的 125 行闭包**,捕获五个外层局部变量;抽它
+要把捕获变成显式参数,并让一批读 `main.swift` 的守卫失去锚点、逐条重判 ——
+收益是指标,风险是用户天天在用的菜单。
+
+## Run() 拆相位:按判据切,不按行数切(2026-08-31)
+
+`Run()` 764 → 734 行,但**行数是副产品,不是目标**。切的过程中确认了一件事:
+**它的 700 多行不是等价的**。相位 3(fake-IP + DNS)里真正的判据(hosts 合并、
+split 路由)**已经在独立函数里**,剩下的是纯粘合 —— 把粘合搬进另一个函数只是
+把同样的耦合换个地方放(一个 3 进 6 出的函数不比原地代码更清晰)。
+
+**判断「哪里还藏着判据」有个客观信号:读源码的守卫指向哪里。** 守卫是前人留下的
+路标 —— 他们想断言某件事,而那件事长在接线里够不着,只好去比字符串。
+
+已抽出两块:`buildSplitBrain`(「global 一个字节的 china 列表都不读」「CLI flag
+压过 config.lists」,两条各自对应过真实事故)与 `buildSplitRoutes`(顺序即优先级)。
+china 列表与它的两个路径**留在相位内** —— 此前是四个只在二十行内被用到的局部
+变量,而组装根的每个局部变量都是一次「它后面还会被谁改」的阅读负担。
+
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,
