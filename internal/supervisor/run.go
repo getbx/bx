@@ -59,6 +59,32 @@ func proxyMode(global bool, mode string) string {
 	return "split"
 }
 
+// takeoverSummary 是路由劫持成功后那句播报。**它必须与这一次实际生效的分流
+// 方式一致**,而不是一句写死的话。
+//
+// 起因是一次真实误导(2026-08-31,项目所有者升级后读日志发现):这句话原先
+// 无条件说「中国 IP 直连,其余走 bx 隧道」,而 global 模式下 china 列表**整个
+// 不加载** —— 同一份日志里隔两行就是 `china_domain=0 china_cidr=0`。一句关于
+// 系统当前行为的假话比不说更糟:用户会据此以为国内流量在直连,于是去别处找
+// 「访问国内站点为什么慢」的原因,而真实原因正是它们全走了隧道。
+//
+// 与 proxyMode 共用同一套模式判定(它给 status 用、这个给日志用),两处措辞
+// 对得上;四种组合各有各的话,由 TestTakeoverSummaryIsDistinctPerMode 钉住 ——
+// 两种模式塌成同一句,就意味着有一种在被另一种的描述冒名顶替。
+func takeoverSummary(global bool, mode string) string {
+	split := "中国 IP 直连,其余走 bx 隧道。"
+	if global {
+		// 与 proxyMode 那行「除内网/用户 direct 外一切走代理」是同一句话。
+		split = "除内网与用户 direct 规则外,一切走 bx 隧道。"
+	}
+	if mode == "router" {
+		// 只劫持 LAN 转发流量,路由器自身的出站不碰 —— 说「全局接管」会让人
+		// 以为这台路由器自己也走了隧道。
+		return "✅ bx 已接管 LAN 转发流量。" + split
+	}
+	return "✅ bx 已全局接管。" + split
+}
+
 // Options 是 bx up 的运行期参数(非配置文件项)。
 type Options struct {
 	TunName         string
@@ -827,7 +853,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			routes.set(false)
 			teardown()
 		})
-		log.Printf("✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。")
+		log.Printf("%s", takeoverSummary(global, cfg.Mode))
 	}
 
 	// 列表自动刷新(仅分流模式):隧道健康后周期经 socks5 拉最新列表热重载
