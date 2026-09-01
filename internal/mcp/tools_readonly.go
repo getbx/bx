@@ -57,6 +57,15 @@ func registerReadOnly(s *mcpsdk.Server, ops Ops) {
 			return nil, out, nil
 		})
 
+	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_protection", Description: "what bx intends versus what the machine actually is: desired state, observed facts, their divergence, the reconcile loop's latest round, recovery and DNS state. Read-only, no root, no outbound probes. Use this when protection looks wrong but the tunnel looks fine", Annotations: ro},
+		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, JSONCommandOut, error) {
+			out, err := ops.Protection()
+			if err != nil {
+				return errResultTyped[JSONCommandOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
+			}
+			return nil, out, nil
+		})
+
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_observe", Description: "sample local bx runtime counters over a short window; no outbound probes or network changes", Annotations: ro},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, in ObserveIn) (*mcpsdk.CallToolResult, JSONCommandOut, error) {
 			out, err := ops.Observe(in)

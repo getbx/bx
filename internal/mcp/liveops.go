@@ -141,6 +141,17 @@ func (o *liveOps) Observe(in ObserveIn) (JSONCommandOut, error) {
 	return runBXJSONCommand(observeArgs(in))
 }
 
+// Protection 走 `bx status --json`:Guardian 那半只有它带
+// (inspect 里的 status 是 Core 的 stats.Report,没有 desired/observed/reconcile)。
+//
+// **不需要 root**:读取面走 0666 的控制 socket 与 guardian.sock,而 MCP 的整个
+// 前提是 agent 以业主身份免 sudo 操作 bx。
+func (o *liveOps) Protection() (JSONCommandOut, error) {
+	return runBXJSONCommand(protectionArgs())
+}
+
+func protectionArgs() []string { return []string{"status", "--json"} }
+
 // Check composes the existing read-only inspection and local observation
 // surfaces. It neither changes bx nor probes externally unless explicitly
 // requested through CheckIn.Network or CheckIn.Browser.

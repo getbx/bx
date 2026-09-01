@@ -14,6 +14,7 @@ type fakeOps struct {
 	inspect              JSONCommandOut
 	leakCheck            JSONCommandOut
 	observe              JSONCommandOut
+	protection           JSONCommandOut
 	check                CheckOut
 	checkIn              CheckIn
 	logs                 LogsOut
@@ -46,6 +47,10 @@ func (f *fakeOps) LeakCheck(LeakCheckIn) (JSONCommandOut, error) {
 
 func (f *fakeOps) Observe(ObserveIn) (JSONCommandOut, error) {
 	return f.observe, nil
+}
+
+func (f *fakeOps) Protection() (JSONCommandOut, error) {
+	return f.protection, nil
 }
 
 func (f *fakeOps) Check(in CheckIn) (CheckOut, error) {
