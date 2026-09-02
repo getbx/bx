@@ -10,7 +10,7 @@ import (
 
 // —— CLAUDE.md / README.md 点名的文件必须真的在(2026-08-24)——
 //
-// 与 TestEveryTestNameMentionedInACommentExists 同一条纪律,换一个维度:那条管
+// 与 TestEveryTestNameMentionedInProseExists 同一条纪律,换一个维度:那条管
 // 「注释里点名的测试」,这条管「文档里点名的文件」。
 //
 // **范围刻意只有这两份,不含 docs/superpowers/{specs,plans}。** 首次全仓扫描的

@@ -8,7 +8,12 @@ import (
 	"testing"
 )
 
-// —— 注释里点名的测试必须真的存在(2026-08-24)——
+// —— 散文里点名的测试必须真的存在(2026-08-24;2026-09-02 扩到 CLAUDE.md)——
+//
+// **名字里是「散文」不是「注释」,因为范围在 2026-09-02 扩了**:CLAUDE.md 点名
+// 了 40 多个测试而此前一个守卫都没有,而它恰恰是下一个人开工前唯一会通读的
+// 东西。改名是刻意的 —— 一条叫 `…InAComment…` 的守卫会让读到它的人以为
+// CLAUDE.md 不在保护范围内,而那正是这条守卫本身要消灭的那种陈述。
 //
 // **这个仓库为「关于代码的陈述没有守卫」栽过很多次**,而其中最常见的一种是
 // 注释里写着「由 TestXxx 钉住」而 TestXxx 早已改名或删除。代码有测试盯着,
@@ -27,7 +32,7 @@ import (
 // **判据对「前缀」宽容**:注释里写 `TestRequireStatusWatchCapability*` 这类通配
 // 形式很常见,只要有任何一个真实测试以它开头就算数。宁可放过一个,也不要制造
 // 假红 —— 一条会误报的守卫会被下一个人删掉。
-func TestEveryTestNameMentionedInACommentExists(t *testing.T) {
+func TestEveryTestNameMentionedInProseExists(t *testing.T) {
 	root := repoRootForTestNameRefs(t)
 	defined, refs := scanTestNames(t, root)
 	if len(defined) < 500 {
@@ -120,7 +125,17 @@ func scanTestNames(t *testing.T, root string) (map[string]bool, map[string][]str
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") {
+		isGo := strings.HasSuffix(path, ".go")
+		// **CLAUDE.md 也算「关于代码的陈述」,而且是最重的那一份。**
+		//
+		// 它点名了 40 多个测试,此前**一个守卫都没有** —— 而它恰恰是下一个人
+		// (或下一个 agent)开工前唯一会通读的东西。一句「这件事由 TestXxx 钉住」
+		// 在改名之后原样活着,后果与注释里那种完全一样:读到的人据此不再去检查
+		// 那件事。范围刻意只加这一份,不含 docs/superpowers/{specs,plans} ——
+		// 与 TestDocumentedFilePathsExist 同一条:计划书是**有日期的意图记录**,
+		// 它点名的是「将要建的东西」,失效是预期的,拉进来只会制造假红。
+		isDoc := filepath.Base(path) == "CLAUDE.md" && filepath.Dir(path) == root
+		if !isGo && !isDoc {
 			return nil
 		}
 		b, err := os.ReadFile(path)
@@ -128,12 +143,16 @@ func scanTestNames(t *testing.T, root string) (map[string]bool, map[string][]str
 			return err
 		}
 		src := string(b)
-		for _, m := range testFuncRe.FindAllStringSubmatch(src, -1) {
-			defined[m[1]] = true
+		if isGo {
+			for _, m := range testFuncRe.FindAllStringSubmatch(src, -1) {
+				defined[m[1]] = true
+			}
 		}
 		rel, _ := filepath.Rel(root, path)
 		for i, line := range strings.Split(src, "\n") {
-			if !strings.HasPrefix(strings.TrimSpace(line), "//") {
+			// .go 里只看注释行(`t.Run("TestFoo")` 那种字符串不算引用);
+			// CLAUDE.md 整份都是散文,每一行都算。
+			if isGo && !strings.HasPrefix(strings.TrimSpace(line), "//") {
 				continue
 			}
 			for _, m := range testRefRe.FindAllStringSubmatch(line, -1) {
