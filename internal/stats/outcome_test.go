@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/getbx/bx/internal/dialfail"
+
 	"github.com/getbx/bx/internal/udpsource"
 )
 
@@ -40,7 +42,7 @@ func TestRuleOutcomesAttributeFailuresToTheRuleThatForcedThem(t *testing.T) {
 	var c Counters
 	for i := 0; i < 3; i++ {
 		c.RuleAttempt("user_direct", "*.steamstatic.com")
-		c.RuleFailure("user_direct", "*.steamstatic.com")
+		c.RuleFailure("user_direct", "*.steamstatic.com", dialfail.Unreachable)
 	}
 	c.RuleAttempt("user_direct", "gsa.apple.com")
 	c.RuleAttempt("china_domain", "")
@@ -110,7 +112,7 @@ func TestRuleOutcomesAreConcurrencySafe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			c.RuleAttempt("user_direct", "*.steamstatic.com")
-			c.RuleFailure("user_direct", "*.steamstatic.com")
+			c.RuleFailure("user_direct", "*.steamstatic.com", dialfail.Unreachable)
 			_ = c.Snapshot()
 		}()
 	}
@@ -235,7 +237,7 @@ func TestDecisionsCountsBuiltinHitsToo(t *testing.T) {
 func TestFailuresDoNotDoubleCountDecisions(t *testing.T) {
 	var c Counters
 	c.RuleAttempt("user_direct", "a.com")
-	c.RuleFailure("user_direct", "a.com")
+	c.RuleFailure("user_direct", "a.com", dialfail.Timeout)
 	if got := c.Decisions(); got != 1 {
 		t.Fatalf("Decisions() = %d, want 1", got)
 	}
@@ -270,5 +272,44 @@ func TestDecisionsKeepCountingAfterTheRuleTableIsFull(t *testing.T) {
 	if got, want := c.Decisions(), int64(maxTrackedRules+extra); got != want {
 		t.Fatalf("Decisions() = %d, want %d —— 表满之后的判定被丢掉了,"+
 			"而跟踪上限是实现细节,不该影响「这台机器被用过多少」", got, want)
+	}
+}
+
+// 失败分类必须真的被记下来,并且**快照要深拷贝那张 map**。
+//
+// `ruleSnapshot` 里是 `out = append(out, *entry)` —— 浅拷贝只复制 map 头,
+// 快照与活计数器会共享同一张表,于是「快照」会跟着后续失败继续变,而调用方
+// 以为它凝固了。与 statusdigest 那次 FailingRules 切片同一个根因,
+// 而那一次的后果是 digest 污染了它所要度量的东西。
+func TestRuleFailureKindsAreRecordedAndSnapshotIsADeepCopy(t *testing.T) {
+	c := &Counters{}
+	c.RuleAttempt("user_direct", "*.qq.com")
+	c.RuleFailure("user_direct", "*.qq.com", dialfail.Unreachable)
+
+	before := c.Snapshot().Rules
+	if len(before) != 1 || before[0].FailureKinds[dialfail.Unreachable] != 1 {
+		t.Fatalf("分类没被记下来:%+v", before)
+	}
+
+	// 快照之后继续记账 —— 已经拿走的那份不许跟着变。
+	c.RuleAttempt("user_direct", "*.qq.com")
+	c.RuleFailure("user_direct", "*.qq.com", dialfail.Unreachable)
+	if got := before[0].FailureKinds[dialfail.Unreachable]; got != 1 {
+		t.Errorf("快照跟着活计数器变了(%d)—— 那张 map 是共享的", got)
+	}
+}
+
+// 归不了类的失败**仍然计入总数**,只是不进分类表。
+// 少数一条也不许因为归不了类就从 Failures 里消失。
+func TestUnclassifiedFailureStillCountsTowardTheTotal(t *testing.T) {
+	c := &Counters{}
+	c.RuleAttempt("user_direct", "a.com")
+	c.RuleFailure("user_direct", "a.com", "")
+	rules := c.Snapshot().Rules
+	if len(rules) != 1 || rules[0].Failures != 1 {
+		t.Fatalf("归不了类的失败从总数里消失了:%+v", rules)
+	}
+	if len(rules[0].FailureKinds) != 0 {
+		t.Errorf("空分类被记成了一个类别:%+v", rules[0].FailureKinds)
 	}
 }

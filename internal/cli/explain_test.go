@@ -150,3 +150,70 @@ func TestExplainDoesNotQualifyARealRulesCounts(t *testing.T) {
 		t.Errorf("给一条真规则的计数加了不该有的限定:\n%s", got)
 	}
 }
+
+// **一个百分比答不出该不该管。**
+//
+// 真机 2026-09-01:`*.qq.com` 本次运行 78 次判定 / 15 次失败(19.2%),而这个
+// 数字**无法行动** —— 全是 unreachable 就要立刻去查路由(2026-08-13 那个
+// DirectDialer 故障的签名),全是 timeout 就一个字都不用改。错误对象一直在
+// 手边(`conn, err := d.Direct.DialContext(...)`),此前只进 debug 日志。
+func TestExplainBreaksFailuresIntoActionableKinds(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Run.FailureKinds = map[string]int64{"timeout": 12, "unreachable": 3}
+	got := renderExplain(rep)
+	if !strings.Contains(got, "对端不应答") || !strings.Contains(got, "路由不可达") {
+		t.Errorf("没有把失败拆开:\n%s", got)
+	}
+	// **最大的一类排最前,而且每次都一样。**
+	// map 迭代序是随机的:一个只跑一次的顺序断言会偶发通过,而
+	// 「一个会偶发红的闸门比没有闸门更糟」—— 跑够多次把随机性挤掉。
+	for i := 0; i < 50; i++ {
+		out := renderExplain(rep)
+		if strings.Index(out, "对端不应答") > strings.Index(out, "路由不可达") {
+			t.Fatalf("第 %d 次渲染没有按次数倒序(输出不稳定就 diff 不了):\n%s", i, out)
+		}
+	}
+}
+
+// 没有分类时不许显示成「各类都是 0」——
+// 「这一版没分类」与「归不了类」都不是「一次都没发生」。
+func TestExplainSaysNothingAboutKindsWhenThereAreNone(t *testing.T) {
+	got := renderExplain(explainFixture()) // fixture 无 FailureKinds
+	if strings.Contains(got, "×0") || strings.Contains(got, "[]") {
+		t.Errorf("没有分类却渲染了一张空表:\n%s", got)
+	}
+}
+
+// **「累计」必须说清楚覆盖多长时间。**
+// 一个跨了半年、几个版本的 15% 与一天之内的 15% 是完全不同的两件事,
+// 而读的人会默认它是后者。
+func TestExplainSaysHowLongTheCumulativeCountCovers(t *testing.T) {
+	rep := explainFixture()
+	rep.HistoryWindowSeconds = 95040 // 1.1 天
+	got := renderExplain(rep)
+	if !strings.Contains(got, "1.1 天") {
+		t.Errorf("没说累计覆盖多长时间:\n%s", got)
+	}
+}
+
+// 跨版本要说 —— 中间几版的计数行为可能并不一致,那份累计要打折看。
+// 单一版本时不说:一句恒真的话会被训练成噪声。
+func TestExplainFlagsAMultiVersionCumulativeCount(t *testing.T) {
+	rep := explainFixture()
+	rep.HistoryWindowSeconds = 95040
+	rep.HistoryVersions = []string{"dev"}
+	if strings.Contains(renderExplain(rep), "跨 ") {
+		t.Error("单一版本却报了跨版本")
+	}
+	rep.HistoryVersions = []string{"v0.9", "dev"}
+	if !strings.Contains(renderExplain(rep), "跨 2 个版本") {
+		t.Errorf("跨版本没说:\n%s", renderExplain(rep))
+	}
+}
+
+// 没有历史时一个字都不说 —— 「累计覆盖 0 天」比不说更容易被读错。
+func TestExplainSaysNothingAboutAnAbsentHistory(t *testing.T) {
+	if strings.Contains(renderExplain(explainFixture()), "累计口径") {
+		t.Error("没有历史却报了累计口径")
+	}
+}

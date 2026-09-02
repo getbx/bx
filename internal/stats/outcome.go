@@ -26,20 +26,29 @@ type RuleOutcome struct {
 	Rule     string `json:"rule,omitempty"`
 	Attempts int64  `json:"attempts"`
 	Failures int64  `json:"failures"`
+	// FailureKinds 把 Failures 拆成可行动的几类(见 internal/dialfail)。
+	//
+	// **一个百分比答不出该不该管**:`*.qq.com 15.4% 失败` 全是 unreachable
+	// 就要立刻去查路由(2026-08-13 那个 DirectDialer 故障的签名),全是 timeout
+	// 就一个字都不用改。错误对象一直在手边,此前只进 debug 日志然后被扔掉。
+	//
+	// nil = 这一版没有分类,或这条规则没失败过 —— 与「各类都是 0」是两件事,
+	// 故用 omitempty 而不是恒发一张空表。
+	FailureKinds map[string]int64 `json:"failure_kinds,omitempty"`
 }
 
 type ruleKey struct{ source, rule string }
 
 // RuleAttempt 记一次按此规则做出的判定。
-func (c *Counters) RuleAttempt(source, rule string) { c.bump(source, rule, false) }
+func (c *Counters) RuleAttempt(source, rule string) { c.bump(source, rule, false, "") }
 
 // RuleFailure 记一次按此规则拨号失败。
 //
 // **失败不重复计入 Attempts**:调用方对同一次连接先 RuleAttempt 再(失败时)
 // RuleFailure,故 Failures ≤ Attempts 恒成立。反过来会让「全失败」看起来像半数失败。
-func (c *Counters) RuleFailure(source, rule string) { c.bump(source, rule, true) }
+func (c *Counters) RuleFailure(source, rule, kind string) { c.bump(source, rule, true, kind) }
 
-func (c *Counters) bump(source, rule string, failed bool) {
+func (c *Counters) bump(source, rule string, failed bool, kind string) {
 	if source == "" {
 		return
 	}
@@ -72,6 +81,14 @@ func (c *Counters) bump(source, rule string, failed bool) {
 	}
 	if failed {
 		entry.Failures++
+		if kind != "" {
+			// 认不出原因的失败仍然计入 Failures,只是不进这张分类表 ——
+			// 少数一条也不许因为「归不了类」而从总数里消失。
+			if entry.FailureKinds == nil {
+				entry.FailureKinds = make(map[string]int64, 2)
+			}
+			entry.FailureKinds[kind]++
+		}
 		return
 	}
 	entry.Attempts++
@@ -89,7 +106,17 @@ func (c *Counters) ruleSnapshot() []RuleOutcome {
 	}
 	out := make([]RuleOutcome, 0, len(c.rules))
 	for _, entry := range c.rules {
-		out = append(out, *entry)
+		copied := *entry
+		// **深拷贝那张 map。** `*entry` 只复制了 map 头 —— 快照与活计数器会共享
+		// 同一张表,于是「快照」会跟着后续的失败继续变,而调用方以为它凝固了。
+		// 与 statusdigest 那次 FailingRules 切片同一个根因。
+		if entry.FailureKinds != nil {
+			copied.FailureKinds = make(map[string]int64, len(entry.FailureKinds))
+			for k, v := range entry.FailureKinds {
+				copied.FailureKinds[k] = v
+			}
+		}
+		out = append(out, copied)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Source != out[j].Source {

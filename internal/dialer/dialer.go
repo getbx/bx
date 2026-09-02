@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/getbx/bx/internal/appattr"
+	"github.com/getbx/bx/internal/dialfail"
 	"github.com/getbx/bx/internal/fakeip"
 	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/splitdns"
@@ -59,7 +60,10 @@ type DecisionCounter interface {
 	// RuleAttempt / RuleFailure 把判定与失败归因到**做出判定的那条规则**。
 	// 用户规则传原文(config 里那一行),内建列表传空串。
 	RuleAttempt(source, rule string)
-	RuleFailure(source, rule string)
+	// RuleFailure 的 kind 是 internal/dialfail 的分类(空串 = 归不了类)。
+	// **接口直接扩,不做可选断言** —— 「实现里没有就静默不分类」的计数器与
+	// 没有这个功能在输出上完全一样(与 DecisionCounter 当初的判断同源)。
+	RuleFailure(source, rule, kind string)
 }
 
 // AppRecorder 收下「这条连接被判成了什么」,交给上层按 (源端口,协议) 归因到应用。
@@ -317,7 +321,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, fl
 				if err != nil {
 					// 解析失败也是这条路的失败。**此前它直接返回,一次都没被数过** ——
 					// 一条每次都解析不出来的 UDP 路径在 bx status 里完全隐形。
-					d.recordUDPFailure(route.Direct, udpSourceDirectRealtime, "")
+					d.recordUDPFailure(route.Direct, udpSourceDirectRealtime, "", err)
 					return nil, err
 				}
 				ip = resolved
@@ -331,7 +335,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, fl
 			debugf("udp direct-realtime: ip=%s target=%s", m.IP, target)
 			conn, err := d.Direct.DialContext(ctx, "udp", target)
 			if err != nil {
-				d.recordUDPFailure(route.Direct, udpSourceDirectRealtime, "")
+				d.recordUDPFailure(route.Direct, udpSourceDirectRealtime, "", err)
 			}
 			return conn, err
 		}
@@ -367,7 +371,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, fl
 			debugf("udp proxy: ip=%s domain=%q target=%s", m.IP, m.Domain, target)
 			conn, err := utr.Proxy.DialContext(ctx, "udp", target)
 			if err != nil {
-				d.recordUDPFailure(route.Proxy, source, "")
+				d.recordUDPFailure(route.Proxy, source, "", err)
 			}
 			return conn, err
 		}
@@ -430,7 +434,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, fl
 				if err != nil {
 					// **解析不出来也是这条规则的失败。** 少算它会让一条把域名
 					// 逼向坏解析器的规则看起来毫无问题。
-					d.recordFailure(route.Direct, why)
+					d.recordFailure(route.Direct, why, err)
 					return nil, err
 				}
 				ip = r
@@ -443,7 +447,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, fl
 		conn, err := d.Direct.DialContext(ctx, network(m.UDP), target)
 		if err != nil {
 			debugf("dial direct failed: target=%s err=%v", target, err)
-			d.recordFailure(route.Direct, why)
+			d.recordFailure(route.Direct, why, err)
 		}
 		return conn, err
 
@@ -469,7 +473,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, fl
 		conn, err := tr.Proxy.DialContext(ctx, network(m.UDP), target)
 		if err != nil {
 			debugf("dial proxy failed: target=%s err=%v", target, err)
-			d.recordFailure(route.Proxy, why)
+			d.recordFailure(route.Proxy, why, err)
 		}
 		return conn, err
 
@@ -614,7 +618,7 @@ func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Deci
 		if m.Domain != "" {
 			resolved, err := d.Resolver.Resolve(ctx, m.Domain)
 			if err != nil {
-				d.recordUDPFailure(route.Direct, why.Source.String(), why.Rule)
+				d.recordUDPFailure(route.Direct, why.Source.String(), why.Rule, err)
 				return nil, err
 			}
 			ip = resolved
@@ -623,7 +627,7 @@ func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Deci
 		debugf("udp direct by rule: source=%s rule=%q target=%s", why.Source, why.Rule, target)
 		conn, err := d.Direct.DialContext(ctx, "udp", target)
 		if err != nil {
-			d.recordUDPFailure(route.Direct, why.Source.String(), why.Rule)
+			d.recordUDPFailure(route.Direct, why.Source.String(), why.Rule, err)
 		}
 		return conn, err
 	}
@@ -656,7 +660,7 @@ func (d *Dialer) dialUDPByRule(ctx context.Context, m route.Meta, dec route.Deci
 	debugf("udp proxy by rule: source=%s rule=%q target=%s", why.Source, why.Rule, target)
 	conn, err := utr.Proxy.DialContext(ctx, "udp", target)
 	if err != nil {
-		d.recordUDPFailure(route.Proxy, why.Source.String(), why.Rule)
+		d.recordUDPFailure(route.Proxy, why.Source.String(), why.Rule, err)
 	}
 	return conn, err
 }
@@ -683,7 +687,7 @@ const (
 // **UDP 的失败此前一次都没被数过** —— recordFailure 只在 TCP 那三条路上可达,
 // 而 UDP 分支在 DialContext 顶部就短路了。于是一条 UDP 传输哪怕每次拨号都失败,
 // `bx status` 里也是一片安静:proxy 计数照涨(判定发生了),failed 恒为 0。
-func (d *Dialer) recordUDPFailure(dec route.Decision, source, rule string) {
+func (d *Dialer) recordUDPFailure(dec route.Decision, source, rule string, err error) {
 	if d.Stats == nil {
 		return
 	}
@@ -695,7 +699,7 @@ func (d *Dialer) recordUDPFailure(dec route.Decision, source, rule string) {
 	default:
 		return
 	}
-	d.Stats.RuleFailure(source, rule)
+	d.Stats.RuleFailure(source, rule, dialfail.Classify(err))
 }
 
 // dialVia 把这条连接交给一个具名出口。
@@ -719,7 +723,10 @@ func (d *Dialer) dialVia(ctx context.Context, m route.Meta, why route.Reason, po
 		if d.Stats != nil {
 			d.Stats.Blocked()
 			d.Stats.RuleAttempt(why.Source.String(), why.Rule)
-			d.Stats.RuleFailure(why.Source.String(), why.Rule)
+			// **这不是一次拨号失败,是配置与运行时不一致** —— 出口在 config 里
+			// 有、运行时没接上。归成 unreachable/timeout 会把人送去查网络,
+			// 而该改的是配置;归成 other 又把它混进「认不出原因」那一堆。
+			d.Stats.RuleFailure(why.Source.String(), why.Rule, "egress_unwired")
 		}
 		d.recordApp(flow, m, appattr.PathBlocked, why.Source.String(), why.Rule)
 		debugf("dial via blocked: egress=%q 未接线", why.Rule)
@@ -743,7 +750,7 @@ func (d *Dialer) dialVia(ctx context.Context, m route.Meta, why route.Reason, po
 		debugf("dial via failed: egress=%q target=%s err=%v", why.Rule, target, err)
 		if d.Stats != nil {
 			d.Stats.ProxyFailed()
-			d.Stats.RuleFailure(why.Source.String(), why.Rule)
+			d.Stats.RuleFailure(why.Source.String(), why.Rule, dialfail.Classify(err))
 		}
 	}
 	return conn, err
@@ -794,7 +801,7 @@ func (d *Dialer) recordApp(flow *flowSlot, m route.Meta, path appattr.Path, sour
 //
 // 两份都要:总数回答「现在整体坏得厉害吗」,归因回答「该改哪一行」。
 // 只有前者时用户看得见有问题却找不到源头 —— 那正是这次 Steam 排查的处境。
-func (d *Dialer) recordFailure(dec route.Decision, why route.Reason) {
+func (d *Dialer) recordFailure(dec route.Decision, why route.Reason, err error) {
 	if d.Stats == nil {
 		return
 	}
@@ -806,5 +813,5 @@ func (d *Dialer) recordFailure(dec route.Decision, why route.Reason) {
 	default:
 		return
 	}
-	d.Stats.RuleFailure(why.Source.String(), why.Rule)
+	d.Stats.RuleFailure(why.Source.String(), why.Rule, dialfail.Classify(err))
 }
