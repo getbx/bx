@@ -534,7 +534,10 @@ func serverShareFlags() []cli.Flag {
 func serverSharesFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
+		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON(凭据已脱敏)"},
+		&cli.StringFlag{Name: "format", Usage: "link:打印某个 share 的裸链接(要给名字)"},
+		&cli.BoolFlag{Name: "qr", Usage: "把某个 share 的链接画成二维码(要给名字)"},
+		&cli.BoolFlag{Name: "qr-invert", Usage: "深色终端下反色"},
 	}
 }
 
@@ -1171,6 +1174,20 @@ func serverSharesAction(c *cli.Context) error {
 	shares, err := readShares(c.String("dir"))
 	if err != nil {
 		return err
+	}
+	// **重新取出一个已有 share 的链接。**
+	//
+	// 在此之前它只在**创建的那一刻**打出来一次:要么当场扫,要么这张码就没了,
+	// 找回来只能再 share 一个新用户(多一个 uuid、重启一次 server)或者登上机器
+	// 去翻 JSON 手抄。而「当场扫」这个前提经常不成立 —— 在 SSH 里敲完命令时
+	// 手机不一定在手上。
+	//
+	// **纯读**:不新建用户、不碰服务端配置、不重启任何东西。
+	if out, ok, err := replayShare(c, shares); err != nil {
+		return err
+	} else if ok {
+		fmt.Print(out)
+		return nil
 	}
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, sharesReport{OK: true, SecretsRedacted: true, Shares: shareViews(shares)})

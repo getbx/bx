@@ -108,3 +108,50 @@ func phoneShareFor(c *cli.Context, link, udpLink string) (string, bool, error) {
 	}
 	return out, true, nil
 }
+
+// findShare 按名字取一个 share。**纯函数**,与读盘分开才好测。
+func findShare(shares []shareInfo, name string) (shareInfo, bool) {
+	for _, s := range shares {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return shareInfo{}, false
+}
+
+// replayShare 重新取出一个已有 share 的链接(裸链接或二维码)。
+//
+// ok=false 表示「用户没要这条路」,调用方照原样列表。
+func replayShare(c *cli.Context, shares []shareInfo) (string, bool, error) {
+	wantQR := c.Bool("qr")
+	format := strings.TrimSpace(c.String("format"))
+	if !wantQR && format == "" {
+		return "", false, nil
+	}
+	if format != "" && format != "link" {
+		return "", false, fmt.Errorf("--format 只认 link")
+	}
+	// **--json 与 --format link 是矛盾指令,不许静默挑一个。**
+	// 前者刻意脱敏(SecretsRedacted: true),后者刻意打出凭据原文 —— 悄悄执行
+	// 其中一个,用户不会知道自己拿到的是哪一种,而这两种的处置完全不同。
+	if c.Bool("json") {
+		return "", false, fmt.Errorf("--json 是脱敏输出,与 --qr/--format link(打印凭据)矛盾;只用其中一个")
+	}
+	name := strings.TrimSpace(c.Args().First())
+	if name == "" {
+		// **不许把所有 share 的凭据一次全打出来。** 一条命令泄漏全部钥匙,
+		// 而用户想要的几乎总是其中一个。
+		return "", false, fmt.Errorf("要哪个 share?例如:bx server shares alice --qr(先 bx server shares 看名字)")
+	}
+	s, ok := findShare(shares, name)
+	if !ok {
+		return "", false, fmt.Errorf("没有名为 %q 的 share(bx server shares 看现有的)", name)
+	}
+	out, err := renderPhoneShare(phoneShareOutput{
+		Link: s.Config.Link, UDPLink: s.Config.UDPLink, QR: wantQR, Invert: c.Bool("qr-invert"),
+	}, qrEncode)
+	if err != nil {
+		return "", false, err
+	}
+	return out, true, nil
+}
