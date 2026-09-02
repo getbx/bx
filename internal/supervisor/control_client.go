@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/getbx/bx/internal/stats"
@@ -101,6 +102,47 @@ func fetchRuntimeState(ctx context.Context, sockPath string) (RuntimeState, erro
 // 三态原样透传给调用方(subscribed/report/error),**不在这里合并或改写** ——
 // AppTrafficResponse.Error 非空时 Report 是零值(Groups==nil),由调用方
 // 自己先判 Error 再碰 Report,与控制面 handler 那侧同一条纪律。
+// FetchExplain 问跑着的 Core:「现在向这个目标发一条连接会发生什么、为什么」。
+//
+// **501 单独成一句话。** 「这一版 Core 没接线」与「这个目标没有答案」是两件事,
+// 压成一句「请求失败」会让人去查一个不存在的网络问题(与 handleApps 那条
+// 「没接线不是没有应用」同源)。
+func FetchExplain(sockPath, target string) (ExplainResponse, error) {
+	client := controlHTTPClient(sockPath)
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequest(http.MethodGet, "http://local/v0/explain?target="+url.QueryEscape(target), nil)
+	if err != nil {
+		return ExplainResponse{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ExplainResponse{}, err
+	}
+	defer resp.Body.Close()
+	// **404 与 501 都是「这一版 Core 没有判定查询」。**
+	//
+	// 501 = 路由在、没接线;404 = **路由压根不存在**,也就是一个升级前的 Core。
+	// 后者才是升级期最常见的那一种,而只认 501 会让它落进下面的通用错误 ——
+	// 真机冒烟第一次就撞上了:CLI 报「bx 没在跑,先 bx up」,而 bx 跑得好好的。
+	// 一句指向错误方向的诊断比没有诊断更糟。
+	if resp.StatusCode == http.StatusNotImplemented || resp.StatusCode == http.StatusNotFound {
+		return ExplainResponse{}, ErrExplainUnsupported
+	}
+	if resp.StatusCode != http.StatusOK {
+		var out controlResponse
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		if out.Error != "" {
+			return ExplainResponse{}, fmt.Errorf("控制面 /v0/explain 返回 %d: %s", resp.StatusCode, out.Error)
+		}
+		return ExplainResponse{}, fmt.Errorf("控制面 /v0/explain 返回 %d", resp.StatusCode)
+	}
+	var out ExplainResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return ExplainResponse{}, err
+	}
+	return out, nil
+}
+
 func FetchAppTraffic(sockPath string) (AppTrafficResponse, error) {
 	client := controlHTTPClient(sockPath)
 	defer client.CloseIdleConnections()

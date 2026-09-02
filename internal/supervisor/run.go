@@ -807,6 +807,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			// 应用流量归因:接上真实的 *AppTraffic,GET /v0/apps 才不会恒 501。
 			// 这是本轮修复的要害——之前只加了端点本身,没有从 Run 把它接进来。
 			AppTraffic: appTraffic,
+			// 判定查询:交出**跑着的那个 Dialer 自己**的只读方法,而不是
+			// 另起一份判据。CLI 照配置重建一个 Router 来回答才是第二份 ——
+			// bx 不热重载,盘上的配置与跑着的那个不一致的那一刻,恰恰是最
+			// 需要这个命令的那一刻。
+			Explain: d.Explain,
 		})
 	})
 	if err != nil {

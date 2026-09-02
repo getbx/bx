@@ -19,6 +19,8 @@ import (
 
 	"github.com/getbx/bx/internal/appattr"
 	"github.com/getbx/bx/internal/confirm"
+	"github.com/getbx/bx/internal/dialer"
+	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/secdir"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tunnel"
@@ -76,6 +78,11 @@ type controlServer struct {
 	// (与 probeDial/pathRecovery 同一条纪律),此时 /v0/apps 回 501
 	// 而不是一份看起来正常的空报告。
 	appTraffic *AppTraffic
+	// explain 回答「现在向这个目标发一条连接会发生什么、为什么」。
+	// 可为 nil = 该部署没有接线,此时 /v0/explain 回 501 —— 与
+	// probeDial/pathRecovery/appTraffic 同一条纪律:**「没接线」不是
+	// 「没有答案」**,一份看起来正常的空答案比 501 糟得多。
+	explain func(route.Meta) dialer.Outcome
 }
 
 // AppTrafficResponse 是 GET /v0/apps 的响应体。三态刻意分开发布:
@@ -157,6 +164,9 @@ type controlMuxOptions struct {
 	Recoverer     pathRecoverer // 可空 = 该部署不支持路径恢复
 	ProbeDial     probeDialer   // 可空 = 该部署不支持探测(端点回 501)
 	AppTraffic    *AppTraffic   // 可空 = 该部署没有接线(端点回 501)
+	// Explain 回答「现在向这个目标发一条连接会发生什么」。
+	// 可空 = 该部署没有接线(端点回 501,而不是一份看起来正常的空答案)。
+	Explain func(route.Meta) dialer.Outcome
 }
 
 // newControlMuxFull 是唯一真正构造 controlServer 的地方;上面几个包装只是历史调用点的
@@ -166,7 +176,7 @@ func newControlMuxFull(opts controlMuxOptions) http.Handler {
 		eng: opts.Engine, report: opts.Report, runtime: opts.Runtime, mut: opts.Mutator,
 		reload: opts.Reload, refreshBypass: opts.RefreshBypass, ownerUID: opts.OwnerUID,
 		processPID: opts.ProcessPID, shutdown: opts.Shutdown, probeDial: opts.ProbeDial,
-		appTraffic: opts.AppTraffic,
+		appTraffic: opts.AppTraffic, explain: opts.Explain,
 	}
 	if opts.Recoverer != nil {
 		cs.pathRecovery = newPathRecoveryOperation(opts.Recoverer)
@@ -184,6 +194,7 @@ func newControlMuxFull(opts controlMuxOptions) http.Handler {
 	mux.HandleFunc("/v0/rehijack", cs.handleRehijack)
 	mux.HandleFunc("/v0/reload", cs.handleReload)
 	mux.HandleFunc("/v0/apps", cs.handleApps)
+	mux.HandleFunc("/v0/explain", cs.handleExplain)
 	mux.HandleFunc("/v0/probe", cs.handleProbe)
 	mux.HandleFunc("/v0/shutdown", cs.handleShutdown)
 	return mux
@@ -194,6 +205,35 @@ func newControlMuxFull(opts controlMuxOptions) http.Handler {
 // **要 owner 或 root。** 它会真的发出一个包,而且是**在隧道外面**发的 ——
 // 那既是一次出站,也让网络上看得见这台机器联系过那个地址。读状态谁都可以,
 // 这个不行。
+// handleExplain 回答「现在向这个目标发一条连接会发生什么」。**纯读**:
+// 不拨号、不解析、不记任何账(见 dialer.Explain 与 TestExplainRecordsNothing)。
+func (cs *controlServer) handleExplain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
+		return
+	}
+	if !cs.requireOwnerPeer(w, r) {
+		return
+	}
+	if cs.explain == nil {
+		writeJSON(w, http.StatusNotImplemented, controlResponse{Status: "error", Error: "explain unavailable"})
+		return
+	}
+	target := r.URL.Query().Get("target")
+	m, err := explainTarget(target)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: err.Error()})
+		return
+	}
+	udpMeta := m
+	udpMeta.UDP = true
+	var rep stats.Report
+	if cs.report != nil {
+		rep = cs.report()
+	}
+	writeJSON(w, http.StatusOK, buildExplainResponse(target, cs.explain(m), cs.explain(udpMeta), rep))
+}
+
 func (cs *controlServer) handleProbe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
@@ -732,6 +772,8 @@ type controlServeOptions struct {
 	// AppTraffic 是应用流量归因采集器,接进控制面才能让 GET /v0/apps 真的
 	// 发布报告(而不是恒 501)。留零值 = 该部署没有接线。
 	AppTraffic *AppTraffic
+	// Explain 接进控制面才能让 GET /v0/explain 真的作答。留零值 = 没接线。
+	Explain func(route.Meta) dialer.Outcome
 }
 
 // controlMuxOptionsFromServe 把 serveControlWithPathRecovery 收到的依赖翻译成
@@ -748,7 +790,7 @@ func controlMuxOptionsFromServe(opts controlServeOptions, report func() stats.Re
 		Engine: opts.Engine, Report: report, Runtime: opts.Runtime, Mutator: opts.Mutator,
 		Reload: opts.Reload, RefreshBypass: opts.RefreshBypass, OwnerUID: opts.OwnerUID,
 		ProcessPID: processPID, Shutdown: opts.Shutdown, Recoverer: opts.Recoverer,
-		ProbeDial: opts.ProbeDial, AppTraffic: opts.AppTraffic,
+		ProbeDial: opts.ProbeDial, AppTraffic: opts.AppTraffic, Explain: opts.Explain,
 	}
 }
 

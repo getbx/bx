@@ -17,6 +17,8 @@ import (
 
 	"github.com/getbx/bx/internal/appattr"
 	"github.com/getbx/bx/internal/confirm"
+	"github.com/getbx/bx/internal/dialer"
+	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/stats"
 )
 
@@ -301,6 +303,7 @@ func TestControlMuxOptionsFromServeCarriesEveryField(t *testing.T) {
 		Recoverer:     recoverer,
 		ProbeDial:     probeDial,
 		AppTraffic:    at,
+		Explain:       func(route.Meta) dialer.Outcome { return dialer.Outcome{Source: "carried-explain"} },
 	}
 
 	got := controlMuxOptionsFromServe(opts, report, 4242)
@@ -316,6 +319,10 @@ func TestControlMuxOptionsFromServeCarriesEveryField(t *testing.T) {
 	}
 	if got.ProbeDial != probeDial {
 		t.Error("ProbeDial 没搬过来")
+	}
+	// 函数字段不可比较,只能调用它看拿到的是不是同一份判据。
+	if got.Explain == nil || got.Explain(route.Meta{}).Source != "carried-explain" {
+		t.Error("Explain 没搬过来 —— /v0/explain 会恒 501")
 	}
 	if got.AppTraffic != at {
 		t.Error("AppTraffic 没搬过来 —— GET /v0/apps 会恒 501")
@@ -1076,6 +1083,7 @@ func TestControlMuxOptionsForServeCarriesEveryField(t *testing.T) {
 		RuleHistory: func() *stats.RuleHistorySnapshot {
 			return &stats.RuleHistorySnapshot{Decisions: 1}
 		},
+		Explain: func(route.Meta) dialer.Outcome { return dialer.Outcome{Source: "carried-explain"} },
 	}
 
 	got := controlMuxOptionsForServe(context.Background(), opts, 4242)
@@ -1130,5 +1138,48 @@ func TestControlMuxOptionsForServeWiresTheReporterInTheRightOrder(t *testing.T) 
 	if !found {
 		t.Errorf("ConfigWarnings 没到报告里(warnings=%#v)—— 它在这一跳被换成 nil "+
 			"时,supervisor 与 cli 两个包都不会红", rep.Warnings)
+	}
+}
+
+// **接线守卫:Explain 真的从 controlMuxOptions 走到了 controlServer 上。**
+//
+// 变异实测:把 newControlMux 里那句 `explain: opts.Explain` 删掉,端点永远回
+// 501 而**整套测试全绿** —— 上下两跳的反射守卫盯的是选项翻译,盯不到最后这次
+// 组装。这正是本仓库已经栽过的那一次(Task 8 加完 /v0/apps 端点,run.go 却
+// 没把 appTraffic 接进来)在下一跳原样复现,而它的生产后果一模一样:
+// **一个永远说「这一版没有这个功能」的功能。**
+func TestControlMuxCarriesExplainToTheEndpoint(t *testing.T) {
+	h := newControlMuxFull(controlMuxOptions{
+		Engine: &fakeControlEngine{}, Report: func() stats.Report { return stats.Report{} },
+		Mutator: nopMutator{}, OwnerUID: 0,
+		Explain: func(m route.Meta) dialer.Outcome {
+			return dialer.Outcome{Domain: m.Domain, Effective: dialer.EffectiveDirect, Source: "user_direct", Reason: route.Reason{Rule: "*.wired.example"}}
+		},
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v0/explain?target=wired.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotImplemented {
+		t.Fatal("端点回 501 —— Explain 没从组装根搬到 controlServer 上")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("状态 %d", resp.StatusCode)
+	}
+	var out ExplainResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.TCP.Rule != "*.wired.example" {
+		t.Errorf("接到的不是注入的那份判据:%+v", out.TCP)
+	}
+	// UDP 那一半也必须真的被问过一次 —— 只答 TCP 会让 udp.mode 造成的差异
+	// 整个消失,而那正是这个端点要暴露的事实之一。
+	if out.UDP.Effective == "" {
+		t.Error("UDP 方向没有被问过")
 	}
 }
