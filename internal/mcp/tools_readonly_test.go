@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -254,4 +255,66 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// bx_explain 是 agent 那一侧「请求级的为什么」唯一的入口。三条性质各自承重。
+
+// ① 它必须真的把 target 传下去。
+// 一个丢掉 target 的工具会对每个问题返回同一个答案,而 agent 无从察觉。
+func TestExplainToolForwardsTheTarget(t *testing.T) {
+	ops := &fakeOps{explain: JSONCommandOut{OK: true, JSON: map[string]any{"target": "x"}}}
+	_ = callTool(t, ops, "bx_explain", map[string]any{"target": "steamstatic.com"})
+	if ops.explainIn.Target != "steamstatic.com" {
+		t.Errorf("target 没传下去:%q", ops.explainIn.Target)
+	}
+}
+
+// ② 空 target 必须**在拨号之前**被挡下,而且要给可行动的指引。
+// 让它一路走到 Core 再报「target is required」,agent 拿到的是一个通用失败。
+func TestExplainToolRejectsAnEmptyTargetWithGuidance(t *testing.T) {
+	live := &liveOps{}
+	_, err := live.Explain(ExplainIn{Target: "   "})
+	var te ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("空 target 没有产出结构化错误:%v", err)
+	}
+	if te.Remediation == "" {
+		t.Error("挡下了却没说该怎么办")
+	}
+}
+
+// ③ **绝不带可执行路径。** bx_apps 那次已经为此立过规矩:agent 要回答的是
+// 「哪条路、为什么」,不是「那个程序装在哪儿」。explain 连应用维度都没有,
+// 这条守卫钉的是「将来别顺手加进来」。
+func TestExplainToolCarriesNoExecutablePaths(t *testing.T) {
+	res := callTool(t, &fakeOps{explain: JSONCommandOut{OK: true, JSON: map[string]any{"target": "x", "tcp": map[string]any{"effective": "direct"}}}},
+		"bx_explain", map[string]any{"target": "x"})
+	body := res.Content[0].(*mcpsdk.TextContent).Text
+	for _, forbidden := range []string{"exec_path", "execPath", "ExecPath"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("输出里出现了 %s:%s", forbidden, body)
+		}
+	}
+}
+
+// ①b **参数构造那一跳单独守。** 上面那条断言的是工具层传给 Ops 的结构体,
+// 而 fakeOps 不经过 liveOps —— 变异实测(在 liveOps.Explain 里丢掉 target)
+// 它照样全绿。这是本仓库反复出现的「守卫钉住缺陷旁边的东西」。
+func TestExplainArgsCarryTheTarget(t *testing.T) {
+	args := explainArgs("steamstatic.com")
+	if len(args) == 0 || args[0] != "explain" {
+		t.Fatalf("不是 explain 命令:%v", args)
+	}
+	found := false
+	for _, a := range args {
+		if a == "steamstatic.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("target 没进命令行:%v —— 每个问题会得到同一个答案", args)
+	}
+	if !strings.Contains(strings.Join(args, " "), "--json") {
+		t.Errorf("没要 JSON 输出:%v", args)
+	}
 }

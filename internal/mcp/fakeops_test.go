@@ -16,6 +16,9 @@ type fakeOps struct {
 	observe              JSONCommandOut
 	protection           JSONCommandOut
 	apps                 JSONCommandOut
+	explain              JSONCommandOut
+	explainIn            ExplainIn
+	explainErr           error
 	check                CheckOut
 	checkIn              CheckIn
 	logs                 LogsOut
@@ -56,6 +59,12 @@ func (f *fakeOps) Protection() (JSONCommandOut, error) {
 
 func (f *fakeOps) Apps(AppsIn) (JSONCommandOut, error) {
 	return f.apps, nil
+}
+
+func (f *fakeOps) Explain(in ExplainIn) (JSONCommandOut, error) {
+	f.calls = append(f.calls, "explain")
+	f.explainIn = in
+	return f.explain, f.explainErr
 }
 
 func (f *fakeOps) Check(in CheckIn) (CheckOut, error) {

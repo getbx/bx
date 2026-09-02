@@ -94,6 +94,7 @@ var execPathPublicationAllowlist = map[string]string{
 	"internal/appattr/owner.go":                               "DisplayName 的形参:把路径**换成**显示名,它不发布路径",
 	"internal/cli/apps.go":                                    "`bx apps` 的投影:**读到它是为了丢掉它** —— 这条路(人与 agent)刻意不带路径,理由写在 appsProjection 头上",
 	"internal/cli/apps_test.go":                               "上面那条的测试:断言序列化之后的字节里不许出现路径(含一条变异验证过的守卫)",
+	"internal/mcp/tools_readonly_test.go":                     "`bx_explain` 的守卫:**提到这几个名字是为了断言它们不出现** —— explain 连应用维度都没有,这条钉的是「将来别顺手加进来」",
 	"internal/appattr/report.go":                              "字段定义 + 聚合(代表值的选法)",
 	"internal/appattr/report_test.go":                         "上面那条的测试",
 	"internal/appattr/publication_test.go":                    "这条守卫自己",

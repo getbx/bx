@@ -168,6 +168,26 @@ func (o *liveOps) Apps(in AppsIn) (JSONCommandOut, error) {
 	return runBXJSONCommand(appsArgs(in))
 }
 
+func (o *liveOps) Explain(in ExplainIn) (JSONCommandOut, error) {
+	target := strings.TrimSpace(in.Target)
+	if target == "" {
+		return JSONCommandOut{}, ToolError{
+			Code:        CodePolicyInvalid,
+			Message:     "target 不能为空",
+			Remediation: "给一个域名、IP 或 host:port,例如 steamstatic.com",
+		}
+	}
+	return runBXJSONCommand(explainArgs(target))
+}
+
+// explainArgs 把 target 拼进命令行。**抽成纯函数才谈得上守它** ——
+// 变异实测:直接在 liveOps.Explain 里丢掉 target,而守卫断言的是工具层传给
+// Ops 的那个结构体(fakeOps 根本不经过这里),整套测试照样全绿。丢掉 target
+// 的后果是**每个问题都得到同一个答案**,而 agent 无从察觉。
+func explainArgs(target string) []string {
+	return []string{"explain", "--json", target}
+}
+
 func appsArgs(in AppsIn) []string {
 	args := []string{"apps", "--json"}
 	if strings.TrimSpace(in.For) != "" {
