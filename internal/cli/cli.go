@@ -525,6 +525,9 @@ func serverShareFlags() []cli.Flag {
 		&cli.StringFlag{Name: "listen", Usage: "监听地址(留空自动分配端口)"},
 		&cli.StringFlag{Name: "password", Usage: "连接密码(留空自动生成)"},
 		&cli.BoolFlag{Name: "open-ufw", Usage: "创建后自动执行 ufw allow <port>/tcp"},
+		&cli.StringFlag{Name: "format", Usage: "link:打印手机客户端能吃的裸链接(默认打印 bx setup 命令)"},
+		&cli.BoolFlag{Name: "qr", Usage: "把链接画成二维码,用手机客户端扫(凭据不进 shell 历史)"},
+		&cli.BoolFlag{Name: "qr-invert", Usage: "深色终端下反色(默认按浅色终端的正确极性画)"},
 	}
 }
 
@@ -1108,6 +1111,14 @@ func serverShareAction(c *cli.Context) error {
 				return err
 			}
 			fmt.Printf("✅ reality share %s 已创建(主 server 加了一个用户并重启生效)。\n", name)
+			// 手机那条路要的是**裸链接**:bx:// 是 bx 自己的信封,
+			// sing-box / Hiddify / v2rayN 一个都不认。
+			if out, ok, err := phoneShareFor(c, rec.Link, rec.UDPLink); err != nil {
+				return err
+			} else if ok {
+				fmt.Print(out)
+				return nil
+			}
 			printClientSetup(rec)
 			return nil
 		case "hysteria2":
@@ -1142,11 +1153,17 @@ func serverShareAction(c *cli.Context) error {
 	if hint := serverFirewallHint(listen); hint != "" {
 		fmt.Println(hint)
 	}
-	if host != "" {
-		fmt.Println(link)
-	} else {
+	if host == "" {
 		fmt.Println("需要链接时运行: sudo bx server share " + name + " --host <VPS_IP或域名>")
+		return nil
 	}
+	if out, ok, err := phoneShareFor(c, link, ""); err != nil {
+		return err
+	} else if ok {
+		fmt.Print(out)
+		return nil
+	}
+	fmt.Println(link)
 	return nil
 }
 
