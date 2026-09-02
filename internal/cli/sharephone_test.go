@@ -2,8 +2,11 @@ package cli
 
 import (
 	"errors"
+	"flag"
 	"strings"
 	"testing"
+
+	"github.com/urfave/cli/v2"
 )
 
 // 这条路上输出的是**凭据**。多打一份、少打一句警告,都是安全后果,不是排版问题。
@@ -99,5 +102,101 @@ func TestRawLinkShareGivesBothLinks(t *testing.T) {
 	out, _ := renderPhoneShare(phoneShareOutput{Link: fakeVless, UDPLink: udp}, tinyEncode)
 	if !strings.Contains(out, udp) {
 		t.Errorf("--format link 少给了 UDP 那条:\n%s", out)
+	}
+}
+
+// —— 重新取出一个已有 share ——
+//
+// 在此之前链接只在**创建的那一刻**打出来一次:要么当场扫,要么这张码就没了,
+// 找回来只能再 share 一个新用户(多一个 uuid、重启一次 server)。而「当场扫」
+// 这个前提经常不成立 —— 在 SSH 里敲完命令时手机不一定在手上。
+
+func replayCtx(t *testing.T, args []string, flags map[string]any) *cli.Context {
+	t.Helper()
+	set := flag.NewFlagSet("shares", flag.ContinueOnError)
+	set.String("format", "", "")
+	set.Bool("qr", false, "")
+	set.Bool("qr-invert", false, "")
+	set.Bool("json", false, "")
+	for k, v := range flags {
+		switch val := v.(type) {
+		case string:
+			if err := set.Set(k, val); err != nil {
+				t.Fatal(err)
+			}
+		case bool:
+			if val {
+				if err := set.Set(k, "true"); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if err := set.Parse(args); err != nil {
+		t.Fatal(err)
+	}
+	return cli.NewContext(cli.NewApp(), set, nil)
+}
+
+var fixtureShares = []shareInfo{
+	{Name: "alice", Config: serverConfig{Type: "reality", Link: fakeVless}},
+	{Name: "bob", Config: serverConfig{Type: "reality", Link: "vless://bbbb@203.0.113.9:443#bob"}},
+}
+
+// 不给名字时不许把**所有** share 的凭据一次全打出来。
+// 一条命令泄漏全部钥匙,而用户想要的几乎总是其中一个。
+func TestReplayShareRefusesToDumpEveryCredential(t *testing.T) {
+	_, _, err := replayShare(replayCtx(t, nil, map[string]any{"qr": true}), fixtureShares)
+	if err == nil {
+		t.Fatal("没给名字却成功了")
+	}
+	if !strings.Contains(err.Error(), "哪个") {
+		t.Errorf("错误里没说该给名字:%v", err)
+	}
+}
+
+// **--json 与 --format link 是矛盾指令,不许静默挑一个。**
+// 前者刻意脱敏,后者刻意打凭据原文;悄悄执行其中一个,用户不会知道自己拿到的
+// 是哪一种,而这两种的处置完全不同。
+func TestReplayShareRejectsRedactedAndRawAtTheSameTime(t *testing.T) {
+	_, _, err := replayShare(replayCtx(t, []string{"alice"}, map[string]any{"json": true, "format": "link"}), fixtureShares)
+	if err == nil {
+		t.Fatal("--json 与 --format link 同时给却成功了 —— 用户不会知道拿到的是哪一种")
+	}
+}
+
+// 名字不存在要**如实报错**,不能安静地什么都不打(那看起来像成功了)。
+func TestReplayShareReportsAnUnknownName(t *testing.T) {
+	_, _, err := replayShare(replayCtx(t, []string{"carol"}, map[string]any{"qr": true}), fixtureShares)
+	if err == nil {
+		t.Fatal("不存在的名字却成功了")
+	}
+	if !strings.Contains(err.Error(), "carol") {
+		t.Errorf("错误里没点名是哪个:%v", err)
+	}
+}
+
+// 取的必须是**那一个**,不是恰好第一个。
+func TestReplayShareReturnsTheNamedOne(t *testing.T) {
+	out, ok, err := replayShare(replayCtx(t, []string{"bob"}, map[string]any{"format": "link"}), fixtureShares)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(out, "#bob") {
+		t.Errorf("取到的不是 bob:\n%s", out)
+	}
+	if strings.Contains(out, fakeVless) {
+		t.Errorf("把 alice 的凭据也打出来了:\n%s", out)
+	}
+}
+
+// 不加 flag 时**一个字节都不变** —— 列表照旧。
+func TestReplayShareStaysOutOfTheWayByDefault(t *testing.T) {
+	_, ok, err := replayShare(replayCtx(t, []string{"alice"}, nil), fixtureShares)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("没要二维码/裸链接却接管了输出")
 	}
 }
