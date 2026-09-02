@@ -60,7 +60,10 @@ func TestToolAnnotations(t *testing.T) {
 	}
 
 	// 只读工具:必须有 ReadOnlyHint == true。
-	readonly := []string{"bx_capabilities", "bx_status", "bx_diagnose", "bx_inspect", "bx_leak_check", "bx_observe", "bx_check", "bx_logs"}
+	readonly := []string{
+		"bx_capabilities", "bx_status", "bx_diagnose", "bx_inspect", "bx_leak_check",
+		"bx_observe", "bx_check", "bx_logs", "bx_apps", "bx_protection", "bx_explain",
+	}
 	for _, name := range readonly {
 		tool, ok := byName[name]
 		if !ok {
@@ -73,6 +76,34 @@ func TestToolAnnotations(t *testing.T) {
 		}
 		if !tool.Annotations.ReadOnlyHint {
 			t.Errorf("%s: ReadOnlyHint = false,期望 true", name)
+		}
+	}
+
+	// **每一个注册出来的工具都必须被上面某张表分类过。**
+	//
+	// 这两张表此前是手抄的,于是 bx_apps 与 bx_protection 上线之后**一直没被
+	// 任何断言碰过** —— 而 ReadOnlyHint 正是 agent 用来决定「要不要先问人」的
+	// 那一位。漏标的后果不是报错,是一个改动类工具被 agent 当成只读的直接调用。
+	//
+	// 形状照抄 statusdigest 那条嵌套穷举:少分类一个就红,逼加工具的人自己回答
+	// 「它是只读还是改动」这个问题,而不是指望 review 记得问。
+	classified := map[string]bool{}
+	for _, n := range destructive {
+		classified[n] = true
+	}
+	for _, n := range readonly {
+		classified[n] = true
+	}
+	// commit/rollback 刻意不带注解:它们既不是只读,也不是「破坏性」——
+	// 它们是 commit-confirmed 的两个终点,一个确认、一个立刻还原到已知good。
+	// 列在这里是**有意识地留白**,不是漏标。
+	for _, n := range []string{"bx_commit", "bx_rollback", "bx_ping"} {
+		classified[n] = true
+	}
+	for name := range byName {
+		if !classified[name] {
+			t.Errorf("工具 %s 没有被分类 —— 它是只读还是改动?ReadOnlyHint 是 agent "+
+				"用来决定要不要先问人的那一位,漏标不会报错,只会让它被当成另一类调用", name)
 		}
 	}
 

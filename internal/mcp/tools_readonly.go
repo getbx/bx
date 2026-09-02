@@ -75,6 +75,19 @@ func registerReadOnly(s *mcpsdk.Server, ops Ops) {
 			return nil, out, nil
 		})
 
+	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_explain", Description: "why a specific destination goes where it goes: the effective outcome (tunnel/direct/blocked), the routing decision behind it, the verbatim config rule that decided it, and that rule's success rate this run and across restarts. TCP and UDP answered separately. Read-only, no root, no outbound probes, no DNS. Use this when a request failed and you need to know whether bx is the reason", Annotations: ro},
+		func(_ context.Context, _ *mcpsdk.CallToolRequest, in ExplainIn) (*mcpsdk.CallToolResult, JSONCommandOut, error) {
+			out, err := ops.Explain(in)
+			if err != nil {
+				var te ToolError
+				if errors.As(err, &te) {
+					return errResultTyped[JSONCommandOut](te)
+				}
+				return errResultTyped[JSONCommandOut](ToolError{Code: CodeTunnelUnhealthy, Message: err.Error()})
+			}
+			return nil, out, nil
+		})
+
 	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_observe", Description: "sample local bx runtime counters over a short window; no outbound probes or network changes", Annotations: ro},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, in ObserveIn) (*mcpsdk.CallToolResult, JSONCommandOut, error) {
 			out, err := ops.Observe(in)

@@ -27,6 +27,7 @@ type Ops interface {
 	// 菜单窗口一条(internal/appattr/publication_test.go)。agent 要回答的是
 	// 「哪个应用走哪条路」,不是「它装在哪儿」。
 	Apps(AppsIn) (JSONCommandOut, error)
+	Explain(ExplainIn) (JSONCommandOut, error)
 	Check(CheckIn) (CheckOut, error)
 	Logs(LogsIn) (LogsOut, error)
 	ApplyPolicy(PolicyApplyIn) (PolicyApplyOut, error)
@@ -70,6 +71,11 @@ type InspectIn struct {
 
 // LeakCheckIn 刻意**没有 browser 选项**:浏览器那半要人在屏幕前点一下才产生数据,
 // 那从来就不适合由 agent 代劳。人用 `bx leakcheck`,它会开页面并把两半事实对起来。
+// ExplainIn 问「现在向这个目标发一条连接会发生什么、为什么」。
+type ExplainIn struct {
+	Target string `json:"target" jsonschema:"domain, IP, or host:port to ask about, e.g. steamstatic.com or 198.18.0.7"`
+}
+
 type AppsIn struct {
 	For string `json:"for,omitempty" jsonschema:"sampling window, e.g. 8s; the report cannot answer about traffic outside it"`
 }
