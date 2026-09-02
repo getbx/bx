@@ -587,3 +587,41 @@ func TestPostControlReportsNoStateWhenItCannotReachTheSocket(t *testing.T) {
 		t.Errorf("连不上却报了状态 %q —— 那是编出来的", state)
 	}
 }
+
+// **旧 Core 回的是 404,不是 501。**
+//
+// 501 = 路由在、没接线;404 = 路由压根不存在,也就是一个升级前的 Core ——
+// 而后者才是升级期最常见的那一种。真机冒烟第一次就撞上了:只认 501 时,
+// CLI 把它落进通用错误、报「bx 没在跑,先 bx up」,而 bx 跑得好好的。
+// **一句指向错误方向的诊断比没有诊断更糟。**
+func TestFetchExplainTreatsBothMissingRouteAndUnwiredAsUnsupported(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusNotImplemented} {
+		dir, err := os.MkdirTemp("", "bxexp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		sock := filepath.Join(dir, "core.sock")
+		ln, lnErr := net.Listen("unix", sock)
+		if lnErr != nil {
+			t.Fatal(lnErr)
+		}
+		mux := http.NewServeMux()
+		if status == http.StatusNotImplemented {
+			mux.HandleFunc("/v0/explain", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotImplemented)
+				_ = json.NewEncoder(w).Encode(controlResponse{Status: "error", Error: "explain unavailable"})
+			})
+		}
+		srv := &http.Server{Handler: mux}
+		go srv.Serve(ln) //nolint:errcheck
+
+		_, fetchErr := FetchExplain(sock, "example.com")
+		srv.Close()
+		ln.Close()
+
+		if !errors.Is(fetchErr, ErrExplainUnsupported) {
+			t.Errorf("HTTP %d 应当报「这一版 Core 没有判定查询」,得到:%v", status, fetchErr)
+		}
+	}
+}

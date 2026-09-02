@@ -1,0 +1,125 @@
+package cli
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/getbx/bx/internal/stats"
+	"github.com/getbx/bx/internal/supervisor"
+)
+
+// `bx explain` 存在的全部理由是回答**请求级的「为什么」**。三次真实排查
+// (Steam 图片全裂 / 腾讯会议绕一圈 / *.qq.com 57% 失败)里,决定性的那句话
+// 从来不是「判定是 DIRECT」,而是「**是这一行规则**决定的,而它 1291 次里
+// 失败了 1289 次」。渲染层把哪一半丢了,这个命令就白做。
+
+func explainFixture() supervisor.ExplainResponse {
+	return supervisor.ExplainResponse{
+		Target:       "steamstatic.com",
+		Domain:       "steamstatic.com",
+		TunnelHealth: "healthy",
+		TCP: supervisor.ExplainPath{
+			Effective: "direct", Decision: "direct",
+			Source: "user_direct", Rule: "*.steamstatic.com",
+			Run:     &stats.RuleOutcome{Source: "user_direct", Rule: "*.steamstatic.com", Attempts: 1291, Failures: 1289},
+			History: &stats.RuleOutcome{Source: "user_direct", Rule: "*.steamstatic.com", Attempts: 8113, Failures: 8000},
+		},
+		UDP: supervisor.ExplainPath{
+			Effective: "direct", Decision: "direct",
+			Source: "user_direct", Rule: "*.steamstatic.com",
+		},
+		UDPTransportHealth: "unknown",
+	}
+}
+
+// 规则**原文**必须出现 —— 内部把 `*.a.com` 存成 `a.com`,报归一化形式会让
+// 用户去搜一个在自己配置里搜不到的串。
+func TestExplainNamesTheRuleVerbatim(t *testing.T) {
+	got := renderExplain(explainFixture())
+	if !strings.Contains(got, "*.steamstatic.com") {
+		t.Errorf("没有点名规则原文:\n%s", got)
+	}
+}
+
+// 本次运行与跨重启累计**并列出现,绝不合并**。
+// 合成一个数之后,「0 次」到底指哪一个再也表达不出来 —— 而一台刚重连的机器上
+// 每条规则的本次运行计数都是 0,那正是死规则判据要靠累计值的原因。
+func TestExplainShowsRunAndHistorySideBySide(t *testing.T) {
+	got := renderExplain(explainFixture())
+	for _, want := range []string{"1291", "1289", "8113"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("少了 %s:\n%s", want, got)
+		}
+	}
+}
+
+// **没有记录时不许渲染成「0 次」。**
+// nil 是「这条规则没被记过」(内建列表命中本来就不记名),而 0 是「记了、
+// 一次没命中」—— 把前者说成后者正是死规则判据最忌讳的假阳性。
+func TestExplainSaysNothingWhenThereIsNoCount(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Run, rep.TCP.History = nil, nil
+	got := renderExplain(rep)
+	if strings.Contains(got, "0 次判定") {
+		t.Errorf("把「没有记录」渲染成了「0 次」:\n%s", got)
+	}
+}
+
+// **被 kill-switch 拦下时,那一跳必须说出来。**
+// 少了它用户只看到一个 BLOCKED,不知道该去修隧道还是去改规则 ——
+// 而「判定是走隧道、隧道不健康所以被拦」正是「我的请求为什么失败」的答案。
+func TestExplainSpellsOutTheKillswitchHop(t *testing.T) {
+	rep := explainFixture()
+	rep.TunnelHealth = "unhealthy"
+	rep.TCP = supervisor.ExplainPath{
+		Effective: "blocked", Decision: "proxy",
+		Source: "default", BlockedBy: "killswitch",
+	}
+	got := renderExplain(rep)
+	if !strings.Contains(got, "kill-switch") {
+		t.Errorf("没说是 kill-switch 拦的:\n%s", got)
+	}
+	if !strings.Contains(got, "proxy") {
+		t.Errorf("没说路由判定本来是 proxy:\n%s", got)
+	}
+}
+
+// 没有路由表时**说不知道**,不让零值读起来像一个判定。
+func TestExplainSaysSoWithoutARouter(t *testing.T) {
+	got := renderExplain(supervisor.ExplainResponse{Target: "x.com", RouterMissing: true})
+	if !strings.Contains(got, "还没有路由表") {
+		t.Errorf("没有路由表却渲染出了一个判定:\n%s", got)
+	}
+	if strings.Contains(got, "TCP") {
+		t.Errorf("没有判定可言时不该摆出 TCP/UDP 两行:\n%s", got)
+	}
+}
+
+// 「没有健康探针」不许显示成「不健康」——
+// 那会把「传输还没装好」说成「隧道断了」,两者该做的事完全不同。
+func TestExplainDoesNotCallAMissingProbeUnhealthy(t *testing.T) {
+	rep := explainFixture()
+	rep.TunnelHealth = "unknown"
+	got := renderExplain(rep)
+	if strings.Contains(got, "隧道      不健康") {
+		t.Errorf("把「没有探针」说成了「不健康」:\n%s", got)
+	}
+	if !strings.Contains(got, "未知") {
+		t.Errorf("没有如实说未知:\n%s", got)
+	}
+}
+
+// TCP 与 UDP 必须各自成行。
+// udp.transport / udp.mode 让同一个目的地的两个方向可能去往完全不同的地方
+// (甚至一个走隧道一个被 Block),压成一行会把这个事实整个抹掉。
+func TestExplainReportsBothProtocols(t *testing.T) {
+	rep := explainFixture()
+	rep.UDP = supervisor.ExplainPath{Effective: "blocked", Decision: "proxy", Source: "udp_block", BlockedBy: "udp_mode_block"}
+	got := renderExplain(rep)
+	if !strings.Contains(got, "TCP") || !strings.Contains(got, "UDP") {
+		t.Errorf("两个协议方向没有各自成行:\n%s", got)
+	}
+	if !strings.Contains(got, "udp.mode=block") {
+		t.Errorf("没说清 UDP 是被 udp.mode 丢掉的:\n%s", got)
+	}
+}

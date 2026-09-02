@@ -78,6 +78,13 @@ func New() *cli.App {
 			{Name: "user", Usage: "管理 bx 用户", Subcommands: userCommands()},
 			{Name: "preset", Usage: "应用内置应用可用性规则", Subcommands: presetCommands()},
 			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
+			{
+				Name:      "explain",
+				Usage:     "这个目标现在会走哪条路、为什么(问跑着的 Core,不猜)",
+				ArgsUsage: "<域名|IP[:端口]>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "机器可读输出"}},
+				Action:    explainAction,
+			},
 			{Name: "inspect", Usage: "输出 agent 可读诊断包", Flags: inspectFlags(), Action: inspectAction},
 			{Name: "leak-check", Usage: "非交互的机器可读检查(不开页面;供 MCP 与脚本):本机泄漏面 + 其它 VPN 共存 + 可选主动出口探测。人用请敲 leakcheck(没有连字符),它会开页面并把两半事实对起来", Flags: leakCheckFlags(), Action: leakCheckAction},
 			{Name: "leakcheck", Usage: "泄漏检测【推荐】:开浏览器页面,把浏览器那半(WebRTC/公网出口)与本机那半(路由/DNS)对起来 —— 只有两半合起来才判得了泄漏。保护关着、别的 VPN 在跑时照样能用", Flags: leakcheckFlags(), Action: leakcheckAction},
