@@ -28,6 +28,9 @@ type ruleHistoryEntry struct {
 	Rule     string `json:"rule,omitempty"`
 	Attempts int64  `json:"attempts"`
 	Failures int64  `json:"failures"`
+	// FailureKinds 把 Failures 拆成可行动的几类(见 internal/dialfail)。
+	// 老文件里没有这个键 = nil,与「各类都是 0」是两件事。
+	FailureKinds map[string]int64 `json:"failure_kinds,omitempty"`
 }
 
 type ruleHistory struct {
@@ -112,23 +115,31 @@ func mergeRuleHistory(prev ruleHistory, live []stats.RuleOutcome, uptimeDelta ti
 	type key struct{ source, rule string }
 	idx := make(map[key]int, len(prev.Entries)+len(live))
 	next.Entries = make([]ruleHistoryEntry, 0, len(prev.Entries)+len(live))
-	add := func(source, rule string, attempts, failures int64) {
+	add := func(source, rule string, attempts, failures int64, kinds map[string]int64) {
 		k := key{source, rule}
-		if i, ok := idx[k]; ok {
-			next.Entries[i].Attempts += attempts
-			next.Entries[i].Failures += failures
-			return
+		i, ok := idx[k]
+		if !ok {
+			idx[k] = len(next.Entries)
+			next.Entries = append(next.Entries, ruleHistoryEntry{Source: source, Rule: rule})
+			i = idx[k]
 		}
-		idx[k] = len(next.Entries)
-		next.Entries = append(next.Entries, ruleHistoryEntry{
-			Source: source, Rule: rule, Attempts: attempts, Failures: failures,
-		})
+		next.Entries[i].Attempts += attempts
+		next.Entries[i].Failures += failures
+		// **分类也要累加,而且要建一张新表。** 直接把入参那张 map 挂上去,
+		// 历史就与活计数器共享同一张表 —— 落盘的那份会跟着后续失败继续变,
+		// 而 delta 记账正是靠「落盘的那一刻是什么」才成立的。
+		for kind, n := range kinds {
+			if next.Entries[i].FailureKinds == nil {
+				next.Entries[i].FailureKinds = make(map[string]int64, len(kinds))
+			}
+			next.Entries[i].FailureKinds[kind] += n
+		}
 	}
 	for _, e := range prev.Entries {
-		add(e.Source, e.Rule, e.Attempts, e.Failures)
+		add(e.Source, e.Rule, e.Attempts, e.Failures, e.FailureKinds)
 	}
 	for _, o := range live {
-		add(o.Source, o.Rule, o.Attempts, o.Failures)
+		add(o.Source, o.Rule, o.Attempts, o.Failures, o.FailureKinds)
 	}
 
 	// **版本集合去重且有序。** 报告要拿它说「这段累积跨了几个版本」,每次启动都

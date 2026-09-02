@@ -131,11 +131,11 @@ func TestExplainKeepsTunnelHealthUnknownWithoutAProbe(t *testing.T) {
 // countingStats 只数「有没有人记账」。
 type countingStats struct{ calls int }
 
-func (c *countingStats) Direct()                 { c.calls++ }
-func (c *countingStats) Proxy()                  { c.calls++ }
-func (c *countingStats) Blocked()                { c.calls++ }
-func (c *countingStats) DirectFailed()           { c.calls++ }
-func (c *countingStats) ProxyFailed()            { c.calls++ }
-func (c *countingStats) UDPBlocked()             { c.calls++ }
-func (c *countingStats) RuleAttempt(_, _ string) { c.calls++ }
-func (c *countingStats) RuleFailure(_, _ string) { c.calls++ }
+func (c *countingStats) Direct()                    { c.calls++ }
+func (c *countingStats) Proxy()                     { c.calls++ }
+func (c *countingStats) Blocked()                   { c.calls++ }
+func (c *countingStats) DirectFailed()              { c.calls++ }
+func (c *countingStats) ProxyFailed()               { c.calls++ }
+func (c *countingStats) UDPBlocked()                { c.calls++ }
+func (c *countingStats) RuleAttempt(_, _ string)    { c.calls++ }
+func (c *countingStats) RuleFailure(_, _, _ string) { c.calls++ }

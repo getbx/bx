@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"syscall"
 
+	"github.com/getbx/bx/internal/dialfail"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/urfave/cli/v2"
@@ -37,6 +39,9 @@ func renderExplain(rep supervisor.ExplainResponse) string {
 	writeExplainPath(&b, "TCP", rep.TCP)
 	writeExplainPath(&b, "UDP", rep.UDP)
 
+	if note := explainHistoryNote(rep); note != "" {
+		b.WriteString("\n" + note)
+	}
 	fmt.Fprintf(&b, "\n隧道      %s", explainHealthLabel(rep.TunnelHealth))
 	if rep.UDPTransportHealth != "unknown" {
 		fmt.Fprintf(&b, "  ·  UDP 专用传输 %s", explainHealthLabel(rep.UDPTransportHealth))
@@ -98,7 +103,65 @@ func explainCountLine(prefix string, o *stats.RuleOutcome) string {
 		return fmt.Sprintf("%s%d 次判定,无失败\n", prefix, o.Attempts)
 	}
 	pct := float64(o.Failures) * 100 / float64(o.Attempts)
-	return fmt.Sprintf("%s%d 次判定 / %d 次失败 (%.1f%%)\n", prefix, o.Attempts, o.Failures, pct)
+	line := fmt.Sprintf("%s%d 次判定 / %d 次失败 (%.1f%%)", prefix, o.Attempts, o.Failures, pct)
+	if kinds := explainFailureKinds(o.FailureKinds); kinds != "" {
+		line += "  " + kinds
+	}
+	return line + "\n"
+}
+
+// explainFailureKinds 把失败拆成可行动的几类。
+//
+// **一个百分比答不出该不该管。** 同样是 15%,全是 unreachable 就要立刻去查
+// 路由(2026-08-13 那个 DirectDialer 故障的签名),全是 timeout 就一个字都
+// 不用改。按次数倒序,最大的那一类排最前 —— 读的人只需要看第一个。
+//
+// 空表返回空串:这一版没有分类、或者归不了类,都**不许显示成「各类都是 0」**。
+func explainFailureKinds(kinds map[string]int64) string {
+	if len(kinds) == 0 {
+		return ""
+	}
+	type kv struct {
+		kind string
+		n    int64
+	}
+	list := make([]kv, 0, len(kinds))
+	for k, n := range kinds {
+		list = append(list, kv{k, n})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].n != list[j].n {
+			return list[i].n > list[j].n
+		}
+		return list[i].kind < list[j].kind // 并列时定序,否则 map 迭代序让输出 diff 不了
+	})
+	parts := make([]string, 0, len(list))
+	for _, e := range list {
+		parts = append(parts, fmt.Sprintf("%s×%d", explainFailureKindLabel(e.kind), e.n))
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+func explainFailureKindLabel(kind string) string {
+	switch kind {
+	case dialfail.Unreachable:
+		return "路由不可达"
+	case dialfail.Timeout:
+		return "对端不应答"
+	case dialfail.Refused:
+		return "对端拒绝"
+	case dialfail.Reset:
+		return "被重置"
+	case dialfail.DNS:
+		return "解析失败"
+	case dialfail.Canceled:
+		return "调用方取消"
+	case dialfail.EgressUnwired:
+		return "出口未接线"
+	case dialfail.Other:
+		return "其它"
+	}
+	return kind
 }
 
 func explainSourceLabel(source string) string {
@@ -184,4 +247,27 @@ func isControlSocketUnreachable(err error) bool {
 		return true
 	}
 	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
+}
+
+// explainHistoryNote 说明「累计」那一行覆盖了多长时间、跨了几个版本。
+//
+// 少了它,「累计 2679 次 / 410 次失败」答不出**这是什么时候的事** —— 一个跨了
+// 半年、几个版本的 15% 与一天之内的 15% 是完全不同的两件事,而读的人会默认
+// 它是后者。两个数本来就在 RuleHistorySnapshot 里,此前被整个丢掉了。
+//
+// 没有历史可言时一个字都不说:一句「累计覆盖 0 天」比不说更容易被读错。
+func explainHistoryNote(rep supervisor.ExplainResponse) string {
+	if rep.HistoryWindowSeconds <= 0 {
+		return ""
+	}
+	note := fmt.Sprintf("累计口径  覆盖 Core 累计在跑的 %.1f 天", float64(rep.HistoryWindowSeconds)/86400)
+	if n := len(rep.HistoryVersions); n > 1 {
+		// **跨版本要说**:中间几版的计数行为可能并不一致,那份累计要打折看。
+		note += fmt.Sprintf(",跨 %d 个版本(%s)", n, strings.Join(rep.HistoryVersions, "、"))
+	}
+	if rep.HistoryOverflowed {
+		// 表满过之后,「这条规则没有条目」不再等于「它没命中过」。
+		note += ";跟踪表溢出过 —— 没有条目不等于没命中"
+	}
+	return note + "\n"
 }

@@ -5,10 +5,13 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
+	"github.com/getbx/bx/internal/dialfail"
 	"github.com/getbx/bx/internal/route"
 	"github.com/getbx/bx/internal/splitdns"
 )
@@ -22,6 +25,7 @@ type recordingCounter struct {
 	pFail    int
 	attempts []string // "source|rule"
 	failures []string
+	kinds    []string
 }
 
 func (c *recordingCounter) Proxy()        { c.mu.Lock(); c.proxy++; c.mu.Unlock() }
@@ -36,9 +40,10 @@ func (c *recordingCounter) RuleAttempt(source, rule string) {
 	c.mu.Unlock()
 }
 
-func (c *recordingCounter) RuleFailure(source, rule string) {
+func (c *recordingCounter) RuleFailure(source, rule, kind string) {
 	c.mu.Lock()
 	c.failures = append(c.failures, source+"|"+rule)
+	c.kinds = append(c.kinds, kind)
 	c.mu.Unlock()
 }
 
@@ -700,5 +705,39 @@ func TestViaUDPFailsClosedToo(t *testing.T) {
 	}
 	if mainGot != "" || counter.direct != 0 {
 		t.Fatalf("回落了(主隧道 %q / direct %d)", mainGot, counter.direct)
+	}
+}
+
+// **dialer 必须把真实的错误交给分类器。**
+//
+// 这是整条链的第一环:err 一直就在 `conn, err := d.Direct.DialContext(...)`
+// 手边,此前进了一行 debug 日志然后被扔掉,只留下「失败了一次」。变异实测
+// (在 recordFailure 里把 err 换成空串)时,判据层与渲染层的守卫**全绿** ——
+// 又一次「守卫钉住的是缺陷旁边的东西」。
+func TestDialerHandsTheRealErrorToTheClassifier(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"路由不可达", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}, dialfail.Unreachable},
+		{"对端不应答", os.ErrDeadlineExceeded, dialfail.Timeout},
+		{"对端拒绝", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}, dialfail.Refused},
+	} {
+		counter := &recordingCounter{}
+		d, _, _ := newTestDialer(nil, fakeResolver{ip: netip.MustParseAddr("1.2.3.4")}, true, true)
+		d.Stats = counter
+		d.Direct = failingDialer{err: tc.err}
+
+		// x.baidu.com 命中 china 域名列表 → 直连 → 用上面那个必失败的拨号器。
+		if _, err := d.Dial(context.Background(), route.Meta{Domain: "x.baidu.com", Port: 80}); err == nil {
+			t.Fatalf("%s: 期望拨号失败", tc.name)
+		}
+		if len(counter.kinds) == 0 {
+			t.Fatalf("%s: 一次失败都没记", tc.name)
+		}
+		if got := counter.kinds[len(counter.kinds)-1]; got != tc.want {
+			t.Errorf("%s: 分类成了 %q,应当是 %q —— 错误没被交给分类器", tc.name, got, tc.want)
+		}
 	}
 }

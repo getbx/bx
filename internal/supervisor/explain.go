@@ -37,6 +37,18 @@ type ExplainResponse struct {
 	// RouterMissing 为真 = 还没有路由表可问,上面两个 ExplainPath 什么都不说明。
 	// **刻意无 omitempty**:false 与「这一版没有这个字段」必须分得开。
 	RouterMissing bool `json:"router_missing"`
+
+	// HistoryWindow 是**累计计数覆盖多长时间**(Core 累计在跑的秒数),
+	// HistoryVersions 是这段累积跨过的版本。
+	//
+	// 少了它们,「累计 2679 次 / 410 次失败」答不出「这是什么时候的事」——
+	// 一个跨了半年、几个版本的 15% 与一天之内的 15% 是完全不同的两件事,
+	// 而读的人会默认它是后者。两个字段本来就在 RuleHistorySnapshot 里,
+	// 此前被整个丢掉了。
+	HistoryWindowSeconds int64    `json:"history_window_seconds,omitempty"`
+	HistoryVersions      []string `json:"history_versions,omitempty"`
+	// HistoryOverflowed 为真时,「这条规则没有条目」不再等于「它没命中过」。
+	HistoryOverflowed bool `json:"history_overflowed"`
 }
 
 // ExplainPath 是一个协议方向上的答案。
@@ -158,6 +170,11 @@ func buildExplainResponse(target string, tcp, udp dialer.Outcome, rep stats.Repo
 	}
 	if tcp.IP.IsValid() {
 		out.IP = tcp.IP.String()
+	}
+	if rep.RuleHistory != nil {
+		out.HistoryWindowSeconds = rep.RuleHistory.UptimeSeconds
+		out.HistoryVersions = rep.RuleHistory.Versions
+		out.HistoryOverflowed = rep.RuleHistory.Overflowed
 	}
 	return out
 }

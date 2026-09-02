@@ -369,11 +369,11 @@ func TestRecordAppReportsNoDestinationWhenItHasNeither(t *testing.T) {
 // 但**必须让计数那条路真的执行**(见 newAppDialer 里的注释)。
 type noopCounter struct{}
 
-func (noopCounter) Proxy()                  {}
-func (noopCounter) Direct()                 {}
-func (noopCounter) Blocked()                {}
-func (noopCounter) UDPBlocked()             {}
-func (noopCounter) DirectFailed()           {}
-func (noopCounter) ProxyFailed()            {}
-func (noopCounter) RuleAttempt(_, _ string) {}
-func (noopCounter) RuleFailure(_, _ string) {}
+func (noopCounter) Proxy()                     {}
+func (noopCounter) Direct()                    {}
+func (noopCounter) Blocked()                   {}
+func (noopCounter) UDPBlocked()                {}
+func (noopCounter) DirectFailed()              {}
+func (noopCounter) ProxyFailed()               {}
+func (noopCounter) RuleAttempt(_, _ string)    {}
+func (noopCounter) RuleFailure(_, _, _ string) {}
