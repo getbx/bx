@@ -62,11 +62,23 @@ func writeExplainPath(b *strings.Builder, label string, p supervisor.ExplainPath
 	} else {
 		fmt.Fprintf(b, "  依据    %s\n", explainSourceLabel(p.Source))
 	}
-	if line := explainCountLine("  本次    ", p.Run); line != "" {
-		b.WriteString(line)
-	}
-	if line := explainCountLine("  累计    ", p.History); line != "" {
-		b.WriteString(line)
+	run := explainCountLine("  本次    ", p.Run)
+	history := explainCountLine("  累计    ", p.History)
+	b.WriteString(run)
+	b.WriteString(history)
+	// **没有规则可点名时,这两个数是一个桶的合计,不是这个目标的。**
+	//
+	// 计数按 (source, rule) 记。命中具体规则时它确实就是那条规则的成败(这正是
+	// `*.qq.com 2658 次 / 410 次失败` 有用的原因);而 Rule=="" 那一档
+	// (默认 / 内建列表)收的是**走这条路的全部流量**,把它印在一个具体目标下面,
+	// 读起来就是那个目标的 —— 真机实测:steamstatic.com 与 1.1.1.1 拿到逐字相同
+	// 的 49/15228/73,而它们毫无关系。
+	//
+	// 不删掉这两行是因为那个信息本身有用(「默认这条路整体 0.5% 失败」是背景),
+	// 删了就换成另一种失真。加一句话把它归位。
+	if p.Rule == "" && (run != "" || history != "") {
+		fmt.Fprintf(b, "  注      这两个数是走「%s」这条路的全部流量的合计,不是这个目标的(这一层没有具体规则可点名)\n",
+			explainSourceLabel(p.Source))
 	}
 	if p.Egress != "" {
 		fmt.Fprintf(b, "  出口    %s\n", p.Egress)

@@ -123,3 +123,30 @@ func TestExplainReportsBothProtocols(t *testing.T) {
 		t.Errorf("没说清 UDP 是被 udp.mode 丢掉的:\n%s", got)
 	}
 }
+
+// **没有规则可点名时,计数是一个桶的合计,必须说清楚不是这个目标的。**
+//
+// 真机 2026-09-01 实测:`bx explain steamstatic.com` 与 `bx explain 1.1.1.1`
+// 拿到**逐字相同**的 49/15228/73 —— 因为两者都落在 Source="default"、Rule=""
+// 那一档,而计数按 (source, rule) 记。数字没错,错的是把它印在一个具体目标
+// 下面:读起来就是那个目标的。**一个看起来在说 A、实际在说 B 的数**,正是这
+// 整个命令要消灭的东西。
+func TestExplainQualifiesBucketCountsWhenThereIsNoRule(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Rule = ""
+	rep.TCP.Source = "default"
+	got := renderExplain(rep)
+	if !strings.Contains(got, "不是这个目标的") {
+		t.Errorf("桶计数没有被归位,读起来像是这个目标的:\n%s", got)
+	}
+}
+
+// 反过来:命中具体规则时那个数**就是**这条规则的,不许加那句限定 ——
+// 多余的免责声明会让一个准确的数字显得可疑,而 `*.qq.com 410 次失败` 恰恰
+// 是这个命令最有价值的输出。
+func TestExplainDoesNotQualifyARealRulesCounts(t *testing.T) {
+	got := renderExplain(explainFixture()) // fixture 命中 *.steamstatic.com
+	if strings.Contains(got, "不是这个目标的") {
+		t.Errorf("给一条真规则的计数加了不该有的限定:\n%s", got)
+	}
+}
