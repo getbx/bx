@@ -40,7 +40,19 @@ type pathRecoveryStatusController interface {
 }
 
 type LocalAPIOptions struct {
-	OwnerUID        uint32
+	OwnerUID uint32
+	// WakeReconcile, if set, is called after /v1/up and /v1/down settle so the
+	// reconcile loop drops out of its backoff and re-observes.
+	//
+	// **状态刚变过的那一刻,恰恰是那份观测最陈旧的时候。** 真机 2026-09-03:
+	// 一台安静很久、已退到 10 分钟一拍的机器在 `bx up` 之后,`bx status` 把一份
+	// **早于 Core 存在**的观测原样摆了出来(「扫到 0 个 Core 进程」),而同一屏上
+	// Core 正在应答 —— 读的人据此写了一个针对不存在的 bug 的修复。
+	//
+	// 做成注入的函数而不是 Controller 上的方法:接口一扩,全部替身都要跟着改,
+	// 而这件事只有一个真实调用方;更要紧的是**它必须与 watch.poke 走同一条路**
+	// —— 两者是同一时刻要做的同一类事,分开接线迟早只接上一个。
+	WakeReconcile   func()
 	GuardianVersion string
 	RuntimeVersion  func() string
 	// CoreRuntime, if set, is called on every GET /v1/status to fetch the
@@ -776,6 +788,13 @@ func mutationHandler(controller Controller, mutate func(context.Context) error, 
 		// **广播点。** 用户正站在旁边等反馈:up/down 成功后立刻重算并唤醒任何
 		// parked 的 watch,而不是让它们等下一个兵底拍(最长 3 秒)。
 		watch.poke()
+		// **同一时刻也把调谐环从退避里叫醒。**
+		// 状态刚变过的那一刻,恰恰是它那份观测最陈旧的时候 —— 一台安静很久、
+		// 已经退到 10 分钟一拍的机器,在 up 之后会把一份**早于 Core 存在**的
+		// 观测原样摆进 bx status(真机 2026-09-03 撞到)。
+		if options.WakeReconcile != nil {
+			options.WakeReconcile()
+		}
 		// 版本字段必须一起回:`bx up` 只看这一个响应,不会再补一次 GET /v1/status。
 		// 代际号同理:poke() 刚发布过,statusWithVersions 把它原样抄进这份响应。
 		writeGuardianJSON(w, http.StatusOK, statusWithVersions(controller, options, watch))

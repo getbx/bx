@@ -567,6 +567,7 @@ func TestStartRecoveredDaemonKeepsTheReconcileLoopRunningUntilItsContextEnds(t *
 // 进入 runReconcileLoop 时关 entered,然后一直待到 ctx 结束再关 returned。
 // 生命周期那一半的方法从 daemonStartupController 继承,这里只加循环这一个。
 type reconcileLoopTestController struct {
+	woken int
 	*daemonStartupController
 	mu       sync.Mutex
 	observer reconcileObservation
@@ -582,6 +583,21 @@ func (c *reconcileLoopTestController) runReconcileLoop(ctx context.Context, obse
 	// **绝不调用 observer**:生产传进来的是真观测,会在宿主上跑外部命令。
 	<-ctx.Done()
 	close(c.returned)
+}
+
+// wakeReconcile 记下自己被叫过没有 —— 它与 runReconcileLoop 同属一个可选接口,
+// **两者必须一起实现**:漏掉一个,类型断言会静默不成立,于是循环整个不接线
+// (本条测试正是这么发现新方法的)。
+func (c *reconcileLoopTestController) wakeReconcile() {
+	c.mu.Lock()
+	c.woken++
+	c.mu.Unlock()
+}
+
+func (c *reconcileLoopTestController) wakeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.woken
 }
 
 func (c *reconcileLoopTestController) observation() reconcileObservation {
@@ -602,4 +618,134 @@ func logLinesContaining(buffer *bytes.Buffer, marker string) []string {
 		}
 	}
 	return matched
+}
+
+// —— 用户刚改过状态,调谐环必须立刻重新观测(2026-09-03)——
+//
+// 真机:一台安静很久、已退到 10 分钟一拍的机器,在 `sudo bx up` 之后
+// `bx status` 显示 `最近观测 6m14s 前 · 连续 26 轮未变 · 2 项未观测到 ·
+// **扫到 0 个 Core 进程**`,而同一屏上 Core 正在应答。那份观测**早于 Core 存在**。
+//
+// 读的人(包括我)把陈旧的那半当成了当前事实,并据此写了一个针对不存在的
+// 扫描 bug 的修复。**状态刚变过的那一刻,恰恰是那份报告最陈旧的时候。**
+
+// 被叫醒时退避归零:下一轮按基础周期,而不是接着睡到 10 分钟。
+func TestReconcileLoopResetsBackoffWhenWoken(t *testing.T) {
+	wake := make(chan struct{}, 1)
+	wake <- struct{}{}
+	ok, woken := waitReconcileInterval(context.Background(), time.Hour, wake)
+	if !ok || !woken {
+		t.Fatalf("叫醒没生效:ok=%v woken=%v", ok, woken)
+	}
+}
+
+// 没人叫时照常按周期睡 —— 叫醒不能变成「每轮都当自己被叫醒了」。
+func TestReconcileLoopStillPacesItselfWithoutAWake(t *testing.T) {
+	ok, woken := waitReconcileInterval(context.Background(), time.Millisecond, make(chan struct{}))
+	if !ok || woken {
+		t.Fatalf("没人叫却报告被叫醒:ok=%v woken=%v", ok, woken)
+	}
+}
+
+// ctx 结束仍然优先 —— 叫醒不许让循环拖住关机。
+func TestReconcileWakeDoesNotOutrankShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if ok, _ := waitReconcileInterval(ctx, time.Hour, make(chan struct{})); ok {
+		t.Error("ctx 已结束却还想跑下一轮")
+	}
+}
+
+// **一次 up/down 绝不能被这条循环拖住。**
+// 缓冲满了就丢掉这一次叫醒(循环马上要自己醒,或者已经有一次在排队)。
+func TestWakeReconcileNeverBlocks(t *testing.T) {
+	m := &Manager{reconcileWake: make(chan struct{}, 1)}
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			m.wakeReconcile()
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("wakeReconcile 阻塞了 —— 它挂在 /v1/up 的路径上")
+	}
+}
+
+// 循环没跑时叫醒是空操作,不是 panic。
+func TestWakeReconcileIsANoOpWithoutALoop(t *testing.T) {
+	(&Manager{}).wakeReconcile() // reconcileWake 为 nil
+	var nilManager *Manager
+	nilManager.wakeReconcile()
+}
+
+// **接线守卫:能跑循环的 controller,叫醒也必须被接出来。**
+//
+// 两者同属一个可选接口,而断言是**运行期**的 —— 「循环接上了、叫醒没接」
+// 与「完全没接」在输出上完全一样(报告照样陈旧)。
+func TestDaemonWiresTheReconcileWakeAlongsideTheLoop(t *testing.T) {
+	// *Manager 必须同时满足两半 —— 编译期就该成立(这一行赋值即是断言)。
+	var runner reconcileLoopRunner = &Manager{reconcileWake: make(chan struct{}, 1)}
+
+	options := localAPIOptionsFor(DaemonOptions{})
+	if options.WakeReconcile != nil {
+		t.Error("localAPIOptionsFor 不该自己编一个叫醒 —— 它拿不到 controller")
+	}
+	// 组装根那一跳:接了循环就必须接叫醒。
+	options.WakeReconcile = runner.wakeReconcile
+	options.WakeReconcile() // 不 panic 即可
+}
+
+// **被叫醒之后,下一轮必须按基础周期跑,而不是接着睡到 10 分钟。**
+//
+// 上面那几条只盖到 waitReconcileInterval 的返回值;这一条盖的是循环体**用**了
+// 它 —— 变异实测(收到 woken 但不把 unchanged 归零)时它们全绿,而那正是这个
+// 修复的全部内容:叫醒的意义就是让退避归零。
+func TestReconcileLoopAsksForTheBaseIntervalAfterAWake(t *testing.T) {
+	env := newManagerTestEnv(t)
+	m := env.manager
+	m.reconcileWake = make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	var seen []int
+	dropped := make(chan struct{})
+	closed := false
+
+	// **判据是「回落」不是「再见到 0」。**
+	// 归零发生在轮次**之前**,那一轮按基础周期跑完之后 previous 又被本轮结果
+	// 覆盖(unchanged 重新从 1 开始爬),所以看不到第二个字面 0 —— 第一版
+	// 断言写成「再见到 0」,红了 5 秒才发现错的是断言不是代码。
+	// 没有归零时这个序列**单调不减**(0,1,2,3…);有归零才可能出现回落。
+	pacing := func(unchanged int) time.Duration {
+		mu.Lock()
+		if n := len(seen); n > 0 && unchanged < seen[n-1] && !closed {
+			closed = true
+			close(dropped)
+		}
+		seen = append(seen, unchanged)
+		if unchanged >= 2 {
+			m.wakeReconcile()
+		}
+		mu.Unlock()
+		return time.Millisecond
+	}
+	observer := func(context.Context) observe.ObservedState { return observe.ObservedState{} }
+
+	go m.runReconcileLoopWithPacing(ctx, observer, pacing)
+
+	select {
+	case <-dropped:
+	case <-time.After(5 * time.Second):
+		mu.Lock()
+		got := append([]int(nil), seen...)
+		mu.Unlock()
+		if len(got) > 12 {
+			got = got[:12]
+		}
+		t.Fatalf("叫醒之后退避没有回落,pacing 收到的 unchanged 序列(前 12 个):%v", got)
+	}
 }

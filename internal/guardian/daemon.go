@@ -221,6 +221,12 @@ func (d *Daemon) trackStartupRecovery(fn func()) {
 // 正确的行为就是「不跑」。
 type reconcileLoopRunner interface {
 	runReconcileLoop(context.Context, reconcileObservation)
+	// wakeReconcile 把循环从退避里叫醒并让它把退避归零。
+	//
+	// **与 runReconcileLoop 同一个接口,是刻意的**:它们是同一个能力的两半,
+	// 分成两个可选接口就会出现「循环接上了、叫醒没接」这种半接线状态,而那种
+	// 状态与「完全没接」在输出上完全一样(报告照样陈旧)。
+	wakeReconcile()
 }
 
 // trackReconcileLoop 起那条只观察的调谐环,并记下它的结束,好让 Shutdown 叫停它。
@@ -519,6 +525,11 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 // background goroutine instead of inline.
 func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller recoveringController, start daemonStarter) (*Daemon, error) {
 	localAPIOptions := localAPIOptionsFor(options)
+	// **叫醒必须与循环从同一个地方接出来。** 见 reconcileLoopRunner 上的说明:
+	// 「循环接上了、叫醒没接」与「完全没接」在输出上完全一样。
+	if runner, ok := controller.(reconcileLoopRunner); ok {
+		localAPIOptions.WakeReconcile = runner.wakeReconcile
+	}
 	options.Handler = NewLocalAPI(controller, localAPIOptions)
 	options.OwnerUID = 0
 	if options.networkObserver == nil {

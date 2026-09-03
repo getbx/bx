@@ -193,8 +193,23 @@ func (m *Manager) runReconcileLoopWithPacing(ctx context.Context, observer recon
 		if panics > 0 {
 			interval = reconcilePanicBackoff(interval, panics)
 		}
-		if !waitReconcileInterval(ctx, interval) {
+		ok, woken := waitReconcileInterval(ctx, interval, m.reconcileWake)
+		if !ok {
 			return
+		}
+		if woken {
+			// **用户刚改过状态,退避归零。**
+			//
+			// 退避存在的前提是「什么都没变」;而 up/down 恰恰是变了。少了这一句,
+			// 一台安静了很久、已经退到 10 分钟一拍的机器在 `bx up` 之后,
+			// `bx status` 会把一份**早于 Core 存在**的观测原样摆出来 ——
+			// 真机 2026-09-03 撞到:`最近观测 6m14s 前 · 连续 26 轮未变 ·
+			// 2 项未观测到 · 扫到 0 个 Core 进程`,而同一屏上 Core 正在应答。
+			// 读的人(包括我)把那份陈旧观测当成了当前事实,并据此写了一个
+			// 针对不存在的扫描 bug 的修复。
+			//
+			// **状态刚变过的那一刻,恰恰是那份报告最陈旧的时候。**
+			previous.unchanged = 0
 		}
 		round, stop, panicked := m.runReconcileRound(ctx, observer, previous, panics)
 		switch {
@@ -298,14 +313,20 @@ func reconcilePanicBackoff(base time.Duration, consecutivePanics int) time.Durat
 
 // waitReconcileInterval 睡一个周期,ctx 结束则立刻返回 false。
 // 睡的时候也必须叫得醒:退避到 10 分钟之后,一次关机不该等它睡满。
-func waitReconcileInterval(ctx context.Context, interval time.Duration) bool {
+// waitReconcileInterval 睡到下一轮,或者被叫醒。
+//
+// 返回 woken=true 表示这一轮是被**用户刚改过状态**叫起来的,调用方据此把退避
+// 归零 —— 见 wakeReconcile。
+func waitReconcileInterval(ctx context.Context, interval time.Duration, wake <-chan struct{}) (ok, woken bool) {
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return false
+		return false, false
 	case <-timer.C:
-		return true
+		return true, false
+	case <-wake:
+		return true, true
 	}
 }
 
