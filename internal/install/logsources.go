@@ -96,3 +96,40 @@ func statLogFile(path string) (time.Time, bool) {
 	}
 	return info.ModTime(), true
 }
+
+// staleOnlyNotice 在**一份当前日志都没读到**时给一句收尾话。
+//
+// 起因是 2026-09-02 的真机排障:非 root 跑 `bx logs`,四段里前三段是
+// `Permission denied`,最后一段是一个月前的旧实例内容 —— 而**最后那段正是眼睛
+// 落下的地方**。逐段的提示都在(读失败会打、陈旧会标),但读的人拿走的是最后
+// 那屏文字,于是把旧实例的状态当成了现在的状态,并据此差点写出一条不存在的 bug。
+//
+// **这不是「没提示」,是提示被排在了它要否定的那段内容前面。** 修法因此是收尾
+// 补一句,而不是重做输出:前面每一段的事实都是对的,缺的是那个总结。
+//
+// 只在「没有任何**当前**来源被读到」时出声 —— 读到了当前日志就什么都不说,
+// 一句恒真的提示会被训练成噪声。
+func staleOnlyNotice(sources []logSource, readOK map[string]bool) string {
+	var freshSeen, freshRead, staleRead bool
+	for _, s := range sources {
+		if s.Stale {
+			if readOK[s.Path] {
+				staleRead = true
+			}
+			continue
+		}
+		freshSeen = true
+		if readOK[s.Path] {
+			freshRead = true
+		}
+	}
+	if freshRead || !freshSeen {
+		// 读到了当前日志,或者压根没有当前日志(那是另一回事,别在这里下结论)。
+		return ""
+	}
+	notice := "⚠ 一份**当前**日志都没读到 —— 上面能读到的内容来自已经停写的旧实例,**不代表现在的状态**。"
+	if staleRead {
+		notice += "\n  当前日志是 root-only(里面有服务器 IP 与旁路网段),用 `sudo bx logs` 看。"
+	}
+	return notice + "\n"
+}

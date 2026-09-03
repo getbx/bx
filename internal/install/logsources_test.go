@@ -1,6 +1,7 @@
 package install
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -120,5 +121,97 @@ func TestClientLogPathsIncludeTheGuardianLogs(t *testing.T) {
 	// legacy 仍然列出:老安装上它可能才是活的。
 	if !sawLegacy {
 		t.Errorf("legacy 路径被整个删掉了 —— 老安装上它可能才是活的:%v", paths)
+	}
+}
+
+// —— 「一份当前日志都没读到」要有一句收尾话(2026-09-02)——
+//
+// 真机排障:非 root 跑 `bx logs`,四段里前三段是 Permission denied,最后一段是
+// 一个月前的旧实例内容。**逐段的提示都在**(读失败会打、陈旧会标),但读的人
+// 拿走的是最后一屏文字 —— 而那一屏恰恰是唯一读得到的、也是最旧的那一段,
+// 于是把旧实例的状态当成了现在的状态。
+//
+// **这不是「没提示」,是提示被排在了它要否定的那段内容前面。**
+
+func src(path string, stale bool) logSource { return logSource{Path: path, Stale: stale} }
+
+// 当前日志读不到、只读到陈旧的 ⇒ 必须收尾说清楚,并给出路。
+func TestStaleOnlyNoticeFiresWhenNoCurrentLogWasReadable(t *testing.T) {
+	sources := []logSource{src("/var/log/bx.log", false), src("/var/log/bx.err.log", true)}
+	got := staleOnlyNotice(sources, map[string]bool{"/var/log/bx.err.log": true})
+	if got == "" {
+		t.Fatal("只读到旧实例的日志却一个字没说")
+	}
+	if !strings.Contains(got, "不代表现在的状态") {
+		t.Errorf("没说清那不是当前状态:%s", got)
+	}
+	if !strings.Contains(got, "sudo") {
+		t.Errorf("没给出路:%s", got)
+	}
+}
+
+// **读到了当前日志就一个字都不说。**
+// 一句恒真的提示会被训练成噪声,而这条要在真出事时被看见。
+func TestStaleOnlyNoticeStaysQuietWhenTheCurrentLogWasRead(t *testing.T) {
+	sources := []logSource{src("/var/log/bx.log", false), src("/var/log/bx.err.log", true)}
+	got := staleOnlyNotice(sources, map[string]bool{"/var/log/bx.log": true, "/var/log/bx.err.log": true})
+	if got != "" {
+		t.Errorf("当前日志读到了还在提示:%s", got)
+	}
+}
+
+// **压根没有当前日志是另一回事,别在这里下结论。**
+// 那可能是「服务从没启动过」,而这条提示说的是「读不到」—— 说错方向会把人
+// 送去 sudo 一遍,然后发现还是什么都没有。
+func TestStaleOnlyNoticeSaysNothingWhenThereIsNoCurrentLogAtAll(t *testing.T) {
+	sources := []logSource{src("/var/log/bx.err.log", true)}
+	if got := staleOnlyNotice(sources, map[string]bool{"/var/log/bx.err.log": true}); got != "" {
+		t.Errorf("没有当前日志时下了「读不到」的结论:%s", got)
+	}
+}
+
+// 一个字节都没读到时**仍然要说**。
+// 那是权限问题最纯粹的形状,而静默会让人以为「没有日志」。
+func TestStaleOnlyNoticeFiresEvenWhenNothingWasReadable(t *testing.T) {
+	sources := []logSource{src("/var/log/bx.log", false), src("/var/log/bx.err.log", true)}
+	if got := staleOnlyNotice(sources, nil); got == "" {
+		t.Error("一个字节都没读到却什么也没说")
+	}
+}
+
+// **接线守卫**:收尾那句真的被拼进了给人看的那一屏。
+//
+// 变异实测:把 renderLogSources 里那一行删掉,判据层的四条测试**照样全绿** ——
+// 又一次「守卫钉住的是缺陷旁边的东西」。
+func TestRenderedLogsCarryTheStaleOnlyNotice(t *testing.T) {
+	moment := time.Now()
+	sources := []logSource{
+		{Path: "/var/log/bx.log", ModTime: moment, Stale: false},
+		{Path: "/var/log/bx.err.log", ModTime: moment.Add(-30 * 24 * time.Hour), Stale: true},
+	}
+	out := renderLogSources(sources, moment, func(s logSource) ([]byte, error) {
+		if s.Stale {
+			return []byte("一个月前的旧内容\n"), nil
+		}
+		return []byte("tail: Permission denied\n"), errors.New("exit status 1")
+	})
+	if !strings.Contains(out, "不代表现在的状态") {
+		t.Fatalf("收尾话没被拼进输出:\n%s", out)
+	}
+	// **它必须在最后**:整个修法的理由就是「读的人拿走的是最后一屏文字」。
+	if !strings.Contains(out[len(out)/2:], "不代表现在的状态") {
+		t.Errorf("收尾话没排在后半段,起不到收尾作用:\n%s", out)
+	}
+}
+
+// 读到了当前日志时那一屏里不该有那句话。
+func TestRenderedLogsStayQuietWhenTheCurrentLogWasRead(t *testing.T) {
+	moment := time.Now()
+	sources := []logSource{{Path: "/var/log/bx.log", ModTime: moment, Stale: false}}
+	out := renderLogSources(sources, moment, func(logSource) ([]byte, error) {
+		return []byte("当前内容\n"), nil
+	})
+	if strings.Contains(out, "不代表现在的状态") {
+		t.Errorf("当前日志读到了还在提示:\n%s", out)
 	}
 }

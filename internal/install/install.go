@@ -1239,16 +1239,33 @@ func tailDarwinClientLogs(lines int, stat func(string) (time.Time, bool), now fu
 	if len(sources) == 0 {
 		return "", fmt.Errorf("未找到 bx 日志文件(服务可能尚未启动)")
 	}
+	return renderLogSources(sources, moment, func(s logSource) ([]byte, error) {
+		return exec.Command("tail", "-n", fmt.Sprint(lines), s.Path).CombinedOutput()
+	}), nil
+}
+
+// renderLogSources 把几份日志拼成给人看的那一屏。
+//
+// **抽出来是为了让「收尾那句真的被拼进去」可断言** —— 变异实测:把那一行删掉,
+// 整个包的测试照样全绿(判据有测试、接线没有)。而 tailDarwinClientLogs 自己
+// exec `tail`、读的又是写死的 /var/log 路径,测它就等于测这台机器的状态。
+func renderLogSources(sources []logSource, moment time.Time, read func(logSource) ([]byte, error)) string {
 	var out strings.Builder
+	readOK := make(map[string]bool, len(sources))
 	for _, source := range sources {
 		out.WriteString(logSourceHeader(source, moment))
 		out.WriteByte('\n')
-		raw, err := exec.Command("tail", "-n", fmt.Sprint(lines), source.Path).CombinedOutput()
+		raw, err := read(source)
 		out.Write(raw)
 		if err != nil {
 			fmt.Fprintf(&out, "(读取失败:%v)\n", err)
+		} else {
+			readOK[source.Path] = true
 		}
 		out.WriteByte('\n')
 	}
-	return out.String(), nil
+	// **收尾那句是承重的。** 逐段的提示都在,但读的人拿走的是最后一屏文字 ——
+	// 而那一屏恰恰是唯一读得到的、也是最旧的那一段。
+	out.WriteString(staleOnlyNotice(sources, readOK))
+	return out.String()
 }
