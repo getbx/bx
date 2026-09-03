@@ -83,3 +83,43 @@ func TestOnlyRoutingAndResolutionLookLikeOurFault(t *testing.T) {
 		}
 	}
 }
+
+// —— NXDOMAIN 与「够不着解析器」处置完全相反,绝不能合并(2026-09-03)——
+//
+// 真机首次产出:`*.qq.com` 本次运行 1454 次判定 / 963 次失败,分类全是 dns。
+// 而那个答案**无法行动** —— 第一版把两件事合成了一档:
+//
+//   - 名字不存在(微信在查一批不存在的主机名)⇒ 不是 bx 的问题,一个字不用改
+//   - 够不着 223.5.5.5 ⇒ 2026-08-13 那个 macOS DirectDialer 拿不到 scoped
+//     默认路由的签名,而它 8-16 已经复发过一次,同样表现为 *.qq.com 大比例失败
+//
+// **net.Resolver 会把传输层失败也包成 *net.DNSError**,所以只判类型不够 ——
+// 必须看 IsNotFound。合成一档,66% 这个数就又变回一个无法行动的百分比,
+// 而那正是这个功能存在的全部理由。
+
+func TestClassifySeparatesNXDOMAINFromAnUnreachableResolver(t *testing.T) {
+	notFound := &net.DNSError{Err: "no such host", Name: "nope.qq.com", IsNotFound: true}
+	if got := Classify(notFound); got != DNSNotFound {
+		t.Errorf("NXDOMAIN 归成了 %q —— 那会让「应用在查不存在的名字」看起来像 bx 的路由坏了", got)
+	}
+
+	// 连不上 DNS 服务器:Go 把它包成 DNSError,但 IsNotFound 为假。
+	unreachableResolver := &net.DNSError{
+		Err:  "dial udp 223.5.5.5:53: connect: network is unreachable",
+		Name: "mp.weixin.qq.com",
+	}
+	if got := Classify(unreachableResolver); got != DNS {
+		t.Errorf("够不着解析器归成了 %q —— 那正是 2026-08-13 那个故障的签名,不能被当成「域名不存在」", got)
+	}
+}
+
+// **只有「够不着解析器」指向 bx,NXDOMAIN 不指向。**
+// 判错方向的代价:让人去修一个没坏的路由表,而真正该做的是看那个应用在查什么。
+func TestNXDOMAINIsNotOurFault(t *testing.T) {
+	if LooksLikeOurFault(DNSNotFound) {
+		t.Error("把「域名不存在」说成了 bx 的问题")
+	}
+	if !LooksLikeOurFault(DNS) {
+		t.Error("「够不着解析器」应当指向 bx")
+	}
+}
