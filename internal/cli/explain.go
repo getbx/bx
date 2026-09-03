@@ -153,7 +153,9 @@ func explainFailureKindLabel(kind string) string {
 	case dialfail.Reset:
 		return "被重置"
 	case dialfail.DNS:
-		return "解析失败"
+		return "够不着解析器"
+	case dialfail.DNSNotFound:
+		return "域名不存在"
 	case dialfail.Canceled:
 		return "调用方取消"
 	case dialfail.EgressUnwired:

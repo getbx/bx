@@ -35,9 +35,22 @@ const (
 	Refused = "refused"
 	// Reset:连接被对端重置。跨墙路径上它常常是被干扰,不是对端的意思。
 	Reset = "reset"
-	// DNS:名字没解析出来。它与「连不上」是两件事:一条把域名逼向坏解析器的
-	// 规则会全部落在这里,而那时去查网络路径是白费功夫。
+	// DNS:解析器**够不着或出错** —— 超时、SERVFAIL、连不上 DNS 服务器。
+	//
+	// **这一档指向 bx 自己**:net.Resolver 会把传输层失败(「连不上
+	// 223.5.5.5」)也包成 *net.DNSError,而那正是 2026-08-13 那个
+	// macOS DirectDialer 拿不到 scoped 默认路由的签名 —— 它在 2026-08-16
+	// 复发过一次,两次都表现为 `*.qq.com` 大比例失败。
 	DNS = "dns"
+	// DNSNotFound:名字**不存在**(NXDOMAIN)。
+	//
+	// **与上面那档处置完全相反,所以绝不能合并**:一个应用在查一批不存在的
+	// 主机名(微信这类客户端会),那不是 bx 的问题,一个字都不用改;而
+	// 「够不着解析器」是 bx 的路由坏了。合成一个 `dns`,66% 这个数就又变回
+	// 一个无法行动的百分比 —— 那正是这个功能要消灭的东西。
+	//
+	// 第一版就是合并的,而它恰好挡住了这个功能第一次真机产出的那个答案。
+	DNSNotFound = "dns_nxdomain"
 	// Canceled:调用方自己走了(context 取消),**严格说不是这条规则的失败**。
 	//
 	// 本次改动**只给它一个名字,不改变它是否计入失败** —— 先量,再决定。
@@ -77,6 +90,9 @@ func Classify(err error) string {
 	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
+		if dnsErr.IsNotFound {
+			return DNSNotFound
+		}
 		return DNS
 	}
 	if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
