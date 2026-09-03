@@ -43,6 +43,17 @@ const procStatZombie int8 = 5
 // 这不是放宽 fail-closed:僵尸按定义已经退出,漏认它不会产生第二个活着的 Core。
 func isZombieProcess(stat int8) bool { return stat == procStatZombie }
 
+// coreScanReadableFloor 是「视野够不够宽到敢说没有」的下限。
+//
+// **这个数今天没有真机依据。** 项目所有者的 Mac 上实测 891/892(99.9%),
+// 也就是健康的一次扫描几乎能读到全部;取 0.5 是因为「连一半进程都没看到」
+// 是一句无歧义的话,而不是因为量出来该是这里。真要定准,需要那台
+// macOS 26 机器上 `guardian_core_scan enumerated=… readable=…` 的实际数字。
+//
+// 门槛调高的代价是「拒绝启动」(安全),调低的代价是**放行第二个 Core**
+// (灾难)—— 不对称,所以宁可先取一个保守但确定成立的值。
+const coreScanReadableFloor = 0.5
+
 // decideCoreScan 把一次进程扫描的普查数据折算成最终答案。
 //
 // 抽成纯函数是为了让那条**下限**可被单测钉住:syscall 那一半在单测里没法造,
@@ -54,11 +65,22 @@ func isZombieProcess(stat int8) bool { return stat == procStatZombie }
 // (resolveOrphanLaunchMarker / refuseUnrecordedRunningCore)看到空列表就会
 // 判定可以自愈并放行一次 fork,而系统里可能正跑着 Core。
 //
-// 即使 cores 非空也照样报错:两种返回值都让调用方 fail-closed 拒绝启动,
-// 而在一次自相矛盾的普查上多说一句话没有意义。
+// **部分读不出来同样不能说「没有」(2026-09-03 加)。** 此前只有 readable==0
+// 这一档,于是「900 个进程里读到 500 个、没找到 Core」会产出一个**自信的 0**
+// —— 而 Core 完全可能就在没读到的那 400 个里。真机撞到过这个形状:一台
+// macOS 26.5.2 上 `bx status` 明明从 Core 的控制 socket 拿到了全部数据,
+// 同一行的调谐环却报「扫到 0 个 Core 进程」。这正是本仓库最忌讳的那种失效:
+// **「问不出来」被说成了「确定没有」**,而它喂的是准入判据。
+//
+// **只在没找到 Core 时才因视野不足报错**:找到了的话调用方本来就 fail-closed
+// 拒绝,再把它换成一句「扫描出错」只会丢掉「有 Core 在跑(PID N)」这个更
+// 可操作的信息。视野残缺改变答案的,只有「没找到」这一种。
 func decideCoreScan(enumerated, readable int, cores []Process) ([]Process, error) {
 	if readable == 0 {
 		return nil, fmt.Errorf("read process arguments from 0 of %d enumerated processes: cannot rule out a running Core", enumerated)
+	}
+	if len(cores) == 0 && float64(readable) < float64(enumerated)*coreScanReadableFloor {
+		return nil, fmt.Errorf("read process arguments from only %d of %d enumerated processes: cannot rule out a running Core", readable, enumerated)
 	}
 	return cores, nil
 }
