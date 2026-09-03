@@ -273,12 +273,17 @@ type Manager struct {
 	throughput      func()
 	mutation        chan struct{}
 	updateOperation chan struct{}
-	statusMu        sync.RWMutex
-	store           DesiredStore
-	runner          CoreRunner
-	health          HealthGate
-	barrier         Barrier
-	dns             DNSManager
+	// reconcileWake 让「用户刚改过状态」把调谐环从退避里叫醒。
+	//
+	// 缓冲 1、非阻塞发送:**一次改动绝不能被这条循环拖住**。nil(循环没跑)时
+	// 发送是空操作,与 statusPublisher 那两处 poke 同一条纪律。
+	reconcileWake chan struct{}
+	statusMu      sync.RWMutex
+	store         DesiredStore
+	runner        CoreRunner
+	health        HealthGate
+	barrier       Barrier
+	dns           DNSManager
 	// clearOrphanBarrier 是 ③b 执行器清孤儿屏障的原语,默认
 	// RemoveBlockingBarrierRoutes(见 NewManager),测试注入替身。
 	clearOrphanBarrier func(context.Context) error
@@ -413,6 +418,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	m := &Manager{
 		throughput:      options.Throughput,
 		mutation:        make(chan struct{}, 1),
+		reconcileWake:   make(chan struct{}, 1),
 		updateOperation: make(chan struct{}, 1),
 		store:           options.Store,
 		runner:          options.Runner,
@@ -1974,4 +1980,24 @@ func (m *Manager) setStatus(status Status) {
 func cloneBarrierContext(in BarrierContext) BarrierContext {
 	in.ServerBypass = append([]string(nil), in.ServerBypass...)
 	return in
+}
+
+// wakeReconcile 叫醒调谐环并让它把退避归零。
+//
+// **只由 /v1/up 与 /v1/down 调**,与 statusPublisher.poke 同两处 —— 那正是
+// 「用户站在旁边等反馈」的两个时刻,也是状态真的刚变过的两个时刻。
+//
+// 刻意不在 Core 意外退出、路径恢复迁移那些地方也叫:那些逻辑住在 Manager 内部,
+// 而它们换来的只是把一拍提前,不是消除一份**早于事实**的观测。
+//
+// 非阻塞:拿不到就算了(循环马上就要自己醒一次,或者已经有一次叫醒在排队)。
+// 一次 up/down 绝不能因为这条循环而变慢。
+func (m *Manager) wakeReconcile() {
+	if m == nil || m.reconcileWake == nil {
+		return
+	}
+	select {
+	case m.reconcileWake <- struct{}{}:
+	default:
+	}
 }

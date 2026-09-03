@@ -1615,3 +1615,41 @@ func TestCoreRuntimeAlwaysMarshalsItsThreeAlwaysPresentKeys(t *testing.T) {
 		}
 	}
 }
+
+// **接线守卫:/v1/up 与 /v1/down 落定之后必须叫醒调谐环。**
+//
+// 变异实测:把那一句删掉,整个包照样全绿 —— 又一次「判据有测试、接线没有」。
+// 而少了它,一台已退到 10 分钟一拍的机器在 `bx up` 之后,bx status 会把一份
+// **早于 Core 存在**的观测原样摆出来(真机 2026-09-03:「扫到 0 个 Core 进程」,
+// 而同一屏上 Core 正在应答)。
+func TestMutationWakesTheReconcileLoop(t *testing.T) {
+	for _, endpoint := range []string{"/v1/up", "/v1/down"} {
+		woken := 0
+		handler := mutationHandler(&fakeController{},
+			func(context.Context) error { return nil },
+			newAcceptedMutations(),
+			LocalAPIOptions{WakeReconcile: func() { woken++ }},
+			endpoint, newTestStatusPublisher())
+
+		rec := httptest.NewRecorder()
+		handler(rec, rootMutationRequest(t))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: 状态码 = %d", endpoint, rec.Code)
+		}
+		if woken != 1 {
+			t.Errorf("%s: 叫醒了 %d 次,应当恰好 1 次 —— 状态刚变过正是那份观测最陈旧的时候", endpoint, woken)
+		}
+	}
+}
+
+// 没接叫醒时不许 panic:那是「这个部署没有调谐环」,不是错误。
+func TestMutationSurvivesWithoutAReconcileLoop(t *testing.T) {
+	handler := mutationHandler(&fakeController{},
+		func(context.Context) error { return nil },
+		newAcceptedMutations(), LocalAPIOptions{}, "/v1/up", newTestStatusPublisher())
+	rec := httptest.NewRecorder()
+	handler(rec, rootMutationRequest(t))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("没有调谐环时 up 失败了:%d", rec.Code)
+	}
+}
