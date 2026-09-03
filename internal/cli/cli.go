@@ -3458,12 +3458,61 @@ func probeAction(c *cli.Context) error {
 	return nil
 }
 
+// userRuntimeDir 给 probe/doctor 一个落临时配置的地方。
+//
+// **root 绝不写进调用者的家目录。** macOS 的 sudo 默认保留 HOME,于是
+// `os.UserCacheDir()` 在 `sudo bx probe` 下返回的是**用户的**
+// ~/Library/Caches —— root 在那儿建出来的文件属主是 root,之后普通用户再跑
+// 就是 `permission denied`。
+//
+// 真机 2026-09-02 的代价:那个失败**看起来像网络问题**(`8s 内未连通`),
+// 排障者据此去查服务器和线路。一条 sudo 命令把后续所有非 root 调用变成
+// 一个指向错误方向的错误 —— 而 bx 自己就是造成它的那个人。
+//
+// root 落到 config.DefaultDataDir(/var/lib/bx):本文件里 setup 那条路
+// 早就这么做了,属主天然正确,且不碰任何用户的家目录。
 func userRuntimeDir() (string, error) {
 	base, err := os.UserCacheDir()
-	if err != nil {
+	if err != nil && os.Geteuid() != 0 {
 		return "", err
 	}
-	return filepath.Join(base, "bx"), nil
+	dir := probeRuntimeDirFor(os.Geteuid(), base)
+	if dir == config.DefaultDataDir {
+		return dir, nil
+	}
+	if hint := cacheDirOwnershipHint(dir, os.Getuid()); hint != "" {
+		return "", errors.New(hint)
+	}
+	return dir, nil
+}
+
+// probeRuntimeDirFor 决定 probe 的临时目录落在哪。**纯函数,因为 root 那条
+// 分支在测试里跑不到** —— 而它正是这个修复的全部内容:变异实测(把 root 分叉
+// 去掉)时,整包测试全绿。
+func probeRuntimeDirFor(euid int, userCache string) string {
+	if euid == 0 {
+		return config.DefaultDataDir
+	}
+	return filepath.Join(userCache, "bx")
+}
+
+// cacheDirOwnershipHint 认出「这个目录被 root 跑过、属主已经不是我了」。
+//
+// 分开成一个函数是为了让判据可测(stat 那半注入不进来,判定这半可以)。
+// **只在真的对不上时出声** —— 目录不存在、属主是自己、拿不到属主,一律沉默:
+// 一句猜出来的所有权诊断比 permission denied 更能把人带偏。
+func cacheDirOwnershipHint(dir string, selfUID int) string {
+	owner, ok := statDirOwner(dir)
+	return cacheDirOwnershipHintFrom(owner, ok, selfUID, dir)
+}
+
+func cacheDirOwnershipHintFrom(ownerUID int, ok bool, selfUID int, dir string) string {
+	if !ok || ownerUID == selfUID {
+		return ""
+	}
+	return fmt.Sprintf("缓存目录 %s 的属主是 uid %d(不是你 uid %d)—— 多半是之前用 sudo 跑过 bx probe/doctor,"+
+		"那次以 root 建出来的文件普通用户改不动。修:sudo chown -R $(id -u):$(id -g) %s",
+		dir, ownerUID, selfUID, dir)
 }
 
 // setupDisposition 决定 bx setup 该怎么落配置。
