@@ -674,6 +674,9 @@ func requireControlSocket(start controlStarter) (io.Closer, error) {
 // 拼进了 Warnings 字段的唯一办法——TestStatusReporterIncludesBothGuardAndConfigWarnings
 // (control_reporter_test.go)直接调用它,不是重新拼一遍它的逻辑。
 func newStatusReporter(c *stats.Counters, t tunnelStatser, server, mode, udpMode string, transportInfo func() (string, []string, string), runtime func() RuntimeState, guard *networkGuard, rate *stats.RateMeter, configWarnings []stats.Warning,
+	// delivery 报告「探针说健康,而真流量近乎全灭」。**nil 表示这个部署没接线**,
+	// 此时一个字都不说 —— 不是「一切正常」。
+	delivery *deliveryMonitor,
 	// history 给出跨重启累计的按规则计数。**必填,不认 nil provider** ——
 	// 漏传就编不过,那是接线正确的唯一硬凭据。(编译器只证明**实参被传了**、
 	// 不证明它**被用了**,所以另有一条走真 reporter 的测试盯着后半句。)
@@ -734,9 +737,27 @@ func newStatusReporter(c *stats.Counters, t tunnelStatser, server, mode, udpMode
 			// 配置派生的告警(危险直连规则)在 Run 里算好一次传进来 ——
 			// **不在读状态那条路上重算**:菜单每 2 秒拉一次,而配置在运行期不变
 			// (bx 不热重载),重算既浪费又会让 status 说出 Core 此刻并没有在用的那份配置。
-			Warnings: append(guard.warnings(), configWarnings...),
+			// **运行期观测到的告警必须与配置派生的一起发。**
+			// 「隧道自检通过而真流量全灭」是唯一一条会让用户相信自己受保护、
+			// 而实际整机断网的信号 —— 真机 2026-09-02 撞到过(Protected /
+			// 2073ms / 纯 IP 与域名全军覆没)。
+			Warnings: appendDeliveryWarning(append(guard.warnings(), configWarnings...), delivery),
 		}
 	}
+}
+
+// appendDeliveryWarning 把「载不动数据」那句话拼进告警列表。
+//
+// **抽成函数是为了让接线可断言**:这个仓库全部的事故都在组装根上,而
+// 「一个算出来了却没被拼进 Report 的告警」与没有这个功能在输出上完全一样。
+func appendDeliveryWarning(warnings []stats.Warning, m *deliveryMonitor) []stats.Warning {
+	if m == nil {
+		return warnings
+	}
+	if w := m.warning(); w != nil {
+		return append(warnings, *w)
+	}
+	return warnings
 }
 
 // controlServeOptions 打包 serveControlWithPathRecovery 的全部依赖(ctx 除外,
@@ -818,7 +839,9 @@ func controlMuxOptionsForServe(ctx context.Context, opts controlServeOptions, pi
 	// 而峰值是一个「有没有在那一秒看到」的问题 —— 采样疏了就整个错过。
 	rate := &stats.RateMeter{}
 	go sampleThroughput(ctx, opts.Counters, rate)
-	report := newStatusReporter(opts.Counters, opts.Tunnel, opts.Server, opts.Mode, opts.UDPMode, opts.TransportInfo, opts.Runtime, guard, rate, opts.ConfigWarnings, opts.RuleHistory)
+	delivery := &deliveryMonitor{}
+	go sampleDelivery(ctx, opts.Counters, delivery)
+	report := newStatusReporter(opts.Counters, opts.Tunnel, opts.Server, opts.Mode, opts.UDPMode, opts.TransportInfo, opts.Runtime, guard, rate, opts.ConfigWarnings, delivery, opts.RuleHistory)
 	return controlMuxOptionsFromServe(opts, report, pid)
 }
 

@@ -47,7 +47,7 @@ func TestStatusReporterIncludesBothGuardAndConfigWarnings(t *testing.T) {
 	}
 
 	reporter := newStatusReporter(&stats.Counters{}, fakeReporterTunnel{}, "vless://host:443", "split", "proxy",
-		nil, nil, guard, &stats.RateMeter{}, configWarnings,
+		nil, nil, guard, &stats.RateMeter{}, configWarnings, nil,
 		// 这条测试看的是告警那条路;累计历史给一个「没有」的提供者即可 ——
 		// **但它必须传**,漏传编不过,那正是这个必填形参存在的理由。
 		func() *stats.RuleHistorySnapshot { return nil })
@@ -81,7 +81,7 @@ func TestStatusReporterWithNoConfigWarningsKeepsGuardWarnings(t *testing.T) {
 	guard.value.Store([]stats.Warning{{Name: "tailscale", Severity: "warn"}})
 
 	reporter := newStatusReporter(&stats.Counters{}, fakeReporterTunnel{}, "vless://host:443", "split", "proxy",
-		nil, nil, guard, &stats.RateMeter{}, nil,
+		nil, nil, guard, &stats.RateMeter{}, nil, nil,
 		func() *stats.RuleHistorySnapshot { return nil })
 
 	rep := reporter()
@@ -103,7 +103,7 @@ func TestStatusReporterPublishesRuleHistory(t *testing.T) {
 		Rules:     []stats.RuleOutcome{{Source: "user_direct", Rule: "*.qq.com", Attempts: 12}},
 	}
 	reporter := newStatusReporter(&stats.Counters{}, fakeReporterTunnel{}, "vless://host:443", "split", "proxy",
-		nil, nil, &networkGuard{}, &stats.RateMeter{}, nil,
+		nil, nil, &networkGuard{}, &stats.RateMeter{}, nil, nil,
 		func() *stats.RuleHistorySnapshot { return want })
 
 	rep := reporter()
@@ -129,7 +129,7 @@ func TestStatusReporterPublishesRuleHistory(t *testing.T) {
 // 同一句话,而前者需要的是「没查」,后者需要的是「再等等」。
 func TestStatusReporterKeepsRuleHistoryNilWhenThereIsNone(t *testing.T) {
 	reporter := newStatusReporter(&stats.Counters{}, fakeReporterTunnel{}, "vless://host:443", "split", "proxy",
-		nil, nil, &networkGuard{}, &stats.RateMeter{}, nil,
+		nil, nil, &networkGuard{}, &stats.RateMeter{}, nil, nil,
 		func() *stats.RuleHistorySnapshot { return nil })
 	if rep := reporter(); rep.RuleHistory != nil {
 		t.Fatalf("没有历史时发布了 %+v —— nil 与「累计为 0」必须分得开", rep.RuleHistory)
