@@ -172,6 +172,13 @@ type controlMuxOptions struct {
 // newControlMuxFull 是唯一真正构造 controlServer 的地方;上面几个包装只是历史调用点的
 // 便捷入口(RefreshBypass 留零值 = 不支持刷新)。
 func newControlMuxFull(opts controlMuxOptions) http.Handler {
+	_, h := newControlServerFull(opts)
+	return h
+}
+
+// newControlServerFull 同上,但把 cs 也交出来 —— serveControlWithPathRecovery
+// 要把它的 refollowServerBypass 交给 StartBypassRefollow。
+func newControlServerFull(opts controlMuxOptions) (*controlServer, http.Handler) {
 	cs := &controlServer{
 		eng: opts.Engine, report: opts.Report, runtime: opts.Runtime, mut: opts.Mutator,
 		reload: opts.Reload, refreshBypass: opts.RefreshBypass, ownerUID: opts.OwnerUID,
@@ -197,7 +204,7 @@ func newControlMuxFull(opts controlMuxOptions) http.Handler {
 	mux.HandleFunc("/v0/explain", cs.handleExplain)
 	mux.HandleFunc("/v0/probe", cs.handleProbe)
 	mux.HandleFunc("/v0/shutdown", cs.handleShutdown)
-	return mux
+	return cs, mux
 }
 
 // handleProbe 量一次到某台服务器的直连往返时间。
@@ -795,6 +802,14 @@ type controlServeOptions struct {
 	AppTraffic *AppTraffic
 	// Explain 接进控制面才能让 GET /v0/explain 真的作答。留零值 = 没接线。
 	Explain func(route.Meta) dialer.Outcome
+	// StartBypassRefollow 在控制面起来之后被调一次,拿到「在控制面那把锁里重新
+	// 跟随服务器 DNS」的入口(controlServer.refollowServerBypass)。调用方用它起
+	// 那条循环(见 run.go / watchServerBypass)。留零值 = 不跟随(旁路只在启动 pin 一次,
+	// 也就是 2026-08→09 NAS 静默断一个月的那个形状)。
+	//
+	// 做成回调而不是返回值:serveControlWithPathRecovery 的返回形状被
+	// requireControlSocket 钉着,而 cs 本身不该从那道 socket 门里漏出去。
+	StartBypassRefollow func(refollow func(context.Context, []string) (refollowOutcome, error))
 }
 
 // controlMuxOptionsFromServe 把 serveControlWithPathRecovery 收到的依赖翻译成
@@ -857,8 +872,12 @@ func serveControlWithPathRecovery(ctx context.Context, opts controlServeOptions)
 	}
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
+	cs, handler := newControlServerFull(muxOpts)
+	if opts.StartBypassRefollow != nil {
+		opts.StartBypassRefollow(cs.refollowServerBypass)
+	}
 	srv := &http.Server{
-		Handler:           newControlMuxFull(muxOpts),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
