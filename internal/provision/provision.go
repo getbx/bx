@@ -111,19 +111,23 @@ func EnsureLists(dataDir string, domainBytes, cidrBytes []byte) (domainPath, cid
 
 // atomicWrite 写临时文件后 rename,避免覆盖正在执行的文件触发 ETXTBSY/读到半截。
 func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
+	dir := dataDirFor(path)
+	// 写之前先问放不放得下(见 diskspace.go);放不下时目录里一个字节都不留。
+	if err := ensureSpace(dir, len(data)); err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
-		return err
+		return describeWriteError(path, err)
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return err
+		return describeWriteError(path, err)
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return describeWriteError(path, err)
 	}
 	if err := os.Chmod(tmpName, perm); err != nil {
 		return err
