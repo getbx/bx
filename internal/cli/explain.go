@@ -69,6 +69,16 @@ func writeExplainPath(b *strings.Builder, label string, p supervisor.ExplainPath
 	}
 	run := explainCountLine("  本次    ", p.Run)
 	history := explainCountLine("  累计    ", p.History)
+	// **具名规则本次 0 次记录,必须明说,不许留白。**
+	//
+	// 具名规则的每一次判定都按 (source, rule) 计数,表里没有条目就是 0 次 ——
+	// 对这一档 nil 与 0 是同一件事(与下面 Rule=="" 那一档相反,那里不记名)。
+	// 真机 2026-09-03:Tailscale 拨某 direct 域名的 fake-IP 超时,explain 判
+	// DIRECT 而「本次」整行缺席;缺席正是答案(bx 从没见过那条连接,tailscaled
+	// 的 socket 绑在 en0 没进 TUN),而缺席最容易被看漏,于是被记成「explain 骗人」。
+	if p.Rule != "" && run == "" {
+		run = "  本次    0 次判定 —— bx 这次运行没见过走这条规则的连接;要是有程序明明在连它,那些连接多半没进 bx(绑了物理网卡的 socket、或目的地在旁路路由里)\n"
+	}
 	b.WriteString(run)
 	b.WriteString(history)
 	// **没有规则可点名时,这两个数是一个桶的合计,不是这个目标的。**

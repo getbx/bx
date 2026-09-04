@@ -53,15 +53,41 @@ func TestExplainShowsRunAndHistorySideBySide(t *testing.T) {
 	}
 }
 
-// **没有记录时不许渲染成「0 次」。**
-// nil 是「这条规则没被记过」(内建列表命中本来就不记名),而 0 是「记了、
-// 一次没命中」—— 把前者说成后者正是死规则判据最忌讳的假阳性。
+// **没有规则可点名、又没有记录时,不许渲染成「0 次」。**
+// 那一档(默认 / 内建列表)nil 是「这条路没被记过」,而 0 是「记了、一次没走过」
+// —— 把前者说成后者正是死规则判据最忌讳的假阳性。
 func TestExplainSaysNothingWhenThereIsNoCount(t *testing.T) {
 	rep := explainFixture()
+	rep.TCP.Rule, rep.TCP.Source = "", "default"
 	rep.TCP.Run, rep.TCP.History = nil, nil
+	rep.UDP.Rule, rep.UDP.Source = "", "default"
 	got := renderExplain(rep)
 	if strings.Contains(got, "0 次判定") {
 		t.Errorf("把「没有记录」渲染成了「0 次」:\n%s", got)
+	}
+}
+
+// **命中了一条具名规则、而本次运行一次记录都没有,必须明说「0 次」。**
+//
+// 真机 2026-09-03:Tailscale 拨 brook.youdamaster.cc 的 fake-IP 超时,
+// `bx explain` 判 DIRECT、依据那条 direct 规则,而「本次」那一行整个缺席。
+// 缺席正是线索 —— bx 从没见过那条连接(tailscaled 的 socket 绑在 en0,压根
+// 没进 TUN)—— 而缺席最容易被看漏,于是被记成「explain 说 DIRECT 而拨号不通、
+// 诊断工具骗人」。具名规则的每一次判定都按名字计数,没有条目就是 0 次,
+// 这里 nil 与 0 是同一件事,把它说出来才对得起「为什么」这个问题。
+func TestExplainSaysZeroWhenANamedRuleWasNeverHitThisRun(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Run = nil
+	got := renderExplain(rep)
+	if !strings.Contains(got, "本次    0 次判定") {
+		t.Errorf("具名规则本次 0 次记录却没有明说:\n%s", got)
+	}
+	if !strings.Contains(got, "没见过") {
+		t.Errorf("没有把「bx 没见过走这条规则的连接」说出来:\n%s", got)
+	}
+	// 累计那一行不受影响:它仍按「有记录才占地方」渲染。
+	if !strings.Contains(got, "8113") {
+		t.Errorf("累计计数被连累丢了:\n%s", got)
 	}
 }
 
