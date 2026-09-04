@@ -1537,6 +1537,35 @@ err.log 曾被截断过一次,22 小时重新长到 9.4MB(≈10MB/天);升级后
 **未验**:一张码能不能被手机摄像头真的扫出来 —— 渲染的性质(quiet zone/极性/
 落点)有守卫,「扫得出来」没有。
 
+## 服务器旁路重新跟随 DNS(2026-09-04,真机未验)
+
+**起因是一次静默了一个月的断网**:VPS 2026-08-06 换 IP,NAS 上的 bx 重连 65638 次、
+一直到 09-03 才被人发现。根因是「什么必须绕开隧道」**只在启动时算一次**
+(`resolveServerBypass` 全仓唯一调用在 `run.go` 启动处):staticA 把服务器域名
+钉在启动那一刻的 IP,旁路路由 pin 的也是它,子进程经系统 DNS(=bx)永远拿旧答案。
+
+**修法不另造判定**:切换服务器那条路早就有「重读配置 → 防环解析 → 发布两半 →
+变了就 rehijack」(`newBypassRefresher` + `handleSetServer`),
+`internal/supervisor/bypass_refollow.go` 只是在**主传输连续不健康 ≥ 2 分钟**时
+替用户按一次那个按钮(`controlServer.refollowServerBypass`),变了就 rehijack 再
+`Reconnect` 让子进程重新解析;两次之间 ≥ 5 分钟(每次都问一轮 DNS,不限频就是
+一个 DNS 探针)。**必须在 `cs.mu` 里、且有待确认的改动时让路**:刷新是替换语义,
+与 `/v0/server` 交错会把还没落盘的新服务器从旁路里剔掉,而它的路由已经装上了
+(`TestSetServerSerializesConcurrentBypassRefresh` 守着的那个洞)。`Reconnect` 在
+锁外:它要等新隧道健康,最长一个 healthTimeout。**只对域名链接有意义**:IP 字面量
+在 `resolveAll` 里短路,换 IP 只能改链接(这台 Mac 就是这种)。接线经
+`controlServeOptions.StartBypassRefollow` 回调(serve 的返回形状被
+`requireControlSocket` 钉着),循环从 `run.go` 经 `workers.start` 起;
+`TestRunWiresTheServerBypassRefollowLoop` 读源码钉住接线(serve 非 root 起不来,
+netns 台子造不出「VPS 换 IP」)。同一天顺手做掉的两条:`bx explain` 对**具名规则
+本次 0 次记录**明说「bx 没见过走这条规则的连接」(那次 Tailscale 误判就是被省略的
+那一行害的;`Rule==""` 那一档仍然不渲染 0,nil 在那里是「没记名」);
+`provision.atomicWrite` 写之前先 statfs 问放不放得下(QTS 的 `/` 是几百 MB
+内存盘,默认 data_dir 解 29MB sing-box 必 ENOSPC),放不下或写出 ENOSPC 时错误里
+直接点名 `data_dir`,探不出空间则放行(保险不是新前置)。
+**真机验收**:换一次服务器 IP(或先改 DNS 记录),看 `bx-guard.err.log`/`bx.log`
+在 2–7 分钟内出现 `server_bypass_refollow 已切到服务器的新地址` 且隧道自己回绿。
+
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,

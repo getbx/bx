@@ -812,6 +812,36 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			// bx 不热重载,盘上的配置与跑着的那个不一致的那一刻,恰恰是最
 			// 需要这个命令的那一刻。
 			Explain: d.Explain,
+			// 服务器旁路重新跟随 DNS(bypass_refollow.go):主传输持续不健康时,
+			// 在控制面那把锁里重解析服务器域名、变了就 rehijack + 重建传输。
+			// 没有它,VPS 换 IP 之后 staticA/旁路永远钉在旧 IP 上,隧道永远重连
+			// (真机 2026-08-06→09-03,NAS 静默断一个月)。--no-hijack 下没有
+			// 旁路路由可跟随,不起。
+			StartBypassRefollow: func(refollow func(context.Context, []string) (refollowOutcome, error)) {
+				if opts.NoHijack {
+					return
+				}
+				currentLinks := func() []string {
+					links := []string{swapper.currentLink()}
+					if udpSwapper != nil {
+						if u := udpSwapper.currentLink(); u != "" {
+							links = append(links, u)
+						}
+					}
+					return links
+				}
+				refollowTicker := time.NewTicker(bypassRefollowTick)
+				teardowns.push("停止服务器旁路跟随", refollowTicker.Stop)
+				workers.start(ctx, "server-bypass-refollow", func(c context.Context) {
+					watchServerBypass(c, lt.Healthy, func(c context.Context) error {
+						out, err := refollow(c, currentLinks())
+						if err == nil && out == refollowChanged {
+							log.Printf("server_bypass_refollow 已切到服务器的新地址")
+						}
+						return err
+					}, refollowTicker.C)
+				})
+			},
 		})
 	})
 	if err != nil {

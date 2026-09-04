@@ -830,6 +830,7 @@ func TestSetServerRouteIsRegistered(t *testing.T) {
 type recordingMutator struct {
 	onRehijack  func()
 	onSetServer func()
+	onReconnect func()
 	rehijackErr error
 	setErr      error
 }
@@ -862,7 +863,12 @@ func (r *recordingMutator) Rehijack() (func() error, func() error, error) {
 	}, func() error { return nil }, nil
 }
 
-func (r *recordingMutator) Reconnect() error { return nil }
+func (r *recordingMutator) Reconnect() error {
+	if r.onReconnect != nil {
+		r.onReconnect()
+	}
+	return nil
+}
 
 // 先换传输再装路由 = 在新服务器的 bypass 还没落实的那一小段时间里,
 // 隧道自己的流量被劫进 TUN —— 成环。而成环是静默的:连得上、status 显绿。
