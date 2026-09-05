@@ -17,6 +17,10 @@ const (
 // 组数浮动会让渲染层错位。
 var orderedPaths = [...]Path{PathTunnel, PathDirect, PathBlocked}
 
+// OrderedPaths 把这张表交给跨语言守卫(菜单的 AppTrafficPath 枚举必须与它逐个对上)。
+// 每次调用都返回新切片,与 GuardianCapabilities() 同一条纪律。
+func OrderedPaths() []Path { return append([]Path(nil), orderedPaths[:]...) }
+
 // PortKey 是 owners/bytesUp/bytesDown 三张 map 的 join 键。
 //
 // **不能只用端口号** —— TCP 与 UDP 是两个独立的端口空间,同一个数字完全可能
