@@ -802,14 +802,20 @@ type controlServeOptions struct {
 	AppTraffic *AppTraffic
 	// Explain 接进控制面才能让 GET /v0/explain 真的作答。留零值 = 没接线。
 	Explain func(route.Meta) dialer.Outcome
-	// StartBypassRefollow 在控制面起来之后被调一次,拿到「在控制面那把锁里重新
-	// 跟随服务器 DNS」的入口(controlServer.refollowServerBypass)。调用方用它起
-	// 那条循环(见 run.go / watchServerBypass)。留零值 = 不跟随(旁路只在启动 pin 一次,
-	// 也就是 2026-08→09 NAS 静默断一个月的那个形状)。
-	//
-	// 做成回调而不是返回值:serveControlWithPathRecovery 的返回形状被
+	// OnControlReady 在控制面起来之后被调一次,交出几个**必须在控制面那把锁里做**
+	// 的入口(见 controlHooks)。调用方用它起后台自愈循环(run.go)。留零值 = 不起
+	// 那些循环。做成回调而不是返回值:serveControlWithPathRecovery 的返回形状被
 	// requireControlSocket 钉着,而 cs 本身不该从那道 socket 门里漏出去。
-	StartBypassRefollow func(refollow func(context.Context, []string) (refollowOutcome, error))
+	OnControlReady func(controlHooks)
+}
+
+// controlHooks 是控制面交给后台循环的入口。两条都持 cs.mu、都在有待确认的改动时
+// 让路 —— 它们改的东西(旁路集合、路由)与 /v0/server 的 apply 是同一份。
+type controlHooks struct {
+	// RefollowServerBypass 重新解析服务器域名并落实旁路(bypass_refollow.go)。
+	RefollowServerBypass func(context.Context, []string) (refollowOutcome, error)
+	// ReassertRoutes 重新落实全部路由(bypass_route_repair.go)。
+	ReassertRoutes func(context.Context) error
 }
 
 // controlMuxOptionsFromServe 把 serveControlWithPathRecovery 收到的依赖翻译成
@@ -873,8 +879,11 @@ func serveControlWithPathRecovery(ctx context.Context, opts controlServeOptions)
 	// 0o666 让非 root 的 bx status/bx mcp 均可读;mutation 门控靠 peer-cred(POST 路由),不靠 socket 权限。
 	_ = os.Chmod(SockPath, 0o666)
 	cs, handler := newControlServerFull(muxOpts)
-	if opts.StartBypassRefollow != nil {
-		opts.StartBypassRefollow(cs.refollowServerBypass)
+	if opts.OnControlReady != nil {
+		opts.OnControlReady(controlHooks{
+			RefollowServerBypass: cs.refollowServerBypass,
+			ReassertRoutes:       cs.reassertRoutes,
+		})
 	}
 	srv := &http.Server{
 		Handler:           handler,

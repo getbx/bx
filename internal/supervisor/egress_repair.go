@@ -72,11 +72,29 @@ func shouldRepairEgress(reachable, known bool, sinceLastRepair time.Duration) bo
 	return sinceLastRepair >= egressRepairCooldown
 }
 
-// watchDirectEgress 是那条自愈循环。**注入探测与修复**,好让整段逻辑可测 ——
-// 真实实现要 fork `route`,测试进不去。
+// routeWatchMessages 是一条内核路由自愈循环要说的四句话。两条循环(scoped 默认
+// 路由 / 服务器旁路)的判定、退避、change-only 日志完全相同,只有措辞不同 ——
+// 把措辞做成数据,循环体只留一份。
+type routeWatchMessages struct {
+	recovered, broken, repairFailed, repaired string
+}
+
+// watchDirectEgress 是 scoped 默认路由那条自愈循环。**注入探测与修复**,好让整段
+// 逻辑可测 —— 真实实现要 fork `route`,测试进不去。
 //
 // probe / repair 任一为 nil 就不跑(非 darwin 平台没有这两样原语)。
 func watchDirectEgress(ctx context.Context, probe egressProbe, repair egressRepair, tick <-chan time.Time) {
+	watchKernelRoute(ctx, routeWatchMessages{
+		recovered:    "direct_egress 恢复:bx 自己的直连又出得去了",
+		broken:       "direct_egress 断了:bx 自己的直连出不去(scoped 默认路由不见了)—— 每一条 direct 规则都会失败",
+		repairFailed: "direct_egress 重装 scoped 默认路由失败: %v",
+		repaired:     "direct_egress 已重装 scoped 默认路由",
+	}, probe, repair, tick)
+}
+
+// watchKernelRoute 是自愈循环的共用体:每拍问一次内核,只在**明确**观测到坏了
+// 时修,修复之间有冷静期、永不放弃,日志 change-only。
+func watchKernelRoute(ctx context.Context, msgs routeWatchMessages, probe egressProbe, repair egressRepair, tick <-chan time.Time) {
 	if probe == nil || repair == nil {
 		return
 	}
@@ -97,15 +115,13 @@ func watchDirectEgress(ctx context.Context, probe egressProbe, repair egressRepa
 		}
 		if !known || reachable {
 			if lastKnownBad {
-				log.Printf("direct_egress 恢复:bx 自己的直连又出得去了")
+				log.Print(msgs.recovered)
 				lastKnownBad = false
 			}
 			continue
 		}
 		if !lastKnownBad {
-			// 第一次看见就说一句:它对用户的可见后果是**每一条 direct 规则都失败**,
-			// 而隧道看起来一切正常。
-			log.Printf("direct_egress 断了:bx 自己的直连出不去(scoped 默认路由不见了)—— 每一条 direct 规则都会失败")
+			log.Print(msgs.broken)
 			lastKnownBad = true
 		}
 		since := time.Duration(-1)
@@ -117,10 +133,10 @@ func watchDirectEgress(ctx context.Context, probe egressProbe, repair egressRepa
 		}
 		lastRepair = time.Now()
 		if err := repair(ctx); err != nil {
-			log.Printf("direct_egress 重装 scoped 默认路由失败: %v", err)
+			log.Printf(msgs.repairFailed, err)
 			continue
 		}
-		log.Printf("direct_egress 已重装 scoped 默认路由")
+		log.Print(msgs.repaired)
 	}
 }
 

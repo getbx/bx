@@ -817,9 +817,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			// 没有它,VPS 换 IP 之后 staticA/旁路永远钉在旧 IP 上,隧道永远重连
 			// (真机 2026-08-06→09-03,NAS 静默断一个月)。--no-hijack 下没有
 			// 旁路路由可跟随,不起。
-			StartBypassRefollow: func(refollow func(context.Context, []string) (refollowOutcome, error)) {
+			OnControlReady: func(hooks controlHooks) {
 				if opts.NoHijack {
-					return
+					return // 没有旁路路由可跟随、可修
 				}
 				currentLinks := func() []string {
 					links := []string{swapper.currentLink()}
@@ -834,13 +834,26 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 				teardowns.push("停止服务器旁路跟随", refollowTicker.Stop)
 				workers.start(ctx, "server-bypass-refollow", func(c context.Context) {
 					watchServerBypass(c, lt.Healthy, func(c context.Context) error {
-						out, err := refollow(c, currentLinks())
+						out, err := hooks.RefollowServerBypass(c, currentLinks())
 						if err == nil && out == refollowChanged {
 							log.Printf("server_bypass_refollow 已切到服务器的新地址")
 						}
 						return err
 					}, refollowTicker.C)
 				})
+				// 服务器旁路路由自愈(bypass_route_repair.go):去问内核「发往服务器的包
+				// 此刻走哪个接口」,走了我们的 TUN 就重新落实路由。休眠唤醒/网卡重连会
+				// 把挂在物理网关上的 /32 冲掉而劫持路由照旧,隧道从此成环(真机
+				// 2026-09-04)。只在 darwin 有探测原语,与 direct_egress 同一门槛。
+				if runtime.GOOS == "darwin" {
+					routeTicker := time.NewTicker(serverBypassCheckInterval)
+					teardowns.push("停止服务器旁路路由自愈", routeTicker.Stop)
+					workers.start(ctx, "server-bypass-route-repair", func(c context.Context) {
+						watchServerBypassRoutes(c, func(c context.Context) (bool, bool, error) {
+							return ServerBypassRoutesIntact(c, tunH.Name, bypassState.serverAddrs)
+						}, hooks.ReassertRoutes, routeTicker.C)
+					})
+				}
 			},
 		})
 	})
