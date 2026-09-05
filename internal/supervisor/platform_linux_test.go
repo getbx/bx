@@ -3,6 +3,8 @@
 package supervisor
 
 import (
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -321,5 +323,79 @@ func TestParseDefaultRouteSingle(t *testing.T) {
 func TestParseDefaultRouteNone(t *testing.T) {
 	if _, _, err := parseDefaultRoute("10.0.0.0/24 dev eth0 scope link\n"); err == nil {
 		t.Fatal("无 default 路由应报错")
+	}
+}
+
+// Tailscale 的 WireGuard 底层 UDP 必须绕开劫持(2026-09-04,真机诊断)。
+//
+// 公司工作站(bx global)上 tailscaled 发往对端**公网**地址的 WireGuard UDP 落进
+// pref 200 → table 100 → 进 TUN → 经隧道从 VPS 出去,对端看到的源地址对不上,
+// 直连永远建不起来,只能走美国的 DERP,市内两台机器 300ms。bx 已照顾了 Tailscale
+// 三处(DERP 旁路、100.64/10 → table 52、tailscale.com 不给 fake-IP),漏的是这第四处。
+// `tailscale netcheck` 的 `UDP: true` 是假安心:它探的 STUN 就是自建 DERP,而那个
+// IP 恰好在 server bypass 里。
+//
+// 规则**只认 Tailscale 打的标 + 只认 UDP**:TCP(控制面、DERP)照旧经 bx,今天能
+// 工作的东西一样不动;pref 90 排在 bx 全部规则之前。`ipproto` 选择器要 iproute2
+// ≥ 4.17,busybox/老 NAS 没有 —— 所以它是**可选步骤**,装不上只记日志,绝不让
+// `up()` 失败(那会让一台本来能起的机器起不来)。
+func TestUpStepsCarveTailscaleUnderlayUDPAheadOfTheHijack(t *testing.T) {
+	nc := &netConf{
+		tunName: "bx0", tunAddr: "198.51.100.1/30",
+		gw: "10.0.14.1", gwDev: "eno1",
+		mainLookup: []string{"100.64.0.0/10"},
+		blockV6:    true,
+	}
+	want4 := "rule add pref " + tailscaleUnderlayPref + " fwmark " + tailscaleFwmark + " ipproto udp table main"
+	want6 := "-6 rule add pref " + tailscaleUnderlayPref + " fwmark " + tailscaleFwmark + " ipproto udp table main"
+	opt := stepSet(nc.optionalRouteUpSteps())
+	for _, w := range []string{want4, want6} {
+		if !opt[w] {
+			t.Errorf("可选步骤缺少 Tailscale 底层 UDP 旁路: %q", w)
+		}
+	}
+	// 它不许混进必装步骤:必装步骤任一失败 up() 就失败,而 ipproto 在老 iproute2 上不存在。
+	if mand := stepSet(nc.upSteps()); mand[want4] || mand[want6] {
+		t.Error("Tailscale 旁路规则进了必装步骤 —— 老 iproute2 上会让 bx 起不来")
+	}
+	down := stepSet(nc.routeDownSteps())
+	for _, w := range []string{
+		"rule del pref " + tailscaleUnderlayPref + " fwmark " + tailscaleFwmark + " ipproto udp table main",
+		"-6 rule del pref " + tailscaleUnderlayPref + " fwmark " + tailscaleFwmark + " ipproto udp table main",
+	} {
+		if !down[w] {
+			t.Errorf("拆除步骤缺少对称的 del: %q", w)
+		}
+	}
+	// v6 没启用时不产出 -6 那条(与其它 v6 步骤同一门控)。
+	nc.blockV6 = false
+	if stepSet(nc.optionalRouteUpSteps())[want6] {
+		t.Error("v6 未启用却产出了 -6 规则")
+	}
+}
+
+// pref 90 必须小于 bx 自己最前面那条(100),否则轮不到它。
+func TestTailscaleUnderlayPrefIsAheadOfEveryBxRule(t *testing.T) {
+	pref, err := strconv.Atoi(tailscaleUnderlayPref)
+	if err != nil || pref >= 100 {
+		t.Fatalf("pref %q 没排在 bx 的 100 之前", tailscaleUnderlayPref)
+	}
+}
+
+// 可选步骤失败不许连累 up():装不上就记一行、继续。
+func TestUpTreatsTheTailscaleCarveAsOptional(t *testing.T) {
+	restore := runIPOptional
+	failed := 0
+	runIPOptional = func(args ...string) error {
+		failed++
+		return errors.New("Error: either \"to\" is duplicate, or \"ipproto\" is a garbage")
+	}
+	t.Cleanup(func() { runIPOptional = restore })
+	nc := &netConf{tunName: "bx0", tunAddr: "198.51.100.1/30", gw: "10.0.14.1", gwDev: "eno1"}
+	if err := nc.applyOptionalRouteSteps(); err != nil {
+		t.Fatalf("可选步骤失败不该报错: %v", err)
+	}
+	if failed == 0 {
+		t.Fatal("可选步骤根本没被尝试")
 	}
 }

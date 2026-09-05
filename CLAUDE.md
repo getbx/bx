@@ -1555,6 +1555,26 @@ null);现在 believed=blocked 而 barrier_present=False 会产出一行。Unknow
 `sudo bx reconnect` 成功一次即可换掉那份快照。开机那次为什么断开仍未查
 (要 Guardian 日志)。
 
+## Linux:Tailscale 的 WireGuard 底层 UDP 绕开劫持(2026-09-04,真机诊断)
+
+**Mac ↔ 公司工作站 300ms 的真因**:工作站(bx global)上 tailscaled 发往对端**公网**
+地址的 WireGuard UDP 落进 pref 200 → table 100 → 进 TUN → 经隧道从美国 VPS 出去,
+对端看到的源地址对不上,直连永远建不起来,只能走 DERP。真机 `ip route get
+180.158.6.185 mark 0x80000 ipproto udp` → `dev bx0 table 100`;同机 `ip route get
+195.133.192.92` → `via 10.84.14.1 dev eno1`(server bypass)。**`tailscale netcheck` 的
+`UDP: true` 是假安心**:它探的 STUN 就是自建 DERP,而那个 IP 恰好在 bypass 里 —— 于是
+STUN 通、WG 不通,此前「公司封 UDP」那条记录就是这个机制造成的误判。macOS 上没有
+这个问题(tailscaled 把 socket 绑在物理网卡)。bx 已照顾 Tailscale 三处(DERP 旁路、
+100.64/10 → table 52、tailscale.com 不给 fake-IP),这是漏掉的第四处。
+
+修法是一条规则:`ip rule add pref 90 fwmark 0x80000/0xff0000 ipproto udp table main`
+(`platform_linux.go` 的 `optionalRouteUpSteps`;blockV6 时 `-6` 同款)。**只认 Tailscale
+打的标 + 只认 UDP**:TCP 控制面/DERP 照旧经 bx。**它是可选步骤**:`ipproto` 选择器要
+iproute2 ≥ 4.17,busybox 与老 NAS 没有,混进必装步骤会让一台本来能起的机器起不来
+(netns 台子跑在 busybox 上,实测 `exit status 1` 后 `up()` 照常、还原干净 ——
+**台子只能证明退路,证明不了规则真装上了**;后者用 alpine + 真 iproute2 验过 argv,
+再由工作站真机验)。拆除对称 del;rehijack 的 `routeUp` 同样带上。
+
 ## 休眠唤醒后隧道成环:服务器旁路路由自愈(2026-09-04,真机诊断,修复真机未验)
 
 **它看起来像「重启后 bx 断开」,其实不是重启**:电源日志 13:20 电量耗尽进入
