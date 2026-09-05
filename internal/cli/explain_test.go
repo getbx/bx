@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/pathview"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -241,5 +244,102 @@ func TestExplainFlagsAMultiVersionCumulativeCount(t *testing.T) {
 func TestExplainSaysNothingAboutAnAbsentHistory(t *testing.T) {
 	if strings.Contains(renderExplain(explainFixture()), "累计口径") {
 		t.Error("没有历史却报了累计口径")
+	}
+}
+
+// 本机视角(internal/pathview)排在 Core 那一半**前面**,而且 Core 连不上时不再
+// 是一个错误 —— 那正是这个视角存在的理由:bx 没在跑时,这个目标怎么走照样答得出。
+func TestExplainPrintsMachineViewBeforeCoreAndSurvivesCoreBeingDown(t *testing.T) {
+	view := pathview.View{
+		Conclusion: "普通程序连它会进 bx,去向由 bx 判定(见下)。 绑了网卡的程序(如 Tailscale)会从 en0 直出,源 IP 是你的真实 IP。",
+		Kind:       pathview.KindPublic,
+		Lines: []pathview.Line{
+			{Label: "解析", Text: "是 IP,不用解析"},
+			{Label: "本机路由", Text: "utun0(bx 的 TUN)"},
+			{Label: "绑网卡时", Text: "en0 via 192.168.50.2(物理网卡)"},
+		},
+	}
+	out, err := explainOutput(view, explainFixture(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := strings.Index(out, "结论")
+	core := strings.Index(out, "TCP       DIRECT")
+	if machine < 0 || core < 0 || machine > core {
+		t.Fatalf("本机视角要排在 Core 判定之前:\n%s", out)
+	}
+	for _, want := range []string{"绑了网卡", "utun0(bx 的 TUN)", "en0 via 192.168.50.2"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("少了 %q:\n%s", want, out)
+		}
+	}
+
+	down := errors.New("dial unix /var/run/bx/core.sock: connect: no such file or directory")
+	out, err = explainOutput(view, supervisor.ExplainResponse{}, down, false)
+	if err != nil {
+		t.Fatalf("Core 连不上不该让 explain 失败,本机视角照样有用: %v", err)
+	}
+	if !strings.Contains(out, "结论") || !strings.Contains(out, "bx 没在跑") {
+		t.Fatalf("Core 连不上时要有本机视角 + 一句「bx 没在跑」:\n%s", out)
+	}
+	if strings.Contains(out, "TCP       ") {
+		t.Fatalf("Core 连不上时不许渲染一份零值判定:\n%s", out)
+	}
+}
+
+// --json 在 Core 的应答上**追加** machine 键,原有顶层字段一个不动(MCP 的
+// bx_explain 直接转发这份 JSON,agent 已在读 tcp/udp)。
+func TestExplainJSONAddsMachineWithoutMovingCoreFields(t *testing.T) {
+	view := pathview.View{Conclusion: "x", Kind: pathview.KindPublic}
+	out, err := explainOutput(view, explainFixture(), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("不是合法 JSON: %v\n%s", err, out)
+	}
+	if _, ok := got["tcp"]; !ok {
+		t.Fatalf("Core 的顶层字段被挪走了: %v", got)
+	}
+	if _, ok := got["machine"]; !ok {
+		t.Fatalf("没有 machine 键: %v", got)
+	}
+	out, err = explainOutput(view, supervisor.ExplainResponse{}, errors.New("down"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["tcp"]; ok {
+		t.Fatalf("Core 连不上时不许发布零值判定: %v", got)
+	}
+	if got["core_unavailable"] == nil || got["machine"] == nil {
+		t.Fatalf("Core 连不上时要有 machine 与 core_unavailable: %v", got)
+	}
+}
+
+// 标签按显示宽度对齐到 10 列(CJK 每字两列),否则「目标类型」比「解析」凸出去。
+func TestMachineViewLabelsAlignByDisplayWidth(t *testing.T) {
+	view := pathview.View{Conclusion: "c", Lines: []pathview.Line{{Label: "解析", Text: "x"}, {Label: "目标类型", Text: "y"}}}
+	for _, line := range strings.Split(strings.TrimSpace(renderMachineView(view)), "\n") {
+		_, text, ok := strings.Cut(line, "  ")
+		if !ok {
+			t.Fatalf("行里找不到分隔: %q", line)
+		}
+		label := strings.TrimSuffix(line, "  "+text)
+		w := 0
+		for _, r := range label {
+			if r > 0x7f {
+				w += 2
+			} else {
+				w++
+			}
+		}
+		if w+len(strings.TrimPrefix(line, label))-len(strings.TrimLeft(strings.TrimPrefix(line, label), " ")) != 10 {
+			t.Fatalf("标签没对齐到 10 列: %q", line)
+		}
 	}
 }

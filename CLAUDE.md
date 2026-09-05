@@ -689,6 +689,27 @@ Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 `docs/superpowers/specs/2026-08-17-guardian-status-watch-design.md`、计划
 `docs/superpowers/plans/2026-08-17-guardian-status-watch.md`。
 
+## `bx explain` 的本机视角:这个目标在这台机器上会怎么走(2026-09-05,真机已跑)
+
+`bx explain <目标>` 此前只答「进了 bx 的连接会怎样」,Core 没在跑就报错。现在**先**答
+本机视角(`internal/pathview`,纯判据,`purity_test.go` 钉住不做 I/O),再答 Core 那半;
+Core 连不上不再是错误,只留一句「bx 没在跑,以上是没有 bx 时的样子」。动机是同一天两次
+误判:另一会话看到 `8.8.8.8 → utun9` 就断定 bx 吞了 Tailscale,真相是**普通进程走 bx 的
+TUN、绑了网卡的进程走 en0**;休眠成环那次,哨兵地址进了 TUN 而发往服务器的 /32 早已不在,
+只有指着那个具体地址问才看得见。**与 observe 的分工**:observe 是仪表盘(无参、固定几项、
+只报异常),explain 是听诊器(你指哪它听哪),两者共用同一批原语。
+事实采集在 cli(`collectPathFacts`,全部只读:一次系统解析、`LookupRoute`、新导出的
+`LookupBoundRoute`(darwin `-ifscope` / linux `oif`,windows 没问)与 `PhysicalDefaultRoute`、
+一次 Core 运行时读取);判据在 pathview(`Judge`):目标分九类(假 IP / 回环 / 私网 / CGNAT
+/ 链路本地 / 服务器旁路 / 国内 / 公网 / 解析不出),接口归属白名单式(bx 的 TUN / 别的
+隧道(`leakcheck.IsTunnelInterface`)/ 物理网卡 / 认不出就说认不出),结论一句 + 证据几行。
+**两条措辞是真机逼出来的**:假 IP 目标要告诉绑网卡的程序「拿到的是假 IP、从物理网卡
+发出去石沉大海,域名进 `dns.fakeip_filter`/hosts 或直接写 IP」(就是 DERP 域名那次);
+CGNAT 目标不带绑网卡那一句(overlay 走自己的隧道,底层那句是噪声)。`--json` 在 Core 应答
+上**追加** `machine` 键,顶层字段一个不动(MCP 的 `bx_explain` 直接转发);Core 连不上时
+只有 `machine` + `core_unavailable`。这台 Mac 上五类目标(公网 / 服务器旁路 / 假 IP 域名 /
+CGNAT / 私网)实跑过,输出与内核一致。
+
 ## Guardian 的 JSON 响应必须显式带 Content-Length(2026-09-05,真机诊断)
 
 菜单的「规则」窗口报「Guardian returned an invalid response」,而 curl 拿到的是 200 +
