@@ -4617,6 +4617,15 @@ func reconcileRoundExecution(round guardian.ReconcileReport) string {
 	case "ok":
 		return segment + "(成功)"
 	case "skipped":
+		// ③c 的三个码不是让路:放弃要人来,另外两个是「为什么没起」的答案。
+		switch executed.Error {
+		case guardian.ReconcileSkipStartCoreExhausted:
+			return segment + "(已放弃:连续 5 次起不来,等你 sudo bx up;原因见 /var/log/bx-guard.err.log)"
+		case guardian.ReconcileSkipCoreProcessPresent:
+			return segment + "(有 Core 进程在跑但控制 socket 不应答,没起第二个)"
+		case guardian.ReconcileSkipCoreScanFailed:
+			return segment + "(问不出有没有 Core 在跑,没起)"
+		}
 		return segment + "(让路: " + executed.Error + ")"
 	default:
 		// Error 是稳定的失败码(发布面不带原始错误串),完整原因在 Guardian
