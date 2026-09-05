@@ -596,7 +596,14 @@ func (m *Manager) Up(ctx context.Context) error {
 		m.needsAttention(DesiredOn, maintenanceHoldClearFailedCode)
 		return fmt.Errorf("clear maintenance hold: %w", err)
 	}
-	return m.upLocked(ctx, upOriginUser)
+	if err := m.upLocked(ctx, upOriginUser); err != nil {
+		return err
+	}
+	// 用户的显式 up 成功之后,更早那次路径恢复的**结局**不再对外发布(见
+	// retireCompletedPathRecovery):否则 observableStatus 会拿一份 failed 快照
+	// 把这份 Protected 改写成 Blocked,菜单图标跟着裂开,而机器其实是受保护的。
+	m.retireCompletedPathRecovery()
+	return nil
 }
 
 func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
@@ -1113,6 +1120,11 @@ func (m *Manager) Down(ctx context.Context) (err error) {
 	// 拆除到这里已经全做完了(屏障拆了、DNS 还了、desired 落盘为 off),剩下的
 	// 只是「能不能说 off」。Stop 成功不等于系统里没有 Core —— 我们只停得掉自己
 	// 记账里那一个。
+	//
+	// 拆除做完了,更早那次路径恢复的结局就作废(与 Up 同一条纪律)。放在
+	// reportStopped 之前:「说不说得了 off」是另一件事,不该决定一份陈旧快照
+	// 留不留。
+	m.retireCompletedPathRecovery()
 	return m.reportStopped("main")
 }
 

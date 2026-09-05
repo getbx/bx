@@ -294,3 +294,33 @@ func TestDivergeTreatsHoldExpiringExactlyNowAsExpired(t *testing.T) {
 		t.Fatalf("到期时刻与观测时刻相等的挂起必须已失效: %+v", got)
 	}
 }
+
+// 真机 2026-09-04:`bx status` 说 Blocked、菜单图标裂开,而同一份 status 的
+// observed 写着 barrier_present=false、capture=true、tunnel_healthy=true ——
+// 机器其实受保护,标签是一份陈旧的恢复结局。当时 divergence 是 null:这一层
+// 只盯「说好其实坏」,没盯「说坏其实好」。后者不漏 IP,但它让用户去重启一台
+// 没坏的机器,而且把这一层「信念 vs 事实」的承诺打了折。
+func TestDivergeFlagsBlockedWithoutABarrier(t *testing.T) {
+	got := Diverge(
+		Intent{Desired: "on"},
+		ObservedState{CaptureOK: True, DNSManaged: True, TunnelHealthy: True, CoreSocket: True, BarrierPresent: False},
+		Believed{Protection: "blocked"},
+	)
+	if !hasField(got, "barrier_present") {
+		t.Errorf("声称 blocked 而内核里没有屏障必须产出 divergence,实际 = %+v", got)
+	}
+}
+
+// 屏障真的在(或问不出来)时 blocked 是自洽的,不许吵。
+func TestDivergeSilentWhenBlockedAndBarrierPresentOrUnknown(t *testing.T) {
+	for _, present := range []Tristate{True, Unknown} {
+		got := Diverge(
+			Intent{Desired: "on"},
+			ObservedState{CaptureOK: True, DNSManaged: True, TunnelHealthy: True, CoreSocket: True, BarrierPresent: present},
+			Believed{Protection: "blocked"},
+		)
+		if hasField(got, "barrier_present") {
+			t.Errorf("barrier_present=%s 时 blocked 是自洽的,不该产出 divergence,实际 = %+v", present, got)
+		}
+	}
+}
