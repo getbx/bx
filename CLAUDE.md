@@ -689,6 +689,29 @@ Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 `docs/superpowers/specs/2026-08-17-guardian-status-watch-design.md`、计划
 `docs/superpowers/plans/2026-08-17-guardian-status-watch.md`。
 
+## 调谐环执行 start_core(阶段③c,2026-09-05,真机未验)
+
+**修的是一条无人区路径**:Core 意外退出时 `handleUnexpectedExit` 装屏障后重启**一次**,
+失败(`core_restart_failed`)之后没有任何东西再试,机器停在 Blocked 直到有人敲
+`sudo bx up`。现在白名单三项(`restore_dns`/`clear_orphan_barrier`/`start_core`,
+`TestExecutableWhitelistIsExactlyOffCleanupPlusStartCore` 钉死)。**准入是槽内现扫
+`ScanRunning`,不是 socket**(`decideStartCoreAdmission` 三态:测成 0 个才起;≥1 个
+→ `core_process_present`,那是卡住但活着的 Core,起第二个正是 af81632 双 Core 的入口,
+本期只显形;没测成 → `core_scan_failed`,「问不出来」不是「没有」)。起 Core 复用
+`startCoreLocked`(带屏障 handoff、等健康、成功释放屏障),与 `bx up` 同一条路,
+`runner.Start` 既有的 fail-closed 准入一道不拆。**每段故障封顶 5 次**
+(`maxReconcileStartCoreAttempts`,段 = socket 首次不应答 → 再次应答或用户 `Up`),
+被扫描拦下的不计次;过了发布 `start_core_exhausted`,`bx status` 渲染成「已放弃,
+等你 sudo bx up」——**不许渲染成让路**。与 ③b「清理永不放弃」刻意不同:清理幂等,
+起进程不是。槽内前置条件从写死的 `desired==off` 改成按动作(`requiredDesired`)。
+`stop_core`、重启卡住的 Core、装屏障、解 Uncertain 锁存四样仍不做(spec「不做」)。
+旗舰测试 `TestReconcileLoopStartsCoreBackAfterAFailedCrashRestart`(白名单改回两项即红,
+变异实测 `start = 2, want 3`)。
+**真机验收**(所有者在场):把 data_dir 里的 sing-box 暂时改名,`sudo kill -9 <Core PID>`,
+看日志 `core_unexpected_exit` → `core_restart_failed` → 循环 `start_core … execute_failed`
+五次 → `start_core_exhausted`;改回名字、`sudo bx up` 归零回绿。
+spec `docs/superpowers/specs/2026-09-05-stage3c-start-core-design.md`。
+
 ## 调谐环第一批执行权(阶段③b,2026-08-29,真机未验)
 
 **授权面只有 `desired=off` 的两个清理动作**(`restore_dns`/`clear_orphan_barrier`,
