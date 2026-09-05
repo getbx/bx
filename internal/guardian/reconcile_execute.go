@@ -2,6 +2,7 @@ package guardian
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 )
@@ -127,8 +128,12 @@ func (m *Manager) executeUnderMutationSlot(ctx context.Context, action reconcile
 	if held := heldBy(input); held != "" {
 		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedSkipped, Error: held}, ""
 	}
-	if input.Desired != DesiredOff {
+	if input.Desired != requiredDesired(action) {
 		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedSkipped, Error: reconcileSkipPreconditions}, ""
+	}
+
+	if action == actionStartCore {
+		return m.executeStartCore(ctx)
 	}
 
 	execCtx, cancelExec := context.WithTimeout(ctx, reconcileExecuteTimeout)
@@ -148,6 +153,66 @@ func (m *Manager) executeUnderMutationSlot(ctx context.Context, action reconcile
 		return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedFailed, Error: reconcileExecuteFailedCode}, runErr.Error()
 	}
 	return &ReconcileExecution{Action: string(action), Outcome: reconcileExecutedOK}, ""
+}
+
+// requiredDesired 是每个动作要求的意图:清理要 off(用户明确说了关),start_core
+// 要 on。此前写死 `desired==off`,那在只有清理动作时是对的,③c 起不再是。
+func requiredDesired(action reconcileAction) DesiredState {
+	if action == actionStartCore {
+		return DesiredOn
+	}
+	return DesiredOff
+}
+
+// decideStartCoreAdmission 是 start_core 准入的**全部判定**,纯函数。
+// 三态:测成 0 个 → 允许(空串);测成 ≥1 个 → core_process_present;没测成
+// (runner 不会扫 / 扫描出错)→ core_scan_failed。出错时哪怕带着结果也算没测成 ——
+// 「问不出来」永远不等于「没有」。
+func decideStartCoreAdmission(cores []Process, scanErr error, supported bool) string {
+	if !supported || scanErr != nil {
+		return ReconcileSkipCoreScanFailed
+	}
+	if len(cores) > 0 {
+		return ReconcileSkipCoreProcessPresent
+	}
+	return ""
+}
+
+// scanForStartCore 在槽内现扫一次。经 observingCoreScanner/coreScanner 与循环的
+// 只读测量走同一个 runner 入口,单测替身、循环、准入三处看到的是同一份扫描。
+func (m *Manager) scanForStartCore() (cores []Process, err error, supported bool) {
+	if s, ok := m.runner.(observingCoreScanner); ok {
+		cores, err = s.ScanRunningObserved()
+		return cores, err, true
+	}
+	if s, ok := m.runner.(coreScanner); ok {
+		cores, err = s.ScanRunning()
+		return cores, err, true
+	}
+	return nil, nil, false
+}
+
+// executeStartCore 在槽内(调用方已持 mutation 槽、已复核栅栏与意图)起 Core。
+// 顺序:现扫 → 三态 → startCoreLocked。超时取 restartTimeout 而不是
+// reconcileExecuteTimeout:起 Core 要等健康,与 handleUnexpectedExit 那次重启
+// 同一个预算。
+func (m *Manager) executeStartCore(ctx context.Context) (*ReconcileExecution, string) {
+	cores, scanErr, supported := m.scanForStartCore()
+	if code := decideStartCoreAdmission(cores, scanErr, supported); code != "" {
+		detail := ""
+		if scanErr != nil {
+			detail = scanErr.Error()
+		} else if len(cores) > 0 {
+			detail = fmt.Sprintf("cores=%d first_pid=%d", len(cores), cores[0].PID)
+		}
+		return &ReconcileExecution{Action: string(actionStartCore), Outcome: reconcileExecutedSkipped, Error: code}, detail
+	}
+	execCtx, cancelExec := context.WithTimeout(ctx, m.restartTimeout)
+	defer cancelExec()
+	if _, err := m.startCoreLocked(execCtx); err != nil {
+		return &ReconcileExecution{Action: string(actionStartCore), Outcome: reconcileExecutedFailed, Error: reconcileExecuteFailedCode}, err.Error()
+	}
+	return &ReconcileExecution{Action: string(actionStartCore), Outcome: reconcileExecutedOK}, ""
 }
 
 func formatExecutionError(err string) string {
