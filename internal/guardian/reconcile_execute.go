@@ -197,6 +197,10 @@ func (m *Manager) scanForStartCore() (cores []Process, err error, supported bool
 // reconcileExecuteTimeout:起 Core 要等健康,与 handleUnexpectedExit 那次重启
 // 同一个预算。
 func (m *Manager) executeStartCore(ctx context.Context) (*ReconcileExecution, string) {
+	// 封顶先于扫描:试满了就不再花 900 次 syscall 去问。
+	if m.startCoreAttempts.Load() >= maxReconcileStartCoreAttempts {
+		return &ReconcileExecution{Action: string(actionStartCore), Outcome: reconcileExecutedSkipped, Error: ReconcileSkipStartCoreExhausted}, ""
+	}
 	cores, scanErr, supported := m.scanForStartCore()
 	if code := decideStartCoreAdmission(cores, scanErr, supported); code != "" {
 		detail := ""
@@ -207,6 +211,9 @@ func (m *Manager) executeStartCore(ctx context.Context) (*ReconcileExecution, st
 		}
 		return &ReconcileExecution{Action: string(actionStartCore), Outcome: reconcileExecutedSkipped, Error: code}, detail
 	}
+	// 真要起了才计:被扫描拦下的不算,否则一个卡住的 Core 会在五轮之后把
+	// 「起」的权利也耗光,而那正是最该留着的时候。
+	m.startCoreAttempts.Add(1)
 	execCtx, cancelExec := context.WithTimeout(ctx, m.restartTimeout)
 	defer cancelExec()
 	if _, err := m.startCoreLocked(execCtx); err != nil {
