@@ -228,6 +228,61 @@ func (n *netConf) up() error {
 			return err
 		}
 	}
+	return n.applyOptionalRouteSteps()
+}
+
+// Tailscale 的 WireGuard 底层 UDP 旁路(2026-09-04,真机诊断)。
+//
+// 公司工作站(bx global)上 tailscaled 发往对端**公网**地址的 WireGuard UDP 落进
+// pref 200 → table 100 → 进 TUN → 经隧道从 VPS 出去,对端看到的源地址对不上,
+// 直连永远建不起来,只能走美国的 DERP,市内两台机器 300ms。bx 已照顾了 Tailscale
+// 三处(DERP 旁路、100.64/10 → table 52、tailscale.com 不给 fake-IP),这是漏掉的
+// 第四处。`tailscale netcheck` 的 `UDP: true` 是假安心:它探的 STUN 就是自建 DERP,
+// 而那个 IP 恰好在 server bypass 里。
+//
+// **只认 Tailscale 打的标 + 只认 UDP**:TCP(控制面、DERP)照旧经 bx,今天能工作
+// 的东西一样不动。fwmark 0x80000/0xff0000 是 tailscaled 给自己出站包打的标
+// (它自己的 pref 5210 规则也认这个),与 bx 的 0x162 不冲突。
+const (
+	tailscaleFwmark       = "0x80000/0xff0000"
+	tailscaleUnderlayPref = "90" // 排在 bx 全部规则(100/149/150/200)之前
+)
+
+// optionalRouteUpSteps 是**装不上也不影响保护**的步骤(与 darwin 的 optional
+// scoped 默认路由同一条纪律)。`ipproto` 选择器要 iproute2 ≥ 4.17,busybox 与老 NAS
+// 没有 —— 混进必装步骤会让一台本来能起的机器起不来。
+func (n *netConf) optionalRouteUpSteps() [][]string {
+	steps := [][]string{
+		{"rule", "add", "pref", tailscaleUnderlayPref, "fwmark", tailscaleFwmark, "ipproto", "udp", "table", "main"},
+	}
+	if n.blockV6 {
+		// v6 同样放行:那是 Tailscale 自己加密的 WireGuard 包,不是「全局 v6 阻断」
+		// 要堵的明文;家里有 v6 的机器正靠它与手机直连。
+		steps = append(steps, []string{"-6", "rule", "add", "pref", tailscaleUnderlayPref, "fwmark", tailscaleFwmark, "ipproto", "udp", "table", "main"})
+	}
+	return steps
+}
+
+func (n *netConf) optionalRouteDownSteps() [][]string {
+	steps := [][]string{
+		{"rule", "del", "pref", tailscaleUnderlayPref, "fwmark", tailscaleFwmark, "ipproto", "udp", "table", "main"},
+	}
+	if n.blockV6 {
+		steps = append(steps, []string{"-6", "rule", "del", "pref", tailscaleUnderlayPref, "fwmark", tailscaleFwmark, "ipproto", "udp", "table", "main"})
+	}
+	return steps
+}
+
+// runIPOptional 是可选步骤用的执行器,变量形式好让测试证明「失败不连累 up()」。
+var runIPOptional = runIPQuiet
+
+// applyOptionalRouteSteps 尽力装可选步骤:装不上只记一行,永不返回错误。
+func (n *netConf) applyOptionalRouteSteps() error {
+	for _, s := range n.optionalRouteUpSteps() {
+		if err := runIPOptional(s...); err != nil {
+			log.Printf("可选路由未装上(跳过,老 iproute2 无 ipproto 时属预期;Tailscale 直连仍会经隧道): ip %s: %v", strings.Join(s, " "), err)
+		}
+	}
 	return nil
 }
 
@@ -236,6 +291,7 @@ func (n *netConf) routeDownSteps() [][]string {
 	steps := [][]string{
 		{"rule", "del", "pref", "200", "table", itoa(routeTable)},
 	}
+	steps = append(steps, n.optionalRouteDownSteps()...)
 	for _, c := range n.mainLookup {
 		if c == cgnatV4CIDR {
 			steps = append(steps, []string{"rule", "del", "to", c, "pref", "149", "table", itoa(tailscaleTable)})
@@ -284,7 +340,7 @@ func (n *netConf) routeUp() error {
 			return err
 		}
 	}
-	return nil
+	return n.applyOptionalRouteSteps()
 }
 
 // routeDown 尽力拆路由(忽略单步错误),不碰设备。
