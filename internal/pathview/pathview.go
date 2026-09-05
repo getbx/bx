@@ -127,7 +127,10 @@ func resolutionLine(f Facts, addr netip.Addr, resolved bool) Line {
 	case f.FakeIP.IsValid() && f.FakeIP.Contains(addr):
 		return Line{Label: "解析", Text: fmt.Sprintf("本机解析到假 IP %s —— DNS 归 bx 管,真实地址由 bx 拨号时反查", addr)}
 	default:
-		return Line{Label: "解析", Text: fmt.Sprintf("本机解析到 %s —— DNS 没归 bx 管", addr)}
+		// 只说事实:真 IP。**不说「DNS 没归 bx 管」** —— bx 接管着 DNS 时也会对
+		// fakeip_filter / hosts 里的名字直接答真 IP(真机 2026-09-05 derphome 那次),
+		// 这一层分不出是哪种,断言归属就是编。
+		return Line{Label: "解析", Text: fmt.Sprintf("本机解析到 %s(真 IP,不是 bx 的假 IP)", addr)}
 	}
 }
 

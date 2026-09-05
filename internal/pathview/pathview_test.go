@@ -96,8 +96,8 @@ func TestRealResolutionSaysDNSIsNotBxOwned(t *testing.T) {
 	f.CoreRunning = false
 	f.BxTunKnown = false
 	v := Judge(f)
-	if !hasLine(v, "解析", "没归 bx") {
-		t.Fatalf("解析到真 IP 要明说 DNS 没归 bx: %+v", v.Lines)
+	if !hasLine(v, "解析", "真 IP") || hasLine(v, "解析", "没归 bx") {
+		t.Fatalf("解析到真 IP 只说「真 IP」,不断言 DNS 归属(fakeip_filter/hosts 下 bx 也会答真 IP): %+v", v.Lines)
 	}
 	if v.Kind != KindChina {
 		t.Fatalf("Kind = %q, want china", v.Kind)

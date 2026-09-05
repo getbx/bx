@@ -196,7 +196,7 @@ func explainSourceLabel(source string) string {
 	case "private":
 		return "私网恒直连(不受 global 影响)"
 	case "split_dns":
-		return "split-DNS 解析出的内网真实 IP"
+		return "split-DNS 或 fakeip_filter 解析出的真实 IP(强制直连)"
 	case "default":
 		return "没有命中任何列表(默认)"
 	case "udp_proxy":
