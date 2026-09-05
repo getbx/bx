@@ -214,6 +214,29 @@ func (m *Manager) RequestPathRecovery(request RecoveryRequest) (RecoverySnapshot
 	return transaction.snapshot, nil
 }
 
+// retireCompletedPathRecovery 让一次**已经结束**的路径恢复不再对外发布。
+//
+// 用户显式的 up/down 成功之后调用。observableStatus 只要上一次恢复还写着
+// failed 就把 Manager 的 Protected 改写成 Blocked,而那份快照此前没有任何东西
+// 会清 —— 真机 2026-09-04:开机后一次手动重连在 transport_health 失败,随后
+// down/up 都成功、up 的应答是 Protected,`bx status` 与菜单却一直 Blocked、
+// 图标裂开,同一份 status 里 observed 明明说屏障不在、隧道健康。
+//
+// 只清**已结束**的:正在跑或排队中的恢复由它自己发布结局,这里不插手
+// (它跑完会按 ID 比对再写回 pathRecoveryCurrent,见 runPathRecovery)。
+// networkGeneration 不动:它记的是「最近一次看到的网络」,不是恢复的结局。
+func (m *Manager) retireCompletedPathRecovery() {
+	m.pathRecoveryMu.Lock()
+	defer m.pathRecoveryMu.Unlock()
+	if m.pathRecoveryActive || m.pathRecoveryPending != nil {
+		return
+	}
+	if !completedPathRecoveryState(m.pathRecoveryCurrent.State) {
+		return
+	}
+	m.pathRecoveryCurrent = RecoverySnapshot{State: "idle", Stage: "idle"}
+}
+
 func (m *Manager) CurrentPathRecovery() RecoverySnapshot {
 	m.pathRecoveryMu.Lock()
 	defer m.pathRecoveryMu.Unlock()

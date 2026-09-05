@@ -1537,6 +1537,24 @@ err.log 曾被截断过一次,22 小时重新长到 9.4MB(≈10MB/天);升级后
 **未验**:一张码能不能被手机摄像头真的扫出来 —— 渲染的性质(quiet zone/极性/
 落点)有守卫,「扫得出来」没有。
 
+## 陈旧的恢复结局把 Protected 改写成 Blocked(2026-09-04,真机诊断,修复真机未验)
+
+真机:开机后一次手动重连(`recovery-17`,reason=manual)在 `transport_health`
+失败;用户 `bx down` 再 `bx up`,up 的应答是 Protected,而 `bx status` 与菜单
+一直 Blocked、图标裂开 —— **同一份 status 里 observed 说 capture=true、
+barrier_present=false、tunnel_healthy=true,机器其实受保护**。机制:
+`observableStatus`(`localapi.go`)只要**上一次**路径恢复的快照还写着 failed,
+就把 Manager 自己的 Protected 改写成 Blocked,而那份快照没有任何东西会在用户
+之后成功的 up/down 里清掉。这是「status 是记住的不是推导的」那一类失效。
+修法在源头:`Manager.Up`/`Down` 成功后 `retireCompletedPathRecovery` 让**已结束**
+的恢复不再对外发布(正在跑的由它自己发布结局,不插手;`networkGeneration` 不动),
+与「显式 up/down 无条件清挂起」同一条纪律。**观测层也补了反方向那条**:此前
+`Diverge` 只盯「说好其实坏」,对「说坏其实好」一言不发(当时 divergence 为
+null);现在 believed=blocked 而 barrier_present=False 会产出一行。Unknown 不报。
+**装上修复之前的机器**:那个 Blocked 会一直留到下一次恢复成功或 Guardian 重启;
+`sudo bx reconnect` 成功一次即可换掉那份快照。开机那次为什么断开仍未查
+(要 Guardian 日志)。
+
 ## 服务器旁路重新跟随 DNS(2026-09-04,真机未验)
 
 **起因是一次静默了一个月的断网**:VPS 2026-08-06 换 IP,NAS 上的 bx 重连 65638 次、

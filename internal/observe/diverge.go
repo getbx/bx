@@ -157,6 +157,19 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 				"(用户规则 / china 列表)都会失败,而隧道看起来一切正常",
 		})
 	}
+	// 反方向的谎也要说:声称被屏障阻断,而内核里没有 bx 的阻断路由。它不漏 IP,
+	// 但会让用户去重启一台没坏的机器(真机 2026-09-04:一份陈旧的恢复结局把
+	// Protected 改写成 Blocked,菜单图标裂开,observed 三项全 true 而 divergence
+	// 为 null)。Unknown 不报:问不出来不等于不在。
+	if believed.Protection == "blocked" && observed.BarrierPresent == False {
+		emit(Divergence{
+			Field:    "barrier_present",
+			Believed: "blocked",
+			Observed: "false",
+			Note:     "保护状态声称被屏障阻断,但内核里没有 bx 的阻断路由;这份 blocked 多半是一次更早的恢复留下的陈旧结局",
+		})
+	}
+
 	if intent.Desired == "on" && observed.CoreSocket == False {
 		emit(Divergence{
 			Field:    fieldCoreSocket,
