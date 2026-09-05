@@ -206,3 +206,99 @@ func TestReconcileExecutionReportsFailureAndTheLoopRetries(t *testing.T) {
 		t.Fatal("完整失败原因必须进 Guardian 日志")
 	}
 }
+
+// ③c:start_core 的前置是 desired=on(清理动作要 off)。决策与拿到槽之间用户
+// 刚好 down 了,按陈旧决策起一个用户刚关掉的 Core 是本文件最不可犯的错。
+func TestStartCoreYieldsWhenDesiredFlippedToOff(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOff); err != nil {
+		t.Fatal(err)
+	}
+	got := env.manager.executeReconcileAction(context.Background(), reconcileDecision{
+		Actions: []reconcileAction{actionStartCore},
+	})
+	if got == nil || got.Outcome != reconcileExecutedSkipped || got.Error != reconcileSkipPreconditions {
+		t.Fatalf("Executed = %+v, want skipped/preconditions_changed", got)
+	}
+	if env.runner.startCount() != 0 {
+		t.Fatal("desired=off 却起了 Core")
+	}
+}
+
+// 准入是扫描,不是 socket:测成 0 个才起,起的是 startCoreLocked 那条路。
+func TestStartCoreStartsWhenScanFindsNoCore(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	got := env.manager.executeReconcileAction(context.Background(), reconcileDecision{
+		Actions: []reconcileAction{actionStartCore},
+	})
+	if got == nil || got.Action != string(actionStartCore) || got.Outcome != reconcileExecutedOK {
+		t.Fatalf("Executed = %+v, want start_core/ok", got)
+	}
+	if env.runner.startCount() != 1 {
+		t.Fatalf("Start 被调了 %d 次,want 1", env.runner.startCount())
+	}
+	if env.manager.Status().Protection != ProtectionProtected {
+		t.Fatalf("起完不是 Protected: %q", env.manager.Status().Protection)
+	}
+}
+
+// 扫到有 Core 进程(卡住但活着)⇒ 一个都不起,码 core_process_present。
+func TestStartCoreRefusesWhenACoreProcessIsPresent(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.scanResult = []Process{{PID: 4242}}
+	got := env.manager.executeReconcileAction(context.Background(), reconcileDecision{
+		Actions: []reconcileAction{actionStartCore},
+	})
+	if got == nil || got.Outcome != reconcileExecutedSkipped || got.Error != ReconcileSkipCoreProcessPresent {
+		t.Fatalf("Executed = %+v, want skipped/core_process_present", got)
+	}
+	if env.runner.startCount() != 0 {
+		t.Fatal("有 Core 进程在跑还起了第二个 —— af81632 双 Core 的入口")
+	}
+}
+
+// 没测成 ⇒ 不起,码 core_scan_failed。「问不出来」不是「没有」。
+func TestStartCoreRefusesWhenScanFails(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.scanErr = errors.New("sysctl: EIO")
+	got := env.manager.executeReconcileAction(context.Background(), reconcileDecision{
+		Actions: []reconcileAction{actionStartCore},
+	})
+	if got == nil || got.Outcome != reconcileExecutedSkipped || got.Error != ReconcileSkipCoreScanFailed {
+		t.Fatalf("Executed = %+v, want skipped/core_scan_failed", got)
+	}
+	if env.runner.startCount() != 0 {
+		t.Fatal("扫描失败还起了 Core")
+	}
+}
+
+// 纯判据:三态各自的码,supported=false 与 scanErr 同归「没测成」。
+func TestDecideStartCoreAdmission(t *testing.T) {
+	cases := []struct {
+		name      string
+		cores     []Process
+		err       error
+		supported bool
+		want      string
+	}{
+		{"测成 0 个", nil, nil, true, ""},
+		{"测成 1 个", []Process{{PID: 1}}, nil, true, ReconcileSkipCoreProcessPresent},
+		{"扫描出错", nil, errors.New("x"), true, ReconcileSkipCoreScanFailed},
+		{"runner 不会扫", nil, nil, false, ReconcileSkipCoreScanFailed},
+		{"出错且有结果", []Process{{PID: 1}}, errors.New("x"), true, ReconcileSkipCoreScanFailed},
+	}
+	for _, c := range cases {
+		if got := decideStartCoreAdmission(c.cores, c.err, c.supported); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}
