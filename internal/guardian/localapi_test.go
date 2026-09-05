@@ -1677,3 +1677,32 @@ func TestGuardianJSONResponsesAlwaysCarryContentLength(t *testing.T) {
 		t.Fatalf("Content-Length = %q, want %d(缺席时 net/http 对 >2KB 的体会改用 chunked,菜单读不动)", got, body)
 	}
 }
+
+// 每一个 JSON 响应都必须经 writeGuardianJSON(它显式带 Content-Length)。
+// 谁在 handler 里直接 json.NewEncoder(w).Encode,体一超过 2KB 就又是 chunked,
+// 菜单又读不动 —— 真机 2026-09-05 规则窗口与应用流量窗口同时坏就是这个形状。
+// 读源码守;读不到目录响亮失败。
+func TestGuardianHandlersNeverStreamJSONDirectly(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("读不到本包目录: %v", err)
+	}
+	checked := 0
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checked++
+		if strings.Contains(string(src), "json.NewEncoder(w)") {
+			t.Errorf("%s 直接往 ResponseWriter 流式写 JSON —— 改走 writeGuardianJSON,否则 >2KB 的体会变 chunked", name)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("一个源文件都没检查到,守卫失去意义")
+	}
+}
