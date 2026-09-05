@@ -278,12 +278,17 @@ type Manager struct {
 	// 缓冲 1、非阻塞发送:**一次改动绝不能被这条循环拖住**。nil(循环没跑)时
 	// 发送是空操作,与 statusPublisher 那两处 poke 同一条纪律。
 	reconcileWake chan struct{}
-	statusMu      sync.RWMutex
-	store         DesiredStore
-	runner        CoreRunner
-	health        HealthGate
-	barrier       Barrier
-	dns           DNSManager
+	// startCoreAttempts 是 ③c 一段故障里循环起 Core 的次数(封顶
+	// maxReconcileStartCoreAttempts)。只在互斥槽内递增;归零在两处:调谐环
+	// 观测到 Core socket 应答、用户 Up 成功。原子量:观测在循环 goroutine、
+	// 执行在槽内,不为它开第二把锁。
+	startCoreAttempts atomic.Int32
+	statusMu          sync.RWMutex
+	store             DesiredStore
+	runner            CoreRunner
+	health            HealthGate
+	barrier           Barrier
+	dns               DNSManager
 	// clearOrphanBarrier 是 ③b 执行器清孤儿屏障的原语,默认
 	// RemoveBlockingBarrierRoutes(见 NewManager),测试注入替身。
 	clearOrphanBarrier func(context.Context) error
@@ -599,6 +604,8 @@ func (m *Manager) Up(ctx context.Context) error {
 	if err := m.upLocked(ctx, upOriginUser); err != nil {
 		return err
 	}
+	// ③c:用户亲手起了 Core,这段故障结束。
+	m.resetStartCoreAttempts()
 	// 用户的显式 up 成功之后,更早那次路径恢复的**结局**不再对外发布(见
 	// retireCompletedPathRecovery):否则 observableStatus 会拿一份 failed 快照
 	// 把这份 Protected 改写成 Blocked,菜单图标跟着裂开,而机器其实是受保护的。
@@ -1863,6 +1870,9 @@ func (m *Manager) nextBarrierCredential() barrierCredential {
 	}
 	return m.barrierGeneration
 }
+
+// resetStartCoreAttempts 结束一段故障:Core 又被看见了,或用户亲手起了它。
+func (m *Manager) resetStartCoreAttempts() { m.startCoreAttempts.Store(0) }
 
 func (m *Manager) barrierProven() bool {
 	return m.barrierOwnership.proof == barrierProven

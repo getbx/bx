@@ -90,6 +90,10 @@ func nextReconcileInterval(unchangedRounds int) time.Duration {
 //
 // observed 由调用方先取好:观测要 fork 进程,绝不能在 mutation channel 里做。
 func (m *Manager) reconcileOnce(ctx context.Context, observed observe.ObservedState) reconcileDecision {
+	// ③c:观测到 Core 应答 ⇒ 这段故障结束,起 Core 的次数归零。
+	if observed.CoreSocket == observe.True {
+		m.resetStartCoreAttempts()
+	}
 	input := reconcileInput{
 		Observed:         observed,
 		PathRecoveryBusy: m.pathRecoveryBusy(),

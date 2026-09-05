@@ -302,3 +302,80 @@ func TestDecideStartCoreAdmission(t *testing.T) {
 		}
 	}
 }
+
+// 每段故障最多 maxReconcileStartCoreAttempts 次:第 6 次不再起,码 start_core_exhausted,
+// 且 Start 恰好被调了 5 次。
+func TestStartCoreGivesUpAfterTheCap(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.startErr = errors.New("sing-box missing")
+	for i := 0; i < maxReconcileStartCoreAttempts; i++ {
+		got := env.manager.executeReconcileAction(context.Background(), reconcileDecision{Actions: []reconcileAction{actionStartCore}})
+		if got == nil || got.Outcome != reconcileExecutedFailed {
+			t.Fatalf("第 %d 次应为 failed,got %+v", i+1, got)
+		}
+	}
+	got := env.manager.executeReconcileAction(context.Background(), reconcileDecision{Actions: []reconcileAction{actionStartCore}})
+	if got == nil || got.Outcome != reconcileExecutedSkipped || got.Error != ReconcileSkipStartCoreExhausted {
+		t.Fatalf("第 6 次应为 skipped/start_core_exhausted,got %+v", got)
+	}
+	if env.runner.startCount() != maxReconcileStartCoreAttempts {
+		t.Fatalf("Start 被调了 %d 次,want %d", env.runner.startCount(), maxReconcileStartCoreAttempts)
+	}
+}
+
+// 被扫描拦下的不计次:5 轮 core_process_present 之后仍然可起。
+func TestStartCoreScanRefusalsDoNotCountTowardTheCap(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.scanResult = []Process{{PID: 4242}}
+	for i := 0; i < maxReconcileStartCoreAttempts+1; i++ {
+		env.manager.executeReconcileAction(context.Background(), reconcileDecision{Actions: []reconcileAction{actionStartCore}})
+	}
+	env.runner.scanResult = nil
+	got := env.manager.executeReconcileAction(context.Background(), reconcileDecision{Actions: []reconcileAction{actionStartCore}})
+	if got == nil || got.Outcome != reconcileExecutedOK {
+		t.Fatalf("被拦下的轮次不该耗掉起的权利,got %+v", got)
+	}
+}
+
+// 归零的两处各钉一条:观测到 socket 应答;用户 Up 成功。漏一处不会有编译错误。
+func TestStartCoreCapResetsWhenCoreIsSeenAnswering(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.startErr = errors.New("sing-box missing")
+	for i := 0; i < maxReconcileStartCoreAttempts; i++ {
+		env.manager.executeReconcileAction(context.Background(), reconcileDecision{Actions: []reconcileAction{actionStartCore}})
+	}
+	// 一轮观测看见 socket 应答 ⇒ 段结束。
+	env.manager.reconcileOnce(context.Background(), observe.ObservedState{CoreSocket: observe.True})
+	env.runner.startErr = nil
+	got := env.manager.executeReconcileAction(context.Background(), reconcileDecision{Actions: []reconcileAction{actionStartCore}})
+	if got == nil || got.Outcome != reconcileExecutedOK {
+		t.Fatalf("段结束后计数应归零,got %+v", got)
+	}
+}
+
+func TestStartCoreCapResetsAfterUserUp(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.startErr = errors.New("sing-box missing")
+	for i := 0; i < maxReconcileStartCoreAttempts; i++ {
+		env.manager.executeReconcileAction(context.Background(), reconcileDecision{Actions: []reconcileAction{actionStartCore}})
+	}
+	env.runner.startErr = nil
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.manager.startCoreAttempts.Load(); got != 0 {
+		t.Fatalf("用户 Up 成功后计数应归零,got %d", got)
+	}
+}
