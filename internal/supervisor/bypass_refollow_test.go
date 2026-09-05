@@ -180,7 +180,22 @@ func TestRunWiresTheServerBypassRefollowLoop(t *testing.T) {
 			t.Fatalf("run.go 里找不到 %q —— 服务器旁路重跟随没有接线(或锚点改了,守卫读不懂现在的代码)", want)
 		}
 	}
-	if !strings.Contains(string(ctlSrc), "opts.StartBypassRefollow(cs.refollowServerBypass)") {
-		t.Fatal("control.go 没有把 cs.refollowServerBypass 交给 StartBypassRefollow —— 循环拿不到控制面那把锁里的重跟随")
+	for _, want := range []string{
+		"RefollowServerBypass: cs.refollowServerBypass,",
+		"ReassertRoutes:       cs.reassertRoutes,",
+	} {
+		if !strings.Contains(string(ctlSrc), want) {
+			t.Fatalf("control.go 里找不到 %q —— 后台循环拿不到控制面那把锁里的入口", want)
+		}
+	}
+	// 旁路路由自愈那条也从这里起(与 refollow 共用同一个 hook)。
+	for _, want := range []string{
+		`workers.start(ctx, "server-bypass-route-repair"`,
+		`watchServerBypassRoutes(c,`,
+		`hooks.ReassertRoutes, routeTicker.C)`,
+	} {
+		if !strings.Contains(string(runSrc), want) {
+			t.Fatalf("run.go 里找不到 %q —— 服务器旁路路由自愈没有接线", want)
+		}
 	}
 }

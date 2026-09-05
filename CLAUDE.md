@@ -1555,6 +1555,36 @@ null);现在 believed=blocked 而 barrier_present=False 会产出一行。Unknow
 `sudo bx reconnect` 成功一次即可换掉那份快照。开机那次为什么断开仍未查
 (要 Guardian 日志)。
 
+## 休眠唤醒后隧道成环:服务器旁路路由自愈(2026-09-04,真机诊断,修复真机未验)
+
+**它看起来像「重启后 bx 断开」,其实不是重启**:电源日志 13:20 电量耗尽进入
+Low Power Sleep 并休眠到磁盘,17:50:58 按电源键从休眠唤醒;开机时间是 9 月 1 日,
+Guardian 进程从 9 月 3 日一直活着。唤醒 4 秒后 Core 日志开始刷
+`singbox: open connection … using outbound/vless[reality-out]: EOF`,**1–2 毫秒**
+一条 —— VPS 在 300 毫秒之外,真正的 EOF 不可能 2 毫秒回来,那是本机给的。
+机制:en0 重新关联时 macOS 把挂在它网关上的路由冲掉了 —— **包括 bx 装的服务器
+/32 旁路** —— 而 utun 上的两条 /1 劫持路由不挂在 en0,照旧活着。sing-box 到 VPS
+的连接于是进了 TUN,被 bx 当成一条普通公网连接:隧道不健康 → kill-switch 拦下 →
+EOF。**bx 的服务器防环靠的是内核路由,不是 socket mark**(子进程),那条路由丢了
+就是成环,而成环是静默的、自锁的(隧道起不来是因为它自己的包被拦,而拦它是因为
+隧道没起来)。同一个 Wi-Fi、generation 没变,路径恢复的边沿触发不响;
+`direct_egress` 那条循环 17:51:22 修好了 scoped 默认路由(日志坐实),对 /32
+一无所知;手动重连造出的候选传输走同一条坏路,20 秒也起不来;13 分钟后用户
+down/up 才救回来。**bx 里没有一行处理睡眠/唤醒的代码**(grep 过)。
+
+修法照抄 `direct_egress`,**去问内核**:`internal/supervisor/bypass_route_repair.go`
+每 30 秒对每台服务器 `route -n get <ip>`(不带 `-ifscope`:问的是普通 socket 走
+哪条路,子进程正是普通 socket),接口是我们自己的 TUN 就是成环,经控制面那把锁里
+的 `controlServer.reassertRoutes`(Rehijack 的 apply)重新落实全部路由;有待确认的
+改动时让路。判据三态(`decideServerBypassIntact`):**没有服务器可查 / 问不出来
+都是「不知道」,不是「完好」**。循环体与 `direct_egress` 共用一份
+(`watchKernelRoute`,措辞做成数据),退避、冷静期、change-only 日志一字不差。
+只在 darwin 有探测原语(与 `direct_egress` 同一门槛);非 darwin 恒「问不出来」,
+循环不动。**真机验收**:合盖休眠 ≥ 数分钟再唤醒(或 `sudo route delete
+<服务器IP>` 模拟),看 `bx.log` 在 30 秒内出现 `server_bypass 断了` →
+`server_bypass 已重新落实路由`,且 sing-box 的 EOF 刷屏停止、隧道回绿,
+**不需要 down/up**。
+
 ## 服务器旁路重新跟随 DNS(2026-09-04,真机未验)
 
 **起因是一次静默了一个月的断网**:VPS 2026-08-06 换 IP,NAS 上的 bx 重连 65638 次、
@@ -1572,7 +1602,7 @@ null);现在 believed=blocked 而 barrier_present=False 会产出一行。Unknow
 (`TestSetServerSerializesConcurrentBypassRefresh` 守着的那个洞)。`Reconnect` 在
 锁外:它要等新隧道健康,最长一个 healthTimeout。**只对域名链接有意义**:IP 字面量
 在 `resolveAll` 里短路,换 IP 只能改链接(这台 Mac 就是这种)。接线经
-`controlServeOptions.StartBypassRefollow` 回调(serve 的返回形状被
+`controlServeOptions.OnControlReady` 回调交出 `controlHooks`(serve 的返回形状被
 `requireControlSocket` 钉着),循环从 `run.go` 经 `workers.start` 起;
 `TestRunWiresTheServerBypassRefollowLoop` 读源码钉住接线(serve 非 root 起不来,
 netns 台子造不出「VPS 换 IP」)。同一天顺手做掉的两条:`bx explain` 对**具名规则
