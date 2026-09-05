@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1651,5 +1652,28 @@ func TestMutationSurvivesWithoutAReconcileLoop(t *testing.T) {
 	handler(rec, rootMutationRequest(t))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("没有调谐环时 up 失败了:%d", rec.Code)
+	}
+}
+
+// 真机 2026-09-05:菜单的「规则」窗口报「Guardian returned an invalid response」,
+// 而 curl 拿到的是 200 + 合法 JSON。差别在框架:/v1/rules 的体随 review 一节长过
+// 2KB 之后,net/http 对 json.Encoder 的流式写入改用 chunked;菜单那份手写的 HTTP
+// 读取器只认 Content-Length(它刻意最小),于是 body.count != contentLength →
+// invalidResponse。/v1/status 只有 900 字节,恰好没撞上。修在源头:每个 JSON 响应
+// 都先整体 marshal、显式带 Content-Length、一次写出 —— 大小不再决定框架。
+func TestGuardianJSONResponsesAlwaysCarryContentLength(t *testing.T) {
+	big := make([]string, 0, 400)
+	for i := 0; i < 400; i++ {
+		big = append(big, fmt.Sprintf("*.rule-%03d.example.com", i))
+	}
+	rec := httptest.NewRecorder()
+	writeGuardianJSON(rec, http.StatusOK, map[string]any{"direct": big})
+	body := rec.Body.Len()
+	if body <= 2048 {
+		t.Fatalf("测试体太小(%d 字节),够不到 net/http 改用 chunked 的门槛", body)
+	}
+	got := rec.Header().Get("Content-Length")
+	if got != strconv.Itoa(body) {
+		t.Fatalf("Content-Length = %q, want %d(缺席时 net/http 对 >2KB 的体会改用 chunked,菜单读不动)", got, body)
 	}
 }
