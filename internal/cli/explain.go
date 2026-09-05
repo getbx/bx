@@ -1,15 +1,20 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/getbx/bx/internal/dialfail"
+	"github.com/getbx/bx/internal/embedded"
+	"github.com/getbx/bx/internal/pathview"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/urfave/cli/v2"
@@ -225,28 +230,169 @@ func explainAction(c *cli.Context) error {
 	if target == "" {
 		return errors.New("要问哪个目标?例如:bx explain steamstatic.com")
 	}
+	// 本机视角先采(它不依赖 Core):这个目标在这台机器上会怎么走。
+	ctx, cancel := context.WithTimeout(context.Background(), explainMachineTimeout)
+	defer cancel()
+	view := pathview.Judge(collectPathFacts(ctx, target))
+
 	rep, err := supervisor.FetchExplain(supervisor.SockPath, target)
 	if err != nil {
 		if errors.Is(err, supervisor.ErrExplainUnsupported) {
 			return errors.New("跑着的这一版 Core 没有发布判定查询 —— 升级后重试(bx explain 需要 Core 侧的 /v0/explain)")
 		}
-		// **「连不上」与「连上了但答不了」措辞必须不同。** 前者 bx 可能真没在跑;
-		// 后者 bx 明明应答了,再叫人去 `bx up` 就是把他送去做一件确定无用的事。
-		if isControlSocketUnreachable(err) {
-			return fmt.Errorf("连不上跑着的 Core(%v)—— bx 没在跑时它没有判定可言,先 sudo bx up", err)
+		// **「连不上」与「连上了但答不了」措辞必须不同。** 后者 bx 明明应答了,
+		// 再叫人去 `bx up` 就是把他送去做一件确定无用的事。前者不再是错误:
+		// bx 没在跑时本机视角照样有用,那正是它存在的理由。
+		if !isControlSocketUnreachable(err) {
+			return fmt.Errorf("Core 答不了这个问题:%w", err)
 		}
-		return fmt.Errorf("Core 答不了这个问题:%w", err)
 	}
-	if c.Bool("json") {
-		out, err := json.MarshalIndent(rep, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(out))
-		return nil
+	out, oerr := explainOutput(view, rep, err, c.Bool("json"))
+	if oerr != nil {
+		return oerr
 	}
-	fmt.Print(renderExplain(rep))
+	fmt.Print(out)
 	return nil
+}
+
+// explainMachineTimeout 封顶本机视角的采集(几条 route get + 一次系统解析)。
+const explainMachineTimeout = 6 * time.Second
+
+// explainOutput 把本机视角与 Core 判定拼成最终输出。**本机视角在前**;coreErr
+// 非空(Core 连不上)时不渲染零值判定,只留一句。JSON 在 Core 应答上**追加**
+// machine 键,顶层字段一个不动 —— MCP 的 bx_explain 直接转发这份 JSON。
+func explainOutput(view pathview.View, rep supervisor.ExplainResponse, coreErr error, asJSON bool) (string, error) {
+	if asJSON {
+		var top map[string]any
+		if coreErr == nil {
+			raw, err := json.Marshal(rep)
+			if err != nil {
+				return "", err
+			}
+			if err := json.Unmarshal(raw, &top); err != nil {
+				return "", err
+			}
+		} else {
+			top = map[string]any{"core_unavailable": coreErr.Error()}
+		}
+		top["machine"] = view
+		out, err := json.MarshalIndent(top, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		return string(out) + "\n", nil
+	}
+	var b strings.Builder
+	b.WriteString(renderMachineView(view))
+	if coreErr != nil {
+		b.WriteString("\nbx 没在跑(连不上 Core 的控制 socket),以上是没有 bx 时的样子;要看 bx 的判定先 sudo bx up。\n")
+		return b.String(), nil
+	}
+	b.WriteString("\n")
+	b.WriteString(renderExplain(rep))
+	return b.String(), nil
+}
+
+// renderMachineView:先一句结论,再几行证据,标签对齐到与 Core 那半同宽。
+func renderMachineView(v pathview.View) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s%s\n", padLabel("结论"), v.Conclusion)
+	for _, l := range v.Lines {
+		fmt.Fprintf(&b, "%s%s\n", padLabel(l.Label), l.Text)
+	}
+	return b.String()
+}
+
+// padLabel 把标签补到与 Core 那半同宽(10 列)。%-8s 按字符数补,CJK 每字占两列,
+// 会让「目标类型」比「解析」多凸出去四列。
+func padLabel(label string) string {
+	width := 0
+	for _, r := range label {
+		if r > 0x7f {
+			width += 2
+		} else {
+			width++
+		}
+	}
+	if pad := 10 - width; pad > 0 {
+		return label + strings.Repeat(" ", pad)
+	}
+	return label + " "
+}
+
+// collectPathFacts 是本机视角的**事实采集**(全部只读:几条 route get、一次系统
+// 解析、一次 Core 运行时读取)。每一项失败都如实进 Facts,判据在 pathview 里
+// 按「问不出来」处置,绝不让 explain 整个失败。
+func collectPathFacts(ctx context.Context, target string) pathview.Facts {
+	f := pathview.Facts{Target: target, FakeIP: netip.MustParsePrefix("198.18.0.0/15")}
+	if addr, err := netip.ParseAddr(target); err == nil {
+		f.LiteralIP = true
+		f.Addrs = []netip.Addr{addr.Unmap()}
+	} else if addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", target); err != nil {
+		f.ResolveErr = err.Error()
+	} else {
+		for _, a := range addrs {
+			f.Addrs = append(f.Addrs, a.Unmap())
+		}
+	}
+	// Core 在跑时知道自己的 TUN 与服务器旁路;不在跑时这两样「问不出来」。
+	if state, err := supervisor.FetchRuntimeState(supervisor.SockPath); err == nil {
+		f.CoreRunning = true
+		f.BxTun, f.BxTunKnown = state.TunName, state.TunName != ""
+		for _, c := range state.ServerBypass {
+			if p, err := netip.ParsePrefix(c); err == nil {
+				f.ServerBypass = append(f.ServerBypass, p)
+			}
+		}
+	}
+	f.China = pathview.ChinaSetFromList(strings.Split(strings.TrimSpace(string(embedded.ChinaCIDR())), "\n"))
+	if gw, dev, err := supervisor.PhysicalDefaultRoute(ctx); err == nil {
+		_ = gw
+		f.PhysicalDev = dev
+	}
+	addr, ok := firstUsableAddr(f.Addrs)
+	if !ok {
+		return f
+	}
+	f.Route = routeFact(func() (supervisor.RouteSelection, error) {
+		return supervisor.LookupRoute(ctx, addr.String(), addr.Is6())
+	})
+	if f.PhysicalDev != "" && addr.Is4() {
+		f.Bound = routeFact(func() (supervisor.RouteSelection, error) {
+			return supervisor.LookupBoundRoute(ctx, f.PhysicalDev, addr.String())
+		})
+	}
+	return f
+}
+
+func firstUsableAddr(addrs []netip.Addr) (netip.Addr, bool) {
+	for _, a := range addrs { // v4 优先:v6 在 bx 下是 fail-closed 阻断,先答 v4 那条
+		if a.Is4() {
+			return a, true
+		}
+	}
+	for _, a := range addrs {
+		if a.IsValid() {
+			return a, true
+		}
+	}
+	return netip.Addr{}, false
+}
+
+// routeFact 把一次路由查询翻成 pathview 的三态事实。「不支持」记为没问;
+// ErrRouteMissing 记为「表里没有」(那是答案);其余错误记为问不出来。
+func routeFact(lookup func() (supervisor.RouteSelection, error)) pathview.RouteFact {
+	sel, err := lookup()
+	switch {
+	case err == nil:
+		return pathview.RouteFact{Applicable: true, Interface: sel.Interface, Gateway: sel.Gateway, Reject: sel.Reject}
+	case errors.Is(err, supervisor.ErrRouteMissing):
+		return pathview.RouteFact{Applicable: true, Missing: true}
+	case strings.Contains(err.Error(), "only implemented"):
+		return pathview.RouteFact{Applicable: false}
+	default:
+		return pathview.RouteFact{Applicable: true, Err: err.Error()}
+	}
 }
 
 // isControlSocketUnreachable 区分「拨不通控制 socket」与「拨通了、对方拒答」。

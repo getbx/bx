@@ -80,7 +80,7 @@ func New() *cli.App {
 			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
 			{
 				Name:      "explain",
-				Usage:     "这个目标现在会走哪条路、为什么(问跑着的 Core,不猜)",
+				Usage:     "这个目标在本机会怎么走、bx 会怎么判、为什么(只读,不发包;bx 没在跑也能答本机那半)",
 				ArgsUsage: "<域名|IP[:端口]>",
 				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "机器可读输出"}},
 				Action:    explainAction,
