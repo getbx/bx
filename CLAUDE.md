@@ -693,7 +693,7 @@ Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 
 **授权面只有 `desired=off` 的两个清理动作**(`restore_dns`/`clear_orphan_barrier`,
 白名单在 `internal/guardian/reconcile_execute.go`,内容由
-`TestExecutableWhitelistIsExactlyTheOffCleanupPair` 钉死 —— 穷举守卫只测名单**外**
+`TestExecutableWhitelistIsExactlyOffCleanupPlusStartCore` 钉死(③c 起含 start_core)—— 穷举守卫只测名单**外**
 的动作,名单越大它测得越少,扩名单必须有意识地改到这条测试上)。`stop_core` 观察态
 的理由写死:desired=off + socket 应答最常见来源是 **`sudo bx run` 调试路径**,每
 30 秒杀一次调试进程的调谐器是敌意软件;`start_core` 照 ③a 原文(双 Core 入口)。

@@ -76,13 +76,17 @@ func TestReconcileLoopExecutesTheFirstAuthorizedCleanupAndOnlyOne(t *testing.T) 
 }
 
 // 白名单的内容本身要钉死:下面那条穷举测试只测「名单**外**的动作不执行」,
-// 名单越大它测得越少 —— 往名单里加 start_core,它反而少测一个。授权 start/
-// stop core 是 ③c 的决定,必须有意识地改到这条测试上,而不是顺手改个 map。
-func TestExecutableWhitelistIsExactlyTheOffCleanupPair(t *testing.T) {
-	if len(executableReconcileActions) != 2 ||
+// 名单越大它测得越少。③c 把 start_core 加进来是有意识的决定(spec
+// 2026-09-05-stage3c-start-core-design.md),stop_core 仍不在。
+func TestExecutableWhitelistIsExactlyOffCleanupPlusStartCore(t *testing.T) {
+	if len(executableReconcileActions) != 3 ||
 		!executableReconcileActions[actionRestoreDNS] ||
-		!executableReconcileActions[actionClearOrphanBarrier] {
-		t.Fatalf("执行白名单 = %v,扩它之前先读 ③b spec 的「观察态的两个」", executableReconcileActions)
+		!executableReconcileActions[actionClearOrphanBarrier] ||
+		!executableReconcileActions[actionStartCore] {
+		t.Fatalf("执行白名单 = %v,扩它之前先读 ③c spec 的「不做」一节", executableReconcileActions)
+	}
+	if executableReconcileActions[actionStopCore] {
+		t.Fatal("stop_core 不授权:desired=off + socket 应答最常见来源是 sudo bx run 调试路径")
 	}
 }
 
