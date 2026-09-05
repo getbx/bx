@@ -58,3 +58,31 @@ func TestDNSNotNeededRendersAsHealthyNotAsUnavailable(t *testing.T) {
 		t.Fatalf("doctor 对健康态判了 %s(hint=%q)", check.Status, check.Hint)
 	}
 }
+
+// ③c:start_core 的三个码各有一句人话。exhausted 是「放弃、等人」,不是让路 ——
+// 让路是暂时的,放弃是要人来的,把它渲染成让路会让用户以为过会儿就好。
+func TestReconcileLineRendersStartCoreCodesAsActionableSentences(t *testing.T) {
+	now := time.Now()
+	round := guardian.ReconcileReport{At: now.Add(-time.Minute)}
+
+	round.Executed = &guardian.ReconcileExecution{Action: "start_core", Outcome: "skipped", Error: guardian.ReconcileSkipStartCoreExhausted}
+	line := reconcileRoundSummary(round, now)
+	if strings.Contains(line, "让路") {
+		t.Fatalf("放弃被渲染成了让路: %q", line)
+	}
+	if !strings.Contains(line, "已放弃") || !strings.Contains(line, "sudo bx up") {
+		t.Fatalf("exhausted 要说「已放弃」并指路 sudo bx up: %q", line)
+	}
+
+	round.Executed = &guardian.ReconcileExecution{Action: "start_core", Outcome: "skipped", Error: guardian.ReconcileSkipCoreProcessPresent}
+	line = reconcileRoundSummary(round, now)
+	if !strings.Contains(line, "Core 进程") || !strings.Contains(line, "socket") {
+		t.Fatalf("core_process_present 要说出「有 Core 进程在跑但 socket 不应答」: %q", line)
+	}
+
+	round.Executed = &guardian.ReconcileExecution{Action: "start_core", Outcome: "skipped", Error: guardian.ReconcileSkipCoreScanFailed}
+	line = reconcileRoundSummary(round, now)
+	if !strings.Contains(line, "问不出") {
+		t.Fatalf("core_scan_failed 要说「问不出有没有 Core 在跑」: %q", line)
+	}
+}
