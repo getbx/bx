@@ -379,3 +379,70 @@ func TestStartCoreCapResetsAfterUserUp(t *testing.T) {
 		t.Fatalf("用户 Up 成功后计数应归零,got %d", got)
 	}
 }
+
+// ③c 的旗舰:这条路径此前是无人区 —— Core 意外退出,handleUnexpectedExit 装屏障
+// 后那**一次**重启失败,机器停在 Blocked 直到有人敲 bx up。现在循环在下一轮
+// 把它起回来,屏障随之释放。变异验证:把白名单改回两项必须转红。
+func TestReconcileLoopStartsCoreBackAfterAFailedCrashRestart(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.manager.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	startsAfterUp := env.runner.startCount()
+
+	// 崩溃 + 那一次自带的重启失败。
+	env.runner.startErr = errors.New("sing-box missing")
+	env.manager.handleUnexpectedExit(env.runner.currentProcess(), errors.New("Core crashed"))
+	if got := env.runner.startCount(); got != startsAfterUp+1 {
+		t.Fatalf("handleUnexpectedExit 应自己试过一次重启:start = %d, want %d", got, startsAfterUp+1)
+	}
+	if !containsEvent(env.events.snapshot(), "barrier.install") {
+		t.Fatal("前置不成立:崩溃后没装屏障(fail-closed)")
+	}
+	env.runner.startErr = nil
+	env.events.reset()
+
+	// 循环:socket 不应答直到 Start 被循环调过一次,然后应答并结束。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	rounds := 0
+	observer := func(context.Context) observe.ObservedState {
+		mu.Lock()
+		defer mu.Unlock()
+		rounds++
+		socket := observe.False
+		if env.runner.startCount() > startsAfterUp+1 {
+			socket = observe.True
+			cancel()
+		}
+		if rounds > 50 {
+			cancel()
+		}
+		return observe.ObservedState{CoreSocket: socket, ObservedAt: time.Date(2026, 9, 5, 12, 0, rounds, 0, time.UTC)}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.manager.runReconcileLoopWithPacing(ctx, observer, func(int) time.Duration { return time.Millisecond })
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("循环没有随 ctx 结束")
+	}
+
+	if got := env.runner.startCount(); got != startsAfterUp+2 {
+		t.Fatalf("循环应恰好起一次 Core:start = %d, want %d", got, startsAfterUp+2)
+	}
+	if !containsEvent(env.events.snapshot(), "barrier.release") && !containsEvent(env.events.snapshot(), "barrier.remove") {
+		t.Fatalf("起回来之后屏障没释放: %v", env.events.snapshot())
+	}
+	report := env.manager.Status().Reconcile
+	if report == nil || report.Executed == nil || report.Executed.Action != string(actionStartCore) || report.Executed.Outcome != reconcileExecutedOK {
+		t.Fatalf("Executed = %+v, want start_core/ok", report)
+	}
+	if got := env.manager.Status().Protection; got != ProtectionProtected {
+		t.Fatalf("起回来之后仍是 %q", got)
+	}
+}
