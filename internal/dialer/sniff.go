@@ -3,6 +3,7 @@ package dialer
 import (
 	"bytes"
 	"encoding/binary"
+	"net/netip"
 	"strings"
 )
 
@@ -39,14 +40,29 @@ func sniffHTTPHost(b []byte) string {
 		if !ok || !strings.EqualFold(string(k), "host") {
 			continue
 		}
-		host := strings.TrimSpace(string(v))
-		host = strings.Trim(host, "[]")
-		if i := strings.LastIndex(host, ":"); i > 0 && !strings.Contains(host[i+1:], ":") {
-			host = host[:i]
+		host := hostWithoutPort(strings.TrimSpace(string(v)))
+		// IP 字面量不是域名:按它判等于按 IP 判,交给 IP 规则那条路,别冒充域名。
+		if _, err := netip.ParseAddr(host); err == nil {
+			return ""
 		}
 		return strings.ToLower(host)
 	}
 	return ""
+}
+
+// hostWithoutPort 去掉 Host 头里的端口:`[v6]:port` 取方括号里的;`name:port`
+// 只在恰好一个冒号时截(裸 v6 不截,它不合法但也不该被截断成垃圾)。
+func hostWithoutPort(host string) string {
+	if strings.HasPrefix(host, "[") {
+		if end := strings.Index(host, "]"); end > 0 {
+			return host[1:end]
+		}
+		return strings.Trim(host, "[]")
+	}
+	if strings.Count(host, ":") == 1 {
+		return host[:strings.Index(host, ":")]
+	}
+	return host
 }
 
 func sniffTLSClientHelloSNI(b []byte) string {

@@ -272,11 +272,17 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, fl
 		tr = &Transport{}
 	}
 	// 1) fake IP 反查域名
+	//
+	// sniffed 记住「域名是从首包嗅出来的」:那种连接的目的 IP 是**真的**(应用
+	// 自己拨的),域名只是补充信息;而 fake-IP 反查出的域名才是全部信息,那个
+	// IP 什么都说明不了。两者在下面「域名规则全不中」时的处置相反。
+	sniffed := false
 	if m.Domain == "" && d.Fake != nil {
 		if dom, ok := d.Fake.Domain(m.IP); ok {
 			m.Domain = dom
-		} else if sniffed := sniffDomain(initial); sniffed != "" {
-			m.Domain = sniffed
+		} else if sniffedDomain := sniffDomain(initial); sniffedDomain != "" {
+			m.Domain = sniffedDomain
+			sniffed = true
 			debugf("domain sniffed: ip=%s domain=%q port=%d udp=%v", m.IP, m.Domain, m.Port, m.UDP)
 		} else if m.IP.Is4() {
 			debugf("fake-ip miss: ip=%s port=%d udp=%v", m.IP, m.Port, m.UDP)
@@ -404,6 +410,15 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, fl
 
 	// 2) 未命中域名:用国内 DNS 解析后按 IP 二次判定
 	var resolved netip.Addr
+	// 嗅出的域名一条规则都没中 ⇒ 由那个**真 IP** 说了算(用户的 IP 规则、私网、
+	// china CIDR)。真机 2026-09-05:`bx direct add 180.158.6.185` 之后 explain 答
+	// DIRECT,而 tailscaled 到它的 TLS(SNI brook.youdamaster.cc)照样经隧道从 VPS
+	// 出去 —— 域名不中就默认隧道,IP 规则从没被问过。直连时拨的也必须是这个 IP,
+	// 不是把 SNI 再解析一遍(那会解析到 VPS)。fake-IP 那条路不受影响:sniffed 为假。
+	if sniffed && why.Source == route.SourceDefault && m.IP.IsValid() {
+		dec, why = rt.ExplainIP(m.IP)
+		resolved = m.IP
+	}
 	if dec == route.NeedResolve {
 		ip, err := d.Resolver.Resolve(ctx, m.Domain)
 		if err != nil {

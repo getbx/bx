@@ -689,6 +689,20 @@ Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 `docs/superpowers/specs/2026-08-17-guardian-status-watch-design.md`、计划
 `docs/superpowers/plans/2026-08-17-guardian-status-watch.md`。
 
+## 嗅出的 SNI 不许压过真 IP 的规则(2026-09-05,真机诊断,修复真机已验)
+
+真机(公司工作站,bx global):`bx direct add 180.158.6.185` 之后 `bx explain 180.158.6.185`
+答 DIRECT、计数也记在那条规则下,而 tailscaled 到它的 TLS 照样经隧道从 VPS 出去 ——
+家里的 derper 记到的源 IP 是 VPS,tcpdump 里 eno1 上一个发往该 IP 的 TCP 包都没有。
+机制:`dialInner` 对 fake-IP 反查不中的连接从首包嗅 SNI/Host,按域名判;域名规则全不中
+就 `Proxy/SourceDefault`,**IP 规则从头到尾没被问过**;explain 没有首包,按 IP 判,自然说
+DIRECT。修法:嗅出的域名一条规则都没中时,由那个**真 IP** 说了算(`ExplainIP`),且直连
+拨的就是这个 IP、不把 SNI 再解析一遍(那会解析到 VPS);域名规则**命中**时仍由域名说了算
+(更具体);fake-IP 那条路不受影响(那个 IP 是假的,按它判什么都判不出)。顺手:HTTP Host
+里的 IP 字面量不再被当成域名嗅出来。**测试要带 fake 池**:嗅探只在 `d.Fake != nil` 时发生,
+`newTestDialer(nil, …)` 走不到那一支 —— 第一版测试正因此假绿。既有的 explain 漂移守卫用
+`Dial`(无首包),盖不到这一类,新加的四条在 `sniff_realip_test.go`。
+
 ## `bx explain` 的本机视角:这个目标在这台机器上会怎么走(2026-09-05,真机已跑)
 
 `bx explain <目标>` 此前只答「进了 bx 的连接会怎样」,Core 没在跑就报错。现在**先**答
