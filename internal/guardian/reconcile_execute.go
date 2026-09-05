@@ -6,21 +6,26 @@ import (
 	"time"
 )
 
-// 阶段③b:调谐环的第一批执行权。
-// spec:docs/superpowers/specs/2026-08-29-stage3b-cleanup-actions-design.md。
+// 阶段③b:调谐环的第一批执行权;③c 加了 start_core。
+// spec:docs/superpowers/specs/2026-08-29-stage3b-cleanup-actions-design.md、
 //
-// 授权面**只有 desired=off 的两个清理动作**——用户已明确说了「关」,替它清
-// 残留不违背任何意图,且各自对应一次真实事故的形状(孤儿屏障打死整机连通、
-// DNS 残留打死整机解析)。
+//	docs/superpowers/specs/2026-09-05-stage3c-start-core-design.md。
 //
-// 观察态的两个,理由写死在 spec 里,别在这里重新提议:
+// 授权面是 desired=off 的两个清理动作 + desired=on 的 start_core:
+//   - 清理:用户已明确说了「关」,替它清残留不违背任何意图,且各自对应一次
+//     真实事故的形状(孤儿屏障打死整机连通、DNS 残留打死整机解析);
+//   - start_core(③c):Core 意外退出后那一次自带的重启失败之后,此前没有任何
+//     东西再试。准入是槽内现扫 ScanRunning(测成 0 个才起),起 Core 走
+//     startCoreLocked(与 bx up 同一条原语),每段故障最多
+//     maxReconcileStartCoreAttempts 次。
+//
+// 观察态的一个,理由写死在 spec 里,别在这里重新提议:
 //   - stop_core:desired=off + socket 应答最常见的来源是 `sudo bx run`
-//     (文档化的调试路径),每 30 秒杀一次调试进程的调谐器是敌意软件;
-//   - start_core:CoreSocket==False 是「socket 没应答」不是「没有 Core 在跑」,
-//     按它起新 Core 正是 af81632 双 Core 的入口(decide 的注释同一段话)。
+//     (文档化的调试路径),每 30 秒杀一次调试进程的调谐器是敌意软件。
 var executableReconcileActions = map[reconcileAction]bool{
 	actionRestoreDNS:         true,
 	actionClearOrphanBarrier: true,
+	actionStartCore:          true,
 }
 
 const (
@@ -41,6 +46,19 @@ const (
 	// reconcileExecuteTimeout 给一次执行封顶。执行期间持着 mutation 槽,
 	// 用户的 up/down 最坏等这么久 —— 与一次真实 down 的量级相当。
 	reconcileExecuteTimeout = 20 * time.Second
+	// ③c start_core 的三个稳定码。导出:internal/cli 渲染用同一份名字,
+	// 不许两边各抄一份字符串(与 internal/udpsource 那条纪律同源)。
+	//   - core_process_present:扫到 ≥1 个 Core 进程,socket 却不应答 —— 卡住但
+	//     活着,起第二个正是 af81632 双 Core 的入口,本期只显形不处置;
+	//   - core_scan_failed:没测成。「问不出来」不是「没有」;
+	//   - start_core_exhausted:本段故障已试满 maxReconcileStartCoreAttempts 次。
+	ReconcileSkipCoreProcessPresent = "core_process_present"
+	ReconcileSkipCoreScanFailed     = "core_scan_failed"
+	ReconcileSkipStartCoreExhausted = "start_core_exhausted"
+	// maxReconcileStartCoreAttempts 是每段故障(socket 首次不应答 → 再次应答)
+	// 里起 Core 的上限。起进程不幂等:一份坏配置被每 30 秒起一次杀一次是敌意
+	// 软件。5 没有真机依据,取保守值。
+	maxReconcileStartCoreAttempts = 5
 )
 
 // firstExecutableAction 返回提议序里第一个被授权的动作。
