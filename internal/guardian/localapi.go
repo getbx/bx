@@ -841,10 +841,26 @@ func (m *acceptedMutations) wait(ctx context.Context) error {
 	}
 }
 
+// writeGuardianJSON 先整体 marshal、显式带 Content-Length、一次写出。
+//
+// **不用 json.Encoder 流式写。** net/http 只对 handler 返回前攒在 2KB 缓冲里的体
+// 补 Content-Length,更大的体改用 chunked;而菜单那份手写的 HTTP 读取器(刻意最小)
+// 只认 Content-Length。真机 2026-09-05:/v1/rules 的体随 review 一节长过 2KB,
+// 菜单的「规则」窗口从此报「Guardian returned an invalid response」,而 curl 拿到的
+// 是 200 + 合法 JSON。响应的框架不该由体的大小决定。
+// marshal 失败是编程错误(值里有不可序列化的东西),如实回 500 而不是半截 JSON。
 func writeGuardianJSON(w http.ResponseWriter, status int, value any) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		log.Printf("guardian_json_marshal_failed err=%v", err)
+		http.Error(w, "guardian response could not be encoded", http.StatusInternalServerError)
+		return
+	}
+	body = append(body, '\n')
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_, _ = w.Write(body)
 }
 
 // parseWatchGeneration 取出 `wait` 参数。第二个返回值 = 「这是一次长轮询」。

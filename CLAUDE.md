@@ -689,6 +689,17 @@ Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 `docs/superpowers/specs/2026-08-17-guardian-status-watch-design.md`、计划
 `docs/superpowers/plans/2026-08-17-guardian-status-watch.md`。
 
+## Guardian 的 JSON 响应必须显式带 Content-Length(2026-09-05,真机诊断)
+
+菜单的「规则」窗口报「Guardian returned an invalid response」,而 curl 拿到的是 200 +
+合法 JSON。差别在**框架**:`/v1/rules` 的体随 review 一节长过 2KB,`net/http` 对
+`json.Encoder` 的流式写入改用 chunked(它只给 handler 返回前攒在 2KB 缓冲里的体补
+Content-Length);菜单那份手写的 HTTP 读取器刻意最小、只认 Content-Length,于是
+`body.count != contentLength` → invalidResponse。`/v1/status` 只有 900 字节,恰好没撞上。
+修在 `writeGuardianJSON`:先整体 marshal、显式带 Content-Length、一次写出,响应的框架
+不再由体的大小决定(`TestGuardianJSONResponsesAlwaysCarryContentLength` 用一个 10KB
+的体钉住)。**升级之前的机器**菜单规则窗口一直坏,用 `bx direct add` / `bx doctor` 代替。
+
 ## 调谐环执行 start_core(阶段③c,2026-09-05,真机未验)
 
 **修的是一条无人区路径**:Core 意外退出时 `handleUnexpectedExit` 装屏障后重启**一次**,
