@@ -103,12 +103,21 @@ type Receipt struct {
 type CoreRuntime struct {
 	// Reachable 区分「问到了」与「问不出来」。Core 拨不通时其余字段全为零值,
 	// 不得用 TunnelHealthy=false 冒充 —— 那是把「没问到」压成「答案是坏的」。
-	Reachable     bool   `json:"reachable"`
-	TunnelHealthy bool   `json:"tunnel_healthy"`
-	LatencyMS     int64  `json:"latency_ms"`
-	Server        string `json:"server,omitempty"`
-	Transport     string `json:"transport,omitempty"`
-	UDPMode       string `json:"udp_mode,omitempty"`
+	Reachable     bool `json:"reachable"`
+	TunnelHealthy bool `json:"tunnel_healthy"`
+	// RoutesInstalled / DNSListening / UDPRequired / UDPReady 是 Core 那边路径
+	// 恢复 verify 阶段要看的那几项(run.go 的 verify 闭包),原样搬过来。
+	// 它们来自 RuntimeState,问不出来时保持 false —— 「没问到」不许读成
+	// 「满足」。用途见 recoverySupersededByCore:一份失败的恢复快照,在 Core
+	// 此刻已满足 verify 的每一项时是历史,不是现状。
+	RoutesInstalled bool   `json:"routes_installed"`
+	DNSListening    bool   `json:"dns_listening"`
+	UDPRequired     bool   `json:"udp_required"`
+	UDPReady        bool   `json:"udp_ready"`
+	LatencyMS       int64  `json:"latency_ms"`
+	Server          string `json:"server,omitempty"`
+	Transport       string `json:"transport,omitempty"`
+	UDPMode         string `json:"udp_mode,omitempty"`
 	// UDPTransport 是「UDP 走另一条隧道」那个配置的当前值。泄漏检测靠它把
 	// **bx 自己的按类分流**与**真的漏了**分开 —— 两者在 srflx 那个地址上
 	// 长得一模一样。

@@ -1634,13 +1634,21 @@ status/菜单 Blocked 一个多小时。**Core 侧失败从不碰 m.status**(只
 (`retireContradictedPathRecovery`,每轮 `reconcileOnce` 调):观测到捕获在
 我们的 TUN、屏障不在、DNS 归 bx、Core 应答、隧道健康 —— 正是 verify 要看的
 五项 —— 且 Manager 自己说 Protected、没有正在跑的恢复,就让 failed 快照退场并记
-`guardian_path_recovery_retired`。任一项 False/Unknown 都不动。**滞后最长一个退避
-周期(10 分钟)**,刻意不从恢复代码里叫醒循环(wakeReconcile 的注释明写只由
-up/down 调)。三个消费方(Guardian `observableStatus`、CLI
-`assembleClientStatusReport`、菜单 `recoveryPresentation`)各自把「有 failed 快照」
-读成「现在 Blocked」,是同一假设的三份拷贝;修在源头让三处按构造一致,那三份
-拷贝没动。为什么那 20 次 verify 失败仍要看 Guardian 日志(`network_recovery` 行
-带 detail)。
+`guardian_path_recovery_retired reason=observed_protected`。任一项 False/Unknown 都不动。
+**它一个人不够**:滞后最长一个退避周期(10 分钟),刻意不从恢复代码里叫醒循环
+(wakeReconcile 的注释明写只由 up/down 调),而所有者的原话是「能上网,但菜单裂开」
+—— 那 10 分钟对用户就是 bx 坏了。故**状态组装那一刻也判**
+(`recoverySupersededByCore`,`observableStatus` 里):Guardian 每次答 `/v1/status`
+都会问 Core 的运行时事实,`CoreRuntime` 现在多带 `RoutesInstalled`/`DNSListening`/
+`UDPRequired`/`UDPReady`(从 RuntimeState 搬来,问不出来保持 false),连同
+`TunnelHealthy` 正是 Core 那边 verify 闭包看的那几项;全满足 + Manager 自己说
+Protected ⇒ 失败快照是历史:发布 idle、不改写成 Blocked、并把 Manager 记忆里那份
+也退场(`reason=core_verified`,与调谐环共用 `retireFailedPathRecovery`)。菜单每 2 秒
+问一次,于是下一拍就合拢。Core 问不出来(Reachable=false / 没接 provider)一律不算。
+三个消费方(Guardian `observableStatus`、CLI `assembleClientStatusReport`、菜单
+`recoveryPresentation`)各自把「有 failed 快照」读成「现在 Blocked」,是同一假设的三份
+拷贝;修在源头让三处按构造一致,那三份拷贝没动。为什么那 20 次 verify 失败仍要看
+Guardian 日志(`network_recovery` 行带 detail)。
 
 ## Linux:Tailscale 的 WireGuard 底层 UDP 绕开劫持(2026-09-04,真机诊断)
 

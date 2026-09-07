@@ -293,6 +293,15 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 		status.NetworkGeneration = status.Recovery.Generation
 	}
 	status.Recovery = redactRecoverySnapshot(status.Recovery)
+	// Core 的运行时事实在判「失败的恢复还算不算数」之前就要拿到手:它正是
+	// 判据(见 recoverySupersededByCore),不只是附在末尾的展示数据。
+	core := fetchCoreRuntimeForStatus(options)
+	if recoverySupersededByCore(status.Protection, status.Recovery, core) {
+		if retirer, ok := recoveries.(pathRecoveryRetirer); ok {
+			retirer.retireSupersededPathRecovery()
+		}
+		status.Recovery = RecoverySnapshot{State: "idle", Stage: "idle"}
+	}
 	switch status.Recovery.State {
 	case "accepted", "running":
 		if status.Desired == DesiredOn && status.Protection != ProtectionNeedsAttention {
@@ -304,9 +313,57 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 		}
 	}
 	applyVersionFields(&status, options)
-	attachCoreRuntime(&status, options)
+	status.Core = core
 	attachPublishedIntent(&status, controller)
 	return status
+}
+
+// pathRecoveryRetirer 让 observableStatus 把一份被事实否定的失败快照从
+// Manager 的记忆里清掉 —— 否则 /v1/recoveries 与 /v1/status 对同一个问题
+// 给两个答案。可选接口:测试替身不实现时只做投影。
+type pathRecoveryRetirer interface {
+	retireSupersededPathRecovery() bool
+}
+
+// recoverySupersededByCore 判一份**已结束的失败**恢复是不是历史。
+//
+// 真机 2026-09-07:一小时的睡眠/暗唤醒抖动里 recovery-10 在 verify 连败 20 次
+// 后放弃;机器真正醒来后一切自愈,而 failed 快照留着 —— `bx status` 与菜单
+// Blocked 一个多小时,图标裂开,用户能上网。调谐环按内核观测退场要等一个
+// 退避周期(最长 10 分钟),而对用户那 10 分钟就是「bx 坏了」。Guardian 每次
+// 答状态时手里就有 Core 的运行时事实(菜单每 2 秒问一次),而那几项正是
+// Core 那边 verify 要看的:隧道健康、路由在、DNS 在听、UDP 就绪(要的话)。
+// 它们此刻全满足,那次 verify 放在现在就会通过 —— 答状态那一刻就该按事实判。
+//
+// 只对 Manager 自己说 Protected 的情形成立:屏障真在手里时 Manager 自己就说
+// Blocked,需要修理时说 NeedsAttention,两者都不是这条要碰的。Core 问不出来
+// (nil / Reachable=false)一律不算 —— 一次没拿到答案的探测不许被读成「好了」。
+func recoverySupersededByCore(protection string, recovery RecoverySnapshot, core *CoreRuntime) bool {
+	if recovery.State != "failed" || protection != ProtectionProtected || core == nil || !core.Reachable {
+		return false
+	}
+	if !core.TunnelHealthy || !core.RoutesInstalled || !core.DNSListening {
+		return false
+	}
+	if core.UDPRequired && !core.UDPReady {
+		return false
+	}
+	return true
+}
+
+// fetchCoreRuntimeForStatus 问一次 Core 的运行时状态;没接 provider 时返回
+// nil(status.Core 保持缺席,与 attachCoreRuntime 的约定一致)。
+func fetchCoreRuntimeForStatus(options LocalAPIOptions) *CoreRuntime {
+	if options.CoreRuntime == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), coreRuntimeFetchTimeout)
+	defer cancel()
+	runtime, err := options.CoreRuntime(ctx)
+	if err != nil {
+		runtime = CoreRuntime{Reachable: false}
+	}
+	return &runtime
 }
 
 // attachCoreRuntime fills status.Core when the caller wired a CoreRuntime
@@ -320,16 +377,7 @@ func observableStatus(controller Controller, recoveries PathRecoveryController, 
 // menu's only data source cannot be allowed to go dark because the Core
 // socket happened to be unreachable at the moment of the poll.
 func attachCoreRuntime(status *Status, options LocalAPIOptions) {
-	if options.CoreRuntime == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), coreRuntimeFetchTimeout)
-	defer cancel()
-	runtime, err := options.CoreRuntime(ctx)
-	if err != nil {
-		runtime = CoreRuntime{Reachable: false}
-	}
-	status.Core = &runtime
+	status.Core = fetchCoreRuntimeForStatus(options)
 }
 
 // updateCheckCache serializes and caches the injected update-check provider.
