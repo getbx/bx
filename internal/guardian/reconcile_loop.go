@@ -94,6 +94,7 @@ func (m *Manager) reconcileOnce(ctx context.Context, observed observe.ObservedSt
 	if observed.CoreSocket == observe.True {
 		m.resetStartCoreAttempts()
 	}
+	m.retireContradictedPathRecovery(observed)
 	input := reconcileInput{
 		Observed:         observed,
 		PathRecoveryBusy: m.pathRecoveryBusy(),
