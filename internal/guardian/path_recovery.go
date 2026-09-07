@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
@@ -235,6 +236,44 @@ func (m *Manager) retireCompletedPathRecovery() {
 		return
 	}
 	m.pathRecoveryCurrent = RecoverySnapshot{State: "idle", Stage: "idle"}
+}
+
+// retireContradictedPathRecovery 让一份**被内核否定**的失败恢复退场。
+//
+// 真机 2026-09-07:一小时的 50 秒一拍睡眠/暗唤醒里,recovery-10 在 verify 连败
+// 20 次后放弃(退避 100ms→5s,20 次只要 105 秒);机器真正醒来后捕获、屏障、DNS、
+// 隧道全部自愈,而那份 failed 快照没有任何东西会清 —— `bx status` 与菜单一直
+// Blocked、图标裂开,同一屏 observed 说屏障不在、隧道健康。09-04 的
+// retireCompletedPathRecovery 只挂在用户的 up/down 上;用户什么都没做时它永远不跑。
+//
+// **判据是观测,不是时间**:捕获在我们的 TUN 上、屏障不在内核里、DNS 归 bx、Core
+// 应答、隧道健康 —— 这五项正是 Core 那边 verify 要看的东西;它们此刻全为 True,
+// 那次 verify 放在现在就会通过。任一项不是 True(False 或 Unknown)都不动:「问不
+// 出来」不是「好了」。Manager 自己说的不是 Protected 也不动 —— 屏障真在手里时
+// Blocked 是事实,不是陈旧结局;正在跑的恢复由它自己发布结局。
+func (m *Manager) retireContradictedPathRecovery(observed observe.ObservedState) {
+	if observed.CaptureOK != observe.True ||
+		observed.BarrierPresent != observe.False ||
+		observed.DNSManaged != observe.True ||
+		observed.CoreSocket != observe.True ||
+		observed.TunnelHealthy != observe.True {
+		return
+	}
+	if m.Status().Protection != ProtectionProtected {
+		return
+	}
+	m.pathRecoveryMu.Lock()
+	defer m.pathRecoveryMu.Unlock()
+	if m.pathRecoveryActive || m.pathRecoveryPending != nil {
+		return
+	}
+	current := m.pathRecoveryCurrent
+	if current.State != "failed" {
+		return
+	}
+	m.pathRecoveryCurrent = RecoverySnapshot{State: "idle", Stage: "idle"}
+	log.Printf("guardian_path_recovery_retired id=%s stage=%s error_code=%s attempt=%d reason=observed_protected",
+		current.ID, current.Stage, current.ErrorCode, current.Attempt)
 }
 
 func (m *Manager) CurrentPathRecovery() RecoverySnapshot {
