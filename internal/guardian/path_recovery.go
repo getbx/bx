@@ -259,21 +259,36 @@ func (m *Manager) retireContradictedPathRecovery(observed observe.ObservedState)
 		observed.TunnelHealthy != observe.True {
 		return
 	}
+	m.retireFailedPathRecovery("observed_protected")
+}
+
+// retireSupersededPathRecovery 是 observableStatus 那条路的入口:Core 的运行时
+// 事实已满足 verify 的每一项(判据在 recoverySupersededByCore,调用方已判过),
+// 把那份失败快照从记忆里清掉。
+func (m *Manager) retireSupersededPathRecovery() bool {
+	return m.retireFailedPathRecovery("core_verified")
+}
+
+// retireFailedPathRecovery 让一份已结束的失败恢复退场。两个调用方(调谐环按
+// 内核观测、状态组装按 Core 运行时)共用这一份:Manager 自己得说 Protected
+// (屏障真在手里时 Blocked 是事实),没有正在跑或排队的恢复,当前快照是 failed。
+func (m *Manager) retireFailedPathRecovery(reason string) bool {
 	if m.Status().Protection != ProtectionProtected {
-		return
+		return false
 	}
 	m.pathRecoveryMu.Lock()
 	defer m.pathRecoveryMu.Unlock()
 	if m.pathRecoveryActive || m.pathRecoveryPending != nil {
-		return
+		return false
 	}
 	current := m.pathRecoveryCurrent
 	if current.State != "failed" {
-		return
+		return false
 	}
 	m.pathRecoveryCurrent = RecoverySnapshot{State: "idle", Stage: "idle"}
-	log.Printf("guardian_path_recovery_retired id=%s stage=%s error_code=%s attempt=%d reason=observed_protected",
-		current.ID, current.Stage, current.ErrorCode, current.Attempt)
+	log.Printf("guardian_path_recovery_retired id=%s stage=%s error_code=%s attempt=%d reason=%s",
+		current.ID, current.Stage, current.ErrorCode, current.Attempt, reason)
+	return true
 }
 
 func (m *Manager) CurrentPathRecovery() RecoverySnapshot {

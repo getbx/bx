@@ -437,6 +437,16 @@ func fetchCoreRuntime(ctx context.Context) (CoreRuntime, error) {
 	if err != nil {
 		return CoreRuntime{}, err
 	}
+	// 直连解析器与 verify 的那几项住在 RuntimeState 而不是 stats.Report,所以
+	// 要多问一跳。**它失败不许连累整份状态。** 那几项是锦上添花,而隧道健康、
+	// 延迟这些是菜单的立身之本;问不出来就留空/false(= 没问出来),绝不编一个值。
+	state, stateErr := supervisor.FetchRuntimeState(supervisor.SockPath)
+	return coreRuntimeFrom(report, state, stateErr), nil
+}
+
+// coreRuntimeFrom 把 Core 的两份应答折成菜单与状态用的 CoreRuntime。
+// 纯函数,让「RuntimeState 问不出来时哪些字段保持零值」这件事可测。
+func coreRuntimeFrom(report stats.Report, state supervisor.RuntimeState, stateErr error) CoreRuntime {
 	runtime := CoreRuntime{
 		Reachable:     true,
 		TunnelHealthy: report.TunnelHealthy,
@@ -447,14 +457,15 @@ func fetchCoreRuntime(ctx context.Context) (CoreRuntime, error) {
 		UDPTransport:  report.UDPTransport,
 		FailingRules:  failingRulesFrom(report),
 	}
-	// 直连解析器住在 RuntimeState 而不是 stats.Report,所以要多问一跳。
-	//
-	// **它失败不许连累整份状态。** 这一行是锦上添花,而隧道健康、延迟这些是
-	// 菜单的立身之本;问不出来就留空(= 没问出来),绝不编一个值。
-	if state, err := supervisor.FetchRuntimeState(supervisor.SockPath); err == nil {
-		runtime.DNSUpstream = ResolverLabel(state.DNSUpstream, chinaResolverPredicate())
+	if stateErr != nil {
+		return runtime
 	}
-	return runtime, nil
+	runtime.DNSUpstream = ResolverLabel(state.DNSUpstream, chinaResolverPredicate())
+	runtime.RoutesInstalled = state.RoutesInstalled
+	runtime.DNSListening = state.DNSListening
+	runtime.UDPRequired = state.UDPRequired
+	runtime.UDPReady = state.UDPReady
+	return runtime
 }
 
 func RunDaemon(ctx context.Context, options DaemonOptions) error {

@@ -61,6 +61,10 @@ var nestedDigestExclusions = map[string]string{
 var nestedDigestSignals = []string{
 	"Core.Reachable",
 	"Core.TunnelHealthy",
+	"Core.RoutesInstalled",
+	"Core.DNSListening",
+	"Core.UDPRequired",
+	"Core.UDPReady",
 	"Core.Server",
 	"Core.Transport",
 	"Core.UDPMode",
