@@ -146,6 +146,46 @@ struct MenuRowsTests {
                "维护挂起不是异常,不得让图标裂开,实际 \(paused.anomalyCount)")
         expect(row(paused, "Latency") != nil, "挂起行是加进来的,不是替换掉原有的数据行")
 
+        // ---- 紧凑显示(compactMenuRows):菜单里只摆一行「Via」,诊断行只在 ✗ 时露面 ----
+        //
+        // 「已连接」状态下此前五行数据里四行天天一个样(DNS / Direct lookups /
+        // UDP Relay),按「只在真有问题时才占地方」它们不该常驻。**判据在这里,
+        // 不在 rebuildMenu**:菜单那半在 CI 里编不了。anomalyCount 仍按完整集合算
+        // (图标裂不裂不受显示压缩影响),这一条由下面最后一句钉住。
+        let compact = compactMenuRows(set)
+        expect(compact.count == 1, "健康时只该有一行,实际 \(compact.map(\.label))")
+        expect(compact.first?.label == "Via", "那一行叫 Via,实际 \(String(describing: compact.first?.label))")
+        expect(compact.first?.value == "reality@vps · 390 ms", "Via 行合并传输与延迟,实际 \(String(describing: compact.first?.value))")
+        expect(compact.first?.mark == .ok, "健康时 Via 是 ok")
+
+        let tunnelDown = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":false,"server":"vps","transport":"reality@vps"}}
+        """)
+        let sick = compactMenuRows(menuRows(status: tunnelDown, dns: "127.0.0.1"))
+        expect(sick.first?.value == "reality@vps · Tunnel unhealthy", "隧道坏了要在 Via 行说出来,实际 \(String(describing: sick.first?.value))")
+        expect(sick.first?.mark == .bad, "隧道坏了 Via 行是 bad")
+
+        let blind = compactMenuRows(menuRows(status: nil, dns: nil))
+        expect(blind.count == 1 && blind.first?.value == "Not checked" && blind.first?.mark == .unknown,
+               "什么都问不出来时只有一行 Not checked,实际 \(blind.map { "\($0.label)=\($0.value)" })")
+
+        // 诊断行在 ✗ 时必须露面 —— 压缩的是「正常时的噪声」,不是「坏消息」。
+        let withBadDNS = MenuRowSet(rows: set.rows.map {
+            $0.label == "DNS" ? MenuRow(label: "DNS", value: "Not managed by bx", mark: .bad) : $0
+        }, anomalyCount: 1)
+        let shown = compactMenuRows(withBadDNS)
+        expect(shown.contains { $0.label == "DNS" && $0.mark == .bad }, "坏掉的 DNS 行被压缩没了:\(shown.map(\.label))")
+        expect(!shown.contains { $0.label == "UDP Relay" }, "正常的 UDP Relay 不该露面")
+
+        // 维护挂起是「为什么保护是这个样子」,压缩不动它,而且仍在最前。
+        let compactPaused = compactMenuRows(paused)
+        expect(compactPaused.first?.label == "Maintenance", "挂起行在紧凑显示里仍排最前,实际 \(compactPaused.map(\.label))")
+        // 认不出的新行默认参与显示(吵的失效好过安静的失效)。
+        let novel = MenuRowSet(rows: [MenuRow(label: "Something new", value: "x", mark: .ok)], anomalyCount: 0)
+        expect(compactMenuRows(novel).contains { $0.label == "Something new" }, "新加的行不该被静默压掉")
+        expect(set.anomalyCount == 0 && withBadDNS.anomalyCount == 1, "anomalyCount 由完整集合决定,与显示压缩无关")
+
         if failures == 0 { print("MenuRowsTests passed") } else { exit(1) }
     }
 }

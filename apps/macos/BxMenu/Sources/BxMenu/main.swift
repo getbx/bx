@@ -906,8 +906,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var rulesFetchInFlight = false
     private var serversFetchInFlight = false
 
-    /// 规则窗口。**窗口而不是子菜单**:菜单每 2 秒 removeAllItems() 重建一次,
-    /// 而进子菜单再点一项通常超过 2 秒 —— 真机上就是这么变成"点了没反应"的。
+    /// 规则窗口。**窗口而不是子菜单**:2026-09-08 之前菜单每 2 秒 removeAllItems()
+    /// 重建一次(现在只在内容变了才重建,见 commitMenu,子菜单已可用);它仍是窗口
+    /// 是因为规则要编辑、要看失败归因,那不是子菜单能装下的。
     private lazy var rulesWindow: RulesWindowController = {
         let controller = RulesWindowController()
         controller.onToggleGroup = { [weak self] name, enable in
@@ -1050,6 +1051,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.onProbe = { [weak self] in
             self?.probeServers()
+        }
+        controller.onDeploy = { [weak self] in
+            self?.openDeployWindow()
+        }
+        controller.onReplaceConfiguration = { [weak self] in
+            self?.replaceConfiguration()
         }
         return controller
     }()
@@ -1461,9 +1468,55 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// 上一次真正摆进菜单栏的那份内容的签名(menuSignature)。内容没变就不重建
+    /// —— 见 commitMenu。
+    private var lastMenuSignature: String?
+
+    /// 把 rebuildMenu 攒好的草稿摆进菜单栏,**内容没变就一个 item 都不动**。
+    ///
+    /// 菜单开着时每 2 秒刷新一次,此前每次都 `removeAllItems()` 重填:展开的子菜单
+    /// 会被拆掉、高亮会丢、整个菜单闪一下。本仓库两次因此选了窗口而不是子菜单
+    /// (规则、按应用看分流)。根因是「重建」与「有没有变化」没分开:这里按渲染
+    /// 结果的签名比对,只有真的变了才换 —— 于是 `Troubleshoot ▸` 这样的子菜单能
+    /// 用,稳态下菜单开着也不再每 2 秒闪一下。签名里带着计秒的行(Connecting Ns)
+    /// 每秒都变,那几个状态照旧每拍重建,而它们本来就没有子菜单。
+    private func commitMenu(_ draft: NSMenu) {
+        guard let live = statusItem.menu else { return }
+        let signature = menuSignature(draft)
+        if signature == lastMenuSignature { return }
+        lastMenuSignature = signature
+        live.removeAllItems()
+        for item in draft.items {
+            draft.removeItem(item)
+            live.addItem(item)
+        }
+    }
+
+    /// 一份菜单**看得见的一切**折成一个字符串:标题(含富文本标题)、是否可点、
+    /// 是否分隔符、图标名、动作名、子菜单(递归)。漏掉一项就是「那一项变了而菜单
+    /// 不更新」—— 所以宁可多算(动作名、图标名),不许少算。
+    private func menuSignature(_ menu: NSMenu) -> String {
+        menu.items.map { item -> String in
+            if item.isSeparatorItem { return "---" }
+            var parts = [
+                item.title,
+                item.attributedTitle?.string ?? "",
+                item.attributedTitle == nil ? "plain" : "rich",
+                item.isEnabled ? "on" : "off",
+                item.image?.name() ?? item.image?.accessibilityDescription ?? "",
+                item.action.map { NSStringFromSelector($0) } ?? "",
+            ]
+            if let submenu = item.submenu {
+                parts.append("[" + menuSignature(submenu) + "]")
+            }
+            return parts.joined(separator: "\u{1F}")
+        }.joined(separator: "\n")
+    }
+
     private func rebuildMenu() {
-        guard let menu = statusItem.menu else { return }
-        menu.removeAllItems()
+        // 攒进一份草稿,函数的每条出口都经 commitMenu 落定 —— 内容没变就不换。
+        let menu = NSMenu()
+        defer { commitMenu(menu) }
         // 每轮复位:漏了它,某一轮出现过的版本行会让此后所有轮次的页脚都不再
         // 显示更新入口 —— 一个只在特定顺序下才出现、且完全静默的缺失。
         updateShownInVersionRow = false
@@ -1543,7 +1596,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             //
             // `.warning` 那一支的 Status 行**留着**:那里装的是原因(Repair Required /
             // DNS not managed),图标说不出来。
-            for row in menuRowsNow().rows {
+            // 只摆压缩后的行(判据在 compactMenuRows,纯函数):健康时一行 Via,
+            // 诊断行只在 ✗ 时露面。图标裂不裂仍看完整集合的 anomalyCount。
+            for row in compactMenuRows(menuRowsNow()) {
                 let suffix: String
                 switch row.mark {
                 case .ok: suffix = ""
@@ -1640,44 +1695,22 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             break
         }
         switch state {
-        case .setupNeeded:
-            menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
-            menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
-        case .missing, .updateNeeded, .notInstalled:
-            menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
-        case .off:
-            menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
-            menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
-        case .connected, .warning:
-            menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
-            menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
-        }
-        switch state {
-        case .connected, .warning:
-            // 只有这两个状态在下面还会加动作,分隔符才有东西可分隔。
-            menu.addItem(.separator())
-        default:
-            break
-        }
-        switch state {
         case .connected:
-            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
+            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
         case .warning("Repair Required", _):
             menu.addAction(repairActionTitle, symbol: "wrench.and.screwdriver", target: self, action: #selector(repairBx))
-            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
+            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
         case .warning:
-            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
+            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
         case .off, .updateNeeded, .setupNeeded, .missing, .notInstalled:
-            // 这些状态的主动作已经排在诊断入口之前了,这里不再重复。
+            // 这些状态的主动作已经排在上面了。
             break
         }
-        // Check for leaks 在**每一个**状态下都在场。这是刻意的:这个功能的
-        // 立身之本就是「保护关着也有用」——只在 .connected 里给它,等于把它
-        // 藏在最不需要它的那个状态里(TestMacMenuLeakCheckRunsUnprivileged
-        // 按花括号深度钉住它在顶层)。
+        menu.addItem(.separator())
+        // ---- 窗口入口:天天会点的几扇门,一级菜单只留这几项 ----
         // 规则入口:只在这一版 Guardian 声明了 rules 能力时出现。**能力键缺席 =
         // 旧版**,少了这个判断用户会对着一个每次点都 404 的按钮,而 404 在菜单上
         // 根本表达不出来(rulesEditingAvailable 是纯函数,判据由 Swift 套件钉住)。
@@ -1689,9 +1722,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // 服务器入口:同样只在 Guardian 声明了这个能力时出现。旧版没有
         // /v1/servers,画出来的按钮每次点都失败,而用户看不出为什么。
+        // 「Set Up a New Server…」与「Replace Configuration…」2026-09-08 起住在
+        // 这个窗口里(它们说的都是服务器这件事);后者在没有这个窗口的旧 Guardian
+        // 上仍留在菜单里,见 replaceConfigurationLivesInMenu。
         if serverSwitchingAvailable(capabilities: maintenanceReport?.capabilities) {
             menu.addAction("Servers…", symbol: "globe", target: self, action: #selector(openServersWindow))
-            menu.addAction("Set Up a New Server…", symbol: "plus.circle", target: self, action: #selector(openDeployWindow))
         }
         // 应用流量入口:同样只在 Guardian 声明了 apps 能力时出现。旧版没有
         // /v1/apps,画出来的菜单项每次点都 404,而 404 在菜单上根本表达不出来
@@ -1702,23 +1737,29 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addAction("Traffic by App…", symbol: "chart.bar.doc.horizontal",
                            target: self, action: #selector(openAppTrafficWindow))
         }
-        // **换配置的入口。** 此前只有「还没配置」那个状态里有 Set Up bx…,
-        // 配好之后再也找不到它 —— 换服务器只能开终端(2026-08-14 项目所有者提出)。
-        // 叫 Replace 而不是 Switch 是刻意的:它是替换一份配置,不是从列表里挑一台。
-        menu.addAction("Replace Configuration…", symbol: "arrow.triangle.2.circlepath",
-                       target: self, action: #selector(replaceConfiguration))
-        menu.addAction("Check for leaks ↗", symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
-        // 卸载入口。**只在装过的时候出现**(没装就没什么可卸),但它必须存在于
-        // 其余每一个状态里 —— 想删掉 bx 的人,最可能正处在「它出问题了」那几个
-        // 状态,而那正是此前一个卸载入口都没有的地方。
-        //
-        // **位置在最底部、紧邻 Quit。** 上一版把它放在 Replace Configuration
-        // 与 Check for leaks **上面** —— 一个破坏性动作夹在常点的项目中间,
-        // 手滑的代价是把整套保护卸掉。破坏性的东西归到底部,这是菜单的通例。
-        if cliIsInstalled() {
-            menu.addItem(.separator())
-            menu.addAction(UninstallPresentation.actionTitle, symbol: "trash", target: self, action: #selector(uninstallBx))
+        if replaceConfigurationLivesInMenu(capabilities: maintenanceReport?.capabilities) {
+            menu.addAction("Replace Configuration…", symbol: "arrow.triangle.2.circlepath",
+                           target: self, action: #selector(replaceConfiguration))
         }
+        // Check for leaks 在**每一个**状态下都在场。这是刻意的:这个功能的
+        // 立身之本就是「保护关着也有用」——只在 .connected 里给它,等于把它
+        // 藏在最不需要它的那个状态里(TestMacMenuLeakCheckRunsUnprivileged
+        // 按花括号深度钉住它在顶层)。
+        menu.addAction("Check for leaks ↗", symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
+        // ---- Troubleshoot ▸:一年点一次的东西收进一个子菜单 ----
+        // 子菜单能用的前提是 commitMenu 只在内容变了才重建(否则每 2 秒被拆一次)。
+        // 卸载入口也在这里:**只在装过的时候出现**(没装就没什么可卸),但它必须
+        // 存在于其余每一个状态里 —— 想删掉 bx 的人最可能正处在「它出问题了」
+        // 那几个状态。它排在子菜单最底,与破坏性动作归底部的通例一致。
+        let troubleshoot = NSMenu()
+        troubleshoot.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+        troubleshoot.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+        if cliIsInstalled() {
+            troubleshoot.addItem(.separator())
+            troubleshoot.addAction(UninstallPresentation.actionTitle, symbol: "trash", target: self, action: #selector(uninstallBx))
+        }
+        menu.addItem(.separator())
+        menu.addSubmenu("Troubleshoot", symbol: "wrench.adjustable", troubleshoot)
         // 退出入口无条件加一次。**不要挪回上面任何一个 case**:此前它只在
         // .connected/.warning 里,于是 .off/.setupNeeded/.missing/.notInstalled/
         // .updateNeeded 下菜单没有任何退出入口(TestMacMenuQuitActionPresentInEveryState)。
@@ -2832,6 +2873,13 @@ private extension NSMenu {
     func addPlainText(_ text: String) {
         let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
         item.isEnabled = false
+        addItem(item)
+    }
+
+    func addSubmenu(_ title: String, symbol: String, _ submenu: NSMenu) {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        item.submenu = submenu
         addItem(item)
     }
 

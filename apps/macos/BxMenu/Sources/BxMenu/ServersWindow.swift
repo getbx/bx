@@ -18,6 +18,10 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     var onCheckExitIP: (() -> Void)?
     /// 用户点了「Test All」—— 逐台量直连往返时间。
     var onProbe: (() -> Void)?
+    /// 用户点了「New Server…」(从一级菜单搬进来的「Set Up a New Server…」)。
+    var onDeploy: (() -> Void)?
+    /// 用户点了「Replace Configuration…」(同上,从一级菜单搬进来)。
+    var onReplaceConfiguration: (() -> Void)?
 
     /// 正在测。按钮禁掉,免得连点几次发出几串探测。
     var probing = false
@@ -143,6 +147,19 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         check.isEnabled = probe != .checking
         check.toolTip = "Asks a public service where your traffic appears to come from."
         buttons.addArrangedSubview(check)
+
+        // 两个从一级菜单搬进来的入口:它们说的都是「服务器」这件事,归这里。
+        let deploy = NSButton(title: "New Server…", target: self, action: #selector(deployServer))
+        deploy.bezelStyle = .rounded
+        deploy.controlSize = .small
+        deploy.toolTip = "Install bx server on a fresh VPS over SSH."
+        buttons.addArrangedSubview(deploy)
+
+        let replace = NSButton(title: "Replace Configuration…", target: self, action: #selector(replaceConfiguration))
+        replace.bezelStyle = .rounded
+        replace.controlSize = .small
+        replace.toolTip = "Paste a new link to replace the current configuration."
+        buttons.addArrangedSubview(replace)
         stack.addArrangedSubview(buttons)
 
         // **只在有话说时才有这一行。** 「not checked」是常态不是信息。
@@ -207,6 +224,14 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
 
     @objc private func checkExitIP() {
         onCheckExitIP?()
+    }
+
+    @objc private func deployServer() {
+        onDeploy?()
+    }
+
+    @objc private func replaceConfiguration() {
+        onReplaceConfiguration?()
     }
 
     @objc private func probeAll() {

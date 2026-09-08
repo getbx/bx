@@ -733,6 +733,33 @@ Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 不该弹通知(用户自己做的);③ 拔掉 VPS 或 `sudo route delete <服务器IP>` 让隧道
 断 ≥ 30 秒 → 应弹一条「traffic blocked」,恢复后弹「protected again」并顶掉前一条。
 
+## 菜单精简:18 行 → 11 行,子菜单从此可用(2026-09-08,真机未验)
+
+项目所有者原话「bx 菜单感觉有点复杂了」。复杂的根源两个:五行数据里四行是**诊断值**
+(DNS / Direct lookups / UDP Relay 正常时天天一个样,按「只在真有问题时才占地方」它们
+不该常驻);十个动作**按功能平铺**,天天点的(Turn Off)与一年点一次的(Set Up a New
+Server、Uninstall)并排。现在「已连接」是:`Via reality@vps · 293 ms` 一行(判据
+`compactMenuRows`,纯函数:Route+Latency 合并、诊断行只在 ✗ 时露面、维护挂起与认不出的
+新行原样保留 —— 默认参与显示,吵的失效好过安静的)、版本行、Turn Off / Reconnect、
+Routing Rules… / Servers… / Traffic by App… / Check for leaks、`Troubleshoot ▸`
+(Check for Problems / Open Logs / Uninstall)、Quit。「Set Up a New Server…」与
+「Replace Configuration…」搬进服务器窗口当按钮(它们说的都是服务器这件事);后者在
+没有服务器窗口的旧 Guardian 上仍留在菜单(`replaceConfigurationLivesInMenu`),否则
+换服务器又只能开终端。
+
+**子菜单此前不能用,根因顺手修了**:菜单开着时每 2 秒 `removeAllItems()` 重填,展开的
+子菜单会被拆掉 —— 本仓库两次因此选窗口不选子菜单。现在 `rebuildMenu` 攒一份草稿、
+`defer { commitMenu(menu) }` 落定,`commitMenu` 先比**渲染结果的签名**
+(`menuSignature`:标题/富文本/可点/图标名/动作名/子菜单递归),变了才就地换 item;
+稳态下菜单开着也不再每 2 秒闪一下。带计秒的状态(Connecting Ns)每秒签名都变、照旧
+每拍重建,它们本来就没有子菜单。**「菜单对象始终是同一个」那条不变量没动**
+(`TestMacMenuRebuildsMenuInPlace` 改成钉 commitMenu:不换对象、先比签名再清空、
+`removeAllItems()` 全文件只许在 commitMenu 里出现一次 —— 别处清空会绕过签名比对)。
+守卫 `internal/cli/macos_menu_compact_test.go` 三条(已连接只摆压缩行、Troubleshoot
+装全三项且一级菜单不再有它们、Replace Configuration 由能力门控 + 窗口回调接上),
+六条变异各咬中一条。**真机未验**:子菜单展开时菜单开着 2 秒一拍是否真的不再拆它、
+服务器窗口两个新按钮、Via 行的观感。
+
 ## 嗅出的 SNI 不许压过真 IP 的规则(2026-09-05,真机诊断,修复真机已验)
 
 真机(公司工作站,bx global):`bx direct add 180.158.6.185` 之后 `bx explain 180.158.6.185`
