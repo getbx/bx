@@ -81,9 +81,10 @@ func TestMacMenuDroppedTheConstantRows(t *testing.T) {
 	// `updateShownInVersionRow = false` 还同时是那个属性的**声明**),于是删掉真正
 	// 要守的那一处之后,守卫被另一处满足、照样通过。
 	warning := scopeAfter(t, source, "case .warning(let message, let version):", 600)
-	if !strings.Contains(warning, `menu.addInfo("Status", message)`) {
-		t.Error("`.warning` 的 Status 行不见了 —— 那一行装的是原因(Repair Required / " +
-			"DNS not managed),图标说不出来;删掉它用户就只剩一个「有点不对劲」的图标")
+	// 2026-09-08 起原因写在开关行下面那行小字(标红),不再是单独的 Status 行。
+	if !strings.Contains(warning, `protectionSwitchRow(subtitle: message, subtitleIsBad: true)`) {
+		t.Error("`.warning` 的原因(Repair Required / DNS not managed)不见了 —— 图标说不出原因," +
+			"开关下面那行是唯一说得出的地方;删掉它用户就只剩一个「有点不对劲」的图标")
 	}
 	// **不用固定字节窗口取 rebuildMenu。** `scopeAfter` 的 span 是个常数,而这里
 	// 要守的那一句在函数体里的位置会随任何一次无关的插入往后挪 —— 在 rebuildMenu
@@ -95,9 +96,14 @@ func TestMacMenuDroppedTheConstantRows(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 rebuildMenu() 的函数体 —— 这条守卫已经读不懂它要守的东西,请连同它一起改")
 	}
-	if !strings.Contains(rebuild, "updateShownInVersionRow = false") {
-		t.Error("updateShownInVersionRow 没有在 rebuildMenu 开头复位 —— 漏掉它,某一轮" +
-			"出现过版本行之后,此后所有轮次的页脚都不再显示更新入口,而且完全静默")
+	// 2026-09-08 起更新入口只有一处(addUpdateActionIfAvailable,只在有新版时出现),
+	// 常驻版本行连同 updateShownInVersionRow 那个「谁先画了谁」的记账一起删了。
+	if strings.Count(rebuild, "addUpdateActionIfAvailable(to: menu)") != 1 {
+		t.Error("rebuildMenu 里的更新入口不是恰好一处 addUpdateActionIfAvailable(to: menu) —— " +
+			"少了没有更新入口,多了同一件事说两遍")
+	}
+	if strings.Contains(rebuild, "addVersionRow(") {
+		t.Error("常驻版本行又回到菜单里了 —— 它只在有新版时才是信息,平时住在 Troubleshoot ▸ 里")
 	}
 }
 

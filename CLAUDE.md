@@ -784,6 +784,22 @@ Routing Rules… / Servers… / Traffic by App… / Check for leaks、`Troublesh
 - **真机要看**:开关行与其它项的左对齐、`.small` 尺寸的 NSSwitch 在 32/46pt 行高里的观感、
   拨动后菜单是否真的留着并在它下面显示进度、失败时是否弹回。
 
+**设计 review 那一轮(同日,所有者要求「简洁、现代、有设计感」)又剥掉一层重复与噪声**,
+现在是 9 行 2 条分隔线:① **抬头删了** —— 菜单栏图标是身份、开关是状态,「bx / Connected」
+两行加一条线与开关说的是同一件事;只有**没有开关的状态**(Setup Required / Not Installed /
+Updating)保留一行粗体状态词(`addHeadline`)。`.warning` 的原因写在开关下面那行、标红,
+不再是单独的 Status 行。② **常驻版本号删了** —— 它只在有新版时才是信息:更新入口只剩
+`addUpdateActionIfAvailable` 一处(强调色,紧贴顶部那组),平时的「装的是哪一版」搬进
+Troubleshoot ▸ 里一行(`installedVersionForMenu`,只从状态里已带的版本取、不读盘);
+`addVersionRow` 与 `updateShownInVersionRow` 那套「谁先画了谁」的记账一起删了。③ 开关下面
+那行**服务器名优先**(`vps · 293 ms`),`reality@vps` 是传输@服务器的内部标识,协议留在
+`bx status` / doctor(`menuRows` 的 Route 值改为 server 优先、transport 兜底)。④ 标题统一
+Title Case,`Check for leaks ↗` → `Check for Leaks…`(其它开窗口的项都用 `…`,`↗` 不是
+AppKit 惯例)。⑤ Quit **不带图标、带 ⌘Q**(`addQuit`):电源符号紧挨着保护开关会被读成
+「关掉保护」。⑥ Reconnect 与四扇窗口门合成一组,Troubleshoot ▸ 与 Quit 之间不再有线。
+守卫跟着改锚点(`verify_script_test.go` 的 `.warning` 原因与更新入口两条、Quit 存在性、
+leak 标题大小写)+ 新增 `TestMacMenuQuitHasNoIconAndUsesCommandQ`;五条变异各红。
+
 ## 嗅出的 SNI 不许压过真 IP 的规则(2026-09-05,真机诊断,修复真机已验)
 
 真机(公司工作站,bx global):`bx direct add 180.158.6.185` 之后 `bx explain 180.158.6.185`

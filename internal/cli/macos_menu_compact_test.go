@@ -114,3 +114,25 @@ func readMenuSwiftSource(t *testing.T, name string) string {
 	}
 	return string(source)
 }
+
+// Quit 不带图标、带 ⌘Q(与系统菜单栏应用同款)。电源符号在这条菜单里会被读成
+// 「关掉保护」,而真正的开关就在第一行。三处 Quit(两个进行中浮层 + 常规)都走 addQuit。
+func TestMacMenuQuitHasNoIconAndUsesCommandQ(t *testing.T) {
+	code := menuMainSwiftCode(t)
+	if strings.Contains(code, "quitBxActionTitle, symbol:") {
+		t.Fatal("Quit 又带上图标了 —— 电源符号紧挨着保护开关会被读成「关掉保护」")
+	}
+	if n := strings.Count(code, "menu.addQuit(quitBxActionTitle, target: self, action: #selector(quitBx))"); n < 3 {
+		t.Fatalf("addQuit 只有 %d 处,进行中两个浮层 + 常规菜单要都走它", n)
+	}
+	body, ok := swiftFunctionBody(stripSwiftComments(menuMainSwiftSource(t)), "func addQuit(_ title: String, target: AnyObject, action: Selector)")
+	if !ok {
+		t.Fatal("读不出 addQuit 的函数体")
+	}
+	if !strings.Contains(body, `keyEquivalent: "q"`) {
+		t.Fatal("Quit 没有 ⌘Q")
+	}
+	if strings.Contains(body, "systemSymbolName") {
+		t.Fatal("addQuit 给 Quit 画了图标")
+	}
+}
