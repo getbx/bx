@@ -383,7 +383,7 @@ func TestMacMenuQuitBxStopsProtectionThenQuitsMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	if !strings.Contains(text, "menu.addAction(quitBxActionTitle") {
+	if !strings.Contains(text, "menu.addQuit(quitBxActionTitle") {
 		t.Fatal("macOS menu should expose an explicit Quit bx action")
 	}
 
@@ -5802,7 +5802,7 @@ func TestMacMenuLeakCheckRunsUnprivileged(t *testing.T) {
 	}
 	text := swiftCodeOnly(string(source))
 
-	if !strings.Contains(text, "Check for leaks") {
+	if !strings.Contains(text, "Check for Leaks") {
 		t.Fatal("菜单必须有 Check for leaks 入口项")
 	}
 	body, ok := swiftFunctionBody(text, "private func checkForLeaks(")
@@ -5830,7 +5830,7 @@ func TestMacMenuLeakCheckRunsUnprivileged(t *testing.T) {
 
 	// **入口项必须在每一个状态下都在场。**
 	//
-	// 这一段是变异验证逼出来的:上面那句 `strings.Contains(text, "Check for leaks")`
+	// 这一段是变异验证逼出来的:上面那句 `strings.Contains(text, "Check for Leaks")`
 	// 只证明这个串在文件里,把 addAction 那一行挪进 `case .connected:` 它照样全绿
 	// (次数还是 1)。而那正好把「保护关着也有用」的功能藏进了只有保护开着才有的
 	// 菜单里 —— 这个功能的立身之本就没了。照 TestMacMenuQuitActionPresentInEveryState
@@ -5843,7 +5843,7 @@ func TestMacMenuLeakCheckRunsUnprivileged(t *testing.T) {
 	depth := 0
 	for _, line := range strings.Split(menuBody, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if depth == 0 && !strings.HasPrefix(trimmed, "//") && strings.Contains(trimmed, "Check for leaks") {
+		if depth == 0 && !strings.HasPrefix(trimmed, "//") && strings.Contains(trimmed, "Check for Leaks") {
 			topLevel++
 		}
 		depth += strings.Count(line, "{") - strings.Count(line, "}")

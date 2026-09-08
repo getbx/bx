@@ -60,7 +60,9 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
     // 那需要 Guardian 开第二条对外出网路径 + 缓存,单列一期;在它有值之前不占位。
     let core = answeringCore(status)
     if let core {
-        let line = [core.transport, core.server]
+        // **服务器名优先,传输协议兜底。** 用户认的是「连到哪台」(vps / home),
+        // `reality@vps` 是传输@服务器这个内部标识;协议在 bx status / doctor 里。
+        let line = [core.server, core.transport]
             .compactMap { $0 }.first { !$0.isEmpty }
         rows.append(line.map { MenuRow(label: "Route", value: $0, mark: .ok) }
             ?? MenuRow(label: "Route", value: notObserved, mark: .unknown))

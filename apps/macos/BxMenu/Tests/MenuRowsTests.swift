@@ -45,8 +45,14 @@ struct MenuRowsTests {
                "上游问不出来时不许留一行占位符")
 
         // 阶段②能上的行
-        expect(row(set, "Route")?.value.contains("reality") == true,
-               "线路行应显示传输,实际 \(String(describing: row(set, "Route")))")
+        expect(row(set, "Route")?.value == "vps",
+               "线路行应显示服务器名(用户认的是连到哪台),实际 \(String(describing: row(set, "Route")))")
+        let serverless = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":true,"transport":"reality@203.0.113.20"}}
+        """)
+        expect(row(menuRows(status: serverless, dns: nil), "Route")?.value == "reality@203.0.113.20",
+               "没有服务器名时退回传输标识")
         expect(row(set, "Latency")?.value == "390 ms",
                "延迟行,实际 \(String(describing: row(set, "Latency")?.value))")
         expect(row(set, "UDP Relay")?.value == "hysteria2",
@@ -155,7 +161,7 @@ struct MenuRowsTests {
         let compact = compactMenuRows(set)
         expect(compact.count == 1, "健康时只该有一行,实际 \(compact.map(\.label))")
         expect(compact.first?.label == "Via", "那一行叫 Via,实际 \(String(describing: compact.first?.label))")
-        expect(compact.first?.value == "reality@vps · 390 ms", "Via 行合并传输与延迟,实际 \(String(describing: compact.first?.value))")
+        expect(compact.first?.value == "vps · 390 ms", "Via 行合并服务器与延迟,实际 \(String(describing: compact.first?.value))")
         expect(compact.first?.mark == .ok, "健康时 Via 是 ok")
 
         let tunnelDown = decode("""
@@ -163,7 +169,7 @@ struct MenuRowsTests {
          "core":{"reachable":true,"tunnel_healthy":false,"server":"vps","transport":"reality@vps"}}
         """)
         let sick = compactMenuRows(menuRows(status: tunnelDown, dns: "127.0.0.1"))
-        expect(sick.first?.value == "reality@vps · Tunnel unhealthy", "隧道坏了要在 Via 行说出来,实际 \(String(describing: sick.first?.value))")
+        expect(sick.first?.value == "vps · Tunnel unhealthy", "隧道坏了要在 Via 行说出来,实际 \(String(describing: sick.first?.value))")
         expect(sick.first?.mark == .bad, "隧道坏了 Via 行是 bad")
 
         let blind = compactMenuRows(menuRows(status: nil, dns: nil))

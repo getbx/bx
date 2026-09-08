@@ -85,7 +85,6 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 一堆,每个都带着自己的 2 分钟超时。
     private var leakCheckInFlight = false
     /// 本轮菜单里,更新入口是否已经由版本行承担。每次 rebuildMenu 开头复位。
-    private var updateShownInVersionRow = false
     /// Guardian 最近一次**应答并解码成功**的那份报告,只用来问一件事:此刻有没有
     /// 维护挂起(见 maintenanceRow)。挂起期间 `protection_state` 就是 `off`,
     /// `BxState.off` 又不带 payload,不留住这份报告菜单就无从分辨「bx 正在自我升级」
@@ -1538,23 +1537,20 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 攒进一份草稿,函数的每条出口都经 commitMenu 落定 —— 内容没变就不换。
         let menu = NSMenu()
         defer { commitMenu(menu) }
-        // 每轮复位:漏了它,某一轮出现过的版本行会让此后所有轮次的页脚都不再
-        // 显示更新入口 —— 一个只在特定顺序下才出现、且完全静默的缺失。
-        updateShownInVersionRow = false
         if let startedAt = updateInFlight {
             let elapsed = Int(Date().timeIntervalSince(startedAt))
-            menu.addHeader("bx", subtitle: "Updating")
+            menu.addHeadline("Updating bx")
             // 说清"在做什么"与"过了多久" —— 一个沉默的转圈光标与卡死无从区分。
             menu.addInfo("Status", "Downloading and installing… \(elapsed)s")
             menu.addPlainText("This can take a few minutes on a slow connection.")
             menu.addItem(.separator())
-            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
+            menu.addQuit(quitBxActionTitle, target: self, action: #selector(quitBx))
             return
         }
         if let inFlight = toggleInFlight {
             let elapsed = Int(Date().timeIntervalSince(inFlight.startedAt))
-            menu.addHeader("bx", subtitle: inFlight.action == .turnOn ? "Connecting" : "Disconnecting")
-            // 开关停在目标位置、禁用,进度就写在它下面 —— 用户刚拨的地方就是他在看的地方。
+            // 没有抬头:开关停在目标位置、禁用,进度就写在它下面 —— 用户刚拨的地方
+            // 就是他在看的地方,Connecting/Disconnecting 这个词由进度文案自己说。
             if let row = protectionSwitchRow(
                 subtitle: toggleProgressText(action: inFlight.action, elapsedSeconds: elapsed), subtitleIsBad: false) {
                 menu.addProtectionSwitch(row)
@@ -1568,12 +1564,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
             }
             menu.addItem(.separator())
-            menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
+            menu.addQuit(quitBxActionTitle, target: self, action: #selector(quitBx))
             return
         }
         if let snapshot = recoverySnapshot {
             let presentation = recoveryPresentation(for: snapshot)
-            menu.addHeader("bx", subtitle: presentation.title)
+            menu.addHeadline(presentation.title)
             menu.addInfo("Status", presentation.shortReason ?? presentation.title)
             if !snapshot.recoveryID.isEmpty {
                 menu.addInfo("Recovery", snapshot.recoveryID)
@@ -1612,12 +1608,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         switch state {
         case .connected(_, let version, _):
-            menu.addHeader("bx", subtitle: "Connected")
+            // 没有抬头:菜单栏图标是身份,开关就是状态。「bx / Connected」两行外加
+            // 一条分隔线与开关说的是同一件事(项目所有者 review:同一件事说了三遍)。
             // **这里曾经有 `Status: Protected` 与 `Network changes: …` 两行,已删。**
-            //
-            // 前者是三重重复:图标的形状、标题栏那句 "Connected"、再加这一行,说的是
-            // 同一件事。后者是一个**永远不变的常量串** —— 它是安慰文案不是状态,
-            // 与刚删掉的三行占位符是同一类:一行永远说同一句话的东西不是信息。
+            // 前者与图标、开关说的是同一件事;后者是一个**永远不变的常量串** ——
+            // 安慰文案不是状态,一行永远说同一句话的东西不是信息。
             //
             // `.warning` 那一支的 Status 行**留着**:那里装的是原因(Repair Required /
             // DNS not managed),图标说不出来。
@@ -1639,16 +1634,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 menu.addInfo(row.label, row.value + suffix)
             }
-            // 版本号与上面那组分开:上面回答「我的连接现在怎么样」,版本回答
-            // 「我装的是哪一版」。混在一起时它读起来像连接的一项指标。
-            menu.addItem(.separator())
-            addVersionRow(to: menu, version: version)
+            // 版本号不再常驻(它只在有新版时才是信息,见 addUpdateActionIfAvailable);
+            // 「装的是哪一版」搬进 Troubleshoot ▸ 里那一行。
+            _ = version
         case .warning(let message, let version):
-            menu.addHeader("bx", subtitle: "Needs Attention")
-            if let row = protectionSwitchRow(subtitle: nil, subtitleIsBad: false) {
+            // 原因(Repair Required / DNS not managed)写在开关下面那行、标红 ——
+            // 图标说不出原因,这一行是唯一说得出的地方。
+            if let row = protectionSwitchRow(subtitle: message, subtitleIsBad: true) {
                 menu.addProtectionSwitch(row)
             }
-            menu.addInfo("Status", message)
             if message == "Repair Required", let versions = repairVersions {
                 if let bundle = versions.bundle {
                     menu.addInfo("App", bundle)
@@ -1659,24 +1653,23 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if let core = versions.core {
                     menu.addInfo("Core", core)
                 }
-            } else if let version {
-                // 与 .connected 同一条版本行:有新版时它自己就是更新入口。
-                addVersionRow(to: menu, version: version)
+            } else {
+                _ = version
             }
         case .updateNeeded(let message, let version):
-            menu.addHeader("bx", subtitle: "Update Required")
+            menu.addHeadline("Update Required")
             menu.addInfo("Status", message)
             if let version {
                 menu.addInfo("Version", version)
             }
         case .setupNeeded(let message):
-            menu.addHeader("bx", subtitle: "Setup Required")
+            menu.addHeadline("Setup Required")
             menu.addInfo("Status", message)
         case .missing(let message):
-            menu.addHeader("bx", subtitle: "Not Installed")
+            menu.addHeadline("Not Installed")
             menu.addInfo("Status", message)
         case .notInstalled(let bundleVersion):
-            menu.addHeader("bx", subtitle: "Not Installed")
+            menu.addHeadline("Not Installed")
             if let bundleVersion {
                 menu.addInfo("Version", bundleVersion)
             }
@@ -1684,9 +1677,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 副标题是这一屏最大的那几个字。维护挂起期间 protection_state 就是
             // `off`,写死 "Off" 会把「bx 正在自我升级」显示成「你把它关了」——
             // 判定在 offSubtitle(纯函数,MaintenancePresentationTests 钉着)。
-            menu.addHeader("bx", subtitle: offSubtitle(status: maintenanceReport, now: Date()))
-            // 开关拨在「关」就是 Not running,那一行不再另说一遍。
-            if let row = protectionSwitchRow(subtitle: nil, subtitleIsBad: false) {
+            // 没有抬头:开关拨在「关」就是全部信息。维护挂起期间 protection_state
+            // 就是 `off`,判定在 offSubtitle(纯函数):那时开关下面写一句 Paused,
+            // 挂起的详情由下面那行 Maintenance 说;平时什么都不写。
+            let off = offSubtitle(status: maintenanceReport, now: Date())
+            if let row = protectionSwitchRow(subtitle: off == "Off" ? nil : off, subtitleIsBad: false) {
                 menu.addProtectionSwitch(row)
             }
         }
@@ -1705,17 +1700,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addPlainText(notice.remedy)
         }
         if let failure = toggleFailureText {
-            menu.addItem(.separator())
             menu.addInfo("Last operation failed", failure)
         }
+        // **更新入口只有一个,而且只在有新版时出现**(强调色,紧贴顶部那组)。
+        // 平时的版本号不是信息,它住在 Troubleshoot ▸ 里。
+        addUpdateActionIfAvailable(to: menu)
         menu.addItem(.separator())
-        // **每个状态只留一个更新入口。** 有版本行的状态(connected / warning)里,
-        // 更新已经由那一行自己承担了;此前这里再加一条 "Update bx…",与它上面
-        // 几行的版本号说的是同一件事。
-        if !updateShownInVersionRow, let title = menuUpdateActionTitle(check: updateCheck) {
-            menu.addAction(title, symbol: "arrow.down.circle", target: self, action: #selector(updateBx))
-            menu.addItem(.separator())
-        }
         // 建设性主动作排在诊断入口之前:处在 off / 未配置 / 未安装 时,用户唯一
         // 想点的就是它,把它压在 View Logs 与 Run Doctor 下面是本末倒置。
         // 破坏性动作(Turn Off / Quit)反过来仍留在菜单底部——那是 macOS 惯例,
@@ -1746,8 +1736,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 这些状态的主动作已经排在上面了。
             break
         }
-        menu.addItem(.separator())
-        // ---- 窗口入口:天天会点的几扇门,一级菜单只留这几项 ----
+        // ---- 窗口入口:天天会点的几扇门,与上面的动作同一组(少一条分隔线)----
         // 规则入口:只在这一版 Guardian 声明了 rules 能力时出现。**能力键缺席 =
         // 旧版**,少了这个判断用户会对着一个每次点都 404 的按钮,而 404 在菜单上
         // 根本表达不出来(rulesEditingAvailable 是纯函数,判据由 Swift 套件钉住)。
@@ -1782,7 +1771,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 立身之本就是「保护关着也有用」——只在 .connected 里给它,等于把它
         // 藏在最不需要它的那个状态里(TestMacMenuLeakCheckRunsUnprivileged
         // 按花括号深度钉住它在顶层)。
-        menu.addAction("Check for leaks ↗", symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
+        menu.addAction("Check for Leaks…", symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
         // ---- Troubleshoot ▸:一年点一次的东西收进一个子菜单 ----
         // 子菜单能用的前提是 commitMenu 只在内容变了才重建(否则每 2 秒被拆一次)。
         // 卸载入口也在这里:**只在装过的时候出现**(没装就没什么可卸),但它必须
@@ -1791,6 +1780,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let troubleshoot = NSMenu()
         troubleshoot.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
         troubleshoot.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+        // 「装的是哪一版」:从一级菜单搬进来的那行版本号,只答这一个问题。
+        if let version = installedVersionForMenu() {
+            troubleshoot.addItem(.separator())
+            troubleshoot.addInfo("bx \(version)")
+        }
         if cliIsInstalled() {
             troubleshoot.addItem(.separator())
             troubleshoot.addAction(UninstallPresentation.actionTitle, symbol: "trash", target: self, action: #selector(uninstallBx))
@@ -1800,8 +1794,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 退出入口无条件加一次。**不要挪回上面任何一个 case**:此前它只在
         // .connected/.warning 里,于是 .off/.setupNeeded/.missing/.notInstalled/
         // .updateNeeded 下菜单没有任何退出入口(TestMacMenuQuitActionPresentInEveryState)。
-        menu.addItem(.separator())
-        menu.addAction(quitBxActionTitle, symbol: "power", target: self, action: #selector(quitBx))
+        // 不带图标(电源符号在这条菜单里会被读成「关掉保护」,而真正的开关就在
+        // 第一行),带 ⌘Q —— 与系统菜单栏应用同款。
+        menu.addQuit(quitBxActionTitle, target: self, action: #selector(quitBx))
     }
 
     /// 把带 payload 的 `BxState` 收成可测的 `MenuStateKind`。**只是映射,没有判定**
@@ -1831,17 +1826,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return false
     }
 
-    /// 版本行。**有新版时它自己变成更新入口**,文字先把话说完,颜色只做强化。
-    ///
-    /// 只靠颜色不行:菜单项被鼠标划过时会反色,提示恰好在用户要点它的那一刻消失;
-    /// 判定与措辞住在 UpdatePresentation.swift(那里编得进测试套件),这里只负责画。
-    private func addVersionRow(to menu: NSMenu, version: String) {
-        let title = versionRowTitle(current: version, check: updateCheck)
-        guard versionRowOffersUpdate(check: updateCheck) else {
-            menu.addInfo(title)
-            return
-        }
-        updateShownInVersionRow = true
+    /// 更新入口。**只在有新版时出现**,强调色 + 图标;措辞住在 InstallPresentation
+    /// (`menuUpdateActionTitle`,那里编得进测试套件),这里只负责画。
+    /// 平时的版本号不是信息(项目所有者 review:常驻在菜单中间是墙纸),它搬去
+    /// Troubleshoot ▸ 里那一行(installedVersionForMenu)。
+    private func addUpdateActionIfAvailable(to menu: NSMenu) {
+        guard let title = menuUpdateActionTitle(check: updateCheck) else { return }
         let item = NSMenuItem(title: title, action: #selector(updateBx), keyEquivalent: "")
         item.target = self
         item.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: title)
@@ -1850,6 +1840,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             attributes: [.foregroundColor: NSColor.controlAccentColor]
         )
         menu.addItem(item)
+    }
+
+    /// 「装的是哪一版」。只从状态里已经带着的版本取,取不到就不写 —— 不为一行
+    /// 小字在每次重建时去读盘。
+    private func installedVersionForMenu() -> String? {
+        switch state {
+        case .connected(_, let version, _):
+            return version
+        case .warning(_, let version), .updateNeeded(_, let version):
+            return version
+        case .notInstalled(let bundleVersion):
+            return bundleVersion
+        case .setupNeeded, .missing, .off:
+            return nil
+        }
     }
 
     private func menuRowsNow() -> MenuRowSet {
@@ -2880,15 +2885,23 @@ func connectUnixSocket(path: String, timeout: TimeInterval) -> Int32? {
 }
 
 private extension NSMenu {
-    func addHeader(_ title: String, subtitle: String) {
+    /// 一行粗体状态词(Setup Required / Not Installed / Updating bx)。**只给没有
+    /// 开关的状态用**:有开关时图标是身份、开关是状态,抬头是重复。
+    func addHeadline(_ title: String) {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.attributedTitle = NSAttributedString(
             string: title,
-            attributes: [.font: NSFont.systemFont(ofSize: 14, weight: .semibold)]
+            attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)]
         )
+        item.isEnabled = false
         addItem(item)
-        addItem(NSMenuItem(title: subtitle, action: nil, keyEquivalent: ""))
-        addItem(.separator())
+    }
+
+    /// Quit:不带图标、带 ⌘Q,与系统菜单栏应用同款。
+    func addQuit(_ title: String, target: AnyObject, action: Selector) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "q")
+        item.target = target
+        addItem(item)
     }
 
     /// 整行文本已经拼好时用这个(版本行的措辞由 UpdatePresentation 决定,
