@@ -201,6 +201,21 @@ func normalizedRulePattern(_ raw: String) -> String {
     raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
+/// 改完一条规则之后界面该说哪句话。
+///
+/// **由服务端的事实决定,不再是常量。** Guardian 改完会叫 Core 热重载
+/// (与 `bx direct add` 同一条 /v0/reload 路):`false` = 已生效;`true` = 没
+/// 重载成(规则已落盘,重连才生效);`nil` = 这一版 Guardian 没说(旧版),
+/// 按要重连处理 —— 「没说」读成「不用」是把用户送去排除掉真正的原因。
+enum RuleChangeFollowUp: Equatable {
+    case applied
+    case reconnectNeeded
+}
+
+func ruleChangeFollowUp(requiresRestart: Bool?) -> RuleChangeFollowUp {
+    requiresRestart == false ? .applied : .reconnectNeeded
+}
+
 /// 这一版 Guardian 支不支持规则编辑。
 ///
 /// **能力键缺席 = 旧版**,不是「不支持」的同义反复:少了这个判断而菜单照样把

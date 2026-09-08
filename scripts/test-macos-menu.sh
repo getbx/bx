@@ -167,4 +167,8 @@ run_test app-traffic-model \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Tests/AppTrafficModelTests.swift"
 
+run_test transition-notice \
+  "$MENU/Sources/BxMenu/TransitionNotice.swift" \
+  "$MENU/Tests/TransitionNoticeTests.swift"
+
 echo "macOS menu tests passed"

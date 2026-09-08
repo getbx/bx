@@ -204,6 +204,10 @@ struct AppTrafficReport: Decodable, Equatable {
         /// `destsMore > 0` 时末尾加一行 `…and N more`。没有目的地时是空串——
         /// 与规则列同一惯例,窗口那半对空串不设 toolTip。
         let destTooltip: String
+        /// 原始目的地(去重、最多 8 条,与报告同源)。**右键菜单按它生成**
+        /// (`appTrafficRuleMenu(dests:)`);摘要与 toolTip 都是格式化过的字符串,
+        /// 从它们反推域名是第二份解析。
+        let dests: [String]
     }
 
     /// 组固定顺序(tunnel / direct / blocked),渲染层照抄这个顺序摆。
@@ -306,7 +310,8 @@ struct AppTrafficReport: Decodable, Equatable {
             downTotal: formatByteCount(row.bytesDown),
             rule: row.rules.joined(separator: ", "),
             destSummary: destSummary(dests: row.dests, destsMore: row.destsMore),
-            destTooltip: destTooltip(dests: row.dests, destsMore: row.destsMore)
+            destTooltip: destTooltip(dests: row.dests, destsMore: row.destsMore),
+            dests: row.dests
         )
     }
 
@@ -348,6 +353,59 @@ struct AppTrafficReport: Decodable, Equatable {
         }
         return lines.joined(separator: "\n")
     }
+}
+
+/// 右键一行时可加的规则候选,按**目的地**生成。
+///
+/// **规则的粒度是目的地,不是应用** —— bx 没有按应用的规则,而窗口每行本来就
+/// 带着这个应用最近连过的目的地;腾讯会议那半小时排查要的正是「把这些域名直连」。
+///
+/// 形状:三段以上的域名给「精确 + `*.父域`」(`cdn.steamstatic.com` 通常是整个
+/// `steamstatic.com` 都想直连,但也可能只想钉这一个);两段给 `*.host`(bx 的
+/// `*.a.com` 语义含 `a.com` 本身);单段名与 IP 字面量原样。归一化(小写、去尾点)
+/// 与 Go 侧 config.NormalizeHostName 同向 —— 报给 Guardian 的必须是配置里那一行
+/// 会长的样子。空串什么都不给:一个空模式会被 Guardian 拒绝,但在这之前它已经
+/// 出现在菜单里当了一个可点的项。
+func ruleCandidates(for dest: String) -> [String] {
+    var host = dest.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    while host.hasSuffix(".") { host.removeLast() }
+    guard !host.isEmpty else { return [] }
+    // IP 字面量(v4 只有数字和点;v6 含冒号)原样 —— 通配对 IP 没有意义。
+    if host.contains(":") || host.allSatisfy({ $0.isNumber || $0 == "." }) {
+        return [host]
+    }
+    let labels = host.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+    guard !labels.contains(where: \.isEmpty) else { return [] }
+    switch labels.count {
+    case 1:
+        return [host]
+    case 2:
+        return ["*." + host]
+    default:
+        return [host, "*." + labels.dropFirst().joined(separator: ".")]
+    }
+}
+
+/// 右键菜单里的一项:一条候选模式 × 一个方向。`kind` 是 Guardian /v1/rules
+/// 认的字面量(direct / proxy),这里不引 RuleKind —— 纯模型要能单独编进套件。
+struct AppTrafficRuleMenuItem: Equatable {
+    let title: String
+    let kind: String
+    let pattern: String
+}
+
+/// 一行的右键菜单:每个目的地的每条候选,先 direct 再 proxy。同一个通配被两个
+/// 目的地推出来时**只出现一次**(两个 helper 域名同属一个父域是常态)。
+func appTrafficRuleMenu(dests: [String]) -> [AppTrafficRuleMenuItem] {
+    var seen = Set<String>()
+    var out: [AppTrafficRuleMenuItem] = []
+    for dest in dests {
+        for pattern in ruleCandidates(for: dest) where seen.insert(pattern).inserted {
+            out.append(AppTrafficRuleMenuItem(title: "Always direct: \(pattern)", kind: "direct", pattern: pattern))
+            out.append(AppTrafficRuleMenuItem(title: "Always through tunnel: \(pattern)", kind: "proxy", pattern: pattern))
+        }
+    }
+    return out
 }
 
 /// 速率那一格在**没有速率可报**时显示的东西。
@@ -478,6 +536,10 @@ let appTrafficSubscriptionTTLSeconds: TimeInterval = 30
 let appTrafficApproximateNote =
     "Byte counts are approximate: ports get reused, and an app listed in two sections "
     + "may show all its bytes on one side."
+
+/// 右键能加规则这件事要有人告诉用户 —— 右键菜单是发现不了的。只在这一版 Guardian
+/// 支持规则编辑时显示(窗口按 `ruleEditingAvailable` 决定),旧版一个字不提。
+let appTrafficRuleHint = "Right-click an app to always send one of its destinations direct or through the tunnel."
 
 /// 连续失败多少次之后,就不再把手上那份快照当作「此刻的事实」。
 ///
