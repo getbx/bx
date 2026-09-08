@@ -9,6 +9,7 @@ import (
 	"github.com/getbx/bx/internal/preset"
 	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/setup"
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 // rulesResponse 是 GET /v1/rules 的应答。
@@ -28,8 +29,13 @@ type rulesResponse struct {
 	// omitempty 之外的形状**:nil = 「这一版没做/读不到配置」,而一份**空**
 	// 报告是「查过了、没有问题」—— 两者压成同一个东西正是这个功能最贵的教训。
 	Review *rulereview.Report `json:"review,omitempty"`
-	// RequiresRestart 恒为 true,而且**刻意不是 omitempty**:
-	// bx 不热重载配置,改完必须 `bx down && bx up`。菜单不说这句话,用户会以为
+	// RequiresRestart 说的是「这次改动(POST)/ 经这一版改的规则(GET)要不要重连
+	// 才生效」,而且**刻意不是 omitempty**。
+	//
+	// 2026-09-08 之前它恒为 true —— 那是常量,不是事实:`bx direct add` 早就经
+	// Core 的 /v0/reload 热重载,只是 Guardian 这条路从没调过它。现在 POST 成功
+	// 写盘后也走同一条重载路,重载成功 ⇒ false;Core 没应答 / 没接重载 ⇒ true
+	// (规则已落盘、下次重连生效,如实说要重连)。菜单不说这句话,用户会以为
 	// 已经生效,然后在问题依旧时把这一步排除掉 —— 而那正是真正的原因。
 	// 键缺席会被读成「这版 Guardian 不知道要不要重启」,与「不需要重启」是两回事。
 	RequiresRestart bool `json:"requires_restart"`
@@ -66,9 +72,11 @@ type ruleGroup struct {
 // 比开关保护更敏感」—— 恰恰相反,能关掉保护的人已经能做更坏的事。取一致是要点:
 // 菜单要能改规则,而菜单以 owner 身份跑。
 //
-// **它不重启任何东西。** 改完要 `bx down && bx up` 才生效,而那是一次断网 ——
-// 必须是用户单独的、显式的一下,不能顺手替他做了。
-func rulesHandler(configPath string, ownerUID uint32) http.HandlerFunc {
+// **它不重启任何东西。** 重启是一次断网,必须是用户单独的、显式的一下。它做的
+// 是**热重载**:写盘成功后经 reload 叫 Core 重读配置、原子换入新 router(与
+// `bx direct add` 同一条 /v0/reload 路,不断隧道、不碰 TUN/路由)。reload 为 nil
+// 表示没接线,应答退回「要重连」。
+func rulesHandler(configPath string, ownerUID uint32, reload func() error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !authorizeOwnerPeer(r.Context(), ownerUID) {
 			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "rules require owner or root peer"})
@@ -82,16 +90,16 @@ func rulesHandler(configPath string, ownerUID uint32) http.HandlerFunc {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			serveRuleList(w, configPath)
+			serveRuleList(w, configPath, reload == nil)
 		case http.MethodPost:
-			applyRuleChange(w, r, configPath)
+			applyRuleChange(w, r, configPath, reload)
 		default:
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
 	}
 }
 
-func serveRuleList(w http.ResponseWriter, configPath string) {
+func serveRuleList(w http.ResponseWriter, configPath string, requiresRestart bool) {
 	rules, err := setup.ListRules(configPath)
 	if err != nil {
 		// 完整原因只进 Guardian 日志;响应体只带失败类别 —— 原始错误串里可能
@@ -134,11 +142,11 @@ func serveRuleList(w http.ResponseWriter, configPath string) {
 		Custom:          custom,
 		ConfigPath:      configPath,
 		Review:          reviewRulesAt(configPath, nil),
-		RequiresRestart: true,
+		RequiresRestart: requiresRestart,
 	})
 }
 
-func applyRuleChange(w http.ResponseWriter, r *http.Request, configPath string) {
+func applyRuleChange(w http.ResponseWriter, r *http.Request, configPath string, reload func() error) {
 	var req rulesRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "rules_bad_request"})
@@ -181,7 +189,27 @@ func applyRuleChange(w http.ResponseWriter, r *http.Request, configPath string) 
 		return
 	}
 	log.Printf("guardian_rules_change_ok action=%s kind=%s pattern=%q", req.Action, req.Kind, req.Pattern)
-	serveRuleList(w, configPath)
+	// 规则已落盘。**重载失败不回滚、也不把整次改动报成失败**:盘上那条规则是真的,
+	// 下次重连就生效;只是应答要如实说「要重连」,别让用户以为已经生效。
+	requiresRestart := true
+	if reload != nil {
+		if err := reload(); err != nil {
+			log.Printf("guardian_rules_reload_failed err=%v", err)
+		} else {
+			requiresRestart = false
+			log.Printf("guardian_rules_reloaded action=%s kind=%s pattern=%q", req.Action, req.Kind, req.Pattern)
+		}
+	}
+	serveRuleList(w, configPath, requiresRestart)
+}
+
+// reloadCoreRules 是生产那份「叫 Core 热重载规则」:与 `bx direct add` 打的是同一个
+// 控制 socket、同一个端点。Guardian 以 root 跑,拨得到 core.sock。
+func reloadCoreRules() error { return reloadCoreRulesAt(supervisor.SockPath) }
+
+func reloadCoreRulesAt(sockPath string) error {
+	_, err := supervisor.ReloadControl(sockPath)
+	return err
 }
 
 // groupState 把「装了几条 / 一共几条」压成界面那一行的三态。

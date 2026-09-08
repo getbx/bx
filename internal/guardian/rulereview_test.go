@@ -101,7 +101,7 @@ rules:
   - proxy: ["*.a.com"]
 `)
 	recorder := httptest.NewRecorder()
-	serveRuleList(recorder, cfg)
+	serveRuleList(recorder, cfg, true)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d", recorder.Code)
 	}

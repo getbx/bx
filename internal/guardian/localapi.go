@@ -72,6 +72,12 @@ type LocalAPIOptions struct {
 	// where the config is" and "you have no rules" are different answers and
 	// the menu must not render the second when it got the first.
 	ConfigPath string
+	// ReloadRules, if set, is called after a successful POST /v1/rules write so
+	// the change takes effect without a reconnect (production: Core's
+	// /v0/reload, the same path `bx direct add` uses). Nil means "not wired" —
+	// the endpoint then answers requires_restart:true, which is the honest
+	// answer when nobody told Core to re-read the file.
+	ReloadRules func() error
 	// AppsSockPath backs /v1/apps — the unix socket Guardian dials to reach
 	// Core's app-traffic-attribution report. Empty falls back to
 	// supervisor.SockPath (the production constant), so daemon.go/
@@ -183,7 +189,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	mux.HandleFunc("/v1/update-check", updateCheckHandler(newUpdateCheckCache(options.UpdateCheck), options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(controller, pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
-	mux.HandleFunc("/v1/rules", rulesHandler(options.ConfigPath, options.OwnerUID))
+	mux.HandleFunc("/v1/rules", rulesHandler(options.ConfigPath, options.OwnerUID, options.ReloadRules))
 	mux.HandleFunc("/v1/servers", serversHandler(options.ConfigPath, options.OwnerUID, liveServerSwitch, liveServerProbe, liveThroughput))
 	// options.AppsSockPath 空串时回落到 supervisor.SockPath(Core 控制面固定
 	// 的 unix socket 路径,与 fetchCoreRuntime/throughputRecorderFor 用的是
