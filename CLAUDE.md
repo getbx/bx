@@ -760,6 +760,30 @@ Routing Rules… / Servers… / Traffic by App… / Check for leaks、`Troublesh
 六条变异各咬中一条。**真机未验**:子菜单展开时菜单开着 2 秒一拍是否真的不再拆它、
 服务器窗口两个新按钮、Via 行的观感。
 
+## 菜单第一行改成开关(2026-09-08,真机未验)
+
+项目所有者要的是「滑动开关,符合苹果设计」。控制中心的形态:`[盾] Protection …… ◉━━`,
+第二行暗色小字是连接摘要(`reality@vps · 293 ms`,✗ 时系统红;进行中时是
+`Connecting… Ns`)。「Turn Off bx」「Start Protection」两个文字项删了 —— 同一个动作在两个
+状态里有两个名字,用户要先读一遍才知道现在是开是关;开关本身就是状态。
+
+- **判据纯函数** `protectionSwitch(state:inFlight:)`(`ProtectionSwitch.swift`):只在有东西
+  可拨的三个状态显示(connected / warning 开、off 关);没装、没 setup、缺文件不画,保留
+  各自的文字动作。**进行中停在目标位置、禁用**(弹回再跳过去是两次动画,禁用是不让连拨)。
+  **位置永远来自状态,不来自点击**:失败就弹回,与「Last operation failed」那行一起说清。
+- **拨动接回原来的 `startBx` / `turnOffBx`**,确认、免密、逃生口一个字不动。菜单拨完
+  不关:开关变灰、进度写在它下面,用户刚拨的地方就是他在看的地方。
+- **视图** `ProtectionSwitchRow.swift`(AppKit,一行测试都盖不到)挂在 `NSMenuItem.view`
+  上;左边距对齐普通菜单项的图标列与文字列。它的 `signature` 进 `menuSignature`,否则拨完
+  菜单不会重画(变异实测)。代价:自定义视图的菜单行没有键盘高亮导航,VoiceOver 读得到。
+- 守卫 `internal/cli/macos_menu_switch_test.go` 三条:拨开/拨关接的是原入口且位置由
+  `protectionSwitch(state: menuStateKind(), inFlight: toggleInFlight?.action)` 判、四个分支
+  都摆了开关行且文字项不再有、签名算全(**这条第一版整文件查 `enabled ?`,变异照样绿**,
+  收窄到 `signature = […]` 那一段才咬中)。`TestMacMenuPutsConstructiveActionBeforeDiagnostics`
+  的 `.off` 锚点从「Start Protection」改成开关行。
+- **真机要看**:开关行与其它项的左对齐、`.small` 尺寸的 NSSwitch 在 32/46pt 行高里的观感、
+  拨动后菜单是否真的留着并在它下面显示进度、失败时是否弹回。
+
 ## 嗅出的 SNI 不许压过真 IP 的规则(2026-09-05,真机诊断,修复真机已验)
 
 真机(公司工作站,bx global):`bx direct add 180.158.6.185` 之后 `bx explain 180.158.6.185`
