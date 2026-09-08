@@ -313,8 +313,9 @@ fake-IP 反查全部命中。样本约 150 条,要跑几天再定论。
 
 **菜单**(`RulesModel.swift` 纯函数 + `main.swift` 只摆放,子菜单 + NSAlert,不做窗口):
 失败的规则排最前、健康的一个字不说;失败按 **kind + 名字**对齐(同名规则可同时在
-direct 与 proxy 里,语义相反);读不到就说读不到,不摆空列表;改完提示要重连并给
-「现在就重连」,**但绝不替他重连**。**测试当场抓到真 bug**:Swift 合成的 `Decodable`
+direct 与 proxy 里,语义相反);读不到就说读不到,不摆空列表;改完按应答里的
+`requires_restart` 说「已生效」或「要重连」(2026-09-08 起,见下文「菜单侧三件
+用户体验」),要重连时给「现在就重连」,**但绝不替他重连**。**测试当场抓到真 bug**:Swift 合成的 `Decodable`
 **不用属性默认值**,而 Guardian 对空列表用 `omitempty` —— 「一条 proxy 规则都没有」这种
 正常配置会让整个界面解码失败,改手写 `init(from:)`。
 
@@ -688,6 +689,49 @@ Swift 测试套件,Go 侧守卫只证明判据没被手抄第二份,菜单那一
 Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 `docs/superpowers/specs/2026-08-17-guardian-status-watch-design.md`、计划
 `docs/superpowers/plans/2026-08-17-guardian-status-watch.md`。
+
+## 菜单侧三件用户体验:转换通知、右键加规则、规则热生效(2026-09-08,真机未验)
+
+起点是一次「作为用户还缺什么」的盘点,项目所有者点了三件:验掉睡醒/门户那批
+未验修复(他自己跑,见各节验收命令)、**失败不再无声**、**诊断能力离开命令行**。
+后两件落在菜单里,三处改动各自独立可测:
+
+- **状态转换通知**(`TransitionNotice.swift` 纯状态机 + `main.swift` 投递)。
+  kill-switch 拦下流量时用户此前看到的只是网页转圈,唯一信号是 18pt 图标的轮廓。
+  项目所有者否掉的是**常驻**红字(常态会变墙纸);这条只在「受保护 → 阻断 /
+  隧道断 / 需注意**且持续 ≥ 30 秒**」那一刻响一次、回到受保护再响一条「已恢复」,
+  是事件不是墙纸。**不响的每一种都有测试钉住**:30 秒内的抖动(睡醒 Wi-Fi 起落)、
+  用户自己开关(那是意图)、从 off 打开后直接失败(他正站在旁边,进度条在说)、
+  菜单启动时机器就已是坏的(上一段故事菜单没看见)、starting/recovering 过渡态
+  (既不算变好也不算变坏 —— blocked → recovering → blocked 是同一段故障)。
+  `tunnel_healthy` 缺席按「没说」不按「不健康」,与 StatusReport 同一条。投递经
+  `UNUserNotificationCenter`,**只在 bundle 内启用**(裸 `swift run` 一调就崩),
+  同一个 identifier 让「已恢复」顶掉「阻断」。单一漏斗:watch 与轮询都经
+  `refresh()` → `applyRefresh` → `observeTransition(outcome.maintenanceReport)`。
+- **按应用窗口右键加规则**。规则的粒度是**目的地不是应用**(bx 没有按应用的规则),
+  而窗口每行本来就带目的地;候选由纯函数 `ruleCandidates(for:)` 生成:三段以上域名
+  给「精确 + `*.父域`」,两段给 `*.host`,IP 原样,归一化与 `config.NormalizeHostName`
+  同向。走的是 `GuardianClient.changeRule` —— 那个方法**此前存在但从没被调过**。
+  只在 Guardian 声明 `rules` 能力时挂菜单并在窗口底部提示(右键是发现不了的)。
+- **规则热生效**。Guardian `applyRuleChange` 写盘成功后叫 Core `/v0/reload`(与
+  `bx direct add` 同一条路,不断隧道),成功 ⇒ `requires_restart:false`;Core 没应答
+  / 没接线 ⇒ true,**不回滚**(规则已落盘、如实说要重连)。菜单那句「bx applies
+  routing rules when it reconnects」此前是常量,现由纯函数 `ruleChangeFollowUp` 按
+  应答判(nil = 旧 Guardian 没说 = 按要重连)。规则组开关与右键两条路共用同一个收尾。
+
+**守卫**:三个 Swift 套件(`TransitionNoticeTests`、`AppTrafficModelTests`、
+`RulesModelTests`)钉判据;Go 侧 `rules_reload_test.go` 钉 Guardian 的重载与两处接线;
+`internal/cli/macos_menu_transition_test.go` 四条钉 main.swift/窗口的接线(喂状态机的
+是这一轮应答且结果被投递、通知只在 bundle 内、收尾用服务端答案而非字面量、右键每一跳
+都接上)。八条变异各咬中一条 —— **其中一条第一次「仍绿」是变异台子跑错了包**
+(guardian 的测试拿 `internal/cli` 去跑),对包重跑即红;又一次「凡变异全绿先查落没落上」。
+
+**真机未验(全部)**:通知会不会真的弹出、授权框长什么样、右键菜单在 NSGridView
+的格子上弹不弹得出来、`/v0/reload` 从 Guardian 打过去 Core 是否应答。验收:重装菜单后
+① 在按应用窗口里右键一个应用 → 选一条 Always direct → 应弹「已生效」而不是
+「Reconnect Now」,`bx explain <那个域名>` 立刻答 DIRECT;② `sudo bx down && sudo bx up`
+不该弹通知(用户自己做的);③ 拔掉 VPS 或 `sudo route delete <服务器IP>` 让隧道
+断 ≥ 30 秒 → 应弹一条「traffic blocked」,恢复后弹「protected again」并顶掉前一条。
 
 ## 嗅出的 SNI 不许压过真 IP 的规则(2026-09-05,真机诊断,修复真机已验)
 

@@ -189,6 +189,13 @@ var destPublicationAllowlist = map[string]string{
 	// 不进日志、不进诊断包。
 	"apps/macos/BxMenu/Sources/BxMenu/AppTrafficModel.swift": "唯一的消费者:解码 dests/dests_more,算摘要与 toolTip",
 	"apps/macos/BxMenu/Tests/AppTrafficModelTests.swift":     "上面那条的测试(解码、摘要、toolTip、按目的地搜索)",
+
+	// —— 2026-09-08 这条守卫又拦了一次:右键加规则。发布面仍然没有变宽:窗口在
+	// **同一个进程里**拿 `entry.dests` 生成候选(纯模型 `appTrafficRuleMenu`),
+	// 目的地离开这个窗口的唯一形式是**用户自己点选**的那一条模式,写进他自己的
+	// config —— 那是用户的动作,不是 bx 的发布。仍不进 status/日志/诊断包。
+	"apps/macos/BxMenu/Sources/BxMenu/AppTrafficWindow.swift": "右键菜单:按 entry.dests 摆纯模型给的候选,不另发布",
+	"internal/cli/macos_menu_transition_test.go":              "上面那条的接线守卫(断言窗口按 entry.dests 摆候选)",
 }
 
 // destWordPattern 只认发布面会实际出现的复数/连字形态 —— 不是单词边界版的
