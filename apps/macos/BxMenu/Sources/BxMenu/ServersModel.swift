@@ -130,6 +130,14 @@ func serverSwitchingAvailable(capabilities: [String]?) -> Bool {
     return capabilities.contains("servers")
 }
 
+/// 「Replace Configuration…」住在哪:有服务器窗口时它是窗口里的一个按钮(与
+/// 「New Server…」并排,那是它们的归属),一级菜单不再占一行;旧 Guardian 没有
+/// /v1/servers、窗口开不出来,那时它必须留在菜单里 —— 否则换服务器又只能开终端
+/// (2026-08-14 那次抱怨)。判据只看能力声明,绝不试着拨。
+func replaceConfigurationLivesInMenu(capabilities: [String]?) -> Bool {
+    !serverSwitchingAvailable(capabilities: capabilities)
+}
+
 /// 界面上的一行。
 struct ServerRow: Equatable {
     let entry: ServerEntry

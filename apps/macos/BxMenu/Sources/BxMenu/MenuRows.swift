@@ -110,3 +110,47 @@ private func answeringCore(_ status: GuardianStatus?) -> CoreRuntime? {
     guard let core = status?.core, core.reachable == true else { return nil }
     return core
 }
+
+/// 菜单里**真正摆出来**的行:`menuRows` 是完整集合(图标裂不裂由它的 anomalyCount
+/// 决定),这一层只管显示压缩。
+///
+/// 「已连接」状态下此前五行数据里四行天天一个样(DNS / Direct lookups / UDP Relay
+/// 正常时永远是同一个值),按本仓库「只在真有问题时才占地方」的纪律它们不该常驻
+/// —— 常态会变墙纸,把真正要紧的那一行一起淹掉。规则:
+/// - Route + Latency 合成一行 `Via`(`reality@vps · 390 ms`);哪一半问不出来就
+///   不写那一半,两半都问不出来才是 `Not checked`;任一半 ✗ 则整行 ✗。
+/// - DNS / Direct lookups / UDP Relay **只在 ✗ 时露面** —— 压缩的是正常时的噪声,
+///   不是坏消息。
+/// - 维护挂起与任何认不出的行**原样保留**:新加的行默认参与显示(吵的失效好过
+///   安静的失效,与 statusdigest 的「默认参与投影」同一条纪律)。
+func compactMenuRows(_ set: MenuRowSet) -> [MenuRow] {
+    let quietWhenFine: Set<String> = ["DNS", "Direct lookups", "UDP Relay"]
+    var out: [MenuRow] = []
+    var route: MenuRow?
+    var latency: MenuRow?
+    var viaInserted = false
+    for row in set.rows {
+        switch row.label {
+        case "Route":
+            route = row
+        case "Latency":
+            latency = row
+        default:
+            if quietWhenFine.contains(row.label), row.mark != .bad { continue }
+            out.append(row)
+            continue
+        }
+        // Via 行占 Route 原来的位置(第一次遇到两者之一时插入占位,最后回填)。
+        if !viaInserted {
+            viaInserted = true
+            out.append(MenuRow(label: "Via", value: "", mark: .unknown))
+        }
+    }
+    guard viaInserted, let slot = out.firstIndex(where: { $0.label == "Via" }) else { return out }
+    let halves = [route, latency].compactMap { $0 }.filter { $0.mark != .unknown }
+    let marks = [route, latency].compactMap { $0?.mark }
+    let mark: MenuRowMark = marks.contains(.bad) ? .bad : (halves.isEmpty ? .unknown : .ok)
+    let value = halves.isEmpty ? notObserved : halves.map(\.value).joined(separator: " · ")
+    out[slot] = MenuRow(label: "Via", value: value, mark: mark)
+    return out
+}

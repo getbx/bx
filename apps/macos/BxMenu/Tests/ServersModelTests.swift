@@ -221,6 +221,15 @@ struct ServersModelTests {
         expect(relativeAge(seconds: 259_200) == "3d ago", "3 天不对")
     }
 
+    // 「Replace Configuration…」从一级菜单搬进了服务器窗口;但旧 Guardian 没有
+    // /v1/servers、那个窗口根本开不出来 —— 那时它必须留在菜单里,否则换服务器
+    // 又只能开终端(2026-08-14 那次抱怨)。判据只看能力,不试着拨。
+    static func testReplaceConfigurationStaysInTheMenuOnlyWithoutServersWindow() {
+        expect(replaceConfigurationLivesInMenu(capabilities: nil), "旧 Guardian(没声明能力)要留在菜单里")
+        expect(replaceConfigurationLivesInMenu(capabilities: ["rules"]), "没有 servers 能力要留在菜单里")
+        expect(!replaceConfigurationLivesInMenu(capabilities: ["servers"]), "有服务器窗口时不再占一级菜单")
+    }
+
     static func main() {
         testServerListDecodesWhatGuardianSends()
         testServerSwitchingNeedsTheCapability()
@@ -241,6 +250,7 @@ struct ServersModelTests {
         testHistoricalThroughputShowsItsAge()
         testFreshThroughputHasNoAgeSuffix()
         testRelativeAge()
+        testReplaceConfigurationStaysInTheMenuOnlyWithoutServersWindow()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 一个没被脚本登记的套件
         // 退出码也是 0(本仓库实测栽过)。
         if failures == 0 {

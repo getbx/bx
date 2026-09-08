@@ -4441,8 +4441,30 @@ func TestMacMenuRebuildsMenuInPlace(t *testing.T) {
 	if strings.Contains(body, "statusItem.menu =") {
 		t.Fatal("rebuildMenu 不得更换 statusItem.menu:换对象等于换掉 delegate,且新菜单要到下一次打开才可见")
 	}
-	if !strings.Contains(body, "removeAllItems()") {
-		t.Fatal("rebuildMenu 必须就地清空重填(removeAllItems)")
+	// 2026-09-08 起 rebuildMenu 攒的是一份草稿,由 commitMenu 就地摆进**同一个**
+	// 菜单对象 —— 而且只在内容变了才动(签名比对),否则展开的子菜单每 2 秒被拆一次。
+	// 三件事都要在:每条出口都经 commitMenu(defer)、commitMenu 就地 removeAllItems、
+	// 比对排在清空之前。
+	if !strings.Contains(body, "defer { commitMenu(menu) }") {
+		t.Fatal("rebuildMenu 必须以 defer { commitMenu(menu) } 落定 —— 否则某条早退出口攒了草稿却从不摆出去")
+	}
+	commit, ok := swiftFunctionBody(text, "private func commitMenu(_ draft: NSMenu)")
+	if !ok {
+		t.Fatal("找不到 commitMenu 的函数体")
+	}
+	if strings.Contains(commit, "statusItem.menu =") {
+		t.Fatal("commitMenu 不得更换 statusItem.menu")
+	}
+	compare := strings.Index(commit, "== lastMenuSignature")
+	clear := strings.Index(commit, "removeAllItems()")
+	if clear < 0 {
+		t.Fatal("commitMenu 必须就地清空重填(removeAllItems)")
+	}
+	if compare < 0 || compare > clear {
+		t.Fatal("commitMenu 必须先比签名再清空 —— 否则内容没变也重建,展开的子菜单每 2 秒被拆一次")
+	}
+	if strings.Count(swiftCodeOnly(text), "removeAllItems()") != 1 {
+		t.Fatal("removeAllItems() 只许出现在 commitMenu 里:别处清空会绕过签名比对")
 	}
 	configure, ok := swiftFunctionBody(text, "private func configureMenu()")
 	if !ok {
