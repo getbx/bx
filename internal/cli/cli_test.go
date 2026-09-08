@@ -4282,7 +4282,9 @@ func TestMacMenuPutsConstructiveActionBeforeDiagnostics(t *testing.T) {
 		t.Fatal("rebuildMenu should still offer the logs action")
 	}
 	body = tail
-	for _, action := range []string{`"Start Protection"`, `"Set Up bx..."`, `"Install bx…"`} {
+	// 2026-09-08 起 .off 的建设性动作是第一行那个开关(protectionSwitchRow),
+	// 不再是「Start Protection」文字项;它在 header 之后、诊断入口之前。
+	for _, action := range []string{`protectionSwitchRow(`, `"Set Up bx..."`, `"Install bx…"`} {
 		at := strings.Index(body, action)
 		if at < 0 {
 			t.Errorf("rebuildMenu should still offer %s", action)

@@ -19,7 +19,8 @@ func TestMacMenuConnectedStateRendersCompactRows(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 rebuildMenu 的函数体 —— 守卫已失效,先修守卫")
 	}
-	if !strings.Contains(body, "for row in compactMenuRows(menuRowsNow())") {
+	if !strings.Contains(body, "let compact = compactMenuRows(menuRowsNow())") ||
+		!strings.Contains(body, "for row in compact where row.label != ") {
 		t.Fatal("已连接状态没有走 compactMenuRows —— 五行诊断值又常驻回来了")
 	}
 	if strings.Contains(body, "menuRowsNow().rows") {
@@ -101,10 +102,15 @@ func TestMacMenuMovesServerActionsIntoTheServersWindow(t *testing.T) {
 
 func menuServersWindowSource(t *testing.T) string {
 	t.Helper()
-	source, err := os.ReadFile(filepath.Join(
-		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "ServersWindow.swift"))
+	return readMenuSwiftSource(t, "ServersWindow.swift")
+}
+
+// readMenuSwiftSource 读菜单 App 的一个源文件;读不到就响亮失败 —— 安静放过等于没有守卫。
+func readMenuSwiftSource(t *testing.T, name string) string {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", name))
 	if err != nil {
-		t.Fatalf("读不到 ServersWindow.swift:%v —— 守卫已经失效,先修守卫", err)
+		t.Fatalf("读不到 %s:%v —— 守卫已经失效,先修守卫", name, err)
 	}
 	return string(source)
 }

@@ -1509,8 +1509,29 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let submenu = item.submenu {
                 parts.append("[" + menuSignature(submenu) + "]")
             }
+            // 开关行看得见的一切住在它自己的 signature 里;别的自定义视图按构造
+            // 不存在,真出现了就当成「每次都变」,宁可多重建也不许漏更新。
+            if let view = item.view {
+                parts.append((view as? ProtectionSwitchRow)?.signature ?? UUID().uuidString)
+            }
             return parts.joined(separator: "\u{1F}")
         }.joined(separator: "\n")
+    }
+
+    /// 菜单第一行的开关。显示与否、开关、可用全由 protectionSwitch(纯函数)判;
+    /// 拨动接回原来那两个入口 —— 确认、免密、逃生口一个字不动。返回 nil 表示这个
+    /// 状态没什么可拨,调用方保留原来的文字动作。
+    private func protectionSwitchRow(subtitle: String?, subtitleIsBad: Bool) -> ProtectionSwitchRow? {
+        guard case .shown(let isOn, let enabled) = protectionSwitch(
+            state: menuStateKind(), inFlight: toggleInFlight?.action) else { return nil }
+        let row = ProtectionSwitchRow(isOn: isOn, enabled: enabled, subtitle: subtitle, subtitleIsBad: subtitleIsBad)
+        row.onFlip = { [weak self] turnedOn in
+            switch protectionSwitchAction(turnedOn: turnedOn) {
+            case .turnOn: self?.startBx()
+            case .turnOff: self?.turnOffBx()
+            }
+        }
+        return row
     }
 
     private func rebuildMenu() {
@@ -1533,7 +1554,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let inFlight = toggleInFlight {
             let elapsed = Int(Date().timeIntervalSince(inFlight.startedAt))
             menu.addHeader("bx", subtitle: inFlight.action == .turnOn ? "Connecting" : "Disconnecting")
-            menu.addInfo("Status", toggleProgressText(action: inFlight.action, elapsedSeconds: elapsed))
+            // 开关停在目标位置、禁用,进度就写在它下面 —— 用户刚拨的地方就是他在看的地方。
+            if let row = protectionSwitchRow(
+                subtitle: toggleProgressText(action: inFlight.action, elapsedSeconds: elapsed), subtitleIsBad: false) {
+                menu.addProtectionSwitch(row)
+            }
             if pendingQuit != nil {
                 // Quit 已经排队:这是最重要的一句话,用户点了确认框,必须能
                 // 看到"收到了",而不是一个看起来什么都没变的菜单。
@@ -1598,7 +1623,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // DNS not managed),图标说不出来。
             // 只摆压缩后的行(判据在 compactMenuRows,纯函数):健康时一行 Via,
             // 诊断行只在 ✗ 时露面。图标裂不裂仍看完整集合的 anomalyCount。
-            for row in compactMenuRows(menuRowsNow()) {
+            // Via 那一行是开关行的第二行小字(控制中心式:标题下面一行摘要),
+            // 其余压缩后的行照旧一行一行摆。
+            let compact = compactMenuRows(menuRowsNow())
+            let via = compact.first { $0.label == "Via" }
+            if let row = protectionSwitchRow(subtitle: via?.value, subtitleIsBad: via?.mark == .bad) {
+                menu.addProtectionSwitch(row)
+            }
+            for row in compact where row.label != "Via" {
                 let suffix: String
                 switch row.mark {
                 case .ok: suffix = ""
@@ -1613,6 +1645,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             addVersionRow(to: menu, version: version)
         case .warning(let message, let version):
             menu.addHeader("bx", subtitle: "Needs Attention")
+            if let row = protectionSwitchRow(subtitle: nil, subtitleIsBad: false) {
+                menu.addProtectionSwitch(row)
+            }
             menu.addInfo("Status", message)
             if message == "Repair Required", let versions = repairVersions {
                 if let bundle = versions.bundle {
@@ -1650,7 +1685,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // `off`,写死 "Off" 会把「bx 正在自我升级」显示成「你把它关了」——
             // 判定在 offSubtitle(纯函数,MaintenancePresentationTests 钉着)。
             menu.addHeader("bx", subtitle: offSubtitle(status: maintenanceReport, now: Date()))
-            menu.addInfo("Status", "Not running")
+            // 开关拨在「关」就是 Not running,那一行不再另说一遍。
+            if let row = protectionSwitchRow(subtitle: nil, subtitleIsBad: false) {
+                menu.addProtectionSwitch(row)
+            }
         }
         // 挂起在**每一个**状态下都要说出来:它就是「为什么保护不在」的答案。
         // `.connected` 那一支的数据行已经带出同一行(menuRows 的第一行),这里
@@ -1684,7 +1722,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 也避免误点,所以 .connected/.warning 的顺序不动。
         switch state {
         case .off:
-            menu.addAction("Start Protection", symbol: "play.fill", target: self, action: #selector(startBx))
+            // 打开保护 = 拨第一行那个开关(protectionSwitchRow),不再另给文字项。
+            break
         case .setupNeeded:
             menu.addAction("Set Up bx...", symbol: "link", target: self, action: #selector(setUpBx))
         case .notInstalled:
@@ -1694,16 +1733,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .connected, .warning:
             break
         }
+        // 关掉保护 = 拨第一行那个开关;这里只剩修复与重连。
         switch state {
         case .connected:
-            menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
             menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
         case .warning("Repair Required", _):
             menu.addAction(repairActionTitle, symbol: "wrench.and.screwdriver", target: self, action: #selector(repairBx))
-            menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
             menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
         case .warning:
-            menu.addAction(turnOffActionTitle, symbol: "pause.circle", target: self, action: #selector(turnOffBx))
             menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
         case .off, .updateNeeded, .setupNeeded, .missing, .notInstalled:
             // 这些状态的主动作已经排在上面了。
@@ -2873,6 +2910,13 @@ private extension NSMenu {
     func addPlainText(_ text: String) {
         let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
         item.isEnabled = false
+        addItem(item)
+    }
+
+    /// 菜单第一行的开关(ProtectionSwitchRow):一个挂了自定义视图的 item。
+    func addProtectionSwitch(_ row: ProtectionSwitchRow) {
+        let item = NSMenuItem(title: "Protection", action: nil, keyEquivalent: "")
+        item.view = row
         addItem(item)
     }
 
