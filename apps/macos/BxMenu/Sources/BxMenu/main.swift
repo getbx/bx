@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import UserNotifications
 
 struct CommandResult {
     let code: Int32
@@ -57,6 +58,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var toggleTicker: Timer?
     /// 上一次开关失败留下的指引,下次动作开始时清掉。
     private var toggleFailureText: String?
+    /// 状态转换通知的判据(TransitionNotice.swift,纯状态机)。每次刷新喂一次
+    /// Guardian 的应答;它说要响才响。
+    private var transitionNoticeTracker = TransitionNoticeTracker()
+    /// UNUserNotificationCenter 只在**打包成 bundle** 的进程里可用 —— 裸
+    /// `swift run` 下调它会直接崩(bundleProxyForCurrentProcess 为 nil)。
+    private lazy var notificationsAvailable: Bool = Bundle.main.bundleIdentifier != nil
     /// 非 nil 表示用户已经确认 Quit,但当时有另一个动作在跑,只能排队——
     /// 等那个动作的 completion 里落定后再执行(参见 `quitDisposition`)。
     private var pendingQuit: QuitDisposition?
@@ -402,6 +409,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         repairVersions = outcome.repairVersions
         outdatedRuntime = outcome.outdatedRuntime
         maintenanceReport = outcome.maintenanceReport
+        observeTransition(outcome.maintenanceReport)
         // capabilities 刚到手,若这一版 Guardian 声明了 status_watch 且循环还没
         // 起,就在这里转入 watch——引导序列的后半段(前半段是这次 refresh 本身)。
         startWatchLoopIfAvailable()
@@ -449,6 +457,35 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 把用户自己那一下的结果报错到下一拍。补跑是一次性的,不是队列。
         if refreshGate.end() {
             refresh(userInitiated: true)
+        }
+    }
+
+    /// 把这一轮 Guardian 的应答喂给转换通知的状态机;它说要响才响。
+    ///
+    /// **Guardian 没应答(nil)就什么都不喂**:那是「问不出来」,不是一个状态;
+    /// 状态机对没喂的一拍什么都不做,下一拍拿到真答案再判。
+    private func observeTransition(_ report: GuardianStatus?) {
+        guard let report else { return }
+        let signal = protectionSignal(protectionState: report.protectionState, tunnelHealthy: report.core?.tunnelHealthy)
+        if let notice = transitionNoticeTracker.observe(signal, at: Date()) {
+            deliverTransitionNotice(notice)
+        }
+    }
+
+    /// 投递一条系统通知。同一个 identifier:「已恢复」那条顶掉「阻断」那条,
+    /// 通知中心里不会攒一串。授权被拒就静默 —— 用户说过不要,就不要。
+    private func deliverTransitionNotice(_ notice: TransitionNotice) {
+        guard notificationsAvailable else { return }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = notice.title
+            content.body = notice.body
+            content.sound = .default
+            let identifier = "bx.protection.transition"
+            center.removeDeliveredNotifications(withIdentifiers: [identifier])
+            center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
         }
     }
 
@@ -1072,6 +1109,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onClose = { [weak self] in
             self?.stopAppTrafficTimer()
         }
+        controller.onAddRule = { [weak self] kind, pattern in
+            self?.addRuleFromAppTraffic(kind: kind, pattern: pattern)
+        }
         return controller
     }()
 
@@ -1174,6 +1214,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
                 self.appTrafficConsecutiveFailures = 0
+                // 能力清单取自 maintenanceReport(上一次完整的 /v1/status),与
+                // 「Routing Rules…」那个菜单项同一个判据、同一份数据。
+                self.appTrafficWindow.ruleEditingAvailable =
+                    rulesEditingAvailable(capabilities: self.maintenanceReport?.capabilities)
                 if forceShow {
                     self.appTrafficWindow.show(report: fetched)
                     // **心跳在这里起,不在菜单点击处起** —— show 是窗口唯一的
@@ -1346,7 +1390,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         custom: list.custom,
                         configPath: list.configPath
                     )
-                    self.offerReconnectAfterRuleChange(group: group, enable: enable)
+                    self.followUpAfterRuleChange(title: enable ? "Turned on \(group)" : "Turned off \(group)", list: list)
                 case .failure(let error):
                     let alert = NSAlert()
                     alert.messageText = "Could not change that group"
@@ -1359,18 +1403,62 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func offerReconnectAfterRuleChange(group: String, enable: Bool) {
+    /// 从「按应用看分流」窗口的右键菜单加一条规则。与 applyGroupChange 同一条路:
+    /// 后台拨 Guardian,成功就顶替 lastRules、刷新规则窗口、按服务端的答案决定
+    /// 说「已生效」还是「要重连」;失败弹 alert 指向 Guardian 日志。
+    private func addRuleFromAppTraffic(kind: String, pattern: String) {
+        guard let ruleKind = RuleKind(rawValue: kind) else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result {
+                try GuardianClient().changeRule(action: "add", kind: ruleKind, pattern: pattern)
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let list):
+                    self.lastRules = list
+                    self.rulesWindow.refreshIfVisible(
+                        rows: ruleGroupRows(from: list, failing: self.maintenanceReport?.core?.failingRules ?? []),
+                        custom: list.custom,
+                        configPath: list.configPath
+                    )
+                    let verb = ruleKind == .direct ? "direct" : "through the tunnel"
+                    self.followUpAfterRuleChange(title: "\(pattern) will always go \(verb)", list: list)
+                case .failure(let error):
+                    let alert = NSAlert()
+                    alert.messageText = "Could not add that rule"
+                    alert.informativeText = "\(error.localizedDescription)\n\n"
+                        + "See /var/log/bx-guard.err.log for the full reason."
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
+    /// 改完规则之后说哪句话,**由 Guardian 应答里的事实决定**(`ruleChangeFollowUp`,
+    /// 纯函数):它改完会叫 Core 热重载,重载成了就是已生效;没成(或旧版 Guardian
+    /// 没说)才要重连 —— 那句「要重连才生效」此前是常量,不说会让用户以为已经
+    /// 生效,然后在问题依旧时把这一步排除掉;说了而其实已经生效,又会让他白断
+    /// 一次网。
+    private func followUpAfterRuleChange(title: String, list: RuleList) {
         let alert = NSAlert()
-        alert.messageText = enable ? "Turned on \(group)" : "Turned off \(group)"
-        // **必须说这句。** bx 不热重载配置;不说,用户会以为已经生效,
-        // 然后在问题依旧时把这一步排除掉 —— 而那正是真正的原因。
-        alert.informativeText = "bx applies routing rules when it reconnects. "
-            + "Until then, traffic keeps following the old rules."
-        alert.addButton(withTitle: "Reconnect Now")
-        alert.addButton(withTitle: "Later")
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        reconnectBx()
+        alert.messageText = title
+        switch ruleChangeFollowUp(requiresRestart: list.requiresRestart) {
+        case .applied:
+            alert.informativeText = "The change is already in effect. New connections follow the new rules."
+            alert.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        case .reconnectNeeded:
+            alert.informativeText = "bx applies routing rules when it reconnects. "
+                + "Until then, traffic keeps following the old rules."
+            alert.addButton(withTitle: "Reconnect Now")
+            alert.addButton(withTitle: "Later")
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            reconnectBx()
+        }
     }
 
     private func rebuildMenu() {

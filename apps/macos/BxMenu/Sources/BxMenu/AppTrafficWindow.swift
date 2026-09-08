@@ -62,6 +62,18 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
     /// 订阅就永远续着,而界面上看不出任何异常。
     var onClose: (() -> Void)?
 
+    /// 用户在某一行的右键菜单里选了「Always direct / Always through tunnel」。
+    /// 实参是 Guardian /v1/rules 认的字面量 kind(direct / proxy)与模式原文。
+    /// **窗口不拨 Guardian** —— 拨号、回显、失败提示都在接线方(main.swift),
+    /// 与 applyGroupChange 同一条路。
+    var onAddRule: ((String, String) -> Void)?
+
+    /// 这一版 Guardian 支不支持规则编辑(`rulesEditingAvailable`,由接线方每次
+    /// 取数时按能力清单设)。false 时不挂右键菜单、不显示那句提示 —— 旧版
+    /// Guardian 没有 /v1/rules,挂出来的菜单项每次点都 404,而 404 在菜单上根本
+    /// 表达不出来。
+    var ruleEditingAvailable = false
+
     /// 窗口是否开着。供环境刷新路径判断「有没有人在看」:关着就不拨(这个功能
     /// 要买到的收益),开着就说明有人正盯着,这时按需拉一次正是「按需」的本意。
     var isVisible: Bool { window?.isVisible ?? false }
@@ -216,6 +228,9 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         // AppTrafficModel 的常量里,由 Swift 套件钉住。
         stack.addArrangedSubview(gap())
         stack.addArrangedSubview(hint(appTrafficApproximateNote))
+        if ruleEditingAvailable {
+            stack.addArrangedSubview(hint(appTrafficRuleHint))
+        }
         // **第二句小字同样不是可选的。** 窗口打开之前就已经建好的连接由种子播进
         // 缓冲,而种子把一个 socket 上并存的多条流压成一条 —— 于是它们只会出现在
         // 一个组里。这件事此前有三份记档和一条测试,唯独用户看不到,而它恰好落在
@@ -316,7 +331,36 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         }
         cell.setContentCompressionResistancePriority(appNamePriority, for: .horizontal)
         cell.toolTip = entry.destTooltip.isEmpty ? nil : entry.destTooltip
+        // 右键菜单挂在应用名那一格上(子视图没有自己的菜单时事件会落回这里)。
+        cell.menu = contextMenu(for: entry)
         return cell
+    }
+
+    /// 一行的右键菜单:按这一行的目的地列候选,**候选与标题全由纯模型给**
+    /// (`appTrafficRuleMenu`),这里只摆。没有候选、或这一版 Guardian 不支持
+    /// 规则编辑,就不挂菜单 —— 一个空菜单弹出来是「点了没反应」的另一种写法。
+    private func contextMenu(for entry: AppTrafficReport.Entry) -> NSMenu? {
+        guard ruleEditingAvailable, onAddRule != nil else { return nil }
+        let items = appTrafficRuleMenu(dests: entry.dests)
+        guard !items.isEmpty else { return nil }
+        let menu = NSMenu()
+        var lastPattern: String?
+        for item in items {
+            if let lastPattern, lastPattern != item.pattern {
+                menu.addItem(.separator())
+            }
+            let menuItem = NSMenuItem(title: item.title, action: #selector(addRuleItem(_:)), keyEquivalent: "")
+            menuItem.target = self
+            menuItem.representedObject = AppTrafficRuleMenuItemBox(item)
+            menu.addItem(menuItem)
+            lastPattern = item.pattern
+        }
+        return menu
+    }
+
+    @objc private func addRuleItem(_ sender: NSMenuItem) {
+        guard let box = sender.representedObject as? AppTrafficRuleMenuItemBox else { return }
+        onAddRule?(box.item.kind, box.item.pattern)
     }
 
     /// 搜索框内容变了:**只重画,不去拉新数据**。报告 5 秒一拍自己会来,而每敲
@@ -404,4 +448,10 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         label.textColor = .secondaryLabelColor
         return label
     }
+}
+
+/// `NSMenuItem.representedObject` 要一个引用类型;纯模型那个 struct 装进来。
+private final class AppTrafficRuleMenuItemBox: NSObject {
+    let item: AppTrafficRuleMenuItem
+    init(_ item: AppTrafficRuleMenuItem) { self.item = item }
 }

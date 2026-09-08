@@ -312,6 +312,17 @@ struct RulesModelTests {
         }
     }
 
+
+    // **要不要弹「Reconnect Now」由服务端的事实决定,不再是常量。**
+    // Guardian 现在改完会叫 Core 热重载:false = 已生效;true = 没重载成(规则
+    // 已落盘,重连才生效);nil = 这一版 Guardian 没说(旧版),按要重连处理 ——
+    // 「没说」读成「不用」是把用户送去排除掉真正的原因。
+    static func testRuleChangeFollowUpTrustsOnlyAnExplicitNo() {
+        expect(ruleChangeFollowUp(requiresRestart: false) == .applied, "false 应是已生效")
+        expect(ruleChangeFollowUp(requiresRestart: true) == .reconnectNeeded, "true 应要重连")
+        expect(ruleChangeFollowUp(requiresRestart: nil) == .reconnectNeeded, "nil(旧 Guardian)应要重连")
+    }
+
     static func main() {
         testReplaceMessageShowsTheExitChangeNotALecture()
         testReplaceMessageOmitsTheOldServerWhenUnknown()
@@ -334,6 +345,7 @@ struct RulesModelTests {
         testRequiresRestartAbsenceIsNotFalse()
         testFetchFailureInfoOnlyBlamesTheLogWhenTheLogHasTheAnswer()
         testFetchFailureInfoNeverInventsAConfigProblem()
+        testRuleChangeFollowUpTrustsOnlyAnExplicitNo()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」,
         // 而一个根本没被脚本登记的套件退出码也是 0(本仓库实测栽过)。
         if failures == 0 {

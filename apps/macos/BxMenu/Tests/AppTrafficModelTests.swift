@@ -578,6 +578,66 @@ struct AppTrafficModelTests {
         return nil
     }
 
+
+    // **规则的粒度是目的地,不是应用。** 一行右键弹出的候选按这一行的目的地生成:
+    // 三段以上的域名给「精确 + *.父域」(cdn.steamstatic.com 通常是整个
+    // steamstatic.com 都想直连),两段给 `*.host`(qq.com 本身也在 *.qq.com 里),
+    // 裸 IP 原样。空串什么都不给 —— 一个空模式会被 Guardian 拒绝,但在这之前
+    // 它已经出现在菜单里当了一个可点的项。
+    static func testRuleCandidatesFollowTheShapeOfTheDestination() {
+        expect(ruleCandidates(for: "cdn.steamstatic.com") == ["cdn.steamstatic.com", "*.steamstatic.com"],
+               "三段域名应给精确 + 父域通配:\(ruleCandidates(for: "cdn.steamstatic.com"))")
+        expect(ruleCandidates(for: "qq.com") == ["*.qq.com"],
+               "两段域名只给通配:\(ruleCandidates(for: "qq.com"))")
+        expect(ruleCandidates(for: "180.158.6.185") == ["180.158.6.185"],
+               "裸 IP 原样:\(ruleCandidates(for: "180.158.6.185"))")
+        expect(ruleCandidates(for: "2606:4700::1111") == ["2606:4700::1111"],
+               "v6 字面量原样:\(ruleCandidates(for: "2606:4700::1111"))")
+        expect(ruleCandidates(for: "") == [], "空目的地不该有候选")
+        expect(ruleCandidates(for: "localhost") == ["localhost"], "单段名原样")
+    }
+
+    // 归一化:大小写与尾点 —— 与 Go 侧 config.NormalizeHostName 同向。
+    // 报给 Guardian 的模式必须是配置里那一行会长的样子。
+    static func testRuleCandidatesAreNormalized() {
+        expect(ruleCandidates(for: "Cdn.SteamStatic.com.") == ["cdn.steamstatic.com", "*.steamstatic.com"],
+               "没归一化:\(ruleCandidates(for: "Cdn.SteamStatic.com."))")
+    }
+
+    // 菜单项:每个目的地下面先 direct 再 proxy,一条候选两个动作;两个目的地推
+    // 出同一个通配时**只出现一次**(两个 helper 域名同属一个父域是常态)。
+    static func testRuleMenuOffersBothKindsPerCandidateWithoutDuplicates() {
+        let items = appTrafficRuleMenu(dests: ["a.steamstatic.com", "b.steamstatic.com"])
+        let patterns = items.map(\.pattern)
+        expect(patterns == ["a.steamstatic.com", "a.steamstatic.com",
+                            "*.steamstatic.com", "*.steamstatic.com",
+                            "b.steamstatic.com", "b.steamstatic.com"],
+               "候选顺序或去重不对:\(patterns)")
+        let kinds = items.map(\.kind)
+        expect(kinds == ["direct", "proxy", "direct", "proxy", "direct", "proxy"], "每条候选要先 direct 后 proxy:\(kinds)")
+        expect(items.allSatisfy { $0.kind == "direct" || $0.kind == "proxy" }, "kind 只能是 direct / proxy")
+        // 标题是用户看到的那句话,要点名模式 —— 两个「Always direct」并排时
+        // 没有模式就分不出哪个是哪个。
+        expect(items[0].title == "Always direct: a.steamstatic.com", "标题:\(items[0].title)")
+        expect(items[1].title == "Always through tunnel: a.steamstatic.com", "标题:\(items[1].title)")
+        expect(appTrafficRuleMenu(dests: []).isEmpty, "没有目的地就没有菜单项")
+    }
+
+    // Entry 要把原始目的地带给窗口 —— 右键菜单按它生成,摘要与 toolTip 都是
+    // 格式化过的字符串,从它们反推域名是第二份解析。
+    static func testEntryCarriesRawDestinations() {
+        let json = """
+        {"subscribed": true, "report": {"groups": [{"path": "direct", "rows": [
+          {"app": "Steam", "conns": 1, "bytes_up": 1, "bytes_down": 1, "dests": ["cdn.steamstatic.com", "1.2.3.4"]}
+        ]}]}}
+        """
+        guard let report = decode(json) else { return }
+        guard case .entry(let entry)? = report.rows().last else {
+            expect(false, "没有应用行"); return
+        }
+        expect(entry.dests == ["cdn.steamstatic.com", "1.2.3.4"], "Entry 没带原始目的地:\(entry.dests)")
+    }
+
     static func main() {
         testDecodesReportWithMissingRowsArray()
         testDecodesGroupWithNullRows()
@@ -612,6 +672,10 @@ struct AppTrafficModelTests {
         testEntryCarriesTheDestinationSummary()
         testDecodesDestinationsAndToleratesTheirAbsence()
         testStaleNoticeOnlyAppearsAfterRepeatedFailures()
+        testRuleCandidatesFollowTheShapeOfTheDestination()
+        testRuleCandidatesAreNormalized()
+        testRuleMenuOffersBothKindsPerCandidateWithoutDuplicates()
+        testEntryCarriesRawDestinations()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」。
         if failures == 0 {
             print("AppTrafficModelTests passed")
