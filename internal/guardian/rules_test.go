@@ -33,7 +33,7 @@ func withPeer(r *http.Request, uid uint32, got bool) *http.Request {
 // 判据不是「规则比开关更敏感」—— 恰恰相反:能关掉保护的人已经能做更坏的事。
 // 一致才是要点:菜单要能改规则,而菜单以 owner 身份跑。
 func TestRulesEndpointRequiresOwnerOrRoot(t *testing.T) {
-	handler := rulesHandler(rulesTestConfig(t), 501)
+	handler := rulesHandler(rulesTestConfig(t), 501, nil)
 	for _, tc := range []struct {
 		name string
 		uid  uint32
@@ -57,7 +57,7 @@ func TestRulesEndpointRequiresOwnerOrRoot(t *testing.T) {
 
 // ownerUID 未配置时退化成 root-only —— **绝不因为「没配」就放宽**(与 authorizeOwnerPeer 同规矩)。
 func TestRulesEndpointStaysRootOnlyWithoutOwner(t *testing.T) {
-	handler := rulesHandler(rulesTestConfig(t), 0)
+	handler := rulesHandler(rulesTestConfig(t), 0, nil)
 	w := httptest.NewRecorder()
 	handler(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/rules", nil), 501, true))
 	if w.Code != http.StatusForbidden {
@@ -67,7 +67,7 @@ func TestRulesEndpointStaysRootOnlyWithoutOwner(t *testing.T) {
 
 func TestRulesRoundTripThroughTheEndpoint(t *testing.T) {
 	path := rulesTestConfig(t)
-	handler := rulesHandler(path, 501)
+	handler := rulesHandler(path, 501, nil)
 
 	post := func(body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -96,8 +96,8 @@ func TestRulesRoundTripThroughTheEndpoint(t *testing.T) {
 	if !strings.Contains(installed, "*.qq.com") || strings.Contains(installed, "steamcontent") {
 		t.Fatalf("读回来的直连规则不对:%v", got.Direct)
 	}
-	// **改完必须明说要重启才生效。** bx 不热重载;不说这句,用户会以为已经生效,
-	// 然后在问题依旧时排除掉这一步 —— 而那正是真正的原因。
+	// **改完必须明说要不要重启才生效**(这条路没接重载,答案是要)。不说这句,
+	// 用户会以为已经生效,然后在问题依旧时排除掉这一步 —— 而那正是真正的原因。
 	if !strings.Contains(body, "requires_restart") {
 		t.Errorf("响应没说需要重启:%s", body)
 	}
@@ -105,7 +105,7 @@ func TestRulesRoundTripThroughTheEndpoint(t *testing.T) {
 
 // **写失败必须报错,不能静默成功。** 静默成功会让菜单显示「已保存」而盘上一个字没变。
 func TestRulesWriteFailureIsReported(t *testing.T) {
-	handler := rulesHandler(filepath.Join(t.TempDir(), "does-not-exist.yaml"), 501)
+	handler := rulesHandler(filepath.Join(t.TempDir(), "does-not-exist.yaml"), 501, nil)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/rules", strings.NewReader(`{"action":"add","kind":"direct","pattern":"*.a.com"}`))
 	handler(w, withPeer(r, 501, true))
@@ -121,7 +121,7 @@ func TestRulesWriteFailureIsReported(t *testing.T) {
 
 // 没有配置路径时如实回 501 —— 「没接线」不是「没有规则」。
 func TestRulesEndpointReportsWhenNotWired(t *testing.T) {
-	handler := rulesHandler("", 501)
+	handler := rulesHandler("", 501, nil)
 	w := httptest.NewRecorder()
 	handler(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/rules", nil), 501, true))
 	if w.Code != http.StatusNotImplemented {
@@ -173,7 +173,7 @@ func TestRulesEndpointPublishesGroupsWithThreeStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	rulesHandler(path, 501)(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/rules", nil), 501, true))
+	rulesHandler(path, 501, nil)(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/rules", nil), 501, true))
 
 	var got rulesResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
@@ -208,7 +208,7 @@ func TestRulesEndpointPublishesGroupsWithThreeStates(t *testing.T) {
 // 整组开关走同一个端点。
 func TestRulesEndpointTogglesWholeGroups(t *testing.T) {
 	path := rulesTestConfig(t)
-	handler := rulesHandler(path, 501)
+	handler := rulesHandler(path, 501, nil)
 	post := func(body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		handler(w, withPeer(httptest.NewRequest(http.MethodPost, "/v1/rules", strings.NewReader(body)), 501, true))
@@ -236,7 +236,7 @@ func TestRulesEndpointTogglesWholeGroups(t *testing.T) {
 
 // 认不出的组名要报错,别静默什么都不做 —— 静默会让界面显示成功而配置没变。
 func TestUnknownGroupIsRejected(t *testing.T) {
-	handler := rulesHandler(rulesTestConfig(t), 501)
+	handler := rulesHandler(rulesTestConfig(t), 501, nil)
 	w := httptest.NewRecorder()
 	handler(w, withPeer(httptest.NewRequest(http.MethodPost, "/v1/rules",
 		strings.NewReader(`{"action":"enable_group","group":"not-a-preset"}`)), 501, true))
@@ -261,7 +261,7 @@ func TestRetiredDomainsAreCleanedUpButNeverReinstalled(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handler := rulesHandler(path, 501)
+	handler := rulesHandler(path, 501, nil)
 
 	read := func() rulesResponse {
 		w := httptest.NewRecorder()

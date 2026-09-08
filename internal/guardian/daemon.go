@@ -830,6 +830,9 @@ func localAPIOptionsFor(options DaemonOptions) LocalAPIOptions {
 		// /v1/rules 改的就是这个文件 —— 与 Core 启动用的、与 owner_uid 读出来的
 		// 是**同一个路径**,不另猜一份(两处漂开会让菜单改了 A 而 Core 读 B)。
 		ConfigPath: options.ConfigPath,
+		// 改完规则叫 Core 热重载 —— 与 `bx direct add` 同一条 /v0/reload 路。
+		// 不接的话每次菜单改规则都退回「去重连」,与没做这个功能在输出上一样。
+		ReloadRules: reloadCoreRules,
 	}
 }
 
