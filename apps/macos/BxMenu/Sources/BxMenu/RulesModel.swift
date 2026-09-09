@@ -9,7 +9,7 @@ import Foundation
 /// 不会有它,「配置读不出来」是编出来的原因。编一个原因比不给原因更糟:用户
 /// 会去修一个不存在的配置问题,还会连带不再相信那个日志指引。
 ///
-/// 指路 guardian 日志**只在 HTTP 500 时成立**:按「故障可观测性不变量」,只有
+/// 指路 Show Details **只在 HTTP 500 时成立**:按「故障可观测性不变量」,只有
 /// 500 的完整原因会被 Guardian 写进自己的日志;403 按设计不记,客户端侧失败
 /// (连接不上/超时/答不完整)发生在到达 Guardian 之前,日志里没有那一次。
 ///
@@ -22,7 +22,7 @@ func guardianFetchFailureInfo(httpStatus: Int?, failureCode: String?, describedE
             if let code = failureCode, !code.isEmpty {
                 info += ", code=\(code)"
             }
-            info += "). See /var/log/bx-guard.err.log for the reason."
+            info += "). Use Show Details for the reason."
             return info
         }
         var info = "bx answered HTTP \(status)"

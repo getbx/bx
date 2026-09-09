@@ -653,7 +653,7 @@ func TestMacMenuMarksAppTrafficStaleWhenItCannotRefresh(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 fetchAppTrafficOnDemand 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	fail, failEnd, ok := swiftBlockRange(body, "guard let fetched else {")
+	fail, failEnd, ok := swiftBlockRange(body, "guard case .success(let fetched) = outcome else {")
 	if !ok {
 		t.Fatal("读不出失败分支 —— 守卫已经失效,先修守卫")
 	}

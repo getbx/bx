@@ -278,22 +278,19 @@ struct RulesModelTests {
     static func testFetchFailureInfoOnlyBlamesTheLogWhenTheLogHasTheAnswer() {
         // 500:Guardian 按纪律把完整原因写进了自己的日志,这时候才许指路。
         let server = guardianFetchFailureInfo(httpStatus: 500, failureCode: "rules_unreadable", describedError: nil)
-        expect(server.contains("bx-guard.err.log"),
-               "500 的原因在 guardian 日志里,文案必须指路:\(server)")
+        expect(server.contains("Show Details"), "500 要指向 Show Details")
         expect(server.contains("rules_unreadable"),
                "失败码是唯一可检索的线索,不许丢:\(server)")
 
         // 非 500 的 HTTP 应答(403/503):按设计不写日志,指路是白跑。
         let denied = guardianFetchFailureInfo(httpStatus: 403, failureCode: nil, describedError: nil)
-        expect(!denied.contains("bx-guard.err.log"),
-               "403 不进 guardian 日志,不许把人支过去:\(denied)")
+        expect(!denied.contains("Show Details"), "403 不进 guardian 日志,不许把人支过去:\(denied)")
         expect(denied.contains("403"), "状态码本身就是线索,要说:\(denied)")
 
         // 到不了 Guardian(连接失败/超时):失败发生在路上,日志里没有这一次。
         let unreachable = guardianFetchFailureInfo(httpStatus: nil, failureCode: nil,
                                                    describedError: "Guardian connection failed (61).")
-        expect(!unreachable.contains("bx-guard.err.log"),
-               "客户端侧失败不进 guardian 日志,不许指路:\(unreachable)")
+        expect(!unreachable.contains("Show Details"), "客户端侧失败不进 guardian 日志,不许指路:\(unreachable)")
         expect(unreachable.contains("Guardian connection failed (61)."),
                "真实错误描述是唯一线索,必须原样带上:\(unreachable)")
     }
