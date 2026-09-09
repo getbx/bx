@@ -92,6 +92,11 @@ type LocalAPIOptions struct {
 	// 验证的是 appsHandler 本身,不是「NewLocalAPI 正确接上了它」这件事——
 	// 而组装根上的接线错误正是这个仓库反复栽的形状。
 	AppsSockPath string
+
+	// LogSources backs /v1/logs. Nil means "not wired" (non-darwin, or a
+	// caller that never set it) — the endpoint answers 501, never an empty
+	// list that reads like "the logs are empty".
+	LogSources []LogSource
 }
 
 // coreRuntimeFetchTimeout bounds how long observableStatus waits on
@@ -201,6 +206,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 		appsSockPath = supervisor.SockPath
 	}
 	mux.HandleFunc("/v1/apps", appsHandler(appsSockPath, options.OwnerUID))
+	mux.HandleFunc("/v1/logs", logsHandler(options.LogSources, options.OwnerUID))
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
 	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries, watch: watch}
