@@ -28,6 +28,9 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         )
         window.title = "Diagnostics"
         window.isReleasedWhenClosed = false
+        // 窗口可缩放,而日志行是任意长度的散文 —— 给一个下限,免得被拖到一格
+        // 宽度、每行折成十几行。上限不设:日志本来就该越宽越好读。
+        window.minSize = NSSize(width: 480, height: 320)
         window.center()
         window.delegate = self
 
@@ -88,13 +91,6 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
                 continue
             }
             let marks = logLinesMatching(tail.lines, code: code)
-            let text = NSTextView()
-            text.isEditable = false
-            text.isSelectable = true
-            text.drawsBackground = false
-            text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-            text.textContainer?.widthTracksTextView = true
-            text.translatesAutoresizingMaskIntoConstraints = false
             let body = NSMutableAttributedString()
             for (index, line) in tail.lines.enumerated() {
                 var attributes: [NSAttributedString.Key: Any] = [
@@ -106,9 +102,23 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
                 }
                 body.append(NSAttributedString(string: line + "\n", attributes: attributes))
             }
-            text.textStorage?.setAttributedString(body)
-            text.widthAnchor.constraint(greaterThanOrEqualToConstant: 700).isActive = true
+            // **换行的 NSTextField,不是裸 NSTextView。** NSTextView 在
+            // NSStackView 里没有内在高度(它靠自己的 scroll view 定尺寸),裸摆
+            // 进来会塌成零高或者把整栈撑爆;而此前那条 `>= 700` 的宽度约束在一个
+            // 可缩放窗口里更糟 —— 窗口被拖窄到 700 以下时,约束与栈的宽度直接冲突。
+            // wrappingLabel 有内在高度、按宽度自己折行,是「一段只读文本」的正解。
+            let text = NSTextField(wrappingLabelWithString: "")
+            text.attributedStringValue = body
+            text.isSelectable = true
+            text.lineBreakMode = .byWordWrapping
+            text.maximumNumberOfLines = 0
+            text.translatesAutoresizingMaskIntoConstraints = false
+            // 水平抗压缩降到最低:窗口变窄时让它折行,而不是把栈顶出去。
+            text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             stack.addArrangedSubview(text)
+            // 宽度跟着栈走(减去左右 18pt 的 edgeInsets),这是它知道该在哪折行的
+            // 唯一依据 —— 少了它 wrappingLabel 会按自己的内在宽度摊成一行。
+            text.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -36).isActive = true
         }
         let export = NSButton(title: "Export Diagnostics…", target: self, action: #selector(exportDiagnostics))
         export.bezelStyle = .rounded
