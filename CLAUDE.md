@@ -1541,19 +1541,32 @@ divergence、reconcile、protection_state、recovery、dns_state…… **全部�
 
 ## `/v1/logs` 与 `internal/doctor`:判据只有一份(2026-09-09)
 
-`internal/doctor`(`doctor.go`)是**纯判据包**——`Judge(Facts) Report`,不碰
-net/os/exec,`internal/cli`(`doctor_facts.go` 只采集)与将来的 `/v1/doctor`
-共用它。`bx doctor --json` 与文本路径现在都是「采集 → `doctor.Judge` → 渲染」,
-文本只是同一份 `Report` 的另一种打印(`renderDoctorReport`),不再是第二份手写
-判据——`TestClientDoctorIsJudgedByTheDoctorPackage` 逐字钉住
+`internal/doctor`(`doctor.go`)是**纯判据包**——`Judge(Facts) Report`,**本包自己
+的文件**不 import net/os/exec/syscall(`purity_test.go` 按 AST 钉住;传递依赖不在
+守卫范围内 —— `config` 自己就会拖进 net/os,本包用到的只是它的类型),
+`internal/cli`(`doctor_facts.go` 只采集)与将来的 `/v1/doctor` 共用它。
+`bx doctor --json` 与文本路径现在都是「采集 → `doctor.Judge` → 渲染」,
+文本只是同一份 `Report` 的另一种打印(`renderDoctorReport`,返回三段式的
+`doctorLineSpec` 而不是 `status|key|value` 串 —— 规则原文与错误文本里真的会带
+`|`,按分隔符切回去会把一行切错而不报错),不再是第二份手写判据。**只服务文本
+路径的那份孪生判据 `darwinServiceDoctorLines` 已删**(没有调用方,而有测试盖着 ——
+那与没有判据在输出上完全一样,却会让下一个人以为文本路径还有第二份判定)。
+守卫:`TestClientDoctorIsJudgedByTheDoctorPackage` 逐字钉住
 `collectClientDoctorWith` 只有那一句、`collectDoctorFacts` 不含判定用语,
-`TestDoctorTextPathRendersTheSharedReport` 钉住文本路径不再自己采集。`doctor`
-不能 `import guardian`(成环),DNS 三态常量各写一份,`TestDoctorDNSStateConstantsMatchGuardian`
+`TestDoctorTextPathRendersTheSharedReport` 钉住文本路径不再自己采集,
+`TestJudgeGolden`(`internal/doctor/testdata/judge_golden.json`,长路径与权限退路
+各一份)把判决**逐字节**钉住 —— 逐条断言名字与状态挡得住「少了一行」,挡不住
+「detail 少了一个字」。`doctor` 不能 `import guardian`,**会成环**(§3 里 guardian
+要调本包),DNS 三态常量各写一份,`TestDoctorDNSStateConstantsMatchGuardian`
 守跨包不漂。**`/v1/logs`**(`internal/guardian/logs.go`)经 owner 门发布 Guardian
 与 Core 日志尾部,路径来自 `install.GuardianLogPaths`,能力声明 `logs`
-(`CapabilityLogs`)。菜单失败弹窗现带 **Show Details** 打开这份日志页,取代
-此前指向 root 0600 文件、非 root 打不开的路径。**真机未验**:Show Details 按钮
-高亮、Open Logs 打开的日志页渲染。
+(`CapabilityLogs`,值本身由 `TestLogsCapabilityIsDeclared` 钉住 —— 菜单
+`LogsModel.swift` 按字面量门控,改了值菜单就永久看不见日志页而两侧都不报错)。
+菜单失败弹窗现带 **Show Details** 打开这份日志页,取代此前指向 root 0600 文件、
+非 root 打不开的路径。**那句文案与那个按钮共用同一道能力门**
+(`guardianFetchFailureInfo` 吃 `logsAvailable:`):旧 Guardian 上按钮画不出来,
+文案就改说「原因记在 bx 的日志里」而不是许诺一个找不到的按钮。**真机未验**:
+Show Details 按钮高亮、Open Logs 打开的日志页渲染。
 
 ## 读源码的守卫:三种处置(2026-08-31)
 
