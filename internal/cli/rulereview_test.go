@@ -468,7 +468,7 @@ func TestDoctorSurfacesRiskyRuleOnBothPaths(t *testing.T) {
 
 // **回归 review finding**:policy.DirectRisk 的名单有 19 个域
 // (aliyuncs/myqcloud/amazonaws/cloudfront/github.io…),配置里同时有两条危险直连
-// 完全现实。此前的实现按每条 finding 各调一次 rep.addCheck(同一个 name),
+// 完全现实。此前的实现按每条 finding 各调一次 rep.AddCheck(同一个 name),
 // --json 里会出现**多个同名** checkReport;ruleReviewCheckName 的注释自己写的
 // 就是「agent 与 MCP 按名字取」,按名字取的消费方只会拿到其中一条,静默丢掉
 // 其余的安全结论 —— 一个去匿名化风险被静默丢掉,方向正好是这个功能要防的

@@ -2783,7 +2783,7 @@ func TestWebRTCCheckHighRiskForDirectUDP(t *testing.T) {
 
 func TestAssembleLeakCheckReportAggregatesNetworkRisks(t *testing.T) {
 	doctor := doctorReport{Kind: "client", Version: "test", SecretsRedacted: true}
-	doctor.addCheck("service_active", "ok", "active", "")
+	doctor.AddCheck("service_active", "ok", "active", "")
 	webrtc := webrtcCheckReport{
 		OK:              true,
 		Kind:            "webrtc",
@@ -2874,7 +2874,7 @@ func TestAssessNetworkProbeDoesNotTreatIPv4BodyAsIPv6Leak(t *testing.T) {
 
 func TestAssembleLeakCheckReportIncludesNetworkProbe(t *testing.T) {
 	doctor := doctorReport{Kind: "client", Version: "test", SecretsRedacted: true}
-	doctor.addCheck("service_active", "ok", "active", "")
+	doctor.AddCheck("service_active", "ok", "active", "")
 	webrtc := webrtcCheckReport{OK: true, Risk: "low"}
 	network := &networkProbeReport{
 		OK:   true,
