@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/getbx/bx/internal/doctor"
@@ -49,10 +50,23 @@ func TestClientDoctorIsJudgedByTheDoctorPackage(t *testing.T) {
 	if body == nil {
 		t.Fatal("找不到 collectClientDoctorWith —— 守卫读不懂现在的代码,先修守卫")
 	}
-	if !regexp.MustCompile(`return doctor\.Judge\(collectDoctorFacts\(`).MatchString(body[1]) {
-		t.Fatalf("collectClientDoctorWith 不是「采集 → doctor.Judge」:\n%s", body[1])
+	// 整个函数体必须**逐字**就是这一句 —— 不是「包含」,是「只有」;多一句都是判据在长回 cli。
+	const want = "return doctor.Judge(collectDoctorFacts(configPath, target, timeout, skipProbe, includePlatformChecks))"
+	if got := strings.TrimSpace(body[1]); got != want {
+		t.Fatalf("collectClientDoctorWith 的函数体不是「采集 → doctor.Judge」这一句:\n got %q\nwant %q", got, want)
 	}
-	if regexp.MustCompile(`AddCheck\(|addCheck\(`).MatchString(body[1]) {
-		t.Fatal("collectClientDoctorWith 里仍在自己产出 check —— 判据长回了 cli")
+
+	// collectDoctorFacts(doctor_facts.go)是「采集」那一半,它自己也不许产出判定 ——
+	// 判定只有 doctor.Judge 一份。
+	factsSrc, err := os.ReadFile("doctor_facts.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	factsBody := regexp.MustCompile(`(?s)func collectDoctorFacts\([^)]*\) doctor\.Facts \{(.*?)\n\}`).FindStringSubmatch(string(factsSrc))
+	if factsBody == nil {
+		t.Fatal("找不到 collectDoctorFacts —— 守卫读不懂现在的代码,先修守卫")
+	}
+	if m := regexp.MustCompile(`AddCheck\(|AddReport\(|Status:|"ok"|"warn"|"fail"|"info"`).FindString(factsBody[1]); m != "" {
+		t.Fatalf("collectDoctorFacts 里出现了判定用语 %q —— 采集与判定又分叉了", m)
 	}
 }
