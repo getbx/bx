@@ -229,7 +229,7 @@ type MaintenanceHoldStatus struct {
 // 每次调用都返回新切片:它会被塞进 Status 交给 JSON 编码,共享一份底层数组等于
 // 把一个包级可变状态发布出去。
 func GuardianCapabilities() []string {
-	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityStatusWatch, CapabilityApps}
+	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityStatusWatch, CapabilityApps, CapabilityLogs}
 }
 
 // ReconcileReport 是只观察调谐环**最近一轮**的判断,随 Status 一起发布。

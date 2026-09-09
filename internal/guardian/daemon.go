@@ -833,6 +833,8 @@ func localAPIOptionsFor(options DaemonOptions) LocalAPIOptions {
 		// 改完规则叫 Core 热重载 —— 与 `bx direct add` 同一条 /v0/reload 路。
 		// 不接的话每次菜单改规则都退回「去重连」,与没做这个功能在输出上一样。
 		ReloadRules: reloadCoreRules,
+		// /v1/logs:路径来自 install 那份清单,不在 Guardian 里再抄一份。
+		LogSources: guardianLogSources(),
 	}
 }
 
