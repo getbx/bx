@@ -37,6 +37,7 @@ run_test guardian-client \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
+  "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -61,6 +62,7 @@ run_test guardian-status \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
+  "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -72,6 +74,7 @@ run_test guardian-client-timeout \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
+  "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -95,6 +98,7 @@ run_test guardian-failure-code \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
+  "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -153,6 +157,7 @@ run_test guardian-status-fields \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
+  "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -171,6 +176,10 @@ run_test protection-switch \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
   "$MENU/Sources/BxMenu/ProtectionSwitch.swift" \
   "$MENU/Tests/ProtectionSwitchTests.swift"
+
+run_test logs-model \
+  "$MENU/Sources/BxMenu/LogsModel.swift" \
+  "$MENU/Tests/LogsModelTests.swift"
 
 run_test transition-notice \
   "$MENU/Sources/BxMenu/TransitionNotice.swift" \
