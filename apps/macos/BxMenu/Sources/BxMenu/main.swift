@@ -1121,6 +1121,51 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return controller
     }()
 
+    /// Diagnostics 窗口(本期只有日志页)。归档出口接回原来那条终端路。
+    private lazy var diagnosticsWindow: DiagnosticsWindowController = {
+        let controller = DiagnosticsWindowController()
+        controller.onExportDiagnostics = { [weak self] in
+            self?.exportDiagnostics()
+        }
+        return controller
+    }()
+
+    /// 拉一次 /v1/logs 再开窗口;拉不到就明说(这条路本身就是「看失败原因」的路,
+    /// 它自己失败时不能再指向别的什么)。
+    private func openDiagnosticsLogs(highlighting code: String?) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try GuardianClient().fetchLogs() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let report):
+                    self.diagnosticsWindow.showLogs(report, highlightingCode: code)
+                case .failure(let error):
+                    self.showMessage("Logs are not available", "bx could not read its logs: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// 失败弹窗的唯一出口。**完整原因由 Guardian 经 /v1/logs 发布**,弹窗只带失败码
+    /// 与一个「Show Details」;旧 Guardian(没声明 logs)只说失败码。
+    /// 措辞纪律:只说发生了什么与下一步,不断言原因。
+    private func showGuardianFailure(title: String, error: Error) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "OK")
+        let canShow = logsAvailable(capabilities: maintenanceReport?.capabilities)
+        if canShow {
+            alert.addButton(withTitle: "Show Details")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if canShow, response == .alertSecondButtonReturn {
+            openDiagnosticsLogs(highlighting: guardianFailureCode(of: error))
+        }
+    }
+
     /// 有一次按需拉应用流量正在飞。与 `serversFetchInFlight` 同一个模式,而且
     /// 与它一样**不是可选的**:窗口开着时既有心跳定时器、又有环境刷新会触发,
     /// 而 watch 时代刷新是事件驱动、可能连着来。
@@ -1191,11 +1236,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !shouldSuppressFetch(inFlight: appTrafficFetchInFlight, explicit: forceShow) else { return }
         appTrafficFetchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let fetched = try? GuardianClient().appTraffic()
+            let outcome = Result { try GuardianClient().appTraffic() }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.appTrafficFetchInFlight = false
-                guard let fetched else {
+                guard case .success(let fetched) = outcome else {
                     self.appTrafficConsecutiveFailures += 1
                     // **心跳只能活在一个真的开着的窗口旁边。** 首拉失败时窗口
                     // 从来没被创建过,onClose 永远不会来停它 —— 这里必须自己停,
@@ -1211,12 +1256,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // **读不到就说读不到,不摆一个空报告** —— 一份 subscribed:false
                     // 的假报告会把「没问出来」显示成「没在采集」,而那是两件事。
                     guard forceShow else { return }
-                    let alert = NSAlert()
-                    alert.messageText = "App traffic is not available"
-                    alert.informativeText = "bx could not read the per-app report. "
-                        + "See /var/log/bx-guard.err.log for the reason."
-                    NSApp.activate(ignoringOtherApps: true)
-                    alert.runModal()
+                    if case .failure(let error) = outcome {
+                        self.showGuardianFailure(title: "App traffic is not available", error: error)
+                    }
                     return
                 }
                 self.appTrafficConsecutiveFailures = 0
@@ -1337,12 +1379,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     NSApp.activate(ignoringOtherApps: true)
                     alert.runModal()
                 case .failure(let error):
-                    let alert = NSAlert()
-                    alert.messageText = "Could not switch server"
-                    alert.informativeText = "\(error.localizedDescription)\n\n"
-                        + "See /var/log/bx-guard.err.log for the full reason."
-                    NSApp.activate(ignoringOtherApps: true)
-                    alert.runModal()
+                    self.showGuardianFailure(title: "Could not switch server", error: error)
                 }
                 // 用户刚做完动作,这一次刷新不许被丢掉。
                 self.refresh(userInitiated: true)
@@ -1398,12 +1435,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     )
                     self.followUpAfterRuleChange(title: enable ? "Turned on \(group)" : "Turned off \(group)", list: list)
                 case .failure(let error):
-                    let alert = NSAlert()
-                    alert.messageText = "Could not change that group"
-                    alert.informativeText = "\(error.localizedDescription)\n\n"
-                        + "See /var/log/bx-guard.err.log for the full reason."
-                    NSApp.activate(ignoringOtherApps: true)
-                    alert.runModal()
+                    self.showGuardianFailure(title: "Could not change that group", error: error)
                 }
             }
         }
@@ -1431,12 +1463,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let verb = ruleKind == .direct ? "direct" : "through the tunnel"
                     self.followUpAfterRuleChange(title: "\(pattern) will always go \(verb)", list: list)
                 case .failure(let error):
-                    let alert = NSAlert()
-                    alert.messageText = "Could not add that rule"
-                    alert.informativeText = "\(error.localizedDescription)\n\n"
-                        + "See /var/log/bx-guard.err.log for the full reason."
-                    NSApp.activate(ignoringOtherApps: true)
-                    alert.runModal()
+                    self.showGuardianFailure(title: "Could not add that rule", error: error)
                 }
             }
         }
@@ -1600,7 +1627,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                    target: self, action: #selector(openWiFiSignIn))
                 }
                 menu.addAction("Details", symbol: "info.circle", target: self, action: #selector(showRecoveryDetails))
-                menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+                menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctorFromMenu))
             } else {
                 menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             }
@@ -1778,7 +1805,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 存在于其余每一个状态里 —— 想删掉 bx 的人最可能正处在「它出问题了」
         // 那几个状态。它排在子菜单最底,与破坏性动作归底部的通例一致。
         let troubleshoot = NSMenu()
-        troubleshoot.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctor))
+        troubleshoot.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctorFromMenu))
         troubleshoot.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
         // 「装的是哪一版」:从一级菜单搬进来的那行版本号,只答这一个问题。
         if let version = installedVersionForMenu() {
@@ -1867,6 +1894,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openLogs() {
+        // 这一版 Guardian 会发布日志就开日志页;旧版退回原来的文件夹(那是诊断包的落点)。
+        if logsAvailable(capabilities: maintenanceReport?.capabilities) {
+            openDiagnosticsLogs(highlighting: nil)
+            return
+        }
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library")
             .appendingPathComponent("Logs")
@@ -1879,7 +1911,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func runDoctor() {
+    @objc private func runDoctorFromMenu() {
+        exportDiagnostics()
+    }
+
+    private func exportDiagnostics() {
         openTerminal("diag=\"$HOME/Library/Logs/bx/diagnostics\"; mkdir -p \"$diag\"; sudo env BX_LOG_ARCHIVE_DIR=\"$diag\" '\(bxPath)' doctor; latest=$(find \"$diag\" -maxdepth 1 -type d -name 'bx-logs-*' | sort | tail -1); if [ -n \"$latest\" ]; then group=$(id -gn); sudo chown -R \"$USER:$group\" \"$latest\" 2>/dev/null || true; open \"$latest\"; fi; echo; read -n 1 -s -r -p 'Press any key to close'")
     }
 
@@ -2284,7 +2320,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "Check for Problems")
         alert.addButton(withTitle: "OK")
         if alert.runModal() == .alertFirstButtonReturn {
-            runDoctor()
+            exportDiagnostics()
         }
     }
 
@@ -2652,7 +2688,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "Check for Problems")
         alert.addButton(withTitle: "OK")
         if alert.runModal() == .alertFirstButtonReturn {
-            runDoctor()
+            exportDiagnostics()
         }
     }
 
