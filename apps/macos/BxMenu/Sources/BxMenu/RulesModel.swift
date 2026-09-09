@@ -13,16 +13,28 @@ import Foundation
 /// 500 的完整原因会被 Guardian 写进自己的日志;403 按设计不记,客户端侧失败
 /// (连接不上/超时/答不完整)发生在到达 Guardian 之前,日志里没有那一次。
 ///
+/// **`logsAvailable` 是必填的,不给默认值。** 「Show Details」那个按钮由
+/// `logsAvailable(capabilities:)` 这道能力门决定画不画(旧 Guardian 没有
+/// /v1/logs);文案若无条件许诺它,在旧 Guardian 上就是**指向一个不存在的按钮** ——
+/// 用户会在弹窗里找一个找不到的东西,然后以为是自己看漏了。调用方传的必须是
+/// 与 showGuardianFailure 那道门**同一个**判据,两处不许各算各的。
+/// 门关着时改说日志里有原因(那句话在任何一版上都成立:Guardian 按纪律写了自己的
+/// 日志,只是这一版不发布它),失败码照旧带上 —— 它是唯一可检索的线索。
+///
 /// 刻意吃已抽取的事实而不是 Error:本文件被多个测试套件独立编译,引用
 /// GuardianClientError 会把 GuardianClient.swift 拖进每份源文件清单。
-func guardianFetchFailureInfo(httpStatus: Int?, failureCode: String?, describedError: String?) -> String {
+func guardianFetchFailureInfo(
+    httpStatus: Int?, failureCode: String?, describedError: String?, logsAvailable: Bool
+) -> String {
     if let status = httpStatus {
         if status == 500 {
             var info = "bx answered with an error (HTTP 500"
             if let code = failureCode, !code.isEmpty {
                 info += ", code=\(code)"
             }
-            info += "). Use Show Details for the reason."
+            info += logsAvailable
+                ? "). Use Show Details for the reason."
+                : "). bx recorded the reason in its log."
             return info
         }
         var info = "bx answered HTTP \(status)"

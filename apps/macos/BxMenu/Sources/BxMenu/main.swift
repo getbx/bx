@@ -937,6 +937,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 把一次 Guardian 拉取失败折成弹窗说明:只抽事实,措辞由纯函数
     /// guardianFetchFailureInfo(RulesModel.swift,可测)决定。留痕不在这里 ——
     /// 见 logGuardianFetchFailure。
+    ///
+    /// **`logsAvailable:` 传的必须是 showGuardianFailure 用来决定画不画
+    /// 「Show Details」的同一个表达式**:文案许诺一个按钮而能力门把它扣住,
+    /// 用户就会在弹窗里找一个不存在的东西。同一个判据算两遍就够漂开一次。
     private func fetchFailureAlertInfo(_ error: Error?, what: String) -> String {
         var httpStatus: Int?
         var failureCode: String?
@@ -947,7 +951,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         return guardianFetchFailureInfo(
             httpStatus: httpStatus, failureCode: failureCode,
-            describedError: error?.localizedDescription)
+            describedError: error?.localizedDescription,
+            logsAvailable: logsAvailable(capabilities: maintenanceReport?.capabilities))
     }
 
     /// 按需拉一次规则。**只在用户真的要看规则时拨** ——
@@ -1129,13 +1134,22 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return controller
     }()
 
+    /// 有一次日志拉取正在飞。与 `rulesFetchInFlight` 同一个模式:这条路只由用户
+    /// 显式触发(Open Logs / 弹窗里的 Show Details),重叠只可能来自双击连点 ——
+    /// 而重叠在这里比在规则那边更难看:两次成功会把日志窗口连开两遍,两次失败会
+    /// 连弹两个「Logs are not available」。
+    private var diagnosticsFetchInFlight = false
+
     /// 拉一次 /v1/logs 再开窗口;拉不到就明说(这条路本身就是「看失败原因」的路,
     /// 它自己失败时不能再指向别的什么)。
     private func openDiagnosticsLogs(highlighting code: String?) {
+        guard !diagnosticsFetchInFlight else { return }
+        diagnosticsFetchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try GuardianClient().fetchLogs() }
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.diagnosticsFetchInFlight = false
                 switch result {
                 case .success(let report):
                     self.diagnosticsWindow.showLogs(report, highlightingCode: code)
@@ -1454,7 +1468,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 从「按应用看分流」窗口的右键菜单加一条规则。与 applyGroupChange 同一条路:
     /// 后台拨 Guardian,成功就顶替 lastRules、刷新规则窗口、按服务端的答案决定
-    /// 说「已生效」还是「要重连」;失败弹 alert 指向 Guardian 日志。
+    /// 说「已生效」还是「要重连」;失败走 showGuardianFailure —— 这一版 Guardian
+    /// 发布日志时弹窗带「Show Details」直接打开那份日志,旧版才只说失败码。
     private func addRuleFromAppTraffic(kind: String, pattern: String) {
         guard let ruleKind = RuleKind(rawValue: kind) else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in

@@ -277,32 +277,65 @@ struct RulesModelTests {
     // 配置问题。
     static func testFetchFailureInfoOnlyBlamesTheLogWhenTheLogHasTheAnswer() {
         // 500:Guardian 按纪律把完整原因写进了自己的日志,这时候才许指路。
-        let server = guardianFetchFailureInfo(httpStatus: 500, failureCode: "rules_unreadable", describedError: nil)
+        let server = guardianFetchFailureInfo(httpStatus: 500, failureCode: "rules_unreadable",
+                                              describedError: nil, logsAvailable: true)
         expect(server.contains("Show Details"), "500 要指向 Show Details")
         expect(server.contains("rules_unreadable"),
                "失败码是唯一可检索的线索,不许丢:\(server)")
 
         // 非 500 的 HTTP 应答(403/503):按设计不写日志,指路是白跑。
-        let denied = guardianFetchFailureInfo(httpStatus: 403, failureCode: nil, describedError: nil)
+        let denied = guardianFetchFailureInfo(httpStatus: 403, failureCode: nil,
+                                              describedError: nil, logsAvailable: true)
         expect(!denied.contains("Show Details"), "403 不进 guardian 日志,不许把人支过去:\(denied)")
         expect(denied.contains("403"), "状态码本身就是线索,要说:\(denied)")
 
         // 到不了 Guardian(连接失败/超时):失败发生在路上,日志里没有这一次。
         let unreachable = guardianFetchFailureInfo(httpStatus: nil, failureCode: nil,
-                                                   describedError: "Guardian connection failed (61).")
+                                                   describedError: "Guardian connection failed (61).",
+                                                   logsAvailable: true)
         expect(!unreachable.contains("Show Details"), "客户端侧失败不进 guardian 日志,不许指路:\(unreachable)")
         expect(unreachable.contains("Guardian connection failed (61)."),
                "真实错误描述是唯一线索,必须原样带上:\(unreachable)")
+    }
+
+    /// **旧 Guardian 上不许许诺那个按钮。** 「Show Details」由能力门
+    /// (logsAvailable(capabilities:))决定画不画;没有 /v1/logs 的那一版上按钮
+    /// 根本不存在,文案再说「Use Show Details」就是指向一个找不到的东西 ——
+    /// 用户会以为自己看漏了,而不是知道这一版就是没有。
+    ///
+    /// 门关着时仍要说日志里有原因(那句在任何一版上都成立)并带上失败码 ——
+    /// 那是唯一可检索的线索,不能因为按钮没了就一起丢掉。
+    static func testFetchFailureInfoOnlyPromisesShowDetailsWhenTheButtonExists() {
+        let withButton = guardianFetchFailureInfo(httpStatus: 500, failureCode: "rules_unreadable",
+                                                  describedError: nil, logsAvailable: true)
+        expect(withButton.contains("Show Details"), "有 logs 能力时才该指向那个按钮:\(withButton)")
+
+        let withoutButton = guardianFetchFailureInfo(httpStatus: 500, failureCode: "rules_unreadable",
+                                                     describedError: nil, logsAvailable: false)
+        expect(!withoutButton.contains("Show Details"),
+               "旧 Guardian 上没有 Show Details 按钮,文案不许许诺它:\(withoutButton)")
+        expect(withoutButton.contains("500"), "状态码仍要说:\(withoutButton)")
+        expect(withoutButton.contains("rules_unreadable"),
+               "失败码是唯一可检索的线索,按钮没了也不许丢:\(withoutButton)")
+
+        // 非 500 两侧一个字都不该变:那条路本来就不指路,与有没有按钮无关。
+        expect(guardianFetchFailureInfo(httpStatus: 403, failureCode: "denied", describedError: nil, logsAvailable: true)
+                == guardianFetchFailureInfo(httpStatus: 403, failureCode: "denied", describedError: nil, logsAvailable: false),
+               "403 的措辞不该随能力门变")
+        expect(guardianFetchFailureInfo(httpStatus: nil, failureCode: nil, describedError: "timed out", logsAvailable: true)
+                == guardianFetchFailureInfo(httpStatus: nil, failureCode: nil, describedError: "timed out", logsAvailable: false),
+               "客户端侧失败的措辞不该随能力门变")
     }
 
     static func testFetchFailureInfoNeverInventsAConfigProblem() {
         // 「could not read its configuration」是上一版编出来的原因 —— 三种失败
         // 形态下都不许再出现:文案只陈述观测到的事实。
         for info in [
-            guardianFetchFailureInfo(httpStatus: 500, failureCode: nil, describedError: nil),
-            guardianFetchFailureInfo(httpStatus: 403, failureCode: nil, describedError: nil),
-            guardianFetchFailureInfo(httpStatus: nil, failureCode: nil, describedError: "timed out"),
-            guardianFetchFailureInfo(httpStatus: nil, failureCode: nil, describedError: nil),
+            guardianFetchFailureInfo(httpStatus: 500, failureCode: nil, describedError: nil, logsAvailable: true),
+            guardianFetchFailureInfo(httpStatus: 500, failureCode: nil, describedError: nil, logsAvailable: false),
+            guardianFetchFailureInfo(httpStatus: 403, failureCode: nil, describedError: nil, logsAvailable: true),
+            guardianFetchFailureInfo(httpStatus: nil, failureCode: nil, describedError: "timed out", logsAvailable: true),
+            guardianFetchFailureInfo(httpStatus: nil, failureCode: nil, describedError: nil, logsAvailable: false),
         ] {
             expect(!info.lowercased().contains("configuration"),
                    "文案在断言一个没观测到的原因:\(info)")
@@ -341,6 +374,7 @@ struct RulesModelTests {
         testMissingListsDecodeAsEmptyNotAsError()
         testRequiresRestartAbsenceIsNotFalse()
         testFetchFailureInfoOnlyBlamesTheLogWhenTheLogHasTheAnswer()
+        testFetchFailureInfoOnlyPromisesShowDetailsWhenTheButtonExists()
         testFetchFailureInfoNeverInventsAConfigProblem()
         testRuleChangeFollowUpTrustsOnlyAnExplicitNo()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」,
