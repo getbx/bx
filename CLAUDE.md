@@ -1539,6 +1539,22 @@ divergence、reconcile、protection_state、recovery、dns_state…… **全部�
   (不发 review),CLI 报「这一版 Guardian 没有发布规则体检」而不是「你的规则
   都很健康」。
 
+## `/v1/logs` 与 `internal/doctor`:判据只有一份(2026-09-09)
+
+`internal/doctor`(`doctor.go`)是**纯判据包**——`Judge(Facts) Report`,不碰
+net/os/exec,`internal/cli`(`doctor_facts.go` 只采集)与将来的 `/v1/doctor`
+共用它。`bx doctor --json` 与文本路径现在都是「采集 → `doctor.Judge` → 渲染」,
+文本只是同一份 `Report` 的另一种打印(`renderDoctorReport`),不再是第二份手写
+判据——`TestClientDoctorIsJudgedByTheDoctorPackage` 逐字钉住
+`collectClientDoctorWith` 只有那一句、`collectDoctorFacts` 不含判定用语,
+`TestDoctorTextPathRendersTheSharedReport` 钉住文本路径不再自己采集。`doctor`
+不能 `import guardian`(成环),DNS 三态常量各写一份,`TestDoctorDNSStateConstantsMatchGuardian`
+守跨包不漂。**`/v1/logs`**(`internal/guardian/logs.go`)经 owner 门发布 Guardian
+与 Core 日志尾部,路径来自 `install.GuardianLogPaths`,能力声明 `logs`
+(`CapabilityLogs`)。菜单失败弹窗现带 **Show Details** 打开这份日志页,取代
+此前指向 root 0600 文件、非 root 打不开的路径。**真机未验**:Show Details 按钮
+高亮、Open Logs 打开的日志页渲染。
+
 ## 读源码的守卫:三种处置(2026-08-31)
 
 全仓真正读源码的测试函数 **60 → 57**,而**这个数字本身比想象的诚实得多**:
