@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -25,6 +24,7 @@ import (
 
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/doctor"
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/gateway"
 	"github.com/getbx/bx/internal/guardian"
@@ -195,23 +195,11 @@ type userReport struct {
 	User            userView `json:"user"`
 }
 
-type checkReport struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Detail string `json:"detail,omitempty"`
-	Hint   string `json:"hint,omitempty"`
-}
+// checkReport / doctorReport 是 internal/doctor 那两个类型的别名:判据搬去了那边,
+// 这里 80 处使用(server doctor、inspect、MCP 渲染)一个不用改。
+type checkReport = doctor.Check
 
-type doctorReport struct {
-	OK              bool          `json:"ok"`
-	Kind            string        `json:"kind"`
-	Version         string        `json:"version"`
-	SecretsRedacted bool          `json:"secrets_redacted"`
-	ChangesSystem   bool          `json:"changes_system"`
-	ChangesNetwork  bool          `json:"changes_network"`
-	RequiresRoot    bool          `json:"requires_root"`
-	Checks          []checkReport `json:"checks"`
-}
+type doctorReport = doctor.Report
 
 type clientStatusReport struct {
 	*stats.Report
@@ -2284,128 +2272,7 @@ func collectClientDoctor(configPath, target string, timeout time.Duration, skipP
 // 因为 leak-check 自己在顶层已经跑一遍 collectPlatformChecks——避免同一批 pgrep/netstat/scutil
 // 探测跑两遍、同一条检查在 leak.doctor.checks[] 和 leak.checks[] 里重复出现。
 func collectClientDoctorWith(configPath, target string, timeout time.Duration, skipProbe, includePlatformChecks bool) doctorReport {
-	rep := doctorReport{Kind: "client", Version: version.String(), SecretsRedacted: true}
-	cfgPath := resolveConfigPath(configPath)
-	udpMode := "proxy"
-	rep.addCheck("config", "info", cfgPath, "")
-	b, err := os.ReadFile(cfgPath)
-	if err != nil {
-		// **配置读不到不等于什么都查不了。** /etc/bx/config.yaml 是 0600
-		// root-only,而 agent 按设计以业主身份免 sudo 跑 —— 此前这里整块跳过,
-		// 于是规则体检对 agent 等于不存在,而它拿到的信号是一个读起来像
-		// 「bx 坏了」的 ok:false。Guardian 的 /v1/rules 对业主开放,读的正是
-		// 同一个文件:同一份真相,换一条被授权的路。
-		// **两个条件缺一不可。**
-		//   ① 只对**权限**失败退路:文件根本不存在是「这台机器没 setup 过」,
-		//      那是真问题,拿 Guardian 的答案盖住它就是掩盖故障(既有测试
-		//      TestClientDoctorJSONReport 当场抓到过这个错)。
-		//   ② Guardian 读的**必须是同一个文件**:`--config /somewhere/else`
-		//      被一份来自 /etc/bx/config.yaml 的答案冒名顶替,是 wrong-reference-
-		//      object 的又一处 —— 判据没错、读错了输入。
-		review, guardianPath, rulesErr := guardianRulesForDoctor()
-		if rulesErr == nil && !errors.Is(err, fs.ErrPermission) {
-			rulesErr = errors.New("配置不是因为权限读不到,不走 Guardian 退路")
-		}
-		if rulesErr == nil && guardianPath != cfgPath {
-			rulesErr = fmt.Errorf("Guardian 读的是 %s,与要问的 %s 不是同一个文件", guardianPath, cfgPath)
-		}
-		if rulesErr == nil && review == nil {
-			// **nil 不是空报告。** Guardian 连上了、却没算(旧版本,或它自己也
-			// 读不到配置)—— 那时渲染一份空报告就是把「没查」说成「都很健康」。
-			rulesErr = errors.New("这一版 Guardian 没有发布规则体检")
-		}
-		if rulesErr != nil {
-			rep.addCheck("config_readable", "fail", err.Error(), "sudo bx setup <client-link>")
-		} else {
-			// 两条路都试过、其中一条成了 —— 不许再报 fail 把整份报告拖成
-			// ok:false(那是会被训练成忽略的假警报),但也**不许说成 ok**:
-			// 这个进程确实读不到那个文件,别的依赖它的检查仍然缺席。
-			// **说清还缺什么**:规则体检补回来了,但权限/解析/server link/udp 策略
-			// 那几条仍然依赖直接读文件,本次没跑。不点名的话 ok:true 会被读成
-			// 「全都查过且没问题」——「没查」与「查了没有」分不开,是这份报告
-			// 最不能犯的错。
-			rep.addCheck("config_readable", "info",
-				err.Error()+";规则已改经 Guardian 读取(业主授权,无需 root);"+
-					"其余依赖配置的检查(权限/解析/server link/udp 策略)本次缺席,要它们请用 sudo", "")
-			// **体检是 Guardian 算的,不是这里重算。** 它有 root,读得到配置与
-			// Core 实际在用的那张 china 列表,所以给得出完整四类;客户端自己
-			// 算只能给三类(无从知道用户有没有指定自己的列表)。判据仍然只有
-			// 一份 —— 两边都是 rulereview.Review,组装都是 rulereviewsrc。
-			for _, l := range ruleReviewDoctorLines(*review) {
-				rep.addCheck(ruleReviewCheckName(l.Key), l.Status, l.Value, l.Hint)
-			}
-		}
-	} else {
-		rep.addCheck("config_readable", "ok", "yes", "")
-		if modeCheck(cfgPath, 0o600) {
-			rep.addCheck("config_permissions", "ok", "0600", "")
-		} else {
-			rep.addCheck("config_permissions", "warn", "not 0600", "chmod 600 "+cfgPath)
-		}
-		cfg, err := config.Parse(b)
-		if err != nil {
-			rep.addCheck("config_parse", "fail", err.Error(), "")
-		} else {
-			rep.addCheck("config_parse", "ok", "yes", "")
-			udpMode = cfg.UDP.Mode
-			if cfg.Server == "" {
-				rep.addCheck("server_link", "fail", "empty", "sudo bx setup <client-link>")
-			} else {
-				// cfg.Server 经 config.Parse 已校验并解码成裸内部链接(brook/vless/hysteria2);
-				// 不再 blink.Decode 重校验(对非 bx:// 的裸 vless/hysteria2 会误报 fail)。
-				rep.addCheck("server_link", "ok", redactLink(cfg.Server), "")
-				if len(cfg.Transports) > 1 {
-					rep.addCheck("transports", "ok", fmt.Sprintf("%d 个传输(自动容灾)", len(cfg.Transports)), "")
-				}
-				if cfg.UDP.Transport != "" {
-					rep.addCheck("udp_transport", "ok", redactLink(cfg.UDP.Transport), "")
-				}
-				if !skipProbe {
-					rep.addReport(probeCheck(cfg.Server, target, timeout))
-				}
-				for _, l := range ruleReviewDoctorLines(rulereview.Review(buildRuleReviewInput(cfg, embedded.ChinaDomain(), func() (stats.Report, error) {
-					return supervisor.FetchStatusReport(statusSocketPath())
-				}))) {
-					rep.addCheck(ruleReviewCheckName(l.Key), l.Status, l.Value, l.Hint)
-				}
-			}
-		}
-	}
-	// macOS 上服务三行必须问 **Guardian**,不是 Core / 不是 systemd。
-	//
-	// 统一布局下 Core 不是 launchd 服务(由 Guardian 起停),所以
-	// `install.UnitInstalled()`(查 Core 的两个 plist)与 `install.ServiceName`
-	// (systemd 的 "bx.service")在一台**装好且正在保护**的 mac 上必然三条 FAIL
-	// —— 真机 2026-08-06,教训写在 darwinGuardianServiceName 旁边。人读版 doctor
-	// (doctorAction)早就照做了,**这条 --json 路径此前漏了**:后果不只是三行难看,
-	// 还有 `rep.OK = !rep.hasFail()` 让一台健康的 mac 恒报 `ok:false`,以及
-	// doctorNextActions 把 "sudo bx setup <client-link>" 列进 next_actions ——
-	// 建议用户去重跑一个已经跑过的 setup。
-	for _, check := range serviceDoctorChecks(runtime.GOOS, guardianServiceChecks, systemdServiceChecks) {
-		rep.addReport(check)
-	}
-	if err := checkStatusSocket(); err != nil {
-		rep.addCheck("status_socket", "warn", err.Error(), "bx logs")
-	} else {
-		rep.addCheck("status_socket", "ok", "reachable", "")
-	}
-	status, detail, hint := udpPolicyDoctor(udpMode)
-	rep.addCheck("udp_policy", status, detail, hint)
-	if runtime.GOOS == "darwin" {
-		guardianStatus, err := readGuardianStatus()
-		if err != nil {
-			guardianStatus = guardianStatusFallback(stats.Report{}, runtime.GOOS)
-		}
-		rep.Checks = append(rep.Checks, guardianDNSDoctorCheck(guardianStatus))
-		rep.Checks = append(rep.Checks, recoveryDoctorCheck(guardianStatus.Recovery))
-	}
-	if includePlatformChecks {
-		for _, check := range collectPlatformChecks(context.Background()) {
-			rep.addReport(check)
-		}
-	}
-	rep.OK = !rep.hasFail()
-	return rep
+	return doctor.Judge(collectDoctorFacts(configPath, target, timeout, skipProbe, includePlatformChecks))
 }
 
 func collectClientInspect(configPath, target string, timeout time.Duration, skipProbe bool) inspectReport {
@@ -2516,7 +2383,7 @@ func assembleLeakCheckReport(doctor doctorReport, webrtc webrtcCheckReport, netw
 	if network != nil && network.Risk != "" {
 		rep.Risk = maxRisk(rep.Risk, network.Risk)
 	}
-	if doctor.hasFail() {
+	if doctor.HasFail() {
 		rep.Risk = maxRisk(rep.Risk, "high")
 	}
 	rep.addCheck(aggregateDoctorServiceCheck(doctor))
@@ -3236,57 +3103,48 @@ func maxRisk(a, b string) string {
 	return a
 }
 
-func udpPolicyDoctor(mode string) (status, detail, hint string) {
-	switch mode {
-	case "proxy":
-		return "ok", "non-DNS UDP relayed through bx tunnel", ""
-	case "direct-realtime":
-		return "warn", "non-DNS UDP direct; may expose real network path", "Use sudo bx realtime on to relay UDP through bx, or sudo bx realtime off to block it"
-	default:
-		return "warn", "non-DNS UDP blocked", "Google Meet/WebRTC may stutter; use sudo bx realtime on"
-	}
-}
+func udpPolicyDoctor(mode string) (status, detail, hint string) { return doctor.UDPPolicy(mode) }
 
 func collectServerDoctor(configPath, sharesDir string) doctorReport {
 	rep := doctorReport{Kind: "server", Version: version.String(), SecretsRedacted: true, RequiresRoot: true}
 	cfg, err := readServerConfig(configPath)
 	if err != nil {
-		rep.addCheck("config_parse", "fail", err.Error(), "sudo bx server install --host <host>")
+		rep.AddCheck("config_parse", "fail", err.Error(), "sudo bx server install --host <host>")
 	} else {
-		rep.addCheck("config_parse", "ok", "yes", "")
+		rep.AddCheck("config_parse", "ok", "yes", "")
 		if modeCheck(configPath, 0o600) {
-			rep.addCheck("config_permissions", "ok", "0600", "")
+			rep.AddCheck("config_permissions", "ok", "0600", "")
 		} else {
-			rep.addCheck("config_permissions", "warn", "not 0600", "chmod 600 "+configPath)
+			rep.AddCheck("config_permissions", "warn", "not 0600", "chmod 600 "+configPath)
 		}
 		proto, _ := normalizeServerProtocol(cfg.Type)
-		rep.addCheck("protocol", "ok", proto, "")
+		rep.AddCheck("protocol", "ok", proto, "")
 		if proto == "reality" || proto == "hysteria2" {
 			if _, serr := os.Stat(serverSingboxPath); serr != nil {
-				rep.addCheck("singbox_config", "fail", serr.Error(), "sudo bx server install --protocol "+proto+" --host <host>")
+				rep.AddCheck("singbox_config", "fail", serr.Error(), "sudo bx server install --protocol "+proto+" --host <host>")
 			} else {
-				rep.addCheck("singbox_config", "ok", serverSingboxPath, serverFirewallHintFor(cfg))
+				rep.AddCheck("singbox_config", "ok", serverSingboxPath, serverFirewallHintFor(cfg))
 			}
 		} else if port := listenPort(cfg.Listen); port == "" {
-			rep.addCheck("listen", "fail", cfg.Listen, "")
+			rep.AddCheck("listen", "fail", cfg.Listen, "")
 		} else {
-			rep.addCheck("listen", "ok", cfg.Listen, "")
+			rep.AddCheck("listen", "ok", cfg.Listen, "")
 			status := "warn"
 			detail := "tcp/" + port + " not detected"
 			if isListening(port) {
 				status = "ok"
 				detail = "tcp/" + port
 			}
-			rep.addCheck("port_listening", status, detail, serverFirewallHint(cfg.Listen))
+			rep.AddCheck("port_listening", status, detail, serverFirewallHint(cfg.Listen))
 		}
 	}
-	rep.addCheck("service_installed", boolStatus(install.ServerUnitInstalled()), install.ServerServiceName, "sudo bx server install --host <host>")
-	rep.addCheck("service_active", serviceStatus("is-active", install.ServerServiceName), serviceState("is-active", install.ServerServiceName), "sudo bx server start")
-	rep.addCheck("service_enabled", serviceStatus("is-enabled", install.ServerServiceName), serviceState("is-enabled", install.ServerServiceName), "sudo bx server start")
+	rep.AddCheck("service_installed", boolStatus(install.ServerUnitInstalled()), install.ServerServiceName, "sudo bx server install --host <host>")
+	rep.AddCheck("service_active", serviceStatus("is-active", install.ServerServiceName), serviceState("is-active", install.ServerServiceName), "sudo bx server start")
+	rep.AddCheck("service_enabled", serviceStatus("is-enabled", install.ServerServiceName), serviceState("is-enabled", install.ServerServiceName), "sudo bx server start")
 	for _, check := range shareChecks(sharesDir) {
-		rep.addReport(check)
+		rep.AddReport(check)
 	}
-	rep.OK = !rep.hasFail()
+	rep.OK = !rep.HasFail()
 	return rep
 }
 
@@ -3376,23 +3234,6 @@ func shareDoctorStatus(serviceState, listenState string) string {
 		return "ok"
 	}
 	return "warn"
-}
-
-func (r *doctorReport) addCheck(name, status, detail, hint string) {
-	r.addReport(checkReport{Name: name, Status: status, Detail: detail, Hint: hint})
-}
-
-func (r *doctorReport) addReport(check checkReport) {
-	r.Checks = append(r.Checks, check)
-}
-
-func (r doctorReport) hasFail() bool {
-	for _, c := range r.Checks {
-		if c.Status == "fail" {
-			return true
-		}
-	}
-	return false
 }
 
 func doctorProbe(link, target string, timeout time.Duration) {
@@ -4812,45 +4653,11 @@ func captiveNetworkHint(recovery guardian.RecoverySnapshot) string {
 }
 
 func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {
-	status := "ok"
-	hint := ""
-	switch snapshot.State {
-	case "accepted", "running":
-		status = "info"
-	case "failed":
-		status = "warn"
-		hint = "bx logs --json; bx reconnect (troubleshooting only)"
-	}
-	detail := fmt.Sprintf("state=%s stage=%s attempt=%d", snapshot.State, snapshot.Stage, snapshot.Attempt)
-	if snapshot.ErrorCode != "" {
-		detail += " error_code=" + snapshot.ErrorCode
-	}
-	return checkReport{Name: "network_recovery", Status: status, Detail: detail, Hint: hint}
+	return doctor.RecoveryCheck(doctor.RecoveryFact{State: snapshot.State, Stage: snapshot.Stage, Attempt: snapshot.Attempt, ErrorCode: snapshot.ErrorCode})
 }
 
 func guardianDNSDoctorCheck(status guardian.Status) checkReport {
-	state := status.DNSState
-	if state == "" {
-		state = guardian.DNSUnknown
-	}
-	detail := fmt.Sprintf("state=%s managed=%t", state, status.DNSManaged)
-	if status.DNSService != "" {
-		detail += " service=" + status.DNSService
-	}
-	if state == guardian.DNSManaged && status.DNSManaged {
-		return checkReport{Name: "guardian_dns", Status: "ok", Detail: detail}
-	}
-	// NotNeeded 是健康态(linux:数据面自己管,dns_managed 如实为 false)——
-	// 判 fail 并提示 sudo bx up,是在一台完全健康的机器上教用户白跑一趟。
-	if state == guardian.DNSNotNeeded {
-		return checkReport{Name: "guardian_dns", Status: "ok", Detail: detail}
-	}
-	return checkReport{
-		Name:   "guardian_dns",
-		Status: "fail",
-		Detail: detail,
-		Hint:   "sudo bx up; bx logs",
-	}
+	return doctor.DNSCheck(guardianFactFrom(status).DNS)
 }
 
 func readStatusReport() (stats.Report, error) {
@@ -5797,18 +5604,7 @@ func waitStatusSocket(timeout time.Duration) error {
 	return fmt.Errorf("timeout waiting for %s", statusSocketPath())
 }
 
-func redactLink(link string) string {
-	switch {
-	case strings.HasPrefix(link, "bx://"):
-		return "bx://<redacted>"
-	case strings.HasPrefix(link, "blink://"):
-		return "blink://<legacy-redacted>"
-	case strings.HasPrefix(link, "brook://"):
-		return "internal-link:<redacted>"
-	default:
-		return "<redacted>"
-	}
-}
+func redactLink(link string) string { return doctor.RedactLink(link) }
 
 func isListening(port string) bool {
 	for _, addr := range []string{net.JoinHostPort("127.0.0.1", port), net.JoinHostPort("::1", port)} {

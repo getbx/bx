@@ -61,7 +61,7 @@ func TestDarwinDoctorServiceLinesStillFailWhenGuardianAbsent(t *testing.T) {
 // 绝不能落回 Core 的 plist / systemd 的 bx.service。
 //
 // 这个 bug 曾经真实存在于 --json 这条路径上(人读版早就修好了):后果不只是三行
-// 难看,还有 `rep.OK = !rep.hasFail()` 让一台**健康的** mac 恒报 ok:false,以及
+// 难看,还有 `rep.OK = !rep.HasFail()` 让一台**健康的** mac 恒报 ok:false,以及
 // doctorNextActions 把 "sudo bx setup <client-link>" 列进 next_actions——建议用户
 // 去重跑一个已经跑过的 setup。菜单栏 app 曾经照抄这份错判据(Task 4 复审抓到)。
 func TestDarwinServiceChecksAskGuardianNotCore(t *testing.T) {
