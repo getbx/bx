@@ -34,7 +34,6 @@ import (
 	"github.com/getbx/bx/internal/procredact"
 	"github.com/getbx/bx/internal/provision"
 	"github.com/getbx/bx/internal/route"
-	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/setup"
 	"github.com/getbx/bx/internal/srvgen"
 	"github.com/getbx/bx/internal/stats"
@@ -1556,87 +1555,16 @@ func doctorAction(c *cli.Context) (err error) {
 	}
 	fmt.Println("bx doctor")
 	doctorLine("ok", "version", version.String())
-	cfgPath := resolveConfigPath(c.String("config"))
-	doctorLine("info", "config", cfgPath)
-	b, err := os.ReadFile(cfgPath)
-	if err != nil {
-		doctorLine("fail", "config readable", err.Error())
-		doctorLine("hint", "setup", "sudo bx setup <client-link>")
-	} else {
-		doctorLine("ok", "config readable", "yes")
-		checkFileMode(cfgPath, 0o600)
-		cfg, err := config.Parse(b)
-		if err != nil {
-			doctorLine("fail", "config parse", err.Error())
-		} else {
-			doctorLine("ok", "config parse", "yes")
-			if cfg.Server == "" {
-				doctorLine("fail", "server link", "empty")
-			} else {
-				// cfg.Server 经 Parse 已校验解码;不再 blink.Decode 重校验(裸 vless/hysteria2 会误报)。
-				doctorLine("ok", "server link", redactLink(cfg.Server))
-				if len(cfg.Transports) > 1 {
-					doctorLine("ok", "transports", fmt.Sprintf("%d 个(自动容灾)", len(cfg.Transports)))
-				}
-				if cfg.UDP.Transport != "" {
-					doctorLine("ok", "udp transport", redactLink(cfg.UDP.Transport))
-				}
-				if !c.Bool("skip-probe") {
-					doctorProbe(cfg.Server, c.String("target"), c.Duration("timeout"))
-				}
-				for _, l := range ruleReviewDoctorLines(rulereview.Review(buildRuleReviewInput(cfg, embedded.ChinaDomain(), func() (stats.Report, error) {
-					return supervisor.FetchStatusReport(statusSocketPath())
-				}))) {
-					doctorLine(l.Status, l.Key, l.Value)
-					if l.Hint != "" {
-						doctorLine("hint", l.Key, l.Hint)
-					}
-				}
-			}
-		}
+	for _, line := range renderDoctorReport(collectClientDoctor(c.String("config"), c.String("target"), c.Duration("timeout"), c.Bool("skip-probe"))) {
+		parts := strings.SplitN(line, "|", 3)
+		doctorLine(parts[0], parts[1], parts[2])
 	}
-	if runtime.GOOS == "darwin" {
-		for _, line := range darwinServiceDoctorLines(install.GuardianInstalled(), install.GuardianActive()) {
-			doctorLine(line.Status, line.Key, line.Value)
-		}
-	} else {
-		doctorLine(boolStatus(install.UnitInstalled()), "service installed", install.ServiceName)
-		activeState := serviceState("is-active", install.ServiceName)
-		doctorLine(serviceStatusFromState("is-active", activeState), "service active", activeState)
-		if activeState != "active" {
-			doctorLine("hint", "logs", "bx logs")
-		}
-		enabledState := serviceState("is-enabled", install.ServiceName)
-		doctorLine(serviceStatusFromState("is-enabled", enabledState), "service enabled", enabledState)
-	}
-	if err := checkStatusSocket(); err != nil {
-		doctorLine("warn", "status socket", err.Error())
-		doctorLine("hint", "logs", "bx logs")
-	} else {
-		doctorLine("ok", "status socket", "reachable")
-	}
+	// 流量成败那几行是文本路径独有的(它们不在 --json 契约里,加进去会改契约)。
 	// 数据面的成败。**doctor 一直只答得出「装没装好」** —— 而人在出问题时敲的
 	// 正是 doctor,那时最该看到的是「流量到底成不成、哪条规则在成片失败」。
 	// 直连出不出得去,决定上面那些失败该归因到谁 —— 见 failingRuleHint。
 	// 观测只在 darwin 有原语,别的平台返回 Unknown,而 Unknown 维持原样。
 	for _, check := range doctorOutcomeChecks(doctorTrafficFacts(c.Context)) {
-		doctorLine(check.Status, check.Name, check.Detail)
-		if check.Hint != "" {
-			doctorLine("hint", check.Name, check.Hint)
-		}
-	}
-	if runtime.GOOS == "darwin" {
-		guardianStatus, guardianErr := readGuardianStatus()
-		if guardianErr != nil {
-			guardianStatus = guardianStatusFallback(stats.Report{}, runtime.GOOS)
-		}
-		check := recoveryDoctorCheck(guardianStatus.Recovery)
-		doctorLine(check.Status, check.Name, check.Detail)
-		if check.Hint != "" {
-			doctorLine("hint", check.Name, check.Hint)
-		}
-	}
-	for _, check := range collectPlatformChecks(c.Context) {
 		doctorLine(check.Status, check.Name, check.Detail)
 		if check.Hint != "" {
 			doctorLine("hint", check.Name, check.Hint)
@@ -3103,8 +3031,6 @@ func maxRisk(a, b string) string {
 	return a
 }
 
-func udpPolicyDoctor(mode string) (status, detail, hint string) { return doctor.UDPPolicy(mode) }
-
 func collectServerDoctor(configPath, sharesDir string) doctorReport {
 	rep := doctorReport{Kind: "server", Version: version.String(), SecretsRedacted: true, RequiresRoot: true}
 	cfg, err := readServerConfig(configPath)
@@ -3234,24 +3160,6 @@ func shareDoctorStatus(serviceState, listenState string) string {
 		return "ok"
 	}
 	return "warn"
-}
-
-func doctorProbe(link, target string, timeout time.Duration) {
-	raw, err := blink.Decode(link)
-	if err != nil {
-		raw = link
-	}
-	dir, err := userRuntimeDir()
-	if err != nil {
-		doctorLine("warn", "probe", err.Error())
-		return
-	}
-	lat, err := setup.ProbeServer(dir, raw, target, timeout)
-	if err != nil {
-		doctorLine("fail", "probe", err.Error())
-		return
-	}
-	doctorLine("ok", "probe", fmt.Sprintf("%s %dms", target, lat))
 }
 
 func setupFlags() []cli.Flag {
@@ -5513,6 +5421,21 @@ func darwinServiceChecks(installed, active bool) []checkReport {
 
 func doctorLine(status, name, detail string) {
 	fmt.Printf("[%s] %s: %s\n", strings.ToUpper(status), name, detail)
+}
+
+// renderDoctorReport 把共享的 Report 渲染成文本路径的行:每条 check 一行,
+// hint 非空再来一行。**文本与 --json 从此是同一份判据的两种渲染。**
+// 返回 "status|key|value" 三段,供 doctorAction 逐行交给 doctorLine。
+func renderDoctorReport(rep doctorReport) []string {
+	var out []string
+	for _, c := range rep.Checks {
+		key := strings.ReplaceAll(c.Name, "_", " ")
+		out = append(out, c.Status+"|"+key+"|"+c.Detail)
+		if c.Hint != "" {
+			out = append(out, "hint|"+key+"|"+c.Hint)
+		}
+	}
+	return out
 }
 
 func boolStatus(ok bool) string {
