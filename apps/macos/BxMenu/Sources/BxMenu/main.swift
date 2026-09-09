@@ -984,11 +984,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastRules = fetched
                 }
                 guard let rules = self.lastRules else {
-                    let alert = NSAlert()
-                    alert.messageText = "Routing rules are not available"
-                    alert.informativeText = self.fetchFailureAlertInfo(fetchError, what: "rules")
-                    NSApp.activate(ignoringOtherApps: true)
-                    alert.runModal()
+                    self.showGuardianFailure(
+                        title: "Routing rules are not available",
+                        message: self.fetchFailureAlertInfo(fetchError, what: "rules"),
+                        error: fetchError)
                     return
                 }
                 self.rulesWindow.show(
@@ -1150,10 +1149,23 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 失败弹窗的唯一出口。**完整原因由 Guardian 经 /v1/logs 发布**,弹窗只带失败码
     /// 与一个「Show Details」;旧 Guardian(没声明 logs)只说失败码。
     /// 措辞纪律:只说发生了什么与下一步,不断言原因。
+    ///
+    /// 一行转给 `message:error:` 那个真正的漏斗——说明文案就是 error 自己的
+    /// localizedDescription,失败码同样从 error 取。
     private func showGuardianFailure(title: String, error: Error) {
+        showGuardianFailure(title: title, message: error.localizedDescription, error: error)
+    }
+
+    /// 与上面同一个漏斗,只是说明文案由调用方先经 guardianFetchFailureInfo(纯函数)
+    /// 算好——`fetchRulesOnDemand`/`fetchServersOnDemand` 的措辞取决于 HTTP 状态码
+    /// 而不只是 error 的 localizedDescription,但按下「Show Details」时打开的仍是
+    /// 同一个日志页,失败码仍从 error 取(不是从文案里解析)。`error` 可选是因为
+    /// `fetchRulesOnDemand`/`fetchServersOnDemand` 在没有任何缓存可用时,失败原因
+    /// 可能压根没有一个 Error 对象(fetchError 为 nil 也要能弹窗)。
+    private func showGuardianFailure(title: String, message: String, error: Error?) {
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = error.localizedDescription
+        alert.informativeText = message
         alert.addButton(withTitle: "OK")
         let canShow = logsAvailable(capabilities: maintenanceReport?.capabilities)
         if canShow {
@@ -1162,7 +1174,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
         if canShow, response == .alertSecondButtonReturn {
-            openDiagnosticsLogs(highlighting: guardianFailureCode(of: error))
+            openDiagnosticsLogs(highlighting: error.flatMap { guardianFailureCode(of: $0) })
         }
     }
 
@@ -1327,11 +1339,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 guard let servers = self.lastServers else {
                     guard forceShow else { return }
-                    let alert = NSAlert()
-                    alert.messageText = "Servers are not available"
-                    alert.informativeText = self.fetchFailureAlertInfo(fetchError, what: "servers")
-                    NSApp.activate(ignoringOtherApps: true)
-                    alert.runModal()
+                    self.showGuardianFailure(
+                        title: "Servers are not available",
+                        message: self.fetchFailureAlertInfo(fetchError, what: "servers"),
+                        error: fetchError)
                     return
                 }
                 if forceShow {
