@@ -164,3 +164,66 @@ func TestJudgeAppendsPlatformChecksLastAndComputesOK(t *testing.T) {
 		t.Fatal("config_readable fail ⇒ ok=false")
 	}
 }
+
+// **两条 RuleReviewLines 调用点都必须真的把行接进报告** —— 此前两条都只喂过
+// rulereview.Report{}(零值,产出零行),删掉任何一处循环全部六条既有测试仍然
+// 全绿。这里造一份**确定会产出至少一行**的报告(OverriddenCount=1 + 一条匹配
+// 的 ClassOverriddenByOppositeKind finding),分别经 Facts.RuleReview(解析成功
+// 那条路)与 Facts.GuardianRules.Review(权限退路那条路)喂进去,断言两边都能
+// 看到 rule_rules_never_in_effect:warn。
+func TestJudgeEmitsRuleReviewLinesOnBothPaths(t *testing.T) {
+	rep := rulereview.Report{
+		Findings: []rulereview.Finding{
+			{Kind: "direct", Rule: "*.a.example", Class: rulereview.ClassOverriddenByOppositeKind, Summary: "s", CoveredBy: "*.b.example"},
+		},
+		OverriddenCount: 1,
+	}
+	wantName := RuleReviewCheckName("rules never in effect")
+
+	parsed := Judge(Facts{
+		ConfigPath: "/etc/bx/config.yaml",
+		Config:     FileFact{Bytes: []byte("server: x"), Mode0600: true},
+		Parsed:     &config.Config{Server: "bx://abc"},
+		RuleReview: &rep,
+	})
+	if c := find(parsed, wantName); c.Status != "warn" {
+		t.Fatalf("解析成功路径没能把 RuleReviewLines 的行接进报告:%+v(全部 checks: %s)", c, names(parsed))
+	}
+
+	guardianFallback := Judge(Facts{
+		ConfigPath:    "/etc/bx/config.yaml",
+		Config:        FileFact{ReadErr: "permission denied", PermissionDenied: true},
+		GuardianRules: GuardianRulesFact{Review: &rep, ConfigPath: "/etc/bx/config.yaml"},
+	})
+	if c := find(guardianFallback, wantName); c.Status != "warn" {
+		t.Fatalf("Guardian 退路没能把 RuleReviewLines 的行接进报告:%+v(全部 checks: %s)", c, names(guardianFallback))
+	}
+}
+
+// **Guardian 退路必须要求「真的是权限问题」,不能只要求路径匹配 + Review 非
+// nil。** `!f.Config.PermissionDenied` 这个条件此前没有单独的守卫:
+// TestJudgeMissingConfig 的 PermissionDenied 是 false,但它的 Guardian 路径同时
+// 不匹配,两个理由中的任何一个都能让退路作废,删掉 PermissionDenied 判断本身
+// 测试也不会红。这里把「路径匹配 + Review 非 nil」都摆对,只翻转
+// PermissionDenied 一个变量。
+func TestJudgeGuardianFallbackRequiresAPermissionFailure(t *testing.T) {
+	base := Facts{
+		ConfigPath:    "/etc/bx/config.yaml",
+		Config:        FileFact{ReadErr: "read-only filesystem"},
+		GuardianRules: GuardianRulesFact{Review: &rulereview.Report{}, ConfigPath: "/etc/bx/config.yaml"},
+	}
+
+	notPermission := base
+	notPermission.Config.PermissionDenied = false
+	r := Judge(notPermission)
+	if c := find(r, "config_readable"); c.Status != "fail" || c.Hint != "sudo bx setup <client-link>" {
+		t.Fatalf("不是权限失败时,即使路径匹配、Review 非 nil,也不该走 Guardian 退路:%+v", c)
+	}
+
+	permission := base
+	permission.Config.PermissionDenied = true
+	r2 := Judge(permission)
+	if c := find(r2, "config_readable"); c.Status != "info" {
+		t.Fatalf("权限失败 + 路径匹配 + Review 非 nil 应该走 Guardian 退路:%+v", c)
+	}
+}

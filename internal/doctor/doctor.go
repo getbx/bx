@@ -108,7 +108,10 @@ type Facts struct {
 }
 
 // Judge 把事实折成报告。**check 的名字、顺序、措辞是 --json 契约**,与迁移前的
-// collectClientDoctorWith 逐字节相同(internal/cli 的 TestClientDoctorJSONReport 等守着)。
+// collectClientDoctorWith 逐字节相同。这份等价此刻由本包自己的测试钉住;
+// internal/cli 的 TestClientDoctorJSONReport 等**要等 Task 6 把
+// collectClientDoctorWith 改走 Judge 之后才够得到这里**——今天它们只跑旧的
+// collectClientDoctorWith,不经过本函数,别把它们当成已经在守这份等价。
 func Judge(f Facts) Report {
 	rep := Report{Kind: "client", Version: f.Version, SecretsRedacted: true}
 	udpMode := "proxy"
@@ -142,7 +145,14 @@ func Judge(f Facts) Report {
 			rep.AddCheck("config_permissions", "warn", "not 0600", "chmod 600 "+f.ConfigPath)
 		}
 		if f.ParseErr != "" || f.Parsed == nil {
-			rep.AddCheck("config_parse", "fail", f.ParseErr, "")
+			// f.Parsed == nil 而 f.ParseErr == "" 在 Task 6 的采集方那条路上不可达
+			// (config.Parse 出错时总有非空 err.Error());留一个不为空的兜底纯粹是
+			// 防御性的,不是 JSON 契约的一部分——它不会在正常调用里被触发。
+			detail := f.ParseErr
+			if detail == "" {
+				detail = "config did not parse"
+			}
+			rep.AddCheck("config_parse", "fail", detail, "")
 		} else {
 			cfg := f.Parsed
 			rep.AddCheck("config_parse", "ok", "yes", "")
