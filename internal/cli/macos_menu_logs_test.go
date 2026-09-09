@@ -15,18 +15,55 @@ func TestMacMenuFailureAlertsNeverPointAtRootOnlyLogs(t *testing.T) {
 			t.Fatalf("%s 里仍有指向 root 日志文件的路径 —— 普通用户打开就是 Permission denied", name)
 		}
 	}
-	if n := strings.Count(main, "showGuardianFailure(title:"); n < 4 {
-		t.Fatalf("showGuardianFailure 只有 %d 个调用方,四处失败弹窗(apps / switch server / rule group / add rule)都要走它", n)
+	// 四处 error-only 弹窗(apps / switch server / rule group / add rule)+
+	// 两处 message 弹窗(fetchRulesOnDemand / fetchServersOnDemand,措辞由
+	// guardianFetchFailureInfo 按 HTTP 状态码算好)—— 六处都要走这个漏斗。
+	if n := strings.Count(main, "showGuardianFailure(title:"); n < 6 {
+		t.Fatalf("showGuardianFailure 只有 %d 个调用方,六处失败弹窗(apps / switch server / rule group / add rule / rules fetch / servers fetch)都要走它", n)
 	}
-	body, ok := swiftFunctionBody(main, "private func showGuardianFailure(title: String, error: Error)")
+	// error-only 那个重载必须**委托**给 message 重载,不许自己再建一个 alert ——
+	// 否则 Show Details 的按钮/日志高亮逻辑就有两份,容易改一处漏一处。
+	errorOnlyBody, ok := swiftFunctionBody(main, "private func showGuardianFailure(title: String, error: Error)")
 	if !ok {
-		t.Fatal("读不出 showGuardianFailure 的函数体")
+		t.Fatal("读不出 showGuardianFailure(title:error:) 的函数体")
+	}
+	if !strings.Contains(errorOnlyBody, "message: error.localizedDescription, error: error)") {
+		t.Fatalf("showGuardianFailure(title:error:) 必须一行转给 message: 那个真正的漏斗,不许自己再建一个 NSAlert:%s", strings.TrimSpace(errorOnlyBody))
+	}
+	// 真正的漏斗:说明文案由调用方传入(guardianFetchFailureInfo 按 HTTP 状态码
+	// 算好的那句),但「按能力门显示 Show Details、按下后打开日志页并高亮失败码」
+	// 这条判定只能有一份。
+	body, ok := swiftFunctionBody(main, "private func showGuardianFailure(title: String, message: String, error: Error?)")
+	if !ok {
+		t.Fatal("读不出 showGuardianFailure(title:message:error:) 的函数体")
 	}
 	gate := strings.Index(body, "logsAvailable(capabilities: maintenanceReport?.capabilities)")
 	details := strings.Index(body, `"Show Details"`)
-	open := strings.Index(body, "openDiagnosticsLogs(highlighting: guardianFailureCode(of: error))")
+	open := strings.Index(body, "openDiagnosticsLogs(highlighting: error.flatMap { guardianFailureCode(of: $0) })")
 	if gate < 0 || details < 0 || open < 0 || gate > details || details > open {
 		t.Fatalf("Show Details 必须在能力门之后出现、并把失败码交给 openDiagnosticsLogs(gate=%d details=%d open=%d)", gate, details, open)
+	}
+}
+
+// fetchRulesOnDemand/fetchServersOnDemand 的措辞由 guardianFetchFailureInfo(纯函数,
+// 按 HTTP 状态码算)决定,而那句文案自 2026-09-09 起承诺了一个「Show Details」按钮——
+// 两个消费方必须真的走会显示这个按钮的漏斗,不能各自手搭一个只有 OK 的 NSAlert。
+func TestMacMenuRulesAndServersFetchFailuresOfferShowDetails(t *testing.T) {
+	main := stripSwiftComments(menuMainSwiftSource(t))
+	for _, fn := range []string{
+		"private func fetchRulesOnDemand()",
+		"private func fetchServersOnDemand(forceShow: Bool)",
+	} {
+		body, ok := swiftFunctionBody(main, fn)
+		if !ok {
+			t.Fatalf("读不出 %s 的函数体", fn)
+		}
+		if !strings.Contains(body, "self.showGuardianFailure(") {
+			t.Fatalf("%s 没有走 showGuardianFailure —— 拉取失败会弹出一个只有 OK、没有 Show Details 的弹窗", fn)
+		}
+		if strings.Contains(body, "let alert = NSAlert()") {
+			t.Fatalf("%s 仍在手搭 NSAlert —— guardianFetchFailureInfo 那句文案承诺的 Show Details 按钮不会出现", fn)
+		}
 	}
 }
 
