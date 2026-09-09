@@ -19,43 +19,11 @@ import (
 // Core 根本不是 launchd 服务、生命周期归 Guardian,实际存在的是
 // com.getbx.bx.guard.plist;② 显示的名字是 install.ServiceName = "bx.service",
 // 那是 systemd 的名字。用户和 agent 据此会以为服务坏了,而它好得很。
-func TestDarwinDoctorServiceLinesReportGuardian(t *testing.T) {
-	lines := darwinServiceDoctorLines(true, true)
-	if len(lines) == 0 {
-		t.Fatal("必须产出服务相关的 doctor 行")
-	}
-	if lines[0].Value != darwinGuardianServiceName {
-		t.Errorf("服务名 = %q, want %q——不得在 macOS 上印 systemd 的 bx.service", lines[0].Value, darwinGuardianServiceName)
-	}
-	for _, line := range lines {
-		if line.Status == "fail" {
-			t.Errorf("Guardian 已安装且活跃时不得有 FAIL,实际 = %+v", line)
-		}
-		if line.Key == "logs" {
-			t.Errorf("一切正常时不该提示看日志,实际 = %+v", line)
-		}
-	}
-}
-
-// Guardian 确实没装/没跑时,仍须如实报 FAIL 并给出看日志的指引。
-func TestDarwinDoctorServiceLinesStillFailWhenGuardianAbsent(t *testing.T) {
-	lines := darwinServiceDoctorLines(false, false)
-	var failures, hints int
-	for _, line := range lines {
-		if line.Status == "fail" {
-			failures++
-		}
-		if line.Key == "logs" {
-			hints++
-		}
-	}
-	if failures == 0 {
-		t.Errorf("Guardian 缺失时必须报 FAIL,实际 = %+v", lines)
-	}
-	if hints == 0 {
-		t.Errorf("不活跃时必须给看日志的指引,实际 = %+v", lines)
-	}
-}
+//
+// **这件事此前有两份判据**:人读版一份(darwinServiceDoctorLines)、--json 一份
+// (darwinServiceChecks)。文本路径改为渲染共享的 Report 之后,前者没有了调用方 ——
+// 连同只为驱动它而存在的两条测试一并删掉。下面这两条守的是**还活着的**那一份,
+// 以及「darwin 接的是 Guardian 那个生产者」这条接线。
 
 // `bx doctor --json` 在 macOS 上的服务三条必须与人读版同源(Guardian),
 // 绝不能落回 Core 的 plist / systemd 的 bx.service。

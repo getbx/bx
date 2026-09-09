@@ -7,7 +7,7 @@ import (
 	"github.com/getbx/bx/internal/rulereview"
 )
 
-// Finding 是一行 doctor 输出的三段式,与 doctorLine / rep.addCheck 的形参同构。
+// Finding 是一行 doctor 输出的三段式,与 doctorLine / Report.AddCheck 的形参同构。
 // 单独成型是为了让「说什么」可以被单测,而「怎么打印」留在 doctorAction 里。
 type Finding struct {
 	Status string // ok | warn | info | hint
@@ -16,14 +16,6 @@ type Finding struct {
 	Hint   string
 }
 
-// RuleReviewLines 把体检报告翻成 doctor 的行。
-//
-// **干净就一个字都不说。** 只在真有问题时才占地方,是这套东西不被训练成噪声的前提
-// (与按规则失败计数同一条纪律)。唯一的例外是「没查」——那必须说,因为静默的
-// 「没查」与「没问题」在用户眼里长得一模一样。
-//
-// **文本路径与 JSON 路径共用这一份判据** —— doctorAction 与 collectClientDoctorWith
-// 都只是拿这个函数的返回值分别渲染,不许为了保住某一侧的呈现分叉成两条判断逻辑。
 // DeadRulesCheckName 是死规则那一行的 check 名。
 //
 // **单独一个常量**:这一支已经因为同名 check 静默丢过一次安全结论 —— check 名的
@@ -31,6 +23,15 @@ type Finding struct {
 // TestDoctorReportHasNoDuplicateCheckNames 盯着这件事。
 const DeadRulesCheckName = "dead rules"
 
+// RuleReviewLines 把体检报告翻成 doctor 的行。
+//
+// **干净就一个字都不说。** 只在真有问题时才占地方,是这套东西不被训练成噪声的前提
+// (与按规则失败计数同一条纪律)。唯一的例外是「没查」——那必须说,因为静默的
+// 「没查」与「没问题」在用户眼里长得一模一样。
+//
+// **文本路径与 JSON 路径共用这一份判据** —— Judge 把这些行折进同一份 Report,
+// 文本路径(renderDoctorReport)与 --json 只是那一份 Report 的两种渲染,不许
+// 为了保住某一侧的呈现分叉成两条判断逻辑。
 func RuleReviewLines(rep rulereview.Report) []Finding {
 	var out []Finding
 
@@ -111,8 +112,8 @@ func RuleReviewLines(rep rulereview.Report) []Finding {
 // **不是每条 finding 一行** —— policy.DirectRisk 的名单有 19 个域
 // (aliyuncs/myqcloud/amazonaws/cloudfront/github.io…),配置里同时有两条危险直连
 // 完全现实。RuleReviewCheckName 的整个存在理由是「agent 与 MCP 按名字取」,如果
-// 每条 finding 各产出一条同名 check,--json 路径会对 rep.addCheck 同一个名字调
-// 多次,产生多个同名 checkReport —— 按名字取的消费方(这是 JSON 路径唯一的读者)
+// 每条 finding 各产出一条同名 check,--json 路径会对 Report.AddCheck 同一个名字调
+// 多次,产生多个同名 Check —— 按名字取的消费方(这是 JSON 路径唯一的读者)
 // 只会拿到其中一条,静默丢掉其余的安全结论。一个去匿名化风险被静默丢掉,
 // 方向正好是这个功能要防的那个错误的反面。
 //

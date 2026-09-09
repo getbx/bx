@@ -1556,8 +1556,7 @@ func doctorAction(c *cli.Context) (err error) {
 	fmt.Println("bx doctor")
 	doctorLine("ok", "version", version.String())
 	for _, line := range renderDoctorReport(collectClientDoctor(c.String("config"), c.String("target"), c.Duration("timeout"), c.Bool("skip-probe"))) {
-		parts := strings.SplitN(line, "|", 3)
-		doctorLine(parts[0], parts[1], parts[2])
+		doctorLine(line.Status, line.Key, line.Value)
 	}
 	// 流量成败那几行是文本路径独有的(它们不在 --json 契约里,加进去会改契约)。
 	// 数据面的成败。**doctor 一直只答得出「装没装好」** —— 而人在出问题时敲的
@@ -5325,33 +5324,15 @@ func nextShareListen(dir string) (string, error) {
 // 印在 macOS 上。
 const darwinGuardianServiceName = "com.getbx.bx.guard"
 
-// doctorLineSpec 是一条待输出的 doctor 行,抽出来是为了让判定逻辑可测。
+// doctorLineSpec 是一条待输出的 doctor 行(文本路径)。
+//
+// **三段是结构体而不是一个 "status|key|value" 串**:分隔符只要出现在 detail 或
+// hint 里(规则原文、错误文本里都可能带 `|`),按分隔符切回去就会把一行切错,
+// 而切错的后果是 doctorLine 打出半句话 —— 没有任何东西会报错。
 type doctorLineSpec struct {
 	Status string
 	Key    string
 	Value  string
-}
-
-// darwinServiceDoctorLines 由 Guardian 的安装/活跃状态产出 doctor 的服务三行。
-//
-// launchd 没有 systemd 那种 enabled 与 active 的分离:Guardian 的 plist 带
-// RunAtLoad+KeepAlive,装上即开机自启,故 enabled 直接由 installed 决定。
-func darwinServiceDoctorLines(installed, active bool) []doctorLineSpec {
-	lines := []doctorLineSpec{{boolStatus(installed), "service installed", darwinGuardianServiceName}}
-	activeState := "inactive"
-	if active {
-		activeState = "active"
-	}
-	lines = append(lines, doctorLineSpec{serviceStatusFromState("is-active", activeState), "service active", activeState})
-	if !active {
-		lines = append(lines, doctorLineSpec{"hint", "logs", "bx logs"})
-	}
-	enabledState := "disabled"
-	if installed {
-		enabledState = "enabled"
-	}
-	lines = append(lines, doctorLineSpec{serviceStatusFromState("is-enabled", enabledState), "service enabled", enabledState})
-	return lines
 }
 
 // serviceDoctorChecks 选 doctor 的服务三条问谁。**纯派发,两个生产者都注入**
@@ -5387,8 +5368,11 @@ func systemdServiceChecks() []checkReport {
 	}
 }
 
-// darwinServiceChecks 是 darwinServiceDoctorLines 的机器可读兄弟:同一份判据
-// (Guardian 的安装/活跃状态),产出 doctor --json 的服务三条。
+// darwinServiceChecks 由 Guardian 的安装/活跃状态产出服务三条。**只有这一份** ——
+// 文本路径不再自己算一遍,它渲染的是 Judge 折出来的同一份 Report(见
+// renderDoctorReport)。此前那个只服务文本路径的孪生函数(darwinServiceDoctorLines)
+// 已经没有调用方,连同只为驱动它而存在的两条测试一起删掉了:一份没人调用而测试
+// 盖着的判据,与没有判据在输出上完全一样,却会让下一个人以为文本路径还有第二份判定。
 //
 // launchd 没有 systemd 那种 enabled 与 active 的分离:Guardian 的 plist 带
 // RunAtLoad+KeepAlive,装上即开机自启,故 enabled 直接由 installed 决定。
@@ -5425,14 +5409,14 @@ func doctorLine(status, name, detail string) {
 
 // renderDoctorReport 把共享的 Report 渲染成文本路径的行:每条 check 一行,
 // hint 非空再来一行。**文本与 --json 从此是同一份判据的两种渲染。**
-// 返回 "status|key|value" 三段,供 doctorAction 逐行交给 doctorLine。
-func renderDoctorReport(rep doctorReport) []string {
-	var out []string
+// 返回三段式的 doctorLineSpec,供 doctorAction 逐行交给 doctorLine。
+func renderDoctorReport(rep doctorReport) []doctorLineSpec {
+	var out []doctorLineSpec
 	for _, c := range rep.Checks {
 		key := strings.ReplaceAll(c.Name, "_", " ")
-		out = append(out, c.Status+"|"+key+"|"+c.Detail)
+		out = append(out, doctorLineSpec{Status: c.Status, Key: key, Value: c.Detail})
 		if c.Hint != "" {
-			out = append(out, "hint|"+key+"|"+c.Hint)
+			out = append(out, doctorLineSpec{Status: "hint", Key: key, Value: c.Hint})
 		}
 	}
 	return out

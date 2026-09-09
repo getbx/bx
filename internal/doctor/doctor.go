@@ -1,4 +1,3 @@
-// internal/doctor/doctor.go
 package doctor
 
 import (
@@ -47,7 +46,6 @@ func (r Report) HasFail() bool {
 // FileFact 是「读配置文件」这一步的事实。ReadErr 非空 = 没读到;PermissionDenied
 // 单列是因为只有权限失败才走 Guardian 退路(文件不存在是「没 setup 过」,真问题)。
 type FileFact struct {
-	Bytes            []byte
 	ReadErr          string
 	PermissionDenied bool
 	Mode0600         bool
@@ -108,10 +106,13 @@ type Facts struct {
 }
 
 // Judge 把事实折成报告。**check 的名字、顺序、措辞是 --json 契约**,与迁移前的
-// collectClientDoctorWith 逐字节相同。这份等价此刻由本包自己的测试钉住;
-// internal/cli 的 TestClientDoctorJSONReport 等**要等 Task 6 把
-// collectClientDoctorWith 改走 Judge 之后才够得到这里**——今天它们只跑旧的
-// collectClientDoctorWith,不经过本函数,别把它们当成已经在守这份等价。
+// collectClientDoctorWith 逐字节相同。
+//
+// **这份等价今天由三层钉住**:本包自己的 Judge 测试(逐个阶梯的名字与状态)、
+// internal/cli 的 TestClientDoctorJSONReport(它经 collectClientDoctorWith →
+// 本函数,自 Task 6 起真的走到这里)、以及 TestJudgeGolden 那份逐字节 golden
+// (testdata/judge_golden.json,长路径与权限退路各一份)。改判据必然让 golden
+// 转红,那正是回来确认「--json 契约是不是真的要动」的时刻。
 func Judge(f Facts) Report {
 	rep := Report{Kind: "client", Version: f.Version, SecretsRedacted: true}
 	udpMode := "proxy"

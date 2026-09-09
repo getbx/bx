@@ -1,0 +1,191 @@
+[
+  {
+    "name": "long",
+    "report": {
+      "ok": true,
+      "kind": "client",
+      "version": "test",
+      "secrets_redacted": true,
+      "changes_system": false,
+      "changes_network": false,
+      "requires_root": false,
+      "checks": [
+        {
+          "name": "config",
+          "status": "info",
+          "detail": "/etc/bx/config.yaml"
+        },
+        {
+          "name": "config_readable",
+          "status": "ok",
+          "detail": "yes"
+        },
+        {
+          "name": "config_permissions",
+          "status": "ok",
+          "detail": "0600"
+        },
+        {
+          "name": "config_parse",
+          "status": "ok",
+          "detail": "yes"
+        },
+        {
+          "name": "server_link",
+          "status": "ok",
+          "detail": "bx://\u003credacted\u003e"
+        },
+        {
+          "name": "transports",
+          "status": "ok",
+          "detail": "2 个传输(自动容灾)"
+        },
+        {
+          "name": "udp_transport",
+          "status": "ok",
+          "detail": "\u003credacted\u003e"
+        },
+        {
+          "name": "probe",
+          "status": "ok",
+          "detail": "366ms"
+        },
+        {
+          "name": "rule_risky_direct_rule",
+          "status": "warn",
+          "detail": "1 条直连规则命中危险名单:*.aliyuncs.com —— 公有云开放子域,直连会把你单独认出来",
+          "hint": "sudo bx direct rm '*.aliyuncs.com'(改完要 sudo bx down \u0026\u0026 sudo bx up)"
+        },
+        {
+          "name": "rule_rules_never_in_effect",
+          "status": "warn",
+          "detail": "1 条 direct 规则被更宽的 proxy 规则压住,从来没生效过:*.a.example ← *.example"
+        },
+        {
+          "name": "rule_dead_rules",
+          "status": "info",
+          "detail": "未检查:Core 没在跑,拿不到累计判定数"
+        },
+        {
+          "name": "rule_builtin_list_check",
+          "status": "info",
+          "detail": "未检查:global 模式下 china 列表整个不生效"
+        },
+        {
+          "name": "service_installed",
+          "status": "ok",
+          "detail": "com.getbx.bx.guard"
+        },
+        {
+          "name": "service_active",
+          "status": "ok",
+          "detail": "active"
+        },
+        {
+          "name": "status_socket",
+          "status": "warn",
+          "detail": "dial unix /var/run/bx/core.sock: connect: no such file or directory",
+          "hint": "bx logs"
+        },
+        {
+          "name": "udp_policy",
+          "status": "warn",
+          "detail": "non-DNS UDP direct; may expose real network path",
+          "hint": "Use sudo bx realtime on to relay UDP through bx, or sudo bx realtime off to block it"
+        },
+        {
+          "name": "guardian_dns",
+          "status": "ok",
+          "detail": "state=managed managed=true service=Wi-Fi"
+        },
+        {
+          "name": "network_recovery",
+          "status": "ok",
+          "detail": "state=idle stage=idle attempt=0"
+        },
+        {
+          "name": "terminal_proxy",
+          "status": "ok",
+          "detail": "none"
+        }
+      ]
+    }
+  },
+  {
+    "name": "permission_fallback",
+    "report": {
+      "ok": false,
+      "kind": "client",
+      "version": "test",
+      "secrets_redacted": true,
+      "changes_system": false,
+      "changes_network": false,
+      "requires_root": false,
+      "checks": [
+        {
+          "name": "config",
+          "status": "info",
+          "detail": "/etc/bx/config.yaml"
+        },
+        {
+          "name": "config_readable",
+          "status": "info",
+          "detail": "open /etc/bx/config.yaml: permission denied;规则已改经 Guardian 读取(业主授权,无需 root);其余依赖配置的检查(权限/解析/server link/udp 策略)本次缺席,要它们请用 sudo"
+        },
+        {
+          "name": "rule_risky_direct_rule",
+          "status": "warn",
+          "detail": "1 条直连规则命中危险名单:*.aliyuncs.com —— 公有云开放子域,直连会把你单独认出来",
+          "hint": "sudo bx direct rm '*.aliyuncs.com'(改完要 sudo bx down \u0026\u0026 sudo bx up)"
+        },
+        {
+          "name": "rule_rules_never_in_effect",
+          "status": "warn",
+          "detail": "1 条 direct 规则被更宽的 proxy 规则压住,从来没生效过:*.a.example ← *.example"
+        },
+        {
+          "name": "rule_dead_rules",
+          "status": "info",
+          "detail": "未检查:Core 没在跑,拿不到累计判定数"
+        },
+        {
+          "name": "rule_builtin_list_check",
+          "status": "info",
+          "detail": "未检查:global 模式下 china 列表整个不生效"
+        },
+        {
+          "name": "service_installed",
+          "status": "ok",
+          "detail": "com.getbx.bx.guard"
+        },
+        {
+          "name": "status_socket",
+          "status": "ok",
+          "detail": "reachable"
+        },
+        {
+          "name": "udp_policy",
+          "status": "ok",
+          "detail": "non-DNS UDP relayed through bx tunnel"
+        },
+        {
+          "name": "guardian_dns",
+          "status": "fail",
+          "detail": "state=unknown managed=false",
+          "hint": "sudo bx up; bx logs"
+        },
+        {
+          "name": "network_recovery",
+          "status": "warn",
+          "detail": "state=failed stage=unknown attempt=0 error_code=recovery_unavailable",
+          "hint": "bx logs --json; bx reconnect (troubleshooting only)"
+        },
+        {
+          "name": "terminal_proxy",
+          "status": "ok",
+          "detail": "none"
+        }
+      ]
+    }
+  }
+]

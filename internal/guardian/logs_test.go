@@ -151,6 +151,12 @@ func TestGuardianLogsServeTheInstalledPaths(t *testing.T) {
 }
 
 func TestLogsCapabilityIsDeclared(t *testing.T) {
+	// **字面量本身也要钉。** 菜单侧 LogsModel.swift 的 logsAvailable 按字面量
+	// "logs" 门控,Swift 那半编不进 Go 测试:改了这个常量的值,能力照样「声明
+	// 过」而菜单**永久看不见日志页**,两侧一个字都不报错。
+	if CapabilityLogs != "logs" {
+		t.Fatalf("CapabilityLogs 的值变了:菜单 LogsModel.swift 按字面量 \"logs\" 门控,改了值菜单就永久看不见日志页而不报错")
+	}
 	for _, c := range GuardianCapabilities() {
 		if c == CapabilityLogs {
 			return
