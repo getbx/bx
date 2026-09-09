@@ -27,7 +27,7 @@ func tailLines(path string, n int) ([]string, error) {
 	const block = 64 << 10
 	var buf []byte
 	offset := info.Size()
-	for offset > 0 && bytes.Count(buf, []byte{'\n'}) <= n {
+	for offset > 0 && bytes.Count(bytes.TrimRight(buf, "\n"), []byte{'\n'}) < n {
 		size := int64(block)
 		if offset < size {
 			size = offset

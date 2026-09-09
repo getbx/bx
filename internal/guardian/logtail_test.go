@@ -63,3 +63,32 @@ func TestTailLinesReportsMissingFile(t *testing.T) {
 		t.Fatal("文件不存在要报错,不能悄悄给空切片(「没读到」≠「日志是空的」)")
 	}
 }
+
+func TestTailLinesNeverReturnsAFragmentWhenTheFileEndsWithBlankLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blank-lines.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 200,000-byte line, then realline1, realline2, then two blank lines
+	buf := make([]byte, 0, 200_050)
+	for i := 0; i < 200_000; i++ {
+		buf = append(buf, 'x')
+	}
+	_, _ = f.Write(buf)
+	_, _ = f.WriteString("\nrealline1\nrealline2\n\n\n")
+	_ = f.Close()
+	got, err := tailLines(path, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 lines, got %d", len(got))
+	}
+	if len(got[0]) != 200_000 {
+		t.Fatalf("first line should be 200k 'x's, got len=%d (fragment leaked)", len(got[0]))
+	}
+	if got[1] != "realline1" || got[2] != "realline2" {
+		t.Fatalf("expected realline1,realline2, got %v", got[1:])
+	}
+}
