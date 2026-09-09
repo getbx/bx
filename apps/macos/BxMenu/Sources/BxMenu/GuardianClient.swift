@@ -44,11 +44,16 @@ enum GuardianEndpoint {
     /// 「支持但此刻没数据」在客户端看来必须分得开。
     case appTraffic
 
+    /// Guardian 与 Core 两份日志的尾部。**只有 `logsAvailable(capabilities:)` 判定
+    /// 这一版 Guardian 支持时才该调用它**(理由同 appTraffic)。
+    case logs(lines: Int)
+
     var expectedStatus: Int {
         switch self {
         case .requestRecovery: return 202
         case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule,
-             .changeRuleGroup, .listServers, .switchServer, .probeServers, .statusWatch, .appTraffic:
+             .changeRuleGroup, .listServers, .switchServer, .probeServers, .statusWatch, .appTraffic,
+             .logs:
             return 200
         }
     }
@@ -59,7 +64,7 @@ enum GuardianEndpoint {
         case .turnOn, .turnOff: return guardianMutationTimeout
         case .updateCheck: return guardianUpdateCheckTimeout
         // 只是读写一个小 YAML 文件,不做网络 I/O。
-        case .listRules, .changeRule, .changeRuleGroup, .listServers: return guardianDefaultTimeout
+        case .listRules, .changeRule, .changeRuleGroup, .listServers, .logs: return guardianDefaultTimeout
         // 只是把 Core 已经聚合好的一份快照转发出来,不做网络 I/O。
         case .appTraffic: return guardianDefaultTimeout
         // 服务端要武装 → 等新隧道健康(上限 12 秒)→ 确认。客户端必须比那条链
@@ -237,6 +242,11 @@ struct GuardianClient {
         try perform(endpoint: .appTraffic, as: AppTrafficReport.self)
     }
 
+    /// 取两份日志的尾部。**调用前必须过 `logsAvailable(capabilities:)` 那道能力门。**
+    func fetchLogs(lines: Int = logsDefaultLineCount) throws -> LogsReport {
+        try perform(endpoint: .logs(lines: lines), as: LogsReport.self)
+    }
+
     /// 测一遍所有服务器,返回**带探测结论的完整清单**。
     ///
     /// 探测走在隧道外面,所以这只在用户点「Test」时发生 —— 绝不做后台定时探测。
@@ -390,6 +400,11 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
     case .appTraffic:
         method = "GET"
         path = "/v1/apps"
+        body = nil
+    case let .logs(lines):
+        method = "GET"
+        // lines 是 Int,插值不引入注入面(与 statusWatch 同理)。
+        path = "/v1/logs?lines=\(lines)"
         body = nil
     case let .switchServer(name):
         method = "POST"
