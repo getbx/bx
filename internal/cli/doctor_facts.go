@@ -41,7 +41,6 @@ func collectDoctorFacts(configPath, target string, timeout time.Duration, skipPr
 			f.GuardianRules.Err = rulesErr.Error()
 		}
 	} else {
-		f.Config.Bytes = b
 		f.Config.Mode0600 = modeCheck(cfgPath, 0o600)
 		cfg, perr := config.Parse(b)
 		if perr != nil {

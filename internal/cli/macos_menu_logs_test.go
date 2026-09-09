@@ -18,8 +18,14 @@ func TestMacMenuFailureAlertsNeverPointAtRootOnlyLogs(t *testing.T) {
 	// 四处 error-only 弹窗(apps / switch server / rule group / add rule)+
 	// 两处 message 弹窗(fetchRulesOnDemand / fetchServersOnDemand,措辞由
 	// guardianFetchFailureInfo 按 HTTP 状态码算好)—— 六处都要走这个漏斗。
-	if n := strings.Count(main, "showGuardianFailure(title:"); n < 6 {
-		t.Fatalf("showGuardianFailure 只有 %d 个调用方,六处失败弹窗(apps / switch server / rule group / add rule / rules fetch / servers fetch)都要走它", n)
+	//
+	// **数的是 `self.showGuardianFailure(`,不是 `showGuardianFailure(title:`。**
+	// 后者被两个**声明行**(两个重载)加上那句委托调用满足,而它认不出两处跨行写的
+	// 调用(实参换行时 `title:` 不在同一行)—— 于是那个计数在「六处里只剩两处真的
+	// 走漏斗」时照样够数。`self.` 前缀恰好是这六处调用的共同形状(全在
+	// DispatchQueue.main.async 的闭包里),而两个声明与那句同类委托都没有它。
+	if n := strings.Count(main, "self.showGuardianFailure("); n < 6 {
+		t.Fatalf("self.showGuardianFailure 只有 %d 个调用方,六处失败弹窗(apps / switch server / rule group / add rule / rules fetch / servers fetch)都要走它", n)
 	}
 	// error-only 那个重载必须**委托**给 message 重载,不许自己再建一个 alert ——
 	// 否则 Show Details 的按钮/日志高亮逻辑就有两份,容易改一处漏一处。

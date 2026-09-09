@@ -83,7 +83,7 @@ func TestJudgeParsedConfigProducesTheFullLadder(t *testing.T) {
 	probe := Check{Name: "probe", Status: "ok", Detail: "366ms"}
 	r := Judge(Facts{
 		ConfigPath: "/etc/bx/config.yaml",
-		Config:     FileFact{Bytes: []byte("server: x"), Mode0600: false}, Parsed: cfg,
+		Config:     FileFact{Mode0600: false}, Parsed: cfg,
 		RuleReview: &rulereview.Report{}, Probe: &probe,
 		Service:         []Check{{Name: "guardian_installed", Status: "ok"}},
 		StatusSocketErr: "dial unix /var/run/bx/core.sock: connect: no such file",
@@ -110,11 +110,11 @@ func TestJudgeParsedConfigProducesTheFullLadder(t *testing.T) {
 }
 
 func TestJudgeParseFailureAndEmptyServer(t *testing.T) {
-	bad := Judge(Facts{Config: FileFact{Bytes: []byte("x"), Mode0600: true}, ParseErr: "yaml: boom"})
+	bad := Judge(Facts{Config: FileFact{Mode0600: true}, ParseErr: "yaml: boom"})
 	if got := names(bad); got != "config:info config_readable:ok config_permissions:ok config_parse:fail status_socket:ok udp_policy:ok" {
 		t.Fatalf("解析失败阶梯 = %q", got)
 	}
-	empty := Judge(Facts{Config: FileFact{Bytes: []byte("x"), Mode0600: true}, Parsed: &config.Config{}})
+	empty := Judge(Facts{Config: FileFact{Mode0600: true}, Parsed: &config.Config{}})
 	if c := find(empty, "server_link"); c.Status != "fail" || c.Hint != "sudo bx setup <client-link>" {
 		t.Fatalf("server 为空 = %+v", c)
 	}
@@ -182,7 +182,7 @@ func TestJudgeEmitsRuleReviewLinesOnBothPaths(t *testing.T) {
 
 	parsed := Judge(Facts{
 		ConfigPath: "/etc/bx/config.yaml",
-		Config:     FileFact{Bytes: []byte("server: x"), Mode0600: true},
+		Config:     FileFact{Mode0600: true},
 		Parsed:     &config.Config{Server: "bx://abc"},
 		RuleReview: &rep,
 	})
