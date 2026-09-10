@@ -69,7 +69,18 @@ func FetchStatusReportContext(ctx context.Context, sockPath string) (stats.Repor
 
 // FetchRuntimeState reads the non-secret Core handoff state over its unix socket.
 func FetchRuntimeState(sockPath string) (RuntimeState, error) {
-	return fetchRuntimeState(context.Background(), sockPath)
+	return FetchRuntimeStateContext(context.Background(), sockPath)
+}
+
+// FetchRuntimeStateContext 是 FetchRuntimeState 的带 ctx 版本 —— 调用方**自己有
+// 一份预算**时用它(与 ProbeControlContext、FetchStatusReportContext 同一条)。
+//
+// 不带 ctx 的那个版本自己还有两层时钟(1 秒拨号 + 3 秒客户端超时),加起来能把
+// 一份 10 秒的预算撑破;而 Guardian 的 /v1/doctor 跑在 `Daemon.Shutdown` 要等的
+// 那批 handler 里 —— **停止路径不许因为别的事没做完而变慢**。ctx 只会让它更早
+// 返回,永远不会让它等更久。
+func FetchRuntimeStateContext(ctx context.Context, sockPath string) (RuntimeState, error) {
+	return fetchRuntimeState(ctx, sockPath)
 }
 
 func fetchRuntimeState(ctx context.Context, sockPath string) (RuntimeState, error) {

@@ -74,8 +74,8 @@ type doctorCollectorDeps struct {
 	// **它存在的唯一理由是让这一层的单测与机器状态无关**:开发机上 bx 正跑着,
 	// supervisor.SockPath 真的拨得通,于是「拨不通就填 StatusSocketErr」这条
 	// 断言会跟着「此刻有没有开保护」在红绿之间摇摆 —— 而它要守的性质与那件事
-	// 毫无关系。同一条路上顺带把规则体检要问的 Core 也钉住(它读的是同一个
-	// socket),免得单测去读用户正跑着的那份统计。
+	// 毫无关系。同一条路上顺带把规则体检与那次探测要问的 Core 也钉住(三者读的
+	// 是同一个 socket),免得单测去读用户正跑着的那份统计。
 	sock string
 }
 
@@ -86,16 +86,23 @@ func (d doctorCollectorDeps) sockPath() string {
 	return d.sock
 }
 
-func liveDoctorDeps() doctorCollectorDeps {
-	return doctorCollectorDeps{
-		probe: func(ctx context.Context, host string, port int) (probeOutcome, error) {
-			r, err := supervisor.ProbeControlContext(ctx, supervisor.SockPath, host, port)
-			return probeOutcome{Reachable: r.Reachable, RTTMS: r.RTTMS, Error: r.Error}, err
-		},
+// liveDoctorDeps 是生产那份原语。**sock 是参数,不是常量** —— 它管着的三件事
+// (探测、拨控制 socket、规则体检里那次取统计)必须问的是**同一个** Core;
+// 探测这一处曾单独写死 `supervisor.SockPath`,于是 `deps.sock` 那段注释
+// (「同一条路上顺带把规则体检要问的 Core 也钉住」)对它并不成立,而单测把 sock
+// 指到一个死路径时它照旧去拨用户正跑着的那份 —— 一份被机器状态左右的测试。
+func liveDoctorDeps(sock string) doctorCollectorDeps {
+	deps := doctorCollectorDeps{
 		platform: platformcheck.Collect,
 		service:  liveServiceChecks,
 		dial:     dialControlSocket,
+		sock:     sock,
 	}
+	deps.probe = func(ctx context.Context, host string, port int) (probeOutcome, error) {
+		r, err := supervisor.ProbeControlContext(ctx, deps.sockPath(), host, port)
+		return probeOutcome{Reachable: r.Reachable, RTTMS: r.RTTMS, Error: r.Error}, err
+	}
+	return deps
 }
 
 // liveServiceChecks 问 launchd「Guardian 这个服务加载了没有」。
@@ -114,7 +121,7 @@ func liveServiceChecks(ctx context.Context) []doctor.Check {
 
 // collectDoctorFacts 是生产那份采集(localAPIOptionsFor 接的就是它)。
 func collectDoctorFacts(ctx context.Context, configPath string, status Status) doctor.Facts {
-	return collectDoctorFactsWith(ctx, configPath, status, liveDoctorDeps())
+	return collectDoctorFactsWith(ctx, configPath, status, liveDoctorDeps(supervisor.SockPath))
 }
 
 func collectDoctorFactsWith(ctx context.Context, configPath string, status Status, deps doctorCollectorDeps) doctor.Facts {
@@ -240,7 +247,14 @@ func doctorHandler(collect DoctorFactsFunc, configPath string, ownerUID uint32, 
 		log.Printf("guardian_doctor_requested uid=%d", uid)
 		ctx, cancel := context.WithTimeout(r.Context(), budget)
 		defer cancel()
+		started := time.Now()
 		rep := doctor.Judge(collect(ctx, configPath, status()))
+		// 结局那一行(与 mutation handler 的 guardian_mutation_result 同形)。
+		// 少了它,「采集卡到预算耗尽」与「一切正常、几毫秒答完」在日志里逐字
+		// 相同 —— 而 elapsed 正是那份 10 秒预算唯一留得下的证据。
+		// **只发数字,不发内容**:check 的 detail 里有服务器地址。
+		log.Printf("guardian_doctor_result uid=%d ok=%t checks=%d elapsed=%s",
+			uid, rep.OK, len(rep.Checks), time.Since(started).Round(time.Millisecond))
 		writeGuardianJSON(w, http.StatusOK, rep)
 	}
 }
