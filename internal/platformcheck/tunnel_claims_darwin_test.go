@@ -1,6 +1,6 @@
 //go:build darwin
 
-package cli
+package platformcheck
 
 import (
 	"os"
@@ -91,7 +91,7 @@ Destination        Gateway            Flags        Netif
 // 此前那些「may create another tunnel」「verify its routes do not bypass bx」
 // 是让用户去查一件 bx 自己查得到的事。
 func TestProductListStoppedSpeculating(t *testing.T) {
-	raw, err := os.ReadFile("platform_check_darwin.go")
+	raw, err := os.ReadFile("darwin.go")
 	if err != nil {
 		t.Fatalf("读不到源码:%v —— 守卫失去意义,必须响亮失败", err)
 	}
