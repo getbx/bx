@@ -217,7 +217,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	// 那份状态,另算一份就是第二个真相源。
 	mux.HandleFunc("/v1/doctor", doctorHandler(options.DoctorFacts, options.ConfigPath, options.OwnerUID, func() Status {
 		return observableStatus(controller, pathRecoveryControllerFor(controller), options)
-	}))
+	}, doctorTimeout))
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
 	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries, watch: watch}
