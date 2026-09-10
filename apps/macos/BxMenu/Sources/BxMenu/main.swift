@@ -1135,31 +1135,52 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onRunAgain = { [weak self] in
             self?.openDiagnosticsChecks()
         }
+        controller.onLoadLogs = { [weak self] in
+            self?.openDiagnosticsLogs(highlighting: nil)
+        }
         return controller
     }()
 
-    /// 有一次 Diagnostics 拉取正在飞(日志或 checks,**共用一个标志**)。与
-    /// `rulesFetchInFlight` 同一个模式:这条路只由用户显式触发(Open Logs / 弹窗里的
-    /// Show Details / Check for Problems / Checks 页的 Run again),重叠只可能来自
-    /// 双击连点 —— 而重叠在这里比在规则那边更难看:两次成功会把窗口连开两遍,两次
-    /// 失败会连弹两个「… are not available」。
-    /// 两条路共用一个标志是刻意的:它们开的是**同一个窗口**,各用各的标志会让
-    /// 「点了 Checks、紧接着点 Open Logs」两次拉取同时落定,后到的那一页把先到的
-    /// 顶掉,而用户看不出发生了什么。
-    private var diagnosticsFetchInFlight = false
+    /// Diagnostics 的两条拉取各有一个在飞标志。与 `rulesFetchInFlight` 同一个模式:
+    /// 两条路都只由用户显式触发(Open Logs / 弹窗里的 Show Details / Check for
+    /// Problems / 两页上的 Run again 与 Load Logs),重叠只可能来自双击连点 ——
+    /// 而重叠在这里比在规则那边更难看:两次成功会把窗口连开两遍,两次失败会连弹
+    /// 两个「… are not available」。
+    ///
+    /// **它们曾经是同一个标志,那是错的。** 共用的理由写的是「两页顶来顶去用户
+    /// 看不出发生了什么」,而代价是:checks 那次拉取最长 20 秒,这段时间里点
+    /// 「Open Logs」被这个标志**静默**吞掉 —— 窗口不出现、没有 alert、什么都没
+    /// 发生。那正是 `shouldSuppressFetch` 那次回归的形状,而这里两条**都是显式
+    /// 动作**,没有「环境刷新」那一路可以让位。两次落定的先后至多让用户多切一次
+    /// 标签页;吞掉一次点击则让他以为菜单坏了。代价不对称,取吵的那边。
+    private var checksFetchInFlight = false
+    private var logsFetchInFlight = false
+
+    /// 把两页的能力告诉窗口。**在每次开窗之前调** —— 没被请求的那一页停在占位
+    /// 上,而占位要说的是「还没拉」还是「这一版没有这个功能」,只有能力门知道。
+    ///
+    /// 判据取的是与 `runDoctorFromMenu` / `openLogs` 那两道门**同一个表达式**:
+    /// 一边按能力把入口指向 Checks 页、另一边在页上画一个按不动的按钮,是同一个
+    /// 判据算两遍就够漂开一次的老形状。
+    private func applyDiagnosticsAvailability() {
+        diagnosticsWindow.setAvailability(
+            doctor: doctorAvailable(capabilities: maintenanceReport?.capabilities),
+            logs: logsAvailable(capabilities: maintenanceReport?.capabilities))
+    }
 
     /// 拉一次 /v1/logs 再开窗口;拉不到就明说(这条路本身就是「看失败原因」的路,
     /// 它自己失败时不能再指向别的什么)。
     private func openDiagnosticsLogs(highlighting code: String?) {
-        guard !diagnosticsFetchInFlight else { return }
-        diagnosticsFetchInFlight = true
+        guard !logsFetchInFlight else { return }
+        logsFetchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try GuardianClient().fetchLogs() }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.diagnosticsFetchInFlight = false
+                self.logsFetchInFlight = false
                 switch result {
                 case .success(let report):
+                    self.applyDiagnosticsAvailability()
                     self.diagnosticsWindow.showLogs(report, highlightingCode: code)
                 case .failure(let error):
                     self.showMessage("Logs are not available", "bx could not read its logs: \(error.localizedDescription)")
@@ -1171,15 +1192,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 拉一次 /v1/doctor 再开 Checks 页。**它让 Guardian 出网探测一次服务器**,所以只
     /// 由用户点击触发(菜单项与 Run again),绝不放进任何定时器或刷新路径。
     private func openDiagnosticsChecks() {
-        guard !diagnosticsFetchInFlight else { return }
-        diagnosticsFetchInFlight = true
+        guard !checksFetchInFlight else { return }
+        checksFetchInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try GuardianClient().fetchDoctor() }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.diagnosticsFetchInFlight = false
+                self.checksFetchInFlight = false
                 switch result {
                 case .success(let report):
+                    self.applyDiagnosticsAvailability()
                     self.diagnosticsWindow.showChecks(report)
                 case .failure(let error):
                     self.showMessage("Checks are not available", "bx could not run its checks: \(error.localizedDescription)")
@@ -1429,7 +1451,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 无确认框的切换(确认在 confirmAndSwitchServer;Add Server 那条路的确认是
     /// 它自己的第一步)。**切换逻辑只有这一份** —— 第二份拷贝会让两条路上的
     /// in-flight 守卫、失败漏斗、刷新时机各自漂开。
-    /// completion 收到 nil 表示请求本身失败(已弹过失败漏斗)。
+    /// completion 收到 nil 有**两种**情形,措辞必须都说到:请求真的失败了(已经弹过
+    /// 失败漏斗),**或者**被在飞守卫挡下、压根没发出去(什么都没弹)。原话只说了
+    /// 前一种,于是 `confirmAndSwitchServer` 那边照着它把 nil 读成「用户已经看到
+    /// 原因了」而什么都不做 —— 撞上在飞守卫时就是点了没反应。
     private func switchServer(name: String, completion: ((ServerSwitchResult?) -> Void)? = nil) {
         guard !switchInFlight else { completion?(nil); return }
         // 换过去之后旧的探测结果就作废了 —— 留着它会让用户读到上一台的出口。
@@ -1472,15 +1497,34 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastServers = list
                     // **切到 Guardian 说的那个名字,不是用户输入的那个** —— 名字留空时
                     // 最终名字是服务端按链接推的,客户端再推一遍就是第二份判据。
-                    self.switchServer(name: list.added) { outcome in
+                    //
+                    // `added` 缺席只有一种来源:一版**不发这个字段**的旧 Guardian。
+                    // 那时退回**客户端刚刚发出去的那个名字** —— 它不是第二次推导
+                    // (没有再解析一次链接),只是这次请求自己的输入。少了这条退路,
+                    // 切换会拿一个空名字去发,而弹窗写的是「Added , but…」——
+                    // 一句没写完的话。
+                    let target = list.added.isEmpty ? name : list.added
+                    self.switchServer(name: target) { outcome in
                         let alert = NSAlert()
                         alert.messageText = outcome?.applied == true ? "Switched" : "Added"
-                        alert.informativeText = addServerOutcomeMessage(added: list.added, switched: outcome)
+                        alert.informativeText = addServerOutcomeMessage(added: target, switched: outcome)
                         NSApp.activate(ignoringOtherApps: true)
                         alert.runModal()
                     }
                 case .failure(let error):
-                    self.showGuardianFailure(title: "Could not add that server", error: error)
+                    // **失败码不是一句话。** `Guardian request failed (409,
+                    // code=servers_name_exists).` 说的是协议,不是用户能做的事;
+                    // 而这条路上最常见的两种失败(名字撞车、名字带空格)恰恰都是
+                    // 用户改一下就能过的。措辞由纯函数给,认不出的码返回 nil ——
+                    // 那时仍走原来那个通用漏斗,绝不编一句像模像样的解释。
+                    if case GuardianClientError.status(let status, let code) = error,
+                        let sentence = addServerFailureMessage(code: code, status: status)
+                    {
+                        self.showGuardianFailure(
+                            title: "Could not add that server", message: sentence, error: error)
+                    } else {
+                        self.showGuardianFailure(title: "Could not add that server", error: error)
+                    }
                 }
             }
         }

@@ -47,13 +47,48 @@ func TestMacMenuDoctorPageIsFedByFetchDoctor(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 openDiagnosticsChecks 的函数体")
 	}
-	for _, want := range []string{"diagnosticsFetchInFlight", "GuardianClient().fetchDoctor()", "self.diagnosticsWindow.showChecks(report)", "showMessage("} {
+	// **在飞标志按页各一个。** 共用一个的时候,checks 那次拉取(最长 20 秒)会把
+	// 紧跟着点的 Open Logs 静默吞掉 —— 两条都是显式动作,没有哪一条该给另一条让路
+	// (与 `shouldSuppressFetch` 那次回归同一个形状)。
+	for _, want := range []string{"checksFetchInFlight", "GuardianClient().fetchDoctor()", "self.diagnosticsWindow.showChecks(report)", "showMessage("} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("openDiagnosticsChecks 缺 %s", want)
 		}
 	}
 	if !strings.Contains(code, "controller.onRunAgain = ") || !strings.Contains(code, "self?.openDiagnosticsChecks()") {
 		t.Fatal("窗口的 Run again 没接回 openDiagnosticsChecks")
+	}
+	if strings.Contains(code, "diagnosticsFetchInFlight") {
+		t.Fatal("两页又共用了一个在飞标志 —— 一条显式动作会被另一条静默吞掉")
+	}
+	// 没被请求的那一页停在占位上,而占位说「还没拉」还是「这一版没有」由能力门
+	// 决定 —— 故开窗之前必须先把能力告诉窗口。少了这一跳,旧 Guardian 上会画出
+	// 一个按不动的按钮。
+	for _, fn := range []string{"private func openDiagnosticsChecks()", "private func openDiagnosticsLogs(highlighting code: String?)"} {
+		page, ok := swiftFunctionBody(code, fn)
+		if !ok {
+			t.Fatalf("读不出 %s 的函数体", fn)
+		}
+		avail := strings.Index(page, "applyDiagnosticsAvailability()")
+		show := strings.Index(page, "self.diagnosticsWindow.show")
+		if avail < 0 || show < 0 || avail > show {
+			t.Fatalf("%s 要先 applyDiagnosticsAvailability() 再开窗(avail=%d show=%d)", fn, avail, show)
+		}
+	}
+	// 而那一跳算的必须是与两道入口门**同一个表达式** —— 同一个判据算两遍就够
+	// 漂开一次:入口按能力开了 Checks 页,页上却画着「这一版没有 checks」。
+	apply, ok := swiftFunctionBody(code, "private func applyDiagnosticsAvailability()")
+	if !ok {
+		t.Fatal("读不出 applyDiagnosticsAvailability 的函数体")
+	}
+	for _, want := range []string{
+		"diagnosticsWindow.setAvailability(",
+		"doctor: doctorAvailable(capabilities: maintenanceReport?.capabilities)",
+		"logs: logsAvailable(capabilities: maintenanceReport?.capabilities)",
+	} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("applyDiagnosticsAvailability 缺 %s", want)
+		}
 	}
 	// 出现次数必须恰好一次,且落在 openDiagnosticsChecks 的函数体里。用函数体在
 	// 整份源码里的**字节区间**判定归属:`swiftFunctionBody` 返回的是原串的切片,
@@ -147,5 +182,44 @@ func TestMacMenuDiagnosticsWindowRendersChecksByThePureModel(t *testing.T) {
 	}
 	if !strings.Contains(window, "NSTabView") {
 		t.Fatal("两页要用 NSTabView(Checks / Logs),不要两个窗口")
+	}
+	// **没被请求的那一页不许是白纸。** 两页在 ensureWindow 里就各摆一句占位 +
+	// 一个能把它填上的按钮;Checks 那页在渲染之前连 Run again 都没有,于是用户
+	// 切过去之后没有任何办法把它填上。
+	ensure, ok := swiftFunctionBody(window, "private func ensureWindow() -> NSWindow")
+	if !ok {
+		t.Fatal("读不出 ensureWindow 的函数体")
+	}
+	for _, want := range []string{"seedChecksPlaceholder()", "seedLogsPlaceholder()"} {
+		if !strings.Contains(ensure, want) {
+			t.Fatalf("ensureWindow 没摆 %s —— 没被请求的那一页会是一张白纸", want)
+		}
+	}
+	// 空页上的「Check Now」走的是**同一个** onRunAgain(不是第二个回调):
+	// 那次 /v1/doctor 会让 Guardian 在隧道外探测一次服务器,触发点多一个,
+	// TestMacMenuDoctorPageIsFedByFetchDoctor 那条「恰好两个调用点」就守不住了。
+	seed, ok := swiftFunctionBody(window, "private func seedChecksPlaceholder()")
+	if !ok {
+		t.Fatal("读不出 seedChecksPlaceholder 的函数体")
+	}
+	if !strings.Contains(seed, "#selector(runAgain)") {
+		t.Fatal("Check Now 没接回 onRunAgain 那个出口 —— 别给它第二条路")
+	}
+	if !strings.Contains(window, "func setAvailability(doctor: Bool, logs: Bool)") {
+		t.Fatal("Diagnostics 窗口没有能力门 setAvailability(doctor:logs:)")
+	}
+	// 能力缺席时那一页说清楚,并且**不画按钮**:一个按了什么都不会发生的按钮,
+	// 比一句「这一版没有」糟得多。这两句是**字符串字面量**,得在没被抹白的那份
+	// 源码上查(window 那份把字面量内容抹成了空白,专供数括号用)。
+	raw := stripSwiftComments(readMenuSwiftSource(t, "DiagnosticsWindow.swift"))
+	for _, want := range []string{
+		"This version of bx Guardian does not provide checks.",
+		"This version of bx Guardian does not provide logs.",
+		"No checks yet.", "No logs loaded yet.",
+		`NSButton(title: "Check Now"`, `NSButton(title: "Load Logs"`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("Diagnostics 窗口缺 %s", want)
+		}
 	}
 }

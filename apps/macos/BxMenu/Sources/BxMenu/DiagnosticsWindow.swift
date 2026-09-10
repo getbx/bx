@@ -4,8 +4,14 @@ import AppKit
 ///
 /// **这个文件只做摆放。** 哪些行要高亮(失败码定位)由 LogsModel 的纯函数
 /// `logLinesMatching` 决定;Checks 页的排序、合计、标题由 DiagnosticsModel 的
-/// `sortedDoctorChecks`/`doctorSummaryLine`/`doctorCheckTitle` 决定 —— 这里连一次
-/// 字符串比较都不做。
+/// `sortedDoctorChecks`/`doctorSummaryLine`/`doctorCheckTitle` 决定 —— 判定一句
+/// 都不在这里。
+///
+/// **唯一的例外是 `statusColor`**,它按状态字面量选颜色。那不是判定(它不改变
+/// 说了什么,只改变那句话长什么样),而是呈现映射,与 AppKit 绑死、搬进纯模型
+/// 只会让纯模型 import AppKit。写下来是因为原话是「连一次字符串比较都不做」——
+/// 一句当场就能被同一个文件证伪的自述,会让下一个人连带不再相信旁边那些还成立
+/// 的话。
 final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var tabs: NSTabView?
@@ -15,8 +21,33 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     /// 用户点了底部「Export Diagnostics…」—— 走原来那条终端归档路(spec §1 表里保留的)。
     var onExportDiagnostics: (() -> Void)?
 
-    /// 用户点了 Checks 页的「Run again」。
+    /// 用户点了 Checks 页的「Run again」/ 空页上的「Check Now」。**两处同一个出口**
+    /// —— 第二个回调会让「谁在触发那次隧道外的探测」变成两个答案。
     var onRunAgain: (() -> Void)?
+
+    /// 用户点了 Logs 空页上的「Load Logs」。
+    var onLoadLogs: (() -> Void)?
+
+    /// 两页各自的能力(来自 Guardian 的 capabilities)。**默认按「有」画** ——
+    /// 在问出来之前把入口扣住,与「这一版没有这个功能」在界面上完全一样,而后者
+    /// 是一句可能不真的断言。`setAvailability` 由 main.swift 在开窗之前调。
+    private var doctorCapable = true
+    private var logsCapable = true
+
+    /// 这一页有没有被真数据渲染过。**占位只许覆盖没被渲染过的那一页** —— 否则
+    /// 一次能力刷新会把用户正在读的报告换成一句「No checks yet.」。
+    private var checksRendered = false
+    private var logsRendered = false
+
+    /// 能力门。**它不藏标签页**:两页都在,缺的那一页如实说这一版没有这个功能。
+    /// 藏掉标签页会让用户以为菜单坏了(他刚在别处见过 Logs 这两个字);说出来
+    /// 才是「旧 Guardian」这个事实本身。
+    func setAvailability(doctor: Bool, logs: Bool) {
+        doctorCapable = doctor
+        logsCapable = logs
+        if !checksRendered { seedChecksPlaceholder() }
+        if !logsRendered { seedLogsPlaceholder() }
+    }
 
     func showChecks(_ report: DoctorReport) {
         let window = ensureWindow()
@@ -81,6 +112,11 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         self.checksStack = checksStack
         self.logsStack = logsStack
         self.window = window
+        // **两页都要先有东西。** 只渲染被请求的那一页,另一页就是一张白纸 ——
+        // 用户切过去看到的不是「还没拉」,而是一个坏掉的界面;而 Checks 那页
+        // 在渲染之前连「Run again」都没有,于是没有任何办法把它填上。
+        seedChecksPlaceholder()
+        seedLogsPlaceholder()
         return window
     }
 
@@ -125,14 +161,61 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         return page
     }
 
-    /// Checks 页:合计一句在顶,坏的排前,每条 = 状态标签 + 名字 + detail,hint 另起一行暗色小字。
-    /// **排序、合计、标题全由纯模型给**(DiagnosticsModel),这里只摆。
-    private func renderChecks(_ report: DoctorReport) {
-        guard let stack = checksStack else { return }
+    private func clear(_ stack: NSStackView) {
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
+    }
+
+    /// Checks 页在拿到报告之前的样子:一句话 + 一个能把它填上的按钮。
+    ///
+    /// 按钮走的是**同一个** `onRunAgain` —— 「再查一次」与「现在查一次」在这条路
+    /// 上是同一件事(都是一次 `/v1/doctor`),给它第二个回调只会让「那次隧道外的
+    /// 探测由谁触发」多出一个答案。
+    private func seedChecksPlaceholder() {
+        guard let stack = checksStack else { return }
+        clear(stack)
+        guard doctorCapable else {
+            stack.addArrangedSubview(hint("This version of bx Guardian does not provide checks."))
+            return
+        }
+        stack.addArrangedSubview(hint("No checks yet."))
+        stack.addArrangedSubview(gap())
+        let now = NSButton(title: "Check Now", target: self, action: #selector(runAgain))
+        now.bezelStyle = .rounded
+        now.controlSize = .small
+        now.toolTip = "Asks bx to check now. This probes your server once, outside the tunnel."
+        stack.addArrangedSubview(now)
+    }
+
+    /// Logs 页在拉到日志之前的样子。同一条:说一句 + 给一个出口。
+    private func seedLogsPlaceholder() {
+        guard let stack = logsStack else { return }
+        clear(stack)
+        guard logsCapable else {
+            stack.addArrangedSubview(hint("This version of bx Guardian does not provide logs."))
+            return
+        }
+        stack.addArrangedSubview(hint("No logs loaded yet."))
+        stack.addArrangedSubview(gap())
+        let load = NSButton(title: "Load Logs", target: self, action: #selector(loadLogs))
+        load.bezelStyle = .rounded
+        load.controlSize = .small
+        load.toolTip = "Reads the tail of bx's own logs."
+        stack.addArrangedSubview(load)
+    }
+
+    @objc private func loadLogs() {
+        onLoadLogs?()
+    }
+
+    /// Checks 页:合计一句在顶,坏的排前,每条 = 状态标签 + 名字 + detail,hint 另起一行暗色小字。
+    /// **排序、合计、标题全由纯模型给**(DiagnosticsModel),这里只摆。
+    private func renderChecks(_ report: DoctorReport) {
+        guard let stack = checksStack else { return }
+        clear(stack)
+        checksRendered = true
         let summary = NSTextField(labelWithString: doctorSummaryLine(report.checks))
         summary.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
         stack.addArrangedSubview(summary)
@@ -208,10 +291,8 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
 
     private func renderLogs(_ report: LogsReport, code: String?) {
         guard let stack = logsStack else { return }
-        for view in stack.arrangedSubviews {
-            stack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
+        clear(stack)
+        logsRendered = true
         if let code, !code.isEmpty {
             let banner = NSTextField(labelWithString: "Highlighting lines that mention \(code).")
             banner.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
