@@ -38,6 +38,7 @@ run_test guardian-client \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
+  "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -63,6 +64,7 @@ run_test guardian-status \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
+  "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -75,6 +77,7 @@ run_test guardian-client-timeout \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
+  "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -99,6 +102,7 @@ run_test guardian-failure-code \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
+  "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -158,6 +162,7 @@ run_test guardian-status-fields \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
+  "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
   "$MENU/Sources/BxMenu/GuardianClient.swift" \
   "$MENU/Sources/BxMenu/StatusWatch.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
@@ -179,7 +184,12 @@ run_test protection-switch \
 
 run_test logs-model \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
+  "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
   "$MENU/Tests/LogsModelTests.swift"
+
+run_test diagnostics-model \
+  "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
+  "$MENU/Tests/DiagnosticsModelTests.swift"
 
 run_test transition-notice \
   "$MENU/Sources/BxMenu/TransitionNotice.swift" \

@@ -15,6 +15,8 @@ private let guardianUpdateCheckTimeout: TimeInterval = 30
 private let guardianSwitchServerTimeout: TimeInterval = 45
 // Go 侧 probeTimeout = 8 秒/台,串行。
 private let guardianProbeTimeout: TimeInterval = 60
+// 探测 5 秒 + Guardian 整轮 10 秒上限,再留余量。
+private let guardianDoctorTimeout: TimeInterval = 20
 private let guardianMaximumTimeout: TimeInterval = TimeInterval(Int32.max) / 1_000
 
 enum GuardianEndpoint {
@@ -48,12 +50,16 @@ enum GuardianEndpoint {
     /// 这一版 Guardian 支持时才该调用它**(理由同 appTraffic)。
     case logs(lines: Int)
 
+    /// 一份 Guardian 进程内算出的 doctor 报告。**只有 `doctorAvailable(capabilities:)`
+    /// 判定这一版 Guardian 支持时才该调用它**(理由同 appTraffic/logs)。
+    case doctor
+
     var expectedStatus: Int {
         switch self {
         case .requestRecovery: return 202
         case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule,
              .changeRuleGroup, .listServers, .switchServer, .probeServers, .statusWatch, .appTraffic,
-             .logs:
+             .logs, .doctor:
             return 200
         }
     }
@@ -77,6 +83,7 @@ enum GuardianEndpoint {
         // 服务端最长挂 25 秒。客户端必须更长,否则拿到的永远是自己的超时,
         // 而服务端那个上限一次都不会生效。
         case .statusWatch: return guardianStatusWatchTimeout
+        case .doctor: return guardianDoctorTimeout
         }
     }
 }
@@ -247,6 +254,12 @@ struct GuardianClient {
         try perform(endpoint: .logs(lines: lines), as: LogsReport.self)
     }
 
+    /// 一份 Guardian 进程内算出的 doctor 报告。**调用前必须过 `doctorAvailable(capabilities:)`。**
+    /// 它会让 Guardian 出网探测一次服务器,所以只在用户显式点了才调,绝不放进任何定时器。
+    func fetchDoctor() throws -> DoctorReport {
+        try perform(endpoint: .doctor, as: DoctorReport.self)
+    }
+
     /// 测一遍所有服务器,返回**带探测结论的完整清单**。
     ///
     /// 探测走在隧道外面,所以这只在用户点「Test」时发生 —— 绝不做后台定时探测。
@@ -405,6 +418,10 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         method = "GET"
         // lines 是 Int,插值不引入注入面(与 statusWatch 同理)。
         path = "/v1/logs?lines=\(lines)"
+        body = nil
+    case .doctor:
+        method = "GET"
+        path = "/v1/doctor"
         body = nil
     case let .switchServer(name):
         method = "POST"
