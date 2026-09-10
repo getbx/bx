@@ -269,15 +269,28 @@ func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string
 	link := strings.TrimSpace(req.Link)
 	log.Printf("guardian_server_add_requested name=%q uid=%d has_udp=%t", name, uid, strings.TrimSpace(req.UDP) != "")
 	if name == "" {
-		// 名字可省略:按链接推导(与 `bx server add` 不给 --name 时同一条规则)。
-		// 空链接在这里就会报错 → 400,与「空链接拒绝」的要求一致。
-		derived, err := config.DeriveServerName(link)
-		if err != nil {
-			log.Printf("guardian_server_add_failed reason=derive_name err=%v", err)
+		// 名字可省略:按链接推导。**用 setup.LinkHost,不用 config.DeriveServerName**——
+		// 两条理由都要:① 用户手里的几乎全是 bx:// 换壳,DeriveServerName→
+		// tunnel.ServerHost 不解壳,会把整串 base64 当成"名字";LinkHost 是
+		// serverEntries 用的同一份判据,认得壳。② LinkHost 只回 (host, ok),
+		// 没有错误文本——DeriveServerName 那条链路(url.Parse 失败时)会把**原始
+		// 链接逐字**塞进 error string,而链接就是凭据,决不能进日志
+		// (本函数上面那句"链接不写进日志"的注释说的就是这个)。
+		host, ok := setup.LinkHost(link)
+		if !ok {
+			// 不带 err、不带 link:解不出主机本身已经是完整的诊断信息。
+			log.Printf("guardian_server_add_failed reason=derive_name")
 			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_add_failed"})
 			return
 		}
-		name = derived
+		if err := config.ValidateServerName(host); err != nil {
+			// **同样不带 %v**:校验错误会把 host 本身回显进去,而 host 来自
+			// 链接、可能仍带着凭据的碎片(比如把 user:pass@ 一起解出来的情形)。
+			log.Printf("guardian_server_add_failed reason=derive_name_invalid")
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_add_failed"})
+			return
+		}
+		name = host
 	}
 	// **先查重,再写。** setup.AddServer 对已存在的名字是「改写那一台的链接」——
 	// 对用户那是「我加了一台,结果把原来那台换掉了」,而界面上看不出任何异常。

@@ -1,12 +1,16 @@
 package guardian
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/blink"
 )
 
 // serversTestConfig(tokyo / osaka,current=tokyo)与 noSwitch 都是 servers_test.go 里既有的
@@ -38,7 +42,7 @@ func TestAddServerRefusesAnExistingName(t *testing.T) {
 	}
 }
 
-// 名字可省略:按链接推导(config.DeriveServerName),应答里 added 告诉界面最终叫什么。
+// 名字可省略:按链接推导(setup.LinkHost),应答里 added 告诉界面最终叫什么。
 func TestAddServerDerivesTheNameWhenOmitted(t *testing.T) {
 	path := serversTestConfig(t)
 	// brook link 的主机藏在 `?server=` 查询参数里,不是 authority(与 vless/hysteria2
@@ -72,5 +76,45 @@ func TestAddServerRejectsAnEmptyLink(t *testing.T) {
 	code, _, body := postServersAdd(t, path, `{"action":"add","name":"x","link":""}`)
 	if code != http.StatusBadRequest || !strings.Contains(body, "servers_add_failed") {
 		t.Fatalf("空链接 = %d %s", code, body)
+	}
+}
+
+// 用户手里的链接几乎全是 bx:// 换壳 —— 推导必须解得开壳,否则「名字」会是一串
+// base64。这条钉住 setup.LinkHost(而不是不解壳的 config.DeriveServerName)真的
+// 接在了推导路径上。
+func TestAddServerDerivesTheNameFromABxEnvelope(t *testing.T) {
+	path := serversTestConfig(t)
+	link := blink.Encode("vless://" + serversTestUUID + "@vps3.example.com:443?security=reality")
+	code, resp, body := postServersAdd(t, path, `{"action":"add","link":"`+link+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("加 = %d %s", code, body)
+	}
+	if resp.Added != "vps3.example.com" {
+		t.Fatalf("added = %q, want 解壳之后推导的名字", resp.Added)
+	}
+}
+
+// 推导失败绝不许把原始链接(凭据)写进日志。url.Parse 在解析失败时会把**逐字节的
+// 原始输入**塞进它的 error string——这正是本文件那句「链接不写进日志」要防的事;
+// 用 setup.LinkHost(只回 bool,没有错误文本)而不是会产出这种 error 的路径,
+// 从构造上就不会有东西可泄漏。这条测试直接盯着日志里到底写了什么。
+func TestAddServerDeriveFailureLogsNoLinkText(t *testing.T) {
+	path := serversTestConfig(t)
+	orig := log.Writer()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(orig) })
+
+	const badLink = `vless://user:supersecretpassword@ho st:443`
+	code, _, body := postServersAdd(t, path, `{"action":"add","link":"`+badLink+`"}`)
+	if code != http.StatusBadRequest || !strings.Contains(body, "servers_add_failed") {
+		t.Fatalf("= %d %s", code, body)
+	}
+	logged := buf.String()
+	if strings.Contains(logged, "supersecretpassword") {
+		t.Fatalf("日志里出现了凭据:%s", logged)
+	}
+	if strings.Contains(logged, badLink) || strings.Contains(logged, "ho st") {
+		t.Fatalf("日志里出现了原始链接:%s", logged)
 	}
 }
