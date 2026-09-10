@@ -1,19 +1,35 @@
 import AppKit
 
-/// 「Diagnostics」窗口。本期只有日志页;spec §6 的 Checks 页在 /v1/doctor 落地后加。
+/// 「Diagnostics」窗口:两页 —— Checks(/v1/doctor 的结论)与 Logs(/v1/logs 的尾部)。
 ///
 /// **这个文件只做摆放。** 哪些行要高亮(失败码定位)由 LogsModel 的纯函数
-/// `logLinesMatching` 决定;这里连一次字符串比较都不做。
+/// `logLinesMatching` 决定;Checks 页的排序、合计、标题由 DiagnosticsModel 的
+/// `sortedDoctorChecks`/`doctorSummaryLine`/`doctorCheckTitle` 决定 —— 这里连一次
+/// 字符串比较都不做。
 final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
-    private var stack: NSStackView?
+    private var tabs: NSTabView?
+    private var checksStack: NSStackView?
+    private var logsStack: NSStackView?
 
     /// 用户点了底部「Export Diagnostics…」—— 走原来那条终端归档路(spec §1 表里保留的)。
     var onExportDiagnostics: (() -> Void)?
 
+    /// 用户点了 Checks 页的「Run again」。
+    var onRunAgain: (() -> Void)?
+
+    func showChecks(_ report: DoctorReport) {
+        let window = ensureWindow()
+        renderChecks(report)
+        tabs?.selectTabViewItem(at: 0)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
     func showLogs(_ report: LogsReport, highlightingCode code: String?) {
         let window = ensureWindow()
-        render(report, code: code)
+        renderLogs(report, code: code)
+        tabs?.selectTabViewItem(at: 1)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
@@ -34,6 +50,43 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         window.center()
         window.delegate = self
 
+        guard let content = window.contentView else { return window }
+
+        // 两页一个窗口(不是两个窗口):用户排查时要在「结论」与「原始日志」之间
+        // 来回看,两个窗口会互相盖住,而标签页保住「同一件事的两个视角」这层关系。
+        let tabs = NSTabView()
+        tabs.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(tabs)
+        NSLayoutConstraint.activate([
+            tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            tabs.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            tabs.topAnchor.constraint(equalTo: content.topAnchor),
+            tabs.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+
+        // **顺序即索引**:showChecks 选 0、showLogs 选 1,别调换。
+        let checksItem = NSTabViewItem(identifier: "checks")
+        checksItem.label = "Checks"
+        let (checksScroll, checksStack) = makeScrollingStack()
+        checksItem.view = hosting(checksScroll)
+        tabs.addTabViewItem(checksItem)
+
+        let logsItem = NSTabViewItem(identifier: "logs")
+        logsItem.label = "Logs"
+        let (logsScroll, logsStack) = makeScrollingStack()
+        logsItem.view = hosting(logsScroll)
+        tabs.addTabViewItem(logsItem)
+
+        self.tabs = tabs
+        self.checksStack = checksStack
+        self.logsStack = logsStack
+        self.window = window
+        return window
+    }
+
+    /// 一页的骨架:滚动视图 + 翻转的文档视图 + 竖栈。两页各调一次 —— 约束与此前
+    /// 那份单页的完全一样,只是 `content` 换成对应 `NSTabViewItem` 的宿主视图。
+    private func makeScrollingStack() -> (NSScrollView, NSStackView) {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -50,26 +103,101 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         clip.addSubview(stack)
         scroll.documentView = clip
 
-        guard let content = window.contentView else { return window }
-        content.addSubview(scroll)
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: content.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
             stack.topAnchor.constraint(equalTo: clip.topAnchor),
             stack.bottomAnchor.constraint(equalTo: clip.bottomAnchor),
             clip.widthAnchor.constraint(equalTo: scroll.widthAnchor),
         ])
-        self.stack = stack
-        self.window = window
-        return window
+        return (scroll, stack)
     }
 
-    private func render(_ report: LogsReport, code: String?) {
-        guard let stack else { return }
+    private func hosting(_ scroll: NSScrollView) -> NSView {
+        let page = NSView()
+        page.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: page.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: page.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: page.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: page.bottomAnchor),
+        ])
+        return page
+    }
+
+    /// Checks 页:合计一句在顶,坏的排前,每条 = 状态标签 + 名字 + detail,hint 另起一行暗色小字。
+    /// **排序、合计、标题全由纯模型给**(DiagnosticsModel),这里只摆。
+    private func renderChecks(_ report: DoctorReport) {
+        guard let stack = checksStack else { return }
+        for view in stack.arrangedSubviews {
+            stack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        let summary = NSTextField(labelWithString: doctorSummaryLine(report.checks))
+        summary.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        stack.addArrangedSubview(summary)
+        if !report.version.isEmpty {
+            stack.addArrangedSubview(hint("bx \(report.version)"))
+        }
+        stack.addArrangedSubview(gap())
+        for check in sortedDoctorChecks(report.checks) {
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.alignment = .firstBaseline
+            row.spacing = 8
+            let badge = NSTextField(labelWithString: check.status.uppercased())
+            badge.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+            badge.textColor = statusColor(check.status)
+            badge.setContentHuggingPriority(.required, for: .horizontal)
+            row.addArrangedSubview(badge)
+            let title = NSTextField(labelWithString: doctorCheckTitle(check.name))
+            title.setContentHuggingPriority(.required, for: .horizontal)
+            row.addArrangedSubview(title)
+            if !check.detail.isEmpty {
+                let detail = hint(check.detail)
+                // 这一列会被截断,所以必须同时给出看全的办法 —— 窗口不横向滚动,
+                // 少了 toolTip 那段文字就**永久不可见**。
+                detail.lineBreakMode = .byTruncatingTail
+                detail.toolTip = check.detail
+                row.addArrangedSubview(detail)
+            }
+            stack.addArrangedSubview(row)
+            if !check.hint.isEmpty {
+                let h = hint("→ " + check.hint)
+                h.textColor = .tertiaryLabelColor
+                stack.addArrangedSubview(h)
+            }
+        }
+        stack.addArrangedSubview(gap())
+        let again = NSButton(title: "Run again", target: self, action: #selector(runAgain))
+        again.bezelStyle = .rounded
+        again.controlSize = .small
+        again.toolTip = "Asks bx to check again. This probes your server once, outside the tunnel."
+        stack.addArrangedSubview(again)
+    }
+
+    @objc private func runAgain() {
+        onRunAgain?()
+    }
+
+    private func statusColor(_ status: String) -> NSColor {
+        switch status {
+        case "fail": return .systemRed
+        case "warn": return .systemOrange
+        case "ok": return .systemGreen
+        default: return .secondaryLabelColor
+        }
+    }
+
+    private func gap() -> NSView {
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        return spacer
+    }
+
+    private func renderLogs(_ report: LogsReport, code: String?) {
+        guard let stack = logsStack else { return }
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()
