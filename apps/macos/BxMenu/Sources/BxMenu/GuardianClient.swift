@@ -37,6 +37,9 @@ enum GuardianEndpoint {
     case probeServers
     /// 换到清单里的另一台。**服务端会等新隧道健康才确认**,所以它慢。
     case switchServer(name: String)
+    /// 把一台加进清单。**它不动 current** —— 切换是紧接着的另一次请求,
+    /// 两件事分开报,免得「加上了但没切过去」被合成一句「已切换」。
+    case addServer(name: String, link: String)
     /// 长轮询:Guardian 在自己的代际号与 generation 不同时立刻应答,相同则挂住。
     case statusWatch(generation: UInt64)
     /// 一份应用流量归因报告。**这一次拉取同时给 Core 的采集订阅续期**(30 秒
@@ -58,7 +61,7 @@ enum GuardianEndpoint {
         switch self {
         case .requestRecovery: return 202
         case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule,
-             .changeRuleGroup, .listServers, .switchServer, .probeServers, .statusWatch, .appTraffic,
+             .changeRuleGroup, .listServers, .switchServer, .addServer, .probeServers, .statusWatch, .appTraffic,
              .logs, .doctor:
             return 200
         }
@@ -70,7 +73,7 @@ enum GuardianEndpoint {
         case .turnOn, .turnOff: return guardianMutationTimeout
         case .updateCheck: return guardianUpdateCheckTimeout
         // 只是读写一个小 YAML 文件,不做网络 I/O。
-        case .listRules, .changeRule, .changeRuleGroup, .listServers, .logs: return guardianDefaultTimeout
+        case .listRules, .changeRule, .changeRuleGroup, .listServers, .addServer, .logs: return guardianDefaultTimeout
         // 只是把 Core 已经聚合好的一份快照转发出来,不做网络 I/O。
         case .appTraffic: return guardianDefaultTimeout
         // 服务端要武装 → 等新隧道健康(上限 12 秒)→ 确认。客户端必须比那条链
@@ -273,6 +276,12 @@ struct GuardianClient {
         try perform(endpoint: .switchServer(name: name), as: ServerSwitchResult.self)
     }
 
+    /// 把一台加进清单(不切换)。名字为空由 Guardian 按链接推导;应答里 `added` 是最终名字。
+    /// 同名会被 Guardian 拒(409 servers_name_exists),**不会静默覆盖**。
+    func addServer(name: String, link: String) throws -> ServerList {
+        try perform(endpoint: .addServer(name: name, link: link), as: ServerList.self)
+    }
+
     /// 长轮询一次。**只有 `watchIsAvailable(capabilities:)` 判定这一版 Guardian
     /// 支持时才该调用它** —— 旧 Guardian 会把 `wait` 当成未知 query 参数忽略掉、
     /// 立刻回一份普通应答,调用方会把它误读成「刚变了」。
@@ -429,6 +438,13 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         // 与 changeRule 同一条纪律:用 JSONSerialization,不手拼 —— 名字来自
         // 配置文件,一个引号就能改变请求的结构。
         body = (try? JSONSerialization.data(withJSONObject: ["name": name])) ?? Data("{}".utf8)
+    case let .addServer(name, link):
+        method = "POST"
+        path = "/v1/servers"
+        // 名字与链接都是用户输入 —— 用 JSONSerialization,不手拼。
+        var payload: [String: String] = ["action": "add", "link": link]
+        if !name.isEmpty { payload["name"] = name }
+        body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
     case let .statusWatch(generation):
         method = "GET"
         // generation 是 UInt64,插值不引入注入面 —— 与 changeRule 那里用

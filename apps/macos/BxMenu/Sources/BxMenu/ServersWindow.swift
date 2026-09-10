@@ -20,8 +20,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     var onProbe: (() -> Void)?
     /// 用户点了「New Server…」(从一级菜单搬进来的「Set Up a New Server…」)。
     var onDeploy: (() -> Void)?
-    /// 用户点了「Replace Configuration…」(同上,从一级菜单搬进来)。
-    var onReplaceConfiguration: (() -> Void)?
+    /// 用户点了「Add Server…」—— 贴一条链接加进清单并切换过去(spec §4)。
+    var onAddServer: (() -> Void)?
 
     /// 正在测。按钮禁掉,免得连点几次发出几串探测。
     var probing = false
@@ -155,11 +155,11 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         deploy.toolTip = "Install bx server on a fresh VPS over SSH."
         buttons.addArrangedSubview(deploy)
 
-        let replace = NSButton(title: "Replace Configuration…", target: self, action: #selector(replaceConfiguration))
-        replace.bezelStyle = .rounded
-        replace.controlSize = .small
-        replace.toolTip = "Paste a new link to replace the current configuration."
-        buttons.addArrangedSubview(replace)
+        let add = NSButton(title: "Add Server…", target: self, action: #selector(addServer))
+        add.bezelStyle = .rounded
+        add.controlSize = .small
+        add.toolTip = "Paste a bx link to add a server and switch to it. The previous server stays in the list."
+        buttons.addArrangedSubview(add)
         stack.addArrangedSubview(buttons)
 
         // **只在有话说时才有这一行。** 「not checked」是常态不是信息。
@@ -230,8 +230,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         onDeploy?()
     }
 
-    @objc private func replaceConfiguration() {
-        onReplaceConfiguration?()
+    @objc private func addServer() {
+        onAddServer?()
     }
 
     @objc private func probeAll() {

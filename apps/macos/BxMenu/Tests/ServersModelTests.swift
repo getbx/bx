@@ -230,8 +230,29 @@ struct ServersModelTests {
         expect(!replaceConfigurationLivesInMenu(capabilities: ["servers"]), "有服务器窗口时不再占一级菜单")
     }
 
+    // add 应答里的 added 缺席读作空串(旧 Guardian),不抛。
+    static func testServerListDecodesAddedAndToleratesItsAbsence() {
+        let with = try! JSONDecoder().decode(ServerList.self, from: Data(#"{"servers":[],"current":"","added":"vps2"}"#.utf8))
+        expect(with.added == "vps2", "added 没解出来")
+        let without = try! JSONDecoder().decode(ServerList.self, from: Data(#"{"servers":[],"current":""}"#.utf8))
+        expect(without.added.isEmpty, "缺席要落成空串")
+    }
+
+    // 加完之后那句话:切成功说流量已从新那台出去;切没成说已加进清单但没切;
+    // 切换那一步压根没做(add 成功、switch 抛错)说「已加进清单,可以在窗口里 Use」。
+    static func testAddServerOutcomeMessageDistinguishesTheThreeEndings() {
+        let applied = addServerOutcomeMessage(added: "vps2", switched: ServerSwitchResult(name: "vps2", host: "vps2.example.com", applied: true))
+        expect(applied.contains("now leaves from vps2"), "切成功:\(applied)")
+        let saved = addServerOutcomeMessage(added: "vps2", switched: ServerSwitchResult(name: "vps2", host: "", applied: false))
+        expect(saved.contains("did not switch"), "切没成:\(saved)")
+        let onlyAdded = addServerOutcomeMessage(added: "vps2", switched: nil)
+        expect(onlyAdded.contains("Added vps2") && onlyAdded.contains("Use"), "只加了:\(onlyAdded)")
+    }
+
     static func main() {
         testServerListDecodesWhatGuardianSends()
+        testServerListDecodesAddedAndToleratesItsAbsence()
+        testAddServerOutcomeMessageDistinguishesTheThreeEndings()
         testServerSwitchingNeedsTheCapability()
         testServerRowShowsWhereTrafficLeaves()
         testUnselectableRows()

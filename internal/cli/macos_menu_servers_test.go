@@ -97,9 +97,11 @@ func TestMacMenuNeverClaimsASwitchThatDidNotApply(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 confirmAndSwitchServer 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	success := strings.Index(body, "case .success(let outcome):")
+	// 切换那一半已经搬进无确认的 switchServer(Add Server 那条路要复用它),
+	// 结局仍由 confirmAndSwitchServer 自己的 completion 渲染 —— 锚点跟着搬。
+	success := strings.Index(body, "switchServer(name: name) { outcome in")
 	if success < 0 {
-		t.Fatal("读不出成功分支 —— 守卫已经失效,先修守卫")
+		t.Fatal("读不出结局回调 —— 守卫已经失效,先修守卫")
 	}
 	tail := body[success:]
 	if !strings.Contains(tail, "outcome.applied ?") {
@@ -114,13 +116,15 @@ func TestMacMenuNeverClaimsASwitchThatDidNotApply(t *testing.T) {
 // 换过去之后旧的探测结果必须作废。留着它,用户读到的是**上一台**的出口 IP,
 // 而他刚做的恰恰是换出口 —— 这是这个界面最容易骗到人的一处。
 func TestMacMenuDropsTheStaleExitIPAfterSwitching(t *testing.T) {
+	// 作废那一步住在无确认的 switchServer 里 —— 两条路(确认框那条与
+	// Add Server 那条)都经它,所以守在这儿才守得住两条。
 	body, ok := swiftFunctionBody(menuMainSwiftSource(t),
-		"private func confirmAndSwitchServer(name: String, host: String)")
+		"private func switchServer(name: String, completion:")
 	if !ok {
-		t.Fatal("读不出 confirmAndSwitchServer 的函数体 —— 守卫已经失效,先修守卫")
+		t.Fatal("读不出 switchServer 的函数体 —— 守卫已经失效,先修守卫")
 	}
 	reset := strings.Index(body, "exitIPProbe = .unknown")
-	send := strings.Index(body, "switchServer(name:")
+	send := strings.Index(body, "GuardianClient().switchServer(name:")
 	if reset < 0 {
 		t.Fatal("换服务器之后没有作废旧的出口 IP 探测结果")
 	}
@@ -417,8 +421,18 @@ func TestMacMenuRefusesASecondSwitchWhileOneIsInFlight(t *testing.T) {
 	if confirm >= 0 && guardAt > confirm {
 		t.Error("守卫在确认框之后 —— 用户会看到确认框、点了确认、然后什么都没发生")
 	}
-	// 标志位必须被放开,否则第一次之后永远切不了。
-	if !strings.Contains(body, "self.switchInFlight = false") {
+	// 真正发请求的那一半在无确认的 switchServer 里:它自己也要挡一道
+	// (Add Server 那条路不经确认框),而且标志位必须被放开,否则第一次之后
+	// 永远切不了。
+	send, ok := swiftFunctionBody(menuMainSwiftSource(t),
+		"private func switchServer(name: String, completion:")
+	if !ok {
+		t.Fatal("读不出 switchServer 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(send, "guard !switchInFlight else {") {
+		t.Error("switchServer 自己没有在飞守卫 —— Add Server 那条路不经确认框,挡不住第二次")
+	}
+	if !strings.Contains(send, "self.switchInFlight = false") {
 		t.Error("没有放开在飞标志 —— 第一次切换之后就再也切不了了")
 	}
 }

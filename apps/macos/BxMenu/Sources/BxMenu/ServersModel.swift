@@ -82,9 +82,13 @@ struct ServerList: Decodable, Equatable {
     var servers: [ServerEntry] = []
     var current: String = ""
     var configPath: String = ""
+    /// 刚加进清单的那台的**最终名字**(用户给的,或 Guardian 按链接推导的)。
+    /// **只有 add 应答里有它**;别的应答(以及旧 Guardian)缺席读作空串,不抛 ——
+    /// 界面靠它知道接下来该切到哪台,自己再推一遍推导规则就是第二份判据。
+    var added: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case servers, current
+        case servers, current, added
         case configPath = "config_path"
     }
 
@@ -93,10 +97,12 @@ struct ServerList: Decodable, Equatable {
         servers = try c.decodeIfPresent([ServerEntry].self, forKey: .servers) ?? []
         current = try c.decodeIfPresent(String.self, forKey: .current) ?? ""
         configPath = try c.decodeIfPresent(String.self, forKey: .configPath) ?? ""
+        added = try c.decodeIfPresent(String.self, forKey: .added) ?? ""
     }
 
-    init(servers: [ServerEntry] = [], current: String = "", configPath: String = "") {
+    init(servers: [ServerEntry] = [], current: String = "", configPath: String = "", added: String = "") {
         self.servers = servers; self.current = current; self.configPath = configPath
+        self.added = added
     }
 }
 
@@ -223,6 +229,20 @@ func serverSwitchOutcomeMessage(result: ServerSwitchResult) -> String {
     }
     return "Saved \(where_) as your server, but the running tunnel did not switch. "
         + "Turn bx off and on again to use it."
+}
+
+/// 「Add Server…」做完之后那句话。三种结局分开说,**绝不合成「已添加并切换」**:
+/// add 成功 + switch 生效 / add 成功 + switch 没生效(已回滚,原样在旧那台)/
+/// add 成功 + switch 那一步根本没成(抛错)—— 第三种要告诉他清单里已经有了、可以手动 Use。
+func addServerOutcomeMessage(added: String, switched: ServerSwitchResult?) -> String {
+    guard let switched else {
+        return "Added \(added) to your servers, but could not switch to it. Open Servers… and press Use to try again."
+    }
+    if switched.applied {
+        return "Added \(added). Your traffic now leaves from \(added)."
+    }
+    return "Added \(added), but the running tunnel did not switch (it stayed on the previous server). "
+        + "Press Use in Servers… to try again, or turn bx off and on."
 }
 
 /// 「测一下现在从哪出去」的结果。
