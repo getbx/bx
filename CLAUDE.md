@@ -1604,7 +1604,14 @@ state/managed,没有意图这一项。现 `doctor.GuardianFact` 带 `Desired`,`D
 「DNS 被别人接管」)。② **ok 的行在教人修没坏的东西** —— `ok service_active` 底下挂着
 「→ sudo bx up」,两个渲染层都是「hint 非空就画」。现抹在 `Report.AddReport` 这个
 **唯一入口**里(`AddCheck` 也走它),不靠十几个产出点各自自觉。golden 新增
-`desired_off` 一例把关闭态逐字节钉住,原有两例逐字节未变。
+`desired_off` 一例把关闭态逐字节钉住,原有两例逐字节未变。③ **重画之后停在旧的滚动
+位置** —— 打开 Checks 页第一眼看到的是最末尾几行 OK,合计句与唯一那条 WARN 全在屏幕
+外面;一个以「坏的排前」为卖点的页面,第一眼给的恰好是最不重要的一端。同一件事还让
+Run again 看起来没反应(健康机器上两份报告逐字相同,重画完画面不动)。现两页渲染完都
+调 `scrollToTop`(先 `layoutSubtreeIfNeeded` 再滚 `.zero`,少了前者滚的是按旧内容算出
+的坐标),Checks 页另加一行 `doctorCheckedAtLine` 的时间戳(带秒 —— 只到分钟连点两次
+仍看不出),守卫 `TestMacMenuDiagnosticsPagesReturnToTheTopAfterRendering` 钉在两页各自
+的函数体里,三条变异各咬中一条。
 
 ## 读源码的守卫:三种处置(2026-08-31)
 

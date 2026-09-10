@@ -87,3 +87,18 @@ func doctorSummaryLine(_ checks: [DoctorCheck]) -> String {
 func doctorCheckTitle(_ name: String) -> String {
     name.replacingOccurrences(of: "_", with: " ")
 }
+
+/// Checks 页那行「上次检查」的时间。**它是这个页面唯一的「刚才那一下发生过」的
+/// 证据**:一台健康的机器连着检查两次,两份报告逐字相同,重画完画面毫无变化 ——
+/// 2026-09-10 真机上所有者点了两次 Run again,以为按钮坏了。
+///
+/// 带秒是必需的:只到分钟的话连着点两次仍然看不出差别,这一行就白加了。
+/// 时间取的是**本机点下去的那一刻**,不是 Guardian 的采集时刻 —— 后者报告里没有,
+/// 而这一行要回答的问题是「我刚才点的那一下」,本机时钟正是对的答案。
+func doctorCheckedAtLine(_ at: Date, timeZone: TimeZone = .current) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = timeZone
+    formatter.dateFormat = "HH:mm:ss"
+    return "Checked at " + formatter.string(from: at)
+}
