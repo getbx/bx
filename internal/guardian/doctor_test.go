@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -317,4 +318,109 @@ func TestNewLocalAPIGivesDoctorTheRealBudget(t *testing.T) {
 	if left <= doctorTimeout-2*time.Second || left > doctorTimeout {
 		t.Fatalf("采集拿到的剩余预算 %v,与 doctorTimeout %v 对不上", left, doctorTimeout)
 	}
+}
+
+// blackHoleControlSocket 起一个**会 accept、但从不应答**的 unix socket。
+//
+// 它比「一个根本不存在的路径」强的地方正是这条守卫要的:拨不通的路径让每个原语
+// 都立刻返回,于是「吃不吃 ctx」在输出上完全一样 —— 那是「测试输入让待守属性不
+// 可见」的老形状。连得上但永远不答,才逼得出「谁在用自己的钟」。
+func blackHoleControlSocket(t *testing.T) string {
+	t.Helper()
+	// **不用 t.TempDir()**:macOS 上它给的路径接近 120 字节,而 unix socket 的
+	// sun_path 只有 104 —— bind 会以 EINVAL 失败,于是这条守卫会以 SKIP 静默
+	// 消失。一条在最需要它的时候恰好不可达的守卫,与没有这条守卫完全一样。
+	// (deadSock 那个 helper 只造路径、从不 bind,所以不吃这个限制。)
+	dir, err := os.MkdirTemp("", "bxdoc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "core.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("起不了 unix socket:%v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var held []net.Conn
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				for _, c := range held {
+					_ = c.Close()
+				}
+				return
+			}
+			held = append(held, conn) // 收下,不读不写 —— 对端只能等
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+	})
+	return path
+}
+
+// liveDoctorDeps 那几个**生产**闭包也必须吃调用方给的 ctx。
+//
+// 既有的 TestCollectDoctorFactsGivesEveryDepTheSameDeadline 只证明采集**把** ctx
+// 递了下去 —— 它注入的是测试自己的闭包,而生产那份接过 ctx 之后拿它做什么,
+// 那条守卫一个字都没说。这正是「守卫钉住的是缺陷旁边的东西」:probe 那个闭包
+// 一度把 ctx 收下、转手用 context.Background() 去拨,两条测试全绿,而 10 秒预算
+// 在真机上被一个 12 秒的客户端时钟顶穿。
+//
+// 判据是**行为**:给一个 250 毫秒就到期的 ctx,对着一个会 accept 但永不应答的
+// socket,闭包必须在这份预算(加一点余量)之内回来。用自己的钟就回不来。
+func TestLiveDoctorDepsForwardTheCtxTheyAreHanded(t *testing.T) {
+	sock := blackHoleControlSocket(t)
+	deps := liveDoctorDeps(sock)
+	if deps.sockPath() != sock {
+		t.Fatalf("liveDoctorDeps 没把 sock 收下:%q", deps.sockPath())
+	}
+
+	const budget = 250 * time.Millisecond
+	// 余量给得比预算大得多、又远小于每个原语自己的钟(探测 12 秒、拨号 500 毫秒
+	// 之上还有 HTTP 那层):落在中间才既不假红也不假绿。
+	const margin = 3 * time.Second
+
+	t.Run("probe", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		defer cancel()
+		started := time.Now()
+		_, err := deps.probe(ctx, "203.0.113.9", 443)
+		elapsed := time.Since(started)
+		if elapsed > budget+margin {
+			t.Fatalf("探测用了 %v(预算 %v)—— 它在用自己的钟,不是调用方给的那份", elapsed, budget)
+		}
+		// **「早早返回」还不够**:一个立刻返回一个假答案的实现也满足上一条。
+		// 回来的必须是「预算到期」这件事本身。
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("探测返回的错误是 %v,而它该是那份预算到期", err)
+		}
+	})
+
+	t.Run("service", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		defer cancel()
+		started := time.Now()
+		deps.service(ctx)
+		if elapsed := time.Since(started); elapsed > budget+margin {
+			t.Fatalf("问服务用了 %v(预算 %v)—— launchctl 那一跳没吃这份 ctx", elapsed, budget)
+		}
+	})
+
+	t.Run("dial", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		cancel() // 已经到期:拨号必须当场认账,不许再自己等 500 毫秒
+		started := time.Now()
+		err := deps.dial(ctx, deps.sockPath())
+		if elapsed := time.Since(started); elapsed > margin {
+			t.Fatalf("拨控制 socket 用了 %v —— 它没看这份已经取消的 ctx", elapsed)
+		}
+		if err == nil {
+			t.Fatal("ctx 已经取消,拨号却报成功")
+		}
+	})
 }

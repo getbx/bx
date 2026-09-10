@@ -75,8 +75,13 @@ func darwinTunnelClaimChecks(netstatOut, bxTun string) []Check {
 // 问不出来返回空串是安全的,而理由要说准:**控制 socket 拨不通基本等于 Core 没在跑**,
 // 那时根本不存在「bx 自己的隧道」需要排除,ClassifyTunnels 报出来的每一条都确实是
 // 别人的。(而 `bx leak-check` 在 bx 关着时运行正是常态 —— 这个功能的主场景之一。)
-func darwinBXTunName(_ context.Context) string {
-	state, err := supervisor.FetchRuntimeState(supervisor.SockPath)
+//
+// **ctx 是承重的,不是装饰。** 这一跳可达 `/v1/doctor` 的采集(Collect → 这里),
+// 而那一轮只有一份 10 秒预算;不带 ctx 的 FetchRuntimeState 自带 1 秒拨号 + 3 秒
+// 客户端时钟,谁也不看那份预算 —— 于是 handler 能活过它自己的上限,坐在
+// `Daemon.Shutdown` 要等的那条路上。
+func darwinBXTunName(ctx context.Context) string {
+	state, err := supervisor.FetchRuntimeStateContext(ctx, supervisor.SockPath)
 	if err != nil {
 		return ""
 	}

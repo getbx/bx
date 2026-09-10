@@ -2308,7 +2308,7 @@ func TestClientDoctorJSONReport(t *testing.T) {
 func TestClientDoctorIncludesPlatformChecks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.yaml")
 	rep := collectClientDoctor(path, "example.com:443", 0, true)
-	// terminal_proxy 是 collectTerminalProxyChecks 在所有 GOOS 上都会产出的检查名,
+	// terminal_proxy 是 platformcheck.TerminalProxyChecks 在所有 GOOS 上都会产出的检查名,
 	// 用它证明 collectPlatformChecks 的结果已经并入 doctor(darwin 额外检查不便跨平台断言)。
 	if got := findCheck(rep.Checks, "terminal_proxy"); got.Name == "" {
 		t.Fatalf("doctor checks missing terminal_proxy platform check: %+v", rep.Checks)

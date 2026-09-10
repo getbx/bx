@@ -1575,7 +1575,13 @@ Show Details 按钮高亮、Open Logs 打开的日志页渲染。
 第二个采集方);整轮共享一个 10 秒预算,每个依赖都吃同一个 ctx
 (`TestCollectDoctorFactsGivesEveryDepTheSameDeadline`)。`probe` 是**控制面的一次
 TCP 往返**不是完整握手,它与 launchctl 查询只在用户显式点击那次 GET(已过 owner 门)
-才发生。平台检查下沉 `internal/platformcheck`(叶子包,cli/Guardian 共用 `Collect`);
+才发生。生产那几个原语自己也吃这份 ctx,由
+`TestLiveDoctorDepsForwardTheCtxTheyAreHanded` 按**行为**钉住(对着一个会 accept
+但永不应答的 socket,250 毫秒的预算必须在预算内回来)—— 此前那条守卫注入的是测试
+自己的闭包,「采集把 ctx 递下去了」与「生产闭包接过它之后照旧用 context.Background」
+在它眼里一模一样。平台检查下沉 `internal/platformcheck`(cli/Guardian 共用 `Collect`;
+**它不是叶子包** —— 自己引 doctor/leakcheck/supervisor,纪律是**不许反向依赖
+guardian/cli/install**,采集包被它的消费方引就成环);
 `internal/protectionstate` 同理——darwin 上 leakcheck 测试引 guardian、guardian 引
 platformcheck、platformcheck 又用 leakcheck 判据,首尾成环,下沉后「两边常量还一样」
 那条字面量守卫**退场**,漂移在构造上不再可能。Diagnostics 窗口现两页(Logs /
@@ -1584,7 +1590,9 @@ Checks),Checks 只由显式点击喂数据(`TestMacMenuDoctorPageIsFedByFetchDoc
 Configuration:`servers add` 同名 409、名字可省略时 Guardian 用 `setup.LinkHost`
 推导(认 `bx://` 换壳);旧 Guardian 上 Replace Configuration 仍留作降级路。新增
 `TestMacMenuShellOutsStayOnTheAllowlist`:shell-out 只许落在 spec §1 那七个函数。**真机
-未验**:Checks 页与 `sudo bx doctor --json --skip-probe` 逐条对比、Add Server 三种结局、两页布局。
+未验**:Checks 页与 `sudo bx doctor --json --skip-probe` 逐条对比(**Guardian 那份
+永远会探测**,它没有 `--skip-probe` 这个概念,故 Checks 页比 CLI 那份多一行 `probe`
+是预期的,不是漂移)、Add Server 三种结局、两页布局。
 
 ## 读源码的守卫:三种处置(2026-08-31)
 
