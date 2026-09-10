@@ -3,6 +3,7 @@ package guardian
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/doctor"
 )
@@ -54,7 +56,7 @@ func fakeDoctorFacts(t *testing.T, calls *int) DoctorFactsFunc {
 // 与 /v1/rules、/v1/logs 同一道门。
 func TestDoctorEndpointRequiresOwnerOrRoot(t *testing.T) {
 	calls := 0
-	handler := doctorHandler(fakeDoctorFacts(t, &calls), "/etc/bx/config.yaml", 501, func() Status { return Status{} })
+	handler := doctorHandler(fakeDoctorFacts(t, &calls), "/etc/bx/config.yaml", 501, func() Status { return Status{} }, doctorTimeout)
 	for _, tc := range []struct {
 		name string
 		uid  uint32
@@ -82,7 +84,7 @@ func TestDoctorEndpointRequiresOwnerOrRoot(t *testing.T) {
 // 应答就是 doctor.Report 的 JSON —— 与 bx doctor --json 同形状,菜单与 agent 按名字取。
 func TestDoctorEndpointReturnsTheJudgedReport(t *testing.T) {
 	calls := 0
-	handler := doctorHandler(fakeDoctorFacts(t, &calls), "/etc/bx/config.yaml", 501, func() Status { return Status{} })
+	handler := doctorHandler(fakeDoctorFacts(t, &calls), "/etc/bx/config.yaml", 501, func() Status { return Status{} }, doctorTimeout)
 	w := httptest.NewRecorder()
 	handler(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/doctor", nil), 501, true))
 	if w.Code != http.StatusOK {
@@ -111,7 +113,7 @@ func TestDoctorEndpointReturnsTheJudgedReport(t *testing.T) {
 
 func TestDoctorEndpointReportsWhenNotWired(t *testing.T) {
 	w := httptest.NewRecorder()
-	doctorHandler(nil, "/etc/bx/config.yaml", 501, func() Status { return Status{} })(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/doctor", nil), 501, true))
+	doctorHandler(nil, "/etc/bx/config.yaml", 501, func() Status { return Status{} }, doctorTimeout)(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/doctor", nil), 501, true))
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("未接线 = %d, want 501", w.Code)
 	}
@@ -164,7 +166,7 @@ func TestCollectDoctorFactsProbeOutcomes(t *testing.T) {
 	path := doctorTestConfig(t)
 	ok := collectDoctorFactsWith(context.Background(), path, Status{}, doctorCollectorDeps{
 		sock: deadSock(t),
-		probe: func(host string, port int) (probeOutcome, error) {
+		probe: func(_ context.Context, host string, port int) (probeOutcome, error) {
 			return probeOutcome{Reachable: true, RTTMS: 42}, nil
 		},
 	})
@@ -173,7 +175,7 @@ func TestCollectDoctorFactsProbeOutcomes(t *testing.T) {
 	}
 	bad := collectDoctorFactsWith(context.Background(), path, Status{}, doctorCollectorDeps{
 		sock: deadSock(t),
-		probe: func(host string, port int) (probeOutcome, error) {
+		probe: func(_ context.Context, host string, port int) (probeOutcome, error) {
 			return probeOutcome{Reachable: false, Error: "connection refused"}, nil
 		},
 	})
@@ -181,8 +183,10 @@ func TestCollectDoctorFactsProbeOutcomes(t *testing.T) {
 		t.Fatalf("不通 = %+v", bad.Probe)
 	}
 	broken := collectDoctorFactsWith(context.Background(), path, Status{}, doctorCollectorDeps{
-		sock:  deadSock(t),
-		probe: func(host string, port int) (probeOutcome, error) { return probeOutcome{}, context.DeadlineExceeded },
+		sock: deadSock(t),
+		probe: func(_ context.Context, host string, port int) (probeOutcome, error) {
+			return probeOutcome{}, context.DeadlineExceeded
+		},
 	})
 	if broken.Probe == nil || broken.Probe.Status != "warn" {
 		t.Fatalf("探不出来(不是不通)= %+v", broken.Probe)
@@ -225,4 +229,92 @@ func TestDoctorCapabilityIsDeclaredAndPinned(t *testing.T) {
 		}
 	}
 	t.Fatalf("能力清单里没有 %q:%v", CapabilityDoctor, GuardianCapabilities())
+}
+
+// **一份预算,每一个会等的依赖都要吃到它。**
+//
+// 这条守的不是「handler 建了个 10 秒的 ctx」(那句话建一次就永远成立),而是
+// 「采集里每一个原语真的拿到了它」—— 复审抓到的正是后者:ctx 建了,却只传给了
+// 平台检查那一个,而探测(客户端超时 12 秒,比整轮预算还长)与问 launchd
+// (`GuardianActive` 用 context.Background(),压根没有超时)各走各的钟。
+// 于是那个常量只是一句注释,而一次卡住的 `launchctl` 会坐在 daemon 的关机路径上。
+//
+// 判据是**看到的截止时刻**而不是「有没有截止时刻」:后者对一个自己新建
+// `context.WithTimeout` 的依赖照样成立,而那正是「各走各的钟」的写法。
+func TestCollectDoctorFactsGivesEveryDepTheSameDeadline(t *testing.T) {
+	seen := map[string]time.Time{}
+	record := func(name string, ctx context.Context) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("%s 拿到的 ctx 没有截止时刻 —— 整轮那份预算没传到它这里", name)
+			return
+		}
+		seen[name] = deadline
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	want, _ := ctx.Deadline()
+	collectDoctorFactsWith(ctx, doctorTestConfig(t), Status{}, doctorCollectorDeps{
+		sock: deadSock(t),
+		probe: func(ctx context.Context, host string, port int) (probeOutcome, error) {
+			record("probe", ctx)
+			return probeOutcome{Reachable: true, RTTMS: 1}, nil
+		},
+		platform: func(ctx context.Context) []doctor.Check { record("platform", ctx); return nil },
+		service:  func(ctx context.Context) []doctor.Check { record("service", ctx); return nil },
+		dial: func(ctx context.Context, path string) error {
+			record("dial", ctx)
+			return errors.New("dead")
+		},
+	})
+	for _, name := range []string{"probe", "platform", "service", "dial"} {
+		got, ok := seen[name]
+		if !ok {
+			t.Fatalf("%s 这个依赖压根没被调用,守卫读不懂现在的采集流程", name)
+		}
+		if !got.Equal(want) {
+			t.Errorf("%s 的截止时刻 %v ≠ 整轮那份 %v —— 它在用自己的钟", name, got, want)
+		}
+	}
+}
+
+// 卡住的依赖不许让 handler 活过它的预算 —— daemon 的 Shutdown 要等在飞的 handler。
+func TestDoctorHandlerDoesNotOutliveItsBudget(t *testing.T) {
+	collect := func(ctx context.Context, configPath string, status Status) doctor.Facts {
+		<-ctx.Done() // 一个只会在预算到期时才回来的依赖
+		return doctor.Facts{Version: "test", ConfigPath: configPath}
+	}
+	handler := doctorHandler(collect, "/etc/bx/config.yaml", 501, func() Status { return Status{} }, 50*time.Millisecond)
+	done := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		handler(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/doctor", nil), 501, true))
+		done <- w.Code
+	}()
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Fatalf("预算到期仍应给出一份如实的报告,状态码 = %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler 活过了它的预算 —— 采集没有吃到那个 ctx")
+	}
+}
+
+// 生产接线给的是真预算,不是某个随手写的数(budget 是参数,写错不会有人报错)。
+func TestNewLocalAPIGivesDoctorTheRealBudget(t *testing.T) {
+	var left time.Duration
+	api := NewLocalAPI(&fakeController{}, LocalAPIOptions{
+		OwnerUID: 501, ConfigPath: "/etc/bx/config.yaml",
+		DoctorFacts: func(ctx context.Context, configPath string, status Status) doctor.Facts {
+			if deadline, ok := ctx.Deadline(); ok {
+				left = time.Until(deadline)
+			}
+			return doctor.Facts{Version: "test", ConfigPath: configPath}
+		},
+	})
+	api.ServeHTTP(httptest.NewRecorder(), withPeer(httptest.NewRequest(http.MethodGet, "/v1/doctor", nil), 501, true))
+	if left <= doctorTimeout-2*time.Second || left > doctorTimeout {
+		t.Fatalf("采集拿到的剩余预算 %v,与 doctorTimeout %v 对不上", left, doctorTimeout)
+	}
 }

@@ -390,6 +390,15 @@ func RehijackControl(sockPath string) (string, error) {
 // 客户端超时必须比服务端的 probeTimeout(8 秒)长,否则拿到的永远是自己的超时,
 // 而服务端那个上限一次都不会生效 —— 与菜单对 /v1/update-check 同一条纪律。
 func ProbeControl(sockPath, host string, port int) (ProbeResult, error) {
+	return ProbeControlContext(context.Background(), sockPath, host, port)
+}
+
+// ProbeControlContext 是 ProbeControl 的带 ctx 版本 —— 调用方**自己有一份预算**时
+// 用它。上面那个 12 秒的客户端超时是「让服务端那 8 秒先生效」的下限,不是上限:
+// Guardian 的 /v1/doctor 整轮只有 10 秒,光这一次探测就能把它撑破,而它跑在
+// daemon 的 shutdown 要等的那批 handler 里 —— **停止路径不许因为别的事没做完
+// 而变慢**。ctx 只会让它更早返回,永远不会让它等更久。
+func ProbeControlContext(ctx context.Context, sockPath, host string, port int) (ProbeResult, error) {
 	client := controlHTTPClient(sockPath)
 	client.Timeout = probeTimeout + 4*time.Second
 	defer client.CloseIdleConnections()
@@ -397,7 +406,12 @@ func ProbeControl(sockPath, host string, port int) (ProbeResult, error) {
 	if err != nil {
 		return ProbeResult{}, err
 	}
-	resp, err := client.Post("http://local/v0/probe", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://local/v0/probe", bytes.NewReader(body))
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
 		return ProbeResult{}, err
 	}
