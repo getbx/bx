@@ -145,6 +145,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             row.orientation = .horizontal
             row.alignment = .firstBaseline
             row.spacing = 8
+            row.translatesAutoresizingMaskIntoConstraints = false
             let badge = NSTextField(labelWithString: check.status.uppercased())
             badge.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
             badge.textColor = statusColor(check.status)
@@ -159,9 +160,18 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
                 // 少了 toolTip 那段文字就**永久不可见**。
                 detail.lineBreakMode = .byTruncatingTail
                 detail.toolTip = check.detail
+                // **截断要能发生,得先有个边界让它去撞。** 抗压缩降到最低(badge 与
+                // title 都是 .required 抗拉伸,于是让位的一定是这一列),再由下面那条
+                // 行宽约束给出边界 —— 与本文件 renderLogs 里那个 wrappingLabel 同一
+                // 条理由:「少了它会按自己的内在宽度摊成一行」,只是那边摊出去的后果
+                // 是折行错、这边是整行横向溢出到一个没有横向滚动条的滚动视图外面。
+                detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 row.addArrangedSubview(detail)
             }
             stack.addArrangedSubview(row)
+            // 行宽跟着栈走(减去左右 18pt 的 edgeInsets),与 renderLogs 里那条
+            // `text.widthAnchor…constant: -36` 同一个写法。
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -36).isActive = true
             if !check.hint.isEmpty {
                 let h = hint("→ " + check.hint)
                 h.textColor = .tertiaryLabelColor
