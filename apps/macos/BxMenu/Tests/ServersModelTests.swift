@@ -249,6 +249,33 @@ struct ServersModelTests {
         expect(onlyAdded.contains("Added vps2") && onlyAdded.contains("Use"), "只加了:\(onlyAdded)")
     }
 
+    // 加服务器那条路上的两种常见失败必须是人话,不是协议码。
+    static func testAddServerFailureCodesBecomeSentences() {
+        guard let exists = addServerFailureMessage(code: "servers_name_exists", status: 409) else {
+            return fail("同名 409 没有对应的句子 —— 用户会读到 code=servers_name_exists")
+        }
+        expect(exists.contains("already in your list"), "同名那句没说清是名字撞了:\(exists)")
+        expect(!exists.contains("servers_name_exists"), "那句话里还带着失败码:\(exists)")
+        expect(!exists.contains("409"), "那句话里还带着 HTTP 状态码:\(exists)")
+
+        guard let bad = addServerFailureMessage(code: "servers_add_failed", status: 400) else {
+            return fail("加不上那条 400 没有对应的句子")
+        }
+        // **必须说到名字里能用哪些字符** —— 这条路上最常见的触发就是名字带空格,
+        // 而「加不上」本身给不了下一步。
+        expect(bad.contains("Check the link"), "没提链接:\(bad)")
+        expect(bad.lowercased().contains("hyphens"), "没说名字里能用哪些字符:\(bad)")
+        expect(!bad.contains("servers_add_failed"), "那句话里还带着失败码:\(bad)")
+    }
+
+    // 认不出的码返回 nil,让调用方退回通用漏斗。**编一句解释比不解释更糟。**
+    static func testUnknownAddServerFailureFallsBackToTheGenericFunnel() {
+        expect(addServerFailureMessage(code: "servers_switch_busy", status: 409) == nil,
+            "别的码不该被这张表认领 —— 它会把一句不相干的解释贴到另一种失败上")
+        expect(addServerFailureMessage(code: nil, status: 500) == nil, "没有码就没有句子")
+        expect(addServerFailureMessage(code: "", status: 500) == nil, "空码不是一个码")
+    }
+
     static func main() {
         testServerListDecodesWhatGuardianSends()
         testServerListDecodesAddedAndToleratesItsAbsence()
@@ -272,6 +299,8 @@ struct ServersModelTests {
         testFreshThroughputHasNoAgeSuffix()
         testRelativeAge()
         testReplaceConfigurationStaysInTheMenuOnlyWithoutServersWindow()
+        testAddServerFailureCodesBecomeSentences()
+        testUnknownAddServerFailureFallsBackToTheGenericFunnel()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 一个没被脚本登记的套件
         // 退出码也是 0(本仓库实测栽过)。
         if failures == 0 {

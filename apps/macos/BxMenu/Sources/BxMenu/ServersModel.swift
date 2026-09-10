@@ -245,6 +245,29 @@ func addServerOutcomeMessage(added: String, switched: ServerSwitchResult?) -> St
         + "Press Use in Servers… to try again, or turn bx off and on."
 }
 
+/// 把 Add Server 这条路上的失败**码**翻成一句用户做得了的话。
+///
+/// **认不出的码返回 nil**,由调用方退回那个通用漏斗(它至少诚实地说出了状态码)。
+/// 这个不对称是刻意的:多映射一条错的比不映射糟得多 —— 一句像模像样的解释会让
+/// 用户去改一件没坏的东西,而通用文案只是不够好懂。
+///
+/// `status` 今天不参与判定(两个码各自唯一)。**它仍然是参数**,因为码是可以复用
+/// 的:同一个 `servers_add_failed` 将来若也出现在别的状态上,判据要能分开,而那时
+/// 才想起来要传状态码就晚了 —— 调用点已经不在手边。
+func addServerFailureMessage(code: String?, status: Int?) -> String? {
+    _ = status
+    switch code {
+    case "servers_name_exists":
+        return "A server with that name is already in your list. "
+            + "Pick another name, or use it from Servers…."
+    case "servers_add_failed":
+        return "bx could not add that server. Check the link, and use only letters, digits, "
+            + "dots, underscores or hyphens in the name."
+    default:
+        return nil
+    }
+}
+
 /// 「测一下现在从哪出去」的结果。
 ///
 /// **这次探测由菜单自己发,不是 Guardian 发。** 菜单以普通用户身份跑,它的流量

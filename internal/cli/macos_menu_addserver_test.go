@@ -29,9 +29,15 @@ func TestMacMenuAddServerAddsThenSwitchesWithoutPrivilege(t *testing.T) {
 	}
 	link := strings.Index(body, "promptForClientLink(")
 	add := strings.Index(body, "GuardianClient().addServer(name:")
-	sw := strings.Index(body, "self.switchServer(name: list.added")
+	sw := strings.Index(body, "self.switchServer(name: target")
 	if link < 0 || add < 0 || sw < 0 || link > add || add > sw {
 		t.Fatalf("顺序要是 链接 → add → 用 added 切换(link=%d add=%d switch=%d)", link, add, sw)
+	}
+	// **target 只许从应答里的 added 来。** 它存在的唯一理由是旧 Guardian 不发那个
+	// 字段(那时退回这次请求自己发出去的名字),不是「客户端再推一遍链接」——
+	// 后者就是第二份判据,而两份判据迟早给出两个名字。
+	if !strings.Contains(body, "let target = list.added.isEmpty ? name : list.added") {
+		t.Fatal("target 不是从 list.added 派生的 —— 要么少了旧 Guardian 那条退路,要么客户端自己又推了一遍名字")
 	}
 	// 这条路全程只经 owner 门的 Guardian 端点。**一个新的提权出口不会让任何
 	// 既有测试转红** —— 它只会让用户在换服务器时莫名其妙地被要求输密码。
@@ -45,6 +51,12 @@ func TestMacMenuAddServerAddsThenSwitchesWithoutPrivilege(t *testing.T) {
 	if !strings.Contains(body, "showGuardianFailure(title:") {
 		t.Fatal("add 失败要走同一个失败漏斗")
 	}
+	// **失败码要先翻成一句话。** `code=servers_name_exists` 说的是协议;而这条路上
+	// 最常见的两种失败(名字撞车、名字里有空格)恰恰是用户改一下就能过的。措辞出自
+	// 纯函数(ServersModelTests 钉住内容),这里只钉「它真的接在这条路上」。
+	if !strings.Contains(body, "addServerFailureMessage(") {
+		t.Error("add 失败没经 addServerFailureMessage —— 用户会读到一个原始失败码")
+	}
 	// **这条路上的结局也不许合成一句「已添加并切换」。** 标题按服务端答的
 	// `applied` 分支、正文由那个纯函数生成 —— 两行写死的字面量既不会有编译错误,
 	// 也不会让任何 Swift 测试转红(那个纯函数只有它自己的单测在调),而它产生的
@@ -53,7 +65,7 @@ func TestMacMenuAddServerAddsThenSwitchesWithoutPrivilege(t *testing.T) {
 	if !strings.Contains(body, "outcome?.applied == true ?") {
 		t.Error("标题没有按 outcome?.applied 分支 —— 切没成也会显示成「已切换」")
 	}
-	const outcomeCall = "addServerOutcomeMessage(added: list.added, switched: "
+	const outcomeCall = "addServerOutcomeMessage(added: target, switched: "
 	call := strings.Index(body, outcomeCall)
 	if call < 0 {
 		t.Fatal("正文不是 addServerOutcomeMessage(added: list.added, switched:) 生成的 —— " +
