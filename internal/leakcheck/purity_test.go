@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -49,10 +50,9 @@ func TestLeakcheckPackageStaysPure(t *testing.T) {
 			if why, bad := bannedNetImport(path); bad {
 				t.Errorf("%s import 了 %q:本包必须保持纯判据 —— %s", name, path, why)
 			}
-			if strings.HasPrefix(path, "github.com/getbx/bx/internal/") &&
-				path != allowedInternalDep {
-				t.Errorf("%s import 了 %q:纯判据只允许依赖 %s(三值枚举的叶子包),"+
-					"依赖控制面/安装/监督任何一个包都会把它拖回不可测的位置", name, path, allowedInternalDep)
+			if _, ok := allowedInternalDeps[path]; strings.HasPrefix(path, "github.com/getbx/bx/internal/") && !ok {
+				t.Errorf("%s import 了 %q:纯判据只允许依赖这几个叶子包 %v,"+
+					"依赖控制面/安装/监督任何一个包都会把它拖回不可测的位置", name, path, allowedInternalDepNames())
 			}
 		}
 	}
@@ -61,9 +61,24 @@ func TestLeakcheckPackageStaysPure(t *testing.T) {
 	}
 }
 
-// allowedInternalDep 是本包唯一允许的仓库内依赖:一个只放三值枚举、
-// 自己不 import 本仓库任何东西的叶子包。
-const allowedInternalDep = "github.com/getbx/bx/internal/tristate"
+// allowedInternalDeps 是本包允许的仓库内依赖,**每一个都必须是叶子包**:只放值
+// 或枚举、自己不 import 本仓库任何东西。理由逐条写在这里 —— 名单越长它守得越少,
+// 加一项必须是有意识的动作。
+var allowedInternalDeps = map[string]string{
+	"github.com/getbx/bx/internal/tristate": "三值枚举",
+	"github.com/getbx/bx/internal/protectionstate": "Guardian 那六个保护状态字面量。" +
+		"判据本来抄了一份、再靠一条引 guardian 的测试钉住「两边还一样」;" +
+		"下沉之后用的就是同一个常量,漂移在构造上不可能,那条测试也随之退场",
+}
+
+func allowedInternalDepNames() []string {
+	names := make([]string, 0, len(allowedInternalDeps))
+	for path := range allowedInternalDeps {
+		names = append(names, path)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // bannedNetImport 挡住整棵 `net` 子树,**只留一个明写的例外 `net/netip`**。
 //
@@ -117,7 +132,7 @@ func TestLeakcheckHasNoTransitiveControlPlaneDependency(t *testing.T) {
 		t.Fatal("一个内部依赖都没列出来 —— go list 的输出格式变了,守卫已经读不懂它")
 	}
 	for _, dep := range internal {
-		if dep != allowedInternalDep && dep != "github.com/getbx/bx/internal/leakcheck" {
+		if _, ok := allowedInternalDeps[dep]; !ok && dep != "github.com/getbx/bx/internal/leakcheck" {
 			t.Errorf("传递依赖了 %q。判据必须留在能被表驱动测试完整覆盖的位置,"+
 				"而一条通往控制面的依赖链会把它拖回「判得对」与「接线对」重新纠缠在一起的地方 ——"+
 				"本仓库的全部事故都在后者。完整依赖:%v", dep, internal)

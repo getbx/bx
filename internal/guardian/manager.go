@@ -9,16 +9,26 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/getbx/bx/internal/protectionstate"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
+// **值本身住在叶子包 internal/protectionstate**,这里只是本包惯用的名字。
+//
+// 下沉的理由写在那个包的头上:纯判据包 internal/leakcheck 也要按这六个值判事,
+// 而它按纪律不许 import guardian —— 抄一份字面量再拿测试钉住「两边还一样」
+// 曾经是唯一的办法,直到 Guardian 自己开始 import platformcheck(它在 darwin 上
+// 要用 leakcheck),那条测试边把整棵树变成一个 import cycle。用同一个常量之后
+// 漂移在构造上不可能。
+//
+// 别把这几行改回字面量:那会悄悄把两边重新拆成两份,而没有任何东西会报错。
 const (
-	ProtectionOff            = "off"
-	ProtectionStarting       = "starting"
-	ProtectionRecovering     = "recovering"
-	ProtectionProtected      = "protected"
-	ProtectionBlocked        = "blocked"
-	ProtectionNeedsAttention = "needs_attention"
+	ProtectionOff            = protectionstate.Off
+	ProtectionStarting       = protectionstate.Starting
+	ProtectionRecovering     = protectionstate.Recovering
+	ProtectionProtected      = protectionstate.Protected
+	ProtectionBlocked        = protectionstate.Blocked
+	ProtectionNeedsAttention = protectionstate.NeedsAttention
 )
 
 type barrierProof uint8

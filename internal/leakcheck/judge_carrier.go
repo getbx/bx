@@ -1,6 +1,10 @@
 package leakcheck
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/getbx/bx/internal/protectionstate"
+)
 
 // judgeCarrier 回答「**谁在拿你的流量**」。
 //
@@ -126,11 +130,14 @@ func bxRunningVerdict(local LocalFacts) runningState {
 		return isRunning
 	}
 	switch strings.ToLower(strings.TrimSpace(local.BXProtection)) {
-	case "protected", "blocked", "needs_attention":
+	// **用的是 Guardian 那六个值本身**(叶子包 internal/protectionstate),不是
+	// 抄一份字面量 —— 抄一份就要另有一条守卫钉住「两边还一样」,而那条守卫
+	// 得引 guardian,在这个纯判据包里是行不通的(它做 I/O,且会成环)。
+	case protectionstate.Protected, protectionstate.Blocked, protectionstate.NeedsAttention:
 		// 三者都意味着「保护本该是开着的」。blocked 尤其:kill-switch 生效时
 		// **更不该**有公网流量漏出去,此刻发现流量在走别的路是最严重的那种。
 		return isRunning
-	case "off", "":
+	case protectionstate.Off, "":
 		return notRunning
 	default:
 		// starting / recovering 是过渡态,几秒后自己会变;别的值是这一版没见过的。
