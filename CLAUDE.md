@@ -1594,6 +1594,18 @@ Configuration:`servers add` 同名 409、名字可省略时 Guardian 用 `setup.
 永远会探测**,它没有 `--skip-probe` 这个概念,故 Checks 页比 CLI 那份多一行 `probe`
 是预期的,不是漂移)、Add Server 三种结局、两页布局。
 
+**真机验收当场抓到两条判据缺陷(2026-09-10,已修)**:① **关掉保护被说成故障** ——
+用户 `bx down` 之后 `guardian_dns` 报 `fail` 并 hint「sudo bx up」,而 DNS 还给系统
+正是关闭态该有的样子;新 Checks 页把这条红字顶在最上面、合计写「1 failed」,一台
+完全正常的机器被说成坏的(与 Tailscale advisory 当初同一形状)。判据当时只看
+state/managed,没有意图这一项。现 `doctor.GuardianFact` 带 `Desired`,`DNSCheck` 吃它:
+关着且已还给系统 ⇒ ok;**关着却仍占着 DNS ⇒ warn**(那是调谐环 restore_dns 要处理的
+真残留,不许被这次豁免一起判绿);意图问不出来时按「要保护」判(宁可多报,不漏
+「DNS 被别人接管」)。② **ok 的行在教人修没坏的东西** —— `ok service_active` 底下挂着
+「→ sudo bx up」,两个渲染层都是「hint 非空就画」。现抹在 `Report.AddReport` 这个
+**唯一入口**里(`AddCheck` 也走它),不靠十几个产出点各自自觉。golden 新增
+`desired_off` 一例把关闭态逐字节钉住,原有两例逐字节未变。
+
 ## 读源码的守卫:三种处置(2026-08-31)
 
 全仓真正读源码的测试函数 **60 → 57**,而**这个数字本身比想象的诚实得多**:

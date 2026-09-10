@@ -16,7 +16,11 @@ func TestDoctorDNSStateConstantsMatchGuardian(t *testing.T) {
 	for _, pair := range []struct{ got, want string }{
 		{doctor.DNSStateUnknown, string(guardian.DNSUnknown)},
 		{doctor.DNSStateManaged, string(guardian.DNSManaged)},
+		{doctor.DNSStateUnmanaged, string(guardian.DNSUnmanaged)},
 		{doctor.DNSStateNotNeeded, string(guardian.DNSNotNeeded)},
+		// 意图那两个值同样跨包对齐:doctor 判 DNS 要它,而 doctor 不能 import guardian。
+		{doctor.DesiredOn, string(guardian.DesiredOn)},
+		{doctor.DesiredOff, string(guardian.DesiredOff)},
 	} {
 		if pair.got != pair.want {
 			t.Fatalf("doctor 的 DNS 常量 %q ≠ guardian 的 %q", pair.got, pair.want)

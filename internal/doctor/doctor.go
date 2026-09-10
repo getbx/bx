@@ -29,10 +29,21 @@ type Report struct {
 }
 
 func (r *Report) AddCheck(name, status, detail, hint string) {
-	r.Checks = append(r.Checks, Check{Name: name, Status: status, Detail: detail, Hint: hint})
+	r.AddReport(Check{Name: name, Status: status, Detail: detail, Hint: hint})
 }
 
-func (r *Report) AddReport(c Check) { r.Checks = append(r.Checks, c) }
+// AddReport 是每一条 check 进报告的**唯一入口**(AddCheck 也走它)。
+//
+// **ok 的行不带 hint。** hint 是「该怎么办」,而一条通过的检查没有什么要办的 ——
+// 2026-09-10 真机验收:`ok service_active` 底下挂着「→ sudo bx up」,CLI 文本路径
+// 与菜单 Checks 页都是「hint 非空就画」,于是绿色的行在教人去修一件没坏的东西。
+// 抹在这一个入口里而不是靠十几个产出点各自自觉 —— 漏一个不会有人发现。
+func (r *Report) AddReport(c Check) {
+	if c.Status == "ok" {
+		c.Hint = ""
+	}
+	r.Checks = append(r.Checks, c)
+}
 
 func (r Report) HasFail() bool {
 	for _, c := range r.Checks {
@@ -59,12 +70,21 @@ type GuardianRulesFact struct {
 	Err        string
 }
 
-// DNS 状态的三个值与 guardian.DNSState 的常量逐字相同(跨包守卫钉在 internal/cli)。
+// DNS 状态的四个值与 guardian.DNSState 的常量逐字相同(跨包守卫钉在 internal/cli)。
 // 本包不能 import guardian —— 它要被 guardian 调,成环。
 const (
 	DNSStateUnknown   = "unknown"
 	DNSStateManaged   = "managed"
+	DNSStateUnmanaged = "unmanaged"
 	DNSStateNotNeeded = "not_needed"
+)
+
+// 用户意图的两个值与 guardian.DesiredState 逐字相同(同一条跨包守卫)。
+// **判据需要它**:同一份 DNS 事实,在「用户要保护」与「用户刚把它关掉」之下
+// 是两个相反的结论(见 DNSCheck)。
+const (
+	DesiredOn  = "on"
+	DesiredOff = "off"
 )
 
 type DNSFact struct {
@@ -83,6 +103,9 @@ type RecoveryFact struct {
 type GuardianFact struct {
 	DNS      DNSFact
 	Recovery RecoveryFact
+	// Desired 是用户的意图("on"/"off";空 = 这份事实没带意图,见 DNSCheck)。
+	// 它不是 DNS 的事实,而是判 DNS 那条结论时**必须**知道的另一半。
+	Desired string
 }
 
 // Facts 是判据的全部输入:每一项都是采到的事实或「没采到 + 原因」,没有一项是判断。
@@ -196,7 +219,7 @@ func Judge(f Facts) Report {
 			// doctor,进的只有 DNS(空 ⇒ unknown)与 Recovery(failed/unknown/recovery_unavailable)。
 			g = &GuardianFact{Recovery: RecoveryFact{State: "failed", Stage: "unknown", ErrorCode: "recovery_unavailable"}}
 		}
-		rep.AddReport(DNSCheck(g.DNS))
+		rep.AddReport(DNSCheck(g.DNS, g.Desired))
 		rep.AddReport(RecoveryCheck(g.Recovery))
 	}
 	for _, c := range f.Platform {
@@ -230,7 +253,12 @@ func UDPPolicy(mode string) (status, detail, hint string) {
 	}
 }
 
-func DNSCheck(d DNSFact) Check {
+// DNSCheck 判 DNS 归谁。**desired 是必需的输入,不是可选的上下文**:同一份
+// 「DNS 不归 bx」的事实,在用户要保护时是故障,在用户刚把保护关掉时恰恰是正确
+// 状态。2026-09-10 真机验收踩的就是这个 —— 关掉保护之后这条报 fail、hint 叫人
+// `sudo bx up`,而新的 Checks 页把它顶在最上面写「1 failed」,一台完全正常的
+// 机器被说成坏的(与 Tailscale advisory 当初那次同一个形状)。
+func DNSCheck(d DNSFact, desired string) Check {
 	state := d.State
 	if state == "" {
 		state = DNSStateUnknown
@@ -239,13 +267,29 @@ func DNSCheck(d DNSFact) Check {
 	if d.Service != "" {
 		detail += " service=" + d.Service
 	}
-	if state == DNSStateManaged && d.Managed {
-		return Check{Name: "guardian_dns", Status: "ok", Detail: detail}
-	}
-	// NotNeeded 是健康态(linux:数据面自己管,dns_managed 如实为 false)。
+	// NotNeeded 是「本平台没有这件事」(linux:数据面自己管,dns_managed 如实为
+	// false),与用户意图无关,先判。
 	if state == DNSStateNotNeeded {
 		return Check{Name: "guardian_dns", Status: "ok", Detail: detail}
 	}
+	if desired == DesiredOff {
+		// 关着却仍占着 DNS 是**真的残留**(调谐环的 restore_dns 正是为它存在的),
+		// 不许被这条豁免一起判成 ok。
+		if d.Managed {
+			return Check{
+				Name: "guardian_dns", Status: "warn",
+				Detail: detail + " —— bx 关着,DNS 却还归 bx",
+				Hint:   "sudo bx down",
+			}
+		}
+		return Check{Name: "guardian_dns", Status: "ok", Detail: detail + " —— bx 关着,DNS 已还给系统"}
+	}
+	if state == DNSStateManaged && d.Managed {
+		return Check{Name: "guardian_dns", Status: "ok", Detail: detail}
+	}
+	// 意图问不出来(desired 为空)时按「要保护」判:这个字段只由 Guardian 填,
+	// 而 Guardian 总是知道自己的 desired,空值只出现在旧版事实与测试里。那时
+	// 宁可多报一次,也不能把「DNS 被别人接管了」漏掉 —— 两种错的代价不对称。
 	return Check{Name: "guardian_dns", Status: "fail", Detail: detail, Hint: "sudo bx up; bx logs"}
 }
 
