@@ -313,12 +313,16 @@ func TestServerAddNeverHotSwitches(t *testing.T) {
 
 // 坏输入在写盘之前挡掉,并且**如实报错** —— 静默成功会让界面显示「已添加」而
 // 配置一个字节没变。
+//
+// **省略名字本身不再是坏输入**(Task 6 起按链接推导,见
+// TestAddServerDerivesTheNameWhenOmitted);这里改为「名字与链接都推不出来」——
+// 一个连主机都解不出的 link,推导必然失败。
 func TestServerAddRejectsBadInput(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		req  serversRequest
 	}{
-		{"没有名字", serversRequest{Action: "add", Link: "vless://x@203.0.113.30:443"}},
+		{"名字省略且链接推不出主机", serversRequest{Action: "add", Link: "vless://"}},
 		{"没有链接", serversRequest{Action: "add", Name: "nagoya"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
