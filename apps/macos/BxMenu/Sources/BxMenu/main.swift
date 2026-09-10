@@ -1125,19 +1125,27 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return controller
     }()
 
-    /// Diagnostics 窗口(本期只有日志页)。归档出口接回原来那条终端路。
+    /// Diagnostics 窗口(Checks 页 + Logs 页)。归档出口接回原来那条终端路;
+    /// Checks 页的「Run again」接回同一条按需拉取,不另开一条路。
     private lazy var diagnosticsWindow: DiagnosticsWindowController = {
         let controller = DiagnosticsWindowController()
         controller.onExportDiagnostics = { [weak self] in
             self?.exportDiagnostics()
         }
+        controller.onRunAgain = { [weak self] in
+            self?.openDiagnosticsChecks()
+        }
         return controller
     }()
 
-    /// 有一次日志拉取正在飞。与 `rulesFetchInFlight` 同一个模式:这条路只由用户
-    /// 显式触发(Open Logs / 弹窗里的 Show Details),重叠只可能来自双击连点 ——
-    /// 而重叠在这里比在规则那边更难看:两次成功会把日志窗口连开两遍,两次失败会
-    /// 连弹两个「Logs are not available」。
+    /// 有一次 Diagnostics 拉取正在飞(日志或 checks,**共用一个标志**)。与
+    /// `rulesFetchInFlight` 同一个模式:这条路只由用户显式触发(Open Logs / 弹窗里的
+    /// Show Details / Check for Problems / Checks 页的 Run again),重叠只可能来自
+    /// 双击连点 —— 而重叠在这里比在规则那边更难看:两次成功会把窗口连开两遍,两次
+    /// 失败会连弹两个「… are not available」。
+    /// 两条路共用一个标志是刻意的:它们开的是**同一个窗口**,各用各的标志会让
+    /// 「点了 Checks、紧接着点 Open Logs」两次拉取同时落定,后到的那一页把先到的
+    /// 顶掉,而用户看不出发生了什么。
     private var diagnosticsFetchInFlight = false
 
     /// 拉一次 /v1/logs 再开窗口;拉不到就明说(这条路本身就是「看失败原因」的路,
@@ -1155,6 +1163,26 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.diagnosticsWindow.showLogs(report, highlightingCode: code)
                 case .failure(let error):
                     self.showMessage("Logs are not available", "bx could not read its logs: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// 拉一次 /v1/doctor 再开 Checks 页。**它让 Guardian 出网探测一次服务器**,所以只
+    /// 由用户点击触发(菜单项与 Run again),绝不放进任何定时器或刷新路径。
+    private func openDiagnosticsChecks() {
+        guard !diagnosticsFetchInFlight else { return }
+        diagnosticsFetchInFlight = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try GuardianClient().fetchDoctor() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.diagnosticsFetchInFlight = false
+                switch result {
+                case .success(let report):
+                    self.diagnosticsWindow.showChecks(report)
+                case .failure(let error):
+                    self.showMessage("Checks are not available", "bx could not run its checks: \(error.localizedDescription)")
                 }
             }
         }
@@ -1938,6 +1966,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func runDoctorFromMenu() {
+        // 这一版 Guardian 会自己算 doctor 就开 Checks 页;旧版退回终端那条归档路。
+        if doctorAvailable(capabilities: maintenanceReport?.capabilities) {
+            openDiagnosticsChecks()
+            return
+        }
         exportDiagnostics()
     }
 
