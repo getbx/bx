@@ -1568,6 +1568,24 @@ divergence、reconcile、protection_state、recovery、dns_state…… **全部�
 文案就改说「原因记在 bx 的日志里」而不是许诺一个找不到的按钮。**真机未验**:
 Show Details 按钮高亮、Open Logs 打开的日志页渲染。
 
+## `/v1/doctor` 与 Add Server:诊断面搬进 Guardian(2026-09-09)
+
+`/v1/doctor`(`internal/guardian/doctor.go`,能力 `CapabilityDoctor`)在 Guardian 进程内
+采集,喂同一个 `doctor.Judge`(与 `internal/cli` 的 `collectDoctorFacts` 同一份判据的
+第二个采集方);整轮共享一个 10 秒预算,每个依赖都吃同一个 ctx
+(`TestCollectDoctorFactsGivesEveryDepTheSameDeadline`)。`probe` 是**控制面的一次
+TCP 往返**不是完整握手,它与 launchctl 查询只在用户显式点击那次 GET(已过 owner 门)
+才发生。平台检查下沉 `internal/platformcheck`(叶子包,cli/Guardian 共用 `Collect`);
+`internal/protectionstate` 同理——darwin 上 leakcheck 测试引 guardian、guardian 引
+platformcheck、platformcheck 又用 leakcheck 判据,首尾成环,下沉后「两边常量还一样」
+那条字面量守卫**退场**,漂移在构造上不再可能。Diagnostics 窗口现两页(Logs /
+Checks),Checks 只由显式点击喂数据(`TestMacMenuDoctorPageIsFedByFetchDoctor` 钉住
+`fetchDoctor`/`openDiagnosticsChecks` 两处调用点)。**Add Server** 取代 Replace
+Configuration:`servers add` 同名 409、名字可省略时 Guardian 用 `setup.LinkHost`
+推导(认 `bx://` 换壳);旧 Guardian 上 Replace Configuration 仍留作降级路。新增
+`TestMacMenuShellOutsStayOnTheAllowlist`:shell-out 只许落在 spec §1 那七个函数。**真机
+未验**:Checks 页与 `sudo bx doctor --json --skip-probe` 逐条对比、Add Server 三种结局、两页布局。
+
 ## 读源码的守卫:三种处置(2026-08-31)
 
 全仓真正读源码的测试函数 **60 → 57**,而**这个数字本身比想象的诚实得多**:
