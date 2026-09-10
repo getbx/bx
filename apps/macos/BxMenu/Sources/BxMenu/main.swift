@@ -1058,8 +1058,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onDeploy = { [weak self] in
             self?.openDeployWindow()
         }
-        controller.onReplaceConfiguration = { [weak self] in
-            self?.replaceConfiguration()
+        controller.onAddServer = { [weak self] in
+            self?.addServerFromWindow()
         }
         return controller
     }()
@@ -1414,6 +1414,24 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+        switchServer(name: name) { outcome in
+            guard let outcome else { return }
+            let done = NSAlert()
+            // **热切没成功时不许说「已切换」** —— 判据在 ServersModel 的
+            // 纯函数里,由 Swift 套件钉住。
+            done.messageText = outcome.applied ? "Switched" : "Saved, but not applied yet"
+            done.informativeText = serverSwitchOutcomeMessage(result: outcome)
+            NSApp.activate(ignoringOtherApps: true)
+            done.runModal()
+        }
+    }
+
+    /// 无确认框的切换(确认在 confirmAndSwitchServer;Add Server 那条路的确认是
+    /// 它自己的第一步)。**切换逻辑只有这一份** —— 第二份拷贝会让两条路上的
+    /// in-flight 守卫、失败漏斗、刷新时机各自漂开。
+    /// completion 收到 nil 表示请求本身失败(已弹过失败漏斗)。
+    private func switchServer(name: String, completion: ((ServerSwitchResult?) -> Void)? = nil) {
+        guard !switchInFlight else { completion?(nil); return }
         // 换过去之后旧的探测结果就作废了 —— 留着它会让用户读到上一台的出口。
         exitIPProbe = .unknown
         switchInFlight = true
@@ -1424,20 +1442,62 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.switchInFlight = false
                 switch result {
                 case .success(let outcome):
-                    let alert = NSAlert()
-                    // **热切没成功时不许说「已切换」** —— 判据在 ServersModel 的
-                    // 纯函数里,由 Swift 套件钉住。
-                    alert.messageText = outcome.applied ? "Switched" : "Saved, but not applied yet"
-                    alert.informativeText = serverSwitchOutcomeMessage(result: outcome)
-                    NSApp.activate(ignoringOtherApps: true)
-                    alert.runModal()
+                    completion?(outcome)
                 case .failure(let error):
                     self.showGuardianFailure(title: "Could not switch server", error: error)
+                    completion?(nil)
                 }
                 // 用户刚做完动作,这一次刷新不许被丢掉。
                 self.refresh(userInitiated: true)
             }
         }
+    }
+
+    /// Servers 窗口的「Add Server…」:贴链接 → 起名(可空)→ Guardian add(同名 409)→ 用
+    /// 应答里的 added 热切换 → 一句结果。**全程不提权、不开终端**:两步都是 owner 门
+    /// 的 Guardian 端点(spec §4)。旧的那台留在清单里,随时能 Use 回去。
+    private func addServerFromWindow() {
+        guard let link = promptForClientLink(
+            title: "Add Server",
+            hint: "Paste the bx link for the new server. It will be added to your list and used right away.",
+            confirmTitle: "Add and Switch"
+        ) else { return }
+        let name = promptForServerName()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try GuardianClient().addServer(name: name, link: link) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let list):
+                    self.lastServers = list
+                    // **切到 Guardian 说的那个名字,不是用户输入的那个** —— 名字留空时
+                    // 最终名字是服务端按链接推的,客户端再推一遍就是第二份判据。
+                    self.switchServer(name: list.added) { outcome in
+                        let alert = NSAlert()
+                        alert.messageText = outcome?.applied == true ? "Switched" : "Added"
+                        alert.informativeText = addServerOutcomeMessage(added: list.added, switched: outcome)
+                        NSApp.activate(ignoringOtherApps: true)
+                        alert.runModal()
+                    }
+                case .failure(let error):
+                    self.showGuardianFailure(title: "Could not add that server", error: error)
+                }
+            }
+        }
+    }
+
+    /// 名字可空:空就让 Guardian 按链接推导。
+    private func promptForServerName() -> String {
+        let alert = NSAlert()
+        alert.messageText = "Name this server"
+        alert.informativeText = "Leave it empty to name it after the server's address."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "e.g. tokyo"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Continue")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+        return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 「现在从哪出去」。

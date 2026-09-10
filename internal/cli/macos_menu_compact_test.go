@@ -64,8 +64,9 @@ func TestMacMenuTroubleshootSubmenuHoldsTheRareActions(t *testing.T) {
 }
 
 // 「Replace Configuration…」只在没有服务器窗口(旧 Guardian)时留在一级菜单,
-// 判据是 replaceConfigurationLivesInMenu(纯函数);有窗口时它和「New Server…」
-// 是窗口里的按钮,回调接到 main.swift 原来那两个动作上。
+// 判据是 replaceConfigurationLivesInMenu(纯函数)。有窗口时换服务器走窗口里的
+// 「Add Server…」(加进清单再热切,不弹密码),它与「New Server…」一起接回
+// main.swift 的动作 —— 窗口里已经没有 Replace Configuration 了(spec §4)。
 func TestMacMenuMovesServerActionsIntoTheServersWindow(t *testing.T) {
 	code := menuMainSwiftCode(t)
 	body, ok := swiftFunctionBody(code, "private func rebuildMenu()")
@@ -85,15 +86,15 @@ func TestMacMenuMovesServerActionsIntoTheServersWindow(t *testing.T) {
 	for _, want := range []string{
 		"controller.onDeploy = ",
 		"self?.openDeployWindow()",
-		"controller.onReplaceConfiguration = ",
-		"self?.replaceConfiguration()",
+		"controller.onAddServer = ",
+		"self?.addServerFromWindow()",
 	} {
 		if !strings.Contains(code, want) {
 			t.Fatalf("服务器窗口的回调没接上:缺 %s", want)
 		}
 	}
 	window := blankSwiftStringLiterals(stripSwiftComments(menuServersWindowSource(t)))
-	for _, want := range []string{"#selector(deployServer)", "#selector(replaceConfiguration)", "onDeploy?()", "onReplaceConfiguration?()"} {
+	for _, want := range []string{"#selector(deployServer)", "#selector(addServer)", "onDeploy?()", "onAddServer?()"} {
 		if !strings.Contains(window, want) {
 			t.Fatalf("ServersWindow 里缺 %s —— 按钮没摆或没接回调", want)
 		}
