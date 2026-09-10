@@ -45,6 +45,30 @@ func TestMacMenuAddServerAddsThenSwitchesWithoutPrivilege(t *testing.T) {
 	if !strings.Contains(body, "showGuardianFailure(title:") {
 		t.Fatal("add 失败要走同一个失败漏斗")
 	}
+	// **这条路上的结局也不许合成一句「已添加并切换」。** 标题按服务端答的
+	// `applied` 分支、正文由那个纯函数生成 —— 两行写死的字面量既不会有编译错误,
+	// 也不会让任何 Swift 测试转红(那个纯函数只有它自己的单测在调),而它产生的
+	// 正是这个 task 存在的理由要消灭的那句谎。确认框那条路早有同款守卫
+	// (TestMacMenuNeverClaimsASwitchThatDidNotApply),两条路不许只守一条。
+	if !strings.Contains(body, "outcome?.applied == true ?") {
+		t.Error("标题没有按 outcome?.applied 分支 —— 切没成也会显示成「已切换」")
+	}
+	const outcomeCall = "addServerOutcomeMessage(added: list.added, switched: "
+	call := strings.Index(body, outcomeCall)
+	if call < 0 {
+		t.Fatal("正文不是 addServerOutcomeMessage(added: list.added, switched:) 生成的 —— " +
+			"那个纯函数才是「三种结局分开说」那几句话的所在")
+	}
+	rest := body[call+len(outcomeCall):]
+	end := strings.Index(rest, ")")
+	if end < 0 {
+		t.Fatal("读不出 addServerOutcomeMessage 的实参 —— 守卫已经失效,先修守卫")
+	}
+	// **实参必须是光秃秃的一次取值。** `switched: nil` 会让三种结局塌成一种
+	// (永远说「加上了但没切过去」),而它照样满足「调用了那个纯函数」。
+	if arg := strings.TrimSpace(rest[:end]); arg != "outcome" {
+		t.Errorf("switched: 的实参是 %q,不是那次切换真实的结局", arg)
+	}
 	if !strings.Contains(code, "controller.onAddServer = ") || !strings.Contains(code, "self?.addServerFromWindow()") {
 		t.Fatal("窗口的 onAddServer 没接到 addServerFromWindow")
 	}
