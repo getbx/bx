@@ -84,9 +84,34 @@ func goldenCases() []goldenCase {
 		Platform: []Check{{Name: "terminal_proxy", Status: "ok", Detail: "none"}},
 	}
 
+	// off 是 2026-09-10 真机验收暴露的那一态:用户自己关掉保护。DNS 还给系统、
+	// Core socket 没了、探测没做成 —— 三件都不是故障,而修复前这里会报一条
+	// `fail guardian_dns` 并叫他 `sudo bx up`。把它钉进 golden,是为了让「关掉
+	// 保护会不会被说成坏了」以后每次都被逐字节问一遍。
+	off := Facts{
+		Version:    "test",
+		ConfigPath: "/etc/bx/config.yaml",
+		Config:     FileFact{Mode0600: true},
+		Parsed:     cfg,
+		Probe: &Check{
+			Name: "probe", Status: "warn",
+			Detail: "tcp 203.0.113.10:443 not probed: dial unix /var/run/bx/core.sock: connect: no such file or directory",
+		},
+		Service:         DarwinServiceChecks(true, true),
+		StatusSocketErr: "dial unix /var/run/bx/core.sock: connect: no such file or directory",
+		Darwin:          true,
+		Guardian: &GuardianFact{
+			DNS:      DNSFact{State: DNSStateUnmanaged, Managed: false, Service: "Wi-Fi"},
+			Recovery: RecoveryFact{State: "ignored", Stage: "off"},
+			Desired:  DesiredOff,
+		},
+		Platform: []Check{{Name: "terminal_proxy", Status: "info", Detail: "not set"}},
+	}
+
 	return []goldenCase{
 		{Name: "long", Report: Judge(long)},
 		{Name: "permission_fallback", Report: Judge(fallback)},
+		{Name: "desired_off", Report: Judge(off)},
 	}
 }
 

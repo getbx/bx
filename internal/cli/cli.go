@@ -4564,7 +4564,8 @@ func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {
 }
 
 func guardianDNSDoctorCheck(status guardian.Status) checkReport {
-	return doctor.DNSCheck(guardianFactFrom(status).DNS)
+	fact := guardianFactFrom(status)
+	return doctor.DNSCheck(fact.DNS, fact.Desired)
 }
 
 func readStatusReport() (stats.Report, error) {
