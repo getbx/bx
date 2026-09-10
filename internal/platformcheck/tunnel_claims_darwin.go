@@ -1,6 +1,6 @@
 //go:build darwin
 
-package cli
+package platformcheck
 
 import (
 	"context"
@@ -20,10 +20,10 @@ import (
 // tunnel when connected」「verify its routes do not bypass bx」—— 让用户去查一件
 // bx 自己查得到的事。而产品名本来也分不出类:同一个产品会随配置在叠加与竞争之间
 // 翻转(Tailscale 的 exit node、WireGuard 的 AllowedIPs)。
-func darwinTunnelClaimChecks(netstatOut, bxTun string) []checkReport {
+func darwinTunnelClaimChecks(netstatOut, bxTun string) []Check {
 	if strings.TrimSpace(netstatOut) == "" {
 		// **「没问出来」不是「没有人在抢」。** 压成沉默正是这个仓库反复消灭的那种谎。
-		return []checkReport{{
+		return []Check{{
 			Name:   "tunnel_claims",
 			Status: "info",
 			Detail: "the routing table could not be read, so it is not known whether another tunnel is taking public traffic",
@@ -59,7 +59,7 @@ func darwinTunnelClaimChecks(netstatOut, bxTun string) []checkReport {
 		// 共存正常是用户的默认预期 —— 正常时说话只会让他以为出了事。
 		return nil
 	}
-	return []checkReport{{
+	return []Check{{
 		Name:   "tunnel_claims",
 		Status: "warn",
 		Detail: "another tunnel has claimed public address space: " + strings.Join(competing, "; "),

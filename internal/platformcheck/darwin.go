@@ -1,6 +1,6 @@
 //go:build darwin
 
-package cli
+package platformcheck
 
 import (
 	"context"
@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-func collectPlatformChecks(ctx context.Context) []checkReport {
-	checks := collectTerminalProxyChecks()
+func Collect(ctx context.Context) []Check {
+	checks := TerminalProxyChecks()
 	if check := darwinTailscaleCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
@@ -29,33 +29,33 @@ func collectPlatformChecks(ctx context.Context) []checkReport {
 	return checks
 }
 
-func darwinTailscaleCheck(parent context.Context) checkReport {
+func darwinTailscaleCheck(parent context.Context) Check {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
 	if !darwinTailscaleProcessDetected(ctx) {
-		return checkReport{}
+		return Check{}
 	}
 	routes, err := darwinCommand(ctx, "netstat", "-rn", "-f", "inet")
 	if err != nil {
-		return checkReport{Name: "tailscale", Status: "warn", Detail: "could not inspect routes: " + err.Error()}
+		return Check{Name: "tailscale", Status: "warn", Detail: "could not inspect routes: " + err.Error()}
 	}
 	if darwinHasTailscaleOverlayRoute(routes) {
-		return checkReport{Name: "tailscale", Status: "ok", Detail: "overlay route present"}
+		return Check{Name: "tailscale", Status: "ok", Detail: "overlay route present"}
 	}
 	routeGet, err := darwinCommand(ctx, "route", "-n", "get", "100.100.100.100")
 	if err != nil {
-		return checkReport{Name: "tailscale", Status: "warn", Detail: "installed/running, overlay route not visible"}
+		return Check{Name: "tailscale", Status: "warn", Detail: "installed/running, overlay route not visible"}
 	}
 	if iface := darwinRouteGetInterface(routeGet); strings.HasPrefix(iface, "utun") {
-		return checkReport{
+		return Check{
 			Name:   "tailscale",
 			Status: "warn",
 			Detail: "installed/running, but Tailscale 100.x route is absent and traffic currently follows " + iface,
 			Hint:   "wait for Tailscale to reconnect, then run bx leak-check --json",
 		}
 	}
-	return checkReport{Name: "tailscale", Status: "warn", Detail: "installed/running, overlay route not visible"}
+	return Check{Name: "tailscale", Status: "warn", Detail: "installed/running, overlay route not visible"}
 }
 
 func darwinTailscaleProcessDetected(ctx context.Context) bool {
@@ -78,25 +78,25 @@ func darwinRouteGetInterface(out string) string {
 	return ""
 }
 
-func darwinZeroTierCheck(parent context.Context) checkReport {
+func darwinZeroTierCheck(parent context.Context) Check {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
 	if !darwinAnyProcessDetected(ctx, []string{"ZeroTier", "zerotier-one"}) {
-		return checkReport{}
+		return Check{}
 	}
 	ifaces, err := darwinCommand(ctx, "ifconfig")
 	if err != nil {
-		return checkReport{
+		return Check{
 			Name:   "zerotier",
 			Status: "info",
 			Detail: "detected, but interface state was not inspected: " + err.Error(),
 		}
 	}
 	if darwinHasZeroTierInterface(ifaces) {
-		return checkReport{Name: "zerotier", Status: "ok", Detail: "overlay interface present"}
+		return Check{Name: "zerotier", Status: "ok", Detail: "overlay interface present"}
 	}
-	return checkReport{
+	return Check{
 		Name:   "zerotier",
 		Status: "info",
 		Detail: "detected; managed routes are app/network specific and not owned by bx",
@@ -127,11 +127,11 @@ type darwinProcessDetector struct {
 //
 // 留着它的唯一理由:**进程在跑但还没连上时路由表里什么都没有** —— 那时这份清单是
 // 唯一的线索。所以措辞改成如实说「它在跑」,并指向路由表要答案。
-func darwinCompetingTunnelChecks(parent context.Context) []checkReport {
+func darwinCompetingTunnelChecks(parent context.Context) []Check {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
-	var checks []checkReport
+	var checks []Check
 	for _, detector := range []darwinProcessDetector{
 		{
 			name:     "warp",
@@ -156,7 +156,7 @@ func darwinCompetingTunnelChecks(parent context.Context) []checkReport {
 		},
 	} {
 		if darwinAnyProcessDetected(ctx, detector.patterns) {
-			checks = append(checks, checkReport{Name: detector.name, Status: detector.status, Detail: detector.detail, Hint: detector.hint})
+			checks = append(checks, Check{Name: detector.name, Status: detector.status, Detail: detector.detail, Hint: detector.hint})
 		}
 	}
 
@@ -169,39 +169,39 @@ func darwinCompetingTunnelChecks(parent context.Context) []checkReport {
 	return checks
 }
 
-func darwinLocalProxyAppCheck(ctx context.Context) checkReport {
+func darwinLocalProxyAppCheck(ctx context.Context) Check {
 	if !darwinAnyProcessDetected(ctx, []string{"Clash", "clash", "Surge", "surge", "mihomo"}) {
-		return checkReport{}
+		return Check{}
 	}
 	proxyOut, err := darwinCommand(ctx, "scutil", "--proxy")
 	if err != nil {
-		return checkReport{Name: "local_proxy", Status: "info", Detail: "local proxy app detected; system proxy state was not inspected"}
+		return Check{Name: "local_proxy", Status: "info", Detail: "local proxy app detected; system proxy state was not inspected"}
 	}
 	if darwinSystemProxyEnabled(proxyOut) {
-		return checkReport{
+		return Check{
 			Name:   "local_proxy",
 			Status: "warn",
 			Detail: "local proxy app detected and macOS system proxy is enabled",
 			Hint:   "turn off the other proxy app's system proxy mode or verify app traffic with bx check --full",
 		}
 	}
-	return checkReport{Name: "local_proxy", Status: "info", Detail: "local proxy app detected; macOS system proxy is off"}
+	return Check{Name: "local_proxy", Status: "info", Detail: "local proxy app detected; macOS system proxy is off"}
 }
 
-func darwinPacketTunnelCheck(ctx context.Context) checkReport {
+func darwinPacketTunnelCheck(ctx context.Context) Check {
 	ncOut, err := darwinCommand(ctx, "scutil", "--nc", "list")
 	if err != nil {
-		return checkReport{}
+		return Check{}
 	}
 	if name := darwinConnectedNetworkService(ncOut); name != "" {
-		return checkReport{
+		return Check{
 			Name:   "packet_tunnel",
 			Status: "warn",
 			Detail: "macOS VPN service connected: " + name,
 			Hint:   "whether it is taking public traffic is answered by tunnel_claims (the routing table); a split-tunnel VPN coexists with bx",
 		}
 	}
-	return checkReport{}
+	return Check{}
 }
 
 func darwinSystemProxyEnabled(scutilProxyOut string) bool {

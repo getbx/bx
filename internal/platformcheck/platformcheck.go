@@ -1,11 +1,17 @@
-package cli
+package platformcheck
 
 import (
 	"os"
 	"strings"
+
+	"github.com/getbx/bx/internal/doctor"
 )
 
-func collectTerminalProxyChecks() []checkReport {
+// Check 与 doctor.Check 是同一个类型:平台检查的产物直接进 doctor.Facts.Platform,
+// 两边(CLI / Guardian)不必各转一次。
+type Check = doctor.Check
+
+func TerminalProxyChecks() []Check {
 	var values []string
 	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
@@ -13,9 +19,9 @@ func collectTerminalProxyChecks() []checkReport {
 		}
 	}
 	if len(values) == 0 {
-		return []checkReport{{Name: "terminal_proxy", Status: "info", Detail: "not set"}}
+		return []Check{{Name: "terminal_proxy", Status: "info", Detail: "not set"}}
 	}
-	return []checkReport{{Name: "terminal_proxy", Status: "ok", Detail: truncateDetail(strings.Join(values, "; "))}}
+	return []Check{{Name: "terminal_proxy", Status: "ok", Detail: truncateDetail(strings.Join(values, "; "))}}
 }
 
 func redactProxyValue(value string) string {
