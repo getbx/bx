@@ -97,6 +97,11 @@ type LocalAPIOptions struct {
 	// caller that never set it) — the endpoint answers 501, never an empty
 	// list that reads like "the logs are empty".
 	LogSources []LogSource
+
+	// DoctorFacts backs /v1/doctor: Guardian 自己采集事实、喂 doctor.Judge
+	// (判据与 `bx doctor` 是同一份)。nil = 没接线 ⇒ 501,不是一份没有 check
+	// 的报告 —— 后者读起来正是「你的机器全好」。
+	DoctorFacts DoctorFactsFunc
 }
 
 // coreRuntimeFetchTimeout bounds how long observableStatus waits on
@@ -207,6 +212,12 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	}
 	mux.HandleFunc("/v1/apps", appsHandler(appsSockPath, options.OwnerUID))
 	mux.HandleFunc("/v1/logs", logsHandler(options.LogSources, options.OwnerUID))
+	// /v1/doctor 的 status 与 /v1/status 走同一个表达式:体检里那两行
+	// (guardian_dns / network_recovery)读的就是 Guardian 此刻对外发布的
+	// 那份状态,另算一份就是第二个真相源。
+	mux.HandleFunc("/v1/doctor", doctorHandler(options.DoctorFacts, options.ConfigPath, options.OwnerUID, func() Status {
+		return observableStatus(controller, pathRecoveryControllerFor(controller), options)
+	}))
 	recoveries, _ := controller.(recoveryLifecycle)
 	pathRecoveries, _ := controller.(pathRecoveryLifecycle)
 	return &localAPI{handler: mux, mutations: mutations, recoveries: recoveries, pathRecoveries: pathRecoveries, watch: watch}

@@ -835,6 +835,8 @@ func localAPIOptionsFor(options DaemonOptions) LocalAPIOptions {
 		ReloadRules: reloadCoreRules,
 		// /v1/logs:路径来自 install 那份清单,不在 Guardian 里再抄一份。
 		LogSources: guardianLogSources(),
+		// /v1/doctor:Guardian 进程内采集事实,判据仍是 doctor.Judge 那一份。
+		DoctorFacts: collectDoctorFacts,
 	}
 }
 
