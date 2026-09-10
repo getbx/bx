@@ -75,12 +75,26 @@ struct DiagnosticsModelTests {
         expect(doctorCheckTitle("rule_rules_never_in_effect") == "rule rules never in effect", "全部下划线")
     }
 
+    // Run again 之后数据常常与上一次一模一样,页面重画完看起来毫无变化 ——
+    // 2026-09-10 真机:所有者点了两次,以为按钮坏了。这一行是「刚才那一下确实
+    // 发生过」的唯一证据,所以它必须带秒;只到分钟的话连着点两次仍然看不出。
+    static func testCheckedAtLineCarriesSeconds() {
+        var utc = TimeZone(identifier: "UTC")!
+        let at = Date(timeIntervalSince1970: 1_757_400_425) // 2026-09-09 06:47:05 UTC
+        let line = doctorCheckedAtLine(at, timeZone: utc)
+        expect(line == "Checked at 06:47:05", "时间戳行 = \(line)")
+        utc = TimeZone(secondsFromGMT: 8 * 3600)!
+        let shifted = doctorCheckedAtLine(at, timeZone: utc)
+        expect(shifted == "Checked at 14:47:05", "跟随时区:\(shifted)")
+    }
+
     static func main() {
         testDecodesReportWithOptionalDetailAndHint()
         testDoctorAvailableIsGatedByCapability()
         testSortedChecksPutBadFirstAndKeepOrderWithinATier()
         testSummaryLineCountsFailuresAndWarningsSeparately()
         testCheckTitleReadsLikeProse()
+        testCheckedAtLineCarriesSeconds()
         if failures == 0 {
             print("DiagnosticsModelTests passed")
         }

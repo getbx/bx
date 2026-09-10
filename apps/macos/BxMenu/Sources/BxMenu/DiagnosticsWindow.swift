@@ -17,6 +17,11 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     private var tabs: NSTabView?
     private var checksStack: NSStackView?
     private var logsStack: NSStackView?
+    /// 两页各自的滚动视图。**留着只为渲染完能滚回顶部** —— 见 scrollToTop:
+    /// 重画之后停在旧位置,是 2026-09-10 真机上「最严重的那条被挡在屏幕外面」
+    /// 与「点了 Run again 像是没反应」这两件事的同一个根因。
+    private var checksScroll: NSScrollView?
+    private var logsScroll: NSScrollView?
 
     /// 用户点了底部「Export Diagnostics…」—— 走原来那条终端归档路(spec §1 表里保留的)。
     var onExportDiagnostics: (() -> Void)?
@@ -111,6 +116,8 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         self.tabs = tabs
         self.checksStack = checksStack
         self.logsStack = logsStack
+        self.checksScroll = checksScroll
+        self.logsScroll = logsScroll
         self.window = window
         // **两页都要先有东西。** 只渲染被请求的那一页,另一页就是一张白纸 ——
         // 用户切过去看到的不是「还没拉」,而是一个坏掉的界面;而 Checks 那页
@@ -159,6 +166,23 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             scroll.bottomAnchor.constraint(equalTo: page.bottomAnchor),
         ])
         return page
+    }
+
+    /// 把一页滚回顶部。**每次重画之后都要调。**
+    ///
+    /// 排序把最严重的放在最前,而 NSScrollView 重画后停在原来的偏移上:真机上
+    /// 打开 Checks 页第一眼看到的是最末尾那几行 OK,合计句与那条 WARN 全在屏幕
+    /// 外面 —— 一个以「坏的排前」为卖点的页面,第一眼给的是最不重要的一端。
+    /// 同一件事也让 Run again 看起来没反应:重画完画面停在同一个位置。
+    ///
+    /// `layoutSubtreeIfNeeded` 不能省:不先让布局落定,documentView 还是上一次的
+    /// 高度,滚到的是一个按旧内容算出来的坐标。文档视图是 FlippedView,所以
+    /// 顶部就是 .zero。
+    private func scrollToTop(_ scroll: NSScrollView?) {
+        guard let scroll else { return }
+        scroll.layoutSubtreeIfNeeded()
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     private func clear(_ stack: NSStackView) {
@@ -219,9 +243,11 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         let summary = NSTextField(labelWithString: doctorSummaryLine(report.checks))
         summary.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
         stack.addArrangedSubview(summary)
+        var subtitle = doctorCheckedAtLine(Date())
         if !report.version.isEmpty {
-            stack.addArrangedSubview(hint("bx \(report.version)"))
+            subtitle = "bx \(report.version) · " + subtitle
         }
+        stack.addArrangedSubview(hint(subtitle))
         stack.addArrangedSubview(gap())
         for check in sortedDoctorChecks(report.checks) {
             let row = NSStackView()
@@ -267,6 +293,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         again.controlSize = .small
         again.toolTip = "Asks bx to check again. This probes your server once, outside the tunnel."
         stack.addArrangedSubview(again)
+        scrollToTop(checksScroll)
     }
 
     @objc private func runAgain() {
@@ -344,6 +371,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         export.controlSize = .small
         export.toolTip = "Runs bx doctor in Terminal and collects a diagnostics folder you can share."
         stack.addArrangedSubview(export)
+        scrollToTop(logsScroll)
     }
 
     @objc private func exportDiagnostics() {
