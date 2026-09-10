@@ -50,6 +50,9 @@ type ServerListResponse struct {
 	Servers    []ServerEntry `json:"servers"`
 	Current    string        `json:"current"`
 	ConfigPath string        `json:"config_path"`
+	// Added 只在 add 应答里出现:最终写进清单的名字(用户给的,或按链接推导的)。
+	// 界面靠它知道接下来该切换到哪一台 —— 自己再推一遍推导规则就是第二份判据。
+	Added string `json:"added,omitempty"`
 }
 
 type serversRequest struct {
@@ -263,8 +266,35 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 // 链接不写进日志 —— 它就是凭据。
 func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string, uid uint32) {
 	name := strings.TrimSpace(req.Name)
+	link := strings.TrimSpace(req.Link)
 	log.Printf("guardian_server_add_requested name=%q uid=%d has_udp=%t", name, uid, strings.TrimSpace(req.UDP) != "")
-	if _, err := setup.AddServer(configPath, name, strings.TrimSpace(req.Link), strings.TrimSpace(req.UDP)); err != nil {
+	if name == "" {
+		// 名字可省略:按链接推导(与 `bx server add` 不给 --name 时同一条规则)。
+		// 空链接在这里就会报错 → 400,与「空链接拒绝」的要求一致。
+		derived, err := config.DeriveServerName(link)
+		if err != nil {
+			log.Printf("guardian_server_add_failed reason=derive_name err=%v", err)
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_add_failed"})
+			return
+		}
+		name = derived
+	}
+	// **先查重,再写。** setup.AddServer 对已存在的名字是「改写那一台的链接」——
+	// 对用户那是「我加了一台,结果把原来那台换掉了」,而界面上看不出任何异常。
+	existing, _, err := setup.ListServers(configPath)
+	if err != nil {
+		log.Printf("guardian_servers_read_failed path=%s err=%v", configPath, err)
+		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
+		return
+	}
+	for _, s := range existing {
+		if strings.EqualFold(strings.TrimSpace(s.Name), name) {
+			log.Printf("guardian_server_add_rejected reason=name_exists name=%q", name)
+			writeGuardianJSON(w, http.StatusConflict, map[string]string{"code": "servers_name_exists"})
+			return
+		}
+	}
+	if _, err := setup.AddServer(configPath, name, link, strings.TrimSpace(req.UDP)); err != nil {
 		log.Printf("guardian_server_add_failed name=%q err=%v", name, err)
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_add_failed"})
 		return
@@ -279,7 +309,7 @@ func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string
 	// 回完整清单而不是一个 ok:界面据此重画,不必自己推演改动后的状态 ——
 	// 推演出来的状态与盘上真实的状态漂开,正是这个仓库反复栽的形状。
 	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
-		Servers: serverEntries(list, current), Current: current, ConfigPath: configPath,
+		Servers: serverEntries(list, current), Current: current, ConfigPath: configPath, Added: name,
 	})
 }
 
