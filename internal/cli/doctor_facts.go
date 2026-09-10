@@ -18,12 +18,11 @@ import (
 	"github.com/getbx/bx/internal/version"
 )
 
-// guardianFactFrom 把 Guardian 的状态折成判据要的两个事实。纯转换,逐字段。
+// guardianFactFrom 把 Guardian 的状态折成判据要的两个事实。**只是个薄壳**——
+// 真判据住在 guardian.DoctorGuardianFact:Guardian 自己的 /v1/doctor 采集也要
+// 这一份,两份拷贝就是漂移的起点。
 func guardianFactFrom(st guardian.Status) doctor.GuardianFact {
-	return doctor.GuardianFact{
-		DNS:      doctor.DNSFact{State: string(st.DNSState), Managed: st.DNSManaged, Service: st.DNSService},
-		Recovery: doctor.RecoveryFact{State: st.Recovery.State, Stage: st.Recovery.Stage, Attempt: st.Recovery.Attempt, ErrorCode: st.Recovery.ErrorCode},
-	}
+	return guardian.DoctorGuardianFact(st)
 }
 
 // collectDoctorFacts 是 CLI 这一侧的事实采集:读文件、拨 Core / Guardian、探测、平台检查。
