@@ -42,7 +42,7 @@
 ### Task 1: `policy.DirectRuleHazard` —— 危险的是通配符,不是平台
 
 **Files:**
-- Modify: `internal/policy/policy.go`(在 `DirectRisk` 旁边新增;`DirectRisk` **暂不删**,Task 2 删)
+- Modify: `internal/policy/policy.go`(在 `DirectRisk` 旁边新增。**`DirectRisk` 保留、不删** —— `internal/doctor/rulereview.go` 用它判体检的 `ClassRisky`,那是「这条规则危不危险」,与「能不能加」不是同一个问题:一条已经在配置里的 `*.aliyuncs.com` 仍然该被体检点名)
 - Test: `internal/policy/policy_test.go`
 
 **Interfaces:**
@@ -195,7 +195,7 @@ Claude-Session: https://claude.ai/code/session_01Cyaqxb1Fsv9ixwAVMXybjT"
 **Files:**
 - Modify: `internal/cli/direct.go`(`directRuleRisk` 改成薄壳或直接用新判据)
 - Modify: `internal/cli/direct_test.go`(两条既有测试改成通配 vs 确切两组,**不是删掉**)
-- Modify: `internal/policy/policy.go`(删掉 `DirectRisk`,**前提是**全仓只剩这一个调用方)
+(不动 `internal/policy/policy.go` —— `DirectRisk` 留给体检,见 Task 1)
 
 **Interfaces:**
 - Consumes: `policy.DirectRuleHazard`(Task 1)。
