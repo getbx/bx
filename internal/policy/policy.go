@@ -29,6 +29,33 @@ func norm(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 // traffic.
 func DirectRisk(domain string) bool { return riskyDirect.Match(norm(domain)) }
 
+// DirectRuleHazard 判一条 direct 规则会不会重新打开去匿名化洞。
+//
+// **危险的是「在任何人都能注册子域的平台上用通配符」,不是平台本身。**
+// `*.s3.amazonaws.com` 危险:攻击者注册 evil.s3.amazonaws.com 就命中你的白名单,
+// 你的真实 IP 直连给他。`mybucket.s3.amazonaws.com` 不危险:那个确切主机他拿不到,
+// 直连只对这一个主机暴露,是一次窄而明确的选择。
+//
+// 它取代 DirectRisk 那条更宽的判据(那条把确切主机也一并拦下)。收窄是刻意的:
+// 过宽的门会把人逼去用 --force,而一道总被绕过的门等于没有门。
+//
+// reason/suggestion 是**英文**:CLI 与菜单共用这两句,而菜单的用户可见字符串
+// 只准英文(TestMacMenuUserFacingStringsAreEnglish)。
+func DirectRuleHazard(pattern string) (hazard bool, reason, suggestion string) {
+	p := strings.TrimSuffix(norm(pattern), ".")
+	if !strings.HasPrefix(p, "*.") {
+		// 没有通配符就没有「邻居」可被注册 —— 确切主机是安全的,即使它落在
+		// 那些平台上。
+		return false, "", ""
+	}
+	if !riskyDirect.Match(strings.TrimPrefix(p, "*.")) {
+		return false, "", ""
+	}
+	return true,
+		"Anyone can register a subdomain on this platform, so a wildcard rule lets a stranger send your real IP outside the tunnel.",
+		"Use the exact host you need instead, for example bucket.s3.amazonaws.com."
+}
+
 func mapping(n *yaml.Node, key string) *yaml.Node {
 	if n == nil || n.Kind != yaml.MappingNode {
 		return nil
