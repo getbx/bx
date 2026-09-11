@@ -531,3 +531,68 @@ func looksLikeClientLinkText(_ text: String) -> Bool {
     }
     return false
 }
+
+// MARK: - 删掉了、但还能撤销的那几条
+
+/// 一条已经删掉、而用户还能撤销的规则。
+///
+/// **它必须活过重画,这就是它存在的全部理由。** 删一条规则刻意不弹确认框
+/// (要清掉十一条冗余规则就得点十一次确认,那是在惩罚正确的行为),那句
+/// 「Removed … · Undo」是那个确认框的**替身**;而规则窗口自 2026-09-11 起
+/// 跟着环境刷新重画(菜单开着时约每 2 秒一次),重画从新鲜数据重建整张表,
+/// 而新鲜数据里已经没有这条规则了 —— 于是那个 Undo 会在**两秒后无声消失**。
+/// 把一个刻意保留的安全出口的寿命绑在下一次刷新的节拍上,没有人做过这个决定。
+struct PendingRuleRemoval: Equatable {
+    let kind: RuleKind
+    let pattern: String
+    /// 删掉那一刻它在表里的行号。重画时按它插回**原位** —— 否则那个 Undo
+    /// 会在光标底下跳到别处,而用户正要点它。
+    let index: Int
+}
+
+/// 表里要摆的一行:一条规则,或者一条等着撤销的删除。
+enum RuleTableEntry: Equatable {
+    case rule(RuleRow)
+    case removed(kind: RuleKind, pattern: String)
+}
+
+/// 挂起的删除的上限。**不是性能考虑**:一个只涨不消的集合会让窗口摆出一串
+/// 早已不相干的「Removed …」。满了丢最旧的那条 —— 最近那次删除的 Undo 最
+/// 可能真的被点到。
+let maxPendingRuleRemovals = 16
+
+/// `kind|pattern`。**方向必须进键**:同名规则可以同时出现在 direct 与 proxy 里
+/// 且语义相反,只按模式比会让删掉其中一条把另一条也从表里抹掉。
+func ruleEntryKey(_ kind: RuleKind, _ pattern: String) -> String {
+    kind.rawValue + "|" + pattern
+}
+
+/// 挂起的删除对账:**服务端重新报出这条规则 = 那次 Undo 成功了**(从服务端
+/// 那半看,成功的 Undo 就长这样),这条挂起退场。
+///
+/// 判据只有这一条 —— 窗口不去猜某个 Undo 请求的结局,它看数据。
+func survivingRuleRemovals(_ pending: [PendingRuleRemoval], freshRows: [RuleRow])
+    -> [PendingRuleRemoval]
+{
+    let present = Set(freshRows.map { ruleEntryKey($0.kind, $0.pattern) })
+    return pending.filter { !present.contains(ruleEntryKey($0.kind, $0.pattern)) }
+}
+
+/// 把等着撤销的删除**插回**这份数据里,得到表上真正要摆的那几行。
+///
+/// 挂起的那几条不许同时以两种面目出现:删完那一刻窗口手里还是旧数据(那条
+/// 规则仍在里头),刷新之后才没有 —— 两种情形都只摆一行「Removed … · Undo」。
+func ruleTableEntries(rows: [RuleRow], pending: [PendingRuleRemoval]) -> [RuleTableEntry] {
+    let pendingKeys = Set(pending.map { ruleEntryKey($0.kind, $0.pattern) })
+    var out =
+        rows
+        .filter { !pendingKeys.contains(ruleEntryKey($0.kind, $0.pattern)) }
+        .map(RuleTableEntry.rule)
+    // 按行号升序插:先插行号小的,后面那条记下的行号才还算得准。
+    for item in pending.sorted(by: { $0.index < $1.index }) {
+        out.insert(
+            .removed(kind: item.kind, pattern: item.pattern),
+            at: min(max(item.index, 0), out.count))
+    }
+    return out
+}

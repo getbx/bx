@@ -1678,8 +1678,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 正确的行为。但删完那一行**不消失**,原地留一句 Removed · Undo ——
     /// 一次误点不该静默且不可逆地毁掉一条手写规则。
     ///
-    /// 成功之后刻意**不重拉**:重拉会重画整张表,那一行连同它的 Undo 一起消失,
-    /// 正好把上面那半句取消掉。真正的消失发生在下一次 render。
+    /// 成功之后刻意**不重拉**:`changeRule` 的应答本身就是那份新表,再问一遍
+    /// 只是一次多余的往返。那一行由 `markRemoved` 记进窗口的「等着撤销」里,
+    /// **之后每一次重画都会把它插回原位**(`ruleTableEntries`)—— 这一点是
+    /// 承重的:这个窗口跟着环境刷新每 2 秒重画一次,靠改装某一行的撤销口活不过
+    /// 下一拍,而删除刻意不弹确认框、Undo 正是那个确认框的替身。
     ///
     /// **在飞守卫**(与 `probing`/`switchInFlight`/`rulesFetchInFlight` 同一个模式):
     /// `Remove` 是个 small 按钮,双击一下就发两次删除,而第二次撞上 Guardian

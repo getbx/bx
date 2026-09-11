@@ -11,10 +11,22 @@ import AppKit
 final class RulesWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var stack: NSStackView?
+    /// 滚动容器。**重画要保住滚动位置**,而位置只能从它身上取。
+    private var scroll: NSScrollView?
 
-    /// 表里每一行的容器,键是 `kind|pattern`。`markRemoved` 靠它找到那一行 ——
-    /// 删完**不重画整张表**:重画会让这一行直接消失,而那正是这里要避免的。
-    private var ruleRowBoxes: [String: NSStackView] = [:]
+    /// 删掉了、而用户还能撤销的那几条。**由窗口自己记着,因为它必须活过重画**
+    /// —— 这个窗口跟着环境刷新每 2 秒重建一次整张表,而新鲜数据里已经没有
+    /// 这条规则了;不记着它,那个 Undo 就是个两秒后无声消失的承诺(见
+    /// `PendingRuleRemoval` 的注释)。
+    private var pendingRemovals: [PendingRuleRemoval] = []
+
+    /// 最近一次收到的那份数据。`markRemoved` 靠它**不重新问服务端**就地重画 ——
+    /// 「Removed … · Undo」长什么样因此只有一份实现,而不是删除那条路一份、
+    /// 重画那条路另一份(两份早晚说出两句不一样的话)。
+    private var lastGroupRows: [RuleGroupRow] = []
+    private var lastRuleRows: [RuleRow] = []
+    private var lastConfigPath = ""
+    private var lastReviewNote: String?
 
     /// 用户拨动了一个组开关。参数是组名与目标状态。
     var onToggleGroup: ((String, Bool) -> Void)?
@@ -29,7 +41,11 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
 
     func show(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?) {
         let window = ensureWindow()
-        render(rows: rows, ruleRows: ruleRows, configPath: configPath, reviewNote: reviewNote)
+        adoptFreshRules(
+            rows: rows, ruleRows: ruleRows, configPath: configPath, reviewNote: reviewNote)
+        // **显式打开从头开始看。** 保住滚动位置是给环境重画准备的(用户正盯着
+        // 某一行,不该每 2 秒被拽回顶部);他刚点开这扇窗,顶上那几行才是他要的。
+        render(preservingScroll: false)
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
         // 用户以为"点了没反应"——正是这一版要消灭的那种体验。
         NSApp.activate(ignoringOtherApps: true)
@@ -38,9 +54,33 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
 
     /// 数据更新时就地重画。**窗口不存在就什么都不做** —— 不要因为后台刷新
     /// 把一个用户没打开的窗口弹出来。
+    ///
+    /// 这是**环境刷新**那条路(`applyRefresh` → `fetchRulesOnDemand(forceShow: false)`),
+    /// 菜单开着时约每 2 秒一拍:滚动位置要保住,等着撤销的那几条也要保住。
     func refreshIfVisible(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?) {
         guard let window, window.isVisible else { return }
-        render(rows: rows, ruleRows: ruleRows, configPath: configPath, reviewNote: reviewNote)
+        adoptFreshRules(
+            rows: rows, ruleRows: ruleRows, configPath: configPath, reviewNote: reviewNote)
+        render(preservingScroll: true)
+    }
+
+    /// 收下服务端刚发来的一份规则。
+    ///
+    /// **挂起的删除在这里、也只在这里对账**:判据是 `survivingRuleRemovals` ——
+    /// 新鲜数据里又出现了那条规则,就说明那次 Undo 成功了(从服务端那半看,
+    /// 成功的 Undo 就长这样),这条挂起退场。窗口不去猜某个请求的结局,它看数据。
+    ///
+    /// **对账只发生在拿到新鲜数据的时候**,`markRemoved` 的就地重画走不到这里:
+    /// 那一刻手里还是旧数据、那条规则仍在里头,对一次账就会把刚记下的挂起
+    /// 当场抹掉 —— 于是这个修复在它自己的入口处失效。
+    private func adoptFreshRules(
+        rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?
+    ) {
+        pendingRemovals = survivingRuleRemovals(pendingRemovals, freshRows: ruleRows)
+        lastGroupRows = rows
+        lastRuleRows = ruleRows
+        lastConfigPath = configPath
+        lastReviewNote = reviewNote
     }
 
     /// 窗口是否开着。**供环境刷新路径判断「有没有人在看」** —— 与
@@ -50,6 +90,12 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     /// 少了它,每条规则的失败计数会冻在**打开窗口那一刻**,而这个窗口存在的
     /// 理由就是回答「哪条在失败」—— 服务器窗口 2026-08-17 就是这么坏过一次的。
     var isVisible: Bool { window?.isVisible ?? false }
+
+    /// 窗口关掉 = 那些 Undo 再也点不到了。留着它们只会让下次打开时摆出一串
+    /// 早已不相干的「Removed …」,而那几条规则**确实**已经不在了。
+    func windowWillClose(_ notification: Notification) {
+        pendingRemovals.removeAll()
+    }
 
     private func ensureWindow() -> NSWindow {
         if let window { return window }
@@ -100,6 +146,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             clip.widthAnchor.constraint(equalTo: scroll.widthAnchor),
         ])
         self.stack = stack
+        self.scroll = scroll
         self.window = window
         return window
     }
@@ -125,20 +172,25 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     ///
     /// **顺序与那句话都来自 `ruleRows`(纯模型),这里一个字节都不算。** 判定
     /// 落进 AppKit 这半就等于没有测试盯着它:这个文件在 CI 里编都不编。
-    private func render(
-        rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?
-    ) {
+    ///
+    /// **表上摆哪几行由 `ruleTableEntries` 说了算,不是直接遍历新鲜数据** ——
+    /// 少了这一跳,一条刚删掉的规则连同它的 Undo 会在下一次环境重画(约 2 秒)
+    /// 里无声消失,而删除刻意不弹确认框、Undo 正是那个确认框的替身。
+    private func render(preservingScroll: Bool) {
         guard let stack else { return }
+        // 滚动位置在拆视图之前取。**AppKit 的重建会把它清零**,而这个窗口每
+        // 2 秒重建一次 —— 不保住的话用户每翻到一半就被拽回顶部。
+        let offset = preservingScroll ? scroll?.contentView.bounds.origin : nil
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
-        ruleRowBoxes.removeAll()
 
         // **体检缺席要说出来,摆在最上面。** 这个窗口的词汇表里「一行没有副标题」
         // 读作「查过了,健康」;旧 Guardian(以及配置读不出来的那一次)根本没发
         // 体检,不说这句话就是替一份从没收到过的报告签字。判据在
         // `ruleReviewUnavailableNote`,这里只摆。
+        let reviewNote = lastReviewNote
         if let reviewNote {
             let note = NSTextField(labelWithString: reviewNote)
             note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -149,14 +201,20 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             stack.addArrangedSubview(gap())
         }
 
-        for row in rows {
+        for row in lastGroupRows {
             stack.addArrangedSubview(groupRow(row))
         }
 
-        if !ruleRows.isEmpty {
+        let entries = ruleTableEntries(rows: lastRuleRows, pending: pendingRemovals)
+        if !entries.isEmpty {
             stack.addArrangedSubview(gap())
-            for row in ruleRows {
-                stack.addArrangedSubview(ruleRow(row))
+            for entry in entries {
+                switch entry {
+                case .rule(let row):
+                    stack.addArrangedSubview(ruleRow(row))
+                case .removed(let kind, let pattern):
+                    stack.addArrangedSubview(removedRow(kind: kind, pattern: pattern))
+                }
             }
         }
 
@@ -168,13 +226,21 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         add.bezelStyle = .rounded
         add.controlSize = .small
         footer.addArrangedSubview(add)
-        if !configPath.isEmpty {
+        if !lastConfigPath.isEmpty {
             let reveal = NSButton(title: "Show Config", target: self, action: #selector(revealConfig))
             reveal.bezelStyle = .rounded
             reveal.controlSize = .small
             footer.addArrangedSubview(reveal)
         }
         stack.addArrangedSubview(footer)
+
+        if let offset, let scroll {
+            // **先布局再滚。** 少了这一步滚的是按旧内容算出来的坐标,于是
+            // 表变长/变短的那一拍位置照样会跳(Diagnostics 那两页同款)。
+            scroll.documentView?.layoutSubtreeIfNeeded()
+            scroll.contentView.scroll(to: offset)
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
     }
 
     /// 一条规则一行:等宽的模式、方向、出问题那句话、以及一个 Remove。
@@ -216,39 +282,63 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         let remove = NSButton(title: "Remove", target: self, action: #selector(removeRule(_:)))
         remove.bezelStyle = .rounded
         remove.controlSize = .small
-        remove.identifier = NSUserInterfaceItemIdentifier(ruleKey(row.kind, row.pattern))
+        remove.identifier = NSUserInterfaceItemIdentifier(ruleEntryKey(row.kind, row.pattern))
         remove.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         box.addArrangedSubview(remove)
 
-        ruleRowBoxes[ruleKey(row.kind, row.pattern)] = box
         return box
     }
 
-    /// 那一行原地变成「Removed … · Undo」,**不从栈里移除**。
+    /// 一条删掉了、还能撤回的规则:「Removed … · Undo」。
     ///
-    /// 不弹确认框是刻意的(要清掉十一条冗余规则就得点十一次确认,那是在惩罚
-    /// 正确的行为);但一次误点静默毁掉一条手写规则同样不行 —— 出路是删完
-    /// 留一个撤销口,下一次 render(重拉规则之后)它才真的不见。
-    func markRemoved(kind: RuleKind, pattern: String) {
-        let key = ruleKey(kind, pattern)
-        guard let box = ruleRowBoxes[key] else { return }
-        for view in box.arrangedSubviews {
-            box.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
+    /// **它是每一次重画都会重新摆出来的一行**,不是某一行的临时改装 —— 那是
+    /// 这个修复的要害:改装活不过下一次 `render`,而这个窗口每 2 秒 render 一次。
+    private func removedRow(kind: RuleKind, pattern: String) -> NSView {
+        let box = NSStackView()
+        box.orientation = .horizontal
+        box.alignment = .firstBaseline
+        box.spacing = 8
+
         let label = NSTextField(labelWithString: "Removed \(pattern)")
         label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         label.textColor = .secondaryLabelColor
         box.addArrangedSubview(label)
+        box.setHuggingPriority(.defaultLow, for: .horizontal)
+
         let undo = NSButton(title: "Undo", target: self, action: #selector(undoRemove(_:)))
         undo.bezelStyle = .rounded
         undo.controlSize = .small
-        undo.identifier = NSUserInterfaceItemIdentifier(key)
+        undo.identifier = NSUserInterfaceItemIdentifier(ruleEntryKey(kind, pattern))
+        undo.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         box.addArrangedSubview(undo)
+        return box
     }
 
-    private func ruleKey(_ kind: RuleKind, _ pattern: String) -> String {
-        kind.rawValue + "|" + pattern
+    /// 那一行原地变成「Removed … · Undo」。
+    ///
+    /// 不弹确认框是刻意的(要清掉十一条冗余规则就得点十一次确认,那是在惩罚
+    /// 正确的行为);但一次误点静默毁掉一条手写规则同样不行 —— 出路是删完
+    /// 留一个撤销口。**那个撤销口要活到用户自己处置它为止**:点了 Undo,或者
+    /// 关掉这扇窗。它**不**随下一次刷新到期 —— 环境刷新每 2 秒一拍,那等于
+    /// 给了个两秒的撤销窗口,而没有人做过这个决定。
+    func markRemoved(kind: RuleKind, pattern: String) {
+        let key = ruleEntryKey(kind, pattern)
+        guard !pendingRemovals.contains(where: { ruleEntryKey($0.kind, $0.pattern) == key })
+        else { return }
+        // 行号取自**此刻表上摆着的那几行**(含已经挂起的那些),这样插回去
+        // 的位置就是它消失前的位置,Undo 不会在光标底下跳走。
+        let entries = ruleTableEntries(rows: lastRuleRows, pending: pendingRemovals)
+        let index =
+            entries.firstIndex(where: { entry in
+                guard case .rule(let row) = entry else { return false }
+                return ruleEntryKey(row.kind, row.pattern) == key
+            }) ?? entries.count
+        pendingRemovals.append(PendingRuleRemoval(kind: kind, pattern: pattern, index: index))
+        if pendingRemovals.count > maxPendingRuleRemovals {
+            pendingRemovals.removeFirst(pendingRemovals.count - maxPendingRuleRemovals)
+        }
+        // 就地重画:数据没变(服务端已经答过了),变的只是挂起那一份。
+        render(preservingScroll: true)
     }
 
     /// 从按钮的 identifier 还原出这一行是谁。**按第一个 `|` 切**:方向那一段
@@ -311,8 +401,16 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         onRemoveRule?(kind, pattern)
     }
 
+    /// 点了 Undo:这条挂起当场退场,剩下的交给数据 —— `addRuleBack` 成功也好
+    /// 失败也好都会重拉一次,那一拉带回来的才是真相。
+    ///
+    /// **这里刻意不立刻重画**:撤销请求还在飞,把那一行当场抹掉、一秒后又让它
+    /// 冒回来,是一次没有信息量的闪烁;而如果撤销失败了,那一拉会如实让它消失
+    /// (弹窗已经说过为什么)。
     @objc private func undoRemove(_ sender: NSButton) {
         guard let (kind, pattern) = ruleIdentity(sender) else { return }
+        let key = ruleEntryKey(kind, pattern)
+        pendingRemovals.removeAll { ruleEntryKey($0.kind, $0.pattern) == key }
         onUndoRemove?(kind, pattern)
     }
 
