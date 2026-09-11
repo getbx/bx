@@ -5,8 +5,13 @@ import (
 	"github.com/getbx/bx/internal/route"
 )
 
-// riskySummary 是危险直连那一类要说的话。措辞与 internal/cli/direct.go 的
-// directRuleRisk 保持同源语义:同一个判据在 add 那一侧和体检这一侧说的必须是同一件事。
+// riskySummary 是危险直连那一类要说的话。
+//
+// **同源的是判据不是措辞**:这一类由 policy.DirectRisk 判(它是
+// policy.DirectRuleHazard 的薄壳,与 `bx direct add` / Guardian 那道门同一份
+// 判定)。但这里是**中文**、说的是「一条已经躺在配置里的规则」;add 那一侧是
+// 英文、说的是「这一条现在加不加得进去」,还要带上 --force 那条出路。
+// 写成「措辞同源」会让下一个人以为两处该逐字一致,然后去把其中一边改坏。
 const riskySummary = "公有云存储/CDN/开放子域平台——任何人都能注册它的子域;" +
 	"留在直连白名单里 = 攻击者能用一个子域让你的真实 IP 暴露(去匿名化)。" +
 	"建议只白名单品牌自控的顶级域。"

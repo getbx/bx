@@ -410,8 +410,9 @@ struct RulesModelTests {
     }
 
     /// 说明那一行的轻重**不许按「有没有体检结论」分**:那样会把排序里最靠前的
-    /// 一类(去匿名化)画成最轻的一类。这条与 ruleRowSeverity 是同一个事实的
-    /// 两面,拆开了就会各说各的。
+    /// 一类(去匿名化)画成最轻的一类。它与 ruleRowSeverity **不是同一个事实的
+    /// 两面**(两者在 failures == 0 上判得不一样,而那种行今天到不了界面),
+    /// 但两者的相对轻重必须一致。
     static func testSevereNoteFollowsSeverityNotJustTheVerdictsPresence() {
         let risky = RuleRow(
             kind: .direct, pattern: "*.s3.amazonaws.com", failure: nil,
@@ -437,6 +438,102 @@ struct RulesModelTests {
 
         // 与排序同源:严重的那两类在 ruleRowSeverity 里也排在被盖住那条前面。
         expect(ruleRowSeverity(risky) < ruleRowSeverity(shadowed), "排序与上色说的不是同一件事")
+    }
+
+    // **体检缺席 ≠ 体检说都健康。** 旧 Guardian 不发 review,配置读不出来时它
+    // 也发 nil —— 而这个窗口的词汇表里「一行没有副标题」恰恰读作「查过了,健康」。
+    // 判据只活在解码器里是不够的:界面必须把这句话说出来。
+    static func testAbsentReviewIsAnnouncedInsteadOfLookingClean() {
+        let absent = try! JSONDecoder().decode(RuleList.self, from: Data(#"{"direct":["*.a.com"]}"#.utf8))
+        let empty = try! JSONDecoder().decode(
+            RuleList.self, from: Data(#"{"direct":["*.a.com"],"review":{}}"#.utf8))
+
+        let note = ruleReviewUnavailableNote(absent)
+        expect(note != nil, "体检缺席时窗口什么都不说 —— 那等于替一份没收到的报告签字")
+        expect(ruleReviewUnavailableNote(empty) == nil, "查过了、一条结论都没有时不该多说话")
+        expect(note != ruleReviewUnavailableNote(empty), "缺席与空报告渲染成了同一个样子")
+        // 措辞按「nil 是『这版没说』」那条纪律:不许出现「没有问题 / 健康 / ok」。
+        let lowered = note!.lowercased()
+        for forbidden in ["healthy", "no problems", "all good", "looks good"] {
+            expect(!lowered.contains(forbidden), "这句话替体检下了结论:\(note!)")
+        }
+        // 两份规则一模一样,唯一的差别就是有没有收到体检。
+        expect(absent.direct == empty.direct, "fixture 之间不该有别的差别")
+    }
+
+    // 界面上那句话是**英文**,由 class 在本地映射;服务端那份 summary 是中文
+    // (internal/rulereview 写的),转发它会让一段中文出现在通篇英文的菜单里。
+    static func testVerdictTextIsEnglishAndNeverEchoesTheServersProse() {
+        let chinese = "已在内建 china 直连列表里,这条手写的没有额外作用。"
+        let finding = RuleFinding(
+            kind: "direct", rule: "*.apple.com", cls: "shadowed_by_builtin_list",
+            summary: chinese, coveredBy: "*.apple.com")
+        let row = RuleRow(kind: .direct, pattern: "*.apple.com", failure: nil, verdict: finding)
+        let detail = row.detail ?? ""
+        expect(!detail.contains(chinese), "服务端那段中文原样渲染了:\(detail)")
+        expect(detail.allSatisfy { $0.isASCII || $0 == "←" || $0 == "·" || $0 == "—" },
+               "这一行里有非英文字符:\(detail)")
+        expect(detail.contains("← *.apple.com"), "没说被谁盖住:\(detail)")
+
+        // proxy 命中内建列表是**生效中的例外**,不是冗余 —— 说反了就是叫用户
+        // 删掉一条正在把流量拉回隧道的规则。
+        let proxy = RuleFinding(
+            kind: "proxy", rule: "*.apple.com", cls: "shadowed_by_builtin_list",
+            summary: chinese, coveredBy: "*.apple.com")
+        expect(ruleVerdictText(proxy) != ruleVerdictText(finding),
+               "direct 与 proxy 命中内建列表说了同一句话")
+        expect(ruleVerdictText(proxy).lowercased().contains("exception"),
+               "proxy 那一句没说清它是生效中的例外:\(ruleVerdictText(proxy))")
+
+        // 五类都要有话说,而且各不相同。
+        var seen = Set<String>()
+        for cls in ["risky_direct", "shadowed_by_user_rule", "overridden_by_opposite_kind",
+                    "shadowed_by_builtin_list", "dead"] {
+            let text = ruleVerdictText(
+                RuleFinding(kind: "direct", rule: "r", cls: cls, summary: chinese, coveredBy: ""))
+            expect(!text.isEmpty, "\(cls) 没有话说")
+            expect(!text.contains(chinese), "\(cls) 回落成了服务端那段中文")
+            expect(seen.insert(text).inserted, "\(cls) 与另一类说了同一句话")
+        }
+
+        // 认不出的新类不许消失,也不许冒充自己看懂了 —— 把那个词原样带上。
+        let unknown = ruleVerdictText(
+            RuleFinding(kind: "direct", rule: "r", cls: "brand_new_class", summary: chinese, coveredBy: ""))
+        expect(unknown.contains("brand_new_class"), "认不出的类丢了那个词:\(unknown)")
+        expect(!unknown.contains(chinese), "认不出的类回落成了服务端那段中文")
+        // class 本身是空的(旧版没发这个键)也要说点什么,不能渲染成 "(…)" 。
+        let blank = ruleVerdictText(
+            RuleFinding(kind: "direct", rule: "r", cls: "", summary: chinese, coveredBy: ""))
+        expect(!blank.isEmpty && !blank.contains("()"), "空 class 渲染成了半句话:\(blank)")
+    }
+
+    // 一条**既被分类、又在成片失败**的规则要把两件事都说出来。
+    //
+    // 上一版在体检结论那里就 return 了,于是一条被更宽的规则盖住、同时 8113/8113
+    // 全失败的规则只显示「删掉它不改变任何流量」并被画成红的。这不是边角情况:
+    // DomainSet.MatchRule 逐级往父域找,累积失败的恰恰是被盖住的那条更窄的规则。
+    static func testRowShowsBothItsVerdictAndItsFailures() {
+        let row = RuleRow(
+            kind: .direct, pattern: "*.gc.apple.com",
+            failure: FailingRule(kind: .direct, rule: "*.gc.apple.com", attempts: 8113, failures: 8113),
+            verdict: RuleFinding(
+                kind: "direct", rule: "*.gc.apple.com", cls: "shadowed_by_user_rule",
+                summary: "s", coveredBy: "*.apple.com"))
+        let detail = row.detail ?? ""
+        expect(detail.contains("8113 of 8113"), "失败那半没了:\(detail)")
+        expect(detail.contains("← *.apple.com"), "体检那半没了:\(detail)")
+
+        // 只有一半时不许多摆一个空的分隔。
+        let onlyVerdict = RuleRow(
+            kind: .direct, pattern: "a.com", failure: nil,
+            verdict: RuleFinding(kind: "direct", rule: "a.com", cls: "dead", summary: "d", coveredBy: ""))
+        expect(!(onlyVerdict.detail ?? "").contains(" · "), "只有体检时多了一个分隔:\(onlyVerdict.detail ?? "")")
+        let onlyFailure = RuleRow(
+            kind: .direct, pattern: "b.com",
+            failure: FailingRule(kind: .direct, rule: "b.com", attempts: 10, failures: 9), verdict: nil)
+        expect(!(onlyFailure.detail ?? "").contains(" · "), "只有失败时多了一个分隔")
+        expect(RuleRow(kind: .direct, pattern: "c.com", failure: nil, verdict: nil).detail == nil,
+               "健康的一行仍然一个字都不说")
     }
 
     static func main() {
@@ -468,6 +565,9 @@ struct RulesModelTests {
         testCustomOnlyDropsPresetDerivedRules()
         testProblemsSortAhead()
         testSevereNoteFollowsSeverityNotJustTheVerdictsPresence()
+        testAbsentReviewIsAnnouncedInsteadOfLookingClean()
+        testVerdictTextIsEnglishAndNeverEchoesTheServersProse()
+        testRowShowsBothItsVerdictAndItsFailures()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」,
         // 而一个根本没被脚本登记的套件退出码也是 0(本仓库实测栽过)。
         if failures == 0 {
