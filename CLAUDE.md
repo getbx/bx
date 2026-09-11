@@ -733,6 +733,25 @@ Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 不该弹通知(用户自己做的);③ 拔掉 VPS 或 `sudo route delete <服务器IP>` 让隧道
 断 ≥ 30 秒 → 应弹一条「traffic blocked」,恢复后弹「protected again」并顶掉前一条。
 
+## Routing Rules 窗口重做:规则编辑器 + 加规则的风险门(2026-09-11,真机未验)
+
+窗口从「预设开关」变成规则编辑器:一行一条(direct+proxy 都在),有问题的排
+最前、健康的不说话,`Add Rule…`、`Remove` + `Undo`。`ruleRows(from:failing:
+customOnly:)`(`RulesModel.swift`)此前**早就存在、只有测试在调**,本期是接上
+`RulesWindow.swift`/`main.swift` 而不是新造。**删除不弹确认但留 Undo**——为 11
+条冗余规则点 11 次确认框是在惩罚正确的行为。
+**风险门收窄且挪了位置**:`policy.DirectRuleHazard`(`internal/policy/policy.go`)
+取代 `DirectRisk` 判加规则(`DirectRisk` 仍守着 `internal/rulereview` 体检)——
+危险的是**开放子域平台上的通配符**不是平台本身,确切主机不再需要 `--force`。
+`internal/cli/direct.go` 与 `internal/guardian/rules.go` 共用它——**此前 Guardian
+一处都不查**,右键能一键加进 CLI 会拒绝的规则,本期堵上(`Force` 字段,409
+`code=rules_risky_direct`)。右键候选(`AppTrafficModel.swift` 的
+`ruleCandidates(for:)`)直接滤掉危险的那个,Swift 平台清单由
+`TestOpenPlatformListMatchesPolicy`(`internal/cli/macos_menu_hazard_test.go`)钉
+住与 Go 逐字相同。**真机未验**:默认窗口大小的表格布局与列宽、`Add Rule…` 三种
+结局(接受 / 409 后 Add Anyway / 非法输入)、`Remove`+`Undo`、右键候选过滤,见
+`internal/cli/macos_menu_ruleswindow_test.go`。
+
 ## 菜单精简:18 行 → 11 行,子菜单从此可用(2026-09-08,真机未验)
 
 项目所有者原话「bx 菜单感觉有点复杂了」。复杂的根源两个:五行数据里四行是**诊断值**
