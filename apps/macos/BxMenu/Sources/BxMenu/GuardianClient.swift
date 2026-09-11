@@ -29,7 +29,7 @@ enum GuardianEndpoint {
     case listRules
     /// 改一条规则。**它只写配置,不重启任何东西** —— 生效要 `bx down && bx up`,
     /// 而那是一次断网,必须是用户单独的、显式的一下。
-    case changeRule(action: String, kind: String, pattern: String)
+    case changeRule(action: String, kind: String, pattern: String, force: Bool)
     /// 整组打开或关掉。组开关**只动这一组名下的域名**,用户手写的规则不受影响。
     case changeRuleGroup(action: String, group: String)
     case listServers
@@ -304,9 +304,9 @@ struct GuardianClient {
     }
 
     @discardableResult
-    func changeRule(action: String, kind: RuleKind, pattern: String) throws -> RuleList {
+    func changeRule(action: String, kind: RuleKind, pattern: String, force: Bool = false) throws -> RuleList {
         try perform(
-            endpoint: .changeRule(action: action, kind: kind.rawValue, pattern: pattern),
+            endpoint: .changeRule(action: action, kind: kind.rawValue, pattern: pattern, force: force),
             as: RuleList.self
         )
     }
@@ -398,13 +398,16 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         method = "GET"
         path = "/v1/rules"
         body = nil
-    case let .changeRule(action, kind, pattern):
+    case let .changeRule(action, kind, pattern, force):
         method = "POST"
         path = "/v1/rules"
         // **用 JSONSerialization 而不是字符串插值。** 规则文本来自用户输入,
         // 手拼 JSON 会让一个引号或反斜杠改变请求的结构。服务端另有一道校验,
         // 但客户端不该先把畸形请求发出去。
-        let payload: [String: String] = ["action": action, "kind": kind, "pattern": pattern]
+        var payload: [String: Any] = ["action": action, "kind": kind, "pattern": pattern]
+        if force {
+            payload["force"] = true
+        }
         body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
     case let .changeRuleGroup(action, group):
         method = "POST"

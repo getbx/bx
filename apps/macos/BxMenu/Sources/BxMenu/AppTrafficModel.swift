@@ -376,14 +376,38 @@ func ruleCandidates(for dest: String) -> [String] {
     }
     let labels = host.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
     guard !labels.contains(where: \.isEmpty) else { return [] }
+    let candidates: [String]
     switch labels.count {
     case 1:
-        return [host]
+        candidates = [host]
     case 2:
-        return ["*." + host]
+        candidates = ["*." + host]
     default:
-        return [host, "*." + labels.dropFirst().joined(separator: ".")]
+        candidates = [host, "*." + labels.dropFirst().joined(separator: ".")]
     }
+    // 右键是**一键动作**,没有确认框 —— 把 Guardian 会拒绝的通配候选摆上去,
+    // 用户点下去只看到一句失败。故在生成候选这一步就不摆出来;确切主机不受影响。
+    return candidates.filter { !wildcardOnOpenPlatform($0) }
+}
+
+/// 任何人都能注册子域的平台。**与 internal/policy 的 riskyDirect 逐字相同**,
+/// 由 TestOpenPlatformListMatchesPolicy 钉住。
+let openSubdomainPlatforms: [String] = [
+    "aliyuncs.com", "myqcloud.com", "bcebos.com", "qiniucdn.com", "qbox.me", "clouddn.com", "upaiyun.com", "myhuaweicloud.com",
+    "amazonaws.com", "cloudfront.net", "core.windows.net", "googleapis.com", "r2.dev", "workers.dev", "pages.dev", "github.io", "vercel.app", "netlify.app", "b-cdn.net",
+]
+
+/// 这条通配规则会不会落在「任何人都能注册子域」的平台上。
+///
+/// **它不是第二道门** —— 门在 Guardian(policy.DirectRuleHazard)。这里只决定
+/// 右键要不要把某个候选摆出来:右键是一键动作、没有确认框,把危险选项摆上去再
+/// 靠服务端拒绝,用户看到的是「点了只弹一句失败」。
+func wildcardOnOpenPlatform(_ pattern: String) -> Bool {
+    var p = pattern.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    while p.hasSuffix(".") { p.removeLast() }
+    guard p.hasPrefix("*.") else { return false }
+    let body = String(p.dropFirst(2))
+    return openSubdomainPlatforms.contains { body == $0 || body.hasSuffix("." + $0) }
 }
 
 /// 右键菜单里的一项:一条候选模式 × 一个方向。`kind` 是 Guardian /v1/rules

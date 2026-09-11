@@ -623,6 +623,16 @@ struct AppTrafficModelTests {
         expect(appTrafficRuleMenu(dests: []).isEmpty, "没有目的地就没有菜单项")
     }
 
+    // 右键是**一键动作**,没有确认框 —— 那就不该把危险选项摆在一键的位置上。
+    // 连公有云的应用,右键里只给确切主机;真要那条通配规则,去 Add Rule… 过门。
+    static func testCandidatesDropWildcardsOnOpenPlatforms() {
+        let got = ruleCandidates(for: "mybucket.s3.amazonaws.com")
+        expect(got == ["mybucket.s3.amazonaws.com"], "开放平台上只留确切主机:\(got)")
+        let brand = ruleCandidates(for: "cdn.apple.com")
+        expect(brand.contains("*.apple.com"), "品牌自控域仍然给通配候选:\(brand)")
+        expect(brand.contains("cdn.apple.com"), "确切主机也要在:\(brand)")
+    }
+
     // Entry 要把原始目的地带给窗口 —— 右键菜单按它生成,摘要与 toolTip 都是
     // 格式化过的字符串,从它们反推域名是第二份解析。
     static func testEntryCarriesRawDestinations() {
@@ -675,6 +685,7 @@ struct AppTrafficModelTests {
         testRuleCandidatesFollowTheShapeOfTheDestination()
         testRuleCandidatesAreNormalized()
         testRuleMenuOffersBothKindsPerCandidateWithoutDuplicates()
+        testCandidatesDropWildcardsOnOpenPlatforms()
         testEntryCarriesRawDestinations()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」。
         if failures == 0 {
