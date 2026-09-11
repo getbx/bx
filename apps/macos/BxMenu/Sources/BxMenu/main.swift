@@ -904,6 +904,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var rulesFetchInFlight = false
     private var serversFetchInFlight = false
 
+    /// 正在删的那几条规则(键只是本地去重用的 `kind|pattern`)。理由见
+    /// `removeRuleFromWindow`:小按钮被双击会发两次删除,而第二次会为一条
+    /// **确实删成功了**的规则弹出一句失败。
+    private var ruleRemovalsInFlight: Set<String> = []
+
     /// 规则窗口。**窗口而不是子菜单**:2026-09-08 之前菜单每 2 秒 removeAllItems()
     /// 重建一次(现在只在内容变了才重建,见 commitMenu,子菜单已可用);它仍是窗口
     /// 是因为规则要编辑、要看失败归因,那不是子菜单能装下的。
@@ -1661,13 +1666,25 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///
     /// 成功之后刻意**不重拉**:重拉会重画整张表,那一行连同它的 Undo 一起消失,
     /// 正好把上面那半句取消掉。真正的消失发生在下一次 render。
+    ///
+    /// **在飞守卫**(与 `probing`/`switchInFlight`/`rulesFetchInFlight` 同一个模式):
+    /// `Remove` 是个 small 按钮,双击一下就发两次删除,而第二次撞上 Guardian
+    /// 「删不存在的规则要如实报错」那条契约 —— 用户会为一条**确实删成功了**的
+    /// 规则收到一句「Could not remove that rule」。这条路上没有环境触发,
+    /// 两次都是显式动作,所以拦住后一次就是对的,不存在 `shouldSuppressFetch`
+    /// 那个不对称。
     private func removeRuleFromWindow(_ kind: RuleKind, _ pattern: String) {
+        // 只是本地去重的键,不是跨进程协议 —— 与窗口里那个 identifier 各写各的。
+        let inFlightKey = "\(kind.rawValue)|\(pattern)"
+        guard !ruleRemovalsInFlight.contains(inFlightKey) else { return }
+        ruleRemovalsInFlight.insert(inFlightKey)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result {
                 try GuardianClient().changeRule(action: "remove", kind: kind, pattern: pattern)
             }
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.ruleRemovalsInFlight.remove(inFlightKey)
                 switch result {
                 case .success(let list):
                     self.lastRules = list
@@ -1702,20 +1719,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Add Rule…:窗口底部那个按钮。
     ///
-    /// **输入框与方向选择只建一次,反复摆同一组视图** —— 被风险门拒绝时用户
-    /// 敲的那串还原样留在框里,他要做的是把它改窄,不是重打一遍。收到 409
-    /// `rules_risky_direct` 时**不收摊**:说清为什么、怎么改窄,并留一个
-    /// 「Add Anyway」的次要出口再提交一次(带 `force: true`)。
-    ///
-    /// 那段风险说明写在 Swift 侧,是因为 Guardian 的响应体按纪律只带失败码、
-    /// 不带原文(`policy.DirectRuleHazard` 的 reason/suggestion 到不了这里);
-    /// 两边保持同义即可。
-    ///
-    /// **这一处的拨号是同步的,与本文件其余每一处刻意不同,理由要读一下**:
-    /// `runModal()` 必须**返回**之后异步结果才回得来 —— 那时表单已经收摊,
-    /// 再摆一次就是另一个 alert、用户刚敲的东西一起带走,而「不收摊」正是这条
-    /// 路要保住的东西。主线程本来就被这个 modal 占着(用户正对着它),
-    /// `changeRule` 的上限是 5 秒,只在 Guardian 答不上来时才会撞到。
+    /// **输入框与方向选择只建一次**(就在这里),之后每一轮都把**同一组视图**
+    /// 重新挂到一个新的 NSAlert 上 —— 被风险门拒绝时用户敲的那串因此还原样
+    /// 留在框里,他要做的是把它改窄,不是重打一遍。文本活下来靠的是这个,
+    /// 与拨号同步还是异步无关(拨号在后台队列,与本文件其余每一处一样)。
     private func addRuleFromWindow() {
         // 手摆 frame(与本文件另外两处 accessoryView 同一个写法,不用
         // NSStackView):NSAlert 按 accessoryView 的 frame 定尺寸,而一个交给
@@ -1732,69 +1739,94 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 56))
         accessory.addSubview(field)
         accessory.addSubview(picker)
+        askForNewRule(
+            accessory: accessory, field: field, picker: picker,
+            note: "bx will always send this domain the way you pick.", refused: nil)
+    }
 
-        var note = "bx will always send this domain the way you pick."
-        var offerForce = false
-        while true {
-            let alert = NSAlert()
-            alert.messageText = "Add a Routing Rule"
-            alert.informativeText = note
-            alert.accessoryView = accessory
-            alert.addButton(withTitle: "Add")
-            alert.addButton(withTitle: "Cancel")
-            if offerForce {
-                alert.addButton(withTitle: "Add Anyway")
+    /// 摆一次表单,返回用户按了哪个按钮。**只做呈现,不含任何判断** ——
+    /// 判断全在 `askForNewRule` 里,这样「摆」这件事没有第二份。
+    private func presentAddRuleAlert(
+        accessory: NSView, field: NSTextField, note: String, offerForce: Bool
+    ) -> NSApplication.ModalResponse {
+        let alert = NSAlert()
+        alert.messageText = "Add a Routing Rule"
+        alert.informativeText = note
+        alert.accessoryView = accessory
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        if offerForce {
+            alert.addButton(withTitle: "Add Anyway")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.initialFirstResponder = field
+        return alert.runModal()
+    }
+
+    /// 一轮:摆表单 → 校验 → 后台提交 → 结果回主线程。
+    ///
+    /// **409 `rules_risky_direct` 那一支不收摊**:把**同一组视图**再摆一次
+    /// (输入还在),换上风险说明,并多给一个「Add Anyway」。那段说明写在
+    /// Swift 侧,是因为 Guardian 的响应体按纪律只带失败码、不带原文
+    /// (`policy.DirectRuleHazard` 的 reason/suggestion 到不了这里),两边同义即可。
+    ///
+    /// - Parameter refused: 上一轮被风险门拒掉的那个**归一化模式**;nil = 还没
+    ///   被拒过。它同时是「给不给 Add Anyway」和「这次带不带 force」的依据 ——
+    ///   **一把钥匙只开它自己那道门**:用户在 `*.amazonaws.com` 被拒之后改敲
+    ///   另一个危险模式再按 Add Anyway,那个新模式从没被判过,必须让它也过一遍门。
+    private func askForNewRule(
+        accessory: NSView, field: NSTextField, picker: NSSegmentedControl,
+        note: String, refused: String?
+    ) {
+        let response = presentAddRuleAlert(
+            accessory: accessory, field: field, note: note, offerForce: refused != nil)
+        let pressedAddAnyway = refused != nil && response == .alertThirdButtonReturn
+        guard response == .alertFirstButtonReturn || pressedAddAnyway else { return }
+        // 客户端这一份校验不替代服务端那一份,它存在只是为了在用户敲完的当下
+        // 就说话 —— 有话说就把话说出来、把表单原样再摆一次,不提交。
+        if let problem = validateRulePattern(field.stringValue) {
+            askForNewRule(
+                accessory: accessory, field: field, picker: picker,
+                note: problem, refused: refused)
+            return
+        }
+        let kind: RuleKind = picker.selectedSegment == 0 ? .direct : .proxy
+        let pattern = normalizedRulePattern(field.stringValue)
+        // 主路不带 force —— 让门真的拦一次,是它存在的全部意义(一道永远被绕过
+        // 的门等于没有门);「Add Anyway」也**只放行刚刚被拒的那一条**。
+        let force = pressedAddAnyway && pattern == refused
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result {
+                try GuardianClient().changeRule(
+                    action: "add", kind: kind, pattern: pattern, force: force)
             }
-            NSApp.activate(ignoringOtherApps: true)
-            alert.window.initialFirstResponder = field
-            let response = alert.runModal()
-            let addAnyway = offerForce && response == .alertThirdButtonReturn
-            guard response == .alertFirstButtonReturn || addAnyway else { return }
-            // 客户端这一份校验不替代服务端那一份,它存在只是为了在用户敲完的
-            // 当下就说话 —— 有话说就把话说出来、把表单原样再摆一次,不提交。
-            if let problem = validateRulePattern(field.stringValue) {
-                note = problem
-                continue
-            }
-            let kind: RuleKind = picker.selectedSegment == 0 ? .direct : .proxy
-            let pattern = normalizedRulePattern(field.stringValue)
-            do {
-                let list: RuleList
-                if addAnyway {
-                    // **「Add Anyway」是这道风险门唯一的出路**,所以只有它带 force。
-                    list = try GuardianClient().changeRule(
-                        action: "add", kind: kind, pattern: pattern, force: true)
-                } else {
-                    // 主路不带 force —— 让门真的拦一次,是它存在的全部意义
-                    // (一道永远被绕过的门等于没有门)。
-                    list = try GuardianClient().changeRule(
-                        action: "add", kind: kind, pattern: pattern)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let list):
+                    self.lastRules = list
+                    self.rulesWindow.refreshIfVisible(
+                        rows: ruleGroupRows(
+                            from: list, failing: self.maintenanceReport?.core?.failingRules ?? []),
+                        ruleRows: ruleRows(
+                            from: list, failing: self.maintenanceReport?.core?.failingRules ?? [],
+                            customOnly: true),
+                        configPath: list.configPath
+                    )
+                    let verb = kind == .direct ? "direct" : "through the tunnel"
+                    self.followUpAfterRuleChange(
+                        title: "\(pattern) will always go \(verb)", list: list)
+                case .failure(let error):
+                    if case GuardianClientError.status(409, let code) = error,
+                        code == "rules_risky_direct"
+                    {
+                        self.askForNewRule(
+                            accessory: accessory, field: field, picker: picker,
+                            note: riskyDirectRuleWarning, refused: pattern)
+                        return
+                    }
+                    self.showGuardianFailure(title: "Could not add that rule", error: error)
                 }
-                lastRules = list
-                rulesWindow.refreshIfVisible(
-                    rows: ruleGroupRows(
-                        from: list, failing: maintenanceReport?.core?.failingRules ?? []),
-                    ruleRows: ruleRows(
-                        from: list, failing: maintenanceReport?.core?.failingRules ?? [],
-                        customOnly: true),
-                    configPath: list.configPath
-                )
-                let verb = kind == .direct ? "direct" : "through the tunnel"
-                followUpAfterRuleChange(title: "\(pattern) will always go \(verb)", list: list)
-                return
-            } catch {
-                // **风险门:不收摊。** 把表单原样再摆一次(输入还在),换上风险
-                // 说明,并多给一个「Add Anyway」。收摊再弹一次新的 alert 会把
-                // 用户刚敲的东西一起带走,而这道门的意义恰恰是让他改窄它。
-                if case GuardianClientError.status(409, let code) = error,
-                    code == "rules_risky_direct"
-                {
-                    note = riskyDirectRuleWarning
-                    offerForce = true
-                    continue
-                }
-                showGuardianFailure(title: "Could not add that rule", error: error)
-                return
             }
         }
     }
