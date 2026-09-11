@@ -14,7 +14,7 @@ struct RulesModelTests {
     static func testRuleRowsPutFailingRulesFirst() {
     let list = RuleList(direct: ["*.icloud.com", "*.steamstatic.com"], proxy: ["*.blocked.com"])
     let failing = [FailingRule(kind: .direct, rule: "*.steamstatic.com", attempts: 8113, failures: 8113)]
-    let rows = ruleRows(from: list, failing: failing)
+    let rows = ruleRows(from: list, failing: failing, customOnly: false)
 
     // 用户打开这个界面十有八九是因为有东西坏了 —— 坏的那条不许排在第三行。
     expect(rows.first?.pattern == "*.steamstatic.com",
@@ -35,7 +35,7 @@ struct RulesModelTests {
     let list = RuleList(direct: ["*.a.com"], proxy: ["*.a.com"])
     let rows = ruleRows(from: list, failing: [
         FailingRule(kind: .proxy, rule: "*.a.com", attempts: 100, failures: 90),
-    ])
+    ], customOnly: false)
     let direct = rows.first { $0.kind == .direct }
     let proxy = rows.first { $0.kind == .proxy }
     expect(direct?.failure == nil, "失败标到了错误的那一行(direct)")
@@ -46,7 +46,7 @@ struct RulesModelTests {
     // 配置里写的大小写与 Core 上报的可能不同(Core 归一化过)。
     let rows = ruleRows(from: RuleList(direct: ["*.SteamStatic.com"]), failing: [
         FailingRule(kind: .direct, rule: "*.steamstatic.com", attempts: 10, failures: 10),
-    ])
+    ], customOnly: false)
     expect(rows.first?.failure != nil, "大小写不同就对不上了")
 }
 
@@ -353,6 +353,62 @@ struct RulesModelTests {
         expect(ruleChangeFollowUp(requiresRestart: nil) == .reconnectNeeded, "nil(旧 Guardian)应要重连")
     }
 
+
+    // 体检缺席与体检为空是两件事。nil = 这一版 Guardian 不做体检;空 = 查过了、
+    // 你的规则都健康。压成同一个东西是这个功能最贵的教训。
+    static func testReviewAbsentIsNotTheSameAsEmpty() {
+        let absent = try! JSONDecoder().decode(RuleList.self, from: Data(#"{"direct":["*.a.com"]}"#.utf8))
+        expect(absent.review == nil, "缺席要解成 nil")
+        let empty = try! JSONDecoder().decode(RuleList.self, from: Data(#"{"direct":["*.a.com"],"review":{}}"#.utf8))
+        expect(empty.review != nil && empty.review!.findings.isEmpty, "空报告不是 nil")
+    }
+
+    // 一行规则带上它的体检结论,而结论要说清「被谁盖住」—— 只说「这条冗余」
+    // 而不说被哪一条盖住,用户没法核对,也就没法信。
+    static func testRowsCarryTheReviewVerdict() {
+        let json = """
+        {"direct":["*.apple.com","*.gc.apple.com"],
+         "review":{"findings":[{"kind":"direct","rule":"*.gc.apple.com",
+         "class":"shadowed_by_user_rule","summary":"covered by a broader rule of yours",
+         "covered_by":"*.apple.com"}]}}
+        """
+        let list = try! JSONDecoder().decode(RuleList.self, from: Data(json.utf8))
+        let rows = ruleRows(from: list, failing: [], customOnly: false)
+        let shadowed = rows.first { $0.pattern == "*.gc.apple.com" }
+        expect(shadowed?.verdict?.cls == "shadowed_by_user_rule", "结论没挂上")
+        expect(shadowed?.verdict?.coveredBy == "*.apple.com", "没说被谁盖住")
+        expect(rows.first { $0.pattern == "*.apple.com" }?.verdict == nil, "健康的行不该有结论")
+    }
+
+    // 表只列不属于任何预设的规则:预设在顶上已经有三个勾选框,把它们的域名再
+    // 摊一遍,普通用户第一眼看到的就是四十行域名。
+    static func testCustomOnlyDropsPresetDerivedRules() {
+        let list = RuleList(direct: ["*.apple.com", "*.mine.com"], proxy: ["*.p.com"], custom: ["*.mine.com"])
+        let rows = ruleRows(from: list, failing: [], customOnly: true)
+        let patterns = rows.map(\.pattern).sorted()
+        expect(patterns == ["*.mine.com", "*.p.com"], "customOnly = \(patterns)")
+        // proxy 规则全部是自定义的(预设只定义 direct),所以一条都不能被滤掉。
+        expect(rows.contains { $0.kind == .proxy }, "proxy 规则被滤掉了")
+    }
+
+    // 排序:有问题的在前。顺序是 危险 → 从没生效 → 被自己更宽的盖住 →
+    // 被内建列表覆盖 → 成片失败 → 健康。与 Checks 页同一条纪律。
+    static func testProblemsSortAhead() {
+        let list = RuleList(
+            direct: ["healthy.com", "risky.com", "never.com", "shadow.com"],
+            custom: ["healthy.com", "risky.com", "never.com", "shadow.com"]
+        )
+        let review = RuleReview(findings: [
+            RuleFinding(kind: "direct", rule: "shadow.com", cls: "shadowed_by_user_rule", summary: "s", coveredBy: "x"),
+            RuleFinding(kind: "direct", rule: "risky.com", cls: "risky_direct", summary: "r", coveredBy: ""),
+            RuleFinding(kind: "direct", rule: "never.com", cls: "overridden_by_opposite_kind", summary: "o", coveredBy: "y"),
+        ])
+        var withReview = list
+        withReview.review = review
+        let order = ruleRows(from: withReview, failing: [], customOnly: true).map(\.pattern)
+        expect(order == ["risky.com", "never.com", "shadow.com", "healthy.com"], "排序 = \(order)")
+    }
+
     static func main() {
         testReplaceMessageShowsTheExitChangeNotALecture()
         testReplaceMessageOmitsTheOldServerWhenUnknown()
@@ -377,6 +433,10 @@ struct RulesModelTests {
         testFetchFailureInfoOnlyPromisesShowDetailsWhenTheButtonExists()
         testFetchFailureInfoNeverInventsAConfigProblem()
         testRuleChangeFollowUpTrustsOnlyAnExplicitNo()
+        testReviewAbsentIsNotTheSameAsEmpty()
+        testRowsCarryTheReviewVerdict()
+        testCustomOnlyDropsPresetDerivedRules()
+        testProblemsSortAhead()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」,
         // 而一个根本没被脚本登记的套件退出码也是 0(本仓库实测栽过)。
         if failures == 0 {
