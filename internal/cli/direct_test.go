@@ -5,40 +5,29 @@ import (
 	"testing"
 )
 
+// 通配 + 开放平台:仍然拦。
 func TestDirectRuleRiskFlagsOpenCloud(t *testing.T) {
-	risky := []string{
-		"aliyuncs.com",                 // 阿里 OSS/ECS,任何人开桶
-		"oss-cn-hangzhou.aliyuncs.com", // 子域也算
-		"myfile.oss-cn-beijing.aliyuncs.com",
-		"myqcloud.com", // 腾讯 COS
-		"bcebos.com",   // 百度 BOS
-		"qiniucdn.com", "qbox.me", "clouddn.com",
-		"upaiyun.com",
-		"myhuaweicloud.com",
-		"s3.amazonaws.com", "amazonaws.com",
-		"d123.cloudfront.net",
-		"foo.blob.core.windows.net",
-		"storage.googleapis.com",
-		"bucket.r2.dev", "app.workers.dev", "site.pages.dev",
-		"user.github.io", "app.vercel.app", "site.netlify.app",
-		"cdn.b-cdn.net",
-	}
-	for _, d := range risky {
-		if directRuleRisk(d) == "" {
-			t.Errorf("directRuleRisk(%q) 应给出风险提示(公有云/开放子域),却为空", d)
+	for _, d := range []string{"*.oss-cn-hangzhou.aliyuncs.com", "*.s3.amazonaws.com", "*.github.io"} {
+		msg := directRuleRisk(d)
+		if msg == "" {
+			t.Fatalf("%s 应当被拦下", d)
+		}
+		// **提示必须给出路**:只说危险不说怎么改,用户唯一的出路是 --force,
+		// 那等于没有这道门。
+		if !strings.Contains(strings.ToLower(msg), "exact") {
+			t.Errorf("%s 的提示没给「改成确切主机」这条路:%s", d, msg)
 		}
 	}
 }
 
+// 品牌自控域、以及**开放平台上的确切主机**:不拦。
+//
+// 后者是 2026-09-11 的收窄:攻击者注册不到 mybucket.s3.amazonaws.com,
+// 所以拦它只是在把人逼去用 --force。
 func TestDirectRuleRiskSilentOnBrandDomains(t *testing.T) {
-	safe := []string{
-		"taobao.com", "baidu.com", "bilibili.com", "qq.com",
-		"icbc.com.cn", "gov.cn", "BAIDU.COM", "www.baidu.com",
-		"alipay.com", "hdslb.com",
-	}
-	for _, d := range safe {
-		if w := directRuleRisk(d); w != "" {
-			t.Errorf("directRuleRisk(%q) 品牌自控域不应提示,却得 %q", d, w)
+	for _, d := range []string{"*.apple.com", "*.qq.com", "taobao.com", "mybucket.s3.amazonaws.com", "amazonaws.com"} {
+		if msg := directRuleRisk(d); msg != "" {
+			t.Fatalf("%s 不该被拦:%s", d, msg)
 		}
 	}
 }
