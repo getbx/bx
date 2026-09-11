@@ -70,11 +70,18 @@
 
 ## 4. 判据全在纯模型里
 
-`RulesModel.swift` 新增一个纯函数,把三个来源合成一张表:
+**这张表的纯模型其实已经写好了,只是从没接上窗口。** `RulesModel.swift` 里的
+`RuleRow` 与 `ruleRows(from:failing:)` 已经在做:合并 direct + proxy、挂上失败归因、
+失败的排最前、健康的行 `detail` 返回 nil(一切正常时不说话)。**它今天只有测试在调**
+—— 又一处「被绿色测试守着的死代码」,而这一处正是本期要的东西。
+
+所以本期是**扩它、接上它**,不是另造一个:
 
 ```swift
-func ruleRows(custom: [String], proxy: [String], review: RuleReview?, failing: [FailingRule]) -> [RuleRow]
-struct RuleRow: Equatable { let pattern: String; let kind: RuleKind; let note: String?; let severity: Int }
+// 既有,保持:kind / pattern / failure / detail
+struct RuleRow: Equatable { … let verdict: RuleVerdict? }
+// 扩签名:多吃一份体检,并只留不属于任何预设的规则
+func ruleRows(from list: RuleList, failing: [FailingRule], review: RuleReview?) -> [RuleRow]
 ```
 
 窗口只摆放。与 Checks 页的 `sortedDoctorChecks` / `doctorSummaryLine` 同一个形状,
@@ -127,8 +134,10 @@ CLI 明确拒绝的规则。`ruleCandidates(for:)` 对三段以上域名会生�
 - `mybucket.s3.amazonaws.com` **安全** —— 那个确切主机攻击者拿不到;直连只对这一个
   主机暴露真实 IP,是一次窄而明确的选择。
 
-而现在的 `policy.DirectRisk(domain)` 把两者一律拦下(它做的是后缀匹配,`norm` 会剥掉
-`*.`)。**过宽的门会把人逼去用 `--force`,那正是门死掉的方式。**
+而现在的 `policy.DirectRisk(domain)` 把两者一律拦下:`norm` 只做小写与去空白,
+真正吃掉通配的是 `route.DomainSet.Match` 的**逐级向上走父域** ——
+`*.s3.amazonaws.com` 走到 `amazonaws.com` 命中,`mybucket.s3.amazonaws.com` 也走到
+同一处命中,两者对它完全一样。**过宽的门会把人逼去用 `--force`,那正是门死掉的方式。**
 
 新判据放在 `internal/policy`,**一份,两个消费方共用**:
 
