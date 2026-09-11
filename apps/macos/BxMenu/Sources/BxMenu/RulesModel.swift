@@ -95,6 +95,53 @@ struct RuleGroup: Decodable, Equatable {
     }
 }
 
+/// 体检里的一条结论。**手写解码**:Go 侧 covered_by 是 omitempty,合成解码器
+/// 对缺键会抛,而「没有被谁盖住」(危险规则那一类)是正常情形。
+struct RuleFinding: Decodable, Equatable {
+    let kind: String
+    let rule: String
+    /// 线上取值(Go 的 Class.String(),逐字):risky_direct / shadowed_by_user_rule /
+    /// overridden_by_opposite_kind / shadowed_by_builtin_list / dead。
+    /// **认不出的词不许丢掉这一行** —— 新版 Guardian 发来一类旧菜单不认识的结论时,
+    /// 这一行仍然要显示,只是排在已知的几类后面。
+    let cls: String
+    let summary: String
+    let coveredBy: String
+
+    enum CodingKeys: String, CodingKey {
+        case kind, rule, summary
+        case cls = "class"
+        case coveredBy = "covered_by"
+    }
+
+    init(kind: String, rule: String, cls: String, summary: String, coveredBy: String) {
+        self.kind = kind; self.rule = rule; self.cls = cls; self.summary = summary; self.coveredBy = coveredBy
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        rule = try c.decodeIfPresent(String.self, forKey: .rule) ?? ""
+        cls = try c.decodeIfPresent(String.self, forKey: .cls) ?? ""
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        coveredBy = try c.decodeIfPresent(String.self, forKey: .coveredBy) ?? ""
+    }
+}
+
+/// GET /v1/rules 里的规则体检。**空报告与缺席不是同一件事**,见 `RuleList.review`。
+struct RuleReview: Decodable, Equatable {
+    let findings: [RuleFinding]
+
+    enum CodingKeys: String, CodingKey { case findings }
+
+    init(findings: [RuleFinding]) { self.findings = findings }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        findings = try c.decodeIfPresent([RuleFinding].self, forKey: .findings) ?? []
+    }
+}
+
 /// GET /v1/rules 的应答。
 struct RuleList: Decodable, Equatable {
     var direct: [String] = []
@@ -107,16 +154,20 @@ struct RuleList: Decodable, Equatable {
     /// 服务端恒为 true。**键缺席读作 nil,不读作 false** —— 那意味着
     /// 「这一版 Guardian 没说」,与「不需要重启」是两回事。
     var requiresRestart: Bool?
+    /// 规则体检。**nil = 这一版 Guardian 不做体检;非 nil 但 findings 为空 =
+    /// 查过了、规则都健康。** 压成同一个东西是这个功能最贵的教训。
+    var review: RuleReview?
 
     enum CodingKeys: String, CodingKey {
-        case direct, proxy, groups, custom
+        case direct, proxy, groups, custom, review
         case configPath = "config_path"
         case requiresRestart = "requires_restart"
     }
 
     init(
         direct: [String] = [], proxy: [String] = [], groups: [RuleGroup] = [],
-        custom: [String] = [], configPath: String = "", requiresRestart: Bool? = nil
+        custom: [String] = [], configPath: String = "", requiresRestart: Bool? = nil,
+        review: RuleReview? = nil
     ) {
         self.direct = direct
         self.proxy = proxy
@@ -124,6 +175,7 @@ struct RuleList: Decodable, Equatable {
         self.custom = custom
         self.configPath = configPath
         self.requiresRestart = requiresRestart
+        self.review = review
     }
 
     /// **必须手写。** Swift 合成的解码器**不使用属性默认值** —— 缺键就抛错。
@@ -137,6 +189,7 @@ struct RuleList: Decodable, Equatable {
         custom = try container.decodeIfPresent([String].self, forKey: .custom) ?? []
         configPath = try container.decodeIfPresent(String.self, forKey: .configPath) ?? ""
         requiresRestart = try container.decodeIfPresent(Bool.self, forKey: .requiresRestart)
+        review = try container.decodeIfPresent(RuleReview.self, forKey: .review)
     }
 }
 
@@ -146,42 +199,70 @@ struct RuleRow: Equatable {
     let pattern: String
     /// 非 nil 表示这条规则正在成片失败 —— 界面据此标红。
     let failure: FailingRule?
+    /// 非 nil 表示规则体检对这一行有话说(危险/从没生效/被盖住……)。
+    let verdict: RuleFinding?
 
     /// 副标题。**一切正常时不说话**:每行都挂一句解释会把真正要紧的那一行淹掉。
     var detail: String? {
+        if let verdict {
+            if verdict.coveredBy.isEmpty { return verdict.summary }
+            return verdict.summary + " ← " + verdict.coveredBy
+        }
         guard let failure, failure.attempts > 0 else { return nil }
         let pct = Int((Double(failure.failures) / Double(failure.attempts) * 100).rounded())
         return "\(failure.failures) of \(failure.attempts) connections failed (\(pct)%) — this path is not working"
     }
 }
 
-/// 把规则列表与失败归因合成界面要显示的行。
+/// 越小越靠前。**有问题的在前,健康的一个字不写** —— 与 Checks 页同一条纪律。
+/// 认不出的结论排在已知几类之后、健康之前:不丢,也不冒充自己看懂了。
+func ruleRowSeverity(_ row: RuleRow) -> Int {
+    switch row.verdict?.cls {
+    case "risky_direct": return 0
+    case "overridden_by_opposite_kind": return 1
+    case "shadowed_by_user_rule": return 2
+    case "shadowed_by_builtin_list": return 3
+    case "dead": return 4
+    case .some: return 5
+    case nil: break
+    }
+    if let failure = row.failure, failure.failures > 0 { return 6 }
+    return 7
+}
+
+/// 把规则列表与失败归因、规则体检合成界面要显示的行。
 ///
 /// **合并发生在这里而不是界面里**,是为了让它可测:`main.swift` 与 AppKit 的
 /// 那部分在 CI 里编都不编,而这个仓库全部的事故都在接线上。
-func ruleRows(from list: RuleList, failing: [FailingRule]) -> [RuleRow] {
-    let index = Dictionary(
+///
+/// - Parameter customOnly: true 时 direct 只保留不属于任何预设的规则
+///   (`list.custom`)—— 预设在窗口顶上已经有勾选框,再把它们的域名摊一遍,
+///   普通用户第一眼看到的就是四十行域名。**只对 direct 生效**:预设只定义
+///   direct 域名,所以所有 proxy 规则按定义都是自定义的。
+func ruleRows(from list: RuleList, failing: [FailingRule], customOnly: Bool) -> [RuleRow] {
+    let failureIndex = Dictionary(
         failing.map { ($0.kind.rawValue + "|" + $0.rule.lowercased(), $0) },
         uniquingKeysWith: { first, _ in first }
     )
+    let verdictIndex = Dictionary(
+        (list.review?.findings ?? []).map { ($0.kind + "|" + $0.rule.lowercased(), $0) },
+        uniquingKeysWith: { first, _ in first }
+    )
+    let directPatterns = customOnly ? list.custom : list.direct
     func rows(_ patterns: [String], _ kind: RuleKind) -> [RuleRow] {
         patterns.map { pattern in
-            RuleRow(
-                kind: kind,
-                pattern: pattern,
-                failure: index[kind.rawValue + "|" + pattern.lowercased()]
-            )
+            let key = kind.rawValue + "|" + pattern.lowercased()
+            return RuleRow(kind: kind, pattern: pattern, failure: failureIndex[key], verdict: verdictIndex[key])
         }
     }
-    // 失败的排在最前 —— 用户打开这个界面十有八九是因为有东西坏了。
-    let all = rows(list.direct, .direct) + rows(list.proxy, .proxy)
-    return all.sorted { lhs, rhs in
-        let l = lhs.failure?.failures ?? 0
-        let r = rhs.failure?.failures ?? 0
-        if l != r { return l > r }
-        if lhs.kind != rhs.kind { return lhs.kind == .direct }
-        return lhs.pattern < rhs.pattern
-    }
+    let all = rows(directPatterns, .direct) + rows(list.proxy, .proxy)
+    // 有问题的排最前(严重程度),同级按原顺序稳定 —— 用户打开这个界面
+    // 十有八九是因为有东西坏了。
+    return all.enumerated().sorted { a, b in
+        let sa = ruleRowSeverity(a.element), sb = ruleRowSeverity(b.element)
+        if sa != sb { return sa < sb }
+        return a.offset < b.offset
+    }.map(\.element)
 }
 
 /// 客户端的规则写法校验。
