@@ -289,6 +289,19 @@ func validateRulePattern(_ raw: String) -> String? {
     return nil
 }
 
+/// Guardian 拒绝一条危险的 direct 规则时,界面上说的那句话。
+///
+/// **它写在客户端,是因为服务端按纪律只回失败码、不回原文**
+/// (`policy.DirectRuleHazard` 的 reason/suggestion 到不了这里);两边保持
+/// **同义**即可,不必逐字相同 —— 逐字相同要靠一条谁都想不起来维护的守卫。
+///
+/// 措辞只说**这一条规则会造成什么**与**怎么改窄**,不做告诫:「这样有风险哦」
+/// 只会被点穿,而「任何人都能在这个平台上注册子域」是可核对的事实。
+let riskyDirectRuleWarning =
+    "Anyone can register a subdomain on this platform, so a wildcard rule lets a stranger "
+    + "send your real IP outside the tunnel. Use the exact host you need instead, "
+    + "for example bucket.s3.amazonaws.com."
+
 /// 归一化成写进配置的形式。校验通过后才调用。
 func normalizedRulePattern(_ raw: String) -> String {
     raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

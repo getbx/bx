@@ -57,7 +57,7 @@ func TestMacMenuFailureAlertsNeverPointAtRootOnlyLogs(t *testing.T) {
 func TestMacMenuRulesAndServersFetchFailuresOfferShowDetails(t *testing.T) {
 	main := stripSwiftComments(menuMainSwiftSource(t))
 	for _, fn := range []string{
-		"private func fetchRulesOnDemand()",
+		"private func fetchRulesOnDemand(forceShow: Bool)",
 		"private func fetchServersOnDemand(forceShow: Bool)",
 	} {
 		body, ok := swiftFunctionBody(main, fn)
