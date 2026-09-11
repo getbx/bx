@@ -385,9 +385,10 @@ func ruleCandidates(for dest: String) -> [String] {
     default:
         candidates = [host, "*." + labels.dropFirst().joined(separator: ".")]
     }
-    // 右键是**一键动作**,没有确认框 —— 把 Guardian 会拒绝的通配候选摆上去,
-    // 用户点下去只看到一句失败。故在生成候选这一步就不摆出来;确切主机不受影响。
-    return candidates.filter { !wildcardOnOpenPlatform($0) }
+    // **这里不过滤。** 过滤只对 direct 那一侧成立(见 appTrafficRuleMenu):
+    // 把流量拉回隧道是更安全的方向,Guardian 对 proxy 规则一律放行,而
+    // `*.workers.dev` 恰恰是这份菜单上最该给的那一条。
+    return candidates
 }
 
 /// 任何人都能注册子域的平台。**与 internal/policy 的 riskyDirect 逐字相同**,
@@ -397,17 +398,23 @@ let openSubdomainPlatforms: [String] = [
     "amazonaws.com", "cloudfront.net", "core.windows.net", "googleapis.com", "r2.dev", "workers.dev", "pages.dev", "github.io", "vercel.app", "netlify.app", "b-cdn.net",
 ]
 
-/// 这条通配规则会不会落在「任何人都能注册子域」的平台上。
+/// 这条规则会不会落在「任何人都能注册子域」的平台上。
 ///
-/// **它不是第二道门** —— 门在 Guardian(policy.DirectRuleHazard)。这里只决定
-/// 右键要不要把某个候选摆出来:右键是一键动作、没有确认框,把危险选项摆上去再
-/// 靠服务端拒绝,用户看到的是「点了只弹一句失败」。
-func wildcardOnOpenPlatform(_ pattern: String) -> Bool {
+/// **与 Go 侧 policy.DirectRuleHazard 同判据:看覆盖面,不看写法。** bx 的匹配器
+/// 是后缀集,一条规则覆盖它的整个子树 —— `mybucket.s3.amazonaws.com` 与
+/// `*.mybucket.s3.amazonaws.com` 放行的东西一模一样,`evil.mybucket.s3.amazonaws.com`
+/// 两种写法都直连出去。所以判据去掉可有可无的 `*.` 之后按后缀匹配。
+///
+/// **它不是第二道门**,direct 那一侧的门在 Guardian(409 `rules_risky_direct`);
+/// 这里只决定右键要不要把某个 **direct** 候选摆出来:右键是一键动作、没有确认框,
+/// 摆上去再靠服务端拒绝,用户看到的是「点了只弹一句失败」。**proxy 那一侧没有
+/// 这道门,也不该有** —— 那个方向更安全,Guardian 明确放行。
+func coversOpenSubdomainPlatform(_ pattern: String) -> Bool {
     var p = pattern.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     while p.hasSuffix(".") { p.removeLast() }
-    guard p.hasPrefix("*.") else { return false }
-    let body = String(p.dropFirst(2))
-    return openSubdomainPlatforms.contains { body == $0 || body.hasSuffix("." + $0) }
+    if p.hasPrefix("*.") { p = String(p.dropFirst(2)) }
+    guard !p.isEmpty else { return false }
+    return openSubdomainPlatforms.contains { p == $0 || p.hasSuffix("." + $0) }
 }
 
 /// 右键菜单里的一项:一条候选模式 × 一个方向。`kind` 是 Guardian /v1/rules
@@ -420,12 +427,19 @@ struct AppTrafficRuleMenuItem: Equatable {
 
 /// 一行的右键菜单:每个目的地的每条候选,先 direct 再 proxy。同一个通配被两个
 /// 目的地推出来时**只出现一次**(两个 helper 域名同属一个父域是常态)。
+///
+/// **过滤只落在 direct 那一半。** 上一版把它加在 `ruleCandidates` 里,于是
+/// 连开放平台的应用连 proxy 那条都一起丢了 —— 右键 `foo.workers.dev` 时
+/// 「Always through tunnel: *.workers.dev」(这份菜单上最安全的一项、Guardian
+/// 明确放行的一项)整个消失,两段域名的目的地甚至会得到一个空子菜单。
 func appTrafficRuleMenu(dests: [String]) -> [AppTrafficRuleMenuItem] {
     var seen = Set<String>()
     var out: [AppTrafficRuleMenuItem] = []
     for dest in dests {
         for pattern in ruleCandidates(for: dest) where seen.insert(pattern).inserted {
-            out.append(AppTrafficRuleMenuItem(title: "Always direct: \(pattern)", kind: "direct", pattern: pattern))
+            if !coversOpenSubdomainPlatform(pattern) {
+                out.append(AppTrafficRuleMenuItem(title: "Always direct: \(pattern)", kind: "direct", pattern: pattern))
+            }
             out.append(AppTrafficRuleMenuItem(title: "Always through tunnel: \(pattern)", kind: "proxy", pattern: pattern))
         }
     }

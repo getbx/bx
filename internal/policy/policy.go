@@ -10,10 +10,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var riskyDirect = route.NewDomainSet([]string{
+// riskyDirectDomains 是「任何人都能在上面注册一个子域」的平台清单。
+//
+// 清单本身导出给守卫用(Swift 那份右键候选过滤要与它逐字相同,见
+// internal/cli/macos_menu_hazard_test.go);判据一律走 DirectRuleHazard。
+var riskyDirectDomains = []string{
 	"aliyuncs.com", "myqcloud.com", "bcebos.com", "qiniucdn.com", "qbox.me", "clouddn.com", "upaiyun.com", "myhuaweicloud.com",
 	"amazonaws.com", "cloudfront.net", "core.windows.net", "googleapis.com", "r2.dev", "workers.dev", "pages.dev", "github.io", "vercel.app", "netlify.app", "b-cdn.net",
-})
+}
+
+var riskyDirect = route.NewDomainSet(riskyDirectDomains)
 
 type Request struct {
 	Mode      string
@@ -24,36 +30,41 @@ type Request struct {
 
 func norm(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-// DirectRisk reports whether a direct rule would cover a public cloud or
-// open-subdomain platform that an unrelated party could use for de-anonymizing
-// traffic.
-func DirectRisk(domain string) bool { return riskyDirect.Match(norm(domain)) }
-
-// DirectRuleHazard 判一条 direct 规则会不会重新打开去匿名化洞。
+// DirectRuleHazard 判一条 direct 规则会不会打开一个去匿名化的洞,并给出
+// 用户看得懂的理由与出路。**判据是「这条规则覆盖到哪里」,不是「它写成什么样」。**
 //
-// **危险的是「在任何人都能注册子域的平台上用通配符」,不是平台本身。**
-// `*.s3.amazonaws.com` 危险:攻击者注册 evil.s3.amazonaws.com 就命中你的白名单,
-// 你的真实 IP 直连给他。`mybucket.s3.amazonaws.com` 不危险:那个确切主机他拿不到,
-// 直连只对这一个主机暴露,是一次窄而明确的选择。
+// bx 的匹配器是**后缀集**:route.NewDomainSet 去掉 `*.` 只存后缀,Match 逐级
+// 往父域找(internal/route/domainset.go)。于是这个代码库里**根本没有「确切主机
+// 规则」这种东西** —— `bucket.s3.amazonaws.com` 与 `*.bucket.s3.amazonaws.com`
+// 覆盖的子树一模一样,`evil.bucket.s3.amazonaws.com` 两种写法都命中。只拦带
+// `*.` 的那一种,等于这道门在**裸写**的形式上完全不设防,而攻击者要的那个子域
+// 在两种写法下都躺在直连白名单里。
 //
-// 它取代 DirectRisk 那条更宽的判据(那条把确切主机也一并拦下)。收窄是刻意的:
-// 过宽的门会把人逼去用 --force,而一道总被绕过的门等于没有门。
+// 好用由**逃生口**买单,不由放松判据买单:CLI 的 `--force`、菜单被 409 拒绝
+// 之后的「Add Anyway」。
 //
-// reason/suggestion 是**英文**:CLI 与菜单共用这两句,而菜单的用户可见字符串
-// 只准英文(TestMacMenuUserFacingStringsAreEnglish)。
+// reason/suggestion 是**英文**:`bx direct add` 直接打印它们,而 CLI 这一路的
+// 提示与菜单的用户可见字符串保持同一种语言。Guardian 只把它们写进自己的日志,
+// 响应体按纪律只回失败码(菜单那句话是 riskyDirectRuleWarning,同义不同字)。
 func DirectRuleHazard(pattern string) (hazard bool, reason, suggestion string) {
-	p := strings.TrimSuffix(norm(pattern), ".")
-	if !strings.HasPrefix(p, "*.") {
-		// 没有通配符就没有「邻居」可被注册 —— 确切主机是安全的,即使它落在
-		// 那些平台上。
-		return false, "", ""
-	}
-	if !riskyDirect.Match(strings.TrimPrefix(p, "*.")) {
+	p := strings.TrimPrefix(strings.TrimSuffix(norm(pattern), "."), "*.")
+	if p == "" || !riskyDirect.Match(p) {
 		return false, "", ""
 	}
 	return true,
-		"Anyone can register a subdomain on this platform, so a wildcard rule lets a stranger send your real IP outside the tunnel.",
-		"Use the exact host you need instead, for example bucket.s3.amazonaws.com."
+		"Anyone can register a subdomain on this platform, and a bx direct rule covers every subdomain of what you write — so a stranger could make your real IP leave outside the tunnel.",
+		"Naming the exact host you use narrows the exposure but does not remove it, because that rule still covers its subdomains. Add --force if you really control that host."
+}
+
+// DirectRisk reports whether a direct rule would cover a public cloud or
+// open-subdomain platform that an unrelated party could use for de-anonymizing
+// traffic.
+//
+// **薄壳,判定只有一份。** 两个判据会让同一个域名在一处被拦、在另一处被放行,
+// 而用户无从分辨谁对 —— 这个仓库为这个形状栽过。
+func DirectRisk(domain string) bool {
+	hazard, _, _ := DirectRuleHazard(domain)
+	return hazard
 }
 
 func mapping(n *yaml.Node, key string) *yaml.Node {
@@ -109,7 +120,7 @@ func apply(in []byte, req Request, validateConfig bool) ([]byte, bool, error) {
 		if norm(d) == "" {
 			return nil, false, fmt.Errorf("domain is empty")
 		}
-		if req.Mode == "direct" && riskyDirect.Match(norm(d)) && !req.AllowRisk {
+		if req.Mode == "direct" && DirectRisk(d) && !req.AllowRisk {
 			return nil, false, fmt.Errorf("direct policy for %q is risky; require allow_risk", d)
 		}
 	}

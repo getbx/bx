@@ -76,16 +76,53 @@ func TestAddDirectRuleHonoursForce(t *testing.T) {
 	}
 }
 
-// 确切主机不拦(与 CLI 同一判据),proxy 不走这道门。
-func TestAddRuleLetsThroughExactHostsAndProxy(t *testing.T) {
+// 品牌自控域不拦,proxy 一律不走这道门。
+//
+// **「开放平台上的确切主机」不在这张放行表里**:bx 的匹配器是后缀集,
+// `bucket.s3.amazonaws.com` 照样覆盖它自己的子域,所以它与通配一起被拦
+// (见 policy.DirectRuleHazard,以及下面那条专门钉住它的测试)。
+func TestAddRuleLetsThroughBrandDomainsAndProxy(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
-		{"确切主机", `{"action":"add","kind":"direct","pattern":"bucket.s3.amazonaws.com"}`},
+		{"品牌自控域", `{"action":"add","kind":"direct","pattern":"gateway.icloud.com"}`},
+		{"品牌自控域通配", `{"action":"add","kind":"direct","pattern":"*.apple.com"}`},
 		{"proxy 不过这道门", `{"action":"add","kind":"proxy","pattern":"*.s3.amazonaws.com"}`},
+		{"开放平台的裸域 proxy 也放行", `{"action":"add","kind":"proxy","pattern":"workers.dev"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, body := postRuleRaw(t, rulesTestConfig(t), tc.body)
 			if code != http.StatusOK {
 				t.Fatalf("= %d %s", code, body)
+			}
+		})
+	}
+}
+
+// **开放平台上写成确切主机,一样要被拦。**
+//
+// 这是 2026-09-11 那个 Critical 的回归守卫:那一版把判据收窄成「只拦带 `*.`
+// 的」,于是 `bucket.s3.amazonaws.com` 在这里 200 —— 而 route.NewDomainSet
+// 把它存成后缀,`evil.bucket.s3.amazonaws.com` 照样直连出去。
+func TestAddDirectRuleRefusesABareHostOnAnOpenPlatform(t *testing.T) {
+	for _, pattern := range []string{"bucket.s3.amazonaws.com", "amazonaws.com", "myrepo.github.io"} {
+		t.Run(pattern, func(t *testing.T) {
+			path := rulesTestConfig(t)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, body := postRuleRaw(t, path, `{"action":"add","kind":"direct","pattern":"`+pattern+`"}`)
+			if code != http.StatusConflict {
+				t.Fatalf("状态码 = %d, want 409(%s)", code, body)
+			}
+			if !strings.Contains(body, "rules_risky_direct") {
+				t.Fatalf("失败码 = %s", body)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("被拒之后盘上的配置动了")
 			}
 		})
 	}

@@ -310,12 +310,17 @@ func validateRulePattern(_ raw: String) -> String? {
 /// (`policy.DirectRuleHazard` 的 reason/suggestion 到不了这里);两边保持
 /// **同义**即可,不必逐字相同 —— 逐字相同要靠一条谁都想不起来维护的守卫。
 ///
-/// 措辞只说**这一条规则会造成什么**与**怎么改窄**,不做告诫:「这样有风险哦」
+/// 措辞只说**这一条规则会造成什么**与**出路在哪**,不做告诫:「这样有风险哦」
 /// 只会被点穿,而「任何人都能在这个平台上注册子域」是可核对的事实。
+///
+/// **不许说成「用确切主机代替」**:bx 的规则是后缀匹配,`bucket.s3.amazonaws.com`
+/// 照样覆盖它的子域,改窄并不能让这条规则通过 —— 那句话会把用户送进一个
+/// 永远出不来的循环。真正的出路是旁边那个 Add Anyway。
 let riskyDirectRuleWarning =
-    "Anyone can register a subdomain on this platform, so a wildcard rule lets a stranger "
-    + "send your real IP outside the tunnel. Use the exact host you need instead, "
-    + "for example bucket.s3.amazonaws.com."
+    "Anyone can register a subdomain on this platform, and a bx direct rule covers every "
+    + "subdomain of what you write — so a stranger could make your real IP leave outside "
+    + "the tunnel. Writing a deeper host narrows this but does not remove it. "
+    + "Use Add Anyway only if you control that host."
 
 /// 归一化成写进配置的形式。校验通过后才调用。
 func normalizedRulePattern(_ raw: String) -> String {
