@@ -740,15 +740,28 @@ Windows 托盘另有自己的 3 秒 spawn 轮询,不受影响)。设计
 customOnly:)`(`RulesModel.swift`)此前**早就存在、只有测试在调**,本期是接上
 `RulesWindow.swift`/`main.swift` 而不是新造。**删除不弹确认但留 Undo**——为 11
 条冗余规则点 11 次确认框是在惩罚正确的行为。
-**风险门收窄且挪了位置**:`policy.DirectRuleHazard`(`internal/policy/policy.go`)
-取代 `DirectRisk` 判加规则(`DirectRisk` 仍守着 `internal/rulereview` 体检)——
-危险的是**开放子域平台上的通配符**不是平台本身,确切主机不再需要 `--force`。
+**风险门挪了位置,判据只有一份**:`policy.DirectRuleHazard`
+(`internal/policy/policy.go`)判加规则,`DirectRisk`(`internal/rulereview` 体检
+与 `policy.Apply` 那道 `allow_risk` 门在用,后者正是 MCP `apply_policy` 走的路)
+现在是它的**薄壳** —— 四个消费方同一个判据,漂不开。
 `internal/cli/direct.go` 与 `internal/guardian/rules.go` 共用它——**此前 Guardian
 一处都不查**,右键能一键加进 CLI 会拒绝的规则,本期堵上(`Force` 字段,409
-`code=rules_risky_direct`)。右键候选(`AppTrafficModel.swift` 的
-`ruleCandidates(for:)`)直接滤掉危险的那个,Swift 平台清单由
+`code=rules_risky_direct`)。
+**判据是「这条规则覆盖到哪里」,不是「它写成什么样」** —— 曾经收窄成「只拦开放
+平台上的通配符,确切主机放行」,理由是「那个确切主机攻击者拿不到」;**那句前提
+对 bx 是假的**:匹配器是后缀集(`route.NewDomainSet` 去掉 `*.` 只存后缀,`Match`
+逐级往父域找),`bucket.s3.amazonaws.com` 与 `*.s3.amazonaws.com` 覆盖的子树一模
+一样,`evil.bucket.s3.amazonaws.com` 两种写法都直连出去。收窄因此等于在**裸写**
+的形式上完全不设防,而 `TestDirectRuleRiskSilentOnBrandDomains` 还被翻过来断言
+`amazonaws.com` 必须放行 —— 把回归钉成了绿的。已撤回:好用由**逃生口**买单
+(`--force` / 菜单 409 之后的 Add Anyway),不由放松判据买单。守卫钉的是缺陷本身
+(`TestEveryOpenPlatformIsHazardousWrittenBareAndReallyCoversStrangers`:每条裸写
+的平台域名都判危险,**且** `route.NewDomainSet` 真的匹配 `evil.<它>`)。
+右键候选的过滤在 `appTrafficRuleMenu` 里、**只作用于 direct**:滤在
+`ruleCandidates` 里会连 Guardian 明确放行的 proxy 候选一起丢掉(`*.workers.dev`
+恰是那份菜单上最安全的一项,两段域名的目的地还会得到空子菜单)。Swift 平台清单由
 `TestOpenPlatformListMatchesPolicy`(`internal/cli/macos_menu_hazard_test.go`)钉
-住与 Go 逐字相同。**真机未验**:默认窗口大小的表格布局与列宽、`Add Rule…` 三种
+住与 Go 逐字相同,并**两种写法各问一遍**,免得下一次收窄又从它眼皮底下过去。**真机未验**:默认窗口大小的表格布局与列宽、`Add Rule…` 三种
 结局(接受 / 409 后 Add Anyway / 非法输入)、`Remove`+`Undo`、右键候选过滤,见
 `internal/cli/macos_menu_ruleswindow_test.go`。
 
