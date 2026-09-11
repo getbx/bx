@@ -11,17 +11,17 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-// openCloudDenylist 是「任何人都能注册子域」的公有云存储/CDN/托管平台顶级域。
-// 把它们加进直连白名单会重新打开去匿名化洞:攻击者开一个桶/子域(如
-// evil.oss-cn-xx.aliyuncs.com)即命中白名单 → 直连 → 泄漏真实 IP。
-// 只应白名单「品牌自控 DNS 区」的顶级域(taobao.com 等,攻击者拿不到其子域)。
-// directRuleRisk 返回把 domain 加入直连白名单的风险提示(空=品牌自控域,无需提示)。
+// directRuleRisk 返回把 domain 加进直连白名单的风险提示(空 = 可以加)。
+//
+// **判据在 internal/policy,一份,Guardian 与 CLI 共用。** 两份判据会让同一个
+// 域名在命令行被拒、在菜单里被放行,而用户无从分辨谁对 —— 这个仓库为这个形状
+// 栽过。
 func directRuleRisk(domain string) string {
-	if policy.DirectRisk(domain) {
-		return "⚠ 公有云存储/CDN/开放子域平台——任何人都能注册它的子域;加进直连白名单 = " +
-			"攻击者能用一个子域让你的真实 IP 暴露(去匿名化)。建议只白名单品牌自控顶级域。"
+	hazard, reason, suggestion := policy.DirectRuleHazard(domain)
+	if !hazard {
+		return ""
 	}
-	return ""
+	return "⚠ " + reason + " " + suggestion
 }
 
 // editYAMLRuleList 在 config 的 rules[].<field>(direct/proxy)上增删域名,返回改后字节与
