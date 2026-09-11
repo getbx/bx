@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -115,4 +118,191 @@ func TestMacMenuAddRuleKeepsTheSheetOnRefusal(t *testing.T) {
 	if !strings.Contains(code, "controller.onAddRule = ") || !strings.Contains(code, "self?.addRuleFromWindow()") {
 		t.Error("Add Rule… 没接到 main.swift")
 	}
+}
+
+// **体检缺席要在窗口上说出来,不能摆一排看起来干净的行。**
+//
+// 这个窗口的词汇表里「一行没有副标题」读作「查过了,健康」;旧 Guardian 不发
+// `review`,配置读不出来时它也发 nil —— 不说这句话,窗口就替一份从没收到过的
+// 体检报告签了字。判据在 `ruleReviewUnavailableNote`(纯模型,已有 Swift 测试
+// 钉住「缺席与空报告不是同一个渲染」),这条守卫钉的是**接线**:那句话真的
+// 被算出来、真的传进窗口、真的摆进了视图树。
+func TestMacMenuRulesWindowAnnouncesAnAbsentReview(t *testing.T) {
+	window, _ := menuRulesWindowSource(t)
+	render, ok := swiftFunctionBody(window, "private func render(")
+	if !ok {
+		t.Fatal("读不出 RulesWindow.render 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(render, "if let reviewNote {") {
+		t.Error("render 里没有为体检缺席那句话留的分支")
+	}
+	if !strings.Contains(render, "labelWithString: reviewNote") ||
+		!strings.Contains(render, "stack.addArrangedSubview(note)") {
+		t.Error("那句话没有被摆进视图树 —— 算出来没人看见,与没算一模一样")
+	}
+
+	// 判据不许在窗口里重算一份:窗口只能拿到别人算好的那句话。
+	if strings.Contains(window, "review ==") || strings.Contains(window, "ruleReviewUnavailableNote(") {
+		t.Error("窗口自己判了体检在不在 —— 判据该在 RulesModel 里")
+	}
+
+	// main.swift 那一跳:每一次摆这张表都要带上它,漏一处就是那一条路上的
+	// 窗口重新变回「看起来干净」。
+	main := menuMainSwiftCode(t)
+	for _, call := range []string{"rulesWindow.show(", "rulesWindow.refreshIfVisible("} {
+		n := strings.Count(main, call)
+		if n == 0 {
+			t.Fatalf("main.swift 里找不到 %s —— 守卫已失效,先修守卫", call)
+		}
+	}
+	if got, want := strings.Count(main, "ruleReviewUnavailableNote("),
+		strings.Count(main, "rulesWindow.show(")+strings.Count(main, "rulesWindow.refreshIfVisible("); got != want {
+		t.Errorf("%d 处摆这张表,而只有 %d 处带上了体检缺席那句话", want, got)
+	}
+}
+
+// **规则窗口必须跟着环境刷新走,而且显式打开永不被拦。**
+//
+// 此前 `RulesWindow` 连 `isVisible` 都没有、`applyRefresh` 也不为它做任何事:
+// 每条规则的失败计数冻在打开窗口那一刻,而「哪条在失败」正是这个窗口存在的理由
+// (服务器窗口 2026-08-17 就是这么坏过一次的)。
+//
+// 不对称那一半同样承重:环境刷新设的在飞标志若把紧跟着来的显式打开也拦住,
+// 用户点了菜单项、窗口没出现、没有 alert —— 「点了没反应」,那是上一次真实回归。
+func TestMacMenuRulesWindowFollowsAmbientRefreshButNeverSuppressesAnExplicitOpen(t *testing.T) {
+	source := stripSwiftComments(menuMainSwiftSource(t))
+
+	apply, ok := swiftFunctionBody(source, "private func applyRefresh(")
+	if !ok {
+		t.Fatal("读不出 applyRefresh 的函数体 —— 守卫已失效,先修守卫")
+	}
+	gate := strings.Index(apply, "rulesWindow.isVisible")
+	if gate < 0 {
+		t.Fatal("applyRefresh 不看规则窗口开没开 —— 那张表会冻在打开的那一刻")
+	}
+	rest := apply[gate:]
+	call := strings.Index(rest, "fetchRulesOnDemand(")
+	if call < 0 {
+		t.Fatal("看了可见性却不拉 —— 接线只接了一半")
+	}
+	// **只在开着的时候拨**:窗口关着还拨,就把「按需」这件事整个取消掉了。
+	if !strings.Contains(rest[:call], "{") {
+		t.Error("fetchRulesOnDemand 不在可见性那个分支里")
+	}
+	if !strings.Contains(rest[call:call+len("fetchRulesOnDemand(forceShow: false)")], "forceShow: false") {
+		t.Error("环境刷新走的不是 forceShow: false —— 它会抢焦点、会弹 alert")
+	}
+
+	// 显式打开那一路:用户点「Routing Rules…」,forceShow: true。
+	open, ok := swiftFunctionBody(source, "@objc private func openRulesWindow()")
+	if !ok {
+		t.Fatal("读不出 openRulesWindow 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(open, "fetchRulesOnDemand(forceShow: true)") {
+		t.Error("点菜单项走的不是 forceShow: true")
+	}
+
+	// 不对称在判据里,不在裸 guard 里。`shouldSuppressFetch` 已由 Swift 侧
+	// 表驱动测过四种组合;这里钉的是「规则这一路真的用了它」。
+	fetch, ok := swiftFunctionBody(source, "private func fetchRulesOnDemand(forceShow: Bool)")
+	if !ok {
+		t.Fatal("读不出 fetchRulesOnDemand 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(fetch, "shouldSuppressFetch(inFlight: rulesFetchInFlight, explicit: forceShow)") {
+		t.Error("规则那一路的在飞守卫不是 shouldSuppressFetch —— 裸 guard 会把显式打开也拦住")
+	}
+	// 可见性判据住在窗口自己那边(与 ServersWindow 同一个形状)。
+	window, _ := menuRulesWindowSource(t)
+	if !strings.Contains(window, "var isVisible: Bool") {
+		t.Error("RulesWindow 没有 isVisible —— applyRefresh 那一跳无从判断有没有人在看")
+	}
+}
+
+// **五个 Swift 字面量与 rulereview.Class.String() 必须是同一组词。**
+//
+// 菜单按字面量分派三件事(排序、上色、那句英文说明),而两侧没有任何东西把它们
+// 系在一起:把 `ClassRisky.String()` 改成别的词,`ruleRowNoteIsSevere` 会把去
+// 匿名化那一行画成橙色的建议、`ruleVerdictText` 回落成「bx flagged this rule
+// (…)」,**而两个套件全绿**。这正是本仓库反复出现的形状:守卫钉住的是缺陷旁边
+// 的东西。
+//
+// 双向:Go 有而 Swift 没有 = 新加的一类在菜单里既不排序也没有说明;Swift 有而
+// Go 没有 = 一条永远等不到结论的死分支(它看起来与生效中的分支一模一样)。
+//
+// 两侧任一读不出来都 t.Fatal —— 正则没匹配到时当成空集合,「集合相等」会静默
+// 通过,而那正是这条守卫要挡住的失效形状。
+func TestMacMenuRuleClassLiteralsMatchTheGoClassNames(t *testing.T) {
+	goNames := readRuleReviewClassNames(t)
+	swiftNames := readMenuRuleClassLiterals(t)
+
+	// 自检锚点:正则改坏之后这条守卫不许变成空转。
+	if !goNames["risky_direct"] {
+		t.Fatal("Go 那侧抽不到 risky_direct —— 要么 ClassRisky 改了名(那就是漂移,菜单会把去匿名化那行画成建议),要么守卫读错了地方")
+	}
+	if !swiftNames["risky_direct"] {
+		t.Fatal("Swift 那侧抽不到 risky_direct —— 要么菜单改了字面量(那就是漂移),要么守卫读错了地方")
+	}
+
+	for name := range goNames {
+		if !swiftNames[name] {
+			t.Errorf("rulereview.Class 有 %q,而菜单一个字面量都没有 —— 那一类在界面上既不排序也没有说明", name)
+		}
+	}
+	for name := range swiftNames {
+		if !goNames[name] {
+			t.Errorf("菜单里有 %q,而 rulereview.Class 不发这个词 —— 那是一条永远等不到结论的死分支", name)
+		}
+	}
+}
+
+// readRuleReviewClassNames 从 internal/rulereview/verdict.go 的 Class.String()
+// 里抽出全部返回的字面量(含 default 那一支 —— 它才是 ClassRisky)。
+func readRuleReviewClassNames(t *testing.T) map[string]bool {
+	t.Helper()
+	path := filepath.Join("..", "rulereview", "verdict.go")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读不到 %s:%v —— 守卫已失效,先修守卫", path, err)
+	}
+	body := regexp.MustCompile(`(?s)func \(c Class\) String\(\) string \{(.*?)\n\}`).FindStringSubmatch(string(src))
+	if body == nil {
+		t.Fatal("读不出 Class.String() 的函数体 —— 守卫已失效,先修守卫")
+	}
+	out := map[string]bool{}
+	for _, m := range regexp.MustCompile(`return "([^"]+)"`).FindAllStringSubmatch(body[1], -1) {
+		out[m[1]] = true
+	}
+	if len(out) == 0 {
+		t.Fatal("Class.String() 里一个字面量都没抽到 —— 守卫读错了地方")
+	}
+	return out
+}
+
+// readMenuRuleClassLiterals 从 RulesModel.swift 里按 class 分派的那两个函数
+// (排序与那句英文说明)抽出全部 `case "..."` 字面量。
+//
+// **不是全文件扫字符串**:文档注释里逐字列着那五个词,扫全文会让这条守卫在
+// 实现里一个都不剩时照样绿。
+func readMenuRuleClassLiterals(t *testing.T) map[string]bool {
+	t.Helper()
+	source := stripSwiftComments(readMenuSwiftSource(t, "RulesModel.swift"))
+	out := map[string]bool{}
+	for _, sig := range []string{
+		"func ruleRowSeverity(_ row: RuleRow) -> Int",
+		"func ruleVerdictText(_ finding: RuleFinding) -> String",
+	} {
+		body, ok := swiftFunctionBody(source, sig)
+		if !ok {
+			t.Fatalf("读不出 %s 的函数体 —— 守卫已失效,先修守卫", sig)
+		}
+		found := false
+		for _, m := range regexp.MustCompile(`case "([^"]+)"`).FindAllStringSubmatch(body, -1) {
+			out[m[1]] = true
+			found = true
+		}
+		if !found {
+			t.Fatalf("%s 里一个 case 字面量都没抽到 —— 守卫读错了地方", sig)
+		}
+	}
+	return out
 }

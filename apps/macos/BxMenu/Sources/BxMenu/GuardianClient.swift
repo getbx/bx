@@ -341,11 +341,16 @@ func decodeGuardianHTTPResponse<T: Decodable>(_ response: Data, expectedStatus: 
     let head = try parseGuardianHTTPHead(response)
     let body = response[head.bodyOffset...]
     guard head.status == expectedStatus else {
-        // 失败码必须在这里取:抛出之前不读响应体,整套 toggleFailureHint 就
-        // 永远拿不到码(Guardian 的码只在 500 上,而 200 那条路上 Manager
-        // 已经把 LastError 清掉了),用户只会看到 "Guardian request
-        // failed (500)."。响应体损坏/长度对不上时取不到码 —— 那就没有码,
-        // 但状态码本身仍要如实抛出,不能因为体读不动就变成 invalidResponse。
+        // 失败码必须在这里取:抛出之前不读响应体,码就永远到不了调用方,
+        // 用户只会看到 "Guardian request failed (500)."。
+        //
+        // **码不是只在 500 上。** 加规则那道风险门回的是 409 `rules_risky_direct`,
+        // 而「给不给 Add Anyway」「这次带不带 force」全靠它 —— 在这里按状态码挑着
+        // 读体,那条逃生口会整个失灵(菜单只会说一句失败)。servers 那边的
+        // `servers_name_exists` / `servers_switch_busy` 同理。
+        //
+        // 响应体损坏/长度对不上时取不到码 —— 那就没有码,但状态码本身仍要如实
+        // 抛出,不能因为体读不动就变成 invalidResponse。
         throw GuardianClientError.status(
             head.status,
             code: guardianFailureCode(body: body, contentLength: head.contentLength)

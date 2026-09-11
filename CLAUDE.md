@@ -761,7 +761,31 @@ customOnly:)`(`RulesModel.swift`)此前**早就存在、只有测试在调**,本
 `ruleCandidates` 里会连 Guardian 明确放行的 proxy 候选一起丢掉(`*.workers.dev`
 恰是那份菜单上最安全的一项,两段域名的目的地还会得到空子菜单)。Swift 平台清单由
 `TestOpenPlatformListMatchesPolicy`(`internal/cli/macos_menu_hazard_test.go`)钉
-住与 Go 逐字相同,并**两种写法各问一遍**,免得下一次收窄又从它眼皮底下过去。**真机未验**:默认窗口大小的表格布局与列宽、`Add Rule…` 三种
+住与 Go 逐字相同,并**两种写法各问一遍**,免得下一次收窄又从它眼皮底下过去。
+
+**窗口那半同一轮修掉四条,每条都是「界面悄悄替服务端说了一句它没说过的话」**:
+① **体检缺席 ≠ 体检说都健康** —— `list.review` 为 nil(旧 Guardian,或配置读不
+出来)时窗口照样摆一排没有副标题的行,而这个窗口的词汇表里「没有副标题」恰恰读作
+「查过了、健康」;现由 `ruleReviewUnavailableNote` 在表顶说明白,措辞按「nil 是
+『这版没说』」那条纪律(`TestMacMenuRulesWindowAnnouncesAnAbsentReview` 连
+**每一处摆表都带上它**一起钉,漏一处就是那条路上的窗口重新变回「看起来干净」)。
+② **服务端写的是中文** —— `rulereview` 与 `deadFindings` 的 `summary` 原样渲染
+进一个通篇英文的菜单(`已在内建 china 直连列表里…… ← *.apple.com`);现由
+`ruleVerdictText` 按 `class` **在客户端映射成英文**(选客户端而不是让服务端多发
+一个英文字段:`summary` 同时喂着中文的 `bx doctor`/`bx status`,再写一份就是同一句
+判断在两处各写一遍),认不出的类把那个词原样带上、不消失也不冒充看懂了。
+③ **一行既被分类又在成片失败时,失败那半此前整个丢掉** —— 8113/8113 全失败的规则
+只显示「删掉它不改变任何流量」还被画成红的;而 `DomainSet.MatchRule` 逐级往父域找,
+**累积失败的恰恰是被盖住的那条更窄的规则**,不是边角情况。
+④ **规则窗口从来不跟环境刷新走** —— `RulesWindow` 连 `isVisible` 都没有,失败计数
+冻在打开窗口那一刻,而「哪条在失败」正是这个窗口存在的理由(与 2026-08-17 服务器
+窗口那次回归同一形状)。现照服务器窗口那份先例接上,并由
+`TestMacMenuRulesWindowFollowsAmbientRefreshButNeverSuppressesAnExplicitOpen`
+把**不对称**一并钉住:显式打开永不被在飞标志拦(那次「点了没反应」)。
+另有 `TestMacMenuRuleClassLiteralsMatchTheGoClassNames` 双向钉住菜单那五个字面量
+与 `rulereview.Class.String()` 是同一组词 —— 此前改 `ClassRisky.String()` 会让
+去匿名化那一行被画成橙色建议、说明回落成「bx flagged this rule (…)」,**而两个
+套件全绿**。**真机未验**:默认窗口大小的表格布局与列宽、`Add Rule…` 三种
 结局(接受 / 409 后 Add Anyway / 非法输入)、`Remove`+`Undo`、右键候选过滤,见
 `internal/cli/macos_menu_ruleswindow_test.go`。
 

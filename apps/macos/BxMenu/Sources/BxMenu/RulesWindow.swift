@@ -27,9 +27,9 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     /// 用户点了 Add Rule…。
     var onAddRule: (() -> Void)?
 
-    func show(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String) {
+    func show(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?) {
         let window = ensureWindow()
-        render(rows: rows, ruleRows: ruleRows, configPath: configPath)
+        render(rows: rows, ruleRows: ruleRows, configPath: configPath, reviewNote: reviewNote)
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
         // 用户以为"点了没反应"——正是这一版要消灭的那种体验。
         NSApp.activate(ignoringOtherApps: true)
@@ -38,10 +38,18 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
 
     /// 数据更新时就地重画。**窗口不存在就什么都不做** —— 不要因为后台刷新
     /// 把一个用户没打开的窗口弹出来。
-    func refreshIfVisible(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String) {
+    func refreshIfVisible(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?) {
         guard let window, window.isVisible else { return }
-        render(rows: rows, ruleRows: ruleRows, configPath: configPath)
+        render(rows: rows, ruleRows: ruleRows, configPath: configPath, reviewNote: reviewNote)
     }
+
+    /// 窗口是否开着。**供环境刷新路径判断「有没有人在看」** —— 与
+    /// `ServersWindow` 那份逐字同一个理由:窗口关着就不拨(按需的本意),
+    /// 窗口开着就说明有人正盯着,这时按需拉一次正是按需的本意。
+    ///
+    /// 少了它,每条规则的失败计数会冻在**打开窗口那一刻**,而这个窗口存在的
+    /// 理由就是回答「哪条在失败」—— 服务器窗口 2026-08-17 就是这么坏过一次的。
+    var isVisible: Bool { window?.isVisible ?? false }
 
     private func ensureWindow() -> NSWindow {
         if let window { return window }
@@ -117,13 +125,29 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     ///
     /// **顺序与那句话都来自 `ruleRows`(纯模型),这里一个字节都不算。** 判定
     /// 落进 AppKit 这半就等于没有测试盯着它:这个文件在 CI 里编都不编。
-    private func render(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String) {
+    private func render(
+        rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?
+    ) {
         guard let stack else { return }
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
         ruleRowBoxes.removeAll()
+
+        // **体检缺席要说出来,摆在最上面。** 这个窗口的词汇表里「一行没有副标题」
+        // 读作「查过了,健康」;旧 Guardian(以及配置读不出来的那一次)根本没发
+        // 体检,不说这句话就是替一份从没收到过的报告签字。判据在
+        // `ruleReviewUnavailableNote`,这里只摆。
+        if let reviewNote {
+            let note = NSTextField(labelWithString: reviewNote)
+            note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            note.textColor = .secondaryLabelColor
+            note.lineBreakMode = .byWordWrapping
+            note.preferredMaxLayoutWidth = 380
+            stack.addArrangedSubview(note)
+            stack.addArrangedSubview(gap())
+        }
 
         for row in rows {
             stack.addArrangedSubview(groupRow(row))

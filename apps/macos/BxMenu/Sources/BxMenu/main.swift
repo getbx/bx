@@ -436,6 +436,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if serversWindow.isVisible {
             fetchServersOnDemand(forceShow: false)
         }
+        // 规则窗口同理,而且它此前**整个没有这条路**:`RulesWindow` 连
+        // `isVisible` 都没有,`applyRefresh` 也不为它做任何事,于是每条规则的失败
+        // 计数冻在打开窗口那一刻 —— 而「哪条在失败」正是这个窗口存在的理由。
+        // 与服务器窗口同一个形状、同一条纪律:窗口关着不拨,开着就按需拉一次;
+        // `forceShow: false` 走 `refreshIfVisible` 就地重画,不抢焦点、不弹 alert,
+        // 并且这一路(也只有这一路)会被在飞守卫拦住。
+        if rulesWindow.isVisible {
+            fetchRulesOnDemand(forceShow: false)
+        }
         // 应用流量同理:**窗口关着就不拨**(没人看时 Core 不问内核、不记字节、
         // 不攒历史,也不在这台机器上留下你开过什么应用的记录 —— 注意不是「开销
         // 精确为零」,那句旧说法 2026-08-20 之后不再成立,Core 侧仍要维护一张
@@ -1023,10 +1032,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     from: rules, failing: self.maintenanceReport?.core?.failingRules ?? [],
                     customOnly: true)
                 if forceShow {
-                    self.rulesWindow.show(rows: groups, ruleRows: table, configPath: rules.configPath)
+                    self.rulesWindow.show(
+                        rows: groups, ruleRows: table, configPath: rules.configPath,
+                        reviewNote: ruleReviewUnavailableNote(rules))
                 } else {
                     self.rulesWindow.refreshIfVisible(
-                        rows: groups, ruleRows: table, configPath: rules.configPath)
+                        rows: groups, ruleRows: table, configPath: rules.configPath,
+                        reviewNote: ruleReviewUnavailableNote(rules))
                 }
             }
         }
@@ -1618,7 +1630,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         ruleRows: ruleRows(
                             from: list, failing: self.maintenanceReport?.core?.failingRules ?? [],
                             customOnly: true),
-                        configPath: list.configPath
+                        configPath: list.configPath,
+                        reviewNote: ruleReviewUnavailableNote(list)
                     )
                     self.followUpAfterRuleChange(title: enable ? "Turned on \(group)" : "Turned off \(group)", list: list)
                 case .failure(let error):
@@ -1648,7 +1661,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         ruleRows: ruleRows(
                             from: list, failing: self.maintenanceReport?.core?.failingRules ?? [],
                             customOnly: true),
-                        configPath: list.configPath
+                        configPath: list.configPath,
+                        reviewNote: ruleReviewUnavailableNote(list)
                     )
                     let verb = ruleKind == .direct ? "direct" : "through the tunnel"
                     self.followUpAfterRuleChange(title: "\(pattern) will always go \(verb)", list: list)
@@ -1811,7 +1825,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         ruleRows: ruleRows(
                             from: list, failing: self.maintenanceReport?.core?.failingRules ?? [],
                             customOnly: true),
-                        configPath: list.configPath
+                        configPath: list.configPath,
+                        reviewNote: ruleReviewUnavailableNote(list)
                     )
                     let verb = kind == .direct ? "direct" : "through the tunnel"
                     self.followUpAfterRuleChange(

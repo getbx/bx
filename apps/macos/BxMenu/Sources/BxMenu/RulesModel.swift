@@ -105,6 +105,10 @@ struct RuleFinding: Decodable, Equatable {
     /// **认不出的词不许丢掉这一行** —— 新版 Guardian 发来一类旧菜单不认识的结论时,
     /// 这一行仍然要显示,只是排在已知的几类后面。
     let cls: String
+    /// 服务端写的那句话。**不渲染** —— 它是中文(internal/rulereview 与
+    /// deadFindings 里那几段),而这个菜单的用户可见字符串只准英文。界面上那句
+    /// 由 `ruleVerdictText` 按 `cls` 在本地给出。留着解码是因为它仍是线上契约的
+    /// 一部分,断开的话下一个人会以为服务端没发这个字段。
     let summary: String
     let coveredBy: String
 
@@ -203,15 +207,77 @@ struct RuleRow: Equatable {
     let verdict: RuleFinding?
 
     /// 副标题。**一切正常时不说话**:每行都挂一句解释会把真正要紧的那一行淹掉。
+    ///
+    /// **分类与失败是两件事,两件都有就两件都说。** 上一版在体检结论那里就
+    /// `return` 了,于是一条「被你自己更宽的一条盖住」**并且** 8113/8113 全失败的
+    /// 规则,只显示「covered by a broader rule of yours」还被画成红的 —— 一行红字
+    /// 说的却是「删掉它不改变任何流量」。这不是边角情况:`DomainSet.MatchRule`
+    /// 逐级往父域找,于是**正在累积失败的恰恰是被盖住的那条更窄的规则**。
     var detail: String? {
+        var parts: [String] = []
         if let verdict {
-            if verdict.coveredBy.isEmpty { return verdict.summary }
-            return verdict.summary + " ← " + verdict.coveredBy
+            var text = ruleVerdictText(verdict)
+            if !verdict.coveredBy.isEmpty { text += " ← " + verdict.coveredBy }
+            parts.append(text)
         }
-        guard let failure, failure.attempts > 0 else { return nil }
-        let pct = Int((Double(failure.failures) / Double(failure.attempts) * 100).rounded())
-        return "\(failure.failures) of \(failure.attempts) connections failed (\(pct)%) — this path is not working"
+        if let failure, failure.attempts > 0 {
+            let pct = Int((Double(failure.failures) / Double(failure.attempts) * 100).rounded())
+            parts.append(
+                "\(failure.failures) of \(failure.attempts) connections failed (\(pct)%) — this path is not working")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
+}
+
+/// 一条体检结论在界面上说的那句话。**英文住在客户端,按 `class` 映射。**
+///
+/// 服务端那份 `summary` 是中文(`internal/rulereview` 与 `deadFindings` 写的),
+/// 而这个菜单的每一个用户可见字符串都是英文 —— 直接转发会让
+/// 「已在内建 china 直连列表里,这条手写的没有额外作用。 ← *.apple.com」出现在一个
+/// 通篇英文的窗口里。**选客户端映射而不是让服务端多发一个英文字段**:`summary`
+/// 同时喂着 `bx doctor` 与 `bx status` 的中文输出(那一侧的读者是中文用户),
+/// 让服务端为菜单再写一份英文,就是同一句判断在两处各写一遍、还得有人记得让它们
+/// 保持同义;而 `class` 本来就是这条协议里稳定的那一项。
+///
+/// **认不出的类不许消失,也不许冒充自己看懂了**:如实说「bx 报了这一条」并把
+/// 那个词原样带上,用户能拿它去搜、去问,而 `ruleRowSeverity` 已经给了它一个
+/// 排在已知几类之后、健康之前的位置。
+func ruleVerdictText(_ finding: RuleFinding) -> String {
+    switch finding.cls {
+    case "risky_direct":
+        return "Anyone can register a subdomain on this platform, and this direct rule covers "
+            + "every subdomain of it — a stranger could make your real IP leave outside the tunnel."
+    case "shadowed_by_user_rule":
+        return "Covered by a broader rule of yours; deleting it changes no traffic."
+    case "overridden_by_opposite_kind":
+        return "A broader rule in your other list wins, so this rule has never taken effect."
+    case "shadowed_by_builtin_list":
+        // proxy 命中内建 china 列表**不是冗余**,是生效中的例外 —— 说反了就是叫
+        // 用户删掉一条正在把流量拉回隧道的规则。服务端那两句措辞刻意相反,
+        // 这里必须跟着分开。
+        return finding.kind == "proxy"
+            ? "bx's built-in china list sends this direct; your rule pulls it back through the "
+                + "tunnel — an exception in force, not a duplicate."
+            : "Already covered by bx's built-in china direct list; this rule adds nothing."
+    case "dead":
+        return "bx has never matched a connection against this rule. Check you still visit that "
+            + "domain before deleting it."
+    default:
+        return finding.cls.isEmpty
+            ? "bx flagged this rule, and this version of the menu cannot say why."
+            : "bx flagged this rule (\(finding.cls))."
+    }
+}
+
+/// 体检**缺席**时窗口顶上要说的那句话。`nil` = 这一版发布了体检(哪怕一条结论
+/// 都没有)。
+///
+/// **`nil` 是「这版没说」,不是「没有问题」。** 旧 Guardian 不发 `review`,配置
+/// 读不出来时它也发 nil —— 而这个窗口的词汇表里「一行没有副标题」恰恰读作
+/// 「查过了,健康」。不说这句话,窗口就等于替一份从没收到过的体检报告签了字。
+func ruleReviewUnavailableNote(_ list: RuleList) -> String? {
+    guard list.review == nil else { return nil }
+    return "This version of bx did not check these rules, so none of them is marked good or bad here."
 }
 
 /// 越小越靠前。**有问题的在前,健康的一个字不写** —— 与 Checks 页同一条纪律。
@@ -240,6 +306,13 @@ func ruleRowSeverity(_ row: RuleRow) -> Int {
 ///
 /// 判据因此是两条:去匿名化那一类,以及真的在失败的那一类。其余体检结论
 /// (被盖住、从没生效、认不出的新类)都是**建议**,轻处理是对的。
+///
+/// **它与 `ruleRowSeverity` 不是同一个事实的两面**(这句话此前写在这里,是假的):
+/// 两者在 `failures == 0` 上判得不一样 —— 那边要 `failures > 0` 才算「在失败」,
+/// 这边只看 `failure != nil`。今天那种行到不了界面(`internal/stats/outcome.go`
+/// 的 `ruleWorthReporting` 要求 `Failures >= 5` 才发布一条 FailingRule),所以
+/// **要修的是这句话不是这个行为** —— 为一个到不了的输入去改判据,只会让两处
+/// 各自为了「一致」而漂。
 func ruleRowNoteIsSevere(_ row: RuleRow) -> Bool {
     if row.verdict?.cls == "risky_direct" { return true }
     return row.failure != nil
