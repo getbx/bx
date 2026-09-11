@@ -12,14 +12,24 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var stack: NSStackView?
 
+    /// 表里每一行的容器,键是 `kind|pattern`。`markRemoved` 靠它找到那一行 ——
+    /// 删完**不重画整张表**:重画会让这一行直接消失,而那正是这里要避免的。
+    private var ruleRowBoxes: [String: NSStackView] = [:]
+
     /// 用户拨动了一个组开关。参数是组名与目标状态。
     var onToggleGroup: ((String, Bool) -> Void)?
     /// 用户要求打开配置文件所在位置。
     var onRevealConfig: (() -> Void)?
+    /// 用户要删掉一条规则。
+    var onRemoveRule: ((RuleKind, String) -> Void)?
+    /// 用户点了 Undo,要把刚删掉的那条原样加回去。
+    var onUndoRemove: ((RuleKind, String) -> Void)?
+    /// 用户点了 Add Rule…。
+    var onAddRule: (() -> Void)?
 
-    func show(rows: [RuleGroupRow], custom: [String], configPath: String) {
+    func show(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String) {
         let window = ensureWindow()
-        render(rows: rows, custom: custom, configPath: configPath)
+        render(rows: rows, ruleRows: ruleRows, configPath: configPath)
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
         // 用户以为"点了没反应"——正是这一版要消灭的那种体验。
         NSApp.activate(ignoringOtherApps: true)
@@ -28,16 +38,19 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
 
     /// 数据更新时就地重画。**窗口不存在就什么都不做** —— 不要因为后台刷新
     /// 把一个用户没打开的窗口弹出来。
-    func refreshIfVisible(rows: [RuleGroupRow], custom: [String], configPath: String) {
+    func refreshIfVisible(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String) {
         guard let window, window.isVisible else { return }
-        render(rows: rows, custom: custom, configPath: configPath)
+        render(rows: rows, ruleRows: ruleRows, configPath: configPath)
     }
 
     private func ensureWindow() -> NSWindow {
         if let window { return window }
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
-            styleMask: [.titled, .closable],
+            // **`.resizable` 与那一行的 toolTip 是同一件事的两半**:规则那一行
+            // 的说明会截断,而这个窗口不横向滚动 —— 少了把窗口拉宽这条出路,
+            // 被截掉的那半句就永久不可见了。
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -83,50 +96,142 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         return window
     }
 
-    /// **这个窗口只有三样东西:开关、你自己写的、以及去看配置。**
+    /// **这个窗口只有三样东西:开关、你自己写的那些规则、以及去改它们。**
     ///
     /// 上一版还有标题行、顶部告警、页脚说明、完整路径和分隔线 —— 而它们各自
     /// 都在重复别处已经说过的话:
     ///
     ///   · 顶部「Apple isn't working」与那一行的红色 `6 failed` 是同一件事
     ///   · 「Changes apply when you reconnect」是常驻的,而**改完本来就会弹
-    ///     一次提示**(offerReconnectAfterRuleChange),所以它一年到头只是
-    ///     在占地方
-    ///   · 两块内容一个带勾选框、一个是灰色等宽字,已经分得清,不需要小标题
+    ///     一次提示**(followUpAfterRuleChange),所以它一年到头只是在占地方
+    ///   · 两块内容一个带勾选框、一个一行一条带 Remove,已经分得清,不需要小标题
     ///   · 路径没人会去手打,按钮就是干这个的
     ///
-    /// 删掉之后剩下的每一行都在回答一个问题:哪些开着、我自己写了什么、
+    /// 剩下的每一行都在回答一个问题:哪些开着、我自己写了什么(哪条有毛病)、
     /// 怎么去改。**分隔靠留白,不靠线**。
-    private func render(rows: [RuleGroupRow], custom: [String], configPath: String) {
+    ///
+    /// **自己写的那些规则不再是一坨灰字。** 上一版把它们摊成只读的等宽文本,
+    /// 于是这个窗口回答不了「哪条有问题」「怎么删掉它」—— 而用户打开它十有八九
+    /// 就是为了这两件事,只能去开终端。现在一行一条:模式、方向、以及**只有
+    /// 出了问题才说的那句话**(`row.detail`,健康的一行一个字不写)。
+    ///
+    /// **顺序与那句话都来自 `ruleRows`(纯模型),这里一个字节都不算。** 判定
+    /// 落进 AppKit 这半就等于没有测试盯着它:这个文件在 CI 里编都不编。
+    private func render(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String) {
         guard let stack else { return }
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
+        ruleRowBoxes.removeAll()
 
         for row in rows {
             stack.addArrangedSubview(groupRow(row))
         }
 
-        if !custom.isEmpty {
-            // 只读:菜单没有资格替用户删他手写的规则,而**没有勾选框本身就说明了
-            // 这一点** —— 不必再写一句「这些不能改」。
+        if !ruleRows.isEmpty {
             stack.addArrangedSubview(gap())
-            for pattern in custom {
-                let label = NSTextField(labelWithString: pattern)
-                label.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-                label.textColor = .secondaryLabelColor
-                stack.addArrangedSubview(label)
+            for row in ruleRows {
+                stack.addArrangedSubview(ruleRow(row))
             }
         }
 
+        stack.addArrangedSubview(gap())
+        let footer = NSStackView()
+        footer.orientation = .horizontal
+        footer.spacing = 8
+        let add = NSButton(title: "Add Rule…", target: self, action: #selector(addRule))
+        add.bezelStyle = .rounded
+        add.controlSize = .small
+        footer.addArrangedSubview(add)
         if !configPath.isEmpty {
-            stack.addArrangedSubview(gap())
             let reveal = NSButton(title: "Show Config", target: self, action: #selector(revealConfig))
             reveal.bezelStyle = .rounded
             reveal.controlSize = .small
-            stack.addArrangedSubview(reveal)
+            footer.addArrangedSubview(reveal)
         }
+        stack.addArrangedSubview(footer)
+    }
+
+    /// 一条规则一行:等宽的模式、方向、出问题那句话、以及一个 Remove。
+    ///
+    /// 按钮把 `kind|pattern` 存进 `identifier`:回调要的就是这两样,而
+    /// 从界面上的文字反推它们会在模式里含 `|` 之类的时候悄悄取错一条规则。
+    private func ruleRow(_ row: RuleRow) -> NSView {
+        let box = NSStackView()
+        box.orientation = .horizontal
+        box.alignment = .firstBaseline
+        box.spacing = 8
+
+        let pattern = NSTextField(labelWithString: row.pattern)
+        pattern.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        box.addArrangedSubview(pattern)
+
+        let kind = NSTextField(labelWithString: row.kind.rawValue)
+        kind.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        kind.textColor = .secondaryLabelColor
+        box.addArrangedSubview(kind)
+
+        // **健康的一行不摆这个 label**,不是摆一个空的:一屏参差不齐的留白
+        // 正是上一版「太丑」的来源,而每行都挂一句解释会把真要紧的那行淹掉。
+        if let detail = row.detail {
+            let note = NSTextField(labelWithString: detail)
+            note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            note.textColor = row.verdict != nil ? .systemOrange : .systemRed
+            note.lineBreakMode = .byTruncatingTail
+            // 截断了还看得全:这个窗口不横向滚动,少了 toolTip 那句话就永久不可见。
+            note.toolTip = detail
+            note.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            box.addArrangedSubview(note)
+        }
+
+        box.setHuggingPriority(.defaultLow, for: .horizontal)
+        let remove = NSButton(title: "Remove", target: self, action: #selector(removeRule(_:)))
+        remove.bezelStyle = .rounded
+        remove.controlSize = .small
+        remove.identifier = NSUserInterfaceItemIdentifier(ruleKey(row.kind, row.pattern))
+        remove.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        box.addArrangedSubview(remove)
+
+        ruleRowBoxes[ruleKey(row.kind, row.pattern)] = box
+        return box
+    }
+
+    /// 那一行原地变成「Removed … · Undo」,**不从栈里移除**。
+    ///
+    /// 不弹确认框是刻意的(要清掉十一条冗余规则就得点十一次确认,那是在惩罚
+    /// 正确的行为);但一次误点静默毁掉一条手写规则同样不行 —— 出路是删完
+    /// 留一个撤销口,下一次 render(重拉规则之后)它才真的不见。
+    func markRemoved(kind: RuleKind, pattern: String) {
+        let key = ruleKey(kind, pattern)
+        guard let box = ruleRowBoxes[key] else { return }
+        for view in box.arrangedSubviews {
+            box.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        let label = NSTextField(labelWithString: "Removed \(pattern)")
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        box.addArrangedSubview(label)
+        let undo = NSButton(title: "Undo", target: self, action: #selector(undoRemove(_:)))
+        undo.bezelStyle = .rounded
+        undo.controlSize = .small
+        undo.identifier = NSUserInterfaceItemIdentifier(key)
+        box.addArrangedSubview(undo)
+    }
+
+    private func ruleKey(_ kind: RuleKind, _ pattern: String) -> String {
+        kind.rawValue + "|" + pattern
+    }
+
+    /// 从按钮的 identifier 还原出这一行是谁。**按第一个 `|` 切**:方向那一段
+    /// 取值只有 direct/proxy,不含分隔符,而模式里含分隔符时后半段要原样留着。
+    private func ruleIdentity(_ sender: NSButton) -> (RuleKind, String)? {
+        guard let raw = sender.identifier?.rawValue,
+            let separator = raw.firstIndex(of: "|"),
+            let kind = RuleKind(rawValue: String(raw[raw.startIndex..<separator]))
+        else { return nil }
+        return (kind, String(raw[raw.index(after: separator)...]))
     }
 
     /// 一段留白。**分隔靠它,不靠分隔线** —— 三五行内容之间画线是给长文档用的。
@@ -172,6 +277,20 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         sender.allowsMixedState = false
         sender.state = enable ? .on : .off
         onToggleGroup?(name, enable)
+    }
+
+    @objc private func removeRule(_ sender: NSButton) {
+        guard let (kind, pattern) = ruleIdentity(sender) else { return }
+        onRemoveRule?(kind, pattern)
+    }
+
+    @objc private func undoRemove(_ sender: NSButton) {
+        guard let (kind, pattern) = ruleIdentity(sender) else { return }
+        onUndoRemove?(kind, pattern)
+    }
+
+    @objc private func addRule() {
+        onAddRule?()
     }
 
     @objc private func revealConfig() {
