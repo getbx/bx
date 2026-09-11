@@ -29,6 +29,106 @@ struct RulesModelTests {
     expect(healthy?.detail == nil, "健康规则也在说话:\(String(describing: healthy?.detail))")
 }
 
+
+    // MARK: - 删掉了、还能撤销的那几条(见 PendingRuleRemoval)
+
+    /// **这是本组测试要钉的那条性质。** 删完之后来了一次环境刷新(菜单开着时
+    /// 约每 2 秒一拍),而新鲜数据里已经没有这条规则了 —— 表上那一行连同它的
+    /// Undo 必须还在。此前它会在这一拍里无声消失,于是一个刻意保留的撤销口
+    /// 变成了两秒到期的东西,而没有人做过这个决定。
+    static func testPendingRemovalSurvivesAnAmbientRefreshThatNoLongerHasTheRule() {
+        let before = ruleRows(
+            from: RuleList(direct: ["*.a.com", "*.b.com", "*.c.com"], proxy: []),
+            failing: [], customOnly: false)
+        let pending = [PendingRuleRemoval(kind: .direct, pattern: "*.b.com", index: 1)]
+
+        // 服务端已经删掉了 *.b.com,下一拍环境刷新发来的就是这份。
+        let fresh = ruleRows(
+            from: RuleList(direct: ["*.a.com", "*.c.com"], proxy: []), failing: [], customOnly: false)
+        let surviving = survivingRuleRemovals(pending, freshRows: fresh)
+        expect(surviving == pending, "新鲜数据里没有这条规则,挂起的删除却退场了 —— Undo 会在 2 秒后无声消失")
+
+        let entries = ruleTableEntries(rows: fresh, pending: surviving)
+        expect(
+            entries == [
+                .rule(before[0]), .removed(kind: .direct, pattern: "*.b.com"), .rule(before[2]),
+            ],
+            "重画之后那一行不在原位:\(entries)")
+    }
+
+    /// 服务端重新报出这条规则 = 那次 Undo 成功了(服务端那半就是这么看的)。
+    /// 判据只有这一条 —— 窗口不去猜请求的结局。
+    static func testPendingRemovalRetiresWhenTheRuleComesBack() {
+        let pending = [PendingRuleRemoval(kind: .direct, pattern: "*.b.com", index: 1)]
+        let restored = ruleRows(
+            from: RuleList(direct: ["*.a.com", "*.b.com"], proxy: []), failing: [], customOnly: false)
+        expect(
+            survivingRuleRemovals(pending, freshRows: restored).isEmpty,
+            "规则回来了,挂起还赖着 —— 表上会出现一行「Removed」而它明明还在")
+    }
+
+    /// 删完那一刻窗口手里还是**旧**数据(那条规则仍在里头),而刷新之后才没有。
+    /// 两种情形都只许摆一行:一行 Removed,不是「规则一行 + Removed 一行」。
+    static func testPendingRemovalNeverShowsTheRuleTwice() {
+        let stale = ruleRows(
+            from: RuleList(direct: ["*.a.com", "*.b.com"], proxy: []), failing: [], customOnly: false)
+        let entries = ruleTableEntries(
+            rows: stale, pending: [PendingRuleRemoval(kind: .direct, pattern: "*.b.com", index: 1)])
+        expect(entries.count == 2, "同一条规则同时以两种面目出现:\(entries)")
+        expect(
+            entries.last == .removed(kind: .direct, pattern: "*.b.com"),
+            "删掉的那条没变成 Removed 行:\(entries)")
+    }
+
+    /// **方向必须进键。** 同名规则可以同时在 direct 与 proxy 里、语义相反;
+    /// 只按模式比会让删掉其中一条把另一条也从表里抹掉。
+    static func testPendingRemovalIsKeyedByKindNotJustPattern() {
+        let rows = ruleRows(
+            from: RuleList(direct: ["*.a.com"], proxy: ["*.a.com"]), failing: [], customOnly: false)
+        let pending = [PendingRuleRemoval(kind: .direct, pattern: "*.a.com", index: 0)]
+        let entries = ruleTableEntries(rows: rows, pending: pending)
+        expect(entries.count == 2, "另一张表里的同名规则被一起抹掉了:\(entries)")
+        expect(
+            entries.contains(.rule(rows.first { $0.kind == .proxy }!)),
+            "proxy 那条不见了:\(entries)")
+
+        // 对账那一半同理:proxy 里还有同名的,不能当成「规则回来了」。
+        expect(
+            survivingRuleRemovals(pending, freshRows: rows.filter { $0.kind == .proxy }) == pending,
+            "proxy 里的同名规则把 direct 那条挂起顶掉了")
+    }
+
+    /// 连删两条:各自回到各自的位置,而不是挤在一起或者互相顶歪。
+    static func testTwoPendingRemovalsKeepTheirOwnPositions() {
+        let all = ruleRows(
+            from: RuleList(direct: ["*.a.com", "*.b.com", "*.c.com", "*.d.com"], proxy: []),
+            failing: [], customOnly: false)
+        let fresh = ruleRows(
+            from: RuleList(direct: ["*.a.com", "*.c.com"], proxy: []), failing: [], customOnly: false)
+        let entries = ruleTableEntries(
+            rows: fresh,
+            pending: [
+                PendingRuleRemoval(kind: .direct, pattern: "*.d.com", index: 3),
+                PendingRuleRemoval(kind: .direct, pattern: "*.b.com", index: 1),
+            ])
+        expect(
+            entries == [
+                .rule(all[0]), .removed(kind: .direct, pattern: "*.b.com"), .rule(all[2]),
+                .removed(kind: .direct, pattern: "*.d.com"),
+            ],
+            "两条挂起没有各回各位:\(entries)")
+    }
+
+    /// 行号越界不许让表崩掉或者把行吞了(数据在两拍之间可以变短)。
+    static func testPendingRemovalWithAStaleIndexStillShowsUp() {
+        let fresh = ruleRows(from: RuleList(direct: ["*.a.com"], proxy: []), failing: [], customOnly: false)
+        let entries = ruleTableEntries(
+            rows: fresh, pending: [PendingRuleRemoval(kind: .direct, pattern: "*.z.com", index: 99)])
+        expect(
+            entries.contains(.removed(kind: .direct, pattern: "*.z.com")),
+            "行号过时就把这一行连同它的 Undo 丢了:\(entries)")
+    }
+
     static func testRuleRowsMatchFailuresByKindNotJustName() {
     // 同名规则可以同时出现在 direct 与 proxy 里(语义完全相反)。
     // 只按名字对齐会把失败标到错误的那一行上。
@@ -568,6 +668,12 @@ struct RulesModelTests {
         testAbsentReviewIsAnnouncedInsteadOfLookingClean()
         testVerdictTextIsEnglishAndNeverEchoesTheServersProse()
         testRowShowsBothItsVerdictAndItsFailures()
+        testPendingRemovalSurvivesAnAmbientRefreshThatNoLongerHasTheRule()
+        testPendingRemovalRetiresWhenTheRuleComesBack()
+        testPendingRemovalNeverShowsTheRuleTwice()
+        testPendingRemovalIsKeyedByKindNotJustPattern()
+        testTwoPendingRemovalsKeepTheirOwnPositions()
+        testPendingRemovalWithAStaleIndexStillShowsUp()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」,
         // 而一个根本没被脚本登记的套件退出码也是 0(本仓库实测栽过)。
         if failures == 0 {

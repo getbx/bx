@@ -306,3 +306,155 @@ func readMenuRuleClassLiterals(t *testing.T) map[string]bool {
 	}
 	return out
 }
+
+// **删完那一行的 Undo 必须活过环境重画 —— 这条守卫钉的就是那件事。**
+//
+// 起因是一次修复顺手弄坏的东西:规则窗口 2026-09-11 才接上环境刷新
+// (`applyRefresh` → `fetchRulesOnDemand(forceShow: false)` → `refreshIfVisible`
+// → `render`),而 `render` 从新鲜数据重建整张表,新鲜数据里已经没有刚删掉的
+// 那条规则了 —— 于是那个 Undo 在**约 2 秒后**无声消失。删除刻意不弹确认框
+// (为十一条冗余点十一次确认是在惩罚正确的行为),Undo 是那个确认框的替身,
+// 把它的寿命绑在刷新节拍上没有人做过这个决定。
+//
+// **判据钉的是「重画之后它还在」这条性质本身,不是它旁边的东西**(本仓库最
+// 常复发的失效形状):环境那条路必须经过同一个把挂起插回去的跳板,而且不许
+// 有第二条绕开挂起、直接遍历新鲜数据的摆表路径 —— 那样改回去整套照样绿。
+func TestMacMenuRulesWindowKeepsTheUndoAcrossAnAmbientRerender(t *testing.T) {
+	window, text := menuRulesWindowSource(t)
+
+	// ① 环境那条路(`refreshIfVisible`)与显式打开走同一个跳板:先对账挂起,
+	//    再摆表。绕开它就等于绕开这整个修复。
+	refresh, ok := swiftFunctionBody(window, "func refreshIfVisible(")
+	if !ok {
+		t.Fatal("读不出 refreshIfVisible 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(refresh, "adoptFreshRules(") || !strings.Contains(refresh, "render(") {
+		t.Error("环境刷新没走「对账挂起 → 摆表」那条路 —— 刚删掉的那一行会在这一拍里消失")
+	}
+
+	// ② 摆表只有一条路,而且它经过 `ruleTableEntries`(把挂起的删除插回原位的
+	//    那个纯函数)。直接遍历新鲜数据就是这个 bug 的原形。
+	render, ok := swiftFunctionBody(window, "private func render(")
+	if !ok {
+		t.Fatal("读不出 RulesWindow.render 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(render, "ruleTableEntries(rows: lastRuleRows, pending: pendingRemovals)") {
+		t.Error("render 没有把挂起的删除插回表里 —— 重画一次那条 Undo 就没了")
+	}
+	if strings.Contains(render, "for row in ruleRows") || strings.Contains(render, "for row in lastRuleRows") {
+		t.Error("render 里还有一条直接遍历规则数据的摆表路径 —— 它绕开挂起,正是这个 bug 的原形")
+	}
+	// 那一行长什么样只有一份实现:改装某一行活不过下一次 render。
+	if !strings.Contains(render, "removedRow(kind: kind, pattern: pattern)") {
+		t.Error("render 不摆「Removed … · Undo」那种行 —— 挂起记下了却没人把它画出来")
+	}
+	if !strings.Contains(text, `NSButton(title: "Undo"`) {
+		t.Error("窗口里没有 Undo 按钮")
+	}
+	removed, ok := swiftFunctionBody(window, "private func removedRow(")
+	if !ok {
+		t.Fatal("读不出 removedRow 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(removed, "undoRemove(_:)") {
+		t.Error("Removed 那一行上的按钮不接 undoRemove —— 一个点不动的 Undo")
+	}
+
+	// ③ 对账只有一条判据,而且只在**拿到新鲜数据**时发生。写成无条件清空
+	//    (或者在 markRemoved 的就地重画里也对一次账)就等于这个修复从来没生效:
+	//    删完那一刻手里还是旧数据,对账会把刚记下的挂起当场抹掉。
+	adopt, ok := swiftFunctionBody(window, "private func adoptFreshRules(")
+	if !ok {
+		t.Fatal("读不出 adoptFreshRules 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(adopt, "survivingRuleRemovals(pendingRemovals, freshRows: ruleRows)") {
+		t.Error("挂起的对账判据不是 survivingRuleRemovals —— 判定该在 RulesModel 里")
+	}
+	if strings.Contains(adopt, "pendingRemovals.removeAll") {
+		t.Error("收到新数据就把挂起全清了 —— 那与压根不记它完全一样")
+	}
+	if strings.Contains(render, "survivingRuleRemovals(") || strings.Contains(render, "pendingRemovals =") {
+		t.Error("摆表那一路也在动挂起 —— markRemoved 的就地重画会把刚记下的那条当场抹掉")
+	}
+
+	// ④ 删除那一刻真的记了一条挂起并重画;不记的话前面三条全是空转。
+	mark, ok := swiftFunctionBody(window, "func markRemoved(kind: RuleKind, pattern: String)")
+	if !ok {
+		t.Fatal("读不出 markRemoved 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(mark, "pendingRemovals.append(PendingRuleRemoval(") {
+		t.Error("markRemoved 没有把这一条记成挂起 —— 它只改了一行的样子,活不过下一次重画")
+	}
+	if !strings.Contains(mark, "render(") {
+		t.Error("markRemoved 记了挂起却不重画 —— 用户点完 Remove 看不到任何变化")
+	}
+
+	// ⑤ 挂起不许无边界、也不许活过这扇窗:关掉窗口那些 Undo 就再也点不到了,
+	//    留着只会让下次打开摆出一串早已不相干的「Removed …」。
+	if !strings.Contains(window, "maxPendingRuleRemovals") {
+		t.Error("挂起集合没有上限")
+	}
+	closed, ok := swiftFunctionBody(window, "func windowWillClose(")
+	if !ok {
+		t.Fatal("读不出 windowWillClose 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(closed, "pendingRemovals.removeAll()") {
+		t.Error("关窗不清挂起 —— 下次打开会摆出一串早已不相干的 Removed 行")
+	}
+
+	// ⑥ 判定住在纯模型里(Swift 套件已逐条测过那几条性质);窗口不许自己再算一份。
+	model := stripSwiftComments(readMenuSwiftSource(t, "RulesModel.swift"))
+	for _, want := range []string{
+		"func survivingRuleRemovals(", "func ruleTableEntries(", "struct PendingRuleRemoval",
+	} {
+		if !strings.Contains(model, want) {
+			t.Errorf("RulesModel 里没有 %s —— 判据落进 AppKit 那半就没有测试盯着它了", want)
+		}
+	}
+}
+
+// **滚动位置只在环境重画时保住,显式打开永远从头开始。**
+//
+// 这个窗口每 2 秒把整个 stack 拆掉重填,不保位置的话用户每翻到一半就被拽回
+// 顶部(App Traffic 那扇窗至今就是这么坏的);而他刚点开「Routing Rules…」
+// 的那一次,顶上那几行才是他要看的。两种重画的正确答案相反,压成一个就必错一半。
+func TestMacMenuRulesWindowKeepsScrollOnlyOnAmbientRerender(t *testing.T) {
+	window, _ := menuRulesWindowSource(t)
+
+	show, ok := swiftFunctionBody(window, "func show(rows: [RuleGroupRow]")
+	if !ok {
+		t.Fatal("读不出 show 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(show, "render(preservingScroll: false)") {
+		t.Error("显式打开也保滚动位置 —— 用户点开窗口第一眼看到的会是他上次停的地方")
+	}
+	refresh, ok := swiftFunctionBody(window, "func refreshIfVisible(")
+	if !ok {
+		t.Fatal("读不出 refreshIfVisible 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(refresh, "render(preservingScroll: true)") {
+		t.Error("环境重画不保滚动位置 —— 菜单开着时每 2 秒把用户拽回顶部一次")
+	}
+
+	render, ok := swiftFunctionBody(window, "private func render(")
+	if !ok {
+		t.Fatal("读不出 render 的函数体 —— 守卫已失效,先修守卫")
+	}
+	// 位置必须在**拆视图之前**取:拆完再取就是 0,保了个寂寞。
+	grab := strings.Index(render, "scroll?.contentView.bounds.origin")
+	tear := strings.Index(render, "view.removeFromSuperview()")
+	if grab < 0 || tear < 0 {
+		t.Fatal("render 里找不到取位置或拆视图那两步 —— 守卫已失效,先修守卫")
+	}
+	if grab > tear {
+		t.Error("滚动位置是在拆完视图之后取的 —— 那时它已经是 0 了")
+	}
+	// 先布局再滚:少了这一步滚的是按旧内容算出来的坐标(Diagnostics 两页同款)。
+	layout := strings.Index(render, "layoutSubtreeIfNeeded()")
+	restore := strings.Index(render, "contentView.scroll(to: offset)")
+	if layout < 0 || restore < 0 {
+		t.Fatal("render 里找不到布局或回滚那两步 —— 守卫已失效,先修守卫")
+	}
+	if layout > restore {
+		t.Error("先滚后布局 —— 滚的是按旧内容算出来的坐标,表一变长位置照样跳")
+	}
+}
