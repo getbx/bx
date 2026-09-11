@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/getbx/bx/internal/policy"
 	"github.com/getbx/bx/internal/preset"
 	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/setup"
@@ -47,6 +48,9 @@ type rulesRequest struct {
 	Kind    string `json:"kind"`   // direct | proxy
 	Pattern string `json:"pattern"`
 	Group   string `json:"group"`
+	// Force 放行 direct 规则的风险门(见 policy.DirectRuleHazard)。**逃生口,
+	// 不是主路**:菜单把它放在次要动作上,右键那条一键路径压根不提供危险候选。
+	Force bool `json:"force,omitempty"`
 }
 
 // ruleGroup 是界面上的一行。
@@ -160,6 +164,15 @@ func applyRuleChange(w http.ResponseWriter, r *http.Request, configPath string, 
 	var err error
 	switch req.Action {
 	case "add":
+		if req.Kind == "direct" && !req.Force {
+			if hazard, reason, _ := policy.DirectRuleHazard(req.Pattern); hazard {
+				// pattern 不进响应体(与 servers_name_exists 同一条);进日志是
+				// 可以的 —— 它是用户自己刚输入的域名,不是凭据。
+				log.Printf("guardian_rule_add_refused reason=risky_direct pattern=%q why=%q", req.Pattern, reason)
+				writeGuardianJSON(w, http.StatusConflict, map[string]string{"code": "rules_risky_direct"})
+				return
+			}
+		}
 		err = setup.AddRule(configPath, req.Kind, req.Pattern)
 	case "remove":
 		err = setup.RemoveRule(configPath, req.Kind, req.Pattern)
