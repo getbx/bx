@@ -409,6 +409,36 @@ struct RulesModelTests {
         expect(order == ["risky.com", "never.com", "shadow.com", "healthy.com"], "排序 = \(order)")
     }
 
+    /// 说明那一行的轻重**不许按「有没有体检结论」分**:那样会把排序里最靠前的
+    /// 一类(去匿名化)画成最轻的一类。这条与 ruleRowSeverity 是同一个事实的
+    /// 两面,拆开了就会各说各的。
+    static func testSevereNoteFollowsSeverityNotJustTheVerdictsPresence() {
+        let risky = RuleRow(
+            kind: .direct, pattern: "*.s3.amazonaws.com", failure: nil,
+            verdict: RuleFinding(
+                kind: "direct", rule: "*.s3.amazonaws.com", cls: "risky_direct",
+                summary: "r", coveredBy: ""))
+        let shadowed = RuleRow(
+            kind: .direct, pattern: "shadow.com", failure: nil,
+            verdict: RuleFinding(
+                kind: "direct", rule: "shadow.com", cls: "shadowed_by_user_rule",
+                summary: "s", coveredBy: "x"))
+        let failing = RuleRow(
+            kind: .direct, pattern: "broken.com",
+            failure: FailingRule(kind: .direct, rule: "broken.com", attempts: 100, failures: 99),
+            verdict: nil)
+        let healthy = RuleRow(kind: .direct, pattern: "fine.com", failure: nil, verdict: nil)
+
+        // 有结论就当建议的写法在这一条上会返回 false —— 而它恰恰是最重的那条。
+        expect(ruleRowNoteIsSevere(risky), "去匿名化那条被当成了建议")
+        expect(ruleRowNoteIsSevere(failing), "成片失败那条没被当成严重")
+        expect(!ruleRowNoteIsSevere(shadowed), "被盖住只是建议,不该画成故障")
+        expect(!ruleRowNoteIsSevere(healthy), "健康的一行没有说明,更谈不上严重")
+
+        // 与排序同源:严重的那两类在 ruleRowSeverity 里也排在被盖住那条前面。
+        expect(ruleRowSeverity(risky) < ruleRowSeverity(shadowed), "排序与上色说的不是同一件事")
+    }
+
     static func main() {
         testReplaceMessageShowsTheExitChangeNotALecture()
         testReplaceMessageOmitsTheOldServerWhenUnknown()
@@ -437,6 +467,7 @@ struct RulesModelTests {
         testRowsCarryTheReviewVerdict()
         testCustomOnlyDropsPresetDerivedRules()
         testProblemsSortAhead()
+        testSevereNoteFollowsSeverityNotJustTheVerdictsPresence()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 退出码只证明「没失败」,
         // 而一个根本没被脚本登记的套件退出码也是 0(本仓库实测栽过)。
         if failures == 0 {

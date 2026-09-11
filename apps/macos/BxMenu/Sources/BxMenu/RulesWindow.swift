@@ -177,7 +177,10 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         if let detail = row.detail {
             let note = NSTextField(labelWithString: detail)
             note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            note.textColor = row.verdict != nil ? .systemOrange : .systemRed
+            // 轻重由纯函数说了算(`ruleRowNoteIsSevere`)。按「有没有体检结论」
+            // 分会把去匿名化那一条画得比一条连不通的规则还轻 —— 正好与模型
+            // 自己的排序反着来。
+            note.textColor = ruleRowNoteIsSevere(row) ? .systemRed : .systemOrange
             note.lineBreakMode = .byTruncatingTail
             // 截断了还看得全:这个窗口不横向滚动,少了 toolTip 那句话就永久不可见。
             note.toolTip = detail
