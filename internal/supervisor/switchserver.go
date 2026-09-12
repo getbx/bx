@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
@@ -28,21 +29,58 @@ type SwitchDeps struct {
 // 隧道上,而且用户还以为切成功了。
 func SwitchServer(deps SwitchDeps, name, link, udp string) error {
 	if err := deps.Arm(link, udp); err != nil {
-		return fmt.Errorf("切换到 %s 失败(未生效,仍在原来那台):%w", name, err)
+		return taggedSwitchError(ErrSwitchArmFailed,
+			fmt.Errorf("切换到 %s 失败(未生效,仍在原来那台):%w", name, err))
 	}
 	if !deps.Healthy() {
 		if rerr := deps.Rollback(); rerr != nil {
-			return fmt.Errorf("切换到 %s 后隧道不健康,且回滚失败(%v)——"+
-				"死手仍会在超时后还原,或直接 `sudo bx down && sudo bx up`", name, rerr)
+			return taggedSwitchError(ErrSwitchRollbackFailed,
+				fmt.Errorf("切换到 %s 后隧道不健康,且回滚失败(%v)——"+
+					"死手仍会在超时后还原,或直接 `sudo bx down && sudo bx up`", name, rerr))
 		}
-		return fmt.Errorf("切换到 %s 后隧道起不来,**已回滚**到原来那台", name)
+		return taggedSwitchError(ErrSwitchRolledBack,
+			fmt.Errorf("切换到 %s 后隧道起不来,**已回滚**到原来那台", name))
 	}
 	if err := deps.Commit(); err != nil {
-		return fmt.Errorf("切换到 %s 已生效但确认失败(%v)——死手可能在超时后把它还原,"+
-			"请立刻 `sudo bx down && sudo bx up` 让配置里的选择落定", name, err)
+		return taggedSwitchError(ErrSwitchCommitFailed,
+			fmt.Errorf("切换到 %s 已生效但确认失败(%v)——死手可能在超时后把它还原,"+
+				"请立刻 `sudo bx down && sudo bx up` 让配置里的选择落定", name, err))
 	}
 	return nil
 }
+
+// 四种结局各有各的哨兵。
+//
+// **它们只是贴在上面那四句原话外面的标签,一个字都没改那四句。** `bx server use`
+// 打的是 `%v` 的完整原话,而它今天比 GUI 诚实:Guardian 把四种压成一个码,于是
+// 菜单对**已生效但确认失败**说「没切过去」—— 那是假的,它切过去了,而死手可能
+// 在超时后把它还原,用户必须**立刻**动手;对**回滚也失败了**则轻描淡写了一次
+// 正在发生的断网。哨兵存在的全部目的,就是让那两句话说得对。
+var (
+	// ErrSwitchArmFailed:根本没切过去,仍在原来那台。
+	ErrSwitchArmFailed = errors.New("switch outcome: arm failed")
+	// ErrSwitchRolledBack:切过去了但隧道起不来,**已经回滚**,现在仍在原来那台。
+	ErrSwitchRolledBack = errors.New("switch outcome: rolled back")
+	// ErrSwitchRollbackFailed:隧道起不来,而且回滚也失败了 —— 此刻可能正在断网。
+	ErrSwitchRollbackFailed = errors.New("switch outcome: rollback failed")
+	// ErrSwitchCommitFailed:**已经生效**,只是确认没做成,死手可能把它还原。
+	ErrSwitchCommitFailed = errors.New("switch outcome: commit failed")
+)
+
+// taggedSwitchError 给一条错误贴上结局哨兵,**不改它一个字**。
+//
+// 为什么不是在 fmt.Errorf 里多写一个 %w:那会把哨兵的文字印进用户看见的那句话里。
+// 要加的是一个机器读的标签,不是一句新的话。`Unwrap() []error` 让 errors.Is
+// 同时认得哨兵与里面那条真错误(后者是 Core 报上来的原因,仍然只进日志)。
+func taggedSwitchError(tag, err error) error { return switchOutcomeError{tag: tag, err: err} }
+
+type switchOutcomeError struct {
+	tag error
+	err error
+}
+
+func (e switchOutcomeError) Error() string   { return e.err.Error() }
+func (e switchOutcomeError) Unwrap() []error { return []error{e.tag, e.err} }
 
 // LiveSwitchDeps 是接到真 Core 上的那四步。
 func LiveSwitchDeps() SwitchDeps {

@@ -2,6 +2,7 @@ package guardian
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -75,8 +76,39 @@ type switchResponse struct {
 	//
 	// **这两件事必须分开报。** 合成一个 ok 会让菜单在热切失败时说「已切换」,
 	// 而流量还从原来那台出去 —— 正是 `bx server use` 第一版那句谎的形状。
-	Applied bool   `json:"applied"`
-	Detail  string `json:"detail,omitempty"`
+	Applied bool `json:"applied"`
+	// Outcome 是热切失败时的**结局码**,四种各一个(见 switchOutcomeCode)。
+	//
+	// **applied=false 远不止一种意思**,而此前四种共用一个常量:菜单只能说一句
+	// 「没切过去,关了再开」—— 对「已生效但确认失败」那是假话(它切过去了,
+	// 死手可能把它还原,用户得立刻处理),对「回滚也失败了」则轻描淡写了一次
+	// 正在发生的断网。
+	//
+	// **带 omitempty**:成功时本就没有结局可说;而 applied=false 却没有这个键,
+	// 读作「这一版 Guardian 不说结局」,不是「不知道是哪种」—— 与
+	// Status.Capabilities 同一条区分新旧的纪律。
+	Outcome string `json:"outcome,omitempty"`
+}
+
+// switchOutcomeCode 把 supervisor.SwitchServer 的四种结局映射成一个机器可读的码。
+//
+// **原始错误串一个字都不出门**(与 /v1/rules 的 409 同一条门规):那句话里带着
+// 服务器名与 Core 报上来的细节,完整原因只写进 Guardian 日志,这个码是它唯一的
+// 对外出口。
+func switchOutcomeCode(err error) string {
+	switch {
+	case errors.Is(err, supervisor.ErrSwitchArmFailed):
+		return "arm_failed"
+	case errors.Is(err, supervisor.ErrSwitchRolledBack):
+		return "rolled_back"
+	case errors.Is(err, supervisor.ErrSwitchRollbackFailed):
+		return "rollback_failed"
+	case errors.Is(err, supervisor.ErrSwitchCommitFailed):
+		return "commit_failed"
+	}
+	// 认不出的错误**不许套用四种里的任何一种**。说错了比不说更糟:一句
+	// 「已回滚」会让用户以为流量还好好地走在原来那台上。
+	return "servers_hot_switch_failed"
 }
 
 // serverSwitcher 是「让正在跑的实例换过去」这一步。注入进来是为了让顺序可测:
@@ -255,7 +287,7 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 		// 但 applied=false 让菜单说得出「要重启才能用上」那半句。
 		writeGuardianJSON(w, http.StatusOK, switchResponse{
 			Name: target.Name, Host: host, Applied: false,
-			Detail: "servers_hot_switch_failed",
+			Outcome: switchOutcomeCode(err),
 		})
 		return
 	}
