@@ -12,10 +12,13 @@ import (
 
 // riskyDirectDomains 是「任何人都能在上面注册一个子域」的平台清单。
 //
-// **清单本身不导出**:守卫拿不到符号,它是从**本文件的源码文本**里用正则抠出
-// `var riskyDirectDomains = []string{…}` 这个块,再与 Swift 那份右键候选过滤逐字
-// 比对(internal/cli/macos_menu_hazard_test.go)—— 改名或换写法会让它抠不出来,
-// 那时它 t.Fatal 响亮失败而不是静默放行。判据一律走 DirectRuleHazard。
+// **清单本身不导出**:守卫拿不到符号,它是从**本文件的源码文本**里用正则抠下面
+// 那个变量声明块的字面量,再与 Swift 那份右键候选过滤逐字比对
+// (internal/cli/macos_menu_hazard_test.go)—— 改名或换写法会让它抠不出来,那时它
+// t.Fatal 响亮失败而不是静默放行。判据一律走 DirectRuleHazard。
+//
+// **别在本文件的注释里复写那句声明**:那条正则是非贪婪的,注释里出现一次就会被
+// 先匹配上、抠出一份空清单,守卫当场转红(2026-09-12 实测踩过一次)。
 var riskyDirectDomains = []string{
 	"aliyuncs.com", "myqcloud.com", "bcebos.com", "qiniucdn.com", "qbox.me", "clouddn.com", "upaiyun.com", "myhuaweicloud.com",
 	"amazonaws.com", "cloudfront.net", "core.windows.net", "googleapis.com", "r2.dev", "workers.dev", "pages.dev", "github.io", "vercel.app", "netlify.app", "b-cdn.net",
