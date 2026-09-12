@@ -181,3 +181,28 @@ func observeDirectEgress(ctx context.Context, deps Deps, state *ObservedState) T
 	}
 	return value
 }
+
+// DirectEgress 只问「bx 自己的直连出得去吗」这**一个**问题。
+//
+// 存在的理由是判据只许有一份。Guardian 的 doctor 采集要这一格事实(2026-08-13
+// 那个故障的整个价值就在它:失败的是规则,还是 bx 自己的直连器),而它用不上
+// 整轮 Observe —— 那要多跑两次路由查询、一次 DNS 查询、一次控制 socket 往返,
+// 全是这一格用不着的开销,而 doctor 那一轮只有一份预算。
+//
+// 让调用方自己去问 supervisor.DirectEgressReachable,就是把
+// (reachable, known, err) → Tristate 那段映射抄第二份 —— 这个仓库反复栽的形状。
+// 这里与 Observe 走的是**同一个** observeDirectEgress,区别只是错误不进
+// ObservedState.Errors:这一格的消费方只看三态,而「问不出来」已经由 Unknown
+// 表达完整。
+//
+// **本平台不成立时不去问**(NotApplicable 声明的那几项),与 Observe 同一条:
+// 问了只会在每次调用里留下同一条永久失败,而那是把静态的平台事实伪装成新发生
+// 的故障。返回的仍是 Unknown —— 判据侧对 Unknown 的处置(不改口、不下结论)
+// 正是这里要的。
+func DirectEgress(ctx context.Context, deps Deps) Tristate {
+	state := ObservedState{NotApplicable: deps.NotApplicable}
+	if state.notApplicable(fieldDirectEgress) {
+		return Unknown
+	}
+	return observeDirectEgress(ctx, deps, &state)
+}

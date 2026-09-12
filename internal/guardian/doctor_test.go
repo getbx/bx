@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/doctor"
+	"github.com/getbx/bx/internal/observe"
+	"github.com/getbx/bx/internal/stats"
+	"github.com/getbx/bx/internal/tristate"
 )
 
 func doctorTestConfig(t *testing.T) string {
@@ -267,8 +270,12 @@ func TestCollectDoctorFactsGivesEveryDepTheSameDeadline(t *testing.T) {
 			record("dial", ctx)
 			return errors.New("dead")
 		},
+		directEgress: func(ctx context.Context) observe.Tristate {
+			record("direct_egress", ctx)
+			return observe.Unknown
+		},
 	})
-	for _, name := range []string{"probe", "platform", "service", "dial"} {
+	for _, name := range []string{"probe", "platform", "service", "dial", "direct_egress"} {
 		got, ok := seen[name]
 		if !ok {
 			t.Fatalf("%s 这个依赖压根没被调用,守卫读不懂现在的采集流程", name)
@@ -423,6 +430,125 @@ func TestLiveDoctorDepsForwardTheCtxTheyAreHanded(t *testing.T) {
 			t.Fatal("ctx 已经取消,拨号却报成功")
 		}
 	})
+
+	// 直连出口那一跳会 spawn 两次 `route`。**判据不是「快不快」而是「认不认账」**:
+	// 一个用 context.Background() 去 spawn 的实现在这台机器上也是几毫秒回来,
+	// 计时断言对它完全无感 —— 而它会给出一个**确定的**答案(True/False),
+	// 那正是「这份预算没传到它这里」在输出上唯一看得见的形状。
+	//
+	// **非 darwin 上这一条是弱的**:那里 direct_egress 由
+	// observe.NotApplicableForPlatform 声明为不成立,闭包不问就返回 Unknown,
+	// 于是它与「吃了 ctx」在返回值上一样。这项观测本来就只有 macOS 有原语,
+	// 记在这里免得下一个人以为 linux 那条腿也在守着它。
+	t.Run("direct_egress", func(t *testing.T) {
+		if deps.directEgress == nil {
+			t.Fatal("生产那份 deps 没接直连出口观测 —— Checks 页会照旧建议用户去改正确的规则")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		cancel() // 已经到期
+		started := time.Now()
+		got := deps.directEgress(ctx)
+		if elapsed := time.Since(started); elapsed > margin {
+			t.Fatalf("问直连出口用了 %v —— 它没看这份已经取消的 ctx", elapsed)
+		}
+		if got != tristate.Unknown {
+			t.Fatalf("ctx 已经取消,直连出口却给出了确定答案 %v —— 它在用自己的钟", got)
+		}
+	})
+}
+
+// fakeCoreStatusSocket 起一个只答 /v0/status 的假 Core 控制 socket。
+//
+// 这条路上必须有一份**能解析出来的**统计:trafficChecks 在 Err 非空时提前返回,
+// 于是拿 deadSock 测「直连出不去时不许甩锅给规则」会一路走到 not_checked ——
+// 断言全绿而被守的那句话一个字都没跑到。
+func fakeCoreStatusSocket(t *testing.T, rep stats.Report) string {
+	t.Helper()
+	// 不用 t.TempDir():macOS 上它给的路径接近 120 字节,而 unix socket 的
+	// sun_path 只有 104(理由与 blackHoleControlSocket 那段逐字相同)。
+	dir, err := os.MkdirTemp("", "bxcore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "core.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("起不了假 Core socket:%v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(rep)
+	})
+	srv := &http.Server{Handler: mux}
+	done := make(chan struct{})
+	go func() { defer close(done); _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		<-done
+	})
+	return path
+}
+
+// **直连出不去时,Guardian 这份报告不许把锅甩给用户的规则。**
+//
+// 判据层早有一条(doctor.TestDoctorDoesNotBlameRulesWhenDirectEgressIsDown),
+// 而它在这条路上**从来到不了** —— Guardian 的采集此前恒填 Unknown,于是
+// 2026-08-13 那个签名(`*.qq.com` 1291 条失败 1289,坏的是 bx 自己的直连器)
+// 在菜单 Checks 页上得到的建议是「改 /etc/bx/config.yaml 的 rules」:用户会去
+// 删掉一条**完全正确**的规则,而故障原样留着。
+//
+// 断言打在**渲染得出来的东西**上(每条 check 的 hint),不是打在 Facts 的那个
+// 字段上:后者在两种输入下当然不同,而那正是「守卫钉住的是缺陷旁边的东西」。
+func TestGuardianDoctorBlamesTheDirectDialerNotTheRules(t *testing.T) {
+	rep := stats.Report{
+		ConfigPath: "/etc/bx/config.yaml",
+		Snapshot: stats.Snapshot{
+			Direct: 1322, DirectFailed: 1308,
+			Rules: []stats.RuleOutcome{{Source: "user_direct", Rule: "*.qq.com", Attempts: 1291, Failures: 1289}},
+		},
+	}
+	sock := fakeCoreStatusSocket(t, rep)
+	cfg := doctorTestConfig(t)
+
+	judge := func(egress func(context.Context) observe.Tristate) (doctor.Facts, doctor.Report) {
+		f := collectDoctorFactsWith(context.Background(), cfg, Status{},
+			doctorCollectorDeps{sock: sock, directEgress: egress})
+		return f, doctor.Judge(f)
+	}
+	hints := func(rep doctor.Report) string {
+		var b strings.Builder
+		for _, c := range rep.Checks {
+			b.WriteString(c.Hint)
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+
+	brokenFacts, broken := judge(func(context.Context) observe.Tristate { return tristate.False })
+	if brokenFacts.Traffic == nil || brokenFacts.Traffic.DirectEgress != tristate.False {
+		t.Fatalf("观测到的直连出口没进流量事实:%+v", brokenFacts.Traffic)
+	}
+	if got := hints(broken); !strings.Contains(got, "不是你的规则") {
+		t.Errorf("直连出不去,报告却没说不是规则的问题:\n%s", got)
+	} else if strings.Contains(got, "改 /etc/bx/config.yaml 的 rules") {
+		t.Errorf("直连出不去却仍建议改规则 —— 用户会删掉一条正确的规则:\n%s", got)
+	}
+
+	// **另一半:没问出来时不许倒向任何一边。** nil = 这条路径没问(平台没原语,
+	// 或哪天接线掉了),它必须留 Unknown 而不是被读成「出得去」或「出不去」。
+	unknownFacts, unknown := judge(nil)
+	if unknownFacts.Traffic == nil || unknownFacts.Traffic.DirectEgress != tristate.Unknown {
+		t.Fatalf("没问直连出口却给了确定答案:%+v", unknownFacts.Traffic)
+	}
+	got := hints(unknown)
+	if strings.Contains(got, "不是你的规则") {
+		t.Errorf("没观测到直连出不去,却告诉用户不是他的规则:\n%s", got)
+	}
+	if !strings.Contains(got, "改 /etc/bx/config.yaml 的 rules") {
+		t.Errorf("没改口的那条路上,点名规则的建议不见了:\n%s", got)
+	}
 }
 
 // **Guardian 这一侧必须自己去问流量成败。**

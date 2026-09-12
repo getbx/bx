@@ -150,3 +150,64 @@ func indexFold(s, sub string) int {
 	}
 	return -1
 }
+
+// DirectEgress 是这一格的**单问入口**:Guardian 的 doctor 采集用它,而那一轮
+// 只有一份预算 —— 跑整轮 Observe 会白白多出两次路由查询、一次 DNS 查询和一次
+// 控制 socket 往返。这条守卫钉住三件事:只问这一个问题、把调用方那份 ctx 原样
+// 递下去、以及本平台不成立时**不去问**。
+func TestDirectEgressAsksOnlyThatQuestion(t *testing.T) {
+	other := func(name string, t *testing.T) func() {
+		return func() { t.Fatalf("单问直连出口却顺手问了 %s —— 那份预算不是这么花的", name) }
+	}
+	t.Run("只问这一个,且吃调用方的 ctx", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		called := 0
+		deps := Deps{
+			TunName: func() (string, error) { other("tun_name", t)(); return "", nil },
+			LookupRoute: func(context.Context, string, bool) (RouteResult, error) {
+				other("lookup_route", t)()
+				return RouteResult{}, nil
+			},
+			InspectDNS:   func(context.Context) (DNSResult, error) { other("inspect_dns", t)(); return DNSResult{}, nil },
+			FetchRuntime: func() (RuntimeResult, error) { other("fetch_runtime", t)(); return RuntimeResult{}, nil },
+			DirectEgress: func(ctx context.Context) (Tristate, error) {
+				called++
+				if ctx.Err() == nil {
+					t.Error("拿到的不是调用方那份 ctx —— 它在用自己的钟")
+				}
+				return True, nil
+			},
+		}
+		if got := DirectEgress(ctx, deps); got != True {
+			t.Fatalf("直连出口 = %v,want true", got)
+		}
+		if called != 1 {
+			t.Fatalf("原语被调了 %d 次", called)
+		}
+	})
+	t.Run("问不出来是 Unknown,不倒向任何一边", func(t *testing.T) {
+		deps := Deps{DirectEgress: func(context.Context) (Tristate, error) { return True, errors.New("route 挂了") }}
+		if got := DirectEgress(context.Background(), deps); got != Unknown {
+			t.Fatalf("观测出错却给了确定答案 %v", got)
+		}
+		if got := DirectEgress(context.Background(), Deps{}); got != Unknown {
+			t.Fatalf("没接线却给了确定答案 %v", got)
+		}
+	})
+	t.Run("本平台不成立时不去问", func(t *testing.T) {
+		called := 0
+		deps := Deps{
+			NotApplicable: NotApplicableForPlatform("linux"),
+			DirectEgress:  func(context.Context) (Tristate, error) { called++; return False, nil },
+		}
+		if got := DirectEgress(context.Background(), deps); got != Unknown {
+			t.Fatalf("这个平台上这个问题不成立,却给了 %v", got)
+		}
+		if called != 0 {
+			// 问了只会每次都留下同一条永久失败 —— 把静态的平台事实伪装成
+			// 新发生的故障,正是本包存在的理由的反面。
+			t.Fatal("声明为不成立的项还是去问了")
+		}
+	})
+}
