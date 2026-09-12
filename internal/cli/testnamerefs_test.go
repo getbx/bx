@@ -76,7 +76,7 @@ var retiredTestNames = map[string]string{
 	"TestNoPackageWritesToLiveMutatorStore":              "同上,一并退场",
 	"TestRunDaemonDoesNotDiscoverGatewayAtStartup":       "只禁一个函数名(discoverDaemonGateway),而换条路径去探网关它照样全绿(变异实测);由 TestHarnessRunDaemonStartsWithoutADefaultRoute 接手 —— 在没有默认路由的 netns 里真起 daemon,防的是那件事而不是那个名字",
 	"TestUserSplitRulesArePrependedBeforeOverlayOnes":    "比较两个 for 循环在 run.go 里的位置,它自己写着「读源码是这里唯一够得着的办法」—— 判据已抽成 buildSplitRoutes,由 TestSplitRoutesPutUserRulesFirst 从行为上钉住(变异实测)",
-	"TestUDPSourceNamesMatchTheDialer":                   "它守的是「两份拷贝还一样」;清单下沉到 internal/udpsource 之后漂移在构造上不可能,没有东西可守了。由 TestUDPSourceNamesComeFromTheSharedLeafPackage 接手(钉两边同源,而不是两份字面量恰好相等)",
+	"TestUDPSourceNamesMatchTheDialer":                   "它守的是「两份拷贝还一样」;清单下沉到 internal/udpsource 之后漂移在构造上不可能,没有东西可守了。由 TestUDPSourceNamesComeFromTheSharedLeafPackage 部分接手 —— 它只钉 stats 那一侧的别名确实来自叶子包,dialer 那一侧今天没有守卫(理由写在 internal/stats/outcome.go 那几个常量头上)",
 	"TestConfigWarningsReachTheStatusReport":             "它自己在测试函数里 append 一遍再断言那个局部变量,一次都没调用生产的组装逻辑;被 TestStatusReporterIncludesBothGuardAndConfigWarnings 取代,注释里点名它是在讲这段经过",
 }
 

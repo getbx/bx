@@ -2636,7 +2636,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 问一次内核「默认路由的网关是谁」。**这是 main.swift 里第三个、也是唯一一个
-    /// 只读的进程出口**,由 TestMacMenuSpawnsGoThroughOneDoor 的清单显式认可。
+    /// 只读的进程出口**,由 TestMacMenuSpawnsOnlyFromTheActionPath 的清单显式认可
+    /// (`internal/cli/cli_test.go`,`Process` 类型那条规则的 callers 恰好三个)。
     ///
     /// 为什么它值得占一个名额:替代方案要么是让菜单自己解析 `NET_RT_DUMP` 路由表
     /// (一大段 C interop,判据反而更难看见),要么是把网关经 Guardian 的 wire 格式

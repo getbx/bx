@@ -40,8 +40,9 @@ import "github.com/getbx/bx/internal/observe"
 //     路径恢复一样:本轮什么都不做,并说清是被哪道栅栏挡住的。
 
 // reconcileAction 是一项**被提议**的动作的名字。③a 一项都不执行;③b 起
-// desired=off 的两个清理动作有执行权(白名单在 reconcile_execute.go,
-// **执行权的授予只发生在那份白名单里,不在这里**)。
+// desired=off 的两个清理动作有执行权,③c 起 start_core 也有(白名单在
+// reconcile_execute.go,**执行权的授予只发生在那份白名单里,不在这里**)。
+// 今天仍然只提议不执行的是 stop_core。
 type reconcileAction string
 
 const (
@@ -117,10 +118,15 @@ func decide(in reconcileInput) reconcileDecision {
 		// 两个后果,写在这里免得将来误读:
 		//   - 阶段③a 的 soak 会**高估** start_core 的出现次数,那个计数不能被读成
 		//     「调谐器判断正确」的证据;
-		//   - 阶段③b 真要授权起 Core 时,准入判据是 scanRunningCores(向系统求证
-		//     有没有进程在跑我们的 Core),**不是这条观测**。这条只回答「该不该考虑
-		//     起它」,不回答「起它安不安全」。除此之外还要先解 Uncertain 锁存
-		//     (见设计),否则一次瞬时的扫描失败会经由锁存变成永久拒绝。
+		//   - **③c(2026-09-05)授权执行之后,准入判据是槽内现扫 ScanRunning**
+		//     (decideStartCoreAdmission 三态:测成 0 个才起、扫到 ≥1 个
+		//     core_process_present、没测成 core_scan_failed),**不是这条观测**。
+		//     这条只回答「该不该考虑起它」,不回答「起它安不安全」。
+		//
+		// **③c 发货时并没有先解 Uncertain 锁存 —— 计划里那条前置没做,而它今天
+		// 仍然成立**:锁存一旦升起,heldBy 就让整个循环停在 ownership_uncertain,
+		// 于是一次瞬时的扫描失败经由锁存变成对调谐环的永久拒绝(只有**用户发起**的
+		// bx up/down 会重新求证,循环刻意不清也不为它扫描)。
 		if in.Observed.CoreSocket == observe.False {
 			add(actionStartCore)
 		}

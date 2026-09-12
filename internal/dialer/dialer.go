@@ -187,7 +187,16 @@ func (d *Dialer) SetTransport(t *Transport) {
 }
 
 // SetUDPTransport 设 UDP 专用传输(按类分流的速度档,如 hysteria2);nil 则 UDP 走主传输。
-// 不变量:该传输不健康时 UDP proxy 仍 fail-closed Block,绝不回落直连/主传输。
+//
+// **它不健康时 UDP 回落主传输,不 Block** —— 见 DialContext 里 udp.mode=proxy 那段。
+// 这是 113876b(2026-07-10)刻意做的反转:专用档与主传输去的是同一台 VPS、同一条
+// 加密隧道,回落它 ≠ 回落直连、不泄漏真实 IP;而黑洞掉 UDP 只会让 hysteria2 一抖
+// 整机 UDP 就断。回落记在 udpsource.ProxyFallback 上(bx status 的 UDPNotice 会
+// 说出来,真机见过),**主传输也不健康时才 fail-closed Block**。
+//
+// 此处原先写着「绝不回落直连/主传输」,那半句在 113876b 之后就是假的 —— 照它
+// 「恢复不变量」等于让 hysteria2 每抖一次就黑洞一次 UDP。kill-switch 要防的始终
+// 是回落直连,那一半仍然成立。
 func (d *Dialer) SetUDPTransport(t *Transport) {
 	for {
 		current := d.transports.Load()

@@ -96,8 +96,12 @@ enum GuardianClientError: LocalizedError {
     case invalidResponse
     case responseTooLarge
     case contentType
-    /// Guardian 回了一个不是我们要的状态码。`code` 是它在响应体里附的失败码
-    /// (仅 500 会带),**可能合法缺席** —— 见 `guardianFailureCode(body:contentLength:)`。
+    /// Guardian 回了一个不是我们要的状态码。`code` 是它在响应体里附的失败码,
+    /// **可能合法缺席** —— 见 `guardianFailureCode(body:contentLength:)`。
+    ///
+    /// **码不是只在 500 上**:加规则那道风险门回的是 409 `rules_risky_direct`,
+    /// servers 那边有 `servers_name_exists` / `servers_switch_busy`。所以
+    /// `decodeGuardianHTTPResponse` 对**任何**非预期状态码都先读体再抛。
     case status(Int, code: String?)
 
     var errorDescription: String? {
@@ -124,7 +128,11 @@ enum GuardianClientError: LocalizedError {
 /// 契约在 Go 侧 `internal/guardian/localapi.go` 的 `failureResponseBody`
 /// (`{"error":…,"code":…}`),`internal/guardian/client.go` 的
 /// `guardianFailureBody` 是同一份镜像。四个 mutation handler
-/// (mutation/update/migration/recoveryRequest)都只在 **500** 上写它。
+/// (mutation/update/migration/recoveryRequest)在 **500** 上写它,**而 500
+/// 不是唯一带码的状态**:加规则那道风险门在 **409** 上回 `rules_risky_direct`
+/// (「给不给 Add Anyway」全靠它),servers 那边同样在 409 上回
+/// `servers_name_exists` / `servers_switch_busy`。按状态码挑着读体会让那几条
+/// 逃生口整个失灵 —— 见 `decodeGuardianHTTPResponse` 里那段。
 private struct GuardianFailureBody: Decodable {
     let error: String?
     let code: String?

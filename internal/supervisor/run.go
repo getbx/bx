@@ -446,10 +446,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	appAttribution := wireAppAttribution(d, appTraffic)
 
 	// 按类分流:UDP 专用传输(如 hysteria,QUIC 对丢包/高 RTT 更快)与主传输并行。
-	// UDP proxy 走它;不变量保住——它挂时 UDP fail-closed Block(dialer.SetUDPTransport),绝不回落。
+	// UDP proxy 走它;**它挂时 UDP 回落主传输,不 Block**(dialer.SetUDPTransport 上写了
+	// 为什么:同一台 VPS、同一条加密隧道,回落它不泄漏真实 IP;主传输也挂才 fail-closed)。
 	// best-effort:UDP companion 是"锦上添花"的速度档,绝不阻塞主隧道(reality)把 TUN 拉起
 	// (见 attachUDPCompanion)——否则 flaky UDP 上行(运营商丢包)会把秒健康的 reality 一起
-	// 拖进重启循环。未健康时由上面的 fail-closed 不变量兜住,连上后自动接管 UDP/QUIC。
+	// 拖进重启循环。未健康时由上面那条回落兜住通路,连上后自动接管 UDP/QUIC。
 	var udpHealthy func() bool
 	if udpEnabled {
 		udpTun, err := buildTunnel(cfg.UDP.Transport, "active-udp", false)
@@ -1005,8 +1006,9 @@ func socksProxy(socksAddr string, base *net.Dialer) (dialer.ContextDialer, error
 // attachUDPCompanion 启动 UDP 专用传输(如 hysteria2)并挂到 dialer——best-effort,不阻塞等待健康。
 // UDP companion 只是按类分流的速度档;reality(TCP)才是抗封锁主干。启动期硬等 UDP 健康会让 flaky
 // UDP 上行(运营商对 QUIC 丢包/限速)把秒健康的主隧道也一起拖进 procd 重启循环,TUN 永远起不来。
-// 故此处只 Start + 挂载:未健康时 dialer 按 killswitch fail-closed 阻断 UDP(绝不回落主传输,既有
-// dialer 测试保证),隧道连上后自动接管 UDP/QUIC。socksAddr 在 New 时即固定分配,不依赖健康。
+// 故此处只 Start + 挂载:未健康时 dialer 让 UDP 回落主传输(同一台 VPS、同一条加密隧道,不泄漏;
+// 主传输也挂才按 killswitch fail-closed 阻断,见 dialer.SetUDPTransport),隧道连上后自动接管
+// UDP/QUIC。socksAddr 在 New 时即固定分配,不依赖健康。
 func attachUDPCompanion(d *dialer.Dialer, udpTun *tunnel.Tunnel, label string) error {
 	udpTun.Start()
 	udpProxy, err := socksProxy(udpTun.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
