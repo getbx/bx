@@ -667,8 +667,14 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 		host, port := entries[i].Host, entries[i].Port
 		if host == "" {
 			entries[i].Probe = &ProbeReport{
-				Measured:  false,
-				Error:     "could not parse a host from the link",
+				Measured: false,
+				// **人话经 supervisor.ProbeErrorText,不在这儿手写一句。**
+				// 它此前是英文的,理由是「那句话会出现在全英文菜单里」——
+				// 而菜单如今根本不读这个字段(它读码、自己出英文)。于是这句话
+				// 只剩一个消费方:中文的 `bx server list`。手写还有第二个代价:
+				// 「码 ↔ 中文」那张表里的这一条在生产里**永远不可达**,而守卫
+				// 声称覆盖了它。
+				Error:     supervisor.ProbeErrorText(supervisor.ProbeErrLinkUnparsed),
 				ErrorCode: supervisor.ProbeErrLinkUnparsed,
 			}
 			continue
@@ -680,7 +686,7 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 			log.Printf("guardian_server_probe_failed host=%s err=%v", host, err)
 			entries[i].Probe = &ProbeReport{
 				Measured:  false,
-				Error:     "could not measure (is bx running?)",
+				Error:     supervisor.ProbeErrorText(supervisor.ProbeErrCoreUnreachable),
 				ErrorCode: supervisor.ProbeErrCoreUnreachable,
 			}
 			continue

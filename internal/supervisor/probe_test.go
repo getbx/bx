@@ -3,9 +3,13 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -370,12 +374,12 @@ func fieldWiredTo(block, field, value string) bool {
 // 一样,而没有任何东西会报错。菜单那一半由 `internal/cli` 的
 // TestProbeErrorCodesAllHaveAnEnglishSentenceInTheMenu 对账,这里守 CLI 那一半。
 func TestEveryProbeErrorCodeHasItsOwnChineseSentence(t *testing.T) {
-	fallback := probeErrorText("no_such_code_at_all")
+	fallback := ProbeErrorText("no_such_code_at_all")
 	if fallback == "" {
 		t.Fatal("兜底文案是空的 —— 守卫已经失效,先修守卫")
 	}
 	for _, code := range ProbeErrorCodes {
-		text := probeErrorText(code)
+		text := ProbeErrorText(code)
 		if text == "" {
 			t.Errorf("码 %q 没有中文", code)
 			continue
@@ -388,23 +392,116 @@ func TestEveryProbeErrorCodeHasItsOwnChineseSentence(t *testing.T) {
 	}
 }
 
-// describeProbeError 只是 classify + text 的薄壳:**CLI 上那几句话一个字都没变**。
-// 拆成两半是为了让菜单能按码出英文,不是为了改 CLI 的措辞。
-func TestDescribeProbeErrorKeepsItsWording(t *testing.T) {
-	for _, tc := range []struct {
-		err  error
-		want string
-	}{
-		{context.DeadlineExceeded, "超时(没有应答)"},
-		{context.Canceled, "已取消"},
-		{&net.DNSError{Err: "no such host"}, "域名解析不出来"},
-		{&net.OpError{Err: errors.New("connect: connection refused")}, "连接被拒(端口没在听)"},
-		{&net.OpError{Err: errors.New("connect: network is unreachable")}, "网络不可达"},
-		{&net.OpError{Err: errors.New("connect: no route to host")}, "没有到该主机的路由"},
-		{errors.New("something else entirely"), "连不上"},
-	} {
-		if got := describeProbeError(tc.err); got != tc.want {
-			t.Errorf("describeProbeError(%v) = %q, want %q", tc.err, got, tc.want)
+// **每一个 ProbeErr* 常量都必须登记进 ProbeErrorCodes。**
+//
+// 少登记一个,它对**两条**守卫都是隐形的(菜单那条对账的是这个数组,CLI 这条
+// 遍历的也是它)—— 于是那个码会静默走到菜单的兜底文案上,而那正是这两条守卫
+// 存在的理由,只是高了一层。所以这里不查文本、走 AST:声明的常量集合与数组里
+// 的取值集合必须**逐个相等**。
+//
+// 读不出源码时**响亮失败**:一条在最需要它时恰好不可达的断言,与没有这条断言
+// 完全一样,而它看起来更让人放心。
+func TestEveryProbeErrConstantIsRegisteredInTheList(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "probe.go", nil, 0)
+	if err != nil {
+		t.Fatalf("读不出 probe.go:%v —— 守卫已经失效,先修守卫", err)
+	}
+	declared := map[string]string{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		spec, ok := n.(*ast.ValueSpec)
+		if !ok {
+			return true
 		}
+		for i, name := range spec.Names {
+			if !strings.HasPrefix(name.Name, "ProbeErr") || i >= len(spec.Values) {
+				continue
+			}
+			lit, ok := spec.Values[i].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			value, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				t.Fatalf("%s 的值不是一个字符串字面量 —— 守卫已经失效,先修守卫", name.Name)
+			}
+			declared[name.Name] = value
+		}
+		return true
+	})
+	if len(declared) == 0 {
+		t.Fatal("一个 ProbeErr* 常量都没扫到 —— 守卫已经失效,先修守卫")
+	}
+
+	listed := map[string]bool{}
+	for _, code := range ProbeErrorCodes {
+		listed[code] = true
+	}
+	for name, value := range declared {
+		if !listed[value] {
+			t.Errorf("常量 %s(%q)没有登记进 ProbeErrorCodes —— "+
+				"它对两条对账守卫都是隐形的,菜单会静默退回兜底文案", name, value)
+		}
+	}
+	if len(listed) != len(declared) {
+		t.Errorf("ProbeErrorCodes 有 %d 个取值,而声明了 %d 个常量 —— "+
+			"数组里有一条没有对应的常量(陈旧条目什么也不守)", len(listed), len(declared))
+	}
+}
+
+// **CLI 上那几句话一个字都没变** —— 这条钉的是**生产那条路**
+// (`probeServer` 的两行),不是一个薄壳。
+//
+// 上一版钉的是那个已删掉的薄壳,而它在拆分之后**零生产调用方**:唯一的引用
+// 就是那条测试自己。一个有测试覆盖、没有调用方的函数,读起来与「这里有第二份
+// 判据」一模一样,而删掉它照样编译通过。那个薄壳已经删了,断言搬到真拨号那条路上。
+func TestProbeServerReportsBothTheCodeAndTheChineseSentence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+		text string
+	}{
+		{"超时", context.DeadlineExceeded, ProbeErrTimeout, "超时(没有应答)"},
+		{"取消", context.Canceled, ProbeErrCanceled, "已取消"},
+		{"DNS", &net.DNSError{Err: "no such host"}, ProbeErrDNS, "域名解析不出来"},
+		{"拒绝", &net.OpError{Err: errors.New("connect: connection refused")}, ProbeErrRefused, "连接被拒(端口没在听)"},
+		{"网络不可达", &net.OpError{Err: errors.New("connect: network is unreachable")}, ProbeErrNetworkUnreachable, "网络不可达"},
+		{"没有路由", &net.OpError{Err: errors.New("connect: no route to host")}, ProbeErrNoRoute, "没有到该主机的路由"},
+		{"归不了类", errors.New("something else entirely"), ProbeErrUnknown, "连不上"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := probeServer(context.Background(), &fakeProbeDialer{err: tc.err},
+				ProbeRequest{Host: "203.0.113.10", Port: 443})
+			if got.Reachable {
+				t.Fatal("拨号失败了却报成通了")
+			}
+			if got.ErrorCode != tc.code {
+				t.Errorf("ErrorCode = %q, want %q —— 菜单按码出英文,码错了它就说错话", got.ErrorCode, tc.code)
+			}
+			if got.Error != tc.text {
+				t.Errorf("Error = %q, want %q —— `bx server list` 的措辞变了", got.Error, tc.text)
+			}
+		})
+	}
+
+	// 拨号前就失败的那两条,同样要码与中文成对。
+	for _, tc := range []struct {
+		name string
+		req  ProbeRequest
+		code string
+	}{
+		{"没有主机", ProbeRequest{Host: "  "}, ProbeErrNoHost},
+		{"端口不合法", ProbeRequest{Host: "h", Port: 70000}, ProbeErrBadPort},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := probeServer(context.Background(), &fakeProbeDialer{}, tc.req)
+			if got.ErrorCode != tc.code {
+				t.Errorf("ErrorCode = %q, want %q", got.ErrorCode, tc.code)
+			}
+			if got.Error == "" {
+				t.Error("没有中文说法")
+			}
+		})
 	}
 }

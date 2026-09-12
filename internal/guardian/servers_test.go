@@ -1476,7 +1476,7 @@ func TestSingleServerConfigIsDistinguishableFromAnEmptyServerList(t *testing.T) 
 
 // **失败原因必须带一个机器可读的码,而不只是一句中文。**
 //
-// `supervisor.describeProbeError` 给的是中文(它的第一个消费方是 `bx server list`),
+// `supervisor.probeServer` 给的 Error 是中文(它的第一个消费方是 `bx server list`),
 // 而这份应答的另一个消费方是**全英文**的 macOS 菜单 —— 真机上一台关着的服务器
 // 会让菜单显示「连接被拒(端口没在听)」。菜单那边的 CJK 守卫只扫它自己的源码,
 // 看不见从这里来的字符串,所以这个区分必须由这一层发出去:**服务端发码,
@@ -1516,6 +1516,15 @@ func TestProbeReportsCarryAMachineReadableCode(t *testing.T) {
 	for _, entry := range got.Servers {
 		if entry.Probe == nil || entry.Probe.ErrorCode != supervisor.ProbeErrCoreUnreachable {
 			t.Errorf("%s 的「没测成」没有带码:%+v", entry.Name, entry.Probe)
+			continue
+		}
+		// **人话也要经 supervisor.ProbeErrorText,不许在这儿手写一句。**
+		// 手写的后果有两层:这句话的唯一消费方是中文的 `bx server list`
+		// (菜单不读这个字段),手写出来的英文在那儿是错的语言;而且
+		// 「码 ↔ 中文」那张表里的这一条在生产里就**永远不可达**,
+		// 于是守卫声称覆盖 11 个码、实际只覆盖得到 9 个。
+		if want := supervisor.ProbeErrorText(supervisor.ProbeErrCoreUnreachable); entry.Probe.Error != want {
+			t.Errorf("%s 的人话不是 ProbeErrorText 给的:%q,want %q", entry.Name, entry.Probe.Error, want)
 		}
 	}
 
@@ -1538,6 +1547,10 @@ func TestProbeReportsCarryAMachineReadableCode(t *testing.T) {
 		t.Fatalf("清单长度 = %d", len(got.Servers))
 	}
 	if got.Servers[0].Probe == nil || got.Servers[0].Probe.ErrorCode != supervisor.ProbeErrLinkUnparsed {
-		t.Errorf("链接解不出主机那一处没有带码:%+v", got.Servers[0].Probe)
+		t.Fatalf("链接解不出主机那一处没有带码:%+v", got.Servers[0].Probe)
+	}
+	if want := supervisor.ProbeErrorText(supervisor.ProbeErrLinkUnparsed); got.Servers[0].Probe.Error != want {
+		t.Errorf("链接解不出主机那一处的人话不是 ProbeErrorText 给的:%q,want %q",
+			got.Servers[0].Probe.Error, want)
 	}
 }

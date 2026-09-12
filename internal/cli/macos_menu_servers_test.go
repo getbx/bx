@@ -444,7 +444,7 @@ func TestMacMenuRefusesASecondSwitchWhileOneIsInFlight(t *testing.T) {
 // **探测失败的原因码是一条跨语言契约,而它此前根本不存在 —— 服务端那句中文
 // 直接被端进了全英文菜单。**
 //
-// `supervisor.describeProbeError` 对一台关着的服务器返回「连接被拒(端口没在听)」,
+// `supervisor.probeServer` 对一台关着的服务器把 Error 填成「连接被拒(端口没在听)」,
 // 那是最常见的失败路径;它经 Guardian 的 ProbeReport 一路流到服务器窗口那一行,
 // 还被画成红的。`TestMacMenuUserFacingStringsAreEnglish` 只扫菜单自己的源码,
 // **看不见从服务端来的字符串**,所以没有任何东西会红。
@@ -487,13 +487,34 @@ func TestProbeErrorCodesAllHaveAnEnglishSentenceInTheMenu(t *testing.T) {
 
 	// **菜单不许解服务端那句人话。** 它是中文的(它服务 `bx server list`),
 	// 而这个界面通篇英文;不解这个键,是让「显示它」在构造上不可能。
-	// 判据用词边界,**不用裸子串**:`case errorCode = "error_code"` 含有
-	// "case error" —— 第一版就被它误报了一次,而这正是本仓库记了八次的那个形状
-	// (钉拼法而不是语义)。`\berror\b` 匹配 `.error` 与 `case error`,
-	// 而 `errorCode` / `error_code` 里 "error" 后面跟的是词内字符,不匹配。
-	if regexp.MustCompile(`\.error\b|case\s+error\b`).MatchString(model) {
-		t.Error("ServersModel 又开始解服务端那个 error 键了 —— " +
-			"它是中文的,解出来就迟早有人把它显示出去")
+	// **判据打在 JSON 键的原始值上,不打在 Swift 标识符上。**
+	//
+	// 上一版查的是 `\.error\b|case\s+error\b` —— 那钉的是拼法。
+	// `case serverSaid = "error"` 拉进的是同一个中文键,而它换了个标识符,
+	// 守卫一声不吭。要守的性质是「不解 `error` 这个 **JSON 键**」,所以:
+	//   ① 文件里不许出现字符串字面量 `"error"`(显式 rawValue 那种写法);
+	//   ② CodingKeys 的隐式 rawValue 就是标识符本身,所以任何一个 `case` 的
+	//      标识符列表里也不许出现光秃秃的 `error`。
+	// (`"error_code"` / `errorCode` 是另一个键,两条都不误伤。)
+	if strings.Contains(model, `"error"`) {
+		t.Error(`ServersModel 里出现了 JSON 键 "error" —— 不管它映射到哪个 Swift ` +
+			"标识符,拉进来的都是服务端那句中文,而这个界面通篇英文")
+	}
+	for _, line := range strings.Split(model, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "case ") {
+			continue
+		}
+		for _, token := range strings.Split(strings.TrimPrefix(trimmed, "case "), ",") {
+			name, _, _ := strings.Cut(token, "=")
+			if strings.TrimSpace(name) == "error" {
+				t.Errorf("CodingKeys 里有一个隐式映射到 %q 的 case:%s", "error", trimmed)
+			}
+		}
+	}
+	// 读一个叫 error 的字段同样不许(字段还在的话,上面两条迟早会被绕开)。
+	if regexp.MustCompile(`\.error\b`).MatchString(model) {
+		t.Error("ServersModel 又开始读服务端那句人话了 —— 它是中文的")
 	}
 }
 
@@ -514,10 +535,11 @@ func TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty(t *testing.T) {
 		t.Fatal("读不出 render 的函数体 —— 守卫已经失效,先修守卫")
 	}
 
-	branch, ok := swiftBlockAfter(body, "if rows.isEmpty {")
+	branch, branchAt, ok := swiftBlockAfter(body, "if rows.isEmpty {")
 	if !ok {
 		t.Fatal("读不出 rows.isEmpty 那一支 —— 守卫已经失效,先修守卫")
 	}
+	branchEnd := branchAt + len(branch)
 	if strings.Contains(branch, "return") {
 		t.Error("空清单那一支又提前 return 了 —— 按钮带在它后面,用户会拿到一个" +
 			"没有任何按钮的窗口,而那正是他最需要 Add Server… 的时刻")
@@ -531,14 +553,25 @@ func TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty(t *testing.T) {
 	if strings.Contains(window, "--name") {
 		t.Error("窗口里还留着 `bx setup --name …` —— urfave/cli 遇到未知 flag 直接报错")
 	}
-	// 反面:按钮带真的被摆进了视图树,而且在那一支之后。
-	strip := strings.Index(body, "stack.addArrangedSubview(buttons)")
-	if strip < 0 {
-		t.Fatal("按钮带压根没进视图树 —— 守卫已经失效,先修守卫")
-	}
-	for _, button := range []string{"buttons.addArrangedSubview(add)", "buttons.addArrangedSubview(deploy)"} {
-		if !strings.Contains(body, button) {
-			t.Errorf("%s 没进按钮带", button)
+	// **反面,而且位置必须真的被比较。**
+	//
+	// 上一版只查了 `strip < 0`,注释却写着「而且在那一支之后」—— 于是把整条
+	// 按钮带搬**进** `if rows.isEmpty` 里(刚修的那个 bug 的镜像:按钮只在
+	// 清单为空时才画)守卫照样全绿,而 `swift build` 接受那种改法。
+	// 一条断言的措辞与它实际判的东西不一致,比没有断言更糟。
+	for _, marker := range []string{
+		"stack.addArrangedSubview(buttons)",
+		"buttons.addArrangedSubview(add)",
+		"buttons.addArrangedSubview(deploy)",
+		"buttons.addArrangedSubview(test)",
+	} {
+		at := strings.Index(body, marker)
+		if at < 0 {
+			t.Fatalf("%s 压根没进视图树 —— 守卫已经失效,先修守卫", marker)
+		}
+		if at < branchEnd {
+			t.Errorf("%s 落在 rows.isEmpty 那一支**里面**(偏移 %d < %d)—— "+
+				"那是刚修的那个 bug 的镜像:按钮只在清单为空时才画", marker, at, branchEnd)
 		}
 	}
 }
@@ -547,11 +580,14 @@ func TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty(t *testing.T) {
 //
 // 数括号在**抹白副本**上做(字符串里的 `}` 不是结构,本仓库为此栽过一次假红),
 // 而返回的是**原串**的同一段 —— blankSwiftStringLiterals 逐字节保持偏移。
-func swiftBlockAfter(source, marker string) (string, bool) {
+// 返回的第二个值是**它在 source 里的起始偏移**:调用方要拿它比较位置
+// (「某某有没有落在这一支里面」),而一个只返回文本的 helper 会让那种比较
+// 无从下手 —— 上一版正因此把位置断言写成了一句注释。
+func swiftBlockAfter(source, marker string) (block string, at int, ok bool) {
 	blank := blankSwiftStringLiterals(source)
 	start := strings.Index(blank, marker)
 	if start < 0 {
-		return "", false
+		return "", 0, false
 	}
 	depth := 0
 	for i := start + len(marker) - 1; i < len(blank); i++ {
@@ -561,9 +597,9 @@ func swiftBlockAfter(source, marker string) (string, bool) {
 		case '}':
 			depth--
 			if depth == 0 {
-				return source[start : i+1], true
+				return source[start : i+1], start, true
 			}
 		}
 	}
-	return "", false
+	return "", 0, false
 }
