@@ -475,7 +475,7 @@ func TestThroughputOnlyLandsOnTheRunningServer(t *testing.T) {
 		{Name: "osaka", Current: true},
 		{Name: "nagoya"},
 	}
-	attachThroughput(entries, "osaka", 3_100_000, nil, thBase)
+	attachThroughput(entries, "osaka", coreLiveStatus{PeakBPS: 3_100_000, PeakAt: thBase}, nil, thBase)
 
 	if entries[1].PeakBPS != 3_100_000 {
 		t.Errorf("当前那台没拿到吞吐:%d", entries[1].PeakBPS)
@@ -498,11 +498,15 @@ func TestNoThroughputObservationWritesNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		running string
-		live    int64
+		live    coreLiveStatus
 	}{
-		{"没接线 / 问不出来", "", 0},
-		{"问出来了但没有峰值", "tokyo", 0},
-		{"观测到负数", "tokyo", -1},
+		{"没接线 / 问不出来", "", coreLiveStatus{}},
+		{"问出来了但没有峰值", "tokyo", coreLiveStatus{PeakAt: thBase}},
+		{"观测到负数", "tokyo", coreLiveStatus{PeakBPS: -1, PeakAt: thBase}},
+		// **说不出年龄的数字不许上线**:一个不带年龄的峰值读起来就是现状。
+		{"有峰值却没有观测时刻", "tokyo", coreLiveStatus{PeakBPS: 3_100_000}},
+		// 时钟被改过 —— 与历史那一半同一条:宁可不报也不报一个负的年龄。
+		{"观测时刻在未来", "tokyo", coreLiveStatus{PeakBPS: 3_100_000, PeakAt: thBase.Add(time.Hour)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entries := []ServerEntry{{Name: "tokyo", Current: true, PeakBPS: 7}}
@@ -521,7 +525,7 @@ func TestHistoricalThroughputCarriesItsAge(t *testing.T) {
 	history := map[string]throughputEntry{
 		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
 	}
-	attachThroughput(entries, "", 0, history, thBase)
+	attachThroughput(entries, "", coreLiveStatus{}, history, thBase)
 
 	if entries[1].PeakBPS != 8_000_000 {
 		t.Fatalf("历史没挂上:%d", entries[1].PeakBPS)
@@ -538,7 +542,7 @@ func TestLiveThroughputOverridesHistoryForTheRunningServer(t *testing.T) {
 	history := map[string]throughputEntry{
 		"tokyo": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
 	}
-	attachThroughput(entries, "tokyo", 1_000_000, history, thBase)
+	attachThroughput(entries, "tokyo", coreLiveStatus{PeakBPS: 1_000_000, PeakAt: thBase}, history, thBase)
 
 	if entries[0].PeakBPS != 1_000_000 {
 		t.Fatalf("实时观测没有压过历史:%d", entries[0].PeakBPS)
@@ -555,7 +559,7 @@ func TestNegativeAgeIsDroppedNotShown(t *testing.T) {
 	history := map[string]throughputEntry{
 		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(time.Hour)},
 	}
-	attachThroughput(entries, "", 0, history, thBase)
+	attachThroughput(entries, "", coreLiveStatus{}, history, thBase)
 
 	if entries[0].PeakBPS != 0 || entries[0].PeakAgeSeconds != 0 {
 		t.Fatalf("未来时刻的观测被报了出来:%d bps / %d 秒",
@@ -829,7 +833,7 @@ func TestLiveThroughputFollowsTheRunningServerNotTheConfiguredOne(t *testing.T) 
 	history := map[string]throughputEntry{
 		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
 	}
-	attachThroughput(entries, "tokyo", 3_100_000, history, thBase)
+	attachThroughput(entries, "tokyo", coreLiveStatus{PeakBPS: 3_100_000, PeakAt: thBase}, history, thBase)
 
 	// 配置里选的那台只能拿到**带年龄的历史**,绝不能拿到一个 age=0 的数 ——
 	// 那读起来就是「刚刚在这台上量到的」,而那个数是另一台的。
@@ -890,5 +894,79 @@ func TestThroughputHistoryRecordsNothingForAnUnknownRunningHost(t *testing.T) {
 
 	if _, err := os.Stat(historyPath); !os.IsNotExist(err) {
 		t.Fatalf("认不出跑的是哪一台却写了盘(err=%v)", err)
+	}
+}
+
+// **一次成功的切换照样会撒谎,而上面那条守卫看不见它。**
+//
+// `TestLiveThroughputFollowsTheRunningServerNotTheConfiguredOne` 只演了
+// running != current(切换失败)那一半。切换**成功**时 running == current,
+// 按「谁在跑归谁」这条判据一切正常 —— 但 Core 那块速率表是**进程级**的,
+// 热切换不会把它的峰值清零:在 tokyo 上跑了 25 分钟的 3.1 MB/s,切到 osaka
+// 之后它照样报这个数。年龄写死成 0(而 PeakAgeSeconds 带 omitempty,0 连键
+// 都不上线)之后,界面读到的就是「刚刚在 osaka 上量到 3.1 MB/s」。
+//
+// 这里要的只是**说出那个数字真实的年龄**;把速率表在热切时清零是 Core 那边的
+// 改动,不在这一层做。
+func TestLiveThroughputCarriesItsRealAgeAfterASuccessfulSwitch(t *testing.T) {
+	entries := []ServerEntry{
+		{Name: "tokyo", Host: "203.0.113.10"},
+		{Name: "osaka", Host: "203.0.113.20", Current: true},
+	}
+	// 切换已经成功:配置与 Core 都指着 osaka。而那个峰值是 25 分钟前的事,
+	// 那时流量还从 tokyo 出去。
+	live := coreLiveStatus{
+		ServerHost: "203.0.113.20",
+		PeakBPS:    3_100_000,
+		PeakAt:     thBase.Add(-25 * time.Minute),
+	}
+	attachThroughput(entries, "osaka", live, nil, thBase)
+
+	if entries[1].PeakAgeSeconds != int64(25*time.Minute/time.Second) {
+		t.Errorf("年龄 = %d 秒, want 1500 —— 写死 0 的那个数读起来就是"+
+			"「刚刚在 osaka 上量到的」,而它是 25 分钟前在 tokyo 上量到的",
+			entries[1].PeakAgeSeconds)
+	}
+	if entries[1].PeakBPS != 3_100_000 {
+		t.Errorf("那个数本身不该被丢掉:%d", entries[1].PeakBPS)
+	}
+}
+
+// 反面:真的是刚量到的,就**不该**凭空长出一个年龄来 —— 否则「不带年龄 =
+// 现状」这条约定会被一个恒非零的年龄从另一头毁掉。
+func TestGenuinelyFreshThroughputHasNoAge(t *testing.T) {
+	entries := []ServerEntry{{Name: "tokyo", Host: "203.0.113.10", Current: true}}
+	live := coreLiveStatus{ServerHost: "203.0.113.10", PeakBPS: 3_100_000, PeakAt: thBase.Add(-300 * time.Millisecond)}
+	attachThroughput(entries, "tokyo", live, nil, thBase)
+
+	if entries[0].PeakBPS != 3_100_000 || entries[0].PeakAgeSeconds != 0 {
+		t.Fatalf("刚量到的却带了年龄:%d bps / %d 秒",
+			entries[0].PeakBPS, entries[0].PeakAgeSeconds)
+	}
+}
+
+// **年龄要真的到得了线上。** 上面那条测的是 attachThroughput,而
+// PeakAgeSeconds 带 omitempty —— 一个在结构体里算对了、却没被发出去的年龄,
+// 与写死 0 在窗口里完全一样。
+func TestServerListPublishesTheAgeOfTheLivePeak(t *testing.T) {
+	w := httptest.NewRecorder()
+	serversHandler(serversTestConfig(t), 501, noSwitch(t), nil, func() (coreLiveStatus, bool) {
+		return coreLiveStatus{
+			ServerHost: "203.0.113.10",
+			PeakBPS:    3_100_000,
+			PeakAt:     time.Now().Add(-25 * time.Minute),
+		}, true
+	})(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true))
+
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Servers[0].PeakBPS != 3_100_000 {
+		t.Fatalf("峰值没上线:%+v", got.Servers[0])
+	}
+	// 25 分钟前 ±1 分钟(这条走真实时钟)。
+	if age := got.Servers[0].PeakAgeSeconds; age < 24*60 || age > 26*60 {
+		t.Fatalf("年龄 = %d 秒, want ≈1500 —— 缺席的年龄读起来就是「刚刚量到的」", age)
 	}
 }

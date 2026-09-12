@@ -35,8 +35,12 @@ func serverListAction(c *cli.Context) error {
 // 出现在输出里:一个安静地少显示几列的界面,会让用户以为那几台真的没有数据,
 // 而实际上是没问到 —— 与本仓库里 Tristate 同一条纪律。
 type serverListView struct {
-	Entries  []guardian.ServerEntry
-	Current  string
+	Entries []guardian.ServerEntry
+	Current string
+	// Running 是 Core **此刻真正在用**的那一台(Guardian 的 /v1/servers 报的),
+	// 与 Current 并列。**空 = 这次没问出来,不是「没有在跑」**(旧 Guardian
+	// 不发这个键,Core 不可达时也发不出)。
+	Running  string
 	Degraded bool
 	// Tested 表示这一次真的做过探测(--test)。没测过和测过都没通,是两回事。
 	Tested bool
@@ -68,7 +72,7 @@ func gatherServerList(configPath string, test bool) serverListView {
 		resp, err = client.ListServers(ctx)
 	}
 	if err == nil {
-		return serverListView{Entries: resp.Servers, Current: resp.Current, Tested: test}
+		return serverListViewFrom(resp, test)
 	}
 	// 退回只读配置:名字与出口主机仍然答得出,延迟与吞吐答不出 —— 而输出会说明这一点。
 	list, current, cfgErr := setup.ListServers(configPath)
@@ -88,6 +92,17 @@ func gatherServerList(configPath string, test bool) serverListView {
 		})
 	}
 	return serverListView{Entries: entries, Current: current, Degraded: true}
+}
+
+// serverListViewFrom 把 Guardian 的应答摊成渲染要的输入。
+//
+// **抽成函数只为一件事:让「哪个字段被丢掉了」可断言。** 这一步此前是行内的一句
+// 结构体字面量,而 Running 恰恰是在那里被静默丢掉的 —— 少接一个字段不会有编译
+// 错误,输出上也只是少了一句话。
+func serverListViewFrom(resp guardian.ServerListResponse, tested bool) serverListView {
+	return serverListView{
+		Entries: resp.Servers, Current: resp.Current, Running: resp.Running, Tested: tested,
+	}
 }
 
 const (
@@ -152,12 +167,32 @@ func renderServerList(view serverListView) string {
 		}
 		return "配置里没有服务器清单(还是单服务器配置)。加第二台:bx setup --name <名字> '<链接>'\n"
 	}
+	// **实际在跑的那台与配置里选的那台分开标,绝不合并。** 热切换是先写配置
+	// 再切,所以切换失败的那一刻配置已经指向新那台了 —— 只按配置打那个 ●,
+	// 终端就会在同一秒里断言你的流量从一台它其实没走的机器出去。
+	running := strings.TrimSpace(view.Running)
+	current := strings.TrimSpace(view.Current)
+	diverged := running != "" && !strings.EqualFold(running, current)
+
 	var b strings.Builder
-	b.WriteString("已配置的服务器(● = 当前在用):\n")
+	switch {
+	case running == "":
+		// 问不出来就**别拿配置去冒充它**(旧 Guardian / Core 没在跑 / 退化)。
+		b.WriteString("已配置的服务器(● = 配置里选的;实际在跑的是哪一台这次没问到):\n")
+	case diverged:
+		b.WriteString("已配置的服务器(● = 流量此刻从这里出去,○ = 配置里选的):\n")
+	default:
+		b.WriteString("已配置的服务器(● = 当前在用):\n")
+	}
 	for _, s := range view.Entries {
 		mark := " "
-		if s.Current {
+		switch {
+		case running != "" && strings.EqualFold(strings.TrimSpace(s.Name), running):
 			mark = "●"
+		case running == "" && s.Current:
+			mark = "●"
+		case diverged && s.Current:
+			mark = "○"
 		}
 		host := s.Host
 		if host == "" {
@@ -167,6 +202,13 @@ func renderServerList(view serverListView) string {
 			host += "  UDP→" + s.UDPHost
 		}
 		fmt.Fprintf(&b, " %s %-20s %-28s%s\n", mark, s.Name, host, serverMetrics(s))
+	}
+	if diverged {
+		// **只陈述观测到的两件事,原因给可能性。** bx 分不清「上一次热切没生效」
+		// 与「有人手改了配置还没重连」,断言其中一个就是编答案。
+		fmt.Fprintf(&b, "\n⚠ 配置里选的是 %s,而流量此刻从 %s 出去。\n"+
+			"  最常见的原因是上一次切换只写了配置、没有切过去;要用上 %s:\n"+
+			"    sudo bx down\n    sudo bx up\n", current, running, current)
 	}
 	if view.Degraded {
 		// **少显示了什么必须说出来。** 安静地少几列,用户会以为那几台真的

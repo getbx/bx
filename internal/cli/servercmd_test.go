@@ -257,3 +257,87 @@ func TestHumanAgeMatchesTheMenuThreshold(t *testing.T) {
 		}
 	}
 }
+
+// **终端不许再断言配置里那台就是流量出口。**
+//
+// 热切换是先写配置再切,所以切换失败的那一刻配置已经是新那台了。只按 Current
+// 打那个 ●,`bx server list` 就在同一秒里断言你的流量从一台它其实没走的机器
+// 出去 —— 正是这一轮从窗口里拿掉的那句话,而两个界面对同一台服务器说不同的话
+// 是这个仓库反复栽的形状。
+func TestServerListMarksTheRunningOneNotJustTheConfiguredOne(t *testing.T) {
+	out := renderServerList(serverListView{
+		Current: "us", Running: "hk",
+		Entries: []guardian.ServerEntry{
+			{Name: "hk", Host: "1.1.1.1"},
+			{Name: "us", Host: "2.2.2.2", Current: true},
+		},
+	})
+	// 只在服务器那几行里数(表头图例本身也含这两个符号)。
+	var marked, configured string
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.Contains(line, ".") || len(strings.Fields(line)) < 2 {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "●") {
+			marked = trimmed
+		}
+		if strings.HasPrefix(trimmed, "○") {
+			configured = trimmed
+		}
+	}
+	if !strings.Contains(marked, "hk") {
+		t.Errorf("● 没打在实际在跑的那一行上:%q\n%s", marked, out)
+	}
+	if !strings.Contains(configured, "us") {
+		t.Errorf("配置里选的那一行没有单独标出来:%q\n%s", configured, out)
+	}
+	// 两者不一致本身要说出来,并给出路 —— 一个用户看不懂的符号等于没标。
+	for _, want := range []string{"配置里选的是 us", "流量此刻从 hk 出去", "sudo bx up"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("输出里没有 %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "● = 当前在用") {
+		t.Errorf("两者不一致时还在说「当前在用」:\n%s", out)
+	}
+}
+
+// **问不出来时别拿配置去冒充它。**
+//
+// 旧 Guardian 不发 running 这个键,Core 没在跑时也发不出;那时 ● 只能表示
+// 「配置里选的」,图例必须如实说 —— 与 Tristate 同一条:「没问出来」不是
+// 一个确定的答案。
+func TestServerListDoesNotClaimTheConfiguredOneIsRunningWhenItCannotAsk(t *testing.T) {
+	out := renderServerList(serverListView{
+		Current: "us",
+		Entries: []guardian.ServerEntry{{Name: "us", Host: "2.2.2.2", Current: true}},
+	})
+	if strings.Contains(out, "● = 当前在用") {
+		t.Errorf("没问出来实际在跑的是哪一台,却断言了「当前在用」:\n%s", out)
+	}
+	if !strings.Contains(out, "没问到") {
+		t.Errorf("没问出来却不说:\n%s", out)
+	}
+	// 配置里那台仍要标出来 —— 否则这条守卫可以靠「什么都不标」满足。
+	if !strings.Contains(out, "●") {
+		t.Errorf("配置里选的那台连标记都没有:\n%s", out)
+	}
+}
+
+// **Guardian 报的 running 必须真的到得了渲染层。**
+//
+// 少接一个字段不会有编译错误,输出上也只是少了一句话 —— 而它恰恰是这一整条
+// 改动唯一要说的那句。
+func TestServerListViewCarriesTheRunningServerFromGuardian(t *testing.T) {
+	view := serverListViewFrom(guardian.ServerListResponse{
+		Servers: []guardian.ServerEntry{{Name: "hk"}, {Name: "us", Current: true}},
+		Current: "us", Running: "hk",
+	}, false)
+	if view.Running != "hk" {
+		t.Fatalf("Guardian 报的 running 在路上被丢掉了:%q", view.Running)
+	}
+	if view.Current != "us" {
+		t.Fatalf("Current = %q, want us —— 两者并列,绝不合并", view.Current)
+	}
+}

@@ -34,7 +34,9 @@ type ServerEntry struct {
 	PeakBPS int64 `json:"peak_bps,omitempty"`
 	// PeakAgeSeconds 是那次观测有多久了。**它和 PeakBPS 必须成对出现** ——
 	// 一个不带年龄的历史数字读起来像现状,而所有者同意存历史的前提正是
-	// 「界面上要标出来这是以前的」。0 = 就是现在(当前那台的实时观测)。
+	// 「界面上要标出来这是以前的」。0 = 不到一秒之前,也就是真的就在此刻 ——
+	// **它由观测时刻算出来,绝不许写死**(见 attachThroughput:热切换不会把
+	// Core 那块进程级速率表清零,写死 0 会让上一台的成绩冒充这一台的现状)。
 	PeakAgeSeconds int64 `json:"peak_age_seconds,omitempty"`
 }
 
@@ -148,6 +150,14 @@ type coreLiveStatus struct {
 	ServerHost string
 	// PeakBPS 是观测到的峰值吞吐,0 = 这段时间没人用它传东西(**不是「跑不动」**)。
 	PeakBPS int64
+	// PeakAt 是那个峰值**是什么时候量到的**,必须跟着 PeakBPS 一起带出来。
+	//
+	// **少了它,一次成功的切换照样撒谎。** Core 那块速率表是进程级的,热切换
+	// 不会把它的峰值清零 —— A→B 切成功之后它报的还是 A 那个数,而把年龄写死成
+	// 0 就等于说「刚刚在 B 上量到的」。这个时刻本来就在同一份 stats.Report 里,
+	// 落盘那一半(recordThroughputOnce)一直在忠实地转发它,只有应答这一路把它
+	// 扔掉了。
+	PeakAt time.Time
 }
 
 // coreStatusReader 问一次 Core。
@@ -162,7 +172,7 @@ func liveCoreStatus() (coreLiveStatus, bool) {
 	if err != nil {
 		return coreLiveStatus{}, false
 	}
-	return coreLiveStatus{ServerHost: rep.Server, PeakBPS: rep.PeakBPS}, true
+	return coreLiveStatus{ServerHost: rep.Server, PeakBPS: rep.PeakBPS, PeakAt: rep.PeakAt}, true
 }
 
 // runningServerName 把 Core 报的主机翻成清单里的名字。
@@ -234,14 +244,14 @@ func serveServerList(w http.ResponseWriter, configPath string, coreStatus coreSt
 	// **先问「在跑哪一台」,再决定峰值挂给谁。** 反过来(挂给配置里选的那台)
 	// 正是热切换失败时那句谎的机制。
 	var running string
-	var livePeak int64
+	var live coreLiveStatus
 	if coreStatus != nil {
 		if st, ok := coreStatus(); ok {
 			running = runningServerName(entries, st.ServerHost)
-			livePeak = st.PeakBPS
+			live = st
 		}
 	}
-	attachThroughput(entries, running, livePeak, past.Servers, time.Now())
+	attachThroughput(entries, running, live, past.Servers, time.Now())
 	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
 		Servers:    entries,
 		Current:    current,
@@ -477,10 +487,16 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 // **历史必须带年龄。** 所有者同意存历史(「以前的值没事」)的前提正是界面上
 // 要标出来这是以前的 —— 一个不带年龄的历史数字读起来像现状。
 //
-// **实时的那份压过历史**:两者都在时,在跑的那台显示的是此刻,年龄为 0。
+// **「实时」那一份也要报它真实的年龄,不许写死 0。** Core 那块速率表是进程级的,
+// 热切换**不会**把它的峰值清零 —— A→B 切**成功**之后它报的仍是 A 那个数;年龄
+// 写死成 0 之后(PeakAgeSeconds 带 omitempty,0 连键都不上线)界面读到的就是
+// 「刚刚在 B 上量到的」。带上真实年龄之后,一个不带年龄的数字只可能真的是刚量到的。
+//
+// **实时的那份压过历史**:两者都在时,在跑的那台显示的是速率表此刻报的值。
 // running 为空(问不出来 / 认不出那台主机)时**谁都不挂实时** —— 那个数确实
-// 存在,只是不知道该记给谁,而记错比不记糟得多。
-func attachThroughput(entries []ServerEntry, running string, live int64, history map[string]throughputEntry, now time.Time) {
+// 存在,只是不知道该记给谁,而记错比不记糟得多;`live.PeakAt` 缺席时同样不挂 ——
+// 说不出年龄的数字不许上线。
+func attachThroughput(entries []ServerEntry, running string, live coreLiveStatus, history map[string]throughputEntry, now time.Time) {
 	for i := range entries {
 		past, ok := history[entries[i].Name]
 		if !ok || past.PeakBPS <= 0 || past.ObservedAt.IsZero() {
@@ -496,13 +512,18 @@ func attachThroughput(entries []ServerEntry, running string, live int64, history
 		entries[i].PeakAgeSeconds = int64(age / time.Second)
 	}
 	running = strings.TrimSpace(running)
-	if running == "" || live <= 0 {
+	if running == "" || live.PeakBPS <= 0 || live.PeakAt.IsZero() {
+		return
+	}
+	liveAge := now.Sub(live.PeakAt)
+	if liveAge < 0 {
+		// 与历史那一半同一条:时钟被改过时宁可不报,也不报一个负的年龄。
 		return
 	}
 	for i := range entries {
 		if strings.EqualFold(strings.TrimSpace(entries[i].Name), running) {
-			entries[i].PeakBPS = live
-			entries[i].PeakAgeSeconds = 0
+			entries[i].PeakBPS = live.PeakBPS
+			entries[i].PeakAgeSeconds = int64(liveAge / time.Second)
 			return
 		}
 	}
