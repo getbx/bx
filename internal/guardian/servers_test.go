@@ -970,3 +970,305 @@ func TestServerListPublishesTheAgeOfTheLivePeak(t *testing.T) {
 		t.Fatalf("年龄 = %d 秒, want ≈1500 —— 缺席的年龄读起来就是「刚刚量到的」", age)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// remove / replace:两个此前只有命令行够得着的动作
+// ---------------------------------------------------------------------------
+
+// 删掉一台不在用的:盘上真的少了那一条,current 一动不动。
+func TestServerRemoveDropsTheEntryFromTheConfig(t *testing.T) {
+	path := serversTestConfig(t)
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "remove", Name: "osaka",
+	}), 501, true))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d:%s", w.Code, w.Body.String())
+	}
+	list, current, err := setup.ListServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || !strings.EqualFold(list[0].Name, "tokyo") {
+		t.Fatalf("盘上的清单 = %+v,want 只剩 tokyo —— 应答说删了而盘上没删,是最坏的一种", list)
+	}
+	if current != "tokyo" {
+		t.Fatalf("删掉别的那台却动了 current(=%q)", current)
+	}
+	// 回的是改动后的完整清单,界面据此重画,不必自己推演。
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Servers) != 1 || got.Current != "tokyo" {
+		t.Fatalf("应答不是改动后的完整清单:%+v", got)
+	}
+}
+
+// **删掉当前正在用的那台一律拒绝,而且盘上文件一个字节都不许动。**
+//
+// 删掉它会让 current 指向一个不存在的名字,下一次启动直接起不来 —— 而用户
+// 只是想清理一条记录。**一次「被拒绝」却仍然写了盘的删除,比拒绝失败更糟**:
+// 用户看到一句拒绝,以为什么都没发生,而配置已经变了。
+func TestServerRemoveRefusesTheCurrentOneAndWritesNothing(t *testing.T) {
+	path := serversTestConfig(t)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "remove", Name: "tokyo",
+	}), 501, true))
+
+	// **先查盘,再查应答,而且都用 Errorf。** 顺序与严厉程度都是有意的:
+	// 「拒绝了但还是写了盘」比「没拒绝」更糟,而一个 Fatalf 的状态码断言会让
+	// 后面那条永远跑不到 —— 两条守卫塌成一条,而活下来的是次要的那条。
+	after, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(before) != string(after) {
+		t.Errorf("这次删除动了盘上的配置:\n--- before\n%s\n--- after\n%s", before, after)
+	}
+	if w.Code != http.StatusConflict {
+		t.Errorf("状态码 = %d, want 409:%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "servers_remove_current") {
+		t.Errorf("没说清是「那是当前那台」:%s", w.Body.String())
+	}
+	// 反面自检:那台确实还在、current 也还指着它 —— 否则「文件没变」也可能
+	// 是因为这个 fixture 压根就没有 tokyo,而那样这条守卫什么都没守。
+	list, current, lerr := setup.ListServers(path)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(list) != 2 || current != "tokyo" {
+		t.Errorf("拒绝之后清单变了:%+v current=%q", list, current)
+	}
+}
+
+// 就地换掉同名那台的链接:current 不变,其余内容不动。
+//
+// **换链接是修一条记录,不是换出口。** 凭据轮换、VPS 重建换了地址,都不构成
+// 「把我的流量换到那里去」的请求 —— 与「加一台不许把出口换过去」同一条。
+func TestServerReplaceSwapsTheLinkInPlace(t *testing.T) {
+	path := serversTestConfig(t)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLink := "vless://" + serversTestUUID + "@203.0.113.20:443?security=reality"
+	newLink := "vless://" + serversTestUUID + "@203.0.113.99:8443?security=reality"
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "replace", Name: "osaka", Link: newLink,
+	}), 501, true))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d:%s", w.Code, w.Body.String())
+	}
+	list, current, lerr := setup.ListServers(path)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if current != "tokyo" {
+		t.Fatalf("换一条链接把出口换到了 %q —— 换链接不构成换出口的请求", current)
+	}
+	if len(list) != 2 {
+		t.Fatalf("清单长度 = %d, want 2 —— 换链接不该多出或少掉一台:%+v", len(list), list)
+	}
+	if list[1].Link != newLink {
+		t.Fatalf("osaka 的链接 = %q, want %q", list[1].Link, newLink)
+	}
+	if !strings.Contains(list[0].Link, "203.0.113.10") {
+		t.Fatalf("另一台的链接被连累了:%q", list[0].Link)
+	}
+	// **盘上其余内容一个字都没动**:唯一的差别就是那条链接本身。
+	after, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if want := strings.Replace(string(before), oldLink, newLink, 1); want != string(after) {
+		t.Fatalf("盘上不止那条链接变了:\n--- want\n%s\n--- got\n%s", want, after)
+	}
+	// 应答回的是改动后的完整清单,而且链接本身仍然不许出门(它是凭据)。
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Servers) != 2 || got.Current != "tokyo" || got.Servers[1].Host != "203.0.113.99" {
+		t.Fatalf("应答不是改动后的完整清单:%+v", got)
+	}
+	if strings.Contains(w.Body.String(), serversTestUUID) {
+		t.Errorf("应答里出现了链接凭据:%s", w.Body.String())
+	}
+}
+
+// **没让它改的东西不许被顺手抹掉。**
+//
+// osaka 那台配了独立的 UDP 传输。只换主链接时把 udp: 一起删掉,UDP 会**静默**
+// 回落到主传输 —— 没有任何一处会报错,而用户以为自己只改了一条链接。
+func TestServerReplaceKeepsTheUDPLinkItWasNotAskedToChange(t *testing.T) {
+	path := serversTestConfig(t)
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "replace", Name: "osaka",
+		Link: "vless://" + serversTestUUID + "@203.0.113.99:8443?security=reality",
+	}), 501, true))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d:%s", w.Code, w.Body.String())
+	}
+	list, _, err := setup.ListServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list[1].UDP != "hysteria2://pw@203.0.113.21:443" {
+		t.Fatalf("osaka 的 UDP 传输变成了 %q —— 只换主链接不该动它,UDP 会静默走主传输", list[1].UDP)
+	}
+	// 反面:明确给了 UDP 时它必须被换掉,否则「永远不动 udp」也能满足上面那条。
+	w = httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "replace", Name: "osaka",
+		Link: "vless://" + serversTestUUID + "@203.0.113.99:8443?security=reality",
+		UDP:  "hysteria2://pw@203.0.113.99:8443",
+	}), 501, true))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d:%s", w.Code, w.Body.String())
+	}
+	if list, _, err = setup.ListServers(path); err != nil {
+		t.Fatal(err)
+	} else if list[1].UDP != "hysteria2://pw@203.0.113.99:8443" {
+		t.Fatalf("给了 UDP 却没换:%q", list[1].UDP)
+	}
+}
+
+// **名字不在清单里的 replace 必须被拒,而且一个字节都不写。**
+//
+// 底下那个原语对不存在的名字是「加一台」:用户在名字上敲错一个字母,就会凭空
+// 多出一台顶着新链接的服务器,而界面只会说「替换成功」。
+func TestServerReplaceRejectsAnUnknownNameInsteadOfAddingIt(t *testing.T) {
+	path := serversTestConfig(t)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "replace", Name: "nagoya", Link: "vless://x@203.0.113.30:443",
+	}), 501, true))
+
+	// 盘先查、且都用 Errorf:一个 Fatalf 的状态码断言会让「凭空多出一台」
+	// 那条永远跑不到,而后者才是这条守卫真正要挡的东西。
+	after, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(before) != string(after) {
+		t.Errorf("这次 replace 动了盘上的配置:\n--- before\n%s\n--- after\n%s", before, after)
+	}
+	if list, _, lerr := setup.ListServers(path); lerr != nil || len(list) != 2 {
+		t.Errorf("清单 = %+v(err=%v),want 仍是两台 —— 敲错一个字母不该凭空多出一台", list, lerr)
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("状态码 = %d, want 400:%s", w.Code, w.Body.String())
+	}
+}
+
+// 坏输入在写盘之前挡掉,并且如实报错 —— 与 add 那条同一条纪律。
+func TestServerRemoveAndReplaceRejectBadInput(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  serversRequest
+	}{
+		{"remove 没给名字", serversRequest{Action: "remove"}},
+		{"replace 没给名字", serversRequest{Action: "replace", Link: "vless://x@203.0.113.30:443"}},
+		{"replace 没给链接", serversRequest{Action: "replace", Name: "osaka"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := serversTestConfig(t)
+			before, _ := os.ReadFile(path)
+			w := httptest.NewRecorder()
+			serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, tc.req), 501, true))
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("状态码 = %d, want 400:%s", w.Code, w.Body.String())
+			}
+			after, _ := os.ReadFile(path)
+			if string(before) != string(after) {
+				t.Fatal("被拒绝的请求改动了盘上的配置")
+			}
+		})
+	}
+}
+
+// remove 与 replace **都绝不热切**:noSwitch 在被调用时 t.Fatal。改配置与
+// 换出口是两件事,后者要用户在清单里显式点一下。
+func TestServerRemoveAndReplaceNeverHotSwitch(t *testing.T) {
+	for _, req := range []serversRequest{
+		{Action: "remove", Name: "osaka"},
+		{Action: "replace", Name: "osaka", Link: "vless://x@203.0.113.99:443"},
+	} {
+		path := serversTestConfig(t)
+		w := httptest.NewRecorder()
+		serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, req), 501, true))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s:状态码 = %d:%s", req.Action, w.Code, w.Body.String())
+		}
+	}
+}
+
+// **每一条应答都得说「实际在跑的是哪一台」,不只是 GET 那一条。**
+//
+// 上一轮把 Running 只加在了 GET 那条路上,而 `bx server list --test` 走的是
+// probe 那条 —— 于是一台 Guardian 与 Core 都完全健康的机器,每次都被告知
+// 「实际在跑的是哪一台这次没问到」。
+//
+// **修法不许是「让消费方记住上一次的值」**:那是客户端状态,会陈旧,而它陈旧
+// 的那一刻恰好就是热切换刚失败、这个字段最有价值的一刻。服务端每一次都说实话。
+func TestEveryServerResponsePublishesTheRunningServer(t *testing.T) {
+	core := func() (coreLiveStatus, bool) {
+		return coreLiveStatus{ServerHost: "203.0.113.10"}, true
+	}
+	probe := func(host string, port int) (supervisor.ProbeResult, error) {
+		return supervisor.ProbeResult{Host: host, Port: port, Reachable: true, RTTMS: 7}, nil
+	}
+	for _, tc := range []struct {
+		name string
+		req  func(t *testing.T) *http.Request
+	}{
+		{"GET 清单", func(t *testing.T) *http.Request {
+			return httptest.NewRequest(http.MethodGet, "/v1/servers", nil)
+		}},
+		{"probe", func(t *testing.T) *http.Request {
+			return postServersJSON(t, serversRequest{Action: "probe"})
+		}},
+		{"add", func(t *testing.T) *http.Request {
+			return postServersJSON(t, serversRequest{Action: "add", Name: "nagoya", Link: "vless://x@203.0.113.30:443"})
+		}},
+		{"remove", func(t *testing.T) *http.Request {
+			return postServersJSON(t, serversRequest{Action: "remove", Name: "osaka"})
+		}},
+		{"replace", func(t *testing.T) *http.Request {
+			return postServersJSON(t, serversRequest{Action: "replace", Name: "osaka", Link: "vless://y@203.0.113.20:443"})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			serversHandler(serversTestConfig(t), 501, noSwitch(t), probe, core)(
+				w, withPeer(tc.req(t), 501, true),
+			)
+			if w.Code != http.StatusOK {
+				t.Fatalf("状态码 = %d:%s", w.Code, w.Body.String())
+			}
+			var got ServerListResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Running != "tokyo" {
+				t.Fatalf("running = %q, want tokyo —— 少了它,一台完全健康的机器"+
+					"每次都被告知「实际在跑的是哪一台这次没问到」:%s", got.Running, w.Body.String())
+			}
+		})
+	}
+}
