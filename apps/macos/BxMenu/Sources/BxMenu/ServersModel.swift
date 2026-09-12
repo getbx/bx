@@ -255,8 +255,14 @@ func serverSwitchingAvailable(capabilities: [String]?) -> Bool {
     return capabilities.contains("servers")
 }
 
-/// **改清单**那几个动词有没有:Remove、Replace Link…、以及 Add 表单里那个
-/// UDP 框。判据是 `servers_edit`,**不是 `servers`**。
+/// **改清单**那两个动词有没有:Remove 与 Replace Link…。判据是 `servers_edit`,
+/// **不是 `servers`**。
+///
+/// **Add 表单里那个 UDP 框刻意不在这道门后面**,而这不是漏了:`action:add` 认
+/// `udp` 这个键**早于**这一支(Guardian 一直在收它,只是 Swift 客户端从不发),
+/// 所以对着一台只声明 `servers` 的旧 Guardian 发它,得到的是正确的行为。
+/// 把它一并门控只会在那种机器上**拿掉一个本来能用的功能** —— 而这个门存在的
+/// 理由恰恰相反:remove / replace 在那种机器上会做出一件危险的事。
 ///
 /// 两个能力必须分开,而这不是洁癖:`CapabilityServers` 的含义**早于**这些动词。
 /// 一台只声明 `servers` 的旧 Guardian 收到 `{"action":"remove"}` 时,走的是它

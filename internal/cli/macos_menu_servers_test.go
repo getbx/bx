@@ -561,7 +561,12 @@ func TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty(t *testing.T) {
 	}
 
 	// 措辞由**配置里有没有 servers 清单**决定,不由行数决定;而「只有一台」
-	// 那一档条件不同,归 otherServersEmptyNote —— 两句都必须真的被摆进视图树。
+	// 那一档条件不同,归 otherServersEmptyNote。
+	//
+	// **两句都必须真的被摆进视图树,而这条断言此前只查了「提到过」。**
+	// 变异实测:两句 `stack.addArrangedSubview(wrapped(reason))` 都改成
+	// `_ = wrapped(reason)`,编得过、整套全绿 —— 而单服务器配置的用户打开
+	// Servers 看到的是一个配置路径、四个按钮,和**没有任何解释**。
 	for _, judge := range []string{
 		"serverListEmptyReason(list: list)",
 		"otherServersEmptyNote(list: list, core: core)",
@@ -569,6 +574,11 @@ func TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty(t *testing.T) {
 		if !strings.Contains(body, judge) {
 			t.Errorf("render 没有用 %s —— 对一份单服务器配置说「还没有服务器」"+
 				"是一句当场就能被证伪的假话,而只有一台时那一句压根不会出现", judge)
+			continue
+		}
+		if !swiftValueReachesViewTree(body, judge) {
+			t.Errorf("%s 算出来的那句话没有被摆进视图树 —— 它被算出来然后扔掉了,"+
+				"而用户看到的是一片没有任何解释的空白", judge)
 		}
 	}
 	// **那两句空状态文案不许留在这个文件里。** 它们此前正是以
@@ -626,6 +636,168 @@ func swiftBraceDepthAt(body string, at int) int {
 		}
 	}
 	return depth
+}
+
+// ---------------------------------------------------------------------------
+// 这一段是**摆放**守卫的判据本身,值得先读。
+//
+// 上一版这一堆守卫栽在同一个物种上,而 carry-in 文件恰好点过它的名:断言钉的是
+// 「某个标识符**被提到过**」,而要守的性质是「那个值**真的被摆进了视图树**」。
+// 五条变异因此全绿,其中两条让这扇窗要消灭的两句假话原样回来 ——
+// `stack.addArrangedSubview(wrapped(reason))` 改成 `_ = wrapped(reason)` 编得过、
+// 全绿,而单服务器配置的用户看到的是一片没有任何解释的空白。
+//
+// 判据因此改成一个**很小的数据流跟随器**:从种子表达式(`panel.runningNote`
+// 这种)出发,在**包着它的那个最内层花括号块**里顺着 `let x = …种子…` 把变量名
+// 一路收下去,最后要求其中某个名字出现在一次 `addArrangedSubview(` 的实参里。
+//
+// **限定在最内层块里是承重的**:`let label = hint(note)` 在这个文件里出现三次
+// (三个不同的 if let 分支各一次),不限定的话「A 分支摆了」会替「B 分支没摆」
+// 作证 —— 那正好又是一次「守卫钉住的是缺陷旁边的东西」。
+
+// swiftBlockAt 取包着 at 这一处的**最内层**花括号块的内容(不含花括号本身)。
+// 找不到(at 落在函数体顶层)就返回整个 body。
+func swiftBlockAt(body string, at int) string {
+	blank := blankSwiftStringLiterals(body)
+	// 往回找最近一个没配平的 `{`。
+	depth := 0
+	open := -1
+	for i := at - 1; i >= 0; i-- {
+		switch blank[i] {
+		case '}':
+			depth++
+		case '{':
+			if depth == 0 {
+				open = i
+			} else {
+				depth--
+			}
+		}
+		if open >= 0 {
+			break
+		}
+	}
+	if open < 0 {
+		return body
+	}
+	depth = 0
+	for i := open; i < len(blank); i++ {
+		switch blank[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return body[open+1 : i]
+			}
+		}
+	}
+	return body[open+1:]
+}
+
+// swiftCallArgs 取 body 里每一次 `callee(` 的实参原文(按括号配平取,所以嵌套
+// 调用不会被截断)。
+func swiftCallArgs(body, callee string) []string {
+	blank := blankSwiftStringLiterals(body)
+	var out []string
+	from := 0
+	for {
+		idx := strings.Index(blank[from:], callee+"(")
+		if idx < 0 {
+			return out
+		}
+		start := from + idx + len(callee) + 1
+		depth := 1
+		i := start
+		for ; i < len(blank) && depth > 0; i++ {
+			switch blank[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+		}
+		if depth != 0 {
+			return out
+		}
+		out = append(out, body[start:i-1])
+		from = i
+	}
+}
+
+// swiftMentionsIdentifier 判断 text 里有没有把 name 当成一个**完整标识符**用到
+// (而不是某个更长名字的一截:`label` 不该被 `labelWithString` 满足)。
+func swiftMentionsIdentifier(text, name string) bool {
+	return regexp.MustCompile(`(^|[^A-Za-z0-9_.])` + regexp.QuoteMeta(name) + `($|[^A-Za-z0-9_])`).
+		MatchString(text)
+}
+
+// swiftBindingRegexp 认 `let x = …` / `if let x = …` / `guard let x = …` 三种
+// 绑定 —— 少了后两种,`if let line = panel.statusLine {` 这种最常见的形状就跟不
+// 下去,而这个文件里那七项里有五项是它。
+var swiftBindingRegexp = regexp.MustCompile(
+	`(?m)(?:^|[^A-Za-z0-9_])let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+
+// swiftValueReachesViewTree 回答:从 seed 派生出来的东西,有没有被摆进视图树。
+//
+// 见本段开头那大段注释 —— 这是「摆进去了」与「提到过」的分水岭。
+func swiftValueReachesViewTree(body, seed string) bool {
+	blank := blankSwiftStringLiterals(body)
+	at := strings.Index(blank, seed)
+	if at < 0 {
+		return false
+	}
+	lineStart := strings.LastIndexByte(blank[:at], '\n') + 1
+	lineEnd := lineStart + strings.IndexByte(blank[lineStart:], '\n')
+	if lineEnd < lineStart {
+		lineEnd = len(blank)
+	}
+	var scope string
+	if strings.HasSuffix(strings.TrimSpace(blank[lineStart:lineEnd]), "{") {
+		// seed 在一个分支的头上(`if let x = seed {`)。作用域是它开的那个块,
+		// 而绑定名写在头那一行 —— 两段拼起来才跟得下去。
+		scope = body[lineStart:lineEnd] + "\n" + swiftBlockAt(body, lineEnd+1)
+	} else {
+		scope = swiftBlockAt(body, at)
+	}
+	names := []string{seed}
+	// 三轮足够:seed → 绑定名 → 包一层 → 摆进去。多了只会把不相干的名字收进来。
+	for round := 0; round < 3; round++ {
+		for _, m := range swiftBindingRegexp.FindAllStringSubmatch(scope, -1) {
+			for _, name := range names {
+				if swiftMentionsIdentifier(m[2], name) {
+					names = append(names, m[1])
+					break
+				}
+			}
+		}
+	}
+	for _, arg := range swiftCallArgs(scope, "addArrangedSubview") {
+		for _, name := range names {
+			if swiftMentionsIdentifier(arg, name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// swiftNearestEnclosingIf 取 at 之前**最近**的那个 `if `(整行,去掉首尾空白)。
+// 固定字节窗口在本仓库被邻近函数满足过,所以问的是「包着它的那个条件」。
+func swiftNearestEnclosingIf(body string, at int) (string, bool) {
+	blank := blankSwiftStringLiterals(body)
+	if at > len(blank) {
+		return "", false
+	}
+	idx := strings.LastIndex(blank[:at], "if ")
+	if idx < 0 {
+		return "", false
+	}
+	end := strings.IndexByte(body[idx:], '\n')
+	if end < 0 {
+		end = len(body) - idx
+	}
+	return strings.TrimSpace(body[idx : idx+end]), true
 }
 
 // **每一个渲染点都必须带上 `/v1/status` 的那份实时数据,而漏掉它不会有任何
@@ -713,7 +885,12 @@ func TestMacMenuServersWindowPlacesTheCurrentServerPanel(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 currentPanelView 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	// 那一块上的每一样都得真的进格子:少一样不会报错,只会静默不显示。
+	// 那一块上的每一样都得真的**进格子**,不是「被提到过」。
+	//
+	// 上一版查的是 `strings.Contains(panel, field)`,于是留着
+	// `if let note = panel.runningNote {` 而把里面那句 `box.addArrangedSubview(label)`
+	// 删掉,整套全绿 —— 而那一行正是橙色的分歧提示,也就是这扇窗第三句假话的
+	// 另一半:配置指着这一台而 Core 在跑别的,用户永远看不到这句话。
 	for _, field := range []string{
 		"panel.endpoint", "panel.statusLine", "panel.udpLine",
 		"panel.throughput", "panel.coreSilentNote", "panel.runningNote",
@@ -721,16 +898,37 @@ func TestMacMenuServersWindowPlacesTheCurrentServerPanel(t *testing.T) {
 	} {
 		if !strings.Contains(panel, field) {
 			t.Errorf("当前那一块没用上 %s —— 那一项永远不显示,而界面看起来完全正常", field)
+			continue
+		}
+		if !swiftValueReachesViewTree(panel, field) {
+			t.Errorf("%s 被读出来之后没有被摆进视图树 —— 那一项永远不显示,"+
+				"而界面看起来完全正常", field)
 		}
 	}
-	// **只有实测失败才画红。** `statusLineIsBad` 是那个三态判据的落点:
+	// **只有明确说了不健康才画红。** `statusLineIsBad` 是那个三态判据的落点:
 	// 窗口自己写 `healthy == false` 就会把「没说」画成「不健康」。
-	if !strings.Contains(panel, "panel.statusLineIsBad") {
-		t.Error("隧道健不健康的红色不是由 statusLineIsBad 决定的")
+	// 判据是**包着那处红色的条件是哪一个**,不是「提到过这个属性」。
+	red := strings.Index(panel, ".systemRed")
+	if red < 0 {
+		t.Fatal("当前那一块里没有红色 —— 隧道不健康时没有任何视觉提示")
+	}
+	if n := strings.Count(panel, ".systemRed"); n != 1 {
+		t.Fatalf("当前那一块里有 %d 处 .systemRed,应当恰好一处 —— "+
+			"多出来的那些不受 statusLineIsBad 这个三态判据管", n)
+	}
+	gate, ok := swiftNearestEnclosingIf(panel, red)
+	if !ok || gate != "if panel.statusLineIsBad { label.textColor = .systemRed }" {
+		t.Errorf("隧道健不健康的红色不是由 statusLineIsBad 直接决定的(包着它的条件是 %q)", gate)
 	}
 }
 
-// **三个动词按 `servers_edit` 门控,不按 `servers`。**
+// **`⋯` 里那两个动词按 `servers_edit` 门控,不按 `servers`。**
+//
+// **Add 表单里那个 UDP 框刻意不在这道门后面。** `action:add` 认 `udp` 这个键
+// 早于这一支(Guardian 一直在收,只是 Swift 客户端从不发),对着只声明
+// `servers` 的旧 Guardian 发它得到的是正确的行为 —— 一并门控只会在那种机器上
+// 拿掉一个本来能用的功能。这道门存在的理由恰恰相反:remove / replace 在那种
+// 机器上会做出一件危险的事。
 //
 // 后者的含义早于 remove / replace:一台只声明 `servers` 的旧 Guardian 收到
 // `{"action":"remove"}` 走的是它那一版唯一的行为 —— **换到那一台**。于是在
@@ -754,19 +952,131 @@ func TestMacMenuServerVerbsAreGatedByTheEditCapability(t *testing.T) {
 	}
 	// 窗口那一半:`⋯` 必须真的挂在这道门后面,而不是无条件画出来。
 	window := stripSwiftComments(menuServersWindowSource(t))
+	// **候选行与当前那一块都要查。**
+	//
+	// 上一版只读了 serverView —— 而当前那一块上也有一个 ⋯,删掉包着它的
+	// `if canEdit {` 整套全绿。那条路的后果被完整追过:对着一台只声明 `servers`
+	// 的 Guardian 发 replace,请求落进「空 action = 换到 Name 那一台」的兼容
+	// 分支 —— `SetCurrentServer` 加一次**用旧链接**的热切换;应答又恰好能被
+	// 解成一份空的 ServerList,于是窗口翻成「No servers yet」,隧道在用户脚下
+	// 换了地方,而菜单说的是「Saved the new link for tokyo.」
+	for _, fn := range []string{
+		"private func serverView(_ row: ServerRow) -> NSView",
+		"private func currentPanelView(_ panel: CurrentServerPanel) -> NSView",
+	} {
+		fnBody, ok := swiftFunctionBody(window, fn)
+		if !ok {
+			t.Fatalf("读不出 %s 的函数体 —— 守卫已经失效,先修守卫", fn)
+		}
+		more := strings.Index(fnBody, "moreButton(")
+		if more < 0 {
+			t.Fatalf("%s 上没有那个 ⋯ —— 那几个动词点不到", fn)
+		}
+		gate, ok := swiftNearestEnclosingIf(fnBody, more)
+		if !ok || gate != "if canEdit {" {
+			t.Errorf("%s 里的 ⋯ 不是由 canEdit 直接门控的(包着它的条件是 %q)", fn, gate)
+		}
+	}
+}
+
+// **候选行的红色必须由 `ProbePresentation.isFailure` 决定,而这一处此前无人守。**
+//
+// 变异实测:`if row.probe.isFailure` 改成 `if row.probe != .notChecked`,整个
+// internal/cli 套件与 24 个 Swift 套件全绿 —— 而那是这扇窗要消灭的第二句假话
+// **逐字重现**:bx 没在跑时点一下 Test All,每一行都变红,各配一句
+// `not measured — could not measure (is bx running?)`。
+//
+// 判据是「**包着那个 `.systemRed` 的条件**是哪一个」,不是「文件里提到过
+// isFailure」;另外钉住这个函数里**只有一处** `.systemRed`,否则再加一处
+// 不受这个判据管的红色照样绿。
+func TestMacMenuServerRowRedComesOnlyFromAMeasuredFailure(t *testing.T) {
+	window := stripSwiftComments(menuServersWindowSource(t))
 	body, ok := swiftFunctionBody(window, "private func serverView(_ row: ServerRow) -> NSView")
 	if !ok {
 		t.Fatal("读不出 serverView 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	more := strings.Index(body, "moreButton(")
-	if more < 0 {
-		t.Fatal("候选行上没有那个 ⋯ —— 三个动词一个都点不到")
+	if n := strings.Count(body, ".systemRed"); n != 1 {
+		t.Fatalf("serverView 里有 %d 处 .systemRed,应当恰好一处 —— "+
+			"多出来的那些不受「只有实测失败才红」这个判据管", n)
 	}
-	gate := strings.LastIndex(body[:more], "if canEdit {")
-	other := strings.LastIndex(body[:more], "if ")
-	if gate < 0 || gate != other {
-		t.Errorf("⋯ 不是由 canEdit 直接门控的(最近的条件在 %d,门在 %d)", other, gate)
+	red := strings.Index(body, ".systemRed")
+	gate, ok := swiftNearestEnclosingIf(body, red)
+	if !ok || gate != "if row.probe.isFailure {" {
+		t.Errorf("候选行的红色不是由 row.probe.isFailure 决定的(包着它的条件是 %q)—— "+
+			"「没测过」与「没测成」被画成红的,等于把一整排好服务器说成坏的", gate)
 	}
+	// 那句话本身也得真的被摆进视图树:少了它,红不红都无所谓了。
+	if !swiftValueReachesViewTree(body, "row.note") {
+		t.Error("候选行那句副标题没有被摆进视图树 —— 探测结论算出来之后被扔掉了")
+	}
+}
+
+// **窗口必须真的**用**那份在飞状态,不只是收下它。**
+//
+// 漏斗那条守卫证明的是「传进去了」。变异实测:
+// `let switching = false` / `let mine = false`,整套全绿 —— 而屏幕上恢复的正是
+// Step 4 点名的那个症状:确认之后四十几秒什么都不发生,再点一次静默没反应。
+//
+// 判据是**数据流**:`Use` 的标题与它的可用性,都得由 `switchingTo` 派生出来的
+// 东西决定。
+func TestMacMenuServerRowShowsTheSwitchInFlight(t *testing.T) {
+	window := stripSwiftComments(menuServersWindowSource(t))
+	body, ok := swiftFunctionBody(window, "private func serverView(_ row: ServerRow) -> NSView")
+	if !ok {
+		t.Fatal("读不出 serverView 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	derived := swiftDerivedNames(body, "switchingTo")
+	if len(derived) < 2 {
+		t.Fatalf("serverView 里没有从 switchingTo 派生出任何东西(拿到 %v)—— "+
+			"那份在飞状态被收下之后没有被用", derived)
+	}
+	enabled := regexp.MustCompile(`use\.isEnabled\s*=\s*(.+)`).FindStringSubmatch(body)
+	if enabled == nil {
+		t.Fatal("读不出 Use 那个按钮的可用性 —— 守卫已经失效,先修守卫")
+	}
+	if !swiftAnyIdentifier(enabled[1], derived) {
+		t.Errorf("Use 的可用性不是由 switchingTo 决定的(它是 %q)—— "+
+			"切换在飞时按钮不会变灰,用户会再点一次而什么都不发生", strings.TrimSpace(enabled[1]))
+	}
+	titles := swiftCallArgs(body, "NSButton")
+	if len(titles) == 0 {
+		t.Fatal("serverView 里没有那个 Use 按钮 —— 守卫已经失效,先修守卫")
+	}
+	found := false
+	for _, arg := range titles {
+		if swiftAnyIdentifier(arg, derived) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Use 的标题不是由 switchingTo 决定的 —— 那一行永远不会说 Switching…")
+	}
+}
+
+// swiftDerivedNames 把 seed 以及从它 `let` 出来的名字都收上来(同
+// swiftValueReachesViewTree 的第一半,只是不去看视图树)。
+func swiftDerivedNames(body, seed string) []string {
+	names := []string{seed}
+	for round := 0; round < 3; round++ {
+		for _, m := range swiftBindingRegexp.FindAllStringSubmatch(body, -1) {
+			for _, name := range names {
+				if swiftMentionsIdentifier(m[2], name) {
+					names = append(names, m[1])
+					break
+				}
+			}
+		}
+	}
+	return names
+}
+
+func swiftAnyIdentifier(text string, names []string) bool {
+	for _, name := range names {
+		if swiftMentionsIdentifier(text, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // **删除必须先弹确认,而且那句话要说清链接跟着没。**

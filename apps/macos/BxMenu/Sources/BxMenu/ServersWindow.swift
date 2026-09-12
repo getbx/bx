@@ -423,7 +423,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         return box
     }
 
-    /// 三个动词那个 `⋯`。
+    /// 那两个改清单的动词所在的 `⋯`(Add 表单里那个 UDP 框是第三个动词,
+    /// 它不在这道门后面 —— 见 `serverEditingAvailable` 的注释)。
     ///
     /// **只有 `serverEditingAvailable` 说这一版认得 remove / replace 时才画**
     /// (`canEdit`,判据在纯模型里):只声明 `servers` 的那一版收到 remove 会
