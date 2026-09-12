@@ -176,14 +176,16 @@ struct ServersModelTests {
         expect(!ok.probe.isFailure, "通了却被标成失败")
 
         let bad = ServerRow(entry: ServerEntry(name: "b", host: "h",
-                                               probe: ProbeReport(measured: true, reachable: false, error: "超时(没有应答)")))
-        expect(bad.probeLine == "超时(没有应答)", "没说原因:\(bad.probeLine ?? "")")
+                                               probe: ProbeReport(measured: true, reachable: false,
+                                                                  errorCode: "timeout")))
+        expect(bad.probeLine == "no answer (timed out)", "没说原因:\(bad.probeLine ?? "")")
         expect(bad.probe.isFailure, "没通却没被标成失败")
     }
 
     // **「没通」不许显示成 0 ms。** 零值读起来像一切正常 —— 这是这个仓库反复
     // 禁止的那种谎,而它在这里的具体形状就是「0 毫秒,真快」。
     static func testUnreachableNeverRendersAsZeroMilliseconds() {
+        // 没有码(服务端没归类)时兜底文案是 "unreachable",而不是一个 0 毫秒。
         let row = ServerRow(entry: ServerEntry(name: "b", host: "h", probe: ProbeReport(measured: true, reachable: false)))
         let line = row.probeLine ?? ""
         expect(!line.contains("0 ms"), "没通却显示成 0 ms:\(line)")
@@ -322,12 +324,65 @@ struct ServersModelTests {
     // 假绿的原因 —— 中间那一态在输入里根本没出现过,它是死是活测不出来。
     static func testProbeHasThreeStatesNotTwo() {
         expect(probePresentation(nil) == .notChecked, "没测过")
-        expect(probePresentation(ProbeReport(measured: false, error: "core not running"))
-            == .notMeasured("core not running"), "没测成 —— 绝不许画成不可达")
-        expect(probePresentation(ProbeReport(measured: true, reachable: false))
-            == .measured(reachable: false, rttMS: 0), "测了不通")
+        expect(probePresentation(ProbeReport(measured: false, errorCode: "core_unreachable"))
+            == .notMeasured("could not measure (is bx running?)"), "没测成 —— 绝不许画成不可达")
+        expect(probePresentation(ProbeReport(measured: true, reachable: false, errorCode: "refused"))
+            == .measured(reachable: false, rttMS: 0,
+                         reason: "connection refused (nothing is listening)"), "测了不通")
         expect(probePresentation(ProbeReport(measured: true, reachable: true, rttMS: 42))
-            == .measured(reachable: true, rttMS: 42), "测通了")
+            == .measured(reachable: true, rttMS: 42, reason: ""), "测通了")
+    }
+
+    // **服务端那句失败原因是中文的(它服务 `bx server list`),而这个菜单通篇英文。**
+    //
+    // 这不是假想:`supervisor.describeProbeError` 会对一台关着的服务器返回
+    // 「连接被拒(端口没在听)」,那是**最常见**的失败路径,而它此前一路流到
+    // 这一行上、还被画成红的。CJK 守卫只扫菜单自己的源码,看不见从服务端来的
+    // 字符串。修法是服务端发码、这一侧出话 —— 下面每一条都必须是英文。
+    static func testProbeFailuresSpeakEnglishNotWhateverTheServerSaid() {
+        // 与 supervisor.ProbeErrorCodes 一一对应;跨语言对账由 Go 侧那条守卫做,
+        // 这里钉的是「每个码都真的有一句英文,而且它是英文」。
+        for code in ["timeout", "canceled", "dns", "refused", "network_unreachable",
+                     "no_route", "no_host", "bad_port", "unknown",
+                     "core_unreachable", "link_unparsed"] {
+            let text = probeFailureText(code: code, fallback: "unreachable")
+            expect(!text.isEmpty, "\(code) 没有句子")
+            expect(text.allSatisfy { $0.isASCII }, "\(code) 那句话不是英文:\(text)")
+        }
+        // **认不出的码退回一句笼统的英文,绝不退回服务端那句话** ——
+        // 说得不够细好过说错语言。
+        // 「服务端归不了类」与「这一版没发码」是两件事,不许共用一句话。
+        expect(probeFailureText(code: "unknown", fallback: "unreachable") != "unreachable",
+               "unknown 那一档退回了兜底 —— 它与「压根没发码」就分不开了")
+        expect(probeFailureText(code: "something_new", fallback: "unreachable") == "unreachable",
+               "认不出的码没有退回兜底")
+        expect(probeFailureText(code: "", fallback: "could not measure") == "could not measure",
+               "旧 Guardian(不发码)没有退回兜底")
+
+        // 端到端:一份「服务器关着」的应答,渲染出来必须全是 ASCII。
+        let row = ServerRow(entry: ServerEntry(
+            name: "osaka", host: "203.0.113.20",
+            probe: ProbeReport(measured: true, reachable: false, errorCode: "refused")))
+        let line = row.probeLine ?? ""
+        expect(line.allSatisfy { $0.isASCII }, "界面上出现了非英文的失败原因:\(line)")
+        expect(line.contains("refused"), "没说出原因:\(line)")
+        expect(row.probe.isFailure, "服务器真的关着,这一行该画红")
+    }
+
+    // **`error` 那个键刻意不解。** 解出来就迟早有人显示它,而它是中文的 ——
+    // 这条钉的是「就算服务端把中文放在眼前,它也进不了界面」。
+    static func testTheServersHumanStringNeverReachesTheUI() {
+        let json = #"""
+        {"servers":[{"name":"a","host":"h","probe":
+          {"measured":true,"reachable":false,"error":"连接被拒(端口没在听)","error_code":"refused"}}]}
+        """#
+        guard let list = try? JSONDecoder().decode(ServerList.self, from: Data(json.utf8)) else {
+            fail("解不出带中文 error 的应答"); return
+        }
+        let row = ServerRow(entry: list.servers[0])
+        expect(row.detail.allSatisfy { $0.isASCII }, "服务端那句中文出现在了界面上:\(row.detail)")
+        expect(row.probeLine == "connection refused (nothing is listening)",
+               "码没有被翻成英文:\(row.probeLine ?? "nil")")
     }
 
     // **只有「测过而且没通」才画红。** 另外两态画红等于把一台好服务器说成坏的,
@@ -335,8 +390,10 @@ struct ServersModelTests {
     static func testOnlyAMeasuredFailureIsPaintedRed() {
         expect(!ProbePresentation.notChecked.isFailure, "没测过被画成了红的")
         expect(!ProbePresentation.notMeasured("core not running").isFailure, "没测成被画成了红的")
-        expect(!ProbePresentation.measured(reachable: true, rttMS: 7).isFailure, "通了被画成了红的")
-        expect(ProbePresentation.measured(reachable: false, rttMS: 0).isFailure, "测了不通却没画红")
+        expect(!ProbePresentation.measured(reachable: true, rttMS: 7, reason: "").isFailure,
+               "通了被画成了红的")
+        expect(ProbePresentation.measured(reachable: false, rttMS: 0, reason: "unreachable").isFailure,
+               "测了不通却没画红")
     }
 
     // **`measured` 键缺席 = 这一版 Guardian 没说,不是「测过了」。**
@@ -359,7 +416,7 @@ struct ServersModelTests {
         guard let list = try? JSONDecoder().decode(ServerList.self, from: Data(json.utf8)) else {
             fail("解不出带 measured 的应答"); return
         }
-        expect(probePresentation(list.servers[0].probe) == .measured(reachable: true, rttMS: 7),
+        expect(probePresentation(list.servers[0].probe) == .measured(reachable: true, rttMS: 7, reason: ""),
                "measured=true 的应答没被当成实测结论")
     }
 
@@ -518,6 +575,15 @@ struct ServersModelTests {
 
         let all = [arm, rolled, rollbackFailed, commitFailed]
         expect(Set(all).count == 4, "四种结局没有四句话")
+        // **上面那句话名不副实,必须配这一条。** 删掉某一个分支之后,那种结局
+        // 会落到 default 上,而 default 的措辞与另外三句都不同 —— 集合里照样是
+        // 四个元素,`Set(all).count == 4` 一声不吭。真正要钉的是「四种里没有一种
+        // 走了兜底」。
+        let fallback = switchOutcomeMessage(ServerSwitchResult(
+            name: "osaka", host: "203.0.113.20", applied: false, outcome: "no_such_code"))
+        for (i, line) in all.enumerated() where line == fallback {
+            fail("第 \(i + 1) 种结局塌回了兜底那句话 —— 它的分支没了:\(line)")
+        }
         for line in all {
             expect(line.contains("osaka"), "没点名目标:\(line)")
             expect(!line.contains("_failed") && !line.contains("rolled_back"),
@@ -624,6 +690,8 @@ struct ServersModelTests {
         testAddServerFailureCodesBecomeSentences()
         testUnknownAddServerFailureFallsBackToTheGenericFunnel()
         testProbeHasThreeStatesNotTwo()
+        testProbeFailuresSpeakEnglishNotWhateverTheServerSaid()
+        testTheServersHumanStringNeverReachesTheUI()
         testOnlyAMeasuredFailureIsPaintedRed()
         testAbsentMeasuredKeyIsNotTakenAsMeasured()
         testMeasuredDecodesFromGuardian()

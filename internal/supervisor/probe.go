@@ -48,8 +48,50 @@ type ProbeResult struct {
 	Port      int    `json:"port"`
 	Reachable bool   `json:"reachable"`
 	RTTMS     int64  `json:"rtt_ms,omitempty"`
-	// Error 是给人看的失败原因(超时 / 拒绝 / 解析不出主机)。
+	// Error 是给人看的失败原因(超时 / 拒绝 / 解析不出主机)。**它是中文的**,
+	// 因为它的第一个消费方是 `bx server list`,而 CLI 通篇中文。
 	Error string `json:"error,omitempty"`
+	// ErrorCode 是同一件事的**机器可读**形式,与 Error 成对出现。
+	//
+	// **它存在的理由是菜单。** 上面那句中文会一路流到 macOS 菜单里去
+	// (probe → Guardian 的 ProbeReport → 服务器窗口那一行),而那个界面通篇英文、
+	// 还有一条 CJK 守卫 —— 但守卫只扫 `apps/macos/BxMenu/Sources`,扫不到从服务端
+	// 来的字符串,所以「服务器关着」这条**最常见**的失败路径此前会在全英文菜单里
+	// 显示一句中文。修法不是把这里翻成英文(那会把 `bx server list` 变成半英文),
+	// 是让客户端按码自己出话:**服务端发码,客户端出语言**。
+	//
+	// 带 omitempty 与 Error 同步:两者都缺席 = 这次没有失败可报。
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// 探测失败的**机器可读**原因码。取值集合就在下面那个数组里,跨语言守卫
+// (`internal/cli` 的 TestProbeErrorCodesAllHaveAnEnglishSentenceInTheMenu)
+// 拿它与 ServersModel.swift 里那张英文表**双向**对账 —— 少一边就会在界面上
+// 静默退化成一句笼统的兜底,而那正是这一条要消灭的失效。
+const (
+	ProbeErrTimeout            = "timeout"
+	ProbeErrCanceled           = "canceled"
+	ProbeErrDNS                = "dns"
+	ProbeErrRefused            = "refused"
+	ProbeErrNetworkUnreachable = "network_unreachable"
+	ProbeErrNoRoute            = "no_route"
+	ProbeErrNoHost             = "no_host"
+	ProbeErrBadPort            = "bad_port"
+	ProbeErrUnknown            = "unknown"
+	// 下面两个的产地在 Guardian(探测这一步压根没做成),不在本文件 ——
+	// 但清单只许有一份,所以它们也登记在这里(与 internal/udpsource、
+	// internal/barriercidr 同一条:让漂移在构造上不可能)。
+	ProbeErrCoreUnreachable = "core_unreachable"
+	ProbeErrLinkUnparsed    = "link_unparsed"
+)
+
+// ProbeErrorCodes 是上面全部取值。**新增一个码必须同时登记在这里**,
+// 否则跨语言守卫看不见它,而界面会静默退回兜底文案。
+var ProbeErrorCodes = []string{
+	ProbeErrTimeout, ProbeErrCanceled, ProbeErrDNS, ProbeErrRefused,
+	ProbeErrNetworkUnreachable, ProbeErrNoRoute, ProbeErrNoHost,
+	ProbeErrBadPort, ProbeErrUnknown,
+	ProbeErrCoreUnreachable, ProbeErrLinkUnparsed,
 }
 
 // probeDialer 是 Core 用来直连的那个拨号器(生产里就是 platform.DirectDialer())。
@@ -70,11 +112,11 @@ func probeServer(ctx context.Context, dial probeDialer, req ProbeRequest) ProbeR
 	}
 	result := ProbeResult{Host: host, Port: port}
 	if host == "" {
-		result.Error = "没有主机可测"
+		result.Error, result.ErrorCode = "没有主机可测", ProbeErrNoHost
 		return result
 	}
 	if port > 65535 {
-		result.Error = fmt.Sprintf("端口不合法:%d", port)
+		result.Error, result.ErrorCode = fmt.Sprintf("端口不合法:%d", port), ProbeErrBadPort
 		return result
 	}
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
@@ -84,7 +126,8 @@ func probeServer(ctx context.Context, dial probeDialer, req ProbeRequest) ProbeR
 	conn, err := dial.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	elapsed := time.Since(start)
 	if err != nil {
-		result.Error = describeProbeError(err)
+		result.ErrorCode = classifyProbeError(err)
+		result.Error = probeErrorText(result.ErrorCode)
 		return result
 	}
 	_ = conn.Close()
@@ -97,25 +140,31 @@ func probeServer(ctx context.Context, dial probeDialer, req ProbeRequest) ProbeR
 	return result
 }
 
-// describeProbeError 把拨号错误翻成一句用户读得懂的话。
+// describeProbeError 把拨号错误翻成一句用户读得懂的中文。
 //
 // **原始错误不外传**:它里面有本机接口名、路由细节这类实现内部的东西,而用户
 // 需要的只是「关着 / 太慢 / 域名解析不出来」这三类里的哪一类。
-func describeProbeError(err error) string {
+//
+// 它现在是 classifyProbeError + probeErrorText 的**薄壳**:分类只有一份,
+// 而中文那一份只服务 CLI —— 菜单按码自己出英文,见 ProbeResult.ErrorCode。
+func describeProbeError(err error) string { return probeErrorText(classifyProbeError(err)) }
+
+// classifyProbeError 把拨号错误归到一个机器可读的码上。
+func classifyProbeError(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return "超时(没有应答)"
+		return ProbeErrTimeout
 	case errors.Is(err, context.Canceled):
-		return "已取消"
+		return ProbeErrCanceled
 	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return "域名解析不出来"
+		return ProbeErrDNS
 	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
 		if opErr.Timeout() {
-			return "超时(没有应答)"
+			return ProbeErrTimeout
 		}
 		var syscallMsg string
 		if opErr.Err != nil {
@@ -123,12 +172,42 @@ func describeProbeError(err error) string {
 		}
 		switch {
 		case strings.Contains(syscallMsg, "connection refused"):
-			return "连接被拒(端口没在听)"
+			return ProbeErrRefused
 		case strings.Contains(syscallMsg, "network is unreachable"):
-			return "网络不可达"
+			return ProbeErrNetworkUnreachable
 		case strings.Contains(syscallMsg, "no route to host"):
-			return "没有到该主机的路由"
+			return ProbeErrNoRoute
 		}
+	}
+	return ProbeErrUnknown
+}
+
+// probeErrorText 是那些码的**中文**说法,给 CLI 用。
+//
+// 认不出的码退回「连不上」——一个码走丢了应当读起来像一次普通的失败,
+// 而不是一个协议串。
+func probeErrorText(code string) string {
+	switch code {
+	case ProbeErrTimeout:
+		return "超时(没有应答)"
+	case ProbeErrCanceled:
+		return "已取消"
+	case ProbeErrDNS:
+		return "域名解析不出来"
+	case ProbeErrRefused:
+		return "连接被拒(端口没在听)"
+	case ProbeErrNetworkUnreachable:
+		return "网络不可达"
+	case ProbeErrNoRoute:
+		return "没有到该主机的路由"
+	case ProbeErrNoHost:
+		return "没有主机可测"
+	case ProbeErrBadPort:
+		return "端口不合法"
+	case ProbeErrCoreUnreachable:
+		return "没能测(bx 没在跑?)"
+	case ProbeErrLinkUnparsed:
+		return "链接里解不出主机"
 	}
 	return "连不上"
 }

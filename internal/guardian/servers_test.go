@@ -1473,3 +1473,71 @@ func TestSingleServerConfigIsDistinguishableFromAnEmptyServerList(t *testing.T) 
 		t.Fatalf("single_server 带了 omitempty:%s —— 键缺席就与旧 Guardian 无法区分了", b)
 	}
 }
+
+// **失败原因必须带一个机器可读的码,而不只是一句中文。**
+//
+// `supervisor.describeProbeError` 给的是中文(它的第一个消费方是 `bx server list`),
+// 而这份应答的另一个消费方是**全英文**的 macOS 菜单 —— 真机上一台关着的服务器
+// 会让菜单显示「连接被拒(端口没在听)」。菜单那边的 CJK 守卫只扫它自己的源码,
+// 看不见从这里来的字符串,所以这个区分必须由这一层发出去:**服务端发码,
+// 客户端出语言**。
+func TestProbeReportsCarryAMachineReadableCode(t *testing.T) {
+	// ① 真的测了、没通:码原样转发。
+	w := httptest.NewRecorder()
+	serversHandler(serversTestConfig(t), 501, noSwitch(t),
+		func(host string, port int) (supervisor.ProbeResult, error) {
+			return supervisor.ProbeResult{
+				Host: host, Port: port,
+				Error:     "连接被拒(端口没在听)",
+				ErrorCode: supervisor.ProbeErrRefused,
+			}, nil
+		}, nil)(w, withPeer(postServersJSON(t, serversRequest{Action: "probe"}), 501, true))
+
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range got.Servers {
+		if entry.Probe == nil || entry.Probe.ErrorCode != supervisor.ProbeErrRefused {
+			t.Errorf("%s 的失败没有带码:%+v —— 菜单只能显示服务端那句中文了", entry.Name, entry.Probe)
+		}
+	}
+
+	// ② 探测这一步压根没做成:Guardian 自己那两处产地也要带码。
+	w = httptest.NewRecorder()
+	serversHandler(serversTestConfig(t), 501, noSwitch(t),
+		func(host string, port int) (supervisor.ProbeResult, error) {
+			return supervisor.ProbeResult{}, errTestHotSwitch
+		}, nil)(w, withPeer(postServersJSON(t, serversRequest{Action: "probe"}), 501, true))
+	got = ServerListResponse{}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range got.Servers {
+		if entry.Probe == nil || entry.Probe.ErrorCode != supervisor.ProbeErrCoreUnreachable {
+			t.Errorf("%s 的「没测成」没有带码:%+v", entry.Name, entry.Probe)
+		}
+	}
+
+	// ③ 链接解不出主机那一处。
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("servers:\n    - name: broken\n      link: \"://\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t),
+		func(host string, port int) (supervisor.ProbeResult, error) {
+			t.Fatal("主机都解不出来,不该真去拨号")
+			return supervisor.ProbeResult{}, nil
+		}, nil)(w, withPeer(postServersJSON(t, serversRequest{Action: "probe"}), 501, true))
+	got = ServerListResponse{}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Servers) != 1 {
+		t.Fatalf("清单长度 = %d", len(got.Servers))
+	}
+	if got.Servers[0].Probe == nil || got.Servers[0].Probe.ErrorCode != supervisor.ProbeErrLinkUnparsed {
+		t.Errorf("链接解不出主机那一处没有带码:%+v", got.Servers[0].Probe)
+	}
+}

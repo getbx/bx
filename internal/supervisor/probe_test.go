@@ -362,3 +362,49 @@ func fieldWiredTo(block, field, value string) bool {
 	re := regexp.MustCompile(regexp.QuoteMeta(field) + `:\s*` + regexp.QuoteMeta(value) + `\s*[,\n]`)
 	return re.MatchString(block)
 }
+
+// **码与中文成对,一个都不许漏。**
+//
+// 码是发给菜单的(它按码出英文),中文是发给 `bx server list` 的。加了一个码而
+// 忘了给它一句中文,CLI 上就会静默退回「连不上」—— 那与真的分不出类型长得一模
+// 一样,而没有任何东西会报错。菜单那一半由 `internal/cli` 的
+// TestProbeErrorCodesAllHaveAnEnglishSentenceInTheMenu 对账,这里守 CLI 那一半。
+func TestEveryProbeErrorCodeHasItsOwnChineseSentence(t *testing.T) {
+	fallback := probeErrorText("no_such_code_at_all")
+	if fallback == "" {
+		t.Fatal("兜底文案是空的 —— 守卫已经失效,先修守卫")
+	}
+	for _, code := range ProbeErrorCodes {
+		text := probeErrorText(code)
+		if text == "" {
+			t.Errorf("码 %q 没有中文", code)
+			continue
+		}
+		// ProbeErrUnknown 就是「归不了类」,它**本来**就该是那句兜底。
+		if code != ProbeErrUnknown && text == fallback {
+			t.Errorf("码 %q 退回了兜底文案 %q —— `bx server list` 上它与"+
+				"「真的分不出类型」就分不开了", code, text)
+		}
+	}
+}
+
+// describeProbeError 只是 classify + text 的薄壳:**CLI 上那几句话一个字都没变**。
+// 拆成两半是为了让菜单能按码出英文,不是为了改 CLI 的措辞。
+func TestDescribeProbeErrorKeepsItsWording(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{context.DeadlineExceeded, "超时(没有应答)"},
+		{context.Canceled, "已取消"},
+		{&net.DNSError{Err: "no such host"}, "域名解析不出来"},
+		{&net.OpError{Err: errors.New("connect: connection refused")}, "连接被拒(端口没在听)"},
+		{&net.OpError{Err: errors.New("connect: network is unreachable")}, "网络不可达"},
+		{&net.OpError{Err: errors.New("connect: no route to host")}, "没有到该主机的路由"},
+		{errors.New("something else entirely"), "连不上"},
+	} {
+		if got := describeProbeError(tc.err); got != tc.want {
+			t.Errorf("describeProbeError(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}

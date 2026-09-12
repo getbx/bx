@@ -48,10 +48,19 @@ type ProbeReport struct {
 	// Measured 为 false 时这一轮没测成,Reachable 无意义 —— 别去读它。
 	// **不带 omitempty**:键缺席读作「这一版 Guardian 没说」,而不是「没测成」,
 	// 是客户端区分新旧 Guardian 的唯一信号,与 Status.Capabilities 同一条纪律。
-	Measured  bool   `json:"measured"`
-	Reachable bool   `json:"reachable"`
-	RTTMS     int64  `json:"rtt_ms,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Measured  bool  `json:"measured"`
+	Reachable bool  `json:"reachable"`
+	RTTMS     int64 `json:"rtt_ms,omitempty"`
+	// Error 是给人看的失败原因,**中文** —— 它的消费方是 `bx server list`。
+	//
+	// **菜单不许显示它。** 那个界面通篇英文,而 CJK 守卫只扫菜单自己的源码、
+	// 扫不到从这里来的字符串;真机上「服务器关着」这条最常见的路径会在全英文
+	// 菜单里显示一句中文。客户端改为只读下面那个码、自己出英文,Swift 侧
+	// 干脆连这个键都不解 —— 让「显示它」在构造上不可能。
+	Error string `json:"error,omitempty"`
+	// ErrorCode 是同一件事的机器可读形式(supervisor.ProbeErr*),菜单据此出话。
+	// 与 Error 成对:两者都缺席 = 这次没有失败可报。
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 type ServerListResponse struct {
@@ -657,7 +666,11 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 	for i := range entries {
 		host, port := entries[i].Host, entries[i].Port
 		if host == "" {
-			entries[i].Probe = &ProbeReport{Measured: false, Error: "could not parse a host from the link"}
+			entries[i].Probe = &ProbeReport{
+				Measured:  false,
+				Error:     "could not parse a host from the link",
+				ErrorCode: supervisor.ProbeErrLinkUnparsed,
+			}
 			continue
 		}
 		result, err := probe(host, port)
@@ -665,11 +678,18 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 			// Core 不可达 / 这一版不支持 —— 那是「没问出来」,**不是「不可达」**。
 			// 判成不可达会把一台好服务器标成红的。
 			log.Printf("guardian_server_probe_failed host=%s err=%v", host, err)
-			entries[i].Probe = &ProbeReport{Measured: false, Error: "could not measure (is bx running?)"}
+			entries[i].Probe = &ProbeReport{
+				Measured:  false,
+				Error:     "could not measure (is bx running?)",
+				ErrorCode: supervisor.ProbeErrCoreUnreachable,
+			}
 			continue
 		}
 		entries[i].Probe = &ProbeReport{
-			Measured: true, Reachable: result.Reachable, RTTMS: result.RTTMS, Error: result.Error,
+			Measured: true, Reachable: result.Reachable, RTTMS: result.RTTMS,
+			// **码与文字一起转发。** 只转文字就是把一句中文送进英文菜单;
+			// 只转码就让 `bx server list` 没话可说 —— 两个消费方要的东西不同。
+			Error: result.Error, ErrorCode: result.ErrorCode,
 		}
 	}
 	writeGuardianJSON(w, http.StatusOK, resp)

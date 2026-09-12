@@ -19,11 +19,20 @@ struct ProbeReport: Decodable, Equatable {
     var measured: Bool = false
     var reachable: Bool = false
     var rttMS: Int = 0
-    var error: String = ""
+    /// 失败原因的**机器可读**形式(`supervisor.ProbeErr*`)。英文那句话由
+    /// `probeFailureText` 在这一侧生成。
+    ///
+    /// **服务端那个 `error` 键刻意不解。** 它是中文的(它的第一个消费方是
+    /// `bx server list`,CLI 通篇中文),而这个菜单通篇英文;把它解出来就迟早
+    /// 有人把它显示出去 —— 真机上「服务器关着」这条最常见的路径此前正是这样
+    /// 在全英文界面里显示一句中文,而 CJK 守卫只扫菜单自己的源码、看不见它。
+    /// 不解这个键,是让「显示它」在构造上不可能,而不是靠下一个人自觉。
+    var errorCode: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case measured, reachable, error
+        case measured, reachable
         case rttMS = "rtt_ms"
+        case errorCode = "error_code"
     }
 
     init(from decoder: Decoder) throws {
@@ -31,12 +40,38 @@ struct ProbeReport: Decodable, Equatable {
         measured = try c.decodeIfPresent(Bool.self, forKey: .measured) ?? false
         reachable = try c.decodeIfPresent(Bool.self, forKey: .reachable) ?? false
         rttMS = try c.decodeIfPresent(Int.self, forKey: .rttMS) ?? 0
-        error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
+        errorCode = try c.decodeIfPresent(String.self, forKey: .errorCode) ?? ""
     }
 
-    init(measured: Bool = false, reachable: Bool = false, rttMS: Int = 0, error: String = "") {
+    init(measured: Bool = false, reachable: Bool = false, rttMS: Int = 0, errorCode: String = "") {
         self.measured = measured; self.reachable = reachable
-        self.rttMS = rttMS; self.error = error
+        self.rttMS = rttMS; self.errorCode = errorCode
+    }
+}
+
+/// 探测失败的码 → 一句英文。**这张表是那条跨语言契约的客户端一半**:
+/// `internal/supervisor.ProbeErrorCodes` 是另一半,由
+/// `TestProbeErrorCodesAllHaveAnEnglishSentenceInTheMenu` 双向对账 ——
+/// 少一边,界面就会静默退回下面那句笼统的兜底,而没有任何东西会报错。
+///
+/// 认不出的码(以及旧 Guardian 那种压根不发码的)走 `fallback`:**一句笼统的
+/// 英文,而不是服务端那句话** —— 说得不够细好过说错语言。
+func probeFailureText(code: String, fallback: String) -> String {
+    switch code {
+    case "timeout": return "no answer (timed out)"
+    case "canceled": return "canceled"
+    case "dns": return "could not resolve that host name"
+    case "refused": return "connection refused (nothing is listening)"
+    case "network_unreachable": return "network unreachable"
+    case "no_route": return "no route to that host"
+    case "no_host": return "no host to test"
+    case "bad_port": return "the port in that link is not valid"
+    case "core_unreachable": return "could not measure (is bx running?)"
+    case "link_unparsed": return "could not read a host from that link"
+    // 服务端归不了类的那一档。它**仍然要有自己的一句话**:退回 `fallback`
+    // 读起来与「这一版 Guardian 压根没发码」一模一样,而那是两件事。
+    case "unknown": return "could not connect"
+    default: return fallback
     }
 }
 
@@ -53,14 +88,19 @@ enum ProbePresentation: Equatable {
     /// 附带的是服务端给的原因,**它是英文的**(Guardian 那两处产地已改)。
     case notMeasured(String)
     /// 真的测了。`reachable == false` 才是「这台服务器有问题」。
-    case measured(reachable: Bool, rttMS: Int)
+    ///
+    /// **`reason` 跟着这一档走,而不是让渲染方回头去翻 `ProbeReport`。**
+    /// 少了它,这个类型就不足以画出一行 —— 而不足以画出一行的呈现类型,
+    /// 只会逼下一个人绕过它、自己去判 `reachable`,那正是它要消灭的东西。
+    /// 通了的时候是空串(没有失败可说)。
+    case measured(reachable: Bool, rttMS: Int, reason: String)
 
     /// 要不要画红。**只有实测失败才算** —— 另外两态画红等于把一台好服务器
     /// 说成坏的,而用户会据此去换服务器。
     ///
     /// 判据住在这里而不是窗口里:窗口那一半在本仓库一行 Swift 测试都盖不到。
     var isFailure: Bool {
-        if case let .measured(reachable, _) = self { return !reachable }
+        if case let .measured(reachable, _, _) = self { return !reachable }
         return false
     }
 }
@@ -69,9 +109,16 @@ enum ProbePresentation: Equatable {
 func probePresentation(_ probe: ProbeReport?) -> ProbePresentation {
     guard let probe else { return .notChecked }
     guard probe.measured else {
-        return .notMeasured(probe.error.isEmpty ? "could not measure" : probe.error)
+        return .notMeasured(probeFailureText(code: probe.errorCode, fallback: "could not measure"))
     }
-    return .measured(reachable: probe.reachable, rttMS: probe.rttMS)
+    return .measured(
+        reachable: probe.reachable,
+        rttMS: probe.rttMS,
+        // 通了就没有原因可说;没通时**必须说出原因** —— 一个光秃秃的红叉让用户
+        // 无从判断是服务器关了、还是自己这条网络的问题。
+        reason: probe.reachable
+            ? ""
+            : probeFailureText(code: probe.errorCode, fallback: "unreachable"))
 }
 
 /// 清单里的一台。
@@ -291,10 +338,9 @@ struct ServerRow: Equatable {
             return nil
         case let .notMeasured(why):
             return why.isEmpty ? "not measured" : "not measured — \(why)"
-        case let .measured(reachable, rttMS):
+        case let .measured(reachable, rttMS, reason):
             if reachable { return "\(rttMS) ms" }
-            let why = entry.probe?.error ?? ""
-            return why.isEmpty ? "unreachable" : why
+            return reason.isEmpty ? "unreachable" : reason
         }
     }
 

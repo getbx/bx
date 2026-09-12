@@ -1141,6 +1141,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         serversWindow.probing = true
         serversWindow.refreshIfVisible(
             rows: otherServerRows(list: lastServers ?? ServerList(), core: maintenanceReport?.core),
+            emptyReason: serverListEmptyReason(list: lastServers ?? ServerList()),
             probe: exitIPProbe)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try GuardianClient().probeServers() }
@@ -1155,6 +1156,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastServers = list
                     self.serversWindow.refreshIfVisible(
                         rows: otherServerRows(list: list, core: self.maintenanceReport?.core),
+                        emptyReason: serverListEmptyReason(list: list),
                         probe: self.exitIPProbe)
                 case .failure(let error):
                     // **测不成不许把服务器画成红的。** 保持上一轮的清单原样,
@@ -1163,6 +1165,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.serversWindow.refreshIfVisible(
                         rows: otherServerRows(list: self.lastServers ?? ServerList(),
                                               core: self.maintenanceReport?.core),
+                        emptyReason: serverListEmptyReason(list: self.lastServers ?? ServerList()),
                         probe: self.exitIPProbe)
                     let alert = NSAlert()
                     alert.messageText = "Could not test the servers"
@@ -1480,10 +1483,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if forceShow {
                     self.serversWindow.show(
                         rows: otherServerRows(list: servers, core: self.maintenanceReport?.core),
+                        emptyReason: serverListEmptyReason(list: servers),
                         probe: self.exitIPProbe)
                 } else {
                     self.serversWindow.refreshIfVisible(
                         rows: otherServerRows(list: servers, core: self.maintenanceReport?.core),
+                        emptyReason: serverListEmptyReason(list: servers),
                         probe: self.exitIPProbe)
                 }
             }
@@ -1630,6 +1635,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         exitIPProbe = .checking
         serversWindow.refreshIfVisible(
             rows: otherServerRows(list: lastServers ?? ServerList(), core: maintenanceReport?.core),
+            emptyReason: serverListEmptyReason(list: lastServers ?? ServerList()),
             probe: exitIPProbe)
 
         var request = URLRequest(url: URL(string: "https://ipv4.icanhazip.com")!)
@@ -1645,6 +1651,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.serversWindow.refreshIfVisible(
                     rows: otherServerRows(list: self.lastServers ?? ServerList(),
                                           core: self.maintenanceReport?.core),
+                    emptyReason: serverListEmptyReason(list: self.lastServers ?? ServerList()),
                     probe: self.exitIPProbe)
             }
         }.resume()
