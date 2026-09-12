@@ -255,6 +255,23 @@ func serverSwitchingAvailable(capabilities: [String]?) -> Bool {
     return capabilities.contains("servers")
 }
 
+/// **改清单**那几个动词有没有:Remove、Replace Link…、以及 Add 表单里那个
+/// UDP 框。判据是 `servers_edit`,**不是 `servers`**。
+///
+/// 两个能力必须分开,而这不是洁癖:`CapabilityServers` 的含义**早于**这些动词。
+/// 一台只声明 `servers` 的旧 Guardian 收到 `{"action":"remove"}` 时,走的是它
+/// 那一版唯一的行为 —— **换到那一台**。于是「文件换了、进程没换」那个记录在案
+/// 的升级窗口里,用户点一下 Delete,出口 IP 与国家换到了他想删掉的那一台,
+/// 而那是 2026-08-09 multi-server 设计里唯一明令禁止的事。
+///
+/// 能力名写成字面量,与 `logsAvailable` 同一先例;它的**值本身**由 Go 侧
+/// `TestServersEditCapabilityIsDeclared` 钉住 —— 改了值这里就永久看不见那几个
+/// 动词,而两侧都不报错。
+func serverEditingAvailable(capabilities: [String]?) -> Bool {
+    guard let capabilities else { return false }
+    return capabilities.contains("servers_edit")
+}
+
 /// 「Replace Configuration…」住在哪:有服务器窗口时它是窗口里的一个按钮(与
 /// 「New Server…」并排,那是它们的归属),一级菜单不再占一行;旧 Guardian 没有
 /// /v1/servers、窗口开不出来,那时它必须留在菜单里 —— 否则换服务器又只能开终端
@@ -294,24 +311,24 @@ struct ServerRow: Equatable {
         isRunningNow ? "in use right now" : nil
     }
 
-    /// 副标题:**出口主机比名字重要** —— 名字是用户随便起的,他真正关心的是
-    /// 流量从哪出去。UDP 走另一台时必须单独标出来,否则 UDP 会静默走别的出口。
-    var detail: String {
+    /// `host:port` **之外**还要说的那些:UDP 走了别处、探测结论、吞吐峰值。
+    ///
+    /// **主机不在这里面了。** 窗口如今把 `endpoint` 摆成自己的一格(spec §4 的
+    /// 候选行是「名字、`host:port`、探测呈现」),再在副标题里写一遍主机就是
+    /// 同一个串并排两次 —— 真机截图上的 `195.133.192.92   195.133.192.92` 正是
+    /// 那么来的,只是当时的原因是名字与主机相同。链接解析不出主机那一句也归
+    /// `endpoint`(`endpointText`),不在这儿重复。
+    ///
+    /// **没话说时返回 nil,不返回空串** —— 空串会让窗口摆一个空 label,一屏
+    /// 参差不齐的留白正是上一版「太丑」的来源。
+    var note: String? {
         var parts: [String] = []
-        // **名字与主机相同时只显示一次。** 名字多半是从链接里的主机推出来的
-        // (bx setup 不给 --name 时就是这样),于是同一个串被并排写了两遍 ——
-        // 真机截图上就是 `195.133.192.92   195.133.192.92`。
-        if entry.host.isEmpty {
-            parts.append("Link could not be parsed")
-        } else if entry.host != entry.name {
-            parts.append(entry.host)
-        }
         if !entry.udpHost.isEmpty, entry.udpHost != entry.host {
             parts.append("UDP → \(entry.udpHost)")
         }
         if let line = probeLine { parts.append(line) }
         if let line = throughputLine { parts.append(line) }
-        return parts.joined(separator: "   ")
+        return parts.isEmpty ? nil : parts.joined(separator: "   ")
     }
 
     /// 吞吐那一段。**没观测到就一个字都不说** —— 「0 B/s」读起来像这条隧道
@@ -384,6 +401,34 @@ struct CurrentServerPanel: Equatable {
     let runningConfirmed: Bool
 
     var endpoint: String { endpointText(host: host, port: port) }
+
+    /// 传输 · 实时延迟 · 隧道健不健康,拼成一行。
+    ///
+    /// **「tunnel healthy / unhealthy」这个映射住在这里,不在窗口里。** 它把一个
+    /// 三态的 `Bool?` 折成一句话,而那是判据:窗口写 `healthy ?? false` 就会把
+    /// 「没说」显示成「不健康」—— 一台好机器被说成坏的。三项全缺席时返回 nil
+    /// (Core 静默那一档,上面那句 `coreSilentNote` 已经把话说完了)。
+    var statusLine: String? {
+        var parts: [String] = []
+        if let transport { parts.append(transport) }
+        if let latencyMS { parts.append("\(latencyMS) ms") }
+        if let tunnelHealthy { parts.append(tunnelHealthy ? "tunnel healthy" : "tunnel unhealthy") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// 这一行要不要标红。**只有「明确说了不健康」才算** —— `nil` 是没说,
+    /// 把它画红等于替一份从没收到过的观测下结论。
+    var statusLineIsBad: Bool { tunnelHealthy == false }
+
+    /// UDP 那一行:走哪条传输、出口是不是另一台、当前是哪个档。
+    /// 三样都问不出来就一个字都不说。
+    var udpLine: String? {
+        var parts: [String] = []
+        if let udpTransport { parts.append(udpTransport) }
+        if let udpHost { parts.append("→ \(udpHost)") }
+        if let udpMode { parts.append(udpMode) }
+        return parts.isEmpty ? nil : "UDP  " + parts.joined(separator: " · ")
+    }
 }
 
 /// 把清单里当前那台与 `/v1/status` 的 Core 运行时合成上面那一块。
@@ -455,6 +500,105 @@ func serverListEmptyReason(list: ServerList) -> String? {
             + "Adding a second one turns it into a list you can switch between."
     }
     return "No servers yet. Add one to switch between exits."
+}
+
+/// 候选那一段为空时说哪一句。**它与 `serverListEmptyReason` 的条件不是同一个,
+/// 而这正是它必须存在的理由。**
+///
+/// 这句话此前住在 `ServersWindow.swift` 的 AppKit 那半边(`emptyReason ?? "No
+/// servers to switch to."`),一行测试都盖不到 —— 而它恰恰是**最常见**的那句:
+/// `servers:` 里只有一台时,`list.servers` 不为空 ⇒ `serverListEmptyReason`
+/// 返回 nil ⇒ 那句兜底就是用户真正读到的东西。
+///
+/// **候选为不为空由 `otherServerRows` 说了算,这里不另写一遍过滤条件** ——
+/// 两份「谁是候选」的判据漂开之后,会出现「一行都没摆、也一个字都不说」的空白。
+func otherServersEmptyNote(list: ServerList, core: CoreRuntime?) -> String? {
+    // 一台都没有那一档归 serverListEmptyReason:它分得清「单服务器配置」与
+    // 「清单是空的」,而这里说不出那个区别。两句都摆就是同一件事说两遍。
+    guard !list.servers.isEmpty else { return nil }
+    guard otherServerRows(list: list, core: core).isEmpty else { return nil }
+    return "No servers to switch to. Add another one to switch your exit between them."
+}
+
+/// 删掉一台之前那句确认。
+///
+/// **它必须说清链接会跟着没**(spec §7.1):链接是凭据,`/v1/servers` 刻意
+/// 从不发它,所以菜单手里从来没有那条链接 —— 删掉之后它**无法**把服务器加
+/// 回去。这与规则窗口刻意不弹确认、只留 Undo 是相反的处置,理由正是这一条:
+/// 一个撤不回的 Undo 比没有 Undo 更糟。
+func serverRemoveConfirmMessage(name: String, host: String) -> String {
+    let where_ = host.isEmpty ? name : "\(name) (\(host))"
+    return "Remove \(where_) from your list?\n\n"
+        + "Its link goes with it. bx never hands the link to this menu, so this "
+        + "cannot be undone from here — you would have to paste the link again."
+}
+
+/// 改清单那两个动词(remove / replace)的失败**码**翻成一句用户做得了的话。
+///
+/// 与 `addServerFailureMessage` 同一条不对称:**认不出的码返回 nil**,由调用方
+/// 退回那个通用漏斗。多映射一条错的比不映射糟得多 —— 一句像模像样的解释会让
+/// 用户去改一件没坏的东西。
+///
+/// `status` 今天不参与判定(每个码各自唯一),仍然是参数:码是可以复用的,
+/// 而等到真要按状态分的时候,调用点已经不在手边了。
+func serverEditFailureMessage(code: String?, status: Int?) -> String? {
+    _ = status
+    switch code {
+    case "servers_remove_current":
+        return "That is the server your traffic uses right now. Switch to another one first, "
+            + "then remove this one."
+    case "servers_unknown_name":
+        return "That server is not in your list any more — it may already be gone."
+    case "servers_remove_failed":
+        return "bx could not remove that server from the config file."
+    case "servers_replace_failed":
+        return "bx could not save that link. Check that you pasted a complete bx link."
+    case "servers_read_failed":
+        return "bx could not read the config file, so nothing was changed."
+    default:
+        return nil
+    }
+}
+
+/// 换完链接之后说什么,以及给不给那个「现在就重连」。
+struct ReplaceLinkFollowUp: Equatable {
+    let message: String
+    /// 给不给「现在就重连」那个按钮。**给了也绝不替他按** —— 与规则热生效那条
+    /// 收尾同一条纪律:重连会断掉正在跑的连接,那必须是他自己的一下。
+    let offersReconnect: Bool
+}
+
+/// 换的是**当前那台**时,配置改了而跑着的隧道还连着旧地址(spec §7.2)。
+/// 如实说「已写入,重连后生效」,并给一条现在就重连的路。
+///
+/// 换的是别的那台时**不提重连** —— 那条隧道压根没在跑,一句「重连才生效」
+/// 会让用户去重连一件与它无关的事。
+func replaceLinkFollowUp(name: String, isCurrent: Bool) -> ReplaceLinkFollowUp {
+    if isCurrent {
+        return ReplaceLinkFollowUp(
+            message: "Saved the new link for \(name). The tunnel that is running still uses the "
+                + "old address — bx picks up the new one when it reconnects.",
+            offersReconnect: true)
+    }
+    return ReplaceLinkFollowUp(
+        message: "Saved the new link for \(name). Your exit does not change: press Use on it "
+            + "when you want to switch over.",
+        offersReconnect: false)
+}
+
+/// Add / Replace 表单里那个 UDP 框下面那句话。**两句刻意不同,而这不是措辞
+/// 上的讲究。**
+///
+/// Guardian 的 replace 对空 UDP 的处置是**保持原样**(底层原语里空 UDP 是
+/// 「删掉 `udp:` 这一行」,而 UDP 传输一旦消失就静默回落到主传输,没有任何
+/// 一处会报错)。也就是说**这个菜单今天清不掉一条 UDP 链接** —— 那要 Guardian
+/// 侧另加一个显式的「清空」意图,超出这一轮的范围。把它写成「留空 = 没有 UDP」
+/// 就是一句用户当场验不出、而后果是静默的假话。
+func udpFieldHint(replacing: Bool) -> String {
+    replacing
+        ? "Optional. Leave it empty to keep the UDP link this server already has — "
+            + "the menu cannot clear one."
+        : "Optional. A second link for UDP/QUIC traffic, if your server has one."
 }
 
 /// 空串读作「没说」。

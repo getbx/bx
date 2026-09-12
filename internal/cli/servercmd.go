@@ -165,7 +165,13 @@ func renderServerList(view serverListView) string {
 		if view.Degraded {
 			return "读不到服务器清单(Guardian 不可达,配置也读不出来)。\n"
 		}
-		return "配置里没有服务器清单(还是单服务器配置)。加第二台:bx setup --name <名字> '<链接>'\n"
+		// **这条命令必须真的存在。** 上一句写的是 `bx setup --name <名字>`,而
+		// `bx setup` 根本没有 `--name` 这个 flag(只有 config/probe/force/strict/udp)——
+		// urfave/cli 遇到未知 flag 直接报错,所以那是一条必定失败的指令。
+		// 真的会往 `servers:` 里写一台的只有两条路:菜单 Servers… 里的
+		// 「Add Server…」,以及 `bx server deploy … --name`。
+		return "配置里没有服务器清单(还是单服务器配置)。加第二台:" +
+			"菜单栏 Servers… 里的「Add Server…」,或 bx server deploy <user@host> --name <名字>\n"
 	}
 	// **实际在跑的那台与配置里选的那台分开标,绝不合并。** 热切换是先写配置
 	// 再切,所以切换失败的那一刻配置已经指向新那台了 —— 只按配置打那个 ●,

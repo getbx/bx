@@ -81,13 +81,19 @@ struct ServersModelTests {
     // 从另一个 IP 出去,而界面上一个字都不说。
     static func testServerRowShowsWhereTrafficLeaves() {
         let rows = [
-            ServerEntry(name: "tokyo", host: "203.0.113.10", current: true),
+            ServerEntry(name: "tokyo", host: "203.0.113.10", port: 443, current: true),
             ServerEntry(name: "osaka", host: "203.0.113.20", udpHost: "203.0.113.21"),
             ServerEntry(name: "broken", host: ""),
         ].map { ServerRow(entry: $0) }
-        expect(rows[0].detail == "203.0.113.10", "detail = \(rows[0].detail)")
-        expect(rows[1].detail.contains("UDP → 203.0.113.21"), "UDP 出口没显示:\(rows[1].detail)")
-        expect(rows[2].detail.contains("could not be parsed"), "坏链接没说出来:\(rows[2].detail)")
+        // **主机归 endpoint,不归 note。** 窗口把它摆成自己的一格,再在副标题里
+        // 写一遍就是同一个串并排两次。
+        expect(rows[0].endpoint == "203.0.113.10:443", "endpoint = \(rows[0].endpoint)")
+        expect(rows[0].note == nil, "没话说却摆了一句:\(rows[0].note ?? "")")
+        expect(rows[1].note?.contains("UDP → 203.0.113.21") == true,
+               "UDP 出口没显示:\(rows[1].note ?? "nil")")
+        expect(rows[1].note?.contains("203.0.113.20") == false,
+               "主机在 note 里又写了一遍:\(rows[1].note ?? "nil")")
+        expect(rows[2].endpoint.contains("could not be parsed"), "坏链接没说出来:\(rows[2].endpoint)")
     }
 
     // 当前那台点了是空操作(看起来像坏了);主机解析不出来的那台切过去必然失败。
@@ -165,7 +171,7 @@ struct ServersModelTests {
         let row = ServerRow(entry: ServerEntry(name: "tokyo", host: "203.0.113.10"))
         expect(row.probeLine == nil, "没测过却说了话:\(row.probeLine ?? "")")
         expect(!row.probe.isFailure, "没测过却被标成失败")
-        expect(row.detail == "203.0.113.10", "detail 里混进了探测:\(row.detail)")
+        expect(row.note == nil, "没测过却在 note 里说了话:\(row.note ?? "")")
     }
 
     // 测通了报毫秒;测不通报**原因**,不是一个光秃秃的红叉 —— 用户要分得清
@@ -211,7 +217,7 @@ struct ServersModelTests {
     static func testThroughputStaysSilentWhenNotObserved() {
         let row = ServerRow(entry: ServerEntry(name: "a", host: "h"))
         expect(row.throughputLine == nil, "没观测到却说了话:\(row.throughputLine ?? "")")
-        expect(!row.detail.contains("B/s"), "detail 里混进了吞吐:\(row.detail)")
+        expect(row.note?.contains("B/s") != true, "note 里混进了吞吐:\(row.note ?? "nil")")
     }
 
     // 措辞是 peak 不是 speed:这是**已经发生过的流量**里最快的那一秒,
@@ -380,7 +386,8 @@ struct ServersModelTests {
             fail("解不出带中文 error 的应答"); return
         }
         let row = ServerRow(entry: list.servers[0])
-        expect(row.detail.allSatisfy { $0.isASCII }, "服务端那句中文出现在了界面上:\(row.detail)")
+        expect(row.note?.allSatisfy { $0.isASCII } == true,
+               "服务端那句中文出现在了界面上:\(row.note ?? "nil")")
         expect(row.probeLine == "connection refused (nothing is listening)",
                "码没有被翻成英文:\(row.probeLine ?? "nil")")
     }
@@ -664,6 +671,135 @@ struct ServersModelTests {
         expect(ServerRow(entry: list.servers[1]).endpoint == "h", "端口缺席却写出了一个假端口")
     }
 
+    // **改清单那几个动词按自己的能力门,不按 `servers`。**
+    //
+    // 只声明 `servers` 的那一版 Guardian 收到 `{"action":"remove"}` 走的是它那一版
+    // 唯一的行为 —— **换到那一台**。于是在「文件换了、进程没换」那个升级窗口里
+    // 点一下 Delete,出口 IP 与国家换到了用户想删掉的那一台。
+    static func testEditingVerbsNeedTheirOwnCapability() {
+        expect(!serverEditingAvailable(capabilities: nil), "旧 Guardian(没声明过能力)不许画那几个动词")
+        expect(!serverEditingAvailable(capabilities: ["servers"]),
+               "只声明 servers 的那一版被当成认得 remove —— 点一下 Delete 会换掉出口")
+        expect(serverEditingAvailable(capabilities: ["servers", "servers_edit"]),
+               "声明了 servers_edit 却看不见那几个动词")
+        // 反面:切换那道门不许跟着收紧,否则只声明 servers 的那一版连清单都看不到。
+        expect(serverSwitchingAvailable(capabilities: ["servers"]), "切换那道门被连累着收紧了")
+    }
+
+    // 清单里只有一台时:`servers` 不为空 ⇒ `serverListEmptyReason` 返回 nil,
+    // 而候选行是空的。**两个条件不是同一个**,而这一句恰恰是最常见的那一句。
+    static func testOnlyOneServerStillGetsAnEmptyStateSentence() {
+        let one = ServerList(servers: [ServerEntry(name: "tokyo", host: "h", current: true)],
+                             current: "tokyo")
+        expect(serverListEmptyReason(list: one) == nil, "有服务器却摆了空清单文案")
+        guard let note = otherServersEmptyNote(list: one, core: answeringCoreRuntime()) else {
+            fail("只有一台时候选那一段一个字都不说 —— 用户看到的是一片空白"); return
+        }
+        expect(note.contains("switch"), "那句话没说清能做什么:\(note)")
+        // 有候选时它必须闭嘴,一台都没有时那一档归 serverListEmptyReason。
+        expect(otherServersEmptyNote(list: listWithTwo(), core: answeringCoreRuntime()) == nil,
+               "有候选却还说「没有可切的」")
+        expect(otherServersEmptyNote(list: singleServerConfig(), core: nil) == nil,
+               "一台都没有那一档说了两句 —— serverListEmptyReason 已经说过了")
+    }
+
+    // 当前那一块中间那几行:**「tunnel healthy / unhealthy」这个映射是判据**,
+    // 不许留在窗口里 —— `healthy ?? false` 会把「没说」显示成「不健康」。
+    static func testCurrentPanelLinesComeFromTheModelNotTheWindow() {
+        guard let panel = currentServerPanel(list: listWithCurrent(), core: answeringCoreRuntime())
+        else { fail("拿不到当前那一块"); return }
+        expect(panel.statusLine == "reality@203.0.113.10 · 1051 ms · tunnel healthy",
+               "statusLine = \(panel.statusLine ?? "nil")")
+        expect(!panel.statusLineIsBad, "健康的隧道被标红了")
+        expect(panel.udpLine == "UDP  hysteria2@203.0.113.21 · proxy",
+               "udpLine = \(panel.udpLine ?? "nil")")
+        // UDP 从**另一台**出去时必须单独点名 —— 少了它,UDP 会静默走别的出口。
+        var elsewhere = listWithCurrent()
+        elsewhere.servers[0].udpHost = "198.51.100.9"
+        expect(currentServerPanel(list: elsewhere, core: answeringCoreRuntime())?
+                .udpLine?.contains("→ 198.51.100.9") == true,
+               "UDP 走了另一台却没说出来")
+
+        // 明确说了不健康 ⇒ 标红;**没说 ⇒ 不标红**(那是替一份从没收到过的观测下结论)。
+        let sick = CoreRuntime(reachable: true, tunnelHealthy: false, latencyMS: 12, transport: "reality@h")
+        guard let sickPanel = currentServerPanel(list: listWithCurrent(), core: sick) else {
+            fail("拿不到当前那一块"); return
+        }
+        expect(sickPanel.statusLine?.contains("tunnel unhealthy") == true,
+               "不健康没说出来:\(sickPanel.statusLine ?? "nil")")
+        expect(sickPanel.statusLineIsBad, "明确说了不健康却没标红")
+        let quiet = CoreRuntime(reachable: true, latencyMS: 12)
+        guard let quietPanel = currentServerPanel(list: listWithCurrent(), core: quiet) else {
+            fail("拿不到当前那一块"); return
+        }
+        expect(quietPanel.statusLine == "12 ms", "没说的那几项被编了出来:\(quietPanel.statusLine ?? "nil")")
+        expect(!quietPanel.statusLineIsBad, "「没说」被画成了「不健康」")
+
+        // Core 静默那一档:那几行一个都不该有值,只剩 coreSilentNote。
+        guard let silent = currentServerPanel(list: listWithCurrent(), core: nil) else {
+            fail("拿不到当前那一块"); return
+        }
+        expect(silent.statusLine == nil, "Core 不答话却画出了一行观测:\(silent.statusLine ?? "nil")")
+        expect(silent.udpLine == nil, "Core 不答话却画出了 UDP 那一行:\(silent.udpLine ?? "nil")")
+        expect(silent.coreSilentNote != nil, "Core 不答话却一个字都不说")
+    }
+
+    // 删除的确认文案必须说清**链接会跟着没、而 bx 手里没有副本**(spec §7.1):
+    // 菜单在构造上做不到 Undo,一个撤不回的 Undo 比没有 Undo 更糟。
+    static func testRemoveConfirmationSaysTheLinkIsGoneForGood() {
+        let text = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20")
+        expect(text.contains("osaka") && text.contains("203.0.113.20"), "没说删的是哪一台:\(text)")
+        expect(text.lowercased().contains("link"), "没提到链接会跟着没:\(text)")
+        expect(text.lowercased().contains("undo") || text.lowercased().contains("cannot"),
+               "没说这件事撤不回来:\(text)")
+        // 主机问不出来时只写名字,**不写一个空括号**。
+        expect(!serverRemoveConfirmMessage(name: "osaka", host: "").contains("()"),
+               "主机为空时写出了一对空括号")
+    }
+
+    // remove / replace 的失败码翻成人话;**认不出的返回 nil**,由调用方退回
+    // 通用漏斗 —— 多映射一条错的比不映射糟得多。
+    static func testEditFailureCodesBecomeSentences() {
+        guard let current = serverEditFailureMessage(code: "servers_remove_current", status: 409) else {
+            fail("删当前那台的拒绝没有一句话"); return
+        }
+        expect(current.lowercased().contains("switch"), "没告诉用户先换一台:\(current)")
+        expect(serverEditFailureMessage(code: "servers_unknown_name", status: 400) != nil,
+               "「这台已经没了」没有一句话")
+        expect(serverEditFailureMessage(code: "servers_replace_failed", status: 400) != nil,
+               "换链接失败没有一句话")
+        expect(serverEditFailureMessage(code: nil, status: 500) == nil, "没有码却编了一句解释")
+        expect(serverEditFailureMessage(code: "servers_something_new", status: 500) == nil,
+               "认不出的码被编了一句像模像样的解释")
+        // add 那半的码不许被这半顺手认领 —— 两个漏斗说的是两件事。
+        expect(serverEditFailureMessage(code: "servers_name_exists", status: 409) == nil,
+               "add 的码被 edit 漏斗认领了")
+    }
+
+    // 换的是**当前那台**时:配置改了而跑着的隧道还连着旧地址 —— 如实说
+    // 「重连后生效」并给一条现在就重连的路;换别的那台时不提重连。
+    static func testReplaceFollowUpOnlyOffersReconnectForTheRunningOne() {
+        let current = replaceLinkFollowUp(name: "tokyo", isCurrent: true)
+        expect(current.offersReconnect, "换的是当前那台却没给「现在就重连」")
+        expect(current.message.lowercased().contains("reconnect"), "没说要重连才生效:\(current.message)")
+        let other = replaceLinkFollowUp(name: "osaka", isCurrent: false)
+        expect(!other.offersReconnect, "换的是没在跑的那台却让用户去重连")
+        expect(other.message.contains("osaka"), "没说换的是哪一台:\(other.message)")
+    }
+
+    // **两句 UDP 提示刻意不同。** Guardian 的 replace 对空 UDP 是「保持原样」,
+    // 也就是说这个菜单今天**清不掉**一条 UDP 链接;写成「留空 = 删掉」就是一句
+    // 用户当场验不出、而后果是静默的假话(UDP 传输一消失就回落到主传输)。
+    static func testUDPHintTellsAddApartFromReplace() {
+        let add = udpFieldHint(replacing: false)
+        let replace = udpFieldHint(replacing: true)
+        expect(add != replace, "两条路给了同一句话 —— 「留空」在它们身上不是同一件事")
+        expect(replace.lowercased().contains("keep"), "replace 没说清留空是保持不变:\(replace)")
+        expect(!add.lowercased().contains("keep"), "add 说了一句它没有的语义:\(add)")
+        expect(add.lowercased().contains("optional") && replace.lowercased().contains("optional"),
+               "没说这个框是可选的")
+    }
+
     static func main() {
         testServerListDecodesWhatGuardianSends()
         testServerListDecodesAddedAndToleratesItsAbsence()
@@ -712,6 +848,13 @@ struct ServersModelTests {
         testSwitchResultDecodesOutcomeAndToleratesItsAbsence()
         testServerListDecodesRunningBesideCurrent()
         testPortIsDecodedAndShown()
+        testEditingVerbsNeedTheirOwnCapability()
+        testOnlyOneServerStillGetsAnEmptyStateSentence()
+        testCurrentPanelLinesComeFromTheModelNotTheWindow()
+        testRemoveConfirmationSaysTheLinkIsGoneForGood()
+        testEditFailureCodesBecomeSentences()
+        testReplaceFollowUpOnlyOffersReconnectForTheRunningOne()
+        testUDPHintTellsAddApartFromReplace()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 一个没被脚本登记的套件
         // 退出码也是 0(本仓库实测栽过)。
         if failures == 0 {

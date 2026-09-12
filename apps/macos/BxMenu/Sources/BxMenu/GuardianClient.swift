@@ -39,7 +39,21 @@ enum GuardianEndpoint {
     case switchServer(name: String)
     /// 把一台加进清单。**它不动 current** —— 切换是紧接着的另一次请求,
     /// 两件事分开报,免得「加上了但没切过去」被合成一句「已切换」。
-    case addServer(name: String, link: String)
+    ///
+    /// `udp` 是可选的第二条链接(UDP/QUIC 那一条)。**空 = 这台没有 UDP 链接**;
+    /// 此前客户端根本不发它,于是从菜单加一台 reality+hysteria2 的 VPS 会
+    /// 静默丢掉 QUIC 那半,而 `bx server install` 默认就给两条链接。
+    case addServer(name: String, link: String, udp: String)
+    /// 从清单里删掉一台。**当前那台服务端一律拒**(409 servers_remove_current)。
+    /// **只有 `serverEditingAvailable(capabilities:)` 判定这一版认得这个动词时
+    /// 才该调用它** —— 只声明 `servers` 的那一版会把它当成「换到那一台」。
+    case removeServer(name: String)
+    /// 就地换掉同名那台的链接(凭据轮换 / VPS 换了地址)。**服务端不动 current、
+    /// 也不热切任何东西。** 能力门同 removeServer。
+    ///
+    /// `udp` 空 = **保持这台原来那条 UDP 链接不变**(服务端刻意如此,见
+    /// `udpFieldHint`)—— 不是「删掉它」。
+    case replaceServer(name: String, link: String, udp: String)
     /// 长轮询:Guardian 在自己的代际号与 generation 不同时立刻应答,相同则挂住。
     case statusWatch(generation: UInt64)
     /// 一份应用流量归因报告。**这一次拉取同时给 Core 的采集订阅续期**(30 秒
@@ -61,8 +75,8 @@ enum GuardianEndpoint {
         switch self {
         case .requestRecovery: return 202
         case .currentRecovery, .turnOn, .turnOff, .status, .updateCheck, .listRules, .changeRule,
-             .changeRuleGroup, .listServers, .switchServer, .addServer, .probeServers, .statusWatch, .appTraffic,
-             .logs, .doctor:
+             .changeRuleGroup, .listServers, .switchServer, .addServer, .removeServer, .replaceServer,
+             .probeServers, .statusWatch, .appTraffic, .logs, .doctor:
             return 200
         }
     }
@@ -73,7 +87,9 @@ enum GuardianEndpoint {
         case .turnOn, .turnOff: return guardianMutationTimeout
         case .updateCheck: return guardianUpdateCheckTimeout
         // 只是读写一个小 YAML 文件,不做网络 I/O。
-        case .listRules, .changeRule, .changeRuleGroup, .listServers, .addServer, .logs: return guardianDefaultTimeout
+        case .listRules, .changeRule, .changeRuleGroup, .listServers, .addServer, .removeServer,
+             .replaceServer, .logs:
+            return guardianDefaultTimeout
         // 只是把 Core 已经聚合好的一份快照转发出来,不做网络 I/O。
         case .appTraffic: return guardianDefaultTimeout
         // 服务端要武装 → 等新隧道健康(上限 12 秒)→ 确认。客户端必须比那条链
@@ -286,8 +302,24 @@ struct GuardianClient {
 
     /// 把一台加进清单(不切换)。名字为空由 Guardian 按链接推导;应答里 `added` 是最终名字。
     /// 同名会被 Guardian 拒(409 servers_name_exists),**不会静默覆盖**。
-    func addServer(name: String, link: String) throws -> ServerList {
-        try perform(endpoint: .addServer(name: name, link: link), as: ServerList.self)
+    ///
+    /// `udp` 是可选的第二条链接。**空 = 不发这个键**,而不是发一个空串。
+    func addServer(name: String, link: String, udp: String = "") throws -> ServerList {
+        try perform(endpoint: .addServer(name: name, link: link, udp: udp), as: ServerList.self)
+    }
+
+    /// 从清单里删掉一台,返回改动**之后**的完整清单(与 changeRule 同一条:
+    /// 界面据此重画,不自己推演)。**调用前必须过 `serverEditingAvailable`。**
+    @discardableResult
+    func removeServer(name: String) throws -> ServerList {
+        try perform(endpoint: .removeServer(name: name), as: ServerList.self)
+    }
+
+    /// 就地换掉同名那台的链接。**调用前必须过 `serverEditingAvailable`。**
+    /// `udp` 空 = 保持原样(见 `udpFieldHint`)。
+    @discardableResult
+    func replaceServerLink(name: String, link: String, udp: String = "") throws -> ServerList {
+        try perform(endpoint: .replaceServer(name: name, link: link, udp: udp), as: ServerList.self)
     }
 
     /// 长轮询一次。**只有 `watchIsAvailable(capabilities:)` 判定这一版 Guardian
@@ -454,13 +486,36 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         // 与 changeRule 同一条纪律:用 JSONSerialization,不手拼 —— 名字来自
         // 配置文件,一个引号就能改变请求的结构。
         body = (try? JSONSerialization.data(withJSONObject: ["name": name])) ?? Data("{}".utf8)
-    case let .addServer(name, link):
+    case let .addServer(name, link, udp):
         method = "POST"
         path = "/v1/servers"
         // 名字与链接都是用户输入 —— 用 JSONSerialization,不手拼。
         var payload: [String: String] = ["action": "add", "link": link]
         if !name.isEmpty { payload["name"] = name }
+        // **空就整个不发这个键。** 服务端对空 UDP 的处置在 add 与 replace 上
+        // 并不相同,而一个空串会让「用户没填」与「用户填了空」在报文上无从分辨。
+        if !udp.isEmpty { payload["udp"] = udp }
         body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+    case let .removeServer(name):
+        method = "POST"
+        path = "/v1/servers"
+        // 名字来自配置文件 —— 用 JSONSerialization,不手拼:一个引号就能改变
+        // 请求的结构,而这个端点上「结构变了」的后果是**换到那一台去**
+        // (空 action 是它的兼容契约)。
+        //
+        // **编不出来时发一个空体,不发 `{}`。** 别处那个 `{}` 兜底在这里是错的:
+        // 空 action 是这个端点「换到 Name 那一台」的兼容契约,于是一次删除请求
+        // 会从隔壁那扇门进去 —— 与 Task 4b 刚焊死的那条伤害同形。空体在服务端
+        // 是 JSON 解码失败 ⇒ 400,fail-closed。
+        body = (try? JSONSerialization.data(withJSONObject: ["action": "remove", "name": name]))
+            ?? Data()
+    case let .replaceServer(name, link, udp):
+        method = "POST"
+        path = "/v1/servers"
+        var payload: [String: String] = ["action": "replace", "name": name, "link": link]
+        if !udp.isEmpty { payload["udp"] = udp }
+        // 兜底同 removeServer:`{}` 会落进「换到 Name 那一台」的兼容分支。
+        body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
     case let .statusWatch(generation):
         method = "GET"
         // generation 是 UInt64,插值不引入注入面 —— 与 changeRule 那里用
