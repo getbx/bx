@@ -350,6 +350,24 @@ func postServersJSON(t *testing.T, req serversRequest) *http.Request {
 	return httptest.NewRequest(http.MethodPost, "/v1/servers", strings.NewReader(string(body)))
 }
 
+// 「没测成」与「测了不通」在线上必须分得开。今天两者都是 Reachable:false,
+// 于是菜单把一台好服务器画成红的 —— 而 ServersModel 里那段注释明写不该这样。
+func TestProbeDistinguishesNotMeasuredFromUnreachable(t *testing.T) {
+	notMeasured := ProbeReport{Measured: false, Error: "core not running"}
+	unreachable := ProbeReport{Measured: true, Reachable: false}
+	if notMeasured.Reachable == unreachable.Reachable && notMeasured.Measured == unreachable.Measured {
+		t.Fatal("两种结局在线上无法区分")
+	}
+	// measured 缺席读作「这一版 Guardian 没说」,所以它不许带 omitempty。
+	b, err := json.Marshal(ProbeReport{Measured: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"measured"`) {
+		t.Fatalf("measured 带了 omitempty:%s —— 键缺席就与旧 Guardian 无法区分了", b)
+	}
+}
+
 // **「没能测」不是「不可达」。**
 //
 // Core 不在跑、或这一版不支持探测,都会让 probe 报错。把它判成不可达会**把一台
@@ -369,8 +387,8 @@ func TestProbeFailureIsNotReportedAsUnreachable(t *testing.T) {
 		if entry.Probe == nil {
 			t.Fatalf("%s 没有结论 —— 键缺席读作「没测过」,而我们确实测了", entry.Name)
 		}
-		if entry.Probe.Reachable {
-			t.Errorf("%s 测失败却报成可达", entry.Name)
+		if entry.Probe.Measured {
+			t.Errorf("%s 没测成却标记为 Measured:true —— 与名字承诺的区分矛盾", entry.Name)
 		}
 		if entry.Probe.Error == "" {
 			t.Errorf("%s 没说为什么没测成", entry.Name)
