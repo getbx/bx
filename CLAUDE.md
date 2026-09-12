@@ -1821,6 +1821,27 @@ Run again 看起来没反应(健康机器上两份报告逐字相同,重画完�
 钉住合计句。golden 从三例加到四例(新的 `failing_rules` 是唯一一份 traffic 真查出
 东西的报告 —— 少了它,这次改动可以整个被撤掉而 golden 不动)。
 
+**它当时留了一格空的,同日补上:Guardian 的 `TrafficFact.DirectEgress` 恒
+Unknown。** 那一格正是这份诊断最值钱的一句话 —— 2026-08-13 真机上十条 direct
+规则 100% 失败,坏的不是规则,是 bx 自己的直连器(macOS 上那条 scoped 默认路由
+不见了);恒 Unknown 时 Checks 页会一本正经地建议用户去改那些**完全正确**的规则。
+接法是**用同一份判据**:新的 `observe.DirectEgress(ctx, deps)` 是这一格的单问
+入口(与 `Observe` 走同一个 `observeDirectEgress`,只是不跑整轮 —— 那要多两次
+路由查询、一次 DNS 查询、一次控制 socket 往返,而 doctor 那一轮只有一份预算),
+Guardian 的 `doctorCollectorDeps.directEgress` 接的就是它;**`(reachable, known,
+err) → Tristate` 那段映射仍然只有一份**,没有第二个 `supervisor.DirectEgressReachable`
+调用点。**nil ⇒ Unknown,不是 True** —— 判成好的就等于让那句错的建议照旧发出去。
+观测本身只有 darwin 有原语,别处由 `NotApplicableForPlatform` 声明为不成立、
+不去问(问了只会每次留下同一条永久失败)。守卫两条:
+`TestGuardianDoctorBlamesTheDirectDialerNotTheRules` 打在**渲染出来的 hint** 上
+(观测到 False ⇒ 不许再说「改 rules」;没问出来 ⇒ 不许说「不是你的规则」),
+`TestDirectEgressAsksOnlyThatQuestion` 钉住单问入口不顺手问别的、吃调用方那份
+ctx、且不成立时不去问;`TestLiveDoctorDepsForwardTheCtxTheyAreHanded` 多一条
+子测试,判据是**认不认账**而不是快不快 —— 用自己的钟的实现在这台机器上也是几
+毫秒回来,只是会给出一个**确定的**答案,那是它唯一看得见的形状(非 darwin 上
+这一条是弱的,记着别当成三条腿都在守)。`bx doctor --json` 的 golden 一个字节
+没动:判据层没改,补的是采集。
+
 ## 读源码的守卫:三种处置(2026-08-31)
 
 全仓真正读源码的测试函数 **60 → 57**,而**这个数字本身比想象的诚实得多**:

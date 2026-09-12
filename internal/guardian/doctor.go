@@ -15,6 +15,7 @@ import (
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/doctor"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/platformcheck"
 	"github.com/getbx/bx/internal/setup"
 	"github.com/getbx/bx/internal/stats"
@@ -60,8 +61,8 @@ type probeOutcome struct {
 // 预算(doctorTimeout),而一个不吃 ctx 的依赖会让那份预算变成一句空话。
 //
 // nil 的含义按用途分成两类,各自写明:
-//   - probe / platform:nil ⇒ **不做**。这两个是会出网/会 spawn 一堆命令的,
-//     单测必须能把它们整个关掉(测试不出网)。
+//   - probe / platform / directEgress:nil ⇒ **不做**。这三个是会出网/会 spawn
+//     一堆命令的,单测必须能把它们整个关掉(测试不出网)。
 //   - service / dial:nil ⇒ 用生产那份。它们是「问 launchd」与「拨本机 socket」,
 //     单测跑真的也无害,而让它们可注入是为了能断言它们确实拿到了那份预算。
 type doctorCollectorDeps struct {
@@ -69,6 +70,11 @@ type doctorCollectorDeps struct {
 	platform func(context.Context) []doctor.Check
 	service  func(context.Context) []doctor.Check
 	dial     func(ctx context.Context, path string) error
+	// directEgress 问「bx 自己的直连出不出得去」。**nil ⇒ Unknown,不是 True** ——
+	// 「没问」与「问了、是好的」在这一格上必须分得开:判据只在明确观测到 False
+	// 时才把「不是你的规则」那句话说出口,而把没问过读成好的,等于让诊断继续
+	// 把一次系统故障说成用户的配置问题。
+	directEgress func(context.Context) observe.Tristate
 	// sock 是 Core 控制 socket 的路径;空 = 生产那个常量。
 	//
 	// **它存在的唯一理由是让这一层的单测与机器状态无关**:开发机上 bx 正跑着,
@@ -101,6 +107,13 @@ func liveDoctorDeps(sock string) doctorCollectorDeps {
 	deps.probe = func(ctx context.Context, host string, port int) (probeOutcome, error) {
 		r, err := supervisor.ProbeControlContext(ctx, deps.sockPath(), host, port)
 		return probeOutcome{Reachable: r.Reachable, RTTMS: r.RTTMS, Error: r.Error}, err
+	}
+	// 「bx 自己的直连出得去吗」。**走 observe 那一份判据,不自己问 supervisor** ——
+	// (reachable, known, err) → Tristate 那段映射只许有一份,而 CLI 那侧的
+	// doctor 采集读的正是它。只问这一个问题、不跑整轮 Observe:那要多两次路由
+	// 查询、一次 DNS 查询、一次控制 socket 往返,而这一轮只有一份预算。
+	deps.directEgress = func(ctx context.Context) observe.Tristate {
+		return observe.DirectEgress(ctx, observe.LiveDeps(deps.sockPath()))
 	}
 	return deps
 }
@@ -185,20 +198,29 @@ func collectDoctorFactsWith(ctx context.Context, configPath string, status Statu
 	// (走的正是这个采集方)对「哪条规则在成片失败」一个字都不说、还顶着一句
 	// 加粗的「0 failed」。Guardian 够得着 Core —— `failingRules` 早就为 /v1/status
 	// 跨过这条边界了,这里只是让同一批数字也进 doctor。
-	f.Traffic = guardianTrafficFact(ctx, deps.sockPath())
+	f.Traffic = guardianTrafficFact(ctx, deps.sockPath(), deps.directEgress)
 	return f
 }
 
 // guardianTrafficFact 问一次 Core 的统计。**永不返回 nil**:问不到就带着原因
 // 回来(Judge 会把它报成 not_checked),nil 的语义是「这条路径根本没问」。
 //
-// **DirectEgress 留 Unknown**:那条观测(macOS 上那条 scoped 默认路由还在不在)
-// 的原语住在 internal/observe,Guardian 这一侧今天没接。Unknown 是诚实的 ——
-// failingRuleHint 只在明确观测到 False 时才改口,所以留空只会少一句归因,
-// 不会把系统故障说成用户的配置问题。
-func guardianTrafficFact(ctx context.Context, sock string) *doctor.TrafficFact {
+// **DirectEgress 一起问**(2026-09-12 补)。此前这一格恒 Unknown,理由是
+// 「原语住在 internal/observe,Guardian 这一侧没接」—— 诚实,但那正好把这份
+// 诊断最值钱的一句话弃权掉了:2026-08-13 真机上十条 direct 规则 100% 失败,
+// 坏的不是规则,是 bx 自己的直连器(macOS 上那条 scoped 默认路由不见了)。
+// 这一格恒 Unknown 时,Checks 页会一本正经地建议用户去改那些**完全正确**的
+// 规则 —— 一个在最需要它的时候把人指向错误方向的诊断,比不给建议更糟。
+//
+// egress 为 nil = 这条路径没问(单测把它关掉,或者哪天平台原语没接线)⇒
+// Unknown。**绝不倒向任何一边**:判成 True 会让上面那句错的建议照旧发出去,
+// 判成 False 会在一台规则真写错了的机器上告诉用户「不是你的规则」。
+func guardianTrafficFact(ctx context.Context, sock string, egress func(context.Context) observe.Tristate) *doctor.TrafficFact {
 	report, err := supervisor.FetchStatusReportContext(ctx, sock)
 	fact := &doctor.TrafficFact{Report: report}
+	if egress != nil {
+		fact.DirectEgress = egress(ctx)
+	}
 	if err != nil {
 		fact.Err = err.Error()
 	}
