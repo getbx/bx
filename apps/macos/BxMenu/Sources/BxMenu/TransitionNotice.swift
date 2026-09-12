@@ -36,10 +36,33 @@ enum ProtectionSignal: Equatable {
 
 /// `tunnelHealthy == nil` 是「Guardian 没说」,**不是**「不健康」—— 与
 /// StatusReport 那条纪律同源:键缺席读成 false 会凭空造出一句 "tunnel down"。
+///
+/// **而它同样不是「健康」。** 这里曾经写着 `tunnelHealthy == false ? … : .protectedHealthy`
+/// —— 只防住了一头,nil 从另一头滑进了那个**肯定的好答案**。调用方给的是
+/// `report.core?.tunnelHealthy`,它把两种「没说」摊平成同一个 nil:`core` 整个
+/// 缺席(旧 Guardian,或没接 CoreRuntime provider —— 升级窗口里的常态),以及
+/// `tunnel_healthy` 这个键缺席。后果不是显示错一行:这个函数唯一的消费者是通知,
+/// 而 `.protectedHealthy` 会**结束一段故障并弹一条「已恢复」**,根据是一个没人
+/// 发过的字段;同一份输入 menuProtectionVerdict 给的却是 attention,于是通知与
+/// 菜单栏图标对同一个瞬间各说各话。
+///
+/// 归到 `.transient` 而不是 `.attention`:那一档的语义正是「既不算变好也不算
+/// 变坏」,状态机对它一个字不说、也不改写上一次的稳态 —— 这才是「没问出来」
+/// 该有的处置。判成 attention 则是拿一个缺失的键去断言机器坏了,与原来的错误
+/// 只是方向相反(而 `.attention` 那句文案会说「保护没能自己恢复」,同样是一句
+/// 我们无权说的话)。图标那半照旧由 menuProtectionVerdict 显示 attention:
+/// 常驻指示灯说「问不出来」,事件通知保持沉默,两者不矛盾。
+///
+/// `reachable == false` 不走这条路:Go 侧那时把 `tunnel_healthy` 发成零值
+/// `false`(无 omitempty),于是落在下面 `.some(false)` 那一支。
 func protectionSignal(protectionState: String, tunnelHealthy: Bool?) -> ProtectionSignal {
     switch protectionState {
     case "protected":
-        return tunnelHealthy == false ? .protectedTunnelDown : .protectedHealthy
+        switch tunnelHealthy {
+        case .some(true): return .protectedHealthy
+        case .some(false): return .protectedTunnelDown
+        case .none: return .transient
+        }
     case "blocked":
         return .blocked
     case "needs_attention":

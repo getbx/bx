@@ -121,6 +121,59 @@ struct GuardianStatusFieldsTests {
             expect(false, "core 缺键时不该让整份状态解码失败: \(error)")
         }
 
+        // 6) `failing_rules`:缺席 ⇒ 空;在场且读得动 ⇒ 解出来;**在场而读不动
+        //    ⇒ 绝不许静默塌成空数组。** 这个字段一路走到规则窗口,而那个窗口的
+        //    词汇表里空数组读作「一条规则都没在失败」—— 一份读不动的报文被读成
+        //    这句话,恰恰是在用户最该被警告的时候给他一句安慰。
+        //
+        //    「缺席 ⇒ 空」是 decodeIfPresent 自己就给的;此前那行 `try?` 只额外
+        //    买到了「在场而读不动也当空」,而它买的正是这条守卫要禁的东西。
+        //    今天是潜伏的(Go 侧 failingRulesFrom 只发 direct/proxy 两种 kind,
+        //    四个键都没有 omitempty),明天不是 —— Go 加第三种 kind 或给计数加
+        //    omitempty,都会让闭合的 Swift 枚举/非可选 Int 解不动。
+        let malformedFailing = Data("""
+        {"schema_version":1,"desired":"on","phase":"committed","protection_state":"protected",
+         "dns_state":"managed","dns_managed":true,
+         "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":42,
+                 "failing_rules":[{"kind":"builtin","rule":"*.a.com","attempts":10,"failures":9}]}}
+        """.utf8)
+        do {
+            let status = try JSONDecoder().decode(GuardianStatus.self, from: malformedFailing)
+            expect(!(status.core?.failingRules ?? []).isEmpty,
+                   "在场而读不动的 failing_rules 被读成了「一条都没在失败」——" +
+                   "规则窗口会据此把每一行画成健康的")
+        } catch {
+            // 抛错正是要的:菜单落到 "Status unreadable"(与这份状态里其余十几个
+            // 字段「在场而类型不对就整份失败」同一档),而不是替 Core 说一句
+            // 它没说过的「一条都没在失败」。
+        }
+
+        let wellFormedFailing = Data("""
+        {"schema_version":1,"desired":"on","phase":"committed","protection_state":"protected",
+         "dns_state":"managed","dns_managed":true,
+         "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":42,
+                 "failing_rules":[{"kind":"direct","rule":"*.qq.com","attempts":1291,"failures":1289}]}}
+        """.utf8)
+        do {
+            let status = try JSONDecoder().decode(GuardianStatus.self, from: wellFormedFailing)
+            expect(status.core?.failingRules.count == 1,
+                   "读得动的 failing_rules 必须解出来,实际 \(String(describing: status.core?.failingRules))")
+            expect(status.core?.failingRules.first?.kind == .direct, "kind 解错了")
+            expect(status.core?.failingRules.first?.failures == 1289, "failures 解错了")
+        } catch {
+            expect(false, "形状正常的 failing_rules 不该解码失败: \(error)")
+        }
+
+        // 缺席仍然是空 —— 收紧那一行不许把这半也一起收掉(旧 Core 没这个字段,
+        // 而菜单必须照常工作)。
+        do {
+            let status = try JSONDecoder().decode(GuardianStatus.self, from: partialCoreBody)
+            expect(status.core?.failingRules.isEmpty == true,
+                   "failing_rules 缺席时应为空数组,实际 \(String(describing: status.core?.failingRules))")
+        } catch {
+            expect(false, "failing_rules 缺席不该让整份状态解码失败: \(error)")
+        }
+
         // 5) `.status` 端点走 GET /v1/status,期望 200,用短默认超时——
         //    与 currentRecovery 同档,不该套用 mutation 端点的长超时。
         expect(GuardianEndpoint.status.expectedStatus == 200, "status.expectedStatus = \(GuardianEndpoint.status.expectedStatus)")

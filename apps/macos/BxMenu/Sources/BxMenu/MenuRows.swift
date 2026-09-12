@@ -128,8 +128,16 @@ func answeringCore(_ status: GuardianStatus?) -> CoreRuntime? {
 /// —— 常态会变墙纸,把真正要紧的那一行一起淹掉。规则:
 /// - Route + Latency 合成一行 `Via`(`reality@vps · 390 ms`);哪一半问不出来就
 ///   不写那一半,两半都问不出来才是 `Not checked`;任一半 ✗ 则整行 ✗。
-/// - DNS / Direct lookups / UDP Relay **只在 ✗ 时露面** —— 压缩的是正常时的噪声,
-///   不是坏消息。
+/// - DNS / Direct lookups / UDP Relay **只在「不是 ok」时露面** —— 压缩掉的是
+///   *正常时的噪声*,而 `.unknown` 不是正常:它是「这一项该有值、这次没拿到」。
+///   判据因此是 `== .ok`,**不是** `!= .bad` —— 后者把「查了,没事」与「没问出来」
+///   合成同一种沉默,而在这个菜单里沉默恰恰读作前者(与规则窗口「一行没有副标题
+///   = 查过了、健康」同一条词汇表)。
+///   **它不会变成一行常驻的 "Not checked"**,而防线在**上一层**:一个可能结构性
+///   缺席的字段由 `menuRows` **整行不发**(Direct lookups 就是这么做的),所以
+///   走到这里还带着 `.unknown` 的行,是真的问过了而没问出来。将来某一行在真机上
+///   恒为未知,该修的是它的构造处(照 Direct lookups 整行不发),**不是**回到
+///   这里把 unknown 一起藏掉 —— 那会连真的问不出来一起藏。
 /// - 维护挂起与任何认不出的行**原样保留**:新加的行默认参与显示(吵的失效好过
 ///   安静的失效,与 statusdigest 的「默认参与投影」同一条纪律)。
 func compactMenuRows(_ set: MenuRowSet) -> [MenuRow] {
@@ -145,7 +153,7 @@ func compactMenuRows(_ set: MenuRowSet) -> [MenuRow] {
         case "Latency":
             latency = row
         default:
-            if quietWhenFine.contains(row.label), row.mark != .bad { continue }
+            if quietWhenFine.contains(row.label), row.mark == .ok { continue }
             out.append(row)
             continue
         }

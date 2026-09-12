@@ -20,7 +20,12 @@ struct TransitionNoticeTests {
     static func testSignalProjection() {
         expect(protectionSignal(protectionState: "protected", tunnelHealthy: true) == .protectedHealthy, "protected+healthy")
         expect(protectionSignal(protectionState: "protected", tunnelHealthy: false) == .protectedTunnelDown, "protected+unhealthy")
-        expect(protectionSignal(protectionState: "protected", tunnelHealthy: nil) == .protectedHealthy, "protected+未说 ⇒ 不编一句隧道断了")
+        // **这一条 2026-09-12 翻过来了。** 原来钉的是 `.protectedHealthy`,注释写着
+        // 「不编一句隧道断了」—— 那半是对的,但它一路滑到了对面:缺席被解成了
+        // 一个**自信的好答案**,而通知的全部业务就是宣布好坏。缺席既不算好也不算
+        // 坏,那正是 `.transient` 这一档已经在表达的东西。
+        expect(protectionSignal(protectionState: "protected", tunnelHealthy: nil) == .transient,
+               "protected+未说 ⇒ 既不编一句隧道断了,也不宣布它是健康的")
         expect(protectionSignal(protectionState: "blocked", tunnelHealthy: nil) == .blocked, "blocked")
         expect(protectionSignal(protectionState: "needs_attention", tunnelHealthy: true) == .attention, "needs_attention")
         expect(protectionSignal(protectionState: "off", tunnelHealthy: nil) == .off, "off")
@@ -131,6 +136,36 @@ struct TransitionNoticeTests {
         }
     }
 
+    // **「Guardian 没说隧道好不好」不许被当成一次恢复。**
+    //
+    // `tunnelHealthy` 为 nil 有两种来由,`report.core?.tunnelHealthy` 这一跳把它们
+    // 摊平成同一个 nil:`core` 整个缺席(旧 Guardian,或没接 CoreRuntime provider ——
+    // 升级窗口里的常态),以及 `tunnel_healthy` 这个键缺席。两种都是「没说」。
+    // 把它解成健康,后果不是显示错一行,是**弹一条通知断言机器恢复了**,而根据
+    // 是一个没人发过的字段;与此同时 menuProtectionVerdict 对同一份输入给的是
+    // attention —— 通知与图标对同一个瞬间各说各话。
+    //
+    // 两条断言是成对的:第二条不许被「干脆永远不响」廉价满足。
+    static func testUnknownTunnelHealthNeverAnnouncesRecovery() {
+        var tracker = TransitionNoticeTracker()
+        _ = tracker.observe(.protectedHealthy, at: at(0))
+        _ = tracker.observe(.blocked, at: at(1))
+        expect(tracker.observe(.blocked, at: at(31))?.kind == .degraded,
+               "前置:得先真的响过一条「阻断」,否则下面那条断言什么也没证明")
+
+        let silent = tracker.observe(
+            protectionSignal(protectionState: "protected", tunnelHealthy: nil), at: at(60))
+        expect(silent == nil,
+               "tunnel_healthy 没人说时弹了一条通知:\(String(describing: silent))" +
+               " —— 没有任何东西报告过隧道好了")
+
+        let real = tracker.observe(
+            protectionSignal(protectionState: "protected", tunnelHealthy: true), at: at(90))
+        expect(real?.kind == .recovered,
+               "真的健康了那条「已恢复」必须补上(否则上面那条靠「永远不响」就满足了)" +
+               ":\(String(describing: real))")
+    }
+
     // 门槛是常量、且是「至少 30 秒」—— 短于一次兜底轮询(3 秒兵底 / 60 秒兜底
     // 之间)的抖动本就不该被看见。
     static func testHoldThresholdIsThirtySeconds() {
@@ -146,6 +181,7 @@ struct TransitionNoticeTests {
         testUserOffIsNeverAnEvent()
         testFirstObservationNeverNotifies()
         testFailureRightAfterTurnOnIsSilent()
+        testUnknownTunnelHealthNeverAnnouncesRecovery()
         testNoticeTextsAreEnglishAndSpecific()
         testHoldThresholdIsThirtySeconds()
         if failures == 0 {

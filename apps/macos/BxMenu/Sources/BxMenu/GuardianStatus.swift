@@ -176,6 +176,12 @@ struct CoreRuntime: Decodable {
         udpMode = try container.decodeIfPresent(String.self, forKey: .udpMode)
         dnsUpstream = try container.decodeIfPresent(String.self, forKey: .dnsUpstream)
         // 缺席 = 空,不是解码失败:旧 Core 没有这个字段,而菜单必须照常工作。
-        failingRules = (try? container.decodeIfPresent([FailingRule].self, forKey: .failingRules)) ?? []
+        // **这一半由 `decodeIfPresent` 自己提供,不需要 `try?`。** 那行 `try?`
+        // 曾经在这里,它额外买到的只有一件事:**在场而读不动**的报文也当成空 ——
+        // 而空在下游读作「一条规则都没在失败」(规则窗口的词汇表:一行没有副标题
+        // = 查过了、健康)。于是一份读不动的报文会在用户最该被警告的那一刻给他
+        // 一句安慰。这是本文件里唯一一个失败方式是静默的字段;其余十几个都是
+        // 「缺席 ⇒ nil / 默认值,在场而类型不对 ⇒ 整份响亮失败」,这里回到同一档。
+        failingRules = try container.decodeIfPresent([FailingRule].self, forKey: .failingRules) ?? []
     }
 }
