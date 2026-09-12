@@ -127,7 +127,7 @@ func probeServer(ctx context.Context, dial probeDialer, req ProbeRequest) ProbeR
 	elapsed := time.Since(start)
 	if err != nil {
 		result.ErrorCode = classifyProbeError(err)
-		result.Error = probeErrorText(result.ErrorCode)
+		result.Error = ProbeErrorText(result.ErrorCode)
 		return result
 	}
 	_ = conn.Close()
@@ -140,16 +140,10 @@ func probeServer(ctx context.Context, dial probeDialer, req ProbeRequest) ProbeR
 	return result
 }
 
-// describeProbeError 把拨号错误翻成一句用户读得懂的中文。
+// classifyProbeError 把拨号错误归到一个机器可读的码上。
 //
 // **原始错误不外传**:它里面有本机接口名、路由细节这类实现内部的东西,而用户
 // 需要的只是「关着 / 太慢 / 域名解析不出来」这三类里的哪一类。
-//
-// 它现在是 classifyProbeError + probeErrorText 的**薄壳**:分类只有一份,
-// 而中文那一份只服务 CLI —— 菜单按码自己出英文,见 ProbeResult.ErrorCode。
-func describeProbeError(err error) string { return probeErrorText(classifyProbeError(err)) }
-
-// classifyProbeError 把拨号错误归到一个机器可读的码上。
 func classifyProbeError(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -182,11 +176,18 @@ func classifyProbeError(err error) string {
 	return ProbeErrUnknown
 }
 
-// probeErrorText 是那些码的**中文**说法,给 CLI 用。
+// ProbeErrorText 是那些码的**中文**说法,给 CLI 用(`bx server list`)。
+//
+// **导出是因为 Guardian 那两处产地也要用它。** 探测这一步压根没做成时
+// (Core 拨不通 / 链接里解不出主机)报告是 Guardian 自己拼的;它一度在那儿写
+// 英文,理由是「那句话会出现在全英文菜单里」—— 而菜单如今根本不读这个字段
+// (它读码、自己出英文)。于是那两句英文只剩一个消费方:**中文的 CLI**。
+// 让两处产地都经这一份,既把语言拨回来,也让「码 ↔ 中文」这张表在生产里
+// 真的**每一条都可达** —— 否则守卫声称覆盖 11 个码,实际只覆盖得到 9 个。
 //
 // 认不出的码退回「连不上」——一个码走丢了应当读起来像一次普通的失败,
 // 而不是一个协议串。
-func probeErrorText(code string) string {
+func ProbeErrorText(code string) string {
 	switch code {
 	case ProbeErrTimeout:
 		return "超时(没有应答)"

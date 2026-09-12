@@ -335,7 +335,7 @@ struct ServersModelTests {
 
     // **服务端那句失败原因是中文的(它服务 `bx server list`),而这个菜单通篇英文。**
     //
-    // 这不是假想:`supervisor.describeProbeError` 会对一台关着的服务器返回
+    // 这不是假想:`supervisor.probeServer` 会对一台关着的服务器把 Error 填成
     // 「连接被拒(端口没在听)」,那是**最常见**的失败路径,而它此前一路流到
     // 这一行上、还被画成红的。CJK 守卫只扫菜单自己的源码,看不见从服务端来的
     // 字符串。修法是服务端发码、这一侧出话 —— 下面每一条都必须是英文。
