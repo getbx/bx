@@ -117,7 +117,10 @@ func applyPresetToConfig(path string, p appPreset) (bool, error) {
 	if _, err := config.Parse(b); err != nil {
 		return false, err
 	}
-	out, changed := editYAMLRuleList(b, "direct", p.Direct, nil)
+	out, changed, err := editYAMLRuleList(b, "direct", p.Direct, nil)
+	if err != nil {
+		return false, err
+	}
 	if !changed {
 		return false, nil
 	}

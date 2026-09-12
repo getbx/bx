@@ -2,6 +2,7 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -121,13 +122,19 @@ func apply(in []byte, req Request, validateConfig bool) ([]byte, bool, error) {
 			return nil, false, err
 		}
 	}
+	// **校验在动 YAML 之前全部做完。** 这条路(bx direct/proxy add、MCP 的
+	// bx_apply_policy)此前一个字都不校验,于是 `example.com.` 这种谁都匹配不上
+	// 的规则写得进去、`bx direct ls` 与菜单里还显示成一条正常规则。
+	adds := make([]RulePattern, 0, len(req.Add))
 	for _, d := range req.Add {
-		if norm(d) == "" {
-			return nil, false, fmt.Errorf("domain is empty")
+		p, err := ParseRulePattern(d)
+		if err != nil {
+			return nil, false, err
 		}
-		if req.Mode == "direct" && DirectRisk(d) && !req.AllowRisk {
+		if req.Mode == "direct" && DirectRisk(p.Text) && !req.AllowRisk {
 			return nil, false, fmt.Errorf("direct policy for %q is risky; require allow_risk", d)
 		}
+		adds = append(adds, p)
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(in, &doc); err != nil || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
@@ -146,13 +153,20 @@ func apply(in []byte, req Request, validateConfig bool) ([]byte, bool, error) {
 	if req.Mode == "direct" {
 		opp = "proxy"
 	}
+	if err := refuseRulesTheOppositeModeAlreadyCovers(fieldValues(rules, opp), req.Mode, adds); err != nil {
+		return nil, false, err
+	}
 	remove := map[string]bool{}
 	for _, d := range req.Remove {
-		remove[norm(d)] = true
+		// 删除**不过校验**,只取覆盖键:盘上可能躺着这次修复之前写进去的畸形
+		// 规则,而那正是用户最需要删掉的东西。覆盖键还让 `rm example.com` 删得掉
+		// 写成 `*.example.com` 的那一行 —— 两种写法盖住的东西一模一样,只按字面
+		// 串比对会如实报「不在列表里」,而它明明就在。
+		remove[CoverageKey(d)] = true
 	}
 	add := map[string]bool{}
-	for _, d := range req.Add {
-		add[norm(d)] = true
+	for _, p := range adds {
+		add[p.Key] = true
 	}
 	changed := false
 	removeFrom := func(elem *yaml.Node, field string, want map[string]bool) {
@@ -162,7 +176,7 @@ func apply(in []byte, req Request, validateConfig bool) ([]byte, bool, error) {
 		}
 		kept := seq.Content[:0]
 		for _, item := range seq.Content {
-			if want[norm(item.Value)] {
+			if want[CoverageKey(item.Value)] {
 				changed = true
 				continue
 			}
@@ -188,14 +202,10 @@ func apply(in []byte, req Request, validateConfig bool) ([]byte, bool, error) {
 	}
 	rules.Content = keptRules
 	existing := map[string]bool{}
-	for _, elem := range rules.Content {
-		if seq := mapping(elem, req.Mode); seq != nil && seq.Kind == yaml.SequenceNode {
-			for _, item := range seq.Content {
-				existing[norm(item.Value)] = true
-			}
-		}
+	for _, v := range fieldValues(rules, req.Mode) {
+		existing[CoverageKey(v)] = true
 	}
-	if len(req.Add) > 0 {
+	if len(adds) > 0 {
 		if len(rules.Content) == 0 {
 			rules.Content = append(rules.Content, &yaml.Node{Kind: yaml.MappingNode})
 		}
@@ -211,10 +221,10 @@ func apply(in []byte, req Request, validateConfig bool) ([]byte, bool, error) {
 		if seq.Kind != yaml.SequenceNode {
 			return nil, false, fmt.Errorf("%s must be a sequence", req.Mode)
 		}
-		for _, d := range req.Add {
-			if !existing[norm(d)] {
-				seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: strings.TrimSpace(d)})
-				existing[norm(d)] = true
+		for _, p := range adds {
+			if !existing[p.Key] {
+				seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: p.Text})
+				existing[p.Key] = true
 				changed = true
 			}
 		}
@@ -232,4 +242,63 @@ func apply(in []byte, req Request, validateConfig bool) ([]byte, bool, error) {
 		}
 	}
 	return out, true, nil
+}
+
+// fieldValues 收集 rules 里某一侧(direct/proxy)全部条目的原文。
+//
+// 扫**所有** rules 元素:域名可能写在 rules[1] 上,漏看一个的后果是判定按一份
+// 残缺的现状做出来的。
+func fieldValues(rules *yaml.Node, field string) []string {
+	var out []string
+	for _, elem := range rules.Content {
+		seq := mapping(elem, field)
+		if seq == nil || seq.Kind != yaml.SequenceNode {
+			continue
+		}
+		for _, item := range seq.Content {
+			out = append(out, item.Value)
+		}
+	}
+	return out
+}
+
+// ErrCoveredByOppositeMode 是「这条规则写下去也永远不会命中」这一类拒绝。
+//
+// 导出成哨兵而不是让调用方去 strings.Contains 错误文本:MCP 那一侧要按它给出
+// 对得上的处置建议,而按文本认的话,哪天措辞改一个词,建议就悄悄退回一句通用的
+// 废话,两边都不会报错。
+var ErrCoveredByOppositeMode = errors.New("rule is already covered by the opposite mode")
+
+// refuseRulesTheOppositeModeAlreadyCovers 拦下一条**写下去也永远不会命中**的
+// direct 规则。
+//
+// route.Router.Explain 先查 UserProxy 再查 UserDirect,**没有「更具体优先」这回
+// 事**。所以 proxy 里有 `*.example.com` 时,往 direct 加 `a.example.com` 的结果
+// 是:文件变了、CLI 打勾、MCP 回 changed=true,而那条规则一次都不会生效。
+// rulereview 已经能事后认出这个形状(ClassOverriddenByOppositeKind),但那是
+// 体检报告 —— 写入路径明知会造出一条死规则还报成功,是这个仓库明令禁止的那种谎。
+//
+// **为什么这道门没有 --force。** 风险名单那道门可以判错(用户可能真的独占那台
+// 主机),所以它必须留逃生口;这一道判的不是风险,是 Explain 的查找顺序 ——
+// 它不会错,而放行的唯一结果是往配置里种一条死规则。**能判错的门要逃生口,
+// 不能判错的门不要**:给它一个 --force,等于给「明知没有效果」发一张通行证。
+// 出路是真出路:先把那条更宽的 proxy 规则删掉或收窄,消息里直接把命令给出来。
+//
+// **只对 direct 这一侧成立,反过来不是。** proxy 排在前面,所以 direct 有
+// `*.example.com` 时往 proxy 加 `a.example.com` 是一条**正在生效的例外**(把
+// 一小块流量拉回隧道),不是死规则 —— 拦它就是拦掉一个合法而且常用的写法。
+// 同一张表里加一条更窄的也不拦:判定结果与用户要的一致,他只是多写了一行。
+func refuseRulesTheOppositeModeAlreadyCovers(oppositeEntries []string, mode string, adds []RulePattern) error {
+	if mode != "direct" || len(oppositeEntries) == 0 {
+		return nil
+	}
+	for _, p := range adds {
+		rule, ok := coveringRule(oppositeEntries, p)
+		if !ok {
+			continue
+		}
+		return fmt.Errorf("%w: direct rule %q can never take effect because the proxy rule %q already covers it, and bx consults proxy rules before direct ones (there is no most-specific-wins). Remove or narrow that proxy rule first: bx proxy rm %s",
+			ErrCoveredByOppositeMode, p.Text, rule, rule)
+	}
+	return nil
 }

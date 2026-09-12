@@ -37,9 +37,21 @@ func TestDirectRuleRiskSilentOnBrandDomains(t *testing.T) {
 	}
 }
 
+// mustEditRuleList 是测试里的薄壳:editYAMLRuleList 现在会**如实返回错误**
+// (非法写法、或被更宽的对侧规则压住),而这些用例喂的都是合法输入 —— 静默
+// 把错误折成 changed=false 会让它们在判据变严时假绿。
+func mustEditRuleList(t *testing.T, in []byte, field string, add, remove []string) ([]byte, bool) {
+	t.Helper()
+	out, changed, err := editYAMLRuleList(in, field, add, remove)
+	if err != nil {
+		t.Fatalf("editYAMLRuleList(%s, add=%v, remove=%v) 意外报错: %v", field, add, remove, err)
+	}
+	return out, changed
+}
+
 func TestEditYAMLRuleListAddCreatesBlock(t *testing.T) {
 	in := "server: vless://x@h:443?security=reality\nkillswitch: true\n"
-	out, changed := editYAMLRuleList([]byte(in), "direct", []string{"taobao.com"}, nil)
+	out, changed := mustEditRuleList(t, []byte(in), "direct", []string{"taobao.com"}, nil)
 	if !changed {
 		t.Fatal("新增域名应 changed=true")
 	}
@@ -53,7 +65,7 @@ func TestEditYAMLRuleListAddCreatesBlock(t *testing.T) {
 
 func TestEditYAMLRuleListAddIsIdempotent(t *testing.T) {
 	in := "rules:\n  - direct:\n      - taobao.com\n"
-	out, changed := editYAMLRuleList([]byte(in), "direct", []string{"taobao.com"}, nil)
+	out, changed := mustEditRuleList(t, []byte(in), "direct", []string{"taobao.com"}, nil)
 	if changed {
 		t.Fatal("已存在域名再 add 应 changed=false(无改动)")
 	}
@@ -64,7 +76,7 @@ func TestEditYAMLRuleListAddIsIdempotent(t *testing.T) {
 
 func TestEditYAMLRuleListRemove(t *testing.T) {
 	in := "rules:\n  - direct:\n      - taobao.com\n      - jd.com\n"
-	out, changed := editYAMLRuleList([]byte(in), "direct", nil, []string{"taobao.com"})
+	out, changed := mustEditRuleList(t, []byte(in), "direct", nil, []string{"taobao.com"})
 	if !changed {
 		t.Fatal("删除存在的域名应 changed=true")
 	}
@@ -79,7 +91,7 @@ func TestEditYAMLRuleListRemove(t *testing.T) {
 // 回归:域名在 rules[1](多 rule 块布局)时,rm 必须跨所有元素删,否则报删了其实还在直连(泄漏)。
 func TestEditYAMLRuleListRemoveAcrossAllRules(t *testing.T) {
 	in := "rules:\n  - proxy:\n      - ads.cn\n  - direct:\n      - leak.aliyuncs.com\n"
-	out, changed := editYAMLRuleList([]byte(in), "direct", nil, []string{"leak.aliyuncs.com"})
+	out, changed := mustEditRuleList(t, []byte(in), "direct", nil, []string{"leak.aliyuncs.com"})
 	if !changed {
 		t.Fatal("rules[1] 里的域名也应被删到(changed=true)")
 	}
@@ -90,14 +102,14 @@ func TestEditYAMLRuleListRemoveAcrossAllRules(t *testing.T) {
 
 func TestEditYAMLRuleListRemoveAbsentIsNoChange(t *testing.T) {
 	in := "rules:\n  - direct:\n      - taobao.com\n"
-	_, changed := editYAMLRuleList([]byte(in), "direct", nil, []string{"notthere.com"})
+	_, changed := mustEditRuleList(t, []byte(in), "direct", nil, []string{"notthere.com"})
 	if changed {
 		t.Fatal("删不存在的域名应 changed=false(不误报成功)")
 	}
 }
 
 func TestEditYAMLRuleListProxyField(t *testing.T) {
-	out, changed := editYAMLRuleList([]byte("server: x\n"), "proxy", []string{"ads.cn"}, nil)
+	out, changed := mustEditRuleList(t, []byte("server: x\n"), "proxy", []string{"ads.cn"}, nil)
 	if !changed {
 		t.Fatal("proxy 字段 add 应 changed=true")
 	}
@@ -108,7 +120,7 @@ func TestEditYAMLRuleListProxyField(t *testing.T) {
 
 func TestEditYAMLRuleListProxyAddRemovesConflictingDirect(t *testing.T) {
 	in := "rules:\n  - direct:\n      - taobao.com\n      - jd.com\n"
-	out, changed := editYAMLRuleList([]byte(in), "proxy", []string{"taobao.com"}, nil)
+	out, changed := mustEditRuleList(t, []byte(in), "proxy", []string{"taobao.com"}, nil)
 	if !changed {
 		t.Fatal("proxy add 应 changed=true")
 	}
@@ -123,7 +135,7 @@ func TestEditYAMLRuleListProxyAddRemovesConflictingDirect(t *testing.T) {
 
 func TestEditYAMLRuleListDirectAddRemovesConflictingProxyAcrossRules(t *testing.T) {
 	in := "rules:\n  - proxy:\n      - taobao.com\n      - ads.cn\n  - direct:\n      - bilibili.com\n"
-	out, changed := editYAMLRuleList([]byte(in), "direct", []string{"taobao.com"}, nil)
+	out, changed := mustEditRuleList(t, []byte(in), "direct", []string{"taobao.com"}, nil)
 	if !changed {
 		t.Fatal("direct add 应 changed=true")
 	}
@@ -141,7 +153,7 @@ func TestEditYAMLRuleListDirectAddRemovesConflictingProxyAcrossRules(t *testing.
 
 func TestEditYAMLRuleListConflictRemovalDropsEmptyOppositeField(t *testing.T) {
 	in := "rules:\n  - direct:\n      - taobao.com\n  - proxy:\n      - ads.cn\n"
-	out, changed := editYAMLRuleList([]byte(in), "direct", []string{"ads.cn"}, nil)
+	out, changed := mustEditRuleList(t, []byte(in), "direct", []string{"ads.cn"}, nil)
 	if !changed {
 		t.Fatal("direct add 移除唯一 proxy 冲突项应 changed=true")
 	}
@@ -155,7 +167,7 @@ func TestEditYAMLRuleListConflictRemovalDropsEmptyOppositeField(t *testing.T) {
 
 func TestEditYAMLRuleListAddRepairsExistingConflictWhenTargetAlreadyExists(t *testing.T) {
 	in := "rules:\n  - direct:\n      - taobao.com\n  - proxy:\n      - taobao.com\n"
-	out, changed := editYAMLRuleList([]byte(in), "proxy", []string{"taobao.com"}, nil)
+	out, changed := mustEditRuleList(t, []byte(in), "proxy", []string{"taobao.com"}, nil)
 	if !changed {
 		t.Fatal("目标字段已存在但 opposite 有冲突时,add 应修复冲突并 changed=true")
 	}

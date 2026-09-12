@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -400,10 +401,18 @@ func (o *liveOps) ApplyPolicy(in PolicyApplyIn) (PolicyApplyOut, error) {
 	})
 	if err != nil {
 		code := CodePolicyRisk
+		remediation := "add allow_risk only after the user approves that exposure"
 		if !strings.Contains(err.Error(), "allow_risk") {
 			code = CodePolicyInvalid
+			remediation = "use direct or proxy with a non-empty add/remove list of domains, *.domains, IPs or CIDRs"
 		}
-		return PolicyApplyOut{}, ToolError{Code: code, Message: err.Error(), Remediation: "use direct or proxy with a non-empty add/remove list"}
+		// **被对侧更宽的规则盖住是另一回事,处置也不同**:规则本身写得没错,
+		// 挡路的是配置里已有的那一条。给一句「检查你的写法」会把 agent 送去
+		// 改一个没有问题的输入。
+		if errors.Is(err, policy.ErrCoveredByOppositeMode) {
+			remediation = "remove or narrow the covering proxy rule named in the message first; bx has no most-specific-wins, so the direct rule would never fire"
+		}
+		return PolicyApplyOut{}, ToolError{Code: code, Message: err.Error(), Remediation: remediation}
 	}
 	if !changed {
 		return PolicyApplyOut{Changed: false, State: "unchanged"}, nil
