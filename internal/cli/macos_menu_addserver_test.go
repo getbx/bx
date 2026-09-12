@@ -27,11 +27,21 @@ func TestMacMenuAddServerAddsThenSwitchesWithoutPrivilege(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 addServerFromWindow 的函数体")
 	}
-	link := strings.Index(body, "promptForClientLink(")
+	link := strings.Index(body, "promptForServerLinks(")
 	add := strings.Index(body, "GuardianClient().addServer(name:")
 	sw := strings.Index(body, "self.switchServer(name: target")
 	if link < 0 || add < 0 || sw < 0 || link > add || add > sw {
 		t.Fatalf("顺序要是 链接 → add → 用 added 切换(link=%d add=%d switch=%d)", link, add, sw)
+	}
+	// **UDP 那条链接要真的发出去。** `bx server install` 默认就给两条,而此前
+	// 这个表单只有一个框、客户端也从不发这个参数 —— 从菜单加一台
+	// reality+hysteria2 的 VPS 会静默丢掉 QUIC 那半,`bx status` 上看不出来。
+	if !strings.Contains(body, "udp: links.udp") {
+		t.Error("Add 表单收了 UDP 链接却没发出去 —— QUIC 那半被静默丢掉")
+	}
+	// 「留空」在 add 与 replace 上不是同一件事,措辞由纯函数按路给。
+	if !strings.Contains(body, "udpHint: udpFieldHint(replacing: false)") {
+		t.Error("Add 表单没有按自己那条路取 UDP 提示 —— 会告诉用户留空是「保持不变」")
 	}
 	// **target 只许从应答里的 added 来。** 它存在的唯一理由是旧 Guardian 不发那个
 	// 字段(那时退回这次请求自己发出去的名字),不是「客户端再推一遍链接」——

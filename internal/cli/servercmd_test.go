@@ -8,6 +8,7 @@ import (
 
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/supervisor"
+	"github.com/urfave/cli/v2"
 )
 
 // 清单要一眼看出**哪台在用**,并且带上出口主机 —— 名字可以是任意的,
@@ -339,5 +340,41 @@ func TestServerListViewCarriesTheRunningServerFromGuardian(t *testing.T) {
 	}
 	if view.Current != "us" {
 		t.Fatalf("Current = %q, want us —— 两者并列,绝不合并", view.Current)
+	}
+}
+
+// **这条「怎么加第二台」的提示必须是一条真跑得起来的命令。**
+//
+// 上一版写的是 `bx setup --name <名字> '<链接>'`,而 `bx setup` 根本没有
+// `--name` 这个 flag —— urfave/cli 遇到未知 flag 直接报错,所以窗口和终端给出
+// 的唯一一条出路**必定失败**。同一句死提示在服务器窗口里也有一份(那一份已经
+// 整个删掉,窗口里有按钮)。
+//
+// 判据不是「文案里没有那个串」,那只钉住这一次的拼法;判据是**它点名的东西
+// 在 CLI 里真的存在** —— `bx server deploy` 得是个命令,而它得真有 `--name`。
+func TestServerListEmptyHintNamesACommandThatExists(t *testing.T) {
+	hint := renderServerList(serverListView{})
+	if strings.Contains(hint, "bx setup --name") {
+		t.Error("提示又指向 `bx setup --name` —— bx setup 没有这个 flag,那条命令必定失败")
+	}
+	if !strings.Contains(hint, "bx server deploy") {
+		t.Fatalf("提示没有点名任何一条真能往 servers: 里写一台的路:%s", hint)
+	}
+	server := findAppCommand(New(), "server")
+	if server == nil {
+		t.Fatal("CLI 里没有 server 命令 —— 守卫已经失效,先修守卫")
+	}
+	var deploy *cli.Command
+	for _, sub := range server.Subcommands {
+		if sub.Name == "deploy" {
+			deploy = sub
+		}
+	}
+	if deploy == nil {
+		t.Fatal("提示点名了 `bx server deploy`,而 CLI 里没有这条子命令")
+	}
+	if !commandHasFlag(deploy, "name") {
+		t.Error("提示写了 `--name`,而 `bx server deploy` 没有这个 flag —— " +
+			"照着敲会被 urfave/cli 直接拒掉")
 	}
 }

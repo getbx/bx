@@ -1,16 +1,20 @@
 import AppKit
 
-/// 「Servers」窗口 —— 有哪几台、现在在哪台、换一台、以及「现在从哪出去」。
+/// 「Servers」窗口 —— 这条隧道现在怎么样,以及不好的话我能换到哪儿。
 ///
 /// **为什么是窗口而不是子菜单**(与 RulesWindow 同一个理由):菜单打开时每 2 秒
 /// 就地重填一次,进子菜单再移到某一项通常超过 2 秒,那一刻 item 已经被拆掉重填 ——
 /// 点了没反应。换服务器这种要停留、要确认的交互不该塞进一个会自我重建的菜单。
 ///
-/// **这个文件只做摆放。** 哪些行、副标题写什么、哪一行能点,全在 ServersModel 的
-/// 纯函数里(AppKit 这一半在 CI 里编不了,判断放这儿等于没测)。
+/// **这个文件只做摆放。** 哪些行、每一行写什么、哪一行能点、哪句话该说,全在
+/// `ServersModel` 的纯函数里(AppKit 这一半在 CI 里编不了,判断放这儿等于没测)。
+/// 它连 `ServerList` 与 `CoreRuntime` 都不自己拆:拿到那两样之后立刻交给
+/// `currentServerPanel` / `otherServerRows` / `serverListEmptyReason`,
+/// **一次 `reachable` 都不自己判**(那份判据只有 `answeringCore` 一份)。
 final class ServersWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var stack: NSStackView?
+    private var scroll: NSScrollView?
 
     /// 用户选了另一台。参数是名字与出口主机(后者只用来写确认文案)。
     var onSwitch: ((String, String) -> Void)?
@@ -22,11 +26,25 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     var onDeploy: (() -> Void)?
     /// 用户点了「Add Server…」—— 贴一条链接加进清单并切换过去(spec §4)。
     var onAddServer: (() -> Void)?
+    /// `⋯` 里的删除。参数是名字与出口主机(后者只用来写确认文案)。
+    var onRemove: ((String, String) -> Void)?
+    /// `⋯` 里的换链接。
+    var onReplaceLink: ((String) -> Void)?
 
     /// 正在测。按钮禁掉,免得连点几次发出几串探测。
     var probing = false
 
+    private var list = ServerList()
+    private var core: CoreRuntime?
     private var probe: ExitIPProbe = .unknown
+    /// 正在切到哪一台。**非 nil ⇒ 每个 `Use` 都禁掉**,而那一行原地说
+    /// 「Switching…」—— 此前这个标志是 `main.swift` 的私有量,于是点了确认之后
+    /// 屏幕上二十几秒什么都不发生,再点一次连对话框都不弹(被在飞守卫挡掉)。
+    private var switchingTo: String?
+    /// 这一版 Guardian 认不认得 remove / replace。**认不得就一个动词都不画**
+    /// (`serverEditingAvailable`,判据在纯模型里):对着只声明 `servers` 的
+    /// 那一版发 remove,它会**换到那一台**去。
+    private var canEdit = false
 
     /// 窗口是否开着。**供环境刷新路径判断「有没有人在看」**——rules/servers 改
     /// 按需拉之后,这是唯一能回答「要不要为这个窗口拉一次新数据」的信号:窗口关着
@@ -34,13 +52,16 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     /// 按需,是它的本意。
     var isVisible: Bool { window?.isVisible ?? false }
 
-    /// `emptyReason` 是**清单为空时说哪一句**(`serverListEmptyReason` 的产物)。
-    /// 做成形参而不是一个存储属性:它必须与 rows 同源同刻,而一个「记得设」的
-    /// 属性迟早会陈旧,编译器也不会提醒谁忘了。
-    func show(rows: [ServerRow], emptyReason: String?, probe: ExitIPProbe) {
+    /// **参数而不是存储属性,理由与上一版那个 `emptyReason` 逐字相同**:它们
+    /// 必须与这一份 `list` 同源同刻,而一个「记得设」的属性迟早会陈旧,编译器
+    /// 也不会提醒谁忘了。`core` 尤其如此 —— 漏传它不会有任何编译错误(它是
+    /// 可空的),而后果是当前那一块永远显示「Core not answering」,界面看起来
+    /// 完全正常。
+    func show(list: ServerList, core: CoreRuntime?, probe: ExitIPProbe,
+              switchingTo: String?, canEdit: Bool) {
         let window = ensureWindow()
-        self.probe = probe
-        render(rows: rows, emptyReason: emptyReason)
+        adopt(list: list, core: core, probe: probe, switchingTo: switchingTo, canEdit: canEdit)
+        render(preservingScroll: false)
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
         // 用户以为"点了没反应"。
         NSApp.activate(ignoringOtherApps: true)
@@ -49,17 +70,30 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
 
     /// 数据更新时就地重画。**窗口不存在就什么都不做** —— 不要因为后台刷新
     /// 把一个用户没打开的窗口弹出来。
-    func refreshIfVisible(rows: [ServerRow], emptyReason: String?, probe: ExitIPProbe) {
+    func refreshIfVisible(list: ServerList, core: CoreRuntime?, probe: ExitIPProbe,
+                          switchingTo: String?, canEdit: Bool) {
         guard let window, window.isVisible else { return }
+        adopt(list: list, core: core, probe: probe, switchingTo: switchingTo, canEdit: canEdit)
+        render(preservingScroll: true)
+    }
+
+    private func adopt(list: ServerList, core: CoreRuntime?, probe: ExitIPProbe,
+                       switchingTo: String?, canEdit: Bool) {
+        self.list = list
+        self.core = core
         self.probe = probe
-        render(rows: rows, emptyReason: emptyReason)
+        self.switchingTo = switchingTo
+        self.canEdit = canEdit
     }
 
     private func ensureWindow() -> NSWindow {
         if let window { return window }
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 300),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
+            // **`.resizable` 与那几格的 toolTip 是同一件事的两半**(与 Rules /
+            // Traffic by App 同一条):当前那一块会因为传输名字长而截断,而这个
+            // 窗口不横向滚动 —— 少了把窗口拉宽这条出路,被截掉的那半永久不可见。
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -101,24 +135,47 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
             clip.widthAnchor.constraint(equalTo: scroll.widthAnchor),
         ])
         self.stack = stack
+        self.scroll = scroll
         self.window = window
         return window
     }
 
-    /// **一台一行,两个按钮,没有别的。**
+    /// **当前那台一整块,其余是候选**(spec §4)。
     ///
-    /// 与 Routing Rules 同一次清理:上一版有标题行(「Your traffic leaves from」——
-    /// 一个叫 Servers 的窗口里说这句是废话)、每台占两行、`Test All` 下面挂着
-    /// 一整段解释(那是设计笔记不是界面文案)、还有一条分隔线加一行常驻的
-    /// 「Exit IP: not checked」。
-    ///
-    /// 「测出口会走隧道外面」这条**信息本身是要紧的**(它关系到隐私),但它属于
-    /// 按钮的 tooltip,不属于一段常驻正文 —— 常驻的东西会被读一次然后永远忽略。
-    private func render(rows: [ServerRow], emptyReason: String?) {
+    /// 上一版是一份平列的清单:一行一台、一句灰色 detail、一个 Use。它答得出
+    /// 「有哪几台」,答不出用户打开这扇窗时脑子里的第一个问题 ——「我现在这条
+    /// 隧道怎么样」。而答案早就每 2 秒落进菜单进程了(`/v1/status` 的
+    /// `CoreRuntime`:传输、实时延迟、隧道健不健康、UDP 走哪儿),只是这扇窗的
+    /// 管道一样都不带。**把版面给正在起作用的那一个**,与 Rules 窗口「有问题的
+    /// 排最前、健康的一个字不说」是同一条判断的另一面。
+    private func render(preservingScroll: Bool) {
         guard let stack else { return }
+        // 滚动位置在拆视图之前取。**AppKit 的重建会把它清零**,而这个窗口跟着
+        // 环境刷新重建 —— 不保住的话用户每翻到一半就被拽回顶部。
+        let offset = preservingScroll ? scroll?.contentView.bounds.origin : nil
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()
+        }
+
+        // 配置路径摆右上角(与 Rules 窗口同一处)。它会截断,而这个窗口不横向
+        // 滚动 —— toolTip 是那条出路。
+        if !list.configPath.isEmpty {
+            stack.addArrangedSubview(configPathRow(list.configPath))
+        }
+
+        if let panel = currentServerPanel(list: list, core: core) {
+            stack.addArrangedSubview(sectionTitle("Currently using"))
+            stack.addArrangedSubview(currentPanelView(panel))
+            stack.addArrangedSubview(gap())
+        }
+
+        let rows = otherServerRows(list: list, core: core)
+        if !rows.isEmpty {
+            stack.addArrangedSubview(sectionTitle("Other servers"))
+            for row in rows {
+                stack.addArrangedSubview(serverView(row))
+            }
         }
 
         // **空清单不是死路,而这里此前就是一条死路。**
@@ -132,23 +189,41 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // 措辞也不再由行数决定,而由**配置里到底有没有 servers 清单**决定
         // (`serverListEmptyReason`):`bx setup` 从不写那个清单,所以对多数用户
         // 说「还没有服务器」是一句当场就能被证伪的假话 —— bx 此刻正跑着一台。
-        if rows.isEmpty {
-            let label = NSTextField(wrappingLabelWithString:
-                emptyReason ?? "No servers to switch to.")
-            label.preferredMaxLayoutWidth = 380
-            stack.addArrangedSubview(label)
-            stack.addArrangedSubview(gap())
+        //
+        // **两句空状态的条件不是同一个**,所以并排放两条 if 而不是 if/else:
+        // 清单里只有一台时 `serverListEmptyReason` 返回 nil,而候选行是空的,
+        // 那一档由 `otherServersEmptyNote` 说。
+        if let reason = serverListEmptyReason(list: list) {
+            stack.addArrangedSubview(wrapped(reason))
         }
-
-        for row in rows {
-            stack.addArrangedSubview(serverView(row))
+        if let note = otherServersEmptyNote(list: list, core: core) {
+            stack.addArrangedSubview(wrapped(note))
         }
 
         stack.addArrangedSubview(gap())
+        stack.addArrangedSubview(buttonBar())
+
+        // **只在有话说时才有这一行。** 「not checked」是常态不是信息。
+        if probe != .unknown {
+            stack.addArrangedSubview(hint(exitIPLine(probe)))
+        }
+
+        if let offset, let scroll {
+            // **先布局再滚。** 少了这一步滚的是按旧内容算出来的坐标,于是
+            // 表变长/变短的那一拍位置照样会跳(Diagnostics 那两页同款)。
+            scroll.documentView?.layoutSubtreeIfNeeded()
+            scroll.contentView.scroll(to: offset)
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+    }
+
+    /// 底部那条按钮带。**它在任何一支之外无条件画** —— 见 render 里那段注释:
+    /// 把它挪进某个分支里,就是刚修掉的那个 bug 的镜像。
+    private func buttonBar() -> NSView {
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 8
-        let test = NSButton(title: probing ? "Testing…" : "Test", target: self, action: #selector(probeAll))
+        let test = NSButton(title: probing ? "Testing…" : "Test All", target: self, action: #selector(probeAll))
         test.bezelStyle = .rounded
         test.controlSize = .small
         test.isEnabled = !probing
@@ -175,12 +250,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         add.controlSize = .small
         add.toolTip = "Paste a bx link to add a server and switch to it. The previous server stays in the list."
         buttons.addArrangedSubview(add)
-        stack.addArrangedSubview(buttons)
 
-        // **只在有话说时才有这一行。** 「not checked」是常态不是信息。
-        if probe != .unknown {
-            stack.addArrangedSubview(hint(exitIPLine(probe)))
-        }
+        return buttons
     }
 
     private func gap() -> NSView {
@@ -197,42 +268,222 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         return label
     }
 
-    /// 一台一行:名字 + 出口 + 指标,右边是 Use。
+    private func wrapped(_ text: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.preferredMaxLayoutWidth = 460
+        return label
+    }
+
+    private func sectionTitle(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
+    private func configPathRow(_ path: String) -> NSView {
+        let box = NSStackView()
+        box.orientation = .horizontal
+        box.spacing = 8
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        box.addArrangedSubview(spacer)
+        let label = hint(path)
+        label.lineBreakMode = .byTruncatingHead
+        // 截断了还看得全:这个窗口不横向滚动,少了 toolTip 那半路径就永久不可见。
+        label.toolTip = path
+        label.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        box.addArrangedSubview(label)
+        box.setHuggingPriority(.defaultLow, for: .horizontal)
+        return box
+    }
+
+    /// 当前那台的一整块:身份来自配置,纵深来自 Core。
     ///
-    /// 上一版把出口与指标缩进到第二行 —— 与 Routing Rules 一样的毛病,
-    /// 一屏里全是参差不齐的留白。
+    /// **哪几行有值全由 `CurrentServerPanel` 说了算。** Core 不答话时它把那几个
+    /// 字段一律留成 nil 并给一句 `coreSilentNote` —— 于是这里少画几行,而不是
+    /// 画出一行撒谎的 `0 ms`。
+    private func currentPanelView(_ panel: CurrentServerPanel) -> NSView {
+        let box = NSStackView()
+        box.orientation = .vertical
+        box.alignment = .leading
+        box.spacing = 4
+
+        let head = NSStackView()
+        head.orientation = .horizontal
+        head.alignment = .firstBaseline
+        head.spacing = 10
+        // **`●` 只在 Core 确认过的时候才加粗打点。** 热切换是先写配置再切,
+        // 所以切换失败的那一刻配置已经是新那台了 —— 此时给它打点就是断言用户
+        // 的流量从一台其实没在用的服务器出去。
+        let dot = panel.runningConfirmed ? "● " : "○ "
+        let title = NSTextField(labelWithString: dot + panel.name)
+        title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        head.addArrangedSubview(title)
+        let endpoint = hint(panel.endpoint)
+        endpoint.lineBreakMode = .byTruncatingTail
+        endpoint.toolTip = panel.endpoint
+        endpoint.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        head.addArrangedSubview(endpoint)
+        head.setHuggingPriority(.defaultLow, for: .horizontal)
+        if canEdit {
+            head.addArrangedSubview(moreButton(name: panel.name, host: panel.host, isCurrent: true))
+        }
+        box.addArrangedSubview(head)
+
+        if let note = panel.coreSilentNote {
+            let label = hint(note)
+            label.textColor = .secondaryLabelColor
+            box.addArrangedSubview(label)
+        }
+        if let line = panel.statusLine {
+            let label = hint(line)
+            label.lineBreakMode = .byTruncatingTail
+            label.toolTip = line
+            if panel.statusLineIsBad { label.textColor = .systemRed }
+            box.addArrangedSubview(label)
+        }
+        if let line = panel.udpLine {
+            let label = hint(line)
+            label.lineBreakMode = .byTruncatingTail
+            label.toolTip = line
+            box.addArrangedSubview(label)
+        }
+        if let line = panel.throughput {
+            box.addArrangedSubview(hint(line))
+        }
+        if let note = panel.runningNote {
+            // **这一句是分歧,不是背景信息。** 配置指着这一台而 Core 在跑别的
+            // (或者问不出来),用户真正的出口就不在这一块里 —— 画成灰色会让它
+            // 混进上面那几行观测。
+            let label = hint(note)
+            label.textColor = .systemOrange
+            label.lineBreakMode = .byWordWrapping
+            label.preferredMaxLayoutWidth = 460
+            box.addArrangedSubview(label)
+        }
+        return box
+    }
+
+    /// 一台候选一行:名字、`host:port`、探测呈现,右边是 Use 与 `⋯`。
     private func serverView(_ row: ServerRow) -> NSView {
         let box = NSStackView()
         box.orientation = .horizontal
         box.alignment = .firstBaseline
         box.spacing = 10
 
-        let title = NSTextField(labelWithString: (row.isCurrent ? "● " : "   ") + row.name)
-        if row.isCurrent {
-            title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-        }
+        let title = NSTextField(labelWithString: row.name)
         box.addArrangedSubview(title)
 
-        let detail = hint(row.detail)
-        // **判据在纯模型里**(ProbePresentation.isFailure):只有「测过而且没通」
-        // 才画红。窗口自己看 `reachable` 就会把「没测成」也画成红的 —— 那等于把
-        // 一整排好服务器说成坏的,而这一半代码一行 Swift 测试都盖不到。
-        if row.probe.isFailure {
-            detail.textColor = .systemRed
+        let endpoint = hint(row.endpoint)
+        endpoint.lineBreakMode = .byTruncatingTail
+        endpoint.toolTip = row.endpoint
+        box.addArrangedSubview(endpoint)
+
+        if let note = row.note {
+            let detail = hint(note)
+            // **判据在纯模型里**(ProbePresentation.isFailure):只有「测过而且没通」
+            // 才画红。窗口自己看 `reachable` 就会把「没测成」也画成红的 —— 那等于把
+            // 一整排好服务器说成坏的,而这一半代码一行 Swift 测试都盖不到。
+            if row.probe.isFailure {
+                detail.textColor = .systemRed
+            }
+            detail.lineBreakMode = .byTruncatingTail
+            detail.toolTip = note
+            detail.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            box.addArrangedSubview(detail)
         }
-        detail.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        box.addArrangedSubview(detail)
+        // 热切失败之后,用户真正的出口就在这一行 —— 不点名的话他会盯着上面
+        // 那块加粗的当前那台找原因。
+        if let running = row.runningNote {
+            let label = hint(running)
+            label.textColor = .systemOrange
+            box.addArrangedSubview(label)
+        }
+        box.setHuggingPriority(.defaultLow, for: .horizontal)
 
         if row.isSelectable {
-            let use = NSButton(title: "Use", target: self, action: #selector(switchTo(_:)))
+            // **切换中要看得见。** 此前 switchInFlight 是 main.swift 的私有量,
+            // 于是点了确认之后二十几秒屏幕上什么都不发生,再点一次连对话框都不弹。
+            let switching = switchingTo != nil
+            let mine = switchingTo == row.name
+            let use = NSButton(title: mine ? "Switching…" : "Use",
+                               target: self, action: #selector(switchTo(_:)))
             use.bezelStyle = .rounded
             use.controlSize = .small
             use.identifier = NSUserInterfaceItemIdentifier(row.name)
             use.toolTip = row.entry.host
+            use.isEnabled = !switching
             use.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             box.addArrangedSubview(use)
         }
+        if canEdit {
+            box.addArrangedSubview(moreButton(name: row.name, host: row.entry.host, isCurrent: false))
+        }
         return box
+    }
+
+    /// 三个动词那个 `⋯`。
+    ///
+    /// **只有 `serverEditingAvailable` 说这一版认得 remove / replace 时才画**
+    /// (`canEdit`,判据在纯模型里):只声明 `servers` 的那一版收到 remove 会
+    /// **换到那一台**去,而那正是这个设计唯一明令禁止的事。
+    private func moreButton(name: String, host: String, isCurrent: Bool) -> NSButton {
+        let more = NSButton(title: "⋯", target: self, action: #selector(showRowMenu(_:)))
+        more.bezelStyle = .rounded
+        more.controlSize = .small
+        // `name|host|current` 塞进 identifier:回调要的就是这三样,而从界面上的
+        // 文字反推它们会在名字里含分隔符的时候悄悄取错一台。
+        more.identifier = NSUserInterfaceItemIdentifier(rowMenuKey(name: name, host: host, isCurrent: isCurrent))
+        more.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        more.toolTip = "More actions for \(name)"
+        return more
+    }
+
+    private func rowMenuKey(name: String, host: String, isCurrent: Bool) -> String {
+        "\(isCurrent ? "1" : "0")\u{1F}\(host)\u{1F}\(name)"
+    }
+
+    private func parseRowMenuKey(_ raw: String) -> (name: String, host: String, isCurrent: Bool)? {
+        // 名字在最后一段:主机与标志位都不含分隔符,而名字是用户起的。
+        let parts = raw.components(separatedBy: "\u{1F}")
+        guard parts.count >= 3 else { return nil }
+        return (parts[2...].joined(separator: "\u{1F}"), parts[1], parts[0] == "1")
+    }
+
+    @objc private func showRowMenu(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue, let row = parseRowMenuKey(raw) else { return }
+        let menu = NSMenu()
+        let replace = NSMenuItem(title: "Replace Link…", action: #selector(replaceLink(_:)), keyEquivalent: "")
+        replace.target = self
+        replace.representedObject = row.name
+        menu.addItem(replace)
+
+        let remove = NSMenuItem(title: "Remove…", action: #selector(removeServer(_:)), keyEquivalent: "")
+        remove.target = self
+        remove.representedObject = raw
+        // **当前那台的删除置灰。** 删掉正在用的那一台会让下一次拨号无处可去,
+        // 服务端也拦(409 servers_remove_current)—— 灰掉是为了让用户在点之前
+        // 就知道,而不是点完读一句拒绝。
+        remove.isEnabled = !row.isCurrent
+        remove.toolTip = row.isCurrent
+            ? "Switch to another server first, then you can remove this one."
+            : nil
+        menu.addItem(remove)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+
+    @objc private func replaceLink(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        onReplaceLink?(name)
+    }
+
+    @objc private func removeServer(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let row = parseRowMenuKey(raw) else { return }
+        // 当前那台**在这里也拦一道**(纵深防御):菜单项已经置灰,而一个只靠
+        // `isEnabled` 的保护会在下一次有人从别处触发这个 action 时失效。
+        guard !row.isCurrent else { return }
+        onRemove?(row.name, row.host)
     }
 
     @objc private func switchTo(_ sender: NSButton) {
@@ -255,9 +506,6 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     @objc private func probeAll() {
         onProbe?()
     }
-
-
-
 }
 
 /// 原点在左上的容器。见 ensureWindow 里那段注释。

@@ -891,9 +891,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 出口 IP 探测的当前状态。**默认是 .unknown(「没查过」),不是某个地址** ——
     /// 与这个仓库里 Tristate 同一条纪律。
     private var exitIPProbe: ExitIPProbe = .unknown
-    /// 有一次换服务器正在飞。见 confirmAndSwitchServer。
-    private var switchInFlight = false
-    /// 有一次按需拉规则/服务器正在飞。与 `probing`/`switchInFlight` 同一个模式。
+    /// **正在切到哪一台**,nil = 没有切换在飞。见 confirmAndSwitchServer。
+    ///
+    /// 它此前是个裸 Bool,而且只有 `main.swift` 看得见 —— 于是用户点完确认之后
+    /// 屏幕上二十几秒什么都不发生,再点一次连对话框都不弹(被在飞守卫挡掉,
+    /// 而那个守卫本身是对的)。存名字而不是 Bool,是为了让窗口能在**那一行**
+    /// 上说「Switching…」;**只有这一个状态,没有第二个 Bool** —— 两个要
+    /// 「记得一起设」的变量迟早会漂开,而漂开的后果是界面永远停在切换中,
+    /// 或者永远不显示切换中。
+    private var switchingTo: String?
+    /// 有一次按需拉规则/服务器正在飞。与 `probing`/`switchingTo` 同一个模式。
     ///
     /// **服务器这边不是可选的**:`fetchServersOnDemand` 现在不止由菜单点击触发
     /// (`forceShow: true`),服务器窗口开着时每一次 `applyRefresh` 也会调它一次
@@ -1123,8 +1130,36 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onAddServer = { [weak self] in
             self?.addServerFromWindow()
         }
+        controller.onRemove = { [weak self] name, host in
+            self?.confirmAndRemoveServer(name: name, host: host)
+        }
+        controller.onReplaceLink = { [weak self] name in
+            self?.replaceServerLinkFromWindow(name: name)
+        }
         return controller
     }()
+
+    /// **服务器窗口唯一的渲染入口。**
+    ///
+    /// 六个渲染点此前各自拼一遍 `otherServerRows(list:core:)` +
+    /// `serverListEmptyReason(list:)`,而漏掉 `core:` 那一半**不会有任何编译
+    /// 错误**(它是可空的),后果只是当前那一块永远说「Core not answering」——
+    /// 界面看起来完全正常。规则窗口那次就是漏了一个渲染点。收成一个漏斗之后,
+    /// 「每个渲染点都带上了实时数据」这件事由构造保证,不由记性保证。
+    private func presentServers(_ list: ServerList, forceShow: Bool) {
+        let core = maintenanceReport?.core
+        // 能力清单取自 maintenanceReport(上一次完整的 /v1/status),与
+        // 「Servers…」那个菜单项同一份数据。**判据是 servers_edit,不是
+        // servers** —— 见 serverEditingAvailable。
+        let canEdit = serverEditingAvailable(capabilities: maintenanceReport?.capabilities)
+        if forceShow {
+            serversWindow.show(list: list, core: core, probe: exitIPProbe,
+                               switchingTo: switchingTo, canEdit: canEdit)
+        } else {
+            serversWindow.refreshIfVisible(list: list, core: core, probe: exitIPProbe,
+                                           switchingTo: switchingTo, canEdit: canEdit)
+        }
+    }
 
     /// 逐台量「从这台 Mac 直连过去多远」。
     ///
@@ -1139,10 +1174,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func probeServers() {
         guard !serversWindow.probing else { return }
         serversWindow.probing = true
-        serversWindow.refreshIfVisible(
-            rows: otherServerRows(list: lastServers ?? ServerList(), core: maintenanceReport?.core),
-            emptyReason: serverListEmptyReason(list: lastServers ?? ServerList()),
-            probe: exitIPProbe)
+        presentServers(lastServers ?? ServerList(), forceShow: false)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try GuardianClient().probeServers() }
             DispatchQueue.main.async {
@@ -1154,19 +1186,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // 不必自己把结论并回去(推演出来的状态与真实状态漂开,
                     // 正是这个仓库反复栽的形状)。
                     self.lastServers = list
-                    self.serversWindow.refreshIfVisible(
-                        rows: otherServerRows(list: list, core: self.maintenanceReport?.core),
-                        emptyReason: serverListEmptyReason(list: list),
-                        probe: self.exitIPProbe)
+                    self.presentServers(list, forceShow: false)
                 case .failure(let error):
                     // **测不成不许把服务器画成红的。** 保持上一轮的清单原样,
                     // 只说这次没测成 —— 把「没问出来」画成「不可达」,等于把
                     // 一台好服务器说成坏的。
-                    self.serversWindow.refreshIfVisible(
-                        rows: otherServerRows(list: self.lastServers ?? ServerList(),
-                                              core: self.maintenanceReport?.core),
-                        emptyReason: serverListEmptyReason(list: self.lastServers ?? ServerList()),
-                        probe: self.exitIPProbe)
+                    self.presentServers(self.lastServers ?? ServerList(), forceShow: false)
                     let alert = NSAlert()
                     alert.messageText = "Could not test the servers"
                     alert.informativeText = "\(error.localizedDescription)\n\n"
@@ -1480,17 +1505,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         error: fetchError)
                     return
                 }
-                if forceShow {
-                    self.serversWindow.show(
-                        rows: otherServerRows(list: servers, core: self.maintenanceReport?.core),
-                        emptyReason: serverListEmptyReason(list: servers),
-                        probe: self.exitIPProbe)
-                } else {
-                    self.serversWindow.refreshIfVisible(
-                        rows: otherServerRows(list: servers, core: self.maintenanceReport?.core),
-                        emptyReason: serverListEmptyReason(list: servers),
-                        probe: self.exitIPProbe)
-                }
+                self.presentServers(servers, forceShow: forceShow)
             }
         }
     }
@@ -1503,8 +1518,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func confirmAndSwitchServer(name: String, host: String) {
         // **一次只许有一次切换在飞。** 服务端也会拒(409 servers_switch_busy),
         // 这里挡一道只是为了不让用户撞上一个他看不懂的失败:窗口在那二十几秒里
-        // 一直开着,再点一下是很自然的动作。
-        guard !switchInFlight else { return }
+        // 一直开着,再点一下是很自然的动作。**而窗口如今也会说出来** ——
+        // 那一行写着 Switching…、每个 Use 都灰着,所以这道守卫不再表现为
+        // 「点了没反应」。
+        guard switchingTo == nil else { return }
         let alert = NSAlert()
         alert.messageText = "Switch server?"
         alert.informativeText = serverSwitchConfirmMessage(name: name, host: host)
@@ -1533,15 +1550,18 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 前一种,于是 `confirmAndSwitchServer` 那边照着它把 nil 读成「用户已经看到
     /// 原因了」而什么都不做 —— 撞上在飞守卫时就是点了没反应。
     private func switchServer(name: String, completion: ((ServerSwitchResult?) -> Void)? = nil) {
-        guard !switchInFlight else { completion?(nil); return }
+        guard switchingTo == nil else { completion?(nil); return }
         // 换过去之后旧的探测结果就作废了 —— 留着它会让用户读到上一台的出口。
         exitIPProbe = .unknown
-        switchInFlight = true
+        switchingTo = name
+        // **立刻重画一次。** 这一整条改动的理由就在这里:此前窗口拿不到这个
+        // 状态,于是确认之后二十几秒屏幕上什么都不发生。
+        presentServers(lastServers ?? ServerList(), forceShow: false)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try GuardianClient().switchServer(name: name) }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.switchInFlight = false
+                self.switchingTo = nil
                 switch result {
                 case .success(let outcome):
                     completion?(outcome)
@@ -1559,14 +1579,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 应答里的 added 热切换 → 一句结果。**全程不提权、不开终端**:两步都是 owner 门
     /// 的 Guardian 端点(spec §4)。旧的那台留在清单里,随时能 Use 回去。
     private func addServerFromWindow() {
-        guard let link = promptForClientLink(
+        guard let links = promptForServerLinks(
             title: "Add Server",
             hint: "Paste the bx link for the new server. It will be added to your list and used right away.",
-            confirmTitle: "Add and Switch"
+            confirmTitle: "Add and Switch",
+            udpHint: udpFieldHint(replacing: false)
         ) else { return }
         let name = promptForServerName()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result { try GuardianClient().addServer(name: name, link: link) }
+            let result = Result {
+                try GuardianClient().addServer(name: name, link: links.link, udp: links.udp)
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
@@ -1607,6 +1630,169 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// `⋯` 里的删除。**先弹确认,而这与规则窗口刻意相反。**
+    ///
+    /// 规则删除不弹确认、只留 Undo(为十一条冗余点十一次确认是在惩罚正确的
+    /// 行为);这里两条理由都不成立:链接是凭据、`/v1/servers` 刻意从不发它,
+    /// 所以菜单**在构造上做不到 Undo** —— 一个撤不回的 Undo 比没有 Undo 更糟;
+    /// 而服务器很少、删除很罕见,不存在「要点十一次」那种惩罚(spec §7.1)。
+    ///
+    /// 文案由 `serverRemoveConfirmMessage` 给(它要说清链接会跟着没)。
+    private func confirmAndRemoveServer(name: String, host: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Remove server?"
+        alert.informativeText = serverRemoveConfirmMessage(name: name, host: host)
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try GuardianClient().removeServer(name: name) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let list):
+                    // 服务端返回改动**之后**的完整清单,界面据此重画 —— 不自己
+                    // 从旧清单里减一行(推演出来的状态与盘上真实的状态漂开,
+                    // 正是这个仓库反复栽的形状)。
+                    self.lastServers = list
+                    self.presentServers(list, forceShow: false)
+                case .failure(let error):
+                    self.showServerEditFailure(title: "Could not remove that server", error: error)
+                }
+            }
+        }
+    }
+
+    /// `⋯` 里的换链接:凭据轮换,或者 VPS 重建换了地址(spec §7.2)。
+    ///
+    /// **它不动出口。** 换的是当前那台时,配置改了而跑着的隧道还连着旧地址 ——
+    /// 如实说「已写入,重连后生效」并给一条现在就重连的路,**但绝不替他重连**
+    /// (与规则热生效那条收尾同一条:重连会断掉正在跑的连接)。
+    private func replaceServerLinkFromWindow(name: String) {
+        guard let links = promptForServerLinks(
+            title: "Replace Link",
+            hint: "Paste the new bx link for \(name). Nothing else about this server changes, "
+                + "and your exit stays where it is.",
+            confirmTitle: "Replace",
+            udpHint: udpFieldHint(replacing: true)
+        ) else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result {
+                try GuardianClient().replaceServerLink(name: name, link: links.link, udp: links.udp)
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let list):
+                    self.lastServers = list
+                    self.presentServers(list, forceShow: false)
+                    // **「是不是当前那台」取自服务端刚返回的这份清单**,不是窗口
+                    // 传来的一个可能已经陈旧的标志:replace 不动 current,所以
+                    // 这份应答就是此刻的真相。
+                    let isCurrent = list.servers.contains { $0.current && $0.name == name }
+                    self.followUpAfterLinkReplaced(replaceLinkFollowUp(name: name, isCurrent: isCurrent))
+                case .failure(let error):
+                    self.showServerEditFailure(title: "Could not replace that link", error: error)
+                }
+            }
+        }
+    }
+
+    /// 换完链接之后那一句,以及给不给「现在就重连」。**判据在纯函数里**
+    /// (`replaceLinkFollowUp`),这里只摆。
+    private func followUpAfterLinkReplaced(_ follow: ReplaceLinkFollowUp) {
+        let alert = NSAlert()
+        alert.messageText = "Link replaced"
+        alert.informativeText = follow.message
+        guard follow.offersReconnect else {
+            alert.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+            return
+        }
+        alert.addButton(withTitle: "Reconnect Now")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        reconnectBx()
+    }
+
+    /// remove / replace 的失败漏斗。**认得出的码给一句用户做得了的话,认不出的
+    /// 退回通用漏斗** —— 绝不编一句像模像样的解释(与 addServerFailureMessage
+    /// 同一条不对称)。
+    private func showServerEditFailure(title: String, error: Error) {
+        if case GuardianClientError.status(let status, let code) = error,
+            let sentence = serverEditFailureMessage(code: code, status: status)
+        {
+            showGuardianFailure(title: title, message: sentence, error: error)
+            return
+        }
+        showGuardianFailure(title: title, error: error)
+    }
+
+    /// 一条主链接 + 一条**可选**的 UDP 链接。
+    ///
+    /// UDP 那个框不是锦上添花:`bx server install` 默认就给两条链接,而此前这个
+    /// 表单只有一个框 —— 从菜单加一台 reality+hysteria2 的 VPS 会**静默丢掉
+    /// QUIC 那半**,而界面上什么都看不出来。
+    ///
+    /// 「留空」是什么意思由 `udpFieldHint(replacing:)` 说,两条路不一样:add 是
+    /// 「这台没有 UDP 链接」,replace 是「保持它原来那条」—— 菜单今天清不掉一条
+    /// UDP 链接,把它写成「留空 = 删掉」就是一句后果静默的假话。
+    private func promptForServerLinks(
+        title: String, hint: String, confirmTitle: String, udpHint: String
+    ) -> (link: String, udp: String)? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = hint
+        alert.addButton(withTitle: confirmTitle)
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
+        field.placeholderString = "bx://..."
+        // **预填剪贴板。** 用户十有八九刚从聊天窗口复制过来;这是各家客户端的
+        // 默认行为,没有它会被当成缺陷。预填而不是直接用 —— 他要看得见自己在装什么。
+        if let candidate = clipboardCandidateLink(NSPasteboard.general.string(forType: .string)) {
+            field.stringValue = candidate
+        }
+        let udpField = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
+        udpField.placeholderString = "UDP link (optional)"
+        let udpNote = NSTextField(labelWithString: udpHint)
+        udpNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        udpNote.textColor = .secondaryLabelColor
+        udpNote.lineBreakMode = .byWordWrapping
+        udpNote.preferredMaxLayoutWidth = 420
+
+        let box = NSStackView(views: [field, udpField, udpNote])
+        box.orientation = .vertical
+        box.alignment = .leading
+        box.spacing = 6
+        box.frame = NSRect(x: 0, y: 0, width: 420, height: 92)
+        alert.accessoryView = box
+        NSApp.activate(ignoringOtherApps: true)
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let link = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let udp = udpField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !link.isEmpty else {
+            showMessage("No Link", "Paste a bx link to continue.")
+            return nil
+        }
+        guard looksLikeClientLink(link) else {
+            showMessage("Link Not Recognized", "Paste a bx link to continue.")
+            return nil
+        }
+        // **UDP 那条也要过同一道校验。** 空是合法的(它是可选的);填了却不是
+        // 一条 bx 链接,就在这里说,而不是让服务端回一句关于 base64 的错误。
+        guard udp.isEmpty || looksLikeClientLink(udp) else {
+            showMessage("UDP Link Not Recognized", "Paste a bx link, or leave the second box empty.")
+            return nil
+        }
+        return (link, udp)
+    }
+
     /// 名字可空:空就让 Guardian 按链接推导。
     private func promptForServerName() -> String {
         let alert = NSAlert()
@@ -1633,10 +1819,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func checkExitIP() {
         guard exitIPProbe != .checking else { return }
         exitIPProbe = .checking
-        serversWindow.refreshIfVisible(
-            rows: otherServerRows(list: lastServers ?? ServerList(), core: maintenanceReport?.core),
-            emptyReason: serverListEmptyReason(list: lastServers ?? ServerList()),
-            probe: exitIPProbe)
+        presentServers(lastServers ?? ServerList(), forceShow: false)
 
         var request = URLRequest(url: URL(string: "https://ipv4.icanhazip.com")!)
         request.timeoutInterval = 10
@@ -1648,11 +1831,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self else { return }
                 // 解不出来就是「没问出来」,**绝不编一个地址**。
                 self.exitIPProbe = parsed.map { ExitIPProbe.address($0) } ?? .failed
-                self.serversWindow.refreshIfVisible(
-                    rows: otherServerRows(list: self.lastServers ?? ServerList(),
-                                          core: self.maintenanceReport?.core),
-                    emptyReason: serverListEmptyReason(list: self.lastServers ?? ServerList()),
-                    probe: self.exitIPProbe)
+                self.presentServers(self.lastServers ?? ServerList(), forceShow: false)
             }
         }.resume()
     }
@@ -1713,7 +1892,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 承重的:这个窗口跟着环境刷新每 2 秒重画一次,靠改装某一行的撤销口活不过
     /// 下一拍,而删除刻意不弹确认框、Undo 正是那个确认框的替身。
     ///
-    /// **在飞守卫**(与 `probing`/`switchInFlight`/`rulesFetchInFlight` 同一个模式):
+    /// **在飞守卫**(与 `probing`/`switchingTo`/`rulesFetchInFlight` 同一个模式):
     /// `Remove` 是个 small 按钮,双击一下就发两次删除,而第二次撞上 Guardian
     /// 「删不存在的规则要如实报错」那条契约 —— 用户会为一条**确实删成功了**的
     /// 规则收到一句「Could not remove that rule」。这条路上没有环境触发,
