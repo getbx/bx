@@ -2,10 +2,10 @@
 package supervisor
 
 import (
-	"net/netip"
 	"strings"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/policy"
 	"github.com/getbx/bx/internal/route"
 )
 
@@ -76,16 +76,14 @@ func BuildRouter(cfg *config.Config, chinaDomain, chinaCIDR []string) (*route.Ro
 
 // asCIDR 把条目识别为网段:已是 CIDR 原样返回;裸 IP 补成 /32 或 /128;
 // 否则(域名模式)返回 ok=false。
+//
+// **判定住在 internal/policy,这里是薄壳。** 写入路径(policy.Apply/Edit、
+// setup.AddRule)拿同一个函数决定「这条要不要按域名校验」—— 两处各写一份的
+// 后果是静默的:写入侧按域名拒掉一条这里本来会当网段接受的规则。
 func asCIDR(s string) (string, bool) {
-	if strings.Contains(s, "/") {
-		if _, err := netip.ParsePrefix(s); err == nil {
-			return s, true
-		}
+	p, ok := policy.RuleCIDR(s)
+	if !ok {
 		return "", false
 	}
-	addr, err := netip.ParseAddr(s)
-	if err != nil {
-		return "", false
-	}
-	return netip.PrefixFrom(addr, addr.BitLen()).String(), true
+	return p.String(), true
 }

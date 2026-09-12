@@ -3,9 +3,9 @@ package setup
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 
+	"github.com/getbx/bx/internal/policy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,25 +21,18 @@ type RuleSet struct {
 	Proxy  []string `json:"proxy,omitempty"`
 }
 
-// 域名/通配符的形状。**在写盘之前挡掉非法输入**:一条带空格或换行的「域名」
-// 进了 config,要等到下一次 bx up 才会发现 —— 而那时用户已经断过一次网了。
+// ValidateRulePattern 校验一条规则的写法,并返回归一化后要写进配置的那一行。
 //
-// 允许 `*.` 前缀(bx 的 DomainSet 认它),其余必须是普通域名标签。
-var domainPattern = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$`)
-
-// ValidateRulePattern 校验一条规则的写法,并返回归一化后的形式(小写、去空白)。
+// **判定在 internal/policy,一份,两条写入路径共用。** 另一条路是
+// `bx direct add` / `bx proxy add` 与 MCP 的 bx_apply_policy(policy.Apply/Edit);
+// 两份校验器会让同一个串在菜单里被拒、在命令行里被接受,而用户无从分辨谁对。
+//
+// **2026-09-12 起也收 IP 与 CIDR**:supervisor.BuildRouter 一直把 rules 里的
+// 网段条目分流给 CIDRSet,而这边的域名正则把它们全拒了 —— 菜单右键对一个 IP
+// 目的地给出的候选(AppTrafficModel.ruleCandidates 的「IP 原样」)按构造加不进去。
+// 校验器比它守着的那个面窄,拒的就是合法配置。
 func ValidateRulePattern(pattern string) (string, error) {
-	p := strings.ToLower(strings.TrimSpace(pattern))
-	if p == "" {
-		return "", fmt.Errorf("规则不能为空")
-	}
-	if strings.ContainsAny(p, " \t\n\r'\"") {
-		return "", fmt.Errorf("规则 %q 含空白或引号 —— 域名里不该有这些", pattern)
-	}
-	if !domainPattern.MatchString(p) {
-		return "", fmt.Errorf("规则 %q 不是一个域名或 *.域名", pattern)
-	}
-	return p, nil
+	return policy.ValidateRulePattern(pattern)
 }
 
 func validateKind(kind string) error {

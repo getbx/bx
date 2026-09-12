@@ -925,6 +925,55 @@ AppKit 惯例)。⑤ Quit **不带图标、带 ⌘Q**(`addQuit`):电源符号紧
 守卫跟着改锚点(`verify_script_test.go` 的 `.warning` 原因与更新入口两条、Quit 存在性、
 leak 标题大小写)+ 新增 `TestMacMenuQuitHasNoIconAndUsesCommandQ`;五条变异各红。
 
+## 规则写入路径:归一化与校验只有一半在做(2026-09-12,真机未验)
+
+**两条写入路径此前不同标准,而宽的那条是 agent 也在用的那条。** `internal/setup`
+的 `AddRule`/`RemoveRule`(菜单 → Guardian `/v1/rules`)既归一化又校验;
+`internal/policy` 的 `apply`(`bx direct/proxy add|rm` 与 MCP 的 `bx_policy_apply`)
+两样都不做,只 `ToLower+TrimSpace`。两个后果都实测复现过:
+
+- **对侧删除按字面串比对**,而 bx 的匹配器是后缀集 —— proxy 写着 `*.zoom.us`、
+  往 direct 加 `zoom.us`,两条并存、CLI 打勾、MCP 回 `changed: true`,而
+  `route.Explain` 先查 proxy 且**没有「更具体优先」**,那条 direct 一次都不会命中。
+- **一个字都不校验**:`example.com.` 写得进去,而 `NewDomainSet` 去掉的是**查询**
+  的尾点不是**模式**的 —— 它谁也匹配不上,却在 `bx direct ls` 与菜单里长得像一条
+  健康规则。同一个输入形状这个仓库付过一次学费(`Torchfun.com.` 的静态 A 冲突,
+  两个 Critical,`config.NormalizeHostName` 就是那时长出来的),`rules:` 这个面没跟上。
+
+**判定收敛成一份**:`policy.ParseRulePattern`(归一化走 `config.NormalizeHostName`、
+形状走原先住在 setup 的那条正则、最后拿**生产那份 `route.NewDomainSet`** 验一遍
+匹配得上)· `policy.RuleCIDR`(网段识别,`supervisor.BuildRouter` 的 `asCIDR` 现在
+是它的薄壳)· `policy.CoverageKey`(覆盖键:`zoom.us` 与 `*.zoom.us` 同键)。
+`setup.ValidateRulePattern` 变薄壳。**顺带修掉另一条路上的窄校验**:setup 那条
+域名正则一直拒 IP 与 CIDR,而 `BuildRouter` 一直支持、菜单右键对 IP 目的地给的
+候选(`ruleCandidates` 的「IP 原样」)按构造加不进去 —— **校验器比它守着的那个面
+窄,拒的就是合法配置**。
+
+**更窄的 direct 规则被更宽的 proxy 规则盖住时:拒绝,而且刻意不给 `--force`。**
+风险名单那道门**可能判错**(用户也许真的独占那台主机),所以它必须留逃生口;
+这一道判的不是风险,是 `Explain` 的查找顺序 —— **它不会错**,放行的唯一结果是往
+配置里种一条死规则(`rulereview` 事后会把它归成 `ClassOverriddenByOppositeKind`,
+但那是体检报告,不是写入时该做的事)。**能判错的门要逃生口,不能判错的门不要。**
+出路是真出路:错误里点名挡路的那一行并给出 `bx proxy rm <那一行>`。
+**这道门只朝一个方向关**:proxy 排在前面,所以往 proxy 加一条更窄的是**正在生效
+的例外**(把一小块流量拉回隧道),同表加更窄的判定也与用户要的一致 —— 两者都不拦,
+否则它就变成「总是挡路」的那一类门,而那种门会被绕过或删掉。
+删除同样按覆盖键(`rm example.com` 删得掉 `*.example.com`),且**删除不过校验** ——
+盘上可能躺着这次修复之前写进去的畸形规则,那正是最需要删掉的东西。
+
+**行为变化,记在这里给下一个人**:① `bx_policy_apply` 与 `bx direct/proxy add`
+现在会拒绝畸形写法(空白、引号、URL、`a..b.com`、尾点除外——尾点归一化不打回),
+以及被更宽 proxy 规则盖住的 direct 规则;错误带 `policy.ErrCoveredByOppositeMode`
+哨兵,MCP 按它给对得上的处置建议(**按错误文本认的话,措辞一改建议就悄悄退回一句
+通用的废话**)。② `bx preset apply` 对一份写着更宽 proxy 规则的配置现在**整批拒绝**
+而不是静默不写 —— 它此前把 policy 的错误折成 `changed=false`,打印「preset 已经
+生效,无改动」,两句话都不真;`editYAMLRuleList` 现在如实返回错误。
+
+**守卫**(`internal/policy/writepath_test.go`,外部测试包才引得到 supervisor):
+每条都走 `config.Parse` → `supervisor.BuildRouter` → `route.Explain` 这条生产路径,
+不在测试里重算一遍「谁盖住谁」。四条变异各咬中一条。**真机未验**:没有人在真机上
+敲过 `bx direct add`。
+
 ## 嗅出的 SNI 不许压过真 IP 的规则(2026-09-05,真机诊断,修复真机已验)
 
 真机(公司工作站,bx global):`bx direct add 180.158.6.185` 之后 `bx explain 180.158.6.185`

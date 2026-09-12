@@ -28,12 +28,17 @@ func directRuleRisk(domain string) string {
 // 是否真的发生了变化。走 yaml.Node round-trip 保留其它段注释。语义与 ruleField 读取对齐:
 // remove 扫「所有」rule 元素(域名可能在 rules[1]+,别漏删导致以为删了其实还在直连/泄漏);
 // add 跨所有元素去重后追加到 rules[0]。无有效变化时 changed=false(调用方据此避免误报成功)。
-func editYAMLRuleList(in []byte, field string, add, remove []string) (out []byte, changed bool) {
-	out, changed, err := policy.Edit(in, policy.Request{Mode: field, Add: add, Remove: remove, AllowRisk: true})
+//
+// **错误要往上传,不许折成 changed=false。** 折掉之后一次被拒绝的写入(规则写法
+// 非法、或那条 direct 规则被一条更宽的 proxy 规则压着永远不会命中)会打印成
+// 「无改动:xxx 已在直连白名单」—— 一句既没解释也不真的话,而用户据此以为
+// 规则已经在生效了。
+func editYAMLRuleList(in []byte, field string, add, remove []string) (out []byte, changed bool, err error) {
+	out, changed, err = policy.Edit(in, policy.Request{Mode: field, Add: add, Remove: remove, AllowRisk: true})
 	if err != nil {
-		return in, false
+		return in, false, err
 	}
-	return out, changed
+	return out, changed, nil
 }
 
 // ruleBaseFlags 只有 config;ls/rm 和 proxy 各子命令无风险门,故不挂 --force(避免死 UX)。
@@ -130,10 +135,13 @@ func editRuleAction(c *cli.Context, field string, isAdd bool) error {
 		if len(apply) == 0 {
 			return fmt.Errorf("没有域名被加入(全部命中风险名单且未 --force)")
 		}
-		b, changed = editYAMLRuleList(b, field, apply, nil)
+		b, changed, err = editYAMLRuleList(b, field, apply, nil)
 	} else {
 		apply = domains
-		b, changed = editYAMLRuleList(b, field, nil, apply)
+		b, changed, err = editYAMLRuleList(b, field, nil, apply)
+	}
+	if err != nil {
+		return err
 	}
 
 	// 没有实际变化(add 时已在名单 / rm 时本就不在):不误报成功、不写盘、不热生效。
