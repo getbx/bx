@@ -63,6 +63,9 @@ func sortedDoctorChecks(_ checks: [DoctorCheck]) -> [DoctorCheck] {
         switch status {
         case "fail": return 0
         case "warn": return 1
+        // not_checked 与 info 同档,**排在 ok 之前**:它不是故障,但它是一句
+        // 用户必须看见的话(「这一项根本没查」),埋在一堆绿行下面等于没说。
+        case "not_checked": return 2
         case "ok": return 3
         default: return 2
         }
@@ -75,12 +78,22 @@ func sortedDoctorChecks(_ checks: [DoctorCheck]) -> [DoctorCheck] {
         .map(\.element)
 }
 
-/// 「N failed · M warning(s)」。**两数各自计,永远不合成一个总数**:合成的数在任何
-/// 成熟配置上都不为零,会被训练成噪声,把真正的 fail 一起淹掉。
+/// 「N failed · M warning(s) · K not checked」。**三数各自计,永远不合成一个总数**:
+/// 合成的数在任何成熟配置上都不为零,会被训练成噪声,把真正的 fail 一起淹掉
+/// (与 leakcheck 的 path/identity/surface 三段计数同一条纪律)。
+///
+/// **第三个数是 2026-09-12 补的,它才是这一行不撒谎的那一半。** 在它之前,一份
+/// 「流量成败一整类从没检查过」的报告在这里读出来是加粗的 `0 failed · 0 warnings`
+/// —— 一句在最坏情况下最令人安心的话。异常数为 0 完全可能是因为一条都没查成,
+/// 这一行必须自己说出来。
+///
+/// **K == 0 时也照写。** 「0 not checked」是一句有内容的话(全查过了),而一个
+/// 时有时无的字段会让读的人无从知道它这次是 0 还是这版根本不报。
 func doctorSummaryLine(_ checks: [DoctorCheck]) -> String {
     let failed = checks.filter { $0.status == "fail" }.count
     let warned = checks.filter { $0.status == "warn" }.count
-    return "\(failed) failed · \(warned) warning\(warned == 1 ? "" : "s")"
+    let notChecked = checks.filter { $0.status == "not_checked" }.count
+    return "\(failed) failed · \(warned) warning\(warned == 1 ? "" : "s") · \(notChecked) not checked"
 }
 
 /// check 名转成人话:与 `bx doctor` 文本路径同一个规则(下划线换空格)。

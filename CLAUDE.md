@@ -1669,6 +1669,40 @@ Run again 看起来没反应(健康机器上两份报告逐字相同,重画完�
 仍看不出),守卫 `TestMacMenuDiagnosticsPagesReturnToTheTopAfterRendering` 钉在两页各自
 的函数体里,三条变异各咬中一条。
 
+## 流量成败进 Judge,「没查」不许读成「没问题」(2026-09-12,真机未验)
+
+**升级本身会让一整类诊断消失,而且是被一句相反的话顶掉。** 「哪条规则在成片
+失败」(2026-08-13 那个签名:`*.qq.com` 1291 条失败 1289、Steam 图片全裂)此前
+只长在 `bx doctor` 的**文本**路径上 —— `cli.go` 里那个 for 循环,注释还写明
+「不在 --json 契约里」。而菜单的「Check for Problems」自从 Guardian 声明
+`doctor` 能力起走的是 `/v1/doctor` → `doctor.Judge`,那条路上没有人采流量成败。
+于是 Checks 页对那台正在成片失败的机器一个字都不说,顶上还加粗写着
+`0 failed · 0 warnings`;`bx_inspect` 的 `ok` 同源,agent 拿到的是 `true`。
+
+修法两半,**第二半才是真正闭合缺陷的那个**:
+- **判据搬进 `internal/doctor/traffic.go`,三个消费方共用一份**:`doctor.Facts`
+  多一个 `Traffic *TrafficFact`(数据,不是让 Judge 自己去拿 —— 本包纯度守卫
+  按 AST 禁 net/os/exec),`internal/cli` 与 `internal/guardian` 两个采集方各自
+  填它,文本路径那一段 fork 删掉。与 `bx status` **仍然同源**
+  (`stats.FailingRules`/`UDPNotice`,纯度白名单为此收了 `stats` 与 `tristate`
+  两个只做计算的包,理由写在名单里)。多条失败规则合并成**恰好一条** check
+  (`traffic_failing_rules`)—— 与 `riskyRuleFinding` 同一条:同名 check 会让按
+  名字取的消费方静默丢掉其余结论。
+- **第四种状态 `not_checked`**:采集方没填(nil)与问不到(Err)都产出一行,
+  措辞不同、都不缺席。`Report` 多一个**与 `ok` 并列**的 `not_checked` 计数
+  (刻意无 omitempty),菜单合计句变成 `N failed · M warnings · K not checked`
+  (K=0 也照写)。**`Report.OK` 的含义一个字没改**(仍是「没有一条 fail」):
+  让「有一项没查」把 OK 打成 false,等于宣布一台用户自己 `bx down` 的机器坏了
+  —— Core 没在跑时流量必然查不到,而那正是关闭态该有的样子(2026-09-10
+  `guardian_dns` 栽的同一形状)。代价由那个并列的计数抵掉,理由写在字段上。
+
+**守卫钉的是缺陷本身**:`TestJudgeMakesUncheckedTrafficLookDifferentFromHealthyTraffic`
+断言「没采到流量事实」的报告与「查了、一切正常」的报告**在渲染得出来的行上**不同
+(不是在 Facts 上不同 —— 那是缺陷旁边的东西);`TestGuardianDoctorFactsCarryTraffic`
+钉住菜单走的那个采集方真的问了;Swift 侧 `testSummaryLineSaysHowManyWereNotChecked`
+钉住合计句。golden 从三例加到四例(新的 `failing_rules` 是唯一一份 traffic 真查出
+东西的报告 —— 少了它,这次改动可以整个被撤掉而 golden 不动)。
+
 ## 读源码的守卫:三种处置(2026-08-31)
 
 全仓真正读源码的测试函数 **60 → 57**,而**这个数字本身比想象的诚实得多**:

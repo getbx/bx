@@ -35,7 +35,7 @@ func TestJudgeMissingConfig(t *testing.T) {
 	if r.OK {
 		t.Fatal("缺配置不该 ok")
 	}
-	if got := names(r); got != "config:info config_readable:fail service_installed:fail status_socket:ok udp_policy:ok" {
+	if got := names(r); got != "config:info config_readable:fail service_installed:fail status_socket:ok udp_policy:ok traffic_outcomes:not_checked" {
 		t.Fatalf("顺序/名字 = %q", got)
 	}
 	if c := find(r, "config_readable"); c.Hint != "sudo bx setup <client-link>" || !strings.Contains(c.Detail, "no such file") {
@@ -88,7 +88,7 @@ func TestJudgeParsedConfigProducesTheFullLadder(t *testing.T) {
 		Service:         []Check{{Name: "guardian_installed", Status: "ok"}},
 		StatusSocketErr: "dial unix /var/run/bx/core.sock: connect: no such file",
 	})
-	want := "config:info config_readable:ok config_permissions:warn config_parse:ok server_link:ok transports:ok udp_transport:ok probe:ok guardian_installed:ok status_socket:warn udp_policy:warn"
+	want := "config:info config_readable:ok config_permissions:warn config_parse:ok server_link:ok transports:ok udp_transport:ok probe:ok guardian_installed:ok status_socket:warn udp_policy:warn traffic_outcomes:not_checked"
 	if got := names(r); got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
 	}
@@ -111,7 +111,7 @@ func TestJudgeParsedConfigProducesTheFullLadder(t *testing.T) {
 
 func TestJudgeParseFailureAndEmptyServer(t *testing.T) {
 	bad := Judge(Facts{Config: FileFact{Mode0600: true}, ParseErr: "yaml: boom"})
-	if got := names(bad); got != "config:info config_readable:ok config_permissions:ok config_parse:fail status_socket:ok udp_policy:ok" {
+	if got := names(bad); got != "config:info config_readable:ok config_permissions:ok config_parse:fail status_socket:ok udp_policy:ok traffic_outcomes:not_checked" {
 		t.Fatalf("解析失败阶梯 = %q", got)
 	}
 	empty := Judge(Facts{Config: FileFact{Mode0600: true}, Parsed: &config.Config{}})

@@ -3,6 +3,7 @@
     "name": "long",
     "report": {
       "ok": true,
+      "not_checked": 0,
       "kind": "client",
       "version": "test",
       "secrets_redacted": true,
@@ -104,6 +105,11 @@
           "detail": "state=idle stage=idle attempt=0"
         },
         {
+          "name": "traffic_outcomes",
+          "status": "ok",
+          "detail": "直连 45(失败 0)· 代理 300(失败 2)"
+        },
+        {
           "name": "terminal_proxy",
           "status": "ok",
           "detail": "none"
@@ -115,6 +121,7 @@
     "name": "permission_fallback",
     "report": {
       "ok": false,
+      "not_checked": 1,
       "kind": "client",
       "version": "test",
       "secrets_redacted": true,
@@ -181,6 +188,11 @@
           "hint": "bx logs --json; bx reconnect (troubleshooting only)"
         },
         {
+          "name": "traffic_outcomes",
+          "status": "not_checked",
+          "detail": "这条路径没有采集流量成败,所以下面不会有任何关于规则成败的结论"
+        },
+        {
           "name": "terminal_proxy",
           "status": "ok",
           "detail": "none"
@@ -192,6 +204,7 @@
     "name": "desired_off",
     "report": {
       "ok": true,
+      "not_checked": 1,
       "kind": "client",
       "version": "test",
       "secrets_redacted": true,
@@ -277,9 +290,93 @@
           "detail": "state=ignored stage=off attempt=0"
         },
         {
+          "name": "traffic_outcomes",
+          "status": "not_checked",
+          "detail": "没问到(Core 没在跑?):dial unix /var/run/bx/core.sock: connect: no such file or directory",
+          "hint": "sudo bx up"
+        },
+        {
           "name": "terminal_proxy",
           "status": "info",
           "detail": "not set"
+        }
+      ]
+    }
+  },
+  {
+    "name": "failing_rules",
+    "report": {
+      "ok": false,
+      "not_checked": 0,
+      "kind": "client",
+      "version": "test",
+      "secrets_redacted": true,
+      "changes_system": false,
+      "changes_network": false,
+      "requires_root": false,
+      "checks": [
+        {
+          "name": "config",
+          "status": "info",
+          "detail": "/etc/bx/config.yaml"
+        },
+        {
+          "name": "config_readable",
+          "status": "ok",
+          "detail": "yes"
+        },
+        {
+          "name": "config_permissions",
+          "status": "ok",
+          "detail": "0600"
+        },
+        {
+          "name": "config_parse",
+          "status": "ok",
+          "detail": "yes"
+        },
+        {
+          "name": "server_link",
+          "status": "ok",
+          "detail": "bx://\u003credacted\u003e"
+        },
+        {
+          "name": "transports",
+          "status": "ok",
+          "detail": "2 个传输(自动容灾)"
+        },
+        {
+          "name": "udp_transport",
+          "status": "ok",
+          "detail": "\u003credacted\u003e"
+        },
+        {
+          "name": "status_socket",
+          "status": "ok",
+          "detail": "reachable"
+        },
+        {
+          "name": "udp_policy",
+          "status": "warn",
+          "detail": "non-DNS UDP direct; may expose real network path",
+          "hint": "Use sudo bx realtime on to relay UDP through bx, or sudo bx realtime off to block it"
+        },
+        {
+          "name": "traffic_outcomes",
+          "status": "fail",
+          "detail": "直连 1322(失败 1308)· 代理 0(失败 0)"
+        },
+        {
+          "name": "traffic_failing_rules",
+          "status": "fail",
+          "detail": "2 条规则在成片失败 —— *.qq.com:1291 条里失败 1289(100%)、*.icloud.com:6 条里失败 6(100%)",
+          "hint": "不是你的规则:bx 自己的直连出不去,每一条 direct rule 都会失败。重装路由:sudo bx down \u0026\u0026 sudo bx up"
+        },
+        {
+          "name": "direct_egress",
+          "status": "fail",
+          "detail": "bx 自己的直连出不去(scoped 默认路由不见了)",
+          "hint": "不是你的规则:bx 自己的直连出不去,每一条 direct rule 都会失败。重装路由:sudo bx down \u0026\u0026 sudo bx up"
         }
       ]
     }

@@ -18,9 +18,20 @@ import (
 // 那会让判据重新变成只能靠人读的东西。
 // 依赖 guardian 会成环(guardian 要调本包),依赖 cli/supervisor/install 会把判据拖回
 // 「只能靠人读」的位置。
+// 名单里每一个都必须是**只做计算**的包(自己不读文件、不跑命令、不联网),
+// 加一个进来要在这里写清为什么。
 var allowedInternalDeps = map[string]struct{}{
 	"github.com/getbx/bx/internal/rulereview": {},
 	"github.com/getbx/bx/internal/config":     {},
+	// stats:流量事实的类型(stats.Report),以及 FailingRules / UDPNotice 这
+	// 两个**与 bx status 同源**的判据。自己只 import fmt/sort/strings/sync/time
+	// 与叶子包 udpsource —— 不读文件、不联网。让 Judge 直接调它,是为了让
+	// 「点名一条成片失败的规则」的门槛全仓只有一份;把它摊平成本包自己的结构
+	// 反而要在两个采集方各写一遍搬运,那正是判据分叉的起点。
+	"github.com/getbx/bx/internal/stats": {},
+	// tristate:三值枚举叶子包(只 import encoding/json)。DirectEgress 用它,
+	// 「问不出来」不许被压成 false —— 这正是那个包存在的全部理由。
+	"github.com/getbx/bx/internal/tristate": {},
 }
 
 func TestDoctorPackageStaysPure(t *testing.T) {

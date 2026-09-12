@@ -71,5 +71,9 @@ func collectDoctorFacts(configPath, target string, timeout time.Duration, skipPr
 	if includePlatformChecks {
 		f.Platform = collectPlatformChecks(context.Background())
 	}
+	// 流量成败。**无条件问**,不跟着 includePlatformChecks 走:后者关掉是因为
+	// leak-check 顶层已经跑过一遍同一批 pgrep/netstat 探测,而这一份事实没有
+	// 第二个人在采 —— 漏掉它就是让 Judge 报一条「没查」。
+	f.Traffic = doctorTrafficFacts(context.Background())
 	return f
 }

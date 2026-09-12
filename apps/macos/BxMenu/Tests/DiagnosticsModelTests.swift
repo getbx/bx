@@ -57,7 +57,7 @@ struct DiagnosticsModelTests {
         expect(names == ["d", "b", "e", "c", "f", "a"], "排序 = \(names)(认不出的状态与 info 同档,不丢)")
     }
 
-    // 合计句两数各自计,**永远不合成一个总数**(与 leakcheck 的三段计数同一条纪律)。
+    // 合计句三数各自计,**永远不合成一个总数**(与 leakcheck 的三段计数同一条纪律)。
     static func testSummaryLineCountsFailuresAndWarningsSeparately() {
         let checks = [
             DoctorCheck(name: "a", status: "fail", detail: "", hint: ""),
@@ -65,9 +65,40 @@ struct DiagnosticsModelTests {
             DoctorCheck(name: "c", status: "warn", detail: "", hint: ""),
             DoctorCheck(name: "d", status: "ok", detail: "", hint: ""),
         ]
-        expect(doctorSummaryLine(checks) == "1 failed · 2 warnings", "合计 = \(doctorSummaryLine(checks))")
-        expect(doctorSummaryLine([checks[3]]) == "0 failed · 0 warnings", "全绿也要说清是 0/0,不说「没问题」")
-        expect(doctorSummaryLine([checks[1]]) == "0 failed · 1 warning", "单数")
+        expect(doctorSummaryLine(checks) == "1 failed · 2 warnings · 0 not checked", "合计 = \(doctorSummaryLine(checks))")
+        expect(doctorSummaryLine([checks[3]]) == "0 failed · 0 warnings · 0 not checked", "全绿也要说清是 0/0/0,不说「没问题」")
+        expect(doctorSummaryLine([checks[1]]) == "0 failed · 1 warning · 0 not checked", "单数")
+    }
+
+    // **「没查」必须出现在合计句里,而且不许被算成 ok。**
+    //
+    // 这是 2026-09-12 那个缺陷的用户可见面:升级之后菜单的 Checks 页走
+    // /v1/doctor,而那条路上一整类结论(哪条规则在成片失败)从没被检查过 ——
+    // 页面顶上却是一句加粗的 `0 failed · 0 warnings`。异常数为 0 完全可能是
+    // 因为一条都没查成,这一行必须自己把这件事说出来。
+    static func testSummaryLineSaysHowManyWereNotChecked() {
+        let skipped = [
+            DoctorCheck(name: "traffic_outcomes", status: "not_checked", detail: "", hint: ""),
+            DoctorCheck(name: "config_readable", status: "ok", detail: "", hint: ""),
+        ]
+        let line = doctorSummaryLine(skipped)
+        expect(line == "0 failed · 0 warnings · 1 not checked", "合计 = \(line)")
+        // 一份「没查」的报告与一份「查了、全好」的报告在这一行上必须不同 ——
+        // 否则用户没有任何办法分辨,而两者的处置完全相反。
+        let healthy = [DoctorCheck(name: "traffic_outcomes", status: "ok", detail: "", hint: ""), skipped[1]]
+        expect(doctorSummaryLine(healthy) != line, "没查与全好的合计句一模一样")
+        // 也不许被折进 warning 里:一台用户自己 `bx down` 的机器上「没查」是
+        // 正常的,报成警告会让它长期挂着一个找不到出处的黄字。
+        expect(!line.hasPrefix("0 failed · 1 warning"), "not_checked 被算成了 warning")
+    }
+
+    // 「没查」排在绿行之前:它不是故障,但埋在一堆 ok 下面等于没说。
+    static func testNotCheckedSortsAboveTheGreenRows() {
+        let checks = [
+            DoctorCheck(name: "a", status: "ok", detail: "", hint: ""),
+            DoctorCheck(name: "b", status: "not_checked", detail: "", hint: ""),
+        ]
+        expect(sortedDoctorChecks(checks).map(\.name) == ["b", "a"], "not_checked 要排在 ok 前面")
     }
 
     static func testCheckTitleReadsLikeProse() {
@@ -93,6 +124,8 @@ struct DiagnosticsModelTests {
         testDoctorAvailableIsGatedByCapability()
         testSortedChecksPutBadFirstAndKeepOrderWithinATier()
         testSummaryLineCountsFailuresAndWarningsSeparately()
+        testSummaryLineSaysHowManyWereNotChecked()
+        testNotCheckedSortsAboveTheGreenRows()
         testCheckTitleReadsLikeProse()
         testCheckedAtLineCarriesSeconds()
         if failures == 0 {

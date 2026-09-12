@@ -424,3 +424,30 @@ func TestLiveDoctorDepsForwardTheCtxTheyAreHanded(t *testing.T) {
 		}
 	})
 }
+
+// **Guardian 这一侧必须自己去问流量成败。**
+//
+// 菜单的「Check for Problems」自从声明 `doctor` 能力起走的就是这个采集方;而
+// 「哪条规则在成片失败」此前只长在 `bx doctor` 的文本路径上,于是升级之后
+// Checks 页对 2026-08-13 那个签名(`*.qq.com` 1291 条失败 1289)一个字都不说,
+// 顶上还挂着一句加粗的「0 failed · 0 warnings」——**不是少了一条结论,是那条
+// 结论被一句相反的话顶掉了。**
+//
+// 断言分两半,缺一不可:事实**在**(nil = 这条路径根本没问),以及问不到时
+// **如实说问不到**(Err 非空)—— 一份零值的 stats.Report 与「一切正常、零失败」
+// 在 Judge 眼里逐字节相同。
+func TestGuardianDoctorFactsCarryTraffic(t *testing.T) {
+	f := collectDoctorFactsWith(context.Background(), doctorTestConfig(t), Status{},
+		doctorCollectorDeps{sock: deadSock(t)})
+	if f.Traffic == nil {
+		t.Fatal("Guardian 的采集没问流量成败 —— 菜单 Checks 页会对成片失败的规则完全沉默")
+	}
+	if f.Traffic.Err == "" {
+		t.Fatal("拨不通的 socket 却没填 Err —— 一份零值快照会被报成「零失败」")
+	}
+	// 而那份「没问到」必须真的到得了用户眼前,不是停在 Facts 里。
+	rep := doctor.Judge(f)
+	if rep.NotChecked == 0 {
+		t.Fatalf("问不到流量却报 not_checked=0:%+v", rep.Checks)
+	}
+}
