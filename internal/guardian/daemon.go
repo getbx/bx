@@ -877,19 +877,41 @@ func throughputRecorderFor(configPath string) func() {
 		return nil
 	}
 	return func() {
-		_, current, err := setup.ListServers(configPath)
-		if err != nil || strings.TrimSpace(current) == "" {
-			// 单服务器配置(还没有 servers 清单)就没有名字可挂 —— 安静跳过,
-			// 那是正常状态,不是故障。
-			return
-		}
-		report, err := supervisor.FetchStatusReport(supervisor.SockPath)
-		if err != nil || report.PeakBPS <= 0 || report.PeakAt.IsZero() {
-			// Core 没在跑,或者这段时间没人用它传东西。**都不是可记的观测。**
-			return
-		}
-		if err := recordThroughput(DefaultThroughputHistoryPath, current, report.PeakBPS, report.PeakAt); err != nil {
-			log.Printf("guardian_throughput_record_failed server=%q err=%v", current, err)
-		}
+		recordThroughputOnce(configPath, DefaultThroughputHistoryPath, liveCoreReport)
+	}
+}
+
+// liveCoreReport 问一次真 Core。抽出来只为让 recordThroughputOnce 可测。
+func liveCoreReport() (stats.Report, error) {
+	return supervisor.FetchStatusReport(supervisor.SockPath)
+}
+
+// recordThroughputOnce 是「记一次吞吐观测」里可测的那一半。
+//
+// **记在 Core 报的那一台名下,不是配置里选的那一台。** 热切换先写配置再切,
+// 所以切换失败之后配置里选的已经是新那台,而流量还从旧那台出去;按配置记会在
+// 盘上留下一条错的历史 —— 而它此后每次打开窗口都被原样显示成「那台以前跑到过
+// 这么快」,没有任何一处会说它错了。
+func recordThroughputOnce(configPath, historyPath string, status func() (stats.Report, error)) {
+	list, _, err := setup.ListServers(configPath)
+	if err != nil || len(list) == 0 {
+		// 单服务器配置(还没有 servers 清单)就没有名字可挂 —— 安静跳过,
+		// 那是正常状态,不是故障。
+		return
+	}
+	report, err := status()
+	if err != nil || report.PeakBPS <= 0 || report.PeakAt.IsZero() {
+		// Core 没在跑,或者这段时间没人用它传东西。**都不是可记的观测。**
+		return
+	}
+	name := runningServerName(serverEntries(list, ""), report.Server)
+	if name == "" {
+		// 认不出跑的是哪一台就一个字都不写:记到错的名下之后再也纠正不回来,
+		// 而界面上完全看不出那条历史是假的。这里同样安静跳过 —— 这个循环
+		// 30 秒到 10 分钟跑一次,一条持续的状况打成日志就是刷屏。
+		return
+	}
+	if err := recordThroughput(historyPath, name, report.PeakBPS, report.PeakAt); err != nil {
+		log.Printf("guardian_throughput_record_failed server=%q err=%v", name, err)
 	}
 }

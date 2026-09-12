@@ -28,7 +28,8 @@ type ServerEntry struct {
 	Current bool   `json:"current"`
 	// Probe 只在这次请求做过探测时出现。**键缺席 = 没测过**,不是「测了没通」。
 	Probe *ProbeReport `json:"probe,omitempty"`
-	// PeakBPS 是观测到的峰值吞吐。当前那台来自 Core 的实时观测,其余来自历史。
+	// PeakBPS 是观测到的峰值吞吐。**实际在跑的**那台来自 Core 的实时观测
+	// (见 ServerListResponse.Running,那未必是配置里选的那一台),其余来自历史。
 	// 0/缺席 = 从来没观测到过,**不是「跑不动」**。
 	PeakBPS int64 `json:"peak_bps,omitempty"`
 	// PeakAgeSeconds 是那次观测有多久了。**它和 PeakBPS 必须成对出现** ——
@@ -52,9 +53,22 @@ type ProbeReport struct {
 }
 
 type ServerListResponse struct {
-	Servers    []ServerEntry `json:"servers"`
-	Current    string        `json:"current"`
-	ConfigPath string        `json:"config_path"`
+	Servers []ServerEntry `json:"servers"`
+	Current string        `json:"current"`
+	// Running 是 Core **此刻真正在用**的那一台,与 Current(配置里的选择)
+	// **并列,绝不合并**。
+	//
+	// 两者不同**正是这里最有价值的一条诊断**:热切换是先写配置再切(反过来
+	// 会留下「现在在 B、下次启动回 A」这种没人看得出来的不一致),所以切换
+	// 失败的那一刻配置已经是 B 了。合成一个字段之后,「配置说 B、流量还从 A
+	// 出去」就再也表达不出来 —— 与 bx status --json 里 desired / observed /
+	// divergence 同一条纪律。
+	//
+	// **带 omitempty:问不出来时必须缺席。** 空串会被读成「没有在跑」,而
+	// 真相是「没问出来」。Core 不可达、或者它报的主机在清单里对不上任何一台
+	// (那就说不出名字来),都留空 —— 说不出来好过说错。
+	Running    string `json:"running,omitempty"`
+	ConfigPath string `json:"config_path"`
 	// Added 只在 add 应答里出现:最终写进清单的名字(用户给的,或按链接推导的)。
 	// 界面靠它知道接下来该切换到哪一台 —— 自己再推一遍推导规则就是第二份判据。
 	Added string `json:"added,omitempty"`
@@ -124,17 +138,51 @@ func liveServerProbe(host string, port int) (supervisor.ProbeResult, error) {
 	return supervisor.ProbeControl(supervisor.SockPath, host, port)
 }
 
-// throughputReader 报「**当前**那台观测到的峰值吞吐」。0 = 没观测到。
-type throughputReader func() (bps int64, ok bool)
+// coreLiveStatus 是 Core 此刻的状态里这个端点要用的两件事。
+//
+// **两件必须一起取、且分开表达。** 峰值来自一块进程级速率表,它属于
+// ServerHost 那一台;只取峰值不取主机,就只能把它挂到配置里选的那一台头上,
+// 而热切换失败时那不是同一台。
+type coreLiveStatus struct {
+	// ServerHost 是 Core 报的「此刻主传输指向的主机」。
+	ServerHost string
+	// PeakBPS 是观测到的峰值吞吐,0 = 这段时间没人用它传东西(**不是「跑不动」**)。
+	PeakBPS int64
+}
 
-// liveThroughput 从 Core 的状态里取。**只有当前那台有这个数**,因为吞吐是
-// 被动观测 —— 没在用的服务器没有产生过流量,凭空给它一个数就是编。
-func liveThroughput() (int64, bool) {
+// coreStatusReader 问一次 Core。
+//
+// **ok=false 是「没问出来」,与「问出来了但没有峰值」是两件事** —— 前者
+// 连「在跑哪一台」都答不上来,后者答得上来。压成一个布尔就再也分不开。
+type coreStatusReader func() (coreLiveStatus, bool)
+
+// liveCoreStatus 接到真 Core 上。
+func liveCoreStatus() (coreLiveStatus, bool) {
 	rep, err := supervisor.FetchStatusReport(supervisor.SockPath)
-	if err != nil || rep.PeakBPS <= 0 {
-		return 0, false
+	if err != nil {
+		return coreLiveStatus{}, false
 	}
-	return rep.PeakBPS, true
+	return coreLiveStatus{ServerHost: rep.Server, PeakBPS: rep.PeakBPS}, true
+}
+
+// runningServerName 把 Core 报的主机翻成清单里的名字。
+//
+// **翻成名字而不是原样发主机**:Current 是名字,而这两个字段的全部价值就在于
+// 能不能比对 —— 一个装主机、一个装名字,那个比对就得由每个消费方自己再造一遍。
+//
+// 对不上任何一台时返回空串:说不出名字就别说。退回配置里选的那一台恰恰是这条
+// 改动要消灭的那句谎。
+func runningServerName(entries []ServerEntry, host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	for i := range entries {
+		if strings.EqualFold(strings.TrimSpace(entries[i].Host), host) {
+			return entries[i].Name
+		}
+	}
+	return ""
 }
 
 // liveServerSwitch 接到真 Core 上。
@@ -146,7 +194,7 @@ func liveServerSwitch(name, link, udp string) error {
 //
 // **授权与 /v1/up、/v1/rules 同一道门。** 换服务器会改变出口 IP,是与开关保护
 // 同一量级的动作;而菜单以 owner 身份跑,取一致才用得上。
-func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher, probe serverProber, throughput throughputReader) http.HandlerFunc {
+func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher, probe serverProber, coreStatus coreStatusReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !authorizeOwnerPeer(r.Context(), ownerUID) {
 			writeGuardianJSON(w, http.StatusForbidden, map[string]string{"error": "servers require owner or root peer"})
@@ -160,7 +208,7 @@ func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher,
 		}
 		switch r.Method {
 		case http.MethodGet:
-			serveServerList(w, configPath, throughput)
+			serveServerList(w, configPath, coreStatus)
 		case http.MethodPost:
 			applyServerSwitch(w, r, configPath, switchTo, probe)
 		default:
@@ -169,7 +217,7 @@ func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher,
 	}
 }
 
-func serveServerList(w http.ResponseWriter, configPath string, throughput throughputReader) {
+func serveServerList(w http.ResponseWriter, configPath string, coreStatus coreStatusReader) {
 	list, current, err := setup.ListServers(configPath)
 	if err != nil {
 		// 完整原因只进 Guardian 日志:配置里有服务器链接,而链接就是凭据。
@@ -183,10 +231,21 @@ func serveServerList(w http.ResponseWriter, configPath string, throughput throug
 	if herr != nil {
 		log.Printf("guardian_throughput_history_unreadable err=%v", herr)
 	}
-	attachThroughput(entries, throughput, past.Servers, time.Now())
+	// **先问「在跑哪一台」,再决定峰值挂给谁。** 反过来(挂给配置里选的那台)
+	// 正是热切换失败时那句谎的机制。
+	var running string
+	var livePeak int64
+	if coreStatus != nil {
+		if st, ok := coreStatus(); ok {
+			running = runningServerName(entries, st.ServerHost)
+			livePeak = st.PeakBPS
+		}
+	}
+	attachThroughput(entries, running, livePeak, past.Servers, time.Now())
 	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
 		Servers:    entries,
 		Current:    current,
+		Running:    running,
 		ConfigPath: configPath,
 	})
 }
@@ -408,13 +467,20 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 	})
 }
 
-// attachThroughput 给每台挂上吞吐:当前那台用实时观测,其余用历史。
+// attachThroughput 给每台挂上吞吐:**实际在跑的**那台用实时观测,其余用历史。
+//
+// **running 是 Core 报的那一台,不是配置里选的那一台。** Core 的峰值来自一块
+// 进程级速率表,热切换**不会**把它清零;挂到配置里那台头上、年龄再强行归零,
+// 读起来正是「刚刚在这台上量到的」—— 而那个数是另一台的。切换失败时这两者
+// 恰好不同,而那正是用户最需要一个准确数字的时刻。
 //
 // **历史必须带年龄。** 所有者同意存历史(「以前的值没事」)的前提正是界面上
 // 要标出来这是以前的 —— 一个不带年龄的历史数字读起来像现状。
 //
-// **实时的那份压过历史**:两者都在时,当前那台显示的是此刻,年龄为 0。
-func attachThroughput(entries []ServerEntry, throughput throughputReader, history map[string]throughputEntry, now time.Time) {
+// **实时的那份压过历史**:两者都在时,在跑的那台显示的是此刻,年龄为 0。
+// running 为空(问不出来 / 认不出那台主机)时**谁都不挂实时** —— 那个数确实
+// 存在,只是不知道该记给谁,而记错比不记糟得多。
+func attachThroughput(entries []ServerEntry, running string, live int64, history map[string]throughputEntry, now time.Time) {
 	for i := range entries {
 		past, ok := history[entries[i].Name]
 		if !ok || past.PeakBPS <= 0 || past.ObservedAt.IsZero() {
@@ -429,16 +495,13 @@ func attachThroughput(entries []ServerEntry, throughput throughputReader, histor
 		entries[i].PeakBPS = past.PeakBPS
 		entries[i].PeakAgeSeconds = int64(age / time.Second)
 	}
-	if throughput == nil {
-		return
-	}
-	bps, ok := throughput()
-	if !ok || bps <= 0 {
+	running = strings.TrimSpace(running)
+	if running == "" || live <= 0 {
 		return
 	}
 	for i := range entries {
-		if entries[i].Current {
-			entries[i].PeakBPS = bps
+		if strings.EqualFold(strings.TrimSpace(entries[i].Name), running) {
+			entries[i].PeakBPS = live
 			entries[i].PeakAgeSeconds = 0
 			return
 		}

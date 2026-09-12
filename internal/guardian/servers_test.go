@@ -13,6 +13,7 @@ import (
 
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/setup"
+	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
@@ -460,7 +461,7 @@ func TestProbeReportsWhenNotWired(t *testing.T) {
 	}
 }
 
-// **吞吐只挂在当前那台上,而且只在真观测到的时候挂。**
+// **吞吐只挂在实际在跑的那台上,而且只在真观测到的时候挂。**
 //
 // 吞吐是被动观测:没在用的服务器没有产生过流量,给它一个数就是编。
 //
@@ -468,13 +469,13 @@ func TestProbeReportsWhenNotWired(t *testing.T) {
 // 当场证伪:`peak_bps` 带 omitempty,0 本来就不上线,于是「体里没有它」这条
 // 断言永远成立 —— 测的是 omitempty,不是这个函数。而当前那台恰好排第一,
 // 「给所有人都挂上」同样观察不到差别。两个坑都是「测试测的是相邻的东西」。
-func TestThroughputOnlyLandsOnTheCurrentServer(t *testing.T) {
+func TestThroughputOnlyLandsOnTheRunningServer(t *testing.T) {
 	entries := []ServerEntry{
 		{Name: "tokyo"},
 		{Name: "osaka", Current: true},
 		{Name: "nagoya"},
 	}
-	attachThroughput(entries, func() (int64, bool) { return 3_100_000, true }, nil, thBase)
+	attachThroughput(entries, "osaka", 3_100_000, nil, thBase)
 
 	if entries[1].PeakBPS != 3_100_000 {
 		t.Errorf("当前那台没拿到吞吐:%d", entries[1].PeakBPS)
@@ -495,17 +496,17 @@ func TestThroughputOnlyLandsOnTheCurrentServer(t *testing.T) {
 // 一个没有意义的 0 写进结构体,否则任何不经 JSON 的消费方都会读到它。)
 func TestNoThroughputObservationWritesNothing(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		throughput throughputReader
+		name    string
+		running string
+		live    int64
 	}{
-		{"没接线", nil},
-		{"没观测到", func() (int64, bool) { return 0, false }},
-		{"观测到 0", func() (int64, bool) { return 0, true }},
-		{"观测到负数", func() (int64, bool) { return -1, true }},
+		{"没接线 / 问不出来", "", 0},
+		{"问出来了但没有峰值", "tokyo", 0},
+		{"观测到负数", "tokyo", -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entries := []ServerEntry{{Name: "tokyo", Current: true, PeakBPS: 7}}
-			attachThroughput(entries, tc.throughput, nil, thBase)
+			attachThroughput(entries, tc.running, tc.live, nil, thBase)
 			if entries[0].PeakBPS != 7 {
 				t.Fatalf("没有观测却动了那个值:%d", entries[0].PeakBPS)
 			}
@@ -520,7 +521,7 @@ func TestHistoricalThroughputCarriesItsAge(t *testing.T) {
 	history := map[string]throughputEntry{
 		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
 	}
-	attachThroughput(entries, nil, history, thBase)
+	attachThroughput(entries, "", 0, history, thBase)
 
 	if entries[1].PeakBPS != 8_000_000 {
 		t.Fatalf("历史没挂上:%d", entries[1].PeakBPS)
@@ -531,13 +532,13 @@ func TestHistoricalThroughputCarriesItsAge(t *testing.T) {
 	}
 }
 
-// 当前那台的**实时**观测压过历史,年龄归零。
-func TestLiveThroughputOverridesHistoryForTheCurrentServer(t *testing.T) {
+// 在跑的那台的**实时**观测压过历史,年龄归零。
+func TestLiveThroughputOverridesHistoryForTheRunningServer(t *testing.T) {
 	entries := []ServerEntry{{Name: "tokyo", Current: true}}
 	history := map[string]throughputEntry{
 		"tokyo": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
 	}
-	attachThroughput(entries, func() (int64, bool) { return 1_000_000, true }, history, thBase)
+	attachThroughput(entries, "tokyo", 1_000_000, history, thBase)
 
 	if entries[0].PeakBPS != 1_000_000 {
 		t.Fatalf("实时观测没有压过历史:%d", entries[0].PeakBPS)
@@ -554,7 +555,7 @@ func TestNegativeAgeIsDroppedNotShown(t *testing.T) {
 	history := map[string]throughputEntry{
 		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(time.Hour)},
 	}
-	attachThroughput(entries, nil, history, thBase)
+	attachThroughput(entries, "", 0, history, thBase)
 
 	if entries[0].PeakBPS != 0 || entries[0].PeakAgeSeconds != 0 {
 		t.Fatalf("未来时刻的观测被报了出来:%d bps / %d 秒",
@@ -726,5 +727,168 @@ func TestServerSwitchDoesNotGuessAnOutcomeItCannotTell(t *testing.T) {
 	}
 	if got.Outcome == "" {
 		t.Fatal("认不出也得说一声,不能什么都不说")
+	}
+}
+
+// **配置说 B、实际在跑 A,这两者不同正是这里最有价值的诊断信号。**
+//
+// 热切换是**先写配置再切**(反过来会留下「现在在 B、下次启动回 A」这种没人
+// 看得出来的不一致),所以切换失败的那一刻配置已经是 B 了。合并成一个字段
+// 之后,「配置说 B、流量还从 A 出去」就再也表达不出来 —— 界面会在弹出
+// 「隧道没切过去」的同一秒,用那个 ● 断言你的流量从 B 出去。
+func TestRunningServerIsPublishedBesideTheConfiguredOne(t *testing.T) {
+	path := serversTestConfig(t)
+	if err := setup.SetCurrentServer(path, "osaka"); err != nil {
+		t.Fatal(err)
+	}
+	// Core 说它此刻指着 tokyo 那台的主机 —— 切换失败后的现场。
+	handler := serversHandler(path, 501, noSwitch(t), nil, func() (coreLiveStatus, bool) {
+		return coreLiveStatus{ServerHost: "203.0.113.10"}, true
+	})
+	w := httptest.NewRecorder()
+	handler(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true))
+
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Current != "osaka" {
+		t.Fatalf("配置里选的那台 = %q, want osaka", got.Current)
+	}
+	if got.Running != "tokyo" {
+		t.Fatalf("实际在跑的那台 = %q, want tokyo —— 与配置合并之后,"+
+			"「配置说 B、流量还从 A 出去」就再也表达不出来", got.Running)
+	}
+}
+
+// **Core 问不出来时那个键必须缺席,不是空串。**
+//
+// 空串会被读成「没有在跑」,而真相是「没问出来」—— 这个仓库为把
+// 「问不出来」压成一个确定的坏答案栽过很多次(Tristate 那条纪律)。
+func TestRunningServerIsAbsentWhenCoreCannotBeReached(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status coreStatusReader
+	}{
+		{"没接线", nil},
+		{"Core 不可达", func() (coreLiveStatus, bool) { return coreLiveStatus{}, false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			serversHandler(serversTestConfig(t), 501, noSwitch(t), nil, tc.status)(
+				w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
+			)
+			var got ServerListResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Running != "" {
+				t.Fatalf("问不出来却报了一台在跑:%q", got.Running)
+			}
+			// 键缺席才是「没问出来」;`"running":""` 读起来是「没有在跑」。
+			if strings.Contains(w.Body.String(), `"running"`) {
+				t.Fatalf("问不出来时 running 键仍在体里:%s", w.Body.String())
+			}
+		})
+	}
+}
+
+// **Core 报的主机在清单里对不上任何一台时,说不出名字就别说。**
+//
+// 编一个名字出来(比如退回配置里选的那台)恰恰是这一整条改动要消灭的谎。
+func TestRunningServerIsAbsentWhenCoreReportsAnUnknownHost(t *testing.T) {
+	w := httptest.NewRecorder()
+	serversHandler(serversTestConfig(t), 501, noSwitch(t), nil, func() (coreLiveStatus, bool) {
+		return coreLiveStatus{ServerHost: "198.51.100.77", PeakBPS: 9_000_000}, true
+	})(w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true))
+
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Running != "" {
+		t.Fatalf("认不出那台主机却报了个名字:%q", got.Running)
+	}
+	for _, s := range got.Servers {
+		if s.PeakBPS != 0 {
+			t.Fatalf("%s 拿到了一个不属于它的峰值 %d —— 认不出跑的是哪一台就"+
+				"不该有人拿到那个数", s.Name, s.PeakBPS)
+		}
+	}
+}
+
+// **峰值挂在 Core 报的那台头上,不是配置里选的那台。**
+//
+// Core 的峰值来自一块进程级速率表,热切换**不会**把它清零。挂到配置里那台
+// 头上、年龄再强行归零,读起来正是「刚刚在 B 上量到的」—— 而那个数是 A 的。
+func TestLiveThroughputFollowsTheRunningServerNotTheConfiguredOne(t *testing.T) {
+	entries := []ServerEntry{
+		{Name: "tokyo", Host: "203.0.113.10"},
+		{Name: "osaka", Host: "203.0.113.20", Current: true},
+	}
+	history := map[string]throughputEntry{
+		"osaka": {PeakBPS: 8_000_000, ObservedAt: thBase.Add(-2 * time.Hour)},
+	}
+	attachThroughput(entries, "tokyo", 3_100_000, history, thBase)
+
+	// 配置里选的那台只能拿到**带年龄的历史**,绝不能拿到一个 age=0 的数 ——
+	// 那读起来就是「刚刚在这台上量到的」,而那个数是另一台的。
+	if entries[1].PeakBPS != 0 && entries[1].PeakAgeSeconds == 0 {
+		t.Errorf("配置里选的那台顶着一个 age=0 的峰值 %d —— 那是另一台的数",
+			entries[1].PeakBPS)
+	}
+	if entries[1].PeakBPS != 8_000_000 || entries[1].PeakAgeSeconds != int64(2*time.Hour/time.Second) {
+		t.Errorf("配置里选的那台没有回落到带年龄的历史:%d bps / %d 秒",
+			entries[1].PeakBPS, entries[1].PeakAgeSeconds)
+	}
+	// 反面:那个数必须落在实际在跑的那台上,否则「谁都不给」也能满足上面两条。
+	if entries[0].PeakBPS != 3_100_000 || entries[0].PeakAgeSeconds != 0 {
+		t.Errorf("实际在跑的那台没拿到实时峰值:%d bps / %d 秒",
+			entries[0].PeakBPS, entries[0].PeakAgeSeconds)
+	}
+}
+
+// **盘上那份历史也必须记在实际在跑的那台名下。**
+//
+// 只修应答体、不修落盘的那一半,会在磁盘上留下一条错的记录 —— 而它此后每次
+// 打开窗口都会被当成「B 以前跑到过这么快」原样显示出来。
+func TestThroughputHistoryIsRecordedUnderTheRunningServer(t *testing.T) {
+	path := serversTestConfig(t)
+	if err := setup.SetCurrentServer(path, "osaka"); err != nil {
+		t.Fatal(err)
+	}
+	historyPath := filepath.Join(t.TempDir(), "throughput-history.json")
+	observedAt := thBase.Add(-time.Minute)
+
+	recordThroughputOnce(path, historyPath, func() (stats.Report, error) {
+		// 配置说 osaka,而 Core 指着 tokyo 那台的主机。
+		return stats.Report{Server: "203.0.113.10", PeakBPS: 3_100_000, PeakAt: observedAt}, nil
+	})
+
+	state, err := loadThroughputState(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Servers["osaka"]; ok {
+		t.Fatalf("峰值被记到了配置里那台名下 —— 那条错的历史此后会一直冒充 osaka 的成绩:%+v", state.Servers)
+	}
+	got, ok := state.Servers["tokyo"]
+	if !ok || got.PeakBPS != 3_100_000 || !got.ObservedAt.Equal(observedAt) {
+		t.Fatalf("实际在跑的那台没记上:%+v", state.Servers)
+	}
+}
+
+// 认不出 Core 报的那台主机时**一个字都不写盘**:记到错的名下之后没有任何
+// 一处会说它错了。
+func TestThroughputHistoryRecordsNothingForAnUnknownRunningHost(t *testing.T) {
+	path := serversTestConfig(t)
+	historyPath := filepath.Join(t.TempDir(), "throughput-history.json")
+
+	recordThroughputOnce(path, historyPath, func() (stats.Report, error) {
+		return stats.Report{Server: "198.51.100.77", PeakBPS: 3_100_000, PeakAt: thBase}, nil
+	})
+
+	if _, err := os.Stat(historyPath); !os.IsNotExist(err) {
+		t.Fatalf("认不出跑的是哪一台却写了盘(err=%v)", err)
 	}
 }
