@@ -124,6 +124,47 @@ func addServer(path, name, link, udp string, makeCurrent bool) (added bool, err 
 	return true, writeConfigRoot(path, doc)
 }
 
+// ReplaceServerLink 就地换掉同名那一台的链接:凭据轮换,或者 VPS 重建换了地址。
+//
+// **它与 AddServer / UpsertServer 的区别只有一条,而那一条是要害:它任何情况下
+// 都不动 current,连「本来是空的」也不填。** UpsertServer 会把 current 设成被改
+// 的那一台(它服务的是 `bx setup`「用这一台」);AddServer 只在 current 空着时
+// 填 —— 对**加一台**那是对的(一份清单必须有一台在用,否则下次启动起不来),
+// 对换链接就是把出口挪走:一份没有 current: 的清单**照样在跑**
+// (config.resolveServers 回落 servers[0]),而手改出来的配置正是这个样子。
+//
+// **名字不在清单里报错,绝不顺手加一台** —— 敲错一个字母就凭空多出一台顶着
+// 新链接的服务器,而调用方只会看到成功。
+//
+// UDP 那一格按参数字面处理(给空就删掉);「省略即保留」是调用方的判断,
+// 不藏在这一层。
+func ReplaceServerLink(path, name, link, udp string) error {
+	if strings.TrimSpace(link) == "" {
+		return fmt.Errorf("服务器 %q 的链接不能为空", name)
+	}
+	root, doc, err := loadConfigRoot(path)
+	if err != nil {
+		return err
+	}
+	list := mappingValue(root, "servers")
+	if list == nil || list.Kind != yaml.SequenceNode {
+		return fmt.Errorf("配置里没有 servers 清单")
+	}
+	for _, entry := range list.Content {
+		if !strings.EqualFold(strings.TrimSpace(scalarValue(mappingValue(entry, "name"))), strings.TrimSpace(name)) {
+			continue
+		}
+		setScalar(entry, "link", strings.TrimSpace(link))
+		if strings.TrimSpace(udp) != "" {
+			setScalar(entry, "udp", strings.TrimSpace(udp))
+		} else {
+			removeKey(entry, "udp")
+		}
+		return writeConfigRoot(path, doc)
+	}
+	return fmt.Errorf("没有名为 %q 的服务器", name)
+}
+
 // RemoveServer 从清单里删掉一台。
 //
 // **不许删掉当前正在用的那台**:那会让配置指向一个不存在的名字,下一次启动直接

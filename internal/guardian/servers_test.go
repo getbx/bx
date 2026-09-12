@@ -1226,6 +1226,12 @@ func TestServerRemoveAndReplaceNeverHotSwitch(t *testing.T) {
 //
 // **修法不许是「让消费方记住上一次的值」**:那是客户端状态,会陈旧,而它陈旧
 // 的那一刻恰好就是热切换刚失败、这个字段最有价值的一刻。服务端每一次都说实话。
+//
+// **「每一条」指的是回清单的那些,共五条(GET + 四个动作)。** 第六条出路 ——
+// 换服务器 —— 回的是 switchResponse,那是另一个类型、按设计没有 running:
+// 它答的是「这一次切换的结局」,而不是「现在的清单长什么样」,菜单紧接着会
+// 重新拉一次清单。名字里的 Every 指的是前者;真要给 switchResponse 也加,
+// 那是另一个决定,不是这条守卫漏掉的东西。
 func TestEveryServerResponsePublishesTheRunningServer(t *testing.T) {
 	core := func() (coreLiveStatus, bool) {
 		return coreLiveStatus{ServerHost: "203.0.113.10"}, true
@@ -1270,5 +1276,150 @@ func TestEveryServerResponsePublishesTheRunningServer(t *testing.T) {
 					"每次都被告知「实际在跑的是哪一台这次没问到」:%s", got.Running, w.Body.String())
 			}
 		})
+	}
+}
+
+// **拼错一个动作名不许把用户的出口换掉。**
+//
+// 空 Action = 「换到 Name 那一台」是这个端点最初的契约,而 remove / replace
+// 的请求**按构造带着一个合法的名字** —— 正是用户想删掉或想换链接的那一台。
+// 于是一个 `{"action":"delete","name":"osaka"}` 落进兼容分支之后,做的不是
+// 「找不到名为 delete 的服务器」,而是**真的把出口切到 osaka**:配置改了、
+// 热切也做了、还回 200。Task 6 的 Delete 按钮只要把 "remove" 写成 "delete",
+// 点一下就换了出口 IP 与国家 —— multi-server 设计里明写「只有用户可以切」。
+//
+// 断言三件事,**而且刻意不用 noSwitch 那个替身**:它是 t.Fatal,一旦热切真的
+// 发生,整个子测试当场结束 —— 后面「盘上动没动」那条就永远跑不到,而那正是
+// 这里最该看见的一条。改用一个只记账的替身,三条各自 Errorf、互不遮蔽。
+func TestAMisspelledActionIsRejectedInsteadOfSwitchingTheExit(t *testing.T) {
+	for _, action := range []string{"delete", "rm", "del", "update", "switch", "replace-link"} {
+		t.Run(action, func(t *testing.T) {
+			path := serversTestConfig(t)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switched := ""
+			w := httptest.NewRecorder()
+			serversHandler(path, 501, func(name, link, udp string) error {
+				switched = name
+				return nil
+			}, nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+				// 名字是合法的、而且不是当前那台 —— 这正是 remove/replace 请求的形状。
+				Action: action, Name: "osaka",
+			}), 501, true))
+
+			if switched != "" {
+				t.Errorf("认不出的动作 %q 把正在跑的实例切到了 %q", action, switched)
+			}
+			after, rerr := os.ReadFile(path)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			if string(before) != string(after) {
+				t.Errorf("认不出的动作 %q 改了盘上的配置:\n--- before\n%s\n--- after\n%s", action, before, after)
+			}
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("状态码 = %d, want 400:%s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "servers_unknown_action") {
+				t.Errorf("没说清是「这个动作我不认识」:%s", w.Body.String())
+			}
+		})
+	}
+	// 反面:空 Action 仍然是「换过去」,那是这个端点最初的契约,不许被一起收掉。
+	path := serversTestConfig(t)
+	switched := ""
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, func(name, link, udp string) error {
+		switched = name
+		return nil
+	}, nil, nil)(w, withPeer(postServers(t, "osaka"), 501, true))
+	if w.Code != http.StatusOK || switched != "osaka" {
+		t.Fatalf("空 Action 不再换服务器了(code=%d switched=%q)—— 兼容契约被一起收掉了", w.Code, switched)
+	}
+}
+
+// **一份没有 current: 的配置照样在跑,换链接不许顺手替它挑一个出口。**
+//
+// `config.resolveServers` 对没有 current 的清单回落 servers[0],所以这种配置
+// 是**能起来的**(手改出来的配置正是这个样子,而 7.2 这一节的受众恰好就是
+// 手改配置的人)。底下那个原语会「顺手填上空的 current」—— 对 add 是对的
+// (一份新清单必须有一台在用),对 replace 就是把出口从 tokyo 挪到了 osaka,
+// 而用户只是换了一条链接。
+//
+// **这与不走 UpsertServer 是同一种伤害换了一扇门进来。**
+func TestServerReplaceDoesNotPickAnExitForACurrentlessConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "servers:\n" +
+		"    - name: tokyo\n" +
+		"      link: vless://" + serversTestUUID + "@203.0.113.10:443?security=reality\n" +
+		"    - name: osaka\n" +
+		"      link: vless://" + serversTestUUID + "@203.0.113.20:443?security=reality\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldLink := "vless://" + serversTestUUID + "@203.0.113.20:443?security=reality"
+	newLink := "vless://" + serversTestUUID + "@203.0.113.99:8443?security=reality"
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "replace", Name: "osaka", Link: newLink,
+	}), 501, true))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d:%s", w.Code, w.Body.String())
+	}
+	_, current, err := setup.ListServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current != "" {
+		t.Errorf("换一条链接给一份本来没有 current 的配置挑了 %q 当出口 —— "+
+			"Core 本来用的是清单里第一台(tokyo)", current)
+	}
+	after, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if want := strings.Replace(body, oldLink, newLink, 1); want != string(after) {
+		t.Errorf("盘上不止那条链接变了:\n--- want\n%s\n--- got\n%s", want, after)
+	}
+	// 应答也不许自己编一个 current 出来。
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Current != "" {
+		t.Errorf("应答里的 current = %q,而盘上没有这一行", got.Current)
+	}
+}
+
+// **「这台已经没了」与「盘没写成」必须分得开。**
+//
+// 两个菜单窗口开着、同一台删两次是真会发生的;把「已经删掉了」和一次真实的
+// 写盘失败折成同一个码,菜单就只能对两者说同一句话,而前者其实什么都不用做。
+// replace 那半早有 servers_unknown_name,remove 这半此前没有。
+func TestServerRemoveSaysWhenTheNameIsAlreadyGone(t *testing.T) {
+	path := serversTestConfig(t)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "remove", Name: "nagoya",
+	}), 501, true))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("状态码 = %d, want 400:%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "servers_unknown_name") {
+		t.Errorf("「已经没了」与「写盘失败」共用一个码:%s", w.Body.String())
+	}
+	after, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(before) != string(after) {
+		t.Errorf("删一个不存在的名字动了盘上的配置")
 	}
 }

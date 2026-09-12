@@ -224,7 +224,7 @@ Core 拿到它,只是没发。**它与配置里的 `current` 并列发布,绝不
 | 动词 | 底层 | 今天的缺口 |
 |---|---|---|
 | 删除 | `setup.RemoveServer` | 只接到 `bx server rm`;`/v1/servers` 的 action 只认 `""`/`add`/`probe` |
-| 换链接 | `setup.UpsertServer` | **零生产调用方**(它当初就是为这件事写的);Guardian 对同名 add 回 409 |
+| 换链接 | `setup.ReplaceServerLink` | 实施时新加(见 §7.2):`UpsertServer` / `AddServer` 都会挪动 current。**`UpsertServer` 至今仍是零生产调用方** |
 | 挂 UDP 链接 | `setup.AddServer(path, name, link, udp)` | Guardian 已经收 `udp`,而 Swift 客户端从不发,Add 表单只有一个框 |
 
 ### 7.1 删除要确认,而且没有 Undo
@@ -243,8 +243,24 @@ Core 拿到它,只是没发。**它与配置里的 `current` 并列发布,绝不
 
 ### 7.2 换链接
 
-用 `UpsertServer` 就地更新同名那一台。用途是凭据轮换与 VPS 换 IP —— 今天这件事只能手改
+就地更新同名那一台。用途是凭据轮换与 VPS 换 IP —— 今天这件事只能手改
 `/etc/bx/config.yaml` 或 `bx setup --force`。
+
+> **本节原文写的是「用 `UpsertServer`」,实施时没有照做,而那个偏离是对的**(Task 4,
+> 已 review 通过)。这份文档是下一个人照着做的依据,所以把真实的选择记在这里:
+>
+> - `setup.UpsertServer` **会把 current 设成被改的那一台**(`TestUpsertStillSwitchesBecauseThatIsItsJob`
+>   钉着这个行为:它服务的是 `bx setup`「用这一台」)。于是换一条**没在用**那台的链接
+>   会顺手把出口换过去,而界面只说了「已替换」—— 正是本设计要守的那条「只有用户可以切」。
+>   变异实测:接成 `UpsertServer`,`current` 当场从 tokyo 变成 osaka。
+> - `setup.AddServer` 只差半步,而那半步同样会挪出口:**current 空着时它会填上**。
+>   一份没有 `current:` 的清单**照样在跑**(`config.resolveServers` 回落 `servers[0]`),
+>   而手改出来的配置正是这个样子 —— 恰好就是本节的受众。
+> - 实际走的是**新加的** `setup.ReplaceServerLink`:名字必须已在清单里(不存在就报错,
+>   绝不顺手加一台),链接就地换,**任何情况下都不动 current**。
+>
+> **`UpsertServer` 因此仍然是零生产调用方** —— 那一行「待接线的缺口」不再成立,
+> 别再照着它去接。
 
 **换的是当前那台时**,配置改了而跑着的隧道还连着旧地址:如实说「已写入,重连后生效」,
 并给「现在就重连」,**但绝不替他重连** —— 与规则热生效那条收尾同一条。

@@ -304,6 +304,17 @@ func logServerChange(event, name, current string, ok bool) {
 	log.Printf("%s name=%q current=%q", event, name, current)
 }
 
+// serverNamed 回答「清单里有没有这个名字」,大小写与首尾空白都不计较 ——
+// 与 setup 那一侧的比对规则同款,两处不一致会让「查过了」与「写得进去」分家。
+func serverNamed(list []config.Server, name string) bool {
+	for i := range list {
+		if strings.EqualFold(strings.TrimSpace(list[i].Name), strings.TrimSpace(name)) {
+			return true
+		}
+	}
+	return false
+}
+
 // serverEntries 只发出**主机名**,绝不发链接本身。
 //
 // 链接是凭据(里面有 uuid / 密码)。菜单要显示的是「流量从哪出去」,而那是主机;
@@ -360,7 +371,7 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 		return
 	}
 	uid, _ := peerUIDFrom(r.Context())
-	switch strings.ToLower(strings.TrimSpace(req.Action)) {
+	switch action := strings.ToLower(strings.TrimSpace(req.Action)); action {
 	case "add":
 		addServerEntry(w, req, configPath, coreStatus, uid)
 		return
@@ -372,6 +383,23 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 		return
 	case "probe":
 		probeServers(w, configPath, probe, coreStatus, uid)
+		return
+	case "":
+		// 空 Action = 换到 Name 那一台。这是这个端点最初唯一的动作,保持兼容。
+	default:
+		// **认不出的动作一律拒绝,绝不落进上面那条兼容分支。**
+		//
+		// 兼容分支切的是 `req.Name`,**不是** Action —— 而 remove / replace 的
+		// 请求按构造带着一个**合法**的名字:正是用户想删掉或想换链接的那一台。
+		// 于是一个拼错的 `{"action":"delete","name":"osaka"}` 不会「找不到名为
+		// delete 的服务器」,它会**真的把出口切到 osaka**、改配置、回 200。
+		// 菜单那边只要把 "remove" 写成 "delete",点一下 Delete 就换了出口 IP
+		// 与国家 —— multi-server 设计里明写「只有用户可以切」。
+		//
+		// 这条分支在有兄弟动词之前不可达(没有别的词可拼错),是它们让它变得
+		// 可达的,所以门也由它们来补。
+		log.Printf("guardian_server_action_rejected action=%q uid=%d", action, uid)
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_unknown_action"})
 		return
 	}
 	// 谁把出口换到了哪台,留痕。这是必须可审计的一类改动。
@@ -487,7 +515,7 @@ func removeServerEntry(w http.ResponseWriter, req serversRequest, configPath str
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_bad_request"})
 		return
 	}
-	_, current, err := setup.ListServers(configPath)
+	list, current, err := setup.ListServers(configPath)
 	if err != nil {
 		log.Printf("guardian_servers_read_failed path=%s err=%v", configPath, err)
 		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
@@ -499,6 +527,14 @@ func removeServerEntry(w http.ResponseWriter, req serversRequest, configPath str
 		// 菜单要说得出「先换到别的那台再删」就得有这个码。
 		log.Printf("guardian_server_remove_rejected reason=current name=%q", name)
 		writeGuardianJSON(w, http.StatusConflict, map[string]string{"code": "servers_remove_current"})
+		return
+	}
+	// **「这台已经没了」与「盘没写成」必须分得开。** 两个菜单窗口开着、同一台
+	// 删两次是真会发生的,而前者其实什么都不用做;折成一个码之后菜单只能对两者
+	// 说同一句话(replace 那半早有 servers_unknown_name,这半此前没有)。
+	if !serverNamed(list, name) {
+		log.Printf("guardian_server_remove_rejected reason=unknown_name name=%q", name)
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_unknown_name"})
 		return
 	}
 	if err := setup.RemoveServer(configPath, name); err != nil {
@@ -516,10 +552,15 @@ func removeServerEntry(w http.ResponseWriter, req serversRequest, configPath str
 // 换到那里去」—— 与 addServerEntry 同一条判断。
 //
 // **刻意不走 setup.UpsertServer,尽管那个函数当初就是为这件事写的、至今零生产
-// 调用方。** 它会把 current 设成被改的那一台(TestUpsertStillSwitchesBecauseThatIsItsJob
-// 钉着这个行为:它服务的是 `bx setup`「用这一台」),于是换一条**没在用**那台
-// 的链接会顺手把出口换过去,而界面上只说了「已替换」。setup.AddServer 对**已经
-// 存在**的名字做的恰好是「就地换链接、不动 current」,那才是这里要的语义。
+// 调用方**(spec §7.2 原本就是这么写的,这里是有意偏离):它会把 current 设成
+// 被改的那一台(TestUpsertStillSwitchesBecauseThatIsItsJob 钉着这个行为:它
+// 服务的是 `bx setup`「用这一台」),于是换一条**没在用**那台的链接会顺手把
+// 出口换过去,而界面上只说了「已替换」。
+//
+// **也不走 setup.AddServer** —— 它只差半步,而那半步同样会挪动出口:current
+// 空着时它会填上。一份没有 current: 的清单**照样在跑**(config.resolveServers
+// 回落 servers[0]),而手改出来的配置正是这个样子 —— 恰好就是这个功能的受众。
+// 走的是 setup.ReplaceServerLink:它任何情况下都不动 current。
 func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath string, coreStatus coreStatusReader, uid uint32) {
 	name := strings.TrimSpace(req.Name)
 	link := strings.TrimSpace(req.Link)
@@ -537,9 +578,9 @@ func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath str
 		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
 		return
 	}
-	// **先确认它真在清单里,再写。** 底下那个原语对不存在的名字是「加一台」:
-	// 用户在名字上敲错一个字母,就会凭空多出一台顶着新链接的服务器,而界面
-	// 只会说「已替换」(与 addServerEntry 那句「先查重,再写」是同一条的两面)。
+	// **先确认它真在清单里,再写。** 底层原语自己也拦这一条(纵深防御),但
+	// 错误串按门规不出门 —— 菜单要说得出「这台已经没了」就得有这个码。
+	// 这里同时要拿到它**原来那条 UDP**,见下。
 	var target *config.Server
 	for i := range existing {
 		if strings.EqualFold(strings.TrimSpace(existing[i].Name), name) {
@@ -558,7 +599,7 @@ func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath str
 		// 一处会报错,而用户以为自己只换了一条链接。
 		udp = strings.TrimSpace(target.UDP)
 	}
-	if _, err := setup.AddServer(configPath, target.Name, link, udp); err != nil {
+	if err := setup.ReplaceServerLink(configPath, target.Name, link, udp); err != nil {
 		// %v 里可能带着 name(校验错误会回显它),但绝不会带 link —— 那是凭据。
 		log.Printf("guardian_server_replace_failed name=%q err=%v", target.Name, err)
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_replace_failed"})
