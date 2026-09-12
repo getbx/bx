@@ -200,6 +200,22 @@ const CapabilityRules = "rules"
 // 一个每次点都失败的按钮 —— 与 CapabilityRules 同一机制同一理由。
 const CapabilityServers = "servers"
 
+// CapabilityServersEdit 表示这一版 Guardian 的 POST /v1/servers 认得 remove /
+// replace 这些**改清单**的动词(add 与切换由 CapabilityServers 覆盖)。
+//
+// **它必须与 CapabilityServers 分开,因为后者早于这些动词。** 一台只声明
+// `servers` 的旧 Guardian 收到 `{"action":"remove","name":"osaka"}` 时,走的是
+// 那一版唯一的兼容行为:空/未知 action = **换到 Name 那一台** —— 于是用户点
+// 一下 Delete,出口 IP 与国家就换到了他想删掉的那一台。2026-08-09 的
+// multi-server 设计里明写「只有用户可以换服务器」,这正是它唯一禁止的事。
+// 而「文件换了、进程没换」在本仓库是记录在案的真实升级窗口(2026-08-16 那次
+// 验收就是靠能力声明才认出跑着的还是旧 Guardian,版本号认不出来)。
+//
+// **绝不「试着拨一下看看」**(与 status_watch、logs、doctor 同一条门规):
+// 旧 Guardian 对这些动词回的是 200 + 一次已经发生的切换,客户端事后无从分辨,
+// 而代价已经付掉了。
+const CapabilityServersEdit = "servers_edit"
+
 // CapabilityApps 表示这一版 Guardian 提供 /v1/apps(应用流量归因报告)。
 // **键缺席 = 旧版 Guardian**,与 CapabilityRules/CapabilityServers 同一机制:
 // 菜单据此决定要不要画出这个功能入口,否则用户对着一个每次点都失败的按钮。
@@ -229,7 +245,7 @@ type MaintenanceHoldStatus struct {
 // 每次调用都返回新切片:它会被塞进 Status 交给 JSON 编码,共享一份底层数组等于
 // 把一个包级可变状态发布出去。
 func GuardianCapabilities() []string {
-	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityStatusWatch, CapabilityApps, CapabilityLogs, CapabilityDoctor}
+	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityServersEdit, CapabilityStatusWatch, CapabilityApps, CapabilityLogs, CapabilityDoctor}
 }
 
 // ReconcileReport 是只观察调谐环**最近一轮**的判断,随 Status 一起发布。

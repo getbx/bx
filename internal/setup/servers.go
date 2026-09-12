@@ -18,6 +18,18 @@ import (
 // 与 UpdateTransports 同一条纪律:**在 yaml.Node 上做外科手术**,不整份重写 ——
 // 后者会把用户手写的注释与分流策略一起冲掉(2026-08-06 真机事故)。
 
+// SameServerName 是「这两个名字指的是不是同一台」的**唯一**一份判据:大小写与
+// 首尾空白都不计较。
+//
+// 它存在的理由是这条判据此前在三处各写了一份同样的 `EqualFold(TrimSpace…)` ——
+// guardian 的 serverNamed、guardian 的 replace 里一份内联、以及本文件里的
+// RemoveServer。漂移的后果不是崩溃:一处认得出而另一处认不出时,菜单会说
+// 「已经删掉了」而配置里那一行还在(或者反过来,查得到却写不进去)。
+// 一处收紧成大小写敏感,`bx server rm Osaka` 就会静默什么都不做。
+func SameServerName(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
 // ListServers 读出清单与当前选中的那台。
 func ListServers(path string) ([]config.Server, string, error) {
 	root, _, err := loadConfigRoot(path)
@@ -41,7 +53,7 @@ func SetCurrentServer(path, name string) error {
 		return fmt.Errorf("配置里没有 servers 清单;先用 `bx setup` 或 `bx server add` 加一台")
 	}
 	for _, s := range servers {
-		if strings.EqualFold(strings.TrimSpace(s.Name), strings.TrimSpace(name)) {
+		if SameServerName(s.Name, name) {
 			// 存回**清单里的原样拼写**,而不是用户敲的大小写。
 			setScalar(root, "current", s.Name)
 			return writeConfigRoot(path, doc)
@@ -103,7 +115,7 @@ func addServer(path, name, link, udp string, makeCurrent bool) (added bool, err 
 		}
 	}
 	for _, entry := range list.Content {
-		if !strings.EqualFold(strings.TrimSpace(scalarValue(mappingValue(entry, "name"))), strings.TrimSpace(name)) {
+		if !SameServerName(scalarValue(mappingValue(entry, "name")), name) {
 			continue
 		}
 		setScalar(entry, "link", link)
@@ -151,7 +163,7 @@ func ReplaceServerLink(path, name, link, udp string) error {
 		return fmt.Errorf("配置里没有 servers 清单")
 	}
 	for _, entry := range list.Content {
-		if !strings.EqualFold(strings.TrimSpace(scalarValue(mappingValue(entry, "name"))), strings.TrimSpace(name)) {
+		if !SameServerName(scalarValue(mappingValue(entry, "name")), name) {
 			continue
 		}
 		setScalar(entry, "link", strings.TrimSpace(link))
@@ -175,7 +187,7 @@ func RemoveServer(path, name string) error {
 		return err
 	}
 	current := strings.TrimSpace(scalarValue(mappingValue(root, "current")))
-	if strings.EqualFold(current, strings.TrimSpace(name)) {
+	if SameServerName(current, name) {
 		return fmt.Errorf("%q 是当前正在用的服务器;先 `bx server use <别的名字>` 再删", name)
 	}
 	list := mappingValue(root, "servers")
@@ -185,7 +197,7 @@ func RemoveServer(path, name string) error {
 	kept := list.Content[:0]
 	removed := false
 	for _, entry := range list.Content {
-		if strings.EqualFold(strings.TrimSpace(scalarValue(mappingValue(entry, "name"))), strings.TrimSpace(name)) {
+		if SameServerName(scalarValue(mappingValue(entry, "name")), name) {
 			removed = true
 			continue
 		}
