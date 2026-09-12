@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/blink"
+	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/setup"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
@@ -1552,5 +1553,188 @@ func TestProbeReportsCarryAMachineReadableCode(t *testing.T) {
 	if want := supervisor.ProbeErrorText(supervisor.ProbeErrLinkUnparsed); got.Servers[0].Probe.Error != want {
 		t.Errorf("链接解不出主机那一处的人话不是 ProbeErrorText 给的:%q,want %q",
 			got.Servers[0].Probe.Error, want)
+	}
+}
+
+// postServersRaw 发一个**原样的 JSON 串**,不经 serversRequest 编码。
+//
+// 这个功能的整个判据是「服务端收到一个它不认识的**键**时会怎样」,而
+// postServersJSON 按构造只发得出认识的键 —— 用它写这条测试,被测的那件事
+// 在输入里根本不存在。
+func postServersRaw(body string) *http.Request {
+	return httptest.NewRequest(http.MethodPost, "/v1/servers", strings.NewReader(body))
+}
+
+// recordingSwitch 记下有没有热切、切到了哪台。
+//
+// **刻意不用 noSwitch。** 后者用 t.Fatalf,而 Fatalf 会 runtime.Goexit ——
+// 一旦缺陷复发、真的切了,这条测试就停在那一句上,后面「盘上一个字节没动」
+// 与「状态码是 400」两条断言**永远跑不到**,而它们才是这个功能的性质。
+// (这个错误在 Task 4 的第一轮里犯过一次。)
+func recordingSwitch(switched *string) serverSwitcher {
+	return func(name, link, udp string) error {
+		*switched = name
+		return nil
+	}
+}
+
+// **拼错的键不许从隔壁那扇门进来。**
+//
+// Task 4 关掉的是拼错的**值**(`{"action":"delete"}` 落进兼容分支)。而解码器
+// 当时没开 DisallowUnknownFields,于是拼错的是**键名**时 `Action` 解出空串、
+// 照样落进那条「空 action = 换到 Name 那一台」的兼容分支。re-review 在真 handler
+// 上实发过:
+//
+//	{"actoin":"remove","name":"osaka"}  →  200, switched="osaka", 配置被改写
+//
+// 与刚修掉的那条伤害逐字相同:用户点一下 Delete,**出口 IP 与国家换到了他想
+// 删掉的那一台** —— 2026-08-09 multi-server 设计里唯一明令禁止的事。
+//
+// 这条守卫钉的是「未知的键不许走到切换那一步」这个**性质**,不是某个拼法:
+// 把 DisallowUnknownFields 拿掉,下面三种形状里的每一种都会转红。
+func TestAMisspelledKeyIsRejectedInsteadOfSwitchingTheExit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		// re-review 在 HEAD 上实发的那一条,逐字。
+		{"action 的键名手滑", `{"actoin":"remove","name":"osaka"}`},
+		// 兼容分支的形状 + 一个多出来的键:菜单发出这种东西的唯一原因是
+		// 它以为自己在请求别的动作 —— 而服务端会照兼容契约把出口切过去。
+		{"兼容形状上多一个键", `{"name":"osaka","delete":true}`},
+		// 动作是认识的,可请求里带着一个服务端不认识的键 —— 那意味着发它的
+		// 客户端与这一版服务端**对这次请求的含义没有共识**。照旧执行等于
+		// 「把那个键当不存在」,而这里那个动作是删除:一次以为带着确认/条件的
+		// 删除会被当成无条件的删除做掉。
+		{"认识的动作上多一个键", `{"action":"remove","name":"osaka","confrim":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := serversTestConfig(t)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switched := ""
+			w := httptest.NewRecorder()
+			serversHandler(path, 501, recordingSwitch(&switched), nil, nil)(
+				w, withPeer(postServersRaw(tc.body), 501, true))
+
+			if switched != "" {
+				t.Errorf("%s:认不出的键让正在跑的实例切到了 %q —— 出口 IP 与国家被换掉了", tc.body, switched)
+			}
+			after, rerr := os.ReadFile(path)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			if string(before) != string(after) {
+				t.Errorf("%s:认不出的键改了盘上的配置:\n--- before\n%s\n--- after\n%s", tc.body, before, after)
+			}
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("%s:状态码 = %d, want 400:%s", tc.body, w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "servers_bad_request") {
+				t.Errorf("%s:没说清是「这个请求我读不懂」:%s", tc.body, w.Body.String())
+			}
+		})
+	}
+
+	// **反面一:空 Action 仍然换服务器。** 那是这个端点最初唯一的动作,老客户端
+	// (以及菜单今天的 switchServer)还在用它,收紧未知键不许把它一起收掉。
+	t.Run("只带 name 的合法请求仍然切换", func(t *testing.T) {
+		path := serversTestConfig(t)
+		switched := ""
+		w := httptest.NewRecorder()
+		serversHandler(path, 501, recordingSwitch(&switched), nil, nil)(
+			w, withPeer(postServersRaw(`{"name":"osaka"}`), 501, true))
+		if w.Code != http.StatusOK || switched != "osaka" {
+			t.Fatalf("兼容契约被一起收掉了(code=%d switched=%q):%s", w.Code, switched, w.Body.String())
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), "current: osaka") {
+			t.Errorf("配置没跟着切:\n%s", body)
+		}
+	})
+
+	// **反面二:认识的键一个都没被误伤。** 一条「把什么都拒绝掉」的实现会让
+	// 上面三条全绿,而这一条会红。
+	t.Run("认识的键组成的 remove 仍然生效", func(t *testing.T) {
+		path := serversTestConfig(t)
+		w := httptest.NewRecorder()
+		serversHandler(path, 501, noSwitch(t), nil, nil)(
+			w, withPeer(postServersRaw(`{"action":"remove","name":"osaka"}`), 501, true))
+		if w.Code != http.StatusOK {
+			t.Fatalf("合法的 remove 被误伤了(code=%d):%s", w.Code, w.Body.String())
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "osaka") {
+			t.Errorf("remove 没生效:\n%s", body)
+		}
+	})
+}
+
+// **改清单的那几个动词要有自己的能力门。**
+//
+// CapabilityServers 的含义早于 remove / replace:一台只声明它的旧 Guardian 收到
+// `{"action":"remove","name":"osaka"}` 时走的是那一版唯一的兼容行为 —— **换到
+// osaka**。菜单若按 `servers` 门控 Delete 按钮,「文件换了、进程没换」那个真实
+// 的升级窗口里点一下 Delete,换掉的是用户的出口国。
+//
+// **这条守卫钉的是能力的「值」本身,不只是「清单里有这么一个能力」。**
+// 菜单按字面量门控(CapabilityLogs 有同款先例):改了值,菜单永久看不见这些
+// 动词,而两侧都不报错 —— 一次静默的功能消失。
+func TestServersEditCapabilityIsDeclared(t *testing.T) {
+	if CapabilityServersEdit != "servers_edit" {
+		t.Fatalf("CapabilityServersEdit 的值变了(%q):菜单按字面量门控 remove/replace 入口,"+
+			"改了值菜单就永久看不见那些动词而两侧都不报错", CapabilityServersEdit)
+	}
+	// 它必须与 CapabilityServers **分开**:合成一个的话,旧 Guardian 的
+	// `servers` 声明就会被读成「remove 也能用」,而它在那一版是换出口。
+	if CapabilityServersEdit == CapabilityServers {
+		t.Fatal("改清单的动词与「列清单 + 切换」共用了一个能力键:旧 Guardian 会被误认为支持 remove")
+	}
+	for _, c := range GuardianCapabilities() {
+		if c == CapabilityServersEdit {
+			return
+		}
+	}
+	t.Fatalf("能力清单里没有 %q:%v", CapabilityServersEdit, GuardianCapabilities())
+}
+
+// 三处各写一份同样的名字比对,漂移的后果是「菜单说已经删掉了,而配置里那一行
+// 还在」。现在只有一份判据,这条守卫钉的是那份判据本身认得出哪些形状 ——
+// 少了 EqualFold,`bx server rm Osaka` 就静默什么都不做。
+func TestSameServerNameIgnoresCaseAndSurroundingSpace(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"osaka", "osaka", true},
+		{"Osaka", "osaka", true},
+		{"  osaka  ", "osaka", true},
+		{"\tOSAKA\n", " osaka ", true},
+		{"osaka", "tokyo", false},
+		{"osaka", "osaka2", false},
+		{"", "osaka", false},
+	} {
+		if got := setup.SameServerName(tc.a, tc.b); got != tc.want {
+			t.Errorf("SameServerName(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+	// guardian 这一侧的查找必须与它一致 —— 分家就是「查得到却写不进去」。
+	list := []config.Server{{Name: "Tokyo"}, {Name: "osaka"}}
+	if !serverNamed(list, " tokyo ") {
+		t.Error("serverNamed 没有走同一份判据:大小写/空白不再被忽略")
+	}
+	if findServerNamed(list, "OSAKA") == nil {
+		t.Error("findServerNamed 没有走同一份判据")
+	}
+	if findServerNamed(list, "kyoto") != nil {
+		t.Error("findServerNamed 认出了一台不存在的服务器")
 	}
 }

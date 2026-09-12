@@ -332,15 +332,24 @@ func logServerChange(event, name, current string, ok bool) {
 	log.Printf("%s name=%q current=%q", event, name, current)
 }
 
-// serverNamed 回答「清单里有没有这个名字」,大小写与首尾空白都不计较 ——
-// 与 setup 那一侧的比对规则同款,两处不一致会让「查过了」与「写得进去」分家。
-func serverNamed(list []config.Server, name string) bool {
+// findServerNamed 从清单里挑出叫这个名字的那一台,没有就返回 nil。
+//
+// **比对判据只有一份**(`setup.SameServerName`),不是「与 setup 那一侧同款」——
+// 同款是要靠人记住的,而这三处此前真的各写了一份:这里、replaceServerLink 里
+// 一份内联、setup.RemoveServer 里一份。任一处漂了,「查过了、没有这台」与
+// 「写得进去」就分家:菜单说已经删掉了,而配置里那一行还在。
+func findServerNamed(list []config.Server, name string) *config.Server {
 	for i := range list {
-		if strings.EqualFold(strings.TrimSpace(list[i].Name), strings.TrimSpace(name)) {
-			return true
+		if setup.SameServerName(list[i].Name, name) {
+			return &list[i]
 		}
 	}
-	return false
+	return nil
+}
+
+// serverNamed 是 findServerNamed 的薄壳:只问「在不在」。
+func serverNamed(list []config.Server, name string) bool {
+	return findServerNamed(list, name) != nil
 }
 
 // serverEntries 只发出**主机名**,绝不发链接本身。
@@ -364,7 +373,7 @@ func serverEntries(list []config.Server, current string) []ServerEntry {
 		}
 		entries = append(entries, ServerEntry{
 			Name: s.Name, Host: host, Port: setup.LinkPort(s.Link), UDPHost: udp,
-			Current: strings.EqualFold(strings.TrimSpace(s.Name), strings.TrimSpace(current)),
+			Current: setup.SameServerName(s.Name, current),
 		})
 	}
 	return entries
@@ -393,12 +402,27 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 	}
 	defer switchInFlight.Unlock()
 
+	uid, _ := peerUIDFrom(r.Context())
+	// **拼错的键与拼错的值走的是同一扇门,而这扇门通向换出口。**
+	//
+	// 不开 DisallowUnknownFields 的话,`{"actoin":"remove","name":"osaka"}` 里
+	// `Action` 解出空串,落进下面那条「空 action = 换过去」的兼容分支 —— 于是
+	// 一个键名敲错的删除请求会**真的把出口切到 osaka**、改配置、回 200,与
+	// 下面 default 分支刚拦掉的那条伤害逐字相同(只是从隔壁那扇门进来)。
+	// 菜单那边把 "action" 写成 "actoin" 是一次改不出编译错误的手滑。
+	//
+	// **兼容契约不动**:空 action 仍然是「换到 Name 那一台」,老客户端照旧。
+	// 收紧的只是「我不认识这个键」——那从来不是任何客户端有意发出的东西。
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	decoder.DisallowUnknownFields()
 	var req serversRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+	if err := decoder.Decode(&req); err != nil {
+		// 留痕:这条路上的失手会以「出口国变了」的形式被用户看见,而那时
+		// 唯一能指认是哪个键写错了的地方就是这一行。
+		log.Printf("guardian_server_request_rejected reason=bad_json uid=%d err=%v", uid, err)
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_bad_request"})
 		return
 	}
-	uid, _ := peerUIDFrom(r.Context())
 	switch action := strings.ToLower(strings.TrimSpace(req.Action)); action {
 	case "add":
 		addServerEntry(w, req, configPath, coreStatus, uid)
@@ -448,7 +472,7 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 	}
 	var target config.Server
 	for _, s := range list {
-		if strings.EqualFold(strings.TrimSpace(s.Name), strings.TrimSpace(current)) {
+		if setup.SameServerName(s.Name, current) {
 			target = s
 		}
 	}
@@ -512,7 +536,7 @@ func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string
 		return
 	}
 	for _, s := range existing {
-		if strings.EqualFold(strings.TrimSpace(s.Name), name) {
+		if setup.SameServerName(s.Name, name) {
 			log.Printf("guardian_server_add_rejected reason=name_exists name=%q", name)
 			writeGuardianJSON(w, http.StatusConflict, map[string]string{"code": "servers_name_exists"})
 			return
@@ -549,7 +573,7 @@ func removeServerEntry(w http.ResponseWriter, req serversRequest, configPath str
 		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(current), name) {
+	if setup.SameServerName(current, name) {
 		// **自己的码,不与「删失败了」共用一个。** 底下的 setup.RemoveServer
 		// 也拦这一条(纵深防御),但它只给得出一句中文错误,而错误串不出门 ——
 		// 菜单要说得出「先换到别的那台再删」就得有这个码。
@@ -609,13 +633,7 @@ func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath str
 	// **先确认它真在清单里,再写。** 底层原语自己也拦这一条(纵深防御),但
 	// 错误串按门规不出门 —— 菜单要说得出「这台已经没了」就得有这个码。
 	// 这里同时要拿到它**原来那条 UDP**,见下。
-	var target *config.Server
-	for i := range existing {
-		if strings.EqualFold(strings.TrimSpace(existing[i].Name), name) {
-			target = &existing[i]
-			break
-		}
-	}
+	target := findServerNamed(existing, name)
 	if target == nil {
 		log.Printf("guardian_server_replace_rejected reason=unknown_name name=%q", name)
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_unknown_name"})
@@ -750,7 +768,7 @@ func attachThroughput(entries []ServerEntry, running string, live coreLiveStatus
 		return
 	}
 	for i := range entries {
-		if strings.EqualFold(strings.TrimSpace(entries[i].Name), running) {
+		if setup.SameServerName(entries[i].Name, running) {
 			entries[i].PeakBPS = live.PeakBPS
 			entries[i].PeakAgeSeconds = int64(liveAge / time.Second)
 			return
