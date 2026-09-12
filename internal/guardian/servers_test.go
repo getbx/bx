@@ -643,3 +643,88 @@ func TestSwitchLockIsReleasedAfterFailure(t *testing.T) {
 		}
 	}
 }
+
+// 四种结局在线上必须分得开。合成一个码之后菜单只能说一句话,而那句话对
+// 「已生效但确认失败」是**假的**(它切过去了,死手可能把它还原,用户得立刻
+// 处理),对「回滚也失败了」则轻描淡写了一次正在发生的断网。
+func TestServerSwitchPublishesADistinctOutcomePerFailure(t *testing.T) {
+	seen := map[string]string{}
+	for _, tc := range []struct {
+		name string
+		deps supervisor.SwitchDeps
+		want string
+	}{
+		{"武装失败", supervisor.SwitchDeps{
+			Arm: func(link, udp string) error { return errTestHotSwitch },
+		}, "arm_failed"},
+		{"不健康已回滚", supervisor.SwitchDeps{
+			Arm:      func(link, udp string) error { return nil },
+			Healthy:  func() bool { return false },
+			Rollback: func() error { return nil },
+		}, "rolled_back"},
+		{"不健康且回滚失败", supervisor.SwitchDeps{
+			Arm:      func(link, udp string) error { return nil },
+			Healthy:  func() bool { return false },
+			Rollback: func() error { return errTestHotSwitch },
+		}, "rollback_failed"},
+		{"已生效但确认失败", supervisor.SwitchDeps{
+			Arm:     func(link, udp string) error { return nil },
+			Healthy: func() bool { return true },
+			Commit:  func() error { return errTestHotSwitch },
+		}, "commit_failed"},
+	} {
+		deps := tc.deps
+		path := serversTestConfig(t)
+		handler := serversHandler(path, 501, func(name, link, udp string) error {
+			return supervisor.SwitchServer(deps, name, link, udp)
+		}, nil, nil)
+		w := httptest.NewRecorder()
+		handler(w, withPeer(postServers(t, "osaka"), 501, true))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s:状态码 = %d, want 200", tc.name, w.Code)
+		}
+		var got switchResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("%s:%v", tc.name, err)
+		}
+		if got.Outcome != tc.want {
+			t.Errorf("%s:outcome = %q, want %q", tc.name, got.Outcome, tc.want)
+		}
+		if prev, dup := seen[got.Outcome]; dup {
+			t.Errorf("%s 与 %s 共用同一个码 %q —— 菜单只能对两者说同一句话", tc.name, prev, got.Outcome)
+		}
+		seen[got.Outcome] = tc.name
+
+		// 与 /v1/rules 的 409 同一条门规:完整原因只进 Guardian 日志。
+		// 那句原话里带着服务器名与 Core 的错误细节,码是它唯一的对外出口。
+		if strings.Contains(w.Body.String(), errTestHotSwitch.Error()) {
+			t.Errorf("%s:原始错误串泄漏进了响应体:%s", tc.name, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "切换到") {
+			t.Errorf("%s:那句中文原话泄漏进了响应体:%s", tc.name, w.Body.String())
+		}
+	}
+}
+
+// 认不出的错误不许套用四种里的任何一种。说错了比不说更糟:一句「已回滚」
+// 会让用户以为流量还好好的走在原来那台上。
+func TestServerSwitchDoesNotGuessAnOutcomeItCannotTell(t *testing.T) {
+	handler := serversHandler(serversTestConfig(t), 501, func(name, link, udp string) error {
+		return errTestHotSwitch
+	}, nil, nil)
+	w := httptest.NewRecorder()
+	handler(w, withPeer(postServers(t, "osaka"), 501, true))
+	var got switchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"arm_failed", "rolled_back", "rollback_failed", "commit_failed"} {
+		if got.Outcome == code {
+			t.Fatalf("认不出的错误被当成了 %q", code)
+		}
+	}
+	if got.Outcome == "" {
+		t.Fatal("认不出也得说一声,不能什么都不说")
+	}
+}
