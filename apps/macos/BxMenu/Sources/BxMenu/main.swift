@@ -977,6 +977,41 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             logsAvailable: logsAvailable(capabilities: maintenanceReport?.capabilities))
     }
 
+    /// 把一份规则摆进窗口。**摆这张表的唯一出口。**
+    ///
+    /// 收口的理由不是好看:此前有**五处**各自算一遍这三样(组行、规则行、顶上
+    /// 那句话),而每一处都得记得 ① 失败归因只能取自**答过话的** Core、
+    /// ② 顶上那句话要带上问不出来的半边。五处独立地记住两件事,就是十次机会
+    /// 漏掉其中一次 —— 而这个 bug 正是五处**一致地**都漏了同一件:
+    /// `self.maintenanceReport?.core?.failingRules ?? []`。
+    ///
+    /// **Core 不应答时那个数组按构造就是空的**(`CoreRuntime.Reachable=false`
+    /// 时其余字段一律零值,`internal/guardian/types.go`),而这个窗口把
+    /// 「一行没有副标题」读作「查过了、健康」—— 于是保护关着、Core 崩了或正在
+    /// 重启时,那条把用户招来的失败规则会和其它规则一样安安静静地排在健康档里。
+    /// `/v1/rules` 这一跳照样成功(Guardian 自己读配置、自己算体检,不需要
+    /// Core),所以体检那句话也不会出现,窗口从头到尾看起来干干净净。
+    ///
+    /// 判据因此是 `reachable` 而不是「数组空不空」,并且**复用**菜单数据行那份
+    /// `answeringCore` —— 同一个问题不许有第二份判据。
+    private func presentRules(_ list: RuleList, forceShow: Bool) {
+        // 局部名字刻意不叫 `core`:那会拼成 `core?.failingRules`,与这个 bug 的
+        // 原形 `maintenanceReport?.core?.failingRules` 逐字重合,守卫再也分不开
+        // 「过了 reachable 那道门的」与「直接从 status 上摸的」。
+        let answering = answeringCore(maintenanceReport)
+        let failing = answering?.failingRules ?? []
+        let caveat = ruleWindowCaveatNote(list, coreAnswering: answering != nil)
+        let groups = ruleGroupRows(from: list, failing: failing)
+        let table = ruleRows(from: list, failing: failing, customOnly: true)
+        if forceShow {
+            rulesWindow.show(
+                rows: groups, ruleRows: table, configPath: list.configPath, caveatNote: caveat)
+        } else {
+            rulesWindow.refreshIfVisible(
+                rows: groups, ruleRows: table, configPath: list.configPath, caveatNote: caveat)
+        }
+    }
+
     /// 按需拉一次规则。**只在用户真的要看规则时拨** ——
     /// 图标不依赖它(menuRowsNow 一个字都不碰 rules),而每次拨都让一个 root
     /// 守护进程读并 YAML 解析一遍 /etc/bx/config.yaml。
@@ -1026,20 +1061,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         error: fetchError)
                     return
                 }
-                let groups = ruleGroupRows(
-                    from: rules, failing: self.maintenanceReport?.core?.failingRules ?? [])
-                let table = ruleRows(
-                    from: rules, failing: self.maintenanceReport?.core?.failingRules ?? [],
-                    customOnly: true)
-                if forceShow {
-                    self.rulesWindow.show(
-                        rows: groups, ruleRows: table, configPath: rules.configPath,
-                        reviewNote: ruleReviewUnavailableNote(rules))
-                } else {
-                    self.rulesWindow.refreshIfVisible(
-                        rows: groups, ruleRows: table, configPath: rules.configPath,
-                        reviewNote: ruleReviewUnavailableNote(rules))
-                }
+                self.presentRules(rules, forceShow: forceShow)
             }
         }
     }
@@ -1625,14 +1647,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 switch result {
                 case .success(let list):
                     self.lastRules = list
-                    self.rulesWindow.refreshIfVisible(
-                        rows: ruleGroupRows(from: list, failing: self.maintenanceReport?.core?.failingRules ?? []),
-                        ruleRows: ruleRows(
-                            from: list, failing: self.maintenanceReport?.core?.failingRules ?? [],
-                            customOnly: true),
-                        configPath: list.configPath,
-                        reviewNote: ruleReviewUnavailableNote(list)
-                    )
+                    self.presentRules(list, forceShow: false)
                     self.followUpAfterRuleChange(title: enable ? "Turned on \(group)" : "Turned off \(group)", list: list)
                 case .failure(let error):
                     self.showGuardianFailure(title: "Could not change that group", error: error)
@@ -1656,14 +1671,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 switch result {
                 case .success(let list):
                     self.lastRules = list
-                    self.rulesWindow.refreshIfVisible(
-                        rows: ruleGroupRows(from: list, failing: self.maintenanceReport?.core?.failingRules ?? []),
-                        ruleRows: ruleRows(
-                            from: list, failing: self.maintenanceReport?.core?.failingRules ?? [],
-                            customOnly: true),
-                        configPath: list.configPath,
-                        reviewNote: ruleReviewUnavailableNote(list)
-                    )
+                    self.presentRules(list, forceShow: false)
                     let verb = ruleKind == .direct ? "direct" : "through the tunnel"
                     self.followUpAfterRuleChange(title: "\(pattern) will always go \(verb)", list: list)
                 case .failure(let error):
@@ -1822,15 +1830,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 switch result {
                 case .success(let list):
                     self.lastRules = list
-                    self.rulesWindow.refreshIfVisible(
-                        rows: ruleGroupRows(
-                            from: list, failing: self.maintenanceReport?.core?.failingRules ?? []),
-                        ruleRows: ruleRows(
-                            from: list, failing: self.maintenanceReport?.core?.failingRules ?? [],
-                            customOnly: true),
-                        configPath: list.configPath,
-                        reviewNote: ruleReviewUnavailableNote(list)
-                    )
+                    self.presentRules(list, forceShow: false)
                     let verb = kind == .direct ? "direct" : "through the tunnel"
                     self.followUpAfterRuleChange(
                         title: "\(pattern) will always go \(verb)", list: list)

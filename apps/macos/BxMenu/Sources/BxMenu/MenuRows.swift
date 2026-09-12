@@ -108,7 +108,14 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
 
 /// 只有**答过话的** Core 的统计才算数据。没问过(nil)与问了没答(reachable=false)
 /// 在这里一律归成「没有数据」——它们携带的全是零值,当真会画出一行撒谎的 ✗。
-private func answeringCore(_ status: GuardianStatus?) -> CoreRuntime? {
+///
+/// **不是 private:规则窗口那条路要用同一份判据。** `failing_rules` 与这里的
+/// 每一项同属那批「Reachable=false 时按构造全是零值」的字段
+/// (`internal/guardian/types.go`),而规则窗口一度自己写了
+/// `core?.failingRules ?? []` —— 那是同一个问题的第二份判据,并且答反了:
+/// 空数组被当成「没有规则在失败」,于是 Core 没在应答时每条规则都画成健康的。
+/// 判据只留这一份。
+func answeringCore(_ status: GuardianStatus?) -> CoreRuntime? {
     guard let core = status?.core, core.reachable == true else { return nil }
     return core
 }

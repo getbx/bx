@@ -269,19 +269,49 @@ func ruleVerdictText(_ finding: RuleFinding) -> String {
     }
 }
 
-/// 体检**缺席**时窗口顶上要说的那句话。`nil` = 这一版发布了体检(哪怕一条结论
-/// 都没有)。
+/// 这张表**有半边是问不出来的**时,窗口顶上要说的那句话。两个半边:
+/// 规则体检(`list.review`)与失败归因(Core 的 `failing_rules`)。
+/// `nil` = 两半都收到了(哪怕两半都一条结论都没有)。
 ///
-/// **`nil` 是「这版没说」,不是「没有问题」。** 旧 Guardian 不发 `review`,配置
-/// 读不出来时它也发 nil —— 而这个窗口的词汇表里「一行没有副标题」恰恰读作
-/// 「查过了,健康」。不说这句话,窗口就等于替一份从没收到过的体检报告签了字。
-func ruleReviewUnavailableNote(_ list: RuleList) -> String? {
-    guard list.review == nil else { return nil }
-    return "This version of bx did not check these rules, so none of them is marked good or bad here."
+/// **`nil` 是「这版没说」/「没问出来」,不是「没有问题」。** 这个窗口的词汇表里
+/// 「一行没有副标题」恰恰读作「查过了,健康」;不说这句话,窗口就等于替一份
+/// 从没收到过的报告签了字。两个半边各有各的缺席方式:
+/// - 体检:旧 Guardian 不发 `review`,Guardian 读得到配置但 `config.Parse` 拒了
+///   它时也发 nil;
+/// - 失败:Core 不应答时 `CoreRuntime.Reachable=false` 而**其余字段按构造全是
+///   零值**(`internal/guardian/types.go`),于是 `failing_rules` 是空的 ——
+///   空在那里是「没问出来」,不是「没有规则在失败」。判据因此是 `reachable`,
+///   由调用方经 `answeringCore` 给出,**不是**「数组空不空」。
+///
+/// **一句话报两个半边,不是两条各自独立的横幅。** 两个理由:
+/// ① 对用户要更正的是**同一件事** ——「这一行什么都没写」不等于「查过了」;
+/// 把同一句更正并排说两遍,只会训练他把顶上那块整个跳过去,而这个窗口的全部
+/// 设计纪律就是「只在真有问题时才占地方」。② 摆这张表的地方不止一处,而每一处
+/// 都得记得把话带上;两条独立的横幅就是两次机会漏掉其中一条 —— 正是这次要修的
+/// 那个缺陷的形状(`failing:` 那半在**每一处**都算错了)。
+func ruleWindowCaveatNote(_ list: RuleList, coreAnswering: Bool) -> String? {
+    var halves: [String] = []
+    if list.review == nil {
+        halves.append("this version of bx did not check these rules for problems")
+    }
+    if !coreAnswering {
+        halves.append("bx's core is not answering, so it could not say which rules are failing")
+    }
+    guard !halves.isEmpty else { return nil }
+    return "A rule with nothing written under it here has not been checked: "
+        + halves.joined(separator: ", and ") + "."
 }
 
 /// 越小越靠前。**有问题的在前,健康的一个字不写** —— 与 Checks 页同一条纪律。
-/// 认不出的结论排在已知几类之后、健康之前:不丢,也不冒充自己看懂了。
+/// 认不出的结论排在已知几类之后、healthy 之前:不丢,也不冒充自己看懂了。
+///
+/// **Core 不应答时这个排序刻意一个字不改**,尽管那时每一行都落在最后一档。
+/// 它读起来像「全都健康」,但那句话是由**并列关系**说出来的:某几行排在别人
+/// 后面才等于「这几行更没事」。Core 不应答时失败那半对**每一行**都缺席,没有
+/// 任何一行因此被排到另一行后面 —— 排序退化成配置里的原顺序,它什么也没断言;
+/// 体检那半若还在,它的几类照旧排到最前,那部分仍然是真的。
+/// 反过来,给纯排序再塞一个 `coreAnswering` 参数,就是把 `reachable` 那道判据
+/// 抄成第二份(这个仓库反复罚过的形状),换来的东西横幅已经说了。
 func ruleRowSeverity(_ row: RuleRow) -> Int {
     switch row.verdict?.cls {
     case "risky_direct": return 0

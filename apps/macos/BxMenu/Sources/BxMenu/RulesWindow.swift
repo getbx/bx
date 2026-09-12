@@ -26,7 +26,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     private var lastGroupRows: [RuleGroupRow] = []
     private var lastRuleRows: [RuleRow] = []
     private var lastConfigPath = ""
-    private var lastReviewNote: String?
+    private var lastCaveatNote: String?
 
     /// 用户拨动了一个组开关。参数是组名与目标状态。
     var onToggleGroup: ((String, Bool) -> Void)?
@@ -39,10 +39,10 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     /// 用户点了 Add Rule…。
     var onAddRule: (() -> Void)?
 
-    func show(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?) {
+    func show(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?) {
         let window = ensureWindow()
         adoptFreshRules(
-            rows: rows, ruleRows: ruleRows, configPath: configPath, reviewNote: reviewNote)
+            rows: rows, ruleRows: ruleRows, configPath: configPath, caveatNote: caveatNote)
         // **显式打开从头开始看。** 保住滚动位置是给环境重画准备的(用户正盯着
         // 某一行,不该每 2 秒被拽回顶部);他刚点开这扇窗,顶上那几行才是他要的。
         render(preservingScroll: false)
@@ -57,10 +57,10 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     ///
     /// 这是**环境刷新**那条路(`applyRefresh` → `fetchRulesOnDemand(forceShow: false)`),
     /// 菜单开着时约每 2 秒一拍:滚动位置要保住,等着撤销的那几条也要保住。
-    func refreshIfVisible(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?) {
+    func refreshIfVisible(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?) {
         guard let window, window.isVisible else { return }
         adoptFreshRules(
-            rows: rows, ruleRows: ruleRows, configPath: configPath, reviewNote: reviewNote)
+            rows: rows, ruleRows: ruleRows, configPath: configPath, caveatNote: caveatNote)
         render(preservingScroll: true)
     }
 
@@ -74,13 +74,13 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     /// 那一刻手里还是旧数据、那条规则仍在里头,对一次账就会把刚记下的挂起
     /// 当场抹掉 —— 于是这个修复在它自己的入口处失效。
     private func adoptFreshRules(
-        rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, reviewNote: String?
+        rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?
     ) {
         pendingRemovals = survivingRuleRemovals(pendingRemovals, freshRows: ruleRows)
         lastGroupRows = rows
         lastRuleRows = ruleRows
         lastConfigPath = configPath
-        lastReviewNote = reviewNote
+        lastCaveatNote = caveatNote
     }
 
     /// 窗口是否开着。**供环境刷新路径判断「有没有人在看」** —— 与
@@ -186,13 +186,14 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             view.removeFromSuperview()
         }
 
-        // **体检缺席要说出来,摆在最上面。** 这个窗口的词汇表里「一行没有副标题」
-        // 读作「查过了,健康」;旧 Guardian(以及配置读不出来的那一次)根本没发
-        // 体检,不说这句话就是替一份从没收到过的报告签字。判据在
-        // `ruleReviewUnavailableNote`,这里只摆。
-        let reviewNote = lastReviewNote
-        if let reviewNote {
-            let note = NSTextField(labelWithString: reviewNote)
+        // **问不出来的那半要说出来,摆在最上面。** 这个窗口的词汇表里「一行没有
+        // 副标题」读作「查过了,健康」;体检可能整个没发(旧 Guardian,或配置
+        // 读不出来),失败归因也可能整个没发(Core 不应答时 `failing_rules`
+        // 按构造是空的)—— 任一半缺席都不说话,就是替一份从没收到过的报告签字。
+        // 判据在 `ruleWindowCaveatNote`,这里只摆。
+        let caveatNote = lastCaveatNote
+        if let caveatNote {
+            let note = NSTextField(labelWithString: caveatNote)
             note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
             note.textColor = .secondaryLabelColor
             note.lineBreakMode = .byWordWrapping

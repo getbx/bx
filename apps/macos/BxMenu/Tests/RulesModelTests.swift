@@ -548,10 +548,17 @@ struct RulesModelTests {
         let empty = try! JSONDecoder().decode(
             RuleList.self, from: Data(#"{"direct":["*.a.com"],"review":{}}"#.utf8))
 
-        let note = ruleReviewUnavailableNote(absent)
+        // Core 那半在这条里恒为「答过话」—— 这条只钉体检那半。
+        let note = ruleWindowCaveatNote(absent, coreAnswering: true)
         expect(note != nil, "体检缺席时窗口什么都不说 —— 那等于替一份没收到的报告签字")
-        expect(ruleReviewUnavailableNote(empty) == nil, "查过了、一条结论都没有时不该多说话")
-        expect(note != ruleReviewUnavailableNote(empty), "缺席与空报告渲染成了同一个样子")
+        expect(ruleWindowCaveatNote(empty, coreAnswering: true) == nil,
+               "查过了、一条结论都没有时不该多说话")
+        expect(note != ruleWindowCaveatNote(empty, coreAnswering: true),
+               "缺席与空报告渲染成了同一个样子")
+        // Core 答过话时不许连带说 Core 的不是 —— 一句无中生有的「core is not
+        // answering」会把用户支去查一个没坏的东西。
+        expect(note!.lowercased().contains("core is not answering") == false,
+               "体检缺席那一句捎带诬告了 Core:\(note!)")
         // 措辞按「nil 是『这版没说』」那条纪律:不许出现「没有问题 / 健康 / ok」。
         let lowered = note!.lowercased()
         for forbidden in ["healthy", "no problems", "all good", "looks good"] {
@@ -559,6 +566,66 @@ struct RulesModelTests {
         }
         // 两份规则一模一样,唯一的差别就是有没有收到体检。
         expect(absent.direct == empty.direct, "fixture 之间不该有别的差别")
+    }
+
+    /// **「没问出来」不许长得像「问了、没有规则在失败」。**
+    ///
+    /// Core 不应答时 Go 侧 `CoreRuntime.Reachable=false` 而其余字段按构造全是
+    /// 零值,于是 `failing_rules` 是空的。窗口把「一行没有副标题」读作
+    /// 「查过了、健康」—— 保护关着、Core 崩了或正在重启时,那条把用户招来的
+    /// 失败规则会和别的规则一样安安静静地排在健康档里,而 `/v1/rules` 这一跳
+    /// 照样成功(Guardian 自己读配置、自己算体检),体检那句话也不会出现。
+    ///
+    /// 钉的是**用户看得见的东西**:同一份规则、同样一个空的 failing 数组,
+    /// 「Core 没答话」那次与「Core 答了、一条都没在失败」那次必须长得不一样。
+    static func testCoreNotAnsweringIsNotRenderedAsNothingFailing() {
+        // 体检收到了(review 非 nil),所以两次之间唯一的差别就是 Core 答没答话。
+        let list = try! JSONDecoder().decode(
+            RuleList.self,
+            from: Data(#"{"direct":["*.icloud.com","*.qq.com"],"review":{}}"#.utf8))
+
+        // 窗口上用户看得见的全部:顶上那句话 + 每一行的模式与副标题。
+        func surface(coreAnswering: Bool) -> String {
+            let note = ruleWindowCaveatNote(list, coreAnswering: coreAnswering) ?? ""
+            let rows = ruleRows(from: list, failing: [], customOnly: false)
+                .map { "\($0.pattern)|\($0.detail ?? "")" }
+            return ([note] + rows).joined(separator: "\n")
+        }
+
+        expect(surface(coreAnswering: false) != surface(coreAnswering: true),
+               "Core 没答话与「问了、一条都没在失败」在界面上一模一样 —— 那正是这个 bug")
+
+        // 健康的机器上不许常驻横幅:那会变墙纸,把真要紧的那次一起淹掉。
+        expect(ruleWindowCaveatNote(list, coreAnswering: true) == nil,
+               "Core 答着话、体检也收到了,顶上还挂着一句话 —— 常驻横幅本身就是缺陷")
+        // 而健康那一行仍然一个字不说(既有约定不许被这次修改破坏)。
+        let healthy = ruleRows(from: list, failing: [], customOnly: false).first
+        expect(healthy?.detail == nil,
+               "健康规则开始说话了:\(String(describing: healthy?.detail))")
+
+        let unreachable = ruleWindowCaveatNote(list, coreAnswering: false)
+        expect(unreachable != nil, "Core 没答话时窗口一个字都不说")
+        let lowered = unreachable!.lowercased()
+        expect(lowered.contains("core is not answering"),
+               "没说清是哪一半问不出来:\(unreachable!)")
+        // 不许替这半下结论 —— 与体检那半同一条纪律。
+        for forbidden in ["healthy", "no problems", "all good", "looks good", "nothing is failing"] {
+            expect(!lowered.contains(forbidden), "这句话替失败归因下了结论:\(unreachable!)")
+        }
+
+        // **一句话报两个半边,不是两条横幅。** 两半都缺席时,那唯一的一句话
+        // 必须两半都提到 —— 少说一半,窗口就替那一半签了字。
+        let noReview = try! JSONDecoder().decode(
+            RuleList.self, from: Data(#"{"direct":["*.icloud.com"]}"#.utf8))
+        let both = ruleWindowCaveatNote(noReview, coreAnswering: false)
+        expect(both != nil, "两半都缺席时反而不说话")
+        expect(both!.lowercased().contains("core is not answering"),
+               "两半都缺席,而失败那半没被提到:\(both!)")
+        expect(both!.lowercased().contains("did not check these rules"),
+               "两半都缺席,而体检那半没被提到:\(both!)")
+        // 三种缺席方式必须给出三句不同的话:压成同一句就等于说不清缺的是哪半。
+        expect(Set([both!, unreachable!, ruleWindowCaveatNote(noReview, coreAnswering: true)!]).count == 3,
+               "缺一半与缺两半说了同一句话")
     }
 
     // 界面上那句话是**英文**,由 class 在本地映射;服务端那份 summary 是中文
@@ -666,6 +733,7 @@ struct RulesModelTests {
         testProblemsSortAhead()
         testSevereNoteFollowsSeverityNotJustTheVerdictsPresence()
         testAbsentReviewIsAnnouncedInsteadOfLookingClean()
+        testCoreNotAnsweringIsNotRenderedAsNothingFailing()
         testVerdictTextIsEnglishAndNeverEchoesTheServersProse()
         testRowShowsBothItsVerdictAndItsFailures()
         testPendingRemovalSurvivesAnAmbientRefreshThatNoLongerHasTheRule()
