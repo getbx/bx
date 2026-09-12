@@ -3,8 +3,11 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 // 服务器清单在菜单里的**接线**守卫。
@@ -436,4 +439,131 @@ func TestMacMenuRefusesASecondSwitchWhileOneIsInFlight(t *testing.T) {
 	if !strings.Contains(send, "self.switchInFlight = false") {
 		t.Error("没有放开在飞标志 —— 第一次切换之后就再也切不了了")
 	}
+}
+
+// **探测失败的原因码是一条跨语言契约,而它此前根本不存在 —— 服务端那句中文
+// 直接被端进了全英文菜单。**
+//
+// `supervisor.describeProbeError` 对一台关着的服务器返回「连接被拒(端口没在听)」,
+// 那是最常见的失败路径;它经 Guardian 的 ProbeReport 一路流到服务器窗口那一行,
+// 还被画成红的。`TestMacMenuUserFacingStringsAreEnglish` 只扫菜单自己的源码,
+// **看不见从服务端来的字符串**,所以没有任何东西会红。
+//
+// 修法是服务端发码、菜单出话。这条守卫钉住那条契约的两头:
+//   - Go 能发出的每一个码,菜单里都得有一句英文(少一句就静默退回笼统的兜底);
+//   - 菜单里的每一条,都得是一个真的码(陈旧条目与生效中的长得一模一样,什么也不守)。
+//
+// 还有第三件,而它才是让这类 bug 在构造上不可能的那一件:菜单**根本不解**
+// 服务端那个 `error` 键。解出来就迟早有人显示它。
+func TestProbeErrorCodesAllHaveAnEnglishSentenceInTheMenu(t *testing.T) {
+	model := stripSwiftComments(readMenuSwiftSource(t, "ServersModel.swift"))
+	body, ok := swiftFunctionBody(model, "func probeFailureText(code: String, fallback: String) -> String")
+	if !ok {
+		t.Fatal("读不出 probeFailureText 的函数体 —— 守卫已经失效,先修守卫")
+	}
+
+	inMenu := map[string]bool{}
+	for _, m := range regexp.MustCompile(`case "([a-z_]+)":`).FindAllStringSubmatch(body, -1) {
+		inMenu[m[1]] = true
+	}
+	if len(inMenu) == 0 {
+		t.Fatal("probeFailureText 里一条 case 都没有 —— 守卫已经失效,先修守卫")
+	}
+
+	known := map[string]bool{}
+	for _, code := range supervisor.ProbeErrorCodes {
+		known[code] = true
+		if !inMenu[code] {
+			t.Errorf("码 %q 在菜单里没有对应的英文 —— 那一行会静默退回笼统的兜底文案,"+
+				"而没有任何东西会报错", code)
+		}
+	}
+	for code := range inMenu {
+		if !known[code] {
+			t.Errorf("菜单里有一条 %q,而 supervisor.ProbeErrorCodes 里没有这个码 —— "+
+				"陈旧条目与生效中的长得一模一样,什么也不守", code)
+		}
+	}
+
+	// **菜单不许解服务端那句人话。** 它是中文的(它服务 `bx server list`),
+	// 而这个界面通篇英文;不解这个键,是让「显示它」在构造上不可能。
+	// 判据用词边界,**不用裸子串**:`case errorCode = "error_code"` 含有
+	// "case error" —— 第一版就被它误报了一次,而这正是本仓库记了八次的那个形状
+	// (钉拼法而不是语义)。`\berror\b` 匹配 `.error` 与 `case error`,
+	// 而 `errorCode` / `error_code` 里 "error" 后面跟的是词内字符,不匹配。
+	if regexp.MustCompile(`\.error\b|case\s+error\b`).MatchString(model) {
+		t.Error("ServersModel 又开始解服务端那个 error 键了 —— " +
+			"它是中文的,解出来就迟早有人把它显示出去")
+	}
+}
+
+// **空清单不是死路 —— 而它此前就是一条死路。**
+//
+// `render` 的 `rows.isEmpty` 分支摆一句「No servers yet」加一行
+// `bx setup --name <name> '<link>'` 然后 `return`,而按钮带是在那个 return
+// **之后**才画的。于是零行时:没有 Add Server、没有 New Server、没有 Test、
+// 没有 Exit IP,只剩一条 `urfave/cli` 会直接拒掉的命令(`bx setup` 没有
+// `--name` 这个 flag)。**空清单恰恰是最需要 Add Server… 的那一刻。**
+//
+// 判据打在**视图树**上,不是「文件里出现过 Add Server」:那个字符串在
+// return 之后的死代码里照样在。
+func TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty(t *testing.T) {
+	window := stripSwiftComments(menuServersWindowSource(t))
+	body, ok := swiftFunctionBody(window, "private func render(rows: [ServerRow], emptyReason: String?)")
+	if !ok {
+		t.Fatal("读不出 render 的函数体 —— 守卫已经失效,先修守卫")
+	}
+
+	branch, ok := swiftBlockAfter(body, "if rows.isEmpty {")
+	if !ok {
+		t.Fatal("读不出 rows.isEmpty 那一支 —— 守卫已经失效,先修守卫")
+	}
+	if strings.Contains(branch, "return") {
+		t.Error("空清单那一支又提前 return 了 —— 按钮带在它后面,用户会拿到一个" +
+			"没有任何按钮的窗口,而那正是他最需要 Add Server… 的时刻")
+	}
+	// 措辞由**配置里有没有 servers 清单**决定,不由行数决定。
+	if !strings.Contains(branch, "emptyReason") {
+		t.Error("空清单那一支没有用 serverListEmptyReason 的产物 —— " +
+			"对一份单服务器配置说「还没有服务器」是一句当场就能被证伪的假话")
+	}
+	// 那条死命令整个删掉:`bx setup` 没有 --name 这个 flag。
+	if strings.Contains(window, "--name") {
+		t.Error("窗口里还留着 `bx setup --name …` —— urfave/cli 遇到未知 flag 直接报错")
+	}
+	// 反面:按钮带真的被摆进了视图树,而且在那一支之后。
+	strip := strings.Index(body, "stack.addArrangedSubview(buttons)")
+	if strip < 0 {
+		t.Fatal("按钮带压根没进视图树 —— 守卫已经失效,先修守卫")
+	}
+	for _, button := range []string{"buttons.addArrangedSubview(add)", "buttons.addArrangedSubview(deploy)"} {
+		if !strings.Contains(body, button) {
+			t.Errorf("%s 没进按钮带", button)
+		}
+	}
+}
+
+// swiftBlockAfter 取 marker 之后那一对花括号里的内容(含 marker 那一行的开括号)。
+//
+// 数括号在**抹白副本**上做(字符串里的 `}` 不是结构,本仓库为此栽过一次假红),
+// 而返回的是**原串**的同一段 —— blankSwiftStringLiterals 逐字节保持偏移。
+func swiftBlockAfter(source, marker string) (string, bool) {
+	blank := blankSwiftStringLiterals(source)
+	start := strings.Index(blank, marker)
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	for i := start + len(marker) - 1; i < len(blank); i++ {
+		switch blank[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return source[start : i+1], true
+			}
+		}
+	}
+	return "", false
 }

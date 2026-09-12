@@ -34,10 +34,13 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     /// 按需,是它的本意。
     var isVisible: Bool { window?.isVisible ?? false }
 
-    func show(rows: [ServerRow], probe: ExitIPProbe) {
+    /// `emptyReason` 是**清单为空时说哪一句**(`serverListEmptyReason` 的产物)。
+    /// 做成形参而不是一个存储属性:它必须与 rows 同源同刻,而一个「记得设」的
+    /// 属性迟早会陈旧,编译器也不会提醒谁忘了。
+    func show(rows: [ServerRow], emptyReason: String?, probe: ExitIPProbe) {
         let window = ensureWindow()
         self.probe = probe
-        render(rows: rows)
+        render(rows: rows, emptyReason: emptyReason)
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
         // 用户以为"点了没反应"。
         NSApp.activate(ignoringOtherApps: true)
@@ -46,10 +49,10 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
 
     /// 数据更新时就地重画。**窗口不存在就什么都不做** —— 不要因为后台刷新
     /// 把一个用户没打开的窗口弹出来。
-    func refreshIfVisible(rows: [ServerRow], probe: ExitIPProbe) {
+    func refreshIfVisible(rows: [ServerRow], emptyReason: String?, probe: ExitIPProbe) {
         guard let window, window.isVisible else { return }
         self.probe = probe
-        render(rows: rows)
+        render(rows: rows, emptyReason: emptyReason)
     }
 
     private func ensureWindow() -> NSWindow {
@@ -111,18 +114,30 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     ///
     /// 「测出口会走隧道外面」这条**信息本身是要紧的**(它关系到隐私),但它属于
     /// 按钮的 tooltip,不属于一段常驻正文 —— 常驻的东西会被读一次然后永远忽略。
-    private func render(rows: [ServerRow]) {
+    private func render(rows: [ServerRow], emptyReason: String?) {
         guard let stack else { return }
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
 
+        // **空清单不是死路,而这里此前就是一条死路。**
+        //
+        // 原来这一支摆一句「No servers yet」加一行 `bx setup --name …` 然后
+        // `return` —— 而按钮带是在那个 return 之后才画的。于是零行时:没有
+        // Add Server、没有 New Server、没有 Test、没有 Exit IP,只剩一条
+        // **`urfave/cli` 会直接拒掉的命令**(`bx setup` 没有 `--name` 这个 flag)。
+        // 空清单恰恰是最需要 Add Server… 的那一刻。
+        //
+        // 措辞也不再由行数决定,而由**配置里到底有没有 servers 清单**决定
+        // (`serverListEmptyReason`):`bx setup` 从不写那个清单,所以对多数用户
+        // 说「还没有服务器」是一句当场就能被证伪的假话 —— bx 此刻正跑着一台。
         if rows.isEmpty {
-            let empty = NSTextField(labelWithString: "No servers yet")
-            stack.addArrangedSubview(empty)
-            stack.addArrangedSubview(hint("bx setup --name <name> '<link>'"))
-            return
+            let label = NSTextField(wrappingLabelWithString:
+                emptyReason ?? "No servers to switch to.")
+            label.preferredMaxLayoutWidth = 380
+            stack.addArrangedSubview(label)
+            stack.addArrangedSubview(gap())
         }
 
         for row in rows {
