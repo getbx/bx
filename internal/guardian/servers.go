@@ -41,6 +41,10 @@ type ServerEntry struct {
 // **Reachable 与 RTTMS 分开,而且 RTT 带 omitempty。** 把「没通」表达成 0 毫秒
 // 会让界面显示一个漂亮的零 —— 零值读起来像一切正常,这个仓库反复禁止过。
 type ProbeReport struct {
+	// Measured 为 false 时这一轮没测成,Reachable 无意义 —— 别去读它。
+	// **不带 omitempty**:键缺席读作「这一版 Guardian 没说」,而不是「没测成」,
+	// 是客户端区分新旧 Guardian 的唯一信号,与 Status.Capabilities 同一条纪律。
+	Measured  bool   `json:"measured"`
 	Reachable bool   `json:"reachable"`
 	RTTMS     int64  `json:"rtt_ms,omitempty"`
 	Error     string `json:"error,omitempty"`
@@ -352,7 +356,7 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 	for i := range entries {
 		host, port := entries[i].Host, entries[i].Port
 		if host == "" {
-			entries[i].Probe = &ProbeReport{Error: "链接解析不出主机"}
+			entries[i].Probe = &ProbeReport{Measured: false, Error: "could not parse a host from the link"}
 			continue
 		}
 		result, err := probe(host, port)
@@ -360,11 +364,11 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 			// Core 不可达 / 这一版不支持 —— 那是「没问出来」,**不是「不可达」**。
 			// 判成不可达会把一台好服务器标成红的。
 			log.Printf("guardian_server_probe_failed host=%s err=%v", host, err)
-			entries[i].Probe = &ProbeReport{Error: "没能测(bx 没在跑?)"}
+			entries[i].Probe = &ProbeReport{Measured: false, Error: "could not measure (is bx running?)"}
 			continue
 		}
 		entries[i].Probe = &ProbeReport{
-			Reachable: result.Reachable, RTTMS: result.RTTMS, Error: result.Error,
+			Measured: true, Reachable: result.Reachable, RTTMS: result.RTTMS, Error: result.Error,
 		}
 	}
 	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
