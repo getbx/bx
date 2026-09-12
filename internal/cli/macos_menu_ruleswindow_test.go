@@ -133,31 +133,118 @@ func TestMacMenuRulesWindowAnnouncesAnAbsentReview(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 RulesWindow.render 的函数体 —— 守卫已失效,先修守卫")
 	}
-	if !strings.Contains(render, "if let reviewNote {") {
-		t.Error("render 里没有为体检缺席那句话留的分支")
+	if !strings.Contains(render, "if let caveatNote {") {
+		t.Error("render 里没有为「这半问不出来」那句话留的分支")
 	}
-	if !strings.Contains(render, "labelWithString: reviewNote") ||
+	if !strings.Contains(render, "labelWithString: caveatNote") ||
 		!strings.Contains(render, "stack.addArrangedSubview(note)") {
 		t.Error("那句话没有被摆进视图树 —— 算出来没人看见,与没算一模一样")
 	}
 
 	// 判据不许在窗口里重算一份:窗口只能拿到别人算好的那句话。
-	if strings.Contains(window, "review ==") || strings.Contains(window, "ruleReviewUnavailableNote(") {
-		t.Error("窗口自己判了体检在不在 —— 判据该在 RulesModel 里")
+	if strings.Contains(window, "review ==") || strings.Contains(window, "ruleWindowCaveatNote(") ||
+		strings.Contains(window, "reachable") {
+		t.Error("窗口自己判了哪一半问不出来 —— 判据该在 RulesModel / answeringCore 里")
 	}
 
-	// main.swift 那一跳:每一次摆这张表都要带上它,漏一处就是那一条路上的
-	// 窗口重新变回「看起来干净」。
+	// main.swift 那一跳。**判据从「每一处都记得」换成了「只有一处」**:摆这张表
+	// 此前有五个入口,每个都要自己算一遍那句话,而这一版把它们收口进 presentRules。
+	// 后者严格更强 —— 没有第二处可以忘。
 	main := menuMainSwiftCode(t)
+	funnel, ok := swiftFunctionBody(main, "private func presentRules(")
+	if !ok {
+		t.Fatal("读不出 presentRules 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(funnel, "ruleWindowCaveatNote(") {
+		t.Error("摆这张表那个唯一的出口没有算那句话")
+	}
+	if !strings.Contains(funnel, "caveatNote: caveat") {
+		t.Error("算出来的那句话没传进窗口 —— 算了没人看见,与没算一模一样")
+	}
 	for _, call := range []string{"rulesWindow.show(", "rulesWindow.refreshIfVisible("} {
 		n := strings.Count(main, call)
 		if n == 0 {
 			t.Fatalf("main.swift 里找不到 %s —— 守卫已失效,先修守卫", call)
 		}
+		if got := strings.Count(funnel, call); got != n {
+			t.Errorf("%s 全文出现 %d 次,而 presentRules 里只有 %d 次 —— 有一条路绕开了那个出口,那条路上的窗口会重新变回「看起来干净」", call, n, got)
+		}
 	}
-	if got, want := strings.Count(main, "ruleReviewUnavailableNote("),
-		strings.Count(main, "rulesWindow.show(")+strings.Count(main, "rulesWindow.refreshIfVisible("); got != want {
-		t.Errorf("%d 处摆这张表,而只有 %d 处带上了体检缺席那句话", want, got)
+}
+
+// **「没问出来」不许在界面上长成「问了、没有规则在失败」。**
+//
+// Go 侧的契约是:Core 不应答时 `CoreRuntime.Reachable=false`,而其余字段**按构造
+// 全是零值**(`internal/guardian/types.go`)—— 于是 `failing_rules` 是空的。
+// 规则窗口此前在**每一处**都写 `self.maintenanceReport?.core?.failingRules ?? []`,
+// 把那个空数组读成「没有规则在失败」;而 `/v1/rules` 这一跳照样成功(Guardian
+// 自己读配置、自己算体检,不需要 Core),体检那句话也就不会出现。合起来的后果是:
+// 保护关着、Core 崩了或正在重启时,窗口摆出一排没有副标题的行、按最健康的一档排序,
+// 其中就有那条把用户招来的失败规则,**而这个窗口的约定是「不说话 = 健康」**。
+//
+// 判据钉在**语义**上,不在拼法上:
+//  1. 判定只有一份 —— 走 `answeringCore`(`reachable == true` 那道门),
+//     而不是在这里第二次决定「Core 算不算答过话」;
+//  2. 传进纯模型的那个 `coreAnswering:` 是**同一个值**推出来的,不是字面量
+//     (写死 true 就是没看答案先宣布问过了,与 leakcheck 那条
+//     `probeLanded(probe, true)` 是同一个形状);
+//  3. 全文不许再有「直接从 status 的 core 上摸 failing_rules」那条拼法。
+func TestMacMenuRulesWindowNeverReadsFailingRulesFromAnUnansweredCore(t *testing.T) {
+	main := menuMainSwiftCode(t)
+	funnel, ok := swiftFunctionBody(main, "private func presentRules(")
+	if !ok {
+		t.Fatal("读不出 presentRules 的函数体 —— 守卫已失效,先修守卫")
+	}
+
+	// ③ 绕过 reachable 那道门的那条拼法,全文一处都不许有 —— 包括 presentRules
+	// 自己。局部绑定刻意不叫 core,正是为了让这条判据分得开。
+	if strings.Contains(main, ".core?.failingRules") || strings.Contains(main, ".core!.failingRules") {
+		t.Error("有人又直接从 status 的 core 上摸 failing_rules —— Core 没应答时那是个空数组," +
+			"照它渲染就是把「没问出来」画成「一条都没在失败」")
+	}
+
+	// ① 判定只有一份。
+	if !strings.Contains(funnel, "answeringCore(maintenanceReport)") {
+		t.Error("presentRules 没走 answeringCore —— 这里再判一次 reachable 就是第二份判据")
+	}
+	if !strings.Contains(funnel, "answering?.failingRules ?? []") {
+		t.Error("失败归因不是从 answeringCore 的结果上取的")
+	}
+	// 取出来的那一份要真的喂给两张表,否则窗口照旧拿着别处算的东西画。
+	if got := strings.Count(funnel, "failing: failing"); got != 2 {
+		t.Errorf("presentRules 里只有 %d 处把 failing 传下去,组行与规则行各要一处", got)
+	}
+
+	// ② coreAnswering 由同一个绑定推出,不许是字面量。
+	if strings.Contains(main, "coreAnswering: true") || strings.Contains(main, "coreAnswering: false") {
+		t.Error("coreAnswering 写成了字面量 —— 那是没看答案就宣布问过了(或没问过)," +
+			"而它必须来自 answeringCore 那道门")
+	}
+	if !strings.Contains(funnel, "coreAnswering: answering != nil") {
+		t.Error("coreAnswering 不是从 answeringCore 的结果推出来的")
+	}
+
+	// 判据的另一半住在 MenuRows.swift:那个函数**必须不是 private**,否则规则
+	// 窗口够不着它,只能自己再写一份 —— 这个 bug 的原形。全仓也只许有一份定义。
+	rows := stripSwiftComments(readMenuSwiftSource(t, "MenuRows.swift"))
+	if strings.Contains(rows, "private func answeringCore(") {
+		t.Error("answeringCore 又变回 private 了 —— 规则窗口够不着它就会另写一份判据")
+	}
+	if n := strings.Count(rows, "func answeringCore("); n != 1 {
+		t.Fatalf("MenuRows.swift 里有 %d 个 answeringCore 定义 —— 守卫已失效,先修守卫", n)
+	}
+	if strings.Contains(main, "func answeringCore(") {
+		t.Error("main.swift 里出现了第二份 answeringCore")
+	}
+
+	// 纯模型那一半:那句话必须真的吃 Core 那半,不然收口了也只报体检。
+	model := stripSwiftComments(readMenuSwiftSource(t, "RulesModel.swift"))
+	note, ok := swiftFunctionBody(model, "func ruleWindowCaveatNote(")
+	if !ok {
+		t.Fatal("读不出 ruleWindowCaveatNote 的函数体 —— 守卫已失效,先修守卫")
+	}
+	if !strings.Contains(note, "coreAnswering") {
+		t.Error("那句话没看 Core 那半 —— 只报体检等于只修了一半")
 	}
 }
 

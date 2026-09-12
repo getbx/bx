@@ -766,9 +766,10 @@ customOnly:)`(`RulesModel.swift`)此前**早就存在、只有测试在调**,本
 **窗口那半同一轮修掉四条,每条都是「界面悄悄替服务端说了一句它没说过的话」**:
 ① **体检缺席 ≠ 体检说都健康** —— `list.review` 为 nil(旧 Guardian,或配置读不
 出来)时窗口照样摆一排没有副标题的行,而这个窗口的词汇表里「没有副标题」恰恰读作
-「查过了、健康」;现由 `ruleReviewUnavailableNote` 在表顶说明白,措辞按「nil 是
+「查过了、健康」;现由 `ruleWindowCaveatNote` 在表顶说明白,措辞按「nil 是
 『这版没说』」那条纪律(`TestMacMenuRulesWindowAnnouncesAnAbsentReview` 连
-**每一处摆表都带上它**一起钉,漏一处就是那条路上的窗口重新变回「看起来干净」)。
+**摆表只有一个出口、而那个出口自己带上它**一起钉 —— 判据 2026-09-12 从「每一处
+都记得」换成了「只有一处」,见下文那条)。
 ② **服务端写的是中文** —— `rulereview` 与 `deadFindings` 的 `summary` 原样渲染
 进一个通篇英文的菜单(`已在内建 china 直连列表里…… ← *.apple.com`);现由
 `ruleVerdictText` 按 `class` **在客户端映射成英文**(选客户端而不是让服务端多发
@@ -806,13 +807,56 @@ customOnly:)`(`RulesModel.swift`)此前**早就存在、只有测试在调**,本
 - **窗口开着时每一次环境刷新都拉一遍 `/v1/rules`**,而 Guardian 那一跳会重读配置、
   重建一张约 12k 条的 `route.DomainSet`(`internal/rulereviewsrc`)、再加一次 Core
   往返。与服务器窗口当初同一笔交易(窗口开着就说明有人正盯着)。**没量过。**
-- **`ruleReviewUnavailableNote` 把一次配置解析失败说成了版本问题** —— 它写的是
+- **`ruleWindowCaveatNote` 把一次配置解析失败说成了版本问题** —— 它写的是
   「这一版 bx 没检查这些规则」,而 `review == nil` 也包括「Guardian 读得到文件、
   `config.Parse` 拒了它」(`reviewRulesAt` 两条早退都返回 nil)。**要紧的那一半是
   对的**:它绝不宣称健康。
 - **`apps/macos/BxMenu/Sources/BxMenu/AppTrafficModel.swift` 里那句注释仍写作
   `riskyDirect`**,而守卫读的是 `riskyDirectDomains`(`internal/policy/policy.go`
   里两个都存在,前者是后者建出来的 `DomainSet`)。名字陈旧,说的事情属实。
+
+### 同一个窗口的第五条:Core 不应答时失败那半被读成「一条都没在失败」(2026-09-12,真机未验)
+
+**空数组在这里是「没问出来」,不是「没有」。** Go 侧的契约是 `CoreRuntime.Reachable`
+为 false 时**其余字段按构造全是零值**(`internal/guardian/types.go`),于是
+`failing_rules` 是空的;而规则窗口的五处摆表**一致地**写着
+`self.maintenanceReport?.core?.failingRules ?? []`,把它读成「没有规则在失败」。
+`/v1/rules` 那一跳照样成功(Guardian 自己读配置、自己算体检,**不需要 Core**),
+所以体检那句话也不会出现 —— 合起来:保护关着、Core 崩了或正在重启时,窗口摆出
+一排没有副标题的行、按最健康的一档排序,**其中就有那条把用户招来的失败规则**,
+而这个窗口自己的约定是「不说话 = 健康」。它不是边角:「Routing Rules…」那一项加在
+状态 switch 之外、只由 `rules` 能力门控,保护关着时照样点得开。
+**Swift 那侧其实早就知道这条契约**:`CoreRuntime.failingRules` 的注释写明「空
+**不是**没问出来 —— 后者由 reachable 表达」,`MenuRows.swift` 也早有
+`answeringCore()` 这道 `reachable == true` 的门,只是规则窗口那几处没用它。
+
+- **判据取 `reachable`,不取「数组空不空」**,并且**复用** `answeringCore`
+  (它因此不再 private):同一个问题不许有第二份判据,而第二份恰好答反了。
+- **一句话报两个半边,不是两条横幅**(`ruleWindowCaveatNote(_:coreAnswering:)`,
+  由 `ruleReviewUnavailableNote` 改名而来 —— 只报体检那半的名字会变成假话)。
+  理由两条:① 要更正用户的是**同一件事**(「这一行什么都没写」≠「查过了」),
+  并排说两遍只会训练他把顶上那块整个跳过去,而这个窗口的全部纪律就是「只在真有
+  问题时才占地方」;② 摆表的地方不止一处,两条横幅就是两次机会漏掉其中一条 ——
+  正是这次要修的那个形状。Core 答着话且体检收到了 ⇒ 恒 `nil`,**健康的机器上顶上
+  一个字都没有**(常驻横幅本身就是缺陷)。
+- **摆表收口成一个出口** `presentRules(_:forceShow:)`(此前五处各算一遍组行、
+  规则行、顶上那句话)。局部绑定刻意叫 `answering` 不叫 `core` —— 后者会拼成
+  `core?.failingRules`,与这个 bug 的原形逐字重合,守卫再也分不开「过了门的」与
+  「直接从 status 上摸的」。
+- **`ruleRowSeverity` 一个字不改,这是刻意的。** 「排在后面 = 更健康」这句话是由
+  **并列关系**说出来的;Core 不应答时失败那半对**每一行**都缺席,没有任何一行因此
+  被排到另一行后面 —— 排序退化成配置里的原顺序,它什么也没断言,而体检那半若还在,
+  它的几类照旧排到最前。反过来给纯排序再塞一个 `coreAnswering` 参数,就是把
+  `reachable` 抄成第二份,换来的东西横幅已经说了。
+
+**守卫两侧**:纯模型 `RulesModelTests.testCoreNotAnsweringIsNotRenderedAsNothingFailing`
+钉的是**用户看得见的东西** —— 同一份规则、同样一个空的 failing 数组,「Core 没答话」
+那次与「Core 答了、一条都没在失败」那次**必须长得不一样**(拿顶上那句话 + 每一行的
+模式与副标题拼成一个串比);接线 `TestMacMenuRulesWindowNeverReadsFailingRulesFromAnUnansweredCore`
+钉语义不钉拼法:全文不许再出现 `.core?.failingRules`、`coreAnswering:` 不许是字面量
+(写死 true 就是没看答案先宣布问过了,与 leakcheck 那条 `probeLanded(probe, true)`
+同形)、`answeringCore` 不许变回 private 也不许有第二份定义。
+**真机未验**:窗口顶上那句话的观感与换行。
 
 ## 菜单精简:18 行 → 11 行,子菜单从此可用(2026-09-08,真机未验)
 
