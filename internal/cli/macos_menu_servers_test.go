@@ -655,31 +655,40 @@ func swiftBraceDepthAt(body string, at int) int {
 // (三个不同的 if let 分支各一次),不限定的话「A 分支摆了」会替「B 分支没摆」
 // 作证 —— 那正好又是一次「守卫钉住的是缺陷旁边的东西」。
 
-// swiftBlockAt 取包着 at 这一处的**最内层**花括号块的内容(不含花括号本身)。
-// 找不到(at 落在函数体顶层)就返回整个 body。
-func swiftBlockAt(body string, at int) string {
-	blank := blankSwiftStringLiterals(body)
-	// 往回找最近一个没配平的 `{`。
+// swiftEnclosingBlockOpen 往回找**包着 at 的那个**没配平的 `{` 的下标;
+// at 落在 body 顶层时返回 -1。
+//
+// 「没配平」这三个字是这一整段的要害:它区分「包着它的那个块」与「在它前面
+// 某处出现过的那个块」,而后者正是 swiftNearestEnclosingIf 上一版的判据 ——
+// 见 swiftEnclosingGate 头上那段。
+func swiftEnclosingBlockOpen(blank string, at int) int {
+	if at > len(blank) {
+		at = len(blank)
+	}
 	depth := 0
-	open := -1
 	for i := at - 1; i >= 0; i-- {
 		switch blank[i] {
 		case '}':
 			depth++
 		case '{':
 			if depth == 0 {
-				open = i
-			} else {
-				depth--
+				return i
 			}
-		}
-		if open >= 0 {
-			break
+			depth--
 		}
 	}
+	return -1
+}
+
+// swiftBlockAt 取包着 at 这一处的**最内层**花括号块的内容(不含花括号本身)。
+// 找不到(at 落在函数体顶层)就返回整个 body。
+func swiftBlockAt(body string, at int) string {
+	blank := blankSwiftStringLiterals(body)
+	open := swiftEnclosingBlockOpen(blank, at)
 	if open < 0 {
 		return body
 	}
+	depth := 0
 	depth = 0
 	for i := open; i < len(blank); i++ {
 		switch blank[i] {
@@ -782,22 +791,31 @@ func swiftValueReachesViewTree(body, seed string) bool {
 	return false
 }
 
-// swiftNearestEnclosingIf 取 at 之前**最近**的那个 `if `(整行,去掉首尾空白)。
-// 固定字节窗口在本仓库被邻近函数满足过,所以问的是「包着它的那个条件」。
-func swiftNearestEnclosingIf(body string, at int) (string, bool) {
+// swiftEnclosingGate 取**真的包着 at 的那个块**的头一行(到它的 `{` 为止)。
+//
+// **上一版叫 swiftNearestEnclosingIf,而它没有验证「包着」** —— 它算的是
+// 「at 之前最近的那一行 `if `」。名字与两条失败文案都写着「**直接**门控」,
+// 而判据只是「前面有一个匹配的 if」。reviewer 实测的后果:留一个诱饵
+// `if canEdit { _ = row.name }`,把 `box.addArrangedSubview(moreButton(…))`
+// **挪到它外面** —— 编得过、整套全绿,而 `⋯` 从此无条件画出来。那正是这道门
+// 存在的理由所要挡的 Critical:对着只声明 `servers` 的 Guardian 提供
+// remove / replace,而 replace 在那儿会落进兼容分支、拿旧链接热切一次,
+// 菜单还报成功。
+//
+// 这是这一支上同一个物种的**第十一次**,而且这次长在守卫自己的 helper 里 ——
+// 每一条建在它上面的断言都继承了这个弱点。现在判据由构造保证:先按括号配平
+// 往回找**包着** at 的那个 `{`(`swiftEnclosingBlockOpen`),再取它那一行。
+//
+// at 落在 body 顶层(没有任何块包着它)时返回 ("", false) —— 那正是诱饵变异
+// 的形状,调用方必须把它当成失败。
+func swiftEnclosingGate(body string, at int) (string, bool) {
 	blank := blankSwiftStringLiterals(body)
-	if at > len(blank) {
+	open := swiftEnclosingBlockOpen(blank, at)
+	if open < 0 {
 		return "", false
 	}
-	idx := strings.LastIndex(blank[:at], "if ")
-	if idx < 0 {
-		return "", false
-	}
-	end := strings.IndexByte(body[idx:], '\n')
-	if end < 0 {
-		end = len(body) - idx
-	}
-	return strings.TrimSpace(body[idx : idx+end]), true
+	lineStart := strings.LastIndexByte(blank[:open], '\n') + 1
+	return strings.TrimSpace(body[lineStart : open+1]), true
 }
 
 // **每一个渲染点都必须带上 `/v1/status` 的那份实时数据,而漏掉它不会有任何
@@ -916,9 +934,10 @@ func TestMacMenuServersWindowPlacesTheCurrentServerPanel(t *testing.T) {
 		t.Fatalf("当前那一块里有 %d 处 .systemRed,应当恰好一处 —— "+
 			"多出来的那些不受 statusLineIsBad 这个三态判据管", n)
 	}
-	gate, ok := swiftNearestEnclosingIf(panel, red)
-	if !ok || gate != "if panel.statusLineIsBad { label.textColor = .systemRed }" {
-		t.Errorf("隧道健不健康的红色不是由 statusLineIsBad 直接决定的(包着它的条件是 %q)", gate)
+	gate, ok := swiftEnclosingGate(panel, red)
+	if !ok || gate != "if panel.statusLineIsBad {" {
+		t.Errorf("隧道健不健康的红色不是**包在** statusLineIsBad 里的"+
+			"(包着它的那个块的头是 %q)", gate)
 	}
 }
 
@@ -964,17 +983,24 @@ func TestMacMenuServerVerbsAreGatedByTheEditCapability(t *testing.T) {
 		"private func serverView(_ row: ServerRow) -> NSView",
 		"private func currentPanelView(_ panel: CurrentServerPanel) -> NSView",
 	} {
+		// **这个循环里一律 t.Errorf,不许 t.Fatalf。** 两个主体各查一遍,而
+		// `Fatalf` 会在第一个主体上停住 —— 于是「两处都坏了」只报出一处,
+		// 下一个人修完那一处会以为修完了。本仓库为「Fatal 让后面的断言够不着」
+		// 栽过两次,这一支里就有。
 		fnBody, ok := swiftFunctionBody(window, fn)
 		if !ok {
-			t.Fatalf("读不出 %s 的函数体 —— 守卫已经失效,先修守卫", fn)
+			t.Errorf("读不出 %s 的函数体 —— 守卫已经失效,先修守卫", fn)
+			continue
 		}
 		more := strings.Index(fnBody, "moreButton(")
 		if more < 0 {
-			t.Fatalf("%s 上没有那个 ⋯ —— 那几个动词点不到", fn)
+			t.Errorf("%s 上没有那个 ⋯ —— 那几个动词点不到", fn)
+			continue
 		}
-		gate, ok := swiftNearestEnclosingIf(fnBody, more)
+		gate, ok := swiftEnclosingGate(fnBody, more)
 		if !ok || gate != "if canEdit {" {
-			t.Errorf("%s 里的 ⋯ 不是由 canEdit 直接门控的(包着它的条件是 %q)", fn, gate)
+			t.Errorf("%s 里的 ⋯ 不是**包在** canEdit 里的(包着它的那个块的头是 %q)—— "+
+				"一个留在旁边的 `if canEdit { … }` 诱饵不算数", fn, gate)
 		}
 	}
 }
@@ -1000,7 +1026,7 @@ func TestMacMenuServerRowRedComesOnlyFromAMeasuredFailure(t *testing.T) {
 			"多出来的那些不受「只有实测失败才红」这个判据管", n)
 	}
 	red := strings.Index(body, ".systemRed")
-	gate, ok := swiftNearestEnclosingIf(body, red)
+	gate, ok := swiftEnclosingGate(body, red)
 	if !ok || gate != "if row.probe.isFailure {" {
 		t.Errorf("候选行的红色不是由 row.probe.isFailure 决定的(包着它的条件是 %q)—— "+
 			"「没测过」与「没测成」被画成红的,等于把一整排好服务器说成坏的", gate)
