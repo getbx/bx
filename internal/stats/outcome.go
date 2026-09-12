@@ -162,7 +162,17 @@ func (s Snapshot) FailingRules() []RuleOutcome {
 }
 
 // UDP 那三条来源的名字。**与 internal/dialer 里的常量必须一致** ——
-// 这是唯一一处跨包按字符串对齐的地方,由 TestUDPSourceNamesMatchTheDialer 钉住。
+// 这是唯一一处跨包按字符串对齐的地方。
+//
+// 名字下沉到叶子包 internal/udpsource 之后两边共读同一份,漂移在构造上不可能;
+// 当初那条读 dialer.go 源码文本的守卫因此退场(登记在 retiredTestNames 里)。
+//
+// **今天真正钉住的只有本包这一侧**:TestUDPSourceNamesComeFromTheSharedLeafPackage
+// 比的是下面这三个别名与 udpsource 的值。dialer 那一侧没有任何守卫 —— 有人在那边
+// 写回字面量(连同去掉那行 import),两个包照样全绿(2026-09-12 实测过),而此后
+// 叶子包一改就是静默漂移。**不补一条是想过的**:能咬中那个变异的只有读源码/AST 的
+// 守卫,而那正是下沉叶子包所要消灭的东西;按值比的镜像守卫咬不中它(字面量与叶子包
+// 的值今天恰好相等),那种守卫看起来像保护而其实不是。
 const (
 	// 与 dialer 共读 internal/udpsource 那一份 —— 见该包头上那段。
 	udpSourceProxy          = udpsource.Proxy

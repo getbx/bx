@@ -110,8 +110,10 @@ udp:
 killswitch: true
 ```
 
-两条隧道并行运行,各自独立 fail-closed:**UDP 传输挂 → UDP Block(不回落主传输/直连)**。`bx status`
-显示 `UDP→hysteria2@<vps>`。这样**既安全(都不泄漏)又有速度(UDP 走最适合的引擎)**。
+两条隧道并行运行:**UDP 传输挂 → UDP 回落主传输**(两者去的是同一台 VPS、同一条加密隧道,
+回落它不泄漏真实 IP,只是没了 QUIC 加速档;`bx status` 会把回落次数说出来),**主传输也挂才
+Block**——任何时候都绝不回落直连。`bx status` 显示 `UDP→hysteria2@<vps>`。这样**既安全(都不
+泄漏)又有速度(UDP 走最适合的引擎)**。
 
 > UDP 默认 `mode: block`(QUIC 自动回落 TCP,安全)。想要 UDP 走隧道才设 `proxy`;想要 UDP 提速再加
 > `udp.transport`。三档按需。

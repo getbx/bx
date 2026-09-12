@@ -15,7 +15,10 @@ import (
 // 本文件是调谐环:周期性地把「用户要什么」与「系统实际是什么」对一次。
 // 阶段③a(2026-08-09)它只说不做;**阶段③b(2026-08-29)起,desired=off 的
 // 两个清理动作有执行权**(白名单与五条执行纪律见 reconcile_execute.go 与
-// 2026-08-29-stage3b-cleanup-actions-design.md),start/stop core 仍观察态。
+// 2026-08-29-stage3b-cleanup-actions-design.md);**阶段③c(2026-09-05)起
+// start_core 也在白名单里**(准入是槽内现扫 ScanRunning、每段故障至多
+// maxReconcileStartCoreAttempts 次,见 2026-09-05-stage3c-start-core-design.md)。
+// 观察态今天只剩 stop_core 一个。
 //
 // 三件事在这里是硬性的:
 //

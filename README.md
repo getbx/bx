@@ -556,7 +556,7 @@ rules:
 - `bypass`:路由层绕过 bx 的网段,适合管理网、SSH、内网。
 - 私网、Docker、loopback、link-local 默认内建直连,通常无需手动配置。
 - `transports: [link1, link2, ...]`(替代 `server:`):多传输自动容灾,有序优先级,主挂自动切备。
-- `udp.transport: "hysteria2://..."`:按类分流——UDP/QUIC 走它加速、TCP 走主传输。各自独立 fail-closed。
+- `udp.transport: "hysteria2://..."`:按类分流——UDP/QUIC 走它加速、TCP 走主传输。它挂了 UDP 自动回落主传输(同一台 VPS、同一条加密隧道,不泄漏,只是没了加速档);主传输也挂才 fail-closed 阻断。
 - 多传输/分流详见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
 
 ### 路由器模式(mode: router)

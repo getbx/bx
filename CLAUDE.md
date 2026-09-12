@@ -18,7 +18,7 @@
 
 **传输层(可插拔多传输,2026-06 加)**:`tunnel.Tunnel/Runner/socks5Health` 抽象同构容纳**六种引擎**——`NewBrook`(内嵌 brook 子进程)、`NewReality`(sing-box vless-reality,`reality.go`+`vlesslink.go`,TCP 抗 DPI)、`NewHysteria2`(sing-box hysteria2,`hysteria2.go`+`hysteria2link.go`,QUIC/UDP,丢包高 RTT 链路快)、`NewTrojan`(sing-box trojan,`trojan.go`+`trojanlink.go`,TLS)、`NewShadowsocks`(sing-box shadowsocks,`ss.go`+`sslink.go`,认 SIP002 与 legacy 两种 ss:// 格式)、`NewVmess`(sing-box vmess,`vmess.go`+`vmesslink.go`,v2rayN base64-JSON,认 tcp/ws/grpc/h2 传输 + 可选 TLS,port/aid 字符串或数字都吃)。`transportKind`/`buildTunnel` 按 server link scheme 派发(`vless://`→reality,`hysteria2:///hy2://`→hysteria2,`trojan://`→trojan,`ss://`→shadowsocks,`vmess://`→vmess,其余→brook)。**关键不变量自动继承**:引擎不碰数据面,kill-switch/fail-closed/fakeip 分流零成本沿用;防环靠 `serverHostFromLink`(认 vless/hysteria2/trojan 的 authority host;`ss://`/`vmess://` authority 是 base64 走 `tunnel.SSHost`/`tunnel.VmessHost` 专解)做 server bypass。sing-box **已内嵌**(linux amd64/arm64,自建静态 `with_utls,with_quic`,~28MB),`provision.EnsureSingbox` 优先级 `override > 内嵌 > 下载兜底`,根除自举悖论;`embedCacheKey`=版本+内容 hash,重嵌换 tag 也刷新缓存。**新传输真机 e2e 已验(2026-06-30,VPS 203.0.113.20)**:用 bx 自己的 `parseSSLink`/`parseVmessLink`/`parseTrojanLink`+`singboxConfig` 生成的客户端配置,对真实 sing-box 服务端(ss aes-256-gcm / vmess tcp / trojan TLS 自签 insecure)实跑握手——三者经隧道出口 IP 全 == VPS(api.ipify HTTP + 1.1.1.1/cdn-cgi/trace TLS 双验),**ss/vmess/trojan 协议层全部坐实**;**hysteria2(QUIC/UDP,TLS 自签)亦同法 e2e 已验,出口==VPS**——至此 brook/reality/hysteria2/trojan/ss/vmess **六种全部真机握手背书**。**服务端生成 e2e(2026-06-30,`internal/srvgen` + `bx server install --protocol`)**:bx 生成的 **hysteria2 + reality 服务端**配置均真机跑通,出口==VPS ✅。**reality+hys2 合体(`--with-hysteria2`,一份 sing-box 配两入站)+ reality 多用户 share(`srvgen.AddRealityUser` 加第二 uuid)也真机验过**:2-user reality 服务端跑通,经 **share 用户(第二 uuid,链接 `swapVlessUUID` 换壳)** 连上、出口==VPS——`bx server share` 多用户坐实。**reality 一度全挂、真因是默认 SNI `www.microsoft.com` 证书过大**(~3410B 叶证书,超 reality 借壳中继证书承受 → `processed invalid connection`);**换 `www.cloudflare.com`(~1322B)后:VPS loopback 通、Mudi(真实中国网络,egress 203.0.113.30)→VPS 跨主机也通,且 api.ipify(GFW 直连被挡)经 reality 出口==VPS——reality 跨 GFW 坐实。** 教训坑:① **reality 握手 `processed invalid connection` 先查 SNI 证书大小**(microsoft 必挂),别误归因 sing-box #4023 同机问题或网络 MITM(本次都误判过——reality 同机 loopback 用好 SNI 照样通);默认已固定 cloudflare + 回归守卫(`TestDefaultRealitySNINotMicrosoft`)。② 从「本身已被代理(出口 203.0.113.10)」的机器直连 VPS 高端口,TCP CONNECT 成功但批量数据被双跳 MTU 黑洞(health 绿、curl exit 28)——故 ss/vmess/trojan/hys2 的 e2e 用 **VPS loopback 跑 bx 生成的配置**绕开本地烂路径;但 **reality 不能 loopback 同机测得太干净时也 OK**(本次同机用 cloudflare 通了),真实跨 GFW 复验用 **Mudi 路由器**(干净第三方 arm64 客户端)。③ 验出口用 api.ipify.org/1.1.1.1-trace,别用 china 列表里的 ifconfig.me。VPS 防火墙只放行 22141+9999(测高端口要临时 `ufw allow`,测完删)。
 
-**多传输能力(S1-S5,2026-06-29)**:① **自动容灾**(`failover.go`):config `transports: [link,...]`(有序优先级,reality 主),`failoverPolicy.decide`(滞回+冷静期+全挂不切防抖)+ `transportSwapper.swapTo` 后台 `runFailover` 监健康自动切备,全程 fail-closed(swapper 建新→等健康→SetTransport→停旧;全挂保持当前+Block,不横跳)。② **按类分流**(speed-within-safety):config `udp.transport: hysteria2://…`(仅 mode=proxy),dialer `SetUDPTransport`——UDP/QUIC 走 hysteria(速度)、TCP 走主传输,**各自独立 fail-closed**(UDP 传输挂→UDP Block,绝不回落)。其 server 也进 bypass+静态 DNS 防环。③ **单 link bundle**(`blink.EncodeMulti/DecodeAll`):`bx blink l1 l2 …` → 一条 `bx://` 装多传输,`bx setup` 一贴配好全部+容灾;envelope `links[]`,单元素退化 legacy 兼容。④ **裸链接直收+提示**:`bx setup vless://…` 直接用,但 `rawLinkRisk` 提示建议 `bx blink` 换壳(命令行/分享面防泄)。
+**多传输能力(S1-S5,2026-06-29)**:① **自动容灾**(`failover.go`):config `transports: [link,...]`(有序优先级,reality 主),`failoverPolicy.decide`(滞回+冷静期+全挂不切防抖)+ `transportSwapper.swapTo` 后台 `runFailover` 监健康自动切备,全程 fail-closed(swapper 建新→等健康→SetTransport→停旧;全挂保持当前+Block,不横跳)。② **按类分流**(speed-within-safety):config `udp.transport: hysteria2://…`(仅 mode=proxy),dialer `SetUDPTransport`——UDP/QUIC 走 hysteria(速度)、TCP 走主传输。**专用 UDP 传输挂掉时回落主传输,不 Block**(`113876b`,2026-07-10 刻意反转了原来那条「绝不回落」的不变量:两者去的是同一台 VPS、同一条加密隧道,回落它 ≠ 回落直连、不泄漏,而黑洞 UDP 只会让 hysteria2 一抖整机 UDP 就断);回落记在 `udp_proxy_fallback` 上、`bx status` 的 UDPNotice 会说出来,**主传输也挂才 fail-closed Block**。其 server 也进 bypass+静态 DNS 防环。③ **单 link bundle**(`blink.EncodeMulti/DecodeAll`):`bx blink l1 l2 …` → 一条 `bx://` 装多传输,`bx setup` 一贴配好全部+容灾;envelope `links[]`,单元素退化 legacy 兼容。④ **裸链接直收+提示**:`bx setup vless://…` 直接用,但 `rawLinkRisk` 提示建议 `bx blink` 换壳(命令行/分享面防泄)。
 
 **包速查**:`cli`(命令)·`config`(yaml schema)·`blink`(base64url 换壳 brook/vless/hysteria2 link,多传输 bundle)·`setup`/`install`(开箱+systemd+自装 PATH)·`provision`(内嵌 brook/sing-box+china 释放,sing-box 兜底下载)/`embedded`(内嵌资产)·`supervisor`(编排+路由+传输派发+自动容灾 `failover.go`)·`tunnel`(brook/reality/hysteria2/trojan/shadowsocks/vmess 子进程隧道)·`tun`(gVisor 引擎)·`dialer`(分流+按类 UDP 传输)/`route`/`dns`/`fakeip`·`stats`(面板)。
 
@@ -788,6 +788,31 @@ customOnly:)`(`RulesModel.swift`)此前**早就存在、只有测试在调**,本
 套件全绿**。**真机未验**:默认窗口大小的表格布局与列宽、`Add Rule…` 三种
 结局(接受 / 409 后 Add Anyway / 非法输入)、`Remove`+`Undo`、右键候选过滤,见
 `internal/cli/macos_menu_ruleswindow_test.go`。
+
+**收尾时停在台账里、当时没进这份文件的六条(2026-09-12 补记)。** 它们是**已知
+并接受**,不是待修的 bug —— 补记的理由与这份文件反复罚过的那件事互为镜像:那边
+是一份说谎的清单,这边是一份**根本不存在**的清单,而后者连让人去核一遍的机会都
+不给。逐条核过仍然成立:
+
+- **Add Rule 是可重入的**(拨号改异步之后)。第一次还在飞时用户可以再点一次
+  `Add Rule…`,而 409 回来时 `askForNewRule` 会在已经开着的那个 modal 上再叠一个。
+  **不丢字**:每一轮 `addRuleFromWindow` 自建一份 accessory view,两条流各写各的。
+- **`addRuleBack`(Undo)没有在飞守卫** —— 双击就是两次 **带 force** 的 add
+  (对照:`removeRuleFromWindow` 有 `ruleRemovalsInFlight`)。无害的**承重理由是
+  `setup.AddRule` 幂等**,不是「点两下不会发生」;哪天那个幂等没了,这里就要补守卫。
+- **`RuleFinding.summary` 解出来了、一个字都没渲染** —— 窗口改成按 `class` 映射
+  英文(`ruleVerdictText`)之后它就没有消费方了。**留着是 wire 契约**(同一份
+  `summary` 还喂着中文的 `bx doctor`/`bx status`),不是死字段。
+- **窗口开着时每一次环境刷新都拉一遍 `/v1/rules`**,而 Guardian 那一跳会重读配置、
+  重建一张约 12k 条的 `route.DomainSet`(`internal/rulereviewsrc`)、再加一次 Core
+  往返。与服务器窗口当初同一笔交易(窗口开着就说明有人正盯着)。**没量过。**
+- **`ruleReviewUnavailableNote` 把一次配置解析失败说成了版本问题** —— 它写的是
+  「这一版 bx 没检查这些规则」,而 `review == nil` 也包括「Guardian 读得到文件、
+  `config.Parse` 拒了它」(`reviewRulesAt` 两条早退都返回 nil)。**要紧的那一半是
+  对的**:它绝不宣称健康。
+- **`apps/macos/BxMenu/Sources/BxMenu/AppTrafficModel.swift` 里那句注释仍写作
+  `riskyDirect`**,而守卫读的是 `riskyDirectDomains`(`internal/policy/policy.go`
+  里两个都存在,前者是后者建出来的 `DomainSet`)。名字陈旧,说的事情属实。
 
 ## 菜单精简:18 行 → 11 行,子菜单从此可用(2026-09-08,真机未验)
 
@@ -1650,7 +1675,7 @@ Configuration:`servers add` 同名 409、名字可省略时 Guardian 用 `setup.
 永远会探测**,它没有 `--skip-probe` 这个概念,故 Checks 页比 CLI 那份多一行 `probe`
 是预期的,不是漂移)、Add Server 三种结局、两页布局。
 
-**真机验收当场抓到两条判据缺陷(2026-09-10,已修)**:① **关掉保护被说成故障** ——
+**真机验收当场抓到三条缺陷(2026-09-10,已修;前两条是判据,第三条是界面)**:① **关掉保护被说成故障** ——
 用户 `bx down` 之后 `guardian_dns` 报 `fail` 并 hint「sudo bx up」,而 DNS 还给系统
 正是关闭态该有的样子;新 Checks 页把这条红字顶在最上面、合计写「1 failed」,一台
 完全正常的机器被说成坏的(与 Tailscale advisory 当初同一形状)。判据当时只看
