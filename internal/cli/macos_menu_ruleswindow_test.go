@@ -230,8 +230,21 @@ func TestMacMenuRulesWindowNeverReadsFailingRulesFromAnUnansweredCore(t *testing
 	if strings.Contains(rows, "private func answeringCore(") {
 		t.Error("answeringCore 又变回 private 了 —— 规则窗口够不着它就会另写一份判据")
 	}
-	if n := strings.Count(rows, "func answeringCore("); n != 1 {
-		t.Fatalf("MenuRows.swift 里有 %d 个 answeringCore 定义 —— 守卫已失效,先修守卫", n)
+	// **允许一个薄壳重载,但判据仍然只许有一份。** 服务器窗口拿到的是
+	// `CoreRuntime?`(`maintenanceReport?.core`),菜单拿到的是整份
+	// `GuardianStatus?` —— 同一个问题的两个入口。所以这里钉的不是「只有一个
+	// 函数」,而是**那句判据只写了一遍**、壳真的把活转发给它:一个自己再判一次
+	// reachable 的重载,与另写一份判据在出事的方式上完全一样。
+	defs := strings.Count(rows, "func answeringCore(")
+	if defs < 1 || defs > 2 {
+		t.Fatalf("MenuRows.swift 里有 %d 个 answeringCore 定义 —— 守卫已失效,先修守卫", defs)
+	}
+	if n := strings.Count(rows, "core.reachable == true"); n != 1 {
+		t.Fatalf("判据 `core.reachable == true` 在 MenuRows.swift 里出现 %d 次 —— "+
+			"它只许有一份;多一份就是那个 bug 的原形", n)
+	}
+	if defs == 2 && !strings.Contains(rows, "answeringCore(status?.core)") {
+		t.Error("那个重载不是薄壳(没把活转发给唯一那份判据)—— 它自己判了一遍")
 	}
 	if strings.Contains(main, "func answeringCore(") {
 		t.Error("main.swift 里出现了第二份 answeringCore")

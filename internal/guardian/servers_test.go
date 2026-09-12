@@ -1423,3 +1423,53 @@ func TestServerRemoveSaysWhenTheNameIsAlreadyGone(t *testing.T) {
 		t.Errorf("删一个不存在的名字动了盘上的配置")
 	}
 }
+
+// **单服务器配置不是「一份空清单」,而窗口要说不同的话。**
+//
+// `bx setup` 从不写 `servers:` 清单,所以每一个正常装好 bx 的用户打开服务器
+// 窗口时清单都是空的 —— 而 bx 此刻正跑着一台服务器。两种「空」在 JSON 里都是
+// `[]`,客户端推不出来,所以这个区分必须由服务端说出来。
+func TestSingleServerConfigIsDistinguishableFromAnEmptyServerList(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"单服务器配置", "server: vless://" + serversTestUUID + "@203.0.113.10:443\n", true},
+		{"transports 配置", "transports:\n    - vless://" + serversTestUUID + "@203.0.113.10:443\n", true},
+		{"空清单", "servers: []\n", false},
+		{"有清单", "servers:\n    - name: tokyo\n      link: vless://" +
+			serversTestUUID + "@203.0.113.10:443\ncurrent: tokyo\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			serversHandler(path, 501, noSwitch(t), nil, nil)(
+				w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
+			)
+			if w.Code != http.StatusOK {
+				t.Fatalf("状态码 = %d,body=%s", w.Code, w.Body.String())
+			}
+			var resp ServerListResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.SingleServer != tc.want {
+				t.Errorf("single_server = %v, want %v(body=%s)", resp.SingleServer, tc.want, w.Body.String())
+			}
+		})
+	}
+
+	// **不带 omitempty**:键缺席读作「这一版 Guardian 没说」,而它是客户端
+	// 区分新旧 Guardian 的唯一信号。
+	b, err := json.Marshal(ServerListResponse{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"single_server"`) {
+		t.Fatalf("single_server 带了 omitempty:%s —— 键缺席就与旧 Guardian 无法区分了", b)
+	}
+}

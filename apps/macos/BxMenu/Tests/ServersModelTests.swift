@@ -15,6 +15,42 @@ struct ServersModelTests {
 
     // 服务器清单那一半的纯逻辑守卫。
 
+    // MARK: - fixtures
+    //
+    // **形状必须是生产真的会发生的那些。** 本仓库栽过一次:Swift fixture 喂的是
+    // 生产不会出现的形状(键缺席 vs null),两者恰好走同一分支,于是守卫守了个寂寞。
+
+    /// 一份正常的两台清单,tokyo 是配置里选的那台、也是 Core 报的那台。
+    static func listWithCurrent() -> ServerList {
+        ServerList(
+            servers: [
+                ServerEntry(name: "tokyo", host: "203.0.113.10", port: 443, current: true,
+                            peakBPS: 6_400_000, peakAgeSeconds: 7200),
+                ServerEntry(name: "osaka", host: "203.0.113.20", port: 443, udpHost: "203.0.113.21"),
+            ],
+            current: "tokyo", configPath: "/etc/bx/config.yaml", running: "tokyo")
+    }
+
+    static func listWithTwo() -> ServerList { listWithCurrent() }
+
+    /// 单服务器配置(`server:` / `transports:`):配置里**根本没有** servers 清单。
+    /// 这是每一个正常装好 bx 的用户打开这个窗口时看到的形状。
+    static func singleServerConfig() -> ServerList {
+        ServerList(servers: [], current: "", configPath: "/etc/bx/config.yaml", singleServer: true)
+    }
+
+    /// 有 servers 清单,但确实是空的。
+    static func emptyServerList() -> ServerList {
+        ServerList(servers: [], current: "", configPath: "/etc/bx/config.yaml", singleServer: false)
+    }
+
+    /// Core 在答话。
+    static func answeringCoreRuntime() -> CoreRuntime {
+        CoreRuntime(reachable: true, tunnelHealthy: true, latencyMS: 1051,
+                    server: "tokyo", transport: "reality@203.0.113.10",
+                    udpMode: "proxy", udpTransport: "hysteria2@203.0.113.21")
+    }
+
     static func testServerListDecodesWhatGuardianSends() {
         let json = """
         {"servers":[
@@ -44,11 +80,11 @@ struct ServersModelTests {
     // 副标题要显示出口主机;UDP 走另一台时必须单独标出来 —— 少了它,UDP 会静默
     // 从另一个 IP 出去,而界面上一个字都不说。
     static func testServerRowShowsWhereTrafficLeaves() {
-        let rows = serverRows(from: ServerList(servers: [
+        let rows = [
             ServerEntry(name: "tokyo", host: "203.0.113.10", current: true),
             ServerEntry(name: "osaka", host: "203.0.113.20", udpHost: "203.0.113.21"),
             ServerEntry(name: "broken", host: ""),
-        ]))
+        ].map { ServerRow(entry: $0) }
         expect(rows[0].detail == "203.0.113.10", "detail = \(rows[0].detail)")
         expect(rows[1].detail.contains("UDP → 203.0.113.21"), "UDP 出口没显示:\(rows[1].detail)")
         expect(rows[2].detail.contains("could not be parsed"), "坏链接没说出来:\(rows[2].detail)")
@@ -56,11 +92,11 @@ struct ServersModelTests {
 
     // 当前那台点了是空操作(看起来像坏了);主机解析不出来的那台切过去必然失败。
     static func testUnselectableRows() {
-        let rows = serverRows(from: ServerList(servers: [
+        let rows = [
             ServerEntry(name: "tokyo", host: "203.0.113.10", current: true),
             ServerEntry(name: "osaka", host: "203.0.113.20"),
             ServerEntry(name: "broken", host: ""),
-        ]))
+        ].map { ServerRow(entry: $0) }
         expect(!rows[0].isSelectable, "当前那台还能点")
         expect(rows[1].isSelectable, "另一台点不了")
         expect(!rows[2].isSelectable, "主机解析不出来的那台还能点")
@@ -78,12 +114,12 @@ struct ServersModelTests {
     // **热切没成功时不许说「已切换」。** 配置写好了但正在跑的实例还在旧服务器上,
     // 不明说要重启,用户就会以为已经换过去了。
     static func testSwitchOutcomeSeparatesConfigFromRunningTunnel() {
-        let applied = serverSwitchOutcomeMessage(
-            result: ServerSwitchResult(name: "osaka", host: "203.0.113.20", applied: true))
+        let applied = switchOutcomeMessage(
+            ServerSwitchResult(name: "osaka", host: "203.0.113.20", applied: true))
         expect(applied.contains("now leaves from"), "生效那句不对:\(applied)")
 
-        let saved = serverSwitchOutcomeMessage(
-            result: ServerSwitchResult(name: "osaka", host: "203.0.113.20", applied: false))
+        let saved = switchOutcomeMessage(
+            ServerSwitchResult(name: "osaka", host: "203.0.113.20", applied: false))
         expect(!saved.contains("now leaves from"), "没生效却说流量已经从新那台出去了:\(saved)")
         expect(saved.lowercased().contains("off and on"), "没告诉用户要重启:\(saved)")
     }
@@ -128,27 +164,27 @@ struct ServersModelTests {
     static func testUntestedServersSaySilentlyNothing() {
         let row = ServerRow(entry: ServerEntry(name: "tokyo", host: "203.0.113.10"))
         expect(row.probeLine == nil, "没测过却说了话:\(row.probeLine ?? "")")
-        expect(!row.probeFailed, "没测过却被标成失败")
+        expect(!row.probe.isFailure, "没测过却被标成失败")
         expect(row.detail == "203.0.113.10", "detail 里混进了探测:\(row.detail)")
     }
 
     // 测通了报毫秒;测不通报**原因**,不是一个光秃秃的红叉 —— 用户要分得清
     // 「服务器关了」和「我这条网络的问题」。
     static func testProbeLineSaysMillisecondsOrWhyNot() {
-        let ok = ServerRow(entry: ServerEntry(name: "a", host: "h", probe: ProbeReport(reachable: true, rttMS: 42)))
+        let ok = ServerRow(entry: ServerEntry(name: "a", host: "h", probe: ProbeReport(measured: true, reachable: true, rttMS: 42)))
         expect(ok.probeLine == "42 ms", "通了却没报毫秒:\(ok.probeLine ?? "")")
-        expect(!ok.probeFailed, "通了却被标成失败")
+        expect(!ok.probe.isFailure, "通了却被标成失败")
 
         let bad = ServerRow(entry: ServerEntry(name: "b", host: "h",
-                                               probe: ProbeReport(reachable: false, error: "超时(没有应答)")))
+                                               probe: ProbeReport(measured: true, reachable: false, error: "超时(没有应答)")))
         expect(bad.probeLine == "超时(没有应答)", "没说原因:\(bad.probeLine ?? "")")
-        expect(bad.probeFailed, "没通却没被标成失败")
+        expect(bad.probe.isFailure, "没通却没被标成失败")
     }
 
     // **「没通」不许显示成 0 ms。** 零值读起来像一切正常 —— 这是这个仓库反复
     // 禁止的那种谎,而它在这里的具体形状就是「0 毫秒,真快」。
     static func testUnreachableNeverRendersAsZeroMilliseconds() {
-        let row = ServerRow(entry: ServerEntry(name: "b", host: "h", probe: ProbeReport(reachable: false)))
+        let row = ServerRow(entry: ServerEntry(name: "b", host: "h", probe: ProbeReport(measured: true, reachable: false)))
         let line = row.probeLine ?? ""
         expect(!line.contains("0 ms"), "没通却显示成 0 ms:\(line)")
         expect(line == "unreachable", "没有原因时的兜底文案不对:\(line)")
@@ -244,7 +280,7 @@ struct ServersModelTests {
         let applied = addServerOutcomeMessage(added: "vps2", switched: ServerSwitchResult(name: "vps2", host: "vps2.example.com", applied: true))
         expect(applied.contains("now leaves from vps2"), "切成功:\(applied)")
         let saved = addServerOutcomeMessage(added: "vps2", switched: ServerSwitchResult(name: "vps2", host: "", applied: false))
-        expect(saved.contains("did not switch"), "切没成:\(saved)")
+        expect(saved.contains("could not tell whether"), "切没成:\(saved)")
         let onlyAdded = addServerOutcomeMessage(added: "vps2", switched: nil)
         expect(onlyAdded.contains("Added vps2") && onlyAdded.contains("Use"), "只加了:\(onlyAdded)")
     }
@@ -276,6 +312,292 @@ struct ServersModelTests {
         expect(addServerFailureMessage(code: "", status: 500) == nil, "空码不是一个码")
     }
 
+    // MARK: - 探测三态
+
+    // **三态,不是两态。** 「没测过」/「没测成」/「测了不通」是三个不同的答案,
+    // 而线上此前只有两个位置放它们 —— 于是 bx 没在跑的时候点一下 Test,一整排
+    // 好服务器全被画成红的。
+    //
+    // 这条**必须分别喂三种输入**:只喂「没测过」与「测了不通」正是今天那条测试
+    // 假绿的原因 —— 中间那一态在输入里根本没出现过,它是死是活测不出来。
+    static func testProbeHasThreeStatesNotTwo() {
+        expect(probePresentation(nil) == .notChecked, "没测过")
+        expect(probePresentation(ProbeReport(measured: false, error: "core not running"))
+            == .notMeasured("core not running"), "没测成 —— 绝不许画成不可达")
+        expect(probePresentation(ProbeReport(measured: true, reachable: false))
+            == .measured(reachable: false, rttMS: 0), "测了不通")
+        expect(probePresentation(ProbeReport(measured: true, reachable: true, rttMS: 42))
+            == .measured(reachable: true, rttMS: 42), "测通了")
+    }
+
+    // **只有「测过而且没通」才画红。** 另外两态画红等于把一台好服务器说成坏的,
+    // 而用户会据此去换服务器 —— 与 ipify 那次同一类、方向相反的错。
+    static func testOnlyAMeasuredFailureIsPaintedRed() {
+        expect(!ProbePresentation.notChecked.isFailure, "没测过被画成了红的")
+        expect(!ProbePresentation.notMeasured("core not running").isFailure, "没测成被画成了红的")
+        expect(!ProbePresentation.measured(reachable: true, rttMS: 7).isFailure, "通了被画成了红的")
+        expect(ProbePresentation.measured(reachable: false, rttMS: 0).isFailure, "测了不通却没画红")
+    }
+
+    // **`measured` 键缺席 = 这一版 Guardian 没说,不是「测过了」。**
+    // 旧 Guardian 的应答里没有这个键,按「测过」渲染就会把它的 reachable=false
+    // (那可能只是没测成)当成实测结论。
+    static func testAbsentMeasuredKeyIsNotTakenAsMeasured() {
+        let json = #"{"servers":[{"name":"a","host":"h","probe":{"reachable":true,"rtt_ms":7}}]}"#
+        guard let list = try? JSONDecoder().decode(ServerList.self, from: Data(json.utf8)) else {
+            fail("解不出旧 Guardian 的探测应答"); return
+        }
+        expect(list.servers[0].probe?.measured == false, "measured 缺席却读成了 true")
+        if case .notMeasured = probePresentation(list.servers[0].probe) {} else {
+            fail("旧 Guardian 的探测被当成了实测结论")
+        }
+    }
+
+    // 新 Guardian 的 measured 要真的解得出来。
+    static func testMeasuredDecodesFromGuardian() {
+        let json = #"{"servers":[{"name":"a","host":"h","probe":{"measured":true,"reachable":true,"rtt_ms":7}}]}"#
+        guard let list = try? JSONDecoder().decode(ServerList.self, from: Data(json.utf8)) else {
+            fail("解不出带 measured 的应答"); return
+        }
+        expect(probePresentation(list.servers[0].probe) == .measured(reachable: true, rttMS: 7),
+               "measured=true 的应答没被当成实测结论")
+    }
+
+    // MARK: - 当前那台
+
+    // **Core 没答就不许给一个零值。** 0 毫秒、tunnel unhealthy 都是编出来的答案,
+    // 而这个窗口存在的理由正是「我这条隧道现在怎么样」。
+    static func testCurrentPanelOmitsCoreFieldsWhenCoreIsSilent() {
+        guard let panel = currentServerPanel(list: listWithCurrent(), core: nil) else {
+            fail("有当前那台却没给出面板"); return
+        }
+        expect(panel.latencyMS == nil, "Core 没答就不许给一个 0 毫秒")
+        expect(panel.tunnelHealthy == nil, "同上")
+        expect(panel.transport == nil, "同上")
+        expect(panel.coreSilentNote != nil, "必须明说下面这些没量到")
+        // 主机与端口来自配置,不来自 Core —— 它们照常有。
+        expect(panel.endpoint == "203.0.113.10:443", "配置里就有的东西也不见了:\(panel.endpoint)")
+    }
+
+    // Core 答了话,纵深就该有值 —— 这是这一版窗口存在的全部理由。
+    static func testCurrentPanelCarriesTheLiveDepthWhenCoreAnswers() {
+        guard let panel = currentServerPanel(list: listWithCurrent(), core: answeringCoreRuntime()) else {
+            fail("有当前那台却没给出面板"); return
+        }
+        expect(panel.latencyMS == 1051, "实时延迟没接上:\(String(describing: panel.latencyMS))")
+        expect(panel.tunnelHealthy == true, "隧道健康没接上")
+        expect(panel.transport == "reality@203.0.113.10", "传输没接上")
+        expect(panel.udpMode == "proxy", "UDP 档没接上")
+        expect(panel.udpTransport == "hysteria2@203.0.113.21", "UDP 传输没接上")
+        expect(panel.coreSilentNote == nil, "Core 明明答了话却说没量到")
+        expect(panel.throughput?.contains("2h ago") == true,
+               "峰值没带年龄:\(panel.throughput ?? "nil")")
+    }
+
+    // **`reachable == false` 与「没问过」是同一件事:没有数据。**
+    // 判据只有 answeringCore 那一份 —— 这里喂一个 reachable=false 的 Core,
+    // 它携带的全是零值,当真就会画出一行撒谎的 0 ms。
+    static func testCurrentPanelTreatsAnUnreachableCoreAsNoData() {
+        let dead = CoreRuntime(reachable: false, tunnelHealthy: false, latencyMS: 0)
+        guard let panel = currentServerPanel(list: listWithCurrent(), core: dead) else {
+            fail("有当前那台却没给出面板"); return
+        }
+        expect(panel.latencyMS == nil, "拨不通的 Core 报的 0 毫秒被当成了实测值")
+        expect(panel.tunnelHealthy == nil, "拨不通的 Core 报的 false 被当成了「隧道坏了」")
+        expect(panel.coreSilentNote != nil, "拨不通却没说下面这些没量到")
+    }
+
+    // **配置说 B、实际在跑 A,这两者不同正是最有价值的诊断。** 热切换是先写配置
+    // 再切,所以切换失败的那一刻配置已经是新那台了 —— 此时给它加粗打点,就是
+    // 断言用户的流量从一台其实没在用的服务器出去。
+    static func testCurrentPanelSaysWhenTheRunningServerIsNotTheConfiguredOne() {
+        var list = listWithCurrent()
+        list.running = "osaka"
+        guard let panel = currentServerPanel(list: list, core: answeringCoreRuntime()) else {
+            fail("有当前那台却没给出面板"); return
+        }
+        expect(!panel.runningConfirmed, "实际在跑的是别台,却仍然给当前那台加粗打点")
+        expect(panel.runningNote?.contains("osaka") == true,
+               "没点名实际在跑的那台:\(panel.runningNote ?? "nil")")
+    }
+
+    // 问不出来时既不加粗、也不编一个答案。
+    static func testCurrentPanelWillNotConfirmARunningServerItCannotSee() {
+        var list = listWithCurrent()
+        list.running = ""
+        guard let panel = currentServerPanel(list: list, core: answeringCoreRuntime()) else {
+            fail("有当前那台却没给出面板"); return
+        }
+        expect(!panel.runningConfirmed, "问不出来却仍然断言它在跑")
+        expect(panel.runningNote?.lowercased().contains("could not confirm") == true,
+               "没说这一项没问出来:\(panel.runningNote ?? "nil")")
+
+        // Core 静默时那份 running 可能是上一次取清单时的陈旧值 —— 不许拿它加粗。
+        guard let stale = currentServerPanel(list: listWithCurrent(), core: nil) else {
+            fail("有当前那台却没给出面板"); return
+        }
+        expect(!stale.runningConfirmed, "Core 静默时拿一份可能陈旧的 running 加了粗")
+    }
+
+    // 一份没有 current 的清单(手改出来的配置就是这样)不该凭空造一个面板。
+    static func testCurrentPanelIsAbsentWithoutACurrentServer() {
+        expect(currentServerPanel(list: emptyServerList(), core: answeringCoreRuntime()) == nil,
+               "空清单却给出了一个当前那台")
+    }
+
+    // MARK: - 候选行
+
+    static func testOtherServerRowsLeaveOutTheCurrentOne() {
+        let rows = otherServerRows(list: listWithCurrent(), core: answeringCoreRuntime())
+        expect(rows.count == 1, "候选行数 = \(rows.count),当前那台应当只出现在上面那一块里")
+        expect(rows.first?.name == "osaka", "候选行不对:\(rows.first?.name ?? "nil")")
+        expect(rows.first?.endpoint == "203.0.113.20:443", "端口没显示:\(rows.first?.endpoint ?? "nil")")
+    }
+
+    // 实际在跑的那台落在候选里(热切换失败之后就是这个样子)时必须点名 ——
+    // 那一行才是用户流量真正的出口。
+    static func testOtherRowsMarkTheServerCoreIsActuallyUsing() {
+        var list = listWithCurrent()
+        list.running = "osaka"
+        let rows = otherServerRows(list: list, core: answeringCoreRuntime())
+        expect(rows.first?.isRunningNow == true, "实际在跑的那台没被点名")
+        expect(rows.first?.runningNote != nil, "实际在跑的那台没有说明文字")
+    }
+
+    // **Core 静默时不许点名。** 那份 running 来自上一次取清单,可能已经陈旧 ——
+    // 而它陈旧的那一刻,恰好就是保护刚被关掉、什么都没在跑的时候。
+    static func testOtherRowsDoNotClaimARunningServerWhileCoreIsSilent() {
+        var list = listWithCurrent()
+        list.running = "osaka"
+        let rows = otherServerRows(list: list, core: nil)
+        expect(rows.first?.isRunningNow == false, "Core 静默却断言某一台正在跑")
+        expect(rows.first?.runningNote == nil, "Core 静默却给了一句「正在用」")
+    }
+
+    // MARK: - 空清单
+
+    // **单服务器配置不是「没有服务器」。** 每一个正常装好 bx 的用户打开这个窗口
+    // 都是这个形状(`bx setup` 从不写 servers 清单),而 bx 此刻正跑着一台服务器 ——
+    // 对他说「No servers yet」是一句当场就能被证伪的假话。
+    static func testEmptyReasonTellsSingleServerConfigApartFromNoServers() {
+        expect(serverListEmptyReason(list: singleServerConfig())?.contains("single server") == true,
+               "单服务器配置没有被说清:\(serverListEmptyReason(list: singleServerConfig()) ?? "nil")")
+        expect(serverListEmptyReason(list: emptyServerList())?.contains("No servers yet") == true,
+               "空清单没有被说清:\(serverListEmptyReason(list: emptyServerList()) ?? "nil")")
+        expect(serverListEmptyReason(list: listWithTwo()) == nil, "有服务器却还在说空清单")
+    }
+
+    // `single_server` 缺席(旧 Guardian)读作 false —— 那时退回既有的措辞,
+    // 而不是编一句关于配置形状的话。
+    static func testSingleServerFlagDecodesAndDefaultsToFalse() {
+        let with = try! JSONDecoder().decode(
+            ServerList.self, from: Data(#"{"servers":[],"single_server":true}"#.utf8))
+        expect(with.singleServer, "single_server 没解出来")
+        let without = try! JSONDecoder().decode(
+            ServerList.self, from: Data(#"{"servers":[]}"#.utf8))
+        expect(!without.singleServer, "缺席要落成 false")
+        expect(serverListEmptyReason(list: without)?.contains("No servers yet") == true,
+               "旧 Guardian 上要退回既有措辞")
+    }
+
+    // MARK: - 切换的四种结局
+
+    // **四种结局四句话,其中两句今天是错的。**
+    // 「已生效但确认失败」说成「没切过去」是假的 —— 它切过去了,而死手可能在
+    // 超时后把它还原,用户必须立刻动手;「回滚也失败了」被同一句话轻描淡写成
+    // 「关了再开就行」,而那是一次正在发生的断网。
+    static func testSwitchOutcomeTellsTheFourEndingsApart() {
+        func message(_ outcome: String) -> String {
+            switchOutcomeMessage(ServerSwitchResult(
+                name: "osaka", host: "203.0.113.20", applied: false, outcome: outcome))
+        }
+        let arm = message("arm_failed")
+        let rolled = message("rolled_back")
+        let rollbackFailed = message("rollback_failed")
+        let commitFailed = message("commit_failed")
+
+        let all = [arm, rolled, rollbackFailed, commitFailed]
+        expect(Set(all).count == 4, "四种结局没有四句话")
+        for line in all {
+            expect(line.contains("osaka"), "没点名目标:\(line)")
+            expect(!line.contains("_failed") && !line.contains("rolled_back"),
+                   "把协议码原样端给了用户:\(line)")
+        }
+
+        // 没切过去的两种:必须明说流量还在原来那台。
+        expect(arm.contains("still leaves from the previous server"), "arm_failed 那句不对:\(arm)")
+        expect(rolled.contains("still leaves from the previous server"), "rolled_back 那句不对:\(rolled)")
+
+        // 回滚失败:隧道现在可能是断的,而且要给逃生命令。
+        expect(rollbackFailed.lowercased().contains("may be down"), "没说隧道可能断了:\(rollbackFailed)")
+        expect(rollbackFailed.contains("sudo bx down && sudo bx up"), "没给逃生命令:\(rollbackFailed)")
+
+        // 已生效但确认失败:**它切过去了**,而死手可能还原它。
+        expect(commitFailed.contains("already leaves from osaka"),
+               "没说它其实已经切过去了:\(commitFailed)")
+        expect(!commitFailed.contains("still leaves from the previous server"),
+               "对一次已经生效的切换说「还在原来那台」—— 这正是要消灭的那句假话:\(commitFailed)")
+        expect(commitFailed.contains("sudo bx down && sudo bx up"), "没给落定的办法:\(commitFailed)")
+    }
+
+    // **认不出的码不许被折进四种里的任何一种。** 说错了比不说更糟:一句「已回滚」
+    // 会让用户以为流量还好好地走在原来那台上。旧 Guardian(键缺席)与服务端自己
+    // 那个「说不出是哪种」的兜底码,走同一句诚实的话。
+    static func testUnknownSwitchOutcomeGetsAnHonestFallback() {
+        func message(_ outcome: String) -> String {
+            switchOutcomeMessage(ServerSwitchResult(
+                name: "osaka", host: "", applied: false, outcome: outcome))
+        }
+        let legacy = message("servers_hot_switch_failed")
+        let absent = message("")
+        let unknown = message("something_new_from_the_future")
+        for line in [legacy, absent, unknown] {
+            expect(line.contains("could not tell whether"),
+                   "认不出的码没有一句诚实的兜底:\(line)")
+            expect(!line.contains("already leaves from"), "把认不出的码说成了已生效:\(line)")
+            expect(!line.contains("switched back"), "把认不出的码说成了已回滚:\(line)")
+            expect(!line.isEmpty, "认不出的码静默消失了")
+        }
+        expect(legacy == absent && absent == unknown, "三种「说不出」应当是同一句话")
+    }
+
+    // 成功那一句一个字没变。
+    static func testAppliedSwitchStillSaysItPlainly() {
+        let applied = switchOutcomeMessage(ServerSwitchResult(
+            name: "osaka", host: "203.0.113.20", applied: true))
+        expect(applied.contains("now leaves from"), "生效那句不对:\(applied)")
+    }
+
+    // `outcome` 缺席读作空串(旧 Guardian),不抛。
+    static func testSwitchResultDecodesOutcomeAndToleratesItsAbsence() {
+        let with = try! JSONDecoder().decode(ServerSwitchResult.self,
+            from: Data(#"{"name":"osaka","applied":false,"outcome":"commit_failed"}"#.utf8))
+        expect(with.outcome == "commit_failed", "outcome 没解出来")
+        let without = try! JSONDecoder().decode(ServerSwitchResult.self,
+            from: Data(#"{"name":"osaka","applied":false}"#.utf8))
+        expect(without.outcome.isEmpty, "缺席要落成空串")
+    }
+
+    // running 与 current 并列解出来,**绝不合并**;缺席(问不出来)读作空串。
+    static func testServerListDecodesRunningBesideCurrent() {
+        let with = try! JSONDecoder().decode(ServerList.self,
+            from: Data(#"{"servers":[],"current":"tokyo","running":"osaka"}"#.utf8))
+        expect(with.current == "tokyo" && with.running == "osaka", "两者被合并了")
+        let without = try! JSONDecoder().decode(ServerList.self,
+            from: Data(#"{"servers":[],"current":"tokyo"}"#.utf8))
+        expect(without.running.isEmpty, "问不出来要落成空串,不许退回 current")
+    }
+
+    // 同一台主机上两台不同端口的服务器此前渲染得一模一样 —— port 发了但没解。
+    static func testPortIsDecodedAndShown() {
+        let list = try! JSONDecoder().decode(ServerList.self,
+            from: Data(#"{"servers":[{"name":"a","host":"h","port":8443},{"name":"b","host":"h"}]}"#.utf8))
+        expect(list.servers[0].port == 8443, "端口没解出来")
+        expect(ServerRow(entry: list.servers[0]).endpoint == "h:8443", "端口没显示出来")
+        // 端口缺席(旧 Guardian / 链接里看不出端口)就只写主机,不写一个 `:0`。
+        expect(ServerRow(entry: list.servers[1]).endpoint == "h", "端口缺席却写出了一个假端口")
+    }
+
     static func main() {
         testServerListDecodesWhatGuardianSends()
         testServerListDecodesAddedAndToleratesItsAbsence()
@@ -301,6 +623,27 @@ struct ServersModelTests {
         testReplaceConfigurationStaysInTheMenuOnlyWithoutServersWindow()
         testAddServerFailureCodesBecomeSentences()
         testUnknownAddServerFailureFallsBackToTheGenericFunnel()
+        testProbeHasThreeStatesNotTwo()
+        testOnlyAMeasuredFailureIsPaintedRed()
+        testAbsentMeasuredKeyIsNotTakenAsMeasured()
+        testMeasuredDecodesFromGuardian()
+        testCurrentPanelOmitsCoreFieldsWhenCoreIsSilent()
+        testCurrentPanelCarriesTheLiveDepthWhenCoreAnswers()
+        testCurrentPanelTreatsAnUnreachableCoreAsNoData()
+        testCurrentPanelSaysWhenTheRunningServerIsNotTheConfiguredOne()
+        testCurrentPanelWillNotConfirmARunningServerItCannotSee()
+        testCurrentPanelIsAbsentWithoutACurrentServer()
+        testOtherServerRowsLeaveOutTheCurrentOne()
+        testOtherRowsMarkTheServerCoreIsActuallyUsing()
+        testOtherRowsDoNotClaimARunningServerWhileCoreIsSilent()
+        testEmptyReasonTellsSingleServerConfigApartFromNoServers()
+        testSingleServerFlagDecodesAndDefaultsToFalse()
+        testSwitchOutcomeTellsTheFourEndingsApart()
+        testUnknownSwitchOutcomeGetsAnHonestFallback()
+        testAppliedSwitchStillSaysItPlainly()
+        testSwitchResultDecodesOutcomeAndToleratesItsAbsence()
+        testServerListDecodesRunningBesideCurrent()
+        testPortIsDecodedAndShown()
         // 通过横幅是「这个套件真的跑过」的唯一证据 —— 一个没被脚本登记的套件
         // 退出码也是 0(本仓库实测栽过)。
         if failures == 0 {

@@ -115,9 +115,19 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
 /// `core?.failingRules ?? []` —— 那是同一个问题的第二份判据,并且答反了:
 /// 空数组被当成「没有规则在失败」,于是 Core 没在应答时每条规则都画成健康的。
 /// 判据只留这一份。
-func answeringCore(_ status: GuardianStatus?) -> CoreRuntime? {
-    guard let core = status?.core, core.reachable == true else { return nil }
+func answeringCore(_ core: CoreRuntime?) -> CoreRuntime? {
+    guard let core, core.reachable == true else { return nil }
     return core
+}
+
+/// `GuardianStatus` 那一层的**薄壳**:判据只有上面那一份。
+///
+/// 服务器窗口拿到的是 `maintenanceReport?.core`(一个 `CoreRuntime?`),菜单那边
+/// 拿到的是整份 `GuardianStatus?` —— 两个调用点问的是同一个问题,所以只许有一份
+/// 判据。这里写成重载而不是第二个函数名:一个叫别的名字、内容一样的函数,与
+/// 「第二份判据」在出事的方式上完全一样。
+func answeringCore(_ status: GuardianStatus?) -> CoreRuntime? {
+    answeringCore(status?.core)
 }
 
 /// 菜单里**真正摆出来**的行:`menuRows` 是完整集合(图标裂不裂由它的 anomalyCount

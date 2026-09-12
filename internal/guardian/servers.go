@@ -71,6 +71,22 @@ type ServerListResponse struct {
 	// (那就说不出名字来),都留空 —— 说不出来好过说错。
 	Running    string `json:"running,omitempty"`
 	ConfigPath string `json:"config_path"`
+	// SingleServer 为真表示配置里**根本没有** `servers:` 这个键 —— 它是一份
+	// 单服务器配置(`server:` / `transports:`),而不是一份空的清单。
+	//
+	// **两者在窗口里必须说不同的话。** `bx setup` 从不写 `servers:` 清单
+	// (它写的是 `server:` 或 `transports:`),所以**每一个正常装好 bx 的用户**
+	// 打开服务器窗口时清单都是空的 —— 而 bx 此刻正跑着一台服务器。对他说
+	// 「还没有服务器」是一句当场就能被证伪的假话,`bx server list` 早就说对了
+	// (「配置里没有服务器清单(还是单服务器配置)」),只有窗口没有这个区分。
+	//
+	// 判据是 `setup.ListServers` 返回的切片**是不是 nil**:键缺席时 readServers
+	// 返回 nil,而 `servers: []` 返回一个长度为 0 的非 nil 切片。两者在 JSON 里
+	// 都是 `[]`,所以这个区分必须由服务端说出来,客户端推不出来。
+	//
+	// **不带 omitempty**(与本文件其余新字段同一条纪律):键缺席读作「这一版
+	// Guardian 没说」,客户端那时退回既有措辞,而不是编一句关于配置形状的话。
+	SingleServer bool `json:"single_server"`
 	// Added 只在 add 应答里出现:最终写进清单的名字(用户给的,或按链接推导的)。
 	// 界面靠它知道接下来该切换到哪一台 —— 自己再推一遍推导规则就是第二份判据。
 	Added string `json:"added,omitempty"`
@@ -265,10 +281,13 @@ func serversSnapshot(configPath string, coreStatus coreStatusReader) (ServerList
 	}
 	attachThroughput(entries, running, live, past.Servers, time.Now())
 	return ServerListResponse{
-		Servers:    entries,
-		Current:    current,
-		Running:    running,
-		ConfigPath: configPath,
+		Servers: entries,
+		Current: current,
+		Running: running,
+		// nil ⇒ 配置里根本没有 `servers:` 这个键;长度为 0 的非 nil 切片 ⇒
+		// 有这个键、里面确实是空的。这个区分只有这里做得到(见 SingleServer)。
+		SingleServer: list == nil,
+		ConfigPath:   configPath,
 	}, nil
 }
 

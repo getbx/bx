@@ -149,6 +149,10 @@ struct CoreRuntime: Decodable {
     let server: String?
     let transport: String?
     let udpMode: String?
+    /// UDP 走另一条隧道时的那条传输(`hysteria2@203.0.113.21` 这种**标签**,
+    /// 不是链接 —— 服务端发的是 transportLabel 的产物,凭据不出门)。
+    /// 空/缺席 = 没配按类分流,**不是**「跟主传输同一条」的另一种写法。
+    let udpTransport: String?
     let dnsUpstream: String?
     /// 正在**成片失败**的用户规则。空 = 没有值得报的(判据在 Core 侧的
     /// stats.FailingRules:同时看绝对数与比例),**不是**「没问出来」——
@@ -162,6 +166,7 @@ struct CoreRuntime: Decodable {
         case server
         case transport
         case udpMode = "udp_mode"
+        case udpTransport = "udp_transport"
         case dnsUpstream = "dns_upstream"
         case failingRules = "failing_rules"
     }
@@ -174,6 +179,7 @@ struct CoreRuntime: Decodable {
         server = try container.decodeIfPresent(String.self, forKey: .server)
         transport = try container.decodeIfPresent(String.self, forKey: .transport)
         udpMode = try container.decodeIfPresent(String.self, forKey: .udpMode)
+        udpTransport = try container.decodeIfPresent(String.self, forKey: .udpTransport)
         dnsUpstream = try container.decodeIfPresent(String.self, forKey: .dnsUpstream)
         // 缺席 = 空,不是解码失败:旧 Core 没有这个字段,而菜单必须照常工作。
         // **这一半由 `decodeIfPresent` 自己提供,不需要 `try?`。** 那行 `try?`
@@ -183,5 +189,22 @@ struct CoreRuntime: Decodable {
         // 一句安慰。这是本文件里唯一一个失败方式是静默的字段;其余十几个都是
         // 「缺席 ⇒ nil / 默认值,在场而类型不对 ⇒ 整份响亮失败」,这里回到同一档。
         failingRules = try container.decodeIfPresent([FailingRule].self, forKey: .failingRules) ?? []
+    }
+
+    /// 给判据测试造输入用。**每一项都可省略,而省略读作 nil(没说)** ——
+    /// 与解码那一半同一套语义,否则 fixture 会喂出一个生产不会出现的形状。
+    init(reachable: Bool? = nil, tunnelHealthy: Bool? = nil, latencyMS: Int64? = nil,
+         server: String? = nil, transport: String? = nil, udpMode: String? = nil,
+         udpTransport: String? = nil, dnsUpstream: String? = nil,
+         failingRules: [FailingRule] = []) {
+        self.reachable = reachable
+        self.tunnelHealthy = tunnelHealthy
+        self.latencyMS = latencyMS
+        self.server = server
+        self.transport = transport
+        self.udpMode = udpMode
+        self.udpTransport = udpTransport
+        self.dnsUpstream = dnsUpstream
+        self.failingRules = failingRules
     }
 }
