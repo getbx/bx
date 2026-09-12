@@ -8,6 +8,8 @@ import (
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/rulereview"
+	"github.com/getbx/bx/internal/stats"
+	"github.com/getbx/bx/internal/tristate"
 )
 
 // goldenPath 是那份逐字节契约。**它不是「多一条测试」,它是 spec §7 点名的那条**:
@@ -16,15 +18,24 @@ import (
 // 或者「hint 的 omitempty 掉了」。golden 是唯一会因为后者转红的东西。
 const goldenPath = "testdata/judge_golden.json"
 
-// goldenCase 是 golden 文件里的一项。两条路径**都要在**:
+// goldenCase 是 golden 文件里的一项。四条路径**都要在**:
 //
 //   - long:配置读到了、解析成功、有 server / 多传输 / UDP 传输 / 探测 / 规则体检 /
 //     服务检查 / socket 报错 / darwin 的 Guardian 两行 / 平台检查 —— 走满整条阶梯;
+//
 //   - permission_fallback:配置因权限读不到、改经 Guardian 的 /v1/rules 拿体检 ——
 //     那条退路的措辞(那句很长的 config_readable info)与规则体检行同样是契约,
 //     而它在 long 那条路上一个字都不会出现。
 //
-// 少了后者,一个把退路措辞改掉的改动照样全绿。
+//   - desired_off:用户自己关掉了保护 —— DNS 已还给系统、Core socket 没了、
+//     流量成败**问不到**。这一份钉住的是「关掉保护会不会被说成坏了」;
+//
+//   - failing_rules:2026-08-13 那个签名(`*.qq.com` 1291 条失败 1289)+ 直连
+//     出不去。它钉住多条规则合并成**恰好一条** check、以及那句改口的 hint。
+//
+// 少了 permission_fallback,一个把退路措辞改掉的改动照样全绿;少了
+// failing_rules,这次修复(把流量判据搬进 Judge)可以整个被撤掉而 golden 不动
+// —— 它是唯一一份 traffic 真的查出了东西的报告。
 type goldenCase struct {
 	Name   string `json:"name"`
 	Report Report `json:"report"`
@@ -69,6 +80,12 @@ func goldenCases() []goldenCase {
 			Recovery: RecoveryFact{State: "idle", Stage: "idle"},
 		},
 		Platform: []Check{{Name: "terminal_proxy", Status: "ok", Detail: "none"}},
+		// 流量查过了、一切正常:那一行的数字也是契约(菜单 Checks 页与文本
+		// 路径都照它渲染)。
+		Traffic: &TrafficFact{Report: stats.Report{
+			ConfigPath: "/etc/bx/config.yaml",
+			Snapshot:   stats.Snapshot{Direct: 45, DirectFailed: 0, Proxy: 300, ProxyFailed: 2},
+		}},
 	}
 
 	fallback := Facts{
@@ -106,16 +123,45 @@ func goldenCases() []goldenCase {
 			Desired:  DesiredOff,
 		},
 		Platform: []Check{{Name: "terminal_proxy", Status: "info", Detail: "not set"}},
+		// Core 没在跑 ⇒ 流量成败**问不到**。这一行是这次修复的要点:它必须是
+		// not_checked 而不是缺席,也不是 ok —— 关闭态下「没查」是正常的,但
+		// 「没查」与「查了、没问题」在用户眼里必须分得开。
+		Traffic: &TrafficFact{Err: "dial unix /var/run/bx/core.sock: connect: no such file or directory"},
+	}
+
+	// failing_rules 钉住 2026-08-13 那个签名的**渲染**:多条规则合并成恰好一条
+	// check(按名字取的消费方不会丢结论),而直连出不去时那句 hint 改口说
+	// 「不是你的规则」—— 这两件事此前只长在文本路径上,升级到菜单 Checks 页
+	// 之后整类消失,正是这次要修的缺陷。
+	failing := Facts{
+		Version:    "test",
+		ConfigPath: "/etc/bx/config.yaml",
+		Config:     FileFact{Mode0600: true},
+		Parsed:     cfg,
+		Traffic: &TrafficFact{
+			Report: stats.Report{
+				ConfigPath: "/etc/bx/config.yaml",
+				Snapshot: stats.Snapshot{
+					Direct: 1322, DirectFailed: 1308,
+					Rules: []stats.RuleOutcome{
+						{Source: "user_direct", Rule: "*.qq.com", Attempts: 1291, Failures: 1289},
+						{Source: "user_direct", Rule: "*.icloud.com", Attempts: 6, Failures: 6},
+					},
+				},
+			},
+			DirectEgress: tristate.False,
+		},
 	}
 
 	return []goldenCase{
 		{Name: "long", Report: Judge(long)},
 		{Name: "permission_fallback", Report: Judge(fallback)},
 		{Name: "desired_off", Report: Judge(off)},
+		{Name: "failing_rules", Report: Judge(failing)},
 	}
 }
 
-// TestJudgeGolden 把两条固定 Facts 的判决逐字节钉住。
+// TestJudgeGolden 把四条固定 Facts 的判决逐字节钉住。
 //
 // 重新生成:UPDATE_GOLDEN=1 go test ./internal/doctor/ -run TestJudgeGolden
 // —— 只有在**确实要改 --json 契约**时才跑它,并把 diff 一起提交上去。

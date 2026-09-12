@@ -18,7 +18,27 @@ type Check struct {
 }
 
 type Report struct {
-	OK              bool    `json:"ok"`
+	// OK 的含义是「**没有一条 check 是 fail**」,不是「全部查过且都好」。
+	//
+	// **这次(2026-09-12)刻意没有改它的含义**,理由不对称:
+	//   - 让「有一项没查」也把 OK 打成 false,等于宣布一台用户自己 `bx down`
+	//     的机器坏了 —— Core 没在跑时流量成败必然查不到,而那正是关闭态该有的
+	//     样子。2026-09-10 真机验收上 guardian_dns 就栽过同一形状,不能再犯;
+	//   - OK 是 `bx doctor --json` / `bx_inspect` 已在用的契约,悄悄改含义会
+	//     让所有既有消费方对同一台机器换一个答案。
+	//
+	// 代价是 OK=true **不等于**「什么都查过了」。这个代价由 NotChecked 抵掉:
+	// 它与 OK 并排发布,读的人(与 agent)在同一层就能看见「还有几项没查」。
+	OK bool `json:"ok"`
+	// NotChecked 是这份报告里状态为 not_checked 的条数。
+	//
+	// **它与 OK 并列,绝不合成一个数**(与 leakcheck 的 path/identity/surface
+	// 三段计数同一条纪律):一个「异常数为 0」在「一条都没检查成」时同样成立,
+	// 合起来那句话就永远是安全的假话。
+	//
+	// **刻意无 omitempty**:键缺席读作「这一版没说」,`"not_checked": 0` 读作
+	// 「查全了」—— 两者是两句不同的话,压成同一个缺席就分不开了。
+	NotChecked      int     `json:"not_checked"`
 	Kind            string  `json:"kind"`
 	Version         string  `json:"version"`
 	SecretsRedacted bool    `json:"secrets_redacted"`
@@ -52,6 +72,18 @@ func (r Report) HasFail() bool {
 		}
 	}
 	return false
+}
+
+// CountNotChecked 数「没查」的条数。**按状态数,不按名字数** —— 将来任何一条
+// 结论学会说「没查」都会自动进这个数,不需要谁回来改一张名单。
+func (r Report) CountNotChecked() int {
+	n := 0
+	for _, c := range r.Checks {
+		if c.Status == StatusNotChecked {
+			n++
+		}
+	}
+	return n
 }
 
 // FileFact 是「读配置文件」这一步的事实。ReadErr 非空 = 没读到;PermissionDenied
@@ -126,6 +158,9 @@ type Facts struct {
 	// Guardian 为 nil = 没问到 ⇒ darwin 上走「保守退路」:DNS unknown、恢复 failed/unknown。
 	Guardian *GuardianFact
 	Platform []Check
+	// Traffic 为 nil = **这条采集路径根本没问流量成败**(不是「问了、一切正常」)。
+	// Judge 会为它产出一条 not_checked,绝不让缺席冒充健康 —— 见 TrafficFact。
+	Traffic *TrafficFact
 }
 
 // Judge 把事实折成报告。**check 的名字、顺序、措辞是 --json 契约**,与迁移前的
@@ -222,10 +257,17 @@ func Judge(f Facts) Report {
 		rep.AddReport(DNSCheck(g.DNS, g.Desired))
 		rep.AddReport(RecoveryCheck(g.Recovery))
 	}
+	// 流量成败排在平台检查**之前**:平台检查排最后是既有的不变量
+	// (TestJudgeAppendsPlatformChecksLastAndComputesOK 钉着),而这一段的位置
+	// 本身没有承重的理由 —— 页面按严重度重排,文本路径按顺序打。
+	for _, c := range trafficChecks(f.Traffic) {
+		rep.AddReport(c)
+	}
 	for _, c := range f.Platform {
 		rep.AddReport(c)
 	}
 	rep.OK = !rep.HasFail()
+	rep.NotChecked = rep.CountNotChecked()
 	return rep
 }
 

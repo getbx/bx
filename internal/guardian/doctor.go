@@ -181,7 +181,28 @@ func collectDoctorFactsWith(ctx context.Context, configPath string, status Statu
 	if deps.platform != nil {
 		f.Platform = deps.platform(ctx)
 	}
+	// 流量成败。**这一份事实以前只有 CLI 的文本路径在采**,于是菜单的 Checks 页
+	// (走的正是这个采集方)对「哪条规则在成片失败」一个字都不说、还顶着一句
+	// 加粗的「0 failed」。Guardian 够得着 Core —— `failingRules` 早就为 /v1/status
+	// 跨过这条边界了,这里只是让同一批数字也进 doctor。
+	f.Traffic = guardianTrafficFact(ctx, deps.sockPath())
 	return f
+}
+
+// guardianTrafficFact 问一次 Core 的统计。**永不返回 nil**:问不到就带着原因
+// 回来(Judge 会把它报成 not_checked),nil 的语义是「这条路径根本没问」。
+//
+// **DirectEgress 留 Unknown**:那条观测(macOS 上那条 scoped 默认路由还在不在)
+// 的原语住在 internal/observe,Guardian 这一侧今天没接。Unknown 是诚实的 ——
+// failingRuleHint 只在明确观测到 False 时才改口,所以留空只会少一句归因,
+// 不会把系统故障说成用户的配置问题。
+func guardianTrafficFact(ctx context.Context, sock string) *doctor.TrafficFact {
+	report, err := supervisor.FetchStatusReportContext(ctx, sock)
+	fact := &doctor.TrafficFact{Report: report}
+	if err != nil {
+		fact.Err = err.Error()
+	}
+	return fact
 }
 
 // doctorProbeCheck 把一次探测折成 probe 那一行。**它与 bx doctor 那条不是同一种
