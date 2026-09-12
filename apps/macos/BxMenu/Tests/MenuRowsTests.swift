@@ -173,8 +173,16 @@ struct MenuRowsTests {
         expect(sick.first?.mark == .bad, "隧道坏了 Via 行是 bad")
 
         let blind = compactMenuRows(menuRows(status: nil, dns: nil))
-        expect(blind.count == 1 && blind.first?.value == "Not checked" && blind.first?.mark == .unknown,
-               "什么都问不出来时只有一行 Not checked,实际 \(blind.map { "\($0.label)=\($0.value)" })")
+        expect(blind.first?.label == "Via" && blind.first?.value == "Not checked" && blind.first?.mark == .unknown,
+               "什么都问不出来时头一行是 Not checked,实际 \(blind.map { "\($0.label)=\($0.value)" })")
+        // **这一行此前钉的是 `blind.count == 1`,现在不再成立,而那是刻意的。**
+        // 压缩的判据从「不是 ✗ 就藏」改成「是 ok 才藏」之后,这份全 unknown 的
+        // 输入会摆出三行 Not checked。它**在生产里到不了**:compactMenuRows 只在
+        // `.connected` 那一支被调用,而那一支按构造要求 Core 答过话、隧道健康
+        // (menuProtectionVerdict),Via 那半永远是 ok。留着这个入参组合只是因为
+        // 纯函数不该对没见过的输入崩;真要它只摆一行,得给压缩层再加一条「headline
+        // 自己也未知时别重复」的特例 —— 而一条特例就是一个真 unknown 的藏身处,
+        // 换来的只是一个到不了的画面更好看。
 
         // 诊断行在 ✗ 时必须露面 —— 压缩的是「正常时的噪声」,不是「坏消息」。
         let withBadDNS = MenuRowSet(rows: set.rows.map {
@@ -183,6 +191,36 @@ struct MenuRowsTests {
         let shown = compactMenuRows(withBadDNS)
         expect(shown.contains { $0.label == "DNS" && $0.mark == .bad }, "坏掉的 DNS 行被压缩没了:\(shown.map(\.label))")
         expect(!shown.contains { $0.label == "UDP Relay" }, "正常的 UDP Relay 不该露面")
+
+        // **「没问出来」与「一切正常」在屏幕上必须长得不一样。**
+        //
+        // 压缩掉的是**正常时的噪声**(DNS / Direct lookups / UDP Relay 天天一个样);
+        // `.unknown` 不是正常,它是「这一项该有值、这次没拿到」。判据因此是
+        // `== .ok`,不是 `!= .bad` —— 后者把两种沉默合成同一种,而在这个菜单里
+        // 沉默恰恰读作「查过了,没事」。
+        //
+        // 「那会不会变成一行常驻的 Not checked?」不会,而且防线在**上一层**:
+        // 一个可能结构性缺席的字段由 menuRows **整行不发**(Direct lookups 就是
+        // 这么做的,上面那条 noUpstream 钉着),压缩层看到的 `.unknown` 因此是
+        // 真的「问过了、没问出来」,不是一个永远答不上来的占位符。
+        let udpUnknown = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":390,
+                 "server":"vps","transport":"reality@vps",
+                 "dns_upstream":"223.5.5.5 \u{1F1E8}\u{1F1F3}"}}
+        """)
+        func screen(_ rows: [MenuRow]) -> String {
+            rows.map { "\($0.label)=\($0.value)" }.joined(separator: " | ")
+        }
+        let allKnown = compactMenuRows(menuRows(status: healthy, dns: "127.0.0.1"))
+        let udpBlind = compactMenuRows(menuRows(status: udpUnknown, dns: "127.0.0.1"))
+        expect(screen(allKnown) != screen(udpBlind),
+               "UDP 中继问不出来那次与全部答上话那次在屏幕上一模一样(\(screen(allKnown)))——" +
+               "「没问出来」被压成了「一切正常」")
+        expect(udpBlind.contains { $0.label == "UDP Relay" && $0.value == "Not checked" },
+               "问不出来的那一行必须露面,实际 \(screen(udpBlind))")
+        expect(!allKnown.contains { $0.label == "UDP Relay" },
+               "正常时那一行仍不该占地方,实际 \(screen(allKnown))")
 
         // 维护挂起是「为什么保护是这个样子」,压缩不动它,而且仍在最前。
         let compactPaused = compactMenuRows(paused)

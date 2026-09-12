@@ -974,6 +974,64 @@ leak 标题大小写)+ 新增 `TestMacMenuQuitHasNoIconAndUsesCommandQ`;五条�
 不在测试里重算一遍「谁盖住谁」。四条变异各咬中一条。**真机未验**:没有人在真机上
 敲过 `bx direct add`。
 
+## 菜单里最后三处「没问出来」被解成好消息(2026-09-12,真机未验)
+
+同一个错误的三个实例,都在**用户看得最多的那块面板**上。这个仓库为反面纪律花过
+很多力气(`observe.Tristate`、`Status.Capabilities` 刻意无 `omitempty`、leakcheck
+拒绝打印「没有发现泄漏」、速率宁可返回 nil 也不返回 0),而这三处是菜单里剩下的。
+**三个都在不同的层(显示压缩 / 信号投影 / 解码),类型也不同**,所以没有抽出共用
+的谓词或 helper —— 一个横跨三层的名字下面会是三个互不相干的函数体。抽出来的是
+**一条覆盖整类的守卫**(见第三条),它守的是那个文件里今天与将来的每一个字段。
+
+- **`compactMenuRows` 把 unknown 连同 fine 一起藏了**(`MenuRows.swift`)。判据写的是
+  `row.mark != .bad`,而它上面几行的规则原文是「诊断行**只在 ✗ 时露面**」—— 被压缩
+  的本该是*正常时的噪声*。`.unknown` 从另一头滑了进去,而这个菜单的词汇表里
+  **沉默读作「查过了,没事」**。现判据是 `== .ok`。
+  **「那会不会变成一行常驻的 Not checked?」不会,而且防线在上一层**:一个可能
+  结构性缺席的字段由 `menuRows` **整行不发**(`Direct lookups` 就是这么做的,
+  `noUpstream` 那条钉着),所以走到压缩层还带着 `.unknown` 的行,是真的问过了而没
+  问出来。将来某一行在真机上恒为未知,该修的是它的**构造处**,不是回来把 unknown
+  一起藏掉。代价记在测试里:全 unknown 的输入现在摆三行 Not checked —— 那个输入在
+  生产里到不了(`compactMenuRows` 只在 `.connected` 那一支被调,而那一支按构造要求
+  Core 答过话、隧道健康),给压缩层再加一条「headline 也未知时别重复」的特例,换来
+  的只是一个到不了的画面更好看,而一条特例就是一个真 unknown 的藏身处。
+- **`protectionSignal` 把「Guardian 没说」解成健康**(`TransitionNotice.swift`)。
+  原文 `tunnelHealthy == false ? .protectedTunnelDown : .protectedHealthy`,头上的注释
+  正确地写着「nil 是没说、**不是**不健康」—— 只防住了一头。调用方给的是
+  `report.core?.tunnelHealthy`,它把 `core` 整个缺席(旧 Guardian、没接 CoreRuntime
+  provider —— **升级窗口里的常态**)与键缺席摊平成同一个 nil。后果不是显示错一行:
+  这个函数唯一的消费者是通知,`.protectedHealthy` 会**结束一段故障并弹一条「已恢复」**,
+  根据是一个没人发过的字段;而同一份输入 `menuProtectionVerdict` 给的是 attention,
+  于是通知与菜单栏图标对同一个瞬间各说各话。现归到 **`.transient`**(那一档的语义
+  正是「既不算变好也不算变坏」,状态机对它一个字不说、也不改写上一次的稳态),
+  **不是 `.attention`** —— 后者是拿一个缺失的键断言机器坏了,只是方向相反,而它那句
+  文案会说「保护没能自己恢复」,同样是一句我们无权说的话。图标那半照旧显示
+  attention:常驻指示灯说「问不出来」、事件通知保持沉默,两者不矛盾。
+  `reachable == false` 不受影响(Go 侧那时把 `tunnel_healthy` 发成零值 `false`)。
+- **`CoreRuntime.failingRules` 的 `try?` 吞掉读不动的报文**(`GuardianStatus.swift`)。
+  旁边的注释替它辩护说「缺席 = 空,不是解码失败」—— 那句话是真的,但它描述的是
+  **`decodeIfPresent` 自己的**性质;`try?` 额外买到的只有「**在场而读不动**也当空」,
+  而空在下游读作「一条规则都没在失败」(接着 09-12 上一条修的那个窗口)。今天是
+  潜伏的(`failingRulesFrom` 只发 direct/proxy 两种 kind,四个键都没有 omitempty),
+  明天不是:Go 加第三种 kind 或给计数加 omitempty,闭合的 Swift 枚举 / 非可选 Int
+  就解不动。现去掉 `try?`,回到这个文件其余十几个字段的同一档:**缺席 ⇒ nil / 默认值,
+  在场而类型不对 ⇒ 整份响亮失败**。
+  **抽出来的那条类级守卫是 `TestMacMenuStatusDecoderNeverSwallowsADecodeError`**:
+  GuardianStatus.swift 的任何 `init(from:)` 里都不许有 `try?`。守的是**类**不是那一个
+  字段 —— 下一个人加字段时照抄旁边一行是最自然的动作。判据先 `stripSwiftComments` +
+  `blankSwiftStringLiterals`(上面这段解释里就写着 `try?`),读不出 `init(from decoder:`
+  或 `decodeIfPresent` 时 `t.Fatal` 响亮失败。
+
+**守卫一律钉「用户看得见的东西」**:未知的诊断行与健康的那一行**在屏幕上必须长得
+不一样**(把两次压缩结果拼成串比,不是比某个内部枚举值);nil 的隧道健康**不许弹出
+一条断言恢复的通知**,而**紧接着一条相反的断言**钉住真的健康时那条「已恢复」仍要发
+——少了它,「干脆永远不响」就能廉价满足前一条;读不动的 `failing_rules` **不许读成
+「一条都没在失败」**(判据是「要么抛错、要么非空」,不写死实现选了哪一种)。
+四条变异各咬中一条。**`TransitionNoticeTests` 那条投影断言是被翻过来的** —— 它此前
+以 `.protectedHealthy` 钉住了缺陷本身,注释写的理由(「不编一句隧道断了」)只覆盖
+了另一半,与规则窗口那次翻过来的两条测试同一个形状。
+
+
 ## 嗅出的 SNI 不许压过真 IP 的规则(2026-09-05,真机诊断,修复真机已验)
 
 真机(公司工作站,bx global):`bx direct add 180.158.6.185` 之后 `bx explain 180.158.6.185`
