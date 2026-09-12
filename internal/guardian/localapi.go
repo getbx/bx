@@ -200,7 +200,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(controller, pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries/current", recoveryCurrentHandler(pathRecoveryController, options.OwnerUID))
 	mux.HandleFunc("/v1/rules", rulesHandler(options.ConfigPath, options.OwnerUID, options.ReloadRules))
-	mux.HandleFunc("/v1/servers", serversHandler(options.ConfigPath, options.OwnerUID, liveServerSwitch, liveServerProbe, liveThroughput))
+	mux.HandleFunc("/v1/servers", serversHandler(options.ConfigPath, options.OwnerUID, liveServerSwitch, liveServerProbe, liveCoreStatus))
 	// options.AppsSockPath 空串时回落到 supervisor.SockPath(Core 控制面固定
 	// 的 unix socket 路径,与 fetchCoreRuntime/throughputRecorderFor 用的是
 	// 同一个常量)。字段本身只为一件事存在:让「NewLocalAPI 真的接上了
