@@ -79,6 +79,9 @@ type ServerListResponse struct {
 type serversRequest struct {
 	// Action 空 = 换到 Name 那一台(这个端点最初唯一的动作,保持兼容)。
 	// "add" = 把一台加进清单,**不动 current**。
+	// "remove" = 从清单里删掉 Name 那一台(**当前那台一律拒绝**)。
+	// "replace" = 就地换掉 Name 那一台的链接,**不动 current**(凭据轮换、
+	// VPS 换了地址;这两件事今天只有手改 /etc/bx/config.yaml 或 `bx setup --force`)。
 	Action string `json:"action,omitempty"`
 	Name   string `json:"name"`
 	Link   string `json:"link,omitempty"`
@@ -220,7 +223,7 @@ func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher,
 		case http.MethodGet:
 			serveServerList(w, configPath, coreStatus)
 		case http.MethodPost:
-			applyServerSwitch(w, r, configPath, switchTo, probe)
+			applyServerSwitch(w, r, configPath, switchTo, probe, coreStatus)
 		default:
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
@@ -228,12 +231,21 @@ func serversHandler(configPath string, ownerUID uint32, switchTo serverSwitcher,
 }
 
 func serveServerList(w http.ResponseWriter, configPath string, coreStatus coreStatusReader) {
+	respondWithServerList(w, configPath, coreStatus, "")
+}
+
+// serversSnapshot 组装这个端点每一条应答都该有的东西:清单、配置里选的那台、
+// **Core 此刻真正在跑的那台**、以及挂好的吞吐。
+//
+// **每一条应答都必须经它,不只是 GET 那一条。** Running 上一轮只加在 GET 那条
+// 路上,而 `bx server list --test` 走的是 probe 那条 —— 于是一台 Guardian 与
+// Core 都完全健康的机器,每次都被告知「实际在跑的是哪一台这次没问到」。
+// **修法不许是「让消费方记住上一次的值」**:那是客户端状态,会陈旧,而它陈旧
+// 的那一刻恰好就是热切换刚失败、这个字段最有价值的一刻。服务端每一次说实话。
+func serversSnapshot(configPath string, coreStatus coreStatusReader) (ServerListResponse, error) {
 	list, current, err := setup.ListServers(configPath)
 	if err != nil {
-		// 完整原因只进 Guardian 日志:配置里有服务器链接,而链接就是凭据。
-		log.Printf("guardian_servers_read_failed path=%s err=%v", configPath, err)
-		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
-		return
+		return ServerListResponse{}, err
 	}
 	entries := serverEntries(list, current)
 	// 历史读不出来不影响清单:它是诊断数据,而清单是功能。
@@ -252,12 +264,44 @@ func serveServerList(w http.ResponseWriter, configPath string, coreStatus coreSt
 		}
 	}
 	attachThroughput(entries, running, live, past.Servers, time.Now())
-	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
+	return ServerListResponse{
 		Servers:    entries,
 		Current:    current,
 		Running:    running,
 		ConfigPath: configPath,
-	})
+	}, nil
+}
+
+// respondWithServerList 是「改完之后回一份改动后的完整清单」那一步。
+//
+// 回完整清单而不是一个 ok:界面据此重画,不必自己推演改动后的状态 ——
+// 推演出来的状态与盘上真实的状态漂开,正是这个仓库反复栽的形状。
+//
+// 回的 current 是**发出去的那一份里的那个值**,给改动类动作留痕用:三个动作都
+// 承诺「不动 current」,而一条只记了自己做过什么、没记出口在不在原处的日志,
+// 事后答不出这个承诺有没有被守住。
+func respondWithServerList(w http.ResponseWriter, configPath string, coreStatus coreStatusReader, added string) (current string, ok bool) {
+	resp, err := serversSnapshot(configPath, coreStatus)
+	if err != nil {
+		// 完整原因只进 Guardian 日志:配置里有服务器链接,而链接就是凭据。
+		log.Printf("guardian_servers_read_failed path=%s err=%v", configPath, err)
+		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
+		return "", false
+	}
+	resp.Added = added
+	writeGuardianJSON(w, http.StatusOK, resp)
+	return resp.Current, true
+}
+
+// logServerChange 把一次改动记成一行。**current 一起记**:三个动作都承诺不动
+// 出口,而只有把它记下来,事后才答得出那个承诺有没有被守住。
+func logServerChange(event, name, current string, ok bool) {
+	if !ok {
+		// 改动做成了,但改完那份清单没读回来 —— 别编一个 current 出来。
+		log.Printf("%s name=%q current=unknown", event, name)
+		return
+	}
+	log.Printf("%s name=%q current=%q", event, name, current)
 }
 
 // serverEntries 只发出**主机名**,绝不发链接本身。
@@ -302,7 +346,7 @@ func serverEntries(list []config.Server, current string) []ServerEntry {
 // 自己跳好几次。
 var switchInFlight sync.Mutex
 
-func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string, switchTo serverSwitcher, probe serverProber) {
+func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string, switchTo serverSwitcher, probe serverProber, coreStatus coreStatusReader) {
 	if !switchInFlight.TryLock() {
 		log.Printf("guardian_server_switch_rejected reason=busy")
 		writeGuardianJSON(w, http.StatusConflict, map[string]string{"code": "servers_switch_busy"})
@@ -318,10 +362,16 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 	uid, _ := peerUIDFrom(r.Context())
 	switch strings.ToLower(strings.TrimSpace(req.Action)) {
 	case "add":
-		addServerEntry(w, req, configPath, uid)
+		addServerEntry(w, req, configPath, coreStatus, uid)
+		return
+	case "remove":
+		removeServerEntry(w, req, configPath, coreStatus, uid)
+		return
+	case "replace":
+		replaceServerLink(w, req, configPath, coreStatus, uid)
 		return
 	case "probe":
-		probeServers(w, configPath, probe, uid)
+		probeServers(w, configPath, probe, coreStatus, uid)
 		return
 	}
 	// 谁把出口换到了哪台,留痕。这是必须可审计的一类改动。
@@ -369,7 +419,7 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 // **它不动 current,也不热切任何东西。** 刚部署好一台新 VPS 不构成「把我的出口
 // 换过去」的请求;换出口要用户在清单里显式点一下(见 applyServerSwitch)。
 // 链接不写进日志 —— 它就是凭据。
-func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string, uid uint32) {
+func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string, coreStatus coreStatusReader, uid uint32) {
 	name := strings.TrimSpace(req.Name)
 	link := strings.TrimSpace(req.Link)
 	log.Printf("guardian_server_add_requested name=%q uid=%d has_udp=%t", name, uid, strings.TrimSpace(req.UDP) != "")
@@ -417,18 +467,105 @@ func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_add_failed"})
 		return
 	}
-	list, current, err := setup.ListServers(configPath)
+	nowCurrent, ok := respondWithServerList(w, configPath, coreStatus, name)
+	logServerChange("guardian_server_added", name, nowCurrent, ok)
+}
+
+// removeServerEntry 从清单里删掉一台。
+//
+// **删掉当前正在用的那台一律拒绝。** 那会让 current 指向一个不存在的名字,
+// 下一次启动直接起不来 —— 而用户只是想清理一条不用的记录。判据取配置里的
+// current(**删除是配置层的操作,与「实际在跑哪一台」无关**:热切换失败时
+// 两者不同,而那时该拦的仍然是配置里那台 —— 删掉它配置就坏了)。
+//
+// 拒绝这条路上**一个字节都不许写盘**:用户看到一句拒绝就以为什么都没发生,
+// 而一次「被拒绝」却仍然改了配置的删除,比拒绝失败更糟。
+func removeServerEntry(w http.ResponseWriter, req serversRequest, configPath string, coreStatus coreStatusReader, uid uint32) {
+	name := strings.TrimSpace(req.Name)
+	log.Printf("guardian_server_remove_requested name=%q uid=%d", name, uid)
+	if name == "" {
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_bad_request"})
+		return
+	}
+	_, current, err := setup.ListServers(configPath)
 	if err != nil {
 		log.Printf("guardian_servers_read_failed path=%s err=%v", configPath, err)
 		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
 		return
 	}
-	log.Printf("guardian_server_added name=%q current=%q", name, current)
-	// 回完整清单而不是一个 ok:界面据此重画,不必自己推演改动后的状态 ——
-	// 推演出来的状态与盘上真实的状态漂开,正是这个仓库反复栽的形状。
-	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
-		Servers: serverEntries(list, current), Current: current, ConfigPath: configPath, Added: name,
-	})
+	if strings.EqualFold(strings.TrimSpace(current), name) {
+		// **自己的码,不与「删失败了」共用一个。** 底下的 setup.RemoveServer
+		// 也拦这一条(纵深防御),但它只给得出一句中文错误,而错误串不出门 ——
+		// 菜单要说得出「先换到别的那台再删」就得有这个码。
+		log.Printf("guardian_server_remove_rejected reason=current name=%q", name)
+		writeGuardianJSON(w, http.StatusConflict, map[string]string{"code": "servers_remove_current"})
+		return
+	}
+	if err := setup.RemoveServer(configPath, name); err != nil {
+		log.Printf("guardian_server_remove_failed name=%q err=%v", name, err)
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_remove_failed"})
+		return
+	}
+	nowCurrent, ok := respondWithServerList(w, configPath, coreStatus, "")
+	logServerChange("guardian_server_removed", name, nowCurrent, ok)
+}
+
+// replaceServerLink 就地换掉同名那台的链接:凭据轮换,或者 VPS 重建换了地址。
+//
+// **它不动 current,也不热切任何东西。** 换链接是修一条记录,不是「把我的流量
+// 换到那里去」—— 与 addServerEntry 同一条判断。
+//
+// **刻意不走 setup.UpsertServer,尽管那个函数当初就是为这件事写的、至今零生产
+// 调用方。** 它会把 current 设成被改的那一台(TestUpsertStillSwitchesBecauseThatIsItsJob
+// 钉着这个行为:它服务的是 `bx setup`「用这一台」),于是换一条**没在用**那台
+// 的链接会顺手把出口换过去,而界面上只说了「已替换」。setup.AddServer 对**已经
+// 存在**的名字做的恰好是「就地换链接、不动 current」,那才是这里要的语义。
+func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath string, coreStatus coreStatusReader, uid uint32) {
+	name := strings.TrimSpace(req.Name)
+	link := strings.TrimSpace(req.Link)
+	udp := strings.TrimSpace(req.UDP)
+	// 链接不写进日志 —— 它就是凭据。
+	log.Printf("guardian_server_replace_requested name=%q uid=%d has_udp=%t", name, uid, udp != "")
+	if name == "" || link == "" {
+		log.Printf("guardian_server_replace_failed reason=bad_request name=%q", name)
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_bad_request"})
+		return
+	}
+	existing, _, err := setup.ListServers(configPath)
+	if err != nil {
+		log.Printf("guardian_servers_read_failed path=%s err=%v", configPath, err)
+		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
+		return
+	}
+	// **先确认它真在清单里,再写。** 底下那个原语对不存在的名字是「加一台」:
+	// 用户在名字上敲错一个字母,就会凭空多出一台顶着新链接的服务器,而界面
+	// 只会说「已替换」(与 addServerEntry 那句「先查重,再写」是同一条的两面)。
+	var target *config.Server
+	for i := range existing {
+		if strings.EqualFold(strings.TrimSpace(existing[i].Name), name) {
+			target = &existing[i]
+			break
+		}
+	}
+	if target == nil {
+		log.Printf("guardian_server_replace_rejected reason=unknown_name name=%q", name)
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_unknown_name"})
+		return
+	}
+	if udp == "" {
+		// **没让它改的东西不许被顺手抹掉。** 空 UDP 在底下那个原语里是「删掉
+		// udp: 这一行」,而 UDP 传输一旦消失就**静默**回落到主传输 —— 没有任何
+		// 一处会报错,而用户以为自己只换了一条链接。
+		udp = strings.TrimSpace(target.UDP)
+	}
+	if _, err := setup.AddServer(configPath, target.Name, link, udp); err != nil {
+		// %v 里可能带着 name(校验错误会回显它),但绝不会带 link —— 那是凭据。
+		log.Printf("guardian_server_replace_failed name=%q err=%v", target.Name, err)
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_replace_failed"})
+		return
+	}
+	nowCurrent, ok := respondWithServerList(w, configPath, coreStatus, "")
+	logServerChange("guardian_server_replaced", target.Name, nowCurrent, ok)
 }
 
 // probeServers 逐台量一次「从这台机器直连过去多远」。
@@ -439,21 +576,24 @@ func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string
 //
 // **一台失败不影响其余**:每台各自带自己的结论,与 internal/observe 那条
 // 「任一项观测失败即记为 Unknown 并附原因,绝不中断其余项」同源。
-func probeServers(w http.ResponseWriter, configPath string, probe serverProber, uid uint32) {
+func probeServers(w http.ResponseWriter, configPath string, probe serverProber, coreStatus coreStatusReader, uid uint32) {
 	if probe == nil {
 		writeGuardianJSON(w, http.StatusNotImplemented, map[string]string{"error": "probe unavailable"})
 		return
 	}
-	list, current, err := setup.ListServers(configPath)
+	// **与 GET 那条路同一份快照。** 探测应答此前自己拼一份 ServerListResponse,
+	// 于是 Running 只加在了 GET 上,而 `bx server list --test` 走的正是这一条 ——
+	// 一台完全健康的机器每次都被告知「实际在跑的是哪一台这次没问到」。
+	resp, err := serversSnapshot(configPath, coreStatus)
 	if err != nil {
 		log.Printf("guardian_servers_read_failed path=%s err=%v", configPath, err)
 		writeGuardianJSON(w, http.StatusInternalServerError, map[string]string{"code": "servers_read_failed"})
 		return
 	}
 	// 探测走在隧道**外面**,是一次真实的出站 —— 留痕,和别的改动类动作一样。
-	log.Printf("guardian_server_probe_requested count=%d uid=%d", len(list), uid)
+	log.Printf("guardian_server_probe_requested count=%d uid=%d", len(resp.Servers), uid)
 
-	entries := serverEntries(list, current)
+	entries := resp.Servers
 	for i := range entries {
 		host, port := entries[i].Host, entries[i].Port
 		if host == "" {
@@ -472,9 +612,7 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 			Measured: true, Reachable: result.Reachable, RTTMS: result.RTTMS, Error: result.Error,
 		}
 	}
-	writeGuardianJSON(w, http.StatusOK, ServerListResponse{
-		Servers: entries, Current: current, ConfigPath: configPath,
-	})
+	writeGuardianJSON(w, http.StatusOK, resp)
 }
 
 // attachThroughput 给每台挂上吞吐:**实际在跑的**那台用实时观测,其余用历史。
@@ -491,6 +629,11 @@ func probeServers(w http.ResponseWriter, configPath string, probe serverProber, 
 // 热切换**不会**把它的峰值清零 —— A→B 切**成功**之后它报的仍是 A 那个数;年龄
 // 写死成 0 之后(PeakAgeSeconds 带 omitempty,0 连键都不上线)界面读到的就是
 // 「刚刚在 B 上量到的」。带上真实年龄之后,一个不带年龄的数字只可能真的是刚量到的。
+//
+// **年龄修好了,张冠李戴那一半还在,别以为这里已经修干净了**:切换**成功**
+// 之后,B 那一行显示的仍然是 A 的那个数,只是如今如实标着它真实的年龄(界面
+// 因此至少不会把它读成现状)。根治要在 Core 那边热切时把速率表清零,那是另一层
+// 的改动,**刻意搁置**。
 //
 // **实时的那份压过历史**:两者都在时,在跑的那台显示的是速率表此刻报的值。
 // running 为空(问不出来 / 认不出那台主机)时**谁都不挂实时** —— 那个数确实
