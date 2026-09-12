@@ -36,6 +36,9 @@ run_test guardian-client \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
+  "$MENU/Sources/BxMenu/StatusReport.swift" \
+  "$MENU/Sources/BxMenu/MaintenancePresentation.swift" \
+  "$MENU/Sources/BxMenu/MenuRows.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
@@ -62,6 +65,9 @@ run_test guardian-status \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
+  "$MENU/Sources/BxMenu/StatusReport.swift" \
+  "$MENU/Sources/BxMenu/MaintenancePresentation.swift" \
+  "$MENU/Sources/BxMenu/MenuRows.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
@@ -75,6 +81,9 @@ run_test guardian-client-timeout \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
+  "$MENU/Sources/BxMenu/StatusReport.swift" \
+  "$MENU/Sources/BxMenu/MaintenancePresentation.swift" \
+  "$MENU/Sources/BxMenu/MenuRows.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
@@ -100,6 +109,9 @@ run_test guardian-failure-code \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
+  "$MENU/Sources/BxMenu/StatusReport.swift" \
+  "$MENU/Sources/BxMenu/MaintenancePresentation.swift" \
+  "$MENU/Sources/BxMenu/MenuRows.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
@@ -145,7 +157,15 @@ run_test deploy-model \
   "$MENU/Sources/BxMenu/DeployModel.swift" \
   "$MENU/Tests/DeployModelTests.swift"
 
+# ServersModel 现在要判「Core 在不在答话」,而那份判据只有一份:MenuRows 的
+# answeringCore(不许写第二份)。于是它连同 CoreRuntime 那条依赖链一起编进来。
 run_test servers-model \
+  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
+  "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
+  "$MENU/Sources/BxMenu/GuardianStatus.swift" \
+  "$MENU/Sources/BxMenu/StatusReport.swift" \
+  "$MENU/Sources/BxMenu/MaintenancePresentation.swift" \
+  "$MENU/Sources/BxMenu/MenuRows.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Tests/ServersModelTests.swift"
 
@@ -160,6 +180,9 @@ run_test guardian-status-fields \
   "$MENU/Sources/BxMenu/GuardianStatus.swift" \
   "$MENU/Sources/BxMenu/UpdatePresentation.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
+  "$MENU/Sources/BxMenu/StatusReport.swift" \
+  "$MENU/Sources/BxMenu/MaintenancePresentation.swift" \
+  "$MENU/Sources/BxMenu/MenuRows.swift" \
   "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
   "$MENU/Sources/BxMenu/LogsModel.swift" \
   "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \

@@ -10,25 +10,68 @@ import Foundation
 /// **reachable 与 rttMS 分开,而且 rtt 缺席读作 0 而不是「很快」。** 把「没通」
 /// 表达成 0 毫秒会让界面显示一个漂亮的零 —— 零值读起来像一切正常。
 struct ProbeReport: Decodable, Equatable {
+    /// **这一轮到底测成了没有。** false ⇒ `reachable` 无意义,别去读它。
+    ///
+    /// **键缺席读作 false,而那是刻意的**:旧 Guardian 不发这个键,它的
+    /// `reachable` 可能只是「Core 拨不通」的零值 —— 按「测过」渲染就会把一台
+    /// 好服务器画成红的,正是这一整轮要消灭的那句假话。与 `Status.Capabilities`
+    /// 同一条纪律:缺席是「这一版没说」,而「没说」不许被读成一个答案。
+    var measured: Bool = false
     var reachable: Bool = false
     var rttMS: Int = 0
     var error: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case reachable, error
+        case measured, reachable, error
         case rttMS = "rtt_ms"
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        measured = try c.decodeIfPresent(Bool.self, forKey: .measured) ?? false
         reachable = try c.decodeIfPresent(Bool.self, forKey: .reachable) ?? false
         rttMS = try c.decodeIfPresent(Int.self, forKey: .rttMS) ?? 0
         error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
     }
 
-    init(reachable: Bool = false, rttMS: Int = 0, error: String = "") {
-        self.reachable = reachable; self.rttMS = rttMS; self.error = error
+    init(measured: Bool = false, reachable: Bool = false, rttMS: Int = 0, error: String = "") {
+        self.measured = measured; self.reachable = reachable
+        self.rttMS = rttMS; self.error = error
     }
+}
+
+/// 探测的**三态**。
+///
+/// 这个类型存在的全部理由是:「没测过」/「没测成」/「测了不通」是三个不同的
+/// 答案,而此前只有两个位置放它们 —— 于是 bx 没在跑的时候点一下 Test All,
+/// 一整排好服务器全被画成红的,各配一句它自己也解释不了的错误。
+enum ProbePresentation: Equatable {
+    /// 用户还没点过 Test。**一个字都不说** —— 一行「未测试」在每台后面重复
+    /// 是墙纸不是信息。
+    case notChecked
+    /// 这一轮没测成(最常见的原因是 bx 没在跑:直连拨号器在 Core 手里)。
+    /// 附带的是服务端给的原因,**它是英文的**(Guardian 那两处产地已改)。
+    case notMeasured(String)
+    /// 真的测了。`reachable == false` 才是「这台服务器有问题」。
+    case measured(reachable: Bool, rttMS: Int)
+
+    /// 要不要画红。**只有实测失败才算** —— 另外两态画红等于把一台好服务器
+    /// 说成坏的,而用户会据此去换服务器。
+    ///
+    /// 判据住在这里而不是窗口里:窗口那一半在本仓库一行 Swift 测试都盖不到。
+    var isFailure: Bool {
+        if case let .measured(reachable, _) = self { return !reachable }
+        return false
+    }
+}
+
+/// 一台的探测结论怎么讲。**nil = 没测过**,与「测了没通」是两回事。
+func probePresentation(_ probe: ProbeReport?) -> ProbePresentation {
+    guard let probe else { return .notChecked }
+    guard probe.measured else {
+        return .notMeasured(probe.error.isEmpty ? "could not measure" : probe.error)
+    }
+    return .measured(reachable: probe.reachable, rttMS: probe.rttMS)
 }
 
 /// 清单里的一台。
@@ -39,6 +82,10 @@ struct ServerEntry: Decodable, Equatable {
     let name: String
     /// 出口主机。空 = 服务端解析不出来(链接坏了),**不是** "没有主机"。
     var host: String = ""
+    /// 出口端口。0 = 链接里看不出来(或旧 Guardian 没发),那时只写主机 ——
+    /// **绝不写一个 `:0`**。同一台主机上两台不同端口的服务器此前渲染得一模一样:
+    /// 服务端一直在发这个键,客户端根本没解。
+    var port: Int = 0
     /// UDP 单独走的那台(空 = 跟主传输同一台)。
     var udpHost: String = ""
     var current: Bool = false
@@ -53,7 +100,7 @@ struct ServerEntry: Decodable, Equatable {
     var peakAgeSeconds: Int = 0
 
     enum CodingKeys: String, CodingKey {
-        case name, host, current, probe
+        case name, host, port, current, probe
         case udpHost = "udp_host"
         case peakBPS = "peak_bps"
         case peakAgeSeconds = "peak_age_seconds"
@@ -63,6 +110,7 @@ struct ServerEntry: Decodable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decode(String.self, forKey: .name)
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
         udpHost = try c.decodeIfPresent(String.self, forKey: .udpHost) ?? ""
         current = try c.decodeIfPresent(Bool.self, forKey: .current) ?? false
         probe = try c.decodeIfPresent(ProbeReport.self, forKey: .probe)
@@ -70,9 +118,10 @@ struct ServerEntry: Decodable, Equatable {
         peakAgeSeconds = try c.decodeIfPresent(Int.self, forKey: .peakAgeSeconds) ?? 0
     }
 
-    init(name: String, host: String = "", udpHost: String = "", current: Bool = false,
+    init(name: String, host: String = "", port: Int = 0, udpHost: String = "", current: Bool = false,
          probe: ProbeReport? = nil, peakBPS: Int = 0, peakAgeSeconds: Int = 0) {
-        self.name = name; self.host = host; self.udpHost = udpHost; self.current = current
+        self.name = name; self.host = host; self.port = port
+        self.udpHost = udpHost; self.current = current
         self.probe = probe; self.peakBPS = peakBPS; self.peakAgeSeconds = peakAgeSeconds
     }
 }
@@ -86,10 +135,23 @@ struct ServerList: Decodable, Equatable {
     /// **只有 add 应答里有它**;别的应答(以及旧 Guardian)缺席读作空串,不抛 ——
     /// 界面靠它知道接下来该切到哪台,自己再推一遍推导规则就是第二份判据。
     var added: String = ""
+    /// Core **此刻真正在用**的那一台,与 `current`(配置里的选择)**并列,
+    /// 绝不合并**。
+    ///
+    /// 两者不同正是这里最有价值的一条诊断:热切换是先写配置再切,所以切换
+    /// 失败的那一刻配置已经是新那台了 —— 此时给它加粗打点,就是断言用户的
+    /// 流量从一台其实没在用的服务器出去(与 desired / observed / divergence
+    /// 同一条纪律)。**空 = 问不出来,不许退回 `current`。**
+    var running: String = ""
+    /// 配置里**根本没有** `servers:` 清单(单服务器配置 / `transports:` 配置)。
+    /// 与「有清单但它是空的」是两句不同的话,见 `serverListEmptyReason`。
+    /// 缺席读作 false:旧 Guardian 没说过,那时退回既有措辞。
+    var singleServer: Bool = false
 
     enum CodingKeys: String, CodingKey {
-        case servers, current, added
+        case servers, current, added, running
         case configPath = "config_path"
+        case singleServer = "single_server"
     }
 
     init(from decoder: Decoder) throws {
@@ -98,11 +160,14 @@ struct ServerList: Decodable, Equatable {
         current = try c.decodeIfPresent(String.self, forKey: .current) ?? ""
         configPath = try c.decodeIfPresent(String.self, forKey: .configPath) ?? ""
         added = try c.decodeIfPresent(String.self, forKey: .added) ?? ""
+        running = try c.decodeIfPresent(String.self, forKey: .running) ?? ""
+        singleServer = try c.decodeIfPresent(Bool.self, forKey: .singleServer) ?? false
     }
 
-    init(servers: [ServerEntry] = [], current: String = "", configPath: String = "", added: String = "") {
+    init(servers: [ServerEntry] = [], current: String = "", configPath: String = "",
+         added: String = "", running: String = "", singleServer: Bool = false) {
         self.servers = servers; self.current = current; self.configPath = configPath
-        self.added = added
+        self.added = added; self.running = running; self.singleServer = singleServer
     }
 }
 
@@ -113,8 +178,14 @@ struct ServerSwitchResult: Decodable, Equatable {
     /// **「配置写好了」与「正在跑的实例也换过去了」是两件事。**
     /// 合成一个 ok 会让菜单说「已切换」而流量还从原来那台出去。
     var applied: Bool = false
+    /// 热切失败时的**结局码**,四种各一个(见 `switchOutcomeMessage`)。
+    ///
+    /// **空 = 这一版 Guardian 不说结局**(或者服务端自己也说不出是哪一种),
+    /// 那时只能给一句诚实的兜底 —— 认不出的码套用四种里的任何一种都比不说更糟:
+    /// 一句「已回滚」会让用户以为流量还好好地走在原来那台上。
+    var outcome: String = ""
 
-    enum CodingKeys: String, CodingKey { case name, host, applied }
+    enum CodingKeys: String, CodingKey { case name, host, applied, outcome }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -122,10 +193,11 @@ struct ServerSwitchResult: Decodable, Equatable {
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
         // 缺席读作 false:**说不出「已生效」的时候就不许说**。
         applied = try c.decodeIfPresent(Bool.self, forKey: .applied) ?? false
+        outcome = try c.decodeIfPresent(String.self, forKey: .outcome) ?? ""
     }
 
-    init(name: String = "", host: String = "", applied: Bool = false) {
-        self.name = name; self.host = host; self.applied = applied
+    init(name: String = "", host: String = "", applied: Bool = false, outcome: String = "") {
+        self.name = name; self.host = host; self.applied = applied; self.outcome = outcome
     }
 }
 
@@ -144,11 +216,36 @@ func replaceConfigurationLivesInMenu(capabilities: [String]?) -> Bool {
     !serverSwitchingAvailable(capabilities: capabilities)
 }
 
-/// 界面上的一行。
+/// 界面上的一行(候选那几台;当前那台另有 `CurrentServerPanel`)。
 struct ServerRow: Equatable {
     let entry: ServerEntry
+    /// Core **此刻真的在用**这一台吗。
+    ///
+    /// 它只在两件事同时成立时为真:清单说 Core 在跑这一台,**而且** Core 此刻
+    /// 在答话(见 `otherServerRows`)。热切换失败之后,用户真正的出口就在这一行 ——
+    /// 不点名的话,他会盯着上面那块加粗的当前那台找原因。
+    var isRunningNow: Bool = false
+
+    init(entry: ServerEntry, isRunningNow: Bool = false) {
+        self.entry = entry
+        self.isRunningNow = isRunningNow
+    }
+
     var name: String { entry.name }
     var isCurrent: Bool { entry.current }
+
+    /// `host:port`。**端口问不出来时只写主机** —— 一个 `:0` 是编出来的答案,
+    /// 而它看起来像一个真的端口号。
+    var endpoint: String { endpointText(host: entry.host, port: entry.port) }
+
+    /// 这一行的探测结论(三态)。窗口按它决定说什么、画不画红,
+    /// **不自己判 `reachable`**。
+    var probe: ProbePresentation { probePresentation(entry.probe) }
+
+    /// 「它正在被用」那句话。不成立时 nil —— 每一行都挂一句是墙纸。
+    var runningNote: String? {
+        isRunningNow ? "in use right now" : nil
+    }
 
     /// 副标题:**出口主机比名字重要** —— 名字是用户随便起的,他真正关心的是
     /// 流量从哪出去。UDP 走另一台时必须单独标出来,否则 UDP 会静默走别的出口。
@@ -184,20 +281,21 @@ struct ServerRow: Equatable {
 
     /// 探测那一段。**没测过就一个字都不说** —— 一行「未测试」在每台后面重复,
     /// 是墙纸不是信息。
+    ///
+    /// 三态各有各的话:没测成说「没测成」并附原因(它**不是**红的),
+    /// 测了不通才报失败 —— 而**失败必须说出原因**,一个光秃秃的红叉让用户
+    /// 无从判断是服务器关了、还是自己这条网络的问题。
     var probeLine: String? {
-        guard let probe = entry.probe else { return nil }
-        if probe.reachable { return "\(probe.rttMS) ms" }
-        // **失败必须说出原因。** 一个光秃秃的红叉让用户无从判断是服务器关了、
-        // 还是自己这条网络的问题。
-        return probe.error.isEmpty ? "unreachable" : probe.error
-    }
-
-    /// 这一行要不要标红。**只有「测过而且没通」才标** —— 没测过不标,
-    /// 「没能测」(bx 没在跑)也不标:把那两种画成红的,等于把一台好服务器
-    /// 说成坏的。
-    var probeFailed: Bool {
-        guard let probe = entry.probe else { return false }
-        return !probe.reachable
+        switch probe {
+        case .notChecked:
+            return nil
+        case let .notMeasured(why):
+            return why.isEmpty ? "not measured" : "not measured — \(why)"
+        case let .measured(reachable, rttMS):
+            if reachable { return "\(rttMS) ms" }
+            let why = entry.probe?.error ?? ""
+            return why.isEmpty ? "unreachable" : why
+        }
     }
 
     /// 能不能点它切过去。当前那台不能点(点了是空操作,而空操作看起来像坏了);
@@ -205,8 +303,118 @@ struct ServerRow: Equatable {
     var isSelectable: Bool { !isCurrent && !entry.host.isEmpty }
 }
 
-func serverRows(from list: ServerList) -> [ServerRow] {
-    list.servers.map { ServerRow(entry: $0) }
+/// `host:port`,端口问不出来时只写主机。主机也没有时给一句人话,不给一个空格。
+func endpointText(host: String, port: Int) -> String {
+    if host.isEmpty { return "Link could not be parsed" }
+    return port > 0 ? "\(host):\(port)" : host
+}
+
+/// 当前那台的一整块:配置给出身份,Core 给出纵深。
+///
+/// **凡是来自 Core 的字段,Core 不答话时一律缺席而不是零值。** 0 毫秒、
+/// 「tunnel unhealthy」都是编出来的答案,而这个窗口存在的理由正是
+/// 「我这条隧道现在怎么样」—— 在那儿放一个假的数字比什么都不放糟得多。
+struct CurrentServerPanel: Equatable {
+    let name: String
+    let host: String
+    let port: Int
+    /// 传输(`reality@203.0.113.10`)。nil = Core 没答话或没说。
+    let transport: String?
+    /// **实时**隧道延迟(毫秒)。nil = 没量到。
+    let latencyMS: Int?
+    /// 三态:nil = Guardian 没说过隧道好不好,**不是**「不健康」。
+    let tunnelHealthy: Bool?
+    let udpTransport: String?
+    /// UDP 单独走的那台主机(来自配置,与 Core 无关)。
+    let udpHost: String?
+    let udpMode: String?
+    /// 带年龄的吞吐峰值;没观测到就一个字都不说。
+    let throughput: String?
+    /// Core 没答话时的那句话。**它在,下面那几行就不该有值。**
+    let coreSilentNote: String?
+    /// 「实际在跑的不是这一台」/「没问出来」那句话。都不成立时 nil。
+    let runningNote: String?
+    /// `●` 敢不敢加粗:只有 Core 在答话**且**它报的就是这一台时才敢。
+    let runningConfirmed: Bool
+
+    var endpoint: String { endpointText(host: host, port: port) }
+}
+
+/// 把清单里当前那台与 `/v1/status` 的 Core 运行时合成上面那一块。
+///
+/// 判据取 `answeringCore`(`MenuRows.swift`)—— **不许写第二份**:
+/// `reachable == false` 时 Core 报的每一项都是零值,当真就会画出一行撒谎的 0 ms,
+/// 而规则窗口刚因为「同一个问题的第二份判据」出过一模一样的 bug。
+func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPanel? {
+    guard let entry = list.servers.first(where: { $0.current }) else { return nil }
+    let live = answeringCore(core)
+    let row = ServerRow(entry: entry)
+
+    // **只有 Core 在答话时才敢说「在跑的就是它」。** 那份 running 来自上一次
+    // 取清单,可能已经陈旧 —— 而它陈旧的那一刻,恰好就是保护刚被关掉的时候。
+    let running = list.running.trimmingCharacters(in: .whitespaces)
+    let confirmed = live != nil && !running.isEmpty
+        && running.caseInsensitiveCompare(entry.name) == .orderedSame
+
+    var runningNote: String?
+    if live != nil, !confirmed {
+        runningNote = running.isEmpty
+            ? "bx could not confirm which server is running."
+            : "bx is actually using \(running) right now."
+    }
+
+    return CurrentServerPanel(
+        name: entry.name,
+        host: entry.host,
+        port: entry.port,
+        transport: nonEmpty(live?.transport),
+        latencyMS: live?.latencyMS.map { Int($0) },
+        tunnelHealthy: live?.tunnelHealthy,
+        udpTransport: nonEmpty(live?.udpTransport),
+        udpHost: nonEmpty(entry.udpHost),
+        udpMode: nonEmpty(live?.udpMode),
+        throughput: row.throughputLine,
+        coreSilentNote: live == nil
+            ? "Core not answering — nothing below was measured."
+            : nil,
+        runningNote: runningNote,
+        runningConfirmed: confirmed)
+}
+
+/// 候选那几台:清单里除了当前那台以外的全部。
+///
+/// `core` 在这里只有一个用途,而它承重:**Core 静默时不许点名「正在用」**。
+/// 那句话来自清单里的 `running`,而清单是按需取的 —— 拿一份可能陈旧的答案
+/// 去断言此刻的出口,正是这个仓库反复禁止的那种谎。
+func otherServerRows(list: ServerList, core: CoreRuntime?) -> [ServerRow] {
+    let live = answeringCore(core) != nil
+    let running = list.running.trimmingCharacters(in: .whitespaces)
+    return list.servers.filter { !$0.current }.map { entry in
+        ServerRow(
+            entry: entry,
+            isRunningNow: live && !running.isEmpty
+                && running.caseInsensitiveCompare(entry.name) == .orderedSame)
+    }
+}
+
+/// 清单为空时说哪一句。**有服务器时返回 nil**,那时不该有任何一句空状态文案。
+///
+/// 两种「空」是两件事:`bx setup` 从不写 `servers:` 清单,所以每一个正常装好
+/// bx 的用户打开这个窗口时都是**单服务器配置**那一种 —— 而 bx 此刻正跑着一台
+/// 服务器,对他说「还没有服务器」是一句当场就能被证伪的假话。
+func serverListEmptyReason(list: ServerList) -> String? {
+    guard list.servers.isEmpty else { return nil }
+    if list.singleServer {
+        return "This config has a single server, not a server list. "
+            + "Adding a second one turns it into a list you can switch between."
+    }
+    return "No servers yet. Add one to switch between exits."
+}
+
+/// 空串读作「没说」。
+private func nonEmpty(_ value: String?) -> String? {
+    guard let value, !value.isEmpty else { return nil }
+    return value
 }
 
 /// 换服务器之前的确认文案。
@@ -220,15 +428,48 @@ func serverSwitchConfirmMessage(name: String, host: String) -> String {
         + "ask you to verify again, and downloads in flight will break."
 }
 
-/// 换完之后说人话 —— **成功与「只写了配置」必须分开说**。
-func serverSwitchOutcomeMessage(result: ServerSwitchResult) -> String {
+/// 换完之后说人话。**四种结局四句话,而其中两句此前是错的。**
+///
+/// 服务端把 `supervisor.SwitchServer` 的四种结局各给了一个码
+/// (`internal/guardian/servers.go` 的 `switchOutcomeCode`);此前四种共用一个
+/// 常量,于是菜单对**已生效但确认失败**说「没切过去」—— 那是假的,它切过去了,
+/// 而死手可能在超时后把它还原,用户必须**立刻**动手;对**回滚也失败了**则用同一句
+/// 「关了再开就行」轻描淡写了一次正在发生的断网。
+///
+/// **认不出的码走一句诚实的兜底,绝不折进四种里的任何一种。** 说错了比不说更糟:
+/// 一句「已回滚」会让用户以为流量还好好地走在原来那台上。旧 Guardian(键缺席)与
+/// 服务端自己那个「说不出是哪一种」的兜底码,走的是同一句话 —— 它们说的确实是
+/// 同一件事:不知道。
+func switchOutcomeMessage(_ result: ServerSwitchResult) -> String {
     let where_ = result.host.isEmpty ? result.name : "\(result.name) (\(result.host))"
     if result.applied {
         // 走到这里说明服务端已经确认过(commit),死手不会再把它还原。
         return "Your traffic now leaves from \(where_)."
     }
-    return "Saved \(where_) as your server, but the running tunnel did not switch. "
-        + "Turn bx off and on again to use it."
+    // 逃生命令与 `bx server use` 在终端里给的是同一条 —— 它今天比 GUI 诚实,
+    // 两边说的必须是同一件事。
+    let escape = "Run `sudo bx down && sudo bx up` in Terminal"
+    switch result.outcome {
+    case "arm_failed":
+        return "Saved \(where_) as your server, but bx could not start the switch. "
+            + "Your traffic still leaves from the previous server. "
+            + "Turn bx off and on again to use it."
+    case "rolled_back":
+        return "Saved \(where_) as your server, but its tunnel did not come up, "
+            + "so bx switched back. Your traffic still leaves from the previous server."
+    case "rollback_failed":
+        return "Saved \(where_) as your server. Its tunnel did not come up and bx could "
+            + "not switch back, so your connection may be down right now. "
+            + escape + " to recover."
+    case "commit_failed":
+        return "Your traffic already leaves from \(where_), but bx could not confirm the "
+            + "switch, so a safety timer may put it back on the previous server. "
+            + escape + " now to make it stick."
+    default:
+        return "Saved \(where_) as your server, but bx could not tell whether the running "
+            + "tunnel switched. Check `bx status`; if it is still on the previous server, "
+            + "turn bx off and on again."
+    }
 }
 
 /// 「Add Server…」做完之后那句话。三种结局分开说,**绝不合成「已添加并切换」**:
@@ -238,11 +479,10 @@ func addServerOutcomeMessage(added: String, switched: ServerSwitchResult?) -> St
     guard let switched else {
         return "Added \(added) to your servers, but could not switch to it. Open Servers… and press Use to try again."
     }
-    if switched.applied {
-        return "Added \(added). Your traffic now leaves from \(added)."
-    }
-    return "Added \(added), but the running tunnel did not switch (it stayed on the previous server). "
-        + "Press Use in Servers… to try again, or turn bx off and on."
+    // **结局那句话只有一份。** 这条路上此前自己写了一句「它停在原来那台」——
+    // 对「已生效但确认失败」那种结局,那句话是假的,而它与切换那条路上刚被
+    // 修好的是同一个谎。
+    return "Added \(added). " + switchOutcomeMessage(switched)
 }
 
 /// 把 Add Server 这条路上的失败**码**翻成一句用户做得了的话。

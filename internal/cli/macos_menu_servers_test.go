@@ -107,9 +107,10 @@ func TestMacMenuNeverClaimsASwitchThatDidNotApply(t *testing.T) {
 	if !strings.Contains(tail, "outcome.applied ?") {
 		t.Error("标题没有按 outcome.applied 分支 —— 只写了配置也会显示成「已切换」")
 	}
-	if !strings.Contains(tail, "serverSwitchOutcomeMessage(result: outcome)") {
-		t.Error("文案不是 serverSwitchOutcomeMessage(result:) 生成的 —— " +
-			"那个纯函数才是「没生效就说没生效」那句话的所在")
+	if !strings.Contains(tail, "switchOutcomeMessage(outcome)") {
+		t.Error("文案不是 switchOutcomeMessage 生成的 —— " +
+			"那个纯函数才是「四种结局四句话」的所在(其中两句此前是错的:" +
+			"已生效但确认失败被说成没切过去,回滚失败被说成关了再开就行)")
 	}
 }
 
@@ -237,7 +238,7 @@ func TestMacMenuProbeFailureDoesNotPaintServersRed(t *testing.T) {
 	}
 	tail := body[failure:]
 	// 失败分支重画时用的必须是**缓存**(lastServers),而不是任何新数据。
-	if !strings.Contains(tail, "rows: serverRows(from: self.lastServers ?? ServerList())") {
+	if !strings.Contains(tail, "rows: otherServerRows(list: self.lastServers ?? ServerList()") {
 		t.Error("失败分支没有保持上一轮的清单原样 —— 一次测不成会把界面清空或标红")
 	}
 	if strings.Contains(tail, "self.lastServers =") {

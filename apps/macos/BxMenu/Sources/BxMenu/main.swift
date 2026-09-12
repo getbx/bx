@@ -1139,7 +1139,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func probeServers() {
         guard !serversWindow.probing else { return }
         serversWindow.probing = true
-        serversWindow.refreshIfVisible(rows: serverRows(from: lastServers ?? ServerList()), probe: exitIPProbe)
+        serversWindow.refreshIfVisible(
+            rows: otherServerRows(list: lastServers ?? ServerList(), core: maintenanceReport?.core),
+            probe: exitIPProbe)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try GuardianClient().probeServers() }
             DispatchQueue.main.async {
@@ -1151,13 +1153,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // 不必自己把结论并回去(推演出来的状态与真实状态漂开,
                     // 正是这个仓库反复栽的形状)。
                     self.lastServers = list
-                    self.serversWindow.refreshIfVisible(rows: serverRows(from: list), probe: self.exitIPProbe)
+                    self.serversWindow.refreshIfVisible(
+                        rows: otherServerRows(list: list, core: self.maintenanceReport?.core),
+                        probe: self.exitIPProbe)
                 case .failure(let error):
                     // **测不成不许把服务器画成红的。** 保持上一轮的清单原样,
                     // 只说这次没测成 —— 把「没问出来」画成「不可达」,等于把
                     // 一台好服务器说成坏的。
                     self.serversWindow.refreshIfVisible(
-                        rows: serverRows(from: self.lastServers ?? ServerList()), probe: self.exitIPProbe)
+                        rows: otherServerRows(list: self.lastServers ?? ServerList(),
+                                              core: self.maintenanceReport?.core),
+                        probe: self.exitIPProbe)
                     let alert = NSAlert()
                     alert.messageText = "Could not test the servers"
                     alert.informativeText = "\(error.localizedDescription)\n\n"
@@ -1472,9 +1478,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
                 if forceShow {
-                    self.serversWindow.show(rows: serverRows(from: servers), probe: self.exitIPProbe)
+                    self.serversWindow.show(
+                        rows: otherServerRows(list: servers, core: self.maintenanceReport?.core),
+                        probe: self.exitIPProbe)
                 } else {
-                    self.serversWindow.refreshIfVisible(rows: serverRows(from: servers), probe: self.exitIPProbe)
+                    self.serversWindow.refreshIfVisible(
+                        rows: otherServerRows(list: servers, core: self.maintenanceReport?.core),
+                        probe: self.exitIPProbe)
                 }
             }
         }
@@ -1504,7 +1514,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // **热切没成功时不许说「已切换」** —— 判据在 ServersModel 的
             // 纯函数里,由 Swift 套件钉住。
             done.messageText = outcome.applied ? "Switched" : "Saved, but not applied yet"
-            done.informativeText = serverSwitchOutcomeMessage(result: outcome)
+            done.informativeText = switchOutcomeMessage(outcome)
             NSApp.activate(ignoringOtherApps: true)
             done.runModal()
         }
@@ -1618,7 +1628,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func checkExitIP() {
         guard exitIPProbe != .checking else { return }
         exitIPProbe = .checking
-        serversWindow.refreshIfVisible(rows: serverRows(from: lastServers ?? ServerList()), probe: exitIPProbe)
+        serversWindow.refreshIfVisible(
+            rows: otherServerRows(list: lastServers ?? ServerList(), core: maintenanceReport?.core),
+            probe: exitIPProbe)
 
         var request = URLRequest(url: URL(string: "https://ipv4.icanhazip.com")!)
         request.timeoutInterval = 10
@@ -1631,7 +1643,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // 解不出来就是「没问出来」,**绝不编一个地址**。
                 self.exitIPProbe = parsed.map { ExitIPProbe.address($0) } ?? .failed
                 self.serversWindow.refreshIfVisible(
-                    rows: serverRows(from: self.lastServers ?? ServerList()), probe: self.exitIPProbe)
+                    rows: otherServerRows(list: self.lastServers ?? ServerList(),
+                                          core: self.maintenanceReport?.core),
+                    probe: self.exitIPProbe)
             }
         }.resume()
     }

@@ -199,7 +199,10 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         box.addArrangedSubview(title)
 
         let detail = hint(row.detail)
-        if row.probeFailed {
+        // **判据在纯模型里**(ProbePresentation.isFailure):只有「测过而且没通」
+        // 才画红。窗口自己看 `reachable` 就会把「没测成」也画成红的 —— 那等于把
+        // 一整排好服务器说成坏的,而这一半代码一行 Swift 测试都盖不到。
+        if row.probe.isFailure {
             detail.textColor = .systemRed
         }
         detail.setContentHuggingPriority(.defaultLow, for: .horizontal)
