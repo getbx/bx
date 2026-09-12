@@ -233,3 +233,97 @@ func TestUpsertStillSwitchesBecauseThatIsItsJob(t *testing.T) {
 		t.Fatalf("current = %q, want osaka", current)
 	}
 }
+
+// **ReplaceServerLink 任何情况下都不动 current,连「本来是空的」也不填。**
+//
+// 这是它与 AddServer 唯一的区别,而这一条是要害:一份没有 current: 的清单
+// **照样在跑**(config.resolveServers 回落 servers[0]),顺手把它填上就等于
+// 把出口从第一台挪到了被换链接的那一台 —— 而用户只是换了一条链接。
+// 「一份清单必须有一台在用」那条理由只对**加一台**成立(那时清单可能是空的)。
+func TestReplaceServerLinkNeverTouchesCurrent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		head string
+		want string
+	}{
+		{"有 current", "current: alpha\n", "alpha"},
+		{"没有 current —— 这份配置照样在跑,用的是清单里第一台", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTemp(t, `servers:
+    - name: alpha
+      link: vless://u@1.1.1.1:443?security=reality
+    - name: beta
+      link: vless://u@2.2.2.2:443?security=reality
+      udp: hysteria2://p@2.2.2.2:443
+`+tc.head)
+			if err := ReplaceServerLink(path, "beta", "vless://u@9.9.9.9:8443?security=reality", ""); err != nil {
+				t.Fatal(err)
+			}
+			list, current, err := ListServers(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current != tc.want {
+				t.Fatalf("current = %q, want %q —— 换链接不构成换出口的请求", current, tc.want)
+			}
+			if list[1].Link != "vless://u@9.9.9.9:8443?security=reality" {
+				t.Fatalf("链接没换:%q", list[1].Link)
+			}
+			if list[0].Link != "vless://u@1.1.1.1:443?security=reality" {
+				t.Fatalf("另一台被连累了:%q", list[0].Link)
+			}
+		})
+	}
+}
+
+// 名字不在清单里必须**报错**,绝不「顺手加一台」—— 敲错一个字母就凭空多出
+// 一台顶着新链接的服务器,而调用方只会看到成功。
+func TestReplaceServerLinkRefusesAnUnknownName(t *testing.T) {
+	path := writeTemp(t, `servers:
+    - name: alpha
+      link: vless://u@1.1.1.1:443?security=reality
+current: alpha
+`)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceServerLink(path, "beta", "vless://u@9.9.9.9:443", ""); err == nil {
+		t.Fatal("换了一台不存在的服务器却没报错")
+	}
+	after, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("被拒绝的替换动了盘上的配置:\n%s", after)
+	}
+	// 空链接同样是坏输入:写进去之后那台服务器再也连不上,而错误发生在读配置时。
+	if err := ReplaceServerLink(path, "alpha", "   ", ""); err == nil {
+		t.Fatal("空链接被接受了")
+	}
+}
+
+// UDP 那一格由参数说了算:给了就换,给空就删掉 —— 「省略即保留」是**调用方**
+// 的判断(Guardian 的 replace 就是这么做的),不该藏在这一层里。
+func TestReplaceServerLinkTakesTheUDPArgumentLiterally(t *testing.T) {
+	path := writeTemp(t, `servers:
+    - name: alpha
+      link: vless://u@1.1.1.1:443?security=reality
+      udp: hysteria2://p@1.1.1.1:443
+current: alpha
+`)
+	if err := ReplaceServerLink(path, "alpha", "vless://u@9.9.9.9:443", "hysteria2://p@9.9.9.9:443"); err != nil {
+		t.Fatal(err)
+	}
+	if list, _, _ := ListServers(path); list[0].UDP != "hysteria2://p@9.9.9.9:443" {
+		t.Fatalf("给了 UDP 却没换:%q", list[0].UDP)
+	}
+	if err := ReplaceServerLink(path, "alpha", "vless://u@9.9.9.9:443", ""); err != nil {
+		t.Fatal(err)
+	}
+	if list, _, _ := ListServers(path); list[0].UDP != "" {
+		t.Fatalf("给了空 UDP 却没删:%q", list[0].UDP)
+	}
+}
