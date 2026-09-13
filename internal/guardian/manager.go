@@ -1356,7 +1356,7 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 		return supervisor.RuntimeState{}, fmt.Errorf("start Core: %w", err)
 	}
 	if err := m.runner.Verify(process); err != nil {
-		if cleanupErr := m.forceCleanupStartedCore(ctx, process); cleanupErr != nil {
+		if cleanupErr := m.cleanupCoreAfterFailedStart(ctx, process, supervisor.RuntimeState{}); cleanupErr != nil {
 			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true}, cleanupErr)
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("verify started Core: %w", err), uncertainOwnership(m.current, cleanupErr))
@@ -1366,7 +1366,7 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 	}
 	state, err := m.waitHealthy(operationCtx, process)
 	if err != nil {
-		if cleanupErr := m.forceCleanupStartedCore(ctx, process); cleanupErr != nil {
+		if cleanupErr := m.cleanupCoreAfterFailedStart(ctx, process, state); cleanupErr != nil {
 			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true}, cleanupErr)
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("wait for Core health: %w", err), uncertainOwnership(m.current, cleanupErr))
@@ -1623,27 +1623,57 @@ func (m *Manager) installBarrierForRecovery(ctx context.Context, state superviso
 	return m.installBarrier(ctx, barrierContext)
 }
 
+// cleanupStartedCore 收拾一个**服务过**的 Core:请它自己退出,让它跑完自己的
+// defer 还原(还原默认路由、关 TUN、把 DNS 交回系统)。
+//
+// **只许 cleanupCoreAfterFailedStart 调它**(由测试钉住),理由同上。
 func (m *Manager) cleanupStartedCore(ctx context.Context, process Process) error {
 	cleanupCtx, cancel := context.WithTimeout(ctx, m.cleanupTimeout)
 	defer cancel()
 	return m.runner.Stop(cleanupCtx, process)
 }
 
-// forceCleanupStartedCore 收拾一个**从没健康过**的 Core。
+// forceCleanupStartedCore 收拾一个**从没服务过**的 Core:直接杀。
 //
-// 与 cleanupStartedCore 的区别只有一句话,而那句话是整条修复的支点:那个 Core
-// 卡在「等隧道健康」之前,**没开过 TUN、没装过路由、没碰过 DNS**(supervisor.Run
-// 里那三件事全排在健康检查之后),身上没有任何东西需要优雅还原;而协作关闭要走的
-// 控制 socket 正是它没能建出来的那个东西 —— 于是「请它自己退出」必定失败,把
-// core_health_failed(真话:隧道没起来)换成 core_ownership_uncertain(假话:
-// 系统里可能有第二个 Core)。2026-08-04 那条不变量:**停止路径不许依赖别的先成功**。
+// 那种 Core 卡在「等隧道健康」之前,**没开过 TUN、没装过路由、没碰过 DNS**
+// (supervisor.Run 里那三件事全排在健康检查之后),身上没有任何东西需要优雅还原;
+// 而协作关闭要走的控制 socket 正是它没能建出来的那个东西 —— 于是「请它自己退出」
+// 必定失败,把 core_health_failed(真话:隧道没起来)换成 core_ownership_uncertain
+// (假话:系统里可能有第二个 Core)。2026-08-04 那条不变量:**停止路径不许依赖
+// 别的先成功**。
 //
-// 已经健康、已经在服务的 Core 不走这里(见 update.go 里 acceptHealthy 失败那一处)——
-// 那种 Core 装着 TUN、路由与 DNS,杀掉它等于把机器留在指向一个不存在的 TUN 的状态里。
+// **只许 cleanupCoreAfterFailedStart 调它**(由测试钉住)—— 「有没有服务过」
+// 这个问题只能有一份答案。
 func (m *Manager) forceCleanupStartedCore(ctx context.Context, process Process) error {
 	cleanupCtx, cancel := context.WithTimeout(ctx, m.cleanupTimeout)
 	defer cancel()
 	return m.runner.ForceStop(cleanupCtx, process)
+}
+
+// coreEverServed 报告这个 Core **有没有服务过** —— 判据是它的控制 socket 亲口
+// 报出了自己的 PID,而那个 socket 在 supervisor.Run 里排在 OpenTUN 之后。
+//
+// 这是强杀与协作关闭唯一的分界,而**按调用点分是错的**:「健康检查没过」并不
+// 蕴含「从没服务过」—— UDP 档没就绪、socks 探测整个窗口失败、隧道恰好抖了、
+// 升级时版本对不上,都会让一个已经开了 TUN、装了路由的 Core 没过健康门。
+// 把那样的 Core SIGKILL 掉会跳过它自己的 defer 还原,而 linux 上 pref 150/200
+// 那两条 ip rule 比 TUN 设备活得还久。
+func coreEverServed(process Process, state supervisor.RuntimeState) bool {
+	return process.PID > 0 && state.PID == process.PID
+}
+
+// cleanupCoreAfterFailedStart 是**唯一**决定怎么收拾一个启动失败的 Core 的地方。
+//
+// state 是我们从控制 socket 问到的那份运行时:健康门还没问过(Verify 失败那两处)
+// 时传零值 —— 零值 PID 是 0,与任何真 PID 都不相等,于是落到强杀那一档,而那正是
+// 「它连 socket 都没开出来」的诚实读法。
+func (m *Manager) cleanupCoreAfterFailedStart(ctx context.Context, process Process, state supervisor.RuntimeState) error {
+	if coreEverServed(process, state) {
+		// 协作关闭不许被上游那个已经出错的 ctx 掐断:它要走完 socket 往返 +
+		// 等进程退出,而这条路正是「让它自己还原」的全部意义。
+		return m.cleanupStartedCore(context.WithoutCancel(ctx), process)
+	}
+	return m.forceCleanupStartedCore(ctx, process)
 }
 
 func (m *Manager) reserveCleanup(ctx context.Context) (context.Context, context.CancelFunc, error) {

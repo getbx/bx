@@ -679,11 +679,11 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 	}
 	if err := m.acceptHealthy(ctx, process, runtimeState, false); err != nil {
 		cause := m.updateAcceptFailureCode("new_core_accept_failed")
-		// **这一处刻意仍走协作关闭**:这个 Core 已经健康了 —— 它开了 TUN、装了
-		// 路由、接管了 DNS,socket 也在应答。强杀会跳过它自己的 defer 还原,把
-		// 机器留在指向一个不存在的 TUN 的状态里。强杀只对「从没服务过」的 Core
-		// 成立(见 Manager.forceCleanupStartedCore)。
-		if cleanupErr := m.cleanupStartedCore(context.WithoutCancel(ctx), process); cleanupErr != nil {
+		// 这个 Core 已经健康了 —— 它开了 TUN、装了路由、接管了 DNS,socket 也
+		// 在应答,所以下面那个判据会走协作关闭:强杀会跳过它自己的 defer 还原,
+		// 把机器留在指向一个不存在的 TUN 的状态里。判据在
+		// Manager.cleanupCoreAfterFailedStart,这里不自己选。
+		if cleanupErr := m.cleanupCoreAfterFailedStart(ctx, process, runtimeState); cleanupErr != nil {
 			m.retainUncertain(Process{
 				PID: process.PID, Executable: process.Executable, UID: process.UID,
 				Generation: process.Generation, Exit: process.Exit, Resolution: process.Resolution,
@@ -735,7 +735,7 @@ func (m *Manager) startUpdateCore(ctx context.Context, version string) (Process,
 		return Process{}, supervisor.RuntimeState{}, newUpdateError("new_core_start_failed")
 	}
 	if err := m.runner.Verify(process); err != nil {
-		if stopErr := m.forceCleanupStartedCore(ctx, process); stopErr != nil {
+		if stopErr := m.cleanupCoreAfterFailedStart(ctx, process, supervisor.RuntimeState{}); stopErr != nil {
 			m.retainUncertain(Process{
 				PID: process.PID, Executable: process.Executable, UID: process.UID,
 				Generation: process.Generation, Exit: process.Exit, Resolution: process.Resolution,
@@ -746,9 +746,11 @@ func (m *Manager) startUpdateCore(ctx context.Context, version string) (Process,
 	}
 	state, err := m.health.Wait(operationCtx, HealthTarget{Version: version, PID: process.PID})
 	if err != nil || state.PID != process.PID || state.Version != version {
-		// 这个新 Core 同样从没服务过(它的控制 socket 就是没出现) —— 强杀,
-		// 别去敲一个不存在的 socket。
-		if stopErr := m.forceCleanupStartedCore(ctx, process); stopErr != nil {
+		// 这个新 Core 多半从没服务过(它的控制 socket 就是没出现)—— 那就强杀,
+		// 别去敲一个不存在的 socket。**但版本对不上那一支不是**:那时 socket
+		// 已经在应答、TUN 已经开了,判据(cleanupCoreAfterFailedStart)会按
+		// state 认出它服务过并走协作关闭。
+		if stopErr := m.cleanupCoreAfterFailedStart(ctx, process, state); stopErr != nil {
 			m.retainUncertain(Process{
 				PID: process.PID, Executable: process.Executable, UID: process.UID,
 				Generation: process.Generation, Exit: process.Exit, Resolution: process.Resolution,
