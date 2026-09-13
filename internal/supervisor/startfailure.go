@@ -54,6 +54,8 @@ var startFailureSentinels = []struct {
 	Err  error
 	Code string
 }{
+	{ErrTunnelUnreachable, StartFailureTunnelUnreachable},
+	{ErrTunnelHandshakeFailed, StartFailureTunnelHandshakeFailed},
 	{ErrTunnelUnhealthy, StartFailureTunnelUndetermined},
 	{ErrTUNOpen, StartFailureTUNOpen},
 	{ErrHijack, StartFailureHijack},
