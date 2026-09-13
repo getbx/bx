@@ -612,8 +612,18 @@ func (r *ExecCoreRunner) ForceStop(ctx context.Context, process Process) error {
 //
 // **只有系统说还有东西在、或者系统答不上来时才拒绝** —— 接管来的 Core、上一任
 // Guardian 留下的 Core 仍然不会被猜一个 PID 杀下去,双 Core 那道门一寸没松。
+//
+// 「还有东西在」的判据是 **sameProcessIdentity,与 Stop 逐字同一条**:那个 PID
+// 上现在跑着的进程,身份对不上我们记的这一个 ⇒ 我们的 Core 已经走了,占着这个
+// 号的是别人。少了这道比对,这里就比 Stop **严**:Core 退出到清理之间有约十八秒,
+// PID 在这个窗口里被回收再分配是真会发生的事,那时 Stop 会判「走了,没事」而
+// 这里会答「系统说它还在」⇒ retainUncertain ⇒ **core_ownership_uncertain 从一扇
+// 更窄的门原样回来**,正是 C1 刚消灭掉的那句假话。
+//
+// 比对本身失败(拿不到 generation / 可执行路径)仍然拒绝:那是「问不出来」,
+// 不是「不是我们的」—— 与上面 Inspect 失败那一支同一条极性。
 func (r *ExecCoreRunner) forceStopWithoutHandle(process Process) error {
-	_, err := r.operations().Inspect(process.PID)
+	current, err := r.operations().Inspect(process.PID)
 	switch {
 	case errors.Is(err, ErrProcessNotRunning):
 		if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
@@ -622,9 +632,19 @@ func (r *ExecCoreRunner) forceStopWithoutHandle(process Process) error {
 		return nil
 	case err != nil:
 		return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄,而系统答不上来它还在不在: %w", process.PID, err)
-	default:
-		return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄,而系统说它还在", process.PID)
 	}
+	same, err := sameProcessIdentity(process, current)
+	if err != nil {
+		return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄,而这个号上跑着什么比不出来: %w", process.PID, err)
+	}
+	if !same {
+		// PID 被复用了 —— 我们那个 Core 已经不在。与 Stop 的处置一字不差。
+		if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
+			return uncertainOwnership(process, fmt.Errorf("clear replaced Core record: %w", clearErr))
+		}
+		return nil
+	}
+	return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄,而系统说它还在", process.PID)
 }
 
 func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
