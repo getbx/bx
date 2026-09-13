@@ -265,3 +265,36 @@ func newNeverHealthyTunnel() *tunnel.Tunnel {
 		func(string) (int64, error) { return 0, errors.New("探测失败") },
 	)
 }
+
+// 码要跨进程走(Core 写记录 → Guardian 读回来 → 用户看见),所以「哪些字符串
+// 算一个码」必须有一份**派生自哨兵表**的答案。
+//
+// 手抄第二张白名单正是这个仓库反复栽的形状:加一个码而忘了加进白名单,
+// Guardian 就会把它当成陌生字符串丢掉,那一支静默地永不生效。
+func TestStartFailureCodesAreDerivedFromTheSentinelTable(t *testing.T) {
+	codes := StartFailureCodes()
+	seen := map[string]bool{}
+	for _, code := range codes {
+		if code == "" {
+			t.Fatal("码里有空串 —— 空串是「没有码」,不是一种码")
+		}
+		if seen[code] {
+			t.Fatalf("码 %q 出现了两次", code)
+		}
+		seen[code] = true
+		if !IsStartFailureCode(code) {
+			t.Fatalf("IsStartFailureCode(%q) = false", code)
+		}
+	}
+	for _, entry := range startFailureSentinels {
+		if !seen[entry.Code] {
+			t.Fatalf("哨兵表里的 %q 不在 StartFailureCodes() 里 —— 那个码跨进程走时会被丢掉", entry.Code)
+		}
+	}
+	if !seen[StartFailureOther] {
+		t.Fatal("other 不在清单里 —— 认不出的失败也要能跨进程说出来")
+	}
+	if IsStartFailureCode("") || IsStartFailureCode("我是盘上被人改出来的字符串") {
+		t.Fatal("IsStartFailureCode 放过了不属于这一族的字符串")
+	}
+}

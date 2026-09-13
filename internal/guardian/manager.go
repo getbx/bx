@@ -1346,6 +1346,10 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 		return supervisor.RuntimeState{}, err
 	}
 	defer cancelOperation()
+	// **fork 之前**取这一刻:它是「Core 自报的那份记录属不属于这一次」那道
+	// 判据的下界(见 StartFailureCode)。取在 fork 之后就挡不住一份恰好写在
+	// 这两行之间的陈旧记录。
+	spawnedAt := time.Now()
 	process, err := m.runner.Start(operationCtx, m.coreStartOptions())
 	if err != nil {
 		if errors.Is(err, ErrProcessOwnershipUncertain) {
@@ -1369,12 +1373,18 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 	}
 	state, err := m.waitHealthy(operationCtx, process)
 	if err != nil {
+		// **先读它自己说了什么,再收拾它。** 清理走的是强杀(批一 Task 1),
+		// 而被 SIGKILL 的 Core 不会再写任何东西 —— 顺序反过来之后那次读永远
+		// 读不到东西,而没有任何测试会因此转红。
+		// 用 ctx 而不是 operationCtx:后者是那次健康等待自己的预算,刚刚正是
+		// 它到期的(TestTheRecordIsReadBeforeTheFailedCoreIsCleanedUp 钉顺序)。
+		reported := m.coreReportedStartFailure(ctx, process, spawnedAt)
 		if cleanupErr := m.cleanupCoreAfterFailedStart(ctx, process, state); cleanupErr != nil {
 			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true}, cleanupErr)
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("wait for Core health: %w", err), uncertainOwnership(m.current, cleanupErr))
 		}
-		m.needsAttention(DesiredOn, "core_health_failed")
+		m.needsAttention(DesiredOn, coreStartFailureLastError(reported))
 		return supervisor.RuntimeState{}, fmt.Errorf("wait for Core health: %w", err)
 	}
 	if err := m.acceptHealthy(ctx, process, state, releaseBarrier); err != nil {

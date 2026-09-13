@@ -13,13 +13,13 @@ import (
 )
 
 func TestCoreArgsUsesArgumentVector(t *testing.T) {
-	got := coreArgs("/etc/bx/config.yaml", "127.0.0.1:53")
+	got := coreArgs("/etc/bx/config.yaml", "127.0.0.1:53", "")
 	want := []string{"run", "-c", "/etc/bx/config.yaml", "--listen-dns", "127.0.0.1:53"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("coreArgs() = %#v, want %#v", got, want)
 	}
 	got[0] = "changed"
-	if next := coreArgs("/etc/bx/config.yaml", "127.0.0.1:53"); next[0] != "run" {
+	if next := coreArgs("/etc/bx/config.yaml", "127.0.0.1:53", ""); next[0] != "run" {
 		t.Fatalf("coreArgs returned shared mutable storage: %#v", next)
 	}
 }

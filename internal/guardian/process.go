@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/getbx/bx/internal/corestartfailure"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -111,10 +112,14 @@ type ProcessOperations interface {
 type ExecCoreRunner struct {
 	// ExecutablePath 是构造期设置的初始 Core 可执行路径;运行期读写请走
 	// Executable()/SetExecutable()(锁保护,支持热切换),不要直接读写此字段。
-	ExecutablePath       string
-	ConfigPath           string
-	DNSListen            string
-	StatePath            string
+	ExecutablePath string
+	ConfigPath     string
+	DNSListen      string
+	StatePath      string
+	// StartFailurePath 是 Core 自报启动失败的那份记录(见
+	// internal/corestartfailure)。**空 = 这条路整个关掉**,Core 那边也就
+	// 收不到 --start-failure-file,于是一个字都不写。
+	StartFailurePath     string
 	ControlSocket        string
 	StopTimeout          time.Duration
 	InspectInterval      time.Duration
@@ -177,15 +182,28 @@ func (r *ExecCoreRunner) startedCoreHandle(process Process) (*startedCore, bool)
 
 func NewExecCoreRunner(executable, configPath, dnsListen string) *ExecCoreRunner {
 	return &ExecCoreRunner{
-		ExecutablePath: executable,
-		ConfigPath:     configPath,
-		DNSListen:      dnsListen,
-		StatePath:      defaultProcessStatePath,
+		ExecutablePath:   executable,
+		ConfigPath:       configPath,
+		DNSListen:        dnsListen,
+		StatePath:        defaultProcessStatePath,
+		StartFailurePath: corestartfailure.DefaultPath,
 	}
 }
 
-func coreArgs(configPath, dnsListen string) []string {
-	return []string{"run", "-c", configPath, "--listen-dns", dnsListen}
+// coreArgs 拼 Core 的命令行。
+//
+// **startFailurePath 为空就不加那个 flag**:判据只该有一处 —— 传一个空值过去
+// 会让 Core 那边再判一次「这算不算没给」。手敲的 `sudo bx run` 本来就不带它,
+// 那正是陈旧记录的第一层防线(见 cli 的 recordStartFailure)。
+//
+// 追加 flag 对进程扫描无害:looksLikeCore 只认 basename==bx && argv[1]=="run"
+// && uid==0。
+func coreArgs(configPath, dnsListen, startFailurePath string) []string {
+	args := []string{"run", "-c", configPath, "--listen-dns", dnsListen}
+	if startFailurePath != "" {
+		args = append(args, "--start-failure-file", startFailurePath)
+	}
+	return args
 }
 
 func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (Process, error) {
@@ -226,7 +244,10 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 	}
 	operations := r.operations()
 	executable := r.executablePath()
-	started, err := operations.Start(executable, coreArgs(r.ConfigPath, r.DNSListen), environment)
+	// 陈旧记录的第一层防线:**spawn 之前**先把上一轮留下的那份删掉。
+	// 第二层(PID + 本次健康窗口双重匹配)在 StartFailureCode 里,两层都要。
+	r.discardStaleStartFailureRecord()
+	started, err := operations.Start(executable, coreArgs(r.ConfigPath, r.DNSListen, r.startFailurePath()), environment)
 	if err != nil {
 		if clearErr := r.clearLaunchMarker(); clearErr != nil {
 			return Process{}, uncertainOwnership(Process{Uncertain: true}, errors.Join(fmt.Errorf("start installed Core: %w", err), clearErr))

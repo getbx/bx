@@ -86,6 +86,34 @@ func (e taggedStartFailure) Error() string { return e.err.Error() }
 // Unwrap 返回两条:原错误(链上的 %w 全都还在)与哨兵。
 func (e taggedStartFailure) Unwrap() []error { return []error{e.err, e.sentinel} }
 
+// StartFailureCodes 是这一族**全部**的码,由那张哨兵表现取,外加 other。
+//
+// 它存在是因为码要跨进程走:Core 写进记录、Guardian 读回来。**Guardian 不许
+// 把一个读来的任意字符串当成失败码往 Status.LastError 上放** —— 那会让盘上
+// 一份被改过的记录直接决定用户看到的一句话。手抄一张白名单是这个仓库反复
+// 栽的形状,所以它从同一张表派生。
+func StartFailureCodes() []string {
+	codes := make([]string, 0, len(startFailureSentinels)+1)
+	for _, entry := range startFailureSentinels {
+		codes = append(codes, entry.Code)
+	}
+	return append(codes, StartFailureOther)
+}
+
+// IsStartFailureCode 判断一个字符串是不是这一族的码。空串一律 false:
+// 「没有码」不是一种码。
+func IsStartFailureCode(code string) bool {
+	if code == "" {
+		return false
+	}
+	for _, known := range StartFailureCodes() {
+		if code == known {
+			return true
+		}
+	}
+	return false
+}
+
 // StartFailureCode 把 Run 返回的错误分类成一个码。判据是 errors.Is,不是文本。
 //
 // nil 返回空串:「没有失败」与「失败但认不出来」是两件事,压成同一个值就等于

@@ -1821,7 +1821,11 @@ func TestManagerHeldBarrierRemainsWhenRecoveryHealthFails(t *testing.T) {
 	}
 	// core.force_stop 而不是 core.stop:健康检查失败的 Core 没有控制 socket
 	// (它就是没起来),协作关闭必定失败并把真话换成 core_ownership_uncertain。
-	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "core.force_stop"}) {
+	//
+	// core.read_start_failure 夹在两者之间:**先问它自己说了什么,再杀它** ——
+	// 反过来的话被 SIGKILL 的 Core 永远没机会开口(顺序单独由
+	// TestTheRecordIsReadBeforeTheFailedCoreIsCleanedUp 钉住)。
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "core.read_start_failure", "core.force_stop"}) {
 		t.Fatalf("events = %#v, want no barrier removal before health", got)
 	}
 	if !env.manager.barrierProven() {
@@ -2170,6 +2174,11 @@ type fakeCoreRunner struct {
 
 	executable string
 
+	// reportedStartFailure 是「Core 自己报的启动失败码」。**零值 = 这一次它
+	// 什么都没说**,于是 Manager 回落 core_health_failed —— 既有用例因此
+	// 一行不用改。
+	reportedStartFailure string
+
 	// scanResult / scanErr 是 ScanRunning 的答案。**零值 = 一台干净机器**
 	// (系统里没有任何 Core 在跑,扫描本身也没出错),既有用例因此一行不用改。
 	scanResult []Process
@@ -2258,6 +2267,17 @@ func (r *fakeCoreRunner) Start(ctx context.Context, _ CoreStartOptions) (Process
 // ForceStop 与 Stop **在事件日志里不同名**,而这是刻意的:两者的语义相反
 // (一个请它自己退出、一个直接杀),压成同一个事件之后,「清理走了哪条路」
 // 这件事就再也断言不出来了。
+// StartFailureCode 让替身也能扮演「Core 自己说了为什么起不来」。
+//
+// **它记一条事件**:顺序(读在收拾之前)是这条路上最容易被悄悄改死的东西 ——
+// 反过来之后那次读永远读不到东西,而返回值上看不出任何区别。
+func (r *fakeCoreRunner) StartFailureCode(context.Context, Process, time.Time) string {
+	r.events.add("core.read_start_failure")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reportedStartFailure
+}
+
 func (r *fakeCoreRunner) ForceStop(ctx context.Context, process Process) error {
 	r.events.add("core.force_stop")
 	return r.stop(ctx, process)
