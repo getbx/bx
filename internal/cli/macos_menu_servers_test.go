@@ -734,6 +734,38 @@ func swiftCallArgs(body, callee string) []string {
 	}
 }
 
+// swiftArgumentIsPlainly 判断**这一次**调用的实参表里有没有 `label: value` 这一
+// 项,而且值是那次光秃秃的取值(`core: core`,不是 `core: nil`、也不是一个可以在
+// 两行之外被改掉的中间变量)。
+//
+// **它存在的理由是「一个调用点替另一个满足了断言」。** 漏斗
+// `presentServers` 里有 `show(` 与 `refreshIfVisible(` 两处调用,而此前的判据是
+// `strings.Contains(整个函数体, "canEdit: canEdit")` —— 整枝 review 实测:只把
+// `show(` 那一处写死成 `canEdit: true`(另一处一字未动),整套 `TestMacMenuServer*`
+// **全绿**。而 `show(` 恰恰是用户点「Servers…」走的那条路:对着一台只声明
+// `servers` 的旧 Guardian,`⋯` 照画、Remove… 落进兼容分支 —— 出口 IP 被换到他
+// 想删掉的那一台,菜单还报成功。
+//
+// 这是这一支上「守卫钉住的是缺陷旁边的东西」的**第十二次**,形状与同一轮修复在
+// `swiftValueReachesViewTree` 里学到的那条一模一样(作用域限定在最内层块,否则
+// 一个分支替另一个背书),只是没被带回八百行外的漏斗守卫。判据因此下沉到**每一
+// 个实参表**:调用点各查各的,谁也替不了谁。
+func swiftArgumentIsPlainly(args, label, value string) bool {
+	return regexp.MustCompile(`(^|[^A-Za-z0-9_.])` + regexp.QuoteMeta(label) +
+		`\s*:\s*` + regexp.QuoteMeta(value) + `($|[^A-Za-z0-9_.(])`).MatchString(args)
+}
+
+// swiftEachCallArgs 取 body 里 callee 的全部实参表,并要求它恰好被调用 want 次
+// —— 少了或多了都说明守卫的锚点漂了,而一条锚点漂了还绿着的守卫等于没有守卫。
+func swiftEachCallArgs(t *testing.T, body, callee string, want int) []string {
+	t.Helper()
+	args := swiftCallArgs(body, callee)
+	if len(args) != want {
+		t.Fatalf("%s 被调用了 %d 次,应当 %d 次 —— 守卫已经失效,先修守卫", callee, len(args), want)
+	}
+	return args
+}
+
 // swiftMentionsIdentifier 判断 text 里有没有把 name 当成一个**完整标识符**用到
 // (而不是某个更长名字的一截:`label` 不该被 `labelWithString` 满足)。
 func swiftMentionsIdentifier(text, name string) bool {
@@ -849,12 +881,21 @@ func TestMacMenuServersWindowIsRenderedThroughASingleFunnel(t *testing.T) {
 		t.Error("漏斗里的 core 不是直接取自 maintenanceReport —— " +
 			"当前那一块会永远显示「Core not answering」而界面看起来完全正常")
 	}
-	if !strings.Contains(funnel, "core: core,") {
-		t.Error("那份实时数据没有被传进窗口")
-	}
-	// 在飞状态也必须到得了窗口,否则确认之后二十几秒屏幕上什么都不发生。
-	if !strings.Contains(funnel, "switchingTo: switchingTo,") {
-		t.Error("切换在飞状态没有传进窗口 —— 那一行不会说 Switching…、Use 也不会灰")
+	// **两个调用点各查各的。** 判据打在整个函数体上时,`show(` 与
+	// `refreshIfVisible(` 会**互相背书** —— 整枝 review 实测:只把 `show(` 那一处
+	// 的三个实参写死(`core: nil` / `switchingTo: false` / `canEdit: true`),
+	// 整套全绿,而那正是用户点「Servers…」走的那条路。见 swiftArgumentIsPlainly。
+	for _, call := range []string{"serversWindow.show", "serversWindow.refreshIfVisible"} {
+		args := swiftEachCallArgs(t, funnel, call, 1)[0]
+		if !swiftArgumentIsPlainly(args, "core", "core") {
+			t.Errorf("%s 那一处没把那份实时数据传进窗口 —— "+
+				"当前那一块会永远显示「Core not answering」而界面看起来完全正常", call)
+		}
+		// 在飞状态也必须到得了窗口,否则确认之后二十几秒屏幕上什么都不发生。
+		if !swiftArgumentIsPlainly(args, "switchingTo", "switchingTo") {
+			t.Errorf("%s 那一处没把切换在飞状态传进窗口 —— "+
+				"那一行不会说 Switching…、Use 也不会灰", call)
+		}
 	}
 }
 
@@ -966,8 +1007,16 @@ func TestMacMenuServerVerbsAreGatedByTheEditCapability(t *testing.T) {
 	if strings.Contains(funnel, "canEdit = serverSwitchingAvailable(") {
 		t.Error("用了 serverSwitchingAvailable 当门 —— 那个能力早于 remove / replace")
 	}
-	if !strings.Contains(funnel, "canEdit: canEdit") {
-		t.Error("那道门没有传进窗口")
+	// **两个调用点各查各的**(见 swiftArgumentIsPlainly):写在整个函数体上时,
+	// 只把 `show(` 那一处改成 `canEdit: true` 整套照样全绿 —— 而 `show(` 正是
+	// 用户点「Servers…」那条路,`⋯` 于是对着一台只声明 `servers` 的 Guardian
+	// 无条件画出来。
+	for _, call := range []string{"serversWindow.show", "serversWindow.refreshIfVisible"} {
+		args := swiftEachCallArgs(t, funnel, call, 1)[0]
+		if !swiftArgumentIsPlainly(args, "canEdit", "canEdit") {
+			t.Errorf("%s 那一处没把那道门传进窗口 —— "+
+				"对着只声明 servers 的那一版发 remove,它会把出口换到用户想删的那台", call)
+		}
 	}
 	// 窗口那一半:`⋯` 必须真的挂在这道门后面,而不是无条件画出来。
 	window := stripSwiftComments(menuServersWindowSource(t))
@@ -990,6 +1039,14 @@ func TestMacMenuServerVerbsAreGatedByTheEditCapability(t *testing.T) {
 		fnBody, ok := swiftFunctionBody(window, fn)
 		if !ok {
 			t.Errorf("读不出 %s 的函数体 —— 守卫已经失效,先修守卫", fn)
+			continue
+		}
+		// **恰好一处。** 判据只看第一处时,同一个函数体里晚一点再画一个
+		// **不受这道门管**的 `moreButton(` 照样绿 —— 八行之外那两条
+		// `.systemRed` 守卫早就为同一个理由改成了 Count == 1。
+		if n := strings.Count(fnBody, "moreButton("); n != 1 {
+			t.Errorf("%s 里有 %d 处 moreButton(,应当恰好一处 —— "+
+				"多出来的那些不受 canEdit 这道门管", fn, n)
 			continue
 		}
 		more := strings.Index(fnBody, "moreButton(")
@@ -1034,6 +1091,14 @@ func TestMacMenuServerRowRedComesOnlyFromAMeasuredFailure(t *testing.T) {
 	// 那句话本身也得真的被摆进视图树:少了它,红不红都无所谓了。
 	if !swiftValueReachesViewTree(body, "row.note") {
 		t.Error("候选行那句副标题没有被摆进视图树 —— 探测结论算出来之后被扔掉了")
+	}
+	// **「这一台正在被用」那句橙字同款。** 它此前只有兄弟那句 `row.note` 被钉着:
+	// 整枝 review 实测把它的 `box.addArrangedSubview(label)` 换成 `_ = label`,
+	// 整套全绿。而这一句正是热切失败之后**用户真正的出口在哪**的唯一提示 ——
+	// 少了它,他会盯着上面那块加粗的当前那台找原因。
+	if !swiftValueReachesViewTree(body, "row.runningNote") {
+		t.Error("候选行那句「正在被用」没有被摆进视图树 —— " +
+			"热切失败之后用户真正的出口在哪,界面上一个字都不说")
 	}
 }
 
