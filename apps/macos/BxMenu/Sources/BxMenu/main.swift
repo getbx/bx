@@ -3163,6 +3163,19 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 逃生路径:socket 关不掉就回落到特权 CLI `bx down`,它拥有
             // forcedMacOSTeardown(Guardian 不可达或拒绝关闭时强制拆除)。
             // 同步执行,故必须留在这条后台队列上,绝不能回主线程再跑。
+            // Core 起不来那一族要配上「是哪台服务器、你还能切到哪儿」才成为
+            // 一句可行动的话,而这两样菜单本来就经 /v1/servers 合法持有
+            // (应答体仍然只带码,发布面一寸没扩)。**按需拉一次**:lastServers
+            // 只在服务器窗口开着时才刷新,平时是 nil —— 靠它等于这半边几乎
+            // 永远说不出地址。只在真撞上这一族码时拉,失败就不点名,不编。
+            var startFailureServers = CoreStartFailureServers()
+            if isCoreStartFailureCode(failureCode) {
+                if let list = try? GuardianClient().listServers() {
+                    startFailureServers = coreStartFailureServers(list.servers.map {
+                        CoreStartFailureServer(name: $0.name, host: $0.host, port: $0.port, isCurrent: $0.current)
+                    })
+                }
+            }
             var escape = ToggleEscapeOutcome.notAttempted
             if toggleEscape(action: action, socketSucceeded: succeeded) == .privilegedCLIDown {
                 escape = self.runPrivilegedScriptOffMainThread(
@@ -3182,6 +3195,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.toggleFailureText = toggleResultText(
                     code: failureCode,
                     transportDescription: transportError,
+                    servers: startFailureServers,
                     escape: escape
                 )
                 // 排队的 Quit 优先于常规收尾:不管刚落定的这个动作成不成功,

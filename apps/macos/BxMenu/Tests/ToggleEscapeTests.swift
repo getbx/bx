@@ -45,18 +45,18 @@ struct ToggleEscapeTests {
 
         // 逃生成功也要说话:用户点的是 Turn Off,实际发生的是「Guardian 关不掉、
         // 改由 CLI 强制拆除」,静默成功等于隐瞒 Guardian 已经不听话。
-        let escaped = toggleResultText(code: nil, transportDescription: "Guardian connection failed (61).",
+        let escaped = toggleResultText(code: nil, transportDescription: "Guardian connection failed (61).", servers: CoreStartFailureServers(),
                                        escape: .succeeded)
         expect(escaped?.contains("forced teardown") == true,
                "逃生成功必须说明是强制拆除完成的,实际 = \(String(describing: escaped))")
 
         // 逃生也失败:必须给出最后一条人工出路。
-        let stuck = toggleResultText(code: "recovery_incomplete", transportDescription: nil, escape: .failed)
+        let stuck = toggleResultText(code: "recovery_incomplete", transportDescription: nil, servers: CoreStartFailureServers(), escape: .failed)
         expect(stuck?.contains("sudo bx down") == true,
                "两条路都失败时必须点名终端命令,实际 = \(String(describing: stuck))")
 
         // 没走逃生路径时文案与原来一致(打开失败、或关闭直接成功)。
-        expect(toggleResultText(code: "guardian_busy", transportDescription: nil, escape: .notAttempted)
+        expect(toggleResultText(code: "guardian_busy", transportDescription: nil, servers: CoreStartFailureServers(), escape: .notAttempted)
                 == toggleFailureHint(code: "guardian_busy"),
                "没走逃生路径时不该改动原有文案")
 
