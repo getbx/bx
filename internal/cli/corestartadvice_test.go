@@ -395,11 +395,10 @@ func TestNoNCCommandIsRenderedWithAnEmptyPort(t *testing.T) {
 	if facts.CurrentHostPort != "195.133.192.92" {
 		t.Fatalf("台子造出来的不是「只有主机」那一种:%q", facts.CurrentHostPort)
 	}
+	// 判据是「端口未知时**一条 nc 命令都不许出现**」,不是「不许出现某个具体
+	// 的坏拼法」—— 后者会放过 `nc -z <别的主机> `,而那是同一个缺陷换了个地址。
 	for _, code := range coreStartFailureCodes() {
 		text := coreStartFailureAdvice(code, facts)
-		if strings.Contains(text, "nc -z") && !strings.Contains(text, "nc -z 195.133.192.92 ") {
-			continue // 带端口的形状,不该出现在这个 facts 下,由下面那条兜住
-		}
 		for _, line := range strings.Split(text, "\n") {
 			if !strings.Contains(line, "nc -z") {
 				continue
