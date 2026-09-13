@@ -37,9 +37,16 @@ type platform interface {
     OpenTUN(name, addr string, mtu uint32) (link stack.LinkEndpoint, tun tunHandle, closeTUN func(), err error)
     DirectDialer() *net.Dialer
     Hijack(tun tunHandle, serverBypass, userBypass []string) (teardown func(), err error)
+    // 在**存活**的 TUN 上重落实劫持「路由」(重探网关 + 拆旧装新),绝不删设备。
+    RehijackRoutes(tun tunHandle, serverBypass, userBypass []string) error
 }
 ```
-**加一个平台 = 加一个 `platform_<os>.go` 实现这 3 个方法 + `paths_<os>.go`,core 不动。** TUN 生命周期(closeTUN)由 Run 用 defer 接管,Hijack 只管路由。
+**加一个平台 = 加一个 `platform_<os>.go` 实现这四个方法 + `paths_<os>.go`,core 不动。** TUN 生命周期(closeTUN)由 Run 用 defer 接管,Hijack 只管路由。
+**`RehijackRoutes` 此前漏在这段代码块外面(2026-09-13 补)** —— 而这段是本文件的**移植说明**:
+漏掉它的移植者会在编译期就撞上接口没实现,那还算好的;真正的代价是他不会知道**为什么**
+需要第四个方法 —— 换服务器(commit-confirmed 的 Rehijack)、休眠唤醒后 `/32` 旁路被冲掉的
+自愈(`internal/supervisor/bypass_route_repair.go`)、`refollowServerBypass` 跟着 DNS 换地址,三条路全经它,
+而它们的共同前提是**不能碰 TUN 设备**(拆设备等于把整机流量断在半路)。三平台都实现了。
 
 - **Guardian 侧的平台缝自 2026-08-29 起有清单**:`internal/guardian/lifecycle.go` 的
   `lifecyclePlatform`(RequireDaemon/NewBarrier/DiscoverGateway/NewDNSManager/
@@ -72,9 +79,16 @@ type platform interface {
   bx 打标出站的结构性逃逸、<150/200 压过劫持;网关经 `supervisor.LinuxDefaultRoute`
   复用 metric 感知解析,不许手抄)· **DNS**(`DNSNotNeeded` 第四态:「本平台无
   此事」≠「该接管没接管」,manager 两道门放行它、菜单 dns_managed 如实 false)·
-  **observer** 显式 nil(不装假观测)。**只剩 daemon 门未开 + netns harness 未接,
-  linux 上 Guardian 仍起不来**——刻意的中间态,`lifecycle_linux_test` 钉住
-  「供货≠开门」。焊死语义只对 darwin/linux 之外保留原话。终局路线见
+  **observer** 显式 nil(不装假观测)。**这份清单写下时门还没开**(当天的中间态是
+  「供货完毕、daemon 门未开、netns harness 未接」);**次日全部做完,上面那段已经
+  记了** —— `internal/guardian/daemon_linux.go` 的 `requireDaemonPlatform` 直接 `return nil`,
+  `harness_{barrier,manager,daemon}_netns_linux_test.go` 三条台子都在,而
+  `internal/guardian/lifecycle_linux_test.go` 钉的已经是**反过来那句**
+  (`TestLifecyclePlatformLinuxGateIsOpenNowThatEveryPieceIsSupplied`)。
+  **这里此前留着一句现在时的「linux 上 Guardian 仍起不来」,而它已经不成立** ——
+  本文件罚过很多次的那一类:一句声称某个限制仍然活着的话,比一句普通的陈旧记述更坏,
+  它会让下一个人不去核就相信,并连带对旁边那些还成立的话打折扣。焊死语义只对
+  darwin/linux 之外保留原话。终局路线见
   `docs/superpowers/specs/2026-08-29-control-plane-endgame-design.md`。
 
 ## 防环 / 安全不变量(改动时务必保住)
