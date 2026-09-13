@@ -163,11 +163,11 @@ func TestServerListShowsLatencyAndThroughput(t *testing.T) {
 		Entries: []guardian.ServerEntry{
 			{
 				Name: "hk", Host: "1.1.1.1", Current: true,
-				Probe: &guardian.ProbeReport{Reachable: true, RTTMS: 12}, PeakBPS: 3_100_000,
+				Probe: &guardian.ProbeReport{Measured: true, Reachable: true, RTTMS: 12}, PeakBPS: 3_100_000,
 			},
 			{
 				Name: "us", Host: "2.2.2.2",
-				Probe:   &guardian.ProbeReport{Reachable: true, RTTMS: 180},
+				Probe:   &guardian.ProbeReport{Measured: true, Reachable: true, RTTMS: 180},
 				PeakBPS: 8_000_000, PeakAgeSeconds: 7200,
 			},
 		},
@@ -189,11 +189,17 @@ func TestServerListShowsLatencyAndThroughput(t *testing.T) {
 
 // 探测失败要说**原因**,不是一个光秃秃的叉:用户要分得清是服务器关了,
 // 还是自己这条网络的问题。
+//
+// **fixture 里 `Measured` 不许省。** 省掉它写出来的是一份**生产永远产不出**的
+// 报告(没测成、却报着一个延迟 / 一个失败原因),而那正是本仓库「测试输入让
+// 待守属性不可见」的形状:这几条此前全靠 `Error != ""` 那条反推才绿。
 func TestServerListExplainsProbeFailures(t *testing.T) {
 	out := renderServerList(serverListView{
 		Tested: true,
 		Entries: []guardian.ServerEntry{
-			{Name: "dead", Host: "3.3.3.3", Probe: &guardian.ProbeReport{Error: "超时(没有应答)"}},
+			{Name: "dead", Host: "3.3.3.3", Probe: &guardian.ProbeReport{
+				Measured: true, Error: "超时(没有应答)", ErrorCode: supervisor.ProbeErrTimeout,
+			}},
 		},
 	})
 	if !strings.Contains(out, "超时") {
@@ -202,6 +208,57 @@ func TestServerListExplainsProbeFailures(t *testing.T) {
 	if strings.Contains(out, "0 ms") {
 		t.Errorf("没通却显示成 0 ms:\n%s", out)
 	}
+}
+
+// **三态由 `Measured` 说了算,不许用 `Error != ""` 反推**(spec §6.1 明令禁止)。
+//
+// 这一段此前完全不读 `Measured`:`Reachable == false` 时看 `Error` 空不空,
+// 空就写「不可达」。今天输出恰好是对的,只是因为**生产那三个产地**在
+// `Measured=false` 时总带一句中文原因 —— 也就是说这条判据的正确性挂在另一个
+// 包的实现细节上,而不是挂在契约上。菜单那半(`probePresentation`)读的是
+// `Measured`,两个消费方就此漂开。
+//
+// 三种形状各喂一遍,而**决定性的是第三种**:没测成、原因也没说 —— 那时说
+// 「不可达」就是把一台**根本没测过**的服务器判死。
+func TestServerListReadsTheMeasuredFlagNotTheErrorString(t *testing.T) {
+	render := func(p *guardian.ProbeReport) string {
+		return renderServerList(serverListView{
+			Tested:  true,
+			Entries: []guardian.ServerEntry{{Name: "hk", Host: "1.1.1.1", Probe: p}},
+		})
+	}
+	t.Run("测了、通了", func(t *testing.T) {
+		out := render(&guardian.ProbeReport{Measured: true, Reachable: true, RTTMS: 12})
+		if !strings.Contains(out, "12 ms") {
+			t.Errorf("测通了却没写延迟:\n%s", out)
+		}
+	})
+	t.Run("测了、没通", func(t *testing.T) {
+		out := render(&guardian.ProbeReport{
+			Measured: true, Error: "连接被拒(端口没在听)",
+			ErrorCode: supervisor.ProbeErrRefused,
+		})
+		if !strings.Contains(out, "连接被拒") {
+			t.Errorf("没说清失败原因:\n%s", out)
+		}
+	})
+	t.Run("没测成、原因也没说", func(t *testing.T) {
+		out := render(&guardian.ProbeReport{Measured: false})
+		if strings.Contains(out, "不可达") {
+			t.Errorf("没测成却被判成「不可达」—— 一台好服务器被说成坏的:\n%s", out)
+		}
+		if !strings.Contains(out, "没测成") {
+			t.Errorf("没测成这件事一个字都没说:\n%s", out)
+		}
+	})
+	t.Run("测了、没通、原因也没说", func(t *testing.T) {
+		// 反面自检:少了它,一个「永远说没测成」的实现照样满足上面那条,
+		// 而「这台服务器真的连不上」就再也说不出来了。
+		out := render(&guardian.ProbeReport{Measured: true})
+		if !strings.Contains(out, "不可达") {
+			t.Errorf("测了确实没通,却没说不可达:\n%s", out)
+		}
+	})
 }
 
 // 没测过的那台**一个字都不说** —— 每台后面挂一行「未测试」是墙纸,

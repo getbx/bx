@@ -232,13 +232,28 @@ func renderServerList(view serverListView) string {
 func serverMetrics(s guardian.ServerEntry) string {
 	var parts []string
 	if s.Probe != nil {
-		if s.Probe.Reachable {
+		// **三态的分水岭是 `Measured`,不是 `Error` 空不空**(spec §6.1 明写
+		// 「不许用 Error != "" 反推」)。此前这里就是那么反推的:今天输出恰好
+		// 对着,只因为生产那三个产地在没测成时总带一句中文原因 —— 判据的正确性
+		// 于是挂在另一个包的实现细节上,而不是挂在契约上;菜单那半读的是
+		// `Measured`,两个消费方就此漂开。没测成却被写成「不可达」,是把一台
+		// **根本没测过**的服务器判死。
+		switch {
+		case !s.Probe.Measured:
+			// 原因由服务端给(它是中文的,这一栏的读者就是它);说不出原因时
+			// 也要说「没测成」—— 那与「测了没通」是两句不同的话。
+			if s.Probe.Error != "" {
+				parts = append(parts, s.Probe.Error)
+			} else {
+				parts = append(parts, "没测成")
+			}
+		case s.Probe.Reachable:
 			parts = append(parts, fmt.Sprintf("%d ms", s.Probe.RTTMS))
-		} else if s.Probe.Error != "" {
+		case s.Probe.Error != "":
 			// 失败必须说原因:一个光秃秃的叉让用户分不清是服务器关了还是
 			// 自己这条网络的问题。
 			parts = append(parts, s.Probe.Error)
-		} else {
+		default:
 			parts = append(parts, "不可达")
 		}
 	}
