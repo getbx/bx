@@ -201,9 +201,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		kind := transportKind(link)
 		switch kind {
 		case "reality":
-			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
+			singboxPath, err := ensureSingboxBinary(cfg)
 			if err != nil {
-				return nil, fmt.Errorf("准备 sing-box: %w", err)
+				return nil, err
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			tun, err := tunnel.NewReality(singboxPath, link, opts.Probe, confPath, httpAddr)
@@ -212,9 +212,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			}
 			return tun, err
 		case "hysteria2":
-			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
+			singboxPath, err := ensureSingboxBinary(cfg)
 			if err != nil {
-				return nil, fmt.Errorf("准备 sing-box: %w", err)
+				return nil, err
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			tun, err := tunnel.NewHysteria2(singboxPath, link, opts.Probe, confPath, httpAddr)
@@ -223,9 +223,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			}
 			return tun, err
 		case "trojan":
-			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
+			singboxPath, err := ensureSingboxBinary(cfg)
 			if err != nil {
-				return nil, fmt.Errorf("准备 sing-box: %w", err)
+				return nil, err
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			tun, err := tunnel.NewTrojan(singboxPath, link, opts.Probe, confPath, httpAddr)
@@ -234,9 +234,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			}
 			return tun, err
 		case "shadowsocks":
-			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
+			singboxPath, err := ensureSingboxBinary(cfg)
 			if err != nil {
-				return nil, fmt.Errorf("准备 sing-box: %w", err)
+				return nil, err
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			tun, err := tunnel.NewShadowsocks(singboxPath, link, opts.Probe, confPath, httpAddr)
@@ -245,9 +245,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			}
 			return tun, err
 		case "vmess":
-			singboxPath, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
+			singboxPath, err := ensureSingboxBinary(cfg)
 			if err != nil {
-				return nil, fmt.Errorf("准备 sing-box: %w", err)
+				return nil, err
 			}
 			confPath := transportConfigPath(cfg.DataDir, kind, recoveryID)
 			tun, err := tunnel.NewVmess(singboxPath, link, opts.Probe, confPath, httpAddr)
@@ -256,9 +256,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			}
 			return tun, err
 		default:
-			brookPath, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion(), cfg.BrookURL, cfg.BrookSHA256)
+			brookPath, err := ensureBrookBinary(cfg, opts)
 			if err != nil {
-				return nil, fmt.Errorf("准备 brook: %w", err)
+				return nil, err
 			}
 			return tunnel.NewBrook(brookPath, link, opts.Probe, httpAddr)
 		}
@@ -320,7 +320,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 
 	serverHost, err := serverHostFromLink(cfg.Server)
 	if err != nil {
-		return fmt.Errorf("取服务器 IP: %w", err)
+		return tagStartFailure(ErrConfig, fmt.Errorf("取服务器 IP: %w", err))
 	}
 	// 多传输防环:每个传输(主 + 容灾备选 + UDP 专用)的 server 都要进 serverBypass + 静态 DNS,
 	// 否则切到「不同 server」的备选时,其子进程连自己 server 的连接会落进 TUN(成环/被 Block),
@@ -342,7 +342,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 3) fake-IP 池 + DNS 处理器
 	pool, err := fakeip.New(cfg.DNS.FakeipCIDR)
 	if err != nil {
-		return fmt.Errorf("建 fake-IP 池: %w", err)
+		return tagStartFailure(ErrConfig, fmt.Errorf("建 fake-IP 池: %w", err))
 	}
 	dnsSrv := bxdns.NewServer(pool, 1)
 	splitDirect := splitdns.NewSet()
@@ -354,7 +354,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		// 正是为了这一刻:bx Core 由 Guardian 监管,panic 会被当异常退出重启,新
 		// 进程带着同一份 cfg 立刻在同一处再 panic 一次,变成崩溃循环而非一次干净
 		// 的启动失败。
-		return fmt.Errorf("hosts 覆盖: %w", err)
+		return tagStartFailure(ErrConfig, fmt.Errorf("hosts 覆盖: %w", err))
 	}
 	staticA, appliedHosts, ignoredHosts := mergeHostOverrides(serverStatic, userHosts)
 	for _, host := range ignoredHosts {
@@ -468,7 +468,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
 	link, tunH, closeTUN, err := plat.OpenTUN(opts.TunName, opts.TunAddr, opts.MTU)
 	if err != nil {
-		return fmt.Errorf("建 TUN: %w", err)
+		return tagStartFailure(ErrTUNOpen, fmt.Errorf("建 TUN: %w", err))
 	}
 	// Run 任何提前返回都会关 TUN(停 pump、移除设备),不泄漏。
 	teardowns.push("关闭 TUN", closeTUN)
@@ -875,7 +875,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	} else {
 		teardown, err := plat.Hijack(tunH, serverBypass, cfg.Bypass)
 		if err != nil {
-			return fmt.Errorf("配置路由: %w", err)
+			return tagStartFailure(ErrHijack, fmt.Errorf("配置路由: %w", err))
 		}
 		routes.set(true)
 		teardowns.push("还原默认路由", func() {
@@ -967,6 +967,28 @@ func withTunnelStderr(src tunnelStderrSource, err error) error {
 	return fmt.Errorf("%w\n  %s", err, strings.Join(lines, "\n  "))
 }
 
+// ensureSingboxBinary / ensureBrookBinary 是「释放内嵌传输二进制」这件事的产地。
+//
+// 抽出来有两个理由,后一个是承重的:① buildTunnel 里那五个 sing-box 分支逐字
+// 相同;② 它们是 ErrProvision 的**唯一**产地,而长在 Run() 里那个闭包里时,
+// 「这个哨兵真的会被产出吗」这个问题只能靠读代码回答 —— 抽成包级函数之后
+// 它是可以被直接调用、直接断言的。
+func ensureSingboxBinary(cfg *config.Config) (string, error) {
+	path, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
+	if err != nil {
+		return "", tagStartFailure(ErrProvision, fmt.Errorf("准备 sing-box: %w", err))
+	}
+	return path, nil
+}
+
+func ensureBrookBinary(cfg *config.Config, opts Options) (string, error) {
+	path, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion(), cfg.BrookURL, cfg.BrookSHA256)
+	if err != nil {
+		return "", tagStartFailure(ErrProvision, fmt.Errorf("准备 brook: %w", err))
+	}
+	return path, nil
+}
+
 func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Duration) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -981,7 +1003,11 @@ func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Durat
 			return ctx.Err()
 		case <-deadline.C:
 			s := t.Stats()
-			return withTunnelStderr(t, fmt.Errorf("bx 隧道健康检查超时(%s): restarts=%d", timeout, s.Restarts))
+			// 裹上家长哨兵 ErrTunnelUnhealthy,**不裹两个具体结局中的任何一个** ——
+			// 这一层只知道「20 秒了还不健康」,判别是下一步的事(tunneldiagnosis.go)。
+			// 忘了判别就落回「没判出来」,而不是落到一个可能是错的答案上。
+			return tagStartFailure(ErrTunnelUnhealthy,
+				withTunnelStderr(t, fmt.Errorf("bx 隧道健康检查超时(%s): restarts=%d", timeout, s.Restarts)))
 		case <-tick.C:
 		}
 	}
