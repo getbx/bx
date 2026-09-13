@@ -194,11 +194,21 @@ struct ServerList: Decodable, Equatable {
     /// 与「有清单但它是空的」是两句不同的话,见 `serverListEmptyReason`。
     /// 缺席读作 false:旧 Guardian 没说过,那时退回既有措辞。
     var singleServer: Bool = false
+    /// **当前那台**的主机与端口,只在 `servers` 里没有它的条目时出现 —— 也就是
+    /// 单服务器配置(`bx setup` 写出来的那种)。缺席 = 「清单里已经有它」或者
+    /// 「这一版 Guardian 没说」,两种都退回既有行为,不编。
+    ///
+    /// 它**不进服务器窗口**:那个窗口靠 `servers.isEmpty` + `singleServer`
+    /// 说出「这是单服务器配置,不是一份清单」那句刻意区分出来的话。这里只喂
+    /// 「Core 起不来时那句可行动的话」——没有它,最常见的那种配置上菜单说不出
+    /// 服务器地址。
+    var currentServer: ServerEntry?
 
     enum CodingKeys: String, CodingKey {
         case servers, current, added, running
         case configPath = "config_path"
         case singleServer = "single_server"
+        case currentServer = "current_server"
     }
 
     init(from decoder: Decoder) throws {
@@ -209,12 +219,15 @@ struct ServerList: Decodable, Equatable {
         added = try c.decodeIfPresent(String.self, forKey: .added) ?? ""
         running = try c.decodeIfPresent(String.self, forKey: .running) ?? ""
         singleServer = try c.decodeIfPresent(Bool.self, forKey: .singleServer) ?? false
+        currentServer = try c.decodeIfPresent(ServerEntry.self, forKey: .currentServer)
     }
 
     init(servers: [ServerEntry] = [], current: String = "", configPath: String = "",
-         added: String = "", running: String = "", singleServer: Bool = false) {
+         added: String = "", running: String = "", singleServer: Bool = false,
+         currentServer: ServerEntry? = nil) {
         self.servers = servers; self.current = current; self.configPath = configPath
         self.added = added; self.running = running; self.singleServer = singleServer
+        self.currentServer = currentServer
     }
 }
 
