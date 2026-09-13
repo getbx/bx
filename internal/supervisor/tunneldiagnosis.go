@@ -35,9 +35,15 @@ const (
 	StartFailureTunnelHandshakeFailed = "tunnel_handshake_failed"
 )
 
-// tunnelDiagnosisTimeout 是判别那一次拨号的上限。它只在启动已经失败之后发生,
+// TunnelDiagnosisTimeout 是判别那一次拨号的上限。它只在启动已经失败之后发生,
 // 而用户此刻正站在那儿等一句话 —— 5 秒是「够判出来」与「别再让他多等」之间的取舍。
-const tunnelDiagnosisTimeout = 5 * time.Second
+//
+// **导出是因为 Guardian 要靠它算自己的等待预算**:Core 直到这次判别做完才写下
+// 那份启动失败记录,而 Guardian 的健康等待与 Core 的隧道健康窗口是同一个 20 秒
+// (两边各自的默认值)—— 也就是说 Guardian 放弃的那一刻,Core 还差整整一次判别
+// 才会开口。Guardian 那边的余量因此从这个数派生,不许手抄一个秒数
+// (见 guardian/corestartfailure.go 的 coreStartFailureGrace)。
+const TunnelDiagnosisTimeout = 5 * time.Second
 
 // transportsAnsweringTCP 说明:对这一种传输的 host:port 拨一次 TCP,到底观测
 // 得到什么。
@@ -153,7 +159,7 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 	if dial == nil {
 		return tunnelUndetermined(cause, "没有可用的判别拨号器")
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, tunnelDiagnosisTimeout)
+	dialCtx, cancel := context.WithTimeout(ctx, TunnelDiagnosisTimeout)
 	defer cancel()
 	conn, dialErr := dial(dialCtx, "tcp", addr)
 	if dialErr == nil {
