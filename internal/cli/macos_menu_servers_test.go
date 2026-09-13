@@ -1090,6 +1090,59 @@ func TestMacMenuServerVerbsAreGatedByTheEditCapability(t *testing.T) {
 	}
 }
 
+// **那道能力门在动作那一侧也要有一道,而这不是重复。**
+//
+// 渲染那道门(`presentServers` 的 `canEdit`)只决定「画不画 `⋯`」。而
+// `NSMenu.popUp` 跑的是一个**嵌套事件循环** —— 从画出那个 `⋯` 到用户点下去
+// 之间,窗口完全可能被环境刷新重画一遍(watch 时代刷新是事件驱动的),而那
+// 一拍手里的能力清单可以是另一份(Guardian 刚在升级窗口里被换掉,正是
+// 「文件换了、进程没换」那个记录在案的形状)。
+//
+// 拨出去的代价不是一次失败的请求:只声明 `servers` 的那一版收到
+// `{"action":"remove"}` 走的是它唯一的行为 —— **换到那一台**,用户的出口 IP
+// 与国家换到了他想删掉的机器上,而菜单报成功。本仓库明写「绝不试着拨一下
+// 看看」,这两处正是它适用的地方;GuardianClient.swift 上那两句「只有
+// serverEditingAvailable 判定支持时才该调用它」此前**没有任何东西**在执行。
+//
+// 两层是刻意的:漏斗那道门刚因为「两个调用点互相背书」被绕过一次,
+// **一道防线不该只有一层。**
+func TestMacMenuServerEditVerbsRecheckTheCapabilityBeforeSending(t *testing.T) {
+	source := menuMainSwiftCode(t)
+	for _, fn := range []string{
+		"private func confirmAndRemoveServer(name: String, host: String)",
+		"private func replaceServerLinkFromWindow(name: String)",
+	} {
+		// **一律 t.Errorf。** 两个动词各查一遍,Fatalf 会在第一个上停住,于是
+		// 「两处都坏了」只报出一处 —— 本仓库为这个形状栽过两次。
+		body, ok := swiftFunctionBody(source, fn)
+		if !ok {
+			t.Errorf("读不出 %s 的函数体 —— 守卫已经失效,先修守卫", fn)
+			continue
+		}
+		args := swiftCallArgs(body, "serverEditingAvailable")
+		if len(args) != 1 {
+			t.Errorf("%s 里有 %d 处 serverEditingAvailable,应当恰好一处 —— "+
+				"这个动词会在旧 Guardian 上把用户的出口换到他想删的那台", fn, len(args))
+			continue
+		}
+		// **实参必须是此刻那份状态里那次光秃秃的取值。** 一个中间变量(或者
+		// 窗口传过来的那个陈旧标志)可以在两行之外被改成别的,而这道门要挡的
+		// 恰恰是「画出 ⋯ 之后能力变了」。
+		if !swiftArgumentIsPlainly(args[0], "capabilities", "maintenanceReport?.capabilities") {
+			t.Errorf("%s 那道门问的不是此刻那份能力清单:%q", fn, args[0])
+		}
+		gate := strings.Index(blankSwiftStringLiterals(body), "serverEditingAvailable(")
+		dial := strings.Index(blankSwiftStringLiterals(body), "GuardianClient()")
+		if dial < 0 {
+			t.Errorf("%s 里没有那次拨号 —— 守卫已经失效,先修守卫", fn)
+			continue
+		}
+		if gate > dial {
+			t.Errorf("%s 先拨号后查门 —— 那次请求已经发出去了", fn)
+		}
+	}
+}
+
 // **候选行的红色必须由 `ProbePresentation.isFailure` 决定,而这一处此前无人守。**
 //
 // 变异实测:`if row.probe.isFailure` 改成 `if row.probe != .notChecked`,整个

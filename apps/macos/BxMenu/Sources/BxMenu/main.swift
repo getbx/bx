@@ -1639,6 +1639,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///
     /// 文案由 `serverRemoveConfirmMessage` 给(它要说清链接会跟着没)。
     private func confirmAndRemoveServer(name: String, host: String) {
+        guard serverEditingAvailable(capabilities: maintenanceReport?.capabilities) else {
+            refuseServerEditWithoutTheCapability(title: "Could not remove that server")
+            return
+        }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Remove server?"
@@ -1671,6 +1675,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 如实说「已写入,重连后生效」并给一条现在就重连的路,**但绝不替他重连**
     /// (与规则热生效那条收尾同一条:重连会断掉正在跑的连接)。
     private func replaceServerLinkFromWindow(name: String) {
+        guard serverEditingAvailable(capabilities: maintenanceReport?.capabilities) else {
+            refuseServerEditWithoutTheCapability(title: "Could not replace that link")
+            return
+        }
         guard let links = promptForServerLinks(
             title: "Replace Link",
             hint: "Paste the new bx link for \(name). Nothing else about this server changes, "
@@ -1717,6 +1725,32 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         reconnectBx()
+    }
+
+    /// 那道能力门在**动作**这一侧的落点(渲染那一侧是 `presentServers` 的
+    /// `canEdit`)。
+    ///
+    /// **两层不是重复。** 渲染那道门只决定画不画 `⋯`,而 `NSMenu.popUp` 跑的是
+    /// 一个嵌套事件循环:从画出那个 `⋯` 到用户点下去之间,窗口完全可能被环境
+    /// 刷新重画一遍,而那一拍手里的能力清单可以是另一份(Guardian 刚在升级窗口
+    /// 里被换掉 —— 「文件换了、进程没换」是本仓库记录在案的形状)。
+    ///
+    /// 拨出去的代价不是一次失败的请求:只声明 `servers` 的那一版收到
+    /// `{"action":"remove"}` 走的是它唯一的行为 —— **换到那一台**,用户的出口
+    /// IP 与国家换到了他想删掉的机器上,而菜单报成功。本仓库明写「绝不试着拨
+    /// 一下看看」。
+    ///
+    /// **说出来,不静默返回** —— 一个点了没反应的菜单项是这个仓库付过两次代价
+    /// 的那种失败;而这里说得出的只有观测到的事实,不猜原因。
+    private func refuseServerEditWithoutTheCapability(title: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "The bx background service that is running does not handle "
+            + "changes to the server list. It may have been replaced on disk without being "
+            + "restarted. Reopen this window after turning protection off and on again."
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     /// remove / replace 的失败漏斗。**认得出的码给一句用户做得了的话,认不出的
