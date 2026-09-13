@@ -1130,8 +1130,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onAddServer = { [weak self] in
             self?.addServerFromWindow()
         }
-        controller.onRemove = { [weak self] name, host in
-            self?.confirmAndRemoveServer(name: name, host: host)
+        controller.onRemove = { [weak self] name, host, isRunningNow in
+            self?.confirmAndRemoveServer(name: name, host: host, isRunningNow: isRunningNow)
         }
         controller.onReplaceLink = { [weak self] name in
             self?.replaceServerLinkFromWindow(name: name)
@@ -1638,7 +1638,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 而服务器很少、删除很罕见,不存在「要点十一次」那种惩罚(spec §7.1)。
     ///
     /// 文案由 `serverRemoveConfirmMessage` 给(它要说清链接会跟着没)。
-    private func confirmAndRemoveServer(name: String, host: String) {
+    private func confirmAndRemoveServer(name: String, host: String, isRunningNow: Bool) {
         guard serverEditingAvailable(capabilities: maintenanceReport?.capabilities) else {
             refuseServerEditWithoutTheCapability(title: "Could not remove that server")
             return
@@ -1646,7 +1646,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Remove server?"
-        alert.informativeText = serverRemoveConfirmMessage(name: name, host: host)
+        alert.informativeText = serverRemoveConfirmMessage(
+            name: name, host: host, isRunningNow: isRunningNow)
         alert.addButton(withTitle: "Remove")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)

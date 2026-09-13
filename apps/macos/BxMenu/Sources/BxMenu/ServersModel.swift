@@ -550,9 +550,24 @@ func otherServersEmptyNote(list: ServerList, core: CoreRuntime?) -> String? {
 /// 从不发它,所以菜单手里从来没有那条链接 —— 删掉之后它**无法**把服务器加
 /// 回去。这与规则窗口刻意不弹确认、只留 Undo 是相反的处置,理由正是这一条:
 /// 一个撤不回的 Undo 比没有 Undo 更糟。
-func serverRemoveConfirmMessage(name: String, host: String) -> String {
+/// **`isRunningNow` 那一段不是背景信息。** 一台**在跑、但配置里已经不是
+/// current** 的服务器,它的 Remove… 是亮着的(spec §7.1 只要求拒绝配置里那台,
+/// 所以这合规)—— 而窗口同一行上就写着「in use right now」。确认框此前对这件事
+/// 一个字都不说,于是用户读到的是一句「删掉一条不用的记录」,而删的是他此刻的
+/// 出口。
+///
+/// 说的是**观测到的事实与后果**,不吓唬人:删掉不会把流量挪走,跑着的隧道用它
+/// 到下一次重连为止 —— 而那时链接已经没了。**没在跑的那台一个字都不多说**,
+/// 每台都挂一句就是墙纸,而墙纸会训练人把整个确认框读成一段套话。
+func serverRemoveConfirmMessage(name: String, host: String, isRunningNow: Bool) -> String {
     let where_ = host.isEmpty ? name : "\(name) (\(host))"
-    return "Remove \(where_) from your list?\n\n"
+    var text = "Remove \(where_) from your list?\n\n"
+    if isRunningNow {
+        text += "Your traffic is going through this server right now, even though your config "
+            + "points at another one. Removing it does not move your traffic: the running "
+            + "tunnel keeps using it until bx reconnects, and the link is gone by then.\n\n"
+    }
+    return text
         + "Its link goes with it. bx never hands the link to this menu, so this "
         + "cannot be undone from here — you would have to paste the link again."
 }

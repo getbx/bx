@@ -799,14 +799,37 @@ struct ServersModelTests {
     // 删除的确认文案必须说清**链接会跟着没、而 bx 手里没有副本**(spec §7.1):
     // 菜单在构造上做不到 Undo,一个撤不回的 Undo 比没有 Undo 更糟。
     static func testRemoveConfirmationSaysTheLinkIsGoneForGood() {
-        let text = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20")
+        let text = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", isRunningNow: false)
         expect(text.contains("osaka") && text.contains("203.0.113.20"), "没说删的是哪一台:\(text)")
         expect(text.lowercased().contains("link"), "没提到链接会跟着没:\(text)")
         expect(text.lowercased().contains("undo") || text.lowercased().contains("cannot"),
                "没说这件事撤不回来:\(text)")
         // 主机问不出来时只写名字,**不写一个空括号**。
-        expect(!serverRemoveConfirmMessage(name: "osaka", host: "").contains("()"),
+        expect(!serverRemoveConfirmMessage(name: "osaka", host: "", isRunningNow: false).contains("()"),
                "主机为空时写出了一对空括号")
+    }
+
+    // **「这台正在承载你的流量」必须说出来。**
+    //
+    // 一台**在跑、但配置里已经不是 current** 的服务器,它的 Remove… 是亮着的
+    // (spec §7.1 只要求拒绝配置里那台,所以这合规)—— 而窗口同一行上就写着
+    // 「in use right now」。确认框此前对这件事一个字都不说,于是用户读到的是
+    // 一句「删掉一条不用的记录」,而删的是他此刻的出口。
+    //
+    // 说的是**观测到的事实与后果**,不吓唬人:删掉不会把流量挪走,跑着的隧道
+    // 用它到下一次重连为止 —— 而那时链接已经没了。
+    static func testRemoveConfirmationNamesTheServerCarryingTrafficRightNow() {
+        let quiet = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", isRunningNow: false)
+        let live = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", isRunningNow: true)
+        expect(quiet != live, "正在承载流量的那台与一台闲着的读起来一模一样")
+        expect(live.lowercased().contains("right now"),
+               "没说这台此刻正在承载流量:\(live)")
+        expect(live.lowercased().contains("reconnect"),
+               "没说跑着的隧道要到重连才放开它:\(live)")
+        // 反面自检:闲着那台不许挂这句话 —— 每台都说一遍就是墙纸,而墙纸会
+        // 训练人把整个确认框读成一段套话。
+        expect(!quiet.lowercased().contains("right now"),
+               "一台没在跑的服务器也被说成正在承载流量:\(quiet)")
     }
 
     // remove / replace 的失败码翻成人话;**认不出的返回 nil**,由调用方退回
