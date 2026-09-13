@@ -27,6 +27,18 @@ type RuntimeState struct {
 	RoutesInstalled bool     `json:"routes_installed"`
 	UDPRequired     bool     `json:"udp_required"`
 	UDPReady        bool     `json:"udp_ready"`
+	// FakeipCIDR 是 Core **此刻正在用**的假 IP 段(config 的 dns.fakeip_cidr,
+	// fakeip.Pool 就是拿它建的)。
+	//
+	// 发布它的理由与 DNSUpstream 一样,但后果更硬:它是用户可配的,而消费方
+	// (`bx explain` 的本机视角、`bx leak-check` 的 DNS 探测)此前各自硬编码
+	// 198.18.0.0/15。于是配了别的段的机器上,explain 会把一个假 IP 判成普通
+	// 公网 —— 连带丢掉「绑了网卡的程序拿到的是假 IP,从物理网卡发出去石沉大海」
+	// 那句话,而那正是自定义过这个段的人最需要的一句。
+	//
+	// 一个二进制里同一个问题有两个答案,就是这个仓库反复付学费的那件事;
+	// 出路与 DNSUpstream/ConfigPath 同一条:**发布运行中的值,别让客户端猜。**
+	FakeipCIDR string `json:"fakeip_cidr,omitempty"`
 	// DNSUpstream 是 Core **此刻正在用**的直连解析器(config 的 dns.china)。
 	//
 	// **发布运行中的值而不是盘上的值,是有意的。** 有人改了 config 文件时,Core

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2830,7 +2831,7 @@ func TestAssessNetworkProbeAcceptsExpectedIPv4Exit(t *testing.T) {
 	report := assessNetworkProbe(networkProbeResult{
 		IPv4:   "203.0.113.20",
 		DNSIPs: []string{"198.18.0.42"},
-	}, []string{"203.0.113.20"})
+	}, []string{"203.0.113.20"}, defaultTestFakeIP())
 	if !report.OK || report.Risk != "low" {
 		t.Fatalf("network probe report = %+v, want ok low", report)
 	}
@@ -2843,7 +2844,7 @@ func TestAssessNetworkProbeAcceptsExpectedIPv4Exit(t *testing.T) {
 }
 
 func TestAssessNetworkProbeFlagsUnexpectedIPv4Exit(t *testing.T) {
-	report := assessNetworkProbe(networkProbeResult{IPv4: "203.0.113.10"}, []string{"203.0.113.20"})
+	report := assessNetworkProbe(networkProbeResult{IPv4: "203.0.113.10"}, []string{"203.0.113.20"}, defaultTestFakeIP())
 	if report.OK || report.Risk != "high" {
 		t.Fatalf("network probe report = %+v, want high risk", report)
 	}
@@ -2853,7 +2854,7 @@ func TestAssessNetworkProbeFlagsUnexpectedIPv4Exit(t *testing.T) {
 }
 
 func TestAssessNetworkProbeFlagsPublicIPv6Egress(t *testing.T) {
-	report := assessNetworkProbe(networkProbeResult{IPv6: "2001:db8::1"}, nil)
+	report := assessNetworkProbe(networkProbeResult{IPv6: "2001:db8::1"}, nil, defaultTestFakeIP())
 	if report.OK || report.Risk != "high" {
 		t.Fatalf("network probe report = %+v, want high risk", report)
 	}
@@ -2863,7 +2864,7 @@ func TestAssessNetworkProbeFlagsPublicIPv6Egress(t *testing.T) {
 }
 
 func TestAssessNetworkProbeDoesNotTreatIPv4BodyAsIPv6Leak(t *testing.T) {
-	report := assessNetworkProbe(networkProbeResult{IPv4: "203.0.113.10", IPv6: "203.0.113.10"}, []string{"203.0.113.10"})
+	report := assessNetworkProbe(networkProbeResult{IPv4: "203.0.113.10", IPv6: "203.0.113.10"}, []string{"203.0.113.10"}, defaultTestFakeIP())
 	if !report.OK || report.Risk != "low" {
 		t.Fatalf("network probe report = %+v, want low risk", report)
 	}
@@ -6031,3 +6032,42 @@ func TestClientRecoveryHidesDeliberateNoOpsButNotRealOnes(t *testing.T) {
 		}
 	}
 }
+
+// **`bx leak-check` 的 DNS 判据也不许硬编码假 IP 段。**
+//
+// 「解析回来的是假 IP」这件事说的是「DNS 归 bx」。用户配了别的 `dns.fakeip_cidr`
+// 时,写死 198.18/15 的那份判据会把一台**正常被接管**的机器报成
+// 「resolver returned …」(info),而不是「fake-IP DNS response observed」(ok),
+// 还少一条 evidence。与 `bx explain` 那处是同一句硬编码的第二份拷贝。
+func TestLeakCheckDNSJudgesAgainstTheFakeIPRangeInUse(t *testing.T) {
+	custom := netip.MustParsePrefix("100.100.0.0/16")
+	deflt := netip.MustParsePrefix(config.DefaultFakeipCIDR)
+
+	report := assessNetworkProbe(networkProbeResult{DNSIPs: []string{"100.100.0.9"}}, nil, custom)
+	if !leakDNSCheckSaysFakeIP(report) {
+		t.Fatalf("自定义 fakeip_cidr 下没认出这是假 IP:%+v", report.Checks)
+	}
+	// 反面:同一个地址在默认段下**不**该被当成假 IP —— 少了这一半,一个
+	// 「什么地址都算假 IP」的实现照样绿。
+	report = assessNetworkProbe(networkProbeResult{DNSIPs: []string{"100.100.0.9"}}, nil, deflt)
+	if leakDNSCheckSaysFakeIP(report) {
+		t.Fatalf("默认段下把一个段外地址当成了假 IP:%+v", report.Checks)
+	}
+	report = assessNetworkProbe(networkProbeResult{DNSIPs: []string{"198.18.0.9"}}, nil, deflt)
+	if !leakDNSCheckSaysFakeIP(report) {
+		t.Fatalf("默认段下没认出 198.18 的假 IP:%+v", report.Checks)
+	}
+}
+
+func leakDNSCheckSaysFakeIP(r *networkProbeReport) bool {
+	for _, c := range r.Checks {
+		if c.Name == "dns_resolution" {
+			return strings.Contains(c.Detail, "fake-IP DNS response observed")
+		}
+	}
+	return false
+}
+
+// defaultTestFakeIP 是那些不关心假 IP 段的用例用的默认前缀 —— 与生产退路同源,
+// 不在测试里另写一个字面量。
+func defaultTestFakeIP() netip.Prefix { return netip.MustParsePrefix(config.DefaultFakeipCIDR) }

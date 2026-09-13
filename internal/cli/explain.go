@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/dialfail"
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/pathview"
@@ -324,7 +325,19 @@ func padLabel(label string) string {
 // 解析、一次 Core 运行时读取)。每一项失败都如实进 Facts,判据在 pathview 里
 // 按「问不出来」处置,绝不让 explain 整个失败。
 func collectPathFacts(ctx context.Context, target string) pathview.Facts {
-	f := pathview.Facts{Target: target, FakeIP: netip.MustParsePrefix("198.18.0.0/15")}
+	return collectPathFactsWith(ctx, target, liveCoreRuntime)
+}
+
+func liveCoreRuntime() (supervisor.RuntimeState, error) {
+	return supervisor.FetchRuntimeState(supervisor.SockPath)
+}
+
+// collectPathFactsWith 把「问 Core 要运行时状态」做成参数。抽这条缝不是为了好看:
+// 假 IP 段现在**取自 Core 报的那个值**,而「取错了」的后果是静默的(判成普通
+// 公网、连带丢掉那句最要紧的话),所以它得有一条不碰真实 socket 也测得到的路
+// (TestExplainUsesTheFakeIPRangeCoreIsActuallyUsing)。
+func collectPathFactsWith(ctx context.Context, target string, readRuntime func() (supervisor.RuntimeState, error)) pathview.Facts {
+	f := pathview.Facts{Target: target}
 	if addr, err := netip.ParseAddr(target); err == nil {
 		f.LiteralIP = true
 		f.Addrs = []netip.Addr{addr.Unmap()}
@@ -335,8 +348,10 @@ func collectPathFacts(ctx context.Context, target string) pathview.Facts {
 			f.Addrs = append(f.Addrs, a.Unmap())
 		}
 	}
-	// Core 在跑时知道自己的 TUN 与服务器旁路;不在跑时这两样「问不出来」。
-	if state, err := supervisor.FetchRuntimeState(supervisor.SockPath); err == nil {
+	// Core 在跑时知道自己的 TUN、服务器旁路与**此刻在用的假 IP 段**;
+	// 不在跑时前两样「问不出来」,假 IP 段退回内建默认。
+	state, err := readRuntime()
+	if err == nil {
 		f.CoreRunning = true
 		f.BxTun, f.BxTunKnown = state.TunName, state.TunName != ""
 		for _, c := range state.ServerBypass {
@@ -345,6 +360,7 @@ func collectPathFacts(ctx context.Context, target string) pathview.Facts {
 			}
 		}
 	}
+	f.FakeIP = fakeIPPrefixFrom(state.FakeipCIDR)
 	f.China = pathview.ChinaSetFromList(strings.Split(strings.TrimSpace(string(embedded.ChinaCIDR())), "\n"))
 	if gw, dev, err := supervisor.PhysicalDefaultRoute(ctx); err == nil {
 		_ = gw
@@ -363,6 +379,20 @@ func collectPathFacts(ctx context.Context, target string) pathview.Facts {
 		})
 	}
 	return f
+}
+
+// fakeIPPrefixFrom 把 Core 报的假 IP 段翻成前缀,问不出来就退回内建默认。
+//
+// **三种「没有答案」走同一条退路,而退路不是零值**:Core 不在跑、那一版 Core
+// 不发这个字段、值坏了 —— 都退回 config.DefaultFakeipCIDR。留一个无效的
+// netip.Prefix 会让 pathview 里 `f.FakeIP.IsValid()` 那两处判定**静默关掉**:
+// 一个假 IP 于是被判成普通公网,而界面上什么异常都看不出来。默认段至少对
+// 「没配过 fakeip_cidr」的绝大多数机器是对的,对配过的那些也不比无效前缀更坏。
+func fakeIPPrefixFrom(cidr string) netip.Prefix {
+	if p, err := netip.ParsePrefix(strings.TrimSpace(cidr)); err == nil {
+		return p
+	}
+	return netip.MustParsePrefix(config.DefaultFakeipCIDR)
 }
 
 func firstUsableAddr(addrs []netip.Addr) (netip.Addr, bool) {

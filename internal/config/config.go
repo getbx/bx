@@ -128,6 +128,16 @@ func decodeServerLink(link string) (string, error) {
 }
 
 // Parse 解析并校验配置字节。
+// DefaultFakeipCIDR 是 dns.fakeip_cidr 没配时的假 IP 段(TEST-NET-2 的 198.18/15,
+// 刻意避开 docker 的 172.16/12)。
+//
+// **导出是因为它此前被抄了两份**:`bx explain` 的事实采集与 `bx leak-check` 的
+// DNS 探测各自写了一个 198.18.0.0/15 字面量,于是用户配了别的段之后,前者把
+// 假 IP 判成普通公网、后者认不出「DNS 归 bx」。真正的答案是**问 Core 此刻在用
+// 哪一段**(supervisor.RuntimeState.FakeipCIDR);这个常量只做那条路问不出来时
+// 的退路,不是第三份判据。
+const DefaultFakeipCIDR = "198.18.0.0/15"
+
 func Parse(b []byte) (*Config, error) {
 	var c Config
 	dec := yaml.NewDecoder(bytes.NewReader(b))
@@ -171,7 +181,7 @@ func Parse(b []byte) (*Config, error) {
 		c.DNS.China = "223.5.5.5"
 	}
 	if c.DNS.FakeipCIDR == "" {
-		c.DNS.FakeipCIDR = "198.18.0.0/15"
+		c.DNS.FakeipCIDR = DefaultFakeipCIDR
 	}
 	if c.DNS.FakeipFilter == nil {
 		// 本地/反查域名永不该走 fake-IP(代理它们无意义,且会破坏本地解析);
