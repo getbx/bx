@@ -210,17 +210,31 @@ func liveCoreStatus() (coreLiveStatus, bool) {
 //
 // 对不上任何一台时返回空串:说不出名字就别说。退回配置里选的那一台恰恰是这条
 // 改动要消灭的那句谎。
+//
+// **对上了两条同样是「说不出」。** Core 只报得出一个主机(RuntimeState 里没有
+// 名字),而同一主机上挂两条记录是真会发生的:`bx server install --with-hysteria2`
+// 出的那两条链接、凭据轮换时先加后删的那段过渡。此前这里取**第一条匹配**,于是
+// 填实的 `●` 与「bx is actually using X right now.」落在错的那一台上、实时峰值
+// 给了错的一行,而 recordThroughputOnce 会把那个数**按错的名字永久落盘** ——
+// 一个自信的错答案。有歧义时宁可什么都不说:那时应答里 running 缺席,菜单按
+// 「问不出来」渲染,一个字的谎都没有。
 func runningServerName(entries []ServerEntry, host string) string {
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return ""
 	}
+	name := ""
+	matches := 0
 	for i := range entries {
 		if strings.EqualFold(strings.TrimSpace(entries[i].Host), host) {
-			return entries[i].Name
+			name = entries[i].Name
+			matches++
 		}
 	}
-	return ""
+	if matches != 1 {
+		return ""
+	}
+	return name
 }
 
 // liveServerSwitch 接到真 Core 上。
