@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/getbx/bx/internal/tunnel"
 )
 
 // 三种结局各一条,判据是**渲染出来的那句话**与分类码两样都要对得上。
@@ -331,25 +333,31 @@ func TestAUDPOnlyTransportIsNeverProbedWithTCPAndFallsToUndetermined(t *testing.
 
 // 上面那条判据必须覆盖**每一种** transportKind 会返回的传输,而不是「今天记得
 // 的那几种」。少一种就是一个静默的错答案。
+//
+// **穷举来自 tunnel.Kinds(),不是这里再抄一份。** 上一版这条测试自称穷举,而它
+// 比对的是它自己手写的一张六行的表 —— 变异实测(LANDED):给 tunnel.Kind 加一种
+// tuic,internal/tunnel 与 internal/supervisor **两个包全绿**,那句「每一种」当场
+// 变成假话。后果被极性兜住(没登记 ⇒ 判不出来 ⇒ 丢一个答案,不是编一个),
+// 所以坏的是那句陈述而不是代码 —— 而本仓库对「关于代码的假陈述」的处置是根治:
+// 清单下沉 internal/tunnel(与 internal/udpsource、internal/barriercidr 同一先例),
+// 于是 Kind 与这张表在构造上不可能各说各的。
 func TestEveryTransportKindDeclaresWhetherATCPProbeObservesIt(t *testing.T) {
-	kinds := map[string]string{
-		"reality":     "vless://u@example.com:443",
-		"hysteria2":   "hysteria2://p@example.com:443",
-		"trojan":      "trojan://p@example.com:443",
-		"shadowsocks": "ss://YWVzOnA@example.com:443",
-		"vmess":       "vmess://eyJhZGQiOiJleGFtcGxlLmNvbSJ9",
-		"brook":       "brook://server?server=example.com:9999",
+	kinds := tunnel.Kinds()
+	if len(kinds) == 0 {
+		t.Fatal("tunnel.Kinds() 是空的 —— 这条守卫此刻一种传输都没检查")
 	}
-	for kind, link := range kinds {
-		if got := transportKind(link); got != kind {
-			t.Fatalf("这张表自己错了:transportKind(%q) = %q,want %q", link, got, kind)
-		}
+	for _, kind := range kinds {
 		if _, ok := transportsAnsweringTCP[kind]; !ok {
 			t.Fatalf("传输 %q 没有登记「一次 TCP 拨号观测不观测得到它」——\n"+
 				"没登记就落 false(判不出来),那是对的极性,但沉默地落进去说明没有人想过这个问题", kind)
 		}
 	}
-	if transportsAnsweringTCP["hysteria2"] {
+	// transportKind 只是 tunnel.Kind 的薄壳 —— 少了这一条,上面那圈穷举可能问的
+	// 是一个跟生产判据没关系的清单。
+	if got := transportKind("hysteria2://p@example.com:443"); got != tunnel.KindHysteria2 {
+		t.Fatalf("transportKind 与 tunnel.Kind 对不上:得到 %q,want %q", got, tunnel.KindHysteria2)
+	}
+	if transportsAnsweringTCP[tunnel.KindHysteria2] {
 		t.Fatal("hysteria2 被登记成「TCP 上有东西在听」—— 它是 QUIC/UDP")
 	}
 	// 认不出的种类必须落「判不出来」那一档,不许默认成「可以拨」。

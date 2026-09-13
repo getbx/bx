@@ -53,15 +53,20 @@ const tunnelDiagnosisTimeout = 5 * time.Second
 // 认不出的种类查出 false(=判不出来):将来加一种传输而忘了登记时,落回的是
 // 诚实答案,不是一个可能错的具体答案。与「ErrTunnelUnhealthy 自己就是
 // undetermined 那一档」同一条极性。
+//
+// **键取 tunnel 包的常量、穷举由 tunnel.Kinds() 驱动**:上一版这里是六个手抄的
+// 字符串,而守着它的那条测试自称「覆盖每一种 transportKind 会返回的传输」,
+// 比对的却是它自己手抄的第二张表 —— 给 tunnel.Kind 加一种 tuic,两个包全绿,
+// 那句「穷举」变成假话。清单下沉到 internal/tunnel 之后漂移在构造上不可能。
 var transportsAnsweringTCP = map[string]bool{
-	"reality":     true,
-	"trojan":      true,
-	"shadowsocks": true,
-	"vmess":       true,
+	tunnel.KindReality:     true,
+	tunnel.KindTrojan:      true,
+	tunnel.KindShadowsocks: true,
+	tunnel.KindVmess:       true,
 	// brook server 在同一个端口上同时听 TCP 与 UDP。
-	"brook": true,
+	tunnel.KindBrook: true,
 	// QUIC/UDP:TCP 那一侧没有任何东西在听。
-	"hysteria2": false,
+	tunnel.KindHysteria2: false,
 }
 
 // dialFailuresBeforeTheSYNLeaves 是**本机自己**没能把 SYN 发出去的那些形状。
