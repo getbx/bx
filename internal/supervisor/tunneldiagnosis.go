@@ -92,7 +92,9 @@ type tunnelDiagnosisDialer func() tunnelDialFunc
 //
 // 判别**不读 sing-box 的 stderr 文本**(判据不许长在文本匹配上,而且那份日志
 // 是多次 spawn 共用的,分不清哪几行属于这一次),而是去做一次观测:对服务器
-// 链接里那个 host:port 直连拨一次。
+// 链接里那个 host:port 直连拨一次 TCP —— **除非那一种传输根本不在 TCP 上听**
+// (hysteria2 是 QUIC/UDP),那时一次拨号什么也观测不到,直接落「没判出来」
+// 而不拨(transportsAnsweringTCP)。
 //
 // 这次拨号不新增任何暴露面:目的地是用户自己的服务器,而 bx 刚刚已经朝它连拨
 // 了 20 秒;此刻还没有 Hijack(它排在更后面),普通 socket 走的就是物理网卡。
