@@ -11,10 +11,11 @@ Command:
 ```bash
 bx leak-check --json
 bx leak-check --network --json --expected-ip <proxy-or-vps-ip>
-bx leak-check --browser --json --expected-ip <proxy-or-vps-ip>
 ```
 
-`leak-check` is the agent-friendly summary. It aggregates client service state, DNS takeover, UDP policy, WebRTC posture, and IPv6/QUIC risk notes. By default it only reads local state. With `--network`, it also sends outbound IPv4/IPv6/DNS probes and compares the observed IPv4 exit with `--expected-ip`. It stays scoped to network-path leakage; browser fingerprinting is intentionally outside bx.
+`leak-check` is the agent-friendly summary. It aggregates client service state, DNS takeover, UDP policy, and IPv6/QUIC risk notes. By default it only reads local state. With `--network`, it also sends outbound IPv4/IPv6/DNS probes and compares the observed IPv4 exit with `--expected-ip`. It stays scoped to network-path leakage; browser fingerprinting is intentionally outside bx.
+
+**There is no browser flag here, and that is deliberate.** The browser half needs a person in front of the screen to click a button, which is not something an agent can stand in for; it lives in `bx leakcheck` (no hyphen) instead. The `webrtc` block in this command's JSON therefore reports posture only — its `browser_candidates` check says `not inspected by this command` and `leak_proof` stays `not_proven`, because nothing here ever looked at a browser.
 
 `--network` classifies:
 
@@ -30,14 +31,19 @@ Command:
 bx leakcheck
 ```
 
-This opens a local `127.0.0.1` page, asks the browser to gather ICE candidates, and returns the result to bx. It can distinguish:
+This opens a local `127.0.0.1` page (token-gated, `Host`-checked), lists the third parties it is about to contact **before** contacting any of them, and only starts once you click *Run the check*. The browser gathers ICE candidates and fetches its own public exit; bx joins that with the local half (routes, DNS, who owns the default path) and judges both together. `bx leakcheck` takes no `--expected-ip`: it does not ask you what your exit should be, it **measures** it and compares the WebRTC address against that.
 
-- `no_public_leak_detected`: browser candidates only contain expected public IPs, ignored placeholders, or no public IP.
-- `unexpected_public_ip_detected`: a public IP appeared that is not in `--expected-ip`.
-- `public_ip_detected_without_expected`: a public IP appeared, but bx was not given an expected proxy/VPS IP, so it cannot classify whether it is acceptable.
-- `local_network_candidate_detected`: a LAN candidate such as `192.168.x.x` appeared.
+The report is ten conclusions in three sections, and the three counts are printed side by side and never summed:
 
-Important: an unexpected public IP is not automatically the machine's real ISP IP. It may be another upstream proxy, router, or app tunnel. Pass every acceptable exit with `--expected-ip`.
+- `WHERE YOUR TRAFFIC GOES` (5 conclusions) — who carries your traffic, WebRTC vs HTTP exit, IPv6 exposure, DNS path, routes around the tunnel. Only these feed the leak count.
+- `CAN YOU BE SINGLED OUT` (4) — local addresses, clock vs exit country, language vs exit country, fingerprint defences. Counted separately: on an ordinary browser this is never zero, and folding it into one number would train you to ignore all of it.
+- `WHAT SITES CAN READ` (1) — neither good nor bad, no verdict, counted nowhere.
+
+Every conclusion is `ok`, `bad`, `not checked` or `info`. **`not checked` never silently becomes `ok`**: a run where the browser half never arrived prints `0 leak(s) in the traffic path, 0 identifying trait(s), 6 not checked.` rather than "no leaks found". Nothing is stored — `bx leakcheck` keeps no history of a check.
+
+`bx leakcheck` refuses to run under `sudo`, does not read your config, and does not need bx to be installed or running — checking a machine that is *not* protected is the point.
+
+Important: an unexpected public IP is not automatically the machine's real ISP IP. It may be another upstream proxy, router, or app tunnel — the report names which of those it can and cannot tell apart.
 
 ### DNS takeover
 
@@ -69,7 +75,7 @@ On macOS, overlay networks such as Tailscale and ZeroTier are treated as coexist
 
 ZeroTier and similar overlays do not have one universal control-plane/route shape that bx can safely infer for every user. bx therefore starts with read-only coexistence checks: it can report that ZeroTier is running and whether a likely overlay interface is present, while leaving membership, ACLs, and managed routes to ZeroTier itself.
 
-Other VPN/tunnel/proxy apps are treated the same way. On macOS, `bx check`/`bx leak-check` can surface common competing paths such as Cloudflare WARP, WireGuard, OpenVPN, Clash, Surge, mihomo, system proxy, and connected macOS VPN services. Process-only evidence is reported as `info`; active system proxy or connected VPN evidence is reported as `warn` because it may create a path outside bx. bx intentionally avoids flagging raw helper engine names that bx itself may run internally.
+Other VPN/tunnel/proxy apps are treated the same way. On macOS, `bx leak-check` can surface common competing paths such as Cloudflare WARP, WireGuard, OpenVPN, Clash, Surge, mihomo, system proxy, and connected macOS VPN services. Process-only evidence is reported as `info`; active system proxy or connected VPN evidence is reported as `warn` because it may create a path outside bx. bx intentionally avoids flagging raw helper engine names that bx itself may run internally.
 
 `bx status` is the runtime view. The macOS daemon refreshes a lightweight Network Guard snapshot in the background and exposes it as `warnings` in `/v0/status`. This catches changes that happen after `bx up`, such as a VPN service connecting or system proxy becoming enabled. The guard is read-only; it warns instead of disabling or reordering other software.
 
@@ -97,12 +103,11 @@ The default run is a dry-run. With `--yes`, it opens third-party pages such as B
 For macOS real-machine testing:
 
 ```bash
-scripts/darwin-testkit.sh ... --webrtc-browser
 scripts/darwin-testkit.sh ... --leak-network
 scripts/darwin-testkit.sh --reconnect-check
 ```
 
-When `--webrtc-browser` is used, the testkit passes `--server-bypass` IPs as expected WebRTC public IPs, so the browser result is compared against the intended bx exit.
+The testkit has no browser flag: the browser half needs someone at the keyboard, so run `bx leakcheck` yourself alongside it.
 
 When `--leak-network` is used, the testkit passes `--server-bypass` IPs as expected IPv4 exits for `bx leak-check --network`.
 
