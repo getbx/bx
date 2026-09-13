@@ -207,13 +207,11 @@ func newControlServerFull(opts controlMuxOptions) (*controlServer, http.Handler)
 	return cs, mux
 }
 
-// handleProbe 量一次到某台服务器的直连往返时间。
-//
-// **要 owner 或 root。** 它会真的发出一个包,而且是**在隧道外面**发的 ——
-// 那既是一次出站,也让网络上看得见这台机器联系过那个地址。读状态谁都可以,
-// 这个不行。
 // handleExplain 回答「现在向这个目标发一条连接会发生什么」。**纯读**:
 // 不拨号、不解析、不记任何账(见 dialer.Explain 与 TestExplainRecordsNothing)。
+//
+// **不要把 handleProbe 那段理由读到这里来** —— 它此前就压在这个函数头上,
+// 两行之内自相矛盾:那一段说的是「会真的发一个包」,而这一个一个包都不发。
 func (cs *controlServer) handleExplain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})
@@ -241,6 +239,15 @@ func (cs *controlServer) handleExplain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildExplainResponse(target, cs.explain(m), cs.explain(udpMeta), rep))
 }
 
+// handleProbe 量一次到某台服务器的直连往返时间。
+//
+// **要 owner 或 root。** 它会真的发出一个包,而且是**在隧道外面**发的 ——
+// 那既是一次出站,也让网络上看得见这台机器联系过那个地址。读状态谁都可以,
+// 这个不行。
+//
+// 授权判据与纯读的 handleExplain 其实是同一句(requireOwnerOrRoot 只是在
+// requireOwnerPeer 之上多一道 POST 方法门);理由分头写在两处,是因为这两个
+// 函数在「会不会发包」上正好相反,而这段话此前就压在 handleExplain 头上。
 func (cs *controlServer) handleProbe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{Status: "error", Error: "method not allowed"})

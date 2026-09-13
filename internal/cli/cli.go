@@ -4011,14 +4011,6 @@ func readClientStatusReport() (clientStatusReport, error) {
 	)
 }
 
-// observerForPlatform 只在观测原语真实存在的平台上附观测。
-//
-// supervisor.LookupRoute 目前只有 darwin 实现,DNS 接管探测同理。在其余平台
-// 观测只会产出一份全 Unknown 的结果 + 5 条恒定的「该项无法观测」divergence,
-// 而它换不来任何新事实——tunnel_healthy 本就来自同一个控制 socket,已经在扁平
-// 字段里了。那种噪声会把 divergence 训练成用户和 agent 学会忽略的东西,
-// 正好毁掉它唯一的价值。字段缺席是诚实的「没问」;满屏「无法观测」则是把静态
-// 平台限制伪装成每次调用都新发生的差异。
 // observerForPlatform 决定哪些平台附上观测层。
 //
 // **原来只有 darwin,理由是「别处一个观测原语都没有」——那个理由已经不成立了。**
