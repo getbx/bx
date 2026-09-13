@@ -1109,7 +1109,7 @@ func TestMacMenuServerVerbsAreGatedByTheEditCapability(t *testing.T) {
 func TestMacMenuServerEditVerbsRecheckTheCapabilityBeforeSending(t *testing.T) {
 	source := menuMainSwiftCode(t)
 	for _, fn := range []string{
-		"private func confirmAndRemoveServer(name: String, host: String)",
+		"private func confirmAndRemoveServer(name: String, host: String, isRunningNow: Bool)",
 		"private func replaceServerLinkFromWindow(name: String)",
 	} {
 		// **一律 t.Errorf。** 两个动词各查一遍,Fatalf 会在第一个上停住,于是
@@ -1262,7 +1262,7 @@ func swiftAnyIdentifier(text string, names []string) bool {
 // 的保护会在下一次有人从别处触发这个 action 时失效。
 func TestMacMenuConfirmsBeforeRemovingAServer(t *testing.T) {
 	body, ok := swiftFunctionBody(menuMainSwiftCode(t),
-		"private func confirmAndRemoveServer(name: String, host: String)")
+		"private func confirmAndRemoveServer(name: String, host: String, isRunningNow: Bool)")
 	if !ok {
 		t.Fatal("读不出 confirmAndRemoveServer 的函数体 —— 守卫已经失效,先修守卫")
 	}
@@ -1295,6 +1295,20 @@ func TestMacMenuConfirmsBeforeRemovingAServer(t *testing.T) {
 	action, ok := swiftFunctionBody(window, "@objc private func removeServer(_ sender: NSMenuItem)")
 	if !ok {
 		t.Fatal("读不出 removeServer 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	// **「这一台此刻正在承载流量」必须从窗口带过去,而且是那份算好的判据。**
+	// 一台在跑、但配置里已经不是 current 的服务器,Remove… 是亮着的(合规),
+	// 而确认框若不说这件事,用户读到的是「删掉一条不用的记录」,删的却是他此刻
+	// 的出口。**不许在 main.swift 那边自己再判一遍**:那份判据只有一份
+	// (otherServerRows 里那个 answeringCore 门),而 main.swift 手里清单上的
+	// running 在 Core 静默时是可能陈旧的。字面量同理 —— 写死 false 就是这条
+	// 缺陷原样回来。
+	if !strings.Contains(action, "onRemove?(row.name, row.host, row.isRunningNow)") {
+		t.Error("删除回调没把「这一台正在承载流量」带过去 —— " +
+			"确认框会把用户此刻的出口说成一条不用的记录")
+	}
+	if !strings.Contains(body, "isRunningNow: isRunningNow") {
+		t.Error("确认文案没吃那个标志 —— 它算出来了,却没进那句话")
 	}
 	if !strings.Contains(action, "guard !row.isCurrent else { return }") {
 		t.Error("回调里没有再拦一道 —— 只靠 isEnabled 的保护在别处触发这个 action 时失效")

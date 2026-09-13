@@ -26,8 +26,13 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     var onDeploy: (() -> Void)?
     /// 用户点了「Add Server…」—— 贴一条链接加进清单并切换过去(spec §4)。
     var onAddServer: (() -> Void)?
-    /// `⋯` 里的删除。参数是名字与出口主机(后者只用来写确认文案)。
-    var onRemove: ((String, String) -> Void)?
+    /// `⋯` 里的删除。参数是名字、出口主机、以及**这一台此刻是不是正在承载
+    /// 流量** —— 三样都只用来写确认文案。
+    ///
+    /// 最后那一样必须从这里带过去,**不许让调用方自己再判一遍**:「在不在跑」
+    /// 的判据只有一份(`otherServerRows` 里那个 `answeringCore` 门),而
+    /// main.swift 手里那份清单里的 `running` 在 Core 静默时是可能陈旧的。
+    var onRemove: ((String, String, Bool) -> Void)?
     /// `⋯` 里的换链接。
     var onReplaceLink: ((String) -> Void)?
 
@@ -327,7 +332,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         head.addArrangedSubview(endpoint)
         head.setHuggingPriority(.defaultLow, for: .horizontal)
         if canEdit {
-            head.addArrangedSubview(moreButton(name: panel.name, host: panel.host, isCurrent: true))
+            head.addArrangedSubview(moreButton(name: panel.name, host: panel.host,
+                                              isCurrent: true, isRunningNow: panel.runningConfirmed))
         }
         box.addArrangedSubview(head)
 
@@ -429,7 +435,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
             box.addArrangedSubview(use)
         }
         if canEdit {
-            box.addArrangedSubview(moreButton(name: row.name, host: row.entry.host, isCurrent: false))
+            box.addArrangedSubview(moreButton(name: row.name, host: row.entry.host,
+                                              isCurrent: false, isRunningNow: row.isRunningNow))
         }
         return box
     }
@@ -440,27 +447,30 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     /// **只有 `serverEditingAvailable` 说这一版认得 remove / replace 时才画**
     /// (`canEdit`,判据在纯模型里):只声明 `servers` 的那一版收到 remove 会
     /// **换到那一台**去,而那正是这个设计唯一明令禁止的事。
-    private func moreButton(name: String, host: String, isCurrent: Bool) -> NSButton {
+    private func moreButton(name: String, host: String, isCurrent: Bool, isRunningNow: Bool) -> NSButton {
         let more = NSButton(title: "⋯", target: self, action: #selector(showRowMenu(_:)))
         more.bezelStyle = .rounded
         more.controlSize = .small
         // `name|host|current` 塞进 identifier:回调要的就是这三样,而从界面上的
         // 文字反推它们会在名字里含分隔符的时候悄悄取错一台。
-        more.identifier = NSUserInterfaceItemIdentifier(rowMenuKey(name: name, host: host, isCurrent: isCurrent))
+        more.identifier = NSUserInterfaceItemIdentifier(
+            rowMenuKey(name: name, host: host, isCurrent: isCurrent, isRunningNow: isRunningNow))
         more.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         more.toolTip = "More actions for \(name)"
         return more
     }
 
-    private func rowMenuKey(name: String, host: String, isCurrent: Bool) -> String {
-        "\(isCurrent ? "1" : "0")\u{1F}\(host)\u{1F}\(name)"
+    private func rowMenuKey(name: String, host: String, isCurrent: Bool, isRunningNow: Bool) -> String {
+        "\(isCurrent ? "1" : "0")\u{1F}\(isRunningNow ? "1" : "0")\u{1F}\(host)\u{1F}\(name)"
     }
 
-    private func parseRowMenuKey(_ raw: String) -> (name: String, host: String, isCurrent: Bool)? {
-        // 名字在最后一段:主机与标志位都不含分隔符,而名字是用户起的。
+    private func parseRowMenuKey(_ raw: String)
+        -> (name: String, host: String, isCurrent: Bool, isRunningNow: Bool)?
+    {
+        // 名字在最后一段:主机与两个标志位都不含分隔符,而名字是用户起的。
         let parts = raw.components(separatedBy: "\u{1F}")
-        guard parts.count >= 3 else { return nil }
-        return (parts[2...].joined(separator: "\u{1F}"), parts[1], parts[0] == "1")
+        guard parts.count >= 4 else { return nil }
+        return (parts[3...].joined(separator: "\u{1F}"), parts[2], parts[0] == "1", parts[1] == "1")
     }
 
     @objc private func showRowMenu(_ sender: NSButton) {
@@ -495,7 +505,7 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // 当前那台**在这里也拦一道**(纵深防御):菜单项已经置灰,而一个只靠
         // `isEnabled` 的保护会在下一次有人从别处触发这个 action 时失效。
         guard !row.isCurrent else { return }
-        onRemove?(row.name, row.host)
+        onRemove?(row.name, row.host, row.isRunningNow)
     }
 
     @objc private func switchTo(_ sender: NSButton) {
