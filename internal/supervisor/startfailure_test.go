@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"go/ast"
 	"net"
+	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -59,6 +61,29 @@ func TestEveryStartFailureSentinelHasAProductionSite(t *testing.T) {
 		ErrTunnelHandshakeFailed: {trigger: func(t *testing.T) error {
 			return diagnoseUnhealthyTunnel(context.Background(), listeningLocalAddress(t),
 				func() tunnelDialFunc { return (&net.Dialer{}).DialContext },
+				tagStartFailure(ErrTunnelUnhealthy, errors.New("健康检查超时")))
+		}},
+		ErrTunnelUndeterminedUDPTransport: {trigger: func(t *testing.T) error {
+			// hysteria2 是 QUIC/UDP:那台服务器不在 TCP 上听,一次拨号观测
+			// 不到它 —— 拨都不该拨。
+			return diagnoseUnhealthyTunnel(context.Background(), "hysteria2://secret@"+closedLocalAddress(t),
+				func() tunnelDialFunc {
+					return func(context.Context, string, string) (net.Conn, error) {
+						t.Error("对一台 UDP 传输的服务器拨了 TCP")
+						return nil, errors.New("不该到这里")
+					}
+				},
+				tagStartFailure(ErrTunnelUnhealthy, errors.New("健康检查超时")))
+		}},
+		ErrTunnelUndeterminedLocalDial: {trigger: func(t *testing.T) error {
+			// SYN 没离开本机(2026-08-13 那次事故的签名)。
+			return diagnoseUnhealthyTunnel(context.Background(), closedLocalAddress(t),
+				func() tunnelDialFunc {
+					return func(_ context.Context, network, _ string) (net.Conn, error) {
+						return nil, &net.OpError{Op: "dial", Net: network,
+							Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}
+					}
+				},
 				tagStartFailure(ErrTunnelUnhealthy, errors.New("健康检查超时")))
 		}},
 		ErrTUNOpen: {platformCall: "OpenTUN"},
