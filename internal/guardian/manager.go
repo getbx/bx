@@ -87,6 +87,17 @@ type CoreRunner interface {
 	// 是那条路必定失败的场合。放进接口由编译器点名每一个实现
 	// (与 stats.DecisionCounter、dialer.AppRecorder 同一条)。
 	ForceStop(context.Context, Process) error
+	// StartFailureCode 交出这一次 spawn 的 Core **自己报的**启动失败码。
+	// 空串 = 这一次它没说(没写、读不动、对不上),绝不是一种失败。
+	//
+	// **直接进接口而不是做成可选断言**(与 ForceStop 同一条,也与
+	// stats.DecisionCounter / dialer.AppRecorder 同一条):可选断言问的是
+	// `m.runner` 这个**接口值**的动态类型,于是任何一层包装(装饰、计数、
+	// 日志转发)都会让它静默地不成立 —— 而「静默不成立」在输出上与
+	// 「这个功能不存在」完全一样(都回落 core_health_failed)。
+	// 那条编译期断言 `var _ coreStartFailureReporter = (*ExecCoreRunner)(nil)`
+	// 守的是 ExecCoreRunner 自己,守不住 Manager 手里拿到的是什么。
+	StartFailureCode(ctx context.Context, process Process, since time.Time) string
 	Executable() string
 	SetExecutable(string) error // 必须绝对路径,否则 error;并发安全
 }

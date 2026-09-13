@@ -22,6 +22,12 @@ func (r *scannerOnlyRunner) Start(context.Context, CoreStartOptions) (Process, e
 }
 func (r *scannerOnlyRunner) Stop(context.Context, Process) error      { return nil }
 func (r *scannerOnlyRunner) ForceStop(context.Context, Process) error { return nil }
+
+// 这个替身不模拟「Core 自报」:恒空串 = 这一次它没说 ⇒ 回落 core_health_failed。
+func (r *scannerOnlyRunner) StartFailureCode(context.Context, Process, time.Time) string {
+	return ""
+}
+
 func (r *scannerOnlyRunner) Executable() string                       { return "" }
 func (r *scannerOnlyRunner) SetExecutable(string) error               { return nil }
 func (r *scannerOnlyRunner) ScanRunning() ([]Process, error)          { return r.scan.ScanRunning() }
@@ -37,6 +43,12 @@ func (r *nonScanningRunner) Start(context.Context, CoreStartOptions) (Process, e
 }
 func (r *nonScanningRunner) Stop(context.Context, Process) error      { return nil }
 func (r *nonScanningRunner) ForceStop(context.Context, Process) error { return nil }
+
+// 同上:恒空串 = 这一次没说。
+func (r *nonScanningRunner) StartFailureCode(context.Context, Process, time.Time) string {
+	return ""
+}
+
 func (r *nonScanningRunner) Executable() string                       { return "" }
 func (r *nonScanningRunner) SetExecutable(string) error               { return nil }
 

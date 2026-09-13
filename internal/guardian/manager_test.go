@@ -2179,6 +2179,20 @@ type fakeCoreRunner struct {
 	// 一行不用改。
 	reportedStartFailure string
 
+	// startFailureAsks 记下**每一次**去读时递过来的那两个入参。
+	//
+	// 这两个形参此前都没有名字、都被丢掉,于是没有任何东西观测 Manager 究竟
+	// 递了什么 —— 而它们**就是**新鲜度判据的全部(PID 认对象、since 认这一次)。
+	// 生产里递错任何一个,每一份记录都会被丢掉、回落 core_health_failed,
+	// 也就是 2026-09-12 那天用户读到的那句话,而整包全绿。
+	startFailureAsks []startFailureAsk
+
+	// lastStarted / startEnteredAt 是 Start 这一跳留下的两个事实,供上面那条
+	// 断言比对:**递过去的必须是这一次 fork 出来的那个 Process**,而 since
+	// 必须取在 fork **之前**。
+	lastStarted    Process
+	startEnteredAt time.Time
+
 	// scanResult / scanErr 是 ScanRunning 的答案。**零值 = 一台干净机器**
 	// (系统里没有任何 Core 在跑,扫描本身也没出错),既有用例因此一行不用改。
 	scanResult []Process
@@ -2223,6 +2237,9 @@ func (r *fakeCoreRunner) Start(ctx context.Context, _ CoreStartOptions) (Process
 	r.events.add("core.start")
 	r.mu.Lock()
 	r.starts++
+	// 进入 Start 的这一刻。**since 必须比它更早**(它是 fork 之前取的),
+	// 否则本次 Core 写下的记录会整份落在窗口之外。
+	r.startEnteredAt = time.Now()
 	startErr := r.startErr
 	block := r.blockStart
 	blockUntilContext := r.blockStartUntilContext
@@ -2256,6 +2273,7 @@ func (r *fakeCoreRunner) Start(ctx context.Context, _ CoreStartOptions) (Process
 		Exit:       exit,
 	}
 	r.current = process
+	r.lastStarted = process
 	r.exits[process.PID] = exit
 	r.mu.Unlock()
 	if block != nil {
@@ -2271,11 +2289,36 @@ func (r *fakeCoreRunner) Start(ctx context.Context, _ CoreStartOptions) (Process
 //
 // **它记一条事件**:顺序(读在收拾之前)是这条路上最容易被悄悄改死的东西 ——
 // 反过来之后那次读永远读不到东西,而返回值上看不出任何区别。
-func (r *fakeCoreRunner) StartFailureCode(context.Context, Process, time.Time) string {
+func (r *fakeCoreRunner) StartFailureCode(_ context.Context, process Process, since time.Time) string {
 	r.events.add("core.read_start_failure")
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.startFailureAsks = append(r.startFailureAsks, startFailureAsk{process: process, since: since})
 	return r.reportedStartFailure
+}
+
+// startFailureAsk 是「Manager 递过来的那两个值」。
+type startFailureAsk struct {
+	process Process
+	since   time.Time
+}
+
+func (r *fakeCoreRunner) startFailureAsksSnapshot() []startFailureAsk {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]startFailureAsk(nil), r.startFailureAsks...)
+}
+
+func (r *fakeCoreRunner) lastStartedProcess() Process {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastStarted
+}
+
+func (r *fakeCoreRunner) startEntryInstant() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.startEnteredAt
 }
 
 func (r *fakeCoreRunner) ForceStop(ctx context.Context, process Process) error {
