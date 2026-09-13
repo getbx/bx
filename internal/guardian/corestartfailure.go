@@ -113,7 +113,11 @@ func (r *ExecCoreRunner) discardStaleStartFailureRecord() {
 	if path == "" {
 		return
 	}
-	if err := corestartfailure.Remove(path); err != nil {
+	// Discard 而不是 Remove:它连同 Write 那次原子写遗留的临时文件一起扫掉。
+	// 那一刀(SIGKILL)按构造就落在 CreateTemp 与 Rename 之间那段窗口附近,
+	// 而 SIGKILL 不给 defer 机会 —— 只认最终名字的 Remove 一个碎片都清不掉。
+	// **只在 spawn 之前这么做**:这一刻按构造没有写入者(见 Discard)。
+	if err := corestartfailure.Discard(path); err != nil {
 		log.Printf("guardian_core_start_failure_record_stale_remove_failed path=%s err=%v", path, err)
 	}
 }

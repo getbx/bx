@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -70,7 +71,7 @@ func Write(path string, record Record) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".core-start-failure-")
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPrefix)
 	if err != nil {
 		return fmt.Errorf("create core start failure record: %w", err)
 	}
@@ -120,6 +121,42 @@ func Remove(path string) error {
 		return err
 	}
 	return nil
+}
+
+// tempPrefix 是 Write 那次原子写用的临时文件前缀。
+const tempPrefix = ".core-start-failure-"
+
+// Discard 删掉记录,**连同这个目录里遗留的临时文件**。
+//
+// Write 是「建临时文件 → 写 → fsync → rename」,而这份记录的整个使用场景就是
+// 「Core 起不来,Guardian 随后 SIGKILL 它」—— 那一刀**按构造**落在这段窗口
+// 附近。杀在 CreateTemp 与 Rename 之间时,`defer os.Remove` 不会跑
+// (SIGKILL 不给 defer 机会),于是 /var/lib/bx 里永久留下一个
+// `.core-start-failure-XXXX`;Remove 只认最终那个名字,一个都清不掉。
+// 单个文件几十字节,危害不是磁盘 —— 是一个只增不减的目录,和下一个人在
+// 事故现场看到一堆来路不明的碎片。
+//
+// **只在 spawn 之前调它**(discardStaleStartFailureRecord)。那一刻按构造没有
+// 写入者:这一次的 Core 还没 fork,而上一个已经被清理掉了(Start 之前
+// refuseLiveLaunchMarker / refuseUnrecordedRunningCore 两道 fail-closed 求证过
+// 系统里没有 Core 在跑)。读完之后那次清理仍然走 Remove —— 那时 Core 可能
+// 还活着,而扫掉一个正在写的临时文件只会白白毁掉一次它本来能写成的记录。
+//
+// 扫不动只是少清一个碎片,**绝不升级成失败**(与 Remove 同一条)。
+func Discard(path string) error {
+	err := Remove(path)
+	dir := filepath.Dir(path)
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), tempPrefix) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
+	}
+	return err
 }
 
 // FlagName 是 Guardian 传给 Core 的那个命令行 flag 的名字(不带 `--`)。
