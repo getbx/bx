@@ -269,7 +269,16 @@ bx 不会与其它全局 VPN 争抢默认路由:如果另一条隧道(如 Tailsc
 `sudo bx down` 不依赖 Guardian 还活着、也不依赖网络还通:
 
 - **网络故障(解析不到默认网关)**:降级为纯阻断屏障继续走完拆除,而不是报错拒绝。
-- **Guardian 无响应,或响应了却关不掉**(例如断网期间重启后恢复事务被永久阻断):自动改走强制停止,依次做五件事——先记录"已关闭"(不再开机自启,也让还活着的 Guardian 不再把 core 退出当成崩溃去重装屏障、重启 core)、请求正在运行的 core 经自己的控制面退出(由它的 defer 还原**它装的路由**)、停止 Guardian 服务、**还原系统 DNS**(macOS 的 `networksetup` DNS 是 Guardian 接管的,core 只是 127.0.0.1:53 的监听方,不还原就会"路由干净但网页照样打不开")、删除屏障装下的阻断路由。任一步失败都不会中断后面的步骤,并会把失败原因和下一步一起打印出来(DNS 还原失败会提示手动 `sudo bx dns off`)。
+- **Guardian 无响应,或响应了却关不掉**(例如断网期间重启后恢复事务被永久阻断):自动改走强制停止,依次做**六**件事——
+
+  1. 先记录"已关闭"(不再开机自启,也让还活着的 Guardian 不再把 core 退出当成崩溃去重装屏障、重启 core);
+  2. 请求正在运行的 core 经自己的控制面退出,趁它还有路可走、由它的 defer 还原**它装的路由**;
+  3. 停止 Guardian 服务,免得它在背后又把 core 拉起来;
+  4. **删除屏障装下的阻断路由**——Guardian 连同它的所有权记录一起没了,再没有别的东西能删它。这一步才是真正让你重新上网的那一步(它删掉覆盖整个公网的那组 reject 路由),所以它**排在还原 DNS 之前**:两步互不依赖,而下一步那几条没有自带超时的外部命令绝不许拖住它;
+  5. **还原系统 DNS**(macOS 的 `networksetup` DNS 是 Guardian 接管的,core 只是 127.0.0.1:53 的监听方,不还原就会"路由干净但网页照样打不开");它必须排在停掉 Guardian 之后,否则 Guardian 会把 DNS 抢回去。这一步有超时上限,免得一条卡住的 `networksetup` 让 `bx down` 永远挂着;
+  6. 再记录一次关闭意图。便宜、幂等,而且此刻才是权威的:Guardian 已经被 bootout,没有任何东西能覆盖它,一个抢在第 1 步前面的并发 `up` 也留不下 On。
+
+  任一步失败都不会中断后面的步骤,并会把失败原因和下一步一起打印出来(DNS 还原失败会提示手动 `sudo bx dns off`)。
 
 强制停止只停服务、只删 bx 自己装的路由,**不动 `/etc/bx`、`/var/lib/bx` 与任何配置**。它会如实告诉你做了什么,但不替你断言网络已恢复——请用 `bx status` 或打开任意网页确认。若仍不通,`sudo bx uninstall` 会停止全部服务并还原网络(同样保留 `/etc/bx` 配置,便于重装)。
 
@@ -316,7 +325,7 @@ sudo bx preset apply gaming
 
 ```bash
 scripts/package-macos-menu.sh
-open dist/macos/Bx.app
+open dist.noindex/macos/Bx.app
 ```
 
 生成可分发 macOS release 包:
@@ -328,13 +337,13 @@ scripts/package-macos-release.sh
 产物:
 
 ```text
-dist/release/bx-macos-arm64/
+dist.noindex/release/bx-macos-arm64/
   Bx.app
   install.sh
   uninstall.sh
   README.txt
-dist/release/bx-macos-arm64.tar.gz
-dist/release/SHA256SUMS
+dist.noindex/release/bx-macos-arm64.tar.gz
+dist.noindex/release/SHA256SUMS
 ```
 
 `Bx.app/Contents/Resources` 内嵌 `bx-cli`、`bx-bridge` 和 `release.json`(校验用的 sha256 摘要),不再有顶层裸 `bx` 二进制。
@@ -434,7 +443,7 @@ sudo bx server shares --json
 | `sudo bx reconnect` | 安全重连传输:替代传输健康后切换,不中断 TUN、路由或 DNS |
 | `bx update --check --json` | 只读检查已签名 release,供菜单栏或自动化读取 |
 | `sudo bx update` | 校验已签名 release 并原子替换 CLI;macOS 统一安装(Bx.app)下走统一在线更新(保护开启经 Guardian fail-closed 事务、失败自动回滚,保护关闭直接文件级升级) |
-| `sudo bx direct add <domain>` | 将域名加入直连白名单(**TCP 与 UDP 都生效**),会与 proxy 规则互斥清理 |
+| `sudo bx direct add <domain>` | 将域名加入直连白名单(**TCP 与 UDP 都生效**)。**同名**的 proxy 规则会被一并清掉(`zoom.us` 与 `*.zoom.us` 算同一条);但被一条**更宽**的 proxy 规则盖住时**直接拒绝、不写**,并点名该删哪一行——`Explain` 先查 proxy 且没有「更具体优先」,写下去就是一条永远不命中的死规则,所以这道门刻意没有 `--force`。命中公有云/CDN 风险名单会拒绝,那一道**有** `--force` |
 | `sudo bx direct rm <domain>` | 从直连白名单移除域名 |
 | `sudo bx proxy add <domain>` | 强制域名走隧道,会与 direct 规则互斥清理 |
 | `sudo bx proxy rm <domain>` | 从强制隧道列表移除域名 |
@@ -457,7 +466,7 @@ sudo bx server shares --json
 | `bx observe --json --duration 30s --scenario video` | 观察短窗口内连接、分流、UDP 阻断和流量变化 |
 | `bx logs` | 查看客户端日志 |
 | `bx logs --json` | 输出 agent 可读的客户端日志文本、错误和提示 |
-| `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist/macos/Bx.app` |
+| `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist.noindex/macos/Bx.app`(`.noindex` 后缀让 Spotlight 不去索引构建产物,否则 `mdfind` 会把它当成一个装好的 Bx.app) |
 | `scripts/package-macos-release.sh` | 生成 macOS release 目录和 `.tar.gz` |
 | `scripts/verify-macos-release.sh` | 验证 macOS release 目录、压缩包和 SHA256SUMS |
 | `scripts/darwin-unified-install-check.sh` | 统一安装真机验收(默认 dry-run) |
@@ -533,12 +542,14 @@ rules:
 
 通常不需要手写配置。`bx server install` 和 `bx setup` 会自动生成需要的文件。
 
-客户端支持的常用配置:
+客户端支持的常用配置(下面是**键的说明**,不是 `bx setup` 写出来的那一份——它只写
+`server`(或 `transports`)、`global: true`、`killswitch: true`,加上 sudo 下的
+`owner_uid` 与 `--udp` 给的 `udp.transport`;其余键一个不写,靠 `config.Parse` 填默认值):
 
 ```yaml
 server: "bx://..."
 killswitch: true
-global: false
+global: true                  # setup 写的就是 true;改成 false 才走 china 分流
 dns:
   china: 223.5.5.5
   fakeip_cidr: 198.18.0.0/15
