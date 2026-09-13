@@ -6,7 +6,7 @@ For cutting bx router mode onto the Mudi **safely, with mihomo as a live fallbac
 
 ## 0. Prereqs (local)
 ```sh
-cd ~/Documents/bx && git checkout router-mode
+cd ~/Documents/bx     # router mode is on master; there is no `router-mode` branch (it was merged long ago)
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/bx_arm64 .
 cat /tmp/bx_arm64 | ssh root@192.168.8.1 'cat >/usr/bin/bx && chmod +x /usr/bin/bx && /usr/bin/bx --version'
 ```
