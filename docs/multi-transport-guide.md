@@ -115,8 +115,17 @@ killswitch: true
 Block**——任何时候都绝不回落直连。`bx status` 显示 `UDP→hysteria2@<vps>`。这样**既安全(都不
 泄漏)又有速度(UDP 走最适合的引擎)**。
 
-> UDP 默认 `mode: block`(QUIC 自动回落 TCP,安全)。想要 UDP 走隧道才设 `proxy`;想要 UDP 提速再加
-> `udp.transport`。三档按需。
+> **UDP 默认 `mode: proxy`,不是 `block`。** `config.Parse` 在 `udp.mode` 留空时填
+> `proxy`,而 `setup.WriteConfig` 从不写这个键 —— 所以每一台 `bx setup` 装出来的机器
+> 都是 `proxy`:非 DNS 的 UDP(QUIC/HTTP3、STUN、游戏)**经隧道转发**,出口是 VPS。
+> 这不是泄漏(它走的就是那条加密隧道),但它**不是** fail-closed:以为「UDP 反正被
+> 拦着」而据此放心的人,拿到的其实是「UDP 也在出去,只是从 VPS 出去」。
+>
+> 真要 UDP 一概不出去,得自己动手写 `udp.mode: block`,然后 `sudo bx down && sudo bx up`
+> —— `/v0/reload` 只热重建 rules,`udp.mode` 不在里面,而 `bx realtime` 今天只有
+> `status` 一个只读子命令,改不了它。代价是 QUIC 得回落 TCP、实时应用会退化。
+> 三档:`proxy`(默认,经隧道)· `block`(fail-closed)· `direct-realtime`(**真的以
+> 真实 IP 直连,会泄漏**,只作应急)。想给 UDP 单独提速再加 `udp.transport`。
 
 ## 安全保证(不变量)
 
@@ -130,4 +139,4 @@ Block**——任何时候都绝不回落直连。`bx status` 显示 `UDP→hyste
 bx status     # 「传输」行:当前活跃 + 容灾列表 + UDP 专用
 bx doctor     # server_link / transports / udp_transport / 连通探测
 ```
-踩坑见 [reality-server-setup.md](reality-server-setup.md):服务端别用 443、SNI 挑稳定 TLS1.3 站、OpenWrt 测连通用 `curl` 不用 `/dev/tcp`。
+踩坑见 [reality-server-setup.md](reality-server-setup.md):**reality 就该用 443**(「别用 443」是 brook 明文时代的 folklore,已撤回 —— 真因是 SNI 证书链过大;`srvgen` 默认端口就是 443)、SNI 挑稳定 TLS1.3 且证书链 < ~4.5KB 的站(默认 `www.cloudflare.com`)、OpenWrt 测连通用 `curl` 不用 `/dev/tcp`。
