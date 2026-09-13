@@ -84,6 +84,26 @@ if [ "$QUICK" -eq 0 ]; then
 		step "cross build $target" env GOOS="${target%/*}" GOARCH="${target#*/}" \
 			go build -o /dev/null ./...
 	done
+	# 上面那圈 `go build` **不编 _test.go**,而 Windows 那半的行为断言只在 CI 的
+	# windows runner 上才跑 —— 也就是说一个写坏的 `*_windows_test.go` 在本地
+	# 一路绿灯,推上去才红。这一步把带 windows-tagged 测试的包单独 vet 一遍
+	# (vet 会 typecheck 测试文件)。
+	#
+	# **刻意不写成 `GOOS=windows go vet ./...`**:那样今天就会撞上
+	# internal/tray/win_windows.go 里一条先于此存在的 unsafe.Pointer 告警,
+	# 变成一道恒红的闸门 —— 而恒红的闸门会被下一个人删掉。
+	windows_test_typecheck() {
+		local pkgs
+		pkgs="$(git ls-files '*_windows_test.go' | xargs -n1 dirname 2>/dev/null | sort -u | sed 's|^|./|')"
+		if [ -z "$pkgs" ]; then
+			echo "一个 *_windows_test.go 都没找到 —— 这一步此刻什么都不检查;"
+			echo "要么是那些测试没了(那就把这一步一起删掉),要么是判据认不出它们了。"
+			return 1
+		fi
+		# shellcheck disable=SC2086
+		env GOOS=windows GOARCH=amd64 go vet $pkgs
+	}
+	step "windows test files typecheck" windows_test_typecheck
 else
 	skip "race detector" "--quick"
 	skip "cross builds" "--quick"

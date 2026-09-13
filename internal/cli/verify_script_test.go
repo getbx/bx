@@ -33,6 +33,8 @@ func TestVerifyScriptCoversEveryGate(t *testing.T) {
 		{"swift build --package-path apps/macos/BxMenu", "Swift 侧编译(Tests/ 不属于任何 target,只有它编 Sources/)"},
 		{"scripts/test-macos-menu.sh", "Swift 测试套件(swift build 编不到 Tests/,两步不可互相替代)"},
 		{"macOS menu tests passed", "收尾横幅 —— 脚本提前 exit 0 时退出码是 0,只有它抓得住"},
+		{"windows_test_typecheck", "Windows 那半的 _test.go —— 上面那圈 go build 不编测试文件,\n" +
+			"而 windows-tagged 的行为断言只在 CI 的 windows runner 上跑,写坏了本地一路绿灯"},
 	} {
 		if !strings.Contains(script, gate.needle) {
 			t.Errorf("verify.sh 缺少 %q(%s)—— 少一步就等于那一步从此不再被验,而它照样打印 ✓",
