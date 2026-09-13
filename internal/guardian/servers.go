@@ -558,8 +558,15 @@ func applyServerSwitch(w http.ResponseWriter, r *http.Request, configPath string
 
 // addServerEntry 把一台加进清单。
 //
-// **它不动 current,也不热切任何东西。** 刚部署好一台新 VPS 不构成「把我的出口
-// 换过去」的请求;换出口要用户在清单里显式点一下(见 applyServerSwitch)。
+// **它不改变现在在用的是哪一台,也不热切任何东西。** 刚部署好一台新 VPS 不构成
+// 「把我的出口换过去」的请求;换出口要用户在清单里显式点一下(见 applyServerSwitch)。
+//
+// 「不改变在用哪一台」不等于「一个字节都不碰 current:」:清单本来没有 current 时
+// (`bx setup` 写的 legacy `server:` 迁成清单之后正是这样,而 CLAUDE.md 称它
+// 「最常见那种配置」),setup.settleCurrent 会把**此刻实际在用的那一台**
+// (config.resolveServers 的回落 = servers[0])写明白。**2026-09-13 之前它写的是
+// 刚加进来的那一台** —— 没有热切,所以当场看不出来,要到下一次 `bx up` 才发作。
+//
 // 链接不写进日志 —— 它就是凭据。
 func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string, coreStatus coreStatusReader, uid uint32) {
 	name := strings.TrimSpace(req.Name)
@@ -699,9 +706,11 @@ func removeServerEntry(w http.ResponseWriter, req serversRequest, configPath str
 // 服务的是 `bx setup`「用这一台」),于是换一条**没在用**那台的链接会顺手把
 // 出口换过去,而界面上只说了「已替换」。
 //
-// **也不走 setup.AddServer** —— 它只差半步,而那半步同样会挪动出口:current
-// 空着时它会填上。一份没有 current: 的清单**照样在跑**(config.resolveServers
-// 回落 servers[0]),而手改出来的配置正是这个样子 —— 恰好就是这个功能的受众。
+// **也不走 setup.AddServer** —— 它只差半步:current 空着时它会填上(填的是
+// 清单里第一台,所以自 2026-09-13 起**不再挪动出口**,见 setup.settleCurrent)。
+// 但一份没有 current: 的清单**照样在跑**(config.resolveServers 回落 servers[0]),
+// 手改出来的配置正是这个样子 —— 恰好就是这个功能的受众;替他把 current 钉死之后,
+// RemoveServer 从此会拒绝删掉那一台,而他只是换了一条链接。
 // 走的是 setup.ReplaceServerLink:它任何情况下都不动 current。
 func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath string, coreStatus coreStatusReader, uid uint32) {
 	name := strings.TrimSpace(req.Name)
