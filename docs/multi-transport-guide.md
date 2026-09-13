@@ -121,9 +121,11 @@ Block**——任何时候都绝不回落直连。`bx status` 显示 `UDP→hyste
 > 这不是泄漏(它走的就是那条加密隧道),但它**不是** fail-closed:以为「UDP 反正被
 > 拦着」而据此放心的人,拿到的其实是「UDP 也在出去,只是从 VPS 出去」。
 >
-> 真要 UDP 一概不出去,得自己动手写 `udp.mode: block`,然后 `sudo bx down && sudo bx up`
-> —— `/v0/reload` 只热重建 rules,`udp.mode` 不在里面,而 `bx realtime` 今天只有
-> `status` 一个只读子命令,改不了它。代价是 QUIC 得回落 TCP、实时应用会退化。
+> 真要 UDP 一概不出去,敲 `sudo bx realtime off`(它把 `udp.mode` 写成 `block`;这个
+> 子命令 `Hidden: true`,`bx realtime --help` 里看不到它,只有 `status` 露面),或者
+> 自己动手写 `udp.mode: block`。**两种写法都要 `sudo bx down && sudo bx up` 才生效**
+> —— `/v0/reload` 只热重建 rules,`udp.mode` 不在里面,`realtime off` 自己也会这么说。
+> 代价是 QUIC 得回落 TCP、实时应用会退化。
 > 三档:`proxy`(默认,经隧道)· `block`(fail-closed)· `direct-realtime`(**真的以
 > 真实 IP 直连,会泄漏**,只作应急)。想给 UDP 单独提速再加 `udp.transport`。
 
