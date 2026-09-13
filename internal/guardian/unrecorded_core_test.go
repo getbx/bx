@@ -134,7 +134,31 @@ func (o *systemProcessOperations) Start(string, []string, []string) (StartedProc
 	process := newStartTestProcess(pid)
 	o.processes[pid] = process
 	o.live[pid] = Process{PID: pid, Executable: o.executable, UID: 0, Generation: fmt.Sprintf("darwin:900:%d", pid)}
-	return process, nil
+	return systemStartedProcess{startTestProcess: process, ops: o}, nil
+}
+
+// systemStartedProcess 让 Terminate 表现得像真的 SIGKILL:**进程从这台「系统」
+// 里消失**(不只是 Wait 返回)。少了这一层,一个被杀掉的 Core 在 Inspect 与
+// scanRunningCores 眼里仍然活着 —— 而「收干净了」恰恰是强杀那条路要证明的东西,
+// 台子说不出这个区别就等于没在证明它。
+type systemStartedProcess struct {
+	*startTestProcess
+	ops *systemProcessOperations
+}
+
+func (p systemStartedProcess) Terminate() error {
+	p.startTestProcess.mu.Lock()
+	p.startTestProcess.terminations++
+	p.startTestProcess.mu.Unlock()
+	p.ops.kill(p.PID())
+	return nil
+}
+
+// process 取出台子替某个 PID 记着的那个句柄(断言它有没有真的被 Terminate)。
+func (o *systemProcessOperations) process(pid int) *startTestProcess {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.processes[pid]
 }
 
 func (o *systemProcessOperations) Inspect(pid int) (Process, error) {

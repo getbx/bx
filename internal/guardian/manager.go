@@ -80,6 +80,13 @@ type CoreRunner interface {
 	Verify(Process) error
 	Start(context.Context, CoreStartOptions) (Process, error)
 	Stop(context.Context, Process) error
+	// ForceStop 收拾一个**从没服务过**的 Core:直接杀,不经控制 socket。
+	//
+	// **直接进接口而不是做成可选断言**:实现不了就静默回落到 Stop 的 runner,
+	// 与没有这个功能在输出上完全一样(都是那条依赖 socket 的路),而这里恰恰
+	// 是那条路必定失败的场合。放进接口由编译器点名每一个实现
+	// (与 stats.DecisionCounter、dialer.AppRecorder 同一条)。
+	ForceStop(context.Context, Process) error
 	Executable() string
 	SetExecutable(string) error // 必须绝对路径,否则 error;并发安全
 }
@@ -1349,7 +1356,7 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 		return supervisor.RuntimeState{}, fmt.Errorf("start Core: %w", err)
 	}
 	if err := m.runner.Verify(process); err != nil {
-		if cleanupErr := m.cleanupStartedCore(ctx, process); cleanupErr != nil {
+		if cleanupErr := m.forceCleanupStartedCore(ctx, process); cleanupErr != nil {
 			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true}, cleanupErr)
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("verify started Core: %w", err), uncertainOwnership(m.current, cleanupErr))
@@ -1359,7 +1366,7 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 	}
 	state, err := m.waitHealthy(operationCtx, process)
 	if err != nil {
-		if cleanupErr := m.cleanupStartedCore(ctx, process); cleanupErr != nil {
+		if cleanupErr := m.forceCleanupStartedCore(ctx, process); cleanupErr != nil {
 			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true}, cleanupErr)
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")
 			return supervisor.RuntimeState{}, errors.Join(fmt.Errorf("wait for Core health: %w", err), uncertainOwnership(m.current, cleanupErr))
@@ -1620,6 +1627,23 @@ func (m *Manager) cleanupStartedCore(ctx context.Context, process Process) error
 	cleanupCtx, cancel := context.WithTimeout(ctx, m.cleanupTimeout)
 	defer cancel()
 	return m.runner.Stop(cleanupCtx, process)
+}
+
+// forceCleanupStartedCore 收拾一个**从没健康过**的 Core。
+//
+// 与 cleanupStartedCore 的区别只有一句话,而那句话是整条修复的支点:那个 Core
+// 卡在「等隧道健康」之前,**没开过 TUN、没装过路由、没碰过 DNS**(supervisor.Run
+// 里那三件事全排在健康检查之后),身上没有任何东西需要优雅还原;而协作关闭要走的
+// 控制 socket 正是它没能建出来的那个东西 —— 于是「请它自己退出」必定失败,把
+// core_health_failed(真话:隧道没起来)换成 core_ownership_uncertain(假话:
+// 系统里可能有第二个 Core)。2026-08-04 那条不变量:**停止路径不许依赖别的先成功**。
+//
+// 已经健康、已经在服务的 Core 不走这里(见 update.go 里 acceptHealthy 失败那一处)——
+// 那种 Core 装着 TUN、路由与 DNS,杀掉它等于把机器留在指向一个不存在的 TUN 的状态里。
+func (m *Manager) forceCleanupStartedCore(ctx context.Context, process Process) error {
+	cleanupCtx, cancel := context.WithTimeout(ctx, m.cleanupTimeout)
+	defer cancel()
+	return m.runner.ForceStop(cleanupCtx, process)
 }
 
 func (m *Manager) reserveCleanup(ctx context.Context) (context.Context, context.CancelFunc, error) {

@@ -378,9 +378,10 @@ func (stubCoreRunner) Verify(guardian.Process) error             { return nil }
 func (stubCoreRunner) Start(context.Context, guardian.CoreStartOptions) (guardian.Process, error) {
 	return guardian.Process{}, errors.New("stub Core runner cannot start Core")
 }
-func (stubCoreRunner) Stop(context.Context, guardian.Process) error { return nil }
-func (stubCoreRunner) Executable() string                           { return "/nonexistent/bx" }
-func (stubCoreRunner) SetExecutable(string) error                   { return nil }
+func (stubCoreRunner) Stop(context.Context, guardian.Process) error      { return nil }
+func (stubCoreRunner) ForceStop(context.Context, guardian.Process) error { return nil }
+func (stubCoreRunner) Executable() string                                { return "/nonexistent/bx" }
+func (stubCoreRunner) SetExecutable(string) error                        { return nil }
 
 type stubHealthGate struct{}
 
