@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -2277,7 +2278,7 @@ func collectLeakCheck(ctx context.Context, configPath, dnsService string, networ
 		probeCtx, cancel := context.WithTimeout(ctx, networkTimeout)
 		defer cancel()
 		result := collectNetworkProbe(probeCtx)
-		networkReport = assessNetworkProbe(result, expectedIPs)
+		networkReport = assessNetworkProbe(result, expectedIPs, runningFakeIPPrefix())
 	}
 	rep := assembleLeakCheckReport(doctor, webrtc, networkReport)
 	for _, check := range collectPlatformChecks(ctx) {
@@ -2431,7 +2432,13 @@ func fetchPublicIP(ctx context.Context, network, target string) (string, error) 
 	return ip, nil
 }
 
-func assessNetworkProbe(result networkProbeResult, expectedIPs []string) *networkProbeReport {
+// assessNetworkProbe 把一次网络探测翻成报告。
+//
+// fakeIP 由调用方给,**不在这里写死** —— 它是用户可配的(dns.fakeip_cidr),
+// 而「解析回来的是假 IP」这条判据说的是「DNS 归 bx」:段写错了,一台正常被
+// 接管的机器就会被报成 resolver 直答。取值走 runningFakeIPPrefix(问 Core
+// 此刻在用哪一段),与 `bx explain` 那半同源。
+func assessNetworkProbe(result networkProbeResult, expectedIPs []string, fakeIP netip.Prefix) *networkProbeReport {
 	report := &networkProbeReport{
 		Kind:            "network",
 		Version:         version.String(),
@@ -2478,7 +2485,7 @@ func assessNetworkProbe(result networkProbeResult, expectedIPs []string) *networ
 	}
 
 	if len(result.DNSIPs) > 0 {
-		if containsFakeIP(result.DNSIPs) {
+		if containsFakeIP(result.DNSIPs, fakeIP) {
 			report.addCheck("dns_resolution", "ok", "fake-IP DNS response observed: "+strings.Join(result.DNSIPs, ", "), "")
 			report.Evidence = append(report.Evidence, "dns_resolution: fake-IP")
 		} else {
@@ -2498,15 +2505,27 @@ func (r *networkProbeReport) addCheck(name, status, detail, hint string) {
 	r.Checks = append(r.Checks, checkReport{Name: name, Status: status, Detail: detail, Hint: hint})
 }
 
-func containsFakeIP(ips []string) bool {
-	_, fakeNet, _ := net.ParseCIDR("198.18.0.0/15")
+func containsFakeIP(ips []string, fakeIP netip.Prefix) bool {
+	if !fakeIP.IsValid() {
+		return false
+	}
 	for _, value := range ips {
-		ip := net.ParseIP(value)
-		if ip != nil && fakeNet.Contains(ip) {
+		addr, err := netip.ParseAddr(strings.TrimSpace(value))
+		if err == nil && fakeIP.Contains(addr.Unmap()) {
 			return true
 		}
 	}
 	return false
+}
+
+// runningFakeIPPrefix 问 Core「你此刻在用的假 IP 段是哪一段」,问不出来退回
+// 内建默认(judgement 在 fakeIPPrefixFrom,与 `bx explain` 共用一份)。
+func runningFakeIPPrefix() netip.Prefix {
+	state, err := supervisor.FetchRuntimeState(supervisor.SockPath)
+	if err != nil {
+		return fakeIPPrefixFrom("")
+	}
+	return fakeIPPrefixFrom(state.FakeipCIDR)
 }
 
 func (r *leakCheckReport) addCheck(check checkReport) {

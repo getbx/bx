@@ -625,6 +625,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			UDPRequired:     udpRequired,
 			UDPReady:        udpReady,
 			DNSUpstream:     cfg.DNS.China,
+			FakeipCIDR:      cfg.DNS.FakeipCIDR,
 		}
 	}
 	// 具名出口:每个配置一个 SOCKS5 拨号器。

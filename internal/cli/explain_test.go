@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/pathview"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
@@ -341,5 +344,71 @@ func TestMachineViewLabelsAlignByDisplayWidth(t *testing.T) {
 		if w+len(strings.TrimPrefix(line, label))-len(strings.TrimLeft(strings.TrimPrefix(line, label), " ")) != 10 {
 			t.Fatalf("标签没对齐到 10 列: %q", line)
 		}
+	}
+}
+
+// **假 IP 段是用户可配的(`dns.fakeip_cidr`),而 explain 曾经硬编码 198.18/15。**
+//
+// 后果不是显示错一行:`pathview` 认不出那是假 IP ⇒ 判成普通公网,于是那条
+// 「绑了网卡的程序拿到的是假 IP,从物理网卡发出去石沉大海;域名进
+// dns.fakeip_filter/hosts 或直接写 IP」的话整个不出现 —— 而那句话正是 DERP
+// 域名那次真机排查的产物,也正是自定义了 fakeip_cidr 的人最需要的一句。
+//
+// 判据取 **Core 此刻在用的那个值**(RuntimeState.FakeipCIDR,与 DNSUpstream /
+// ConfigPath 同一条纪律:发布运行中的值,不是盘上的值),Core 不在跑或那一版
+// Core 不发这个字段时退回内建默认。
+func TestExplainUsesTheFakeIPRangeCoreIsActuallyUsing(t *testing.T) {
+	custom := netip.MustParsePrefix("100.100.0.0/16")
+	for _, tc := range []struct {
+		name    string
+		runtime func() (supervisor.RuntimeState, error)
+		probe   netip.Addr // 这个地址必须被判成假 IP
+		want    netip.Prefix
+	}{
+		{
+			name: "Core 报了自定义段 —— 用它,而不是内建默认",
+			runtime: func() (supervisor.RuntimeState, error) {
+				return supervisor.RuntimeState{TunName: "utun9", FakeipCIDR: custom.String()}, nil
+			},
+			probe: netip.MustParseAddr("100.100.0.7"),
+			want:  custom,
+		},
+		{
+			name: "Core 不在跑 —— 退回内建默认,别把假 IP 判成公网",
+			runtime: func() (supervisor.RuntimeState, error) {
+				return supervisor.RuntimeState{}, errors.New("dial: no such file")
+			},
+			probe: netip.MustParseAddr("198.18.0.7"),
+			want:  netip.MustParsePrefix(config.DefaultFakeipCIDR),
+		},
+		{
+			name: "旧版 Core 不发这个字段 —— 同样退回默认,不是退回一个无效前缀",
+			runtime: func() (supervisor.RuntimeState, error) {
+				return supervisor.RuntimeState{TunName: "utun9"}, nil
+			},
+			probe: netip.MustParseAddr("198.18.0.7"),
+			want:  netip.MustParsePrefix(config.DefaultFakeipCIDR),
+		},
+		{
+			name: "值坏了 —— 退回默认。留一个无效 Prefix 会让这一类判定**静默关掉**",
+			runtime: func() (supervisor.RuntimeState, error) {
+				return supervisor.RuntimeState{TunName: "utun9", FakeipCIDR: "不是一个网段"}, nil
+			},
+			probe: netip.MustParseAddr("198.18.0.7"),
+			want:  netip.MustParsePrefix(config.DefaultFakeipCIDR),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := collectPathFactsWith(context.Background(), tc.probe.String(), tc.runtime)
+			if f.FakeIP != tc.want {
+				t.Fatalf("采集到的假 IP 段 = %v, want %v", f.FakeIP, tc.want)
+			}
+			// **断言打在用户看得见的结论上**,不只打在那个 Prefix 字段上:
+			// 字段对了而 pathview 认不出来,与没修一样。
+			if kind := pathview.Judge(f).Kind; kind != pathview.KindFakeIP {
+				t.Fatalf("%v 没被判成假 IP,Kind = %q —— 那条「从物理网卡发出去石沉大海」"+
+					"的话于是整个不会出现", tc.probe, kind)
+			}
+		})
 	}
 }
