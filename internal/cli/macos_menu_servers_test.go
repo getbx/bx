@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -752,9 +753,15 @@ func swiftCallArgs(body, callee string) []string {
 // `swiftValueReachesViewTree` 里学到的那条一模一样(作用域限定在最内层块,否则
 // 一个分支替另一个背书),只是没被带回八百行外的漏斗守卫。判据因此下沉到**每一
 // 个实参表**:调用点各查各的,谁也替不了谁。
+// **值后面只许跟逗号或实参表结尾,不许跟「随便什么」。** 收尾那个字符类原先写的
+// 是 `[^A-Za-z0-9_.(]`,而**空格满足它** —— 定向复审实测:把漏斗里那次
+// `canEdit: canEdit)` 改成 `canEdit: canEdit || legacyEditFallback)`,变异落上而
+// 守卫**保持绿**。那正是把门重新打开的方向,而「给旧 Guardian 加一条回落」在这个
+// 代码库里是隔三差五就会长出来的形状。要让这个缺陷回来,必须在值后面接上点什么
+// —— 判据因此打在「值之后到下一个逗号(或结尾)之间什么都没有」上。
 func swiftArgumentIsPlainly(args, label, value string) bool {
 	return regexp.MustCompile(`(^|[^A-Za-z0-9_.])` + regexp.QuoteMeta(label) +
-		`\s*:\s*` + regexp.QuoteMeta(value) + `($|[^A-Za-z0-9_.(])`).MatchString(args)
+		`\s*:\s*` + regexp.QuoteMeta(value) + `\s*(,|$)`).MatchString(args)
 }
 
 // swiftEachCallArgs 取 body 里 callee 的全部实参表,并要求它恰好被调用 want 次
@@ -1140,7 +1147,124 @@ func TestMacMenuServerEditVerbsRecheckTheCapabilityBeforeSending(t *testing.T) {
 		if gate > dial {
 			t.Errorf("%s 先拨号后查门 —— 那次请求已经发出去了", fn)
 		}
+		// **上面三条对「一道什么也不做的门」和「一道装反了的门」全部成立。**
+		// 定向复审两条变异各自落上、各自全绿:把 `guard … else { …; return }`
+		// 改成不带 return 的 `if !… { … }`,以及给判据加一个 `!`。后者对只声明
+		// `servers` 的旧 Guardian 直接放行 replace —— 出口国被换到用户正在编辑
+		// 的那台机器上,而菜单报成功,正是这道门存在的全部理由逐字复活。
+		// 故判据打在**极性与控制流**上,不打在「有没有这么个东西」上
+		// (先例:leakcheck 那条 TestPageJSNeverAssertsThatAProbeLanded)。
+		if why := swiftGuardStopsHere(body, "serverEditingAvailable("); why != "" {
+			t.Errorf("%s 那道门拦不住这次请求:%s", fn, why)
+		}
 	}
+}
+
+// swiftGuardStopsHere 回答一件事:`callee` 那次调用是不是一条**真的会挡住后面
+// 代码**的门 —— `guard <callee>(…) else { … return … }`,判据不带 `!`。
+//
+// 返回空串表示合格,否则返回一句说明哪一环不成立。判据分三段,**每一段都对应
+// 一条实测落上过的变异**:
+//   - 前面必须紧挨着 `guard`(而不是 `if`,也不是 `!`):`if !x { refuse }` 少了
+//     `return`,拒绝的话说了、请求照发;`guard !x` 则是把门装反,只有该放行的
+//     时候才拦。
+//   - `else` 必须真的在那儿:`guard x` 后面接别的就不是这个形状,守卫读不懂就
+//     响亮说读不懂,不安静放过。
+//   - `else` 那个块里必须有 `return`:一个 `else {}` 在语法上不合法,但一个
+//     只弹框不返回的 `else`(经 fallthrough 到别处)会让门形同虚设。
+func swiftGuardStopsHere(body, callee string) string {
+	blank := blankSwiftStringLiterals(stripSwiftComments(body))
+	at := strings.Index(blank, callee)
+	if at < 0 {
+		return "读不出那次调用 —— 守卫已经失效,先修守卫"
+	}
+	// 往前跳过空白,落点必须正好是 `guard` 这个完整关键字。`!` / `if` / 任何
+	// 别的东西都在这里被挡下,不需要再单独写一条「不许带叹号」。
+	i := at
+	for i > 0 && (blank[i-1] == ' ' || blank[i-1] == '\t' || blank[i-1] == '\n' || blank[i-1] == '\r') {
+		i--
+	}
+	const kw = "guard"
+	if i < len(kw) || blank[i-len(kw):i] != kw {
+		before := strings.TrimSpace(blank[maxInt(0, i-24):at])
+		return fmt.Sprintf("它前面不是一句光秃秃的 `guard`,而是 %q —— "+
+			"一道不带 return 的 if(或者装反了的 `!`)什么也拦不住", before)
+	}
+	// 括号配平跳过实参表。
+	open := at + len(callee) - 1
+	depth := 0
+	j := open
+	for ; j < len(blank); j++ {
+		if blank[j] == '(' {
+			depth++
+		} else if blank[j] == ')' {
+			depth--
+			if depth == 0 {
+				break
+			}
+		}
+	}
+	if depth != 0 {
+		return "实参表括号配不平 —— 守卫已经失效,先修守卫"
+	}
+	rest := blank[j+1:]
+	trimmed := strings.TrimLeft(rest, " \t\n\r")
+	if !strings.HasPrefix(trimmed, "else") {
+		return fmt.Sprintf("`guard` 后面没有 `else`,而是 %q", strings.TrimSpace(trimmed[:minInt(24, len(trimmed))]))
+	}
+	elseBody, ok := swiftFunctionBody(rest, "else")
+	if !ok {
+		return "读不出 `else` 那个块 —— 守卫已经失效,先修守卫"
+	}
+	if !swiftMentionsIdentifier(elseBody, "return") {
+		return "`else` 那个块里没有 return —— 拒绝的话说了,请求照发"
+	}
+	return ""
+}
+
+// **判据自己也要被证明不是恒真。** `swiftGuardStopsHere` 合格时返回空串,而
+// 「恒返回空串」与「一条都不查」在输出上完全一样 —— 这个仓库为这个形状栽过
+// 很多次。三条不合格的形状各喂一遍,外加一条合格的反向自检。
+//
+// 第三条(`else` 里没有 return)在 Swift 里编不过,所以真机变异造不出它;
+// 但判据必须挡着,否则哪天换成 `else { refuse() }` 接一个别处的 fallthrough,
+// 这一段就静默失效了。
+func TestSwiftGuardStopsHereRejectsAGateThatDoesNotStop(t *testing.T) {
+	const callee = "gate("
+	cases := []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		{"合格", "\n    guard gate(x: y) else {\n        refuse()\n        return\n    }\n    dial()\n", true},
+		{"不带 return 的 if", "\n    if !gate(x: y) {\n        refuse()\n    }\n    dial()\n", false},
+		{"装反了的 guard", "\n    guard !gate(x: y) else {\n        refuse()\n        return\n    }\n    dial()\n", false},
+		{"else 里没有 return", "\n    guard gate(x: y) else {\n        refuse()\n    }\n    dial()\n", false},
+		{"根本没有 else", "\n    guard gate(x: y)\n    dial()\n", false},
+	}
+	for _, tc := range cases {
+		why := swiftGuardStopsHere(tc.body, callee)
+		if tc.ok && why != "" {
+			t.Errorf("%s:合格的形状被判不合格:%s", tc.name, why)
+		}
+		if !tc.ok && why == "" {
+			t.Errorf("%s:拦不住的门被判合格 —— 判据形同虚设", tc.name)
+		}
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // **候选行的红色必须由 `ProbePresentation.isFailure` 决定,而这一处此前无人守。**
