@@ -226,19 +226,22 @@ struct CoreStartFailureServer: Equatable {
     }
 }
 
-/// 那句话要用的两样事实:说的是哪一台,以及还有哪几台。
+/// 那句话要用的两样事实:当前那台的 host:port,以及还有哪几台。
 ///
-/// **只有名字与 host:port,没有链接** —— 链接是凭据,而这些字段会被拼进
+/// **只有主机与 host:port,没有链接** —— 链接是凭据,而这些字段会被拼进
 /// 用户看得见的文本里(与 `ServerEntry` 刻意不带 link 同一条)。
+///
+/// **这里刻意没有当前那台的名字。** 它曾经在,而且被采集、被断言,却没有
+/// 任何一句渲染读它 —— 一个有测试盖着、没人读的字段与没有这个字段在输出上
+/// 完全一样,只是看起来还活着(Go 那半同时删掉)。
 struct CoreStartFailureServers: Equatable {
-    var currentName: String = ""
     /// 空 = **没问出来**。那时那句话照说,只是不点名 —— 绝不编一个占位地址,
     /// 一句指着 `<unknown>:0` 的排查命令比不给更糟。
     var currentHostPort: String = ""
     var others: [String] = []
 
-    init(currentName: String = "", currentHostPort: String = "", others: [String] = []) {
-        self.currentName = currentName; self.currentHostPort = currentHostPort; self.others = others
+    init(currentHostPort: String = "", others: [String] = []) {
+        self.currentHostPort = currentHostPort; self.others = others
     }
 }
 
@@ -247,7 +250,6 @@ func coreStartFailureServers(_ entries: [CoreStartFailureServer]) -> CoreStartFa
     var facts = CoreStartFailureServers()
     for entry in entries {
         if entry.isCurrent {
-            facts.currentName = entry.name
             facts.currentHostPort = coreStartFailureHostPort(host: entry.host, port: entry.port)
             continue
         }
@@ -263,6 +265,15 @@ func coreStartFailureHostPort(host: String, port: Int) -> String {
 
 /// Guardian 给这一族启动失败码加的前缀(Go 侧 coreStartFailureLastError)。
 let coreStartFailureCodePrefix = "core_"
+
+/// 这个码是不是「Core 起不来」那一族。
+///
+/// 判据就是 `coreStartFailureHint` 认不认得它 —— **只有一份判据**:
+/// 另写一张码清单会与那个 switch 漂开,而漂开的后果是静默的(去问了服务器
+/// 清单却拼不出话,或者拼得出话却没去问)。
+func isCoreStartFailureCode(_ code: String?) -> Bool {
+    coreStartFailureHint(code: code, servers: CoreStartFailureServers()) != nil
+}
 
 /// Core 起不来时那句可行动的话 —— **菜单自己在本地拼出来**。
 ///
@@ -280,19 +291,11 @@ let coreStartFailureCodePrefix = "core_"
 /// - 「没判出来」有三个码、处置各不相同,但**没有一个可以被读成「服务器没事」**。
 /// - 本机拨号失败那一档指着 **bx 自己的直连器**,不指着 VPS —— 2026-08-13 那次
 ///   事故的签名(IP_BOUND_IF 只查 scoped 路由表,而那条 scoped 默认路由由
-///   Hijack 装,比这次判别拨号晚 572 行)。
+///   Hijack 装,比这次判别拨号晚 572 行)。**但它照样点名 host:port**:那台
+///   机器上最容易落进这一档的恰恰是「VPS 真的挂了」那一次。
 /// - 只在真有另一台时才说「你还配了另一台」,**绝不打印链接**。
 ///
 /// 认不出的码返回 nil —— 宁可不给,也不编一句错的(与 toggleFailureHint 同一条)。
-/// 这个码是不是「Core 起不来」那一族。
-///
-/// 判据就是 `coreStartFailureHint` 认不认得它 —— **只有一份判据**:
-/// 另写一张码清单会与那个 switch 漂开,而漂开的后果是静默的(去问了服务器
-/// 清单却拼不出话,或者拼得出话却没去问)。
-func isCoreStartFailureCode(_ code: String?) -> Bool {
-    coreStartFailureHint(code: code, servers: CoreStartFailureServers()) != nil
-}
-
 func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> String? {
     guard let code, code.hasPrefix(coreStartFailureCodePrefix) else { return nil }
     let bare = String(code.dropFirst(coreStartFailureCodePrefix.count))
