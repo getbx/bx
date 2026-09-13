@@ -63,7 +63,9 @@ func buildSplitBrain(cfg *config.Config, opts Options) (splitBrain, error) {
 
 	router, err := BuildRouter(cfg, chinaDomain, chinaCIDR)
 	if err != nil {
-		return splitBrain{}, fmt.Errorf("构建分流脑: %w", err)
+		// 走到这里的只有「配置里那些规则/CIDR 本身是坏的」——
+		// 准备列表失败上面已经降级过了,不会到这一步。
+		return splitBrain{}, tagStartFailure(ErrConfig, fmt.Errorf("构建分流脑: %w", err))
 	}
 	router.GlobalProxy = global
 
