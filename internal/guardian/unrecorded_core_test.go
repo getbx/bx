@@ -224,7 +224,7 @@ func TestManagerRestartsCoreAfterUnexpectedExitDespiteUnrecordedCoreScan(t *test
 	}
 	operations := newSystemProcessOperations(executable, 100)
 
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.Operations = operations
@@ -282,7 +282,7 @@ func TestManagerRefusesRestartWhileAnotherCoreRemainsVisible(t *testing.T) {
 	operations := newSystemProcessOperations(executable, 200)
 	t.Cleanup(operations.releaseAll)
 
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.Operations = operations

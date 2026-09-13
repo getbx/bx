@@ -117,6 +117,11 @@ func TestAStaleRecordIsDeletedBeforeTheNextSpawn(t *testing.T) {
 // fail-safe 地落到默认位置,而这份记录**静默地关掉了整条路** ——
 // coreArgs 不带 flag、Core 什么都不写、每次都回落 core_health_failed,
 // 三个包全绿(整枝 review 实测复现)。
+//
+// **这是本包里唯一允许裸调 NewExecCoreRunner 的地方**(其余全部走
+// newTestCoreRunner,由 TestTestsNeverPointACoreRunnerAtTheProductionPaths 钉住):
+// 它断言的**正是生产默认值**,拿一个 t.TempDir() 的 runner 来问这个问题
+// 会让断言恒真而什么也不守。它只读字段、不 spawn、不碰文件系统。
 func TestTheStartFailureRecordAlwaysHasAPlaceToLive(t *testing.T) {
 	fresh := NewExecCoreRunner("/usr/local/bin/bx", "/etc/bx/config.yaml", "127.0.0.1:53")
 	if got := fresh.startFailurePath(); got != corestartfailure.DefaultPath {
@@ -373,7 +378,7 @@ func writeStartFailureRecord(t *testing.T, path string, record corestartfailure.
 func newReadOnlyStartFailureRunner(t *testing.T) (*ExecCoreRunner, string) {
 	t.Helper()
 	dir := t.TempDir()
-	runner := NewExecCoreRunner(filepath.Join(dir, "bx"), filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, filepath.Join(dir, "bx"), filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.StartFailurePath = filepath.Join(dir, "core-start-failure.json")
 	return runner, dir
@@ -386,7 +391,7 @@ func newStartFailureRunner(t *testing.T, dir string) (*ExecCoreRunner, *systemPr
 		t.Fatal(err)
 	}
 	operations := newSystemProcessOperations(executable, 500)
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.StartFailurePath = filepath.Join(dir, "core-start-failure.json")

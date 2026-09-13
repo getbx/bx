@@ -48,11 +48,14 @@ func TestTheCoreWritesExactlyWhatTheGuardianReads(t *testing.T) {
 	// —— 读:Guardian 那一侧真正在跑的那条路(生产构造器造出来的 runner)。
 	// **先钉住它开箱就指着那个共享的默认位置** —— 写的人与读的人只有一个
 	// corestartfailure.DefaultPath,构造器不给这个值就等于 Core 收不到 flag。
+	//
+	// **这里的裸 NewExecCoreRunner 是刻意的例外**(其余全走 newRoundtripRunner):
+	// 断言的对象就是生产默认值本身,换成一个指进 t.TempDir() 的 runner,
+	// 这一句会恒真而什么也不守。它只读字段,不 spawn、不碰文件系统。
 	if fresh := guardian.NewExecCoreRunner("/usr/local/bin/bx", "/etc/bx/config.yaml", "127.0.0.1:53"); fresh.StartFailurePath != corestartfailure.DefaultPath {
 		t.Fatalf("生产构造器交出来的记录位置是 %q,want %q", fresh.StartFailurePath, corestartfailure.DefaultPath)
 	}
-	runner := guardian.NewExecCoreRunner(filepath.Join(dir, "bx"), filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
-	runner.StartFailurePath = path
+	runner := newRoundtripRunner(t, dir, path)
 	got := runner.StartFailureCode(context.Background(), guardian.Process{PID: os.Getpid()}, since)
 	if got != supervisor.StartFailureTunnelUnreachable {
 		t.Fatalf("Guardian 从 Core 写下的那份记录里读出 %q,want %q ——\n"+
@@ -84,9 +87,26 @@ func TestNoRecordMeansTheGuardianSaysNothingRatherThanGuessing(t *testing.T) {
 		t.Fatalf("没给路径却写出了记录(stat=%v)—— 陈旧记录的第一层防线没了", err)
 	}
 
-	runner := guardian.NewExecCoreRunner(filepath.Join(dir, "bx"), filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
-	runner.StartFailurePath = path
+	runner := newRoundtripRunner(t, dir, path)
 	if got := runner.StartFailureCode(context.Background(), guardian.Process{PID: os.Getpid()}, time.Now().Add(-time.Second)); got != "" {
 		t.Fatalf("没有记录时读出了 %q —— 「问不出来」不是任何一个具体答案", got)
 	}
+}
+
+// newRoundtripRunner 造读那一半用的 runner。
+//
+// **两个路径字段都要指走**:guardian.NewExecCoreRunner 交出来的 StatePath 与
+// StartFailurePath 都落在 /var/lib/bx —— 项目所有者真机上正在用的那个目录。
+// 这两个测试今天只调 StartFailureCode(碰不到 StatePath),而「今天碰不到」
+// 不是一条能留给下一个人的保证;guardian 那半的同款 helper
+// (newTestCoreRunner)也是两个一起指走的,理由写在那里。
+//
+// 由 guardian 侧的 TestTestsNeverPointACoreRunnerAtTheProductionPaths 全仓钉住:
+// 任何一个 *_test.go 里新长出来的裸 NewExecCoreRunner( 都会让它转红。
+func newRoundtripRunner(t *testing.T, dir, startFailurePath string) *guardian.ExecCoreRunner {
+	t.Helper()
+	runner := guardian.NewExecCoreRunner(filepath.Join(dir, "bx"), filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = filepath.Join(dir, "core-process.json")
+	runner.StartFailurePath = startFailurePath
+	return runner
 }

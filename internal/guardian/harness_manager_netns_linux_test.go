@@ -68,7 +68,7 @@ func newHarnessManager(t *testing.T) *Manager {
 
 	dir := t.TempDir()
 	platform := newLifecyclePlatform()
-	runner := NewExecCoreRunner(installFakeCoreBinary(t), filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, installFakeCoreBinary(t), filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	manager, err := NewManager(ManagerOptions{
 		Store: OpenStore(Paths{

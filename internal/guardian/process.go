@@ -117,8 +117,11 @@ type ExecCoreRunner struct {
 	DNSListen      string
 	StatePath      string
 	// StartFailurePath 是 Core 自报启动失败的那份记录(见
-	// internal/corestartfailure)。**空 = 这条路整个关掉**,Core 那边也就
-	// 收不到 --start-failure-file,于是一个字都不写。
+	// internal/corestartfailure)。**空不是「把这条路关掉」,是「没人设过」**:
+	// startFailurePath() 会落回 corestartfailure.DefaultPath,与兄弟 StatePath
+	// 落回 defaultProcessStatePath 一模一样(那条对称是承重的,理由写在
+	// startFailurePath 头上)。要把记录挪走就给它一个真路径 —— 清空它只会让
+	// 两个字段一起指回 /var/lib/bx。
 	StartFailurePath     string
 	ControlSocket        string
 	StopTimeout          time.Duration

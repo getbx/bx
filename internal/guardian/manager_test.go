@@ -985,7 +985,7 @@ func TestManagerUpBlocksSameAndReconstructedDaemonAfterUncertainLaunch(t *testin
 	}
 	statePath := filepath.Join(dir, "core-process.json")
 	newRunner := func() *ExecCoreRunner {
-		runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+		runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 		runner.StatePath = statePath
 		runner.Operations = operations
 		runner.LaunchCleanupTimeout = 10 * time.Millisecond
@@ -1118,7 +1118,7 @@ func TestManagerLateLaunchCleanupProofClearsUncertaintyForRetry(t *testing.T) {
 		process: Process{PID: 57, Executable: executable, UID: 0, Generation: "darwin:123:461"},
 	}
 	statePath := filepath.Join(dir, "core-process.json")
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.Operations = operations
@@ -1166,7 +1166,7 @@ func TestManagerPostForkCleanupHonorsAcceptedDeadlineAndLateProofClearsUncertain
 		process: Process{PID: 59, Executable: executable, UID: 0, Generation: "darwin:123:463"},
 	}
 	statePath := filepath.Join(dir, "core-process.json")
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.Operations = operations
@@ -2800,7 +2800,7 @@ func TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord(t *testing.T) {
 		live:    map[int]Process{6001: {PID: 6001, Executable: executable, UID: 0, Generation: "darwin:1785999999:1"}},
 		started: started,
 	}
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
