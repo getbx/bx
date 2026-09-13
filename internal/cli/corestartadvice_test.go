@@ -415,3 +415,34 @@ func TestNoNCCommandIsRenderedWithAnEmptyPort(t *testing.T) {
 		t.Error("端口问得出来时反而不给 nc 命令了 —— 上面那条断言于是靠「一律不给」平凡成立")
 	}
 }
+
+// **隧道那一族的每一句话,在 bx 知道地址时都必须点名那台服务器。**
+//
+// 这条是 I1 逼出来的:`local_dial` 从前是这一族里唯一一句连 host:port 都没有
+// 的话,而 2026-08-13 那种机器上(scoped 表里根本没有默认路由)最容易落进它
+// 的恰恰是「VPS 真的挂了」那一次 —— 用户读到的是一句既不说哪台机器、又先派
+// 他去查 bx 自己路由的话,spec §8 的真机验收因此复现不出它要验的那个场景。
+//
+// 判据做成**穷举整族**而不是单点:族由 supervisor 那张表派生,将来加一档
+// 「没判出来」的新来由时它自动进范围,漏给地址当场转红。
+func TestEveryTunnelOutcomeNamesTheServerWhenBxKnowsIt(t *testing.T) {
+	const host = "195.133.192.92"
+	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: host + ":443"}
+	family := 0
+	for _, bare := range supervisor.StartFailureCodes() {
+		isTunnel := bare == supervisor.StartFailureTunnelUnreachable ||
+			bare == supervisor.StartFailureTunnelHandshakeFailed ||
+			supervisor.IsTunnelUndeterminedCode(bare)
+		if !isTunnel {
+			continue
+		}
+		family++
+		text := coreStartFailureAdvice(coreStartFailureCodePrefix+bare, facts)
+		if !strings.Contains(text, host) {
+			t.Errorf("%s 那句话里没有那台服务器的地址 —— bx 明明知道它:\n%s", bare, text)
+		}
+	}
+	if family < 5 {
+		t.Fatalf("只走到 %d 档隧道结局(want ≥5)—— 族的判据认不出现在的码了", family)
+	}
+}

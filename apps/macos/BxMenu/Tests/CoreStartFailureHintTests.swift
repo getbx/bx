@@ -94,6 +94,21 @@ struct CoreStartFailureHintTests {
         expect(localDial.contains("cannot resolve"),
                "没说出这一档里那种换一台确实有用的毛病(主机名解析不出来):\(localDial)")
 
+        // **隧道那一族的每一句话,在 bx 知道地址时都必须点名那台服务器。**
+        //
+        // `local_dial` 从前是这一族里唯一一句连 host:port 都没有的话,而
+        // 2026-08-13 那种机器上(scoped 表里没有默认路由)最容易落进它的恰恰是
+        // 「VPS 真的挂了」那一次 —— 用户读到一句既不说哪台机器、又先派他去查
+        // bx 自己路由的话。菜单明明拿着那个地址。
+        var namedFamily = 0
+        for code in codes where code.hasPrefix("core_tunnel") {
+            namedFamily += 1
+            let text = coreStartFailureHint(code: code, servers: facts) ?? ""
+            expect(text.contains("195.133.192.92"),
+                   "\(code) 那句话里没有那台服务器的地址 —— 菜单明明拿着它:\(text)")
+        }
+        expect(namedFamily >= 5, "只走到 \(namedFamily) 档隧道结局(want ≥5)—— 族的判据认不出现在的码了")
+
         // 「你还配了另一台」只在真有另一台时出现,而且绝不出现链接。
         let alone = CoreStartFailureServers(currentName: "vps", currentHostPort: "195.133.192.92:443")
         let soloText = coreStartFailureHint(code: "core_tunnel_unreachable", servers: alone) ?? ""
