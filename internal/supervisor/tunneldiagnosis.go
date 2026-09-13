@@ -51,8 +51,9 @@ const (
 	//     也不是「我们没去问」;想确认那台机器活着得换个手段(ping/ssh)。
 	//   - 本机拨号失败:SYN 根本没离开这台机器。**它指着 bx 自己的直连器,
 	//     不指着 VPS** —— 2026-08-13 那次真机事故的签名(DirectDialer 用
-	//     IP_BOUND_IF 绑物理网卡,而那条 scoped 默认路由由 Hijack 装,比这次
-	//     判别拨号晚 572 行)。给用户的下一步是 `route -n get -ifscope <网卡>`,
+	//     IP_BOUND_IF 绑物理网卡,而那条 scoped 默认路由由 `plat.Hijack` 装,
+	//     而 Hijack 在 `Run` 里排在这次判别拨号**后面**)。给用户的下一步是
+	//     `route -n get -ifscope <网卡>`,
 	//     去查 VPS 是白费力气。
 	//
 	// 其余三种(解不出 host:port / DNS 解析不了 / 父 ctx 被取消)共用笼统那个码:
@@ -163,15 +164,18 @@ func failedBeforeTheSYNLeft(err error) bool {
 // 没出去时**不绑再试一次**。
 //
 // **为什么必须重试**:绑网卡走的是 IP_BOUND_IF,而它只查 **scoped** 路由表;
-// 那条 scoped 默认路由由 Hijack 装(run.go:880),比这次判别拨号(run.go:308)
-// 晚 572 行。2026-08-13 那台机器的形状(单一活跃网络服务,macOS 根本不建
+// 那条 scoped 默认路由由 `plat.Hijack` 装,而 `Run` 里的顺序是「判别拨号
+// (awaitTunnelHealthOrDiagnose)≺ OpenTUN ≺ 控制 socket ≺ Hijack」—— 这次拨号
+// 发生在它需要的那条路由存在**之前**。**承重的是这个顺序,不是行号**:这里
+// 原先写着 run.go:880 / run.go:308 / 晚 572 行,三个数今天全错,而刷新它们只是
+// 把下一次漂移推迟一周。2026-08-13 那台机器的形状(单一活跃网络服务,macOS 根本不建
 // per-interface default)下,每一次判别拨号都在本机 ENETUNREACH,于是
 // **「VPS 真的挂了」这件事退化成 tunnel_unhealthy_undetermined_local_dial** ——
 // 那句话里连 host:port 都没有,还先派用户去查 bx 自己的路由。真机验收因此
 // 复现不出它要验的那个场景,而跑验收的人有充分理由判定这支修复是坏的。
 //
-// **为什么不绑是安全的、而且更忠实**:此刻 TUN 还没开(run.go:473)、路由还没
-// 劫持(run.go:880),普通 socket 走的就是主路由表 —— 而**隧道子进程刚刚那
+// **为什么不绑是安全的、而且更忠实**:按上面那个顺序,此刻 `OpenTUN` 还没跑、
+// `Hijack` 还没劫路由,普通 socket 走的就是主路由表 —— 而**隧道子进程刚刚那
 // 20 秒走的正是同一张表**(sing-box 既没有 SO_MARK 也没有 IP_BOUND_IF,而
 // server bypass 那条 /32 也要等 Hijack 才装)。也就是说不绑的这一次拨号复现的
 // 才是隧道自己那条路径。
@@ -278,8 +282,9 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 	// 同一族的另一半:**SYN 根本没能离开本机**。
 	//
 	// ENETUNREACH 有真机先例 —— DirectDialer 用 IP_BOUND_IF 绑物理网卡,而
-	// IP_BOUND_IF 只查 **scoped** 路由表;那条 scoped 默认路由是 Hijack
-	// (run.go:880)装的,判别拨号在 run.go:308,**早 572 行**。一台 macOS 自己
+	// IP_BOUND_IF 只查 **scoped** 路由表;那条 scoped 默认路由是 `plat.Hijack`
+	// 装的,而判别拨号在 `Run` 里排在 Hijack **前面**(顺序见
+	// diagnosisDialWithUnboundRetry 头上那段)。一台 macOS 自己
 	// 没建 per-interface default 的机器上(2026-08-13 那次事故的形状),每一次
 	// 判别拨号都在本地就 network is unreachable,于是不管 VPS 在做什么,bx 都
 	// 答「你的 VPS 挂了」—— 而这条路唯一的职责就是说出关于那台服务器的实话。
