@@ -12,7 +12,7 @@ bx 是透明全局代理,AI API 流量(LLM 推理、流式输出、长生成)在
 
 ## 注意
 
-- **QUIC / HTTP3(UDP 443)**:默认 `udp.mode=block`。AI **网页 UI**(浏览器走 QUIC)会回退到 TCP;AI **API SDK**(几乎都走 TCP/HTTP2)不受影响。若需 QUIC 直达,设 `udp.mode=proxy`(经隧道转发 UDP)。
+- **QUIC / HTTP3(UDP 443)**:默认 `udp.mode=proxy`(`config.Parse` 对空值填 `proxy`,而 `setup.WriteConfig` 从不写这个键)—— 非 DNS 的 UDP **经隧道转发**,所以 AI 网页 UI 的 QUIC 不必回落 TCP,出口仍是 VPS。它不泄漏,但**也不是 fail-closed**:要 UDP 一概不出去得自己写 `udp.mode: block` 再 `sudo bx down && sudo bx up`(这个键不在 `/v0/reload` 的热重载范围里),代价是 QUIC 回落 TCP。AI **API SDK**(几乎都走 TCP/HTTP2)两种档位都不受影响。
 - **路由**:AI 服务域名不在 china 列表 → **默认走隧道**。如需强制,用 `global` 模式或在 `rules.proxy` 显式列出该域名。
 
 ## 性能调优原则
