@@ -28,7 +28,7 @@ func TestCoreThatNeverBecameHealthyIsKilledInsteadOfAskedNicely(t *testing.T) {
 	operations := newSystemProcessOperations(executable, 300)
 	t.Cleanup(operations.releaseAll)
 
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.Operations = operations
@@ -255,7 +255,7 @@ func TestCoreThatDiedOnItsOwnIsNotReportedAsOwnershipUncertain(t *testing.T) {
 	operations := newSystemProcessOperations(executable, 300)
 	t.Cleanup(operations.releaseAll)
 
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.StatePath = filepath.Join(dir, "core-process.json")
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.Operations = operations

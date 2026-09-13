@@ -90,7 +90,7 @@ func newSpawnMarkerRunner(t *testing.T, ops ProcessOperations) (*ExecCoreRunner,
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(dir, "core-process.json")
-	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
 	runner.ScanRunningCores = noCoresRunning
 	runner.StatePath = statePath
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")

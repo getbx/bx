@@ -36,7 +36,7 @@ func TestCoreScanIsUnsupportedOffDarwin(t *testing.T) {
 // 这条测试唯一想证明的东西。
 func TestUserInitiatedUpStaysWeldedShutOffDarwin(t *testing.T) {
 	env := newManagerTestEnv(t)
-	runner := NewExecCoreRunner(filepath.Join(t.TempDir(), "bx"), filepath.Join(t.TempDir(), "config.yaml"), "127.0.0.1:53")
+	runner := newTestCoreRunner(t, filepath.Join(t.TempDir(), "bx"), filepath.Join(t.TempDir(), "config.yaml"), "127.0.0.1:53")
 	// 拒绝发生在读记录之前,这里改路径是为了万一将来顺序变了也绝不去碰
 	// 真机上的 /var/lib/bx。
 	runner.StatePath = filepath.Join(t.TempDir(), "core-process.json")
