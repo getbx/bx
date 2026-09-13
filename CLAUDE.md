@@ -858,6 +858,105 @@ customOnly:)`(`RulesModel.swift`)此前**早就存在、只有测试在调**,本
 同形)、`answeringCore` 不许变回 private 也不许有第二份定义。
 **真机未验**:窗口顶上那句话的观感与换行。
 
+## Servers 窗口:从一份清单变成「这条隧道现在怎么样,以及我能换到哪儿」(2026-09-12,真机未验)
+
+所有者原话「servers 的页面也是,可以升级下」,与 Routing Rules 那次同形;**这个窗口
+此前在本文件里一行记录都没有**。主要理由不是「Guardian 发了而窗口没用」,是它在说
+**三句假话**(spec §2.1),三处线上改动各修一句:
+
+- **空列表是死路,给的出路还不存在** —— 按钮带画在 `rows.isEmpty` 的 `return` 之后,
+  唯一那句提示 `bx setup --name <name>` 里的 flag 根本不存在。**而这是最常见的情形**:
+  `bx setup` 从不写 `servers:`,于是每个正常装好 bx 的人打开它都看到「No servers yet」
+  而 bx 正跑着一台。现由线上新加的 `single_server` 把「单服务器配置」与「清单真的是
+  空的」分开(`serverListEmptyReason`),按钮带**照画**
+  (`TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty`);`internal/cli/servercmd.go`
+  里那份同款死提示一并清掉(`TestServerListEmptyHintNamesACommandThatExists`)。
+- **「没能测」被画成「这台服务器坏了」** —— `ProbeReport` 加 `measured`(**不带
+  omitempty**:缺席读作「这一版 Guardian 没说」,不是「测过」),Guardian 那两处中文
+  产地改发码,菜单**根本不解码** `error` 那个键 —— 不显示服务端的中文从「靠纪律」变成
+  按构造做不到;红只从**实测失败**来(`TestMacMenuServerRowRedComesOnlyFromAMeasuredFailure`)。
+- **`●` 跟着配置走,不跟着实际在跑的走** —— 热切先写配置再切,失败那一刻窗口正断言你
+  的流量从一台它其实没走的机器出去。现**并列**发 Core 报的 `running`(问不出来就缺席,
+  绝不与 `current` 合并),吞吐峰值改按「这个峰值是在哪一台上量的」归属**并带真实年龄**
+  (此前写死 0 ⇒ 读起来像「刚在这台量到的」);`bx server list` 的 ● 一并改。
+
+切换四种结局各一个码(`arm_failed`/`rolled_back`/`rollback_failed`/`commit_failed`,原始
+错误串不出门),认不出的回落旧常量 —— 消费方**必须留一个「说不出是哪种」的分支**。
+`⋯` 里两个动词:**删除弹确认、没有 Undo,与 Rules 窗口刻意相反** —— 链接是凭据
+(`TestServerListNeverShipsTheLinkItself`),菜单手里从来没有它、删了加不回来,而一个撤
+不回的 Undo 比没有更糟;服务器又很少,不存在「为十一条冗余点十一次」那种惩罚。删当前
+那台一律拒绝(菜单置灰 + 服务端 409,两道)。换链接走**新加的** `setup.ReplaceServerLink`:
+`UpsertServer`/`AddServer` 都会挪 `current`,换一条**没在用**那台的链接会顺手搬走出口 ——
+`UpsertServer` 因此**仍是零生产调用方**,spec §7.2 那句「用 UpsertServer」已就地更正。
+动词另立能力 **`servers_edit`**:只声明 `servers` 的旧 Guardian 收到 `remove` 会落进兼容
+分支**切到那一台**去,而这里「试着拨一下看看」的代价就是把用户的出口国换掉;Add 表单的
+UDP 框**不**门控(旧 Guardian 一直处理得对,加门等于在那道门本要保护的机器上删功能)。
+**所有者定死的四条边界一字未碰**(spec §8):不自动容灾、**只有用户能切**;不按延迟排序 /
+不自动选最快 / 不分组 / 不导入订阅;**不后台定时探测**(探测走在隧道外面,几台同时握手
+是一个很整齐的模式,而它们恰好是同一个人的资产)—— 只在用户点时发、且串行;不做每台
+独立的 `rules`/`dns`/`udp.mode`。
+
+**三条已知缺口**:① `internal/acceptance.RequiredCapabilities` **还没加** `servers_edit`
+—— 当初刻意不加(菜单还没依赖它,加早了会让升级前的机器验收失败),而现在菜单真的按它
+门控了;不加就测不出「这一版声明了没有」,**而能力声明是唯一能证明进程真的换了的信号,
+版本号不能**。② `replace` **清不掉** UDP 链接(Guardian 把空 `udp` 读作「保持不变」;
+界面已明说「留空 = 保持这台已有的」,措辞对、缺口真)。③ **最常见那种配置(`bx setup`
+写的、根本没有 `servers:` 键)仍然看不到「当前那台」那一块** —— `currentServerPanel`
+要清单里有一条 `current` 的条目,而 Guardian 没有条目可画。不是回归,但 Task 6 的报告
+与验收清单把这句说反了。
+
+**真机未验:整套,含此前搬进来的那两个按钮**(spec §10)—— 实时延迟是否真的每 2 秒跟着
+`/v1/status` 动 · 保护关着时点 `Test All` 每行应是灰色英文 `not measured` 而不是红 ·
+真切一次(会改出口 IP):要有可见反馈、四种结局的措辞对得上实际发生的事 · 删一台非当前
+的(确认框说清链接会丢)与删当前那台应被拒 · 单服务器配置下四个按钮都在、文案说的是
+「这是单服务器配置」· 加一台带 UDP 链接的,`bx status` 应显示 `UDP→hysteria2@…`。
+设计 `docs/superpowers/specs/2026-09-12-servers-window-design.md`、计划
+`docs/superpowers/plans/2026-09-12-servers-window.md`。
+
+### 「守卫钉住的是缺陷旁边的东西」的五种写法(本支十一次,没有一次是读出来的)
+
+这个物种在「按应用看分流」那一支记过一笔(「11 个 task 里出现六次」),只有实例、没有
+分类。这一支把形状补全了:**十一次,每一次都由变异抓到** —— 而 21 次变异里全绿的那
+**五次,全部落在盖测不到的那一半**(AppKit / `main.swift`),那里读源码的守卫是唯一的
+保护。分类如下,每一种配一个本支的实例:
+
+1. **钉标识符,而性质是关于 JSON 键的**(两次,同一条守卫连着被绕过两回)。「窗口不许
+   解码服务端那句中文」写成 `strings.Contains(model, "case error")` —— `case errorCode
+   = "error_code"` 就满足它;收紧成词边界正则之后,`case serverSaid = "error"` 解的是
+   同一个键,照样全绿。判据该打在**原始值** `= "error"` 上,不是 `case` 后面那个名字。
+2. **钉「这东西存在」,而性质是「它在某处之后 / 它被摆进了视图树 / 它真的被用上」**
+   (五次,全在 Swift 那半):按钮带的**顺序**断言只写在注释里,把它整个搬进
+   `if rows.isEmpty`(刚修掉那个 bug 的镜像)守卫照样绿 · 两句空状态文案「算出来了但
+   不摆上去」 · 当前那块七个字段同款 · 窗口收到 `switchingTo` 却不用它 · 候选行的红
+   **没有任何东西**绑到 `ProbePresentation.isFailure`(换成 `!= .notChecked` 全绿,
+   假话二带着全绿的测试逐字复活)。**根因只有一个**:括号深度那套判断此前只用在按钮带
+   上,其余全退回 `strings.Contains`。修法是 `swiftValueReachesViewTree`(从种子表达式
+   出发跟 `let`/`if let`/`guard let` 绑定,要求派生出的名字之一出现在 `addArrangedSubview(`
+   的实参里)与 `swiftEnclosingGate`(向后做括号配平,找**真正包住**该点的那个 `{`);
+   **作用域限定在最内层那个块是承重的** —— `let label = hint(note)` 在同一个函数里出现
+   三次,不限定的话一个分支会替另一个分支背书。
+3. **钉一个零调用方的壳函数**(一次):`describeProbeError` 被取代之后没人调了,而守卫
+   钉的正是这个壳,活路径十一个码里只有 `refused` 一种被盖着。**一个没人调用而测试盖着
+   的函数,与没有测试在输出上完全一样**(那个壳已删,判据下沉到产地)。
+4. **用 `t.Fatalf` 的桩当依赖**(两次):桩一响,状态断言先失败,真正想验的那条**够不
+   着**。「拼错 action 不许改配置」那几条逐字节磁盘断言就是这么被架空的,换成记录型桩
+   之后一起转红。
+5. **断言被满足,但是因为别的理由**(一次):`{"action":"remove","nmae":"osaka"}` 是被
+   「名字为空」拒掉的,不是被「认不出的键」拒掉的,于是决定性变异之下它保持绿;换成
+   `{"action":"remove","name":"osaka","confrim":true}`(变异下真的会删掉 osaka)才咬得住。
+
+**两条可推广的判据**:① 写每一条断言之前,先说出「要让这个缺陷回来,**什么**必须
+改变」,再检查这条断言是不是恰好卡住那件事;② **凡是盖测不到的那一半的守卫,一律要用
+变异证明,不许靠读。**
+
+**变异台子本身出过一次事,方向是那条老纪律没写过的**:scratchpad 里**共用**的变异脚本
+被**另一个任务**换成了一个旧版本,调用时在碰到任何字节之前就 IndexError,于是三次变异
+**打印全绿而根本没落上**,`go test` 诚实地报了绿。「凡变异全绿先查落没落上」抓住了它,
+但它这次不是「变异写错了位置」,是**共用工具被别的任务覆盖** —— 派多个任务共用一个
+scratchpad 时要知道这条。新台子每次成功都打印 `MUTATION LANDED`,找不到锚点、或改完的
+文件与副本逐字节相同时非零退出;**还原那一步也差点出事** —— 备份目录里积着上一个任务
+留下的子目录,`cp` 回去差一点把文件拷到仓库根,现在还原拒绝写到仓库树之外。
+
 ## 菜单精简:18 行 → 11 行,子菜单从此可用(2026-09-08,真机未验)
 
 项目所有者原话「bx 菜单感觉有点复杂了」。复杂的根源两个:五行数据里四行是**诊断值**
@@ -867,10 +966,13 @@ Server、Uninstall)并排。现在「已连接」是:`Via reality@vps · 293 ms`
 `compactMenuRows`,纯函数:Route+Latency 合并、诊断行只在 ✗ 时露面、维护挂起与认不出的
 新行原样保留 —— 默认参与显示,吵的失效好过安静的)、版本行、Turn Off / Reconnect、
 Routing Rules… / Servers… / Traffic by App… / Check for leaks、`Troubleshoot ▸`
-(Check for Problems / Open Logs / Uninstall)、Quit。「Set Up a New Server…」与
-「Replace Configuration…」搬进服务器窗口当按钮(它们说的都是服务器这件事);后者在
-没有服务器窗口的旧 Guardian 上仍留在菜单(`replaceConfigurationLivesInMenu`),否则
-换服务器又只能开终端。
+(Check for Problems / Open Logs / Uninstall)、Quit。「Set Up a New Server…」搬进服务器
+窗口当按钮(它说的就是服务器这件事)。**「Replace Configuration…」并没有搬进去
+(2026-09-12 更正)** —— 窗口里取代它的是「Add Server…」,这是 2026-09-09 那次刻意定的
+(`TestMacMenuServersWindowOffersAddServerNotReplace`);它只在没有服务器窗口的旧
+Guardian 上留在一级菜单(`replaceConfigurationLivesInMenu`),否则换服务器又只能开终端。
+原话让 Servers 窗口那一支的实施者照着加了一个按钮、撞上那条守卫才回滚 —— **一句指着
+已被明确否掉的做法的记述,正是本仓库定义的第一类缺陷。**
 
 **子菜单此前不能用,根因顺手修了**:菜单开着时每 2 秒 `removeAllItems()` 重填,展开的
 子菜单会被拆掉 —— 本仓库两次因此选窗口不选子菜单。现在 `rebuildMenu` 攒一份草稿、
@@ -883,7 +985,7 @@ Routing Rules… / Servers… / Traffic by App… / Check for leaks、`Troublesh
 守卫 `internal/cli/macos_menu_compact_test.go` 三条(已连接只摆压缩行、Troubleshoot
 装全三项且一级菜单不再有它们、Replace Configuration 由能力门控 + 窗口回调接上),
 六条变异各咬中一条。**真机未验**:子菜单展开时菜单开着 2 秒一拍是否真的不再拆它、
-服务器窗口两个新按钮、Via 行的观感。
+服务器窗口那两个按钮(`New Server…`/`Add Server…`)、Via 行的观感。
 
 ## 菜单第一行改成开关(2026-09-08,真机未验)
 
@@ -1416,6 +1518,8 @@ trailing、速率真的传进 `rows(...)`、缺口提示真的出现在某一次
 填协议标记那半 · 接线测试只测得到 403 那条路径(成功路径绕开了组装根)· 「近似值
 小字」守卫退化成「文件里出现过这个标识符」· Swift fixture 喂的是**生产不会发生**的
 形状(键缺席 vs `null`,两者恰好走同一分支)。
+**这个物种的分类学在 2026-09-12 Servers 窗口那一支补全了**(五种写法 + 两条可推广的
+判据,见上文那一节);这里记的六次只有实例、没有分类。
 
 **根因往往比单条守卫更深。** 最后一轮挖到的:`stripSwiftComments` 刻意保留字符串
 内容(对的),而之后**每个**结构化扫描器都在数括号 —— 于是数进了字符串字面量里的
