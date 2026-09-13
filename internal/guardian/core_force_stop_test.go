@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 2026-09-12 真机事故的那一跳。
@@ -116,4 +117,114 @@ func TestForceStopRefusesWhenItHasNoHandleForThatCore(t *testing.T) {
 	if shutdownRequests != 0 {
 		t.Fatalf("ForceStop 悄悄回落到了协作关闭(%d 次)—— 那条路依赖的正是失败本身", shutdownRequests)
 	}
+}
+
+// C1:占主导的那种「手里没有句柄」恰恰是**我们自己那个 Core、而它已经退了**。
+//
+// Start 的 wait goroutine 在 waitpid 一返回就 forgetStartedCore(process.go 里
+// close(exited) 前那一句)。死于 provision / config / tun_open / hijack 的 Core
+// 两秒就没了,而 Guardian 的健康等待要满 20 秒才超时 —— 走到清理这一步时,句柄
+// 早在十八秒前就被摘掉了。在那里如实报错的后果不是「诚实」,是
+// retainUncertain + core_ownership_uncertain:**用户又一次读到那段关于幻影第二个
+// Core 的排查指引**,而且恰好落在 Task 2 刚教会 bx 说清楚的那四个码上。
+// 老的 Stop 一直处理得对:Inspect → ErrProcessNotRunning → 清记录 → nil。
+func TestForceStopAcceptsOurOwnCoreThatAlreadyExited(t *testing.T) {
+	runner, process, operations := newRecordedProcessRunner(t)
+	shutdownRequests := 0
+	runner.ShutdownCore = func(context.Context, string, int) error {
+		shutdownRequests++
+		return nil
+	}
+	// 进程已经退了(这正是 waitHealthy 超时那一刻的常态),句柄也早被摘掉。
+	operations.setAlive(false)
+
+	if err := runner.ForceStop(context.Background(), process); err != nil {
+		t.Fatalf("我们自己那个已经退掉的 Core 被 ForceStop 报成失败:%v\n"+
+			"—— 这条错误会被翻成 core_ownership_uncertain,把「隧道没起来」那句真话顶掉", err)
+	}
+	if shutdownRequests != 0 {
+		t.Fatalf("ForceStop 回落到了协作关闭(%d 次)", shutdownRequests)
+	}
+	if _, statErr := os.Stat(runner.StatePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("core-process.json = %v, want 已删除 —— 留着它下一次 bx up 会撞上一条指着死 PID 的陈旧记录", statErr)
+	}
+}
+
+// 反向:系统**答不上来**它还在不在,仍然拒绝。「问不出来」不是「没有」,
+// 这半边一个字都没松 —— 否则双 Core 那道门就从这里被打开了。
+func TestForceStopStillRefusesWhenTheSystemCannotSayWhetherItIsGone(t *testing.T) {
+	runner, process, operations := newRecordedProcessRunner(t)
+	operations.setInspectError(errors.New("sysctl kern.proc.pid: input/output error"))
+	if err := runner.ForceStop(context.Background(), process); err == nil {
+		t.Fatal("系统答不上来,ForceStop 却报了成功 —— 那是把「问不出来」当成「没有」")
+	}
+}
+
+// C1 的整机形状:Core 自己两秒就死了(provision / config / tun_open / hijack),
+// 而健康等待要满 20 秒。到清理那一刻句柄早就没了 —— 这条路必须仍然答出
+// core_health_failed,不许退回 core_ownership_uncertain。
+//
+// 旗舰那条(TestCoreThatNeverBecameHealthyIsKilledInsteadOfAskedNicely)全程
+// 让假进程活着,所以看不见这一种:**测试输入让待守的属性不可见**。
+func TestCoreThatDiedOnItsOwnIsNotReportedAsOwnershipUncertain(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "bx")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	operations := newSystemProcessOperations(executable, 300)
+	t.Cleanup(operations.releaseAll)
+
+	runner := NewExecCoreRunner(executable, filepath.Join(dir, "config.yaml"), "127.0.0.1:53")
+	runner.StatePath = filepath.Join(dir, "core-process.json")
+	runner.ControlSocket = filepath.Join(dir, "bx.sock")
+	runner.Operations = operations
+	runner.ScanRunningCores = operations.runningCores
+	shutdownRequests := 0
+	runner.ShutdownCore = func(context.Context, string, int) error {
+		shutdownRequests++
+		return errors.New("dial unix core.sock: connect: no such file or directory")
+	}
+
+	env := newManagerTestEnv(t)
+	env.manager.runner = runner
+	env.health.err = errors.New("bx 隧道健康检查超时(20s): restarts=0")
+	// Core 在健康等待还没返回之前就自己没了 —— 等回来时句柄早被 wait
+	// goroutine 摘掉了(process.go 里 forgetStartedCore 那一句)。
+	env.health.onWait = func() {
+		operations.kill(300)
+		waitForForgottenHandle(t, runner, Process{PID: 300, Generation: "darwin:900:300"})
+	}
+
+	err := env.manager.Up(context.Background())
+	if err == nil {
+		t.Fatal("Core 死了而 Up 报成功了")
+	}
+	if errors.Is(err, ErrProcessOwnershipUncertain) {
+		t.Fatalf("一个自己死掉的 Core 被报成所有权存疑:%v\n"+
+			"—— 这正是这一支要消灭的那句假话,只是从另一扇门回来了", err)
+	}
+	if got := env.manager.Status().LastError; got != "core_health_failed" {
+		t.Fatalf("LastError = %q, want core_health_failed", got)
+	}
+	if env.manager.current.Uncertain {
+		t.Fatal("留下了所有权锁存 —— 下一次 bx up 会被它挡住")
+	}
+	if shutdownRequests != 0 {
+		t.Fatalf("向一个按构造不存在的 socket 请求了 %d 次协作关闭", shutdownRequests)
+	}
+}
+
+// waitForForgottenHandle 等 Start 那个 wait goroutine 真的把句柄摘掉 ——
+// 不等的话这条测试要守的那个状态(句柄已经没了)只是偶尔出现。
+func waitForForgottenHandle(t *testing.T, runner *ExecCoreRunner, process Process) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := runner.startedCoreHandle(process); !ok {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("句柄一直没被摘掉 —— 这条测试要守的状态根本没出现")
 }

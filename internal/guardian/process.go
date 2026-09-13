@@ -271,9 +271,11 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 				process.PID, process.Generation, err)
 		}
 		r.forgetStartedCore(process)
-		// 记录清完才关:ForceStop 返回 nil 就意味着进程没了**且**盘上那条
-		// owned 记录也没了 —— 少了后半句,下一次 bx up 会撞上一条指着死 PID
-		// 的陈旧记录,而这正是本次修复要消灭的那种二次故障。
+		// **先试着清记录再放行等的人**:少了这个顺序,ForceStop 可能在那次
+		// 删除之前就返回,下一次 bx up 撞上一条指着死 PID 的陈旧记录。
+		// 注意上面那一支 —— 删失败只记一行日志,所以 ForceStop 返回 nil 只
+		// 保证「进程没了」,**不保证盘上那条记录也没了**;写成保证会让下一个
+		// 人以为陈旧记录在这条路上不可能出现。
 		close(tracked.exited)
 		exit <- waitErr
 		close(exit)
@@ -567,16 +569,20 @@ func (r *ExecCoreRunner) Verify(process Process) error {
 // **Stop 一个字不动**:它收拾的是验明过身份、正在正常服务的 Core,那种 Core
 // 装着 TUN、路由与 DNS,让它自己跑 defer 还原才是对的。
 //
-// 杀的是**我们自己 fork 出来的那个句柄**,不是一个 PID。手里没有句柄(比如
-// 接管来的、或上一任 Guardian 留下的 Core)就如实报错:既不猜一个 PID 杀下去,
-// 也不悄悄回落到那条要 socket 的协作关闭 —— 悄悄回落等于把这次修复原样撤销。
+// 杀的是**我们自己 fork 出来的那个句柄**,不是一个 PID:拿 PID 杀要先验身份,
+// 而验身份与杀之间那一瞬 PID 可能已被复用,拿句柄杀在构造上没有这个窗口。
+//
+// 手里没有句柄时**去问系统**(forceStopWithoutHandle),不直接报错 —— 那种情形
+// 里占主导的一种是「我们自己那个 Core,它已经退了」,而不是「别人的 Core」。
+// 系统说它还在、或者答不上来才拒绝:既不猜一个 PID 杀下去,也不悄悄回落到那条
+// 要 socket 的协作关闭 —— 悄悄回落等于把这次修复原样撤销。
 func (r *ExecCoreRunner) ForceStop(ctx context.Context, process Process) error {
 	if process.PID <= 0 {
 		return nil
 	}
 	tracked, ok := r.startedCoreHandle(process)
 	if !ok {
-		return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄", process.PID)
+		return r.forceStopWithoutHandle(process)
 	}
 	if err := tracked.handle.Terminate(); err != nil {
 		// 它可能刚好自己退了 —— 那正是我们要的结局。只记一行,继续去等。
@@ -591,6 +597,33 @@ func (r *ExecCoreRunner) ForceStop(ctx context.Context, process Process) error {
 		return fmt.Errorf("等被强行收掉的 Core PID %d 退出: %w", process.PID, ctx.Err())
 	case <-timer.C:
 		return fmt.Errorf("等被强行收掉的 Core PID %d 退出: %w", process.PID, context.DeadlineExceeded)
+	}
+}
+
+// forceStopWithoutHandle:手里没有句柄时**去问系统**,而不是直接报错。
+//
+// 占主导的那种「没有句柄」恰恰是我们自己那个 Core、而它已经退了 —— Start 的
+// wait goroutine 在 waitpid 一返回就 forgetStartedCore。一个死于 ErrProvision /
+// ErrConfig / ErrTUNOpen / ErrHijack 的 Core 约两秒就没了,而 Guardian 的健康
+// 等待要满 20 秒才超时:走到清理这一步,句柄已经被摘掉十八秒。在这里如实报错
+// 换来的不是诚实,是 retainUncertain + core_ownership_uncertain —— 那段关于
+// 幻影第二个 Core 的排查指引原样回来,而且恰好盖在这一支刚教会 bx 说清楚的
+// 那四个码上。Stop 一直是这么做的(Inspect → ErrProcessNotRunning → 清记录 → nil)。
+//
+// **只有系统说还有东西在、或者系统答不上来时才拒绝** —— 接管来的 Core、上一任
+// Guardian 留下的 Core 仍然不会被猜一个 PID 杀下去,双 Core 那道门一寸没松。
+func (r *ExecCoreRunner) forceStopWithoutHandle(process Process) error {
+	_, err := r.operations().Inspect(process.PID)
+	switch {
+	case errors.Is(err, ErrProcessNotRunning):
+		if clearErr := r.removeRecordIfGeneration(process.PID, process.Generation); clearErr != nil {
+			return uncertainOwnership(process, fmt.Errorf("clear exited Core record: %w", clearErr))
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄,而系统答不上来它还在不在: %w", process.PID, err)
+	default:
+		return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄,而系统说它还在", process.PID)
 	}
 }
 
