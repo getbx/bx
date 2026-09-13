@@ -43,9 +43,9 @@ const (
 	StartFailureOther = "other"
 )
 
-// startFailureSentinels 是**有序**表:先具体后笼统(隧道那一族随后被拆成三档,
-// 见 tunneldiagnosis.go —— 具体那两档的错误链里同时挂着家长 ErrTunnelUnhealthy,
-// 家长排到前面会让三档塌成一档)。
+// startFailureSentinels 是**有序**表:先具体后笼统(隧道那一族随后被拆成五档,
+// 见 tunneldiagnosis.go —— 具体那几档的错误链里同时挂着家长 ErrTunnelUnhealthy,
+// 家长排到前面会让五档塌成一档)。
 //
 // **每一条都必须有产地**:一个没有产地的哨兵是一个永远不会出现的码,与没有
 // 这个分支在输出上完全一样。由 TestEveryStartFailureSentinelHasAProductionSite
@@ -56,6 +56,10 @@ var startFailureSentinels = []struct {
 }{
 	{ErrTunnelUnreachable, StartFailureTunnelUnreachable},
 	{ErrTunnelHandshakeFailed, StartFailureTunnelHandshakeFailed},
+	// 「没判出来」那两个**处置不同**的来由排在家长前面:它们的错误链上同时
+	// 挂着家长 ErrTunnelUnhealthy(cause 就是它),家长排前面会让三档塌成一档。
+	{ErrTunnelUndeterminedUDPTransport, StartFailureTunnelUndeterminedUDPTransport},
+	{ErrTunnelUndeterminedLocalDial, StartFailureTunnelUndeterminedLocalDial},
 	{ErrTunnelUnhealthy, StartFailureTunnelUndetermined},
 	{ErrTUNOpen, StartFailureTUNOpen},
 	{ErrHijack, StartFailureHijack},

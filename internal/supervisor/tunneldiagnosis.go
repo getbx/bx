@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,12 +29,49 @@ var (
 	ErrTunnelUnreachable = errors.New("连不上服务器,那个端口没有应答")
 	// ErrTunnelHandshakeFailed:TCP 连得上,而隧道没能建起来。
 	ErrTunnelHandshakeFailed = errors.New("服务器在应答,但隧道没能建起来")
+
+	// ErrTunnelUndeterminedUDPTransport:这一种传输不在 TCP 上听,一次拨号
+	// 观测不到那台服务器。**不是「没应答」,也不是「我们没问」。**
+	ErrTunnelUndeterminedUDPTransport = errors.New("这一种传输不在 TCP 上听,一次 TCP 拨号观测不到那台服务器")
+	// ErrTunnelUndeterminedLocalDial:判别那次拨号**在本机就失败了**,SYN 没
+	// 能离开这台机器 —— 要查的是 bx 自己的直连器,不是那台服务器。
+	ErrTunnelUndeterminedLocalDial = errors.New("判别拨号在本机就失败了,SYN 没能离开这台机器")
 )
 
 const (
 	StartFailureTunnelUnreachable     = "tunnel_unreachable"
 	StartFailureTunnelHandshakeFailed = "tunnel_handshake_failed"
+
+	// 「没判出来」有**五种来由**,而其中两种的处置与其余三种完全不同 ——
+	// 所以它们各有自己的码。仍然只有码,发布面一寸没扩(spec §5)。
+	//
+	//   - UDP 传输:那台服务器根本不在 TCP 上听(hysteria2 是 QUIC)。要告诉
+	//     用户的是「bx 这次观测对这种传输不成立」—— 既不是「服务器没应答」,
+	//     也不是「我们没去问」;想确认那台机器活着得换个手段(ping/ssh)。
+	//   - 本机拨号失败:SYN 根本没离开这台机器。**它指着 bx 自己的直连器,
+	//     不指着 VPS** —— 2026-08-13 那次真机事故的签名(DirectDialer 用
+	//     IP_BOUND_IF 绑物理网卡,而那条 scoped 默认路由由 Hijack 装,比这次
+	//     判别拨号晚 572 行)。给用户的下一步是 `route -n get -ifscope <网卡>`,
+	//     去查 VPS 是白费力气。
+	//
+	// 其余三种(解不出 host:port / DNS 解析不了 / 父 ctx 被取消)共用笼统那个码:
+	// 它们的下一步是同一句「看 Core 日志、自己确认一下那台服务器」。
+	//
+	// **三个码共享同一个前缀,而且是由拼接得来的**(不是三个各写一遍的字面量):
+	// 任何消费方都不可能把其中之一读成「那台服务器没事」,而将来加第四种时
+	// 它自动进这一族。判据是 IsTunnelUndeterminedCode。
+	StartFailureTunnelUndeterminedUDPTransport = StartFailureTunnelUndetermined + "_udp_transport"
+	StartFailureTunnelUndeterminedLocalDial    = StartFailureTunnelUndetermined + "_local_dial"
 )
+
+// IsTunnelUndeterminedCode:这个码是不是「隧道没起来,而 bx 没能判断那台
+// 服务器还在不在」那一族。
+//
+// 消费方(CLI 与菜单)拿它兜底:漏掉一种具体来由时落回笼统那句话,而**绝不会**
+// 落进「服务器活着 / 服务器挂了」两个具体答案里的任何一个。
+func IsTunnelUndeterminedCode(code string) bool {
+	return strings.HasPrefix(code, StartFailureTunnelUndetermined)
+}
 
 // TunnelDiagnosisTimeout 是判别那一次拨号的上限。它只在启动已经失败之后发生,
 // 而用户此刻正站在那儿等一句话 —— 5 秒是「够判出来」与「别再让他多等」之间的取舍。
@@ -143,21 +181,22 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 		// 这一种传输的服务器**不在 TCP 上听**(hysteria2 是 QUIC/UDP)。拨过去
 		// 拿到的既不是「它挂了」也不是「它活着」,只是「TCP 那边没人」——
 		// 而 §4.5 最长的那一段禁止的正是拿这种非观测去下一个具体结论。
-		return tunnelUndetermined(cause, fmt.Sprintf("%s 跑在 UDP 上,一次 TCP 拨号观测不到那台服务器", kind))
+		return tunnelUndetermined(ErrTunnelUndeterminedUDPTransport, cause,
+			fmt.Sprintf("%s 跑在 UDP 上,一次 TCP 拨号观测不到那台服务器", kind))
 	}
 	addr, err := serverDialAddress(link)
 	if err != nil {
 		// **不带上那个错误的文本**:url.Parse 失败时 *url.Error 会原样打印整条
 		// 链接,vless 的 UUID 就在里面。这句话进 Core 日志,而这一族的码还要
 		// 往 Guardian 送 —— 一条凭据一旦进了会被转发的字符串就再也收不回来。
-		return tunnelUndetermined(cause, "没能从服务器链接里解出 host:port")
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, "没能从服务器链接里解出 host:port")
 	}
 	if dialer == nil {
-		return tunnelUndetermined(cause, "没有可用的判别拨号器")
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, "没有可用的判别拨号器")
 	}
 	dial := dialer()
 	if dial == nil {
-		return tunnelUndetermined(cause, "没有可用的判别拨号器")
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, "没有可用的判别拨号器")
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, TunnelDiagnosisTimeout)
 	defer cancel()
@@ -169,13 +208,13 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 	}
 	// 父 ctx 挂了 ⇒ **是我们自己没问完**,不是那台服务器没答。
 	if ctx.Err() != nil {
-		return tunnelUndetermined(cause, fmt.Sprintf("判别过程本身被打断:%v", ctx.Err()))
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, fmt.Sprintf("判别过程本身被打断:%v", ctx.Err()))
 	}
 	// 名字都没解出来 ⇒ 连问都没问到 TCP 那一层。说「端口没有应答」是在替一个
 	// 我们根本没做过的观测下结论。
 	var dnsErr *net.DNSError
 	if errors.As(dialErr, &dnsErr) {
-		return tunnelUndetermined(cause, fmt.Sprintf("服务器域名没能解析:%v", dialErr))
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, fmt.Sprintf("服务器域名没能解析:%v", dialErr))
 	}
 	// 同一族的另一半:**SYN 根本没能离开本机**。
 	//
@@ -187,7 +226,8 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 	// 答「你的 VPS 挂了」—— 而这条路唯一的职责就是说出关于那台服务器的实话。
 	for _, localFailure := range dialFailuresBeforeTheSYNLeaves {
 		if errors.Is(dialErr, localFailure) {
-			return tunnelUndetermined(cause, fmt.Sprintf("这次拨号在本机就失败了(%v)", dialErr))
+			return tunnelUndetermined(ErrTunnelUndeterminedLocalDial, cause,
+				fmt.Sprintf("这次拨号在本机就失败了(%v)", dialErr))
 		}
 	}
 	// 拨不通(拒绝、超时、不可达)—— **超时归这一档,不归「没判出来」**:
@@ -199,8 +239,14 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 
 // tunnelUndetermined:隧道没起来,而 bx **没能判断**那台服务器还在不在。
 // 两条动作都要给,一条都不许断言 —— 与 observe.Tristate 同一条纪律。
-func tunnelUndetermined(cause error, why string) error {
-	return tagStartFailure(ErrTunnelUnhealthy,
+//
+// sentinel 选的是这一族里对得上的那一档:笼统那个是家长 ErrTunnelUnhealthy,
+// 另外两档各有自己的哨兵(它们的处置与笼统那三种完全不同,见上面那段常量)。
+// **无论选哪一个,家长都还在错误链上** —— cause 本身就是 waitTunnelHealthy 挂了
+// ErrTunnelUnhealthy 的那个错误,于是别处按 errors.Is(err, ErrTunnelUnhealthy)
+// 做的判定一个字不用改。
+func tunnelUndetermined(sentinel, cause error, why string) error {
+	return tagStartFailure(sentinel,
 		fmt.Errorf("没能判断服务器还在不在(%s): %w", why, cause))
 }
 

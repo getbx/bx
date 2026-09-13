@@ -318,9 +318,14 @@ func TestAUDPOnlyTransportIsNeverProbedWithTCPAndFallsToUndetermined(t *testing.
 		"hy2://secret@" + closed,
 	} {
 		err := diagnoseUnhealthyTunnel(context.Background(), link, dialer, cause)
-		if got := StartFailureCode(err); got != StartFailureTunnelUndetermined {
+		if got := StartFailureCode(err); got != StartFailureTunnelUndeterminedUDPTransport {
 			t.Fatalf("%s 分类成 %q,want %q —— 一次 TCP 拨号不是对一台 QUIC 服务器的观测",
-				transportKind(link), got, StartFailureTunnelUndetermined)
+				transportKind(link), got, StartFailureTunnelUndeterminedUDPTransport)
+		}
+		// 它仍然是「没判出来」那一族:消费方漏掉这个具体来由时落回笼统那句话,
+		// 而不会落进两个具体答案里的任何一个。
+		if !IsTunnelUndeterminedCode(StartFailureCode(err)) {
+			t.Fatalf("%s 的码离开了「没判出来」那一族:%q", transportKind(link), StartFailureCode(err))
 		}
 		if errors.Is(err, ErrTunnelUnreachable) || errors.Is(err, ErrTunnelHandshakeFailed) {
 			t.Fatalf("对一台没在 TCP 上听的服务器挑了一个具体答案:%v", err)
@@ -393,9 +398,14 @@ func TestALocalDialFailureIsNotReportedAsTheServerNotAnswering(t *testing.T) {
 			}
 		}
 		err := diagnoseUnhealthyTunnel(context.Background(), addr, dialer, cause)
-		if got := StartFailureCode(err); got != StartFailureTunnelUndetermined {
+		if got := StartFailureCode(err); got != StartFailureTunnelUndeterminedLocalDial {
 			t.Fatalf("%s 分类成 %q,want %q —— 这次失败发生在本机,SYN 一个都没出去,\n"+
-				"说「那台服务器没有应答」是替一个我们根本没做过的观测下结论", tc.name, got, StartFailureTunnelUndetermined)
+				"说「那台服务器没有应答」是替一个我们根本没做过的观测下结论", tc.name, got, StartFailureTunnelUndeterminedLocalDial)
+		}
+		// 它有自己的码是因为**处置不同**(要查 bx 自己的直连器,不是 VPS),
+		// 但它仍属「没判出来」那一族 —— 谁都不许把它读成「服务器没事」。
+		if !IsTunnelUndeterminedCode(StartFailureCode(err)) {
+			t.Fatalf("%s 的码离开了「没判出来」那一族:%q", tc.name, StartFailureCode(err))
 		}
 	}
 	// 反向:被拒绝与超时仍然是 tunnel_unreachable(台账 ruling ②,一个字没动)——
@@ -450,5 +460,68 @@ func TestDiagnosisNeverPrintsTheServerLink(t *testing.T) {
 	}
 	if got := StartFailureCode(err); got != StartFailureTunnelUndetermined {
 		t.Fatalf("分类成 %q,want %q", got, StartFailureTunnelUndetermined)
+	}
+}
+
+// 「没判出来」拆成三个码之后,**每一个都必须还认得出是「没判出来」**。
+//
+// 拆开的理由是处置不同(UDP 传输要换个手段确认那台机器、本机拨号失败要去查
+// bx 自己的直连器),而拆开的风险恰恰相反:某个消费方漏掉一个新码,落进
+// 「服务器活着」或者「服务器挂了」两个具体答案里的任何一个 —— 那正是这一支
+// 存在要消灭的东西。前缀由拼接得来(不是三个字面量),这条守卫走的是**五条
+// 真实的生产路径**,不是一张枚举清单。
+func TestEveryUndeterminedOutcomeStillReadsAsUndetermined(t *testing.T) {
+	cause := tagStartFailure(ErrTunnelUnhealthy, errors.New("bx 隧道健康检查超时(20s): restarts=0"))
+	closed := closedLocalAddress(t)
+	neverDial := func() tunnelDialFunc {
+		return func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("不该拨号")
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"UDP 传输", diagnoseUnhealthyTunnel(context.Background(), "hysteria2://s@"+closed, neverDial, cause)},
+		{"SYN 没离开本机", diagnoseUnhealthyTunnel(context.Background(), closed, func() tunnelDialFunc {
+			return func(_ context.Context, network, _ string) (net.Conn, error) {
+				return nil, &net.OpError{Op: "dial", Net: network, Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}
+			}
+		}, cause)},
+		{"解不出 host:port", diagnoseUnhealthyTunnel(context.Background(), "vless://", neverDial, cause)},
+		{"域名解析失败", diagnoseUnhealthyTunnel(context.Background(), closed, func() tunnelDialFunc {
+			return func(context.Context, string, string) (net.Conn, error) {
+				return nil, &net.DNSError{Err: "no such host", Name: "vps.example"}
+			}
+		}, cause)},
+		{"判别本身被打断", diagnoseUnhealthyTunnel(canceled, closed, func() tunnelDialFunc {
+			return func(context.Context, string, string) (net.Conn, error) {
+				cancel()
+				return nil, errors.New("dial tcp: operation was canceled")
+			}
+		}, cause)},
+	}
+	seen := map[string]bool{}
+	for _, tc := range cases {
+		code := StartFailureCode(tc.err)
+		if !IsTunnelUndeterminedCode(code) {
+			t.Fatalf("%s 的码 %q 不在「没判出来」那一族 —— 一个漏掉它的消费方会把它\n"+
+				"读成两个具体答案里的某一个", tc.name, code)
+		}
+		if errors.Is(tc.err, ErrTunnelUnreachable) || errors.Is(tc.err, ErrTunnelHandshakeFailed) {
+			t.Fatalf("%s 的错误链上挂着一个具体结局:%v", tc.name, tc.err)
+		}
+		// 家长必须还在链上:别处按 errors.Is(err, ErrTunnelUnhealthy) 做的判定
+		// (awaitTunnelHealthOrDiagnose 自己就有一处)不许因为这次拆分而失效。
+		if !errors.Is(tc.err, ErrTunnelUnhealthy) {
+			t.Fatalf("%s 的错误链上没有家长 ErrTunnelUnhealthy:%v", tc.name, tc.err)
+		}
+		seen[code] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("五条生产路径只产出了 %d 个不同的码(%v)—— 处置不同的那两种必须\n"+
+			"各有自己的码,否则用户被派去查错的东西", len(seen), seen)
 	}
 }
