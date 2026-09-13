@@ -386,6 +386,37 @@ var guardianCodeHints = map[string]string{
 func guardianHTTPError(path string, statusCode int, body []byte) error {
 	var failure guardianFailureBody
 	_ = json.Unmarshal(body, &failure)
+	return &HTTPError{Message: guardianHTTPErrorMessage(path, statusCode, failure), Code: failure.Code}
+}
+
+// HTTPError 是一次 Guardian 失败应答的**结构化**形态。
+//
+// 消息一个字没变(既有测试逐句比对它);多出来的是那个码 —— 调用方此前只能
+// 从消息文本里把 `(code=…)` 抠出来,而按文本认码正是本仓库反复禁止的形状:
+// 措辞一改,消费方悄悄退回一句通用的废话而两边都不报错。
+//
+// 它的第一个消费方是 `bx up`:那几个 core_* 启动失败码要配上服务器地址与
+// 「你还配了另一台」才成为一句可行动的话,而这两样只有 CLI 手里有 ——
+// **应答体仍然只带码,发布面一寸没扩**(spec §5)。
+type HTTPError struct {
+	Message string
+	// Code 是应答体里那个失败码。**空 = 这次没有码**(短路失败、旧 Guardian),
+	// 不是「码是空串」—— 消费方必须留一个「说不出是哪种」的分支。
+	Code string
+}
+
+func (e *HTTPError) Error() string { return e.Message }
+
+// FailureCode 从错误链上取出 Guardian 的失败码,取不到返回空串。
+func FailureCode(err error) string {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Code
+	}
+	return ""
+}
+
+func guardianHTTPErrorMessage(path string, statusCode int, failure guardianFailureBody) string {
 	message := fmt.Sprintf("Guardian %s returned %d", path, statusCode)
 	if failure.Error != "" {
 		message += ": " + failure.Error
@@ -402,7 +433,7 @@ func guardianHTTPError(path string, statusCode int, body []byte) error {
 		}
 		message += "。" + guardianTroubleshootingHint
 	}
-	return errors.New(message)
+	return message
 }
 
 func guardianHTTPClient(socketPath string) *http.Client {
