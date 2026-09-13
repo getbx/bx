@@ -84,8 +84,10 @@ func TestAStaleRecordIsDeletedBeforeTheNextSpawn(t *testing.T) {
 // Core 拿得到那个路径,否则它一个字都写不出来。
 func TestCoreArgsCarryTheStartFailureFile(t *testing.T) {
 	got := coreArgs("/etc/bx/config.yaml", "127.0.0.1:53", "/var/lib/bx/core-start-failure.json")
-	want := []string{"run", "-c", "/etc/bx/config.yaml", "--listen-dns", "127.0.0.1:53",
-		"--start-failure-file", "/var/lib/bx/core-start-failure.json"}
+	want := []string{
+		"run", "-c", "/etc/bx/config.yaml", "--listen-dns", "127.0.0.1:53",
+		"--start-failure-file", "/var/lib/bx/core-start-failure.json",
+	}
 	if len(got) != len(want) {
 		t.Fatalf("coreArgs() = %#v, want %#v", got, want)
 	}
@@ -137,20 +139,26 @@ func TestARecordThatIsNotThisSpawnsIsNotBelieved(t *testing.T) {
 	}{
 		{
 			name: "上一次 spawn 的 PID",
-			record: corestartfailure.Record{SchemaVersion: corestartfailure.SchemaVersion,
-				PID: 4241, At: now, Code: supervisor.StartFailureTunnelUnreachable},
+			record: corestartfailure.Record{
+				SchemaVersion: corestartfailure.SchemaVersion,
+				PID:           4241, At: now, Code: supervisor.StartFailureTunnelUnreachable,
+			},
 			since: now.Add(-time.Second),
 		},
 		{
 			name: "时间戳落在本次健康窗口之前",
-			record: corestartfailure.Record{SchemaVersion: corestartfailure.SchemaVersion,
-				PID: 4242, At: now.Add(-time.Hour), Code: supervisor.StartFailureTunnelUnreachable},
+			record: corestartfailure.Record{
+				SchemaVersion: corestartfailure.SchemaVersion,
+				PID:           4242, At: now.Add(-time.Hour), Code: supervisor.StartFailureTunnelUnreachable,
+			},
 			since: now.Add(-time.Second),
 		},
 		{
 			name: "时间戳在未来",
-			record: corestartfailure.Record{SchemaVersion: corestartfailure.SchemaVersion,
-				PID: 4242, At: now.Add(time.Hour), Code: supervisor.StartFailureTunnelUnreachable},
+			record: corestartfailure.Record{
+				SchemaVersion: corestartfailure.SchemaVersion,
+				PID:           4242, At: now.Add(time.Hour), Code: supervisor.StartFailureTunnelUnreachable,
+			},
 			since: now.Add(-time.Second),
 		},
 		{

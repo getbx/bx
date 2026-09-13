@@ -31,7 +31,7 @@ struct GuardianFailureCodeTests {
             return (nil, nil)
         } catch {
             let code = guardianFailureCode(of: error)
-            return (code, toggleFailureMessage(code: code, transportDescription: error.localizedDescription))
+            return (code, toggleFailureMessage(code: code, transportDescription: error.localizedDescription, servers: CoreStartFailureServers()))
         }
     }
 

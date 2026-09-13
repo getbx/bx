@@ -80,8 +80,10 @@ func TestEveryStartFailureSentinelHasAProductionSite(t *testing.T) {
 			return diagnoseUnhealthyTunnel(context.Background(), closedLocalAddress(t),
 				func() tunnelDialFunc {
 					return func(_ context.Context, network, _ string) (net.Conn, error) {
-						return nil, &net.OpError{Op: "dial", Net: network,
-							Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}
+						return nil, &net.OpError{
+							Op: "dial", Net: network,
+							Err: os.NewSyscallError("connect", syscall.ENETUNREACH),
+						}
 					}
 				},
 				tagStartFailure(ErrTunnelUnhealthy, errors.New("健康检查超时")))

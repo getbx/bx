@@ -207,6 +207,177 @@ func quitQueuedStatusText() -> String {
     "Will quit once the current operation finishes"
 }
 
+/// 拼「Core 起不来」那句话所需的**最小**一条服务器事实。
+///
+/// **刻意不吃 `ServerList`**:这个文件是纯判据、被好几个测试 target 单独编译,
+/// 拉进 ServersModel.swift 会把那份依赖铺到六个 target 上。main.swift 那边只做
+/// 一次字段对拷,判定(谁是当前那台、host:port 怎么拼、谁算「另一台」)全在
+/// 下面那个纯函数里。
+struct CoreStartFailureServer: Equatable {
+    let name: String
+    /// 出口主机。空 = 服务端解析不出来,**不是**「没有主机」。
+    let host: String
+    /// 0 = 链接里看不出来(或旧 Guardian 没发)。那时只写主机 —— **绝不写 `:0`**。
+    let port: Int
+    let isCurrent: Bool
+
+    init(name: String, host: String, port: Int, isCurrent: Bool) {
+        self.name = name; self.host = host; self.port = port; self.isCurrent = isCurrent
+    }
+}
+
+/// 那句话要用的两样事实:说的是哪一台,以及还有哪几台。
+///
+/// **只有名字与 host:port,没有链接** —— 链接是凭据,而这些字段会被拼进
+/// 用户看得见的文本里(与 `ServerEntry` 刻意不带 link 同一条)。
+struct CoreStartFailureServers: Equatable {
+    var currentName: String = ""
+    /// 空 = **没问出来**。那时那句话照说,只是不点名 —— 绝不编一个占位地址,
+    /// 一句指着 `<unknown>:0` 的排查命令比不给更糟。
+    var currentHostPort: String = ""
+    var others: [String] = []
+
+    init(currentName: String = "", currentHostPort: String = "", others: [String] = []) {
+        self.currentName = currentName; self.currentHostPort = currentHostPort; self.others = others
+    }
+}
+
+/// 把清单折成那两样事实。
+func coreStartFailureServers(_ entries: [CoreStartFailureServer]) -> CoreStartFailureServers {
+    var facts = CoreStartFailureServers()
+    for entry in entries {
+        if entry.isCurrent {
+            facts.currentName = entry.name
+            facts.currentHostPort = coreStartFailureHostPort(host: entry.host, port: entry.port)
+            continue
+        }
+        facts.others.append(entry.host.isEmpty ? entry.name : "\(entry.name) (\(entry.host))")
+    }
+    return facts
+}
+
+func coreStartFailureHostPort(host: String, port: Int) -> String {
+    if host.isEmpty { return "" }
+    return port > 0 ? "\(host):\(port)" : host
+}
+
+/// Guardian 给这一族启动失败码加的前缀(Go 侧 coreStartFailureLastError)。
+let coreStartFailureCodePrefix = "core_"
+
+/// Core 起不来时那句可行动的话 —— **菜单自己在本地拼出来**。
+///
+/// Guardian 的应答体只带一个码,这是刻意的(spec §5):服务器地址与「你还有
+/// 哪几台」菜单本来就经 /v1/servers 合法持有,于是这次改动不新增任何一个字节
+/// 的发布面。
+///
+/// **措辞的每一条规矩都来自一次真实事故**,改之前先读:
+///
+/// - 只说 bx 观测到什么,**绝不断言那台服务器的状态**。这台 Mac 自己没网时
+///   同样拨不通,而一句「that server is down」会让用户去重启一台好好的 VPS。
+/// - 「连不上」与「连得上但没握上」的措辞必须**相反**。说反了就是把人派去修
+///   一台好机器:reality 一度全挂,真因是默认 SNI www.microsoft.com 的证书
+///   过大,而当时先误归因成 sing-box 同机问题、又误归因成网络 MITM。
+/// - 「没判出来」有三个码、处置各不相同,但**没有一个可以被读成「服务器没事」**。
+/// - 本机拨号失败那一档指着 **bx 自己的直连器**,不指着 VPS —— 2026-08-13 那次
+///   事故的签名(IP_BOUND_IF 只查 scoped 路由表,而那条 scoped 默认路由由
+///   Hijack 装,比这次判别拨号晚 572 行)。
+/// - 只在真有另一台时才说「你还配了另一台」,**绝不打印链接**。
+///
+/// 认不出的码返回 nil —— 宁可不给,也不编一句错的(与 toggleFailureHint 同一条)。
+/// 这个码是不是「Core 起不来」那一族。
+///
+/// 判据就是 `coreStartFailureHint` 认不认得它 —— **只有一份判据**:
+/// 另写一张码清单会与那个 switch 漂开,而漂开的后果是静默的(去问了服务器
+/// 清单却拼不出话,或者拼得出话却没去问)。
+func isCoreStartFailureCode(_ code: String?) -> Bool {
+    coreStartFailureHint(code: code, servers: CoreStartFailureServers()) != nil
+}
+
+func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> String? {
+    guard let code, code.hasPrefix(coreStartFailureCodePrefix) else { return nil }
+    let bare = String(code.dropFirst(coreStartFailureCodePrefix.count))
+    let where_ = servers.currentHostPort
+    let named = !where_.isEmpty
+    let logLine = "Full reason: sudo tail -50 /var/log/bx.log"
+
+    var headline: String
+    var steps: [String] = []
+    var tunnelOutcome = true
+    switch bare {
+    case "tunnel_unreachable":
+        // 「bx cannot reach X」是关于**这次尝试**的事实;「X is down」是关于
+        // 那台服务器的断言,而本机自己没网时同样连不上。
+        headline = "bx could not start: " +
+            (named ? "bx cannot reach \(where_)" : "bx cannot reach your server") +
+            " — no TCP connection was established to that address."
+        steps.append(named
+            ? "That machine may be down or may have changed IP, but this Mac's own network could be at fault too. Check it yourself: nc -z \(coreStartFailureHostOnly(where_)) \(coreStartFailurePortOnly(where_))"
+            : "That machine may be down or may have changed IP, but this Mac's own network could be at fault too.")
+    case "tunnel_handshake_failed":
+        // 措辞与上面**相反**:那台机器活着,去修它是白费力气。
+        headline = "bx could not start: " +
+            (named ? "\(where_) is answering on TCP" : "your server is answering on TCP") +
+            ", but the tunnel did not come up within the start-up window."
+        steps.append("That machine is alive — look at the link, its credentials, the SNI, or interference on the way, not at whether the server is down.")
+        steps.append(logLine)
+    case "tunnel_unhealthy_undetermined_udp_transport":
+        headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there — it runs a UDP transport (hysteria2/QUIC), which a single TCP probe cannot observe."
+        steps.append(named
+            ? "To confirm that machine is alive, try ping or ssh to \(coreStartFailureHostOnly(where_))"
+            : "To confirm that machine is alive, try ping or ssh to it")
+        steps.append(logLine)
+    case "tunnel_unhealthy_undetermined_local_dial":
+        headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there — its probe failed on this Mac before any SYN left it."
+        steps.append("Check bx's own direct route first (the signature of the 2026-08-13 failure): route -n get -ifscope <your interface> 1.1.1.1 — \"not in table\" is the cause, and it has nothing to do with the server.")
+        steps.append(logLine)
+    case "tunnel_unhealthy_undetermined":
+        headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there (the check itself did not complete)."
+        steps.append(named
+            ? "To check the server yourself: nc -z \(coreStartFailureHostOnly(where_)) \(coreStartFailurePortOnly(where_))"
+            : "Check that the server link in the configuration is still right")
+        steps.append(logLine)
+    case "config_unusable":
+        tunnelOutcome = false
+        headline = "bx could not start: something in the configuration is unusable (a rule, a CIDR, a hosts entry, or a server link). After editing it, run sudo bx down && sudo bx up."
+        steps.append(logLine)
+    case "provision_failed":
+        tunnelOutcome = false
+        headline = "bx could not start: the embedded transport binary could not be unpacked into data_dir (usually a full disk or an unwritable directory)."
+        steps.append(logLine)
+    case "tun_open_failed":
+        tunnelOutcome = false
+        headline = "bx could not start: the TUN device could not be opened (permissions, or the device is in use)."
+        steps.append(logLine)
+    case "hijack_failed":
+        tunnelOutcome = false
+        headline = "bx could not start: the TUN came up but hijacking the default route failed."
+        steps.append(logLine)
+    case "other":
+        tunnelOutcome = false
+        headline = "bx could not start: Core reported a failure this version of bx has no specific wording for."
+        steps.append(logLine)
+    default:
+        // 认不出的码一个字都不编。
+        return nil
+    }
+
+    // 换一台服务器只对隧道那几种结局有用。
+    if tunnelOutcome, !servers.others.isEmpty {
+        steps.append("You also have another server configured: \(servers.others.joined(separator: ", ")) — switch to it in Servers…")
+    }
+    return ([headline] + steps.map { "  • " + $0 }).joined(separator: "\n")
+}
+
+func coreStartFailureHostOnly(_ hostPort: String) -> String {
+    guard let index = hostPort.lastIndex(of: ":") else { return hostPort }
+    return String(hostPort[hostPort.startIndex..<index]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+}
+
+func coreStartFailurePortOnly(_ hostPort: String) -> String {
+    guard let index = hostPort.lastIndex(of: ":") else { return "" }
+    return String(hostPort[hostPort.index(after: index)...])
+}
+
 func toggleFailureHint(code: String?) -> String? {
     guard let code, !code.isEmpty else { return nil }
     switch code {
@@ -282,7 +453,12 @@ func privilegedTurnOffScript(bxPath: String) -> String {
 ///
 /// 「没有码」不能被伪装成有码:`toggleFailureHint` 对 nil/空码返回 nil,这里
 /// 也绝不替它补一句通用套话冒充专属指引。
-func toggleFailureMessage(code: String?, transportDescription: String?) -> String? {
+func toggleFailureMessage(code: String?, transportDescription: String?, servers: CoreStartFailureServers) -> String? {
+    // Core 起不来那一族排在最前:它是这几个码里唯一能配上「哪台服务器、
+    // 你还能切到哪儿」的一族,而那正是用户此刻要的。
+    if let hint = coreStartFailureHint(code: code, servers: servers) {
+        return hint
+    }
     if let hint = toggleFailureHint(code: code) {
         return hint
     }
@@ -298,8 +474,8 @@ func toggleFailureMessage(code: String?, transportDescription: String?) -> Strin
 /// 改由特权 CLI 强制拆除」——这是两件不同的事,静默成功等于隐瞒 Guardian 已经
 /// 不听话了。逃生失败则必须把最后一条人工出路(在终端敲 sudo bx down)说出来,
 /// 那时菜单已经无路可走。
-func toggleResultText(code: String?, transportDescription: String?, escape: ToggleEscapeOutcome) -> String? {
-    let base = toggleFailureMessage(code: code, transportDescription: transportDescription)
+func toggleResultText(code: String?, transportDescription: String?, servers: CoreStartFailureServers, escape: ToggleEscapeOutcome) -> String? {
+    let base = toggleFailureMessage(code: code, transportDescription: transportDescription, servers: servers)
     switch escape {
     case .notAttempted:
         return base

@@ -103,6 +103,9 @@ run_test quit-plan \
 run_test toggle-escape \
   "$MENU/Sources/BxMenu/ToggleController.swift" \
   "$MENU/Tests/ToggleEscapeTests.swift"
+run_test core-start-failure-hint \
+  "$MENU/Sources/BxMenu/ToggleController.swift" \
+  "$MENU/Tests/CoreStartFailureHintTests.swift"
 run_test guardian-failure-code \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
