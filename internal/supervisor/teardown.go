@@ -50,7 +50,7 @@ type teardownOutcome struct {
 
 // teardownDefaultBudget 是单步默认预算。
 //
-// 取值比整条关机 grace(shutdownGrace,15s)小一个量级:一步的预算不该接近
+// 取值比整条关机 grace(ShutdownGrace,15s)小一个量级:一步的预算不该接近
 // 整条路径的预算 —— 那样第一步挂住就把额度用光了,后面的步骤等于没有预算。
 const teardownDefaultBudget = 3 * time.Second
 

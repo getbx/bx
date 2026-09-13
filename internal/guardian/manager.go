@@ -406,7 +406,10 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	}
 	cleanupTimeout := options.CleanupTimeout
 	if cleanupTimeout <= 0 {
-		cleanupTimeout = 15 * time.Second
+		// 见 cleanupbudget.go:这个数必须包得住 runner.Stop 的等待,而后者必须
+		// 包得住 Core 自己的 supervisor.ShutdownGrace。三者相等 = 零余量,
+		// 一个把 defer 还原跑满的健康 Core 会被报成 core_ownership_uncertain。
+		cleanupTimeout = defaultCoreCleanupTimeout
 	}
 	updates, _ := options.Store.(updateStore)
 	pathsProvider, _ := options.Store.(guardianPathsProvider)

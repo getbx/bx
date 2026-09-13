@@ -690,7 +690,10 @@ func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
 	}
 	timeout := r.StopTimeout
 	if timeout <= 0 {
-		timeout = 15 * time.Second
+		// 见 cleanupbudget.go:等的是 Core 自己那条 defer 链,而它的上界是
+		// supervisor.ShutdownGrace —— 预算与它相等的话,一个还原跑满的 Core
+		// 在这里表现为超时,而它其实关得干干净净。
+		timeout = defaultCoreStopWait
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

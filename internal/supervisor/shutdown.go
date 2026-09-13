@@ -7,11 +7,16 @@ import (
 	"time"
 )
 
-// shutdownGrace:还原(信号/死手/ctx)触发后,Run 的 cleanup(defer 链)允许的最长耗时。
+// ShutdownGrace:还原(信号/死手/ctx)触发后,Run 的 cleanup(defer 链)允许的最长耗时。
 // 超过则判定某个 defer 卡住(已知罕见 timing 竞态:疑 eng.Close/gVisor stack.Close 或 tun0.Stop),
 // dump 全部 goroutine 栈 + 强制退出。死手契约是「到点必终止进程」,cleanup 卡住不该让它落空。
 // 正常关机远快于此(实测 <1s),watchdog 不误触。
-const shutdownGrace = 15 * time.Second
+//
+// **导出的理由**:Guardian 那边请 Core 协作关闭之后要等它退出,而它等多久必须
+// 排在这个数**之后** —— 一个跑满 grace 才被 watchdog 强制退出的 Core,在一个
+// 预算相等的等待里表现为超时 ⇒ retainUncertain ⇒ core_ownership_uncertain。
+// 两个包各写一个 15s 常量时,那个关系表达不出来,也就没有东西守得住它。
+const ShutdownGrace = 15 * time.Second
 
 // armShutdownWatchdog 在 grace 后调用 onTimeout,返回 timer(Stop 可取消)。
 // time.AfterFunc fire-and-forget:正常关机时 Run 返回→进程退出→timer 随进程作废(永不触发);
@@ -24,6 +29,6 @@ func armShutdownWatchdog(grace time.Duration, onTimeout func()) *time.Timer {
 func dumpAndExit() {
 	buf := make([]byte, 1<<20)
 	n := runtime.Stack(buf, true)
-	log.Printf("⚠ 关机超时 %s:cleanup 卡住,强制退出。goroutine 转储:\n%s", shutdownGrace, buf[:n])
+	log.Printf("⚠ 关机超时 %s:cleanup 卡住,强制退出。goroutine 转储:\n%s", ShutdownGrace, buf[:n])
 	os.Exit(1)
 }

@@ -388,8 +388,8 @@ func (h *harness) stop() {
 			if err != nil {
 				h.t.Errorf("Run() 应干净返回,却报错: %v", err)
 			}
-		case <-time.After(shutdownGrace + 15*time.Second):
-			// 到这里 Run() 自己的关机 watchdog(shutdownGrace)其实已经先一步
+		case <-time.After(ShutdownGrace + 15*time.Second):
+			// 到这里 Run() 自己的关机 watchdog(ShutdownGrace)其实已经先一步
 			// os.Exit(1) 掉整个进程了;留这条分支是为了万一它没触发也能得到一句话。
 			h.t.Errorf("ctx 取消后 Run() 迟迟不返回(teardown 卡住)")
 		}
