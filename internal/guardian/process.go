@@ -201,7 +201,7 @@ func NewExecCoreRunner(executable, configPath, dnsListen string) *ExecCoreRunner
 func coreArgs(configPath, dnsListen, startFailurePath string) []string {
 	args := []string{"run", "-c", configPath, "--listen-dns", dnsListen}
 	if startFailurePath != "" {
-		args = append(args, "--start-failure-file", startFailurePath)
+		args = append(args, "--"+corestartfailure.FlagName, startFailurePath)
 	}
 	return args
 }

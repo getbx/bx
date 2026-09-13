@@ -189,3 +189,37 @@ func TestBothRunExitsAreCoveredByTheStartFailureRecorder(t *testing.T) {
 		t.FailNow()
 	}
 }
+
+// `bx run` 必须**真的声明**那个 flag,否则 Guardian 传过去的 `--start-failure-file`
+// 会让 Core 在 flag 解析这一步就退出。
+//
+// 名字本身已经不会漂了(两侧共用 corestartfailure.FlagName),但**删掉这一侧
+// 的声明**仍然可能:reviewer 实测把 runFlags 里那一行删掉之后,
+// internal/cli 与 internal/guardian **两个包全绿**,而真机上 Core 打印
+// `Incorrect Usage: flag provided but not defined: -start-failure-file`、
+// 立刻退出,Guardian 等满 20 秒报 core_health_failed —— 正是这份记录本来要
+// 消灭的那个失效模式,由一次改动原样重新引入。
+//
+// 判据打在**生产那份 Flags 上**(runFlags() 就是挂在 run 命令上的那一个),
+// 不是源码文本。
+func TestRunDeclaresTheStartFailureFileFlag(t *testing.T) {
+	var found bool
+	for _, flag := range runFlags() {
+		for _, name := range flag.Names() {
+			if name == corestartfailure.FlagName {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("`bx run` 没有声明 --%s —— Guardian 照样会传它,\n"+
+			"Core 在 flag 解析就退出,而这一族码于是一个都到不了用户面前",
+			corestartfailure.FlagName)
+	}
+	// 前置自检:那个名字得真的是 Guardian 拼出去的那个,否则上面那条断言
+	// 只是在跟自己比对(名字换了两边一起换,而那正是共用常量买到的东西 ——
+	// 这里要证明的是**声明还在**)。
+	if corestartfailure.FlagName == "" {
+		t.Fatal("flag 名字是空串 —— 这条断言什么都没证明")
+	}
+}
