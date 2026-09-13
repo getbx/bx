@@ -34,6 +34,23 @@ import (
 // 这段等待**只在启动已经失败之后**发生,而且一拿到答案就返回;Core 早早死掉
 // (config/provision/tun_open/hijack 那几种约 2 秒就写完退出)时它一拍就走。
 // 它吃调用方的 ctx —— 用户取消就立刻停,mutation 槽不会被它多押住。
+//
+// **那 3 秒是什么,写清楚。** 上面说「两个计时器几乎同时起跑」,而「几乎」
+// 恰好就是这 3 秒要覆盖的东西:Core 从 fork 到进入 awaitTunnelHealthOrDiagnose
+// 之间还有一段偏移(buildSplitBrain 要建 12k 域名 / 6k 网段的分流脑、
+// EnsureSingbox 要核 28MB 内嵌资产的缓存键 —— 重嵌之后的第一次启动是一次
+// 真解压、EnsureLists、buildTunnel 加子进程 spawn)。真正的要求因此是
+//
+//	grace ≥ Core 的启动偏移 + supervisor.TunnelDiagnosisTimeout
+//
+// 而这 3 秒就是留给那个偏移的**全部**余量。它没有测量依据 —— 这台机器上
+// 那段偏移是多少,只有真机能给。
+//
+// **偏移超过 3 秒时的行为是安全的、而且现在说得出来**:那次读空手而归,
+// LastError 诚实地回落 core_health_failed(不编病因),而 Guardian 日志里会有
+// 一行 `guardian_core_start_failure_record_absent reason=grace_expired waited=…`
+// —— 少了它,「Core 从没写」与「我们早放弃了 200 毫秒」在真机上完全分不开,
+// 而这条分支唯一的存在理由就是可诊断性。要调这个数,先去日志里读那个 waited。
 const coreStartFailureGrace = supervisor.TunnelDiagnosisTimeout + 3*time.Second
 
 // coreStartFailurePoll 是等那份记录出现的轮询间隔。
@@ -156,9 +173,18 @@ func (r *ExecCoreRunner) StartFailureCode(ctx context.Context, process Process, 
 // 句柄本来就不在(不是我们 fork 的、或者早被摘掉)时只读一次:那种 Core 不会
 // 再往这个位置写任何东西,等下去只是白白押着 mutation 槽。
 func (r *ExecCoreRunner) awaitStartFailureRecord(ctx context.Context, path string, process Process) (corestartfailure.Record, bool) {
-	deadline := time.Now().Add(coreStartFailureGrace)
+	started := time.Now()
+	deadline := started.Add(coreStartFailureGrace)
 	for {
 		_, tracked := r.startedCoreHandle(process)
+		// 测试钩子:生产恒 nil。**它就摆在这两行中间**,而那个位置是判据本身:
+		// 上下两行对调之后(reviewer 变异实测「对调两行」整包全绿),同一个钩子
+		// 落在「读之后、探句柄之前」,于是它在那一瞬写下的记录会被漏掉。
+		// 这两行的顺序只在一个亚微秒的交错窗口里产生差别,没有任何不带观察点的
+		// 测试分得开 —— 留一个钩子,好过让一条承重的顺序无人守。
+		if r.afterLivenessProbe != nil {
+			r.afterLivenessProbe()
+		}
 		record, err := corestartfailure.Read(path)
 		if err == nil {
 			return record, true
@@ -169,16 +195,28 @@ func (r *ExecCoreRunner) awaitStartFailureRecord(ctx context.Context, path strin
 			log.Printf("guardian_core_start_failure_record_unreadable path=%s err=%v", path, err)
 			return corestartfailure.Record{}, false
 		}
-		if !tracked {
+		// **三种「没等到」各留一行,而且互相分得开。** 真机上「Core 从没写」
+		// 与「我们早放弃了 200 毫秒」在返回值上完全一样(都是空串、都回落
+		// core_health_failed),而这条分支唯一的存在理由就是可诊断性。
+		switch {
+		case !tracked:
+			log.Printf("guardian_core_start_failure_record_absent reason=handle_gone waited=%s",
+				time.Since(started).Round(time.Millisecond))
 			return corestartfailure.Record{}, false
-		}
-		if !time.Now().Before(deadline) {
+		case !time.Now().Before(deadline):
+			log.Printf("guardian_core_start_failure_record_absent reason=grace_expired waited=%s grace=%s",
+				time.Since(started).Round(time.Millisecond), coreStartFailureGrace)
 			return corestartfailure.Record{}, false
 		}
 		timer := time.NewTimer(coreStartFailurePoll)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			// 调用方那份预算先到期(见 startFailureReadContext:三条
+			// restartTimeout=25s 的路上余量本就是零)。它与 grace_expired 是
+			// 两回事:那一种说「我等满了它还没写」,这一种说「我压根没等够」。
+			log.Printf("guardian_core_start_failure_record_absent reason=deadline waited=%s err=%v",
+				time.Since(started).Round(time.Millisecond), ctx.Err())
 			return corestartfailure.Record{}, false
 		case <-timer.C:
 		}

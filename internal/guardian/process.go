@@ -139,6 +139,14 @@ type ExecCoreRunner struct {
 	// 句柄**杀 —— 而不是拿一个 PID 去杀。拿 PID 杀要先验一次身份,而验完到杀
 	// 那一瞬 PID 可能已经被复用;句柄在构造上没有这个窗口。
 	startedCores map[startedCoreKey]*startedCore
+
+	// afterLivenessProbe **只由测试设置**,生产恒 nil。
+	//
+	// awaitStartFailureRecord 里「先取句柄、再读记录」那个顺序是承重的
+	// (句柄消失蕴含「该写的都写完了」,所以最后一次读必须排在观测到消失
+	// 之后),而对调两行只在一个亚微秒的交错窗口里产生差别 —— 不给一个
+	// 落在那两行中间的观察点,这条顺序就没有任何测试分得开。
+	afterLivenessProbe func()
 }
 
 // startedCoreKey 含 generation:PID 会被复用,而这张表决定的是「杀谁」。
