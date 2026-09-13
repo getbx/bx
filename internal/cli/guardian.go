@@ -951,7 +951,11 @@ func macOSUpAction(c *urfavecli.Context) error {
 	stepLine("Guardian", "接管并启动 bx 保护")
 	result, err := macOSUpLifecycle(c.Context, configPath, defaultMacOSLifecycleDeps())
 	if err != nil {
-		return err
+		// Core 起不来时,把「是哪台服务器、发生了什么、你还能切到哪儿」拼在
+		// Guardian 那句只有码的话前面 —— 2026-09-12 那天用户读到的是七次
+		// core_ownership_uncertain,而真相(VPS 的 443 没有应答)从第一秒就在。
+		// 应答体仍然只带码;地址与清单是这一侧自己从配置里读的(spec §5)。
+		return annotateCoreStartFailure(err, configPath)
 	}
 	stepDone("Guardian", "bx 已进入 Protected")
 	if result.MenuWarning != nil {
