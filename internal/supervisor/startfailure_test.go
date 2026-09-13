@@ -129,10 +129,22 @@ func TestStartFailureCodeNeverGuessesFromText(t *testing.T) {
 //   - **位置**:紧跟那次调用的那个 if 语句体内 —— 只查「run.go 里出现过这个词」
 //     的话,把哨兵挂到隔壁任何一跳上都照样绿,而挂错跳产生的是一个自信的错误
 //     答案(用户被派去查 TUN,真因在路由);
-//   - **它真的被挂上了**:那个标识符必须是一次 tagStartFailure(…) 调用的**第一个
-//     实参**。只钉标识符出现过的话,`log.Printf("%v", ErrTUNOpen)` + 一句不带
-//     哨兵的 return 就能满足它 —— 变异实测:守卫与整个包全绿,而 tun_open_failed
-//     变成一个**永远不会被产生的码**,正是这条守卫存在要消灭的那件事。
+//   - **那次挂标的结果真的被返回了**:哨兵必须是这个 if 体里某条 return 的
+//     结果表达式**里**的一次 tagStartFailure(<哨兵>, …)。
+//
+// 第二层为什么是「被返回」而不是「这次调用存在」:后者写过一版,而它挡不住
+//
+//	_ = tagStartFailure(ErrTUNOpen, fmt.Errorf("建 TUN: %w", err))
+//	return fmt.Errorf("建 TUN: %w", err)
+//
+// —— 变异实测(LANDED,与副本 diff 确认):守卫与整个包全绿,而 tun_open_failed
+// 又变回一个**永远不会被产生的码**,正是这条守卫存在要消灭的那件事。
+// **作实参不等于被返回**;错误链上有没有那个哨兵,只由被 return 出去的那个值说了算。
+//
+// 允许包一层(`return fmt.Errorf("…: %w", tagStartFailure(…))`):那样的错误链上
+// 哨兵仍在,errors.Is 照样认得出。
+//
+// 这一跳无法用行为测试覆盖:plat.OpenTUN / plat.Hijack 都要 root 才跑得动。
 func requireSentinelTagsPlatformCall(t *testing.T, fn *ast.FuncDecl, method string, sentinel error) {
 	t.Helper()
 	name := sentinelIdentName(t, sentinel)
@@ -150,18 +162,46 @@ func requireSentinelTagsPlatformCall(t *testing.T, fn *ast.FuncDecl, method stri
 			if !ok {
 				continue
 			}
-			if tagsSentinel(guard, name) {
+			if returnsSentinelTagged(guard, name) {
 				found = true
 			}
 		}
 		return true
 	})
 	if !found {
-		t.Fatalf("Run() 里 plat.%s(…) 失败那一支没有把 %s **挂上去**(要的是\n"+
-			"tagStartFailure(%s, …) 这一次调用,不是这个词在附近出现过)—— 少了它,\n"+
-			"那个哨兵没有产地,它对应的码永远不会出现,而消费方为它写的分支看起来是被覆盖着的",
+		t.Fatalf("Run() 里 plat.%s(…) 失败那一支 **return 出去的那个错误**没有挂上 %s\n"+
+			"(要的是 return … tagStartFailure(%s, …) …,不是这次调用在附近发生过 ——\n"+
+			"作实参不等于被返回)—— 少了它,那个哨兵没有产地,它对应的码永远不会出现,\n"+
+			"而消费方为它写的分支看起来是被覆盖着的",
 			method, name, name)
 	}
+}
+
+// returnsSentinelTagged:这个 if 体里有没有一条 return,它**返回的表达式**里
+// 含一次 tagStartFailure(<name>, …)。
+//
+// 判据打在 ReturnStmt.Results 上而不是整个块上 —— 这正是「作实参」与「被返回」
+// 的分界,也是这条守卫上一版被一句 `_ = tagStartFailure(…)` + 裸 return 绕过去
+// 的地方。嵌套的函数字面量不算数:它里面那条 return 返回的是那个闭包的结果,
+// 不是这一跳的错误。
+func returnsSentinelTagged(guard *ast.IfStmt, name string) bool {
+	tagged := false
+	ast.Inspect(guard.Body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok {
+			return true
+		}
+		for _, result := range ret.Results {
+			if tagsSentinel(result, name) {
+				tagged = true
+			}
+		}
+		return true
+	})
+	return tagged
 }
 
 // tagsSentinel:node 里有没有一次 tagStartFailure(<name>, …)。
