@@ -69,18 +69,34 @@ var transportsAnsweringTCP = map[string]bool{
 	tunnel.KindHysteria2: false,
 }
 
-// dialFailuresBeforeTheSYNLeaves 是**本机自己**没能把 SYN 发出去的那些形状。
+// posixDialFailuresBeforeTheSYNLeaves 是**本机自己**没能把 SYN 发出去的那些形状。
 // 它们与 *net.DNSError 同一族:连问都没问到那台服务器,所以只能判「没判出来」。
 //
 // **被拒绝与超时不在这张表里**(台账 ruling ②):那两种是那台服务器给的答复,
 // 2026-09-12 事故的原文正是 i/o timeout,把它们判成「问不出来」等于把这一支
 // 要给用户的那个答案整个扔掉。
-var dialFailuresBeforeTheSYNLeaves = []error{
+var posixDialFailuresBeforeTheSYNLeaves = []error{
 	syscall.ENETUNREACH,   // 没有到那个目的地的路由(scoped 表是空的)
 	syscall.EHOSTUNREACH,  // 有路由,但本机就判定这台主机够不着
 	syscall.EACCES,        // 本机策略挡下了这次出站(沙盒 / 防火墙)
 	syscall.EADDRNOTAVAIL, // 绑不上源地址 —— 也在离开本机之前
 }
+
+// dialFailuresBeforeTheSYNLeaves = 上面那些 + 本平台的孪生值。
+//
+// **Windows 上那四个 syscall 常量是编造出来的**:zerrors_windows.go 把它们定义成
+// `APPLICATION_ERROR + iota`(≥ 2^29),winsock 一次都不会返回;真实的那次失败是
+// `WSAENETUNREACH`(10051),而 `syscall.Errno.Is` 在两者之间**什么都不映射**
+// (它只桥接 ErrPermission/ErrExist/ErrNotExist/ErrUnsupported 四个 oserror)。
+// 也就是说这张表在 Windows 上是**死的** —— 而 Windows 真的会跑 supervisor.Run
+// (服务),它的 DirectDialer 也真的绑物理网卡(IP_UNICAST_IF),于是同一个
+// 「本机自己不可达」照样被报成「你的 VPS 挂了」。同一个缺陷活在第三个平台上。
+//
+// darwin/linux 上 platformDialFailuresBeforeTheSYNLeaves 是 nil,行为逐字节不变。
+var dialFailuresBeforeTheSYNLeaves = append(
+	append([]error(nil), posixDialFailuresBeforeTheSYNLeaves...),
+	platformDialFailuresBeforeTheSYNLeaves...,
+)
 
 type tunnelDialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
