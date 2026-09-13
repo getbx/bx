@@ -215,10 +215,10 @@ func (d *Daemon) trackStartupRecovery(fn func()) {
 	}()
 }
 
-// reconcileLoopRunner 由能跑阶段③a 只观察调谐环的 controller 实现(今天只有
-// *Manager)。做成**可选**接口而不是塞进 recoveringController:daemon 层的一堆
-// 测试替身没有理由为了一个什么都不做的循环各自实现一个空方法,而循环缺席时
-// 正确的行为就是「不跑」。
+// reconcileLoopRunner 由能跑调谐环的 controller 实现(今天只有 *Manager)。
+// 做成**可选**接口而不是塞进 recoveringController:daemon 层的一堆测试替身
+// 没有理由为了一个它们不需要的循环各自实现一个空方法,而循环缺席时正确的行为
+// 就是「不跑」。
 type reconcileLoopRunner interface {
 	runReconcileLoop(context.Context, reconcileObservation)
 	// wakeReconcile 把循环从退避里叫醒并让它把退避归零。
@@ -229,7 +229,7 @@ type reconcileLoopRunner interface {
 	wakeReconcile()
 }
 
-// trackReconcileLoop 起那条只观察的调谐环,并记下它的结束,好让 Shutdown 叫停它。
+// trackReconcileLoop 起调谐环,并记下它的结束,好让 Shutdown 叫停它。
 //
 // **每个 Daemon 至多一条,而且这条由代码强制,不是注释。** 上一版把它写成一句
 // 「Must be called at most once」:第二次调用会覆写 reconcileLoopCancel 与
@@ -559,9 +559,17 @@ func startRecoveredDaemon(ctx context.Context, options DaemonOptions, controller
 		return nil, err
 	}
 	daemon.trackStartupRecovery(func() { runStartupRecovery(ctx, controller) })
-	// 阶段③a 的只观察调谐环。**它一个动作都不执行**,只把「本来会做什么」记进
-	// 日志,给阶段③b 的逐项授权攒真机证据(尤其是 looksLikeCore 的误报率 ——
-	// 至今从未测量)。跟着 daemon 的 ctx 停。
+	// 调谐环。**它有执行权** —— 授权面是 executableReconcileActions 那份白名单
+	// (reconcile_execute.go),今天是 restore_dns / clear_orphan_barrier /
+	// start_core 三项,由 TestExecutableWhitelistIsExactlyOffCleanupPlusStartCore
+	// 钉住;别的动作它只提议、不执行。**要回答「这条后台循环会不会碰我的网络」,
+	// 读那份白名单,不要读这里**:名单会长(③d),而这行注释不会跟着长 ——
+	// 阶段③a 那句「一个动作都不执行」就是这么在名单开了三项之后原样活下来的。
+	//
+	// 每一项授权外面还套着 reconcile_execute.go 的五条执行纪律(mutation 槽
+	// try-acquire 不排队、槽内复核意图、一轮至多一个、失败靠退避限频不放弃、
+	// 动作一律复用既有原语),start_core 另有槽内现扫 ScanRunning 的准入。
+	// 跟着 daemon 的 ctx 停。
 	if loop, ok := controller.(reconcileLoopRunner); ok {
 		daemon.trackReconcileLoop(ctx, func(loopCtx context.Context) {
 			loop.runReconcileLoop(loopCtx, liveReconcileObservation)

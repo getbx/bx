@@ -222,8 +222,8 @@ type clientStatusReport struct {
 	Observed   *observe.ObservedState `json:"observed,omitempty"`
 	Divergence []observe.Divergence   `json:"divergence,omitempty"`
 
-	// Reconcile 是 Guardian 那条只观察调谐环**最近一轮**的判断,与上面的一次性
-	// 观测**并列**发布,不是替换它。
+	// Reconcile 是 Guardian 那条调谐环**最近一轮**的判断(与它执行了什么),
+	// 与上面的一次性观测**并列**发布,不是替换它。
 	//
 	// 一次性观测的价值是「你敲命令那一刻的新鲜事实」——bx status 正是出问题时
 	// 最先敲的命令;拿一份最多可能陈旧 10 分钟(退避上限)的缓存去顶替它是退化。
@@ -4305,7 +4305,7 @@ func writeClientDNS(b *strings.Builder, state guardian.DNSState, service string)
 // 一个 `Loop` —— 后者短到会撞上别处的字。
 const reconcileStatusPrefix = "  Loop    "
 
-// writeClientReconcile 把 Guardian 那条只观察调谐环的最近一轮判断写成一行。
+// writeClientReconcile 把 Guardian 那条调谐环的最近一轮判断写成一行。
 //
 // **三态,每一态的理由都不一样,不能合并:**
 //

@@ -140,8 +140,9 @@ func (s *Store) migrateLegacyUpgradeIntent(now time.Time, writes legacyMigration
 		// 挂起的职责是「拦住这一次启动,15 分钟内把它交还」,而它的尽头靠的是
 		// 欠条被删掉:删不掉的话每一次 Guardian 启动都会重新武装一次,过期时刻
 		// 跟着往后推。叠加两条既有事实就致命 —— recoverLocked 在
-		// intent.HoldArmed 那一支直接 return,调谐器又只观察没有执行权:一张
-		// 武装着的挂起压制的是**整个进程生命周期**。于是「删不掉」就等于
+		// intent.HoldArmed 那一支直接 return,而挂起又是调谐环的**第四道栅栏**
+		// (heldBy:整轮停摆,连白名单里那几个动作也一个都不执行):一张武装着
+		// 的挂起压制的是**整个进程生命周期**。于是「删不掉」就等于
 		// 「保护再也不回来」,而以前这里还报成功。
 		//
 		// desired=on 那一半保留(它是欠条的全部意义,且不依赖删得掉与否);

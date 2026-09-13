@@ -87,9 +87,21 @@ func nextReconcileInterval(unchangedRounds int) time.Duration {
 
 // reconcileOnce 判断一轮:读栅栏 → 组 reconcileInput → decide → 返回。
 //
-// **只读。** 它不执行 decide 提议的任何一项,也不改 Manager 的任何状态 ——
-// 尤其不清 m.current.Uncertain:那是一个存在意义就是「拒绝」的 fail-closed 判断,
-// 由循环去清等于自动推翻一次刻意的拒绝(af81632 那个双 Core 风险的入口)。
+// **它不执行 decide 提议的任何一项** —— 执行只发生在 executeReconcileAction
+// 里,由调用方(runReconcileRound)在这之后单独调用,经的是
+// executableReconcileActions 那份白名单。
+//
+// **但它不是「不改 Manager 任何状态」**,那句原话是假的:函数头两句就在写
+// Manager —— resetStartCoreAttempts(③c:观测到 Core 应答就把这段故障的起
+// Core 次数归零)与 retireContradictedPathRecovery(2026-09-07 的修复:观测
+// 反驳了那份 failed 快照就让它退场)。后者**用户可见** —— 它正是让 status 不
+// 再对着一台已经自愈的机器贴 Blocked 的那一下。两者都只动 Manager 自己的记账,
+// 一个内核状态都不碰。
+//
+// 真正不许动的是**一样东西**:m.current.Uncertain。那是一个存在意义就是「拒绝」
+// 的 fail-closed 判断,由循环去清等于自动推翻一次刻意的拒绝(af81632 那个双
+// Core 风险的入口),由 TestReconcileOnceNeverClearsTheOwnershipUncertainLatch
+// 钉住。
 //
 // observed 由调用方先取好:观测要 fork 进程,绝不能在 mutation channel 里做。
 func (m *Manager) reconcileOnce(ctx context.Context, observed observe.ObservedState) reconcileDecision {
@@ -127,8 +139,9 @@ func (m *Manager) reconcileOnce(ctx context.Context, observed observe.ObservedSt
 	//
 	// **短 ctx,拿不到就安静跳过,绝不重试。** channel 的唤醒是 FIFO 的:一个
 	// 硬重试的循环会不断把自己排进队里,把用户那次 `bx up` 挤过 60s 预算,
-	// 变成一个它完全无从理解的 guardian_busy。跳过没有代价 —— 下一轮就在
-	// 30 秒后,而本期反正一个动作都不会执行。
+	// 变成一个它完全无从理解的 guardian_busy。跳过的代价有界:这一轮不判断、
+	// 因而也不执行,而下一轮就在 30 秒后 —— 而那两道栅栏本来就是「本轮别动手」
+	// 的意思,少读一次只会让循环更保守。
 	blocked, uncertain, acquired := m.readMutationFences(ctx)
 	if !acquired {
 		return reconcileDecision{Held: heldMutationBusy}
@@ -141,8 +154,8 @@ func (m *Manager) reconcileOnce(ctx context.Context, observed observe.ObservedSt
 // readMutationFences 取一次 mutation channel,读出躲在它后面的两道栅栏,立刻还回去。
 //
 // 用 defer 还锁而不是读完手动还:这中间任何一次 panic 若把 channel 漏掉,
-// Guardian 的每一次 up/down 都会永久卡在 acquireMutation 上 —— 一个只观察的
-// 循环把整个控制面锁死,是这一期能造成的最坏后果。
+// Guardian 的每一次 up/down 都会永久卡在 acquireMutation 上 —— 一条每 30 秒
+// 醒一次的后台循环把整个控制面锁死,而它自己一个字都不会报错。
 func (m *Manager) readMutationFences(ctx context.Context) (recoveryBlocked, ownershipUncertain, acquired bool) {
 	acquireCtx, cancel := context.WithTimeout(ctx, reconcileMutationWait)
 	defer cancel()

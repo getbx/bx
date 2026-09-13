@@ -272,8 +272,9 @@ func TestLegacyMigrationRunsOnlyOncePerProcess(t *testing.T) {
 // migrateLegacyIntentOnce 打印一句「已迁移」的成功日志,而文件还在盘上。
 // 原注释「本次进程只跑这一遍,不会反复刷新过期时间」在**进程内**成立、跨重启
 // 不成立,而跨重启正是「删不掉」这件事的定义。叠加两条既有事实就致命:
-// recoverLocked 在 intent.HoldArmed 那一支直接 return,而调谐器只观察没有执行权
-// —— 一张武装着的挂起压制的是**整个进程生命周期**,不是 15 分钟。净结果是
+// recoverLocked 在 intent.HoldArmed 那一支直接 return,而挂起又是调谐环的第四道
+// 栅栏(heldBy:整轮停摆,白名单里那几个动作也一个都不执行)—— 一张武装着的
+// 挂起压制的是**整个进程生命周期**,不是 15 分钟。净结果是
 // 保护再也回不来,而日志说成功。
 //
 // 处置:删不掉 ⇒ 把挂起撤掉。desired=on 照样恢复(那一半是欠条的全部意义),

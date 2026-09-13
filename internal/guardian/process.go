@@ -323,8 +323,11 @@ const (
 	// guardian_orphan_launch_marker / guardian_no_core_record 是「我放行了一个
 	// Core,因为我认为没有别的 Core 在跑」唯一的记录。
 	coreScanLifecycle = "lifecycle"
-	// coreScanObserve:只观察的调谐循环的每轮测量。稳态约 144 次/天且永久,
-	// 不打标签会把上面那条审计线索淹掉。
+	// coreScanObserve:调谐环那一路。主体是它每轮一次的只读测量(稳态约
+	// 144 次/天且永久,不打标签会把上面那条审计线索淹掉);**③c 起
+	// executeStartCore 的槽内准入现扫也走这个标签** —— 数 reason=observe 的
+	// 行数因此不完全等于「跑了多少轮」。真正放行一次 fork 的那条审计线索不受
+	// 影响:它出自 startCoreLocked 里面的 lifecycle 扫描。
 	coreScanObserve = "observe"
 )
 
@@ -343,9 +346,9 @@ func (r *ExecCoreRunner) scanCores(reason string) ([]Process, error) {
 // 没有 `sudo bx run` 起的 Core,手删过它的机器上更是什么都没有。
 func (r *ExecCoreRunner) ScanRunning() ([]Process, error) { return r.scanCores(coreScanLifecycle) }
 
-// ScanRunningObserved 是只观察的调谐循环那条测量路径。**与 ScanRunning 同一个
-// 判据、同一个注入点**,只是普查日志的 reason 不同 —— 分开是为了让准入审计
-// 那条 grep 不被每轮一次的循环噪声淹没,不是为了让两条路问出不同的答案。
+// ScanRunningObserved 是调谐环那条扫描路径。**与 ScanRunning 同一个判据、
+// 同一个注入点**,只是普查日志的 reason 不同 —— 分开是为了让准入审计那条 grep
+// 不被每轮一次的循环噪声淹没,不是为了让两条路问出不同的答案。
 func (r *ExecCoreRunner) ScanRunningObserved() ([]Process, error) {
 	return r.scanCores(coreScanObserve)
 }
