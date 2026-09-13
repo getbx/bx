@@ -553,6 +553,22 @@ func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_add_failed"})
 		return
 	}
+	// **UDP 那条链接过同一道门。** 上面那段论证(同一个 helper、一行代码、
+	// 一严一松是自相矛盾的)对同一个请求里的第二条链接逐字成立。
+	//
+	// **空的 UDP 是「这台不单独走 UDP」,不是畸形输入**,所以只在非空时校验。
+	// 后果比主链接轻(专用 UDP 传输起不来会回落主传输,`bx status` 的
+	// UDPNotice 会说出来),但两种形式都收下一条解不出主机的链接、都静默写盘,
+	// 而用户以为自己配好了 QUIC 加速。码沿用 servers_add_failed:菜单对它那句
+	// 话正是「Check the link」,另立一个码只会退回通用漏斗那句更差的废话。
+	if udp := strings.TrimSpace(req.UDP); udp != "" {
+		if _, ok := setup.LinkHost(udp); !ok {
+			// 不带 err、不带 link:UDP 链接同样是凭据。
+			log.Printf("guardian_server_add_failed reason=bad_udp_link")
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_add_failed"})
+			return
+		}
+	}
 	// **先查重,再写。** setup.AddServer 对已存在的名字是「改写那一台的链接」——
 	// 对用户那是「我加了一台,结果把原来那台换掉了」,而界面上看不出任何异常。
 	existing, _, err := setup.ListServers(configPath)
@@ -678,6 +694,17 @@ func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath str
 		log.Printf("guardian_server_replace_rejected reason=bad_link name=%q", target.Name)
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_replace_failed"})
 		return
+	}
+	if udp != "" {
+		if _, ok := setup.LinkHost(udp); !ok {
+			// **同一道门,同一条理由**(见 addServerEntry 里那段)。这里只校验
+			// **请求带来的**那条:下面那个回落取的是盘上已有的值,而盘上可能
+			// 正躺着一条这次修复之前写进去的畸形链接 —— 拿它当拒绝理由会让
+			// 用户连主链接都换不了,而换主链接恰恰是他此刻要做的事。
+			log.Printf("guardian_server_replace_rejected reason=bad_udp_link name=%q", target.Name)
+			writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_replace_failed"})
+			return
+		}
 	}
 	if udp == "" {
 		// **没让它改的东西不许被顺手抹掉。** 空 UDP 在底下那个原语里是「删掉

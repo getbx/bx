@@ -1816,3 +1816,103 @@ func TestSameServerNameIgnoresCaseAndSurroundingSpace(t *testing.T) {
 		t.Error("findServerNamed 认出了一台不存在的服务器")
 	}
 }
+
+// **UDP 那条链接也要过同一道门 —— 两条写入路径此前都不校验它。**
+//
+// F9 那一轮给主链接补上了 `setup.LinkHost` 校验,而它自己的论证(同一个 helper、
+// 一行代码、一严一松是自相矛盾的)对**同一个请求里的第二条链接**逐字成立:
+// `add` 与 `replace` 都收 `udp`,都原样写进配置。
+//
+// 后果是降级不是崩:专用 UDP 传输起不来时按 `113876b` 回落主传输,`bx status`
+// 的 UDPNotice 会说出来 —— 但用户以为自己配好了 QUIC 加速,而它从第一秒起就
+// 没生效过,配置里那一行长得和一条好链接一模一样。
+//
+// **空的 UDP 仍然是「别动它」,不是校验失败**:replace 那一路空值的语义就是
+// 「保持这台已有的」(界面明说),把空值变成拒绝会删掉一个能用的功能。
+// 拒绝一律只发码:UDP 链接同样是凭据,不回显、不进日志。
+func TestServerAddAndReplaceRejectAnUnparseableUDPLink(t *testing.T) {
+	const badUDP = "hysteria2://pw:supersecretpassword@ho st:443"
+	cases := []struct {
+		name string
+		req  serversRequest
+		code string
+	}{
+		{"add", serversRequest{
+			Action: "add", Name: "kyoto",
+			Link: "vless://" + serversTestUUID + "@203.0.113.30:443?security=reality",
+			UDP:  badUDP,
+		}, "servers_add_failed"},
+		{"replace", serversRequest{
+			Action: "replace", Name: "tokyo",
+			Link: "vless://" + serversTestUUID + "@203.0.113.40:443?security=reality",
+			UDP:  badUDP,
+		}, "servers_replace_failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := serversTestConfig(t)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			orig := log.Writer()
+			var buf bytes.Buffer
+			log.SetOutput(&buf)
+			t.Cleanup(func() { log.SetOutput(orig) })
+
+			w := httptest.NewRecorder()
+			serversHandler(path, 501, noSwitch(t), nil, nil)(w,
+				withPeer(postServersJSON(t, tc.req), 501, true))
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("解不出主机的 UDP 链接被写进了配置:%d %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.code) {
+				t.Errorf("没给一个菜单说得出话的码:%s", w.Body.String())
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("拒绝之后盘上的配置动了 —— 一次「被拒绝」却仍然改了配置,比拒绝失败更糟")
+			}
+			if logged := buf.String(); strings.Contains(logged, "supersecretpassword") ||
+				strings.Contains(logged, badUDP) {
+				t.Fatalf("日志里出现了凭据:%s", logged)
+			}
+		})
+	}
+}
+
+// **空的 UDP 不是畸形的 UDP。** 上面那道门只许拦「给了一条解不出主机的链接」;
+// 把「没给」也一起拦掉,就等于在 replace 上删掉「保持这台已有的」这个语义
+// (界面明说留空 = 保持不变),在 add 上删掉「这台不单独走 UDP」。
+//
+// 这条与上面那条**必须同时绿**:少了它,一个「UDP 非空才放行」的实现照样满足
+// 上面每一条断言,而那是把两个能用的功能一起关掉。
+func TestServerAddAndReplaceStillAcceptAnEmptyUDPLink(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  serversRequest
+	}{
+		{"add", serversRequest{
+			Action: "add", Name: "kyoto",
+			Link: "vless://" + serversTestUUID + "@203.0.113.30:443?security=reality",
+		}},
+		{"replace", serversRequest{
+			Action: "replace", Name: "tokyo",
+			Link: "vless://" + serversTestUUID + "@203.0.113.40:443?security=reality",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := serversTestConfig(t)
+			w := httptest.NewRecorder()
+			serversHandler(path, 501, noSwitch(t), nil, nil)(w,
+				withPeer(postServersJSON(t, tc.req), 501, true))
+			if w.Code != http.StatusOK {
+				t.Fatalf("没给 UDP 链接被当成畸形输入拒了:%d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
