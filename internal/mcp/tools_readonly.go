@@ -97,7 +97,7 @@ func registerReadOnly(s *mcpsdk.Server, ops Ops) {
 			return nil, out, nil
 		})
 
-	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_check", Description: "run the safe bx verification bundle; outbound and browser probes are opt-in", Annotations: ro},
+	mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "bx_check", Description: "run the safe bx verification bundle: read-only inspection plus a short sample of local runtime counters. Outbound egress/DNS probes are opt-in via network=true. There is no browser option: browser-side checks need a person in front of the screen, and live in `bx leakcheck` instead", Annotations: ro},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, in CheckIn) (*mcpsdk.CallToolResult, CheckOut, error) {
 			out, err := ops.Check(in)
 			if err != nil {
