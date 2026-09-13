@@ -1041,6 +1041,43 @@ Guardian 自己说不出是哪一台(同主机两台),都交出 `false`,与「�
 「别动它」**,replace 也只校验请求带来的那条 —— 盘上可能正躺着一条修复之前写进去的
 畸形链接,拿它当拒绝理由会让用户连主链接都换不了。
 
+### 第七种写法:**判据是对的,而「把真实输入递给它」的那根线没人守**(2026-09-13,本支三次)
+
+上面五种是「断言钉在缺陷**旁边**」,第六种是「断言所在的函数没人调」。第七种更隐蔽:
+断言钉得准、函数也跑了,**但它从来看不到生产里真正会到达的那个输入** —— 于是判据在测试
+里被喂着精心构造的好数据一路绿灯,而生产里喂给它的东西是零值、是字面量、是一次都不会
+发生的时序。**整包全绿,功能在真机上死透。**
+
+本支三次,形状一模一样:
+
+1. **Manager 递给读取方一个零 `Process` 和一个「失败之后」的时间戳** —— 而那两个值
+   **就是**新鲜度判据的全部(PID 匹配 + `at` 落在本次健康窗口内)。Manager 级测试用的
+   替身两个形参**都没名字、都被丢掉**,没有任何东西观测 Manager 到底递了什么。生产里
+   这个变异双重致命:PID 0 对不上真 PID、`at` 早于 since ⇒ **每一份记录都被丢弃** ⇒
+   回落 `core_health_failed` ⇒ 用户读到的与事故那天一模一样。
+2. **Guardian → 菜单那份服务器映射里,`isCurrent` 被写成字面量 `false`** ⇒ Go 与 Swift
+   两套全绿,而菜单会**叫用户切到刚刚失败的那台机器上去**。
+3. **等记录那段轮询被换成「只读一次」** ⇒ 两条守卫(常量关系 + 「那个常量真的被用了」)
+   原封不动、整个包全绿 —— 而轮询恰恰是事故场景里**唯一**需要的东西:Core 要在
+   Guardian 放弃之后才写下那份记录。一次「删掉这个看起来多余的循环」的重构会静默通过。
+
+**与前五种的区别要说清楚**:那五种的断言**看见了**输入,只是瞄偏了一点;这一种的断言
+**根本没有看见输入** —— 被观测的是「这次调用发生过」「这个常量等于那个常量」,而不是
+「到达的值是什么」「什么时候到达的」。
+
+**对策是同一句**:钉**到达的值**与**时序**,不钉「调用发生过」。落地形态分别是 ——
+替身记下每一次到达的 `(process, since, ctx.deadline)`,守卫比对 PID + Generation 必须
+是这一次 fork 出来的、`since` 必须严格早于进入 `Start` 的那一刻
+(`TestUpHandsTheReaderThisSpawnsProcessAndAPreForkInstant`);映射的**每一格**逐个钉
+(`TestMacMenuStartFailureServerMappingCarriesTheEntrysOwnFields`);以及一条**记录晚到**
+的行为测试 —— 所有既有测试都在等待开始**之前**就把记录写好了,那个输入让待守属性不可见
+(`TestARecordThatArrivesDuringTheWaitIsStillPickedUp`)。
+
+**顺带一条纪律的边界被真事撞出来了**:本支一位**只读** reviewer 用
+`git checkout -- <path>` 还原自己刚打的变异。这次无损失(基线干净、只碰它秒前改的那一个
+文件),但**那正是本仓库明令禁止的操作**,而禁令不因「我只改了自己的东西」而放宽 ——
+只读 reviewer 还原变异同样用 scratchpad 备份 + `cp`。
+
 ## 菜单精简:18 行 → 11 行,子菜单从此可用(2026-09-08,真机未验)
 
 项目所有者原话「bx 菜单感觉有点复杂了」。复杂的根源两个:五行数据里四行是**诊断值**
@@ -2389,6 +2426,232 @@ netns 台子造不出「VPS 换 IP」)。同一天顺手做掉的两条:`bx expl
 **真机验收**:换一次服务器 IP(或先改 DNS 记录),看 `bx-guard.err.log`/`bx.log`
 在 2–7 分钟内出现 `server_bypass_refollow 已切到服务器的新地址` 且隧道自己回绿。
 
+## Core 起不来时,说出它为什么起不来(2026-09-13,真机未验)
+
+**所有者原话:「vps 之前不通,但 bx 不会告诉我是 vps 不通,用户会以为是 bx 自己的
+问题。」** 2026-09-12 那天他的 VPS(195.133.192.92)ssh 与 ping 都不通,而 `sudo bx up`
+连着**七次**答 `core_ownership_uncertain` —— 三百字关于「系统里可能有第二个 Core」的
+排查指引,一个字都不沾边。
+
+**真相从第一秒就在 bx 手里**(`dial tcp 195.133.192.92:443: i/o timeout`),它是被逐层
+剥掉的,而每一层都有名字:
+
+- Core 卡在等隧道健康 ⇒ `supervisor.Run` 在**建出控制 socket 之前**就返回了
+  (fail-closed,这一段本支一个字不改);那句原文只进 root-only 的 `/var/log/bx.log`,
+  然后进程没了;
+- Guardian 只知道「socket 20 秒没出现」—— 它从不读 Core 的日志,也拿不到它的退出原因;
+- **清理去请这个 Core 从 `core.sock` 上自己退出,而那个 socket 按构造正是它没能建出来
+  的东西。** `Manager.cleanupStartedCore` → `runner.Stop` 失败即 return、从不回落 kill,
+  于是**真话 `core_health_failed` 被假话 `core_ownership_uncertain` 顶掉**;
+- 副作用是被丢下的 Core 要等自己那 20 秒才自杀,窗口恰好盖住用户的重试 ——
+  `guardian_core_still_running_on_release` 指着的正是 bx 自己造的孤儿,把用户派去杀
+  一个 bx 该自己收拾的进程。
+
+**这条链违反的是 2026-08-04 那次 71 分钟事故立下的规矩:停止路径不许依赖别的先成功。**
+
+### 两条结构性事实,动这块之前必须知道
+
+**① `supervisor.Run` 的顺序**(`internal/supervisor/run.go`,当前行号:
+`awaitTunnelHealthOrDiagnose` 在 308、`plat.OpenTUN` 在 473、控制 socket 在 792、
+`plat.Hijack` 在 880):**卡在健康门的 Core 没开过 TUN、没装过路由、没碰过 DNS**,
+身上没有任何东西需要优雅还原 —— 这是「清理改走强杀」能成立的**承重前提**。
+
+**② 那个前提被 review 收窄过一次,而收窄才是对的。** 我(控制者)在台账里写的是
+「waitHealthy 失败 ⇒ 强杀安全」,实施者拿代码顶了回来:**「健康门没过」并不蕴含
+「从没服务过」** —— UDP 档没就绪、socks 探测整个窗口失败、隧道恰好抖了、升级时版本
+对不上,都会让一个**已经开了 TUN、装了路由**的 Core 没过健康门,强杀它会跳过它自己的
+defer 还原(linux 上 pref 150/200 那两条 ip rule 比 TUN 设备活得还久)。所以判据不是
+**调用点**,是 `coreEverServed(process, state)` = **它的控制 socket 亲口报过自己的
+PID**;`cleanupCoreAfterFailedStart`(`internal/guardian/manager.go`)是**唯一**决定点,
+`update.go` 里 accept 健康失败那一处因此**自动**仍走协作关闭(它本来就服务过),
+Verify 那两处传零值 `RuntimeState` ⇒ PID 0 与任何真 PID 都不等 ⇒ 落强杀,而那正是
+「它连 socket 都没开出来」的诚实读法。判据本身由
+`TestACoreThatAnsweredTheControlSocketIsNeverForceKilled` 钉住,而**能力**由
+`TestTheKillCapabilityItselfHasExactlyOneCallSite` 钉住(`m.runner.ForceStop` 全包只许
+一个调用点 —— 钉包装函数的名字挡不住内联一次强杀;协作关闭那一侧对称地是一份**带
+理由的具名白名单**,每条写明它凭什么不是失败启动的清理)。
+
+**顺带一条窄门,它差点让这批修复从另一扇门把事故放回来**:`ForceStop` 手里没句柄时
+原先直接报错,而**占主导的那种「没句柄」恰恰是我们自己那个 Core、它已经退了**
+(wait goroutine 在 `waitpid` 一返回就 forget,而死于 provision/config/tun_open/hijack
+的 Core 约 2 秒就没了,Guardian 却要等 20 秒)⇒ `retainUncertain` ⇒
+`core_ownership_uncertain` 原样回来,**正落在刚教会 bx 说清楚的那四个码上**。现在它
+去问系统:`ErrProcessNotRunning` ⇒ 清记录 → nil(与老的 `Stop` 同一条),身份比对复用
+同一个 `sameProcessIdentity`(PID 复用时不许比 `Stop` 更严 —— 更严就是又一道通向那句
+假话的窄门),系统说它还在、或者答不上来才拒绝。`TestCoreThatDiedOnItsOwnIsNotReportedAsOwnershipUncertain`
+逐字重现事故,`TestCoreThatNeverBecameHealthyIsKilledInsteadOfAskedNicely` 钉住主路径。
+
+### 差点让整支修复胎死腹中的时序陷阱(实施者发现,计划里没有)
+
+**Guardian 的健康等待 20s == Core 的隧道健康窗口 20s,而 Guardian 从不给 Core 传
+`--health-timeout`,Core 那 20s 还起步更晚**(先 provision、建 router、建隧道)。于是
+**Guardian 放弃的那一刻,Core 才刚开始那次判别拨号,记录一个字节都没写 —— 紧接着就被
+SIGKILL**。按计划原样写,这批的核心机制在它唯一存在的那个场景(=事故本身)里
+**一次都不会触发,而且不会有任何东西转红。**
+
+修法是在健康等待放弃之后再给一段**由 `supervisor.TunnelDiagnosisTimeout` 派生**的有界
+宽限(`coreStartFailureGrace`,`internal/guardian/corestartfailure.go`,不是手写秒数):
+只在失败路径上跑、答案一到就返回、Core 句柄没了就收手、吃调用方的 ctx。
+**没选的两条**:把 Core 的健康窗口调短(那是真的缩短隧道能用多久建起来,一次产品行为
+改动 —— 一条 reality 握手在烂链路上慢一点就此起不来)、把 Guardian 的等待调长(同样长
+的等待,却连「答案已经到了」都不看)。
+
+**那 3 秒的余量没有任何测量依据,所以要记住它必须覆盖什么**:真正的要求是
+`grace ≥ Core 的启动偏移 + TunnelDiagnosisTimeout`,而这 3 秒是留给那个偏移的**全部**
+余量 —— 偏移里装着 `buildSplitBrain` 建 12k 域名 / 6k 网段的分流脑、`EnsureSingbox` 核
+28MB 内嵌资产的缓存键(重嵌之后第一次是一次真解压)、`EnsureLists`、`buildTunnel` 加
+子进程 spawn。偏移超过 3 秒时行为是安全的(空手而归 ⇒ 回落 `core_health_failed`,
+不编病因),而且**现在说得出来**:
+`guardian_core_start_failure_record_absent reason=handle_gone|grace_expired|deadline waited=…`
+—— 少了这行,「Core 从没写」与「我们早放弃了 200 毫秒」在真机上完全分不开,而这条分支
+唯一的存在理由就是可诊断性。**要调这个数,先去日志里读那个 `waited`。**
+
+**宽限不许花清理那份预算**(review 抓到):`/v1/up` 的 60s 有余量,而**三个**
+`startCoreLocked` 调用点传的是 `restartTimeout=25s` —— 崩溃重启、调谐环 `start_core`、
+以及 **`Manager.Down` 里 DNS 还原失败之后那次补偿重启,一条停止路径**。裸拿外层 ctx 去
+等会把清理预算从 12.5s 挤到 4.5s ⇒ 清理超时 ⇒ `retainUncertain` ⇒ 又是
+`core_ownership_uncertain`。故上界取 operationCtx 的 deadline,**不自己再算一遍
+`min(cleanupTimeout, remaining/2)`** —— 那就是第二份判据,而它会与 `reserveCleanup`
+漂开;余量为零时**仍然读一次、一拍都不等**(config/provision/tun_open/hijack 那几种
+两秒前就写完了)。而且在那三条路上宽限是**纯成本**:Guardian 的耐心 12.5s < Core 写出
+「隧道那一族」所需的约 25s。守卫:`TestTheRecordGraceOutlastsTheCoresOwnDiagnosis` /
+`TestTheGraceActuallyComesFromTheCoresDiagnosisBudget` /
+`TestTheStartFailureGraceNeverEatsTheCleanupReserve` / `TestZeroGraceStillReadsOnce`。
+**已知代价**:一次失败的 `bx up` 最坏多押住 mutation 槽约 8 秒。
+
+### 「隧道没起来」必须一分为二 —— 而判据是一次观测,不是读 sing-box 的 stderr
+
+一个笼统的 `tunnel_unreachable` 会把两件处置**完全相反**的事压成一句话:那台机器连不上
+(去修 VPS 或换一台)vs TCP 连得上而隧道就是不健康(机器活着,问题在链接/凭据/SNI/
+路上的干扰)。**本仓库为第二种付过一次大代价**:reality 一度全挂,真因是默认 SNI
+`www.microsoft.com` 的证书过大,而当时先误归因成 sing-box 同机问题、又误归因成网络
+MITM(见「reality 传输收尾」教训坑 ①)。**把两种压成一个码,等于把那次教训重新埋回去。**
+
+判别**不读文本**(那正是本仓库反对的形状,而且那份日志是多次 spawn 共用的、分不清哪几
+行属于这一次),而是**做一次观测**:健康窗口过后,对 `serverHostFromLink` 给出的
+host:port 直连拨一次(`internal/supervisor/tunneldiagnosis.go`,上限
+`TunnelDiagnosisTimeout` = 5s)。**这次拨号不新增任何暴露面**(目的地是用户自己的服务器,
+bx 刚朝它拨了 20 秒;此刻还没 Hijack,普通 socket 走物理网卡),而且**只在失败路径上
+发生** —— 成功启动一次都不拨,由 `TestHealthyStartupNeverDials` 守着那条「不后台定时
+探测」的边界。
+
+结局**五种**,而不是三种 —— 后两种是 review 逼出来的,每一种都在真机上能演一次:
+
+- 拨不通(拒绝 / 超时)⇒ `tunnel_unreachable`;拨得通 ⇒ `tunnel_handshake_failed`。
+- **这一种传输根本不在 TCP 上听** ⇒ `tunnel_unhealthy_undetermined_udp_transport`,
+  **一次号都不拨**。hysteria2 是 QUIC/UDP —— 一台**活着的** hysteria2 服务器
+  根本不应答 TCP SYN(那个端口被防火墙过滤时连拒绝都不是、直接超时)⇒ 报「那台机器
+  可能挂了」。这是确定性的,不是概率性的。判据取**传输种类**不取端口号,认不出的种类落
+  「观测不到」(诚实答案):`TestEveryTransportKindDeclaresWhetherATCPProbeObservesIt` +
+  `TestAUDPOnlyTransportIsNeverProbedWithTCPAndFallsToUndetermined`。
+- **SYN 根本没离开这台机器**(`ENETUNREACH`/`EHOSTUNREACH`/`EACCES`/`EADDRNOTAVAIL`,
+  以及 `*net.DNSError`)⇒ `tunnel_unhealthy_undetermined_local_dial`。**它指着 bx 自己的
+  直连器,不指着 VPS** —— 2026-08-13 那次事故的签名(DirectDialer 用 `IP_BOUND_IF` 绑
+  物理网卡,而那条 scoped 默认路由由 `Hijack` 装,比这次判别拨号晚 572 行)。落在唯一
+  一条职责就是说实话的路上说了假话,代价最大。
+  `TestALocalDialFailureIsNotReportedAsTheServerNotAnswering` 的后半段刻意钉住反面:
+  **拒绝与超时仍然是 `tunnel_unreachable`** —— 少了它,「凡是拨不通一律判不出来」也能
+  满足前半段。Windows 那半的 errno 是另一族(`WSAENETUNREACH` 10051,`Errno.Is` 不跨
+  映射),平台孪生表由 `TestEveryLocalDialFailureHasAWinsockTwin` 守住。
+- 其余(解不出 host:port / DNS 解析不了 / 父 ctx 被取消)落笼统那个码。
+
+**三个 undetermined 码共享同一个前缀,而且是由拼接得来的**(不是三个各写一遍的字面
+量):消费方不可能把其中之一读成「那台服务器没事」,而将来加第四种时它自动进这一族。
+**超时归 `tunnel_unreachable` 而不是 undetermined** —— 事故本身的错误就是 i/o timeout,
+把最常见的形状判成「说不出」等于把这批要给的答案扔掉;undetermined 留给「我们自己没问
+成」。分类全程靠**哨兵错误**(`internal/supervisor/startfailure.go`,`errors.Is`),
+**一条字符串匹配都没有**(`TestStartFailureCodeNeverGuessesFromText`);每个哨兵必须有
+产地(`TestEveryStartFailureSentinelHasAProductionSite`),否则就是一个永远不会出现的码。
+
+### Core 自报,Guardian 按 PID + 窗口双重匹配着读
+
+Core 在 `bx run` 的错误路径上原子写 `/var/lib/bx/core-start-failure.json`
+(`internal/corestartfailure/record.go`,叶子包 —— 写的人在 cli、读的人在 guardian,
+这是唯一需要逐字对齐的东西,与 `internal/udpsource`/`internal/barriercidr` 同一先例;
+flag 名 `--start-failure-file` 也下沉在那儿,**改名漂移因此在构造上不可能**,而「删掉
+声明」由 `TestRunDeclaresTheStartFailureFileFlag` 打在生产那份 `runFlags()` 上)。
+
+- **只有 schema/pid/at/code,一个自由文本字段都没有** —— 按构造漏不出路径、链接、凭据;
+  由**序列化出来的字节**钉住,不由字段名白名单钉住(`TestRecordCarriesNothingButACode`、
+  `TestTheRecordCarriesNeitherTheLinkNorTheConfigPath`)。细节照旧进 Core 日志。
+- **陈旧记录两层防线**:spawn 之前先删(而且用 `Discard` 不用 `Remove` —— SIGKILL 按
+  构造就落在 `CreateTemp` 与 `Rename` 之间那段窗口附近,只认最终名字的 `Remove` 一个
+  碎片都清不掉,`TestDiscardSweepsTemporariesLeftBehindByAKilledWriter`),读的时候
+  `pid` 必须是这一次 fork 的、`at` 必须落在本次健康窗口内、码必须在白名单里。任何一项
+  对不上 ⇒ **「这一次没说」**,回落 `core_health_failed`,**绝不猜**
+  (`TestARecordThatIsNotThisSpawnsIsNotBelieved`、`TestNoRecordAtAllIsSilenceNotAGuess`)。
+  这个仓库为陈旧文件栽过三次(`upgrade-intent.json`、`core-process.json`、那份四分之三
+  是假的缺口清单)。
+- **读发生在收拾那个 Core 之前**(`TestTheRecordIsReadBeforeTheFailedCoreIsCleanedUp`):
+  清理走强杀,顺序反了那次读永远读不到东西**而返回值上看不出任何区别**。
+- 手敲的 `sudo bx run` 不传 flag ⇒ 一个字都不写(`TestRunWithoutTheFlagWritesNothing`);
+  写盘失败**不改变 Run 的返回错误**(诊断不许把一次故障换成另一次故障)。
+
+### 应答体仍然只带码 —— 这才是它没扩大发布面的原因
+
+「那台服务器是谁」与「你还有哪几台」**两个客户端本来就合法持有**:`bx up` 以 root 跑、
+读得到 `/etc/bx/config.yaml`;菜单经 `/v1/servers` 拿到的条目本来就带 host/port。于是
+Guardian 只发 `code=core_tunnel_unreachable`,两个客户端各自在本地把那句可行动的话拼
+出来(`internal/cli/corestartadvice.go`、纯判据在
+`apps/macos/BxMenu/Sources/BxMenu/ToggleController.swift`、映射在 `main.swift`),
+**这次改动没有新增一个字节的发布面** —— 而「发布面扩大靠 review」在本仓库是已知的弱环。
+
+**唯一的例外是 review 量出来的**:`bx setup` 写出的那种配置(只有 `server:`、没有
+`servers:`)在 `/v1/servers` 的应答里**主机名一个字都没有**(实测过应答体,不是照
+brief 假设的「已经带了」),于是菜单那半说不出是哪台服务器。修法是新加
+`current_server`(`internal/guardian/servers.go`),**刻意在 `servers` 清单之外** ——
+往清单里塞一条会让 `serverListEmptyReason` 从「这是单服务器配置」退回 nil,把服务器
+窗口那句刻意区分出来的话吃掉。它走同一个构造器,于是映射守卫顺带盖住它
+(`TestSingleServerConfigStillNamesTheCurrentServer`、
+`TestMacMenuStartFailureServerMappingCarriesTheEntrysOwnFields`)。
+
+**措辞四条规矩,每条都来自一次真实事故**,由
+`TestEveryStartFailureOutcomeReadsDifferently`(判据是**整句话**,不是枚举值 —— 少了它,
+三个分支映射到同一句「隧道没起来」照样全绿)与另外几条守着:
+① 只说 bx 观测到什么,**绝不断言那台服务器的状态** —— 本机自己没网时同样拨不通,而
+一句「那台服务器没有应答」会让用户去重启一台好好的 VPS,所以那句话是「**bx 连不上**
+<host:port>」(`TestTheWordingNeverAssertsWhatTheServerIsDoing`);
+② 连不上与连得上但没握上的措辞必须**相反**;
+③ 三个 undetermined **没有一个**可以被读成「服务器没事」;
+④ 只在真有另一台时才说「你还配了另一台」,而且**绝不打印链接**
+(`TestTheOtherServerLineOnlyAppearsWhenThereIsOne`、`TestNoRenderedAdviceEverCarriesALink`,
+与 `TestServerListNeverShipsTheLinkItself` 同一条)。
+**实施者在这里也纠正过我一次**:我说「local_dial 那档既然指着本机,就把『换一台服务器』
+那句删掉」—— 它顶回来:`*net.DNSError` 也落这个桶,而那个病因**换一台确实有用**。
+矛盾的不是那句出路,是那句**无条件断言**;现在它挂在判别结果上,并点名另一种病因
+(`TestTheLocalDialAdviceDoesNotContradictItsOwnSwitchSuggestion`)。同理:端口解不出来
+就整条不给 `nc -z`(`TestNoNCCommandIsRenderedWithAnEmptyPort` —— 一条粘贴过去就报错的
+命令出现在一句唯一目的就是「照着做」的话里),渲染出来的话里不许有 markdown 的 `**`
+(用户读到的是字面上的星号,`TestNoRenderedAdviceCarriesMarkdown` 两侧各一条)。
+
+### 刻意不做
+
+- **不自动切服务器。** 所有者定死的边界(Servers 窗口 spec §8:不自动容灾、只有用户能
+  切)。但「你还配了另一台」这句话必须说出来 —— 否则那条边界的代价白付了。
+- **不改「Core 先等隧道健康、再开控制 socket」这个顺序。** 反过来能让 `bx status` 在
+  启动途中就答得出「正在起、隧道还没通」,但 `core_socket=true` 这个信号被观测层
+  (`internal/observe`)、调谐环准入(`decideStartCoreAdmission`)、所有权判定到处在用,
+  改它的语义是全仓爆炸半径。**单独立项。**
+- **不改 fail-closed**,一个字不动。
+
+### 真机未验(整套)
+
+验收(所有者手上就有现成的复现方式):把 `current` 指向一个不通的地址,`sudo bx up`
+应当**一次**就说出「bx 连不上 <host:port>」并点名另一台,**而不是**七次
+`core_ownership_uncertain`;另外盯一件事 —— `/var/lib/bx/core-start-failure.json` 在
+**成功**启动之后不该存在(Guardian spawn 前删、读完也删)。
+
+**两条已知缺口**:① **`bx up` 那条接线只在 darwin 生效**(`macOSUpAction`,
+`internal/cli/guardian.go`);linux 的 `upAction` 走 systemd、根本不经 Guardian socket,
+没有码可解,Windows 同理 —— 事故在 darwin。② `current_server` **只喂「Core 起不来那句
+话」,没接进服务器窗口** —— 上文「Servers 窗口」那条「最常见那种配置看不到当前那台」的
+已知缺口**原样还在**,本支没动它。③ 菜单那半在 `.warning`/`.connected` 之外的状态下
+拿不到码(与既有 `toggleFailureHint` 同一条路)—— **没有新增缺口,但也没有新增覆盖**。
+
+设计 `docs/superpowers/specs/2026-09-13-core-start-failure-reason-design.md`、计划
+`docs/superpowers/plans/2026-09-13-core-start-failure-reason.md`。
+
+
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,
@@ -2459,7 +2722,13 @@ netns 台子造不出「VPS 换 IP」)。同一天顺手做掉的两条:`bx expl
   **控制器的判断错误也记在这里**:当时依据 stash 那一方「零数据丢失、逐字节还原」的
   报告下了「没出事」的结论 —— 那只在它自己视角内成立,它不知道自己卷走了同伴的工作。
   **一方的报告不是全局事实**,尤其当那一方恰好是肇事者。
-- **验证命令**:`bash scripts/verify.sh`(全量 12 步)或 `--quick`(改一行时,跳过 race 与交叉编译)。
+- **验证命令**:`bash scripts/verify.sh`(全量 14 步)或 `--quick`(改一行时,跳过 race 与交叉编译)。
+  **2026-09-13 加的第 14 步值得单说**:那圈交叉编译用的 `go build` **从不编译 `_test.go`**,
+  而 Windows 那半的行为断言只在 CI 的 windows runner 上跑 —— 实测把一个 `*_windows_test.go`
+  里的常量改成不存在的名字,`go vet ./...` 与 `GOOS=windows go build ./...` **两条都通过**,
+  推上去才红。现在多一步:只 vet 那些含 windows-tagged 测试的包(vet 会 typecheck 测试文件),
+  清单从 `git ls-files` 现取、一个文件都找不到时响亮失败。**刻意不写成 `GOOS=windows go vet ./...`**
+  —— `internal/tray` 有一条先于此存在的 unsafe.Pointer 告警,拉进来就是一道恒红的闸门。
   **判据一律是退出码,不是字符串匹配。** 它的存在是因为 2026-08-11 那轮里同一个根因栽了六次:
   `go test … | grep …; git commit` 用 `;` 串联(测试红了照样提交)、变异验证 grep `^failed` 而套件
   打印的是 `FAIL:`(「没转红」被误判成守卫失效)、`head -5` 查 `set -e` 而注释头十几行、`grep -c` 数
