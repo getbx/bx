@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,24 @@ type ServerListResponse struct {
 	// **不带 omitempty**(与本文件其余新字段同一条纪律):键缺席读作「这一版
 	// Guardian 没说」,客户端那时退回既有措辞,而不是编一句关于配置形状的话。
 	SingleServer bool `json:"single_server"`
+	// CurrentServer 是**当前那台**的主机与端口,**只在 `Servers` 里没有它的
+	// 条目时出现** —— 也就是单服务器配置(`bx setup` 写出来的那种,根本没有
+	// `servers:` 这个键,`Current` 因此也是空的)。
+	//
+	// 少了它,菜单在**最常见的那种配置上说不出服务器地址**:Core 起不来时那句
+	// 可行动的话退化成「bx cannot reach your server」,没有地址、没有 `nc -z`。
+	// CLI 那一半没有这个洞(它以 root 跑,直接 config.Parse 读 cfg.Server),
+	// 而所有者自己的机器有 `servers:`,所以真机验收也照不出这一条。
+	//
+	// **为什么不是往 Servers 里塞一条**:那会让 serverListEmptyReason 从
+	// 「这是单服务器配置,不是一份清单」退回 nil —— 那句话正是为这种配置刻意
+	// 写的,而窗口还会摆出一行既切不过去也删不掉的服务器。
+	//
+	// **发布面一寸没扩**:它带的是 ServerEntry 早就在发的那几个字段,多服务器
+	// 配置下每一条应答都带着它们;链接一个字节都不出门(与
+	// TestServerListNeverShipsTheLinkItself 同一条)。名字空着是诚实的 ——
+	// 单服务器配置里那台真的没有名字。
+	CurrentServer *ServerEntry `json:"current_server,omitempty"`
 	// Added 只在 add 应答里出现:最终写进清单的名字(用户给的,或按链接推导的)。
 	// 界面靠它知道接下来该切换到哪一台 —— 自己再推一遍推导规则就是第二份判据。
 	Added string `json:"added,omitempty"`
@@ -304,9 +323,10 @@ func serversSnapshot(configPath string, coreStatus coreStatusReader) (ServerList
 	}
 	attachThroughput(entries, running, live, past.Servers, time.Now())
 	return ServerListResponse{
-		Servers: entries,
-		Current: current,
-		Running: running,
+		Servers:       entries,
+		CurrentServer: singleServerEntry(list, configPath),
+		Current:       current,
+		Running:       running,
 		// nil ⇒ 配置里根本没有 `servers:` 这个键;长度为 0 的非 nil 切片 ⇒
 		// 有这个键、里面确实是空的。这个区分只有这里做得到(见 SingleServer)。
 		SingleServer: list == nil,
@@ -370,6 +390,34 @@ func serverNamed(list []config.Server, name string) bool {
 //
 // 链接是凭据(里面有 uuid / 密码)。菜单要显示的是「流量从哪出去」,而那是主机;
 // 把整条链接送到一个 uid 501 的进程里,只是为了渲染一行字,不值得。
+// singleServerEntry 在单服务器配置下把「当前那台」补成一条条目。
+//
+// **判据与 CLI 那一半同源**:走 config.Parse 取 cfg.Server —— 它已经把
+// servers/current、server、transports 三种写法归一了,自己再推一遍 current
+// 该指谁就是第二份判据,而它会与真正在用的那条漂开。
+//
+// 只在 `list == nil`(键整个缺席)时出现:有 `servers:` 清单时那台已经在
+// Servers 里,再发一遍就是同一件事的两份拷贝。读不出来 ⇒ nil ⇒ 消费方照旧
+// 说「没问出来」,绝不编一个占位地址。
+func singleServerEntry(list []config.Server, configPath string) *ServerEntry {
+	if list != nil {
+		return nil
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+	cfg, err := config.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	host, ok := setup.LinkHost(cfg.Server)
+	if !ok || host == "" {
+		return nil
+	}
+	return &ServerEntry{Host: host, Port: setup.LinkPort(cfg.Server), Current: true}
+}
+
 func serverEntries(list []config.Server, current string) []ServerEntry {
 	entries := make([]ServerEntry, 0, len(list))
 	for _, s := range list {

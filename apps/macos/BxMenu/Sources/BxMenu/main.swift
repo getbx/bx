@@ -3171,7 +3171,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var startFailureServers = CoreStartFailureServers()
             if isCoreStartFailureCode(failureCode) {
                 if let list = try? GuardianClient().listServers() {
-                    startFailureServers = coreStartFailureServers(list.servers.map {
+                    // `bx setup` 写出来的配置根本没有 `servers:` 键 ⇒ 清单是空的,
+                    // 而当前那台由 current_server 单独带来。少了这一半,**最常见的
+                    // 那种配置上这句话说不出服务器地址**,退化成一句没有 nc -z 的
+                    // 「bx cannot reach your server」。两路合成一份再映射:映射只有
+                    // 一处,不然新加的这一半又是一段没人守的接线。
+                    let entries = list.servers + (list.currentServer.map { [$0] } ?? [])
+                    startFailureServers = coreStartFailureServers(entries.map {
                         CoreStartFailureServer(name: $0.name, host: $0.host, port: $0.port, isCurrent: $0.current)
                     })
                 }

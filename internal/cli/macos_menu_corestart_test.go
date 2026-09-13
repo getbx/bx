@@ -124,3 +124,78 @@ func menuToggleControllerSource(t *testing.T) string {
 	}
 	return string(source)
 }
+
+// **那个映射的每一格都要对上。**
+//
+// reviewer 变异实测(LANDED):`isCurrent: $0.current` → `isCurrent: false`
+// ⇒ `go test ./internal/cli -run TestMacMenu` ok、24 个 Swift 套件全过。
+// 而它之下菜单**永远说不出是哪台服务器在失败**,并且会把那台刚刚失败的机器
+// 当成「你还配了另一台」推给用户去切 —— 一句正好指错方向的建议。
+//
+// 上面那条守卫钉的是「实参是一个绑定、它来自 listServers()、它由
+// coreStartFailureServers 折出来」—— 每一句都成立,而**喂进去的是什么**
+// 没人看。这一条钉值:四个标签各自必须取那个条目上同名的字段
+// (isCurrent ← current 是唯一一处改名,单列)。
+func TestMacMenuStartFailureServerMappingCarriesTheEntrysOwnFields(t *testing.T) {
+	body, ok := swiftFunctionBody(
+		stripSwiftComments(menuMainSwiftSource(t)),
+		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {")
+	if !ok {
+		t.Fatal("main.swift 里找不到 performToggle —— 锚点漂了,回来重判")
+	}
+	calls := swiftCallArguments(body, "CoreStartFailureServer")
+	if len(calls) != 1 {
+		t.Fatalf("performToggle 里 CoreStartFailureServer( 的调用有 %d 处,want 1 ——\n"+
+			"映射只该有一处,多一处就是多一段没人守的接线。实参:%v", len(calls), calls)
+	}
+	mapping := calls[0]
+	for label, field := range map[string]string{
+		"name":      "name",
+		"host":      "host",
+		"port":      "port",
+		"isCurrent": "current",
+	} {
+		want := regexp.MustCompile(regexp.QuoteMeta(label) + `:\s*\$0\.` + regexp.QuoteMeta(field) + `\b`)
+		if !want.MatchString(mapping) {
+			t.Errorf("映射里 %s: 拿到的不是 $0.%s —— 实参:%s\n"+
+				"写死一个值(reviewer 变异用的是 isCurrent: false)会让菜单永远说不出\n"+
+				"是哪台服务器在失败,还会把刚刚失败的那台当成「你还能切过去」推给用户,\n"+
+				"而 Go 与 Swift 两侧全绿", label, field, mapping)
+		}
+	}
+}
+
+// 单服务器配置(`bx setup` 写出来的那种)那一半也要喂进去。
+//
+// 那种配置根本没有 `servers:` 键 ⇒ `/v1/servers` 的 `servers` 是空的,
+// 当前那台由 `current_server` 单独带来。**而那是最常见的一种配置** ——
+// 靠 `list.servers` 一路等于:一台正常装好 bx 的机器上,这句话永远说不出
+// 服务器地址,也就永远给不出那条 `nc -z`。
+func TestMacMenuStartFailureFactsIncludeTheSingleServerConfigsServer(t *testing.T) {
+	body, ok := swiftFunctionBody(
+		stripSwiftComments(menuMainSwiftSource(t)),
+		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {")
+	if !ok {
+		t.Fatal("main.swift 里找不到 performToggle —— 锚点漂了,回来重判")
+	}
+	if !strings.Contains(body, "currentServer") {
+		t.Fatal("performToggle 一个字都没提 currentServer —— `bx setup` 写出来的配置\n" +
+			"(只有 server:、没有 servers: 清单)清单是空的,这句话于是说不出服务器地址")
+	}
+	// 判据不是「提到过」,是**它真的进了被映射的那个序列**:映射走的是
+	// `entries.map { … }`,而 entries 必须由两半拼出来。
+	mapped := regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.map\s*\{\s*\n?\s*CoreStartFailureServer\(`)
+	match := mapped.FindStringSubmatch(body)
+	if match == nil {
+		t.Fatal("找不到「某个序列 .map { CoreStartFailureServer(」—— 锚点漂了,回来重判")
+	}
+	sequence := match[1]
+	if sequence == "list" {
+		t.Fatal("映射的是 list.servers —— 单服务器配置下它是空的,current_server 被丢掉了")
+	}
+	built := regexp.MustCompile(`\b` + regexp.QuoteMeta(sequence) + `\s*=\s*[^\n]*\bcurrentServer\b`)
+	if !built.MatchString(body) {
+		t.Fatalf("被映射的那个序列 %q 不是由 currentServer 参与拼出来的 ——\n"+
+			"单服务器配置下这句话仍然说不出地址", sequence)
+	}
+}

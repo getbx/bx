@@ -1916,3 +1916,66 @@ func TestServerAddAndReplaceStillAcceptAnEmptyUDPLink(t *testing.T) {
 		})
 	}
 }
+
+// 单服务器配置(`bx setup` 写出来的那种)下,当前那台也要说得出来。
+//
+// **这是最常见的一种配置**:`bx setup` 从不写 `servers:` 清单,于是
+// `/v1/servers` 的 servers 是 `[]`、current 是空串。菜单在 Core 起不来时
+// 那句可行动的话因此退化成一句没有地址、没有 `nc -z` 的
+// 「bx cannot reach your server」;CLI 那一半没有这个洞(它以 root 跑、
+// 直接读 cfg.Server),而所有者自己的机器有 `servers:`,真机验收也照不出来。
+//
+// 发布面没扩:发的是 ServerEntry 早就在发的那几个字段,链接一个字节不出门。
+func TestSingleServerConfigStillNamesTheCurrentServer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "server: vless://" + serversTestUUID + "@203.0.113.30:8443?security=reality\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(
+		w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
+	)
+
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	// 前置自检:这确实是「清单为空的单服务器配置」那一种,否则下面在测别的东西。
+	if len(got.Servers) != 0 || !got.SingleServer {
+		t.Fatalf("台子造出来的不是单服务器配置:%+v", got)
+	}
+	if got.CurrentServer == nil {
+		t.Fatal("单服务器配置下当前那台一个字都没发出来 —— 菜单于是说不出\n" +
+			"服务器地址,那句可行动的话退化成一句没有 nc -z 的空话")
+	}
+	if got.CurrentServer.Host != "203.0.113.30" || got.CurrentServer.Port != 8443 {
+		t.Fatalf("当前那台的 host:port 不对:%+v", got.CurrentServer)
+	}
+	if !got.CurrentServer.Current {
+		t.Fatal("当前那台没被标成 current —— 客户端会把它折进「你还配了另一台」,\n" +
+			"于是叫用户切到刚刚失败的那台上去")
+	}
+	// 链接仍然一个字节都不出门。
+	if strings.Contains(w.Body.String(), serversTestUUID) {
+		t.Fatalf("响应体里出现了链接凭据:%s", w.Body.String())
+	}
+}
+
+// 有清单时**不许**再发一份 —— 同一件事的两份拷贝会漂开,而且客户端会把它
+// 当成第二台服务器。
+func TestAServerListDoesNotAlsoShipACurrentServerCopy(t *testing.T) {
+	w := httptest.NewRecorder()
+	serversHandler(serversTestConfig(t), 501, noSwitch(t), nil, nil)(
+		w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
+	)
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CurrentServer != nil {
+		t.Fatalf("清单里已经有当前那台了,却又单发了一份:%+v —— 客户端会把它\n"+
+			"数成第二台服务器,于是叫用户「切到」他此刻正在用的那一台", got.CurrentServer)
+	}
+}
