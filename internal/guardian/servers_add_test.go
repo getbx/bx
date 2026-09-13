@@ -29,10 +29,15 @@ func postServersAdd(t *testing.T, path, body string) (int, ServerListResponse, s
 
 // 同名不许静默覆盖:setup.AddServer 对已存在的名字会**改写链接**,那对用户是「我加了
 // 一台,结果把原来那台换掉了」。Guardian 先查重、409,盘上不动。
+//
+// **链接按 brook 的真实形状写(主机在 `?server=` 里,不是 authority)。** 这两条
+// fixture 原先是 `brook://host:9999?password=y` —— 一条 `tunnel.ServerHost` 解不出
+// 主机的链接,也就是生产里会被这个端点拒掉的东西;它们此前能绿,只是因为
+// 「给了名字就不校验链接」那个缺口。同一个文件下面二十行就写着正确的形状。
 func TestAddServerRefusesAnExistingName(t *testing.T) {
 	path := serversTestConfig(t)
 	before, _ := os.ReadFile(path)
-	code, _, body := postServersAdd(t, path, `{"action":"add","name":"Tokyo","link":"brook://other.example.com:9999?password=y"}`)
+	code, _, body := postServersAdd(t, path, `{"action":"add","name":"Tokyo","link":"brook://other.example.com?server=other.example.com%3A9999&password=y"}`)
 	if code != http.StatusConflict || !strings.Contains(body, "servers_name_exists") {
 		t.Fatalf("同名 = %d %s", code, body)
 	}
@@ -65,7 +70,7 @@ func TestAddServerDerivesTheNameWhenOmitted(t *testing.T) {
 
 func TestAddServerEchoesTheGivenName(t *testing.T) {
 	path := serversTestConfig(t)
-	code, resp, _ := postServersAdd(t, path, `{"action":"add","name":"office","link":"brook://o.example.com:9999?password=y"}`)
+	code, resp, _ := postServersAdd(t, path, `{"action":"add","name":"office","link":"brook://o.example.com?server=o.example.com%3A9999&password=y"}`)
 	if code != http.StatusOK || resp.Added != "office" {
 		t.Fatalf("= %d added=%q", code, resp.Added)
 	}
@@ -91,6 +96,42 @@ func TestAddServerDerivesTheNameFromABxEnvelope(t *testing.T) {
 	}
 	if resp.Added != "vps3.example.com" {
 		t.Fatalf("added = %q, want 解壳之后推导的名字", resp.Added)
+	}
+}
+
+// **给了名字也照样要校验链接** —— 校验此前只发生在「名字省略、要按链接推导」
+// 那一支上,而那是个副作用:名字一给,`setup.LinkHost` 就不再被调,任何字符串
+// 都写得进配置。
+//
+// 后果在 replace 那边最重(见 servers_test.go 里的同款):写进**当前**那台之后,
+// 下一次重连解析不出来,而界面刚刚承诺「bx picks up the new one when it
+// reconnects」。add 这边只是种下一台永远切不过去的服务器 —— 但两条路走的是同一个
+// helper、各一行,让 replace 严而 add 松是不自洽的。
+//
+// 拒绝**只发码**:链接是凭据,一个字都不回显、不进日志。
+func TestAddServerValidatesTheLinkEvenWhenTheNameIsGiven(t *testing.T) {
+	path := serversTestConfig(t)
+	before, _ := os.ReadFile(path)
+	orig := log.Writer()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(orig) })
+
+	// **形状要挑 `setup.LinkHost` 真的解不出主机的那一种。** 它认得出的东西比
+	// 想象中多(`looksLikeHost` 对一串裸字母是放行的,那会被当成主机名)——
+	// 这道门守的是「主机解不出来」,不是「这条链接一定能连上」,后者只有真拨
+	// 一次才知道。
+	const badLink = `vless://user:supersecretpassword@ho st:443`
+	code, _, body := postServersAdd(t, path, `{"action":"add","name":"osaka2","link":"`+badLink+`"}`)
+	if code != http.StatusBadRequest || !strings.Contains(body, "servers_add_failed") {
+		t.Fatalf("解不出主机的链接被收下了 = %d %s", code, body)
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Fatal("拒绝之后盘上的配置动了")
+	}
+	if logged := buf.String(); strings.Contains(logged, badLink) || strings.Contains(logged, "supersecret") {
+		t.Fatalf("日志里出现了原始链接:%s", logged)
 	}
 }
 

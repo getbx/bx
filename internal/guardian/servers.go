@@ -540,6 +540,18 @@ func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string
 			return
 		}
 		name = host
+	} else if _, ok := setup.LinkHost(link); !ok {
+		// **给了名字也照样校验。** 校验此前只发生在「名字省略、要按链接推导」
+		// 那一支上,而那是个副作用:名字一给,LinkHost 就不再被调,任何字符串
+		// 都写得进配置 —— 种下的是一台永远切不过去的服务器,而清单里它长得
+		// 和别的一样(只有 host 那一格空着)。
+		//
+		// 这道门守的是「主机解不出来」,**不是**「这条链接一定能连上」——
+		// 后者只有真拨一次才知道,而这里一个包都不许发。
+		// 不带 err、不带 link:链接就是凭据。
+		log.Printf("guardian_server_add_failed reason=bad_link")
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_add_failed"})
+		return
 	}
 	// **先查重,再写。** setup.AddServer 对已存在的名字是「改写那一台的链接」——
 	// 对用户那是「我加了一台,结果把原来那台换掉了」,而界面上看不出任何异常。
@@ -651,6 +663,20 @@ func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath str
 	if target == nil {
 		log.Printf("guardian_server_replace_rejected reason=unknown_name name=%q", name)
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_unknown_name"})
+		return
+	}
+	if _, ok := setup.LinkHost(link); !ok {
+		// **换链接同样要校验,而这一条的代价落在当前那台上。** 底下的
+		// setup.ReplaceServerLink 什么都不校验:任何字符串都写得进去。换的是
+		// 当前那台时,配置就此指着一条下一次重连解析不出来的链接,而界面刚刚
+		// 承诺「bx picks up the new one when it reconnects」—— 一句当场就被
+		// 证伪的话,还把机器留在起不来的状态里。
+		//
+		// **码沿用 servers_replace_failed**:菜单对它那句话正是「Check that you
+		// pasted a complete bx link」—— 另立一个码只会得到同一句话。原始链接
+		// 一个字都不出门、也不进日志。
+		log.Printf("guardian_server_replace_rejected reason=bad_link name=%q", target.Name)
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_replace_failed"})
 		return
 	}
 	if udp == "" {
