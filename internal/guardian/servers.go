@@ -386,10 +386,6 @@ func serverNamed(list []config.Server, name string) bool {
 	return findServerNamed(list, name) != nil
 }
 
-// serverEntries 只发出**主机名**,绝不发链接本身。
-//
-// 链接是凭据(里面有 uuid / 密码)。菜单要显示的是「流量从哪出去」,而那是主机;
-// 把整条链接送到一个 uid 501 的进程里,只是为了渲染一行字,不值得。
 // singleServerEntry 在单服务器配置下把「当前那台」补成一条条目。
 //
 // **判据与 CLI 那一半同源**:走 config.Parse 取 cfg.Server —— 它已经把
@@ -418,6 +414,10 @@ func singleServerEntry(list []config.Server, configPath string) *ServerEntry {
 	return &ServerEntry{Host: host, Port: setup.LinkPort(cfg.Server), Current: true}
 }
 
+// serverEntries 只发出**主机名**,绝不发链接本身。
+//
+// 链接是凭据(里面有 uuid / 密码)。菜单要显示的是「流量从哪出去」,而那是主机;
+// 把整条链接送到一个 uid 501 的进程里,只是为了渲染一行字,不值得。
 func serverEntries(list []config.Server, current string) []ServerEntry {
 	entries := make([]ServerEntry, 0, len(list))
 	for _, s := range list {

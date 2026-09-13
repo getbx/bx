@@ -23,7 +23,6 @@ import (
 // 没出现。
 func TestEveryStartFailureOutcomeReadsDifferently(t *testing.T) {
 	facts := startFailureServers{
-		CurrentName:     "vps",
 		CurrentHostPort: "195.133.192.92:443",
 		Others:          []string{"tokyo(166.1.190.123)"},
 	}
@@ -52,7 +51,7 @@ func TestEveryStartFailureOutcomeReadsDifferently(t *testing.T) {
 // 全挂,真因是默认 SNI www.microsoft.com 的证书过大,而当时先误归因成
 // sing-box 同机问题、又误归因成网络 MITM。
 func TestReachableAndUnreachableSayOppositeThings(t *testing.T) {
-	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443"}
+	facts := startFailureServers{CurrentHostPort: "195.133.192.92:443"}
 	unreachable := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUnreachable, facts)
 	handshake := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelHandshakeFailed, facts)
 
@@ -73,7 +72,7 @@ func TestReachableAndUnreachableSayOppositeThings(t *testing.T) {
 // 本机自己没网时同样拨不通(批一 ruling ② 留给批二的那条):一句「那台服务器
 // 没有应答」在那种情况下是一句确凿的假话,而用户会照着它去重启一台好好的 VPS。
 func TestTheWordingNeverAssertsWhatTheServerIsDoing(t *testing.T) {
-	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443"}
+	facts := startFailureServers{CurrentHostPort: "195.133.192.92:443"}
 	text := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUnreachable, facts)
 	for _, forbidden := range []string{"服务器没有应答", "那台机器挂了", "服务器已经挂了", "服务器不在线"} {
 		if strings.Contains(text, forbidden) {
@@ -92,7 +91,7 @@ func TestTheWordingNeverAssertsWhatTheServerIsDoing(t *testing.T) {
 // IP_BOUND_IF 只查 scoped 路由表 —— 那条 scoped 默认路由由 Hijack 装,比这次
 // 判别拨号晚 572 行。那时去查 VPS 是白费力气。
 func TestTheLocalDialOutcomeSendsTheUserToBxsOwnDialerNotTheVPS(t *testing.T) {
-	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443"}
+	facts := startFailureServers{CurrentHostPort: "195.133.192.92:443"}
 	text := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUndeterminedLocalDial, facts)
 	if !strings.Contains(text, "-ifscope") {
 		t.Fatalf("没有给出那条出路(route -n get -ifscope <网卡>):\n%s", text)
@@ -114,8 +113,8 @@ func TestTheLocalDialOutcomeSendsTheUserToBxsOwnDialerNotTheVPS(t *testing.T) {
 // 上),而且另一种毛病必须被说出来。
 func TestTheLocalDialAdviceDoesNotContradictItsOwnSwitchSuggestion(t *testing.T) {
 	facts := startFailureServers{
-		CurrentName: "vps", CurrentHostPort: "195.133.192.92:443",
-		Others: []string{"tokyo(166.1.190.123)"},
+		CurrentHostPort: "195.133.192.92:443",
+		Others:          []string{"tokyo(166.1.190.123)"},
 	}
 	text := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUndeterminedLocalDial, facts)
 	// 前置自检:那句「你还配了另一台」确实在,否则下面在测一段不存在的矛盾。
@@ -137,7 +136,7 @@ func TestTheLocalDialAdviceDoesNotContradictItsOwnSwitchSuggestion(t *testing.T)
 // 三个码的处置不同(所以各有一句话),但**没有一个可以被读成「那台服务器没事」**。
 // 穷举来自 supervisor.StartFailureCodes(),不是这里再抄一份。
 func TestEveryUndeterminedOutcomeAdmitsItCouldNotTell(t *testing.T) {
-	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443"}
+	facts := startFailureServers{CurrentHostPort: "195.133.192.92:443"}
 	checked := 0
 	for _, code := range supervisor.StartFailureCodes() {
 		if !supervisor.IsTunnelUndeterminedCode(code) {
@@ -162,7 +161,7 @@ func TestEveryUndeterminedOutcomeAdmitsItCouldNotTell(t *testing.T) {
 // 链接是凭据(vless 的 uuid 就在里面)。同一条纪律在服务器清单那边由
 // TestServerListNeverShipsTheLinkItself 守着。
 func TestTheOtherServerLineOnlyAppearsWhenThereIsOne(t *testing.T) {
-	alone := startFailureServers{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443"}
+	alone := startFailureServers{CurrentHostPort: "195.133.192.92:443"}
 	text := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUnreachable, alone)
 	if strings.Contains(text, "还配了另一台") {
 		t.Fatalf("只有一台服务器却说「你还配了另一台」:\n%s", text)
@@ -182,7 +181,6 @@ func TestTheOtherServerLineOnlyAppearsWhenThereIsOne(t *testing.T) {
 func TestNoRenderedAdviceEverCarriesALink(t *testing.T) {
 	const link = "vless://11111111-2222-3333-4444-555555555555@198.51.100.7:443"
 	facts := startFailureServers{
-		CurrentName:     "vps",
 		CurrentHostPort: "195.133.192.92:443",
 		Others:          []string{"tokyo(166.1.190.123)"},
 	}
@@ -198,7 +196,7 @@ func TestNoRenderedAdviceEverCarriesALink(t *testing.T) {
 
 // 认不出的码一个字都不许编。
 func TestAnUnknownCodeGetsNoInventedAdvice(t *testing.T) {
-	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443"}
+	facts := startFailureServers{CurrentHostPort: "195.133.192.92:443"}
 	for _, code := range []string{"", "core_ownership_uncertain", "guardian_busy", "core_我是新来的"} {
 		if got := coreStartFailureAdvice(code, facts); got != "" {
 			t.Fatalf("对 %q 编了一句话:\n%s", code, got)
@@ -236,14 +234,14 @@ current: vps
 		t.Fatal(err)
 	}
 	facts := readStartFailureServers(path)
-	if facts.CurrentName != "vps" || facts.CurrentHostPort != "195.133.192.92:443" {
+	if facts.CurrentHostPort != "195.133.192.92:443" {
 		t.Fatalf("当前那台解错了:%+v", facts)
 	}
 	if len(facts.Others) != 1 || !strings.Contains(facts.Others[0], "tokyo") || !strings.Contains(facts.Others[0], "166.1.190.123") {
 		t.Fatalf("另一台没被点名:%+v", facts)
 	}
 	// 事实里也不许夹带链接:它会被拼进给用户看的那段话。
-	joined := facts.CurrentName + facts.CurrentHostPort + strings.Join(facts.Others, " ")
+	joined := facts.CurrentHostPort + strings.Join(facts.Others, " ")
 	if strings.Contains(joined, "vless://") || strings.Contains(joined, "11111111-2222-3333-4444-555555555555") {
 		t.Fatalf("事实里夹带了链接/凭据:%+v", facts)
 	}
@@ -252,7 +250,7 @@ current: vps
 // 读不到配置(不存在、坏了、非 root)⇒ 空事实,不报错、不猜。
 func TestUnreadableConfigYieldsNoFactsRatherThanAGuess(t *testing.T) {
 	facts := readStartFailureServers(filepath.Join(t.TempDir(), "没有这个文件"))
-	if facts.CurrentHostPort != "" || facts.CurrentName != "" || len(facts.Others) != 0 {
+	if facts.CurrentHostPort != "" || len(facts.Others) != 0 {
 		t.Fatalf("读不到配置却给出了事实:%+v", facts)
 	}
 }
@@ -355,7 +353,7 @@ func TestMacOSUpActionRoutesTheGuardianFailureThroughTheAdvice(t *testing.T) {
 // i/o timeout`)只在 root-only 的 Core 日志里 —— 这条指引是两者之间唯一的桥。
 // `tunnel_unreachable` 此前是唯一没有它的一种,而**它恰恰就是事故那一种**。
 func TestEveryOutcomeSaysWhereTheFullReasonIs(t *testing.T) {
-	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443"}
+	facts := startFailureServers{CurrentHostPort: "195.133.192.92:443"}
 	for _, code := range coreStartFailureCodes() {
 		text := coreStartFailureAdvice(code, facts)
 		if !strings.Contains(text, coreLogPathForAdvice()) {
@@ -372,7 +370,7 @@ func TestEveryOutcomeSaysWhereTheFullReasonIs(t *testing.T) {
 // 顺手抄一句进字符串是最自然的动作,而没有任何东西拦着。
 func TestNoRenderedAdviceCarriesMarkdown(t *testing.T) {
 	for _, facts := range []startFailureServers{
-		{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443", Others: []string{"tokyo(166.1.190.123)"}},
+		{CurrentHostPort: "195.133.192.92:443", Others: []string{"tokyo(166.1.190.123)"}},
 		{},
 	} {
 		for _, code := range coreStartFailureCodes() {
@@ -391,7 +389,7 @@ func TestNoRenderedAdviceCarriesMarkdown(t *testing.T) {
 // 一条粘贴过去就报错的命令,出现在一条唯一目的就是「照着做」的话里。
 func TestNoNCCommandIsRenderedWithAnEmptyPort(t *testing.T) {
 	// 前置自检:这确实是「解得出主机、解不出端口」那一种形状。
-	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: joinHostPortForAdvice("195.133.192.92", 0)}
+	facts := startFailureServers{CurrentHostPort: joinHostPortForAdvice("195.133.192.92", 0)}
 	if facts.CurrentHostPort != "195.133.192.92" {
 		t.Fatalf("台子造出来的不是「只有主机」那一种:%q", facts.CurrentHostPort)
 	}
@@ -427,7 +425,7 @@ func TestNoNCCommandIsRenderedWithAnEmptyPort(t *testing.T) {
 // 「没判出来」的新来由时它自动进范围,漏给地址当场转红。
 func TestEveryTunnelOutcomeNamesTheServerWhenBxKnowsIt(t *testing.T) {
 	const host = "195.133.192.92"
-	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: host + ":443"}
+	facts := startFailureServers{CurrentHostPort: host + ":443"}
 	family := 0
 	for _, bare := range supervisor.StartFailureCodes() {
 		isTunnel := bare == supervisor.StartFailureTunnelUnreachable ||

@@ -33,10 +33,13 @@ import (
 //
 // **只有名字与 host:port,没有链接** —— 它会被拼进给用户看的文本里。
 type startFailureServers struct {
-	// CurrentName / CurrentHostPort 空 = **没问出来**(配置读不到、链接解不开)。
-	// 那时那句话照说,只是不点名 —— 绝不编一个占位地址,一句指着 `<unknown>:0`
-	// 的排查命令比不给更糟。
-	CurrentName     string
+	// CurrentHostPort 空 = **没问出来**(配置读不到、链接解不开)。那时那句话
+	// 照说,只是不点名 —— 绝不编一个占位地址,一句指着 `<unknown>:0` 的排查
+	// 命令比不给更糟。
+	//
+	// **这里刻意没有服务器的名字。** 它曾经在,而且被采集、被断言,却没有任何
+	// 一句渲染读它 —— 一个有测试盖着、没人读的字段与没有这个字段在输出上完全
+	// 一样,只是看起来还活着。要点名就得先有一句话真的说出它。
 	CurrentHostPort string
 	// Others 是别的服务器,形如 `tokyo(166.1.190.123)`。空 = 真的只有一台。
 	Others []string
@@ -230,7 +233,7 @@ func readStartFailureServers(configPath string) startFailureServers {
 	}
 	for _, server := range list {
 		if setup.SameServerName(server.Name, current) {
-			facts.CurrentName = server.Name
+			// 当前那台不进 Others(那句话说的是「你还配了**别的**」)。
 			continue
 		}
 		// **只发名字与主机,链接一个字节都不出门。**

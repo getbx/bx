@@ -228,3 +228,60 @@ func TestMacMenuStartFailureFactsUseTheSharedGuardianClient(t *testing.T) {
 			"同一个闭包上面几行就在用 self.guardianClient,第二个来源会静默绕过注进来的那个")
 	}
 }
+
+// **Swift 那份测试自己那张码清单,也必须与 Go 常量逐字相同。**
+//
+// CoreStartFailureHintTests.swift 头上写着「这份清单由 internal/cli 的一条双向
+// 守卫钉住」—— 那句话此前是**假的**:
+// TestMacMenuStartFailureCodesMatchTheGoConstants 读的是
+// `coreStartFailureHint` 里的 case 字面量,不是这张数组。于是从数组里删掉一个
+// 码,Swift 那边就少测一档结局,而两侧全绿。
+//
+// 这条把那句话变成真的。**一句声称自己被守着、而其实没有的话,比没有话更糟**
+// (本仓库为这个形状罚过多次):下一个人读到它,会据此不再去检查那件事。
+func TestMacMenuStartFailureHintTestsCoverEveryGoCode(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Tests", "CoreStartFailureHintTests.swift"))
+	if err != nil {
+		t.Fatalf("读不到 CoreStartFailureHintTests.swift:%v —— 守卫够不着要扫的东西时必须响亮失败", err)
+	}
+	source := stripSwiftComments(string(raw))
+	start := strings.Index(source, "static let codes = [")
+	if start < 0 {
+		t.Fatal("找不到那张 codes 数组 —— 锚点漂了,回来重判,别静默放行")
+	}
+	end := strings.Index(source[start:], "]")
+	if end < 0 {
+		t.Fatal("那张 codes 数组没有收尾的 ] —— 锚点漂了")
+	}
+	literal := regexp.MustCompile(`"(core_[a-z0-9_]+)"`)
+	got := map[string]bool{}
+	for _, match := range literal.FindAllStringSubmatch(source[start:start+end], -1) {
+		got[match[1]] = true
+	}
+	if len(got) == 0 {
+		t.Fatal("那张 codes 数组里一个码都没读出来 —— 守卫认不出现在的写法")
+	}
+	want := map[string]bool{}
+	for _, code := range supervisor.StartFailureCodes() {
+		want[coreStartFailureCodePrefix+code] = true
+	}
+	var missing, extra []string
+	for code := range want {
+		if !got[code] {
+			missing = append(missing, code)
+		}
+	}
+	for code := range got {
+		if !want[code] {
+			extra = append(extra, code)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	if len(missing) > 0 {
+		t.Errorf("Swift 那份测试没覆盖这些码:%v —— 它们的那句话从此无人验,而两侧全绿", missing)
+	}
+	if len(extra) > 0 {
+		t.Errorf("Swift 那份测试里的 %v 不是 supervisor 的启动失败码 —— 它测的是一段死代码", extra)
+	}
+}

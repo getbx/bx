@@ -11,9 +11,13 @@ struct CoreStartFailureHintTests {
         }
     }
 
-    /// 与 Go 侧 supervisor.StartFailureCodes() 一一对应。**这份清单由
-    /// internal/cli 的一条双向守卫钉住与 Go 常量逐字相同** —— 少一个码
-    /// 就是一段用户永远读不到的话,而两侧测试都不会红。
+    /// 与 Go 侧 supervisor.StartFailureCodes() 一一对应。**这张数组由
+    /// TestMacMenuStartFailureHintTestsCoverEveryGoCode 双向钉住**(它读的
+    /// 就是这个文件);`coreStartFailureHint` 里那个 switch 的 case 字面量
+    /// 另由 TestMacMenuStartFailureCodesMatchTheGoConstants 钉住 ——
+    /// **两条守卫读的是两处不同的清单,少一条就少守一处**:
+    /// 从这张数组里删掉一个码,那一档结局在 Swift 这边就没人验了,而少一个
+    /// case 则是一段用户永远读不到的话。
     static let codes = [
         "core_tunnel_unreachable",
         "core_tunnel_handshake_failed",
@@ -29,7 +33,6 @@ struct CoreStartFailureHintTests {
 
     static func main() {
         let facts = CoreStartFailureServers(
-            currentName: "vps",
             currentHostPort: "195.133.192.92:443",
             others: ["tokyo (166.1.190.123)"])
 
@@ -110,7 +113,7 @@ struct CoreStartFailureHintTests {
         expect(namedFamily >= 5, "只走到 \(namedFamily) 档隧道结局(want ≥5)—— 族的判据认不出现在的码了")
 
         // 「你还配了另一台」只在真有另一台时出现,而且绝不出现链接。
-        let alone = CoreStartFailureServers(currentName: "vps", currentHostPort: "195.133.192.92:443")
+        let alone = CoreStartFailureServers(currentHostPort: "195.133.192.92:443")
         let soloText = coreStartFailureHint(code: "core_tunnel_unreachable", servers: alone) ?? ""
         expect(!soloText.contains("another server"), "只有一台却说「你还配了另一台」:\(soloText)")
         let pairText = coreStartFailureHint(code: "core_tunnel_unreachable", servers: facts) ?? ""
@@ -149,7 +152,7 @@ struct CoreStartFailureHintTests {
             CoreStartFailureServer(name: "vps", host: "195.133.192.92", port: 443, isCurrent: true),
             CoreStartFailureServer(name: "tokyo", host: "166.1.190.123", port: 8443, isCurrent: false),
         ])
-        expect(folded.currentName == "vps" && folded.currentHostPort == "195.133.192.92:443",
+        expect(folded.currentHostPort == "195.133.192.92:443",
                "当前那台折错了:\(folded)")
         expect(folded.others == ["tokyo (166.1.190.123)"], "另一台折错了:\(folded.others)")
         let noPort = coreStartFailureServers([
@@ -178,7 +181,7 @@ struct CoreStartFailureHintTests {
         }
 
         // 端口解不出来时那条 nc 命令整条不给 —— 不许渲染出尾巴上空着的端口。
-        let hostOnly = CoreStartFailureServers(currentName: "vps", currentHostPort: "195.133.192.92")
+        let hostOnly = CoreStartFailureServers(currentHostPort: "195.133.192.92")
         for code in codes {
             let text = coreStartFailureHint(code: code, servers: hostOnly) ?? ""
             expect(!text.contains("nc -z 195.133.192.92 "),
