@@ -160,6 +160,86 @@ func TestForceStopStillRefusesWhenTheSystemCannotSayWhetherItIsGone(t *testing.T
 	}
 }
 
+// Minor 4:**手里没句柄时的判据要与 Stop 一字相同** —— 不然它比 Stop 更严,
+// 而更严的那一头恰好通向同一句假话。
+//
+// Core 退出与走到清理之间约十八秒(健康等待 20s,而死于 provision/config/
+// tun_open/hijack 的 Core 两秒就没了);PID 在这个窗口里被回收再分配是真会发生
+// 的事。那时 Stop 会按 sameProcessIdentity 判「身份不符 ⇒ 我们的 Core 已经走了」
+// ⇒ 清记录、返回 nil;而 ForceStop 若只看「这个号上有没有进程」,就会答
+// 「系统说它还在」⇒ retainUncertain ⇒ **core_ownership_uncertain**,C1 刚消灭掉
+// 的那句假话从一扇更窄的门原样回来。
+//
+// 方向本身是 fail-closed(不是安全洞),但判据只能有一份,而这里那一份答反了。
+func TestForceStopTreatsAReusedPIDTheSameWayStopDoes(t *testing.T) {
+	runner, process, operations := newRecordedProcessRunner(t)
+	shutdownRequests := 0
+	runner.ShutdownCore = func(context.Context, string, int) error {
+		shutdownRequests++
+		return nil
+	}
+	// 这个号上现在跑着别人:PID 一样,但代际(与可执行路径)对不上 ——
+	// 与 Stop 里 sameProcessIdentity 判「不是同一个」的输入逐字相同。
+	operations.setProcess(Process{
+		PID: process.PID, Executable: process.Executable, UID: process.UID,
+		Generation: "darwin:999:999",
+	})
+
+	// 前置自检:同一份输入喂给 Stop,它判「走了,没事」。少了这一句,下面那条
+	// 断言可能只是在描述一个两边都错的世界。
+	if err := runner.Stop(context.Background(), process); err != nil {
+		t.Fatalf("前置不成立:Stop 对同一份输入报了失败:%v", err)
+	}
+	if shutdownRequests != 0 {
+		t.Fatalf("前置不成立:Stop 对一个身份不符的 PID 发了 %d 次协作关闭请求", shutdownRequests)
+	}
+
+	runner, process, operations = newRecordedProcessRunner(t)
+	operations.setProcess(Process{
+		PID: process.PID, Executable: process.Executable, UID: process.UID,
+		Generation: "darwin:999:999",
+	})
+	if err := runner.ForceStop(context.Background(), process); err != nil {
+		t.Fatalf("PID 被复用之后 ForceStop 报了失败:%v\n"+
+			"—— 它会被翻成 core_ownership_uncertain,而 Stop 对同一份输入判的是「我们的 Core 已经走了」。\n"+
+			"同一个问题不许有第二份答案,尤其当第二份答的是那句刚被消灭的假话", err)
+	}
+	if _, statErr := os.Stat(runner.StatePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("core-process.json = %v, want 已删除 —— 那条记录指着一个已经属于别人的 PID", statErr)
+	}
+}
+
+// 反向:身份**对得上**(系统说那个 Core 真的还在)时仍然拒绝 —— 接管来的 Core、
+// 上一任 Guardian 留下的 Core,一寸都不许松。少了这一条,「凡是没句柄一律放行」
+// 也能满足上面那条,而那正是双 Core 那道门。
+func TestForceStopStillRefusesWhenTheRecordedCoreIsGenuinelyStillRunning(t *testing.T) {
+	runner, process, _ := newRecordedProcessRunner(t)
+	if err := runner.ForceStop(context.Background(), process); err == nil {
+		t.Fatal("身份对得上、系统说它还在,ForceStop 却报了成功 —— 双 Core 那道门从这里被打开")
+	}
+	if _, statErr := os.Stat(runner.StatePath); statErr != nil {
+		t.Fatalf("拒绝了却把记录删了:%v", statErr)
+	}
+}
+
+// 第三种:**身份比不出来**(拿不到代际 / 可执行路径)。它是「问不出来」,
+// 不是「不是我们的」—— 与 Inspect 失败那一支同一条极性,也与 Stop 一字相同。
+//
+// 变异实测:把比对失败折成 same=false(于是走清记录 + nil)之后,上面两条
+// **全绿** —— 那正是「守卫钉住的是缺陷旁边的东西」,一个把「没问出来」当成
+// 「没有」的分支从这里溜进来,而它的出口恰好是 fail-open。
+func TestForceStopRefusesWhenTheIdentityCannotBeCompared(t *testing.T) {
+	runner, process, operations := newRecordedProcessRunner(t)
+	// 代际读不出来 —— sameProcessIdentity 对这种输入报错,不报「不是同一个」。
+	operations.setProcess(Process{PID: process.PID, Executable: process.Executable, UID: process.UID})
+	if err := runner.ForceStop(context.Background(), process); err == nil {
+		t.Fatal("身份比不出来,ForceStop 却报了成功 ——「问不出来」不是「没有」")
+	}
+	if _, statErr := os.Stat(runner.StatePath); statErr != nil {
+		t.Fatalf("没能判断就把记录删了:%v", statErr)
+	}
+}
+
 // C1 的整机形状:Core 自己两秒就死了(provision / config / tun_open / hijack),
 // 而健康等待要满 20 秒。到清理那一刻句柄早就没了 —— 这条路必须仍然答出
 // core_health_failed,不许退回 core_ownership_uncertain。
