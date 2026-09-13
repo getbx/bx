@@ -3538,23 +3538,34 @@ func runFlags() []cli.Flag {
 		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "全局模式:除内网(bypass)/用户 direct 规则外,一切(含中国)走代理"},
 		&cli.StringFlag{Name: "listen-dns", Value: "", Usage: "本地 DNS 监听地址(默认关闭;macOS 测试可用 127.0.0.1:53)"},
 		&cli.BoolFlag{Name: "no-hijack", Usage: "分步验证:起隧道+TUN+引擎但不劫持路由/不设 DNS/不装 WFP(系统网络零改动,真机 bring-up 用)"},
+		// **只由 Guardian 传**,故 Hidden:手敲的 `sudo bx run` 不传就一个字节
+		// 都不写,陈旧记录在构造上不可能串味(见 runWithStartFailureRecord)。
+		&cli.StringFlag{Name: "start-failure-file", Hidden: true, Usage: "启动失败时把失败码写到这里(仅 Guardian 使用)"},
 	}
 }
 
 func runAction(c *cli.Context) error {
-	cfg, err := loadConfig(c.String("config"))
-	if err != nil {
-		return err
-	}
-	opts := optsFromFlags(c)
-	// Windows:若由 SCM 作为服务拉起,须走 svc.Run 上报状态;Stop 时 cancel ctx 触发 Run 的
-	// defer 全量还原。控制台调试(bx run 手敲)则 isWindowsService()=false,照常前台跑。
-	if isWindowsService() {
-		return runAsWindowsService(func(ctx context.Context) error {
-			return supervisor.Run(ctx, cfg, opts)
-		})
-	}
-	return supervisor.Run(c.Context, cfg, opts)
+	// 包装**罩住整个函数体**,两条 supervisor.Run 出口一并盖住,连 loadConfig
+	// 失败也在内 —— 那同样是一次「Core 起不来」,而 Guardian 那边看到的现象
+	// 一模一样。少盖一条出口的后果是静默的:那条路上起不来的 Core 什么都不说,
+	// 与这支修复之前完全一样。由 TestBothRunExitsAreCoveredByTheStartFailureRecorder
+	// 按 AST 钉住(判据是「每一次 supervisor.Run 都在它的实参里」,不是
+	// 「这个文件提到过它」)。
+	return runWithStartFailureRecord(c.String("start-failure-file"), func() error {
+		cfg, err := loadConfig(c.String("config"))
+		if err != nil {
+			return err
+		}
+		opts := optsFromFlags(c)
+		// Windows:若由 SCM 作为服务拉起,须走 svc.Run 上报状态;Stop 时 cancel ctx 触发 Run 的
+		// defer 全量还原。控制台调试(bx run 手敲)则 isWindowsService()=false,照常前台跑。
+		if isWindowsService() {
+			return runAsWindowsService(func(ctx context.Context) error {
+				return supervisor.Run(ctx, cfg, opts)
+			})
+		}
+		return supervisor.Run(c.Context, cfg, opts)
+	})
 }
 
 // trayAction 启动系统托盘(仅 Windows 有实现;其它平台返回清晰错误,见 tray_other.go)。
