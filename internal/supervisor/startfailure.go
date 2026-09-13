@@ -80,6 +80,19 @@ func tagStartFailure(sentinel, err error) error {
 	return taggedStartFailure{err: err, sentinel: sentinel}
 }
 
+// TagUnusableConfig 把 ErrConfig 挂到一个「配置内容本身用不了」的错误上,
+// **而一个字都不改它的文案**(与包内的 tagStartFailure 同一件事)。
+//
+// 导出它是因为最常见的那一种配置故障发生在 supervisor 之外:`bx run` 先
+// loadConfig,那次 config.Parse 失败根本走不到 Run 里去 —— 于是 Core 自报的
+// 码是 `other`,用户读到「bx 这一版还没有专门说法的启动失败」,而这恰恰是
+// 最有专门说法的一种(哪个文件、改完要 down && up)。
+//
+// **只给「内容用不了」用,别拿去盖「暂时读不到配置」** —— 后者是另一种故障
+// (文件不在、权限不够),借这个码就是把「你还没 setup 过」说成「你的配置
+// 写错了」。ErrConfig 头上那段注释写的就是这条分界。
+func TagUnusableConfig(err error) error { return tagStartFailure(ErrConfig, err) }
+
 type taggedStartFailure struct {
 	err      error
 	sentinel error
