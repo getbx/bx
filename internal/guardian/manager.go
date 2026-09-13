@@ -1389,7 +1389,13 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 		// 读不到东西,而没有任何测试会因此转红。
 		// 用 ctx 而不是 operationCtx:后者是那次健康等待自己的预算,刚刚正是
 		// 它到期的(TestTheRecordIsReadBeforeTheFailedCoreIsCleanedUp 钉顺序)。
-		reported := m.coreReportedStartFailure(ctx, process, spawnedAt)
+		// 但**上界仍取 operationCtx 的 deadline**:这段等待坐在 reserveCleanup
+		// 与 cleanupCoreAfterFailedStart 中间,裸拿外层 ctx 去等花的就是收拾
+		// 这个 Core 的那份预留 —— 而三个 restartTimeout=25s 的调用点上那会让
+		// 清理超时、落回 core_ownership_uncertain(见 startFailureReadContext)。
+		readCtx, cancelRead := startFailureReadContext(ctx, operationCtx)
+		reported := m.coreReportedStartFailure(readCtx, process, spawnedAt)
+		cancelRead()
 		if cleanupErr := m.cleanupCoreAfterFailedStart(ctx, process, state); cleanupErr != nil {
 			m.retainUncertain(Process{PID: process.PID, Executable: process.Executable, UID: process.UID, Generation: process.Generation, Exit: process.Exit, Uncertain: true}, cleanupErr)
 			m.needsAttention(DesiredOn, "core_ownership_uncertain")

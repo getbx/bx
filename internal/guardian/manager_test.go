@@ -2289,18 +2289,24 @@ func (r *fakeCoreRunner) Start(ctx context.Context, _ CoreStartOptions) (Process
 //
 // **它记一条事件**:顺序(读在收拾之前)是这条路上最容易被悄悄改死的东西 ——
 // 反过来之后那次读永远读不到东西,而返回值上看不出任何区别。
-func (r *fakeCoreRunner) StartFailureCode(_ context.Context, process Process, since time.Time) string {
+func (r *fakeCoreRunner) StartFailureCode(ctx context.Context, process Process, since time.Time) string {
 	r.events.add("core.read_start_failure")
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.startFailureAsks = append(r.startFailureAsks, startFailureAsk{process: process, since: since})
+	deadline, hasDeadline := ctx.Deadline()
+	r.startFailureAsks = append(r.startFailureAsks, startFailureAsk{
+		process: process, since: since, deadline: deadline, hasDeadline: hasDeadline,
+	})
 	return r.reportedStartFailure
 }
 
-// startFailureAsk 是「Manager 递过来的那两个值」。
+// startFailureAsk 是「Manager 递过来的那两个值」,外加它给这次读的预算 ——
+// 后者决定这段等待是不是花的清理那份预留(见 startFailureReadContext)。
 type startFailureAsk struct {
-	process Process
-	since   time.Time
+	process     Process
+	since       time.Time
+	deadline    time.Time
+	hasDeadline bool
 }
 
 func (r *fakeCoreRunner) startFailureAsksSnapshot() []startFailureAsk {
