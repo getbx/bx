@@ -372,3 +372,95 @@ func TestUpHandsTheReaderThisSpawnsProcessAndAPreForkInstant(t *testing.T) {
 			ask.since.Format(time.RFC3339Nano), entered.Format(time.RFC3339Nano))
 	}
 }
+
+// **这段等待绝不许花清理那份预留。**
+//
+// reserveCleanup 存在的全部意义是「无论上面那些事花了多久,收拾这个 Core 的
+// 预算还在」;它交出来的 operationCtx 的 deadline 就是那条线。宽限坐在
+// reserveCleanup 与 cleanupCoreAfterFailedStart 中间,裸拿外层 ctx 去等就是
+// 从预留里扣 —— 三个 restartTimeout=25s 的调用点上(崩溃重启、调谐环
+// start_core、**以及 Manager.Down 里 DNS 还原失败之后那次补偿重启,一条停止
+// 路径**)清理会从 12.5s 掉到 4.5s ⇒ 超时 ⇒ retainUncertain ⇒
+// core_ownership_uncertain,正是这一整支要消灭的那条。
+//
+// **钉的是顺序不是秒数**(先例:TestCoreCleanupBudgetLeavesRoomAboveWhatItWaitsOn):
+// 递给「读记录」那一跳的 deadline,不许晚于递给 Start 的那一个 —— 后者正是
+// reserveCleanup 扣掉清理预算之后剩下的东西。
+func TestTheStartFailureGraceNeverEatsTheCleanupReserve(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.health.err = errors.New("bx 隧道健康检查超时(20s): restarts=0")
+	env.runner.reportedStartFailure = supervisor.StartFailureTunnelUnreachable
+
+	// 25s 正是那三个调用点传的 m.restartTimeout。
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	if err := env.manager.Up(ctx); err == nil {
+		t.Fatal("隧道没起来而 Up 报成功了")
+	}
+
+	deadlines := env.runner.startDeadlinesSnapshot()
+	if len(deadlines) != 1 || deadlines[0].IsZero() {
+		t.Fatalf("替身没记下递给 Start 的那个 deadline(%v)—— 台子坏了,下面的断言什么都证明不了", deadlines)
+	}
+	operationDeadline := deadlines[0]
+
+	asks := env.runner.startFailureAsksSnapshot()
+	if len(asks) != 1 {
+		t.Fatalf("去读 Core 自报失败的次数 = %d,want 1", len(asks))
+	}
+	if !asks[0].hasDeadline {
+		t.Fatal("递给「读记录」那一跳的 ctx 没有 deadline —— 它会一直等到宽限跑满,\n" +
+			"而那段时间是从收拾这个 Core 的预留里扣的")
+	}
+	if asks[0].deadline.After(operationDeadline) {
+		t.Fatalf("读记录的 deadline %s 晚于 Start 拿到的那个 %s ——\n"+
+			"多出来的 %v 花的是 reserveCleanup 给清理留的预算:清理超时 ⇒\n"+
+			"retainUncertain ⇒ core_ownership_uncertain,而 Manager.Down 的\n"+
+			"DNS 还原补偿就走这条路(停止路径不许因为别的事没做完而变慢或失败)",
+			asks[0].deadline.Format(time.RFC3339Nano),
+			operationDeadline.Format(time.RFC3339Nano),
+			asks[0].deadline.Sub(operationDeadline))
+	}
+}
+
+// 外层没有 deadline(菜单/CLI 直接 Up)⇒ 宽限拿满,一秒不少。
+//
+// 少了这一条,把上面那条修成「一律不等」也能全绿 —— 而那会让这支修复在
+// /v1/up 那条最常见的路上一次都不生效。
+func TestWithNoOuterDeadlineTheGraceIsTheFullOne(t *testing.T) {
+	ctx, cancel := startFailureReadContext(context.Background(), context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("宽限没有 deadline —— 它必须有界,否则一次失败的 up 会无限押着 mutation 槽")
+	}
+	if got := time.Until(deadline); got < coreStartFailureGrace-time.Second || got > coreStartFailureGrace {
+		t.Fatalf("宽限 = %v,want ≈ %v", got, coreStartFailureGrace)
+	}
+}
+
+// 余量已经是零(那三条 25s 的路)⇒ **仍然读一次**,只是一拍都不等。
+//
+// config / provision / tun_open / hijack 那几种约两秒就写完退出了,记录早在
+// 盘上;「不等」不等于「不看」。反过来直接返回空串,会把这四种也一起丢掉。
+func TestZeroGraceStillReadsOnce(t *testing.T) {
+	runner, _ := newReadOnlyStartFailureRunner(t)
+	writeStartFailureRecord(t, runner.StartFailurePath, corestartfailure.Record{
+		SchemaVersion: corestartfailure.SchemaVersion,
+		PID:           4242, At: time.Now(), Code: supervisor.StartFailureProvision,
+	})
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancelExpired()
+	readCtx, cancel := startFailureReadContext(context.Background(), expired)
+	defer cancel()
+	// 两半都要断言。少了这一半,「余量为零时照样给满宽限」的实现也全绿 ——
+	// 而那正是这条修复要消灭的东西(它花的是清理那份预留)。
+	if readCtx.Err() == nil {
+		t.Fatal("余量为零而那份 ctx 还没到期 —— 「一拍都不等」是假的,\n" +
+			"这段等待仍然在花收拾这个 Core 的预留")
+	}
+	if got := runner.StartFailureCode(readCtx, Process{PID: 4242}, time.Now().Add(-time.Second)); got != supervisor.StartFailureProvision {
+		t.Fatalf("StartFailureCode = %q, want %q —— 余量为零时仍要读一次,\n"+
+			"早早死掉的那几种记录两秒前就写好了", got, supervisor.StartFailureProvision)
+	}
+}

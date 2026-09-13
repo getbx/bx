@@ -39,6 +39,46 @@ const coreStartFailureGrace = supervisor.TunnelDiagnosisTimeout + 3*time.Second
 // coreStartFailurePoll 是等那份记录出现的轮询间隔。
 const coreStartFailurePoll = 200 * time.Millisecond
 
+// startFailureReadContext 给「读 Core 自报的那句话」一份**绝不动清理预算**的 ctx。
+//
+// 这段等待坐在 reserveCleanup 与 cleanupCoreAfterFailedStart 中间,而
+// reserveCleanup 存在的全部意义就是「无论上面那些事花了多久,收拾这个 Core
+// 的预算还在」。裸拿外层 ctx 去等,花的就是那份预留:
+//
+//	/v1/up 的 60s 有富余 —— 健康门 20s 到期,清理仍有 25s;
+//	而 **三个** startCoreLocked 调用点传的是 m.restartTimeout = 25s:
+//	  manager.go 的崩溃重启、reconcile_execute.go 的调谐环 start_core、
+//	  以及 **Manager.Down 里 DNS 还原失败之后那次补偿重启 —— 一条停止路径**。
+//	那里 reserveCleanup 扣下 min(25, 12.5) = 12.5s,健康门在 t+12.5 断,
+//	8 秒宽限等到 t+20.5,清理只剩 4.5s(本该 12.5s)⇒ 清理超时 ⇒
+//	retainUncertain ⇒ **core_ownership_uncertain**,正是这一整支要消灭的那条。
+//
+// 「停止路径不许因为别的事没做完而变慢或失败」是本仓库最硬的一条不变量
+// (2026-08-04 那次 71 分钟事故),而 Down 那条补偿恰好在它上面。
+//
+// 而且在那三条路上宽限是**纯成本**:Guardian 的耐心只有 12.5 秒,而 Core 要到
+// 约 25 秒之后才会为「隧道那一族」写下任何东西 —— 唯一需要宽限的那一族根本
+// 等不到。**余量不够就一拍都不等**(仍然读一次:config/provision/tun_open/
+// hijack 那几种约两秒就写完退出了,记录早在那儿)。
+//
+// 上界取 operationCtx 的 deadline,**不是自己再算一遍 min(cleanupTimeout,
+// remaining/2)** —— 那就是第二份判据,而它会与 reserveCleanup 漂开。
+func startFailureReadContext(ctx, operationCtx context.Context) (context.Context, context.CancelFunc) {
+	budget := coreStartFailureGrace
+	if deadline, ok := operationCtx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < budget {
+			budget = remaining
+		}
+	}
+	if budget <= 0 {
+		// 已经过期的 ctx:awaitStartFailureRecord 的第一次读排在任何 ctx 检查
+		// 之前(由 TestZeroGraceStillReadsOnce 钉住),于是「记录早就写好了」
+		// 那几种照样拿得到,而一拍都不等。
+		return context.WithDeadline(ctx, time.Now())
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
 // startFailurePath 是 Core 自报那份记录的位置(空 = 这条路整个关掉)。
 func (r *ExecCoreRunner) startFailurePath() string { return r.StartFailurePath }
 
