@@ -930,7 +930,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	case <-ctx.Done():
 		log.Printf("ctx 取消,还原中…")
 	}
-	// 关机 watchdog:还原已触发,下面的拆除若整体卡住超过 shutdownGrace,
+	// 关机 watchdog:还原已触发,下面的拆除若整体卡住超过 ShutdownGrace,
 	// dump goroutine + 强制退出 —— 保证死手/信号一定终止进程,并捕获卡点根因。
 	// 正常关机远快于 grace,watchdog 随进程退出自然作废、不触发。
 	//
@@ -941,7 +941,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 的累加。单步预算与 grace 的关系由
 	// TestTeardownStepBudgetLeavesRoomBeforeTheShutdownWatchdog 钉住 ——
 	// 一步挂住绝不该把 watchdog 逼出来,因为它会跳过剩下的还原。
-	armShutdownWatchdog(shutdownGrace, dumpAndExit)
+	armShutdownWatchdog(ShutdownGrace, dumpAndExit)
 	return nil
 }
 

@@ -124,9 +124,9 @@ func TestTeardownLedgerUnwindsOnlyOnce(t *testing.T) {
 // **强制退出整个进程**,剩下的还原全部跳过 —— 那正是这次改动要消灭的后果。
 // 留三倍余量,是给「一步挂住 + 其余各自花点时间」这种真实组合的空间。
 func TestTeardownStepBudgetLeavesRoomBeforeTheShutdownWatchdog(t *testing.T) {
-	if teardownDefaultBudget*3 > shutdownGrace {
+	if teardownDefaultBudget*3 > ShutdownGrace {
 		t.Fatalf("单步预算 %v 相对关机 grace %v 太大:一步挂住就可能把 watchdog 逼出来,"+
-			"而它会强制退出、跳过剩下的还原", teardownDefaultBudget, shutdownGrace)
+			"而它会强制退出、跳过剩下的还原", teardownDefaultBudget, ShutdownGrace)
 	}
 }
 
