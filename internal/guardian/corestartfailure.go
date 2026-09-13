@@ -96,8 +96,25 @@ func startFailureReadContext(ctx, operationCtx context.Context) (context.Context
 	return context.WithTimeout(ctx, budget)
 }
 
-// startFailurePath 是 Core 自报那份记录的位置(空 = 这条路整个关掉)。
-func (r *ExecCoreRunner) startFailurePath() string { return r.StartFailurePath }
+// startFailurePath 是 Core 自报那份记录的位置。
+//
+// **字段空了要落回默认位置,与兄弟 statePath 一模一样** —— 这条对称是承重的。
+// 从前它是一句裸转发,于是同一行删除(构造器里那句 `StartFailurePath:
+// corestartfailure.DefaultPath`)对状态文件是 **fail-safe** 的、对这份记录却是
+// **fail-silent** 的:路径变空 ⇒ coreArgs 不带那个 flag ⇒ Core 一个字节都不写 ⇒
+// 每一次都回落 core_health_failed,也就是 2026-09-12 那天用户读到的那句话,
+// 而三个包全绿。整枝 review 实测复现过。
+//
+// 代价说清楚:这之后 `StartFailurePath = ""` **不再是「把这条路关掉」的开关**。
+// 生产里从来没有人想关掉它(只有 NewExecCoreRunner 一个构造点),而
+// coreArgs 那道空路径判断仍然留着 —— 它守的是**另一条**路:手敲的
+// `sudo bx run` 压根不带这个 flag(见 cli 的 recordStartFailure)。
+func (r *ExecCoreRunner) startFailurePath() string {
+	if r.StartFailurePath != "" {
+		return r.StartFailurePath
+	}
+	return corestartfailure.DefaultPath
+}
 
 // discardStaleStartFailureRecord 在每次 spawn 之前把旧记录删掉 —— 陈旧记录的
 // **第一层**防线。
@@ -109,10 +126,10 @@ func (r *ExecCoreRunner) startFailurePath() string { return r.StartFailurePath }
 // **删不掉只记一行日志。** 起 Core 不许因为一次诊断准备工作没做成而失败;
 // 而漏删的后果由第二层兜住。
 func (r *ExecCoreRunner) discardStaleStartFailureRecord() {
+	// startFailurePath 永不返回空串(它落回 DefaultPath),所以这里没有
+	// 「这条路关掉了」那一支 —— 一段永远不会被执行的分支与没有它一样,
+	// 而它看起来更像还有一道防线。
 	path := r.startFailurePath()
-	if path == "" {
-		return
-	}
 	// Discard 而不是 Remove:它连同 Write 那次原子写遗留的临时文件一起扫掉。
 	// 那一刀(SIGKILL)按构造就落在 CreateTemp 与 Rename 之间那段窗口附近,
 	// 而 SIGKILL 不给 defer 机会 —— 只认最终名字的 Remove 一个碎片都清不掉。
@@ -138,10 +155,8 @@ func (r *ExecCoreRunner) discardStaleStartFailureRecord() {
 // **读完即删**;删不掉只记日志,不升级成失败(停止/诊断路径不许因为别的事
 // 没做成而失败)。
 func (r *ExecCoreRunner) StartFailureCode(ctx context.Context, process Process, since time.Time) string {
+	// 路径永不为空(startFailurePath 落回 DefaultPath),故不再有「关掉了」那一支。
 	path := r.startFailurePath()
-	if path == "" {
-		return ""
-	}
 	record, ok := r.awaitStartFailureRecord(ctx, path, process)
 	if !ok {
 		return ""

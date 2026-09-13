@@ -93,22 +93,74 @@ func TestAStaleRecordIsDeletedBeforeTheNextSpawn(t *testing.T) {
 	if _, err := os.Stat(recordPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("spawn 之前那份陈旧记录还在(stat=%v)—— 第一层防线没生效", err)
 	}
+
+	// **Core 被告知的那个位置,必须就是稍后读的人要去看的那个位置。**
+	// 这是跨进程那条线的第一跳:少了它,`coreArgs(…, "")` 这一行改动会让
+	// Core 一个字节都不写,而每一个包都还是绿的。
+	told, ok := startFailureFileArgument(spy.args)
+	if !ok {
+		t.Fatalf("spawn 的 argv 里没有 --%s:%v —— Core 不知道该往哪儿写,\n"+
+			"于是它一个字节都不写,而 Guardian 每次都回落 core_health_failed",
+			corestartfailure.FlagName, spy.args)
+	}
+	if told != runner.startFailurePath() {
+		t.Fatalf("告诉 Core 写到 %q,而读的人去看 %q —— 两头对不上,\n"+
+			"这条跨进程的线断在第一跳上", told, runner.startFailurePath())
+	}
 }
 
-// spawnRecordSpy 在 fork 的**那一刻**看一眼记录还在不在。
+// 记录位置**开箱就是那个共享的默认值**,而且字段空了也落回它 ——
+// 与兄弟 statePath() 一模一样。
+//
+// 这条对称是承重的:从前 startFailurePath 是一句裸转发,于是构造器里那句
+// `StartFailurePath: corestartfailure.DefaultPath` 被删掉之后,状态文件仍然
+// fail-safe 地落到默认位置,而这份记录**静默地关掉了整条路** ——
+// coreArgs 不带 flag、Core 什么都不写、每次都回落 core_health_failed,
+// 三个包全绿(整枝 review 实测复现)。
+func TestTheStartFailureRecordAlwaysHasAPlaceToLive(t *testing.T) {
+	fresh := NewExecCoreRunner("/usr/local/bin/bx", "/etc/bx/config.yaml", "127.0.0.1:53")
+	if got := fresh.startFailurePath(); got != corestartfailure.DefaultPath {
+		t.Fatalf("生产构造器造出来的 runner 用 %q 当记录位置,want %q", got, corestartfailure.DefaultPath)
+	}
+	if got := (&ExecCoreRunner{}).startFailurePath(); got != corestartfailure.DefaultPath {
+		t.Fatalf("字段空着时记录位置是 %q,want 落回 %q ——\n"+
+			"空串在这里不是「把这条路关掉」,而是「没人给它设过」;\n"+
+			"statePath() 对同一种情形就是落回默认值的", got, corestartfailure.DefaultPath)
+	}
+}
+
+// spawnRecordSpy 在 fork 的**那一刻**看一眼记录还在不在,**并记下 argv**。
+//
+// argv 此前拿到了却什么都不断言 —— 守卫就摆在缺陷旁边:把
+// `coreArgs(…, r.startFailurePath())` 改成 `coreArgs(…, "")`,Core 收不到那个
+// flag、一个字节都不写,而整个包照样全绿。
 type spawnRecordSpy struct {
 	ProcessOperations
 	recordPath           string
 	spawns               int
 	recordPresentAtSpawn bool
+	args                 []string
 }
 
 func (s *spawnRecordSpy) Start(executable string, args, environment []string) (StartedProcess, error) {
 	s.spawns++
+	s.args = append([]string(nil), args...)
 	if _, err := os.Stat(s.recordPath); err == nil {
 		s.recordPresentAtSpawn = true
 	}
 	return s.ProcessOperations.Start(executable, args, environment)
+}
+
+// startFailureFileArgument 从 argv 里取 --start-failure-file 的值
+// （没有那个 flag 就返回 "", false)。
+func startFailureFileArgument(args []string) (string, bool) {
+	flag := "--" + corestartfailure.FlagName
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1], true
+		}
+	}
+	return "", false
 }
 
 // Core 拿得到那个路径,否则它一个字都写不出来。
