@@ -71,14 +71,44 @@ func TestAStaleRecordIsDeletedBeforeTheNextSpawn(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// **判据是「spawn 那一刻它已经不在了」,不是「Start 返回之后它不在」。**
+	// 后者守不住任何东西:把那次预删挪到 operations.Start **之后**,终态一模
+	// 一样、整包全绿 —— 而那之间正好是 Core 已经起来、可能正在写记录的窗口,
+	// 预删挪进去就会把这一次刚写好的记录删掉,或者留着上一次那份让它被采信。
+	spy := &spawnRecordSpy{ProcessOperations: operations, recordPath: recordPath}
+	runner.Operations = spy
+
 	if _, err := runner.Start(context.Background(), CoreStartOptions{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(operations.releaseAll)
 
+	if spy.spawns != 1 {
+		t.Fatalf("spawn 了 %d 次,want 1 —— 台子坏了,下面那条断言什么都没证明", spy.spawns)
+	}
+	if spy.recordPresentAtSpawn {
+		t.Fatal("spawn 的那一刻陈旧记录还在盘上 —— 预删排在了 fork 之后,\n" +
+			"而那之间 Core 已经起来、可能正在写它自己那一份")
+	}
 	if _, err := os.Stat(recordPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("spawn 之前那份陈旧记录还在(stat=%v)—— 第一层防线没生效", err)
 	}
+}
+
+// spawnRecordSpy 在 fork 的**那一刻**看一眼记录还在不在。
+type spawnRecordSpy struct {
+	ProcessOperations
+	recordPath           string
+	spawns               int
+	recordPresentAtSpawn bool
+}
+
+func (s *spawnRecordSpy) Start(executable string, args, environment []string) (StartedProcess, error) {
+	s.spawns++
+	if _, err := os.Stat(s.recordPath); err == nil {
+		s.recordPresentAtSpawn = true
+	}
+	return s.ProcessOperations.Start(executable, args, environment)
 }
 
 // Core 拿得到那个路径,否则它一个字都写不出来。
@@ -462,5 +492,133 @@ func TestZeroGraceStillReadsOnce(t *testing.T) {
 	if got := runner.StartFailureCode(readCtx, Process{PID: 4242}, time.Now().Add(-time.Second)); got != supervisor.StartFailureProvision {
 		t.Fatalf("StartFailureCode = %q, want %q —— 余量为零时仍要读一次,\n"+
 			"早早死掉的那几种记录两秒前就写好了", got, supervisor.StartFailureProvision)
+	}
+}
+
+// --- 等待那半边的四条行为守卫 ---
+//
+// 这四条守的是同一段循环上四个各自独立、而且**都曾在变异下全绿**的性质。
+// 共同的根因是既有用例的形状:每一条都在等待开始**之前**就把记录写好了,
+// 于是「等」这件事整个不可见 —— 一次删掉轮询的重构(而那恰恰是事故场景唯一
+// 需要的东西)会静默通过。
+
+// ① 句柄没了就收手,不许把宽限等满。
+//
+// 那种 Core 不会再往这个位置写任何东西(waitpid 已经返回),继续等只是白白
+// 押着 mutation 槽。变异 `_ = tracked` 之下这条循环会一直轮询到 ctx 到期。
+func TestTheWaitStopsAsSoonAsTheHandleIsGone(t *testing.T) {
+	runner, _ := newReadOnlyStartFailureRunner(t)
+	// 句柄从没登记过 = 「不是我们 fork 的、或者早被摘掉」。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	if got := runner.StartFailureCode(ctx, Process{PID: 4242}, time.Now().Add(-time.Second)); got != "" {
+		t.Fatalf("StartFailureCode = %q, want 空串", got)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("句柄不在而等了 %v —— 那个 Core 不会再写任何东西,\n"+
+			"继续等只是白白押着 mutation 槽(宽限 %v,ctx 2s)", elapsed, coreStartFailureGrace)
+	}
+}
+
+// ② 轮询要吃调用方的 ctx。
+//
+// 变异:把 select 换成裸 `<-timer.C`。那之后这条循环会一路等满 coreStartFailureGrace
+// (8 秒),而调用方的预算早就到了 —— 在那三条 restartTimeout=25s 的路上,
+// 多出来的时间正是收拾这个 Core 的预留。
+func TestTheWaitHonoursTheCallersDeadline(t *testing.T) {
+	runner, _ := newReadOnlyStartFailureRunner(t)
+	process := Process{PID: 4242, Generation: "test:1"}
+	// 登记一个句柄:否则它在第一拍就按「句柄没了」返回,这条断言什么都证明不了。
+	runner.rememberStartedCore(process, &startedCore{exited: make(chan struct{})})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if got := runner.StartFailureCode(ctx, process, time.Now().Add(-time.Second)); got != "" {
+		t.Fatalf("StartFailureCode = %q, want 空串", got)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 3*time.Second {
+		t.Fatalf("调用方的 ctx 400ms 前就到期了,而这次等待花了 %v(宽限 %v)——\n"+
+			"轮询没有吃调用方的 ctx", elapsed, coreStartFailureGrace)
+	}
+	// 前置自检:它确实**等**过,不是一拍就走(否则上面那条对「不轮询」的
+	// 实现也平凡成立)。
+	if elapsed < coreStartFailurePoll {
+		t.Fatalf("这次等待只花了 %v —— 它根本没进轮询,上面那条断言什么都没证明", elapsed)
+	}
+}
+
+// ③ **记录在等待途中才出现**,照样拿得到。
+//
+// 这是这一族里最重要的一条,而它此前一条都没有:所有既有用例都在等待开始
+// **之前**就把记录写好了,于是变异「只读一次、根本不轮询」整个包全绿 ——
+// 而「Core 还在跑、记录几秒后才写出来」正是这支修复唯一存在的那个场景。
+func TestARecordThatArrivesDuringTheWaitIsStillPickedUp(t *testing.T) {
+	runner, _ := newReadOnlyStartFailureRunner(t)
+	process := Process{PID: 4242, Generation: "test:1"}
+	runner.rememberStartedCore(process, &startedCore{exited: make(chan struct{})})
+
+	go func() {
+		time.Sleep(3 * coreStartFailurePoll)
+		_ = corestartfailure.Write(runner.StartFailurePath, corestartfailure.Record{
+			SchemaVersion: corestartfailure.SchemaVersion,
+			PID:           4242, At: time.Now(), Code: supervisor.StartFailureTunnelUnreachable,
+		})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), coreStartFailureGrace)
+	defer cancel()
+	if got := runner.StartFailureCode(ctx, process, time.Now().Add(-time.Second)); got != supervisor.StartFailureTunnelUnreachable {
+		t.Fatalf("StartFailureCode = %q, want %q —— 记录在等待途中才写出来时没拿到,\n"+
+			"也就是说这段等待只读了一次。而「Core 还在跑、几秒后才写」正是这支\n"+
+			"修复唯一存在的那个场景",
+			got, supervisor.StartFailureTunnelUnreachable)
+	}
+}
+
+// ④ 句柄**看见没了之后**必须再读一次。
+//
+// 顺序:Core 先写记录、再退出,父进程 waitpid 返回之后才 forgetStartedCore。
+// 所以「句柄没了」蕴含「该写的都写完并且可见了」—— 但只有在观测到句柄消失
+// **之后**再读一次才拿得到最后那一瞬写下的东西。
+//
+// 对调那两行只在一个亚微秒的交错窗口里产生差别,任何不带观察点的测试都分不开
+// (reviewer 变异实测:对调之后整包全绿)。钩子落在两行中间,把那个窗口变成
+// 确定的:句柄在「取过句柄之后、读之前」消失,同时记录出现。
+//   - 现在这个顺序:tracked 取到的是 true(取在消失之前)→ 读 → 拿到记录 ✓
+//   - 对调之后:先读(那时记录还没写)→ 再取句柄(已经没了)→ 返回空串 ✗
+func TestTheLastReadHappensAfterTheHandleIsSeenGone(t *testing.T) {
+	runner, _ := newReadOnlyStartFailureRunner(t)
+	process := Process{PID: 4242, Generation: "test:1"}
+	runner.rememberStartedCore(process, &startedCore{exited: make(chan struct{})})
+
+	probes := 0
+	runner.afterLivenessProbe = func() {
+		probes++
+		if probes != 1 {
+			return
+		}
+		// 「Core 写完记录、退出、父进程收割」全发生在这一瞬。
+		if err := corestartfailure.Write(runner.StartFailurePath, corestartfailure.Record{
+			SchemaVersion: corestartfailure.SchemaVersion,
+			PID:           4242, At: time.Now(), Code: supervisor.StartFailureTunnelUnreachable,
+		}); err != nil {
+			t.Error(err)
+		}
+		runner.forgetStartedCore(process)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), coreStartFailureGrace)
+	defer cancel()
+	if got := runner.StartFailureCode(ctx, process, time.Now().Add(-time.Second)); got != supervisor.StartFailureTunnelUnreachable {
+		t.Fatalf("StartFailureCode = %q, want %q —— 那次读排在了「观测到句柄消失」之前,\n"+
+			"于是 Core 在退出前最后一瞬写下的东西被漏掉了",
+			got, supervisor.StartFailureTunnelUnreachable)
+	}
+	if probes == 0 {
+		t.Fatal("钩子一次都没被调用 —— 这条断言什么都没证明")
 	}
 }
