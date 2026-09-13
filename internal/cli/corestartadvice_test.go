@@ -446,3 +446,37 @@ func TestEveryTunnelOutcomeNamesTheServerWhenBxKnowsIt(t *testing.T) {
 		t.Fatalf("只走到 %d 档隧道结局(want ≥5)—— 族的判据认不出现在的码了", family)
 	}
 }
+
+// **最常见的那一种配置故障必须报 config_unusable,不是 other。**
+//
+// `bx run` 先 loadConfig,那次 config.Parse 失败根本走不到 supervisor.Run 里 ——
+// 而 Run 里那三处 tagStartFailure(ErrConfig, …) 盖的是更深的东西(分流脑、
+// fake-IP 池、hosts 覆盖)。于是一份 YAML 写坏了的配置,用户读到的是
+// 「bx 这一版还没有专门说法的启动失败」,而这恰恰是最有说法的一种。
+//
+// **反面那一半是判据的一部分**:文件读不到(不在 / 权限不够)不许借这个码。
+// 那是另一种故障(多半是「还没 setup 过」),说成「你的配置写错了」会把用户
+// 派去改一个他还没写过的文件 —— ErrConfig 头上那段注释画的就是这条分界。
+func TestABrokenConfigFileIsReportedAsConfigUnusable(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(broken, []byte("server: [这不是\n  合法的 yaml: :\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadConfig(broken)
+	if err == nil {
+		t.Fatal("坏掉的 YAML 没有报错 —— 这条测试的前提不成立了")
+	}
+	if got := supervisor.StartFailureCode(err); got != supervisor.StartFailureConfig {
+		t.Fatalf("解析不了的配置分类成 %q,want %q —— 用户会读到「还没有专门说法的启动失败」,\n"+
+			"而这一种恰恰有说法(哪个文件、改完要 sudo bx down && sudo bx up)", got, supervisor.StartFailureConfig)
+	}
+
+	_, missingErr := loadConfig(filepath.Join(dir, "根本没有这个文件.yaml"))
+	if missingErr == nil {
+		t.Fatal("读一个不存在的配置没有报错 —— 这条测试的前提不成立了")
+	}
+	if got := supervisor.StartFailureCode(missingErr); got == supervisor.StartFailureConfig {
+		t.Fatal("「读不到配置」借用了 config_unusable —— 那会叫用户去改一个他还没写过的文件")
+	}
+}

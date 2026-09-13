@@ -5069,9 +5069,20 @@ func loadConfig(path string) (*config.Config, error) {
 	path = resolveConfigPath(path)
 	b, err := os.ReadFile(path)
 	if err != nil {
+		// **读不到不是「内容用不了」。** 文件不在 / 权限不够是另一种故障
+		// (多半是「还没 setup 过」),借 config_unusable 那个码就是叫用户去
+		// 改一个他还没写过的文件。这一支照旧落 other。
 		return nil, fmt.Errorf("读配置 %s: %w", path, err)
 	}
-	return config.Parse(b)
+	cfg, err := config.Parse(b)
+	if err != nil {
+		// 挂上哨兵,`bx run` 起不来时 Core 自报的码才是 config_unusable 而不是
+		// other —— 后者给的是「bx 这一版还没有专门说法的启动失败」,而这一种
+		// 恰恰是最有说法的一种。文案一个字不改(tagStartFailure 的 Error()
+		// 原样透传),别处照旧。
+		return nil, supervisor.TagUnusableConfig(err)
+	}
+	return cfg, nil
 }
 
 // resolveConfigPath: 默认路径不存在时回退到家目录配置(便于非 root 只读命令)。
