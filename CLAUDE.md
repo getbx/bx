@@ -997,6 +997,50 @@ scratchpad 时要知道这条。新台子每次成功都打印 `MUTATION LANDED`
 文件与副本逐字节相同时非零退出;**还原那一步也差点出事** —— 备份目录里积着上一个任务
 留下的子目录,`cp` 回去差一点把文件拷到仓库根,现在还原拒绝写到仓库树之外。
 
+### 第六种写法:**那条守卫写了、跑了、绿了 —— 而它守的函数一次都没被执行过**(2026-09-13)
+
+上面那五种讲的都是「断言钉错了地方」。第六种更靠外一层:断言钉对了,**但没人调用
+它所在的那个函数**。定向复审在 `ServersModelTests.swift` 里抓到三条 `static func test*`
+只有定义、`main()` 里没有调用 —— 而它们恰好是上一轮两条修复的**整个纯模型那一半**。
+变异实测:把 `currentServerPanel` 的 probe 写死成 `.notChecked`、或把「这台正在承载
+你的流量」那段整个删掉,套件照样打印通过横幅并**退出码 0**。
+
+`TestEveryMacOSMenuTestSuiteIsRegistered` 钉的是**文件**有没有进
+`scripts/test-macos-menu.sh`,它在结构上看不见这件事 —— 文件跑了、横幅打了,只是
+里面少执行了三个函数。另一半现在由
+`TestEveryMacOSMenuTestFunctionIsCalledFromItsMain` 守着(每个登记过的套件文件里
+定义的每个 `static func test*`,都必须在同一文件的 `main()` 里被调到)。**两条合起来
+才是一条链**;那条旧守卫头上原先写着「本测试是全仓库唯一能发现这件事的东西」,
+那句话是陈旧的,已就地更正 —— **一句声称某处已被保护的假陈述,会让下一个人不再去
+补另一半。**
+
+**写这条守卫本身有两个陷阱,都实测踩过**:① `GuardianClientTests.swift` 用的是
+`static func main() throws {`,按 `static func main() {` 逐字匹配的扫描器会**静默
+跳过它** —— 一次假清白;签名因此只匹配到 `static func main(` 为止,函数体走括号配平。
+② 读不到脚本 / 读不到目录 / 登记过的文件里找不到 `main()` / 一个函数都没扫到,
+一律 `t.Fatal`。少数套件(`FirstRunTests` 一类)把断言直接写在 `main()` 里、没有具名
+的 `test*`,那种写法按构造不可能漏调,跳过即可 —— 但整体一个函数都没扫到仍然是 Fatal。
+
+**同一轮里另外三条,形状都在上面那五种里**:F8 那道能力门的守卫钉的是「门存在」而
+不是「门拦得住」(`guard … else { return }` 改成不带 `return` 的 `if !…`、以及给
+判据加一个 `!`,两条变异都落上且**全绿**;后者对只声明 `servers` 的旧 Guardian 直接
+放行 replace ⇒ 出口国被换到用户正在编辑的那台机器上,而菜单报成功)—— 现由
+`swiftGuardStopsHere` 钉**极性与控制流**;`swiftArgumentIsPlainly` 收尾那个字符类
+`[^A-Za-z0-9_.(]` **被空格满足**,于是 `canEdit: canEdit || legacyEditFallback` 照样
+算「光秃秃的取值」(把门重新打开的方向,而「给旧 Guardian 加一条回落」在这个代码库里
+隔三差五就会长出来);F7 那条 `!contains("nothing below")` 钉的是那一种拼法,改写成
+「none of the readings below were measured」照样全绿 —— 现在判据从**这一块实际画出来
+的行**推出来(仍画着的不许被点名、也不许被全称词一网打尽)。
+
+**另有两条产品缺陷**:① 删除确认框用 `Bool` 回答了一个三态问题 —— Core 静默、或者
+Guardian 自己说不出是哪一台(同主机两台),都交出 `false`,与「确认这台闲着」无法区分,
+而确认框对 `false` 一个字都不说,**在这个窗口里沉默读作那句让人放心的答案**。现由
+`ServerTrafficState`(carrying / idle / unconfirmed)与**唯一**一份判据
+`serverTrafficState` 回答,零值取 `unconfirmed`。② `add` 与 `replace` 都收 `udp` 却
+**都不校验它**(F9 只补了主链接),现走同一个 `setup.LinkHost` 门;**空的 UDP 仍然是
+「别动它」**,replace 也只校验请求带来的那条 —— 盘上可能正躺着一条修复之前写进去的
+畸形链接,拿它当拒绝理由会让用户连主链接都换不了。
+
 ## 菜单精简:18 行 → 11 行,子菜单从此可用(2026-09-08,真机未验)
 
 项目所有者原话「bx 菜单感觉有点复杂了」。复杂的根源两个:五行数据里四行是**诊断值**
