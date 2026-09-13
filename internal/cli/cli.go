@@ -438,7 +438,10 @@ func realtimeCommands() []*cli.Command {
 	return []*cli.Command{
 		{Name: "status", Usage: "查看 UDP / 实时应用策略", Flags: realtimeFlags(), Action: realtimeStatusAction},
 		{Name: "on", Usage: "开启非 DNS UDP 中继模式", Flags: realtimeFlags(), Hidden: true, Action: realtimeOnAction},
-		{Name: "off", Usage: "恢复默认 UDP 阻断模式", Flags: realtimeFlags(), Hidden: true, Action: realtimeOffAction},
+		// **不许写「恢复默认」**:`udp.mode` 的默认值是 `proxy`
+		// (config.go 的 Parse),而这个动词写的是 `block` —— 它把 UDP 从默认
+		// 状态改**走**,不是改回去。用户按那句话读会以为敲它等于什么都没做。
+		{Name: "off", Usage: "把非 DNS UDP 切到阻断模式(注意:配置默认是 proxy,这不是「恢复默认」)", Flags: realtimeFlags(), Hidden: true, Action: realtimeOffAction},
 	}
 }
 

@@ -123,7 +123,7 @@ func apply(in []byte, req Request, validateConfig bool) ([]byte, bool, error) {
 		}
 	}
 	// **校验在动 YAML 之前全部做完。** 这条路(bx direct/proxy add、MCP 的
-	// bx_apply_policy)此前一个字都不校验,于是 `example.com.` 这种谁都匹配不上
+	// bx_policy_apply)此前一个字都不校验,于是 `example.com.` 这种谁都匹配不上
 	// 的规则写得进去、`bx direct ls` 与菜单里还显示成一条正常规则。
 	adds := make([]RulePattern, 0, len(req.Add))
 	for _, d := range req.Add {

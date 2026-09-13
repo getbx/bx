@@ -387,8 +387,8 @@ func TestEveryTransportKindDeclaresWhetherATCPProbeObservesIt(t *testing.T) {
 // I3:**本机自己**没能把 SYN 发出去,不许说成「那台服务器的端口没有应答」。
 //
 // ENETUNREACH 有真机先例:DirectDialer 的 IP_BOUND_IF 只查 scoped 路由表,而
-// 那条 scoped 默认路由是 Hijack(run.go:880)装的,判别拨号在 run.go:308,
-// **早 572 行**。一台 macOS 上没有 per-interface default 的机器上,每一次判别
+// 那条 scoped 默认路由是 `plat.Hijack` 装的,而判别拨号在 `Run` 里排在 Hijack
+// **前面**。一台 macOS 上没有 per-interface default 的机器上,每一次判别
 // 拨号都在本地就 network is unreachable —— 于是不管 VPS 在做什么,bx 都答
 // 「你的 VPS 挂了」。2026-08-13 那次事故的同一签名,落在唯一一条职责就是
 // 说实话的路上。
@@ -549,7 +549,7 @@ func localDialFailure() error {
 //
 // 这是 2026-08-13 那台机器上这一整支修复的成败线:判别拨号走
 // plat.DirectDialer()(darwin 上是 IP_BOUND_IF),而 IP_BOUND_IF 只查 scoped
-// 路由表;那条 scoped 默认路由由 Hijack 在 572 行之后才装。于是那台机器上
+// 路由表;那条 scoped 默认路由由 `plat.Hijack` 装,而它排在判别拨号后面。于是那台机器上
 // **每一次**判别拨号都 ENETUNREACH,「VPS 真的挂了」与「VPS 活着而握手失败」
 // 一起塌进 local_dial —— 而 local_dial 那句话里连 host:port 都没有,还先派
 // 用户去查 bx 自己的路由。spec §8 的真机验收因此复现不出它要验的那个场景。

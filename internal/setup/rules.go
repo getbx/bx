@@ -24,7 +24,7 @@ type RuleSet struct {
 // ValidateRulePattern 校验一条规则的写法,并返回归一化后要写进配置的那一行。
 //
 // **判定在 internal/policy,一份,两条写入路径共用。** 另一条路是
-// `bx direct add` / `bx proxy add` 与 MCP 的 bx_apply_policy(policy.Apply/Edit);
+// `bx direct add` / `bx proxy add` 与 MCP 的 bx_policy_apply(policy.Apply/Edit);
 // 两份校验器会让同一个串在菜单里被拒、在命令行里被接受,而用户无从分辨谁对。
 //
 // **2026-09-12 起也收 IP 与 CIDR**:supervisor.BuildRouter 一直把 rules 里的

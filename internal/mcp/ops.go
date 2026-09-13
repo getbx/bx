@@ -69,8 +69,6 @@ type InspectIn struct {
 	Timeout   string `json:"timeout,omitempty" jsonschema:"optional probe timeout, e.g. 8s"`
 }
 
-// LeakCheckIn 刻意**没有 browser 选项**:浏览器那半要人在屏幕前点一下才产生数据,
-// 那从来就不适合由 agent 代劳。人用 `bx leakcheck`,它会开页面并把两半事实对起来。
 // ExplainIn 问「现在向这个目标发一条连接会发生什么、为什么」。
 type ExplainIn struct {
 	Target string `json:"target" jsonschema:"domain, IP, or host:port to ask about, e.g. steamstatic.com or 198.18.0.7"`
@@ -80,6 +78,11 @@ type AppsIn struct {
 	For string `json:"for,omitempty" jsonschema:"sampling window, e.g. 8s; the report cannot answer about traffic outside it"`
 }
 
+// LeakCheckIn 刻意**没有 browser 选项**:浏览器那半要人在屏幕前点一下才产生数据,
+// 那从来就不适合由 agent 代劳。人用 `bx leakcheck`,它会开页面并把两半事实对起来。
+//
+// (这段话此前**没有空行**地贴在 ExplainIn 的文档注释上面,于是 godoc 把它整块
+// 挂给了 ExplainIn —— 一个连 leak 都不沾的类型。)
 type LeakCheckIn struct {
 	Network        bool     `json:"network,omitempty" jsonschema:"send outbound IPv4/IPv6/DNS probes"`
 	ExpectedIPs    []string `json:"expected_ips,omitempty" jsonschema:"acceptable proxy/VPS public IPs"`

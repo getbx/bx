@@ -1,5 +1,5 @@
 // 这一组守卫钉的是**写入路径**(policy.Apply / policy.Edit,即 bx direct add /
-// bx proxy add / bx_apply_policy)的两条性质:
+// bx proxy add / bx_policy_apply)的两条性质:
 //
 //   - 加进一边,对侧那条**覆盖相等**的规则必须消失;
 //   - 写不进去一条 bx 的匹配器认不出的规则。

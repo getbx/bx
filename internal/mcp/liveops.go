@@ -199,7 +199,14 @@ func appsArgs(in AppsIn) []string {
 
 // Check composes the existing read-only inspection and local observation
 // surfaces. It neither changes bx nor probes externally unless explicitly
-// requested through CheckIn.Network or CheckIn.Browser.
+// requested through CheckIn.Network.
+//
+// There is no browser half and there is not meant to be one: the browser
+// checks need a person in front of the screen to click, which is never a
+// thing to hand to an agent (see the LeakCheckIn comment in ops.go, and the
+// deletion of `bx leak-check --browser`). This sentence used to say
+// "CheckIn.Network or CheckIn.Browser" — a field that has never existed on
+// this struct.
 func (o *liveOps) Check(in CheckIn) (CheckOut, error) {
 	inspect, err := o.Inspect(InspectIn{SkipProbe: true})
 	if err != nil {
