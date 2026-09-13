@@ -104,8 +104,13 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 		// DirectDialer 用 IP_BOUND_IF 绑物理网卡,而 IP_BOUND_IF 只查 scoped
 		// 路由表 —— 那条 scoped 默认路由由 Hijack 装,比这次判别拨号晚 572 行。
 		// 这时去探 VPS 什么也说明不了:SYN 根本没离开这台机器。
-		headline = "bx 起不来:隧道没建起来,而 bx 没能判断那台服务器还在不在 —— " +
-			"那次判别拨号在本机就失败了,SYN 一个都没发出去。"
+		// **这一档也要点名 host:port。** 从前它是这一族里唯一一句连地址都没有
+		// 的话,而 2026-08-13 那种机器上(scoped 表里没有默认路由)最容易落进
+		// 来的恰恰是「VPS 真的挂了」那一次 —— 用户拿到一句既不说哪台机器、
+		// 又先派他去查 bx 自己路由的话。bx 明明知道那个地址。
+		headline = "bx 起不来:隧道没建起来,而 bx " +
+			phrase(named, "没能判断服务器 "+where+" 还在不在", "没能判断那台服务器还在不在") +
+			" —— 那次判别拨号在本机就失败了,SYN 一个都没发出去。"
 		steps = append(steps,
 			"先查 bx 自己的直连出口(2026-08-13 那次故障的签名):route -n get -ifscope <你的网卡> 1.1.1.1;"+
 				"答 `not in table` 的话,坏的是这台机器上 bx 的直连器,换一台服务器帮不上忙",

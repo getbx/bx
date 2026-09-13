@@ -305,8 +305,14 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 隧道没起来时**当场判别一次**「是那台服务器不通,还是它活着而隧道没建起来」——
 	// 两者的处置完全相反(tunneldiagnosis.go)。判别只在失败路径上发生:拨号器
 	// 是个 thunk,成功启动的那条路上连造都不会造它。
+	//
+	// 拨号器是**两条**:先绑物理网卡(防的是上一个崩掉的实例留下的陈旧 TUN),
+	// SYN 在本机就没出去时不绑再试一次 —— 此刻 TUN 还没开、路由还没劫持,不绑
+	// 走的正是隧道子进程刚才那 20 秒走的同一张主路由表(diagnosisDialWithUnboundRetry)。
 	if err := awaitTunnelHealthOrDiagnose(ctx, tun0, healthTimeout, cfg.Server,
-		func() tunnelDialFunc { return plat.DirectDialer().DialContext }); err != nil {
+		func() tunnelDialFunc {
+			return diagnosisDialWithUnboundRetry(plat.DirectDialer().DialContext, (&net.Dialer{}).DialContext)
+		}); err != nil {
 		return err
 	}
 	log.Printf("bx 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)

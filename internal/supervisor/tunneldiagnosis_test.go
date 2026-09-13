@@ -211,6 +211,19 @@ func TestRunAwaitsTunnelHealthThroughTheDiagnosingPath(t *testing.T) {
 	if !mentionsSelector(lit, "plat", "DirectDialer") {
 		t.Fatal("判别用的拨号器不是 plat.DirectDialer() —— 别的拨号器可能绕回隧道成环")
 	}
+	// **不绑的那次重试也必须接在这条线上。** 少了它,2026-08-13 那种机器上
+	// (scoped 表里没有默认路由)每一次判别拨号都在本机 ENETUNREACH,于是
+	// 「VPS 真的挂了」退化成 local_dial —— 而那句话里连 host:port 都没有。
+	retry := findCall(t, lit, "diagnosisDialWithUnboundRetry")
+	if len(retry.Args) != 2 {
+		t.Fatalf("diagnosisDialWithUnboundRetry 收到 %d 个实参(接线守卫失效,请更新本测试)", len(retry.Args))
+	}
+	// 第二个实参**不许**也是 plat.DirectDialer:同一个绑网卡的拨号器拨两遍,
+	// 重试一次都救不了,而这条守卫会照样绿。
+	if mentionsSelector(retry.Args[1], "plat", "DirectDialer") {
+		t.Fatal("不绑那次重试用的还是 plat.DirectDialer() —— 它照样只查 scoped 表,\n" +
+			"重试等于把同一次失败又做了一遍")
+	}
 }
 
 // listeningLocalAddress 起一个真的在应答的本地端口,并在测试结束时收掉。
@@ -523,5 +536,82 @@ func TestEveryUndeterminedOutcomeStillReadsAsUndetermined(t *testing.T) {
 	if len(seen) != 3 {
 		t.Fatalf("五条生产路径只产出了 %d 个不同的码(%v)—— 处置不同的那两种必须\n"+
 			"各有自己的码,否则用户被派去查错的东西", len(seen), seen)
+	}
+}
+
+// localDialFailure 造一个「SYN 没离开本机」的失败(2026-08-13 那台机器的形状:
+// IP_BOUND_IF 绑物理网卡,而 scoped 表里根本没有默认路由)。
+func localDialFailure() error {
+	return &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ENETUNREACH}
+}
+
+// **绑网卡那次在本机就失败时,不绑再试一次 —— 关于那台服务器的真话因此还答得出来。**
+//
+// 这是 2026-08-13 那台机器上这一整支修复的成败线:判别拨号走
+// plat.DirectDialer()(darwin 上是 IP_BOUND_IF),而 IP_BOUND_IF 只查 scoped
+// 路由表;那条 scoped 默认路由由 Hijack 在 572 行之后才装。于是那台机器上
+// **每一次**判别拨号都 ENETUNREACH,「VPS 真的挂了」与「VPS 活着而握手失败」
+// 一起塌进 local_dial —— 而 local_dial 那句话里连 host:port 都没有,还先派
+// 用户去查 bx 自己的路由。spec §8 的真机验收因此复现不出它要验的那个场景。
+func TestALocalDialFailureIsRetriedUnboundSoTheServerStillGetsAnswered(t *testing.T) {
+	cause := tagStartFailure(ErrTunnelUnhealthy, errors.New("隧道没起来"))
+	bound := func(context.Context, string, string) (net.Conn, error) { return nil, localDialFailure() }
+	unbound := (&net.Dialer{}).DialContext
+	retrying := func() tunnelDialFunc { return diagnosisDialWithUnboundRetry(bound, unbound) }
+
+	// 服务器活着(端口在应答)⇒ 必须答「它在应答」,不是「没判出来」。
+	alive := diagnoseUnhealthyTunnel(context.Background(), listeningLocalAddress(t), retrying, cause)
+	if got := StartFailureCode(alive); got != StartFailureTunnelHandshakeFailed {
+		t.Fatalf("绑网卡失败 + 服务器在应答 ⇒ %q,want %q —— 不绑那次重试没发生",
+			got, StartFailureTunnelHandshakeFailed)
+	}
+	// 服务器那个端口没人听(= 事故本身的形状)⇒ 必须答「连不上」,
+	// 那句话里才有 host:port,验收才复现得出来。
+	dead := diagnoseUnhealthyTunnel(context.Background(), closedLocalAddress(t), retrying, cause)
+	if got := StartFailureCode(dead); got != StartFailureTunnelUnreachable {
+		t.Fatalf("绑网卡失败 + 服务器端口没人听 ⇒ %q,want %q —— 事故本身的形状复现不出来",
+			got, StartFailureTunnelUnreachable)
+	}
+}
+
+// 两次都在本机失败 ⇒ **照旧报 local_dial**,一个字都不变。
+func TestWhenTheUnboundRetryAlsoFailsLocallyItIsStillLocalDial(t *testing.T) {
+	cause := tagStartFailure(ErrTunnelUnhealthy, errors.New("隧道没起来"))
+	local := func(context.Context, string, string) (net.Conn, error) { return nil, localDialFailure() }
+	err := diagnoseUnhealthyTunnel(context.Background(), closedLocalAddress(t), func() tunnelDialFunc {
+		return diagnosisDialWithUnboundRetry(local, local)
+	}, cause)
+	if got := StartFailureCode(err); got != StartFailureTunnelUndeterminedLocalDial {
+		t.Fatalf("两次都在本机失败 ⇒ %q,want %q —— 「没判出来」不许被重试变成一个具体答案",
+			got, StartFailureTunnelUndeterminedLocalDial)
+	}
+}
+
+// **那台服务器给出的答复不许被第二次拨号覆盖。**
+//
+// 拒绝与超时是观测到的答案(2026-09-12 事故的原文正是 i/o timeout);对它们
+// 再拨一次不绑的,换来的只是一个可能不同的第二意见,而我们没有理由相信后者。
+// 重试只服务于「SYN 根本没离开本机」那一种。
+func TestAnAnswerFromTheServerIsNeverSecondGuessedByARetry(t *testing.T) {
+	cause := tagStartFailure(ErrTunnelUnhealthy, errors.New("隧道没起来"))
+	refused := func(context.Context, string, string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	}
+	retried := false
+	unbound := func(ctx context.Context, network, address string) (net.Conn, error) {
+		retried = true
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+	// 目的地是一个**在应答**的端口:重试一旦发生,结论会从「连不上」翻成
+	// 「在应答」—— 少了这一半,一个无条件重试的实现照样能让上面那个布尔为真
+	// 而结论看不出区别。
+	err := diagnoseUnhealthyTunnel(context.Background(), listeningLocalAddress(t), func() tunnelDialFunc {
+		return diagnosisDialWithUnboundRetry(refused, unbound)
+	}, cause)
+	if retried {
+		t.Fatal("那台服务器已经答复了(拒绝),而我们又不绑拨了一次 —— 观测到的答案被第二意见覆盖")
+	}
+	if got := StartFailureCode(err); got != StartFailureTunnelUnreachable {
+		t.Fatalf("被拒绝 ⇒ %q,want %q", got, StartFailureTunnelUnreachable)
 	}
 }

@@ -329,7 +329,12 @@ func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> St
             : "To confirm that machine is alive, try ping or ssh to it")
         steps.append(logLine)
     case "tunnel_unhealthy_undetermined_local_dial":
-        headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there — its probe failed on this Mac before any SYN left it."
+        // **这一档也要点名 host:port**(与 Go 侧同一条):从前它是这一族里唯一
+        // 一句连地址都没有的话,而 2026-08-13 那种机器上最容易落进来的恰恰是
+        // 「VPS 真的挂了」那一次。
+        headline = "bx could not start: the tunnel did not come up, and bx could not tell whether "
+            + (named ? "\(where_) is still there" : "that server is still there")
+            + " — its probe failed on this Mac before any SYN left it."
         steps.append("Check bx's own direct route first (the signature of the 2026-08-13 failure): route -n get -ifscope <your interface> 1.1.1.1 — if it says \"not in table\", bx's own direct dialer on this Mac is broken and switching servers will not help.")
         // **这条不许省。** 同一个码还盖着「解析不出那台服务器的主机名」——
         // 那一种是服务器特有的,换一台确实有用。少了它,下面那句「你还配了

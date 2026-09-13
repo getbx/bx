@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -144,6 +145,64 @@ var dialFailuresBeforeTheSYNLeaves = append(
 
 type tunnelDialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
+// failedBeforeTheSYNLeft:这次拨号失败是不是**本机自己**没能把 SYN 发出去。
+//
+// 判据只有这一份 —— 判别那边用它给结论分档,重试那边用它决定要不要不绑再试
+// 一次。两处各写一遍的话,一次「往表里加一个 errno」只会落到其中一处,而漏掉
+// 的那一处不会有任何东西转红。
+func failedBeforeTheSYNLeft(err error) bool {
+	for _, localFailure := range dialFailuresBeforeTheSYNLeaves {
+		if errors.Is(err, localFailure) {
+			return true
+		}
+	}
+	return false
+}
+
+// diagnosisDialWithUnboundRetry:先按**绑物理网卡**的直连器拨,SYN 在本机就
+// 没出去时**不绑再试一次**。
+//
+// **为什么必须重试**:绑网卡走的是 IP_BOUND_IF,而它只查 **scoped** 路由表;
+// 那条 scoped 默认路由由 Hijack 装(run.go:880),比这次判别拨号(run.go:308)
+// 晚 572 行。2026-08-13 那台机器的形状(单一活跃网络服务,macOS 根本不建
+// per-interface default)下,每一次判别拨号都在本机 ENETUNREACH,于是
+// **「VPS 真的挂了」这件事退化成 tunnel_unhealthy_undetermined_local_dial** ——
+// 那句话里连 host:port 都没有,还先派用户去查 bx 自己的路由。真机验收因此
+// 复现不出它要验的那个场景,而跑验收的人有充分理由判定这支修复是坏的。
+//
+// **为什么不绑是安全的、而且更忠实**:此刻 TUN 还没开(run.go:473)、路由还没
+// 劫持(run.go:880),普通 socket 走的就是主路由表 —— 而**隧道子进程刚刚那
+// 20 秒走的正是同一张表**(sing-box 既没有 SO_MARK 也没有 IP_BOUND_IF,而
+// server bypass 那条 /32 也要等 Hijack 才装)。也就是说不绑的这一次拨号复现的
+// 才是隧道自己那条路径。
+//
+// **那为什么还把绑的那次留作主路径**:它防的是**上一个崩掉的实例**留在内核里
+// 的陈旧 TUN 与劫持路由 —— 那种残留会把一次不绑的拨号吸进一个没有主人的 TUN。
+// 所以只在「SYN 没离开本机」这一种失败上才退到不绑,别的失败(拒绝、超时、
+// 域名解析不了)一律照原样上报:那些都是**观测到的答案**,不该被第二次拨号覆盖。
+//
+// **两次都在本机失败 ⇒ 返回后一次的错误**,它同样落在
+// dialFailuresBeforeTheSYNLeaves 里,于是照旧报 local_dial —— 与这次改动之前
+// 逐字相同。
+func diagnosisDialWithUnboundRetry(bound, unbound tunnelDialFunc) tunnelDialFunc {
+	if bound == nil {
+		return unbound
+	}
+	if unbound == nil {
+		return bound
+	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := bound(ctx, network, address)
+		if err == nil || !failedBeforeTheSYNLeft(err) {
+			return conn, err
+		}
+		// 这一行是真机验收唯一看得见「重试发生过」的地方。address 是用户自己
+		// 那台服务器的 host:port(链接里的凭据一个字节都不在里面)。
+		log.Printf("core_start_diagnosis_unbound_retry addr=%s bound_err=%v", address, err)
+		return unbound(ctx, network, address)
+	}
+}
+
 // tunnelDiagnosisDialer 交出判别用的直连拨号器。
 //
 // **做成 thunk 而不是直接传一个拨号器**:darwin 的 DirectDialer() 每次都要去
@@ -224,11 +283,9 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 	// 没建 per-interface default 的机器上(2026-08-13 那次事故的形状),每一次
 	// 判别拨号都在本地就 network is unreachable,于是不管 VPS 在做什么,bx 都
 	// 答「你的 VPS 挂了」—— 而这条路唯一的职责就是说出关于那台服务器的实话。
-	for _, localFailure := range dialFailuresBeforeTheSYNLeaves {
-		if errors.Is(dialErr, localFailure) {
-			return tunnelUndetermined(ErrTunnelUndeterminedLocalDial, cause,
-				fmt.Sprintf("这次拨号在本机就失败了(%v)", dialErr))
-		}
+	if failedBeforeTheSYNLeft(dialErr) {
+		return tunnelUndetermined(ErrTunnelUndeterminedLocalDial, cause,
+			fmt.Sprintf("这次拨号在本机就失败了(%v)", dialErr))
 	}
 	// 拨不通(拒绝、超时、不可达)—— **超时归这一档,不归「没判出来」**:
 	// 2026-09-12 那次事故的原文正是 `i/o timeout`,一台不通的 VPS 给出的就是
