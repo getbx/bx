@@ -76,9 +76,15 @@ type Facts struct {
 //
 // 少一个的后果不是崩溃,而是**界面安静地少一块**:菜单按能力键决定画不画服务器
 // 与规则入口,键缺席时它什么都不画,而用户以为这一版就没有这个功能。
+// **`servers_edit` 当初刻意不在这里,而它的条件已经到期。** 那个能力落地那天
+// 菜单还没依赖它,加早了只会让升级前的机器验收失败;Task 6 之后菜单的三个动词
+// (Remove… / Replace Link… / `⋯` 本身)全按它门控 —— 不加就等于:一台还跑着
+// 旧 Guardian 的机器被判「4 项齐全」,而那一整块安静地不在。
+// **能力声明是唯一能证明进程真的换了的信号,版本号不能**(2026-08-16 那次验收)。
 var RequiredCapabilities = []string{
 	guardian.CapabilityRules,
 	guardian.CapabilityServers,
+	guardian.CapabilityServersEdit,
 	guardian.CapabilityMaintenanceHold,
 	guardian.CapabilityReconcileReport,
 }

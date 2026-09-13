@@ -69,6 +69,32 @@ func TestMissingCapabilitiesMeanTheOldBinaryIsStillRunning(t *testing.T) {
 	t.Fatal("没有能力声明这一条")
 }
 
+// **菜单真的按某个能力门控了什么,这张表就必须有它。**
+//
+// 这一条当初被刻意推迟(Task 4b 的记档):`servers_edit` 落地那天菜单还没依赖
+// 它,加早了只会让升级前的机器验收失败。而 Task 6 之后菜单的三个动词
+// (Remove… / Replace Link… / ⋯ 本身)全按它门控 —— 条件到期了。
+//
+// 不加的后果不是少一行报告:一台还跑着升级前 Guardian 的机器上,
+// `go run ./cmd/bx-acceptance` 会说「能力声明 … 4 项齐全」,而 `⋯` 那一整块
+// 安静地不在。CLAUDE.md 2026-08-16 那次验收的结论正是这一条 ——
+// **能力声明是唯一能证明进程真的换了的信号,版本号不能。**
+func TestRequiredCapabilitiesCoverTheVerbsTheMenuGatesOn(t *testing.T) {
+	for _, want := range []string{guardian.CapabilityServers, guardian.CapabilityServersEdit} {
+		found := false
+		for _, got := range RequiredCapabilities {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("验收表里没有 %q —— 一台还跑着旧 Guardian 的机器会被判「齐全」,"+
+				"而菜单里那几个动词安静地不在", want)
+		}
+	}
+}
+
 // 少一项能力也要 Fail,并**点名少了哪一项** —— 菜单会安静地少掉对应入口,
 // 而用户以为这一版就没有这个功能。
 func TestPartialCapabilitiesAreNamed(t *testing.T) {
