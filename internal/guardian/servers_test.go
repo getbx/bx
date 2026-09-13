@@ -1,7 +1,9 @@
 package guardian
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1370,6 +1372,50 @@ func TestAMisspelledActionIsRejectedInsteadOfSwitchingTheExit(t *testing.T) {
 	}, nil, nil)(w, withPeer(postServers(t, "osaka"), 501, true))
 	if w.Code != http.StatusOK || switched != "osaka" {
 		t.Fatalf("空 Action 不再换服务器了(code=%d switched=%q)—— 兼容契约被一起收掉了", w.Code, switched)
+	}
+}
+
+// **换链接必须校验那条链接解不解得出主机 —— 而这一条的代价落在当前那台上。**
+//
+// 此前 replace 只判 `link != ""`,底下的 `setup.ReplaceServerLink` 也不校验:
+// 任何字符串都写得进去。换的是**当前**那台时,配置就此指着一条下一次重连解析
+// 不出来的链接,而界面刚刚承诺「bx picks up the new one when it reconnects」——
+// 一句当场就被证伪的话,而且它把机器留在一个起不来的状态里。
+//
+// `setup.LinkHost` 就在同一个请求里被逐台调过(serverEntries 拿它算 Host),
+// 这道门只是把它挪到写盘**之前**。**拒绝只发码**:链接是凭据,不回显、不进日志。
+func TestServerReplaceRejectsALinkWithNoParseableHost(t *testing.T) {
+	path := serversTestConfig(t)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := log.Writer()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(orig) })
+
+	const badLink = "vless://user:supersecretpassword@ho st:443"
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "replace", Name: "tokyo", Link: badLink,
+	}), 501, true))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("解不出主机的链接被写进了当前那台:%d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "servers_replace_failed") {
+		t.Errorf("没给一个菜单说得出话的码:%s", w.Body.String())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("拒绝之后盘上的配置动了 —— 一次「被拒绝」却仍然改了配置,比拒绝失败更糟")
+	}
+	if logged := buf.String(); strings.Contains(logged, "supersecretpassword") || strings.Contains(logged, badLink) {
+		t.Fatalf("日志里出现了凭据:%s", logged)
 	}
 }
 
