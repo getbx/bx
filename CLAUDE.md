@@ -896,14 +896,54 @@ UDP 框**不**门控(旧 Guardian 一直处理得对,加门等于在那道门本
 是一个很整齐的模式,而它们恰好是同一个人的资产)—— 只在用户点时发、且串行;不做每台
 独立的 `rules`/`dns`/`udp.mode`。
 
-**三条已知缺口**:① `internal/acceptance.RequiredCapabilities` **还没加** `servers_edit`
-—— 当初刻意不加(菜单还没依赖它,加早了会让升级前的机器验收失败),而现在菜单真的按它
-门控了;不加就测不出「这一版声明了没有」,**而能力声明是唯一能证明进程真的换了的信号,
-版本号不能**。② `replace` **清不掉** UDP 链接(Guardian 把空 `udp` 读作「保持不变」;
-界面已明说「留空 = 保持这台已有的」,措辞对、缺口真)。③ **最常见那种配置(`bx setup`
-写的、根本没有 `servers:` 键)仍然看不到「当前那台」那一块** —— `currentServerPanel`
-要清单里有一条 `current` 的条目,而 Guardian 没有条目可画。不是回归,但 Task 6 的报告
-与验收清单把这句说反了。
+**两条已知缺口**(此前记的三条里,`servers_edit` 那一条已在整枝修复轮做掉,见下):
+① `replace` **清不掉** UDP 链接(Guardian 把空 `udp` 读作「保持不变」;界面已明说
+「留空 = 保持这台已有的」,措辞对、缺口真)。② **最常见那种配置(`bx setup` 写的、
+根本没有 `servers:` 键)仍然看不到「当前那台」那一块** —— `currentServerPanel` 要清单里
+有一条 `current` 的条目,而 Guardian 没有条目可画。不是回归,但 Task 6 的报告与验收清单
+把这句说反了。
+
+### 整枝 review 的修复轮(2026-09-13,真机仍未验)
+
+**十一条,其中「守卫钉住的是缺陷旁边的东西」的第十二次长在漏斗自己身上**:
+`presentServers` 收成一个漏斗之后,里面有 `show(` 与 `refreshIfVisible(` **两个**调用点,
+而判据是 `strings.Contains(整个函数体, "canEdit: canEdit")` —— **一个调用点替另一个满足了
+断言**。实测只把 `show(` 那一处写死成 `core: nil / switchingTo: false / canEdit: true`,
+整套 `TestMacMenuServer*` 全绿;而 `show(` 正是用户点「Servers…」那条路,后果是对着只声明
+`servers` 的旧 Guardian 画出 `⋯`、Remove… 落进兼容分支 —— 出口 IP 换到他想删的那一台,
+菜单还报成功。判据因此下沉到**每一个实参表**(`swiftArgumentIsPlainly`),与同一轮在
+`swiftValueReachesViewTree` 里学到的「作用域限定在最内层块」是同一条。
+
+行为上改掉四件,每一件都是用户看得见的:
+- **`runningServerName` 对同一主机上的两台不再自信地报第一条。** Core 只报得出主机
+  (`RuntimeState` 里没有名字),而 `--with-hysteria2` 出的两条链接、凭据轮换那段过渡都会
+  造出这个形状。此前:填实的 `●` 与「bx is actually using X」落在错的那台,实时峰值给错行,
+  `recordThroughputOnce` **按错名字永久落盘**。**有歧义也是「说不出」**,返回空串。
+- **`Test All` 对只有一台的清单不再什么都不发生**(这一支自己引入的回归):探测结论只长在
+  候选行上,而 `otherServerRows` 按定义排除当前那台。现在当前那一块有自己的探测行,
+  **复用同一个三态呈现** —— 灰的仍是灰的,红只从实测失败来。
+- **两个改清单的动词在拨号之前自己再查一遍能力门**(`main.swift` 两处)。`NSMenu.popUp` 是
+  嵌套事件循环,画出 `⋯` 到点下去之间窗口可能已被重画;`GuardianClient.swift` 上那两句
+  「只有 serverEditingAvailable 判定支持时才该调用它」此前**没有任何东西**在执行。
+  两层是刻意的:一道防线不该只有一层。
+- **删除确认框说得出「这一台此刻正在承载你的流量」**(在跑、但配置里已不是 current 的那台
+  Remove… 是亮着的,合规),判据仍只有一份,从 `row.isRunningNow` 带过去。
+
+线上/CLI 三件:`servers_edit` 进 `acceptance.RequiredCapabilities`(菜单已真的依赖它 ——
+**能力声明是唯一能证明进程真的换了的信号**);`bx server list` 的探测三态改读 `Measured`
+而不是从 `Error != ""` 反推(spec §6.1 明令禁止,今天输出恰好对着只是因为产地总带一句
+中文原因);**add 与 replace 都在写盘之前校验链接解不解得出主机** —— 此前 add 只在「名字
+省略要推导」那一支上顺带校验,replace 一个字都不校验,而写进**当前**那台的一条解析不出的
+链接会让下一次重连起不来,同时界面刚承诺「重连后生效」。
+`Core not answering — nothing below was measured.` 改成 `— the live readings below are
+missing.`:它下面还活着 UDP 那行(来自配置)与吞吐(来自落了盘的历史,**确实量到过**且
+带真实年龄),原话被它自己下面那行当场证伪。
+
+**顺带修掉两处生产**产不出**的 fixture**(两次都是「测试输入让待守属性不可见」):
+`bx server list` 那三条 `ProbeReport` 省了 `Measured`(`Reachable:true` 而 `Measured:false`),
+它们全靠那条反推才绿;两条 add fixture 用的是 `brook://host:9999?password=y` —— 一条
+`tunnel.ServerHost` **解不出主机**的链接,能绿正是因为 add 那个校验缺口,而同一个文件
+二十行之下就写着正确的形状。
 
 **真机未验:整套,含此前搬进来的那两个按钮**(spec §10)—— 实时延迟是否真的每 2 秒跟着
 `/v1/status` 动 · 保护关着时点 `Test All` 每行应是灰色英文 `not measured` 而不是红 ·
