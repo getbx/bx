@@ -373,7 +373,14 @@ func (stubCoreRunner) Existing(context.Context) (guardian.Process, error) {
 	return guardian.Process{}, nil
 }
 func (stubCoreRunner) Watch(p guardian.Process) guardian.Process { return p }
-func (stubCoreRunner) Verify(guardian.Process) error             { return nil }
+
+// 恒空串 = 「这一次 Core 什么都没说」⇒ 回落 core_health_failed。
+// 这条 e2e 不关心 Core 自报的启动失败(它的 Start 直接报错,压根走不到那一跳)。
+func (stubCoreRunner) StartFailureCode(context.Context, guardian.Process, time.Time) string {
+	return ""
+}
+
+func (stubCoreRunner) Verify(guardian.Process) error { return nil }
 
 func (stubCoreRunner) Start(context.Context, guardian.CoreStartOptions) (guardian.Process, error) {
 	return guardian.Process{}, errors.New("stub Core runner cannot start Core")

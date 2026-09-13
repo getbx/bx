@@ -121,3 +121,17 @@ func Remove(path string) error {
 	}
 	return nil
 }
+
+// FlagName 是 Guardian 传给 Core 的那个命令行 flag 的名字(不带 `--`)。
+//
+// **它是一条跨进程契约,而契约的两端住在两个包里**:Guardian 在 coreArgs 里
+// 拼 `--`+它,`bx run` 在 runFlags 里声明它。两边各写一个字面量时,一次改名
+// 只会让真机上的 Core 在 flag 解析这一步就退出(`Incorrect Usage: flag
+// provided but not defined`),Guardian 等满 20 秒、报 core_health_failed ——
+// 也就是这份记录本来要消灭的那个失效模式,由一次重命名原样重新引入,而两个
+// 包的测试都是绿的。
+//
+// 名字放在这里(与 internal/udpsource、internal/barriercidr 同一先例)让**改名**
+// 那一种漂移在构造上不可能;**删掉那一侧的声明**仍然可能,由
+// TestRunDeclaresTheStartFailureFileFlag 从生产那份 Flags 上钉住。
+const FlagName = "start-failure-file"

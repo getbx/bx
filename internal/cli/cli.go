@@ -24,6 +24,7 @@ import (
 
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/corestartfailure"
 	"github.com/getbx/bx/internal/doctor"
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/gateway"
@@ -3540,7 +3541,7 @@ func runFlags() []cli.Flag {
 		&cli.BoolFlag{Name: "no-hijack", Usage: "分步验证:起隧道+TUN+引擎但不劫持路由/不设 DNS/不装 WFP(系统网络零改动,真机 bring-up 用)"},
 		// **只由 Guardian 传**,故 Hidden:手敲的 `sudo bx run` 不传就一个字节
 		// 都不写,陈旧记录在构造上不可能串味(见 runWithStartFailureRecord)。
-		&cli.StringFlag{Name: "start-failure-file", Hidden: true, Usage: "启动失败时把失败码写到这里(仅 Guardian 使用)"},
+		&cli.StringFlag{Name: corestartfailure.FlagName, Hidden: true, Usage: "启动失败时把失败码写到这里(仅 Guardian 使用)"},
 	}
 }
 
@@ -3551,7 +3552,7 @@ func runAction(c *cli.Context) error {
 	// 与这支修复之前完全一样。由 TestBothRunExitsAreCoveredByTheStartFailureRecorder
 	// 按 AST 钉住(判据是「每一次 supervisor.Run 都在它的实参里」,不是
 	// 「这个文件提到过它」)。
-	return runWithStartFailureRecord(c.String("start-failure-file"), func() error {
+	return runWithStartFailureRecord(c.String(corestartfailure.FlagName), func() error {
 		cfg, err := loadConfig(c.String("config"))
 		if err != nil {
 			return err
