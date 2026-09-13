@@ -544,9 +544,18 @@ func appTrafficAvailable(capabilities: [String]?) -> Bool {
 /// 频率翻十倍。
 let appTrafficRefreshSeconds: TimeInterval = 5
 
-/// Core 侧 `appTrafficTTL`。**跨语言手抄的一个数**(Go 侧未导出,Swift 拿不到),
-/// 只用来在测试里钉住上面那个间隔留了足够余量;它变了这边不会红,与
-/// `guardianStatusWatchTimeout` 那一对是同一个局限。
+/// Core 侧 `appTrafficTTL`。跨语言手抄的一个数(Go 侧未导出,Swift 拿不到),
+/// 用来在 Swift 测试里钉住上面那个间隔留了足够余量。
+///
+/// **它漂了会红**,而且就是上面点名的那条守卫:
+/// `TestMenuAppTrafficRefreshIntervalMatchesTheGoTTL` 从
+/// `internal/supervisor/apptraffic.go` 里正则解出 `appTrafficTTL`,再从本文件解出
+/// 这个常量,两者不等即 `t.Fatalf`。**这里此前写着「它变了这边不会红」,而那条
+/// 守卫恰恰是为堵这个洞写的** —— 同一个文件里隔八行自相矛盾,而假的那半会让
+/// 下一个人放心地改掉这个数。
+///
+/// 与它对照的真·无守卫是 `guardianStatusWatchTimeout`:Go 侧 `watchMaxHold`
+/// 没有任何东西去读,那一对确实只能靠人读两份源码时都留意到。
 let appTrafficSubscriptionTTLSeconds: TimeInterval = 30
 
 /// 界面底部那句「字节数是近似值」。**不是可选的** —— spec 明写「界面不该把它

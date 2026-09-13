@@ -854,9 +854,15 @@ func controlMuxOptionsFromServe(opts controlServeOptions, report func() stats.Re
 //
 // 「这个仓库全部的事故都在组装根上」是本仓库自己的立论,而这正是一个组装根。
 //
-// **`newStatusReporter` 有 10 个位置参数,其中 server/mode/udpMode 是连着三个
+// **`newStatusReporter` 全是位置参数,其中 server/mode/udpMode 是连着三个
 // string** —— 换位不会有任何编译错误,而症状是 `bx status` 里三个字段互相串台。
-// TestControlMuxOptionsForServeCarriesEveryField 用三个互不相同的值把顺序钉住。
+// 钉住顺序的是 TestControlMuxOptionsForServeWiresTheReporterInTheRightOrder
+// (它给那三个 string 三个互不相同的值,再从产出的 Report 上读回来)。
+//
+// **不是** TestControlMuxOptionsForServeCarriesEveryField —— 这段话此前点名的
+// 就是它,而它只反射断言产出的每个字段非零:对调 Server 与 Mode,`Report` 仍然
+// 是个非 nil 的函数值,那条照样绿。**「这件事有人守着」是一句关于代码的陈述,
+// 而这句陈述本身没有守卫;读到它的人会据此不再去核。**
 //
 // 不碰 socket、不碰 /var/run —— 那一半仍留在 serveControlWithPathRecovery 里,
 // 它非 root 测不了(secdir.Ensure 要 MkdirAll 到 /var/run)。
