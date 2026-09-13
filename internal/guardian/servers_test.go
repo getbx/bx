@@ -822,6 +822,38 @@ func TestRunningServerIsAbsentWhenCoreReportsAnUnknownHost(t *testing.T) {
 	}
 }
 
+// **同一台主机上有两台时,说不出是哪一台就别说 —— 而这不是「对不上」,是
+// 「对上了两条」。**
+//
+// Core 只报得出一个**主机**(RuntimeState.ServerHost 里没有名字),而同一主机上
+// 挂两条记录是真会发生的:`bx server install --with-hysteria2` 出的两条链接、
+// 凭据轮换时先加后删的那段过渡。此前那个循环取**第一条匹配**,于是:填实的 `●`
+// 与「bx is actually using X right now.」落在错的那一台上,attachThroughput 把
+// 实时峰值给了错的一行,而 recordThroughputOnce 会把它**按错的名字永久落盘**;
+// `bx server list` 还会对着一台什么都没分歧的机器打出那段 ⚠ 分歧文案。
+//
+// 「说不出名字就别说」这条规则写在 runningServerName 头上 —— **有歧义是
+// 「说不出」的一种**,与 observe.Tristate 那条「问不出来不是 false」同源。
+func TestRunningServerIsAbsentWhenTwoEntriesShareTheHost(t *testing.T) {
+	entries := []ServerEntry{
+		{Name: "tokyo-tcp", Host: "203.0.113.10"},
+		{Name: "tokyo-udp", Host: "203.0.113.10"},
+	}
+	if got := runningServerName(entries, "203.0.113.10"); got != "" {
+		t.Errorf("两台同主机却报出了 %q —— 那个名字有一半的机会是错的,"+
+			"而它会被 recordThroughputOnce 按名字永久写进盘上那份历史", got)
+	}
+	// 反面自检:少了它,一个「永远返回空串」的实现照样满足上面那条,而这一整个
+	// 字段的价值(配置说 B、流量还从 A 出去)就没了。
+	if got := runningServerName(entries, "203.0.113.11"); got != "" {
+		t.Errorf("对不上任何一台却报了 %q", got)
+	}
+	unique := []ServerEntry{{Name: "tokyo", Host: "203.0.113.10"}, {Name: "osaka", Host: "203.0.113.20"}}
+	if got := runningServerName(unique, "203.0.113.20"); got != "osaka" {
+		t.Errorf("唯一那台没被认出来:%q", got)
+	}
+}
+
 // **峰值挂在 Core 报的那台头上,不是配置里选的那台。**
 //
 // Core 的峰值来自一块进程级速率表,热切换**不会**把它清零。挂到配置里那台
