@@ -39,20 +39,6 @@ const coreStartFailureGrace = supervisor.TunnelDiagnosisTimeout + 3*time.Second
 // coreStartFailurePoll 是等那份记录出现的轮询间隔。
 const coreStartFailurePoll = 200 * time.Millisecond
 
-// coreStartFailureReporter 由「能读到 Core 自报的失败」的 runner 实现。
-//
-// **刻意做成可选接口而不是塞进 CoreRunner**(与 coreScanner 同一条):读不到
-// 的 runner 落回 core_health_failed —— 那是一句**诚实**的话,不是一个静默
-// 消失的功能。生产那份由下面这条编译期断言钉住:实现掉了就编不过,而不是
-// 悄悄退回沉默。
-type coreStartFailureReporter interface {
-	// StartFailureCode 交出这一次 spawn 的 Core 自己报的失败码。
-	// 空串 = **这一次它没说**(没写、读不动、对不上),绝不是一种失败。
-	StartFailureCode(ctx context.Context, process Process, since time.Time) string
-}
-
-var _ coreStartFailureReporter = (*ExecCoreRunner)(nil)
-
 // startFailurePath 是 Core 自报那份记录的位置(空 = 这条路整个关掉)。
 func (r *ExecCoreRunner) startFailurePath() string { return r.StartFailurePath }
 
@@ -178,11 +164,14 @@ func coreStartFailureLastError(reported string) string {
 
 // coreReportedStartFailure 问 runner「Core 自己说了什么」。
 //
-// runner 不实现那个可选接口(测试替身、将来别的平台)⇒ 空串 ⇒ 回落。
+// **不做可选类型断言。** StartFailureCode 就在 CoreRunner 上(见那里的注释):
+// 一次断言失败等于这个功能静默消失,而它与「功能不存在」在输出上完全一样。
+//
+// process 与 since 是新鲜度判据的**全部**:PID 认「是不是这一次那个 Core」,
+// since(fork **之前**取的那一刻)认「是不是这一次写的」。递错任何一个,
+// 每一份记录都会被丢掉而回落 core_health_failed —— 也就是 2026-09-12 那天
+// 用户读到的那句话。由 TestUpHandsTheReaderThisSpawnsProcessAndAPreForkInstant
+// 钉住**递过去的那两个值**,不是「这次调用发生过」。
 func (m *Manager) coreReportedStartFailure(ctx context.Context, process Process, since time.Time) string {
-	reporter, ok := m.runner.(coreStartFailureReporter)
-	if !ok {
-		return ""
-	}
-	return reporter.StartFailureCode(ctx, process, since)
+	return m.runner.StartFailureCode(ctx, process, since)
 }

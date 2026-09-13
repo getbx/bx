@@ -2123,6 +2123,12 @@ func (r *updateCoreRunner) Executable() string {
 // 只是把新默认值撞在了测试上。
 func (r *updateCoreRunner) ScanRunning() ([]Process, error) { return nil, nil }
 
+// StartFailureCode 恒空串 = 「这一次 Core 什么都没说」⇒ 回落 core_health_failed。
+// 升级那条路上没有一条用例关心 Core 自报的启动失败,恒空串让它们一行不用改。
+func (r *updateCoreRunner) StartFailureCode(context.Context, Process, time.Time) string {
+	return ""
+}
+
 func (r *updateCoreRunner) SetExecutable(executable string) error {
 	if !filepath.IsAbs(executable) {
 		return fmt.Errorf("executable must be absolute")

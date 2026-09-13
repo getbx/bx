@@ -312,3 +312,63 @@ func newStartFailureRunner(t *testing.T, dir string) (*ExecCoreRunner, *systemPr
 	runner.ScanRunningCores = operations.runningCores
 	return runner, operations
 }
+
+// **递过去的那两个值就是新鲜度判据的全部** —— 它们没有守卫过。
+//
+// `StartFailureCode(ctx, process, since)` 的两个入参各自把一份记录否掉:
+// PID 对不上 ⇒ 丢;`record.At.Before(since)` ⇒ 丢。也就是说递一个零值
+// Process 和一个「失败之后」的 since 过去,**每一份记录都会被丢掉两遍**,
+// LastError 回落 core_health_failed —— 与这支修复不存在时逐字相同。
+//
+// 复现过:把那一行改成 `m.coreReportedStartFailure(ctx, Process{}, time.Now())`
+// (加一句 `_ = spawnedAt` 才编得过),**整个 internal/guardian 全绿**。
+// 既有那条 TestTheRecordIsReadBeforeTheFailedCoreIsCleanedUp 只钉「这次调用
+// 发生过」,而替身的两个形参连名字都没有 —— 这是本支第三次同一个形状:
+// 判据是对的,而把真实输入接上判据的那根线没人守。
+//
+// 判据因此打在**到达的值**上:进程必须是这一次 fork 出来的那个,
+// since 必须严格早于进入 Start 的那一刻。
+func TestUpHandsTheReaderThisSpawnsProcessAndAPreForkInstant(t *testing.T) {
+	env := newManagerTestEnv(t)
+	env.health.err = errors.New("bx 隧道健康检查超时(20s): restarts=0")
+	env.runner.reportedStartFailure = supervisor.StartFailureTunnelUnreachable
+
+	if err := env.manager.Up(context.Background()); err == nil {
+		t.Fatal("隧道没起来而 Up 报成功了")
+	}
+
+	asks := env.runner.startFailureAsksSnapshot()
+	if len(asks) != 1 {
+		t.Fatalf("去读 Core 自报失败的次数 = %d,want 1", len(asks))
+	}
+	ask := asks[0]
+
+	started := env.runner.lastStartedProcess()
+	if started.PID == 0 {
+		t.Fatal("替身没记下它 fork 出来的那个 Process —— 台子坏了,下面的断言什么都证明不了")
+	}
+	if ask.process.PID != started.PID {
+		t.Fatalf("递给读取方的 PID = %d,而这一次 fork 出来的是 %d ——\n"+
+			"PID 对不上时每一份记录都会被丢掉,回落 core_health_failed,\n"+
+			"也就是 2026-09-12 那天用户读到的那句话",
+			ask.process.PID, started.PID)
+	}
+	if ask.process.Generation != started.Generation {
+		t.Fatalf("递给读取方的 Generation = %q,而这一次 fork 出来的是 %q",
+			ask.process.Generation, started.Generation)
+	}
+
+	entered := env.runner.startEntryInstant()
+	if entered.IsZero() {
+		t.Fatal("替身没记下进入 Start 的那一刻 —— 台子坏了")
+	}
+	if ask.since.IsZero() {
+		t.Fatal("递过去的 since 是零值 —— 那不是「fork 之前那一刻」")
+	}
+	if !ask.since.Before(entered) {
+		t.Fatalf("递过去的 since = %s,不早于进入 Start 的那一刻 %s ——\n"+
+			"since 是「这份记录属不属于这一次」的下界,取在 fork 之后会把\n"+
+			"本次 Core 写下的记录整份判成窗口之外",
+			ask.since.Format(time.RFC3339Nano), entered.Format(time.RFC3339Nano))
+	}
+}
