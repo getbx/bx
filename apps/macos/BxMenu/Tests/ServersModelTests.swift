@@ -439,15 +439,38 @@ struct ServersModelTests {
         expect(panel.tunnelHealthy == nil, "同上")
         expect(panel.transport == nil, "同上")
         expect(panel.coreSilentNote != nil, "必须明说下面这些没量到")
-        // **那句话不许把它盖不到的东西也说成没量到。** 下面还活着两行:
-        // udpLine 来自配置,吞吐来自 Guardian 那份**落了盘的**历史 —— 后者
-        // 确实量到过,而且现在还带着真实年龄。一句「nothing below was
-        // measured」于是当场被它下面那行 `peak 6.4 MB/s · 2h ago` 证伪,
-        // 而这个窗口全部的纪律就是不说这种话。
-        expect(panel.coreSilentNote?.lowercased().contains("nothing below") != true,
-               "那句话把下面每一行都说成没量到:\(panel.coreSilentNote ?? "nil")")
+        // **那句话不许把它盖不到的东西也说成没量到 —— 而判据是那个性质,
+        // 不是某一句话的拼法。**
+        //
+        // 这一条原先写的是 `!contains("nothing below")`,而把那句过度声明
+        // 改写成「none of the readings below were measured」照样全绿:钉的是
+        // 措辞,不是「它有没有否认一行仍然画在屏幕上的东西」。
+        //
+        // 现在的判据两半,都从**这一块实际画出来的行**推出来:
+        //   ① 仍然画着的那几行,那句话不许点名(点名了就是当场被下一行证伪);
+        //   ② 也不许对整块区域做全称断言(不点名而一网打尽是同一句假话)。
+        // 局限写在这里,别读成更强:一句既不点名、也不用全称词的过度声明
+        // (「the readings below were not measured」)它抓不到 —— 那需要判据
+        // 读得懂英语。它抓得住的是**改写措辞把假话搬回来**这个真实动作。
         expect(panel.throughput != nil,
-               "反面自检:Core 静默时那份落了盘的历史仍该在,否则上一条无从谈起")
+               "反面自检:Core 静默时那份落了盘的历史仍该在,否则下面每一条都无从谈起")
+        let note = (panel.coreSilentNote ?? "").lowercased()
+        // 这一块在 Core 静默时仍然画出来的行 → 它们各自的说法。
+        let stillOnScreen: [(String, Bool, [String])] = [
+            ("吞吐峰值", panel.throughput != nil, ["throughput", "peak"]),
+            ("UDP 那一行", panel.udpLine != nil, ["udp"]),
+            ("探测结论", panel.probeLine != nil, ["probe", "ping"]),
+            ("主机与端口", !panel.endpoint.isEmpty, ["host", "endpoint", "address"]),
+        ]
+        for (what, rendered, words) in stillOnScreen where rendered {
+            for word in words where note.contains(word) {
+                fail("那句话点名了「\(what)」,而它此刻仍然画在屏幕上:\(note)")
+            }
+        }
+        for sweep in ["nothing", "none of", "no readings", "everything", "all the readings",
+                      "all readings", "nothing here"] where note.contains(sweep) {
+            fail("那句话对整块区域做了全称断言(\(sweep)),而下面还有真的量到过的行:\(note)")
+        }
         // 主机与端口来自配置,不来自 Core —— 它们照常有。
         expect(panel.endpoint == "203.0.113.10:443", "配置里就有的东西也不见了:\(panel.endpoint)")
     }
