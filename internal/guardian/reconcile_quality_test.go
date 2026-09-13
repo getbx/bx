@@ -159,10 +159,11 @@ func TestStayingBlindDoesNotKeepPrinting(t *testing.T) {
 
 // **循环必须自己去问「有几个进程看起来像 Core」。**
 //
-// 设计交付的第二样是 looksLikeCore 的真机误报率,而 scanRunningCores 今天只挂在
-// Existing / Start / confirmCoreStopped 三条**改动**路径上;只观察的循环一条都不
-// 会走。循环读的 m.current.Uncertain 是那些路径**锁存**下来的旧结论,不是本轮的
-// 事实。于是跑上几天也攒不出一条证据。
+// 设计交付的第二样是 looksLikeCore 的真机误报率,而 scanRunningCores 此前只挂在
+// Existing / Start / confirmCoreStopped 三条**改动**路径上,循环一条都不会走
+// (③c 的 executeStartCore 又多了一条,但那只在提议起 Core 的那些轮发生,攒不出
+// 稳态样本)。循环读的 m.current.Uncertain 是那些路径**锁存**下来的旧结论,不是
+// 本轮的事实。于是没有这一跳,跑上几天也攒不出一条证据。
 func TestReconcileLoopMeasuresRunningCoresEveryRound(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.runner.mu.Lock()
@@ -184,7 +185,8 @@ func TestReconcileLoopMeasuresRunningCoresEveryRound(t *testing.T) {
 	if got.CoreScan.Reason != "" {
 		t.Errorf("测成了就不该有「没测成的理由」: %+v", got.CoreScan)
 	}
-	// **测量绝不许变成动作。** 这一期一个动作都不执行,扫描也不例外。
+	// **测量绝不许变成动作。** 循环有执行权(白名单在 reconcile_execute.go),
+	// 正因如此这条断言更要紧:扫描不在那份名单里,它一步都不许动系统。
 	if after := env.mutationCallCounts(); after != before {
 		t.Fatalf("测量那一跳动了系统\nbefore=%+v\nafter =%+v", before, after)
 	}

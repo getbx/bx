@@ -166,8 +166,10 @@ type UpdateAvailability struct {
 // 可能是旧版(此前那次探测正是拿 /usr/local/bin/bx 去问的)。
 const CapabilityDiagnosticsArchive = "diagnostics_archive"
 
-// CapabilityReconcileReport 表示这一版 Guardian 跑着阶段③a 那条只观察的调谐环,
-// 因而 Status.Reconcile 这个字段是**它会填的**。
+// CapabilityReconcileReport 表示这一版 Guardian 跑着调谐环(阶段③a 起),
+// 因而 Status.Reconcile 这个字段是**它会填的**。它只声明「报告这个字段有人填」,
+// **不声明循环有没有执行权** —— 那由 executableReconcileActions 决定,而它自
+// ③b/③c 起已经不是空的。
 //
 // 消费方靠它把两件事分开:
 //   - 「新版 Guardian,循环在跑,只是还没跑完第一轮」⇒ 声明了能力、报告还缺席;
@@ -248,11 +250,12 @@ func GuardianCapabilities() []string {
 	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityServersEdit, CapabilityStatusWatch, CapabilityApps, CapabilityLogs, CapabilityDoctor}
 }
 
-// ReconcileReport 是只观察调谐环**最近一轮**的判断,随 Status 一起发布。
+// ReconcileReport 是调谐环**最近一轮**的判断与执行结果,随 Status 一起发布。
 //
-// 存在的理由:今天要回答「循环提议过什么」只能 root 去 tail
-// /var/log/bx-guard.log,而真机 soak 是阶段③a 唯一真正的验收 —— 它得能从
-// `bx status` 读到。
+// 存在的理由:今天要回答「循环提议过什么、做了什么」只能 root 去 tail
+// /var/log/bx-guard.log,而阶段③a 的真机 soak 唯一的验收手段就是从
+// `bx status` 读到它。Actions 与 Executed **并列**,「提议了什么」与
+// 「做了什么」不合并 —— 自 ③b 起两者不再总是一回事。
 //
 // **At 是这份报告里最重要的字段,而且它的重要性不来自「时间好看」。**
 // reconcileDecision 的零值(无动作、无栅栏)恰恰就是一台**健康机器**的判断,
@@ -291,9 +294,16 @@ type ReconcileReport struct {
 	// CoreScan 是这一轮**只读**进程扫描的测量结果。见 ReconcileCoreScan ——
 	// 它是测量,不参与判断。
 	CoreScan ReconcileCoreScan `json:"core_scan"`
-	// Executed 是上一轮实际执行的动作(阶段③b 起,仅 desired=off 的清理
-	// 动作有执行权,白名单见 reconcile_execute.go)。nil = 这一轮没有执行
-	// 任何东西 —— 健康机器的常态。
+	// Executed 是这一轮实际执行的动作。nil = 这一轮什么都没执行 —— 健康机器
+	// 的常态。
+	//
+	// **消费方不许假设「执行只发生在 desired=off」。** 这条曾经写着「仅
+	// desired=off 的清理动作有执行权」,而 ③c(2026-09-05)起 start_core 也在
+	// 白名单里,且它要求的意图恰恰是 **DesiredOn**(requiredDesired)——
+	// 也就是说一台**用户要保护**的机器上,这个字段可以报出「刚起了一个 Core」。
+	// 授权面的唯一真相源是 executableReconcileActions(reconcile_execute.go),
+	// 由 TestExecutableWhitelistIsExactlyOffCleanupPlusStartCore 钉住;这里刻意
+	// 不再复述那份名单,它会长而这行注释不会跟着长。
 	Executed *ReconcileExecution `json:"executed,omitempty"`
 }
 
@@ -309,9 +319,11 @@ type ReconcileExecution struct {
 // ReconcileCoreScan 是一轮里对 looksLikeCore 的**只读**测量。
 //
 // 存在的理由是设计里的第二样交付:looksLikeCore(basename(argv[0])=="bx" &&
-// argv[1]=="run" && uid==0)的误报率**至今从未测量**,而阶段③b 要在它之上再叠
-// 一层准入。它今天只在 Existing/Start/confirmCoreStopped 这三条**改动**路径上被
-// 调用,所以只观察的循环跑上几天也攒不出任何证据。
+// argv[1]=="run" && uid==0)的误报率要有人量,而 ③c 的 start_core 准入正是叠在
+// 它之上的那一层。写下这个字段时它只在 Existing/Start/confirmCoreStopped 这三条
+// **改动**路径上被调用,循环跑上几天也攒不出任何证据;③c 之后循环里还多了
+// executeStartCore 那次槽内现扫,但那一次只在**提议起 Core 的那些轮**发生,
+// 攒不出稳态样本 —— 这个字段仍是每一轮都测的那一路。
 //
 // **它绝不参与判断**:decide 的输入一个字段都没加,这里只是把答案记下来。
 type ReconcileCoreScan struct {
@@ -388,7 +400,7 @@ type Status struct {
 	// 菜单正是靠这个区分决定要不要提示用户升级。
 	Capabilities []string `json:"capabilities"`
 
-	// Reconcile 是只观察调谐环最近一轮的判断(见 ReconcileReport)。
+	// Reconcile 是调谐环最近一轮的判断与执行结果(见 ReconcileReport)。
 	//
 	// **omitempty 在这里是契约的一部分,不是省字节。** 一轮都没跑过时这个键必须
 	// 整个缺席:一份 `{"at":"0001-01-01T00:00:00Z"}` 的零值报告读起来与「跑过、

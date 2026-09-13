@@ -103,7 +103,8 @@ func TestReconcileOnceExecutesNothing(t *testing.T) {
 		t.Fatal("这份观测本该提议动作,否则这条测试证明不了「提议了但没执行」")
 	}
 	if after := env.mutationCallCounts(); after != before {
-		t.Fatalf("只观察阶段绝不许执行任何动作\nbefore=%+v\nafter =%+v", before, after)
+		t.Fatalf("reconcileOnce 是判断那一半,绝不许自己动手 —— 执行只许发生在\n"+
+			"executeReconcileAction 里,经 executableReconcileActions 那份白名单\nbefore=%+v\nafter =%+v", before, after)
 	}
 }
 
@@ -481,7 +482,7 @@ func TestStartRecoveredDaemonWiresTheReconcileLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	if daemon.reconcileLoopDone == nil {
-		t.Fatal("daemon 没有给真正的 Manager 起那条只观察的调谐环 —— 真机 soak 会拿到" +
+		t.Fatal("daemon 没有给真正的 Manager 起调谐环 —— 真机 soak 会拿到" +
 			"一份干净日志,而干净日志会被读成「零分歧」")
 	}
 

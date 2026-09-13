@@ -114,8 +114,8 @@ type coreScanner interface {
 	ScanRunning() ([]Process, error)
 }
 
-// observingCoreScanner 是同一次求证的「只观察」入口:判据一字不差,只是普查
-// 日志的 reason 不同。可选 —— 实现不了的 runner 落回 coreScanner,答案完全一样,
+// observingCoreScanner 是同一次求证的调谐环入口:判据一字不差,只是普查日志的
+// reason 不同。可选 —— 实现不了的 runner 落回 coreScanner,答案完全一样,
 // 唯一的差别是那行日志分不出是谁扫的。
 type observingCoreScanner interface {
 	ScanRunningObserved() ([]Process, error)
@@ -378,7 +378,7 @@ type Manager struct {
 	pathRecoveryResolveOff bool
 	pathRecoveryDrained    chan struct{}
 	pathRecoveryClosed     bool
-	// reconcileReport 是只观察调谐环最近一轮的判断,由 statusMu 保护。
+	// reconcileReport 是调谐环最近一轮的判断与执行结果,由 statusMu 保护。
 	//
 	// **刻意住在 m.status 外面。** 控制面里有一大批路径是拿一个从零构造的
 	// Status 字面量整体替换 m.status 的(upLocked/downLocked/recoverLocked…),
@@ -540,10 +540,15 @@ func (m *Manager) recordReconcileRound(round reconcileRound) {
 
 // recordThroughputObservation 把「当前那台此刻观测到的峰值吞吐」记进历史。
 //
-// **这是观测,不是动作。** 调谐环本期一个动作都不执行,而这件事与它已经在做的
-// measureRunningCores 是同一类:向系统问一个事实,把答案记下来。它不改任何系统
-// 状态、不碰路由/DNS/Core,decide 的动作集合一个字都没变(那由穷举全部输入的
-// 白名单守卫钉着)。
+// **这是观测,不是动作。** 说清这一点是必要的,因为调谐环**有**执行权
+// (executableReconcileActions,reconcile_execute.go:③b 起 restore_dns /
+// clear_orphan_barrier,③c 起 start_core)—— 往这条循环上挂新东西时,「它只是
+// 观测」不再是默认成立的前提,得自己论证。
+//
+// 这一件与它已经在做的 measureRunningCores 是同一类:向系统问一个事实,把答案
+// 记下来。它不改任何系统状态、不碰路由/DNS/Core,也不经过那份白名单 ——
+// decide 的动作集合一个字都没变(那由穷举全部输入的白名单守卫
+// TestDecideNeverProposesAnythingOutsideTheAuthorizedSet 钉着)。
 //
 // 挂在这个循环上,是因为它是 Guardian 里**唯一一个不依赖界面、按时钟持续跑**的
 // 东西。挂在 /v1/servers 那条读路径上的话,只有用户打开服务器窗口时才会积累历史,
@@ -559,9 +564,11 @@ func (m *Manager) recordThroughputObservation() {
 
 // measureRunningCores 向系统求证「有多少个进程看起来像 Core」,**只测量,不判断**。
 //
-// 设计交付的第二样是 looksLikeCore 的真机误报率,而它今天只挂在三条改动路径上
-// (Existing / Start / confirmCoreStopped),只观察的循环再跑多久也攒不出证据。
-// 这里把同一个原语接进循环,但答案只进报告,不进 decide 的输入。
+// 设计交付的第二样是 looksLikeCore 的真机误报率,而它此前只挂在三条改动路径上
+// (Existing / Start / confirmCoreStopped),循环再跑多久也攒不出证据。这里把
+// 同一个原语接进循环,**每一轮都测**,答案只进报告、不进 decide 的输入。
+// (③c 的 executeStartCore 也会扫一次,但那只发生在提议起 Core 的那些轮,
+// 攒不出稳态样本。)
 //
 // 三条纪律,与 confirmCoreStopped 同源:
 //   - **不持 mutation channel。** m.runner 是构造后不再变的字段,取它不需要任何锁;
