@@ -83,6 +83,16 @@ struct CoreStartFailureHintTests {
         expect(localDial.contains("-ifscope"), "没给出那条出路(route -n get -ifscope):\(localDial)")
         expect(!localDial.contains("nc -z 195.133.192.92"),
                "把用户派去探那台 VPS —— SYN 根本没出去,那次探测什么也说明不了:\(localDial)")
+        // **不许一边说「与那台服务器无关」、一边叫用户换一台。** 这个码盖着两种
+        // 毛病、出路相反:直连器坏了(换服务器帮不上忙)与这台机器解析不出那台
+        // 服务器的主机名(换一台确实有用)。判据:那句「帮不上忙」必须挂在那次
+        // 路由检查的结果上,而另一种毛病必须被说出来。
+        expect(localDial.contains("another server"),
+               "这一档没给「你还配了另一台」—— 下面这条测的矛盾不存在了,回来重判:\(localDial)")
+        expect(localDial.contains("if it says \"not in table\""),
+               "「switching servers will not help」成了一句无条件断言,而同一段话下面就叫用户换一台:\(localDial)")
+        expect(localDial.contains("cannot resolve"),
+               "没说出这一档里那种换一台确实有用的毛病(主机名解析不出来):\(localDial)")
 
         // 「你还配了另一台」只在真有另一台时出现,而且绝不出现链接。
         let alone = CoreStartFailureServers(currentName: "vps", currentHostPort: "195.133.192.92:443")
@@ -132,6 +142,37 @@ struct CoreStartFailureHintTests {
         ])
         expect(noPort.currentHostPort == "195.133.192.92",
                "端口问不出来时写了一个 :0:\(noPort.currentHostPort)")
+
+        // **每一种结局都要给出「完整原因在哪儿」。** 应答体只带一个码,而真正
+        // 那句话(事故那次是 dial tcp <server>:443: i/o timeout)只在 root-only
+        // 的 Core 日志里 —— 这条指引是两者之间唯一的桥。tunnel_unreachable 此前
+        // 是唯一没有它的一种,而它恰恰就是事故那一种。
+        for code in codes {
+            let text = coreStartFailureHint(code: code, servers: facts) ?? ""
+            expect(text.contains("sudo tail -50 /var/log/bx.log"),
+                   "\(code) 没告诉用户完整原因在哪儿:\(text)")
+        }
+
+        // 用户可见的那几行里不许有 markdown 的 `**`:NSAlert 不渲染它,
+        // 用户读到的是字面上的星号(三条曾经就这么发出去过)。
+        for code in codes {
+            for servers in [facts, CoreStartFailureServers()] {
+                let text = coreStartFailureHint(code: code, servers: servers) ?? ""
+                expect(!text.contains("**"), "\(code) 渲染出了 markdown 的 `**`:\(text)")
+            }
+        }
+
+        // 端口解不出来时那条 nc 命令整条不给 —— 不许渲染出尾巴上空着的端口。
+        let hostOnly = CoreStartFailureServers(currentName: "vps", currentHostPort: "195.133.192.92")
+        for code in codes {
+            let text = coreStartFailureHint(code: code, servers: hostOnly) ?? ""
+            expect(!text.contains("nc -z 195.133.192.92 "),
+                   "\(code) 在端口未知时渲染出了 `nc -z <主机> `(尾巴上一个空端口):\(text)")
+        }
+        // 反面:端口问得出来时那条命令仍然要给,否则「一律不给」也能满足上面。
+        expect((coreStartFailureHint(code: "core_tunnel_unreachable", servers: facts) ?? "")
+                .contains("nc -z 195.133.192.92 443"),
+               "端口问得出来时反而不给 nc 命令了")
 
         // 一次成功的开关不许被这一族接走。
         expect(toggleFailureMessage(code: nil, transportDescription: nil, servers: facts) == nil,

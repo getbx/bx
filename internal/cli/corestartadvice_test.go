@@ -102,6 +102,36 @@ func TestTheLocalDialOutcomeSendsTheUserToBxsOwnDialerNotTheVPS(t *testing.T) {
 	}
 }
 
+// 这一档**不许一边说「与那台服务器无关」、一边叫用户换一台**。
+//
+// 这个码盖着两种毛病,而它们的出路相反:bx 自己的直连器坏了(2026-08-13 的
+// 签名,换服务器帮不上忙)、以及**这台机器解析不出那台服务器的主机名**
+// (*net.DNSError 就在这一档里,换一台确实有用)。此前那句话把前一种当成
+// 唯一的答案断言下来,而下面紧跟着「你还配了另一台 —— sudo bx server use」,
+// 于是同一段话自己打自己 —— 在一条唯一目的就是「别再盯着 VPS 看」的话里。
+//
+// 判据:那句「换服务器帮不上忙」必须是**有条件的**(挂在那次路由检查的结果
+// 上),而且另一种毛病必须被说出来。
+func TestTheLocalDialAdviceDoesNotContradictItsOwnSwitchSuggestion(t *testing.T) {
+	facts := startFailureServers{
+		CurrentName: "vps", CurrentHostPort: "195.133.192.92:443",
+		Others: []string{"tokyo(166.1.190.123)"},
+	}
+	text := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUndeterminedLocalDial, facts)
+	// 前置自检:那句「你还配了另一台」确实在,否则下面在测一段不存在的矛盾。
+	if !strings.Contains(text, "你还配了另一台") {
+		t.Fatalf("这一档没给「你还配了另一台」—— 这条断言测的那个矛盾不存在了,回来重判:\n%s", text)
+	}
+	if !strings.Contains(text, "答 `not in table` 的话") {
+		t.Fatalf("「换服务器帮不上忙」不是挂在那次路由检查的结果上的 ——\n"+
+			"它成了一句无条件断言,而同一段话下面就叫用户换一台:\n%s", text)
+	}
+	if !strings.Contains(text, "解析不出那台服务器的主机名") {
+		t.Fatalf("没说出这一档里那种**换一台确实有用**的毛病(主机名解析不出来,\n"+
+			"*net.DNSError 就在这一档),于是「你还配了另一台」读起来仍然是自相矛盾:\n%s", text)
+	}
+}
+
 // 每一种「没判出来」都要说成「没判出来」。
 //
 // 三个码的处置不同(所以各有一句话),但**没有一个可以被读成「那台服务器没事」**。
@@ -316,5 +346,73 @@ func TestMacOSUpActionRoutesTheGuardianFailureThroughTheAdvice(t *testing.T) {
 	if !annotated {
 		t.Fatal("macOSUpAction 没有把 Guardian 的失败经 annotateCoreStartFailure **返回出去** ——\n" +
 			"用户拿到的还是那句只有 code= 的话,而那个词对他毫无意义")
+	}
+}
+
+// **每一种结局都要给出「完整原因在哪儿」。**
+//
+// 应答体只带一个码,而真正的那句话(事故那次是 `dial tcp <server>:443:
+// i/o timeout`)只在 root-only 的 Core 日志里 —— 这条指引是两者之间唯一的桥。
+// `tunnel_unreachable` 此前是唯一没有它的一种,而**它恰恰就是事故那一种**。
+func TestEveryOutcomeSaysWhereTheFullReasonIs(t *testing.T) {
+	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443"}
+	for _, code := range coreStartFailureCodes() {
+		text := coreStartFailureAdvice(code, facts)
+		if !strings.Contains(text, coreLogPathForAdvice()) {
+			t.Errorf("%s 没告诉用户完整原因在哪儿:\n%s\n"+
+				"—— 应答体只有一个码,那句真正的原因只在 root-only 的 Core 日志里", code, text)
+		}
+	}
+}
+
+// 用户可见的那几行里不许出现 markdown 的 `**`。
+//
+// 终端与 NSAlert 都不渲染它,用户读到的是字面上的星号。三条曾经就这么发出去
+// 过(4fbf829 才清掉),而这个文件的注释里 `**` 满天飞 —— 下一个人从注释里
+// 顺手抄一句进字符串是最自然的动作,而没有任何东西拦着。
+func TestNoRenderedAdviceCarriesMarkdown(t *testing.T) {
+	for _, facts := range []startFailureServers{
+		{CurrentName: "vps", CurrentHostPort: "195.133.192.92:443", Others: []string{"tokyo(166.1.190.123)"}},
+		{},
+	} {
+		for _, code := range coreStartFailureCodes() {
+			text := coreStartFailureAdvice(code, facts)
+			if strings.Contains(text, "**") {
+				t.Errorf("%s 渲染出了 markdown 的 `**`,终端不认它、用户读到的是星号:\n%s", code, text)
+			}
+		}
+	}
+}
+
+// 端口解不出来时,那条 `nc -z` 整条不给 —— 不许渲染出一个尾巴上空着的端口。
+//
+// joinHostPortForAdvice 在端口 <= 0 时只写主机(那是对的:绝不编一个 `:0`),
+// 于是 portOf 返回空串,而那条指引此前拼成 `nc -z 195.133.192.92 ` ——
+// 一条粘贴过去就报错的命令,出现在一条唯一目的就是「照着做」的话里。
+func TestNoNCCommandIsRenderedWithAnEmptyPort(t *testing.T) {
+	// 前置自检:这确实是「解得出主机、解不出端口」那一种形状。
+	facts := startFailureServers{CurrentName: "vps", CurrentHostPort: joinHostPortForAdvice("195.133.192.92", 0)}
+	if facts.CurrentHostPort != "195.133.192.92" {
+		t.Fatalf("台子造出来的不是「只有主机」那一种:%q", facts.CurrentHostPort)
+	}
+	for _, code := range coreStartFailureCodes() {
+		text := coreStartFailureAdvice(code, facts)
+		if strings.Contains(text, "nc -z") && !strings.Contains(text, "nc -z 195.133.192.92 ") {
+			continue // 带端口的形状,不该出现在这个 facts 下,由下面那条兜住
+		}
+		for _, line := range strings.Split(text, "\n") {
+			if !strings.Contains(line, "nc -z") {
+				continue
+			}
+			t.Errorf("%s 在端口未知时仍然给了一条 nc 命令:%q —— 它渲染成的是\n"+
+				"`nc -z <主机> `,尾巴上一个空端口,粘贴过去就报错", code, strings.TrimSpace(line))
+		}
+	}
+	// 反面:端口问得出来时那条命令仍然要给,否则「一律不给」也能满足上面。
+	withPort := startFailureServers{CurrentHostPort: joinHostPortForAdvice("195.133.192.92", 443)}
+	if !strings.Contains(coreStartFailureAdvice(
+		coreStartFailureCodePrefix+supervisor.StartFailureTunnelUnreachable, withPort),
+		"nc -z 195.133.192.92 443") {
+		t.Error("端口问得出来时反而不给 nc 命令了 —— 上面那条断言于是靠「一律不给」平凡成立")
 	}
 }

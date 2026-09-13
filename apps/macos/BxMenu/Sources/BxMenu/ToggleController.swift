@@ -310,9 +310,11 @@ func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> St
         headline = "bx could not start: " +
             (named ? "bx cannot reach \(where_)" : "bx cannot reach your server") +
             " — no TCP connection was established to that address."
-        steps.append(named
-            ? "That machine may be down or may have changed IP, but this Mac's own network could be at fault too. Check it yourself: nc -z \(coreStartFailureHostOnly(where_)) \(coreStartFailurePortOnly(where_))"
-            : "That machine may be down or may have changed IP, but this Mac's own network could be at fault too.")
+        steps.append("That machine may be down or may have changed IP, but this Mac's own network could be at fault too."
+            + coreStartFailureSelfCheckSuffix(where_))
+        // **这一族里最要紧的一条偏偏此前没给这句话** —— 事故那一次就是它,而
+        // `dial tcp <server>:443: i/o timeout` 那句原文只在 Core 日志里。
+        steps.append(logLine)
     case "tunnel_handshake_failed":
         // 措辞与上面**相反**:那台机器活着,去修它是白费力气。
         headline = "bx could not start: " +
@@ -328,12 +330,16 @@ func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> St
         steps.append(logLine)
     case "tunnel_unhealthy_undetermined_local_dial":
         headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there — its probe failed on this Mac before any SYN left it."
-        steps.append("Check bx's own direct route first (the signature of the 2026-08-13 failure): route -n get -ifscope <your interface> 1.1.1.1 — \"not in table\" is the cause, and it has nothing to do with the server.")
+        steps.append("Check bx's own direct route first (the signature of the 2026-08-13 failure): route -n get -ifscope <your interface> 1.1.1.1 — if it says \"not in table\", bx's own direct dialer on this Mac is broken and switching servers will not help.")
+        // **这条不许省。** 同一个码还盖着「解析不出那台服务器的主机名」——
+        // 那一种是服务器特有的,换一台确实有用。少了它,下面那句「你还配了
+        // 另一台」就与上面那句读起来自相矛盾,而两句各自都只对一半情形成立。
+        steps.append("If the route is there, this Mac most likely cannot resolve that server's host name — for that one, switching servers does help.")
         steps.append(logLine)
     case "tunnel_unhealthy_undetermined":
         headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there (the check itself did not complete)."
-        steps.append(named
-            ? "To check the server yourself: nc -z \(coreStartFailureHostOnly(where_)) \(coreStartFailurePortOnly(where_))"
+        steps.append(coreStartFailureNCCheckable(where_)
+            ? "To check the server yourself: \(coreStartFailureNCCommand(where_))"
             : "Check that the server link in the configuration is still right")
         steps.append(logLine)
     case "config_unusable":
@@ -366,6 +372,24 @@ func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> St
         steps.append("You also have another server configured: \(servers.others.joined(separator: ", ")) — switch to it in Servers…")
     }
     return ([headline] + steps.map { "  • " + $0 }).joined(separator: "\n")
+}
+
+/// **端口解不出来就不给那条 `nc -z`。**
+///
+/// 链接里看不出端口时 `coreStartFailureHostPort` 只写主机,于是 portOnly 返回
+/// 空串,那条指引渲染成 `nc -z 195.133.192.92 `(尾巴上一个空端口)—— 一条
+/// 粘贴过去就报错的命令,而它出现在一条唯一目的就是「照着做」的话里。
+func coreStartFailureNCCheckable(_ hostPort: String) -> Bool {
+    !coreStartFailureHostOnly(hostPort).isEmpty && !coreStartFailurePortOnly(hostPort).isEmpty
+}
+
+func coreStartFailureNCCommand(_ hostPort: String) -> String {
+    "nc -z \(coreStartFailureHostOnly(hostPort)) \(coreStartFailurePortOnly(hostPort))"
+}
+
+func coreStartFailureSelfCheckSuffix(_ hostPort: String) -> String {
+    guard coreStartFailureNCCheckable(hostPort) else { return "" }
+    return " Check it yourself: \(coreStartFailureNCCommand(hostPort))"
 }
 
 func coreStartFailureHostOnly(_ hostPort: String) -> String {

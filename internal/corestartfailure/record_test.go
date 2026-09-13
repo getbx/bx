@@ -154,3 +154,71 @@ func TestWriteFailsLoudlyWhenTheDirectoryIsMissing(t *testing.T) {
 		t.Fatal("错误消息是空的")
 	}
 }
+
+// 被 SIGKILL 在原子写中途,留下的临时文件必须有人清 —— 而那一刀按构造就落在
+// 这段窗口附近。
+//
+// Write 是「CreateTemp → 写 → fsync → rename」,那个 `defer os.Remove` 只对
+// 正常返回与 panic 有效;SIGKILL 一个 defer 都不跑。而这份记录的整个使用场景
+// 就是「Core 起不来,Guardian 随后强杀它」。Remove 只认最终那个名字,一个
+// 碎片都清不掉,于是 /var/lib/bx 变成一个只增不减的目录。
+func TestDiscardSweepsTemporariesLeftBehindByAKilledWriter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "core-start-failure.json")
+	// 模拟「杀在 CreateTemp 与 Rename 之间」:临时文件在,最终名字不在。
+	orphan, err := os.CreateTemp(dir, tempPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanName := orphan.Name()
+	if err := orphan.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// 另一份是上一轮真的写成了的记录。
+	if err := Write(path, Record{SchemaVersion: SchemaVersion, PID: 1, At: time.Now(), Code: "other"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Discard(path); err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+	if _, err := os.Stat(orphanName); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("被强杀的那次写留下的临时文件还在(stat=%v)—— /var/lib/bx 会变成\n"+
+			"一个只增不减的目录,而下一个人在事故现场看到的是一堆来路不明的碎片", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("记录本身没被删掉(stat=%v)—— Discard 首先得是一次 Remove", err)
+	}
+}
+
+// Discard 只扫自己那个前缀,**同目录里别人的文件一个都不许碰**。
+//
+// 它跑在 /var/lib/bx 上,那里躺着 core-process.json、guardian-state.json、
+// maintenance-hold.json、brook / sing-box 二进制、china 列表 —— 一个扫得太宽的
+// 清理器会把这台机器的传输二进制删掉,而它挂在**每一次 spawn** 之前。
+func TestDiscardTouchesNothingButItsOwnTemporaries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "core-start-failure.json")
+	bystanders := []string{"core-process.json", "guardian-state.json", "singbox", ".hidden", "core-start-failure.json.bak"}
+	for _, name := range bystanders {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Discard(path); err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+	for _, name := range bystanders {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("Discard 删掉了 %q(%v)—— 它跑在 /var/lib/bx 上,那里躺着\n"+
+				"传输二进制与 Guardian 自己的状态文件,而它挂在每一次 spawn 之前", name, err)
+		}
+	}
+}
+
+// 目录整个不在也不算失败(诊断路径不许因为别的事没做成而失败)。
+func TestDiscardIsHappyWithNothingToSweep(t *testing.T) {
+	if err := Discard(filepath.Join(t.TempDir(), "没有这个目录", "r.json")); err != nil {
+		t.Fatalf("Discard 在一个不存在的目录上报了错:%v", err)
+	}
+}
