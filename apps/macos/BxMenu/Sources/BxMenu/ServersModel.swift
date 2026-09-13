@@ -286,19 +286,54 @@ func replaceConfigurationLivesInMenu(capabilities: [String]?) -> Bool {
     !serverSwitchingAvailable(capabilities: capabilities)
 }
 
+/// 「这一台此刻在不在承载你的流量」—— **三态,别用 Bool 答。**
+///
+/// `unconfirmed` 涵盖两件事,而它们在用户那里是同一句话:Core 没在答话
+/// (保护关着、Guardian 刚被换掉、报文还没到),或者 Guardian 自己就说不出
+/// 是哪一台(同主机两台时它刻意不猜,`running` 发的是空串)。**两者都不是
+/// 「确认闲着」**,而一个 Bool 会把它们和 `idle` 压成同一个 false —— 于是
+/// 删除确认框在最该出声的时候一个字都不说,而这个窗口的词汇表里沉默恰恰
+/// 读作那句让人放心的答案。
+///
+/// `rawValue` 是承重的:窗口把它编进 `⋯` 那个按钮的 identifier 里带回调用方。
+enum ServerTrafficState: String, Equatable {
+    /// Core 在答话,而且它点名的就是这一台。
+    case carrying
+    /// Core 在答话,它点名的是**别的**那台 ⇒ 这一台确实闲着。
+    case idle
+    /// 没问出来。**不是**「闲着」。
+    case unconfirmed
+}
+
+/// 上面那个三态的**唯一**一份判据。
+///
+/// 两个消费方(候选行 `otherServerRows`、当前那块 `currentServerPanel`)都走它,
+/// 门是 `answeringCore`(`MenuRows.swift`)—— 不许在任何地方写第二份:同一个
+/// 问题的第二份判据恰好答反了,是这个仓库刚修掉的那个 bug。
+func serverTrafficState(name: String, list: ServerList, core: CoreRuntime?) -> ServerTrafficState {
+    let running = list.running.trimmingCharacters(in: .whitespaces)
+    guard answeringCore(core) != nil, !running.isEmpty else { return .unconfirmed }
+    return running.caseInsensitiveCompare(name) == .orderedSame ? .carrying : .idle
+}
+
 /// 界面上的一行(候选那几台;当前那台另有 `CurrentServerPanel`)。
 struct ServerRow: Equatable {
     let entry: ServerEntry
-    /// Core **此刻真的在用**这一台吗。
+    /// 这一台此刻在不在承载流量(三态,见 `ServerTrafficState`)。
     ///
-    /// 它只在两件事同时成立时为真:清单说 Core 在跑这一台,**而且** Core 此刻
-    /// 在答话(见 `otherServerRows`)。热切换失败之后,用户真正的出口就在这一行 ——
-    /// 不点名的话,他会盯着上面那块加粗的当前那台找原因。
-    var isRunningNow: Bool = false
+    /// 缺省是 `.unconfirmed` 而不是 `.idle` —— 零值取「没问出来」那一档是刻意的:
+    /// 漏填是多说一句谨慎的话,反过来是替一份从没收到过的观测宣布「闲着」。
+    var traffic: ServerTrafficState = .unconfirmed
 
-    init(entry: ServerEntry, isRunningNow: Bool = false) {
+    /// Core **此刻真的在用**这一台吗。上面那个三态的薄壳,**判据只有一份**。
+    ///
+    /// 热切换失败之后,用户真正的出口就在这一行 —— 不点名的话,他会盯着上面
+    /// 那块加粗的当前那台找原因。
+    var isRunningNow: Bool { traffic == .carrying }
+
+    init(entry: ServerEntry, traffic: ServerTrafficState = .unconfirmed) {
         self.entry = entry
-        self.isRunningNow = isRunningNow
+        self.traffic = traffic
     }
 
     var name: String { entry.name }
@@ -414,6 +449,10 @@ struct CurrentServerPanel: Equatable {
     let runningNote: String?
     /// `●` 敢不敢加粗:只有 Core 在答话**且**它报的就是这一台时才敢。
     let runningConfirmed: Bool
+    /// 这一台此刻在不在承载流量(三态)。`runningConfirmed` 是它的
+    /// `== .carrying` 那一半 —— 加粗只有「敢」与「不敢」两档,而删除确认框
+    /// 要分得清「确认闲着」与「没问出来」。
+    let traffic: ServerTrafficState
 
     var endpoint: String { endpointText(host: host, port: port) }
 
@@ -454,7 +493,8 @@ struct CurrentServerPanel: Equatable {
 func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPanel? {
     guard let entry = list.servers.first(where: { $0.current }) else { return nil }
     let live = answeringCore(core)
-    let row = ServerRow(entry: entry)
+    let row = ServerRow(entry: entry,
+                        traffic: serverTrafficState(name: entry.name, list: list, core: core))
 
     // **只有 Core 在答话时才敢说「在跑的就是它」。** 那份 running 来自上一次
     // 取清单,可能已经陈旧 —— 而它陈旧的那一刻,恰好就是保护刚被关掉的时候。
@@ -493,7 +533,8 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
             ? "Core not answering — the live readings below are missing."
             : nil,
         runningNote: runningNote,
-        runningConfirmed: confirmed)
+        runningConfirmed: confirmed,
+        traffic: serverTrafficState(name: entry.name, list: list, core: core))
 }
 
 /// 候选那几台:清单里除了当前那台以外的全部。
@@ -502,13 +543,9 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
 /// 那句话来自清单里的 `running`,而清单是按需取的 —— 拿一份可能陈旧的答案
 /// 去断言此刻的出口,正是这个仓库反复禁止的那种谎。
 func otherServerRows(list: ServerList, core: CoreRuntime?) -> [ServerRow] {
-    let live = answeringCore(core) != nil
-    let running = list.running.trimmingCharacters(in: .whitespaces)
-    return list.servers.filter { !$0.current }.map { entry in
-        ServerRow(
-            entry: entry,
-            isRunningNow: live && !running.isEmpty
-                && running.caseInsensitiveCompare(entry.name) == .orderedSame)
+    list.servers.filter { !$0.current }.map { entry in
+        ServerRow(entry: entry,
+                  traffic: serverTrafficState(name: entry.name, list: list, core: core))
     }
 }
 
@@ -550,22 +587,36 @@ func otherServersEmptyNote(list: ServerList, core: CoreRuntime?) -> String? {
 /// 从不发它,所以菜单手里从来没有那条链接 —— 删掉之后它**无法**把服务器加
 /// 回去。这与规则窗口刻意不弹确认、只留 Undo 是相反的处置,理由正是这一条:
 /// 一个撤不回的 Undo 比没有 Undo 更糟。
-/// **`isRunningNow` 那一段不是背景信息。** 一台**在跑、但配置里已经不是
-/// current** 的服务器,它的 Remove… 是亮着的(spec §7.1 只要求拒绝配置里那台,
-/// 所以这合规)—— 而窗口同一行上就写着「in use right now」。确认框此前对这件事
-/// 一个字都不说,于是用户读到的是一句「删掉一条不用的记录」,而删的是他此刻的
-/// 出口。
+/// **「在不在承载流量」那一段不是背景信息,而它是三态的。** 一台**在跑、但
+/// 配置里已经不是 current** 的服务器,它的 Remove… 是亮着的(spec §7.1 只要求
+/// 拒绝配置里那台,所以这合规)—— 而窗口同一行上就写着「in use right now」。
+/// 确认框此前对这件事一个字都不说,于是用户读到的是一句「删掉一条不用的记录」,
+/// 而删的是他此刻的出口。
 ///
-/// 说的是**观测到的事实与后果**,不吓唬人:删掉不会把流量挪走,跑着的隧道用它
-/// 到下一次重连为止 —— 而那时链接已经没了。**没在跑的那台一个字都不多说**,
-/// 每台都挂一句就是墙纸,而墙纸会训练人把整个确认框读成一段套话。
-func serverRemoveConfirmMessage(name: String, host: String, isRunningNow: Bool) -> String {
+/// 这个参数一度是 `Bool`,而那把 `.unconfirmed`(Core 静默,或者同主机两台时
+/// Guardian 刻意不猜)和 `.idle` 压成了同一个 false —— **在这个框里沉默读作
+/// 那句让人放心的答案**,于是最该出声的那一档反而什么都不说。三态之后:
+/// - `.carrying` 说观测到的事实与后果,不吓唬人:删掉不会把流量挪走,跑着的
+///   隧道用它到下一次重连为止 —— 而那时链接已经没了;
+/// - `.unconfirmed` 如实说「没问出来,可能就是这一台」,后果同上;
+/// - `.idle` **一个字都不多说** —— 每台都挂一句就是墙纸,而墙纸会训练人把
+///   整个确认框读成一段套话。
+func serverRemoveConfirmMessage(name: String, host: String, traffic: ServerTrafficState) -> String {
     let where_ = host.isEmpty ? name : "\(name) (\(host))"
     var text = "Remove \(where_) from your list?\n\n"
-    if isRunningNow {
+    switch traffic {
+    case .carrying:
         text += "Your traffic is going through this server right now, even though your config "
             + "points at another one. Removing it does not move your traffic: the running "
             + "tunnel keeps using it until bx reconnects, and the link is gone by then.\n\n"
+    case .unconfirmed:
+        text += "bx could not confirm which server is carrying your traffic right now, so this "
+            + "may be the one in use. Removing it does not move your traffic: a running tunnel "
+            + "keeps using it until bx reconnects, and the link is gone by then.\n\n"
+    case .idle:
+        // **确认闲着的那台一个字都不多说。** 每一台都挂一句提醒就是墙纸,
+        // 而墙纸会训练人把整个确认框读成一段套话。
+        break
     }
     return text
         + "Its link goes with it. bx never hands the link to this menu, so this "

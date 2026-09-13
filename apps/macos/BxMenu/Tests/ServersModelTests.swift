@@ -799,13 +799,13 @@ struct ServersModelTests {
     // 删除的确认文案必须说清**链接会跟着没、而 bx 手里没有副本**(spec §7.1):
     // 菜单在构造上做不到 Undo,一个撤不回的 Undo 比没有 Undo 更糟。
     static func testRemoveConfirmationSaysTheLinkIsGoneForGood() {
-        let text = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", isRunningNow: false)
+        let text = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", traffic: .idle)
         expect(text.contains("osaka") && text.contains("203.0.113.20"), "没说删的是哪一台:\(text)")
         expect(text.lowercased().contains("link"), "没提到链接会跟着没:\(text)")
         expect(text.lowercased().contains("undo") || text.lowercased().contains("cannot"),
                "没说这件事撤不回来:\(text)")
         // 主机问不出来时只写名字,**不写一个空括号**。
-        expect(!serverRemoveConfirmMessage(name: "osaka", host: "", isRunningNow: false).contains("()"),
+        expect(!serverRemoveConfirmMessage(name: "osaka", host: "", traffic: .idle).contains("()"),
                "主机为空时写出了一对空括号")
     }
 
@@ -819,8 +819,8 @@ struct ServersModelTests {
     // 说的是**观测到的事实与后果**,不吓唬人:删掉不会把流量挪走,跑着的隧道
     // 用它到下一次重连为止 —— 而那时链接已经没了。
     static func testRemoveConfirmationNamesTheServerCarryingTrafficRightNow() {
-        let quiet = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", isRunningNow: false)
-        let live = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", isRunningNow: true)
+        let quiet = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", traffic: .idle)
+        let live = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", traffic: .carrying)
         expect(quiet != live, "正在承载流量的那台与一台闲着的读起来一模一样")
         expect(live.lowercased().contains("right now"),
                "没说这台此刻正在承载流量:\(live)")
@@ -830,6 +830,53 @@ struct ServersModelTests {
         // 训练人把整个确认框读成一段套话。
         expect(!quiet.lowercased().contains("right now"),
                "一台没在跑的服务器也被说成正在承载流量:\(quiet)")
+    }
+
+    // **「这一台此刻在不在承载流量」是个三态问题,用 Bool 答会把「没问出来」
+    // 说成「确认闲着」。**
+    //
+    // Core 静默(保护关着、Guardian 刚重启、报文还没到),或者清单里那个
+    // `running` 是空的(同主机两台时 Guardian 刻意不猜)—— 两种情况下旧的
+    // `isRunningNow` 都是 false,与「Core 答了话、点名的是别的那台」完全
+    // 无法区分。而这个确认框的词汇表里**沉默读作那句让人放心的答案**:用户
+    // 读到的是「删掉一条不用的记录」,删的可能是他此刻的出口。
+    //
+    // 三句话必须两两不同 —— 少任何一对,某两种状态在屏幕上就长一个样。
+    static func testRemoveConfirmationAnswersTheThreeStateQuestion() {
+        let carrying = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", traffic: .carrying)
+        let idle = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", traffic: .idle)
+        let unknown = serverRemoveConfirmMessage(name: "osaka", host: "203.0.113.20", traffic: .unconfirmed)
+        expect(carrying != idle, "正在承载流量的那台与一台确认闲着的读起来一模一样")
+        expect(unknown != idle, "「没问出来」与「确认闲着」读起来一模一样 —— "
+               + "沉默在这个框里读作让人放心的那个答案")
+        expect(carrying != unknown, "「确认在跑」与「没问出来」读起来一模一样")
+        expect(unknown.lowercased().contains("could not confirm"),
+               "没说清这是「没问出来」:\(unknown)")
+        expect(unknown.lowercased().contains("reconnect"),
+               "没说跑着的隧道要到重连才放开它:\(unknown)")
+        // 反面自检:**确认闲着的那台一个字都不多说**。每一台都挂一句提醒就是
+        // 墙纸,而墙纸会训练人把整个确认框读成一段套话。
+        expect(!idle.lowercased().contains("right now"),
+               "一台确认闲着的服务器也被说成可能在承载流量:\(idle)")
+        expect(!idle.lowercased().contains("could not confirm"),
+               "确认闲着却说「没问出来」:\(idle)")
+    }
+
+    // 三态判据本身:它必须**只有一份**,而且与候选行那个 `isRunningNow`
+    // 同源(同一个 answeringCore 门、同一个 running 串)。
+    static func testServerTrafficStateKeepsTheThreeCasesApart() {
+        var list = listWithCurrent()
+        list.servers.append(ServerEntry(name: "osaka", host: "203.0.113.20"))
+        list.running = "osaka"
+        expect(serverTrafficState(name: "osaka", list: list, core: answeringCoreRuntime()) == .carrying,
+               "Core 点名了它却不算在跑")
+        expect(serverTrafficState(name: "tokyo", list: list, core: answeringCoreRuntime()) == .idle,
+               "Core 点名的是别的那台,这一台应当是确认闲着")
+        expect(serverTrafficState(name: "osaka", list: list, core: nil) == .unconfirmed,
+               "Core 没答话却给出了确定的答案")
+        list.running = ""
+        expect(serverTrafficState(name: "osaka", list: list, core: answeringCoreRuntime()) == .unconfirmed,
+               "bx 自己都说不出是哪一台,却被答成确认闲着")
     }
 
     // remove / replace 的失败码翻成人话;**认不出的返回 nil**,由调用方退回
@@ -930,6 +977,8 @@ struct ServersModelTests {
         testCurrentPanelLinesComeFromTheModelNotTheWindow()
         testRemoveConfirmationSaysTheLinkIsGoneForGood()
         testRemoveConfirmationNamesTheServerCarryingTrafficRightNow()
+        testRemoveConfirmationAnswersTheThreeStateQuestion()
+        testServerTrafficStateKeepsTheThreeCasesApart()
         testEditFailureCodesBecomeSentences()
         testReplaceFollowUpOnlyOffersReconnectForTheRunningOne()
         testUDPHintTellsAddApartFromReplace()
