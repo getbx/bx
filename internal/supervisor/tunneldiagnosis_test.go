@@ -5,8 +5,10 @@ import (
 	"errors"
 	"go/ast"
 	"net"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -289,4 +291,156 @@ func mentionsSelector(n ast.Node, x, sel string) bool {
 		return true
 	})
 	return found
+}
+
+// C2:hysteria2 跑在 QUIC/UDP 上 —— 一次 TCP 拨号观测不到它。
+//
+// 它是**被支持的主传输**(transportKind 认它、`bx server install --protocol
+// hysteria2` 装它、CLAUDE.md 记着真机 e2e 过)。一台活得好好的 hysteria2 服务器
+// 不会应答 TCP SYN,而 `bx server deploy` 把 443/tcp 也放行了,所以连「拒绝」
+// 都不是:那次拨号一路超时 ⇒ tunnel_unreachable ⇒ 对着一台**正常的**服务器说
+// 「它可能挂了、或者换了 IP」。这是确定性的,不是概率性的。
+func TestAUDPOnlyTransportIsNeverProbedWithTCPAndFallsToUndetermined(t *testing.T) {
+	cause := tagStartFailure(ErrTunnelUnhealthy, errors.New("bx 隧道健康检查超时(20s): restarts=0"))
+	// 端口是关着的 —— 拨过去必定超时/被拒,也就是会被判成「那台机器挂了」。
+	closed := closedLocalAddress(t)
+	dials := 0
+	dialer := func() tunnelDialFunc {
+		return func(context.Context, string, string) (net.Conn, error) {
+			dials++
+			return nil, errors.New("不该拨号")
+		}
+	}
+	for _, link := range []string{
+		"hysteria2://secret@" + closed + "?insecure=1",
+		"hy2://secret@" + closed,
+	} {
+		err := diagnoseUnhealthyTunnel(context.Background(), link, dialer, cause)
+		if got := StartFailureCode(err); got != StartFailureTunnelUndetermined {
+			t.Fatalf("%s 分类成 %q,want %q —— 一次 TCP 拨号不是对一台 QUIC 服务器的观测",
+				transportKind(link), got, StartFailureTunnelUndetermined)
+		}
+		if errors.Is(err, ErrTunnelUnreachable) || errors.Is(err, ErrTunnelHandshakeFailed) {
+			t.Fatalf("对一台没在 TCP 上听的服务器挑了一个具体答案:%v", err)
+		}
+	}
+	if dials != 0 {
+		t.Fatalf("对 UDP 传输拨了 %d 次 TCP —— 那次拨号观测不到任何东西,只会给出一个错答案", dials)
+	}
+}
+
+// 上面那条判据必须覆盖**每一种** transportKind 会返回的传输,而不是「今天记得
+// 的那几种」。少一种就是一个静默的错答案。
+func TestEveryTransportKindDeclaresWhetherATCPProbeObservesIt(t *testing.T) {
+	kinds := map[string]string{
+		"reality":     "vless://u@example.com:443",
+		"hysteria2":   "hysteria2://p@example.com:443",
+		"trojan":      "trojan://p@example.com:443",
+		"shadowsocks": "ss://YWVzOnA@example.com:443",
+		"vmess":       "vmess://eyJhZGQiOiJleGFtcGxlLmNvbSJ9",
+		"brook":       "brook://server?server=example.com:9999",
+	}
+	for kind, link := range kinds {
+		if got := transportKind(link); got != kind {
+			t.Fatalf("这张表自己错了:transportKind(%q) = %q,want %q", link, got, kind)
+		}
+		if _, ok := transportsAnsweringTCP[kind]; !ok {
+			t.Fatalf("传输 %q 没有登记「一次 TCP 拨号观测不观测得到它」——\n"+
+				"没登记就落 false(判不出来),那是对的极性,但沉默地落进去说明没有人想过这个问题", kind)
+		}
+	}
+	if transportsAnsweringTCP["hysteria2"] {
+		t.Fatal("hysteria2 被登记成「TCP 上有东西在听」—— 它是 QUIC/UDP")
+	}
+	// 认不出的种类必须落「判不出来」那一档,不许默认成「可以拨」。
+	if transportsAnsweringTCP["某种将来的传输"] {
+		t.Fatal("没登记的传输默认成了「TCP 上有东西在听」")
+	}
+}
+
+// I3:**本机自己**没能把 SYN 发出去,不许说成「那台服务器的端口没有应答」。
+//
+// ENETUNREACH 有真机先例:DirectDialer 的 IP_BOUND_IF 只查 scoped 路由表,而
+// 那条 scoped 默认路由是 Hijack(run.go:880)装的,判别拨号在 run.go:308,
+// **早 572 行**。一台 macOS 上没有 per-interface default 的机器上,每一次判别
+// 拨号都在本地就 network is unreachable —— 于是不管 VPS 在做什么,bx 都答
+// 「你的 VPS 挂了」。2026-08-13 那次事故的同一签名,落在唯一一条职责就是
+// 说实话的路上。
+func TestALocalDialFailureIsNotReportedAsTheServerNotAnswering(t *testing.T) {
+	cause := tagStartFailure(ErrTunnelUnhealthy, errors.New("健康检查超时"))
+	addr := closedLocalAddress(t)
+	local := []struct {
+		name string
+		err  error
+	}{
+		{"network is unreachable", syscall.ENETUNREACH},
+		{"no route to host", syscall.EHOSTUNREACH},
+		{"permission denied", syscall.EACCES},
+		{"cannot assign requested address", syscall.EADDRNOTAVAIL},
+	}
+	for _, tc := range local {
+		dialer := func() tunnelDialFunc {
+			return func(_ context.Context, network, address string) (net.Conn, error) {
+				return nil, &net.OpError{Op: "dial", Net: network, Err: os.NewSyscallError("connect", tc.err)}
+			}
+		}
+		err := diagnoseUnhealthyTunnel(context.Background(), addr, dialer, cause)
+		if got := StartFailureCode(err); got != StartFailureTunnelUndetermined {
+			t.Fatalf("%s 分类成 %q,want %q —— 这次失败发生在本机,SYN 一个都没出去,\n"+
+				"说「那台服务器没有应答」是替一个我们根本没做过的观测下结论", tc.name, got, StartFailureTunnelUndetermined)
+		}
+	}
+	// 反向:被拒绝与超时仍然是 tunnel_unreachable(台账 ruling ②,一个字没动)——
+	// 少了这一半,「凡是拨不通一律判不出来」也能满足上面那几条,而那等于把这一支
+	// 要给用户的那个答案整个扔掉。
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"connection refused", syscall.ECONNREFUSED},
+		{"i/o timeout", os.ErrDeadlineExceeded},
+	} {
+		dialer := func() tunnelDialFunc {
+			return func(_ context.Context, network, address string) (net.Conn, error) {
+				return nil, &net.OpError{Op: "dial", Net: network, Addr: nil, Err: tc.err}
+			}
+		}
+		err := diagnoseUnhealthyTunnel(context.Background(), addr, dialer, cause)
+		if got := StartFailureCode(err); got != StartFailureTunnelUnreachable {
+			t.Fatalf("%s 分类成 %q,want %q —— 事故原文正是 i/o timeout", tc.name, got, StartFailureTunnelUnreachable)
+		}
+	}
+}
+
+// M2:解不出 host:port 时,那句话里**不许**带上原始错误 —— url.Parse 的
+// *url.Error 会原样打印整条链接,vless 的 UUID 就在里面。这条消息进 Core 日志,
+// 而批二要把这一族往 Guardian 送:一条凭据一旦进了会被转发的字符串就收不回来。
+func TestDiagnosisNeverPrintsTheServerLink(t *testing.T) {
+	const uuid = "3f2b9c7e-dead-beef-cafe-000000000001"
+	link := "vless://" + uuid + "@ho st:443?security=reality&sni=www.cloudflare.com"
+	// 前提自检:那条链接确实解不出地址,而原始错误确实带着 UUID ——
+	// 少了这一步,这条守卫可能只是因为走了别的分支而绿。
+	_, parseErr := serverDialAddress(link)
+	if parseErr == nil {
+		t.Fatal("这条链接现在解得出地址了,守卫要换一条")
+	}
+	if !strings.Contains(parseErr.Error(), uuid) {
+		t.Fatalf("原始错误里已经没有 UUID 了 —— 这条守卫守的东西可能已经换了地方:%v", parseErr)
+	}
+
+	err := diagnoseUnhealthyTunnel(context.Background(), link, func() tunnelDialFunc {
+		return func(context.Context, string, string) (net.Conn, error) {
+			t.Error("链接都解不出 host:port,不该拨号")
+			return nil, errors.New("不该到这里")
+		}
+	}, tagStartFailure(ErrTunnelUnhealthy, errors.New("健康检查超时")))
+	if strings.Contains(err.Error(), uuid) {
+		t.Fatalf("判别把服务器链接里的凭据写进了错误文本:%v", err)
+	}
+	if strings.Contains(err.Error(), "vless://") {
+		t.Fatalf("判别把整条服务器链接写进了错误文本:%v", err)
+	}
+	if got := StartFailureCode(err); got != StartFailureTunnelUndetermined {
+		t.Fatalf("分类成 %q,want %q", got, StartFailureTunnelUndetermined)
+	}
 }

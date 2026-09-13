@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/getbx/bx/internal/tunnel"
@@ -37,6 +38,44 @@ const (
 // tunnelDiagnosisTimeout 是判别那一次拨号的上限。它只在启动已经失败之后发生,
 // 而用户此刻正站在那儿等一句话 —— 5 秒是「够判出来」与「别再让他多等」之间的取舍。
 const tunnelDiagnosisTimeout = 5 * time.Second
+
+// transportsAnsweringTCP 说明:对这一种传输的 host:port 拨一次 TCP,到底观测
+// 得到什么。
+//
+// **hysteria2 跑在 QUIC/UDP 上** —— 一台活得好好的 hysteria2 服务器不会应答
+// TCP SYN,而 `bx server deploy` 把 443/tcp 也放行了,于是那次拨号连「被拒绝」
+// 都不是,一路超时 ⇒ 判成「那台机器可能挂了、或者换了 IP」,而它正常得很。
+// 它不是边角:transportKind 认它、`bx server install --protocol hysteria2` 装它、
+// CLAUDE.md 记着六种传输真机 e2e 全过。
+//
+// **判据取传输种类,不取端口号** —— 端口号说不出上面在跑什么协议。
+//
+// 认不出的种类查出 false(=判不出来):将来加一种传输而忘了登记时,落回的是
+// 诚实答案,不是一个可能错的具体答案。与「ErrTunnelUnhealthy 自己就是
+// undetermined 那一档」同一条极性。
+var transportsAnsweringTCP = map[string]bool{
+	"reality":     true,
+	"trojan":      true,
+	"shadowsocks": true,
+	"vmess":       true,
+	// brook server 在同一个端口上同时听 TCP 与 UDP。
+	"brook": true,
+	// QUIC/UDP:TCP 那一侧没有任何东西在听。
+	"hysteria2": false,
+}
+
+// dialFailuresBeforeTheSYNLeaves 是**本机自己**没能把 SYN 发出去的那些形状。
+// 它们与 *net.DNSError 同一族:连问都没问到那台服务器,所以只能判「没判出来」。
+//
+// **被拒绝与超时不在这张表里**(台账 ruling ②):那两种是那台服务器给的答复,
+// 2026-09-12 事故的原文正是 i/o timeout,把它们判成「问不出来」等于把这一支
+// 要给用户的那个答案整个扔掉。
+var dialFailuresBeforeTheSYNLeaves = []error{
+	syscall.ENETUNREACH,   // 没有到那个目的地的路由(scoped 表是空的)
+	syscall.EHOSTUNREACH,  // 有路由,但本机就判定这台主机够不着
+	syscall.EACCES,        // 本机策略挡下了这次出站(沙盒 / 防火墙)
+	syscall.EADDRNOTAVAIL, // 绑不上源地址 —— 也在离开本机之前
+}
 
 type tunnelDialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
@@ -70,9 +109,19 @@ func awaitTunnelHealthOrDiagnose(ctx context.Context, t *tunnel.Tunnel, timeout 
 }
 
 func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiagnosisDialer, cause error) error {
+	kind := transportKind(link)
+	if !transportsAnsweringTCP[kind] {
+		// 这一种传输的服务器**不在 TCP 上听**(hysteria2 是 QUIC/UDP)。拨过去
+		// 拿到的既不是「它挂了」也不是「它活着」,只是「TCP 那边没人」——
+		// 而 §4.5 最长的那一段禁止的正是拿这种非观测去下一个具体结论。
+		return tunnelUndetermined(cause, fmt.Sprintf("%s 跑在 UDP 上,一次 TCP 拨号观测不到那台服务器", kind))
+	}
 	addr, err := serverDialAddress(link)
 	if err != nil {
-		return tunnelUndetermined(cause, fmt.Sprintf("没能从服务器链接里解出 host:port:%v", err))
+		// **不带上那个错误的文本**:url.Parse 失败时 *url.Error 会原样打印整条
+		// 链接,vless 的 UUID 就在里面。这句话进 Core 日志,而这一族的码还要
+		// 往 Guardian 送 —— 一条凭据一旦进了会被转发的字符串就再也收不回来。
+		return tunnelUndetermined(cause, "没能从服务器链接里解出 host:port")
 	}
 	if dialer == nil {
 		return tunnelUndetermined(cause, "没有可用的判别拨号器")
@@ -98,6 +147,19 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 	var dnsErr *net.DNSError
 	if errors.As(dialErr, &dnsErr) {
 		return tunnelUndetermined(cause, fmt.Sprintf("服务器域名没能解析:%v", dialErr))
+	}
+	// 同一族的另一半:**SYN 根本没能离开本机**。
+	//
+	// ENETUNREACH 有真机先例 —— DirectDialer 用 IP_BOUND_IF 绑物理网卡,而
+	// IP_BOUND_IF 只查 **scoped** 路由表;那条 scoped 默认路由是 Hijack
+	// (run.go:880)装的,判别拨号在 run.go:308,**早 572 行**。一台 macOS 自己
+	// 没建 per-interface default 的机器上(2026-08-13 那次事故的形状),每一次
+	// 判别拨号都在本地就 network is unreachable,于是不管 VPS 在做什么,bx 都
+	// 答「你的 VPS 挂了」—— 而这条路唯一的职责就是说出关于那台服务器的实话。
+	for _, localFailure := range dialFailuresBeforeTheSYNLeaves {
+		if errors.Is(dialErr, localFailure) {
+			return tunnelUndetermined(cause, fmt.Sprintf("这次拨号在本机就失败了(%v)", dialErr))
+		}
 	}
 	// 拨不通(拒绝、超时、不可达)—— **超时归这一档,不归「没判出来」**:
 	// 2026-09-12 那次事故的原文正是 `i/o timeout`,一台不通的 VPS 给出的就是
