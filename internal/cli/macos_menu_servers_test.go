@@ -3,7 +3,9 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -850,6 +852,32 @@ func swiftEnclosingGate(body string, at int) (string, bool) {
 	return strings.TrimSpace(body[lineStart : open+1]), true
 }
 
+// swiftRedGates 取 body 里**每一处** needle 各自被哪个块包着(顺序无关,调用方
+// 自己排序比对)。顶层那一处 —— 也就是「谁都没包着它」—— 记成空串。
+//
+// 判据从「恰好一处 .systemRed」升级成这个,是因为这一块上现在有**两处**该红的
+// 地方(隧道不健康、探测实测失败),而两处各有各的三态判据。只数个数就只能在
+// 「一处」和「随便几处」之间选,前者拦住正当的第二处,后者放过任何一处不受判据
+// 管的红 —— 而这一整块存在的理由正是「不许把没测成画成坏了」。
+func swiftRedGates(body, needle string) []string {
+	blank := blankSwiftStringLiterals(body)
+	var gates []string
+	from := 0
+	for {
+		i := strings.Index(blank[from:], needle)
+		if i < 0 {
+			return gates
+		}
+		at := from + i
+		gate, ok := swiftEnclosingGate(body, at)
+		if !ok {
+			gate = ""
+		}
+		gates = append(gates, gate)
+		from = at + len(needle)
+	}
+}
+
 // **每一个渲染点都必须带上 `/v1/status` 的那份实时数据,而漏掉它不会有任何
 // 编译错误** —— `core` 是可空的,漏传的后果只是当前那一块永远说「Core not
 // answering」,而界面看起来完全正常。规则窗口那次就是漏了一个渲染点。
@@ -952,7 +980,7 @@ func TestMacMenuServersWindowPlacesTheCurrentServerPanel(t *testing.T) {
 	// 另一半:配置指着这一台而 Core 在跑别的,用户永远看不到这句话。
 	for _, field := range []string{
 		"panel.endpoint", "panel.statusLine", "panel.udpLine",
-		"panel.throughput", "panel.coreSilentNote", "panel.runningNote",
+		"panel.throughput", "panel.probeLine", "panel.coreSilentNote", "panel.runningNote",
 		"panel.runningConfirmed",
 	} {
 		if !strings.Contains(panel, field) {
@@ -964,21 +992,21 @@ func TestMacMenuServersWindowPlacesTheCurrentServerPanel(t *testing.T) {
 				"而界面看起来完全正常", field)
 		}
 	}
-	// **只有明确说了不健康才画红。** `statusLineIsBad` 是那个三态判据的落点:
-	// 窗口自己写 `healthy == false` 就会把「没说」画成「不健康」。
-	// 判据是**包着那处红色的条件是哪一个**,不是「提到过这个属性」。
-	red := strings.Index(panel, ".systemRed")
-	if red < 0 {
-		t.Fatal("当前那一块里没有红色 —— 隧道不健康时没有任何视觉提示")
-	}
-	if n := strings.Count(panel, ".systemRed"); n != 1 {
-		t.Fatalf("当前那一块里有 %d 处 .systemRed,应当恰好一处 —— "+
-			"多出来的那些不受 statusLineIsBad 这个三态判据管", n)
-	}
-	gate, ok := swiftEnclosingGate(panel, red)
-	if !ok || gate != "if panel.statusLineIsBad {" {
-		t.Errorf("隧道健不健康的红色不是**包在** statusLineIsBad 里的"+
-			"(包着它的那个块的头是 %q)", gate)
+	// **每一处红色都必须被一个三态判据包着,而这一块上恰好有两处该红的地方:**
+	// 隧道明确说了不健康(`statusLineIsBad`)、探测**实测**失败
+	// (`probe.isFailure`)。窗口自己写 `healthy == false` 会把「没说」画成
+	// 「不健康」;自己看 `reachable` 会把「没测成」(bx 没在跑)画成「这台坏了」
+	// —— 两者都是把一台好机器说成坏的。
+	//
+	// 判据是**包着每一处红色的那个条件**,不是「提到过这个属性」,也不是个数:
+	// 只数个数时,「恰好一处」会拦住正当的第二处,「随便几处」会放过任何一处
+	// 不受判据管的红。
+	wantGates := []string{"if panel.probe.isFailure {", "if panel.statusLineIsBad {"}
+	gotGates := swiftRedGates(panel, ".systemRed")
+	sort.Strings(gotGates)
+	if !reflect.DeepEqual(gotGates, wantGates) {
+		t.Errorf("当前那一块里那几处红色被包在 %q 里,应当恰好是 %q —— "+
+			"多出来的那些不受三态判据管,少了的那一项则永远不会变红", gotGates, wantGates)
 	}
 }
 
