@@ -199,9 +199,11 @@ struct AppTrafficModelTests {
     // 间隔一旦逼近 TTL,订阅就会在两次刷新之间过期:窗口开着,界面却反复跳回
     // 「Not collecting app traffic right now.」,而且每次续上都从零开始计数。
     //
-    // **这一对数字是跨语言手抄的**(Go 侧 appTrafficTTL 未导出),这条只能钉住
-    // Swift 这一侧留了余量,证明不了 Go 那边真的是 30 —— 与
-    // guardianStatusWatchTimeout 注释里记下的是同一个局限。
+    // **这一对数字是跨语言手抄的**(Go 侧 appTrafficTTL 未导出),所以**这条**
+    // 只钉得住 Swift 这一侧留了余量。证明两边真的相等的是 Go 侧那条守卫
+    // TestMenuAppTrafficRefreshIntervalMatchesTheGoTTL(它把两份源码都读出来
+    // 逐个比)—— 那不是与 guardianStatusWatchTimeout 同一个局限,后者的 Go 侧
+    // watchMaxHold 才是真的没人读。
     static func testRefreshIntervalStaysWellInsideTheSubscriptionTTL() {
         expect(appTrafficRefreshSeconds * 3 <= appTrafficSubscriptionTTLSeconds,
                "刷新间隔 \(appTrafficRefreshSeconds)s 对 TTL \(appTrafficSubscriptionTTLSeconds)s 没有余量")

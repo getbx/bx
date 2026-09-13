@@ -1065,7 +1065,9 @@ func TestSetServerSerializesConcurrentBypassRefresh(t *testing.T) {
 //   - 这一条走**反射**、**默认参与**:构造一个所有字段都非零的入参,断言产出的
 //     每一个字段也非零。新加字段自动被覆盖 —— 与 statusdigest 的排除名单同一条
 //     纪律(漏填是多报、反过来是漏报,代价不对称)。
-//   - 下面那条钉 `newStatusReporter` 的 **10 个位置参数**,尤其连着三个 string。
+//   - 下面那条(…WiresTheReporterInTheRightOrder)钉 `newStatusReporter` 的
+//     **位置参数顺序**,尤其连着的那三个 string。**这一条钉不住那件事**:
+//     对调 Server 与 Mode 之后 Report 仍是个非 nil 的函数值,反射断言照样绿。
 func TestControlMuxOptionsForServeCarriesEveryField(t *testing.T) {
 	at := NewAppTraffic(&fakeAppSource{}, nil)
 	opts := controlServeOptions{
@@ -1105,7 +1107,7 @@ func TestControlMuxOptionsForServeCarriesEveryField(t *testing.T) {
 	}
 }
 
-// **`newStatusReporter` 的 10 个位置参数里,server/mode/udpMode 是连着三个 string。**
+// **`newStatusReporter` 全是位置参数,其中 server/mode/udpMode 是连着三个 string。**
 //
 // 换位不会有任何编译错误,症状是 `bx status` 里三个字段互相串台 —— 而没有人会
 // 对着一份 status 输出逐字核对它们的对应关系。这里用三个互不相同的值把顺序钉死,
