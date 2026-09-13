@@ -2830,6 +2830,13 @@ Windows 上是死的**(`dialFailuresBeforeTheSYNLeaves` 头上写着为什么:wi
 - **内嵌资产**:`internal/embedded/assets/brook_linux_{amd64,arm64}`(~30MB)+ `singbox_{linux,darwin}_{amd64,arm64}`(linux ~28MB / darwin ~23MB)是提交进仓库的真二进制,按 GOOS/GOARCH 条件 embed(每构建只嵌匹配的那一个;singbox 经 `embedded_singbox_{amd64,arm64,darwin_amd64,darwin_arm64,other}.go`,**linux+darwin 都内嵌(同 brook 平台覆盖,mac 上 reality/hysteria2 也零依赖即跑)**,windows/其他 arch 走 nil 兜底→下载)。CI `embed-brook.yml`/`embed-singbox.yml` 跟上游 release 自动重嵌。换 arch 要补对应二进制。**缓存键掺内容 hash(已实现)**:`provision.embedCacheKey` = 版本 tag + `sha256(内嵌字节)[:12]`,写进 `.brook-version`/`.singbox-version`;同 tag 重嵌不同字节(如 sing-box 从 `with_utls` 加到 `with_utls,with_quic`)也会失效旧缓存、强制重释放,避免用到陈旧二进制。
   - **sing-box 是「自建静态最小构建」不是官方 release 二进制**:官方 linux 包是 glibc **动态链接 + 56MB 全家桶**(含 tailscale/acme/clash/dhcp,reality 全用不上),违背 bx「静态单文件、零依赖」。故从同一 release tag 源码用 `CGO_ENABLED=0 go build -tags with_utls,with_quic`(REALITY 需 utls;**hysteria2/QUIC 需 with_quic**)自建:**静态**(Alpine/musl 也跑,同 brook)、**~28MB**(官方半体积)、同 revision。CI `embed-singbox.yml` 复刻此构建;改时务必保持 `with_utls,with_quic` 与 `CGO_ENABLED=0`。
 - **绝不擅自启动 bx / 改路由**:启动是用户的事(需 root、动真实网络)。改完让用户自己 `bx up`。
+  **2026-09-13 真机事故:这条约定被 shell 绕过去了一次,而不是被谁决定绕过去的。** 一个只读
+  排查代理在**双引号**的 grep 模式里带了反引号,zsh 把它当命令替换执行,于是真的跑了一次
+  `bx up`(Core 没起来、屏障没装、路由与 DNS 未动;只有盘上 `desired` 被翻成 on,因为
+  `upLocked` 先写意图再起 Core)。**这个仓库对这个形状格外脆弱:文档里到处是反引号包着的命令**,
+  而搜文档是每个代理开工第一件事 —— 一次 `grep -rn "…`bx up`…" CLAUDE.md` 就会真的执行它。
+  **规矩:凡是搜索/匹配用的模式一律单引号**(单引号里的反引号不执行,双引号里的会);
+  要在双引号里出现反引号就转义。判据不是「代理会不会自觉」——这次自觉的是代理,执行的是 shell。
 - gVisor/wireguard 等库的 API 易随版本变——查 `$(go list -m -f '{{.Dir}}' <module>)` 的真实源码,别凭记忆。
 
 ## 跨平台待办
