@@ -1819,7 +1819,9 @@ func TestManagerHeldBarrierRemainsWhenRecoveryHealthFails(t *testing.T) {
 	if err := env.manager.Up(context.Background()); err == nil {
 		t.Fatal("Up succeeded despite recovery health failure")
 	}
-	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "core.stop"}) {
+	// core.force_stop 而不是 core.stop:健康检查失败的 Core 没有控制 socket
+	// (它就是没起来),协作关闭必定失败并把真话换成 core_ownership_uncertain。
+	if got := env.events.snapshot(); !reflect.DeepEqual(got, []string{"core.start", "core.force_stop"}) {
 		t.Fatalf("events = %#v, want no barrier removal before health", got)
 	}
 	if !env.manager.barrierProven() {
@@ -2253,8 +2255,20 @@ func (r *fakeCoreRunner) Start(ctx context.Context, _ CoreStartOptions) (Process
 	return process, nil
 }
 
+// ForceStop 与 Stop **在事件日志里不同名**,而这是刻意的:两者的语义相反
+// (一个请它自己退出、一个直接杀),压成同一个事件之后,「清理走了哪条路」
+// 这件事就再也断言不出来了。
+func (r *fakeCoreRunner) ForceStop(ctx context.Context, process Process) error {
+	r.events.add("core.force_stop")
+	return r.stop(ctx, process)
+}
+
 func (r *fakeCoreRunner) Stop(ctx context.Context, process Process) error {
 	r.events.add("core.stop")
+	return r.stop(ctx, process)
+}
+
+func (r *fakeCoreRunner) stop(ctx context.Context, process Process) error {
 	r.mu.Lock()
 	r.signals++
 	r.stopContextErr = ctx.Err()

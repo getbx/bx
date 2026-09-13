@@ -20,10 +20,11 @@ func (r *scannerOnlyRunner) Verify(Process) error                      { return 
 func (r *scannerOnlyRunner) Start(context.Context, CoreStartOptions) (Process, error) {
 	return Process{}, nil
 }
-func (r *scannerOnlyRunner) Stop(context.Context, Process) error { return nil }
-func (r *scannerOnlyRunner) Executable() string                  { return "" }
-func (r *scannerOnlyRunner) SetExecutable(string) error          { return nil }
-func (r *scannerOnlyRunner) ScanRunning() ([]Process, error)     { return r.scan.ScanRunning() }
+func (r *scannerOnlyRunner) Stop(context.Context, Process) error      { return nil }
+func (r *scannerOnlyRunner) ForceStop(context.Context, Process) error { return nil }
+func (r *scannerOnlyRunner) Executable() string                       { return "" }
+func (r *scannerOnlyRunner) SetExecutable(string) error               { return nil }
+func (r *scannerOnlyRunner) ScanRunning() ([]Process, error)          { return r.scan.ScanRunning() }
 
 // nonScanningRunner 刻意不实现 ScanRunning:它代表「求证不了」的 runner。
 type nonScanningRunner struct{}
@@ -34,9 +35,10 @@ func (r *nonScanningRunner) Verify(Process) error                      { return 
 func (r *nonScanningRunner) Start(context.Context, CoreStartOptions) (Process, error) {
 	return Process{}, nil
 }
-func (r *nonScanningRunner) Stop(context.Context, Process) error { return nil }
-func (r *nonScanningRunner) Executable() string                  { return "" }
-func (r *nonScanningRunner) SetExecutable(string) error          { return nil }
+func (r *nonScanningRunner) Stop(context.Context, Process) error      { return nil }
+func (r *nonScanningRunner) ForceStop(context.Context, Process) error { return nil }
+func (r *nonScanningRunner) Executable() string                       { return "" }
+func (r *nonScanningRunner) SetExecutable(string) error               { return nil }
 
 type scriptedScanner struct {
 	results [][]Process

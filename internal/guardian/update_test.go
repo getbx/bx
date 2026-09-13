@@ -59,7 +59,9 @@ func TestManagerUpdateTransactions(t *testing.T) {
 				"prepare", "health.v1", "install.bind_barrier", "journal.prepared",
 				"journal.prepared.barrier_intent", "barrier.install", "journal.barrier_active",
 				"core.stop.v1", "barrier.reassert", "journal.activating", "install.activate",
-				"core.start.v2", "health.v2", "core.stop.v2", "journal.rolling_back",
+				// 新 Core 没能健康 = 它的控制 socket 从没出现过,清理只能强杀
+				// (协作关闭要走的正是那个不存在的 socket)。
+				"core.start.v2", "health.v2", "core.force_stop.v2", "journal.rolling_back",
 				"install.restore", "barrier.reassert", "core.start.v1", "health.v1", "journal.rolled_back",
 				"barrier.release", "receipt.rolled_back", "install.commit", "journal.clear",
 			},
@@ -74,8 +76,11 @@ func TestManagerUpdateTransactions(t *testing.T) {
 				"prepare", "health.v1", "install.bind_barrier", "journal.prepared",
 				"journal.prepared.barrier_intent", "barrier.install", "journal.barrier_active",
 				"core.stop.v1", "barrier.reassert", "journal.activating", "install.activate",
-				"core.start.v2", "health.v2", "core.stop.v2", "journal.rolling_back",
-				"install.restore", "barrier.reassert", "core.start.v1", "health.v1", "core.stop.v1",
+				"core.start.v2", "health.v2", "core.force_stop.v2", "journal.rolling_back",
+				// 回滚回去的旧 Core 同样没能健康 —— 同一条理由,同样强杀。
+				// 而**开头那次** core.stop.v1 停的是正在正常服务的 Core,
+				// 它照旧是协作关闭:那种 Core 装着 TUN、路由与 DNS。
+				"install.restore", "barrier.reassert", "core.start.v1", "health.v1", "core.force_stop.v1",
 				"journal.needs_attention",
 			},
 		},
@@ -2078,11 +2083,21 @@ func (r *updateCoreRunner) startOptionsSnapshot() []CoreStartOptions {
 	return result
 }
 
+// ForceStop 与 Stop 分开记事件:两条清理路语义相反(请它自己退出 / 直接杀),
+// 同名会让「走了哪一条」再也断言不出来。
+func (r *updateCoreRunner) ForceStop(ctx context.Context, process Process) error {
+	return r.stopCore(ctx, process, "core.force_stop.")
+}
+
 func (r *updateCoreRunner) Stop(ctx context.Context, process Process) error {
+	return r.stopCore(ctx, process, "core.stop.")
+}
+
+func (r *updateCoreRunner) stopCore(ctx context.Context, process Process, event string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	version := r.versions[process.PID]
-	r.events.add("core.stop." + version)
+	r.events.add(event + version)
 	r.stopSawCanceled[version] = ctx.Err() != nil
 	r.stopDeadline[version], _ = ctx.Deadline()
 	if version == r.failStopVersion {

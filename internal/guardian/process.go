@@ -128,6 +128,51 @@ type ExecCoreRunner struct {
 	ScanRunningCores func() ([]Process, error)
 
 	mu sync.Mutex
+
+	startedMu sync.Mutex
+	// startedCores 记着本进程每一次 fork 出来的 Core 句柄,供 ForceStop **拿着
+	// 句柄**杀 —— 而不是拿一个 PID 去杀。拿 PID 杀要先验一次身份,而验完到杀
+	// 那一瞬 PID 可能已经被复用;句柄在构造上没有这个窗口。
+	startedCores map[startedCoreKey]*startedCore
+}
+
+// startedCoreKey 含 generation:PID 会被复用,而这张表决定的是「杀谁」。
+type startedCoreKey struct {
+	pid        int
+	generation string
+}
+
+type startedCore struct {
+	handle StartedProcess
+	// exited 在 waitpid 返回、owned 记录也清掉之后关闭。**广播语义,不是
+	// Process.Exit 那个 channel**:后者只能被读走一次,ForceStop 消费它就会
+	// 把 Manager 的 monitor / retainUncertain 饿死在一个永远不来的值上。
+	exited chan struct{}
+}
+
+func (r *ExecCoreRunner) rememberStartedCore(process Process, tracked *startedCore) {
+	r.startedMu.Lock()
+	defer r.startedMu.Unlock()
+	if r.startedCores == nil {
+		r.startedCores = map[startedCoreKey]*startedCore{}
+	}
+	r.startedCores[startedCoreKey{pid: process.PID, generation: process.Generation}] = tracked
+}
+
+func (r *ExecCoreRunner) forgetStartedCore(process Process) {
+	r.startedMu.Lock()
+	defer r.startedMu.Unlock()
+	delete(r.startedCores, startedCoreKey{pid: process.PID, generation: process.Generation})
+}
+
+// startedCoreHandle 只查不删:ForceStop 超时之后调用方可能再试一次,而删掉
+// 句柄会让第二次拿不到东西可杀。真正的摘除由 Start 那个 wait goroutine 在
+// 进程确实没了之后做。
+func (r *ExecCoreRunner) startedCoreHandle(process Process) (*startedCore, bool) {
+	r.startedMu.Lock()
+	defer r.startedMu.Unlock()
+	tracked, ok := r.startedCores[startedCoreKey{pid: process.PID, generation: process.Generation}]
+	return tracked, ok
 }
 
 func NewExecCoreRunner(executable, configPath, dnsListen string) *ExecCoreRunner {
@@ -212,6 +257,8 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 	if err := r.saveRecord(r.statePath(), record); err != nil {
 		return Process{}, r.cleanupFailedStart(ctx, started, process, fmt.Errorf("persist Core process: %w", err))
 	}
+	tracked := &startedCore{handle: started, exited: make(chan struct{})}
+	r.rememberStartedCore(process, tracked)
 	exit := make(chan error, 1)
 	go func() {
 		waitErr := started.Wait()
@@ -223,6 +270,11 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 			log.Printf("guardian_stale_core_record_after_exit pid=%d generation=%s clear_failed=%v",
 				process.PID, process.Generation, err)
 		}
+		r.forgetStartedCore(process)
+		// 记录清完才关:ForceStop 返回 nil 就意味着进程没了**且**盘上那条
+		// owned 记录也没了 —— 少了后半句,下一次 bx up 会撞上一条指着死 PID
+		// 的陈旧记录,而这正是本次修复要消灭的那种二次故障。
+		close(tracked.exited)
 		exit <- waitErr
 		close(exit)
 	}()
@@ -500,6 +552,46 @@ func (r *ExecCoreRunner) Watch(process Process) Process {
 
 func (r *ExecCoreRunner) Verify(process Process) error {
 	return verifyInstalledProcess(process, r.executablePath())
+}
+
+// ForceStop 收拾一个**从没服务过**的 Core:直接杀,一个字都不问控制 socket。
+//
+// 承重理由(2026-09-12 真机事故):supervisor.Run 里等隧道健康那一步排在开 TUN、
+// 劫持路由、开控制 socket **之前** —— 隧道不通就 fail-closed 返回,那个 Core
+// 没开过 TUN、没装过路由、没碰过 DNS,身上没有任何东西需要优雅还原。而「先请
+// 它自己退出」依赖的恰恰是它没能建出来的那个 socket:一个「没能起来的 Core」
+// 按定义就是「没有 socket 的 Core」,那条清理路在最需要它的时候必定失败,于是
+// 真话(隧道没起来)被 core_ownership_uncertain 顶掉。这是 2026-08-04 那次
+// 71 分钟事故立下的规矩 —— **停止路径不许依赖别的先成功**。
+//
+// **Stop 一个字不动**:它收拾的是验明过身份、正在正常服务的 Core,那种 Core
+// 装着 TUN、路由与 DNS,让它自己跑 defer 还原才是对的。
+//
+// 杀的是**我们自己 fork 出来的那个句柄**,不是一个 PID。手里没有句柄(比如
+// 接管来的、或上一任 Guardian 留下的 Core)就如实报错:既不猜一个 PID 杀下去,
+// 也不悄悄回落到那条要 socket 的协作关闭 —— 悄悄回落等于把这次修复原样撤销。
+func (r *ExecCoreRunner) ForceStop(ctx context.Context, process Process) error {
+	if process.PID <= 0 {
+		return nil
+	}
+	tracked, ok := r.startedCoreHandle(process)
+	if !ok {
+		return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄", process.PID)
+	}
+	if err := tracked.handle.Terminate(); err != nil {
+		// 它可能刚好自己退了 —— 那正是我们要的结局。只记一行,继续去等。
+		log.Printf("guardian_core_force_stop_signal_failed pid=%d err=%v", process.PID, err)
+	}
+	timer := time.NewTimer(r.launchCleanupTimeout())
+	defer timer.Stop()
+	select {
+	case <-tracked.exited:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("等被强行收掉的 Core PID %d 退出: %w", process.PID, ctx.Err())
+	case <-timer.C:
+		return fmt.Errorf("等被强行收掉的 Core PID %d 退出: %w", process.PID, context.DeadlineExceeded)
+	}
 }
 
 func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {
