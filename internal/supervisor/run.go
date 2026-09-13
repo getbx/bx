@@ -302,7 +302,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if healthTimeout <= 0 {
 		healthTimeout = 20 * time.Second
 	}
-	if err := waitTunnelHealthy(ctx, tun0, healthTimeout); err != nil {
+	// 隧道没起来时**当场判别一次**「是那台服务器不通,还是它活着而隧道没建起来」——
+	// 两者的处置完全相反(tunneldiagnosis.go)。判别只在失败路径上发生:拨号器
+	// 是个 thunk,成功启动的那条路上连造都不会造它。
+	if err := awaitTunnelHealthOrDiagnose(ctx, tun0, healthTimeout, cfg.Server,
+		func() tunnelDialFunc { return plat.DirectDialer().DialContext }); err != nil {
 		return err
 	}
 	log.Printf("bx 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
@@ -49,6 +50,16 @@ func TestEveryStartFailureSentinelHasAProductionSite(t *testing.T) {
 				Rules:  []config.Rule{{Via: "wan2", CIDR: []string{"这不是网段"}}},
 			}, Options{})
 			return err
+		}},
+		ErrTunnelUnreachable: {trigger: func(t *testing.T) error {
+			return diagnoseUnhealthyTunnel(context.Background(), closedLocalAddress(t),
+				func() tunnelDialFunc { return (&net.Dialer{}).DialContext },
+				tagStartFailure(ErrTunnelUnhealthy, errors.New("健康检查超时")))
+		}},
+		ErrTunnelHandshakeFailed: {trigger: func(t *testing.T) error {
+			return diagnoseUnhealthyTunnel(context.Background(), listeningLocalAddress(t),
+				func() tunnelDialFunc { return (&net.Dialer{}).DialContext },
+				tagStartFailure(ErrTunnelUnhealthy, errors.New("健康检查超时")))
 		}},
 		ErrTUNOpen: {platformCall: "OpenTUN"},
 		ErrHijack:  {platformCall: "Hijack"},
