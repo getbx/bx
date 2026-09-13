@@ -155,6 +155,42 @@ func TestManagerRecoveryBlockedDoesNotTouchLastError(t *testing.T) {
 	}
 }
 
+// **Down 不清 recoveryBlocked —— 这条锁存只有一次成功的启动恢复才解得开。**
+//
+// 这不是一条讲究:`recovery_incomplete` 那句用户可见的指引此前写着「只有 down
+// 会清掉这个锁存状态」,而用户读到它的时刻正是 up 与 down 双双被堵死的时刻
+// (manager.go 那句注释的原话:「置 recoveryBlocked,把 Up 与 Down **双双堵死**」)。
+// 他确实脱得了身,但靠的是 CLI 在 Guardian 拒绝之后落到强制拆除、把守护进程整个
+// 停掉 —— 与所有权锁存那条早就更正过的记述同一句话(「真正管用的一直是杀掉
+// daemon」)。判据打在**行为**上而不是那句文案上:文案会被改写,而它描述的这个
+// 事实一旦变了(哪天真让 Down 清它),该红的是这里。
+//
+// 同一个 Down 里另一半**是真的**:维护挂起照清 —— 它的 defer 排在那句短路检查
+// 之前。两件事写在一条断言里,免得下一次更正又把它们混成一句。
+func TestDownDoesNotClearTheRecoveryLatchButStillClearsTheMaintenanceHold(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.ArmMaintenanceHold(HoldReasonUpgrade, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	env.manager.recoveryBlocked = true
+
+	err := env.manager.Down(context.Background())
+	if !errors.Is(err, errRecoveryIncomplete) {
+		t.Fatalf("err = %v, want errRecoveryIncomplete —— Down 也被这条锁存堵死", err)
+	}
+	if !env.manager.recoveryBlocked {
+		t.Fatal("Down 把 recoveryBlocked 清掉了 —— 那么 recovery_incomplete 的指引该改回去," +
+			"而清它的地方只该是 recoverLocked")
+	}
+	intent, ierr := env.store.LoadIntentSnapshot(time.Now())
+	if ierr != nil {
+		t.Fatal(ierr)
+	}
+	if intent.HoldArmed {
+		t.Fatal("Down 连维护挂起也没清 —— 那半句(defer 排在短路检查之前)就不成立了")
+	}
+}
+
 // Down 的 DNS-restore-失败但恢复成功分支(装屏障时的 setStatus 字面量已把
 // LastError 清空为 "",随后 core 重启与屏障拆除都成功)全程不调用
 // needsAttention 就 return restoreErr。回传给调用方的 code 绝不能是更早一次

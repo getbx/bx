@@ -371,11 +371,25 @@ var guardianCodeHints = map[string]string{
 	maintenanceHoldClearFailedCode: "维护挂起删不掉,保护因此没有打开(挂起还在就等于 Core 退出后不会被拉回来):" +
 		"检查 " + defaultMaintenanceHoldPath + " 及其目录是否可写(ls -l /var/lib/bx)," +
 		"必要时 sudo rm -f " + defaultMaintenanceHoldPath + " 后重试 sudo bx up",
-	// recoveryBlocked 是**锁存**的:Up 的第一句就短路,而那句检查排在销挂起
-	// 之前 —— 于是 `bx up` 既不会清挂起也不会启动。Down 会清掉这个状态
-	// (它自己的 defer 也会销挂起),所以出路只有一条,必须写出来。
-	"recovery_incomplete": "上一次启动恢复没能完成,Guardian 把后续操作锁住了(bx up 会在第一句就返回):" +
-		"先 sudo bx down 再 sudo bx up —— 只有 down 会清掉这个锁存状态",
+	// recoveryBlocked 是**锁存**的,而且 **Up 与 Down 双双短路**(manager.go:866
+	// 的注释原话)。这条提示此前写着「只有 down 会清掉这个锁存状态」——
+	// **那是假的**:Down 在自己那句 `if m.recoveryBlocked` 上就 return 了
+	// (manager.go),`recoveryBlocked = false` 只发生在 recoverLocked 里面。
+	// Down **确实**清掉的是维护挂起(它的 defer 排在那句检查之前),两件事别混。
+	//
+	// 用户在实践中确实脱得了身,但机制是另一回事:`sudo bx down` 被 Guardian
+	// 拒绝之后,CLI 会落到强制拆除,把 Guardian 服务整个停掉 —— 锁存住在**进程
+	// 内存**里,进程没了它就没了,下一个 Guardian 重新跑一遍启动恢复。
+	// **这与所有权锁存那条早就更正过的记述是同一句话**(CLAUDE.md:「真正管用的
+	// 一直是杀掉 daemon」),只是 recovery_incomplete 这条文案一直没跟上。
+	//
+	// 所以措辞**不许写成承诺**:恢复再失败一次,新 Guardian 会重新锁上,
+	// 而那时要看的是它为什么恢复不了,不是再敲一遍同样的命令。
+	"recovery_incomplete": "上一次启动恢复没能完成,Guardian 把后续操作锁住了(up 与 down 都会在第一句就返回)。" +
+		"敲 sudo bx down:它会被 Guardian 拒绝,但 CLI 随即落到强制拆除、把 Guardian 服务停掉," +
+		"而这个锁存只活在那个进程的内存里 —— 下一个 Guardian 会重新跑一遍启动恢复。" +
+		"**这不是保证**:恢复再失败一次就会重新锁上,那时先 sudo tail -50 " + install.GuardianStderrLogPath +
+		" 看 network_recovery / guardian_startup_recovery 那几行为什么失败,再决定下一步",
 }
 
 // guardianHTTPError renders a Guardian error response. Every 500 carries the
