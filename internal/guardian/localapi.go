@@ -624,12 +624,6 @@ func recoveryCurrentHandler(controller PathRecoveryController, ownerUID uint32) 
 	}
 }
 
-// authorizeOwnerPeer 是「root 或 config 里配置的 owner」这条判据。
-//
-// ownerUID 为 0(未配置)时退化为 root-only —— 绝不因为「没配」就放宽。
-// 守着 /v1/recoveries(路径恢复)与 /v1/up、/v1/down(日常开关)。
-// 装卸(/v1/update)与迁移(/v1/migrate)刻意不用它,见
-// TestLocalAPIUpdateAndMigrateStayRootOnlyEvenWithOwnerConfigured。
 // peerUIDFrom 取出对端 uid,供审计日志使用。第二个返回值区分「内核给了我们
 // 凭据」与「没拿到」——没拿到时 uid 是零值 0,而 0 恰好就是 root,不区分就会
 // 把「不知道谁」记成「root 干的」。今天调用它的路径都在 authorizeOwnerPeer
@@ -639,6 +633,24 @@ func peerUIDFrom(ctx context.Context) (uint32, bool) {
 	return credentials.uid, credentials.got
 }
 
+// authorizeOwnerPeer 是「root 或 config 里配置的 owner」这条判据。
+//
+// ownerUID 为 0(未配置)时退化为 root-only —— 绝不因为「没配」就放宽;
+// 没拿到 peer 凭据一律拒绝(uid 零值恰好是 root,不先判 got 就等于给所有人开门)。
+//
+// **它是本地 API 上最宽的那道门,而门后的端点一直在长。** 今天走它的有:
+// /v1/up、/v1/down(同一个 mutationHandler)、/v1/update-check、/v1/recoveries、
+// /v1/recoveries/current、/v1/rules、/v1/servers、/v1/apps、/v1/logs、/v1/doctor。
+// **别照抄这份名单去论证「这道门只守着几件小事」** —— 它 2026-08-07 只守三条,
+// 现在十条;要看当下的全集就重数一遍:
+//
+//	grep -rn 'authorizeOwnerPeer(r.Context()' internal/guardian/ | grep -v _test
+//
+// 判据不是「哪个端点更敏感」,恰恰相反:能关掉保护的人已经能做更坏的事,所以
+// 读/改配置这类动作与 up/down 取一致才是要点(见 /v1/rules 那一期的记述)。
+//
+// 装卸(/v1/update)与迁移(/v1/migrate)刻意**不**用它,仍是 root-only,见
+// TestLocalAPIUpdateAndMigrateStayRootOnlyEvenWithOwnerConfigured。
 func authorizeOwnerPeer(ctx context.Context, ownerUID uint32) bool {
 	credentials, _ := ctx.Value(peerCredentialsKey{}).(peerCredentials)
 	if !credentials.got {
