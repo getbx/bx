@@ -439,6 +439,15 @@ struct ServersModelTests {
         expect(panel.tunnelHealthy == nil, "同上")
         expect(panel.transport == nil, "同上")
         expect(panel.coreSilentNote != nil, "必须明说下面这些没量到")
+        // **那句话不许把它盖不到的东西也说成没量到。** 下面还活着两行:
+        // udpLine 来自配置,吞吐来自 Guardian 那份**落了盘的**历史 —— 后者
+        // 确实量到过,而且现在还带着真实年龄。一句「nothing below was
+        // measured」于是当场被它下面那行 `peak 6.4 MB/s · 2h ago` 证伪,
+        // 而这个窗口全部的纪律就是不说这种话。
+        expect(panel.coreSilentNote?.lowercased().contains("nothing below") != true,
+               "那句话把下面每一行都说成没量到:\(panel.coreSilentNote ?? "nil")")
+        expect(panel.throughput != nil,
+               "反面自检:Core 静默时那份落了盘的历史仍该在,否则上一条无从谈起")
         // 主机与端口来自配置,不来自 Core —— 它们照常有。
         expect(panel.endpoint == "203.0.113.10:443", "配置里就有的东西也不见了:\(panel.endpoint)")
     }
@@ -501,6 +510,49 @@ struct ServersModelTests {
             fail("有当前那台却没给出面板"); return
         }
         expect(!stale.runningConfirmed, "Core 静默时拿一份可能陈旧的 running 加了粗")
+    }
+
+    // **`Test All` 对一份只有一台的清单必须有可见的结果 —— 而这一支引入的
+    // 回归恰恰是它没有。**
+    //
+    // 探测结论此前只长在候选行上,而 `otherServerRows` 按定义排除当前那台。
+    // 于是 `servers:` 里只有一台时(单次 Add Server… 之后就是这个形状)按下
+    // `Test All`:真的发了一次探测,屏幕上一个字都不变。这正是这个仓库付过
+    // 两次代价的「点了没反应」,也让 spec §10 第 2 条在单条清单上无从验收。
+    //
+    // 三态与候选行**共用** `probePresentation`:灰的仍然是灰的,红只从实测
+    // 失败来。
+    static func testCurrentPanelShowsItsOwnProbeResult() {
+        var list = listWithCurrent()
+        list.servers[0].probe = ProbeReport(measured: true, reachable: true, rttMS: 12)
+        guard let panel = currentServerPanel(list: list, core: answeringCoreRuntime()) else {
+            fail("有当前那台却没给出面板"); return
+        }
+        expect(panel.probeLine?.contains("12 ms") == true,
+               "当前那台测出来的延迟没地方显示:\(panel.probeLine ?? "nil")")
+        expect(!panel.probe.isFailure, "测通了却被判成失败")
+    }
+
+    // 没测过就一个字都不说(一行「未测试」是墙纸);没测成是灰的,不是红的;
+    // 测了不通才是红的 —— 三态各喂一遍,只喂前两种正是这一支反复栽的那种假绿。
+    static func testCurrentPanelProbeKeepsTheThreeStatesApart() {
+        func panel(_ probe: ProbeReport?) -> CurrentServerPanel? {
+            var list = listWithCurrent()
+            list.servers[0].probe = probe
+            return currentServerPanel(list: list, core: answeringCoreRuntime())
+        }
+        expect(panel(nil)?.probeLine == nil, "没测过却挂了一行字")
+        expect(panel(nil)?.probe == .notChecked, "没测过却不是 notChecked")
+
+        let notMeasured = panel(ProbeReport(measured: false, errorCode: "core_unreachable"))
+        expect(notMeasured?.probeLine?.contains("not measured") == true,
+               "没测成没说清:\(notMeasured?.probeLine ?? "nil")")
+        expect(notMeasured?.probe.isFailure == false,
+               "「没测成」被判成失败 —— 那会把一台好服务器画成红的")
+
+        let dead = panel(ProbeReport(measured: true, reachable: false, errorCode: "refused"))
+        expect(dead?.probe.isFailure == true, "测了不通却不算失败")
+        expect(dead?.probeLine?.isEmpty == false, "失败却没说原因")
     }
 
     // 一份没有 current 的清单(手改出来的配置就是这样)不该凭空造一个面板。

@@ -349,6 +349,17 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
             label.toolTip = line
             box.addArrangedSubview(label)
         }
+        if let line = panel.probeLine {
+            // **与候选行同一个三态判据**(`ProbePresentation.isFailure`):
+            // 「没测过」不画、「没测成」是灰的,只有实测失败才红。窗口自己看
+            // `reachable` 就会把 bx 没在跑那一档也画红 —— 把一台好服务器说成
+            // 坏的,而这一半代码一行 Swift 测试都盖不到。
+            let label = hint(line)
+            if panel.probe.isFailure { label.textColor = .systemRed }
+            label.lineBreakMode = .byTruncatingTail
+            label.toolTip = line
+            box.addArrangedSubview(label)
+        }
         if let line = panel.throughput {
             box.addArrangedSubview(hint(line))
         }

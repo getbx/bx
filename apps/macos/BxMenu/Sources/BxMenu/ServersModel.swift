@@ -399,6 +399,15 @@ struct CurrentServerPanel: Equatable {
     let udpMode: String?
     /// 带年龄的吞吐峰值;没观测到就一个字都不说。
     let throughput: String?
+    /// 这一台的探测结论(三态),与候选行**同一个** `probePresentation`。
+    ///
+    /// **它此前整个不在这一块上,而那是一条这一支引入的回归**:探测结论只长在
+    /// 候选行上,而 `otherServerRows` 按定义排除当前那台 —— 于是 `servers:` 里
+    /// 只有一台时(单次 Add Server… 之后就是这个形状)按下 `Test All`:真的发了
+    /// 一次探测,屏幕上一个字都不变。这个仓库为「点了没反应」付过两次代价。
+    let probe: ProbePresentation
+    /// 上面那个三态要说的那句话;没测过时 nil(一行「未测试」是墙纸)。
+    let probeLine: String?
     /// Core 没答话时的那句话。**它在,下面那几行就不该有值。**
     let coreSilentNote: String?
     /// 「实际在跑的不是这一台」/「没问出来」那句话。都不成立时 nil。
@@ -471,8 +480,17 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
         udpHost: nonEmpty(entry.udpHost),
         udpMode: nonEmpty(live?.udpMode),
         throughput: row.throughputLine,
+        // **与候选行同一个判据**(`ServerRow.probe`/`probeLine`)—— 灰的仍然是
+        // 灰的,红只从实测失败来。
+        probe: row.probe,
+        probeLine: row.probeLine,
+        // **只说 Core 那几行,别把它盖不到的也一起说了。** 下面还活着两行:
+        // udpLine 来自配置,吞吐来自 Guardian 落了盘的那份历史 —— 后者确实
+        // 量到过,而且带着真实年龄。「nothing below was measured」会被它下面
+        // 那行 `peak 6.4 MB/s · 2h ago` 当场证伪,而这个窗口全部的纪律就是
+        // 不说这种话。
         coreSilentNote: live == nil
-            ? "Core not answering — nothing below was measured."
+            ? "Core not answering — the live readings below are missing."
             : nil,
         runningNote: runningNote,
         runningConfirmed: confirmed)
