@@ -303,6 +303,56 @@ func TestServerAddDoesNotChangeTheCurrentExit(t *testing.T) {
 	}
 }
 
+// **同一条承诺,换成 `bx setup` 真的写出来的那份配置再问一遍。**
+//
+// 上面那条喂的是 serversTestConfig —— 它带着 `current: tokyo`,而带着 current 的
+// 清单恰恰是这个缺陷**看不见**的那一半:走的是 settleCurrent 里「current 非空就
+// 什么都不做」那一支。真机上最常见的却是另一半:`bx setup` 从不写 `servers:`,
+// 它写的是 legacy `server:`,迁成清单时不写 current,于是「顺手填一个」那一支
+// 生效 —— 2026-09-13 之前它填的是刚加进来的那一台,菜单的「Add Server…」就此
+// 把出口挪到新装的 VPS 上;**没有热切,所以当场看不出来,要到下一次 `bx up`**。
+func TestServerAddDoesNotChangeTheCurrentExitOnASetupShapedConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	// `bx setup` 单链接写出来的形状:global/killswitch + server: + udp.transport。
+	body := "global: true\nkillswitch: true\n" +
+		"server: vless://" + serversTestUUID + "@203.0.113.10:443?security=reality\n" +
+		"udp:\n    transport: hysteria2://pw@203.0.113.11:443\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "add", Name: "nagoya",
+		Link: "vless://" + serversTestUUID + "@203.0.113.30:443?security=reality",
+	}), 501, true))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d:%s", w.Code, w.Body.String())
+	}
+	list, current, err := setup.ListServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 迁移把 legacy server: 变成 servers[0],名字按链接的主机推导。
+	if current != "203.0.113.10" {
+		t.Fatalf("加一台之后 current = %q —— 用户的出口被挪到新装的那台上了", current)
+	}
+	if len(list) != 2 || list[0].Name != "203.0.113.10" || list[1].Name != "nagoya" {
+		t.Fatalf("清单不对:%+v", list)
+	}
+	// 迁移不许把 legacy 那台的 UDP 丢掉 —— 丢了就静默回落主传输。
+	if list[0].UDP == "" {
+		t.Errorf("迁移把 legacy 的 udp.transport 弄丢了:%+v", list[0])
+	}
+	// 应答也要说同一件事,菜单的 ● 是照它画的。
+	var got ServerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Current != "203.0.113.10" {
+		t.Fatalf("应答里的 current = %q", got.Current)
+	}
+}
+
 // 加一台**绝不热切**:noSwitch 会在被调用时 t.Fatal。这条断言由那个替身承担,
 // 单独写出来是为了让意图可读 —— 热切是「换过去」的一部分,不是「加进来」的。
 func TestServerAddNeverHotSwitches(t *testing.T) {
@@ -1424,8 +1474,8 @@ func TestServerReplaceRejectsALinkWithNoParseableHost(t *testing.T) {
 // `config.resolveServers` 对没有 current 的清单回落 servers[0],所以这种配置
 // 是**能起来的**(手改出来的配置正是这个样子,而 7.2 这一节的受众恰好就是
 // 手改配置的人)。底下那个原语会「顺手填上空的 current」—— 对 add 是对的
-// (一份新清单必须有一台在用),对 replace 就是把出口从 tokyo 挪到了 osaka,
-// 而用户只是换了一条链接。
+// (把此刻在用的那一台写明白),对 replace 就是多写了一个用户没写过的键:
+// 从此 RemoveServer 会拒绝删掉 tokyo,而用户只是换了一条链接。
 //
 // **这与不走 UpsertServer 是同一种伤害换了一扇门进来。**
 func TestServerReplaceDoesNotPickAnExitForACurrentlessConfig(t *testing.T) {

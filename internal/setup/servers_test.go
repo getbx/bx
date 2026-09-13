@@ -236,10 +236,11 @@ func TestUpsertStillSwitchesBecauseThatIsItsJob(t *testing.T) {
 
 // **ReplaceServerLink 任何情况下都不动 current,连「本来是空的」也不填。**
 //
-// 这是它与 AddServer 唯一的区别,而这一条是要害:一份没有 current: 的清单
-// **照样在跑**(config.resolveServers 回落 servers[0]),顺手把它填上就等于
-// 把出口从第一台挪到了被换链接的那一台 —— 而用户只是换了一条链接。
-// 「一份清单必须有一台在用」那条理由只对**加一台**成立(那时清单可能是空的)。
+// 这是它与 AddServer 唯一的区别:一份没有 current: 的清单**照样在跑**
+// (config.resolveServers 回落 servers[0]),顺手把它填上就是多写了一个用户
+// 没写过的键 —— 从此 RemoveServer 会拒绝删掉那一台,而用户只是换了一条链接。
+// 「顺手填上 current」那条理由只对**加一台**成立(那时清单可能是空的,
+// 而把此刻在用的那一台写明白是有意义的)。
 func TestReplaceServerLinkNeverTouchesCurrent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -325,5 +326,62 @@ current: alpha
 	}
 	if list, _, _ := ListServers(path); list[0].UDP != "" {
 		t.Fatalf("给了空 UDP 却没删:%q", list[0].UDP)
+	}
+}
+
+// **加一台不许改变「现在在用哪一台」—— 包括 current 那一格本来是空的时候。**
+//
+// 这条与 TestAddServerDoesNotStealTheCurrentExit 不是同一件事,而差别正是缺陷
+// 藏身的地方:那条测的是 current 已经写着名字的清单,这条测的是 current **空着**
+// 的两种真实形状 —— ①`bx setup` 写出来的 legacy `server:`(CLAUDE.md 称它
+// 「最常见那种配置」),迁移建清单时不写 current;②手改出来的、只有 servers: 没有
+// current: 的清单(replaceServerLink 的注释点名它「恰好就是这个功能的受众」)。
+// 两种都**照样在跑**,用的是 config.resolveServers 的回落:servers[0]。
+//
+// 所以 current 空着时要填的是**此刻实际在用的那一台**,不是刚加的那一台。填错
+// 不会当场报错、也不热切,要到下一次 `bx up` 才发作 —— 比立刻切更难归因。
+func TestAddServerNeverMovesTheServerInUseWhenCurrentIsBlank(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string // 加完之后 current 必须是它
+	}{
+		{
+			name: "bx setup 写的 legacy server:(迁移建清单时不写 current)",
+			body: "global: true\nkillswitch: true\nserver: vless://a@203.0.113.10:443\n" +
+				"udp:\n    transport: hysteria2://a@203.0.113.10:443\n",
+			want: "203.0.113.10", // config.DeriveServerName 从链接取的主机名
+		},
+		{
+			name: "手改出来的清单:有 servers 没有 current",
+			body: "servers:\n" +
+				"    - name: tokyo\n      link: vless://a@203.0.113.10:443\n" +
+				"    - name: paris\n      link: vless://c@203.0.113.30:443\n",
+			want: "tokyo",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTemp(t, tc.body)
+			if _, err := AddServer(path, "osaka", "vless://b@203.0.113.20:443", ""); err != nil {
+				t.Fatal(err)
+			}
+			list, current, err := ListServers(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current != tc.want {
+				t.Fatalf("current = %q, want %q —— 加一台把用户的出口挪走了", current, tc.want)
+			}
+			// 出口那台的链接也要原样在:换掉它同样是换出口,只是换了个形状。
+			if list[0].Name != tc.want {
+				t.Fatalf("清单第一台是 %q, want %q", list[0].Name, tc.want)
+			}
+			if list[0].Link != "vless://a@203.0.113.10:443" {
+				t.Fatalf("在用那台的链接被动了:%q", list[0].Link)
+			}
+			if len(list) < 2 || list[len(list)-1].Name != "osaka" {
+				t.Fatalf("新加的那台没落在清单末尾:%+v", list)
+			}
+		})
 	}
 }

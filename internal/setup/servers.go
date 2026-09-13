@@ -70,8 +70,8 @@ func UpsertServer(path, name, link, udp string) (added bool, err error) {
 	return addServer(path, name, link, udp, true)
 }
 
-// AddServer 把一台加进清单,**但不动 current** —— 除非清单本来就没有 current
-// (一份清单必须有一台在用,否则下次启动直接起不来)。
+// AddServer 把一台加进清单,**但绝不改变现在在用的是哪一台** —— 除非清单本来
+// 就没有 current,那时它把**此刻实际在用的那一台**写上去(见 settleCurrent)。
 //
 // 它与 UpsertServer 的区别只有这一条,而这一条是要害:刚部署好一台新 VPS
 // **不构成**「把我的出口换过去」的请求。换出口是有后果的事(登录态、风控、
@@ -124,16 +124,45 @@ func addServer(path, name, link, udp string, makeCurrent bool) (added bool, err 
 		} else {
 			removeKey(entry, "udp")
 		}
-		if makeCurrent || strings.TrimSpace(scalarValue(mappingValue(root, "current"))) == "" {
-			setScalar(root, "current", scalarValue(mappingValue(entry, "name")))
-		}
+		settleCurrent(root, list, scalarValue(mappingValue(entry, "name")), makeCurrent)
 		return false, writeConfigRoot(path, doc)
 	}
 	list.Content = append(list.Content, serverNode(name, link, udp))
-	if makeCurrent || strings.TrimSpace(scalarValue(mappingValue(root, "current"))) == "" {
-		setScalar(root, "current", name)
-	}
+	settleCurrent(root, list, name, makeCurrent)
 	return true, writeConfigRoot(path, doc)
+}
+
+// settleCurrent 决定这次写入之后 current: 那一格是什么。**判据只有一份**,两个
+// 写入分支(改写同名那一台 / 追加一台)共用 —— 此前它们各写了一份同样的条件,
+// 而这个函数要守的性质恰恰是「两条路都不许挪动出口」。
+//
+// makeCurrent 是 UpsertServer(`bx setup`「用这一台」)那条路,它就是来换出口的:
+// 指名 named 那一台。
+//
+// 否则**只在 current 空着时**填,而且填的是**此刻实际在用的那一台** ——
+// config.resolveServers 对没有 current 的清单回落 servers[0],所以在用的是清单
+// 里第一台,**不是刚加进来的那一台**。这半步曾经写成「填新加的那台」,后果是
+// `bx setup` 写出来的 legacy `server:` 配置(迁移建清单时不写 current)与手改
+// 出来的无 current 清单上,「Add Server…」会把出口悄悄挪到新加的那台;没有热切,
+// 所以要到下一次 `bx up` 才发作 —— 比立刻切更难归因。
+//
+// 清单本来就是空的时候,servers[0] 就是刚加的那一台,于是「加第一台之后
+// current 必须有值」照旧成立 —— 不是靠一条特例,是同一条规则的结果。
+func settleCurrent(root, list *yaml.Node, named string, makeCurrent bool) {
+	if makeCurrent {
+		setScalar(root, "current", named)
+		return
+	}
+	if strings.TrimSpace(scalarValue(mappingValue(root, "current"))) != "" {
+		return
+	}
+	if len(list.Content) == 0 {
+		return
+	}
+	// 名字为空的条目 config.Parse 本来就会拒;这里不拿它去写一个空 current。
+	if first := strings.TrimSpace(scalarValue(mappingValue(list.Content[0], "name"))); first != "" {
+		setScalar(root, "current", first)
+	}
 }
 
 // ReplaceServerLink 就地换掉同名那一台的链接:凭据轮换,或者 VPS 重建换了地址。
@@ -141,9 +170,12 @@ func addServer(path, name, link, udp string, makeCurrent bool) (added bool, err 
 // **它与 AddServer / UpsertServer 的区别只有一条,而那一条是要害:它任何情况下
 // 都不动 current,连「本来是空的」也不填。** UpsertServer 会把 current 设成被改
 // 的那一台(它服务的是 `bx setup`「用这一台」);AddServer 只在 current 空着时
-// 填 —— 对**加一台**那是对的(一份清单必须有一台在用,否则下次启动起不来),
-// 对换链接就是把出口挪走:一份没有 current: 的清单**照样在跑**
-// (config.resolveServers 回落 servers[0]),而手改出来的配置正是这个样子。
+// 填,填的是清单里第一台 —— 对**加一台**那是对的(把此刻实际在用的那一台写明白),
+// 对换链接就是**多写了一个用户没写过的键**:一份没有 current: 的清单**照样在跑**
+// (config.resolveServers 回落 servers[0]),而手改出来的配置正是这个样子;
+// 替它把 current 钉死之后,RemoveServer 从此会拒绝删掉那一台,而用户只是换了
+// 一条链接。(它**不再**像 2026-09-13 之前那样把出口挪到被改的那一台 ——
+// 那半步已经修掉,见 settleCurrent;但「换链接不改配置形状」这条仍然成立。)
 //
 // **名字不在清单里报错,绝不顺手加一台** —— 敲错一个字母就凭空多出一台顶着
 // 新链接的服务器,而调用方只会看到成功。
