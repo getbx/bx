@@ -93,7 +93,7 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 			"那台机器活着 —— 要查的是这条链接、凭据、SNI、或者路上的干扰,不是那台机器停没停",
 			"完整原因:sudo tail -50 "+coreLogPathForAdvice())
 	case bare == supervisor.StartFailureTunnelUndeterminedUDPTransport:
-		headline = "bx 起不来:隧道没建起来,而 bx **没能判断**那台服务器还在不在 —— " +
+		headline = "bx 起不来:隧道没建起来,而 bx 没能判断那台服务器还在不在 —— " +
 			"它跑的是 UDP 传输(hysteria2/QUIC),一次 TCP 拨号观测不到它。"
 		steps = append(steps,
 			phrase(named, "想确认那台机器活着,用 ping / ssh 试它:"+hostOf(where), "想确认那台机器活着,用 ping / ssh 试它"),
@@ -103,14 +103,14 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 		// DirectDialer 用 IP_BOUND_IF 绑物理网卡,而 IP_BOUND_IF 只查 scoped
 		// 路由表 —— 那条 scoped 默认路由由 Hijack 装,比这次判别拨号晚 572 行。
 		// 这时去探 VPS 什么也说明不了:SYN 根本没离开这台机器。
-		headline = "bx 起不来:隧道没建起来,而 bx **没能判断**那台服务器还在不在 —— " +
+		headline = "bx 起不来:隧道没建起来,而 bx 没能判断那台服务器还在不在 —— " +
 			"那次判别拨号在本机就失败了,SYN 一个都没发出去。"
 		steps = append(steps,
 			"先查 bx 自己的直连出口(2026-08-13 那次故障的签名):route -n get -ifscope <你的网卡> 1.1.1.1;"+
 				"答 `not in table` 就是它,与那台服务器无关",
 			"完整原因:sudo tail -50 "+coreLogPathForAdvice())
 	case supervisor.IsTunnelUndeterminedCode(bare):
-		headline = "bx 起不来:隧道没建起来,而 bx **没能判断**那台服务器还在不在(那次判别本身没做成)。"
+		headline = "bx 起不来:隧道没建起来,而 bx 没能判断那台服务器还在不在(那次判别本身没做成)。"
 		steps = append(steps,
 			phrase(named, "想自己确认那台服务器:nc -z "+hostOf(where)+" "+portOf(where), "先看看配置里那条服务器链接对不对"),
 			"完整原因:sudo tail -50 "+coreLogPathForAdvice())
