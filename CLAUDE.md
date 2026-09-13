@@ -2624,6 +2624,50 @@ brief 假设的「已经带了」),于是菜单那半说不出是哪台服务器
 命令出现在一句唯一目的就是「照着做」的话里),渲染出来的话里不许有 markdown 的 `**`
 (用户读到的是字面上的星号,`TestNoRenderedAdviceCarriesMarkdown` 两侧各一条)。
 
+### 判别拨号绑物理网卡,而那张表在真机上可能是空的(整枝 review 抓到,已修)
+
+判别那次拨号走 `plat.DirectDialer()`(darwin 上是 `IP_BOUND_IF`,防的是绕回隧道成环),
+而 **`IP_BOUND_IF` 只查 scoped 路由表** —— 那条 scoped 默认路由由 `Hijack`
+(`run.go:880`)装,**比这次拨号(`run.go:308`)晚 572 行**。2026-08-13 那种机器状态
+(单一活跃网络服务,macOS 根本不建 per-interface default)下每一次判别都在本机
+`ENETUNREACH`,于是「VPS 真的挂了」与「VPS 活着而握手失败」**一起塌进 local_dial**,
+而那句话此前连 host:port 都没有,还先派用户去查 bx 自己的路由 —— **spec §8 的真机验收
+因此验不出它要验的东西**,跑验收的人有充分理由判定这支修复是坏的。(今天所有者机器上
+那条 scoped 路由在,所以它是潜伏的,不是活着的。)
+
+修法两半:① **local_dial 那句话也点名 host:port**(bx 明明知道那个地址),守卫做成
+**穷举整族**(族由 `supervisor.StartFailureCodes()` 派生,新加一档自动进范围):
+`TestEveryTunnelOutcomeNamesTheServerWhenBxKnowsIt` 与 Swift 侧同款。
+② **绑网卡那次在本机失败后,不绑再试一次**(`diagnosisDialWithUnboundRetry`)。
+
+**为什么不绑在这个位置是安全的、而且更忠实**:此刻 TUN 还没开(`run.go:473`)、路由还
+没劫持,普通 socket 走的就是主路由表 —— 而**隧道子进程刚才那 20 秒走的正是同一张表**
+(sing-box 既没有 `SO_MARK` 也没有 `IP_BOUND_IF`,server bypass 那条 /32 也要等 Hijack
+才装)。也就是说不绑的那一次拨号复现的才是隧道自己那条路径。**那为什么还把绑的那次
+留作主路径**:它防的是上一个崩掉的实例留在内核里的陈旧 TUN 与劫持路由。所以**只在
+「SYN 没离开本机」这一族失败上**才退到不绑;拒绝 / 超时 / 域名解析不了都是**观测到的
+答案**,不许被第二次拨号覆盖(`TestAnAnswerFromTheServerIsNeverSecondGuessedByARetry`)。
+两次都在本机失败 ⇒ 照旧 `local_dial`,一个字不变。「本机自己没发出去」的判据下沉成
+`failedBeforeTheSYNLeft`,分档与重试**共用一份**。
+
+### 跨进程那条线,两头的测试从不相遇(整枝 review 的 Critical,已修)
+
+**生产的写方与生产的读方此前从不在同一个测试里碰面** —— 写那半只在 `internal/cli` 里
+对着临时目录测,读那半只在 `internal/guardian` 里对着手工拼出来的 `Record` 测。于是
+**三条各一行的改动都能让这个功能整个退回改动前,而三个包全绿**:构造器里那句
+`StartFailurePath` 被删、`coreArgs` 收到 `""`、写记录时 `At` 取零值。
+
+**结构性帮凶两条,都已拆掉**:① `startFailurePath()` 是**裸转发**,而兄弟 `statePath()`
+有默认兜底 —— 同一行删除对状态文件 **fail-safe**、对这份记录 **fail-silent**;现在它
+也落回 `corestartfailure.DefaultPath`(`TestTheStartFailureRecordAlwaysHasAPlaceToLive`),
+代价是 `StartFailurePath = ""` 不再是「关掉」的开关,而空路径既然不可能了,两处
+`if path == ""` 一并删掉 —— 一段永远不会被执行的分支看起来像还有一道防线。
+② `spawnRecordSpy` 拿到了 `args` 却什么都不断言(**守卫就摆在缺陷旁边**),现在它断言
+argv 里那个值**就是读的人稍后要去看的那个位置**。往返本身由
+`TestTheCoreWritesExactlyWhatTheGuardianReads` 钉住:写下去的字节,读回来必须还是同一
+个码 —— 判据刻意不是「调用发生过」。**这是本支第四次「第七种写法」,第二次它会让功能
+静默死掉。**
+
 ### 刻意不做
 
 - **不自动切服务器。** 所有者定死的边界(Servers 窗口 spec §8:不自动容灾、只有用户能
@@ -2638,15 +2682,37 @@ brief 假设的「已经带了」),于是菜单那半说不出是哪台服务器
 
 验收(所有者手上就有现成的复现方式):把 `current` 指向一个不通的地址,`sudo bx up`
 应当**一次**就说出「bx 连不上 <host:port>」并点名另一台,**而不是**七次
-`core_ownership_uncertain`;另外盯一件事 —— `/var/lib/bx/core-start-failure.json` 在
-**成功**启动之后不该存在(Guardian spawn 前删、读完也删)。
+`core_ownership_uncertain`;另外盯两件事 —— ① `/var/lib/bx/core-start-failure.json` 在
+**成功**启动之后不该存在(Guardian spawn 前删、读完也删);② 若那句话报的是
+`local_dial`(不该,但正是 2026-08-13 那种机器状态的样子),去 `bx.log` 里找
+`core_start_diagnosis_unbound_retry` —— 有这一行说明不绑那次重试发生过、而它也在本机
+失败了;**没有这一行**说明绑网卡那次拿到的是那台服务器的答复,判据走的是另一条路。
 
-**两条已知缺口**:① **`bx up` 那条接线只在 darwin 生效**(`macOSUpAction`,
-`internal/cli/guardian.go`);linux 的 `upAction` 走 systemd、根本不经 Guardian socket,
-没有码可解,Windows 同理 —— 事故在 darwin。② `current_server` **只喂「Core 起不来那句
-话」,没接进服务器窗口** —— 上文「Servers 窗口」那条「最常见那种配置看不到当前那台」的
-已知缺口**原样还在**,本支没动它。③ 菜单那半在 `.warning`/`.connected` 之外的状态下
-拿不到码(与既有 `toggleFailureHint` 同一条路)—— **没有新增缺口,但也没有新增覆盖**。
+**六条已知缺口**(此前这里写着「两条」而列了三条 —— **本文件为这个形状罚过自己一次**
+「此前这里写的是『八条』,漏了头尾两条」,而它当场又犯了一遍;整枝 review 抓到,现在
+逐条列全):
+
+① **`bx up` 那条接线只在 darwin 生效**(`macOSUpAction`,`internal/cli/guardian.go`);
+linux 的 `upAction` 走 systemd、根本不经 Guardian socket,没有码可解,Windows 同理
+—— 事故在 darwin。
+② `current_server` **只喂「Core 起不来那句话」,没接进服务器窗口** —— 上文
+「Servers 窗口」那条「最常见那种配置看不到当前那台」的已知缺口**原样还在**,本支没动它。
+③ 菜单那半在 `.warning`/`.connected` 之外的状态下拿不到码(与既有 `toggleFailureHint`
+同一条路)—— **没有新增缺口,但也没有新增覆盖**。
+④ **升级那条路上的健康失败仍然不读记录**(`startUpdateCore`,`internal/guardian/update.go`
+的 `new_core_health_failed`)—— 与 `bx up` 那一支形状完全相同,而它一个字都不说为什么。
+不顺手做掉是因为它**不是几行**:那条路的码空间是另一套(`new_core_*`,消费方是升级
+流程不是 `bx up` 的那段话),要先定「新 Core 的病因该用哪个前缀、升级中止时怎么呈现」,
+还要重新过一遍 reserveCleanup 的预算账。**单独立项,别顺手改。**
+⑤ **「读不到配置」仍然落 `other`。** 只有 `config.Parse` 失败挂了 `ErrConfig`
+(`loadConfig`);文件不在 / 权限不够是另一种故障(多半是「还没 setup 过」),借
+`config_unusable` 就是叫用户去改一个他还没写过的文件 —— `ErrConfig` 头上那段注释画的
+就是这条分界。真要给它一句话,得先有一个属于它自己的哨兵。
+⑥ **判别拨号那次不绑的重试只在「SYN 没离开本机」这一族失败上发生,而那张 errno 表在
+Windows 上是死的**(`dialFailuresBeforeTheSYNLeaves` 头上写着为什么:winsock 返回的是
+`WSAENETUNREACH`,而 `syscall.Errno.Is` 在两者之间什么都不映射)。也就是说 Windows 上
+同一个「本机自己不可达」既判不出 local_dial、也不会触发那次重试 —— 与这次改动之前
+逐字相同,不是新增缺口,但也没有被这次改动修好。
 
 设计 `docs/superpowers/specs/2026-09-13-core-start-failure-reason-design.md`、计划
 `docs/superpowers/plans/2026-09-13-core-start-failure-reason.md`。
