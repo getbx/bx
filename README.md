@@ -209,7 +209,7 @@ WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md
 
 `bx status` 是运行期面板。macOS 上 daemon 会轻量只读监测 Tailscale 路由、系统代理和已连接的 VPN 服务；如果 bx 启动后又出现其他通道,status 会显示 `提醒`,菜单栏也可用同一份 JSON 变成需要注意的状态。
 
-macOS 用户优先使用统一安装包(`Bx.app`)。安装后菜单栏图标会常驻显示保护状态,并按当前状态提供 Install bx…、Set Up bx、Start Protection、Troubleshoot: Reconnect、Turn Off bx、Quit bx…、Update bx(有新版时)、Logs、Doctor 这些必要入口。网络变化后自动安全恢复;恢复时可能短暂断网但绝不回落直连。`bx reconnect` 仅用于 troubleshooting,不是日常网络切换步骤。命令行仍然保留,用于自动化、远程诊断和高级维护。
+macOS 用户优先使用统一安装包(`Bx.app`)。安装后菜单栏图标常驻显示保护状态。菜单第一行是一个**开关**(`Protection`,控制中心那种):开保护、关保护都拨它,没有单独的 Start / Turn Off 文字项——同一个动作在两个状态里有两个名字,用户得先读一遍才知道现在是开是关。开关下面那行暗色小字是连接摘要(服务器名 · 延迟),出问题时改写成原因并标红。往下是 `Reconnect`,四扇窗口 `Routing Rules…` / `Servers…` / `Traffic by App…` / `Check for Leaks…`(前三扇只在这一版 Guardian 声明了对应能力时出现;`Check for Leaks…` 每个状态都在,保护关着时它照样有用),`Troubleshoot ▸` 子菜单(`Check for Problems`、`Open Logs`、装的是哪一版、`Uninstall bx…`),最后 `Quit bx…`(⌘Q)。有新版时顶部另加一行 `Update bx…`;没装 / 没配置的状态给的是 `Install bx…` / `Set Up bx...`。诊断值(DNS、直连解析、UDP 中继)**只在出问题时才占一行**——正常时天天一个样的东西不是信息。网络变化后自动安全恢复;恢复时可能短暂断网但绝不回落直连。`bx reconnect` 仅用于 troubleshooting,不是日常网络切换步骤。命令行仍然保留,用于自动化、远程诊断和高级维护。
 
 #### macOS 安装包
 
@@ -232,20 +232,20 @@ macOS release 包是统一安装:一份 `bx-macos-<arch>.tar.gz` 只含 `Bx.app`
 
 装到一台**已经装过 bx**(Guardian 服务已加载,无论保护是否开启)的机器上(覆盖安装/升级)则不同:安装会先问你一次,然后停止保护 → 换文件 → 重启 Guardian 服务 → 把保护恢复到升级前的状态;升级前保护开着的话,期间网络回到直连几秒。这是有意的——只换文件不重启进程,跑着的仍是旧版本(2026-08-08 真机事故)。停保护排在换文件之前也是有意的:其后任何一步失败,机器最差只是「没有保护」,而不是「路由指向已消失的 TUN、整机断网」。**但 bx 不会替你断言网络一定可用**:停保护若走了强制拆除(Guardian 无响应等),那条路是 best-effort,失败信息会如实说「网络是否已恢复未经确认」,请自己打开一个网页确认。菜单里的 `Install bx…` / `Repair bx…` 走同一条路(确认框在菜单里弹)。
 
-菜单栏 App 是 macOS 的默认体验:它显示当前保护状态、延迟、DNS 接管状态和诊断入口。盾牌右侧的静态状态点表示保护状态:绿=已保护,黄=安全恢复中或需要注意,红=保护不可用(当 bx 明确报告该状态时),灰=已关闭或未配置。
+菜单栏 App 是 macOS 的默认体验:它显示当前保护状态、延迟、DNS 接管状态和诊断入口。**状态编码在盾牌的轮廓形态上,不在颜色上**(图标是 template image,由系统按明暗菜单栏自己上色,旁边没有状态点):**实心盾**=已保护,**空心盾**=已关闭 / 未配置 / 未安装,**虚线盾**=正在开或关,**沿中线裂开的盾**=需要注意(隧道不健康、DNS 没接管、Repair Required、恢复失败)。另有极慢的呼吸(保护中)与明显的脉冲(过渡中);系统里开了「减弱动态效果」时四态全静止,所以**形态必须独自可分**,动效只是加强。鼠标停在图标上有 tooltip 说明原因。
 
-**绿色的完整含义**:隧道健康、路由保护到位,**且 DNS 已核实由 bx 接管**——三者缺一不可。DNS 处于未接管(`unmanaged`)或状态不明(`unknown`、旧版 core 未上报)时,菜单栏一律显示**黄色 Needs Attention**(`DNS not managed` / `DNS status unavailable`),不会因为隧道通就报绿。同样地,`sudo bx up` 在 DNS 未能接管时会**返回错误**而非静默成功。安全恢复、重连和更新在返回绿色之前都会重新核实 DNS,因此不存在"路由已恢复但 DNS 还漏着"的中间态。
+**实心盾(已保护)的完整含义**:隧道健康、路由保护到位,**且 DNS 已核实由 bx 接管**——三者缺一不可。DNS 处于未接管(`unmanaged`)或状态不明(`unknown`、旧版 core 未上报)时,菜单栏一律显示**裂盾**、并在开关下面那行写出原因(`DNS not managed` / `DNS status unavailable`),不会因为隧道通就报已保护。同样地,`sudo bx up` 在 DNS 未能接管时会**返回错误**而非静默成功。安全恢复、重连和更新在返回绿色之前都会重新核实 DNS,因此不存在"路由已恢复但 DNS 还漏着"的中间态。
 
 安装后打开菜单栏图标即可。如果显示 `Setup Required`,点击 `Set Up bx...` 粘贴客户端链接;配置成功后菜单栏会询问是否立即 `Start Protection`。命令行备用路径是 `sudo bx setup '<client-link>' && sudo bx up`。
 
-菜单栏的 `Turn Off bx` 只停止保护、恢复 bx 管理的 DNS,菜单栏 App 本身继续常驻;`Quit bx…` 在此之上再确认关闭菜单栏 App。也可以用命令行 `sudo bx down`。
+把第一行那个 `Protection` 开关拨到关,只停止保护、恢复 bx 管理的 DNS,菜单栏 App 本身继续常驻;拨完菜单不关闭——开关变灰、进度就写在它下面那行,失败则弹回并说明原因。`Quit bx…` 是另一回事:它在停止保护之上再确认关掉菜单栏 App。也可以用命令行 `sudo bx down`。
 
 **更新**:统一安装布局下 `sudo bx update`(等价菜单栏 `Update bx…`)是就地在线更新,覆盖 App+CLI+runtime 三组件,完成后 `bx --version` 与 App 版本一致。行为按当前保护状态分两条路:
 
 - **保护开启**:经 Guardian 安全事务(4 个阶段——1/4 准备并校验新包、2/4 更新中、3/4 重连、4/4 完成),期间网络可能短暂暂停,但全程 fail-closed(DNS 保持接管、绝不回落直连);新版本未通过健康检查会自动回滚到旧版本并保持保护。
 - **保护关闭**:直接文件级升级(1/2 校验安装、2/2 完成),零网络影响。
 
-`bx update --check` 始终只读,只查有无新版,不下载不安装。`--json` 输出结构化 `UpdateResult`(`from_version`/`to_version`/`phase`/`core_activated`/`rolled_back`/`protection_state`);`rolled_back=true` 时退出码非零。若 App/CLI/runtime 三版本出现不一致,菜单栏会出现 `Repair bx…` 一键修复;更新进行中菜单栏显示黄色 `Updating bx…`(非红色 Blocked)。菜单栏更新前的确认弹窗文案是「Internet access may pause briefly. bx will reconnect automatically.」。
+`bx update --check` 始终只读,只查有无新版,不下载不安装。`--json` 输出结构化 `UpdateResult`(`from_version`/`to_version`/`phase`/`core_activated`/`rolled_back`/`protection_state`);`rolled_back=true` 时退出码非零。若 App/CLI/runtime 三版本出现不一致,菜单栏会出现 `Repair bx…` 一键修复;更新进行中开关下面那行写的是 `Updating bx…` 而**不是** `Blocked`——两者今天画的是同一个裂盾,把它们分开的只有那句话本身,所以那句话必须说对。菜单栏更新前的确认弹窗文案是「Internet access may pause briefly. bx will reconnect automatically.」。
 
 **卸载**:
 
@@ -298,7 +298,7 @@ scripts/install-macos-menu.sh restart
 scripts/install-macos-menu.sh uninstall
 ```
 
-这条路径只装菜单栏 App 本身,`/usr/local/bin/bx` 仍由统一安装的 bridge 提供。如果菜单栏显示 `Update Required`,说明当前 CLI 版本落后于菜单栏预期——按上面「macOS 安装包」的方式重新走一遍安装(`./install.sh` 或菜单栏 `Install bx…`)即可;不要手工拿本地 `./bx` 覆盖 `/usr/local/bin/bx`,那会绕开 bridge,让 `bx --version` 和 App 版本脱节。
+这条路径只装菜单栏 App 本身,`/usr/local/bin/bx` 仍由统一安装的 bridge 提供。菜单栏比 Guardian 新时,菜单里会多出一行 `Guardian` 附注(`Older build; live Core status and diagnostics archive unavailable`)以及它自己给出的那条补救命令——**它是一条与保护状态并排的附注,不是一个顶掉保护状态的状态**:Protected/Off、开关、Reconnect 一个不少,降级的只有它点名的那一项。按上面「macOS 安装包」的方式重新走一遍安装即可。不要手工拿本地 `./bx` 覆盖 `/usr/local/bin/bx`,那会绕开 bridge,让 `bx --version` 和 App 版本脱节。
 
 ### 应用可用性预设
 
