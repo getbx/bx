@@ -123,11 +123,16 @@ func TestStartFailureCodeNeverGuessesFromText(t *testing.T) {
 }
 
 // requireSentinelTagsPlatformCall 断言 Run() 里 plat.<method>(…) 那一跳的失败
-// 分支真的挂上了这个哨兵。
+// 分支真的**把这个哨兵挂上去了**。
 //
-// 判据是**位置**:紧跟那次调用的那个 if 语句体内出现该标识符。只查「run.go 里
-// 出现过这个词」的话,把哨兵挂到隔壁任何一跳上都照样绿 —— 而挂错跳产生的正是
-// 一个自信的错误答案(用户被派去查 TUN,真因在路由)。
+// 判据两层,缺一不可:
+//   - **位置**:紧跟那次调用的那个 if 语句体内 —— 只查「run.go 里出现过这个词」
+//     的话,把哨兵挂到隔壁任何一跳上都照样绿,而挂错跳产生的是一个自信的错误
+//     答案(用户被派去查 TUN,真因在路由);
+//   - **它真的被挂上了**:那个标识符必须是一次 tagStartFailure(…) 调用的**第一个
+//     实参**。只钉标识符出现过的话,`log.Printf("%v", ErrTUNOpen)` + 一句不带
+//     哨兵的 return 就能满足它 —— 变异实测:守卫与整个包全绿,而 tun_open_failed
+//     变成一个**永远不会被产生的码**,正是这条守卫存在要消灭的那件事。
 func requireSentinelTagsPlatformCall(t *testing.T, fn *ast.FuncDecl, method string, sentinel error) {
 	t.Helper()
 	name := sentinelIdentName(t, sentinel)
@@ -145,19 +150,38 @@ func requireSentinelTagsPlatformCall(t *testing.T, fn *ast.FuncDecl, method stri
 			if !ok {
 				continue
 			}
-			ast.Inspect(guard, func(inner ast.Node) bool {
-				if id, ok := inner.(*ast.Ident); ok && id.Name == name {
-					found = true
-				}
-				return true
-			})
+			if tagsSentinel(guard, name) {
+				found = true
+			}
 		}
 		return true
 	})
 	if !found {
-		t.Fatalf("Run() 里 plat.%s(…) 失败那一支没有挂上 %s —— 那个哨兵因此没有产地,\n"+
-			"它对应的码永远不会出现,而消费方为它写的分支看起来是被覆盖着的", method, name)
+		t.Fatalf("Run() 里 plat.%s(…) 失败那一支没有把 %s **挂上去**(要的是\n"+
+			"tagStartFailure(%s, …) 这一次调用,不是这个词在附近出现过)—— 少了它,\n"+
+			"那个哨兵没有产地,它对应的码永远不会出现,而消费方为它写的分支看起来是被覆盖着的",
+			method, name, name)
 	}
+}
+
+// tagsSentinel:node 里有没有一次 tagStartFailure(<name>, …)。
+func tagsSentinel(node ast.Node, name string) bool {
+	tagged := false
+	ast.Inspect(node, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		fn, ok := call.Fun.(*ast.Ident)
+		if !ok || fn.Name != "tagStartFailure" {
+			return true
+		}
+		if id, ok := call.Args[0].(*ast.Ident); ok && id.Name == name {
+			tagged = true
+		}
+		return true
+	})
+	return tagged
 }
 
 // sentinelIdentName 把哨兵的值映射回它在源码里的标识符名。**写死一张表**是刻意的:
