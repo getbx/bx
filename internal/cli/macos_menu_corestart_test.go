@@ -198,4 +198,33 @@ func TestMacMenuStartFailureFactsIncludeTheSingleServerConfigsServer(t *testing.
 		t.Fatalf("被映射的那个序列 %q 不是由 currentServer 参与拼出来的 ——\n"+
 			"单服务器配置下这句话仍然说不出地址", sequence)
 	}
+	// **另一半也要在**:这条守卫此前只钉了 currentServer 那一半,于是把
+	// `list.servers +` 删掉之后 Go 与 24 个 Swift 套件全绿,而一份多服务器
+	// 配置(所有者自己那台机器就是)上菜单一台服务器都点不出来、也给不出
+	// 「你还配了另一台」。reviewer 变异实测(LANDED)。
+	multi := regexp.MustCompile(`\b` + regexp.QuoteMeta(sequence) + `\s*=\s*[^\n]*\.servers\b`)
+	if !multi.MatchString(body) {
+		t.Fatalf("被映射的那个序列 %q 里没有清单那一半(list.servers)——\n"+
+			"多服务器配置下菜单一台都点不出来", sequence)
+	}
+}
+
+// 那一跳用的是**注进来的那个** GuardianClient,不是当场新造一个。
+//
+// 同一个闭包上面几行已经在用 self.guardianClient;第二个来源会让一个注进来
+// 的客户端被静默绕过,而绕过它的恰好是「说不说得出服务器地址」这一半。
+func TestMacMenuStartFailureFactsUseTheSharedGuardianClient(t *testing.T) {
+	body, ok := swiftFunctionBody(
+		stripSwiftComments(menuMainSwiftSource(t)),
+		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {")
+	if !ok {
+		t.Fatal("main.swift 里找不到 performToggle —— 锚点漂了,回来重判")
+	}
+	if !strings.Contains(body, "self.guardianClient.listServers()") {
+		t.Fatal("那次取服务器清单没走 self.guardianClient —— 锚点漂了,或者又新造了一个客户端")
+	}
+	if regexp.MustCompile(`GuardianClient\(\)\s*\.listServers`).MatchString(body) {
+		t.Fatal("performToggle 里当场新造了一个 GuardianClient 去取清单 ——\n" +
+			"同一个闭包上面几行就在用 self.guardianClient,第二个来源会静默绕过注进来的那个")
+	}
 }

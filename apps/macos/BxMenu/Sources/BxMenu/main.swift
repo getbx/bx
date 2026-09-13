@@ -3170,7 +3170,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 永远说不出地址。只在真撞上这一族码时拉,失败就不点名,不编。
             var startFailureServers = CoreStartFailureServers()
             if isCoreStartFailureCode(failureCode) {
-                if let list = try? GuardianClient().listServers() {
+                // **用 self.guardianClient,不新造一个。** 同一个闭包上面几行
+                // 已经在用它了;第二个来源意味着注进来的那个客户端会被这一跳
+                // 静默绕过 —— 而绕过它的恰好是「说不说得出服务器地址」这一半。
+                if let list = try? self.guardianClient.listServers() {
                     // `bx setup` 写出来的配置根本没有 `servers:` 键 ⇒ 清单是空的,
                     // 而当前那台由 current_server 单独带来。少了这一半,**最常见的
                     // 那种配置上这句话说不出服务器地址**,退化成一句没有 nc -z 的
