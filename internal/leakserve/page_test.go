@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -300,4 +301,194 @@ func TestPageDistinguishesAnExpiredServiceFromOtherFailures(t *testing.T) {
 	if strings.Contains(tail[:end], "not checked") {
 		t.Error("过期分支里出现了「not checked」—— bx 根本不在跑,它什么都不会报告")
 	}
+}
+
+// **页面对认不出的分段是静默回落到 titles.path** —— 与 CLI 那个 default 兜底
+// 同一个形状。第四段一加进来,四行可达性结论就会出现在一个写着「你的流量去
+// 哪儿」的标题底下,而页面这一侧**两边测试都绿**:骨架行摆出来了、ID 对得上、
+// 结论也贴回去了,只有那个标题在说一件判据没说过的事。
+//
+// 判据按 Outline() 现有的分段穷举:每一段都必须在 titles 里有**自己**的条目,
+// 而且标题两两不同。
+func TestPageGivesEverySectionItsOwnHeading(t *testing.T) {
+	block := pageTitlesBlock(t)
+	entry := regexp.MustCompile(`(?m)^\s*(\w+)\s*:\s*\[\s*"((?:[^"\\]|\\.)*)"`)
+	titles := map[string]string{}
+	for _, m := range entry.FindAllStringSubmatch(block, -1) {
+		titles[m[1]] = m[2]
+	}
+	if len(titles) == 0 {
+		t.Fatal("在 page.html 的 skeleton() 里读不出任何分段标题 —— 本守卫读不懂现在的代码,请连同它一起重写")
+	}
+	seenHeading := map[string]string{}
+	seenSection := map[string]bool{}
+	for _, o := range leakcheck.Outline() {
+		sec := o.Section.String()
+		if seenSection[sec] {
+			continue
+		}
+		seenSection[sec] = true
+		head, ok := titles[sec]
+		if !ok {
+			t.Fatalf("分段 %q 在页面里没有自己的标题,会静默回落到 titles.path —— "+
+				"「连不上」于是被画在「你的流量去哪儿」底下,读起来就是一次泄漏", sec)
+		}
+		if other, dup := seenHeading[head]; dup {
+			t.Fatalf("分段 %q 与 %q 共用同一个标题 %q", sec, other, head)
+		}
+		seenHeading[head] = sec
+	}
+}
+
+// 第四段那几行不是「只看本机就答得出来」的:bx 为它们联系了第三方。页面对不吃
+// 浏览器探测的行统一写「Judged from this machine alone.」,在这一段里那是一句
+// 与它自己的分段标题刚刚披露的事实相矛盾的话。
+func TestPageDoesNotSayTheReachRowsNeededNoNetwork(t *testing.T) {
+	body := pageFunctionBody(t, "function skeleton(")
+	if !strings.Contains(body, `"reach"`) {
+		t.Fatalf("skeleton() 没有为第四段单独措辞 —— 它会说这几行「只看本机」,"+
+			"而 bx 为它们联系了 Anthropic/OpenAI/Google:\n%s", body)
+	}
+	if !strings.Contains(body, "Probed by bx from this machine") {
+		t.Fatalf("第四段那几行没有说出「这是 bx 从本机探出来的」:\n%s", body)
+	}
+}
+
+// pageTitlesBlock 抠出 skeleton() 里那个 `var titles = { … }` 的对象字面量。
+func pageTitlesBlock(t *testing.T) string {
+	t.Helper()
+	src := blankPageNoise(pageHTML)
+	anchor := strings.Index(src, "var titles = {")
+	if anchor < 0 {
+		t.Fatal("page.html 里找不到 `var titles = {` —— 本守卫读不懂现在的代码,请连同它一起重写")
+	}
+	open := strings.Index(src[anchor:], "{") + anchor
+	depth := 0
+	for i := open; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				// 抹白只是为了数括号,取内容仍从原串取(字面量里的括号已被抹掉,
+				// 偏移逐字节对齐)。
+				return pageHTML[open : i+1]
+			}
+		}
+	}
+	t.Fatal("page.html 里 titles 对象的括号配不平 —— 本守卫读不懂现在的代码,请连同它一起重写")
+	return ""
+}
+
+// pageFunctionBody 抠出一个以 header 开头的 JS 函数体(含花括号)。
+func pageFunctionBody(t *testing.T, header string) string {
+	t.Helper()
+	src := blankPageNoise(pageHTML)
+	anchor := strings.Index(src, header)
+	if anchor < 0 {
+		t.Fatalf("page.html 里找不到 %q —— 本守卫读不懂现在的代码,请连同它一起重写", header)
+	}
+	open := strings.Index(src[anchor:], "{") + anchor
+	depth := 0
+	for i := open; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return pageHTML[open : i+1]
+			}
+		}
+	}
+	t.Fatalf("%q 的括号配不平 —— 本守卫读不懂现在的代码,请连同它一起重写", header)
+	return ""
+}
+
+// blankPageNoise 把 page.html 里 <script> 那一段的注释与字符串字面量抹白,
+// 而**保住每个字节偏移** —— 数括号时不许把注释或字面量里的 `{`/`}` 数进去
+// (本仓库为这个根因同时吃过假绿与假红:`stripSwiftComments` 保留字符串内容,
+// 而随后每个扫描器都在数括号)。
+//
+// 先把 <script> 之前那半 HTML 整个抹掉:那里的散文里全是 `bx's` 这样的撇号,
+// 单引号状态机会从那儿一路吃到文件末尾。
+func blankPageNoise(src string) string {
+	out := []byte(src)
+	begin := strings.Index(src, "<script>")
+	if begin < 0 {
+		begin = 0
+	}
+	for i := 0; i < begin; i++ {
+		if out[i] != '\n' {
+			out[i] = ' '
+		}
+	}
+	const (
+		code = iota
+		lineComment
+		blockComment
+		dquote
+		squote
+	)
+	state := code
+	blank := func(i int) {
+		if out[i] != '\n' {
+			out[i] = ' '
+		}
+	}
+	for i := begin; i < len(out); i++ {
+		c := out[i]
+		switch state {
+		case code:
+			switch {
+			case c == '/' && i+1 < len(out) && out[i+1] == '/':
+				state = lineComment
+				blank(i)
+				blank(i + 1)
+				i++
+			case c == '/' && i+1 < len(out) && out[i+1] == '*':
+				state = blockComment
+				blank(i)
+				blank(i + 1)
+				i++
+			case c == '"':
+				state = dquote
+			case c == '\'':
+				state = squote
+			}
+		case lineComment:
+			if c == '\n' {
+				state = code
+			} else {
+				blank(i)
+			}
+		case blockComment:
+			if c == '*' && i+1 < len(out) && out[i+1] == '/' {
+				blank(i)
+				blank(i + 1)
+				i++
+				state = code
+			} else {
+				blank(i)
+			}
+		case dquote, squote:
+			quote := byte('"')
+			if state == squote {
+				quote = '\''
+			}
+			if c == '\\' && i+1 < len(out) {
+				blank(i)
+				blank(i + 1)
+				i++
+				continue
+			}
+			if c == quote {
+				state = code
+				continue
+			}
+			blank(i)
+		}
+	}
+	return string(out)
 }

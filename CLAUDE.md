@@ -206,6 +206,20 @@ TunnelCrack ServerIP)** ‖ `local_addresses` 内网地址是否被 mDNS 遮掉 
 
 **检测结果不留存**,页面与 CLI 都明说。
 
+**第四段从 2026-09-14 起真的在跑**(此前 `ProbeReach` 零生产调用方,四条结论在真机上
+恒为「这一轮没有检查」而两个包全绿)。接线是 `internal/cli` 的 `collectLeakCheckFacts`
+→ `leakserve.CollectReach`,**单独一跳、单独预算**:探测是四次跨洋 TLS 握手,塞进
+`CollectFacts` 那 5 秒预算里会被掐断,而掐断的结果与「这条路真的不通」在屏幕上一模一样;
+预算由**探测数**派生(`reachBudget`),不写死秒数。**它给 `bx leakcheck` 新增了出站**:
+跑一次会从本机 GET 四个 AI 端点(走当前路径,不绕隧道),故 `announceReachTargets` 在
+**第一个请求之前**把地址原样列出来(`--json` 走 stderr)—— 页面那份披露只管浏览器那半,
+这一半页面一个字节都不经手。bypass 那条路仍关着(`DefaultProbeBypass=false`,spec §5.1),
+**而且没有绑物理网卡的拨号器**:只翻常量不供 `BypassDial`,这一轮会安静地什么都不多跑;
+spec §5 那三句比较结论(「直连不行、走当前隧道行」…)也等那一天,不是忘了。
+第四段在 CLI 与页面**各有自己的标题**,摘要**另起一行**报五态、**为零也打印** ——
+`default`/`|| titles.path` 兜底吞掉新分段在这一支里出现过三次,每一次的后果都是把
+「连不上」画在一个写着「你的流量去哪儿」的标题底下,读起来就是一次泄漏。
+
 **真机首验(2026-08-31,项目所有者的 Mac):本机那一半全绿** —— 十条结论一条不少、
 三段分段正确、**三个计数并排且绝不合成**(`0 leak(s) / 0 identifying trait(s) /
 6 not checked`,没有出现「没有发现泄漏」那句最坏的假话)、`WhoOwnsTheRoute` 判对

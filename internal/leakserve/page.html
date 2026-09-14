@@ -258,8 +258,17 @@ Neither half alone can tell you whether traffic is leaking.</p>
           identity: ["Can you be singled out",
                      "Mostly not bx's to fix — browser and system traits that can identify you even when nothing leaks."],
           surface: ["What sites can read",
-                    "Neither good nor bad, and nothing here is a verdict. Listed so you can see what every site gets without asking."]
+                    "Neither good nor bad, and nothing here is a verdict. Listed so you can see what every site gets without asking."],
+          // Not a security question. This section's bad news is "you cannot use
+          // it", not "you leaked" — filing it under the traffic-path heading
+          // would read as a leak, which is exactly the confusion this section
+          // was split out to avoid.
+          reach: ["Can this path reach the AI services",
+                  "bx contacted each of these from this machine to see whether this path gets through. \u201cCould not reach\u201d is not a leak."]
         };
+        // Falling back to titles.path is how the reach rows once ended up under
+        // a heading that says "leak". Keep every section Go can emit in the map
+        // above — TestPageGivesEverySectionItsOwnHeading pins that.
         var t = titles[c.section] || titles.path;
         head.appendChild(text(el("h2"), t[0]));
         head.appendChild(text(el("p"), t[1]));
@@ -284,7 +293,13 @@ Neither half alone can tell you whether traffic is leaking.</p>
       var body = el("div");
       body.appendChild(text(el("p", "name"), c.title));
       body.appendChild(text(el("p", "state"), "checking"));
-      body.appendChild(text(el("p", "say"), c.inputs && c.inputs.length ? "Waiting for the browser half." : "Judged from this machine alone."));
+      // "Judged from this machine alone" is true of the rows that read the
+      // routing table — it is not true of the reach rows, which bx answers by
+      // contacting a third party. Saying it there would understate what this
+      // page's own section header just disclosed.
+      var waiting = "Waiting for the browser half.";
+      var local = c.section === "reach" ? "Probed by bx from this machine." : "Judged from this machine alone.";
+      body.appendChild(text(el("p", "say"), c.inputs && c.inputs.length ? waiting : local));
       row.appendChild(feed); row.appendChild(body);
       rowsEl.appendChild(row);
       rowEls[c.id] = row;
