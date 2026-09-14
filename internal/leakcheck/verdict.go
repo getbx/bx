@@ -69,6 +69,10 @@ const (
 	// SectionSurface:网站读得到什么。**中性,不打勾** —— 这一段里的东西没有
 	// 正确答案,列出来是为了让用户看见自己暴露了什么,而不是评判它。
 	SectionSurface
+	// SectionReach:这条路能不能到达目标站。**它不是安全问题** ——
+	// path/identity 的坏消息是「你泄漏了」,这一段的坏消息是「你用不了」。
+	// 两者合成一个数就是让一次连不上稀释掉真正的泄漏告警(spec §6.1)。
+	SectionReach
 )
 
 func (s Section) String() string {
@@ -77,6 +81,8 @@ func (s Section) String() string {
 		return "identity"
 	case SectionSurface:
 		return "surface"
+	case SectionReach:
+		return "reach"
 	default:
 		return "path"
 	}
@@ -87,17 +93,63 @@ func (s Section) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + s.String() + `"`), nil
 }
 
+// ReachState 是一次可达性探测的四态。**零值必须是 ReachUndetermined。**
+//
+// 与 Verdict 分开是因为它们回答不同的问题:Verdict 是给界面的**极性**(好/坏/没查),
+// ReachState 是**发生了什么**(到了/被拒/没问出来/到不了)。Refused 与 Unreachable
+// 都映射成 Bad,但给用户的话完全不同 —— 一个是「换服务器」,一个是「这条路不通」。
+type ReachState uint8
+
+const (
+	// ReachUndetermined:没问出来。CF 人机挑战、认不出的状态码,全在这一格。
+	// **绝不因为「没看到拒绝」就升格成可达。**
+	ReachUndetermined ReachState = iota
+	ReachReachable
+	ReachRefused
+	ReachUnreachable
+)
+
+func (r ReachState) String() string {
+	switch r {
+	case ReachReachable:
+		return "reachable"
+	case ReachRefused:
+		return "refused"
+	case ReachUnreachable:
+		return "unreachable"
+	default:
+		return "undetermined"
+	}
+}
+
+func (r ReachState) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + r.String() + `"`), nil
+}
+
+// ReachSummary 是第四段的计数。**四态各自一个数,绝不合成** ——
+// 合成之后「一条都没查出来」与「查了、全可达」在屏幕上就一样了。
+type ReachSummary struct {
+	Reachable    int `json:"reachable"`
+	Refused      int `json:"refused"`
+	Undetermined int `json:"undetermined"`
+	Unreachable  int `json:"unreachable"`
+}
+
 // Finding 是一条可展开看依据的结论。
 //
 // Evidence 是**必须**的那一半:一个不肯出示依据的检测工具,用户没有理由信它,
 // 而且 bx 判错时用户看得出它是怎么错的。
 type Finding struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Section  Section  `json:"section"`
-	Verdict  Verdict  `json:"verdict"`
-	Summary  string   `json:"summary"`
-	Evidence []string `json:"evidence,omitempty"`
+	ID      string  `json:"id"`
+	Title   string  `json:"title"`
+	Section Section `json:"section"`
+	Verdict Verdict `json:"verdict"`
+	Summary string  `json:"summary"`
+	// Reach 只在 Section == SectionReach 时有意义。**其余段一律忽略它** ——
+	// ReachUndetermined 恰好是零值,不加这道门就会把每条 path 结论都算成
+	// 「一次没问出来的可达性探测」。
+	Reach    ReachState `json:"reach,omitempty"`
+	Evidence []string   `json:"evidence,omitempty"`
 }
 
 // Report 是一次检测的全部产出。**没有任何字段是 BrowserReport 或 LocalFacts** ——
@@ -112,12 +164,30 @@ type Report struct {
 	AnomalyCount int `json:"anomaly_count"`
 	// IdentityCount 数身份段的 bad。**单独一个数,永远不并进上面那个。**
 	IdentityCount int `json:"identity_count"`
+	// Reach 是第四段的四态计数。**与上面两个数并排,永不合并。**
+	Reach ReachSummary `json:"reach"`
 }
 
 // NewReport 组装报告并**按段**算出异常数。只数 Bad。
 func NewReport(now time.Time, endpoints EndpointDisclosure, findings []Finding, evidence []string) Report {
 	anomalies, identity := 0, 0
+	var reach ReachSummary
 	for _, f := range findings {
+		// **可达性先分流,且不看 Verdict** —— 它的四态自己就带极性,
+		// 而把它塞进下面那个 else 分支正是这个任务要堵的洞。
+		if f.Section == SectionReach {
+			switch f.Reach {
+			case ReachReachable:
+				reach.Reachable++
+			case ReachRefused:
+				reach.Refused++
+			case ReachUnreachable:
+				reach.Unreachable++
+			default:
+				reach.Undetermined++
+			}
+			continue
+		}
 		if f.Verdict != Bad {
 			continue
 		}
@@ -134,5 +204,6 @@ func NewReport(now time.Time, endpoints EndpointDisclosure, findings []Finding, 
 		Evidence:      evidence,
 		AnomalyCount:  anomalies,
 		IdentityCount: identity,
+		Reach:         reach,
 	}
 }

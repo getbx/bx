@@ -3,6 +3,7 @@ package leakcheck
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // 零值必须是 NotChecked。**这是本包的地基**:一个零值读作 OK 的三态,会让
@@ -88,5 +89,58 @@ func TestReportsAreWriteOnlyAndNeverDecodeSilently(t *testing.T) {
 			"UnmarshalJSON 一起补上并把这条测试换成真正的往返测试;"+
 			"当前的危险在于一份解码失败的报告会读作「全部 not checked」,"+
 			"与一次诚实的「没问出来」逐字节相同", back.Findings)
+	}
+}
+
+// 可达性的坏消息是「你用不了」,而 path/identity 的坏消息是「你泄漏了」——
+// 后者是安全问题,前者不是。把它算进 AnomalyCount 就是让一次连不上
+// 稀释掉真正的泄漏告警(spec §6.1)。
+//
+// **这条守卫钉的是 NewReport 里那个 else 分支**:它今天把所有非 identity 的
+// Bad 都算进 anomalies,加新 Section 而不改它,编译和现有测试都不会红。
+func TestReachSectionNeverCountsAsALeak(t *testing.T) {
+	findings := []Finding{
+		{ID: "x", Section: SectionPath, Verdict: Bad},
+		{ID: "y", Section: SectionReach, Verdict: Bad, Reach: ReachUnreachable},
+		{ID: "z", Section: SectionReach, Verdict: Bad, Reach: ReachRefused},
+	}
+	got := NewReport(time.Now(), EndpointDisclosure{}, findings, nil)
+	if got.AnomalyCount != 1 {
+		t.Fatalf("AnomalyCount = %d, want 1 —— 可达性的 Bad 不许并进流量泄漏那个数", got.AnomalyCount)
+	}
+	if got.IdentityCount != 0 {
+		t.Fatalf("IdentityCount = %d, want 0", got.IdentityCount)
+	}
+	if got.Reach.Unreachable != 1 || got.Reach.Refused != 1 {
+		t.Fatalf("Reach = %+v, want Unreachable=1 Refused=1", got.Reach)
+	}
+}
+
+// 四态各自计数,绝不合成 —— 「一条都没查出来」与「查了、全可达」在屏幕上
+// 必须长得不一样(spec §6.2)。
+func TestReachSummaryCountsAllFourStatesSeparately(t *testing.T) {
+	findings := []Finding{
+		{ID: "a", Section: SectionReach, Verdict: OK, Reach: ReachReachable},
+		{ID: "b", Section: SectionReach, Verdict: OK, Reach: ReachReachable},
+		{ID: "c", Section: SectionReach, Verdict: NotChecked, Reach: ReachUndetermined},
+		{ID: "d", Section: SectionReach, Verdict: Bad, Reach: ReachUnreachable},
+	}
+	got := NewReport(time.Now(), EndpointDisclosure{}, findings, nil).Reach
+	want := ReachSummary{Reachable: 2, Undetermined: 1, Unreachable: 1}
+	if got != want {
+		t.Fatalf("Reach = %+v, want %+v", got, want)
+	}
+}
+
+// 非 reach 段的 Finding 带着 Reach 零值,不许被算进任何一格 ——
+// ReachUndetermined 恰好是零值,所以「只对 SectionReach 读这个字段」是承重的。
+func TestNonReachFindingsNeverTouchTheReachSummary(t *testing.T) {
+	findings := []Finding{
+		{ID: "p", Section: SectionPath, Verdict: OK},
+		{ID: "i", Section: SectionIdentity, Verdict: Bad},
+		{ID: "s", Section: SectionSurface, Verdict: Info},
+	}
+	if got := NewReport(time.Now(), EndpointDisclosure{}, findings, nil).Reach; got != (ReachSummary{}) {
+		t.Fatalf("Reach = %+v, want 全零 —— 非 reach 段的零值 Reach 字段不许被计数", got)
 	}
 }
