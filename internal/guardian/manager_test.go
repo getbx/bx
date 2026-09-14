@@ -2830,7 +2830,6 @@ func TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := newStartTestProcess(6001)
-	defer started.release()
 	operations := &pidAwareProcessOperations{
 		dead:    map[int]bool{5129: true},
 		live:    map[int]Process{6001: {PID: 6001, Executable: executable, UID: 0, Generation: "darwin:1785999999:1"}},
@@ -2842,6 +2841,24 @@ func TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord(t *testing.T) {
 	runner.ControlSocket = filepath.Join(dir, "bx.sock")
 	runner.Operations = operations
 	runner.RemoveProcessRecord = func(string) error { return errors.New("remove record: permission denied") }
+
+	// **刻意不 release 那个假进程 —— 别顺手把 `defer started.release()` 补回来。**
+	//
+	// release 会让 `Wait()` 返回,于是 manager 把它当成一次**意外退出**走
+	// `handleUnexpectedExit`:写状态、可能再起一个 Core —— 而那些全落在
+	// `t.TempDir()` 里,与 TempDir 自己的 `RemoveAll` 抢同一个目录。
+	// 2026-09-14 的 release run 在 **Linux** 上因此红:
+	// `TempDir RemoveAll cleanup: unlinkat …: directory not empty`
+	// —— RemoveAll 删完内容、正要 rmdir 时,那条 goroutine 又写了进来。
+	//
+	// **两件事值得记住**:① 本机 macOS 时序不同、一次都没红过,而
+	// `scripts/verify.sh` 跑的正是本机 —— **这一类平台差异它结构上覆盖不到**,
+	// 是 CI 的 linux build job 抓到的;② 只同步 runner 那条 goroutine 不够
+	// (试过),manager 的 monitor 是**另一根**,两根都会写这个目录。
+	//
+	// 这个测试要证明的是「陈旧的死记录不再卡死 bx up」,**到 Up 成功就结束**;
+	// 再模拟一次 Core 退出不属于它,只会引进上面那个竞态。留下的那条 goroutine
+	// 永久阻塞在 `<-p.wait`、不碰任何文件,随测试进程一起消失。
 
 	events := &eventLog{}
 	manager, err := NewManager(ManagerOptions{
