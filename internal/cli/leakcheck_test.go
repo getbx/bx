@@ -1,15 +1,19 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/getbx/bx/internal/leakcheck"
+	"github.com/getbx/bx/internal/leakserve"
 )
 
 // **`sudo bx leakcheck` 必须被拒绝**,不是「照跑但更强大」。
@@ -208,4 +212,318 @@ func lineCarriesVerdict(lines []string, verdict, title string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// 第四段(SectionReach)的渲染与接线
+// ---------------------------------------------------------------------------
+
+// **可达性结论不许被画在「流量去哪儿」那个标题底下。**
+//
+// 分段标题此前是 `switch { case identity … case surface … default: 流量路径 }`,
+// 而 SectionReach 落进 default —— 于是「bx 连不上 claude.ai」出现在一个通篇在
+// 讲「你泄漏了没有」的标题下面,用户会把「连不上」读成「流量泄漏」(spec §6.1
+// 要避免的正是这件事,只是它发生在渲染层)。
+//
+// 判据打在**用户看得见的东西**上:那一行标题在屏幕上必须与流量路径那条不同。
+func TestReachConclusionsAreNotFiledUnderTheTrafficPathHeading(t *testing.T) {
+	rep := leakcheck.Report{Findings: []leakcheck.Finding{
+		{ID: "carrier", Title: "Who carries your traffic", Section: leakcheck.SectionPath, Verdict: leakcheck.OK},
+		{
+			ID: "reach_anthropic_api", Title: "Anthropic API", Section: leakcheck.SectionReach,
+			Verdict: leakcheck.OK, Reach: leakcheck.ReachReachable,
+		},
+	}}
+	lines := renderLeakCheckReport(rep)
+	pathHead := headingAbove(lines, "Who carries your traffic")
+	reachHead := headingAbove(lines, "Anthropic API")
+	if pathHead == "" || reachHead == "" {
+		t.Fatalf("找不到分段标题(path=%q reach=%q):\n%s", pathHead, reachHead, strings.Join(lines, "\n"))
+	}
+	if reachHead == pathHead {
+		t.Fatalf("可达性结论被画在流量路径那个标题底下(%q)—— 用户会把「连不上」"+
+			"读成「流量泄漏」:\n%s", reachHead, strings.Join(lines, "\n"))
+	}
+	// 它也不许反过来借用一句读着像安全问题的话。
+	if strings.Contains(strings.ToUpper(reachHead), "TRAFFIC GOES") {
+		t.Fatalf("第四段的标题读起来仍像流量泄漏:%q", reachHead)
+	}
+}
+
+// 上面那条只钉住今天这一段。**下一段加进来时没有任何东西会替它问同样的问题** ——
+// 而 default 兜底吞掉新分段在这一支里已经是第三次(NewReport 的 else、
+// notChecked 那个循环、这个 switch)。故按 Outline() 现有的分段穷举:每一段都
+// 必须拿到**属于自己**的标题,两段共用一句就是其中一段在冒充另一段的责任人。
+func TestEverySectionOutlineEmitsGetsItsOwnHeading(t *testing.T) {
+	seen := map[leakcheck.Section]bool{}
+	sections := []leakcheck.Section{}
+	for _, o := range leakcheck.Outline() {
+		if !seen[o.Section] {
+			seen[o.Section] = true
+			sections = append(sections, o.Section)
+		}
+	}
+	if len(sections) < 4 {
+		t.Fatalf("Outline() 只产出 %d 个分段 —— 本守卫读不懂现在的代码,请连同它一起重写", len(sections))
+	}
+	byHeading := map[string]leakcheck.Section{}
+	for _, sec := range sections {
+		title := "row-" + sec.String()
+		lines := renderLeakCheckReport(leakcheck.Report{Findings: []leakcheck.Finding{
+			{ID: "x", Title: title, Section: sec, Verdict: leakcheck.OK},
+		}})
+		head := headingAbove(lines, title)
+		if head == "" {
+			t.Fatalf("分段 %q 渲染不出标题:\n%s", sec, strings.Join(lines, "\n"))
+		}
+		if other, dup := byHeading[head]; dup {
+			t.Fatalf("分段 %q 与 %q 共用同一个标题 %q —— 其中一段在冒充另一段的责任人",
+				sec, other, head)
+		}
+		byHeading[head] = sec
+	}
+}
+
+// **现有的 notChecked 数的是所有 Findings 里 Verdict==NotChecked 的**,而第四段
+// 的 Undetermined 与 Challenged 两态都映射成 NotChecked ⇒ 它们会被算进**泄漏
+// 检测**那一格。这是 Task 1 在 NewReport 里堵过的同一种静默合并,在渲染层又出现
+// 一次;CLAUDE.md 记的真机基线「6 not checked」会静默变成 10。
+func TestReachNotCheckedDoesNotInflateTheLeakNotCheckedCount(t *testing.T) {
+	rep := leakcheck.Report{
+		Findings: []leakcheck.Finding{
+			{ID: "p", Title: "path row", Section: leakcheck.SectionPath, Verdict: leakcheck.OK},
+			{
+				ID: "reach_a", Title: "reach a", Section: leakcheck.SectionReach,
+				Verdict: leakcheck.NotChecked, Reach: leakcheck.ReachUndetermined,
+			},
+			{
+				ID: "reach_b", Title: "reach b", Section: leakcheck.SectionReach,
+				Verdict: leakcheck.NotChecked, Reach: leakcheck.ReachChallenged,
+			},
+		},
+		Reach: leakcheck.ReachSummary{Undetermined: 1, Challenged: 1},
+	}
+	out := strings.Join(renderLeakCheckReport(rep), "\n")
+	if !strings.Contains(out, "0 not checked.") {
+		t.Fatalf("泄漏检测那一格应是 0(没有一条 path/identity 结论没查成),"+
+			"而第四段那两条被算了进去:\n%s", out)
+	}
+	// 同时它们不许就此消失:第四段自己那行要说出来。
+	if !strings.Contains(out, "1 challenged") || !strings.Contains(out, "1 undetermined") {
+		t.Fatalf("第四段那两条既没进泄漏那一格、也没在自己那行出现 —— 它们被吞了:\n%s", out)
+	}
+}
+
+// 五态并排,而且 **undetermined / unreachable / challenged 为零也要打印**:
+// 否则「一条都没查出来」与「查了、全可达」在屏幕上长得一样(spec §6.2)。
+func TestLeakCheckSummaryPrintsReachCountsSeparately(t *testing.T) {
+	allReachable := strings.Join(renderLeakCheckReport(leakcheck.Report{
+		Reach: leakcheck.ReachSummary{Reachable: 4},
+	}), "\n")
+	for _, want := range []string{"4 reachable", "0 refused", "0 unreachable", "0 challenged", "0 undetermined"} {
+		if !strings.Contains(allReachable, want) {
+			t.Fatalf("摘要缺 %q —— 为零的档也必须打印:\n%s", want, allReachable)
+		}
+	}
+	// **决定性的一条**:「四条全可达」与「四条一条都没问出来」在屏幕上必须不同。
+	noneChecked := strings.Join(renderLeakCheckReport(leakcheck.Report{
+		Reach: leakcheck.ReachSummary{Undetermined: 4},
+	}), "\n")
+	if noneChecked == allReachable {
+		t.Fatalf("「全可达」与「一条都没查出来」渲染出同一份输出:\n%s", allReachable)
+	}
+	// 而且它绝不能与泄漏那一格合成一句话(合起来之后「0 not checked」到底在说
+	// 哪一段就再也表达不出来了)。
+	if strings.Contains(allReachable, "identifying trait(s), 4 reachable") {
+		t.Fatalf("第四段被并进了泄漏那句话里:\n%s", allReachable)
+	}
+}
+
+// headingAbove 返回屏幕上离这条结论最近的那个分段标题(全大写、顶格的那种)。
+func headingAbove(lines []string, title string) string {
+	idx := -1
+	for i, l := range lines {
+		if strings.Contains(l, title) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return ""
+	}
+	for i := idx; i >= 0; i-- {
+		if isSectionHeadingLine(lines[i]) {
+			return lines[i]
+		}
+	}
+	return ""
+}
+
+func isSectionHeadingLine(line string) bool {
+	if line == "" || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "[") {
+		return false
+	}
+	return line == strings.ToUpper(line) && strings.ContainsAny(line, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+}
+
+// **判据造好了不等于功能通电。** ProbeReach 在这一支里一路做到 Task 5 都还是
+// 零生产调用方:LocalFacts.ReachProbes 从来没被填过,于是四条可达性结论在真机上
+// 恒为「这一轮没有检查」,而两个包的测试全绿。
+//
+// 判据打在**到达 LocalFacts 的那个值**上,不打在「调用发生过」(第七种失效写法):
+// 探测记录必须一个目标一条、标着 current 那条路径。
+func TestCollectLeakCheckFactsCarriesTheReachProbes(t *testing.T) {
+	dialed := 0
+	reach := leakserve.ReachDeps{
+		CurrentDial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialed++
+			return nil, errors.New("这条测试不联网")
+		},
+	}
+	facts := collectLeakCheckFacts(context.Background(), leakserve.FactDeps{}, reach)
+	targets := leakcheck.ReachTargets()
+	if len(facts.ReachProbes) != len(targets) {
+		t.Fatalf("ReachProbes 有 %d 条,要 %d 条 —— 探测结果没有到达 LocalFacts,"+
+			"第四段在真机上会恒为「这一轮没有检查」", len(facts.ReachProbes), len(targets))
+	}
+	if dialed == 0 {
+		t.Fatal("一次都没拨号 —— 记录是凭空造出来的,不是探出来的")
+	}
+	for i, tgt := range targets {
+		got := facts.ReachProbes[i]
+		if got.TargetID != tgt.ID {
+			t.Errorf("第 %d 条记的是 %q,要 %q", i, got.TargetID, tgt.ID)
+		}
+		if got.Path != leakcheck.ReachPathCurrent {
+			t.Errorf("第 %d 条的路径是 %q,要 %q(常量,不是手抄的字面量)",
+				i, got.Path, leakcheck.ReachPathCurrent)
+		}
+	}
+}
+
+// 接线那一半:生产那条路必须真的走 collectLeakCheckFacts,而且喂给它的是
+// **生产的**两份 deps。喂一个零值 ReachDeps 进去,上面那条行为测试照样全绿,
+// 而真机上一个探测都不会发(CollectReach 对两个拨号器全 nil 返回 nil)。
+func TestLeakCheckActionCollectsFactsThroughTheReachWiring(t *testing.T) {
+	body := leakCheckActionBody(t)
+	args := callArgsInBody(body, "collectLeakCheckFacts")
+	if args == "" {
+		t.Fatal("leakcheckAction 没有调用 collectLeakCheckFacts —— 可达性探测没有接上," +
+			"第四段在真机上是死的")
+	}
+	for _, want := range []string{"leakserve.LiveFactDeps()", "leakserve.LiveReachDeps()"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("collectLeakCheckFacts 的实参里没有 %s(得到 %q)—— 喂一个零值 deps "+
+				"进去,真机上一个探测都不会发,而所有测试照样绿", want, args)
+		}
+	}
+	// 结果必须真的成为喂给 Judge 的那份事实,不是算完就丢。
+	lhs := assignedNameOfCall(body, "collectLeakCheckFacts")
+	if lhs == "" {
+		t.Fatal("collectLeakCheckFacts 的结果没有被赋给任何变量 —— 算完就丢")
+	}
+	judgeArgs := callArgsInBody(body, "leakcheck.Judge")
+	if !strings.Contains(judgeArgs, lhs) {
+		t.Fatalf("leakcheck.Judge 拿到的不是 collectLeakCheckFacts 的结果(%q 不在 %q 里)",
+			lhs, judgeArgs)
+	}
+}
+
+// **联网之前先说要联系谁。** 这条契约此前整个由页面兑现,而可达性探测是 bx 自己
+// 发的、页面一个字节都不经手 —— 于是这句话只能由 CLI 说,且必须排在第一个请求
+// **之前**。判据同时钉住顺序:披露那一句在源码里要出现在采集那一句前面。
+func TestLeakCheckAnnouncesTheReachTargetsBeforeContactingThem(t *testing.T) {
+	body := leakCheckActionBody(t)
+	announce, collect := -1, -1
+	for i, stmt := range body.List {
+		if announce < 0 && callArgsInBody(&ast.BlockStmt{List: []ast.Stmt{stmt}}, "announceReachTargets") != "" {
+			announce = i
+		}
+		if collect < 0 && callArgsInBody(&ast.BlockStmt{List: []ast.Stmt{stmt}}, "collectLeakCheckFacts") != "" {
+			collect = i
+		}
+	}
+	if announce < 0 {
+		t.Fatal("leakcheckAction 没有披露可达性探测目标 —— bx 在没打招呼的情况下联系了" +
+			"Anthropic / OpenAI / Google")
+	}
+	if collect < 0 {
+		t.Fatal("找不到 collectLeakCheckFacts —— 本守卫读不懂现在的代码,请连同它一起重写")
+	}
+	if announce > collect {
+		t.Fatal("披露排在探测之后 —— 事后补一句不是「联网之前先说」")
+	}
+	// 清单必须现取,不许手抄第二份:少报一个第三方不是排版问题。
+	out := captureStdout(t, func() { announceReachTargets(false) })
+	for _, tgt := range leakcheck.ReachTargets() {
+		if !strings.Contains(out, tgt.URL) {
+			t.Errorf("披露里没有 %q:\n%s", tgt.URL, out)
+		}
+	}
+	// --json 那一份 stdout 必须干净:它是机器读的。
+	if got := captureStdout(t, func() { announceReachTargets(true) }); got != "" {
+		t.Errorf("--json 模式往 stdout 写了东西,会把那份 JSON 弄脏:%q", got)
+	}
+}
+
+func leakCheckActionBody(t *testing.T) *ast.BlockStmt {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "leakcheck.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("解析 leakcheck.go 失败(本守卫读不懂现在的代码,请连同它一起重写):%v", err)
+	}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "leakcheckAction" && fn.Body != nil {
+			return fn.Body
+		}
+	}
+	t.Fatal("找不到 leakcheckAction —— 本守卫读不懂现在的代码,请连同它一起重写")
+	return nil
+}
+
+// callArgsInBody 在一段函数体里找对 name 的调用,返回它实参的源码形状;
+// 没找到返回空串。name 可以带包名(如 "leakcheck.Judge")。
+func callArgsInBody(body *ast.BlockStmt, name string) string {
+	found := ""
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || found != "" {
+			return found == ""
+		}
+		if exprText(call.Fun) != name {
+			return true
+		}
+		args := make([]string, 0, len(call.Args))
+		for _, arg := range call.Args {
+			args = append(args, exprText(arg))
+		}
+		found = "(" + strings.Join(args, ",") + ")"
+		return false
+	})
+	return found
+}
+
+// assignedNameOfCall 返回 `x := name(...)` 里那个 x;不是赋值语句就返回空串。
+func assignedNameOfCall(body *ast.BlockStmt, name string) string {
+	got := ""
+	ast.Inspect(body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || got != "" {
+			return got == ""
+		}
+		for _, rhs := range assign.Rhs {
+			call, ok := rhs.(*ast.CallExpr)
+			if !ok || exprText(call.Fun) != name {
+				continue
+			}
+			if len(assign.Lhs) == 1 {
+				if id, ok := assign.Lhs[0].(*ast.Ident); ok && id.Name != "_" {
+					got = id.Name
+				}
+			}
+		}
+		return got == ""
+	})
+	return got
 }

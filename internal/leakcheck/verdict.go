@@ -190,7 +190,7 @@ type Report struct {
 	AnomalyCount int `json:"anomaly_count"`
 	// IdentityCount 数身份段的 bad。**单独一个数,永远不并进上面那个。**
 	IdentityCount int `json:"identity_count"`
-	// Reach 是第四段的四态计数。**与上面两个数并排,永不合并。**
+	// Reach 是第四段的五态计数。**与上面两个数并排,永不合并。**
 	Reach ReachSummary `json:"reach"`
 }
 
