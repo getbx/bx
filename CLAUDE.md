@@ -2593,15 +2593,23 @@ brief 假设的「已经带了」),于是菜单那半说不出是哪台服务器
   「出现次数」而它数的是行数、替换串带了不存在的前导 tab 而 `str.replace` 匹配不上时不报错。
   **别再手敲那一串命令**;`verify.sh` 自己也验过五个方向都会失败,漏一道闸门由 `TestVerifyScriptCoversEveryGate` 钉住。
   **一个会偶发红的闸门比没有闸门更糟**,因为它训练人去重跑
-  **今天挂着一个已知的 flake,它的形状与 socks5 那次不同,记在这里免得下一个人
-  以为自己弄坏了什么**:`TestManagerUpdateReservesDeadlineForTargetCleanup`
-  (`internal/guardian/update_test.go`)在 2026-09-14 的 release run 上红过一次
-  (`previous_core_health_failed`),而**本地连跑 30 次全过**。脆在挂钟上:整个
-  `Update` 只给 500ms,而 v2 的健康检查是**无限阻塞**的,它先吃掉大半,剩给
-  「回滚之后等 v1 健康」的余量在 CI 慢机器上不够。**正确修法不是把 500ms 调大**
-  —— 要先弄清 `Update` 内部怎么在健康检查与清理之间分预算(那正是这条测试要证明
-  的东西),否则调大只是把同一个竞态推远一点。**它不是被这次改动弄红的**:那一轮
-  一个字都没碰 guardian,而 release 之前的全量 verify 在本机是绿的。
+  **2026-09-14 的 release run 连着红两次,两次是不同的测试、不同的病因,而且
+  `scripts/verify.sh` 在本机(macOS)全绿 —— 那一整类平台差异它结构上覆盖不到,
+  因为它跑的是这台 Mac,而 CI 的 build job 跑 Linux。两条都记下来:**
+  ① `TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord` —— **确定性的,已修**。
+  它 `release` 那个假进程,于是 manager 把它当**意外退出**走 `handleUnexpectedExit`:
+  写状态、可能再起一个 Core,而那些全落在 `t.TempDir()` 里,与 TempDir 自己的
+  `RemoveAll` 抢同一个目录(`unlinkat …: directory not empty` —— 删完内容正要
+  rmdir 时又被写进来)。修法是**不 release**:这个测试到 Up 成功就该结束,再模拟
+  一次退出不属于它。**只同步 runner 那条 goroutine 不够(试过),manager 的 monitor
+  是另一根。** 形状与 socks5 那次同源(活过测试函数的 goroutine),只是那次碰的是
+  `t.Errorf`,这次碰的是文件。**在 Colima 的 linux 容器里复现与验证**(本机复现不出来)。
+  ② `TestManagerUpdateReservesDeadlineForTargetCleanup` —— **仍是潜在 flake,未修**。
+  整个 `Update` 只给 500ms,而 v2 的健康检查无限阻塞、先吃掉大半,剩给「回滚后等
+  v1 健康」的余量在 CI 慢机器上不够(`previous_core_health_failed`);本机与本地
+  linux 容器各跑 20~30 次都全过。**正确修法不是把 500ms 调大** —— 要先弄清 `Update`
+  内部怎么在健康检查与清理之间分预算(那正是这条测试要证明的东西),否则调大只是
+  把同一个竞态推远一点。
  —— 而重跑正是「判据是
   退出码」这条纪律唯一的解毒方式。2026-08-17 抓到并修掉一个:`internal/socks5` 的
   `TestDialerUDPAssociateRelaysDatagrams` 在 1500 次里失败 4 次,根因是 UDP ASSOCIATE
