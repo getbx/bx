@@ -31,7 +31,22 @@ func TestDocumentedFilePathsExist(t *testing.T) {
 	// (`internal/dialer` 这种没有扩展名的写法太容易和散文混在一起)。
 	re := regexp.MustCompile(`\b((?:internal|cmd|scripts|apps|docs|packaging|winres)/[A-Za-z0-9_./-]+\.(?:go|sh|swift|html|yml|yaml|md|json|iss))\b`)
 
+	// **2026-09-13:docs/lessons/ 一并进来。** 那天从 CLAUDE.md 搬出八节施工日志,
+	// 而搬迁本身会制造盲区 —— 那些原文点名的每一个文件路径,从此不再被检查。
+	// 与 specs/plans 的区别是**时态**:计划书点名的是「将要建的东西」,失效是预期
+	// 的;lessons 记的是已经发生的事实,和 CLAUDE.md 一样会被当作现状读。
 	docs := []string{"CLAUDE.md", "README.md"}
+	lessons, lerr := filepath.Glob(filepath.Join(root, "docs", "lessons", "*.md"))
+	if lerr != nil {
+		t.Fatalf("列 docs/lessons: %v", lerr)
+	}
+	for _, p := range lessons {
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			t.Fatalf("相对路径 %s: %v", p, relErr)
+		}
+		docs = append(docs, rel)
+	}
 	total := 0
 	for _, doc := range docs {
 		b, err := os.ReadFile(filepath.Join(root, doc))

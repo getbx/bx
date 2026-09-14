@@ -217,6 +217,7 @@ func scanTestNames(t *testing.T, root string) (map[string]bool, map[string][]pro
 	defined := map[string]bool{}
 	refs := map[string][]proseSite{}
 	var skipped []string
+	lessonFiles := 0
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// 走不进去的**非 Go 路径**跳过,但要留痕 —— 仓库里有 root 属主的
@@ -247,7 +248,23 @@ func scanTestNames(t *testing.T, root string) (map[string]bool, map[string][]pro
 		// 那件事。范围刻意只加这一份,不含 docs/superpowers/{specs,plans} ——
 		// 与 TestDocumentedFilePathsExist 同一条:计划书是**有日期的意图记录**,
 		// 它点名的是「将要建的东西」,失效是预期的,拉进来只会制造假红。
+		//
+		// **2026-09-13:范围扩到 `docs/lessons/`。** 那天把 CLAUDE.md 里一个 79KB
+		// 的单行列表项(占全文 22%)拆开,把八节施工日志搬进 docs/lessons/ ——
+		// **而搬迁本身就制造了一个盲区**:那 27k 字符里点名的每一条测试,从此不再
+		// 被任何东西检查。变异实测过:往 lessons 里写一句「由 <某个不存在的测试名>
+		// 钉住」,扩范围前整条守卫全绿、扩范围后当场转红。(这里不敢写出那个名字 ——
+		// 这条守卫连注释里的都认,实测被自己咬过一次,而那正是它在正常工作。)
+		//
+		// lessons 与 specs/plans 的区别是**时态**,不是位置:计划书写的是「将要建
+		// 的东西」,失效是预期的;lessons 写的是**已经发生的事实**,和 CLAUDE.md
+		// 一样承重,只是按「判据 / 过程」分了家。一份搬出去就没人看管的过程记录,
+		// 比留在 CLAUDE.md 里更糟 —— 它同样会被读到,却不再会被证伪。
 		isDoc := filepath.Base(path) == "CLAUDE.md" && filepath.Dir(path) == root
+		if !isDoc && strings.HasSuffix(path, ".md") && filepath.Dir(path) == filepath.Join(root, "docs", "lessons") {
+			isDoc = true
+			lessonFiles++
+		}
 		if !isGo && !isDoc {
 			return nil
 		}
@@ -274,6 +291,14 @@ func scanTestNames(t *testing.T, root string) (map[string]bool, map[string][]pro
 		// 静默跳过的守卫与静默通过的守卫是同一个问题,所以跳过要留痕。
 		t.Logf("走不进去、已跳过的非 Go 路径(%d 条):%s", len(skipped), strings.Join(skipped, ", "))
 	}
+	// **docs/lessons/ 存在却一个 .md 都没扫到 ⇒ 响亮失败**,与 scanSwiftProse
+	// 那两道同一条纪律:一条安静地扫了零个文件的守卫,与没有这条守卫在输出上完全
+	// 一样,而它看起来更让人放心。目录**不存在**是另一回事(没搬过东西),放行。
+	if fi, statErr := os.Stat(filepath.Join(root, "docs", "lessons")); statErr == nil && fi.IsDir() && lessonFiles == 0 {
+		t.Fatal("docs/lessons/ 在,却一个 .md 都没被收进散文引用表 —— " +
+			"**这条守卫自己坏了,先修它**:搬出 CLAUDE.md 的过程记录从此无人看管")
+	}
+	t.Logf("docs/lessons 散文:扫了 %d 个 .md", lessonFiles)
 	scanSwiftProse(t, root, refs)
 	return defined, refs
 }
