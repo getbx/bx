@@ -69,7 +69,7 @@ func TestReportResponseCarriesFinishedConclusions(t *testing.T) {
 		// 不是可判断的原料。两个数刻意分开:合成一个总数时它永远不为零,
 		// 于是会被训练成噪声,连带把真正的泄漏一起淹掉。
 		"identity_count": true,
-		// reach 是第四段(可达性)的四态计数,与上面两个数同类 —— 同样是
+		// reach 是第四段(可达性)的五态计数,与上面两个数同类 —— 同样是
 		// **成品结论**,不是原料。它刻意与 anomaly_count/identity_count 并排
 		// 而不合并:可达性的坏消息是「你用不了」,path/identity 的坏消息是
 		// 「你泄漏了」,后者才是安全问题;合成一个数就是让一次连不上稀释掉
@@ -344,14 +344,74 @@ func TestPageGivesEverySectionItsOwnHeading(t *testing.T) {
 // 浏览器探测的行统一写「Judged from this machine alone.」,在这一段里那是一句
 // 与它自己的分段标题刚刚披露的事实相矛盾的话。
 func TestPageDoesNotSayTheReachRowsNeededNoNetwork(t *testing.T) {
-	body := pageFunctionBody(t, "function skeleton(")
-	if !strings.Contains(body, `"reach"`) {
+	raw := pageFunctionBody(t, "function skeleton(")
+	blanked := blankPageNoise(raw)
+
+	// ① 措辞本身:第四段那几行必须有自己的说法,而且它认的是分段不是行号。
+	if !strings.Contains(raw, `"reach"`) || !strings.Contains(raw, "Probed by bx from this machine") {
 		t.Fatalf("skeleton() 没有为第四段单独措辞 —— 它会说这几行「只看本机」,"+
-			"而 bx 为它们联系了 Anthropic/OpenAI/Google:\n%s", body)
+			"而 bx 为它们联系了 Anthropic/OpenAI/Google:\n%s", raw)
 	}
-	if !strings.Contains(body, "Probed by bx from this machine") {
-		t.Fatalf("第四段那几行没有说出「这是 bx 从本机探出来的」:\n%s", body)
+
+	// ② **算出来了还得摆进去。** 判据钉的此前是「这个串出现在函数体里」——
+	// 把末尾改成无条件用 "Judged from this machine alone."(local 算了不用),
+	// 那条守卫照样全绿,而页面会对四行「bx 刚联系过三家 AI 厂商」的结论说
+	// 「只看本机就答出来了」。这半页 JS 没有第二层覆盖(Inputs 为 nil ⇒ 它是
+	// 活路径),所以判据必须从那个绑定出发,一路跟到它真的进了 DOM。
+	//
+	// 形状照 internal/cli 那边 swiftValueReachesViewTree:从种子标识符出发,
+	// 要求它出现在 text(...) / appendChild(...) 的**实参**里。
+	seed := jsBindingName(t, "Probed by bx from this machine", raw)
+	if !jsIdentifierReachesCall(blanked, seed, []string{"text", "appendChild"}) {
+		t.Fatalf("第四段那句话被算了出来却没有进 DOM(%q 没有出现在任何 text(...)/"+
+			"appendChild(...) 的实参里)—— 页面仍然会说这几行只看本机:\n%s", seed, raw)
 	}
+}
+
+// jsBindingName 找到把含 needle 的那个字面量绑上去的那个 `var X =`,返回 X。
+func jsBindingName(t *testing.T, needle, raw string) string {
+	t.Helper()
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.Contains(line, needle) {
+			m := regexp.MustCompile(`var\s+(\w+)\s*=`).FindStringSubmatch(line)
+			if m == nil {
+				t.Fatalf("含 %q 的那一行不是一个 `var X =` 绑定,本守卫读不懂现在的代码,"+
+					"请连同它一起重写:%q", needle, line)
+			}
+			return m[1]
+		}
+	}
+	t.Fatalf("在 skeleton() 里找不到 %q —— 本守卫读不懂现在的代码,请连同它一起重写", needle)
+	return ""
+}
+
+// jsIdentifierReachesCall 问:标识符 ident 是不是出现在某个 names 里的调用的实参中。
+// 输入必须是**注释与字符串都抹白过**的那一份 —— 否则一句注释里提到这个名字就
+// 能让守卫平凡成立(本仓库为这个形状吃过假绿)。
+func jsIdentifierReachesCall(blanked, ident string, names []string) bool {
+	word := regexp.MustCompile(`\b` + regexp.QuoteMeta(ident) + `\b`)
+	for _, name := range names {
+		call := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`)
+		for _, loc := range call.FindAllStringIndex(blanked, -1) {
+			open := loc[1] - 1
+			depth := 0
+			for i := open; i < len(blanked); i++ {
+				switch blanked[i] {
+				case '(':
+					depth++
+				case ')':
+					depth--
+					if depth == 0 {
+						if word.MatchString(blanked[open+1 : i]) {
+							return true
+						}
+						i = len(blanked)
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // pageTitlesBlock 抠出 skeleton() 里那个 `var titles = { … }` 的对象字面量。
@@ -406,6 +466,12 @@ func pageFunctionBody(t *testing.T, header string) string {
 	return ""
 }
 
+// **已知缺口(记档,今天安全)**:它不认反引号模板串,也不认正则字面量 ——
+// `/}/` 里那个花括号会被数进去。今天 page.html 里两者都没有;真出现时后果是
+// **括号配不平 ⇒ 上面那几个 helper 一律 t.Fatal 响亮失败**,不是静默放行,
+// 所以留着这个缺口是安全的那一边。下一个往 page.html 里写模板串或正则的人,
+// 会先被这条守卫的 Fatal 拦下来,那正是回来把它补上的时刻。
+//
 // blankPageNoise 把 page.html 里 <script> 那一段的注释与字符串字面量抹白,
 // 而**保住每个字节偏移** —— 数括号时不许把注释或字面量里的 `{`/`}` 数进去
 // (本仓库为这个根因同时吃过假绿与假红:`stripSwiftComments` 保留字符串内容,

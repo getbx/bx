@@ -125,8 +125,11 @@ func judgeReachTarget(tgt ReachTarget, probes []ReachProbe) Finding {
 	}
 
 	if !hasCurrent {
-		// **与「探过了、认不出」是两件不同的事**:这里连探测记录都没有(今天的
-		// 常态,直到接线任务把 leakserve.ProbeReach 的结果填进 LocalFacts 为止)。
+		// **与「探过了、认不出」是两件不同的事**:这里连探测记录都没有。
+		// **这条路 2026-09-14 之后不再是常态**(接线已经做完:internal/cli 的
+		// collectLeakCheckFacts → leakserve.CollectReach 会把结果填进 LocalFacts)——
+		// 今天它只剩三种来源:`bx leakcheck --no-reach`、两个拨号器都没供货的 deps、
+		// 以及不经 CLI 直接调 Judge 的调用方。
 		// 零值 ReachUndetermined 之下 Verdict 仍是 NotChecked,但措辞必须诚实地
 		// 说「没检查」,不能借用「像是人机挑战」那句 —— 那句话断言了一次并没有
 		// 发生的观测。

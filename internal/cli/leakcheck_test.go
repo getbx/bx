@@ -9,6 +9,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -117,7 +118,14 @@ func guardCallArgs(stmt ast.Stmt) string {
 func exprText(expr ast.Expr) string {
 	switch e := expr.(type) {
 	case *ast.CallExpr:
-		return exprText(e.Fun) + "()"
+		// **实参要渲染出来。** 此前这里折成 `f()`,于是 `c.Bool("no-reach")` 与
+		// `c.Bool("json")` 在守卫眼里一模一样 —— 一条钉「读的是哪个 flag」的断言
+		// 就此平凡成立。
+		args := make([]string, 0, len(e.Args))
+		for _, a := range e.Args {
+			args = append(args, exprText(a))
+		}
+		return exprText(e.Fun) + "(" + strings.Join(args, ",") + ")"
 	case *ast.SelectorExpr:
 		return exprText(e.X) + "." + e.Sel.Name
 	case *ast.Ident:
@@ -411,11 +419,30 @@ func TestLeakCheckActionCollectsFactsThroughTheReachWiring(t *testing.T) {
 		t.Fatal("leakcheckAction 没有调用 collectLeakCheckFacts —— 可达性探测没有接上," +
 			"第四段在真机上是死的")
 	}
-	for _, want := range []string{"leakserve.LiveFactDeps()", "leakserve.LiveReachDeps()"} {
-		if !strings.Contains(args, want) {
-			t.Errorf("collectLeakCheckFacts 的实参里没有 %s(得到 %q)—— 喂一个零值 deps "+
-				"进去,真机上一个探测都不会发,而所有测试照样绿", want, args)
-		}
+	if !strings.Contains(args, "leakserve.LiveFactDeps()") {
+		t.Errorf("collectLeakCheckFacts 的实参里没有 leakserve.LiveFactDeps()(得到 %q)", args)
+	}
+	// 第三个实参不是字面量,而是一个从 reachDepsFor(...) 绑出来的名字 ——
+	// 喂一个 leakserve.ReachDeps{} 字面量进去,真机上一个探测都不会发,而行为
+	// 那半的测试(它直接调 collectLeakCheckFacts)照样全绿。
+	depsName := assignedNameOfCall(body, "reachDepsFor")
+	if depsName == "" {
+		t.Fatal("leakcheckAction 没有经 reachDepsFor 取拨号器 —— --no-reach 那道开关没有接上")
+	}
+	if !strings.Contains(args, depsName) {
+		t.Fatalf("collectLeakCheckFacts 拿到的不是 reachDepsFor 的结果(%q 不在 %q 里)",
+			depsName, args)
+	}
+	// 而 reachDepsFor 吃的必须是**真实的 flag**,不是一个常量:写死 false 的话
+	// --no-reach 就只是个摆设,而每一条测试照样绿。
+	if flagArgs := callArgsInBody(body, "reachDepsFor"); !strings.Contains(flagArgs, `c.Bool("no-reach")`) {
+		t.Errorf("reachDepsFor 的实参不是 c.Bool(\"no-reach\")(得到 %q)—— 喂一个常量进去,"+
+			"那道开关就只是个摆设", flagArgs)
+	}
+	// 披露与探测必须由**同一个值**驱动:分成两个判据,两者漂开的方向分别是
+	// 「探了没说」与「说了没探」,都是假话。
+	if announceArgs := callArgsInBody(body, "announceReachTargets"); !strings.Contains(announceArgs, depsName) {
+		t.Fatalf("披露读的不是探测那份 deps(%q 不在 %q 里)", depsName, announceArgs)
 	}
 	// 结果必须真的成为喂给 Judge 的那份事实,不是算完就丢。
 	lhs := assignedNameOfCall(body, "collectLeakCheckFacts")
@@ -454,14 +481,14 @@ func TestLeakCheckAnnouncesTheReachTargetsBeforeContactingThem(t *testing.T) {
 		t.Fatal("披露排在探测之后 —— 事后补一句不是「联网之前先说」")
 	}
 	// 清单必须现取,不许手抄第二份:少报一个第三方不是排版问题。
-	out := captureStdout(t, func() { announceReachTargets(false) })
+	out := captureStdout(t, func() { announceReachTargets(leakserve.LiveReachDeps(), false) })
 	for _, tgt := range leakcheck.ReachTargets() {
 		if !strings.Contains(out, tgt.URL) {
 			t.Errorf("披露里没有 %q:\n%s", tgt.URL, out)
 		}
 	}
 	// --json 那一份 stdout 必须干净:它是机器读的。
-	if got := captureStdout(t, func() { announceReachTargets(true) }); got != "" {
+	if got := captureStdout(t, func() { announceReachTargets(leakserve.LiveReachDeps(), true) }); got != "" {
 		t.Errorf("--json 模式往 stdout 写了东西,会把那份 JSON 弄脏:%q", got)
 	}
 }
@@ -526,4 +553,145 @@ func assignedNameOfCall(body *ast.BlockStmt, name string) string {
 		return got == ""
 	})
 	return got
+}
+
+// **用户可见的那几行里不许出现 markdown 的 `**`。**
+//
+// 与 corestartadvice_test.go 的 TestNoRenderedAdviceCarriesMarkdown 同一条,
+// 而那一条只罩 coreStartFailureAdvice —— 它的头注释说的正是这次的机制:
+// 「这个文件的注释里 `**` 满天飞,下一个人从注释里顺手抄一句进字符串是最自然的
+// 动作,而没有任何东西拦着」。announceReachTargets 就是那个下一个人,判据因此
+// 跟着扩到 leakcheck 这两个出口。终端不渲染 markdown,用户读到的是字面星号。
+func TestNoLeakCheckOutputCarriesMarkdown(t *testing.T) {
+	out := captureStdout(t, func() { announceReachTargets(leakserve.LiveReachDeps(), false) })
+	if strings.Contains(out, "**") {
+		t.Errorf("披露那几行渲染出了 markdown 的 `**`,终端不认它:\n%s", out)
+	}
+	facts := leakcheck.LocalFacts{}
+	for _, tgt := range leakcheck.ReachTargets() {
+		facts.ReachProbes = append(facts.ReachProbes, leakcheck.ReachProbe{
+			TargetID: tgt.ID, Path: leakcheck.ReachPathCurrent, State: leakcheck.ReachReachable,
+		})
+	}
+	// 两种输入各跑一遍:全 not checked 的那份与四条 reach 都有答案的那份,
+	// 走的是不同的措辞分支。
+	for _, f := range []leakcheck.LocalFacts{{}, facts} {
+		rep := leakcheck.Judge(time.Unix(0, 0).UTC(), leakcheck.BrowserReport{}, f)
+		for _, line := range renderLeakCheckReport(rep) {
+			if strings.Contains(line, "**") {
+				t.Errorf("报告渲染出了 markdown 的 `**`:%q", line)
+			}
+		}
+	}
+}
+
+// **预算分离此前有三处注释、零条断言。**
+//
+// 现有的探测测试用的是**立刻返回错误**的拨号器 —— 5 秒上限在它眼里看不出任何
+// 区别,又一次「测试输入让待守属性不可见」。一次看起来无辜的整理(把 CollectReach
+// 折进 CollectFactsWithBudget 那份 5 秒预算里)会全绿通过,而真机上后面几个目标
+// 静默变成 undetermined,与「这条路真的不通」在屏幕上一模一样。
+//
+// 两条断言:① 这一轮的预算必须真的比本机采集那份宽;② 喂一个**第一个目标就阻塞
+// 得比那份预算还久**的拨号器,后面的目标仍然必须被拨到。
+func TestReachProbesDoNotShareTheLocalFactsBudget(t *testing.T) {
+	if leakserve.ReachBudget() <= leakserve.DefaultFactsBudget {
+		t.Fatalf("可达性探测的预算 %v 不比本机采集那份 %v 宽 —— 它被塞回同一份预算里了",
+			leakserve.ReachBudget(), leakserve.DefaultFactsBudget)
+	}
+
+	targets := leakcheck.ReachTargets()
+	blockFor := leakserve.DefaultFactsBudget + time.Second
+	var mu sync.Mutex
+	dialed := 0
+	reach := leakserve.ReachDeps{
+		CurrentDial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			mu.Lock()
+			n := dialed
+			dialed++
+			mu.Unlock()
+			if n == 0 {
+				// 第一个目标把本机采集那份预算整个吃掉还有余。
+				select {
+				case <-time.After(blockFor):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return nil, errors.New("这条测试不联网")
+		},
+	}
+	facts := collectLeakCheckFacts(context.Background(), leakserve.FactDeps{}, reach)
+	mu.Lock()
+	got := dialed
+	mu.Unlock()
+	if got != len(targets) {
+		t.Fatalf("只拨到 %d 个目标(共 %d)—— 第一个目标花了 %v 就把后面的掐掉了,"+
+			"那正是把探测塞进本机采集那份 %v 预算的后果",
+			got, len(targets), blockFor, leakserve.DefaultFactsBudget)
+	}
+	if len(facts.ReachProbes) != len(targets) {
+		t.Fatalf("ReachProbes 只有 %d 条,要 %d 条", len(facts.ReachProbes), len(targets))
+	}
+}
+
+// **`--no-reach` 必须真的关掉探测,而那四条结论不许就此消失。**
+//
+// 关掉时它们如实报「这一轮没有检查」—— 让它们消失会让用户以为 bx 压根没有这一段,
+// 而「没查」与「查了、没问题」正是这个工具存在的理由要分开的两件事。
+func TestNoReachTurnsOffTheProbesWithoutHidingTheConclusions(t *testing.T) {
+	app := New()
+	cmd := findAppCommand(app, "leakcheck")
+	hasFlag := false
+	for _, f := range cmd.Flags {
+		for _, n := range f.Names() {
+			if n == "no-reach" {
+				hasFlag = true
+			}
+		}
+	}
+	if !hasFlag {
+		t.Fatal("bx leakcheck 没有 --no-reach —— 路径 A 同样是 bx 从用户真实出口" +
+			"向四家 AI 厂商发的请求,两条路径一个有开关一个没有,不对称")
+	}
+
+	off := reachDepsFor(true)
+	if off.WillProbe() {
+		t.Fatal("--no-reach 之下仍然会发探测")
+	}
+	if on := reachDepsFor(false); !on.WillProbe() {
+		t.Fatal("不加 --no-reach 时反而不探测了 —— 上面那条断言于是靠「一律不探」平凡成立")
+	}
+	// 关掉时**一个字都不披露**:披露的意义是「我接下来要联系他们」。
+	if out := captureStdout(t, func() { announceReachTargets(off, false) }); out != "" {
+		t.Errorf("--no-reach 之下仍然披露了要联系谁:%q", out)
+	}
+
+	facts := collectLeakCheckFacts(context.Background(), leakserve.FactDeps{}, off)
+	if len(facts.ReachProbes) != 0 {
+		t.Fatalf("--no-reach 之下仍然产出了 %d 条探测记录", len(facts.ReachProbes))
+	}
+	rep := leakcheck.Judge(time.Unix(0, 0).UTC(), leakcheck.BrowserReport{}, facts)
+	reachFindings := 0
+	for _, f := range rep.Findings {
+		if f.Section != leakcheck.SectionReach {
+			continue
+		}
+		reachFindings++
+		if f.Verdict != leakcheck.NotChecked {
+			t.Errorf("%s 在没探测的情况下给出了 %q 的结论", f.ID, f.Verdict)
+		}
+	}
+	if reachFindings != len(leakcheck.ReachTargets()) {
+		t.Fatalf("--no-reach 之下第四段只剩 %d 条结论(要 %d 条)—— 它们不许消失,"+
+			"消失会让用户以为 bx 压根没有这一段", reachFindings, len(leakcheck.ReachTargets()))
+	}
+	// 而且屏幕上必须说得出「没查」。
+	out := strings.Join(renderLeakCheckReport(rep), "\n")
+	if !strings.Contains(out, "not checked in this run") {
+		t.Errorf("--no-reach 之下第四段没说出「这一轮没有检查」:\n%s", out)
+	}
+	if !strings.Contains(out, "4 undetermined") {
+		t.Errorf("--no-reach 之下摘要没把四条都算进「没问出来」:\n%s", out)
+	}
 }

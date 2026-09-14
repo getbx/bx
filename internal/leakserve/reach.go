@@ -111,6 +111,13 @@ type ReachDeps struct {
 // 那个拨号器今天不存在。翻转常量时**必须同时供货 BypassDial** —— 只翻常量而
 // 让 BypassDial 留空,这一轮会安静地什么都不多跑,而守卫全绿。
 //
+// **spec §5.1 对那一天还有第二条要求,别只记住第一条**:「无论默认哪边,两件事
+// 必须做:① 界面上明说**这一步从物理网卡直接发,不经任何隧道**;② 给关掉的开关。」
+// ② 今天已经就位 —— `bx leakcheck --no-reach` 关掉整轮探测(两条路径一起),
+// 而 CollectReach 对没有拨号器的 deps 返回 nil,不是一组假记录。① **还没有**:
+// announceReachTargets 今天说的是「走你当前的网络路径,不绕过隧道」,那句话在
+// BypassDial 供货的那一天就变成了假话,必须同批改。
+//
 // **spec §5 承诺的那三句比较结论**(「直连不行、走当前隧道行」/「两边都不行,
 // 换台服务器」/「两边都行」)属于同一天:今天只有 current 一条路径,没有可比的
 // 对照,所以 judgeReachTarget 与渲染层对「两条路一比」一个字都不说 —— 不是漏了,
@@ -132,17 +139,7 @@ func LiveReachDeps() ReachDeps {
 // 跑到一半被掐断,剩下的目标全部变成「没问出来」** —— 而那个答案与「这条路真的
 // 不通」在屏幕上长得一模一样。两件事量级差两个数量级,就该是两跳两份预算。
 func CollectReach(ctx context.Context, deps ReachDeps) []leakcheck.ReachProbe {
-	type reachPath struct {
-		dial DialFunc
-		name string
-	}
-	paths := make([]reachPath, 0, 2)
-	if deps.CurrentDial != nil {
-		paths = append(paths, reachPath{deps.CurrentDial, leakcheck.ReachPathCurrent})
-	}
-	if deps.BypassDial != nil {
-		paths = append(paths, reachPath{deps.BypassDial, leakcheck.ReachPathBypass})
-	}
+	paths := reachPathsOf(deps)
 	if len(paths) == 0 {
 		// **nil 而不是一组 undetermined 记录。** 「这一轮没跑探测」与「探过了、
 		// 没问出来」是两句不同的话,judgeReachTarget 对前者说的是「这一轮没有
@@ -150,7 +147,7 @@ func CollectReach(ctx context.Context, deps ReachDeps) []leakcheck.ReachProbe {
 		return nil
 	}
 	targets := leakcheck.ReachTargets()
-	ctx, cancel := context.WithTimeout(ctx, reachBudget(len(targets)*len(paths)))
+	ctx, cancel := context.WithTimeout(ctx, reachBudgetFor(deps))
 	defer cancel()
 
 	out := make([]leakcheck.ReachProbe, 0, len(targets)*len(paths))
@@ -158,4 +155,43 @@ func CollectReach(ctx context.Context, deps ReachDeps) []leakcheck.ReachProbe {
 		out = append(out, ProbeReach(ctx, p.dial, p.name)...)
 	}
 	return out
+}
+
+type reachPath struct {
+	dial DialFunc
+	name string
+}
+
+// reachPathsOf 说出这份 deps 这一轮真的会跑哪几条路。**预算与执行共用它** ——
+// 两边各数一遍的话,加一条路径时可能只改了执行那半,而多出来的那些探测会被一份
+// 没跟着长的预算静默掐掉。
+func reachPathsOf(deps ReachDeps) []reachPath {
+	paths := make([]reachPath, 0, 2)
+	if deps.CurrentDial != nil {
+		paths = append(paths, reachPath{deps.CurrentDial, leakcheck.ReachPathCurrent})
+	}
+	if deps.BypassDial != nil {
+		paths = append(paths, reachPath{deps.BypassDial, leakcheck.ReachPathBypass})
+	}
+	return paths
+}
+
+// WillProbe 说出这份 deps 这一轮到底会不会发请求。
+//
+// 披露那一句(CLI 的 announceReachTargets)必须与探测**读同一个判据** ——
+// 各判各的话,两个漂开的方向分别是「探了没说」与「说了没探」,都是假话。
+func (d ReachDeps) WillProbe() bool { return len(reachPathsOf(d)) > 0 }
+
+func reachBudgetFor(deps ReachDeps) time.Duration {
+	return reachBudget(len(leakcheck.ReachTargets()) * len(reachPathsOf(deps)))
+}
+
+// ReachBudget 是**默认这一轮**探测的上限,给「这一步最多要等多久」那句话用。
+//
+// 它算的就是 CollectReach(ctx, LiveReachDeps()) 会用的那份预算,**不是另写一个
+// 数**:announceReachTargets 手抄一个秒数的话,加第五个目标(或打开 bypass)那天
+// 屏幕上那句「最多约 N 秒」会悄悄变成假的,而它唯一的用途就是让用户知道该等多久、
+// 别以为命令挂了。
+func ReachBudget() time.Duration {
+	return reachBudgetFor(LiveReachDeps())
 }

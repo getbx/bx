@@ -116,7 +116,7 @@ func TestReachSectionNeverCountsAsALeak(t *testing.T) {
 	}
 }
 
-// 四态各自计数,绝不合成 —— 「一条都没查出来」与「查了、全可达」在屏幕上
+// 五态各自计数,绝不合成 —— 「一条都没查出来」与「查了、全可达」在屏幕上
 // 必须长得不一样(spec §6.2)。
 func TestReachSummaryCountsAllFourStatesSeparately(t *testing.T) {
 	findings := []Finding{
