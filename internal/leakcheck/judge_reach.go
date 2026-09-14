@@ -1,6 +1,10 @@
 package leakcheck
 
-import "bytes"
+import (
+	"bytes"
+	"strconv"
+	"strings"
+)
 
 // cfChallengeMarkers 是 Cloudflare 人机挑战页的特征。
 //
@@ -77,4 +81,124 @@ func looksLikeServiceJSON(head []byte) bool {
 		return false
 	}
 	return bytes.Contains(t, []byte(`"error"`)) || bytes.Contains(t, []byte(`"type"`))
+}
+
+// FindingReachPrefix 是可达性结论 ID 的前缀。**每个端点一条结论**,ID 由前缀拼
+// 端点 ID 得来 —— 拼接而不是手抄一份清单,加端点时 Outline() 的骨架自动跟上。
+const FindingReachPrefix = "reach_"
+
+// reachPathCurrent / reachPathBypass 是 ReachProbe.Path 的两个合法值(见
+// reach.go 里 `Path string`的文档注释:`"current" | "bypass"`)。常量只住在
+// 这里被读,不被导出 —— leakserve 那一侧写的是字面量,本包不替它背书第二份。
+const (
+	reachPathCurrent = "current"
+	reachPathBypass  = "bypass"
+)
+
+// judgeReach 把这一轮的 AI 站可达性探测变成一组 Finding,**每个端点一条**,
+// 与 ReachTargets() 的顺序一致(Outline() 的骨架按同一个顺序追加)。
+//
+// 一个端点即使两条路径(current + bypass)都探过,也只产出一条结论 —— 这一段
+// 回答的是「这条路通不通」,不是「每条子路径各自怎样」;两条路径的探测结果都
+// 进 Evidence,供人核对,但极性只由 current 那条决定(bypass 是诊断用的对照,
+// 不是这一段的主线 —— §5 的比较逻辑留给渲染层)。
+func judgeReach(local LocalFacts) []Finding {
+	targets := ReachTargets()
+	out := make([]Finding, 0, len(targets))
+	for _, tgt := range targets {
+		out = append(out, judgeReachTarget(tgt, local.ReachProbes))
+	}
+	return out
+}
+
+func judgeReachTarget(tgt ReachTarget, probes []ReachProbe) Finding {
+	f := Finding{ID: FindingReachPrefix + tgt.ID, Title: tgt.Title, Section: SectionReach}
+	host := reachHost(tgt.URL)
+
+	if tgt.OnChinaDirectList != nil {
+		f.Evidence = append(f.Evidence, tgt.ID+" on built-in china direct list: "+
+			strconv.FormatBool(*tgt.OnChinaDirectList))
+	}
+
+	current, hasCurrent := findReachProbe(probes, tgt.ID, reachPathCurrent)
+	if bypass, hasBypass := findReachProbe(probes, tgt.ID, reachPathBypass); hasBypass {
+		// **并排出示,不参与判定。** current 缺席时仍然把它列出来 —— 它是一条真实
+		// 观测,即便这一轮没能给出主线结论。
+		f.Evidence = append(f.Evidence, "bypass path: "+describeReachProbe(bypass))
+	}
+
+	if !hasCurrent {
+		// **与「探过了、认不出」是两件不同的事**:这里连探测记录都没有(今天的
+		// 常态,直到接线任务把 leakserve.ProbeReach 的结果填进 LocalFacts 为止)。
+		// 零值 ReachUndetermined 之下 Verdict 仍是 NotChecked,但措辞必须诚实地
+		// 说「没检查」,不能借用「像是人机挑战」那句 —— 那句话断言了一次并没有
+		// 发生的观测。
+		f.Reach = ReachUndetermined
+		f.Verdict = NotChecked
+		f.Summary = "Reachability to " + host + " was not checked in this run."
+		return f
+	}
+
+	f.Reach = current.State
+	f.Evidence = append(f.Evidence, "current path: "+describeReachProbe(current))
+
+	switch current.State {
+	case ReachReachable:
+		f.Verdict = OK
+		// **绝不说「你可以用 X」**(spec §3.4):地区限制可能发生在登录或 API 调用层,
+		// 这里只观测到了边缘——bx 无权替对方的产品说话。
+		f.Summary = "bx can reach " + host + "."
+	case ReachRefused:
+		f.Verdict = Bad
+		f.Summary = host + " has refused connections from the region this exit is in."
+	case ReachUnreachable:
+		f.Verdict = Bad
+		// **不断言对方服务的状态**(与 core_tunnel_unreachable 同一条纪律):
+		// 本机自己没网时同样拨不通,这句话只说 bx 观测到了什么。
+		f.Summary = "This path could not reach " + host + "."
+	default: // ReachUndetermined
+		f.Verdict = NotChecked
+		// **主动否掉用户会自己脑补的坏消息**(spec §3.4):这不是「你的出口有问题」。
+		f.Summary = "This looks like Cloudflare's bot-verification challenge, not a " +
+			"problem with your exit — a browser can get through this even though the " +
+			"command line cannot."
+	}
+	return f
+}
+
+// findReachProbe 在这一轮的探测记录里找一个端点在一条路径上的结果。
+// **按 TargetID + Path 找,不假设顺序或数量** —— 上游 leakserve.ProbeReach
+// 串行跑完全部目标,但这里不依赖它的实现细节。找到多条时用第一条:重复记录
+// 不该发生,而发生时偏向较早的那一条不比偏向较晚的那一条更错。
+func findReachProbe(probes []ReachProbe, targetID, path string) (ReachProbe, bool) {
+	for _, p := range probes {
+		if p.TargetID == targetID && p.Path == path {
+			return p, true
+		}
+	}
+	return ReachProbe{}, false
+}
+
+// describeReachProbe 把一次探测渲染成一行证据。
+func describeReachProbe(p ReachProbe) string {
+	s := p.State.String()
+	if p.Detail != "" {
+		s += " (" + p.Detail + ")"
+	}
+	return s
+}
+
+// reachHost 从探测目标的 URL 里取出主机名,**只用字符串操作,不 import net/url**
+// (本包的纯度守卫挡住整棵 net 子树,只留 net/netip 一个例外——net/url 会拨号/
+// 解析名字不在其列)。够用:ReachTargets() 里的 URL 都是形如
+// `https://host/path` 的字面量,不需要处理端口、用户信息或 IDN。
+func reachHost(rawURL string) string {
+	s := rawURL
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }

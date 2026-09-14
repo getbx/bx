@@ -53,6 +53,9 @@ func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 		judgeFingerprint(browser),
 		judgeSurface(browser),
 	}
+	// 第四段紧跟在后面追加,与 Outline() 把它的骨架行摆在末尾同一个顺序 ——
+	// 两边对不上时 TestOutlineMatchesWhatJudgeActuallyEmits 会当场红。
+	findings = append(findings, judgeReach(local)...)
 	return NewReport(now, Endpoints(), findings, collectEvidence(browser, local))
 }
 

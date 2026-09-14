@@ -125,6 +125,9 @@ func TestEverySectionIsDeclaredOnPurpose(t *testing.T) {
 		FindingFingerprint:    SectionIdentity,
 		FindingSurface:        SectionSurface,
 	}
+	for _, tgt := range ReachTargets() {
+		want[FindingReachPrefix+tgt.ID] = SectionReach
+	}
 	report := Judge(fixedTime(), BrowserReport{}, LocalFacts{})
 	if len(report.Findings) != len(want) {
 		t.Fatalf("Judge 产出 %d 条结论,而这里登记了 %d 条 —— 新增结论必须来这里说明它属于哪一段",

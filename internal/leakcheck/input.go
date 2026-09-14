@@ -194,4 +194,12 @@ type LocalFacts struct {
 	// RoutesErr 非空表示没读出来,与「读出来了、是空的」必须分开。
 	Routes    []RouteEntry `json:"routes,omitempty"`
 	RoutesErr string       `json:"routes_err,omitempty"`
+
+	// ReachProbes 是本次 AI 站可达性探测的原始结果(第四段 SectionReach 的输入)。
+	//
+	// **本任务(接进 Outline/Judge)不负责填它** —— 真正跑探测(leakserve.ProbeReach)
+	// 预算与本机事实采集的 5 秒预算不是同一件事(秒级远程操作 vs 毫秒级本地读取),
+	// 接线归后续任务。空切片是诚实的默认值:judgeReach 对每个端点找不到探测记录时
+	// 如实报「这一轮没有检查」,不会把它读成 CF 挑战或任何具体的坏消息。
+	ReachProbes []ReachProbe `json:"reach_probes,omitempty"`
 }
