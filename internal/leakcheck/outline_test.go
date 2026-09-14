@@ -1,6 +1,7 @@
 package leakcheck
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,13 +141,41 @@ func TestJudgeAlwaysEmitsTheSameConclusionsWhateverTheInput(t *testing.T) {
 // CLAUDE.md 一度把它记成 8 条,实际是 10 条 —— 少记的两条是 traffic_carrier 与
 // language_vs_exit。一份说少了的清单会让下一个人以为某条结论不存在。
 //
+// **2026-09-14 从 10 改成 14**:第四段(SectionReach)加了 4 个 AI 站可达性目标,
+// 每个一条骨架行(§6.3)。CLAUDE.md 里「十条结论」那句同批改成「十四条」。
+//
 // **这条守卫钉的是数字本身,不是某几个 ID。** 加减一条结论时它会红一次,那正是
-// 提醒去把记档改对的时刻;只钉 ID 列表的话,加一条新结论不会红,而记档继续说 10。
+// 提醒去把记档改对的时刻;只钉 ID 列表的话,加一条新结论不会红,而记档继续说旧数字。
 func TestOutlineHasTheDocumentedNumberOfConclusions(t *testing.T) {
-	const documented = 10
+	const documented = 14
 	if got := len(Outline()); got != documented {
 		t.Fatalf("结论有 %d 条,而记档写的是 %d 条 —— 改了条数就去把 CLAUDE.md 与"+
 			" spec 里那个数字一起改掉;一份说少了的清单会让下一个人以为某条结论不存在",
 			got, documented)
+	}
+}
+
+// 骨架与 Judge 的 ID/顺序/分段逐项对上 —— 页面按骨架先摆行、再按 ID 塞结论,
+// 而页面对认不出的 ID 是静默丢弃,少一条就是一行永远等不到结论的空壳。
+func TestEveryReachTargetHasASkeletonRow(t *testing.T) {
+	outline := Outline()
+	byID := map[string]bool{}
+	for _, o := range outline {
+		byID[o.ID] = true
+	}
+	for _, tgt := range ReachTargets() {
+		id := FindingReachPrefix + tgt.ID
+		if !byID[id] {
+			t.Fatalf("端点 %s 没有骨架行(%s)—— 页面会永远停在「还在等」", tgt.ID, id)
+		}
+	}
+}
+
+// 第四段的骨架行必须标 SectionReach,否则它的结论会被算进流量泄漏数。
+func TestReachSkeletonRowsAreInTheReachSection(t *testing.T) {
+	for _, o := range Outline() {
+		if strings.HasPrefix(o.ID, FindingReachPrefix) && o.Section != SectionReach {
+			t.Fatalf("%s 的 Section = %v, want reach", o.ID, o.Section)
+		}
 	}
 }

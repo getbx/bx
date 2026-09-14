@@ -136,14 +136,19 @@ leakcheck 的真子集(它跟用户填的期望 IP 比,leakcheck 跟实测出口
 (普通 Chrome 就是不防指纹),于是被训练成噪声、把真正的泄漏一起淹掉。`Section` 零值是
 `SectionPath`:漏填是多报,反过来是漏报,代价不对称。
 
-**十条结论**(此前这里写的是「八条」,**漏了头尾两条**,2026-08-24 按 `Outline()` 实测更正):
+**十四条结论**(此前这里写的是「八条」,**漏了头尾两条**,2026-08-24 按 `Outline()` 实测
+更正;**2026-09-14 从十条改成十四条** —— 第四段 `reach`(AI 站可达性)接进
+`Outline()`/`Judge()`,四个端点各一条结论):
 `traffic_carrier` 谁在承载你的流量 · `webrtc_srflx` WebRTC vs 出口 · `ipv6_leak` IPv6 暴露 ·
 `dns_path` DNS 路径 · `route_escape` **路由被动过手脚(TunnelVision CVE-2024-3661 /
 TunnelCrack ServerIP)** ‖ `local_addresses` 内网地址是否被 mDNS 遮掉 · `timezone_vs_exit`
 时钟 vs 出口国 · `language_vs_exit` 语言 vs 出口国 · `fingerprint_defence` 指纹防护 ‖
-`browser_surface` 网站看得到什么。(`‖` 是分段边界:path 5 条、identity 4 条、surface 1 条。)
+`browser_surface` 网站看得到什么 ‖ `reach_*`(前缀拼端点 ID)四个 AI 站的边缘可达性 ——
+**不是安全问题**,坏消息是「你用不了」不是「你泄漏了」,与另外三段各自计数、绝不合成。
+(`‖` 是分段边界:path 5 条、identity 4 条、surface 1 条、**reach 4 条**。)
 骨架(`Outline()`)与 `Judge()` 的 ID/顺序/分段**逐项对上**,由守卫钉住;「哪条需要浏览器」由
-`Outline().Inputs` 是否为空推导,**不许手抄一份 ID 列表**。
+`Outline().Inputs` 是否为空推导,**不许手抄一份 ID 列表**(`reach_*` 的 Inputs 为 nil ——
+探测是普通 HTTP 拨号,不依赖页面 JS 采集)。
 **条数本身也由守卫钉住**(`TestOutlineHasTheDocumentedNumberOfConclusions`)——
 加减一条结论时它会红一次,那正是回来把这个数字改对的时刻;而一份说少了的清单会让下一个人
 以为某条结论不存在。**另有一条钉住「结论集合不随输入变化」**:页面按骨架先摆行、再按 ID

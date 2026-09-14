@@ -50,7 +50,7 @@ type CheckOutline struct {
 // 对不上,页面就会摆出一行永远等不到结论的空骨架,或者收到一条没有位置可放的
 // 结论 —— 两种都是「界面在说一件判据没说过的事」。
 func Outline() []CheckOutline {
-	return []CheckOutline{
+	rows := []CheckOutline{
 		// 只吃本机事实:路由表说了算,浏览器一个包都不用发。
 		{ID: FindingCarrier, Title: "Who carries your traffic", Section: SectionPath, Inputs: nil},
 		{ID: FindingWebRTC, Title: "WebRTC vs HTTP exit", Section: SectionPath, Inputs: []string{ProbeSRFLX, ProbeExitV4}},
@@ -68,4 +68,21 @@ func Outline() []CheckOutline {
 		{ID: FindingFingerprint, Title: "Fingerprint defences", Section: SectionIdentity, Inputs: []string{ProbeSurface}},
 		{ID: FindingSurface, Title: "What sites can read", Section: SectionSurface, Inputs: []string{ProbeSurface}},
 	}
+	// 第四段:每个 AI 站可达性目标一条骨架行,**在静态清单之后追加**,与 Judge()
+	// 把 judgeReach(local) 的结果拼在 findings 末尾同一个顺序。
+	//
+	// **ID 由 FindingReachPrefix 拼端点 ID 得来,不手抄第二份清单** —— 加端点时
+	// 这里自动跟上,不需要有人记得来这里再添一行。
+	//
+	// Inputs 为 nil:这一段**本机就能跑,不等浏览器**——探测是普通 HTTP 拨号,
+	// 不依赖页面 JS 采集的任何东西。
+	for _, tgt := range ReachTargets() {
+		rows = append(rows, CheckOutline{
+			ID:      FindingReachPrefix + tgt.ID,
+			Title:   tgt.Title,
+			Section: SectionReach,
+			Inputs:  nil,
+		})
+	}
+	return rows
 }
