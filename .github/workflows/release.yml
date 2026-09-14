@@ -138,9 +138,16 @@ jobs:
       # (本文件开头那句注释),下一次它再满的时候,没有这两行就只能靠猜。
       - name: Free disk space for the .dmg
         run: |
-          echo "--- before ---"; df -h /
+          # **第一版这里只打 `df -h /`,而那是错的位置** —— 它显示 37Gi 可用,
+          # 而 hdiutil 照样报 No space left on device。dmg 有两个落点:
+          # `$DMG` 在工作目录,`STAGE`(package-macos-dmg.sh 里的 `mktemp -d`)
+          # 在 $TMPDIR,两者未必与 `/` 同卷。**诊断要打在真正相关的位置上。**
+          echo "--- all volumes (before) ---"; df -h
+          echo "--- workdir ---"; df -h .
+          echo "--- TMPDIR=${TMPDIR:-/tmp} ---"; df -h "${TMPDIR:-/tmp}"
           sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
-          echo "--- after ---"; df -h /
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* || true
+          echo "--- all volumes (after) ---"; df -h
 
       - name: Package macOS release
         run: |
