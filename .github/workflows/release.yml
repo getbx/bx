@@ -145,9 +145,25 @@ jobs:
           echo "--- all volumes (before) ---"; df -h
           echo "--- workdir ---"; df -h .
           echo "--- TMPDIR=${TMPDIR:-/tmp} ---"; df -h "${TMPDIR:-/tmp}"
+          # **上一轮的诊断把「磁盘满」这个假设排除了**:workdir 与 TMPDIR 都在
+          # /dev/disk3s5,**38Gi 可用**,而 dmg 只要 45MB —— hdiutil 那句
+          # `No space left on device` 不是字面意思。APFS 上 `df` 的 Avail 含
+          # purgeable,实际能分配的可能远低于它;所以这里仍然腾空间,但**先把
+          # 占用明细打出来**,免得下一次又对着一个错的数字猜。
+          echo "--- what is using the volume ---"
+          sudo du -sh /Applications/* 2>/dev/null | sort -h | tail -8 || true
+          sudo du -sh /Library/Developer/* 2>/dev/null | sort -h | tail -5 || true
+          echo "--- selected Xcode ---"; xcode-select -p || true
+
           sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
           sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* || true
-          echo "--- all volumes (after) ---"; df -h
+          # 只删**没有被 xcode-select 选中**的那些 Xcode;swift build 要用选中的那个。
+          keep="$(xcode-select -p 2>/dev/null | sed -E 's#(/Applications/[^/]+\.app).*#\1#')"
+          for app in /Applications/Xcode*.app; do
+            [ "$app" = "$keep" ] && continue
+            echo "removing $app"; sudo rm -rf "$app" || true
+          done
+          echo "--- all volumes (after) ---"; df -h .
 
       - name: Package macOS release
         run: |
