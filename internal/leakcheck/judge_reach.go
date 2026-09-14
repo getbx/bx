@@ -27,12 +27,17 @@ var regionRefusalMarkers = [][]byte{
 	[]byte("country_not_supported"),
 }
 
-// JudgeReach 把一次探测的结果判成四态。**判据同时看状态码与 body。**
+// JudgeReach 把一次探测的结果判成五态。**判据同时看状态码与 body。**
 //
 // 只看状态码会判反:`generativelanguage.googleapis.com` 的 403 是 API 在正常
 // 应答,`chatgpt.com` 的 403 是人机挑战 —— 同一个码,相反的两件事(spec §2.3)。
 //
 // 判据按**先后顺序**取,前一条命中就不再往下看。
+//
+// **CF 挑战判 `ReachChallenged`,不是 `ReachUndetermined`**(2026-09-14 review
+// 加,见 ReachState 的注释)——两者虽然都是「没问出来」,但 Challenged 有真凭据
+// 支撑「不是你的出口有问题」这句话,而其余「认不出」的形状(步骤⑦)没有凭据,
+// 不许替它猜同一句话。
 func JudgeReach(status int, body []byte, dialErr error) ReachState {
 	// ① 连都没连上 —— 这时 status/body 没有意义。
 	if dialErr != nil {
@@ -49,10 +54,10 @@ func JudgeReach(status int, body []byte, dialErr error) ReachState {
 			return ReachRefused
 		}
 	}
-	// ③ CF 人机挑战。
+	// ③ CF 人机挑战 —— 有特征串这份真凭据,判 Challenged 而不是 Undetermined。
 	for _, m := range cfChallengeMarkers {
 		if bytes.Contains(head, m) {
-			return ReachUndetermined
+			return ReachChallenged
 		}
 	}
 	// ④ 服务自己的 JSON 在说话 —— 最强的可达证据,与状态码无关。
@@ -148,12 +153,22 @@ func judgeReachTarget(tgt ReachTarget, probes []ReachProbe) Finding {
 		// **不断言对方服务的状态**(与 core_tunnel_unreachable 同一条纪律):
 		// 本机自己没网时同样拨不通,这句话只说 bx 观测到了什么。
 		f.Summary = "This path could not reach " + host + "."
-	default: // ReachUndetermined
+	case ReachChallenged:
 		f.Verdict = NotChecked
 		// **主动否掉用户会自己脑补的坏消息**(spec §3.4):这不是「你的出口有问题」。
+		// 这句话**只对这一态成立** —— 判据手里有 CF 的特征串这份真凭据,才敢替
+		// 用户否掉那句坏消息;下面的 ReachUndetermined 没有这份凭据,不许借用它。
 		f.Summary = "This looks like Cloudflare's bot-verification challenge, not a " +
 			"problem with your exit — a browser can get through this even though the " +
 			"command line cannot."
+	default: // ReachUndetermined:探过了,但认不出是哪一种(未知状态码/重定向)。
+		f.Verdict = NotChecked
+		// **不猜原因**(2026-09-14 review 修正)——此前这一格与 ReachChallenged
+		// 共用同一句 CF 措辞,而一个真实的地区封禁页(HTML,不含 CF 那几个特征串)
+		// 会落在这里,读到的却是一句主动否掉坏消息的假话。判据自己都说「认不出
+		// 就是认不出,不猜」(JudgeReach 步骤⑦),这里的措辞必须同样诚实。
+		f.Summary = "bx could not determine whether " + host + " is reachable — " +
+			"this path returned something that wasn't recognized as either reachable or blocked."
 	}
 	return f
 }

@@ -113,6 +113,23 @@ func TestJudgeAlwaysEmitsTheSameConclusionsWhateverTheInput(t *testing.T) {
 				TraceErr: "the trace endpoint returned nothing usable",
 			},
 		},
+		// **2026-09-14 review 加(C1)**:此前全部 cases 的 LocalFacts.ReachProbes
+		// 都是空的,第四段永远只走 judgeReachTarget 的「没有探测记录」那条早退 ——
+		// 与本文件头上那句「够是因为实现恰好是无条件的,正是测试输入让待守属性
+		// 不可见的形状」同一个坑,Task 5 把它原样复刻了一遍。这一组喂真实探测
+		// 结果,覆盖 reach 那四条结论走判定分支(而不是早退分支)时结论集合
+		// 是否仍与骨架逐项对上。
+		{
+			name: "reach 探测拿到了混合结果",
+			local: LocalFacts{
+				ReachProbes: []ReachProbe{
+					{TargetID: "anthropic_api", Path: ReachPathCurrent, State: ReachReachable},
+					{TargetID: "claude_web", Path: ReachPathCurrent, State: ReachChallenged},
+					{TargetID: "openai_api", Path: ReachPathCurrent, State: ReachRefused},
+					{TargetID: "google_ai_api", Path: ReachPathCurrent, State: ReachUnreachable},
+				},
+			},
+		},
 	}
 
 	want := Outline()
@@ -176,6 +193,45 @@ func TestReachSkeletonRowsAreInTheReachSection(t *testing.T) {
 	for _, o := range Outline() {
 		if strings.HasPrefix(o.ID, FindingReachPrefix) && o.Section != SectionReach {
 			t.Fatalf("%s 的 Section = %v, want reach", o.ID, o.Section)
+		}
+	}
+}
+
+// **三条 ID 守卫(TestEveryReachTargetHasASkeletonRow / TestFindingIDsAndOrderAreStable /
+// TestEverySectionIsDeclaredOnPurpose)的 want 与 got 都用同一个表达式
+// `FindingReachPrefix + tgt.ID` 生成** —— 把 `FindingReachPrefix` 改成 `"r_"`,
+// 或把 `ReachTargets()` 里某个端点的 `ID: "anthropic_api"` 改成别的字符串,
+// 三条守卫会**一起漂移、整包照样全绿**,而 JSON 契约已经变了。
+//
+// 这条钉的是**字面量本身**,不是表达式:Task 6 的 page.html 会把这些 ID 原样
+// 写死在 JS 里,页面对认不出的 ID 是静默丢弃 —— 一条 ID 漂了就是一行永远等不到
+// 结论的空壳,而没有任何东西会报错。
+func TestReachFindingIDsAreThisLiteralString(t *testing.T) {
+	if FindingReachPrefix != "reach_" {
+		t.Fatalf("FindingReachPrefix = %q, want %q —— 这是线上 ID 的一部分,"+
+			"Task 6 的页面会把它写死", FindingReachPrefix, "reach_")
+	}
+	want := []string{
+		"reach_anthropic_api",
+		"reach_claude_web",
+		"reach_openai_api",
+		"reach_google_ai_api",
+	}
+	byOutlineID := map[string]bool{}
+	for _, o := range Outline() {
+		byOutlineID[o.ID] = true
+	}
+	report := Judge(fixedTime(), BrowserReport{}, LocalFacts{})
+	byFindingID := map[string]bool{}
+	for _, f := range report.Findings {
+		byFindingID[f.ID] = true
+	}
+	for _, id := range want {
+		if !byOutlineID[id] {
+			t.Errorf("骨架里没有 %q —— 端点 ID 或前缀漂了", id)
+		}
+		if !byFindingID[id] {
+			t.Errorf("Judge 产出里没有 %q —— 端点 ID 或前缀漂了", id)
 		}
 	}
 }
