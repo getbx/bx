@@ -106,7 +106,7 @@ bx leakcheck          # 非 root,不读 config,不需要 Guardian
 - [ ] 页面**在联系任何人之前**先列出四个第三方(icanhazip v4/v6、stun.cloudflare.com、
       www.cloudflare.com/cdn-cgi/trace)。
 - [ ] 点 `Run the check` —— **这会向那四个发真实探测**。
-- [ ] 十条结论一条不少,三段(path 5 / identity 4 / surface 1)分段正确。
+- [ ] 十四条结论一条不少,四段(path 5 / identity 4 / surface 1 / reach 4)分段正确 —— 第四段见 A8。
 - [ ] **三个计数并排,绝不合成一个总数**;绝不出现「没有发现泄漏」那句话。
 - [ ] 另外两项:`sudo bx leakcheck` 应被**拒绝**(`guardLeakCheckPrivileges`,从没实跑过);
       `bx leakcheck --json` 输出。
@@ -119,6 +119,26 @@ bx leakcheck          # 非 root,不读 config,不需要 Guardian
       它没有 `--skip-probe` 这个概念),不是漂移。
 - [ ] 两页渲染完都应**滚回顶部**(第一眼看到的该是合计句与 WARN,不是末尾的 OK)。
 - [ ] Checks 页有带秒的时间戳(只到分钟的话连点两次看不出有没有刷新)。
+
+### A8. AI 站可达性(第四段)
+
+```
+bx leakcheck          # 页面会在探测前多等最长约 37 秒(4 个目标 × 8 秒 + 5 秒余量)
+```
+
+- [ ] 页面上出现第四段,四个目标各一行(Anthropic API / claude.ai / OpenAI API /
+      Google AI API)。**`chatgpt.com` 不在清单里,这是刻意的**,不是漏了。
+- [ ] 五态计数(reachable/refused/undetermined/unreachable/challenged)**与
+      泄漏那两个计数并排**,不是合成一个数。
+- [ ] `claude.ai` 那行应是**可达**(favicon 路径);若显示「没查出来」
+      (undetermined 或 challenged),说明 CF 把防护加到 favicon 上了 ——
+      回来更新 `internal/leakcheck/endpoints.go` 里那条 target 的 `ExpectedSignal`。
+- [ ] 措辞是「bx can reach claude.ai」,**不是**「你可以用 Claude」。
+- [ ] `bx leakcheck --no-reach` 应当**不发**那四个请求(用抓包或防火墙日志确认),
+      而第四段的四条结论仍在、如实报「没查」,不是从页面上消失。
+- [ ] 把服务器切到一台不通的 VPS 再跑一次:四个目标应变成 **unreachable**,
+      而**不是**多了几条「泄漏」——不可达属于 reach 这一段,不进 path/identity 的
+      异常计数。
 
 ---
 
