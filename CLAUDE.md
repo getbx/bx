@@ -194,71 +194,30 @@ TunnelCrack ServerIP)** ‖ `local_addresses` 内网地址是否被 mDNS 遮掉 
 
 **检测结果不留存**,页面与 CLI 都明说。
 
-**真机首验(2026-08-31,项目所有者的 Mac,本机那一半全绿)**:`bx leakcheck`
-非 root 起服务 → loopback + token 页面加载 → **在联系任何人之前**先列出四个
-第三方(与钉死的常量逐条一致)→ 刻意**不点** Run the check、让它自然硬超时,
-验的正是风险最高的那条路径。结果逐条对上设计:
-- **十条结论一条不少**、三段(path 5 / identity 4 / surface 1)分段正确;
-- **三个计数并排、绝不合成**:`0 leak(s) in the traffic path, 0 identifying
-  trait(s), 6 not checked` —— 没有出现「没有发现泄漏」那句最坏的假话
-  (设计风险四:异常数为 0 完全可能是一条都没检查成);
-- **`WhoOwnsTheRoute` 四态在真机上判对**:「carried by bx (utun12)」,白名单式
-  接口分类没有把物理网卡误判成隧道;
-- **TunnelVision 判据的形状对**:7 条单主机路由走隧道外,如实说明「这是隧道
-  联系自己服务器的方式」而**不报逃逸** —— 正是「单主机不报、更宽的公网前缀
-  才报」那条判断;
-- IPv6「没有到 v6 互联网的路由,故无可泄漏」、DNS「全部解析器经 bx 或本机」
-  均正确;超时那 6 条如实说「浏览器那半从未到达,什么都没联系,故无从下结论」。
+**真机首验(2026-08-31,项目所有者的 Mac):本机那一半全绿** —— 十条结论一条不少、
+三段分段正确、**三个计数并排且绝不合成**(`0 leak(s) / 0 identifying trait(s) /
+6 not checked`,没有出现「没有发现泄漏」那句最坏的假话)、`WhoOwnsTheRoute` 判对
+(「carried by bx (utun12)」)、TunnelVision 判据形状对(7 条单主机路由走隧道外,
+如实说明而**不报逃逸**)。**逐条结果见 `docs/lessons/leakcheck-page-js-gate.md`。**
 
 **仍未验(三项,别读成已验)**:① **浏览器那半**——要人点一下按钮才产生数据,
 点下去会向 icanhazip/cloudflare/STUN 发真实探测;② **非 root 门槛**
 (`guardLeakCheckPrivileges`)当时没有 sudo 口令,没实跑;③ `--json` 输出。
 
-**页面那半的 JS 从 2026-08-24 起有闸门了(此前一行测试都盖不到)。** 形状照抄
-Swift 那半边 —— Go 测试进不去的语言,单独一个运行器 + `verify.sh` 挂闸门 + CI 跑:
-`page.html` 里用 `==== BX-PURE-BEGIN/END ====` 划出一段**纯解析**(只做「字符串 →
-结构」,判定仍然全在 Go),`scripts/test-page-js.sh` 把它原样抽出来交给 node 跑断言。
-覆盖的是整页最承重的两处:ICE candidate → srflx/host 地址(决定 WebRTC 那条结论
-看不看得见你的公网出口)与 `/cdn-cgi/trace` 的 body(决定出口 IP 与国家)——
-**它们解析错了不会报错,只会让结论悄悄变成「没检查」或者一个错的 IP,而对一个
-泄漏检测工具,静默的假阴性是最坏的一种失效。**
-顺手补了一处判据:`bxParseCandidate` 现在**校验下标 6 确实是字面量 `typ`**;
-少了它,一条形状意外的 candidate 会让下标 7 上那个词被当成类型直接采信,于是一个
-不是 srflx 的地址被报成公网出口。地址仍**原样返回、不按 IP 形状过滤** —— mDNS 的
-`<uuid>.local` 正是要报告的事实之一,筛掉它等于把一条结论悄悄变成「没检查」。
-Go 侧三条守卫钉住 node 自己证明不了的事:区段是纯的(剥注释后按标识符禁
-`document`/`setTimeout`/`fetch` 等 —— 危险的不是 DOM(node 里当场 ReferenceError,
-吵),是 node 里**恰好也存在**的那些)、**区段里定义的每个函数页面都真的在调**
-(一个没人调用而测试盖着的纯函数,与没有测试在输出上完全一样)、闸门真的接进了
-`verify.sh` 且**连收尾横幅一起查**(本仓库实测过「脚本提前 exit 0 仍然退 0」)。
-没有 node 时 `verify.sh` 显式报 SKIPPED,不安静通过。五条变异各咬中一条。
-
-**闸门装上的第二天就抓到一个真 bug(2026-08-24)**:`fetchEcho` 里空 body 那一支
-**早退时跳过了 `probeLanded`**(`.catch` 只对 throw 生效,所以另一支也接不住)——
-后果是那个探针格子**永远停在「还在等」的样子**(`data-got` 缺席既不是 `yes` 也
-不是 `no`),而报告其实已经发出并渲染完了。修法不是补一行调用,而是把**结论**
-(值 / 错误 / 落地与否)整个移进纯区段(`bxEchoOutcome`),让三个分支不可能各写
-各的极性。另加一条接线守卫 `TestPageJSNeverAssertsThatAProbeLanded`,判据**刻意
-不对称**:第二个实参写字面量 `true` 一律禁(那是没看答案就宣布探针落地,正是这个
-bug 的一般形式),字面量 `false` **允许**(只出现在 `.catch` 里,什么都没到达,那不是
-对内容的判断);同时必须真的有一处把纯函数算出的 `.landed` 传进去 —— 少了后半句,
-把它改回 `probeLanded(probe, true)` 之后 node 那边照样全绿,**被测的极性根本没接到
-界面上**。反向变异确认过 catch 里的 `false` 不被误伤。
-
-**四个探针的极性随后全部收进纯区段(同日)**,守卫也从「至少有一处用纯判据」
-收紧成「**每一处都是**」—— 前者在三处内联表达式旁边照样绿,而那三处恰恰是没有
-任何测试盯着的地方。新增 `bxTraceOutcome`(拦截页会以 200 返回 HTML,解析出来
-两项皆空**必须**判没落地,报成落地等于把一次没拿到答案的探测说成拿到了)、
-`bxSrflxLanded`(**只看 srflx 不看 host** —— host 到了不代表公网那半到了,把它算成
-落地会让「WebRTC 被禁/被挡」显示成已完成而 Go 拿到空列表:**界面说查过了、判据
-说没查过**)、`bxSurfaceLanded`(canvas 被指纹防护挡掉是**要报告的事实**,不是这段
-没跑成,故两项任一非空即算)。
-**同一轮里我自己那两条守卫各有一个 bug,都是收紧判据时才显形的**:①「区段里每个
-函数都要被外面调用」逼出坏分解(纯函数互相组合恰恰是对的),改成**可达性**;
-② `probeLandedArgs` 把 `function probeLanded(name, ok)` 的**定义行**当成一次调用 ——
-`TrimSpace` 已去掉尾空格,`HasSuffix(…, "function ")` 永远不成立,而它此前无害只是
-因为旧判据认不出形参名 `ok`。五条变异各咬中一条(含一条反向:纯函数只被区段内部
-调用时可达性守卫不许假红)。
+**页面那半的 JS 有闸门,判据仍全在 Go 里。** `page.html` 用
+`==== BX-PURE-BEGIN/END ====` 划出一段**纯解析**(只做「字符串 → 结构」),
+`scripts/test-page-js.sh` 把它原样抽出来交给 node 跑断言,挂进 `verify.sh`(没有 node
+时显式报 SKIPPED,不安静通过)。覆盖整页最承重的两处:ICE candidate → srflx/host 地址、
+`/cdn-cgi/trace` 的 body —— **它们解析错了不会报错,只会让结论悄悄变成「没检查」或者
+一个错的 IP,而对一个泄漏检测工具,静默的假阴性是最坏的一种失效。**
+Go 侧三条守卫钉住 node 自己证明不了的事:区段是纯的、**区段里定义的每个函数页面都真的
+在调**(一个没人调用而测试盖着的纯函数,与没有测试在输出上完全一样)、闸门真的接进了
+`verify.sh` 且连收尾横幅一起查。**四个探针的极性全部收进纯区段**,守卫是「**每一处都是**」
+而不是「至少有一处」—— 前者在三处内联表达式旁边照样绿,而那三处恰恰没有任何测试盯着。
+接线守卫 `TestPageJSNeverAssertsThatAProbeLanded` 的判据**刻意不对称**:第二个实参写
+字面量 `true` 一律禁(那是没看答案就宣布探针落地),字面量 `false` **允许**(只出现在
+`.catch` 里,什么都没到达)。**逐条经过(闸门装上第二天抓到的那个真 bug、五条变异、
+我自己那两条守卫各有一个 bug)见 `docs/lessons/leakcheck-page-js-gate.md`。**
 
 ## 真机验收(2026-08-16,项目所有者的 Mac)—— 一次升级把一大批「未验」清掉
 
@@ -1205,7 +1164,7 @@ Content-Length);菜单那份手写的 HTTP 读取器刻意最小、只认 Conten
 不再由体的大小决定(`TestGuardianJSONResponsesAlwaysCarryContentLength` 用一个 10KB
 的体钉住)。**升级之前的机器**菜单规则窗口一直坏,用 `bx direct add` / `bx doctor` 代替。
 
-## 调谐环执行 start_core(阶段③c,2026-09-05,真机未验)
+## 调谐环执行 start_core(阶段③c,2026-09-05;**2026-09-13 真机已验**)
 
 **修的是一条无人区路径**:Core 意外退出时 `handleUnexpectedExit` 装屏障后重启**一次**,
 失败(`core_restart_failed`)之后没有任何东西再试,机器停在 Blocked 直到有人敲
@@ -1865,8 +1824,10 @@ Checks),Checks 只由显式点击喂数据(`TestMacMenuDoctorPageIsFedByFetchDoc
 `fetchDoctor`/`openDiagnosticsChecks` 两处调用点)。**Add Server** 取代 Replace
 Configuration:`servers add` 同名 409、名字可省略时 Guardian 用 `setup.LinkHost`
 推导(认 `bx://` 换壳);旧 Guardian 上 Replace Configuration 仍留作降级路。新增
-`TestMacMenuShellOutsStayOnTheAllowlist`:shell-out 只许落在 spec §1 那七个函数。**真机
-未验**:Checks 页与 `sudo bx doctor --json --skip-probe` 逐条对比(**Guardian 那份
+`TestMacMenuShellOutsStayOnTheAllowlist`:shell-out 只许落在 spec §1 那七个函数。**Checks 页真机已拉到过数据**(Guardian 日志
+`guardian_doctor_result uid=501 ok=true checks=19 elapsed=188~451ms`,2026-09-10/12 共 11 次
+请求)—— 端点、owner 门、19 项检查、耗时都坐实了。**仍未验的是判据本身对不对**:
+Checks 页与 `sudo bx doctor --json --skip-probe` 逐条对比(**Guardian 那份
 永远会探测**,它没有 `--skip-probe` 这个概念,故 Checks 页比 CLI 那份多一行 `probe`
 是预期的,不是漂移)、Add Server 三种结局、两页布局。
 
@@ -2042,9 +2003,21 @@ fd 手术,而那是本仓库明写「全部事故都在组装根」的地方,且
 err.log 曾被截断过一次,22 小时重新长到 9.4MB(≈10MB/天);升级后两分钟只长
 90 字节(≈65KB/天),**约 160 倍**。
 
-**折叠那一半仍未验**:`bx.log` 里 `missing default interface` 出现 **0 次** ——
-素材还没出现,与此前实测的「90 秒零增长」一致:**那句话是阵发的,不是稳态的**。
-它下次发作时 `bx.log` 里会出现带 `[同一行重复 N 次已折叠]` 的行。
+**折叠那一半仍未验,而「阵发」这个判断现在有 13 天证据**(2026-09-13 复核):
+`bx.log` 里 `missing default interface` 共 **5 次**,分散在 09-10(2)、09-12(3),
+**没有任何一次落在同一个折叠窗口内** ⇒ 折叠标记 0 条。所以那句话确实是阵发的、
+不是稳态的,而折叠**至今没有素材**。它下次成串发作时 `bx.log` 里会出现带
+`[同一行重复 N 次已折叠]` 的行。
+
+**同一次复核把两个外推的数字换成实测**:① **分家已再次确认** —— `bx-guard.err.log`
+里 39455 行 `singbox:` **全部在 2026/09/01**(最后一条 23:25:55,正是分家当天),
+09-02 起 **0 行**。**注意别拿累计数字当「现在的状态」** —— 光看「有 39455 行」会
+把一条已经修好的事判成还在发生。② **Guardian 自己那份日志的增长实测 26.6 KB/天**
+(09-02 起 12 天长了 319 KB / 2829 行),年化约 **9.7 MB/年**,比原先外推的
+65 KB/天 ≈ 15 MB/年 **小 2.4 倍**;「仍无轮转」这条已知缺口的紧迫性因此比记的低。
+今天那个文件 9.7 MB,其中 **96.6% 是 09/01 那一天的历史** —— 要清就用
+`sudo : > /var/log/bx-guard.err.log` 截断,**不要 `rm`**(launchd 与 Guardian 都持着
+那个 fd,删一个字节都不会释放)。
 
 ## `bx explain <目标>`:判定第一次有了外部出口(2026-09-01,部分真机已验)
 
@@ -2628,6 +2601,10 @@ darwin/linux 行为逐字节不变),加一行 posix 值时孪生表由
   会制造盲区:那些原文点名的测试与路径,搬出去之后若无人看管,**同样会被读到、却
   不再会被证伪**。它与 `docs/superpowers/{specs,plans}` 的区别是**时态** —— 计划书
   写的是「将要建的东西」,失效是预期的;lessons 写的是已经发生的事实。
+  **推论:真机验收的逐条结果进 lessons,CLAUDE.md 只留「已验 / 未验」那一行状态加
+  指针。** 否则它会随每一次验收单调增长 —— 2026-09-13 那次拆分刚把它压到 148k,
+  补三条实测证据就又吃掉 1.6k。**但「未验」那一半必须留在 CLAUDE.md**:它是待办,
+  不是历史。
 - **TDD**:先写失败测试→跑红→最小实现→跑绿→提交。纯逻辑测试免 root(用 `t.TempDir()`,不碰真实路由/设备)。
 - **绝不并行派两个会写盘的子代理进同一个 checkout。** 2026-08-17 实测的代价:两个
   实施代理按「路径不相交」并行(一个改 `internal/socks5`,一个改
