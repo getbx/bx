@@ -457,8 +457,12 @@ Expected: `ok`
 
 - [ ] **Step 5: 变异验证(两条,各咬一个方向)**
 
-1. 把 `JudgeReach` 改成只看状态码(`if status>=200 && status<400 { return ReachReachable }` 放在最前)
-   → `TestSame403MeansOppositeThings` 必须红
+1. 把 `JudgeReach` 改成只看状态码 —— **范围必须覆盖 403**,否则变异咬不到那两个
+   决定性 fixture:`if status >= 200 && status < 500 { return ReachReachable }` 放在最前
+   → `TestSame403MeansOppositeThings` 必须红。
+   **`status < 400` 是错的写法(2026-09-14 实测):403 不在 [200,400) 里,变异根本没落上,
+   于是「测试没转红」看起来像守卫失效,其实是变异失效** —— 本仓库那条
+   「凡变异全绿先查落没落上」说的就是这个。
 2. 把第 ⑦ 支的 `return ReachUndetermined` 改成 `return ReachReachable`
    → `TestUnrecognisedResponsesAreUndeterminedNotReachable` 必须红
 
