@@ -103,8 +103,12 @@
 bx leakcheck          # 非 root,不读 config,不需要 Guardian
 ```
 
-- [ ] 页面**在联系任何人之前**先列出四个第三方(icanhazip v4/v6、stun.cloudflare.com、
-      www.cloudflare.com/cdn-cgi/trace)。
+- [ ] 页面**在它自己联系任何人之前**先列出四个第三方(icanhazip v4/v6、
+      stun.cloudflare.com、www.cloudflare.com/cdn-cgi/trace),措辞是
+      「Before **this page** sends anything」。**范围只到页面那一半** ——
+      打开页面的时刻 bx 已经从本机探过四个 AI 端点(A8),那一半的披露在终端里;
+      页面上应另有一句说明这件事。**别把这一条读成「bx 这一轮还没联系过任何人」
+      就打勾** —— 那正是它 2026-09-14 被收窄的原因。
 - [ ] 点 `Run the check` —— **这会向那四个发真实探测**。
 - [ ] 十四条结论一条不少,四段(path 5 / identity 4 / surface 1 / reach 4)分段正确 —— 第四段见 A8。
 - [ ] **三个计数并排,绝不合成一个总数**;绝不出现「没有发现泄漏」那句话。
@@ -123,8 +127,15 @@ bx leakcheck          # 非 root,不读 config,不需要 Guardian
 ### A8. AI 站可达性(第四段)
 
 ```
-bx leakcheck          # 页面会在探测前多等最长约 37 秒(4 个目标 × 8 秒 + 5 秒余量)
+bx leakcheck          # 探测在前、页面在后:打印页面 URL 之前最长静默约 42 秒
+                      #   = 本机事实采集 ≤5 秒 + 可达性探测 ≤37 秒
+                      #     (4 个目标 × 8 秒 + 5 秒余量)
 ```
+
+- [ ] **先盯这条**:敲下命令之后,终端应**立刻**打出要联系的四个 AI 地址与
+      「这一步最多约 37 秒」,然后才是那段静默。静默期间什么都不打印是预期的,
+      不是命令挂了 —— 若它让人难忍,**下一步不是缩短 probeTimeout**(会把慢链路上
+      的可达站判成不可达),台账里记着一个「Listen 先、Serve 后」的零并发方案。
 
 - [ ] 页面上出现第四段,四个目标各一行(Anthropic API / claude.ai / OpenAI API /
       Google AI API)。**`chatgpt.com` 不在清单里,这是刻意的**,不是漏了。

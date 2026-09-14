@@ -53,6 +53,13 @@ func TestJudgeReachOnRealMachineFixtures(t *testing.T) {
 		{"claude.ai 首页是CF挑战", 403, bodyCloudflareChallenge, nil, ReachChallenged},
 		{"地区拒绝", 403, bodyRegionRefused, nil, ReachRefused},
 		{"拨不通", 0, "", errors.New("dial tcp: i/o timeout"), ReachUnreachable},
+		// **步骤⑦(认不出的 4xx/5xx HTML)此前整张表一组都没走到**,而它恰恰是
+		// 这个判据里最危险的一支:一个真实的地区封禁页就长这样 —— HTML、不含
+		// CF 那两个特征串、不是 JSON。它必须是 `Undetermined`,**尤其不许是
+		// `Challenged`**(那句「不是你的出口有问题」要 CF 特征串这份凭据)。
+		// 2026-09-14 final review 变异实测:步骤⑦改成 `return ReachChallenged`
+		// 时,本包 8 组 fixture 一组都咬不住它。
+		{"认不出的 5xx HTML 拦截页", 503, "<html>service unavailable</html>", nil, ReachUndetermined},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := JudgeReach(tc.status, []byte(tc.body), tc.err); got != tc.want {
@@ -76,6 +83,18 @@ func TestSame403MeansOppositeThings(t *testing.T) {
 }
 
 // 认不出的东西一律「没问出来」,绝不升格成可达(spec §3.1 零值纪律)。
+//
+// **断言是 `!= ReachUndetermined`,而不是 `!= ReachReachable`** —— 后者守不住
+// 这条守卫唯一要守的那件事。加出 `ReachChallenged` 的**全部理由**是:`Challenged`
+// 那句话主动否掉「不是你的出口有问题」,而这句话**只有拿着 CF 特征串这份凭据
+// 才敢说**;步骤⑦(认不出的 4xx/5xx HTML)手里什么都没有,不许借用。于是这里
+// 最该被钉住的性质是「**步骤⑦绝不许变成 Challenged**」,而「别升格成 reachable」
+// 只是它顺带的一半。
+//
+// 2026-09-14 final review 的变异实测:把步骤⑦改成 `return ReachChallenged`,在
+// `!= ReachReachable` 那一版判据下**整个 internal/leakcheck 全绿** —— 而真机上的
+// 后果是用户对着一个真实的地区封禁页(HTML、不含那几个构造的关键词)读到
+// 「不是你的出口有问题」,即这个功能存在的唯一理由被反着答了一遍。
 func TestUnrecognisedResponsesAreUndeterminedNotReachable(t *testing.T) {
 	for _, tc := range []struct {
 		status int
@@ -85,8 +104,11 @@ func TestUnrecognisedResponsesAreUndeterminedNotReachable(t *testing.T) {
 		{502, "<html>bad gateway</html>"},
 		{503, ""},
 	} {
-		if got := JudgeReach(tc.status, []byte(tc.body), nil); got == ReachReachable {
-			t.Fatalf("status=%d body=%q 判成了 reachable —— 认不出就该是 undetermined", tc.status, tc.body)
+		if got := JudgeReach(tc.status, []byte(tc.body), nil); got != ReachUndetermined {
+			t.Fatalf("status=%d body=%q 判成了 %v —— 认不出就该是 undetermined;"+
+				"尤其不许是 challenged,那句「不是你的出口有问题」要 CF 特征串这份凭据,"+
+				"而这里一个字的凭据都没有",
+				tc.status, tc.body, got)
 		}
 	}
 }
