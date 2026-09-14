@@ -220,6 +220,36 @@ spec §5 那三句比较结论(「直连不行、走当前隧道行」…)也等
 `default`/`|| titles.path` 兜底吞掉新分段在这一支里出现过三次,每一次的后果都是把
 「连不上」画在一个写着「你的流量去哪儿」的标题底下,读起来就是一次泄漏。
 
+**`ReachState` 是五态,零值 `ReachUndetermined`(问过没问出来)**:`Reachable`/
+`Refused`/`Unreachable`/**`Challenged`**。**`Challenged` 与 `Undetermined` 必须分开
+(review 抓到的核心判据)**:CF 人机挑战有真凭据(特征串)能主动否掉坏消息「不是你的
+出口有问题」,而「认不出」没有凭据、不许替它猜同一句话 —— 合成一态就必然有一半在
+撒谎:一个真实的地区封禁页(HTML、不含那几个构造的关键词)会落进 undetermined,若
+借用 Challenged 那句话,用户读到的是「不是你的出口有问题」,而这个功能存在的唯一
+理由就是回答这个问题。**`JudgeReach` 同时看状态码与 body**:
+`generativelanguage.googleapis.com` 的 403 是 API 在正常应答(JSON body),
+`chatgpt.com` 的 403 是人机挑战(CF 特征串)—— 同一个码,相反的两件事,只看状态码
+会判反。
+
+**端点四个**(anthropic API `/v1/messages`、claude.ai **favicon 路径**、openai API
+`/v1/models`、google AI API `/v1beta/models`),**`chatgpt.com` 刻意不在清单里**:
+它实测恒为 CF 挑战页,会变成一行永远给不出答案的噪声。**claude.ai 用 favicon 而非
+首页**:首页是 403 CF 挑战,favicon 路径不挂防护。
+
+**措辞纪律**:可达只说「bx can reach X」,**绝不说「你可以用 X」**—— 地区限制可能
+在登录/调用层,本期只观测到了边缘,bx 无权替对方的产品说话;不可达只说 bx 观测到
+什么,**不断言对方服务的状态**(与 `core_tunnel_unreachable` 同一条纪律)—— 本机
+自己没网时同样拨不通。
+
+**`DefaultProbeBypass=false`,取舍写在这**:绕过隧道那条路径会从物理网卡直接发
+4 个 GET、**暴露真实 IP 给 Anthropic/OpenAI/Google**——是 leakcheck 今天没有的
+新行为,决定留给项目所有者;守卫把「翻常量」与「供 `BypassDial`」绑在一起,只翻
+常量会安静地什么都不多跑。
+
+**已知边界**:favicon 200 只证明**边缘可达**,不证明能登录能用;`Refused` 的关键词
+**没有真机样本、是构造的**;CF 的防护会变(今天 favicon 不挂,明天可能挂),端点
+常量带 `ExpectedSignal` 记档,行为变了守卫会红一次。
+
 **真机首验(2026-08-31,项目所有者的 Mac):本机那一半全绿** —— 十条结论一条不少、
 三段分段正确、**三个计数并排且绝不合成**(`0 leak(s) / 0 identifying trait(s) /
 6 not checked`,没有出现「没有发现泄漏」那句最坏的假话)、`WhoOwnsTheRoute` 判对
