@@ -261,9 +261,20 @@ func scanTestNames(t *testing.T, root string) (map[string]bool, map[string][]pro
 		// 一样承重,只是按「判据 / 过程」分了家。一份搬出去就没人看管的过程记录,
 		// 比留在 CLAUDE.md 里更糟 —— 它同样会被读到,却不再会被证伪。
 		isDoc := filepath.Base(path) == "CLAUDE.md" && filepath.Dir(path) == root
-		if !isDoc && strings.HasSuffix(path, ".md") && filepath.Dir(path) == filepath.Join(root, "docs", "lessons") {
-			isDoc = true
-			lessonFiles++
+		//
+		// **2026-09-13 同日再扩一次:`docs/` 下除 `superpowers/` 外的 .md 全进来。**
+		// 起因是那天又长出 `docs/acceptance-pending.md`(待人工验收清单)—— 它同样
+		// 点名测试、点名文件,同样会被人当作现状读。**按目录白名单逐个加,漏掉的
+		// 那一份就是下一个无人看管的文档**;改成「除 superpowers 之外」之后,
+		// 以后新加的文档自动进范围,不需要有人记得回来改这里。
+		if !isDoc && strings.HasSuffix(path, ".md") {
+			rel, relErr := filepath.Rel(filepath.Join(root, "docs"), path)
+			inDocs := relErr == nil && !strings.HasPrefix(rel, "..")
+			isPlan := strings.HasPrefix(rel, "superpowers"+string(filepath.Separator))
+			if inDocs && !isPlan {
+				isDoc = true
+				lessonFiles++
+			}
 		}
 		if !isGo && !isDoc {
 			return nil
@@ -294,11 +305,11 @@ func scanTestNames(t *testing.T, root string) (map[string]bool, map[string][]pro
 	// **docs/lessons/ 存在却一个 .md 都没扫到 ⇒ 响亮失败**,与 scanSwiftProse
 	// 那两道同一条纪律:一条安静地扫了零个文件的守卫,与没有这条守卫在输出上完全
 	// 一样,而它看起来更让人放心。目录**不存在**是另一回事(没搬过东西),放行。
-	if fi, statErr := os.Stat(filepath.Join(root, "docs", "lessons")); statErr == nil && fi.IsDir() && lessonFiles == 0 {
-		t.Fatal("docs/lessons/ 在,却一个 .md 都没被收进散文引用表 —— " +
+	if fi, statErr := os.Stat(filepath.Join(root, "docs")); statErr == nil && fi.IsDir() && lessonFiles == 0 {
+		t.Fatal("docs/ 在,却一个 .md 都没被收进散文引用表 —— " +
 			"**这条守卫自己坏了,先修它**:搬出 CLAUDE.md 的过程记录从此无人看管")
 	}
-	t.Logf("docs/lessons 散文:扫了 %d 个 .md", lessonFiles)
+	t.Logf("docs 散文(不含 superpowers):扫了 %d 个 .md", lessonFiles)
 	scanSwiftProse(t, root, refs)
 	return defined, refs
 }
