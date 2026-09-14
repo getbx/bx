@@ -24,12 +24,12 @@ func TestProbeReachUsesTheSharedJudgement(t *testing.T) {
 	}
 	got := probeOne(context.Background(), dial, leakcheck.ReachTarget{
 		ID: "x", URL: srv.URL,
-	}, "current")
+	}, leakcheck.ReachPathCurrent)
 	if got.State != leakcheck.ReachReachable {
 		t.Fatalf("State = %v, want reachable —— 405 + 服务 JSON 是最强的可达证据", got.State)
 	}
-	if got.Path != "current" {
-		t.Fatalf("Path = %q, want current", got.Path)
+	if got.Path != leakcheck.ReachPathCurrent {
+		t.Fatalf("Path = %q, want %q", got.Path, leakcheck.ReachPathCurrent)
 	}
 }
 
@@ -41,7 +41,7 @@ func TestProbeReachOnDialFailureSaysNothingAboutTheError(t *testing.T) {
 	}
 	got := probeOne(context.Background(), dial, leakcheck.ReachTarget{
 		ID: "x", URL: "https://example.invalid/",
-	}, "bypass")
+	}, leakcheck.ReachPathBypass)
 	if got.State != leakcheck.ReachUnreachable {
 		t.Fatalf("State = %v, want unreachable", got.State)
 	}
@@ -71,7 +71,7 @@ func TestProbeReachDoesNotFollowRedirectsToAvoidMisattribution(t *testing.T) {
 	}
 	got := probeOne(context.Background(), dial, leakcheck.ReachTarget{
 		ID: "x", URL: srv.URL + "/start",
-	}, "current")
+	}, leakcheck.ReachPathCurrent)
 	if got.State != leakcheck.ReachUndetermined {
 		t.Fatalf("State = %v, want undetermined —— 跟了重定向、把终点的应答"+
 			"记成了起点的观测", got.State)

@@ -87,14 +87,6 @@ func looksLikeServiceJSON(head []byte) bool {
 // 端点 ID 得来 —— 拼接而不是手抄一份清单,加端点时 Outline() 的骨架自动跟上。
 const FindingReachPrefix = "reach_"
 
-// reachPathCurrent / reachPathBypass 是 ReachProbe.Path 的两个合法值(见
-// reach.go 里 `Path string`的文档注释:`"current" | "bypass"`)。常量只住在
-// 这里被读,不被导出 —— leakserve 那一侧写的是字面量,本包不替它背书第二份。
-const (
-	reachPathCurrent = "current"
-	reachPathBypass  = "bypass"
-)
-
 // judgeReach 把这一轮的 AI 站可达性探测变成一组 Finding,**每个端点一条**,
 // 与 ReachTargets() 的顺序一致(Outline() 的骨架按同一个顺序追加)。
 //
@@ -120,8 +112,8 @@ func judgeReachTarget(tgt ReachTarget, probes []ReachProbe) Finding {
 			strconv.FormatBool(*tgt.OnChinaDirectList))
 	}
 
-	current, hasCurrent := findReachProbe(probes, tgt.ID, reachPathCurrent)
-	if bypass, hasBypass := findReachProbe(probes, tgt.ID, reachPathBypass); hasBypass {
+	current, hasCurrent := findReachProbe(probes, tgt.ID, ReachPathCurrent)
+	if bypass, hasBypass := findReachProbe(probes, tgt.ID, ReachPathBypass); hasBypass {
 		// **并排出示,不参与判定。** current 缺席时仍然把它列出来 —— 它是一条真实
 		// 观测,即便这一轮没能给出主线结论。
 		f.Evidence = append(f.Evidence, "bypass path: "+describeReachProbe(bypass))
