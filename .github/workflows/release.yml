@@ -127,6 +127,21 @@ jobs:
         with:
           go-version: '1.26'
 
+      # v0.4.0 那次发布在这一步栽了:`hdiutil: create failed - No space left on device`。
+      #
+      # **不是产物变大了那么简单** —— 一次打包要同时容下:checkout(内嵌资产近 400MB)、
+      # Go 的 build cache、swift build 的中间产物、release 目录(~96MB)、tar.gz(~39MB),
+      # 而 .dmg 还要再要一份。macos-14 runner 的盘本来就紧,simulator runtimes 白占十几 GB
+      # 而**这个 job 一个都用不到**(`swift build` 建的是原生 macOS 命令行产物,不碰模拟器)。
+      #
+      # `df -h` 留在前后两头:**这个 workflow 只在打 tag 时跑,平时的 CI 覆盖不到它**
+      # (本文件开头那句注释),下一次它再满的时候,没有这两行就只能靠猜。
+      - name: Free disk space for the .dmg
+        run: |
+          echo "--- before ---"; df -h /
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
+          echo "--- after ---"; df -h /
+
       - name: Package macOS release
         run: |
           set -euo pipefail
