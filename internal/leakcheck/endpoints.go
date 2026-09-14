@@ -55,3 +55,68 @@ func (d EndpointDisclosure) All() []string {
 func Endpoints() EndpointDisclosure {
 	return EndpointDisclosure{EchoV4: EchoV4URL, EchoV6: EchoV6URL, STUN: STUNURL, Trace: TraceURL}
 }
+
+// ReachTarget 是一个可达性探测目标。
+//
+// ExpectedSignal 记的是**上一次真机实测见到什么**。它不参与判定,只用来让
+// 「这个端点的行为变了」有人发现 —— CF 的防护会变,今天 claude.ai/favicon.ico
+// 不挂挑战,明天可能挂(spec §10)。
+type ReachTarget struct {
+	ID             string
+	Title          string
+	URL            string
+	ExpectedSignal string
+	// OnChinaDirectList 是「这个域名在不在内建 china 直连列表里」。
+	//
+	// **它是解释,不是门。** 回声端点那三关的第三关是「不许在列表里」(在的话
+	// 探测会走直连、报出真实 IP);可达性探测走哪条路由**由本功能自己指定**,
+	// 不依赖分流 —— 所以这里要的是如实报告,作为该端点结论的一行证据。
+	//
+	// **值是写死的编译期常量,不是运行时算出来的**:本包纯度守卫的
+	// allowedInternalDeps 白名单刻意很窄(只有 internal/tristate 与
+	// internal/protectionstate),运行时判 china 列表要 import internal/route,
+	// 会撑开这个白名单。四个值 2026-09-14 用生产 route.NewDomainSet 逐个实测过,
+	// 全部为 false(见 endpoints_test.go 的
+	// TestReachTargetsOnChinaDirectListMatchesRealList),换端点时重新实测再改。
+	//
+	// 指针类型:nil 是「没填」,由守卫拦下;false 是「查过了,不在」。
+	OnChinaDirectList *bool
+}
+
+// reachTargetNotOnChinaList 是四个可达性端点共用的「不在列表里」标记。
+// 用一个共享变量取地址,免得每个 target 字面量里各写一个局部 bool。
+var reachTargetNotOnChinaList = false
+
+// ReachTargets 是内嵌的一小组 AI 站。**只发 GET,不带认证,不发 body** ——
+// 401/405 恰恰是我们要的信号:服务自己在说话。
+//
+// **chatgpt.com 刻意不在这里**:它实测恒为 CF 挑战页,会变成一行永远给不出
+// 答案的噪声(spec §4.1)。
+func ReachTargets() []ReachTarget {
+	return []ReachTarget{
+		{
+			ID: "anthropic_api", Title: "Anthropic API",
+			URL:               "https://api.anthropic.com/v1/messages",
+			ExpectedSignal:    "405 + 服务 JSON(invalid_request_error / Method Not Allowed),2026-09-13 实测",
+			OnChinaDirectList: &reachTargetNotOnChinaList,
+		},
+		{
+			ID: "claude_web", Title: "claude.ai",
+			URL:               "https://claude.ai/favicon.ico",
+			ExpectedSignal:    "200 + favicon 二进制;首页是 403 CF 挑战,favicon 路径不挂防护,2026-09-13 实测",
+			OnChinaDirectList: &reachTargetNotOnChinaList,
+		},
+		{
+			ID: "openai_api", Title: "OpenAI API",
+			URL:               "https://api.openai.com/v1/models",
+			ExpectedSignal:    "401 + 服务 JSON(Missing bearer authentication),2026-09-13 实测",
+			OnChinaDirectList: &reachTargetNotOnChinaList,
+		},
+		{
+			ID: "google_ai_api", Title: "Google AI API",
+			URL:               "https://generativelanguage.googleapis.com/v1beta/models",
+			ExpectedSignal:    "403 + 服务 JSON(Method doesn't allow unregistered callers),2026-09-13 实测",
+			OnChinaDirectList: &reachTargetNotOnChinaList,
+		},
+	}
+}
