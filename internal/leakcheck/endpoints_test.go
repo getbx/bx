@@ -166,10 +166,12 @@ func TestChatGPTIsDeliberatelyAbsentFromReachTargets(t *testing.T) {
 	}
 }
 
-// **协调者裁决**:ReachTarget.OnChinaDirectList 的值必须是写死的编译期常量,
-// 不能在生产代码里运行时算 —— 本包纯度守卫的 allowedInternalDeps 白名单刻意很窄
-// (只有 internal/tristate 与 internal/protectionstate),运行时判 china 列表要
-// import internal/route,会撑开这个白名单。
+// **协调者裁决**:ReachTarget.OnChinaDirectList 的值必须是写死的字面量,
+// 不能在生产代码里运行时算(它不是「编译期常量」——Go 不允许对字面量取地址进
+// const,是一个运行期 `*bool`,类型系统不替它背书)—— 本包纯度守卫的
+// allowedInternalDeps 白名单刻意很窄(只有 internal/tristate 与
+// internal/protectionstate),运行时判 china 列表要 import internal/route,
+// 会撑开这个白名单。
 //
 // 但写死不等于可以凭空写:这条测试拿**真实内嵌列表 + 生产的 route.NewDomainSet**
 // (与 TestEchoEndpointsAreNotOnTheChinaDirectList 同一手法)去核对 ReachTargets()

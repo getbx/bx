@@ -72,20 +72,31 @@ type ReachTarget struct {
 	// 探测会走直连、报出真实 IP);可达性探测走哪条路由**由本功能自己指定**,
 	// 不依赖分流 —— 所以这里要的是如实报告,作为该端点结论的一行证据。
 	//
-	// **值是写死的编译期常量,不是运行时算出来的**:本包纯度守卫的
-	// allowedInternalDeps 白名单刻意很窄(只有 internal/tristate 与
-	// internal/protectionstate),运行时判 china 列表要 import internal/route,
-	// 会撑开这个白名单。四个值 2026-09-14 用生产 route.NewDomainSet 逐个实测过,
-	// 全部为 false(见 endpoints_test.go 的
-	// TestReachTargetsOnChinaDirectListMatchesRealList),换端点时重新实测再改。
+	// **值是写死的字面量,不是运行时算出来的**(它不是「编译期常量」——Go 不允许
+	// 对字面量取地址进 const,这里是运行期的一个 `*bool`,类型系统不替它背书):
+	// 本包纯度守卫的 allowedInternalDeps 白名单刻意很窄(只有 internal/tristate
+	// 与 internal/protectionstate),运行时判 china 列表要 import internal/route,
+	// 会撑开这个白名单。正确性靠 endpoints_test.go 的
+	// TestReachTargetsOnChinaDirectListMatchesRealList 拿真实内嵌列表 +
+	// 生产 route.NewDomainSet 核对 —— 四个值 2026-09-14 逐个实测过,全部为 false;
+	// 上游列表变了那条守卫会红,那正是回来更新的时刻。
+	//
+	// **将来某个域名真的进了 china 列表,正确做法是给那一个 target 单独写
+	// `pbool(true)`,不是去改共享变量的值**——见下面 pbool 的注释。
 	//
 	// 指针类型:nil 是「没填」,由守卫拦下;false 是「查过了,不在」。
 	OnChinaDirectList *bool
 }
 
-// reachTargetNotOnChinaList 是四个可达性端点共用的「不在列表里」标记。
-// 用一个共享变量取地址,免得每个 target 字面量里各写一个局部 bool。
-var reachTargetNotOnChinaList = false
+// pbool 返回指向一个新建局部变量的指针。**每次调用都现建一个,不共享地址**:
+// 早先的写法是四个 target 共用同一个包级 `var` 的地址,`*tgt.OnChinaDirectList = x`
+// 这种设置可选字段的常见写法(本仓库到处是 `*bool`/`omitempty` 惯用法)会
+// 静默改掉全部四个 target,没有编译错误、没有 panic、没有任何提示。
+// 先例见 internal/mcp/tools_mutating.go 的 `ptrue`。
+func pbool(v bool) *bool {
+	b := v
+	return &b
+}
 
 // ReachTargets 是内嵌的一小组 AI 站。**只发 GET,不带认证,不发 body** ——
 // 401/405 恰恰是我们要的信号:服务自己在说话。
@@ -98,25 +109,25 @@ func ReachTargets() []ReachTarget {
 			ID: "anthropic_api", Title: "Anthropic API",
 			URL:               "https://api.anthropic.com/v1/messages",
 			ExpectedSignal:    "405 + 服务 JSON(invalid_request_error / Method Not Allowed),2026-09-13 实测",
-			OnChinaDirectList: &reachTargetNotOnChinaList,
+			OnChinaDirectList: pbool(false),
 		},
 		{
 			ID: "claude_web", Title: "claude.ai",
 			URL:               "https://claude.ai/favicon.ico",
 			ExpectedSignal:    "200 + favicon 二进制;首页是 403 CF 挑战,favicon 路径不挂防护,2026-09-13 实测",
-			OnChinaDirectList: &reachTargetNotOnChinaList,
+			OnChinaDirectList: pbool(false),
 		},
 		{
 			ID: "openai_api", Title: "OpenAI API",
 			URL:               "https://api.openai.com/v1/models",
 			ExpectedSignal:    "401 + 服务 JSON(Missing bearer authentication),2026-09-13 实测",
-			OnChinaDirectList: &reachTargetNotOnChinaList,
+			OnChinaDirectList: pbool(false),
 		},
 		{
 			ID: "google_ai_api", Title: "Google AI API",
 			URL:               "https://generativelanguage.googleapis.com/v1beta/models",
 			ExpectedSignal:    "403 + 服务 JSON(Method doesn't allow unregistered callers),2026-09-13 实测",
-			OnChinaDirectList: &reachTargetNotOnChinaList,
+			OnChinaDirectList: pbool(false),
 		},
 	}
 }
