@@ -459,6 +459,28 @@ func TestLeakCheckActionCollectsFactsThroughTheReachWiring(t *testing.T) {
 // **联网之前先说要联系谁。** 这条契约此前整个由页面兑现,而可达性探测是 bx 自己
 // 发的、页面一个字节都不经手 —— 于是这句话只能由 CLI 说,且必须排在第一个请求
 // **之前**。判据同时钉住顺序:披露那一句在源码里要出现在采集那一句前面。
+// 披露的每一行都要带信息 —— **不许有一行只是把命令名回显一遍**。
+//
+// 2026-09-14 真机首验当场看出来的:用户敲 `bx leakcheck`,而程序在披露的第一行
+// 又打印了一遍 `bx leakcheck`。它没有任何注释解释自己(这个函数其余每一行都有),
+// 也没有任何测试依赖它 —— 是残留。
+//
+// **所有 review 都没抓到它**:守卫钉的是「披露说全了要联系谁」与「不许印出
+// markdown 星号」,没有一条钉「不许有多余的行」。真机一眼就看见了 ——
+// 这一条记在这里,是因为它标出了那一族守卫的盲区,不只是为了拦这一行。
+func TestTheDisclosureDoesNotEchoTheCommandNameBackAtYou(t *testing.T) {
+	out := captureStdout(t, func() { announceReachTargets(leakserve.LiveReachDeps(), false) })
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "bx leakcheck" {
+			t.Fatalf("披露里有一行只是命令名的回显 —— 用户刚敲完它,这一行不带任何信息:\n%s", out)
+		}
+	}
+	// 自检:确实捕获到了披露(否则上面那条循环是一句空话)。
+	if !strings.Contains(out, "https://api.anthropic.com/v1/messages") {
+		t.Fatalf("没捕获到披露内容,这条守卫在空转:%q", out)
+	}
+}
+
 func TestLeakCheckAnnouncesTheReachTargetsBeforeContactingThem(t *testing.T) {
 	body := leakCheckActionBody(t)
 	announce, collect := -1, -1
