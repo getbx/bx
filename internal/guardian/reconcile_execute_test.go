@@ -380,6 +380,42 @@ func TestStartCoreCapResetsAfterUserUp(t *testing.T) {
 	}
 }
 
+// **段的定义是「用户按下开关」,不是「按下去之后起成功了」。** ③c 设计原文:
+// 段 = socket 首次不应答 → **再次应答或用户 `Up`**;而实现把 resetStartCoreAttempts
+// 排在 `upLocked` 成功之后,于是唯一需要它的那个场景恰好不生效 ——
+// Core 起得来的时候,下一轮观测(CoreSocket == True)本来就会重置,用户那一下是多余的。
+//
+// 真机 2026-09-13 逐字兑现:VPS 不通,08:23 用户从菜单按下开关、`upLocked` 在
+// `wait for Core health` 超时返回,此后 9 小时 16 分钟里调谐环 61 次醒来、
+// 61 次 `outcome=skipped code=start_core_exhausted` —— 一次都没再试,
+// 而 desired=on、机器上没有 Core、流量明文直连。
+//
+// 兄弟测试 TestStartCoreCapResetsAfterUserUp 喂的是 up **成功**那条路径,
+// 那个输入让这条性质完全不可见。
+func TestStartCoreCapResetsEvenWhenTheUserUpFails(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if err := env.store.SaveDesired(DesiredOn); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.startErr = errors.New("sing-box missing")
+	for i := 0; i < maxReconcileStartCoreAttempts; i++ {
+		env.manager.executeReconcileAction(context.Background(), reconcileDecision{Actions: []reconcileAction{actionStartCore}})
+	}
+	// 前置:这一段确实已经试满了 —— 少了它,一条从没计过数的实现也能让下面那条断言通过。
+	if got := env.manager.startCoreAttempts.Load(); got != maxReconcileStartCoreAttempts {
+		t.Fatalf("前置不成立:计数 = %d,want %d", got, maxReconcileStartCoreAttempts)
+	}
+
+	// 用户亲手按下开关,而 Core 仍然起不来(VPS 不通就是这个形状)。
+	if err := env.manager.Up(context.Background()); err == nil {
+		t.Fatal("前置不成立:这一次 Up 本该失败,否则测的又是成功那条路径")
+	}
+
+	if got := env.manager.startCoreAttempts.Load(); got != 0 {
+		t.Fatalf("Up 失败后计数 = %d,want 0 —— 用户表达过意图,调谐环必须重新开始试", got)
+	}
+}
+
 // ③c 的旗舰:这条路径此前是无人区 —— Core 意外退出,handleUnexpectedExit 装屏障
 // 后那**一次**重启失败,机器停在 Blocked 直到有人敲 bx up。现在循环在下一轮
 // 把它起回来,屏障随之释放。变异验证:把白名单改回两项必须转红。
