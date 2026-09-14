@@ -50,6 +50,34 @@ func TestProbeReachOnDialFailureSaysNothingAboutTheError(t *testing.T) {
 	}
 }
 
+// 不许跟随重定向 —— 跟过去之后 status/body 是**终点**的,而这条记录仍然标着
+// **起点**的 TargetID,那就是「记录 A 的观测、归因给 B」。3xx 必须落进
+// JudgeReach 的「认不出的状态码 ⇒ Undetermined」那一支,不许因为跟过去拿到了
+// 200 就报可达。判据打在结论上,不是打在「CheckRedirect 字段存在」上。
+func TestProbeReachDoesNotFollowRedirectsToAvoidMisattribution(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	})
+	mux.HandleFunc("/elsewhere", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"message":"this is some other service"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+	}
+	got := probeOne(context.Background(), dial, leakcheck.ReachTarget{
+		ID: "x", URL: srv.URL + "/start",
+	}, "current")
+	if got.State != leakcheck.ReachUndetermined {
+		t.Fatalf("State = %v, want undetermined —— 跟了重定向、把终点的应答"+
+			"记成了起点的观测", got.State)
+	}
+}
+
 // 默认值是 spec §5.1 的待定项,由一条守卫钉住「今天是关的」——
 // 所有者拍板改成开的时候,这条测试会红一次,那正是回来读 §5.1 的时刻。
 func TestBypassProbeIsOffByDefaultUntilTheOwnerDecides(t *testing.T) {

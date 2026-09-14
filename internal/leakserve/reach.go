@@ -29,7 +29,16 @@ func probeOne(ctx context.Context, dial DialFunc, tgt leakcheck.ReachTarget, pat
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	client := &http.Client{Transport: &http.Transport{DialContext: dial}}
+	client := &http.Client{
+		Transport: &http.Transport{DialContext: dial},
+		// **不跟随重定向。** 跟过去之后 status 与 body 都是**终点**的,而这条记录
+		// 仍然标着起点的 TargetID —— 那就是「记录 A 的观测、归因给 B」。
+		// 3xx 因此落进 JudgeReach 的「认不出的状态码 ⇒ Undetermined」那一支,
+		// 而那正是诚实的答案:目标把我们支到别处去了,我们没问出它自己的状态。
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tgt.URL, nil)
 	if err != nil {
 		return leakcheck.ReachProbe{
