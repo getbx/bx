@@ -36,9 +36,16 @@ func TestDocumentedFilePathsExist(t *testing.T) {
 	// 与 specs/plans 的区别是**时态**:计划书点名的是「将要建的东西」,失效是预期
 	// 的;lessons 记的是已经发生的事实,和 CLAUDE.md 一样会被当作现状读。
 	docs := []string{"CLAUDE.md", "README.md"}
-	lessons, lerr := filepath.Glob(filepath.Join(root, "docs", "lessons", "*.md"))
-	if lerr != nil {
-		t.Fatalf("列 docs/lessons: %v", lerr)
+	var lessons []string
+	for _, pat := range []string{
+		filepath.Join(root, "docs", "*.md"),
+		filepath.Join(root, "docs", "lessons", "*.md"),
+	} {
+		hits, lerr := filepath.Glob(pat)
+		if lerr != nil {
+			t.Fatalf("列 %s: %v", pat, lerr)
+		}
+		lessons = append(lessons, hits...)
 	}
 	for _, p := range lessons {
 		rel, relErr := filepath.Rel(root, p)

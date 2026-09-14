@@ -3,6 +3,10 @@
 基于 brook 的 **Linux 透明全局代理**(自研「类 ipio」,单一 Go 静态二进制)。整机 TCP/UDP 经 TUN 自动分流:中国直连、其余走加密隧道,对应用零配置。隧道是**可插拔黑盒子进程**:`brook://` 链接→内嵌 brook(默认),`vless://` 链接→sing-box 的 **VLESS-REALITY**(抗 DPI 伪装);两者其余全自有代码。
 
 - 用户文档见 `README.md`;设计/计划见 `docs/superpowers/specs/` 与 `docs/superpowers/plans/`。
+- **过程记录见 `docs/lessons/`**(事故复盘、施工日志、守卫的七种失效写法);
+  **待人工验收的清单见 `docs/acceptance-pending.md`** —— 那上面每一条都只有人在机器前
+  才能做(要在屏幕上点,或要制造一次真实故障),**agent 不要去跑它,也不要替它下结论**;
+  本文件各节的「真机未验」标签是那份清单的索引。
 - 模块:`github.com/getbx/bx`,Go 1.26,GitHub `getbx/bx`。
 - 平台:**linux/amd64 + linux/arm64**(开箱即用)+ **macOS 真机已跑通**;**Windows 真机 e2e 已验**(2026-07-09,`030-SJWJ-GSR-B` Win10 19044):全量路由劫持**整机出口==VPS**、reality(sing-box)隧道 390ms 健康、DNS-into-TUN fake-IP(`example.com→198.18.0.16`)、WFP 防泄漏装成功、SSH 经 10/8 旁路存活、死手优雅还原干净。
 
@@ -876,56 +880,17 @@ UDP 框**不**门控(旧 Guardian 一直处理得对,加门等于在那道门本
 有一条 `current` 的条目,而 Guardian 没有条目可画。不是回归,但 Task 6 的报告与验收清单
 把这句说反了。
 
-### 整枝 review 的修复轮(2026-09-13,真机仍未验)
+### 整枝 review 的修复轮(2026-09-13)→ `docs/lessons/2026-09-servers-and-core-start.md`
 
-**十一条,其中「守卫钉住的是缺陷旁边的东西」的第十二次长在漏斗自己身上**:
-`presentServers` 收成一个漏斗之后,里面有 `show(` 与 `refreshIfVisible(` **两个**调用点,
-而判据是 `strings.Contains(整个函数体, "canEdit: canEdit")` —— **一个调用点替另一个满足了
-断言**。实测只把 `show(` 那一处写死成 `core: nil / switchingTo: false / canEdit: true`,
-整套 `TestMacMenuServer*` 全绿;而 `show(` 正是用户点「Servers…」那条路,后果是对着只声明
-`servers` 的旧 Guardian 画出 `⋯`、Remove… 落进兼容分支 —— 出口 IP 换到他想删的那一台,
-菜单还报成功。判据因此下沉到**每一个实参表**(`swiftArgumentIsPlainly`),与同一轮在
-`swiftValueReachesViewTree` 里学到的「作用域限定在最内层块」是同一条。
-
-行为上改掉四件,每一件都是用户看得见的:
-- **`runningServerName` 对同一主机上的两台不再自信地报第一条。** Core 只报得出主机
-  (`RuntimeState` 里没有名字),而 `--with-hysteria2` 出的两条链接、凭据轮换那段过渡都会
-  造出这个形状。此前:填实的 `●` 与「bx is actually using X」落在错的那台,实时峰值给错行,
-  `recordThroughputOnce` **按错名字永久落盘**。**有歧义也是「说不出」**,返回空串。
-- **`Test All` 对只有一台的清单不再什么都不发生**(这一支自己引入的回归):探测结论只长在
-  候选行上,而 `otherServerRows` 按定义排除当前那台。现在当前那一块有自己的探测行,
-  **复用同一个三态呈现** —— 灰的仍是灰的,红只从实测失败来。
-- **两个改清单的动词在拨号之前自己再查一遍能力门**(`main.swift` 两处)。`NSMenu.popUp` 是
-  嵌套事件循环,画出 `⋯` 到点下去之间窗口可能已被重画;`GuardianClient.swift` 上那两句
-  「只有 serverEditingAvailable 判定支持时才该调用它」此前**没有任何东西**在执行。
-  两层是刻意的:一道防线不该只有一层。
-- **删除确认框说得出「这一台此刻正在承载你的流量」**(在跑、但配置里已不是 current 的那台
-  Remove… 是亮着的,合规),判据仍只有一份,从 `row.isRunningNow` 带过去。
-
-线上/CLI 三件:`servers_edit` 进 `acceptance.RequiredCapabilities`(菜单已真的依赖它 ——
-**能力声明是唯一能证明进程真的换了的信号**);`bx server list` 的探测三态改读 `Measured`
-而不是从 `Error != ""` 反推(spec §6.1 明令禁止,今天输出恰好对着只是因为产地总带一句
-中文原因);**add 与 replace 都在写盘之前校验链接解不解得出主机** —— 此前 add 只在「名字
-省略要推导」那一支上顺带校验,replace 一个字都不校验,而写进**当前**那台的一条解析不出的
-链接会让下一次重连起不来,同时界面刚承诺「重连后生效」。
-`Core not answering — nothing below was measured.` 改成 `— the live readings below are
-missing.`:它下面还活着 UDP 那行(来自配置)与吞吐(来自落了盘的历史,**确实量到过**且
-带真实年龄),原话被它自己下面那行当场证伪。
-
-**顺带修掉两处生产**产不出**的 fixture**(两次都是「测试输入让待守属性不可见」):
-`bx server list` 那三条 `ProbeReport` 省了 `Measured`(`Reachable:true` 而 `Measured:false`),
-它们全靠那条反推才绿;两条 add fixture 用的是 `brook://host:9999?password=y` —— 一条
-`tunnel.ServerHost` **解不出主机**的链接,能绿正是因为 add 那个校验缺口,而同一个文件
-二十行之下就写着正确的形状。
-
-**真机未验:整套,含此前搬进来的那两个按钮**(spec §10)—— 实时延迟是否真的每 2 秒跟着
-`/v1/status` 动 · 保护关着时点 `Test All` 每行应是灰色英文 `not measured` 而不是红 ·
-真切一次(会改出口 IP):要有可见反馈、四种结局的措辞对得上实际发生的事 · 删一台非当前
-的(确认框说清链接会丢)与删当前那台应被拒 · 单服务器配置下四个按钮都在、文案说的是
-「这是单服务器配置」· 加一台带 UDP 链接的,`bx status` 应显示 `UDP→hysteria2@…`。
-设计 `docs/superpowers/specs/2026-09-12-servers-window-design.md`、计划
-`docs/superpowers/plans/2026-09-12-servers-window.md`。
-
+**十一条,而「守卫钉住的是缺陷旁边的东西」的第十二次长在漏斗自己身上**:
+`presentServers` 收成一个漏斗之后里面有 `show(` 与 `refreshIfVisible(` **两个**调用点,
+而判据是 `strings.Contains(整个函数体, "canEdit: canEdit")` —— **一个调用点替另一个
+满足了断言**。判据因此下沉到**每一个实参表**(`swiftArgumentIsPlainly`)。
+行为上改掉四件,每件都是用户看得见的:`runningServerName` 对同一主机上的两台
+**有歧义也说「说不出」**(此前自信地报第一条,导致填实的 ● 落在错的那台、吞吐峰值
+**按错名字永久落盘**);`Test All` 对只有一台的清单不再什么都不发生;两个改清单的
+动词在拨号之前**自己再查一遍能力门**(`NSMenu.popUp` 是嵌套事件循环,画出 `⋯` 到点
+下去之间窗口可能已被重画);删除确认框说得出「这一台此刻正在承载你的流量」。
 ### 守卫的七种失效写法 → `docs/lessons/guard-antipatterns.md`
 
 **这个仓库最贵的一份方法论。** 七种写法此前散在本文件四个小节里(这一支三节、
@@ -2432,50 +2397,24 @@ brief 假设的「已经带了」),于是菜单那半说不出是哪台服务器
 命令出现在一句唯一目的就是「照着做」的话里),渲染出来的话里不许有 markdown 的 `**`
 (用户读到的是字面上的星号,`TestNoRenderedAdviceCarriesMarkdown` 两侧各一条)。
 
-### 判别拨号绑物理网卡,而那张表在真机上可能是空的(整枝 review 抓到,已修)
+### 判别拨号绑物理网卡 → 同一份 lessons
 
-判别那次拨号走 `plat.DirectDialer()`(darwin 上是 `IP_BOUND_IF`,防的是绕回隧道成环),
-而 **`IP_BOUND_IF` 只查 scoped 路由表** —— 那条 scoped 默认路由由 `Hijack` 装,而
-`Hijack` 在 `Run` 里排在这次判别拨号(`awaitTunnelHealthOrDiagnose`)**五百多行之后**
-(行号别抄:见上文「两条结构性事实」那条,写死的数字已经漂过一次)。2026-08-13 那种机器状态
-(单一活跃网络服务,macOS 根本不建 per-interface default)下每一次判别都在本机
-`ENETUNREACH`,于是「VPS 真的挂了」与「VPS 活着而握手失败」**一起塌进 local_dial**,
-而那句话此前连 host:port 都没有,还先派用户去查 bx 自己的路由 —— **spec §8 的真机验收
-因此验不出它要验的东西**,跑验收的人有充分理由判定这支修复是坏的。(今天所有者机器上
-那条 scoped 路由在,所以它是潜伏的,不是活着的。)
+判别那次拨号走 `plat.DirectDialer()`(darwin 上是 `IP_BOUND_IF`),而**它只查 scoped
+路由表** —— 那条 scoped 默认路由由 `Hijack` 装,而 `Hijack` 排在判别拨号**之后**。
+2026-08-13 那种机器状态(单一活跃网络服务)下每次判别都在本机 `ENETUNREACH`,
+于是「VPS 真的挂了」与「VPS 活着而握手失败」**一起塌进 local_dial**。修法两半:
+① local_dial 那句话也点名 host:port;② **绑网卡那次在本机失败后,不绑再试一次**
+(此刻还没 OpenTUN、没劫持,普通 socket 走的就是主路由表 —— 而隧道子进程刚才那
+20 秒走的正是同一张表)。**只在「SYN 没离开本机」这一族失败上才退到不绑**:
+拒绝 / 超时 / 域名解析不了都是**观测到的答案**,不许被第二次拨号覆盖。
 
-修法两半:① **local_dial 那句话也点名 host:port**(bx 明明知道那个地址),守卫做成
-**穷举整族**(族由 `supervisor.StartFailureCodes()` 派生,新加一档自动进范围):
-`TestEveryTunnelOutcomeNamesTheServerWhenBxKnowsIt` 与 Swift 侧同款。
-② **绑网卡那次在本机失败后,不绑再试一次**(`diagnosisDialWithUnboundRetry`)。
+### 跨进程那条线 → 同一份 lessons
 
-**为什么不绑在这个位置是安全的、而且更忠实**:此刻 `plat.OpenTUN` 还没被调到、路由也还
-没劫持,普通 socket 走的就是主路由表 —— 而**隧道子进程刚才那 20 秒走的正是同一张表**
-(sing-box 既没有 `SO_MARK` 也没有 `IP_BOUND_IF`,server bypass 那条 /32 也要等 Hijack
-才装)。也就是说不绑的那一次拨号复现的才是隧道自己那条路径。**那为什么还把绑的那次
-留作主路径**:它防的是上一个崩掉的实例留在内核里的陈旧 TUN 与劫持路由。所以**只在
-「SYN 没离开本机」这一族失败上**才退到不绑;拒绝 / 超时 / 域名解析不了都是**观测到的
-答案**,不许被第二次拨号覆盖(`TestAnAnswerFromTheServerIsNeverSecondGuessedByARetry`)。
-两次都在本机失败 ⇒ 照旧 `local_dial`,一个字不变。「本机自己没发出去」的判据下沉成
-`failedBeforeTheSYNLeft`,分档与重试**共用一份**。
+**生产的写方与生产的读方此前从不在同一个测试里碰面**,于是三条各一行的改动都能让
+这个功能整个退回改动前而三个包全绿。往返现由
+`TestTheCoreWritesExactlyWhatTheGuardianReads` 钉住:**写下去的字节读回来必须还是
+同一个码**,判据刻意不是「调用发生过」。**这是本支第四次「第七种写法」。**
 
-### 跨进程那条线,两头的测试从不相遇(整枝 review 的 Critical,已修)
-
-**生产的写方与生产的读方此前从不在同一个测试里碰面** —— 写那半只在 `internal/cli` 里
-对着临时目录测,读那半只在 `internal/guardian` 里对着手工拼出来的 `Record` 测。于是
-**三条各一行的改动都能让这个功能整个退回改动前,而三个包全绿**:构造器里那句
-`StartFailurePath` 被删、`coreArgs` 收到 `""`、写记录时 `At` 取零值。
-
-**结构性帮凶两条,都已拆掉**:① `startFailurePath()` 是**裸转发**,而兄弟 `statePath()`
-有默认兜底 —— 同一行删除对状态文件 **fail-safe**、对这份记录 **fail-silent**;现在它
-也落回 `corestartfailure.DefaultPath`(`TestTheStartFailureRecordAlwaysHasAPlaceToLive`),
-代价是 `StartFailurePath = ""` 不再是「关掉」的开关,而空路径既然不可能了,两处
-`if path == ""` 一并删掉 —— 一段永远不会被执行的分支看起来像还有一道防线。
-② `spawnRecordSpy` 拿到了 `args` 却什么都不断言(**守卫就摆在缺陷旁边**),现在它断言
-argv 里那个值**就是读的人稍后要去看的那个位置**。往返本身由
-`TestTheCoreWritesExactlyWhatTheGuardianReads` 钉住:写下去的字节,读回来必须还是同一
-个码 —— 判据刻意不是「调用发生过」。**这是本支第四次「第七种写法」,第二次它会让功能
-静默死掉。**
 
 ### 刻意不做
 
@@ -2487,51 +2426,18 @@ argv 里那个值**就是读的人稍后要去看的那个位置**。往返本�
   改它的语义是全仓爆炸半径。**单独立项。**
 - **不改 fail-closed**,一个字不动。
 
-### 真机未验(整套)
+### 真机未验(整套)→ `docs/acceptance-pending.md` B2
 
-验收(所有者手上就有现成的复现方式):把 `current` 指向一个不通的地址,`sudo bx up`
-应当**一次**就说出「bx 连不上 <host:port>」并点名另一台,**而不是**七次
-`core_ownership_uncertain`;另外盯两件事 —— ① `/var/lib/bx/core-start-failure.json` 在
-**成功**启动之后不该存在(Guardian spawn 前删、读完也删);② 若那句话报的是
-`local_dial`(不该,但正是 2026-08-13 那种机器状态的样子),去 `bx.log` 里找
-`core_start_diagnosis_unbound_retry` —— 有这一行说明不绑那次重试发生过、而它也在本机
-失败了;**没有这一行**说明绑网卡那次拿到的是那台服务器的答复,判据走的是另一条路。
-
-**五条已知缺口**(下面 ①–⑤;原来的 ⑥ 已经修掉,划掉留档 —— **数的是还活着的那几条,
-加减一条就回来改这个数**。此前这里先写「两条」而列了三条,整枝 review 抓到才逐条列全,
-**本文件为这个形状罚过自己一次**「此前这里写的是『八条』,漏了头尾两条」,而它当场又
-犯了一遍):
-
-① **`bx up` 那条接线只在 darwin 生效**(`macOSUpAction`,`internal/cli/guardian.go`);
-linux 的 `upAction` 走 systemd、根本不经 Guardian socket,没有码可解,Windows 同理
-—— 事故在 darwin。
-② `current_server` **只喂「Core 起不来那句话」,没接进服务器窗口** —— 上文
-「Servers 窗口」那条「最常见那种配置看不到当前那台」的已知缺口**原样还在**,本支没动它。
-③ 菜单那半在 `.warning`/`.connected` 之外的状态下拿不到码(与既有 `toggleFailureHint`
-同一条路)—— **没有新增缺口,但也没有新增覆盖**。
-④ **升级那条路上的健康失败仍然不读记录**(`startUpdateCore`,`internal/guardian/update.go`
-的 `new_core_health_failed`)—— 与 `bx up` 那一支形状完全相同,而它一个字都不说为什么。
-不顺手做掉是因为它**不是几行**:那条路的码空间是另一套(`new_core_*`,消费方是升级
-流程不是 `bx up` 的那段话),要先定「新 Core 的病因该用哪个前缀、升级中止时怎么呈现」,
-还要重新过一遍 reserveCleanup 的预算账。**单独立项,别顺手改。**
-⑤ **「读不到配置」仍然落 `other`。** 只有 `config.Parse` 失败挂了 `ErrConfig`
-(`loadConfig`);文件不在 / 权限不够是另一种故障(多半是「还没 setup 过」),借
-`config_unusable` 就是叫用户去改一个他还没写过的文件 —— `ErrConfig` 头上那段注释画的
-就是这条分界。真要给它一句话,得先有一个属于它自己的哨兵。
-~~⑥ 那张 errno 表在 Windows 上是死的~~ —— **同一支的 `32450ff` 已经把它修好了,
-这条缺口 2026-09-13 划掉**:`internal/supervisor/tunneldiagnosis_windows.go` 供货四个 WSAE 孪生值
-(`WSAENETUNREACH`/`WSAEHOSTUNREACH`/`WSAEACCES`/`WSAEADDRNOTAVAIL`),
-`dialFailuresBeforeTheSYNLeaves` = posix 那四个 + 本平台孪生(非 windows 显式 nil,
-darwin/linux 行为逐字节不变),加一行 posix 值时孪生表由
-`TestEveryLocalDialFailureHasAWinsockTwin` 逼着一起加。
-**留着这条记述是因为它自相矛盾的形状值得记住**:同一节上面那段(local_dial 那一条)
-写的一直是修好之后的样子,而这里还停在修好之前 —— **一份缺口清单最坏的失效不是漏记,
-是把一个已经修掉的缺陷说成仍然活着**,它会派下一个人去修一个不存在的东西,并连带让他
-不再相信旁边那几条还成立的话(与本文件那份「四分之三是假的缺口清单」同一个教训)。
-
-设计 `docs/superpowers/specs/2026-09-13-core-start-failure-reason-design.md`、计划
-`docs/superpowers/plans/2026-09-13-core-start-failure-reason.md`。
-
+验收步骤搬到那份清单里了(把 `current` 指向不通的地址、`sudo bx up` 应**一次**就说出
+「bx 连不上 <host:port>」)。**五条已知缺口仍留在这里**,因为它们是待办不是步骤:
+① `bx up` 那条接线**只在 darwin 生效**(linux 走 systemd 不经 Guardian socket);
+② `current_server` 只喂「Core 起不来那句话」,**没接进服务器窗口**;
+③ 菜单那半在 `.warning`/`.connected` 之外的状态下拿不到码;
+④ **升级那条路上的健康失败仍不读记录**(`startUpdateCore` 的 `new_core_health_failed`)
+—— 不顺手做是因为那条路的码空间是另一套,要先定前缀与呈现,**单独立项,别顺手改**;
+⑤ **「读不到配置」仍落 `other`** —— 只有 `config.Parse` 失败挂了 `ErrConfig`,
+文件不在 / 权限不够是另一种故障(多半是「还没 setup 过」),借 `config_unusable`
+就是叫用户去改一个他还没写过的文件。
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,
