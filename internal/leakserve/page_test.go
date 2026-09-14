@@ -68,6 +68,12 @@ func TestReportResponseCarriesFinishedConclusions(t *testing.T) {
 		// 不是可判断的原料。两个数刻意分开:合成一个总数时它永远不为零,
 		// 于是会被训练成噪声,连带把真正的泄漏一起淹掉。
 		"identity_count": true,
+		// reach 是第四段(可达性)的四态计数,与上面两个数同类 —— 同样是
+		// **成品结论**,不是原料。它刻意与 anomaly_count/identity_count 并排
+		// 而不合并:可达性的坏消息是「你用不了」,path/identity 的坏消息是
+		// 「你泄漏了」,后者才是安全问题;合成一个数就是让一次连不上稀释掉
+		// 真正的泄漏告警。
+		"reach": true,
 	}
 	for key := range top {
 		if !want[key] {
