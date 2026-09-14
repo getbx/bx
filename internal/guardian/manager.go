@@ -639,11 +639,33 @@ func (m *Manager) Up(ctx context.Context) error {
 		m.needsAttention(DesiredOn, maintenanceHoldClearFailedCode)
 		return fmt.Errorf("clear maintenance hold: %w", err)
 	}
+	// ③c:**用户按下开关这个动作本身**结束一段故障,不是「按下去之后起成功了」。
+	// 故它排在 upLocked **之前** —— 排在后面的话,唯一需要它的那个场景恰好不生效:
+	// Core 起得来的时候,下一轮观测(reconcileOnce 里 CoreSocket == True)本来就会
+	// 重置,用户那一下是多余的;Core 起不来的时候才需要它,而那正是 upLocked 返回
+	// 错误、这一行被跳过的时候。
+	//
+	// 真机 2026-09-13 逐字兑现:VPS 不通,08:23 用户从菜单按下开关、upLocked 在
+	// `wait for Core health` 超时返回,此后 9 小时 16 分钟里调谐环 61 次醒来、
+	// 61 次 `outcome=skipped code=start_core_exhausted`,一次都没再试 —— 而
+	// desired=on、机器上没有 Core、没有屏障,流量明文直连。VPS 若在这 9 小时里
+	// 恢复,bx 也不会自己回来。
+	//
+	// **重置不等于无限重试**:它只发生在用户按下开关那一刻,不在每一轮。用户按一次
+	// ⇒ 调谐环重新试满 maxReconcileStartCoreAttempts 次 ⇒ 再 exhausted 停住,
+	// 封顶那条纪律一个字没动。
+	//
+	// **排在 clearMaintenanceHold 之后,今天不产生任何可观测差异 —— 别把它读成一道门。**
+	// 那道门失败时(升级中、挂起还武装着)upLocked 一次都没跑,语义上不该算「用户
+	// 重新开始了一段」;但即便重置了也起不了 Core,因为 heldBy 会先返回
+	// maintenance_hold ⇒ decide 产出 actions=none。recoveryBlocked 那条早退同理
+	// (heldBy 排在第一位)。两条都在 2026-09-13 的真机日志里实测到
+	// (`held=maintenance_hold actions=none` / `held=recovery_blocked actions=none`)。
+	// 位置在这里是为了让语义只有一种读法,不是因为它挡住了什么。
+	m.resetStartCoreAttempts()
 	if err := m.upLocked(ctx, upOriginUser); err != nil {
 		return err
 	}
-	// ③c:用户亲手起了 Core,这段故障结束。
-	m.resetStartCoreAttempts()
 	// 用户的显式 up 成功之后,更早那次路径恢复的**结局**不再对外发布(见
 	// retireCompletedPathRecovery):否则 observableStatus 会拿一份 failed 快照
 	// 把这份 Protected 改写成 Blocked,菜单图标跟着裂开,而机器其实是受保护的。
