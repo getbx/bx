@@ -2592,7 +2592,17 @@ brief 假设的「已经带了」),于是菜单那半说不出是哪台服务器
   打印的是 `FAIL:`(「没转红」被误判成守卫失效)、`head -5` 查 `set -e` 而注释头十几行、`grep -c` 数
   「出现次数」而它数的是行数、替换串带了不存在的前导 tab 而 `str.replace` 匹配不上时不报错。
   **别再手敲那一串命令**;`verify.sh` 自己也验过五个方向都会失败,漏一道闸门由 `TestVerifyScriptCoversEveryGate` 钉住。
-  **一个会偶发红的闸门比没有闸门更糟**,因为它训练人去重跑 —— 而重跑正是「判据是
+  **一个会偶发红的闸门比没有闸门更糟**,因为它训练人去重跑
+  **今天挂着一个已知的 flake,它的形状与 socks5 那次不同,记在这里免得下一个人
+  以为自己弄坏了什么**:`TestManagerUpdateReservesDeadlineForTargetCleanup`
+  (`internal/guardian/update_test.go`)在 2026-09-14 的 release run 上红过一次
+  (`previous_core_health_failed`),而**本地连跑 30 次全过**。脆在挂钟上:整个
+  `Update` 只给 500ms,而 v2 的健康检查是**无限阻塞**的,它先吃掉大半,剩给
+  「回滚之后等 v1 健康」的余量在 CI 慢机器上不够。**正确修法不是把 500ms 调大**
+  —— 要先弄清 `Update` 内部怎么在健康检查与清理之间分预算(那正是这条测试要证明
+  的东西),否则调大只是把同一个竞态推远一点。**它不是被这次改动弄红的**:那一轮
+  一个字都没碰 guardian,而 release 之前的全量 verify 在本机是绿的。
+ —— 而重跑正是「判据是
   退出码」这条纪律唯一的解毒方式。2026-08-17 抓到并修掉一个:`internal/socks5` 的
   `TestDialerUDPAssociateRelaysDatagrams` 在 1500 次里失败 4 次,根因是 UDP ASSOCIATE
   的客户端 socket 绑的是**双栈通配** `[::]`,而 relay 是 IPv4 —— 服务端明明写成功了
