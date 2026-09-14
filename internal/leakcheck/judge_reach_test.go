@@ -166,7 +166,7 @@ func TestJudgeReachTargetCoversEveryState(t *testing.T) {
 	}
 }
 
-// 没有探测记录时(今天的常态,接线归后续任务)必须诚实地说「没检查」,
+// 没有探测记录时(2026-09-14 接线做完之后它不再是常态,主要来自 --no-reach)必须诚实地说「没检查」,
 // **不许借用人机挑战那句话** —— 这与「探过了、认不出」是两件不同的事,零值
 // ReachUndetermined 之下两条路径的 Summary 必须不同(早退分支 vs switch 的
 // default 分支)。

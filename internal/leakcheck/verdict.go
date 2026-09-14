@@ -199,7 +199,7 @@ func NewReport(now time.Time, endpoints EndpointDisclosure, findings []Finding, 
 	anomalies, identity := 0, 0
 	var reach ReachSummary
 	for _, f := range findings {
-		// **可达性先分流,且不看 Verdict** —— 它的四态自己就带极性,
+		// **可达性先分流,且不看 Verdict** —— 它的五态自己就带极性,
 		// 而把它塞进下面那个 else 分支正是这个任务要堵的洞。
 		if f.Section == SectionReach {
 			switch f.Reach {
