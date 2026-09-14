@@ -93,20 +93,35 @@ func (s Section) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + s.String() + `"`), nil
 }
 
-// ReachState 是一次可达性探测的四态。**零值必须是 ReachUndetermined。**
+// ReachState 是一次可达性探测的五态。**零值必须是 ReachUndetermined。**
 //
 // 与 Verdict 分开是因为它们回答不同的问题:Verdict 是给界面的**极性**(好/坏/没查),
-// ReachState 是**发生了什么**(到了/被拒/没问出来/到不了)。Refused 与 Unreachable
-// 都映射成 Bad,但给用户的话完全不同 —— 一个是「换服务器」,一个是「这条路不通」。
+// ReachState 是**发生了什么**(到了/被拒/没问出来/到不了/被拦下来问不出来)。
+// Refused 与 Unreachable 都映射成 Bad,但给用户的话完全不同 —— 一个是「换服务器」,
+// 一个是「这条路不通」。
+//
+// **Challenged 与 Undetermined 是分开的两态,不合成一个(2026-09-14 review 加)。**
+// 此前 CF 人机挑战与「认不出的状态码/重定向」共用同一个 `ReachUndetermined`,而
+// `judgeReachTarget` 对这一态无条件说「这是 Cloudflare 的人机挑战,不是你的出口
+// 有问题」——那句话只对 CF 那一支为真。一个真实的地区封禁页(HTML,不含 CF 那
+// 几个特征串)会落进同一态,读到的却是一句主动否掉坏消息的话,而这个功能存在的
+// 唯一理由就是回答「是不是你的出口有问题」,给反了答案比不给更糟。两态措辞相反:
+// Challenged 能主动否掉那句坏消息(有真凭据——CF 的特征串),Undetermined 不能
+// (认不出就是认不出,不猜)。
 type ReachState uint8
 
 const (
-	// ReachUndetermined:没问出来。CF 人机挑战、认不出的状态码,全在这一格。
-	// **绝不因为「没看到拒绝」就升格成可达。**
+	// ReachUndetermined:没问出来,且**不知道拦住它的是什么**——认不出的状态码、
+	// 3xx 重定向、连探测记录都没有,全在这一格。**绝不因为「没看到拒绝」就升格成
+	// 可达,也绝不替它猜一个具体原因**(那正是 Challenged 与它分开的理由)。
 	ReachUndetermined ReachState = iota
 	ReachReachable
 	ReachRefused
 	ReachUnreachable
+	// ReachChallenged:命中了 Cloudflare 人机挑战的特征(spec §3.1 步骤②)——
+	// 这是**唯一**能主动告诉用户「不是你的出口有问题」的一态,因为判据手里
+	// 有真凭据(那几个特征串),不是在猜。
+	ReachChallenged
 )
 
 func (r ReachState) String() string {
@@ -117,6 +132,8 @@ func (r ReachState) String() string {
 		return "refused"
 	case ReachUnreachable:
 		return "unreachable"
+	case ReachChallenged:
+		return "challenged"
 	default:
 		return "undetermined"
 	}
@@ -126,13 +143,16 @@ func (r ReachState) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + r.String() + `"`), nil
 }
 
-// ReachSummary 是第四段的计数。**四态各自一个数,绝不合成** ——
+// ReachSummary 是第四段的计数。**五态各自一个数,绝不合成** ——
 // 合成之后「一条都没查出来」与「查了、全可达」在屏幕上就一样了。
 type ReachSummary struct {
 	Reachable    int `json:"reachable"`
 	Refused      int `json:"refused"`
 	Undetermined int `json:"undetermined"`
 	Unreachable  int `json:"unreachable"`
+	// Challenged 与 Undetermined 分开数——两者的措辞相反(见 ReachState 的注释),
+	// 合成一个数会让「查了、是人机挑战」与「查了、什么都认不出」在屏幕上一样。
+	Challenged int `json:"challenged"`
 }
 
 // Finding 是一条可展开看依据的结论。
@@ -148,7 +168,13 @@ type Finding struct {
 	// Reach 只在 Section == SectionReach 时有意义。**其余段一律忽略它** ——
 	// ReachUndetermined 恰好是零值,不加这道门就会把每条 path 结论都算成
 	// 「一次没问出来的可达性探测」。
-	Reach    ReachState `json:"reach,omitempty"`
+	//
+	// **刻意不带 omitempty**(2026-09-14 review 修正,brief 原文写反了):`uint8`
+	// 的 omitempty 判的是 Go 零值、不走 MarshalJSON,而 `ReachUndetermined` 恰好
+	// 是零值——加了 omitempty,这一段唯一必须说清楚的「没问出来」那个状态会从
+	// JSON 里整个消失(实测:该 Finding 序列化后没有 `reach` 键)。与
+	// `Status.Capabilities`、`ProbeReport.measured` 刻意不带 omitempty 同一条纪律。
+	Reach    ReachState `json:"reach"`
 	Evidence []string   `json:"evidence,omitempty"`
 }
 
@@ -183,6 +209,8 @@ func NewReport(now time.Time, endpoints EndpointDisclosure, findings []Finding, 
 				reach.Refused++
 			case ReachUnreachable:
 				reach.Unreachable++
+			case ReachChallenged:
+				reach.Challenged++
 			default:
 				reach.Undetermined++
 			}

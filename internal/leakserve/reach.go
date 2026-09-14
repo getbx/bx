@@ -39,11 +39,15 @@ func probeOne(ctx context.Context, dial DialFunc, tgt leakcheck.ReachTarget, pat
 			return http.ErrUseLastResponse
 		},
 	}
+	// **Detail 是给用户看的一句话,而这份报告通篇是英文**(CLAUDE.md「服务端写的是
+	// 中文」那条先例:`rulereview`/`deadFindings` 的中文 summary 原样渲染进英文
+	// 菜单,是本仓库罚过的形状)。`Detail` 此前零消费方,Task 5 是第一个把它送上
+	// 用户可见面的 —— 中文字面量因此在这里成了缺陷,一并改成英文。
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tgt.URL, nil)
 	if err != nil {
 		return leakcheck.ReachProbe{
 			TargetID: tgt.ID, Path: path,
-			State: leakcheck.ReachUnreachable, Detail: "这个地址解析不了",
+			State: leakcheck.ReachUnreachable, Detail: "this address could not be resolved",
 		}
 	}
 	resp, err := client.Do(req)
@@ -51,7 +55,7 @@ func probeOne(ctx context.Context, dial DialFunc, tgt leakcheck.ReachTarget, pat
 		return leakcheck.ReachProbe{
 			TargetID: tgt.ID, Path: path,
 			State:  leakcheck.JudgeReach(0, nil, err),
-			Detail: "这条路到不了",
+			Detail: "this path could not be reached",
 		}
 	}
 	defer resp.Body.Close()
