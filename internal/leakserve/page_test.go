@@ -13,8 +13,16 @@ import (
 	"github.com/getbx/bx/internal/leakcheck"
 )
 
-// 页面必须在**联网之前**原样显示要联系谁(设计风险三:第三方暴露是用户明确
-// 接受的,但必须可见)。断言打在真实响应体上,不是打在模板文件上。
+// 页面必须在**它自己联网之前**原样显示它要联系谁(设计风险三:第三方暴露是
+// 用户明确接受的,但必须可见)。断言打在真实响应体上,不是打在模板文件上。
+//
+// **范围就到这里,别再读成「bx 这一轮还没联系过任何人」**(2026-09-14 更正):
+// 第四段接上之后,用户读到这一页的时刻 bx 已经从本机 GET 过四个 AI 端点 ——
+// 那一半的披露由 CLI 的 announceReachTargets 兑现,排在第一个请求之前,页面
+// 一个字节都不经手。页面上那句加粗的话此前写的是「Before anything is sent」,
+// 一个看完清单决定「算了不跑」关掉标签页的人会据此以为一个字节都没出去;
+// 已收窄成「Before this page sends anything」。**同一句话在 CLI 那边
+// (`Contacted by the browser half:`)先清过一次,而这一份当时漏了。**
 func TestPageDisclosesEndpointsVerbatim(t *testing.T) {
 	srv := newTestServer(t)
 	resp := get(t, srv, "/?t="+srv.Token())

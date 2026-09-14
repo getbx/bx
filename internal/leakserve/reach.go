@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/getbx/bx/internal/leakcheck"
@@ -30,7 +31,14 @@ func probeOne(ctx context.Context, dial DialFunc, tgt leakcheck.ReachTarget, pat
 	defer cancel()
 
 	client := &http.Client{
-		Transport: &http.Transport{DialContext: dial},
+		Transport: &http.Transport{
+			DialContext: dial,
+			// **单次 GET,keep-alive 一点用都没有,而它的代价不为零**:这个进程
+			// 在探测结束之后还要活最多 2 分钟等浏览器那半,期间四条到 Anthropic /
+			// OpenAI / Google 的空闲 TLS 连接会一直挂到 90 秒的空闲超时 ——
+			// 对一个隐私工具那是白送出去的持续连接。
+			DisableKeepAlives: true,
+		},
 		// **不跟随重定向。** 跟过去之后 status 与 body 都是**终点**的,而这条记录
 		// 仍然标着起点的 TargetID —— 那就是「记录 A 的观测、归因给 B」。
 		// 3xx 因此落进 JudgeReach 的「认不出的状态码 ⇒ Undetermined」那一支,
@@ -47,9 +55,16 @@ func probeOne(ctx context.Context, dial DialFunc, tgt leakcheck.ReachTarget, pat
 	if err != nil {
 		return leakcheck.ReachProbe{
 			TargetID: tgt.ID, Path: path,
-			State: leakcheck.ReachUnreachable, Detail: "this address could not be resolved",
+			// **不说「解析不了」** —— 这一支只在 URL **解析**失败时走到
+			// (目标 URL 是本仓库钉死的字面量,它到不了网络那一层),说「这个地址
+			// 解析不了」就是**断言了一次并没有发生的 DNS 观测**,与本段
+			// 「只说 bx 观测到什么」那条纪律正好反着来。
+			State: leakcheck.ReachUnreachable, Detail: "this target URL could not be parsed",
 		}
 	}
+	// 连 DisableKeepAlives 一起是两道:前者不复用,这一句把已经建起来的也收掉,
+	// 不等 Go 的空闲回收。
+	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
 		return leakcheck.ReachProbe{
@@ -63,6 +78,13 @@ func probeOne(ctx context.Context, dial DialFunc, tgt leakcheck.ReachTarget, pat
 	return leakcheck.ReachProbe{
 		TargetID: tgt.ID, Path: path,
 		State: leakcheck.JudgeReach(resp.StatusCode, body, nil),
+		// **状态码是这一段唯一的真观测,必须出示。** 在它进来之前,第四段的
+		// Evidence 只是把结论换个词重说一遍(`current path: reachable`),而
+		// leakcheck 的地基是「Evidence 是**必须**的那一半 —— bx 判错时用户看得出
+		// 它是怎么错的」:同一个 403 可以是 API 在正常应答也可以是人机挑战,
+		// 看不到那个数字的人无从复核判据挑了哪一支。
+		// **只放这个数字,不放 body、不放原始错误**(ReachProbe.Detail 的注释)。
+		Detail: "HTTP " + strconv.Itoa(resp.StatusCode),
 	}
 }
 
@@ -111,6 +133,12 @@ type ReachDeps struct {
 // 那个拨号器今天不存在。翻转常量时**必须同时供货 BypassDial** —— 只翻常量而
 // 让 BypassDial 留空,这一轮会安静地什么都不多跑,而守卫全绿。
 //
+// **翻转那天的清单里还有一条最容易漏的:DNS。** `http.Transport.DialContext`
+// 拿到的是已经拼好的 `host:port`,**名字解析发生在拨号器内部**(`net.Dialer`
+// 自己去做)—— 只把 `Control`/`LocalAddr` 绑上物理接口而不管解析,那条路会变成
+// 「DNS 经隧道、TCP 走物理」,两条路径的对照形状就对不上了,而屏幕上看不出
+// 任何异常。这条今天只活在 SDD 台账里,而**台账下一个人不会读,注释会读**。
+//
 // **spec §5.1 对那一天还有第二条要求,别只记住第一条**:「无论默认哪边,两件事
 // 必须做:① 界面上明说**这一步从物理网卡直接发,不经任何隧道**;② 给关掉的开关。」
 // ② 今天已经就位 —— `bx leakcheck --no-reach` 关掉整轮探测(两条路径一起),
@@ -147,7 +175,7 @@ func CollectReach(ctx context.Context, deps ReachDeps) []leakcheck.ReachProbe {
 		return nil
 	}
 	targets := leakcheck.ReachTargets()
-	ctx, cancel := context.WithTimeout(ctx, reachBudgetFor(deps))
+	ctx, cancel := context.WithTimeout(ctx, ReachBudgetFor(deps))
 	defer cancel()
 
 	out := make([]leakcheck.ReachProbe, 0, len(targets)*len(paths))
@@ -182,16 +210,18 @@ func reachPathsOf(deps ReachDeps) []reachPath {
 // 各判各的话,两个漂开的方向分别是「探了没说」与「说了没探」,都是假话。
 func (d ReachDeps) WillProbe() bool { return len(reachPathsOf(d)) > 0 }
 
-func reachBudgetFor(deps ReachDeps) time.Duration {
-	return reachBudget(len(leakcheck.ReachTargets()) * len(reachPathsOf(deps)))
-}
-
-// ReachBudget 是**默认这一轮**探测的上限,给「这一步最多要等多久」那句话用。
+// ReachBudgetFor 是**这一份 deps** 这一轮探测的上限,给「这一步最多要等多久」
+// 那句话用。它算的就是 CollectReach(ctx, deps) 会用的那份预算。
 //
-// 它算的就是 CollectReach(ctx, LiveReachDeps()) 会用的那份预算,**不是另写一个
-// 数**:announceReachTargets 手抄一个秒数的话,加第五个目标(或打开 bypass)那天
-// 屏幕上那句「最多约 N 秒」会悄悄变成假的,而它唯一的用途就是让用户知道该等多久、
-// 别以为命令挂了。
-func ReachBudget() time.Duration {
-	return reachBudgetFor(LiveReachDeps())
+// **必须吃调用方手里那份 deps,不许自己去取 LiveReachDeps()。** 此前的无参版本
+// 就是那么写的:披露那一句问的是「我这一轮会发几个探测」,而答案来自**另一个
+// 对象**。今天两者恰好是同一份,所以数字对;`DefaultProbeBypass` 翻成 true 的
+// 那天探测数翻倍、预算变成 69 秒,而一个拿着 `--no-reach` 之外的定制 deps 的
+// 调用方会在屏幕上读到一个不属于自己那一轮的秒数 —— 而这个文件上面刚用三段
+// 注释论证过「披露与探测必须读同一个值」(WillProbe),预算是同一件事的另一半。
+//
+// 无参那个版本**已删**,不是保留着不用:留着它,下一个人照着 `WillProbe()` 的
+// 形状写一行 `leakserve.ReachBudget()` 是最自然的动作,而编译器不会拦他。
+func ReachBudgetFor(deps ReachDeps) time.Duration {
+	return reachBudget(len(leakcheck.ReachTargets()) * len(reachPathsOf(deps)))
 }

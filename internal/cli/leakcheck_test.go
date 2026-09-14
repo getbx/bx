@@ -595,9 +595,9 @@ func TestNoLeakCheckOutputCarriesMarkdown(t *testing.T) {
 // 两条断言:① 这一轮的预算必须真的比本机采集那份宽;② 喂一个**第一个目标就阻塞
 // 得比那份预算还久**的拨号器,后面的目标仍然必须被拨到。
 func TestReachProbesDoNotShareTheLocalFactsBudget(t *testing.T) {
-	if leakserve.ReachBudget() <= leakserve.DefaultFactsBudget {
+	if leakserve.ReachBudgetFor(leakserve.LiveReachDeps()) <= leakserve.DefaultFactsBudget {
 		t.Fatalf("可达性探测的预算 %v 不比本机采集那份 %v 宽 —— 它被塞回同一份预算里了",
-			leakserve.ReachBudget(), leakserve.DefaultFactsBudget)
+			leakserve.ReachBudgetFor(leakserve.LiveReachDeps()), leakserve.DefaultFactsBudget)
 	}
 
 	targets := leakcheck.ReachTargets()

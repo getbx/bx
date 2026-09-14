@@ -40,6 +40,15 @@ var regionRefusalMarkers = [][]byte{
 // 不许替它猜同一句话。
 func JudgeReach(status int, body []byte, dialErr error) ReachState {
 	// ① 连都没连上 —— 这时 status/body 没有意义。
+	//
+	// **⚠️ 这一支今天安全,靠的是一个本包看不见的事实**:`bx leakcheck` 跑在
+	// `app.Run(os.Args)` 交下来的 `context.Background()` 上,`c.Context` 永不取消,
+	// 所以走到这里的 dialErr 只可能是「这条路不通」。哪天有人给 CLI 接上
+	// `signal.NotifyContext`(Ctrl-C),「我们自己被取消了」会经同一个 err 落进
+	// 这里、被报成 `ReachUnreachable` —— 而那正是这一段最不该产生的答案:用户按
+	// 了一下 Ctrl-C,报告说 Anthropic 连不上。那一天要在**产地**(leakserve 的
+	// probeOne)先把 `ctx.Err()` 那一类分出来,不是在这里猜 —— 本包拿到的只有一个
+	// error,它分不出「对方不理我」与「我自己走了」。
 	if dialErr != nil {
 		return ReachUnreachable
 	}
@@ -70,6 +79,14 @@ func JudgeReach(status int, body []byte, dialErr error) ReachState {
 		return ReachReachable
 	}
 	// ⑥ 2xx 且不是挑战页:真的拿到了东西(favicon 走这一支)。
+	//
+	// **一个 200 的 HTML 拦截页(酒店门户、企业代理的「访问被阻止」页)会落进
+	// 这里判 Reachable。这是刻意的边界,不是漏判** —— spec §3.1 无条件把 2xx
+	// 收进可达,两条理由:① 四个端点全是 https,拦截方插不进这一页 —— TLS 会
+	// 先失败,那一轮落进步骤①;② 措辞救了它:这一段说的是「bx can reach X」
+	// 而不是「你可以用 X」,而「这条路到得了那个地址」在拿到 200 时确实成立。
+	// 要改成「认出拦截页」就得维护一份拦截页特征库,而那是一个没有语料库的
+	// 分母(与「指纹那条问有没有在防、不问指纹是什么」同一条)。**别当 bug 修。**
 	if status >= 200 && status < 300 {
 		return ReachReachable
 	}
@@ -113,7 +130,9 @@ func judgeReachTarget(tgt ReachTarget, probes []ReachProbe) Finding {
 	host := reachHost(tgt.URL)
 
 	if tgt.OnChinaDirectList != nil {
-		f.Evidence = append(f.Evidence, tgt.ID+" on built-in china direct list: "+
+		// **点名 host 而不是内部的 tgt.ID**:这一行是给用户读的证据,而
+		// `anthropic_api` 这种内部标识对他是黑话 —— 他手里能对照的东西是域名。
+		f.Evidence = append(f.Evidence, host+" on built-in china direct list: "+
 			strconv.FormatBool(*tgt.OnChinaDirectList))
 	}
 

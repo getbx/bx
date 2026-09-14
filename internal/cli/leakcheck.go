@@ -254,8 +254,13 @@ func announceReachTargets(deps leakserve.ReachDeps, jsonOut bool) {
 	// 用户会对着完全静默的屏幕等半分钟,然后以为命令挂了(leakserve 的
 	// DefaultFactsBudget 注释里写的是同一件事)。数字由**生产那份预算**现算,
 	// 不手抄一个秒数 —— 加第五个目标时它自己跟着长。
+	//
+	// **而且是从 `deps` 现算,不是去问 `LiveReachDeps()`。** 上一版就是后者:
+	// 「会不会探」读的是手里这份 deps(WillProbe),「要等多久」却来自另一个对象
+	// —— 今天两者恰好同源所以数字对,bypass 打开那天探测数翻倍而屏幕上那句
+	// 悄悄变假。同一句话的两半必须读同一个值。
 	fmt.Fprintf(w, "  这一步最多约 %.0f 秒;不想让 bx 联系它们就加 --no-reach。\n",
-		leakserve.ReachBudget().Seconds())
+		leakserve.ReachBudgetFor(deps).Seconds())
 }
 
 // reachDepsFor 按 --no-reach 决定这一轮用哪份拨号器。

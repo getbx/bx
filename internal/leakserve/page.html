@@ -88,7 +88,7 @@
 Neither half alone can tell you whether traffic is leaking.</p>
 
 <div class="disc">
-  <p><strong>Before anything is sent:</strong> this page will contact the following
+  <p><strong>Before this page sends anything:</strong> it will contact the following
   third parties from your browser. They will see your real exit address.</p>
   <ul>
     <li>IPv4 echo: <code>{{.Endpoints.EchoV4}}</code></li>
@@ -96,6 +96,10 @@ Neither half alone can tell you whether traffic is leaking.</p>
     <li>STUN (WebRTC): <code>{{.Endpoints.STUN}}</code></li>
     <li>Exit country: <code>{{.Endpoints.Trace}}</code></li>
   </ul>
+  <p>This page is only half of the check, and the other half has already run. Unless
+  you passed <code>--no-reach</code>, bx probed the AI service endpoints from this
+  machine over your current network path before opening this page, and listed those
+  addresses in the terminal.</p>
   <p>Nothing is stored. bx keeps no history of this check.</p>
   <button id="go">Run the check</button>
 </div>
