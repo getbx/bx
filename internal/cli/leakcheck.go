@@ -245,7 +245,10 @@ func announceReachTargets(deps leakserve.ReachDeps, jsonOut bool) {
 		// stdout 那一份是机器读的。
 		w = os.Stderr
 	}
-	fmt.Fprintln(w, "bx leakcheck")
+	// **第一行就说事,不回显命令名。** 这里曾有一行 `fmt.Fprintln(w, "bx leakcheck")`
+	// —— 用户刚敲完那条命令,再打印一遍不带任何信息。它是 2026-09-14 真机首验
+	// 当场看出来的,而在那之前所有 review 都没抓到:守卫钉的是「说全了要联系谁」
+	// 与「不许印 markdown 星号」,没有一条钉「不许有多余的行」。
 	fmt.Fprintln(w, "bx 现在会从这台机器探测下面这些地址(走你当前的网络路径,不绕过隧道):")
 	for _, tgt := range leakcheck.ReachTargets() {
 		fmt.Fprintln(w, "  ·", tgt.URL)
