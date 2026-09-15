@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/getbx/bx/internal/dirsync"
 )
 
 type Store struct {
@@ -253,11 +255,7 @@ func writeJSONAtomically(path string, value any) error {
 	return syncGuardianDirectory(filepath.Dir(path))
 }
 
-func syncGuardianDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
-}
+// syncGuardianDirectory 走共用那一份 —— **平台事实只许有一处**。
+// 此前本仓库四个地方各写了一遍 open+Sync,而 Windows 上目录 fsync 一律
+// `Access is denied`,四份拷贝里漏改一份的失败方式是静默的。
+func syncGuardianDirectory(path string) error { return dirsync.Sync(path) }

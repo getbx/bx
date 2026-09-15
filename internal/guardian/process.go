@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/corestartfailure"
+	"github.com/getbx/bx/internal/dirsync"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -987,12 +988,7 @@ func removeProcessRecordFile(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return dirsync.Sync(filepath.Dir(path))
 }
 
 func verifyInstalledProcess(process Process, installedPath string) error {
