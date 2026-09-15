@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/getbx/bx/internal/dirsync"
 	"github.com/getbx/bx/internal/install"
 )
 
@@ -606,11 +607,4 @@ func (osFileOps) Chmod(path string, mode fs.FileMode) error { return os.Chmod(pa
 func (osFileOps) Chown(path string, uid, gid int) error     { return os.Chown(path, uid, gid) }
 func (osFileOps) Rename(oldPath, newPath string) error      { return os.Rename(oldPath, newPath) }
 func (osFileOps) RemoveAll(path string) error               { return os.RemoveAll(path) }
-func (osFileOps) SyncDir(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
-}
+func (osFileOps) SyncDir(path string) error                 { return dirsync.Sync(path) }

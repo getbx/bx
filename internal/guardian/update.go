@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/dirsync"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/runtimedir"
 	"github.com/getbx/bx/internal/supervisor"
@@ -37,15 +38,7 @@ const (
 var (
 	updateTransactionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	updateVersionPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+\-]{0,127}$`)
-	syncRecoveryRoot           = func(root *os.Root) error {
-		directory, err := root.Open(".")
-		if err != nil {
-			return err
-		}
-		syncErr := directory.Sync()
-		closeErr := directory.Close()
-		return errors.Join(syncErr, closeErr)
-	}
+	syncRecoveryRoot           = dirsync.SyncRoot
 )
 
 type UpdateRequest struct {
