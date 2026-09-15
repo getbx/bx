@@ -20,6 +20,9 @@ func (dataPlaneDNSManager) Restore(context.Context) (DNSStatus, error) {
 	return DNSStatus{State: DNSNotNeeded}, nil
 }
 
+// Baseline:本平台没有「DNS 接管」这件事 —— 这不是「还没问」,是**没有可问的**。
+func (dataPlaneDNSManager) Baseline() DNSState { return DNSNotNeeded }
+
 func newPlatformDNSManager(string) DNSManager {
 	return dataPlaneDNSManager{}
 }

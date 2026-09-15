@@ -29,6 +29,10 @@ func (m dnsManager) EnsureManaged(ctx context.Context) (DNSStatus, error) {
 	return guardianDNSStatus(status, err), err
 }
 
+// Baseline:darwin 上「还没问过」就是**还没问过** —— 系统 DNS 归谁要真的去问
+// networksetup,而那件事不许发生在 daemon 的启动路径上。
+func (m dnsManager) Baseline() DNSState { return DNSUnknown }
+
 func (m dnsManager) Inspect(ctx context.Context) (DNSStatus, error) {
 	status, err := m.inspect(ctx, m.service)
 	return guardianDNSStatus(status, err), err

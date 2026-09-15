@@ -79,10 +79,10 @@ func parseProcStatusUID(raw []byte) (int, error) {
 // /proc/<pid>/exe 读不出(权限、进程刚退出)不算致命:looksLikeCore 有
 // argv[0] 兜底;读出来带 " (deleted)" 尾巴(升级换掉了二进制、旧 Core 还在跑)
 // 必须剥掉再判——漏认一个正在跑的旧版 Core 就是 af81632 那个双 Core 风险。
-func scanLinuxProcTree(root string) (enumerated, readable int, cores []Process) {
+func scanLinuxProcTree(root string) (enumerated, kernel, readable int, cores []Process) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
@@ -108,7 +108,22 @@ func scanLinuxProcTree(root string) (enumerated, readable int, cores []Process) 
 		}
 		argv := parseProcCmdline(cmdlineRaw)
 		if len(argv) == 0 {
-			continue // 内核线程:没有 argv 可判,不算 readable
+			// 没有 argv ⇒ 不算 readable(它给不出「这是不是 Core」的直接答案)。
+			//
+			// **但要分清两种没有 argv。** 内核线程没有用户态映像,
+			// `/proc/<pid>/exe` 读不出来 —— 它**按构造不可能是 Core**
+			// (Core 是一个 argv[1]=="run" 的用户态进程),所以它不是一处盲区,
+			// 不进「视野够不够宽」那道门的分母。Linux 上这件事是承重的:
+			// 内核线程常占进程表的四分之三(2026-09-15 CI 实测 169 个里 126 个),
+			// 算进分母会让那道门在一台完全正常的机器上恒假。
+			//
+			// 空 argv 而 exe 读得出来的,是**真的没读成** —— 那是盲区,照旧进分母;
+			// 少了这一半,一台 /proc 真被遮住的机器会被说成视野干净,而那正是
+			// 这套扫描最忌讳的假「全清」。
+			if _, lerr := os.Readlink(filepath.Join(dir, "exe")); lerr != nil {
+				kernel++
+			}
+			continue
 		}
 		statusRaw, err := os.ReadFile(filepath.Join(dir, "status"))
 		if err != nil {
@@ -129,5 +144,5 @@ func scanLinuxProcTree(root string) (enumerated, readable int, cores []Process) 
 		}
 		cores = append(cores, Process{PID: pid, Executable: executable, UID: uid})
 	}
-	return enumerated, readable, cores
+	return enumerated, kernel, readable, cores
 }

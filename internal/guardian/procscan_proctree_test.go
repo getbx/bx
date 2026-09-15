@@ -117,9 +117,9 @@ func TestScanLinuxProcTreeFindsRootCore(t *testing.T) {
 	writeProcEntry(t, root, 4300, "bx", 'S', []string{"bx", "status"}, 0, "/usr/local/bin/bx") // 不是 run
 	writeProcEntry(t, root, 4400, "bx", 'S', []string{"/usr/local/bin/bx", "run"}, 501, "")    // 非 root
 
-	enumerated, readable, cores := scanLinuxProcTree(root)
-	if enumerated != 4 || readable != 4 {
-		t.Fatalf("enumerated=%d readable=%d want 4/4", enumerated, readable)
+	enumerated, kernel, readable, cores := scanLinuxProcTree(root)
+	if enumerated != 4 || kernel != 0 || readable != 4 {
+		t.Fatalf("enumerated=%d kernel=%d readable=%d want 4/0/4", enumerated, kernel, readable)
 	}
 	if len(cores) != 1 || cores[0].PID != 4242 || cores[0].UID != 0 {
 		t.Fatalf("cores=%+v want 只有 4242", cores)
@@ -133,7 +133,7 @@ func TestScanLinuxProcTreeSkipsZombies(t *testing.T) {
 	writeProcEntry(t, root, 1, "systemd", 'S', []string{"/sbin/init"}, 0, "/sbin/init")
 	writeProcEntry(t, root, 4242, "bx", 'Z', []string{"/usr/local/bin/bx", "run"}, 0, "")
 
-	_, _, cores := scanLinuxProcTree(root)
+	_, _, _, cores := scanLinuxProcTree(root)
 	if len(cores) != 0 {
 		t.Fatalf("僵尸被算成在跑的 Core: %+v", cores)
 	}
@@ -147,9 +147,14 @@ func TestScanLinuxProcTreeCountsKernelThreadsAsUnreadable(t *testing.T) {
 	writeProcEntry(t, root, 2, "kthreadd", 'S', nil, 0, "")
 	writeProcEntry(t, root, 1, "systemd", 'S', []string{"/sbin/init"}, 0, "/sbin/init")
 
-	enumerated, readable, _ := scanLinuxProcTree(root)
+	enumerated, kernel, readable, _ := scanLinuxProcTree(root)
 	if enumerated != 2 || readable != 1 {
 		t.Fatalf("enumerated=%d readable=%d want 2/1", enumerated, readable)
+	}
+	// 2026-09-15 补:它**同时**要被记成内核线程 —— 不算 readable(这条原样成立)
+	// 之外,还要从「视野够不够宽」那道门的分母里去掉,否则那道门在 Linux 上恒假。
+	if kernel != 1 {
+		t.Fatalf("kernel=%d want 1 —— 内核线程没被认出来,它会被当成一处盲区", kernel)
 	}
 }
 
@@ -160,7 +165,7 @@ func TestScanLinuxProcTreeRecognizesDeletedExecutable(t *testing.T) {
 	root := t.TempDir()
 	writeProcEntry(t, root, 4242, "bx", 'S', []string{"weird", "run"}, 0, "/usr/local/bin/bx (deleted)")
 
-	_, _, cores := scanLinuxProcTree(root)
+	_, _, _, cores := scanLinuxProcTree(root)
 	if len(cores) != 1 || cores[0].PID != 4242 {
 		t.Fatalf("被删可执行文件的 Core 没被认出: %+v", cores)
 	}
@@ -173,8 +178,56 @@ func TestScanLinuxProcTreeIgnoresNonNumericEntries(t *testing.T) {
 	}
 	writeProcEntry(t, root, 1, "systemd", 'S', []string{"/sbin/init"}, 0, "/sbin/init")
 
-	enumerated, _, _ := scanLinuxProcTree(root)
+	enumerated, _, _, _ := scanLinuxProcTree(root)
 	if enumerated != 1 {
 		t.Fatalf("enumerated=%d want 1(sys 不是进程)", enumerated)
+	}
+}
+
+// —— 内核线程不是盲区,不许进「视野够不够宽」那道门的分母(2026-09-15,CI 抓到)——
+//
+// `coreScanReadableFloor` 要求 readable/enumerated ≥ 0.5,而那个 0.5 是按
+// **darwin** 定的(所有者的 Mac 上实测 891/892 = 99.9%)。Linux 上它结构性地
+// 不成立:内核线程(kworker/ksoftirqd/rcu_* …)没有用户态 argv,按这份实现算
+// 「没读成」,而它们常常占进程表的四分之三 —— CI 的 ubuntu runner 上实测
+// **169 个进程里 126 个是内核线程**,readable=43 ⇒ 25% ⇒ 那道门在一台完全
+// 正常的机器上恒假,于是 netns 集成台上五个测试一直红着。
+//
+// **判据上的要点**:内核线程给得出结论 ——「它不可能是 Core」,因为 Core 按构造
+// 是一个 argv[1]=="run" 的**用户态**进程。它不是一处盲区,所以不该进分母。
+
+func TestKernelThreadsAreNotCountedAsBlindSpots(t *testing.T) {
+	root := t.TempDir()
+	writeProcEntry(t, root, 1, "systemd", 'S', []string{"/sbin/init"}, 0, "/sbin/init")
+	writeProcEntry(t, root, 4242, "bx", 'S', []string{"/usr/local/bin/bx", "run"}, 0, "/usr/local/bin/bx")
+	// 十个内核线程:没有 argv,也没有 exe(内核线程没有用户态映像)。
+	for pid := 100; pid < 110; pid++ {
+		writeProcEntry(t, root, pid, "kworker/0:1", 'S', nil, 0, "")
+	}
+
+	enumerated, kernel, readable, cores := scanLinuxProcTree(root)
+	if enumerated != 12 || kernel != 10 || readable != 2 {
+		t.Fatalf("enumerated=%d kernel=%d readable=%d,want 12/10/2", enumerated, kernel, readable)
+	}
+	// **决定性的那一句**:把内核线程从分母里去掉之后,这次扫描必须被接受。
+	// 去掉之前是 2/12 = 17%,那道门会拒绝一台完全正常的机器。
+	if _, err := decideCoreScan(enumerated-kernel, readable, cores); err != nil {
+		t.Errorf("一台只是内核线程多的正常机器被拒了:%v", err)
+	}
+}
+
+// **空 argv 而 exe 读得出来的,是真的没读成 —— 那是盲区,照旧进分母。**
+// 少了这一半,「凡是读不出 argv 一律不算数」就会把一台 /proc 真的被遮住的机器
+// 说成视野干净,而那正是这套扫描最忌讳的假「全清」(hidepid 那条纪律)。
+func TestAProcessWithAnExecutableButNoArgvIsStillABlindSpot(t *testing.T) {
+	root := t.TempDir()
+	writeProcEntry(t, root, 1, "systemd", 'S', []string{"/sbin/init"}, 0, "/sbin/init")
+	// 用户态进程(有 exe)却读不出 argv:我们对它下不了「不是 Core」的结论。
+	writeProcEntry(t, root, 900, "hidden", 'S', nil, 0, "/usr/bin/hidden")
+
+	enumerated, kernel, readable, _ := scanLinuxProcTree(root)
+	if enumerated != 2 || kernel != 0 || readable != 1 {
+		t.Fatalf("enumerated=%d kernel=%d readable=%d,want 2/0/1 —— 有 exe 的空 argv 不是内核线程",
+			enumerated, kernel, readable)
 	}
 }

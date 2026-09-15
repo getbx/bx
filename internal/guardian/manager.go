@@ -466,7 +466,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 			return RemoveBlockingBarrierRoutes(ctx, nil)
 		},
 		dns:                   options.DNS,
-		dnsStatus:             DNSStatus{State: DNSUnknown},
+		dnsStatus:             DNSStatus{State: options.DNS.Baseline()},
 		legacy:                options.Legacy,
 		barrierContext:        cloneBarrierContext(options.BarrierContext),
 		gatewayProvider:       gatewayProvider,
@@ -485,12 +485,16 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		pathRecoveryCurrent:   RecoverySnapshot{State: "idle", Stage: "idle"},
 		pathRecoveryAccepting: true,
 		pathRecoveryDrained:   make(chan struct{}),
+		// DNS 那一栏的初值由**平台**给,不写死 unknown:linux 上「本平台没有
+		// 这件事」是一个不需要问任何人就知道的答案,而 m.dnsStatus 只在开/关
+		// 保护时才被填 —— 写死 unknown 会让一个刚起来的 linux daemon 把静态
+		// 平台事实报成「没问出来」(2026-09-15 netns 集成台抓到)。
 		status: Status{
 			SchemaVersion: 1,
 			Desired:       DesiredOff,
 			Phase:         PhaseIdle,
 			Protection:    ProtectionOff,
-			DNSState:      DNSUnknown,
+			DNSState:      options.DNS.Baseline(),
 		},
 	}
 	m.pathRecoveryNewContext = func() (context.Context, context.CancelFunc) {

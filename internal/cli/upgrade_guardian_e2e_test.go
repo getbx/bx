@@ -416,3 +416,6 @@ func (stubDNSManager) Inspect(context.Context) (guardian.DNSStatus, error) {
 func (stubDNSManager) Restore(context.Context) (guardian.DNSStatus, error) {
 	return guardian.DNSStatus{State: guardian.DNSUnmanaged}, nil
 }
+
+// Baseline:这份替身模拟 darwin —— 什么都还没做时确实没问过。
+func (stubDNSManager) Baseline() guardian.DNSState { return guardian.DNSUnknown }

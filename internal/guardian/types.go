@@ -72,6 +72,22 @@ type DNSManager interface {
 	EnsureManaged(context.Context) (DNSStatus, error)
 	Inspect(context.Context) (DNSStatus, error)
 	Restore(context.Context) (DNSStatus, error)
+	// Baseline 是**什么都还没做时** DNS 那一栏的诚实答案,**不做任何 I/O**。
+	//
+	// 它把两件长得一样的事分开:darwin 上刚起来的 daemon 报 `unknown` 是对的
+	// (确实没问过 networksetup);linux 上报 `unknown` 是错的 —— 那儿根本没有
+	// 「DNS 接管」这件事(数据面整机劫持 + engine 拦 UDP:53),答案不需要问
+	// 任何人。把一个**静态平台事实**说成「没问出来」,正是本文件反复消灭的
+	// 那种失真(「字段缺席是诚实的『没问』;满屏『无法观测』则是把静态平台
+	// 限制伪装成每次调用都新发生的差异」)。2026-09-15 由 netns 集成台抓到。
+	//
+	// **直接扩接口而不是做成可选断言**:「实现里没有就当 unknown」与没有这个
+	// 方法在输出上完全一样,而它恰恰是用来区分两种 unknown 的
+	// (与 stats.DecisionCounter、dialer.AppRecorder 同一条)。
+	//
+	// **不许做 I/O**:它跑在 daemon 的启动路径上,那条路上多一次 networksetup
+	// 就是多一个会挂住的地方(与「启动时不做网关发现」同源)。
+	Baseline() DNSState
 }
 
 type Transaction struct {
