@@ -558,3 +558,61 @@ func TestMacMenuRulesWindowKeepsScrollOnlyOnAmbientRerender(t *testing.T) {
 		t.Error("先滚后布局 —— 滚的是按旧内容算出来的坐标,表一变长位置照样跳")
 	}
 }
+
+// 三行组被十八行自定义规则淹掉 —— 两块之间要有分界,组要能展开看里面有什么。
+//
+// **2026-09-14 真机反馈**:项目所有者打开窗口,那三行(Apple / China CDN / Steam,
+// 带勾选)确实画着,但紧接着就是 18 行平铺的自定义规则,中间**没有任何标题**,
+// 于是「这里能按组勾选」这件事整个看不出来。他要的原话是「apple 里面有哪些,
+// cdn 里面有哪些,用户是否可以简单勾选」—— 前半句的数据(`group.domains`)
+// 早就解码到客户端了,只是从来没画过。
+func TestMacMenuRulesWindowSeparatesPresetsFromYourOwnRules(t *testing.T) {
+	window, _ := menuRulesWindowSource(t)
+	body, ok := swiftFunctionBody(window, "private func render(")
+	if !ok {
+		t.Fatal("读不出 render(preservingScroll:) —— 这条守卫读不懂现在的代码了,先修它")
+	}
+	// 判据打在**摆进视图树**上,不是「这个串在函数体里出现过」——
+	// 后者是本仓库编号的第二种失效写法,这一支刚栽过一次。
+	for _, seed := range []string{"presetsHeading", "customHeading"} {
+		if !swiftValueReachesViewTree(body, seed) {
+			t.Errorf("%s 没有被摆进视图树 —— 分区标题算出来了却没画,与没写一样", seed)
+		}
+	}
+}
+
+// 组能展开,展开之后**真的把 `domains` 画出来**。
+//
+// 数据早就在(`RuleGroup` 的 CodingKeys 里就有 `domains`),缺的只是渲染。
+func TestMacMenuRulesWindowCanShowWhatIsInsideAGroup(t *testing.T) {
+	window, _ := menuRulesWindowSource(t)
+	body, ok := swiftFunctionBody(window, "private func groupRow(")
+	if !ok {
+		t.Fatal("读不出 groupRow —— 这条守卫读不懂现在的代码了,先修它")
+	}
+	if !strings.Contains(body, "domains") {
+		t.Error("groupRow 里没有 domains —— 「apple 里面有哪些」是这次改动的第一条诉求")
+	}
+	// **种子用完整表达式,不用裸的 `domains`** —— `swiftMentionsIdentifier` 的
+	// 前缀类刻意排除了 `.`(它要区分 `foo` 与 `bar.foo`,那对「实参是光秃秃的
+	// 一次取值」那类判据是对的),于是一个属性名当种子永远跟不下去。
+	if !swiftValueReachesViewTree(body, "row.group.domains") {
+		t.Error("组里的域名没有被摆进视图树 —— 解码了、算了,但用户看不见")
+	}
+}
+
+// **`summary` 永不被渲染。** 它是服务端来的**中文**
+// (「Apple 系统服务、Game Center、Arcade、iCloud 同步可用性」),而菜单通篇英文。
+//
+// 这个仓库为同一个形状栽过一次:`rulereview` 与 `deadFindings` 的 summary
+// 原样渲染进英文菜单(CLAUDE.md 那条「服务端写的是中文」)。域名本身是中性的,
+// 画它没问题;那句中文说明不行 —— 要给组配人话,得先在 internal/preset 里
+// 加一份英文的,而不是把中文直接摆上去。
+func TestMacMenuRulesWindowNeverRendersTheServerChineseSummary(t *testing.T) {
+	window, _ := menuRulesWindowSource(t)
+	for _, forbidden := range []string{".summary", "group.summary"} {
+		if strings.Contains(window, forbidden) {
+			t.Errorf("窗口里出现了 %s —— 那是服务端来的中文,会渲染进通篇英文的界面", forbidden)
+		}
+	}
+}

@@ -785,8 +785,15 @@ func swiftMentionsIdentifier(text, name string) bool {
 // swiftBindingRegexp 认 `let x = …` / `if let x = …` / `guard let x = …` 三种
 // 绑定 —— 少了后两种,`if let line = panel.statusLine {` 这种最常见的形状就跟不
 // 下去,而这个文件里那七项里有五项是它。
+//
+// **2026-09-14 补上 `for x in y`**:规则窗口把一个组的域名画出来的写法是
+// `for domain in row.group.domains { … addArrangedSubview(line) }` —— 那是和
+// `let` 同样真实的一条到达路径,不认它就是**假阴性**(值确实摆进了视图树,
+// 守卫却说没有)。扩它会让判据变松一点,所以那条守卫用变异验证过:
+// 把最后那句 `addArrangedSubview` 去掉之后它仍然转红。
 var swiftBindingRegexp = regexp.MustCompile(
-	`(?m)(?:^|[^A-Za-z0-9_])let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	`(?m)(?:^|[^A-Za-z0-9_])(?:let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$` +
+		`|for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*\{)`)
 
 // swiftValueReachesViewTree 回答:从 seed 派生出来的东西,有没有被摆进视图树。
 //
@@ -814,9 +821,13 @@ func swiftValueReachesViewTree(body, seed string) bool {
 	// 三轮足够:seed → 绑定名 → 包一层 → 摆进去。多了只会把不相干的名字收进来。
 	for round := 0; round < 3; round++ {
 		for _, m := range swiftBindingRegexp.FindAllStringSubmatch(scope, -1) {
+			bound, source := m[1], m[2]
+			if bound == "" {
+				bound, source = m[3], m[4] // `for x in y` 那一支
+			}
 			for _, name := range names {
-				if swiftMentionsIdentifier(m[2], name) {
-					names = append(names, m[1])
+				if swiftMentionsIdentifier(source, name) {
+					names = append(names, bound)
 					break
 				}
 			}
