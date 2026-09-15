@@ -89,12 +89,24 @@ func parseRules(out string, fam ipFamily) []ruleSpec {
 	return specs
 }
 
-// stripMask 去掉 fwmark 的掩码后缀(有些 iproute2 打 "0x162/0xffffffff")。
+// stripMask 只去掉**空掩码**后缀(有些 iproute2 对一条不带掩码加进去的规则
+// 回显 "0x162/0xffffffff")。
+//
+// **真掩码不许剥:它是选择子的一部分。** 2026-09-04 那条 Tailscale 规则是带
+// 掩码加进去的(`fwmark 0x80000/0xff0000`,只认 Tailscale 打的那几位),
+// 剥掉之后 `ip rule del … fwmark 0x80000 …` 与内核里那条匹配不上 ⇒ Restore
+// 删不掉它 ⇒ **bx 自己装上、自己却拆不掉**(2026-09-15 netns 集成台抓到,
+// 而它是同一个 bug 的第三层:先是不认 ipproto,再是认了不发,最后是掩码被剥)。
 func stripMask(s string) string {
-	if i := strings.IndexByte(s, '/'); i >= 0 {
-		return s[:i]
+	i := strings.IndexByte(s, '/')
+	if i < 0 {
+		return s
 	}
-	return s
+	mask, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(s[i+1:]), "0x"), 16, 64)
+	if err != nil || mask != 0xffffffff {
+		return s // 认不出、或真的是一个掩码:原样留着
+	}
+	return s[:i]
 }
 
 // parseRoutes 解析 `ip [-6] route show table 100` 输出(只取重建所需:typ/dst/via/dev)。

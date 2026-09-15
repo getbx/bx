@@ -251,3 +251,44 @@ func TestSnapshotterUnderstandsEverySelectorBxInstalls(t *testing.T) {
 		}
 	}
 }
+
+// —— fwmark 的掩码:空掩码要剥,真掩码不许剥(2026-09-15,同一个 bug 的第三层)——
+//
+// `stripMask` 的本意是剥掉**内核回显的空掩码**(有些 iproute2 对一条不带掩码
+// 加进去的规则打 `0x162/0xffffffff`)。而 2026-09-04 那条 Tailscale 规则是
+// **带真掩码**加进去的(`0x80000/0xff0000`,只认 Tailscale 打的那几位),
+// 剥掉它之后 `ip rule del … fwmark 0x80000 …` 与内核里那条匹配不上 —— 掩码
+// 是选择子的一部分。
+//
+// 这个 bug 有三层,每一层都是修掉上一层之后才露出来的:
+// ① 快照器不认 ipproto → ② 认了但重建时不发 → ③ 发了但掩码被剥掉。
+func TestStripMaskKeepsARealMask(t *testing.T) {
+	if got := stripMask("0x80000/0xff0000"); got != "0x80000/0xff0000" {
+		t.Errorf("真掩码被剥掉了:%q —— 掩码是选择子的一部分,少了它删不掉那条规则", got)
+	}
+}
+
+// 空掩码照旧要剥 —— 那是内核的回显噪声,带上它反而与原始命令不一致。
+func TestStripMaskStillDropsTheNoOpMask(t *testing.T) {
+	for _, in := range []string{"0x162/0xffffffff", "0x162/0xFFFFFFFF"} {
+		if got := stripMask(in); got != "0x162" {
+			t.Errorf("stripMask(%q) = %q,want 0x162", in, got)
+		}
+	}
+	if got := stripMask("0x162"); got != "0x162" {
+		t.Errorf("没有掩码的被改动了:%q", got)
+	}
+}
+
+// 解析真掩码那条规则,重建出来的删除命令必须逐字带着掩码。
+func TestRuleArgsRoundTripsAMaskedFwmark(t *testing.T) {
+	specs := parseRules("90:\tfrom all fwmark 0x80000/0xff0000 ipproto udp lookup main\n", familyV4)
+	if len(specs) != 1 {
+		t.Fatalf("解出 %d 条,want 1", len(specs))
+	}
+	got := strings.Join(ruleArgs("del", specs[0]), " ")
+	want := "rule del pref 90 fwmark 0x80000/0xff0000 ipproto udp table main"
+	if got != want {
+		t.Fatalf("重建出来的是:\n  %s\nwant:\n  %s", got, want)
+	}
+}
