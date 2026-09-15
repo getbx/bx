@@ -1,6 +1,10 @@
 package cli
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/getbx/bx/internal/elevate"
+)
 
 // UpgradeStep 是升级流程中的一步。
 //
@@ -138,7 +142,7 @@ func upgradeFailureMessageWithNetwork(step UpgradeStep, err error, networkRestor
 		return fmt.Sprintf(
 			"停止保护未能全部完成:%v\n"+
 				"新版本文件尚未安装(升级没有开始),但保护已经被停过,网络是否已恢复未经确认——"+
-				"请打开任意网页确认;若仍不通,执行 sudo bx uninstall(保留 /etc/bx 配置)后重新安装。", err,
+				"请打开任意网页确认;若仍不通,执行 "+elevate.Prefix+"bx uninstall(保留 /etc/bx 配置)后重新安装。", err,
 		)
 	case UpgradeEnableGuardian:
 		// 这一步只在全新安装那条路上出现:文件都装好了、保护从没开过、网络一直是
@@ -148,20 +152,20 @@ func upgradeFailureMessageWithNetwork(step UpgradeStep, err error, networkRestor
 		return fmt.Sprintf(
 			"新版本文件已装好,但保护服务没能启动:%v\n"+
 				"网络不受影响(一直是直连,保护本来就没开)。菜单栏的开关暂时点不动——"+
-				"执行 sudo bx up 即可开启保护并把服务拉起来;若仍失败,看 sudo tail -50 /var/log/bx-guard.err.log。", err,
+				"执行 "+elevate.Prefix+"bx up 即可开启保护并把服务拉起来;若仍失败,看 sudo tail -50 /var/log/bx-guard.err.log。", err,
 		)
 	default:
 		if !networkRestored {
 			return fmt.Sprintf(
 				"升级未完成:%v\n"+
 					"停止保护时走了强制拆除,网络是否已恢复未经确认——请打开任意网页确认。"+
-					"若不通,执行 sudo bx uninstall 后重新安装。", err,
+					"若不通,执行 "+elevate.Prefix+"bx uninstall 后重新安装。", err,
 			)
 		}
 		// 走到这里说明已经干净地停过保护 —— 网络已还原为直连,可用。
 		return fmt.Sprintf(
 			"升级未完成:%v\n网络仍可正常使用(直连,无保护)。"+
-				"若反复失败,执行 sudo bx uninstall 后重新安装。", err,
+				"若反复失败,执行 "+elevate.Prefix+"bx uninstall 后重新安装。", err,
 		)
 	}
 }

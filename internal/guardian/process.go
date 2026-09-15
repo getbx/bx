@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/corestartfailure"
 	"github.com/getbx/bx/internal/dirsync"
 	"github.com/getbx/bx/internal/install"
@@ -378,7 +380,7 @@ func scannedCorePIDs(cores []Process) string {
 // 错误文本、进 Guardian 日志;那一条是 CLI 按失败码翻出来的指引),改一个忘另一个
 // 不会有任何编译错误 —— 由 TestOwnershipUncertainEscapeHintDescribesReVerification
 // 与 TestOwnershipUncertainHintNoLongerClaimsDownIsTheOnlyEscape 分别钉住。
-const ownershipUncertainEscapeHint = "`sudo bx up` re-verifies this on every attempt; if it still refuses, a Core really is running (or the scan cannot answer) — see guardian_core_scan / guardian_core_still_running_on_release in " + install.GuardianStderrLogPath
+const ownershipUncertainEscapeHint = "`" + elevate.Prefix + "bx up` re-verifies this on every attempt; if it still refuses, a Core really is running (or the scan cannot answer) — see guardian_core_scan / guardian_core_still_running_on_release in " + install.GuardianStderrLogPath
 
 // resolveOrphanLaunchMarker 判定一个 launching 标记是不是孤儿。
 //

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 // 本文件是「换服务器」的编排,**cli 与 guardian 共用**。
@@ -36,7 +38,7 @@ func SwitchServer(deps SwitchDeps, name, link, udp string) error {
 		if rerr := deps.Rollback(); rerr != nil {
 			return taggedSwitchError(ErrSwitchRollbackFailed,
 				fmt.Errorf("切换到 %s 后隧道不健康,且回滚失败(%v)——"+
-					"死手仍会在超时后还原,或直接 `sudo bx down && sudo bx up`", name, rerr))
+					"死手仍会在超时后还原,或直接 `"+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up`", name, rerr))
 		}
 		return taggedSwitchError(ErrSwitchRolledBack,
 			fmt.Errorf("切换到 %s 后隧道起不来,**已回滚**到原来那台", name))
@@ -44,7 +46,7 @@ func SwitchServer(deps SwitchDeps, name, link, udp string) error {
 	if err := deps.Commit(); err != nil {
 		return taggedSwitchError(ErrSwitchCommitFailed,
 			fmt.Errorf("切换到 %s 已生效但确认失败(%v)——死手可能在超时后把它还原,"+
-				"请立刻 `sudo bx down && sudo bx up` 让配置里的选择落定", name, err))
+				"请立刻 `"+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up` 让配置里的选择落定", name, err))
 	}
 	return nil
 }

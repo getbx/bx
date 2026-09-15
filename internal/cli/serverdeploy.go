@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 	updatepkg "github.com/getbx/bx/internal/update"
 	"github.com/urfave/cli/v2"
@@ -387,7 +389,7 @@ func applyDeployedLink(link, name string) error {
 	// **不偷偷提权。** 写 /etc/bx 要 root,而这条命令的其余部分不需要 ——
 	// 让一条只做 ssh 的命令中途弹密码框是坏意外。
 	if os.Geteuid() != 0 {
-		fmt.Printf("\n下一步(需要 root):\n  %s\n  sudo bx up\n", setupCommandLine(main, udp))
+		fmt.Printf("\n下一步(需要 root):\n  %s\n  "+elevate.Prefix+"bx up\n", setupCommandLine(main, udp))
 		return nil
 	}
 
@@ -413,7 +415,7 @@ func applyDeployedLink(link, name string) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("写本机配置失败:%w(可手动跑 %s)", err, setupCommandLine(main, udp))
 	}
-	fmt.Println("\n✅ 部署完成。下一步:sudo bx up")
+	fmt.Println("\n✅ 部署完成。下一步:" + elevate.Prefix + "bx up")
 	return nil
 }
 

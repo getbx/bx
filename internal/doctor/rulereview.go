@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/rulereview"
 )
 
@@ -69,7 +71,7 @@ func RuleReviewLines(rep rulereview.Report) []Finding {
 				Status: "info",
 				Key:    DeadRulesCheckName,
 				Value:  value,
-				Hint:   "删之前先确认那个域名你确实不再访问;删规则用 sudo bx direct rm '<规则>',改完要 sudo bx down && sudo bx up",
+				Hint:   "删之前先确认那个域名你确实不再访问;删规则用 " + elevate.Prefix + "bx direct rm '<规则>',改完要 " + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up",
 			})
 		}
 	} else if rep.DeadSkipReason != "" {
@@ -171,7 +173,7 @@ func riskyRuleFinding(rep rulereview.Report) *Finding {
 		// 一次不必要的密码提示——不对称,故两条命令都印 sudo。这与
 		// editRuleAction 自己在同一文件里的既有措辞一致(未运行时的提示已经写的
 		// 是「下次 sudo bx up 时生效」)。
-		Hint: fmt.Sprintf("sudo bx direct rm %s(改完要 sudo bx down && sudo bx up)", strings.Join(quoted, " ")),
+		Hint: fmt.Sprintf(""+elevate.Prefix+"bx direct rm %s(改完要 "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up)", strings.Join(quoted, " ")),
 	}
 }
 

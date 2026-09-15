@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 )
 
@@ -171,7 +173,7 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 					stepErr = fmt.Errorf(
 						"Guardian 确认系统里仍有 bx 的 Core 进程在跑(%s):此时换掉二进制会留下一个"+
 							"不受管的旧 Core 占着 TUN,而症状要到之后才现(core_ownership_uncertain —— "+
-							"每次 sudo bx up 都会重新求证,但只要那个 Core 还在跑就一直拒绝)。"+
+							"每次 "+elevate.Prefix+"bx up 都会重新求证,但只要那个 Core 还在跑就一直拒绝)。"+
 							"先看 sudo tail -50 /var/log/bx-guard.err.log 确认是哪个进程并处理掉,再重跑升级",
 						reason,
 					)
@@ -227,13 +229,13 @@ func restoreIntentAfterHoldUnawareStop(io upgradeIO, desiredOn bool, down macOSD
 		return
 	}
 	if io.reassertDesiredOn == nil {
-		io.log("! 无法把「用户要保护」写回磁盘(此平台不可用):若升级中途失败,重跑时保护可能不会自动恢复,届时执行 sudo bx up")
+		io.log("! 无法把「用户要保护」写回磁盘(此平台不可用):若升级中途失败,重跑时保护可能不会自动恢复,届时执行 " + elevate.Prefix + "bx up")
 		return
 	}
 	if err := io.reassertDesiredOn(); err != nil {
 		io.log(fmt.Sprintf(
 			"! 未能把「用户要保护」写回磁盘(%v):这次升级仍会在末尾恢复保护,"+
-				"但若中途失败,重跑不会自动恢复 —— 那时请执行 sudo bx up", err,
+				"但若中途失败,重跑不会自动恢复 —— 那时请执行 "+elevate.Prefix+"bx up", err,
 		))
 	}
 }

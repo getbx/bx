@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/dialfail"
 	"github.com/getbx/bx/internal/embedded"
@@ -316,7 +318,7 @@ func explainOutput(view pathview.View, rep supervisor.ExplainResponse, coreErr e
 	var b strings.Builder
 	b.WriteString(renderMachineView(view))
 	if coreErr != nil {
-		b.WriteString("\nbx 没在跑(连不上 Core 的控制 socket),以上是没有 bx 时的样子;要看 bx 的判定先 sudo bx up。\n")
+		b.WriteString("\nbx 没在跑(连不上 Core 的控制 socket),以上是没有 bx 时的样子;要看 bx 的判定先 " + elevate.Cmd("bx up") + elevate.Note() + "。\n")
 		return b.String(), nil
 	}
 	b.WriteString("\n")
@@ -540,10 +542,10 @@ func explainVerdictText(kind string) string {
 	switch kind {
 	case dialfail.Unreachable:
 		return "多数失败是「路由不可达」 —— 那不是目标的问题,是 bx 自己的直连出口到不了那条路。" +
-			"这是 2026-08-13 与 08-16 两次真机故障的签名;跑 sudo bx doctor 看 direct_egress 那一行"
+			"这是 2026-08-13 与 08-16 两次真机故障的签名;跑 " + elevate.Prefix + "bx doctor 看 direct_egress 那一行"
 	case dialfail.DNS:
 		return "多数失败是「够不着解析器」 —— 同样指向本机:bx 拨不到上游 DNS。" +
-			"跑 sudo bx doctor 看 direct_egress 与 dns 那两行"
+			"跑 " + elevate.Prefix + "bx doctor 看 direct_egress 与 dns 那两行"
 	case dialfail.DNSNotFound:
 		return "多数失败是「域名不存在」 —— 有程序在查一批查不到的主机名(微信这类客户端会)。" +
 			"这不是 bx 的故障,一个字都不用改"
@@ -559,7 +561,7 @@ func explainVerdictText(kind string) string {
 		return "多数失败是「连接被重置」 —— 建起来又被打断;跨墙路径上这常常是干扰而不是对端的意思。" +
 			"改规则没用,换传输或换服务器才可能有用"
 	default:
-		return "bx 认不出这些失败是怎么回事 —— 上面那行的分类里没有可行动的信息,去看 sudo bx logs"
+		return "bx 认不出这些失败是怎么回事 —— 上面那行的分类里没有可行动的信息,去看 " + elevate.Prefix + "bx logs"
 	}
 }
 

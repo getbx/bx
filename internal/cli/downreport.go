@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 )
 
@@ -41,7 +43,7 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 		stdout = append(
 			stdout,
 			"已执行:记录关闭意图(不再开机自启)、请求 Core 退出(由它自己还原它装的路由)、停止 Guardian 服务、删除屏障阻断路由、还原系统 DNS。",
-			"请确认网络是否已恢复(例如 bx status 或打开任意网页);若仍不通,执行 sudo bx uninstall(会保留 /etc/bx 配置)。",
+			"请确认网络是否已恢复(例如 bx status 或打开任意网页);若仍不通,执行 "+elevate.Prefix+"bx uninstall(会保留 /etc/bx 配置)。",
 		)
 		return stdout, stderr
 	}
@@ -55,12 +57,12 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 		stderr = append(stderr, "⚠️  Guardian 没能确认保护已经关闭("+downUnconfirmedReason(result)+")。")
 		stdout = append(
 			stdout,
-			"拆除步骤已执行完,但系统里可能仍有 bx 的 Core 进程在跑(例如另一个终端里的 sudo bx run,或旧版本残留)。",
+			"拆除步骤已执行完,但系统里可能仍有 bx 的 Core 进程在跑(例如另一个终端里的 "+elevate.Prefix+"bx run,或旧版本残留)。",
 			// **不要让用户去跑一条看不到答案的命令。** 这里曾写「请执行 bx status 查看原因」,
 			// 而 bx status 根本不显示 last_error —— 那是把人支进死胡同。具体 PID 只在
 			// Guardian 日志里(刻意不进 Status:扫到的进程是「疑似」,把第三方 PID 放进
 			// Status 是 7778b53 专门修掉的错)。
-			"具体是哪个进程见:sudo tail -50 /var/log/bx-guard.err.log;确认无误后可用 sudo bx uninstall 彻底清理。",
+			"具体是哪个进程见:sudo tail -50 /var/log/bx-guard.err.log;确认无误后可用 "+elevate.Prefix+"bx uninstall 彻底清理。",
 		)
 		return stdout, stderr
 	}

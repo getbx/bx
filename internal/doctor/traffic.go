@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/tristate"
 )
@@ -90,7 +92,7 @@ func trafficChecks(f *TrafficFact) []Check {
 		return []Check{{
 			Name: TrafficOutcomesCheckName, Status: StatusNotChecked,
 			Detail: "没问到(Core 没在跑?):" + f.Err,
-			Hint:   "sudo bx up",
+			Hint:   "" + elevate.Prefix + "bx up",
 		}}
 	}
 	report := f.Report
@@ -169,9 +171,9 @@ func failingRuleHint(configPath string, directEgress tristate.Tristate) string {
 	if where == "" {
 		where = "配置文件"
 	}
-	return fmt.Sprintf("这条路已经不通;改 %s 的 rules 后 sudo bx down && sudo bx up", where)
+	return fmt.Sprintf("这条路已经不通;改 %s 的 rules 后 "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up", where)
 }
 
 // directEgressHint 是那条真正的下一步。**不提改规则** —— 规则是好的。
 const directEgressHint = "不是你的规则:bx 自己的直连出不去,每一条 direct rule 都会失败。" +
-	"重装路由:sudo bx down && sudo bx up"
+	"重装路由:" + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up"

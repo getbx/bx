@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/policy"
@@ -24,7 +26,7 @@ func requireRoot(isRoot bool) error {
 		return ToolError{
 			Code:        CodePrivilegeRequired,
 			Message:     "改动类操作需 root",
-			Remediation: "用 `sudo bx mcp` 或 `ssh root@host bx mcp` 启动 server",
+			Remediation: "用 `" + elevate.Prefix + "bx mcp` 或 `ssh root@host bx mcp` 启动 server",
 		}
 	}
 	return nil
@@ -86,7 +88,7 @@ func (o *liveOps) Status() (StatusOut, error) {
 		return StatusOut{}, ToolError{
 			Code:        CodeTunnelUnhealthy,
 			Message:     "bx 未运行或控制 socket 不可达",
-			Remediation: "sudo bx up",
+			Remediation: "" + elevate.Prefix + "bx up",
 		}
 	}
 	return StatusOut{
@@ -105,14 +107,14 @@ func (o *liveOps) Status() (StatusOut, error) {
 // reachable=false:守护进程连不上(rep 忽略)。
 func diagnoseFindings(rep StatusOut, reachable bool) []Finding {
 	if !reachable {
-		return []Finding{{Severity: "error", Title: "bx 未运行(连不上守护进程)", Remediation: "sudo bx up"}}
+		return []Finding{{Severity: "error", Title: "bx 未运行(连不上守护进程)", Remediation: "" + elevate.Prefix + "bx up"}}
 	}
 	var fs []Finding
 	if !rep.TunnelHealthy {
 		fs = append(fs, Finding{
 			Severity:    "error",
 			Title:       "隧道不健康:可能服务器被封或网络波动;真实 IP 已被 kill-switch 保护",
-			Remediation: "等十几秒看自动重连;不行用 bx_set_transport 换隐写传输(brook→REALITY),或 sudo bx setup 换新链接",
+			Remediation: "等十几秒看自动重连;不行用 bx_set_transport 换隐写传输(brook→REALITY),或 " + elevate.Prefix + "bx setup 换新链接",
 		})
 	}
 	if rep.Restarts > 3 {
@@ -350,10 +352,10 @@ func runBXJSONCommand(args []string) (JSONCommandOut, error) {
 // logsResultText 把 TailLogs 结果转成给 agent 的文本(优雅降级)。纯函数。
 func logsResultText(raw string, err error) string {
 	if err != nil {
-		return "取日志失败(可能无权限):" + err.Error() + "\n试 sudo bx logs"
+		return "取日志失败(可能无权限):" + err.Error() + "\n试 " + elevate.Prefix + "bx logs"
 	}
 	if strings.TrimSpace(raw) == "" {
-		return "无日志(或本用户无权限读 journal)。试 sudo bx logs"
+		return "无日志(或本用户无权限读 journal)。试 " + elevate.Prefix + "bx logs"
 	}
 	return raw
 }
@@ -362,11 +364,11 @@ func logsResultReport(raw string, err error) LogsOut {
 	out := LogsOut{OK: err == nil, Text: raw}
 	if err != nil {
 		out.Error = err.Error()
-		out.Hint = "try sudo bx logs"
+		out.Hint = "try " + elevate.Prefix + "bx logs"
 	}
 	if err == nil && strings.TrimSpace(raw) == "" {
 		out.OK = false
-		out.Hint = "try sudo bx logs"
+		out.Hint = "try " + elevate.Prefix + "bx logs"
 	}
 	return out
 }
@@ -397,7 +399,7 @@ func (o *liveOps) ApplyPolicy(in PolicyApplyIn) (PolicyApplyOut, error) {
 		return PolicyApplyOut{}, ToolError{
 			Code:        CodeTunnelUnhealthy,
 			Message:     "read bx config: " + err.Error(),
-			Remediation: "run sudo bx setup with a valid link first",
+			Remediation: "run " + elevate.Prefix + "bx setup with a valid link first",
 		}
 	}
 	after, changed, err := policy.Apply(before, policy.Request{
@@ -495,7 +497,7 @@ func (o *liveOps) Setup(in SetupIn) error {
 	return ToolError{
 		Code:        CodeNotImplemented,
 		Message:     "Setup 尚未接线(待 Task 9 集成真实快照/supervisor 机器)",
-		Remediation: "用 `sudo bx setup <link>` 替代",
+		Remediation: "用 `" + elevate.Prefix + "bx setup <link>` 替代",
 	}
 }
 

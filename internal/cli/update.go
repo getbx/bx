@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	updatepkg "github.com/getbx/bx/internal/update"
@@ -348,7 +350,7 @@ func updateAction(c *cli.Context) error {
 		}
 		fmt.Printf("最新版本:%s (已验证)\n", latest)
 		if available {
-			fmt.Printf("🆕 有新版可用:%s → 运行 sudo bx update 安装。\n", latest)
+			fmt.Printf("🆕 有新版可用:%s → 运行 "+elevate.Prefix+"bx update 安装。\n", latest)
 		} else {
 			fmt.Println("✅ 已是最新,无需更新。")
 		}
@@ -420,7 +422,7 @@ func updateAction(c *cli.Context) error {
 		fmt.Println("  当前保护会话保持运行;新版会在下次启动保护时生效。")
 		fmt.Println("  Reconnect 只安全更换传输,不会为了加载二进制而结束保护。")
 	} else {
-		fmt.Println("  (bx 未在运行,下次 sudo bx up 用新版)")
+		fmt.Println("  (bx 未在运行,下次 " + elevate.Prefix + "bx up 用新版)")
 	}
 	return nil
 }
@@ -431,7 +433,7 @@ func updateAction(c *cli.Context) error {
 // Off 直接就地统一安装(反正无网络保护要保,没有回滚必要)。
 func updateUnifiedMacOS(c *cli.Context, client *http.Client, manifest updatepkg.Manifest, latest string) error {
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("统一布局更新需要管理员权限:请用 sudo bx update")
+		return fmt.Errorf("统一布局更新需要管理员权限:请用 " + elevate.Prefix + "bx update")
 	}
 
 	localPackage := c.String("package-file")
@@ -602,7 +604,7 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 		fmt.Printf("! 更新未终结:保留 %s 供 Guardian 恢复使用\n", stagingDir)
 	}
 	if err != nil {
-		return fmt.Errorf("更新失败:%w;运行 sudo bx status 与 bx doctor 检查保护状态", err)
+		return fmt.Errorf("更新失败:%w;运行 "+elevate.Prefix+"bx status 与 bx doctor 检查保护状态", err)
 	}
 	// JSON body 无论成功还是回滚都先写出(调用方需要 to_version/rolled_back 等字段
 	// 判读结果);但退出码绝不能在写完 JSON 后就地 return nil——回滚意味着更新失败,
@@ -648,11 +650,11 @@ func decideUnifiedUpdateRoute(status guardian.Status, statusErr error, guardianL
 		case guardian.ProtectionStarting, guardian.ProtectionRecovering:
 			return "", fmt.Errorf("Guardian 正在 %s,请稍后再试", status.Protection)
 		default: // blocked、needs_attention 或未知取值
-			return "", fmt.Errorf("Guardian 状态需处理(%s),请先运行 sudo bx doctor", status.Protection)
+			return "", fmt.Errorf("Guardian 状态需处理(%s),请先运行 "+elevate.Prefix+"bx doctor", status.Protection)
 		}
 	}
 	if guardianLoaded {
-		return "", fmt.Errorf("Guardian 状态不明,先 sudo bx doctor: %w", statusErr)
+		return "", fmt.Errorf("Guardian 状态不明,先 "+elevate.Prefix+"bx doctor: %w", statusErr)
 	}
 	return "direct", nil
 }

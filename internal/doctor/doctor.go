@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/rulereview"
 )
@@ -187,7 +189,7 @@ func Judge(f Facts) Report {
 			rulesErr = "这一版 Guardian 没有发布规则体检"
 		}
 		if rulesErr != "" {
-			rep.AddCheck("config_readable", "fail", f.Config.ReadErr, "sudo bx setup <client-link>")
+			rep.AddCheck("config_readable", "fail", f.Config.ReadErr, ""+elevate.Prefix+"bx setup <client-link>")
 		} else {
 			rep.AddCheck("config_readable", "info",
 				f.Config.ReadErr+";规则已改经 Guardian 读取(业主授权,无需 root);"+
@@ -217,7 +219,7 @@ func Judge(f Facts) Report {
 			rep.AddCheck("config_parse", "ok", "yes", "")
 			udpMode = cfg.UDP.Mode
 			if cfg.Server == "" {
-				rep.AddCheck("server_link", "fail", "empty", "sudo bx setup <client-link>")
+				rep.AddCheck("server_link", "fail", "empty", ""+elevate.Prefix+"bx setup <client-link>")
 			} else {
 				rep.AddCheck("server_link", "ok", RedactLink(cfg.Server), "")
 				if len(cfg.Transports) > 1 {
@@ -289,9 +291,9 @@ func UDPPolicy(mode string) (status, detail, hint string) {
 	case "proxy":
 		return "ok", "non-DNS UDP relayed through bx tunnel", ""
 	case "direct-realtime":
-		return "warn", "non-DNS UDP direct; may expose real network path", "Use sudo bx realtime on to relay UDP through bx, or sudo bx realtime off to block it"
+		return "warn", "non-DNS UDP direct; may expose real network path", "Use " + elevate.Prefix + "bx realtime on to relay UDP through bx, or " + elevate.Prefix + "bx realtime off to block it"
 	default:
-		return "warn", "non-DNS UDP blocked", "Google Meet/WebRTC may stutter; use sudo bx realtime on"
+		return "warn", "non-DNS UDP blocked", "Google Meet/WebRTC may stutter; use " + elevate.Prefix + "bx realtime on"
 	}
 }
 
@@ -321,7 +323,7 @@ func DNSCheck(d DNSFact, desired string) Check {
 			return Check{
 				Name: "guardian_dns", Status: "warn",
 				Detail: detail + " —— bx 关着,DNS 却还归 bx",
-				Hint:   "sudo bx down",
+				Hint:   "" + elevate.Prefix + "bx down",
 			}
 		}
 		return Check{Name: "guardian_dns", Status: "ok", Detail: detail + " —— bx 关着,DNS 已还给系统"}
@@ -332,7 +334,7 @@ func DNSCheck(d DNSFact, desired string) Check {
 	// 意图问不出来(desired 为空)时按「要保护」判:这个字段只由 Guardian 填,
 	// 而 Guardian 总是知道自己的 desired,空值只出现在旧版事实与测试里。那时
 	// 宁可多报一次,也不能把「DNS 被别人接管了」漏掉 —— 两种错的代价不对称。
-	return Check{Name: "guardian_dns", Status: "fail", Detail: detail, Hint: "sudo bx up; bx logs"}
+	return Check{Name: "guardian_dns", Status: "fail", Detail: detail, Hint: "" + elevate.Prefix + "bx up; bx logs"}
 }
 
 func RecoveryCheck(r RecoveryFact) Check {
