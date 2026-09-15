@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/netip"
+	"os"
 	"sort"
 	"strings"
 	"syscall"
@@ -16,6 +18,7 @@ import (
 	"github.com/getbx/bx/internal/dialfail"
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/pathview"
+	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/urfave/cli/v2"
@@ -26,7 +29,17 @@ import (
 // 抽出来的理由与本仓库其它渲染层相同 —— 「说了什么」与「说得像句人话」是两件
 // 事,而后者只有把它变成可断言的字符串才盯得住(summarizeFindings 那次无条件
 // 拼 `← CoveredBy`、输出 `*.a ← 、*.b ← ` 一句没写完的话,既有断言全绿)。
+// renderExplain 是 renderExplainWithReview 的薄壳(体检缺席那一路)。
+// **判定只有一份**:既有的几十条测试原样喂它,而新加的那一路多带一个参数。
 func renderExplain(rep supervisor.ExplainResponse) string {
+	return renderExplainWithReview(rep, nil)
+}
+
+// renderExplainWithReview 多答一个问题:**把这个目标送上这条路的那一行本身
+// 有没有问题。** review 为 nil = 这一轮没拿到体检(读不到配置、Guardian 没发、
+// 或这台机器上压根没有那条路)—— 此时一个字都不说,**绝不渲染成「这条规则
+// 没问题」**:「没查」与「查了没有」是两件事。
+func renderExplainWithReview(rep supervisor.ExplainResponse, review *rulereview.Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "目标      %s\n", rep.Target)
 	if rep.Domain != "" && rep.Domain != rep.Target {
@@ -42,8 +55,8 @@ func renderExplain(rep supervisor.ExplainResponse) string {
 		return b.String()
 	}
 
-	writeExplainPath(&b, "TCP", rep.TCP)
-	writeExplainPath(&b, "UDP", rep.UDP)
+	writeExplainPath(&b, "TCP", rep.TCP, review)
+	writeExplainPath(&b, "UDP", rep.UDP, review)
 
 	if note := explainHistoryNote(rep); note != "" {
 		b.WriteString("\n" + note)
@@ -56,7 +69,7 @@ func renderExplain(rep supervisor.ExplainResponse) string {
 	return b.String()
 }
 
-func writeExplainPath(b *strings.Builder, label string, p supervisor.ExplainPath) {
+func writeExplainPath(b *strings.Builder, label string, p supervisor.ExplainPath, review *rulereview.Report) {
 	fmt.Fprintf(b, "\n%-9s %s", label, strings.ToUpper(p.Effective))
 	// **路由判定与实际结局不同时,必须把那一跳说出来** —— 「判定走隧道,而隧道
 	// 不健康所以被拦下」正是「我的请求为什么失败」的答案,少了它用户只看到
@@ -102,6 +115,9 @@ func writeExplainPath(b *strings.Builder, label string, p supervisor.ExplainPath
 			explainSourceLabel(p.Source))
 	}
 	b.WriteString(explainFailureVerdict(p.Run, p.History))
+	for _, f := range explainRuleFindings(review, p.Source, p.Rule) {
+		fmt.Fprintf(b, "  体检    %s\n", explainFindingText(f))
+	}
 	if p.Egress != "" {
 		fmt.Fprintf(b, "  出口    %s\n", p.Egress)
 	}
@@ -249,7 +265,10 @@ func explainAction(c *cli.Context) error {
 			return fmt.Errorf("Core 答不了这个问题:%w", err)
 		}
 	}
-	out, oerr := explainOutput(view, rep, err, c.Bool("json"))
+	// **体检那一份要对着 Core 此刻在用的那个配置文件算**,不是对着默认路径 ——
+	// 拿错输入而判据没错,正是本仓库记着的 wrong-reference-object 那类事故;
+	// 问不出来就不算(nil),绝不猜一个路径。
+	out, oerr := explainOutput(view, rep, err, c.Bool("json"), explainRuleReview())
 	if oerr != nil {
 		return oerr
 	}
@@ -263,7 +282,7 @@ const explainMachineTimeout = 6 * time.Second
 // explainOutput 把本机视角与 Core 判定拼成最终输出。**本机视角在前**;coreErr
 // 非空(Core 连不上)时不渲染零值判定,只留一句。JSON 在 Core 应答上**追加**
 // machine 键,顶层字段一个不动 —— MCP 的 bx_explain 直接转发这份 JSON。
-func explainOutput(view pathview.View, rep supervisor.ExplainResponse, coreErr error, asJSON bool) (string, error) {
+func explainOutput(view pathview.View, rep supervisor.ExplainResponse, coreErr error, asJSON bool, review *rulereview.Report) (string, error) {
 	if asJSON {
 		var top map[string]any
 		if coreErr == nil {
@@ -278,6 +297,16 @@ func explainOutput(view pathview.View, rep supervisor.ExplainResponse, coreErr e
 			top = map[string]any{"core_unavailable": coreErr.Error()}
 		}
 		top["machine"] = view
+		// **体检结论也进 JSON。** 只长在文本路径上的诊断正是本仓库记着的那类
+		// 缺陷:菜单与 agent 走的是另一条路,于是同一台机器上一边说得出问题、
+		// 一边一个字都不说。只发**这一条规则**的结论(与文本那半同一份判据),
+		// 不把整份报告塞进来 —— 那是 bx doctor 的事。
+		if f := explainRuleFindings(review, rep.TCP.Source, rep.TCP.Rule); len(f) > 0 {
+			top["tcp_rule_findings"] = f
+		}
+		if f := explainRuleFindings(review, rep.UDP.Source, rep.UDP.Rule); len(f) > 0 {
+			top["udp_rule_findings"] = f
+		}
 		out, err := json.MarshalIndent(top, "", "  ")
 		if err != nil {
 			return "", err
@@ -291,7 +320,7 @@ func explainOutput(view pathview.View, rep supervisor.ExplainResponse, coreErr e
 		return b.String(), nil
 	}
 	b.WriteString("\n")
-	b.WriteString(renderExplain(rep))
+	b.WriteString(renderExplainWithReview(rep, review))
 	return b.String(), nil
 }
 
@@ -532,4 +561,100 @@ func explainVerdictText(kind string) string {
 	default:
 		return "bx 认不出这些失败是怎么回事 —— 上面那行的分类里没有可行动的信息,去看 sudo bx logs"
 	}
+}
+
+// explainRuleFindings 挑出**这一条规则**的体检结论。
+//
+// 两条判据,各堵一个真实的误判:
+//
+//   - **按 kind 分开查。** 同一条原文可以同时在 direct 与 proxy 两张表里、
+//     语义相反(一条把流量拉出隧道、一条把它拉回来);只按原文比,会把对面
+//     那张表的结论安到这一条头上 —— 与死规则判据「按 Source 把 direct/proxy
+//     分开查」同一条。
+//   - **没有用户规则可点名时一个都不给。** 内建列表与默认那一档(Rule=="")
+//     没有哪一行是用户写的,给它安一个结论就是叫人去删一行他没写过的东西。
+//
+// **全部匹配的结论都返回,不是第一条。** 一条规则可以同时是去匿名化风险、
+// 又被同表更宽的一条盖住;按名字取一条会静默丢掉其余安全结论 —— 本仓库为
+// 这个形状栽过(多条危险规则各打一条同名 JSON check)。
+func explainRuleFindings(review *rulereview.Report, source, rule string) []rulereview.Finding {
+	if review == nil || strings.TrimSpace(rule) == "" {
+		return nil
+	}
+	kind := explainRuleKind(source)
+	if kind == "" {
+		return nil
+	}
+	want := strings.ToLower(strings.TrimSpace(rule))
+	var out []rulereview.Finding
+	for _, f := range review.Findings {
+		if f.Kind == kind && strings.ToLower(strings.TrimSpace(f.Rule)) == want {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// explainRuleKind 把判定来源折成它所在的那张表。
+// **认不出的来源返回空串**(于是一个结论都不给),而不是猜一张表 ——
+// 猜错的后果是把对面那张表的结论安到这条规则头上。
+func explainRuleKind(source string) string {
+	switch source {
+	case "user_direct", "user_direct_ip":
+		return "direct"
+	case "user_proxy", "user_proxy_ip":
+		return "proxy"
+	default:
+		return ""
+	}
+}
+
+// explainFindingText 渲染一条结论。`Summary` 是服务端产地写好的中文,而
+// `bx explain` 也是中文界面 —— **不在这里另写一份措辞**(菜单那半要映射成英文
+// 是因为它通篇英文,不是因为 Summary 不好)。
+//
+// `CoveredBy` 只在真有的时候拼:死规则没有「被谁盖住」这回事,无条件拼
+// 会打出「*.a ← 」这种没写完的话 —— 那是肉眼看输出才抓到过的一个真 bug。
+func explainFindingText(f rulereview.Finding) string {
+	if f.CoveredBy != "" {
+		return f.Summary + " ← " + f.CoveredBy
+	}
+	return f.Summary
+}
+
+// explainRuleReview 取一份规则体检,**只对 Core 此刻在用的那个配置文件算**。
+//
+// 两条路与 bx doctor 逐字同源(同一个 rulereview.Review、同一个组装):配置
+// 读得到就本地算;**只有权限不足**才退到 Guardian 的 /v1/rules —— 配置
+// **不存在**是「还没 setup 过」这个真问题,拿 Guardian 的答案盖住它是掩盖故障。
+// 退路那条还要比对 Guardian 报的 config_path 与我们要问的是同一个文件,
+// 否则一份来自别处的答案会冒名顶替。
+//
+// **任何一步问不出来就返回 nil**,于是 explain 一个字都不说 —— 而不是说成
+// 「这条规则没问题」。
+func explainRuleReview() *rulereview.Report {
+	rt, err := supervisor.FetchRuntimeState(supervisor.SockPath)
+	if err != nil || strings.TrimSpace(rt.ConfigPath) == "" {
+		return nil
+	}
+	configPath := rt.ConfigPath
+	b, rerr := os.ReadFile(configPath)
+	if rerr != nil {
+		if !errors.Is(rerr, fs.ErrPermission) {
+			return nil
+		}
+		review, guardianPath, gerr := guardianRulesForDoctor()
+		if gerr != nil || review == nil || guardianPath != configPath {
+			return nil
+		}
+		return review
+	}
+	cfg, perr := config.Parse(b)
+	if perr != nil {
+		return nil
+	}
+	r := rulereview.Review(buildRuleReviewInput(cfg, embedded.ChinaDomain(), func() (stats.Report, error) {
+		return supervisor.FetchStatusReport(statusSocketPath())
+	}))
+	return &r
 }
