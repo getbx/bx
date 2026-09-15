@@ -412,6 +412,16 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         box.addArrangedSubview(toggle)
         box.setHuggingPriority(.defaultLow, for: .horizontal)
 
+        // **副标题回答「我该不该勾它」。** 摆在同一行里、不另起一行:上一版正是
+        // 「勾选框下面缩进一行小字」,而那行多半是空的 —— 一屏参差不齐的留白就是
+        // 「太丑」的来源。ruleGroupSubtitle 恒非空,所以这一列是齐的。
+        let subtitle = NSTextField(labelWithString: ruleGroupSubtitle(row.group))
+        subtitle.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        subtitle.textColor = .secondaryLabelColor
+        subtitle.lineBreakMode = .byTruncatingTail
+        subtitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        box.addArrangedSubview(subtitle)
+
         let trailing = NSTextField(labelWithString: row.trailing ?? "")
         trailing.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         trailing.textColor = row.failing > 0 ? .systemRed : .secondaryLabelColor
