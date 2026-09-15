@@ -202,13 +202,24 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             stack.addArrangedSubview(gap())
         }
 
-        for row in lastGroupRows {
-            stack.addArrangedSubview(groupRow(row))
+        // **两块之间要有分界。** 2026-09-14 真机反馈:三行组(Apple / China CDN /
+        // Steam,带勾选)确实画着,但紧接着就是十几行平铺的自定义规则,中间没有
+        // 任何标题 —— 于是「这里能按组勾选」整个看不出来,用户的原话是
+        // 「分类要清晰……用户是否可以简单勾选」。
+        if !lastGroupRows.isEmpty {
+            let presetsHeading = sectionHeading("Presets")
+            stack.addArrangedSubview(presetsHeading)
+            for row in lastGroupRows {
+                stack.addArrangedSubview(groupRow(row))
+            }
         }
 
         let entries = ruleTableEntries(rows: lastRuleRows, pending: pendingRemovals)
         if !entries.isEmpty {
             stack.addArrangedSubview(gap())
+            // 数量写进标题:一眼看出下面这一长串是「你自己加的」,而不是预设的一部分。
+            let customHeading = sectionHeading("Your own rules (\(lastRuleRows.count))")
+            stack.addArrangedSubview(customHeading)
             for entry in entries {
                 switch entry {
                 case .rule(let row):
@@ -364,6 +375,29 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     ///
     /// 上一版是勾选框下面缩进一行小字,而那行小字多半是空的 —— 于是一屏里全是
     /// 参差不齐的留白,正是「太丑」的来源。右对齐之后眼睛只需要扫一列。
+    /// 一行小标题。**只分区,不解释** —— 组是干什么的由组名与展开后的域名说,
+    /// 而不是把服务端那句中文 summary 摆上来(菜单通篇英文;本仓库为
+    /// 「服务端写的是中文」栽过一次)。
+    private func sectionHeading(_ text: String) -> NSView {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
+    /// 展开状态按组名记 —— 每次刷新都重建视图树,存在视图上会跟着一起没。
+    private var expandedGroups: Set<String> = []
+
+    @objc private func toggleGroupExpansion(_ sender: NSButton) {
+        guard let name = sender.identifier?.rawValue else { return }
+        if expandedGroups.contains(name) {
+            expandedGroups.remove(name)
+        } else {
+            expandedGroups.insert(name)
+        }
+        render(preservingScroll: true)
+    }
+
     private func groupRow(_ row: RuleGroupRow) -> NSView {
         let box = NSStackView()
         box.orientation = .horizontal
@@ -384,7 +418,35 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         trailing.alignment = .right
         trailing.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         box.addArrangedSubview(trailing)
-        return box
+
+        // **「apple 里面有哪些」** —— 这一整条诉求缺的只是渲染:`RuleGroup` 的
+        // `domains` 早就解码到客户端了(CodingKeys 里就有),而在此之前没有任何
+        // 地方画过它。一个只给勾选框、不肯说自己管哪些域名的开关,用户没有理由
+        // 相信它 —— 与 leakcheck 那条「Evidence 是必须的那一半」同源。
+        let name = row.group.name
+        let expanded = expandedGroups.contains(name)
+        let disclose = NSButton(
+            title: expanded ? "Hide" : "Show",
+            target: self, action: #selector(toggleGroupExpansion(_:)))
+        disclose.bezelStyle = .inline
+        disclose.controlSize = .small
+        disclose.identifier = NSUserInterfaceItemIdentifier(name)
+        disclose.isHidden = row.group.domains.isEmpty
+        box.addArrangedSubview(disclose)
+
+        guard expanded, !row.group.domains.isEmpty else { return box }
+        let column = NSStackView()
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 2
+        column.addArrangedSubview(box)
+        for domain in row.group.domains {
+            let line = NSTextField(labelWithString: "    " + domain)
+            line.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+            line.textColor = .secondaryLabelColor
+            column.addArrangedSubview(line)
+        }
+        return column
     }
 
 
