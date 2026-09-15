@@ -36,6 +36,11 @@ func uninstallDarwinAction(c *urfavecli.Context) error {
 	for _, args := range plan.LaunchctlCommands {
 		runLaunchctlBestEffort(args)
 	}
+	// **等 launchd 真的把 job 拆掉,再往下删它的文件。**
+	// 顺序是承重的:下面 RemovePaths 会删掉 plist、二进制与 App bundle,而 guard
+	// 与菜单 agent 都带 KeepAlive —— job 还在域里时把文件删掉,launchd 会不停
+	// 重拉一个不存在的二进制,而卸载已经报了成功。
+	waitForLaunchdTargetsGone(bootoutWaitTargets(plan))
 
 	if err := install.Uninstall(); err != nil {
 		fmt.Printf("! 清理 legacy 服务失败: %v\n", err)
@@ -131,4 +136,35 @@ func darwinConsoleUserForUninstall() (int, string) {
 		return 0, ""
 	}
 	return uid, account.HomeDir
+}
+
+// launchdTeardownPollInterval / launchdTeardownPollAttempts 界定「等 job 真的
+// 从域里消失」等多久。取值与 install.bootoutGuardian 那条路同量级(约 3 秒上限):
+// 真机上 launchd 拆一个 KeepAlive 服务通常几百毫秒。
+const (
+	launchdTeardownPollInterval = 150 * time.Millisecond
+	launchdTeardownPollAttempts = 20
+)
+
+// waitForLaunchdTargetsGone 等每个 bootout 过的目标真的不在域里。
+//
+// **等不到不报错、也不中止卸载** —— 停止这条路上任何一步都不得因为别的事没做成
+// 而失败(2026-08-04 那次 71 分钟事故立的规矩)。等不到时打一行,让用户知道
+// 可能要注销一次;而**沉默才是最坏的**:那正是「用户以为卸干净了」的来源。
+func waitForLaunchdTargetsGone(targets []string) {
+	for _, target := range targets {
+		gone := false
+		for i := 0; i < launchdTeardownPollAttempts; i++ {
+			if exec.Command("launchctl", "print", target).Run() != nil {
+				gone = true
+				break
+			}
+			time.Sleep(launchdTeardownPollInterval)
+		}
+		if !gone {
+			fmt.Printf("! launchd 里的 %s 还没拆掉(已等约 %s)—— 它带 KeepAlive,"+
+				"可能会重拉一个已被删掉的二进制,注销一次即可清掉\n",
+				target, launchdTeardownPollInterval*launchdTeardownPollAttempts)
+		}
+	}
 }

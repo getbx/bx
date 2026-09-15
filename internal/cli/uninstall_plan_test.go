@@ -246,3 +246,87 @@ func TestUninstallRemovesTheThroughputHistory(t *testing.T) {
 	}
 	t.Fatalf("卸载计划里没有 %s:%v", guardian.DefaultThroughputHistoryPath, plan.RemovePaths)
 }
+
+// —— 卸载必须等 launchd 真的把 job 拆掉,再去删它的文件 ——
+//
+// **2026-09-15 CI 抓到的,而这一步此前从没被执行到过**:`macos-fresh-install`
+// 那条腿在它前面那条断言上红了两个月,于是卸载这一步一次都没跑过。跑通之后
+// 当场现形:`launchctl bootout` 返回、紧接着删掉 plist,而 120 毫秒后
+// `launchctl print system/com.getbx.bx.guard` **仍然找得到那个 job**。
+// bootout 自己没失败(失败会打一行 `! …`,日志里没有)—— 是 2026-08-13 那次
+// 「bootout 返回时服务还没真的从域里消失」的同一个竞态。
+//
+// 后果不是难看:guard 与菜单 agent 都带 KeepAlive,job 留在 launchd 里而文件
+// 已经被删,launchd 便会不停重拉一个不存在的二进制,**而用户以为卸干净了**。
+// 这正是 runLaunchctlBestEffort 头上那段注释已经描述过的失败形状,只是当时
+// 只防住了「bootout 失败」那一半,没防住「bootout 成功但还没生效」这一半。
+
+func TestUninstallWaitsForEveryBootoutTarget(t *testing.T) {
+	plan := buildDarwinUninstallPlan(501, "/Users/alice", true)
+	targets := bootoutWaitTargets(plan)
+	want := map[string]bool{
+		"system/" + darwinGuardLaunchdLabel: true,
+		"gui/501/" + darwinMenuLaunchdLabel: true,
+	}
+	if len(targets) != len(want) {
+		t.Fatalf("要等的目标数 = %d,应当是 %d:%v", len(targets), len(want), targets)
+	}
+	for _, target := range targets {
+		if !want[target] {
+			t.Errorf("多等了一个目标 %q", target)
+		}
+		delete(want, target)
+	}
+	for missing := range want {
+		t.Errorf("漏掉了 %q —— 它的文件会在 job 还在时被删掉", missing)
+	}
+}
+
+// 没有控制台用户时只有 guard 那一个 —— 不许凭空造一个 gui 域目标出来。
+func TestUninstallWaitTargetsFollowThePlan(t *testing.T) {
+	plan := buildDarwinUninstallPlan(0, "", false)
+	targets := bootoutWaitTargets(plan)
+	if len(targets) != 1 || targets[0] != "system/"+darwinGuardLaunchdLabel {
+		t.Errorf("没有控制台用户时要等的目标不对:%v", targets)
+	}
+}
+
+// **只等 bootout,不等别的命令。** 计划里将来可能出现 bootstrap/kickstart,
+// 对它们「等到消失」是把话说反了。
+func TestUninstallNeverWaitsForANonBootoutCommand(t *testing.T) {
+	plan := darwinUninstallPlan{LaunchctlCommands: [][]string{
+		{"launchctl", "bootstrap", "system", "/Library/LaunchDaemons/x.plist"},
+		{"launchctl", "kickstart", "-k", "system/x"},
+	}}
+	if targets := bootoutWaitTargets(plan); len(targets) != 0 {
+		t.Errorf("对非 bootout 的命令也等了:%v", targets)
+	}
+}
+
+// **等待必须排在删文件之前,而这条顺序是承重的。**
+//
+// 反过来就是这次 CI 抓到的形状:job 还在域里、文件已经没了,而 KeepAlive 让
+// launchd 不停重拉一个不存在的二进制。顺序长在 AppKit 之外的普通 Go 里,但它
+// 是**接线**而不是判据 —— 判据层的测试证明不了「谁排在谁前面」,这个仓库
+// 全部的事故都在接线上。
+func TestUninstallWaitsBeforeItDeletesTheFiles(t *testing.T) {
+	src, err := os.ReadFile("uninstall_darwin.go")
+	if err != nil {
+		t.Fatalf("读不出 uninstall_darwin.go:%v —— 这条守卫读不懂现在的代码了,先修它", err)
+	}
+	body, ok := goFunctionBody(string(src), "func uninstallDarwinAction(c *urfavecli.Context) error {")
+	if !ok {
+		t.Fatal("读不出 uninstallDarwin —— 守卫的锚点漂了,先修它")
+	}
+	wait := strings.Index(body, "waitForLaunchdTargetsGone(")
+	remove := strings.Index(body, "plan.RemovePaths")
+	if wait < 0 {
+		t.Fatal("卸载根本没等 launchd 拆完就往下走了 —— 正是 2026-09-15 CI 抓到的那个")
+	}
+	if remove < 0 {
+		t.Fatal("找不到删文件那一段 —— 守卫读不懂现在的代码了")
+	}
+	if wait > remove {
+		t.Error("等待排在了删文件之后 —— 那等于没等:文件已经没了,job 还在域里重拉它")
+	}
+}
