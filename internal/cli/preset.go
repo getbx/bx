@@ -63,7 +63,7 @@ func getPreset(name string) (appPreset, error) {
 func presetListAction(c *cli.Context) error {
 	for _, name := range presetNames() {
 		p := appPresets[name]
-		fmt.Printf("%-10s %s\n", p.Name, p.Summary)
+		fmt.Printf("%-10s %s\n", p.Name, plainText(p.Summary))
 	}
 	return nil
 }
@@ -74,7 +74,7 @@ func presetShowAction(c *cli.Context) error {
 		return err
 	}
 	fmt.Printf("bx preset: %s\n", p.Name)
-	fmt.Printf("  %s\n", p.Summary)
+	fmt.Printf("  %s\n", plainText(p.Summary))
 	fmt.Println("  Direct:")
 	for _, domain := range p.Direct {
 		fmt.Printf("    %s\n", domain)
@@ -135,3 +135,11 @@ func applyPresetToConfig(path string, p appPreset) (bool, error) {
 	_ = os.Chmod(path, 0o600)
 	return true, nil
 }
+
+// plainText 把 preset 的 Summary 里的 markdown 去掉。
+//
+// **用户在终端里读到的是字面上的星号。** 2026-09-15 真机实测 `bx preset ls`:
+// `只含**纯字节**:…**刻意不在其中** ——`。那些 `**` 是写给读源码的人的强调,
+// 而 Summary 同时喂着这条命令的输出;与 `bx explain` 的判决行、
+// corestartadvice 那条守卫同一条纪律 —— 渲染出来的话里不许有 markdown。
+func plainText(s string) string { return strings.ReplaceAll(s, "**", "") }

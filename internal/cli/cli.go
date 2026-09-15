@@ -5380,7 +5380,7 @@ func systemdServiceChecks() []checkReport {
 	activeState := serviceState("is-active", install.ServiceName)
 	enabledState := serviceState("is-enabled", install.ServiceName)
 	return []checkReport{
-		{Name: "service_installed", Status: boolStatus(install.UnitInstalled()), Detail: install.ServiceName, Hint: "" + elevate.Prefix + "bx setup <client-link>"},
+		{Name: "service_installed", Status: boolStatus(install.UnitInstalled()), Detail: install.ServiceDisplayName(), Hint: "" + elevate.Prefix + "bx setup <client-link>"},
 		{
 			Name:   "service_active",
 			Status: serviceStatusFromState("is-active", activeState),

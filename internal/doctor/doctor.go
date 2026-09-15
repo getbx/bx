@@ -2,7 +2,11 @@ package doctor
 
 import (
 	"fmt"
+	"io/fs"
+	"runtime"
 	"strings"
+
+	"github.com/getbx/bx/internal/tristate"
 
 	"github.com/getbx/bx/internal/elevate"
 
@@ -93,7 +97,15 @@ func (r Report) CountNotChecked() int {
 type FileFact struct {
 	ReadErr          string
 	PermissionDenied bool
-	Mode0600         bool
+	// Mode0600 三态:True=确实是 0600;False=不是;**Unknown=这个平台没有
+	// POSIX 权限位**(Windows:NTFS 靠 ACL,Go 合成 0666)。
+	//
+	// 2026-09-15 真机实测:Windows 上它恒为「不是 0600」,于是一台完全正常的
+	// 机器被报 WARN,还被派去敲 `chmod` —— 那条命令在那儿也不存在。与
+	// 2026-09-10 `guardian_dns` 把「用户自己关掉保护」说成故障同一个形状。
+	//
+	// **零值取 Unknown 是刻意的**:漏填时说「没查」,而不是说「权限不对」。
+	Mode0600 tristate.Tristate
 }
 
 // GuardianRulesFact 是 Guardian /v1/rules 退路拿到的东西:Review 为 nil 表示这一版
@@ -200,10 +212,14 @@ func Judge(f Facts) Report {
 		}
 	} else {
 		rep.AddCheck("config_readable", "ok", "yes", "")
-		if f.Config.Mode0600 {
+		switch f.Config.Mode0600 {
+		case tristate.True:
 			rep.AddCheck("config_permissions", "ok", "0600", "")
-		} else {
+		case tristate.False:
 			rep.AddCheck("config_permissions", "warn", "not 0600", "chmod 600 "+f.ConfigPath)
+		default:
+			// **「这个平台没有这件事」不是一次失败,也不是「查过没问题」。**
+			rep.AddCheck("config_permissions", StatusNotChecked, "本平台没有 POSIX 权限位(靠 ACL)", "")
 		}
 		if f.ParseErr != "" || f.Parsed == nil {
 			// f.Parsed == nil 而 f.ParseErr == "" 在 Task 6 的采集方那条路上不可达
@@ -352,4 +368,18 @@ func RecoveryCheck(r RecoveryFact) Check {
 		detail += " error_code=" + r.ErrorCode
 	}
 	return Check{Name: "network_recovery", Status: status, Detail: detail, Hint: hint}
+}
+
+// ConfigMode0600 把一次文件权限观测折成三态。**两个采集方共用一份** ——
+// `internal/cli` 与 `internal/guardian` 各写一遍的话,一处跟上、另一处没跟上
+// 的失败方式是静默的(那一条 check 的状态悄悄换了一个平台的含义)。
+//
+// **Windows 一律 Unknown**:NTFS 靠 ACL,Go 在那儿把权限合成 0666 —— 拿它
+// 判「不是 0600」就是把一台完全正常的机器说成有问题,还要派用户去敲一条
+// 那儿不存在的 `chmod`(2026-09-15 真机实测)。这是纯函数,不做任何 I/O。
+func ConfigMode0600(perm fs.FileMode) tristate.Tristate {
+	if runtime.GOOS == "windows" {
+		return tristate.Unknown
+	}
+	return tristate.FromBool(perm == 0o600)
 }

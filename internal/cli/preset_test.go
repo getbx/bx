@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/preset"
+
 	"github.com/getbx/bx/internal/config"
 )
 
@@ -154,4 +156,27 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// **终端里读到的是字面上的星号。** 2026-09-15 真机实测 `bx preset ls`:
+// `只含**纯字节**:…**刻意不在其中**`。Summary 里的 `**` 是写给读源码的人的,
+// 而它同时喂着这条命令的输出 —— 与 explain 的判决行、corestartadvice 那条
+// 守卫同一条纪律:渲染出来的话里不许有 markdown。
+//
+// 判据穷举**每一组的 Summary**,不靠某一次渲染碰巧覆盖到哪几组。
+func TestNoPresetSummaryRendersMarkdown(t *testing.T) {
+	names := 0
+	for _, p := range preset.All() {
+		names++
+		got := plainText(p.Summary)
+		if strings.Contains(got, "**") {
+			t.Errorf("预设 %q 的说明里还有 markdown:%s", p.Name, got)
+		}
+		if got == "" {
+			t.Errorf("预设 %q 的说明被清空了 —— 去 markdown 不该把内容一起去掉", p.Name)
+		}
+	}
+	if names == 0 {
+		t.Fatal("一个预设都没扫到 —— 安静地扫了零个的守卫,与没有这条守卫完全一样")
+	}
 }

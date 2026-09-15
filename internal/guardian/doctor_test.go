@@ -134,7 +134,7 @@ func TestCollectDoctorFactsWalksTheLongPathWithoutProbing(t *testing.T) {
 			probe:    nil,
 			platform: func(context.Context) []doctor.Check { return []doctor.Check{{Name: "terminal_proxy", Status: "info"}} },
 		})
-	if f.ConfigPath != path || f.Config.ReadErr != "" || !f.Config.Mode0600 {
+	if f.ConfigPath != path || f.Config.ReadErr != "" || f.Config.Mode0600 != tristate.True {
 		t.Fatalf("配置事实 = %+v", f.Config)
 	}
 	if f.Parsed == nil || f.Parsed.Server == "" {

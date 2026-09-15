@@ -40,7 +40,11 @@ func collectDoctorFacts(configPath, target string, timeout time.Duration, skipPr
 			f.GuardianRules.Err = rulesErr.Error()
 		}
 	} else {
-		f.Config.Mode0600 = modeCheck(cfgPath, 0o600)
+		// 走共用判据:Windows 上没有 POSIX 权限位,那儿不是「权限不对」而是
+		// 「本平台没有这件事」(doctor.ConfigMode0600)。
+		if fi, serr := os.Stat(cfgPath); serr == nil {
+			f.Config.Mode0600 = doctor.ConfigMode0600(fi.Mode().Perm())
+		}
 		cfg, perr := config.Parse(b)
 		if perr != nil {
 			f.ParseErr = perr.Error()

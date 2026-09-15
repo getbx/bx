@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/tristate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/rulereview"
 )
@@ -83,7 +85,7 @@ func TestJudgeParsedConfigProducesTheFullLadder(t *testing.T) {
 	probe := Check{Name: "probe", Status: "ok", Detail: "366ms"}
 	r := Judge(Facts{
 		ConfigPath: "/etc/bx/config.yaml",
-		Config:     FileFact{Mode0600: false}, Parsed: cfg,
+		Config:     FileFact{Mode0600: tristate.False}, Parsed: cfg,
 		RuleReview: &rulereview.Report{}, Probe: &probe,
 		Service:         []Check{{Name: "guardian_installed", Status: "ok"}},
 		StatusSocketErr: "dial unix /var/run/bx/core.sock: connect: no such file",
@@ -110,11 +112,11 @@ func TestJudgeParsedConfigProducesTheFullLadder(t *testing.T) {
 }
 
 func TestJudgeParseFailureAndEmptyServer(t *testing.T) {
-	bad := Judge(Facts{Config: FileFact{Mode0600: true}, ParseErr: "yaml: boom"})
+	bad := Judge(Facts{Config: FileFact{Mode0600: tristate.True}, ParseErr: "yaml: boom"})
 	if got := names(bad); got != "config:info config_readable:ok config_permissions:ok config_parse:fail status_socket:ok udp_policy:ok traffic_outcomes:not_checked" {
 		t.Fatalf("解析失败阶梯 = %q", got)
 	}
-	empty := Judge(Facts{Config: FileFact{Mode0600: true}, Parsed: &config.Config{}})
+	empty := Judge(Facts{Config: FileFact{Mode0600: tristate.True}, Parsed: &config.Config{}})
 	if c := find(empty, "server_link"); c.Status != "fail" || c.Hint != "sudo bx setup <client-link>" {
 		t.Fatalf("server 为空 = %+v", c)
 	}
@@ -182,7 +184,7 @@ func TestJudgeEmitsRuleReviewLinesOnBothPaths(t *testing.T) {
 
 	parsed := Judge(Facts{
 		ConfigPath: "/etc/bx/config.yaml",
-		Config:     FileFact{Mode0600: true},
+		Config:     FileFact{Mode0600: tristate.True},
 		Parsed:     &config.Config{Server: "bx://abc"},
 		RuleReview: &rep,
 	})
@@ -225,5 +227,68 @@ func TestJudgeGuardianFallbackRequiresAPermissionFailure(t *testing.T) {
 	r2 := Judge(permission)
 	if c := find(r2, "config_readable"); c.Status != "info" {
 		t.Fatalf("权限失败 + 路径匹配 + Review 非 nil 应该走 Guardian 退路:%+v", c)
+	}
+}
+
+// —— NTFS 没有 POSIX 权限位,而 bx 在 Windows 上为此报了 WARN(2026-09-15 真机)——
+//
+// `030-SJWJ-GSR-B` 上实测:
+//
+//	[WARN] config permissions: not 0600
+//	[HINT] config permissions: chmod 600 C:\ProgramData\bx\config.yaml
+//
+// 两件事都错:NTFS 靠 ACL,Go 在 Windows 上合成 0666,于是**一台完全正常的机器
+// 被说成有问题**;而给出的动作是一条那儿不存在的命令。与 2026-09-10
+// `guardian_dns` 把「用户自己关掉保护」说成故障是同一个形状。
+//
+// 三态因此是必需的:**「不是 0600」与「这个平台没有这件事」不是同一句话。**
+func TestConfigPermissionsAreNotCheckedWherePOSIXModesDoNotExist(t *testing.T) {
+	facts := Facts{ConfigPath: `C:\ProgramData\bx\config.yaml`}
+	facts.Config.Mode0600 = tristate.Unknown
+
+	rep := Judge(facts)
+	var found *Check
+	for i := range rep.Checks {
+		if rep.Checks[i].Name == "config_permissions" {
+			found = &rep.Checks[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("config_permissions 整条不见了 —— 缺席与「查过没问题」在输出上一样")
+	}
+	if found.Status != StatusNotChecked {
+		t.Errorf("status = %q,want %q —— 本平台没有 POSIX 权限位不是一次失败", found.Status, StatusNotChecked)
+	}
+	if strings.Contains(found.Hint, "chmod") {
+		t.Errorf("还在教人敲 chmod:%q —— Windows 上没有这条命令", found.Hint)
+	}
+}
+
+// **两头都不许被这次改动连累**:真的是 0600 仍然 ok,真的不是仍然 warn 并给
+// 那条命令 —— 少了这一半,「干脆永远报 not_checked」也能廉价满足上一条。
+func TestConfigPermissionsStillJudgeWhereModesDoExist(t *testing.T) {
+	ok := Facts{ConfigPath: "/etc/bx/config.yaml"}
+	ok.Config.Mode0600 = tristate.True
+	bad := Facts{ConfigPath: "/etc/bx/config.yaml"}
+	bad.Config.Mode0600 = tristate.False
+
+	pick := func(rep Report) Check {
+		for _, c := range rep.Checks {
+			if c.Name == "config_permissions" {
+				return c
+			}
+		}
+		t.Fatal("config_permissions 不见了")
+		return Check{}
+	}
+	if got := pick(Judge(ok)); got.Status != "ok" {
+		t.Errorf("0600 被判成了 %q", got.Status)
+	}
+	got := pick(Judge(bad))
+	if got.Status != "warn" {
+		t.Errorf("不是 0600 被判成了 %q —— 配置里有服务器链接,权限松是真问题", got.Status)
+	}
+	if !strings.Contains(got.Hint, "chmod") {
+		t.Errorf("不是 0600 却没给出那条命令:%q", got.Hint)
 	}
 }

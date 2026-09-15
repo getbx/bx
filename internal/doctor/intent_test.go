@@ -1,5 +1,7 @@
 package doctor
 
+import "github.com/getbx/bx/internal/tristate"
+
 import "testing"
 
 // **关掉保护不是故障。** 2026-09-10 真机验收:用户自己 `bx down` 之后,doctor 报
@@ -102,7 +104,7 @@ func TestJudgeEmitsNoHintOnAnyOKCheck(t *testing.T) {
 	rep := Judge(Facts{
 		Version:    "test",
 		ConfigPath: "/etc/bx/config.yaml",
-		Config:     FileFact{Mode0600: true},
+		Config:     FileFact{Mode0600: tristate.True},
 		Probe:      &Check{Name: "probe", Status: "ok", Detail: "1ms", Hint: "sudo bx up"},
 		Service:    DarwinServiceChecks(true, true),
 		Darwin:     true,

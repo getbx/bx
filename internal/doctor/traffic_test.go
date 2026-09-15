@@ -267,7 +267,7 @@ func TestDoctorKeepsTheRuleHintWhenEgressIsUnknown(t *testing.T) {
 // NotChecked 计数),不是打在 Facts 上:后者在两种情形下当然不同,而那正是
 // 「守卫钉住的是缺陷旁边的东西」。
 func TestJudgeMakesUncheckedTrafficLookDifferentFromHealthyTraffic(t *testing.T) {
-	base := Facts{Version: "test", ConfigPath: "/etc/bx/config.yaml", Config: FileFact{Mode0600: true}, Parsed: healthyConfig()}
+	base := Facts{Version: "test", ConfigPath: "/etc/bx/config.yaml", Config: FileFact{Mode0600: tristate.True}, Parsed: healthyConfig()}
 
 	absent := Judge(base)
 	healthy := base
@@ -301,7 +301,7 @@ func TestJudgeMakesUncheckedTrafficLookDifferentFromHealthyTraffic(t *testing.T)
 // 坏的(2026-09-10 真机上 guardian_dns 栽的那个形状)。后半句是这次修复的全部
 // 意义:代价由 NotChecked 那个计数抵掉,它必须真的数得出来。
 func TestNotCheckedDoesNotFailTheReportButIsCountedSeparately(t *testing.T) {
-	rep := Judge(Facts{Version: "test", ConfigPath: "/etc/bx/config.yaml", Config: FileFact{Mode0600: true}, Parsed: healthyConfig()})
+	rep := Judge(Facts{Version: "test", ConfigPath: "/etc/bx/config.yaml", Config: FileFact{Mode0600: tristate.True}, Parsed: healthyConfig()})
 	if !rep.OK {
 		t.Error("只有「没查」时 OK 变成了 false —— 一台用户自己关掉保护的机器会被说成坏的")
 	}
