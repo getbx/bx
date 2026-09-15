@@ -74,6 +74,32 @@ var all = map[string]Preset{
 			"*.cdn-apple.com",
 		},
 	},
+	// **这一组是 2026-08-19 那次排查的固化。** 当时项目所有者报「腾讯会议开着 bx
+	// 会绕一圈」,根因很浅 —— 白名单里只有 `*.qq.com`(那是微信在用),而腾讯会议
+	// 整个跑在 `*.tencent.com` / 腾讯云 IM 上,于是 global 模式下**信令和媒体流
+	// 全部**绕到境外 VPS 再回国。**但发现它花了半小时**,最后是靠
+	// `strings /Applications/TencentMeeting.app` 把域名捞出来比对才确认的。
+	//
+	// **`*.qq.com` 与 `*.weixin.qq.com` 刻意不在这里** —— 它们归 china-cdn
+	// (`Classify` 的 owner 表一个域名只认一个组,放两处会让 china-cdn 永远装不满)。
+	//
+	// **腾讯云只收 `*.im.qcloud.com` 这个固定服务域,不收 `*.myqcloud.com`** ——
+	// 后者是对象存储,任何人都能在上面开桶,它就在 `policy` 那份开放平台名单里,
+	// 由 TestNoPresetShipsARuleItsOwnCommandWouldRefuse 钉着。
+	"tencent": {
+		Title:   "Tencent",
+		Name:    "tencent",
+		Summary: "微信、腾讯会议、QQ 的登录/消息/媒体可用性;不含任何人都能注册的腾讯云对象存储域",
+		Direct: []string{
+			"*.tencent.com",
+			"*.tencent-cloud.com",
+			"*.im.qcloud.com",
+			"*.wechat.com",
+			"*.qpic.cn",
+			"*.qlogo.cn",
+			"*.gtimg.cn",
+		},
+	},
 	"china-cdn": {
 		Title:   "China CDN",
 		Name:    "china-cdn",

@@ -319,7 +319,22 @@ bx preset show gaming
 sudo bx preset apply gaming
 ```
 
-当前内置 `gaming`、`apple`、`china-cdn`。预设只向客户端配置加入经过筛选的 `direct` 域名规则,并清理同名 `proxy` 规则;运行中的 bx 会热加载,不会直接修改 TUN、路由或 DNS。要撤销某一项,用 `sudo bx direct rm <domain>`。
+当前内置 `apple`、`china-cdn`、`gaming`、`tencent`。预设只向客户端配置加入经过筛选的 `direct` 域名规则,并清理同名 `proxy` 规则;运行中的 bx 会热加载,不会直接修改 TUN、路由或 DNS。要撤销某一项,用 `sudo bx direct rm <domain>`。
+
+**一个组 = 一件「让某类应用正常工作」的事,不是一批域名。** 这个区别在你要判断「该不该开」时才显出来:
+`apple` 管的是 iCloud 同步与 Game Center 能不能连上,`tencent` 管的是微信/腾讯会议的登录、消息与媒体
+(那一组是一次真实排查的固化 —— 白名单里只有 `*.qq.com` 时,腾讯会议整个跑在 `*.tencent.com` 上,
+信令和媒体流全部绕到境外再回来,而**发现它花了半小时**)。`gaming` 刻意只含**纯字节**:游戏文件与
+更新,商店页面不在其中 —— 它的 HTML 走隧道而图片走直连的话,同一个页面会一半美国一半本地。
+
+**预设里的每一条都过同一道风险门。** `bx direct add` 会拒绝开放平台域(任何人都能在
+`*.myqcloud.com`、`*.amazonaws.com` 上注册子域,而 bx 的匹配器是后缀集 —— 一条直连规则覆盖它的
+每一个子域,于是陌生人能让你的真实 IP 走到隧道外面);**预设不许绕过那道门**,由
+`TestNoPresetShipsARuleItsOwnCommandWouldRefuse` 钉着 —— 一键装进去一条自己的命令会拒绝的规则,
+是同一道门给出两个答案。所以 `tencent` 只收固定服务域 `*.im.qcloud.com`,不收对象存储。
+
+macOS 菜单栏的 **Routing Rules** 窗口把这几组画成可勾选的行(半装的组显示成第三态),点 `Show`
+能展开看这一组到底管哪些域名;下面另起一段是**你自己加的**规则。
 
 如果只想生成 `.app` 包而不安装:
 
@@ -460,9 +475,12 @@ sudo bx server shares --json
 | `bx capabilities` | 输出机器可读能力清单 |
 | `bx doctor` | 诊断客户端配置、服务状态和链接连通性 |
 | `bx doctor --json` | 输出客户端机器可读诊断 |
-| `bx leakcheck` | **泄漏检测（推荐）**：开本地页面，把浏览器那半（WebRTC/出口/指纹）与本机那半（路由/DNS）对起来。bx 关着、别的 VPN 在跑时照样能用 |
+| `bx leakcheck` | **泄漏检测（推荐）**：开本地页面，把浏览器那半（WebRTC/出口/指纹）与本机那半（路由/DNS）对起来。bx 关着、别的 VPN 在跑时照样能用。**还会从本机探测几个 AI 站**（Anthropic / Claude / OpenAI / Google AI），回答「这条路能不能到达它们」—— 那不是安全问题，所以单独一段、单独计数，`--no-reach` 可关 |
 | `bx leak-check --json` | 非交互的机器可读检查（不开页面；供 MCP 与脚本） |
 | `bx leak-check --network --json --expected-ip <ip>` | 主动探测 IPv4/IPv6/DNS 出口并判断是否符合预期 |
+| `bx explain <域名或 IP>` | **「这个目标在我这台机器上会怎么走」** —— 先答本机视角(解析到什么、进不进 TUN、绑网卡的程序会走哪),再答 bx 的判定(命中哪条规则、本次与累计各失败多少次)。bx 没在跑也能用 |
+| `bx apps` | 按应用看分流:哪个应用的流量走隧道、直连还是被拦(采样一个窗口,默认 6 秒) |
+| `bx leakcheck --no-reach` | 同上,但**不探测那几个 AI 站**(默认会探;见下) |
 | `bx observe --json --duration 30s --scenario video` | 观察短窗口内连接、分流、UDP 阻断和流量变化 |
 | `bx logs` | 查看客户端日志 |
 | `bx logs --json` | 输出 agent 可读的客户端日志文本、错误和提示 |
