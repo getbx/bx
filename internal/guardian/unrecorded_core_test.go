@@ -82,7 +82,7 @@ func TestStartForksWithoutRecordWhenNoCoreRunning(t *testing.T) {
 //
 // 这里断言的是「错误文本带着 ownershipUncertainEscapeHint」这条接线,不是那句话
 // 的字面内容 —— 后者由 TestOwnershipUncertainEscapeHintDescribesReVerification
-// 单独钉住。原来这条测试查的是硬编码的 "sudo bx down",而 2026-08-11 之后那已经
+// 单独钉住。原来这条测试查的是硬编码的 "" + elevate.Prefix + "bx down",而 2026-08-11 之后那已经
 // 不是出路了(用户发起的 up/migrate 每次都会重新求证);拿常量本身来比,改文案
 // 时这条测试跟着走,而「接线断了」照样红。
 func TestUnrecordedCoreRefusalNamesTheEscape(t *testing.T) {

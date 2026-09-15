@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 )
 
@@ -70,8 +72,8 @@ func TestReconcileLineRendersStartCoreCodesAsActionableSentences(t *testing.T) {
 	if strings.Contains(line, "让路") {
 		t.Fatalf("放弃被渲染成了让路: %q", line)
 	}
-	if !strings.Contains(line, "已放弃") || !strings.Contains(line, "sudo bx up") {
-		t.Fatalf("exhausted 要说「已放弃」并指路 sudo bx up: %q", line)
+	if !strings.Contains(line, "已放弃") || !strings.Contains(line, ""+elevate.Prefix+"bx up") {
+		t.Fatalf("exhausted 要说「已放弃」并指路 "+elevate.Prefix+"bx up: %q", line)
 	}
 
 	round.Executed = &guardian.ReconcileExecution{Action: "start_core", Outcome: "skipped", Error: guardian.ReconcileSkipCoreProcessPresent}

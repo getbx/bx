@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/supervisor"
 	"github.com/urfave/cli/v2"
@@ -351,7 +353,7 @@ func TestServerListMarksTheRunningOneNotJustTheConfiguredOne(t *testing.T) {
 		t.Errorf("配置里选的那一行没有单独标出来:%q\n%s", configured, out)
 	}
 	// 两者不一致本身要说出来,并给出路 —— 一个用户看不懂的符号等于没标。
-	for _, want := range []string{"配置里选的是 us", "流量此刻从 hk 出去", "sudo bx up"} {
+	for _, want := range []string{"配置里选的是 us", "流量此刻从 hk 出去", "" + elevate.Prefix + "bx up"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("输出里没有 %q:\n%s", want, out)
 		}

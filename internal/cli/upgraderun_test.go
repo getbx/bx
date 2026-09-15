@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 )
 
@@ -297,7 +299,7 @@ func TestRunUpgradeStopsBeforeTouchingFilesWhenTheStopWasUnconfirmed(t *testing.
 	// sudo bx up 能解)」。那句现在是假的:用户发起的 up/migrate 每次都会重新
 	// 向系统求证,而只要那个 Core 还在跑,down+up 一样会被拒。把用户支去做一件
 	// 不管用的事,比不说更坏 —— 他会以为自己已经处理过了。
-	if strings.Contains(err.Error(), "只有 sudo bx down") {
+	if strings.Contains(err.Error(), "只有 "+elevate.Prefix+"bx down") {
 		t.Errorf("中止文案还在声称 down+up 是唯一出路(而那个 Core 还在跑时它同样会被拒):%v", err)
 	}
 	// **文件一个字节都不许动。** 中止之所以安全,正因为它发生在第一步。
@@ -430,7 +432,7 @@ func TestRunUpgradeWarnsWhenItCannotRestoreTheIntent(t *testing.T) {
 		t.Fatalf("写回失败不该让这次升级整个失败(这一次仍会在末尾起保护): %v", err)
 	}
 	joined := strings.Join(f.logs, "\n")
-	if !strings.Contains(joined, "read-only file system") || !strings.Contains(joined, "sudo bx up") {
+	if !strings.Contains(joined, "read-only file system") || !strings.Contains(joined, ""+elevate.Prefix+"bx up") {
 		t.Fatalf("必须说清失败原因与用户的出路:\n%s", joined)
 	}
 }
@@ -513,7 +515,7 @@ func TestRunUpgradeReportsGuardianStartFailureWithoutClaimingAnUpgradeStopped(t 
 	if err == nil {
 		t.Fatal("拉不起 Guardian 必须报错 —— 静默等于把今天这个 bug 原样留着")
 	}
-	if !strings.Contains(err.Error(), "sudo bx up") {
+	if !strings.Contains(err.Error(), ""+elevate.Prefix+"bx up") {
 		t.Errorf("必须给出可操作的下一步, got %q", err.Error())
 	}
 	if strings.Contains(err.Error(), "升级未完成") || strings.Contains(err.Error(), "uninstall") {

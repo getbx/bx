@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/observe"
 )
 
@@ -86,7 +88,7 @@ func TestExecutableWhitelistIsExactlyOffCleanupPlusStartCore(t *testing.T) {
 		t.Fatalf("执行白名单 = %v,扩它之前先读 ③c spec 的「不做」一节", executableReconcileActions)
 	}
 	if executableReconcileActions[actionStopCore] {
-		t.Fatal("stop_core 不授权:desired=off + socket 应答最常见来源是 sudo bx run 调试路径")
+		t.Fatal("stop_core 不授权:desired=off + socket 应答最常见来源是 " + elevate.Prefix + "bx run 调试路径")
 	}
 }
 

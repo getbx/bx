@@ -3,6 +3,8 @@ package stats
 import (
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 func TestHumanBytes(t *testing.T) {
@@ -77,7 +79,7 @@ func TestRender_UnhealthyHasRecovery(t *testing.T) {
 
 func TestRenderNotRunning(t *testing.T) {
 	out := RenderNotRunning()
-	for _, want := range []string{"未运行", "sudo bx up"} {
+	for _, want := range []string{"未运行", "" + elevate.Prefix + "bx up"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("RenderNotRunning 应含 %q,实际:%q", want, out)
 		}

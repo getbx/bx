@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/corestartfailure"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -34,7 +36,7 @@ func TestRunWithoutTheFlagWritesNothing(t *testing.T) {
 		t.Fatalf("返回的错误变了:%v", err)
 	}
 	if calls != 0 {
-		t.Fatalf("没给 --start-failure-file 却调了 %d 次写盘 —— 手敲的 sudo bx run "+
+		t.Fatalf("没给 --start-failure-file 却调了 %d 次写盘 —— 手敲的 "+elevate.Prefix+"bx run "+
 			"必须一个字节都不留,否则陈旧记录的第一层防线就没了", calls)
 	}
 }

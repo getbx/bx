@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	updatepkg "github.com/getbx/bx/internal/update"
 )
 
@@ -79,7 +81,7 @@ func TestClientLinksFromRealInstallOutput(t *testing.T) {
 
 // 只有一条链接时 UDP 为空,不许把主链接复制一份当 UDP。
 func TestClientLinksWithoutUDP(t *testing.T) {
-	main, udp, err := clientLinksFromInstallOutput("  sudo bx setup 'bx://ONLY'")
+	main, udp, err := clientLinksFromInstallOutput("  " + elevate.Prefix + "bx setup 'bx://ONLY'")
 	if err != nil || main != "bx://ONLY" {
 		t.Fatalf("main=%q err=%v", main, err)
 	}
@@ -536,7 +538,7 @@ func TestEveryRemoteCommandGoesThroughSudoWhenNeeded(t *testing.T) {
 			case name == "scp":
 				return "", nil
 			}
-			return "sudo bx setup 'bx://MAIN'", nil
+			return "" + elevate.Prefix + "bx setup 'bx://MAIN'", nil
 		},
 		remoteFetch:      func(string, string, bool, bool) error { return nil },
 		fetchBinary:      func(string) (string, error) { return "/tmp/bx", nil },
@@ -575,7 +577,7 @@ func TestRootLoginDoesNotWrapInSudo(t *testing.T) {
 			if strings.Contains(strings.Join(args, " "), "id -u") {
 				return "0\nx86_64\n", nil
 			}
-			return "sudo bx setup 'bx://MAIN'", nil
+			return "" + elevate.Prefix + "bx setup 'bx://MAIN'", nil
 		},
 		remoteFetch:      func(string, string, bool, bool) error { return nil },
 		fetchBinary:      func(string) (string, error) { return "/tmp/bx", nil },

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/tristate"
 
 	"github.com/getbx/bx/internal/config"
@@ -40,7 +42,7 @@ func TestJudgeMissingConfig(t *testing.T) {
 	if got := names(r); got != "config:info config_readable:fail service_installed:fail status_socket:ok udp_policy:ok traffic_outcomes:not_checked" {
 		t.Fatalf("顺序/名字 = %q", got)
 	}
-	if c := find(r, "config_readable"); c.Hint != "sudo bx setup <client-link>" || !strings.Contains(c.Detail, "no such file") {
+	if c := find(r, "config_readable"); c.Hint != ""+elevate.Prefix+"bx setup <client-link>" || !strings.Contains(c.Detail, "no such file") {
 		t.Fatalf("config_readable = %+v", c)
 	}
 	if c := find(r, "udp_policy"); !strings.Contains(c.Detail, "relayed through bx tunnel") {
@@ -117,7 +119,7 @@ func TestJudgeParseFailureAndEmptyServer(t *testing.T) {
 		t.Fatalf("解析失败阶梯 = %q", got)
 	}
 	empty := Judge(Facts{Config: FileFact{Mode0600: tristate.True}, Parsed: &config.Config{}})
-	if c := find(empty, "server_link"); c.Status != "fail" || c.Hint != "sudo bx setup <client-link>" {
+	if c := find(empty, "server_link"); c.Status != "fail" || c.Hint != ""+elevate.Prefix+"bx setup <client-link>" {
 		t.Fatalf("server 为空 = %+v", c)
 	}
 }
@@ -218,7 +220,7 @@ func TestJudgeGuardianFallbackRequiresAPermissionFailure(t *testing.T) {
 	notPermission := base
 	notPermission.Config.PermissionDenied = false
 	r := Judge(notPermission)
-	if c := find(r, "config_readable"); c.Status != "fail" || c.Hint != "sudo bx setup <client-link>" {
+	if c := find(r, "config_readable"); c.Status != "fail" || c.Hint != ""+elevate.Prefix+"bx setup <client-link>" {
 		t.Fatalf("不是权限失败时,即使路径匹配、Review 非 nil,也不该走 Guardian 退路:%+v", c)
 	}
 

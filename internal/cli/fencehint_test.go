@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 )
 
@@ -16,8 +18,8 @@ import (
 // sudo bx up 撞一次墙的人才看得到怎么脱身。
 func TestStatusGivesANextStepForFencesAUserCanActOn(t *testing.T) {
 	for _, tc := range []struct{ held, must string }{
-		{"ownership_uncertain", "sudo bx up"},
-		{"recovery_blocked", "sudo bx down"},
+		{"ownership_uncertain", "" + elevate.Prefix + "bx up"},
+		{"recovery_blocked", "" + elevate.Prefix + "bx down"},
 		{"intent_unreadable", "bx-guard"},
 	} {
 		got := reconcileRoundVerdict(guardian.ReconcileReport{Held: tc.held})

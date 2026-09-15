@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -79,7 +81,7 @@ func TestStatusToolIncludesMutationState(t *testing.T) {
 }
 
 func TestLogsToolReturnsStructuredReport(t *testing.T) {
-	ops := &fakeOps{logs: LogsOut{OK: false, Text: "partial\n", Error: "denied", Hint: "sudo bx logs"}}
+	ops := &fakeOps{logs: LogsOut{OK: false, Text: "partial\n", Error: "denied", Hint: "" + elevate.Prefix + "bx logs"}}
 	res := callTool(t, ops, "bx_logs", map[string]any{"lines": 5})
 	if res.IsError {
 		t.Fatal("logs tool should return structured log report, not tool error")
