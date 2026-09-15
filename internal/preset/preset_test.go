@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/policy"
 )
 
 // **分组要能认出用户配置里那些域名属于哪一组,而认不出的必须单独留着。**
@@ -166,6 +168,26 @@ func TestPresetTitlesAreShortEnoughToBeTags(t *testing.T) {
 		for _, bad := range []string{"(", "(", "、", "/"} {
 			if strings.Contains(p.Title, bad) {
 				t.Errorf("%s 的标题里塞了说明(含 %q):%q", p.Name, bad, p.Title)
+			}
+		}
+	}
+}
+
+// **预设里不许出现 `policy.DirectRuleHazard` 会拦下的域名。**
+//
+// 预设是 bx 自己出的、用户一键就装的东西。而 `bx direct add *.myqcloud.com`
+// 会被拒绝(开放平台:任何人都能在上面注册子域,而 bx 的匹配器是后缀集 ——
+// 一条 direct 规则覆盖它的每一个子域,于是陌生人能让你的真实 IP 走隧道外面)。
+// **一键装进去一条自己的命令会拒绝的规则,是同一道门的两个答案。**
+//
+// 这条守卫 2026-09-14 补上,起因是加 tencent 预设时要判断 `*.qcloud.com` 能不能放
+// —— 发现 `myqcloud.com` 就在那份危险名单里,而当时没有任何东西拦着把它写进预设。
+func TestNoPresetShipsARuleItsOwnCommandWouldRefuse(t *testing.T) {
+	for _, p := range All() {
+		for _, domain := range p.AllDomains() {
+			if hazard, reason, _ := policy.DirectRuleHazard(domain); hazard {
+				t.Errorf("预设 %s 含 %q,而 bx direct add 会拒绝它:%s",
+					p.Name, domain, reason)
 			}
 		}
 	}
