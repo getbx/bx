@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 // Report 是 bx status 的线材格式:计数快照 + 隧道信息。
@@ -203,7 +205,9 @@ func recoveryHint(r Report) string {
 
 // RenderNotRunning:bx status 连不上守护进程时的人面提示(daemon 未起)。
 func RenderNotRunning() string {
-	return "bx 未运行。\n  启动:sudo bx up        体检:bx doctor\n"
+	// elevate.Note() 在有 sudo 的平台上是空串,于是这一行逐字不变;
+	// Windows 上补一句「要在管理员 PowerShell 里跑」—— 裸命令自己说不出它需要提权。
+	return "bx 未运行。\n  启动:" + elevate.Cmd("bx up") + elevate.Note() + "        体检:bx doctor\n"
 }
 
 // humanBytes 把字节数转成人类可读单位。

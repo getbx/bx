@@ -1,5 +1,7 @@
 package doctor
 
+import "github.com/getbx/bx/internal/elevate"
+
 // 服务三行的判据(darwin 上 Guardian 是 launchd 服务)。**从 internal/cli 原样搬来**:
 // Guardian 的 /v1/doctor 采集要用同一份,而 cli 不能被 guardian import。
 
@@ -24,7 +26,7 @@ const DarwinGuardianServiceName = "com.getbx.bx.guard"
 func DarwinServiceChecks(installed, active bool) []Check {
 	installHint := ""
 	if !installed {
-		installHint = "sudo bx setup <client-link>"
+		installHint = "" + elevate.Prefix + "bx setup <client-link>"
 	}
 	activeState := "inactive"
 	if active {
@@ -40,9 +42,9 @@ func DarwinServiceChecks(installed, active bool) []Check {
 			Name:   "service_active",
 			Status: ServiceStatusFromState("is-active", activeState),
 			Detail: activeState,
-			Hint:   HintForState(activeState, "sudo bx up", "bx logs"),
+			Hint:   HintForState(activeState, ""+elevate.Prefix+"bx up", "bx logs"),
 		},
-		{Name: "service_enabled", Status: ServiceStatusFromState("is-enabled", enabledState), Detail: enabledState, Hint: "sudo bx up"},
+		{Name: "service_enabled", Status: ServiceStatusFromState("is-enabled", enabledState), Detail: enabledState, Hint: "" + elevate.Prefix + "bx up"},
 	}
 }
 

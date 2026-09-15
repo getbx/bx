@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/setup"
@@ -214,7 +216,7 @@ func renderServerList(view serverListView) string {
 		// 与「有人手改了配置还没重连」,断言其中一个就是编答案。
 		fmt.Fprintf(&b, "\n⚠ 配置里选的是 %s,而流量此刻从 %s 出去。\n"+
 			"  最常见的原因是上一次切换只写了配置、没有切过去;要用上 %s:\n"+
-			"    sudo bx down\n    sudo bx up\n", current, running, current)
+			"    "+elevate.Prefix+"bx down\n    "+elevate.Prefix+"bx up\n", current, running, current)
 	}
 	if view.Degraded {
 		// **少显示了什么必须说出来。** 安静地少几列,用户会以为那几台真的
@@ -298,6 +300,6 @@ func switchOutcomeMessage(name, host string, hotErr error) string {
 		"✓ 已写入配置:current = %s(%s)\n"+
 		"⚠ 但热切没有成功:%v\n"+
 		"  配置里的选择已经落定,执行下面两条即可用上:\n"+
-		"    sudo bx down\n"+
-		"    sudo bx up\n", name, host, hotErr)
+		"    "+elevate.Prefix+"bx down\n"+
+		"    "+elevate.Prefix+"bx up\n", name, host, hotErr)
 }

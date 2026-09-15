@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/setup"
 	"github.com/urfave/cli/v2"
 )
@@ -128,7 +130,7 @@ func egressRemoveAction(c *cli.Context) error {
 
 // egressRestartHint —— **改完必须说要重连。** bx 不热重载配置,而一条「已保存」
 // 之后什么都没变的体验,会让用户以为功能坏了(`bx direct add` 同款)。
-const egressRestartHint = "  改动在重连后生效:sudo bx down && sudo bx up\n"
+const egressRestartHint = "  改动在重连后生效:" + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up\n"
 
 // renderEgressList 渲染清单。
 //

@@ -32,6 +32,11 @@ var allowedInternalDeps = map[string]struct{}{
 	// tristate:三值枚举叶子包(只 import encoding/json)。DirectEgress 用它,
 	// 「问不出来」不许被压成 false —— 这正是那个包存在的全部理由。
 	"github.com/getbx/bx/internal/tristate": {},
+	// elevate:提权前缀的叶子包,**自己一个 import 都没有**(两个平台各一个
+	// 常量 + 一个纯函数)。hint 里那句「跑 sudo bx up」在 Windows 上是一条
+	// 不存在的命令(2026-09-15 真机实测),而 hint 的唯一目的就是被粘贴;
+	// 判定只能有一份,摊平成本包自己的常量就是在两个平台各写一遍。
+	"github.com/getbx/bx/internal/elevate": {},
 }
 
 func TestDoctorPackageStaysPure(t *testing.T) {

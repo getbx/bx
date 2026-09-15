@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/policy"
 	"github.com/getbx/bx/internal/supervisor"
@@ -171,7 +173,7 @@ func editRuleAction(c *cli.Context, field string, isAdd bool) error {
 	// 热生效:先探 bx 是否在跑(GET /v0/status),再触发 reload(POST)。区分三态,别把
 	// 「在跑但 reload 失败」误报成「没在跑,下次 up 生效」——那会让旧的泄漏规则仍在生效却谎报安全。
 	if _, err := supervisor.FetchStatusReport(supervisor.SockPath); err != nil {
-		fmt.Println("  (bx 未在运行,下次 sudo bx up 时生效)")
+		fmt.Println("  (bx 未在运行,下次 " + elevate.Prefix + "bx up 时生效)")
 	} else if _, err := supervisor.ReloadControl(supervisor.SockPath); err != nil {
 		fmt.Printf("  ⚠ 配置已写入,但热生效失败——旧规则仍在运行;请查看 bx logs,新规则将在下次启动保护时生效:%v\n", err)
 	} else {

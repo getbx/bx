@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/setup"
@@ -153,7 +155,7 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 func nonTunnelStartFailureHeadline(bare string) string {
 	switch bare {
 	case supervisor.StartFailureConfig:
-		return "配置里的内容 bx 用不了(规则 / 网段 / hosts / 服务器链接里有一条是坏的)。改完要 sudo bx down && sudo bx up。"
+		return "配置里的内容 bx 用不了(规则 / 网段 / hosts / 服务器链接里有一条是坏的)。改完要 " + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up。"
 	case supervisor.StartFailureProvision:
 		return "没能把内嵌的传输二进制释放到 data_dir(多半是磁盘满了或那个目录不可写)。"
 	case supervisor.StartFailureTUNOpen:

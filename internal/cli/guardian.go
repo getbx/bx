@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
@@ -616,7 +618,7 @@ func disarmLegacyCoreUnit(ctx context.Context, deps macOSLifecycleDeps) error {
 	if err := runWithTimeout(ctx, legacyBootoutTimeout, deps.bootoutLegacyUnit); err != nil {
 		return fmt.Errorf(
 			"解除旧版 Core 的开机自启(launchd job)失败:%w\n"+
-				"它带 KeepAlive,可能会自己重新启动。请执行 sudo bx uninstall —— 它会把两个旧 label(com.getbx.bx 与 com.ggshr9.bx)都停掉并删除,而单独 bootout 其中一个可能落空",
+				"它带 KeepAlive,可能会自己重新启动。请执行 "+elevate.Prefix+"bx uninstall —— 它会把两个旧 label(com.getbx.bx 与 com.ggshr9.bx)都停掉并删除,而单独 bootout 其中一个可能落空",
 			err,
 		)
 	}
@@ -778,7 +780,7 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	//    down` forever.
 	if deps.restoreSystemDNS != nil {
 		if err := runWithTimeout(ctx, dnsRestoreTimeout, deps.restoreSystemDNS); err != nil {
-			failures = append(failures, fmt.Errorf("还原系统 DNS(否则仍会网页打不开,可手动执行 sudo bx dns off): %w", err))
+			failures = append(failures, fmt.Errorf("还原系统 DNS(否则仍会网页打不开,可手动执行 "+elevate.Prefix+"bx dns off): %w", err))
 		}
 	}
 	// 6. Record the intent once more. Cheap, idempotent, and now
@@ -808,7 +810,7 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 		problems = errors.Join(fmt.Errorf("Guardian 关闭事务失败: %w", cause), problems)
 	}
 	return fmt.Errorf(
-		"强制停止未能全部完成:\n%w\n下一步:sudo bx uninstall(停止全部服务并还原网络,保留 /etc/bx 配置);"+
+		"强制停止未能全部完成:\n%w\n下一步:"+elevate.Prefix+"bx uninstall(停止全部服务并还原网络,保留 /etc/bx 配置);"+
 			"或手动执行 sudo launchctl bootout system/com.getbx.bx.guard,再逐条删除阻断路由:\n  sudo %s",
 		problems, strings.Join(blockingRouteCleanupHints(), "\n  sudo "),
 	)
@@ -946,7 +948,7 @@ func blockingRouteCleanupHints() []string {
 func macOSUpAction(c *urfavecli.Context) error {
 	configPath := defaultConfigPath
 	if _, err := os.Stat(configPath); err != nil {
-		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
+		return fmt.Errorf("尚未配置。先运行: " + elevate.Prefix + "bx setup <client-link>")
 	}
 	stepLine("Guardian", "接管并启动 bx 保护")
 	result, err := macOSUpLifecycle(c.Context, configPath, defaultMacOSLifecycleDeps())

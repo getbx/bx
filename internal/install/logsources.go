@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 // logSource 是一份候选日志文件。
@@ -129,7 +131,7 @@ func staleOnlyNotice(sources []logSource, readOK map[string]bool) string {
 	}
 	notice := "⚠ 一份**当前**日志都没读到 —— 上面能读到的内容来自已经停写的旧实例,**不代表现在的状态**。"
 	if staleRead {
-		notice += "\n  当前日志是 root-only(里面有服务器 IP 与旁路网段),用 `sudo bx logs` 看。"
+		notice += "\n  当前日志是 root-only(里面有服务器 IP 与旁路网段),用 `" + elevate.Prefix + "bx logs` 看。"
 	}
 	return notice + "\n"
 }

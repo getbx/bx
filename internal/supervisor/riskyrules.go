@@ -3,6 +3,8 @@ package supervisor
 import (
 	"fmt"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/stats"
@@ -61,7 +63,7 @@ func riskyRuleWarnings(cfg *config.Config) []stats.Warning {
 			// 里必定 permission denied,与 `direct rm` 是同一类 bug;多带的代价
 			// 只是 macOS 已配置 owner 的机器上一次不必要的密码提示——不对称,
 			// 两条都印 sudo。
-			Hint: fmt.Sprintf("sudo bx direct rm '%s'；改完要 sudo bx down && sudo bx up", f.Rule),
+			Hint: fmt.Sprintf(""+elevate.Prefix+"bx direct rm '%s'；改完要 "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up", f.Rule),
 		})
 	}
 	return out

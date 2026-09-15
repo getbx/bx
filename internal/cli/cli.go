@@ -23,6 +23,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/corestartfailure"
@@ -912,7 +914,7 @@ func setupCommand(main, udp string) string {
 	if udp != "" {
 		return setupCommandLine(main, udp)
 	}
-	return fmt.Sprintf("sudo bx setup '%s'", main)
+	return fmt.Sprintf(""+elevate.Prefix+"bx setup '%s'", main)
 }
 
 func inviteText(name, main, udp string) string {
@@ -935,7 +937,7 @@ func inviteText(name, main, udp string) string {
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "命令行备用:")
 	fmt.Fprintf(&b, "  %s\n", setupCommand(main, udp))
-	fmt.Fprintln(&b, "  sudo bx up")
+	fmt.Fprintln(&b, "  "+elevate.Prefix+"bx up")
 	return b.String()
 }
 
@@ -1803,7 +1805,7 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"Read-only.", "Used by lightweight status surfaces such as a menu bar helper."},
 			},
 			{
-				Command:        "sudo bx reconnect",
+				Command:        "" + elevate.Prefix + "bx reconnect",
 				Category:       "control",
 				Summary:        "Reconnect transport without releasing protection.",
 				Stable:         true,
@@ -1811,11 +1813,11 @@ func capabilities() capabilitiesReport {
 				ChangesSystem:  false,
 				ChangesNetwork: false,
 				Outputs:        []string{"text"},
-				Examples:       []string{"sudo bx reconnect"},
+				Examples:       []string{"" + elevate.Prefix + "bx reconnect"},
 				SafeNotes:      []string{"Requires a running bx service.", "Builds and verifies a replacement transport before switching.", "Does not release TUN, routes, or managed DNS; a failed replacement leaves the current protected path in place."},
 			},
 			{
-				Command:        "sudo bx update",
+				Command:        "" + elevate.Prefix + "bx update",
 				Category:       "update",
 				Summary:        "Download, verify, and atomically replace the bx binary without interrupting protection.",
 				Stable:         true,
@@ -1824,11 +1826,11 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: false,
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--check", "--force"},
-				Examples:       []string{"sudo bx update", "bx update --check"},
+				Examples:       []string{"" + elevate.Prefix + "bx update", "bx update --check"},
 				SafeNotes:      []string{"Downloads a SHA256-checked release and atomically replaces the CLI binary.", "Does not restart the running protection service or release TUN, routes, or DNS.", "The replacement binary is used the next time protection starts.", "On a protected macOS unified install, this runs as a fail-closed Guardian update transaction: network access may pause briefly, it never falls back to a direct (unprotected) connection, and a failed health check automatically rolls back to the previous version while protection stays on.", "Agents should call this command directly; do not simulate an update by combining down and up."},
 			},
 			{
-				Command:        "sudo bx direct add <domain>",
+				Command:        "" + elevate.Prefix + "bx direct add <domain>",
 				Category:       "routing",
 				Summary:        "Add a domain to the direct allowlist and hot-reload routing rules when bx is running.",
 				Stable:         true,
@@ -1838,11 +1840,11 @@ func capabilities() capabilitiesReport {
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
 				Arguments:      []string{"<domain>...", "--config <path>", "--force"},
-				Examples:       []string{"sudo bx direct add taobao.com", "sudo bx direct ls", "sudo bx direct rm taobao.com"},
+				Examples:       []string{"" + elevate.Prefix + "bx direct add taobao.com", "" + elevate.Prefix + "bx direct ls", "" + elevate.Prefix + "bx direct rm taobao.com"},
 				SafeNotes:      []string{"Writes client config only.", "direct/proxy entries are mutually exclusive; adding direct removes matching proxy entries.", "Public cloud/open-subdomain domains are skipped unless --force is provided."},
 			},
 			{
-				Command:        "sudo bx proxy add <domain>",
+				Command:        "" + elevate.Prefix + "bx proxy add <domain>",
 				Category:       "routing",
 				Summary:        "Force tunnel routing for a domain and hot-reload routing rules when bx is running.",
 				Stable:         true,
@@ -1852,11 +1854,11 @@ func capabilities() capabilitiesReport {
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
 				Arguments:      []string{"<domain>...", "--config <path>"},
-				Examples:       []string{"sudo bx proxy add openai.com", "sudo bx proxy ls", "sudo bx proxy rm openai.com"},
+				Examples:       []string{"" + elevate.Prefix + "bx proxy add openai.com", "" + elevate.Prefix + "bx proxy ls", "" + elevate.Prefix + "bx proxy rm openai.com"},
 				SafeNotes:      []string{"Writes client config only.", "Adds force tunnel rules; matching direct entries are removed to avoid route conflicts.", "Does not change TUN, routes, or DNS directly."},
 			},
 			{
-				Command:        "sudo bx preset apply <name>",
+				Command:        "" + elevate.Prefix + "bx preset apply <name>",
 				Category:       "routing",
 				Summary:        "Apply a curated app/CDN usability preset as explicit direct rules and hot-reload when bx is running.",
 				Stable:         true,
@@ -1866,8 +1868,8 @@ func capabilities() capabilitiesReport {
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
 				Arguments:      []string{"<name>", "--config <path>"},
-				Examples:       []string{"bx preset ls", "bx preset show gaming", "sudo bx preset apply gaming"},
-				SafeNotes:      []string{"Explicit opt-in; no preset is active by default.", "Writes client config direct rules only and removes matching proxy rules.", "Does not directly change TUN, routes, or DNS.", "Uses the local reload control when bx is running; otherwise it takes effect on the next sudo bx up."},
+				Examples:       []string{"bx preset ls", "bx preset show gaming", "" + elevate.Prefix + "bx preset apply gaming"},
+				SafeNotes:      []string{"Explicit opt-in; no preset is active by default.", "Writes client config direct rules only and removes matching proxy rules.", "Does not directly change TUN, routes, or DNS.", "Uses the local reload control when bx is running; otherwise it takes effect on the next " + elevate.Prefix + "bx up."},
 			},
 			{
 				Command:        "bx logs",
@@ -1895,7 +1897,7 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"Read-only.", "UDP policy is currently visible through bx status and bx doctor --json."},
 			},
 			{
-				Command:        "sudo bx realtime on",
+				Command:        "" + elevate.Prefix + "bx realtime on",
 				Category:       "udp",
 				Summary:        "Return the advanced UDP policy to the default relay mode.",
 				Stable:         true,
@@ -1905,11 +1907,11 @@ func capabilities() capabilitiesReport {
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--config <path>"},
-				Examples:       []string{"sudo bx realtime on"},
+				Examples:       []string{"" + elevate.Prefix + "bx realtime on"},
 				SafeNotes:      []string{"Writes client config without restarting the active protection service.", "The changed UDP policy is used the next time protection starts.", "Relays non-DNS UDP through bx instead of using the local real network path."},
 			},
 			{
-				Command:        "sudo bx realtime off",
+				Command:        "" + elevate.Prefix + "bx realtime off",
 				Category:       "udp",
 				Summary:        "Advanced: block non-DNS UDP explicitly.",
 				Stable:         true,
@@ -1919,7 +1921,7 @@ func capabilities() capabilitiesReport {
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--config <path>"},
-				Examples:       []string{"sudo bx realtime off"},
+				Examples:       []string{"" + elevate.Prefix + "bx realtime off"},
 				SafeNotes:      []string{"Writes client config without restarting the active protection service.", "The changed UDP policy is used the next time protection starts.", "Block mode blocks non-DNS UDP."},
 			},
 			{
@@ -1936,7 +1938,7 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"Read-only.", "Only supported on macOS."},
 			},
 			{
-				Command:        "sudo bx dns on",
+				Command:        "" + elevate.Prefix + "bx dns on",
 				Category:       "dns",
 				Summary:        "Manually set the active macOS network service DNS to bx and save the original DNS for rollback.",
 				Stable:         true,
@@ -1945,11 +1947,11 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: true,
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--service <name>"},
-				Examples:       []string{"sudo bx dns on"},
-				SafeNotes:      []string{"Only supported on macOS.", "sudo bx up already does this on macOS.", "Use sudo bx dns off to restore the saved DNS."},
+				Examples:       []string{"" + elevate.Prefix + "bx dns on"},
+				SafeNotes:      []string{"Only supported on macOS.", "" + elevate.Prefix + "bx up already does this on macOS.", "Use " + elevate.Prefix + "bx dns off to restore the saved DNS."},
 			},
 			{
-				Command:        "sudo bx dns off",
+				Command:        "" + elevate.Prefix + "bx dns off",
 				Category:       "dns",
 				Summary:        "Restore the macOS DNS values saved by bx dns on.",
 				Stable:         true,
@@ -1958,7 +1960,7 @@ func capabilities() capabilitiesReport {
 				ChangesNetwork: true,
 				Outputs:        []string{"text"},
 				Arguments:      []string{"--service <name>"},
-				Examples:       []string{"sudo bx dns off"},
+				Examples:       []string{"" + elevate.Prefix + "bx dns off"},
 				SafeNotes:      []string{"Only supported on macOS.", "Restores the saved DNS state instead of guessing."},
 			},
 			{
@@ -2036,7 +2038,7 @@ func capabilities() capabilitiesReport {
 				SafeNotes:      []string{"macOS only.", "Does not turn off protection, change DNS, routes, or client config."},
 			},
 			{
-				Command:        "sudo bx setup <client-link>",
+				Command:        "" + elevate.Prefix + "bx setup <client-link>",
 				Category:       "client",
 				Summary:        "Install bx client service and write client config.",
 				Stable:         true,
@@ -2046,11 +2048,11 @@ func capabilities() capabilitiesReport {
 				ReadsSecrets:   true,
 				Outputs:        []string{"text"},
 				Arguments:      []string{"<client-link>", "--config <path>", "--force", "--strict"},
-				Examples:       []string{"sudo bx setup '<client-link>'"},
+				Examples:       []string{"" + elevate.Prefix + "bx setup '<client-link>'"},
 				SafeNotes:      []string{"Does not start traffic routing by itself."},
 			},
 			{
-				Command:        "sudo bx up",
+				Command:        "" + elevate.Prefix + "bx up",
 				Category:       "client",
 				Summary:        "Start bx client service, enable it at boot, and enter runtime traffic takeover.",
 				Stable:         true,
@@ -2058,11 +2060,11 @@ func capabilities() capabilitiesReport {
 				ChangesSystem:  true,
 				ChangesNetwork: true,
 				Outputs:        []string{"text"},
-				Examples:       []string{"sudo bx up"},
+				Examples:       []string{"" + elevate.Prefix + "bx up"},
 				SafeNotes:      []string{"On macOS, this also switches system DNS to bx after the service is ready.", "If DNS takeover fails, bx rolls the service start back."},
 			},
 			{
-				Command:        "sudo bx down",
+				Command:        "" + elevate.Prefix + "bx down",
 				Category:       "client",
 				Summary:        "Leave runtime traffic takeover, restore DNS on macOS, and stop bx client service.",
 				Stable:         true,
@@ -2070,7 +2072,7 @@ func capabilities() capabilitiesReport {
 				ChangesSystem:  true,
 				ChangesNetwork: true,
 				Outputs:        []string{"text"},
-				Examples:       []string{"sudo bx down"},
+				Examples:       []string{"" + elevate.Prefix + "bx down"},
 				SafeNotes:      []string{"On macOS, DNS is restored before the service is stopped."},
 			},
 			{
@@ -2209,7 +2211,7 @@ func collectClientInspect(configPath, target string, timeout time.Duration, skip
 		rep.Status = &status
 	} else {
 		rep.StatusError = err.Error()
-		rep.NextActions = append(rep.NextActions, "sudo bx up")
+		rep.NextActions = append(rep.NextActions, ""+elevate.Prefix+"bx up")
 	}
 	rep.NextActions = appendUnique(rep.NextActions, doctorNextActions(doctor)...)
 	rep.OK = doctor.OK && rep.StatusError == ""
@@ -2255,9 +2257,9 @@ func collectWebRTCCheck(configPath, dnsService string) webrtcCheckReport {
 	}
 	rep := assessWebRTCCheck(cfg, statusPtr(status, statusErr), statusErr, dnsStatus, dnsErr)
 	if cfgErr != nil {
-		updateCheck(&rep, "config", "fail", cfgErr.Error(), "sudo bx setup <client-link>")
+		updateCheck(&rep, "config", "fail", cfgErr.Error(), ""+elevate.Prefix+"bx setup <client-link>")
 		rep.Risk = maxRisk(rep.Risk, "high")
-		rep.NextActions = appendUnique(rep.NextActions, "sudo bx setup <client-link>")
+		rep.NextActions = appendUnique(rep.NextActions, ""+elevate.Prefix+"bx setup <client-link>")
 		rep.OK = false
 	}
 	return rep
@@ -2638,10 +2640,10 @@ func observeErrorReport(duration time.Duration, scenario string, err error) obse
 		Scenario:        normalizeObserveScenario(scenario),
 		DurationMS:      duration.Milliseconds(),
 		Error:           err.Error(),
-		Hint:            "sudo bx up; bx logs --json",
+		Hint:            "" + elevate.Prefix + "bx up; bx logs --json",
 	}
 	rep.TestSteps = observeTestSteps(rep.Scenario, duration)
-	rep.addCheck("status_socket", "fail", err.Error(), "sudo bx up")
+	rep.addCheck("status_socket", "fail", err.Error(), ""+elevate.Prefix+"bx up")
 	rep.Recommendations = append(rep.Recommendations, "Start bx, then reproduce the app issue while bx observe is running.")
 	return rep
 }
@@ -2663,7 +2665,7 @@ func assessObserveWindow(samples []stats.Report, duration time.Duration, scenari
 	rep.TestSteps = observeTestSteps(scenario, duration)
 	if len(samples) == 0 {
 		rep.Risk = "high"
-		rep.addCheck("samples", "fail", "no status samples", "sudo bx up")
+		rep.addCheck("samples", "fail", "no status samples", ""+elevate.Prefix+"bx up")
 		rep.Recommendations = append(rep.Recommendations, "Start bx and run observe while reproducing the problem.")
 		return rep
 	}
@@ -2822,21 +2824,21 @@ func assessWebRTCCheck(cfg *config.Config, status *stats.Report, statusErr error
 		BrowserVerificationRequired: true,
 	}
 	if cfg == nil {
-		rep.addCheck("config", "fail", "missing or unreadable", "sudo bx setup <client-link>")
+		rep.addCheck("config", "fail", "missing or unreadable", ""+elevate.Prefix+"bx setup <client-link>")
 		rep.Risk = "high"
-		rep.NextActions = appendUnique(rep.NextActions, "sudo bx setup <client-link>")
+		rep.NextActions = appendUnique(rep.NextActions, ""+elevate.Prefix+"bx setup <client-link>")
 	} else {
 		rep.addCheck("config", "ok", "readable", "")
 	}
 
 	if statusErr != nil {
-		rep.addCheck("service", "fail", statusErr.Error(), "sudo bx up")
+		rep.addCheck("service", "fail", statusErr.Error(), ""+elevate.Prefix+"bx up")
 		rep.Risk = maxRisk(rep.Risk, "high")
-		rep.NextActions = appendUnique(rep.NextActions, "sudo bx up", "bx logs")
+		rep.NextActions = appendUnique(rep.NextActions, ""+elevate.Prefix+"bx up", "bx logs")
 	} else if status == nil {
-		rep.addCheck("service", "fail", "status unavailable", "sudo bx up")
+		rep.addCheck("service", "fail", "status unavailable", ""+elevate.Prefix+"bx up")
 		rep.Risk = maxRisk(rep.Risk, "high")
-		rep.NextActions = appendUnique(rep.NextActions, "sudo bx up")
+		rep.NextActions = appendUnique(rep.NextActions, ""+elevate.Prefix+"bx up")
 	} else if !status.TunnelHealthy {
 		rep.addCheck("service", "fail", "tunnel unhealthy", "bx logs")
 		rep.Risk = maxRisk(rep.Risk, "high")
@@ -2873,32 +2875,32 @@ func assessWebRTCCheck(cfg *config.Config, status *stats.Report, statusErr error
 		rep.addCheck("udp_path", statusName, detail, "")
 		rep.Evidence = append(rep.Evidence, "udp_mode: proxy")
 	case "direct-realtime":
-		rep.addCheck("udp_path", "fail", "non-DNS UDP uses local real network path", "sudo bx realtime on")
+		rep.addCheck("udp_path", "fail", "non-DNS UDP uses local real network path", ""+elevate.Prefix+"bx realtime on")
 		rep.Risk = maxRisk(rep.Risk, "high")
-		rep.NextActions = appendUnique(rep.NextActions, "sudo bx realtime on")
+		rep.NextActions = appendUnique(rep.NextActions, ""+elevate.Prefix+"bx realtime on")
 	case "":
-		rep.addCheck("udp_path", "warn", "UDP policy unknown; config and runtime status are unavailable", "sudo bx up")
+		rep.addCheck("udp_path", "warn", "UDP policy unknown; config and runtime status are unavailable", ""+elevate.Prefix+"bx up")
 		rep.Risk = maxRisk(rep.Risk, "high")
-		rep.NextActions = appendUnique(rep.NextActions, "sudo bx up")
+		rep.NextActions = appendUnique(rep.NextActions, ""+elevate.Prefix+"bx up")
 	default:
-		rep.addCheck("udp_path", "warn", "non-DNS UDP blocked; WebRTC may fail but should not leak by UDP", "sudo bx realtime on")
+		rep.addCheck("udp_path", "warn", "non-DNS UDP blocked; WebRTC may fail but should not leak by UDP", ""+elevate.Prefix+"bx realtime on")
 		rep.Risk = maxRisk(rep.Risk, "medium")
-		rep.NextActions = appendUnique(rep.NextActions, "sudo bx realtime on")
+		rep.NextActions = appendUnique(rep.NextActions, ""+elevate.Prefix+"bx realtime on")
 	}
 
 	if dnsErr != nil {
-		rep.addCheck("dns", "warn", dnsErr.Error(), "sudo bx dns on")
+		rep.addCheck("dns", "warn", dnsErr.Error(), ""+elevate.Prefix+"bx dns on")
 		rep.Risk = maxRisk(rep.Risk, "medium")
-		rep.NextActions = appendUnique(rep.NextActions, "sudo bx dns on")
+		rep.NextActions = appendUnique(rep.NextActions, ""+elevate.Prefix+"bx dns on")
 	} else if !dnsStatus.Supported {
 		rep.addCheck("dns", "info", dnsStatus.Detail, "")
 	} else if dnsStatus.Enabled {
 		rep.addCheck("dns", "ok", "system DNS -> 127.0.0.1", "")
 		rep.Evidence = append(rep.Evidence, "dns: system DNS uses bx")
 	} else {
-		rep.addCheck("dns", "warn", "system DNS is not using bx", "sudo bx dns on")
+		rep.addCheck("dns", "warn", "system DNS is not using bx", ""+elevate.Prefix+"bx dns on")
 		rep.Risk = maxRisk(rep.Risk, "medium")
-		rep.NextActions = appendUnique(rep.NextActions, "sudo bx dns on")
+		rep.NextActions = appendUnique(rep.NextActions, ""+elevate.Prefix+"bx dns on")
 	}
 
 	if status != nil {
@@ -3379,7 +3381,7 @@ func checkSetupArgs(args []string) error {
 		if !strings.HasPrefix(arg, "-") {
 			continue
 		}
-		return fmt.Errorf("%s 写在了链接后面,会被静默忽略(flag 必须在链接之前)。\n正确写法:sudo bx setup %s '<值>' '<链接>'", arg, arg)
+		return fmt.Errorf("%s 写在了链接后面,会被静默忽略(flag 必须在链接之前)。\n正确写法:"+elevate.Prefix+"bx setup %s '<值>' '<链接>'", arg, arg)
 	}
 	return fmt.Errorf("bx setup 只接受一个链接,多给了 %d 个参数;若要传 flag,必须写在链接之前", len(args)-1)
 }
@@ -3387,7 +3389,7 @@ func checkSetupArgs(args []string) error {
 func setupAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if arg == "" {
-		return fmt.Errorf("用法: sudo bx setup <客户端链接>")
+		return fmt.Errorf("用法: " + elevate.Prefix + "bx setup <客户端链接>")
 	}
 	if err := checkSetupArgs(c.Args().Slice()); err != nil {
 		return err
@@ -3450,7 +3452,7 @@ func setupAction(c *cli.Context) error {
 		if err := postSetupAutostart(); err != nil {
 			return fmt.Errorf("设默认开机自启: %w", err)
 		}
-		fmt.Printf("✅ 配置已写好 %s,Guardian 已指向统一 runtime。下一步:sudo bx up\n", cfgPath)
+		fmt.Printf("✅ 配置已写好 %s,Guardian 已指向统一 runtime。下一步:"+elevate.Prefix+"bx up\n", cfgPath)
 		return nil
 	}
 	if unifiedLayoutDegraded() {
@@ -3466,7 +3468,7 @@ func setupAction(c *cli.Context) error {
 	if err := postSetupAutostart(); err != nil {
 		return fmt.Errorf("设默认开机自启: %w", err)
 	}
-	fmt.Printf("✅ bx 已装到 %s、写好配置 %s、装好服务。下一步:sudo bx up\n", install.BinPath, cfgPath)
+	fmt.Printf("✅ bx 已装到 %s、写好配置 %s、装好服务。下一步:"+elevate.Prefix+"bx up\n", install.BinPath, cfgPath)
 	return nil
 }
 
@@ -3764,7 +3766,7 @@ func upAction(c *cli.Context) (err error) {
 		return macOSUpAction(c)
 	}
 	if !install.UnitInstalled() {
-		return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
+		return fmt.Errorf("尚未配置。先运行: " + elevate.Prefix + "bx setup <client-link>")
 	}
 	stepLine("服务", "启动 bx")
 	// 防呆:命令模型重排后 up=enable service、run=前台。旧 unit 的 ExecStart 仍写
@@ -3774,7 +3776,7 @@ func upAction(c *cli.Context) (err error) {
 		return err
 	}
 	if cmd != "run" {
-		return fmt.Errorf("检测到旧版服务配置(启动子命令是 %q,应为 run):直接 up 会让服务递归调用自身。请重跑 sudo bx setup <client-link> 重写服务配置", cmd)
+		return fmt.Errorf("检测到旧版服务配置(启动子命令是 %q,应为 run):直接 up 会让服务递归调用自身。请重跑 "+elevate.Prefix+"bx setup <client-link> 重写服务配置", cmd)
 	}
 	if err := install.Enable(); err != nil {
 		return err
@@ -3826,7 +3828,7 @@ func defaultReconnectDependencies() reconnectDependencies {
 		wait:   waitForReconnectPoll,
 		legacyReconnect: func(ctx context.Context) error {
 			if !install.UnitInstalled() {
-				return fmt.Errorf("尚未配置。先运行: sudo bx setup <client-link>")
+				return fmt.Errorf("尚未配置。先运行: " + elevate.Prefix + "bx setup <client-link>")
 			}
 			if _, err := supervisor.ReconnectControlContext(ctx, statusSocketPath()); err != nil {
 				return err
@@ -3971,7 +3973,7 @@ func dnsOnAction(c *cli.Context) error {
 		return err
 	}
 	printDNSStatus(st)
-	fmt.Println("✅ macOS 系统 DNS 已切到 bx。恢复: sudo bx dns off")
+	fmt.Println("✅ macOS 系统 DNS 已切到 bx。恢复: " + elevate.Prefix + "bx dns off")
 	return nil
 }
 
@@ -4272,7 +4274,7 @@ func maintenanceHoldIntentNote(desired string) string {
 		return ",desired 仍是 on"
 	}
 	return ";但盘上的 desired 是 " + desired +
-		" —— 挂起过期后保护不会自动恢复(下次开机也不会),需要保护请执行 sudo bx up"
+		" —— 挂起过期后保护不会自动恢复(下次开机也不会),需要保护请执行 " + elevate.Prefix + "bx up"
 }
 
 // maintenanceHoldReasonLabel 把稳定标识符翻成一句人话,**并保留标识符本身**。
@@ -4383,7 +4385,7 @@ func reconcileRoundExecution(round guardian.ReconcileReport) string {
 		// ③c 的三个码不是让路:放弃要人来,另外两个是「为什么没起」的答案。
 		switch executed.Error {
 		case guardian.ReconcileSkipStartCoreExhausted:
-			return segment + "(已放弃:连续 5 次起不来,等你 sudo bx up;原因见 /var/log/bx-guard.err.log)"
+			return segment + "(已放弃:连续 5 次起不来,等你 " + elevate.Prefix + "bx up;原因见 /var/log/bx-guard.err.log)"
 		case guardian.ReconcileSkipCoreProcessPresent:
 			return segment + "(有 Core 进程在跑但控制 socket 不应答,没起第二个)"
 		case guardian.ReconcileSkipCoreScanFailed:
@@ -4571,7 +4573,7 @@ func captiveNetworkHint(recovery guardian.RecoverySnapshot) string {
 		"          先用菜单栏的「Open Wi-Fi Sign-In Page」——**不用关掉 bx**\n" +
 		"          (网关是私网、一直直连;弹不出登录页是因为 DNS 与重定向被 bx 接管了)。\n" +
 		"          已经在终端里的话:open \"http://$(route -n get default | awk '/gateway:/{print $2}')\"\n" +
-		"          登录页打不开、或登录后仍不通,再:sudo bx down → 登录 → sudo bx up\n"
+		"          登录页打不开、或登录后仍不通,再:" + elevate.Prefix + "bx down → 登录 → " + elevate.Prefix + "bx up\n"
 }
 
 func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {
@@ -4683,12 +4685,12 @@ type realtimePostChangePlan struct{ Message string }
 
 func planRealtimePostChange(unitInstalled bool, activeState string) realtimePostChangePlan {
 	if !unitInstalled {
-		return realtimePostChangePlan{Message: "尚未安装服务。下次运行 sudo bx up 时生效。"}
+		return realtimePostChangePlan{Message: "尚未安装服务。下次运行 " + elevate.Prefix + "bx up 时生效。"}
 	}
 	if activeState == "active" {
-		return realtimePostChangePlan{Message: "当前保护会话保持运行;新的 UDP 策略将在下次 sudo bx up 时生效。"}
+		return realtimePostChangePlan{Message: "当前保护会话保持运行;新的 UDP 策略将在下次 " + elevate.Prefix + "bx up 时生效。"}
 	}
-	return realtimePostChangePlan{Message: "bx 当前未运行。下次 sudo bx up 时生效。"}
+	return realtimePostChangePlan{Message: "bx 当前未运行。下次 " + elevate.Prefix + "bx up 时生效。"}
 }
 
 func applyRealtimePostChange(_ *cli.Context) error {
@@ -4855,7 +4857,7 @@ func logsReportFromTail(service string, lines int, raw string, err error) logsRe
 	}
 	if err != nil {
 		rep.Error = err.Error()
-		rep.Hint = "try sudo bx logs"
+		rep.Hint = "try " + elevate.Prefix + "bx logs"
 	}
 	return rep
 }
@@ -5378,14 +5380,14 @@ func systemdServiceChecks() []checkReport {
 	activeState := serviceState("is-active", install.ServiceName)
 	enabledState := serviceState("is-enabled", install.ServiceName)
 	return []checkReport{
-		{Name: "service_installed", Status: boolStatus(install.UnitInstalled()), Detail: install.ServiceName, Hint: "sudo bx setup <client-link>"},
+		{Name: "service_installed", Status: boolStatus(install.UnitInstalled()), Detail: install.ServiceName, Hint: "" + elevate.Prefix + "bx setup <client-link>"},
 		{
 			Name:   "service_active",
 			Status: serviceStatusFromState("is-active", activeState),
 			Detail: activeState,
-			Hint:   hintForState(activeState, "sudo bx up", "bx logs"),
+			Hint:   hintForState(activeState, ""+elevate.Prefix+"bx up", "bx logs"),
 		},
-		{Name: "service_enabled", Status: serviceStatusFromState("is-enabled", enabledState), Detail: enabledState, Hint: "sudo bx up"},
+		{Name: "service_enabled", Status: serviceStatusFromState("is-enabled", enabledState), Detail: enabledState, Hint: "" + elevate.Prefix + "bx up"},
 	}
 }
 
@@ -5578,10 +5580,10 @@ var publicIPProbeURLs = []string{publicIPProbeV4URL, "https://ipinfo.io/ip"}
 func heldFenceHint(held string) string {
 	switch held {
 	case "ownership_uncertain":
-		return "(Guardian 拒绝再起一个 Core。`sudo bx up` 每次都会重新求证;" +
+		return "(Guardian 拒绝再起一个 Core。`" + elevate.Prefix + "bx up` 每次都会重新求证;" +
 			"仍被拒就去看 " + install.GuardianStderrLogPath + " 里的 guardian_core_scan)"
 	case "recovery_blocked":
-		return "(启动恢复没做完。`sudo bx down` 仍然可用)"
+		return "(启动恢复没做完。`" + elevate.Prefix + "bx down` 仍然可用)"
 	case "intent_unreadable":
 		return "(读不出 /var/lib/bx 里的意图或维护挂起。见 " + install.GuardianStderrLogPath + ")"
 	default:
@@ -5599,7 +5601,7 @@ func heldFenceHint(held string) string {
 // 而 bx 自己曾在三处**生成**它 —— 包括 `bx server install` 与 `bx server deploy`
 // 打给用户的下一步(2026-08-14 真机:照着敲直接被拒)。
 func setupCommandLine(main, udp string) string {
-	parts := []string{"sudo bx setup"}
+	parts := []string{"" + elevate.Prefix + "bx setup"}
 	if strings.TrimSpace(udp) != "" {
 		parts = append(parts, "--udp", "'"+udp+"'")
 	}

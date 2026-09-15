@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/preset"
 	"github.com/getbx/bx/internal/supervisor"
@@ -96,7 +98,7 @@ func presetApplyAction(c *cli.Context) error {
 	}
 	fmt.Println(presetApplySuccessMessage(p.Name))
 	if _, err := supervisor.FetchStatusReport(supervisor.SockPath); err != nil {
-		fmt.Println("  (bx 未在运行,下次 sudo bx up 时生效)")
+		fmt.Println("  (bx 未在运行,下次 " + elevate.Prefix + "bx up 时生效)")
 	} else if _, err := supervisor.ReloadControl(supervisor.SockPath); err != nil {
 		fmt.Printf("  ⚠ 配置已写入,但热生效失败——旧规则仍在运行;请查看 bx logs,新规则将在下次启动保护时生效:%v\n", err)
 	} else {
