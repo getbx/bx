@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 var errSwitchTestBoom = errors.New("dial /run/bx/core.sock: connection refused")
@@ -67,13 +69,13 @@ func TestSwitchServerKeepsTheHumanWordingIntact(t *testing.T) {
 		{
 			"不健康且回滚失败",
 			SwitchDeps{Arm: okArm, Healthy: func() bool { return false }, Rollback: func() error { return errSwitchTestBoom }},
-			"切换到 vps 后隧道不健康,且回滚失败(dial /run/bx/core.sock: connection refused)——死手仍会在超时后还原,或直接 `sudo bx down && sudo bx up`",
+			"切换到 vps 后隧道不健康,且回滚失败(dial /run/bx/core.sock: connection refused)——死手仍会在超时后还原,或直接 `" + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up`",
 			"",
 		},
 		{
 			"已生效但确认失败",
 			SwitchDeps{Arm: okArm, Healthy: func() bool { return true }, Commit: func() error { return errSwitchTestBoom }},
-			"切换到 vps 已生效但确认失败(dial /run/bx/core.sock: connection refused)——死手可能在超时后把它还原,请立刻 `sudo bx down && sudo bx up` 让配置里的选择落定",
+			"切换到 vps 已生效但确认失败(dial /run/bx/core.sock: connection refused)——死手可能在超时后把它还原,请立刻 `" + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up` 让配置里的选择落定",
 			"",
 		},
 	} {

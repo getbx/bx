@@ -1,6 +1,9 @@
 package doctor
 
-import "github.com/getbx/bx/internal/tristate"
+import (
+	"github.com/getbx/bx/internal/elevate"
+	"github.com/getbx/bx/internal/tristate"
+)
 
 import "testing"
 
@@ -30,7 +33,7 @@ func TestDNSCheckReadsTheUserIntent(t *testing.T) {
 			fact:     DNSFact{State: DNSStateManaged, Managed: true, Service: "Wi-Fi"},
 			desired:  DesiredOff,
 			status:   "warn",
-			wantHint: "sudo bx down",
+			wantHint: "" + elevate.Prefix + "bx down",
 		},
 		{
 			name:    "开着且 DNS 归 bx",
@@ -43,7 +46,7 @@ func TestDNSCheckReadsTheUserIntent(t *testing.T) {
 			fact:     DNSFact{State: DNSStateUnmanaged, Managed: false, Service: "Wi-Fi"},
 			desired:  DesiredOn,
 			status:   "fail",
-			wantHint: "sudo bx up; bx logs",
+			wantHint: "" + elevate.Prefix + "bx up; bx logs",
 		},
 		{
 			// 意图问不出来时保持旧答案:这个字段只由 Guardian 填,而 Guardian 总是
@@ -53,7 +56,7 @@ func TestDNSCheckReadsTheUserIntent(t *testing.T) {
 			fact:     DNSFact{State: DNSStateUnmanaged, Managed: false},
 			desired:  "",
 			status:   "fail",
-			wantHint: "sudo bx up; bx logs",
+			wantHint: "" + elevate.Prefix + "bx up; bx logs",
 		},
 		{
 			// NotNeeded 是「本平台没有这件事」(linux 数据面自己管),与意图无关。
@@ -85,8 +88,8 @@ func TestDNSCheckReadsTheUserIntent(t *testing.T) {
 // 抹在**唯一的入口**里,而不是靠十几个产出点各自自觉 —— 漏一个不会有人发现。
 func TestOKChecksNeverCarryAHint(t *testing.T) {
 	var rep Report
-	rep.AddCheck("via_addcheck", "ok", "yes", "sudo bx up")
-	rep.AddReport(Check{Name: "via_addreport", Status: "ok", Detail: "yes", Hint: "sudo bx up"})
+	rep.AddCheck("via_addcheck", "ok", "yes", ""+elevate.Prefix+"bx up")
+	rep.AddReport(Check{Name: "via_addreport", Status: "ok", Detail: "yes", Hint: "" + elevate.Prefix + "bx up"})
 	rep.AddCheck("warn_keeps_it", "warn", "hmm", "bx logs")
 	for _, c := range rep.Checks {
 		if c.Status == "ok" && c.Hint != "" {
@@ -105,7 +108,7 @@ func TestJudgeEmitsNoHintOnAnyOKCheck(t *testing.T) {
 		Version:    "test",
 		ConfigPath: "/etc/bx/config.yaml",
 		Config:     FileFact{Mode0600: tristate.True},
-		Probe:      &Check{Name: "probe", Status: "ok", Detail: "1ms", Hint: "sudo bx up"},
+		Probe:      &Check{Name: "probe", Status: "ok", Detail: "1ms", Hint: "" + elevate.Prefix + "bx up"},
 		Service:    DarwinServiceChecks(true, true),
 		Darwin:     true,
 		Guardian: &GuardianFact{

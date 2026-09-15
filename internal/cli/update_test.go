@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 func TestAssetName(t *testing.T) {
@@ -30,7 +32,7 @@ func TestUpdateDoesNotRestartProtection(t *testing.T) {
 	if strings.Contains(text, "install.Restart(") {
 		t.Fatal("update must not restart the protection service: process restart can release the protection path")
 	}
-	if strings.Contains(text, "sudo bx down && sudo bx up") {
+	if strings.Contains(text, ""+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up") {
 		t.Fatal("update must not recommend a down/up cycle")
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 func hasFinding(fs []Finding, sev, substr string) bool {
@@ -37,8 +39,8 @@ func TestDiagnoseFindings(t *testing.T) {
 }
 
 func TestLogsResultText(t *testing.T) {
-	if got := logsResultText("", errors.New("denied")); !strings.Contains(got, "sudo bx logs") {
-		t.Errorf("err 应提示 sudo bx logs, got %q", got)
+	if got := logsResultText("", errors.New("denied")); !strings.Contains(got, ""+elevate.Prefix+"bx logs") {
+		t.Errorf("err 应提示 "+elevate.Prefix+"bx logs, got %q", got)
 	}
 	if got := logsResultText("   ", nil); !strings.Contains(got, "无日志") {
 		t.Errorf("空应提示无日志, got %q", got)
@@ -50,7 +52,7 @@ func TestLogsResultText(t *testing.T) {
 
 func TestLogsResultReport(t *testing.T) {
 	got := logsResultReport("partial\n", errors.New("denied"))
-	if got.OK || got.Text != "partial\n" || got.Error == "" || !strings.Contains(got.Hint, "sudo bx logs") {
+	if got.OK || got.Text != "partial\n" || got.Error == "" || !strings.Contains(got.Hint, ""+elevate.Prefix+"bx logs") {
 		t.Fatalf("error report = %+v, want partial text, error, and hint", got)
 	}
 	got = logsResultReport("line1\n", nil)

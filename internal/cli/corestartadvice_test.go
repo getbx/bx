@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -468,7 +470,7 @@ func TestABrokenConfigFileIsReportedAsConfigUnusable(t *testing.T) {
 	}
 	if got := supervisor.StartFailureCode(err); got != supervisor.StartFailureConfig {
 		t.Fatalf("解析不了的配置分类成 %q,want %q —— 用户会读到「还没有专门说法的启动失败」,\n"+
-			"而这一种恰恰有说法(哪个文件、改完要 sudo bx down && sudo bx up)", got, supervisor.StartFailureConfig)
+			"而这一种恰恰有说法(哪个文件、改完要 "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up)", got, supervisor.StartFailureConfig)
 	}
 
 	_, missingErr := loadConfig(filepath.Join(dir, "根本没有这个文件.yaml"))

@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/guardian"
@@ -2273,7 +2275,7 @@ func TestDoctorHelpers(t *testing.T) {
 	if got := shareDoctorStatus("inactive", "listening"); got != "warn" {
 		t.Fatalf("shareDoctorStatus inactive/listening = %q", got)
 	}
-	if got := hintForState("inactive", "sudo bx up", "bx logs"); got != "sudo bx up; bx logs" {
+	if got := hintForState("inactive", ""+elevate.Prefix+"bx up", "bx logs"); got != ""+elevate.Prefix+"bx up; bx logs" {
 		t.Fatalf("hintForState inactive = %q", got)
 	}
 }
@@ -2713,7 +2715,7 @@ func TestClientDoctorReportsBlockedUDPPolicy(t *testing.T) {
 	}
 	rep := collectClientDoctor(path, "example.com:443", 0, true)
 	got := findCheck(rep.Checks, "udp_policy")
-	if got.Status != "warn" || !strings.Contains(got.Hint, "Google Meet") || !strings.Contains(got.Hint, "sudo bx realtime on") {
+	if got.Status != "warn" || !strings.Contains(got.Hint, "Google Meet") || !strings.Contains(got.Hint, ""+elevate.Prefix+"bx realtime on") {
 		t.Fatalf("udp_policy = %+v, want block warning with realtime hint", got)
 	}
 }
@@ -3043,7 +3045,7 @@ func TestLogsReportFromTailSuccess(t *testing.T) {
 
 func TestLogsReportFromTailErrorKeepsTextAndHint(t *testing.T) {
 	rep := logsReportFromTail("client", 0, "partial\n", os.ErrPermission)
-	if rep.OK || rep.Lines != 100 || rep.Text != "partial\n" || rep.Error == "" || !strings.Contains(rep.Hint, "sudo bx logs") {
+	if rep.OK || rep.Lines != 100 || rep.Text != "partial\n" || rep.Error == "" || !strings.Contains(rep.Hint, ""+elevate.Prefix+"bx logs") {
 		t.Fatalf("logs report = %+v, want error report with partial text and hint", rep)
 	}
 }
@@ -3157,7 +3159,7 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(observe.SafeNotes, " "), "status socket") {
 		t.Fatalf("observe should document local-only status socket sampling: %+v", observe)
 	}
-	setup := findCapability(rep.Commands, "sudo bx setup <client-link>")
+	setup := findCapability(rep.Commands, ""+elevate.Prefix+"bx setup <client-link>")
 	if setup.Command == "" || !strings.Contains(strings.Join(setup.Arguments, " "), "<client-link>") {
 		t.Fatalf("setup capability should use client-link wording: %+v", setup)
 	}
@@ -3190,7 +3192,7 @@ func TestCapabilitiesReport(t *testing.T) {
 	if probe.Command == "" || !strings.Contains(strings.Join(probe.Examples, " "), "<client-link>") {
 		t.Fatalf("probe capability should use client-link wording: %+v", probe)
 	}
-	up := findCapability(rep.Commands, "sudo bx up")
+	up := findCapability(rep.Commands, ""+elevate.Prefix+"bx up")
 	if !up.RequiresRoot || !up.ChangesSystem || !up.ChangesNetwork {
 		t.Fatalf("unexpected up capability: %+v", up)
 	}
@@ -3201,17 +3203,17 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(status.SafeNotes, " "), "menu bar") {
 		t.Fatalf("status json should mention status surfaces: %+v", status)
 	}
-	reconnect := findCapability(rep.Commands, "sudo bx reconnect")
+	reconnect := findCapability(rep.Commands, ""+elevate.Prefix+"bx reconnect")
 	if !reconnect.Stable || !reconnect.RequiresRoot || reconnect.ChangesSystem || reconnect.ChangesNetwork {
 		t.Fatalf("unexpected reconnect capability: %+v", reconnect)
 	}
 	if !strings.Contains(strings.Join(reconnect.SafeNotes, " "), "Does not release") {
 		t.Fatalf("reconnect should document its fail-closed scope: %+v", reconnect)
 	}
-	if restart := findCapability(rep.Commands, "sudo bx restart"); restart.Command != "" {
+	if restart := findCapability(rep.Commands, ""+elevate.Prefix+"bx restart"); restart.Command != "" {
 		t.Fatalf("legacy restart must not be advertised to agents: %+v", restart)
 	}
-	update := findCapability(rep.Commands, "sudo bx update")
+	update := findCapability(rep.Commands, ""+elevate.Prefix+"bx update")
 	if !update.Stable || !update.RequiresRoot || !update.ChangesSystem || update.ChangesNetwork {
 		t.Fatalf("unexpected update capability: %+v", update)
 	}
@@ -3225,21 +3227,21 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(updateNotes, "do not simulate an update by combining down and up") {
 		t.Fatalf("update should tell agents not to simulate updates with down/up: %+v", update)
 	}
-	direct := findCapability(rep.Commands, "sudo bx direct add <domain>")
+	direct := findCapability(rep.Commands, ""+elevate.Prefix+"bx direct add <domain>")
 	if !direct.Stable || !direct.RequiresRoot || !direct.ChangesSystem || direct.ChangesNetwork || !direct.ReadsSecrets {
 		t.Fatalf("unexpected direct add capability: %+v", direct)
 	}
 	if !strings.Contains(strings.Join(direct.SafeNotes, " "), "mutually exclusive") {
 		t.Fatalf("direct add should document direct/proxy mutual exclusion: %+v", direct)
 	}
-	proxy := findCapability(rep.Commands, "sudo bx proxy add <domain>")
+	proxy := findCapability(rep.Commands, ""+elevate.Prefix+"bx proxy add <domain>")
 	if !proxy.Stable || !proxy.RequiresRoot || !proxy.ChangesSystem || proxy.ChangesNetwork || !proxy.ReadsSecrets {
 		t.Fatalf("unexpected proxy add capability: %+v", proxy)
 	}
 	if !strings.Contains(strings.Join(proxy.SafeNotes, " "), "force tunnel") {
 		t.Fatalf("proxy add should document force tunnel behavior: %+v", proxy)
 	}
-	presetApply := findCapability(rep.Commands, "sudo bx preset apply <name>")
+	presetApply := findCapability(rep.Commands, ""+elevate.Prefix+"bx preset apply <name>")
 	if !presetApply.Stable || !presetApply.RequiresRoot || !presetApply.ChangesSystem || presetApply.ChangesNetwork || !presetApply.ReadsSecrets {
 		t.Fatalf("unexpected preset apply capability: %+v", presetApply)
 	}
@@ -3261,7 +3263,7 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(udpStatus.SafeNotes, " "), "UDP") {
 		t.Fatalf("realtime status should mention UDP: %+v", udpStatus)
 	}
-	realtimeOn := findCapability(rep.Commands, "sudo bx realtime on")
+	realtimeOn := findCapability(rep.Commands, ""+elevate.Prefix+"bx realtime on")
 	if !realtimeOn.Stable || !realtimeOn.RequiresRoot || !realtimeOn.ChangesSystem || realtimeOn.ChangesNetwork || !realtimeOn.ReadsSecrets {
 		t.Fatalf("unexpected realtime on capability: %+v", realtimeOn)
 	}
@@ -3271,11 +3273,11 @@ func TestCapabilitiesReport(t *testing.T) {
 	if !strings.Contains(strings.Join(realtimeOn.SafeNotes, " "), "without restarting") {
 		t.Fatalf("realtime on should document preserved protection: %+v", realtimeOn)
 	}
-	realtimeOff := findCapability(rep.Commands, "sudo bx realtime off")
+	realtimeOff := findCapability(rep.Commands, ""+elevate.Prefix+"bx realtime off")
 	if !realtimeOff.Stable || !realtimeOff.RequiresRoot || !realtimeOff.ChangesSystem || realtimeOff.ChangesNetwork || !realtimeOff.ReadsSecrets {
 		t.Fatalf("unexpected realtime off capability: %+v", realtimeOff)
 	}
-	dnsOn := findCapability(rep.Commands, "sudo bx dns on")
+	dnsOn := findCapability(rep.Commands, ""+elevate.Prefix+"bx dns on")
 	if !dnsOn.RequiresRoot || !dnsOn.ChangesSystem || !dnsOn.ChangesNetwork {
 		t.Fatalf("unexpected dns on capability: %+v", dnsOn)
 	}
@@ -3402,8 +3404,8 @@ func TestPlanRealtimePostChange(t *testing.T) {
 		wantContains  string
 	}{
 		{"active stays protected", true, "active", "保持运行"},
-		{"not installed", false, "inactive", "sudo bx up"},
-		{"inactive installed", true, "inactive", "下次 sudo bx up"},
+		{"not installed", false, "inactive", "" + elevate.Prefix + "bx up"},
+		{"inactive installed", true, "inactive", "下次 " + elevate.Prefix + "bx up"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3754,21 +3756,21 @@ func TestNextShareListenSkipsExistingShares(t *testing.T) {
 func TestSetupCommandQuotesLinks(t *testing.T) {
 	main := "bx://main"
 	udp := "bx://udp"
-	if got := setupCommand(main, ""); got != "sudo bx setup 'bx://main'" {
+	if got := setupCommand(main, ""); got != ""+elevate.Prefix+"bx setup 'bx://main'" {
 		t.Fatalf("setupCommand main = %q", got)
 	}
 	// **flag 必须在链接之前。** 这条断言此前钉的是相反的顺序 —— 也就是把一个
 	// bx 自己会拒绝的命令钉成了「正确」:urfave/cli 遇到第一个位置参数就停止
 	// 解析 flag,`setup '<链接>' --udp '<值>'` 里的 --udp 会被当成位置参数,
 	// 而 checkSetupArgs 专门拒绝它(2026-08-14 真机:照着敲直接被拒)。
-	if got := setupCommand(main, udp); got != "sudo bx setup --udp 'bx://udp' 'bx://main'" {
+	if got := setupCommand(main, udp); got != ""+elevate.Prefix+"bx setup --udp 'bx://udp' 'bx://main'" {
 		t.Fatalf("setupCommand udp = %q", got)
 	}
 }
 
 func TestInviteTextIsUserFriendly(t *testing.T) {
 	out := inviteText("alice", "bx://main", "bx://udp")
-	for _, want := range []string{"bx invite: alice", "给用户", "菜单栏 App", "bx://main", "UDP: bx://udp", "sudo bx setup --udp 'bx://udp' 'bx://main'", "sudo bx up"} {
+	for _, want := range []string{"bx invite: alice", "给用户", "菜单栏 App", "bx://main", "UDP: bx://udp", "" + elevate.Prefix + "bx setup --udp 'bx://udp' 'bx://main'", "" + elevate.Prefix + "bx up"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("invite text missing %q:\n%s", want, out)
 		}
@@ -5562,7 +5564,7 @@ func TestRenderClientStatusExplainsAHoldOverAnOffIntent(t *testing.T) {
 }
 
 // 而 desired=on 那条常态**不许**多这句话:挂起一过期,机器就回到「用户要保护」
-// 那条线上,凭空劝人去跑 sudo bx up 是噪声。
+// 那条线上,凭空劝人去跑 " + elevate.Prefix + "bx up 是噪声。
 func TestRenderClientStatusDoesNotTellUsersToRunUpUnderANormalHold(t *testing.T) {
 	out := renderClientStatus(clientStatusReport{
 		ProtectionState: guardian.ProtectionOff,

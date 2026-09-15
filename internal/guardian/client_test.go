@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/install"
 )
 
@@ -42,7 +44,7 @@ func TestGuardianHTTPErrorNamesEscapeForLatchedOwnershipUncertainty(t *testing.T
 		[]byte(`{"error":"guardian operation failed","code":"core_ownership_uncertain"}`)).Error()
 
 	if !strings.Contains(msg, "bx down") {
-		t.Errorf("必须告诉用户 sudo bx down 能清除这条锁存判定,实际:%s", msg)
+		t.Errorf("必须告诉用户 "+elevate.Prefix+"bx down 能清除这条锁存判定,实际:%s", msg)
 	}
 	if !strings.Contains(msg, "bx up") {
 		t.Errorf("必须给出完整的脱身动作(down 之后还要 up),实际:%s", msg)

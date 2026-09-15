@@ -1,6 +1,10 @@
 package doctor
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/getbx/bx/internal/elevate"
+)
 
 // 三行服务检查是 --json 契约的一部分(名字/状态/detail/hint),搬家不许改一个字。
 func TestDarwinServiceChecksThreeRows(t *testing.T) {
@@ -11,17 +15,17 @@ func TestDarwinServiceChecksThreeRows(t *testing.T) {
 	if up[0] != (Check{Name: "service_installed", Status: "ok", Detail: DarwinGuardianServiceName}) {
 		t.Fatalf("installed = %+v", up[0])
 	}
-	if up[1] != (Check{Name: "service_active", Status: "ok", Detail: "active", Hint: "sudo bx up"}) {
+	if up[1] != (Check{Name: "service_active", Status: "ok", Detail: "active", Hint: "" + elevate.Prefix + "bx up"}) {
 		t.Fatalf("active = %+v", up[1])
 	}
-	if up[2] != (Check{Name: "service_enabled", Status: "ok", Detail: "enabled", Hint: "sudo bx up"}) {
+	if up[2] != (Check{Name: "service_enabled", Status: "ok", Detail: "enabled", Hint: "" + elevate.Prefix + "bx up"}) {
 		t.Fatalf("enabled = %+v", up[2])
 	}
 	down := DarwinServiceChecks(false, false)
-	if down[0].Status != "fail" || down[0].Hint != "sudo bx setup <client-link>" {
+	if down[0].Status != "fail" || down[0].Hint != ""+elevate.Prefix+"bx setup <client-link>" {
 		t.Fatalf("没装 = %+v", down[0])
 	}
-	if down[1].Status != "fail" || down[1].Detail != "inactive" || down[1].Hint != "sudo bx up; bx logs" {
+	if down[1].Status != "fail" || down[1].Detail != "inactive" || down[1].Hint != ""+elevate.Prefix+"bx up; bx logs" {
 		t.Fatalf("没跑 = %+v", down[1])
 	}
 	if down[2].Status != "fail" || down[2].Detail != "disabled" {

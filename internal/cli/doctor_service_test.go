@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 // macOS 上 doctor 必须报告 Guardian,而不是 Core 的 legacy LaunchDaemon。
@@ -30,7 +32,7 @@ import (
 //
 // 这个 bug 曾经真实存在于 --json 这条路径上(人读版早就修好了):后果不只是三行
 // 难看,还有 `rep.OK = !rep.HasFail()` 让一台**健康的** mac 恒报 ok:false,以及
-// doctorNextActions 把 "sudo bx setup <client-link>" 列进 next_actions——建议用户
+// doctorNextActions 把 "" + elevate.Prefix + "bx setup <client-link>" 列进 next_actions——建议用户
 // 去重跑一个已经跑过的 setup。菜单栏 app 曾经照抄这份错判据(Task 4 复审抓到)。
 func TestDarwinServiceChecksAskGuardianNotCore(t *testing.T) {
 	installed := darwinServiceChecks(true, true)
@@ -54,7 +56,7 @@ func TestDarwinServiceChecksAskGuardianNotCore(t *testing.T) {
 	}
 
 	missing := darwinServiceChecks(false, false)
-	if missing[0].Status != "fail" || missing[0].Hint != "sudo bx setup <client-link>" {
+	if missing[0].Status != "fail" || missing[0].Hint != ""+elevate.Prefix+"bx setup <client-link>" {
 		t.Errorf("没装时应 fail 并指引 setup,实际 %+v", missing[0])
 	}
 	// launchd 没有 enabled/active 的分离:装上即自启,故 enabled 由 installed 决定。
@@ -68,7 +70,7 @@ func TestDarwinServiceChecksAskGuardianNotCore(t *testing.T) {
 // 这条测的是**接线**,不是生产者。两个生产者各自都有单测,而此前这段判断内联在
 // collectClientDoctorWith 里,没有任何测试看着它:变异实测把 darwin 那一支关掉
 // (`if false`),整套测试全绿 —— 一台健康的 mac 于是恒报 ok:false,并把
-// "sudo bx setup <client-link>" 列进 next_actions。
+// "" + elevate.Prefix + "bx setup <client-link>" 列进 next_actions。
 func TestServiceDoctorChecksAskGuardianOnDarwin(t *testing.T) {
 	guardian := []checkReport{{Name: "service_installed", Detail: "guardian"}}
 	systemd := []checkReport{{Name: "service_installed", Detail: "systemd"}}

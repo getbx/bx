@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 )
 
@@ -89,7 +91,7 @@ func TestRiskyClassIsJudgedIndependentlyOfWhetherTheRuleEverFires(t *testing.T) 
 // **一条点名了安全问题却给不出下一步的告警,比不告警更糟**:用户照着做、失败、
 // 于是不再相信这条告警,而问题原样留在那里。
 //
-// cli 那半有同名思路的守卫(internal/cli 的 TestRiskyRuleFindingHintNeedsSudo),
+// cli 那半有同名思路的守卫(internal/cli 的 TestRiskyRuleFindingHintNeedsElevation),
 // **而这一半此前完全裸奔** —— 两处各自拼一句 hint,只守一处等于只守一半。
 //
 // 判据只钉**性质**(带 sudo、点名真实子命令、规则原文带引号),不钉整句字面量:
@@ -104,8 +106,8 @@ func TestRiskyRuleHintUsesARealSubcommand(t *testing.T) {
 	}
 	hint := got[0].Hint
 
-	if !strings.Contains(hint, "sudo bx direct rm") {
-		t.Errorf("hint 没有 `sudo bx direct rm`:%q —— 少了 sudo 就是 permission denied"+
+	if !strings.Contains(hint, ""+elevate.Prefix+"bx direct rm") {
+		t.Errorf("hint 没有 `"+elevate.Prefix+"bx direct rm`:%q —— 少了 sudo 就是 permission denied"+
 			"(那份 config 是 0600 属主 root),而子命令写错就是「未知子命令」", hint)
 	}
 	// `remove` 是那次笔误的原文,专门钉住它不许回来。

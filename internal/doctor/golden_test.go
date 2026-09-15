@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/getbx/bx/internal/elevate"
+
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/stats"
@@ -166,6 +168,18 @@ func goldenCases() []goldenCase {
 // 重新生成:UPDATE_GOLDEN=1 go test ./internal/doctor/ -run TestJudgeGolden
 // —— 只有在**确实要改 --json 契约**时才跑它,并把 diff 一起提交上去。
 func TestJudgeGolden(t *testing.T) {
+	// **golden 钉的是类 Unix 那份渲染,逐字节。** 2026-09-15 起 hint 里的提权
+	// 前缀跟着平台走(elevate.Prefix:Windows 上没有 sudo),于是这份文件在
+	// Windows 上必然对不上 —— 而**把差异在测试里再算一遍**就是把那个变换
+	// 重新实现一遍,它会与生产那份漂开,正是这个仓库反复罚过的形状。
+	//
+	// 跳过不是留白:Windows 那一侧由 elevate 自己的两个分支测试 +
+	// `TestNoUserFacingCopyTellsWindowsUsersToRunSudo`(用户可见串里不许有裸
+	// sudo)守着;这里只放弃「逐字节」这一种更强的形式。
+	if elevate.Prefix != "sudo " {
+		t.Skipf("golden 钉的是 sudo 那份渲染,本平台的提权前缀是 %q —— "+
+			"Windows 那侧由 elevate 的分支测试与用户可见串守卫覆盖", elevate.Prefix)
+	}
 	got, err := json.MarshalIndent(goldenCases(), "", "  ")
 	if err != nil {
 		t.Fatalf("序列化判决失败: %v", err)

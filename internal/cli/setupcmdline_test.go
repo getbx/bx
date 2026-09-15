@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 // **bx 不许教用户敲一条 bx 自己会拒绝的命令。**
@@ -36,7 +38,7 @@ func TestGeneratedSetupCommandPassesItsOwnGuard(t *testing.T) {
 // 反面:旧的那个顺序**确实**会被守卫拒绝 —— 否则上面那条测试可以靠
 // 「守卫从不拒绝任何东西」满足。
 func TestTheOldArgumentOrderIsStillRejected(t *testing.T) {
-	bad := "sudo bx setup 'bx://MAIN' --udp 'bx://UDP'"
+	bad := "" + elevate.Prefix + "bx setup 'bx://MAIN' --udp 'bx://UDP'"
 	if err := checkSetupArgs(positionalArgsOf(bad)); err == nil {
 		t.Fatal("旧顺序没被拒绝 —— 那条守卫已经不起作用了,上面那条测试也就没有意义")
 	}

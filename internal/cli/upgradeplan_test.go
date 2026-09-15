@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/elevate"
 )
 
 // Guardian 没在跑、配置也还不可用(还没跑过 bx setup)就只装文件 ——
@@ -194,7 +196,7 @@ func TestAppInstallDoesNotAdviseTheIneffectiveDownUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	if strings.Contains(text, "bx down && sudo bx up") {
+	if strings.Contains(text, "bx down && "+elevate.Prefix+"bx up") {
 		t.Fatal("这句建议无效,不得再出现:app-install 必须自己把升级做完")
 	}
 	// 编排搬进了 upgraderun.go(为了让顺序可测),所以链条分两段查:
@@ -225,7 +227,7 @@ func TestUpVersionMismatchIsReported(t *testing.T) {
 	}
 	// 给出的命令必须是真正管用的那条。上次事故的根因正是一句看起来权威、
 	// 执行起来无效的建议。
-	if strings.Contains(msg, "bx down && sudo bx up") {
+	if strings.Contains(msg, "bx down && "+elevate.Prefix+"bx up") {
 		t.Fatalf("不得给出那条无效建议,实际 = %q", msg)
 	}
 	if !strings.Contains(msg, "app-install") {
@@ -260,8 +262,8 @@ func TestUpgradeSwitchCommandCanActuallyRun(t *testing.T) {
 	if _, err := bundleRootFromExecutable("/usr/local/bin/bx"); err == nil {
 		t.Fatal("test premise 失效:bridge 路径本应反推不出 Bx.app 包根")
 	}
-	if strings.Contains(upVersionMismatchMessage("dev", "phase2"), "sudo bx app-install") {
-		t.Fatal("不得再建议 `sudo bx app-install`:经 bridge 跑必然报 not inside a Bx.app bundle")
+	if strings.Contains(upVersionMismatchMessage("dev", "phase2"), ""+elevate.Prefix+"bx app-install") {
+		t.Fatal("不得再建议 `" + elevate.Prefix + "bx app-install`:经 bridge 跑必然报 not inside a Bx.app bundle")
 	}
 }
 
