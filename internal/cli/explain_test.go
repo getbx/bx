@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/dialfail"
 	"github.com/getbx/bx/internal/pathview"
+	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -263,7 +265,7 @@ func TestExplainPrintsMachineViewBeforeCoreAndSurvivesCoreBeingDown(t *testing.T
 			{Label: "绑网卡时", Text: "en0 via 192.168.50.2(物理网卡)"},
 		},
 	}
-	out, err := explainOutput(view, explainFixture(), nil, false)
+	out, err := explainOutput(view, explainFixture(), nil, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +281,7 @@ func TestExplainPrintsMachineViewBeforeCoreAndSurvivesCoreBeingDown(t *testing.T
 	}
 
 	down := errors.New("dial unix /var/run/bx/core.sock: connect: no such file or directory")
-	out, err = explainOutput(view, supervisor.ExplainResponse{}, down, false)
+	out, err = explainOutput(view, supervisor.ExplainResponse{}, down, false, nil)
 	if err != nil {
 		t.Fatalf("Core 连不上不该让 explain 失败,本机视角照样有用: %v", err)
 	}
@@ -295,7 +297,7 @@ func TestExplainPrintsMachineViewBeforeCoreAndSurvivesCoreBeingDown(t *testing.T
 // bx_explain 直接转发这份 JSON,agent 已在读 tcp/udp)。
 func TestExplainJSONAddsMachineWithoutMovingCoreFields(t *testing.T) {
 	view := pathview.View{Conclusion: "x", Kind: pathview.KindPublic}
-	out, err := explainOutput(view, explainFixture(), nil, true)
+	out, err := explainOutput(view, explainFixture(), nil, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +311,7 @@ func TestExplainJSONAddsMachineWithoutMovingCoreFields(t *testing.T) {
 	if _, ok := got["machine"]; !ok {
 		t.Fatalf("没有 machine 键: %v", got)
 	}
-	out, err = explainOutput(view, supervisor.ExplainResponse{}, errors.New("down"), true)
+	out, err = explainOutput(view, supervisor.ExplainResponse{}, errors.New("down"), true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -593,5 +595,133 @@ func TestExplainFallsBackToTheRunWhenHistoryCannotAnswer(t *testing.T) {
 	}
 	if !strings.Contains(got, "按本次") {
 		t.Errorf("判决没说它读的是本次那份:\n%s", got)
+	}
+}
+
+// —— 体检行:`bx explain` 第一次答得出「这条规则该不该留」——
+//
+// 判据整份早就在(`internal/rulereview` 的四类 + 死规则),而 explain 从来不调它:
+// 它答得出「这个目标会怎么走」,答不出「把它送上这条路的那一行本身有没有问题」。
+// 用户的原话是「是否有的可以放行,有的必须关掉」—— 那正是这份体检的四类。
+
+func explainFixtureWithFinding(class rulereview.Class, summary, coveredBy string) (supervisor.ExplainResponse, *rulereview.Report) {
+	return explainFixture(), &rulereview.Report{Findings: []rulereview.Finding{{
+		Kind: "direct", Rule: "*.steamstatic.com", Class: class,
+		Summary: summary, CoveredBy: coveredBy,
+	}}}
+}
+
+// 命中的那条规则有体检结论时,explain 要说出来。
+func TestExplainSurfacesTheRuleReviewVerdict(t *testing.T) {
+	rep, review := explainFixtureWithFinding(
+		rulereview.ClassShadowedByBuiltinList, "已在内建 china 直连列表里,删掉不改变任何流量", "内建列表")
+	got := renderExplainWithReview(rep, review)
+	if !strings.Contains(got, "体检") {
+		t.Fatalf("命中的规则有体检结论却一个字没说:\n%s", got)
+	}
+	if !strings.Contains(got, "删掉不改变任何流量") {
+		t.Errorf("体检结论没有被渲染出来:\n%s", got)
+	}
+}
+
+// **按 kind 分开查。** 同一条原文可以同时在 direct 与 proxy 里、语义相反 ——
+// 只按原文比,会把 proxy 那条的结论安到 direct 这条头上
+// (与死规则判据「按 Source 把 direct/proxy 分开查」同一条)。
+func TestExplainDoesNotBorrowTheOppositeTablesVerdict(t *testing.T) {
+	rep := explainFixture() // TCP.Source = user_direct
+	review := &rulereview.Report{Findings: []rulereview.Finding{{
+		Kind: "proxy", Rule: "*.steamstatic.com",
+		Class: rulereview.ClassRisky, Summary: "这是 proxy 那条的结论",
+	}}}
+	if got := renderExplainWithReview(rep, review); strings.Contains(got, "这是 proxy 那条的结论") {
+		t.Errorf("把对面那张表的结论安到了这条规则头上:\n%s", got)
+	}
+}
+
+// 没有命中用户规则时(内建列表 / 默认)不许安一个结论上去 —— 那一档没有哪一行可点名。
+func TestExplainSaysNothingAboutReviewWithoutAUserRule(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Source, rep.TCP.Rule = "china_domain", ""
+	rep.UDP.Source, rep.UDP.Rule = "china_domain", ""
+	review := &rulereview.Report{Findings: []rulereview.Finding{{
+		Kind: "direct", Rule: "*.steamstatic.com",
+		Class: rulereview.ClassRisky, Summary: "去匿名化风险",
+	}}}
+	if got := renderExplainWithReview(rep, review); strings.Contains(got, "体检") {
+		t.Errorf("没有用户规则可点名却渲染了体检行:\n%s", got)
+	}
+}
+
+// **体检拿不到时一个字都不说,绝不说成「这条规则没问题」。**
+// 「没查」与「查了没有」是两件事,而这个仓库为把前者渲染成后者栽过很多次。
+func TestExplainNeverCallsAnUnreviewedRuleHealthy(t *testing.T) {
+	got := renderExplainWithReview(explainFixture(), nil)
+	if strings.Contains(got, "体检") {
+		t.Errorf("体检缺席时仍渲染了体检行:\n%s", got)
+	}
+	// **禁词要卡在「关于规则的断言」上,不是卡在某个字。**
+	// 第一版把「健康」整个禁了,而同一份输出里 `隧道      健康` 是另一件事的
+	// 正确答案 —— 一条会误报的闸门比没有闸门更糟。
+	for _, forbidden := range []string{"这条规则没有问题", "规则健康", "体检通过"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("体检缺席时冒出了 %q —— 那是把「没查」说成「查了没问题」:\n%s", forbidden, got)
+		}
+	}
+}
+
+// 一条规则可以同时踩中两类(既危险、又被更宽的一条盖住),两条都要说。
+// **按名字取一条就静默丢掉其余安全结论** —— 本仓库为这个形状栽过。
+func TestExplainShowsEveryVerdictForTheRule(t *testing.T) {
+	rep := explainFixture()
+	review := &rulereview.Report{Findings: []rulereview.Finding{
+		{Kind: "direct", Rule: "*.steamstatic.com", Class: rulereview.ClassRisky, Summary: "去匿名化风险"},
+		{Kind: "direct", Rule: "*.steamstatic.com", Class: rulereview.ClassShadowedByUserRule, Summary: "被同表更宽的一条盖住"},
+	}}
+	got := renderExplainWithReview(rep, review)
+	for _, want := range []string{"去匿名化风险", "被同表更宽的一条盖住"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("少说了一条结论(%q):\n%s", want, got)
+		}
+	}
+}
+
+// **体检结论也要进 --json。** 只长在文本路径上的诊断正是本仓库记着的那类缺陷:
+// 菜单与 agent 走的是另一条路,于是同一台机器上一边说得出问题、一边一个字都不说
+// (bx doctor 的「哪条规则在成片失败」就这么消失过一次)。
+func TestExplainJSONCarriesTheRuleReviewVerdict(t *testing.T) {
+	rep, review := explainFixtureWithFinding(rulereview.ClassRisky, "公有云直连,去匿名化风险", "")
+	out, err := explainOutput(pathview.View{}, rep, nil, true, review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]any
+	if err := json.Unmarshal([]byte(out), &top); err != nil {
+		t.Fatalf("输出不是合法 JSON:%v\n%s", err, out)
+	}
+	if _, ok := top["tcp_rule_findings"]; !ok {
+		t.Errorf("--json 里没有体检结论 —— agent 与文本路径看到的不是同一件事:\n%s", out)
+	}
+	// 顶层既有字段一个不许动 —— MCP 的 bx_explain 直接转发这份 JSON。
+	for _, key := range []string{"target", "tcp", "udp", "tunnel_health"} {
+		if _, ok := top[key]; !ok {
+			t.Errorf("顶层字段 %q 被这次改动碰掉了", key)
+		}
+	}
+}
+
+// **那根线必须有人守。** 判据写对了、测试也绿,而 explainAction 递给它一个
+// 写死的 nil —— 整个功能在真机上死透而没有任何东西转红。这是本仓库编号的
+// 第七种失效写法,这一支上它已经出现过四次。
+func TestExplainActionReallyFetchesTheRuleReview(t *testing.T) {
+	src, err := os.ReadFile("explain.go")
+	if err != nil {
+		t.Fatalf("读不出 explain.go:%v", err)
+	}
+	body, ok := goFunctionBody(string(src), "func explainAction(c *cli.Context) error {")
+	if !ok {
+		t.Fatal("读不出 explainAction —— 这条守卫读不懂现在的代码了,先修它")
+	}
+	if !strings.Contains(body, "explainOutput(view, rep, err, c.Bool(\"json\"), explainRuleReview())") {
+		t.Errorf("explainAction 没有把真的体检递给 explainOutput(写死 nil 也会让每条测试保持绿):\n%s", body)
 	}
 }
