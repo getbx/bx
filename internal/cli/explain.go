@@ -101,6 +101,7 @@ func writeExplainPath(b *strings.Builder, label string, p supervisor.ExplainPath
 		fmt.Fprintf(b, "  注      这两个数是走「%s」这条路的全部流量的合计,不是这个目标的(这一层没有具体规则可点名)\n",
 			explainSourceLabel(p.Source))
 	}
+	b.WriteString(explainFailureVerdict(p.Run, p.History))
 	if p.Egress != "" {
 		fmt.Fprintf(b, "  出口    %s\n", p.Egress)
 	}
@@ -458,4 +459,77 @@ func explainHistoryNote(rep supervisor.ExplainResponse) string {
 		note += ";跟踪表溢出过 —— 没有条目不等于没命中"
 	}
 	return note + "\n"
+}
+
+// explainFailureVerdict 把失败分类翻成**一句可行动的话**。
+//
+// 它补的是这条命令一直缺的最后一步:分类(`[路由不可达×410 对端不应答×15]`)
+// 从 2026-09-01 起就印着了,而**分类到处置之间那一跳一直留给读的人自己走** ——
+// 而那句推理早就写在 `internal/dialfail` 每个常量的注释里,以一个零生产调用方的
+// 判据(`LooksLikeOurFault`)的形式存在着,从没有一个字到过屏幕上。
+//
+// 三条规矩:
+//
+//   - **没有单一主因就不说话。** 门槛是 dialfail.Dominant 那道严格多数 ——
+//     一份 40/30/30 的失败里挑一个说成主因就是编答案,而那一行的 `[×N ×N ×N]`
+//     拆分本身已经说明「它不是一个原因造成的」,那才是可行动的信息。
+//   - **说清读的是哪一份数。** 本次与累计可以给出相反的答案(刚修好的机器:
+//     累计全是 unreachable、本次一次都没有),而两句话的处置完全相反。
+//     优先读累计 —— 它是跨重启的大样本,而它的口径(覆盖多少天、跨几个版本、
+//     溢出没有)由 explainHistoryNote 在同一份输出的顶上说清楚了。
+//   - **指向对端的那一档绝不断言对方的状态。** 本机自己没网时同样表现为
+//     「没收到回应」,而一句「那台服务器挂了」会让人去重启一台好好的机器
+//     —— 与 core_tunnel_unreachable 那四条措辞规矩同源。
+func explainFailureVerdict(run, history *stats.RuleOutcome) string {
+	// **挑第一份答得出这个问题的样本,不是第一份有失败的样本。**
+	// 累计那份可能有 8000 次失败却一个分类都没有(旧版本记的、或这一轮还没
+	// 落盘),而本次这份分好了类 —— 按「有失败就用它」会把唯一答得出问题的
+	// 样本整个扔掉,输出与「这一版不下判决」完全一样。
+	sample, source := run, "本次"
+	if history != nil && history.Failures > 0 && len(history.FailureKinds) > 0 {
+		sample, source = history, "累计"
+	}
+	if sample == nil || sample.Failures <= 0 {
+		return ""
+	}
+	// 选中的那份说不出主因就到此为止,**不回落到更小的那份** ——
+	// 累计说「这是复数原因造成的」时,拿一份小一百倍的样本去推翻它,
+	// 是用噪声盖掉信号。
+	kind, ok := dialfail.Dominant(sample.FailureKinds)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("  判决    按%s,%s\n", source, explainVerdictText(kind))
+}
+
+// explainVerdictText 是每一类的处置。**措辞按 dialfail.Blame 分组,但逐类写** ——
+// 同一档里的两类要去查的东西并不一样(路由不可达查路由表、够不着解析器查解析器),
+// 压成一句「这是 bx 的问题」就又退回一个不可行动的结论。
+//
+// 认不出的类别落最后那一支:如实说认不出,**绝不悄悄归进「不是 bx 的问题」**。
+func explainVerdictText(kind string) string {
+	switch kind {
+	case dialfail.Unreachable:
+		return "多数失败是「路由不可达」 —— 那不是目标的问题,是 bx 自己的直连出口到不了那条路。" +
+			"这是 2026-08-13 与 08-16 两次真机故障的签名;跑 sudo bx doctor 看 direct_egress 那一行"
+	case dialfail.DNS:
+		return "多数失败是「够不着解析器」 —— 同样指向本机:bx 拨不到上游 DNS。" +
+			"跑 sudo bx doctor 看 direct_egress 与 dns 那两行"
+	case dialfail.DNSNotFound:
+		return "多数失败是「域名不存在」 —— 有程序在查一批查不到的主机名(微信这类客户端会)。" +
+			"这不是 bx 的故障,一个字都不用改"
+	case dialfail.Canceled:
+		return "多数失败是「调用方自己取消」 —— 连接还没建好程序就走了。这不是这条路的问题"
+	case dialfail.EgressUnwired:
+		return "多数失败是「具名出口没接上」 —— config 里写了一个运行时不存在的出口。该改的是配置,不是网络"
+	case dialfail.Timeout:
+		return "多数失败是「对端不应答」 —— bx 把连接发出去了、没等到回应。改 bx 的规则不会有帮助"
+	case dialfail.Refused:
+		return "多数失败是「对端明确拒绝」 —— 那个端口上没人在听。改 bx 的规则不会有帮助"
+	case dialfail.Reset:
+		return "多数失败是「连接被重置」 —— 建起来又被打断;跨墙路径上这常常是干扰而不是对端的意思。" +
+			"改规则没用,换传输或换服务器才可能有用"
+	default:
+		return "bx 认不出这些失败是怎么回事 —— 上面那行的分类里没有可行动的信息,去看 sudo bx logs"
+	}
 }

@@ -105,10 +105,85 @@ func Classify(err error) string {
 	return Other
 }
 
-// LooksLikeOurFault 说明这一类失败**通常指向 bx 自己**,而不是对端。
+// Blame 说明一类失败**指向谁**。
 //
-// 它是给渲染层用的措辞依据,不是判决:一条 15% 都是 unreachable 的规则值得
-// 立刻去查路由,而 15% 都是 timeout 的规则多半什么都不用做。
-func LooksLikeOurFault(kind string) bool {
-	return kind == Unreachable || kind == DNS
+// 它取代了原来那个 bool(`LooksLikeOurFault`)。换掉的理由有两条,第二条更要紧:
+//
+//   - 那个 bool **零生产调用方** —— 判据写下来了、测试盖着,而从没有一个字
+//     印给用户看过。一个没人调用而测试盖着的函数,与没有这个功能在输出上
+//     完全一样。
+//   - **两态不够**:`Other`(认不出这次失败是怎么回事)在 bool 下与 `Timeout`
+//     (确知是对端的问题)返回同一个 false,于是「我判不出来」被渲染成
+//     「不是 bx 的问题」。本仓库为这个形状栽过很多次 —— 「没问出来」不许被
+//     解成好消息。
+type Blame uint8
+
+const (
+	// BlameUndetermined 是**零值**:这一类说不出指向谁。
+	// 零值取它而不是取任何一个确定的答案,与 observe.Tristate、
+	// leakcheck.ReachUndetermined 同一条纪律 —— 漏填一类时多报好过漏报。
+	BlameUndetermined Blame = iota
+	// BlameLocal:指向本机 / bx 自己这一侧。**这一档要立刻去查。**
+	BlameLocal
+	// BlameRemote:指向对端或路上。改 bx 的规则一个字都没用。
+	BlameRemote
+	// BlameNotAFailure:压根不是「这条路走不通」——是应用自己的行为。
+	BlameNotAFailure
+)
+
+func (b Blame) String() string {
+	switch b {
+	case BlameLocal:
+		return "local"
+	case BlameRemote:
+		return "remote"
+	case BlameNotAFailure:
+		return "not_a_failure"
+	default:
+		return "undetermined"
+	}
+}
+
+// BlameFor 把一个类别名映射成它指向谁。
+//
+// 认不出的名字(含空串)一律 BlameUndetermined —— 绝不悄悄归进「不是 bx 的问题」。
+func BlameFor(kind string) Blame {
+	switch kind {
+	case Unreachable, DNS, EgressUnwired:
+		return BlameLocal
+	case Timeout, Refused, Reset:
+		return BlameRemote
+	case DNSNotFound, Canceled:
+		return BlameNotAFailure
+	default:
+		return BlameUndetermined
+	}
+}
+
+// Dominant 找出占**严格多数**的那一类,没有就说没有。
+//
+// **门槛是多数不是最多,这是判据的一部分。** 一份 4/3/3 的失败里最多的那一类
+// 只占 40%,把它说成「主因」就是编答案 —— 而那种失败真正可行动的信息恰恰是
+// 「它不是一个原因造成的」。正好一半同样不算:5 个路由不可达 + 5 个对端不应答
+// 是两句处置完全相反的话,挑一句说出来就有一半概率把人送错方向。
+//
+// 零值与负数的计数不参与(也不进分母),空串的键名同理 —— 它不是一类失败。
+func Dominant(kinds map[string]int64) (string, bool) {
+	var total, best int64
+	var bestKind string
+	for kind, n := range kinds {
+		if kind == "" || n <= 0 {
+			continue
+		}
+		total += n
+		// 并列时按名字定序,否则 map 迭代序会让输出每次不同 ——
+		// 不过并列本来就到不了下面那道多数门槛,这里只为可复现。
+		if n > best || (n == best && kind < bestKind) {
+			best, bestKind = n, kind
+		}
+	}
+	if total == 0 || best*2 <= total {
+		return "", false
+	}
+	return bestKind, true
 }

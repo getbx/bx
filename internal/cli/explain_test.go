@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/dialfail"
 	"github.com/getbx/bx/internal/pathview"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
@@ -410,5 +411,187 @@ func TestExplainUsesTheFakeIPRangeCoreIsActuallyUsing(t *testing.T) {
 					"的话于是整个不会出现", tc.probe, kind)
 			}
 		})
+	}
+}
+
+// —— 判决行:把 `internal/dialfail` 每个常量注释里已经写着的处置印出来 ——
+//
+// explain 此前答的是「会怎么走」加「数了多少次、分成哪几类」。而
+// **分类到处置之间那一步一直留给读的人自己走** —— 判据从 2026-09-01 起就在
+// dialfail 里,是 `LooksLikeOurFault`,零生产调用方。
+
+// 路由不可达占多数 ⇒ 指向 bx 自己,而且必须点名去哪儿查。
+// 这是 2026-08-13 与 08-16 两次真机故障的签名。
+func TestExplainBlamesTheDirectDialerWhenTheRouteIsUnreachable(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 500, 420
+	rep.TCP.Run.FailureKinds = map[string]int64{"unreachable": 410, "timeout": 10}
+	got := renderExplain(rep)
+	if !strings.Contains(got, "判决") {
+		t.Fatalf("一份 98%% 都是路由不可达的失败没有判决行:\n%s", got)
+	}
+	if !strings.Contains(got, "direct_egress") {
+		t.Errorf("判决没点名去哪儿查(direct_egress):\n%s", got)
+	}
+}
+
+// **对端那一档的措辞绝不许断言对方的状态。** 本机自己没网时同样表现为
+// 不应答,而一句「那台服务器挂了」会让人去重启一台好好的机器
+// (与 core_tunnel_unreachable 同一条纪律)。
+func TestExplainNeverAssertsWhatTheOtherEndIsDoing(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 100, 90
+	rep.TCP.Run.FailureKinds = map[string]int64{"timeout": 90}
+	got := renderExplain(rep)
+	if !strings.Contains(got, "判决") {
+		t.Fatalf("90%% 超时没有判决行:\n%s", got)
+	}
+	for _, forbidden := range []string{"挂了", "宕机", "服务器不可用", "对方已下线"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("判决断言了对端的状态(%q)—— bx 只观测到自己没收到回应:\n%s", forbidden, got)
+		}
+	}
+}
+
+// **两档的措辞必须相反。** 指向本机的那一档要说「去查」,指向对端的那一档
+// 要说「改 bx 的规则没用」;两者渲染成同一句话,这个功能就整个没有意义,
+// 而那种退化不会有任何测试因为别的理由转红。
+func TestExplainLocalAndRemoteVerdictsReadDifferently(t *testing.T) {
+	verdictFor := func(kinds map[string]int64) string {
+		rep := explainFixture()
+		rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 100, 90
+		rep.TCP.Run.FailureKinds = kinds
+		for _, line := range strings.Split(renderExplain(rep), "\n") {
+			if strings.Contains(line, "判决") {
+				return line
+			}
+		}
+		t.Fatalf("没有判决行,输入 %v", kinds)
+		return ""
+	}
+	local := verdictFor(map[string]int64{"unreachable": 90})
+	remote := verdictFor(map[string]int64{"timeout": 90})
+	if local == remote {
+		t.Errorf("「指向 bx 自己」与「指向对端」渲染成了同一句话:\n%s", local)
+	}
+}
+
+// **域名不存在不是故障**,判决必须说「不用改」——
+// 真机上 `*.qq.com` 966 次失败全是这一类,而那是微信在查一批不存在的主机名。
+func TestExplainSaysNXDOMAINNeedsNoFix(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 1454, 963
+	rep.TCP.Run.FailureKinds = map[string]int64{"dns_nxdomain": 963}
+	got := renderExplain(rep)
+	if !strings.Contains(got, "判决") {
+		t.Fatalf("NXDOMAIN 占绝对多数却没有判决行:\n%s", got)
+	}
+	if strings.Contains(got, "direct_egress") {
+		t.Errorf("把「应用在查不存在的名字」派去查 bx 的直连出口了:\n%s", got)
+	}
+}
+
+// **没有单一主因时不许硬挑一个。** 4/3/3 里最多的那一类只占 40%,
+// 说「主因是它」就是编答案;而那一行的 `[×N ×N ×N]` 拆分本身已经说明
+// 「它不是一个原因造成的」,那才是可行动的信息。
+func TestExplainRefusesToNameACauseWhenFailuresAreMixed(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 100, 100
+	rep.TCP.Run.FailureKinds = map[string]int64{"unreachable": 40, "timeout": 30, "reset": 30}
+	if got := renderExplain(rep); strings.Contains(got, "判决") {
+		t.Errorf("一份 40/30/30 的失败被安上了单一主因:\n%s", got)
+	}
+}
+
+// 没有失败就没有判决 —— 一台健康机器上这一行一个字都不占。
+// **两种「没有」各测一遍**:真的一次没失败,以及这一版根本没做分类 ——
+// 后者是 fixture 的原样,少了它这条测试会因为 fixture 恰好没分类而假绿。
+func TestExplainPrintsNoVerdictWithoutFailures(t *testing.T) {
+	healthy := explainFixture()
+	healthy.TCP.Run.Failures = 0
+	healthy.TCP.Run.FailureKinds = nil
+	if got := renderExplain(healthy); strings.Contains(got, "判决") {
+		t.Errorf("没有失败却出现了判决行:\n%s", got)
+	}
+
+	// 有失败、但这一版没有分类:分不出主因就没有判决可下。
+	unclassified := explainFixture() // Failures=1289 而 FailureKinds 为 nil
+	if unclassified.TCP.Run.Failures == 0 {
+		t.Fatal("fixture 改了,这条测试的前提没了")
+	}
+	if got := renderExplain(unclassified); strings.Contains(got, "判决") {
+		t.Errorf("没有分类却下了判决:\n%s", got)
+	}
+}
+
+// **判决必须说清它读的是哪一份数。** 本次与累计可以给出相反的答案
+// (刚修好的机器:累计全是 unreachable,本次一次都没有),而那两句话的
+// 处置完全相反 —— 不说来源就没法知道该信哪一句。
+func TestExplainVerdictNamesWhichSampleItRead(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.History = &stats.RuleOutcome{
+		Source: rep.TCP.Source, Rule: rep.TCP.Rule,
+		Attempts: 9000, Failures: 8000,
+		FailureKinds: map[string]int64{"unreachable": 8000},
+	}
+	got := renderExplain(rep)
+	var verdict string
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "判决") {
+			verdict = line
+		}
+	}
+	if verdict == "" {
+		t.Fatalf("累计里 8000 次失败没有判决行:\n%s", got)
+	}
+	if !strings.Contains(verdict, "累计") {
+		t.Errorf("判决读的是累计却没说:\n%s", verdict)
+	}
+}
+
+// **渲染出来的话里不许有 markdown。** 用户在终端里读到的是字面上的星号,
+// 而这条判决唯一的目的就是「照着做」——
+// 与 corestartadvice 那条同源(本仓库为它单独立过一条守卫)。
+// 判据打在**每一类的产出**上,穷举,不靠某一次渲染碰巧覆盖到哪几类。
+func TestExplainVerdictsCarryNoMarkdown(t *testing.T) {
+	kinds := []string{
+		dialfail.Unreachable, dialfail.Timeout, dialfail.Refused, dialfail.Reset,
+		dialfail.DNS, dialfail.DNSNotFound, dialfail.Canceled,
+		dialfail.EgressUnwired, dialfail.Other, "某个将来才有的类别",
+	}
+	for _, kind := range kinds {
+		text := explainVerdictText(kind)
+		if text == "" {
+			t.Errorf("%q 没有判决措辞 —— 认不出的类别也该有一句如实的话", kind)
+		}
+		// 反引号在这里不只是难看:这个仓库真的被它坑过一次
+		// (文档里反引号包着的命令被 zsh 当成命令替换执行了),
+		// 而这一行的全部目的就是让人照着敲。命令一律裸写,与仓库其余提示一致。
+		for _, sym := range []string{"**", "`", "__"} {
+			if strings.Contains(text, sym) {
+				t.Errorf("%q 的判决带着 markdown 符号 %q,用户读到的是字面符号:%s", kind, sym, text)
+			}
+		}
+	}
+}
+
+// **累计有失败但没分类时,判决要落回本次那份。**
+// 累计那份可能有 8000 次失败却一个分类都没有(旧版本记的、或这一轮还没落盘);
+// 按「哪份有失败就读哪份」会把唯一答得出问题的样本整个扔掉,而输出与
+// 「这一版不下判决」逐字节相同 —— 一次静默的功能缺失。
+func TestExplainFallsBackToTheRunWhenHistoryCannotAnswer(t *testing.T) {
+	rep := explainFixture()
+	rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 100, 90
+	rep.TCP.Run.FailureKinds = map[string]int64{"unreachable": 90}
+	rep.TCP.History = &stats.RuleOutcome{
+		Source: rep.TCP.Source, Rule: rep.TCP.Rule,
+		Attempts: 9000, Failures: 8000, // 有失败,但这一版没记分类
+	}
+	got := renderExplain(rep)
+	if !strings.Contains(got, "判决") {
+		t.Fatalf("累计答不出问题时没有落回本次那份:\n%s", got)
+	}
+	if !strings.Contains(got, "按本次") {
+		t.Errorf("判决没说它读的是本次那份:\n%s", got)
 	}
 }
