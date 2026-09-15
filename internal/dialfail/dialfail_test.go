@@ -69,16 +69,16 @@ func TestClassifyPrefersDNSOverTimeout(t *testing.T) {
 	}
 }
 
-// 「通常是谁的错」只对真正指向 bx 的那两类为真。
+// 「通常是谁的错」只对真正指向 bx 的那两类为 BlameLocal。
 // 判错方向的代价不对称:把对端的问题说成 bx 的,会让人去改一个没坏的东西。
 func TestOnlyRoutingAndResolutionLookLikeOurFault(t *testing.T) {
 	for _, kind := range []string{Unreachable, DNS} {
-		if !LooksLikeOurFault(kind) {
+		if BlameFor(kind) != BlameLocal {
 			t.Errorf("%s 应当指向 bx 自己", kind)
 		}
 	}
 	for _, kind := range []string{Timeout, Refused, Reset, Canceled, Other, ""} {
-		if LooksLikeOurFault(kind) {
+		if BlameFor(kind) == BlameLocal {
 			t.Errorf("%s 不该被说成 bx 的问题 —— 会让人去改一个没坏的东西", kind)
 		}
 	}
@@ -116,10 +116,10 @@ func TestClassifySeparatesNXDOMAINFromAnUnreachableResolver(t *testing.T) {
 // **只有「够不着解析器」指向 bx,NXDOMAIN 不指向。**
 // 判错方向的代价:让人去修一个没坏的路由表,而真正该做的是看那个应用在查什么。
 func TestNXDOMAINIsNotOurFault(t *testing.T) {
-	if LooksLikeOurFault(DNSNotFound) {
+	if BlameFor(DNSNotFound) == BlameLocal {
 		t.Error("把「域名不存在」说成了 bx 的问题")
 	}
-	if !LooksLikeOurFault(DNS) {
+	if BlameFor(DNS) != BlameLocal {
 		t.Error("「够不着解析器」应当指向 bx")
 	}
 }
