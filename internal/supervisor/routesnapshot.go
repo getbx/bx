@@ -21,7 +21,15 @@ type ruleSpec struct {
 	pref   int
 	fwmark string // "" 表示无;否则如 "0x162"
 	toCIDR string // "" 表示无 to 选择子
-	table  string // "main"/"local"/"default"/"100"/"52"...
+	// ipproto 是 `ip rule` 的协议选择子("udp"/"tcp"/…;"" 表示无)。
+	//
+	// **它必须被记住,否则 Restore 删不掉那条规则。** `ip rule del` 要求所有
+	// 选择子都对得上;2026-09-04 加的那条 Tailscale 规则带 `ipproto udp`,
+	// 而这里此前不认它 —— 重建出的删除命令少一个选择子,内核里那条匹配不上,
+	// 于是**装得上、拆不掉**(2026-09-15 由 netns 集成台抓到)。
+	// 一条 bx 自己装上、自己却还原不掉的策略路由,在这个仓库里有前科(孤儿屏障)。
+	ipproto string
+	table   string // "main"/"local"/"default"/"100"/"52"...
 }
 
 // routeSpec 是 table 100 一条路由的可比较表示,足以重建 `ip [-6] route add ... table 100`。
@@ -62,6 +70,11 @@ func parseRules(out string, fam ipFamily) []ruleSpec {
 			case "to":
 				if i+1 < len(rest) {
 					r.toCIDR = rest[i+1]
+					i++
+				}
+			case "ipproto":
+				if i+1 < len(rest) {
+					r.ipproto = rest[i+1]
 					i++
 				}
 			case "lookup":
@@ -160,6 +173,10 @@ func ruleArgs(verb string, r ruleSpec) []string {
 		a = append(a, "pref", strconv.Itoa(r.pref), "fwmark", r.fwmark)
 	default:
 		a = append(a, "pref", strconv.Itoa(r.pref))
+	}
+	// 解析出来了却不发,与没解析完全一样 —— 内核仍然匹配不上。
+	if r.ipproto != "" {
+		a = append(a, "ipproto", r.ipproto)
 	}
 	a = append(a, "table", r.table)
 	return a
