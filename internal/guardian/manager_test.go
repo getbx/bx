@@ -2658,6 +2658,7 @@ type fakeDNSResult struct {
 }
 
 type fakeDNSManager struct {
+	baseline       DNSState
 	events         *eventLog
 	record         bool
 	ensureErr      error
@@ -2675,6 +2676,14 @@ type fakeDNSManager struct {
 
 func newFakeDNSManager(events *eventLog) *fakeDNSManager {
 	return &fakeDNSManager{events: events}
+}
+
+// Baseline 默认 DNSUnknown(零值)—— 与 darwin 同,既有测试一个字不用改。
+func (d *fakeDNSManager) Baseline() DNSState {
+	if d.baseline == "" {
+		return DNSUnknown
+	}
+	return d.baseline
 }
 
 func (d *fakeDNSManager) EnsureManaged(ctx context.Context) (DNSStatus, error) {
@@ -2893,5 +2902,76 @@ func TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord(t *testing.T) {
 	}
 	if operations.startCount() != 1 {
 		t.Errorf("Core 启动次数 = %d, want 1", operations.startCount())
+	}
+}
+
+// —— 刚起来的 daemon:DNS 那一栏要分清「没问过」与「本平台没有这件事」——
+//
+// **2026-09-15 由 netns 集成台抓到。** `m.dnsStatus` 只在开保护
+// (ensureDNSManaged)或关保护(restoreDNS)时才被填,于是一个刚起来、
+// desired=off 的 daemon 报 `dns_state=unknown`。
+//
+// 在 darwin 上那是**诚实的**:我们确实没问过 networksetup。
+// 在 linux 上不是 —— 那儿根本没有「DNS 接管」这件事(数据面整机劫持 +
+// engine 拦 UDP:53),答案不需要问任何人就知道。把一个**静态平台事实**报成
+// 「没问出来」,正是本仓库明写过要消灭的那种失真:「字段缺席是诚实的『没问』;
+// 满屏『无法观测』则是把静态平台限制伪装成每次调用都新发生的差异」。
+//
+// 判据因此从 DNSManager 自己要:它最清楚本平台什么都没做的时候该怎么答,
+// 而且 **Baseline 不做任何 I/O** —— daemon 启动路径上不许多一次 networksetup。
+func newDNSBaselineManager(t *testing.T, baseline DNSState) (*Manager, *eventLog) {
+	t.Helper()
+	events := &eventLog{}
+	store := OpenStore(Paths{
+		Desired:         filepath.Join(t.TempDir(), "guardian-state.json"),
+		Transaction:     filepath.Join(t.TempDir(), "transaction.json"),
+		Receipt:         filepath.Join(t.TempDir(), "receipt.json"),
+		Staging:         filepath.Join(t.TempDir(), "staging"),
+		Snapshots:       filepath.Join(t.TempDir(), "snapshots"),
+		UpgradeIntent:   filepath.Join(t.TempDir(), "upgrade-intent.json"),
+		MaintenanceHold: filepath.Join(t.TempDir(), "maintenance-hold.json"),
+	})
+	dns := newFakeDNSManager(events)
+	dns.record = true
+	dns.baseline = baseline
+	manager, err := NewManager(ManagerOptions{
+		Store:       store,
+		Runner:      newFakeCoreRunner(events),
+		Health:      &fakeHealthGate{},
+		Barrier:     &fakeBarrier{events: events},
+		DNS:         dns,
+		CoreVersion: version.Version,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, events
+}
+
+func TestAFreshManagerReportsThePlatformsDNSBaseline(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		baseline DNSState
+	}{
+		{"linux:本平台没有这件事", DNSNotNeeded},
+		{"darwin:确实还没问过", DNSUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _ := newDNSBaselineManager(t, tc.baseline)
+			if got := manager.Status().DNSState; got != tc.baseline {
+				t.Errorf("刚起来的 Manager 报 dns_state=%q,应当是 %q", got, tc.baseline)
+			}
+		})
+	}
+}
+
+// **Baseline 不许偷偷去问。** 它跑在 daemon 的启动路径上,而那条路上
+// 多一次 networksetup 就是多一个会挂住的地方(与「启动时不做网关发现」同源)。
+func TestDNSBaselineAsksNobody(t *testing.T) {
+	_, events := newDNSBaselineManager(t, DNSNotNeeded)
+	for _, e := range events.snapshot() {
+		if strings.HasPrefix(e, "dns.") {
+			t.Errorf("构造 Manager 时问了 DNS 管理器(%s)—— 启动路径不许有 I/O", e)
+		}
 	}
 }
