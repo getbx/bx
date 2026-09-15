@@ -169,3 +169,30 @@ func unifiedTeardownNeeded(paths ...string) bool {
 	}
 	return false
 }
+
+// bootoutWaitTargets 列出这份计划里**需要等它真的从域里消失**的那些 launchd 目标。
+//
+// **`launchctl bootout` 返回不等于 job 已经不在域里。** 2026-08-13 那次真机事故
+// (升级停在「保护已关、文件已换、服务没起」)的根因就是这个竞态,当时在
+// `install.BootoutGuardian` 那条路上补了「等标签真的消失」;而卸载这条路走的是
+// 另一套裸命令,**从没跟上**。2026-09-15 由 CI 抓到:bootout 成功、120 毫秒后
+// `launchctl print system/com.getbx.bx.guard` 仍然找得到那个 job,而计划已经把
+// plist 删了。
+//
+// 后果不是难看:guard 与菜单 agent 都带 KeepAlive,job 留在 launchd 里而文件已经
+// 被删,launchd 便会不停重拉一个不存在的二进制,**而用户以为卸干净了** ——
+// runLaunchctlBestEffort 头上那段注释早就描述过这个形状,只是当时只防住了
+// 「bootout 失败」那一半。
+//
+// **只认 bootout**:计划里将来可能出现 bootstrap / kickstart,对它们「等到消失」
+// 是把话说反了。
+func bootoutWaitTargets(plan darwinUninstallPlan) []string {
+	var targets []string
+	for _, args := range plan.LaunchctlCommands {
+		if len(args) < 3 || args[1] != "bootout" {
+			continue
+		}
+		targets = append(targets, args[2])
+	}
+	return targets
+}
