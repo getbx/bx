@@ -150,16 +150,48 @@ jobs:
           cd dist.noindex/release/bx-macos-arm64 2>/dev/null || cd dist.noindex/release/bx-macos-amd64
           ./install.sh --yes
 
-      # 这四条就是「全新安装之后该是什么样」的契约。第二条是 2026-08-10 那个 bug。
-      - name: Assert the contract a fresh install must satisfy
+      # **这里此前断言的是产品刻意不满足的契约,于是它从 2026-07 起一直红着。**
+      # 全新安装 = **还没跑过 bx setup** 的机器,那台机器上没有 /etc/bx/config.yaml;
+      # 而 daemon 启动要读 owner_uid、读不出就退出,plist 又带 KeepAlive=true ——
+      # 硬 bootstrap 一个读不到配置的 Guardian 等于造一个每秒重启的崩溃循环。
+      # `internal/cli/upgradeplan.go` 的 configUsable 那道门就是为这件事加的
+      # (2026-08-10 真机换来的),所以「没有配置 ⇒ 不拉 Guardian」是**对的**。
+      #
+      # 契约因此是**一道门的两半**,两半都要钉:没配置时不许拉起来(否则是崩溃
+      # 循环),配置一可用就必须拉起来(否则正是 2026-08-10 那个 bug —— 菜单栏的
+      # 免密开关在全新安装这条路上从没能工作过)。只钉其中一半,另一半就是盲区。
+      - name: Assert the contract while there is still no config
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
 
           test -x /usr/local/bin/bx || fail "命令行入口没装上"
 
+          if sudo launchctl print system/com.getbx.bx.guard >/dev/null 2>&1; then
+            fail "还没有配置就把 Guardian bootstrap 了 —— KeepAlive=true 下那是一个每秒重启的崩溃循环,而安装会报成功"
+          fi
+          test ! -S /var/run/bx/guardian.sock \
+            || fail "还没有配置就出现了 guardian.sock"
+
+      # 第二半:配置一可用,Guardian 就必须被拉起来。
+      # 这里刻意**不跑 bx setup** —— 它要做连通检测,而这个 job 没有 VPS 也不需要;
+      # 判据(guardianConfigUsable)只要求 config.Parse 过得去,所以直接写一份最小配置,
+      # 用的正是生产那道门看的那两样东西。
+      - name: Assert Guardian comes up once the config is usable
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          sudo mkdir -p /etc/bx
+          printf 'owner_uid: %s\nserver: brook://ci.invalid:9999?password=ci\n' "$(id -u)" \
+            | sudo tee /etc/bx/config.yaml >/dev/null
+          sudo chmod 600 /etc/bx/config.yaml
+
+          cd dist.noindex/release/bx-macos-arm64 2>/dev/null || cd dist.noindex/release/bx-macos-amd64
+          ./install.sh --yes
+
           sudo launchctl print system/com.getbx.bx.guard >/dev/null 2>&1 \
-            || fail "Guardian 服务没有被 bootstrap —— 菜单栏的免密开关连的就是它的 socket,这正是 2026-08-10 真机抓到的那个 bug"
+            || fail "配置已经可用,Guardian 仍然没被 bootstrap —— 菜单栏的免密开关连的就是它的 socket,这正是 2026-08-10 真机抓到的那个 bug"
 
           for _ in $(seq 1 20); do
             [ -S /var/run/bx/guardian.sock ] && break
@@ -168,10 +200,10 @@ jobs:
           test -S /var/run/bx/guardian.sock \
             || fail "guardian.sock 不存在 —— 菜单栏连不上,免密开关点不动"
 
-          # **全新安装绝不开启保护**,README 是这么向用户承诺的。
+          # **装完绝不开启保护**,README 是这么向用户承诺的。
           state=$(sudo cat /var/lib/bx/guardian-state.json 2>/dev/null || echo '"off"')
           [ "$state" = '"off"' ] \
-            || fail "全新安装把保护打开了(desired=$state)—— README 承诺的是不启动保护"
+            || fail "安装把保护打开了(desired=$state)—— README 承诺的是不启动保护"
 
       - name: Uninstall leaves no launchd job behind
         run: |
