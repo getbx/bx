@@ -152,7 +152,7 @@ func collectDoctorFactsWith(ctx context.Context, configPath string, status Statu
 		}
 	} else {
 		if info, serr := os.Stat(configPath); serr == nil {
-			f.Config.Mode0600 = info.Mode().Perm() == 0o600
+			f.Config.Mode0600 = doctor.ConfigMode0600(info.Mode().Perm())
 		}
 		cfg, perr := config.Parse(b)
 		if perr != nil {

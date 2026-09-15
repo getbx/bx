@@ -65,7 +65,7 @@ func goldenCases() []goldenCase {
 	long := Facts{
 		Version:    "test",
 		ConfigPath: "/etc/bx/config.yaml",
-		Config:     FileFact{Mode0600: true},
+		Config:     FileFact{Mode0600: tristate.True},
 		Parsed:     cfg,
 		RuleReview: &review,
 		Probe:      &Check{Name: "probe", Status: "ok", Detail: "366ms"},
@@ -108,7 +108,7 @@ func goldenCases() []goldenCase {
 	off := Facts{
 		Version:    "test",
 		ConfigPath: "/etc/bx/config.yaml",
-		Config:     FileFact{Mode0600: true},
+		Config:     FileFact{Mode0600: tristate.True},
 		Parsed:     cfg,
 		Probe: &Check{
 			Name: "probe", Status: "warn",
@@ -136,7 +136,7 @@ func goldenCases() []goldenCase {
 	failing := Facts{
 		Version:    "test",
 		ConfigPath: "/etc/bx/config.yaml",
-		Config:     FileFact{Mode0600: true},
+		Config:     FileFact{Mode0600: tristate.True},
 		Parsed:     cfg,
 		Traffic: &TrafficFact{
 			Report: stats.Report{
