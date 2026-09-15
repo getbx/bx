@@ -703,6 +703,56 @@ struct RulesModelTests {
                "健康的一行仍然一个字都不说")
     }
 
+
+    // —— 组的副标题:回答「我该不该勾它」,不是「它叫什么」——
+    //
+    // 品牌名(Steam / Apple / Tencent)回答的是「这一组叫什么」,而用户站在
+    // 这个窗口前想的是**开了会怎样**。上一版这一行被刻意拿掉过,理由是两条:
+    // 服务端那句 summary 是中文(菜单通篇英文),以及竖着堆的小字**多半是空的**,
+    // 于是一屏参差不齐的留白。第二条是这里最要紧的约束 —— 所以判据的第一性质
+    // 就是**恒非空**。
+
+    /// **每一组都有一句,一句都不许空。** 这正是上一版那行小字被拿掉的原因:
+    /// 空一半的第二列比没有这一列更难看,也更难读。
+    static func testEveryGroupHasANonEmptySubtitle() {
+        for name in ["gaming", "apple", "tencent", "china-cdn", "某个将来才有的组"] {
+            let group = RuleGroup(name: name, title: "T", state: .off, installed: 0, total: 7)
+            let subtitle = ruleGroupSubtitle(group)
+            expect(!subtitle.isEmpty, "\(name) 没有副标题 —— 空的那一格会让这一列重新变成参差不齐的留白")
+        }
+    }
+
+    /// **认不出的组必须回落到一句如实的话,而不是一句编出来的效果。**
+    /// 新 Guardian 出了一组而菜单还没跟上时,这条路真的会走到。
+    static func testAnUnknownGroupFallsBackToSomethingTrue() {
+        let unknown = RuleGroup(name: "newer-than-this-menu", title: "T", state: .off, installed: 0, total: 9)
+        let subtitle = ruleGroupSubtitle(unknown)
+        expect(subtitle.contains("9"), "认不出的组没有回落到「它管几个域名」这句一定成立的话:\(subtitle)")
+    }
+
+    /// **副标题说的是效果,不是清单。** 一句「7 domains」对认得出的组是退化 ——
+    /// 用户本来就能点 Show 看清单,他不知道的是「不开会怎样」。
+    static func testKnownGroupsDescribeTheEffectNotTheDomainCount() {
+        for name in ["gaming", "apple", "tencent", "china-cdn"] {
+            let group = RuleGroup(name: name, title: "T", state: .off, installed: 0, total: 7)
+            let subtitle = ruleGroupSubtitle(group)
+            expect(!subtitle.contains("domains"),
+                   "\(name) 的副标题退化成了域名个数,那正是用户点 Show 就能看到的东西:\(subtitle)")
+            expect(subtitle.count <= 64, "\(name) 的副标题长得当不了一行小字(\(subtitle.count)):\(subtitle)")
+        }
+    }
+
+    /// **绝不把服务端那句中文摆上来。** 本仓库为「服务端写的是中文」栽过一次
+    /// (规则窗口把 rulereview 的中文 summary 渲染进了通篇英文的菜单)。
+    static func testSubtitleNeverEchoesTheServersChineseSummary() {
+        let group = RuleGroup(name: "apple", title: "Apple",
+                              summary: "Apple 系统服务、Game Center、Arcade、iCloud 同步可用性",
+                              state: .off, installed: 0, total: 7)
+        let subtitle = ruleGroupSubtitle(group)
+        expect(subtitle != group.summary, "副标题直接回显了服务端那句中文")
+        expect(!subtitle.contains("可用性"), "副标题里混进了中文:\(subtitle)")
+    }
+
     static func main() {
         testReplaceMessageShowsTheExitChangeNotALecture()
         testReplaceMessageOmitsTheOldServerWhenUnknown()
@@ -711,6 +761,10 @@ struct RulesModelTests {
         testPartialGroupShowsOnlyTheCount()
         testFailingGroupSaysOnlyWhatMatters()
         testGroupTitlesAreShortEnoughToBeTags()
+        testEveryGroupHasANonEmptySubtitle()
+        testAnUnknownGroupFallsBackToSomethingTrue()
+        testKnownGroupsDescribeTheEffectNotTheDomainCount()
+        testSubtitleNeverEchoesTheServersChineseSummary()
         testRuleRowsPutFailingRulesFirst()
         testRuleRowsMatchFailuresByKindNotJustName()
         testRuleRowsAreCaseInsensitiveWhenMatching()

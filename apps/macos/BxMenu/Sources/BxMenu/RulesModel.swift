@@ -626,3 +626,39 @@ func ruleTableEntries(rows: [RuleRow], pending: [PendingRuleRemoval]) -> [RuleTa
     }
     return out
 }
+
+/// 一组的副标题:**回答「我该不该勾它」,不是「它叫什么」。**
+///
+/// 品牌名(Steam / Apple / Tencent)答的是后者,而用户站在这个窗口前想的是
+/// **开了会怎样**;展开后的域名清单是证据,不是答案 —— 没有人靠读
+/// `*.steamcontent.com` 认出「游戏下载会变快」。
+///
+/// 三条,每条都对应一次已经付过的学费:
+///
+///   - **恒非空。** 上一版这一行是「勾选框下面缩进一行小字」,被拿掉的理由是
+///     它多半是空的,于是一屏参差不齐的留白。空一半的一列比没有这一列更糟。
+///   - **在客户端映射成英文,绝不回显服务端那句 `summary`。** 那句是中文、
+///     同时还喂着 `bx preset show`,把它摆进通篇英文的菜单是本仓库栽过的同一个坑
+///     (规则窗口曾把 rulereview 的中文 summary 原样渲染出来)。
+///   - **认不出的组回落到一句一定成立的话**(它管几个域名),而不是消失、
+///     也不是冒充看懂了。新 Guardian 出了一组而菜单还没跟上时,这条路真会走到 ——
+///     与 `ruleVerdictText` 对认不出的 class 的处置同向。
+///
+/// 这张表与 Go 那份预设清单的对齐由
+/// `TestMacMenuEveryPresetHasAnEnglishSubtitle` 钉住:Go 加了一组而这里没跟上时
+/// 它红一次,那正是回来写这句话的时刻 —— 否则新组会静默停在那句回落上,
+/// 而回落与「我们想过了、就是没什么可说的」在屏幕上完全一样。
+func ruleGroupSubtitle(_ group: RuleGroup) -> String {
+    switch group.name {
+    case "gaming":
+        return "Game downloads and cloud saves come straight from the CDN"
+    case "apple":
+        return "iCloud sync, Game Center and the App Store stay responsive"
+    case "tencent":
+        return "WeChat, Tencent Meeting and QQ sign-in, chat and media"
+    case "china-cdn":
+        return "Chinese apps, video and shopping load from nearby servers"
+    default:
+        return "\(group.total) domains"
+    }
+}

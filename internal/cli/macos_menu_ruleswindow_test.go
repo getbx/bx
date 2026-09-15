@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/preset"
 )
 
 // menuRulesWindowSource 读窗口那份源码,两种视图各一次:
@@ -613,6 +615,66 @@ func TestMacMenuRulesWindowNeverRendersTheServerChineseSummary(t *testing.T) {
 	for _, forbidden := range []string{".summary", "group.summary"} {
 		if strings.Contains(window, forbidden) {
 			t.Errorf("窗口里出现了 %s —— 那是服务端来的中文,会渲染进通篇英文的界面", forbidden)
+		}
+	}
+}
+
+// 组的副标题真的被摆进视图树 —— 算出来了没画,与没写一样(第二种失效写法)。
+func TestMacMenuGroupSubtitleReachesTheViewTree(t *testing.T) {
+	window, _ := menuRulesWindowSource(t)
+	body, ok := swiftFunctionBody(window, "private func groupRow(")
+	if !ok {
+		t.Fatal("读不出 groupRow —— 这条守卫读不懂现在的代码了,先修它")
+	}
+	if !swiftValueReachesViewTree(body, "ruleGroupSubtitle(row.group)") {
+		t.Error("组的副标题没有被摆进视图树 —— 用户看不到「开了会怎样」,而那正是这一行存在的理由")
+	}
+}
+
+// **每一组预设都要有一句英文副标题,而清单的真相源在 Go 这一边。**
+//
+// Go 加了一组而 Swift 没跟上时,新组会静默停在那句回落(「N domains」)上 ——
+// 而回落与「我们想过了、就是没什么可说的」在屏幕上完全一样,两头都不报错。
+// 这个仓库为「两份清单会漂」立过好几条同款守卫(TestOpenPlatformListMatchesPolicy、
+// TestMacMenuRuleClassLiteralsMatchTheGoClassNames)。
+func TestMacMenuEveryPresetHasAnEnglishSubtitle(t *testing.T) {
+	model := stripSwiftComments(readMenuSwiftSource(t, "RulesModel.swift"))
+	body, ok := swiftFunctionBody(model, "func ruleGroupSubtitle(")
+	if !ok {
+		t.Fatal("读不出 ruleGroupSubtitle —— 这条守卫读不懂现在的代码了,先修它")
+	}
+	var names []string
+	for _, p := range preset.All() {
+		names = append(names, p.Name)
+	}
+	if len(names) == 0 {
+		t.Fatal("一个预设都没扫到 —— 安静地扫了零个的守卫,与没有这条守卫完全一样")
+	}
+	for _, name := range names {
+		if !strings.Contains(body, `case "`+name+`":`) {
+			t.Errorf("预设 %q 在菜单里没有英文副标题 —— 它会静默停在那句「N domains」的回落上", name)
+		}
+	}
+	// 反向:表里不许有指向已不存在预设的陈旧分支 —— 陈旧条目什么也不守,
+	// 而它看起来与生效中的一模一样。
+	live := map[string]bool{}
+	for _, name := range names {
+		live[name] = true
+	}
+	for _, m := range regexp.MustCompile(`case "([a-z0-9-]+)":`).FindAllStringSubmatch(body, -1) {
+		if !live[m[1]] {
+			t.Errorf("副标题表里的 %q 已经不是一个预设了 —— 陈旧分支什么也不守", m[1])
+		}
+	}
+	// **副标题不许是中文。** 服务端那句 summary 是中文且还喂着 bx preset show,
+	// 把它搬进通篇英文的菜单是本仓库栽过的同一个坑。判据打在**返回的串**上
+	// (注释已被 stripSwiftComments 剥掉,但解释性的中文仍可能留在别处)。
+	for _, m := range regexp.MustCompile(`return "([^"]*)"`).FindAllStringSubmatch(body, -1) {
+		for _, r := range m[1] {
+			if r >= 0x4E00 && r <= 0x9FFF {
+				t.Errorf("副标题里混进了中文:%s", m[1])
+				break
+			}
 		}
 	}
 }
