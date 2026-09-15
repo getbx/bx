@@ -112,7 +112,8 @@ func (a *ruleHistoryAccumulator) flush() error {
 	cur := a.counters.Snapshot().Rules
 	decisions := a.counters.Decisions()
 
-	next := mergeRuleHistory(prev,
+	next := mergeRuleHistory(
+		prev,
 		ruleDeltas(a.prevRules, cur),
 		now.Sub(a.lastAt),
 		decisions-a.prevDecisions,

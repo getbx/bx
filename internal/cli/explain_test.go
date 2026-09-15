@@ -614,7 +614,8 @@ func explainFixtureWithFinding(class rulereview.Class, summary, coveredBy string
 // 命中的那条规则有体检结论时,explain 要说出来。
 func TestExplainSurfacesTheRuleReviewVerdict(t *testing.T) {
 	rep, review := explainFixtureWithFinding(
-		rulereview.ClassShadowedByBuiltinList, "已在内建 china 直连列表里,删掉不改变任何流量", "内建列表")
+		rulereview.ClassShadowedByBuiltinList, "已在内建 china 直连列表里,删掉不改变任何流量", "内建列表",
+	)
 	got := renderExplainWithReview(rep, review)
 	if !strings.Contains(got, "体检") {
 		t.Fatalf("命中的规则有体检结论却一个字没说:\n%s", got)

@@ -793,7 +793,8 @@ func swiftMentionsIdentifier(text, name string) bool {
 // 把最后那句 `addArrangedSubview` 去掉之后它仍然转红。
 var swiftBindingRegexp = regexp.MustCompile(
 	`(?m)(?:^|[^A-Za-z0-9_])(?:let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$` +
-		`|for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*\{)`)
+		`|for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*\{)`,
+)
 
 // swiftValueReachesViewTree 回答:从 seed 派生出来的东西,有没有被摆进视图树。
 //

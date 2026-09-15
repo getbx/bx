@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -169,5 +170,42 @@ func TestMacMenuRunsFirstRunGuidanceAfterTheFirstRefresh(t *testing.T) {
 	}
 	if !strings.Contains(installer, "refresh(userInitiated: true) {") {
 		t.Error("装完之后的引导没有挂在刷新的完成回调上 —— 会读到装之前的状态,重复弹安装框")
+	}
+}
+
+// **verify.sh 与 CI 必须钉同一个 gofumpt 版本。**
+//
+// 2026-09-15 实测的代价:本机装的是 v0.11.0、CI 钉的是 v0.10.0,而两版真的会
+// 打架(v0.10.0 要求多行实参表带尾逗号 + 右括号独占一行,v0.11.0 放松了这条)。
+// 于是 `bash scripts/verify.sh` 的「gofumpt (no drift)」恒绿、CI 的 lint 恒红 ——
+// **而这个仓库的全部「已验证」都只由本机那一份背书**。一道与它要预演的那道
+// 守着不同标准的闸门,比没有这道闸门更糟:它训练人相信自己已经过了。
+//
+// 判据打在**两个 pin 的值相等**上,不写死某个具体版本 —— 升级 gofumpt 时该做的
+// 是两处一起改,而不是回来改这条测试里的第三份拷贝。
+func TestVerifyScriptPinsTheSameGofumptAsCI(t *testing.T) {
+	read := func(path string) string {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("读不出 %s:%v —— 这条守卫读不懂现在的代码了,先修它", path, err)
+		}
+		return string(b)
+	}
+	ciPin := regexp.MustCompile(`mvdan\.cc/gofumpt@(v[0-9.]+)`).FindStringSubmatch(read("../../.github/workflows/ci.yml"))
+	if ciPin == nil {
+		t.Fatal("ci.yml 里找不到钉死的 gofumpt 版本 —— 读不出要比的东西时必须响亮失败")
+	}
+	verify := read("../../scripts/verify.sh")
+	localPin := regexp.MustCompile(`GOFUMPT_VERSION="(v[0-9.]+)"`).FindStringSubmatch(verify)
+	if localPin == nil {
+		t.Fatal("verify.sh 里找不到 GOFUMPT_VERSION —— 它又退回「谁装的哪一版就是哪一版」了")
+	}
+	if ciPin[1] != localPin[1] {
+		t.Errorf("两道闸门用的不是同一个 gofumpt:CI=%s verify.sh=%s —— 本机绿而 CI 红正是这么来的",
+			ciPin[1], localPin[1])
+	}
+	// **而且 verify.sh 真的要用那个 pin 去跑**,不是留一个没人读的变量。
+	if !strings.Contains(verify, `gofumpt@$GOFUMPT_VERSION`) {
+		t.Error("verify.sh 声明了 GOFUMPT_VERSION 却没拿它去跑 gofumpt —— 一个没人读的 pin 什么也不钉")
 	}
 }

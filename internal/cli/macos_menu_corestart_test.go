@@ -84,7 +84,8 @@ func TestMacMenuStartFailureCodePrefixMatchesGuardian(t *testing.T) {
 func TestMacMenuFeedsTheStartFailureHintRealServerFacts(t *testing.T) {
 	body, ok := swiftFunctionBody(
 		stripSwiftComments(menuMainSwiftSource(t)),
-		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {")
+		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {",
+	)
 	if !ok {
 		t.Fatal("main.swift 里找不到 performToggle —— 锚点漂了,回来重判")
 	}
@@ -139,7 +140,8 @@ func menuToggleControllerSource(t *testing.T) string {
 func TestMacMenuStartFailureServerMappingCarriesTheEntrysOwnFields(t *testing.T) {
 	body, ok := swiftFunctionBody(
 		stripSwiftComments(menuMainSwiftSource(t)),
-		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {")
+		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {",
+	)
 	if !ok {
 		t.Fatal("main.swift 里找不到 performToggle —— 锚点漂了,回来重判")
 	}
@@ -174,7 +176,8 @@ func TestMacMenuStartFailureServerMappingCarriesTheEntrysOwnFields(t *testing.T)
 func TestMacMenuStartFailureFactsIncludeTheSingleServerConfigsServer(t *testing.T) {
 	body, ok := swiftFunctionBody(
 		stripSwiftComments(menuMainSwiftSource(t)),
-		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {")
+		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {",
+	)
 	if !ok {
 		t.Fatal("main.swift 里找不到 performToggle —— 锚点漂了,回来重判")
 	}
@@ -216,7 +219,8 @@ func TestMacMenuStartFailureFactsIncludeTheSingleServerConfigsServer(t *testing.
 func TestMacMenuStartFailureFactsUseTheSharedGuardianClient(t *testing.T) {
 	body, ok := swiftFunctionBody(
 		stripSwiftComments(menuMainSwiftSource(t)),
-		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {")
+		"private func performToggle(_ action: ToggleAction, completion: ((Bool) -> Void)? = nil) {",
+	)
 	if !ok {
 		t.Fatal("main.swift 里找不到 performToggle —— 锚点漂了,回来重判")
 	}

@@ -232,7 +232,8 @@ func blankSwiftStringLiterals(src string) string {
 func menuAppTrafficWindowSource(t *testing.T) string {
 	t.Helper()
 	source, err := os.ReadFile(filepath.Join(
-		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "AppTrafficWindow.swift"))
+		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "AppTrafficWindow.swift",
+	))
 	if err != nil {
 		t.Fatalf("读不到 AppTrafficWindow.swift:%v —— 守卫已经失效,先修守卫", err)
 	}
@@ -607,7 +608,8 @@ func TestMacMenuAppTrafficExplicitOpenIsNeverSuppressed(t *testing.T) {
 	// 实参必须是光秃秃的一次取值:`explicit: false`、`explicit: forceShow && x`
 	// 这类写法都会把显式那一路重新压回可被拦截。
 	want := regexp.MustCompile(
-		`guard !shouldSuppressFetch\(inFlight: appTrafficFetchInFlight, explicit: forceShow\) else \{ return \}`)
+		`guard !shouldSuppressFetch\(inFlight: appTrafficFetchInFlight, explicit: forceShow\) else \{ return \}`,
+	)
 	if !want.MatchString(body) {
 		t.Fatal("在飞守卫不是 shouldSuppressFetch(inFlight: appTrafficFetchInFlight, explicit: forceShow) —— " +
 			"显式打开会被一次在飞的环境刷新拦掉,用户点了菜单项什么都不会发生")
@@ -664,7 +666,8 @@ func TestMacMenuMarksAppTrafficStaleWhenItCannotRefresh(t *testing.T) {
 	// **实参必须是光秃秃的一次取值**(与同一文件里那道能力门同一条纪律):
 	// 写死 `consecutiveFailures: 0` 会让横幅永不出现,而存在性检查照样全绿。
 	ask := regexp.MustCompile(
-		`if let notice = appTrafficStaleNotice\(\s*consecutiveFailures: self\.appTrafficConsecutiveFailures\)`)
+		`if let notice = appTrafficStaleNotice\(\s*consecutiveFailures: self\.appTrafficConsecutiveFailures\)`,
+	)
 	if !ask.MatchString(failure) {
 		t.Fatal("失败分支没有拿**当前**失败计数去问「该不该标陈旧」—— " +
 			"写死一个常量就让横幅永不出现,而窗口会静默冻在上一份快照上," +
@@ -748,7 +751,8 @@ func TestMenuAppTrafficRefreshIntervalMatchesTheGoTTL(t *testing.T) {
 	}
 
 	swiftSource, err := os.ReadFile(filepath.Join(
-		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "AppTrafficModel.swift"))
+		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "AppTrafficModel.swift",
+	))
 	if err != nil {
 		t.Fatalf("读不到 AppTrafficModel.swift:%v —— 守卫已经失效,先修守卫", err)
 	}
@@ -801,7 +805,8 @@ func swiftTimeIntervalConstant(t *testing.T, source, name string) (int, bool) {
 // `GuardianClient().appTraffic()`,也就必然撞上上一条守卫。
 func TestMenuAppTrafficClientExposesExactlyOneWayIn(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(
-		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "GuardianClient.swift"))
+		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "GuardianClient.swift",
+	))
 	if err != nil {
 		t.Fatalf("读不到 GuardianClient.swift:%v —— 守卫已经失效,先修守卫", err)
 	}
@@ -893,7 +898,8 @@ func swiftBracketedLiteral(source, marker string) (string, bool) {
 func menuAppTrafficModelSource(t *testing.T) string {
 	t.Helper()
 	source, err := os.ReadFile(filepath.Join(
-		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "AppTrafficModel.swift"))
+		"..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "AppTrafficModel.swift",
+	))
 	if err != nil {
 		t.Fatalf("读不到 AppTrafficModel.swift:%v —— 守卫已经失效,先修守卫", err)
 	}

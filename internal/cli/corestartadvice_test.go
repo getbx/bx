@@ -408,7 +408,8 @@ func TestNoNCCommandIsRenderedWithAnEmptyPort(t *testing.T) {
 	// 反面:端口问得出来时那条命令仍然要给,否则「一律不给」也能满足上面。
 	withPort := startFailureServers{CurrentHostPort: joinHostPortForAdvice("195.133.192.92", 443)}
 	if !strings.Contains(coreStartFailureAdvice(
-		coreStartFailureCodePrefix+supervisor.StartFailureTunnelUnreachable, withPort),
+		coreStartFailureCodePrefix+supervisor.StartFailureTunnelUnreachable, withPort,
+	),
 		"nc -z 195.133.192.92 443") {
 		t.Error("端口问得出来时反而不给 nc 命令了 —— 上面那条断言于是靠「一律不给」平凡成立")
 	}
