@@ -61,18 +61,24 @@ step "build" go build ./...
 step "vet" go vet ./...
 step "unit tests" go test ./... -count=1
 
+# **版本必须与 CI 钉死的那个一致,而这条 2026-09-15 才补上。** 在那之前这里读的是
+# `$(go env GOPATH)/bin/gofumpt` —— 谁装的哪一版就是哪一版,而 CI 钉的是下面这个。
+# 实测两版真的会打架(v0.10.0 要求多行实参表带尾逗号 + 右括号独占一行,v0.11.0
+# 放松了这条):本机 v0.11.0 判无漂移、CI v0.10.0 判七个文件漂移,**于是本机这道
+# 闸门恒绿而 CI 那道恒红** —— 而这个仓库的全部「已验证」都只由本机这一份背书。
+# **一道与它要预演的那道守着不同标准的闸门,比没有这道闸门更糟。**
+# 两处 pin 还一不一样由 TestVerifyScriptPinsTheSameGofumptAsCI 钉住。
+GOFUMPT_VERSION="v0.10.0"
+
 # gofumpt 输出的是**文件名列表**,退出码恒为 0 —— 这是全脚本唯一一处退出码不够用
-# 的地方,故显式把「输出非空」转成失败。缺工具必须响亮失败,不许静默跳过:
-# 一个因为拿不到工具而自动通过的检查,与没有这个检查是同一回事。
+# 的地方,故显式把「输出非空」转成失败。
 gofumpt_check() {
-	local bin="$(go env GOPATH)/bin/gofumpt"
-	[ -x "$bin" ] || { echo "gofumpt 未安装:go install mvdan.cc/gofumpt@latest"; return 1; }
 	local drift
 	# **`--others` 不能省。** 只问 `git ls-files` 就只看得见**已跟踪**的文件,
 	# 于是一个新文件在它最需要被检查的那一次(提交之前)是隐形的,提交之后才
 	# 头一回被看见 —— 实测栽过:本轮两个新测试文件带着格式漂移过了这道闸门,
 	# 提交之后的下一次 verify 才转红。
-	drift="$(git ls-files --cached --others --exclude-standard '*.go' | grep -v '^internal/embedded/assets/' | grep -v '^internal/winfw/' | xargs "$bin" -l)"
+	drift="$(git ls-files --cached --others --exclude-standard '*.go' | grep -v '^internal/embedded/assets/' | grep -v '^internal/winfw/' | xargs go run "mvdan.cc/gofumpt@$GOFUMPT_VERSION" -l)"
 	[ -z "$drift" ] || { echo "以下文件未格式化,请跑 gofumpt -w:"; echo "$drift"; return 1; }
 }
 step "gofumpt (no drift)" gofumpt_check

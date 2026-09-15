@@ -1745,7 +1745,8 @@ func TestAMisspelledKeyIsRejectedInsteadOfSwitchingTheExit(t *testing.T) {
 			switched := ""
 			w := httptest.NewRecorder()
 			serversHandler(path, 501, recordingSwitch(&switched), nil, nil)(
-				w, withPeer(postServersRaw(tc.body), 501, true))
+				w, withPeer(postServersRaw(tc.body), 501, true),
+			)
 
 			if switched != "" {
 				t.Errorf("%s:认不出的键让正在跑的实例切到了 %q —— 出口 IP 与国家被换掉了", tc.body, switched)
@@ -1773,7 +1774,8 @@ func TestAMisspelledKeyIsRejectedInsteadOfSwitchingTheExit(t *testing.T) {
 		switched := ""
 		w := httptest.NewRecorder()
 		serversHandler(path, 501, recordingSwitch(&switched), nil, nil)(
-			w, withPeer(postServersRaw(`{"name":"osaka"}`), 501, true))
+			w, withPeer(postServersRaw(`{"name":"osaka"}`), 501, true),
+		)
 		if w.Code != http.StatusOK || switched != "osaka" {
 			t.Fatalf("兼容契约被一起收掉了(code=%d switched=%q):%s", w.Code, switched, w.Body.String())
 		}
@@ -1792,7 +1794,8 @@ func TestAMisspelledKeyIsRejectedInsteadOfSwitchingTheExit(t *testing.T) {
 		path := serversTestConfig(t)
 		w := httptest.NewRecorder()
 		serversHandler(path, 501, noSwitch(t), nil, nil)(
-			w, withPeer(postServersRaw(`{"action":"remove","name":"osaka"}`), 501, true))
+			w, withPeer(postServersRaw(`{"action":"remove","name":"osaka"}`), 501, true),
+		)
 		if w.Code != http.StatusOK {
 			t.Fatalf("合法的 remove 被误伤了(code=%d):%s", w.Code, w.Body.String())
 		}
