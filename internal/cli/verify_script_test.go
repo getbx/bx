@@ -209,3 +209,88 @@ func TestVerifyScriptPinsTheSameGofumptAsCI(t *testing.T) {
 		t.Error("verify.sh 声明了 GOFUMPT_VERSION 却没拿它去跑 gofumpt —— 一个没人读的 pin 什么也不钉")
 	}
 }
+
+// **每一个打 macOS 包的 job 都必须先腾磁盘,而且用的必须是同一份。**
+//
+// 2026-09-15:`macos-fresh-install` 在 `hdiutil: create failed - No space left
+// on device` 上红了 —— 与 v0.4.0 那次发布**同一个根因**。当时的修法只加进了
+// `release.yml`,而 `ci.yml` 里这个**同样跑 package-macos-release.sh** 的 job
+// 没跟上:一份拷贝修好了,另一份原地不动,而两条腿都会在同一件事上失败。
+//
+// 判据是**结构**不是拼写:凡是有一步跑 `package-macos-release.sh` 的 job,
+// 同一个 job 里必须**在它之前**用上那个共用的腾盘动作。抄第三份进来照样红 ——
+// 那正是这条守卫要拦的事。
+func TestEveryMacOSPackagingJobFreesDiskFirst(t *testing.T) {
+	const action = "./.github/actions/free-macos-disk"
+	for _, wf := range []string{"ci.yml", "release.yml"} {
+		path := filepath.Join("..", "..", ".github", "workflows", wf)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("读不出 %s:%v —— 这条守卫读不懂现在的代码了,先修它", wf, err)
+		}
+		jobs := splitWorkflowJobs(string(b))
+		if len(jobs) == 0 {
+			t.Fatalf("%s 里一个 job 都没扫到 —— 安静地扫了零个的守卫,与没有这条守卫完全一样", wf)
+		}
+		packaging := 0
+		for name, body := range jobs {
+			pack := strings.Index(body, "package-macos-release.sh")
+			if pack < 0 {
+				continue
+			}
+			packaging++
+			free := strings.Index(body, action)
+			if free < 0 {
+				t.Errorf("%s 的 job %q 打了 macOS 包却没腾磁盘 —— v0.4.0 与 2026-09-15 "+
+					"两次都栽在 hdiutil 的 No space left on device 上", wf, name)
+				continue
+			}
+			if free > pack {
+				t.Errorf("%s 的 job %q 把腾磁盘排在打包之后 —— 那等于没腾", wf, name)
+			}
+		}
+		if packaging == 0 {
+			t.Errorf("%s 里没有任何 job 跑 package-macos-release.sh —— 守卫的锚点漂了", wf)
+		}
+	}
+}
+
+// splitWorkflowJobs 把 workflow 切成「job 名 → 那个 job 的整段文本」。
+// 按缩进切:`jobs:` 下面缩进 2 空格的那一层是 job 名。
+func splitWorkflowJobs(src string) map[string]string {
+	lines := strings.Split(src, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "jobs:") {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	jobs := map[string]string{}
+	name, from := "", -1
+	flush := func(to int) {
+		if name != "" && from >= 0 {
+			jobs[name] = strings.Join(lines[from:to], "\n")
+		}
+	}
+	for i := start; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent == 0 {
+			break // 回到顶层,jobs 段结束
+		}
+		if indent == 2 && strings.HasSuffix(trimmed, ":") {
+			flush(i)
+			name, from = strings.TrimSuffix(trimmed, ":"), i
+		}
+	}
+	flush(len(lines))
+	return jobs
+}

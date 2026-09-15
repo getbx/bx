@@ -135,6 +135,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # **这个 job 也打 .dmg,所以它也会栽在 hdiutil 上** —— 2026-09-15 实测,
+      # 与 v0.4.0 那次发布同一句 `No space left on device`。当时的修法只加进了
+      # release.yml,这一份从来没跟上;现在两边共用同一个动作。
+      - uses: ./.github/actions/free-macos-disk
+
       - name: Package the release
         run: BX_VERSION=ci-fresh bash scripts/package-macos-release.sh
 

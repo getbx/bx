@@ -127,43 +127,10 @@ jobs:
         with:
           go-version: '1.26'
 
-      # v0.4.0 那次发布在这一步栽了:`hdiutil: create failed - No space left on device`。
-      #
-      # **不是产物变大了那么简单** —— 一次打包要同时容下:checkout(内嵌资产近 400MB)、
-      # Go 的 build cache、swift build 的中间产物、release 目录(~96MB)、tar.gz(~39MB),
-      # 而 .dmg 还要再要一份。macos-14 runner 的盘本来就紧,simulator runtimes 白占十几 GB
-      # 而**这个 job 一个都用不到**(`swift build` 建的是原生 macOS 命令行产物,不碰模拟器)。
-      #
-      # `df -h` 留在前后两头:**这个 workflow 只在打 tag 时跑,平时的 CI 覆盖不到它**
-      # (本文件开头那句注释),下一次它再满的时候,没有这两行就只能靠猜。
-      - name: Free disk space for the .dmg
-        run: |
-          # **第一版这里只打 `df -h /`,而那是错的位置** —— 它显示 37Gi 可用,
-          # 而 hdiutil 照样报 No space left on device。dmg 有两个落点:
-          # `$DMG` 在工作目录,`STAGE`(package-macos-dmg.sh 里的 `mktemp -d`)
-          # 在 $TMPDIR,两者未必与 `/` 同卷。**诊断要打在真正相关的位置上。**
-          echo "--- all volumes (before) ---"; df -h
-          echo "--- workdir ---"; df -h .
-          echo "--- TMPDIR=${TMPDIR:-/tmp} ---"; df -h "${TMPDIR:-/tmp}"
-          # **上一轮的诊断把「磁盘满」这个假设排除了**:workdir 与 TMPDIR 都在
-          # /dev/disk3s5,**38Gi 可用**,而 dmg 只要 45MB —— hdiutil 那句
-          # `No space left on device` 不是字面意思。APFS 上 `df` 的 Avail 含
-          # purgeable,实际能分配的可能远低于它;所以这里仍然腾空间,但**先把
-          # 占用明细打出来**,免得下一次又对着一个错的数字猜。
-          echo "--- what is using the volume ---"
-          sudo du -sh /Applications/* 2>/dev/null | sort -h | tail -8 || true
-          sudo du -sh /Library/Developer/* 2>/dev/null | sort -h | tail -5 || true
-          echo "--- selected Xcode ---"; xcode-select -p || true
-
-          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* || true
-          # 只删**没有被 xcode-select 选中**的那些 Xcode;swift build 要用选中的那个。
-          keep="$(xcode-select -p 2>/dev/null | sed -E 's#(/Applications/[^/]+\.app).*#\1#')"
-          for app in /Applications/Xcode*.app; do
-            [ "$app" = "$keep" ] && continue
-            echo "removing $app"; sudo rm -rf "$app" || true
-          done
-          echo "--- all volumes (after) ---"; df -h .
+      # 腾磁盘那一步搬进了 .github/actions/free-macos-disk —— **ci.yml 的
+      # macos-fresh-install 同样打包、同样会栽在 hdiutil 上**,而此前它没跟上
+      # (2026-09-15 实测)。共用一份之后漂移在构造上不可能。
+      - uses: ./.github/actions/free-macos-disk
 
       - name: Package macOS release
         run: |
