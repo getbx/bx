@@ -111,7 +111,10 @@ bx leakcheck          # 非 root,不读 config,不需要 Guardian
       就打勾** —— 那正是它 2026-09-14 被收窄的原因。
 - [ ] 点 `Run the check` —— **这会向那四个发真实探测**。
 - [ ] 十四条结论一条不少,四段(path 5 / identity 4 / surface 1 / reach 4)分段正确 —— 第四段见 A8。
-- [ ] **三个计数并排,绝不合成一个总数**;绝不出现「没有发现泄漏」那句话。
+- [ ] **三个计数并排,绝不合成一个总数** —— 今天那一行长这样:
+      `N leak(s) in the traffic path, M identifying trait(s), K not checked.`
+      绝不出现任何一句笼统的好话(「no leaks found」「you are not leaking」那一类):
+      一份全是 not checked 的报告渲染出那句话,正是这个功能最坏的失效。
 - [ ] 另外两项:`sudo bx leakcheck` 应被**拒绝**(`guardLeakCheckPrivileges`,从没实跑过);
       `bx leakcheck --json` 输出。
 
@@ -133,7 +136,7 @@ bx leakcheck          # 探测在前、页面在后:打印页面 URL 之前最�
 ```
 
 - [ ] **先盯这条**:敲下命令之后,终端应**立刻**打出要联系的四个 AI 地址与
-      「这一步最多约 37 秒」,然后才是那段静默。静默期间什么都不打印是预期的,
+      `This step takes about 37 seconds at most`,然后才是那段静默。静默期间什么都不打印是预期的,
       不是命令挂了 —— 若它让人难忍,**下一步不是缩短 probeTimeout**(会把慢链路上
       的可达站判成不可达),台账里记着一个「Listen 先、Serve 后」的零并发方案。
 
@@ -164,11 +167,11 @@ bx explain <上面挑出来的那个域名>
 
 要看三件事:
 
-1. **`判决` 那一行在不在,以及它说的处置对不对。** 主导那一类是「路由不可达」时
+1. **`Blame` 那一行在不在,以及它说的处置对不对。** 主导那一类是 `route unreachable` 时
    它应当点名 direct_egress(那是 2026-08-13 与 08-16 两次故障的签名),是
-   「对端不应答」时应当说「改 bx 的规则不会有帮助」。**两句读起来必须相反。**
+   `peer did not answer` 时应当说「改 bx 的规则不会有帮助」。**两句读起来必须相反。**
    失败混杂(没有哪一类过半)时**这一行不该出现** —— 那不是 bug。
-2. **`体检` 那一行。** 拿一条你知道有问题的规则试(例如一条被内建 china 列表
+2. **`Review` 那一行。** 拿一条你知道有问题的规则试(例如一条被内建 china 列表
    覆盖的,或 `sudo bx doctor --skip-probe` 报过的任意一条),explain 应当在那条
    规则旁边说出同一句结论。**没有结论时这一行不该出现,更不该出现「这条规则
    没问题」那种话。**

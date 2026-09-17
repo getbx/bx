@@ -324,7 +324,10 @@ func TestUnconfirmedGuidancePointsSomewhereTheAnswerActuallyIs(t *testing.T) {
 	if !strings.Contains(joined, "bx-guard.err.log") {
 		t.Errorf("要指向真的能看到原因的地方(Guardian 日志):\n%s", joined)
 	}
-	if strings.Contains(joined, "bx status 查看原因") {
+	// 禁词随文案一起改成英文(2026-09-17)。一份指向中文原句的禁词表在文案
+	// 改英文之后永远不可能命中 —— 与它要防的那种「看起来在守、其实守不住」
+	// 是同一件事。
+	if strings.Contains(joined, "bx status") {
 		t.Errorf("bx status 不显示 last_error,别把用户支过去:\n%s", joined)
 	}
 }
