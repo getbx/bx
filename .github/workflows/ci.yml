@@ -123,6 +123,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # **这个 job 此前不装 Go**,而它现在要跑一条 Go 守卫(菜单窗口布局)。
+      # 2026-09-17 第一次推上去就栽在 `go: command not found` —— 本机 verify 全绿,
+      # 因为本机当然有 Go。又一次「一边的绿不替另一边背书」。
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
       - name: Swift version
         run: swift --version
 
