@@ -17,13 +17,13 @@ import (
 
 func leakcheckFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读结果"},
+		&cli.BoolFlag{Name: "json", Usage: "print machine-readable results"},
 		// **路径 A 也要有关掉的办法。** spec §5.1 只为「绕过隧道」那条路(路径 B)
 		// 规定了开关,而接线之后路径 A 同样是 bx 从用户真实出口向四家 AI 厂商发出
 		// 的请求 —— 两条路一个有开关一个没有,不对称。而且 `bx leakcheck` 的立身
 		// 之本是「一个只想查自己 Mullvad 的人装完就能用」,那个人没要求 bx 去连
 		// Anthropic。默认开(披露在前),这个 flag 关掉它。
-		&cli.BoolFlag{Name: "no-reach", Usage: "不做 AI 站可达性探测(那四条结论会如实报「没查」)"},
+		&cli.BoolFlag{Name: "no-reach", Usage: "skip the AI-site reachability probes (those four conclusions then honestly say they were not checked)"},
 	}
 }
 

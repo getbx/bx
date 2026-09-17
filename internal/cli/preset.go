@@ -30,15 +30,15 @@ var appPresets = func() map[string]appPreset {
 
 func presetCommands() []*cli.Command {
 	return []*cli.Command{
-		{Name: "ls", Usage: "列出内置应用可用性 preset", Action: presetListAction},
-		{Name: "show", Usage: "查看一个 preset", ArgsUsage: "<name>", Action: presetShowAction},
-		{Name: "apply", Usage: "应用一个 preset 到 direct 规则并热加载", ArgsUsage: "<name>", Flags: presetApplyFlags(), Action: presetApplyAction},
+		{Name: "ls", Usage: "list the built-in app-reachability presets", Action: presetListAction},
+		{Name: "show", Usage: "show one preset", ArgsUsage: "<name>", Action: presetShowAction},
+		{Name: "apply", Usage: "apply one preset to the direct rules and hot-reload", ArgsUsage: "<name>", Flags: presetApplyFlags(), Action: presetApplyAction},
 	}
 }
 
 func presetApplyFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "client config path"},
 	}
 }
 

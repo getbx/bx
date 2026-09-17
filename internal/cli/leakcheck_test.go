@@ -151,7 +151,7 @@ func TestLeakCheckCommandIsRegisteredAlongsideLeakCheck(t *testing.T) {
 	if newCmd.Usage == oldCmd.Usage {
 		t.Fatal("两条命令只差一个连字符,Usage 必须能让用户分辨它们")
 	}
-	if !strings.Contains(newCmd.Usage, "浏览器") {
+	if !strings.Contains(newCmd.Usage, "browser page") {
 		t.Errorf("bx leakcheck 的 Usage 应点明它开浏览器页面,得到 %q", newCmd.Usage)
 	}
 }

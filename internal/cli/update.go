@@ -174,14 +174,14 @@ func currentProtectionStateForUpdate() string {
 
 func updateFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "check", Usage: "只检查有无新版,不下载安装"},
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读更新状态"},
-		&cli.BoolFlag{Name: "package", Hidden: true, Usage: "已废弃(legacy 布局报错;统一布局忽略,行为等同默认路径)"},
-		&cli.StringFlag{Name: "package-file", Hidden: true, Usage: "统一布局:本地已下载的包文件路径,跳过下载与 manifest 查询(真机演练用)"},
-		&cli.StringFlag{Name: "app-path", Hidden: true, Usage: "已废弃,忽略"},
-		&cli.StringFlag{Name: "app-owner", Hidden: true, Usage: "已废弃,忽略"},
-		&cli.BoolFlag{Name: "force", Usage: "即便已是最新(或 dev 构建)也强制下载安装最新版"},
-		&cli.BoolFlag{Name: "no-restart", Usage: "已废弃:更新始终保留当前保护会话", Hidden: true},
+		&cli.BoolFlag{Name: "check", Usage: "only check whether a new version exists, do not download or install"},
+		&cli.BoolFlag{Name: "json", Usage: "print machine-readable update state"},
+		&cli.BoolFlag{Name: "package", Hidden: true, Usage: "deprecated (an error under the legacy layout; ignored under the unified layout, which behaves as if the default path were given)"},
+		&cli.StringFlag{Name: "package-file", Hidden: true, Usage: "unified layout: path to an already-downloaded package file, skipping the download and the manifest query (for rehearsals on real hardware)"},
+		&cli.StringFlag{Name: "app-path", Hidden: true, Usage: "deprecated, ignored"},
+		&cli.StringFlag{Name: "app-owner", Hidden: true, Usage: "deprecated, ignored"},
+		&cli.BoolFlag{Name: "force", Usage: "download and install the latest version even if this is already it (or a dev build)"},
+		&cli.BoolFlag{Name: "no-restart", Usage: "deprecated: an update always keeps the current protection session", Hidden: true},
 	}
 }
 

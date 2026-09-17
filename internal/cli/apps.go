@@ -130,11 +130,11 @@ func appsProjection(report appattr.Report) appsReport {
 // MCP 薄转发)。多开一条只给 agent 的路,就是让两份输出各自演化、迟早说不同的话。
 func appsFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读结果"},
+		&cli.BoolFlag{Name: "json", Usage: "print machine-readable results"},
 		&cli.DurationFlag{
 			Name:  "for",
 			Value: appsSampleWindow,
-			Usage: "采样窗口(订阅后等这么久再读;窗口里没发生的事这份报告答不出来)",
+			Usage: "sampling window (how long to wait after subscribing before reading; anything that did not happen inside the window is not in this report)",
 		},
 	}
 }
