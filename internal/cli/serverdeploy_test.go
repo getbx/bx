@@ -282,7 +282,7 @@ func TestVerifyAssetBytes(t *testing.T) {
 	if err == nil {
 		t.Fatal("内容被换掉却放行了")
 	}
-	if !strings.Contains(err.Error(), "校验和") {
+	if !strings.Contains(err.Error(), "checksum") {
 		t.Errorf("错误说不清是什么问题:%v", err)
 	}
 	// **清单里没有校验和 → 拒绝,不是放行。** 「不知道」在供应链上等同于「不可信」。

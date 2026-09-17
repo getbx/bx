@@ -9,5 +9,5 @@ import (
 )
 
 func autostartAction(_ *cli.Context) error {
-	return errors.New("bx autostart 目前仅支持 Windows")
+	return errors.New("bx autostart is only supported on Windows for now")
 }

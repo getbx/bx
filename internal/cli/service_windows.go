@@ -34,7 +34,7 @@ func runAsWindowsService(run func(context.Context) error) error {
 		log.SetOutput(f)
 		defer f.Close()
 	}
-	log.Printf("bx service: 由 SCM 拉起,开始运行")
+	log.Printf("bx service: started by the SCM, now running")
 	return svc.Run(bxServiceName, &bxService{run: run})
 }
 
@@ -69,11 +69,11 @@ func (h *bxService) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- 
 			// run 自行退出(隧道致命错误 / 死手到点):停服务并透出退出码。
 			// 服务无控制台,CLI 的 stderr 报错会丢失 → 在此显式记进 service.log,否则失败无从查。
 			if err != nil {
-				log.Printf("bx service: run 退出错误: %v", err)
+				log.Printf("bx service: run exited with an error: %v", err)
 				s <- svc.Status{State: svc.Stopped}
 				return false, 1
 			}
-			log.Printf("bx service: run 正常退出")
+			log.Printf("bx service: run exited normally")
 			s <- svc.Status{State: svc.Stopped}
 			return false, 0
 		}

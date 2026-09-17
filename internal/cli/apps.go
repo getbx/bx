@@ -43,9 +43,9 @@ func sampleAppTraffic(fetch func() (supervisorAppTraffic, error), sleep func(tim
 	if !first.Subscribed {
 		reason := first.Error
 		if reason == "" {
-			reason = "Core 没有接受订阅,原因未说明"
+			reason = "Core did not accept the subscription, and gave no reason"
 		}
-		return appsReport{}, errors.New("应用流量采集没有开始:" + reason)
+		return appsReport{}, errors.New("per-app collection never started: " + reason)
 	}
 	sleep(window)
 	second, err := fetch()
@@ -55,9 +55,9 @@ func sampleAppTraffic(fetch func() (supervisorAppTraffic, error), sleep func(tim
 	if !second.Subscribed {
 		reason := second.Error
 		if reason == "" {
-			reason = "订阅在采样窗口内失效,原因未说明"
+			reason = "the subscription expired inside the sampling window, with no reason given"
 		}
-		return appsReport{}, errors.New("应用流量采集中断:" + reason)
+		return appsReport{}, errors.New("per-app collection was interrupted: " + reason)
 	}
 	return appsProjection(second.Report), nil
 }
@@ -158,7 +158,7 @@ func appsAction(c *cli.Context) error {
 	if c.Bool("json") {
 		return writeJSON(os.Stdout, rep)
 	}
-	fmt.Printf("bx apps(最近 %s)\n", window)
+	fmt.Printf("bx apps (last %s)\n", window)
 	for _, g := range rep.Groups {
 		if len(g.Rows) == 0 {
 			continue
@@ -171,10 +171,10 @@ func appsAction(c *cli.Context) error {
 				// 而「unknown 占比高」本身是可用的故障信号。
 				name = "unknown app"
 			}
-			line := fmt.Sprintf("    %-28s 连接 %-4d ↑ %-9s ↓ %s", name, r.Conns,
+			line := fmt.Sprintf("    %-28s conns %-4d ↑ %-9s ↓ %s", name, r.Conns,
 				observeBytes(r.BytesUp), observeBytes(r.BytesDown))
 			if len(r.Rules) > 0 {
-				line += "  规则 " + strings.Join(r.Rules, ",")
+				line += "  rules " + strings.Join(r.Rules, ",")
 			}
 			fmt.Println(line)
 		}

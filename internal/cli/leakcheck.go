@@ -42,9 +42,9 @@ func guardLeakCheckPrivileges(euid int) error {
 		return nil
 	}
 	return errors.New(
-		"bx leakcheck 不能用 sudo 运行。它需要的本机事实一个都不需要 root," +
-			"而以 root 打开一个对浏览器开放的本机端口会把这个检测本身变成风险。\n" +
-			"请去掉 sudo,直接运行:bx leakcheck  (run it again without sudo)",
+		"bx leakcheck must not be run under sudo. None of the local facts it needs need root at all, " +
+			"and opening a browser-facing local port as root would turn this check itself into a risk.\n" +
+			"Run it again without sudo: bx leakcheck",
 	)
 }
 
@@ -75,20 +75,20 @@ func leakcheckAction(c *cli.Context) error {
 		},
 	})
 	if err != nil {
-		return cli.Exit("起不了本机检测服务:"+err.Error(), 1)
+		return cli.Exit("could not start the local check service: "+err.Error(), 1)
 	}
 	defer func() { _ = srv.Close() }()
 	go srv.Serve()
 
 	if !c.Bool("json") {
-		fmt.Println("正在打开浏览器页面。页面会先列出要联系的第三方,点「Run the check」才开始。")
-		fmt.Println("入口(浏览器没自动打开就手动粘贴):", srv.URL())
-		fmt.Println("最多等待 2 分钟,之后本机服务会自己关闭。")
+		fmt.Println("Opening the browser page. It first lists the third parties it will contact; nothing starts until you click Run the check.")
+		fmt.Println("Address (paste it by hand if the browser did not open):", srv.URL())
+		fmt.Println("It waits at most 2 minutes, after which the local service shuts itself down.")
 	}
 	if err := openBrowserURL(ctx, srv.URL()); err != nil {
 		// 打不开浏览器不是失败:URL 已经打印出来了,用户可以自己粘。
 		if !c.Bool("json") {
-			fmt.Println("没能自动打开浏览器(", err, "),请手动打开上面那个地址。")
+			fmt.Println("Could not open the browser automatically (", err, "), so please open the address above by hand.")
 		}
 	}
 
@@ -249,7 +249,7 @@ func announceReachTargets(deps leakserve.ReachDeps, jsonOut bool) {
 	// —— 用户刚敲完那条命令,再打印一遍不带任何信息。它是 2026-09-14 真机首验
 	// 当场看出来的,而在那之前所有 review 都没抓到:守卫钉的是「说全了要联系谁」
 	// 与「不许印 markdown 星号」,没有一条钉「不许有多余的行」。
-	fmt.Fprintln(w, "bx 现在会从这台机器探测下面这些地址(走你当前的网络路径,不绕过隧道):")
+	fmt.Fprintln(w, "bx is about to probe these addresses from this machine (over your current network path, without bypassing the tunnel):")
 	for _, tgt := range leakcheck.ReachTargets() {
 		fmt.Fprintln(w, "  ·", tgt.URL)
 	}
@@ -262,7 +262,7 @@ func announceReachTargets(deps leakserve.ReachDeps, jsonOut bool) {
 	// 「会不会探」读的是手里这份 deps(WillProbe),「要等多久」却来自另一个对象
 	// —— 今天两者恰好同源所以数字对,bypass 打开那天探测数翻倍而屏幕上那句
 	// 悄悄变假。同一句话的两半必须读同一个值。
-	fmt.Fprintf(w, "  这一步最多约 %.0f 秒;不想让 bx 联系它们就加 --no-reach。\n",
+	fmt.Fprintf(w, "  This step takes about %.0f seconds at most; pass --no-reach if you do not want bx contacting them.\n",
 		leakserve.ReachBudgetFor(deps).Seconds())
 }
 

@@ -3403,9 +3403,9 @@ func TestPlanRealtimePostChange(t *testing.T) {
 		activeState   string
 		wantContains  string
 	}{
-		{"active stays protected", true, "active", "保持运行"},
+		{"active stays protected", true, "active", "keeps running"},
 		{"not installed", false, "inactive", "" + elevate.Prefix + "bx up"},
-		{"inactive installed", true, "inactive", "下次 " + elevate.Prefix + "bx up"},
+		{"inactive installed", true, "inactive", "on the next " + elevate.Prefix + "bx up"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3770,7 +3770,7 @@ func TestSetupCommandQuotesLinks(t *testing.T) {
 
 func TestInviteTextIsUserFriendly(t *testing.T) {
 	out := inviteText("alice", "bx://main", "bx://udp")
-	for _, want := range []string{"bx invite: alice", "给用户", "菜单栏 App", "bx://main", "UDP: bx://udp", "" + elevate.Prefix + "bx setup --udp 'bx://udp' 'bx://main'", "" + elevate.Prefix + "bx up"} {
+	for _, want := range []string{"bx invite: alice", "For the user", "menu-bar app", "bx://main", "UDP: bx://udp", "" + elevate.Prefix + "bx setup --udp 'bx://udp' 'bx://main'", "" + elevate.Prefix + "bx up"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("invite text missing %q:\n%s", want, out)
 		}
