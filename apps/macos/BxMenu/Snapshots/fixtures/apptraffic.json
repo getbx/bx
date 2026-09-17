@@ -1,8 +1,57 @@
 {
   "subscribed": true,
-  "groups": [
-    {"path": "tunnel", "apps": [{"name": "Google Chrome", "connections": 42, "bytes_up": 128000, "bytes_down": 4096000}]},
-    {"path": "direct", "apps": [{"name": "WeChat", "connections": 7, "bytes_up": 2048, "bytes_down": 8192}]},
-    {"path": "blocked", "apps": []}
-  ]
+  "report": {
+    "groups": [
+      {
+        "path": "tunnel",
+        "rows": [
+          {
+            "app": "Google Chrome",
+            "conns": 42,
+            "bytes_up": 128000,
+            "bytes_down": 4096000,
+            "bytes_up_rate": 9600,
+            "bytes_down_rate": 184000,
+            "dests": [
+              "meet.google.com",
+              "rr1---sn-4g5e6nsz.googlevideo.com",
+              "stun.l.google.com"
+            ],
+            "dests_more": 5
+          },
+          {
+            "app": "",
+            "conns": 16,
+            "bytes_up": 959,
+            "bytes_down": 1843,
+            "dests": []
+          }
+        ]
+      },
+      {
+        "path": "direct",
+        "rows": [
+          {
+            "app": "WeChat",
+            "conns": 7,
+            "bytes_up": 2048,
+            "bytes_down": 8192,
+            "rules": [
+              "*.qq.com"
+            ],
+            "bytes_up_rate": 0,
+            "bytes_down_rate": 0,
+            "dests": [
+              "short.weixin.qq.com"
+            ],
+            "dests_more": 0
+          }
+        ]
+      },
+      {
+        "path": "blocked",
+        "rows": []
+      }
+    ]
+  }
 }
