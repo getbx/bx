@@ -53,7 +53,7 @@ func TestEmptyEgressListPointsAtMeshFirst(t *testing.T) {
 // 不说的话用户会以为配好了,然后去查一个根本没生效的功能。
 func TestEgressWithoutRoutesSaysItDoesNothing(t *testing.T) {
 	out := renderEgressList([]setup.EgressEntry{{Name: "office", Socks5: "127.0.0.1:1080"}}, map[string]bool{"office": true})
-	if !strings.Contains(out, "什么都不做") {
+	if !strings.Contains(out, "it does nothing right now") {
 		t.Errorf("没说清它现在不生效:\n%s", out)
 	}
 }
@@ -72,14 +72,14 @@ func TestEgressChangesSayReconnect(t *testing.T) {
 func TestEgressListShowsWhenTheSocksIsDown(t *testing.T) {
 	entries := []setup.EgressEntry{{Name: "office", Socks5: "127.0.0.1:1080", CIDR: []string{"10.84.0.0/16"}}}
 	down := renderEgressList(entries, map[string]bool{"office": false})
-	if !strings.Contains(down, "连不上") {
+	if !strings.Contains(down, "unreachable") {
 		t.Fatalf("没说它连不上:\n%s", down)
 	}
 	if !strings.Contains(down, "SOCKS5") {
 		t.Errorf("没指向真正的原因:\n%s", down)
 	}
 	up := renderEgressList(entries, map[string]bool{"office": true})
-	if strings.Contains(up, "连不上") {
+	if strings.Contains(up, "unreachable") {
 		t.Fatalf("在听却说连不上:\n%s", up)
 	}
 }

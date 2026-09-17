@@ -55,7 +55,7 @@ func getPreset(name string) (appPreset, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	p, ok := appPresets[name]
 	if !ok {
-		return appPreset{}, fmt.Errorf("未知 preset %q;可用: %s", name, strings.Join(presetNames(), ", "))
+		return appPreset{}, fmt.Errorf("unknown preset %q; available: %s", name, strings.Join(presetNames(), ", "))
 	}
 	return p, nil
 }
@@ -93,28 +93,28 @@ func presetApplyAction(c *cli.Context) error {
 		return err
 	}
 	if !changed {
-		fmt.Printf("• preset %s 已经生效,无改动。\n", p.Name)
+		fmt.Printf("• preset %s is already in effect, nothing changed.\n", p.Name)
 		return nil
 	}
 	fmt.Println(presetApplySuccessMessage(p.Name))
 	if _, err := supervisor.FetchStatusReport(supervisor.SockPath); err != nil {
-		fmt.Println("  (bx 未在运行,下次 " + elevate.Prefix + "bx up 时生效)")
+		fmt.Println("  (bx is not running; it takes effect on the next " + elevate.Prefix + "bx up)")
 	} else if _, err := supervisor.ReloadControl(supervisor.SockPath); err != nil {
-		fmt.Printf("  ⚠ 配置已写入,但热生效失败——旧规则仍在运行;请查看 bx logs,新规则将在下次启动保护时生效:%v\n", err)
+		fmt.Printf("  ⚠ the config was written, but the hot reload failed — the old rules are still running; see bx logs. The new rules take effect the next time protection starts: %v\n", err)
 	} else {
-		fmt.Println("  已热生效(未断隧道)。")
+		fmt.Println("  Applied without a reconnect (the tunnel was not interrupted).")
 	}
 	return nil
 }
 
 func presetApplySuccessMessage(name string) string {
-	return fmt.Sprintf("✅ preset %s 已应用。", name)
+	return fmt.Sprintf("✅ preset %s applied.", name)
 }
 
 func applyPresetToConfig(path string, p appPreset) (bool, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return false, fmt.Errorf("读配置 %s: %w", path, err)
+		return false, fmt.Errorf("reading the config %s: %w", path, err)
 	}
 	if _, err := config.Parse(b); err != nil {
 		return false, err
@@ -127,10 +127,10 @@ func applyPresetToConfig(path string, p appPreset) (bool, error) {
 		return false, nil
 	}
 	if _, err := config.Parse(out); err != nil {
-		return false, fmt.Errorf("改动后配置无法解析(已中止,未写入): %w", err)
+		return false, fmt.Errorf("the config no longer parses after the change (aborted; nothing was written): %w", err)
 	}
 	if err := os.WriteFile(path, out, 0o600); err != nil {
-		return false, fmt.Errorf("写配置 %s: %w", path, err)
+		return false, fmt.Errorf("writing the config %s: %w", path, err)
 	}
 	_ = os.Chmod(path, 0o600)
 	return true, nil

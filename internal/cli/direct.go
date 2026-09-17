@@ -90,15 +90,15 @@ func listRuleAction(c *cli.Context, field string) error {
 		return err
 	}
 	doms := ruleField(cfg, field)
-	label := "直连白名单"
+	label := "direct allowlist"
 	if field == "proxy" {
-		label = "强制隧道列表"
+		label = "forced-tunnel list"
 	}
 	if len(doms) == 0 {
-		fmt.Printf("%s为空。\n", label)
+		fmt.Printf("The %s is empty.\n", label)
 		return nil
 	}
-	fmt.Printf("%s(%d):\n", label, len(doms))
+	fmt.Printf("%s (%d):\n", label, len(doms))
 	for _, d := range doms {
 		fmt.Printf("  %s\n", d)
 	}
@@ -108,12 +108,12 @@ func listRuleAction(c *cli.Context, field string) error {
 func editRuleAction(c *cli.Context, field string, isAdd bool) error {
 	domains := c.Args().Slice()
 	if len(domains) == 0 {
-		return fmt.Errorf("需指定至少一个域名,例如: bx %s %s taobao.com", field, map[bool]string{true: "add", false: "rm"}[isAdd])
+		return fmt.Errorf("at least one domain is required, for example: bx %s %s taobao.com", field, map[bool]string{true: "add", false: "rm"}[isAdd])
 	}
 	path := resolveConfigPath(c.String("config"))
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("读配置 %s: %w", path, err)
+		return fmt.Errorf("reading the config %s: %w", path, err)
 	}
 	if _, err := config.Parse(b); err != nil {
 		return err
@@ -127,7 +127,7 @@ func editRuleAction(c *cli.Context, field string, isAdd bool) error {
 				if w := directRuleRisk(d); w != "" {
 					fmt.Printf("%s  (%s)\n", w, d)
 					if !c.Bool("force") {
-						fmt.Printf("  → 已跳过 %s;确要加入请加 --force。\n", d)
+						fmt.Printf("  → skipped %s; add --force if you really want it.\n", d)
 						continue
 					}
 				}
@@ -135,7 +135,7 @@ func editRuleAction(c *cli.Context, field string, isAdd bool) error {
 			apply = append(apply, d)
 		}
 		if len(apply) == 0 {
-			return fmt.Errorf("没有域名被加入(全部命中风险名单且未 --force)")
+			return fmt.Errorf("no domain was added (they all matched the risk list and --force was not given)")
 		}
 		b, changed, err = editYAMLRuleList(b, field, apply, nil)
 	} else {
@@ -148,43 +148,43 @@ func editRuleAction(c *cli.Context, field string, isAdd bool) error {
 
 	// 没有实际变化(add 时已在名单 / rm 时本就不在):不误报成功、不写盘、不热生效。
 	if !changed {
-		state := "已在"
+		state := "is already in the"
 		if !isAdd {
-			state = "不在"
+			state = "is not in the"
 		}
-		fmt.Printf("• 无改动:%s %s%s。\n", strings.Join(apply, " "), state, ruleLabel(field))
+		fmt.Printf("• Nothing changed: %s %s %s.\n", strings.Join(apply, " "), state, ruleLabel(field))
 		return nil
 	}
 
 	if _, err := config.Parse(b); err != nil {
-		return fmt.Errorf("改动后配置无法解析(已中止,未写入): %w", err)
+		return fmt.Errorf("the config no longer parses after the change (aborted; nothing was written): %w", err)
 	}
 	if err := os.WriteFile(path, b, 0o600); err != nil {
-		return fmt.Errorf("写配置 %s: %w", path, err)
+		return fmt.Errorf("writing the config %s: %w", path, err)
 	}
 	_ = os.Chmod(path, 0o600)
 
-	verb := "已加入"
+	verb := "added to"
 	if !isAdd {
-		verb = "已移除"
+		verb = "removed from"
 	}
 	fmt.Printf("✅ %s %s: %s\n", verb, field, strings.Join(apply, " "))
 
 	// 热生效:先探 bx 是否在跑(GET /v0/status),再触发 reload(POST)。区分三态,别把
 	// 「在跑但 reload 失败」误报成「没在跑,下次 up 生效」——那会让旧的泄漏规则仍在生效却谎报安全。
 	if _, err := supervisor.FetchStatusReport(supervisor.SockPath); err != nil {
-		fmt.Println("  (bx 未在运行,下次 " + elevate.Prefix + "bx up 时生效)")
+		fmt.Println("  (bx is not running; it takes effect on the next " + elevate.Prefix + "bx up)")
 	} else if _, err := supervisor.ReloadControl(supervisor.SockPath); err != nil {
-		fmt.Printf("  ⚠ 配置已写入,但热生效失败——旧规则仍在运行;请查看 bx logs,新规则将在下次启动保护时生效:%v\n", err)
+		fmt.Printf("  ⚠ the config was written, but the hot reload failed — the old rules are still running; see bx logs. The new rules take effect the next time protection starts: %v\n", err)
 	} else {
-		fmt.Println("  已热生效(未断隧道)。")
+		fmt.Println("  Applied without a reconnect (the tunnel was not interrupted).")
 	}
 	return nil
 }
 
 func ruleLabel(field string) string {
 	if field == "proxy" {
-		return "强制隧道列表"
+		return "forced-tunnel list"
 	}
-	return "直连白名单"
+	return "direct allowlist"
 }
