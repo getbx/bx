@@ -106,7 +106,7 @@ func (a *ruleHistoryAccumulator) flush() error {
 	loadErr := ""
 	if err != nil {
 		loadErr = err.Error()
-		log.Printf("规则历史读不出来,当空重新累计: %v", err)
+		log.Printf("the rule history could not be read; it is treated as empty and accumulation restarts: %v", err)
 	}
 
 	cur := a.counters.Snapshot().Rules
@@ -190,7 +190,7 @@ func runRuleHistoryLoop(ctx context.Context, interval time.Duration, a *ruleHist
 	// 不先读进来的话,Core 起来后的头一个周期里 `bx status` 会说「没有累计历史」,
 	// 而那是假话;② 路径写不了要早点在日志里显形,别等到第一个周期。
 	if err := a.flush(); err != nil {
-		log.Printf("首次写规则历史失败: %v", err)
+		log.Printf("the first rule-history write failed: %v", err)
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -198,12 +198,12 @@ func runRuleHistoryLoop(ctx context.Context, interval time.Duration, a *ruleHist
 		select {
 		case <-ctx.Done():
 			if err := a.flush(); err != nil {
-				log.Printf("退出前写规则历史失败: %v", err)
+				log.Printf("could not write the rule history before exiting: %v", err)
 			}
 			return
 		case <-t.C:
 			if err := a.flush(); err != nil {
-				log.Printf("写规则历史失败: %v", err)
+				log.Printf("could not write the rule history: %v", err)
 			}
 		}
 	}
@@ -223,6 +223,6 @@ func waitRuleHistoryFlush(done <-chan struct{}) {
 	select {
 	case <-done:
 	case <-time.After(ruleHistoryShutdownWait):
-		log.Printf("等规则历史收尾写盘超时(%s),继续关闭 —— 丢一段统计好过让关闭卡住", ruleHistoryShutdownWait)
+		log.Printf("waiting for the final rule-history flush timed out after %s; the shutdown continues — losing a slice of statistics beats letting the shutdown hang", ruleHistoryShutdownWait)
 	}
 }

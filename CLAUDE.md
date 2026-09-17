@@ -2123,7 +2123,8 @@ fd 手术,而那是本仓库明写「全部事故都在组装根」的地方,且
 一个字节都不会释放(直到 Guardian 重启),而 `sudo : > /var/log/bx-guard.err.log`
 就地截断、fd 仍然有效(O_APPEND)。
 
-**分家已真机验(2026-09-01 升级后)**:`bx.log` 末行是当次 `✅ bx 已全局接管`,
+**分家已真机验(2026-09-01 升级后)**:`bx.log` 末行是当次接管播报(**当时那行还是
+中文** `✅ bx 已全局接管`;2026-09-17 起是 `✅ bx has taken over this machine`),
 而重启时刻之后 `bx-guard.err.log` 里的 `singbox:` **0 行**,也没有
 `guardian_core_log_unavailable`(那条退路没被触发)。**顺带得到一次天然对照**:
 err.log 曾被截断过一次,22 小时重新长到 9.4MB(≈10MB/天);升级后两分钟只长
@@ -2360,8 +2361,8 @@ down/up 才救回来。**bx 里没有一行处理睡眠/唤醒的代码**(grep �
 (`watchKernelRoute`,措辞做成数据),退避、冷静期、change-only 日志一字不差。
 只在 darwin 有探测原语(与 `direct_egress` 同一门槛);非 darwin 恒「问不出来」,
 循环不动。**真机验收**:合盖休眠 ≥ 数分钟再唤醒(或 `sudo route delete
-<服务器IP>` 模拟),看 `bx.log` 在 30 秒内出现 `server_bypass 断了` →
-`server_bypass 已重新落实路由`,且 sing-box 的 EOF 刷屏停止、隧道回绿,
+<服务器IP>` 模拟),看 `bx.log` 在 30 秒内出现 `server_bypass is broken` →
+`server_bypass reinstalled the routes`,且 sing-box 的 EOF 刷屏停止、隧道回绿,
 **不需要 down/up**。
 
 ## 服务器旁路重新跟随 DNS(2026-09-04,真机未验)
@@ -2391,7 +2392,7 @@ netns 台子造不出「VPS 换 IP」)。同一天顺手做掉的两条:`bx expl
 内存盘,默认 data_dir 解 29MB sing-box 必 ENOSPC),放不下或写出 ENOSPC 时错误里
 直接点名 `data_dir`,探不出空间则放行(保险不是新前置)。
 **真机验收**:换一次服务器 IP(或先改 DNS 记录),看 `bx-guard.err.log`/`bx.log`
-在 2–7 分钟内出现 `server_bypass_refollow 已切到服务器的新地址` 且隧道自己回绿。
+在 2–7 分钟内出现 `server_bypass_refollow: the server's address changed` 且隧道自己回绿。
 
 ## Core 起不来时,说出它为什么起不来(2026-09-13,真机未验)
 

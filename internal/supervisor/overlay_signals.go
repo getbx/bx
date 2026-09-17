@@ -28,7 +28,7 @@ func detectOverlayTenants() []overlay.Tenant {
 	if err != nil {
 		// 问不出来就当没有:多报一个租户的代价是给几条陌生 /32 开旁路,
 		// 而这里连接口都枚举不了,任何推断都没有依据。
-		log.Printf("overlay 共存:接口枚举失败,跳过租户检测:%v", err)
+		log.Printf("overlay coexistence: enumerating interfaces failed, so the tenant check is skipped: %v", err)
 		return nil
 	}
 	signals := overlay.Signals{}
@@ -75,10 +75,10 @@ func logOverlayChange(present []overlay.Tenant) {
 	}
 	lastOverlayNames.names = joined
 	if joined == "" {
-		log.Printf("overlay 共存:不再检测到任何 overlay 网络")
+		log.Printf("overlay coexistence: no overlay network is detected any more")
 		return
 	}
-	log.Printf("overlay 共存:检测到 %s", joined)
+	log.Printf("overlay coexistence: detected %s", joined)
 }
 
 // overlayPresent 判断某个租户是否在这一组里。

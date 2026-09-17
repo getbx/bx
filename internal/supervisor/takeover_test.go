@@ -9,7 +9,8 @@ import (
 //
 // 起因是项目所有者 2026-08-31 升级后读日志当场发现的:那行播报无条件打印
 // 「中国 IP 直连,其余走 bx 隧道」,而他跑的是 global —— china 列表整个不加载。
-// 铁证就在同一份日志里隔两行:
+// 铁证就在同一份日志里隔两行(**当时的原话,那一版还是中文**;
+// 今天这两行是英文,见下面的断言):
 //
 //	分流脑就绪: 模式=全局(除内网/用户 direct 外一切走代理) china_domain=0 china_cidr=0
 //	✅ bx 已全局接管。中国 IP 直连,其余走 bx 隧道。
@@ -20,12 +21,12 @@ import (
 
 func TestTakeoverSummaryNeverClaimsChinaDirectInGlobalMode(t *testing.T) {
 	got := takeoverSummary(true, "host", false)
-	if strings.Contains(got, "中国 IP 直连") {
+	if strings.Contains(got, "Chinese IPs") {
 		t.Fatalf("global 模式下 china 列表根本不加载,不许说中国 IP 直连: %q", got)
 	}
 	// 说清楚**真正**直连的是哪两类 —— 与 proxyMode 那行「除内网/用户 direct
 	// 外一切走代理」对上,两处措辞不许各说各的。
-	if !strings.Contains(got, "内网") || !strings.Contains(got, "direct") {
+	if !strings.Contains(got, "private networks") || !strings.Contains(got, "direct") {
 		t.Fatalf("global 播报没说清真正直连的是什么: %q", got)
 	}
 }
@@ -37,7 +38,7 @@ func TestTakeoverSummaryNeverClaimsChinaDirectInGlobalMode(t *testing.T) {
 //     `*.mycompany.com` 那类没生效。
 func TestTakeoverSummarySplitNamesTheListSourceAndUserRules(t *testing.T) {
 	builtin := takeoverSummary(false, "host", false)
-	if !strings.Contains(builtin, "中国") {
+	if !strings.Contains(builtin, "Chinese") {
 		t.Fatalf("内建列表这一支该说清按什么直连: %q", builtin)
 	}
 	if !strings.Contains(builtin, "direct") {
@@ -45,10 +46,10 @@ func TestTakeoverSummarySplitNamesTheListSourceAndUserRules(t *testing.T) {
 	}
 
 	custom := takeoverSummary(false, "host", true)
-	if strings.Contains(custom, "中国") {
+	if strings.Contains(custom, "Chinese") {
 		t.Fatalf("用了自定义列表就不该再自称按「中国」分流: %q", custom)
 	}
-	if !strings.Contains(custom, "自定义") {
+	if !strings.Contains(custom, "custom direct list") {
 		t.Fatalf("自定义列表这一支没说清列表来源: %q", custom)
 	}
 	if builtin == custom {
@@ -69,7 +70,7 @@ func TestTakeoverSummaryGlobalIgnoresListSource(t *testing.T) {
 func TestTakeoverSummaryDistinguishesRouterMode(t *testing.T) {
 	for _, global := range []bool{false, true} {
 		got := takeoverSummary(global, "router", false)
-		if strings.Contains(got, "全局接管") {
+		if strings.Contains(got, "taken over this machine") {
 			t.Fatalf("router 模式(global=%v)不该说全局接管: %q", global, got)
 		}
 		if !strings.Contains(got, "LAN") {
@@ -77,7 +78,7 @@ func TestTakeoverSummaryDistinguishesRouterMode(t *testing.T) {
 		}
 	}
 	// router + global:分流方式仍是 global,那一半也要说对。
-	if got := takeoverSummary(true, "router", false); strings.Contains(got, "中国 IP 直连") {
+	if got := takeoverSummary(true, "router", false); strings.Contains(got, "Chinese IPs") {
 		t.Fatalf("router-global 仍然不该说中国 IP 直连: %q", got)
 	}
 }

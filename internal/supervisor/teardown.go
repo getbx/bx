@@ -140,9 +140,9 @@ func runTeardownStep(step teardownStep, defaultBudget time.Duration) teardownOut
 func logTeardownOutcome(outcome teardownOutcome) {
 	switch {
 	case outcome.TimedOut:
-		log.Printf("拆除步骤 %q 超过预算(%s)未返回,跳过它继续还原 —— 该步可能没做完",
+		log.Printf("the teardown step %q did not return within its budget (%s); it is skipped and the restore continues — that step may not have finished",
 			outcome.Name, outcome.Elapsed.Round(time.Millisecond))
 	case outcome.Panic != "":
-		log.Printf("拆除步骤 %q panic,已收住并继续还原:%s", outcome.Name, outcome.Panic)
+		log.Printf("the teardown step %q panicked; it was contained and the restore continues: %s", outcome.Name, outcome.Panic)
 	}
 }

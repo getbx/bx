@@ -62,7 +62,7 @@ func (r *dohResolver) query(ctx context.Context, domain string) ([]byte, error) 
 	req.Header.Set("Accept", "application/dns-json")
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("DoH 请求: %w", err)
+		return nil, fmt.Errorf("DoH request: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
@@ -70,7 +70,7 @@ func (r *dohResolver) query(ctx context.Context, domain string) ([]byte, error) 
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DoH 返回 %d", resp.StatusCode)
+		return nil, fmt.Errorf("DoH returned %d", resp.StatusCode)
 	}
 	return body, nil
 }
@@ -86,10 +86,10 @@ func parseDoHJSON(b []byte) (netip.Addr, error) {
 		} `json:"Answer"`
 	}
 	if err := json.Unmarshal(b, &r); err != nil {
-		return netip.Addr{}, fmt.Errorf("DoH 响应非法 JSON: %w", err)
+		return netip.Addr{}, fmt.Errorf("the DoH response was not valid JSON: %w", err)
 	}
 	if r.Status != 0 {
-		return netip.Addr{}, fmt.Errorf("DoH 解析失败 Status=%d", r.Status)
+		return netip.Addr{}, fmt.Errorf("DoH resolution failed, Status=%d", r.Status)
 	}
 	for _, a := range r.Answer {
 		if a.Type != 1 && a.Type != 28 { // 仅 A / AAAA
@@ -99,7 +99,7 @@ func parseDoHJSON(b []byte) (netip.Addr, error) {
 			return ip.Unmap(), nil
 		}
 	}
-	return netip.Addr{}, fmt.Errorf("DoH 无 A/AAAA 记录")
+	return netip.Addr{}, fmt.Errorf("the DoH answer had no A/AAAA records")
 }
 
 // parseDoHJSONAll 与 parseDoHJSON 同源,但把**全部** A/AAAA 记录交出来。
@@ -112,10 +112,10 @@ func parseDoHJSONAll(b []byte) ([]netip.Addr, error) {
 		} `json:"Answer"`
 	}
 	if err := json.Unmarshal(b, &r); err != nil {
-		return nil, fmt.Errorf("DoH 响应非法 JSON: %w", err)
+		return nil, fmt.Errorf("the DoH response was not valid JSON: %w", err)
 	}
 	if r.Status != 0 {
-		return nil, fmt.Errorf("DoH 解析失败 Status=%d", r.Status)
+		return nil, fmt.Errorf("DoH resolution failed, Status=%d", r.Status)
 	}
 	var out []netip.Addr
 	for _, a := range r.Answer {
@@ -127,7 +127,7 @@ func parseDoHJSONAll(b []byte) ([]netip.Addr, error) {
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("DoH 无 A/AAAA 记录")
+		return nil, fmt.Errorf("the DoH answer had no A/AAAA records")
 	}
 	return out, nil
 }

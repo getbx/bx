@@ -15,20 +15,20 @@ import "errors"
 var (
 	// ErrConfig:配置文件里的内容本身不可用(规则/CIDR/hosts/服务器链接)。
 	// 与「暂时读不到配置」不同 —— 那是别的故障,不该借这个码。
-	ErrConfig = errors.New("配置不可用")
+	ErrConfig = errors.New("the config is unusable")
 	// ErrProvision:内嵌的 brook/sing-box 没能释放到 data_dir。
-	ErrProvision = errors.New("准备传输二进制失败")
+	ErrProvision = errors.New("could not prepare the transport binary")
 	// ErrTUNOpen:开 TUN 设备失败(权限、设备被占、wintun.dll 缺席……)。
-	ErrTUNOpen = errors.New("打开 TUN 设备失败")
+	ErrTUNOpen = errors.New("could not open the TUN device")
 	// ErrHijack:TUN 起来了,劫持默认路由失败。
-	ErrHijack = errors.New("劫持默认路由失败")
+	ErrHijack = errors.New("could not hijack the default route")
 
 	// ErrTunnelUnhealthy:隧道没能在启动窗口内建起来。
 	//
 	// 它同时是这一族里「**没判出来**」那一档本身:waitTunnelHealthy 只知道
 	// 「20 秒了还不健康」,产出的就是它。与 observe.Tristate、
 	// leakcheck.NotChecked 同一条 —— 「问不出来」不是任何一个具体答案。
-	ErrTunnelUnhealthy = errors.New("隧道没能建起来")
+	ErrTunnelUnhealthy = errors.New("the tunnel could not be established")
 )
 
 // 启动失败码。**只有码,没有自由文本** —— 它要跨进程传给 Guardian,

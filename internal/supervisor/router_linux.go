@@ -26,18 +26,18 @@ func (linuxPlatform) hijackRouter(t tunHandle, serverBypass, userBypass []string
 	if len(cidrs) == 0 {
 		cidrs = detectLANCIDRs() // 未配 lan_cidrs:从 br-* 私网桥自动探测(仅用于防火墙接口识别)
 		if len(cidrs) > 0 {
-			log.Printf("router mode 自动探测到 LAN 网段: %v", cidrs)
+			log.Printf("router mode auto-detected the LAN prefixes: %v", cidrs)
 		}
 	}
 	if len(cidrs) == 0 {
-		return nil, fmt.Errorf("router mode 需要 router.lan_cidrs(自动探测未找到 br-* 私网桥)")
+		return nil, fmt.Errorf("router mode needs router.lan_cidrs (auto-detection found no br-* private bridge)")
 	}
 	if !nftFw4Present() {
-		return nil, fmt.Errorf("router mode 目前需要 OpenWrt fw4(nft inet fw4 表缺失)")
+		return nil, fmt.Errorf("router mode currently needs OpenWrt fw4 (the nft inet fw4 table is missing)")
 	}
 	ifaces := lanIfacesFor(cidrs)
 	if len(ifaces) == 0 {
-		return nil, fmt.Errorf("router mode 未能从 lan_cidrs 探测到 LAN 接口: %v", cidrs)
+		return nil, fmt.Errorf("router mode could not detect a LAN interface from lan_cidrs: %v", cidrs)
 	}
 	var v6 []string
 	if ipv6Enabled() {
@@ -82,7 +82,7 @@ func (linuxPlatform) hijackRouter(t tunHandle, serverBypass, userBypass []string
 	// 把同一组规则落成 fw4 chain-pre include:`fw4 reload` 会 flush inet fw4 把上面 insert 的规则冲掉
 	// (→ IPv6 阻断没了=泄漏,LAN→tun accept 没了=断网),include 让其在每次 reload 重建时自动加回。
 	writeFw4Include(fp)
-	log.Printf("router 模式已接管:路由器自身 + LAN(ifaces=%v)→ %s,tailscale 绕过,fail-closed,抗 fw4 reload", ifaces, t.Name)
+	log.Printf("router mode has taken over: the router itself + the LAN (ifaces=%v) → %s, tailscale bypassed, fail-closed, surviving an fw4 reload", ifaces, t.Name)
 	down := func() { cleanupRouter(rp, fp, t.Name) }
 	return down, nil
 }
@@ -118,17 +118,17 @@ func fw4IncludePath(chain string) string {
 func writeFw4Include(fp gateway.FirewallPlan) {
 	path := fw4IncludePath(fp.Chain)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		log.Printf("router 模式:建 fw4 include 目录失败(规则仍由运行期 insert 生效,但不抗 fw4 reload): %v", err)
+		log.Printf("router mode: could not create the fw4 include directory (the rules still take effect via the runtime insert, but they will not survive an fw4 reload): %v", err)
 		return
 	}
 	body := "# bx router-mode fail-closed rules — auto re-applied at top of " + fp.Chain +
 		" on every fw4 reload. Managed by bx; do not edit.\n" +
 		strings.Join(fp.IncludeRules(), "\n") + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		log.Printf("router 模式:写 fw4 include %s 失败(规则仍由运行期 insert 生效,但不抗 fw4 reload): %v", path, err)
+		log.Printf("router mode: could not write the fw4 include %s (the rules still take effect via the runtime insert, but they will not survive an fw4 reload): %v", path, err)
 		return
 	}
-	log.Printf("router 模式:已装 fw4 chain-pre include %s(抗 fw4 reload)", path)
+	log.Printf("router mode: installed the fw4 chain-pre include %s (survives an fw4 reload)", path)
 }
 
 // removeFw4Include 删掉 chain-pre include 文件(teardown 时,避免下次 reload 又加回规则)。
@@ -142,7 +142,7 @@ func clearShadowingLANRules(lanCIDRs []string) {
 	}
 	for _, del := range gateway.ShadowingLANRules(string(out), lanCIDRs) {
 		if runIPQuiet(del...) == nil {
-			log.Printf("router 模式:清掉抢 LAN 的残留路由规则: ip %s", strings.Join(del, " "))
+			log.Printf("router mode: cleared a leftover routing rule that was grabbing the LAN: ip %s", strings.Join(del, " "))
 		}
 	}
 }

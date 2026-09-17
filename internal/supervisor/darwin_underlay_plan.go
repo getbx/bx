@@ -212,6 +212,6 @@ func underlayRebindFailed(command darwinUnderlayCommand, err error) error {
 // 都不留(Hijack 用的 runDarwinRouteCommand 成功时不打印),于是真机上「它到底
 // 装了没有」在事后完全查不了 —— 排查绕了一大圈,还一度读错了日志文件。
 func logOptionalUnderlayRoute(command darwinUnderlayCommand, err error) {
-	log.Printf("可选路由未装上(跳过,不影响恢复):%s %s: %v",
+	log.Printf("an optional route was not installed (skipped; recovery is unaffected): %s %s: %v",
 		command.Name, strings.Join(command.Args, " "), err)
 }

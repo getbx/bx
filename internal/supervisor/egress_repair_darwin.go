@@ -20,11 +20,11 @@ import (
 func liveEgressRepair(ctx context.Context) error {
 	gw, dev, err := defaultRouteDarwinContext(ctx)
 	if err != nil {
-		return fmt.Errorf("探测默认路由: %w", err)
+		return fmt.Errorf("probing the default route: %w", err)
 	}
 	gw, dev = strings.TrimSpace(gw), strings.TrimSpace(dev)
 	if gw == "" || dev == "" {
-		return fmt.Errorf("默认路由缺网关或网卡(gw=%q dev=%q)", gw, dev)
+		return fmt.Errorf("the default route has no gateway or no device (gw=%q dev=%q)", gw, dev)
 	}
 	out, err := exec.CommandContext(ctx, "route", "-n", "add", "-ifscope", dev, "default", gw).CombinedOutput()
 	return egressRepairOutcome(err, string(out), dev, gw)

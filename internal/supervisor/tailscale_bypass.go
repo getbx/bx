@@ -48,10 +48,10 @@ var tailscaleBootstrapFallbackCIDRs = []string{
 func tailscaleBootstrapBypassCIDRs(ctx context.Context, direct *net.Dialer) []string {
 	cidrs, err := tailscaleDERPBypassCIDRs(ctx, direct)
 	if err != nil {
-		log.Printf("tailscale bootstrap bypass:%v;先用内置 bootstrap 旁路,后台会一直重试", err)
+		log.Printf("tailscale bootstrap bypass: %v; the built-in bootstrap bypass is used for now, and the background retry keeps going", err)
 		return mergeBypassCIDRs(tailscaleBootstrapFallbackCIDRs, tailscaleControlplaneFallbackCIDRs())
 	}
-	log.Printf("tailscale bootstrap bypass:已准备 %d 条 DERP/control IPv4 旁路", len(cidrs))
+	log.Printf("tailscale bootstrap bypass: %d DERP/control IPv4 bypass entries are ready", len(cidrs))
 	return cidrs
 }
 
@@ -65,7 +65,7 @@ func tailscaleDERPBypassCIDRs(ctx context.Context, direct *net.Dialer) ([]string
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tailscaleDERPMapURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("构造 DERP map 请求失败: %w", err)
+		return nil, fmt.Errorf("could not build the DERP map request: %w", err)
 	}
 	client := &http.Client{
 		Timeout: 3 * time.Second,
@@ -76,20 +76,20 @@ func tailscaleDERPBypassCIDRs(ctx context.Context, direct *net.Dialer) ([]string
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("DERP map 获取失败: %w", err)
+		return nil, fmt.Errorf("could not fetch the DERP map: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("DERP map 返回 %d", resp.StatusCode)
+		return nil, fmt.Errorf("the DERP map returned %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return nil, fmt.Errorf("读取 DERP map 失败: %w", err)
+		return nil, fmt.Errorf("could not read the DERP map: %w", err)
 	}
 	cidrs := tailscaleDERPMapBypassCIDRs(body)
 	if len(cidrs) == 0 {
-		return nil, errors.New("DERP map 无 IPv4 节点")
+		return nil, errors.New("the DERP map has no IPv4 nodes")
 	}
 	return mergeBypassCIDRs(cidrs, tailscaleControlplaneFallbackCIDRs()), nil
 }
@@ -267,8 +267,8 @@ func (s *tailscaleBypassSource) Run(ctx context.Context, fetch func(context.Cont
 		if changed {
 			// 只在真的变了时说话:每 6 小时打一行「没变」是噪声,而这一行的价值
 			// 在于它平时不出现。
-			log.Printf("tailscale bootstrap bypass:中继旁路已更新(%d 条);"+
-				"新集合会在下一次路由重装时生效", len(fetched))
+			log.Printf("tailscale bootstrap bypass: the relay bypass was updated (%d entries); "+
+				"the new set takes effect the next time the routes are reinstalled", len(fetched))
 		}
 	}
 }

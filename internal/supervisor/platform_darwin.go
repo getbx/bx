@@ -48,12 +48,12 @@ func (darwinPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint
 	}
 	dev, err := wgtun.CreateTUN(name, int(mtu))
 	if err != nil {
-		return nil, tunHandle{}, nil, fmt.Errorf("创建 utun(需 root): %w", err)
+		return nil, tunHandle{}, nil, fmt.Errorf("creating the utun (needs root): %w", err)
 	}
 	real, err := dev.Name()
 	if err != nil {
 		_ = dev.Close()
-		return nil, tunHandle{}, nil, fmt.Errorf("取 utun 名: %w", err)
+		return nil, tunHandle{}, nil, fmt.Errorf("getting the utun name: %w", err)
 	}
 	link, closeTUN := tun.NewWGEndpoint(dev, mtu)
 	return link, tunHandle{Name: real, Addr: addr, MTU: mtu}, closeTUN, nil
@@ -100,7 +100,7 @@ func boundIfDialer(ifIndex int) *net.Dialer {
 func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (func(), error) {
 	gw, physicalDev, err := defaultRouteDarwin()
 	if err != nil {
-		return nil, fmt.Errorf("探测默认网关: %w", err)
+		return nil, fmt.Errorf("probing the default gateway: %w", err)
 	}
 
 	// 1) utun 配地址并 up(点对点:本端=对端=同一地址)。TUN 关闭由 Run 的 closeTUN 负责。
@@ -109,7 +109,7 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 		ip = ip[:i]
 	}
 	if err := runCmd("ifconfig", t.Name, "inet", ip, ip, "up"); err != nil {
-		return nil, fmt.Errorf("配置 utun 地址: %w", err)
+		return nil, fmt.Errorf("configuring the utun address: %w", err)
 	}
 
 	// 2) 组装路由:v4 私网/bypass 经物理网关、split-default 劫进 utun;
@@ -127,7 +127,7 @@ func (darwinPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (fu
 		cleanup()
 		return nil, err
 	}
-	log.Printf("默认路由已劫持进 %s;serverBypass=%v userBypass=%v via %s;v6阻断=%v", t.Name, serverBypass, userBypass, gw, blockV6)
+	log.Printf("the default route is hijacked into %s; serverBypass=%v userBypass=%v via %s; v6blocked=%v", t.Name, serverBypass, userBypass, gw, blockV6)
 	return cleanup, nil
 }
 
@@ -149,7 +149,7 @@ func runDarwinRouteCommand(args ...string) error {
 func (darwinPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
 	gw, physicalDev, err := defaultRouteDarwin()
 	if err != nil {
-		return fmt.Errorf("探测默认网关: %w", err)
+		return fmt.Errorf("probing the default gateway: %w", err)
 	}
 	ip := t.Addr
 	if i := strings.IndexByte(ip, '/'); i >= 0 {
@@ -162,7 +162,7 @@ func (darwinPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []str
 		if err := runCmd("route", s.add...); err != nil {
 			if s.optional {
 				// 可选路由(scoped 默认)装不上不影响保护 —— 见 darwinRouteSpec.optional。
-				log.Printf("可选路由未装上(跳过):route %s: %v", strings.Join(s.add, " "), err)
+				log.Printf("an optional route was not installed (skipped): route %s: %v", strings.Join(s.add, " "), err)
 				continue
 			}
 			return fmt.Errorf("route %s: %w", strings.Join(s.add, " "), err)
@@ -198,7 +198,7 @@ func parseDefaultRouteDarwin(out []byte) (gw, dev string, err error) {
 		}
 	}
 	if gw == "" || dev == "" {
-		return "", "", fmt.Errorf("解析默认路由失败: %q", strings.TrimSpace(string(out)))
+		return "", "", fmt.Errorf("could not parse the default route: %q", strings.TrimSpace(string(out)))
 	}
 	return gw, dev, nil
 }

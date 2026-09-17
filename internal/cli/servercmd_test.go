@@ -135,7 +135,7 @@ func TestSwitchServerRollsBackWhenTheNewTunnelIsUnhealthy(t *testing.T) {
 	if !strings.HasSuffix(got, "rollback") {
 		t.Fatalf("没有立刻回滚:%s", got)
 	}
-	if !strings.Contains(err.Error(), "已回滚") {
+	if !strings.Contains(err.Error(), "ROLLED BACK") {
 		t.Errorf("错误里没说清已经回滚,用户不知道自己现在在哪台:%v", err)
 	}
 }

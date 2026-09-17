@@ -147,7 +147,7 @@ func applyDarwinRouteSpecs(specs []darwinRouteSpec, run func(...string) error) (
 		}
 		if err != nil && spec.optional {
 			// 跳过,**并且不记进 done** —— 记进去就会在拆除时删掉一条不是我们装的路由。
-			log.Printf("可选路由未装上(跳过,不影响保护):route %s: %v", strings.Join(spec.add, " "), err)
+			log.Printf("an optional route was not installed (skipped; protection is unaffected): route %s: %v", strings.Join(spec.add, " "), err)
 			continue
 		}
 		if err != nil {

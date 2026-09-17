@@ -45,15 +45,15 @@ type bypassRefreshDeps struct {
 func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bool, error) {
 	return func(ctx context.Context, requiredLinks []string) (bool, error) {
 		if d.configPath == "" {
-			return false, fmt.Errorf("未知配置路径,无法刷新 bypass")
+			return false, fmt.Errorf("the config path is unknown, so the bypass cannot be refreshed")
 		}
 		raw, err := os.ReadFile(d.configPath)
 		if err != nil {
-			return false, fmt.Errorf("重读配置: %w", err)
+			return false, fmt.Errorf("re-reading the config: %w", err)
 		}
 		fresh, err := config.Parse(raw)
 		if err != nil {
-			return false, fmt.Errorf("重读配置: %w", err)
+			return false, fmt.Errorf("re-reading the config: %w", err)
 		}
 
 		timeout := d.timeout
@@ -96,7 +96,7 @@ func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bo
 		// 用户 hosts 覆盖在启动时是合并进静态表的,刷新不能把它抹掉。
 		userHosts, err := fresh.HostOverrides()
 		if err != nil {
-			return false, fmt.Errorf("hosts 覆盖: %w", err)
+			return false, fmt.Errorf("applying the hosts overrides: %w", err)
 		}
 		staticA, _, ignored := mergeHostOverrides(serverStatic, userHosts)
 		for _, host := range ignored {
@@ -131,7 +131,7 @@ func dropFakeIPs(host string, addrs []netip.Addr, fakeip netip.Prefix) []netip.A
 	var out []netip.Addr
 	for _, a := range addrs {
 		if fakeip.Contains(a.Unmap()) {
-			log.Printf("bypass 刷新丢弃 fake-IP 应答 host=%s addr=%s(解析器指向了 bx 自己)", host, a)
+			log.Printf("bypass refresh discarded a fake-IP answer host=%s addr=%s (the resolver was pointing at bx itself)", host, a)
 			continue
 		}
 		out = append(out, a)

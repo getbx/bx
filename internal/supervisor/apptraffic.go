@@ -295,7 +295,7 @@ func (t *AppTraffic) runResolver(interval time.Duration) {
 func (t *AppTraffic) resolveTick() (keepGoing bool) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("apptraffic: 后台归因 panic(已隔离,下一拍继续): %v", r)
+			log.Printf("apptraffic: the background attributor panicked (contained; it resumes on the next tick): %v", r)
 			keepGoing = true
 		}
 	}()

@@ -58,7 +58,7 @@ const tunV6ULA = "fd0b:a78e:9c1d::1/128"
 func (windowsPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoint, tunHandle, func(), error) {
 	if exe, err := os.Executable(); err == nil {
 		if _, werr := provision.EnsureWintun(filepath.Dir(exe), embedded.Wintun(), embedded.WintunVersion()); werr != nil {
-			return nil, tunHandle{}, nil, fmt.Errorf("释放内嵌 wintun.dll 到 exe 目录: %w", werr)
+			return nil, tunHandle{}, nil, fmt.Errorf("extracting the embedded wintun.dll into the exe directory: %w", werr)
 		}
 	}
 	if name == "" {
@@ -66,12 +66,12 @@ func (windowsPlatform) OpenTUN(name, addr string, mtu uint32) (stack.LinkEndpoin
 	}
 	dev, err := wgtun.CreateTUN(name, int(mtu))
 	if err != nil {
-		return nil, tunHandle{}, nil, fmt.Errorf("创建 wintun 适配器(需管理员;wintun.dll 由 bx 自动释放到 exe 目录,若失败见该目录是否可写): %w", err)
+		return nil, tunHandle{}, nil, fmt.Errorf("creating the wintun adapter (needs administrator; bx extracts wintun.dll into its own exe directory, so check that directory is writable if this fails): %w", err)
 	}
 	real, err := dev.Name()
 	if err != nil {
 		_ = dev.Close()
-		return nil, tunHandle{}, nil, fmt.Errorf("取 wintun 适配器名: %w", err)
+		return nil, tunHandle{}, nil, fmt.Errorf("getting the wintun adapter name: %w", err)
 	}
 	var luid uint64
 	if nt, ok := dev.(*wgtun.NativeTun); ok {
@@ -168,15 +168,15 @@ type addedRoute struct {
 func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (func(), error) {
 	tunLUID := winipcfg.LUID(t.LUID)
 	if tunLUID == 0 {
-		return nil, errors.New("bx: 缺少 wintun 适配器 LUID(OpenTUN 未回填)")
+		return nil, errors.New("bx: the wintun adapter LUID is missing (OpenTUN never filled it in)")
 	}
 	// 1) TUN 配 v4 地址(点对点 /30)。
 	tunPrefix, err := netip.ParsePrefix(t.Addr)
 	if err != nil {
-		return nil, fmt.Errorf("解析 TUN 地址 %q: %w", t.Addr, err)
+		return nil, fmt.Errorf("parsing the TUN address %q: %w", t.Addr, err)
 	}
 	if err := tunLUID.SetIPAddressesForFamily(windows.AF_INET, []netip.Prefix{tunPrefix}); err != nil {
-		return nil, fmt.Errorf("配置 wintun v4 地址: %w", err)
+		return nil, fmt.Errorf("configuring the wintun v4 address: %w", err)
 	}
 	// 2) 降低 TUN 接口 metric(best-effort;/1 本就比物理 /0 更具体,按最长前缀已抢赢)。
 	if ipif, err := tunLUID.IPInterface(windows.AF_INET); err == nil {
@@ -187,14 +187,14 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 	// 3) 物理默认网关 + 其 LUID(bypass 路由挂它上,防环/私网/SSH 走原路)。
 	gw, physLUID, err := physicalDefaultRoute()
 	if err != nil {
-		return nil, fmt.Errorf("探测物理默认路由: %w", err)
+		return nil, fmt.Errorf("probing the physical default route: %w", err)
 	}
 	// 4) v6 fail-closed(仅宿主有 v6 时):给 TUN 开 v6,把 ::/1+8000::/1 劫进 TUN。best-effort:
 	//    开 v6 失败不连累 v4 劫持(域名维度 v6 已由 DNS NODATA 堵死,此为字面量 v6 纵深防御)。
 	blockV6 := ipv6HostEnabled()
 	if blockV6 {
 		if err := tunLUID.SetIPAddressesForFamily(windows.AF_INET6, []netip.Prefix{netip.MustParsePrefix(tunV6ULA)}); err != nil {
-			log.Printf("windows: 开 TUN v6 失败,跳过 v6 阻断(v4 劫持不受影响): %v", err)
+			log.Printf("windows: could not bring up IPv6 on the TUN, so the v6 block is skipped (the v4 hijack is unaffected): %v", err)
 			blockV6 = false
 		} else if ipif6, err := tunLUID.IPInterface(windows.AF_INET6); err == nil {
 			ipif6.UseAutomaticMetric = false
@@ -225,7 +225,7 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 	//    (路由已把大部分 :53 导进 TUN;WFP 是纵深防御,真机验证前不让它一票否决整个 Hijack)。
 	//    permitDNSServers 传 nil = 封尽所有非本进程/off-TUN :53(bx 自身 resolver 靠 permitSelf 放行)。
 	if err := winfw.BlockDNSLeak(t.LUID, nil); err != nil {
-		log.Printf("windows: 启用 WFP DNS 泄漏防护失败(路由劫持仍生效): %v", err)
+		log.Printf("windows: could not enable the WFP DNS leak protection (the route hijack is still in effect): %v", err)
 	} else {
 		wfpOn = true
 	}
@@ -234,10 +234,10 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 	//    由 fake-IP handler 应答;TUN 接口 metric 已 0(最优),系统优先用它。best-effort。
 	if sentinel, perr := netip.ParseAddr(tunDNSSentinel); perr == nil {
 		if err := tunLUID.SetDNS(windows.AF_INET, []netip.Addr{sentinel}, nil); err != nil {
-			log.Printf("windows: 设 TUN DNS=%s 失败(DNS 可能走物理网卡漏/被 WFP 封): %v", tunDNSSentinel, err)
+			log.Printf("windows: could not set TUN DNS=%s (DNS may leak out the physical NIC, or be blocked by WFP): %v", tunDNSSentinel, err)
 		}
 	}
-	log.Printf("windows: 默认路由已劫进 %s(LUID=%#x);bypass via %s;server=%v user=%v v6阻断=%v WFP-DNS=%v TUN-DNS=%s",
+	log.Printf("windows: the default route is hijacked into %s (LUID=%#x); bypass via %s; server=%v user=%v v6blocked=%v WFP-DNS=%v TUN-DNS=%s",
 		t.Name, uint64(tunLUID), gw, serverBypass, userBypass, blockV6, wfpOn, tunDNSSentinel)
 	return cleanup, nil
 }
@@ -247,11 +247,11 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 func (windowsPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
 	tunLUID := winipcfg.LUID(t.LUID)
 	if tunLUID == 0 {
-		return errors.New("bx: 缺少 wintun 适配器 LUID")
+		return errors.New("bx: the wintun adapter LUID is missing")
 	}
 	gw, physLUID, err := physicalDefaultRoute()
 	if err != nil {
-		return fmt.Errorf("探测物理默认路由: %w", err)
+		return fmt.Errorf("probing the physical default route: %w", err)
 	}
 	plan := windowsRoutes(windowsDirectCIDRs, serverBypass, userBypass, ipv6HostEnabled())
 	_, err = addPlannedRoutes(tunLUID, physLUID, gw, plan, true) // 幂等:忽略已存在
@@ -266,7 +266,7 @@ func addPlannedRoutes(tunLUID, physLUID winipcfg.LUID, gw netip.Addr, plan []win
 	for _, r := range plan {
 		dest, err := netip.ParsePrefix(r.Dest)
 		if err != nil {
-			return added, fmt.Errorf("解析路由前缀 %q: %w", r.Dest, err)
+			return added, fmt.Errorf("parsing the route prefix %q: %w", r.Dest, err)
 		}
 		dest = dest.Masked()
 		var luid winipcfg.LUID
@@ -283,7 +283,7 @@ func addPlannedRoutes(tunLUID, physLUID winipcfg.LUID, gw netip.Addr, plan []win
 			if ignoreExisting && errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
 				continue
 			}
-			return added, fmt.Errorf("加路由 %s via %s: %w", dest, nh, err)
+			return added, fmt.Errorf("adding the route %s via %s: %w", dest, nh, err)
 		}
 		added = append(added, addedRoute{luid: luid, dest: dest, nh: nh})
 	}
@@ -331,7 +331,7 @@ func physicalDefaultRoute() (netip.Addr, winipcfg.LUID, error) {
 		}
 	}
 	if !found {
-		return netip.Addr{}, 0, errors.New("未找到物理默认路由(0.0.0.0/0)")
+		return netip.Addr{}, 0, errors.New("no physical default route (0.0.0.0/0) was found")
 	}
 	return bestGW, bestLUID, nil
 }

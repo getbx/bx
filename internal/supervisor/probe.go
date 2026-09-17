@@ -112,11 +112,11 @@ func probeServer(ctx context.Context, dial probeDialer, req ProbeRequest) ProbeR
 	}
 	result := ProbeResult{Host: host, Port: port}
 	if host == "" {
-		result.Error, result.ErrorCode = "没有主机可测", ProbeErrNoHost
+		result.Error, result.ErrorCode = "there is no host to test", ProbeErrNoHost
 		return result
 	}
 	if port > 65535 {
-		result.Error, result.ErrorCode = fmt.Sprintf("端口不合法:%d", port), ProbeErrBadPort
+		result.Error, result.ErrorCode = fmt.Sprintf("the port is not valid: %d", port), ProbeErrBadPort
 		return result
 	}
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
@@ -190,25 +190,25 @@ func classifyProbeError(err error) string {
 func ProbeErrorText(code string) string {
 	switch code {
 	case ProbeErrTimeout:
-		return "超时(没有应答)"
+		return "timed out (no answer)"
 	case ProbeErrCanceled:
-		return "已取消"
+		return "canceled"
 	case ProbeErrDNS:
-		return "域名解析不出来"
+		return "the domain does not resolve"
 	case ProbeErrRefused:
-		return "连接被拒(端口没在听)"
+		return "connection refused (nothing is listening on that port)"
 	case ProbeErrNetworkUnreachable:
-		return "网络不可达"
+		return "the network is unreachable"
 	case ProbeErrNoRoute:
-		return "没有到该主机的路由"
+		return "there is no route to that host"
 	case ProbeErrNoHost:
-		return "没有主机可测"
+		return "there is no host to test"
 	case ProbeErrBadPort:
-		return "端口不合法"
+		return "the port is not valid"
 	case ProbeErrCoreUnreachable:
-		return "没能测(bx 没在跑?)"
+		return "could not measure (is bx running?)"
 	case ProbeErrLinkUnparsed:
-		return "链接里解不出主机"
+		return "no host could be parsed out of the link"
 	}
-	return "连不上"
+	return "unreachable"
 }

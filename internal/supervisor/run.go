@@ -79,20 +79,20 @@ func takeoverSummary(global bool, mode string, listsOverridden bool) string {
 	// split 那半也要说全:直连的**不只**是列表命中的那些,用户 direct 规则
 	// (`rules:` 里的 kind: direct)同样在直连,而且优先级更高 —— 只提列表
 	// 会让人以为自己加的那几条没生效。
-	split := "中国 IP 与用户 direct 规则直连,其余走 bx 隧道。"
+	split := "Chinese IPs and your own direct rules go direct; everything else goes through the bx tunnel."
 	if listsOverridden {
-		split = "自定义直连列表与用户 direct 规则直连,其余走 bx 隧道。"
+		split = "Your custom direct list and your own direct rules go direct; everything else goes through the bx tunnel."
 	}
 	if global {
 		// 与 proxyMode 那行「除内网/用户 direct 外一切走代理」是同一句话。
-		split = "除内网与用户 direct 规则外,一切走 bx 隧道。"
+		split = "Everything goes through the bx tunnel except private networks and your own direct rules."
 	}
 	if mode == "router" {
 		// 只劫持 LAN 转发流量,路由器自身的出站不碰 —— 说「全局接管」会让人
 		// 以为这台路由器自己也走了隧道。
-		return "✅ bx 已接管 LAN 转发流量。" + split
+		return "✅ bx has taken over forwarded LAN traffic. " + split
 	}
-	return "✅ bx 已全局接管。" + split
+	return "✅ bx has taken over this machine. " + split
 }
 
 // Options 是 bx up 的运行期参数(非配置文件项)。
@@ -179,11 +179,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	router := brain.Router
 	listsOverridden := brain.ListsOverridden
-	mode := "分流(中国直连/其余代理)"
+	mode := "split (China direct / everything else proxied)"
 	if global {
-		mode = "全局(除内网/用户 direct 外一切走代理)"
+		mode = "global (everything proxied except private networks and your own direct rules)"
 	}
-	log.Printf("分流脑就绪: 模式=%s china_domain=%d china_cidr=%d", mode, brain.DomainCount, brain.CIDRCount)
+	log.Printf("routing brain ready: mode=%s china_domain=%d china_cidr=%d", mode, brain.DomainCount, brain.CIDRCount)
 
 	// 2) 隧道:按 server link 的 scheme 选传输(brook | reality),数据面不变。
 	// buildTunnel 由 link 建隧道(含按需 sing-box 准备),供启动与 Slice 2b 运行期换隧道复用。
@@ -196,7 +196,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		}
 		httpAddr, err := privateAuxiliaryAddr(cfg.HTTPProxy, auxiliaryHTTP)
 		if err != nil {
-			return nil, fmt.Errorf("分配传输私有 HTTP 监听: %w", err)
+			return nil, fmt.Errorf("allocating the transport's private HTTP listener: %w", err)
 		}
 		kind := transportKind(link)
 		switch kind {
@@ -265,7 +265,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	}
 	tun0, err := buildTunnel(cfg.Server, "active-main", true)
 	if err != nil {
-		return fmt.Errorf("构建隧道: %w", err)
+		return fmt.Errorf("building the tunnel: %w", err)
 	}
 	lt := &liveTunnel{}
 	lt.set(tun0)
@@ -287,7 +287,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 进程,而内核里的 ip rule / 策略路由**还在**,机器就此指向一个不存在的
 	// TUN。六个工人没有一件事值得那个代价,逐个理由写在 workers.go 头上。
 	workers := &workerRegistry{}
-	teardowns.push("停止传输", func() {
+	teardowns.push("stop transport", func() {
 		if liveTransports != nil {
 			liveTransports.Stop()
 			return
@@ -297,7 +297,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		}
 		lt.get().Stop()
 	})
-	log.Printf("bx 隧道启动: socks5=%s 探测=%s", tun0.SocksAddr(), opts.Probe)
+	log.Printf("bx tunnel started: socks5=%s probe=%s", tun0.SocksAddr(), opts.Probe)
 	healthTimeout := opts.HealthTimeout
 	if healthTimeout <= 0 {
 		healthTimeout = 20 * time.Second
@@ -315,22 +315,22 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		}); err != nil {
 		return err
 	}
-	log.Printf("bx 隧道健康: 延迟=%dms", tun0.Stats().LatencyMS)
+	log.Printf("bx tunnel healthy: latency=%dms", tun0.Stats().LatencyMS)
 	var auxiliary *auxiliaryProxy
 	if cfg.HTTPProxy != "" {
 		if tun0.HTTPAddr() == "" {
-			return errors.New("主传输缺少私有 HTTP 监听")
+			return errors.New("the main transport has no private HTTP listener")
 		}
 		auxiliary, err = startAuxiliaryProxy(cfg.HTTPProxy, tun0.HTTPAddr())
 		if err != nil {
-			return fmt.Errorf("监听固定 HTTP 代理: %w", err)
+			return fmt.Errorf("listening on the fixed HTTP proxy: %w", err)
 		}
-		teardowns.push("关闭辅助代理", func() { _ = auxiliary.Close() })
+		teardowns.push("close auxiliary proxy", func() { _ = auxiliary.Close() })
 	}
 
 	serverHost, err := serverHostFromLink(cfg.Server)
 	if err != nil {
-		return tagStartFailure(ErrConfig, fmt.Errorf("取服务器 IP: %w", err))
+		return tagStartFailure(ErrConfig, fmt.Errorf("resolving the server IP: %w", err))
 	}
 	// 多传输防环:每个传输(主 + 容灾备选 + UDP 专用)的 server 都要进 serverBypass + 静态 DNS,
 	// 否则切到「不同 server」的备选时,其子进程连自己 server 的连接会落进 TUN(成环/被 Block),
@@ -352,7 +352,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 3) fake-IP 池 + DNS 处理器
 	pool, err := fakeip.New(cfg.DNS.FakeipCIDR)
 	if err != nil {
-		return tagStartFailure(ErrConfig, fmt.Errorf("建 fake-IP 池: %w", err))
+		return tagStartFailure(ErrConfig, fmt.Errorf("building the fake-IP pool: %w", err))
 	}
 	dnsSrv := bxdns.NewServer(pool, 1)
 	splitDirect := splitdns.NewSet()
@@ -364,7 +364,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		// 正是为了这一刻:bx Core 由 Guardian 监管,panic 会被当异常退出重启,新
 		// 进程带着同一份 cfg 立刻在同一处再 panic 一次,变成崩溃循环而非一次干净
 		// 的启动失败。
-		return tagStartFailure(ErrConfig, fmt.Errorf("hosts 覆盖: %w", err))
+		return tagStartFailure(ErrConfig, fmt.Errorf("applying the hosts overrides: %w", err))
 	}
 	staticA, appliedHosts, ignoredHosts := mergeHostOverrides(serverStatic, userHosts)
 	for _, host := range ignoredHosts {
@@ -385,9 +385,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		if err != nil {
 			return err
 		}
-		teardowns.push("关闭 DNS 监听", func() { _ = dnsListener.Close() })
+		teardowns.push("close DNS listener", func() { _ = dnsListener.Close() })
 		dnsListening = true
-		log.Printf("本地 DNS 已监听: udp://%s", dnsListener.LocalAddr())
+		log.Printf("local DNS listening on udp://%s", dnsListener.LocalAddr())
 	}
 
 	// 先问「机器上还跑着哪些 overlay」——下面的 split-DNS 与后面的中继旁路都要用它。
@@ -409,10 +409,10 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		// 循环在 run.go 里出现位置的源码守卫钉着。
 		routes := buildSplitRoutes(cfg.DNS.Split, overlaySplit)
 		for _, r := range overlaySplit {
-			log.Printf("overlay 共存:*.%s 交给 %s 解析", r.Suffix, normalizeDNSServerAddr(r.Resolver))
+			log.Printf("overlay coexistence: *.%s is resolved by %s", r.Suffix, normalizeDNSServerAddr(r.Resolver))
 		}
 		dnsSrv.SetSplit(routes, bxdns.NewUDPForwarder(plat.DirectDialer()), splitDirect)
-		log.Printf("split-DNS 已启用:%d 条规则", len(routes))
+		log.Printf("split-DNS enabled: %d rule(s)", len(routes))
 	}
 
 	// fake-ip-filter:本地/反查域名(*.lan/*.arpa 等)不分配 fake-IP,转发到国内 DNS 真实解析并直连。
@@ -422,7 +422,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			fdns = net.JoinHostPort(fdns, "53")
 		}
 		dnsSrv.SetFakeipFilter(cfg.DNS.FakeipFilter, fdns, bxdns.NewUDPForwarder(plat.DirectDialer()), splitDirect)
-		log.Printf("fake-ip-filter 已启用:%d 条(本地/反查域名不走 fake-IP)", len(cfg.DNS.FakeipFilter))
+		log.Printf("fake-ip-filter enabled: %d entr(ies) (local and reverse-lookup domains skip fake-IP)", len(cfg.DNS.FakeipFilter))
 	}
 
 	// 4) Dialer:fake-IP 反查 + 防环直连 + socks 代理 + 国内 DNS resolver
@@ -432,7 +432,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// macOS 的 DirectDialer 会 IP_BOUND_IF 绑物理网卡,绑后反而无法可靠连接 127/8。
 	proxyDialer, err := socksProxy(tun0.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
 	if err != nil {
-		return fmt.Errorf("构建 socks 代理: %w", err)
+		return fmt.Errorf("building the socks proxy: %w", err)
 	}
 	d := &dialer.Dialer{
 		Fake:        pool, // 连接回到 TUN 时,用 fake IP 反查域名做精确分流
@@ -465,12 +465,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if udpEnabled {
 		udpTun, err := buildTunnel(cfg.UDP.Transport, "active-udp", false)
 		if err != nil {
-			return fmt.Errorf("构建 UDP 传输: %w", err)
+			return fmt.Errorf("building the UDP transport: %w", err)
 		}
 		udpLT = &liveTunnel{}
 		udpLT.set(udpTun)
 		if err := attachUDPCompanion(d, udpTun, transportLabel(cfg.UDP.Transport)); err != nil {
-			return fmt.Errorf("挂载 UDP 传输: %w", err)
+			return fmt.Errorf("attaching the UDP transport: %w", err)
 		}
 		udpHealthy = udpLT.Healthy
 	}
@@ -478,25 +478,25 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 5) TUN 设备 + 引擎(UDP:53 由 fake-IP DNS 处理器就地应答)
 	link, tunH, closeTUN, err := plat.OpenTUN(opts.TunName, opts.TunAddr, opts.MTU)
 	if err != nil {
-		return tagStartFailure(ErrTUNOpen, fmt.Errorf("建 TUN: %w", err))
+		return tagStartFailure(ErrTUNOpen, fmt.Errorf("opening the TUN: %w", err))
 	}
 	// Run 任何提前返回都会关 TUN(停 pump、移除设备),不泄漏。
-	teardowns.push("关闭 TUN", closeTUN)
+	teardowns.push("close TUN", closeTUN)
 	// 路由器模式:把网关参数交给 Hijack,只劫持 LAN 转发流量。
 	tunH.RouterMode = cfg.Mode == "router"
 	tunH.LANCIDRs = cfg.Router.LANCIDRs
 	eng, err := tun.New(link, d, opts.MTU, tun.WithDNS(dnsSrv), tun.WithStats(counters), appAttribution)
 	if err != nil {
-		return fmt.Errorf("启动引擎: %w", err)
+		return fmt.Errorf("starting the engine: %w", err)
 	}
-	teardowns.push("关闭引擎", func() { _ = eng.Close() })
+	teardowns.push("close engine", func() { _ = eng.Close() })
 
 	// commit-confirmed 引擎:挂进守护进程,接 9a 真快照器;onRevert 大声记日志。
 	mutEng := newMutationEngine(NewSystemSnapshotter(), 240*time.Second, time.Now, func(reverted bool, err error) {
 		if err != nil {
-			log.Printf("死手自动回滚失败(系统可能半改动): %v", err)
+			log.Printf("dead-man rollback failed (the system may be half-changed): %v", err)
 		} else if reverted {
-			log.Printf("死手自动回滚:已还原到 last-known-good")
+			log.Printf("dead-man rollback: restored to last-known-good")
 		}
 	})
 	workers.start(ctx, "mutation-engine", mutEng.Run)
@@ -584,7 +584,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 				failoverPolicy{failoverAfter: 25 * time.Second, cooldown: 60 * time.Second},
 				5*time.Second)
 		})
-		log.Printf("多传输容灾已启用:%d 个传输,主=%s", len(cfg.Transports), transportLabel(cfg.Transports[0]))
+		log.Printf("multi-transport failover enabled: %d transports, main=%s", len(cfg.Transports), transportLabel(cfg.Transports[0]))
 	}
 	routes := &routeReadiness{}
 	mut := &liveMutator{
@@ -641,11 +641,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 				// **接不上就不接,绝不放一个坏的进去**:dialVia 对「没有这个出口」
 				// 的处置是阻断,而那正是我们要的 —— 而一个连不上的拨号器会让
 				// 每条连接都走完超时才失败。
-				log.Printf("具名出口 %q 接线失败(该网段将被阻断,不会回落直连): %v", e.Name, derr)
+				log.Printf("named egress %q could not be wired up (its prefixes will be blocked, never falling back to direct): %v", e.Name, derr)
 				continue
 			}
 			egresses[e.Name] = d
-			log.Printf("具名出口 %q → %s", e.Name, e.Socks5)
+			log.Printf("named egress %q → %s", e.Name, e.Socks5)
 		}
 		d.SetEgresses(egresses)
 	}
@@ -657,7 +657,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	// 这个循环去问内核,不信记账。只在 Hijack 真的装了路由时才跑。
 	if !opts.NoHijack && runtime.GOOS == "darwin" {
 		egressTicker := time.NewTicker(egressCheckInterval)
-		teardowns.push("停止直连出口探测", egressTicker.Stop)
+		teardowns.push("stop direct-egress probe", egressTicker.Stop)
 		workers.start(ctx, "direct-egress-repair", func(c context.Context) {
 			watchDirectEgress(c, DirectEgressReachable, liveEgressRepair, egressTicker.C)
 		})
@@ -668,7 +668,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		underlay := provider.Underlay()
 		initialUnderlay, observeErr := underlay.Observe(ctx)
 		if observeErr != nil {
-			log.Printf("网络路径恢复不可用:初始 underlay 观察失败: %v", observeErr)
+			log.Printf("network path recovery unavailable: the initial underlay observation failed: %v", observeErr)
 		} else {
 			verify := func(verifyCtx context.Context) error {
 				if err := underlay.ValidateCapture(verifyCtx, tunH); err != nil {
@@ -782,7 +782,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	})
 	// **等最后那次写盘,但只等一个很短的上限。** 不等的话 Run 返回后进程可能
 	// 先退出,那次写静默不发生 —— 而它带着自上一拍以来最长一个周期的增量。
-	teardowns.push("等规则历史写盘", func() { waitRuleHistoryFlush(historyDone) })
+	teardowns.push("wait for rule history flush", func() { waitRuleHistoryFlush(historyDone) })
 
 	// reloadRouter(bx direct/proxy → /v0/reload):重建 router 原子换入,不断隧道、不碰 TUN/路由。
 	// global 用启动值(改 mode/global 需重劫持,不在此列;这里只热更用户分流规则)。
@@ -843,12 +843,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 					return links
 				}
 				refollowTicker := time.NewTicker(bypassRefollowTick)
-				teardowns.push("停止服务器旁路跟随", refollowTicker.Stop)
+				teardowns.push("stop server-bypass refollow", refollowTicker.Stop)
 				workers.start(ctx, "server-bypass-refollow", func(c context.Context) {
 					watchServerBypass(c, lt.Healthy, func(c context.Context) error {
 						out, err := hooks.RefollowServerBypass(c, currentLinks())
 						if err == nil && out == refollowChanged {
-							log.Printf("server_bypass_refollow 已切到服务器的新地址")
+							log.Printf("server_bypass_refollow switched to the server's new address")
 						}
 						return err
 					}, refollowTicker.C)
@@ -859,7 +859,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 				// 2026-09-04)。只在 darwin 有探测原语,与 direct_egress 同一门槛。
 				if runtime.GOOS == "darwin" {
 					routeTicker := time.NewTicker(serverBypassCheckInterval)
-					teardowns.push("停止服务器旁路路由自愈", routeTicker.Stop)
+					teardowns.push("stop server-bypass route repair", routeTicker.Stop)
 					workers.start(ctx, "server-bypass-route-repair", func(c context.Context) {
 						watchServerBypassRoutes(c, func(c context.Context) (bool, bool, error) {
 							return ServerBypassRoutesIntact(c, tunH.Name, bypassState.serverAddrs)
@@ -872,24 +872,24 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err != nil {
 		return err
 	}
-	teardowns.push("关闭控制面", func() { _ = closer.Close() })
-	teardowns.push("移除控制 socket", func() { _ = os.Remove(SockPath) })
+	teardowns.push("close control plane", func() { _ = closer.Close() })
+	teardowns.push("remove control socket", func() { _ = os.Remove(SockPath) })
 	if err := os.WriteFile(PidPath, []byte(itoa(os.Getpid())), 0o644); err == nil {
-		teardowns.push("移除 pid 文件", func() { _ = os.Remove(PidPath) })
+		teardowns.push("remove pid file", func() { _ = os.Remove(PidPath) })
 	}
 
 	// 6) 劫持默认路由(含 bypass 保 SSH + 服务器防环)。
 	// --no-hijack:分步验证专用——隧道/TUN/引擎都已起,但**不劫持路由、不设 DNS、不装 WFP**,
 	// 系统网络零改动。用于真机隔离验证「隧道能否健康 + TUN 能否起」而不冒断网/断 SSH 的风险。
 	if opts.NoHijack {
-		log.Printf("⚠️ --no-hijack:隧道+TUN+引擎已起,但未劫持路由/未设 DNS/未装 WFP(系统网络零改动)")
+		log.Printf("⚠️ --no-hijack: tunnel, TUN and engine are up, but no routes were hijacked, no DNS was set and no WFP filters were installed (zero change to the system network)")
 	} else {
 		teardown, err := plat.Hijack(tunH, serverBypass, cfg.Bypass)
 		if err != nil {
-			return tagStartFailure(ErrHijack, fmt.Errorf("配置路由: %w", err))
+			return tagStartFailure(ErrHijack, fmt.Errorf("installing the routes: %w", err))
 		}
 		routes.set(true)
-		teardowns.push("还原默认路由", func() {
+		teardowns.push("restore default route", func() {
 			routes.set(false)
 			teardown()
 		})
@@ -917,7 +917,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 				return nil
 			})
 		})
-		log.Printf("china 列表自动刷新已启用: 间隔=%s", cfg.Lists.RefreshInterval())
+		log.Printf("china list auto-refresh enabled: interval=%s", cfg.Lists.RefreshInterval())
 	}
 
 	// 7) 阻塞:信号 / deadman / ctx
@@ -926,16 +926,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	defer signal.Stop(sig)
 	var deadman <-chan time.Time
 	if opts.Deadman > 0 {
-		log.Printf("⏲ 死手定时器 %s 后自动还原", opts.Deadman)
+		log.Printf("⏲ dead-man timer: everything is restored automatically in %s", opts.Deadman)
 		deadman = time.After(opts.Deadman)
 	}
 	select {
 	case s := <-sig:
-		log.Printf("收到信号 %v,还原中…", s)
+		log.Printf("got signal %v, restoring…", s)
 	case <-deadman:
-		log.Printf("死手定时器到点,还原中…")
+		log.Printf("the dead-man timer fired, restoring…")
 	case <-ctx.Done():
-		log.Printf("ctx 取消,还原中…")
+		log.Printf("ctx canceled, restoring…")
 	}
 	// 关机 watchdog:还原已触发,下面的拆除若整体卡住超过 ShutdownGrace,
 	// dump goroutine + 强制退出 —— 保证死手/信号一定终止进程,并捕获卡点根因。
@@ -987,7 +987,7 @@ func withTunnelStderr(src tunnelStderrSource, err error) error {
 func ensureSingboxBinary(cfg *config.Config) (string, error) {
 	path, err := provision.EnsureSingbox(cfg.DataDir, cfg.SingboxBin, embedded.Singbox(), embedded.SingboxVersion(), cfg.SingboxURL, cfg.SingboxSHA256)
 	if err != nil {
-		return "", tagStartFailure(ErrProvision, fmt.Errorf("准备 sing-box: %w", err))
+		return "", tagStartFailure(ErrProvision, fmt.Errorf("preparing sing-box: %w", err))
 	}
 	return path, nil
 }
@@ -995,7 +995,7 @@ func ensureSingboxBinary(cfg *config.Config) (string, error) {
 func ensureBrookBinary(cfg *config.Config, opts Options) (string, error) {
 	path, err := provision.EnsureBrook(cfg.DataDir, firstNonEmpty(opts.BrookBin, cfg.Brook), embedded.Brook(), embedded.BrookVersion(), cfg.BrookURL, cfg.BrookSHA256)
 	if err != nil {
-		return "", tagStartFailure(ErrProvision, fmt.Errorf("准备 brook: %w", err))
+		return "", tagStartFailure(ErrProvision, fmt.Errorf("preparing brook: %w", err))
 	}
 	return path, nil
 }
@@ -1018,7 +1018,7 @@ func waitTunnelHealthy(ctx context.Context, t *tunnel.Tunnel, timeout time.Durat
 			// 这一层只知道「20 秒了还不健康」,判别是下一步的事(tunneldiagnosis.go)。
 			// 忘了判别就落回「没判出来」,而不是落到一个可能是错的答案上。
 			return tagStartFailure(ErrTunnelUnhealthy,
-				withTunnelStderr(t, fmt.Errorf("bx 隧道健康检查超时(%s): restarts=%d", timeout, s.Restarts)))
+				withTunnelStderr(t, fmt.Errorf("the bx tunnel health check timed out after %s: restarts=%d", timeout, s.Restarts)))
 		case <-tick.C:
 		}
 	}
@@ -1050,10 +1050,10 @@ func attachUDPCompanion(d *dialer.Dialer, udpTun *tunnel.Tunnel, label string) e
 	udpTun.Start()
 	udpProxy, err := socksProxy(udpTun.SocksAddr(), &net.Dialer{Timeout: 10 * time.Second})
 	if err != nil {
-		return fmt.Errorf("构建 UDP socks 代理: %w", err)
+		return fmt.Errorf("building the UDP socks proxy: %w", err)
 	}
 	d.SetUDPTransport(&dialer.Transport{Proxy: udpProxy, Healthy: udpTun.Healthy})
-	log.Printf("UDP 专用传输已挂载:%s(UDP/QUIC 走它,TCP 走主传输;未健康则 UDP fail-closed,不拖住主隧道)", label)
+	log.Printf("dedicated UDP transport attached: %s (UDP/QUIC uses it, TCP stays on the main transport; if it is unhealthy UDP fails closed without holding up the main tunnel)", label)
 	return nil
 }
 
@@ -1084,7 +1084,7 @@ func (d *dnsResolver) Resolve(ctx context.Context, domain string) (netip.Addr, e
 		return netip.Addr{}, err
 	}
 	if len(ips) == 0 {
-		return netip.Addr{}, fmt.Errorf("无解析结果: %s", domain)
+		return netip.Addr{}, fmt.Errorf("no addresses resolved for %s", domain)
 	}
 	return ips[0].Unmap(), nil
 }
@@ -1095,7 +1095,7 @@ func readLines(path string) []string {
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		log.Printf("读列表 %s 失败(忽略): %v", path, err)
+		log.Printf("could not read the list %s (ignored): %v", path, err)
 		return nil
 	}
 	defer f.Close()

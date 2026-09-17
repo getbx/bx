@@ -115,7 +115,7 @@ func (m *liveMutator) SetServer(link, udp string) (apply, undo func() error, err
 	}
 	apply = func() error {
 		if err := m.swap.swapTo(link); err != nil {
-			return fmt.Errorf("换主传输: %w", err)
+			return fmt.Errorf("swapping the main transport: %w", err)
 		}
 		if m.udpSwap == nil {
 			return nil
@@ -123,9 +123,9 @@ func (m *liveMutator) SetServer(link, udp string) (apply, undo func() error, err
 		if err := m.udpSwap.swapTo(targetUDP); err != nil {
 			// 主传输已经换过去了。留着就是半切状态,故立刻换回。
 			if rerr := m.swap.swapTo(oldMain); rerr != nil {
-				return fmt.Errorf("换 UDP 传输失败(%w),回退主传输也失败(%v)——两个槽可能不一致", err, rerr)
+				return fmt.Errorf("swapping the UDP transport failed (%w), and putting the main transport back failed too (%v) — the two slots may now disagree", err, rerr)
 			}
-			return fmt.Errorf("换 UDP 传输: %w(主传输已换回 %s)", err, transportLabel(oldMain))
+			return fmt.Errorf("swapping the UDP transport: %w (the main transport was put back to %s)", err, transportLabel(oldMain))
 		}
 		return nil
 	}

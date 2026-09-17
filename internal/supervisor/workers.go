@@ -69,7 +69,7 @@ func (r *workerRegistry) start(ctx context.Context, name string, fn func(context
 			r.mu.Unlock()
 			// 大声,并且带栈 —— 一个静默降级的后台循环是这个仓库最典型的
 			// 失效形状:它与「一切正常」在输出上完全一样。
-			log.Printf("后台工人 %q panic,已收住(该工人就此停止,bx 其余部分继续跑):%v\n%s",
+			log.Printf("the background worker %q panicked and was contained (that worker stops here; the rest of bx keeps running): %v\n%s",
 				name, recovered, debug.Stack())
 			if onPanic != nil {
 				onPanic(name, recovered)

@@ -29,6 +29,6 @@ func armShutdownWatchdog(grace time.Duration, onTimeout func()) *time.Timer {
 func dumpAndExit() {
 	buf := make([]byte, 1<<20)
 	n := runtime.Stack(buf, true)
-	log.Printf("⚠ 关机超时 %s:cleanup 卡住,强制退出。goroutine 转储:\n%s", ShutdownGrace, buf[:n])
+	log.Printf("⚠ shutdown timed out after %s: cleanup is stuck, forcing an exit. goroutine dump:\n%s", ShutdownGrace, buf[:n])
 	os.Exit(1)
 }

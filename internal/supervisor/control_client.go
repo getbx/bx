@@ -58,7 +58,7 @@ func FetchStatusReportContext(ctx context.Context, sockPath string) (stats.Repor
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return stats.Report{}, fmt.Errorf("控制面 /v0/status 返回 %d", resp.StatusCode)
+		return stats.Report{}, fmt.Errorf("the control plane /v0/status returned %d", resp.StatusCode)
 	}
 	var rep stats.Report
 	if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
@@ -96,7 +96,7 @@ func fetchRuntimeState(ctx context.Context, sockPath string) (RuntimeState, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return RuntimeState{}, fmt.Errorf("控制面 /v0/runtime 返回 %d", resp.StatusCode)
+		return RuntimeState{}, fmt.Errorf("the control plane /v0/runtime returned %d", resp.StatusCode)
 	}
 	var state RuntimeState
 	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
@@ -143,9 +143,9 @@ func FetchExplain(sockPath, target string) (ExplainResponse, error) {
 		var out controlResponse
 		_ = json.NewDecoder(resp.Body).Decode(&out)
 		if out.Error != "" {
-			return ExplainResponse{}, fmt.Errorf("控制面 /v0/explain 返回 %d: %s", resp.StatusCode, out.Error)
+			return ExplainResponse{}, fmt.Errorf("the control plane /v0/explain returned %d: %s", resp.StatusCode, out.Error)
 		}
-		return ExplainResponse{}, fmt.Errorf("控制面 /v0/explain 返回 %d", resp.StatusCode)
+		return ExplainResponse{}, fmt.Errorf("the control plane /v0/explain returned %d", resp.StatusCode)
 	}
 	var out ExplainResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -167,7 +167,7 @@ func FetchAppTraffic(sockPath string) (AppTrafficResponse, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return AppTrafficResponse{}, fmt.Errorf("控制面 /v0/apps 返回 %d", resp.StatusCode)
+		return AppTrafficResponse{}, fmt.Errorf("the control plane /v0/apps returned %d", resp.StatusCode)
 	}
 	var out AppTrafficResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -201,9 +201,9 @@ func ShutdownControl(ctx context.Context, sockPath string, expectedPID int) erro
 	decodeErr := json.NewDecoder(response.Body).Decode(&result)
 	if response.StatusCode != http.StatusOK {
 		if result.Error != "" {
-			return fmt.Errorf("控制面 /v0/shutdown 返回 %d: %s", response.StatusCode, result.Error)
+			return fmt.Errorf("the control plane /v0/shutdown returned %d: %s", response.StatusCode, result.Error)
 		}
-		return fmt.Errorf("控制面 /v0/shutdown 返回 %d", response.StatusCode)
+		return fmt.Errorf("the control plane /v0/shutdown returned %d", response.StatusCode)
 	}
 	if decodeErr != nil {
 		return decodeErr
@@ -220,7 +220,7 @@ func SupportsSafeReconnect(sockPath string) (bool, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("控制面 /v0/capabilities 返回 %d", resp.StatusCode)
+		return false, fmt.Errorf("the control plane /v0/capabilities returned %d", resp.StatusCode)
 	}
 	var out struct {
 		SafeReconnect bool `json:"safe_reconnect"`
@@ -246,9 +246,9 @@ func decodeControlResponse(resp *http.Response, path string) (string, error) {
 	decodeErr := json.NewDecoder(resp.Body).Decode(&out)
 	if resp.StatusCode != http.StatusOK {
 		if out.Error != "" {
-			return out.State, fmt.Errorf("控制面 %s 返回 %d: %s", path, resp.StatusCode, out.Error)
+			return out.State, fmt.Errorf("the control plane %s returned %d: %s", path, resp.StatusCode, out.Error)
 		}
-		return out.State, fmt.Errorf("控制面 %s 返回 %d", path, resp.StatusCode)
+		return out.State, fmt.Errorf("the control plane %s returned %d", path, resp.StatusCode)
 	}
 	if decodeErr != nil {
 		return "", decodeErr
@@ -431,9 +431,9 @@ func ProbeControlContext(ctx context.Context, sockPath, host string, port int) (
 		var out controlResponse
 		_ = json.NewDecoder(resp.Body).Decode(&out)
 		if out.Error != "" {
-			return ProbeResult{}, fmt.Errorf("控制面 /v0/probe 返回 %d: %s", resp.StatusCode, out.Error)
+			return ProbeResult{}, fmt.Errorf("the control plane /v0/probe returned %d: %s", resp.StatusCode, out.Error)
 		}
-		return ProbeResult{}, fmt.Errorf("控制面 /v0/probe 返回 %d", resp.StatusCode)
+		return ProbeResult{}, fmt.Errorf("the control plane /v0/probe returned %d", resp.StatusCode)
 	}
 	var result ProbeResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

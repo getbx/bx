@@ -100,7 +100,7 @@ func (s *transportSwapper) runFailover(ctx context.Context, transports []string,
 		// 门控已过:按优先级逐个 swapTo,失败标 false 重判下一个;全失败 → decide 返 -1 退出。
 		for target >= 0 {
 			if err := s.swapTo(transports[target]); err == nil {
-				log.Printf("failover: 当前传输持续不健康,已切到 %s", transportLabel(transports[target]))
+				log.Printf("failover: the current transport stayed unhealthy, switched to %s", transportLabel(transports[target]))
 				unhealthySince = time.Time{}
 				break
 			}
@@ -108,7 +108,7 @@ func (s *transportSwapper) runFailover(ctx context.Context, transports []string,
 			target = policy.decide(curIdx, healthy, now.Sub(unhealthySince), switchAge(lastSwitch, now))
 		}
 		if target < 0 {
-			log.Printf("failover: 所有备选传输均不可用,保持当前并 Block(疑网络问题,不横跳)")
+			log.Printf("failover: no alternative transport is usable, keeping the current one and blocking (this looks like a network problem, so it does not flap between them)")
 		}
 		lastSwitch = now // 切成功→冷静期;全挂→节流重试,都避免每 tick 风暴
 	}
