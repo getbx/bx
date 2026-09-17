@@ -40,7 +40,7 @@ func validateKind(kind string) error {
 	case RuleKindDirect, RuleKindProxy:
 		return nil
 	default:
-		return fmt.Errorf("规则类型只能是 %s 或 %s,得到 %q", RuleKindDirect, RuleKindProxy, kind)
+		return fmt.Errorf("a rule kind must be %s or %s, got %q", RuleKindDirect, RuleKindProxy, kind)
 	}
 }
 
@@ -113,7 +113,7 @@ func RemoveRule(path, kind, pattern string) error {
 	}
 	rules := mappingValue(root, "rules")
 	if rules == nil || rules.Kind != yaml.SequenceNode {
-		return fmt.Errorf("配置里没有 rules 段,规则 %q 无从删起", pattern)
+		return fmt.Errorf("the config has no rules section, so there is nothing to remove %q from", pattern)
 	}
 	removed := false
 	for _, entry := range rules.Content {
@@ -132,7 +132,7 @@ func RemoveRule(path, kind, pattern string) error {
 		list.Content = kept
 	}
 	if !removed {
-		return fmt.Errorf("规则 %q 不在 %s 列表里", pattern, kind)
+		return fmt.Errorf("rule %q is not in the %s list", pattern, kind)
 	}
 	return writeConfigRoot(path, doc)
 }
@@ -177,15 +177,15 @@ func findOrCreateRuleList(root *yaml.Node, kind string) *yaml.Node {
 func loadConfigRoot(path string) (*yaml.Node, *yaml.Node, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("读配置 %s: %w", path, err)
+		return nil, nil, fmt.Errorf("reading the config %s: %w", path, err)
 	}
 	doc := &yaml.Node{}
 	if err := yaml.Unmarshal(raw, doc); err != nil {
-		return nil, nil, fmt.Errorf("解析配置 %s: %w", path, err)
+		return nil, nil, fmt.Errorf("parsing the config %s: %w", path, err)
 	}
 	root := documentRoot(doc)
 	if root == nil {
-		return nil, nil, fmt.Errorf("配置 %s 不是一个 YAML 映射", path)
+		return nil, nil, fmt.Errorf("the config %s is not a YAML mapping", path)
 	}
 	return root, doc, nil
 }
@@ -193,17 +193,17 @@ func loadConfigRoot(path string) (*yaml.Node, *yaml.Node, error) {
 func writeConfigRoot(path string, doc *yaml.Node) error {
 	out, err := yaml.Marshal(doc)
 	if err != nil {
-		return fmt.Errorf("序列化配置: %w", err)
+		return fmt.Errorf("serializing the config: %w", err)
 	}
 	// **原子替换。** 这个文件有两个进程会读(Core 与 CLI),写到一半被读到
 	// 会让下一次 bx up 拿到半份配置 —— 与本仓库其它持久化状态同一条纪律。
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		return fmt.Errorf("写配置 %s: %w", tmp, err)
+		return fmt.Errorf("writing the config %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
-		return fmt.Errorf("替换配置 %s: %w", path, err)
+		return fmt.Errorf("replacing the config %s: %w", path, err)
 	}
 	return nil
 }

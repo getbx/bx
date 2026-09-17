@@ -50,7 +50,7 @@ func SetCurrentServer(path, name string) error {
 	}
 	servers := readServers(root)
 	if len(servers) == 0 {
-		return fmt.Errorf("配置里没有 servers 清单;先用 `bx setup` 或 `bx server add` 加一台")
+		return fmt.Errorf("the config has no servers list; add one first with bx setup or bx server add")
 	}
 	for _, s := range servers {
 		if SameServerName(s.Name, name) {
@@ -59,7 +59,7 @@ func SetCurrentServer(path, name string) error {
 			return writeConfigRoot(path, doc)
 		}
 	}
-	return fmt.Errorf("没有名为 %q 的服务器;清单里有:%s", name, strings.Join(serverNames(servers), "、"))
+	return fmt.Errorf("there is no server named %q; the list has: %s", name, strings.Join(serverNames(servers), ", "))
 }
 
 // UpsertServer 加一台或就地更新同名的那一台,并把 current 设成它。
@@ -86,7 +86,7 @@ func addServer(path, name, link, udp string, makeCurrent bool) (added bool, err 
 		return false, err
 	}
 	if strings.TrimSpace(link) == "" {
-		return false, fmt.Errorf("服务器 %q 的链接不能为空", name)
+		return false, fmt.Errorf("the link for server %q must not be empty", name)
 	}
 	root, doc, err := loadConfigRoot(path)
 	if err != nil {
@@ -184,7 +184,7 @@ func settleCurrent(root, list *yaml.Node, named string, makeCurrent bool) {
 // 不藏在这一层。
 func ReplaceServerLink(path, name, link, udp string) error {
 	if strings.TrimSpace(link) == "" {
-		return fmt.Errorf("服务器 %q 的链接不能为空", name)
+		return fmt.Errorf("the link for server %q must not be empty", name)
 	}
 	root, doc, err := loadConfigRoot(path)
 	if err != nil {
@@ -192,7 +192,7 @@ func ReplaceServerLink(path, name, link, udp string) error {
 	}
 	list := mappingValue(root, "servers")
 	if list == nil || list.Kind != yaml.SequenceNode {
-		return fmt.Errorf("配置里没有 servers 清单")
+		return fmt.Errorf("the config has no servers list")
 	}
 	for _, entry := range list.Content {
 		if !SameServerName(scalarValue(mappingValue(entry, "name")), name) {
@@ -206,7 +206,7 @@ func ReplaceServerLink(path, name, link, udp string) error {
 		}
 		return writeConfigRoot(path, doc)
 	}
-	return fmt.Errorf("没有名为 %q 的服务器", name)
+	return fmt.Errorf("there is no server named %q", name)
 }
 
 // RemoveServer 从清单里删掉一台。
@@ -220,11 +220,11 @@ func RemoveServer(path, name string) error {
 	}
 	current := strings.TrimSpace(scalarValue(mappingValue(root, "current")))
 	if SameServerName(current, name) {
-		return fmt.Errorf("%q 是当前正在用的服务器;先 `bx server use <别的名字>` 再删", name)
+		return fmt.Errorf("%q is the server currently in use; switch away with bx server use <another name> before removing it", name)
 	}
 	list := mappingValue(root, "servers")
 	if list == nil || list.Kind != yaml.SequenceNode {
-		return fmt.Errorf("配置里没有 servers 清单")
+		return fmt.Errorf("the config has no servers list")
 	}
 	kept := list.Content[:0]
 	removed := false
@@ -236,7 +236,7 @@ func RemoveServer(path, name string) error {
 		kept = append(kept, entry)
 	}
 	if !removed {
-		return fmt.Errorf("没有名为 %q 的服务器", name)
+		return fmt.Errorf("there is no server named %q", name)
 	}
 	list.Content = kept
 	return writeConfigRoot(path, doc)

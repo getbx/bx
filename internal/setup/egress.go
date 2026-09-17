@@ -99,7 +99,7 @@ func RouteViaEgress(path, name, cidr string) error {
 	if !egressExists(root, name) {
 		// **不许静默建一个出口。** 那样用户会得到一条指向不存在地址的规则,
 		// 而 `bx up` 在加载期报错,信息却指向他没写过的东西。
-		return fmt.Errorf("没有名为 %q 的出口;先 `bx egress add %s --socks5 <地址>`", name, name)
+		return fmt.Errorf("there is no egress named %q; add one first with bx egress add %s --socks5 <address>", name, name)
 	}
 	rules := findOrCreateSequence(root, "rules")
 	for _, entry := range rules.Content {
@@ -138,7 +138,7 @@ func RemoveEgress(path, name string) error {
 		return err
 	}
 	if !egressExists(root, name) {
-		return fmt.Errorf("没有名为 %q 的出口", name)
+		return fmt.Errorf("there is no egress named %q", name)
 	}
 	if list := mappingValue(root, "egress"); list != nil && list.Kind == yaml.SequenceNode {
 		kept := list.Content[:0]

@@ -25,19 +25,19 @@ type TransportsBefore struct {
 func UpdateTransports(path string, links []string, udpTransport string) (TransportsBefore, error) {
 	var before TransportsBefore
 	if len(links) == 0 {
-		return before, fmt.Errorf("setup: 无传输链接")
+		return before, fmt.Errorf("setup: no transport link")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return before, fmt.Errorf("读配置 %s: %w", path, err)
+		return before, fmt.Errorf("reading the config %s: %w", path, err)
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return before, fmt.Errorf("解析配置 %s: %w", path, err)
+		return before, fmt.Errorf("parsing the config %s: %w", path, err)
 	}
 	root := documentRoot(&doc)
 	if root == nil {
-		return before, fmt.Errorf("配置 %s 不是一个 YAML 映射", path)
+		return before, fmt.Errorf("the config %s is not a YAML mapping", path)
 	}
 
 	before.Server = scalarValue(mappingValue(root, "server"))
@@ -65,10 +65,10 @@ func UpdateTransports(path string, links []string, udpTransport string) (Transpo
 
 	out, err := yaml.Marshal(&doc)
 	if err != nil {
-		return before, fmt.Errorf("序列化配置: %w", err)
+		return before, fmt.Errorf("serializing the config: %w", err)
 	}
 	if err := os.WriteFile(path, out, 0o600); err != nil {
-		return before, fmt.Errorf("写配置 %s: %w", path, err)
+		return before, fmt.Errorf("writing the config %s: %w", path, err)
 	}
 	return before, nil
 }
