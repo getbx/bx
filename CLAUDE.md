@@ -2688,6 +2688,16 @@ brief 假设的「已经带了」),于是菜单那半说不出是哪台服务器
   另开一条路。
   两处 grep 参与判据是**必要**的并已注明:`test-macos-menu.sh` 提前 `exit 0` 时退出码仍是 0(只有收尾
   横幅抓得住),`gofumpt -l` 输出文件名而退出码恒 0。
+- **真机绿不等于这条路没问题 —— 真机与 CI 互不替代(2026-09-16 付的学费)。**
+  给 Windows 那条腿修三条测试时,测试二进制交叉编译到项目所有者的真机
+  (`030-SJWJ-GSR-B`)上跑,七个包全绿,变异对照也做了(修复前红、修复后绿,
+  CRLF 那条还当场复现了「找不到函数结尾」)。推上 CI 第一轮却红了 **11 条**:
+  `control_client_test.go` 写死 `os.MkdirTemp("/tmp", …)`,而 `/tmp` 在 Windows 上
+  解析成**当前盘**的 `\tmp` —— 那台真机恰好有 `C:\tmp`(事后实测确认),runner 上没有。
+  **真机比 CI 宽松,于是它在这一族上给了假绿,而我当时已经用它下过「七个包全绿」的结论。**
+  分工是确定的,别拿一边的绿去替另一边背书:真机验 CI 验不了的(平台语义、真实文件
+  系统、真实网卡、真实网络);CI 验真机验不了的(**干净 checkout** —— `.gitattributes`
+  的行尾效果只有它证得了、标准环境、没有任何本地遗留物)。
 - **提交信息**:中文 conventional commits,结尾带 `Co-Authored-By: Claude …`。在默认分支直接提交(单人项目)。
 - **内嵌资产**:`internal/embedded/assets/brook_linux_{amd64,arm64}`(~30MB)+ `singbox_{linux,darwin}_{amd64,arm64}`(linux ~28MB / darwin ~23MB)是提交进仓库的真二进制,按 GOOS/GOARCH 条件 embed(每构建只嵌匹配的那一个;singbox 经 `embedded_singbox_{amd64,arm64,darwin_amd64,darwin_arm64,other}.go`,**linux+darwin 都内嵌(同 brook 平台覆盖,mac 上 reality/hysteria2 也零依赖即跑)**,windows/其他 arch 走 nil 兜底→下载)。CI `embed-brook.yml`/`embed-singbox.yml` 跟上游 release 自动重嵌。换 arch 要补对应二进制。**缓存键掺内容 hash(已实现)**:`provision.embedCacheKey` = 版本 tag + `sha256(内嵌字节)[:12]`,写进 `.brook-version`/`.singbox-version`;同 tag 重嵌不同字节(如 sing-box 从 `with_utls` 加到 `with_utls,with_quic`)也会失效旧缓存、强制重释放,避免用到陈旧二进制。
   - **sing-box 是「自建静态最小构建」不是官方 release 二进制**:官方 linux 包是 glibc **动态链接 + 56MB 全家桶**(含 tailscale/acme/clash/dhcp,reality 全用不上),违背 bx「静态单文件、零依赖」。故从同一 release tag 源码用 `CGO_ENABLED=0 go build -tags with_utls,with_quic`(REALITY 需 utls;**hysteria2/QUIC 需 with_quic**)自建:**静态**(Alpine/musl 也跑,同 brook)、**~28MB**(官方半体积)、同 revision。CI `embed-singbox.yml` 复刻此构建;改时务必保持 `with_utls,with_quic` 与 `CGO_ENABLED=0`。
@@ -2858,6 +2868,33 @@ Service 生命周期(setup→up→status→down→uninstall)与 hysteria2 UDP �
 与 Inno 安装包**代码完成、GUI 真机未验**(要人在机器旁点 UAC)。**逐步的经过、每次 e2e
 的逐条结果、当时踩的坑全在 `docs/lessons/windows-port.md`**;下面只留改这块之前必须
 知道的判据。
+
+**CI 那条腿只跑它证明得了的东西(2026-09-16 定;当天 master 恢复 7/7 全绿,
+自 2026-07-08 以来第一次)。** `go test ./...` 在 Windows 上红了两个多月,168 条失败
+散在 15 个包里,逐条看下来绝大多数是 **darwin/linux 子系统的测试跑在一台 Windows
+主机上**:`/tmp` 硬编码、0600 权限断言、launchd plist 路径、拿宿主 `filepath` 语义去
+校验 POSIX 路径串(`filepath.IsAbs("/Applications/Bx.app")` 在 Windows 是 false)。
+那些代码在 Windows 上**编得进但跑不到**(Guardian 只在 darwin/linux 起)。同一天在真机上
+跑只读命令,一次扫描抓到五条真缺陷(到处让人敲 sudo、拿 NTFS 判 0600、印 systemd 的
+服务名、explain 认不出物理网卡、preset 打出字面星号)—— **没有一条会被那 168 个里的
+任何一个抓到。红着的腿不是严格,是等于不存在。**
+现在 `test-windows` 跑两组:带 `*_windows_test.go` 的包(Windows **独家**能证明的行为)
+与带 `purity_test.go` 的纯判据包(按构造与平台无关,在哪儿都该一样)。**清单从
+`git ls-files` 现取、不手抄,一个都找不到时响亮失败** —— 与 `verify.sh` 第 14 步同源,
+由 `TestWindowsCILegDerivesItsPackageList` 钉住,其中含「全量 `go test ./...` 不许回来」
+那一条:它在这个平台上结构性地红,而**恒红的闸门会被下一个人删掉**。
+**收窄不等于豁免**:收窄之后仍然抓到了真东西 —— 新腿推上去第一轮就逼出
+`control_client_test.go` 写死的 `/tmp`(见「约定」里那条「真机绿不等于没问题」)。
+
+**`.gitattributes` 是全部读源码守卫的前提,不是格式偏好。** 它们按 `"\n"` 定位锚点
+(`tailscale_bypass_test.go` 找函数结尾的 `"\n}\n"`),而 Windows 上 git 默认
+`core.autocrlf=true`、GitHub 的 windows runner 也是 —— checkout 出来是 CRLF,
+那一整类守卫会在**最需要它们的那条腿上**以 `t.Fatal` 恒红。今天
+`internal/{appattr,platformcheck,supervisor}` 里就有 8 个读源码的测试文件,
+它们没红只是因为锚点恰好没跨行。落地前实测全仓 0 个文件含 CRLF,强制 LF 不改变任何
+既有内容;内嵌的真二进制(~150MB)与 `*.syso` **显式**标 `binary` —— `text=auto` 靠
+内容探测,而一次探测失误就是把一个可执行文件改坏,代价不对称(rebase 到一次 sing-box
+自动升级之上时逐个核过:大小逐字节一致、`binary: set`)。
 
 - **WFP 的权重就是正确性本身,照抄上游会反。** `internal/winfw` 只装三条过滤器:
   `permitSelf(15)` + `permitTun(14)` + `blockDNS(deny 12)`,**刻意不带 `blockAll`** ——
