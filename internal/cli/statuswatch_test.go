@@ -208,10 +208,10 @@ func TestStatusWatchLoopRetriesOnErrorThenRecovers(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "第 1 次") {
+	if !strings.Contains(out, "attempt 1") {
 		t.Errorf("没有打印第 1 次失败提示:%q", out)
 	}
-	if !strings.Contains(out, "第 2 次") {
+	if !strings.Contains(out, "attempt 2") {
 		t.Errorf("没有打印第 2 次失败提示:%q", out)
 	}
 	if strings.Count(out, "\n") != 3 { // 2 条失败提示 + 1 条状态行
@@ -329,7 +329,7 @@ func TestRequireStatusWatchCapabilityRejectsAbsentKey(t *testing.T) {
 	if !strings.Contains(msg, "0.9.0-old") {
 		t.Errorf("错误信息没有点名对面的 guardian_version,实际:%q", msg)
 	}
-	if !strings.Contains(msg, "从未声明") {
+	if !strings.Contains(msg, "never declared") {
 		t.Errorf("Capabilities 为 nil 时错误信息应说明「从未声明过 capabilities」,实际:%q", msg)
 	}
 }
@@ -362,7 +362,7 @@ func TestRequireStatusWatchCapabilityRejectsMissingStatusWatch(t *testing.T) {
 	if !strings.Contains(msg, "status_watch") {
 		t.Errorf("错误信息应点名缺的能力 status_watch,实际:%q", msg)
 	}
-	if strings.Contains(msg, "从未声明") {
+	if strings.Contains(msg, "never declared") {
 		t.Errorf("这一情形声明过能力(只是没有这一项),不该说成「从未声明」,实际:%q", msg)
 	}
 }
@@ -373,7 +373,7 @@ func TestRequireStatusWatchCapabilityRejectsMissingStatusWatch(t *testing.T) {
 // status_watch"那一支,而不是"从未声明"那一支。
 //
 // 若判据被错误地写成 len(status.Capabilities)==0,这条测试会失败(会命中
-// "从未声明"分支、断言 !strings.Contains(msg,"从未声明") 就会红)——这正是
+// "never declared" 分支、断言 !strings.Contains(msg,"never declared") 就会红)——这正是
 // 选 nil 判据而不是 len 判据的存在性证明。手工变异验证过(见 task 报告):
 // 把 requireStatusWatchCapability 里的判据从 `== nil` 改成 `len(...)==0`,
 // 唯独这条测试会失败,另外两条(TestRequireStatusWatchCapabilityRejects
@@ -402,7 +402,7 @@ func TestRequireStatusWatchCapabilityDistinguishesEmptyFromNilCapabilities(t *te
 	if !strings.Contains(msg, "status_watch") {
 		t.Errorf("错误信息应点名缺的能力 status_watch,实际:%q", msg)
 	}
-	if strings.Contains(msg, "从未声明") {
+	if strings.Contains(msg, "never declared") {
 		t.Errorf("Capabilities 是非 nil 的空切片,意味着「声明过」,不该说成「从未声明」"+
 			"——这正是 nil 判据存在的理由(换成 len()==0 判据,这条测试会失败),实际:%q", msg)
 	}

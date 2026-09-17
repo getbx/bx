@@ -68,7 +68,7 @@ func releaseArchFromUname(out string) (string, error) {
 	case "aarch64", "arm64":
 		return "arm64", nil
 	}
-	return "", fmt.Errorf("远端架构无法识别(uname -m 说的是 %q);bx 只提供 linux/amd64 与 linux/arm64",
+	return "", fmt.Errorf("the remote architecture was not recognized (uname -m says %q); bx only ships linux/amd64 and linux/arm64",
 		strings.TrimSpace(out))
 }
 
@@ -128,7 +128,7 @@ func clientLinksFromInstallOutput(out string) (main, udp string, err error) {
 		}
 	}
 	if len(links) == 0 {
-		return "", "", fmt.Errorf("远端没有给出 bx:// 客户端链接;它说的是:\n%s", strings.TrimSpace(out))
+		return "", "", fmt.Errorf("the remote host did not produce a bx:// client link; what it said was:\n%s", strings.TrimSpace(out))
 	}
 	if len(links) > 1 {
 		return links[0], links[1], nil
@@ -142,16 +142,16 @@ func clientLinksFromInstallOutput(out string) (main, udp string, err error) {
 // 比彻底失败更难查(用户会以为已经换过去了)。
 func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	if strings.TrimSpace(opts.Host) == "" {
-		return fmt.Errorf("缺目标主机(形如 root@1.2.3.4)")
+		return fmt.Errorf("the target host is missing (it looks like root@1.2.3.4)")
 	}
 	// 一次往返同时问「我是谁」和「什么架构」—— 两个都决定后面怎么做。
 	probe, err := deps.run("ssh", opts.Host, "id -u; uname -m")
 	if err != nil {
-		return fmt.Errorf("连不上 %s:%w", opts.Host, err)
+		return fmt.Errorf("could not connect to %s: %w", opts.Host, err)
 	}
 	idLine, unameLine, ok := strings.Cut(strings.TrimSpace(probe), "\n")
 	if !ok {
-		return fmt.Errorf("远端的探测输出读不懂:%q", strings.TrimSpace(probe))
+		return fmt.Errorf("the remote probe output could not be understood: %q", strings.TrimSpace(probe))
 	}
 	sudo, err := needsSudo(idLine)
 	if err != nil {
@@ -162,11 +162,11 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 		return err
 	}
 	if sudo {
-		fmt.Println("• 远端不是 root,后续命令走 sudo")
+		fmt.Println("• The remote login is not root, so the rest runs under sudo")
 		if !deps.hasTTY {
 			// 没有终端就问不了密码 —— 与其让它挂住或吐一句无关的错误,
 			// 不如提前说清楚。
-			fmt.Println("  (当前没有终端,sudo 若需要密码会失败;那时请配 NOPASSWD 或在终端里重跑)")
+			fmt.Println("  (there is no terminal here, so sudo will fail if it asks for a password — set up NOPASSWD, or re-run this from a terminal)")
 		}
 	}
 	// runRemote 把「要不要 sudo」「要不要 TTY」收在一处 —— 散在各调用点就会
@@ -182,36 +182,36 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 		err := deps.remoteFetch(opts.Host, arch, sudo, deps.hasTTY)
 		switch {
 		case err == nil:
-			fmt.Println("• 远端已自行取到二进制并核对通过")
+			fmt.Println("• The remote host fetched the binary itself and it checks out")
 		case !shouldFallBackToLocalUpload(err):
 			// 校验和不符 —— **绝不回落**。换条路再拿一遍只会掩盖问题。
-			return fmt.Errorf("远端校验失败:%w", err)
+			return fmt.Errorf("the remote verification failed: %w", err)
 		default:
-			fmt.Printf("• 远端取不到(%v),改由本机下载后上传\n", err)
+			fmt.Printf("• The remote host could not fetch it (%v), so it is downloaded here and uploaded\n", err)
 			local, ferr := deps.fetchBinary(arch)
 			if ferr != nil {
-				return fmt.Errorf("准备 linux/%s 的 bx 二进制:%w", arch, ferr)
+				return fmt.Errorf("preparing the linux/%s bx binary: %w", arch, ferr)
 			}
 			if _, serr := deps.run("scp", local, opts.Host+":"+upload); serr != nil {
-				return fmt.Errorf("上传二进制:%w", serr)
+				return fmt.Errorf("uploading the binary: %w", serr)
 			}
 		}
 	} else {
 		local, ferr := deps.fetchBinary(arch)
 		if ferr != nil {
-			return fmt.Errorf("准备 linux/%s 的 bx 二进制:%w", arch, ferr)
+			return fmt.Errorf("preparing the linux/%s bx binary: %w", arch, ferr)
 		}
 		if _, serr := deps.run("scp", local, opts.Host+":"+upload); serr != nil {
-			return fmt.Errorf("上传二进制:%w", serr)
+			return fmt.Errorf("uploading the binary: %w", serr)
 		}
 	}
 	if _, err := runRemote(fmt.Sprintf("chmod +x %s && mv %s %s",
 		shellSingleQuoted(upload), shellSingleQuoted(upload), shellSingleQuoted(final))); err != nil {
-		return fmt.Errorf("就位二进制:%w", err)
+		return fmt.Errorf("putting the binary in place: %w", err)
 	}
 	out, err := runRemote(remoteInstallCommand(opts))
 	if err != nil {
-		return fmt.Errorf("远端安装失败:%w\n%s", err, strings.TrimSpace(out))
+		return fmt.Errorf("the remote installation failed: %w\n%s", err, strings.TrimSpace(out))
 	}
 	main, udp, err := clientLinksFromInstallOutput(out)
 	if err != nil {
@@ -228,17 +228,17 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	fwOut, err := runRemote(remoteFirewallCommand(port))
 	switch {
 	case err != nil:
-		fmt.Printf("⚠ 未能自动放行防火墙端口 %d,若外部连不上请手动开:%v\n", port, err)
+		fmt.Printf("⚠ The firewall port %d could not be opened automatically; if it is unreachable from outside, open it by hand: %v\n", port, err)
 	case strings.TrimSpace(fwOut) != "":
 		// **改了别人的防火墙就要说出来。** 静默修改系统状态,用户既无从复核也
 		// 无从撤销 —— 而这条命令的其余每一步都会打一行。
 		fmt.Printf("• %s\n", strings.TrimSpace(fwOut))
 	default:
-		fmt.Println("• 远端没有启用 ufw,未改动防火墙(若有云安全组,记得放行该端口)")
+		fmt.Println("• ufw is not enabled on the remote host, so no firewall was changed (if there is a cloud security group, remember to open that port)")
 	}
 	// 装完就启动 —— 一条命令该留下一台**在跑**的服务器,而不是一台装好没开的。
 	if _, err := runRemote(shellSingleQuoted(final) + " server start"); err != nil {
-		fmt.Printf("⚠ 远端服务未能自动启动,登上去跑一次 `bx server start` 即可:%v\n", err)
+		fmt.Printf("⚠ The remote service did not start by itself; log in and run bx server start once: %v\n", err)
 	}
 	if udp != "" {
 		return deps.writeLocalConfig(main + " --udp " + udp)
@@ -262,7 +262,7 @@ func shellSingleQuoted(value string) string {
 func serverDeployAction(c *cli.Context) error {
 	host := strings.TrimSpace(c.Args().First())
 	if host == "" {
-		return errors.New("用法:bx server deploy <user@host>(host 也可以是 ssh_config 里的别名)")
+		return errors.New("usage: bx server deploy <user@host>   (host may also be an alias from your ssh_config)")
 	}
 	opts := deployOptions{
 		Host:     host,
@@ -272,7 +272,7 @@ func serverDeployAction(c *cli.Context) error {
 		Force:    c.Bool("force"),
 		Name:     strings.TrimSpace(c.String("name")),
 	}
-	fmt.Printf("• 目标 %s(bx 不经手你的 SSH 凭据 —— 密码/密钥/agent 全由系统 ssh 处理)\n", host)
+	fmt.Printf("• Target %s (bx never handles your SSH credentials — password, key and agent are all your system ssh's job)\n", host)
 	return runServerDeploy(opts, deployDeps{
 		run:              runDeployCommand,
 		hasTTY:           stdinIsTerminal(),
@@ -303,14 +303,14 @@ func fetchLinuxBinary(arch string) (string, error) {
 	client := &http.Client{Transport: stallSafeTransport()}
 	tag, err := latestReleaseTag(client)
 	if err != nil {
-		return "", fmt.Errorf("查最新版本:%w", err)
+		return "", fmt.Errorf("looking up the latest version: %w", err)
 	}
 	// **走签名 manifest,不是裸 sha256。** manifest 由 ed25519 签名,校验不过
 	// verifiedReleaseManifest 就直接失败 —— 这是这条路上唯一的供应链依据,
 	// 而我们正要把这个文件放进一台机器的 /usr/local/bin。
 	manifest, err := verifiedReleaseManifest(client, tag)
 	if err != nil {
-		return "", fmt.Errorf("校验发布清单:%w", err)
+		return "", fmt.Errorf("verifying the release manifest: %w", err)
 	}
 	return buildLinuxBinary(manifest, arch, tag, func(url string) ([]byte, error) {
 		return downloadBytes(client, url)
@@ -329,7 +329,7 @@ func buildLinuxBinary(manifest updatepkg.Manifest, arch, tag string, fetch func(
 	}
 	data, err := fetch(repoReleaseDL + "/" + tag + "/" + asset.Name)
 	if err != nil {
-		return "", fmt.Errorf("下载 %s:%w", asset.Name, err)
+		return "", fmt.Errorf("downloading %s: %w", asset.Name, err)
 	}
 	if err := verifyAssetBytes(data, asset); err != nil {
 		return "", err
@@ -360,7 +360,7 @@ func linuxAssetFor(manifest updatepkg.Manifest, arch string) (updatepkg.Asset, e
 			return asset, nil
 		}
 	}
-	return updatepkg.Asset{}, fmt.Errorf("这一版没有 %s 的发布产物", want)
+	return updatepkg.Asset{}, fmt.Errorf("this release has no artifact for %s", want)
 }
 
 func sha256Sum(data []byte) []byte {
@@ -373,7 +373,7 @@ func sha256Sum(data []byte) []byte {
 // name 非空时走「加进清单」那条路(经 Guardian,不提权、**不改 current**);
 // 为空则维持原状:root 就 `bx setup`,非 root 就打印下一步。
 func applyDeployedLink(link, name string) error {
-	fmt.Println("• 远端已就绪,客户端链接已取到")
+	fmt.Println("• The remote host is ready, and the client link was retrieved")
 	main, udp := splitDeployedLink(link)
 
 	if strings.TrimSpace(name) != "" {
@@ -382,14 +382,14 @@ func applyDeployedLink(link, name string) error {
 		} else {
 			// **加不进去不是致命的** —— 机器已经装好了,链接就在眼前。
 			// 报清楚原因,再退回原来那条「你自己敲一条」的路。
-			fmt.Printf("⚠ 没能自动加进服务器清单:%v\n", err)
+			fmt.Printf("⚠ It could not be added to the server list automatically: %v\n", err)
 		}
 	}
 
 	// **不偷偷提权。** 写 /etc/bx 要 root,而这条命令的其余部分不需要 ——
 	// 让一条只做 ssh 的命令中途弹密码框是坏意外。
 	if os.Geteuid() != 0 {
-		fmt.Printf("\n下一步(需要 root):\n  %s\n  "+elevate.Prefix+"bx up\n", setupCommandLine(main, udp))
+		fmt.Printf("\nNext (needs root):\n  %s\n  "+elevate.Prefix+"bx up\n", setupCommandLine(main, udp))
 		return nil
 	}
 
@@ -398,7 +398,7 @@ func applyDeployedLink(link, name string) error {
 	// 而这个仓库全部的事故都在这种「同一件事两个实现」上。
 	self, err := os.Executable()
 	if err != nil {
-		fmt.Printf("\n下一步:\n  %s\n  bx up\n", setupCommandLine(main, udp))
+		fmt.Printf("\nNext:\n  %s\n  bx up\n", setupCommandLine(main, udp))
 		return nil
 	}
 	// **flag 必须在链接之前。** urfave/cli 遇到第一个位置参数就停止解析 flag,
@@ -409,13 +409,13 @@ func applyDeployedLink(link, name string) error {
 		args = append(args, "--udp", udp)
 	}
 	args = append(args, main)
-	fmt.Println("• 写本机配置(bx setup)…")
+	fmt.Println("• Writing the local config (bx setup)…")
 	cmd := exec.Command(self, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("写本机配置失败:%w(可手动跑 %s)", err, setupCommandLine(main, udp))
+		return fmt.Errorf("could not write the local config: %w (you can run %s by hand)", err, setupCommandLine(main, udp))
 	}
-	fmt.Println("\n✅ 部署完成。下一步:" + elevate.Prefix + "bx up")
+	fmt.Println("\n✅ Deployed. Next: " + elevate.Prefix + "bx up")
 	return nil
 }
 
@@ -432,8 +432,8 @@ func addDeployedServer(name, main, udp string) error {
 	if err := guardian.NewClient(guardian.SocketPath).AddServer(ctx, name, main, udp); err != nil {
 		return err
 	}
-	fmt.Printf("✓ 已加进服务器清单:%s(当前在用的那台没有变)\n", name)
-	fmt.Printf("  要换过去:bx server use %s\n", name)
+	fmt.Printf("✓ Added to the server list as %s (the one you are using did not change)\n", name)
+	fmt.Printf("  To switch to it: bx server use %s\n", name)
 	return nil
 }
 
@@ -474,11 +474,11 @@ func serverDeployFlags() []cli.Flag {
 func verifyAssetBytes(data []byte, asset updatepkg.Asset) error {
 	want := strings.TrimSpace(asset.SHA256)
 	if want == "" {
-		return fmt.Errorf("发布清单里没有 %s 的校验和 —— 拒绝上传一个无法核对的二进制", asset.Name)
+		return fmt.Errorf("the release manifest has no checksum for %s — refusing to upload a binary that cannot be verified", asset.Name)
 	}
 	got := hex.EncodeToString(sha256Sum(data))
 	if !strings.EqualFold(got, want) {
-		return fmt.Errorf("%s 校验和不符(清单 %s,实际 %s)—— 拒绝上传", asset.Name, want, got)
+		return fmt.Errorf("the checksum of %s does not match (the manifest says %s, the file is %s) — refusing to upload it", asset.Name, want, got)
 	}
 	return nil
 }
@@ -521,17 +521,17 @@ func remoteFetchBinary(host, arch string, sudo, hasTTY bool) error {
 	client := &http.Client{Transport: stallSafeTransport()}
 	tag, err := latestReleaseTag(client)
 	if err != nil {
-		return fmt.Errorf("查最新版本:%w", err)
+		return fmt.Errorf("looking up the latest version: %w", err)
 	}
 	manifest, err := verifiedReleaseManifest(client, tag)
 	if err != nil {
-		return fmt.Errorf("校验发布清单:%w", err)
+		return fmt.Errorf("verifying the release manifest: %w", err)
 	}
 	asset, err := linuxAssetFor(manifest, arch)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("• 让远端自行取 %s(%s),校验和由本机的签名清单提供\n", asset.Name, tag)
+	fmt.Printf("• Letting the remote host fetch %s (%s) itself; the checksum comes from the signed manifest read here\n", asset.Name, tag)
 	args := append(sshArgsFor(host, sudo, hasTTY), remoteScript(remoteFetchCommand(tag, asset), sudo))
 	out, err := runDeployCommand("ssh", args...)
 	if err != nil {
@@ -551,7 +551,7 @@ func remoteFirewallCommand(port int) string {
 		"if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | head -1 | grep -q active; then",
 		"  ufw allow " + p + "/tcp >/dev/null || true",
 		"  ufw allow " + p + "/udp >/dev/null || true",
-		"  echo 'bx: ufw 已放行 " + p + "/tcp 与 " + p + "/udp'",
+		"  echo 'bx: ufw now allows " + p + "/tcp and " + p + "/udp'",
 		"fi",
 	}, "\n")
 }
@@ -567,7 +567,7 @@ func remoteFirewallCommand(port int) string {
 func needsSudo(idOutput string) (bool, error) {
 	uid := strings.TrimSpace(idOutput)
 	if uid == "" {
-		return false, errors.New("远端没有回报 uid(`id -u` 没有输出)")
+		return false, errors.New("the remote host reported no uid (id -u printed nothing)")
 	}
 	switch uid {
 	case "0":
@@ -575,7 +575,7 @@ func needsSudo(idOutput string) (bool, error) {
 	}
 	for _, r := range uid {
 		if r < '0' || r > '9' {
-			return false, fmt.Errorf("远端 `id -u` 的输出不像一个 uid:%q", uid)
+			return false, fmt.Errorf("the remote id -u did not print something that looks like a uid: %q", uid)
 		}
 	}
 	return true, nil

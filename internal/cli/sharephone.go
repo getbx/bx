@@ -43,7 +43,7 @@ func renderPhoneShare(out phoneShareOutput, encode func(string) (int, func(x, y 
 	if strings.TrimSpace(out.Link) == "" {
 		// **没有链接就说没有,不画一张空码。** 一张空白的二维码看起来像
 		// 「画出来了、只是扫不出来」,会让人去查扫描器。
-		return "", fmt.Errorf("这台 server 还没有可分享的链接(先 bx server install,或给 --host)")
+		return "", fmt.Errorf("this server has no link to share yet (run bx server install first, or pass --host)")
 	}
 	var b strings.Builder
 	if !out.QR {
@@ -52,26 +52,26 @@ func renderPhoneShare(out phoneShareOutput, encode func(string) (int, func(x, y 
 			b.WriteString(out.UDPLink + "\n")
 		}
 		// 与 rawLinkRisk 同一条:裸链接自带凭据,而它刚刚进了 shell 历史。
-		b.WriteString("⚠ 以上是含明文凭据的裸链接,已留进 shell 历史;" +
-			"发给别人前想清楚经过哪些地方,或者改用 --qr(凭据以图形出现,不进历史、不经剪贴板)\n")
+		b.WriteString("⚠ The above is a bare link carrying a cleartext credential, and it is now in your shell history; " +
+			"think about everywhere it passes through before sending it to someone, or use --qr instead (the credential appears as an image, so it stays out of your history and your clipboard)\n")
 		return b.String(), nil
 	}
 
 	size, dark, err := encode(out.Link)
 	if err != nil {
-		return "", fmt.Errorf("生成二维码: %w", err)
+		return "", fmt.Errorf("generating the QR code: %w", err)
 	}
 	b.WriteString(qrHalfBlocks(size, dark, out.Invert))
-	b.WriteString("用 sing-box / Hiddify / v2rayN / NekoBox 扫这张码导入。\n")
+	b.WriteString("Scan this code with sing-box / Hiddify / v2rayN / NekoBox to import it.\n")
 	if !out.Invert {
 		// 极性在深色终端上是反的。现代扫描器多数认得反色,但不是全部,
 		// 而一张扫不出来的码与没有这个功能完全一样 —— 所以把出路说出来。
-		b.WriteString("扫不出来的话终端多半是深色主题,加 --qr-invert 再来一次。\n")
+		b.WriteString("If it will not scan, your terminal is probably on a dark theme — add --qr-invert and try again.\n")
 	}
 	if out.UDPLink != "" {
 		// **第二条链接刻意不画第二张码。** 手机客户端一次导入一条,而 UDP 那档
 		// 是 bx 的按类分流(加速,可选);多摆一张码会让人以为两张都得扫。
-		b.WriteString("(这台还有一条 hysteria2 UDP 加速链接,手机上可选;要的话用 --format link 看原文)\n")
+		b.WriteString("(this server also has a hysteria2 UDP fast-lane link, optional on a phone; use --format link to see it)\n")
 	}
 	return b.String(), nil
 }
@@ -98,7 +98,7 @@ func phoneShareFor(c *cli.Context, link, udpLink string) (string, bool, error) {
 		return "", false, nil
 	}
 	if format != "" && format != "link" {
-		return "", false, fmt.Errorf("--format 只认 link(手机客户端能吃的裸链接);要给电脑用就别加这个 flag")
+		return "", false, fmt.Errorf("--format only accepts link (the bare link a phone client can read); leave the flag off if this is for a computer")
 	}
 	out, err := renderPhoneShare(phoneShareOutput{
 		Link: link, UDPLink: udpLink, QR: wantQR, Invert: c.Bool("qr-invert"),
@@ -129,23 +129,23 @@ func replayShare(c *cli.Context, shares []shareInfo) (string, bool, error) {
 		return "", false, nil
 	}
 	if format != "" && format != "link" {
-		return "", false, fmt.Errorf("--format 只认 link")
+		return "", false, fmt.Errorf("--format only accepts link")
 	}
 	// **--json 与 --format link 是矛盾指令,不许静默挑一个。**
 	// 前者刻意脱敏(SecretsRedacted: true),后者刻意打出凭据原文 —— 悄悄执行
 	// 其中一个,用户不会知道自己拿到的是哪一种,而这两种的处置完全不同。
 	if c.Bool("json") {
-		return "", false, fmt.Errorf("--json 是脱敏输出,与 --qr/--format link(打印凭据)矛盾;只用其中一个")
+		return "", false, fmt.Errorf("--json is the redacted output and contradicts --qr / --format link, which print the credential; use one or the other")
 	}
 	name := strings.TrimSpace(c.Args().First())
 	if name == "" {
 		// **不许把所有 share 的凭据一次全打出来。** 一条命令泄漏全部钥匙,
 		// 而用户想要的几乎总是其中一个。
-		return "", false, fmt.Errorf("要哪个 share?例如:bx server shares alice --qr(先 bx server shares 看名字)")
+		return "", false, fmt.Errorf("which share? for example: bx server shares alice --qr (run bx server shares first to see the names)")
 	}
 	s, ok := findShare(shares, name)
 	if !ok {
-		return "", false, fmt.Errorf("没有名为 %q 的 share(bx server shares 看现有的)", name)
+		return "", false, fmt.Errorf("there is no share named %q (bx server shares lists the existing ones)", name)
 	}
 	out, err := renderPhoneShare(phoneShareOutput{
 		Link: s.Config.Link, UDPLink: s.Config.UDPLink, QR: wantQR, Invert: c.Bool("qr-invert"),

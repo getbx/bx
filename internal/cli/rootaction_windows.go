@@ -15,5 +15,5 @@ func rootAction(c *cli.Context) error {
 		return trayAction(c)
 	}
 	_ = cli.ShowAppHelp(c)
-	return fmt.Errorf("未知命令: %s", c.Args().First())
+	return fmt.Errorf("unknown command: %s", c.Args().First())
 }

@@ -139,7 +139,7 @@ func newStatusWatchClient() *guardian.Client {
 func requireStatusWatchCapability(ctx context.Context, probe func(context.Context) (guardian.Status, error)) error {
 	status, err := probe(ctx)
 	if err != nil {
-		return fmt.Errorf("watch 无法确认这一版 Guardian 是否支持长轮询(探测 /v1/status 失败):%w", err)
+		return fmt.Errorf("the watch could not determine whether this Guardian supports long polling (probing /v1/status failed): %w", err)
 	}
 	version := status.GuardianVersion
 	if version == "" {
@@ -147,16 +147,16 @@ func requireStatusWatchCapability(ctx context.Context, probe func(context.Contex
 	}
 	if status.Capabilities == nil {
 		return fmt.Errorf(
-			"这一版 Guardian(guardian_version=%s)从未声明过 capabilities 字段,"+
-				"无法确认是否支持长轮询;为避免退化成满速空转轮询,拒绝进入 --watch。"+
-				"升级 Guardian 后重试,或不带 --watch 直接跑 bx status", version,
+			"this Guardian (guardian_version=%s) has never declared a capabilities field, "+
+				"so whether it supports long polling cannot be determined; rather than degrade into a full-speed busy poll, --watch refuses to start. "+
+				"Upgrade Guardian and try again, or just run bx status without --watch", version,
 		)
 	}
 	if !slices.Contains(status.Capabilities, guardian.CapabilityStatusWatch) {
 		return fmt.Errorf(
-			"这一版 Guardian(guardian_version=%s)声明的 capabilities 里没有 %s,"+
-				"不支持 --watch;为避免退化成满速空转轮询,拒绝进入循环。"+
-				"升级 Guardian 后重试,或不带 --watch 直接跑 bx status",
+			"the capabilities this Guardian (guardian_version=%s) declares do not include %s, "+
+				"so --watch is not supported; rather than degrade into a full-speed busy poll, the loop refuses to start. "+
+				"Upgrade Guardian and try again, or just run bx status without --watch",
 			version, guardian.CapabilityStatusWatch,
 		)
 	}
@@ -200,7 +200,7 @@ func statusWatchLoopWith(
 				return nil
 			}
 			failures++
-			fmt.Fprintf(out, "watch 断开(第 %d 次):%v\n", failures, err)
+			fmt.Fprintf(out, "the watch dropped (attempt %d): %v\n", failures, err)
 			continue
 		}
 		failures = 0

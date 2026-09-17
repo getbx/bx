@@ -12,7 +12,7 @@ import (
 func rootAction(c *cli.Context) error {
 	_ = cli.ShowAppHelp(c)
 	if c.Args().Len() > 0 {
-		return fmt.Errorf("未知命令: %s", c.Args().First())
+		return fmt.Errorf("unknown command: %s", c.Args().First())
 	}
 	return nil
 }

@@ -115,7 +115,7 @@ const (
 func serverUseAction(c *cli.Context) error {
 	name := strings.TrimSpace(c.Args().First())
 	if name == "" {
-		return fmt.Errorf("用法:bx server use <name>(先 `bx server list` 看有哪些)")
+		return fmt.Errorf("usage: bx server use <name>   (run bx server list first to see which ones exist)")
 	}
 	path := c.String("config")
 	// **先写配置,再热切。** 顺序反过来的话,热切成功而写盘失败就会留下
@@ -146,12 +146,12 @@ func serverUseAction(c *cli.Context) error {
 func serverRemoveAction(c *cli.Context) error {
 	name := strings.TrimSpace(c.Args().First())
 	if name == "" {
-		return fmt.Errorf("用法:bx server rm <name>")
+		return fmt.Errorf("usage: bx server rm <name>")
 	}
 	if err := setup.RemoveServer(c.String("config"), name); err != nil {
 		return err
 	}
-	fmt.Printf("✓ 已从清单里删掉 %s\n", name)
+	fmt.Printf("✓ %s was removed from the list\n", name)
 	return nil
 }
 
@@ -165,15 +165,15 @@ func serverRemoveAction(c *cli.Context) error {
 func renderServerList(view serverListView) string {
 	if len(view.Entries) == 0 {
 		if view.Degraded {
-			return "读不到服务器清单(Guardian 不可达,配置也读不出来)。\n"
+			return "The server list could not be read (Guardian is unreachable and the config could not be read either).\n"
 		}
 		// **这条命令必须真的存在。** 上一句写的是 `bx setup --name <名字>`,而
 		// `bx setup` 根本没有 `--name` 这个 flag(只有 config/probe/force/strict/udp)——
 		// urfave/cli 遇到未知 flag 直接报错,所以那是一条必定失败的指令。
 		// 真的会往 `servers:` 里写一台的只有两条路:菜单 Servers… 里的
 		// 「Add Server…」,以及 `bx server deploy … --name`。
-		return "配置里没有服务器清单(还是单服务器配置)。加第二台:" +
-			"菜单栏 Servers… 里的「Add Server…」,或 bx server deploy <user@host> --name <名字>\n"
+		return "The config has no server list (it is still a single-server config). To add a second one: " +
+			"Add Server… in the menu bar's Servers… window, or bx server deploy <user@host> --name <name>\n"
 	}
 	// **实际在跑的那台与配置里选的那台分开标,绝不合并。** 热切换是先写配置
 	// 再切,所以切换失败的那一刻配置已经指向新那台了 —— 只按配置打那个 ●,
@@ -186,11 +186,11 @@ func renderServerList(view serverListView) string {
 	switch {
 	case running == "":
 		// 问不出来就**别拿配置去冒充它**(旧 Guardian / Core 没在跑 / 退化)。
-		b.WriteString("已配置的服务器(● = 配置里选的;实际在跑的是哪一台这次没问到):\n")
+		b.WriteString("Configured servers (● = selected in the config; which one is actually running was not asked this time):\n")
 	case diverged:
-		b.WriteString("已配置的服务器(● = 流量此刻从这里出去,○ = 配置里选的):\n")
+		b.WriteString("Configured servers (● = traffic leaves here right now, ○ = selected in the config):\n")
 	default:
-		b.WriteString("已配置的服务器(● = 当前在用):\n")
+		b.WriteString("Configured servers (● = in use):\n")
 	}
 	for _, s := range view.Entries {
 		mark := " "
@@ -204,7 +204,7 @@ func renderServerList(view serverListView) string {
 		}
 		host := s.Host
 		if host == "" {
-			host = "(链接解析不出主机)"
+			host = "(no host could be parsed out of the link)"
 		}
 		if s.UDPHost != "" && s.UDPHost != s.Host {
 			host += "  UDP→" + s.UDPHost
@@ -214,18 +214,18 @@ func renderServerList(view serverListView) string {
 	if diverged {
 		// **只陈述观测到的两件事,原因给可能性。** bx 分不清「上一次热切没生效」
 		// 与「有人手改了配置还没重连」,断言其中一个就是编答案。
-		fmt.Fprintf(&b, "\n⚠ 配置里选的是 %s,而流量此刻从 %s 出去。\n"+
-			"  最常见的原因是上一次切换只写了配置、没有切过去;要用上 %s:\n"+
+		fmt.Fprintf(&b, "\n⚠ The config selects %s, while your traffic is leaving through %s right now.\n"+
+			"  The most common reason is that the last switch only wrote the config and never switched over; to actually use %s:\n"+
 			"    "+elevate.Prefix+"bx down\n    "+elevate.Prefix+"bx up\n", current, running, current)
 	}
 	if view.Degraded {
 		// **少显示了什么必须说出来。** 安静地少几列,用户会以为那几台真的
 		// 没有数据,而实际上是没问到。
-		b.WriteString("\n(Guardian 不可达,延迟与吞吐这次没问到 —— 只显示了配置里的内容)\n")
+		b.WriteString("\n(Guardian is unreachable, so latency and throughput were not asked for this time — only what is in the config is shown)\n")
 	} else if !view.Tested {
-		b.WriteString("\n延迟没测(它要往隧道外面发包,只在你要的时候发):bx server list --test\n")
+		b.WriteString("\nLatency was not measured (that sends packets outside the tunnel, so it only happens when you ask): bx server list --test\n")
 	}
-	b.WriteString("\n切换:bx server use <name>\n")
+	b.WriteString("\nTo switch: bx server use <name>\n")
 	return b.String()
 }
 
@@ -242,12 +242,12 @@ func serverMetrics(s guardian.ServerEntry) string {
 		// **根本没测过**的服务器判死。
 		switch {
 		case !s.Probe.Measured:
-			// 原因由服务端给(它是中文的,这一栏的读者就是它);说不出原因时
+			// 原因由服务端给(2026-09-17 起两侧都是英文);说不出原因时
 			// 也要说「没测成」—— 那与「测了没通」是两句不同的话。
 			if s.Probe.Error != "" {
 				parts = append(parts, s.Probe.Error)
 			} else {
-				parts = append(parts, "没测成")
+				parts = append(parts, "not measured")
 			}
 		case s.Probe.Reachable:
 			parts = append(parts, fmt.Sprintf("%d ms", s.Probe.RTTMS))
@@ -256,11 +256,11 @@ func serverMetrics(s guardian.ServerEntry) string {
 			// 自己这条网络的问题。
 			parts = append(parts, s.Probe.Error)
 		default:
-			parts = append(parts, "不可达")
+			parts = append(parts, "unreachable")
 		}
 	}
 	if s.PeakBPS > 0 {
-		peak := "峰值 " + stats.HumanBPS(s.PeakBPS)
+		peak := "peak " + stats.HumanBPS(s.PeakBPS)
 		if age := humanAge(time.Duration(s.PeakAgeSeconds) * time.Second); age != "" {
 			// **历史数字必须带年龄。** 不带年龄的历史读起来像现状。
 			peak += " · " + age
@@ -276,12 +276,15 @@ func humanAge(age time.Duration) string {
 	switch {
 	case age < 2*time.Minute:
 		return ""
+	// 单位与措辞与菜单侧那份逐字相同(ServersModel.swift 的 relativeAge:
+	// `2m ago` / `2h ago` / `3d ago`)。此前中文那版只对齐了**门槛**,而同一条
+	// 记录在两个界面上读起来是两句话 —— 翻译这一轮顺手把措辞也对齐了。
 	case age < time.Hour:
-		return fmt.Sprintf("%d 分钟前", int(age/time.Minute))
+		return fmt.Sprintf("%dm ago", int(age/time.Minute))
 	case age < 24*time.Hour:
-		return fmt.Sprintf("%d 小时前", int(age/time.Hour))
+		return fmt.Sprintf("%dh ago", int(age/time.Hour))
 	default:
-		return fmt.Sprintf("%d 天前", int(age/(24*time.Hour)))
+		return fmt.Sprintf("%dd ago", int(age/(24*time.Hour)))
 	}
 }
 
@@ -294,12 +297,12 @@ func switchOutcomeMessage(name, host string, hotErr error) string {
 	if hotErr == nil {
 		// 走到这里说明**已经确认过**(commit),死手不会再把它还原 ——
 		// 第一版只武装就说「立即生效」,而 Core 随后自动回滚了。
-		return fmt.Sprintf("✓ 已切到 %s(%s),已确认生效 —— 你的流量现在从这里出去。\n", name, host)
+		return fmt.Sprintf("✓ Switched to %s (%s) and confirmed — your traffic now leaves through it.\n", name, host)
 	}
 	return fmt.Sprintf(""+
-		"✓ 已写入配置:current = %s(%s)\n"+
-		"⚠ 但热切没有成功:%v\n"+
-		"  配置里的选择已经落定,执行下面两条即可用上:\n"+
+		"✓ Written to the config: current = %s (%s)\n"+
+		"⚠ But the hot switch did not succeed: %v\n"+
+		"  The choice in the config is settled; these two commands put it into effect:\n"+
 		"    "+elevate.Prefix+"bx down\n"+
 		"    "+elevate.Prefix+"bx up\n", name, host, hotErr)
 }

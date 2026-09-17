@@ -156,7 +156,7 @@ func normalizeServerProtocol(p string) (string, error) {
 	case "reality", "hysteria2":
 		return p, nil
 	default:
-		return "", fmt.Errorf("不支持的 server 协议 %q(支持 brook/reality/hysteria2)", p)
+		return "", fmt.Errorf("unsupported server protocol %q (brook, reality and hysteria2 are supported)", p)
 	}
 }
 
@@ -165,11 +165,11 @@ func serverConfigComplete(cfg serverConfig) error {
 	switch t, _ := normalizeServerProtocol(cfg.Type); t {
 	case "reality", "hysteria2":
 		if cfg.Link == "" {
-			return fmt.Errorf("%s server 配置缺 link", t)
+			return fmt.Errorf("the %s server config has no link", t)
 		}
 	default: // brook
 		if cfg.Listen == "" || cfg.Password == "" {
-			return fmt.Errorf("brook server 配置缺 listen/password")
+			return fmt.Errorf("the brook server config has no listen/password")
 		}
 	}
 	return nil
@@ -679,13 +679,13 @@ func generateServerConfig(proto, host, sni, listen, password string, port int, w
 		return serverConfig{}, nil, err
 	}
 	if withHysteria2 && p != "reality" {
-		return serverConfig{}, nil, fmt.Errorf("--with-hysteria2 只能配 --protocol reality(主 TCP)用")
+		return serverConfig{}, nil, fmt.Errorf("--with-hysteria2 only goes with --protocol reality (TCP as the main transport)")
 	}
 	host = strings.TrimSpace(host)
 	switch p {
 	case "reality":
 		if host == "" {
-			return serverConfig{}, nil, fmt.Errorf("reality 需要 --host <公网IP或域名>(链接生成时要用)")
+			return serverConfig{}, nil, fmt.Errorf("reality needs --host <public_IP_or_domain> (the link is generated from it)")
 		}
 		rp, err := srvgen.GenerateReality(host, sni, port)
 		if err != nil {
@@ -710,7 +710,7 @@ func generateServerConfig(proto, host, sni, listen, password string, port int, w
 		return serverConfig{Type: "reality", SNI: rp.SNI, Port: rp.Port, Link: rp.ClientLink()}, sb, nil
 	case "hysteria2":
 		if host == "" {
-			return serverConfig{}, nil, fmt.Errorf("hysteria2 需要 --host <公网IP或域名>(链接生成时要用)")
+			return serverConfig{}, nil, fmt.Errorf("hysteria2 needs --host <public_IP_or_domain> (the link is generated from it)")
 		}
 		hp, err := srvgen.GenerateHysteria2(host, sni, port)
 		if err != nil {
@@ -740,7 +740,7 @@ func buildServerConfig(c *cli.Context) (serverConfig, error) {
 	if host == "" && (proto == "reality" || proto == "hysteria2") {
 		if ip := detectPublicIP(); ip != "" {
 			host = ip
-			fmt.Fprintf(os.Stderr, "自动用探测到的公网 IP:%s(不对请 --host 指定)\n", ip)
+			fmt.Fprintf(os.Stderr, "Using the detected public IP: %s (if that is wrong, pass --host)\n", ip)
 		}
 	}
 	// reality 默认附带 hysteria2(UDP 加速),--tcp-only 关掉。
@@ -761,7 +761,7 @@ func buildServerConfig(c *cli.Context) (serverConfig, error) {
 func writeServerSingbox(b []byte, force bool) error {
 	if !force {
 		if _, err := os.Stat(serverSingboxPath); err == nil {
-			return fmt.Errorf("%s 已存在(加 --force 覆盖)", serverSingboxPath)
+			return fmt.Errorf("%s already exists (pass --force to overwrite it)", serverSingboxPath)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(serverSingboxPath), 0o755); err != nil {
@@ -778,13 +778,13 @@ func serverInstallAction(c *cli.Context) error {
 	// 重装防呆:reality/hys2 重装(--force)会重生成密钥/UUID,已发出的客户端链接全失效。
 	if (proto == "reality" || proto == "hysteria2") && c.Bool("force") {
 		if _, e := os.Stat(serverSingboxPath); e == nil {
-			fmt.Fprintln(os.Stderr, "⚠ 重装(--force)会重新生成密钥/UUID——所有已发出的客户端链接将失效;\n   装完用 `bx server link`(或 `bx server share`)重新分发。")
+			fmt.Fprintln(os.Stderr, "⚠ Reinstalling (--force) regenerates the keys and UUIDs — every client link already handed out stops working;\n   after installing, hand out new ones with bx server link (or bx server share).")
 		}
 	}
 	// 缺 --host 时,best-effort 探测本机公网 IP 给个建议(不擅自用,避免探到错 IP)。
 	if (proto == "reality" || proto == "hysteria2") && strings.TrimSpace(c.String("host")) == "" {
 		if ip := detectPublicIP(); ip != "" {
-			fmt.Fprintf(os.Stderr, "提示:本机公网 IP 可能是 %s,若正确请: --host %s\n", ip, ip)
+			fmt.Fprintf(os.Stderr, "Hint: this machine's public IP may be %s; if that is right, use --host %s\n", ip, ip)
 		}
 	}
 	cfg, err := buildServerConfig(c)
@@ -812,7 +812,7 @@ func serverInstallAction(c *cli.Context) error {
 	if err := install.WriteServerUnit(fmt.Sprintf("%s serve -c %s", bin, abs)); err != nil {
 		return err
 	}
-	fmt.Printf("✅ bx server 已安装(协议 %s)。下一步:sudo bx server start\n", cfg.Type)
+	fmt.Printf("✅ bx server installed (protocol %s). Next: sudo bx server start\n", cfg.Type)
 	if hint := serverFirewallHintFor(cfg); hint != "" {
 		fmt.Println(hint)
 	}
@@ -821,7 +821,7 @@ func serverInstallAction(c *cli.Context) error {
 		if err := openUFWRules(rules); err != nil {
 			return err
 		}
-		fmt.Printf("✅ 已放行 ufw 规则: %s\n", strings.Join(rules, ", "))
+		fmt.Printf("✅ ufw now allows: %s\n", strings.Join(rules, ", "))
 	}
 	// reality/hysteria2:链接已在生成时含 host,直接给(换壳成 bx://)。
 	if cfg.Type == "reality" || cfg.Type == "hysteria2" {
@@ -835,7 +835,7 @@ func serverInstallAction(c *cli.Context) error {
 		}
 		fmt.Println(link)
 	} else {
-		fmt.Println("需要客户端链接时运行: sudo bx server link --host <VPS_IP或域名>")
+		fmt.Println("when you need a client link, run: sudo bx server link --host <VPS_IP_or_domain>")
 	}
 	return nil
 }
@@ -893,7 +893,7 @@ func swapVlessUUID(link, newUUID string) string {
 func printClientSetup(cfg serverConfig) {
 	main, udp := encodedClientLinks(cfg)
 	if udp != "" {
-		fmt.Println("🔀 reality(TCP/隐蔽)+ hysteria2(UDP/加速)就绪。客户端一条命令配齐(按类分流,既安全又有速度):")
+		fmt.Println("🔀 reality (TCP, covert) + hysteria2 (UDP, fast) are ready. One command configures the client for both (split by kind: safe and fast):")
 		fmt.Printf("  %s\n", setupCommand(main, udp))
 		return
 	}
@@ -924,18 +924,18 @@ func inviteText(name, main, udp string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", title)
-	fmt.Fprintln(&b, "给用户:")
-	fmt.Fprintln(&b, "  1. 安装 bx")
-	fmt.Fprintln(&b, "  2. 打开 bx 菜单栏 App,粘贴下面的 bx:// 链接")
-	fmt.Fprintln(&b, "  3. 点击 Start Protection")
+	fmt.Fprintln(&b, "For the user:")
+	fmt.Fprintln(&b, "  1. Install bx")
+	fmt.Fprintln(&b, "  2. Open the bx menu-bar app and paste the bx:// link below")
+	fmt.Fprintln(&b, "  3. Click Start Protection")
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "bx:// 链接:")
+	fmt.Fprintln(&b, "bx:// link:")
 	fmt.Fprintf(&b, "  %s\n", main)
 	if udp != "" {
 		fmt.Fprintf(&b, "  UDP: %s\n", udp)
 	}
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "命令行备用:")
+	fmt.Fprintln(&b, "From a terminal instead:")
 	fmt.Fprintf(&b, "  %s\n", setupCommand(main, udp))
 	fmt.Fprintln(&b, "  "+elevate.Prefix+"bx up")
 	return b.String()
@@ -951,7 +951,7 @@ func inviteAction(c *cli.Context) error {
 		if cfg.Link == "" {
 			host := c.String("host")
 			if host == "" {
-				return fmt.Errorf("brook server 生成邀请需要 --host <VPS_IP或域名>")
+				return fmt.Errorf("generating an invite for a brook server needs --host <VPS_IP_or_domain>")
 			}
 			link, err := bxServerLink(host, cfg)
 			if err != nil {
@@ -961,7 +961,7 @@ func inviteAction(c *cli.Context) error {
 		}
 		main, udp := encodedClientLinks(cfg)
 		if main == "" {
-			return fmt.Errorf("server 配置没有可分享链接")
+			return fmt.Errorf("the server config has no link to share")
 		}
 		fmt.Print(inviteText("", main, udp))
 		return nil
@@ -977,7 +977,7 @@ func inviteAction(c *cli.Context) error {
 	}
 	main, udp := encodedClientLinks(cfg)
 	if main == "" {
-		return fmt.Errorf("share %s 没有可分享链接", name)
+		return fmt.Errorf("the share %s has no link to share", name)
 	}
 	if c.Bool("open-ufw") && cfg.Listen != "" {
 		if err := openUFW(cfg.Listen); err != nil {
@@ -992,7 +992,7 @@ func inviteShareConfig(name, configPath, dir, host string) (serverConfig, error)
 	if cfg, err := readServerConfig(shareConfigPath(dir, name)); err == nil {
 		if cfg.Link == "" {
 			if host == "" {
-				return serverConfig{}, fmt.Errorf("brook share %s 显示邀请需要 --host <VPS_IP或域名>", name)
+				return serverConfig{}, fmt.Errorf("showing the invite for the brook share %s needs --host <VPS_IP_or_domain>", name)
 			}
 			link, err := bxServerLink(host, cfg)
 			if err != nil {
@@ -1010,10 +1010,10 @@ func inviteShareConfig(name, configPath, dir, host string) (serverConfig, error)
 	case "reality":
 		return realityShare(name, dir, mainCfg)
 	case "hysteria2":
-		return serverConfig{}, fmt.Errorf("hysteria2 主 server 暂不支持多用户邀请;请使用默认 reality+hysteria2 server")
+		return serverConfig{}, fmt.Errorf("a hysteria2 main server does not support multi-user invites yet; use the default reality+hysteria2 server")
 	default:
 		if host == "" {
-			return serverConfig{}, fmt.Errorf("brook server 创建邀请需要 --host <VPS_IP或域名>")
+			return serverConfig{}, fmt.Errorf("creating an invite for a brook server needs --host <VPS_IP_or_domain>")
 		}
 		link, _, err := createShare(name, host, dir, "", "")
 		if err != nil {
@@ -1052,7 +1052,7 @@ func serverLinkAction(c *cli.Context) error {
 	}
 	host := c.String("host")
 	if host == "" {
-		return fmt.Errorf("用法: sudo bx server link --host <VPS_IP或域名>")
+		return fmt.Errorf("usage: sudo bx server link --host <VPS_IP_or_domain>")
 	}
 	link, err := bxServerLink(host, cfg)
 	if err != nil {
@@ -1071,7 +1071,7 @@ func realityShare(name, dir string, mainCfg serverConfig) (serverConfig, error) 
 	}
 	sb, err := os.ReadFile(serverSingboxPath)
 	if err != nil {
-		return serverConfig{}, fmt.Errorf("读 server sing-box 配置: %w", err)
+		return serverConfig{}, fmt.Errorf("reading the server sing-box config: %w", err)
 	}
 	sb2, err := srvgen.AddRealityUser(sb, newUUID)
 	if err != nil {
@@ -1088,7 +1088,7 @@ func realityShare(name, dir string, mainCfg serverConfig) (serverConfig, error) 
 		return serverConfig{}, err
 	}
 	if err := install.RestartServer(); err != nil {
-		return rec, fmt.Errorf("用户已加并落盘,但重启 server 失败(下次启动生效): %w", err)
+		return rec, fmt.Errorf("the user was added and written to disk, but restarting the server failed (it takes effect on the next start): %w", err)
 	}
 	return rec, nil
 }
@@ -1107,7 +1107,7 @@ func serverShareAction(c *cli.Context) error {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✅ reality share %s 已创建(主 server 加了一个用户并重启生效)。\n", name)
+			fmt.Printf("✅ The reality share %s was created (a user was added to the main server and it was restarted).\n", name)
 			// 手机那条路要的是**裸链接**:bx:// 是 bx 自己的信封,
 			// sing-box / Hiddify / v2rayN 一个都不认。
 			if out, ok, err := phoneShareFor(c, rec.Link, rec.UDPLink); err != nil {
@@ -1119,7 +1119,7 @@ func serverShareAction(c *cli.Context) error {
 			printClientSetup(rec)
 			return nil
 		case "hysteria2":
-			return fmt.Errorf("hysteria2 主 server 暂不支持多用户 share;reality(默认附带 hys2)支持")
+			return fmt.Errorf("a hysteria2 main server does not support multi-user shares yet; reality does (and it ships hysteria2 alongside by default)")
 		}
 	}
 	password := stringFlag(c, "password")
@@ -1141,7 +1141,7 @@ func serverShareAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("✅ share %s 已创建。\n", name)
+	fmt.Printf("✅ The share %s was created.\n", name)
 	if c.Bool("open-ufw") {
 		if err := openUFW(listen); err != nil {
 			return err
@@ -1151,7 +1151,7 @@ func serverShareAction(c *cli.Context) error {
 		fmt.Println(hint)
 	}
 	if host == "" {
-		fmt.Println("需要链接时运行: sudo bx server share " + name + " --host <VPS_IP或域名>")
+		fmt.Println("when you need a link, run: sudo bx server share " + name + " --host <VPS_IP_or_domain>")
 		return nil
 	}
 	if out, ok, err := phoneShareFor(c, link, ""); err != nil {
@@ -1190,10 +1190,10 @@ func serverSharesAction(c *cli.Context) error {
 		fmt.Println("No shares.")
 		return nil
 	}
-	fmt.Println("NAME\tLISTEN/类型\tSTATUS")
+	fmt.Println("NAME\tLISTEN/TYPE\tSTATUS")
 	for _, s := range shares {
 		if s.Config.Type == "reality" {
-			fmt.Printf("%s\treality\t主 server 内一用户\n", s.Name)
+			fmt.Printf("%s\treality\tone user inside the main server\n", s.Name)
 			continue
 		}
 		fmt.Printf("%s\t%s\t%s\n", s.Name, s.Config.Listen, serviceState("is-active", install.ShareServiceName(s.Name)))
@@ -1253,7 +1253,7 @@ func userRevokeAction(c *cli.Context) error {
 	if err := revokeShare(name, c.String("dir")); err != nil {
 		return err
 	}
-	fmt.Printf("✅ user %s 已撤销。\n", name)
+	fmt.Printf("✅ The user %s was revoked.\n", name)
 	return nil
 }
 
@@ -1265,7 +1265,7 @@ func serverRevokeAction(c *cli.Context) error {
 	if err := revokeShare(name, c.String("dir")); err != nil {
 		return err
 	}
-	fmt.Printf("✅ share %s 已撤销。\n", name)
+	fmt.Printf("✅ The share %s was revoked.\n", name)
 	return nil
 }
 
@@ -1315,11 +1315,11 @@ func revokeShare(name, dir string) error {
 	if shareCfg, err := readServerConfig(shareConfigPath(dir, name)); err == nil && shareCfg.Type == "reality" {
 		uuid := uuidFromVlessLink(shareCfg.Link)
 		if uuid == "" {
-			return fmt.Errorf("share 记录里没有有效 uuid")
+			return fmt.Errorf("the share record has no valid uuid")
 		}
 		sb, err := os.ReadFile(serverSingboxPath)
 		if err != nil {
-			return fmt.Errorf("读 server sing-box 配置: %w", err)
+			return fmt.Errorf("reading the server sing-box config: %w", err)
 		}
 		sb2, err := srvgen.RemoveRealityUser(sb, uuid)
 		if err != nil {
@@ -1334,7 +1334,7 @@ func revokeShare(name, dir string) error {
 			return err
 		}
 		if err := install.RestartServer(); err != nil {
-			return fmt.Errorf("撤销已落盘,但重启 server 失败(下次启动生效): %w", err)
+			return fmt.Errorf("the revocation was written to disk, but restarting the server failed (it takes effect on the next start): %w", err)
 		}
 		return nil
 	}
@@ -1352,11 +1352,11 @@ func serverRotateAction(c *cli.Context) error {
 	// reality/hys2 没有"换密码"语义——轮换=重生成密钥,等价于带 --force 重装。导到正确命令,
 	// 避免给它们套 brook 的密码轮换(无意义且会在生成 brook 链接时出错)。
 	if cfg, err := readServerConfig(c.String("config")); err == nil && (cfg.Type == "reality" || cfg.Type == "hysteria2") {
-		host := "<VPS_IP或域名>"
+		host := "<VPS_IP_or_domain>"
 		if h := serverHostFromLink(cfg.Link); h != "" {
 			host = h
 		}
-		return fmt.Errorf("%s 轮换密钥请用:sudo bx server install --protocol %s --host %s --force\n(会重生成密钥/UUID,主链接 + 所有 share 链接全失效,需重新分发)", cfg.Type, cfg.Type, host)
+		return fmt.Errorf("to rotate the %s keys, use: sudo bx server install --protocol %s --host %s --force\n(that regenerates the keys and UUIDs, so the main link and every share link stop working and must be handed out again)", cfg.Type, cfg.Type, host)
 	}
 	password := c.String("password")
 	if password == "" {
@@ -1370,16 +1370,16 @@ func serverRotateAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("✅ bx server 密码已轮换。旧 bx:// 链接将失效。")
+	fmt.Println("✅ The bx server password has been rotated. The old bx:// links stop working.")
 	if !c.Bool("no-restart") {
 		switch state := serviceState("is-active", install.ServerServiceName); state {
 		case "active":
 			if err := install.RestartServer(); err != nil {
 				return err
 			}
-			fmt.Println("✅ bx server 已重启,新链接已生效。")
+			fmt.Println("✅ bx server restarted, and the new link is in effect.")
 		default:
-			fmt.Printf("server 当前状态: %s。启动后新链接生效: sudo bx server start\n", state)
+			fmt.Printf("the server is currently %s. The new link takes effect once it is started: sudo bx server start\n", state)
 		}
 	}
 	if host := c.String("host"); host != "" {
@@ -1389,19 +1389,19 @@ func serverRotateAction(c *cli.Context) error {
 		}
 		fmt.Println(link)
 	} else {
-		fmt.Println("需要新客户端链接时运行: sudo bx server link --host <VPS_IP或域名>")
+		fmt.Println("when you need a new client link, run: sudo bx server link --host <VPS_IP_or_domain>")
 	}
 	return nil
 }
 
 func serverStartAction(c *cli.Context) error {
 	if !install.ServerUnitInstalled() {
-		return fmt.Errorf("尚未安装 bx server。先运行: sudo bx server install")
+		return fmt.Errorf("bx server is not installed yet. First run: sudo bx server install")
 	}
 	if err := install.EnableServer(); err != nil {
 		return err
 	}
-	fmt.Println("✅ bx server 已启动并设为开机自启。")
+	fmt.Println("✅ bx server started, and start-at-boot is on.")
 	return nil
 }
 
@@ -1409,7 +1409,7 @@ func serverStopAction(c *cli.Context) error {
 	if err := install.DisableServer(); err != nil {
 		return err
 	}
-	fmt.Println("✅ bx server 已停止并取消开机自启。")
+	fmt.Println("✅ bx server stopped, and start-at-boot is off.")
 	return nil
 }
 
@@ -1418,12 +1418,12 @@ func serverStopAction(c *cli.Context) error {
 func serverUpAction(c *cli.Context) error {
 	var ufwRules []string
 	if install.ServerUnitInstalled() {
-		fmt.Println("bx server 已安装,直接启动(要换协议/重生成密钥:sudo bx server install --force)。")
+		fmt.Println("bx server is already installed, so it is just started (to change protocol or regenerate keys: sudo bx server install --force).")
 		// 已装分支不经过 serverInstallAction,--open-ufw 要在这里单独生效(读盘现有配置推导规则)。
 		if c.Bool("open-ufw") {
 			cfg, err := readServerConfig(c.String("config"))
 			if err != nil {
-				return fmt.Errorf("读取 server 配置以应用 --open-ufw: %w", err)
+				return fmt.Errorf("reading the server config so --open-ufw can be applied: %w", err)
 			}
 			ufwRules = serverUFWRules(cfg)
 			if err := openUFWRules(ufwRules); err != nil {
@@ -1437,9 +1437,9 @@ func serverUpAction(c *cli.Context) error {
 		return err
 	}
 	if len(ufwRules) > 0 {
-		fmt.Printf("✅ 已放行 ufw 规则: %s\n", strings.Join(ufwRules, ", "))
+		fmt.Printf("✅ ufw now allows: %s\n", strings.Join(ufwRules, ", "))
 	}
-	fmt.Println("✅ bx server 已启动并开机自启。看状态:bx server status;停:sudo bx server down")
+	fmt.Println("✅ bx server started, with start-at-boot on. To see its state: bx server status; to stop it: sudo bx server down")
 	return nil
 }
 
@@ -1456,16 +1456,16 @@ func serverStatusSummary(cfg serverConfig, shareCount int) string {
 		if port <= 0 {
 			port = 443
 		}
-		fmt.Fprintf(&b, "协议: %s", proto)
+		fmt.Fprintf(&b, "Protocol: %s", proto)
 		if cfg.UDPLink != "" {
-			b.WriteString(" + hysteria2(UDP 加速,按类分流)")
+			b.WriteString(" + hysteria2 (UDP fast lane, split by kind)")
 		}
-		fmt.Fprintf(&b, "\n端口: %d  借用 SNI: %s", port, cfg.SNI)
+		fmt.Fprintf(&b, "\nPort: %d  borrowed SNI: %s", port, cfg.SNI)
 	default:
-		fmt.Fprintf(&b, "协议: brook  监听: %s", cfg.Listen)
+		fmt.Fprintf(&b, "Protocol: brook  listen: %s", cfg.Listen)
 	}
 	if shareCount > 0 {
-		fmt.Fprintf(&b, "\n用户/分享: %d", shareCount)
+		fmt.Fprintf(&b, "\nUsers/shares: %d", shareCount)
 	}
 	return b.String()
 }
@@ -1487,7 +1487,7 @@ func serverStatusAction(c *cli.Context) error {
 func serverLogsAction(c *cli.Context) error {
 	if c.Bool("json") {
 		if c.Bool("follow") {
-			return fmt.Errorf("--json 不能和 --follow 同时使用")
+			return fmt.Errorf("--json and --follow cannot be used together")
 		}
 		raw, err := install.TailLogs(install.ServerServiceName, c.Int("lines"))
 		return writeJSON(os.Stdout, logsReportFromTail("server", c.Int("lines"), raw, err))
@@ -1507,7 +1507,7 @@ func serverUninstallAction(c *cli.Context) error {
 	// 在 link 里)、shares 下每份(brook 密码 / reality 用户链接)。
 	rm := func(p string) {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "warning: 删除 %s 失败: %v\n", p, err)
+			fmt.Fprintf(os.Stderr, "warning: could not delete %s: %v\n", p, err)
 		}
 	}
 	rm(serverSingboxPath)
@@ -1519,7 +1519,7 @@ func serverUninstallAction(c *cli.Context) error {
 			}
 		}
 	}
-	fmt.Println("已卸载 bx server 服务(配置与秘密已清除)")
+	fmt.Println("the bx server service has been uninstalled (its config and secrets are gone)")
 	return nil
 }
 
@@ -1532,7 +1532,7 @@ func serveAction(c *cli.Context) error {
 	if cfg.Type == "reality" || cfg.Type == "hysteria2" {
 		sbPath, err := provision.EnsureSingbox("/var/lib/bx", "", embedded.Singbox(), embedded.SingboxVersion(), "", "")
 		if err != nil {
-			return fmt.Errorf("准备 sing-box: %w", err)
+			return fmt.Errorf("preparing sing-box: %w", err)
 		}
 		cmd := exec.CommandContext(c.Context, sbPath, "run", "-c", serverSingboxPath)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
@@ -1540,7 +1540,7 @@ func serveAction(c *cli.Context) error {
 	}
 	path, err := provision.EnsureBrook("/var/lib/bx", "", embedded.Brook(), embedded.BrookVersion(), "", "")
 	if err != nil {
-		return fmt.Errorf("准备运行环境: %w", err)
+		return fmt.Errorf("preparing the runtime: %w", err)
 	}
 	cmd := exec.CommandContext(c.Context, path, "server", "-l", cfg.Listen, "-p", cfg.Password)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
@@ -1578,12 +1578,12 @@ func leakCheckAction(c *cli.Context) error {
 		return writeJSON(os.Stdout, rep)
 	}
 	fmt.Println("bx leak-check")
-	fmt.Printf("  风险    %s\n", rep.Risk)
+	fmt.Printf("  Risk    %s\n", rep.Risk)
 	for _, check := range rep.Checks {
 		doctorLine(check.Status, check.Name, check.Detail)
 	}
 	for _, action := range rep.NextActions {
-		fmt.Printf("  下一步  %s\n", action)
+		fmt.Printf("  Next    %s\n", action)
 	}
 	return nil
 }
@@ -1594,15 +1594,15 @@ func observeAction(c *cli.Context) error {
 		return writeJSON(os.Stdout, rep)
 	}
 	fmt.Println("bx observe")
-	fmt.Printf("  风险    %s\n", rep.Risk)
+	fmt.Printf("  Risk    %s\n", rep.Risk)
 	for _, check := range rep.Checks {
 		doctorLine(check.Status, check.Name, check.Detail)
 	}
 	for _, rec := range rep.Recommendations {
-		fmt.Printf("  建议    %s\n", rec)
+		fmt.Printf("  Advice  %s\n", rec)
 	}
 	if rep.Error != "" {
-		fmt.Printf("  错误    %s\n", rep.Error)
+		fmt.Printf("  Error   %s\n", rep.Error)
 	}
 	return nil
 }
@@ -1618,7 +1618,7 @@ func serverDoctorAction(c *cli.Context) error {
 	cfg, err := readServerConfig(cfgPath)
 	if err != nil {
 		doctorLine("fail", "config parse", err.Error())
-		doctorLine("hint", "install", "sudo bx server install --host <VPS_IP或域名>")
+		doctorLine("hint", "install", "sudo bx server install --host <VPS_IP_or_domain>")
 	} else {
 		doctorLine("ok", "config parse", "yes")
 		checkFileMode(cfgPath, 0o600)
@@ -1641,7 +1641,7 @@ func serverDoctorAction(c *cli.Context) error {
 				if isListening(portStr) {
 					doctorLine("ok", "port listening", "tcp/"+portStr)
 				} else {
-					doctorLine("warn", "port listening", "tcp/"+portStr+" 未在听(server 没起?bx server start)")
+					doctorLine("warn", "port listening", "tcp/"+portStr+" not listening (did the server not start? bx server start)")
 				}
 				for _, w := range srvgen.CheckRealitySNI(cfg.SNI) {
 					doctorLine("warn", "reality sni", w)
@@ -4676,7 +4676,7 @@ func realtimeOnAction(c *cli.Context) error {
 	if err := setRealtimeMode(c.String("config"), "proxy"); err != nil {
 		return err
 	}
-	fmt.Println("✅ realtime 已开启: 非 DNS UDP 将通过 bx 隧道中继。")
+	fmt.Println("✅ realtime is on: non-DNS UDP is relayed through the bx tunnel.")
 	return applyRealtimePostChange(c)
 }
 
@@ -4684,7 +4684,7 @@ func realtimeOffAction(c *cli.Context) error {
 	if err := setRealtimeMode(c.String("config"), "block"); err != nil {
 		return err
 	}
-	fmt.Println("✅ realtime 已关闭: 非 DNS UDP 将恢复阻断。")
+	fmt.Println("✅ realtime is off: non-DNS UDP goes back to being blocked.")
 	return applyRealtimePostChange(c)
 }
 
@@ -4692,12 +4692,12 @@ type realtimePostChangePlan struct{ Message string }
 
 func planRealtimePostChange(unitInstalled bool, activeState string) realtimePostChangePlan {
 	if !unitInstalled {
-		return realtimePostChangePlan{Message: "尚未安装服务。下次运行 " + elevate.Prefix + "bx up 时生效。"}
+		return realtimePostChangePlan{Message: "the service is not installed yet. The next " + elevate.Prefix + "bx up."}
 	}
 	if activeState == "active" {
-		return realtimePostChangePlan{Message: "当前保护会话保持运行;新的 UDP 策略将在下次 " + elevate.Prefix + "bx up 时生效。"}
+		return realtimePostChangePlan{Message: "The current protection session keeps running; the new UDP policy takes effect on the next " + elevate.Prefix + "bx up."}
 	}
-	return realtimePostChangePlan{Message: "bx 当前未运行。下次 " + elevate.Prefix + "bx up 时生效。"}
+	return realtimePostChangePlan{Message: "bx is not running right now. It takes effect on the next " + elevate.Prefix + "bx up."}
 }
 
 func applyRealtimePostChange(_ *cli.Context) error {
@@ -4766,14 +4766,14 @@ func setRealtimeMode(path, mode string) error {
 	path = resolveConfigPath(path)
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("读配置 %s: %w", path, err)
+		return fmt.Errorf("reading the config %s: %w", path, err)
 	}
 	if _, err := config.Parse(b); err != nil {
 		return err
 	}
 	out := setYAMLScalar(b, "udp", "mode", mode)
 	if err := os.WriteFile(path, out, 0o600); err != nil {
-		return fmt.Errorf("写配置 %s: %w", path, err)
+		return fmt.Errorf("writing the config %s: %w", path, err)
 	}
 	return os.Chmod(path, 0o600)
 }
@@ -4825,10 +4825,10 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 func logsAction(c *cli.Context) error {
 	if c.Bool("json") {
 		if c.Bool("follow") {
-			return fmt.Errorf("--json 不能和 --follow 同时使用")
+			return fmt.Errorf("--json and --follow cannot be used together")
 		}
 		if c.Bool("archive") {
-			return fmt.Errorf("--json 不能和 --archive 同时使用")
+			return fmt.Errorf("--json and --archive cannot be used together")
 		}
 		raw, err := install.TailLogs(install.ServiceName, c.Int("lines"))
 		rep := logsReportFromTail("client", c.Int("lines"), raw, err)
@@ -4837,7 +4837,7 @@ func logsAction(c *cli.Context) error {
 	}
 	if c.Bool("archive") {
 		if c.Bool("follow") {
-			return fmt.Errorf("--archive 不能和 --follow 同时使用")
+			return fmt.Errorf("--archive and --follow cannot be used together")
 		}
 		dir, err := archiveClientLogs(c.String("dir"))
 		if err != nil {
@@ -5095,7 +5095,7 @@ func loadConfig(path string) (*config.Config, error) {
 		// **读不到不是「内容用不了」。** 文件不在 / 权限不够是另一种故障
 		// (多半是「还没 setup 过」),借 config_unusable 那个码就是叫用户去
 		// 改一个他还没写过的文件。这一支照旧落 other。
-		return nil, fmt.Errorf("读配置 %s: %w", path, err)
+		return nil, fmt.Errorf("reading the config %s: %w", path, err)
 	}
 	cfg, err := config.Parse(b)
 	if err != nil {
@@ -5130,7 +5130,7 @@ func writeServerConfig(path string, cfg serverConfig, force bool) error {
 	}
 	if !force {
 		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("server 配置已存在 %s(加 --force 覆盖)", path)
+			return fmt.Errorf("a server config already exists at %s (pass --force to overwrite it)", path)
 		}
 	}
 	b, err := yaml.Marshal(cfg)
@@ -5150,12 +5150,12 @@ func readServerConfig(path string) (serverConfig, error) {
 	var cfg serverConfig
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return cfg, fmt.Errorf("读 server 配置 %s: %w", path, err)
+		return cfg, fmt.Errorf("reading the server config %s: %w", path, err)
 	}
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
-		return cfg, fmt.Errorf("解析 server 配置: %w", err)
+		return cfg, fmt.Errorf("parsing the server config: %w", err)
 	}
 	if err := serverConfigComplete(cfg); err != nil {
 		return cfg, err
@@ -5165,7 +5165,7 @@ func readServerConfig(path string) (serverConfig, error) {
 
 func rotateServerConfig(path, password string) (serverConfig, error) {
 	if password == "" {
-		return serverConfig{}, fmt.Errorf("password 不能为空")
+		return serverConfig{}, fmt.Errorf("password must not be empty")
 	}
 	cfg, err := readServerConfig(path)
 	if err != nil {
@@ -5181,17 +5181,17 @@ func rotateServerConfig(path, password string) (serverConfig, error) {
 func bxServerLink(host string, cfg serverConfig) (string, error) {
 	host = strings.TrimSpace(host)
 	if host == "" {
-		return "", fmt.Errorf("host 不能为空")
+		return "", fmt.Errorf("host must not be empty")
 	}
 	if strings.Contains(host, "://") {
-		return "", fmt.Errorf("host 应只填公网地址或域名,不要带 scheme")
+		return "", fmt.Errorf("host takes just a public address or domain, with no scheme")
 	}
 	if h, p, err := net.SplitHostPort(host); err == nil && h != "" && p != "" {
-		return "", fmt.Errorf("host 不要带端口;端口来自 server listen(%s)", cfg.Listen)
+		return "", fmt.Errorf("host must not carry a port; the port comes from the server's listen (%s)", cfg.Listen)
 	}
 	port := listenPort(cfg.Listen)
 	if port == "" {
-		return "", fmt.Errorf("无法从 listen=%q 推导端口", cfg.Listen)
+		return "", fmt.Errorf("the port could not be derived from listen=%q", cfg.Listen)
 	}
 	target := net.JoinHostPort(strings.Trim(host, "[]"), port)
 	raw := "brook://server?server=" + url.QueryEscape(target) + "&password=" + url.QueryEscape(cfg.Password)
@@ -5213,7 +5213,7 @@ func serverFirewallHint(listen string) string {
 	if port == "" {
 		return ""
 	}
-	return fmt.Sprintf("如果 VPS 启用了防火墙,请确认已放行 TCP %s; ufw 可用: sudo ufw allow %s/tcp", port, port)
+	return fmt.Sprintf("if the VPS has a firewall, make sure TCP %s is open; with ufw: sudo ufw allow %s/tcp", port, port)
 }
 
 // serverFirewallHintFor 按协议给防火墙放行提示:reality=TCP、hysteria2=UDP、brook=其 listen 端口。
@@ -5225,9 +5225,9 @@ func serverFirewallHintFor(cfg serverConfig) string {
 	}
 	switch cfg.Type {
 	case "reality":
-		return fmt.Sprintf("如果 VPS 启用了防火墙,请放行 TCP %d(ufw + 云安全组都要); ufw: sudo ufw allow %d/tcp", port, port)
+		return fmt.Sprintf("if the VPS has a firewall, open TCP %d (both ufw and the cloud security group); ufw: sudo ufw allow %d/tcp", port, port)
 	case "hysteria2":
-		return fmt.Sprintf("如果 VPS 启用了防火墙,请放行 UDP %d(hysteria2 走 QUIC/UDP;ufw + 云安全组都要); ufw: sudo ufw allow %d/udp", port, port)
+		return fmt.Sprintf("if the VPS has a firewall, open UDP %d (hysteria2 runs over QUIC/UDP; both ufw and the cloud security group); ufw: sudo ufw allow %d/udp", port, port)
 	default:
 		return serverFirewallHint(cfg.Listen)
 	}
@@ -5243,7 +5243,7 @@ func writeJSON(w io.Writer, v any) error {
 func openUFW(listen string) error {
 	port := listenPort(listen)
 	if port == "" {
-		return fmt.Errorf("无法从 listen=%q 推导端口", listen)
+		return fmt.Errorf("the port could not be derived from listen=%q", listen)
 	}
 	cmd := exec.Command("ufw", "allow", port+"/tcp")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
@@ -5256,16 +5256,16 @@ func openUFW(listen string) error {
 func cleanShareName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return "", fmt.Errorf("share name 不能为空")
+		return "", fmt.Errorf("the share name must not be empty")
 	}
 	if len(name) > 48 {
-		return "", fmt.Errorf("share name 太长")
+		return "", fmt.Errorf("the share name is too long")
 	}
 	for _, r := range name {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
 			continue
 		}
-		return "", fmt.Errorf("share name 只能包含字母、数字、-、_")
+		return "", fmt.Errorf("a share name may only contain letters, digits, - and _")
 	}
 	return name, nil
 }
@@ -5349,7 +5349,7 @@ func nextShareListen(dir string) (string, error) {
 		}
 		return ":" + p, nil
 	}
-	return "", fmt.Errorf("没有可用 share 端口(10000-10999)")
+	return "", fmt.Errorf("no share port is available (10000-10999)")
 }
 
 const darwinGuardianServiceName = doctor.DarwinGuardianServiceName
@@ -5502,7 +5502,7 @@ func isListening(port string) bool {
 func randomPassword() (string, error) {
 	var b [24]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("生成密码: %w", err)
+		return "", fmt.Errorf("generating a password: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
@@ -5546,7 +5546,7 @@ func uninstallAction(c *cli.Context) error {
 	if err := install.Uninstall(); err != nil {
 		return err
 	}
-	fmt.Println("已卸载 bx 服务")
+	fmt.Println("the bx service has been uninstalled")
 	return nil
 }
 

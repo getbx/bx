@@ -57,7 +57,7 @@ func TestRenderServerList(t *testing.T) {
 	if !strings.Contains(out, "UDP") {
 		t.Errorf("没说清哪台带独立 UDP 传输:\n%s", out)
 	}
-	if out == "" || !strings.Contains(renderServerList(serverListView{}), "没有") {
+	if out == "" || !strings.Contains(renderServerList(serverListView{}), "no server list") {
 		t.Errorf("空清单时应当说人话")
 	}
 }
@@ -76,13 +76,13 @@ func TestSwitchOutcomeMessage(t *testing.T) {
 	}
 
 	cold := switchOutcomeMessage("us", "2.2.2.2", errors.New("dial unix: no such file"))
-	for _, want := range []string{"bx down", "bx up", "已写入"} {
+	for _, want := range []string{"bx down", "bx up", "Written to the config"} {
 		if !strings.Contains(cold, want) {
 			t.Errorf("热切失败时没说清下一步(缺 %q):%s", want, cold)
 		}
 	}
 	// **不许把失败说成成功。**
-	if strings.Contains(cold, "已生效") {
+	if strings.Contains(cold, "confirmed") {
 		t.Errorf("热切失败却说已生效:%s", cold)
 	}
 }
@@ -180,11 +180,11 @@ func TestServerListShowsLatencyAndThroughput(t *testing.T) {
 		}
 	}
 	// **历史数字必须带年龄。** 不带年龄的历史读起来像现状。
-	if !strings.Contains(out, "2 小时前") {
+	if !strings.Contains(out, "2h ago") {
 		t.Errorf("历史吞吐没标出年龄:\n%s", out)
 	}
 	// 刚观测到的那台不写「0 分钟前」—— 那只会让人怀疑数字坏了。
-	if strings.Contains(out, "0 分钟前") {
+	if strings.Contains(out, "0m ago") {
 		t.Errorf("刚观测到的却写了年龄:\n%s", out)
 	}
 }
@@ -200,11 +200,11 @@ func TestServerListExplainsProbeFailures(t *testing.T) {
 		Tested: true,
 		Entries: []guardian.ServerEntry{
 			{Name: "dead", Host: "3.3.3.3", Probe: &guardian.ProbeReport{
-				Measured: true, Error: "超时(没有应答)", ErrorCode: supervisor.ProbeErrTimeout,
+				Measured: true, Error: "timed out (no answer)", ErrorCode: supervisor.ProbeErrTimeout,
 			}},
 		},
 	})
-	if !strings.Contains(out, "超时") {
+	if !strings.Contains(out, "timed out") {
 		t.Errorf("没说清失败原因:\n%s", out)
 	}
 	if strings.Contains(out, "0 ms") {
@@ -237,19 +237,19 @@ func TestServerListReadsTheMeasuredFlagNotTheErrorString(t *testing.T) {
 	})
 	t.Run("测了、没通", func(t *testing.T) {
 		out := render(&guardian.ProbeReport{
-			Measured: true, Error: "连接被拒(端口没在听)",
+			Measured: true, Error: "connection refused (nothing is listening on that port)",
 			ErrorCode: supervisor.ProbeErrRefused,
 		})
-		if !strings.Contains(out, "连接被拒") {
+		if !strings.Contains(out, "connection refused") {
 			t.Errorf("没说清失败原因:\n%s", out)
 		}
 	})
 	t.Run("没测成、原因也没说", func(t *testing.T) {
 		out := render(&guardian.ProbeReport{Measured: false})
-		if strings.Contains(out, "不可达") {
+		if strings.Contains(out, "unreachable") {
 			t.Errorf("没测成却被判成「不可达」—— 一台好服务器被说成坏的:\n%s", out)
 		}
-		if !strings.Contains(out, "没测成") {
+		if !strings.Contains(out, "not measured") {
 			t.Errorf("没测成这件事一个字都没说:\n%s", out)
 		}
 	})
@@ -257,7 +257,7 @@ func TestServerListReadsTheMeasuredFlagNotTheErrorString(t *testing.T) {
 		// 反面自检:少了它,一个「永远说没测成」的实现照样满足上面那条,
 		// 而「这台服务器真的连不上」就再也说不出来了。
 		out := render(&guardian.ProbeReport{Measured: true})
-		if !strings.Contains(out, "不可达") {
+		if !strings.Contains(out, "unreachable") {
 			t.Errorf("测了确实没通,却没说不可达:\n%s", out)
 		}
 	})
@@ -290,7 +290,7 @@ func TestDegradedServerListSaysWhatItCouldNotAsk(t *testing.T) {
 	if !strings.Contains(out, "1.1.1.1") {
 		t.Errorf("退化时连配置里的内容都没显示:\n%s", out)
 	}
-	if !strings.Contains(out, "没问到") {
+	if !strings.Contains(out, "not asked") {
 		t.Errorf("退化了却不说:\n%s", out)
 	}
 	// 退化时不该再劝用户 --test:那条路这会儿本来就走不通。
@@ -299,8 +299,9 @@ func TestDegradedServerListSaysWhatItCouldNotAsk(t *testing.T) {
 	}
 }
 
-// 年龄的门槛与菜单侧一致(两分钟)。两边不一致的话,同一条记录在 CLI 里
-// 「刚刚」而在菜单里「1 分钟前」。
+// 年龄的门槛**与措辞**都与菜单侧一致(两分钟;`2m ago` / `2h ago` / `3d ago`)。
+// 门槛不一致的话,同一条记录在 CLI 里「没有年龄」而在菜单里「1m ago」;
+// 措辞不一致的话,同一条记录在两个界面上读起来是两句话。
 func TestHumanAgeMatchesTheMenuThreshold(t *testing.T) {
 	for _, tc := range []struct {
 		age  time.Duration
@@ -308,9 +309,9 @@ func TestHumanAgeMatchesTheMenuThreshold(t *testing.T) {
 	}{
 		{0, ""},
 		{119 * time.Second, ""},
-		{2 * time.Minute, "2 分钟前"},
-		{2 * time.Hour, "2 小时前"},
-		{72 * time.Hour, "3 天前"},
+		{2 * time.Minute, "2m ago"},
+		{2 * time.Hour, "2h ago"},
+		{72 * time.Hour, "3d ago"},
 	} {
 		if got := humanAge(tc.age); got != tc.want {
 			t.Errorf("humanAge(%v) = %q, want %q", tc.age, got, tc.want)
@@ -353,12 +354,12 @@ func TestServerListMarksTheRunningOneNotJustTheConfiguredOne(t *testing.T) {
 		t.Errorf("配置里选的那一行没有单独标出来:%q\n%s", configured, out)
 	}
 	// 两者不一致本身要说出来,并给出路 —— 一个用户看不懂的符号等于没标。
-	for _, want := range []string{"配置里选的是 us", "流量此刻从 hk 出去", "" + elevate.Prefix + "bx up"} {
+	for _, want := range []string{"config selects us", "leaving through hk", "" + elevate.Prefix + "bx up"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("输出里没有 %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "● = 当前在用") {
+	if strings.Contains(out, "● = in use") {
 		t.Errorf("两者不一致时还在说「当前在用」:\n%s", out)
 	}
 }
@@ -373,10 +374,10 @@ func TestServerListDoesNotClaimTheConfiguredOneIsRunningWhenItCannotAsk(t *testi
 		Current: "us",
 		Entries: []guardian.ServerEntry{{Name: "us", Host: "2.2.2.2", Current: true}},
 	})
-	if strings.Contains(out, "● = 当前在用") {
+	if strings.Contains(out, "● = in use") {
 		t.Errorf("没问出来实际在跑的是哪一台,却断言了「当前在用」:\n%s", out)
 	}
-	if !strings.Contains(out, "没问到") {
+	if !strings.Contains(out, "not asked") {
 		t.Errorf("没问出来却不说:\n%s", out)
 	}
 	// 配置里那台仍要标出来 —— 否则这条守卫可以靠「什么都不标」满足。

@@ -34,7 +34,7 @@ type userView struct {
 
 func serverUIAction(c *cli.Context) error {
 	if !isLoopbackListen(c.String("listen")) {
-		return fmt.Errorf("server ui 只允许监听本机地址,例如 127.0.0.1:8787")
+		return fmt.Errorf("server ui may only listen on a local address, 127.0.0.1:8787 for example")
 	}
 	s := uiServer{host: c.String("host"), sharesDir: c.String("shares-dir")}
 	mux := http.NewServeMux()
@@ -103,7 +103,7 @@ func (s uiServer) handleShare(w http.ResponseWriter, r *http.Request) {
 			writeHTTPJSON(w, map[string]string{"name": name, "type": "reality", "link": blink.Encode(rec.Link)})
 			return
 		case "hysteria2":
-			http.Error(w, "hysteria2 主 server 暂不支持多用户 share", http.StatusBadRequest)
+			http.Error(w, "a hysteria2 main server does not support multi-user shares yet", http.StatusBadRequest)
 			return
 		}
 	}

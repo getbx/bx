@@ -15,6 +15,6 @@ func parseAutostartArg(arg string) (want *bool, status bool, err error) {
 	case "", "status":
 		return nil, true, nil
 	default:
-		return nil, false, fmt.Errorf("未知参数 %q(用 on|off|status)", arg)
+		return nil, false, fmt.Errorf("unknown argument %q (use on|off|status)", arg)
 	}
 }

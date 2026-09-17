@@ -16,9 +16,9 @@ func autostartAction(c *cli.Context) error {
 	}
 	if status {
 		if install.AutostartEnabled() {
-			fmt.Println("开机自启:开")
+			fmt.Println("Start at boot: on")
 		} else {
-			fmt.Println("开机自启:关")
+			fmt.Println("Start at boot: off")
 		}
 		return nil
 	}
@@ -26,9 +26,9 @@ func autostartAction(c *cli.Context) error {
 		return err
 	}
 	if *want {
-		fmt.Println("✅ 已设为开机自启(服务 + 托盘图标)。")
+		fmt.Println("✅ Start-at-boot is on (the service and the tray icon).")
 	} else {
-		fmt.Println("✅ 已取消开机自启。")
+		fmt.Println("✅ Start-at-boot is off.")
 	}
 	return nil
 }

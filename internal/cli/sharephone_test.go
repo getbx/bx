@@ -44,7 +44,7 @@ func TestRawLinkShareWarnsAboutCredentials(t *testing.T) {
 	if !strings.Contains(out, fakeVless) {
 		t.Fatalf("--format link 没打出链接:\n%s", out)
 	}
-	if !strings.Contains(out, "shell 历史") {
+	if !strings.Contains(out, "shell history") {
 		t.Errorf("打了裸凭据却没警告:\n%s", out)
 	}
 }
@@ -150,7 +150,7 @@ func TestReplayShareRefusesToDumpEveryCredential(t *testing.T) {
 	if err == nil {
 		t.Fatal("没给名字却成功了")
 	}
-	if !strings.Contains(err.Error(), "哪个") {
+	if !strings.Contains(err.Error(), "which share") {
 		t.Errorf("错误里没说该给名字:%v", err)
 	}
 }
