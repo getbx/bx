@@ -40,7 +40,7 @@ func TestExplainSaysWhenTheRoutingVerdictCannotHappen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "不进 bx") {
+	if !strings.Contains(got, "never enter bx") {
 		t.Errorf("观测到流量不进 bx,而输出里一个字都没说 —— 下面那两条 TUNNEL 会被读成实际行为:\n%s", got)
 	}
 
@@ -51,7 +51,7 @@ func TestExplainSaysWhenTheRoutingVerdictCannotHappen(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(got, "不进 bx") {
+		if strings.Contains(got, "never enter bx") {
 			t.Errorf("EntersBx=%v 时不该下这个结论:\n%s", s, got)
 		}
 	}

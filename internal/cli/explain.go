@@ -44,17 +44,17 @@ func renderExplain(rep supervisor.ExplainResponse) string {
 // 没问题」**:「没查」与「查了没有」是两件事。
 func renderExplainWithReview(rep supervisor.ExplainResponse, review *rulereview.Report) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "目标      %s\n", rep.Target)
+	fmt.Fprintf(&b, "Target    %s\n", rep.Target)
 	if rep.Domain != "" && rep.Domain != rep.Target {
 		if rep.FakeIPResolved {
-			fmt.Fprintf(&b, "          假 IP 反查到域名 %s\n", rep.Domain)
+			fmt.Fprintf(&b, "          fake IP maps back to %s\n", rep.Domain)
 		} else {
-			fmt.Fprintf(&b, "          域名 %s\n", rep.Domain)
+			fmt.Fprintf(&b, "          domain %s\n", rep.Domain)
 		}
 	}
 	if rep.RouterMissing {
 		// **说不知道,而不是让一份零值读起来像一个判定。**
-		b.WriteString("\n还没有路由表可问 —— bx 此刻不在做任何分流判定。\n")
+		b.WriteString("\nThere is no routing table to ask yet — bx is making no routing decisions right now.\n")
 		return b.String()
 	}
 
@@ -64,9 +64,9 @@ func renderExplainWithReview(rep supervisor.ExplainResponse, review *rulereview.
 	if note := explainHistoryNote(rep); note != "" {
 		b.WriteString("\n" + note)
 	}
-	fmt.Fprintf(&b, "\n隧道      %s", explainHealthLabel(rep.TunnelHealth))
+	fmt.Fprintf(&b, "\nTunnel    %s", explainHealthLabel(rep.TunnelHealth))
 	if rep.UDPTransportHealth != "unknown" {
-		fmt.Fprintf(&b, "  ·  UDP 专用传输 %s", explainHealthLabel(rep.UDPTransportHealth))
+		fmt.Fprintf(&b, "  ·  dedicated UDP transport %s", explainHealthLabel(rep.UDPTransportHealth))
 	}
 	b.WriteString("\n")
 	return b.String()
@@ -78,19 +78,19 @@ func writeExplainPath(b *strings.Builder, label string, p supervisor.ExplainPath
 	// 不健康所以被拦下」正是「我的请求为什么失败」的答案,少了它用户只看到
 	// 一个 BLOCKED 而不知道该去修什么。
 	if p.BlockedBy == "killswitch" {
-		fmt.Fprintf(b, "(路由判定是 %s,但隧道不健康 → kill-switch 拦下)", p.Decision)
+		fmt.Fprintf(b, " (routing says %s, but the tunnel is unhealthy → the kill-switch blocked it)", p.Decision)
 	} else if p.BlockedBy == "udp_mode_block" {
-		b.WriteString("(udp.mode=block:UDP 整个被丢弃)")
+		b.WriteString(" (udp.mode=block: all UDP is dropped)")
 	}
 	b.WriteString("\n")
 
 	if p.Rule != "" {
-		fmt.Fprintf(b, "  依据    %s: %s\n", explainSourceLabel(p.Source), p.Rule)
+		fmt.Fprintf(b, "  Because  %s: %s\n", explainSourceLabel(p.Source), p.Rule)
 	} else {
-		fmt.Fprintf(b, "  依据    %s\n", explainSourceLabel(p.Source))
+		fmt.Fprintf(b, "  Because  %s\n", explainSourceLabel(p.Source))
 	}
-	run := explainCountLine("  本次    ", p.Run)
-	history := explainCountLine("  累计    ", p.History)
+	run := explainCountLine("  This run ", p.Run)
+	history := explainCountLine("  Total    ", p.History)
 	// **具名规则本次 0 次记录,必须明说,不许留白。**
 	//
 	// 具名规则的每一次判定都按 (source, rule) 计数,表里没有条目就是 0 次 ——
@@ -99,7 +99,7 @@ func writeExplainPath(b *strings.Builder, label string, p supervisor.ExplainPath
 	// DIRECT 而「本次」整行缺席;缺席正是答案(bx 从没见过那条连接,tailscaled
 	// 的 socket 绑在 en0 没进 TUN),而缺席最容易被看漏,于是被记成「explain 骗人」。
 	if p.Rule != "" && run == "" {
-		run = "  本次    0 次判定 —— bx 这次运行没见过走这条规则的连接;要是有程序明明在连它,那些连接多半没进 bx(绑了物理网卡的 socket、或目的地在旁路路由里)\n"
+		run = "  This run 0 decisions — bx has not seen a connection take this rule since it started. If something is clearly connecting to it, those connections probably never entered bx (a socket bound to the physical NIC, or a destination sitting in a bypass route)\n"
 	}
 	b.WriteString(run)
 	b.WriteString(history)
@@ -114,15 +114,15 @@ func writeExplainPath(b *strings.Builder, label string, p supervisor.ExplainPath
 	// 不删掉这两行是因为那个信息本身有用(「默认这条路整体 0.5% 失败」是背景),
 	// 删了就换成另一种失真。加一句话把它归位。
 	if p.Rule == "" && (run != "" || history != "") {
-		fmt.Fprintf(b, "  注      这两个数是走「%s」这条路的全部流量的合计,不是这个目标的(这一层没有具体规则可点名)\n",
+		fmt.Fprintf(b, "  Note     these two numbers cover all traffic taking the \"%s\" path, not this target (there is no specific rule to name at this level)\n",
 			explainSourceLabel(p.Source))
 	}
 	b.WriteString(explainFailureVerdict(p.Run, p.History))
 	for _, f := range explainRuleFindings(review, p.Source, p.Rule) {
-		fmt.Fprintf(b, "  体检    %s\n", explainFindingText(f))
+		fmt.Fprintf(b, "  Review   %s\n", explainFindingText(f))
 	}
 	if p.Egress != "" {
-		fmt.Fprintf(b, "  出口    %s\n", p.Egress)
+		fmt.Fprintf(b, "  Egress   %s\n", p.Egress)
 	}
 }
 
@@ -136,10 +136,10 @@ func explainCountLine(prefix string, o *stats.RuleOutcome) string {
 		return ""
 	}
 	if o.Failures == 0 {
-		return fmt.Sprintf("%s%d 次判定,无失败\n", prefix, o.Attempts)
+		return fmt.Sprintf("%s%d decisions, no failures\n", prefix, o.Attempts)
 	}
 	pct := float64(o.Failures) * 100 / float64(o.Attempts)
-	line := fmt.Sprintf("%s%d 次判定 / %d 次失败 (%.1f%%)", prefix, o.Attempts, o.Failures, pct)
+	line := fmt.Sprintf("%s%d decisions / %d failures (%.1f%%)", prefix, o.Attempts, o.Failures, pct)
 	if kinds := explainFailureKinds(o.FailureKinds); kinds != "" {
 		line += "  " + kinds
 	}
@@ -181,23 +181,23 @@ func explainFailureKinds(kinds map[string]int64) string {
 func explainFailureKindLabel(kind string) string {
 	switch kind {
 	case dialfail.Unreachable:
-		return "路由不可达"
+		return "route unreachable"
 	case dialfail.Timeout:
-		return "对端不应答"
+		return "peer did not answer"
 	case dialfail.Refused:
-		return "对端拒绝"
+		return "peer refused"
 	case dialfail.Reset:
-		return "被重置"
+		return "connection reset"
 	case dialfail.DNS:
-		return "够不着解析器"
+		return "resolver unreachable"
 	case dialfail.DNSNotFound:
-		return "域名不存在"
+		return "no such host"
 	case dialfail.Canceled:
-		return "调用方取消"
+		return "caller canceled"
 	case dialfail.EgressUnwired:
-		return "出口未接线"
+		return "egress not wired"
 	case dialfail.Other:
-		return "其它"
+		return "other"
 	}
 	return kind
 }
@@ -205,31 +205,31 @@ func explainFailureKindLabel(kind string) string {
 func explainSourceLabel(source string) string {
 	switch source {
 	case "user_direct", "user_direct_ip":
-		return "用户规则 direct"
+		return "your direct rule"
 	case "user_proxy", "user_proxy_ip":
-		return "用户规则 proxy"
+		return "your proxy rule"
 	case "user_egress":
-		return "用户具名出口"
+		return "your named egress"
 	case "china_domain":
-		return "内建 china 域名列表"
+		return "built-in china domain list"
 	case "china_cidr":
-		return "内建 china IP 段"
+		return "built-in china IP ranges"
 	case "private":
-		return "私网恒直连(不受 global 影响)"
+		return "private network, always direct (global does not affect it)"
 	case "split_dns":
-		return "split-DNS 或 fakeip_filter 解析出的真实 IP(强制直连)"
+		return "a real IP resolved by split-DNS or fakeip_filter (forced direct)"
 	case "default":
-		return "没有命中任何列表(默认)"
+		return "matched no list (default)"
 	case "udp_proxy":
-		return "UDP 走专用传输"
+		return "UDP takes the dedicated transport"
 	case "udp_proxy_fallback":
-		return "UDP 专用传输不健康,回落主传输"
+		return "the dedicated UDP transport is unhealthy, falling back to the main one"
 	case "udp_direct_realtime":
-		return "udp.mode=direct-realtime(以真实 IP 直连)"
+		return "udp.mode=direct-realtime (direct, with your real IP)"
 	case "udp_block":
 		return "udp.mode=block"
 	case "":
-		return "(未记名)"
+		return "(unnamed)"
 	}
 	return source
 }
@@ -237,19 +237,19 @@ func explainSourceLabel(source string) string {
 func explainHealthLabel(h string) string {
 	switch h {
 	case "healthy":
-		return "健康"
+		return "healthy"
 	case "unhealthy":
-		return "不健康"
+		return "unhealthy"
 	}
 	// **「没有健康探针」不是「不健康」。** 压成不健康会把「传输还没装好」
 	// 说成「隧道断了」,而 kill-switch 对两者的处置相同不代表它们是同一件事。
-	return "未知(没有健康探针;kill-switch 按不健康处理)"
+	return "unknown (no health probe; the kill-switch treats it as unhealthy)"
 }
 
 func explainAction(c *cli.Context) error {
 	target := strings.TrimSpace(c.Args().First())
 	if target == "" {
-		return errors.New("要问哪个目标?例如:bx explain steamstatic.com")
+		return errors.New("Which target? For example: bx explain steamstatic.com")
 	}
 	// 本机视角先采(它不依赖 Core):这个目标在这台机器上会怎么走。
 	ctx, cancel := context.WithTimeout(context.Background(), explainMachineTimeout)
@@ -259,13 +259,13 @@ func explainAction(c *cli.Context) error {
 	rep, err := supervisor.FetchExplain(supervisor.SockPath, target)
 	if err != nil {
 		if errors.Is(err, supervisor.ErrExplainUnsupported) {
-			return errors.New("跑着的这一版 Core 没有发布判定查询 —— 升级后重试(bx explain 需要 Core 侧的 /v0/explain)")
+			return errors.New("the running Core does not publish decision queries — upgrade and retry (bx explain needs /v0/explain on the Core side)")
 		}
 		// **「连不上」与「连上了但答不了」措辞必须不同。** 后者 bx 明明应答了,
 		// 再叫人去 `bx up` 就是把他送去做一件确定无用的事。前者不再是错误:
 		// bx 没在跑时本机视角照样有用,那正是它存在的理由。
 		if !isControlSocketUnreachable(err) {
-			return fmt.Errorf("Core 答不了这个问题:%w", err)
+			return fmt.Errorf("Core cannot answer that: %w", err)
 		}
 	}
 	// **体检那一份要对着 Core 此刻在用的那个配置文件算**,不是对着默认路径 ——
@@ -319,7 +319,7 @@ func explainOutput(view pathview.View, rep supervisor.ExplainResponse, coreErr e
 	var b strings.Builder
 	b.WriteString(renderMachineView(view))
 	if coreErr != nil {
-		b.WriteString("\nbx 没在跑(连不上 Core 的控制 socket),以上是没有 bx 时的样子;要看 bx 的判定先 " + elevate.Cmd("bx up") + elevate.Note() + "。\n")
+		b.WriteString("\nbx is not running (its control socket is unreachable), so the above is what things look like without bx. To see bx's verdict, first " + elevate.Cmd("bx up") + elevate.Note() + "。\n")
 		return b.String(), nil
 	}
 	b.WriteString("\n")
@@ -348,21 +348,23 @@ func explainVerdictUnreachableNote(v pathview.View) string {
 	if v.EntersBx != tristate.False {
 		return ""
 	}
-	return padLabel("说明") + "到这个目标的包不进 bx(见上面「本机路由」),下面这两条说的是\n" +
-		padLabel("") + "「如果它进了 bx,bx 会怎么判」—— 不是实际会发生的事。\n"
+	return padLabel("Note") + "packets to this target never enter bx (see \"Route\" above), so the two lines below say\n" +
+		padLabel("") + "what bx *would* decide if they did — not what actually happens.\n"
 }
 
 // renderMachineView:先一句结论,再几行证据,标签对齐到与 Core 那半同宽。
 func renderMachineView(v pathview.View) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s%s\n", padLabel("结论"), v.Conclusion)
+	fmt.Fprintf(&b, "%s%s\n", padLabel("Verdict"), v.Conclusion)
 	for _, l := range v.Lines {
 		fmt.Fprintf(&b, "%s%s\n", padLabel(l.Label), l.Text)
 	}
 	return b.String()
 }
 
-// padLabel 把标签补到与 Core 那半同宽(10 列)。%-8s 按字符数补,CJK 每字占两列,
+// padLabel 把标签补到与 Core 那半同宽(10 列)。**英文标签要挑得放得下** ——
+// 一度用过 "Bound to NIC"(12 列)并把这里改成 12,结果下半截仍是手写的 10 列
+// 对齐,两半错开两列;改短成 "NIC-bound" 之后退回 10,两半重新对齐。%-8s 按字符数补,CJK 每字占两列,
 // 会让「目标类型」比「解析」多凸出去四列。
 func padLabel(label string) string {
 	width := 0
@@ -506,14 +508,14 @@ func explainHistoryNote(rep supervisor.ExplainResponse) string {
 	if rep.HistoryWindowSeconds <= 0 {
 		return ""
 	}
-	note := fmt.Sprintf("累计口径  覆盖 Core 累计在跑的 %.1f 天", float64(rep.HistoryWindowSeconds)/86400)
+	note := fmt.Sprintf("Totals    cover %.1f days of cumulative Core uptime", float64(rep.HistoryWindowSeconds)/86400)
 	if n := len(rep.HistoryVersions); n > 1 {
 		// **跨版本要说**:中间几版的计数行为可能并不一致,那份累计要打折看。
-		note += fmt.Sprintf(",跨 %d 个版本(%s)", n, strings.Join(rep.HistoryVersions, "、"))
+		note += fmt.Sprintf(", spanning %d versions (%s)", n, strings.Join(rep.HistoryVersions, "、"))
 	}
 	if rep.HistoryOverflowed {
 		// 表满过之后,「这条规则没有条目」不再等于「它没命中过」。
-		note += ";跟踪表溢出过 —— 没有条目不等于没命中"
+		note += "; the tracking table overflowed — no entry does not mean no match"
 	}
 	return note + "\n"
 }
@@ -542,9 +544,9 @@ func explainFailureVerdict(run, history *stats.RuleOutcome) string {
 	// 累计那份可能有 8000 次失败却一个分类都没有(旧版本记的、或这一轮还没
 	// 落盘),而本次这份分好了类 —— 按「有失败就用它」会把唯一答得出问题的
 	// 样本整个扔掉,输出与「这一版不下判决」完全一样。
-	sample, source := run, "本次"
+	sample, source := run, "this run"
 	if history != nil && history.Failures > 0 && len(history.FailureKinds) > 0 {
-		sample, source = history, "累计"
+		sample, source = history, "the totals"
 	}
 	if sample == nil || sample.Failures <= 0 {
 		return ""
@@ -556,7 +558,7 @@ func explainFailureVerdict(run, history *stats.RuleOutcome) string {
 	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("  判决    按%s,%s\n", source, explainVerdictText(kind))
+	return fmt.Sprintf("  Blame    by %s: %s\n", source, explainVerdictText(kind))
 }
 
 // explainVerdictText 是每一类的处置。**措辞按 dialfail.Blame 分组,但逐类写** ——
@@ -567,27 +569,27 @@ func explainFailureVerdict(run, history *stats.RuleOutcome) string {
 func explainVerdictText(kind string) string {
 	switch kind {
 	case dialfail.Unreachable:
-		return "多数失败是「路由不可达」 —— 那不是目标的问题,是 bx 自己的直连出口到不了那条路。" +
-			"这是 2026-08-13 与 08-16 两次真机故障的签名;跑 " + elevate.Prefix + "bx doctor 看 direct_egress 那一行"
+		return "most failures are \"route unreachable\" — that is not the target's problem, it is bx's own direct egress being unable to reach that path. " +
+			"This is the signature of the 2026-08-13 and 08-16 real-machine failures; run " + elevate.Prefix + "bx doctor and look at the direct_egress line"
 	case dialfail.DNS:
-		return "多数失败是「够不着解析器」 —— 同样指向本机:bx 拨不到上游 DNS。" +
-			"跑 " + elevate.Prefix + "bx doctor 看 direct_egress 与 dns 那两行"
+		return "most failures are \"resolver unreachable\" — that also points at this machine: bx cannot dial its upstream DNS. " +
+			"Run " + elevate.Prefix + "bx doctor and look at the direct_egress and dns lines"
 	case dialfail.DNSNotFound:
-		return "多数失败是「域名不存在」 —— 有程序在查一批查不到的主机名(微信这类客户端会)。" +
-			"这不是 bx 的故障,一个字都不用改"
+		return "most failures are \"no such host\" — something is looking up a batch of hostnames that do not exist (clients like WeChat do this). " +
+			"This is not a bx failure; nothing needs changing"
 	case dialfail.Canceled:
-		return "多数失败是「调用方自己取消」 —— 连接还没建好程序就走了。这不是这条路的问题"
+		return "most failures are \"the caller canceled\" — the program left before the connection was up. This is not a problem with this path"
 	case dialfail.EgressUnwired:
-		return "多数失败是「具名出口没接上」 —— config 里写了一个运行时不存在的出口。该改的是配置,不是网络"
+		return "most failures are \"egress not wired\" — the config names an egress that does not exist at runtime. The thing to fix is the config, not the network"
 	case dialfail.Timeout:
-		return "多数失败是「对端不应答」 —— bx 把连接发出去了、没等到回应。改 bx 的规则不会有帮助"
+		return "most failures are \"the peer did not answer\" — bx sent the connection out and no reply came back. Changing bx's rules will not help"
 	case dialfail.Refused:
-		return "多数失败是「对端明确拒绝」 —— 那个端口上没人在听。改 bx 的规则不会有帮助"
+		return "most failures are \"the peer refused\" — nothing is listening on that port. Changing bx's rules will not help"
 	case dialfail.Reset:
-		return "多数失败是「连接被重置」 —— 建起来又被打断;跨墙路径上这常常是干扰而不是对端的意思。" +
-			"改规则没用,换传输或换服务器才可能有用"
+		return "most failures are \"the connection was reset\" — it came up and was then cut; on a path crossing the wall this is usually interference rather than the peer's intent. " +
+			"Changing rules will not help; changing transport or server might"
 	default:
-		return "bx 认不出这些失败是怎么回事 —— 上面那行的分类里没有可行动的信息,去看 " + elevate.Prefix + "bx logs"
+		return "bx cannot tell what these failures are — the classification above carries nothing actionable. Look at " + elevate.Prefix + "bx logs"
 	}
 }
 
