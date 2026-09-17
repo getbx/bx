@@ -82,7 +82,7 @@ func TestRenderShowsFailureTotalsEvenWithNoRuleToBlame(t *testing.T) {
 }
 
 // 拿不到配置路径时(旧 Core、或该部署没有配置文件)仍要给出可读的下一步,
-// 而不是打出一句 `改  的 rules`。
+// 而不是打出一句 `edit the rules in , then`。
 func TestRenderDegradesGracefullyWithoutAConfigPath(t *testing.T) {
 	out := Render(Report{Snapshot: Snapshot{
 		Direct: 8113, DirectFailed: 8113,
@@ -91,8 +91,14 @@ func TestRenderDegradesGracefullyWithoutAConfigPath(t *testing.T) {
 	if !strings.Contains(out, "*.steamstatic.com") {
 		t.Fatalf("规则仍然要点名:\n%s", out)
 	}
-	if strings.Contains(out, "改  的") || strings.Contains(out, "改 的") {
+	// **正反两条都要。** 反面那条("in , then")挡的是残缺的句子;正面那条
+	// 挡的是「回落串被人删掉、于是那半句话整个消失」—— 只留反面的话,一个
+	// 什么都不打印的实现照样满足它。
+	if strings.Contains(out, "in , then") || strings.Contains(out, "in  ,") {
 		t.Errorf("路径缺失时打出了残缺的句子:\n%s", out)
+	}
+	if !strings.Contains(out, "edit the rules in your config file") {
+		t.Errorf("路径缺失时仍要给出可读的下一步:\n%s", out)
 	}
 }
 
@@ -140,7 +146,7 @@ func TestStatusGivesEgressAdviceForEgressFailures(t *testing.T) {
 	if !strings.Contains(out, "office") {
 		t.Fatalf("没点名那个出口:\n%s", out)
 	}
-	if strings.Contains(out, "改 /etc/bx/config.yaml 的 rules") {
+	if strings.Contains(out, "edit the rules in /etc/bx/config.yaml") {
 		t.Errorf("出口连不上却建议改规则 —— 会让用户删掉一条对的规则:\n%s", out)
 	}
 	if !strings.Contains(out, "SOCKS5") {
@@ -158,7 +164,7 @@ func TestStatusKeepsRuleAdviceWhenBothKindsFail(t *testing.T) {
 			{Source: "user_direct", Rule: "*.qq.com", Attempts: 20, Failures: 20},
 		},
 	}})
-	if !strings.Contains(out, "改 /etc/bx/config.yaml 的 rules") {
+	if !strings.Contains(out, "edit the rules in /etc/bx/config.yaml") {
 		t.Errorf("混合失败时丢掉了改规则那句:\n%s", out)
 	}
 }

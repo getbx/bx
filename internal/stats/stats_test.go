@@ -64,7 +64,7 @@ func TestRenderShowsUDPPolicy(t *testing.T) {
 	for _, want := range []string{
 		"UDP",
 		"mode block",
-		"阻断 4",
+		"blocked 4",
 		"Google Meet",
 	} {
 		if !strings.Contains(out, want) {

@@ -163,7 +163,7 @@ func TestUDPNoticeReportsSilentFallback(t *testing.T) {
 		{Source: udpSourceProxyFallback, Attempts: 90},
 	}}
 	notice := snap.UDPNotice()
-	if !strings.Contains(notice, "90") || !strings.Contains(notice, "加速档") {
+	if !strings.Contains(notice, "90") || !strings.Contains(notice, "fast lane") {
 		t.Fatalf("没说清回落:%q", notice)
 	}
 }

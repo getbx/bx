@@ -38,9 +38,11 @@ func TestRender_ContainsKeyInfo(t *testing.T) {
 	for _, want := range []string{
 		"203.0.113.10:9999", // 节点
 		"42",                // 延迟
-		"健康",                // 隧道状态
-		"72.7%",             // 代理占比 120/(120+45)
-		"1.2 MB",            // 上行
+		// 隧道状态。**连着圆点一起断言**:英文里 "healthy" 是 "unhealthy" 的
+		// 子串,只查前者的话「隧道挂了」那一版也照样满足这条断言。
+		"● healthy",
+		"72.7%",  // 代理占比 120/(120+45)
+		"1.2 MB", // 上行
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Render 输出应含 %q,实际:\n%s", want, out)
@@ -50,7 +52,7 @@ func TestRender_ContainsKeyInfo(t *testing.T) {
 
 func TestRender_Unhealthy(t *testing.T) {
 	out := Render(Report{TunnelHealthy: false})
-	if !strings.Contains(out, "不健康") {
+	if !strings.Contains(out, "○ unhealthy") {
 		t.Errorf("隧道挂时应显示「不健康」,实际:\n%s", out)
 	}
 }
@@ -60,7 +62,7 @@ func TestRecoveryHint(t *testing.T) {
 		t.Errorf("健康时 recoveryHint 应为空,实际:%q", got)
 	}
 	out := recoveryHint(Report{TunnelHealthy: false, Restarts: 3})
-	for _, want := range []string{"kill-switch", "bx doctor", "重连 3", "换"} {
+	for _, want := range []string{"kill-switch", "bx doctor", "3 reconnects", "switch to"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("不健康 recoveryHint 应含 %q,实际:\n%s", want, out)
 		}
@@ -79,7 +81,7 @@ func TestRender_UnhealthyHasRecovery(t *testing.T) {
 
 func TestRenderNotRunning(t *testing.T) {
 	out := RenderNotRunning()
-	for _, want := range []string{"未运行", "" + elevate.Prefix + "bx up"} {
+	for _, want := range []string{"is not running", "" + elevate.Prefix + "bx up"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("RenderNotRunning 应含 %q,实际:%q", want, out)
 		}
@@ -93,7 +95,7 @@ func TestRenderShowsMultiTransport(t *testing.T) {
 		Transports:    []string{"reality@1.2.3.4", "brook@1.2.3.4"},
 		UDPTransport:  "hysteria2@1.2.3.4",
 	})
-	for _, want := range []string{"传输", "reality@1.2.3.4", "容灾", "brook@1.2.3.4", "UDP→hysteria2@1.2.3.4"} {
+	for _, want := range []string{"Via", "reality@1.2.3.4", "failover", "brook@1.2.3.4", "UDP→hysteria2@1.2.3.4"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status 面板缺 %q:\n%s", want, out)
 		}
@@ -102,18 +104,18 @@ func TestRenderShowsMultiTransport(t *testing.T) {
 
 func TestRenderShowsMode(t *testing.T) {
 	for mode, want := range map[string]string{
-		"split":         "split(国内直连",
-		"global":        "global(含国内全走隧道)",
-		"router":        "router(只劫持 LAN 转发)",
-		"router-global": "白名单",
+		"split":         "split (China direct",
+		"global":        "global (everything, China included",
+		"router":        "router (only forwarded LAN traffic",
+		"router-global": "allowlist",
 	} {
 		out := Render(Report{TunnelHealthy: true, Mode: mode})
-		if !strings.Contains(out, "模式") || !strings.Contains(out, want) {
+		if !strings.Contains(out, "Mode") || !strings.Contains(out, want) {
 			t.Errorf("mode=%q 面板缺 %q:\n%s", mode, want, out)
 		}
 	}
 	// 空 mode 不显模式行(向后兼容,旧 socket 不带 mode)。
-	if strings.Contains(Render(Report{TunnelHealthy: true}), "模式") {
+	if strings.Contains(Render(Report{TunnelHealthy: true}), "Mode") {
 		t.Error("空 mode 不应显模式行")
 	}
 }
@@ -128,7 +130,7 @@ func TestRenderShowsWarnings(t *testing.T) {
 			Hint:     "another VPN may own part of the network path",
 		}},
 	})
-	for _, want := range []string{"提醒", "Work VPN", "another VPN"} {
+	for _, want := range []string{"Notice", "Work VPN", "another VPN"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("warning panel missing %q:\n%s", want, out)
 		}
@@ -138,7 +140,7 @@ func TestRenderShowsWarnings(t *testing.T) {
 // 单传输(无容灾/UDP)只显当前传输,不显容灾块。
 func TestRenderSingleTransportNoFailoverBlock(t *testing.T) {
 	out := Render(Report{TunnelHealthy: true, Transport: "brook@1.2.3.4"})
-	if strings.Contains(out, "容灾") {
+	if strings.Contains(out, "failover") {
 		t.Errorf("单传输不该显容灾:\n%s", out)
 	}
 	if !strings.Contains(out, "brook@1.2.3.4") {

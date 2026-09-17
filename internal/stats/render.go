@@ -58,52 +58,60 @@ type Warning struct {
 	Hint     string `json:"hint,omitempty"`
 }
 
-// modeLabel 给分流模式配中文说明,让 status 一眼看懂当前流量策略。
+// modeLabel 给分流模式配一句说明,让 status 一眼看懂当前流量策略。
 func modeLabel(mode string) string {
 	switch mode {
 	case "global":
-		return "global(含国内全走隧道)"
+		return "global (everything, China included, goes through the tunnel)"
 	case "router":
-		return "router(只劫持 LAN 转发)"
+		return "router (only forwarded LAN traffic is captured)"
 	case "router-global":
-		return "router · 白名单(LAN 转发全走隧道,仅白名单直连)"
+		return "router · allowlist (forwarded LAN traffic all tunnelled, only the allowlist goes direct)"
 	case "split":
-		return "split(国内直连 / 境外走隧道)"
+		return "split (China direct / everything else through the tunnel)"
 	default:
 		return mode
 	}
 }
 
+// statusLabelWidth 是面板左边那一列的宽度。
+//
+// **它是一个常量而不是每行手数的空格**,因为这块面板与 cli 那半
+// (Status/Network/DNS/Hold/Loop)必须对齐成同一列 —— 手数的版本在中文时代
+// 就已经差过一格(续行那句注释记着),而那种错没有任何测试会红。
+const statusLabelWidth = 8
+
 // Render 把 Report 渲染成命令行状态面板。
 func Render(r Report) string {
-	health := "● 健康"
+	health := "● healthy"
 	if !r.TunnelHealthy {
-		health = "○ 不健康"
+		health = "○ unhealthy"
 	}
 	ratio := r.ProxyRatio() * 100
 	var b strings.Builder
-	fmt.Fprintln(&b, "bx 状态")
-	fmt.Fprintf(&b, "  节点    %s  (socks %s)\n", r.Server, r.SocksAddr)
-	fmt.Fprintf(&b, "  隧道    %s  延迟 %dms  重连 %d\n", health, r.LatencyMS, r.Restarts)
+	fmt.Fprintln(&b, "bx status")
+	fmt.Fprintf(&b, "  %-*s%s  (socks %s)\n", statusLabelWidth, "Server", r.Server, r.SocksAddr)
+	fmt.Fprintf(&b, "  %-*s%s  latency %dms  reconnects %d\n", statusLabelWidth, "Tunnel", health, r.LatencyMS, r.Restarts)
 	if r.Mode != "" {
-		fmt.Fprintf(&b, "  模式    %s\n", modeLabel(r.Mode))
+		fmt.Fprintf(&b, "  %-*s%s\n", statusLabelWidth, "Mode", modeLabel(r.Mode))
 	}
 	if r.Transport != "" {
-		fmt.Fprintf(&b, "  传输    %s", r.Transport)
+		fmt.Fprintf(&b, "  %-*s%s", statusLabelWidth, "Via", r.Transport)
 		if len(r.Transports) > 1 {
-			fmt.Fprintf(&b, "  (容灾 %s)", strings.Join(r.Transports, " › "))
+			fmt.Fprintf(&b, "  (failover %s)", strings.Join(r.Transports, " › "))
 		}
 		if r.UDPTransport != "" {
 			fmt.Fprintf(&b, "  UDP→%s", r.UDPTransport)
 		}
 		fmt.Fprintln(&b)
 	}
-	fmt.Fprintf(&b, "  连接    活跃 %d  代理 %d  直连 %d  阻断 %d\n", r.Active, r.Proxy, r.Direct, r.Blocked)
+	fmt.Fprintf(&b, "  %-*sactive %d  proxy %d  direct %d  blocked %d\n",
+		statusLabelWidth, "Conns", r.Active, r.Proxy, r.Direct, r.Blocked)
 	udpMode := r.UDPMode
 	if udpMode == "" {
 		udpMode = "proxy"
 	}
-	fmt.Fprintf(&b, "  UDP     mode %s  阻断 %d", udpMode, r.UDPBlocked)
+	fmt.Fprintf(&b, "  %-*smode %s  blocked %d", statusLabelWidth, "UDP", udpMode, r.UDPBlocked)
 	if r.UDPNote != "" {
 		fmt.Fprintf(&b, "  %s", r.UDPNote)
 	}
@@ -112,30 +120,30 @@ func Render(r Report) string {
 	// bx 就在数据面上,这些失败它每一次都看见 —— 此前只打进 debug 日志然后扔掉,
 	// 于是「direct 26186」里藏着几千条秒失败的连接,而 status 一个字都不说。
 	if r.DirectFailed > 0 || r.ProxyFailed > 0 {
-		fmt.Fprintf(&b, "  失败    代理 %d  直连 %d\n", r.ProxyFailed, r.DirectFailed)
+		fmt.Fprintf(&b, "  %-*sproxy %d  direct %d\n", statusLabelWidth, "Failed", r.ProxyFailed, r.DirectFailed)
 	}
-	fmt.Fprintf(&b, "  分流    代理 %.1f%% / 直连 %.1f%%\n", ratio, 100-ratio)
-	fmt.Fprintf(&b, "  流量    ↑ %s   ↓ %s\n", humanBytes(r.BytesUp), humanBytes(r.BytesDown))
+	fmt.Fprintf(&b, "  %-*sproxy %.1f%% / direct %.1f%%\n", statusLabelWidth, "Split", ratio, 100-ratio)
+	fmt.Fprintf(&b, "  %-*s↑ %s   ↓ %s\n", statusLabelWidth, "Traffic", humanBytes(r.BytesUp), humanBytes(r.BytesDown))
 	// UDP 那条路的一句话。**一切正常时一个字都不打。**
 	// 它此前完全隐形:UDP 不问 router,于是既没有规则归因,失败也一次都没被数过。
 	if notice := r.UDPNotice(); notice != "" {
-		fmt.Fprintf(&b, "  %-6s%s\n", "UDP", notice)
+		fmt.Fprintf(&b, "  %-*s%s\n", statusLabelWidth, "UDP", notice)
 	}
 	// 点名成片失败的用户规则。**一切正常时这里一个字都不打** ——
 	// 那是它不被训练成噪声的前提。
 	if failing := r.FailingRules(); len(failing) > 0 {
 		for i, rule := range failing {
-			label := "规则"
+			label := "Rule"
 			if i > 0 {
 				label = ""
 			}
 			pct := float64(rule.Failures) / float64(rule.Attempts) * 100
-			fmt.Fprintf(&b, "  %-6s%s  %s %d 条,失败 %d(%.0f%%)\n",
-				label, rule.Rule, ruleActionLabel(rule.Source), rule.Attempts, rule.Failures, pct)
+			fmt.Fprintf(&b, "  %-*s%s  %s, %d attempts, %d failed (%.0f%%)\n",
+				statusLabelWidth, label, rule.Rule, ruleActionLabel(rule.Source), rule.Attempts, rule.Failures, pct)
 		}
 		where := r.ConfigPath
 		if where == "" {
-			where = "配置文件"
+			where = "your config file"
 		}
 		// **出口失败要给出口的下一步,不是「改 rules」。**
 		//
@@ -143,28 +151,30 @@ func Render(r Report) string {
 		// 照旧建议改规则,会把人指向删掉一条对的规则,而问题原样留着。
 		// (与 doctor 里 direct_egress 那处同一个形状、同一条纪律。)
 		if egressFailing(failing) {
-			fmt.Fprintf(&b, "  %-6s↑ 那条出口连不上(开着的 SOCKS5 断了?),先恢复它;改配置用 bx egress\n", "")
+			fmt.Fprintf(&b, "  %-*s↑ that egress is unreachable (did the SOCKS5 you had open go away?); bring it back first — to change it, use bx egress\n",
+				statusLabelWidth, "")
 			for i, w := range r.Warnings {
-				label := "提醒"
+				label := "Notice"
 				if i > 0 {
 					label = ""
 				}
-				fmt.Fprintf(&b, "  %-6s %s\n", label, WarningText(w))
+				fmt.Fprintf(&b, "  %-*s%s\n", statusLabelWidth, label, WarningText(w))
 			}
 			fmt.Fprint(&b, recoveryHint(r))
 			return b.String()
 		}
 		// 续行与上面的规则名对齐:用同一个标签宽度构造,不手数空格
 		// (手数的那个版本差了一格,而这种错没有任何测试会红)。
-		fmt.Fprintf(&b, "  %-6s↑ 这条路已经不通;改 %s 的 rules 后 bx down && bx up\n", "", where)
+		fmt.Fprintf(&b, "  %-*s↑ that path is dead; edit the rules in %s, then bx down && bx up\n",
+			statusLabelWidth, "", where)
 	}
 
 	for i, w := range r.Warnings {
-		label := "提醒"
+		label := "Notice"
 		if i > 0 {
 			label = ""
 		}
-		fmt.Fprintf(&b, "  %-6s %s\n", label, WarningText(w))
+		fmt.Fprintf(&b, "  %-*s%s\n", statusLabelWidth, label, WarningText(w))
 	}
 	fmt.Fprint(&b, recoveryHint(r))
 	return b.String()
@@ -194,12 +204,13 @@ func recoveryHint(r Report) string {
 		return ""
 	}
 	return fmt.Sprintf(`
-  ⚠ 隧道不健康:可能是服务器被封或网络波动。
-    你的真实 IP 已被 kill-switch 保护(外网暂时不通是「保护」,不是故障)。
-    可以试:
-      · 稍等十几秒看是否自动重连(已重连 %d 次)
-      · bx doctor                体检找原因
-      · 让你的 agent 换隐写传输(brook→REALITY)绕过封锁,或 sudo bx setup 换新链接
+  ⚠ The tunnel is unhealthy: the server may be blocked, or the network is flapping.
+    Your real IP is still covered by the kill-switch (losing the outside world
+    for a moment is the protection working, not a failure).
+    Things to try:
+      · wait ten or twenty seconds and see if it reconnects itself (%d reconnects so far)
+      · bx doctor                to look for a cause
+      · switch to a harder-to-block transport (brook→REALITY), or `+elevate.Prefix+`bx setup with a new link
 `, r.Restarts)
 }
 
@@ -207,7 +218,7 @@ func recoveryHint(r Report) string {
 func RenderNotRunning() string {
 	// elevate.Note() 在有 sudo 的平台上是空串,于是这一行逐字不变;
 	// Windows 上补一句「要在管理员 PowerShell 里跑」—— 裸命令自己说不出它需要提权。
-	return "bx 未运行。\n  启动:" + elevate.Cmd("bx up") + elevate.Note() + "        体检:bx doctor\n"
+	return "bx is not running.\n  Start it: " + elevate.Cmd("bx up") + elevate.Note() + "        Check it: bx doctor\n"
 }
 
 // humanBytes 把字节数转成人类可读单位。
@@ -228,13 +239,13 @@ func humanBytes(n int64) string {
 func ruleActionLabel(source string) string {
 	switch source {
 	case "user_direct", "user_direct_ip":
-		return "强制直连"
+		return "forced direct"
 	case "user_proxy", "user_proxy_ip":
-		return "强制走隧道"
+		return "forced through the tunnel"
 	case "user_egress":
-		return "交给出口"
+		return "handed to an egress"
 	default:
-		return "命中"
+		return "matched"
 	}
 }
 
