@@ -25,7 +25,7 @@ import (
 func egressCommands() []*cli.Command {
 	return []*cli.Command{
 		{
-			Name: "ls", Usage: "列出具名出口与交给它们的网段",
+			Name: "ls", Usage: "list the named egresses and the prefixes handed to them",
 			Flags: ruleBaseFlags(), Action: egressListAction,
 		},
 		{
@@ -36,15 +36,15 @@ func egressCommands() []*cli.Command {
 			// 而它是 Required,命令直接失败,报的还是「没给 --socks5」。
 			// 这个坑本仓库 2026-08-14 在 `bx setup … --udp` 上栽过一次,
 			// 实跑这条命令时又栽了一次。全用位置参数就没有这个问题。
-			Name: "add", Usage: "加一个具名出口(同名则更新地址)", ArgsUsage: "<name> <socks5>",
+			Name: "add", Usage: "add a named egress (an existing name has its address updated)", ArgsUsage: "<name> <socks5>",
 			Flags: ruleBaseFlags(), Action: egressAddAction,
 		},
 		{
-			Name: "route", Usage: "把一个网段交给某个出口(白名单)", ArgsUsage: "<name> <cidr>",
+			Name: "route", Usage: "hand a prefix to an egress (allowlist)", ArgsUsage: "<name> <cidr>",
 			Flags: ruleBaseFlags(), Action: egressRouteAction,
 		},
 		{
-			Name: "rm", Usage: "删掉一个出口,连同交给它的所有网段", ArgsUsage: "<name>",
+			Name: "rm", Usage: "delete an egress along with every prefix handed to it", ArgsUsage: "<name>",
 			Flags: ruleBaseFlags(), Action: egressRemoveAction,
 		},
 	}

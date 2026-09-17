@@ -454,12 +454,12 @@ func splitDeployedLink(combined string) (main, udp string) {
 
 func serverDeployFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "protocol", Value: "reality", Usage: "协议:reality(默认)| hysteria2 | brook"},
-		&cli.StringFlag{Name: "sni", Usage: "reality/hysteria2 借用的真站(默认 www.cloudflare.com)"},
-		&cli.IntFlag{Name: "port", Usage: "监听端口(默认 443)"},
-		&cli.BoolFlag{Name: "force", Usage: "覆盖远端已存在的 server 配置"},
+		&cli.StringFlag{Name: "protocol", Value: "reality", Usage: "protocol: reality (default) | hysteria2 | brook"},
+		&cli.StringFlag{Name: "sni", Usage: "the real site reality/hysteria2 borrows (default www.cloudflare.com)"},
+		&cli.IntFlag{Name: "port", Usage: "listen port (default 443)"},
+		&cli.BoolFlag{Name: "force", Usage: "overwrite an existing server config on the remote host"},
 		// **给了名字就自动加进清单,但不换过去。** 换出口要用户在清单里显式点一下。
-		&cli.StringFlag{Name: "name", Usage: "装好后用这个名字加进本机服务器清单(不会切换当前出口)"},
+		&cli.StringFlag{Name: "name", Usage: "add it to this machine's server list under this name once installed (your current exit does not change)"},
 	}
 }
 

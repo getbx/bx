@@ -69,67 +69,67 @@ const (
 func New() *cli.App {
 	return &cli.App{
 		Name:    "bx",
-		Usage:   "透明全局代理",
+		Usage:   "a transparent, whole-machine proxy",
 		Version: version.String(),
 		Action:  rootAction,
 		Commands: []*cli.Command{
 			guardianCommand(),
-			{Name: "setup", Usage: "首次配置:写配置+装服务+连通检测(不启动)", ArgsUsage: "bx://...", Flags: setupFlags(), Action: setupAction},
-			{Name: "probe", Usage: "检测 bx:// 链接连通性(不写配置/不改路由)", ArgsUsage: "bx://...", Flags: probeFlags(), Action: probeAction},
-			{Name: "server", Usage: "管理 bx server", Subcommands: serverCommands()},
-			{Name: "invite", Usage: "生成给普通用户的 bx 邀请", ArgsUsage: "[name]", Flags: inviteFlags(), Action: inviteAction},
-			{Name: "user", Usage: "管理 bx 用户", Subcommands: userCommands()},
-			{Name: "preset", Usage: "应用内置应用可用性规则", Subcommands: presetCommands()},
-			{Name: "doctor", Usage: "诊断客户端配置和运行状态", Flags: doctorFlags(), Action: doctorAction},
+			{Name: "setup", Usage: "first-time setup: write the config, install the service, check connectivity (does not start it)", ArgsUsage: "bx://...", Flags: setupFlags(), Action: setupAction},
+			{Name: "probe", Usage: "check that a bx:// link connects (writes no config, touches no routes)", ArgsUsage: "bx://...", Flags: probeFlags(), Action: probeAction},
+			{Name: "server", Usage: "manage a bx server", Subcommands: serverCommands()},
+			{Name: "invite", Usage: "generate a bx invite for an ordinary user", ArgsUsage: "[name]", Flags: inviteFlags(), Action: inviteAction},
+			{Name: "user", Usage: "manage bx users", Subcommands: userCommands()},
+			{Name: "preset", Usage: "apply the built-in app-reachability rules", Subcommands: presetCommands()},
+			{Name: "doctor", Usage: "diagnose the client's configuration and runtime state", Flags: doctorFlags(), Action: doctorAction},
 			{
 				Name:      "explain",
-				Usage:     "这个目标在本机会怎么走、bx 会怎么判、为什么(只读,不发包;bx 没在跑也能答本机那半)",
-				ArgsUsage: "<域名|IP[:端口]>",
-				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "机器可读输出"}},
+				Usage:     "how this target travels on this machine, how bx would decide, and why (read-only, sends no packets; answers the machine half even when bx is not running)",
+				ArgsUsage: "<domain|IP[:port]>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "machine-readable output"}},
 				Action:    explainAction,
 			},
-			{Name: "inspect", Usage: "输出 agent 可读诊断包", Flags: inspectFlags(), Action: inspectAction},
-			{Name: "leak-check", Usage: "非交互的机器可读检查(不开页面;供 MCP 与脚本):本机泄漏面 + 其它 VPN 共存 + 可选主动出口探测。人用请敲 leakcheck(没有连字符),它会开页面并把两半事实对起来", Flags: leakCheckFlags(), Action: leakCheckAction},
-			{Name: "leakcheck", Usage: "泄漏检测【推荐】:开浏览器页面,把浏览器那半(WebRTC/公网出口)与本机那半(路由/DNS)对起来 —— 只有两半合起来才判得了泄漏。保护关着、别的 VPN 在跑时照样能用", Flags: leakcheckFlags(), Action: leakcheckAction},
-			{Name: "observe", Usage: "观察一小段运行期状态变化(只读)", Flags: observeFlags(), Action: observeAction},
-			{Name: "apps", Usage: "按应用看分流:哪个应用走隧道、哪个直连、哪个被拦(只读,采样一小段)", Flags: appsFlags(), Action: appsAction},
-			{Name: "capabilities", Usage: "输出机器可读能力清单", Action: capabilitiesAction},
-			{Name: "up", Usage: "启动并设为开机自启", Action: upAction},
-			{Name: "down", Usage: "停止并取消开机自启", Action: downAction},
-			{Name: "reconnect", Usage: "故障排查:手动触发安全恢复(正常网络变化会自动恢复)", Flags: reconnectFlags(), Action: reconnectAction},
-			{Name: "restart", Usage: "安全重连保护(reconnect 的兼容别名)", Hidden: true, Action: restartAction},
-			{Name: "update", Usage: "更新 bx 到最新 release(SHA256 校验 + 原子替换,不打断保护)", Flags: updateFlags(), Action: updateAction},
-			{Name: "direct", Usage: "管理直连白名单(global 下只有白名单域名直连,其余走隧道)", Subcommands: directCommands()},
-			{Name: "proxy", Usage: "管理强制走隧道的域名", Subcommands: proxyCommands()},
-			{Name: "dns", Usage: "管理 macOS 系统 DNS 接管", Subcommands: dnsCommands()},
-			{Name: "realtime", Usage: "查看实时 UDP 策略", Subcommands: realtimeCommands()},
-			{Name: "run", Usage: "前台运行(调试/服务内部用)", Hidden: true, Flags: runFlags(), Action: runAction},
-			{Name: "tray", Usage: "启动系统托盘(Windows;点图标连/断/设置/看状态)", Action: trayAction},
-			{Name: "autostart", Usage: "开机自启开关(Windows;on|off|status)", ArgsUsage: "on|off|status", Action: autostartAction},
-			{Name: "debug-tun", Usage: "仅创建 TUN 适配器(不起隧道/不碰路由),真机验证 wintun+wgbridge", Hidden: true, Flags: debugTunFlags(), Action: debugTunAction},
-			{Name: "serve", Usage: "运行 bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
-			{Name: "mcp", Usage: "启动 agent 控制面 MCP server(stdio)", Hidden: false, Flags: mcpFlags(), Action: mcpAction, Subcommands: []*cli.Command{
-				{Name: "install", Usage: "打印把 bx 接入你的 agent 的 MCP 配对指令(只打印,不自跑)", Action: mcpInstallAction},
+			{Name: "inspect", Usage: "print a diagnostic bundle an agent can read", Flags: inspectFlags(), Action: inspectAction},
+			{Name: "leak-check", Usage: "non-interactive, machine-readable check (opens no page; for MCP and scripts): this machine's leak surface + coexisting VPNs + an optional active exit probe. If you are a human, type leakcheck (no hyphen) instead — it opens a page and lines the two halves up", Flags: leakCheckFlags(), Action: leakCheckAction},
+			{Name: "leakcheck", Usage: "leak check [recommended]: opens a browser page and lines the browser half (WebRTC / public exit) up against the machine half (routes / DNS) — only both halves together can decide whether you are leaking. Works with protection off and with another VPN running", Flags: leakcheckFlags(), Action: leakcheckAction},
+			{Name: "observe", Usage: "watch runtime state change over a short window (read-only)", Flags: observeFlags(), Action: observeAction},
+			{Name: "apps", Usage: "traffic by app: which app goes through the tunnel, which goes direct, which is blocked (read-only, samples a short window)", Flags: appsFlags(), Action: appsAction},
+			{Name: "capabilities", Usage: "print a machine-readable capability list", Action: capabilitiesAction},
+			{Name: "up", Usage: "start it and enable start-at-boot", Action: upAction},
+			{Name: "down", Usage: "stop it and disable start-at-boot", Action: downAction},
+			{Name: "reconnect", Usage: "troubleshooting: trigger a safe recovery by hand (ordinary network changes recover on their own)", Flags: reconnectFlags(), Action: reconnectAction},
+			{Name: "restart", Usage: "safely reconnect protection (compatibility alias for reconnect)", Hidden: true, Action: restartAction},
+			{Name: "update", Usage: "update bx to the latest release (SHA256-verified, atomic replace, protection is not interrupted)", Flags: updateFlags(), Action: updateAction},
+			{Name: "direct", Usage: "manage the direct allowlist (in global mode only allowlisted domains go direct, everything else is tunnelled)", Subcommands: directCommands()},
+			{Name: "proxy", Usage: "manage the domains forced through the tunnel", Subcommands: proxyCommands()},
+			{Name: "dns", Usage: "manage the macOS system DNS takeover", Subcommands: dnsCommands()},
+			{Name: "realtime", Usage: "show the realtime UDP policy", Subcommands: realtimeCommands()},
+			{Name: "run", Usage: "run in the foreground (for debugging, and used internally by the service)", Hidden: true, Flags: runFlags(), Action: runAction},
+			{Name: "tray", Usage: "start the system tray (Windows; click the icon to connect, disconnect, configure, or see status)", Action: trayAction},
+			{Name: "autostart", Usage: "start-at-boot switch (Windows; on|off|status)", ArgsUsage: "on|off|status", Action: autostartAction},
+			{Name: "debug-tun", Usage: "create only the TUN adapter (no tunnel, no routes) to verify wintun+wgbridge on real hardware", Hidden: true, Flags: debugTunFlags(), Action: debugTunAction},
+			{Name: "serve", Usage: "run a bx server", Hidden: true, Flags: serveFlags(), Action: serveAction},
+			{Name: "mcp", Usage: "start the agent control-plane MCP server (stdio)", Hidden: false, Flags: mcpFlags(), Action: mcpAction, Subcommands: []*cli.Command{
+				{Name: "install", Usage: "print the MCP pairing instructions for wiring bx into your agent (prints only, runs nothing)", Action: mcpInstallAction},
 			}},
-			{Name: "status", Usage: "查看状态面板", Flags: statusFlags(), Action: statusAction},
-			{Name: "logs", Usage: "查看客户端日志", Flags: logsFlags(), Action: logsAction},
-			{Name: "link", Usage: "生成 bx:// 链接", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
-			{Name: "blink", Usage: "把内部传输链接换壳成 bx://", ArgsUsage: "<link> [link2 ...]", Hidden: true, Action: linkAction},
-			{Name: "darwin-plan", Usage: "打印 macOS 路由 dry-run 计划(不改网络)", Hidden: true, Flags: darwinPlanFlags(), Action: darwinPlanAction},
-			{Name: "router-plan", Usage: "打印 router 模式 dry-run 计划(ip + nft,不改网络)", Hidden: true, Flags: routerPlanFlags(), Action: routerPlanAction},
+			{Name: "status", Usage: "show the status panel", Flags: statusFlags(), Action: statusAction},
+			{Name: "logs", Usage: "show the client log", Flags: logsFlags(), Action: logsAction},
+			{Name: "link", Usage: "generate a bx:// link", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
+			{Name: "blink", Usage: "re-wrap an internal transport link as bx://", ArgsUsage: "<link> [link2 ...]", Hidden: true, Action: linkAction},
+			{Name: "darwin-plan", Usage: "print the macOS routing dry-run plan (changes nothing)", Hidden: true, Flags: darwinPlanFlags(), Action: darwinPlanAction},
+			{Name: "router-plan", Usage: "print the router-mode dry-run plan (ip + nft, changes nothing)", Hidden: true, Flags: routerPlanFlags(), Action: routerPlanAction},
 			{
 				Name:   "app-install",
-				Usage:  "从 Bx.app 安装统一 runtime/CLI bridge/Guardian(macOS,root)",
+				Usage:  "install the unified runtime / CLI bridge / Guardian from Bx.app (macOS, root)",
 				Hidden: true,
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "app-source", Usage: "源 Bx.app 路径(默认从自身位置推导)"},
-					&cli.StringFlag{Name: "config", Value: defaultConfigPath, Usage: "Guardian 配置路径"},
-					&cli.BoolFlag{Name: "yes", Usage: "跳过升级确认(非交互调用必须显式加;已装过 bx 时会停止并重启保护)"},
+					&cli.StringFlag{Name: "app-source", Usage: "path to the source Bx.app (derived from this binary's own location by default)"},
+					&cli.StringFlag{Name: "config", Value: defaultConfigPath, Usage: "Guardian config path"},
+					&cli.BoolFlag{Name: "yes", Usage: "skip the upgrade confirmation (required for non-interactive callers; if bx is already installed this stops and restarts protection)"},
 				},
 				Action: appInstallAction,
 			},
-			{Name: "uninstall", Usage: "卸载客户端服务", Action: uninstallAction},
-			{Name: "egress", Usage: "具名出口:把点名的网段交给一条已有的隧道(mesh 用不了时的退路)", Subcommands: egressCommands()},
+			{Name: "uninstall", Usage: "uninstall the client service", Action: uninstallAction},
+			{Name: "egress", Usage: "named egress: hand named prefixes to a tunnel you already have (the fallback for when a mesh will not work)", Subcommands: egressCommands()},
 		},
 	}
 }
@@ -393,192 +393,192 @@ func serverCommands() []*cli.Command {
 		// 客户端那一半:在已配好的几台之间**由用户自己**选(不是自动容灾)。
 		{
 			Name:  "list",
-			Usage: "列出已配置的服务器,并标出当前在用的那台",
+			Usage: "list the configured servers and mark the one in use",
 			// --test 会往隧道**外面**发包(每台一次 TCP 握手),所以它是
 			// 显式的一下,不是默认行为。
-			Flags:  append(ruleBaseFlags(), &cli.BoolFlag{Name: "test", Usage: "顺便测一遍延迟与可达性(会往隧道外面发包)"}),
+			Flags:  append(ruleBaseFlags(), &cli.BoolFlag{Name: "test", Usage: "also measure latency and reachability (sends packets outside the tunnel)"}),
 			Action: serverListAction,
 		},
-		{Name: "use", Usage: "切换到清单里的另一台(先热切,切不动才需要重启)", ArgsUsage: "<name>", Flags: ruleBaseFlags(), Action: serverUseAction},
-		{Name: "rm", Usage: "从清单里删掉一台(不能删当前在用的)", ArgsUsage: "<name>", Flags: ruleBaseFlags(), Action: serverRemoveAction},
-		{Name: "deploy", Usage: "从本机把 bx server 装到一台 VPS 上(走系统 ssh,bx 不经手凭据)", ArgsUsage: "<user@host>", Flags: serverDeployFlags(), Action: serverDeployAction},
-		{Name: "install", Usage: "安装 bx server 服务", Flags: serverInstallFlags(), Action: serverInstallAction},
-		{Name: "link", Usage: "生成客户端 bx:// 链接", Flags: serverLinkFlags(), Action: serverLinkAction},
-		{Name: "share", Usage: "分享给一个人", ArgsUsage: "<name>", Flags: serverShareFlags(), Action: serverShareAction},
-		{Name: "shares", Usage: "查看已分享的链接", Flags: serverSharesFlags(), Action: serverSharesAction},
-		{Name: "revoke", Usage: "撤销一个分享", ArgsUsage: "<name>", Flags: serverRevokeFlags(), Action: serverRevokeAction},
-		{Name: "rotate", Usage: "轮换 server 密码并生成新链接", Flags: serverRotateFlags(), Action: serverRotateAction},
-		{Name: "up", Usage: "一键装好(默认 reality+hys2、自动探测公网IP)并启动", Flags: serverInstallFlags(), Action: serverUpAction},
-		{Name: "down", Usage: "停止并取消开机自启", Action: serverDownAction},
-		{Name: "start", Usage: "启动并设为开机自启", Action: serverStartAction},
-		{Name: "stop", Usage: "停止并取消开机自启", Action: serverStopAction},
-		{Name: "status", Usage: "查看服务状态", Action: serverStatusAction},
-		{Name: "doctor", Usage: "诊断 bx server 配置和运行状态", Flags: serverDoctorFlags(), Action: serverDoctorAction},
-		{Name: "logs", Usage: "查看 bx server 日志", Flags: serverLogsFlags(), Action: serverLogsAction},
-		{Name: "ui", Usage: "启动本地 Web 管理界面", Flags: serverUIFlags(), Action: serverUIAction},
-		{Name: "uninstall", Usage: "卸载 bx server 服务", Action: serverUninstallAction},
+		{Name: "use", Usage: "switch to another server in the list (hot-switch first; only a failed switch needs a restart)", ArgsUsage: "<name>", Flags: ruleBaseFlags(), Action: serverUseAction},
+		{Name: "rm", Usage: "remove a server from the list (not the one in use)", ArgsUsage: "<name>", Flags: ruleBaseFlags(), Action: serverRemoveAction},
+		{Name: "deploy", Usage: "install a bx server onto a VPS from this machine (over your system ssh; bx never handles your credentials)", ArgsUsage: "<user@host>", Flags: serverDeployFlags(), Action: serverDeployAction},
+		{Name: "install", Usage: "install the bx server service", Flags: serverInstallFlags(), Action: serverInstallAction},
+		{Name: "link", Usage: "generate a client bx:// link", Flags: serverLinkFlags(), Action: serverLinkAction},
+		{Name: "share", Usage: "share with one person", ArgsUsage: "<name>", Flags: serverShareFlags(), Action: serverShareAction},
+		{Name: "shares", Usage: "show the links you have shared", Flags: serverSharesFlags(), Action: serverSharesAction},
+		{Name: "revoke", Usage: "revoke one share", ArgsUsage: "<name>", Flags: serverRevokeFlags(), Action: serverRevokeAction},
+		{Name: "rotate", Usage: "rotate the server password and generate a new link", Flags: serverRotateFlags(), Action: serverRotateAction},
+		{Name: "up", Usage: "install and start in one step (reality+hysteria2 by default, public IP auto-detected)", Flags: serverInstallFlags(), Action: serverUpAction},
+		{Name: "down", Usage: "stop it and disable start-at-boot", Action: serverDownAction},
+		{Name: "start", Usage: "start it and enable start-at-boot", Action: serverStartAction},
+		{Name: "stop", Usage: "stop it and disable start-at-boot", Action: serverStopAction},
+		{Name: "status", Usage: "show the service state", Action: serverStatusAction},
+		{Name: "doctor", Usage: "diagnose the bx server's configuration and runtime state", Flags: serverDoctorFlags(), Action: serverDoctorAction},
+		{Name: "logs", Usage: "show the bx server log", Flags: serverLogsFlags(), Action: serverLogsAction},
+		{Name: "ui", Usage: "start the local web admin UI", Flags: serverUIFlags(), Action: serverUIAction},
+		{Name: "uninstall", Usage: "uninstall the bx server service", Action: serverUninstallAction},
 	}
 }
 
 func userCommands() []*cli.Command {
 	return []*cli.Command{
-		{Name: "list", Usage: "列出 bx 用户", Flags: userListFlags(), Action: userListAction},
-		{Name: "show", Usage: "查看一个用户", ArgsUsage: "<name>", Flags: userShowFlags(), Action: userShowAction},
-		{Name: "invite", Usage: "生成或复显用户邀请", ArgsUsage: "<name>", Flags: inviteFlags(), Action: inviteAction},
-		{Name: "revoke", Usage: "撤销一个用户", ArgsUsage: "<name>", Flags: userRevokeFlags(), Action: userRevokeAction},
+		{Name: "list", Usage: "list bx users", Flags: userListFlags(), Action: userListAction},
+		{Name: "show", Usage: "show one user", ArgsUsage: "<name>", Flags: userShowFlags(), Action: userShowAction},
+		{Name: "invite", Usage: "generate or re-display a user's invite", ArgsUsage: "<name>", Flags: inviteFlags(), Action: inviteAction},
+		{Name: "revoke", Usage: "revoke one user", ArgsUsage: "<name>", Flags: userRevokeFlags(), Action: userRevokeAction},
 	}
 }
 
 func dnsCommands() []*cli.Command {
 	return []*cli.Command{
-		{Name: "status", Usage: "查看 macOS 系统 DNS 接管状态", Flags: dnsFlags(), Action: dnsStatusAction},
-		{Name: "on", Usage: "将当前网络服务 DNS 临时切到 bx", Flags: dnsFlags(), Action: dnsOnAction},
-		{Name: "off", Usage: "恢复 bx 保存的原始 DNS", Flags: dnsFlags(), Action: dnsOffAction},
+		{Name: "status", Usage: "show the macOS system DNS takeover state", Flags: dnsFlags(), Action: dnsStatusAction},
+		{Name: "on", Usage: "temporarily point the current network service's DNS at bx", Flags: dnsFlags(), Action: dnsOnAction},
+		{Name: "off", Usage: "restore the original DNS bx saved", Flags: dnsFlags(), Action: dnsOffAction},
 	}
 }
 
 func realtimeCommands() []*cli.Command {
 	return []*cli.Command{
-		{Name: "status", Usage: "查看 UDP / 实时应用策略", Flags: realtimeFlags(), Action: realtimeStatusAction},
-		{Name: "on", Usage: "开启非 DNS UDP 中继模式", Flags: realtimeFlags(), Hidden: true, Action: realtimeOnAction},
+		{Name: "status", Usage: "show the UDP / realtime-app policy", Flags: realtimeFlags(), Action: realtimeStatusAction},
+		{Name: "on", Usage: "turn on relay mode for non-DNS UDP", Flags: realtimeFlags(), Hidden: true, Action: realtimeOnAction},
 		// **不许写「恢复默认」**:`udp.mode` 的默认值是 `proxy`
 		// (config.go 的 Parse),而这个动词写的是 `block` —— 它把 UDP 从默认
 		// 状态改**走**,不是改回去。用户按那句话读会以为敲它等于什么都没做。
-		{Name: "off", Usage: "把非 DNS UDP 切到阻断模式(注意:配置默认是 proxy,这不是「恢复默认」)", Flags: realtimeFlags(), Hidden: true, Action: realtimeOffAction},
+		{Name: "off", Usage: "switch non-DNS UDP to block mode (note: the config default is proxy, so this is NOT \"restore defaults\")", Flags: realtimeFlags(), Hidden: true, Action: realtimeOffAction},
 	}
 }
 
 func realtimeFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "client config path"},
 	}
 }
 
 func reconnectFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "check", Usage: "只检查运行中的 bx 是否支持安全重连"},
-		&cli.BoolFlag{Name: "json", Usage: "输出最终 recovery snapshot"},
+		&cli.BoolFlag{Name: "check", Usage: "only check whether the running bx supports a safe reconnect"},
+		&cli.BoolFlag{Name: "json", Usage: "print the final recovery snapshot"},
 	}
 }
 
 func leakCheckFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
-		&cli.BoolFlag{Name: "network", Usage: "发起只读外网出口/DNS 探测"},
-		&cli.DurationFlag{Name: "network-timeout", Value: 8 * time.Second, Usage: "等待外网出口/DNS 探测的最长时间"},
-		&cli.StringSliceFlag{Name: "expected-ip", Usage: "允许出现的代理/VPS 公网 IP(可重复)"},
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
-		&cli.StringFlag{Name: "dns-service", Usage: "macOS 网络服务名(留空自动探测)"},
+		&cli.BoolFlag{Name: "json", Usage: "print JSON an agent can read"},
+		&cli.BoolFlag{Name: "network", Usage: "run a read-only probe of the public exit and DNS"},
+		&cli.DurationFlag{Name: "network-timeout", Value: 8 * time.Second, Usage: "how long to wait for the public-exit / DNS probe"},
+		&cli.StringSliceFlag{Name: "expected-ip", Usage: "a proxy/VPS public IP that is allowed to appear (repeatable)"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "client config path"},
+		&cli.StringFlag{Name: "dns-service", Usage: "macOS network service name (auto-detected when empty)"},
 	}
 }
 
 func observeFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
-		&cli.DurationFlag{Name: "duration", Value: 30 * time.Second, Usage: "观察窗口"},
-		&cli.DurationFlag{Name: "interval", Value: 2 * time.Second, Usage: "采样间隔"},
-		&cli.StringFlag{Name: "scenario", Value: "general", Usage: "观察场景: general|video|realtime"},
+		&cli.BoolFlag{Name: "json", Usage: "print JSON an agent can read"},
+		&cli.DurationFlag{Name: "duration", Value: 30 * time.Second, Usage: "observation window"},
+		&cli.DurationFlag{Name: "interval", Value: 2 * time.Second, Usage: "sampling interval"},
+		&cli.StringFlag{Name: "scenario", Value: "general", Usage: "observation scenario: general|video|realtime"},
 	}
 }
 
 func serverInstallFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置写入路径"},
-		&cli.StringFlag{Name: "protocol", Value: "reality", Usage: "协议:reality(默认,强封锁首选)| hysteria2(速度档)| brook(简单兜底)"},
-		&cli.StringFlag{Name: "sni", Usage: "reality/hysteria2 借用的真站(默认 www.cloudflare.com;别用 microsoft 证书过大)"},
-		&cli.IntFlag{Name: "port", Usage: "reality/hysteria2 监听端口(默认 443,最自然;被占/受限才换)"},
-		&cli.BoolFlag{Name: "tcp-only", Usage: "reality 只开 TCP,不附带 hysteria2 UDP 加速(默认附带,既安全又有速度)"},
-		&cli.StringFlag{Name: "listen", Value: ":9999", Usage: "brook 监听地址"},
-		&cli.StringFlag{Name: "password", Usage: "brook 连接密码(留空自动生成)"},
-		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(留空自动探测公网 IP)"},
-		&cli.BoolFlag{Name: "force", Usage: "覆盖已存在的 server 配置"},
-		&cli.BoolFlag{Name: "open-ufw", Usage: "安装后自动执行 ufw allow(reality+hys2 会同时放行 tcp 与 udp)"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "where to write the server config"},
+		&cli.StringFlag{Name: "protocol", Value: "reality", Usage: "protocol: reality (default, the choice under heavy blocking) | hysteria2 (the fast lane) | brook (the simple fallback)"},
+		&cli.StringFlag{Name: "sni", Usage: "the real site reality/hysteria2 borrows (default www.cloudflare.com; do not use microsoft — its certificate is too large)"},
+		&cli.IntFlag{Name: "port", Usage: "reality/hysteria2 listen port (default 443, the most natural one; change it only if that port is taken or restricted)"},
+		&cli.BoolFlag{Name: "tcp-only", Usage: "reality over TCP only, without the hysteria2 UDP fast lane (it is included by default: safe and fast)"},
+		&cli.StringFlag{Name: "listen", Value: ":9999", Usage: "brook listen address"},
+		&cli.StringFlag{Name: "password", Usage: "brook password (generated when empty)"},
+		&cli.StringFlag{Name: "host", Usage: "public address or domain (the public IP is auto-detected when empty)"},
+		&cli.BoolFlag{Name: "force", Usage: "overwrite an existing server config"},
+		&cli.BoolFlag{Name: "open-ufw", Usage: "run ufw allow after installing (reality+hysteria2 opens both tcp and udp)"},
 	}
 }
 
 func serverLinkFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
-		&cli.StringFlag{Name: "host", Usage: "公网地址或域名"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server config path"},
+		&cli.StringFlag{Name: "host", Usage: "public address or domain"},
 	}
 }
 
 func serverRotateFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
-		&cli.StringFlag{Name: "host", Usage: "生成新链接使用的公网地址或域名"},
-		&cli.StringFlag{Name: "password", Usage: "新连接密码(留空自动生成)"},
-		&cli.BoolFlag{Name: "no-restart", Usage: "只写配置,不重启正在运行的 server"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server config path"},
+		&cli.StringFlag{Name: "host", Usage: "the public address or domain to put in the new link"},
+		&cli.StringFlag{Name: "password", Usage: "the new password (generated when empty)"},
+		&cli.BoolFlag{Name: "no-restart", Usage: "write the config only, do not restart a running server"},
 	}
 }
 
 func serverShareFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
-		&cli.StringFlag{Name: "host", Usage: "生成链接使用的公网地址或域名"},
-		&cli.StringFlag{Name: "listen", Usage: "监听地址(留空自动分配端口)"},
-		&cli.StringFlag{Name: "password", Usage: "连接密码(留空自动生成)"},
-		&cli.BoolFlag{Name: "open-ufw", Usage: "创建后自动执行 ufw allow <port>/tcp"},
-		&cli.StringFlag{Name: "format", Usage: "link:打印手机客户端能吃的裸链接(默认打印 bx setup 命令)"},
-		&cli.BoolFlag{Name: "qr", Usage: "把链接画成二维码,用手机客户端扫(凭据不进 shell 历史)"},
-		&cli.BoolFlag{Name: "qr-invert", Usage: "深色终端下反色(默认按浅色终端的正确极性画)"},
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share config directory"},
+		&cli.StringFlag{Name: "host", Usage: "the public address or domain to put in the link"},
+		&cli.StringFlag{Name: "listen", Usage: "listen address (a port is allocated when empty)"},
+		&cli.StringFlag{Name: "password", Usage: "password (generated when empty)"},
+		&cli.BoolFlag{Name: "open-ufw", Usage: "run ufw allow <port>/tcp after creating it"},
+		&cli.StringFlag{Name: "format", Usage: "link: print the bare link a phone client can read (a bx setup command is printed by default)"},
+		&cli.BoolFlag{Name: "qr", Usage: "draw the link as a QR code to scan with a phone client (keeps the credential out of your shell history)"},
+		&cli.BoolFlag{Name: "qr-invert", Usage: "invert for a dark terminal (drawn with the polarity a light terminal needs by default)"},
 	}
 }
 
 func serverSharesFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON(凭据已脱敏)"},
-		&cli.StringFlag{Name: "format", Usage: "link:打印某个 share 的裸链接(要给名字)"},
-		&cli.BoolFlag{Name: "qr", Usage: "把某个 share 的链接画成二维码(要给名字)"},
-		&cli.BoolFlag{Name: "qr-invert", Usage: "深色终端下反色"},
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share config directory"},
+		&cli.BoolFlag{Name: "json", Usage: "print machine-readable JSON (credentials redacted)"},
+		&cli.StringFlag{Name: "format", Usage: "link: print one share's bare link (a name is required)"},
+		&cli.BoolFlag{Name: "qr", Usage: "draw one share's link as a QR code (a name is required)"},
+		&cli.BoolFlag{Name: "qr-invert", Usage: "invert for a dark terminal"},
 	}
 }
 
 func inviteFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
-		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
-		&cli.StringFlag{Name: "host", Usage: "公网地址或域名(brook server 需要;reality 链接通常已内含)"},
-		&cli.BoolFlag{Name: "open-ufw", Usage: "brook share 创建后自动执行 ufw allow <port>/tcp"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server config path"},
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share config directory"},
+		&cli.StringFlag{Name: "host", Usage: "public address or domain (needed by a brook server; a reality link usually already carries it)"},
+		&cli.BoolFlag{Name: "open-ufw", Usage: "run ufw allow <port>/tcp after creating a brook share"},
 	}
 }
 
 func userListFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "用户/share 配置目录"},
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "user / share config directory"},
+		&cli.BoolFlag{Name: "json", Usage: "print machine-readable JSON"},
 	}
 }
 
 func userShowFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "用户/share 配置目录"},
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "user / share config directory"},
+		&cli.BoolFlag{Name: "json", Usage: "print machine-readable JSON"},
 	}
 }
 
 func userRevokeFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "用户/share 配置目录"},
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "user / share config directory"},
 	}
 }
 
 func serverRevokeFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share 配置目录"},
+		&cli.StringFlag{Name: "dir", Value: defaultShareDir, Usage: "share config directory"},
 	}
 }
 
 func serveFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server config path"},
 	}
 }
 
 func mcpFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "client config path"},
 	}
 }
 
@@ -615,11 +615,11 @@ func mcpInstallAction(c *cli.Context) error {
 
 func doctorFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
-		&cli.DurationFlag{Name: "timeout", Value: 8 * time.Second, Usage: "链接探测超时"},
-		&cli.StringFlag{Name: "target", Value: defaultProbeTarget, Usage: "链接探测目标"},
-		&cli.BoolFlag{Name: "skip-probe", Usage: "跳过 bx:// 链接探测"},
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "client config path"},
+		&cli.DurationFlag{Name: "timeout", Value: 8 * time.Second, Usage: "link probe timeout"},
+		&cli.StringFlag{Name: "target", Value: defaultProbeTarget, Usage: "link probe target"},
+		&cli.BoolFlag{Name: "skip-probe", Usage: "skip the bx:// link probe"},
+		&cli.BoolFlag{Name: "json", Usage: "print machine-readable JSON"},
 	}
 }
 
@@ -629,9 +629,9 @@ func inspectFlags() []cli.Flag {
 
 func serverDoctorFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server 配置路径"},
-		&cli.StringFlag{Name: "shares-dir", Value: defaultShareDir, Usage: "share 配置目录"},
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultServerConfigPath, Usage: "server config path"},
+		&cli.StringFlag{Name: "shares-dir", Value: defaultShareDir, Usage: "share config directory"},
+		&cli.BoolFlag{Name: "json", Usage: "print machine-readable JSON"},
 	}
 }
 
@@ -641,32 +641,32 @@ func serverLogsFlags() []cli.Flag {
 
 func logsFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 100, Usage: "显示最近 N 行日志"},
-		&cli.BoolFlag{Name: "json", Usage: "输出 agent 可读 JSON"},
-		&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "持续跟随日志"},
-		&cli.BoolFlag{Name: "archive", Usage: "保存原始日志和诊断快照到本地目录"},
-		&cli.StringFlag{Name: "dir", Value: ".bx-log-archives", Usage: "日志归档目录"},
+		&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 100, Usage: "show the last N log lines"},
+		&cli.BoolFlag{Name: "json", Usage: "print JSON an agent can read"},
+		&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "follow the log"},
+		&cli.BoolFlag{Name: "archive", Usage: "save the raw log and a diagnostic snapshot to a local directory"},
+		&cli.StringFlag{Name: "dir", Value: ".bx-log-archives", Usage: "log archive directory"},
 	}
 }
 
 func statusFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "json", Usage: "输出机器可读 JSON"},
-		&cli.BoolFlag{Name: "watch", Usage: "挂住等状态变化,每次变化打印一次(Ctrl-C 退出;只读,不改任何东西)"},
+		&cli.BoolFlag{Name: "json", Usage: "print machine-readable JSON"},
+		&cli.BoolFlag{Name: "watch", Usage: "park and wait for state changes, printing once per change (Ctrl-C to quit; read-only, changes nothing)"},
 	}
 }
 
 func serverUIFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "listen", Value: "127.0.0.1:8787", Usage: "Web UI 监听地址"},
-		&cli.StringFlag{Name: "host", Usage: "生成链接使用的公网地址或域名"},
-		&cli.StringFlag{Name: "shares-dir", Value: defaultShareDir, Usage: "share 配置目录"},
+		&cli.StringFlag{Name: "listen", Value: "127.0.0.1:8787", Usage: "web UI listen address"},
+		&cli.StringFlag{Name: "host", Usage: "the public address or domain to put in the link"},
+		&cli.StringFlag{Name: "shares-dir", Value: defaultShareDir, Usage: "share config directory"},
 	}
 }
 
 func dnsFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "service", Usage: "macOS 网络服务名(默认自动检测当前默认出口)"},
+		&cli.StringFlag{Name: "service", Usage: "macOS network service name (the current default exit is detected automatically)"},
 	}
 }
 
@@ -3177,18 +3177,18 @@ func shareDoctorStatus(serviceState, listenState string) string {
 
 func setupFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "配置写入路径"},
-		&cli.StringFlag{Name: "probe", Value: defaultProbeTarget, Usage: "连通检测目标"},
-		&cli.BoolFlag{Name: "force", Usage: "覆盖已存在的配置"},
-		&cli.BoolFlag{Name: "strict", Usage: "连通检测失败则中止(默认仅警告)"},
-		&cli.StringFlag{Name: "udp", Usage: "按类分流:UDP 走的专用传输链接(如 hysteria2,bx server install 默认就给)"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "where to write the config"},
+		&cli.StringFlag{Name: "probe", Value: defaultProbeTarget, Usage: "connectivity check target"},
+		&cli.BoolFlag{Name: "force", Usage: "overwrite an existing config"},
+		&cli.BoolFlag{Name: "strict", Usage: "abort if the connectivity check fails (it only warns by default)"},
+		&cli.StringFlag{Name: "udp", Usage: "split by kind: the dedicated transport link UDP uses (hysteria2, say — bx server install hands you one by default)"},
 	}
 }
 
 func probeFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "target", Value: defaultProbeTarget, Usage: "连通检测目标"},
-		&cli.DurationFlag{Name: "timeout", Value: 15 * time.Second, Usage: "检测超时"},
+		&cli.StringFlag{Name: "target", Value: defaultProbeTarget, Usage: "connectivity check target"},
+		&cli.DurationFlag{Name: "timeout", Value: 15 * time.Second, Usage: "check timeout"},
 	}
 }
 
@@ -3550,22 +3550,22 @@ func normalizeClientLink(arg string) (link string, configLink string, err error)
 
 func runFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "配置文件路径(默认 /etc/bx/config.yaml,非 root 回退 ~/.config/bx/config.yaml)"},
-		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "TUN 设备名"},
-		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "TUN 接口地址(TEST-NET-2,避开 docker 默认地址池 172.16/12 防撞段)"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "config file path (default /etc/bx/config.yaml; falls back to ~/.config/bx/config.yaml when not root)"},
+		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "TUN device name"},
+		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "TUN interface address (TEST-NET-2, deliberately clear of docker's default 172.16/12 pool)"},
 		&cli.UintFlag{Name: "mtu", Value: 1500},
-		&cli.StringFlag{Name: "brook", Value: "", Usage: "内部传输二进制路径", Hidden: true},
-		&cli.StringFlag{Name: "china-domain", Value: "", Usage: "china 域名列表(留空=用内嵌/自动刷新快照)"},
-		&cli.StringFlag{Name: "china-cidr", Value: "", Usage: "china IP 段(留空=用内嵌/自动刷新快照)"},
-		&cli.StringFlag{Name: "probe", Value: defaultProbeTarget, Usage: "隧道健康检查目标"},
-		&cli.DurationFlag{Name: "health-timeout", Value: 20 * time.Second, Usage: "等待隧道健康的启动超时"},
-		&cli.DurationFlag{Name: "test-timeout", Usage: "死手定时器:到点自动还原(远程实测保命)"},
-		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "全局模式:除内网(bypass)/用户 direct 规则外,一切(含中国)走代理"},
-		&cli.StringFlag{Name: "listen-dns", Value: "", Usage: "本地 DNS 监听地址(默认关闭;macOS 测试可用 127.0.0.1:53)"},
-		&cli.BoolFlag{Name: "no-hijack", Usage: "分步验证:起隧道+TUN+引擎但不劫持路由/不设 DNS/不装 WFP(系统网络零改动,真机 bring-up 用)"},
+		&cli.StringFlag{Name: "brook", Value: "", Usage: "path to the internal transport binary", Hidden: true},
+		&cli.StringFlag{Name: "china-domain", Value: "", Usage: "china domain list (empty = use the embedded / auto-refreshed snapshot)"},
+		&cli.StringFlag{Name: "china-cidr", Value: "", Usage: "china IP ranges (empty = use the embedded / auto-refreshed snapshot)"},
+		&cli.StringFlag{Name: "probe", Value: defaultProbeTarget, Usage: "tunnel health check target"},
+		&cli.DurationFlag{Name: "health-timeout", Value: 20 * time.Second, Usage: "how long startup waits for the tunnel to become healthy"},
+		&cli.DurationFlag{Name: "test-timeout", Usage: "dead-man timer: restore everything automatically when it fires (what saves you during a remote test)"},
+		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "global mode: everything (China included) is proxied except private networks (bypass) and your own direct rules"},
+		&cli.StringFlag{Name: "listen-dns", Value: "", Usage: "local DNS listen address (off by default; 127.0.0.1:53 works for macOS testing)"},
+		&cli.BoolFlag{Name: "no-hijack", Usage: "step-by-step verification: bring up the tunnel, TUN and engine but hijack no routes, set no DNS and install no WFP filters (zero change to the system network; for bring-up on real hardware)"},
 		// **只由 Guardian 传**,故 Hidden:手敲的 `sudo bx run` 不传就一个字节
 		// 都不写,陈旧记录在构造上不可能串味(见 runWithStartFailureRecord)。
-		&cli.StringFlag{Name: corestartfailure.FlagName, Hidden: true, Usage: "启动失败时把失败码写到这里(仅 Guardian 使用)"},
+		&cli.StringFlag{Name: corestartfailure.FlagName, Hidden: true, Usage: "write the failure code here when startup fails (used by Guardian only)"},
 	}
 }
 
@@ -3598,10 +3598,10 @@ func trayAction(c *cli.Context) error { return tray.Run() }
 
 func debugTunFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "TUN 设备名"},
-		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "TUN 接口地址(仅记录;debug-tun 不配地址)"},
+		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "TUN device name"},
+		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "TUN interface address (recorded only; debug-tun assigns no address)"},
 		&cli.UintFlag{Name: "mtu", Value: 1500},
-		&cli.DurationFlag{Name: "test-timeout", Usage: "死手:到点自动退出并移除 TUN(可选;debug-tun 不改路由,风险低)"},
+		&cli.DurationFlag{Name: "test-timeout", Usage: "dead man: exit and remove the TUN when it fires (optional; debug-tun changes no routes, so the risk is low)"},
 	}
 }
 
@@ -3642,12 +3642,12 @@ func optsFromFlags(c *cli.Context) supervisor.Options {
 
 func darwinPlanFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "tun", Value: "utunX", Usage: "计划中的 utun 设备名"},
-		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "计划中的 TUN 接口地址"},
-		&cli.StringFlag{Name: "gateway", Usage: "当前物理默认网关,例如 192.168.1.1"},
-		&cli.StringSliceFlag{Name: "server-bypass", Usage: "服务器旁路 CIDR,可重复"},
-		&cli.StringSliceFlag{Name: "bypass", Usage: "用户旁路 CIDR,可重复"},
-		&cli.BoolFlag{Name: "block-v6", Usage: "包含 macOS IPv6 reject 路由计划"},
+		&cli.StringFlag{Name: "tun", Value: "utunX", Usage: "the utun device name in the plan"},
+		&cli.StringFlag{Name: "tun-addr", Value: "198.51.100.1/30", Usage: "the TUN interface address in the plan"},
+		&cli.StringFlag{Name: "gateway", Usage: "the current physical default gateway, e.g. 192.168.1.1"},
+		&cli.StringSliceFlag{Name: "server-bypass", Usage: "server bypass CIDR (repeatable)"},
+		&cli.StringSliceFlag{Name: "bypass", Usage: "user bypass CIDR (repeatable)"},
+		&cli.BoolFlag{Name: "block-v6", Usage: "include the macOS IPv6 reject routes in the plan"},
 	}
 }
 
@@ -3677,9 +3677,9 @@ func darwinPlanAction(c *cli.Context) error {
 
 func routerPlanFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径(取 router.lan_cidrs)"},
-		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "计划中的 TUN 设备名"},
-		&cli.StringFlag{Name: "lan-ifaces", Value: "br-lan", Usage: "LAN 接口名(逗号分隔;真机由 lan_cidrs 自动探测)"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "client config path (router.lan_cidrs is read from it)"},
+		&cli.StringFlag{Name: "tun", Value: "bx0", Usage: "the TUN device name in the plan"},
+		&cli.StringFlag{Name: "lan-ifaces", Value: "br-lan", Usage: "LAN interface names (comma-separated; on real hardware they are detected from lan_cidrs)"},
 	}
 }
 

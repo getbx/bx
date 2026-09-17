@@ -46,28 +46,28 @@ func editYAMLRuleList(in []byte, field string, add, remove []string) (out []byte
 // ruleBaseFlags 只有 config;ls/rm 和 proxy 各子命令无风险门,故不挂 --force(避免死 UX)。
 func ruleBaseFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "客户端配置路径"},
+		&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Value: defaultConfigPath, Usage: "client config path"},
 	}
 }
 
 // directAddFlags 仅 `bx direct add` 用:多一个 --force(唯一有风险门控的命令)。
 func directAddFlags() []cli.Flag {
-	return append(ruleBaseFlags(), &cli.BoolFlag{Name: "force", Usage: "即便命中公有云/CDN 风险名单也强制加入"})
+	return append(ruleBaseFlags(), &cli.BoolFlag{Name: "force", Usage: "add it even if it matches the public-cloud / CDN risk list"})
 }
 
 func directCommands() []*cli.Command {
 	return []*cli.Command{
-		{Name: "ls", Usage: "列出当前直连白名单", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return listRuleAction(c, "direct") }},
-		{Name: "add", Usage: "加域名进直连白名单(命中公有云会提示风险)", Flags: directAddFlags(), Action: func(c *cli.Context) error { return editRuleAction(c, "direct", true) }},
-		{Name: "rm", Usage: "从直连白名单移除域名", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return editRuleAction(c, "direct", false) }},
+		{Name: "ls", Usage: "list the current direct allowlist", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return listRuleAction(c, "direct") }},
+		{Name: "add", Usage: "add a domain to the direct allowlist (you are warned if it matches a public cloud)", Flags: directAddFlags(), Action: func(c *cli.Context) error { return editRuleAction(c, "direct", true) }},
+		{Name: "rm", Usage: "remove a domain from the direct allowlist", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return editRuleAction(c, "direct", false) }},
 	}
 }
 
 func proxyCommands() []*cli.Command {
 	return []*cli.Command{
-		{Name: "ls", Usage: "列出强制走隧道的域名", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return listRuleAction(c, "proxy") }},
-		{Name: "add", Usage: "加域名进强制隧道列表", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return editRuleAction(c, "proxy", true) }},
-		{Name: "rm", Usage: "从强制隧道列表移除域名", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return editRuleAction(c, "proxy", false) }},
+		{Name: "ls", Usage: "list the domains forced through the tunnel", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return listRuleAction(c, "proxy") }},
+		{Name: "add", Usage: "add a domain to the forced-tunnel list", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return editRuleAction(c, "proxy", true) }},
+		{Name: "rm", Usage: "remove a domain from the forced-tunnel list", Flags: ruleBaseFlags(), Action: func(c *cli.Context) error { return editRuleAction(c, "proxy", false) }},
 	}
 }
 
