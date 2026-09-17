@@ -121,7 +121,7 @@ rules:
 }
 
 func TestPresetApplySuccessMessageDoesNotClaimRuleCount(t *testing.T) {
-	if got, want := presetApplySuccessMessage("gaming"), "✅ preset gaming 已应用。"; got != want {
+	if got, want := presetApplySuccessMessage("gaming"), "✅ preset gaming applied."; got != want {
 		t.Fatalf("preset success message = %q, want %q", got, want)
 	}
 }
