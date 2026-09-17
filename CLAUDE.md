@@ -2725,13 +2725,26 @@ brief 假设的「已经带了」),于是菜单那半说不出是哪台服务器
   **控制器的判断错误也记在这里**:当时依据 stash 那一方「零数据丢失、逐字节还原」的
   报告下了「没出事」的结论 —— 那只在它自己视角内成立,它不知道自己卷走了同伴的工作。
   **一方的报告不是全局事实**,尤其当那一方恰好是肇事者。
-- **验证命令**:`bash scripts/verify.sh`(全量 14 步)或 `--quick`(改一行时,跳过 race 与交叉编译)。
-  **2026-09-13 加的第 14 步值得单说**:那圈交叉编译用的 `go build` **从不编译 `_test.go`**,
+- **验证命令**:`bash scripts/verify.sh`(全量)或 `--quick`(改一行时)。
+  **步数这里不写了** —— 原文写着「全量 14 步」,而实测是 17 步,与拆除台账那条
+  「九处 defer / 11 处」同一个形状:一个没人会去核的数,过一阵就变成假的。
+  要知道有哪几步就跑一次看横幅;要知道 `--quick` 跳了什么,横幅也会逐条报出来
+  (race / 交叉编译 / windows 测试 typecheck / integration 测试 typecheck /
+  纯判据可移植性,共 5 步 —— **此前后三步在 `--quick` 下一个字都不报**,横幅却说
+  「跳过 2 步」,2026-09-17 补上)。
+  **2026-09-13 加的 windows typecheck 那步值得单说**:那圈交叉编译用的 `go build` **从不编译 `_test.go`**,
   而 Windows 那半的行为断言只在 CI 的 windows runner 上跑 —— 实测把一个 `*_windows_test.go`
   里的常量改成不存在的名字,`go vet ./...` 与 `GOOS=windows go build ./...` **两条都通过**,
   推上去才红。现在多一步:只 vet 那些含 windows-tagged 测试的包(vet 会 typecheck 测试文件),
   清单从 `git ls-files` 现取、一个文件都找不到时响亮失败。**刻意不写成 `GOOS=windows go vet ./...`**
   —— `internal/tray` 有一条先于此存在的 unsafe.Pointer 告警,拉进来就是一道恒红的闸门。
+  **2026-09-17 补的 integration typecheck 是同一条盲区的另一半,但上限更低**:那九个
+  `//go:build integration && linux` 的 netns 台子既不被 `go build` 编(不编测试文件)、
+  也不被 `go test ./...` 编(缺 tag),本机**一个字都看不见**,只有 CI 那条
+  `sudo go test -tags integration ./...` 会红。这一步只 typecheck,**不跑** ——
+  同一天就有一条真实的断言(换服务器被拒绝时答复里那句话)随文案改英文而失效,
+  而 vet 对它一个字都说不出来。它拦得住「改了个名字、台子编不过了」,拦不住
+  「编得过、断言不再成立」;后者今天仍然只有 CI 那条腿证得了。
   **判据一律是退出码,不是字符串匹配。** 它的存在是因为 2026-08-11 那轮里同一个根因栽了六次:
   `go test … | grep …; git commit` 用 `;` 串联(测试红了照样提交)、变异验证 grep `^failed` 而套件
   打印的是 `FAIL:`(「没转红」被误判成守卫失效)、`head -5` 查 `set -e` 而注释头十几行、`grep -c` 数

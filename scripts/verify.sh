@@ -110,6 +110,27 @@ if [ "$QUICK" -eq 0 ]; then
 		env GOOS=windows GOARCH=amd64 go vet $pkgs
 	}
 	step "windows test files typecheck" windows_test_typecheck
+	# **netns 集成台同理,而且盲区更大。** 那九个 `//go:build integration && linux`
+	# 的文件既不被上面那圈 `go build` 编(它不编 _test.go),也不被 `go test ./...`
+	# 编(缺 tag),于是本机**一个字都看不见**它们 —— 只有 CI 那条
+	# `sudo go test -tags integration ./...` 的腿会红。
+	#
+	# **这一步的上限必须写清楚:它只 typecheck,不跑。** 2026-09-17 就有一条真实的
+	# 断言(换服务器被拒绝时答复里那句话)随文案改英文而失效,而 vet 对它一个字都
+	# 说不出来 —— 字符串断言编得过。它拦得住的是「改了个签名/名字,台子编不过了」,
+	# 拦不住「编得过、断言不再成立」。后者今天仍然只有 CI 那条腿证得了。
+	integration_test_typecheck() {
+		local pkgs
+		pkgs="$(git grep -l '//go:build integration' -- '*_test.go' | xargs -n1 dirname 2>/dev/null | sort -u | sed 's|^|./|')"
+		if [ -z "$pkgs" ]; then
+			echo "一个带 integration 标签的测试文件都没找到 —— 要么那些台子没了"
+			echo "(那就把这一步一起删掉),要么判据认不出它们了。"
+			return 1
+		fi
+		# shellcheck disable=SC2086
+		env GOOS=linux GOARCH=amd64 go vet -tags integration $pkgs
+	}
+	step "integration test files typecheck" integration_test_typecheck
 	# **手机那半的地基:纯判据包必须保持可移植。**
 	#
 	# bx 要不要有手机端还没定(见 docs/superpowers/specs/2026-09-17-mobile-client-design.md),
@@ -148,6 +169,12 @@ if [ "$QUICK" -eq 0 ]; then
 else
 	skip "race detector" "--quick"
 	skip "cross builds" "--quick"
+	# 下面三步与交叉编译同处非 --quick 分支。此前它们在 --quick 下**一个字都不报**,
+	# 于是横幅说「跳过 2 步」而实际跳了 5 步 —— 一次「跑过 verify」会被读成比实际
+	# 更强的背书,正是这个脚本自己钉着的那条纪律(跳过不许与通过混为一谈)。
+	skip "windows test files typecheck" "--quick"
+	skip "integration test files typecheck" "--quick"
+	skip "portable judgment (ios+android)" "--quick"
 fi
 
 # macOS 那一半。**CI 里 Swift 侧一度整个不跑而全绿**,所以这里两步都要:
