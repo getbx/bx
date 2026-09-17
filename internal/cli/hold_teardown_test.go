@@ -659,7 +659,12 @@ func TestNoHoldFallbackMeansNoExtraLine(t *testing.T) {
 		t.Fatalf("没退回却报了退回:%v", result.HoldFallback)
 	}
 	lines := upgradeStopLines(t, deps)
-	if slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "未能武装维护挂起") }) {
+	// **这条禁词此前一个字都没守住**:生产那句写的是「没能武装维护挂起」,
+	// 而这里查的是「未能」—— 一字之差,从来匹配不上。2026-09-17 改英文时才
+	// 显形。现在钉的是 holdFallbackWarning 的原话。
+	if slices.ContainsFunc(lines, func(line string) bool {
+		return strings.Contains(line, "Could not arm the maintenance hold")
+	}) {
 		t.Fatalf("没退回却多写了一行:%v", lines)
 	}
 }

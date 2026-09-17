@@ -327,12 +327,12 @@ func TestProxyOnlyBuiltinListHitsAreFiledAsExceptionsNotSafeToDelete(t *testing.
 	rep := rulereview.NewReport([]rulereview.Finding{
 		{
 			Kind: "proxy", Rule: "*.bilibili.com", Class: rulereview.ClassShadowedByBuiltinList,
-			Summary:   "内建 china 列表把它判为直连,而你这条把它扳回隧道——这是生效中的例外,不是冗余。",
+			Summary:   "the built-in china list sends this direct, and your rule pulls it back through the tunnel — an exception in force, not a duplicate.",
 			CoveredBy: "bilibili.com",
 		},
 		{
 			Kind: "proxy", Rule: "*.hdslb.com", Class: rulereview.ClassShadowedByBuiltinList,
-			Summary:   "内建 china 列表把它判为直连,而你这条把它扳回隧道——这是生效中的例外,不是冗余。",
+			Summary:   "the built-in china list sends this direct, and your rule pulls it back through the tunnel — an exception in force, not a duplicate.",
 			CoveredBy: "hdslb.com",
 		},
 	}, true, "")
@@ -360,7 +360,12 @@ func TestProxyOnlyBuiltinListHitsAreFiledAsExceptionsNotSafeToDelete(t *testing.
 		if !strings.Contains(l.Value, "*.hdslb.com") {
 			t.Errorf("两条 proxy 命中应该合并在同一行,不是各占一行:%q", l.Value)
 		}
-		if strings.Contains(l.Value, "删掉不改变") || strings.Contains(l.Value, "没有额外作用") {
+		// **禁的是渲染层 direct 那一支的原话,不是 Finding.Summary 的。**
+		// builtinListLines 自己写两句方向相反的话,Summary 一个字都不打印 ——
+		// 第一版改英文时照着 Summary 选词,于是这条禁词永远命中不了(变异实测
+		// 全绿)。direct 说「deleting them changes no traffic」,proxy 说
+		// 「…changes traffic」,前者不是后者的子串。
+		if strings.Contains(l.Value, "changes no traffic") {
 			t.Errorf("proxy 那一行用了「可以安全删除」的措辞——会让用户删掉一条正在把流量拉回"+
 				"隧道的规则(bilibili.com 会因此改走直连):%q", l.Value)
 		}
@@ -385,7 +390,7 @@ func TestBuiltinListHitsSplitByKindIntoTwoLinesAndTwoCheckNames(t *testing.T) {
 		},
 		{
 			Kind: "proxy", Rule: "*.myqcloud.com", Class: rulereview.ClassShadowedByBuiltinList,
-			Summary:   "内建 china 列表把它判为直连,而你这条把它扳回隧道——这是生效中的例外,不是冗余。",
+			Summary:   "the built-in china list sends this direct, and your rule pulls it back through the tunnel — an exception in force, not a duplicate.",
 			CoveredBy: "myqcloud.com",
 		},
 	}, true, "")

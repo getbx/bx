@@ -128,7 +128,7 @@ func TestStatusOmitsTheUDPNoticeWhenHealthy(t *testing.T) {
 		Proxy: 100,
 		Rules: []RuleOutcome{{Source: "udp_proxy", Attempts: 500}},
 	}}
-	if out := Render(report); strings.Contains(out, "加速档") {
+	if out := Render(report); strings.Contains(out, "fast lane") {
 		t.Fatalf("一切正常却打了 UDP 那一行:\n%s", out)
 	}
 }

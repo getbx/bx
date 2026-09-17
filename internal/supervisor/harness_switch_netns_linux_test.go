@@ -128,7 +128,7 @@ func TestHarnessRefusesSwitchWhenTargetUnresolvable(t *testing.T) {
 	// **409 已有待确认的改动** —— 上一发请求已经把切换 arm 上了,于是一个「切换成功、
 	// 只是被后一发撞见」的世界同样能给出非 200。拒绝必须是**这一次**的拒绝,
 	// 故认那句只有拒绝分支才会写的话。
-	if !strings.Contains(body, "已拒绝切换") {
+	if !strings.Contains(body, "the switch was refused") {
 		t.Fatalf("答复不是「拒绝切换」而是别的什么(409 撞锁?已经 arm 上了?):%d %s", code, body)
 	}
 	t.Logf("服务端如实拒绝: %d %s", code, body)
