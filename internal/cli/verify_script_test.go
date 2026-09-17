@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -334,4 +335,83 @@ func TestWindowsCILegDerivesItsPackageList(t *testing.T) {
 	if strings.Contains(body, "go test ./...") {
 		t.Error("test-windows 又跑回全量 go test ./... 了 —— 那条路在这个平台上恒红")
 	}
+}
+
+// **编译并跑 Swift 套件的跑器,全仓只许有一份。**
+//
+// 2026-08-01 到 2026-09-16 之间有两份:scripts/test-macos-menu.sh(真正那份),
+// 以及 apps/macos/BxMenu/run-swift-tests.sh —— 后者由一个 SwiftPM build-tool 插件
+// 在 `swift build` 时顺带跑。当初的计划书白纸黑字写着两份编译清单「人工保持一致」,
+// 而**这正是这个仓库反复罚过的那种约定**:它漂了,插件那份停在 7 个套件,真正
+// 那份长到 32 个;更要命的是插件那份的 guardian-client 套件编 GuardianClient.swift
+// 却没带 2026-08-07 才出现的 GuardianStatus.swift。
+//
+// 后果不是少跑几个套件,是 `swift build` 从那天起一直失败(cannot find
+// 'GuardianStatus' in scope),verify.sh 那一步与 CI 的 macos-app job 一起
+// **红了五周**。红着的腿不是严格,是等于不存在。
+//
+// 判据钉的是缺陷本身:**能编 Swift 的脚本有几个**。钉「插件不在 Package.swift 里」
+// 挡不住有人换个方式再挂一份,而多出来的那一份无论怎么挂,都要有人去调 swiftc。
+func TestOnlyOneSwiftTestRunnerExists(t *testing.T) {
+	root := filepath.Join("..", "..")
+	canonical := "scripts/test-macos-menu.sh"
+
+	// **清单从 git ls-files 现取**,与 verify.sh 第 14 步、ci.yml 的 test-windows
+	// 同一条:只看被跟踪的文件。走文件系统会撞上本地产物(.build/、.bx-test-logs/,
+	// 后者实测还会 permission denied),而那些不是仓库的一部分。
+	out, err := exec.Command("git", "-C", root, "ls-files", "*.sh").Output()
+	if err != nil {
+		t.Fatalf("列不出被跟踪的脚本:%v —— 这条守卫读不懂现在的仓库了,先修它", err)
+	}
+	files := strings.Fields(string(out))
+	if len(files) == 0 {
+		t.Fatal("一个被跟踪的 .sh 都没列出来 —— 判据已经认不出它要看的东西了")
+	}
+
+	var runners []string
+	for _, rel := range files {
+		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if os.IsNotExist(err) {
+			// git ls-files 读的是**索引**。一次删除或改名登记之前,索引里有而
+			// 工作树里没有是正常状态,而一个不存在的文件当然不是跑器。
+			// 别的读错误仍然响亮失败。
+			continue
+		}
+		if err != nil {
+			t.Fatalf("读不出 %s:%v", rel, err)
+		}
+		// **判据是「它编不编 Tests/ 下的文件」,不是「它调不调 swiftc」。**
+		// 后者会把打包脚本(scripts/package-macos-menu.sh,只编 Sources/)
+		// 一起网进来,而那不是跑器。注释要先剥掉:verify.sh 的注释里同时写着
+		// swiftc 和 Tests/,正是在解释这两步的分工。
+		body := stripShellComments(string(b))
+		if strings.Contains(body, "swiftc ") && strings.Contains(body, "Tests/") {
+			runners = append(runners, rel)
+		}
+	}
+
+	// 一个都没扫到 ⇒ 判据已经认不出跑器了,这时候必须响亮失败:
+	// 一条安静地扫了零个文件的守卫,与没有这条守卫在输出上完全一样。
+	if len(runners) == 0 {
+		t.Fatal("一个调 swiftc 的脚本都没扫到 —— 要么跑器没了(那就把这条守卫一起删掉)," +
+			"要么判据认不出它了")
+	}
+	if len(runners) != 1 || runners[0] != canonical {
+		t.Errorf("编 Swift 套件的脚本不止一份(或不是那一份):%v\n"+
+			"唯一那份应当是 %s;多出来的一份会漂,而漂的表现是 swift build 静默红掉",
+			runners, canonical)
+	}
+}
+
+// stripShellComments 去掉整行的 shell 注释。判据要看的是脚本**做**了什么,
+// 而这个仓库的注释里经常原样写着它要匹配的那些串。
+func stripShellComments(body string) string {
+	var kept []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
