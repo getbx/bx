@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -204,12 +205,7 @@ func TestRollbackControlPostsRollback(t *testing.T) {
 }
 
 func TestShutdownControlPostsExpectedPID(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "bxs-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	sockPath := filepath.Join(dir, "bx.sock")
+	sockPath := filepath.Join(shortSocketDir(t), "bx.sock")
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
 		t.Fatal(err)
@@ -462,12 +458,7 @@ func TestPathRecoveryControlPreservesAllowlistedSafetyCodesWithoutDetail(t *test
 
 func startControlSocket(t *testing.T, handler http.HandlerFunc) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "bxs-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "bx.sock")
+	sock := filepath.Join(shortSocketDir(t), "bx.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -624,4 +615,36 @@ func TestFetchExplainTreatsBothMissingRouteAndUnwiredAsUnsupported(t *testing.T)
 			t.Errorf("HTTP %d 应当报「这一版 Core 没有判定查询」,得到:%v", status, fetchErr)
 		}
 	}
+}
+
+// shortSocketDir 给 unix socket 建一个**短路径**的临时目录。
+//
+// 两条约束互相拉扯,所以它不能是 t.TempDir(),也不能写死 "/tmp":
+//
+//   - t.TempDir() 的路径里带测试名(子测试还要再带一层),而 unix socket 的
+//     sun_path 只有 104(darwin)/ 108(linux)字节。超了 net.Listen 以
+//     "invalid argument" 失败,而那个错误一个字都不提长度 —— 原来这两处写死
+//     "/tmp" 就是为了躲开它,只是没把理由写下来。
+//   - 写死 "/tmp" 在 Windows 上解析成**当前盘**的 \tmp,CI runner 上它不存在:
+//     2026-09-17 实测 11 条测试一起红在
+//     `GetFileAttributesEx /tmp: The system cannot find the file specified.`。
+//     (这条在项目所有者那台 Windows 真机上**不复现** —— 那台机器恰好有 C:\tmp,
+//     于是同一批测试在真机上是绿的。真机绿不等于这条路没问题。)
+//
+// Windows 的 AF_UNIX 走普通文件系统命名,没有 sun_path 那个长度限制,
+// 用系统临时目录即可 —— 而 bx 在 Windows 上用的确实是真 AF_UNIX
+// (paths_windows.go 的 C:\ProgramData\bx\bx.sock),所以这几条测的是活的路径,
+// 不是该跳过的东西。
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	root := "/tmp"
+	if runtime.GOOS == "windows" {
+		root = "" // os.TempDir()
+	}
+	dir, err := os.MkdirTemp(root, "bxs-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
