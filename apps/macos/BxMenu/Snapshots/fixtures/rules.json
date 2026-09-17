@@ -1,0 +1,14 @@
+{
+  "groups": [
+    {"name":"apple","title":"Apple","state":"on","installed":6,"total":6,
+     "domains":["*.apple.com","*.icloud.com","*.icloud-content.com","*.mzstatic.com","*.aaplimg.com","*.cdn-apple.com"]},
+    {"name":"china-cdn","title":"China CDN","state":"partial","installed":1,"total":11,
+     "domains":["*.alicdn.com","*.taobao.com","*.tmall.com","*.jd.com","*.bilibili.com","*.bilivideo.com","*.douyin.com","*.douyinpic.com","*.byteimg.com","*.weixin.qq.com","*.qq.com"]},
+    {"name":"steam","title":"Steam","state":"off","installed":0,"total":4,
+     "domains":["*.steampowered.com","*.steamstatic.com","*.steamcontent.com","*.steamcommunity.com"]}
+  ],
+  "custom": ["*.apple-cloudkit.com","*.qpic.cn","*.qlogo.cn","*.gtimg.cn","*.wechat.com","*.tencent.com"],
+  "direct": ["*.apple-cloudkit.com","*.qpic.cn","*.qlogo.cn","*.gtimg.cn","*.wechat.com","*.tencent.com","*.qq.com"],
+  "config_path": "/etc/bx/config.yaml",
+  "requires_restart": false
+}

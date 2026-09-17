@@ -111,38 +111,15 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         window.center()
         window.delegate = self
 
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        // **必须是翻转坐标系。** NSView 默认原点在左下,于是文档视图比可视区
-        // 小时内容会**沉到窗口底部** —— 真机截图上那一大片空白就是这么来的,
-        // 它看起来像刻意的留白,其实是坐标系。
-        let clip = FlippedView()
-        clip.translatesAutoresizingMaskIntoConstraints = false
-        clip.addSubview(stack)
-        scroll.documentView = clip
-
         guard let content = window.contentView else { return window }
-        content.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: content.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: clip.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: clip.bottomAnchor),
-            clip.widthAnchor.constraint(equalTo: scroll.widthAnchor),
-        ])
+        // 组装走共用原语(MenuLayout.swift)。四扇窗口此前各抄了一份,
+        // 而那份拷贝里有同一个缺陷:行没被钉到容器宽度,塞不下时整行溢出
+        // 到窗口外面,行尾按钮点不到 —— 2026-09-17 离屏快照量出来的。
+        let (scroll, stack) = makeScrollingStack(
+            insets: NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18),
+            spacing: 10
+        )
+        pinToEdges(scroll, in: content)
         self.stack = stack
         self.scroll = scroll
         self.window = window
@@ -170,20 +147,20 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // 配置路径摆右上角(与 Rules 窗口同一处)。它会截断,而这个窗口不横向
         // 滚动 —— toolTip 是那条出路。
         if !list.configPath.isEmpty {
-            stack.addArrangedSubview(configPathRow(list.configPath))
+            stack.addFullWidthRow(configPathRow(list.configPath))
         }
 
         if let panel = currentServerPanel(list: list, core: core) {
-            stack.addArrangedSubview(sectionTitle("Currently using"))
-            stack.addArrangedSubview(currentPanelView(panel))
-            stack.addArrangedSubview(gap())
+            stack.addFullWidthRow(sectionTitle("Currently using"))
+            stack.addFullWidthRow(currentPanelView(panel))
+            stack.addFullWidthRow(gap())
         }
 
         let rows = otherServerRows(list: list, core: core)
         if !rows.isEmpty {
-            stack.addArrangedSubview(sectionTitle("Other servers"))
+            stack.addFullWidthRow(sectionTitle("Other servers"))
             for row in rows {
-                stack.addArrangedSubview(serverView(row))
+                stack.addFullWidthRow(serverView(row))
             }
         }
 
@@ -203,18 +180,18 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // 清单里只有一台时 `serverListEmptyReason` 返回 nil,而候选行是空的,
         // 那一档由 `otherServersEmptyNote` 说。
         if let reason = serverListEmptyReason(list: list) {
-            stack.addArrangedSubview(wrapped(reason))
+            stack.addFullWidthRow(wrapped(reason))
         }
         if let note = otherServersEmptyNote(list: list, core: core) {
-            stack.addArrangedSubview(wrapped(note))
+            stack.addFullWidthRow(wrapped(note))
         }
 
-        stack.addArrangedSubview(gap())
-        stack.addArrangedSubview(buttonBar())
+        stack.addFullWidthRow(gap())
+        stack.addFullWidthRow(buttonBar())
 
         // **只在有话说时才有这一行。** 「not checked」是常态不是信息。
         if probe != .unknown {
-            stack.addArrangedSubview(hint(exitIPLine(probe)))
+            stack.addFullWidthRow(hint(exitIPLine(probe)))
         }
 
         if let offset, let scroll {
@@ -539,7 +516,3 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-/// 原点在左上的容器。见 ensureWindow 里那段注释。
-final class FlippedView: NSView {
-    override var isFlipped: Bool { true }
-}

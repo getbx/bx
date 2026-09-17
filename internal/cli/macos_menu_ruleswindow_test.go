@@ -139,7 +139,7 @@ func TestMacMenuRulesWindowAnnouncesAnAbsentReview(t *testing.T) {
 		t.Error("render 里没有为「这半问不出来」那句话留的分支")
 	}
 	if !strings.Contains(render, "labelWithString: caveatNote") ||
-		!strings.Contains(render, "stack.addArrangedSubview(note)") {
+		!swiftPlacesValue(render, "note") {
 		t.Error("那句话没有被摆进视图树 —— 算出来没人看见,与没算一模一样")
 	}
 

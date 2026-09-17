@@ -139,6 +139,25 @@ jobs:
           grep -q '^macOS menu tests passed$' /tmp/menu-tests.log \
             || { echo "::error::菜单测试脚本未跑到收尾横幅 —— 可能中途 return 或套件被清空"; exit 1; }
 
+      # 菜单窗口的离屏快照。**这是 CI 第一次对 AppKit 那半边有任何断言** ——
+      # 此前 swift build 只证明它编得过,窗口长什么样从来没有闸门。
+      # 判据钉视图树(控件不许越过内容宽度),PNG 作为构件传上去给人看。
+      # runner 没有可用 WindowServer 时脚本明说 SKIPPED 并退 0 —— 那是「跑不了」,
+      # 与「跑了没过」必须分开;而它到底能不能跑,这一步的输出就是答案。
+      - name: Snapshot menu windows
+        run: bash scripts/snapshot-macos-menu.sh
+
+      - name: Guard menu window layout
+        run: go test ./internal/cli/ -run TestMacMenuWindowsKeepEveryControlInsideTheContentWidth -count=1
+
+      - name: Upload menu snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: menu-snapshots
+          path: dist.noindex/menu-snapshots
+          if-no-files-found: ignore
+
       # leakcheck 页面里那段纯解析 JS。与上面 Swift 那两步同一条理由:Go 测试
       # 进不去那半边,而它包含整页最承重的两个解析(WebRTC 那条结论看不看得见
       # 你的公网出口、出口 IP 与国家)。node 在 runner 上预装,不需要 setup-node。
