@@ -1005,9 +1005,13 @@ AppKit 就老老实实把它画到窗口外面,**而且不报错**。
 **仍然答不了的**:手感、动画、VoiceOver、跨 macOS 版本的控件差异;以及
 `NSStatusItem` 的那个菜单本身(它不是窗口,这条路够不着)。快照是静态的。
 
-**CI 能不能跑它是个待答的问题**:脚本在没有 WindowServer 时**明说 SKIPPED 并退 0**
-(「跑不了」与「跑了没过」必须分开),而 GitHub 的 macOS runner 到底属于哪一种,
-`macos-app` job 的输出就是答案 —— 第一次跑完记得回来把这句改成结论。
+**CI 上它真的在跑(2026-09-17 第一轮实测)**:GitHub 的 `macos-latest` runner
+有可用的 WindowServer,快照四件产物齐全、守卫在那上面执行。脚本仍保留「没有
+WindowServer 就明说 SKIPPED 并退 0」那一支 —— 「跑不了」与「跑了没过」必须分开,
+而那一支今天在 CI 上走不到,只对本地 headless 会话有意义。
+**同一轮还栽了一次**:`macos-app` job 此前从不装 Go,而这条守卫是 Go 测试 ——
+本机 verify 全绿(本机当然有 Go),推上去 `go: command not found`。
+又一次「一边的绿不替另一边背书」。
 
 ### 守卫的七种失效写法 → `docs/lessons/guard-antipatterns.md`
 
