@@ -294,3 +294,44 @@ func splitWorkflowJobs(src string) map[string]string {
 	flush(len(lines))
 	return jobs
 }
+
+// **Windows 那条腿要跑的包必须现取,不许是手抄的清单。**
+//
+// 2026-09-15 把它从 `go test ./...` 收窄成「带 *_windows_test.go 的包 +
+// 带 purity_test.go 的纯判据包」。收窄的理由是实测:`go test ./...` 在
+// Windows 上红了两个多月,168 条失败绝大多数是 darwin/linux 子系统的测试跑在
+// 一台 Windows 主机上;而同一天真机扫描抓到的五条**真**缺陷,没有一条会被
+// 那 168 个里的任何一个抓到 —— 红着的腿不是严格,是等于不存在。
+//
+// 收窄之后最容易出的事是**那份清单变成手抄的**:加一个纯判据包而没人把它
+// 加进去,它就永远不在 Windows 上跑过,而没有任何东西会红。判据因此与
+// verify.sh 第 14 步同源:从 git ls-files 现取 + 一个都找不到时响亮失败。
+func TestWindowsCILegDerivesItsPackageList(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("读不出 ci.yml:%v —— 这条守卫读不懂现在的代码了,先修它", err)
+	}
+	jobs := splitWorkflowJobs(string(b))
+	body, ok := jobs["test-windows"]
+	if !ok {
+		t.Fatal("ci.yml 里没有 test-windows —— Windows 那一侧此刻一个测试都不跑")
+	}
+	if !strings.Contains(body, "git ls-files") {
+		t.Error("那份清单不是现取的 —— 手抄的清单会漏掉下一个纯判据包,而漏掉不会有任何东西红")
+	}
+	for _, pattern := range []string{"_windows_test.go", "purity_test.go"} {
+		if !strings.Contains(body, pattern) {
+			t.Errorf("清单里没有 %s —— 少一组就是少一整类 Windows 覆盖", pattern)
+		}
+	}
+	// 一个都找不到时必须响亮失败:一条安静地跑了零个包的 CI 腿,
+	// 与没有这条腿在输出上完全一样,而它看起来更让人放心。
+	if !strings.Contains(body, "::error::") {
+		t.Error("清单为空时没有响亮失败 —— 那会退化成一条安静地什么都不跑的腿")
+	}
+	// 全量 `go test ./...` 不许回来:它在这个平台上结构性地红,
+	// 而恒红的闸门会被下一个人删掉。
+	if strings.Contains(body, "go test ./...") {
+		t.Error("test-windows 又跑回全量 go test ./... 了 —— 那条路在这个平台上恒红")
+	}
+}

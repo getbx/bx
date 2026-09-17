@@ -1,0 +1,18 @@
+# 读源码的守卫按 "\n" 定位锚点(例如 tailscale_bypass_test.go 找 "\n}\n",
+# 而它读不到锚点时是 t.Fatal 响亮失败)。Windows 上 git 默认 core.autocrlf=true,
+# GitHub Actions 的 windows runner 也是,于是 checkout 出来是 CRLF ——
+# **那一整类守卫会在最需要它们的那条腿上恒红**,而一条恒红的闸门会被下一个人删掉。
+#
+# 这不是给那一条测试打的补丁:internal/{appattr,platformcheck,supervisor} 里
+# 今天就有 8 个读源码的测试文件,它们今天没红只是因为锚点恰好没跨行。
+# 判据留在这里而不是留在每条守卫里,与 internal/dirsync、internal/elevate 同一条:
+# **唯一需要逐字对齐的东西就该只有一份。**
+#
+# Go 工具链本来就只写 LF,强制它不改变任何既有内容 ——
+# 落地前实测过 `git grep -Il $'\r'` 全仓 0 个文件。
+* text=auto eol=lf
+
+# 内嵌的真二进制(brook/sing-box/wintun,~30MB)与 Windows 资源对象:
+# text=auto 靠内容探测,而一次探测失误就是把一个可执行文件改坏,代价不对称。
+internal/embedded/assets/** binary
+*.syso binary

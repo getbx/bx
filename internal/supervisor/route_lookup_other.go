@@ -20,3 +20,9 @@ var errRouteLookupUnsupported = errors.New("route lookup is only implemented on 
 func LookupRoute(context.Context, string, bool) (RouteSelection, error) {
 	return RouteSelection{}, errRouteLookupUnsupported
 }
+
+// lookupRouteSupported 为假:本平台没有 LookupRoute 的实现。
+//
+// 契约是「查不到要**说出来**」—— LookupRoute 必须明确报错,不得返回零值冒充
+// 查到了。守卫按这个常量选分支,不按手抄的 GOOS 清单(见各实现文件里那份注释)。
+const lookupRouteSupported = false

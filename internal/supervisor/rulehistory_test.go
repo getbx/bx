@@ -117,20 +117,39 @@ func TestSaveReplacesAtomically(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "h.json")
 	write := func() error { return saveRuleHistory(p, ruleHistory{SchemaVersion: ruleHistorySchema, Decisions: 1}) }
+
+	// **文件身份必须当场取到,不能留到事后按路径现查。**
+	//
+	// os.Stat 在 Windows 上走 newFileStatFromWin32FileAttributeData,只读属性、
+	// 不带文件 ID;ID 要等 os.SameFile 调用时由 loadFileId **按路径**补取 ——
+	// 那一刻两个 FileInfo 都会解析到当时盘上那一个文件,于是「换没换过文件」
+	// 这个问题恒答「没换」,而它正是本条守卫唯一要问的事。
+	// 经打开的句柄取 (*File).Stat 走 GetFileInformationByHandle,当场就把
+	// vol/idxhi/idxlo 填上(sameFile 比的正是这三个),三个平台语义一致。
+	//
+	// 这是测试技巧的缺陷,不是产品缺陷:saveRuleHistory 本身一个字没改。
+	capture := func() os.FileInfo {
+		t.Helper()
+		f, err := os.Open(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		fi, err := f.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi
+	}
+
 	if err := write(); err != nil {
 		t.Fatal(err)
 	}
-	first, err := os.Stat(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := capture()
 	if err := write(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := os.Stat(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := capture()
 	if os.SameFile(first, second) {
 		t.Error("两次写是原地截断而不是 rename —— 崩在中间会留下半个文件")
 	}

@@ -83,3 +83,11 @@ func parseIPRouteGet(text string, runErr error) (RouteSelection, error) {
 	}
 	return selection, nil
 }
+
+// lookupRouteSupported:本平台有 LookupRoute 的实现。
+//
+// 它取代了守卫里那份**手抄的 GOOS 清单**。清单会漂,而且已经漂过一次:
+// route_lookup_windows.go 落地之后,清单仍写着 darwin/linux,于是 windows 上
+// 那条守卫去断言「必须报错」,而实现好好地答了出来 —— 测试红在一条与缺陷
+// 完全无关的地方。常量跟着实现文件走,漏写它连编译都过不去。
+const lookupRouteSupported = true
