@@ -45,14 +45,14 @@ func RuleReviewLines(rep rulereview.Report) []Finding {
 		out = append(out, Finding{
 			Status: "warn",
 			Key:    "rules never in effect",
-			Value:  summarizeClass(rep, rulereview.ClassOverriddenByOppositeKind, n, "条 direct 规则被更宽的 proxy 规则压住,从来没生效过"),
+			Value:  summarizeClass(rep, rulereview.ClassOverriddenByOppositeKind, n, " direct rule(s) are overridden by a broader proxy rule and have never taken effect"),
 		})
 	}
 	if n := rep.ShadowedByUserCount; n > 0 {
 		out = append(out, Finding{
 			Status: "info",
 			Key:    "redundant rules",
-			Value:  summarizeClass(rep, rulereview.ClassShadowedByUserRule, n, "条被你自己更宽的一条覆盖,删掉不改变任何流量"),
+			Value:  summarizeClass(rep, rulereview.ClassShadowedByUserRule, n, " covered by a broader rule of your own; deleting them changes no traffic"),
 		})
 	}
 	// —— 死规则 ——
@@ -61,24 +61,24 @@ func RuleReviewLines(rep rulereview.Report) []Finding {
 	// 满过 / 门槛还没到),静默缺席会让用户以为体检查过了这一项、而且没发现问题。
 	if rep.DeadChecked {
 		if n := rep.DeadCount; n > 0 {
-			value := summarizeClass(rep, rulereview.ClassDead, n, "条规则累计从未命中过一次")
+			value := summarizeClass(rep, rulereview.ClassDead, n, " rule(s) have never matched a single connection, cumulatively")
 			// **跨了几个版本要说出来**,让用户对这份累计打折 —— 中间可能有几版的
 			// 计数行为并不一致。
 			if v := rep.DeadVersionsSpanned; v > 1 {
-				value += fmt.Sprintf("(这份累计跨了 %d 个 bx 版本,可酌情打折)", v)
+				value += fmt.Sprintf(" (this total spans %d bx versions — discount it accordingly)", v)
 			}
 			out = append(out, Finding{
 				Status: "info",
 				Key:    DeadRulesCheckName,
 				Value:  value,
-				Hint:   "删之前先确认那个域名你确实不再访问;删规则用 " + elevate.Prefix + "bx direct rm '<规则>',改完要 " + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up",
+				Hint:   "Before deleting, make sure you really no longer visit that domain. To delete: " + elevate.Prefix + "bx direct rm '<rule>', then " + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up",
 			})
 		}
 	} else if rep.DeadSkipReason != "" {
 		out = append(out, Finding{
 			Status: "info",
 			Key:    DeadRulesCheckName,
-			Value:  "未检查:" + rep.DeadSkipReason,
+			Value:  "Not checked: " + rep.DeadSkipReason,
 		})
 	}
 
@@ -93,7 +93,7 @@ func RuleReviewLines(rep rulereview.Report) []Finding {
 			out = append(out, Finding{
 				Status: "info",
 				Key:    "builtin list source",
-				Value:  "china 列表比对回落到了内嵌快照,不是 Core 此刻实际使用的那一份:" + rep.BuiltinListSource,
+				Value:  "the china-list comparison fell back to the embedded snapshot, not the one Core is actually using: " + rep.BuiltinListSource,
 			})
 		}
 		out = append(out, builtinListLines(rep)...)
@@ -103,7 +103,7 @@ func RuleReviewLines(rep rulereview.Report) []Finding {
 		out = append(out, Finding{
 			Status: "info",
 			Key:    "builtin list check",
-			Value:  "未检查:" + rep.BuiltinSkipReason,
+			Value:  "Not checked: " + rep.BuiltinSkipReason,
 		})
 	}
 	return out
@@ -145,7 +145,7 @@ func riskyRuleFinding(rep rulereview.Report) *Finding {
 	return &Finding{
 		Status: "warn",
 		Key:    "risky direct rule",
-		Value: fmt.Sprintf("%d 条直连规则命中危险名单:%s —— %s",
+		Value: fmt.Sprintf("%d direct rule(s) hit the hazard list: %s — %s",
 			len(rules), strings.Join(rules, "、"), summary),
 		// bx direct rm(不是 remove —— 那是这条 hint 上一版的笔误,命令本身
 		// 不存在)接受多个域名一次处理,一条命令覆盖全部规则。
@@ -173,7 +173,7 @@ func riskyRuleFinding(rep rulereview.Report) *Finding {
 		// 一次不必要的密码提示——不对称,故两条命令都印 sudo。这与
 		// editRuleAction 自己在同一文件里的既有措辞一致(未运行时的提示已经写的
 		// 是「下次 sudo bx up 时生效」)。
-		Hint: fmt.Sprintf(""+elevate.Prefix+"bx direct rm %s(改完要 "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up)", strings.Join(quoted, " ")),
+		Hint: fmt.Sprintf(""+elevate.Prefix+"bx direct rm %s (then "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up)", strings.Join(quoted, " ")),
 	}
 }
 
@@ -208,7 +208,7 @@ func builtinListLines(rep rulereview.Report) []Finding {
 		out = append(out, Finding{
 			Status: "info",
 			Key:    "covered by builtin list",
-			Value:  summarizeFindings(direct, len(direct), "条与内建 china 列表相关,删掉不改变任何流量") + builtinListSourceSuffix(rep),
+			Value:  summarizeFindings(direct, len(direct), " already covered by bx's built-in china list; deleting them changes no traffic") + builtinListSourceSuffix(rep),
 		})
 	}
 	if proxy := classKindFindings(rep, rulereview.ClassShadowedByBuiltinList, "proxy"); len(proxy) > 0 {
@@ -216,7 +216,7 @@ func builtinListLines(rep rulereview.Report) []Finding {
 			Status: "info",
 			Key:    "builtin list exception",
 			Value: summarizeFindings(proxy, len(proxy),
-				"条把内建 china 列表判直连的域名扳回隧道——这是生效中的例外,删掉会改变流量") + builtinListSourceSuffix(rep),
+				" pull domains that the built-in china list sends direct back through the tunnel — an exception in force; deleting them changes traffic") + builtinListSourceSuffix(rep),
 		})
 	}
 	// **不认识的 Kind 不许静默丢弃。**
@@ -235,7 +235,7 @@ func builtinListLines(rep rulereview.Report) []Finding {
 			Status: "info",
 			Key:    "builtin list (kind unknown)",
 			Value: summarizeFindings(rest, len(rest),
-				"条与内建 china 列表相关,但它们所在的表未知——请核对再决定是否改动") + builtinListSourceSuffix(rep),
+				" relate to the built-in china list, but which list they live in is unknown — check before changing anything") + builtinListSourceSuffix(rep),
 		})
 	}
 	return out
@@ -270,7 +270,7 @@ func builtinListSourceSuffix(rep rulereview.Report) string {
 	if rep.BuiltinListSource == "" {
 		return ""
 	}
-	return "(依据:" + rep.BuiltinListSource + ")"
+	return " (source: " + rep.BuiltinListSource + ")"
 }
 
 // classKindFindings 按 Class 与 Kind 两个维度筛选,顺序与 rep.Findings 一致。
@@ -307,7 +307,7 @@ func summarizeFindings(findings []rulereview.Finding, n int, tail string) string
 	}
 	s := fmt.Sprintf("%d %s:%s", n, tail, strings.Join(names, "、"))
 	if n > len(names) {
-		s += fmt.Sprintf(" 等 %d 条", n)
+		s += fmt.Sprintf(" and %d more", n)
 	}
 	return s
 }

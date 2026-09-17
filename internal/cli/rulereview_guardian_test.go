@@ -109,7 +109,7 @@ func TestDoctorNamesWhatIsStillMissingOnTheGuardianPath(t *testing.T) {
 		if c.Name != "config_readable" {
 			continue
 		}
-		if !strings.Contains(c.Detail, "缺席") {
+		if !strings.Contains(c.Detail, "are absent this round") {
 			t.Fatalf("没说清哪些检查本次没跑: %q", c.Detail)
 		}
 		return

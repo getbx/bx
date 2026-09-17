@@ -22,7 +22,7 @@ func TestDoctorSaysWhenItCouldNotAsk(t *testing.T) {
 	if checks[0].Status != StatusNotChecked {
 		t.Fatalf("没问到却报 %q —— 只有 not_checked 说得出「这一项没查」", checks[0].Status)
 	}
-	if !strings.Contains(checks[0].Detail, "没问到") {
+	if !strings.Contains(checks[0].Detail, "Could not ask") {
 		t.Errorf("没说清是问不出来:%q", checks[0].Detail)
 	}
 	if checks[0].Hint == "" {
@@ -219,10 +219,10 @@ func TestDoctorDoesNotBlameRulesWhenDirectEgressIsDown(t *testing.T) {
 	if named == nil {
 		t.Fatal("没点名那条规则")
 	}
-	if strings.Contains(named.Hint, "改 /etc/bx/config.yaml") {
+	if strings.Contains(named.Hint, "edit the rules in /etc/bx/config.yaml") {
 		t.Errorf("直连出不去却建议改规则 —— 用户会删掉一条正确的规则:%q", named.Hint)
 	}
-	if !strings.Contains(named.Hint, "不是你的规则") {
+	if !strings.Contains(named.Hint, "Not your rules") {
 		t.Errorf("没说清不是规则的问题:%q", named.Hint)
 	}
 	if egress == nil {

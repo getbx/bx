@@ -109,7 +109,7 @@ func TestBuildRuleReviewInputUsesCoresLiveChinaListWhenReadable(t *testing.T) {
 			t.Errorf("没点名到规则原文: %q", l.Value)
 		}
 		// 三:finding 文本必须点名用的是哪一份列表。
-		if !strings.Contains(l.Value, "依据") || !strings.Contains(l.Value, "Core 当前实际使用") {
+		if !strings.Contains(l.Value, "source:") || !strings.Contains(l.Value, "Core 当前实际使用") {
 			t.Errorf("finding 文本没说清用的是哪份列表: %q", l.Value)
 		}
 	}

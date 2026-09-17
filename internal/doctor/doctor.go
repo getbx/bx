@@ -192,20 +192,20 @@ func Judge(f Facts) Report {
 	if f.Config.ReadErr != "" {
 		rulesErr := f.GuardianRules.Err
 		if rulesErr == "" && !f.Config.PermissionDenied {
-			rulesErr = "配置不是因为权限读不到,不走 Guardian 退路"
+			rulesErr = "the config is unreadable for some reason other than permissions, so the Guardian fallback does not apply"
 		}
 		if rulesErr == "" && f.GuardianRules.ConfigPath != f.ConfigPath {
-			rulesErr = fmt.Sprintf("Guardian 读的是 %s,与要问的 %s 不是同一个文件", f.GuardianRules.ConfigPath, f.ConfigPath)
+			rulesErr = fmt.Sprintf("Guardian read %s, which is not the file being asked about (%s)", f.GuardianRules.ConfigPath, f.ConfigPath)
 		}
 		if rulesErr == "" && f.GuardianRules.Review == nil {
-			rulesErr = "这一版 Guardian 没有发布规则体检"
+			rulesErr = "this version of Guardian does not publish the rule review"
 		}
 		if rulesErr != "" {
 			rep.AddCheck("config_readable", "fail", f.Config.ReadErr, ""+elevate.Prefix+"bx setup <client-link>")
 		} else {
 			rep.AddCheck("config_readable", "info",
-				f.Config.ReadErr+";规则已改经 Guardian 读取(业主授权,无需 root);"+
-					"其余依赖配置的检查(权限/解析/server link/udp 策略)本次缺席,要它们请用 sudo", "")
+				f.Config.ReadErr+"; rules were read through Guardian instead (owner-authorized, no root needed); "+
+					"the other config-dependent checks (permissions, parsing, server link, udp policy) are absent this round — run with sudo to get them", "")
 			for _, l := range RuleReviewLines(*f.GuardianRules.Review) {
 				rep.AddCheck(RuleReviewCheckName(l.Key), l.Status, l.Value, l.Hint)
 			}
@@ -219,7 +219,7 @@ func Judge(f Facts) Report {
 			rep.AddCheck("config_permissions", "warn", "not 0600", "chmod 600 "+f.ConfigPath)
 		default:
 			// **「这个平台没有这件事」不是一次失败,也不是「查过没问题」。**
-			rep.AddCheck("config_permissions", StatusNotChecked, "本平台没有 POSIX 权限位(靠 ACL)", "")
+			rep.AddCheck("config_permissions", StatusNotChecked, "this platform has no POSIX permission bits (it uses ACLs)", "")
 		}
 		if f.ParseErr != "" || f.Parsed == nil {
 			// f.Parsed == nil 而 f.ParseErr == "" 在 Task 6 的采集方那条路上不可达
@@ -239,7 +239,7 @@ func Judge(f Facts) Report {
 			} else {
 				rep.AddCheck("server_link", "ok", RedactLink(cfg.Server), "")
 				if len(cfg.Transports) > 1 {
-					rep.AddCheck("transports", "ok", fmt.Sprintf("%d 个传输(自动容灾)", len(cfg.Transports)), "")
+					rep.AddCheck("transports", "ok", fmt.Sprintf("%d transports (automatic failover)", len(cfg.Transports)), "")
 				}
 				if cfg.UDP.Transport != "" {
 					rep.AddCheck("udp_transport", "ok", RedactLink(cfg.UDP.Transport), "")
@@ -338,11 +338,11 @@ func DNSCheck(d DNSFact, desired string) Check {
 		if d.Managed {
 			return Check{
 				Name: "guardian_dns", Status: "warn",
-				Detail: detail + " —— bx 关着,DNS 却还归 bx",
+				Detail: detail + " — bx is off, but DNS still belongs to bx",
 				Hint:   "" + elevate.Prefix + "bx down",
 			}
 		}
-		return Check{Name: "guardian_dns", Status: "ok", Detail: detail + " —— bx 关着,DNS 已还给系统"}
+		return Check{Name: "guardian_dns", Status: "ok", Detail: detail + " — bx is off and DNS has been handed back to the system"}
 	}
 	if state == DNSStateManaged && d.Managed {
 		return Check{Name: "guardian_dns", Status: "ok", Detail: detail}
