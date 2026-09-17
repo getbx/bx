@@ -804,10 +804,16 @@ customOnly:)`(`RulesModel.swift`)此前**早就存在、只有测试在调**,本
 **摆表只有一个出口、而那个出口自己带上它**一起钉 —— 判据 2026-09-12 从「每一处
 都记得」换成了「只有一处」,见下文那条)。
 ② **服务端写的是中文** —— `rulereview` 与 `deadFindings` 的 `summary` 原样渲染
-进一个通篇英文的菜单(`已在内建 china 直连列表里…… ← *.apple.com`);现由
-`ruleVerdictText` 按 `class` **在客户端映射成英文**(选客户端而不是让服务端多发
-一个英文字段:`summary` 同时喂着中文的 `bx doctor`/`bx status`,再写一份就是同一句
-判断在两处各写一遍),认不出的类把那个词原样带上、不消失也不冒充看懂了。
+进一个通篇英文的菜单(`已在内建 china 直连列表里…… ← *.apple.com`);当时由
+`ruleVerdictText` 按 `class` 在客户端映射成英文,理由是「`summary` 同时喂着**中文的**
+`bx doctor`/`bx status`,再写一份就是同一句判断在两处各写一遍」。
+**2026-09-17 那个前提被拆掉了**:`internal/doctor`(35 条)与 `internal/rulereview`
+(16 条)的判据文案改成英文,一处产地;`ruleVerdictText` 连同它的 Swift 测试一起
+删掉,菜单直接渲染 `summary`。**走英文这条路在这里是减少一份清单,不是增加。**
+客户端只剩一件事:服务端没发 `summary` 时把那个 `class` 原样带上(`verdictText`),
+绝不冒充看懂了。「每一类说一句属于自己的话」这条不变量**搬到了 Go**
+(`TestEveryClassSaysSomethingOfItsOwn`,穷举 Class、走生产的 `Review`)——
+**判据搬了家,守卫必须跟着搬**,否则它会随着那次删除一起静默消失。
 ③ **一行既被分类又在成片失败时,失败那半此前整个丢掉** —— 8113/8113 全失败的规则
 只显示「删掉它不改变任何流量」还被画成红的;而 `DomainSet.MatchRule` 逐级往父域找,
 **累积失败的恰恰是被盖住的那条更窄的规则**,不是边角情况。

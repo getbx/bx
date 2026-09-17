@@ -32,7 +32,7 @@ func deadGate(in Input) (bool, string) {
 	if in.History == nil {
 		why := in.HistorySkipReason
 		if why == "" {
-			why = "拿不到跨重启累计的按规则计数"
+			why = "no cross-restart per-rule counters are available"
 		}
 		return false, why
 	}
@@ -40,14 +40,14 @@ func deadGate(in Input) (bool, string) {
 		// **这道门最要紧。** 表满之后新规则不再被记,于是「历史里没有这条」与
 		// 「有这条、attempts==0」在数据上完全无法区分 —— 前者是「没被记过」,
 		// 后者才是「从没命中」。不区分就会把一条正在工作的规则报成死的。
-		return false, "按规则跟踪的表曾经满过,「没有记录」与「从没命中」无法区分,这一类没有判断"
+		return false, "the per-rule tracking table overflowed at some point, so \"no record\" and \"never matched\" are indistinguishable; this class is not judged"
 	}
 	if in.HistoryUptime < deadMinUptime {
-		return false, fmt.Sprintf("累计运行 %s,不足 %s,这一类还不能下结论",
+		return false, fmt.Sprintf("%s of cumulative uptime, short of %s — not enough to conclude anything here yet",
 			roundDays(in.HistoryUptime), roundDays(deadMinUptime))
 	}
 	if in.HistoryDecisions < deadMinDecisions {
-		return false, fmt.Sprintf("累计判定 %d 次,不足 %d 次,这一类还不能下结论",
+		return false, fmt.Sprintf("%d cumulative decisions, short of %d — not enough to conclude anything here yet",
 			in.HistoryDecisions, deadMinDecisions)
 	}
 	return true, ""
@@ -56,9 +56,9 @@ func deadGate(in Input) (bool, string) {
 // roundDays 把时长说成人话。报告是给人读的,`336h0m0s` 不是。
 func roundDays(d time.Duration) string {
 	if d < 24*time.Hour {
-		return fmt.Sprintf("%.0f 小时", d.Hours())
+		return fmt.Sprintf("%.0f hours", d.Hours())
 	}
-	return fmt.Sprintf("%.0f 天", d.Hours()/24)
+	return fmt.Sprintf("%.0f days", d.Hours()/24)
 }
 
 // deadFindings 找出累计命中为零的规则。
@@ -93,7 +93,7 @@ func deadFindings(kind, source string, rules []domainRule, in Input) []Finding {
 			Rule:  r.raw,
 			Class: ClassDead,
 			// **不写 CoveredBy** —— 死规则没有「被谁盖住」这回事,它只是从没被用到。
-			Summary: "累计从未命中过一次:这条规则可能已经不需要了(删之前先确认那个域名你确实不再访问)",
+			Summary: "never matched once, cumulatively: this rule may no longer be needed (before deleting, make sure you really no longer visit that domain)",
 		})
 	}
 	return out

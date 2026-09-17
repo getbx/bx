@@ -12,9 +12,9 @@ import (
 // 判定)。但这里是**中文**、说的是「一条已经躺在配置里的规则」;add 那一侧是
 // 英文、说的是「这一条现在加不加得进去」,还要带上 --force 那条出路。
 // 写成「措辞同源」会让下一个人以为两处该逐字一致,然后去把其中一边改坏。
-const riskySummary = "公有云存储/CDN/开放子域平台——任何人都能注册它的子域;" +
-	"留在直连白名单里 = 攻击者能用一个子域让你的真实 IP 暴露(去匿名化)。" +
-	"建议只白名单品牌自控的顶级域。"
+const riskySummary = "a public cloud storage / CDN / open-subdomain platform — anyone can register a subdomain under it; " +
+	"keeping it on the direct allowlist means an attacker can use one subdomain to expose your real IP (de-anonymization). " +
+	"Prefer allowlisting only top-level domains the brand itself controls."
 
 // Review 跑完四类判据。**纯函数:同样的输入永远给同样的输出。**
 func Review(in Input) Report {
@@ -38,10 +38,10 @@ func Review(in Input) Report {
 	fallback := false
 	switch {
 	case in.GlobalProxy:
-		skip = "global 模式下内建 china 列表整个不生效,这一类没有比对"
+		skip = "in global mode the built-in china list does not apply at all, so this class was not compared"
 	case in.China == nil:
 		if skip == "" {
-			skip = "没拿到内建 china 列表,这一类没有比对"
+			skip = "the built-in china list was not available, so this class was not compared"
 		}
 	default:
 		checked = true
@@ -79,11 +79,11 @@ func shadowedByBuiltinFindings(kind string, rules []domainRule, china *route.Dom
 		if !ok {
 			continue
 		}
-		summary := "已在内建 china 直连列表里,这条手写的没有额外作用。"
+		summary := "already on bx's built-in china direct list; this hand-written rule adds nothing."
 		if kind == "proxy" {
 			// proxy 规则命中 china 列表不是冗余 —— 它是**故意的例外**:
 			// 用户就是要把一个内建列表判直连的域名扳回隧道。说反了会让他删掉它。
-			summary = "内建 china 列表把它判为直连,而你这条把它扳回隧道——这是生效中的例外,不是冗余。"
+			summary = "the built-in china list sends this direct, and your rule pulls it back through the tunnel — an exception in force, not a duplicate."
 		}
 		out = append(out, Finding{
 			Kind:      kind,
@@ -140,7 +140,7 @@ func shadowedByUserFindings(kind string, rules []domainRule) []Finding {
 			Kind:      kind,
 			Rule:      r.raw,
 			Class:     ClassShadowedByUserRule,
-			Summary:   "已被你自己更宽的一条覆盖,删掉它不会改变任何流量的去向。",
+			Summary:   "already covered by a broader rule of your own; deleting it will not change where any traffic goes.",
 			CoveredBy: covering,
 		})
 	}
@@ -178,7 +178,7 @@ func overriddenFindings(direct, proxy []domainRule) []Finding {
 			Kind:      "direct",
 			Rule:      d.raw,
 			Class:     ClassOverriddenByOppositeKind,
-			Summary:   "被 proxy 表里更宽的一条压住,从来没有生效过——bx 先查 proxy 再查 direct,没有「更具体的优先」。要它生效就得收窄或删掉压住它的那一条。",
+			Summary:   "overridden by a broader rule in the proxy list and has never taken effect — bx checks proxy before direct, and there is no \"more specific wins\" rule. To make it work, narrow or delete the rule that shadows it.",
 			CoveredBy: covering,
 		})
 	}

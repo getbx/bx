@@ -118,7 +118,7 @@ func TestDeadNotCheckedWhenTheTrackingTableOverflowed(t *testing.T) {
 	if rep.DeadChecked {
 		t.Error("溢出时 DeadChecked 必须为假")
 	}
-	if !strings.Contains(rep.DeadSkipReason, "满") && !strings.Contains(rep.DeadSkipReason, "溢出") {
+	if !strings.Contains(rep.DeadSkipReason, "overflowed") {
 		t.Errorf("没点名溢出这个原因:%q", rep.DeadSkipReason)
 	}
 }

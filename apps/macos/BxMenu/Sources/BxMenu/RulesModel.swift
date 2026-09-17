@@ -105,10 +105,15 @@ struct RuleFinding: Decodable, Equatable {
     /// **认不出的词不许丢掉这一行** —— 新版 Guardian 发来一类旧菜单不认识的结论时,
     /// 这一行仍然要显示,只是排在已知的几类后面。
     let cls: String
-    /// 服务端写的那句话。**不渲染** —— 它是中文(internal/rulereview 与
-    /// deadFindings 里那几段),而这个菜单的用户可见字符串只准英文。界面上那句
-    /// 由 `ruleVerdictText` 按 `cls` 在本地给出。留着解码是因为它仍是线上契约的
-    /// 一部分,断开的话下一个人会以为服务端没发这个字段。
+    /// 服务端写的那句话,**直接渲染**。
+    ///
+    /// 2026-09-17 之前它是中文(internal/rulereview 那几段),而这个菜单通篇英文,
+    /// 所以界面上那句由本地的 `ruleVerdictText` 按 `cls` 另写一份 —— 同一句判断
+    /// 在两处各写一遍。判据文案改成英文之后**那个理由不成立了**,`ruleVerdictText`
+    /// 连同它的测试一起删掉:走英文这条路在这里是**减少**一份清单,不是增加。
+    ///
+    /// **空串仍要有出路**:旧 Guardian 可能不发这个键,那时按 `cls` 说一句
+    /// 「这一版说不出为什么」,绝不冒充看懂了(见 `verdictText`)。
     let summary: String
     let coveredBy: String
 
@@ -216,7 +221,7 @@ struct RuleRow: Equatable {
     var detail: String? {
         var parts: [String] = []
         if let verdict {
-            var text = ruleVerdictText(verdict)
+            var text = verdictText(verdict)
             if !verdict.coveredBy.isEmpty { text += " ← " + verdict.coveredBy }
             parts.append(text)
         }
@@ -242,31 +247,17 @@ struct RuleRow: Equatable {
 /// **认不出的类不许消失,也不许冒充自己看懂了**:如实说「bx 报了这一条」并把
 /// 那个词原样带上,用户能拿它去搜、去问,而 `ruleRowSeverity` 已经给了它一个
 /// 排在已知几类之后、健康之前的位置。
-func ruleVerdictText(_ finding: RuleFinding) -> String {
-    switch finding.cls {
-    case "risky_direct":
-        return "Anyone can register a subdomain on this platform, and this direct rule covers "
-            + "every subdomain of it — a stranger could make your real IP leave outside the tunnel."
-    case "shadowed_by_user_rule":
-        return "Covered by a broader rule of yours; deleting it changes no traffic."
-    case "overridden_by_opposite_kind":
-        return "A broader rule in your other list wins, so this rule has never taken effect."
-    case "shadowed_by_builtin_list":
-        // proxy 命中内建 china 列表**不是冗余**,是生效中的例外 —— 说反了就是叫
-        // 用户删掉一条正在把流量拉回隧道的规则。服务端那两句措辞刻意相反,
-        // 这里必须跟着分开。
-        return finding.kind == "proxy"
-            ? "bx's built-in china list sends this direct; your rule pulls it back through the "
-                + "tunnel — an exception in force, not a duplicate."
-            : "Already covered by bx's built-in china direct list; this rule adds nothing."
-    case "dead":
-        return "bx has never matched a connection against this rule. Check you still visit that "
-            + "domain before deleting it."
-    default:
-        return finding.cls.isEmpty
-            ? "bx flagged this rule, and this version of the menu cannot say why."
-            : "bx flagged this rule (\(finding.cls))."
-    }
+/// 这一行要显示的那句话。**服务端发什么就显示什么** —— 判据只有一份。
+///
+/// 只在服务端没发(旧 Guardian,或将来某一类忘了写 summary)时才由本地兜底,
+/// 而兜底那句**绝不冒充看懂了**:它把认不出的那个 class 原样带上,
+/// 与 leakcheck 那条「问不出来就说问不出来」同一条纪律。
+func verdictText(_ finding: RuleFinding) -> String {
+    let summary = finding.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !summary.isEmpty { return summary }
+    return finding.cls.isEmpty
+        ? "bx flagged this rule, and this version could not say why."
+        : "bx flagged this rule (\(finding.cls))."
 }
 
 /// 这张表**有半边是问不出来的**时,窗口顶上要说的那句话。两个半边:
@@ -642,7 +633,7 @@ func ruleTableEntries(rows: [RuleRow], pending: [PendingRuleRemoval]) -> [RuleTa
 ///     (规则窗口曾把 rulereview 的中文 summary 原样渲染出来)。
 ///   - **认不出的组回落到一句一定成立的话**(它管几个域名),而不是消失、
 ///     也不是冒充看懂了。新 Guardian 出了一组而菜单还没跟上时,这条路真会走到 ——
-///     与 `ruleVerdictText` 对认不出的 class 的处置同向。
+///     与 `verdictText` 对认不出的 class 的处置同向。
 ///
 /// 这张表与 Go 那份预设清单的对齐由
 /// `TestMacMenuEveryPresetHasAnEnglishSubtitle` 钉住:Go 加了一组而这里没跟上时
