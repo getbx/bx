@@ -530,9 +530,9 @@ func TestGuardianDoctorBlamesTheDirectDialerNotTheRules(t *testing.T) {
 	if brokenFacts.Traffic == nil || brokenFacts.Traffic.DirectEgress != tristate.False {
 		t.Fatalf("观测到的直连出口没进流量事实:%+v", brokenFacts.Traffic)
 	}
-	if got := hints(broken); !strings.Contains(got, "不是你的规则") {
+	if got := hints(broken); !strings.Contains(got, "Not your rules") {
 		t.Errorf("直连出不去,报告却没说不是规则的问题:\n%s", got)
-	} else if strings.Contains(got, "改 /etc/bx/config.yaml 的 rules") {
+	} else if strings.Contains(got, "edit the rules in /etc/bx/config.yaml") {
 		t.Errorf("直连出不去却仍建议改规则 —— 用户会删掉一条正确的规则:\n%s", got)
 	}
 
@@ -543,10 +543,10 @@ func TestGuardianDoctorBlamesTheDirectDialerNotTheRules(t *testing.T) {
 		t.Fatalf("没问直连出口却给了确定答案:%+v", unknownFacts.Traffic)
 	}
 	got := hints(unknown)
-	if strings.Contains(got, "不是你的规则") {
+	if strings.Contains(got, "Not your rules") {
 		t.Errorf("没观测到直连出不去,却告诉用户不是他的规则:\n%s", got)
 	}
-	if !strings.Contains(got, "改 /etc/bx/config.yaml 的 rules") {
+	if !strings.Contains(got, "edit the rules in /etc/bx/config.yaml") {
 		t.Errorf("没改口的那条路上,点名规则的建议不见了:\n%s", got)
 	}
 }

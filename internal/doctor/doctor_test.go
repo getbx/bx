@@ -58,7 +58,7 @@ func TestJudgePermissionDeniedUsesGuardianReviewOnlyForTheSameFile(t *testing.T)
 		Config:        FileFact{ReadErr: "permission denied", PermissionDenied: true},
 		GuardianRules: GuardianRulesFact{Review: review, ConfigPath: "/etc/bx/config.yaml"},
 	})
-	if c := find(same, "config_readable"); c.Status != "info" || !strings.Contains(c.Detail, "规则已改经 Guardian 读取") {
+	if c := find(same, "config_readable"); c.Status != "info" || !strings.Contains(c.Detail, "read through Guardian instead") {
 		t.Fatalf("同一文件的退路 = %+v", c)
 	}
 	other := Judge(Facts{

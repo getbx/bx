@@ -83,7 +83,7 @@ func trafficChecks(f *TrafficFact) []Check {
 		// 看采集方而不是去修自己的网络。
 		return []Check{{
 			Name: TrafficOutcomesCheckName, Status: StatusNotChecked,
-			Detail: "这条路径没有采集流量成败,所以下面不会有任何关于规则成败的结论",
+			Detail: "This path did not collect traffic outcomes, so nothing below says anything about rule failures",
 		}}
 	}
 	if f.Err != "" {
@@ -91,7 +91,7 @@ func trafficChecks(f *TrafficFact) []Check {
 		// 机器与一台完全健康的机器,在 doctor 的这一段里逐字节相同。
 		return []Check{{
 			Name: TrafficOutcomesCheckName, Status: StatusNotChecked,
-			Detail: "没问到(Core 没在跑?):" + f.Err,
+			Detail: "Could not ask (is Core running?): " + f.Err,
 			Hint:   "" + elevate.Prefix + "bx up",
 		}}
 	}
@@ -99,7 +99,7 @@ func trafficChecks(f *TrafficFact) []Check {
 	checks := []Check{{
 		Name:   TrafficOutcomesCheckName,
 		Status: outcomeStatus(report),
-		Detail: fmt.Sprintf("直连 %d(失败 %d)· 代理 %d(失败 %d)",
+		Detail: fmt.Sprintf("direct %d (%d failed) · proxy %d (%d failed)",
 			report.Direct, report.DirectFailed, report.Proxy, report.ProxyFailed),
 	}}
 	// 点名成片失败的用户规则:它们是用户**改得了**的那几行,而这正是 doctor
@@ -114,12 +114,12 @@ func trafficChecks(f *TrafficFact) []Check {
 		named := make([]string, 0, len(failing))
 		for _, rule := range failing {
 			pct := float64(rule.Failures) / float64(rule.Attempts) * 100
-			named = append(named, fmt.Sprintf("%s:%d 条里失败 %d(%.0f%%)", rule.Rule, rule.Attempts, rule.Failures, pct))
+			named = append(named, fmt.Sprintf("%s: %d of %d failed (%.0f%%)", rule.Rule, rule.Failures, rule.Attempts, pct))
 		}
 		checks = append(checks, Check{
 			Name:   TrafficFailingRulesCheckName,
 			Status: "fail",
-			Detail: fmt.Sprintf("%d 条规则在成片失败 —— %s", len(failing), strings.Join(named, "、")),
+			Detail: fmt.Sprintf("%d rule(s) failing in bulk — %s", len(failing), strings.Join(named, "、")),
 			Hint:   failingRuleHint(report.ConfigPath, f.DirectEgress),
 		})
 	}
@@ -128,7 +128,7 @@ func trafficChecks(f *TrafficFact) []Check {
 	if f.DirectEgress == tristate.False {
 		checks = append(checks, Check{
 			Name: directEgressCheckName, Status: "fail",
-			Detail: "bx 自己的直连出不去(scoped 默认路由不见了)",
+			Detail: "bx's own direct dialer cannot get out (the scoped default route is gone)",
 			Hint:   directEgressHint,
 		})
 	}
@@ -169,11 +169,11 @@ func failingRuleHint(configPath string, directEgress tristate.Tristate) string {
 	}
 	where := configPath
 	if where == "" {
-		where = "配置文件"
+		where = "the config file"
 	}
-	return fmt.Sprintf("这条路已经不通;改 %s 的 rules 后 "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up", where)
+	return fmt.Sprintf("That path is dead; edit the rules in %s, then "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up", where)
 }
 
 // directEgressHint 是那条真正的下一步。**不提改规则** —— 规则是好的。
-const directEgressHint = "不是你的规则:bx 自己的直连出不去,每一条 direct rule 都会失败。" +
-	"重装路由:" + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up"
+const directEgressHint = "Not your rules: bx's own direct dialer cannot get out, so every direct rule will fail. " +
+	"Reinstall the routes: " + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up"

@@ -39,7 +39,7 @@
         {
           "name": "transports",
           "status": "ok",
-          "detail": "2 个传输(自动容灾)"
+          "detail": "2 transports (automatic failover)"
         },
         {
           "name": "udp_transport",
@@ -54,23 +54,23 @@
         {
           "name": "rule_risky_direct_rule",
           "status": "warn",
-          "detail": "1 条直连规则命中危险名单:*.aliyuncs.com —— 公有云开放子域,直连会把你单独认出来",
-          "hint": "sudo bx direct rm '*.aliyuncs.com'(改完要 sudo bx down \u0026\u0026 sudo bx up)"
+          "detail": "1 direct rule(s) hit the hazard list: *.aliyuncs.com — 公有云开放子域,直连会把你单独认出来",
+          "hint": "sudo bx direct rm '*.aliyuncs.com' (then sudo bx down \u0026\u0026 sudo bx up)"
         },
         {
           "name": "rule_rules_never_in_effect",
           "status": "warn",
-          "detail": "1 条 direct 规则被更宽的 proxy 规则压住,从来没生效过:*.a.example ← *.example"
+          "detail": "1  direct rule(s) are overridden by a broader proxy rule and have never taken effect:*.a.example ← *.example"
         },
         {
           "name": "rule_dead_rules",
           "status": "info",
-          "detail": "未检查:Core 没在跑,拿不到累计判定数"
+          "detail": "Not checked: Core 没在跑,拿不到累计判定数"
         },
         {
           "name": "rule_builtin_list_check",
           "status": "info",
-          "detail": "未检查:global 模式下 china 列表整个不生效"
+          "detail": "Not checked: global 模式下 china 列表整个不生效"
         },
         {
           "name": "service_installed",
@@ -107,7 +107,7 @@
         {
           "name": "traffic_outcomes",
           "status": "ok",
-          "detail": "直连 45(失败 0)· 代理 300(失败 2)"
+          "detail": "direct 45 (0 failed) · proxy 300 (2 failed)"
         },
         {
           "name": "terminal_proxy",
@@ -137,28 +137,28 @@
         {
           "name": "config_readable",
           "status": "info",
-          "detail": "open /etc/bx/config.yaml: permission denied;规则已改经 Guardian 读取(业主授权,无需 root);其余依赖配置的检查(权限/解析/server link/udp 策略)本次缺席,要它们请用 sudo"
+          "detail": "open /etc/bx/config.yaml: permission denied; rules were read through Guardian instead (owner-authorized, no root needed); the other config-dependent checks (permissions, parsing, server link, udp policy) are absent this round — run with sudo to get them"
         },
         {
           "name": "rule_risky_direct_rule",
           "status": "warn",
-          "detail": "1 条直连规则命中危险名单:*.aliyuncs.com —— 公有云开放子域,直连会把你单独认出来",
-          "hint": "sudo bx direct rm '*.aliyuncs.com'(改完要 sudo bx down \u0026\u0026 sudo bx up)"
+          "detail": "1 direct rule(s) hit the hazard list: *.aliyuncs.com — 公有云开放子域,直连会把你单独认出来",
+          "hint": "sudo bx direct rm '*.aliyuncs.com' (then sudo bx down \u0026\u0026 sudo bx up)"
         },
         {
           "name": "rule_rules_never_in_effect",
           "status": "warn",
-          "detail": "1 条 direct 规则被更宽的 proxy 规则压住,从来没生效过:*.a.example ← *.example"
+          "detail": "1  direct rule(s) are overridden by a broader proxy rule and have never taken effect:*.a.example ← *.example"
         },
         {
           "name": "rule_dead_rules",
           "status": "info",
-          "detail": "未检查:Core 没在跑,拿不到累计判定数"
+          "detail": "Not checked: Core 没在跑,拿不到累计判定数"
         },
         {
           "name": "rule_builtin_list_check",
           "status": "info",
-          "detail": "未检查:global 模式下 china 列表整个不生效"
+          "detail": "Not checked: global 模式下 china 列表整个不生效"
         },
         {
           "name": "service_installed",
@@ -190,7 +190,7 @@
         {
           "name": "traffic_outcomes",
           "status": "not_checked",
-          "detail": "这条路径没有采集流量成败,所以下面不会有任何关于规则成败的结论"
+          "detail": "This path did not collect traffic outcomes, so nothing below says anything about rule failures"
         },
         {
           "name": "terminal_proxy",
@@ -240,7 +240,7 @@
         {
           "name": "transports",
           "status": "ok",
-          "detail": "2 个传输(自动容灾)"
+          "detail": "2 transports (automatic failover)"
         },
         {
           "name": "udp_transport",
@@ -282,7 +282,7 @@
         {
           "name": "guardian_dns",
           "status": "ok",
-          "detail": "state=unmanaged managed=false service=Wi-Fi —— bx 关着,DNS 已还给系统"
+          "detail": "state=unmanaged managed=false service=Wi-Fi — bx is off and DNS has been handed back to the system"
         },
         {
           "name": "network_recovery",
@@ -292,7 +292,7 @@
         {
           "name": "traffic_outcomes",
           "status": "not_checked",
-          "detail": "没问到(Core 没在跑?):dial unix /var/run/bx/core.sock: connect: no such file or directory",
+          "detail": "Could not ask (is Core running?): dial unix /var/run/bx/core.sock: connect: no such file or directory",
           "hint": "sudo bx up"
         },
         {
@@ -343,7 +343,7 @@
         {
           "name": "transports",
           "status": "ok",
-          "detail": "2 个传输(自动容灾)"
+          "detail": "2 transports (automatic failover)"
         },
         {
           "name": "udp_transport",
@@ -364,19 +364,19 @@
         {
           "name": "traffic_outcomes",
           "status": "fail",
-          "detail": "直连 1322(失败 1308)· 代理 0(失败 0)"
+          "detail": "direct 1322 (1308 failed) · proxy 0 (0 failed)"
         },
         {
           "name": "traffic_failing_rules",
           "status": "fail",
-          "detail": "2 条规则在成片失败 —— *.qq.com:1291 条里失败 1289(100%)、*.icloud.com:6 条里失败 6(100%)",
-          "hint": "不是你的规则:bx 自己的直连出不去,每一条 direct rule 都会失败。重装路由:sudo bx down \u0026\u0026 sudo bx up"
+          "detail": "2 rule(s) failing in bulk — *.qq.com: 1289 of 1291 failed (100%)、*.icloud.com: 6 of 6 failed (100%)",
+          "hint": "Not your rules: bx's own direct dialer cannot get out, so every direct rule will fail. Reinstall the routes: sudo bx down \u0026\u0026 sudo bx up"
         },
         {
           "name": "direct_egress",
           "status": "fail",
-          "detail": "bx 自己的直连出不去(scoped 默认路由不见了)",
-          "hint": "不是你的规则:bx 自己的直连出不去,每一条 direct rule 都会失败。重装路由:sudo bx down \u0026\u0026 sudo bx up"
+          "detail": "bx's own direct dialer cannot get out (the scoped default route is gone)",
+          "hint": "Not your rules: bx's own direct dialer cannot get out, so every direct rule will fail. Reinstall the routes: sudo bx down \u0026\u0026 sudo bx up"
         }
       ]
     }
