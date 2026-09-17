@@ -16,20 +16,20 @@ import (
 func TestReconcileLineShowsLastExecutionOnlyWhenPresent(t *testing.T) {
 	now := time.Now()
 	round := guardian.ReconcileReport{At: now.Add(-time.Minute), UnchangedRounds: 2}
-	if line := reconcileRoundSummary(round, now); strings.Contains(line, "上轮执行") {
+	if line := reconcileRoundSummary(round, now); strings.Contains(line, "last round executed") {
 		t.Fatalf("没执行过任何东西的健康机器必须静默: %q", line)
 	}
 
 	round.Executed = &guardian.ReconcileExecution{Action: "clear_orphan_barrier", Outcome: "ok"}
 	line := reconcileRoundSummary(round, now)
-	if !strings.Contains(line, "上轮执行 clear_orphan_barrier") || !strings.Contains(line, "成功") {
+	if !strings.Contains(line, "last round executed clear_orphan_barrier") || !strings.Contains(line, "(ok)") {
 		t.Fatalf("执行成功要说出口: %q", line)
 	}
 
 	// Error 是失败码不是原始错误串(发布面纪律);可行动的线索是那个指路。
 	round.Executed = &guardian.ReconcileExecution{Action: "restore_dns", Outcome: "failed", Error: "execute_failed"}
 	line = reconcileRoundSummary(round, now)
-	if !strings.Contains(line, "失败") || !strings.Contains(line, "execute_failed") {
+	if !strings.Contains(line, "(failed:") || !strings.Contains(line, "execute_failed") {
 		t.Fatalf("失败码要说出口: %q", line)
 	}
 	if !strings.Contains(line, "bx-guard.err.log") {
@@ -39,10 +39,10 @@ func TestReconcileLineShowsLastExecutionOnlyWhenPresent(t *testing.T) {
 	// skipped 不是故障,是让路 —— 措辞不许长得像出了事。
 	round.Executed = &guardian.ReconcileExecution{Action: "restore_dns", Outcome: "skipped", Error: "mutation_busy"}
 	line = reconcileRoundSummary(round, now)
-	if !strings.Contains(line, "让路") || !strings.Contains(line, "mutation_busy") {
+	if !strings.Contains(line, "stood aside") || !strings.Contains(line, "mutation_busy") {
 		t.Fatalf("让路要与失败分得开: %q", line)
 	}
-	if strings.Contains(line, "失败") {
+	if strings.Contains(line, "(failed:") {
 		t.Fatalf("让路不是失败: %q", line)
 	}
 }
@@ -69,22 +69,22 @@ func TestReconcileLineRendersStartCoreCodesAsActionableSentences(t *testing.T) {
 
 	round.Executed = &guardian.ReconcileExecution{Action: "start_core", Outcome: "skipped", Error: guardian.ReconcileSkipStartCoreExhausted}
 	line := reconcileRoundSummary(round, now)
-	if strings.Contains(line, "让路") {
+	if strings.Contains(line, "stood aside") {
 		t.Fatalf("放弃被渲染成了让路: %q", line)
 	}
-	if !strings.Contains(line, "已放弃") || !strings.Contains(line, ""+elevate.Prefix+"bx up") {
+	if !strings.Contains(line, "given up") || !strings.Contains(line, ""+elevate.Prefix+"bx up") {
 		t.Fatalf("exhausted 要说「已放弃」并指路 "+elevate.Prefix+"bx up: %q", line)
 	}
 
 	round.Executed = &guardian.ReconcileExecution{Action: "start_core", Outcome: "skipped", Error: guardian.ReconcileSkipCoreProcessPresent}
 	line = reconcileRoundSummary(round, now)
-	if !strings.Contains(line, "Core 进程") || !strings.Contains(line, "socket") {
+	if !strings.Contains(line, "a Core process is running") || !strings.Contains(line, "socket") {
 		t.Fatalf("core_process_present 要说出「有 Core 进程在跑但 socket 不应答」: %q", line)
 	}
 
 	round.Executed = &guardian.ReconcileExecution{Action: "start_core", Outcome: "skipped", Error: guardian.ReconcileSkipCoreScanFailed}
 	line = reconcileRoundSummary(round, now)
-	if !strings.Contains(line, "问不出") {
+	if !strings.Contains(line, "could not find out") {
 		t.Fatalf("core_scan_failed 要说「问不出有没有 Core 在跑」: %q", line)
 	}
 }

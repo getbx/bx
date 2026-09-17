@@ -4204,7 +4204,7 @@ func renderClientStatus(report clientStatusReport) string {
 		fmt.Fprintln(&b, "bx protection (partial)")
 		fmt.Fprintf(&b, "  Guardian %s\n", label)
 		if shouldShowUpdateMessage(report.Phase) {
-			fmt.Fprintf(&b, "  更新中(%s):网络可能短暂暂停,完成后自动恢复\n", report.Phase)
+			fmt.Fprintf(&b, "  Updating (%s): the network may pause briefly and comes back on its own\n", report.Phase)
 		}
 		fmt.Fprintln(&b, "  Core     Unavailable")
 		fmt.Fprintln(&b, "  Protection Core status/protection cannot be verified")
@@ -4222,7 +4222,7 @@ func renderClientStatus(report clientStatusReport) string {
 	fmt.Fprintln(&b, "bx protection")
 	fmt.Fprintf(&b, "  Status  %s\n", label)
 	if shouldShowUpdateMessage(report.Phase) {
-		fmt.Fprintf(&b, "  更新中(%s):网络可能短暂暂停,完成后自动恢复\n", report.Phase)
+		fmt.Fprintf(&b, "  Updating (%s): the network may pause briefly and comes back on its own\n", report.Phase)
 	}
 	if report.NetworkGeneration != "" {
 		fmt.Fprintf(&b, "  Network %s\n", report.NetworkGeneration)
@@ -4254,7 +4254,7 @@ func writeClientMaintenanceHold(b *strings.Builder, report clientStatusReport) {
 	if hold == nil {
 		return
 	}
-	fmt.Fprintf(b, "%s维护挂起(%s),%s —— 保护此刻被有意压制%s\n",
+	fmt.Fprintf(b, "%sMaintenance hold (%s), %s — protection is deliberately suppressed right now%s\n",
 		maintenanceHoldStatusPrefix, maintenanceHoldReasonLabel(hold.Reason),
 		maintenanceHoldRemaining(time.Until(hold.ExpiresAt)), maintenanceHoldIntentNote(report.Desired))
 }
@@ -4271,10 +4271,10 @@ func writeClientMaintenanceHold(b *strings.Builder, report clientStatusReport) {
 // off,于是下一次开机也不会。用户需要知道的是那条出路。
 func maintenanceHoldIntentNote(desired string) string {
 	if desired == string(guardian.DesiredOn) {
-		return ",desired 仍是 on"
+		return "; desired is still on"
 	}
-	return ";但盘上的 desired 是 " + desired +
-		" —— 挂起过期后保护不会自动恢复(下次开机也不会),需要保护请执行 " + elevate.Prefix + "bx up"
+	return "; but desired on disk is " + desired +
+		" — when the hold expires protection will not come back on its own (nor on the next boot). If you want protection, run " + elevate.Prefix + "bx up"
 }
 
 // maintenanceHoldReasonLabel 把稳定标识符翻成一句人话,**并保留标识符本身**。
@@ -4285,11 +4285,11 @@ func maintenanceHoldIntentNote(desired string) string {
 // 人话出来比不编更糟。
 func maintenanceHoldReasonLabel(reason string) string {
 	labels := map[string]string{
-		guardian.HoldReasonUpgrade:       "升级中",
-		guardian.HoldReasonLegacyUpgrade: "升级中,由旧版升级记录迁移而来",
+		guardian.HoldReasonUpgrade:       "upgrading",
+		guardian.HoldReasonLegacyUpgrade: "upgrading, migrated from an older version's upgrade record",
 	}
 	if label := labels[reason]; label != "" {
-		return label + "," + reason
+		return label + ", " + reason
 	}
 	return reason
 }
@@ -4301,9 +4301,9 @@ func maintenanceHoldReasonLabel(reason string) string {
 // 这一行会印出「-2s 后失效」并同时断言保护是被有意压制的 —— 一句自相矛盾的话。
 func maintenanceHoldRemaining(remaining time.Duration) string {
 	if remaining <= 0 {
-		return "刚刚失效(保护应随即恢复;若没有,见 sudo tail -50 " + install.GuardianStderrLogPath + ")"
+		return "just expired (protection should come back right away; if it does not, see sudo tail -50 " + install.GuardianStderrLogPath + ")"
 	}
-	return remaining.Round(time.Second).String() + " 后失效"
+	return "expires in " + remaining.Round(time.Second).String()
 }
 
 func writeClientDNS(b *strings.Builder, state guardian.DNSState, service string) {
@@ -4352,18 +4352,18 @@ func clientReconcileLine(report clientStatusReport, now time.Time) (string, bool
 	if !slices.Contains(report.GuardianCapabilities, guardian.CapabilityReconcileReport) {
 		return "", false
 	}
-	return "尚未完成第一轮观测", true
+	return "has not finished its first round of observation yet", true
 }
 
 func reconcileRoundSummary(round guardian.ReconcileReport, now time.Time) string {
-	prefix := fmt.Sprintf("最近观测 %s 前 · ", reconcileElapsed(now, round.At))
+	prefix := fmt.Sprintf("last observed %s ago · ", reconcileElapsed(now, round.At))
 	// **停滞优先于内容。** 一份两倍退避上限都没更新过的报告,说明循环已经停了、
 	// 或者每一轮都在 panic(炸掉的轮次刻意不写报告)。此时照常渲染那一轮的内容,
 	// 等于把一份冻住的快照说成「最近的一轮」——而它的内容多半正是「无差异」,
 	// 也就是把一条死掉的循环渲染成一台健康的机器。用户没有理由知道那个上限,
 	// 所以必须由这一行说出口。
 	if now.Sub(round.At) > guardian.ReconcileStaleAfter {
-		return prefix + "报告已停滞 —— 调谐环可能已停止(查 /var/log/bx-guard.err.log)"
+		return prefix + "the report has gone stale — the reconcile loop may have stopped (see /var/log/bx-guard.err.log)"
 	}
 	return prefix + reconcileRoundVerdict(round) + reconcileRoundEvidence(round) + reconcileRoundExecution(round)
 }
@@ -4377,25 +4377,25 @@ func reconcileRoundExecution(round guardian.ReconcileReport) string {
 	if executed == nil {
 		return ""
 	}
-	segment := " · 上轮执行 " + executed.Action
+	segment := " · last round executed " + executed.Action
 	switch executed.Outcome {
 	case "ok":
-		return segment + "(成功)"
+		return segment + " (ok)"
 	case "skipped":
 		// ③c 的三个码不是让路:放弃要人来,另外两个是「为什么没起」的答案。
 		switch executed.Error {
 		case guardian.ReconcileSkipStartCoreExhausted:
-			return segment + "(已放弃:连续 5 次起不来,等你 " + elevate.Prefix + "bx up;原因见 /var/log/bx-guard.err.log)"
+			return segment + " (given up: it failed to start 5 times in a row, waiting for your " + elevate.Prefix + "bx up; the reason is in /var/log/bx-guard.err.log)"
 		case guardian.ReconcileSkipCoreProcessPresent:
-			return segment + "(有 Core 进程在跑但控制 socket 不应答,没起第二个)"
+			return segment + " (a Core process is running but its control socket does not answer, so no second one was started)"
 		case guardian.ReconcileSkipCoreScanFailed:
-			return segment + "(问不出有没有 Core 在跑,没起)"
+			return segment + " (could not find out whether a Core is running, so none was started)"
 		}
-		return segment + "(让路: " + executed.Error + ")"
+		return segment + " (stood aside: " + executed.Error + ")"
 	default:
 		// Error 是稳定的失败码(发布面不带原始错误串),完整原因在 Guardian
 		// 日志里 —— 不指路的话这个码就是死胡同。
-		return segment + "(失败: " + executed.Error + ",详见 /var/log/bx-guard.err.log)"
+		return segment + " (failed: " + executed.Error + ", details in /var/log/bx-guard.err.log)"
 	}
 }
 
@@ -4405,9 +4405,9 @@ func reconcileRoundVerdict(round guardian.ReconcileReport) string {
 	case round.Held != "":
 		// 被栅栏挡住的一轮**没有做判断**,不是「判断出没有差异」——soak 要数的
 		// 正是这种轮次有多少。
-		return "被 " + round.Held + " 挡住" + heldFenceHint(round.Held)
+		return "held back by " + round.Held + heldFenceHint(round.Held)
 	case len(round.Actions) > 0:
-		return "本会提议 " + strings.Join(round.Actions, ",")
+		return "would have proposed " + strings.Join(round.Actions, ", ")
 	case round.UnchangedRounds == 0:
 		// 干净 + 连续未变轮数为 0 ⇒ 这一轮的判断与上一轮**不同**。写成「连续 0 轮
 		// 未变」在最该说清楚的那一刻反而最难读。
@@ -4416,9 +4416,9 @@ func reconcileRoundVerdict(round guardian.ReconcileReport) string {
 		// 二是 Guardian 刚起来、这是第一轮(循环的 previous 初值虽然也是「干净」,
 		// 但每轮还带着观测质量与 Core 普查,首轮几乎必然与初值不同)。故这里说
 		// 「刚转为」而不说「刚被解决」—— 后者在开机后的头 30 秒会是一句假话。
-		return "无差异(本轮刚转为无差异)"
+		return "no divergence (it just became so this round)"
 	default:
-		return fmt.Sprintf("无差异(连续 %d 轮未变)", round.UnchangedRounds)
+		return fmt.Sprintf("no divergence (unchanged for %d rounds)", round.UnchangedRounds)
 	}
 }
 
@@ -4433,11 +4433,11 @@ func reconcileRoundVerdict(round guardian.ReconcileReport) string {
 func reconcileRoundEvidence(round guardian.ReconcileReport) string {
 	evidence := ""
 	if len(round.Unobservable) > 0 {
-		evidence += fmt.Sprintf(" · %d 项未观测到(%s)",
-			len(round.Unobservable), strings.Join(round.Unobservable, ","))
+		evidence += fmt.Sprintf(" · %d item(s) could not be observed (%s)",
+			len(round.Unobservable), strings.Join(round.Unobservable, ", "))
 	}
 	if round.CoreScan.Measured {
-		evidence += fmt.Sprintf(" · 扫到 %d 个 Core 进程", round.CoreScan.Cores)
+		evidence += fmt.Sprintf(" · scanned %d Core process(es)", round.CoreScan.Cores)
 		return evidence
 	}
 	reason := round.CoreScan.Reason
@@ -4445,7 +4445,7 @@ func reconcileRoundEvidence(round guardian.ReconcileReport) string {
 		reason = "unknown"
 	}
 	// 「没测成」绝不能渲染成「扫到 0 个」:那是把「问不出来」写成「问过、没有」。
-	return evidence + " · Core 进程未测成(" + reason + ")"
+	return evidence + " · could not count Core processes (" + reason + ")"
 }
 
 // reconcileElapsed 把「多久以前」渲染成人话,并把负数收敛成 0。
@@ -4569,11 +4569,14 @@ func captiveNetworkHint(recovery guardian.RecoverySnapshot) string {
 	if recovery.Reason != "underlay_changed" || recovery.ErrorCode != "transport_unavailable" {
 		return ""
 	}
-	return "          这个网络连不上服务器。咖啡馆/酒店 Wi-Fi 常常要先在浏览器里登录。\n" +
-		"          先用菜单栏的「Open Wi-Fi Sign-In Page」——**不用关掉 bx**\n" +
-		"          (网关是私网、一直直连;弹不出登录页是因为 DNS 与重定向被 bx 接管了)。\n" +
-		"          已经在终端里的话:open \"http://$(route -n get default | awk '/gateway:/{print $2}')\"\n" +
-		"          登录页打不开、或登录后仍不通,再:" + elevate.Prefix + "bx down → 登录 → " + elevate.Prefix + "bx up\n"
+	return "          This network cannot reach the server. Cafe/hotel Wi-Fi often makes you sign in\n" +
+		"          in a browser first. Start with \"Open Wi-Fi Sign-In Page\" in the menu bar —\n" +
+		"          you do NOT have to turn bx off (the gateway is on a private network and always\n" +
+		"          goes direct; the sign-in page does not pop up because bx now owns DNS and the\n" +
+		"          redirects, not because that path is blocked).\n" +
+		"          Already in a terminal: open \"http://$(route -n get default | awk '/gateway:/{print $2}')\"\n" +
+		"          If the sign-in page will not open, or it still does not work after signing in: " +
+		elevate.Prefix + "bx down → sign in → " + elevate.Prefix + "bx up\n"
 }
 
 func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {
@@ -4588,7 +4591,7 @@ func guardianDNSDoctorCheck(status guardian.Status) checkReport {
 func readStatusReport() (stats.Report, error) {
 	rep, err := supervisor.FetchStatusReport(statusSocketPath())
 	if err != nil {
-		return stats.Report{}, fmt.Errorf("连接 bx 失败(bx 是否在运行?): %w", err)
+		return stats.Report{}, fmt.Errorf("could not reach bx (is it running?): %w", err)
 	}
 	return rep, nil
 }
@@ -5579,13 +5582,15 @@ var publicIPProbeURLs = []string{publicIPProbeV4URL, "https://ipinfo.io/ip"}
 // 继续拒绝。
 func heldFenceHint(held string) string {
 	switch held {
+	// 反引号刻意不用:用户读到的是字面上的那个符号,而这几句话唯一的目的
+	// 就是「照着敲」(与 corestartadvice 那条同一纪律)。
 	case "ownership_uncertain":
-		return "(Guardian 拒绝再起一个 Core。`" + elevate.Prefix + "bx up` 每次都会重新求证;" +
-			"仍被拒就去看 " + install.GuardianStderrLogPath + " 里的 guardian_core_scan)"
+		return " (Guardian is refusing to start another Core. " + elevate.Prefix + "bx up re-checks every time; " +
+			"if it is still refused, look for guardian_core_scan in " + install.GuardianStderrLogPath + ")"
 	case "recovery_blocked":
-		return "(启动恢复没做完。`" + elevate.Prefix + "bx down` 仍然可用)"
+		return " (startup recovery did not finish. " + elevate.Prefix + "bx down still works)"
 	case "intent_unreadable":
-		return "(读不出 /var/lib/bx 里的意图或维护挂起。见 " + install.GuardianStderrLogPath + ")"
+		return " (the intent or maintenance hold under /var/lib/bx could not be read. See " + install.GuardianStderrLogPath + ")"
 	default:
 		// path_recovery_in_flight / maintenance_hold 都是**过渡态**,自己会结束,
 		// 给「下一步」反而会催人去动手。

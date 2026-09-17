@@ -207,7 +207,7 @@ DERP 旁路抓不到时(开机自启那一刻网络常常还没好)会先用内�
 
 WebRTC、DNS、IPv6、QUIC 等泄漏面和检测边界见 [docs/leak-surfaces.md](docs/leak-surfaces.md)。完整检测敲 `bx leakcheck`（开本地页面，把浏览器那半与本机那半对起来）；脚本/agent 用 `bx leak-check --network --json --expected-ip <proxy-ip>`（不开页面）。macOS 上,`bx leak-check` 也会只读检查 Tailscale/ZeroTier/WARP/WireGuard/OpenVPN/Clash/Surge/mihomo 这类额外通道是否与 bx 正常共存；Tailscale 会额外做 bootstrap 旁路,避免它重连时被 bx 抢走控制面流量。
 
-`bx status` 是运行期面板。macOS 上 daemon 会轻量只读监测 Tailscale 路由、系统代理和已连接的 VPN 服务；如果 bx 启动后又出现其他通道,status 会显示 `提醒`,菜单栏也可用同一份 JSON 变成需要注意的状态。
+`bx status` 是运行期面板。macOS 上 daemon 会轻量只读监测 Tailscale 路由、系统代理和已连接的 VPN 服务；如果 bx 启动后又出现其他通道,status 会显示 `Notice` 那一行,菜单栏也可用同一份 JSON 变成需要注意的状态。
 
 macOS 用户优先使用统一安装包(`Bx.app`)。安装后菜单栏图标常驻显示保护状态。菜单第一行是一个**开关**(`Protection`,控制中心那种):开保护、关保护都拨它,没有单独的 Start / Turn Off 文字项——同一个动作在两个状态里有两个名字,用户得先读一遍才知道现在是开是关。开关下面那行暗色小字是连接摘要(服务器名 · 延迟),出问题时改写成原因并标红。往下是 `Reconnect`,四扇窗口 `Routing Rules…` / `Servers…` / `Traffic by App…` / `Check for Leaks…`(前三扇只在这一版 Guardian 声明了对应能力时出现;`Check for Leaks…` 每个状态都在,保护关着时它照样有用),`Troubleshoot ▸` 子菜单(`Check for Problems`、`Open Logs`、装的是哪一版、`Uninstall bx…`),最后 `Quit bx…`(⌘Q)。有新版时顶部另加一行 `Update bx…`;没装 / 没配置的状态给的是 `Install bx…` / `Set Up bx...`。诊断值(DNS、直连解析、UDP 中继)**只在出问题时才占一行**——正常时天天一个样的东西不是信息。网络变化后自动安全恢复;恢复时可能短暂断网但绝不回落直连。`bx reconnect` 仅用于 troubleshooting,不是日常网络切换步骤。命令行仍然保留,用于自动化、远程诊断和高级维护。
 

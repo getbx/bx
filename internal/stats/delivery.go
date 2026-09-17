@@ -89,8 +89,8 @@ func DeliveryWarning(v DeliveryVerdict, attempts, failures int64) *Warning {
 	return &Warning{
 		Name:     "tunnel_not_delivering",
 		Severity: "warn",
-		Detail: fmt.Sprintf("隧道自检通过,但最近 %d 次经隧道的连接失败了 %d 次 —— 隧道多半载不动数据",
-			attempts, failures),
-		Hint: "自检只验证「能建立一条连接」,不验证数据流得动;先用 bx explain <一个你打不开的域名> 看判定,再查服务器或换一条线路",
+		Detail: fmt.Sprintf("the tunnel's own health check passes, but %d of the last %d connections through it failed — the tunnel most likely cannot carry data",
+			failures, attempts),
+		Hint: "the health check only proves a connection can be opened, not that data flows; start with bx explain <a domain you cannot open> to see the verdict, then look at the server or switch to another line",
 	}
 }

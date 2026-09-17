@@ -151,7 +151,7 @@ func TestDoctorSurfacesTheUDPNotice(t *testing.T) {
 	}}})
 	var found bool
 	for _, c := range checks {
-		if c.Name == udpTrafficCheckName && strings.Contains(c.Detail, "加速档") {
+		if c.Name == udpTrafficCheckName && strings.Contains(c.Detail, "fast lane") {
 			found = true
 		}
 	}

@@ -231,12 +231,12 @@ func (s Snapshot) UDPNotice() string {
 	// 感知不到 —— 通路是好的,只是慢。
 	if u.Fallback >= ruleReportMinFailures &&
 		float64(u.Fallback)/float64(u.Dedicated+u.Fallback) >= ruleReportMinFailRate {
-		return fmt.Sprintf("UDP 加速档没在用:%d/%d 条回落到了主传输(那台 UDP 服务器不健康)",
+		return fmt.Sprintf("the UDP fast lane is not in use: %d of %d fell back to the main transport (that UDP server is unhealthy)",
 			u.Fallback, u.Dedicated+u.Fallback)
 	}
 	if u.Failures >= ruleReportMinFailures &&
 		float64(u.Failures)/float64(total) >= ruleReportMinFailRate {
-		return fmt.Sprintf("UDP 拨号大量失败:%d/%d 条", u.Failures, total)
+		return fmt.Sprintf("a lot of UDP dials are failing: %d of %d", u.Failures, total)
 	}
 	return ""
 }

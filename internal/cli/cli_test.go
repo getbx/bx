@@ -5033,7 +5033,7 @@ func withReconcileCapability(report clientStatusReport) clientStatusReport {
 }
 
 // elapsedSecondsPattern 钉的是「印出了一个以秒计的时长」这条性质,不是某个数字。
-var elapsedSecondsPattern = regexp.MustCompile(`最近观测 [0-9hms]+ 前`)
+var elapsedSecondsPattern = regexp.MustCompile(`last observed [0-9hms]+ ago`)
 
 // 这一行必须与 Status / Network / DNS 对进同一列。
 //
@@ -5104,13 +5104,13 @@ func TestRenderClientStatusWordsAFreshlyResolvedRoundDifferently(t *testing.T) {
 	settled.Reconcile = &guardian.ReconcileReport{At: time.Now().Add(-5 * time.Second), UnchangedRounds: 6}
 
 	freshText := renderClientStatus(fresh)
-	if strings.Contains(freshText, "连续 0 轮未变") {
+	if strings.Contains(freshText, "unchanged for 0 rounds") {
 		t.Errorf("刚转为无差异的那一轮不该写成「连续 0 轮未变」:\n%s", freshText)
 	}
-	if !strings.Contains(freshText, "无差异") {
+	if !strings.Contains(freshText, "no divergence") {
 		t.Errorf("它仍然是无差异的一轮,这两个字不能丢:\n%s", freshText)
 	}
-	if got := renderClientStatus(settled); !strings.Contains(got, "连续 6 轮未变") {
+	if got := renderClientStatus(settled); !strings.Contains(got, "unchanged for 6 rounds") {
 		t.Errorf("连续未变的轮数要照说:\n%s", got)
 	}
 	if freshText == renderClientStatus(settled) {
@@ -5138,7 +5138,7 @@ func TestRenderClientStatusDistinguishesNeverRanFromClean(t *testing.T) {
 			if never == cleanText {
 				t.Fatal("「从没跑过一轮」与「跑了、无差异」渲染成了同一段文字")
 			}
-			if !strings.Contains(cleanText, "无差异") {
+			if !strings.Contains(cleanText, "no divergence") {
 				t.Errorf("无差异时也必须出现这一行,否则分不清循环活着还是死了:\n%s", cleanText)
 			}
 			// **不钉具体那个数字。** 夹具用 time.Now() 造 At,而渲染在之后
@@ -5154,10 +5154,10 @@ func TestRenderClientStatusDistinguishesNeverRanFromClean(t *testing.T) {
 				t.Errorf("这一行要说清「连续多少轮没变」:\n%s", cleanText)
 			}
 			// 变异③(把 nil 也渲染成无差异)直接死在这一条上。
-			if strings.Contains(never, "无差异") {
+			if strings.Contains(never, "no divergence") {
 				t.Errorf("一轮都没跑过时说「无差异」是一句假话:\n%s", never)
 			}
-			if !strings.Contains(never, "尚未完成第一轮观测") {
+			if !strings.Contains(never, "has not finished its first round") {
 				t.Errorf("Guardian 声明了这条能力却还没有报告 ⇒ 必须明说还没跑完第一轮:\n%s", never)
 			}
 		})
@@ -5170,7 +5170,7 @@ func TestRenderClientStatusSaysNothingWhenGuardianHasNoReconcileLoop(t *testing.
 	for _, branch := range clientStatusRenderBranches() {
 		t.Run(branch.name, func(t *testing.T) {
 			got := renderClientStatus(branch.base)
-			for _, forbidden := range []string{reconcileStatusPrefix, "尚未完成第一轮观测", "无差异", "本会提议"} {
+			for _, forbidden := range []string{reconcileStatusPrefix, "has not finished its first round", "no divergence", "would have proposed"} {
 				if strings.Contains(got, forbidden) {
 					t.Errorf("对面没声明这条能力时不该出现 %q:\n%s", forbidden, got)
 				}
@@ -5191,10 +5191,10 @@ func TestRenderClientStatusTreatsAZeroTimestampAsNeverRan(t *testing.T) {
 	report := withReconcileCapability(clientStatusReport{ProtectionState: guardian.ProtectionProtected})
 	report.Reconcile = &guardian.ReconcileReport{UnchangedRounds: 9}
 	got := renderClientStatus(report)
-	if !strings.Contains(got, "尚未完成第一轮观测") {
+	if !strings.Contains(got, "has not finished its first round") {
 		t.Errorf("At 为零的报告必须按「还没跑过」渲染:\n%s", got)
 	}
-	if strings.Contains(got, "无差异") {
+	if strings.Contains(got, "no divergence") {
 		t.Errorf("At 为零却报「无差异」,正是本任务要消灭的那句假话:\n%s", got)
 	}
 }
@@ -5214,8 +5214,8 @@ func TestRenderClientStatusShowsProposedActionsAndFences(t *testing.T) {
 				At:      time.Now().Add(-90 * time.Second),
 				Actions: []string{"restore_dns", "clear_orphan_barrier"},
 			},
-			want:  []string{"本会提议", "restore_dns", "clear_orphan_barrier"},
-			avoid: "无差异",
+			want:  []string{"would have proposed", "restore_dns", "clear_orphan_barrier"},
+			avoid: "no divergence",
 		},
 		{
 			name: "held",
@@ -5223,8 +5223,8 @@ func TestRenderClientStatusShowsProposedActionsAndFences(t *testing.T) {
 				At:   time.Now().Add(-3 * time.Second),
 				Held: "path_recovery_in_flight",
 			},
-			want:  []string{"path_recovery_in_flight", "挡住"},
-			avoid: "无差异",
+			want:  []string{"path_recovery_in_flight", "held back by"},
+			avoid: "no divergence",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5335,10 +5335,10 @@ func TestRenderClientStatusFlagsAStaleReconcileReport(t *testing.T) {
 				CoreScan:        guardian.ReconcileCoreScan{Measured: true, Cores: 1},
 			}
 			got := renderClientStatus(stale)
-			if !strings.Contains(got, "已停滞") {
+			if !strings.Contains(got, "gone stale") {
 				t.Errorf("超过两倍退避上限没更新的报告必须被标出来:\n%s", got)
 			}
-			if strings.Contains(got, "无差异") {
+			if strings.Contains(got, "no divergence") {
 				t.Errorf("一份冻住的报告不许说「无差异」—— 那正是一条死掉的循环最像健康机器的地方:\n%s", got)
 			}
 
@@ -5350,7 +5350,7 @@ func TestRenderClientStatusFlagsAStaleReconcileReport(t *testing.T) {
 				UnchangedRounds: 41,
 				CoreScan:        guardian.ReconcileCoreScan{Measured: true, Cores: 1},
 			}
-			if got := renderClientStatus(fresh); strings.Contains(got, "已停滞") {
+			if got := renderClientStatus(fresh); strings.Contains(got, "gone stale") {
 				t.Errorf("还在窗口内的报告不该被标成停滞:\n%s", got)
 			}
 		})
@@ -5380,12 +5380,12 @@ func TestRenderClientStatusSeparatesABlindRoundFromACleanOne(t *testing.T) {
 	if cleanText == blindText {
 		t.Fatal("全盲的一轮与干净的一轮渲染成了同一段文字 —— soak 的头条结论会读成「零提议」")
 	}
-	for _, want := range []string{"未观测到", "capture_ok", "dns_managed"} {
+	for _, want := range []string{"could not be observed", "capture_ok", "dns_managed"} {
 		if !strings.Contains(blindText, want) {
 			t.Errorf("缺 %q:\n%s", want, blindText)
 		}
 	}
-	if strings.Contains(cleanText, "未观测到") {
+	if strings.Contains(cleanText, "could not be observed") {
 		t.Errorf("每一项都问出来了,不该多这一段:\n%s", cleanText)
 	}
 }
@@ -5406,13 +5406,13 @@ func TestRenderClientStatusDistinguishesAnUnmeasuredCoreScanFromZeroCores(t *tes
 	if zeroText == unmeasuredText {
 		t.Fatal("「扫到 0 个」与「没扫成」渲染成了同一段文字")
 	}
-	if !strings.Contains(zeroText, "扫到 0 个") {
+	if !strings.Contains(zeroText, "scanned 0 Core process") {
 		t.Errorf("测成了就要把数字说出来:\n%s", zeroText)
 	}
 	if !strings.Contains(unmeasuredText, "scan_failed") {
 		t.Errorf("没测成要说清是为什么:\n%s", unmeasuredText)
 	}
-	if strings.Contains(unmeasuredText, "扫到 0 个") {
+	if strings.Contains(unmeasuredText, "scanned 0 Core process") {
 		t.Errorf("没测成绝不能印成「扫到 0 个」:\n%s", unmeasuredText)
 	}
 }
@@ -5527,7 +5527,7 @@ func TestRenderClientStatusMentionsMaintenanceHold(t *testing.T) {
 		Desired:         "on",
 		MaintenanceHold: &guardian.MaintenanceHoldStatus{Reason: "upgrade", ExpiresAt: time.Now().Add(3 * time.Minute)},
 	})
-	if !strings.Contains(out, "维护挂起") || !strings.Contains(out, "upgrade") {
+	if !strings.Contains(out, "Maintenance hold") || !strings.Contains(out, "upgrade") {
 		t.Fatalf("渲染里看不到挂起(partial 分支):\n%s", out)
 	}
 }
@@ -5541,7 +5541,7 @@ func TestRenderClientStatusMentionsMaintenanceHoldOnTheFullReport(t *testing.T) 
 		Desired:         "on",
 		MaintenanceHold: &guardian.MaintenanceHoldStatus{Reason: "legacy_upgrade", ExpiresAt: time.Now().Add(3 * time.Minute)},
 	})
-	if !strings.Contains(out, "维护挂起") || !strings.Contains(out, "legacy_upgrade") {
+	if !strings.Contains(out, "Maintenance hold") || !strings.Contains(out, "legacy_upgrade") {
 		t.Fatalf("渲染里看不到挂起(完整报告分支):\n%s", out)
 	}
 }
@@ -5558,7 +5558,7 @@ func TestRenderClientStatusExplainsAHoldOverAnOffIntent(t *testing.T) {
 		Desired:         "off",
 		MaintenanceHold: &guardian.MaintenanceHoldStatus{Reason: "upgrade", ExpiresAt: time.Now().Add(3 * time.Minute)},
 	})
-	if !strings.Contains(out, "不会自动恢复") || !strings.Contains(out, "sudo bx up") {
+	if !strings.Contains(out, "will not come back on its own") || !strings.Contains(out, "sudo bx up") {
 		t.Fatalf("desired=off 时必须说清过期之后没人会把保护起回来,以及出路:\n%s", out)
 	}
 }
@@ -5583,7 +5583,7 @@ func TestRenderClientStatusSaysNothingWithoutAMaintenanceHold(t *testing.T) {
 		"partial": {ProtectionState: guardian.ProtectionOff, Desired: "off"},
 		"full":    {Report: &stats.Report{}, CoreAvailable: true, ProtectionState: guardian.ProtectionOff, Desired: "off"},
 	} {
-		if out := renderClientStatus(report); strings.Contains(out, "维护挂起") {
+		if out := renderClientStatus(report); strings.Contains(out, "Maintenance hold") {
 			t.Errorf("%s:没有挂起却写了一行:\n%s", name, out)
 		}
 	}
@@ -5618,7 +5618,7 @@ func TestRenderClientStatusExplainsLegacyHoldReasonInWords(t *testing.T) {
 			Reason: guardian.HoldReasonLegacyUpgrade, ExpiresAt: time.Now().Add(3 * time.Minute),
 		},
 	})
-	if !strings.Contains(out, "升级中") {
+	if !strings.Contains(out, "upgrading") {
 		t.Fatalf("legacy_upgrade 只印了裸标识符,用户读不懂:\n%s", out)
 	}
 	if !strings.Contains(out, guardian.HoldReasonLegacyUpgrade) {
@@ -5639,7 +5639,7 @@ func TestRenderClientStatusNeverPrintsNegativeHoldCountdown(t *testing.T) {
 	if strings.Contains(out, "-2s") || strings.Contains(out, "-1s") {
 		t.Fatalf("印出了负数倒计时:\n%s", out)
 	}
-	if !strings.Contains(out, "刚刚失效") {
+	if !strings.Contains(out, "just expired") {
 		t.Fatalf("过期该说清楚:\n%s", out)
 	}
 }
@@ -5993,7 +5993,7 @@ func TestCaptiveNetworkHintLeadsWithTheNoDisableRouteAndKeepsTheFallback(t *test
 	if gateway > teardown {
 		t.Errorf("先让用户关保护、再提网关(%d > %d)—— 顺序反了,第一步应当是不用关的那条", gateway, teardown)
 	}
-	if !strings.Contains(hint, "常常") {
+	if !strings.Contains(hint, "often") {
 		t.Error("把原因说死了 —— bx 分不清强制门户与服务器真挂了,只能给可能性")
 	}
 }
