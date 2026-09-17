@@ -305,7 +305,7 @@ func shutdownRunningCoreWithin(ctx context.Context, wait time.Duration) error {
 		return nil
 	}
 	if err := supervisor.ShutdownControl(ctx, socketPath, state.PID); err != nil {
-		return fmt.Errorf("请求 Core(PID %d)协作关闭: %w", state.PID, err)
+		return fmt.Errorf("asking Core (PID %d) to shut down cooperatively: %w", state.PID, err)
 	}
 	waitCoreSocketClosed(ctx, socketPath, wait)
 	return nil
@@ -617,8 +617,8 @@ func disarmLegacyCoreUnit(ctx context.Context, deps macOSLifecycleDeps) error {
 	}
 	if err := runWithTimeout(ctx, legacyBootoutTimeout, deps.bootoutLegacyUnit); err != nil {
 		return fmt.Errorf(
-			"解除旧版 Core 的开机自启(launchd job)失败:%w\n"+
-				"它带 KeepAlive,可能会自己重新启动。请执行 "+elevate.Prefix+"bx uninstall —— 它会把两个旧 label(com.getbx.bx 与 com.ggshr9.bx)都停掉并删除,而单独 bootout 其中一个可能落空",
+			"could not disable the older Core's start-at-boot (launchd job): %w\n"+
+				"It has KeepAlive set, so it may restart itself. Run "+elevate.Prefix+"bx uninstall — that stops and removes both legacy labels (com.getbx.bx and com.ggshr9.bx), whereas booting out just one of them can miss",
 			err,
 		)
 	}
@@ -690,7 +690,7 @@ func cleanGuardianDown(ctx context.Context, purpose downPurpose, configPath stri
 // can take by hand.
 func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecycleDeps, cause error) error {
 	if deps.forceTeardown == nil {
-		return fmt.Errorf("Guardian 无法正常关闭,且强制拆除功能在此平台不可用")
+		return fmt.Errorf("Guardian could not shut down cleanly, and forced teardown is not available on this platform")
 	}
 	var failures []error
 	// 1. Record the intent BEFORE touching anything. A Guardian that is still
@@ -726,7 +726,7 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	switch {
 	case stop.armsHold():
 		if err := armMaintenanceHold(deps, guardian.HoldReasonUpgrade); err != nil {
-			failures = append(failures, fmt.Errorf("刷新维护挂起: %w", err))
+			failures = append(failures, fmt.Errorf("refreshing the maintenance hold: %w", err))
 		}
 	case stop.recordsDesiredOff():
 		if err := persistDesiredOff(deps); err != nil {
@@ -744,19 +744,19 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	// 而「停止」永不许因为一个记账文件而中止剩下的步骤。
 	if !stop.purpose.isUpgrade() {
 		if err := clearMaintenanceHold(deps); err != nil {
-			failures = append(failures, fmt.Errorf("清除维护挂起: %w", err))
+			failures = append(failures, fmt.Errorf("clearing the maintenance hold: %w", err))
 		}
 	}
 	// 2. Ask the running Core to stop itself, while it still has a live
 	//    path to restore the routes it installed.
 	if deps.stopCore != nil {
 		if err := deps.stopCore(ctx); err != nil {
-			failures = append(failures, fmt.Errorf("协作关闭 Core: %w", err))
+			failures = append(failures, fmt.Errorf("shutting Core down cooperatively: %w", err))
 		}
 	}
 	// 3. Stop the Guardian service so it cannot restart Core behind us.
 	if err := deps.forceTeardown(ctx); err != nil {
-		failures = append(failures, fmt.Errorf("停止 Guardian 服务: %w", err))
+		failures = append(failures, fmt.Errorf("stopping the Guardian service: %w", err))
 	}
 	// 4. Remove the barrier's blocking routes. Nothing else can: Guardian
 	//    is gone along with its ownership record. This is the step that
@@ -767,7 +767,7 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	//    must never be allowed to delay it.
 	if deps.clearBarrierRoutes != nil {
 		if err := deps.clearBarrierRoutes(ctx); err != nil {
-			failures = append(failures, fmt.Errorf("清理屏障阻断路由: %w", err))
+			failures = append(failures, fmt.Errorf("removing the barrier blocking routes: %w", err))
 		}
 	}
 	// 5. Put the system resolver back. Guardian owns the DNS takeover and
@@ -780,7 +780,7 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	//    down` forever.
 	if deps.restoreSystemDNS != nil {
 		if err := runWithTimeout(ctx, dnsRestoreTimeout, deps.restoreSystemDNS); err != nil {
-			failures = append(failures, fmt.Errorf("还原系统 DNS(否则仍会网页打不开,可手动执行 "+elevate.Prefix+"bx dns off): %w", err))
+			failures = append(failures, fmt.Errorf("restoring system DNS (web pages stay broken without it; you can run "+elevate.Prefix+"bx dns off by hand): %w", err))
 		}
 	}
 	// 6. Record the intent once more. Cheap, idempotent, and now
@@ -790,7 +790,7 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	switch {
 	case stop.armsHold():
 		if err := armMaintenanceHold(deps, guardian.HoldReasonUpgrade); err != nil {
-			failures = append(failures, fmt.Errorf("刷新维护挂起: %w", err))
+			failures = append(failures, fmt.Errorf("refreshing the maintenance hold: %w", err))
 		}
 	case stop.recordsDesiredOff():
 		if err := persistDesiredOff(deps); err == nil {
@@ -800,18 +800,18 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 		}
 	}
 	if desiredErr != nil {
-		failures = append(failures, fmt.Errorf("记录关闭意图(下次开机可能仍会自动启动保护): %w", desiredErr))
+		failures = append(failures, fmt.Errorf("recording the intent to stop (protection may still start itself on the next boot): %w", desiredErr))
 	}
 	if len(failures) == 0 {
 		return nil
 	}
 	problems := errors.Join(failures...)
 	if cause != nil {
-		problems = errors.Join(fmt.Errorf("Guardian 关闭事务失败: %w", cause), problems)
+		problems = errors.Join(fmt.Errorf("Guardian's shutdown transaction failed: %w", cause), problems)
 	}
 	return fmt.Errorf(
-		"强制停止未能全部完成:\n%w\n下一步:"+elevate.Prefix+"bx uninstall(停止全部服务并还原网络,保留 /etc/bx 配置);"+
-			"或手动执行 sudo launchctl bootout system/com.getbx.bx.guard,再逐条删除阻断路由:\n  sudo %s",
+		"the forced stop did not finish every step:\n%w\nNext: "+elevate.Prefix+"bx uninstall (stops every service and restores the network, keeping /etc/bx); "+
+			"or by hand, sudo launchctl bootout system/com.getbx.bx.guard, then remove the blocking routes one by one:\n  sudo %s",
 		problems, strings.Join(blockingRouteCleanupHints(), "\n  sudo "),
 	)
 }
@@ -909,9 +909,9 @@ func stopIntentFailure(stop stopIntent) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"保护已停止,但未能记录停机意图(维护挂起与 desired=off 都没写成): %w\n"+
-			"已中止后续步骤:盘上没有任何一句话说明「此刻不该有保护」,继续换二进制会被自动恢复的保护打断。"+
-			"请检查 /var/lib/bx 是否可写后重试",
+		"protection stopped, but the intent to stop could not be recorded (neither the maintenance hold nor desired=off was written): %w\n"+
+			"The remaining steps were aborted: nothing on disk says \"there should be no protection right now\", so swapping the binary would be interrupted by protection restoring itself. "+
+			"Check that /var/lib/bx is writable and try again",
 		stop.err,
 	)
 }
@@ -922,7 +922,7 @@ func stopIntentFailure(stop stopIntent) error {
 // desired=off,那是今天的行为 —— 安全,只是会撒谎。
 func armMaintenanceHold(deps macOSLifecycleDeps, reason string) error {
 	if deps.armMaintenanceHold == nil {
-		return fmt.Errorf("维护挂起在此平台不可用")
+		return fmt.Errorf("the maintenance hold is not available on this platform")
 	}
 	return deps.armMaintenanceHold(reason)
 }
@@ -948,9 +948,9 @@ func blockingRouteCleanupHints() []string {
 func macOSUpAction(c *urfavecli.Context) error {
 	configPath := defaultConfigPath
 	if _, err := os.Stat(configPath); err != nil {
-		return fmt.Errorf("尚未配置。先运行: " + elevate.Prefix + "bx setup <client-link>")
+		return fmt.Errorf("not configured yet. First run: " + elevate.Prefix + "bx setup <client-link>")
 	}
-	stepLine("Guardian", "接管并启动 bx 保护")
+	stepLine("Guardian", "taking over and starting bx protection")
 	result, err := macOSUpLifecycle(c.Context, configPath, defaultMacOSLifecycleDeps())
 	if err != nil {
 		// Core 起不来时,把「是哪台服务器、发生了什么、你还能切到哪儿」拼在
@@ -959,9 +959,9 @@ func macOSUpAction(c *urfavecli.Context) error {
 		// 应答体仍然只带码;地址与清单是这一侧自己从配置里读的(spec §5)。
 		return annotateCoreStartFailure(err, configPath)
 	}
-	stepDone("Guardian", "bx 已进入 Protected")
+	stepDone("Guardian", "bx is now Protected")
 	if result.MenuWarning != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  bx 已受保护,但菜单栏未启动: %v\n", result.MenuWarning)
+		fmt.Fprintf(os.Stderr, "⚠️  bx is protected, but the menu bar did not start: %v\n", result.MenuWarning)
 	}
 	if msg := upVersionMismatchMessage(result.Status.GuardianVersion, result.Status.RuntimeVersion); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
@@ -970,13 +970,13 @@ func macOSUpAction(c *urfavecli.Context) error {
 		printUpSummary(report, result.Status)
 		return nil
 	}
-	fmt.Println("✅ bx 已启动。")
+	fmt.Println("✅ bx started.")
 	return nil
 }
 
 func macOSDownAction(c *urfavecli.Context) error {
 	configPath := defaultConfigPath
-	stepLine("Guardian", "停止 bx 保护并恢复网络")
+	stepLine("Guardian", "stopping bx protection and restoring the network")
 	result, err := macOSDownLifecycleDetailed(c.Context, configPath, defaultMacOSLifecycleDeps())
 	if err != nil {
 		return err
@@ -986,11 +986,11 @@ func macOSDownAction(c *urfavecli.Context) error {
 	// 用户在相邻两行里同时读到断言和对它的否认。改一处忘一处,正是这类文案的常见死法。
 	switch {
 	case result.Forced:
-		stepDone("Guardian", "已强制停止 bx")
+		stepDone("Guardian", "bx was force-stopped")
 	case downConfirmedStopped(result):
-		stepDone("Guardian", "bx 已停止,网络已恢复")
+		stepDone("Guardian", "bx stopped, network restored")
 	default:
-		stepDone("Guardian", "已执行停止,但未能确认")
+		stepDone("Guardian", "the stop ran, but could not be confirmed")
 	}
 	stdout, stderrLines := downReportLines(result)
 	for _, line := range stderrLines {
@@ -1061,7 +1061,7 @@ func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSL
 		// so just delete it — don't demand a default gateway or run a
 		// migration transaction for it.
 		if err := deps.removeLegacyUnit(); err != nil {
-			return guardian.Status{}, false, fmt.Errorf("清理 legacy Core 服务: %w", err)
+			return guardian.Status{}, false, fmt.Errorf("cleaning up the legacy Core service: %w", err)
 		}
 	}
 	if err := deps.enableGuardian(); err != nil {
@@ -1069,7 +1069,7 @@ func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSL
 	}
 	if !deps.guardianReady(ctx) {
 		return guardian.Status{}, false, fmt.Errorf(
-			"Guardian 服务未能启动(socket %s 未就绪)。最近的守护日志:\n%s\n排查:sudo launchctl print system/com.getbx.bx.guard;完整日志 /var/log/bx-guard.err.log",
+			"the Guardian service did not start (socket %s never became ready). Recent guardian log:\n%s\nTo dig in: sudo launchctl print system/com.getbx.bx.guard; full log at /var/log/bx-guard.err.log",
 			guardian.SocketPath, install.GuardianLogTail(10),
 		)
 	}

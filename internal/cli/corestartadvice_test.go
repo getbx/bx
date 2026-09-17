@@ -57,14 +57,14 @@ func TestReachableAndUnreachableSayOppositeThings(t *testing.T) {
 	unreachable := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUnreachable, facts)
 	handshake := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelHandshakeFailed, facts)
 
-	if !strings.Contains(handshake, "在应答") {
+	if !strings.Contains(handshake, "answers") {
 		t.Fatalf("「连得上但没握上」没说那台机器在应答 —— 那正是它与另一种的分界:\n%s", handshake)
 	}
-	if strings.Contains(unreachable, "在应答") {
+	if strings.Contains(unreachable, "answers") {
 		t.Fatalf("「连不上」那句话里出现了「在应答」:\n%s", unreachable)
 	}
 	// 反过来那一半:握手失败时**不许**建议去修/换那台机器。
-	if strings.Contains(handshake, "挂了") {
+	if strings.Contains(handshake, "is down") {
 		t.Fatalf("对一台正在应答的服务器说它可能挂了:\n%s", handshake)
 	}
 }
@@ -82,7 +82,7 @@ func TestTheWordingNeverAssertsWhatTheServerIsDoing(t *testing.T) {
 				"本机自己没网时同样连不上:\n%s", forbidden, text)
 		}
 	}
-	if !strings.Contains(text, "bx 连不上") {
+	if !strings.Contains(text, "bx cannot reach") {
 		t.Fatalf("这句话没有把它说成一次**尝试**的事实:\n%s", text)
 	}
 }
@@ -120,14 +120,14 @@ func TestTheLocalDialAdviceDoesNotContradictItsOwnSwitchSuggestion(t *testing.T)
 	}
 	text := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUndeterminedLocalDial, facts)
 	// 前置自检:那句「你还配了另一台」确实在,否则下面在测一段不存在的矛盾。
-	if !strings.Contains(text, "你还配了另一台") {
+	if !strings.Contains(text, "You have another server configured") {
 		t.Fatalf("这一档没给「你还配了另一台」—— 这条断言测的那个矛盾不存在了,回来重判:\n%s", text)
 	}
-	if !strings.Contains(text, "答 `not in table` 的话") {
+	if !strings.Contains(text, "reply is not in table") {
 		t.Fatalf("「换服务器帮不上忙」不是挂在那次路由检查的结果上的 ——\n"+
 			"它成了一句无条件断言,而同一段话下面就叫用户换一台:\n%s", text)
 	}
-	if !strings.Contains(text, "解析不出那台服务器的主机名") {
+	if !strings.Contains(text, "cannot resolve that server's hostname") {
 		t.Fatalf("没说出这一档里那种**换一台确实有用**的毛病(主机名解析不出来,\n"+
 			"*net.DNSError 就在这一档),于是「你还配了另一台」读起来仍然是自相矛盾:\n%s", text)
 	}
@@ -146,10 +146,10 @@ func TestEveryUndeterminedOutcomeAdmitsItCouldNotTell(t *testing.T) {
 		}
 		checked++
 		text := coreStartFailureAdvice("core_"+code, facts)
-		if !strings.Contains(text, "没能判断") {
+		if !strings.Contains(text, "could not tell whether") {
 			t.Fatalf("%s 没有说出「bx 没能判断那台服务器还在不在」:\n%s", code, text)
 		}
-		if strings.Contains(text, "在应答") {
+		if strings.Contains(text, "answers") {
 			t.Fatalf("%s 断言了那台服务器在应答:\n%s", code, text)
 		}
 	}
@@ -165,7 +165,7 @@ func TestEveryUndeterminedOutcomeAdmitsItCouldNotTell(t *testing.T) {
 func TestTheOtherServerLineOnlyAppearsWhenThereIsOne(t *testing.T) {
 	alone := startFailureServers{CurrentHostPort: "195.133.192.92:443"}
 	text := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUnreachable, alone)
-	if strings.Contains(text, "还配了另一台") {
+	if strings.Contains(text, "another server configured") {
 		t.Fatalf("只有一台服务器却说「你还配了另一台」:\n%s", text)
 	}
 	if strings.Contains(text, "bx server use") {

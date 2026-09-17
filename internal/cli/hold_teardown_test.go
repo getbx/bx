@@ -231,13 +231,13 @@ func TestCleanUpgradeDownDoesNotReportSuccessWhenNeitherIntentIsRecorded(t *test
 		t.Fatal("结果里必须留下痕迹:忽略 error 的调用方否则会平静地渲染成「已停止」")
 	}
 	// 「失败必须留下可操作线索」:两次写入都要点名,只说其中一个会把人送去查错文件。
-	for _, want := range []string{"维护挂起", "desired=off"} {
+	for _, want := range []string{"maintenance hold", "desired=off"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("错误里必须点名 %q:%v", want, err)
 		}
 	}
 	stdout, stderr := downReportLines(result)
-	if !slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "未能记录停机意图") }) {
+	if !slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "Could not record the intent to stop") }) {
 		t.Fatalf("忽略 error 的调用方也必须看到这一行。stderr=%v stdout=%v", stderr, stdout)
 	}
 }
@@ -294,7 +294,7 @@ func TestCleanUpgradeDownStaysSilentWhenTheHoldIsRecorded(t *testing.T) {
 		t.Fatalf("干净路径上意图应当只由 recordStopIntent 武装一次: %v", calls.order)
 	}
 	_, stderr := downReportLines(result)
-	if slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "未能记录停机意图") }) {
+	if slices.ContainsFunc(stderr, func(line string) bool { return strings.Contains(line, "Could not record the intent to stop") }) {
 		t.Fatalf("不该无中生有地警告: %v", stderr)
 	}
 }
@@ -463,7 +463,7 @@ func TestForcedTeardownStillFailsWhenOnlyTheFirstHoldWriteFailed(t *testing.T) {
 	if err == nil {
 		t.Fatal("挂起写失败必须让整条拆除报错 —— 否则升级会带着一个没人拦着的窗口继续")
 	}
-	if !strings.Contains(err.Error(), "刷新维护挂起") {
+	if !strings.Contains(err.Error(), "refreshing the maintenance hold") {
 		t.Fatalf("报错必须指名是挂起那一笔没写成:%v", err)
 	}
 	if len(calls.armed) != 3 {
@@ -603,7 +603,7 @@ func TestHoldFallbackIsReportedOnEveryDownPath(t *testing.T) {
 			// HoldFallback 恒为 nil。测试自己把两头接起来,于是「用户看得到」
 			// 在生产里从来不成立:真正会渲染它的是 runUpgrade。
 			lines := upgradeStopLines(t, deps)
-			if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "维护挂起") }) {
+			if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "maintenance hold") }) {
 				t.Fatalf("用户看不到这次退回:%v", lines)
 			}
 			if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, armFailure.Error()) }) {

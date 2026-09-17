@@ -26,7 +26,7 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 	// 教训(零值 result 会平静地渲染成「✅ bx 已停止」)说的正是这种调用方。
 	if result.IntentUnrecorded != nil {
 		stderr = append(stderr, fmt.Sprintf(
-			"⚠️  未能记录停机意图(维护挂起与 desired=off 都没写成): %v;下次开机可能仍会自动启动保护。",
+			"⚠️  Could not record the intent to stop (neither the maintenance hold nor desired=off was written): %v; protection may still start itself on the next boot.",
 			result.IntentUnrecorded,
 		))
 	}
@@ -38,12 +38,12 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 	// 「自己把两头接起来」的测试;这一期已经抓到过同样的形状。
 	// 升级那条路的渲染住在 runUpgrade(holdFallbackWarning),那里才有真的 producer。
 	if result.Forced {
-		stderr = append(stderr, "⚠️  "+forcedTeardownReason(result)+"。")
+		stderr = append(stderr, "⚠️  "+forcedTeardownReason(result)+".")
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
 		stdout = append(
 			stdout,
-			"已执行:记录关闭意图(不再开机自启)、请求 Core 退出(由它自己还原它装的路由)、停止 Guardian 服务、删除屏障阻断路由、还原系统 DNS。",
-			"请确认网络是否已恢复(例如 bx status 或打开任意网页);若仍不通,执行 "+elevate.Prefix+"bx uninstall(会保留 /etc/bx 配置)。",
+			"Done: recorded the intent to stop (no more start-at-boot), asked Core to exit (so it restores the routes it installed), stopped the Guardian service, removed the barrier blocking routes, restored system DNS.",
+			"Please check whether your network is back (bx status, or just open any web page). If it is still broken, run "+elevate.Prefix+"bx uninstall (it keeps /etc/bx).",
 		)
 		return stdout, stderr
 	}
@@ -54,19 +54,19 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 	// 而这里从不看 result.Status,于是 bx down 照样打印 ✅。
 	// 机制建好而最后一寸没接,等于没建。
 	if !downConfirmedStopped(result) {
-		stderr = append(stderr, "⚠️  Guardian 没能确认保护已经关闭("+downUnconfirmedReason(result)+")。")
+		stderr = append(stderr, "⚠️  Guardian could not confirm that protection is off ("+downUnconfirmedReason(result)+").")
 		stdout = append(
 			stdout,
-			"拆除步骤已执行完,但系统里可能仍有 bx 的 Core 进程在跑(例如另一个终端里的 "+elevate.Prefix+"bx run,或旧版本残留)。",
+			"The teardown steps all ran, but a bx Core process may still be running on this system (from another terminal's "+elevate.Prefix+"bx run, say, or left over from an older version).",
 			// **不要让用户去跑一条看不到答案的命令。** 这里曾写「请执行 bx status 查看原因」,
 			// 而 bx status 根本不显示 last_error —— 那是把人支进死胡同。具体 PID 只在
 			// Guardian 日志里(刻意不进 Status:扫到的进程是「疑似」,把第三方 PID 放进
 			// Status 是 7778b53 专门修掉的错)。
-			"具体是哪个进程见:sudo tail -50 /var/log/bx-guard.err.log;确认无误后可用 "+elevate.Prefix+"bx uninstall 彻底清理。",
+			"To see which process: sudo tail -50 /var/log/bx-guard.err.log. Once you are satisfied, "+elevate.Prefix+"bx uninstall clears everything out.",
 		)
 		return stdout, stderr
 	}
-	stdout = append(stdout, "✅ bx 已停止并取消开机自启。")
+	stdout = append(stdout, "✅ bx stopped, and start-at-boot is off.")
 	return stdout, stderr
 }
 
@@ -79,8 +79,8 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 // desired=off 会撒谎,以及那句谎在升级结束时会被纠正。
 func holdFallbackWarning(cause error) string {
 	return fmt.Sprintf(
-		"未能武装维护挂起(%v),已退回记录 desired=off:升级期间 bx status 会显示「已关闭」而非「维护挂起」;"+
-			"升级结束后保护会被重新打开。",
+		"Could not arm the maintenance hold (%v), so desired=off was recorded instead: during the upgrade bx status will say \"off\" rather than \"on hold\"; "+
+			"protection is turned back on when the upgrade finishes.",
 		cause,
 	)
 }
@@ -116,10 +116,10 @@ func forcedTeardownReason(result macOSDownResult) string {
 	case result.LegacyCore:
 		// 措辞用「可能」是如实的:探查失败时我们同样走这条路,那时确实只是
 		// 不能排除,而不是确知有。
-		return "可能有不受 Guardian 掌管的旧版 Core 在运行,已改走强制停止(只有这条路停得下它)"
+		return "An older Core outside Guardian's control may be running, so the forced teardown was used instead (it is the only path that can stop it)"
 	case result.Cause != nil:
-		return fmt.Sprintf("Guardian 正常关闭事务失败(%v),已改走强制停止", result.Cause)
+		return fmt.Sprintf("Guardian's clean shutdown failed (%v), so the forced teardown was used instead", result.Cause)
 	default:
-		return "Guardian 未响应,已改走强制停止"
+		return "Guardian did not respond, so the forced teardown was used instead"
 	}
 }

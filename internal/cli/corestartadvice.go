@@ -84,26 +84,26 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 	case bare == supervisor.StartFailureTunnelUnreachable:
 		// 「bx 连不上 X」是关于**这次尝试**的事实;「X 没有应答」是关于那台
 		// 服务器的断言,而本机自己没网时同样连不上。
-		headline = "bx 起不来:" + phrase(named, "bx 连不上服务器 "+where, "bx 连不上你的服务器") +
-			" —— 那个地址上没有建立起 TCP 连接。"
+		headline = "bx could not start: " + phrase(named, "bx cannot reach server "+where, "bx cannot reach your server") +
+			" — no TCP connection came up to that address. "
 		steps = append(steps,
-			"可能是那台机器停了/换了 IP,也可能是这台机器自己的网络不通"+selfCheckSuffix(where),
+			"That machine may be down or may have changed IP, or this machine's own network may be broken"+selfCheckSuffix(where),
 			// **这一族里最要紧的一条偏偏此前没给这句话** —— 事故那一次就是它,
 			// 而 `dial tcp <server>:443: i/o timeout` 那句原文只在 Core 日志里。
-			"完整原因:sudo tail -50 "+coreLogPathForAdvice())
+			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
 	case bare == supervisor.StartFailureTunnelHandshakeFailed:
 		// 措辞与上面**相反**:那台机器活着,去修它是白费力气。
-		headline = "bx 起不来:" + phrase(named, "服务器 "+where+" 的 TCP 端口在应答", "你的服务器在应答") +
-			",而隧道没能在启动窗口内建起来。"
+		headline = "bx could not start: " + phrase(named, "server "+where+" answers on its TCP port", "your server answers") +
+			", but the tunnel did not come up inside the start window. "
 		steps = append(steps,
-			"那台机器活着 —— 要查的是这条链接、凭据、SNI、或者路上的干扰,不是那台机器停没停",
-			"完整原因:sudo tail -50 "+coreLogPathForAdvice())
+			"That machine is alive — what to check is this link, the credentials, the SNI, or interference on the path, not whether that machine has stopped",
+			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
 	case bare == supervisor.StartFailureTunnelUndeterminedUDPTransport:
-		headline = "bx 起不来:隧道没建起来,而 bx 没能判断那台服务器还在不在 —— " +
-			"它跑的是 UDP 传输(hysteria2/QUIC),一次 TCP 拨号观测不到它。"
+		headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there — " +
+			"it runs a UDP transport (hysteria2/QUIC), which a single TCP dial cannot observe. "
 		steps = append(steps,
-			phrase(named, "想确认那台机器活着,用 ping / ssh 试它:"+hostOf(where), "想确认那台机器活着,用 ping / ssh 试它"),
-			"完整原因:sudo tail -50 "+coreLogPathForAdvice())
+			phrase(named, "To confirm that machine is alive, try ping or ssh: "+hostOf(where), "To confirm that machine is alive, try ping or ssh"),
+			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
 	case bare == supervisor.StartFailureTunnelUndeterminedLocalDial:
 		// **它指着 bx 自己的直连器,不指着 VPS。** 2026-08-13 那次事故的签名:
 		// DirectDialer 用 IP_BOUND_IF 绑物理网卡,而 IP_BOUND_IF 只查 scoped
@@ -113,32 +113,32 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 		// 的话,而 2026-08-13 那种机器上(scoped 表里没有默认路由)最容易落进
 		// 来的恰恰是「VPS 真的挂了」那一次 —— 用户拿到一句既不说哪台机器、
 		// 又先派他去查 bx 自己路由的话。bx 明明知道那个地址。
-		headline = "bx 起不来:隧道没建起来,而 bx " +
-			phrase(named, "没能判断服务器 "+where+" 还在不在", "没能判断那台服务器还在不在") +
-			" —— 那次判别拨号在本机就失败了,SYN 一个都没发出去。"
+		headline = "bx could not start: the tunnel did not come up, and bx " +
+			phrase(named, "could not tell whether server "+where+" is still there", "could not tell whether that server is still there") +
+			" — that diagnostic dial failed on this machine; not one SYN left it. "
 		steps = append(steps,
-			"先查 bx 自己的直连出口(2026-08-13 那次故障的签名):route -n get -ifscope <你的网卡> 1.1.1.1;"+
-				"答 `not in table` 的话,坏的是这台机器上 bx 的直连器,换一台服务器帮不上忙",
+			"First check bx's own direct egress (the signature of the 2026-08-13 failure): route -n get -ifscope <your NIC> 1.1.1.1; "+
+				"if the reply is not in table, what is broken is bx's direct dialer on this machine, and switching servers will not help",
 			// **这条不许省。** 同一个码还盖着「解析不出那台服务器的主机名」——
 			// 那一种是服务器特有的,换一台确实有用。少了它,下面那句「你还配了
 			// 另一台」就与上面那句读起来自相矛盾,而两句各自都只对一半情形成立。
-			"答得出路由的话,那多半是这台机器解析不出那台服务器的主机名 —— 那一种换一台确实有用",
-			"完整原因:sudo tail -50 "+coreLogPathForAdvice())
+			"if it does answer with a route, this machine most likely cannot resolve that server's hostname — and for that one, switching servers really does help",
+			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
 	case supervisor.IsTunnelUndeterminedCode(bare):
-		headline = "bx 起不来:隧道没建起来,而 bx 没能判断那台服务器还在不在(那次判别本身没做成)。"
+		headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there (the diagnostic itself did not complete). "
 		steps = append(steps,
-			phrase(ncCheckable(where), "想自己确认那台服务器:"+ncCommand(where), "先看看配置里那条服务器链接对不对"),
-			"完整原因:sudo tail -50 "+coreLogPathForAdvice())
+			phrase(ncCheckable(where), "To check that server yourself: "+ncCommand(where), "start by checking the server link in your config"),
+			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
 	default:
 		// 隧道之外的启动失败(配置 / 释放二进制 / 开 TUN / 劫持路由 / 认不出)。
 		// 换一台服务器对它们一点用都没有,所以**不给那句话**。
 		tunnelOutcome = false
-		headline = "bx 起不来:" + nonTunnelStartFailureHeadline(bare)
-		steps = append(steps, "完整原因:sudo tail -50 "+coreLogPathForAdvice())
+		headline = "bx could not start: " + nonTunnelStartFailureHeadline(bare)
+		steps = append(steps, "Full reason: sudo tail -50 "+coreLogPathForAdvice())
 	}
 
 	if tunnelOutcome && len(facts.Others) > 0 {
-		steps = append(steps, fmt.Sprintf("你还配了另一台:%s —— sudo bx server use <名字>",
+		steps = append(steps, fmt.Sprintf("You have another server configured: %s — sudo bx server use <name>",
 			strings.Join(facts.Others, "、")))
 	}
 	lines := []string{headline}
@@ -155,15 +155,15 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 func nonTunnelStartFailureHeadline(bare string) string {
 	switch bare {
 	case supervisor.StartFailureConfig:
-		return "配置里的内容 bx 用不了(规则 / 网段 / hosts / 服务器链接里有一条是坏的)。改完要 " + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up。"
+		return "bx cannot use what is in the config (one of the rules, CIDRs, hosts entries, or the server link is bad). After fixing it, " + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up。"
 	case supervisor.StartFailureProvision:
-		return "没能把内嵌的传输二进制释放到 data_dir(多半是磁盘满了或那个目录不可写)。"
+		return "could not unpack the embedded transport binary into data_dir (most likely the disk is full or that directory is not writable). "
 	case supervisor.StartFailureTUNOpen:
-		return "打不开 TUN 设备(权限、设备被占用)。"
+		return "could not open the TUN device (permissions, or the device is in use). "
 	case supervisor.StartFailureHijack:
-		return "TUN 起来了,而劫持默认路由失败了。"
+		return "the TUN came up, but hijacking the default route failed. "
 	}
-	return "Core 报了一个 bx 这一版还没有专门说法的启动失败。"
+	return "Core reported a start failure this version of bx has no specific wording for. "
 }
 
 // phrase:问得出地址就点名,问不出就说一句仍然成立的话。
@@ -192,7 +192,7 @@ func selfCheckSuffix(hostPort string) string {
 	if !ncCheckable(hostPort) {
 		return ""
 	}
-	return "。自己确认一下:" + ncCommand(hostPort)
+	return ". Check for yourself: " + ncCommand(hostPort)
 }
 
 func hostOf(hostPort string) string {
