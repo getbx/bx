@@ -16,18 +16,18 @@ func TestDownReportForcedPathTellsTheTruthAndGivesTheNextStep(t *testing.T) {
 	joined := strings.Join(append(append([]string{}, out...), errLines...), "\n")
 
 	// ① 必须说清「走的是强制」,否则用户以为一切正常。
-	if !strings.Contains(joined, "强制") {
+	if !strings.Contains(joined, "forced teardown") {
 		t.Errorf("强制路径必须让用户知道走的是强制:\n%s", joined)
 	}
 	// ② 必须逐条列出做过的动作。用户要凭它判断还差什么。
-	for _, action := range []string{"关闭意图", "Core", "Guardian", "屏障", "DNS"} {
+	for _, action := range []string{"intent to stop", "Core", "Guardian", "barrier", "DNS"} {
 		if !strings.Contains(joined, action) {
 			t.Errorf("强制路径必须列出做过的动作,缺 %q:\n%s", action, joined)
 		}
 	}
 	// ③ **绝不能断言「网络已还原」。** 强制拆除是尽力而为,六步里任何一步都可能失败
 	//    而流程仍然继续 —— 断言已还原就是骗人,而被骗的人此刻可能正断着网。
-	if strings.Contains(joined, "网络已恢复") {
+	if strings.Contains(joined, "your network is back and working") {
 		t.Errorf("强制路径不得断言网络已恢复(它做不到这个保证):\n%s", joined)
 	}
 	// ④ 必须给出下一步。
@@ -40,10 +40,10 @@ func TestDownReportForcedPathTellsTheTruthAndGivesTheNextStep(t *testing.T) {
 func TestDownReportCleanPathMayAssertRecovery(t *testing.T) {
 	out, _ := downReportLines(macOSDownResult{})
 	joined := strings.Join(out, "\n")
-	if !strings.Contains(joined, "已停止") {
+	if !strings.Contains(joined, "bx stopped") {
 		t.Errorf("干净路径要告诉用户已停止:\n%s", joined)
 	}
-	if strings.Contains(joined, "强制") {
+	if strings.Contains(joined, "forced teardown") {
 		t.Errorf("干净路径不该出现「强制」字样:\n%s", joined)
 	}
 }
@@ -61,7 +61,7 @@ func TestDownReportCarriesTheCleanPathFailureCause(t *testing.T) {
 func TestDownReportSaysGuardianWasUnreachableWhenThereIsNoCause(t *testing.T) {
 	_, errLines := downReportLines(macOSDownResult{Forced: true})
 	joined := strings.Join(errLines, "\n")
-	if !strings.Contains(joined, "未响应") {
+	if !strings.Contains(joined, "did not respond") {
 		t.Errorf("没有 Cause 时要说明 Guardian 未响应:\n%s", joined)
 	}
 }
@@ -75,13 +75,13 @@ func TestDownReportSaysGuardianWasUnreachableWhenThereIsNoCause(t *testing.T) {
 func TestDownReportExplainsLegacyCoreForcedPathWithoutBlamingGuardian(t *testing.T) {
 	_, errLines := downReportLines(macOSDownResult{Forced: true, LegacyCore: true})
 	joined := strings.Join(errLines, "\n")
-	if strings.Contains(joined, "未响应") {
+	if strings.Contains(joined, "did not respond") {
 		t.Errorf("Guardian 应答了,不得说它未响应:\n%s", joined)
 	}
-	if !strings.Contains(joined, "旧版 Core") {
+	if !strings.Contains(joined, "older Core") {
 		t.Errorf("必须说明真实原因(旧版 Core):\n%s", joined)
 	}
-	if !strings.Contains(joined, "强制") {
+	if !strings.Contains(joined, "forced teardown") {
 		t.Errorf("仍要说清走的是强制路径:\n%s", joined)
 	}
 }
@@ -105,15 +105,15 @@ func TestDownReportForcedPropertiesHoldForEveryForcedSubCase(t *testing.T) {
 			out, errLines := downReportLines(tc.result)
 			joined := strings.Join(append(append([]string{}, out...), errLines...), "\n")
 
-			if !strings.Contains(joined, "强制") {
+			if !strings.Contains(joined, "forced teardown") {
 				t.Errorf("必须让用户知道走的是强制:\n%s", joined)
 			}
-			for _, action := range []string{"关闭意图", "Core", "Guardian", "屏障", "DNS"} {
+			for _, action := range []string{"intent to stop", "Core", "Guardian", "barrier", "DNS"} {
 				if !strings.Contains(joined, action) {
 					t.Errorf("必须列出做过的动作,缺 %q:\n%s", action, joined)
 				}
 			}
-			if strings.Contains(joined, "网络已恢复") {
+			if strings.Contains(joined, "your network is back and working") {
 				t.Errorf("不得断言网络已恢复(强制拆除做不到这个保证):\n%s", joined)
 			}
 			if !strings.Contains(joined, "bx uninstall") {
@@ -134,16 +134,16 @@ func TestForcedTeardownReasonDistinguishesEveryForcedSubCase(t *testing.T) {
 	failed := forcedTeardownReason(macOSDownResult{Forced: true, Cause: errSentinelForReport})
 	legacy := forcedTeardownReason(macOSDownResult{Forced: true, LegacyCore: true})
 
-	if !strings.Contains(unreachable, "未响应") {
+	if !strings.Contains(unreachable, "Guardian did not respond") {
 		t.Errorf("Guardian 没应答时要说清:%q", unreachable)
 	}
 	if !strings.Contains(failed, errSentinelForReport.Error()) {
 		t.Errorf("干净事务失败必须带上原因:%q", failed)
 	}
-	if strings.Contains(legacy, "未响应") {
+	if strings.Contains(legacy, "Guardian did not respond") {
 		t.Errorf("Guardian 应答了,不得说它未响应:%q", legacy)
 	}
-	if !strings.Contains(legacy, "旧版 Core") {
+	if !strings.Contains(legacy, "An older Core outside Guardian's control") {
 		t.Errorf("必须说明真实原因:%q", legacy)
 	}
 	// 三种原因必须互不相同,否则区分它们的意义就没了。
@@ -239,7 +239,7 @@ func TestDownResultOnErrorPathsNeverRendersAsCleanSuccess(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stdout, _ := downReportLines(tc.result)
 			joined := strings.Join(stdout, "\n")
-			if strings.Contains(joined, "网络已恢复") || strings.Contains(joined, "✅") {
+			if strings.Contains(joined, "your network is back and working") || strings.Contains(joined, "✅") {
 				t.Fatalf("出错路径的结果绝不能渲染成干净成功:\n%s", joined)
 			}
 		})

@@ -299,7 +299,7 @@ func TestMacOSUpLifecycleFailsWithGuardianLogWhenSocketNeverReady(t *testing.T) 
 	if err == nil {
 		t.Fatal("unready Guardian socket should fail bx up")
 	}
-	if !strings.Contains(err.Error(), "Guardian 服务未能启动") || !strings.Contains(err.Error(), guardian.SocketPath) {
+	if !strings.Contains(err.Error(), "the Guardian service did not start") || !strings.Contains(err.Error(), guardian.SocketPath) {
 		t.Fatalf("error missing diagnostic content: %v", err)
 	}
 	if got, want := strings.Join(events, "|"), "legacy.loaded|guardian.enable|guardian.ready"; got != want {
