@@ -9,5 +9,5 @@ import "fmt"
 // 这些平台上被调用到这一步——这个 stub 纯粹是为了让 update.go(无 build tag)在所有
 // GOOS 下都能编译,install.UnifiedInstall 等类型仅在 darwin 构建下存在。
 func directInstallUnifiedUpdate(bundlePath, configPath string) error {
-	return fmt.Errorf("统一布局在线更新仅支持 macOS(bundlePath=%s, configPath=%s)", bundlePath, configPath)
+	return fmt.Errorf("online updates under the unified layout are only supported on macOS (bundlePath=%s, configPath=%s)", bundlePath, configPath)
 }

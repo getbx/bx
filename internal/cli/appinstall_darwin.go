@@ -18,7 +18,7 @@ import (
 
 func appInstallAction(c *urfavecli.Context) error {
 	if os.Geteuid() != 0 {
-		return errors.New("app-install 需要 root:请通过 Bx.app 的 Install bx 或 sudo 执行")
+		return errors.New("app-install needs root: run it through Bx.app's Install bx, or with sudo")
 	}
 	source := c.String("app-source")
 	if source == "" {
@@ -32,11 +32,11 @@ func appInstallAction(c *urfavecli.Context) error {
 	}
 	uid, err := consoleUserUID()
 	if err != nil {
-		return fmt.Errorf("定位控制台用户失败: %w", err)
+		return fmt.Errorf("locating the console user failed: %w", err)
 	}
 	account, err := user.LookupId(strconv.Itoa(uid))
 	if err != nil {
-		return fmt.Errorf("查找控制台用户失败: %w", err)
+		return fmt.Errorf("looking up the console user failed: %w", err)
 	}
 	gid, err := strconv.Atoi(account.Gid)
 	if err != nil {
@@ -105,7 +105,7 @@ func appInstallAction(c *urfavecli.Context) error {
 		// 的进法不止两种,而 macOSDownLifecycleFor 选 legacy 分支时根本不看
 		// purpose —— 升级路径照样会走到它。内联的副本就是这么把「Guardian 未响应」
 		// 打印在一个明明应答了的 Guardian 头上的。
-		fmt.Fprintf(os.Stderr, "⚠️  %s;请自行确认网络是否恢复。\n", forcedTeardownReason(outcome.Down))
+		fmt.Fprintf(os.Stderr, "⚠️  %s; please check for yourself whether the network is back.\n", forcedTeardownReason(outcome.Down))
 	}
 	if err != nil {
 		return err
@@ -113,15 +113,15 @@ func appInstallAction(c *urfavecli.Context) error {
 	if outcome.Cancelled {
 		// 退出码 2 = 用户明确说了不。不是失败(没有任何东西坏掉),但也不是
 		// 成功——调用它的 install.sh 据此不再打印「完成」,而是如实说取消了。
-		return urfavecli.Exit("已取消,未做任何改动。", 2)
+		return urfavecli.Exit("Canceled, nothing was changed.", 2)
 	}
 
-	fmt.Printf("✓ 已安装 Bx.app %s → %s\n", outcome.Files.Version, outcome.Files.AppPath)
+	fmt.Printf("✓ Installed Bx.app %s → %s\n", outcome.Files.Version, outcome.Files.AppPath)
 	fmt.Printf("✓ runtime → %s\n", outcome.Files.RuntimeExecutable)
-	fmt.Println("✓ 命令行入口 /usr/local/bin/bx 与 Guardian 服务已就绪")
+	fmt.Println("✓ The /usr/local/bin/bx entry point and the Guardian service are ready")
 	// 安装刚改过 plist(可执行路径可能变了),必须强制重载才能生效。
 	if err := ensureMacOSMenuReloaded(uid, true); err != nil {
-		fmt.Printf("! 菜单栏未能自动启动(可手动打开 Bx.app): %v\n", err)
+		fmt.Printf("! the menu bar did not start by itself (you can open Bx.app manually): %v\n", err)
 	}
 	// 收尾文案由**做过的事**导出,不由「打算做什么」导出。
 	fmt.Println(appInstallNextStep(outcome.ProtectionRestored, configured(configPath)))
@@ -135,11 +135,11 @@ func appInstallAction(c *urfavecli.Context) error {
 func appInstallNextStep(protectionRestored, configured bool) string {
 	switch {
 	case protectionRestored:
-		return "升级完成,保护已按升级前的状态恢复。"
+		return "The upgrade is done, and protection was restored to whatever it was before it started."
 	case configured:
-		return "安装完成(未启动保护)。开启保护:sudo bx up,或用菜单栏的开关。"
+		return "Installed (protection was not started). To turn it on: sudo bx up, or use the switch in the menu bar."
 	default:
-		return "下一步:菜单栏 Set Up bx,或 sudo bx setup <client-link> && sudo bx up"
+		return "Next: Set Up bx from the menu bar, or sudo bx setup <client-link> && sudo bx up"
 	}
 }
 

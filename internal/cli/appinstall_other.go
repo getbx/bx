@@ -9,5 +9,5 @@ import (
 )
 
 func appInstallAction(c *urfavecli.Context) error {
-	return errors.New("app-install 仅支持 macOS")
+	return errors.New("app-install is only supported on macOS")
 }

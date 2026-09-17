@@ -21,11 +21,11 @@ func directInstallUnifiedUpdate(bundlePath, configPath string) error {
 		ConfigPath: configPath,
 	}
 	if uid, err := consoleUserUID(); err != nil {
-		fmt.Printf("  (无法定位控制台用户,跳过菜单栏登录项迁移: %v)\n", err)
+		fmt.Printf("  (could not locate the console user, so the menu-bar login item was not migrated: %v)\n", err)
 	} else if account, err := user.LookupId(strconv.Itoa(uid)); err != nil {
-		fmt.Printf("  (查找控制台用户失败,跳过菜单栏登录项迁移: %v)\n", err)
+		fmt.Printf("  (looking up the console user failed, so the menu-bar login item was not migrated: %v)\n", err)
 	} else if gid, err := strconv.Atoi(account.Gid); err != nil {
-		fmt.Printf("  (解析控制台用户组失败,跳过菜单栏登录项迁移: %v)\n", err)
+		fmt.Printf("  (resolving the console user's group failed, so the menu-bar login item was not migrated: %v)\n", err)
 	} else {
 		options.ConsoleHome = account.HomeDir
 		options.ConsoleUID = uid
@@ -41,7 +41,7 @@ func directInstallUnifiedUpdate(bundlePath, configPath string) error {
 	// 重载失败不让更新失败:菜单栏是 UI 壳,下次登录也会带上新 plist。
 	if options.ConsoleUID > 0 {
 		if err := ensureMacOSMenuReloaded(options.ConsoleUID, true); err != nil {
-			fmt.Printf("  (菜单栏未能重载,下次登录后生效: %v)\n", err)
+			fmt.Printf("  (the menu bar could not be reloaded; it takes effect after the next login: %v)\n", err)
 		}
 	}
 	return nil

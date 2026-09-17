@@ -32,7 +32,7 @@ func bundleRootFromExecutable(executable string) (string, error) {
 // Guardian 处于 loaded 就为真(保护未开启时同样如此,那正是任何一次 bx down
 // 之后的常态)—— 于是一次运行里会先打印「当前保护未开启,不会影响网络」,
 // 紧接着报「会断网的升级」,自相矛盾。
-var errCannotAsk = errors.New("非交互环境,无法确认升级")
+var errCannotAsk = errors.New("non-interactive environment; the upgrade cannot be confirmed")
 
 // confirmOnTTY 就地问用户一句「继续吗」。
 // 返回 (是否同意, 是否问不出来)。
