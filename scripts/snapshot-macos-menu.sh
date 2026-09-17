@@ -42,6 +42,13 @@ xcrun swiftc -O \
   "$MENU/Sources/BxMenu/RulesWindow.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \
   "$MENU/Sources/BxMenu/ServersWindow.swift" \
+  "$MENU/Sources/BxMenu/DiagnosticsModel.swift" \
+  "$MENU/Sources/BxMenu/DiagnosticsWindow.swift" \
+  "$MENU/Sources/BxMenu/LogsModel.swift" \
+  "$MENU/Sources/BxMenu/AppTrafficModel.swift" \
+  "$MENU/Sources/BxMenu/AppTrafficWindow.swift" \
+  "$MENU/Sources/BxMenu/DeployModel.swift" \
+  "$MENU/Sources/BxMenu/DeployWindow.swift" \
   "$MENU/Snapshots/main.swift" \
   -o "$TMP/snapshot"
 

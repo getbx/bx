@@ -86,7 +86,7 @@ func checkTree(t *testing.T, path string) {
 	}
 	limit := width - inset
 
-	checked := 0
+	checked, withText := 0, 0
 	for _, line := range lines[2:] {
 		// **只查控件。** 滚动视图、clip、contentView 本来就该占满整宽,
 		// 把它们算进来会让这条守卫恒红,然后被下一个人删掉。
@@ -99,6 +99,9 @@ func checkTree(t *testing.T, path string) {
 		}
 		maxX, _ := strconv.Atoi(m[1])
 		checked++
+		if strings.Contains(line, `text="`) && !strings.Contains(line, `text=""`) {
+			withText++
+		}
 		if maxX > limit {
 			t.Errorf("控件越过内容右边界(%d > %d = %d-%d):\n  %s\n"+
 				"行没有被钉到容器宽度时 AppKit 会老老实实把它画到窗口外面,**而且不报错**;"+
@@ -108,6 +111,17 @@ func checkTree(t *testing.T, path string) {
 	}
 	if checked == 0 {
 		t.Fatalf("%s 里一个控件都没查到 —— 判据认不出这份 dump 的格式了", path)
+	}
+	// **一扇空窗口会毫不费力地通过上面每一条断言。**
+	//
+	// fixture 解成了空结构(wire 形状漂了、字段名写错)时,窗口照样建得出来、
+	// 照样渲染,只是什么都没有 —— 而"没有控件越界"在那种图上恒真。
+	// 这条守卫因此要求**真的画出了内容**:至少一个带非空文本的控件。
+	// 它挡不住"内容是错的",但挡得住"内容是空的",而后者是这套工具最容易
+	// 悄悄退化成的样子(与 verify.sh 那几处「收尾横幅」同一条理由)。
+	if withText == 0 {
+		t.Errorf("%s 里没有任何带文本的控件 —— 这扇窗口是空的。"+
+			"多半是 fixture 解成了空结构(wire 形状漂了),而空窗口会通过上面每一条断言", path)
 	}
 }
 

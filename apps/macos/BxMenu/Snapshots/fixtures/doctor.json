@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "checks": [
+    {"name": "guardian_dns", "status": "fail", "detail": "系统 DNS 没有指向 bx", "hint": "sudo bx up"},
+    {"name": "traffic_failing_rules", "status": "warn", "detail": "*.qq.com 1291 次 / 失败 1289"},
+    {"name": "config_readable", "status": "ok", "detail": "/etc/bx/config.yaml"},
+    {"name": "tunnel", "status": "not_checked", "detail": "Core 没在跑,这一轮没有检查"}
+  ]
+}
