@@ -29,7 +29,7 @@ func facts() Facts {
 
 func TestPublicTargetIntoBxWithBoundSocketsEscaping(t *testing.T) {
 	v := Judge(facts())
-	if !strings.Contains(v.Conclusion, "进 bx") || !strings.Contains(v.Conclusion, "en0") {
+	if !strings.Contains(v.Conclusion, "into bx") || !strings.Contains(v.Conclusion, "en0") {
 		t.Fatalf("结论要同时说出两个视角(普通进程进 bx、绑网卡的从 en0 直出): %q", v.Conclusion)
 	}
 	if v.Kind != KindPublic {
@@ -43,10 +43,10 @@ func TestServerBypassGoesOutPhysicalAndSaysWhy(t *testing.T) {
 	f.Route = RouteFact{Applicable: true, Interface: "en0", Gateway: "192.168.50.2"}
 	f.ServerBypass = []netip.Prefix{netip.MustParsePrefix("195.133.192.92/32")}
 	v := Judge(f)
-	if !strings.Contains(v.Conclusion, "en0") || !strings.Contains(v.Conclusion, "不经过 bx") {
+	if !strings.Contains(v.Conclusion, "en0") || !strings.Contains(v.Conclusion, "not through bx") {
 		t.Fatalf("旁路目标要说「从 en0 直出、不经过 bx」: %q", v.Conclusion)
 	}
-	if !strings.Contains(v.Conclusion, "服务器旁路") {
+	if !strings.Contains(v.Conclusion, "server bypass") {
 		t.Fatalf("要说出原因是服务器旁路: %q", v.Conclusion)
 	}
 	if v.Kind != KindServerBypass {
@@ -59,7 +59,7 @@ func TestPrivateTargetIsAlwaysDirect(t *testing.T) {
 	f.Target, f.Addrs = "192.168.50.1", []netip.Addr{netip.MustParseAddr("192.168.50.1")}
 	f.Route = RouteFact{Applicable: true, Interface: "en0"}
 	v := Judge(f)
-	if v.Kind != KindPrivate || !strings.Contains(v.Conclusion, "私网") {
+	if v.Kind != KindPrivate || !strings.Contains(v.Conclusion, "private network") {
 		t.Fatalf("私网要说私网: kind=%q %q", v.Kind, v.Conclusion)
 	}
 }
@@ -69,7 +69,7 @@ func TestCGNATTargetNamesTailscaleRange(t *testing.T) {
 	f.Target, f.Addrs = "100.101.160.96", []netip.Addr{netip.MustParseAddr("100.101.160.96")}
 	f.Route = RouteFact{Applicable: true, Interface: "utun10"}
 	v := Judge(f)
-	if v.Kind != KindCGNAT || !strings.Contains(v.Conclusion, "utun10") || strings.Contains(v.Conclusion, "进 bx") {
+	if v.Kind != KindCGNAT || !strings.Contains(v.Conclusion, "utun10") || strings.Contains(v.Conclusion, "into bx") {
 		t.Fatalf("CGNAT 段走别的隧道,不该说进 bx: kind=%q %q", v.Kind, v.Conclusion)
 	}
 }
@@ -79,7 +79,7 @@ func TestFakeIPResolutionSaysDNSIsBxOwned(t *testing.T) {
 	f.Target, f.LiteralIP = "www.google.com", false
 	f.Addrs = []netip.Addr{netip.MustParseAddr("198.18.0.40")}
 	v := Judge(f)
-	if !hasLine(v, "解析", "假 IP") {
+	if !hasLine(v, "Resolves", "fake IP") {
 		t.Fatalf("解析到 fake-IP 要明说 DNS 归 bx: %+v", v.Lines)
 	}
 	if v.Kind != KindFakeIP {
@@ -96,13 +96,13 @@ func TestRealResolutionSaysDNSIsNotBxOwned(t *testing.T) {
 	f.CoreRunning = false
 	f.BxTunKnown = false
 	v := Judge(f)
-	if !hasLine(v, "解析", "真 IP") || hasLine(v, "解析", "没归 bx") {
+	if !hasLine(v, "Resolves", "a real IP") || hasLine(v, "Resolves", "not owned by bx") {
 		t.Fatalf("解析到真 IP 只说「真 IP」,不断言 DNS 归属(fakeip_filter/hosts 下 bx 也会答真 IP): %+v", v.Lines)
 	}
 	if v.Kind != KindChina {
 		t.Fatalf("Kind = %q, want china", v.Kind)
 	}
-	if !strings.Contains(v.Conclusion, "bx 没在跑") {
+	if !strings.Contains(v.Conclusion, "bx is not running") {
 		t.Fatalf("Core 没在跑要在结论里说出来: %q", v.Conclusion)
 	}
 }
@@ -111,7 +111,7 @@ func TestRejectRouteIsNamedAsBlocked(t *testing.T) {
 	f := facts()
 	f.Route = RouteFact{Applicable: true, Reject: true}
 	v := Judge(f)
-	if !strings.Contains(v.Conclusion, "阻断") {
+	if !strings.Contains(v.Conclusion, "blocking route") {
 		t.Fatalf("reject 路由要说被阻断: %q", v.Conclusion)
 	}
 }
@@ -120,14 +120,14 @@ func TestUnknownsAreSaidNotGuessed(t *testing.T) {
 	f := facts()
 	f.Route = RouteFact{Applicable: true, Err: "route: command timed out"}
 	v := Judge(f)
-	if !strings.Contains(v.Conclusion, "问不出") {
+	if !strings.Contains(v.Conclusion, "Could not find out") {
 		t.Fatalf("路由问不出来要说问不出,不许猜: %q", v.Conclusion)
 	}
 	f = facts()
 	f.Addrs, f.LiteralIP, f.ResolveErr = nil, false, "no such host"
 	f.Target = "nonexistent.invalid"
 	v = Judge(f)
-	if !hasLine(v, "解析", "失败") {
+	if !hasLine(v, "Resolves", "failed") {
 		t.Fatalf("解析失败要明说: %+v", v.Lines)
 	}
 }
@@ -136,7 +136,7 @@ func TestBoundRouteMissingSaysBoundSocketsFail(t *testing.T) {
 	f := facts()
 	f.Bound = RouteFact{Applicable: true, Missing: true}
 	v := Judge(f)
-	if !strings.Contains(v.Conclusion, "绑了网卡") || !strings.Contains(v.Conclusion, "连不上") {
+	if !strings.Contains(v.Conclusion, "NIC-bound program") || !strings.Contains(v.Conclusion, "cannot reach it") {
 		t.Fatalf("scoped 表里没路由 ⇒ 绑网卡的程序连不上,要说出来: %q", v.Conclusion)
 	}
 }
@@ -147,8 +147,8 @@ func TestUnknownInterfaceIsNotCalledPhysical(t *testing.T) {
 	f.PhysicalDev = "en0"
 	v := Judge(f)
 	// 只看主句:绑网卡那一句说的是另一种 socket,它说 en0 直出是对的。
-	main, _, _ := strings.Cut(v.Conclusion, " 绑了网卡")
-	if strings.Contains(main, "真实 IP") {
+	main, _, _ := strings.Cut(v.Conclusion, " A NIC-bound program")
+	if strings.Contains(main, "real IP") {
 		t.Fatalf("认不出的接口不许说成物理网卡直出: %q", main)
 	}
 	if !strings.Contains(v.Conclusion, "bridge7") {
@@ -173,10 +173,10 @@ func TestFakeIPBoundSocketsAreToldTheyWillDie(t *testing.T) {
 	f.Target, f.LiteralIP = "brook.example.com", false
 	f.Addrs = []netip.Addr{netip.MustParseAddr("198.18.0.40")}
 	v := Judge(f)
-	if strings.Contains(v.Conclusion, "真实 IP") {
+	if strings.Contains(v.Conclusion, "real IP") {
 		t.Fatalf("假 IP 目标不许说绑网卡的程序会带真实 IP 直出: %q", v.Conclusion)
 	}
-	if !strings.Contains(v.Conclusion, "绑了网卡") || !strings.Contains(v.Conclusion, "fakeip_filter") {
+	if !strings.Contains(v.Conclusion, "NIC-bound program") || !strings.Contains(v.Conclusion, "fakeip_filter") {
 		t.Fatalf("要说出绑网卡的程序拿到假 IP 会连不上、以及出路(fakeip_filter/hosts/写 IP): %q", v.Conclusion)
 	}
 }
@@ -188,7 +188,7 @@ func TestCGNATTargetDoesNotGetTheBoundSocketClause(t *testing.T) {
 	f.Target, f.Addrs = "100.101.160.96", []netip.Addr{netip.MustParseAddr("100.101.160.96")}
 	f.Route = RouteFact{Applicable: true, Interface: "utun10"}
 	v := Judge(f)
-	if strings.Contains(v.Conclusion, "绑了网卡") {
+	if strings.Contains(v.Conclusion, "NIC-bound program") {
 		t.Fatalf("CGNAT 目标不该带绑网卡那一句: %q", v.Conclusion)
 	}
 }

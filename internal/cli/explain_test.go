@@ -71,7 +71,7 @@ func TestExplainSaysNothingWhenThereIsNoCount(t *testing.T) {
 	rep.TCP.Run, rep.TCP.History = nil, nil
 	rep.UDP.Rule, rep.UDP.Source = "", "default"
 	got := renderExplain(rep)
-	if strings.Contains(got, "0 次判定") {
+	if strings.Contains(got, "0 decisions") {
 		t.Errorf("把「没有记录」渲染成了「0 次」:\n%s", got)
 	}
 }
@@ -88,10 +88,10 @@ func TestExplainSaysZeroWhenANamedRuleWasNeverHitThisRun(t *testing.T) {
 	rep := explainFixture()
 	rep.TCP.Run = nil
 	got := renderExplain(rep)
-	if !strings.Contains(got, "本次    0 次判定") {
+	if !strings.Contains(got, "This run 0 decisions") {
 		t.Errorf("具名规则本次 0 次记录却没有明说:\n%s", got)
 	}
-	if !strings.Contains(got, "没见过") {
+	if !strings.Contains(got, "has not seen a connection") {
 		t.Errorf("没有把「bx 没见过走这条规则的连接」说出来:\n%s", got)
 	}
 	// 累计那一行不受影响:它仍按「有记录才占地方」渲染。
@@ -122,7 +122,7 @@ func TestExplainSpellsOutTheKillswitchHop(t *testing.T) {
 // 没有路由表时**说不知道**,不让零值读起来像一个判定。
 func TestExplainSaysSoWithoutARouter(t *testing.T) {
 	got := renderExplain(supervisor.ExplainResponse{Target: "x.com", RouterMissing: true})
-	if !strings.Contains(got, "还没有路由表") {
+	if !strings.Contains(got, "no routing table to ask") {
 		t.Errorf("没有路由表却渲染出了一个判定:\n%s", got)
 	}
 	if strings.Contains(got, "TCP") {
@@ -136,10 +136,10 @@ func TestExplainDoesNotCallAMissingProbeUnhealthy(t *testing.T) {
 	rep := explainFixture()
 	rep.TunnelHealth = "unknown"
 	got := renderExplain(rep)
-	if strings.Contains(got, "隧道      不健康") {
+	if strings.Contains(got, "Tunnel    unhealthy") {
 		t.Errorf("把「没有探针」说成了「不健康」:\n%s", got)
 	}
-	if !strings.Contains(got, "未知") {
+	if !strings.Contains(got, "unknown") {
 		t.Errorf("没有如实说未知:\n%s", got)
 	}
 }
@@ -171,7 +171,7 @@ func TestExplainQualifiesBucketCountsWhenThereIsNoRule(t *testing.T) {
 	rep.TCP.Rule = ""
 	rep.TCP.Source = "default"
 	got := renderExplain(rep)
-	if !strings.Contains(got, "不是这个目标的") {
+	if !strings.Contains(got, "not this target") {
 		t.Errorf("桶计数没有被归位,读起来像是这个目标的:\n%s", got)
 	}
 }
@@ -181,7 +181,7 @@ func TestExplainQualifiesBucketCountsWhenThereIsNoRule(t *testing.T) {
 // 是这个命令最有价值的输出。
 func TestExplainDoesNotQualifyARealRulesCounts(t *testing.T) {
 	got := renderExplain(explainFixture()) // fixture 命中 *.steamstatic.com
-	if strings.Contains(got, "不是这个目标的") {
+	if strings.Contains(got, "not this target") {
 		t.Errorf("给一条真规则的计数加了不该有的限定:\n%s", got)
 	}
 }
@@ -196,7 +196,7 @@ func TestExplainBreaksFailuresIntoActionableKinds(t *testing.T) {
 	rep := explainFixture()
 	rep.TCP.Run.FailureKinds = map[string]int64{"timeout": 12, "unreachable": 3}
 	got := renderExplain(rep)
-	if !strings.Contains(got, "对端不应答") || !strings.Contains(got, "路由不可达") {
+	if !strings.Contains(got, "peer did not answer") || !strings.Contains(got, "route unreachable") {
 		t.Errorf("没有把失败拆开:\n%s", got)
 	}
 	// **最大的一类排最前,而且每次都一样。**
@@ -226,7 +226,7 @@ func TestExplainSaysHowLongTheCumulativeCountCovers(t *testing.T) {
 	rep := explainFixture()
 	rep.HistoryWindowSeconds = 95040 // 1.1 天
 	got := renderExplain(rep)
-	if !strings.Contains(got, "1.1 天") {
+	if !strings.Contains(got, "1.1 days") {
 		t.Errorf("没说累计覆盖多长时间:\n%s", got)
 	}
 }
@@ -241,7 +241,7 @@ func TestExplainFlagsAMultiVersionCumulativeCount(t *testing.T) {
 		t.Error("单一版本却报了跨版本")
 	}
 	rep.HistoryVersions = []string{"v0.9", "dev"}
-	if !strings.Contains(renderExplain(rep), "跨 2 个版本") {
+	if !strings.Contains(renderExplain(rep), "spanning 2 versions") {
 		t.Errorf("跨版本没说:\n%s", renderExplain(rep))
 	}
 }
@@ -269,7 +269,7 @@ func TestExplainPrintsMachineViewBeforeCoreAndSurvivesCoreBeingDown(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := strings.Index(out, "结论")
+	machine := strings.Index(out, "Verdict")
 	core := strings.Index(out, "TCP       DIRECT")
 	if machine < 0 || core < 0 || machine > core {
 		t.Fatalf("本机视角要排在 Core 判定之前:\n%s", out)
@@ -285,7 +285,7 @@ func TestExplainPrintsMachineViewBeforeCoreAndSurvivesCoreBeingDown(t *testing.T
 	if err != nil {
 		t.Fatalf("Core 连不上不该让 explain 失败,本机视角照样有用: %v", err)
 	}
-	if !strings.Contains(out, "结论") || !strings.Contains(out, "bx 没在跑") {
+	if !strings.Contains(out, "Verdict") || !strings.Contains(out, "bx is not running") {
 		t.Fatalf("Core 连不上时要有本机视角 + 一句「bx 没在跑」:\n%s", out)
 	}
 	if strings.Contains(out, "TCP       ") {
@@ -344,6 +344,10 @@ func TestMachineViewLabelsAlignByDisplayWidth(t *testing.T) {
 				w++
 			}
 		}
+		// **12 列,不是 10** —— 判据文案改英文之后,"Bound to NIC" 这类标签比
+		// 原来的 CJK 标签更长,10 列会把它挤出去而让整栏错位。这个数字与
+		// padLabel 里那个必须一致;它们不一致时错位只在**某些**标签上出现,
+		// 看起来像随机的排版毛病而不是一个可查的常量。
 		if w+len(strings.TrimPrefix(line, label))-len(strings.TrimLeft(strings.TrimPrefix(line, label), " ")) != 10 {
 			t.Fatalf("标签没对齐到 10 列: %q", line)
 		}
@@ -429,7 +433,7 @@ func TestExplainBlamesTheDirectDialerWhenTheRouteIsUnreachable(t *testing.T) {
 	rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 500, 420
 	rep.TCP.Run.FailureKinds = map[string]int64{"unreachable": 410, "timeout": 10}
 	got := renderExplain(rep)
-	if !strings.Contains(got, "判决") {
+	if !strings.Contains(got, "Blame ") {
 		t.Fatalf("一份 98%% 都是路由不可达的失败没有判决行:\n%s", got)
 	}
 	if !strings.Contains(got, "direct_egress") {
@@ -445,7 +449,7 @@ func TestExplainNeverAssertsWhatTheOtherEndIsDoing(t *testing.T) {
 	rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 100, 90
 	rep.TCP.Run.FailureKinds = map[string]int64{"timeout": 90}
 	got := renderExplain(rep)
-	if !strings.Contains(got, "判决") {
+	if !strings.Contains(got, "Blame ") {
 		t.Fatalf("90%% 超时没有判决行:\n%s", got)
 	}
 	for _, forbidden := range []string{"挂了", "宕机", "服务器不可用", "对方已下线"} {
@@ -464,7 +468,7 @@ func TestExplainLocalAndRemoteVerdictsReadDifferently(t *testing.T) {
 		rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 100, 90
 		rep.TCP.Run.FailureKinds = kinds
 		for _, line := range strings.Split(renderExplain(rep), "\n") {
-			if strings.Contains(line, "判决") {
+			if strings.Contains(line, "Blame ") {
 				return line
 			}
 		}
@@ -485,7 +489,7 @@ func TestExplainSaysNXDOMAINNeedsNoFix(t *testing.T) {
 	rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 1454, 963
 	rep.TCP.Run.FailureKinds = map[string]int64{"dns_nxdomain": 963}
 	got := renderExplain(rep)
-	if !strings.Contains(got, "判决") {
+	if !strings.Contains(got, "Blame ") {
 		t.Fatalf("NXDOMAIN 占绝对多数却没有判决行:\n%s", got)
 	}
 	if strings.Contains(got, "direct_egress") {
@@ -500,7 +504,7 @@ func TestExplainRefusesToNameACauseWhenFailuresAreMixed(t *testing.T) {
 	rep := explainFixture()
 	rep.TCP.Run.Attempts, rep.TCP.Run.Failures = 100, 100
 	rep.TCP.Run.FailureKinds = map[string]int64{"unreachable": 40, "timeout": 30, "reset": 30}
-	if got := renderExplain(rep); strings.Contains(got, "判决") {
+	if got := renderExplain(rep); strings.Contains(got, "Blame ") {
 		t.Errorf("一份 40/30/30 的失败被安上了单一主因:\n%s", got)
 	}
 }
@@ -512,7 +516,7 @@ func TestExplainPrintsNoVerdictWithoutFailures(t *testing.T) {
 	healthy := explainFixture()
 	healthy.TCP.Run.Failures = 0
 	healthy.TCP.Run.FailureKinds = nil
-	if got := renderExplain(healthy); strings.Contains(got, "判决") {
+	if got := renderExplain(healthy); strings.Contains(got, "Blame ") {
 		t.Errorf("没有失败却出现了判决行:\n%s", got)
 	}
 
@@ -521,7 +525,7 @@ func TestExplainPrintsNoVerdictWithoutFailures(t *testing.T) {
 	if unclassified.TCP.Run.Failures == 0 {
 		t.Fatal("fixture 改了,这条测试的前提没了")
 	}
-	if got := renderExplain(unclassified); strings.Contains(got, "判决") {
+	if got := renderExplain(unclassified); strings.Contains(got, "Blame ") {
 		t.Errorf("没有分类却下了判决:\n%s", got)
 	}
 }
@@ -539,14 +543,14 @@ func TestExplainVerdictNamesWhichSampleItRead(t *testing.T) {
 	got := renderExplain(rep)
 	var verdict string
 	for _, line := range strings.Split(got, "\n") {
-		if strings.Contains(line, "判决") {
+		if strings.Contains(line, "Blame ") {
 			verdict = line
 		}
 	}
 	if verdict == "" {
 		t.Fatalf("累计里 8000 次失败没有判决行:\n%s", got)
 	}
-	if !strings.Contains(verdict, "累计") {
+	if !strings.Contains(verdict, "the totals") {
 		t.Errorf("判决读的是累计却没说:\n%s", verdict)
 	}
 }
@@ -590,10 +594,10 @@ func TestExplainFallsBackToTheRunWhenHistoryCannotAnswer(t *testing.T) {
 		Attempts: 9000, Failures: 8000, // 有失败,但这一版没记分类
 	}
 	got := renderExplain(rep)
-	if !strings.Contains(got, "判决") {
+	if !strings.Contains(got, "Blame ") {
 		t.Fatalf("累计答不出问题时没有落回本次那份:\n%s", got)
 	}
-	if !strings.Contains(got, "按本次") {
+	if !strings.Contains(got, "by this run") {
 		t.Errorf("判决没说它读的是本次那份:\n%s", got)
 	}
 }
@@ -614,13 +618,13 @@ func explainFixtureWithFinding(class rulereview.Class, summary, coveredBy string
 // 命中的那条规则有体检结论时,explain 要说出来。
 func TestExplainSurfacesTheRuleReviewVerdict(t *testing.T) {
 	rep, review := explainFixtureWithFinding(
-		rulereview.ClassShadowedByBuiltinList, "已在内建 china 直连列表里,删掉不改变任何流量", "内建列表",
+		rulereview.ClassShadowedByBuiltinList, "already on bx's built-in china direct list; deleting it changes no traffic", "the built-in list",
 	)
 	got := renderExplainWithReview(rep, review)
-	if !strings.Contains(got, "体检") {
+	if !strings.Contains(got, "Review") {
 		t.Fatalf("命中的规则有体检结论却一个字没说:\n%s", got)
 	}
-	if !strings.Contains(got, "删掉不改变任何流量") {
+	if !strings.Contains(got, "changes no traffic") {
 		t.Errorf("体检结论没有被渲染出来:\n%s", got)
 	}
 }
@@ -632,9 +636,9 @@ func TestExplainDoesNotBorrowTheOppositeTablesVerdict(t *testing.T) {
 	rep := explainFixture() // TCP.Source = user_direct
 	review := &rulereview.Report{Findings: []rulereview.Finding{{
 		Kind: "proxy", Rule: "*.steamstatic.com",
-		Class: rulereview.ClassRisky, Summary: "这是 proxy 那条的结论",
+		Class: rulereview.ClassRisky, Summary: "this is the proxy verdict",
 	}}}
-	if got := renderExplainWithReview(rep, review); strings.Contains(got, "这是 proxy 那条的结论") {
+	if got := renderExplainWithReview(rep, review); strings.Contains(got, "this is the proxy verdict") {
 		t.Errorf("把对面那张表的结论安到了这条规则头上:\n%s", got)
 	}
 }
@@ -648,7 +652,7 @@ func TestExplainSaysNothingAboutReviewWithoutAUserRule(t *testing.T) {
 		Kind: "direct", Rule: "*.steamstatic.com",
 		Class: rulereview.ClassRisky, Summary: "去匿名化风险",
 	}}}
-	if got := renderExplainWithReview(rep, review); strings.Contains(got, "体检") {
+	if got := renderExplainWithReview(rep, review); strings.Contains(got, "Review") {
 		t.Errorf("没有用户规则可点名却渲染了体检行:\n%s", got)
 	}
 }
@@ -657,7 +661,7 @@ func TestExplainSaysNothingAboutReviewWithoutAUserRule(t *testing.T) {
 // 「没查」与「查了没有」是两件事,而这个仓库为把前者渲染成后者栽过很多次。
 func TestExplainNeverCallsAnUnreviewedRuleHealthy(t *testing.T) {
 	got := renderExplainWithReview(explainFixture(), nil)
-	if strings.Contains(got, "体检") {
+	if strings.Contains(got, "Review") {
 		t.Errorf("体检缺席时仍渲染了体检行:\n%s", got)
 	}
 	// **禁词要卡在「关于规则的断言」上,不是卡在某个字。**

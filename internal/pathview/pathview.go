@@ -110,10 +110,10 @@ func Judge(f Facts) View {
 	addr, resolved := firstAddr(f)
 	lines = append(lines, resolutionLine(f, addr, resolved))
 	kind := classify(f, addr, resolved)
-	lines = append(lines, Line{Label: "目标类型", Text: kindText(kind)})
-	lines = append(lines, Line{Label: "本机路由", Text: routeText(f.Route, f)})
+	lines = append(lines, Line{Label: "Kind", Text: kindText(kind)})
+	lines = append(lines, Line{Label: "Route", Text: routeText(f.Route, f)})
 	if f.Bound.Applicable {
-		lines = append(lines, Line{Label: "绑网卡时", Text: routeText(f.Bound, f)})
+		lines = append(lines, Line{Label: "NIC-bound", Text: routeText(f.Bound, f)})
 	}
 	return View{Conclusion: conclusion(f, kind, resolved), Kind: kind, Lines: lines, EntersBx: entersBx(f)}
 }
@@ -130,18 +130,18 @@ func firstAddr(f Facts) (netip.Addr, bool) {
 func resolutionLine(f Facts, addr netip.Addr, resolved bool) Line {
 	switch {
 	case f.LiteralIP:
-		return Line{Label: "解析", Text: "是 IP,不用解析"}
+		return Line{Label: "Resolves", Text: "it is an IP, no resolution needed"}
 	case !resolved && f.ResolveErr != "":
-		return Line{Label: "解析", Text: "失败:" + f.ResolveErr}
+		return Line{Label: "Resolves", Text: "failed: " + f.ResolveErr}
 	case !resolved:
-		return Line{Label: "解析", Text: "没有地址"}
+		return Line{Label: "Resolves", Text: "no address"}
 	case f.FakeIP.IsValid() && f.FakeIP.Contains(addr):
-		return Line{Label: "解析", Text: fmt.Sprintf("本机解析到假 IP %s —— DNS 归 bx 管,真实地址由 bx 拨号时反查", addr)}
+		return Line{Label: "Resolves", Text: fmt.Sprintf("resolved locally to fake IP %s — DNS belongs to bx, which looks the real address back up when it dials", addr)}
 	default:
 		// 只说事实:真 IP。**不说「DNS 没归 bx 管」** —— bx 接管着 DNS 时也会对
 		// fakeip_filter / hosts 里的名字直接答真 IP(真机 2026-09-05 derphome 那次),
 		// 这一层分不出是哪种,断言归属就是编。
-		return Line{Label: "解析", Text: fmt.Sprintf("本机解析到 %s(真 IP,不是 bx 的假 IP)", addr)}
+		return Line{Label: "Resolves", Text: fmt.Sprintf("resolved locally to %s (a real IP, not one of bx's fake IPs)", addr)}
 	}
 }
 
@@ -175,54 +175,54 @@ func classify(f Facts, addr netip.Addr, resolved bool) string {
 func kindText(kind string) string {
 	switch kind {
 	case KindFakeIP:
-		return "bx 的假 IP(真实目标要看 bx 的判定)"
+		return "one of bx's fake IPs (the real destination is whatever bx decides)"
 	case KindLoopback:
-		return "本机回环"
+		return "loopback"
 	case KindPrivate:
-		return "私网(bx 任何模式下都直连)"
+		return "private network (bx goes direct in every mode)"
 	case KindCGNAT:
-		return "CGNAT 段 100.64/10(Tailscale 等 overlay 用这一段;bx 恒直连并让给它们)"
+		return "CGNAT range 100.64/10 (overlays like Tailscale use it; bx always goes direct and leaves it to them)"
 	case KindLinkLocal:
-		return "链路本地"
+		return "link-local"
 	case KindServerBypass:
-		return "bx 的传输服务器旁路(经物理网关,不进 TUN)"
+		return "bx's transport-server bypass (via the physical gateway, never into the TUN)"
 	case KindChina:
-		return "公网,在内建国内段"
+		return "public, inside the built-in China ranges"
 	case KindPublic:
-		return "公网,不在国内段"
+		return "public, outside the China ranges"
 	default:
-		return "解析不出,无法归类"
+		return "does not resolve, so it cannot be classified"
 	}
 }
 
 func routeText(r RouteFact, f Facts) string {
 	switch {
 	case !r.Applicable:
-		return "本平台没问"
+		return "not asked on this platform"
 	case r.Err != "":
-		return "问不出来:" + r.Err
+		return "could not find out: " + r.Err
 	case r.Reject:
-		return "阻断路由(reject/unreachable)"
+		return "a blocking route (reject/unreachable)"
 	case r.Missing:
-		return "表里没有这条路由"
+		return "no such route in the table"
 	case r.Interface == "":
-		return "内核没给接口"
+		return "the kernel named no interface"
 	}
 	text := r.Interface
 	if r.Gateway != "" {
 		text += " via " + r.Gateway
 	}
 	if owner := ownerOf(r.Interface, f); owner != "" {
-		text += "(" + owner + ")"
+		text += " (" + owner + ")"
 	}
 	return text
 }
 
 // 接口归属,白名单式:认得出是 bx / 别的隧道 / 物理网卡才说,认不出就不说。
 const (
-	ownerBx       = "bx 的 TUN"
-	ownerTunnel   = "另一条隧道,不是 bx"
-	ownerPhysical = "物理网卡"
+	ownerBx       = "bx's TUN"
+	ownerTunnel   = "another tunnel, not bx"
+	ownerPhysical = "physical NIC"
 )
 
 func ownerOf(iface string, f Facts) string {
@@ -245,35 +245,35 @@ func ownerOf(iface string, f Facts) string {
 func conclusion(f Facts, kind string, resolved bool) string {
 	if !resolved {
 		if f.ResolveErr != "" {
-			return "这个名字在本机解析不出来(" + f.ResolveErr + "),包根本发不出去。"
+			return "This name does not resolve on this machine (" + f.ResolveErr + "), so no packet can even leave."
 		}
-		return "这个名字没有解析到任何地址,包根本发不出去。"
+		return "This name resolved to no address at all, so no packet can even leave."
 	}
 	r := f.Route
 	var main string
 	switch {
 	case !r.Applicable:
-		main = "本平台问不了内核路由,只能看 bx 的判定。"
+		main = "This platform cannot be asked about kernel routes, so only bx's own verdict is below."
 	case r.Err != "":
-		main = "问不出内核会把它送去哪(" + r.Err + "),下面只有 bx 那一半。"
+		main = "Could not find out where the kernel would send it (" + r.Err + "), so only bx's half is below."
 	case r.Reject:
-		main = "内核里有一条阻断路由挡着它:包出不去。bx 的 fail-closed 屏障与 v6 阻断都是这个形状。"
+		main = "A blocking route in the kernel stops it: packets do not get out. bx's fail-closed barrier and its v6 block both look like this."
 	case r.Interface == "":
-		main = "内核没说这个包走哪个接口,不猜。"
+		main = "The kernel did not say which interface this packet takes, and bx will not guess."
 	default:
 		switch ownerOf(r.Interface, f) {
 		case ownerBx:
 			if f.CoreRunning {
-				main = "普通程序连它会进 bx,去向由 bx 判定(见下)。"
+				main = "An ordinary program reaching it goes into bx; where it ends up is bx's decision (below)."
 			} else {
-				main = "普通程序连它会进 bx 的 TUN,但 bx 没在跑:包进了一个没人接的口子。"
+				main = "An ordinary program reaching it goes into bx's TUN, but bx is not running: the packets enter a door nobody is behind."
 			}
 		case ownerTunnel:
-			main = fmt.Sprintf("普通程序连它会进另一条隧道(%s),不经过 bx。", r.Interface)
+			main = fmt.Sprintf("An ordinary program reaching it goes into another tunnel (%s), not through bx.", r.Interface)
 		case ownerPhysical:
-			main = fmt.Sprintf("普通程序连它会直接从 %s 出去,不经过 bx,源 IP 是你的真实 IP%s。", r.Interface, physicalReason(f, kind))
+			main = fmt.Sprintf("An ordinary program reaching it leaves straight from %s, not through bx, with your real IP as the source%s.", r.Interface, physicalReason(f, kind))
 		default:
-			main = fmt.Sprintf("普通程序连它会走 %s,我认不出这个接口是什么。", r.Interface)
+			main = fmt.Sprintf("An ordinary program reaching it goes over %s, and bx cannot tell what that interface is.", r.Interface)
 		}
 	}
 	return main + boundClause(f, kind)
@@ -282,16 +282,16 @@ func conclusion(f Facts, kind string, resolved bool) string {
 func physicalReason(f Facts, kind string) string {
 	switch kind {
 	case KindServerBypass:
-		return "(它在 bx 的服务器旁路里,本该如此)"
+		return " — it is in bx's server bypass, which is how it should be"
 	case KindPrivate:
-		return "(私网,本该如此)"
+		return " — a private network, which is how it should be"
 	case KindCGNAT:
-		return "(CGNAT 段,本该如此)"
+		return " — the CGNAT range, which is how it should be"
 	case KindLoopback, KindLinkLocal:
 		return ""
 	}
 	if !f.CoreRunning {
-		return "(bx 没在跑)"
+		return " (bx is not running)"
 	}
 	return ""
 }
@@ -309,23 +309,23 @@ func boundClause(f Facts, kind string) string {
 	case KindFakeIP:
 		// 绑了网卡的程序拿到的是假 IP,从物理网卡发出去石沉大海 —— 2026-09-03
 		// Tailscale 自建 DERP 域名那次(dial 198.18.0.40 超时)就是这个形状。
-		return " 绑了网卡的程序(如 Tailscale)拿到的是这个假 IP,从物理网卡发出去会石沉大海、连不上:" +
-			"给它用的域名要进 dns.fakeip_filter 或 hosts,或者直接写 IP。"
+		return " A NIC-bound program (Tailscale, say) gets this fake IP, and sending it out the physical NIC goes nowhere: " +
+			"put the domain it uses into dns.fakeip_filter or hosts, or give it the IP directly."
 	}
 	switch {
 	case b.Err != "":
-		return " 绑了网卡的程序(如 Tailscale)会怎样问不出来:" + b.Err
+		return " What a NIC-bound program (Tailscale, say) would do could not be determined: " + b.Err
 	case b.Missing:
-		return " 绑了网卡的程序(如 Tailscale)连不上它:scoped 路由表里没有这条路。"
+		return " A NIC-bound program (Tailscale, say) cannot reach it: the scoped route table has no route for it."
 	case b.Reject:
-		return " 绑了网卡的程序(如 Tailscale)也被阻断路由挡着。"
+		return " A NIC-bound program (Tailscale, say) is stopped by the blocking route too."
 	case b.Interface == "" || b.Interface == f.Route.Interface:
 		return ""
 	}
 	if ownerOf(b.Interface, f) == ownerPhysical {
-		return fmt.Sprintf(" 绑了网卡的程序(如 Tailscale)会从 %s 直出,源 IP 是你的真实 IP。", b.Interface)
+		return fmt.Sprintf(" A NIC-bound program (Tailscale, say) leaves straight from %s with your real IP as the source.", b.Interface)
 	}
-	return fmt.Sprintf(" 绑了网卡的程序(如 Tailscale)会走 %s。", b.Interface)
+	return fmt.Sprintf(" A NIC-bound program (Tailscale, say) goes over %s.", b.Interface)
 }
 
 // ChinaSetFromList 把内建的 china_cidr4.txt 变成判据函数;解析失败返回 nil
