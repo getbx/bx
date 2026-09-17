@@ -1,0 +1,8 @@
+{
+  "subscribed": true,
+  "groups": [
+    {"path": "tunnel", "apps": [{"name": "Google Chrome", "connections": 42, "bytes_up": 128000, "bytes_down": 4096000}]},
+    {"path": "direct", "apps": [{"name": "WeChat", "connections": 7, "bytes_up": 2048, "bytes_down": 8192}]},
+    {"path": "blocked", "apps": []}
+  ]
+}

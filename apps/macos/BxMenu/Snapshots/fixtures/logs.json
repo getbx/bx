@@ -1,0 +1,20 @@
+{
+  "logs": [
+    {
+      "name": "Core",
+      "path": "/var/log/bx.log",
+      "lines": [
+        "2026/09/17 02:00:00 ✅ bx 已全局接管",
+        "2026/09/17 02:00:01 china 列表已刷新并热重载",
+        "2026/09/17 02:00:02 server_bypass 已重新落实路由"
+      ],
+      "unavailable": ""
+    },
+    {
+      "name": "Guardian",
+      "path": "/var/log/bx-guard.err.log",
+      "lines": [],
+      "unavailable": "读不到(0600 root)"
+    }
+  ]
+}

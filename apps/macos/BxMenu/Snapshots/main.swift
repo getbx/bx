@@ -91,6 +91,31 @@ func writeTree(_ window: NSWindow, to path: String) {
     } catch { fail("写 \(path): \(error)") }
 }
 
+/// 按标题找窗口。**每扇窗口各自 ensureWindow,所以不能只取 NSApp.windows.first** ——
+/// 那会在第二扇之后取到错的那一个,而两张图看起来都"像模像样"。
+func windowTitled(_ title: String) -> NSWindow {
+    guard let w = NSApp.windows.first(where: { $0.title == title && $0.contentView != nil }) else {
+        fail("没拿到标题为 \(title) 的窗口")
+    }
+    return w
+}
+
+/// 读一份 fixture 并解码。**走真实解码路径** —— 解不出来就是 wire 形状漂了,
+/// 那本身就是要报的事,不是"快照跑不了"。
+func loadFixture<T: Decodable>(_ file: String, as type: T.Type) -> T {
+    let data: Data
+    do { data = try Data(contentsOf: URL(fileURLWithPath: fixtures + "/" + file)) }
+    catch { fail("读不到 \(file): \(error)") }
+    do { return try JSONDecoder().decode(T.self, from: data) }
+    catch { fail("\(file) 解不出 \(T.self)(wire 形状漂了?): \(error)") }
+}
+
+/// 渲染一扇窗口的两份产物。
+func capture(_ window: NSWindow, as name: String) {
+    writePNG(window, to: out + "/" + name + ".png")
+    writeTree(window, to: out + "/" + name + ".tree")
+}
+
 func findButton(_ view: NSView, title: String, id: String) -> NSButton? {
     if let b = view as? NSButton, b.title == title, b.identifier?.rawValue == id { return b }
     for sub in view.subviews { if let hit = findButton(sub, title: title, id: id) { return hit } }
@@ -99,28 +124,18 @@ func findButton(_ view: NSView, title: String, id: String) -> NSButton? {
 
 // —— Routing Rules ——
 //
-// 覆盖面今天只有这一扇。**加一扇的成本是一份 fixture 加十来行**,
-// 而四扇窗口共用同一套布局原语(MenuLayout.swift),所以这一扇量到的
-// 「行有没有溢出」对另外三扇有很强的指示性 —— 但那不等于验过了,别把它读成验过了。
+// 五扇窗口共用同一套布局原语(MenuLayout.swift),所以每多覆盖一扇,
+// 闸门就多守住一份真实的行内容 —— 而行内容正是把布局撑坏的东西。
 do {
-    let data: Data
-    do { data = try Data(contentsOf: URL(fileURLWithPath: fixtures + "/rules.json")) }
-    catch { fail("读不到 rules.json: \(error)") }
-    let list: RuleList
-    do { list = try JSONDecoder().decode(RuleList.self, from: data) }
-    catch { fail("rules.json 解不出 RuleList(wire 形状漂了?): \(error)") }
-
+    let list = loadFixture("rules.json", as: RuleList.self)
     let controller = RulesWindowController()
     controller.show(
         rows: ruleGroupRows(from: list, failing: []),
         ruleRows: ruleRows(from: list, failing: [], customOnly: true),
         configPath: list.configPath,
         caveatNote: nil)
-    guard let window = NSApp.windows.first(where: { $0.contentView != nil }) else {
-        fail("没拿到 Routing Rules 窗口")
-    }
-    writePNG(window, to: out + "/rules-collapsed.png")
-    writeTree(window, to: out + "/rules-collapsed.tree")
+    let window = windowTitled("Routing Rules")
+    capture(window, as: "rules-collapsed")
 
     // 展开一组:**「里面有哪些域名」那条路只有点开才量得到**,
     // 而展开会把一行变成十几行,恰恰是最容易把布局撑坏的输入。
@@ -128,8 +143,40 @@ do {
         fail("找不到 China CDN 的 Show 按钮 —— 展开那条路没接上,或者判据认不出它了")
     }
     show.performClick(nil)
-    writePNG(window, to: out + "/rules-expanded.png")
-    writeTree(window, to: out + "/rules-expanded.tree")
+    capture(window, as: "rules-expanded")
+}
+
+// —— Servers ——
+do {
+    let list = loadFixture("servers.json", as: ServerList.self)
+    let controller = ServersWindowController()
+    controller.show(list: list, core: nil, probe: .address("195.133.192.92"),
+                    switchingTo: nil, canEdit: true)
+    capture(windowTitled("Servers"), as: "servers")
+}
+
+// —— Diagnostics(两页各一张)——
+do {
+    let controller = DiagnosticsWindowController()
+    controller.setAvailability(doctor: true, logs: true)
+    controller.showChecks(loadFixture("doctor.json", as: DoctorReport.self))
+    capture(windowTitled("Diagnostics"), as: "diagnostics-checks")
+    controller.showLogs(loadFixture("logs.json", as: LogsReport.self), highlightingCode: nil)
+    capture(windowTitled("Diagnostics"), as: "diagnostics-logs")
+}
+
+// —— Traffic by App ——
+do {
+    let controller = AppTrafficWindowController()
+    controller.show(report: loadFixture("apptraffic.json", as: AppTrafficReport.self))
+    capture(windowTitled("Traffic by App"), as: "apptraffic")
+}
+
+// —— Set Up a New Server(无数据,纯表单)——
+do {
+    let controller = DeployWindowController()
+    controller.show()
+    capture(windowTitled("Set Up a New Server"), as: "deploy")
 }
 
 print("macOS menu snapshots written")
