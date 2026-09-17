@@ -960,6 +960,55 @@ UDP 框**不**门控(旧 Guardian 一直处理得对,加门等于在那道门本
 **按错名字永久落盘**);`Test All` 对只有一台的清单不再什么都不发生;两个改清单的
 动词在拨号之前**自己再查一遍能力门**(`NSMenu.popUp` 是嵌套事件循环,画出 `⋯` 到点
 下去之间窗口可能已被重画);删除确认框说得出「这一台此刻正在承载你的流量」。
+## 菜单窗口第一次有了闸门:离屏快照(2026-09-17)
+
+**「菜单那半 Go 测试一行都盖不到」这句话从今天起不再成立。** 它一直是本文件里
+「真机未验」清单最长的那一段,而它成立的前提只是**没人试过**:
+
+- `NSView.cacheDisplay(in:to:)` **不需要窗口上屏**就能把视图树渲染成位图;
+- `.prohibited` 激活策略下 `makeKeyAndOrderFront` 实测 `occlusionState = hidden`、
+  `app.isActive = false` —— 窗口不画到屏幕上、不抢焦点,**可以在人正常工作时跑**。
+
+`scripts/snapshot-macos-menu.sh` 走的是**真实路径**:真实 wire JSON →
+真实 `RuleList` 解码 → 真实 `ruleGroupRows`/`ruleRows` → 真实 `RulesWindowController`
+→ 离屏 PNG + 视图树 dump。另写一份渲染代码就是这个仓库最忌讳的「两份清单」。
+
+**两种产物,用途不同,别混**:
+- **PNG 给人(和给能读图的 agent)看** —— 布局、截断、对齐、空状态。
+  它**不适合当闸门**:像素比对换个系统版本字体一变就全红,而一个会偶发红的闸门
+  比没有闸门更糟。
+- **视图树 dump 给守卫看** —— 每个控件的 frame 与右边界。「控件超出了内容宽度」
+  是确定性判定,不是审美问题。
+
+**判据量的是 alignment rect 不是 frame**:Auto Layout 定位用前者,而 `NSTextField`
+的 frame 比它每边大 2pt(焦点环)。按 frame 量会让每个标签都「越界 2pt」,
+于是闸门恒红。**内边距由 dump 自己报出来,守卫不写魔法数字** —— 判「行活在内边距
+里面」而不是「别超过窗口宽度」,后者会放过下面那个真实缺陷,因为它确实没有超过。
+
+**它抓到的第一个缺陷,也是它存在的理由**:规则窗口的 `Show`/`Hide` 按钮
+`maxX = 420`,正好压在窗口右边缘(内边距本该 18),被滚动条盖掉半个、点不到。
+根因是**五扇窗口各抄了一份布局组装**,而那份拷贝里的行从不被钉到容器宽度 ——
+竖直 stack 的 `.leading` 对齐让每行按**固有宽度**布局,压缩永远不触发,
+AppKit 就老老实实把它画到窗口外面,**而且不报错**。
+
+判据收进 `apps/macos/BxMenu/Sources/BxMenu/MenuLayout.swift`(`makeScrollingStack`
++ `pinToEdges` + `addFullWidthRow`),五扇窗口共用一份。**两条守卫都要**:
+`TestMacMenuWindowsKeepEveryControlInsideTheContentWidth` 抓**结果**(只覆盖今天
+有 fixture 的那扇),`TestMacMenuWindowsUseTheSharedFullWidthRowPrimitive` 抓**成因**
+(对每扇 `*Window.swift` 都成立)—— 少了成因那条,新加的窗口会静默地带着同一个
+缺陷出生;成因那条当场就抓到了我自己漏掉的第五扇(`DeployWindow.swift`)。
+
+**加一扇窗口的成本是一份 fixture 加十来行**,清单在 `Snapshots/main.swift` 里。
+今天只覆盖 Routing Rules —— 五扇共用同一套原语,所以这一扇量到的结果对另外四扇
+有**指示性**,但那不等于验过了,**别把它读成验过了**。
+
+**仍然答不了的**:手感、动画、VoiceOver、跨 macOS 版本的控件差异;以及
+`NSStatusItem` 的那个菜单本身(它不是窗口,这条路够不着)。快照是静态的。
+
+**CI 能不能跑它是个待答的问题**:脚本在没有 WindowServer 时**明说 SKIPPED 并退 0**
+(「跑不了」与「跑了没过」必须分开),而 GitHub 的 macOS runner 到底属于哪一种,
+`macos-app` job 的输出就是答案 —— 第一次跑完记得回来把这句改成结论。
+
 ### 守卫的七种失效写法 → `docs/lessons/guard-antipatterns.md`
 
 **这个仓库最贵的一份方法论。** 七种写法此前散在本文件四个小节里(这一支三节、

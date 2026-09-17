@@ -130,6 +130,18 @@ if [ "$(uname -s)" = "Darwin" ]; then
 				|| { echo "菜单测试脚本未跑到收尾横幅 —— 可能中途 return 或套件被清空"; return 1; }
 		}
 		step "swift menu test suites" menu_tests
+		# 菜单窗口的**离屏快照**。这半边(AppKit)此前在 CI 里一行测试都盖不到,
+		# 于是「按钮跑到窗口外面去了」只能靠人盯着屏幕发现 —— 而那正是本仓库
+		# 「真机未验」清单里最长的一段。判据钉视图树(PNG 只给人看,像素比对
+		# 换个系统版本就全红),脚本没有 WindowServer 时明说 SKIPPED。
+		# **两个条件都要满足**,理由与 menu_tests 那段一字不差。
+		menu_snapshots() {
+			bash scripts/snapshot-macos-menu.sh >/dev/null || return 1
+			bash scripts/snapshot-macos-menu.sh 2>/dev/null \
+				| grep -qE '^(macOS menu snapshots passed|SKIPPED:)' \
+				|| { echo "快照脚本未跑到收尾横幅 —— 可能中途 exit 0 而一个窗口都没渲染"; return 1; }
+		}
+		step "macos menu snapshots" menu_snapshots
 	else
 		skip "swift build + menu suites" "swift 未安装"
 	fi

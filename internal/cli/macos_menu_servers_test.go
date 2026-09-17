@@ -592,8 +592,14 @@ func TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty(t *testing.T) {
 	}
 
 	// 按钮带必须在**顶层**摆进视图树:深度 0 = 任何 if / for 都管不着它。
-	bar := "stack.addArrangedSubview(buttonBar())"
-	at := strings.Index(body, bar)
+	// 写法认全(viewPlacementCallees):只认一种的守卫会在换共用原语那天假红。
+	at := -1
+	for _, callee := range viewPlacementCallees {
+		if i := strings.Index(body, "stack."+callee+"(buttonBar())"); i >= 0 {
+			at = i
+			break
+		}
+	}
 	if at < 0 {
 		t.Fatal("按钮带压根没进视图树 —— 守卫已经失效,先修守卫")
 	}
@@ -709,6 +715,26 @@ func swiftBlockAt(body string, at int) string {
 
 // swiftCallArgs 取 body 里每一次 `callee(` 的实参原文(按括号配平取,所以嵌套
 // 调用不会被截断)。
+// viewPlacementCallees 是「把一个视图摆进视图树」的**全部**写法。
+//
+// 2026-09-17 加了共用原语 addFullWidthRow(MenuLayout.swift):竖直表里的行不再
+// 裸调 addArrangedSubview —— 那样每行按固有宽度布局,塞不下时整行溢出到窗口
+// 外面,行尾按钮点不到(真实缺陷,离屏快照量出来的)。
+//
+// **判据必须认全。** 只认旧名字的那一刻,一批「这句话被摆出来了吗」的守卫会
+// 集体假红:改名当次实测红了 6 条,而它们守的东西一个字都没变。清单放一处,
+// 加第三种写法时只改这里。
+var viewPlacementCallees = []string{"addArrangedSubview", "addFullWidthRow"}
+
+// swiftPlacementArgs 收集 body 里所有「摆进视图树」的调用实参。
+func swiftPlacementArgs(body string) []string {
+	var args []string
+	for _, callee := range viewPlacementCallees {
+		args = append(args, swiftCallArgs(body, callee)...)
+	}
+	return args
+}
+
 func swiftCallArgs(body, callee string) []string {
 	blank := blankSwiftStringLiterals(body)
 	var out []string
@@ -834,7 +860,7 @@ func swiftValueReachesViewTree(body, seed string) bool {
 			}
 		}
 	}
-	for _, arg := range swiftCallArgs(scope, "addArrangedSubview") {
+	for _, arg := range swiftPlacementArgs(scope) {
 		for _, name := range names {
 			if swiftMentionsIdentifier(arg, name) {
 				return true
@@ -984,7 +1010,7 @@ func TestMacMenuServersWindowPlacesTheCurrentServerPanel(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 render 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	if !strings.Contains(body, "stack.addArrangedSubview(currentPanelView(panel))") {
+	if !swiftPlacesValue(body, "currentPanelView(panel)") {
 		t.Error("当前那一块没被摆进视图树 —— 只有一台服务器的用户看不到自己在哪台上")
 	}
 	panel, ok := swiftFunctionBody(window, "private func currentPanelView(_ panel: CurrentServerPanel) -> NSView")

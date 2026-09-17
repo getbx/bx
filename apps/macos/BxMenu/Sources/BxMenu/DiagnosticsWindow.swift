@@ -103,13 +103,13 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         // **顺序即索引**:showChecks 选 0、showLogs 选 1,别调换。
         let checksItem = NSTabViewItem(identifier: "checks")
         checksItem.label = "Checks"
-        let (checksScroll, checksStack) = makeScrollingStack()
+        let (checksScroll, checksStack) = makePageStack()
         checksItem.view = hosting(checksScroll)
         tabs.addTabViewItem(checksItem)
 
         let logsItem = NSTabViewItem(identifier: "logs")
         logsItem.label = "Logs"
-        let (logsScroll, logsStack) = makeScrollingStack()
+        let (logsScroll, logsStack) = makePageStack()
         logsItem.view = hosting(logsScroll)
         tabs.addTabViewItem(logsItem)
 
@@ -129,31 +129,14 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
 
     /// 一页的骨架:滚动视图 + 翻转的文档视图 + 竖栈。两页各调一次 —— 约束与此前
     /// 那份单页的完全一样,只是 `content` 换成对应 `NSTabViewItem` 的宿主视图。
-    private func makeScrollingStack() -> (NSScrollView, NSStackView) {
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        let clip = FlippedView()
-        clip.translatesAutoresizingMaskIntoConstraints = false
-        clip.addSubview(stack)
-        scroll.documentView = clip
-
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: clip.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: clip.bottomAnchor),
-            clip.widthAnchor.constraint(equalTo: scroll.widthAnchor),
-        ])
-        return (scroll, stack)
+    /// 一页的骨架。组装走共用原语(MenuLayout.swift):四扇窗口此前各抄了一份,
+    /// 而那份拷贝里有同一个缺陷 —— 行没被钉到容器宽度,塞不下时整行溢出到窗口
+    /// 外面,行尾按钮点不到(2026-09-17 离屏快照量出来的)。挂载在 hosting() 里。
+    private func makePageStack() -> (NSScrollView, NSStackView) {
+        makeScrollingStack(
+            insets: NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18),
+            spacing: 8
+        )
     }
 
     private func hosting(_ scroll: NSScrollView) -> NSView {
@@ -201,16 +184,16 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         guard let stack = checksStack else { return }
         clear(stack)
         guard doctorCapable else {
-            stack.addArrangedSubview(hint("This version of bx Guardian does not provide checks."))
+            stack.addFullWidthRow(hint("This version of bx Guardian does not provide checks."))
             return
         }
-        stack.addArrangedSubview(hint("No checks yet."))
-        stack.addArrangedSubview(gap())
+        stack.addFullWidthRow(hint("No checks yet."))
+        stack.addFullWidthRow(gap())
         let now = NSButton(title: "Check Now", target: self, action: #selector(runAgain))
         now.bezelStyle = .rounded
         now.controlSize = .small
         now.toolTip = "Asks bx to check now. This probes your server once, outside the tunnel."
-        stack.addArrangedSubview(now)
+        stack.addFullWidthRow(now)
     }
 
     /// Logs 页在拉到日志之前的样子。同一条:说一句 + 给一个出口。
@@ -218,16 +201,16 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         guard let stack = logsStack else { return }
         clear(stack)
         guard logsCapable else {
-            stack.addArrangedSubview(hint("This version of bx Guardian does not provide logs."))
+            stack.addFullWidthRow(hint("This version of bx Guardian does not provide logs."))
             return
         }
-        stack.addArrangedSubview(hint("No logs loaded yet."))
-        stack.addArrangedSubview(gap())
+        stack.addFullWidthRow(hint("No logs loaded yet."))
+        stack.addFullWidthRow(gap())
         let load = NSButton(title: "Load Logs", target: self, action: #selector(loadLogs))
         load.bezelStyle = .rounded
         load.controlSize = .small
         load.toolTip = "Reads the tail of bx's own logs."
-        stack.addArrangedSubview(load)
+        stack.addFullWidthRow(load)
     }
 
     @objc private func loadLogs() {
@@ -242,13 +225,13 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         checksRendered = true
         let summary = NSTextField(labelWithString: doctorSummaryLine(report.checks))
         summary.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-        stack.addArrangedSubview(summary)
+        stack.addFullWidthRow(summary)
         var subtitle = doctorCheckedAtLine(Date())
         if !report.version.isEmpty {
             subtitle = "bx \(report.version) · " + subtitle
         }
-        stack.addArrangedSubview(hint(subtitle))
-        stack.addArrangedSubview(gap())
+        stack.addFullWidthRow(hint(subtitle))
+        stack.addFullWidthRow(gap())
         for check in sortedDoctorChecks(report.checks) {
             let row = NSStackView()
             row.orientation = .horizontal
@@ -277,22 +260,22 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
                 detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 row.addArrangedSubview(detail)
             }
-            stack.addArrangedSubview(row)
+            stack.addFullWidthRow(row)
             // 行宽跟着栈走(减去左右 18pt 的 edgeInsets),与 renderLogs 里那条
             // `text.widthAnchor…constant: -36` 同一个写法。
             row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -36).isActive = true
             if !check.hint.isEmpty {
                 let h = hint("→ " + check.hint)
                 h.textColor = .tertiaryLabelColor
-                stack.addArrangedSubview(h)
+                stack.addFullWidthRow(h)
             }
         }
-        stack.addArrangedSubview(gap())
+        stack.addFullWidthRow(gap())
         let again = NSButton(title: "Run again", target: self, action: #selector(runAgain))
         again.bezelStyle = .rounded
         again.controlSize = .small
         again.toolTip = "Asks bx to check again. This probes your server once, outside the tunnel."
-        stack.addArrangedSubview(again)
+        stack.addFullWidthRow(again)
         scrollToTop(checksScroll)
     }
 
@@ -324,16 +307,16 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             let banner = NSTextField(labelWithString: "Highlighting lines that mention \(code).")
             banner.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
             banner.textColor = .secondaryLabelColor
-            stack.addArrangedSubview(banner)
+            stack.addFullWidthRow(banner)
         }
         for tail in report.logs {
-            stack.addArrangedSubview(header("\(tail.name)  ·  \(tail.path)"))
+            stack.addFullWidthRow(header("\(tail.name)  ·  \(tail.path)"))
             if !tail.unavailable.isEmpty {
-                stack.addArrangedSubview(hint("Not available: \(tail.unavailable)"))
+                stack.addFullWidthRow(hint("Not available: \(tail.unavailable)"))
                 continue
             }
             if tail.lines.isEmpty {
-                stack.addArrangedSubview(hint("This log is empty."))
+                stack.addFullWidthRow(hint("This log is empty."))
                 continue
             }
             let marks = logLinesMatching(tail.lines, code: code)
@@ -361,7 +344,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             text.translatesAutoresizingMaskIntoConstraints = false
             // 水平抗压缩降到最低:窗口变窄时让它折行,而不是把栈顶出去。
             text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            stack.addArrangedSubview(text)
+            stack.addFullWidthRow(text)
             // 宽度跟着栈走(减去左右 18pt 的 edgeInsets),这是它知道该在哪折行的
             // 唯一依据 —— 少了它 wrappingLabel 会按自己的内在宽度摊成一行。
             text.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -36).isActive = true
@@ -370,7 +353,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         export.bezelStyle = .rounded
         export.controlSize = .small
         export.toolTip = "Runs bx doctor in Terminal and collects a diagnostics folder you can share."
-        stack.addArrangedSubview(export)
+        stack.addFullWidthRow(export)
         scrollToTop(logsScroll)
     }
 

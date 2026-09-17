@@ -113,38 +113,14 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         window.center()
         window.delegate = self
 
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        // **必须是翻转坐标系。** NSView 默认原点在左下,于是文档视图比可视区
-        // 小时内容会**沉到窗口底部** —— 真机截图上那一大片空白就是这么来的,
-        // 它看起来像刻意的留白,其实是坐标系。
-        let clip = FlippedView()
-        clip.translatesAutoresizingMaskIntoConstraints = false
-        clip.addSubview(stack)
-        scroll.documentView = clip
-
         guard let content = window.contentView else { return window }
-        content.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: content.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: clip.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: clip.bottomAnchor),
-            clip.widthAnchor.constraint(equalTo: scroll.widthAnchor),
-        ])
+        // 组装走共用原语(MenuLayout.swift):四扇窗口此前各抄一份,而那份拷贝里
+        // 有一个「行溢出到窗口外面、行尾按钮点不到」的缺陷,四处一模一样。
+        let (scroll, stack) = makeScrollingStack(
+            insets: NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18),
+            spacing: 10
+        )
+        pinToEdges(scroll, in: content)
         self.stack = stack
         self.scroll = scroll
         self.window = window
@@ -198,8 +174,8 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             note.textColor = .secondaryLabelColor
             note.lineBreakMode = .byWordWrapping
             note.preferredMaxLayoutWidth = 380
-            stack.addArrangedSubview(note)
-            stack.addArrangedSubview(gap())
+            stack.addFullWidthRow(note)
+            stack.addFullWidthRow(gap())
         }
 
         // **两块之间要有分界。** 2026-09-14 真机反馈:三行组(Apple / China CDN /
@@ -208,29 +184,29 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         // 「分类要清晰……用户是否可以简单勾选」。
         if !lastGroupRows.isEmpty {
             let presetsHeading = sectionHeading("Presets")
-            stack.addArrangedSubview(presetsHeading)
+            stack.addFullWidthRow(presetsHeading)
             for row in lastGroupRows {
-                stack.addArrangedSubview(groupRow(row))
+                stack.addFullWidthRow(groupRow(row))
             }
         }
 
         let entries = ruleTableEntries(rows: lastRuleRows, pending: pendingRemovals)
         if !entries.isEmpty {
-            stack.addArrangedSubview(gap())
+            stack.addFullWidthRow(gap())
             // 数量写进标题:一眼看出下面这一长串是「你自己加的」,而不是预设的一部分。
             let customHeading = sectionHeading("Your own rules (\(lastRuleRows.count))")
-            stack.addArrangedSubview(customHeading)
+            stack.addFullWidthRow(customHeading)
             for entry in entries {
                 switch entry {
                 case .rule(let row):
-                    stack.addArrangedSubview(ruleRow(row))
+                    stack.addFullWidthRow(ruleRow(row))
                 case .removed(let kind, let pattern):
-                    stack.addArrangedSubview(removedRow(kind: kind, pattern: pattern))
+                    stack.addFullWidthRow(removedRow(kind: kind, pattern: pattern))
                 }
             }
         }
 
-        stack.addArrangedSubview(gap())
+        stack.addFullWidthRow(gap())
         let footer = NSStackView()
         footer.orientation = .horizontal
         footer.spacing = 8
@@ -244,7 +220,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             reveal.controlSize = .small
             footer.addArrangedSubview(reveal)
         }
-        stack.addArrangedSubview(footer)
+        stack.addFullWidthRow(footer)
 
         if let offset, let scroll {
             // **先布局再滚。** 少了这一步滚的是按旧内容算出来的坐标,于是
@@ -264,6 +240,11 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         box.orientation = .horizontal
         box.alignment = .firstBaseline
         box.spacing = 8
+        // **.fill 而不是默认的 .gravityAreas。** 后者不拉伸任何东西,于是副标题短的
+        // 那一行(Steam「4 domains」)整行左packed,行尾的 1/11 与 Show 落在
+        // 一个比别行靠左得多的位置 —— 同一列的东西出现在两个 x 上。
+        // .fill 把余量交给 hugging 最低的那一根(副标题),行尾因此对齐成一列。
+        box.distribution = .fill
 
         let pattern = NSTextField(labelWithString: row.pattern)
         pattern.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
@@ -409,8 +390,12 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         // 半装的组用 mixed 状态显示 —— 它既不是开也不是关,而勾选框恰好有第三态。
         toggle.allowsMixedState = row.isMixed
         toggle.state = row.isOn ? .on : (row.isMixed ? .mixed : .off)
+        // **勾选框按自己的固有宽度,别吸收整行的余量。** 行钉成全宽之后,多出来
+        // 的空间会被 hugging 优先级最低的那个控件吃掉;此前是勾选框,于是短副标题
+        // 的那一行(Steam「4 domains」)会被推到右边,而长副标题的行紧跟标题 ——
+        // 同一列的东西落在两个位置上。弹性的那一根应当是副标题,它本来就可截断。
+        toggle.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         box.addArrangedSubview(toggle)
-        box.setHuggingPriority(.defaultLow, for: .horizontal)
 
         // **副标题回答「我该不该勾它」。** 摆在同一行里、不另起一行:上一版正是
         // 「勾选框下面缩进一行小字」,而那行多半是空的 —— 一屏参差不齐的留白就是
@@ -420,6 +405,10 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         subtitle.textColor = .secondaryLabelColor
         subtitle.lineBreakMode = .byTruncatingTail
         subtitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // 余量由它吸收。**优先级要压到比 .defaultLow 还低**:行里那个占位的空
+        // trailing 标签也是 .defaultLow,两者平手时 AppKit 谁都不拉,于是短副标题
+        // 的行整行左packed、行尾控件落在比别行靠左得多的位置。
+        subtitle.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         box.addArrangedSubview(subtitle)
 
         let trailing = NSTextField(labelWithString: row.trailing ?? "")
@@ -441,6 +430,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         disclose.bezelStyle = .inline
         disclose.controlSize = .small
         disclose.identifier = NSUserInterfaceItemIdentifier(name)
+        disclose.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         disclose.isHidden = row.group.domains.isEmpty
         box.addArrangedSubview(disclose)
 

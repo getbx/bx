@@ -281,6 +281,17 @@ func swiftBlockRange(source, marker string) (int, int, bool) {
 // 两件事 —— `let _ = appTrafficApproximateNote` 能满足前者而小字从窗口消失
 // (审查实测全绿)。要证明它被画出来,判据只能是「它出现在某一次
 // addArrangedSubview 的实参里」。
+// swiftPlacementArguments 与 swiftPlacementArgs 同义,只是这一支用的是
+// swiftCallArguments 那个解析器。清单共用 viewPlacementCallees —— 两份名字清单
+// 会漂,而漂了之后这些守卫会安静地少看一种写法。
+func swiftPlacementArguments(source string) []string {
+	var args []string
+	for _, callee := range viewPlacementCallees {
+		args = append(args, swiftCallArguments(source, callee)...)
+	}
+	return args
+}
+
 func swiftCallArguments(source, callee string) []string {
 	// 同上:**圆括号也只在抹白副本上数**。`hint("(")` 里那个括号不是结构,
 	// 把它当结构会让一次调用的实参吞掉后面整段源码(假绿),或者让一个合法的
@@ -559,7 +570,7 @@ func TestMacMenuAppTrafficWindowSaysByteCountsAreApproximate(t *testing.T) {
 	// 会满足它,而小字仍然不在窗口上。同一个根因修一处漏两处是这个仓库的老形状,
 	// 所以这里跟着改到只剩代码的那一份。
 	window := menuAppTrafficWindowCode(t)
-	args := swiftCallArguments(window, "addArrangedSubview")
+	args := swiftPlacementArguments(window)
 	if len(args) == 0 {
 		t.Fatal("在 AppTrafficWindow.swift 里一次 addArrangedSubview 都没解析出来 —— " +
 			"守卫读不懂现在的代码了,先修守卫")
@@ -1007,7 +1018,7 @@ func TestMacMenuAppTrafficWindowDrawsAppIcons(t *testing.T) {
 		t.Fatal("appCell 里找不到「把 icon(for:) 的结果绑给一个名字」这一句 —— " +
 			"守卫读不懂现在的代码了,先修守卫(别删)")
 	}
-	if !strings.Contains(appCell, "addArrangedSubview("+bind[1]+")") {
+	if !swiftPlacesValue(appCell, bind[1]) {
 		t.Errorf("取到的图标 %q 没有被放进视图树 —— 丢弃返回值不会有编译错误,"+
 			"而那一列会一个图标都没有,窗口看起来完全正常", bind[1])
 	}
@@ -1142,7 +1153,7 @@ func TestMacMenuAppTrafficWindowFeedsRatesIntoRendering(t *testing.T) {
 // 标识符」证明不了它被画出来(`let _ = note` 就能满足)。
 func TestMacMenuAppTrafficWindowShowsTheApproximateNote(t *testing.T) {
 	window := menuAppTrafficWindowCode(t)
-	args := swiftCallArguments(window, "addArrangedSubview")
+	args := swiftPlacementArguments(window)
 	if len(args) == 0 {
 		t.Fatal("在 AppTrafficWindow.swift 里一次 addArrangedSubview 都没解析出来 —— " +
 			"守卫读不懂现在的代码了,先修守卫")
@@ -1353,4 +1364,14 @@ func TestMacMenuWiFiSignInNeverTouchesProtection(t *testing.T) {
 				"外加一个可能悄悄违约的自动重新武装)", forbidden.why, forbidden.needle)
 		}
 	}
+}
+
+// swiftPlacesValue 判「这个绑定被摆进了视图树」,认全部写法(见 viewPlacementCallees)。
+func swiftPlacesValue(body, name string) bool {
+	for _, callee := range viewPlacementCallees {
+		if strings.Contains(body, callee+"("+name+")") {
+			return true
+		}
+	}
+	return false
 }

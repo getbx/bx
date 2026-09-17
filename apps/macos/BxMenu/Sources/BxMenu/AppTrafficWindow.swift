@@ -135,49 +135,15 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         window.center()
         window.delegate = self
 
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        // **必须是翻转坐标系**(与 ServersWindow 同一个坑):NSView 默认原点在
-        // 左下,文档视图比可视区小时内容会沉到窗口底部,看起来像刻意的留白。
-        let clip = FlippedView()
-        clip.translatesAutoresizingMaskIntoConstraints = false
-        clip.addSubview(stack)
-        scroll.documentView = clip
-
-        // **搜索框在这里创建一次,不在 render() 里** —— 见 `searchField` 头上那段。
-        let search = NSSearchField()
-        search.translatesAutoresizingMaskIntoConstraints = false
-        search.placeholderString = "Filter by app, destination, or rule"
-        search.sendsSearchStringImmediately = true
-        search.delegate = self
-        self.searchField = search
-
         guard let content = window.contentView else { return window }
-        content.addSubview(search)
-        content.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            search.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
-            search.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
-            search.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
-            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 8),
-            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: clip.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: clip.bottomAnchor),
-            clip.widthAnchor.constraint(equalTo: scroll.widthAnchor),
-        ])
+        // 组装走共用原语(MenuLayout.swift)。四扇窗口此前各抄了一份,
+        // 而那份拷贝里有同一个缺陷:行没被钉到容器宽度,塞不下时整行溢出
+        // 到窗口外面,行尾按钮点不到 —— 2026-09-17 离屏快照量出来的。
+        let (scroll, stack) = makeScrollingStack(
+            insets: NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18),
+            spacing: 8
+        )
+        pinToEdges(scroll, in: content)
         self.stack = stack
         self.window = window
         return window
@@ -205,19 +171,19 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
             let banner = NSTextField(labelWithString: staleNotice)
             banner.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
             banner.textColor = .systemOrange
-            stack.addArrangedSubview(banner)
-            stack.addArrangedSubview(gap())
+            stack.addFullWidthRow(banner)
+            stack.addFullWidthRow(gap())
         }
 
         let rows = report.rows(query: query)
         // 有应用行就摆成一张表(数字右对齐、跨组对得上);三种「空」那几句
         // 说明没有列可对齐,原样一行一行摆。
         if rows.contains(where: { if case .entry = $0 { return true }; return false }) {
-            stack.addArrangedSubview(grid(for: rows))
+            stack.addFullWidthRow(grid(for: rows))
         } else {
             for row in rows {
                 if case .notice(let text) = row {
-                    stack.addArrangedSubview(NSTextField(labelWithString: text))
+                    stack.addFullWidthRow(NSTextField(labelWithString: text))
                 }
             }
         }
@@ -226,10 +192,10 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         // 复用 —— 上一条连接的残留字节会算到新连接头上。spec 明写「界面不该把
         // 它显示成精确账」;那句话本身(以及它为什么必须点明端口复用)住在
         // AppTrafficModel 的常量里,由 Swift 套件钉住。
-        stack.addArrangedSubview(gap())
-        stack.addArrangedSubview(hint(appTrafficApproximateNote))
+        stack.addFullWidthRow(gap())
+        stack.addFullWidthRow(hint(appTrafficApproximateNote))
         if ruleEditingAvailable {
-            stack.addArrangedSubview(hint(appTrafficRuleHint))
+            stack.addFullWidthRow(hint(appTrafficRuleHint))
         }
         // **第二句小字同样不是可选的。** 窗口打开之前就已经建好的连接由种子播进
         // 缓冲,而种子把一个 socket 上并存的多条流压成一条 —— 于是它们只会出现在

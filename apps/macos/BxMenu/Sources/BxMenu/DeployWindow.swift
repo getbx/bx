@@ -49,45 +49,45 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         // 三个框、每个一句占位符,比「标签 + 空框」少一半行数而信息一样多。
         let host = field(placeholder: "Server address — 1.2.3.4 or an ssh_config alias")
         hostField = host
-        stack.addArrangedSubview(host)
+        stack.addFullWidthRow(host)
 
         let user = field(placeholder: "SSH login")
         user.stringValue = "root"
         userField = user
-        stack.addArrangedSubview(user)
+        stack.addFullWidthRow(user)
 
         let name = field(placeholder: "Name it in your list (optional)")
         nameField = name
-        stack.addArrangedSubview(name)
+        stack.addFullWidthRow(name)
         // **这一行留着,而且是两个事实合成一行。**
         //
         // 「装好一台不等于用它」是用户在这个表单上最容易搞错的;
         // 「bx 看不到你的密码」是一次**安全披露** —— 我一度把它挪进按钮的
         // tooltip,那是错的:装饰可以删,披露不行,而 tooltip 要悬停才看得到。
         // 合成一行之后既没多占地方,两件事也都还在。
-        stack.addArrangedSubview(caption(
+        stack.addFullWidthRow(caption(
             "Your current exit does not change. bx never sees your SSH password."))
 
-        stack.addArrangedSubview(gap())
+        stack.addFullWidthRow(gap())
         let preview = caption("")
         preview.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
         // 用户看得见将要执行的那条命令 —— 一个会 ssh 到别人机器上装东西的动作,
         // 不该在别处解释过就算数。
         preview.isSelectable = true
         self.preview = preview
-        stack.addArrangedSubview(preview)
+        stack.addFullWidthRow(preview)
 
 
         let problem = caption("")
         problem.textColor = .systemRed
         self.problem = problem
-        stack.addArrangedSubview(problem)
+        stack.addFullWidthRow(problem)
 
         let run = NSButton(title: "Open in Terminal", target: self, action: #selector(run))
         run.bezelStyle = .rounded
         run.toolTip = deployCredentialNote
         run.keyEquivalent = "\r"
-        stack.addArrangedSubview(run)
+        stack.addFullWidthRow(run)
 
         guard let content = window.contentView else { return window }
         content.addSubview(stack)
