@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"context"
-	"runtime"
 	"testing"
 )
 
@@ -28,10 +27,14 @@ func TestLookupRouteNeverReturnsAnEmptyAnswerAsSuccess(t *testing.T) {
 }
 
 // 没有实现的平台必须明确报错,而不是零值冒充。
+//
+// **分支判据取常量,不取手抄的 GOOS 清单。** 原来那份清单只列了 darwin/linux,
+// 而 route_lookup_windows.go 落地之后它就成了假话:windows 上这条守卫会去
+// 断言「必须报错」,而实现好好地答了出来 —— 一条红在与缺陷完全无关处的测试。
+// 常量住在各实现文件里、跟着实现走,新加一个平台时漏写它连编译都过不去。
 func TestLookupRouteIsExplicitlyUnsupportedWhereItIsNotImplemented(t *testing.T) {
-	switch runtime.GOOS {
-	case "darwin", "linux":
-		t.Skip("这两个平台有实现,行为由上面那条守卫覆盖")
+	if lookupRouteSupported {
+		t.Skip("本平台有实现,行为由上面那条守卫覆盖")
 	}
 	if _, err := LookupRoute(context.Background(), "1.1.1.1", false); err == nil {
 		t.Error("没有实现的平台必须返回错误,不得静默返回零值")

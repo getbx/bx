@@ -43,9 +43,16 @@ func TestWinsockLocalDialFailuresAreNotReportedAsTheServerNotAnswering(t *testin
 			}
 		}
 		err := diagnoseUnhealthyTunnel(context.Background(), addr, dialer, cause)
-		if got := StartFailureCode(err); got != StartFailureTunnelUndetermined {
+		// **期望的是 …LocalDial 那个码,与 darwin/linux 那条兄弟测试一字同源。**
+		// 它此前停在更笼统的 StartFailureTunnelUndetermined 上 —— 「五种结局」
+		// 那一轮给「SYN 没离开本机」单独立了码,而这条测试没跟上。
+		// **没跟上的原因是它从来没被执行过**:verify.sh 对 Windows 只 typecheck
+		// (编得过就绿),而 CI 的 windows 腿在别的事情上红着,于是没人看见。
+		// 一条编得过、看起来对、却一次都没跑过的守卫,与没有这条守卫一样。
+		if got := StartFailureCode(err); got != StartFailureTunnelUndeterminedLocalDial {
 			t.Fatalf("%s 分类成 %q,want %q —— 这次失败发生在本机,SYN 一个都没出去,\n"+
-				"说「那台服务器没有应答」是替一个我们根本没做过的观测下结论", tc.name, got, StartFailureTunnelUndetermined)
+				"说「那台服务器没有应答」是替一个我们根本没做过的观测下结论",
+				tc.name, got, StartFailureTunnelUndeterminedLocalDial)
 		}
 	}
 
