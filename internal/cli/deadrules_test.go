@@ -77,9 +77,11 @@ func TestDoctorSaysWhyDeadRulesWereNotChecked(t *testing.T) {
 			name: "拿不到历史",
 			in: rulereview.Input{
 				Direct: []string{"*.x.example"}, History: nil,
-				HistorySkipReason: "Core 没在跑",
+				// 调用方给的理由**原样透传**(生产里今天没有任何地方设它,
+				// 一直走 deadGate 的兜底;这一条钉的是"给了就用给的那句")。
+				HistorySkipReason: "Core is not running",
 			},
-			want: "Core 没在跑",
+			want: "Core is not running",
 		},
 		{
 			name: "跟踪表满过",
@@ -88,7 +90,7 @@ func TestDoctorSaysWhyDeadRulesWereNotChecked(t *testing.T) {
 				HistoryUptime: 15 * 24 * time.Hour, HistoryDecisions: 25_000,
 				HistoryOverflowed: true,
 			},
-			want: "满",
+			want: "overflowed",
 		},
 		{
 			name: "门槛还没到",
@@ -96,7 +98,7 @@ func TestDoctorSaysWhyDeadRulesWereNotChecked(t *testing.T) {
 				Direct: []string{"*.x.example"}, History: map[rulereview.RuleKey]rulereview.RuleCounts{},
 				HistoryUptime: time.Hour, HistoryDecisions: 3,
 			},
-			want: "不足",
+			want: "short of",
 		},
 	}
 	for _, tc := range cases {

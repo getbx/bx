@@ -301,11 +301,11 @@ func TestRiskyRuleGetsAWarnLineNamingTheRule(t *testing.T) {
 
 // 「没查」不许长得像「零条」。
 func TestNotCheckedBuiltinListSaysSo(t *testing.T) {
-	rep := rulereview.NewReport(nil, false, "global 模式下内建 china 列表整个不生效,这一类没有比对")
+	rep := rulereview.NewReport(nil, false, "in global mode the built-in china list does not apply at all, so this class was not compared")
 	lines := ruleReviewDoctorLines(rep)
 	var said bool
 	for _, l := range lines {
-		if strings.Contains(l.Value, "没有比对") || strings.Contains(l.Value, "不生效") {
+		if strings.Contains(l.Value, "was not compared") || strings.Contains(l.Value, "does not apply") {
 			said = true
 		}
 	}

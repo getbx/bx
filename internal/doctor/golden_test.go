@@ -47,13 +47,13 @@ func goldenRuleReview() rulereview.Report {
 	return rulereview.Report{
 		Findings: []rulereview.Finding{
 			{Kind: "direct", Rule: "*.a.example", Class: rulereview.ClassOverriddenByOppositeKind, Summary: "被更宽的 proxy 规则压住", CoveredBy: "*.example"},
-			{Kind: "direct", Rule: "*.aliyuncs.com", Class: rulereview.ClassRisky, Summary: "公有云开放子域,直连会把你单独认出来"},
+			{Kind: "direct", Rule: "*.aliyuncs.com", Class: rulereview.ClassRisky, Summary: "an open-subdomain cloud platform; going direct lets you be singled out"},
 		},
 		OverriddenCount:    1,
 		DeadChecked:        false,
-		DeadSkipReason:     "Core 没在跑,拿不到累计判定数",
+		DeadSkipReason:     "Core is not running, so cumulative decision counts are unavailable",
 		BuiltinListChecked: false,
-		BuiltinSkipReason:  "global 模式下 china 列表整个不生效",
+		BuiltinSkipReason:  "in global mode the china list does not apply at all",
 	}
 }
 

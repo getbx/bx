@@ -324,7 +324,7 @@ func TestMacMenuRulesWindowFollowsAmbientRefreshButNeverSuppressesAnExplicitOpen
 //
 // 菜单按字面量分派三件事(排序、上色、那句英文说明),而两侧没有任何东西把它们
 // 系在一起:把 `ClassRisky.String()` 改成别的词,`ruleRowNoteIsSevere` 会把去
-// 匿名化那一行画成橙色的建议、`ruleVerdictText` 回落成「bx flagged this rule
+// 匿名化那一行画成橙色的建议、那句说明回落成「bx flagged this rule
 // (…)」,**而两个套件全绿**。这正是本仓库反复出现的形状:守卫钉住的是缺陷旁边
 // 的东西。
 //
@@ -389,9 +389,14 @@ func readMenuRuleClassLiterals(t *testing.T) map[string]bool {
 	t.Helper()
 	source := stripSwiftComments(readMenuSwiftSource(t, "RulesModel.swift"))
 	out := map[string]bool{}
+	// **2026-09-17 起只剩排序这一个。** 此前还读 `ruleVerdictText` ——
+	// 那时菜单按 class 在客户端另写一份英文文案,于是"说什么"和"排在哪"两处
+	// 都枚举 class。判据文案改成英文之后那份被删掉了(同一句判断不许写两遍),
+	// "每一类说一句属于自己的话"改由 Go 侧的
+	// TestEveryClassSaysSomethingOfItsOwn 钉住 —— **判据搬了家,守卫跟着搬**。
+	// 这里仍然管着"排在哪":新加一类而菜单没跟上,它照旧会红。
 	for _, sig := range []string{
 		"func ruleRowSeverity(_ row: RuleRow) -> Int",
-		"func ruleVerdictText(_ finding: RuleFinding) -> String",
 	} {
 		body, ok := swiftFunctionBody(source, sig)
 		if !ok {

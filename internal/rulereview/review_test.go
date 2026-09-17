@@ -273,10 +273,10 @@ func TestProxyRuleHittingChinaListIsCalledAnException(t *testing.T) {
 		t.Fatalf("want 1 条:%+v", rep.Findings)
 	}
 	s := rep.Findings[0].Summary
-	if !strings.Contains(s, "例外") {
+	if !strings.Contains(s, "exception in force") {
 		t.Errorf("proxy 那一支没有说清它是生效中的例外,got %q", s)
 	}
-	if strings.Contains(s, "没有额外作用") {
+	if strings.Contains(s, "adds nothing") {
 		t.Errorf("proxy 那一支照抄了 direct 的措辞 —— 会让用户删掉一条正在工作的规则:%q", s)
 	}
 }

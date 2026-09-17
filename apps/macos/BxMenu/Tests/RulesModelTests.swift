@@ -630,48 +630,42 @@ struct RulesModelTests {
 
     // 界面上那句话是**英文**,由 class 在本地映射;服务端那份 summary 是中文
     // (internal/rulereview 写的),转发它会让一段中文出现在通篇英文的菜单里。
-    static func testVerdictTextIsEnglishAndNeverEchoesTheServersProse() {
-        let chinese = "已在内建 china 直连列表里,这条手写的没有额外作用。"
+    // —— 判据只有一份:服务端说什么就显示什么(2026-09-17 反转)——
+    //
+    // 这条测试此前钉的是**相反**的性质:「绝不回显服务端那段散文」,因为那时
+    // internal/rulereview 写的是中文,而这个菜单通篇英文,界面上那句由本地的
+    // `ruleVerdictText` 按 class 另写一份。**判据文案改成英文之后那个理由不成立了**
+    // —— 同一句判断在两处各写一遍正是本仓库最贵的那条教训,于是本地那份连同它
+    // 守着的这条性质一起删掉,改为直接渲染 summary。
+    //
+    // **搬走的不变量要有人接住**:「每一类说一句属于自己的话」现在由 Go 侧的
+    // TestEveryClassSaysSomethingOfItsOwn 钉着(判据搬了家,守卫跟着搬)。
+    // 这里只剩客户端还答得了的那半:透传,以及**服务端没发时不许冒充看懂了**。
+    static func testVerdictTextPassesTheServerThroughAndFallsBackHonestly() {
+        let summary = "already on bx's built-in china direct list; this rule adds nothing."
         let finding = RuleFinding(
             kind: "direct", rule: "*.apple.com", cls: "shadowed_by_builtin_list",
-            summary: chinese, coveredBy: "*.apple.com")
+            summary: summary, coveredBy: "*.apple.com")
         let row = RuleRow(kind: .direct, pattern: "*.apple.com", failure: nil, verdict: finding)
         let detail = row.detail ?? ""
-        expect(!detail.contains(chinese), "服务端那段中文原样渲染了:\(detail)")
-        expect(detail.allSatisfy { $0.isASCII || $0 == "←" || $0 == "·" || $0 == "—" },
-               "这一行里有非英文字符:\(detail)")
+        expect(detail.contains(summary), "没有原样显示服务端那句话:\(detail)")
         expect(detail.contains("← *.apple.com"), "没说被谁盖住:\(detail)")
 
-        // proxy 命中内建列表是**生效中的例外**,不是冗余 —— 说反了就是叫用户
-        // 删掉一条正在把流量拉回隧道的规则。
-        let proxy = RuleFinding(
-            kind: "proxy", rule: "*.apple.com", cls: "shadowed_by_builtin_list",
-            summary: chinese, coveredBy: "*.apple.com")
-        expect(ruleVerdictText(proxy) != ruleVerdictText(finding),
-               "direct 与 proxy 命中内建列表说了同一句话")
-        expect(ruleVerdictText(proxy).lowercased().contains("exception"),
-               "proxy 那一句没说清它是生效中的例外:\(ruleVerdictText(proxy))")
-
-        // 五类都要有话说,而且各不相同。
-        var seen = Set<String>()
-        for cls in ["risky_direct", "shadowed_by_user_rule", "overridden_by_opposite_kind",
-                    "shadowed_by_builtin_list", "dead"] {
-            let text = ruleVerdictText(
-                RuleFinding(kind: "direct", rule: "r", cls: cls, summary: chinese, coveredBy: ""))
-            expect(!text.isEmpty, "\(cls) 没有话说")
-            expect(!text.contains(chinese), "\(cls) 回落成了服务端那段中文")
-            expect(seen.insert(text).inserted, "\(cls) 与另一类说了同一句话")
-        }
-
-        // 认不出的新类不许消失,也不许冒充自己看懂了 —— 把那个词原样带上。
-        let unknown = ruleVerdictText(
-            RuleFinding(kind: "direct", rule: "r", cls: "brand_new_class", summary: chinese, coveredBy: ""))
+        // 服务端没发 summary(旧 Guardian,或将来某一类忘了写)⇒ **把那个 class
+        // 原样带上,绝不冒充看懂了**。与 leakcheck 那条「问不出来就说问不出来」同向。
+        let unknown = verdictText(
+            RuleFinding(kind: "direct", rule: "r", cls: "brand_new_class", summary: "", coveredBy: ""))
         expect(unknown.contains("brand_new_class"), "认不出的类丢了那个词:\(unknown)")
-        expect(!unknown.contains(chinese), "认不出的类回落成了服务端那段中文")
-        // class 本身是空的(旧版没发这个键)也要说点什么,不能渲染成 "(…)" 。
-        let blank = ruleVerdictText(
-            RuleFinding(kind: "direct", rule: "r", cls: "", summary: chinese, coveredBy: ""))
+
+        // class 也是空的(旧版连这个键都没发)⇒ 仍要说点什么,不能渲染成半句话。
+        let blank = verdictText(
+            RuleFinding(kind: "direct", rule: "r", cls: "", summary: "", coveredBy: ""))
         expect(!blank.isEmpty && !blank.contains("()"), "空 class 渲染成了半句话:\(blank)")
+
+        // 只有空白的 summary 等于没发 —— 不许把一行空白当成一句结论摆出去。
+        let blankish = verdictText(
+            RuleFinding(kind: "direct", rule: "r", cls: "dead", summary: "   ", coveredBy: ""))
+        expect(blankish.contains("dead"), "全空白的 summary 被当成了一句话:\(blankish)")
     }
 
     // 一条**既被分类、又在成片失败**的规则要把两件事都说出来。
@@ -788,7 +782,7 @@ struct RulesModelTests {
         testSevereNoteFollowsSeverityNotJustTheVerdictsPresence()
         testAbsentReviewIsAnnouncedInsteadOfLookingClean()
         testCoreNotAnsweringIsNotRenderedAsNothingFailing()
-        testVerdictTextIsEnglishAndNeverEchoesTheServersProse()
+        testVerdictTextPassesTheServerThroughAndFallsBackHonestly()
         testRowShowsBothItsVerdictAndItsFailures()
         testPendingRemovalSurvivesAnAmbientRefreshThatNoLongerHasTheRule()
         testPendingRemovalRetiresWhenTheRuleComesBack()

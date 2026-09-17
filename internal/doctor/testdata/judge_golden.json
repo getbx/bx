@@ -54,7 +54,7 @@
         {
           "name": "rule_risky_direct_rule",
           "status": "warn",
-          "detail": "1 direct rule(s) hit the hazard list: *.aliyuncs.com — 公有云开放子域,直连会把你单独认出来",
+          "detail": "1 direct rule(s) hit the hazard list: *.aliyuncs.com — an open-subdomain cloud platform; going direct lets you be singled out",
           "hint": "sudo bx direct rm '*.aliyuncs.com' (then sudo bx down \u0026\u0026 sudo bx up)"
         },
         {
@@ -65,12 +65,12 @@
         {
           "name": "rule_dead_rules",
           "status": "info",
-          "detail": "Not checked: Core 没在跑,拿不到累计判定数"
+          "detail": "Not checked: Core is not running, so cumulative decision counts are unavailable"
         },
         {
           "name": "rule_builtin_list_check",
           "status": "info",
-          "detail": "Not checked: global 模式下 china 列表整个不生效"
+          "detail": "Not checked: in global mode the china list does not apply at all"
         },
         {
           "name": "service_installed",
@@ -142,7 +142,7 @@
         {
           "name": "rule_risky_direct_rule",
           "status": "warn",
-          "detail": "1 direct rule(s) hit the hazard list: *.aliyuncs.com — 公有云开放子域,直连会把你单独认出来",
+          "detail": "1 direct rule(s) hit the hazard list: *.aliyuncs.com — an open-subdomain cloud platform; going direct lets you be singled out",
           "hint": "sudo bx direct rm '*.aliyuncs.com' (then sudo bx down \u0026\u0026 sudo bx up)"
         },
         {
@@ -153,12 +153,12 @@
         {
           "name": "rule_dead_rules",
           "status": "info",
-          "detail": "Not checked: Core 没在跑,拿不到累计判定数"
+          "detail": "Not checked: Core is not running, so cumulative decision counts are unavailable"
         },
         {
           "name": "rule_builtin_list_check",
           "status": "info",
-          "detail": "Not checked: global 模式下 china 列表整个不生效"
+          "detail": "Not checked: in global mode the china list does not apply at all"
         },
         {
           "name": "service_installed",

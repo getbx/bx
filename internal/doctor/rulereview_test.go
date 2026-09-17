@@ -20,7 +20,7 @@ import (
 // 字面量,命令措辞调整时不会跟着变红。
 func TestRiskyRuleFindingHintNeedsElevation(t *testing.T) {
 	rep := rulereview.Report{Findings: []rulereview.Finding{
-		{Kind: "direct", Rule: "*.myqcloud.com", Class: rulereview.ClassRisky, Summary: "公有云开放子域"},
+		{Kind: "direct", Rule: "*.myqcloud.com", Class: rulereview.ClassRisky, Summary: "an open-subdomain cloud platform"},
 	}}
 	f := riskyRuleFinding(rep)
 	if f == nil {
