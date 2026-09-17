@@ -15,7 +15,7 @@ var privateNoBind = func() *route.CIDRSet {
 	lines := append(append([]string{}, route.DefaultPrivateCIDRs...), route.DefaultPrivateV6CIDRs...)
 	s, err := route.NewCIDRSet(lines)
 	if err != nil {
-		panic("bx: 内建私网 CIDR 解析失败: " + err.Error())
+		panic("bx: could not parse a built-in private CIDR: " + err.Error())
 	}
 	return s
 }()

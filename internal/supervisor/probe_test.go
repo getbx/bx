@@ -69,7 +69,7 @@ func TestUnreachableNeverLooksLikeZeroLatency(t *testing.T) {
 	if got.Error == "" {
 		t.Error("失败却没说原因")
 	}
-	if !strings.Contains(got.Error, "拒") {
+	if !strings.Contains(got.Error, "refused") {
 		t.Errorf("原因没说清楚:%q", got.Error)
 	}
 }
@@ -455,20 +455,20 @@ func TestEveryProbeErrConstantIsRegisteredInTheList(t *testing.T) {
 // 上一版钉的是那个已删掉的薄壳,而它在拆分之后**零生产调用方**:唯一的引用
 // 就是那条测试自己。一个有测试覆盖、没有调用方的函数,读起来与「这里有第二份
 // 判据」一模一样,而删掉它照样编译通过。那个薄壳已经删了,断言搬到真拨号那条路上。
-func TestProbeServerReportsBothTheCodeAndTheChineseSentence(t *testing.T) {
+func TestProbeServerReportsBothTheCodeAndTheSentence(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		err  error
 		code string
 		text string
 	}{
-		{"超时", context.DeadlineExceeded, ProbeErrTimeout, "超时(没有应答)"},
-		{"取消", context.Canceled, ProbeErrCanceled, "已取消"},
-		{"DNS", &net.DNSError{Err: "no such host"}, ProbeErrDNS, "域名解析不出来"},
-		{"拒绝", &net.OpError{Err: errors.New("connect: connection refused")}, ProbeErrRefused, "连接被拒(端口没在听)"},
-		{"网络不可达", &net.OpError{Err: errors.New("connect: network is unreachable")}, ProbeErrNetworkUnreachable, "网络不可达"},
-		{"没有路由", &net.OpError{Err: errors.New("connect: no route to host")}, ProbeErrNoRoute, "没有到该主机的路由"},
-		{"归不了类", errors.New("something else entirely"), ProbeErrUnknown, "连不上"},
+		{"超时", context.DeadlineExceeded, ProbeErrTimeout, "timed out (no answer)"},
+		{"取消", context.Canceled, ProbeErrCanceled, "canceled"},
+		{"DNS", &net.DNSError{Err: "no such host"}, ProbeErrDNS, "the domain does not resolve"},
+		{"拒绝", &net.OpError{Err: errors.New("connect: connection refused")}, ProbeErrRefused, "connection refused (nothing is listening on that port)"},
+		{"网络不可达", &net.OpError{Err: errors.New("connect: network is unreachable")}, ProbeErrNetworkUnreachable, "the network is unreachable"},
+		{"没有路由", &net.OpError{Err: errors.New("connect: no route to host")}, ProbeErrNoRoute, "there is no route to that host"},
+		{"归不了类", errors.New("something else entirely"), ProbeErrUnknown, "unreachable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := probeServer(context.Background(), &fakeProbeDialer{err: tc.err},
@@ -485,7 +485,7 @@ func TestProbeServerReportsBothTheCodeAndTheChineseSentence(t *testing.T) {
 		})
 	}
 
-	// 拨号前就失败的那两条,同样要码与中文成对。
+	// 拨号前就失败的那两条,同样要码与那句话成对。
 	for _, tc := range []struct {
 		name string
 		req  ProbeRequest

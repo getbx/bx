@@ -117,7 +117,7 @@ func resolveServerBypassRetaining(cfg *config.Config, requiredLinks []string, re
 	add := func(link string) error {
 		h, err := serverHostFromLink(link)
 		if err != nil {
-			return fmt.Errorf("取传输服务器: %w", err)
+			return fmt.Errorf("getting the transport server: %w", err)
 		}
 		if _, ok := staticA[h]; ok {
 			return nil // 去重(多传输同 server)
@@ -125,12 +125,12 @@ func resolveServerBypassRetaining(cfg *config.Config, requiredLinks []string, re
 		a := resolve(h)
 		if len(a) == 0 {
 			if kept := retain[h]; len(kept) > 0 && !noRetain[h] {
-				log.Printf("bypass 刷新:%q 本轮解析失败,沿用上一轮已解析的地址(掉出 bypass 会成环)", h)
+				log.Printf("bypass refresh: %q did not resolve this round, so the previously resolved address is kept (dropping out of the bypass would loop the tunnel)", h)
 				staticA[h] = append([]netip.Addr(nil), kept...)
 				addrs = append(addrs, kept...)
 				return nil
 			}
-			return fmt.Errorf("无法解析传输服务器 %q 为 IP(bypass 必需,否则成环)", h)
+			return fmt.Errorf("the transport server %q could not be resolved to an IP (the bypass needs one, or the tunnel loops back on itself)", h)
 		}
 		staticA[h] = a
 		addrs = append(addrs, a...)
@@ -144,11 +144,11 @@ func resolveServerBypassRetaining(cfg *config.Config, requiredLinks []string, re
 			// 跳过的那台此刻不在 bypass 里,故也切不过去 —— 切换路径会重新刷新
 			// bypass 并按需 rehijack,那时再解析一次;在那之前它对数据面不存在,
 			// 不会有半装状态。
-			log.Printf("跳过服务器 bypass(非当前选中,暂不可切换): %v", err)
+			log.Printf("skipping a server bypass (it is not the selected one and cannot be switched to right now): %v", err)
 		}
 	}
 	if len(addrs) == 0 {
-		return nil, nil, fmt.Errorf("无法解析任何传输服务器 IP(bypass 必需)")
+		return nil, nil, fmt.Errorf("no transport server IP could be resolved (the bypass needs one)")
 	}
 	return staticA, addrs, nil
 }

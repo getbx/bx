@@ -85,10 +85,10 @@ type routeWatchMessages struct {
 // probe / repair 任一为 nil 就不跑(非 darwin 平台没有这两样原语)。
 func watchDirectEgress(ctx context.Context, probe egressProbe, repair egressRepair, tick <-chan time.Time) {
 	watchKernelRoute(ctx, routeWatchMessages{
-		recovered:    "direct_egress 恢复:bx 自己的直连又出得去了",
-		broken:       "direct_egress 断了:bx 自己的直连出不去(scoped 默认路由不见了)—— 每一条 direct 规则都会失败",
-		repairFailed: "direct_egress 重装 scoped 默认路由失败: %v",
-		repaired:     "direct_egress 已重装 scoped 默认路由",
+		recovered:    "direct_egress recovered: bx's own direct dials can get out again",
+		broken:       "direct_egress is broken: bx's own direct dials cannot get out (the scoped default route is gone) — every direct rule will fail",
+		repairFailed: "direct_egress could not reinstall the scoped default route: %v",
+		repaired:     "direct_egress reinstalled the scoped default route",
 	}, probe, repair, tick)
 }
 

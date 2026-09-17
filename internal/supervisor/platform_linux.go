@@ -68,7 +68,7 @@ func (p linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 	}
 	gw, gwDev, err := defaultRoute()
 	if err != nil {
-		return nil, fmt.Errorf("探测默认网关: %w", err)
+		return nil, fmt.Errorf("probing the default gateway: %w", err)
 	}
 	bypass := append(append([]string{}, serverBypass...), userBypass...)
 	nc := &netConf{
@@ -86,7 +86,7 @@ func (p linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 		nc.down()
 		return nil, err
 	}
-	log.Printf("默认路由已劫持进 %s;bypass=%v via %s dev %s", t.Name, bypass, gw, gwDev)
+	log.Printf("the default route is hijacked into %s; bypass=%v via %s dev %s", t.Name, bypass, gw, gwDev)
 	return nc.down, nil
 }
 
@@ -95,11 +95,11 @@ func (p linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 // 破坏路由时由 commit-confirmed 的 Rehijack mutation 调用。
 func (p linuxPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
 	if t.RouterMode {
-		return fmt.Errorf("router 模式暂不支持 rehijack")
+		return fmt.Errorf("router mode does not support rehijack yet")
 	}
 	gw, gwDev, err := defaultRoute() // 重探:网关常是「为何要 rehijack」的根源
 	if err != nil {
-		return fmt.Errorf("探测默认网关: %w", err)
+		return fmt.Errorf("probing the default gateway: %w", err)
 	}
 	bypass := append(append([]string{}, serverBypass...), userBypass...)
 	nc := &netConf{
@@ -118,7 +118,7 @@ func (p linuxPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []st
 	if err := nc.routeUp(); err != nil {
 		return err // 引擎据此 Rollback(经 9a 快照网);设备在 → 快照可重建,无泄漏
 	}
-	log.Printf("rehijack:路由已在 %s 重落实 via %s dev %s", t.Name, gw, gwDev)
+	log.Printf("rehijack: the routes were reinstalled on %s via %s dev %s", t.Name, gw, gwDev)
 	return nil
 }
 
@@ -280,7 +280,7 @@ var runIPOptional = runIPQuiet
 func (n *netConf) applyOptionalRouteSteps() error {
 	for _, s := range n.optionalRouteUpSteps() {
 		if err := runIPOptional(s...); err != nil {
-			log.Printf("可选路由未装上(跳过,老 iproute2 无 ipproto 时属预期;Tailscale 直连仍会经隧道): ip %s: %v", strings.Join(s, " "), err)
+			log.Printf("an optional route was not installed (skipped; expected on an older iproute2 that has no ipproto selector — Tailscale's direct paths will still go through the tunnel): ip %s: %v", strings.Join(s, " "), err)
 		}
 	}
 	return nil
@@ -407,7 +407,7 @@ func parseDefaultRoute(out string) (gw, dev string, err error) {
 		}
 	}
 	if gw == "" || dev == "" {
-		return "", "", fmt.Errorf("解析默认路由失败: %q", strings.TrimSpace(out))
+		return "", "", fmt.Errorf("could not parse the default route: %q", strings.TrimSpace(out))
 	}
 	return gw, dev, nil
 }

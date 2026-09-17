@@ -19,8 +19,8 @@ func DebugTUN(ctx context.Context, name, addr string, mtu uint32) error {
 		return err
 	}
 	defer closeTUN()
-	log.Printf("debug-tun: 已创建 TUN %q(mtu=%d);不起隧道、不碰路由/DNS/WFP。等待退出信号(Ctrl+C)…", tunH.Name, mtu)
+	log.Printf("debug-tun: created TUN %q (mtu=%d); no tunnel is started and routes, DNS and WFP are untouched. Waiting for a quit signal (Ctrl+C)…", tunH.Name, mtu)
 	<-ctx.Done()
-	log.Printf("debug-tun: 收到退出,移除 TUN…")
+	log.Printf("debug-tun: got the quit signal, removing the TUN…")
 	return nil
 }

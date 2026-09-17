@@ -80,7 +80,7 @@ func (s *linuxSnapshotter) Capture() (confirm.Snapshot, error) {
 func (s *linuxSnapshotter) Restore(snap confirm.Snapshot) error {
 	ls, ok := snap.(*linuxSnapshot)
 	if !ok {
-		return fmt.Errorf("快照类型不符: %T", snap)
+		return fmt.Errorf("snapshot type mismatch: %T", snap)
 	}
 	var errs []error
 	run := func(args ...string) {
@@ -96,14 +96,14 @@ func (s *linuxSnapshotter) Restore(snap confirm.Snapshot) error {
 	// I2: parseCurrentRules 失败时上浮错误(toDel=∅ → 坏规则留在内核,回滚不完整)。
 	curV4, err := parseCurrentRules(familyV4)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("读当前 v4 规则失败(无法计算待删,回滚不完整): %w", err))
+		errs = append(errs, fmt.Errorf("could not read the current v4 rules (so what to delete cannot be computed and the rollback is incomplete): %w", err))
 	}
 	delV4, addV4 := diffRules(curV4, ls.v4Rules)
 	var delV6, addV6 []ruleSpec
 	if v6 {
 		curV6, err6 := parseCurrentRules(familyV6)
 		if err6 != nil {
-			errs = append(errs, fmt.Errorf("读当前 v6 规则失败(无法计算待删,回滚不完整): %w", err6))
+			errs = append(errs, fmt.Errorf("could not read the current v6 rules (so what to delete cannot be computed and the rollback is incomplete): %w", err6))
 		}
 		delV6, addV6 = diffRules(curV6, ls.v6Rules)
 	}

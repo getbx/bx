@@ -69,7 +69,7 @@ func fetchLists(ctx context.Context, client *http.Client, dataDir string) error 
 	} {
 		body, err := httpGet(ctx, client, j.url)
 		if err != nil {
-			return fmt.Errorf("拉 %s: %w", j.name, err)
+			return fmt.Errorf("fetching %s: %w", j.name, err)
 		}
 		if err := atomicWriteFile(filepath.Join(dataDir, j.name), body); err != nil {
 			return err
@@ -138,9 +138,9 @@ func waitHealthy(ctx context.Context, healthy func() bool) bool {
 
 func runRefresh(doRefresh func() error) {
 	if err := doRefresh(); err != nil {
-		log.Printf("列表刷新失败(保留旧列表): %v", err)
+		log.Printf("the list refresh failed (the old list is kept): %v", err)
 	} else {
-		log.Printf("china 列表已刷新并热重载")
+		log.Printf("the china list was refreshed and hot-reloaded")
 	}
 }
 

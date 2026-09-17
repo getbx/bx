@@ -49,7 +49,7 @@ func PhysicalDefaultRoute(context.Context) (gateway, device string, err error) {
 		// 调用方按「没问出来」处理;给一个空的 device 会让 pathview 拿空串
 		// 去比对接口名,而空串永远对不上 —— 与「认不出」在输出上一样,
 		// 却少了一条可查的错误。
-		return "", "", fmt.Errorf("查物理默认路由的网卡名(LUID %v): %w", luid, err)
+		return "", "", fmt.Errorf("looking up the NIC name of the physical default route (LUID %v): %w", luid, err)
 	}
 	return gw.String(), row.Alias(), nil
 }

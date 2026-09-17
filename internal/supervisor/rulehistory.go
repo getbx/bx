@@ -66,14 +66,14 @@ func loadRuleHistory(path string) (ruleHistory, error) {
 		if os.IsNotExist(err) {
 			return empty, nil
 		}
-		return empty, fmt.Errorf("读规则历史 %s: %w", path, err)
+		return empty, fmt.Errorf("reading the rule history %s: %w", path, err)
 	}
 	var h ruleHistory
 	if err := json.Unmarshal(raw, &h); err != nil {
-		return empty, fmt.Errorf("解析规则历史 %s: %w", path, err)
+		return empty, fmt.Errorf("parsing the rule history %s: %w", path, err)
 	}
 	if h.SchemaVersion != ruleHistorySchema {
-		return empty, fmt.Errorf("规则历史 %s 的 schema 是 %d,本版只认 %d —— 当作空历史重新累计",
+		return empty, fmt.Errorf("the rule history %s has schema %d and this version only understands %d — it is treated as empty and accumulation restarts",
 			path, h.SchemaVersion, ruleHistorySchema)
 	}
 	return h, nil
@@ -88,7 +88,7 @@ func saveRuleHistory(path string, h ruleHistory) error {
 	h.SchemaVersion = ruleHistorySchema
 	data, err := json.Marshal(h)
 	if err != nil {
-		return fmt.Errorf("编码规则历史: %w", err)
+		return fmt.Errorf("encoding the rule history: %w", err)
 	}
 	return atomicWriteFile(path, data)
 }

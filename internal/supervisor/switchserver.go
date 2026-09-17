@@ -32,21 +32,21 @@ type SwitchDeps struct {
 func SwitchServer(deps SwitchDeps, name, link, udp string) error {
 	if err := deps.Arm(link, udp); err != nil {
 		return taggedSwitchError(ErrSwitchArmFailed,
-			fmt.Errorf("切换到 %s 失败(未生效,仍在原来那台):%w", name, err))
+			fmt.Errorf("switching to %s failed (nothing took effect, you are still on the previous server): %w", name, err))
 	}
 	if !deps.Healthy() {
 		if rerr := deps.Rollback(); rerr != nil {
 			return taggedSwitchError(ErrSwitchRollbackFailed,
-				fmt.Errorf("切换到 %s 后隧道不健康,且回滚失败(%v)——"+
-					"死手仍会在超时后还原,或直接 `"+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up`", name, rerr))
+				fmt.Errorf("switching to %s left the tunnel unhealthy, and the rollback failed too (%v) — "+
+					"the dead-man timer will still restore everything when it fires, or you can run "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up", name, rerr))
 		}
 		return taggedSwitchError(ErrSwitchRolledBack,
-			fmt.Errorf("切换到 %s 后隧道起不来,**已回滚**到原来那台", name))
+			fmt.Errorf("switching to %s could not bring the tunnel up; it was ROLLED BACK to the previous server", name))
 	}
 	if err := deps.Commit(); err != nil {
 		return taggedSwitchError(ErrSwitchCommitFailed,
-			fmt.Errorf("切换到 %s 已生效但确认失败(%v)——死手可能在超时后把它还原,"+
-				"请立刻 `"+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up` 让配置里的选择落定", name, err))
+			fmt.Errorf("switching to %s took effect but could not be confirmed (%v) — the dead-man timer may undo it when it fires, so "+
+				"run "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up to make the choice in the config take hold", name, err))
 	}
 	return nil
 }

@@ -71,7 +71,7 @@ func watchServerBypass(ctx context.Context, healthy func() bool, refollow func(c
 		}
 		lastAttempt = t
 		if err := refollow(ctx); err != nil {
-			log.Printf("server_bypass_refollow 失败(旁路保持原样): %v", err)
+			log.Printf("server_bypass_refollow failed (the bypass is left as it was): %v", err)
 		}
 	}
 }
@@ -120,7 +120,7 @@ func (cs *controlServer) refollowServerBypass(ctx context.Context, links []strin
 	changed, err := cs.refreshBypass(links)
 	if err != nil {
 		cs.mu.Unlock()
-		return refollowUnchanged, fmt.Errorf("重新解析服务器旁路: %w", err)
+		return refollowUnchanged, fmt.Errorf("re-resolving the server bypass: %w", err)
 	}
 	if !changed {
 		cs.mu.Unlock()
@@ -129,16 +129,16 @@ func (cs *controlServer) refollowServerBypass(ctx context.Context, links []strin
 	apply, _, err := cs.mut.Rehijack()
 	if err != nil {
 		cs.mu.Unlock()
-		return refollowUnchanged, fmt.Errorf("准备重装旁路路由: %w", err)
+		return refollowUnchanged, fmt.Errorf("preparing to reinstall the bypass routes: %w", err)
 	}
 	if err := apply(); err != nil {
 		cs.mu.Unlock()
-		return refollowUnchanged, fmt.Errorf("重装旁路路由: %w", err)
+		return refollowUnchanged, fmt.Errorf("reinstalling the bypass routes: %w", err)
 	}
 	cs.mu.Unlock()
-	log.Printf("server_bypass_refollow 服务器地址变了,旁路已重装;正在重建传输")
+	log.Printf("server_bypass_refollow: the server's address changed, the bypass was reinstalled, and the transport is being rebuilt")
 	if err := cs.mut.Reconnect(); err != nil {
-		return refollowChanged, fmt.Errorf("旁路已重装,但重建传输失败(隧道自己的重连会继续): %w", err)
+		return refollowChanged, fmt.Errorf("the bypass was reinstalled, but rebuilding the transport failed (the tunnel's own reconnect keeps going): %w", err)
 	}
 	return refollowChanged, nil
 }

@@ -31,14 +31,14 @@ func newMutationEngine(snapper confirm.Snapshotter, window time.Duration, now fu
 // capture 失败 → 不武装、不 apply;apply 失败 → 立即 Rollback、返回错误(不留半截)。
 func (e *mutationEngine) Arm(apply, undo func() error) error {
 	if apply == nil {
-		return errors.New("apply 不能为空")
+		return errors.New("apply must not be nil")
 	}
 	if e.guard.State() == confirm.StateArmed {
 		return confirm.ErrAlreadyArmed
 	}
 	snap, err := e.snapper.Capture()
 	if err != nil {
-		return fmt.Errorf("抓 last-known-good 快照失败,已中止改动: %w", err)
+		return fmt.Errorf("could not take the last-known-good snapshot, so the change was aborted: %w", err)
 	}
 	restore := func() error {
 		var errs []error
@@ -48,7 +48,7 @@ func (e *mutationEngine) Arm(apply, undo func() error) error {
 			}
 		}
 		if rerr := e.snapper.Restore(snap); rerr != nil {
-			errs = append(errs, fmt.Errorf("快照还原: %w", rerr))
+			errs = append(errs, fmt.Errorf("restoring the snapshot: %w", rerr))
 		}
 		return errors.Join(errs...)
 	}
@@ -57,9 +57,9 @@ func (e *mutationEngine) Arm(apply, undo func() error) error {
 	}
 	if err := apply(); err != nil {
 		if rerr := e.guard.Rollback(); rerr != nil {
-			return fmt.Errorf("apply 失败,回滚也失败(系统可能半改动): %w", errors.Join(err, rerr))
+			return fmt.Errorf("apply failed and so did the rollback (the system may be half-changed): %w", errors.Join(err, rerr))
 		}
-		return fmt.Errorf("apply 失败已回滚: %w", err)
+		return fmt.Errorf("apply failed and was rolled back: %w", err)
 	}
 	return nil
 }

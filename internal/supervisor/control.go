@@ -345,7 +345,7 @@ func (cs *controlServer) handleReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cs.reload == nil {
-		writeJSON(w, http.StatusNotImplemented, controlResponse{Status: "error", Error: "reload 不可用"})
+		writeJSON(w, http.StatusNotImplemented, controlResponse{Status: "error", Error: "reload is not available"})
 		return
 	}
 	if err := cs.reload(); err != nil {
@@ -472,9 +472,9 @@ func (cs *controlServer) requireOwnerPeer(w http.ResponseWriter, r *http.Request
 	}
 	uid, gotUID := peerCredUID(conn)
 	if !authorizeMutation(uid, gotUID, cs.ownerUID) {
-		msg := "此命令需 root 或业主"
+		msg := "this command needs root or the owner"
 		if !peerCredSupported {
-			msg = "此平台暂不支持 peer-cred,已拒绝"
+			msg = "this platform does not support peer-cred yet, so the request was refused"
 		}
 		writeJSON(w, http.StatusForbidden, controlResponse{Status: "error", Error: msg})
 		return false
@@ -530,14 +530,14 @@ func (cs *controlServer) handleSetTransport(w http.ResponseWriter, r *http.Reque
 	}
 	var req setTransportReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Link == "" {
-		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: "缺 link"})
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: "the link is missing"})
 		return
 	}
 	cs.mu.Lock()
 	if cs.eng.State() == confirm.StateArmed {
 		state := stateName(cs.eng.State())
 		cs.mu.Unlock()
-		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
+		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "there is already a change waiting to be confirmed", State: state})
 		return
 	}
 	apply, undo, merr := cs.mut.SetTransport(req.Link)
@@ -571,14 +571,14 @@ func (cs *controlServer) handleSetServer(w http.ResponseWriter, r *http.Request)
 	}
 	var req setServerReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Link == "" {
-		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: "缺 link"})
+		writeJSON(w, http.StatusBadRequest, controlResponse{Status: "error", Error: "the link is missing"})
 		return
 	}
 	cs.mu.Lock()
 	if cs.eng.State() == confirm.StateArmed {
 		state := stateName(cs.eng.State())
 		cs.mu.Unlock()
-		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
+		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "there is already a change waiting to be confirmed", State: state})
 		return
 	}
 	changed := false
@@ -603,7 +603,7 @@ func (cs *controlServer) handleSetServer(w http.ResponseWriter, r *http.Request)
 			// 落实不了新服务器的 bypass 就绝不切过去。切过去 = 隧道自己的流量
 			// 被劫进 TUN = 成环,而成环是静默的(连得上、status 显绿、流量绕圈)。
 			writeJSON(w, http.StatusInternalServerError,
-				controlResponse{Status: "error", Error: "刷新 bypass 失败,已拒绝切换: " + rerr.Error()})
+				controlResponse{Status: "error", Error: "refreshing the bypass failed, so the switch was refused: " + rerr.Error()})
 			return
 		}
 	}
@@ -639,7 +639,7 @@ func (cs *controlServer) handleRehijack(w http.ResponseWriter, r *http.Request) 
 	if cs.eng.State() == confirm.StateArmed {
 		state := stateName(cs.eng.State())
 		cs.mu.Unlock()
-		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
+		writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "there is already a change waiting to be confirmed", State: state})
 		return
 	}
 	apply, undo, merr := cs.mut.Rehijack()
@@ -658,7 +658,7 @@ func (cs *controlServer) handleRehijack(w http.ResponseWriter, r *http.Request) 
 func respondArm(w http.ResponseWriter, armErr error, state string) {
 	if armErr != nil {
 		if errors.Is(armErr, confirm.ErrAlreadyArmed) {
-			writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "已有待确认的改动", State: state})
+			writeJSON(w, http.StatusConflict, controlResponse{Status: "error", Error: "there is already a change waiting to be confirmed", State: state})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, controlResponse{Status: "error", Error: armErr.Error(), State: state})
@@ -670,7 +670,7 @@ func respondArm(w http.ResponseWriter, armErr error, state string) {
 func requireControlSocket(start controlStarter) (io.Closer, error) {
 	closer, err := start()
 	if err != nil {
-		return nil, fmt.Errorf("控制 socket 启动失败: %w", err)
+		return nil, fmt.Errorf("the control socket did not start: %w", err)
 	}
 	return closer, nil
 }
@@ -699,7 +699,7 @@ func newStatusReporter(c *stats.Counters, t tunnelStatser, server, mode, udpMode
 	if history == nil {
 		// 传 nil 是编程错误,不是运行期情况。**当场 panic 好过静默发布 nil** ——
 		// 后者会让死规则那一类永远显示「没查」,而没有任何一处会说为什么。
-		panic("newStatusReporter: history provider 必填")
+		panic("newStatusReporter: the history provider is required")
 	}
 	return func() stats.Report {
 		ts := t.Stats()
@@ -882,7 +882,7 @@ func controlMuxOptionsForServe(ctx context.Context, opts controlServeOptions, pi
 func serveControlWithPathRecovery(ctx context.Context, opts controlServeOptions) (io.Closer, error) {
 	muxOpts := controlMuxOptionsForServe(ctx, opts, os.Getpid())
 	if err := secdir.Ensure(filepath.Dir(SockPath), os.Geteuid(), 0o755); err != nil {
-		return nil, fmt.Errorf("准备控制 socket 目录: %w", err)
+		return nil, fmt.Errorf("preparing the control socket directory: %w", err)
 	}
 	_ = os.Remove(SockPath)
 	ln, err := net.Listen("unix", SockPath)

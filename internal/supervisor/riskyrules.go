@@ -36,7 +36,7 @@ func riskyRuleWarnings(cfg *config.Config) []stats.Warning {
 		out = append(out, stats.Warning{
 			Name:     "risky_direct_rule",
 			Severity: "warn",
-			Detail:   fmt.Sprintf("直连白名单里的 %s 是公有云/开放子域平台:任何人都能注册它的子域,用一个子域让你的真实 IP 暴露", f.Rule),
+			Detail:   fmt.Sprintf("%s in the direct allowlist is a public cloud / open subdomain platform: anyone can register a subdomain under it and use one to expose your real IP", f.Rule),
 			// bx direct rm(不是 remove —— 那是这条 hint 上一版的笔误,命令本身
 			// 不存在,见 directCommands();用户照着敲会得到一句 usage 错误)。
 			//
@@ -63,7 +63,7 @@ func riskyRuleWarnings(cfg *config.Config) []stats.Warning {
 			// 里必定 permission denied,与 `direct rm` 是同一类 bug;多带的代价
 			// 只是 macOS 已配置 owner 的机器上一次不必要的密码提示——不对称,
 			// 两条都印 sudo。
-			Hint: fmt.Sprintf(""+elevate.Prefix+"bx direct rm '%s'；改完要 "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up", f.Rule),
+			Hint: fmt.Sprintf(""+elevate.Prefix+"bx direct rm '%s' — after changing it, run "+elevate.Prefix+"bx down && "+elevate.Prefix+"bx up", f.Rule),
 		})
 	}
 	return out

@@ -36,7 +36,7 @@ func composeMutations(a1, u1, a2, u2 func() error) (apply, undo func() error) {
 		}
 		if err := a2(); err != nil {
 			if rerr := once(); rerr != nil {
-				return fmt.Errorf("%w(回滚前一步也失败: %v)", err, rerr)
+				return fmt.Errorf("%w (rolling the previous step back failed too: %v)", err, rerr)
 			}
 			return err
 		}

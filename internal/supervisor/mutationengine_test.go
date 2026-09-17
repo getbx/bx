@@ -146,8 +146,8 @@ func TestEngineArmApplyFailRollbackAlsoFails(t *testing.T) {
 	if !errors.Is(err, restoreErr) {
 		t.Fatalf("错误应包含 restore 错误,得 %v", err)
 	}
-	if s := err.Error(); len(s) == 0 || !containsStr(s, "回滚也失败") {
-		t.Fatalf("错误信息应含 '回滚也失败',得 %q", s)
+	if s := err.Error(); len(s) == 0 || !containsStr(s, "so did the rollback") {
+		t.Fatalf("错误信息应含「回滚也失败」,得 %q", s)
 	}
 }
 

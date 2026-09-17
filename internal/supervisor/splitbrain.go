@@ -44,7 +44,7 @@ func buildSplitBrain(cfg *config.Config, opts Options) (splitBrain, error) {
 	if !global {
 		domainPath, cidrPath, err := provision.EnsureLists(cfg.DataDir, embedded.ChinaDomain(), embedded.ChinaCIDR())
 		if err != nil {
-			log.Printf("准备 china 列表失败(降级空列表,等刷新补): %v", err)
+			log.Printf("could not prepare the china list (falling back to an empty one until a refresh fills it in): %v", err)
 		}
 		// 列表路径覆盖优先级:CLI flag > config lists.* > 内嵌/刷新快照。
 		// 搞反是安静的失败:用户以为自己换了参照表,而 bx 用的还是默认那份。
@@ -65,7 +65,7 @@ func buildSplitBrain(cfg *config.Config, opts Options) (splitBrain, error) {
 	if err != nil {
 		// 走到这里的只有「配置里那些规则/CIDR 本身是坏的」——
 		// 准备列表失败上面已经降级过了,不会到这一步。
-		return splitBrain{}, tagStartFailure(ErrConfig, fmt.Errorf("构建分流脑: %w", err))
+		return splitBrain{}, tagStartFailure(ErrConfig, fmt.Errorf("building the routing brain: %w", err))
 	}
 	router.GlobalProxy = global
 

@@ -229,14 +229,14 @@ sudo kill -9 <Core PID>
 ### B5. 休眠唤醒后的旁路自愈
 
 - [ ] 合盖休眠 ≥ 数分钟再唤醒(或 `sudo route delete <服务器IP>` 模拟)
-- [ ] 30 秒内 `bx.log` 出现 `server_bypass 断了` → `server_bypass 已重新落实路由`
+- [ ] 30 秒内 `bx.log` 出现 `server_bypass is broken` → `server_bypass reinstalled the routes`
 - [ ] sing-box 的 EOF 刷屏停止、隧道回绿,**不需要 down/up**
 
 ### B6. 换服务器 / 换 IP
 
 - [ ] **切换一次服务器**(会改出口 IP):四种结局的措辞对得上实际发生的事
 - [ ] **换服务器 IP 或先改 DNS 记录**:2–7 分钟内应出现
-      `server_bypass_refollow 已切到服务器的新地址`,隧道自己回绿
+      `server_bypass_refollow: the server's address changed`,隧道自己回绿
 
 ### B7. 规则写入路径(会改配置,但热生效、不断隧道)
 

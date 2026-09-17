@@ -51,10 +51,10 @@ func decideServerBypassIntact(tunName string, lookups []routeLookup) (intact boo
 // watchServerBypassRoutes 是那条循环;probe/repair 注入,与 watchDirectEgress 同体。
 func watchServerBypassRoutes(ctx context.Context, probe egressProbe, repair egressRepair, tick <-chan time.Time) {
 	watchKernelRoute(ctx, routeWatchMessages{
-		recovered:    "server_bypass 恢复:发往服务器的包又走物理网卡了",
-		broken:       "server_bypass 断了:发往服务器的包在走 bx 自己的 TUN(旁路路由不见了,多半是休眠唤醒/网卡重连冲掉的)—— 隧道成环,永远连不上",
-		repairFailed: "server_bypass 重新落实路由失败: %v",
-		repaired:     "server_bypass 已重新落实路由",
+		recovered:    "server_bypass recovered: packets to the server are leaving through the physical NIC again",
+		broken:       "server_bypass is broken: packets to the server are going through bx's own TUN (the bypass route is gone, most likely wiped by a wake-from-sleep or a NIC reassociation) — the tunnel now loops back on itself and will never connect",
+		repairFailed: "server_bypass could not reinstall the routes: %v",
+		repaired:     "server_bypass reinstalled the routes",
 	}, probe, repair, tick)
 }
 
@@ -73,10 +73,10 @@ func (cs *controlServer) reassertRoutes(_ context.Context) error {
 	}
 	apply, _, err := cs.mut.Rehijack()
 	if err != nil {
-		return fmt.Errorf("准备重新落实路由: %w", err)
+		return fmt.Errorf("preparing to reinstall the routes: %w", err)
 	}
 	if err := apply(); err != nil {
-		return fmt.Errorf("重新落实路由: %w", err)
+		return fmt.Errorf("reinstalling the routes: %w", err)
 	}
 	return nil
 }

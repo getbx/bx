@@ -27,16 +27,16 @@ import (
 // 等于把那次教训重新埋回去。**
 var (
 	// ErrTunnelUnreachable:那台服务器的 TCP 端口没有应答。
-	ErrTunnelUnreachable = errors.New("连不上服务器,那个端口没有应答")
+	ErrTunnelUnreachable = errors.New("the server is unreachable: that port is not answering")
 	// ErrTunnelHandshakeFailed:TCP 连得上,而隧道没能建起来。
-	ErrTunnelHandshakeFailed = errors.New("服务器在应答,但隧道没能建起来")
+	ErrTunnelHandshakeFailed = errors.New("the server is answering, but the tunnel could not be established")
 
 	// ErrTunnelUndeterminedUDPTransport:这一种传输不在 TCP 上听,一次拨号
 	// 观测不到那台服务器。**不是「没应答」,也不是「我们没问」。**
-	ErrTunnelUndeterminedUDPTransport = errors.New("这一种传输不在 TCP 上听,一次 TCP 拨号观测不到那台服务器")
+	ErrTunnelUndeterminedUDPTransport = errors.New("this kind of transport does not listen on TCP, so a single TCP dial cannot observe that server")
 	// ErrTunnelUndeterminedLocalDial:判别那次拨号**在本机就失败了**,SYN 没
 	// 能离开这台机器 —— 要查的是 bx 自己的直连器,不是那台服务器。
-	ErrTunnelUndeterminedLocalDial = errors.New("判别拨号在本机就失败了,SYN 没能离开这台机器")
+	ErrTunnelUndeterminedLocalDial = errors.New("the diagnostic dial failed on this machine: the SYN never left it")
 )
 
 const (
@@ -245,21 +245,21 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 		// 拿到的既不是「它挂了」也不是「它活着」,只是「TCP 那边没人」——
 		// 而 §4.5 最长的那一段禁止的正是拿这种非观测去下一个具体结论。
 		return tunnelUndetermined(ErrTunnelUndeterminedUDPTransport, cause,
-			fmt.Sprintf("%s 跑在 UDP 上,一次 TCP 拨号观测不到那台服务器", kind))
+			fmt.Sprintf("%s runs over UDP, so a single TCP dial cannot observe that server", kind))
 	}
 	addr, err := serverDialAddress(link)
 	if err != nil {
 		// **不带上那个错误的文本**:url.Parse 失败时 *url.Error 会原样打印整条
 		// 链接,vless 的 UUID 就在里面。这句话进 Core 日志,而这一族的码还要
 		// 往 Guardian 送 —— 一条凭据一旦进了会被转发的字符串就再也收不回来。
-		return tunnelUndetermined(ErrTunnelUnhealthy, cause, "没能从服务器链接里解出 host:port")
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, "host:port could not be parsed out of the server link")
 	}
 	if dialer == nil {
-		return tunnelUndetermined(ErrTunnelUnhealthy, cause, "没有可用的判别拨号器")
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, "no diagnostic dialer is available")
 	}
 	dial := dialer()
 	if dial == nil {
-		return tunnelUndetermined(ErrTunnelUnhealthy, cause, "没有可用的判别拨号器")
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, "no diagnostic dialer is available")
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, TunnelDiagnosisTimeout)
 	defer cancel()
@@ -267,17 +267,17 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 	if dialErr == nil {
 		_ = conn.Close()
 		return tagStartFailure(ErrTunnelHandshakeFailed,
-			fmt.Errorf("服务器 %s 的 TCP 端口在应答: %w", addr, cause))
+			fmt.Errorf("the TCP port on the server %s is answering: %w", addr, cause))
 	}
 	// 父 ctx 挂了 ⇒ **是我们自己没问完**,不是那台服务器没答。
 	if ctx.Err() != nil {
-		return tunnelUndetermined(ErrTunnelUnhealthy, cause, fmt.Sprintf("判别过程本身被打断:%v", ctx.Err()))
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, fmt.Sprintf("the diagnosis itself was interrupted: %v", ctx.Err()))
 	}
 	// 名字都没解出来 ⇒ 连问都没问到 TCP 那一层。说「端口没有应答」是在替一个
 	// 我们根本没做过的观测下结论。
 	var dnsErr *net.DNSError
 	if errors.As(dialErr, &dnsErr) {
-		return tunnelUndetermined(ErrTunnelUnhealthy, cause, fmt.Sprintf("服务器域名没能解析:%v", dialErr))
+		return tunnelUndetermined(ErrTunnelUnhealthy, cause, fmt.Sprintf("the server's domain did not resolve: %v", dialErr))
 	}
 	// 同一族的另一半:**SYN 根本没能离开本机**。
 	//
@@ -290,13 +290,13 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 	// 答「你的 VPS 挂了」—— 而这条路唯一的职责就是说出关于那台服务器的实话。
 	if failedBeforeTheSYNLeft(dialErr) {
 		return tunnelUndetermined(ErrTunnelUndeterminedLocalDial, cause,
-			fmt.Sprintf("这次拨号在本机就失败了(%v)", dialErr))
+			fmt.Sprintf("this dial failed on this machine (%v)", dialErr))
 	}
 	// 拨不通(拒绝、超时、不可达)—— **超时归这一档,不归「没判出来」**:
 	// 2026-09-12 那次事故的原文正是 `i/o timeout`,一台不通的 VPS 给出的就是
 	// 这个形状,把它判成「问不出来」等于把最常见的那一种答案扔掉。
 	return tagStartFailure(ErrTunnelUnreachable,
-		fmt.Errorf("到服务器 %s 的 TCP 连接没有建立(%v): %w", addr, dialErr, cause))
+		fmt.Errorf("no TCP connection to the server %s was established (%v): %w", addr, dialErr, cause))
 }
 
 // tunnelUndetermined:隧道没起来,而 bx **没能判断**那台服务器还在不在。
@@ -309,7 +309,7 @@ func diagnoseUnhealthyTunnel(ctx context.Context, link string, dialer tunnelDiag
 // 做的判定一个字不用改。
 func tunnelUndetermined(sentinel, cause error, why string) error {
 	return tagStartFailure(sentinel,
-		fmt.Errorf("没能判断服务器还在不在(%s): %w", why, cause))
+		fmt.Errorf("it could not be determined whether the server is still there (%s): %w", why, cause))
 }
 
 // serverDialAddress 从服务器链接解出 host:port。
