@@ -73,7 +73,7 @@ func statusDigest(s Status) (string, error) {
 
 	encoded, err := json.Marshal(s)
 	if err != nil {
-		return "", fmt.Errorf("投影 Status: %w", err)
+		return "", fmt.Errorf("projecting the Status: %w", err)
 	}
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:]), nil

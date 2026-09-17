@@ -14,7 +14,7 @@ import (
 
 // errNoCoreForReview 是「Core 没在跑」的哨兵。**它不是错误路径**:体检本来就
 // 常在保护关着时跑,那时死规则那一类如实显示「未检查」。
-var errNoCoreForReview = errors.New("Core 没在跑")
+var errNoCoreForReview = errors.New("Core is not running")
 
 // reviewRulesAt 让 **Guardian** 做规则体检。
 //

@@ -61,10 +61,10 @@ func (p lifecyclePlatform) validate() error {
 	for i := 0; i < v.NumField(); i++ {
 		f := v.Field(i)
 		if f.Kind() != reflect.Func {
-			return fmt.Errorf("lifecyclePlatform.%s 不是函数字段:清单只收平台构造器", t.Field(i).Name)
+			return fmt.Errorf("lifecyclePlatform.%s is not a function field: the list only takes platform constructors", t.Field(i).Name)
 		}
 		if f.IsNil() {
-			return fmt.Errorf("lifecyclePlatform.%s 未接线:平台清单不许有洞", t.Field(i).Name)
+			return fmt.Errorf("lifecyclePlatform.%s is not wired up: the platform list may not have holes", t.Field(i).Name)
 		}
 	}
 	return nil
