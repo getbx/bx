@@ -110,6 +110,41 @@ if [ "$QUICK" -eq 0 ]; then
 		env GOOS=windows GOARCH=amd64 go vet $pkgs
 	}
 	step "windows test files typecheck" windows_test_typecheck
+	# **手机那半的地基:纯判据包必须保持可移植。**
+	#
+	# bx 要不要有手机端还没定(见 docs/superpowers/specs/2026-09-17-mobile-client-design.md),
+	# 但有一件事现在就该钉住:**桌面的改动不许悄悄把那条路堵死**。手机上传输与路由
+	# 都会是上游的 libbox,bx 的数据面一行都用不上;真正能原样搬过去的是那几个
+	# **纯判据**包(泄漏检测、路径解释、规则体检、doctor)—— 它们按构造不做 I/O,
+	# 编得过就等于能用(对照:supervisor/tun 也"编得过",但那只是落到了 _other.go
+	# 的桩上,是个假绿)。
+	#
+	# 清单从 git ls-files 现取(与 windows 腿同一条纪律),一个都找不到时响亮失败。
+	# 两个目标都免 CGO,所以 Linux 上也跑得了。
+	#
+	# **这道闸门的力量有明确上限,别把它读成「手机上能用」**(2026-09-17 实测):
+	# `GOOS=ios` **满足 `darwin` 构建标签**(go list 实测:ios 构建包含 a_darwin.go),
+	# 于是 platform_darwin.go 那种 `exec.Command("route", …)` / networksetup / launchd
+	# 的代码会被**原样编进 iOS 构建** —— 编得过,运行时全挂(iOS 上没有 /sbin/route,
+	# 更不许起进程)。同理 android 满足 linux。
+	# 所以它拦得住的是「引入了一个在 ios/android 上**编不过**的依赖」(cgo、
+	# 显式 !ios 约束之类),拦不住「编得过但跑不了」。
+	# 真正防住后者的是那几个包自己的 purity_test.go(按 AST 禁 net/os/exec),
+	# 以及 leakcheck 那条 go list -deps 的传递依赖守卫。三者各守一段,缺一不可。
+	portable_judgment_build() {
+		local pkgs target
+		pkgs="$(git ls-files '*purity_test.go' | xargs -n1 dirname 2>/dev/null | sort -u | sed 's|^|./|')"
+		if [ -z "$pkgs" ]; then
+			echo "一个 purity_test.go 都没找到 —— 要么纯判据包没了(那就把这一步删掉),"
+			echo "要么判据认不出它们了。"
+			return 1
+		fi
+		for target in ios/arm64 android/arm64; do
+			# shellcheck disable=SC2086
+			env CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build $pkgs || return 1
+		done
+	}
+	step "portable judgment (ios+android)" portable_judgment_build
 else
 	skip "race detector" "--quick"
 	skip "cross builds" "--quick"
