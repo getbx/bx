@@ -22,7 +22,7 @@ import (
 // 校验 + 计划执行(plists、bridge、统一 runtime、App、登录项),保留配置/数据。
 func uninstallDarwinAction(c *urfavecli.Context) error {
 	if os.Geteuid() != 0 {
-		return errors.New("卸载需要 root:请用 sudo bx uninstall")
+		return errors.New("uninstalling needs root: use sudo bx uninstall")
 	}
 
 	if err := ensureGuardianNotRunningForUninstall(); err != nil {
@@ -43,18 +43,18 @@ func uninstallDarwinAction(c *urfavecli.Context) error {
 	waitForLaunchdTargetsGone(bootoutWaitTargets(plan))
 
 	if err := install.Uninstall(); err != nil {
-		fmt.Printf("! 清理 legacy 服务失败: %v\n", err)
+		fmt.Printf("! could not clean up the legacy service: %v\n", err)
 	}
 
 	for _, path := range plan.RemovePaths {
 		if err := os.RemoveAll(path); err != nil {
-			fmt.Printf("! 删除 %s 失败: %v\n", path, err)
+			fmt.Printf("! could not delete %s: %v\n", path, err)
 			continue
 		}
-		fmt.Printf("✓ 已删除 %s\n", path)
+		fmt.Printf("✓ Deleted %s\n", path)
 	}
 
-	fmt.Println("已卸载 bx。以下路径已保留(如需彻底清除配置数据请手动删除):")
+	fmt.Println("bx has been uninstalled. These paths were kept (delete them by hand if you want the configuration data gone as well):")
 	for _, path := range plan.KeepPaths {
 		fmt.Printf("  %s\n", path)
 	}
@@ -92,7 +92,7 @@ func runLaunchctlBestEffort(args []string) {
 	if launchctlBootoutAlreadyGone(fallback, commandExitCode(retryErr)) {
 		return
 	}
-	fmt.Printf("! %s: %v(已重试 %s: %v)\n",
+	fmt.Printf("! %s: %v (retried %s: %v)\n",
 		strings.Join(args, " "), err, strings.Join(fallback, " "), retryErr)
 }
 
@@ -117,7 +117,7 @@ func ensureGuardianNotRunningForUninstall() error {
 	}
 	switch status.Protection {
 	case guardian.ProtectionProtected, guardian.ProtectionStarting, guardian.ProtectionRecovering, guardian.ProtectionBlocked:
-		return errors.New("保护仍在运行:先执行 sudo bx down 再卸载")
+		return errors.New("protection is still running: run sudo bx down before uninstalling")
 	}
 	return nil
 }
@@ -127,12 +127,12 @@ func ensureGuardianNotRunningForUninstall() error {
 func darwinConsoleUserForUninstall() (int, string) {
 	uid, err := consoleUserUID()
 	if err != nil {
-		fmt.Printf("! 未找到控制台用户,跳过登录项与用户级文件清理: %v\n", err)
+		fmt.Printf("! no console user was found, so the login item and user-level files were not cleaned up: %v\n", err)
 		return 0, ""
 	}
 	account, err := user.LookupId(strconv.Itoa(uid))
 	if err != nil {
-		fmt.Printf("! 无法定位控制台用户主目录,跳过登录项与用户级文件清理: %v\n", err)
+		fmt.Printf("! could not locate the console user's home directory, so the login item and user-level files were not cleaned up: %v\n", err)
 		return 0, ""
 	}
 	return uid, account.HomeDir
@@ -162,8 +162,8 @@ func waitForLaunchdTargetsGone(targets []string) {
 			time.Sleep(launchdTeardownPollInterval)
 		}
 		if !gone {
-			fmt.Printf("! launchd 里的 %s 还没拆掉(已等约 %s)—— 它带 KeepAlive,"+
-				"可能会重拉一个已被删掉的二进制,注销一次即可清掉\n",
+			fmt.Printf("! %s is still loaded in launchd (waited about %s) — it has KeepAlive set, "+
+				"so it may restart a binary that has already been deleted; logging out once clears it\n",
 				target, launchdTeardownPollInterval*launchdTeardownPollAttempts)
 		}
 	}

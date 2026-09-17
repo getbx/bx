@@ -55,12 +55,12 @@ func TestDecideUnifiedUpdateRoute(t *testing.T) {
 		{
 			name:       "starting asks to retry later",
 			status:     guardian.Status{Protection: guardian.ProtectionStarting},
-			wantErrHas: "稍后",
+			wantErrHas: "try again in a moment",
 		},
 		{
 			name:       "recovering asks to retry later",
 			status:     guardian.Status{Protection: guardian.ProtectionRecovering},
-			wantErrHas: "稍后",
+			wantErrHas: "try again in a moment",
 		},
 		{
 			name:       "blocked points at doctor",

@@ -102,7 +102,7 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 	running, err := io.guardianRunning()
 	if err != nil {
 		running = true
-		io.log(fmt.Sprintf("! 无法确认 Guardian 是否在运行(%v):按「正在运行」处理,会停保护并重启服务", err))
+		io.log(fmt.Sprintf("! could not determine whether Guardian is running (%v): treating it as running, so protection will be stopped and the service restarted", err))
 	}
 
 	// 意图必须在动手之前读完:退回路径(挂起写不成)上停机仍会写 desired=off,
@@ -133,7 +133,7 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 		var stepErr error
 		switch step {
 		case UpgradeStopProtection:
-			io.log("• 停止保护(网络将暂时回到直连)")
+			io.log("• Stopping protection (the network goes back to direct for now)")
 			down, err := io.stopProtection(desiredOn)
 			outcome.Down = down
 			outcome.ForcedTeardown = down.Forced || err != nil
@@ -171,30 +171,30 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 			if stepErr == nil && !downConfirmedStopped(down) {
 				if reason := downUnconfirmedReason(down); reason == "core_still_running" {
 					stepErr = fmt.Errorf(
-						"Guardian 确认系统里仍有 bx 的 Core 进程在跑(%s):此时换掉二进制会留下一个"+
-							"不受管的旧 Core 占着 TUN,而症状要到之后才现(core_ownership_uncertain —— "+
-							"每次 "+elevate.Prefix+"bx up 都会重新求证,但只要那个 Core 还在跑就一直拒绝)。"+
-							"先看 sudo tail -50 /var/log/bx-guard.err.log 确认是哪个进程并处理掉,再重跑升级",
+						"Guardian confirmed that a bx Core process is still running on this system (%s): swapping the binary now would leave an "+
+							"unmanaged old Core holding the TUN, and the symptom only shows up later (core_ownership_uncertain — "+
+							"every "+elevate.Prefix+"bx up re-verifies, but as long as that Core is running it keeps refusing). "+
+							"Start with sudo tail -50 /var/log/bx-guard.err.log to find out which process it is, deal with it, then re-run the upgrade",
 						reason,
 					)
 				} else {
 					io.log(fmt.Sprintf(
-						"! Guardian 没能确认保护已经关闭(%s):继续升级,但升级后若起不来保护,"+
-							"先看 sudo tail -50 /var/log/bx-guard.err.log", reason,
+						"! Guardian could not confirm that protection is off (%s): the upgrade continues, but if protection will not start afterwards, "+
+							"start with sudo tail -50 /var/log/bx-guard.err.log", reason,
 					))
 				}
 			}
 		case UpgradeInstallFiles:
-			io.log("• 安装新版本文件")
+			io.log("• Installing the new version's files")
 			outcome.Files, stepErr = io.installFiles()
 		case UpgradeRestartGuardian:
-			io.log("• 重启保护服务(使新版本生效)")
+			io.log("• Restarting the protection service (so the new version takes effect)")
 			stepErr = io.restartGuardian()
 		case UpgradeEnableGuardian:
-			io.log("• 启动保护服务(不开启保护)")
+			io.log("• Starting the protection service (protection itself stays off)")
 			stepErr = io.enableGuardian()
 		case UpgradeStartProtection:
-			io.log("• 恢复保护")
+			io.log("• Restoring protection")
 			if stepErr = io.startProtection(); stepErr == nil {
 				outcome.ProtectionRestored = true
 			}
@@ -229,13 +229,13 @@ func restoreIntentAfterHoldUnawareStop(io upgradeIO, desiredOn bool, down macOSD
 		return
 	}
 	if io.reassertDesiredOn == nil {
-		io.log("! 无法把「用户要保护」写回磁盘(此平台不可用):若升级中途失败,重跑时保护可能不会自动恢复,届时执行 " + elevate.Prefix + "bx up")
+		io.log("! 'the user wants protection' could not be written back to disk (not available on this platform): if the upgrade fails partway through, a re-run may not restore protection by itself — run " + elevate.Prefix + "bx up")
 		return
 	}
 	if err := io.reassertDesiredOn(); err != nil {
 		io.log(fmt.Sprintf(
-			"! 未能把「用户要保护」写回磁盘(%v):这次升级仍会在末尾恢复保护,"+
-				"但若中途失败,重跑不会自动恢复 —— 那时请执行 "+elevate.Prefix+"bx up", err,
+			"! 'the user wants protection' could not be written back to disk (%v): this upgrade still restores protection at the end, "+
+				"but if it fails partway through, a re-run will not restore it by itself — run "+elevate.Prefix+"bx up", err,
 		))
 	}
 }

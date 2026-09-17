@@ -125,7 +125,7 @@ func TestUpgradeStepsAlwaysRestartGuardianWhenItIsRunning(t *testing.T) {
 // 确认文案必须明说会断网,而不是含糊的「可能有短暂中断」。
 func TestUpgradeConfirmMessageStatesTheOutage(t *testing.T) {
 	on := upgradeConfirmMessage(true)
-	for _, must := range []string{"断网", "重启保护"} {
+	for _, must := range []string{"network drops", "restart protection"} {
 		if !strings.Contains(on, must) {
 			t.Fatalf("确认文案必须包含 %q,实际 = %q", must, on)
 		}
@@ -136,7 +136,7 @@ func TestUpgradeConfirmMessageStatesTheOutage(t *testing.T) {
 	// KeepAlive=true,"Guardian 在跑、保护未开启" 正是任何一次 bx down 之后的
 	// 常态,不是边角情况。
 	off := upgradeConfirmMessage(false)
-	if strings.Contains(off, "断网") {
+	if strings.Contains(off, "network drops") {
 		t.Fatalf("保护未开启时不该声称会断网,实际 = %q", off)
 	}
 }
@@ -144,7 +144,7 @@ func TestUpgradeConfirmMessageStatesTheOutage(t *testing.T) {
 // 失败文案必须说清「现在处于什么状态」,而不只是抛出错误。
 func TestUpgradeFailureMessageSaysNetworkIsUsable(t *testing.T) {
 	msg := upgradeFailureMessage(UpgradeStartProtection, errors.New("boom"))
-	if !strings.Contains(msg, "网络") {
+	if !strings.Contains(msg, "The network still works") {
 		t.Fatalf("装文件之后的失败必须说明网络仍可用(直连),实际 = %q", msg)
 	}
 	if !strings.Contains(msg, "uninstall") {
@@ -160,13 +160,13 @@ func TestUpgradeFailureMessageSaysNetworkIsUsable(t *testing.T) {
 // 状态说反了。
 func TestUpgradeFailureMessageForStopDoesNotClaimNothingChanged(t *testing.T) {
 	msg := upgradeFailureMessage(UpgradeStopProtection, errors.New("boom"))
-	if strings.Contains(msg, "状态未变") {
+	if strings.Contains(msg, "nothing changed") {
 		t.Fatalf("强制拆除已经跑过了,不得声称状态未变,实际 = %q", msg)
 	}
-	if !strings.Contains(msg, "未经确认") {
+	if !strings.Contains(msg, "has not been confirmed") {
 		t.Fatalf("必须说明网络状态未经确认,实际 = %q", msg)
 	}
-	if !strings.Contains(msg, "尚未安装") {
+	if !strings.Contains(msg, "are not installed") {
 		t.Fatalf("必须说清文件还没换(升级没开始),实际 = %q", msg)
 	}
 }
@@ -174,15 +174,15 @@ func TestUpgradeFailureMessageForStopDoesNotClaimNothingChanged(t *testing.T) {
 // 走过强制拆除之后,不得替 bx down 说出它自己拒绝说的那句话。
 func TestUpgradeFailureMessageWithoutRestoredNetworkDoesNotPromiseConnectivity(t *testing.T) {
 	msg := upgradeFailureMessageWithNetwork(UpgradeStartProtection, errors.New("boom"), false)
-	if strings.Contains(msg, "网络仍可正常使用") {
+	if strings.Contains(msg, "The network still works") {
 		t.Fatalf("强制拆除是 best-effort,不得断言网络可用,实际 = %q", msg)
 	}
-	if !strings.Contains(msg, "未经确认") || !strings.Contains(msg, "uninstall") {
+	if !strings.Contains(msg, "has not been confirmed") || !strings.Contains(msg, "uninstall") {
 		t.Fatalf("必须说明未经确认并给出下一步,实际 = %q", msg)
 	}
 	// 干净停过保护那条路的措辞不变(既有断言仍然成立)。
 	clean := upgradeFailureMessageWithNetwork(UpgradeStartProtection, errors.New("boom"), true)
-	if !strings.Contains(clean, "网络仍可正常使用") {
+	if !strings.Contains(clean, "The network still works") {
 		t.Fatalf("干净路径仍应如实告知网络可用,实际 = %q", clean)
 	}
 }
@@ -303,11 +303,11 @@ func TestMacOSUpActionWiresVersionMismatchMessage(t *testing.T) {
 // 升级」,两句自相矛盾。这是 f7f976e 修过的同一个错误换了件衣服。
 func TestUpgradeCannotAskMessageDoesNotInventAnOutage(t *testing.T) {
 	on := upgradeCannotAskMessage(true)
-	if !strings.Contains(on, "断网") {
+	if !strings.Contains(on, "network drops") {
 		t.Fatalf("保护开着时必须说明会断网,实际 = %q", on)
 	}
 	off := upgradeCannotAskMessage(false)
-	if strings.Contains(off, "断网") {
+	if strings.Contains(off, "network drops") {
 		t.Fatalf("保护未开启时不该声称会断网,实际 = %q", off)
 	}
 	for _, msg := range []string{on, off} {

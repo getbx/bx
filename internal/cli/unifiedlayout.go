@@ -25,4 +25,4 @@ func unifiedLayoutDegradedWith(goos string, artifactsPresent, healthy bool) bool
 	return goos == "darwin" && artifactsPresent && !healthy
 }
 
-const unifiedRepairHint = "统一安装已损坏(runtime/current 不完整):请打开 /Applications/Bx.app 点 Install bx 修复,或运行 sudo /Applications/Bx.app/Contents/Resources/bx-cli app-install。为避免覆盖 CLI bridge,本命令不会回退 legacy 安装。"
+const unifiedRepairHint = "the unified installation is broken (runtime/current is incomplete): open /Applications/Bx.app and click Install bx to repair it, or run sudo /Applications/Bx.app/Contents/Resources/bx-cli app-install. To avoid overwriting the CLI bridge, this command will not fall back to a legacy installation."

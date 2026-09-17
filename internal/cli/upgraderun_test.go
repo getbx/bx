@@ -227,10 +227,10 @@ func TestRunUpgradeDoesNotClaimUsableNetworkAfterForcedTeardown(t *testing.T) {
 	if !outcome.ForcedTeardown || outcome.Down.Cause == nil {
 		t.Fatalf("强制拆除必须被上报给调用方,outcome=%+v", outcome)
 	}
-	if strings.Contains(err.Error(), "网络仍可正常使用") {
+	if strings.Contains(err.Error(), "The network still works") {
 		t.Fatalf("走过强制拆除就不能断言网络可用,实际 = %q", err)
 	}
-	if !strings.Contains(err.Error(), "未经确认") {
+	if !strings.Contains(err.Error(), "has not been confirmed") {
 		t.Fatalf("必须说明网络状态未经确认,实际 = %q", err)
 	}
 }

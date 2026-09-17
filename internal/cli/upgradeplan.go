@@ -66,9 +66,9 @@ func upgradeSteps(guardianRunning bool, desiredOn bool, configUsable bool) []Upg
 // 需要的是一个能据以决定「现在还是待会」的事实。
 func upgradeConfirmMessage(desiredOn bool) string {
 	if desiredOn {
-		return "升级需要重启保护,期间会断网几秒。现在继续吗?"
+		return "The upgrade has to restart protection, and the network drops for a few seconds. Continue now?"
 	}
-	return "升级需要重启保护服务,当前保护未开启,不会影响网络。现在继续吗?"
+	return "The upgrade has to restart the protection service. Protection is off right now, so the network is unaffected. Continue now?"
 }
 
 // upgradeCannotAskMessage 是「没有终端可问」时给用户的那句话。
@@ -78,13 +78,13 @@ func upgradeConfirmMessage(desiredOn bool) string {
 // 关着,正是任何一次 bx down 之后的常态。对着这样一台机器说「会断网」,就是
 // 在专门用来如实相告的地方再放一句不成立的话。
 func upgradeCannotAskMessage(desiredOn bool) string {
-	detail := "当前保护未开启,升级不会影响网络"
+	detail := "protection is off right now, so the upgrade does not affect the network"
 	if desiredOn {
-		detail = "升级期间会断网几秒"
+		detail = "the network drops for a few seconds during the upgrade"
 	}
 	return fmt.Sprintf(
-		"无法确认这次升级:当前不是交互式终端(%s)。"+
-			"确认要升级请重跑并加 --yes(例如 ./install.sh --yes,或 bx app-install --yes)。", detail,
+		"this upgrade could not be confirmed: this is not an interactive terminal (%s). "+
+			"To confirm the upgrade, run it again with --yes (./install.sh --yes, say, or bx app-install --yes).", detail,
 	)
 }
 
@@ -116,7 +116,7 @@ func upVersionMismatchMessage(guardianVersion, runtimeVersion string) string {
 	// 不一致,说明 runtime 装着且 CLI 可用,此时菜单是 .connected/.warning)。
 	// 给一条指向不存在菜单项的指引,与本函数要消灭的那类假话同级。
 	return fmt.Sprintf(
-		"! Guardian 仍在跑旧版 %s(已安装 %s)。执行 %s 完成切换(会断网几秒)。",
+		"! Guardian is still running the old version %s (%s is installed). Run %s to finish the switch (the network drops for a few seconds).",
 		guardianVersion, runtimeVersion, upgradeSwitchCommand,
 	)
 }
@@ -140,9 +140,9 @@ func upgradeFailureMessageWithNetwork(step UpgradeStep, err error, networkRestor
 		// desired=off、请 Core 退出、bootout Guardian、删屏障阻断路由、还原
 		// 系统 DNS)。保护已经被停过了。
 		return fmt.Sprintf(
-			"停止保护未能全部完成:%v\n"+
-				"新版本文件尚未安装(升级没有开始),但保护已经被停过,网络是否已恢复未经确认——"+
-				"请打开任意网页确认;若仍不通,执行 "+elevate.Prefix+"bx uninstall(保留 /etc/bx 配置)后重新安装。", err,
+			"stopping protection did not finish every step: %v\n"+
+				"the new version's files are not installed (the upgrade never started), but protection was stopped, and whether the network is back has not been confirmed — "+
+				"open any web page to check; if it is still not working, run "+elevate.Prefix+"bx uninstall (it keeps /etc/bx), then install again.", err,
 		)
 	case UpgradeEnableGuardian:
 		// 这一步只在全新安装那条路上出现:文件都装好了、保护从没开过、网络一直是
@@ -150,22 +150,22 @@ func upgradeFailureMessageWithNetwork(step UpgradeStep, err error, networkRestor
 		// 失败的后果是具体且有限的:菜单栏的开关点不动(它连的 socket 不存在),
 		// 而命令行的 sudo bx up 自己会再拉一次 Guardian,照样能开起来。
 		return fmt.Sprintf(
-			"新版本文件已装好,但保护服务没能启动:%v\n"+
-				"网络不受影响(一直是直连,保护本来就没开)。菜单栏的开关暂时点不动——"+
-				"执行 "+elevate.Prefix+"bx up 即可开启保护并把服务拉起来;若仍失败,看 sudo tail -50 /var/log/bx-guard.err.log。", err,
+			"the new version's files are installed, but the protection service did not start: %v\n"+
+				"The network is unaffected (it has been direct all along, since protection was never on). The switch in the menu bar will not work for now — "+
+				""+elevate.Prefix+"bx up turns protection on and brings the service up with it; if that still fails, see sudo tail -50 /var/log/bx-guard.err.log.", err,
 		)
 	default:
 		if !networkRestored {
 			return fmt.Sprintf(
-				"升级未完成:%v\n"+
-					"停止保护时走了强制拆除,网络是否已恢复未经确认——请打开任意网页确认。"+
-					"若不通,执行 "+elevate.Prefix+"bx uninstall 后重新安装。", err,
+				"the upgrade did not finish: %v\n"+
+					"stopping protection went through the forced teardown, so whether the network is back has not been confirmed — open any web page to check. "+
+					"If it is not, run "+elevate.Prefix+"bx uninstall, then install again.", err,
 			)
 		}
 		// 走到这里说明已经干净地停过保护 —— 网络已还原为直连,可用。
 		return fmt.Sprintf(
-			"升级未完成:%v\n网络仍可正常使用(直连,无保护)。"+
-				"若反复失败,执行 "+elevate.Prefix+"bx uninstall 后重新安装。", err,
+			"the upgrade did not finish: %v\nThe network still works (direct, unprotected). "+
+				"If it keeps failing, run "+elevate.Prefix+"bx uninstall, then install again.", err,
 		)
 	}
 }

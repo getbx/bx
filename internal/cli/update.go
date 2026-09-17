@@ -97,12 +97,12 @@ func expectedSum(sums, asset string) string {
 // verifyChecksum 校验 data 的 sha256 是否等于 wantHex(空 wantHex 视为失败,拒绝未校验的下载)。
 func verifyChecksum(data []byte, wantHex string) error {
 	if strings.TrimSpace(wantHex) == "" {
-		return fmt.Errorf("缺校验和,拒绝安装未经校验的下载")
+		return fmt.Errorf("there is no checksum, so this refuses to install an unverified download")
 	}
 	sum := sha256.Sum256(data)
 	got := hex.EncodeToString(sum[:])
 	if !strings.EqualFold(got, strings.TrimSpace(wantHex)) {
-		return fmt.Errorf("校验和不符:期望 %s,实得 %s", wantHex, got)
+		return fmt.Errorf("the checksum does not match: expected %s, got %s", wantHex, got)
 	}
 	return nil
 }
@@ -111,7 +111,7 @@ func verifyChecksum(data []byte, wantHex string) error {
 func extractBxFromTarGz(gzData []byte) ([]byte, error) {
 	gr, err := gzip.NewReader(bytes.NewReader(gzData))
 	if err != nil {
-		return nil, fmt.Errorf("解压 gzip: %w", err)
+		return nil, fmt.Errorf("decompressing gzip: %w", err)
 	}
 	defer gr.Close()
 	tr := tar.NewReader(gr)
@@ -121,7 +121,7 @@ func extractBxFromTarGz(gzData []byte) ([]byte, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("读 tar: %w", err)
+			return nil, fmt.Errorf("reading the tar: %w", err)
 		}
 		// 取 basename 为 bx 的常规文件
 		name := hdr.Name
@@ -132,7 +132,7 @@ func extractBxFromTarGz(gzData []byte) ([]byte, error) {
 			return io.ReadAll(tr)
 		}
 	}
-	return nil, fmt.Errorf("包内未找到 bx 二进制")
+	return nil, fmt.Errorf("no bx binary was found inside the package")
 }
 
 // updateDisposition 是 `bx update` 在拿到最新版本信息后该做什么。
@@ -209,12 +209,12 @@ func latestReleaseTag(client *http.Client) (string, error) {
 func latestReleaseTagContext(ctx context.Context, client *http.Client) (string, error) {
 	resp, err := httpGetContext(ctx, client, repoReleasesLatest)
 	if err != nil {
-		return "", fmt.Errorf("查询最新版本: %w", err)
+		return "", fmt.Errorf("looking up the latest version: %w", err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("查询最新版本返回 %d(仓库尚无 release?)", resp.StatusCode)
+		return "", fmt.Errorf("looking up the latest version returned %d (does the repository have no release yet?)", resp.StatusCode)
 	}
 	return parseReleaseTag(resp.Request.URL.String()), nil
 }
@@ -231,7 +231,7 @@ func downloadBytesContext(ctx context.Context, client *http.Client, url string) 
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("下载 %s 返回 %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("downloading %s returned %d", url, resp.StatusCode)
 	}
 	// **停滞时限,不是总时限。** client 上那个 90 秒的总 Timeout 覆盖整个请求
 	// 含读完 body,于是一个 33MB 的包实际要求「全程 375 KB/s 不掉」——
@@ -283,7 +283,7 @@ func checkLatestReleaseAvailability(ctx context.Context) (guardian.UpdateAvailab
 		return guardian.UpdateAvailability{}, err
 	}
 	if tag == "" {
-		return guardian.UpdateAvailability{}, fmt.Errorf("解析最新版本失败(仓库可能尚无 release)")
+		return guardian.UpdateAvailability{}, fmt.Errorf("the latest version could not be parsed (the repository may have no release yet)")
 	}
 	manifest, err := verifiedReleaseManifestContext(ctx, client, tag)
 	if err != nil {
@@ -326,14 +326,14 @@ func updateAction(c *cli.Context) error {
 	}
 
 	if !c.Bool("json") {
-		fmt.Printf("当前版本:%s\n⏳ 查询最新 release…\n", version.String())
+		fmt.Printf("Current version: %s\n⏳ Looking up the latest release…\n", version.String())
 	}
 	latest, err := latestReleaseTag(client)
 	if err != nil {
 		return err
 	}
 	if latest == "" {
-		return fmt.Errorf("解析最新版本失败(仓库可能尚无 release)")
+		return fmt.Errorf("the latest version could not be parsed (the repository may have no release yet)")
 	}
 	releaseTag := latest
 	manifest, err := verifiedReleaseManifest(client, releaseTag)
@@ -348,11 +348,11 @@ func updateAction(c *cli.Context) error {
 		if asJSON {
 			return json.NewEncoder(os.Stdout).Encode(updateCheckReport{Current: cur, Latest: latest, Available: available, Verified: true})
 		}
-		fmt.Printf("最新版本:%s (已验证)\n", latest)
+		fmt.Printf("Latest version: %s (verified)\n", latest)
 		if available {
-			fmt.Printf("🆕 有新版可用:%s → 运行 "+elevate.Prefix+"bx update 安装。\n", latest)
+			fmt.Printf("🆕 A new version is available: %s → run "+elevate.Prefix+"bx update to install it.\n", latest)
 		} else {
-			fmt.Println("✅ 已是最新,无需更新。")
+			fmt.Println("✅ Already up to date, nothing to do.")
 		}
 		return nil
 	case updateDispositionUpToDate:
@@ -369,37 +369,37 @@ func updateAction(c *cli.Context) error {
 				ProtectionState: currentProtectionStateForUpdate(),
 			})
 		}
-		fmt.Printf("最新版本:%s (已验证)\n", latest)
-		fmt.Println("✅ 已是最新,无需更新。")
+		fmt.Printf("Latest version: %s (verified)\n", latest)
+		fmt.Println("✅ Already up to date, nothing to do.")
 		return nil
 	}
 	if !asJSON {
-		fmt.Printf("最新版本:%s (已验证)\n", latest)
+		fmt.Printf("Latest version: %s (verified)\n", latest)
 	}
 
 	if unifiedLayoutActive() {
 		return updateUnifiedMacOS(c, client, manifest, latest)
 	}
 	if c.Bool("package") {
-		return fmt.Errorf("--package 已废弃:legacy 布局请用完整包重装(install.sh)")
+		return fmt.Errorf("--package is deprecated: under the legacy layout, reinstall from the full package (install.sh)")
 	}
 
 	asset, err := updatepkg.FindAsset(manifest, runtime.GOOS+"/"+runtime.GOARCH)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("⏳ 下载 %s…\n", asset.Name)
+	fmt.Printf("⏳ Downloading %s…\n", asset.Name)
 	tgz, err := downloadBytes(client, fmt.Sprintf("%s/%s/%s", repoReleaseDL, releaseTag, asset.Name))
 	if err != nil {
 		return err
 	}
 	if int64(len(tgz)) != asset.Size {
-		return fmt.Errorf("下载大小不符:期望 %d,实得 %d", asset.Size, len(tgz))
+		return fmt.Errorf("the downloaded size does not match: expected %d, got %d", asset.Size, len(tgz))
 	}
 	if err := verifyChecksum(tgz, asset.SHA256); err != nil {
-		return fmt.Errorf("校验失败(已中止,未替换): %w", err)
+		return fmt.Errorf("verification failed (aborted; nothing was replaced): %w", err)
 	}
-	fmt.Println("✅ SHA256 校验通过")
+	fmt.Println("✅ SHA256 verified")
 
 	bin, err := extractBxFromTarGz(tgz)
 	if err != nil {
@@ -412,17 +412,17 @@ func updateAction(c *cli.Context) error {
 		dst = self
 	}
 	if err := install.ReplaceBinary(dst, bin); err != nil {
-		return fmt.Errorf("替换二进制 %s: %w", dst, err)
+		return fmt.Errorf("replacing the binary %s: %w", dst, err)
 	}
-	fmt.Printf("✅ 已更新到 %s(%s)\n", latest, dst)
+	fmt.Printf("✅ Updated to %s (%s)\n", latest, dst)
 
 	// 绝不为了加载新二进制而重启服务。守护进程退出会撤销路由/TUN,在真正
 	// 的进程交接实现前,保留当前受保护会话比"立刻生效"更重要。
 	if install.UnitInstalled() && serviceState("is-active", install.ServiceName) == "active" {
-		fmt.Println("  当前保护会话保持运行;新版会在下次启动保护时生效。")
-		fmt.Println("  Reconnect 只安全更换传输,不会为了加载二进制而结束保护。")
+		fmt.Println("  The current protection session keeps running; the new version takes effect the next time protection starts.")
+		fmt.Println("  Reconnect only swaps the transport safely; it never ends protection just to load a binary.")
 	} else {
-		fmt.Println("  (bx 未在运行,下次 " + elevate.Prefix + "bx up 用新版)")
+		fmt.Println("  (bx is not running; the next " + elevate.Prefix + "bx up uses the new version)")
 	}
 	return nil
 }
@@ -433,7 +433,7 @@ func updateAction(c *cli.Context) error {
 // Off 直接就地统一安装(反正无网络保护要保,没有回滚必要)。
 func updateUnifiedMacOS(c *cli.Context, client *http.Client, manifest updatepkg.Manifest, latest string) error {
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("统一布局更新需要管理员权限:请用 " + elevate.Prefix + "bx update")
+		return fmt.Errorf("updating under the unified layout needs administrator rights: use " + elevate.Prefix + "bx update")
 	}
 
 	localPackage := c.String("package-file")
@@ -442,23 +442,23 @@ func updateUnifiedMacOS(c *cli.Context, client *http.Client, manifest updatepkg.
 		var err error
 		data, err = os.ReadFile(localPackage)
 		if err != nil {
-			return fmt.Errorf("读取本地包文件 %s: %w", localPackage, err)
+			return fmt.Errorf("reading the local package file %s: %w", localPackage, err)
 		}
 	} else {
 		asset, err := updatepkg.FindPackage(manifest, runtime.GOOS+"/"+runtime.GOARCH)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("⏳ 下载完整 macOS 包 %s…\n", asset.Name)
+		fmt.Printf("⏳ Downloading the full macOS package %s…\n", asset.Name)
 		data, err = downloadBytes(client, fmt.Sprintf("%s/%s/%s", repoReleaseDL, latest, asset.Name))
 		if err != nil {
 			return err
 		}
 		if int64(len(data)) != asset.Size {
-			return fmt.Errorf("下载大小不符:期望 %d,实得 %d", asset.Size, len(data))
+			return fmt.Errorf("the downloaded size does not match: expected %d, got %d", asset.Size, len(data))
 		}
 		if err := verifyChecksum(data, asset.SHA256); err != nil {
-			return fmt.Errorf("完整 macOS 包校验失败(已中止,未替换): %w", err)
+			return fmt.Errorf("the full macOS package failed verification (aborted; nothing was replaced): %w", err)
 		}
 	}
 
@@ -471,7 +471,7 @@ func updateUnifiedMacOS(c *cli.Context, client *http.Client, manifest updatepkg.
 	}
 	target := pkg.Release.Version
 	if localPackage == "" && target != latest {
-		return fmt.Errorf("下载的包版本 %s 与最新版本 %s 不符,已中止", target, latest)
+		return fmt.Errorf("the downloaded package is version %s but the latest is %s, so this was aborted", target, latest)
 	}
 
 	statusCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -494,25 +494,25 @@ func updateUnifiedMacOS(c *cli.Context, client *http.Client, manifest updatepkg.
 func updateUnifiedMacOSDirect(c *cli.Context, pkg updatepkg.MacOSPackage, target string) error {
 	asJSON := c.Bool("json")
 	if !asJSON {
-		fmt.Println("1/2 校验并安装新版本…")
+		fmt.Println("1/2 verifying and installing the new version…")
 	}
 
 	tmpRoot, err := os.MkdirTemp("/var/lib/bx", ".bx-update-app-")
 	if err != nil {
-		return fmt.Errorf("创建临时目录: %w", err)
+		return fmt.Errorf("creating a temporary directory: %w", err)
 	}
 	defer os.RemoveAll(tmpRoot)
 	bundlePath := filepath.Join(tmpRoot, "Bx.app")
 	if err := writeMacOSAppTree(bundlePath, pkg.App); err != nil {
-		return fmt.Errorf("展开新版 Bx.app: %w", err)
+		return fmt.Errorf("unpacking the new Bx.app: %w", err)
 	}
 
 	if err := directInstallUnifiedUpdate(bundlePath, defaultConfigPath); err != nil {
-		return fmt.Errorf("安装新版本失败: %w", err)
+		return fmt.Errorf("installing the new version failed: %w", err)
 	}
 
 	if !asJSON {
-		fmt.Printf("2/2 完成 ✅ bx 已更新到 %s(保护未开启,无网络影响)\n", target)
+		fmt.Printf("2/2 done ✅ bx updated to %s (protection was off, so the network was unaffected)\n", target)
 		return nil
 	}
 	result := guardian.UpdateResult{
@@ -534,14 +534,14 @@ func writeMacOSAppTree(bundlePath string, app map[string][]byte) error {
 	for name, content := range app {
 		target := filepath.Join(bundlePath, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("建目录(为 %q): %w", name, err)
+			return fmt.Errorf("creating the directory for %q: %w", name, err)
 		}
 		mode := os.FileMode(0o644)
 		if strings.HasPrefix(name, "Contents/MacOS/") || name == "Contents/Resources/bx-cli" || name == "Contents/Resources/bx-bridge" {
 			mode = 0o755
 		}
 		if err := os.WriteFile(target, content, mode); err != nil {
-			return fmt.Errorf("写 %q: %w", name, err)
+			return fmt.Errorf("writing %q: %w", name, err)
 		}
 	}
 	return nil
@@ -553,7 +553,7 @@ func writeMacOSAppTree(bundlePath string, app map[string][]byte) error {
 func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSPackage, status guardian.Status, target string) error {
 	from := status.CoreVersion
 	if from == "" {
-		return fmt.Errorf("无法确认运行版本,先 bx doctor")
+		return fmt.Errorf("the running version could not be confirmed; start with bx doctor")
 	}
 	if from == target && !c.Bool("force") {
 		if c.Bool("json") {
@@ -567,28 +567,28 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 			}
 			return json.NewEncoder(os.Stdout).Encode(result)
 		}
-		fmt.Println("✅ 已是最新,无需更新。")
+		fmt.Println("✅ Already up to date, nothing to do.")
 		return nil
 	}
 
 	var randomSuffix [4]byte
 	if _, err := rand.Read(randomSuffix[:]); err != nil {
-		return fmt.Errorf("生成事务 ID: %w", err)
+		return fmt.Errorf("generating a transaction ID: %w", err)
 	}
 	txid := newUpdateTransactionID(time.Now().Unix(), randomSuffix[:])
 	stagingDir := filepath.Join("/var/lib/bx/update/staging", txid)
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
-		return fmt.Errorf("创建暂存目录: %w", err)
+		return fmt.Errorf("creating the staging directory: %w", err)
 	}
 	packagePath := filepath.Join(stagingDir, "package.tgz")
 	if err := os.WriteFile(packagePath, data, 0o600); err != nil {
-		return fmt.Errorf("暂存更新包: %w", err)
+		return fmt.Errorf("staging the update package: %w", err)
 	}
 
 	asJSON := c.Bool("json")
 	if !asJSON {
-		fmt.Println("1/4 准备:包已验证并暂存")
-		fmt.Println("2/4 更新中:网络可能短暂暂停,bx 将自动重连…")
+		fmt.Println("1/4 prepared: the package is verified and staged")
+		fmt.Println("2/4 updating: the network may pause briefly, and bx reconnects by itself…")
 	}
 
 	sum := sha256.Sum256(data)
@@ -601,10 +601,10 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 	if shouldCleanUpdateStaging(result, err) {
 		os.RemoveAll(stagingDir)
 	} else if !asJSON {
-		fmt.Printf("! 更新未终结:保留 %s 供 Guardian 恢复使用\n", stagingDir)
+		fmt.Printf("! the update was not finalized: %s is kept for Guardian to recover from\n", stagingDir)
 	}
 	if err != nil {
-		return fmt.Errorf("更新失败:%w;运行 "+elevate.Prefix+"bx status 与 bx doctor 检查保护状态", err)
+		return fmt.Errorf("the update failed: %w; run "+elevate.Prefix+"bx status and bx doctor to check the state of your protection", err)
 	}
 	// JSON body 无论成功还是回滚都先写出(调用方需要 to_version/rolled_back 等字段
 	// 判读结果);但退出码绝不能在写完 JSON 后就地 return nil——回滚意味着更新失败,
@@ -615,12 +615,12 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 			return err
 		}
 	} else if result.RolledBack {
-		fmt.Printf("3/4 新版本未通过健康检查,已自动回滚\n4/4 完成:保持 %s,保护未降级直连 ✅\n", result.FromVersion)
+		fmt.Printf("3/4 the new version failed its health check and was rolled back automatically\n4/4 done: still on %s, and protection never fell back to direct ✅\n", result.FromVersion)
 	} else {
-		fmt.Printf("3/4 已重连(protection_state=%s)\n4/4 完成 ✅ bx 已更新到 %s\n", result.ProtectionState, result.ToVersion)
+		fmt.Printf("3/4 reconnected (protection_state=%s)\n4/4 done ✅ bx updated to %s\n", result.ProtectionState, result.ToVersion)
 	}
 	if result.RolledBack {
-		return fmt.Errorf("更新已自动回滚,仍运行 %s", result.FromVersion)
+		return fmt.Errorf("the update was rolled back automatically; still running %s", result.FromVersion)
 	}
 	return nil
 }
@@ -648,13 +648,13 @@ func decideUnifiedUpdateRoute(status guardian.Status, statusErr error, guardianL
 		case guardian.ProtectionOff:
 			return "direct", nil
 		case guardian.ProtectionStarting, guardian.ProtectionRecovering:
-			return "", fmt.Errorf("Guardian 正在 %s,请稍后再试", status.Protection)
+			return "", fmt.Errorf("Guardian is busy doing %s; try again in a moment", status.Protection)
 		default: // blocked、needs_attention 或未知取值
-			return "", fmt.Errorf("Guardian 状态需处理(%s),请先运行 "+elevate.Prefix+"bx doctor", status.Protection)
+			return "", fmt.Errorf("Guardian's state needs attention (%s); first run "+elevate.Prefix+"bx doctor", status.Protection)
 		}
 	}
 	if guardianLoaded {
-		return "", fmt.Errorf("Guardian 状态不明,先 "+elevate.Prefix+"bx doctor: %w", statusErr)
+		return "", fmt.Errorf("Guardian's state is unclear; start with "+elevate.Prefix+"bx doctor: %w", statusErr)
 	}
 	return "direct", nil
 }
