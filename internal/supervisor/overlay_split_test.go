@@ -171,16 +171,16 @@ func TestNormalizeDNSServerAddrHandlesColonWithoutPort(t *testing.T) {
 // 排在前面的必须是用户那条(matchSplit 取第一个命中的)。
 func TestSplitRoutesPutUserRulesFirst(t *testing.T) {
 	routes := buildSplitRoutes(
-		[]config.SplitRule{{Domains: []string{"ts.net"}, Server: "10.0.0.1:53"}},
+		[]config.SplitRule{{Domains: []string{"ts.net"}, Servers: []string{"10.0.0.1:53"}}},
 		[]overlay.SplitRoute{{Suffix: "ts.net", Resolver: "100.100.100.100"}},
 	)
 	if len(routes) != 2 {
 		t.Fatalf("两边各一条,应当得到 2 条: %+v", routes)
 	}
 	// 第一条必须是用户那条 —— 否则用户为 ts.net 配的解析器被硬编码的那个静默遮蔽。
-	if routes[0].Server != "10.0.0.1:53" {
+	if routes[0].Servers[0] != "10.0.0.1:53" {
 		t.Fatalf("第一条不是用户的规则(server=%q)—— matchSplit 取第一个命中的,"+
-			"用户配置会被 overlay 那条遮蔽", routes[0].Server)
+			"用户配置会被 overlay 那条遮蔽", routes[0].Servers[0])
 	}
 	if !routes[1].Match.Match("host.ts.net") {
 		t.Fatalf("overlay 那条没覆盖子域: %+v", routes[1])
@@ -191,14 +191,14 @@ func TestSplitRoutesPutUserRulesFirst(t *testing.T) {
 // 用户可能故意指了非 53 端口。
 func TestSplitRoutesNormalizeOnlyTheOverlayResolver(t *testing.T) {
 	routes := buildSplitRoutes(
-		[]config.SplitRule{{Domains: []string{"corp.example"}, Server: "10.0.0.1:5353"}},
+		[]config.SplitRule{{Domains: []string{"corp.example"}, Servers: []string{"10.0.0.1:5353"}}},
 		[]overlay.SplitRoute{{Suffix: "ts.net", Resolver: "100.100.100.100"}},
 	)
-	if routes[0].Server != "10.0.0.1:5353" {
-		t.Fatalf("用户写的端口被改了: %q", routes[0].Server)
+	if got := routes[0].Servers; len(got) != 1 || got[0] != "10.0.0.1:5353" {
+		t.Fatalf("用户写的端口被改了: %q", got)
 	}
-	if routes[1].Server != "100.100.100.100:53" {
-		t.Fatalf("overlay 的裸 IP 没补端口: %q", routes[1].Server)
+	if got := routes[1].Servers; len(got) != 1 || got[0] != "100.100.100.100:53" {
+		t.Fatalf("overlay 的裸 IP 没补端口: %q", got)
 	}
 }
 

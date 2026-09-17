@@ -571,6 +571,9 @@ global: true                  # setup 写的就是 true;改成 false 才走 chin
 dns:
   china: 223.5.5.5
   fakeip_cidr: 198.18.0.0/15
+  split:                        # 内网域名交给内网 DNS 解析,并强制直连
+    - domains: ["*.corp.example"]
+      servers: ["10.0.13.23", "10.0.13.24"]
 bypass:
   - 10.0.0.0/16
 rules:
@@ -586,6 +589,13 @@ rules:
 - 私网、Docker、loopback、link-local 默认内建直连,通常无需手动配置。
 - `transports: [link1, link2, ...]`(替代 `server:`):多传输自动容灾,有序优先级,主挂自动切备。
 - `udp.transport: "hysteria2://..."`:按类分流——UDP/QUIC 走它加速、TCP 走主传输。它挂了 UDP 自动回落主传输(同一台 VPS、同一条加密隧道,不泄漏,只是没了加速档);主传输也挂才 fail-closed 阻断。
+- `dns.split`:**内网域名的解析交给内网 DNS**(公网 DNS 答不出它们)。命中的域名
+  不分配假 IP、转发到 `servers` 拿真实地址,并把拿到的地址**注册成强制直连** ——
+  所以内网访问不会绕进隧道。`servers` 可以写多台(AD 域控通常成对),语义是
+  **并发查、先到先用**,一台挂了不拖慢另一台;单台写法 `server: 10.0.13.23` 仍然
+  支持,但**两个键不能同时写**(加载期报错)。无端口时补 `:53`。
+  一轮查询的总预算是 2 秒:离开内网时这些域名会在 2 秒内明确失败,而不是卡住。
+  **改完要 `bx down && bx up`**(split 不热重载,只有 direct/proxy 规则热生效)。
 - 多传输/分流详见 [docs/multi-transport-guide.md](docs/multi-transport-guide.md)。
 
 ### 路由器模式(mode: router)

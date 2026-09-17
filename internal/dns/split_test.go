@@ -72,8 +72,8 @@ func newSplitServer(fwd Forwarder, set *splitdns.Set) *Server {
 	pool, _ := fakeip.New("198.18.0.0/15")
 	s := NewServer(pool, 1)
 	s.SetSplit([]SplitRoute{{
-		Match:  route.NewDomainSet([]string{"*.shanghai-electric.com"}),
-		Server: "10.0.13.23:53",
+		Match:   route.NewDomainSet([]string{"*.shanghai-electric.com"}),
+		Servers: []string{"10.0.13.23:53"},
 	}}, fwd, set)
 	return s
 }
@@ -108,8 +108,8 @@ func TestRespondStaticAMatchReturnsPinnedAddress(t *testing.T) {
 		"vps.example.com": {pinned},
 	}, set)
 	s.SetSplit([]SplitRoute{{
-		Match:  route.NewDomainSet([]string{"*.example.com"}),
-		Server: "10.0.13.23:53",
+		Match:   route.NewDomainSet([]string{"*.example.com"}),
+		Servers: []string{"10.0.13.23:53"},
 	}}, fwd, set)
 
 	resp, err := s.Respond(buildQuery(t, 1, "vps.example.com.", dnsmessage.TypeA))

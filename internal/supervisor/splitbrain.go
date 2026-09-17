@@ -95,14 +95,16 @@ func buildSplitRoutes(userRules []config.SplitRule, overlayRoutes []overlay.Spli
 	var routes []bxdns.SplitRoute
 	for _, r := range userRules {
 		routes = append(routes, bxdns.SplitRoute{
-			Match:  route.NewDomainSet(r.Domains),
-			Server: r.Server,
+			Match: route.NewDomainSet(r.Domains),
+			// **读 Servers,不读 Server。** 后者只是单台写法的输入形式,
+			// config 在加载期把它归一化进 Servers;下游读哪一个必须只有一种答案。
+			Servers: r.Servers,
 		})
 	}
 	for _, r := range overlayRoutes {
 		routes = append(routes, bxdns.SplitRoute{
-			Match:  route.NewDomainSet(overlaySplitPatterns(r.Suffix)),
-			Server: normalizeDNSServerAddr(r.Resolver),
+			Match:   route.NewDomainSet(overlaySplitPatterns(r.Suffix)),
+			Servers: []string{normalizeDNSServerAddr(r.Resolver)},
 		})
 	}
 	return routes
