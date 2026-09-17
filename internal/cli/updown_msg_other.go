@@ -5,15 +5,15 @@ package cli
 // upDoneMessage 是 `bx up` 完成后打印的收尾文案。Linux(systemd)/macOS(launchd)上
 // Enable 确实原子地把开机自启一并打开,文案维持原样准确,不做任何改动。
 func upDoneMessage() string {
-	return "✅ bx 已启动。"
+	return "✅ bx started."
 }
 
 // downDoneMessage 同理:Disable 确实一并取消了开机自启。
 func downDoneMessage() string {
-	return "✅ bx 已停止并取消开机自启。"
+	return "✅ bx stopped, and start-at-boot is off."
 }
 
 // upStepLabel 返回 up 进度行的标签。Linux/macOS 上 up 启动并设为开机自启。
 func upStepLabel() string {
-	return "已启动并设为开机自启"
+	return "started, and start-at-boot is on"
 }

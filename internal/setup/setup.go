@@ -44,11 +44,11 @@ func ownerUIDFromEnv(getenv func(string) string) int {
 // 文件已存在且 !force 则报错。
 func WriteConfig(path string, links []string, udpTransport string, force bool) error {
 	if len(links) == 0 {
-		return fmt.Errorf("setup: 无传输链接")
+		return fmt.Errorf("setup: no transport link")
 	}
 	if !force {
 		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("配置已存在 %s(加 --force 覆盖)", path)
+			return fmt.Errorf("a config already exists at %s (pass --force to overwrite it)", path)
 		}
 	}
 	cfg := minimalConfig{Global: true, Killswitch: true, OwnerUID: ownerUIDFromEnv(os.Getenv)}
@@ -110,7 +110,7 @@ func buildProbeTunnel(dataDir, link, probe string) (*tunnel.Tunnel, func(), erro
 		t, err = tunnel.NewVmess(sbPath, link, probe, confPath, "")
 	default:
 		// Kind 新增了引擎但这里没跟上:响亮报错,绝不静默回落 brook 误判连通。
-		return nil, nil, fmt.Errorf("setup 探测不支持的传输引擎: %s", kind)
+		return nil, nil, fmt.Errorf("setup cannot probe this transport engine: %s", kind)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -136,9 +136,9 @@ func ProbeServer(dataDir, link, probe string, timeout time.Duration) (int64, err
 		select {
 		case <-deadline.C:
 			if last := t.Stats().LastError; last != "" {
-				return 0, fmt.Errorf("%s 内未连通(最近错误: %s)", timeout, last)
+				return 0, fmt.Errorf("no connection within %s (most recent error: %s)", timeout, last)
 			}
-			return 0, fmt.Errorf("%s 内未连通(检查 server/密码/网络)", timeout)
+			return 0, fmt.Errorf("no connection within %s (check the server, the password, and your network)", timeout)
 		case <-tick.C:
 			if t.Healthy() {
 				return t.Stats().LatencyMS, nil

@@ -803,7 +803,7 @@ func serverInstallAction(c *cli.Context) error {
 	}
 	bin, err := install.SelfInstall()
 	if err != nil {
-		return fmt.Errorf("安装 bx 到 PATH: %w", err)
+		return fmt.Errorf("installing bx onto PATH: %w", err)
 	}
 	abs, err := filepath.Abs(c.String("config"))
 	if err != nil {
@@ -1289,7 +1289,7 @@ func createShare(name, host, dir, listen, password string) (link string, effecti
 	}
 	bin, err := install.SelfInstall()
 	if err != nil {
-		return "", "", fmt.Errorf("安装 bx 到 PATH: %w", err)
+		return "", "", fmt.Errorf("installing bx onto PATH: %w", err)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -3115,7 +3115,7 @@ func doctorShares(dir string) {
 	}
 	for _, s := range shares {
 		if s.Config.Type == "reality" { // reality share = 主 server 内一 uuid,无独立服务/端口
-			doctorLine("ok", "share "+s.Name, "reality（主 server 内一用户）")
+			doctorLine("ok", "share "+s.Name, "reality (one user inside the main server)")
 			continue
 		}
 		state := serviceState("is-active", install.ShareServiceName(s.Name))
@@ -3195,7 +3195,7 @@ func probeFlags() []cli.Flag {
 func probeAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if arg == "" {
-		return fmt.Errorf("用法: bx probe <客户端链接>")
+		return fmt.Errorf("usage: bx probe <client-link>")
 	}
 	link, _, err := normalizeClientLink(arg)
 	if err != nil {
@@ -3211,12 +3211,12 @@ func probeAction(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("⏳ 连通检测中…")
+	fmt.Println("⏳ Checking connectivity…")
 	lat, err := setup.ProbeServer(dir, link, c.String("target"), c.Duration("timeout"))
 	if err != nil {
-		return fmt.Errorf("连通检测失败: %w", err)
+		return fmt.Errorf("connectivity check failed: %w", err)
 	}
-	fmt.Printf("✅ 服务器连通,延迟 %dms\n", lat)
+	fmt.Printf("✅ Server reachable, latency %dms\n", lat)
 	return nil
 }
 
@@ -3272,8 +3272,8 @@ func cacheDirOwnershipHintFrom(ownerUID int, ok bool, selfUID int, dir string) s
 	if !ok || ownerUID == selfUID {
 		return ""
 	}
-	return fmt.Sprintf("缓存目录 %s 的属主是 uid %d(不是你 uid %d)—— 多半是之前用 sudo 跑过 bx probe/doctor,"+
-		"那次以 root 建出来的文件普通用户改不动。修:sudo chown -R $(id -u):$(id -g) %s",
+	return fmt.Sprintf("the cache directory %s is owned by uid %d, not by you (uid %d) — most likely bx probe/doctor was run under sudo at some point, "+
+		"and an ordinary user cannot touch the files root created then. Fix: sudo chown -R $(id -u):$(id -g) %s",
 		dir, ownerUID, selfUID, dir)
 }
 
@@ -3328,12 +3328,12 @@ func transportChangeLines(before setup.TransportsBefore, links []string, udpTran
 	}
 	newMain := links[0]
 	if oldMain == newMain {
-		out = append(out, fmt.Sprintf("• 主传输不变:%s", redactLink(newMain)))
+		out = append(out, fmt.Sprintf("• Main transport unchanged: %s", redactLink(newMain)))
 	} else {
-		out = append(out, fmt.Sprintf("• 主传输:%s → %s", redactLink(oldMain), redactLink(newMain)))
+		out = append(out, fmt.Sprintf("• Main transport: %s → %s", redactLink(oldMain), redactLink(newMain)))
 	}
 	if len(links) > 1 {
-		out = append(out, fmt.Sprintf("• 容灾传输共 %d 条", len(links)))
+		out = append(out, fmt.Sprintf("• %d transports in the failover list", len(links)))
 	}
 	switch {
 	case udpTransport == "":
@@ -3344,20 +3344,20 @@ func transportChangeLines(before setup.TransportsBefore, links []string, udpTran
 			// 而 bx status 显示 Protected(主隧道确实健康)。
 			if host, stale := setup.StaleUDPTransport(before, newMain); stale {
 				out = append(out,
-					fmt.Sprintf("⚠ UDP 传输仍指向旧服务器 %s —— 它跟着上一台机器走的,现在那台已经不是你的出口了", host),
-					"  后果:UDP(微信语音、QUIC、NTP)会被 fail-closed 全部阻断,而 bx status 仍显示 Protected",
-					"  处置:带上新服务器的 UDP 链接重跑 `bx setup --udp <hysteria2://…> <bx://…>`(**flag 必须在链接之前**),",
-					"        或者从 /etc/bx/config.yaml 里删掉 udp.transport 这一行(UDP 会改走主传输)")
+					fmt.Sprintf("⚠ The UDP transport still points at the old server %s — it came with the previous machine, which is no longer your exit", host),
+					"  Consequence: UDP (WeChat voice, QUIC, NTP) gets blocked fail-closed across the board, while bx status still says Protected",
+					"  What to do: re-run setup with the new server's UDP link — "+elevate.Prefix+"bx setup --udp <hysteria2://…> <bx://…> (the flag MUST come before the link),",
+					"        or delete the udp.transport line from /etc/bx/config.yaml (UDP then moves to the main transport)")
 			} else {
-				out = append(out, fmt.Sprintf("• UDP 传输保持不变:%s", redactLink(before.UDPTransport)))
+				out = append(out, fmt.Sprintf("• UDP transport left as it was: %s", redactLink(before.UDPTransport)))
 			}
 		}
 	case before.UDPTransport == udpTransport:
-		out = append(out, fmt.Sprintf("• UDP 传输不变:%s", redactLink(udpTransport)))
+		out = append(out, fmt.Sprintf("• UDP transport unchanged: %s", redactLink(udpTransport)))
 	default:
-		out = append(out, fmt.Sprintf("• UDP 传输:%s → %s", redactLink(before.UDPTransport), redactLink(udpTransport)))
+		out = append(out, fmt.Sprintf("• UDP transport: %s → %s", redactLink(before.UDPTransport), redactLink(udpTransport)))
 	}
-	out = append(out, "• 配置里的其余设置(分流策略、模式、列表等)未改动")
+	out = append(out, "• Everything else in the config (routing policy, mode, lists…) is untouched")
 	return out
 }
 
@@ -3381,15 +3381,15 @@ func checkSetupArgs(args []string) error {
 		if !strings.HasPrefix(arg, "-") {
 			continue
 		}
-		return fmt.Errorf("%s 写在了链接后面,会被静默忽略(flag 必须在链接之前)。\n正确写法:"+elevate.Prefix+"bx setup %s '<值>' '<链接>'", arg, arg)
+		return fmt.Errorf("%s was written after the link, so it would be silently ignored (flags must come before the link).\nWrite it like this: "+elevate.Prefix+"bx setup %s '<value>' '<link>'", arg, arg)
 	}
-	return fmt.Errorf("bx setup 只接受一个链接,多给了 %d 个参数;若要传 flag,必须写在链接之前", len(args)-1)
+	return fmt.Errorf("bx setup takes exactly one link, but %d extra argument(s) were given; flags, if any, must come before the link", len(args)-1)
 }
 
 func setupAction(c *cli.Context) error {
 	arg := c.Args().First()
 	if arg == "" {
-		return fmt.Errorf("用法: " + elevate.Prefix + "bx setup <客户端链接>")
+		return fmt.Errorf("usage: " + elevate.Prefix + "bx setup <client-link>")
 	}
 	if err := checkSetupArgs(c.Args().Slice()); err != nil {
 		return err
@@ -3406,26 +3406,26 @@ func setupAction(c *cli.Context) error {
 	}
 	cfgPath := c.String("config")
 	if len(configLinks) > 1 {
-		fmt.Printf("🔀 多传输:%d 个,自动容灾(主传输优先)\n", len(configLinks))
+		fmt.Printf("🔀 Multiple transports: %d, with automatic failover (the main one comes first)\n", len(configLinks))
 	}
 	// 按类分流:--udp <link> → udp.transport(UDP/QUIC 走它加速,TCP 走主传输)。
 	var udpTransport string
 	if u := strings.TrimSpace(c.String("udp")); u != "" {
 		_, udpLinks, uerr := resolveConfigLinks(u)
 		if uerr != nil {
-			return fmt.Errorf("--udp 链接无效: %w", uerr)
+			return fmt.Errorf("the --udp link is not valid: %w", uerr)
 		}
 		udpTransport = udpLinks[0]
-		fmt.Printf("⚡ 按类分流:UDP 走专用传输(%s)\n", redactLink(udpTransport))
+		fmt.Printf("⚡ Split by kind: UDP uses a dedicated transport (%s)\n", redactLink(udpTransport))
 	}
-	fmt.Println("⏳ 连通检测中…")
+	fmt.Println("⏳ Checking connectivity…")
 	if lat, perr := setup.ProbeServer(config.DefaultDataDir, link, c.String("probe"), 15*time.Second); perr != nil {
 		if c.Bool("strict") {
-			return fmt.Errorf("连通检测失败: %w", perr)
+			return fmt.Errorf("connectivity check failed: %w", perr)
 		}
-		fmt.Printf("⚠️  连通检测未通过(仍写配置,稍后可排查): %v\n", perr)
+		fmt.Printf("⚠️  Connectivity check did not pass (the config is written anyway, so you can look into it later): %v\n", perr)
 	} else {
-		fmt.Printf("✅ 服务器连通,延迟 %dms\n", lat)
+		fmt.Printf("✅ Server reachable, latency %dms\n", lat)
 	}
 	_, statErr := os.Stat(cfgPath)
 	switch decideSetupDisposition(statErr == nil, c.Bool("force")) {
@@ -3446,13 +3446,13 @@ func setupAction(c *cli.Context) error {
 	}
 	if unifiedLayoutActive() {
 		if err := install.WriteGuardianUnit(install.GuardianExecutable(), abs); err != nil {
-			return fmt.Errorf("写入 Guardian 服务失败: %w", err)
+			return fmt.Errorf("could not write the Guardian service: %w", err)
 		}
-		fmt.Println("✓ 统一布局:保留 CLI bridge,Guardian 指向 runtime")
+		fmt.Println("✓ Unified layout: the CLI bridge is kept, and Guardian points at the runtime")
 		if err := postSetupAutostart(); err != nil {
-			return fmt.Errorf("设默认开机自启: %w", err)
+			return fmt.Errorf("setting the default start-at-boot: %w", err)
 		}
-		fmt.Printf("✅ 配置已写好 %s,Guardian 已指向统一 runtime。下一步:"+elevate.Prefix+"bx up\n", cfgPath)
+		fmt.Printf("✅ Config written to %s, and Guardian now points at the unified runtime. Next: "+elevate.Prefix+"bx up\n", cfgPath)
 		return nil
 	}
 	if unifiedLayoutDegraded() {
@@ -3460,15 +3460,15 @@ func setupAction(c *cli.Context) error {
 	}
 	bin, err := install.SelfInstall()
 	if err != nil {
-		return fmt.Errorf("安装 bx 到 PATH: %w", err)
+		return fmt.Errorf("installing bx onto PATH: %w", err)
 	}
 	if err := install.WriteUnit(buildExecStart(bin, abs)); err != nil {
 		return err
 	}
 	if err := postSetupAutostart(); err != nil {
-		return fmt.Errorf("设默认开机自启: %w", err)
+		return fmt.Errorf("setting the default start-at-boot: %w", err)
 	}
-	fmt.Printf("✅ bx 已装到 %s、写好配置 %s、装好服务。下一步:"+elevate.Prefix+"bx up\n", install.BinPath, cfgPath)
+	fmt.Printf("✅ bx installed at %s, config written to %s, service installed. Next: "+elevate.Prefix+"bx up\n", install.BinPath, cfgPath)
 	return nil
 }
 
@@ -3478,7 +3478,8 @@ func setupAction(c *cli.Context) error {
 func rawLinkRisk(arg string) string {
 	arg = strings.TrimSpace(arg)
 	if tunnel.IsClientLink(arg) {
-		return "⚠ 这是含明文凭据的裸链接,已留进 shell 历史;分享/留存前建议先用 `bx blink <link>` 换壳成 bx://"
+		return "⚠ That is a bare link carrying a cleartext credential, and it is now in your shell history; " +
+			"before sharing or storing it, re-wrap it as bx:// with bx blink <link>"
 	}
 	return ""
 }
@@ -3491,14 +3492,17 @@ func rawLinkRisk(arg string) string {
 func protocolAdvisory(link string) string {
 	switch tunnel.Kind(strings.TrimSpace(link)) {
 	case "trojan", "shadowsocks", "vmess":
-		return "⚠ " + tunnel.Kind(link) + " 协议对当今强 DPI/主动探测较弱(2025 起 GFW 检出 80-95%),\n" +
-			"   也更易让 server IP 被各类服务(含 Claude/OpenAI/Google 等)风控封禁。\n" +
-			"   作 client 能直接用;但强封锁或需稳定访问 AI 服务时,建议 server 端改用 VLESS-REALITY\n" +
-			"   (隐蔽性最强),速度档再叠 hysteria2(UDP,见 docs/multi-transport-guide.md)。"
+		return "⚠ The " + tunnel.Kind(link) + " protocol holds up poorly against today's heavy DPI and active probing\n" +
+			"   (detected 80-95% of the time by the GFW since 2025), and it also makes the server IP more likely\n" +
+			"   to be blocked by various services' risk controls (Claude/OpenAI/Google among them).\n" +
+			"   It works fine as a client; but under heavy blocking, or when you need AI services to stay reachable,\n" +
+			"   move the server side to VLESS-REALITY (the most covert option) and add hysteria2 on top as the fast\n" +
+			"   lane (UDP; see docs/multi-transport-guide.md)."
 	case "hysteria2":
 		if !strings.Contains(link, "obfs=") {
-			return "💡 hysteria2 是速度档(UDP/QUIC)。裸 QUIC 在部分网络(如中国电信)会被 SNI 识别/限速;\n" +
-				"   建议 server 端开 salamander 混淆,链接加 ?obfs=salamander&obfs-password=<pw>。"
+			return "💡 hysteria2 is the fast lane (UDP/QUIC). Bare QUIC gets identified by SNI and throttled on some\n" +
+				"   networks (China Telecom, for one); turn on salamander obfuscation on the server side and add\n" +
+				"   ?obfs=salamander&obfs-password=<pw> to the link."
 		}
 		return ""
 	default: // reality(最隐蔽)、brook(bx 默认)无需提示
@@ -3520,7 +3524,7 @@ func resolveConfigLinks(arg string) (probe string, configLinks []string, err err
 	case tunnel.IsClientLink(arg):
 		internal = []string{arg}
 	default:
-		return "", nil, fmt.Errorf("不是支持的客户端链接")
+		return "", nil, fmt.Errorf("not a supported client link")
 	}
 	configLinks = make([]string, len(internal))
 	for i, l := range internal {
@@ -3544,7 +3548,7 @@ func normalizeClientLink(arg string) (link string, configLink string, err error)
 		}
 		return link, arg, nil
 	default:
-		return "", "", fmt.Errorf("不是支持的客户端链接")
+		return "", "", fmt.Errorf("not a supported client link")
 	}
 }
 
@@ -3653,7 +3657,7 @@ func darwinPlanFlags() []cli.Flag {
 
 func darwinPlanAction(c *cli.Context) error {
 	if c.String("gateway") == "" {
-		return fmt.Errorf("必须显式传 --gateway,例如: bx darwin-plan --gateway 192.168.1.1 --server-bypass 1.2.3.4/32")
+		return fmt.Errorf("--gateway must be given explicitly, e.g. bx darwin-plan --gateway 192.168.1.1 --server-bypass 1.2.3.4/32")
 	}
 	apply, cleanup := supervisor.DarwinRoutePlan(supervisor.DarwinRoutePlanOptions{
 		TunName:      c.String("tun"),
@@ -3723,10 +3727,10 @@ func routerPlanAction(c *cli.Context) error {
 		return err
 	}
 	if cfg.Mode != "router" {
-		fmt.Printf("# 注意: 配置 mode=%q(非 router);以下为「若启用 router」的计划\n", cfg.Mode)
+		fmt.Printf("# Note: the config says mode=%q, which is not router; what follows is the plan you would get if router were enabled\n", cfg.Mode)
 	}
 	if len(cfg.Router.LANCIDRs) == 0 {
-		return fmt.Errorf("router.lan_cidrs 为空:dry-run 需要显式网段(真机可自动探测)")
+		return fmt.Errorf("router.lan_cidrs is empty: a dry run needs explicit prefixes (on real hardware they are detected automatically)")
 	}
 	tun := c.String("tun")
 	var ifaces []string
@@ -3766,9 +3770,9 @@ func upAction(c *cli.Context) (err error) {
 		return macOSUpAction(c)
 	}
 	if !install.UnitInstalled() {
-		return fmt.Errorf("尚未配置。先运行: " + elevate.Prefix + "bx setup <client-link>")
+		return fmt.Errorf("not configured yet. First run: " + elevate.Prefix + "bx setup <client-link>")
 	}
-	stepLine("服务", "启动 bx")
+	stepLine("Service", "starting bx")
 	// 防呆:命令模型重排后 up=enable service、run=前台。旧 unit 的 ExecStart 仍写
 	// `bx up`,配新二进制会让 service 启动时递归调用 up → 死锁。检测到就报错让用户重装。
 	cmd, err := install.ExecStartCmd()
@@ -3776,12 +3780,12 @@ func upAction(c *cli.Context) (err error) {
 		return err
 	}
 	if cmd != "run" {
-		return fmt.Errorf("检测到旧版服务配置(启动子命令是 %q,应为 run):直接 up 会让服务递归调用自身。请重跑 "+elevate.Prefix+"bx setup <client-link> 重写服务配置", cmd)
+		return fmt.Errorf("this is an old service configuration (its start subcommand is %q, and it should be run): going straight to up would make the service call itself recursively. Re-run "+elevate.Prefix+"bx setup <client-link> to rewrite it", cmd)
 	}
 	if err := install.Enable(); err != nil {
 		return err
 	}
-	stepDone("服务", upStepLabel())
+	stepDone("Service", upStepLabel())
 	if rep, err := readStatusReport(); err == nil {
 		printUpSummary(rep)
 		return nil
@@ -3828,7 +3832,7 @@ func defaultReconnectDependencies() reconnectDependencies {
 		wait:   waitForReconnectPoll,
 		legacyReconnect: func(ctx context.Context) error {
 			if !install.UnitInstalled() {
-				return fmt.Errorf("尚未配置。先运行: " + elevate.Prefix + "bx setup <client-link>")
+				return fmt.Errorf("not configured yet. First run: " + elevate.Prefix + "bx setup <client-link>")
 			}
 			if _, err := supervisor.ReconnectControlContext(ctx, statusSocketPath()); err != nil {
 				return err
@@ -3856,7 +3860,7 @@ func reconnectAction(c *cli.Context) (err error) {
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("运行中的 bx 不支持安全重连")
+			return fmt.Errorf("the running bx does not support a safe reconnect")
 		}
 		return nil
 	}
@@ -3973,7 +3977,7 @@ func dnsOnAction(c *cli.Context) error {
 		return err
 	}
 	printDNSStatus(st)
-	fmt.Println("✅ macOS 系统 DNS 已切到 bx。恢复: " + elevate.Prefix + "bx dns off")
+	fmt.Println("✅ macOS system DNS now points at bx. To restore it: " + elevate.Prefix + "bx dns off")
 	return nil
 }
 
@@ -3983,18 +3987,18 @@ func dnsOffAction(c *cli.Context) error {
 		return err
 	}
 	printDNSStatus(st)
-	fmt.Println("✅ macOS 系统 DNS 已确认恢复。")
+	fmt.Println("✅ macOS system DNS is confirmed restored.")
 	return nil
 }
 
 func linkAction(c *cli.Context) error {
 	args := c.Args().Slice()
 	if len(args) == 0 {
-		return fmt.Errorf("用法: bx blink <link> [link2 ...](brook:// 或 vless://;多个=容灾 bundle)")
+		return fmt.Errorf("usage: bx blink <link> [link2 ...] (brook:// or vless://; more than one makes a failover bundle)")
 	}
 	for _, a := range args {
 		if !tunnel.IsClientLink(a) {
-			return fmt.Errorf("不支持的链接(仅 brook/vless/hysteria2/trojan/ss/vmess): %s", a)
+			return fmt.Errorf("unsupported link (only brook/vless/hysteria2/trojan/ss/vmess): %s", a)
 		}
 	}
 	// 多个 link → 一条容灾 bundle bx://;单个 → legacy 单格式。

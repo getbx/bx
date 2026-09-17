@@ -19,7 +19,7 @@ func TestTransportChangeWarnsAboutTheStrandedUDPTransport(t *testing.T) {
 	}
 	lines := strings.Join(transportChangeLines(before, []string{"vless://u@2.2.2.2:443?security=reality"}, ""), "\n")
 
-	if strings.Contains(lines, "UDP 传输保持不变") {
+	if strings.Contains(lines, "UDP transport left as it was") {
 		t.Errorf("把一条已经落在旧机器上的 UDP 传输报成了「保持不变」:\n%s", lines)
 	}
 	for _, want := range []string{"1.1.1.1", "fail-closed", "--udp"} {
@@ -39,7 +39,7 @@ func TestTransportChangeStaysQuietAboutADeliberateSeparateUDPServer(t *testing.T
 	if strings.Contains(lines, "⚠") {
 		t.Errorf("对用户故意分开的 UDP 服务器发了警告:\n%s", lines)
 	}
-	if !strings.Contains(lines, "UDP 传输保持不变") {
+	if !strings.Contains(lines, "UDP transport left as it was") {
 		t.Errorf("该说的「保持不变」没说:\n%s", lines)
 	}
 }
