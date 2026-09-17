@@ -380,7 +380,7 @@ func scannedCorePIDs(cores []Process) string {
 // 错误文本、进 Guardian 日志;那一条是 CLI 按失败码翻出来的指引),改一个忘另一个
 // 不会有任何编译错误 —— 由 TestOwnershipUncertainEscapeHintDescribesReVerification
 // 与 TestOwnershipUncertainHintNoLongerClaimsDownIsTheOnlyEscape 分别钉住。
-const ownershipUncertainEscapeHint = "`" + elevate.Prefix + "bx up` re-verifies this on every attempt; if it still refuses, a Core really is running (or the scan cannot answer) — see guardian_core_scan / guardian_core_still_running_on_release in " + install.GuardianStderrLogPath
+const ownershipUncertainEscapeHint = "" + elevate.Prefix + "bx up re-verifies this on every attempt; if it still refuses, a Core really is running (or the scan cannot answer) — see guardian_core_scan / guardian_core_still_running_on_release in " + install.GuardianStderrLogPath
 
 // resolveOrphanLaunchMarker 判定一个 launching 标记是不是孤儿。
 //
@@ -632,9 +632,9 @@ func (r *ExecCoreRunner) ForceStop(ctx context.Context, process Process) error {
 	case <-tracked.exited:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("等被强行收掉的 Core PID %d 退出: %w", process.PID, ctx.Err())
+		return fmt.Errorf("waiting for the force-killed Core PID %d to exit: %w", process.PID, ctx.Err())
 	case <-timer.C:
-		return fmt.Errorf("等被强行收掉的 Core PID %d 退出: %w", process.PID, context.DeadlineExceeded)
+		return fmt.Errorf("waiting for the force-killed Core PID %d to exit: %w", process.PID, context.DeadlineExceeded)
 	}
 }
 
@@ -669,11 +669,11 @@ func (r *ExecCoreRunner) forceStopWithoutHandle(process Process) error {
 		}
 		return nil
 	case err != nil:
-		return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄,而系统答不上来它还在不在: %w", process.PID, err)
+		return fmt.Errorf("force-killing Core PID %d: this process has no handle for it, and the system cannot say whether it is still there: %w", process.PID, err)
 	}
 	same, err := sameProcessIdentity(process, current)
 	if err != nil {
-		return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄,而这个号上跑着什么比不出来: %w", process.PID, err)
+		return fmt.Errorf("force-killing Core PID %d: this process has no handle for it, and what is running under that PID cannot be compared: %w", process.PID, err)
 	}
 	if !same {
 		// PID 被复用了 —— 我们那个 Core 已经不在。与 Stop 的处置一字不差。
@@ -682,7 +682,7 @@ func (r *ExecCoreRunner) forceStopWithoutHandle(process Process) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("强行收掉 Core PID %d:本进程没有 fork 出它的句柄,而系统说它还在", process.PID)
+	return fmt.Errorf("force-killing Core PID %d: this process has no handle for it, and the system says it is still there", process.PID)
 }
 
 func (r *ExecCoreRunner) Stop(ctx context.Context, process Process) error {

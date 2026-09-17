@@ -334,8 +334,8 @@ type guardianFailureBody struct {
 // is only ever written to the Guardian log. During the 2026-08-05 incident
 // the diagnostics archive was consulted and yielded stale Core logs, which
 // is exactly what pointing at the wrong log produces.
-const guardianTroubleshootingHint = "排查:" + elevate.Prefix + "bx doctor;完整原因见 Guardian 日志 sudo tail -50 " +
-	install.GuardianStderrLogPath + "(bx logs 看的是 Core 日志,不含 Guardian 失败原因)"
+const guardianTroubleshootingHint = "To dig in: " + elevate.Prefix + "bx doctor; the full reason is in the Guardian log, sudo tail -50 " +
+	install.GuardianStderrLogPath + " (bx logs shows the Core log, which does not carry Guardian failures)"
 
 // guardianCodeHints carries the per-code next step for failures the generic
 // hint cannot resolve.
@@ -354,25 +354,25 @@ const guardianTroubleshootingHint = "排查:" + elevate.Prefix + "bx doctor;完�
 // carry paths/links/credentials), which is why the wording lives here on the
 // CLI side rather than in the error text the daemon produces.
 var guardianCodeHints = map[string]string{
-	"core_ownership_uncertain": "Guardian 没能证明系统里没有第二个 bx Core 在跑,于是拒绝再起一个" +
-		"(两个 Core 会争默认路由,先退出的那个用旧快照还原、掀掉另一个的劫持)。" +
-		"每次 " + elevate.Prefix + "bx up 都会重新求证,所以直接重试是有意义的;仍然被拒就说明系统里真有一个 Core、" +
-		"或者根本扫不动 —— 先 sudo tail -50 " + install.GuardianStderrLogPath +
-		" 看是扫到了哪个进程(guardian_core_still_running_on_release / guardian_core_scan)," +
-		"若是另一个终端里的 " + elevate.Prefix + "bx run,退出它再重试。" +
-		"" + elevate.Prefix + "bx down 再 " + elevate.Prefix + "bx up 会让 Guardian 忘掉这条判定,但那个 Core 还跑着时它同样会被拒",
+	"core_ownership_uncertain": "Guardian could not prove that no second bx Core is running, so it refused to start another one " +
+		"(two Cores fight over the default route, and whichever exits first restores a stale snapshot and tears down the other one's hijack). " +
+		"Every " + elevate.Prefix + "bx up re-verifies this from scratch, so simply retrying is worth something; if it is still refused, either a Core really is running " +
+		"or the scan cannot answer at all — start with sudo tail -50 " + install.GuardianStderrLogPath +
+		" to see which process was found (guardian_core_still_running_on_release / guardian_core_scan), " +
+		"and if it is a " + elevate.Prefix + "bx run in another terminal, quit that and retry. " +
+		"" + elevate.Prefix + "bx down followed by " + elevate.Prefix + "bx up makes Guardian forget this judgement, but while that Core is still running it will be refused just the same",
 	// 维护挂起读不出来:Guardian 一律 fail-closed(不起 Core),而保护**不会**
 	// 自己恢复。挂起只是一次升级留下的临时标记,内容读不懂时直接删掉即可 ——
 	// 这条出路必须写在 CLI 侧:响应体刻意不外传原始错误串,daemon 那边写的
 	// 错误文本用户根本看不到。
-	"intent_unreadable": "维护挂起文件读不出来,保护不会自动恢复:检查 " + defaultMaintenanceHoldPath +
-		"(它只是一次升级的临时标记,可直接删除),再 " + elevate.Prefix + "bx up",
+	"intent_unreadable": "the maintenance-hold file cannot be read, and protection will not come back on its own: look at " + defaultMaintenanceHoldPath +
+		" (it is only a temporary marker left by an upgrade, so deleting it is fine), then " + elevate.Prefix + "bx up",
 	// 挂起删不掉(多半是 /var/lib/bx 或那个文件本身不可写)。Guardian **拒绝**
 	// 在这种情况下打开保护:挂起还武装着而保护开着,意味着 Core 一退出就既不
 	// 重启也不装屏障,保护会在用户以为开着的时候悄悄退回明文直连。
-	maintenanceHoldClearFailedCode: "维护挂起删不掉,保护因此没有打开(挂起还在就等于 Core 退出后不会被拉回来):" +
-		"检查 " + defaultMaintenanceHoldPath + " 及其目录是否可写(ls -l /var/lib/bx)," +
-		"必要时 sudo rm -f " + defaultMaintenanceHoldPath + " 后重试 " + elevate.Prefix + "bx up",
+	maintenanceHoldClearFailedCode: "the maintenance hold could not be cleared, so protection was not turned on (while the hold stands, a Core that exits is never brought back): " +
+		"check that " + defaultMaintenanceHoldPath + " and its directory are writable (ls -l /var/lib/bx), " +
+		"and if need be sudo rm -f " + defaultMaintenanceHoldPath + " then retry " + elevate.Prefix + "bx up",
 	// recoveryBlocked 是**锁存**的,而且 **Up 与 Down 双双短路**(manager.go:866
 	// 的注释原话)。这条提示此前写着「只有 down 会清掉这个锁存状态」——
 	// **那是假的**:Down 在自己那句 `if m.recoveryBlocked` 上就 return 了
@@ -387,11 +387,11 @@ var guardianCodeHints = map[string]string{
 	//
 	// 所以措辞**不许写成承诺**:恢复再失败一次,新 Guardian 会重新锁上,
 	// 而那时要看的是它为什么恢复不了,不是再敲一遍同样的命令。
-	"recovery_incomplete": "上一次启动恢复没能完成,Guardian 把后续操作锁住了(up 与 down 都会在第一句就返回)。" +
-		"敲 " + elevate.Prefix + "bx down:它会被 Guardian 拒绝,但 CLI 随即落到强制拆除、把 Guardian 服务停掉," +
-		"而这个锁存只活在那个进程的内存里 —— 下一个 Guardian 会重新跑一遍启动恢复。" +
-		"**这不是保证**:恢复再失败一次就会重新锁上,那时先 sudo tail -50 " + install.GuardianStderrLogPath +
-		" 看 network_recovery / guardian_startup_recovery 那几行为什么失败,再决定下一步",
+	"recovery_incomplete": "the last startup recovery did not finish, so Guardian has locked out what follows (both up and down return on their very first line). " +
+		"Run " + elevate.Prefix + "bx down: Guardian will refuse it, but the CLI then falls through to the forced teardown and stops the Guardian service, " +
+		"and this latch only lives in that process's memory — the next Guardian runs startup recovery again. " +
+		"This is NOT a promise: if recovery fails once more it locks again, and at that point start with sudo tail -50 " + install.GuardianStderrLogPath +
+		" to see why the network_recovery / guardian_startup_recovery lines failed, before deciding what to do next",
 }
 
 // guardianHTTPError renders a Guardian error response. Every 500 carries the

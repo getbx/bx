@@ -327,8 +327,12 @@ func TestGuardianHTTPErrorNon500StaysPlain(t *testing.T) {
 // 拒绝就意味着系统里真有一个 Core、或者根本扫不动 —— 该看的是 Guardian 日志。
 //
 // 三条断言各自盯着一句**曾经写在那里、而现在是假的**话:
-//   - 「只有 down」/「已锁存」:旧文案的原文,也是 CLAUDE.md 里被本期推翻的那句;
-//   - 「重新求证」:新行为的核心。没有这句,指引就没说出用户该先做什么;
+//   - 「only down」/「latched」:旧文案的原文,也是 CLAUDE.md 里被本期推翻的那句
+//     (2026-09-17 改英文之后,这几个禁词跟着换成了英文 —— 一份永远不可能命中的
+//     禁词表与没有这条断言完全一样);
+//   - 「re-verifies」:新行为的核心。没有这句,指引就没说出用户该先做什么;
+//     这个词与 daemon 侧那句**刻意用同一个**,但两者仍是两份字符串,故下面
+//     那条测试单独再盯一遍;
 //   - Guardian 日志路径:仍然拒绝时唯一写着「扫到了谁」的地方。
 //
 // **不许反过来把「重试一定管用」写死**:非 darwin 上扫描恒不可用 ⇒ 恒拒绝,
@@ -338,12 +342,12 @@ func TestOwnershipUncertainHintNoLongerClaimsDownIsTheOnlyEscape(t *testing.T) {
 	if !ok {
 		t.Fatal("core_ownership_uncertain 没有指引 —— 这个码最需要指引")
 	}
-	for _, stale := range []string{"只有 down", "已锁存", "唯一"} {
+	for _, stale := range []string{"only down", "latched", "the only"} {
 		if strings.Contains(hint, stale) {
 			t.Errorf("指引还在把它描述成一条靠 down 清掉的锁存(命中 %q): %q", stale, hint)
 		}
 	}
-	if !strings.Contains(hint, "重新求证") {
+	if !strings.Contains(hint, "re-verifies") {
 		t.Errorf("指引没说出用户该先做的那一步(每次 up 都会重新求证,所以重试有意义): %q", hint)
 	}
 	if !strings.Contains(hint, install.GuardianStderrLogPath) {

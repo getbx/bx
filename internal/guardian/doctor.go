@@ -148,7 +148,7 @@ func collectDoctorFactsWith(ctx context.Context, configPath string, status Statu
 		// 可以问。
 		f.GuardianRules = doctor.GuardianRulesFact{
 			ConfigPath: configPath,
-			Err:        "guardian 自己也读不到这份配置:" + err.Error(),
+			Err:        "guardian cannot read this config either: " + err.Error(),
 		}
 	} else {
 		if info, serr := os.Stat(configPath); serr == nil {
