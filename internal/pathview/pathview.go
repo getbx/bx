@@ -20,6 +20,7 @@ import (
 
 	"github.com/getbx/bx/internal/leakcheck"
 	"github.com/getbx/bx/internal/route"
+	"github.com/getbx/bx/internal/tristate"
 )
 
 // RouteFact 是一次「发往这个地址的包走哪」的答案。
@@ -73,6 +74,16 @@ type View struct {
 	Conclusion string `json:"conclusion"`
 	Kind       string `json:"kind"`
 	Lines      []Line `json:"lines"`
+	// EntersBx:普通程序发往这个目标的包会不会进 bx。
+	//
+	// 它存在的理由是 explain 的**下半截**(Core 的分流判定)回答的是
+	// 「**如果**这条连接进了 bx,bx 会怎么判」。私网 / 旁路 / 别人的隧道那些
+	// 目的地的包根本到不了 TUN,于是那半截描述的事永远不会发生 —— 而两半
+	// 并排摆着、措辞都很肯定,用户没有义务知道该信哪一个。
+	//
+	// **三态,零值 Unknown。** 认不出接口时绝不许塌成任一边:说 True 会把一条
+	// 其实没进 bx 的流量说成 bx 在管,说 False 会让用户忽略一条真正生效的判定。
+	EntersBx tristate.Tristate `json:"enters_bx"`
 }
 
 // 目标类型。
@@ -104,7 +115,7 @@ func Judge(f Facts) View {
 	if f.Bound.Applicable {
 		lines = append(lines, Line{Label: "绑网卡时", Text: routeText(f.Bound, f)})
 	}
-	return View{Conclusion: conclusion(f, kind, resolved), Kind: kind, Lines: lines}
+	return View{Conclusion: conclusion(f, kind, resolved), Kind: kind, Lines: lines, EntersBx: entersBx(f)}
 }
 
 func firstAddr(f Facts) (netip.Addr, bool) {
@@ -325,4 +336,28 @@ func ChinaSetFromList(lines []string) func(netip.Addr) bool {
 		return nil
 	}
 	return set.Contains
+}
+
+// entersBx 判「普通程序发往这个目标的包会不会进 bx」。
+//
+// **它刻意不是 ownerOf 的薄壳**,差别只在一处而那一处承重:ownerOf 认得出
+// 「这是条隧道」就说「另一条隧道,不是 bx」,而在 **bx 自己的 TUN 名没问出来**
+// 时(BxTunKnown 为假),一条 utunN 完全可能就是 bx 的 —— 这时候答 False 等于
+// 告诉用户「下面那条判定走不到」,而它可能正走得到。那是这个函数最不能犯的错。
+func entersBx(f Facts) tristate.Tristate {
+	iface := strings.TrimSpace(f.Route.Interface)
+	if iface == "" {
+		return tristate.Unknown // 没问出路由,不是「没进 bx」
+	}
+	if f.BxTunKnown && f.BxTun != "" && iface == f.BxTun {
+		return tristate.True
+	}
+	if f.PhysicalDev != "" && iface == f.PhysicalDev {
+		return tristate.False // 物理网卡是确定的:它不是任何隧道
+	}
+	// 认得出是隧道、**而且**知道 bx 的 TUN 叫什么(所以知道这条不是它)才敢说 False。
+	if f.BxTunKnown && f.BxTun != "" && leakcheck.IsTunnelInterface(iface) {
+		return tristate.False
+	}
+	return tristate.Unknown
 }

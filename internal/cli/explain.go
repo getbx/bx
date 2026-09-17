@@ -23,6 +23,7 @@ import (
 	"github.com/getbx/bx/internal/rulereview"
 	"github.com/getbx/bx/internal/stats"
 	"github.com/getbx/bx/internal/supervisor"
+	"github.com/getbx/bx/internal/tristate"
 	"github.com/urfave/cli/v2"
 )
 
@@ -322,8 +323,33 @@ func explainOutput(view pathview.View, rep supervisor.ExplainResponse, coreErr e
 		return b.String(), nil
 	}
 	b.WriteString("\n")
+	if note := explainVerdictUnreachableNote(view); note != "" {
+		b.WriteString(note)
+		b.WriteString("\n")
+	}
 	b.WriteString(renderExplainWithReview(rep, review))
 	return b.String(), nil
+}
+
+// explainVerdictUnreachableNote 说的是**下半截描述的事会不会发生**。
+//
+// Core 那半回答的是「如果一条到这个目标的连接进了 bx,bx 会怎么判」。而私网、
+// 服务器旁路、别人的隧道那些目的地的包根本到不了 TUN —— 于是两半并排摆着、
+// 措辞都很肯定,却在回答两个不同的问题,用户没有义务知道该信哪一个。
+// 真机原形(2026-09-16):`结论 …不经过 bx` 与 `TCP TUNNEL` 同屏。
+//
+// **只在明确观测到「不进 bx」时说话。** Unknown 一个字都不说 —— 说「走不到」
+// 会让用户忽略一条可能正在生效的判定,与「没查」不许读成「没问题」是同一条
+// 纪律的两面;True 更不必说,那正是下半截在描述的情形。
+//
+// **一句话说两个半边,不摆两条横幅**:要更正的是同一件事,而 TCP/UDP 各说一遍
+// 只会训练读的人把这一块整个跳过去(与规则窗口那条 caveat 同一条)。
+func explainVerdictUnreachableNote(v pathview.View) string {
+	if v.EntersBx != tristate.False {
+		return ""
+	}
+	return padLabel("说明") + "到这个目标的包不进 bx(见上面「本机路由」),下面这两条说的是\n" +
+		padLabel("") + "「如果它进了 bx,bx 会怎么判」—— 不是实际会发生的事。\n"
 }
 
 // renderMachineView:先一句结论,再几行证据,标签对齐到与 Core 那半同宽。
