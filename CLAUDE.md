@@ -1942,10 +1942,19 @@ Run again 看起来没反应(健康机器上两份报告逐字相同,重画完�
 离屏快照第一次把这一页画出来之后看见的:
 
 ```
-1 failed · 1 warning · 1 not checked
-FAIL   guardian dns   系统 DNS 没有指向 bx
-WARN   traffic failing rules   *.qq.com 1291 次 / 失败 1289
+1 failed · 1 warning · 1 not checked          ← 英文
+info  rule_dead_rules          未检查:累计运行 12 天,不足 14 天,这一类还不能下结论
+info  rule_builtin_list_check  未检查:global 模式下内建 china 列表整个不生效,这一类没有比对
+ok    traffic_outcomes         直连 1896(失败 192)· 代理 8496(失败 18)
 ```
+
+**上面三条是 2026-09-17 从项目所有者机器上 `bx doctor --json` 取的真实输出
+(19 条 check 里有 3 条 detail 含中文)。** 这一段最初写的是一个**我编造的**例子
+(`FAIL guardian dns 系统 DNS 没有指向 bx`)—— 那是快照 fixture 里我自己造的数据,
+不是产品真实产出的话。缺陷本身是真的,例子是假的;**一条用假例子撑着的记述,
+下一个人按它去 grep 会一无所获,然后连带不再相信这一整条。**
+同一轮我还因此误报过 Traffic by App 的 Rule 列"也有混排" —— 实际那一列只放
+用户规则原文(`*.qq.com`),中文是我 fixture 编的,已撤回。
 
 **与规则窗口 2026-09-11 修掉的那条是同一个形状** —— 服务端写的是中文,而菜单
 通篇英文。但**那次的修法搬不过来**:规则窗口能修是因为 `rulereview.Class` 是
