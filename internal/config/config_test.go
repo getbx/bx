@@ -120,8 +120,11 @@ dns:
 	if len(r.Domains) != 1 || r.Domains[0] != "*.shanghai-electric.com" {
 		t.Fatalf("bad domains: %+v", r.Domains)
 	}
-	if r.Server != "10.0.13.23:53" { // 无端口时补 :53
-		t.Fatalf("want server 10.0.13.23:53, got %q", r.Server)
+	// **断言的是 Servers,不是 Server。** 2026-09-16 起 server 只是输入写法,
+	// 加载期归一化进 Servers,下游只读后者 —— 留两条路给下游各自判断就是
+	// 留了一处会漂的地方。
+	if len(r.Servers) != 1 || r.Servers[0] != "10.0.13.23:53" { // 无端口时补 :53
+		t.Fatalf("want servers [10.0.13.23:53], got %q", r.Servers)
 	}
 }
 
@@ -153,8 +156,8 @@ func TestParseSplitServerTrailingColon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if c.DNS.Split[0].Server != "10.0.13.23:53" {
-		t.Fatalf("trailing colon should normalize to :53, got %q", c.DNS.Split[0].Server)
+	if got := c.DNS.Split[0].Servers; len(got) != 1 || got[0] != "10.0.13.23:53" {
+		t.Fatalf("trailing colon should normalize to :53, got %q", got)
 	}
 }
 
@@ -163,8 +166,8 @@ func TestParseSplitServerKeepsExplicitPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if c.DNS.Split[0].Server != "10.0.13.23:5353" {
-		t.Fatalf("explicit port must be preserved, got %q", c.DNS.Split[0].Server)
+	if got := c.DNS.Split[0].Servers; len(got) != 1 || got[0] != "10.0.13.23:5353" {
+		t.Fatalf("explicit port must be preserved, got %q", got)
 	}
 }
 

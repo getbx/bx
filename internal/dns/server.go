@@ -4,11 +4,13 @@ package dns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/netip"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/fakeip"
@@ -146,7 +148,7 @@ func (s *Server) Respond(query []byte) ([]byte, error) {
 	// split 命中:A 及 CNAME/SRV 等非 AAAA 类型一律转发到内网 DNS(保内网解析完整),
 	// 注册其中真实 A 记录后原样返回。仅 AAAA 不转发 → 落到下面默认路径成 NODATA(逼 v4)。
 	if rt := s.matchSplit(domain); rt != nil && q.Type != dnsmessage.TypeAAAA {
-		resp, err := s.fwd.Forward(context.Background(), rt.Server, query)
+		resp, err := s.forwardToAny(rt.Servers, query)
 		if err != nil {
 			return s.servfail(query)
 		}
@@ -293,3 +295,67 @@ func (s *Server) servfail(query []byte) ([]byte, error) {
 	}
 	return b.Finish()
 }
+
+// splitQueryBudget 是**一轮** split 转发的总预算(不是每台一份)。
+//
+// 原先是转发器里硬编码的 5 秒。真机实测内网 DNS 的往返是 14ms
+// (2026-09-16,项目所有者的公司网络),5 秒是它的 350 倍;而真正的代价在
+// **离网**那一侧:笔记本离开内网是常态,那时每一次内网域名查询都要卡满这么久
+// (对照:不命中 split 的域名走国内 DNS,秒回)。2 秒仍是实测往返的 140 倍。
+//
+// **这个数只有那一个真机数据点撑着。** 要调它,先去量内网 DNS 在忙时的 p99,
+// 别照着感觉改 —— 调短的代价是把一台忙着的域控误判成挂了。
+const splitQueryBudget = 2 * time.Second
+
+// forwardToAny 并发问一组内网 DNS,**先到先用**。
+//
+// 为什么不是顺序回退:「域控挂了」最常见的形态是不应答而不是拒绝,顺序回退下
+// 第二台要等第一台耗满预算才轮得到,而系统 resolver 早就放弃了 —— 那等于没有备份。
+//
+// 取第一个**拿到字节**的应答,不看 RCODE:NXDOMAIN 也是一个权威答案,而这一层
+// 没有任何依据去判断哪台的 NXDOMAIN 更可信;一个「挑一个看起来更好的答案」的
+// 解析器会在两台数据不一致时给出不可复现的结果。
+func (s *Server) forwardToAny(servers []string, query []byte) ([]byte, error) {
+	if len(servers) == 0 {
+		return nil, errNoSplitServer
+	}
+	if s.fwd == nil {
+		return nil, errNoSplitForwarder
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), splitQueryBudget)
+	defer cancel() // 有人先答出来就取消其余几路,别让它们空转到预算尽头
+
+	type result struct {
+		resp []byte
+		err  error
+	}
+	// **带缓冲,容量等于路数**:先到先用之后没人再读这个 channel,
+	// 无缓冲会把剩下那几个 goroutine 永久挂在发送上。
+	ch := make(chan result, len(servers))
+	for _, srv := range servers {
+		go func(srv string) {
+			resp, err := s.fwd.Forward(ctx, srv, query)
+			ch <- result{resp, err}
+		}(srv)
+	}
+	var lastErr error
+	for range servers {
+		r := <-ch
+		if r.err == nil && len(r.resp) > 0 {
+			return r.resp, nil
+		}
+		if r.err != nil {
+			lastErr = r.err
+		}
+	}
+	if lastErr == nil {
+		lastErr = errNoSplitAnswer
+	}
+	return nil, lastErr
+}
+
+var (
+	errNoSplitServer    = errors.New("这条 split 路由一台内网 DNS 都没有")
+	errNoSplitForwarder = errors.New("没有配转发器,split 路由用不了")
+	errNoSplitAnswer    = errors.New("一组内网 DNS 都没给出应答")
+)

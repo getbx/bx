@@ -15,7 +15,17 @@ import (
 // SplitRule:把匹配域名交给指定内网 DNS 解析(并由分流层强制直连)。
 type SplitRule struct {
 	Domains []string `yaml:"domains"` // 支持 *.suffix 通配
-	Server  string   `yaml:"server"`  // 内网 DNS;无端口时补 :53
+	// Server 是单台内网 DNS 的写法(老配置,保留)。**下游不读它** ——
+	// 加载期归一化进 Servers,留两条路给下游各自判断就是留了一处会漂的地方。
+	Server string `yaml:"server"`
+	// Servers 是内网 DNS 组(AD 域控几乎必然成对)。无端口的补 :53。
+	// 与 Server 二选一,两个都写在加载期就报错:一份把同一件事说两遍的配置
+	// 迟早会漂,而漂了之后没有任何东西会红。
+	//
+	// **语义是并发查、先到先用,不是顺序回退。** 顺序回退对「挂了 = 不应答」
+	// 这种最常见的故障形态无效(第一台要先耗满预算),而内网 DNS 就在局域网、
+	// 实测 14ms,并发两台的成本可以忽略。
+	Servers []string `yaml:"servers"`
 }
 
 type DNS struct {
@@ -211,13 +221,29 @@ func Parse(b []byte) (*Config, error) {
 		if len(r.Domains) == 0 {
 			return nil, fmt.Errorf("config: dns.split[%d].domains 不能为空", i)
 		}
-		if strings.TrimSpace(r.Server) == "" {
-			return nil, fmt.Errorf("config: dns.split[%d].server 不能为空", i)
+		single := strings.TrimSpace(r.Server) != ""
+		if single && len(r.Servers) > 0 {
+			return nil, fmt.Errorf("config: dns.split[%d] 同时写了 server 与 servers —— 二选一", i)
 		}
-		if host, port, err := net.SplitHostPort(r.Server); err != nil {
-			r.Server = net.JoinHostPort(strings.Trim(r.Server, "[]"), "53") // 无端口补 :53(strip 裸 [::1] 的括号)
-		} else if port == "" {
-			r.Server = net.JoinHostPort(host, "53") // 形如 "10.0.13.23:" 的空端口也补 :53
+		if single {
+			r.Servers = []string{r.Server}
+		}
+		if len(r.Servers) == 0 {
+			return nil, fmt.Errorf("config: dns.split[%d] 要有 server 或 servers", i)
+		}
+		for j := range r.Servers {
+			s := strings.TrimSpace(r.Servers[j])
+			if s == "" {
+				// 空条目会在运行期变成一次拨向 ":53" 的失败,而那次失败在日志里
+				// 与「内网 DNS 真的不通」长得一模一样。
+				return nil, fmt.Errorf("config: dns.split[%d].servers[%d] 不能为空", i, j)
+			}
+			if host, port, err := net.SplitHostPort(s); err != nil {
+				s = net.JoinHostPort(strings.Trim(s, "[]"), "53") // 无端口补 :53(strip 裸 [::1] 的括号)
+			} else if port == "" {
+				s = net.JoinHostPort(host, "53") // 形如 "10.0.13.23:" 的空端口也补 :53
+			}
+			r.Servers[j] = s
 		}
 	}
 	// 具名出口:加载期把话说死。一个悄悄没生效的出口规则,表现与「配错地址」、
