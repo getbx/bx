@@ -2394,6 +2394,35 @@ netns 台子造不出「VPS 换 IP」)。同一天顺手做掉的两条:`bx expl
 **真机验收**:换一次服务器 IP(或先改 DNS 记录),看 `bx-guard.err.log`/`bx.log`
 在 2–7 分钟内出现 `server_bypass_refollow: the server's address changed` 且隧道自己回绿。
 
+## Bx.app 里谁要执行位,判据只有一份(2026-09-18,真机撞到)
+
+**两个写者、两份清单,而窄的那份在常规路径上。** `internal/update` 的 `stageApp`
+(Guardian 主持的升级,**保护开着时走它**)只给 `Contents/MacOS/BxMenu` 加执行位;
+`internal/cli` 的 `writeMacOSAppTree`(直装,保护关着时才走)还认
+`Resources/bx-cli` 与 `Resources/bx-bridge`。
+
+真机后果:一次正常升级之后 `/Applications/Bx.app/Contents/Resources/bx-cli` 是
+**0644**,而 `upgradeSwitchCommand` —— 产品自己在 `bx up` 时打印的、用来收掉
+Guardian 版本漂移的那条命令 —— 正是直接执行它,于是用户照着敲得到
+`command not found`。**一条指向跑不动的命令的提示**是这个仓库反复罚过的那一类,
+而这次它出在**修复指引**上,读到它的人正处在「升级只做了一半」的时刻。
+
+**判据下沉成 `updatepkg.MacOSAppFileMode`**,两个写者都用它。**两条守卫各钉一个
+写者、都拿那份共用判据当准绳**(`TestStageAppGivesEveryFileTheSharedMode`、
+`TestWriteMacOSAppTreeUsesTheSharedFileModes`)—— 任一方不再用它,它那条就红;
+合起来「两份清单」在构造上回不来。**断言打在盘上真实的权限位上**,不是打在
+「它调用了那个函数」上:后者挡不住「调了、又被下面一行 Chmod 覆盖掉」,而
+`stageApp` 里恰好两样都有。第三条 `TestEveryRequiredAppFileHasADeliberateMode`
+穷举 `requiredMacOSAppFiles`,逼着往清单里加文件的人回答「它要不要执行位」,
+并反向钉住可执行名单里没有陈旧条目。
+
+**顺带记两个真机事实,省得下一个人重新挖**:① `/usr/local/bin/bx`(2.6MB)是
+**bridge**,真正执行的是 `/Library/Application Support/bx/runtime/current/bx`(96MB);
+bundle 里那两个是**安装载荷**,平时不被执行 —— 所以这个 bug 只打穿「直接执行
+bundle 那份」这一条路,`bx` 本身一直是好的。② bundle 的 `bx-cli` 与 runtime 里那份
+**字节完全相同**(实测同一个 sha256),所以 `sudo bx app-install` 与那条长路径
+等价 —— 用户被卡住时这就是出路。
+
 ## 升级进度按字节报,不按秒报;下载与换文件分开说(2026-09-18,真机未验)
 
 **一个时钟在下载已经死掉之后照样在涨。** 真机上一个 39MB 的包经隧道下了十几分钟,

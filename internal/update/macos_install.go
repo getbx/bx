@@ -483,10 +483,11 @@ func stageApp(ops FileOps, destination string, payload MacOSPayload, uid, gid in
 		if err := chmodDirectoryChain(ops, destination, filepath.Dir(target)); err != nil {
 			return fmt.Errorf("set app directory mode for %q: %w", name, err)
 		}
-		mode := fs.FileMode(0o644)
-		if name == "Contents/MacOS/BxMenu" {
-			mode = 0o755
-		}
+		// 判据只有一份(MacOSAppFileMode)。**此前这里自己写了一份更窄的**,
+		// 只认 Contents/MacOS/BxMenu,于是升级之后 Resources/bx-cli 没有执行位,
+		// 而 upgradeSwitchCommand 正是直接执行它 —— 真机上那条修复指引因此
+		// `command not found`(2026-09-18)。
+		mode := MacOSAppFileMode(name)
 		if err := ops.WriteFile(target, payload.Menu[name], mode); err != nil {
 			return fmt.Errorf("write app file %q: %w", name, err)
 		}
