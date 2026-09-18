@@ -156,8 +156,16 @@ struct StatusReportTests {
             expect(notice.remedy.contains(outdatedRuntimeRepairCommand),
                    "附注必须带上那条真能完成切换的命令,实际 \(notice.remedy)")
         }
-        expect(outdatedRuntimeRepairCommand.hasPrefix("sudo /Applications/Bx.app/"),
-               "命令要从 App 包里的 bx-cli 跑 —— 经 /usr/local/bin/bx 那条 bridge 必然失败(见 upgradeplan.go)")
+        // **2026-09-18 判据换了,但守的性质没换:这条命令必须真的跑得起来。**
+        // 旧判据是「必须从 App 包里的 bx-cli 跑」,理由是经 bridge 跑反推不出
+        // --app-source。那个理由仍然成立 —— 但**显式给 --app-source 就没有那一跳了**,
+        // 而且不必执行 bundle 里那个文件:升级路径一度没给它执行位,用户照着敲
+        // 得到 command not found(见 update.MacOSAppFileMode)。
+        // 一条修复指引的全部职责就是在降级状态下还能跑。
+        expect(!outdatedRuntimeRepairCommand.contains("/Contents/Resources/bx-cli"),
+               "不许再依赖 bundle 里那份的执行位,实际 \(outdatedRuntimeRepairCommand)")
+        expect(outdatedRuntimeRepairCommand.contains("--app-source /Applications/Bx.app"),
+               "必须显式给 --app-source,否则经 bridge 跑反推必然失败(见 upgradeplan.go)")
 
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) failure(s)\n".utf8))

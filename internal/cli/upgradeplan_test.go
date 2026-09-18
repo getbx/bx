@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -246,24 +247,43 @@ func TestUpVersionMismatchIsReported(t *testing.T) {
 // 这里用**生产代码自己的解析器**(bundleRootFromExecutable,就是 app-install
 // 定 --app-source 的那一跳)检查命令里的可执行文件,而不是比对一个字符串常量:
 // 只有它说得通,这条命令才真的能启动一次升级。
+// **2026-09-18 改了判据但没有放松它。** 命令从「跑 bundle 里那份 bx-cli」换成
+// 「显式给 --app-source」之后,「反推得出包根」这个断言对它已经不适用 —— 而它
+// 要守的性质没变:**app-install 必须知道 --app-source 是什么**。所以判据改成
+// 「两条路任一条走得通」:显式给了就验那个值,没给就验反推。把这条测试删掉换一
+// 条只比字符串的,才是放松。
 func TestUpgradeSwitchCommandCanActuallyRun(t *testing.T) {
 	fields := strings.Fields(upgradeSwitchCommand)
-	if len(fields) != 3 || fields[0] != "sudo" || fields[2] != "app-install" {
-		t.Fatalf("命令形如 `sudo <可执行文件> app-install`,实际 = %q", upgradeSwitchCommand)
+	if len(fields) < 3 || fields[0] != "sudo" || fields[2] != "app-install" {
+		t.Fatalf("命令形如 `sudo <可执行文件> app-install [...]`,实际 = %q", upgradeSwitchCommand)
 	}
-	root, err := bundleRootFromExecutable(fields[1])
-	if err != nil {
-		t.Fatalf("命令里的可执行文件必须能反推出 Bx.app 包根(app-install 正是这么定 --app-source 的):%v", err)
-	}
-	if root != darwinAppBundlePath {
-		t.Fatalf("推出的包根 = %q,want %q(安装目的地)", root, darwinAppBundlePath)
+	if i := slices.Index(fields, "--app-source"); i >= 0 {
+		if i+1 >= len(fields) {
+			t.Fatalf("--app-source 后面没有值:%q", upgradeSwitchCommand)
+		}
+		if fields[i+1] != darwinAppBundlePath {
+			t.Fatalf("--app-source = %q,want %q(安装目的地)", fields[i+1], darwinAppBundlePath)
+		}
+	} else {
+		root, err := bundleRootFromExecutable(fields[1])
+		if err != nil {
+			t.Fatalf("没有显式给 --app-source,那么命令里的可执行文件必须能反推出 Bx.app 包根"+
+				"(app-install 正是这么定 --app-source 的):%v", err)
+		}
+		if root != darwinAppBundlePath {
+			t.Fatalf("推出的包根 = %q,want %q(安装目的地)", root, darwinAppBundlePath)
+		}
 	}
 	// `sudo bx app-install` 是 bridge,反推不出包根 —— 不得回到这个形式。
 	if _, err := bundleRootFromExecutable("/usr/local/bin/bx"); err == nil {
 		t.Fatal("test premise 失效:bridge 路径本应反推不出 Bx.app 包根")
 	}
-	if strings.Contains(upVersionMismatchMessage("dev", "phase2"), ""+elevate.Prefix+"bx app-install") {
-		t.Fatal("不得再建议 `" + elevate.Prefix + "bx app-install`:经 bridge 跑必然报 not inside a Bx.app bundle")
+	// 裸的 `sudo bx app-install`(不带 --app-source)经 bridge 跑必然报
+	// not inside a Bx.app bundle —— 不得回到那个形式。判据要连「后面跟不跟
+	// --app-source」一起看,否则新形式会被它自己误伤。
+	if msg := upVersionMismatchMessage("dev", "phase2"); strings.Contains(msg, elevate.Prefix+"bx app-install") &&
+		!strings.Contains(msg, "--app-source") {
+		t.Fatal("不得建议裸 `" + elevate.Prefix + "bx app-install`:经 bridge 跑必然报 not inside a Bx.app bundle")
 	}
 }
 
@@ -384,5 +404,38 @@ func TestNoUserFacingCopyClaimsProtectionMustBeRunning(t *testing.T) {
 	if len(offenders) > 0 {
 		t.Fatalf("确认/中止的触发条件是「已装过 bx(Guardian 已加载)」,不是「保护正在运行」;"+
 			"以下位置仍是旧说法:\n  %s", strings.Join(offenders, "\n  "))
+	}
+}
+
+// 这条修复指引**不许依赖 bundle 里那个文件的执行位**。
+//
+// 2026-09-18 真机:一次正常升级之后 Contents/Resources/bx-cli 是 0644(两个写者
+// 两份清单,见 update.MacOSAppFileMode),而这条命令正是直接执行它 —— 用户照着
+// 敲得到 `command not found`。执行位那个 bug 已经修了,但**一条修复指引的全部
+// 职责就是在降级状态下还能跑**,而"安装器把权限位写对了"是它最不该依赖的前提。
+//
+// 出路是显式给 --app-source:它绕开 appInstallAction 的那一跳反推(那一跳正是
+// 裸 `bx app-install` 跑不通的原因,见上一条守卫),同时不执行 bundle 里的任何
+// 东西 —— bridge 与 runtime 都是好的,这条路的前提本来就是"runtime 是新的、
+// 只有 Guardian 旧"。
+//
+// **unifiedRepairHint 刻意不跟着改**,由下面那条钉住:它用在 runtime/current
+// 坏掉的场景,那时 bridge exec 过去的东西根本不存在,bundle 那份是唯一保证在的
+// 二进制 —— 同一个写法在两处有相反的理由。
+func TestUpgradeSwitchCommandDoesNotDependOnTheBundleExecBit(t *testing.T) {
+	if strings.Contains(upgradeSwitchCommand, "/Contents/Resources/bx-cli") {
+		t.Fatalf("这条指引仍在直接执行 bundle 里的 bx-cli,而升级可能没给它执行位:%q", upgradeSwitchCommand)
+	}
+	if !strings.Contains(upgradeSwitchCommand, "--app-source "+darwinAppBundlePath) {
+		t.Fatalf("没有显式给 --app-source,经 bridge 跑必然反推失败:%q", upgradeSwitchCommand)
+	}
+}
+
+// 相反方向:修坏掉的统一安装时**必须**用 bundle 里那份。
+// runtime/current 不完整正是那条提示的前提,而 bridge 会 exec 到那里。
+func TestUnifiedRepairHintStillRunsTheBundleCopy(t *testing.T) {
+	if !strings.Contains(unifiedRepairHint, darwinAppBundlePath+"/Contents/Resources/bx-cli") {
+		t.Fatalf("修复提示不再指向 bundle 里那份 —— runtime 坏掉时 bridge exec 不过去,"+
+			"那份是唯一保证在的二进制:%q", unifiedRepairHint)
 	}
 }
