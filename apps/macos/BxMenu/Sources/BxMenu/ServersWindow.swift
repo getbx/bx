@@ -22,9 +22,9 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     var onCheckExitIP: (() -> Void)?
     /// 用户点了「Test All」—— 逐台量直连往返时间。
     var onProbe: (() -> Void)?
-    /// 用户点了「New Server…」(从一级菜单搬进来的「Set Up a New Server…」)。
+    /// 用户点了「Set Up a New VPS…」(从一级菜单搬进来的「Set Up a New Server…」)。
     var onDeploy: (() -> Void)?
-    /// 用户点了「Add Server…」—— 贴一条链接加进清单并切换过去(spec §4)。
+    /// 用户点了「Add Existing Server…」—— 贴一条链接加进清单并切换过去(spec §4)。
     var onAddServer: (() -> Void)?
     /// `⋯` 里的删除。参数是名字、出口主机、以及**这一台此刻在不在承载流量**
     /// (三态)—— 三样都只用来写确认文案。
@@ -225,13 +225,18 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         buttons.addArrangedSubview(check)
 
         // 两个从一级菜单搬进来的入口:它们说的都是「服务器」这件事,归这里。
-        let deploy = NSButton(title: "New Server…", target: self, action: #selector(deployServer))
+        // **「New Server…」与「Add Server…」曾经并排站着,而它们是两件完全不同的事**:
+        // 前者 ssh 进一台空 VPS 把 bx server 装上去,后者只是把一条已有的链接加进清单。
+        // 名字近义、动作不同,而点错第一个的代价是对着一台陌生机器跑 ssh。
+        // 2026-09-18 用离屏快照第一次并排看到它们之后改名:现在一个说「我有台空机器」,
+        // 另一个说「我已经有链接了」。
+        let deploy = NSButton(title: "Set Up a New VPS…", target: self, action: #selector(deployServer))
         deploy.bezelStyle = .rounded
         deploy.controlSize = .small
         deploy.toolTip = "Install bx server on a fresh VPS over SSH."
         buttons.addArrangedSubview(deploy)
 
-        let add = NSButton(title: "Add Server…", target: self, action: #selector(addServer))
+        let add = NSButton(title: "Add Existing Server…", target: self, action: #selector(addServer))
         add.bezelStyle = .rounded
         add.controlSize = .small
         add.toolTip = "Paste a bx link to add a server and switch to it. The previous server stays in the list."

@@ -8,15 +8,54 @@ import (
 // 窗口里的按钮是 Add Server…,Replace Configuration… 已从窗口退场;点了走 onAddServer。
 func TestMacMenuServersWindowOffersAddServerNotReplace(t *testing.T) {
 	window := stripSwiftComments(menuServersWindowSource(t))
-	if !strings.Contains(window, `NSButton(title: "Add Server…"`) {
-		t.Fatal("Servers 窗口没有 Add Server… 按钮")
+	// **判据钉的是「有这条出口」,不是某一个措辞。** 标签 2026-09-18 改过一次:
+	// 「New Server…」与「Add Server…」并排时名字近义而动作完全不同(一个 ssh 进
+	// 空 VPS 装 bx server,一个只是把已有链接加进清单),点错前者的代价是对着一台
+	// 陌生机器跑 ssh。所以这里只要求「装新机器」与「加已有」各有一个按钮、且两个
+	// 标题不许再撞在一起。
+	deploy, okDeploy := swiftButtonTitleFor(window, "deployServer")
+	add, okAdd := swiftButtonTitleFor(window, "addServer")
+	if !okDeploy || !okAdd {
+		t.Fatalf("Servers 窗口缺按钮:deploy=%v add=%v —— 守卫读不懂现在的代码了", okDeploy, okAdd)
+	}
+	if deploy == add {
+		t.Fatalf("两个按钮同名 %q", deploy)
+	}
+	// 两个标题都提到 server/VPS 却互相区分不开,正是这次要消灭的东西:
+	// 必须一个说「新装一台」、一个说「加一条已有的」。
+	if !strings.Contains(strings.ToLower(deploy), "new") {
+		t.Fatalf("装新机器那个按钮没说它是「新」的:%q", deploy)
+	}
+	if !strings.Contains(strings.ToLower(add), "existing") {
+		t.Fatalf("加已有那个按钮没说它是「已有」的:%q —— 与「装一台新的」区分不开", add)
 	}
 	if strings.Contains(window, "Replace Configuration") || strings.Contains(window, "onReplaceConfiguration") {
 		t.Fatal("Replace Configuration 还在窗口里 —— 它被 Add Server 取代了(spec §4)")
 	}
 	if !strings.Contains(window, "onAddServer?()") {
-		t.Fatal("Add Server… 没有回调出口")
+		t.Fatal("「加一条已有的」没有回调出口")
 	}
+}
+
+// swiftButtonTitleFor 取 `NSButton(title: "…", target: self, action: #selector(<sel>))` 的标题。
+func swiftButtonTitleFor(src, selector string) (string, bool) {
+	for _, line := range strings.Split(src, "\n") {
+		if !strings.Contains(line, "#selector("+selector+")") {
+			continue
+		}
+		const marker = `NSButton(title: "`
+		i := strings.Index(line, marker)
+		if i < 0 {
+			continue
+		}
+		rest := line[i+len(marker):]
+		j := strings.Index(rest, `"`)
+		if j < 0 {
+			continue
+		}
+		return rest[:j], true
+	}
+	return "", false
 }
 
 // 流程:贴链接 → 名字(可空)→ /v1/servers add → 用应答里的 added 切换 → 一句结果。
