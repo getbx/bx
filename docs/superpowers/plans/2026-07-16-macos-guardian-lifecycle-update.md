@@ -866,7 +866,7 @@ go test -race ./internal/guardian ./internal/update
 swift test --package-path apps/macos/BxMenu
 swift build --package-path apps/macos/BxMenu -c release
 bash -n scripts/darwin-guardian-testkit.sh
-scripts/darwin-guardian-testkit.sh --scenario update-success --gateway 192.0.2.1 --server-bypass 198.51.100.10/32 --dns-service Wi-Fi
+scripts/darwin-guardian-testkit.sh --scenario update-success --gateway 192.0.2.1 --server-bypass 203.0.113.92/32 --dns-service Wi-Fi
 scripts/package-macos-release.sh
 scripts/verify-macos-release.sh
 scripts/verify-guardian-source-contracts.sh

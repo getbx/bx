@@ -592,7 +592,7 @@ func TestMigrateRefusesToTurnProtectionOnWhenTheHoldCannotBeCleared(t *testing.T
 	env.store.setClearError(errors.New("read-only file system"))
 
 	err := env.manager.Migrate(context.Background(), MigrationRequest{
-		Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"},
+		Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"},
 	})
 	if err == nil {
 		t.Fatal("清不掉挂起时 Migrate 必须失败")
@@ -638,7 +638,7 @@ func TestMigrateClearsMaintenanceHold(t *testing.T) {
 	}
 	if err := env.manager.Migrate(context.Background(), MigrationRequest{
 		Gateway:      "192.0.2.1",
-		ServerBypass: []string{"198.51.100.10/32"},
+		ServerBypass: []string{"203.0.113.92/32"},
 	}); err != nil {
 		t.Fatal(err)
 	}

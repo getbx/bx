@@ -99,7 +99,7 @@ func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
 		Health:         stubHealthGate{},
 		Barrier:        stubBarrier{},
 		DNS:            stubDNSManager{},
-		BarrierContext: guardian.BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}},
+		BarrierContext: guardian.BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}},
 		CoreVersion:    "test",
 	})
 	if err != nil {

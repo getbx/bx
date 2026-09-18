@@ -29,7 +29,7 @@ func TestLegacyMigrationRequestPrefersRuntimeHandoffMetadata(t *testing.T) {
 		fetchRuntime: func(string) (supervisor.RuntimeState, error) {
 			return supervisor.RuntimeState{
 				PID: 42, TunName: "utun7", SocksAddr: "127.0.0.1:1080",
-				ServerBypass: []string{"198.51.100.10/32"}, TunnelHealthy: true,
+				ServerBypass: []string{"203.0.113.92/32"}, TunnelHealthy: true,
 				DNSListening: true, RoutesInstalled: true,
 			}, nil
 		},
@@ -44,7 +44,7 @@ func TestLegacyMigrationRequestPrefersRuntimeHandoffMetadata(t *testing.T) {
 	if loadCalls != 0 {
 		t.Fatalf("runtime handoff unexpectedly read config %d times", loadCalls)
 	}
-	if request.Gateway != "192.0.2.1" || strings.Join(request.ServerBypass, ",") != "198.51.100.10/32" {
+	if request.Gateway != "192.0.2.1" || strings.Join(request.ServerBypass, ",") != "203.0.113.92/32" {
 		t.Fatalf("migration request = %+v", request)
 	}
 }
@@ -57,7 +57,7 @@ func TestLegacyMigrationRequestFallbackResolvesOnlyTransportHostIPs(t *testing.T
 		UDP:        config.UDP{Mode: "proxy", Transport: "trojan://another-secret@tcp.example:443"},
 	}
 	lookups := map[string][]netip.Addr{
-		"proxy.example": {netip.MustParseAddr("198.51.100.10"), netip.MustParseAddr("2001:db8::10")},
+		"proxy.example": {netip.MustParseAddr("203.0.113.92"), netip.MustParseAddr("2001:db8::10")},
 		"udp.example":   {netip.MustParseAddr("198.51.100.11")},
 		"tcp.example":   {netip.MustParseAddr("198.51.100.12")},
 	}
@@ -81,7 +81,7 @@ func TestLegacyMigrationRequestFallbackResolvesOnlyTransportHostIPs(t *testing.T
 			t.Fatalf("migration request leaked %q: %s", forbidden, b)
 		}
 	}
-	want := "198.51.100.10/32,2001:db8::10/128,198.51.100.11/32,198.51.100.12/32"
+	want := "203.0.113.92/32,2001:db8::10/128,198.51.100.11/32,198.51.100.12/32"
 	if got := strings.Join(request.ServerBypass, ","); got != want {
 		t.Fatalf("migration bypasses = %q, want %q", got, want)
 	}
@@ -122,7 +122,7 @@ func TestMacOSUpLifecycleMigratesBeforeMenuAndWaitsForProtected(t *testing.T) {
 	}
 	deps.migrationRequest = func(context.Context, string) (guardian.MigrationRequest, error) {
 		events = append(events, "metadata")
-		return guardian.MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}}, nil
+		return guardian.MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}}, nil
 	}
 	result, err := macOSUpLifecycle(context.Background(), "/etc/bx/config.yaml", deps)
 	if err != nil {
@@ -213,7 +213,7 @@ func TestMacOSUpLifecycleStillMigratesWhenLegacyLoaded(t *testing.T) {
 	}
 	deps.migrationRequest = func(context.Context, string) (guardian.MigrationRequest, error) {
 		events = append(events, "metadata")
-		return guardian.MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}}, nil
+		return guardian.MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}}, nil
 	}
 	result, err := macOSUpLifecycle(context.Background(), "/etc/bx/config.yaml", deps)
 	if err != nil {
@@ -1398,7 +1398,7 @@ func testMacOSLifecycleDeps(events *[]string, client guardianLifecycleClient) ma
 		},
 		migrationRequest: func(context.Context, string) (guardian.MigrationRequest, error) {
 			*events = append(*events, "metadata")
-			return guardian.MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}}, nil
+			return guardian.MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}}, nil
 		},
 		client: client,
 		consoleUID: func() (int, error) {

@@ -1,6 +1,6 @@
 {
   "servers": [
-    {"name": "vps-eu", "host": "198.51.100.10", "port": 443, "transport": "reality", "current": true},
+    {"name": "vps-eu", "host": "203.0.113.92", "port": 443, "transport": "reality", "current": true},
     {"name": "vps-jp", "host": "203.0.113.20", "port": 2053, "transport": "hysteria2", "current": false}
   ],
   "current": "vps-eu"

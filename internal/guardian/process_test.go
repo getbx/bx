@@ -125,7 +125,7 @@ func TestExecCoreRunnerScopesBypassHandoffToAuthorizedStart(t *testing.T) {
 		options CoreStartOptions
 		want    string
 	}{
-		{name: "authorized", options: CoreStartOptions{GuardianBypassHandoff: []string{"198.51.100.10/32"}}, want: guardianBypassHandoffEnv + "=198.51.100.10/32"},
+		{name: "authorized", options: CoreStartOptions{GuardianBypassHandoff: []string{"203.0.113.92/32"}}, want: guardianBypassHandoffEnv + "=203.0.113.92/32"},
 		{name: "ordinary start strips ambient authorization"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

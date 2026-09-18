@@ -103,7 +103,7 @@ func TestHealthCheckerDefaultProbeUsesLoopbackSOCKS(t *testing.T) {
 		DNSListening: true, RoutesInstalled: true,
 	}
 	checker := HealthChecker{
-		ProbeAddr:    "198.51.100.10:443",
+		ProbeAddr:    "203.0.113.92:443",
 		fetchRuntime: func(context.Context, string) (supervisor.RuntimeState, error) { return state, nil },
 	}
 	if _, err := checker.Wait(context.Background(), HealthTarget{Version: "v0.3.0", PID: 42, Timeout: time.Second}); err != nil {
@@ -111,7 +111,7 @@ func TestHealthCheckerDefaultProbeUsesLoopbackSOCKS(t *testing.T) {
 	}
 	select {
 	case got := <-requested:
-		if got != "198.51.100.10:443" {
+		if got != "203.0.113.92:443" {
 			t.Fatalf("SOCKS target = %q", got)
 		}
 	case <-time.After(time.Second):

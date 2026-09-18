@@ -123,13 +123,17 @@ var ipv4Literal = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
 // addressIsSafeForAFixture:文档保留网段(RFC5737)、私网、回环、链路本地、
 // CGNAT,以及 bx 自己的假 IP 段(198.18/15,fixture 里会出现)。
 func addressIsSafeForAFixture(addr netip.Addr) bool {
-	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsUnspecified() {
+	// 组播与保留段按定义不是谁的机器(mDNS 的 224.0.0.251 就落在这里)。
+	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
+		addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalMulticast() {
 		return true
 	}
 	for _, cidr := range []string{
 		"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", // RFC5737 文档用
 		"198.18.0.0/15", // bx 的 fake-IP
 		"100.64.0.0/10", // CGNAT / tailscale
+		"240.0.0.0/4",   // 保留段
+		"192.0.0.0/24",  // IETF 协议分配
 	} {
 		if netip.MustParsePrefix(cidr).Contains(addr) {
 			return true

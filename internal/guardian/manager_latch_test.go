@@ -308,7 +308,7 @@ func TestLatchedMigrateRefusalKeepsTheOriginalCause(t *testing.T) {
 	env.manager.current = Process{PID: 4242, Uncertain: true}
 	env.manager.uncertainCause = errors.New("spawned Core record has a live process whose identity was never verified")
 
-	err := env.manager.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}})
+	err := env.manager.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}})
 	if !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("Migrate = %v, want 所有权不确定", err)
 	}
@@ -603,7 +603,7 @@ func TestMigrateReVerifiesOwnershipWhenTheSystemIsClean(t *testing.T) {
 	env.manager.current = Process{PID: 4242, Uncertain: true}
 	env.manager.uncertainCause = errors.New("Core appeared to be running (PID 4242)")
 
-	err := env.manager.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}})
+	err := env.manager.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}})
 	if errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("扫干净了 Migrate 仍以所有权不确定拒绝: %v", err)
 	}
@@ -622,7 +622,7 @@ func TestMigrateStillRefusesWhenACoreIsStillRunning(t *testing.T) {
 	env.runner.scanResult = []Process{{PID: 4242}}
 	env.manager.current = Process{PID: 4242, Uncertain: true}
 
-	err := env.manager.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}})
+	err := env.manager.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}})
 	if !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("Migrate = %v, want 仍然拒绝", err)
 	}

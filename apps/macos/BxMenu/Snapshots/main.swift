@@ -166,7 +166,7 @@ do {
 do {
     let list = loadFixture("servers.json", as: ServerList.self)
     let controller = ServersWindowController()
-    controller.show(list: list, core: nil, probe: .address("198.51.100.10"),
+    controller.show(list: list, core: nil, probe: .address("203.0.113.92"),
                     switchingTo: nil, canEdit: true)
     capture(windowTitled("Servers"), as: "servers")
 }

@@ -779,7 +779,7 @@ func TestManagerUpdateDerivesBarrierFromLiveRuntime(t *testing.T) {
 
 func TestManagerReleasesOldBarrierAgainstTargetRuntimeBypassSet(t *testing.T) {
 	env := newUpdateTestEnv(t)
-	oldBypass := []string{"198.51.100.10/32"}
+	oldBypass := []string{"203.0.113.92/32"}
 	targetBypass := []string{"203.0.113.20/32"}
 	env.manager.barrierContext.ServerBypass = append([]string(nil), oldBypass...)
 	env.manager.runtime.ServerBypass = append([]string(nil), oldBypass...)
@@ -1671,7 +1671,7 @@ func (e *updateTestEnv) restartedManagerWithoutJournal(t *testing.T, existingVer
 		events: e.events, prepared: e.prepared, entered: make(chan struct{}, 1),
 		requiredProtocol: currentGuardianProtocol,
 		recoveryContext: BarrierContext{
-			Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}, BlockIPv6: true,
+			Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}, BlockIPv6: true,
 		},
 	}
 	dns := newFakeDNSManager(e.events)
@@ -2195,7 +2195,7 @@ func (p *fakeGatewayProvider) callCount() int {
 func updateRuntime(pid int, version string) supervisor.RuntimeState {
 	return supervisor.RuntimeState{
 		Version: version, PID: pid, TunName: "utun7", SocksAddr: "127.0.0.1:1080",
-		ServerBypass: []string{"198.51.100.10/32"}, TunnelHealthy: true,
+		ServerBypass: []string{"203.0.113.92/32"}, TunnelHealthy: true,
 		DNSListening: true, RoutesInstalled: true,
 	}
 }
@@ -2663,7 +2663,7 @@ func newDiskRecoveryTestEnv(t *testing.T) *diskRecoveryTestEnv {
 		appPath:        filepath.Join(root, "Applications/Bx.app"),
 		snapshotPath:   filepath.Join(root, "update/snapshots/tx-1"),
 		stagingPath:    filepath.Join(root, "update/staging/tx-1"),
-		barrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}, BlockIPv6: true},
+		barrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}, BlockIPv6: true},
 	}
 	writeUpdatePackage(t, filepath.Join(env.snapshotPath, "bx"), []byte("old-cli"))
 	writeUpdatePackage(t, filepath.Join(env.snapshotPath, "Bx.app/Contents/MacOS/BxMenu"), []byte("old-menu"))
