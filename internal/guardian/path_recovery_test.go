@@ -769,7 +769,7 @@ func TestManagerPathRecoveryPublishesQueuedPendingDuringOnPreservingTransitions(
 			run: func(env *managerTestEnv) error {
 				return env.manager.Migrate(context.Background(), MigrationRequest{
 					Gateway:      "192.0.2.1",
-					ServerBypass: []string{"198.51.100.10/32"},
+					ServerBypass: []string{"203.0.113.92/32"},
 				})
 			},
 		},
@@ -1023,7 +1023,7 @@ func TestManagerPathRecoveryOnPreservingTransitionsReplayGeneratedRecovery(t *te
 			run: func(env *managerTestEnv) error {
 				return env.manager.Migrate(context.Background(), MigrationRequest{
 					Gateway:      "192.0.2.1",
-					ServerBypass: []string{"198.51.100.10/32"},
+					ServerBypass: []string{"203.0.113.92/32"},
 				})
 			},
 		},

@@ -69,8 +69,8 @@ import "testing"
 
 func TestServerHostAcrossSchemes(t *testing.T) {
 	for _, tc := range []struct{ name, link, want string }{
-		{"vless", "vless://uuid@195.133.192.92:443?sni=www.cloudflare.com", "195.133.192.92"},
-		{"hysteria2", "hysteria2://pw@195.133.192.92:443?obfs=salamander", "195.133.192.92"},
+		{"vless", "vless://uuid@203.0.113.92:443?sni=www.cloudflare.com", "203.0.113.92"},
+		{"hysteria2", "hysteria2://pw@203.0.113.92:443?obfs=salamander", "203.0.113.92"},
 		{"hy2 别名", "hy2://pw@example.com:8443", "example.com"},
 		{"trojan", "trojan://pw@example.com:443", "example.com"},
 		{"裸 endpoint", "1.2.3.4:9999", "1.2.3.4"},
@@ -253,7 +253,7 @@ func TestValidateServerName(t *testing.T) {
 			t.Fatalf("非法名字 %q 必须被拒", bad)
 		}
 	}
-	for _, ok := range []string{"hk", "tokyo-2", "195.133.192.92", "a_b.c-1"} {
+	for _, ok := range []string{"hk", "tokyo-2", "203.0.113.92", "a_b.c-1"} {
 		if err := ValidateServerName(ok); err != nil {
 			t.Fatalf("合法名字 %q 被拒: %v", ok, err)
 		}
@@ -261,11 +261,11 @@ func TestValidateServerName(t *testing.T) {
 }
 
 func TestDeriveServerNameFromLink(t *testing.T) {
-	got, err := DeriveServerName("vless://u@195.133.192.92:443")
+	got, err := DeriveServerName("vless://u@203.0.113.92:443")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "195.133.192.92" {
+	if got != "203.0.113.92" {
 		t.Fatalf("没给 --name 时应取主机名, got %q", got)
 	}
 }

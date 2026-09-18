@@ -27,10 +27,10 @@ func TestTailscaleDERPMapBypassCIDRs(t *testing.T) {
 
 func TestMergeBypassCIDRsDedupes(t *testing.T) {
 	got := mergeBypassCIDRs(
-		[]string{"23.27.134.77/32", "203.0.113.10/32"},
+		[]string{"203.0.113.77/32", "203.0.113.10/32"},
 		[]string{"203.0.113.10/32", "203.0.113.11/32"},
 	)
-	want := []string{"23.27.134.77/32", "203.0.113.10/32", "203.0.113.11/32"}
+	want := []string{"203.0.113.77/32", "203.0.113.10/32", "203.0.113.11/32"}
 	if !sameStringSet(got, want) || len(got) != len(want) {
 		t.Fatalf("merged bypass CIDRs = %v, want %v", got, want)
 	}

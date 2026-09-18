@@ -455,7 +455,7 @@ func TestMigrationHandlerOmitsStaleCodeWhenLastErrorUnchanged(t *testing.T) {
 // 请求,满足 migrationHandler 的鉴权与元数据前提。
 func rootMigrationRequest(t *testing.T) *http.Request {
 	t.Helper()
-	body := `{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"]}`
+	body := `{"gateway":"192.0.2.1","server_bypass":["203.0.113.92/32"]}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/migrate", strings.NewReader(body))
 	return request.WithContext(withPeerCredentials(request.Context(), 0, true))
 }
@@ -469,7 +469,7 @@ func rootMutationRequest(t *testing.T) *http.Request {
 }
 
 func TestLocalAPIMigrateRequiresRootAndStrictMetadata(t *testing.T) {
-	validBody := []byte(`{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"]}`)
+	validBody := []byte(`{"gateway":"192.0.2.1","server_bypass":["203.0.113.92/32"]}`)
 	tests := []struct {
 		name      string
 		uid       uint32
@@ -479,7 +479,7 @@ func TestLocalAPIMigrateRequiresRootAndStrictMetadata(t *testing.T) {
 		wantCalls int
 	}{
 		{name: "logged-in user", uid: 501, gotUID: true, body: validBody, wantCode: http.StatusForbidden},
-		{name: "unknown secret field", uid: 0, gotUID: true, body: []byte(`{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"],"server_link":"vless://secret"}`), wantCode: http.StatusBadRequest},
+		{name: "unknown secret field", uid: 0, gotUID: true, body: []byte(`{"gateway":"192.0.2.1","server_bypass":["203.0.113.92/32"],"server_link":"vless://secret"}`), wantCode: http.StatusBadRequest},
 		{name: "root metadata", uid: 0, gotUID: true, body: validBody, wantCode: http.StatusOK, wantCalls: 1},
 	}
 	for _, tt := range tests {
@@ -495,7 +495,7 @@ func TestLocalAPIMigrateRequiresRootAndStrictMetadata(t *testing.T) {
 			if controller.migrateCalls != tt.wantCalls {
 				t.Fatalf("Migrate calls = %d, want %d", controller.migrateCalls, tt.wantCalls)
 			}
-			if tt.wantCalls == 1 && !reflect.DeepEqual(controller.migration, MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}}) {
+			if tt.wantCalls == 1 && !reflect.DeepEqual(controller.migration, MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}}) {
 				t.Fatalf("migration request = %+v", controller.migration)
 			}
 		})
@@ -504,7 +504,7 @@ func TestLocalAPIMigrateRequiresRootAndStrictMetadata(t *testing.T) {
 
 func TestLocalAPIMigrateRejectsDataBeyondBodyLimit(t *testing.T) {
 	controller := &fakeController{}
-	body := []byte(`{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"]}`)
+	body := []byte(`{"gateway":"192.0.2.1","server_bypass":["203.0.113.92/32"]}`)
 	body = append(body, bytes.Repeat([]byte(" "), (64<<10)-len(body))...)
 	body = append(body, []byte(`{"server_link":"vless://secret"}`)...)
 	request := httptest.NewRequest(http.MethodPost, "/v1/migrate", bytes.NewReader(body))
@@ -857,7 +857,7 @@ func TestClientUsesGuardianUnixAPI(t *testing.T) {
 	if _, err := client.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}}); err != nil {
+	if _, err := client.Migrate(context.Background(), MigrationRequest{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}}); err != nil {
 		t.Fatal(err)
 	}
 	updateRequest := UpdateRequest{
@@ -1223,7 +1223,7 @@ func TestMutationResponsesCarryVersions(t *testing.T) {
 	}{
 		{path: "/v1/up"},
 		{path: "/v1/down"},
-		{path: "/v1/migrate", body: `{"gateway":"192.0.2.1","server_bypass":["198.51.100.10/32"]}`},
+		{path: "/v1/migrate", body: `{"gateway":"192.0.2.1","server_bypass":["203.0.113.92/32"]}`},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			controller := &fakeController{

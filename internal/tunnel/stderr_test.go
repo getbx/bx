@@ -33,7 +33,7 @@ func TestStderrSinkForwardsAndRemembersLines(t *testing.T) {
 // 抹密必须发生在**写日志之前**——日志本身就是泄露面。brook connect -l <link>
 // 的链接就在 argv 上,brook 有可能把它回显进自己的日志,而链接自带凭据。
 func TestStderrSinkRedactsSecretsBeforeLogging(t *testing.T) {
-	const link = "vless://f293d747-66b5-4b8a-b102-6b1d981e5c97@166.1.190.123:443?security=reality"
+	const link = "vless://f293d747-66b5-4b8a-b102-6b1d981e5c97@203.0.113.123:443?security=reality"
 	restore := captureLog(t)
 	sink := newStderrSink("brook", link, "hunter2")
 	sink.consume(strings.NewReader("dial failed for " + link + " with password hunter2\n"))

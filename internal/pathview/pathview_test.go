@@ -39,9 +39,9 @@ func TestPublicTargetIntoBxWithBoundSocketsEscaping(t *testing.T) {
 
 func TestServerBypassGoesOutPhysicalAndSaysWhy(t *testing.T) {
 	f := facts()
-	f.Target, f.Addrs = "195.133.192.92", []netip.Addr{netip.MustParseAddr("195.133.192.92")}
+	f.Target, f.Addrs = "203.0.113.92", []netip.Addr{netip.MustParseAddr("203.0.113.92")}
 	f.Route = RouteFact{Applicable: true, Interface: "en0", Gateway: "192.168.50.2"}
-	f.ServerBypass = []netip.Prefix{netip.MustParsePrefix("195.133.192.92/32")}
+	f.ServerBypass = []netip.Prefix{netip.MustParsePrefix("203.0.113.92/32")}
 	v := Judge(f)
 	if !strings.Contains(v.Conclusion, "en0") || !strings.Contains(v.Conclusion, "not through bx") {
 		t.Fatalf("旁路目标要说「从 en0 直出、不经过 bx」: %q", v.Conclusion)

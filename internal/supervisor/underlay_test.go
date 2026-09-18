@@ -9,7 +9,7 @@ import (
 // 轮换一次,路由器就发一个新 IP —— 192.168.50.14 → .16 → .18 → .37 → .38,同一个
 // Wi-Fi、同一个网关、同一个网段。每换一次,sing-box 的 socket 就绑在一个已经不
 // 存在的源地址上,日志里连着几小时的
-// `write udp 192.168.50.16:…->195.133.192.92:443: write: can't assign requested address`
+// `write udp 192.168.50.16:…->203.0.113.92:443: write: can't assign requested address`
 // (8-17 一天 45011 条,连续 5.5 小时),而 `network_recovery` 一次都没触发,
 // 用户只能 `sudo bx down && sudo bx up`(8-10 至今 28 次)。
 //
@@ -31,7 +31,7 @@ func TestDarwinUnderlayPlanRebindsWhenOnlyTheHostAddressChanges(t *testing.T) {
 	before := mustUnderlaySnapshot(t, "en0", "192.168.50.1", "192.168.50.37/24")
 	after := mustUnderlaySnapshot(t, "en0", "192.168.50.1", "192.168.50.38/24")
 
-	plan, err := darwinUnderlayPlan(before, after, []string{"195.133.192.92/32"}, nil)
+	plan, err := darwinUnderlayPlan(before, after, []string{"203.0.113.92/32"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestDarwinUnderlayPlanRebindsWhenOnlyTheHostAddressChanges(t *testing.T) {
 	}
 	var sawServerBypass bool
 	for _, command := range allDarwinUnderlayCommandTexts(plan) {
-		if command == "route -n change -net 195.133.192.92/32 192.168.50.1" {
+		if command == "route -n change -net 203.0.113.92/32 192.168.50.1" {
 			sawServerBypass = true
 		}
 	}

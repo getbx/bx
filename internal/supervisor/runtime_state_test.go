@@ -21,7 +21,7 @@ func TestRuntimeStateContainsOnlyHandoffMetadata(t *testing.T) {
 		PID:             42,
 		TunName:         "utun7",
 		SocksAddr:       "127.0.0.1:43210",
-		ServerBypass:    []string{"23.27.134.77/32"},
+		ServerBypass:    []string{"203.0.113.77/32"},
 		TunnelHealthy:   true,
 		DNSListening:    true,
 		RoutesInstalled: true,
@@ -58,11 +58,11 @@ func TestRuntimeStateContainsOnlyHandoffMetadata(t *testing.T) {
 
 func TestRuntimeIPv4BypassUsesExactResolvedAddresses(t *testing.T) {
 	addrs := []netip.Addr{
-		netip.MustParseAddr("23.27.134.77"),
+		netip.MustParseAddr("203.0.113.77"),
 		netip.MustParseAddr("2001:db8::1"),
-		netip.MustParseAddr("23.27.134.77"),
+		netip.MustParseAddr("203.0.113.77"),
 	}
-	want := []string{"23.27.134.77/32"}
+	want := []string{"203.0.113.77/32"}
 	if got := runtimeIPv4Bypass(addrs); !reflect.DeepEqual(got, want) {
 		t.Fatalf("runtimeIPv4Bypass() = %v, want %v", got, want)
 	}

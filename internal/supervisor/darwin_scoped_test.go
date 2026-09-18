@@ -18,7 +18,7 @@ import (
 //
 //	route -n get -ifscope en0 8.8.8.8   → not in table
 //	bound-en0 udp 223.5.5.5:53          → network is unreachable
-//	bound-en0 tcp 166.1.190.123:443     → 通(bx 自己装了这条 /32 的 en0 路由)
+//	bound-en0 tcp 203.0.113.123:443     → 通(bx 自己装了这条 /32 的 en0 路由)
 //
 // 于是**所有用户 direct 规则全死**,而隧道正常 —— 因为隧道的 server bypass 恰好
 // 是一条显式 en0 路由。这一直是坏的,只是 bx 从来数不出失败,所以没人知道;

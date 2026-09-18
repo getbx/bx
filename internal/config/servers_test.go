@@ -108,7 +108,7 @@ func TestValidateServerName(t *testing.T) {
 			t.Fatalf("非法名字 %q 必须被拒", bad)
 		}
 	}
-	for _, ok := range []string{"hk", "tokyo-2", "195.133.192.92", "a_b.c-1"} {
+	for _, ok := range []string{"hk", "tokyo-2", "203.0.113.92", "a_b.c-1"} {
 		if err := ValidateServerName(ok); err != nil {
 			t.Fatalf("合法名字 %q 被拒: %v", ok, err)
 		}
@@ -116,11 +116,11 @@ func TestValidateServerName(t *testing.T) {
 }
 
 func TestDeriveServerNameFromLink(t *testing.T) {
-	got, err := DeriveServerName("vless://u@195.133.192.92:443")
+	got, err := DeriveServerName("vless://u@203.0.113.92:443")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "195.133.192.92" {
+	if got != "203.0.113.92" {
 		t.Fatalf("没给 --name 时应取主机名, got %q", got)
 	}
 }
@@ -133,8 +133,8 @@ func TestDeriveServerNameFromLink(t *testing.T) {
 // 而那份幂等性今天没有任何测试守着 —— 一次对 decodeServerLink 的重构就能悄悄打破它,
 // 后果是所有用户粘贴的链接全部失效。
 func TestServersEntryAcceptsBxLinkWrapper(t *testing.T) {
-	const raw = "vless://u@195.133.192.92:443?sni=www.cloudflare.com"
-	const rawUDP = "hysteria2://p@195.133.192.92:443?obfs=salamander"
+	const raw = "vless://u@203.0.113.92:443?sni=www.cloudflare.com"
+	const rawUDP = "hysteria2://p@203.0.113.92:443?obfs=salamander"
 	c := parseOrFail(t, "servers:\n  - name: tokyo\n    link: "+blink.Encode(raw)+
 		"\n    udp: "+blink.Encode(rawUDP)+"\n")
 	if c.Server != raw {

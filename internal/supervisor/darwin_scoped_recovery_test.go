@@ -24,7 +24,7 @@ func TestRecoveryReinstallsTheScopedDefaultOnTheNewGateway(t *testing.T) {
 	plan, err := darwinUnderlayPlan(
 		snap("en0", "192.168.50.2", "192.168.50.0/24"),
 		snap("en0", "10.84.6.1", "10.84.6.0/23"),
-		[]string{"166.1.190.123/32"}, nil,
+		[]string{"203.0.113.123/32"}, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

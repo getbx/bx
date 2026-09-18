@@ -591,8 +591,8 @@ struct AppTrafficModelTests {
                "三段域名应给精确 + 父域通配:\(ruleCandidates(for: "cdn.steamstatic.com"))")
         expect(ruleCandidates(for: "qq.com") == ["*.qq.com"],
                "两段域名只给通配:\(ruleCandidates(for: "qq.com"))")
-        expect(ruleCandidates(for: "180.158.6.185") == ["180.158.6.185"],
-               "裸 IP 原样:\(ruleCandidates(for: "180.158.6.185"))")
+        expect(ruleCandidates(for: "192.0.2.185") == ["192.0.2.185"],
+               "裸 IP 原样:\(ruleCandidates(for: "192.0.2.185"))")
         expect(ruleCandidates(for: "2606:4700::1111") == ["2606:4700::1111"],
                "v6 字面量原样:\(ruleCandidates(for: "2606:4700::1111"))")
         expect(ruleCandidates(for: "") == [], "空目的地不该有候选")

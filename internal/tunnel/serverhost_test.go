@@ -4,8 +4,8 @@ import "testing"
 
 func TestServerHostAcrossSchemes(t *testing.T) {
 	for _, tc := range []struct{ name, link, want string }{
-		{"vless", "vless://uuid@195.133.192.92:443?sni=www.cloudflare.com", "195.133.192.92"},
-		{"hysteria2", "hysteria2://pw@195.133.192.92:443?obfs=salamander", "195.133.192.92"},
+		{"vless", "vless://uuid@203.0.113.92:443?sni=www.cloudflare.com", "203.0.113.92"},
+		{"hysteria2", "hysteria2://pw@203.0.113.92:443?obfs=salamander", "203.0.113.92"},
 		{"hy2 别名", "hy2://pw@example.com:8443", "example.com"},
 		{"trojan", "trojan://pw@example.com:443", "example.com"},
 		{"裸 endpoint", "1.2.3.4:9999", "1.2.3.4"},

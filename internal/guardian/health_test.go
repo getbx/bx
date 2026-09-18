@@ -20,7 +20,7 @@ func TestHealthCheckerRequiresCompleteRuntimeState(t *testing.T) {
 		PID:             42,
 		TunName:         "utun7",
 		SocksAddr:       "127.0.0.1:43210",
-		ServerBypass:    []string{"23.27.134.77/32"},
+		ServerBypass:    []string{"203.0.113.77/32"},
 		TunnelHealthy:   true,
 		DNSListening:    true,
 		RoutesInstalled: true,
@@ -83,7 +83,7 @@ func TestHealthCheckerRequiresCompleteRuntimeState(t *testing.T) {
 func TestHealthCheckerAllowsUDPWhenNotRequired(t *testing.T) {
 	state := supervisor.RuntimeState{
 		Version: "v0.3.0", PID: 42, TunName: "utun7", SocksAddr: "127.0.0.1:43210",
-		ServerBypass: []string{"23.27.134.77/32"}, TunnelHealthy: true,
+		ServerBypass: []string{"203.0.113.77/32"}, TunnelHealthy: true,
 		DNSListening: true, RoutesInstalled: true, UDPRequired: false, UDPReady: false,
 	}
 	checker := HealthChecker{
@@ -99,11 +99,11 @@ func TestHealthCheckerDefaultProbeUsesLoopbackSOCKS(t *testing.T) {
 	socksAddr, requested := startHealthSOCKSServer(t)
 	state := supervisor.RuntimeState{
 		Version: "v0.3.0", PID: 42, TunName: "utun7", SocksAddr: socksAddr,
-		ServerBypass: []string{"23.27.134.77/32"}, TunnelHealthy: true,
+		ServerBypass: []string{"203.0.113.77/32"}, TunnelHealthy: true,
 		DNSListening: true, RoutesInstalled: true,
 	}
 	checker := HealthChecker{
-		ProbeAddr:    "198.51.100.10:443",
+		ProbeAddr:    "203.0.113.92:443",
 		fetchRuntime: func(context.Context, string) (supervisor.RuntimeState, error) { return state, nil },
 	}
 	if _, err := checker.Wait(context.Background(), HealthTarget{Version: "v0.3.0", PID: 42, Timeout: time.Second}); err != nil {
@@ -111,7 +111,7 @@ func TestHealthCheckerDefaultProbeUsesLoopbackSOCKS(t *testing.T) {
 	}
 	select {
 	case got := <-requested:
-		if got != "198.51.100.10:443" {
+		if got != "203.0.113.92:443" {
 			t.Fatalf("SOCKS target = %q", got)
 		}
 	case <-time.After(time.Second):
@@ -122,7 +122,7 @@ func TestHealthCheckerDefaultProbeUsesLoopbackSOCKS(t *testing.T) {
 func TestHealthCheckerRejectsNonLoopbackSOCKS(t *testing.T) {
 	state := supervisor.RuntimeState{
 		Version: "v0.3.0", PID: 42, TunName: "utun7", SocksAddr: "192.0.2.10:1080",
-		ServerBypass: []string{"23.27.134.77/32"}, TunnelHealthy: true,
+		ServerBypass: []string{"203.0.113.77/32"}, TunnelHealthy: true,
 		DNSListening: true, RoutesInstalled: true,
 	}
 	checker := HealthChecker{
@@ -161,7 +161,7 @@ func TestHealthCheckerTimeoutPreservesLastConcreteFailure(t *testing.T) {
 			if calls == 1 {
 				return supervisor.RuntimeState{
 					Version: "v0.3.0", PID: 42, TunName: "utun7", SocksAddr: "127.0.0.1:43210",
-					ServerBypass: []string{"23.27.134.77/32"}, TunnelHealthy: true,
+					ServerBypass: []string{"203.0.113.77/32"}, TunnelHealthy: true,
 					DNSListening: true, RoutesInstalled: false,
 				}, nil
 			}

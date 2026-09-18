@@ -38,7 +38,7 @@ func TestTheCoreWritesExactlyWhatTheGuardianReads(t *testing.T) {
 	since := time.Now()
 
 	// 2026-09-12 那次事故的形状:VPS 的端口没有应答。
-	cause := fmt.Errorf("到服务器 195.133.192.92:443 的 TCP 连接没有建立: %w", supervisor.ErrTunnelUnreachable)
+	cause := fmt.Errorf("到服务器 203.0.113.92:443 的 TCP 连接没有建立: %w", supervisor.ErrTunnelUnreachable)
 
 	// —— 写:Core 那一侧真正在跑的那条路(bx run 的包装)。
 	if back := runWithStartFailureRecord(path, func() error { return cause }); !errors.Is(back, supervisor.ErrTunnelUnreachable) {

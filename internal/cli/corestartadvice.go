@@ -43,7 +43,7 @@ type startFailureServers struct {
 	// 一句渲染读它 —— 一个有测试盖着、没人读的字段与没有这个字段在输出上完全
 	// 一样,只是看起来还活着。要点名就得先有一句话真的说出它。
 	CurrentHostPort string
-	// Others 是别的服务器,形如 `tokyo(166.1.190.123)`。空 = 真的只有一台。
+	// Others 是别的服务器,形如 `tokyo(203.0.113.123)`。空 = 真的只有一台。
 	Others []string
 }
 
@@ -178,7 +178,7 @@ func phrase(named bool, withName, without string) string {
 // ncCheckable / ncCommand / selfCheckSuffix:**端口解不出来就不给那条 `nc -z`**。
 //
 // 链接里看不出端口时 joinHostPortForAdvice 只写主机,于是 portOf 返回空串,
-// 那条指引渲染成 `nc -z 195.133.192.92 `(尾巴上一个空端口)—— 一条粘贴过去
+// 那条指引渲染成 `nc -z 203.0.113.92 `(尾巴上一个空端口)—— 一条粘贴过去
 // 就报错的命令,而它出现在一条唯一目的就是「照着做」的话里。
 func ncCheckable(hostPort string) bool {
 	return hostOf(hostPort) != "" && portOf(hostPort) != ""

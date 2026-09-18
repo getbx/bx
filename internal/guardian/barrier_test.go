@@ -11,7 +11,7 @@ import (
 func TestPlanBarrierBlocksPublicIPv4MoreSpecificallyThanSplitDefault(t *testing.T) {
 	apply, reassert, cleanup, err := PlanBarrier(BarrierContext{
 		Gateway:      "192.168.50.2",
-		ServerBypass: []string{"23.27.134.77/32"},
+		ServerBypass: []string{"203.0.113.77/32"},
 		BlockIPv6:    true,
 	})
 	if err != nil {
@@ -19,7 +19,7 @@ func TestPlanBarrierBlocksPublicIPv4MoreSpecificallyThanSplitDefault(t *testing.
 	}
 	requireCommands(
 		t, apply,
-		"route -n add -net 23.27.134.77/32 192.168.50.2",
+		"route -n add -net 203.0.113.77/32 192.168.50.2",
 		"route -n add -net 0.0.0.0/2 127.0.0.1 -reject",
 		"route -n add -net 64.0.0.0/2 127.0.0.1 -reject",
 		"route -n add -net 128.0.0.0/2 127.0.0.1 -reject",
@@ -29,7 +29,7 @@ func TestPlanBarrierBlocksPublicIPv4MoreSpecificallyThanSplitDefault(t *testing.
 		"route -n add -inet6 -net 8000::/2 ::1 -reject",
 		"route -n add -inet6 -net c000::/2 ::1 -reject",
 	)
-	requireCommands(t, reassert, "route -n add -net 23.27.134.77/32 192.168.50.2")
+	requireCommands(t, reassert, "route -n add -net 203.0.113.77/32 192.168.50.2")
 	requireCommands(
 		t, cleanup,
 		"route -n delete -inet6 -net c000::/2",
@@ -40,16 +40,16 @@ func TestPlanBarrierBlocksPublicIPv4MoreSpecificallyThanSplitDefault(t *testing.
 		"route -n delete -net 128.0.0.0/2",
 		"route -n delete -net 64.0.0.0/2",
 		"route -n delete -net 0.0.0.0/2",
-		"route -n delete -net 23.27.134.77/32",
+		"route -n delete -net 203.0.113.77/32",
 	)
 }
 
 func TestPlanBarrierReleaseToCorePreservesTransferredBypass(t *testing.T) {
 	release, err := PlanBarrierRelease(BarrierContext{
 		Gateway:      "192.168.50.2",
-		ServerBypass: []string{"23.27.134.77/32"},
+		ServerBypass: []string{"203.0.113.77/32"},
 		BlockIPv6:    true,
-	}, []string{"23.27.134.77/32"})
+	}, []string{"203.0.113.77/32"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestPlanBarrierReleaseToCorePreservesTransferredBypass(t *testing.T) {
 		"route -n delete -net 0.0.0.0/2",
 	)
 	for _, command := range release {
-		if strings.Contains(command.String(), "23.27.134.77/32") {
+		if strings.Contains(command.String(), "203.0.113.77/32") {
 			t.Fatalf("release deleted transferred bypass: %s", command.String())
 		}
 	}
@@ -74,13 +74,13 @@ func TestPlanBarrierReleaseToCorePreservesTransferredBypass(t *testing.T) {
 func TestPlanBarrierReleaseDeletesOldBypassNotTransferredToTarget(t *testing.T) {
 	release, err := PlanBarrierRelease(BarrierContext{
 		Gateway:      "192.168.50.2",
-		ServerBypass: []string{"23.27.134.77/32"},
+		ServerBypass: []string{"203.0.113.77/32"},
 		BlockIPv6:    true,
 	}, []string{"198.51.100.20/32"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := release[len(release)-1].String(); got != "route -n delete -net 23.27.134.77/32" {
+	if got := release[len(release)-1].String(); got != "route -n delete -net 203.0.113.77/32" {
 		t.Fatalf("last release command = %q, want stale Guardian bypass deletion", got)
 	}
 	for _, command := range release {
@@ -91,7 +91,7 @@ func TestPlanBarrierReleaseDeletesOldBypassNotTransferredToTarget(t *testing.T) 
 }
 
 func TestBarrierOwnershipOldAToTargetBThenDownLeavesNoBypass(t *testing.T) {
-	oldContext := BarrierContext{Gateway: "192.168.50.2", ServerBypass: []string{"23.27.134.77/32"}, BlockIPv6: true}
+	oldContext := BarrierContext{Gateway: "192.168.50.2", ServerBypass: []string{"203.0.113.77/32"}, BlockIPv6: true}
 	targetContext := BarrierContext{Gateway: "192.168.50.2", ServerBypass: []string{"198.51.100.20/32"}, BlockIPv6: true}
 	routes := make(map[string]struct{})
 	apply := func(commands []Command) {
@@ -149,11 +149,11 @@ func TestBarrierOwnershipOldAToTargetBThenDownLeavesNoBypass(t *testing.T) {
 
 func TestPlanBarrierRejectsUnsafeHandoffs(t *testing.T) {
 	for _, context := range []BarrierContext{
-		{Gateway: "not-an-ip", ServerBypass: []string{"23.27.134.77/32"}},
-		{Gateway: "2001:db8::1", ServerBypass: []string{"23.27.134.77/32"}},
+		{Gateway: "not-an-ip", ServerBypass: []string{"203.0.113.77/32"}},
+		{Gateway: "2001:db8::1", ServerBypass: []string{"203.0.113.77/32"}},
 		{Gateway: "192.168.1.1"},
 		{Gateway: "192.168.1.1", ServerBypass: []string{"0.0.0.0/0"}},
-		{Gateway: "192.168.1.1", ServerBypass: []string{"23.27.134.0/24"}},
+		{Gateway: "192.168.1.1", ServerBypass: []string{"203.0.113.0/24"}},
 		{Gateway: "192.168.1.1", ServerBypass: []string{"example.com"}},
 		{Gateway: "192.168.1.1", ServerBypass: []string{"2001:db8::7/128"}},
 	} {
@@ -210,7 +210,7 @@ func TestDarwinBarrierUsesValidatedRouteArgvAndIdempotentErrors(t *testing.T) {
 		errors.New("route: writing to routing socket: not in table"),
 	}}
 	barrier := NewBarrier(runner)
-	ctx := BarrierContext{Gateway: "192.168.50.2", ServerBypass: []string{"23.27.134.77/32"}}
+	ctx := BarrierContext{Gateway: "192.168.50.2", ServerBypass: []string{"203.0.113.77/32"}}
 
 	if err := barrier.Install(context.Background(), ctx); err != nil {
 		t.Fatal(err)
@@ -229,10 +229,10 @@ func TestDarwinBarrierUsesValidatedRouteArgvAndIdempotentErrors(t *testing.T) {
 			t.Fatalf("command name = %q, want /sbin/route", command.Name)
 		}
 	}
-	if got := runner.commands[0].String(); got != "/sbin/route -n add -net 23.27.134.77/32 192.168.50.2" {
+	if got := runner.commands[0].String(); got != "/sbin/route -n add -net 203.0.113.77/32 192.168.50.2" {
 		t.Fatalf("first command = %q", got)
 	}
-	if got := runner.commands[len(runner.commands)-1].String(); got != "/sbin/route -n delete -net 23.27.134.77/32" {
+	if got := runner.commands[len(runner.commands)-1].String(); got != "/sbin/route -n delete -net 203.0.113.77/32" {
 		t.Fatalf("last command = %q", got)
 	}
 }

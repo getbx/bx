@@ -337,8 +337,8 @@ struct RulesModelTests {
     /// 项目所有者的立场:用户可以有很多躺着的节点,但换出口是件要看清楚的事。
     /// 而真正的防线是**让他看见出口要变**,不是让他多点两下或者读一段告诫。
     static func testReplaceMessageShowsTheExitChangeNotALecture() {
-        let text = replaceConfigurationMessage(currentServer: "166.1.190.123", pastedFrom: .clipboard)
-        expect(text.contains("166.1.190.123"), "没说现在的出口是哪:\(text)")
+        let text = replaceConfigurationMessage(currentServer: "203.0.113.123", pastedFrom: .clipboard)
+        expect(text.contains("203.0.113.123"), "没说现在的出口是哪:\(text)")
         expect(text.lowercased().contains("clipboard"), "没说链接是从剪贴板来的:\(text)")
         // 不许出现空泛的风险告诫 —— 那种句子只会被点穿。
         for lecture in ["risk", "dangerous", "be careful", "are you sure"] {

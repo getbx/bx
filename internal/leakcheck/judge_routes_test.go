@@ -21,8 +21,8 @@ func TestParseRouteDestination(t *testing.T) {
 		{in: "10.84.6/23", want: "10.84.6.0/23"},
 		{in: "0/1", want: "0.0.0.0/1"},
 		{in: "128.0/1", want: "128.0.0.0/1"},
-		{in: "45.159.97.61/32", want: "45.159.97.61/32"},
-		{in: "166.1.190.123/32", want: "166.1.190.123/32"},
+		{in: "192.0.2.61/32", want: "192.0.2.61/32"},
+		{in: "203.0.113.123/32", want: "203.0.113.123/32"},
 		{in: "default", bad: true},
 		{in: "", bad: true},
 		{in: "not-an-address", bad: true},
@@ -56,7 +56,7 @@ func withRoutes(entries ...RouteEntry) LocalFacts {
 // bx 是路由型代理,这就是它的攻击面 —— 而 bx 自己的屏障用 /2 压 /1,用的正是同一招。
 //
 // **判据的形状由真机决定,不是拍脑袋。** 本机(2026-08-11)路由表里有 108 条公网
-// /32 经物理网关 —— 那是 bx 自己的 server bypass(其中就有 VPS 的 166.1.190.123)。
+// /32 经物理网关 —— 那是 bx 自己的 server bypass(其中就有 VPS 的 203.0.113.123)。
 // 把它们报成异常,这条检查在每一台正常工作的机器上都会红,于是被训练成噪声。
 //
 // 所以:**单主机(/32)是隧道旁路自己服务器的正常形状,不报;能捕获成片流量的
@@ -73,8 +73,8 @@ func TestRouteEscapeRule(t *testing.T) {
 			local: withRoutes(
 				RouteEntry{Destination: "0/1", Interface: "utun11", Flags: "UScg"},
 				RouteEntry{Destination: "128.0/1", Interface: "utun11", Flags: "USc"},
-				RouteEntry{Destination: "166.1.190.123/32", Interface: "en0", Flags: "UGSc"},
-				RouteEntry{Destination: "45.159.97.61/32", Interface: "en0", Flags: "UGSc"},
+				RouteEntry{Destination: "203.0.113.123/32", Interface: "en0", Flags: "UGSc"},
+				RouteEntry{Destination: "192.0.2.61/32", Interface: "en0", Flags: "UGSc"},
 				RouteEntry{Destination: "10", Interface: "en0", Flags: "UGSc"},
 				RouteEntry{Destination: "172.16/12", Interface: "en0", Flags: "UGSc"},
 				RouteEntry{Destination: "169.254", Interface: "en0", Flags: "UCS"},

@@ -13,7 +13,7 @@ func TestManagerMigrationVerifiesDNSBeforeBarrierRelease(t *testing.T) {
 	env.dns.record = true
 	request := MigrationRequest{
 		Gateway:      "192.0.2.1",
-		ServerBypass: []string{"198.51.100.10/32"},
+		ServerBypass: []string{"203.0.113.92/32"},
 	}
 	if err := env.manager.Migrate(context.Background(), request); err != nil {
 		t.Fatal(err)
@@ -41,13 +41,13 @@ func TestManagerMigrationVerifiesDNSBeforeBarrierRelease(t *testing.T) {
 func TestMigrationRequestJSONContainsOnlyNonSecretHandoffMetadata(t *testing.T) {
 	request := MigrationRequest{
 		Gateway:      "192.0.2.1",
-		ServerBypass: []string{"198.51.100.10/32", "2001:db8::10/128"},
+		ServerBypass: []string{"203.0.113.92/32", "2001:db8::10/128"},
 	}
 	b, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"gateway", "server_bypass", "198.51.100.10/32"} {
+	for _, want := range []string{"gateway", "server_bypass", "203.0.113.92/32"} {
 		if !bytes.Contains(b, []byte(want)) {
 			t.Fatalf("migration request missing %q: %s", want, b)
 		}
@@ -63,7 +63,7 @@ func TestValidateMigrationRequestRequiresExactBypassesAndIPv4(t *testing.T) {
 	for _, request := range []MigrationRequest{
 		{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.0/24"}},
 		{Gateway: "192.0.2.1", ServerBypass: []string{"2001:db8::10/128"}},
-		{Gateway: "not-an-ip", ServerBypass: []string{"198.51.100.10/32"}},
+		{Gateway: "not-an-ip", ServerBypass: []string{"203.0.113.92/32"}},
 	} {
 		if _, err := ValidateMigrationRequest(request); err == nil {
 			t.Fatalf("unsafe migration request accepted: %+v", request)
@@ -71,7 +71,7 @@ func TestValidateMigrationRequestRequiresExactBypassesAndIPv4(t *testing.T) {
 	}
 	request := MigrationRequest{
 		Gateway:      "192.0.2.1",
-		ServerBypass: []string{"198.51.100.10/32", "2001:db8::10/128", "198.51.100.10/32"},
+		ServerBypass: []string{"203.0.113.92/32", "2001:db8::10/128", "203.0.113.92/32"},
 	}
 	got, err := ValidateMigrationRequest(request)
 	if err != nil {

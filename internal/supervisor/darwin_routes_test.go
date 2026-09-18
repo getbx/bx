@@ -217,10 +217,10 @@ func TestDarwinCoreDoesNotAdoptUnauthorizedServerBypassCollision(t *testing.T) {
 }
 
 func TestParseGuardianBypassHandoffFailsClosed(t *testing.T) {
-	if got := parseGuardianBypassHandoff("198.51.100.10/32,203.0.113.20/32,198.51.100.10/32"); !reflect.DeepEqual(got, []string{"198.51.100.10/32", "203.0.113.20/32"}) {
+	if got := parseGuardianBypassHandoff("203.0.113.92/32,203.0.113.20/32,203.0.113.92/32"); !reflect.DeepEqual(got, []string{"203.0.113.92/32", "203.0.113.20/32"}) {
 		t.Fatalf("valid handoff = %#v", got)
 	}
-	for _, value := range []string{"", "198.51.100.0/24", "2001:db8::1/128", "198.51.100.10/32,invalid"} {
+	for _, value := range []string{"", "198.51.100.0/24", "2001:db8::1/128", "203.0.113.92/32,invalid"} {
 		if got := parseGuardianBypassHandoff(value); len(got) != 0 {
 			t.Fatalf("unsafe handoff %q authorized %#v", value, got)
 		}

@@ -211,7 +211,7 @@ func TestIPLiteralsAndCIDRsStayWritable(t *testing.T) {
 		ip   string
 		want route.Source
 	}{
-		{"180.158.6.185", "180.158.6.185", route.SourceUserDirectIP},
+		{"192.0.2.185", "192.0.2.185", route.SourceUserDirectIP},
 		{"10.84.0.0/16", "10.84.1.2", route.SourceUserDirectIP},
 		{"2001:db8::1", "2001:db8::1", route.SourceUserDirectIP},
 	} {

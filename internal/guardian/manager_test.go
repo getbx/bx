@@ -630,7 +630,7 @@ func TestManagerMigrateTransitionsLegacyCoreBehindValidatedBarrier(t *testing.T)
 	env := newManagerTestEnv(t)
 	request := MigrationRequest{
 		Gateway:      "192.0.2.1",
-		ServerBypass: []string{"198.51.100.10/32", "2001:db8::10/128"},
+		ServerBypass: []string{"203.0.113.92/32", "2001:db8::10/128"},
 	}
 	if err := env.manager.Migrate(context.Background(), request); err != nil {
 		t.Fatal(err)
@@ -651,7 +651,7 @@ func TestManagerMigrateTransitionsLegacyCoreBehindValidatedBarrier(t *testing.T)
 	if barrierContext.Gateway != request.Gateway || !barrierContext.BlockIPv6 {
 		t.Fatalf("migration barrier context = %+v", barrierContext)
 	}
-	if !reflect.DeepEqual(barrierContext.ServerBypass, []string{"198.51.100.10/32"}) {
+	if !reflect.DeepEqual(barrierContext.ServerBypass, []string{"203.0.113.92/32"}) {
 		t.Fatalf("migration IPv4 barrier bypass = %#v", barrierContext.ServerBypass)
 	}
 	if got := env.manager.Status(); got.Protection != ProtectionProtected || got.Desired != DesiredOn {
@@ -681,7 +681,7 @@ func TestManagerMigrateBarrierFailureLeavesLegacyCoreUntouchedAndFailsClosed(t *
 	env.barrier.installErr = errors.New("partial barrier install failed")
 	err := env.manager.Migrate(context.Background(), MigrationRequest{
 		Gateway:      "192.0.2.1",
-		ServerBypass: []string{"198.51.100.10/32"},
+		ServerBypass: []string{"203.0.113.92/32"},
 	})
 	if err == nil {
 		t.Fatal("barrier failure accepted")
@@ -708,7 +708,7 @@ func TestManagerMigrateLegacyRemovalFailureRetainsBarrier(t *testing.T) {
 	env.legacy.removeErr = errors.New("read-only filesystem")
 	err := env.manager.Migrate(context.Background(), MigrationRequest{
 		Gateway:      "192.0.2.1",
-		ServerBypass: []string{"198.51.100.10/32"},
+		ServerBypass: []string{"203.0.113.92/32"},
 	})
 	if err == nil {
 		t.Fatal("legacy plist removal failure accepted")
@@ -1997,7 +1997,7 @@ func newManagerTestEnv(t *testing.T) *managerTestEnv {
 		Barrier:        barrier,
 		DNS:            dns,
 		Legacy:         legacy,
-		BarrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}, BlockIPv6: true},
+		BarrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}, BlockIPv6: true},
 		CoreVersion:    version.Version,
 	})
 	if err != nil {
@@ -2544,7 +2544,7 @@ func (h *fakeHealthGate) lastContextDeadline() time.Time {
 func healthyRuntime(pid int) supervisor.RuntimeState {
 	return supervisor.RuntimeState{
 		Version: version.Version, PID: pid, TunName: "utun7", SocksAddr: "127.0.0.1:43210",
-		ServerBypass: []string{"198.51.100.10/32"}, TunnelHealthy: true, DNSListening: true, RoutesInstalled: true,
+		ServerBypass: []string{"203.0.113.92/32"}, TunnelHealthy: true, DNSListening: true, RoutesInstalled: true,
 	}
 }
 
@@ -2887,7 +2887,7 @@ func TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord(t *testing.T) {
 		Health:         &fakeHealthGate{},
 		Barrier:        &fakeBarrier{events: events},
 		DNS:            newFakeDNSManager(events),
-		BarrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"198.51.100.10/32"}, BlockIPv6: true},
+		BarrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}, BlockIPv6: true},
 		CoreVersion:    version.Version,
 	})
 	if err != nil {

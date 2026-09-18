@@ -1025,7 +1025,30 @@ JSON,而快照驱动 `Snapshots/main.swift` 里还内联着一份同样的数据
 第一种失效写法(守卫钉住了缺陷旁边的东西),这次是在同一个改动里当场自己犯了
 一遍 —— 下一张图把它显形。
 
-**真实 VPS 地址不止这一处:全仓 10 个文件里有它**(生产 Go 源码与 Swift 源码里的
+**这件事随后做到了全仓(2026-09-18,选项②:换掉现有文件 + 加守卫,不改写历史)。**
+`TestNoRealInfrastructureAddressesInTheRepo` 扫 `git ls-files` 的每一个文本文件
+(只跳过 `internal/embedded/assets/` 那两份真实世界的 china 列表),任何公网 IPv4
+要么落在文档保留网段/私网/组播/保留段里,要么必须在 `knownPublicAddresses` 里
+**写明理由**。**判据是白名单而不是黑名单**:黑名单只拦得住已经知道的那几个,而下一个
+人粘贴的是一个新的;白名单里加一条的动作本身,就是那句要被逼着回答的话——
+「这是第三方服务,还是我们自己的机器?」另有反向断言禁止陈旧条目。
+一次替换动了 **52 个文件 223 处**(自有 VPS、测试 VPS、家里 derper 的地址),
+换成 `203.0.113.x`(bx 服务器)与 `192.0.2.x`(别的真实主机)。
+
+**替换当场换错过一处,值得记**:`192.200.0.101–116` 看起来像"某台机器",实际是
+**Tailscale controlplane 兜底段**,而且它在生产里是由 `{192, 200, 0, byte(i)}`
+**算出来**的 —— 字面量只出现在测试里,于是纯文本替换把测试改了、生产没动,
+`TestTailscaleControlplaneFallbackCIDRs` 当场转红。**"看起来像真实主机"与"是我们的
+主机"是两件事**,而区分它们要去读产地;白名单里那两条现在写着它是什么。
+ZeroTier root 与 Tailscale DERP 兜底同理 —— 它们**功能上**必须是真地址。
+
+**风险在哪、为什么不改写历史**:不在"IP 被知道"(那台机器本来就在 443 上对外听,
+REALITY 的设计就是让它看起来像普通 TLS 站)—— 在"这个公开仓库 ↔ 这台机器是翻墙
+出口"这条**可被爬取的关联**。对一个翻墙工具,这条关联比地址本身值钱。改现有文件
+拿不掉已经进历史的那些,守卫管的是**停止扩散**;改写历史要 force-push 且任何 fork
+仍有旧副本,换来的确定性不高 —— 项目所有者据此选了②。
+
+**此前记的原文(已由上面这段取代)**:全仓 10 个文件里有它(生产 Go 源码与 Swift 源码里的
 注释、Swift 测试、两份 spec、一份 plan、CLAUDE.md 自己)。绝大多数是记述真机事故
 时顺手贴的。**守卫只管 `Snapshots/`**(那是唯一会被渲染成"用户看到的样子"的地方);
 其余是不是要清、要不要换一台服务器,是项目所有者的决定 —— 而**编辑现有文件并不
@@ -1257,7 +1280,7 @@ leak 标题大小写)+ 新增 `TestMacMenuQuitHasNoIconAndUsesCommandQ`;五条�
 
 ## 嗅出的 SNI 不许压过真 IP 的规则(2026-09-05,真机诊断,修复真机已验)
 
-真机(公司工作站,bx global):`bx direct add 180.158.6.185` 之后 `bx explain 180.158.6.185`
+真机(公司工作站,bx global):`bx direct add 192.0.2.185` 之后 `bx explain 192.0.2.185`
 答 DIRECT、计数也记在那条规则下,而 tailscaled 到它的 TLS 照样经隧道从 VPS 出去 ——
 家里的 derper 记到的源 IP 是 VPS,tcpdump 里 eno1 上一个发往该 IP 的 TCP 包都没有。
 机制:`dialInner` 对 fake-IP 反查不中的连接从首包嗅 SNI/Host,按域名判;域名规则全不中
@@ -1320,7 +1343,7 @@ Content-Length);菜单那份手写的 HTTP 读取器刻意最小、只认 Conten
 旗舰测试 `TestReconcileLoopStartsCoreBackAfterAFailedCrashRestart`(白名单改回两项即红,
 变异实测 `start = 2, want 3`)。
 **真机已验(2026-09-13,项目所有者的 Mac)——而且是它自己跑完的,故障源不是改名
-sing-box,是 VPS(195.133.192.92)真的不通**:日志里 `start_core` 连着
+sing-box,是 VPS(203.0.113.92)真的不通**:日志里 `start_core` 连着
 `execute_failed(wait for Core health: context deadline exceeded)`,封顶之后
 **61 条 `outcome=skipped code=start_core_exhausted`**,如实说「我已经放弃了」而
 不渲染成让路 —— 这一半原样成立。
@@ -1755,12 +1778,12 @@ gui/501 …` 仍报 `EIO(5)`。文档此前把这个 EIO 归因到「上一次�
 的全部区别:后者要求你已经在那台机器上)。走系统 `ssh`/`scp` —— **bx 完全不经手
 凭据**,密码/密钥/agent/known_hosts 全由用户自己的 ssh 客户端处理。
 
-**真机验收(142.111.173.173,全新 Ubuntu 24.04)**:一条命令 → 远端自取并校验
+**真机验收(203.0.113.173,全新 Ubuntu 24.04)**:一条命令 → 远端自取并校验
 二进制 → 装 reality+hysteria2 → 放行 ufw → 起服务(active+enabled)→ 443 TCP/UDP
 双 LISTEN → 打出可直接粘贴的 setup 命令(含 `--udp`)。**再用第二台 VPS
-(102.208.216.250)当干净外部视角做端到端**:tcp/443 通而**对照的 12345 不通**、
+(203.0.113.250)当干净外部视角做端到端**:tcp/443 通而**对照的 12345 不通**、
 reality 把未认证探测正确中继到真 cloudflare(http 200)、真实客户端握手 619ms、
-**经隧道出口 == 142.111.173.173 而直连出口 == 102.208.216.250** —— 全程用
+**经隧道出口 == 203.0.113.173 而直连出口 == 203.0.113.250** —— 全程用
 `run --no-hijack`,VPS#2 零路由改动。
 
 **真机第一次跑打穿三处,都是只有真机才暴露得出来的**:
@@ -2364,8 +2387,8 @@ Guardian 日志(`network_recovery` 行带 detail)。
 **Mac ↔ 公司工作站 300ms 的真因**:工作站(bx global)上 tailscaled 发往对端**公网**
 地址的 WireGuard UDP 落进 pref 200 → table 100 → 进 TUN → 经隧道从美国 VPS 出去,
 对端看到的源地址对不上,直连永远建不起来,只能走 DERP。真机 `ip route get
-180.158.6.185 mark 0x80000 ipproto udp` → `dev bx0 table 100`;同机 `ip route get
-195.133.192.92` → `via 10.84.14.1 dev eno1`(server bypass)。**`tailscale netcheck` 的
+192.0.2.185 mark 0x80000 ipproto udp` → `dev bx0 table 100`;同机 `ip route get
+203.0.113.92` → `via 10.84.14.1 dev eno1`(server bypass)。**`tailscale netcheck` 的
 `UDP: true` 是假安心**:它探的 STUN 就是自建 DERP,而那个 IP 恰好在 bypass 里 —— 于是
 STUN 通、WG 不通,此前「公司封 UDP」那条记录就是这个机制造成的误判。macOS 上没有
 这个问题(tailscaled 把 socket 绑在物理网卡)。bx 已照顾 Tailscale 三处(DERP 旁路、
@@ -2613,11 +2636,11 @@ linux 与 windows 各有两处前置检查)。**那条守卫第一版是假绿�
 ## Core 起不来时,说出它为什么起不来(2026-09-13,真机未验)
 
 **所有者原话:「vps 之前不通,但 bx 不会告诉我是 vps 不通,用户会以为是 bx 自己的
-问题。」** 2026-09-12 那天他的 VPS(195.133.192.92)ssh 与 ping 都不通,而 `sudo bx up`
+问题。」** 2026-09-12 那天他的 VPS(203.0.113.92)ssh 与 ping 都不通,而 `sudo bx up`
 连着**七次**答 `core_ownership_uncertain` —— 三百字关于「系统里可能有第二个 Core」的
 排查指引,一个字都不沾边。
 
-**真相从第一秒就在 bx 手里**(`dial tcp 195.133.192.92:443: i/o timeout`),它是被逐层
+**真相从第一秒就在 bx 手里**(`dial tcp 203.0.113.92:443: i/o timeout`),它是被逐层
 剥掉的,而每一层都有名字:
 
 - Core 卡在等隧道健康 ⇒ `supervisor.Run` 在**建出控制 socket 之前**就返回了

@@ -423,7 +423,7 @@ func (f *fakeGuardianLaunchdControl) Run(_ context.Context, args ...string) erro
 func TestSecureGuardianLogsAtCreatesRootOnlyFiles(t *testing.T) {
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "bx-guard.err.log")
-	if err := os.WriteFile(existing, []byte("166.1.190.123\n"), 0o644); err != nil {
+	if err := os.WriteFile(existing, []byte("203.0.113.123\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	missing := filepath.Join(dir, "bx-guard.log")
@@ -453,7 +453,7 @@ func TestSecureGuardianLogsAtCreatesRootOnlyFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(content), "166.1.190.123") {
+	if !strings.Contains(string(content), "203.0.113.123") {
 		t.Errorf("已有日志内容必须保留,实际 = %q", content)
 	}
 }

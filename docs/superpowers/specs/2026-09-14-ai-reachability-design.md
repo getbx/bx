@@ -14,7 +14,7 @@ ipcheck.ing 那两个站,目标是「用别的 VPN 的用户会慢慢转向 bx�
 「Start check」就会调它。**裸调的结果是**:
 
 ```
-$ curl https://cleanip.io/api/v2/195.133.192.92
+$ curl https://cleanip.io/api/v2/203.0.113.92
 {"error":"bot not allowed","ok":false}          [HTTP 403]
 ```
 
@@ -38,7 +38,7 @@ $ curl https://cleanip.io/api/v2/195.133.192.92
 本期两条路径(§5)都不读 config:「当前路径」是普通拨号,「绕过隧道」绑的物理接口
 来自 leakcheck **已经在读**的路由表(`WhoOwnsTheRoute` 那一跳)。
 
-## 2. 实测:2026-09-13 夜,项目所有者的 Mac(经 bx 隧道,出口 195.133.192.92)
+## 2. 实测:2026-09-13 夜,项目所有者的 Mac(经 bx 隧道,出口 203.0.113.92)
 
 **这份数据是整个设计的基础,两次推翻了动笔前的假设。**
 

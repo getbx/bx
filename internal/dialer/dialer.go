@@ -420,7 +420,7 @@ func (d *Dialer) dialInner(ctx context.Context, m route.Meta, initial []byte, fl
 	// 2) 未命中域名:用国内 DNS 解析后按 IP 二次判定
 	var resolved netip.Addr
 	// 嗅出的域名一条规则都没中 ⇒ 由那个**真 IP** 说了算(用户的 IP 规则、私网、
-	// china CIDR)。真机 2026-09-05:`bx direct add 180.158.6.185` 之后 explain 答
+	// china CIDR)。真机 2026-09-05:`bx direct add 192.0.2.185` 之后 explain 答
 	// DIRECT,而 tailscaled 到它的 TLS(SNI brook.youdamaster.cc)照样经隧道从 VPS
 	// 出去 —— 域名不中就默认隧道,IP 规则从没被问过。直连时拨的也必须是这个 IP,
 	// 不是把 SNI 再解析一遍(那会解析到 VPS)。fake-IP 那条路不受影响:sniffed 为假。

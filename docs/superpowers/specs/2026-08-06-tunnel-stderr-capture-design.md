@@ -77,7 +77,7 @@ type stderrTailer interface{ RecentStderr() []string }
 
 ```
 bx 隧道健康检查超时(20s): restarts=1
-  singbox: outbound/vless[proxy]: dial tcp 166.1.190.123:443: i/o timeout
+  singbox: outbound/vless[proxy]: dial tcp 203.0.113.123:443: i/o timeout
 ```
 
 一行就能分辨握手失败 / 超时 / reset,而不必靠猜端口。

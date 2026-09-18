@@ -385,7 +385,7 @@ func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> St
 /// **端口解不出来就不给那条 `nc -z`。**
 ///
 /// 链接里看不出端口时 `coreStartFailureHostPort` 只写主机,于是 portOnly 返回
-/// 空串,那条指引渲染成 `nc -z 195.133.192.92 `(尾巴上一个空端口)—— 一条
+/// 空串,那条指引渲染成 `nc -z 203.0.113.92 `(尾巴上一个空端口)—— 一条
 /// 粘贴过去就报错的命令,而它出现在一条唯一目的就是「照着做」的话里。
 func coreStartFailureNCCheckable(_ hostPort: String) -> Bool {
     !coreStartFailureHostOnly(hostPort).isEmpty && !coreStartFailurePortOnly(hostPort).isEmpty

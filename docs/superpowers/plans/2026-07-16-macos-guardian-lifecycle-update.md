@@ -195,23 +195,23 @@ git commit -m "feat(macos): persist guardian lifecycle state"
 ```go
 func TestPlanBarrierBlocksPublicIPv4MoreSpecificallyThanSplitDefault(t *testing.T) {
     apply, reassert, cleanup, err := PlanBarrier(BarrierContext{
-        Gateway: "192.168.50.2", ServerBypass: []string{"23.27.134.77/32"}, BlockIPv6: true,
+        Gateway: "192.168.50.2", ServerBypass: []string{"203.0.113.77/32"}, BlockIPv6: true,
     })
     if err != nil { t.Fatal(err) }
     requireCommands(t, apply,
-        "route -n add -net 23.27.134.77/32 192.168.50.2",
+        "route -n add -net 203.0.113.77/32 192.168.50.2",
         "route -n add -net 0.0.0.0/2 127.0.0.1 -reject",
         "route -n add -net 64.0.0.0/2 127.0.0.1 -reject",
         "route -n add -net 128.0.0.0/2 127.0.0.1 -reject",
         "route -n add -net 192.0.0.0/2 127.0.0.1 -reject",
         "route -n add -inet6 -net ::/2 ::1 -reject",
     )
-    requireCommands(t, reassert, "route -n add -net 23.27.134.77/32 192.168.50.2")
+    requireCommands(t, reassert, "route -n add -net 203.0.113.77/32 192.168.50.2")
     if cleanup[0].String() == apply[0].String() { t.Fatal("cleanup must delete in reverse order") }
 }
 
 func TestPlanBarrierRejectsBroadOrNonIPBypass(t *testing.T) {
-    for _, bypass := range []string{"0.0.0.0/0", "23.27.134.0/24", "example.com"} {
+    for _, bypass := range []string{"0.0.0.0/0", "203.0.113.0/24", "example.com"} {
         if _, _, _, err := PlanBarrier(BarrierContext{Gateway: "192.168.1.1", ServerBypass: []string{bypass}}); err == nil {
             t.Fatalf("unsafe bypass accepted: %s", bypass)
         }
@@ -291,7 +291,7 @@ type HealthTarget struct {
 ```go
 func TestRuntimeStateContainsOnlyHandoffMetadata(t *testing.T) {
     state := RuntimeState{
-        Version: "v0.3.0", TunName: "utun7", ServerBypass: []string{"23.27.134.77/32"},
+        Version: "v0.3.0", TunName: "utun7", ServerBypass: []string{"203.0.113.77/32"},
         TunnelHealthy: true, DNSListening: true, RoutesInstalled: true, UDPRequired: true, UDPReady: true,
     }
     b, _ := json.Marshal(state)
@@ -866,7 +866,7 @@ go test -race ./internal/guardian ./internal/update
 swift test --package-path apps/macos/BxMenu
 swift build --package-path apps/macos/BxMenu -c release
 bash -n scripts/darwin-guardian-testkit.sh
-scripts/darwin-guardian-testkit.sh --scenario update-success --gateway 192.0.2.1 --server-bypass 198.51.100.10/32 --dns-service Wi-Fi
+scripts/darwin-guardian-testkit.sh --scenario update-success --gateway 192.0.2.1 --server-bypass 203.0.113.92/32 --dns-service Wi-Fi
 scripts/package-macos-release.sh
 scripts/verify-macos-release.sh
 scripts/verify-guardian-source-contracts.sh

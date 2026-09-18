@@ -31,9 +31,9 @@ func TestDecideServerBypassIntact(t *testing.T) {
 		known   bool
 		wantErr bool
 	}{
-		{"全部走物理网卡", []routeLookup{{Addr: "195.133.192.92", Interface: "en0"}}, true, true, false},
-		{"有一台走了我们的 TUN = 成环", []routeLookup{{Addr: "1.2.3.4", Interface: "en0"}, {Addr: "195.133.192.92", Interface: "utun9"}}, false, true, false},
-		{"问不出来不等于坏了", []routeLookup{{Addr: "195.133.192.92", Err: boom}}, false, false, true},
+		{"全部走物理网卡", []routeLookup{{Addr: "203.0.113.92", Interface: "en0"}}, true, true, false},
+		{"有一台走了我们的 TUN = 成环", []routeLookup{{Addr: "1.2.3.4", Interface: "en0"}, {Addr: "203.0.113.92", Interface: "utun9"}}, false, true, false},
+		{"问不出来不等于坏了", []routeLookup{{Addr: "203.0.113.92", Err: boom}}, false, false, true},
 		{"没有服务器可查 = 无从判断", nil, false, false, false},
 	}
 	for _, c := range cases {

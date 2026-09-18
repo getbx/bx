@@ -107,13 +107,13 @@ func TestDialDirectRealtimeUDPUsesDirect(t *testing.T) {
 func TestDialDirectRealtimeUDPResolvesFakeIP(t *testing.T) {
 	pool, _ := fakeip.New("198.18.0.0/15")
 	fip := pool.Alloc("stun.l.google.com")
-	d, _, dr := newTestDialer(pool, fakeResolver{ip: netip.MustParseAddr("74.125.250.129")}, true, true)
+	d, _, dr := newTestDialer(pool, fakeResolver{ip: netip.MustParseAddr("192.0.2.129")}, true, true)
 	d.UDPMode = "direct-realtime"
 	if _, err := d.Dial(context.Background(), route.Meta{IP: fip, Port: 19302, UDP: true}); err != nil {
 		t.Fatalf("direct-realtime fake UDP should resolve and direct dial: %v", err)
 	}
-	if dr.lastAddr != "74.125.250.129:19302" {
-		t.Fatalf("UDP fake-IP direct target = %q, want 74.125.250.129:19302", dr.lastAddr)
+	if dr.lastAddr != "192.0.2.129:19302" {
+		t.Fatalf("UDP fake-IP direct target = %q, want 192.0.2.129:19302", dr.lastAddr)
 	}
 }
 
@@ -504,7 +504,7 @@ func TestPrivateStaysDirectWhileTheTunnelIsDownButPublicIsBlocked(t *testing.T) 
 
 	// ② 对照组:同一次不健康,公网目的地必须被拦 —— 否则上面那条只是说明
 	// kill-switch 压根没武装,证明不了任何事。
-	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("93.184.216.34"), Port: 443}); !errors.Is(err, ErrBlocked) {
+	if _, err := d.Dial(context.Background(), route.Meta{IP: netip.MustParseAddr("192.0.2.34"), Port: 443}); !errors.Is(err, ErrBlocked) {
 		t.Fatalf("隧道挂掉而公网没有被 kill-switch 拦下(err=%v)—— 对照组不成立,"+
 			"上面那条私网断言什么也证明不了", err)
 	}

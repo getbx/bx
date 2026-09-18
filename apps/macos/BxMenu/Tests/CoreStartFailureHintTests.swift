@@ -33,8 +33,8 @@ struct CoreStartFailureHintTests {
 
     static func main() {
         let facts = CoreStartFailureServers(
-            currentHostPort: "195.133.192.92:443",
-            others: ["tokyo (166.1.190.123)"])
+            currentHostPort: "203.0.113.92:443",
+            others: ["tokyo (203.0.113.123)"])
 
         // 每一种结局在**渲染出来的整段话**上两两不同。判据刻意不是枚举值:
         // 把几个分支映射到同一句「隧道没起来」照样能让一条比枚举的测试全绿,
@@ -84,7 +84,7 @@ struct CoreStartFailureHintTests {
         // 2026-08-13 那次事故的签名:SYN 根本没离开这台机器,去探 VPS 白费力气。
         let localDial = coreStartFailureHint(code: "core_tunnel_unhealthy_undetermined_local_dial", servers: facts) ?? ""
         expect(localDial.contains("-ifscope"), "没给出那条出路(route -n get -ifscope):\(localDial)")
-        expect(!localDial.contains("nc -z 195.133.192.92"),
+        expect(!localDial.contains("nc -z 203.0.113.92"),
                "把用户派去探那台 VPS —— SYN 根本没出去,那次探测什么也说明不了:\(localDial)")
         // **不许一边说「与那台服务器无关」、一边叫用户换一台。** 这个码盖着两种
         // 毛病、出路相反:直连器坏了(换服务器帮不上忙)与这台机器解析不出那台
@@ -107,13 +107,13 @@ struct CoreStartFailureHintTests {
         for code in codes where code.hasPrefix("core_tunnel") {
             namedFamily += 1
             let text = coreStartFailureHint(code: code, servers: facts) ?? ""
-            expect(text.contains("195.133.192.92"),
+            expect(text.contains("203.0.113.92"),
                    "\(code) 那句话里没有那台服务器的地址 —— 菜单明明拿着它:\(text)")
         }
         expect(namedFamily >= 5, "只走到 \(namedFamily) 档隧道结局(want ≥5)—— 族的判据认不出现在的码了")
 
         // 「你还配了另一台」只在真有另一台时出现,而且绝不出现链接。
-        let alone = CoreStartFailureServers(currentHostPort: "195.133.192.92:443")
+        let alone = CoreStartFailureServers(currentHostPort: "203.0.113.92:443")
         let soloText = coreStartFailureHint(code: "core_tunnel_unreachable", servers: alone) ?? ""
         expect(!soloText.contains("another server"), "只有一台却说「你还配了另一台」:\(soloText)")
         let pairText = coreStartFailureHint(code: "core_tunnel_unreachable", servers: facts) ?? ""
@@ -149,16 +149,16 @@ struct CoreStartFailureHintTests {
 
         // 清单折成事实:当前那台与其余那几台分得开;端口为 0 时**不写 :0**。
         let folded = coreStartFailureServers([
-            CoreStartFailureServer(name: "vps", host: "195.133.192.92", port: 443, isCurrent: true),
-            CoreStartFailureServer(name: "tokyo", host: "166.1.190.123", port: 8443, isCurrent: false),
+            CoreStartFailureServer(name: "vps", host: "203.0.113.92", port: 443, isCurrent: true),
+            CoreStartFailureServer(name: "tokyo", host: "203.0.113.123", port: 8443, isCurrent: false),
         ])
-        expect(folded.currentHostPort == "195.133.192.92:443",
+        expect(folded.currentHostPort == "203.0.113.92:443",
                "当前那台折错了:\(folded)")
-        expect(folded.others == ["tokyo (166.1.190.123)"], "另一台折错了:\(folded.others)")
+        expect(folded.others == ["tokyo (203.0.113.123)"], "另一台折错了:\(folded.others)")
         let noPort = coreStartFailureServers([
-            CoreStartFailureServer(name: "vps", host: "195.133.192.92", port: 0, isCurrent: true),
+            CoreStartFailureServer(name: "vps", host: "203.0.113.92", port: 0, isCurrent: true),
         ])
-        expect(noPort.currentHostPort == "195.133.192.92",
+        expect(noPort.currentHostPort == "203.0.113.92",
                "端口问不出来时写了一个 :0:\(noPort.currentHostPort)")
 
         // **每一种结局都要给出「完整原因在哪儿」。** 应答体只带一个码,而真正
@@ -181,15 +181,15 @@ struct CoreStartFailureHintTests {
         }
 
         // 端口解不出来时那条 nc 命令整条不给 —— 不许渲染出尾巴上空着的端口。
-        let hostOnly = CoreStartFailureServers(currentHostPort: "195.133.192.92")
+        let hostOnly = CoreStartFailureServers(currentHostPort: "203.0.113.92")
         for code in codes {
             let text = coreStartFailureHint(code: code, servers: hostOnly) ?? ""
-            expect(!text.contains("nc -z 195.133.192.92 "),
+            expect(!text.contains("nc -z 203.0.113.92 "),
                    "\(code) 在端口未知时渲染出了 `nc -z <主机> `(尾巴上一个空端口):\(text)")
         }
         // 反面:端口问得出来时那条命令仍然要给,否则「一律不给」也能满足上面。
         expect((coreStartFailureHint(code: "core_tunnel_unreachable", servers: facts) ?? "")
-                .contains("nc -z 195.133.192.92 443"),
+                .contains("nc -z 203.0.113.92 443"),
                "端口问得出来时反而不给 nc 命令了")
 
         // 一次成功的开关不许被这一族接走。

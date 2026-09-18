@@ -31,8 +31,8 @@ func clientHelloFor(t *testing.T, sni string) []byte {
 	return buf[:n]
 }
 
-// 真机 2026-09-05(公司工作站,bx global):`bx direct add 180.158.6.185` 之后
-// `bx explain 180.158.6.185` 答 DIRECT,而 tailscaled 到那个 IP 的 TLS 连接照样
+// 真机 2026-09-05(公司工作站,bx global):`bx direct add 192.0.2.185` 之后
+// `bx explain 192.0.2.185` 答 DIRECT,而 tailscaled 到那个 IP 的 TLS 连接照样
 // 经隧道从 VPS 出去(家里的 derper 记到的源 IP 是 VPS;tcpdump 里 eno1 上一个
 // 发往该 IP 的 TCP 包都没有)。机制:dialInner 从首包嗅出 SNI(brook.youdamaster.cc),
 // 按域名判 —— 域名规则全部不中就默认走隧道,**IP 规则从头到尾没被问过**;而
@@ -46,11 +46,11 @@ func TestSniffedSNIDoesNotOverrideAnIPDirectRuleOnARealIP(t *testing.T) {
 	}
 	d, px, dr := newTestDialer(pool, fakeResolver{ip: netip.MustParseAddr("1.2.3.4")}, true, true)
 	rt := d.router.Load()
-	udi, _ := route.NewCIDRSet([]string{"180.158.6.185/32"})
+	udi, _ := route.NewCIDRSet([]string{"192.0.2.185/32"})
 	rt.UserDirectIP = udi
 	d.SetRouter(rt)
 
-	m := route.Meta{IP: netip.MustParseAddr("180.158.6.185"), Port: 33445}
+	m := route.Meta{IP: netip.MustParseAddr("192.0.2.185"), Port: 33445}
 	if got := d.Explain(m).Effective; got != EffectiveDirect {
 		t.Fatalf("前置不成立:explain 对这个 IP 该答 direct,got %s", got)
 	}
@@ -74,12 +74,12 @@ func TestSniffedSNIStillWinsWhenADomainRuleMatches(t *testing.T) {
 	}
 	d, px, dr := newTestDialer(pool, fakeResolver{ip: netip.MustParseAddr("1.2.3.4")}, true, true)
 	rt := d.router.Load()
-	udi, _ := route.NewCIDRSet([]string{"180.158.6.185/32"})
+	udi, _ := route.NewCIDRSet([]string{"192.0.2.185/32"})
 	rt.UserDirectIP = udi
 	rt.UserProxy = route.NewDomainSet([]string{"force-tunnel.example"})
 	d.SetRouter(rt)
 
-	m := route.Meta{IP: netip.MustParseAddr("180.158.6.185"), Port: 443}
+	m := route.Meta{IP: netip.MustParseAddr("192.0.2.185"), Port: 443}
 	conn, err := d.DialWithInitial(context.Background(), m, clientHelloFor(t, "force-tunnel.example"))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -117,7 +117,7 @@ func TestFakeIPConnectionsStillDefaultToTunnelOnDomainMiss(t *testing.T) {
 // IP 字面量不是域名:HTTP Host 里写的是 IP 时,嗅探不该把它当域名交出去。
 func TestSniffIgnoresIPLiteralHosts(t *testing.T) {
 	for _, req := range []string{
-		"GET / HTTP/1.1\r\nHost: 180.158.6.185:33445\r\n\r\n",
+		"GET / HTTP/1.1\r\nHost: 192.0.2.185:33445\r\n\r\n",
 		"GET / HTTP/1.1\r\nHost: [2001:db8::1]:443\r\n\r\n",
 	} {
 		if got := sniffDomain([]byte(req)); got != "" {
