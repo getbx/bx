@@ -118,7 +118,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         let window = NSWindow(
             // 七列(应用名 + 五个数字列 + 规则原文)摆得下的宽度。图标不再单独
             // 占一列 —— 它搬进了应用名那一格。上一版是 460,那时一行是一句散文。
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
             // **`.resizable` 是承重的,不是讲究。** 最后一列是规则原文(变长文本、
             // 会截断),而这个窗口既不横向滚动(clip 的宽度锚死在 scroll 上)、
             // 也没有别的地方能读到全文 —— 少了它,一条被截断的规则就**永久不可见**,
