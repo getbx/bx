@@ -2416,6 +2416,23 @@ Guardian 版本漂移的那条命令 —— 正是直接执行它,于是用户�
 穷举 `requiredMacOSAppFiles`,逼着往清单里加文件的人回答「它要不要执行位」,
 并反向钉住可执行名单里没有陈旧条目。
 
+**同一次真机还暴露出这条修复指引自己的脆弱,`upgradeSwitchCommand` 因此改了形式。**
+它原先是 `sudo <bundle>/Contents/Resources/bx-cli app-install`,推理没错(常量上方那段
+注释解释得很清楚:裸 `sudo bx app-install` 经 bridge 跑会 `syscall.Exec` 到 runtime,
+`os.Executable()` 反推不出包根,必然报 `is not inside a Bx.app bundle`)——但它把这条
+指引押在了「安装器给那个文件写对了执行位」上,而上面那个 bug 正好让这个前提塌掉。
+**一条修复指引的全部职责就是在降级状态下还能跑**,「安装器把每件事都做对了」是它最
+不该依赖的前提。现在是 `sudo bx app-install --app-source /Applications/Bx.app`:显式
+传值绕开那一跳反推(旧注释那段推理仍然成立),又不执行 bundle 里的任何东西。
+**`unifiedRepairHint` 刻意不跟着改** —— 它用在 `runtime/current` 不完整的场景,而
+bridge 正是 exec 到那里,那时 bundle 那份是唯一保证在的二进制;同一个写法在两处有
+**相反**的理由,`TestUpgradeSwitchCommandDoesNotDependOnTheBundleExecBit` 与
+`TestUnifiedRepairHintStillRunsTheBundleCopy` 各钉一边。
+**两条既有守卫(Go 的 `TestUpgradeSwitchCommandCanActuallyRun` 与 Swift 的
+StatusReportTests)当场把这次改动拦了下来,这是它们该做的**;判据改成「显式给了就验
+那个值,没给就验反推」而不是删掉 —— **换判据不等于放松判据**,把它换成一条只比字符串
+的测试才是。
+
 **顺带记两个真机事实,省得下一个人重新挖**:① `/usr/local/bin/bx`(2.6MB)是
 **bridge**,真正执行的是 `/Library/Application Support/bx/runtime/current/bx`(96MB);
 bundle 里那两个是**安装载荷**,平时不被执行 —— 所以这个 bug 只打穿「直接执行

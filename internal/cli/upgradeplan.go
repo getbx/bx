@@ -96,12 +96,27 @@ func upgradeCannotAskMessage(desiredOn bool) string {
 // os.Executable() 反推 --app-source 时拿到的是 runtime 路径 —— 那里没有
 // /Bx.app/Contents/Resources/,bundleRootFromExecutable 直接报
 // "is not inside a Bx.app bundle"。一条抄下来必然失败的命令,比不给命令更糟。
-// 从 App 包里的 bx-cli 直接跑就没有这一跳:它自己就在 Bx.app 里,--app-source
-// 自动推成 /Applications/Bx.app,而 installAppBundle 认得「源与目的地是同一个」
+// **出路是显式给 --app-source**,而不是去跑 App 包里那份 bx-cli。
+//
+// 上一版写的是 `sudo <bundle>/Contents/Resources/bx-cli app-install`:它自己就在
+// Bx.app 里,反推得出包根,推理没错 —— 但它把这条指引押在了「安装器给那个文件
+// 写对了执行位」上。2026-09-18 真机证明那个前提会塌:升级路径(stageApp)与直装
+// 路径两份清单,窄的那份漏了 Resources/bx-cli,于是升级之后它是 0644,用户照着
+// 敲得到 `command not found`(执行位那个 bug 已修,见 update.MacOSAppFileMode)。
+// **一条修复指引的全部职责就是在降级状态下还能跑**,而「安装器把每件事都做对了」
+// 是它最不该依赖的前提。
+//
+// 显式传 --app-source 同时解决两头:绕开 os.Executable() 那一跳反推(裸
+// `sudo bx app-install` 跑不通的原因,上面那段仍然成立),又不执行 bundle 里的
+// 任何东西。这条路的前提本来就是「runtime 是新的、只有 Guardian 进程旧」,所以
+// bridge 与 runtime 都是好的。installAppBundle 认得「源与目的地是同一个」
 // (samePath)并跳过整树复制,其余步骤(runtime/bridge/Guardian plist/重启/恢复
-// 保护)照常做完 —— 这正是「完成切换」需要的。unifiedlayout.go 的
-// unifiedRepairHint 早就用的是这一条,两处保持一致。
-const upgradeSwitchCommand = "sudo " + darwinAppBundlePath + "/Contents/Resources/bx-cli app-install"
+// 保护)照常做完 —— 这正是「完成切换」需要的。
+//
+// **unifiedlayout.go 的 unifiedRepairHint 刻意不跟着改**:它用在 runtime/current
+// 不完整的场景,而 bridge 正是 exec 到那里 —— 那时 bundle 里那份是唯一保证在的
+// 二进制。同一个写法在两处有相反的理由,两条守卫各钉一边。
+const upgradeSwitchCommand = elevate.Prefix + "bx app-install --app-source " + darwinAppBundlePath
 
 // upVersionMismatchMessage 在 Guardian 跑着旧版时给出提示。
 //

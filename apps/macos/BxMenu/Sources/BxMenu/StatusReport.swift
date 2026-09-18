@@ -26,7 +26,10 @@ func declaresDiagnosticsArchive(_ capabilities: [String]?) -> Bool {
 /// `sudo bx app-install`:/usr/local/bin/bx 是 bridge,它 exec 到 runtime 目录下的
 /// bx,那里不在任何 Bx.app 里,`--app-source` 反推直接报错 —— 一条抄下来必然失败
 /// 的命令,比不给命令更糟。
-let outdatedRuntimeRepairCommand = "sudo /Applications/Bx.app/Contents/Resources/bx-cli app-install"
+// 与 Go 侧 upgradeSwitchCommand 逐字一致(由 cli_test.go 钉住)。
+// 显式给 --app-source 而不是去跑 bundle 里那份 bx-cli:后者把这条指引押在
+// 「安装器给那个文件写对了执行位」上,而 2026-09-18 真机证明那个前提会塌。
+let outdatedRuntimeRepairCommand = "sudo bx app-install --app-source /Applications/Bx.app"
 
 /// Guardian 缺这个能力时,菜单要**并排**告诉用户的那件事。
 ///
