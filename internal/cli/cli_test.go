@@ -2197,7 +2197,7 @@ func TestNormalizeClientLinkAcceptsEncodedBX(t *testing.T) {
 }
 
 func TestNormalizeClientLinkAcceptsVless(t *testing.T) {
-	raw := "vless://be625ca6@1.2.3.4:9998?security=reality&pbk=PUB&sid=ab12&sni=www.apple.com&flow=xtls-rprx-vision&fp=chrome"
+	raw := "vless://11111111@1.2.3.4:9998?security=reality&pbk=PUB&sid=ab12&sni=www.apple.com&flow=xtls-rprx-vision&fp=chrome"
 	link, configLink, err := normalizeClientLink(raw)
 	if err != nil {
 		t.Fatalf("vless 链接应被接受: %v", err)

@@ -15,7 +15,7 @@ func TestBuildProbeTunnelRealitySelectsSingbox(t *testing.T) {
 		t.Skip("无内嵌 sing-box(windows/其他 arch),走下载兜底")
 	}
 	dir := t.TempDir()
-	link := "vless://be625ca6-947d-46f4-8567-4bdcc5fd530d@1.2.3.4:9998?security=reality&pbk=PUB&sid=ab12&sni=www.apple.com"
+	link := "vless://11111111-2222-3333-4444-555555555555@1.2.3.4:9998?security=reality&pbk=PUB&sid=ab12&sni=www.apple.com"
 	// 仅构造不 Start:Stop() 会阻塞在未关闭的 done(无 goroutine 关它),故直接丢弃隧道。
 	_, cleanup, err := buildProbeTunnel(dir, link, "1.1.1.1:443")
 	if err != nil {

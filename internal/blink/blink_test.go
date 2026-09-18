@@ -72,7 +72,7 @@ func TestDecodeRejectsUnsupportedTransport(t *testing.T) {
 }
 
 func TestEncodeDecodeVlessRoundTrip(t *testing.T) {
-	link := "vless://be625ca6@1.2.3.4:9998?security=reality&pbk=PUB&sid=ab12&sni=www.apple.com&flow=xtls-rprx-vision&fp=chrome"
+	link := "vless://11111111@1.2.3.4:9998?security=reality&pbk=PUB&sid=ab12&sni=www.apple.com&flow=xtls-rprx-vision&fp=chrome"
 	enc := Encode(link)
 	if enc[:5] != "bx://" {
 		t.Fatalf("应以 bx:// 开头, got %q", enc)
