@@ -94,12 +94,14 @@ func (p linuxPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 // 绝不删设备(故 bx0 始终在,快照网可兜底还原,不漏 IP)。外部事件(DHCP/NM/清规则)
 // 破坏路由时由 commit-confirmed 的 Rehijack mutation 调用。
 func (p linuxPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
+	// 以下两处都是前置检查:到这里一条路由都没碰过(第一次改动是下面的
+	// nc.routeDown()),失败不该把就绪位打脏。
 	if t.RouterMode {
-		return fmt.Errorf("router mode does not support rehijack yet")
+		return fmt.Errorf("%w: router mode does not support rehijack yet", ErrRehijackNoChange)
 	}
 	gw, gwDev, err := defaultRoute() // 重探:网关常是「为何要 rehijack」的根源
 	if err != nil {
-		return fmt.Errorf("probing the default gateway: %w", err)
+		return fmt.Errorf("%w: probing the default gateway: %w", ErrRehijackNoChange, err)
 	}
 	bypass := append(append([]string{}, serverBypass...), userBypass...)
 	nc := &netConf{

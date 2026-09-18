@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -225,5 +226,41 @@ func TestLiveMutatorSetTransportApplyFailUndoNop(t *testing.T) {
 	}
 	if len(fs.swapCalls) != before {
 		t.Fatalf("apply 未换成时 undo 应 nop, swapCalls 多了: %v", fs.swapCalls)
+	}
+}
+
+// 一次**在动任何一条路由之前**就失败的 rehijack,不许把路由就绪位打脏。
+//
+// 真机代价(2026-09-17,项目所有者的 Mac):13:04:43 `server_bypass_refollow`
+// 触发一次 Rehijack,darwin 的 RehijackRoutes 第一句探默认网关就失败
+// (`解析默认路由失败: ""`),**一条路由都没碰过** —— 而 apply 已经先把就绪位
+// 清成 false,且全仓只有「Hijack 成功」与「Rehijack 成功」两处会把它设回来,
+// 于是它一直假到 Core 重启。后果不是显示错一行:
+//
+//   - 路径恢复自己的 verify 就读这一位(run.go 那个闭包),于是此后每一次恢复
+//     都以 verification_failed 告终 —— 那天连败 20 次,而机器全程受保护;
+//   - Guardian 的 health 门也读它,于是 `bx update` 永久停在
+//     update_runtime_refresh_failed,**在 Core 重启之前升不了级**。
+//
+// 与下面那条「失败之后就绪位必须是假」是一对,**两条都要**:少了这一条,
+// 缺陷原样回来;少了那一条,「apply 干脆不碰这一位」也能全绿,而那会让一次
+// 拆到一半的 rehijack 谎报路由完好 —— 方向相反,代价更大。
+func TestLiveMutatorRehijackKeepsRoutesReadyWhenNothingWasTouched(t *testing.T) {
+	inner := errors.New("probing the default gateway: empty default route")
+	routes := &routeReadiness{}
+	routes.set(true)
+	m := &liveMutator{
+		plat:   &fakePlatform{rehijackErr: fmt.Errorf("%w: %w", ErrRehijackNoChange, inner)},
+		routes: routes,
+	}
+	apply, _, err := m.Rehijack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply(); !errors.Is(err, ErrRehijackNoChange) || !errors.Is(err, inner) {
+		t.Fatalf("apply error = %v, want one wrapping both ErrRehijackNoChange and the cause", err)
+	}
+	if !routes.ready() {
+		t.Fatal("一次什么都没改的失败把路由就绪位清掉了 —— 而没有任何东西会把它设回来")
 	}
 }

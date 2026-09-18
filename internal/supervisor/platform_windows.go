@@ -245,13 +245,15 @@ func (windowsPlatform) Hijack(t tunHandle, serverBypass, userBypass []string) (f
 // RehijackRoutes 在存活 TUN 上重落实劫持「路由」(重探物理网关 + 幂等重装路由),绝不碰设备/地址。
 // 供 commit-confirmed 的 Rehijack mutation 用。AddRoute 已存在则忽略(幂等)。
 func (windowsPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
+	// 以下两处都是前置检查:到这里一条路由都没碰过(第一次改动是下面的
+	// addPlannedRoutes),失败不该把就绪位打脏。
 	tunLUID := winipcfg.LUID(t.LUID)
 	if tunLUID == 0 {
-		return errors.New("bx: the wintun adapter LUID is missing")
+		return fmt.Errorf("%w: bx: the wintun adapter LUID is missing", ErrRehijackNoChange)
 	}
 	gw, physLUID, err := physicalDefaultRoute()
 	if err != nil {
-		return fmt.Errorf("probing the physical default route: %w", err)
+		return fmt.Errorf("%w: probing the physical default route: %w", ErrRehijackNoChange, err)
 	}
 	plan := windowsRoutes(windowsDirectCIDRs, serverBypass, userBypass, ipv6HostEnabled())
 	_, err = addPlannedRoutes(tunLUID, physLUID, gw, plan, true) // 幂等:忽略已存在
