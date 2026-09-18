@@ -33,6 +33,19 @@ func (nopMutator) SetServer(string, string) (func() error, func() error, error) 
 func (nopMutator) Rehijack() (func() error, func() error, error) { return nop, nop, nil }
 func (nopMutator) Reconnect() error                              { return nil }
 
+// ErrRehijackNoChange 标记一次**在动任何一条路由之前**就失败的重落实 ——
+// 平台实现的前置检查(探网关、模式判断、拿设备句柄)失败时用它包一层。
+//
+// 它存在的唯一理由是路由就绪位(routeReadiness)**只有两处会被置真**:启动时
+// Hijack 成功,以及 Rehijack 成功。一次失败把它清掉,它就再也回不来了 ——
+// 2026-09-17 真机上正是这样:探默认网关失败(一条路由都没碰),而此后路径恢复
+// 的 verify 与 Guardian 的 health 门都读这一位,于是恢复连败 20 次、`bx update`
+// 永久失败,直到 Core 重启。
+//
+// **漏包的后果是退回到今天的行为(悲观、卡住),不是放宽** —— 方向刻意如此:
+// 一个平台忘了标记只会少一次自愈,绝不会让一次拆到一半的 rehijack 谎报完好。
+var ErrRehijackNoChange = errors.New("rehijack failed before changing any route")
+
 // rehijacker 是 liveMutator 对 platform 的窄依赖(只需路由-only 重落实)。
 // platform 接口的方法集 ⊇ rehijacker,故 run.go 的 plat 可直接赋值;
 // 单测的 fakePlatform 也只需实现这一个方法。
@@ -151,8 +164,14 @@ func (m *liveMutator) SetServer(link, udp string) (apply, undo func() error, err
 // engine.Arm 的 snapshotter.Restore(9a 快照网),未验证的还原不会重新宣称路由就绪。
 func (m *liveMutator) Rehijack() (apply, undo func() error, err error) {
 	apply = func() error {
+		// 进来时那个样子要记住:平台若在动任何一条路由之前就失败,就绪位该原样
+		// 留着 —— 而**不是**无条件置真,那会在它进来就是假的时候撒一次谎。
+		was := m.routesReady()
 		m.setRoutesInstalled(false)
 		if err := m.plat.RehijackRoutes(m.tunH, m.currentServerBypass(), m.userBypass); err != nil {
+			if errors.Is(err, ErrRehijackNoChange) {
+				m.setRoutesInstalled(was)
+			}
 			return err
 		}
 		m.setRoutesInstalled(true)
@@ -169,4 +188,10 @@ func (m *liveMutator) setRoutesInstalled(installed bool) {
 	if m.routes != nil {
 		m.routes.set(installed)
 	}
+}
+
+// routesReady 读当前的路由就绪位。没接就绪位时答 false —— 那与
+// setRoutesInstalled 对 nil 的处置同向:不记账的实现不许因此宣称路由完好。
+func (m *liveMutator) routesReady() bool {
+	return m.routes != nil && m.routes.ready()
 }

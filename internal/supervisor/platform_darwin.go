@@ -149,7 +149,8 @@ func runDarwinRouteCommand(args ...string) error {
 func (darwinPlatform) RehijackRoutes(t tunHandle, serverBypass, userBypass []string) error {
 	gw, physicalDev, err := defaultRouteDarwin()
 	if err != nil {
-		return fmt.Errorf("probing the default gateway: %w", err)
+		// 前置检查:到这里一条路由都没碰过,失败不该把就绪位打脏。
+		return fmt.Errorf("%w: probing the default gateway: %w", ErrRehijackNoChange, err)
 	}
 	ip := t.Addr
 	if i := strings.IndexByte(ip, '/'); i >= 0 {

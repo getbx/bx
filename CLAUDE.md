@@ -2394,6 +2394,50 @@ netns 台子造不出「VPS 换 IP」)。同一天顺手做掉的两条:`bx expl
 **真机验收**:换一次服务器 IP(或先改 DNS 记录),看 `bx-guard.err.log`/`bx.log`
 在 2–7 分钟内出现 `server_bypass_refollow: the server's address changed` 且隧道自己回绿。
 
+## 路由就绪位只有两处会被置真,而一次什么都没改的失败曾把它永久清掉(2026-09-17,真机诊断,修复真机未验)
+
+`RuntimeState.RoutesInstalled` 的写点**全仓只有三处**:启动时 `Hijack` 成功置真、
+`liveMutator.Rehijack` 的 apply 成功置真,以及那个 apply/undo 的置假。**没有任何
+东西会根据观测把它设回来。** 而 apply 的第一句就是置假。
+
+真机(项目所有者的 Mac)13:04:43 `server_bypass_refollow` 触发一次 Rehijack,
+darwin 的 `RehijackRoutes` **第一句**探默认网关就失败(`解析默认路由失败: ""`)——
+**一条路由都没碰过**,而就绪位已经被清成 false,并一直假到 Core 重启。三个消费方
+各吃一次,全都表现为「机器明明好好的,而某件事就是做不成」:
+
+- **路径恢复自己的 `verify`**(`run.go` 里那个闭包)读这一位 ⇒ 17:34 那次
+  `underlay_changed` 连败 20 次 `verification_failed` 才放弃,**而机器全程受保护**
+  (observed 五项全绿、10205 条连接经隧道)。2026-09-07 那次记作「为什么那 20 次
+  verify 失败仍要看 Guardian 日志」的,大概率就是同一个机制。
+- **Guardian 的 health 门**(`validateRuntimeState`)也读它 ⇒ `/v1/update` 轮询 20 秒
+  超时,`bx update` 永久停在 `update_runtime_refresh_failed`、菜单只说
+  「guardian operation failed」,**在 Core 重启之前升不了级**,而错误里一个字都
+  没提到路由。
+- `recoverySupersededByCore` 的五项里也有它。
+
+**修法是 `ErrRehijackNoChange`**:三个平台把**前置检查**(探网关 / 判 RouterMode /
+拿 wintun LUID)的失败包一层,apply 只在「真的可能动过路由」时才清就绪位,失败时
+**恢复成进来时那个值、不是无条件置真** —— 后者会在它进来就是假的时候撒一次谎。
+**漏包的后果是退回今天的行为(悲观、卡住),不是放宽**:一个平台忘了标记只少一次
+自愈,绝不会让一次拆到一半的 rehijack 谎报完好。
+
+**仍然存在的缺口,别读成已修**:一次**拆到一半**才失败的 rehijack 照样把就绪位永久
+清成 false。那一次清它是对的(路由真的可能坏了),但**仍然没有任何东西会把它设回来**。
+根治要让这一位变成一次观测而不是一份记账(darwin 上 `underlay.ValidateCapture` 就是
+现成的判据,`RoutesInstalled` 也正是本文件点名过的那个「只置位不复查的 `atomic.Bool`」),
+而那会朝放宽 fail-closed 的方向动,是一次产品决定,没做。
+
+**守卫**:`TestLiveMutatorRehijackKeepsRoutesReadyWhenNothingWasTouched` 与它旁边那条
+`TestLiveMutatorRehijackLeavesRoutesNotReadyAfterFailure` 是**一对** —— 少前者缺陷原样
+回来,少后者「apply 干脆不碰这一位」也能全绿,而那是相反方向的、更贵的错。接线由
+`TestEveryRehijackPreflightFailureIsTaggedAsNoChange` 钉住(读三个 `platform_*.go`,
+判据是「前置区段里**每一个** return 都带标记」而不是「函数体里提到过一次」——
+linux 与 windows 各有两处前置检查)。**那条守卫第一版是假绿的,而且是被我自己写的
+注释骗的**:它在剥注释之前找锚点,而我刚加的解释性注释里恰好写着锚点本身
+(`nc.routeDown()` / `addPlannedRoutes`),于是前置区段被截断在第一个 return 之前,
+三个实现里两个漏检。**先剥注释再找锚点**这一步因此是判据的一部分,不是讲究;
+它也是「断言被满足,但是因为别的理由」的第 N 次,只有变异实测抓得到。
+
 ## Core 起不来时,说出它为什么起不来(2026-09-13,真机未验)
 
 **所有者原话:「vps 之前不通,但 bx 不会告诉我是 vps 不通,用户会以为是 bx 自己的
