@@ -1,9 +1,26 @@
 {
-  "ok": false,
-  "checks": [
-    {"name": "guardian_dns", "status": "fail", "detail": "系统 DNS 没有指向 bx", "hint": "sudo bx up"},
-    {"name": "traffic_failing_rules", "status": "warn", "detail": "*.qq.com 1291 次 / 失败 1289"},
-    {"name": "config_readable", "status": "ok", "detail": "/etc/bx/config.yaml"},
-    {"name": "tunnel", "status": "not_checked", "detail": "Core 没在跑,这一轮没有检查"}
-  ]
+ "ok": false,
+ "checks": [
+  {
+   "name": "guardian_dns",
+   "status": "fail",
+   "detail": "state=unknown managed=false",
+   "hint": "sudo bx up; bx logs"
+  },
+  {
+   "name": "traffic_failing_rules",
+   "status": "warn",
+   "detail": "1 rule(s) failing in bulk — *.qq.com: 1289 of 1291 failed (100%)"
+  },
+  {
+   "name": "config_readable",
+   "status": "ok",
+   "detail": "/etc/bx/config.yaml"
+  },
+  {
+   "name": "tunnel",
+   "status": "not_checked",
+   "detail": "bx is not running, so this round could not look"
+  }
+ ]
 }

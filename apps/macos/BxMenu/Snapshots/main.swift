@@ -77,7 +77,23 @@ func writeTree(_ window: NSWindow, to path: String) {
         // 于是这条守卫恒红 —— 而恒红的闸门会被下一个人删掉。
         let maxX = view.convert(view.bounds, to: nil).maxX - view.alignmentRectInsets.right
         var label = String(describing: type(of: view))
-        if let t = view as? NSTextField { label += " text=\(t.stringValue.debugDescription)" }
+        if let t = view as? NSTextField {
+            label += " text=\(t.stringValue.debugDescription)"
+            // **"这段字被截断了吗"是确定性判定,不是审美问题** —— 与"控件超出内容
+            // 宽度"同一类,所以它属于 dump 而不属于 PNG。fittingSize 是这段文字不被
+            // 截断所需要的宽度;它大于实得宽度,屏幕上就是一句话在中间断掉。
+            // 2026-09-18 量到:规则窗口三条预设副标题**全部**如此(需要 ~347pt、
+            // 实得 218~269pt),而那句话正是设计里用来回答「开了会怎样」的东西。
+            //
+            // **会换行的字段不算**:它"需要的宽度"超出边框只是说明它折了行,而折行
+            // 是对的(日志页那块多行文本就是这样)。只有不能换行的标签才会把多出来的
+            // 部分变成一句断掉的话 —— 第一版没分这两者,日志那块当场假阳性。
+            let wraps = (t.cell as? NSTextFieldCell)?.wraps ?? false
+            let needed = t.fittingSize.width
+            if !wraps && needed > f.width + 0.5 {
+                label += String(format: " truncated needs=%.0f", needed)
+            }
+        }
         if let b = view as? NSButton { label += " title=\(b.title.debugDescription)" }
         lines.append(String(
             format: "%@%@ w=%.0f h=%.0f maxX=%.0f",
