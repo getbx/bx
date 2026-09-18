@@ -96,14 +96,57 @@ func (s *Store) guardianPaths() Paths {
 	return s.paths
 }
 
+// updateError 把一次更新失败的**码**与**病因**装在一起,而它们走两条不同的路:
+// 码进响应体(failureCodeForError 认它),病因只进 Guardian 日志(handler 打的是
+// `%v`,而那份日志是 0600 root:wheel)。**发布面因此一寸没扩** —— 原始错误串
+// 一个字都不出 socket。
+//
+// 2026-09-17 真机上两样都缺:`health.Wait` 算出的
+// 「core routes are not installed」被整个丢掉,而码落进 failureCodeForError 的
+// default 分支、响应体只剩一句「guardian operation failed」。
 type updateError struct {
-	code string
+	code  string
+	cause error
 }
 
-func (e updateError) Error() string { return e.code }
+func (e updateError) Error() string {
+	if e.cause == nil {
+		return e.code
+	}
+	return e.code + ": " + e.cause.Error()
+}
+
+func (e updateError) Unwrap() error { return e.cause }
 
 func newUpdateError(code string) error {
 	return updateError{code: code}
+}
+
+// newUpdateErrorWithCause 用在**病因已经算出来了**的地方。没有病因时仍然用
+// newUpdateError:Error() 原样只返回码,既有那批逐字比对 err.Error() 的测试不受影响。
+func newUpdateErrorWithCause(code string, cause error) error {
+	if cause == nil {
+		return updateError{code: code}
+	}
+	return updateError{code: code, cause: cause}
+}
+
+// runtimeRefreshCause 说出健康门的三种失败方式里是哪一种 —— nil = 过了。
+//
+// 三种此前**在输出上完全一样**,而处置并不一样:健康检查自己报错要去看 Core 报的
+// 运行时事实(隧道/DNS/路由/UDP 哪一项不满足),而 PID 或版本对不上说明**答话的
+// 那个 Core 不是 Guardian 以为的那个**,是另一类问题。
+func runtimeRefreshCause(err error, live supervisor.RuntimeState, wantPID int, wantVersion string) error {
+	if err != nil {
+		return err
+	}
+	if live.PID != wantPID {
+		return fmt.Errorf("the Core answering the control socket reports PID %d, but this update targets PID %d", live.PID, wantPID)
+	}
+	if live.Version != wantVersion {
+		return fmt.Errorf("the Core answering the control socket reports version %q, but this update starts from %q", live.Version, wantVersion)
+	}
+	return nil
 }
 
 func ValidateUpdateRequest(request UpdateRequest) (UpdateRequest, error) {
@@ -169,7 +212,7 @@ func (m *Manager) Update(ctx context.Context, request UpdateRequest) (UpdateResu
 	}
 	prepared, err := m.updatePreparer.Prepare(ctx, normalized, packageData, m.updatePaths)
 	if err != nil {
-		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_prepare_failed")
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateErrorWithCause("update_prepare_failed", err)
 	}
 	if prepared.RequiredGuardianProtocol() > m.guardianProtocol {
 		_ = prepared.Commit()
@@ -197,16 +240,16 @@ func (m *Manager) Update(ctx context.Context, request UpdateRequest) (UpdateResu
 		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_source_identity_failed")
 	}
 	liveRuntime, err := m.health.Wait(ctx, HealthTarget{Version: normalized.FromVersion, PID: m.current.PID})
-	if err != nil || liveRuntime.PID != m.current.PID || liveRuntime.Version != normalized.FromVersion {
+	if cause := runtimeRefreshCause(err, liveRuntime, m.current.PID, normalized.FromVersion); cause != nil {
 		m.releaseMutation()
 		_ = prepared.Commit()
-		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_runtime_refresh_failed")
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateErrorWithCause("update_runtime_refresh_failed", cause)
 	}
 	gateway, err := m.gatewayProvider.DefaultGateway(ctx)
 	if err != nil {
 		m.releaseMutation()
 		_ = prepared.Commit()
-		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_gateway_discovery_failed")
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateErrorWithCause("update_gateway_discovery_failed", err)
 	}
 	barrierContext := cloneBarrierContext(m.barrierContext)
 	barrierContext.Gateway = gateway
@@ -219,7 +262,7 @@ func (m *Manager) Update(ctx context.Context, request UpdateRequest) (UpdateResu
 	if err := prepared.BindBarrierContext(barrierContext); err != nil {
 		m.releaseMutation()
 		_ = prepared.Commit()
-		return m.updateResult(normalized, status.Phase, false, false), newUpdateError("update_recovery_metadata_failed")
+		return m.updateResult(normalized, status.Phase, false, false), newUpdateErrorWithCause("update_recovery_metadata_failed", err)
 	}
 	m.runtime = liveRuntime
 	defer m.releaseMutation()

@@ -601,9 +601,16 @@ func failureCodeForError(err error) string {
 		return "recovery_incomplete"
 	case errors.Is(err, errMutationBusy):
 		return "guardian_busy"
-	default:
-		return ""
 	}
+	// updateError 自带码,而它此前落进 default 那一支 —— 于是 /v1/update 的失败
+	// **一个码都不带**:Update 从不走 needsAttention,`after.LastError` 那条兜底
+	// 也是空的,客户端只拿到一句「guardian operation failed」。病因不在这里出门
+	// (那只进 Guardian 日志),出门的只有码。
+	var updErr updateError
+	if errors.As(err, &updErr) && updErr.code != "" {
+		return updErr.code
+	}
+	return ""
 }
 
 func recoveryCurrentHandler(controller PathRecoveryController, ownerUID uint32) http.HandlerFunc {

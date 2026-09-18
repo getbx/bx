@@ -88,13 +88,26 @@ func darwinSystemProxyEnabled(scutilProxyOut string) bool {
 
 var darwinGuardNetworkServiceLineRe = regexp.MustCompile(`^\*\s+\((Connected|Connecting)\)\s+(.+)$`)
 
+// darwinGuardServiceDisplayNameRe 取 scutil 那一行里引号中的显示名。
+var darwinGuardServiceDisplayNameRe = regexp.MustCompile(`"([^"]+)"`)
+
 func darwinConnectedNetworkService(scutilNCListOut string) string {
 	for _, line := range strings.Split(scutilNCListOut, "\n") {
 		line = strings.TrimSpace(line)
 		matches := darwinGuardNetworkServiceLineRe.FindStringSubmatch(line)
-		if len(matches) == 3 {
-			return strings.TrimSpace(matches[2])
+		if len(matches) != 3 {
+			continue
 		}
+		tail := strings.TrimSpace(matches[2])
+		// **这句话是常驻的**(`bx status` / `bx doctor` / 菜单三处),而 scutil
+		// 那一行的尾巴是给列对齐用的:UUID、括号里的 bundle id、一长串填充空格,
+		// 最后把同一个 bundle id 再印一遍。用户要的只有引号里那个显示名。
+		if name := darwinGuardServiceDisplayNameRe.FindStringSubmatch(tail); len(name) == 2 {
+			return name[1]
+		}
+		// 认不出显示名**绝不返回空串** —— 那会让「另一个 VPN 正开着」这条告警
+		// 整个消失,而它正是这个函数存在的理由。退路是原文,只压掉多余空白。
+		return strings.Join(strings.Fields(tail), " ")
 	}
 	return ""
 }

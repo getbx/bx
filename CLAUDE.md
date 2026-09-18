@@ -2394,6 +2394,37 @@ netns 台子造不出「VPS 换 IP」)。同一天顺手做掉的两条:`bx expl
 **真机验收**:换一次服务器 IP(或先改 DNS 记录),看 `bx-guard.err.log`/`bx.log`
 在 2–7 分钟内出现 `server_bypass_refollow: the server's address changed` 且隧道自己回绿。
 
+## `/v1/update` 的失败码从来没到过客户端,病因也被整个丢掉(2026-09-17,真机诊断)
+
+2026-08-05 立的故障可观测性不变量是「**完整错误写进 Guardian 日志,响应体只带
+失败码**」。`/v1/update` 这条路上**两样都没有**,而它正是用户最需要线索的那一刻:
+
+- `Manager.Update` 在健康门那里写的是 `newUpdateError("update_runtime_refresh_failed")`
+  —— `m.health.Wait` **已经算出**了一句精确的话(真机上是「core health check timed
+  out after 20s: core routes are not installed」),被整个丢掉。Guardian 日志那行
+  因此是 `guardian_mutation_failed err=update_runtime_refresh_failed`,只有码。
+  同一处还有另外几个码(prepare / gateway_discovery / recovery_metadata)一样丢 err。
+- `failureCodeForError` **只认两个哨兵**(`errRecoveryIncomplete`/`errMutationBusy`),
+  `updateError` 落进 default;而 `Update` 从不走 `needsAttention`,于是 `after.LastError`
+  那条兜底也是空的 —— 响应体里**一个码都没有**,菜单上只有「guardian operation
+  failed」加三百字通用排查。`guardianCodeHints` 那套机制在这条路上从未被触发过。
+
+**修法把两条路分开**:`updateError` 带上 cause,`Error()` 把它拼进去(handler 打的
+是 `%v`,那份日志是 0600 root:wheel),而响应体走 `failureCodeForError` **只拿 code**
+—— 发布面一寸没扩,原始错误串一个字都不出 socket。
+
+**健康门那三种失败方式此前在输出上完全一样**(Wait 报错 / PID 对不上 / 版本对不上),
+后两种连 err 都没有,所以「把 err 带上」修不到它们:`runtimeRefreshCause` 让这道门
+自己说出是哪一种 —— PID 或版本对不上说明**答话的那个 Core 不是 Guardian 以为的那个**,
+与「Core 报的运行时事实里有一项不满足」是两类问题。
+
+**守卫**:`TestUpdateHealthGateFailureKeepsItsCauseForTheLogAndItsCodeForTheBody`
+(病因在 `%v` 里 **且** 码在 `failureCodeForError` 里,两条刻意不合并)与
+`TestUpdateHealthGateSaysWhichOfItsThreeConditionsFailed`(喂一个 PID 对不上的
+运行时,断言那个 PID 被点名 —— 少了它,只把 err 带上也能满足前一条)。
+`newUpdateError`(无 cause)原样只返回码,既有那批逐字比对 `err.Error()` 的测试
+一条没动。
+
 ## 路由就绪位只有两处会被置真,而一次什么都没改的失败曾把它永久清掉(2026-09-17,真机诊断,修复真机未验)
 
 `RuntimeState.RoutesInstalled` 的写点**全仓只有三处**:启动时 `Hijack` 成功置真、
