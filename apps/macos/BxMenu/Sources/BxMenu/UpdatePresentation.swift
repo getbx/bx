@@ -137,3 +137,50 @@ func strippedLogTimestamp(_ line: String) -> String {
     }
     return String(parts[2]).trimmingCharacters(in: .whitespaces)
 }
+
+/// CLI 每打一行下载进度用的前缀。**它是一条跨语言契约** —— 产地在
+/// `internal/cli/download_progress.go` 的 formatDownloadProgress,这里手抄了一份。
+/// 抄漂的后果是静默的:菜单永远找不到进度行,于是永远退回那句只有秒数的话,
+/// 而两侧测试都绿。由 Go 侧 TestMenuReadsTheSameDownloadProgressMarkerTheCLIWrites 双向钉住。
+let downloadProgressMarker = "⏳ downloaded "
+
+/// 从升级日志里取**最后一行**下载进度,返回前缀之后那一段(`12.0 MB of 38.9 MB (31%)`)。
+///
+/// 取最后一行而不是第一行:进度是一行行追加的,第一行永远是 0%。
+func lastDownloadProgressLine(_ log: String?) -> String? {
+    guard let log else { return nil }
+    var found: String?
+    for rawLine in log.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        guard line.hasPrefix(downloadProgressMarker) else { continue }
+        let payload = String(line.dropFirst(downloadProgressMarker.count)).trimmingCharacters(in: .whitespaces)
+        if !payload.isEmpty { found = payload }
+    }
+    return found
+}
+
+/// 升级那一行该说什么。
+///
+/// **两段的性质完全不同,所以必须分开说**:下载要十几分钟、保护一动不动、走开
+/// 完全没事;换文件只有几秒,但屏障装着、网络会停一下。合成一句
+/// `Downloading and installing… 199s`,等于用同一句话同时表示「随便等」和「别碰」。
+///
+/// `installing` 三态,而**第三态是承重的**:Guardian 没答话、或这一版不发 phase 时
+/// 是 nil,那时**不许挑一段说** —— 猜错哪一边都是一句我们无权说的话,退回原来那句
+/// 合并文案(它没有变得更好,但它没有撒谎)。
+///
+/// 进度优先于秒数:一个时钟在下载死掉之后照样在涨,它答不了「是不是卡住了」;
+/// 一个朝着已知终点走的字节数自己就证明自己活着。
+func updateStageText(installing: Bool?, progress: String?, elapsedSeconds: Int) -> String {
+    let progressText = (progress?.isEmpty == false) ? progress : nil
+    switch installing {
+    case .some(true):
+        return "Installing… the network pauses for a few seconds (\(elapsedSeconds)s)"
+    case .some(false):
+        if let progressText { return "Downloading — \(progressText)" }
+        return "Downloading… \(elapsedSeconds)s"
+    case .none:
+        if let progressText { return "Downloading and installing — \(progressText)" }
+        return "Downloading and installing… \(elapsedSeconds)s"
+    }
+}

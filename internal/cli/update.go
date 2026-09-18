@@ -219,11 +219,38 @@ func latestReleaseTagContext(ctx context.Context, client *http.Client) (string, 
 	return parseReleaseTag(resp.Request.URL.String()), nil
 }
 
+// downloadBytes 下的都是几十 MB 的 release 资产(更新那两处 + bx server deploy),
+// 所以它**一边下一边报进度**;downloadBytesContext 留给清单与签名那几百字节,
+// 给它们报进度只是噪声。
+//
+// 进度绑在这个函数上而不是绑在调用点上是刻意的:三个调用点全是大文件,没有一个
+// 需要「记得传一个 reporter」,**漏接线在构造上不可能发生**(本仓库为「判据对了、
+// 而把真实输入递给它那根线没人守」栽过很多次)。
 func downloadBytes(client *http.Client, url string) ([]byte, error) {
-	return downloadBytesContext(context.Background(), client, url)
+	return downloadBytesReporting(context.Background(), client, url, printDownloadProgress)
 }
 
+// printDownloadProgress 把进度写 **stderr**。
+//
+// `--json` 的契约是 stdout 上只有那一份 JSON;而菜单跑的是
+// `bx update --json > 日志 2>&1`,两条流进同一个文件,所以菜单照样读得到 ——
+// 既没有破坏管道给 jq 的那条路,也没有为菜单另开一条通道。
+func printDownloadProgress(line string) {
+	fmt.Fprintln(downloadProgressOut, line)
+}
+
+// downloadProgressOut 是 var 而不是直接写 os.Stderr,理由与 downloadStallTimeout
+// 同一条:**让测试够得着这条线**。少了它,「downloadBytes 真的把 reporter 传下去」
+// 这一步全仓没有任何东西守着 —— 改成 nil 一行不红,而用户看到的就是进度永远不
+// 出现、菜单永远退回那句只有秒数的话。
+var downloadProgressOut io.Writer = os.Stderr
+
 func downloadBytesContext(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	return downloadBytesReporting(ctx, client, url, nil)
+}
+
+// downloadBytesReporting 是那两个的共同实现;emit 非 nil 时一边下一边报进度。
+func downloadBytesReporting(ctx context.Context, client *http.Client, url string, emit func(string)) ([]byte, error) {
 	resp, err := httpGetContext(ctx, client, url)
 	if err != nil {
 		return nil, err
@@ -238,7 +265,13 @@ func downloadBytesContext(ctx context.Context, client *http.Client, url string) 
 	// 慢一点的网络必然失败,而用户看到的只是一句
 	// `context deadline exceeded (…while reading body)`(2026-08-14 真机)。
 	// 现在只问「还在不在动」:慢的网络会慢慢下完,真断了的照样很快失败。
-	return io.ReadAll(newStallTimeoutReader(resp.Body, downloadStallTimeout))
+	// 进度**套在停滞 reader 外面**:数的是真正到达的字节,而一次半途停滞失败
+	// 也会经它走一遍收尾,把「下到哪儿断的」说出来。
+	var reader io.Reader = newStallTimeoutReader(resp.Body, downloadStallTimeout)
+	if emit != nil {
+		reader = newProgressReader(reader, resp.ContentLength, emit)
+	}
+	return io.ReadAll(reader)
 }
 
 func verifiedReleaseManifest(client *http.Client, tag string) (updatepkg.Manifest, error) {

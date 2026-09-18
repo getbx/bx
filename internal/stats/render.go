@@ -123,7 +123,7 @@ func Render(r Report) string {
 		fmt.Fprintf(&b, "  %-*sproxy %d  direct %d\n", statusLabelWidth, "Failed", r.ProxyFailed, r.DirectFailed)
 	}
 	fmt.Fprintf(&b, "  %-*sproxy %.1f%% / direct %.1f%%\n", statusLabelWidth, "Split", ratio, 100-ratio)
-	fmt.Fprintf(&b, "  %-*s↑ %s   ↓ %s\n", statusLabelWidth, "Traffic", humanBytes(r.BytesUp), humanBytes(r.BytesDown))
+	fmt.Fprintf(&b, "  %-*s↑ %s   ↓ %s\n", statusLabelWidth, "Traffic", HumanBytes(r.BytesUp), HumanBytes(r.BytesDown))
 	// UDP 那条路的一句话。**一切正常时一个字都不打。**
 	// 它此前完全隐形:UDP 不问 router,于是既没有规则归因,失败也一次都没被数过。
 	if notice := r.UDPNotice(); notice != "" {
@@ -221,8 +221,11 @@ func RenderNotRunning() string {
 	return "bx is not running.\n  Start it: " + elevate.Cmd("bx up") + elevate.Note() + "        Check it: bx doctor\n"
 }
 
-// humanBytes 把字节数转成人类可读单位。
-func humanBytes(n int64) string {
+// HumanBytes 把字节数转成人类可读单位。
+//
+// 导出是因为 internal/cli 的下载进度要用同一份换算:两处各写一份,同一个数会在
+// `bx status` 与更新进度里长得不一样,而用户会以为那是两件事。
+func HumanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
 		return fmt.Sprintf("%d B", n)

@@ -2183,8 +2183,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let startedAt = updateInFlight {
             let elapsed = Int(Date().timeIntervalSince(startedAt))
             menu.addHeadline("Updating bx")
-            // 说清"在做什么"与"过了多久" —— 一个沉默的转圈光标与卡死无从区分。
-            menu.addInfo("Status", "Downloading and installing… \(elapsed)s")
+            // 说清"在做什么"与"到哪儿了"。**按字节报,不按秒报**:一个时钟在
+            // 下载死掉之后照样在涨,它结构上答不了用户唯一想问的那个问题
+            // (2026-09-18 真机:39MB 的包经隧道下了十几分钟,屏幕上只有 `199s`,
+            // 于是「是不是卡住了」只能由人来问)。两段也分开说 —— 下载可以走开,
+            // 换文件那几秒网络会停;问不出来是哪一段时一段都不猜。
+            menu.addInfo("Status", updateStageText(
+                installing: updateStageInstalling(),
+                progress: lastDownloadProgressLine(updateLogTail()),
+                elapsedSeconds: elapsed))
             menu.addPlainText("This can take a few minutes on a slow connection.")
             menu.addItem(.separator())
             menu.addQuit(quitBxActionTitle, target: self, action: #selector(quitBx))
@@ -3001,6 +3008,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // (2026-08-14)。与阶段①把开关异步化是同一条理由:任何可能慢的动作都
         // 不许占着主线程,否则菜单连"我在做什么"都说不出来。
         updateInFlight = Date()
+        updateLogPath = logPath
         rebuildMenu()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             _ = self?.runPrivileged(command)
@@ -3009,6 +3017,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.updateInFlight = nil
+                self.updateLogPath = nil
                 self.finishUpdate(logData: logData)
             }
         }
@@ -3017,6 +3026,30 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 更新正在跑的开始时刻。非 nil 时菜单显示进度行 —— 一个什么都不说的
     /// 转圈光标与"卡死了"在用户眼里没有区别。
     private var updateInFlight: Date?
+
+    /// 这一次更新的日志文件。`bx update --json > 它 2>&1` 一边跑一边往里写,
+    /// 所以**不需要任何新通道**就能拿到下载进度:菜单本来就在收尾时读它。
+    private var updateLogPath: String?
+
+    /// 现在是在下载还是在换文件?**三态**:nil = 问不出来。
+    ///
+    /// 判据是 Guardian 报的 phase —— 下载期间 Guardian 根本没被调用,phase 还停在
+    /// 上一次的终态;真正换文件时它会走到 prepared/barrier_active/activating/
+    /// rolling_back。阶段名单**只有 updatingBanner 一份**,这里不再抄:两份名单必然
+    /// 漂,而漂的后果是把"正在换文件"显示成"正在下载",用户据此以为可以放心走开。
+    ///
+    /// phase 缺席(旧 Guardian、或这一轮没答话)一律 nil,不许当成"没在装"。
+    private func updateStageInstalling() -> Bool? {
+        guard let phase = maintenanceReport?.phase else { return nil }
+        return updatingBanner(phase: phase) != nil
+    }
+
+    /// 读这一次更新的日志。读不到就是读不到 —— 交给 updateStageText 退回秒数,
+    /// 绝不因此编一个进度出来。
+    private func updateLogTail() -> String? {
+        guard let path = updateLogPath else { return nil }
+        return try? String(contentsOfFile: path, encoding: .utf8)
+    }
 
     private func finishUpdate(logData: Data?) {
         rebuildMenu()

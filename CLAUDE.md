@@ -2394,6 +2394,57 @@ netns 台子造不出「VPS 换 IP」)。同一天顺手做掉的两条:`bx expl
 **真机验收**:换一次服务器 IP(或先改 DNS 记录),看 `bx-guard.err.log`/`bx.log`
 在 2–7 分钟内出现 `server_bypass_refollow: the server's address changed` 且隧道自己回绿。
 
+## 升级进度按字节报,不按秒报;下载与换文件分开说(2026-09-18,真机未验)
+
+**一个时钟在下载已经死掉之后照样在涨。** 真机上一个 39MB 的包经隧道下了十几分钟,
+而菜单上唯一的数字是 `Downloading and installing… 199s` —— 它结构上答不了用户唯一
+想问的那个问题「是不是卡住了」,于是那个问题只能由人来问一遍。**一个朝着已知终点
+走的字节数自己就证明自己活着**,这是这次改动的全部判据。
+
+**两段必须分开说,因为它们对用户意味着不同的行为**:下载十几分钟、保护一动不动、
+走开完全没事;换文件几秒、屏障装着、网络会停一下。合成一句话等于用同一句同时表示
+「随便等」和「别碰」。
+
+- **进度在 `downloadBytes` 上,不在调用点上**(`internal/cli/download_progress.go`)。
+  那个函数的三个调用点全是几十 MB 的 release 资产(更新两处 + `bx server deploy`),
+  于是**漏接线在构造上不可能** —— 没有人需要「记得传一个 reporter」;清单与签名那
+  几百字节走 `downloadBytesContext`,一个字不打。
+- **写 stderr 不写 stdout**:`--json` 的契约是 stdout 上只有那份 JSON,而菜单跑的是
+  `bx update --json > 日志 2>&1`,两条流进同一个文件 —— 菜单因此**不需要任何新通道**,
+  读它本来就在收尾时读的那个文件即可。
+- **总量未知时绝不编百分比**(`formatDownloadProgress`):编出来的数会在过半时跳一下,
+  而用户无从分辨那是进度还是错的。
+- **打多少行由两条判据各管一头**(`shouldEmitProgress`):每多下 1 MiB 一行(下得快时
+  细粒度,总行数随包大小有界),每 10 秒至少一行(下得极慢时仍然证明活着 —— 而那
+  正是用户会怀疑卡住的时候)。收尾那一行无条件打,否则进度停在 97% 然后画面一跳。
+- **菜单那三态是承重的**(`updateStageText`,`installing: Bool?`):阶段由 Guardian 的
+  phase 判(下载期间 Guardian 根本没被调用,phase 还停在上一次的终态),而
+  **phase 缺席 ⇒ nil ⇒ 一段都不猜**,退回原来那句合并文案。阶段名单只有
+  `updatingBanner` 一份,菜单不再抄第二份 —— 漂了的后果是把「正在换文件」显示成
+  「正在下载」,用户据此以为可以放心走开。
+
+**跨语言契约**:`⏳ downloaded ` 这个前缀产地在 Go 的 `formatDownloadProgress`,
+Swift 的 `lastDownloadProgressLine` 手抄了一份常量。漂掉是**完全静默的** —— 菜单
+一行进度都找不到、永远退回秒数,两侧测试全绿。由
+`TestMenuReadsTheSameDownloadProgressMarkerTheCLIWrites` 双向钉住(Go 打的每一种
+进度行都带这个前缀 **且** 那个常量真的参与解析),与 leakcheck 页面探针名同一条。
+
+**接线那一跳单独守**:`TestDownloadBytesActuallyReportsProgress` 打在真 HTTP 上,
+为此 `downloadProgressOut` 是 var(理由同 `downloadStallTimeout`:让测试够得着这条
+线)—— 少了它,把那个实参改成 nil 全仓一行不红,而这次改动等于没做。菜单那半由
+`TestMacMenuUpdateRowIsFedTheRealStageAndTheRealLog` 钉**到达的值**而不是「调用发生
+过」(第七种失效写法),含「日志路径收尾要清掉」——不清则下一次更新开始那一瞬间会
+把上一次的陈旧进度显示成当前进度。五条变异各咬中一条。
+
+**刻意不做:把下载与安装拆成两次用户动作。** 「下好了自己挑时间装」听起来体贴,
+实际是把一个待办交给用户:一个躺着的包他得记着、会过期(下一个版本出了怎么办)、
+而菜单被杀或机器睡过去之后那个承诺会悄悄作废 —— 与否掉「登录此网络」那个入口同
+一条理由(**自动重新武装是一个可能悄悄违约的承诺**)。多付的注意力是天天的,换来
+的好处(挑一个几秒抖动的时机)一年用一次。
+
+**真机未验**:进度行在菜单上的观感与换行、两段标签的切换时刻、`bx server deploy`
+那条路上的进度输出。
+
 ## `/v1/update` 的失败码从来没到过客户端,病因也被整个丢掉(2026-09-17,真机诊断)
 
 2026-08-05 立的故障可观测性不变量是「**完整错误写进 Guardian 日志,响应体只带

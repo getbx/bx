@@ -83,6 +83,43 @@ struct UpdatePresentationTests {
         expect(updateRolledBackMessage == "Update couldn't be completed. Previous version restored.",
                "update rolled back message pinned")
         testVersionRowCarriesTheUpdateInItsText()
+        testDownloadProgressIsReadFromTheLastLine()
+        testUpdateStageNeverGuessesWhichHalfItIsIn()
+    }
+
+    /// 进度是一行行追加的,第一行永远是 0% —— 取最后一行。
+    static func testDownloadProgressIsReadFromTheLastLine() {
+        let log = """
+        ⏳ Downloading the full macOS package bx-macos-arm64.tar.gz…
+        \(downloadProgressMarker)1.0 MB of 38.9 MB (3%)
+        \(downloadProgressMarker)12.0 MB of 38.9 MB (31%)
+        """
+        expect(lastDownloadProgressLine(log) == "12.0 MB of 38.9 MB (31%)", "取最后一行进度")
+        expect(lastDownloadProgressLine("nothing here\nstill nothing") == nil, "没有进度行就说没有")
+        expect(lastDownloadProgressLine(nil) == nil, "读不到日志就说没有")
+    }
+
+    /// 三段各说各的,而**第三段是承重的**:问不出来时不许挑一段说。
+    static func testUpdateStageNeverGuessesWhichHalfItIsIn() {
+        let downloading = updateStageText(installing: false, progress: "12.0 MB of 38.9 MB (31%)", elapsedSeconds: 199)
+        let installing = updateStageText(installing: true, progress: "38.9 MB of 38.9 MB (100%)", elapsedSeconds: 210)
+        let unknown = updateStageText(installing: nil, progress: nil, elapsedSeconds: 199)
+
+        // 下载那段必须说得出字节 —— 秒数答不了「是不是卡住了」。
+        expect(downloading.contains("12.0 MB of 38.9 MB"), "下载段报字节")
+        expect(!downloading.contains("Installing"), "下载段不许说在装")
+        // 换文件那段必须预告网络会停 —— 那是用户唯一需要改变行为的几秒。
+        expect(installing.contains("Installing"), "安装段说在装")
+        expect(installing.contains("network pauses"), "安装段预告网络会停")
+        // 问不出来:退回原来那句合并文案,一段都不猜。
+        expect(unknown.contains("Downloading and installing"), "问不出来时退回合并文案")
+        expect(!unknown.contains("Installing…"), "问不出来时不许断言在装")
+        // 三种在屏幕上必须两两不同 —— 判据打在用户看得见的东西上。
+        expect(downloading != installing && installing != unknown && downloading != unknown,
+               "三段必须长得不一样")
+        // 没有进度行时仍然要说点什么(退回秒数),不能是空白。
+        expect(!updateStageText(installing: false, progress: nil, elapsedSeconds: 5).isEmpty,
+               "没有进度行也要有话说")
     }
 
     private static func expect(_ condition: Bool, _ label: String) {
