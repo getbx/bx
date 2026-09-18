@@ -569,10 +569,9 @@ func writeMacOSAppTree(bundlePath string, app map[string][]byte) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("creating the directory for %q: %w", name, err)
 		}
-		mode := os.FileMode(0o644)
-		if strings.HasPrefix(name, "Contents/MacOS/") || name == "Contents/Resources/bx-cli" || name == "Contents/Resources/bx-bridge" {
-			mode = 0o755
-		}
+		// 与 Guardian 主持的那条升级路径(update.stageApp)共用同一份判据 ——
+		// 两个写者两份清单正是 2026-09-18 那个 bug 的形状,而窄的那份在常规路径上。
+		mode := os.FileMode(updatepkg.MacOSAppFileMode(name))
 		if err := os.WriteFile(target, content, mode); err != nil {
 			return fmt.Errorf("writing %q: %w", name, err)
 		}

@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"strings"
 
@@ -135,4 +136,34 @@ func validateMacOSPackagePath(name string) error {
 		return fmt.Errorf("macOS package contains unsafe path %q", name)
 	}
 	return nil
+}
+
+// MacOSAppFileMode 说出 Bx.app 里某个文件该用什么权限位。
+//
+// **它是全仓唯一一份判据,而此前有两份。** Guardian 主持的那条升级路径
+// (stageApp)只给 `Contents/MacOS/BxMenu` 加执行位;直装那条
+// (internal/cli 的 writeMacOSAppTree)还认 `Resources/bx-cli` 与 `Resources/bx-bridge`
+// —— 而**窄的那份恰好是保护开着时走的常规路径**。
+//
+// 真机代价(2026-09-18,项目所有者的 Mac):一次正常升级之后
+// `Contents/Resources/bx-cli` 是 0644,而 `upgradeSwitchCommand` —— 产品自己给出的、
+// 用来收掉 Guardian 版本漂移的那条命令 —— 正是直接执行它,于是用户照着敲得到
+// `command not found`。一条指向不存在/跑不动的命令的提示,是这个仓库反复罚过的
+// 那一类;这次它出在**修复指引**上,而读到它的人正处在「升级只做了一半」的时刻。
+func MacOSAppFileMode(name string) fs.FileMode {
+	if macOSAppExecutables[name] {
+		return 0o755
+	}
+	return 0o644
+}
+
+// macOSAppExecutables 是 Bx.app 里需要可执行位的那几个。
+//
+// `Contents/MacOS/BxMenu` 是菜单进程本身;`Resources/bx-cli` 与 `Resources/bx-bridge`
+// 是安装载荷,**但 bx-cli 会被直接执行**(见上)。其余(Info.plist、release.json、
+// 图标)是数据。
+var macOSAppExecutables = map[string]bool{
+	"Contents/MacOS/BxMenu":        true,
+	"Contents/Resources/bx-cli":    true,
+	"Contents/Resources/bx-bridge": true,
 }
