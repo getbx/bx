@@ -100,7 +100,13 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     private func ensureWindow() -> NSWindow {
         if let window { return window }
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
+            // 580 而不是 420:这一行要装下勾选框 + 组名 + **整句**副标题 + N/M + 按钮,
+            // 而副标题正是 2026-09-14 定下来回答「开了会怎样」的那句话。420 下三条
+            // 预设副标题**全部**在句子中间被截断(离屏快照量到:需要 ~347pt,实得
+            // 218~269pt)—— 那个设计在默认宽度下 100% 失效,用户永远只读到半句。
+            // 加宽而不是折成两行:「一组仍然一行」是同一次决定的另一半,而当初
+            // 拒绝两行的理由(那行多半是空的)已经随「恒非空」消失了。
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 320),
             // **`.resizable` 与那一行的 toolTip 是同一件事的两半**:规则那一行
             // 的说明会截断,而这个窗口不横向滚动 —— 少了把窗口拉宽这条出路,
             // 被截掉的那半句就永久不可见了。
