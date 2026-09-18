@@ -3182,3 +3182,61 @@ func TestDescriptorRuntimeFieldsValidated(t *testing.T) {
 		}
 	})
 }
+
+// 健康门拒绝更新时,**病因要进 Guardian 日志,码要进响应体** —— 此前两样都没有。
+//
+// 真机代价(2026-09-17,项目所有者的 Mac):Core 的 routes_installed 卡在 false
+// (见 supervisor 那条 Rehijack 修复),`health.Wait` 因此算出了一句精确的话
+// ——「core health check timed out after 20s: core routes are not installed」——
+// 而 Update 把 err 整个丢掉,只 `return newUpdateError("update_runtime_refresh_failed")`。
+// 两个后果叠在一起,用户与排查者手上一条线索都没有:
+//
+//   - Guardian 日志那行成了 `guardian_mutation_failed err=update_runtime_refresh_failed`
+//     —— 只有码,没有病因,而 2026-08-05 立的不变量原话是「完整错误写进 Guardian 日志」;
+//   - 响应体连那个码都没有:`failureCodeForError` 只认两个哨兵,而 Update 从不走
+//     `needsAttention`,于是 LastError 那条兜底也空着。菜单上是一句
+//     「guardian operation failed」加三百字通用排查。
+//
+// 两条断言各堵一头,**而且刻意不合并**:病因只许出现在 `%v` 里(handler 打的就是
+// 它,日志是 0600 root:wheel),响应体那半仍然只拿码 —— 发布面一寸没扩。
+func TestUpdateHealthGateFailureKeepsItsCauseForTheLogAndItsCodeForTheBody(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.health.failVersions = map[string]error{
+		"v1": errors.New("core health check timed out after 20s: core routes are not installed"),
+	}
+
+	result, err := env.manager.Update(context.Background(), env.request)
+	if err == nil {
+		t.Fatal("健康门失败时 Update 必须报错")
+	}
+	if !strings.Contains(err.Error(), "core routes are not installed") {
+		t.Fatalf("错误里没有病因 —— Guardian 日志那行因此什么也不说: %v", err)
+	}
+	if got := failureCodeForError(err); got != "update_runtime_refresh_failed" {
+		t.Fatalf("failureCodeForError = %q, want %q —— 响应体因此连码都拿不到",
+			got, "update_runtime_refresh_failed")
+	}
+	assertSecretFreeUpdateValues(t, result, err, env.manager.Status())
+}
+
+// 同一道门有三种失败方式(Wait 报错 / PID 对不上 / 版本对不上),而它们此前
+// **在输出上完全一样**。后两种连 err 都没有,所以「把 err 带上」这一条修不到它们:
+// 病因必须是这道门自己说出来的。
+func TestUpdateHealthGateSaysWhichOfItsThreeConditionsFailed(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	// Wait 成功,但答的是另一个 PID —— 那说明应答的不是我们要更新的那个 Core。
+	env.health.runtimeByVersion = map[string]supervisor.RuntimeState{
+		"v1": updateRuntime(999, "v1"),
+	}
+
+	_, err := env.manager.Update(context.Background(), env.request)
+	if err == nil {
+		t.Fatal("答话的 Core 不是要更新的那个,Update 必须报错")
+	}
+	if failureCodeForError(err) != "update_runtime_refresh_failed" {
+		t.Fatalf("码 = %q", failureCodeForError(err))
+	}
+	if !strings.Contains(err.Error(), "999") {
+		t.Fatalf("没说出是哪一项对不上(应点名那个 PID): %v", err)
+	}
+}

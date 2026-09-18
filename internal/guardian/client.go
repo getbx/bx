@@ -373,6 +373,20 @@ var guardianCodeHints = map[string]string{
 	maintenanceHoldClearFailedCode: "the maintenance hold could not be cleared, so protection was not turned on (while the hold stands, a Core that exits is never brought back): " +
 		"check that " + defaultMaintenanceHoldPath + " and its directory are writable (ls -l /var/lib/bx), " +
 		"and if need be sudo rm -f " + defaultMaintenanceHoldPath + " then retry " + elevate.Prefix + "bx up",
+	// 健康门拒绝的那一档。**措辞只说 bx 观测到什么,不断言哪里坏了** —— 三种
+	// 失败方式(健康检查报错 / PID 对不上 / 版本对不上)都落这个码,而它们指向的
+	// 不是同一件事;精确那一句在 Guardian 日志里。
+	//
+	// 出路点名 down/up 是有据的:这道门读的是 Core 报的运行时事实,而那里面
+	// 至少有一位(routes_installed)在一次失败的路由重装之后会**永久**卡住,
+	// 重启 Core 是今天唯一能把它清掉的办法(见 CLAUDE.md 那条,拆到一半才失败
+	// 的那一支至今没有自愈路径)。
+	"update_runtime_refresh_failed": "Guardian refused the update because the running Core did not report a healthy runtime in time — " +
+		"nothing was installed and protection was left exactly as it was. " +
+		"Which condition failed is on the guardian_mutation_failed line: sudo tail -50 " + install.GuardianStderrLogPath + ". " +
+		"If it names a runtime flag rather than the tunnel, " + elevate.Prefix + "bx down followed by " + elevate.Prefix + "bx up restarts the Core and clears it, " +
+		"after which the update can be retried",
+
 	// recoveryBlocked 是**锁存**的,而且 **Up 与 Down 双双短路**(manager.go:866
 	// 的注释原话)。这条提示此前写着「只有 down 会清掉这个锁存状态」——
 	// **那是假的**:Down 在自己那句 `if m.recoveryBlocked` 上就 return 了

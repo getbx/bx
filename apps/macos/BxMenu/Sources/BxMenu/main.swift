@@ -3038,11 +3038,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// **那句「Run Doctor to collect diagnostics.」不在这里加。**
+    /// showFailure 是所有失败弹窗的唯一出口,它自己会补上;这里再加一遍,用户
+    /// 读到的就是同一句话连着出现两次 —— 2026-09-17 真机截图里就是这样。
     private func updateFailureMessage(_ detail: String?) -> String {
         guard let detail, !detail.isEmpty else {
-            return "bx could not complete the update. Run Doctor to collect diagnostics."
+            return "bx could not complete the update."
         }
-        return detail + "\n\nRun Doctor to collect diagnostics."
+        return detail
     }
 
     @objc private func quitBx() {
