@@ -5,8 +5,9 @@ package supervisor
 import (
 	"context"
 	"os/exec"
-	"regexp"
 	"strings"
+
+	"github.com/getbx/bx/internal/macnetprobe"
 
 	"github.com/getbx/bx/internal/stats"
 )
@@ -70,46 +71,19 @@ func darwinPacketTunnelWarning(ctx context.Context) stats.Warning {
 	return stats.Warning{}
 }
 
-var darwinGuardTailscaleRouteRe = regexp.MustCompile(`(?m)^\s*(100\.64(?:\.0\.0)?/10|100\.100\.100\.100)\s+`)
-
 func darwinHasTailscaleOverlayRoute(routes string) bool {
-	return darwinGuardTailscaleRouteRe.MatchString(routes)
+	return macnetprobe.HasTailscaleOverlayRoute(routes)
 }
 
 func darwinSystemProxyEnabled(scutilProxyOut string) bool {
-	for _, line := range strings.Split(scutilProxyOut, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "HTTPEnable : 1" || line == "HTTPSEnable : 1" || line == "SOCKSEnable : 1" {
-			return true
-		}
-	}
-	return false
+	return macnetprobe.SystemProxyEnabled(scutilProxyOut)
 }
 
-var darwinGuardNetworkServiceLineRe = regexp.MustCompile(`^\*\s+\((Connected|Connecting)\)\s+(.+)$`)
-
-// darwinGuardServiceDisplayNameRe 取 scutil 那一行里引号中的显示名。
-var darwinGuardServiceDisplayNameRe = regexp.MustCompile(`"([^"]+)"`)
-
+// darwinConnectedNetworkService 是 macnetprobe 的薄壳 —— **判定只有一份**。
+// 此前这里与 internal/platformcheck 各有一份逐字拷贝,改了一处另一处不跟,于是
+// `bx status` 与 `bx doctor` 对同一个事实说了两句不一样的话(2026-09-18 真机)。
 func darwinConnectedNetworkService(scutilNCListOut string) string {
-	for _, line := range strings.Split(scutilNCListOut, "\n") {
-		line = strings.TrimSpace(line)
-		matches := darwinGuardNetworkServiceLineRe.FindStringSubmatch(line)
-		if len(matches) != 3 {
-			continue
-		}
-		tail := strings.TrimSpace(matches[2])
-		// **这句话是常驻的**(`bx status` / `bx doctor` / 菜单三处),而 scutil
-		// 那一行的尾巴是给列对齐用的:UUID、括号里的 bundle id、一长串填充空格,
-		// 最后把同一个 bundle id 再印一遍。用户要的只有引号里那个显示名。
-		if name := darwinGuardServiceDisplayNameRe.FindStringSubmatch(tail); len(name) == 2 {
-			return name[1]
-		}
-		// 认不出显示名**绝不返回空串** —— 那会让「另一个 VPN 正开着」这条告警
-		// 整个消失,而它正是这个函数存在的理由。退路是原文,只压掉多余空白。
-		return strings.Join(strings.Fields(tail), " ")
-	}
-	return ""
+	return macnetprobe.ConnectedNetworkService(scutilNCListOut)
 }
 
 func darwinAnyProcessDetected(ctx context.Context, patterns []string) bool {

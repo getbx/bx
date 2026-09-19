@@ -2893,6 +2893,43 @@ brief 假设的「已经带了」),于是菜单那半说不出是哪台服务器
 ⑤ **「读不到配置」仍落 `other`** —— 只有 `config.Parse` 失败挂了 `ErrConfig`,
 文件不在 / 权限不够是另一种故障(多半是「还没 setup 过」),借 `config_unusable`
 就是叫用户去改一个他还没写过的文件。
+## macOS 共存检查:同一份判据别再写两遍(2026-09-18,真机撞到)
+
+`bx status` 与 `bx doctor` 对**同一个事实**说了两句不一样的话:
+
+```
+bx status →  Notice  macOS VPN service active: Tailscale
+bx doctor →  [WARN]  macOS VPN service connected: 8B24B74E-… "Tailscale"   [VPN:…]
+```
+
+根因是 `internal/supervisor/network_guard_darwin.go`(喂 `bx status`)与
+`internal/platformcheck/darwin.go`(喂 `bx doctor` 与菜单 Checks 页)里**四个函数
+逐字重复**;同日修了前者的措辞而后者没跟上。**两边的测试都绿** —— 因为两边各测各
+的那一份。
+
+三个**纯解析**判据下沉成叶子包 `internal/macnetprobe`(`ConnectedNetworkService` /
+`SystemProxyEnabled` / `HasTailscaleOverlayRoute`),两处都变薄壳;`darwinAnyProcessDetected`
+要 exec,不是解析,留在原地。守卫 `TestTheseJudgementsExistOnlyHere` 用 git grep 断言
+**本包之外没有第二份同样的正则**(薄壳可以很多,自己解析的不许有第二个),并带一条
+「本包自己那几个正则要真的在」的下限 —— 它当场抓到我漏删的一处残留正则,以及「新包
+还没 git add,git grep 看不见」这种守卫自己失明的情形。
+
+**同一轮按真机输出修掉三条用户读不懂的话**:① `rule dead rules` 打的是
+「**14 days of cumulative uptime, short of 14 days**」—— `roundDays` 用 `%.0f`
+四舍五入,13.6 天被说成 14,而门槛也是 14。改成向下取整:在一道「还不能下结论」
+的门上**少说自己的进度是安全方向**。② 三处 hint 写着「answered by tunnel_claims」,
+而 `tunnel_claims` 那条 check 在非 root 的报告里根本不出现 —— **一句指向用户看不见
+的东西的提示,与指向不存在的命令是同一类**。③ 非 root 跑 `bx doctor`(它**刻意**
+允许非 root)会在一份全绿的报告末尾打出
+`Diagnostics archive failed: mkdir …: permission denied`,用户读到的是「doctor 失败
+了」;现在如实说 `(diagnostics archive skipped: it needs sudo bx doctor)` ——
+**「跑不了」与「跑了没过」必须分开**。
+
+**真机上还看得见、但没动的两条**(它们是产品判断,不是缺陷):`bx status` 顶上那行
+`Loop  last observed 1m35s ago · no divergence (unchanged for 58 rounds) · scanned 1 Core
+process(es)` 是调谐环的内部记账,用户读不出该做什么、也无事可做 —— 按「只在真有问题
+时才占地方」它不该常驻;以及 `Server` 与 `Via` 两行把同一个 IP 印了三遍。
+
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,

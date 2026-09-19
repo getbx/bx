@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/netip"
@@ -4974,7 +4975,17 @@ func autoArchiveAfterClientCommand(command string, commandErr *error, announce b
 	dir, err := archiveClientLogsWithReason(defaultLogArchiveRoot(), command)
 	if err != nil {
 		if announce || (commandErr != nil && *commandErr != nil) {
-			fmt.Fprintf(os.Stderr, "Diagnostics archive failed: %v\n", err)
+			// **「没权限」不是失败,是没做。** 归档目录在 /Library/Logs 下,普通
+			// 用户写不进去;而 `bx doctor` 本身是**刻意**允许非 root 跑的。上一版
+			// 在一份全绿的报告末尾打出
+			// `Diagnostics archive failed: mkdir …: permission denied`,
+			// 用户读到的是「doctor 失败了」(2026-09-18 真机)。
+			// 「跑不了」与「跑了没过」必须分开,这是本仓库反复立过的同一条。
+			if errors.Is(err, fs.ErrPermission) && os.Geteuid() != 0 {
+				fmt.Fprintf(os.Stderr, "(diagnostics archive skipped: it needs %sbx %s)\n", elevate.Prefix, command)
+			} else {
+				fmt.Fprintf(os.Stderr, "Diagnostics archive failed: %v\n", err)
+			}
 		}
 		return
 	}
