@@ -73,16 +73,16 @@ ACTUAL_BRIDGE_SHA=$(shasum -a 256 "$RESOURCES/bx-bridge" | awk '{print $1}')
 [[ "$RELEASE_CLI_SHA" == "$ACTUAL_CLI_SHA" ]] || fail "release.json bx-cli digest mismatch"
 [[ "$RELEASE_BRIDGE_SHA" == "$ACTUAL_BRIDGE_SHA" ]] || fail "release.json bx-bridge digest mismatch"
 
-grep -qF "install.sh 不会执行 bx setup" "$RELEASE_DIR/README.txt" || fail "README missing no-setup note"
+grep -qF "install.sh never runs bx setup" "$RELEASE_DIR/README.txt" || fail "README missing no-setup note"
 # 升级路径改成「一次做完」之后,「不会执行 bx up、不修改 DNS/路由」只对全新安装
 # 成立:覆盖安装到一台已经装过 bx 的机器上时,安装会在用户确认后把保护重启回来。
 # 这里钉住的必须是真话,否则 CI 会把一句假话钉死在发布物里(旧版正是如此:
 # 它 grep 那三句无条件的承诺,谁去改正就撞红)。
-grep -qF "全新安装不启动保护、不修改 DNS/路由" "$RELEASE_DIR/README.txt" || fail "README missing fresh-install network safety note"
-grep -qF "安装会在你确认后重启保护" "$RELEASE_DIR/README.txt" || fail "README missing upgrade-restarts-protection disclosure"
+grep -qF "does not turn protection on and does not touch DNS or routing" "$RELEASE_DIR/README.txt" || fail "README missing fresh-install network safety note"
+grep -qF "protection is restarted after you confirm" "$RELEASE_DIR/README.txt" || fail "README missing upgrade-restarts-protection disclosure"
 grep -qF "Install bx" "$RELEASE_DIR/README.txt" || fail "README missing Install bx menu note"
 grep -qF "sudo bx uninstall" "$RELEASE_DIR/README.txt" || fail "README missing uninstall pointer"
-grep -qF "普通 macOS 用户身份运行" "$RELEASE_DIR/README.txt" || fail "README missing non-root install note"
+grep -qF "Run install.sh as your normal macOS user" "$RELEASE_DIR/README.txt" || fail "README missing non-root install note"
 
 grep -qF "app-install --app-source" "$RELEASE_DIR/install.sh" || fail "install.sh missing app-install invocation"
 
@@ -112,12 +112,12 @@ grep -qF -- '--yes|-y) ASSUME_YES="--yes"' "$RELEASE_DIR/install.sh" || fail "in
 # 用户明确说「不」时 app-install 退出 2;脚本必须据此不再打印「完成」。
 grep -qF 'if [ "$rc" -eq 2 ]' "$RELEASE_DIR/install.sh" || fail "install.sh must branch on the explicit-cancel exit code"
 ! grep -qE 'app-install .*--yes' "$RELEASE_DIR/install.sh" || fail "install.sh must not hardcode --yes"
-grep -qF "全新安装不会启动保护" "$RELEASE_DIR/install.sh" || fail "install.sh missing fresh-install protection note"
-grep -qF "再停止保护、换好文件、重启保护服务" "$RELEASE_DIR/install.sh" || fail "install.sh missing upgrade outage disclosure"
+grep -qF "A fresh install does not turn protection on" "$RELEASE_DIR/install.sh" || fail "install.sh missing fresh-install protection note"
+grep -qF "the files are swapped, the service restarts" "$RELEASE_DIR/install.sh" || fail "install.sh missing upgrade outage disclosure"
 ! grep -qF "bx setup" "$RELEASE_DIR/install.sh" || fail "install.sh must not invoke bx setup"
 ! grep -qF "bx up " "$RELEASE_DIR/install.sh" || fail "install.sh must not invoke bx up"
 ! grep -qF "networksetup" "$RELEASE_DIR/install.sh" || fail "install.sh must not touch networksetup"
-grep -qF "架构不匹配" "$RELEASE_DIR/install.sh" || fail "install.sh missing architecture preflight"
+grep -qF "wrong architecture" "$RELEASE_DIR/install.sh" || fail "install.sh missing architecture preflight"
 grep -qF '[ "$(id -u)" -ne 0 ]' "$RELEASE_DIR/install.sh" || fail "install.sh missing non-root install guard"
 grep -qF '[ -x "$DIR/Bx.app/Contents/Resources/bx-cli" ]' "$RELEASE_DIR/install.sh" || fail "install.sh missing bx-cli preflight"
 
