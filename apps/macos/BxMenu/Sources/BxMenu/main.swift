@@ -1012,10 +1012,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let table = ruleRows(from: list, failing: failing, customOnly: true)
         if forceShow {
             rulesWindow.show(
-                rows: groups, ruleRows: table, configPath: list.configPath, caveatNote: caveat)
+                rows: groups, ruleRows: table, configPath: list.configPath, caveatNote: caveat,
+                global: list.global)
         } else {
             rulesWindow.refreshIfVisible(
-                rows: groups, ruleRows: table, configPath: list.configPath, caveatNote: caveat)
+                rows: groups, ruleRows: table, configPath: list.configPath, caveatNote: caveat,
+                global: list.global)
         }
     }
 

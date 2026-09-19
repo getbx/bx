@@ -196,6 +196,9 @@ type RuleList struct {
 	//
 	// **nil 与空报告是两件事**:nil = 这一版没做 / 配置读不到 =「没查」;
 	// 空报告 = 查过了、没有问题。压成同一个东西正是这个功能最贵的教训。
+	// Global 说这台机器是不是 global 模式 —— nil = 这一版 Guardian 没说。
+	// 模式改变的是这份列表的**含义**,见服务端 rulesResponse.Global 那段。
+	Global *bool              `json:"global,omitempty"`
 	Review *rulereview.Report `json:"review"`
 }
 

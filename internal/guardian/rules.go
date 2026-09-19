@@ -26,6 +26,16 @@ type rulesResponse struct {
 	// ConfigPath 供界面提供「在 Finder 中显示」。发布出去而不是让菜单自己猜,
 	// 与 stats.Report.ConfigPath 同一条纪律。
 	ConfigPath string `json:"config_path,omitempty"`
+	// Global 说这台机器是不是 global 模式。
+	//
+	// **它在这里,是因为模式改变的是这份列表的含义,不是别的**:global 下用户那
+	// 几条 direct 规则**就是**全部的直连集合;split 下它们是叠在一万两千条内建
+	// china 列表之上的例外。同一份列表,两种意思 —— 而这个混淆真实造成过一次
+	// 错判(体检曾把 22 条正在工作的规则报成「被 china 列表覆盖」,而那台机器是
+	// global、那份列表整个不生效)。
+	//
+	// **指针**:nil = 这一版没说 / 配置读不出来,不是「不是 global」。
+	Global *bool `json:"global,omitempty"`
 	// Review 是 Guardian 自己做的规则体检(rulereview.go)。**刻意不是
 	// omitempty 之外的形状**:nil = 「这一版没做/读不到配置」,而一份**空**
 	// 报告是「查过了、没有问题」—— 两者压成同一个东西正是这个功能最贵的教训。
@@ -145,6 +155,7 @@ func serveRuleList(w http.ResponseWriter, configPath string, requiresRestart boo
 		Groups:          groups,
 		Custom:          custom,
 		ConfigPath:      configPath,
+		Global:          globalModeFlag(configPath),
 		Review:          reviewRulesAt(configPath, nil),
 		RequiresRestart: requiresRestart,
 	})
@@ -242,4 +253,13 @@ func groupState(live, total, stale int) string {
 	default:
 		return "partial"
 	}
+}
+
+// globalModeFlag 把「问不出来」表达成 nil。
+func globalModeFlag(configPath string) *bool {
+	global, known := configIsGlobal(configPath)
+	if !known {
+		return nil
+	}
+	return &global
 }
