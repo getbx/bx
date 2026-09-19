@@ -88,7 +88,7 @@ for arg in "$@"; do
     *) echo "usage: ./install.sh [--yes]" >&2; exit 2 ;;
   esac
 done
-echo "This installs Bx.app into /Applications and sets bx up (one administrator prompt)."
+echo "This installs Bx.app into /Applications and configures it (one administrator prompt)."
 echo "Your connection settings are left alone. A fresh install does not turn protection on."
 echo "If bx is already installed here, you are asked first, and then protection is stopped,"
 echo "the files are swapped, the service restarts and protection returns to how you had it"
@@ -148,35 +148,58 @@ SCRIPT
 cat > "$RELEASE_DIR/README.txt" <<TXT
 bx macOS $ARCH release ($VERSION)
 
-Install (the .dmg is the easy way):
+FIRST, THE ONE THING THAT WILL LOOK BROKEN
+------------------------------------------
+The first time you open bx, macOS will refuse to run it. There are two different
+messages and they mean opposite things:
+
+  "bx cannot be opened because the developer cannot be verified"
+      -> This is expected. bx is not signed with an Apple Developer ID.
+         Allow it: System Settings -> Privacy & Security -> scroll down to the
+         bx entry -> Open Anyway.
+
+  "bx is damaged and can't be opened. You should move it to the Trash"
+      -> Do NOT allow this one, and do not run any xattr command you find online:
+         that message means the package was modified after it was built.
+         Download it again from the official releases page.
+
+Install (the .dmg is the easy way)
+----------------------------------
   1. Open bx-macos-ARCH.dmg, drag Bx.app onto Applications and double-click it.
-     It walks you through the rest — no terminal needed.
+     It walks you through the rest - no terminal needed.
   2. Or: drag the Bx.app in this folder to /Applications, open it and click "Install bx...".
   3. Or: run ./install.sh (the same thing, from a terminal).
 
-The first time you open it macOS will say the developer cannot be verified — bx is not
-signed with an Apple Developer ID. To allow it: System Settings -> Privacy & Security ->
-scroll down to the bx entry -> Open Anyway.
-(That is NOT the same as "is damaged and should be moved to the Trash". If you see that
-one, the package was tampered with — do not allow it, download it again.)
-
-What installing does:
+What installing does
+--------------------
   Puts Bx.app in /Applications, installs the bx-cli inside it as the system bx command,
   and sets up the Guardian protection service and the login item. It does not touch your
-  connection settings. A fresh install does not turn protection on.
-  If bx is already installed on this machine (the Guardian service is loaded, whether or
-  not protection is on — i.e. an upgrade), you are asked first; then protection stops, the
-  files are swapped, the service restarts and protection returns to how you had it. If it
-  was on, the network drops for a few seconds in between.
+  connection settings.
 
-After installing:
+After installing
+----------------
   Open the bx icon in the menu bar and choose Set Up bx... to continue.
 
-Uninstall:
+Uninstall
+---------
   sudo bx uninstall
   (see ./uninstall.sh)
 
-Notes:
+Notes
+-----
+  Run install.sh as your normal macOS user (it asks for administrator rights once, via
+  sudo, when it needs them).
+  Installing over a machine that already has bx (the Guardian service is loaded, whether
+  or not protection is on) asks you first. Where there is no terminal to ask in
+  (non-interactive SSH, CI) install.sh stops with an error rather than pretending it
+  worked - if you mean to upgrade, run ./install.sh --yes.
+  install.sh never runs bx setup: not one character of your connection settings changes.
+  A fresh install does not turn protection on and does not touch DNS or routing. When you
+  install over a machine that already has bx, protection is restarted after you confirm -
+  DNS and routing are taken over again as a result, which is what resuming protection means.
+  An older bx client (installed before this release) will fail to unpack this package with
+  bx update --package and say so cleanly; that is expected (pre-1.0). Install it again the
+  way this README describes instead.
 TXT
 
 chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh"

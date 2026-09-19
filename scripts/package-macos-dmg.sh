@@ -25,7 +25,10 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 ditto "$RELEASE_DIR/Bx.app" "$STAGE/Bx.app"
 ln -s /Applications "$STAGE/Applications"
-cp "$RELEASE_DIR/README.txt" "$STAGE/README.txt"
+# **名字要让人想点开它。** 那段「macOS 会说无法验证开发者、去哪里放行」的说明
+# 是首装唯一一道过不去的坎,而它此前叫 README.txt —— 没有人会在拖完图标之后去
+# 点开一个叫 README 的文件,于是他卡在系统弹窗前,而说明就在旁边。
+cp "$RELEASE_DIR/README.txt" "$STAGE/Open me first - macOS will say bx is unverified.txt"
 
 rm -f "$DMG"
 hdiutil create -volname "bx $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
