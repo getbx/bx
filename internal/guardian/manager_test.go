@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -296,9 +297,9 @@ func TestManagerDNSContextFailureUsesBoundedBarrierCleanupContext(t *testing.T) 
 		{
 			name: "deadline",
 			new: func() (context.Context, context.CancelFunc, func(context.Context) error) {
-				ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
-				return ctx, cancel, func(ctx context.Context) error {
-					<-ctx.Done()
+				ctx := newExpiringOnDemandContext()
+				return ctx, func() {}, func(ctx context.Context) error {
+					ctx.(*expiringOnDemandContext).expire()
 					return ctx.Err()
 				}
 			},
@@ -313,10 +314,23 @@ func TestManagerDNSContextFailureUsesBoundedBarrierCleanupContext(t *testing.T) 
 				env.barrier.failIfContextDone = true
 				ctx, cancel, fail := contextFailure.new()
 				t.Cleanup(cancel)
-				dnsFailure.configure(env.dns, fail)
+				var dnsReached atomic.Bool
+				dnsFailure.configure(env.dns, func(ctx context.Context) error {
+					dnsReached.Store(true)
+					return fail(ctx)
+				})
 
 				if err := env.manager.Up(ctx); err == nil {
 					t.Fatal("Up succeeded after DNS request context failure")
+				}
+				// **先问「到了没有」,再问「到了之后做对了没有」。**
+				//
+				// Up 在走到 DNS 之前就失败时,走的是另一条根本不装恢复屏障的路,
+				// 于是下面那句会报「没留下一个已证实的屏障」—— 一句指着屏障、
+				// 而真因是「这条测试守的那一跳压根没被执行到」的话。CI 上红的
+				// 就是它(2026-09-18,ubuntu),而读的人会去查屏障。
+				if !dnsReached.Load() {
+					t.Fatal("Up 没走到 DNS 那一跳就失败了 —— 这条测试要守的东西一次都没被执行到")
 				}
 				if !env.manager.barrierProven() {
 					t.Fatal("DNS context failure did not leave a proven barrier")
@@ -2973,5 +2987,49 @@ func TestDNSBaselineAsksNobody(t *testing.T) {
 		if strings.HasPrefix(e, "dns.") {
 			t.Errorf("构造 Manager 时问了 DNS 管理器(%s)—— 启动路径不许有 I/O", e)
 		}
+	}
+}
+
+// expiringOnDemandContext 是一个**由调用方决定何时到期**的 context,到期后
+// `Err()` 报 `context.DeadlineExceeded`。
+//
+// **为什么不用 `context.WithTimeout`**:上面那两个子测试要证明的是「DNS 那一跳
+// 拿到的 context 死掉时,屏障清理必须另起一个活的 context」—— 它要求 context
+// **在 DNS 那一跳**死掉。挂钟预算给的却是「在某个绝对时刻死掉」,两者只在
+// `Up` 能在预算内走到 DNS 时才等价,而那取决于跑它的那台机器有多忙:2026-09-18
+// CI 的 ubuntu 那条腿上 40ms 在 `Up` 走到 DNS 之前就到期了,失败于更早的一步,
+// 而那条路不装恢复屏障 —— 测试红在「没留下一个已证实的屏障」,报的不是它守的
+// 那件事。本机(darwin 72 次,含 8 核满载)与 linux 容器(100 次)都复现不出来,
+// 把 40ms 调大只是把同一个竞态推远一点。
+//
+// 兄弟子测试 "canceled" 从来没有这个问题:它的 `cancel()` 由 `fail` 自己调,
+// 时点就是 DNS 那一跳。这里照它,只是把错误形状换成 `DeadlineExceeded` ——
+// 那正是 "deadline" 这一支存在的理由。
+//
+// 刻意**不**报一个 `Deadline()`:下游那个清理 context 走
+// `context.WithTimeout(context.WithoutCancel(ctx), …)`,而 `WithoutCancel`
+// 本就不继承父 deadline;报一个假的只会给「谁读了它」留一个说不清的口子。
+type expiringOnDemandContext struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newExpiringOnDemandContext() *expiringOnDemandContext {
+	return &expiringOnDemandContext{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *expiringOnDemandContext) expire() {
+	c.once.Do(func() { close(c.done) })
+}
+
+func (c *expiringOnDemandContext) Done() <-chan struct{} { return c.done }
+
+func (c *expiringOnDemandContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
 	}
 }
