@@ -2947,6 +2947,33 @@ bx doctor →  [WARN]  macOS VPN service connected: 8B24B74E-… "Tailscale"   [
 函数被一条绿测试盖着,真机输出一个字没变 —— 是拿新二进制去真机上看输出才发现的。
 断言因此下沉到 `Render()` 的**输出行**上,而不是停在那个纯函数上。
 
+## `bx --help` 分组:顶上那一屏只放天天用的(2026-09-18)
+
+把 help 树当用户读了一遍:**28 个命令平铺成一列**,而天天敲的 `up`/`down`/`status`
+排在第 15、16、26 位,前面挤着 `server`/`invite`/`user` 这些装服务端才用的东西。
+
+现在按 `Category` 分组。**urfave 把没有 Category 的命令渲染在最前、且不带标题** ——
+顶上那一组因此是 `up`/`down`/`status`/`update`,其余进
+Diagnose / First run / For agents / Routing rules / Server side / Windows only。
+分类名**按字典序**排(`commandCategories.Less`),顺序不可控,所以别指望用名字排出
+想要的次序;要紧的是日常四条在顶上、相关的聚在一起。
+
+**守卫守的是「新命令不会静默落进顶上那一组」**
+(`TestEveryTopLevelCommandDeclaresWhereItBelongs`)—— 漏填 Category 的后果不是
+「没分组」,是**它看起来像一条天天要用的命令**;另有反向断言禁止 everyday 表里
+留已经不存在的命令。
+
+**两条 leakcheck 的描述从三行压成一行,长解释搬进各自的 `--help`**(`Description`)。
+列表里用户只需要回答一个问题:我该打哪一个。**但 `bx leakcheck` 的 Usage 必须保留
+「browser page」这几个字** —— 既有守卫 `TestLeakCheckCommandIsRegisteredAlongsideLeakCheck`
+钉着它,而我压缩时写成了「opens a page」,当场被它拦下:那条守卫要的性质是「用户
+分得出它会开浏览器」,而「a page」在终端里读起来可以是别的东西。
+
+**顺手补上一条射程外的守卫**:`TestNoHelpTextCarriesMarkdown` —— help 文案里不许有
+markdown 的 `**`(终端不渲染,用户读到的是字面星号)。这条纪律本仓库立过两次
+(corestartadvice 与 leakcheck 各一条),而 **help 文案一直在那两条的射程之外**;
+我给 leakcheck 写 Description 时当场又写进去一对,是看终端输出才发现的。
+
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,
