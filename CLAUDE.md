@@ -3199,6 +3199,22 @@ mode/global 需重劫持,不在此列)」—— 切模式要重启 Core、断网
   偶发红的闸门,正是本节那句「一个会偶发红的闸门比没有闸门更糟」警告的东西。谁
   下次动这条测试,先去比 `release.yml` 与 `ci.yml` 两条腿的 runner 规格与并发度 ——
   那是今天还没查的一格。
+
+  **2026-09-18 第三次,而这一条是确定性写法造成的、已修,判据可复用**:
+  `TestManagerDNSContextFailureUsesBoundedBarrierCleanupContext/ensure/deadline`
+  在 ubuntu 那条腿上红成「DNS context failure did not leave a proven barrier」,
+  而真因与屏障无关。它要证明的是「DNS 那一跳拿到的 context 死掉时,屏障清理必须
+  另起一个活的 context」—— 那要求 context **在 DNS 那一跳**死掉;它用的却是
+  `context.WithTimeout(…, 40ms)`,给的是「在某个绝对时刻死掉」。**两者只在
+  `Up` 能在预算内走到 DNS 时才等价**,而那取决于机器有多忙:预算先到期时 `Up`
+  失败在更早的一步,那条路不装恢复屏障,断言于是红在屏障上 —— 报的不是它守的
+  那件事。**形状叫得出名字:拿挂钟去指定「哪一步」该失败,就是在赌调度。**
+  兄弟子测试 "canceled" 从来没这个问题(它的 `cancel()` 由 `fail` 自己调,
+  时点就是那一跳);修法是照它,换一个由调用方决定何时到期、`Err()` 仍报
+  `DeadlineExceeded` 的 context 替身,错误形状一个字没变。**把 40ms 调大不算修。**
+  顺带补的那条断言值得照抄:`Up` 没走到 DNS 就失败时**当场说出来**,别让它伪装
+  成屏障问题 —— 「断言被满足/被违反,但是因为别的理由」是记档在案的第五种守卫
+  失效写法。复现方式:把那个预算改成 1ns,得到 CI 那句一字不差的话。
  —— 而重跑正是「判据是
   退出码」这条纪律唯一的解毒方式。2026-08-17 抓到并修掉一个:`internal/socks5` 的
   `TestDialerUDPAssociateRelaysDatagrams` 在 1500 次里失败 4 次,根因是 UDP ASSOCIATE
