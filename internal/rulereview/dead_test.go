@@ -205,3 +205,31 @@ func TestDeadCountNeverMergesWithTheOtherFour(t *testing.T) {
 		t.Errorf("RiskyCount = %d, want 1 —— 死规则被算进危险那一类了", rep.RiskyCount)
 	}
 }
+
+// 「还差多少」那句话里,**已有的量永远不许等于或超过门槛** —— 否则它会说出
+// 「14 days of cumulative uptime, short of 14 days」这种自相矛盾的话
+// (2026-09-18 真机上就是这么打的:13.6 天被四舍五入成了 14)。
+func TestTheNotEnoughUptimeMessageNeverContradictsItself(t *testing.T) {
+	for _, uptime := range []time.Duration{
+		deadMinUptime - time.Minute,
+		deadMinUptime - time.Hour,
+		deadMinUptime - 10*time.Hour, // 13.58 天 —— 四舍五入正是它变成 14 的那一档
+	} {
+		ok, why := deadGate(Input{
+			History:          map[RuleKey]RuleCounts{},
+			HistoryUptime:    uptime,
+			HistoryDecisions: deadMinDecisions,
+		})
+		if ok {
+			t.Fatalf("uptime=%v 不该过门", uptime)
+		}
+		have := roundDays(uptime)
+		want := roundDays(deadMinUptime)
+		if have == want {
+			t.Errorf("uptime=%v 时这句话自相矛盾:「%s … short of %s」", uptime, have, want)
+		}
+		if !strings.Contains(why, have) {
+			t.Errorf("uptime=%v: 消息 %q 里没有 %q", uptime, why, have)
+		}
+	}
+}

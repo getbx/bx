@@ -54,11 +54,19 @@ func deadGate(in Input) (bool, string) {
 }
 
 // roundDays 把时长说成人话。报告是给人读的,`336h0m0s` 不是。
+//
+// **向下取整,不四舍五入。** 上一版用 `%.0f`,于是 13.6 天被说成 "14 days",
+// 而门槛也是 14 天 —— 真机上打出来的是
+// 「14 days of cumulative uptime, short of 14 days」,一句自相矛盾的话
+// (2026-09-18,项目所有者的 Mac)。用户读到它只会觉得这东西坏了。
+//
+// 在一道「还不能下结论」的门上,**少说自己的进度是安全方向**:说 13 天而实际
+// 13.9 天,只是让人以为还要多等一点;说 14 天而门槛是 14 天,是自相矛盾。
 func roundDays(d time.Duration) string {
 	if d < 24*time.Hour {
-		return fmt.Sprintf("%.0f hours", d.Hours())
+		return fmt.Sprintf("%d hours", int(d.Hours()))
 	}
-	return fmt.Sprintf("%.0f days", d.Hours()/24)
+	return fmt.Sprintf("%d days", int(d.Hours()/24))
 }
 
 // deadFindings 找出累计命中为零的规则。

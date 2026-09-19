@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/getbx/bx/internal/macnetprobe"
 )
 
 func Collect(ctx context.Context) []Check {
@@ -62,10 +64,8 @@ func darwinTailscaleProcessDetected(ctx context.Context) bool {
 	return darwinAnyProcessDetected(ctx, []string{"Tailscale", "tailscaled"})
 }
 
-var darwinTailscaleRouteRe = regexp.MustCompile(`(?m)^\s*(100\.64(?:\.0\.0)?/10|100\.100\.100\.100)\s+`)
-
 func darwinHasTailscaleOverlayRoute(routes string) bool {
-	return darwinTailscaleRouteRe.MatchString(routes)
+	return macnetprobe.HasTailscaleOverlayRoute(routes)
 }
 
 func darwinRouteGetInterface(out string) string {
@@ -138,21 +138,24 @@ func darwinCompetingTunnelChecks(parent context.Context) []Check {
 			patterns: []string{"Cloudflare WARP", "CloudflareWARP", "warp-svc"},
 			status:   "info",
 			detail:   "Cloudflare WARP is running",
-			hint:     "whether it is taking traffic is answered by tunnel_claims (the routing table), not by this line",
+			// **不点内部 check 名。** 上一版写的是「…answered by tunnel_claims…」,
+			// 而 tunnel_claims 那条在非 root 的报告里根本不出现 —— 一句指向用户
+			// 看不见的东西的提示,与指向不存在的命令是同一类。
+			hint: "whether it is actually carrying your traffic is answered by the routing table, not by this line",
 		},
 		{
 			name:     "wireguard",
 			patterns: []string{"WireGuard"},
 			status:   "info",
 			detail:   "WireGuard is running",
-			hint:     "whether it is taking traffic is answered by tunnel_claims (the routing table); a WireGuard tunnel is only a competitor when its AllowedIPs cover public space",
+			hint:     "whether it is taking traffic is answered by the routing table; a WireGuard tunnel is only a competitor when its AllowedIPs cover public space",
 		},
 		{
 			name:     "openvpn",
 			patterns: []string{"OpenVPN", "openvpn"},
 			status:   "info",
 			detail:   "OpenVPN is running",
-			hint:     "whether it is taking traffic is answered by tunnel_claims (the routing table); a split-tunnel OpenVPN coexists with bx",
+			hint:     "whether it is taking traffic is answered by the routing table; a split-tunnel OpenVPN coexists with bx",
 		},
 	} {
 		if darwinAnyProcessDetected(ctx, detector.patterns) {
@@ -198,7 +201,7 @@ func darwinPacketTunnelCheck(ctx context.Context) Check {
 			Name:   "packet_tunnel",
 			Status: "warn",
 			Detail: "macOS VPN service connected: " + name,
-			Hint:   "whether it is taking public traffic is answered by tunnel_claims (the routing table); a split-tunnel VPN coexists with bx",
+			Hint:   "whether it is taking public traffic is answered by the routing table; a split-tunnel VPN coexists with bx",
 		}
 	}
 	return Check{}
@@ -214,17 +217,11 @@ func darwinSystemProxyEnabled(scutilProxyOut string) bool {
 	return false
 }
 
-var darwinNetworkServiceLineRe = regexp.MustCompile(`^\*\s+\((Connected|Connecting)\)\s+(.+)$`)
-
+// darwinConnectedNetworkService 是 macnetprobe 的薄壳 —— **判定只有一份**。
+// 此前这里与 internal/supervisor 各有一份逐字拷贝,改了一处另一处不跟,于是
+// `bx doctor` 与 `bx status` 对同一个事实说了两句不一样的话(2026-09-18 真机)。
 func darwinConnectedNetworkService(scutilNCListOut string) string {
-	for _, line := range strings.Split(scutilNCListOut, "\n") {
-		line = strings.TrimSpace(line)
-		matches := darwinNetworkServiceLineRe.FindStringSubmatch(line)
-		if len(matches) == 3 {
-			return strings.TrimSpace(matches[2])
-		}
-	}
-	return ""
+	return macnetprobe.ConnectedNetworkService(scutilNCListOut)
 }
 
 func darwinAnyProcessDetected(ctx context.Context, patterns []string) bool {
