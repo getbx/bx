@@ -2925,10 +2925,27 @@ bx doctor →  [WARN]  macOS VPN service connected: 8B24B74E-… "Tailscale"   [
 了」;现在如实说 `(diagnostics archive skipped: it needs sudo bx doctor)` ——
 **「跑不了」与「跑了没过」必须分开**。
 
-**真机上还看得见、但没动的两条**(它们是产品判断,不是缺陷):`bx status` 顶上那行
-`Loop  last observed 1m35s ago · no divergence (unchanged for 58 rounds) · scanned 1 Core
-process(es)` 是调谐环的内部记账,用户读不出该做什么、也无事可做 —— 按「只在真有问题
-时才占地方」它不该常驻;以及 `Server` 与 `Via` 两行把同一个 IP 印了三遍。
+**那两条随后也做掉了(同日)**:
+
+- **`Loop` 那行改成稳态沉默**(`reconcileRoundIsQuiet`)。一台健康机器上它每次都长
+  一个样(`no divergence (unchanged for N rounds) · scanned 1 Core process(es)`),
+  用户读不出该做什么、也无事可做 —— 每次都在的东西会被训练成墙纸,然后把真正要紧
+  的那一次一起淹掉。**「安静」的判据是「没有任何可行动的内容」,不是「没出错」**:
+  报告发霉 / 被栅栏挡住 / 提议过动作 / 真的执行过 / 有项目没观测到 / Core 进程数
+  不是 1 / 没数出来 / `UnchangedRounds == 0`(这一轮与上一轮不同,是一次转变),
+  任何一条都要重新开口。守卫两半缺一不可 —— 少了「安静时不说」缺陷原样回来,少了
+  那张「每一种都要开口」的表,一个**干脆永远不说**的实现也能全绿,而那会把发霉的
+  报告与双 Core 一起藏掉。**`bx status --json` 一个字段都没少**:agent 拿全量,
+  人拿信号。
+- **`Via` 不再重复 `Server` 刚说过的地址**(`reality@203.0.113.92  UDP→hysteria2@203.0.113.92`
+  → `reality  UDP→hysteria2`)。**判据是「与 Server 相同才省」,不是无脑去掉 `@`
+  后面的东西** —— `udp.transport` 指向另一台服务器是 bx 支持的真实配置,那时这两个
+  host 的差别恰恰是这一行最值钱的信息。
+
+**这一条改动当场演了一遍第三种失效写法**:那个 helper 写好了、单测绿了,而**调用点
+根本没改**(一次脚本在写盘前抛了异常,替换只在内存里发生过),于是一个零调用方的壳
+函数被一条绿测试盖着,真机输出一个字没变 —— 是拿新二进制去真机上看输出才发现的。
+断言因此下沉到 `Render()` 的**输出行**上,而不是停在那个纯函数上。
 
 ## 约定
 

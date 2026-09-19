@@ -96,12 +96,12 @@ func Render(r Report) string {
 		fmt.Fprintf(&b, "  %-*s%s\n", statusLabelWidth, "Mode", modeLabel(r.Mode))
 	}
 	if r.Transport != "" {
-		fmt.Fprintf(&b, "  %-*s%s", statusLabelWidth, "Via", r.Transport)
+		fmt.Fprintf(&b, "  %-*s%s", statusLabelWidth, "Via", transportWithoutRedundantHost(r.Transport, r.Server))
 		if len(r.Transports) > 1 {
 			fmt.Fprintf(&b, "  (failover %s)", strings.Join(r.Transports, " › "))
 		}
 		if r.UDPTransport != "" {
-			fmt.Fprintf(&b, "  UDP→%s", r.UDPTransport)
+			fmt.Fprintf(&b, "  UDP→%s", transportWithoutRedundantHost(r.UDPTransport, r.Server))
 		}
 		fmt.Fprintln(&b)
 	}
@@ -219,6 +219,29 @@ func RenderNotRunning() string {
 	// elevate.Note() 在有 sudo 的平台上是空串,于是这一行逐字不变;
 	// Windows 上补一句「要在管理员 PowerShell 里跑」—— 裸命令自己说不出它需要提权。
 	return "bx is not running.\n  Start it: " + elevate.Cmd("bx up") + elevate.Note() + "        Check it: bx doctor\n"
+}
+
+// transportWithoutRedundantHost 把 `reality@<host>` 里那个**与 Server 行相同**的
+// 地址省掉,只留传输名。
+//
+// 真机上那一屏是这样的(2026-09-18):
+//
+//	Server  203.0.113.92  (socks 127.0.0.1:64213)
+//	Via     reality@203.0.113.92  UDP→hysteria2@203.0.113.92
+//
+// 同一个地址在相邻两行里印了三遍,一个新信息都没带。
+//
+// **地址不同的时候必须留着** —— `udp.transport` 指向另一台服务器是 bx 支持的真实
+// 配置,那时这两个 host 的差别恰恰是这一行最值钱的信息。所以判据是「与 Server
+// 相同才省」,不是无脑去掉 `@` 后面的东西。
+func transportWithoutRedundantHost(transport, server string) string {
+	if server == "" {
+		return transport
+	}
+	if name, host, ok := strings.Cut(transport, "@"); ok && host == server {
+		return name
+	}
+	return transport
 }
 
 // HumanBytes 把字节数转成人类可读单位。

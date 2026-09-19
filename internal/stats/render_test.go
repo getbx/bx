@@ -147,3 +147,45 @@ func TestRenderSingleTransportNoFailoverBlock(t *testing.T) {
 		t.Errorf("应显当前传输:\n%s", out)
 	}
 }
+
+// Via 那行不再把 Server 行刚说过的地址再印一遍 —— 但**只在真的相同时**。
+func TestViaLineDropsTheAddressOnlyWhenItRepeatsTheServer(t *testing.T) {
+	same := transportWithoutRedundantHost("reality@203.0.113.92", "203.0.113.92")
+	if same != "reality" {
+		t.Fatalf("同一台服务器时应只留传输名, got %q", same)
+	}
+	// **不同的时候那个地址是这一行最值钱的信息**:udp.transport 指向另一台服务器
+	// 是 bx 支持的真实配置,省掉它等于把「UDP 从另一台机器出去」这件事藏起来。
+	other := transportWithoutRedundantHost("hysteria2@203.0.113.7", "203.0.113.92")
+	if other != "hysteria2@203.0.113.7" {
+		t.Fatalf("不同服务器时必须保留地址, got %q", other)
+	}
+	if got := transportWithoutRedundantHost("brook", "203.0.113.92"); got != "brook" {
+		t.Fatalf("没有 @ 的传输名原样返回, got %q", got)
+	}
+	if got := transportWithoutRedundantHost("reality@203.0.113.92", ""); got != "reality@203.0.113.92" {
+		t.Fatalf("Server 未知时不许省, got %q", got)
+	}
+
+	// **断言打在渲染出来的那一行上,不只是这个纯函数上。**
+	// 第一版只测了纯函数 —— 而调用点当时**根本没改**(一次脚本在写盘前抛了异常),
+	// 于是一个零调用方的壳函数被一条绿测试盖着,真机输出一个字没变。
+	// 那正是本仓库列过的第三种失效写法,这次是当场自己犯了一遍。
+	out := Render(Report{
+		Server: "203.0.113.92", SocksAddr: "127.0.0.1:1080",
+		Transport: "reality@203.0.113.92", UDPTransport: "hysteria2@203.0.113.92",
+		TunnelHealthy: true,
+	})
+	if !strings.Contains(out, "Via     reality  UDP→hysteria2") {
+		t.Fatalf("Via 那一行仍在重复 Server 的地址:\n%s", out)
+	}
+	// 反向:地址不同时必须出现在渲染结果里。
+	out = Render(Report{
+		Server: "203.0.113.92", SocksAddr: "127.0.0.1:1080",
+		Transport: "reality@203.0.113.92", UDPTransport: "hysteria2@203.0.113.7",
+		TunnelHealthy: true,
+	})
+	if !strings.Contains(out, "UDP→hysteria2@203.0.113.7") {
+		t.Fatalf("UDP 指向另一台服务器时必须把地址说出来:\n%s", out)
+	}
+}

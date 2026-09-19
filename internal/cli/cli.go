@@ -4352,12 +4352,49 @@ func clientReconcileLine(report clientStatusReport, now time.Time) (string, bool
 	// At 为零的报告不算「跑过一轮」:零时刻正是「从没跑过」的形状,把它渲染成
 	// 「最近观测 490000h 前 · 无差异」既荒唐,又恰好是本任务要消灭的那句假话。
 	if round := report.Reconcile; round != nil && !round.At.IsZero() {
+		// **稳态沉默,转变时开口。** 一台健康机器上这一行每次都长一个样
+		// (`no divergence (unchanged for N rounds) · scanned 1 Core process(es)`),
+		// 而用户读不出该做什么、也无事可做 —— 按本仓库那条「只在真有问题时才占
+		// 地方」(当初否掉「Direct rules: N unreachable」常驻红字用的就是它),
+		// 它不该常驻:每次都在的东西会被训练成墙纸,然后把真正要紧的那一次一起
+		// 淹掉。`bx status --json` 一个字段都没少 —— agent 拿全量,人拿信号。
+		if reconcileRoundIsQuiet(*round, now) {
+			return "", false
+		}
 		return reconcileRoundSummary(*round, now), true
 	}
 	if !slices.Contains(report.GuardianCapabilities, guardian.CapabilityReconcileReport) {
 		return "", false
 	}
 	return "has not finished its first round of observation yet", true
+}
+
+// reconcileRoundIsQuiet:这一轮有没有值得占一行的东西。
+//
+// **「安静」= 没有任何可行动的内容**,而不是「没出错」:
+//
+//   - 报告发霉(循环可能停了)要说 —— 那是最要紧的一种;
+//   - 被栅栏挡住 / 提议过动作 / 真的执行过什么,都要说;
+//   - **有项目没观测到**要说 —— 三项探测全失败时判断恰好等于一台健康机器的判断,
+//     一台永久失明的机器读起来会和健康机器一模一样;
+//   - **Core 进程数不是 1** 要说 —— 2 个是这个项目最坏的结局,0 个也不正常;
+//     「没测成」同理(问不出来不是问过没有)。
+//   - **UnchangedRounds == 0 要说**:那是「这一轮的判断与上一轮不同」,是一次
+//     转变而不是常态,而且它下一轮就自己消失 —— 事件,不是墙纸。
+func reconcileRoundIsQuiet(round guardian.ReconcileReport, now time.Time) bool {
+	if now.Sub(round.At) > guardian.ReconcileStaleAfter {
+		return false
+	}
+	if round.Held != "" || len(round.Actions) > 0 || round.Executed != nil {
+		return false
+	}
+	if len(round.Unobservable) > 0 {
+		return false
+	}
+	if !round.CoreScan.Measured || round.CoreScan.Cores != 1 {
+		return false
+	}
+	return round.UnchangedRounds > 0
 }
 
 func reconcileRoundSummary(round guardian.ReconcileReport, now time.Time) string {
