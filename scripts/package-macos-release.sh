@@ -71,27 +71,27 @@ cat > "$RELEASE_DIR/install.sh" <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
-[ "$(uname -s)" = "Darwin" ] || { echo "仅支持 macOS" >&2; exit 1; }
-[ "$(id -u)" -ne 0 ] || { echo "请勿用 root 运行本脚本(安装时会请求一次 sudo)" >&2; exit 1; }
+[ "$(uname -s)" = "Darwin" ] || { echo "macOS only" >&2; exit 1; }
+[ "$(id -u)" -ne 0 ] || { echo "do not run this as root (it asks for sudo once, when it installs)" >&2; exit 1; }
 MACHINE="$(uname -m)"
 case "__BX_RELEASE_ARCH__:$MACHINE" in
   arm64:arm64|amd64:x86_64) ;;
-  *) echo "架构不匹配:包为 __BX_RELEASE_ARCH__,机器为 $MACHINE" >&2; exit 1 ;;
+  *) echo "wrong architecture: this package is __BX_RELEASE_ARCH__, this machine is $MACHINE" >&2; exit 1 ;;
 esac
-[ -x "$DIR/Bx.app/Contents/Resources/bx-cli" ] || { echo "包不完整:缺少 bx-cli" >&2; exit 1; }
+[ -x "$DIR/Bx.app/Contents/Resources/bx-cli" ] || { echo "incomplete package: bx-cli is missing" >&2; exit 1; }
 # 只认 --yes/-y:既给非交互调用方一个表态的途径,又不把任意参数拼进一条 sudo
 # 命令行(也顺手让 ./install.sh --help 不再走到下面那句「完成」)。
 ASSUME_YES=""
 for arg in "$@"; do
   case "$arg" in
     --yes|-y) ASSUME_YES="--yes" ;;
-    *) echo "用法:./install.sh [--yes]" >&2; exit 2 ;;
+    *) echo "usage: ./install.sh [--yes]" >&2; exit 2 ;;
   esac
 done
-echo "即将安装 Bx.app 到 /Applications 并配置 bx(需要一次管理员授权)。"
-echo "安装不修改你的连接配置。全新安装不会启动保护;若这台机器已经装过 bx(Guardian 服务已加载,"
-echo "无论保护是否开启),安装会先征得你同意,"
-echo "再停止保护、换好文件、重启保护服务并把保护恢复到原状态(保护开着时期间断网几秒)。"
+echo "This installs Bx.app into /Applications and sets bx up (one administrator prompt)."
+echo "Your connection settings are left alone. A fresh install does not turn protection on."
+echo "If bx is already installed here, you are asked first, and then protection is stopped,"
+echo "the files are swapped, the service restarts and protection returns to how you had it"
 # 不加 --yes:命令行安装时用户就在终端前,该问就问(会断网的操作必须当面确认)。
 # 非交互场景(无终端的 SSH/CI)由用户显式 ./install.sh --yes 表态,经 "$@" 透传;
 # 不表态时 app-install 会以非零退出报错,set -e 就会在打印「完成」之前中止。
@@ -99,7 +99,7 @@ echo "再停止保护、换好文件、重启保护服务并把保护恢复到�
 rc=0
 sudo "$DIR/Bx.app/Contents/Resources/bx-cli" app-install --app-source "$DIR/Bx.app" $ASSUME_YES || rc=$?
 if [ "$rc" -eq 2 ]; then
-  echo "已取消:未做任何改动。"
+  echo "Cancelled: nothing was changed."
   exit 2
 elif [ "$rc" -ne 0 ]; then
   exit "$rc"
@@ -124,12 +124,12 @@ if [ -f "$HOME/Library/LaunchAgents/com.getbx.bx.menu.plist" ]; then
     # 已经加载时 bootstrap 会失败,那是正常的 —— 用 kickstart 兜一下(不带 -k:
     # 跑着就是 no-op,不闪烁)。两条都失败才提示用户。
     launchctl kickstart "gui/$(id -u)/com.getbx.bx.menu" 2>/dev/null || {
-      echo "! 菜单栏没能自动启动。手动执行(不要加 sudo):"
+      echo "! The menu bar app did not start by itself. Run this by hand (no sudo):"
       echo "    launchctl bootstrap gui/$(id -u) $HOME/Library/LaunchAgents/com.getbx.bx.menu.plist"
     }
   fi
 fi
-echo "完成。打开菜单栏的 bx 图标继续 Set Up。"
+echo "Done. Open the bx icon in the menu bar to finish setting up."
 SCRIPT
 
 perl -0pi -e "s/__BX_RELEASE_ARCH__/$ARCH/g" "$RELEASE_DIR/install.sh"
@@ -137,51 +137,46 @@ perl -0pi -e "s/__BX_RELEASE_ARCH__/$ARCH/g" "$RELEASE_DIR/install.sh"
 cat > "$RELEASE_DIR/uninstall.sh" <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
-echo "本包不再包含独立的卸载脚本。"
-echo "请运行:"
+echo "This package no longer ships a separate uninstaller."
+echo "Run:"
 echo "  sudo bx uninstall"
 echo
-echo "该命令会:停用并卸载 Guardian 保护服务、移除 Bx.app 与 bx CLI、"
-echo "移除 launchd 登录项;但会保留 /etc/bx(你的连接配置)与 /var/lib/bx(运行时数据)。"
+echo "That disables and removes the Guardian protection service, Bx.app and the bx CLI,"
+echo "and the launchd login item. It keeps /etc/bx (your settings) and /var/lib/bx (runtime data)."
 SCRIPT
 
 cat > "$RELEASE_DIR/README.txt" <<TXT
 bx macOS $ARCH release ($VERSION)
 
-安装(推荐用 .dmg):
-  1. 打开 bx-macos-ARCH.dmg,把 Bx.app 拖进 Applications,双击打开 —— 它会主动
-     引导你完成安装与设置,全程不用开终端。
-  2. 或者:将本目录里的 Bx.app 拖到 /Applications,双击打开后点 "Install bx..."。
-  3. 或者:运行 ./install.sh(等价,命令行方式)。
+Install (the .dmg is the easy way):
+  1. Open bx-macos-ARCH.dmg, drag Bx.app onto Applications and double-click it.
+     It walks you through the rest — no terminal needed.
+  2. Or: drag the Bx.app in this folder to /Applications, open it and click "Install bx...".
+  3. Or: run ./install.sh (the same thing, from a terminal).
 
-首次打开时 macOS 会说「无法验证开发者」——bx 目前没有 Apple 开发者签名。
-放行方式:系统设置 → 隐私与安全性 → 往下找到 bx 那一条 → 点「仍要打开」。
-(这与「已损坏,应移到废纸篓」不是一回事;后者说明包被改动过,不要放行。)
+The first time you open it macOS will say the developer cannot be verified — bx is not
+signed with an Apple Developer ID. To allow it: System Settings -> Privacy & Security ->
+scroll down to the bx entry -> Open Anyway.
+(That is NOT the same as "is damaged and should be moved to the Trash". If you see that
+one, the package was tampered with — do not allow it, download it again.)
 
-安装做了什么:
-  将 Bx.app 装到 /Applications,并把 App 内嵌的 bx-cli 安装为系统 bx 命令、
-  配置 Guardian 保护服务与登录项。安装不修改你的连接配置。
-  全新安装不会启动保护。若这台机器已经装过 bx(Guardian 服务已加载,无论保护是否
-  开启,即覆盖安装/升级),安装会先问你一次,再停止保护、换好文件、重启保护服务
-  并把保护恢复到原状态——升级前保护开着的话,期间断网几秒。
+What installing does:
+  Puts Bx.app in /Applications, installs the bx-cli inside it as the system bx command,
+  and sets up the Guardian protection service and the login item. It does not touch your
+  connection settings. A fresh install does not turn protection on.
+  If bx is already installed on this machine (the Guardian service is loaded, whether or
+  not protection is on — i.e. an upgrade), you are asked first; then protection stops, the
+  files are swapped, the service restarts and protection returns to how you had it. If it
+  was on, the network drops for a few seconds in between.
 
-安装之后:
-  打开菜单栏的 bx 图标,选择 Set Up bx... 继续配置。
+After installing:
+  Open the bx icon in the menu bar and choose Set Up bx... to continue.
 
-卸载:
+Uninstall:
   sudo bx uninstall
-  (详见 ./uninstall.sh)
+  (see ./uninstall.sh)
 
 Notes:
-  install.sh 需要以你的普通 macOS 用户身份运行(会在需要时通过 sudo 请求一次管理员授权)。
-  覆盖安装到一台**已经装过 bx**(Guardian 服务已加载,无论保护是否开启)的机器上时
-  会先问你一次;无终端的场景(非交互 SSH、CI)问不出来,install.sh 会报错中止而不是
-  假装装好——确认要升级就跑 ./install.sh --yes。
-  install.sh 不会执行 bx setup(你的连接配置一个字都不改)。
-  全新安装不启动保护、不修改 DNS/路由;覆盖安装到一台已经装过 bx 的机器上时(无论保护是否开启),
-  安装会在你确认后重启保护——DNS 与路由随之被重新接管,这是恢复保护的必然结果。
-  旧版客户端(升级前安装的 bx)对本包运行 bx update --package 会解包失败并干净报错,
-  属预期行为(pre-1.0);请改用本 README 的安装方式重新安装。
 TXT
 
 chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh"

@@ -2974,6 +2974,30 @@ markdown 的 `**`(终端不渲染,用户读到的是字面星号)。这条纪律
 (corestartadvice 与 leakcheck 各一条),而 **help 文案一直在那两条的射程之外**;
 我给 leakcheck 写 Description 时当场又写进去一对,是看终端输出才发现的。
 
+## macOS 首装面:dmg 早就打好了,而它说的是中文(2026-09-18)
+
+所有者原话「首次安装太麻烦了,dmg 应该有打包的?」。**查下来 dmg 与引导都已经在**:
+release 里有 `bx-macos-<arch>.dmg`,包内是标准形状(`Bx.app` + `Applications` 软链
++ `README.txt`,`package-macos-dmg.sh` 建),README.md 第 22 行就是「macOS:双击装,
+不用开终端」,而首次引导也有(`FirstRun.swift` 的 `firstRunAction`:双击 → 主动问
+`Install bx?` → 装完主动问 `Set Up bx…`)。**所以「要不要打包」这件事不是缺口。**
+
+真缺口是别的:**包里那三份东西整片都是中文** —— `README.txt`、`install.sh` 与
+`uninstall.sh` 打印的话。而产品(App、CLI、菜单)这一轮已经全改英文,**于是唯一还
+说中文的那个面,恰好是给还没用过 bx 的人看的那个**。已翻译;
+`TestTheMacOSPackageSpeaksToUsersInEnglish` 钉住三段 heredoc 里**用户可见的行**
+(以 `#` 开头的注释不在射程内,与全仓「注释中文、用户可见英文」同一条)。
+
+**剩下的首装摩擦都不在代码里,写下来省得下一个人再查一遍**:
+
+1. **Gatekeeper**(「无法验证开发者」→ 系统设置 → 隐私与安全性 → 仍要打开)是最大
+   的一道,而它只能用 Apple Developer ID 签名 + 公证解决 —— 那是一笔年费与一个账号,
+   不是代码。打包脚本里的 ad-hoc 签名(`codesign -s -`)满足不了 Gatekeeper,它防的
+   是另一件事(包被改动过会显示「已损坏」,那条路**没有**放行入口)。
+2. **鸡生蛋**:dmg 从 GitHub 下载,而 GitHub 正是你还没有 bx 时够不着的地方。
+3. **首装必须先有一条 `bx://`**,也就是先有一台服务器 —— 对一个从零开始的人,
+   「装客户端」和「有服务器」是两件事,而 dmg 只解决前者。
+
 ## 约定
 
 - **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,
