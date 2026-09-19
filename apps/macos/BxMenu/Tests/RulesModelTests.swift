@@ -747,7 +747,33 @@ struct RulesModelTests {
         expect(!subtitle.contains("可用性"), "副标题里混进了中文:\(subtitle)")
     }
 
+    /// 模式改变的是这份列表的**含义**,所以标题必须说出来 —— 而问不出来时
+    /// 只报条数,绝不替服务端猜一个。
+    ///
+    /// **三种在屏幕上必须两两不同**(判据打在用户看得见的东西上,不是打在枚举上):
+    /// global 下那几条 direct 规则**就是**全部的直连集合;split 下它们是叠在
+    /// 一万两千条内建 china 列表之上的例外。同一份列表,两种意思 —— 而这个混淆
+    /// 真实造成过一次错判(体检把 22 条正在工作的规则报成「被 china 列表覆盖」,
+    /// 而那台机器是 global、那份列表整个不生效)。
+    static func testCustomRulesHeadingSaysWhatTheModeMakesTheseRulesMean() {
+        let global = customRulesHeading(count: 17, global: true)
+        let split = customRulesHeading(count: 17, global: false)
+        let unknown = customRulesHeading(count: 17, global: nil)
+
+        for text in [global, split, unknown] {
+            expect(text.contains("17"), "条数必须在:\(text)")
+        }
+        expect(global.contains("only"), "global 下要说这些是全部的直连集合:\(global)")
+        expect(split.contains("exceptions"), "split 下要说这些是例外:\(split)")
+        // 问不出来时不许出现任何一种断言 —— 猜错的那一半正好把话说反。
+        expect(!unknown.contains("only") && !unknown.contains("exceptions"),
+               "这一版 Guardian 没说模式时不许猜:\(unknown)")
+        expect(global != split && split != unknown && global != unknown,
+               "三种在屏幕上必须两两不同")
+    }
+
     static func main() {
+        testCustomRulesHeadingSaysWhatTheModeMakesTheseRulesMean()
         testReplaceMessageShowsTheExitChangeNotALecture()
         testReplaceMessageOmitsTheOldServerWhenUnknown()
         testClipboardCandidateOnlyTakesASingleLinkLine()

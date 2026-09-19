@@ -149,7 +149,8 @@ do {
         rows: ruleGroupRows(from: list, failing: []),
         ruleRows: ruleRows(from: list, failing: [], customOnly: true),
         configPath: list.configPath,
-        caveatNote: nil)
+        caveatNote: nil,
+        global: list.global)
     let window = windowTitled("Routing Rules")
     capture(window, as: "rules-collapsed")
 

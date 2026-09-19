@@ -48,3 +48,22 @@ func reviewRulesAt(configPath string, fetchStatus func() (stats.Report, error)) 
 	report := rulereview.Review(rulereviewsrc.Assemble(cfg, embedded.ChinaDomain(), fetchStatus))
 	return &report
 }
+
+// configIsGlobal 答「这台机器是不是 global 模式」,以及**问没问出来**。
+//
+// 它单独走一遍配置,而不是从 rulereview.Report 的 BuiltinSkipReason 那句话里
+// 认字 —— **按文本认的后果是措辞一改,界面就悄悄退回一句通用的废话**,本仓库为这个
+// 形状立过规矩(policy.ErrCoveredByOppositeMode 那条)。
+//
+// 两个返回值分开是承重的:读不到配置时是「没问出来」,不是「不是 global」。
+func configIsGlobal(configPath string) (global, known bool) {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return false, false
+	}
+	cfg, err := config.Parse(raw)
+	if err != nil {
+		return false, false
+	}
+	return cfg.Global, true
+}

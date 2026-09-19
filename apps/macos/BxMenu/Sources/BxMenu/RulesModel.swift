@@ -166,9 +166,12 @@ struct RuleList: Decodable, Equatable {
     /// 规则体检。**nil = 这一版 Guardian 不做体检;非 nil 但 findings 为空 =
     /// 查过了、规则都健康。** 压成同一个东西是这个功能最贵的教训。
     var review: RuleReview?
+    /// 这台机器是不是 global 模式。**nil = 这一版 Guardian 没说**,不是「不是」。
+    /// 它决定下面那份自定义规则读起来是什么意思,见 customRulesHeading。
+    var global: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case direct, proxy, groups, custom, review
+        case direct, proxy, groups, custom, review, global
         case configPath = "config_path"
         case requiresRestart = "requires_restart"
     }
@@ -176,7 +179,7 @@ struct RuleList: Decodable, Equatable {
     init(
         direct: [String] = [], proxy: [String] = [], groups: [RuleGroup] = [],
         custom: [String] = [], configPath: String = "", requiresRestart: Bool? = nil,
-        review: RuleReview? = nil
+        review: RuleReview? = nil, global: Bool? = nil
     ) {
         self.direct = direct
         self.proxy = proxy
@@ -185,6 +188,7 @@ struct RuleList: Decodable, Equatable {
         self.configPath = configPath
         self.requiresRestart = requiresRestart
         self.review = review
+        self.global = global
     }
 
     /// **必须手写。** Swift 合成的解码器**不使用属性默认值** —— 缺键就抛错。
@@ -198,6 +202,7 @@ struct RuleList: Decodable, Equatable {
         custom = try container.decodeIfPresent([String].self, forKey: .custom) ?? []
         configPath = try container.decodeIfPresent(String.self, forKey: .configPath) ?? ""
         requiresRestart = try container.decodeIfPresent(Bool.self, forKey: .requiresRestart)
+        global = try container.decodeIfPresent(Bool.self, forKey: .global)
         review = try container.decodeIfPresent(RuleReview.self, forKey: .review)
     }
 }
@@ -651,5 +656,32 @@ func ruleGroupSubtitle(_ group: RuleGroup) -> String {
         return "Chinese apps, video and shopping load from nearby servers"
     default:
         return "\(group.total) domains"
+    }
+}
+
+/// 「Your own rules (N)」那一行该怎么写。
+///
+/// **模式改变的是这份列表的含义,所以它必须说在这里,而不是菜单里。**
+///
+///   - global:这几条 direct 规则**就是**全部的直连集合。删掉一条,那部分流量
+///     立刻改走隧道。
+///   - split:它们是叠在内建 china 列表(约一万两千条)之上的**例外**,大半可能
+///     本来就被那份列表盖住。
+///
+/// 同一份列表,两种意思 —— 而这个混淆真实造成过一次错判:体检曾把 22 条正在
+/// 工作的规则报成「被 china 列表覆盖」,而那台机器是 global、那份列表整个不生效,
+/// 照着删会让 22 个域名改走隧道。
+///
+/// **问不出来时只说条数**(旧 Guardian 不发这个键)—— 绝不替它猜一个模式,
+/// 因为猜错的那一半正好会把上面那句话说反。
+func customRulesHeading(count: Int, global: Bool?) -> String {
+    let head = "Your own rules (\(count))"
+    switch global {
+    case .some(true):
+        return head + " — global mode: these are the only domains that go direct"
+    case .some(false):
+        return head + " — split mode: exceptions on top of the built-in China list"
+    case .none:
+        return head
     }
 }

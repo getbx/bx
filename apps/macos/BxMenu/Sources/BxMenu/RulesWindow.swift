@@ -27,6 +27,9 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     private var lastRuleRows: [RuleRow] = []
     private var lastConfigPath = ""
     private var lastCaveatNote: String?
+    /// 这台机器是不是 global 模式。**nil = 这一版 Guardian 没说**(旧版),
+    /// 那时标题只报条数 —— 猜错的那一半会把「这些是全部」说成「这些是例外」。
+    private var lastGlobal: Bool?
 
     /// 用户拨动了一个组开关。参数是组名与目标状态。
     var onToggleGroup: ((String, Bool) -> Void)?
@@ -39,10 +42,11 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     /// 用户点了 Add Rule…。
     var onAddRule: (() -> Void)?
 
-    func show(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?) {
+    func show(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?, global: Bool?) {
         let window = ensureWindow()
         adoptFreshRules(
-            rows: rows, ruleRows: ruleRows, configPath: configPath, caveatNote: caveatNote)
+            rows: rows, ruleRows: ruleRows, configPath: configPath, caveatNote: caveatNote,
+            global: global)
         // **显式打开从头开始看。** 保住滚动位置是给环境重画准备的(用户正盯着
         // 某一行,不该每 2 秒被拽回顶部);他刚点开这扇窗,顶上那几行才是他要的。
         render(preservingScroll: false)
@@ -57,10 +61,11 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     ///
     /// 这是**环境刷新**那条路(`applyRefresh` → `fetchRulesOnDemand(forceShow: false)`),
     /// 菜单开着时约每 2 秒一拍:滚动位置要保住,等着撤销的那几条也要保住。
-    func refreshIfVisible(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?) {
+    func refreshIfVisible(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?, global: Bool?) {
         guard let window, window.isVisible else { return }
         adoptFreshRules(
-            rows: rows, ruleRows: ruleRows, configPath: configPath, caveatNote: caveatNote)
+            rows: rows, ruleRows: ruleRows, configPath: configPath, caveatNote: caveatNote,
+            global: global)
         render(preservingScroll: true)
     }
 
@@ -74,13 +79,14 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     /// 那一刻手里还是旧数据、那条规则仍在里头,对一次账就会把刚记下的挂起
     /// 当场抹掉 —— 于是这个修复在它自己的入口处失效。
     private func adoptFreshRules(
-        rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?
+        rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?, global: Bool?
     ) {
         pendingRemovals = survivingRuleRemovals(pendingRemovals, freshRows: ruleRows)
         lastGroupRows = rows
         lastRuleRows = ruleRows
         lastConfigPath = configPath
         lastCaveatNote = caveatNote
+        lastGlobal = global
     }
 
     /// 窗口是否开着。**供环境刷新路径判断「有没有人在看」** —— 与
@@ -200,7 +206,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         if !entries.isEmpty {
             stack.addFullWidthRow(gap())
             // 数量写进标题:一眼看出下面这一长串是「你自己加的」,而不是预设的一部分。
-            let customHeading = sectionHeading("Your own rules (\(lastRuleRows.count))")
+            let customHeading = sectionHeading(customRulesHeading(count: lastRuleRows.count, global: lastGlobal))
             stack.addFullWidthRow(customHeading)
             for entry in entries {
                 switch entry {
