@@ -2,7 +2,8 @@
 
 本文件只在读到 `apps/macos/BxMenu/` 下的文件时加载。跨领域的不变量(kill-switch、
 防环、Guardian 授权面、守卫的七种失效写法)在根目录 `CLAUDE.md`,**这里不重复**。
-2026-09-23 从根目录那份下沉过来;搬的是**判据**,过程叙述在 `docs/lessons/`。
+2026-09-23 从根目录那份下沉过来;搬的是**判据**,过程叙述在 `docs/lessons/`,
+下沉前的原文逐字存档在 `docs/lessons/menu-app-archive.md`。
 
 **菜单那半的测试分三处,改之前知道去哪看**:纯模型在 `Tests/`(Swift 套件);
 接线(`main.swift` 编不进 Swift 测试 target)由 `internal/cli/macos_menu_*_test.go`
@@ -101,7 +102,7 @@
 - 守卫 `internal/cli/macos_menu_transition_test.go` 与 `TransitionNoticeTests`
   (含「真的健康时『已恢复』仍要发」这一条反向断言,少了它「永远不响」就能满足前一条)。
 
-## Status watch 在菜单这一侧(协议判据在根目录 CLAUDE.md「Guardian 状态 watch」)
+## Status watch 在菜单这一侧(协议判据在 `internal/guardian/CLAUDE.md`「状态 watch」)
 
 - **兜底轮询是常量,watch 健康时也照跑**(`menuWatchBackstopSeconds = 60`):watch 有一类
   失效是静默的(半开、循环自己死掉),被 watch 自己的健康判断影响的兜底,在那个判断错的
