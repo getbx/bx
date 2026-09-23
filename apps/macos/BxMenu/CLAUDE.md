@@ -185,6 +185,22 @@ Guardian 侧的线上字段(`single_server`、`measured`、`running`、`current_
   那种配置仍看不到「当前那台」那一块(`currentServerPanel` 要清单里有条目;`current_server`
   只喂了 Core 起不来那句话,没接进窗口)。
 
+## 按应用窗口(Traffic by App,真机未验)
+
+采集那半(订阅、TTL、活连接表、60 秒窗口、归因时机)的判据在 `internal/supervisor/CLAUDE.md`。
+- **心跳 5 秒,且必须活不过它的窗口**:兜底轮询 60 秒比订阅 TTL(30 秒)还长,光靠环境刷新
+  窗口会反复跳回「Not collecting」。首拉失败时窗口从未创建 ⇒ `windowWillClose` 永不触发 ⇒
+  心跳永不停止(每 5 秒一次失败拨号 + 一条 Guardian 日志),而那恰是最常见的探索场景
+  (保护关着时点一下这个菜单项)。
+- **改这块最容易静默出错的三处**:① `appTrafficNumericColumns` 的下标(列从八降到七之后每个
+  下标都要挪,挪错没有编译错误,只是右对齐落在错的列上);② **速率的 `nil` 与 0 是两件事**
+  (第一次采样只立基线 = 不知道;压成 0 会显示成「闲着」);③ **搜索框必须在 `ensureWindow()`
+  里创建一次**,长在每 5 秒被拆掉重填的树里,用户打两个字就连同焦点一起消失。
+- 三组标题是 `Through the tunnel` / `Direct` / `Blocked`(`AppTrafficReport.sectionTitle`);
+  同一个应用可以同时出现在多组(压成一行「混合」等于扔掉最有用的那一半)。不进菜单栏常驻。
+- **真机要看**:七列在默认宽度下的分配、图标取不到时那一格、搜索时三个分组标题还在不在、
+  目的地小字的 `+N`;**速率第一拍必然是破折号,若一直是破折号说明 `refreshIfVisible` 没走到**。
+
 ## Diagnostics 窗口(Logs / Checks)
 
 - Checks 页只由显式点击喂数据(`TestMacMenuDoctorPageIsFedByFetchDoctor`);合计句是
