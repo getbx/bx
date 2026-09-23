@@ -35,7 +35,9 @@ func TestDocumentedFilePathsExist(t *testing.T) {
 	// 而搬迁本身会制造盲区 —— 那些原文点名的每一个文件路径,从此不再被检查。
 	// 与 specs/plans 的区别是**时态**:计划书点名的是「将要建的东西」,失效是预期
 	// 的;lessons 记的是已经发生的事实,和 CLAUDE.md 一样会被当作现状读。
-	docs := []string{"CLAUDE.md", "README.md"}
+	// **2026-09-23:子目录里的 CLAUDE.md 一并进来。** 根目录那份的判据开始按代码
+	// 目录下沉,下沉出去的那一份与根目录那份同样承重、同样会被当作现状读。
+	docs := append(projectMemoryFiles(t, root), "README.md")
 	var lessons []string
 	for _, pat := range []string{
 		filepath.Join(root, "docs", "*.md"),

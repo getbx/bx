@@ -260,7 +260,9 @@ func scanTestNames(t *testing.T, root string) (map[string]bool, map[string][]pro
 		// 的东西」,失效是预期的;lessons 写的是**已经发生的事实**,和 CLAUDE.md
 		// 一样承重,只是按「判据 / 过程」分了家。一份搬出去就没人看管的过程记录,
 		// 比留在 CLAUDE.md 里更糟 —— 它同样会被读到,却不再会被证伪。
-		isDoc := filepath.Base(path) == "CLAUDE.md" && filepath.Dir(path) == root
+		// **2026-09-23:任何目录下的 CLAUDE.md 都算。** 此前只认根目录那一份;判据
+		// 开始下沉到代码目录之后,只认根目录就等于让下沉出去的那一份无人看管。
+		isDoc := filepath.Base(path) == "CLAUDE.md"
 		//
 		// **2026-09-13 同日再扩一次:`docs/` 下除 `superpowers/` 外的 .md 全进来。**
 		// 起因是那天又长出 `docs/acceptance-pending.md`(待人工验收清单)—— 它同样
