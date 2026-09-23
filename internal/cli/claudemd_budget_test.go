@@ -21,7 +21,7 @@ import (
 //
 // rootClaudeMDBudget **只许往下调**。撞上它时该做的不是把数字改大,而是想清楚
 // 新写的那一节属于哪个子目录 —— 往上调的那一次 diff 本身就是要被 review 问住的东西。
-const rootClaudeMDBudget = 150000
+const rootClaudeMDBudget = 118000
 
 // subtreeClaudeMDBudget 是每一份子目录 CLAUDE.md 的上限。它取 Claude Code 自己对
 // 单份记忆文件的告警线:子目录那份一旦也长到这个量级,说明它该再往下一层拆了。
