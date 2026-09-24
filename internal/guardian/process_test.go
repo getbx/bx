@@ -943,17 +943,24 @@ type startTestProcessOperations struct {
 	startErr    error
 	inspectErr  error
 	environment []string
+	// onStart 在「fork」那一刻被调(锁外)。测试用它让一个按需到期的 context 恰好在
+	// fork 之后到期 —— 拿挂钟去指定「哪一步该失败」就是在赌调度。
+	onStart func()
 }
 
 func (o *startTestProcessOperations) Start(_ string, _ []string, environment []string) (StartedProcess, error) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	o.starts++
 	o.environment = append([]string(nil), environment...)
-	if o.startErr != nil {
-		return nil, o.startErr
+	startErr, started, onStart := o.startErr, o.started, o.onStart
+	o.mu.Unlock()
+	if startErr != nil {
+		return nil, startErr
 	}
-	return o.started, nil
+	if onStart != nil {
+		onStart()
+	}
+	return started, nil
 }
 
 func (o *startTestProcessOperations) startEnvironment() []string {
