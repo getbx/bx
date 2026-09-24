@@ -2032,3 +2032,57 @@ func TestAServerListDoesNotAlsoShipACurrentServerCopy(t *testing.T) {
 			"数成第二台服务器,于是叫用户「切到」他此刻正在用的那一台", got.CurrentServer)
 	}
 }
+
+// 单服务器配置下,「此刻在跑的是不是这一台」也必须答得出来(A1,2026-09-23)。
+//
+// `running` 是按**名字**比对的,而单服务器配置里那台**没有名字** —— 于是窗口一旦
+// 开始画这一台,它永远会说「bx could not confirm which server is running」,
+// 在最常见的那种配置上天天说一句假话。判据与 runningServerName 同一份(按主机),
+// 三态:对上 ⇒ true,Core 报的是别的主机 ⇒ false,问不出来 ⇒ 键缺席(不许编)。
+func TestSingleServerConfigSaysWhetherTheCurrentServerIsRunning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "server: vless://" + serversTestUUID + "@203.0.113.30:8443?security=reality\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	get := func(core coreStatusReader) (ServerListResponse, string) {
+		w := httptest.NewRecorder()
+		serversHandler(path, 501, noSwitch(t), nil, core)(
+			w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
+		)
+		var got ServerListResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got, w.Body.String()
+	}
+	reporting := func(host string) coreStatusReader {
+		return func() (coreLiveStatus, bool) { return coreLiveStatus{ServerHost: host}, true }
+	}
+
+	got, _ := get(reporting("203.0.113.30"))
+	if got.CurrentServerRunning == nil || !*got.CurrentServerRunning {
+		t.Fatalf("Core 报的就是这一台,而应答没说它在跑:%+v", got.CurrentServerRunning)
+	}
+	got, _ = get(reporting("198.51.100.7"))
+	if got.CurrentServerRunning == nil || *got.CurrentServerRunning {
+		t.Fatalf("Core 报的是别的主机(配置改过而 Core 没重启),应答却说在跑的是这一台:%+v",
+			got.CurrentServerRunning)
+	}
+	got, raw := get(nil)
+	if got.CurrentServerRunning != nil || strings.Contains(raw, "current_server_running") {
+		t.Fatalf("Core 没答话,应答却编了一个答案:%s", raw)
+	}
+}
+
+// 有清单时这个键不许出现:那时「在跑哪台」由 running(名字)说,两份会漂开。
+func TestAServerListDoesNotShipCurrentServerRunning(t *testing.T) {
+	w := httptest.NewRecorder()
+	core := func() (coreLiveStatus, bool) { return coreLiveStatus{ServerHost: "203.0.113.30"}, true }
+	serversHandler(serversTestConfig(t), 501, noSwitch(t), nil, core)(
+		w, withPeer(httptest.NewRequest(http.MethodGet, "/v1/servers", nil), 501, true),
+	)
+	if strings.Contains(w.Body.String(), "current_server_running") {
+		t.Fatalf("有清单时也发了 current_server_running:%s", w.Body.String())
+	}
+}

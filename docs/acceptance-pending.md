@@ -28,7 +28,7 @@
 - [ ] **空列表不再是死路**。你这台是 `bx setup` 写的单服务器配置,应看到
       `This config has a single server, not a server list. Adding a second one turns it
       into a list you can switch between.` —— **不是** `No servers yet`。
-      **四个按钮(Test All / New Server… / Add Server… / 以及窗口里的切换)都该在**,
+      **四个按钮(Test All / Exit IP / Set Up a New VPS… / Add Existing Server…)都该在**,
       此前它们画在 `rows.isEmpty` 的 return 之后,整个不出现。
 - [ ] **`⋯` 菜单里有 Remove… 与 Replace Link…**(需要 `servers_edit` 能力,
       升级后已声明)。**删当前那台应被拒绝**(置灰或 409)。
@@ -36,8 +36,11 @@
 - [ ] 点 `Test All`:保护开着应给出实测延迟;**保护关掉再点,每行应是灰色英文
       `not measured`,不是红色** —— 红只从**实测失败**来,「没能测」不该被画成
       「这台服务器坏了」。
-- [ ] **已知缺口,不算 bug**:单服务器配置下看不到「当前那台」那一块纵深
-      (`currentServerPanel` 要清单里有一条 `current` 条目,而 Guardian 没有条目可画)。
+- [ ] **单服务器配置下顶上有「Currently using」那一块**(2026-09-23 补上,此前整块缺席):
+      标题是 `Your server` 加主机:端口,保护开着时点是**实心**的并带实时延迟,**没有 `⋯`**
+      (这种配置没有清单条目可改)。关掉保护再看:点变空心,并说 Core 没在答话。
+      离屏快照 `servers-single` 是它应有的样子。**需要先升级 Guardian**(新字段
+      `current_server_running`),旧 Guardian 下这一块照旧不出现。
 
 ### A2. Routing Rules 窗口
 

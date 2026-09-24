@@ -181,9 +181,12 @@ Guardian 侧的线上字段(`single_server`、`measured`、`running`、`current_
   `refreshIfVisible(` 两个调用点,整函数体 `Contains` 会让一个替另一个满足断言。
 - **所有者定死的边界**:不自动容灾、只有用户能切;不按延迟排序/不自动选最快/不分组/
   不导入订阅;**不后台定时探测**(只在用户点时发、且串行);不做每台独立的 rules/dns/udp。
-- **已知缺口**:`replace` 清不掉 UDP 链接(界面已明说「留空 = 保持」);`bx setup` 写出的
-  那种配置仍看不到「当前那台」那一块(`currentServerPanel` 要清单里有条目;`current_server`
-  只喂了 Core 起不来那句话,没接进窗口)。
+- **单服务器配置(`bx setup` 写的那种,最常见)**:清单为空,`currentServerPanel` 退到
+  `current_server`。那台**没有名字**:标题写 `singleServerTitle`;「在不在跑」取 Guardian 按
+  主机比好的 `currentServerRunning`(`serverTrafficState` 对空名字走这一支,门仍是
+  `answeringCore`);**不画 `⋯`**(`panel.editable`,两个动词按名字改清单,这台没有条目)。
+  快照 `servers-single` 盖着这个画面。
+- **已知缺口**:`replace` 清不掉 UDP 链接(界面已明说「留空 = 保持」)。
 
 ## 按应用窗口(Traffic by App,真机未验)
 

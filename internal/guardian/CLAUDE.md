@@ -134,7 +134,7 @@ NewNetworkObserver / PeerCredentials 六个构造器字段,反射 `validate()` +
   **绝不打印链接**。local_dial 那档也点名 host:port,并说出 DNS 那种病因(换一台确实有用);
   端口解不出就整条不给 `nc -z`;渲染出的话不许带 markdown 的 `**`。守卫的判据是**整句话**
   不是枚举值(`TestEveryStartFailureOutcomeReadsDifferently`)。不自动切服务器(所有者定死的边界)。
-- **已知缺口**:`bx up` 的接线只在 darwin 生效;`current_server` 没接进服务器窗口;菜单在
+- **已知缺口**:`bx up` 的接线只在 darwin 生效;菜单在
   `.warning`/`.connected` 之外拿不到码;**升级路径的健康失败仍不读记录**(那条路的码空间
   是另一套,单独立项,别顺手改);「读不到配置」仍落 `other`(不许借 `config_unusable`,
   文件不在多半是还没 setup)。真机验收在 `docs/acceptance-pending.md` B2。

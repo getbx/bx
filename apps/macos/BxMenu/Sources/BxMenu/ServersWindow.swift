@@ -317,9 +317,13 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         endpoint.setContentHuggingPriority(.defaultLow, for: .horizontal)
         head.addArrangedSubview(endpoint)
         head.setHuggingPriority(.defaultLow, for: .horizontal)
-        if canEdit {
-            head.addArrangedSubview(moreButton(name: panel.name, host: panel.host,
-                                              isCurrent: true, traffic: panel.traffic))
+        // `panel.editable` 为假的是单服务器配置那一台:没有清单条目、没有名字,⋯ 里
+        // 按名字改清单的两个动词对它都无从下手。
+        if panel.editable {
+            if canEdit {
+                head.addArrangedSubview(moreButton(name: panel.name, host: panel.host,
+                                                  isCurrent: true, traffic: panel.traffic))
+            }
         }
         box.addArrangedSubview(head)
 
