@@ -931,10 +931,11 @@ DNS/路由」「覆盖安装会在你确认后重启保护」)。**翻译一段�
   并在没走到预定那一步时**当场说出来**;把超时调大不算修;③ 守卫钉**修法的机制**而不是那个
   flake(1/375 的失败率跑一遍抓不到)。**本机 `verify.sh` 覆盖不到 Linux 的平台差异**(CI 的 build
   job 跑 Linux),复现用 Colima 的 linux 容器。
-  **已知仍未修的潜在 flake**:`TestManagerUpdateReservesDeadlineForTargetCleanup`(整个 `Update`
-  只给 500ms,慢机器上回滚后等 v1 健康的余量不够,`previous_core_health_failed`)。**正确修法不是
-  把 500ms 调大**,要先弄清 `Update` 在健康检查与清理之间怎么分预算。已知两次都落在 `release.yml`
-  而不在 `ci.yml` —— 下次动它先比两条腿的 runner 规格与并发度。
+  **那条挡过两次发版的 `TestManagerUpdateReservesDeadlineForTargetCleanup` 已修(2026-09-23),
+  而根因是产品缺陷不是测试**:新版 Core 的健康等待只给「清理新版」留了预算、没给「回滚」留,
+  新版卡满时回滚只剩零头 —— 生产上就是「更新失败之后连回滚也失败」。修法与判据见
+  `internal/guardian/CLAUDE.md`「更新的预算」;没有调大任何一个超时。**「偶发红」先去找它在
+  分什么预算,别先怀疑 runner。**
 - **真机与 CI 互不替代。** 真机验 CI 验不了的(平台语义、真实文件系统、网卡、网络);CI 验真机
   验不了的(**干净 checkout** —— `.gitattributes` 的效果只有它证得了、没有本地遗留物)。真机
   可能比 CI 宽松(那台 Windows 恰好有 `C:\tmp`,写死 `/tmp` 的测试在它上面全绿而 runner 上红 11 条)。

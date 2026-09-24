@@ -695,6 +695,33 @@ func TestManagerUpdateReservesDeadlineForTargetCleanup(t *testing.T) {
 	}
 }
 
+// **新版卡满了健康窗口时,回滚到旧版必须还有一份像样的预算**(known-gaps A4,2026-09-23)。
+//
+// 此前新版的健康等待只给「清理新版」留了预算,没给「回滚到旧版」留:新版卡满时回滚只能
+// 用清理剩下的零头,旧版的健康窗口在 CI 慢机器上只剩几十毫秒 ⇒ previous_core_health_failed
+// —— TestManagerUpdateReservesDeadlineForTargetCleanup 两次挡住发版的就是这个。在生产上它
+// 意味着更新失败之后连回滚也失败,机器停在 Blocked。判据打在回滚拿到的预算上(确定性的),
+// 不打在「这次碰巧过没过」上。
+func TestManagerUpdateLeavesARealBudgetForTheRollback(t *testing.T) {
+	const total = 500 * time.Millisecond
+	env := newUpdateTestEnv(t)
+	env.manager.cleanupTimeout = 100 * time.Millisecond
+	env.health.blockVersions = map[string]bool{"v2": true}
+
+	ctx, cancel := context.WithTimeout(context.Background(), total)
+	defer cancel()
+	if _, err := env.manager.Update(ctx, env.request); err != nil {
+		t.Fatalf("Update 失败:%v", err)
+	}
+	got, ok := env.health.budgets["v1"]
+	if !ok {
+		t.Fatal("回滚那一次的健康等待没有 deadline —— 这条测试的前提不成立了")
+	}
+	if got < total/5 {
+		t.Fatalf("回滚到旧版的健康窗口只有 %v(总预算 %v)—— 新版把能用的时间吃光了,回滚只剩零头", got, total)
+	}
+}
+
 func TestManagerUpdateDoesNotRollbackAcrossUncertainTargetOwnership(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -2150,6 +2177,8 @@ type updateHealthGate struct {
 	blockVersions    map[string]bool
 	runtimeByVersion map[string]supervisor.RuntimeState
 	calls            map[string]int
+	// budgets 记下每个版本的健康等待拿到了多长预算(调用那一刻离 deadline 还有多久)。
+	budgets map[string]time.Duration
 }
 
 func (h *updateHealthGate) Wait(ctx context.Context, target HealthTarget) (supervisor.RuntimeState, error) {
@@ -2158,6 +2187,12 @@ func (h *updateHealthGate) Wait(ctx context.Context, target HealthTarget) (super
 		h.calls = make(map[string]int)
 	}
 	h.calls[target.Version]++
+	if deadline, ok := ctx.Deadline(); ok {
+		if h.budgets == nil {
+			h.budgets = make(map[string]time.Duration)
+		}
+		h.budgets[target.Version] = time.Until(deadline)
+	}
 	if h.blockVersions[target.Version] {
 		<-ctx.Done()
 		return supervisor.RuntimeState{}, ctx.Err()
