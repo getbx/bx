@@ -30,6 +30,8 @@ Claude Code 在读到那个子树的文件时才加载它。**登记在这里的
   按应用看分流的采集侧。
 - `internal/leakcheck/CLAUDE.md` —— 泄漏检测的判据(含 `leakserve`/`loopbackgate` 与 AI 站可达性)。
 - `internal/rulereview/CLAUDE.md` —— 规则体检的分类与渲染、死规则。
+- `internal/doctor/CLAUDE.md` —— 诊断判据(`bx doctor` 与 `/v1/doctor` 共用),流量成败。
+- `internal/dialer/CLAUDE.md` —— 分流决策里的 SNI 规则,`bx explain`(含 `pathview`、`dialfail`)。
 
 ## 架构(数据面 vs 控制面)
 
@@ -153,7 +155,7 @@ fake-IP 反查全部命中。样本约 150 条,要跑几天再定论。
 `Decide`/`DecideIP` 是它们的**薄壳**(判定只有一份,另有一条测试逐输入比对以防拆开);
 `Rule` 是**配置里那一行的原文**(内部把 `*.a.com` 存成 `a.com`,报归一化形式会让用户
 去搜一个搜不到的串)。② `stats` 的 `direct_failed`/`proxy_failed` 两个总数 + 按规则的
-{attempts, failures, failure_kinds} 表(分类见下文 `internal/dialfail`);内建列表也计数(少了它无从区分「全网在失败」与「只有我这条
+{attempts, failures, failure_kinds} 表(分类见 `internal/dialer/CLAUDE.md` 的 `internal/dialfail`);内建列表也计数(少了它无从区分「全网在失败」与「只有我这条
 规则在失败」)。③ `DecisionCounter` 接口**直接扩而不是做成可选断言** —— 「实现里没有
 就静默不计」的计数器与没有这个功能在输出上完全一样(都是 0),而它恰恰是用来发现
 「有东西在悄悄失败」的。
@@ -226,6 +228,7 @@ fake-IP 反查全部命中。样本约 150 条,要跑几天再定论。
   会落进兼容分支**切到那一台**,「试着拨一下」的代价是换掉用户的出口国。删当前那台服务端
   409。换链接走 `setup.ReplaceServerLink`(`UpsertServer`/`AddServer` 都会挪 `current`,
   换一条没在用那台的链接会顺手搬走出口)。
+  `servers add` 同名回 409;名字可省略,Guardian 用 `setup.LinkHost` 推导(认 `bx://` 换壳)。
 - **所有者定死的边界**:不自动容灾、只有用户能切;不按延迟排序、不自动选最快、不分组、
   不导入订阅;**不后台定时探测**(探测走在隧道外面,几台同时握手是很整齐的模式);
   不做每台独立的 rules/dns/udp.mode。
@@ -314,40 +317,9 @@ fake-IP 反查全部命中。样本约 150 条,要跑几天再定论。
 不在测试里重算一遍「谁盖住谁」。四条变异各咬中一条。**真机未验**:没有人在真机上
 敲过 `bx direct add`。
 
-## 嗅出的 SNI 不许压过真 IP 的规则(2026-09-05,真机诊断,修复真机已验)
+## 嗅出的 SNI 不许压过真 IP 的规则 → `internal/dialer/CLAUDE.md`
 
-真机(公司工作站,bx global):`bx direct add 192.0.2.185` 之后 `bx explain 192.0.2.185`
-答 DIRECT、计数也记在那条规则下,而 tailscaled 到它的 TLS 照样经隧道从 VPS 出去 ——
-家里的 derper 记到的源 IP 是 VPS,tcpdump 里 eno1 上一个发往该 IP 的 TCP 包都没有。
-机制:`dialInner` 对 fake-IP 反查不中的连接从首包嗅 SNI/Host,按域名判;域名规则全不中
-就 `Proxy/SourceDefault`,**IP 规则从头到尾没被问过**;explain 没有首包,按 IP 判,自然说
-DIRECT。修法:嗅出的域名一条规则都没中时,由那个**真 IP** 说了算(`ExplainIP`),且直连
-拨的就是这个 IP、不把 SNI 再解析一遍(那会解析到 VPS);域名规则**命中**时仍由域名说了算
-(更具体);fake-IP 那条路不受影响(那个 IP 是假的,按它判什么都判不出)。顺手:HTTP Host
-里的 IP 字面量不再被当成域名嗅出来。**测试要带 fake 池**:嗅探只在 `d.Fake != nil` 时发生,
-`newTestDialer(nil, …)` 走不到那一支 —— 第一版测试正因此假绿。既有的 explain 漂移守卫用
-`Dial`(无首包),盖不到这一类,新加的四条在 `sniff_realip_test.go`。
-
-## `bx explain` 的本机视角:这个目标在这台机器上会怎么走(2026-09-05,真机已跑)
-
-`bx explain <目标>` 此前只答「进了 bx 的连接会怎样」,Core 没在跑就报错。现在**先**答
-本机视角(`internal/pathview`,纯判据,`purity_test.go` 钉住不做 I/O),再答 Core 那半;
-Core 连不上不再是错误,只留一句「bx 没在跑,以上是没有 bx 时的样子」。动机是同一天两次
-误判:另一会话看到 `8.8.8.8 → utun9` 就断定 bx 吞了 Tailscale,真相是**普通进程走 bx 的
-TUN、绑了网卡的进程走 en0**;休眠成环那次,哨兵地址进了 TUN 而发往服务器的 /32 早已不在,
-只有指着那个具体地址问才看得见。**与 observe 的分工**:observe 是仪表盘(无参、固定几项、
-只报异常),explain 是听诊器(你指哪它听哪),两者共用同一批原语。
-事实采集在 cli(`collectPathFacts`,全部只读:一次系统解析、`LookupRoute`、新导出的
-`LookupBoundRoute`(darwin `-ifscope` / linux `oif`,windows 没问)与 `PhysicalDefaultRoute`、
-一次 Core 运行时读取);判据在 pathview(`Judge`):目标分九类(假 IP / 回环 / 私网 / CGNAT
-/ 链路本地 / 服务器旁路 / 国内 / 公网 / 解析不出),接口归属白名单式(bx 的 TUN / 别的
-隧道(`leakcheck.IsTunnelInterface`)/ 物理网卡 / 认不出就说认不出),结论一句 + 证据几行。
-**两条措辞是真机逼出来的**:假 IP 目标要告诉绑网卡的程序「拿到的是假 IP、从物理网卡
-发出去石沉大海,域名进 `dns.fakeip_filter`/hosts 或直接写 IP」(就是 DERP 域名那次);
-CGNAT 目标不带绑网卡那一句(overlay 走自己的隧道,底层那句是噪声)。`--json` 在 Core 应答
-上**追加** `machine` 键,顶层字段一个不动(MCP 的 `bx_explain` 直接转发);Core 连不上时
-只有 `machine` + `core_unavailable`。这台 Mac 上五类目标(公网 / 服务器旁路 / 假 IP 域名 /
-CGNAT / 私网)实跑过,输出与内核一致。
+嗅出的域名一条规则都没中时由真 IP 说了算,直连拨的就是这个 IP。细节与测试的坑在那份里。
 
 ## 按应用看分流(2026-08-19,整套真机未验)→ `internal/supervisor/CLAUDE.md`
 
@@ -536,136 +508,11 @@ divergence、reconcile、protection_state、recovery、dns_state…… **全部�
   (不发 review),CLI 报「这一版 Guardian 没有发布规则体检」而不是「你的规则
   都很健康」。
 
-## `/v1/logs` 与 `internal/doctor`:判据只有一份(2026-09-09)
+## 诊断:`bx doctor` 与 `/v1/doctor` → `internal/doctor/CLAUDE.md`
 
-`internal/doctor`(`doctor.go`)是**纯判据包**——`Judge(Facts) Report`,**本包自己
-的文件**不 import net/os/exec/syscall(`purity_test.go` 按 AST 钉住;传递依赖不在
-守卫范围内 —— `config` 自己就会拖进 net/os,本包用到的只是它的类型),
-`internal/cli`(`doctor_facts.go` 只采集)与将来的 `/v1/doctor` 共用它。
-`bx doctor --json` 与文本路径现在都是「采集 → `doctor.Judge` → 渲染」,
-文本只是同一份 `Report` 的另一种打印(`renderDoctorReport`,返回三段式的
-`doctorLineSpec` 而不是 `status|key|value` 串 —— 规则原文与错误文本里真的会带
-`|`,按分隔符切回去会把一行切错而不报错),不再是第二份手写判据。**只服务文本
-路径的那份孪生判据 `darwinServiceDoctorLines` 已删**(没有调用方,而有测试盖着 ——
-那与没有判据在输出上完全一样,却会让下一个人以为文本路径还有第二份判定)。
-守卫:`TestClientDoctorIsJudgedByTheDoctorPackage` 逐字钉住
-`collectClientDoctorWith` 只有那一句、`collectDoctorFacts` 不含判定用语,
-`TestDoctorTextPathRendersTheSharedReport` 钉住文本路径不再自己采集,
-`TestJudgeGolden`(`internal/doctor/testdata/judge_golden.json`,长路径与权限退路
-各一份)把判决**逐字节**钉住 —— 逐条断言名字与状态挡得住「少了一行」,挡不住
-「detail 少了一个字」。`doctor` 不能 `import guardian`,**会成环**(§3 里 guardian
-要调本包),DNS 三态常量各写一份,`TestDoctorDNSStateConstantsMatchGuardian`
-守跨包不漂。**`/v1/logs`**(`internal/guardian/logs.go`)经 owner 门发布 Guardian
-与 Core 日志尾部,路径来自 `install.GuardianLogPaths`,能力声明 `logs`
-(`CapabilityLogs`,值本身由 `TestLogsCapabilityIsDeclared` 钉住 —— 菜单
-`LogsModel.swift` 按字面量门控,改了值菜单就永久看不见日志页而两侧都不报错)。
-菜单失败弹窗现带 **Show Details** 打开这份日志页,取代此前指向 root 0600 文件、
-非 root 打不开的路径。**那句文案与那个按钮共用同一道能力门**
-(`guardianFetchFailureInfo` 吃 `logsAvailable:`):旧 Guardian 上按钮画不出来,
-文案就改说「原因记在 bx 的日志里」而不是许诺一个找不到的按钮。**真机未验**:
-Show Details 按钮高亮、Open Logs 打开的日志页渲染。
-
-## `/v1/doctor` 与 Add Server:诊断面搬进 Guardian(2026-09-09)
-
-`/v1/doctor`(`internal/guardian/doctor.go`,能力 `CapabilityDoctor`)在 Guardian 进程内
-采集,喂同一个 `doctor.Judge`(与 `internal/cli` 的 `collectDoctorFacts` 同一份判据的
-第二个采集方);整轮共享一个 10 秒预算,每个依赖都吃同一个 ctx
-(`TestCollectDoctorFactsGivesEveryDepTheSameDeadline`)。`probe` 是**控制面的一次
-TCP 往返**不是完整握手,它与 launchctl 查询只在用户显式点击那次 GET(已过 owner 门)
-才发生。生产那几个原语自己也吃这份 ctx,由
-`TestLiveDoctorDepsForwardTheCtxTheyAreHanded` 按**行为**钉住(对着一个会 accept
-但永不应答的 socket,250 毫秒的预算必须在预算内回来)—— 此前那条守卫注入的是测试
-自己的闭包,「采集把 ctx 递下去了」与「生产闭包接过它之后照旧用 context.Background」
-在它眼里一模一样。平台检查下沉 `internal/platformcheck`(cli/Guardian 共用 `Collect`;
-**它不是叶子包** —— 自己引 doctor/leakcheck/supervisor,纪律是**不许反向依赖
-guardian/cli/install**,采集包被它的消费方引就成环);
-`internal/protectionstate` 同理——darwin 上 leakcheck 测试引 guardian、guardian 引
-platformcheck、platformcheck 又用 leakcheck 判据,首尾成环,下沉后「两边常量还一样」
-那条字面量守卫**退场**,漂移在构造上不再可能。Diagnostics 窗口现两页(Logs /
-Checks),Checks 只由显式点击喂数据(`TestMacMenuDoctorPageIsFedByFetchDoctor` 钉住
-`fetchDoctor`/`openDiagnosticsChecks` 两处调用点)。**Add Server** 取代 Replace
-Configuration:`servers add` 同名 409、名字可省略时 Guardian 用 `setup.LinkHost`
-推导(认 `bx://` 换壳);旧 Guardian 上 Replace Configuration 仍留作降级路。新增
-`TestMacMenuShellOutsStayOnTheAllowlist`:shell-out 只许落在 spec §1 那七个函数。**Checks 页真机已拉到过数据**(Guardian 日志
-`guardian_doctor_result uid=501 ok=true checks=19 elapsed=188~451ms`,2026-09-10/12 共 11 次
-请求)—— 端点、owner 门、19 项检查、耗时都坐实了。**仍未验的是判据本身对不对**:
-Checks 页与 `sudo bx doctor --json --skip-probe` 逐条对比(**Guardian 那份
-永远会探测**,它没有 `--skip-probe` 这个概念,故 Checks 页比 CLI 那份多一行 `probe`
-是预期的,不是漂移)、Add Server 三种结局、两页布局。
-
-**真机验收当场抓到三条缺陷(2026-09-10,已修;前两条是判据,第三条是界面)**:① **关掉保护被说成故障** ——
-用户 `bx down` 之后 `guardian_dns` 报 `fail` 并 hint「sudo bx up」,而 DNS 还给系统
-正是关闭态该有的样子;新 Checks 页把这条红字顶在最上面、合计写「1 failed」,一台
-完全正常的机器被说成坏的(与 Tailscale advisory 当初同一形状)。判据当时只看
-state/managed,没有意图这一项。现 `doctor.GuardianFact` 带 `Desired`,`DNSCheck` 吃它:
-关着且已还给系统 ⇒ ok;**关着却仍占着 DNS ⇒ warn**(那是调谐环 restore_dns 要处理的
-真残留,不许被这次豁免一起判绿);意图问不出来时按「要保护」判(宁可多报,不漏
-「DNS 被别人接管」)。② **ok 的行在教人修没坏的东西** —— `ok service_active` 底下挂着
-「→ sudo bx up」,两个渲染层都是「hint 非空就画」。现抹在 `Report.AddReport` 这个
-**唯一入口**里(`AddCheck` 也走它),不靠十几个产出点各自自觉。golden 新增
-`desired_off` 一例把关闭态逐字节钉住,原有两例逐字节未变。③ **重画之后停在旧的滚动
-位置** —— 打开 Checks 页第一眼看到的是最末尾几行 OK,合计句与唯一那条 WARN 全在屏幕
-外面;一个以「坏的排前」为卖点的页面,第一眼给的恰好是最不重要的一端。同一件事还让
-Run again 看起来没反应(健康机器上两份报告逐字相同,重画完画面不动)。现两页渲染完都
-调 `scrollToTop`(先 `layoutSubtreeIfNeeded` 再滚 `.zero`,少了前者滚的是按旧内容算出
-的坐标),Checks 页另加一行 `doctorCheckedAtLine` 的时间戳(带秒 —— 只到分钟连点两次
-仍看不出),守卫 `TestMacMenuDiagnosticsPagesReturnToTheTopAfterRendering` 钉在两页各自
-的函数体里,三条变异各咬中一条。
-
-## 流量成败进 Judge,「没查」不许读成「没问题」(2026-09-12,真机未验)
-
-**升级本身会让一整类诊断消失,而且是被一句相反的话顶掉。** 「哪条规则在成片
-失败」(2026-08-13 那个签名:`*.qq.com` 1291 条失败 1289、Steam 图片全裂)此前
-只长在 `bx doctor` 的**文本**路径上 —— `cli.go` 里那个 for 循环,注释还写明
-「不在 --json 契约里」。而菜单的「Check for Problems」自从 Guardian 声明
-`doctor` 能力起走的是 `/v1/doctor` → `doctor.Judge`,那条路上没有人采流量成败。
-于是 Checks 页对那台正在成片失败的机器一个字都不说,顶上还加粗写着
-`0 failed · 0 warnings`;`bx_inspect` 的 `ok` 同源,agent 拿到的是 `true`。
-
-修法两半,**第二半才是真正闭合缺陷的那个**:
-- **判据搬进 `internal/doctor/traffic.go`,三个消费方共用一份**:`doctor.Facts`
-  多一个 `Traffic *TrafficFact`(数据,不是让 Judge 自己去拿 —— 本包纯度守卫
-  按 AST 禁 net/os/exec),`internal/cli` 与 `internal/guardian` 两个采集方各自
-  填它,文本路径那一段 fork 删掉。与 `bx status` **仍然同源**
-  (`stats.FailingRules`/`UDPNotice`,纯度白名单为此收了 `stats` 与 `tristate`
-  两个只做计算的包,理由写在名单里)。多条失败规则合并成**恰好一条** check
-  (`traffic_failing_rules`)—— 与 `riskyRuleFinding` 同一条:同名 check 会让按
-  名字取的消费方静默丢掉其余结论。
-- **第四种状态 `not_checked`**:采集方没填(nil)与问不到(Err)都产出一行,
-  措辞不同、都不缺席。`Report` 多一个**与 `ok` 并列**的 `not_checked` 计数
-  (刻意无 omitempty),菜单合计句变成 `N failed · M warnings · K not checked`
-  (K=0 也照写)。**`Report.OK` 的含义一个字没改**(仍是「没有一条 fail」):
-  让「有一项没查」把 OK 打成 false,等于宣布一台用户自己 `bx down` 的机器坏了
-  —— Core 没在跑时流量必然查不到,而那正是关闭态该有的样子(2026-09-10
-  `guardian_dns` 栽的同一形状)。代价由那个并列的计数抵掉,理由写在字段上。
-
-**守卫钉的是缺陷本身**:`TestJudgeMakesUncheckedTrafficLookDifferentFromHealthyTraffic`
-断言「没采到流量事实」的报告与「查了、一切正常」的报告**在渲染得出来的行上**不同
-(不是在 Facts 上不同 —— 那是缺陷旁边的东西);`TestGuardianDoctorFactsCarryTraffic`
-钉住菜单走的那个采集方真的问了;Swift 侧 `testSummaryLineSaysHowManyWereNotChecked`
-钉住合计句。golden 从三例加到四例(新的 `failing_rules` 是唯一一份 traffic 真查出
-东西的报告 —— 少了它,这次改动可以整个被撤掉而 golden 不动)。
-
-**它当时留了一格空的,同日补上:Guardian 的 `TrafficFact.DirectEgress` 恒
-Unknown。** 那一格正是这份诊断最值钱的一句话 —— 2026-08-13 真机上十条 direct
-规则 100% 失败,坏的不是规则,是 bx 自己的直连器(macOS 上那条 scoped 默认路由
-不见了);恒 Unknown 时 Checks 页会一本正经地建议用户去改那些**完全正确**的规则。
-接法是**用同一份判据**:新的 `observe.DirectEgress(ctx, deps)` 是这一格的单问
-入口(与 `Observe` 走同一个 `observeDirectEgress`,只是不跑整轮 —— 那要多两次
-路由查询、一次 DNS 查询、一次控制 socket 往返,而 doctor 那一轮只有一份预算),
-Guardian 的 `doctorCollectorDeps.directEgress` 接的就是它;**`(reachable, known,
-err) → Tristate` 那段映射仍然只有一份**,没有第二个 `supervisor.DirectEgressReachable`
-调用点。**nil ⇒ Unknown,不是 True** —— 判成好的就等于让那句错的建议照旧发出去。
-观测本身只有 darwin 有原语,别处由 `NotApplicableForPlatform` 声明为不成立、
-不去问(问了只会每次留下同一条永久失败)。守卫两条:
-`TestGuardianDoctorBlamesTheDirectDialerNotTheRules` 打在**渲染出来的 hint** 上
-(观测到 False ⇒ 不许再说「改 rules」;没问出来 ⇒ 不许说「不是你的规则」),
-`TestDirectEgressAsksOnlyThatQuestion` 钉住单问入口不顺手问别的、吃调用方那份
-ctx、且不成立时不去问;`TestLiveDoctorDepsForwardTheCtxTheyAreHanded` 多一条
-子测试,判据是**认不认账**而不是快不快 —— 用自己的钟的实现在这台机器上也是几
-毫秒回来,只是会给出一个**确定的**答案,那是它唯一看得见的形状(非 darwin 上
-这一条是弱的,记着别当成三条腿都在守)。`bx doctor --json` 的 golden 一个字节
-没动:判据层没改,补的是采集。
+`doctor.Judge` 是两个采集方(`internal/cli/doctor_facts.go`、`internal/guardian/doctor.go`)共用的
+唯一判据;golden 逐字节、`not_checked` 第四态、关掉保护不是故障、ok 行不带 hint、流量成败与
+DirectEgress 那一格都在那份里。**改两个采集方之前先读它。**
 
 ## 读源码的守卫:三种处置(2026-08-31)
 
@@ -767,103 +614,11 @@ err.log 曾被截断过一次,22 小时重新长到 9.4MB(≈10MB/天);升级后
 `sudo : > /var/log/bx-guard.err.log` 截断,**不要 `rm`**(launchd 与 Guardian 都持着
 那个 fd,删一个字节都不会释放)。
 
-## `bx explain <目标>`:判定第一次有了外部出口(2026-09-01,部分真机已验)
+## `bx explain <目标>`(2026-09-01/05/14)→ `internal/dialer/CLAUDE.md`
 
-**动机是三次病历,三次 bx 都握着答案、三次都没人问得到**:Steam 图片全裂(用户去
-怀疑 bx 和 CDN,真因是一条 direct 规则指向的路完全不通,而 bx 每一次都看见了
-`dial direct failed` 然后扔掉)· 腾讯会议绕一圈(查半小时,最后靠 `strings` 捞
-域名)· `*.qq.com` 57% 失败。**共同形状是请求级的「为什么」**,而 bx 全部 11 个
-只读 MCP 工具、`bx status`、`bx doctor` 答的都是系统级的「状态如何」。
-
-`route.Explain(Meta) → (Decision, Reason)` 每秒执行上万次,**此前只被 dialer.go
-调用**。这个功能就是给它开一个出口。
-
-**几条改之前要读的判断**:
-
-- **问活着的 Core,不在 CLI 里重建 Router。** bx 不热重载,盘上的配置可能已经和
-  跑着的那个不一样;CLI 自建的答案是「bx **应该**做什么」,而用户问的是「bx
-  **会**做什么」—— 两者不同的那一刻恰恰最需要这个命令。Core 没在跑就如实说,
-  **不退回配置推断**。
-- **合成不重写一遍。** `route.Explain` 只给路由判定,实际结局还要叠 kill-switch
-  与 UDP 档。三条路选了第三条:`(*Dialer).Explain` 是**同一个 Dialer 实例**上的
-  只读兄弟方法,读同一个 Router 指针、同一批 Transport、同一个 `Killswitch`/
-  `UDPMode`,并调用**同一个** `killswitchBlocks` —— 不是第二份判据,是同一个对象
-  的另一个问法。(把 `dialInner` 的合成整块抽出来风险大于收益:它和 stats、
-  recordApp、真拨号绞在一起,是全产品最热的路径。)
-- **分支结构仍是分别写的两份**,由 `explain_drift_test.go` 挡住:9 个目标 ×
-  健康/不健康 × kill-switch 开关 × 三种 udp.mode = 108 组,断言 Explain **预言的**
-  结局与 `dialInner` **真的做出来的**一致。
-- **Explain 绝不许有副作用。** `udpRuleOverride` 在不命中时会调
-  `countUDPCounterfactual`,走那条路等于拿一条根本没发生的连接污染反事实计数 ——
-  而那份计数正是「让 china 列表也对 UDP 生效」那个搁置选项的依据。故剥出纯判据
-  `udpRuleOverrideDecision`,并由 `TestExplainRecordsNothing` 钉住。
-- **`route.Explain` 从不解析。** 写 spec 时我判断错了(以为未命中域名规则时会用
-  国内 DNS 解析再按 IP 判),动手时被代码证伪:它直接 `return Proxy, SourceDefault`,
-  注释写明理由是不拿可能被污染的国内 DNS 做 geoip。**所以 `--resolve` 整个不必
-  存在。**(顺带发现 `dialInner` 里 `dec == route.NeedResolve` 那一支**今天不可达**。)
-
-**失败分类(`internal/dialfail`,叶子包)**:一个百分比**答不出该不该管** ——
-同样是 15%,全是 `unreachable` 就要立刻去查路由(2026-08-13 那个 DirectDialer 故障
-的签名),全是 `timeout` 就一个字都不用改。而 err 一直在手边
-(`conn, err := d.Direct.DialContext(...)`),此前进一行 debug 日志然后被扔掉。
-类别名下沉叶子包的理由同 `internal/udpsource`:它是 dialer 与 stats 之间唯一按
-字面对齐的东西。**顺序是判据的一部分**:DNS 排在超时之前(DNS 超时的可行动信息
-是解析器不是对端);**nil 返回空串不是 Other**;`canceled` **只给名字、不改它是否
-计入失败** —— 先量再决定,反过来做会让改动前后的累计不可比。
-
-**两处「数字看起来在说 A、实际在说 B」,都是真机首用当场发现的**:
-- `Rule == ""` 那一档(默认/内建列表)的计数是**一个桶的合计**,不是这个目标的。
-  真机实测 `steamstatic.com` 与 `1.1.1.1` 拿到逐字相同的 49/15228/73。不删那两行
-  (整体失败率是有用背景),加一句话把它归位;命中具体规则时**不加** —— 多余的
-  免责声明会让一个准确的数字显得可疑。
-- **「累计」必须说清覆盖多长时间、跨几个版本、表溢出过没有**。三个字段本来就在
-  `RuleHistorySnapshot` 里,第一版全丢了。一个跨半年几个版本的 15% 与一天之内的
-  15% 是完全不同的两件事,而读的人会默认它是后者。
-
-### explain 的两句判决(2026-09-14,真机未验)
-
-**分类到处置之间那一跳此前一直留给读的人自己走。** 失败分类从 2026-09-01 就印着
-(`[route unreachable×410 peer did not answer×15]`),而「所以该怎么办」写在 `internal/dialfail`
-每个常量的注释里、抽成过一个判据 `LooksLikeOurFault`,**零生产调用方** —— 判据
-写下来了、测试盖着,从没有一个字到过屏幕上。现在是 `Blame` 那一行(2026-09-14 落地时它叫「判决」,2026-09-17 随整条 explain 改英文)。
-
-- **`dialfail.Blame` 四态取代了那个 bool,零值是 `BlameUndetermined`。** 两态之下
-  `Other`(认不出)与 `Timeout`(确知是对端的问题)返回同一个 false,于是
-  「我判不出来」被渲染成「不是 bx 的问题」。新加类别忘了分类时由一条 AST 穷举
-  守卫红一次 —— 否则它静默落进零值,**而零值读起来像「想过了判不出来」**。
-- **`dialfail.Dominant` 的门槛是严格多数,不是「最多的那一类」。** 40/30/30 里挑
-  一个说成主因就是编答案;正好一半更不行 —— 5 个路由不可达 + 5 个对端不应答是
-  两句处置完全相反的话。没有主因就不说话,那一行的 `[×N ×N ×N]` 拆分本身已经
-  说明「它不是一个原因造成的」。
-- **选样本的判据是「哪份答得出这个问题」,不是「哪份有失败」。** 累计那份可能有
-  8000 次失败却一个分类都没有(旧版本记的、或这一轮还没落盘),按后者会把唯一
-  答得出问题的样本整个扔掉,**而输出与「这一版不下判决」逐字节相同**;选中的那份
-  说不出主因时也不回落到更小的那份。读的是哪一份必须印出来。
-- **指向对端的那一档绝不断言对方的状态**(本机没网时同样表现为「没收到回应」),
-  渲染出来的话里**没有 markdown、没有反引号** —— 用户读到的是字面符号,而这个
-  仓库刚被反引号坑过一次(文档里反引号包着的命令被 zsh 当成命令替换执行)。
-
-**第二句是 `Review` 行:这条规则该不该留。** `internal/rulereview` 那四类加死规则
-整份早就在(`bx doctor`/`bx status` 都在用),而 explain 此前不调它。
-**explain 是预言不是观测,所以五类都够得着** —— 它报「会命中哪一条」,于是一条
-从来没命中过的死规则照样会被点名。四条判据:**按 kind 分开查**(同一条原文可同时
-在两张表里、语义相反)· **全部结论都说不是第一条**(一条规则可以既危险又被盖住,
-取第一条会静默丢掉其余安全结论)· **没有用户规则可点名时一个都不给**(内建/默认
-那一档没有哪一行是用户写的)· **`CoveredBy` 只在真有时才拼**(死规则没有「被谁
-盖住」这回事)。体检对着 **`RuntimeState.ConfigPath`** 算 —— 拿错输入而判据没错
-正是 wrong-reference-object 那类事故;两条取数路与 `bx doctor` 逐字同源,
-**只有权限不足**才退到 Guardian 的 `/v1/rules`(配置**不存在**是「还没 setup 过」
-这个真问题,拿 Guardian 的答案盖住它是掩盖故障),且要比对 config_path 同不同。
-**任何一步问不出来 ⇒ 一个字都不说,绝不渲染成「这条规则没问题」。**
-两句都同时进 `--json`(`tcp_rule_findings`/`udp_rule_findings`,顶层既有字段
-一个没动)—— 只长在文本路径上的诊断正是 `bx doctor` 那次「被一句 0 failed 顶掉」
-的形状。
-
-**真机状态**:`bx explain` 本身**已验**(当场答出 `*.qq.com`:命中 `*.qq.com`、
-本次 78 次/15 次失败、累计 2726/425)。**失败分类与累计口径未验** —— 升级后第一件
-事就是 `bx explain qq.com`,看那些失败是 `route unreachable` 还是 `peer did not answer`:前者是
-8-13 那个故障的签名要立刻查,后者一个字都不用改。`bx_explain` MCP 工具也未验
-(没有 agent 调过)。设计 `docs/superpowers/specs/2026-09-01-explain-target-design.md`。
+判据(问活着的 Core 不重建 Router、合成不重写、Explain 无副作用、失败分类与两句判决、本机视角)
+在 `internal/dialer/CLAUDE.md`。**改 `internal/cli/explain.go`、`internal/pathview`、`internal/dialfail` 之前先读它**
+(动那几个包时它不会自动加载)。
 
 ## 手机那条桥(2026-09-01,真机未验)
 
@@ -1133,205 +888,59 @@ DNS/路由」「覆盖安装会在你确认后重启保护」)。**翻译一段�
 
 ## 约定
 
-- **CLAUDE.md / README.md 点名的文件必须真的在**(`TestDocumentedFilePathsExist`,
-  2026-08-24)。**范围刻意只有这两份,不含 `docs/superpowers/{specs,plans}`** ——
-  首次全仓扫描给的结论:文档里共点名 541 个路径、55 个不存在,而**这 55 个无一在
-  CLAUDE.md**,全部在 plans 里。计划书是**有日期的意图记录**,它点名的是「将要建
-  的文件」;实施走偏或功能后来被删,它的路径失效是预期的,不是谎。把 plans 拉进来
-  只会制造 55 条假红,而假红的守卫会被下一个人删掉。
-  **同一轮试过、而刻意没做的一条**:「文档里点名的**标识符**是否存在」。噪声太大 ——
-  92 个「查不到定义」里绝大多数是 stdlib、Win32/AppKit API、plist 键、域名,以及
-  CLAUDE.md 自己明确记述「已删」的东西(`KickControl`/`StatusPanel` 那一类),做不成
-  闸门。**但那次扫描本身有产出**:它抓出 CLAUDE.md 的「速率」那一整段描述的是已经
-  被换掉的做法(客户端做差、键是 (组,应用名)、判据在 `AppTrafficRateTracker` 里 ——
-  三条都不再成立,那个类型已删),已按代码重写。
-- **散文里点名的测试必须真的存在**(`TestEveryTestNameMentionedInProseExists`,
-  **范围含 CLAUDE.md 本身 + `apps/` 下的 Swift**,
-  `internal/cli/testnamerefs_test.go`,2026-08-24)。这个仓库最常复发的失效不是代码
-  错,是**关于代码的陈述**错:注释写着「由 `TestXxx` 钉住」而 `TestXxx` 早已改名或
-  删除。下一个人读到那句话,会**据此不再去检查那件事**。首次全仓扫描一次性抓出
-  **7 个失效引用**;其中一个点名的测试**压根不存在**,而它描述的那件事(常驻安全
-  告警的 hint 必须是真敲得动的命令 —— 它已经错过两次:一次指向不存在的
-  `bx direct remove`、一次漏了 `sudo`)在 supervisor 那一侧**确实无人守**,那条守卫
-  已按注释描述的样子补上。判据对**前缀**宽容(`TestFoo*` 这类通配写法很常见,
-  宁可放过一个也不制造假红);**刻意退场**的测试登记进 `retiredTestNames` 并写明
-  被什么接手了,另有反向断言钉住「退场的名字不许又变回真测试」。
-  **这条守卫自己犯过它要抓的那个错**:反向断言原先排在前缀匹配之后,于是永远
-  不可达 —— 变异实测随手加一个同名空测试整条守卫照样绿。**一条在最需要它时恰好
-  不可达的断言,与没有这条断言完全一样,而它看起来更让人放心。**
-  **2026-09-02 把 CLAUDE.md 拉进同一条守卫**(不是加第二份):它点名了 41 个测试
-  而此前**一个守卫都没有** —— 而它恰恰是下一个人(或下一个 agent)开工前唯一会
-  通读的东西。首次全量扫描**是干净的**:5 个查不到的里两个是散文占位符
-  (`TestFoo`/`TestXxx`,按构造被正则的最短长度排除,不是碰巧),另外三个正是
-  「读源码的守卫:三种处置」那张表里明写已退役的,早登记在 `retiredTestNames`。
-  测试**顺带改了名**(原 `…MentionedInAComment…`):一条叫「注释」的守卫会让人
-  以为 CLAUDE.md 不在保护范围内,而那正是它自己要消灭的那种陈述。
-  **2026-09-12 再扩到 `apps/` 下的 Swift**(仍不含 `docs/superpowers/{specs,plans}`,
-  理由同 `TestDocumentedFilePathsExist`:计划书是有日期的意图记录,失效是预期的,
-  拉进来只会制造 55 条假红)。起因是一次审计在 `main.swift` 里抓到一条失效引用,
-  而守卫**在结构上看不见它**;而菜单恰恰是全仓测试覆盖最薄、读源码守卫最多的
-  一块 —— 「由 `TestXxx` 钉住」在那里**最承重、也最不容易被发现失效**。Swift 只
-  贡献引用不贡献定义(那边的「测试」是 `@main` 结构体加一串 `expect(...)`,没有
-  `Test…` 开头的函数名)。**够不着要扫的源码时必须 `t.Fatal`**:两道下限,走不进
-  `apps/` 一道、走进去了却一个 `.swift` 都没见着一道 —— 一条安静地扫了零个文件的
-  守卫,与没有这条守卫在输出上完全一样,而它看起来更让人放心。首次全量扫描
-  **是干净的**(Swift 里 9 处点名全部指向真实存在的 Go 测试)。
-  **同一轮收窄了 `retiredTestNames` 那个逃生口。** 它是给**历史记述**用的
-  (「那条已退场,由 X 接手」),而审计发现它正在被一句**现在时**的断言吃着:
-  `internal/stats/outcome.go` 写着「由 <某条已退场的测试> 钉住」,名字在名单里,
-  于是全绿 —— 名字一旦进名单,就从「必须真的存在」变成了「随便怎么用都行」。
-  现在多一道:退场的名字**同一句话里紧跟着**断言词(钉住/钉死/守着/守住/盯着/
-  pinned by),而相邻一行又没有任何退场字样,就红。**判定粒度是「一句话」不是
-  「一段」,这是变异实测逼出来的**:第一版免责窗口开到 ±3 行,把出事那天的原话
-  写回去照样全绿 —— 那一段在事后被改对时补上了「当初那条守卫因此退场」,窗口够宽
-  就把新写回去的假话一并赦免了,而**一段同时讲着「它退场了」和「由它钉住」的文字
-  恰恰是最不该赦免的那一段**。网仍然刻意窄(动词在名字前面、被折到下一行、同义
-  改写、块注释、英文只认一种写法,都看不见),理由是本仓库那条老纪律:一条会误报
-  的闸门比没有闸门更糟。真实的 12 处退场记述一条都不红。
-- **CLAUDE.md 与 `docs/lessons/` 的分家规则(2026-09-13 定)**:CLAUDE.md 只放**判据**
-  ——「改这块之前必须知道什么」「哪条不变量不许动」「什么是已知缺口」;**过程**
-  (某次事故的逐轮复盘、某个功能的施工日志、某条守卫当初怎么被攻破的)进
-  `docs/lessons/`。**判据不许只存在于 lessons 里**:那边是给「想知道当初怎么换来的」
-  的人看的,而 CLAUDE.md 是每次会话都加载、下一个人开工前唯一会通读的那一份。
-  定这条规则是因为它长到了 200k 字符,其中一个 markdown 列表项独占 79KB(22%)
-  —— **通读不了的东西等于没写**。
-  **`docs/lessons/` 与 CLAUDE.md 受同两条守卫保护**(`TestDocumentedFilePathsExist`
-  与 `TestEveryTestNameMentionedInProseExists`,2026-09-13 扩的范围),因为搬迁本身
-  会制造盲区:那些原文点名的测试与路径,搬出去之后若无人看管,**同样会被读到、却
-  不再会被证伪**。它与 `docs/superpowers/{specs,plans}` 的区别是**时态** —— 计划书
-  写的是「将要建的东西」,失效是预期的;lessons 写的是已经发生的事实。
-  **推论:真机验收的逐条结果进 lessons,CLAUDE.md 只留「已验 / 未验」那一行状态加
-  指针。** 否则它会随每一次验收单调增长 —— 2026-09-13 那次拆分刚把它压到 148k,
-  补三条实测证据就又吃掉 1.6k。**但「未验」那一半必须留在 CLAUDE.md**:它是待办,
-  不是历史。
-- **TDD**:先写失败测试→跑红→最小实现→跑绿→提交。纯逻辑测试免 root(用 `t.TempDir()`,不碰真实路由/设备)。
-- **绝不并行派两个会写盘的子代理进同一个 checkout。** 2026-08-17 实测的代价:两个
-  实施代理按「路径不相交」并行(一个改 `internal/socks5`,一个改
-  `internal/cli`/`internal/rulereview`),结果**一方为隔离自己而 `git stash`,把另一方
-  五个进行中的未提交文件整批卷走** —— 受害者看到的现象是「文件回到一个我从未提交过
-  的 HEAD,而两个我根本没碰过的文件显示为已修改」,只能从零重做。
-  **路径不相交挡得住 git 冲突,挡不住两件事**:① `verify.sh` 是全树的,任何一方跑全量
-  都会读到另一方的半成品(已害得一个代理吃过一次假红);② **`git stash` 是全树操作,
-  完全不受路径保护**。
-  只读的 review 代理可以并行。要真并行写,就得各自一个 worktree。
-  **控制器的判断错误也记在这里**:当时依据 stash 那一方「零数据丢失、逐字节还原」的
-  报告下了「没出事」的结论 —— 那只在它自己视角内成立,它不知道自己卷走了同伴的工作。
-  **一方的报告不是全局事实**,尤其当那一方恰好是肇事者。
-- **验证命令**:`bash scripts/verify.sh`(全量)或 `--quick`(改一行时)。
-  **步数这里不写了** —— 原文写着「全量 14 步」,而实测是 17 步,与拆除台账那条
-  「九处 defer / 11 处」同一个形状:一个没人会去核的数,过一阵就变成假的。
-  要知道有哪几步就跑一次看横幅;要知道 `--quick` 跳了什么,横幅也会逐条报出来
-  (race / 交叉编译 / windows 测试 typecheck / integration 测试 typecheck /
-  纯判据可移植性,共 5 步 —— **此前后三步在 `--quick` 下一个字都不报**,横幅却说
-  「跳过 2 步」,2026-09-17 补上)。
-  **2026-09-13 加的 windows typecheck 那步值得单说**:那圈交叉编译用的 `go build` **从不编译 `_test.go`**,
-  而 Windows 那半的行为断言只在 CI 的 windows runner 上跑 —— 实测把一个 `*_windows_test.go`
-  里的常量改成不存在的名字,`go vet ./...` 与 `GOOS=windows go build ./...` **两条都通过**,
-  推上去才红。现在多一步:只 vet 那些含 windows-tagged 测试的包(vet 会 typecheck 测试文件),
-  清单从 `git ls-files` 现取、一个文件都找不到时响亮失败。**刻意不写成 `GOOS=windows go vet ./...`**
-  —— `internal/tray` 有一条先于此存在的 unsafe.Pointer 告警,拉进来就是一道恒红的闸门。
-  **2026-09-17 补的 integration typecheck 是同一条盲区的另一半,但上限更低**:那九个
-  `//go:build integration && linux` 的 netns 台子既不被 `go build` 编(不编测试文件)、
-  也不被 `go test ./...` 编(缺 tag),本机**一个字都看不见**,只有 CI 那条
-  `sudo go test -tags integration ./...` 会红。这一步只 typecheck,**不跑** ——
-  同一天就有一条真实的断言(换服务器被拒绝时答复里那句话)随文案改英文而失效,
-  而 vet 对它一个字都说不出来。它拦得住「改了个名字、台子编不过了」,拦不住
-  「编得过、断言不再成立」;后者今天仍然只有 CI 那条腿证得了。
-  **判据一律是退出码,不是字符串匹配。** 它的存在是因为 2026-08-11 那轮里同一个根因栽了六次:
-  `go test … | grep …; git commit` 用 `;` 串联(测试红了照样提交)、变异验证 grep `^failed` 而套件
-  打印的是 `FAIL:`(「没转红」被误判成守卫失效)、`head -5` 查 `set -e` 而注释头十几行、`grep -c` 数
-  「出现次数」而它数的是行数、替换串带了不存在的前导 tab 而 `str.replace` 匹配不上时不报错。
-  **别再手敲那一串命令**;`verify.sh` 自己也验过五个方向都会失败,漏一道闸门由 `TestVerifyScriptCoversEveryGate` 钉住。
-  **一个会偶发红的闸门比没有闸门更糟**,因为它训练人去重跑
-  **2026-09-14 的 release run 连着红两次,两次是不同的测试、不同的病因,而且
-  `scripts/verify.sh` 在本机(macOS)全绿 —— 那一整类平台差异它结构上覆盖不到,
-  因为它跑的是这台 Mac,而 CI 的 build job 跑 Linux。两条都记下来:**
-  ① `TestManagerUpStartsCoreDespiteUnremovableDeadCoreRecord` —— **确定性的,已修**。
-  它 `release` 那个假进程,于是 manager 把它当**意外退出**走 `handleUnexpectedExit`:
-  写状态、可能再起一个 Core,而那些全落在 `t.TempDir()` 里,与 TempDir 自己的
-  `RemoveAll` 抢同一个目录(`unlinkat …: directory not empty` —— 删完内容正要
-  rmdir 时又被写进来)。修法是**不 release**:这个测试到 Up 成功就该结束,再模拟
-  一次退出不属于它。**只同步 runner 那条 goroutine 不够(试过),manager 的 monitor
-  是另一根。** 形状与 socks5 那次同源(活过测试函数的 goroutine),只是那次碰的是
-  `t.Errorf`,这次碰的是文件。**在 Colima 的 linux 容器里复现与验证**(本机复现不出来)。
-  ② `TestManagerUpdateReservesDeadlineForTargetCleanup` —— **仍是潜在 flake,未修**。
-  整个 `Update` 只给 500ms,而 v2 的健康检查无限阻塞、先吃掉大半,剩给「回滚后等
-  v1 健康」的余量在 CI 慢机器上不够(`previous_core_health_failed`);本机与本地
-  linux 容器各跑 20~30 次都全过。**正确修法不是把 500ms 调大** —— 要先弄清 `Update`
-  内部怎么在健康检查与清理之间分预算(那正是这条测试要证明的东西),否则调大只是
-  把同一个竞态推远一点。
-  **2026-09-17 又红一次,同一个码,而这次值得记的是它落在哪条腿上**:v0.4.1 的
-  release run 在 `build` 里红,而 **ci.yml 在同一个 commit 上二十分钟前刚 7/7 绿过**
-  (含同一个包的 `go test ./...`)—— 于是它不是回归,是那个竞态本身。**两次已知的
-  CI 失败都落在 release.yml,一次都没落在 ci.yml。** 两个样本不足以断言「只在发版
-  时发生」(两条腿跑的是同一条命令,更可能只是概率),记下来是因为**它挡住的恰好
-  是最不想被挡住的那件事**:发版流水线红了就没有 release 资产,而重跑一条已知会
-  偶发红的闸门,正是本节那句「一个会偶发红的闸门比没有闸门更糟」警告的东西。谁
-  下次动这条测试,先去比 `release.yml` 与 `ci.yml` 两条腿的 runner 规格与并发度 ——
-  那是今天还没查的一格。
+过程(每条守卫的来历、事故复盘、CI flake 的逐条经过)在 `docs/lessons/conventions-archive.md`。
 
-  **2026-09-18 第三次,而这一条是确定性写法造成的、已修,判据可复用**:
-  `TestManagerDNSContextFailureUsesBoundedBarrierCleanupContext/ensure/deadline`
-  在 ubuntu 那条腿上红成「DNS context failure did not leave a proven barrier」,
-  而真因与屏障无关。它要证明的是「DNS 那一跳拿到的 context 死掉时,屏障清理必须
-  另起一个活的 context」—— 那要求 context **在 DNS 那一跳**死掉;它用的却是
-  `context.WithTimeout(…, 40ms)`,给的是「在某个绝对时刻死掉」。**两者只在
-  `Up` 能在预算内走到 DNS 时才等价**,而那取决于机器有多忙:预算先到期时 `Up`
-  失败在更早的一步,那条路不装恢复屏障,断言于是红在屏障上 —— 报的不是它守的
-  那件事。**形状叫得出名字:拿挂钟去指定「哪一步」该失败,就是在赌调度。**
-  兄弟子测试 "canceled" 从来没这个问题(它的 `cancel()` 由 `fail` 自己调,
-  时点就是那一跳);修法是照它,换一个由调用方决定何时到期、`Err()` 仍报
-  `DeadlineExceeded` 的 context 替身,错误形状一个字没变。**把 40ms 调大不算修。**
-  顺带补的那条断言值得照抄:`Up` 没走到 DNS 就失败时**当场说出来**,别让它伪装
-  成屏障问题 —— 「断言被满足/被违反,但是因为别的理由」是记档在案的第五种守卫
-  失效写法。复现方式:把那个预算改成 1ns,得到 CI 那句一字不差的话。
- —— 而重跑正是「判据是
-  退出码」这条纪律唯一的解毒方式。2026-08-17 抓到并修掉一个:`internal/socks5` 的
-  `TestDialerUDPAssociateRelaysDatagrams` 在 1500 次里失败 4 次,根因是 UDP ASSOCIATE
-  的客户端 socket 绑的是**双栈通配** `[::]`,而 relay 是 IPv4 —— 服务端明明写成功了
-  (14 字节、err=nil、28µs),客户端两秒收不到。**内核层面为什么会漏投这个跨族环回包
-  至今未查清**,但修法不依赖它:一个 SOCKS5 客户端只跟一个 relay 说话,socket 就该绑在
-  **relay 所在的地址族**上(`78edafa`,改后 0/1500)。守卫钉的是**修法的机制**而不是那个
-  flake ——「IPv4 relay ⇒ 本地址是 IPv4」是确定性的,而 1/375 的失败率跑一遍抓不到。
-  **同一个文件里第二个、独立的间歇失败源也已修(2026-08-17)**:`serveTCP`/`serveUDP` 是
-  活过测试函数的 goroutine,而它们在里面调 `t.Errorf`(以及 `t.Helper()`,同样是测试
-  完成后不该调的 `*testing.T` 方法)—— 测试返回之后再调 `t.Errorf` 会让 Go panic
-  (`Log in goroutine after Test… has completed`)。当时只修了被点名的那一处丢弃
-  `WriteTo` 错误的地方(经 `t.Cleanup` 排空的 channel);现在把同一套机制推广到两个
-  goroutine 里全部诊断点(读握手/版本/方法/请求/地址、写方法回复/写 ASSOCIATE 回复、
-  解析/构造 UDP 数据报……一律经 `s.reportf` 排队成 `error`),并加一个 `sync.WaitGroup`
-  让 `t.Cleanup` **先等两个 goroutine 真正退出、再排空 channel 逐条 `t.Errorf`**——
-  否则会有「goroutine 还没来得及把错误塞进 channel,Cleanup 已经查过一遍」的竞态,
-  origin 那版靠 `select+default` 单次不阻塞查询本就吃这个亏。`t.Helper()` 从两个
-  goroutine 里整个删掉:它们不再直接调 `t.Errorf`,标记 helper 帧对它们已没有意义。
-  **教训是通用的、留着**:任何活过测试函数的 goroutine,一旦持有 `*testing.T` 并调用
-  它的任何方法(不止 `Errorf`/`Fatalf`,`Helper`/`Log` 同样算),就是一颗定时炸弹 ——
-  正确的形状始终是「goroutine 只把错误递给一个 channel,由测试(或 `t.Cleanup`)
-  自己的 goroutine 在还没标记完成时把它转成 `t.Errorf`」,一份机制,别为下一个诊断点
-  另开一条路。
-  两处 grep 参与判据是**必要**的并已注明:`test-macos-menu.sh` 提前 `exit 0` 时退出码仍是 0(只有收尾
-  横幅抓得住),`gofumpt -l` 输出文件名而退出码恒 0。
-- **真机绿不等于这条路没问题 —— 真机与 CI 互不替代(2026-09-16 付的学费)。**
-  给 Windows 那条腿修三条测试时,测试二进制交叉编译到项目所有者的真机
-  (`030-SJWJ-GSR-B`)上跑,七个包全绿,变异对照也做了(修复前红、修复后绿,
-  CRLF 那条还当场复现了「找不到函数结尾」)。推上 CI 第一轮却红了 **11 条**:
-  `control_client_test.go` 写死 `os.MkdirTemp("/tmp", …)`,而 `/tmp` 在 Windows 上
-  解析成**当前盘**的 `\tmp` —— 那台真机恰好有 `C:\tmp`(事后实测确认),runner 上没有。
-  **真机比 CI 宽松,于是它在这一族上给了假绿,而我当时已经用它下过「七个包全绿」的结论。**
-  分工是确定的,别拿一边的绿去替另一边背书:真机验 CI 验不了的(平台语义、真实文件
-  系统、真实网卡、真实网络);CI 验真机验不了的(**干净 checkout** —— `.gitattributes`
-  的行尾效果只有它证得了、标准环境、没有任何本地遗留物)。
+- **文档本身有守卫,别让「关于代码的陈述」无人看管。** 任意目录的 `CLAUDE.md`、`README.md`、
+  `docs/` 下除 `superpowers/` 之外的 `.md`、`apps/` 下 Swift 的注释:点名的**文件**必须存在
+  (`TestDocumentedFilePathsExist`),点名的**测试**必须存在(`TestEveryTestNameMentionedInProseExists`,
+  对前缀宽容)。**`docs/superpowers/{specs,plans}` 刻意不在范围**:区别是时态,计划书点名
+  「将要建的东西」,失效是预期的。刻意退场的测试登记进 `retiredTestNames` 并写明被谁接手;
+  退场的名字**不许在同一句话里被当成现在时的守卫**(「由 X 钉住」)。守卫够不着要扫的东西时
+  必须 `t.Fatal`(安静地扫了零个文件的守卫与没有守卫在输出上一样)。
+- **CLAUDE.md 的分家规则**:跨领域判据留根目录;只跟某块代码有关的判据下沉到那块代码目录的
+  `CLAUDE.md`(登记在本文件顶上那一节);过程进 `docs/lessons/`;逐条验收步骤进
+  `docs/acceptance-pending.md`,但「真机未验」标签留在判据旁边(它是待办不是历史);
+  **判据不许只存在于 lessons 里**;下沉时原文逐字存进 `docs/lessons/*-archive.md`。根目录与
+  每份子目录都有大小预算(`internal/cli/claudemd_budget_test.go`,根目录的数**只许往下调**)。
+  清理的判据是「说的是不是今天的事实」,不是「旧不旧」:**一句声称某个 bug / 限制仍然活着的话,
+  比一句普通的陈旧记述更坏**;被明确否掉过的方案与判据的理由不删(删了会被重新提出来)。
+- **TDD**:先写失败测试→跑红→最小实现→跑绿→提交。纯逻辑测试免 root(用 `t.TempDir()`,
+  不碰真实路由/设备)。
+- **绝不并行派两个会写盘的子代理进同一个 checkout。** 路径不相交挡得住 git 冲突,挡不住两件事:
+  `verify.sh` 是全树的(会读到对方的半成品)、**`git stash` 是全树操作**(2026-08-17 一方为隔离
+  自己把另一方五个未提交文件整批卷走)。只读的 review 代理可以并行;要真并行写,各自一个
+  worktree。**一方的报告不是全局事实**,尤其当那一方恰好是肇事者。
+- **验证命令**:`bash scripts/verify.sh`(全量)或 `--quick`(改一行时;横幅逐条报出跳过了哪几步)。
+  **判据一律是退出码,不是字符串匹配**(`go test … | grep …; git commit` 用 `;` 串联、grep 错的
+  失败字样、`grep -c` 数的是行数……同一个根因栽过六次),**别再手敲那一串命令**;漏一道闸门由
+  `TestVerifyScriptCoversEveryGate` 钉住。步数别写死。两步值得知道为什么在:**windows 测试
+  typecheck**(`go build` 从不编译 `_test.go`,`*_windows_test.go` 里的错只在 CI 红;刻意不写成
+  `GOOS=windows go vet ./...`,`internal/tray` 有一条既有告警会让它恒红)、**integration 测试
+  typecheck**(`//go:build integration && linux` 的 netns 台子本机一个字都看不见;它只 typecheck
+  不跑,「编得过、断言不再成立」仍然只有 CI 那条腿证得了)。
+- **一个会偶发红的闸门比没有闸门更糟**,它训练人去重跑。三条可复用的判据:
+  ① **活过测试函数的 goroutine 不许碰 `*testing.T` 的任何方法**(`Errorf`/`Helper`/`Log` 都算,
+  测试返回后调用会 panic),也不许在测试结束后往 `t.TempDir()` 里写(与 `RemoveAll` 抢目录)——
+  正确形状是 goroutine 只把错误递给 channel,由 `t.Cleanup` **先等 goroutine 退出再排空**转成
+  `t.Errorf`;② **拿挂钟指定「哪一步该失败」就是在赌调度**(`WithTimeout(40ms)` 想让第 N 步失败,
+  在忙机器上会失败在更早一步、红在别的断言上)—— 换成由调用方决定何时到期的 context 替身,
+  并在没走到预定那一步时**当场说出来**;把超时调大不算修;③ 守卫钉**修法的机制**而不是那个
+  flake(1/375 的失败率跑一遍抓不到)。**本机 `verify.sh` 覆盖不到 Linux 的平台差异**(CI 的 build
+  job 跑 Linux),复现用 Colima 的 linux 容器。
+  **已知仍未修的潜在 flake**:`TestManagerUpdateReservesDeadlineForTargetCleanup`(整个 `Update`
+  只给 500ms,慢机器上回滚后等 v1 健康的余量不够,`previous_core_health_failed`)。**正确修法不是
+  把 500ms 调大**,要先弄清 `Update` 在健康检查与清理之间怎么分预算。已知两次都落在 `release.yml`
+  而不在 `ci.yml` —— 下次动它先比两条腿的 runner 规格与并发度。
+- **真机与 CI 互不替代。** 真机验 CI 验不了的(平台语义、真实文件系统、网卡、网络);CI 验真机
+  验不了的(**干净 checkout** —— `.gitattributes` 的效果只有它证得了、没有本地遗留物)。真机
+  可能比 CI 宽松(那台 Windows 恰好有 `C:\tmp`,写死 `/tmp` 的测试在它上面全绿而 runner 上红 11 条)。
 - **提交信息**:中文 conventional commits,结尾带 `Co-Authored-By: Claude …`。在默认分支直接提交(单人项目)。
 - **内嵌资产**:`internal/embedded/assets/brook_linux_{amd64,arm64}`(~30MB)+ `singbox_{linux,darwin}_{amd64,arm64}`(linux ~28MB / darwin ~23MB)是提交进仓库的真二进制,按 GOOS/GOARCH 条件 embed(每构建只嵌匹配的那一个;singbox 经 `embedded_singbox_{amd64,arm64,darwin_amd64,darwin_arm64,other}.go`,**linux+darwin 都内嵌(同 brook 平台覆盖,mac 上 reality/hysteria2 也零依赖即跑)**,windows/其他 arch 走 nil 兜底→下载)。CI `embed-brook.yml`/`embed-singbox.yml` 跟上游 release 自动重嵌。换 arch 要补对应二进制。**缓存键掺内容 hash(已实现)**:`provision.embedCacheKey` = 版本 tag + `sha256(内嵌字节)[:12]`,写进 `.brook-version`/`.singbox-version`;同 tag 重嵌不同字节(如 sing-box 从 `with_utls` 加到 `with_utls,with_quic`)也会失效旧缓存、强制重释放,避免用到陈旧二进制。
   - **sing-box 是「自建静态最小构建」不是官方 release 二进制**:官方 linux 包是 glibc **动态链接 + 56MB 全家桶**(含 tailscale/acme/clash/dhcp,reality 全用不上),违背 bx「静态单文件、零依赖」。故从同一 release tag 源码用 `CGO_ENABLED=0 go build -tags with_utls,with_quic`(REALITY 需 utls;**hysteria2/QUIC 需 with_quic**)自建:**静态**(Alpine/musl 也跑,同 brook)、**~28MB**(官方半体积)、同 revision。CI `embed-singbox.yml` 复刻此构建;改时务必保持 `with_utls,with_quic` 与 `CGO_ENABLED=0`。
 - **绝不擅自启动 bx / 改路由**:启动是用户的事(需 root、动真实网络)。改完让用户自己 `bx up`。
-  **2026-09-13 真机事故:这条约定被 shell 绕过去了一次,而不是被谁决定绕过去的。** 一个只读
-  排查代理在**双引号**的 grep 模式里带了反引号,zsh 把它当命令替换执行,于是真的跑了一次
-  `bx up`(Core 没起来、屏障没装、路由与 DNS 未动;只有盘上 `desired` 被翻成 on,因为
-  `upLocked` 先写意图再起 Core)。**这个仓库对这个形状格外脆弱:文档里到处是反引号包着的命令**,
-  而搜文档是每个代理开工第一件事 —— 一次 `grep -rn "…`bx up`…" CLAUDE.md` 就会真的执行它。
-  **规矩:凡是搜索/匹配用的模式一律单引号**(单引号里的反引号不执行,双引号里的会);
-  要在双引号里出现反引号就转义。判据不是「代理会不会自觉」——这次自觉的是代理,执行的是 shell。
+  **这条约定被 shell 绕过去过一次**(2026-09-13):一个只读排查代理在**双引号**的 grep 模式里带了
+  反引号,zsh 把它当命令替换执行了 `bx up`。这个仓库的文档里到处是反引号包着的命令,而搜文档是
+  每个代理开工第一件事。**规矩:凡是搜索/匹配用的模式一律单引号**(双引号里要出现反引号就转义)。
 - gVisor/wireguard 等库的 API 易随版本变——查 `$(go list -m -f '{{.Dir}}' <module>)` 的真实源码,别凭记忆。
 
 ## 跨平台待办
