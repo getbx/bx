@@ -332,3 +332,29 @@ func shellQuoteForAdvice(name string) string {
 	}
 	return "'" + strings.ReplaceAll(name, "'", `'\''`) + "'"
 }
+
+// updateStartFailureNote 是升级那条路上「为什么」那一段(known-gaps A3)。
+//
+// Core 自报的码与 bx up 那条路是同一套、渲染也复用 coreStartFailureAdvice;升级这里
+// 多说一句它**意味着什么**:隧道那一族指向服务器或路径,不是升级 —— 这句话只对这一族
+// 成立(IsTunnelStartFailureCode),别的原因反而可能正是新版本的问题,不许借它。
+// rolledBack 区分两种处境:已回到旧版(稍后再试)与回滚也失败、机器被拦住。
+// 没有原因、认不出的码一律不说。
+func updateStartFailureNote(reported string, facts startFailureServers, rolledBack bool) string {
+	if !supervisor.IsStartFailureCode(reported) {
+		return ""
+	}
+	tunnel := supervisor.IsTunnelStartFailureCode(reported)
+	var lead string
+	switch {
+	case tunnel && rolledBack:
+		lead = "Why: during the switch the new version could not bring up the tunnel. That points at your server or the path to it, not the update itself; try updating again later."
+	case tunnel:
+		lead = "Why protection is blocked: the previous version could not bring up the tunnel either. That points at your server or the path to it, not the update itself."
+	case rolledBack:
+		lead = "Why: the new version could not start on this machine."
+	default:
+		lead = "Why protection is blocked: the previous version could not start either."
+	}
+	return lead + "\n" + coreStartFailureAdvice(coreStartFailureCodePrefix+reported, facts)
+}

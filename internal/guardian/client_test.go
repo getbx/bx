@@ -383,3 +383,20 @@ func TestGuardianHTTPErrorMessageUsesEnglishPunctuation(t *testing.T) {
 		t.Fatalf("标点不对:%s", msg)
 	}
 }
+
+// 回滚也失败时,旧版 Core 自报的原因挂在 500 错误体上(A3);客户端必须把它解出来,
+// 否则 CLI 那句「为什么被拦住」永远不会出现,而两侧测试照样全绿。
+func TestGuardianHTTPErrorCarriesTheCoreStartFailure(t *testing.T) {
+	err := guardianHTTPError("/v1/update", 500,
+		[]byte(`{"error":"guardian operation failed","code":"previous_core_health_failed","core_start_failure":"tunnel_unreachable"}`))
+	if got := CoreStartFailure(err); got != "tunnel_unreachable" {
+		t.Fatalf("CoreStartFailure = %q,want tunnel_unreachable", got)
+	}
+	if got := FailureCode(err); got != "previous_core_health_failed" {
+		t.Fatalf("失败码被改了:%q", got)
+	}
+	// 旧 Guardian 不发这个键:空串,不编。
+	if got := CoreStartFailure(guardianHTTPError("/v1/update", 500, []byte(`{"code":"x"}`))); got != "" {
+		t.Fatalf("没有这个键却解出了 %q", got)
+	}
+}

@@ -645,6 +645,11 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 		fmt.Printf("! the update was not finalized: %s is kept for Guardian to recover from\n", stagingDir)
 	}
 	if err != nil {
+		// 回滚也失败时 Guardian 会把旧版 Core 自报的原因挂在错误体上(A3)。写 stderr:
+		// --json 的 stdout 只放那份 JSON,而菜单读的日志两条流都收。
+		if note := updateStartFailureNote(guardian.CoreStartFailure(err), readStartFailureServers(defaultConfigPath), false); note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
 		return fmt.Errorf("the update failed: %w; run "+elevate.Prefix+"bx status and bx doctor to check the state of your protection", err)
 	}
 	// JSON body 无论成功还是回滚都先写出(调用方需要 to_version/rolled_back 等字段
@@ -657,6 +662,9 @@ func updateUnifiedMacOSGuarded(c *cli.Context, data []byte, pkg updatepkg.MacOSP
 		}
 	} else if result.RolledBack {
 		fmt.Printf("3/4 the new version failed its health check and was rolled back automatically\n4/4 done: still on %s, and protection never fell back to direct ✅\n", result.FromVersion)
+		if note := updateStartFailureNote(result.CoreStartFailure, readStartFailureServers(defaultConfigPath), true); note != "" {
+			fmt.Println(note)
+		}
 	} else {
 		fmt.Printf("3/4 reconnected (protection_state=%s)\n4/4 done ✅ bx updated to %s\n", result.ProtectionState, result.ToVersion)
 	}

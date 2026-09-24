@@ -59,8 +59,19 @@ struct UpdatePresentationTests {
                "committed non-rolled-back line yields succeeded")
 
         let rolledBackLine = #"{"from_version":"1.0.0","to_version":"1.1.0","phase":"rolling_back","core_activated":false,"rolled_back":true,"protection_state":"protected"}"#
-        expect(parseUpdateOutcome(Data(rolledBackLine.utf8)) == .rolledBack(from: "1.0.0"),
+        expect(parseUpdateOutcome(Data(rolledBackLine.utf8)) == .rolledBack(from: "1.0.0", reason: nil),
                "rolled_back line yields rolledBack")
+
+        // A3:回滚带着 Core 自报的原因时,那句话要说出它意味着什么。
+        let withReason = #"{"from_version":"1.0.0","to_version":"1.1.0","phase":"rolled_back","core_activated":false,"rolled_back":true,"protection_state":"protected","core_start_failure":"tunnel_unreachable"}"#
+        expect(parseUpdateOutcome(Data(withReason.utf8)) == .rolledBack(from: "1.0.0", reason: "tunnel_unreachable"),
+               "core_start_failure 没有被解出来")
+        let tunnel = updateRolledBackMessage(reason: "tunnel_handshake_failed")
+        let other = updateRolledBackMessage(reason: "tun_open_failed")
+        expect(tunnel.contains("not the update"), "隧道那一族没说「不是升级的问题」:\(tunnel)")
+        expect(!other.contains("not the update"), "非隧道原因被说成「不是升级的问题」:\(other)")
+        expect(tunnel != other && other != updateRolledBackMessage, "三种说法没分开")
+        expect(updateRolledBackMessage(reason: nil) == updateRolledBackMessage, "没说原因时不许编")
 
         let mixedLog = """
         preparing update

@@ -2033,6 +2033,8 @@ type updateCoreRunner struct {
 	startOptions          []CoreStartOptions
 	executable            string
 	setExecutableErr      error
+	// reportedByVersion:这个版本的 Core 起不来时「自报」的启动失败码(A3)。
+	reportedByVersion map[string]string
 }
 
 func newUpdateCoreRunner(events *eventLog) *updateCoreRunner {
@@ -2150,10 +2152,17 @@ func (r *updateCoreRunner) Executable() string {
 // 只是把新默认值撞在了测试上。
 func (r *updateCoreRunner) ScanRunning() ([]Process, error) { return nil, nil }
 
-// StartFailureCode 恒空串 = 「这一次 Core 什么都没说」⇒ 回落 core_health_failed。
-// 升级那条路上没有一条用例关心 Core 自报的启动失败,恒空串让它们一行不用改。
-func (r *updateCoreRunner) StartFailureCode(context.Context, Process, time.Time) string {
-	return ""
+// StartFailureCode 默认空串 = 「这一次 Core 什么都没说」。reportedByVersion 给了的
+// 版本才自报(A3);读的那一刻记一个事件,好钉住「先读、再收拾」的顺序。
+func (r *updateCoreRunner) StartFailureCode(_ context.Context, process Process, _ time.Time) string {
+	r.mu.Lock()
+	version := r.versions[process.PID]
+	code := r.reportedByVersion[version]
+	r.mu.Unlock()
+	if code != "" {
+		r.events.add("startfailure.read." + version)
+	}
+	return code
 }
 
 func (r *updateCoreRunner) SetExecutable(executable string) error {
@@ -3273,5 +3282,74 @@ func TestUpdateHealthGateSaysWhichOfItsThreeConditionsFailed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "999") {
 		t.Fatalf("没说出是哪一项对不上(应点名那个 PID): %v", err)
+	}
+}
+
+// —— 升级时 Core 起不来,说出为什么(known-gaps A3,2026-09-24)——
+//
+// 此前新版健康失败只报 new_core_health_failed,「VPS 刚好不通」与「新版本真有问题」
+// 在用户那里是同一句话;回滚也失败时机器停在 Blocked,用户以为是升级把 bx 弄坏了。
+// 所有者选的方案:失败码一个不改,另带一个 core_start_failure(Core 自报的码)。
+
+func TestUpdateRollbackCarriesWhyTheNewCoreCouldNotStart(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.health.failVersions = map[string]error{"v2": errors.New("health timed out")}
+	env.runner.reportedByVersion = map[string]string{"v2": supervisor.StartFailureTunnelUnreachable}
+
+	result, err := env.manager.Update(context.Background(), env.request)
+	if err != nil {
+		t.Fatalf("回滚成功却报错:%v", err)
+	}
+	if !result.RolledBack {
+		t.Fatalf("result = %+v,want rolled back", result)
+	}
+	if result.CoreStartFailure != supervisor.StartFailureTunnelUnreachable {
+		t.Fatalf("CoreStartFailure = %q,want %q —— 回滚的原因没带出来", result.CoreStartFailure, supervisor.StartFailureTunnelUnreachable)
+	}
+	// 先读它自己说了什么,再收拾它(清理可能是强杀,被杀的 Core 不会再写任何东西)。
+	events := env.events.snapshot()
+	read, stop := indexOfEvent(events, "startfailure.read.v2"), indexOfEvent(events, "core.stop.v2")
+	if read < 0 || (stop >= 0 && read > stop) {
+		t.Fatalf("没有在收拾新版 Core 之前读它的记录:%#v", events)
+	}
+}
+
+func TestUpdateWhoseRollbackAlsoFailsSaysWhyInTheErrorBody(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.health.failVersions = map[string]error{
+		"v2": errors.New("health timed out"), "v1": errors.New("health timed out"),
+	}
+	// v1 只在**回滚那一次**失败:第一次是 Update 开头刷新当前运行时,那时它是好的。
+	env.health.failAfter = map[string]int{"v1": 2}
+	env.runner.reportedByVersion = map[string]string{
+		"v2": supervisor.StartFailureTunnelHandshakeFailed,
+		"v1": supervisor.StartFailureTunnelHandshakeFailed,
+	}
+	_, err := env.manager.Update(context.Background(), env.request)
+	if err == nil {
+		t.Fatal("新旧两版都起不来,Update 却报成功")
+	}
+	body := failureResponseBody(Status{}, Status{}, err)
+	if body["code"] != "previous_core_health_failed" {
+		t.Fatalf("失败码变了:%v —— 方案 A 约定码一个不改", body)
+	}
+	if body["core_start_failure"] != supervisor.StartFailureTunnelHandshakeFailed {
+		t.Fatalf("错误体里没带出旧版起不来的原因:%v", body)
+	}
+}
+
+func TestUpdateWithoutAReportedReasonAddsNothing(t *testing.T) {
+	env := newUpdateTestEnv(t)
+	env.health.failVersions = map[string]error{"v2": errors.New("health timed out")}
+	result, err := env.manager.Update(context.Background(), env.request)
+	if err != nil || !result.RolledBack {
+		t.Fatalf("前提不成立:result=%+v err=%v", result, err)
+	}
+	if result.CoreStartFailure != "" {
+		t.Fatalf("Core 什么都没说,结果里却编了一个原因:%q", result.CoreStartFailure)
+	}
+	raw, _ := json.Marshal(result)
+	if strings.Contains(string(raw), "core_start_failure") {
+		t.Fatalf("没有原因时 JSON 里仍出现了这个键:%s", raw)
 	}
 }

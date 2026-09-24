@@ -476,6 +476,10 @@ type UpdateResult struct {
 	CoreActivated   bool   `json:"core_activated"`
 	RolledBack      bool   `json:"rolled_back"`
 	ProtectionState string `json:"protection_state"`
+	// CoreStartFailure 是新版 Core 起不来时**它自己报的**启动失败码(supervisor 那一族,
+	// 不带 core_ 前缀),问不出来就缺席 —— 不编(known-gaps A3)。它区分「VPS 刚好不通、
+	// 升级本身大概没问题」与「新版本在这台机器上起不来」;失败码本身一个不改。
+	CoreStartFailure string `json:"core_start_failure,omitempty"`
 }
 
 type RecoveryRequest struct {

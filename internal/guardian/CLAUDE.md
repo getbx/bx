@@ -142,8 +142,13 @@ NewNetworkObserver / PeerCredentials 六个构造器字段,反射 `validate()` +
   读不到 `/var/lib/bx` 时如实说「要 sudo 才看得到原因」。「Full reason」那条指引按平台给:
   linux 是 `journalctl -u bx.service`,不是 `/var/log/bx.log`(`coreLogCommandFor`)。
 - **已知缺口**:菜单在
-  `.warning`/`.connected` 之外拿不到码;**升级路径的健康失败仍不读记录**(那条路的码空间
-  是另一套,单独立项,别顺手改)。「读不到配置」(文件不在 / 权限不够)有自己的码
+  `.warning`/`.connected` 之外拿不到码;**升级路径也读记录**(2026-09-24,所有者选的方案 A):
+  失败码一个不改,`startUpdateCore` 在健康失败时**先读后收拾**(同一个函数),码挂在
+  `updateError.startFailure` 上 —— 回滚成功时进 `UpdateResult.core_start_failure`,回滚也失败
+  时进 500 错误体的 `core_start_failure`(取**旧版**自报的那个,不借新版的)。CLI 的
+  `updateStartFailureNote` 与菜单的 `updateRolledBackMessage(reason:)` 按四种处境说话;
+  「多半是服务器或路径、不是升级」**只对隧道那一族说**(`supervisor.IsTunnelStartFailureCode`,
+  菜单那份码由 `TestMenuTunnelStartFailureCodesMatchGo` 钉住)。「读不到配置」(文件不在 / 权限不够)有自己的码
   `config_unreadable`(`supervisor.ReadConfigFile` 挂哨兵,2026-09-23)—— 不借 `config_unusable`
   (那会叫人去改一个还没写过的文件),也不落 `other`。真机验收在 `docs/acceptance-pending.md` B2。
 

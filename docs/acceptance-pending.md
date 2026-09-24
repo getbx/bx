@@ -232,6 +232,14 @@ Servers 窗口 → 某台带 UDP 链接的服务器的 `⋯` → `Replace Link�
 - [ ] 勾上、主链接照旧粘贴 → 确认后 `/etc/bx/config.yaml` 里那一台的 `udp:` 行没了。
 - [ ] 勾上又填了一条 UDP → 应弹「Two Answers for UDP」,配置一个字节不变。
 
+### B10. 升级时 Core 起不来,说出为什么(2026-09-24)
+
+不值得专门制造 —— 下次升级**恰好**撞上服务器不通(比如握手被 RST 的那种风暴)时看一眼:
+
+- [ ] 回滚成功时,`bx update` 在「rolled back」之后多一段「Why: … not the update itself; try updating
+      again later」并点名服务器;菜单弹的「Update Rolled Back」也说同样的意思。
+- [ ] 回滚也失败(机器被拦住)时,终端的错误前面多一段「Why protection is blocked: …」。
+
 ### B3. 状态转换通知
 
 - [ ] `sudo bx down && sudo bx up` **不该弹通知**(那是你自己做的)

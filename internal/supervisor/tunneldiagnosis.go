@@ -75,6 +75,13 @@ func IsTunnelUndeterminedCode(code string) bool {
 	return strings.HasPrefix(code, StartFailureTunnelUndetermined)
 }
 
+// IsTunnelStartFailureCode:这个码是不是「隧道没起来」那一族(五档都算)。升级那条路
+// 用它决定能不能说「多半是服务器或路径的问题,不是升级」—— 那句话只对这一族成立。
+func IsTunnelStartFailureCode(code string) bool {
+	return code == StartFailureTunnelUnreachable || code == StartFailureTunnelHandshakeFailed ||
+		IsTunnelUndeterminedCode(code)
+}
+
 // TunnelDiagnosisTimeout 是判别那一次拨号的上限。它只在启动已经失败之后发生,
 // 而用户此刻正站在那儿等一句话 —— 5 秒是「够判出来」与「别再让他多等」之间的取舍。
 //
