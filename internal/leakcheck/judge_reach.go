@@ -115,7 +115,7 @@ const FindingReachPrefix = "reach_"
 // 一个端点即使两条路径(current + bypass)都探过,也只产出一条结论 —— 这一段
 // 回答的是「这条路通不通」,不是「每条子路径各自怎样」;两条路径的探测结果都
 // 进 Evidence,供人核对,但极性只由 current 那条决定(bypass 是诊断用的对照,
-// 不是这一段的主线 —— §5 的比较逻辑留给渲染层)。
+// 不是这一段的主线);两条一比的那句话由 reachComparison 追加在摘要末尾。
 func judgeReach(local LocalFacts) []Finding {
 	targets := ReachTargets()
 	out := make([]Finding, 0, len(targets))
@@ -192,7 +192,46 @@ func judgeReachTarget(tgt ReachTarget, probes []ReachProbe) Finding {
 		f.Summary = "bx could not determine whether " + host + " is reachable — " +
 			"this path returned something that wasn't recognized as either reachable or blocked."
 	}
+	if bypass, hasBypass := findReachProbe(probes, tgt.ID, ReachPathBypass); hasBypass {
+		f.Summary += reachComparison(current.State, bypass.State)
+	}
 	return f
+}
+
+// reachComparison 是两条路一比的那句话(spec §5)。**只追加,不改极性** —— 这一段
+// 回答的是「当前这条路通不通」,直连那条是诊断用的对照。
+//
+// **有一边没问出来就一个字都不说**:Challenged / Undetermined 都不是「通」也不是
+// 「不通」,拿它去比,比出来的那句就是编的。Refused 与 Unreachable 在这里同一档
+// (都是「这条路上用不了」)。措辞守着同一条纪律:只说 bx 观测到什么,不断言对方
+// 服务的状态,也不替用户下「换服务器」这类结论 —— 两边都不通时,本机没网与出口被封
+// 在这里分不开。
+func reachComparison(current, bypass ReachState) string {
+	up := func(s ReachState) (reachable, known bool) {
+		switch s {
+		case ReachReachable:
+			return true, true
+		case ReachUnreachable, ReachRefused:
+			return false, true
+		default:
+			return false, false
+		}
+	}
+	cur, curKnown := up(current)
+	byp, bypKnown := up(bypass)
+	if !curKnown || !bypKnown {
+		return ""
+	}
+	switch {
+	case cur && byp:
+		return " It is reachable directly too."
+	case cur && !byp:
+		return " It is reachable through your current path but not directly — the tunnel is what gets you there."
+	case !cur && byp:
+		return " bx can reach it directly, without the tunnel — so what fails is this path (most likely your tunnel's exit), not your own network."
+	default:
+		return " bx could not reach it directly either."
+	}
 }
 
 // findReachProbe 在这一轮的探测记录里找一个端点在一条路径上的结果。

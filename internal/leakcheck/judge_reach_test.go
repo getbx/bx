@@ -210,3 +210,74 @@ func TestJudgeReachTargetWithNoProbeSaysNotCheckedNotChallenged(t *testing.T) {
 		t.Fatalf("Summary = %q,应如实说明这一轮没有检查", f.Summary)
 	}
 }
+
+// —— 两条路一比(spec §5,known-gaps B3,2026-09-23)——
+//
+// `bx leakcheck --compare-direct` 会再从物理网卡直接探一遍。两条路的结果放在一起,
+// 才答得出「是不是隧道的问题」。**极性仍只由当前路径决定**(这一段回答的是「这条路
+// 通不通」),对照只追加一句话;有一边没问出来就不比,不编。
+
+func reachPair(current, bypass ReachState) []ReachProbe {
+	tgt := ReachTargets()[0]
+	return []ReachProbe{
+		{TargetID: tgt.ID, Path: ReachPathCurrent, State: current},
+		{TargetID: tgt.ID, Path: ReachPathBypass, State: bypass},
+	}
+}
+
+func TestReachComparisonSaysWhatTheTwoPathsShowTogether(t *testing.T) {
+	tgt := ReachTargets()[0]
+	cases := []struct {
+		name            string
+		current, bypass ReachState
+		want            string // 摘要里必须出现的那句对照
+	}{
+		{"两边都行", ReachReachable, ReachReachable, "reachable directly too"},
+		{"只有走当前路径行", ReachReachable, ReachUnreachable, "but not directly"},
+		{"只有直连行 —— 问题在这条路上", ReachUnreachable, ReachReachable, "reach it directly, without the tunnel"},
+		{"两边都不行", ReachUnreachable, ReachUnreachable, "directly either"},
+		{"直连被拒、当前路径行", ReachReachable, ReachRefused, "but not directly"},
+	}
+	for _, c := range cases {
+		f := judgeReachTarget(tgt, reachPair(c.current, c.bypass))
+		if !strings.Contains(f.Summary, c.want) {
+			t.Errorf("%s:摘要里没有那句对照 %q:%s", c.name, c.want, f.Summary)
+		}
+		// 极性只看当前路径:把 bypass 换掉,Verdict 不许变。
+		alone := judgeReachTarget(tgt, reachPair(c.current, c.bypass)[:1])
+		if f.Verdict != alone.Verdict {
+			t.Errorf("%s:加了直连对照之后 Verdict 从 %v 变成了 %v —— 直连只是对照,不是主线", c.name, alone.Verdict, f.Verdict)
+		}
+	}
+}
+
+// 「两边都不行」与「只有直连行」是相反的两句处置 —— 渲染出来必须不同。
+func TestReachComparisonTellsTheTwoFailureShapesApart(t *testing.T) {
+	tgt := ReachTargets()[0]
+	both := judgeReachTarget(tgt, reachPair(ReachUnreachable, ReachUnreachable)).Summary
+	onlyDirect := judgeReachTarget(tgt, reachPair(ReachUnreachable, ReachReachable)).Summary
+	if both == onlyDirect {
+		t.Fatalf("两种失败形状说了同一句话:%s", both)
+	}
+}
+
+// 有一边没问出来(挑战页 / 认不出 / 本机没发出去)就不比 —— 拿一个不知道去比,
+// 比出来的那句话就是编的。
+func TestReachComparisonStaysSilentWhenEitherSideIsUnknown(t *testing.T) {
+	tgt := ReachTargets()[0]
+	plain := judgeReachTarget(tgt, reachPair(ReachReachable, ReachReachable)[:1]).Summary
+	for _, pair := range [][2]ReachState{
+		{ReachReachable, ReachUndetermined},
+		{ReachReachable, ReachChallenged},
+		{ReachChallenged, ReachReachable},
+		{ReachUndetermined, ReachUnreachable},
+	} {
+		got := judgeReachTarget(tgt, reachPair(pair[0], pair[1])).Summary
+		if pair[0] == ReachReachable && got != plain {
+			t.Errorf("%v/%v:有一边没问出来,却追加了对照:%s", pair[0], pair[1], got)
+		}
+		if strings.Contains(got, "directly") {
+			t.Errorf("%v/%v:有一边没问出来,摘要却说了直连怎样:%s", pair[0], pair[1], got)
+		}
+	}
+}

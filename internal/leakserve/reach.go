@@ -2,6 +2,7 @@ package leakserve
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/leakcheck"
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 // DefaultProbeBypass 决定「绕过隧道」那条路径默不默认跑。
@@ -67,6 +69,23 @@ func probeOne(ctx context.Context, dial DialFunc, tgt leakcheck.ReachTarget, pat
 	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
+		// **直连那条路上「我们自己没问出来」不是「不通」。** 本机没把包发出去(另一个
+		// VPN 在跑时 scoped 表常常是空的,绑网卡的 socket 当场 ENETUNREACH)、或名字
+		// 在物理网卡上解析不出来 —— 都是这一轮没测成。当前路径的判法一个字不改。
+		if path == leakcheck.ReachPathBypass {
+			if errors.Is(err, errBypassResolve) {
+				return leakcheck.ReachProbe{
+					TargetID: tgt.ID, Path: path, State: leakcheck.ReachUndetermined,
+					Detail: "the name could not be resolved over the physical network interface",
+				}
+			}
+			if supervisor.DialFailedBeforeLeavingThisMachine(err) {
+				return leakcheck.ReachProbe{
+					TargetID: tgt.ID, Path: path, State: leakcheck.ReachUndetermined,
+					Detail: "bx could not send from the physical network interface",
+				}
+			}
+		}
 		return leakcheck.ReachProbe{
 			TargetID: tgt.ID, Path: path,
 			State:  leakcheck.JudgeReach(0, nil, err),
@@ -125,31 +144,17 @@ type ReachDeps struct {
 	BypassDial DialFunc
 }
 
-// LiveReachDeps 接上生产环境的拨号器。
+// LiveReachDeps 接上生产环境的拨号器 —— **默认那一轮只有当前路径**。
 //
-// **绕过隧道那条路今天没有产地,这是刻意的,不是忘了接。** `DefaultProbeBypass`
-// 是 false(spec §5.1 把「暴露真实 IP 给 Anthropic/OpenAI/Google」这个决定留给
-// 所有者);它翻成 true 的那天还需要一个绑物理网卡(IP_BOUND_IF)的拨号器,而
-// 那个拨号器今天不存在。翻转常量时**必须同时供货 BypassDial** —— 只翻常量而
-// 让 BypassDial 留空,这一轮会安静地什么都不多跑,而守卫全绿。
+// 「绕过隧道」那条路是 opt-in(`bx leakcheck --compare-direct`,所有者 2026-09-23 定):
+// 它由 WithBypass(reach_bypass.go)按需接上,这里刻意不供货,`DefaultProbeBypass`
+// 因此仍是 false —— 两者由 reach_test 里那条守卫绑在一起(只翻常量不供拨号器,
+// 这一轮会安静地什么都不多跑)。
 //
-// **翻转那天的清单里还有一条最容易漏的:DNS。** `http.Transport.DialContext`
-// 拿到的是已经拼好的 `host:port`,**名字解析发生在拨号器内部**(`net.Dialer`
-// 自己去做)—— 只把 `Control`/`LocalAddr` 绑上物理接口而不管解析,那条路会变成
-// 「DNS 经隧道、TCP 走物理」,两条路径的对照形状就对不上了,而屏幕上看不出
-// 任何异常。这条今天只活在 SDD 台账里,而**台账下一个人不会读,注释会读**。
-//
-// **spec §5.1 对那一天还有第二条要求,别只记住第一条**:「无论默认哪边,两件事
-// 必须做:① 界面上明说**这一步从物理网卡直接发,不经任何隧道**;② 给关掉的开关。」
-// ② 今天已经就位 —— `bx leakcheck --no-reach` 关掉整轮探测(两条路径一起),
-// 而 CollectReach 对没有拨号器的 deps 返回 nil,不是一组假记录。① **还没有**:
-// announceReachTargets 今天说的是「走你当前的网络路径,不绕过隧道」,那句话在
-// BypassDial 供货的那一天就变成了假话,必须同批改。
-//
-// **spec §5 承诺的那三句比较结论**(「直连不行、走当前隧道行」/「两边都不行,
-// 换台服务器」/「两边都行」)属于同一天:今天只有 current 一条路径,没有可比的
-// 对照,所以 judgeReachTarget 与渲染层对「两条路一比」一个字都不说 —— 不是漏了,
-// 是没有素材。bypass 那条路打开之后,那三句话是它的第一批消费方。
+// 直连那条路的几件事住在 reach_bypass.go 与它的消费方里:名字解析也走物理网卡
+// (系统 DNS 在 bx 开着时答的是假 IP);本机没把包发出去 / 解析不出来判「没测成」
+// (probeOne);披露那句说出「会从物理网卡发、会暴露真实 IP」(announceReachTargets);
+// 两条路一比的那句话由 leakcheck.reachComparison 追加在结论末尾。
 func LiveReachDeps() ReachDeps {
 	return ReachDeps{
 		CurrentDial: func(ctx context.Context, network, addr string) (net.Conn, error) {

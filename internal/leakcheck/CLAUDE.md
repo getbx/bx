@@ -79,9 +79,20 @@
   刻意不在(恒为挑战页);claude.ai 用 favicon 是因为首页挂防护。常量带 `ExpectedSignal` 记档。
 - **措辞**:可达只说「bx can reach X」,**绝不说「你可以用 X」**;不可达只说观测到什么,不断言
   对方服务状态。
-- **`DefaultProbeBypass=false`**:绕过隧道会从物理网卡发 4 个 GET、**暴露真实 IP 给
-  Anthropic/OpenAI/Google**,决定留给项目所有者;而且**没有绑物理网卡的拨号器**,只翻常量不供
-  `BypassDial` 会安静地什么都不多跑。
+- **「绕过隧道」那条路是 opt-in:`bx leakcheck --compare-direct`**(所有者 2026-09-23 定;
+  它从物理网卡发请求,**Anthropic/OpenAI/Google 会看到真实 IP**,例行检查不许悄悄做这件事)。
+  默认那一轮不跑,`DefaultProbeBypass` 仍是 false、`LiveReachDeps` 不供货;`leakserve.WithBypass`
+  按需接上(`internal/leakserve/reach_bypass.go`)。几条不许动的细节:
+  **名字解析也走物理网卡**(经 1.1.1.1;bx 开着时系统 DNS 答的是假 IP,从物理网卡发出去必然
+  不通,那是我们问错了人);**本机没把包发出去 / 在物理网卡上解析不出来 ⇒ Undetermined(没测成),
+  对方拒绝/超时才是 Unreachable**(判据复用 `supervisor.DialFailedBeforeLeavingThisMachine`,
+  另一个 VPN 在跑时 scoped 表常常是空的);**拿不到物理网卡就报错**,不退回一个不绑网卡的拨号器
+  (那会让两条「路」走同一条路);与 `--no-reach` 同时给报错;**披露句必须说出会暴露真实 IP**。
+  **只有 macOS**(linux 绑网卡要 CAP_NET_RAW,而 leakcheck 拒绝 root)。
+- **两条路一比**(`reachComparison`,spec §5):只**追加**一句,极性仍只由当前路径决定;
+  **有一边没问出来(挑战页 / 认不出 / 没测成)就不比**;Refused 与 Unreachable 同一档。
+  「只有直连行」那句会点出「多半是隧道出口」,「两边都不行」只说「直连也不行」、不替用户下
+  「换服务器」这类结论(本机没网与出口被封在这里分不开)。
 - **已知边界**:favicon 200 只证明边缘可达;`Refused` 的关键词是构造的,没有真机样本。
   验收清单 `docs/acceptance-pending.md` A8。
 
@@ -89,4 +100,5 @@
 
 2026-08-31 本机那一半全绿(十条结论、三段分段、三个计数并排、`WhoOwnsTheRoute` 判对、
 TunnelVision 不误报)。**仍未验**:浏览器那半(要人点)、非 root 门槛
-(`guardLeakCheckPrivileges`)、`--json` 输出、整个 reach 段。
+(`guardLeakCheckPrivileges`)、`--json` 输出、整个 reach 段,以及 `--compare-direct`
+(物理网卡在真机上找得到 —— `en0`,2026-09-23 只读确认过;但一次请求都没发过)。
