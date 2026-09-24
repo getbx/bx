@@ -522,7 +522,7 @@ func TestMacMenuRulesWindowKeepsTheUndoAcrossAnAmbientRerender(t *testing.T) {
 // **滚动位置只在环境重画时保住,显式打开永远从头开始。**
 //
 // 这个窗口每 2 秒把整个 stack 拆掉重填,不保位置的话用户每翻到一半就被拽回
-// 顶部(App Traffic 那扇窗至今就是这么坏的);而他刚点开「Routing Rules…」
+// 顶部(App Traffic 那扇窗 2026-09-24 之前就是这么坏的);而他刚点开「Routing Rules…」
 // 的那一次,顶上那几行才是他要看的。两种重画的正确答案相反,压成一个就必错一半。
 func TestMacMenuRulesWindowKeepsScrollOnlyOnAmbientRerender(t *testing.T) {
 	window, _ := menuRulesWindowSource(t)

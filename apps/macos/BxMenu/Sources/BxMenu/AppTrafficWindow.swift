@@ -37,6 +37,10 @@ let numberPriority = NSLayoutConstraint.Priority(750)
 final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private var window: NSWindow?
     private var stack: NSStackView?
+    /// 外层的滚动视图。**环境刷新要保住它的位置**(known-gaps A8):报告 5 秒一拍、
+    /// 每一拍都把 stack 拆掉重填,AppKit 的重建会把位置清零 —— 用户往下翻到一半,
+    /// 下一拍就被拽回顶部(2026-09-24 所有者真机确认)。
+    private var scroll: NSScrollView?
 
     /// 搜索框。**它在 `ensureWindow()` 里创建一次,住在每次刷新都会被拆掉重填的
     /// 那棵树(`stack`)之外。**
@@ -82,7 +86,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         let window = ensureWindow()
         self.report = report
         staleNotice = nil
-        render()
+        render(preservingScroll: false)
         // LSUIElement 应用不会自动到前台;不激活的话窗口会开在别的应用后面,
         // 用户以为"点了没反应"。
         NSApp.activate(ignoringOtherApps: true)
@@ -96,7 +100,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         self.report = report
         // 拉到了就是拉到了 —— 一次成功抹掉陈旧标记,不留一句会自我永存的警告。
         staleNotice = nil
-        render()
+        render(preservingScroll: true)
     }
 
     /// 连着几次拉不到之后,在窗口顶上盖一句「这不是此刻的事实」。
@@ -106,7 +110,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
     func markStaleIfVisible(_ notice: String) {
         guard let window, window.isVisible else { return }
         staleNotice = notice
-        render()
+        render(preservingScroll: true)
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -144,6 +148,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
             spacing: 8
         )
         pinToEdges(scroll, in: content)
+        self.scroll = scroll
         self.stack = stack
         self.window = window
         return window
@@ -151,8 +156,10 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
 
     /// 按 `rows()` 给的行摆。**顺序与内容一个字都不重新判断** —— 三种「空」
     /// 各自该说哪一句已经在纯模型里定死并测过,这里再判一次就是第二份判据。
-    private func render() {
+    private func render(preservingScroll: Bool) {
         guard let stack else { return }
+        // 位置在拆视图之前取:拆完再取就是 0。
+        let offset = preservingScroll ? scroll?.contentView.bounds.origin : nil
         // **没有报告就什么都不画。** 上一版在这里用零值兜底
         // (`?? AppTrafficReport(subscribed: false)`),而那份零值渲染出来的正是
         // "Not collecting app traffic right now." —— 恰恰是拨号失败分支明令禁止
@@ -196,6 +203,13 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         stack.addFullWidthRow(hint(appTrafficApproximateNote))
         if ruleEditingAvailable {
             stack.addFullWidthRow(hint(appTrafficRuleHint))
+        }
+        if let offset, let scroll {
+            // **先布局再滚。** 少了这一步滚的是按旧内容算出来的坐标(Servers / Rules /
+            // Diagnostics 同款)。
+            scroll.documentView?.layoutSubtreeIfNeeded()
+            scroll.contentView.scroll(to: offset)
+            scroll.reflectScrolledClipView(scroll.contentView)
         }
         // **第二句小字同样不是可选的。** 窗口打开之前就已经建好的连接由种子播进
         // 缓冲,而种子把一个 socket 上并存的多条流压成一条 —— 于是它们只会出现在
@@ -334,7 +348,8 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
     func controlTextDidChange(_ obj: Notification) {
         guard let field = obj.object as? NSSearchField, field === searchField else { return }
         query = field.stringValue
-        render()
+        // 结果集变了,停在原来的偏移上没有意义 —— 从头开始。
+        render(preservingScroll: false)
     }
 
     /// 应用图标。**路径为空就返回 nil,不画占位** —— 一格空白的占位图不是

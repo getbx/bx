@@ -141,5 +141,5 @@ Guardian 的 health 门(`/v1/update`)、`recoverySupersededByCore`。一次**一
 **窗口那半**(七列、搜索框、速率 nil vs 0、心跳必须活不过它的窗口)见
 `apps/macos/BxMenu/CLAUDE.md`「按应用窗口」与 `docs/lessons/2026-08-app-traffic.md`。
 真机验收清单:三组都在、腾讯会议出现在预期的组里;关窗后 CPU 与拨号回落;制造阻断后
-`Blocked` 组出现内容;`unknown` 占比不高;每 5 秒重建会不会把滚动位置拉回顶部(已知未修);
+`Blocked` 组出现内容;`unknown` 占比不高;每 5 秒重建时滚动位置保住了没有(2026-09-24 修);
 窗口开着时 Guardian 的 CPU。

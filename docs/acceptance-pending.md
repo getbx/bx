@@ -75,7 +75,8 @@
 - [ ] 底部固定一行 `Byte counts are approximate: ports get reused, and an app listed in
       two sections may show all its bytes on one side.`
 - [ ] 关掉窗口后 CPU 与拨号回落;30 秒后再开,数据从零开始。
-- [ ] **已知未修**:每 5 秒重建视图树会把滚动位置拉回顶部。
+- [ ] **滚动位置不再被拉回顶部**(2026-09-24 所有者确认会拉回、当天修掉):往下翻到一半,
+      等过几次 5 秒刷新,应停在原处;改搜索词时回到顶部是刻意的。
 
 ### A4. 菜单本体:精简 + 第一行开关
 
