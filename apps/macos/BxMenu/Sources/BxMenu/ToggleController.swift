@@ -356,6 +356,10 @@ func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> St
         tunnelOutcome = false
         headline = "bx could not start: something in the configuration is unusable (a rule, a CIDR, a hosts entry, or a server link). After editing it, run sudo bx down && sudo bx up."
         steps.append(logLine)
+    case "config_unreadable":
+        tunnelOutcome = false
+        headline = "bx could not start: it could not read its configuration file — most likely bx has not been set up on this Mac yet, or the file is not readable. To set it up: sudo bx setup <your link>."
+        steps.append(logLine)
     case "provision_failed":
         tunnelOutcome = false
         headline = "bx could not start: the embedded transport binary could not be unpacked into data_dir (usually a full disk or an unwritable directory)."

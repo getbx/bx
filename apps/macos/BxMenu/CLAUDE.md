@@ -67,8 +67,10 @@
   保护开关会被读成「关掉保护」。**退出入口由 `rebuildMenu()` 顶层无条件加一次**
   (`TestMacMenuQuitActionPresentInEveryState` 按花括号深度钉「无条件」)。
   **`Quit Menu`(只关界面、保护继续跑)已删**:它一键做出「保护在跑但没有指示灯」的
-  隐形状态。**已知缺口**:恢复浮层在按 state 建菜单之前就 `return`,走不到那个退出项
-  (更新与开关两个进度浮层已在 `return` 前自己加上 Quit;2026-09-23 核过)。**全部路径都失败时 Quit 不退出**(退出会藏掉唯一的指示灯)。
+  隐形状态。**`rebuildMenu` 里每一个提前 `return`(更新 / 开关 / 恢复三个浮层)之前都必须
+  自己挂上 Quit**(`TestMacMenuEveryEarlyExitOfRebuildMenuStillOffersQuit`,判据是「每一个」):
+  Quit 先关保护再退出,**恢复卡住时它是唯一的离场出口**(2026-08-04 那次 71 分钟关不掉就是
+  这个形状;恢复浮层那一支 2026-09-23 才补上)。**全部路径都失败时 Quit 不退出**(退出会藏掉唯一的指示灯)。
 - **「Replace Configuration…」没有搬进 Servers 窗口**,窗口里取代它的是
   「Add Existing Server…」(`TestMacMenuServersWindowOffersAddServerNotReplace`);
   它只在没有服务器窗口的旧 Guardian 上留在一级菜单(`replaceConfigurationLivesInMenu`)。

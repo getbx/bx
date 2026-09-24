@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/corestartfailure"
+	"github.com/getbx/bx/internal/elevate"
 	"github.com/getbx/bx/internal/install"
 )
 
@@ -51,4 +52,4 @@ func liveLinuxStartFailureNote(configPath string) string {
 }
 
 // elevateStatusCommand 是那句提示里要敲的命令。
-func elevateStatusCommand() string { return "sudo bx status" }
+func elevateStatusCommand() string { return elevate.Cmd("bx status") }

@@ -2256,6 +2256,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             }
+            // 恢复进行中也要有离场的出口:Quit 先关保护再退出,恢复卡住时它恰恰是
+            // 唯一的出路(2026-08-04 那次卡了 71 分钟、全程关不掉就是这个形状)。
+            menu.addItem(.separator())
+            menu.addQuit(quitBxActionTitle, target: self, action: #selector(quitBx))
             return
         }
         switch state {

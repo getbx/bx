@@ -143,8 +143,9 @@ NewNetworkObserver / PeerCredentials 六个构造器字段,反射 `validate()` +
   linux 是 `journalctl -u bx.service`,不是 `/var/log/bx.log`(`coreLogCommandFor`)。
 - **已知缺口**:菜单在
   `.warning`/`.connected` 之外拿不到码;**升级路径的健康失败仍不读记录**(那条路的码空间
-  是另一套,单独立项,别顺手改);「读不到配置」仍落 `other`(不许借 `config_unusable`,
-  文件不在多半是还没 setup)。真机验收在 `docs/acceptance-pending.md` B2。
+  是另一套,单独立项,别顺手改)。「读不到配置」(文件不在 / 权限不够)有自己的码
+  `config_unreadable`(`supervisor.ReadConfigFile` 挂哨兵,2026-09-23)—— 不借 `config_unusable`
+  (那会叫人去改一个还没写过的文件),也不落 `other`。真机验收在 `docs/acceptance-pending.md` B2。
 
 ## 调谐环(判断与执行分离)
 

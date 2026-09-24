@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/corestartfailure"
+	"github.com/getbx/bx/internal/elevate"
 	"github.com/getbx/bx/internal/supervisor"
 )
 
@@ -66,7 +67,7 @@ func TestLinuxStatusDoesNotGuessWithoutARecord(t *testing.T) {
 func TestLinuxStatusWithoutRootSaysWhereTheReasonIs(t *testing.T) {
 	denied := func() (corestartfailure.Record, error) { return corestartfailure.Record{}, fs.ErrPermission }
 	note := linuxStartFailureNote("activating", denied, startFailureServers{})
-	if !strings.Contains(note, "sudo bx status") {
+	if !strings.Contains(note, elevate.Cmd("bx status")) {
 		t.Fatalf("读不到记录时没说要 sudo 才看得到原因:%q", note)
 	}
 	if note2 := linuxStartFailureNote("inactive", denied, startFailureServers{}); note2 != "" {

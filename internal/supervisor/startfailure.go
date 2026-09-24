@@ -1,6 +1,10 @@
 package supervisor
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"os"
+)
 
 // Core 启动失败的分类 —— **哨兵错误,一条字符串匹配都没有**。
 //
@@ -16,6 +20,10 @@ var (
 	// ErrConfig:配置文件里的内容本身不可用(规则/CIDR/hosts/服务器链接)。
 	// 与「暂时读不到配置」不同 —— 那是别的故障,不该借这个码。
 	ErrConfig = errors.New("the config is unusable")
+	// ErrConfigUnreadable:配置文件**读不到**(不在 / 权限不够)—— 多半是「还没 setup
+	// 过」。与 ErrConfig 刻意分开:借那个码就是叫用户去改一个他还没写过的文件;落进
+	// other 则是说「这一版还没有专门说法」,而这一种有(known-gaps A6)。
+	ErrConfigUnreadable = errors.New("the config file could not be read")
 	// ErrProvision:内嵌的 brook/sing-box 没能释放到 data_dir。
 	ErrProvision = errors.New("could not prepare the transport binary")
 	// ErrTUNOpen:开 TUN 设备失败(权限、设备被占、wintun.dll 缺席……)。
@@ -39,6 +47,7 @@ const (
 	StartFailureHijack             = "hijack_failed"
 	StartFailureProvision          = "provision_failed"
 	StartFailureConfig             = "config_unusable"
+	StartFailureConfigUnreadable   = "config_unreadable"
 	// StartFailureOther:认不出的一律落这里,**不静默丢弃**。
 	StartFailureOther = "other"
 )
@@ -65,6 +74,7 @@ var startFailureSentinels = []struct {
 	{ErrHijack, StartFailureHijack},
 	{ErrProvision, StartFailureProvision},
 	{ErrConfig, StartFailureConfig},
+	{ErrConfigUnreadable, StartFailureConfigUnreadable},
 }
 
 // tagStartFailure 把一个哨兵挂到既有错误上,**而一个字都不改它的文案**。
@@ -145,4 +155,17 @@ func StartFailureCode(err error) string {
 		}
 	}
 	return StartFailureOther
+}
+
+// ReadConfigFile 读配置文件,读不到时挂上 ErrConfigUnreadable(文案一个字不改)。
+//
+// 它住在这里而不是 internal/cli 的 loadConfig 里,是为了让这个哨兵的产地能被
+// TestEveryStartFailureSentinelHasAProductionSite 在本包里触发 —— 一个产地在别的包、
+// 本包测不到的哨兵,与没有产地的哨兵在那条守卫眼里分不开。
+func ReadConfigFile(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, tagStartFailure(ErrConfigUnreadable, fmt.Errorf("reading the config %s: %w", path, err))
+	}
+	return b, nil
 }

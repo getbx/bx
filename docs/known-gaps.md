@@ -15,11 +15,9 @@
 
 | # | 问题 | 核过 | 判据在哪 | 估计 |
 |---|---|---|---|---|
-| A2 | **恢复浮层走不到 Quit**:`rebuildMenu` 里恢复那一支 `return` 之前没加退出项(更新、开关两支已加)。 | 09-23 | `apps/macos/BxMenu/CLAUDE.md` 菜单本身 | 小,但要想清楚「恢复进行中点 Quit」该发生什么 |
 | A3 | **升级路径的健康失败不读 Core 起不来的记录**:`internal/guardian/update.go` 一处都没引用它,升级时 VPS 不通照样只说 `new_core_health_failed`。 | 09-23 | `internal/guardian/CLAUDE.md` Core 起不来 | 中:那条路的码空间是另一套,先定前缀与呈现 |
 | A4 | **`TestManagerUpdateReservesDeadlineForTargetCleanup` 偶发红**,两次都落在 `release.yml`,**会挡发版**。 | — | 根目录 CLAUDE.md 约定 | 中:先弄清 `Update` 怎么在健康检查与清理之间分预算;**调大 500ms 不算修** |
 | A5 | **`replace` 清不掉服务器的 UDP 链接**:Guardian 把空 `udp` 读作「保持不变」(刻意的,防止顺手抹掉)。界面已如实说「留空 = 保持」,但用户没有办法真的去掉它。 | 09-23 | `apps/macos/BxMenu/CLAUDE.md` Servers 窗口 | 小-中:需要一个显式的「清除」语义,不能复用空串 |
-| A6 | **「读不到配置」落进 `other`**(Core 起不来的分类里只有 `config.Parse` 失败挂了哨兵)。不许借 `config_unusable`:文件不在多半是「还没 setup」。 | — | `internal/guardian/CLAUDE.md` | 小 |
 | A7 | **菜单 LaunchAgent 经 `launchctl asuser` bootstrap 报 `EIO(5)`**,原先那条「残留 plist」的归因不完整。 | — | 根目录 CLAUDE.md 升级时 launchctl 的竞态 | 未知:先查 |
 | A8 | **按应用窗口每 5 秒重建会不会把滚动位置拉回顶部** —— 记档为「已知未修」,但没真机确认过是否发生。 | — | `internal/supervisor/CLAUDE.md` | 小,先验再修 |
 

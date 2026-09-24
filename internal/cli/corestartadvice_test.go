@@ -480,6 +480,15 @@ func TestABrokenConfigFileIsReportedAsConfigUnusable(t *testing.T) {
 	if got := supervisor.StartFailureCode(missingErr); got == supervisor.StartFailureConfig {
 		t.Fatal("「读不到配置」借用了 config_unusable —— 那会叫用户去改一个他还没写过的文件")
 	}
+	// **也不许落进 other**(known-gaps A6):「这一版还没有专门说法」是假话 —— 这一种
+	// 有专门的说法(多半还没 setup 过)。
+	if got := supervisor.StartFailureCode(missingErr); got != supervisor.StartFailureConfigUnreadable {
+		t.Fatalf("读不到配置分类成 %q,want %q", got, supervisor.StartFailureConfigUnreadable)
+	}
+	advice := coreStartFailureAdvice(coreStartFailureCodePrefix+supervisor.StartFailureConfigUnreadable, startFailureServers{})
+	if !strings.Contains(advice, "bx setup") {
+		t.Fatalf("读不到配置时没有给出 setup 那条出路:%s", advice)
+	}
 }
 
 // —— 2026-09-24 真机上那句话的三个毛病 ——
