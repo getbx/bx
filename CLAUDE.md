@@ -7,6 +7,8 @@
   **待人工验收的清单见 `docs/acceptance-pending.md`** —— 那上面每一条都只有人在机器前
   才能做(要在屏幕上点,或要制造一次真实故障),**agent 不要去跑它,也不要替它下结论**;
   本文件各节的「真机未验」标签是那份清单的索引。
+- **已知没修的问题与待你拍板的决定见 `docs/known-gaps.md`**(待修 / 待决定 / 等数据 / 接受不动);
+  修完回来删掉那一条,拿不准还成不成立先去代码里核。
 - 模块:`github.com/getbx/bx`,Go 1.26,GitHub `getbx/bx`。
 - 平台:**linux/amd64 + linux/arm64**(开箱即用)+ **macOS 真机已跑通**;**Windows 真机 e2e 已验**(2026-07-09,`030-SJWJ-GSR-B` Win10 19044):全量路由劫持**整机出口==VPS**、reality(sing-box)隧道 390ms 健康、DNS-into-TUN fake-IP(`example.com→198.18.0.16`)、WFP 防泄漏装成功、SSH 经 10/8 旁路存活、死手优雅还原干净。
 

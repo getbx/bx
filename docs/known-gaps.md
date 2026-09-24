@@ -1,0 +1,67 @@
+# 已知没修的问题与待定的决定
+
+**这份清单管「待修 / 待决定」,`docs/acceptance-pending.md` 管「待验证」,两者分开。**
+每一条都指回判据所在的那份 CLAUDE.md(那里有来龙去脉);这里只回答三件事:它是什么、
+今天还成不成立、要谁来动。
+
+**维护纪律**(与根目录 CLAUDE.md 对陈旧陈述的纪律同一条):修完就回来**删掉**这一条,不是划掉;
+拿不准某条还成不成立时**先去代码里核**再动手。「核过」一列写的是最后一次去代码里确认的日期 ——
+一份说谎的缺口清单比没有清单更糟(2026-08-24 那份「四分之三是假的」就是先例)。
+
+起草于 2026-09-23,从 8 份 CLAUDE.md 与记忆里收拢;起草当天就核出一条半已经不成立
+(「进度浮层走不到 Quit」已修,只剩恢复浮层那一半)。
+
+## A. 待修:是 bug,修法大致清楚
+
+| # | 问题 | 核过 | 判据在哪 | 估计 |
+|---|---|---|---|---|
+| A1 | **Servers 窗口在 `bx setup` 写出的配置下看不到「当前那台」**。`currentServerPanel` 只查 `list.servers`,而单服务器配置里当前那台只在 `current_server` 里(09-13 已经为 Core 起不来那句话加上了这个字段,窗口没接)。这是最常见的配置。 | 09-23 | `apps/macos/BxMenu/CLAUDE.md` Servers 窗口 | 小:接上 `current_server` + 一条模型测试 |
+| A2 | **恢复浮层走不到 Quit**:`rebuildMenu` 里恢复那一支 `return` 之前没加退出项(更新、开关两支已加)。 | 09-23 | `apps/macos/BxMenu/CLAUDE.md` 菜单本身 | 小,但要想清楚「恢复进行中点 Quit」该发生什么 |
+| A3 | **升级路径的健康失败不读 Core 起不来的记录**:`internal/guardian/update.go` 一处都没引用它,升级时 VPS 不通照样只说 `new_core_health_failed`。 | 09-23 | `internal/guardian/CLAUDE.md` Core 起不来 | 中:那条路的码空间是另一套,先定前缀与呈现 |
+| A4 | **`TestManagerUpdateReservesDeadlineForTargetCleanup` 偶发红**,两次都落在 `release.yml`,**会挡发版**。 | — | 根目录 CLAUDE.md 约定 | 中:先弄清 `Update` 怎么在健康检查与清理之间分预算;**调大 500ms 不算修** |
+| A5 | **`replace` 清不掉服务器的 UDP 链接**:Guardian 把空 `udp` 读作「保持不变」(刻意的,防止顺手抹掉)。界面已如实说「留空 = 保持」,但用户没有办法真的去掉它。 | 09-23 | `apps/macos/BxMenu/CLAUDE.md` Servers 窗口 | 小-中:需要一个显式的「清除」语义,不能复用空串 |
+| A6 | **「读不到配置」落进 `other`**(Core 起不来的分类里只有 `config.Parse` 失败挂了哨兵)。不许借 `config_unusable`:文件不在多半是「还没 setup」。 | — | `internal/guardian/CLAUDE.md` | 小 |
+| A7 | **菜单 LaunchAgent 经 `launchctl asuser` bootstrap 报 `EIO(5)`**,原先那条「残留 plist」的归因不完整。 | — | 根目录 CLAUDE.md 升级时 launchctl 的竞态 | 未知:先查 |
+| A8 | **按应用窗口每 5 秒重建会不会把滚动位置拉回顶部** —— 记档为「已知未修」,但没真机确认过是否发生。 | — | `internal/supervisor/CLAUDE.md` | 小,先验再修 |
+
+## B. 要你拍板:产品或安全上的取舍
+
+| # | 决定 | 为什么现在是这样 | 判据在哪 |
+|---|---|---|---|
+| B1 | **Apple Developer ID(年费账号)** | 一个决定同时解决两件事:首装的 Gatekeeper(ad-hoc 签名过不了,最大的一道坎),以及菜单免密开关的授权面(没有 Developer ID 就绑不了权利,**同一用户下任何进程都能静默开关 bx**,今天靠日志记 uid 缓解)。 | 根目录 CLAUDE.md 首装面;控制面那段 |
+| B2 | **`RoutesInstalled` 改成一次观测而不是一份记账** | 今天拆到一半失败的 rehijack 会把它永久清成 false(之后路径恢复验不过、升级做不了,直到 Core 重启)。根治的方向是放宽 fail-closed。 | `internal/supervisor/CLAUDE.md` |
+| B3 | **leakcheck 要不要做「绕过隧道」那一路**(`DefaultProbeBypass=false`) | 做了才说得出「直连不行、走隧道行」这类比较,代价是从物理网卡向 Anthropic/OpenAI/Google 暴露真实 IP。还缺一个绑物理网卡的拨号器。 | `internal/leakcheck/CLAUDE.md` |
+| B4 | **调谐环下一批执行权**(`stop_core`、重启卡住的 Core、解所有权锁存) | ③c 的 spec 明确列为不做:每一样都靠近双 Core 或「把调试进程杀掉」。 | `internal/guardian/CLAUDE.md` 调谐环 |
+| B5 | **Linux 的产品形态**:要不要让 Guardian 在 linux 上真的跑起来 | 门已开、每块都有 netns 背书,但生产 linux 仍是 systemd 直管 supervisor,没有调用方。`bx up` 的「说出 Core 为什么起不来」因此只在 darwin 生效。 | `internal/guardian/CLAUDE.md` 平台缝 |
+
+## C. 等数据:判据写好了,门槛要真机跑一段才敢定
+
+| # | 事 | 要攒的数据 |
+|---|---|---|
+| C1 | **死规则的门槛 14 天 / 20,000 次**够不够、有没有假阳性 | `bx status --json \| jq '.rule_history'` 跨重启是否持续累计 |
+| C2 | **「一直直连失败的域名」要不要提醒**(explain 第四件) | 同上,再加 `failure_kinds`:全是 `dns_nxdomain` 不该开口,全是 `unreachable` 该说的是直连出口坏了 |
+| C3 | **让 china 列表也对 UDP 生效**(搁置的选项 B) | UDP 反事实计数;第一批约 150 条样本里 `udp_would_flip_*` 为 0 |
+| C4 | **Core 起不来的宽限余量 3 秒**够不够 | 日志 `guardian_core_start_failure_record_absent` 的 `waited=` |
+
+## D. 知道、接受、暂不动
+
+- **Guardian 自己的日志没有轮转**:实测约 26.6 KB/天(约 10 MB/年),要修得在 daemon 启动路径上做 fd 手术,且无法不升级真机就验证。
+- **后台工人炸了只能翻日志**:`panickedNames()` 零生产调用方,不进 `bx status`。
+- **规则窗口把「配置解析失败」说成「这一版没检查」**:它绝不宣称健康,要紧的那一半对。
+- **Guardian 声明了 `status_watch` 却不带 `status_generation` 时,菜单会按轮询节拍反复进出 watch**:那说明某一端在能力声明上撒谎,不是菜单的 bug。
+- **规则窗口开着时每次刷新都让 Guardian 重建一张约 12k 条的 `DomainSet`**:没量过。
+- **规则体检的第 4 类「缺失规则」**没做。
+
+## E. 没有机器,长期挂着
+
+- **Windows**:托盘 App 与 Inno 安装包的 GUI 没有真机验过;server 写主机名时断线重连要重解析,
+  而 WFP 只放行 `bx.exe`、子进程 app-id 不同,它 off-TUN 的 :53 可能被封(理论上被哨兵 DNS +
+  `staticA` 兜住,没实测)。见根目录 CLAUDE.md「Windows」。
+- **非 darwin 的关闭路径没排查过**(不变量 5:拆除永不拒绝,今天由 `internal/cli` 的 darwin 强制入口测试保住)。
+
+## F. 结构性的,等基线干净再做
+
+- **菜单状态机搬出 `main.swift`**(3,675 行,`resolve()` 嵌在函数体里、编不进测试)。搬进一个
+  可测的 `MenuState.swift` 能让一批读源码的守卫变成行为测试,也是「真机未验」最集中的地方。
+  **等 `acceptance-pending.md` 的 A 组验完、菜单处在已知良好的状态,再单独开分支做。**
+- `internal/cli/cli.go`(5,688 行)同理,优先级低于菜单。
