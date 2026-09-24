@@ -706,7 +706,12 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 		}
 	}
 
-	process, runtimeState, startErr := m.startUpdateCore(ctx, request.ToVersion)
+	// **新版这一步不许把回滚的时间也吃掉**(known-gaps A4):它只拿到清理预留之外的一半,
+	// 另一半留给「失败了就回滚到旧版并等它健康」。process 不依赖这份 ctx 的寿命
+	// (startUpdateCore 返回前已经收掉了它派生出去的那些),所以用完即取消。
+	targetCtx, cancelTarget := m.reserveRollback(ctx)
+	process, runtimeState, startErr := m.startUpdateCore(targetCtx, request.ToVersion)
+	cancelTarget()
 	if startErr != nil {
 		if isUpdateErrorCode(startErr, "core_ownership_uncertain") {
 			return m.failUpdate(transaction, request, "core_ownership_uncertain", false, false)
@@ -1954,4 +1959,31 @@ func requiredGuardianProtocol(packageData []byte, arch string) (int, error) {
 		required = metadata.GuardianProtocol
 	}
 	return required, nil
+}
+
+// reserveRollback 给「新版起来并健康」这一步划出上限,**给回滚留出另一半**。
+//
+// 此前新版的健康等待只给「清理新版」留了预算(reserveCleanup):新版卡满时,回滚到
+// 旧版只能用清理剩下的零头 —— 在 CI 慢机器上旧版的健康窗口只剩几十毫秒,在生产上
+// 意味着更新失败之后连回滚也失败、机器停在 Blocked。
+//
+// 切法:先照 reserveCleanup 的规则留出清理(min(cleanupTimeout, 剩余的一半)),剩下
+// 的对半分 —— 新版拿一半,回滚拿另一半。生产上(60 秒的 mutation 预算、25 秒的清理
+// 预留)新版的健康窗口从 HealthChecker 自己的 20 秒收到 17.5 秒;健康的新版通常一两
+// 秒就答话,代价只落在「本来就要失败」的那一次上。没有 deadline 时原样放行。
+func (m *Manager) reserveRollback(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return context.WithCancel(ctx)
+	}
+	cleanup := m.cleanupTimeout
+	if half := remaining / 2; cleanup > half {
+		cleanup = half
+	}
+	target := cleanup + (remaining-cleanup)/2
+	return context.WithDeadline(ctx, time.Now().Add(target))
 }

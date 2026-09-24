@@ -235,6 +235,15 @@ verify 在 105 秒内耗尽,醒来全部自愈,菜单裂开一个多小时)。**
 CLI `assembleClientStatusReport` 与菜单 `recoveryPresentation` 各自那份「有 failed 快照 ⇒ Blocked」
 的拷贝没动 —— 修在源头,三处按构造一致。**真机未验。**
 
+## 更新的预算(`Update`,2026-09-23)
+
+`/v1/update` 一共 60 秒(`guardianMutationTimeout`)。**新版 Core 起来并健康那一步只拿「清理预留
+之外的一半」**(`reserveRollback`),另一半留给「失败了就回滚到旧版并等它健康」。此前它只给清理
+新版留了预算:新版卡满时回滚只剩零头,旧版的健康窗口可能只有几十毫秒 ⇒ `previous_core_health_failed`、
+机器停在 Blocked。生产上新版的健康窗口因此从 20 秒收到约 17.5 秒。守卫
+`TestManagerUpdateLeavesARealBudgetForTheRollback` 打在**回滚拿到的预算**上(确定性的),不打在
+「这次碰巧过没过」上 —— 修之前它稳定报 44ms。
+
 ## 响应与失败码
 
 - **JSON 响应必须显式带 Content-Length**(`writeGuardianJSON`:先整体 marshal 再一次写出)。
