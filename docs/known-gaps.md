@@ -15,7 +15,6 @@
 
 | # | 问题 | 核过 | 判据在哪 | 估计 |
 |---|---|---|---|---|
-| A1 | **Servers 窗口在 `bx setup` 写出的配置下看不到「当前那台」**。`currentServerPanel` 只查 `list.servers`,而单服务器配置里当前那台只在 `current_server` 里(09-13 已经为 Core 起不来那句话加上了这个字段,窗口没接)。这是最常见的配置。 | 09-23 | `apps/macos/BxMenu/CLAUDE.md` Servers 窗口 | 小:接上 `current_server` + 一条模型测试 |
 | A2 | **恢复浮层走不到 Quit**:`rebuildMenu` 里恢复那一支 `return` 之前没加退出项(更新、开关两支已加)。 | 09-23 | `apps/macos/BxMenu/CLAUDE.md` 菜单本身 | 小,但要想清楚「恢复进行中点 Quit」该发生什么 |
 | A3 | **升级路径的健康失败不读 Core 起不来的记录**:`internal/guardian/update.go` 一处都没引用它,升级时 VPS 不通照样只说 `new_core_health_failed`。 | 09-23 | `internal/guardian/CLAUDE.md` Core 起不来 | 中:那条路的码空间是另一套,先定前缀与呈现 |
 | A4 | **`TestManagerUpdateReservesDeadlineForTargetCleanup` 偶发红**,两次都落在 `release.yml`,**会挡发版**。 | — | 根目录 CLAUDE.md 约定 | 中:先弄清 `Update` 怎么在健康检查与清理之间分预算;**调大 500ms 不算修** |

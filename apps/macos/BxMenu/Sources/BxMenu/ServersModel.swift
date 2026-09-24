@@ -198,17 +198,24 @@ struct ServerList: Decodable, Equatable {
     /// 单服务器配置(`bx setup` 写出来的那种)。缺席 = 「清单里已经有它」或者
     /// 「这一版 Guardian 没说」,两种都退回既有行为,不编。
     ///
-    /// 它**不进服务器窗口**:那个窗口靠 `servers.isEmpty` + `singleServer`
-    /// 说出「这是单服务器配置,不是一份清单」那句刻意区分出来的话。这里只喂
-    /// 「Core 起不来时那句可行动的话」——没有它,最常见的那种配置上菜单说不出
-    /// 服务器地址。
+    /// 它**不进候选清单**:那个窗口靠 `servers.isEmpty` + `singleServer` 说出
+    /// 「这是单服务器配置,不是一份清单」那句刻意区分出来的话。它喂两处:
+    /// 「Core 起不来时那句可行动的话」,以及服务器窗口顶上「Currently using」
+    /// 那一块(`currentServerPanel` 在清单里找不到当前那台时退到它)—— 没有它,
+    /// 最常见的那种配置上窗口看不到正在用的服务器。
     var currentServer: ServerEntry?
+    /// Core 此刻跑的是不是 `currentServer` 那一台 —— Guardian 按主机比好的答案
+    /// (与它算 `running` 同一份判据)。单服务器配置里那台**没有名字**,按名字比的
+    /// `running` 永远对不上,所以这件事只能由服务端说。**nil = 没说**(旧 Guardian,
+    /// 或 Core 没答话),不许读成「不在跑」。
+    var currentServerRunning: Bool?
 
     enum CodingKeys: String, CodingKey {
         case servers, current, added, running
         case configPath = "config_path"
         case singleServer = "single_server"
         case currentServer = "current_server"
+        case currentServerRunning = "current_server_running"
     }
 
     init(from decoder: Decoder) throws {
@@ -220,14 +227,15 @@ struct ServerList: Decodable, Equatable {
         running = try c.decodeIfPresent(String.self, forKey: .running) ?? ""
         singleServer = try c.decodeIfPresent(Bool.self, forKey: .singleServer) ?? false
         currentServer = try c.decodeIfPresent(ServerEntry.self, forKey: .currentServer)
+        currentServerRunning = try c.decodeIfPresent(Bool.self, forKey: .currentServerRunning)
     }
 
     init(servers: [ServerEntry] = [], current: String = "", configPath: String = "",
          added: String = "", running: String = "", singleServer: Bool = false,
-         currentServer: ServerEntry? = nil) {
+         currentServer: ServerEntry? = nil, currentServerRunning: Bool? = nil) {
         self.servers = servers; self.current = current; self.configPath = configPath
         self.added = added; self.running = running; self.singleServer = singleServer
-        self.currentServer = currentServer
+        self.currentServer = currentServer; self.currentServerRunning = currentServerRunning
     }
 }
 
@@ -323,9 +331,21 @@ enum ServerTrafficState: String, Equatable {
 /// 两个消费方(候选行 `otherServerRows`、当前那块 `currentServerPanel`)都走它,
 /// 门是 `answeringCore`(`MenuRows.swift`)—— 不许在任何地方写第二份:同一个
 /// 问题的第二份判据恰好答反了,是这个仓库刚修掉的那个 bug。
+///
+/// **名字为空的只有单服务器配置那一台**(`current_server`,见 `ServerList`):它按
+/// 名字永远对不上,于是答案取 Guardian 按主机比好的 `currentServerRunning`。
+/// 门仍是同一个 `answeringCore` —— Core 静默时那份答案可能陈旧,一样不许当真。
 func serverTrafficState(name: String, list: ServerList, core: CoreRuntime?) -> ServerTrafficState {
+    guard answeringCore(core) != nil else { return .unconfirmed }
+    if name.trimmingCharacters(in: .whitespaces).isEmpty {
+        switch list.currentServerRunning {
+        case .some(true): return .carrying
+        case .some(false): return .idle
+        case .none: return .unconfirmed
+        }
+    }
     let running = list.running.trimmingCharacters(in: .whitespaces)
-    guard answeringCore(core) != nil, !running.isEmpty else { return .unconfirmed }
+    guard !running.isEmpty else { return .unconfirmed }
     return running.caseInsensitiveCompare(name) == .orderedSame ? .carrying : .idle
 }
 
@@ -466,6 +486,9 @@ struct CurrentServerPanel: Equatable {
     /// `== .carrying` 那一半 —— 加粗只有「敢」与「不敢」两档,而删除确认框
     /// 要分得清「确认闲着」与「没问出来」。
     let traffic: ServerTrafficState
+    /// `⋯`(换链接 / 删除)画不画。那两个动词按**名字**改 `servers:` 清单,而单服务器
+    /// 配置那一台没有清单条目也没有名字 —— 拿空名字去调 Guardian 只会失败或改错东西。
+    var editable: Bool = true
 
     var endpoint: String { endpointText(host: host, port: port) }
 
@@ -503,27 +526,37 @@ struct CurrentServerPanel: Equatable {
 /// 判据取 `answeringCore`(`MenuRows.swift`)—— **不许写第二份**:
 /// `reachable == false` 时 Core 报的每一项都是零值,当真就会画出一行撒谎的 0 ms,
 /// 而规则窗口刚因为「同一个问题的第二份判据」出过一模一样的 bug。
+///
+/// **清单里找不到当前那台时退到 `current_server`**(单服务器配置 —— `bx setup` 写的
+/// 就是这种,也是最常见的那种)。那一台没有名字:标题写 `singleServerTitle`,「在不
+/// 在跑」取 Guardian 按主机比好的答案,`⋯` 不画。旧 Guardian 不发它时照旧没有面板。
 func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPanel? {
-    guard let entry = list.servers.first(where: { $0.current }) else { return nil }
+    let listed = list.servers.first(where: { $0.current })
+    let single = list.servers.isEmpty ? list.currentServer : nil
+    guard let entry = listed ?? single else { return nil }
     let live = answeringCore(core)
-    let row = ServerRow(entry: entry,
-                        traffic: serverTrafficState(name: entry.name, list: list, core: core))
+    let traffic = serverTrafficState(name: entry.name, list: list, core: core)
+    let row = ServerRow(entry: entry, traffic: traffic)
 
-    // **只有 Core 在答话时才敢说「在跑的就是它」。** 那份 running 来自上一次
-    // 取清单,可能已经陈旧 —— 而它陈旧的那一刻,恰好就是保护刚被关掉的时候。
+    // **只有 Core 在答话时才敢说「在跑的就是它」**(门在 serverTrafficState 里)。
+    // 那份答案来自上一次取清单,可能已经陈旧 —— 而它陈旧的那一刻,恰好就是保护
+    // 刚被关掉的时候。
+    let confirmed = traffic == .carrying
     let running = list.running.trimmingCharacters(in: .whitespaces)
-    let confirmed = live != nil && !running.isEmpty
-        && running.caseInsensitiveCompare(entry.name) == .orderedSame
 
     var runningNote: String?
     if live != nil, !confirmed {
-        runningNote = running.isEmpty
-            ? "bx could not confirm which server is running."
-            : "bx is actually using \(running) right now."
+        if traffic == .idle {
+            runningNote = listed == nil || running.isEmpty
+                ? "bx is actually using a different server right now."
+                : "bx is actually using \(running) right now."
+        } else {
+            runningNote = "bx could not confirm which server is running."
+        }
     }
 
     return CurrentServerPanel(
-        name: entry.name,
+        name: listed == nil ? singleServerTitle : entry.name,
         host: entry.host,
         port: entry.port,
         transport: nonEmpty(live?.transport),
@@ -547,8 +580,13 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
             : nil,
         runningNote: runningNote,
         runningConfirmed: confirmed,
-        traffic: serverTrafficState(name: entry.name, list: list, core: core))
+        traffic: traffic,
+        editable: listed != nil)
 }
+
+/// 单服务器配置那一台的标题。它真的没有名字(Guardian 刻意不编一个),地址已经
+/// 画在标题旁边,再写一遍主机只是重复。
+let singleServerTitle = "Your server"
 
 /// 候选那几台:清单里除了当前那台以外的全部。
 ///

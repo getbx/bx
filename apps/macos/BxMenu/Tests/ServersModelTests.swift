@@ -579,6 +579,92 @@ struct ServersModelTests {
     }
 
     // 一份没有 current 的清单(手改出来的配置就是这样)不该凭空造一个面板。
+    // MARK: - 单服务器配置的「当前那台」(A1,2026-09-23)
+    //
+    // `bx setup` 写出来的配置根本没有 `servers:` 清单,而这是**最常见**的那种配置。
+    // 当前那台只在 `current_server` 里、**没有名字**;此前窗口只从清单里找当前那台,
+    // 于是每一个正常装好 bx 的人打开服务器窗口都看不到「Currently using」那一块。
+
+    /// 新 Guardian 对单服务器配置真实会发的形状:清单为空、`single_server`、
+    /// `current_server`(无名字)、以及 Guardian 按主机比好的 `current_server_running`。
+    static func singleServerConfigFromANewGuardian(running: Bool?) -> ServerList {
+        var list = singleServerConfig()
+        list.currentServer = ServerEntry(name: "", host: "203.0.113.30", port: 8443, current: true)
+        list.currentServerRunning = running
+        return list
+    }
+
+    static func testSingleServerConfigStillShowsTheCurrentServer() {
+        guard let panel = currentServerPanel(list: singleServerConfigFromANewGuardian(running: true),
+                                             core: answeringCoreRuntime()) else {
+            fail("单服务器配置下没有「Currently using」那一块 —— 最常见的配置上窗口看不到正在用的服务器")
+            return
+        }
+        expect(panel.endpoint.contains("203.0.113.30"), "当前那台的地址没画出来:\(panel.endpoint)")
+        expect(!panel.name.trimmingCharacters(in: .whitespaces).isEmpty,
+               "标题是空的 —— 窗口会只画一个孤零零的点")
+        expect(panel.runningConfirmed && panel.traffic == .carrying,
+               "Guardian 说在跑的就是它,面板却没确认")
+        expect(panel.runningNote == nil,
+               "确认过了还挂着一句「说不出在跑哪台」:\(panel.runningNote ?? "nil")")
+        // 这一台没有清单条目,⋯ 里的「换链接 / 删除」是按名字改清单的 —— 拿空名字
+        // 去调 Guardian 只会失败或改错东西。
+        expect(!panel.editable, "单服务器配置那一块画了 ⋯,而它没有可改的清单条目")
+    }
+
+    // Core 报的是别的主机(改过配置而 Core 没重启):不许加粗,要说出来。
+    static func testSingleServerConfigSaysWhenCoreRunsSomethingElse() {
+        guard let panel = currentServerPanel(list: singleServerConfigFromANewGuardian(running: false),
+                                             core: answeringCoreRuntime()) else {
+            fail("单服务器配置下没有面板"); return
+        }
+        expect(!panel.runningConfirmed, "Core 跑的是别的主机,面板却给这一台加粗打点")
+        expect(panel.runningNote?.lowercased().contains("different server") == true,
+               "没说 Core 此刻跑的不是这一台:\(panel.runningNote ?? "nil")")
+    }
+
+    // 问不出来就说问不出来 —— 而**确认过的那一次必须长得不一样**(少了上面那条,
+    // 「永远说 could not confirm」也能满足这一条)。
+    static func testSingleServerConfigWillNotConfirmWhatItCannotSee() {
+        guard let unknown = currentServerPanel(list: singleServerConfigFromANewGuardian(running: nil),
+                                               core: answeringCoreRuntime()),
+              let silent = currentServerPanel(list: singleServerConfigFromANewGuardian(running: true),
+                                              core: nil) else {
+            fail("单服务器配置下没有面板"); return
+        }
+        expect(!unknown.runningConfirmed && unknown.traffic == .unconfirmed,
+               "Guardian 没说在不在跑,面板却下了结论")
+        expect(unknown.runningNote?.lowercased().contains("could not confirm") == true,
+               "没说这一项没问出来:\(unknown.runningNote ?? "nil")")
+        expect(!silent.runningConfirmed, "Core 静默时拿一份可能陈旧的答案加了粗")
+    }
+
+    // 旧 Guardian 不发 current_server:退回原来的样子(没有面板),不编。
+    // 有清单时清单里那台照旧可编辑。
+    static func testCurrentPanelFallbackOnlyWhenGuardianSaidSo() {
+        expect(currentServerPanel(list: singleServerConfig(), core: answeringCoreRuntime()) == nil,
+               "旧 Guardian 没发 current_server,面板却编出了一台")
+        guard let listed = currentServerPanel(list: listWithCurrent(), core: answeringCoreRuntime()) else {
+            fail("有清单时当前那台的面板没了"); return
+        }
+        expect(listed.editable, "清单里的当前那台失去了 ⋯")
+    }
+
+    static func testServerListDecodesCurrentServerRunning() {
+        let json = """
+        {"servers":[],"single_server":true,
+         "current_server":{"name":"","host":"203.0.113.30","port":8443,"current":true},
+         "current_server_running":false}
+        """
+        guard let list = try? JSONDecoder().decode(ServerList.self, from: Data(json.utf8)) else {
+            fail("带 current_server_running 的应答解不动"); return
+        }
+        expect(list.currentServerRunning == false, "current_server_running 没解出来")
+        let old = try? JSONDecoder().decode(ServerList.self, from: Data(#"{"servers":[]}"#.utf8))
+        expect(old != nil && old?.currentServerRunning == nil,
+               "旧 Guardian 不发这个键时不是 nil(缺席 = 这一版没说)")
+    }
+
     static func testCurrentPanelIsAbsentWithoutACurrentServer() {
         expect(currentServerPanel(list: emptyServerList(), core: answeringCoreRuntime()) == nil,
                "空清单却给出了一个当前那台")
@@ -947,6 +1033,11 @@ struct ServersModelTests {
 
     static func main() {
         testServerListDecodesWhatGuardianSends()
+        testSingleServerConfigStillShowsTheCurrentServer()
+        testSingleServerConfigSaysWhenCoreRunsSomethingElse()
+        testSingleServerConfigWillNotConfirmWhatItCannotSee()
+        testCurrentPanelFallbackOnlyWhenGuardianSaidSo()
+        testServerListDecodesCurrentServerRunning()
         testServerListDecodesAddedAndToleratesItsAbsence()
         testAddServerOutcomeMessageDistinguishesTheThreeEndings()
         testServerSwitchingNeedsTheCapability()

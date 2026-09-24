@@ -115,6 +115,16 @@ type ServerListResponse struct {
 	// TestServerListNeverShipsTheLinkItself 同一条)。名字空着是诚实的 ——
 	// 单服务器配置里那台真的没有名字。
 	CurrentServer *ServerEntry `json:"current_server,omitempty"`
+	// CurrentServerRunning 答「Core 此刻跑的是不是 CurrentServer 那一台」,**只在
+	// CurrentServer 存在时才可能出现**。
+	//
+	// 有清单时这件事由 Running(名字)说;而单服务器配置里那台**没有名字**,按名字
+	// 比对永远对不上 —— 窗口一旦开始画这一台,它会在最常见的那种配置上天天说
+	// 「bx could not confirm which server is running」。判据与 runningServerName
+	// 同一份(hostMatches,按主机)。三态:true = 对上;false = Core 报的是别的主机
+	// (配置改过而 Core 没重启 —— 那时说「在跑的就是它」是一句谎);**nil = Core
+	// 没答话,键缺席,不编**。
+	CurrentServerRunning *bool `json:"current_server_running,omitempty"`
 	// Added 只在 add 应答里出现:最终写进清单的名字(用户给的,或按链接推导的)。
 	// 界面靠它知道接下来该切换到哪一台 —— 自己再推一遍推导规则就是第二份判据。
 	Added string `json:"added,omitempty"`
@@ -238,22 +248,28 @@ func liveCoreStatus() (coreLiveStatus, bool) {
 // 一个自信的错答案。有歧义时宁可什么都不说:那时应答里 running 缺席,菜单按
 // 「问不出来」渲染,一个字的谎都没有。
 func runningServerName(entries []ServerEntry, host string) string {
+	idx := hostMatches(entries, host)
+	if len(idx) != 1 {
+		return ""
+	}
+	return entries[idx[0]].Name
+}
+
+// hostMatches 是「Core 报的主机对上了哪几条」的**唯一**判据,runningServerName
+// 与单服务器配置的 CurrentServerRunning 都经它 —— 两处各写一份比对,就会有一天
+// 一处认大小写、一处不认。主机为空时一条都不算对上。
+func hostMatches(entries []ServerEntry, host string) []int {
 	host = strings.TrimSpace(host)
 	if host == "" {
-		return ""
+		return nil
 	}
-	name := ""
-	matches := 0
+	var idx []int
 	for i := range entries {
 		if strings.EqualFold(strings.TrimSpace(entries[i].Host), host) {
-			name = entries[i].Name
-			matches++
+			idx = append(idx, i)
 		}
 	}
-	if matches != 1 {
-		return ""
-	}
-	return name
+	return idx
 }
 
 // liveServerSwitch 接到真 Core 上。
@@ -315,18 +331,27 @@ func serversSnapshot(configPath string, coreStatus coreStatusReader) (ServerList
 	// 正是热切换失败时那句谎的机制。
 	var running string
 	var live coreLiveStatus
+	answered := false
 	if coreStatus != nil {
 		if st, ok := coreStatus(); ok {
 			running = runningServerName(entries, st.ServerHost)
 			live = st
+			answered = true
 		}
 	}
 	attachThroughput(entries, running, live, past.Servers, time.Now())
+	single := singleServerEntry(list, configPath)
+	var singleRunning *bool
+	if single != nil && answered {
+		on := len(hostMatches([]ServerEntry{*single}, live.ServerHost)) == 1
+		singleRunning = &on
+	}
 	return ServerListResponse{
-		Servers:       entries,
-		CurrentServer: singleServerEntry(list, configPath),
-		Current:       current,
-		Running:       running,
+		Servers:              entries,
+		CurrentServer:        single,
+		CurrentServerRunning: singleRunning,
+		Current:              current,
+		Running:              running,
 		// nil ⇒ 配置里根本没有 `servers:` 这个键;长度为 0 的非 nil 切片 ⇒
 		// 有这个键、里面确实是空的。这个区分只有这里做得到(见 SingleServer)。
 		SingleServer: list == nil,

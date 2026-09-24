@@ -164,12 +164,29 @@ do {
 }
 
 // —— Servers ——
+// **两张图共用一个控制器**(生产里也只有一个):`windowTitled` 取第一扇同名窗口,
+// 新建第二个控制器会让第二张图拍到的仍是第一扇窗口 —— 画出来的是上一份清单。
+let serversController = ServersWindowController()
 do {
     let list = loadFixture("servers.json", as: ServerList.self)
-    let controller = ServersWindowController()
+    let controller = serversController
     controller.show(list: list, core: nil, probe: .address("203.0.113.92"),
                     switchingTo: nil, canEdit: true)
     capture(windowTitled("Servers"), as: "servers")
+}
+
+// —— Servers:单服务器配置(`bx setup` 写出来的那种,也是最常见的那种)——
+// 清单为空,当前那台只在 current_server 里、没有名字。Core 在答话 —— 那是
+// 这种配置下用户最常看到的样子。
+do {
+    let list = loadFixture("servers-single.json", as: ServerList.self)
+    let core = CoreRuntime(reachable: true, tunnelHealthy: true, latencyMS: 293,
+                           server: "203.0.113.30", transport: "reality@203.0.113.30",
+                           udpMode: "proxy")
+    let controller = serversController
+    controller.show(list: list, core: core, probe: .unknown,
+                    switchingTo: nil, canEdit: true)
+    capture(windowTitled("Servers"), as: "servers-single")
 }
 
 // —— Diagnostics(两页各一张)——

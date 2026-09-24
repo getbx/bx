@@ -1,0 +1,8 @@
+{
+  "servers": [],
+  "current": "",
+  "config_path": "/etc/bx/config.yaml",
+  "single_server": true,
+  "current_server": {"name": "", "host": "203.0.113.30", "port": 443, "current": true},
+  "current_server_running": true
+}
