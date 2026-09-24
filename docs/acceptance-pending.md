@@ -273,6 +273,10 @@ sudo kill -9 <Core PID>
 
 ## C. 要等机会,不值得专门制造
 
+- [ ] **菜单栏 LaunchAgent 的 EIO(5) 不再出现**:下次升级(或 `bx app-install`)时看输出里有没有
+      `Bootstrap failed: 5: Input/output error`。2026-08-14 `580c0363` 已修,之后没再见过;见到了
+      就说明还有另一条路径,回来重新立项。
+
 - [ ] **路由就绪位自愈**(2026-09-23):要一次**拆到一半才失败**的换路由才会触发,不值得专门制造。
       真发生时 `bx.log` 应先出现 `routes_ready is false while bx is running`,最多 30 秒 ~ 5 分钟后
       出现 `routes_ready: reinstalled the capture routes`,之后路径恢复与 `bx update` 不再因
