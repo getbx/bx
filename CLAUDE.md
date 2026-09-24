@@ -410,9 +410,11 @@ kill-switch 影响),网关上的门户页在 bx 开着时通常够得着 —— 
 如实上报**。真机验收:同一台机器上次升级必落 113,修复后 `重启保护服务 → 恢复保护 →
 ✓ 升级完成` 干净通过。
 
-**仍未解**:统一安装里菜单栏 LaunchAgent 经 `launchctl asuser 501 launchctl bootstrap
-gui/501 …` 仍报 `EIO(5)`。文档此前把这个 EIO 归因到「上一次统一安装残留的 plist」,
-本次是从 root 经 `asuser` 走的、仍然失败 —— **那条归因不完整**,待查。
+**菜单栏 LaunchAgent 的 `EIO(5)`:次日(2026-08-14,`580c0363`)已修,这里此前写着「仍未解」
+是过期的**(2026-09-24 核出)。机制与 Guardian 那个 113 同源:`bootout` 返回时 job 还在册,
+紧跟着的 `asuser … bootstrap` 撞上它就拿到 EIO(5)。修法同样是 bootout 之后等标签真的消失
+(`waitMenuLabelUnloaded`,`internal/cli/menu_darwin.go`),等不到不报错。之后 Guardian 日志里
+再没出现过 `Input/output error`;下次升级时看一眼即可(`docs/acceptance-pending.md` C 组)。
 
 ## bx server deploy(2026-08-14,真机端到端已验)
 
