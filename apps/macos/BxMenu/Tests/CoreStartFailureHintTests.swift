@@ -28,6 +28,7 @@ struct CoreStartFailureHintTests {
         "core_hijack_failed",
         "core_provision_failed",
         "core_config_unusable",
+        "core_config_unreadable",
         "core_other",
     ]
 

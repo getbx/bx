@@ -164,7 +164,9 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 func nonTunnelStartFailureHeadline(bare string) string {
 	switch bare {
 	case supervisor.StartFailureConfig:
-		return "bx cannot use what is in the config (one of the rules, CIDRs, hosts entries, or the server link is bad). After fixing it, " + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up。"
+		return "bx cannot use what is in the config (one of the rules, CIDRs, hosts entries, or the server link is bad). After fixing it, " + elevate.Prefix + "bx down && " + elevate.Prefix + "bx up. "
+	case supervisor.StartFailureConfigUnreadable:
+		return "bx could not read its config file — most likely bx has not been set up on this machine yet, or the file is not readable. To set it up: " + elevate.Prefix + "bx setup <your link>. "
 	case supervisor.StartFailureProvision:
 		return "could not unpack the embedded transport binary into data_dir (most likely the disk is full or that directory is not writable). "
 	case supervisor.StartFailureTUNOpen:

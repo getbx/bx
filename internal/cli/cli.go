@@ -5167,12 +5167,12 @@ func printDNSStatus(st install.DNSStatus) {
 
 func loadConfig(path string) (*config.Config, error) {
 	path = resolveConfigPath(path)
-	b, err := os.ReadFile(path)
+	b, err := supervisor.ReadConfigFile(path)
 	if err != nil {
 		// **读不到不是「内容用不了」。** 文件不在 / 权限不够是另一种故障
 		// (多半是「还没 setup 过」),借 config_unusable 那个码就是叫用户去
-		// 改一个他还没写过的文件。这一支照旧落 other。
-		return nil, fmt.Errorf("reading the config %s: %w", path, err)
+		// 改一个他还没写过的文件。它有自己的码 config_unreadable(known-gaps A6)。
+		return nil, err
 	}
 	cfg, err := config.Parse(b)
 	if err != nil {

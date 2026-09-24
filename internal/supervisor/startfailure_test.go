@@ -45,6 +45,10 @@ func TestEveryStartFailureSentinelHasAProductionSite(t *testing.T) {
 			})
 			return err
 		}},
+		ErrConfigUnreadable: {trigger: func(t *testing.T) error {
+			_, err := ReadConfigFile(filepath.Join(t.TempDir(), "没有这个文件.yaml"))
+			return err
+		}},
 		ErrConfig: {trigger: func(t *testing.T) error {
 			// via + 一条不是网段的 cidr:配置里那几行本身就是坏的。
 			_, err := buildSplitBrain(&config.Config{
