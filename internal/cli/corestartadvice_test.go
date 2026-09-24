@@ -529,3 +529,66 @@ func TestTheOtherServerLineReadsLikeEnglishAndNamesTheServer(t *testing.T) {
 		t.Errorf("多台候选时命令该留占位符让用户挑:\n%s", two)
 	}
 }
+
+// —— 升级时 Core 起不来(known-gaps A3,2026-09-24)——
+//
+// 同一个码在升级这条路上要多说一句「这意味着什么」:隧道那一族指向服务器或路径,
+// **不是升级**;别的那几种才是「新版本在这台机器上起不来」。已回滚与回滚也失败
+// (机器被拦住)是两种处境,措辞必须不同。
+func TestUpdateStartFailureNoteTellsTheFourSituationsApart(t *testing.T) {
+	facts := startFailureServers{CurrentHostPort: "203.0.113.92:443"}
+	tunnelBack := updateStartFailureNote(supervisor.StartFailureTunnelUnreachable, facts, true)
+	tunnelBlocked := updateStartFailureNote(supervisor.StartFailureTunnelUnreachable, facts, false)
+	otherBack := updateStartFailureNote(supervisor.StartFailureTUNOpen, facts, true)
+	otherBlocked := updateStartFailureNote(supervisor.StartFailureTUNOpen, facts, false)
+	seen := map[string]bool{}
+	for _, n := range []string{tunnelBack, tunnelBlocked, otherBack, otherBlocked} {
+		if n == "" {
+			t.Fatal("有一种处境一个字都没说")
+		}
+		if seen[n] {
+			t.Fatalf("两种处境说了同一段话:\n%s", n)
+		}
+		seen[n] = true
+	}
+	for _, n := range []string{tunnelBack, tunnelBlocked} {
+		if !strings.Contains(n, "not the update") || !strings.Contains(n, "203.0.113.92:443") {
+			t.Errorf("隧道那一族没说「不是升级的问题」或没点名服务器:\n%s", n)
+		}
+	}
+	for _, n := range []string{otherBack, otherBlocked} {
+		if strings.Contains(n, "not the update") {
+			t.Errorf("非隧道的原因被说成「不是升级的问题」—— 那恰恰可能就是新版本的问题:\n%s", n)
+		}
+	}
+	if updateStartFailureNote("", facts, true) != "" || updateStartFailureNote("no_such_code", facts, true) != "" {
+		t.Error("没有原因 / 认不出的码也说了话 —— 不编")
+	}
+	if strings.Contains(tunnelBack+tunnelBlocked+otherBack+otherBlocked, "**") {
+		t.Error("用户可见的话里有 markdown 星号")
+	}
+}
+
+// 菜单那份「隧道那一族」的码必须与 Go 这份逐字相同 —— 漂了的后果是静默的:菜单把一次
+// VPS 不通的回滚说成「新版本在这台 Mac 上起不来」,两侧测试照样全绿。
+func TestMenuTunnelStartFailureCodesMatchGo(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu", "UpdatePresentation.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(src), "func isTunnelStartFailure(")
+	if !ok {
+		t.Fatal("读不出 isTunnelStartFailure —— 守卫读不懂现在的代码了")
+	}
+	for _, code := range []string{supervisor.StartFailureTunnelUnreachable, supervisor.StartFailureTunnelHandshakeFailed, supervisor.StartFailureTunnelUndetermined} {
+		if !strings.Contains(body, `"`+code+`"`) {
+			t.Errorf("菜单的隧道码清单里没有 %q", code)
+		}
+	}
+	for _, code := range supervisor.StartFailureCodes() {
+		if supervisor.IsTunnelStartFailureCode(code) && !strings.HasPrefix(code, supervisor.StartFailureTunnelUndetermined) &&
+			!strings.Contains(body, `"`+code+`"`) {
+			t.Errorf("Go 认作隧道那一族的 %q 菜单不认", code)
+		}
+	}
+}

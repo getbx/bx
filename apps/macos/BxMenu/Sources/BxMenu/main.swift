@@ -3085,8 +3085,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showMessage("Update Complete", updateSucceededMessage)
             refresh(userInitiated: true)
             refreshUpdateCheck()
-        case .rolledBack:
-            showMessage("Update Rolled Back", updateRolledBackMessage)
+        case .rolledBack(_, let reason):
+            showMessage("Update Rolled Back", updateRolledBackMessage(reason: reason))
         case .failed:
             // **把真正的原因说出来。** 它就在这份刚读过的日志里 —— 上一版
             // 读到了、解析了,然后只报一句"Run Doctor for details"。

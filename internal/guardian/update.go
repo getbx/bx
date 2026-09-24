@@ -107,6 +107,9 @@ func (s *Store) guardianPaths() Paths {
 type updateError struct {
 	code  string
 	cause error
+	// startFailure 是那个没起来的 Core **自报**的启动失败码(A3)。只进应答体的
+	// core_start_failure 键、只取白名单里的码,自由文本一个字都不出门。
+	startFailure string
 }
 
 func (e updateError) Error() string {
@@ -120,6 +123,26 @@ func (e updateError) Unwrap() error { return e.cause }
 
 func newUpdateError(code string) error {
 	return updateError{code: code}
+}
+
+// withStartFailure 把一个 Core 自报的启动失败码挂到 updateError 上(码为空或 err 不是
+// updateError 时原样返回)。
+func withStartFailure(err error, code string) error {
+	var updErr updateError
+	if code == "" || !errors.As(err, &updErr) {
+		return err
+	}
+	updErr.startFailure = code
+	return updErr
+}
+
+// updateStartFailure 取出错误链上那个 Core 自报的启动失败码;没有就空串。
+func updateStartFailure(err error) string {
+	var updErr updateError
+	if errors.As(err, &updErr) {
+		return updErr.startFailure
+	}
+	return ""
 }
 
 // newUpdateErrorWithCause 用在**病因已经算出来了**的地方。没有病因时仍然用
@@ -692,17 +715,17 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 	m.current = Process{}
 	m.runtime = supervisor.RuntimeState{}
 	if err := m.barrier.ReassertBypass(ctx, barrierContext); err != nil {
-		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "barrier_reassert_failed")
+		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "barrier_reassert_failed", "")
 	}
 	if err := m.saveUpdatePhase(&transaction, PhaseActivating, ""); err != nil {
-		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "update_journal_failed")
+		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "update_journal_failed", "")
 	}
 	if err := prepared.Activate(); err != nil {
-		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "update_activate_failed")
+		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "update_activate_failed", "")
 	}
 	if next := prepared.CoreExecutable(); next != "" {
 		if err := m.runner.SetExecutable(next); err != nil {
-			return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "update_activate_failed")
+			return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, "update_activate_failed", "")
 		}
 	}
 
@@ -716,7 +739,8 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 		if isUpdateErrorCode(startErr, "core_ownership_uncertain") {
 			return m.failUpdate(transaction, request, "core_ownership_uncertain", false, false)
 		}
-		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, startErr.Error())
+		return m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, startErr.Error(),
+			updateStartFailure(startErr))
 	}
 	if err := m.acceptHealthy(ctx, process, runtimeState, false); err != nil {
 		cause := m.updateAcceptFailureCode("new_core_accept_failed")
@@ -733,7 +757,7 @@ func (m *Manager) updatePreparedLocked(ctx context.Context, request UpdateReques
 		}
 		m.current = Process{}
 		m.runtime = supervisor.RuntimeState{}
-		result, rollbackErr := m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, cause)
+		result, rollbackErr := m.rollbackUpdate(ctx, &transaction, request, prepared, barrierContext, cause, "")
 		if rollbackErr != nil {
 			return result, rollbackErr
 		}
@@ -765,6 +789,7 @@ func (m *Manager) startUpdateCore(ctx context.Context, version string) (Process,
 		return Process{}, supervisor.RuntimeState{}, newUpdateError("new_core_start_failed")
 	}
 	defer cancelOperation()
+	spawnedAt := time.Now()
 	process, err := m.runner.Start(operationCtx, m.coreStartOptions())
 	if err != nil {
 		if errors.Is(err, ErrProcessOwnershipUncertain) {
@@ -787,6 +812,15 @@ func (m *Manager) startUpdateCore(ctx context.Context, version string) (Process,
 	}
 	state, err := m.health.Wait(operationCtx, HealthTarget{Version: version, PID: process.PID})
 	if err != nil || state.PID != process.PID || state.Version != version {
+		// **先读它自己说了什么,再收拾它**(与 startCoreLocked 同一个顺序、同一个函数):
+		// 清理可能是强杀,被杀的 Core 不会再写任何东西(A3)。只在健康等待本身失败时读
+		// —— PID / 版本对不上那一支说明答话的是**别的** Core,这份记录不属于它。
+		reported := ""
+		if err != nil {
+			readCtx, cancelRead := startFailureReadContext(ctx, operationCtx)
+			reported = m.coreReportedStartFailure(readCtx, process, spawnedAt)
+			cancelRead()
+		}
 		// 这个新 Core 多半从没服务过(它的控制 socket 就是没出现)—— 那就强杀,
 		// 别去敲一个不存在的 socket。**但版本对不上那一支不是**:那时 socket
 		// 已经在应答、TUN 已经开了,判据(cleanupCoreAfterFailedStart)会按
@@ -798,7 +832,7 @@ func (m *Manager) startUpdateCore(ctx context.Context, version string) (Process,
 			}, stopErr)
 			return Process{}, supervisor.RuntimeState{}, newUpdateError("core_ownership_uncertain")
 		}
-		return Process{}, supervisor.RuntimeState{}, newUpdateError("new_core_health_failed")
+		return Process{}, supervisor.RuntimeState{}, updateError{code: "new_core_health_failed", startFailure: reported}
 	}
 	return process, state, nil
 }
@@ -810,6 +844,9 @@ func (m *Manager) rollbackUpdate(
 	prepared PreparedUpdate,
 	barrierContext BarrierContext,
 	cause string,
+	// targetStartFailure 是新版 Core 自报的启动失败码(没有就空串),回滚成功时随结果
+	// 带出去(A3)。
+	targetStartFailure string,
 ) (UpdateResult, error) {
 	if err := m.saveUpdatePhase(transaction, PhaseRollingBack, safeUpdateCode(cause)); err != nil {
 		return m.failUpdate(*transaction, request, "update_journal_failed", false, false)
@@ -828,7 +865,10 @@ func (m *Manager) rollbackUpdate(
 	m.coreVersion = request.FromVersion
 	process, state, err := m.startUpdateCore(ctx, request.FromVersion)
 	if err != nil {
-		return m.failUpdate(*transaction, request, "previous_core_health_failed", false, false)
+		// **回滚也失败时,原因取旧版自己报的那一个**,不借新版的:用户此刻要知道的是
+		// 「为什么现在被拦住」,而那是旧版起不来的原因。它没说就不说(A3)。
+		result, failErr := m.failUpdate(*transaction, request, "previous_core_health_failed", false, false)
+		return result, withStartFailure(failErr, updateStartFailure(err))
 	}
 	if err := m.acceptHealthy(ctx, process, state, false); err != nil {
 		return m.failUpdate(*transaction, request, m.updateAcceptFailureCode("previous_core_accept_failed"), false, false)
@@ -845,6 +885,7 @@ func (m *Manager) rollbackUpdate(
 		return m.updateResult(request, PhaseNeedsAttention, false, true), newUpdateError("dns_verification_failed")
 	}
 	result := m.updateResult(request, PhaseRolledBack, false, true)
+	result.CoreStartFailure = targetStartFailure
 	if err := m.finishUpdate(transaction, prepared, PhaseRolledBack); err != nil {
 		return result, err
 	}

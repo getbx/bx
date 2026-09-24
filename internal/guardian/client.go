@@ -329,6 +329,8 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 type guardianFailureBody struct {
 	Error string `json:"error"`
 	Code  string `json:"code"`
+	// CoreStartFailure:升级时那个没起来的 Core 自报的启动失败码(A3),旧 Guardian 不发。
+	CoreStartFailure string `json:"core_start_failure"`
 }
 
 // guardianTroubleshootingHint names the Guardian log explicitly: `bx logs`
@@ -419,7 +421,10 @@ var guardianCodeHints = map[string]string{
 func guardianHTTPError(path string, statusCode int, body []byte) error {
 	var failure guardianFailureBody
 	_ = json.Unmarshal(body, &failure)
-	return &HTTPError{Message: guardianHTTPErrorMessage(path, statusCode, failure), Code: failure.Code}
+	return &HTTPError{
+		Message: guardianHTTPErrorMessage(path, statusCode, failure), Code: failure.Code,
+		CoreStartFailure: failure.CoreStartFailure,
+	}
 }
 
 // HTTPError 是一次 Guardian 失败应答的**结构化**形态。
@@ -436,9 +441,20 @@ type HTTPError struct {
 	// Code 是应答体里那个失败码。**空 = 这次没有码**(短路失败、旧 Guardian),
 	// 不是「码是空串」—— 消费方必须留一个「说不出是哪种」的分支。
 	Code string
+	// CoreStartFailure 是应答体里 core_start_failure 那个键(没有就空串)。
+	CoreStartFailure string
 }
 
 func (e *HTTPError) Error() string { return e.Message }
+
+// CoreStartFailure 从错误链上取出「那个没起来的 Core 自报的启动失败码」(A3),取不到空串。
+func CoreStartFailure(err error) string {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.CoreStartFailure
+	}
+	return ""
+}
 
 // FailureCode 从错误链上取出 Guardian 的失败码,取不到返回空串。
 func FailureCode(err error) string {

@@ -15,7 +15,6 @@
 
 | # | 问题 | 核过 | 判据在哪 | 估计 |
 |---|---|---|---|---|
-| A3 | **升级路径的健康失败不读 Core 起不来的记录**:`internal/guardian/update.go` 一处都没引用它,升级时 VPS 不通照样只说 `new_core_health_failed`。 | 09-23 | `internal/guardian/CLAUDE.md` Core 起不来 | 中:那条路的码空间是另一套,先定前缀与呈现 |
 
 ## B. 要你拍板:产品或安全上的取舍
 

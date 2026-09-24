@@ -34,6 +34,9 @@ struct UpdateResultJSON: Decodable, Equatable {
     let coreActivated: Bool
     let rolledBack: Bool
     let protectionState: String
+    /// 新版 Core 起不来时它自报的启动失败码(A3)。**缺席 = 没说**(旧 Guardian,或 Core
+    /// 什么都没写)—— 那时那句话退回原样,不编原因。
+    let coreStartFailure: String?
     enum CodingKeys: String, CodingKey {
         case fromVersion = "from_version"
         case toVersion = "to_version"
@@ -41,12 +44,13 @@ struct UpdateResultJSON: Decodable, Equatable {
         case coreActivated = "core_activated"
         case rolledBack = "rolled_back"
         case protectionState = "protection_state"
+        case coreStartFailure = "core_start_failure"
     }
 }
 
 enum UpdateOutcome: Equatable {
     case succeeded(to: String)
-    case rolledBack(from: String)
+    case rolledBack(from: String, reason: String?)
     case failed
 }
 
@@ -58,7 +62,7 @@ func parseUpdateOutcome(_ logData: Data) -> UpdateOutcome {
             continue
         }
         if result.rolledBack {
-            return .rolledBack(from: result.fromVersion)
+            return .rolledBack(from: result.fromVersion, reason: result.coreStartFailure)
         }
         if result.phase == "committed" {
             return .succeeded(to: result.toVersion)
@@ -72,6 +76,25 @@ let updateConfirmTitle = "Update bx?"
 let updateConfirmMessage = "Internet access may pause briefly. bx will reconnect automatically."
 let updateSucceededMessage = "bx is up to date"
 let updateRolledBackMessage = "Update couldn't be completed. Previous version restored."
+
+/// 回滚那句话按原因分三种(A3)。**隧道那一族**(与 Go 的 supervisor.IsTunnelStartFailureCode
+/// 同一组码,由 Go 侧守卫钉住)指向服务器或路径、**不是升级** —— 否则「VPS 刚好不通」
+/// 会被读成「这个版本有问题」;别的原因才说「新版本在这台 Mac 上起不来」;没说就原样。
+func updateRolledBackMessage(reason: String?) -> String {
+    guard let reason, !reason.isEmpty else { return updateRolledBackMessage }
+    if isTunnelStartFailure(reason) {
+        return "Update couldn't be completed: during the switch the new version could not bring up the tunnel. "
+            + "That points at your server or the path to it, not the update itself. "
+            + "Previous version restored — try updating again later."
+    }
+    return "Update couldn't be completed: the new version could not start on this Mac. Previous version restored."
+}
+
+/// 「隧道没起来」那一族。**码与 Go 那一份逐字相同**(TestMenuTunnelStartFailureCodesMatchGo 钉住)。
+func isTunnelStartFailure(_ code: String) -> Bool {
+    code == "tunnel_unreachable" || code == "tunnel_handshake_failed"
+        || code.hasPrefix("tunnel_unhealthy_undetermined")
+}
 
 /// 版本那一行显示什么。**有新版时这一行自己就把话说完**,颜色只做强化。
 ///

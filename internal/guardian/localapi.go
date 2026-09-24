@@ -576,6 +576,11 @@ func statusOf(controller Controller) Status {
 // reported, whereas LastError is shared long-term state.
 func failureResponseBody(before, after Status, err error) map[string]string {
 	body := map[string]string{"error": "guardian operation failed"}
+	// 升级时那个没起来的 Core 自报的原因(A3):只取白名单里的码,自由文本不出门。
+	// 失败码本身不变 —— 它挂在 code 旁边,旧客户端不认识这个键就照旧只读 code。
+	if reported := updateStartFailure(err); reported != "" && supervisor.IsStartFailureCode(reported) {
+		body["core_start_failure"] = reported
+	}
 	if code := failureCodeForError(err); code != "" {
 		body["code"] = code
 		return body
