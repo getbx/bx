@@ -1230,15 +1230,25 @@ func TestManagerPostForkCleanupHonorsAcceptedDeadlineAndLateProofClearsUncertain
 	env := newManagerTestEnv(t)
 	env.manager.runner = runner
 	env.manager.cleanupTimeout = 10 * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
-	defer cancel()
+	// **deadline 必须在 fork 之后到期**,这条测试守的是「fork 之后的清理跟着已接受的
+	// context 一起结束,不拖到 LaunchCleanupTimeout(200ms)」。此前用 WithTimeout(40ms)
+	// 拿挂钟去指定那一步,慢机器上它在更早的一步(查已有的 Core)就先到期了 ——
+	// 2026-09-24 CI 集成台红过一次,报的是 inspect existing Core 超时,与这条性质无关。
+	ctx := newExpiringOnDemandContext()
+	var expiredAt time.Time
+	operations.onStart = func() {
+		expiredAt = time.Now()
+		ctx.expire()
+	}
 
-	started := time.Now()
 	if err := env.manager.Up(ctx); !errors.Is(err, ErrProcessOwnershipUncertain) {
 		t.Fatalf("Up error = %v, want uncertain ownership", err)
 	}
-	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
-		t.Fatalf("post-fork cleanup exceeded accepted deadline: elapsed=%s", elapsed)
+	if expiredAt.IsZero() {
+		t.Fatal("Up 没有走到 fork —— 这条测试的前提不成立了")
+	}
+	if elapsed := time.Since(expiredAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("post-fork cleanup exceeded accepted deadline: elapsed since expiry=%s", elapsed)
 	}
 	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		t.Fatalf("accepted context error = %v, want deadline exceeded", ctx.Err())

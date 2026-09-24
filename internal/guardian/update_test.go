@@ -703,7 +703,10 @@ func TestManagerUpdateReservesDeadlineForTargetCleanup(t *testing.T) {
 // 意味着更新失败之后连回滚也失败,机器停在 Blocked。判据打在回滚拿到的预算上(确定性的),
 // 不打在「这次碰巧过没过」上。
 func TestManagerUpdateLeavesARealBudgetForTheRollback(t *testing.T) {
-	const total = 500 * time.Millisecond
+	// **2 秒,不是 500ms**:新分法给回滚约 (总预算 - 清理预留)/2 - 清理预留 ≈ 850ms,旧分法
+	// 只剩清理的零头(约 50ms)。阈值 total/5 = 400ms 离两边都远 —— 第一版用 500ms 时
+	// 新分法的设计值恰好就是 total/5,CI 慢机器上量到 79.7ms 就红了(2026-09-24)。
+	const total = 2 * time.Second
 	env := newUpdateTestEnv(t)
 	env.manager.cleanupTimeout = 100 * time.Millisecond
 	env.health.blockVersions = map[string]bool{"v2": true}
