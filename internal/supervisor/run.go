@@ -587,6 +587,8 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		log.Printf("multi-transport failover enabled: %d transports, main=%s", len(cfg.Transports), transportLabel(cfg.Transports[0]))
 	}
 	routes := &routeReadiness{}
+	// reinstallRoutes 由 OnControlReady 填上;工人在 Hijack 之后才用它(见那段)。
+	var reinstallRoutes func(context.Context, func() bool) error
 	mut := &liveMutator{
 		plat:         plat,
 		swap:         swapper,
@@ -830,6 +832,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			// (真机 2026-08-06→09-03,NAS 静默断一个月)。--no-hijack 下没有
 			// 旁路路由可跟随,不起。
 			OnControlReady: func(hooks controlHooks) {
+				// 就绪位自愈的入口先存下来,**工人在 Hijack 成功之后才起**(见下面
+				// routes-ready-repair 那段)—— 在这里起,它的停止就会排在还原路由之后。
+				reinstallRoutes = hooks.ReinstallRoutesIfNotReady
 				if opts.NoHijack {
 					return // 没有旁路路由可跟随、可修
 				}
@@ -893,6 +898,29 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			routes.set(false)
 			teardown()
 		})
+		// 路由就绪位自愈(routes_ready_repair.go):拆到一半失败的换路由会把就绪位
+		// 永久清成 false,此后路径恢复与升级都卡住直到 Core 重启。它重新完整装一遍,
+		// 就绪位只在真的装成功之后才回来。
+		//
+		// **顺序承重**:它在 Hijack 成功之后才起,停止那一步 push 在「restore default
+		// route」之后 ⇒ LIFO 下**先停**。否则正常关机时就绪位一被置假,这个循环会把
+		// 刚拆掉的劫持路由装回去。停止要**等循环真的退出**,不是只取消。
+		if reinstall := reinstallRoutes; reinstall != nil {
+			readyCtx, stopReady := context.WithCancel(ctx)
+			readyTicker := time.NewTicker(routesReadyCheckInterval)
+			readyDone := make(chan struct{})
+			workers.start(readyCtx, "routes-ready-repair", func(c context.Context) {
+				defer close(readyDone)
+				watchRoutesReady(c, routes.ready, func(c context.Context) error {
+					return reinstall(c, routes.ready)
+				}, readyTicker.C)
+			})
+			teardowns.push("stop routes-ready repair", func() {
+				readyTicker.Stop()
+				stopReady()
+				<-readyDone
+			})
+		}
 		log.Printf("%s", takeoverSummary(global, cfg.Mode, listsOverridden))
 	}
 

@@ -180,11 +180,14 @@ func TestRunWiresTheServerBypassRefollowLoop(t *testing.T) {
 			t.Fatalf("run.go 里找不到 %q —— 服务器旁路重跟随没有接线(或锚点改了,守卫读不懂现在的代码)", want)
 		}
 	}
+	// 对齐空格不算数:gofumpt 在结构体里加一个更长的字段名就会重排对齐,而这条
+	// 守卫要的是「接上了」,不是「对齐成几个空格」。
+	flat := strings.Join(strings.Fields(string(ctlSrc)), " ")
 	for _, want := range []string{
 		"RefollowServerBypass: cs.refollowServerBypass,",
-		"ReassertRoutes:       cs.reassertRoutes,",
+		"ReassertRoutes: cs.reassertRoutes,",
 	} {
-		if !strings.Contains(string(ctlSrc), want) {
+		if !strings.Contains(flat, want) {
 			t.Fatalf("control.go 里找不到 %q —— 后台循环拿不到控制面那把锁里的入口", want)
 		}
 	}
