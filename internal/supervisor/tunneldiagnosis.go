@@ -151,6 +151,11 @@ type tunnelDialFunc func(ctx context.Context, network, address string) (net.Conn
 // 判据只有这一份 —— 判别那边用它给结论分档,重试那边用它决定要不要不绑再试
 // 一次。两处各写一遍的话,一次「往表里加一个 errno」只会落到其中一处,而漏掉
 // 的那一处不会有任何东西转红。
+// DialFailedBeforeLeavingThisMachine 是 failedBeforeTheSYNLeft 的导出薄壳,给
+// `bx leakcheck` 的「绕过隧道」那条路用(同一个问题:这次失败是不是本机自己没把
+// 包发出去)。**判据仍只有下面那一份。**
+func DialFailedBeforeLeavingThisMachine(err error) bool { return failedBeforeTheSYNLeft(err) }
+
 func failedBeforeTheSYNLeft(err error) bool {
 	for _, localFailure := range dialFailuresBeforeTheSYNLeaves {
 		if errors.Is(err, localFailure) {

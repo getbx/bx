@@ -22,16 +22,13 @@
 | A6 | **「读不到配置」落进 `other`**(Core 起不来的分类里只有 `config.Parse` 失败挂了哨兵)。不许借 `config_unusable`:文件不在多半是「还没 setup」。 | — | `internal/guardian/CLAUDE.md` | 小 |
 | A7 | **菜单 LaunchAgent 经 `launchctl asuser` bootstrap 报 `EIO(5)`**,原先那条「残留 plist」的归因不完整。 | — | 根目录 CLAUDE.md 升级时 launchctl 的竞态 | 未知:先查 |
 | A8 | **按应用窗口每 5 秒重建会不会把滚动位置拉回顶部** —— 记档为「已知未修」,但没真机确认过是否发生。 | — | `internal/supervisor/CLAUDE.md` | 小,先验再修 |
+| A9 | **Linux 上 Core 起不来时说不出原因**:Core 已经会写 `/var/lib/bx/core-start-failure.json`,但 linux 走 systemd、不经 Guardian,没有人去读它。让 linux 的 `bx status`(Core 不在时)读同一份记录、用同一套措辞,不换架构。 | 09-23 | `internal/guardian/CLAUDE.md` Core 起不来 | 小-中 |
 
 ## B. 要你拍板:产品或安全上的取舍
 
 | # | 决定 | 为什么现在是这样 | 判据在哪 |
 |---|---|---|---|
 | B1 | **Apple Developer ID(年费账号)** | 一个决定同时解决两件事:首装的 Gatekeeper(ad-hoc 签名过不了,最大的一道坎),以及菜单免密开关的授权面(没有 Developer ID 就绑不了权利,**同一用户下任何进程都能静默开关 bx**,今天靠日志记 uid 缓解)。 | 根目录 CLAUDE.md 首装面;控制面那段 |
-| B2 | **`RoutesInstalled` 改成一次观测而不是一份记账** | 今天拆到一半失败的 rehijack 会把它永久清成 false(之后路径恢复验不过、升级做不了,直到 Core 重启)。根治的方向是放宽 fail-closed。 | `internal/supervisor/CLAUDE.md` |
-| B3 | **leakcheck 要不要做「绕过隧道」那一路**(`DefaultProbeBypass=false`) | 做了才说得出「直连不行、走隧道行」这类比较,代价是从物理网卡向 Anthropic/OpenAI/Google 暴露真实 IP。还缺一个绑物理网卡的拨号器。 | `internal/leakcheck/CLAUDE.md` |
-| B4 | **调谐环下一批执行权**(`stop_core`、重启卡住的 Core、解所有权锁存) | ③c 的 spec 明确列为不做:每一样都靠近双 Core 或「把调试进程杀掉」。 | `internal/guardian/CLAUDE.md` 调谐环 |
-| B5 | **Linux 的产品形态**:要不要让 Guardian 在 linux 上真的跑起来 | 门已开、每块都有 netns 背书,但生产 linux 仍是 systemd 直管 supervisor,没有调用方。`bx up` 的「说出 Core 为什么起不来」因此只在 darwin 生效。 | `internal/guardian/CLAUDE.md` 平台缝 |
 
 ## C. 等数据:判据写好了,门槛要真机跑一段才敢定
 
@@ -43,6 +40,13 @@
 | C4 | **Core 起不来的宽限余量 3 秒**够不够 | 日志 `guardian_core_start_failure_record_absent` 的 `waited=` |
 
 ## D. 知道、接受、暂不动
+
+- **调谐环不再加执行权**(原 B4,2026-09-23 所有者定):`stop_core` 最常见的触发是用户自己在跑的
+  `sudo bx run` 调试进程,重启卡住的 Core 与自动解所有权锁存都靠近「双 Core」这个最坏结局;没有
+  一次真实事故需要它们。**等真出现「Core 活着但卡死、没人管」的事故再议。**
+- **Linux 不改成走 Guardian**(原 B5,同日定):Guardian 的主要价值是给菜单栏 App 供状态与开关,
+  而 linux 上没有菜单;换架构要动 NAS、路由器这些无人值守设备的启动方式。linux 真正缺的那一样
+  (Core 起不来时说不出原因)作为 A9 单独修。
 
 - **Guardian 自己的日志没有轮转**:实测约 26.6 KB/天(约 10 MB/年),要修得在 daemon 启动路径上做 fd 手术,且无法不升级真机就验证。
 - **后台工人炸了只能翻日志**:`panickedNames()` 零生产调用方,不进 `bx status`。

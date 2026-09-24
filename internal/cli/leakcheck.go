@@ -24,6 +24,9 @@ func leakcheckFlags() []cli.Flag {
 		// 之本是「一个只想查自己 Mullvad 的人装完就能用」,那个人没要求 bx 去连
 		// Anthropic。默认开(披露在前),这个 flag 关掉它。
 		&cli.BoolFlag{Name: "no-reach", Usage: "skip the AI-site reachability probes (those four conclusions then honestly say they were not checked)"},
+		// **opt-in,所有者定的(known-gaps B3)。** 直连那条路从物理网卡发请求,四家
+		// AI 厂商会看到用户的真实 IP;一个检测工具不该在例行检查里悄悄做这件事。
+		&cli.BoolFlag{Name: "compare-direct", Usage: "also probe the AI sites directly from your physical network interface, bypassing any tunnel, to tell whether a failure is the tunnel's (those sites will see your real IP address; macOS only)"},
 	}
 }
 
@@ -63,6 +66,12 @@ func leakcheckAction(c *cli.Context) error {
 	// **披露与探测由同一个值驱动。** 拆成两个判据(一个看 flag、一个看 deps)
 	// 迟早会漂开,而漂开的两个方向分别是「探了没说」与「说了没探」—— 都是假话。
 	reachDeps := reachDepsFor(c.Bool("no-reach"))
+	if c.Bool("compare-direct") {
+		var err error
+		if reachDeps, err = withDirectComparison(ctx, reachDeps); err != nil {
+			return cli.Exit(err.Error(), 1)
+		}
+	}
 	announceReachTargets(reachDeps, c.Bool("json"))
 
 	// 本机事实那一半在起服务之前就采好,而且**从不下发给页面**:页面拿到的只有
@@ -249,7 +258,12 @@ func announceReachTargets(deps leakserve.ReachDeps, jsonOut bool) {
 	// —— 用户刚敲完那条命令,再打印一遍不带任何信息。它是 2026-09-14 真机首验
 	// 当场看出来的,而在那之前所有 review 都没抓到:守卫钉的是「说全了要联系谁」
 	// 与「不许印 markdown 星号」,没有一条钉「不许有多余的行」。
-	fmt.Fprintln(w, "bx is about to probe these addresses from this machine (over your current network path, without bypassing the tunnel):")
+	if deps.BypassDial != nil {
+		// **这一轮恰恰要绕过隧道** —— 沿用下面那句「不绕过隧道」就是一句假话。
+		fmt.Fprintln(w, "bx is about to probe these addresses from this machine twice: over your current network path, and again directly from your physical network interface, bypassing any tunnel. The direct probes show these sites your real IP address:")
+	} else {
+		fmt.Fprintln(w, "bx is about to probe these addresses from this machine (over your current network path, without bypassing the tunnel):")
+	}
 	for _, tgt := range leakcheck.ReachTargets() {
 		fmt.Fprintln(w, "  ·", tgt.URL)
 	}
@@ -264,6 +278,22 @@ func announceReachTargets(deps leakserve.ReachDeps, jsonOut bool) {
 	// 悄悄变假。同一句话的两半必须读同一个值。
 	fmt.Fprintf(w, "  This step takes about %.0f seconds at most; pass --no-reach if you do not want bx contacting them.\n",
 		leakserve.ReachBudgetFor(deps).Seconds())
+}
+
+// withDirectComparison 给这一轮加上直连那条路(`--compare-direct`)。
+//
+// 与 `--no-reach` 同时给是**矛盾指令**:一个说别联系,一个说再多联系一遍。报错而
+// 不是悄悄挑一个 —— 用户不会知道自己拿到的是哪一种(与 `--json` 配 `--qr` 同一条)。
+// 拿不到物理网卡(非 macOS)同样报错,不退回一条和当前路径一模一样的「直连」。
+func withDirectComparison(ctx context.Context, deps leakserve.ReachDeps) (leakserve.ReachDeps, error) {
+	if !deps.WillProbe() {
+		return deps, errors.New("--compare-direct and --no-reach contradict each other: one adds probes, the other turns them all off")
+	}
+	with, err := leakserve.WithBypass(ctx, deps)
+	if err != nil {
+		return deps, fmt.Errorf("--compare-direct: %w", err)
+	}
+	return with, nil
 }
 
 // reachDepsFor 按 --no-reach 决定这一轮用哪份拨号器。

@@ -250,9 +250,24 @@ sudo kill -9 <Core PID>
 - [ ] 畸形写法应被拒(空白、引号、URL、`a..b.com`)
 - [ ] 被更宽 proxy 规则盖住的 direct 规则应被拒,**且错误里点名挡路的那一行**
 
+### B8. AI 站可达性的直连对照(`--compare-direct`,2026-09-23)
+
+**会从物理网卡直接访问四个 AI 端点,那四家会看到你的真实 IP** —— 自己决定要不要跑。
+
+- [ ] `bx leakcheck --compare-direct`(不加 sudo):第一行应说「probe … twice … directly from your
+      physical network interface … show these sites your real IP address」,**在任何请求之前**。
+- [ ] 每条 AI 站结论末尾多一句对照(例如「It is reachable directly too.」或「… through your current
+      path but not directly …」)。**有一边是挑战页或没测成时不该有这句。**
+- [ ] 与 `--no-reach` 同时给应直接报错,一个请求都不发。
+
 ---
 
 ## C. 要等机会,不值得专门制造
+
+- [ ] **路由就绪位自愈**(2026-09-23):要一次**拆到一半才失败**的换路由才会触发,不值得专门制造。
+      真发生时 `bx.log` 应先出现 `routes_ready is false while bx is running`,最多 30 秒 ~ 5 分钟后
+      出现 `routes_ready: reinstalled the capture routes`,之后路径恢复与 `bx update` 不再因
+      「capture routes are not installed」失败。
 
 - [ ] **强制门户**:下次住酒店/在咖啡店连 Wi-Fi 时,看 bx 有没有给出那句
       「常常要 down/up」的提示,以及菜单里的 `Open Wi-Fi Sign-In Page` 按钮能不能

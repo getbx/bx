@@ -717,3 +717,47 @@ func TestNoReachTurnsOffTheProbesWithoutHidingTheConclusions(t *testing.T) {
 		t.Errorf("--no-reach 之下摘要没把四条都算进「没问出来」:\n%s", out)
 	}
 }
+
+// —— --compare-direct(known-gaps B3,2026-09-23)——
+//
+// 直连那条路会让四家 AI 厂商看到用户的**真实 IP**,所以它是 opt-in;而一旦要了,
+// **联网之前**那句披露必须说出这件事 —— 沿用「只说走当前路径、不绕过隧道」那句
+// 就成了假话。
+
+func TestCompareDirectIsAnOptInFlag(t *testing.T) {
+	found := false
+	for _, f := range leakcheckFlags() {
+		for _, n := range f.Names() {
+			if n == "compare-direct" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("bx leakcheck 没有 --compare-direct")
+	}
+}
+
+func TestCompareDirectCannotBeCombinedWithNoReach(t *testing.T) {
+	if _, err := withDirectComparison(context.Background(), reachDepsFor(true)); err == nil {
+		t.Fatal("--no-reach 与 --compare-direct 同时给,却没报错 —— 两个 flag 意思相反,悄悄挑一个用户不会知道拿到的是哪种")
+	}
+}
+
+func TestAnnouncementSaysTheDirectProbesExposeTheRealIP(t *testing.T) {
+	withDirect := leakserve.LiveReachDeps()
+	withDirect.BypassDial = func(context.Context, string, string) (net.Conn, error) { return nil, nil }
+	out := captureStdout(t, func() { announceReachTargets(withDirect, false) })
+	low := strings.ToLower(out)
+	if !strings.Contains(low, "real ip") || !strings.Contains(low, "physical network interface") {
+		t.Fatalf("要了直连对照,披露却没说会从物理网卡发、会暴露真实 IP:\n%s", out)
+	}
+	if strings.Contains(out, "without bypassing the tunnel") {
+		t.Fatalf("披露仍说「不绕过隧道」—— 这一轮恰恰要绕过:\n%s", out)
+	}
+	// 反面:默认那一轮不许提直连(少了这一条,「一律说会暴露真实 IP」也能满足上面)。
+	plain := captureStdout(t, func() { announceReachTargets(leakserve.LiveReachDeps(), false) })
+	if strings.Contains(strings.ToLower(plain), "real ip") {
+		t.Fatalf("没要直连对照,披露却说会暴露真实 IP:\n%s", plain)
+	}
+}
