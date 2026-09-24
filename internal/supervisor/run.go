@@ -1081,7 +1081,7 @@ func attachUDPCompanion(d *dialer.Dialer, udpTun *tunnel.Tunnel, label string) e
 		return fmt.Errorf("building the UDP socks proxy: %w", err)
 	}
 	d.SetUDPTransport(&dialer.Transport{Proxy: udpProxy, Healthy: udpTun.Healthy})
-	log.Printf("dedicated UDP transport attached: %s (UDP/QUIC uses it, TCP stays on the main transport; if it is unhealthy UDP fails closed without holding up the main tunnel)", label)
+	log.Printf("dedicated UDP transport attached: %s (UDP/QUIC uses it, TCP stays on the main transport; if it is unhealthy UDP falls back to the main transport, and is blocked only when the main transport is unhealthy too)", label)
 	return nil
 }
 

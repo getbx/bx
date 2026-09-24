@@ -455,16 +455,16 @@ func guardianHTTPErrorMessage(path string, statusCode int, failure guardianFailu
 		message += ": " + failure.Error
 	}
 	if failure.Code != "" {
-		message += fmt.Sprintf("(code=%s)", failure.Code)
+		message += fmt.Sprintf(" (code=%s)", failure.Code)
 	}
 	if statusCode == http.StatusInternalServerError {
 		// 专用指引在前、通用排查在后:前者是这一类失败的直接出路。
 		// 与通用指引一样只挂在 500 上(非 500 保持素净,见
 		// TestGuardianHTTPErrorNon500StaysPlain)。
 		if hint := guardianCodeHints[failure.Code]; hint != "" {
-			message += "。" + hint
+			message += ". " + hint
 		}
-		message += "。" + guardianTroubleshootingHint
+		message += ". " + guardianTroubleshootingHint
 	}
 	return message
 }

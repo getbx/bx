@@ -155,6 +155,11 @@ struct CoreStartFailureHintTests {
         expect(folded.currentHostPort == "203.0.113.92:443",
                "当前那台折错了:\(folded)")
         expect(folded.others == ["tokyo (203.0.113.123)"], "另一台折错了:\(folded.others)")
+        // 名字就是地址时只写一次(2026-09-24 真机上 CLI 那一侧写成了「<地址>(<同一个地址>)」)。
+        let sameName = coreStartFailureServers([
+            CoreStartFailureServer(name: "203.0.113.30", host: "203.0.113.30", port: 443, isCurrent: false),
+        ])
+        expect(sameName.others == ["203.0.113.30"], "名字就是地址时写了两遍:\(sameName.others)")
         let noPort = coreStartFailureServers([
             CoreStartFailureServer(name: "vps", host: "203.0.113.92", port: 0, isCurrent: true),
         ])

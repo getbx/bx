@@ -369,3 +369,17 @@ func TestOwnershipUncertainEscapeHintDescribesReVerification(t *testing.T) {
 		t.Errorf("daemon 侧提示没有点名 Guardian 日志: %q", ownershipUncertainEscapeHint)
 	}
 }
+
+// 2026-09-24 真机原文:「…returned 500: guardian operation failed(code=…)。To dig in: …」——
+// 一段英文里混着全角句号,括号前也没有空格。它是 bx up 失败时用户读到的第一句话。
+func TestGuardianHTTPErrorMessageUsesEnglishPunctuation(t *testing.T) {
+	msg := guardianHTTPErrorMessage("/v1/up", 500, guardianFailureBody{
+		Error: "guardian operation failed", Code: "core_tunnel_handshake_failed",
+	})
+	if strings.ContainsAny(msg, "。、") {
+		t.Fatalf("英文错误里混进了中文标点:%s", msg)
+	}
+	if !strings.Contains(msg, "guardian operation failed (code=core_tunnel_handshake_failed). To dig in:") {
+		t.Fatalf("标点不对:%s", msg)
+	}
+}

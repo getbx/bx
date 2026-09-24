@@ -214,6 +214,14 @@ bx explain <上面挑出来的那个域名>
       去 `bx.log` 找 `core_start_diagnosis_unbound_retry`:**有**这一行说明不绑网卡
       那次重试发生过而也在本机失败;**没有**说明绑网卡那次拿到的是服务器的答复。
 
+**2026-09-24 真机上自己触发了一次(不是造出来的),给你打勾参考**:`sudo bx up` 一次就给出
+`core_tunnel_handshake_failed` 那一档 ——「server <地址>:443 answers on its TCP port, but the tunnel
+did not come up inside the start window」,并点名了另一台服务器;没有出现 `core_ownership_uncertain`。
+Core 日志里对应的是 20 秒内几十次 REALITY 握手约 150ms 后被 `connection reset by peer`,判别拨号
+TCP 连得上 —— 与这句话说的一致。50 秒后重试成功。**这只覆盖五档里的一档**(handshake_failed);
+unreachable / udp_transport / local_dial / 笼统那档仍然没在真机上出现过。同一次暴露的三处措辞毛病
+(名字就是地址时写两遍、命令留着 `<name>` 占位符、英文里混中文标点)已修,需要升级后再看一眼。
+
 ### B3. 状态转换通知
 
 - [ ] `sudo bx down && sudo bx up` **不该弹通知**(那是你自己做的)
