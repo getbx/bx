@@ -201,6 +201,9 @@ Guardian 侧的线上字段(`single_server`、`measured`、`running`、`current_
   下标都要挪,挪错没有编译错误,只是右对齐落在错的列上);② **速率的 `nil` 与 0 是两件事**
   (第一次采样只立基线 = 不知道;压成 0 会显示成「闲着」);③ **搜索框必须在 `ensureWindow()`
   里创建一次**,长在每 5 秒被拆掉重填的树里,用户打两个字就连同焦点一起消失。
+- **环境刷新保住滚动位置**(与 Servers / Rules 同一个写法):显式打开与改搜索词从头开始,
+  5 秒一拍的刷新与陈旧提示保住位置(`TestMacMenuAppTrafficWindowKeepsScrollOnAmbientRefresh`;
+  2026-09-24 所有者真机确认过会被拽回顶部,当天修)。
 - 三组标题是 `Through the tunnel` / `Direct` / `Blocked`(`AppTrafficReport.sectionTitle`);
   同一个应用可以同时出现在多组(压成一行「混合」等于扔掉最有用的那一半)。不进菜单栏常驻。
 - **真机要看**:七列在默认宽度下的分配、图标取不到时那一格、搜索时三个分组标题还在不在、
