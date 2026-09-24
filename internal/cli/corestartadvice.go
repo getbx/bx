@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/getbx/bx/internal/elevate"
@@ -92,20 +93,20 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 			"That machine may be down or may have changed IP, or this machine's own network may be broken"+selfCheckSuffix(where),
 			// **这一族里最要紧的一条偏偏此前没给这句话** —— 事故那一次就是它,
 			// 而 `dial tcp <server>:443: i/o timeout` 那句原文只在 Core 日志里。
-			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
+			"Full reason: "+coreLogCommandForAdvice())
 	case bare == supervisor.StartFailureTunnelHandshakeFailed:
 		// 措辞与上面**相反**:那台机器活着,去修它是白费力气。
 		headline = "bx could not start: " + phrase(named, "server "+where+" answers on its TCP port", "your server answers") +
 			", but the tunnel did not come up inside the start window. "
 		steps = append(steps,
 			"That machine is alive — what to check is this link, the credentials, the SNI, or interference on the path, not whether that machine has stopped",
-			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
+			"Full reason: "+coreLogCommandForAdvice())
 	case bare == supervisor.StartFailureTunnelUndeterminedUDPTransport:
 		headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there — " +
 			"it runs a UDP transport (hysteria2/QUIC), which a single TCP dial cannot observe. "
 		steps = append(steps,
 			phrase(named, "To confirm that machine is alive, try ping or ssh: "+hostOf(where), "To confirm that machine is alive, try ping or ssh"),
-			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
+			"Full reason: "+coreLogCommandForAdvice())
 	case bare == supervisor.StartFailureTunnelUndeterminedLocalDial:
 		// **它指着 bx 自己的直连器,不指着 VPS。** 2026-08-13 那次事故的签名:
 		// DirectDialer 用 IP_BOUND_IF 绑物理网卡,而 IP_BOUND_IF 只查 scoped
@@ -125,18 +126,18 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 			// 那一种是服务器特有的,换一台确实有用。少了它,下面那句「你还配了
 			// 另一台」就与上面那句读起来自相矛盾,而两句各自都只对一半情形成立。
 			"if it does answer with a route, this machine most likely cannot resolve that server's hostname — and for that one, switching servers really does help",
-			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
+			"Full reason: "+coreLogCommandForAdvice())
 	case supervisor.IsTunnelUndeterminedCode(bare):
 		headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there (the diagnostic itself did not complete). "
 		steps = append(steps,
 			phrase(ncCheckable(where), "To check that server yourself: "+ncCommand(where), "start by checking the server link in your config"),
-			"Full reason: sudo tail -50 "+coreLogPathForAdvice())
+			"Full reason: "+coreLogCommandForAdvice())
 	default:
 		// 隧道之外的启动失败(配置 / 释放二进制 / 开 TUN / 劫持路由 / 认不出)。
 		// 换一台服务器对它们一点用都没有,所以**不给那句话**。
 		tunnelOutcome = false
 		headline = "bx could not start: " + nonTunnelStartFailureHeadline(bare)
-		steps = append(steps, "Full reason: sudo tail -50 "+coreLogPathForAdvice())
+		steps = append(steps, "Full reason: "+coreLogCommandForAdvice())
 	}
 
 	if tunnelOutcome && len(facts.Others) > 0 {
@@ -217,9 +218,20 @@ func portOf(hostPort string) string {
 	return ""
 }
 
-// coreLogPathForAdvice:细节照旧只进 Core 日志(它是给人读的、root-only),
+// coreLogCommandForAdvice:细节照旧只进 Core 日志(它是给人读的、root-only),
 // 而应答体只带码 —— 这条指引是两者之间唯一的桥。
-func coreLogPathForAdvice() string { return "/var/log/bx.log" }
+func coreLogCommandForAdvice() string { return coreLogCommandFor(runtime.GOOS) }
+
+// coreLogCommandFor:**Core 日志在哪儿因平台而异。** darwin 上 Guardian 把 Core 的
+// 输出写进 /var/log/bx.log;linux 上 Core 由 systemd 直管,输出进 journald ——
+// 在 linux 上说「sudo tail /var/log/bx.log」是把人派去看一个不存在的文件,而读到
+// 这句话的人正处在 bx 起不来的时刻。
+func coreLogCommandFor(goos string) string {
+	if goos == "linux" {
+		return "sudo journalctl -u bx.service -n 50 --no-pager"
+	}
+	return "sudo tail -50 /var/log/bx.log"
+}
 
 // readStartFailureServers 从配置里取那两样事实。
 //

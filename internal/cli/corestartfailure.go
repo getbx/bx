@@ -25,6 +25,13 @@ type startFailureWriter func(path string, record corestartfailure.Record) error
 // 只看得见「20 秒了 socket 还没出现」,于是用户拿到七次「系统里可能有第二个
 // Core」。这个包装是那条信息唯一的结构化出口。
 func runWithStartFailureRecord(path string, run func() error) error {
+	if path != "" {
+		// **记录只代表最近一次启动**(known-gaps A9)。linux 上 systemd 每 3 秒重启
+		// 一次、没有 Guardian 在 spawn 之前替它清;一次成功的启动之后旧记录还在,
+		// 之后任何一次 Core 不在的时刻都会读到一段过期的失败。清不掉不算失败 ——
+		// 这是诊断路径,不许把一次启动变成另一次故障。
+		_ = corestartfailure.Discard(path)
+	}
 	return recordStartFailure(path, run(), corestartfailure.Write)
 }
 

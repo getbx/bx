@@ -295,6 +295,14 @@ sudo kill -9 <Core PID>
 
 ## D. 非 macOS(没有机器,长期挂着)
 
+- [ ] **Linux 上 Core 起不来时 `bx status` 说出原因**(2026-09-23):升级一台 Linux 客户端后,
+      `bx update` 应打印「The service definition now records why the core fails to start…」,
+      `/etc/systemd/system/bx.service` 的 ExecStart 末尾多出 `--start-failure-file …`。
+      之后把服务器链接指到一个不通的地址、`sudo bx up`,几秒后 `sudo bx status` 应给出
+      「bx could not start: …」那段话(不是「bx is not running」),「Full reason」指向
+      `journalctl -u bx.service`;不加 sudo 应说「要 sudo bx status 才看得到原因」。
+      `sudo bx down` 之后 `bx status` 应回到普通的「not running」,**不许**再报那段失败。
+
 - [ ] **Windows 托盘 App 与 Inno 安装包**:代码完成、GUI 从未真机点过
       (`030-SJWJ-GSR-B` 那次验的是 CLI 与服务,不含托盘)。
 - [ ] **IPv6 在 darwin 上的 `-reject` 语法**、本地 errno 是否 EHOSTUNREACH。

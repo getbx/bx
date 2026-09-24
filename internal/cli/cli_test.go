@@ -2127,9 +2127,9 @@ func TestAppHidesLegacyAndDeveloperCommands(t *testing.T) {
 func TestBuildExecStart(t *testing.T) {
 	// Linux: 标准路径格式无引号
 	got := buildExecStartForGOOS("linux", "/usr/local/bin/bx", "/etc/bx/config.yaml")
-	want := "/usr/local/bin/bx run -c /etc/bx/config.yaml"
+	want := "/usr/local/bin/bx run -c /etc/bx/config.yaml --start-failure-file /var/lib/bx/core-start-failure.json"
 	if got != want {
-		t.Fatalf("Linux ExecStart 应跑 run, got %q", got)
+		t.Fatalf("Linux ExecStart 应跑 run 并带上写失败记录的 flag(known-gaps A9), got %q", got)
 	}
 
 	// darwin legacy: Guardian 可执行文件在 /usr/local/bin/bx

@@ -551,6 +551,44 @@ func ExecStartCmd() (string, error) {
 	}
 }
 
+// UpgradeUnitExecStart 给已装好的 linux 客户端 unit 补上 `--flag value`(已有就不动),
+// 只改 ExecStart 那一行,然后 daemon-reload。**不重启服务** —— 下次服务启动时生效
+// (与 bx update「绝不为了加载新二进制而结束保护」同一条)。非 linux、没装 unit 时
+// 什么都不做。返回有没有真的改。
+func UpgradeUnitExecStart(flag, value string) (bool, error) {
+	if runtime.GOOS != "linux" || !UnitInstalled() {
+		return false, nil
+	}
+	b, err := os.ReadFile(unitPath)
+	if err != nil {
+		return false, err
+	}
+	next, changed := upgradeExecStartLine(string(b), flag, value)
+	if !changed {
+		return false, nil
+	}
+	return true, writeUnitFile(unitPath, next)
+}
+
+// upgradeExecStartLine 是上面那一步的纯判据。**只碰子命令是 `run` 的那一行**:
+// 旧 unit 的 ExecStart 写的是 `bx up`(配新二进制会递归),那一种由 bx up 自己
+// 报错让用户重装,这里不替它补。
+func upgradeExecStartLine(unitText, flag, value string) (string, bool) {
+	lines := strings.Split(unitText, "\n")
+	for i, line := range lines {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "ExecStart=")
+		if !ok {
+			continue
+		}
+		if strings.Contains(rest, "--"+flag) || serviceSubcommand(rest) != "run" {
+			return unitText, false
+		}
+		lines[i] = "ExecStart=" + rest + " --" + flag + " " + value
+		return strings.Join(lines, "\n"), true
+	}
+	return unitText, false
+}
+
 // execStartCmd 从 unit 文本里取出 ExecStart 的子命令(二进制路径后的第一个参数)。
 // 例:"ExecStart=/usr/local/bin/bx run -c /etc/bx/config.yaml" → "run"。
 // 没有 ExecStart 或其后无子命令则返回 ""。
