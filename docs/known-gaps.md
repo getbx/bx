@@ -22,7 +22,6 @@
 | A6 | **「读不到配置」落进 `other`**(Core 起不来的分类里只有 `config.Parse` 失败挂了哨兵)。不许借 `config_unusable`:文件不在多半是「还没 setup」。 | — | `internal/guardian/CLAUDE.md` | 小 |
 | A7 | **菜单 LaunchAgent 经 `launchctl asuser` bootstrap 报 `EIO(5)`**,原先那条「残留 plist」的归因不完整。 | — | 根目录 CLAUDE.md 升级时 launchctl 的竞态 | 未知:先查 |
 | A8 | **按应用窗口每 5 秒重建会不会把滚动位置拉回顶部** —— 记档为「已知未修」,但没真机确认过是否发生。 | — | `internal/supervisor/CLAUDE.md` | 小,先验再修 |
-| A9 | **Linux 上 Core 起不来时说不出原因**:Core 已经会写 `/var/lib/bx/core-start-failure.json`,但 linux 走 systemd、不经 Guardian,没有人去读它。让 linux 的 `bx status`(Core 不在时)读同一份记录、用同一套措辞,不换架构。 | 09-23 | `internal/guardian/CLAUDE.md` Core 起不来 | 小-中 |
 
 ## B. 要你拍板:产品或安全上的取舍
 
@@ -46,7 +45,7 @@
   一次真实事故需要它们。**等真出现「Core 活着但卡死、没人管」的事故再议。**
 - **Linux 不改成走 Guardian**(原 B5,同日定):Guardian 的主要价值是给菜单栏 App 供状态与开关,
   而 linux 上没有菜单;换架构要动 NAS、路由器这些无人值守设备的启动方式。linux 真正缺的那一样
-  (Core 起不来时说不出原因)作为 A9 单独修。
+  (Core 起不来时说不出原因)已作为 A9 单独修掉(2026-09-23)。
 
 - **Guardian 自己的日志没有轮转**:实测约 26.6 KB/天(约 10 MB/年),要修得在 daemon 启动路径上做 fd 手术,且无法不升级真机就验证。
 - **后台工人炸了只能翻日志**:`panickedNames()` 零生产调用方,不进 `bx status`。

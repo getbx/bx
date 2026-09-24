@@ -21,6 +21,7 @@ import (
 
 	"github.com/getbx/bx/internal/elevate"
 
+	"github.com/getbx/bx/internal/corestartfailure"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	updatepkg "github.com/getbx/bx/internal/update"
@@ -448,6 +449,14 @@ func updateAction(c *cli.Context) error {
 		return fmt.Errorf("replacing the binary %s: %w", dst, err)
 	}
 	fmt.Printf("✅ Updated to %s (%s)\n", latest, dst)
+	// 老 linux 机器的 unit 写于「Core 起不来时自报原因」之前,只有 bx setup 会写 unit,
+	// 而那些机器不会再跑 setup(known-gaps A9)。补上那个 flag,不重启 —— 下次服务
+	// 启动时生效。补不上只提一句:这是诊断能力,不许让一次升级失败。
+	if changed, err := install.UpgradeUnitExecStart(corestartfailure.FlagName, corestartfailure.DefaultPath); err != nil {
+		fmt.Printf("  (could not update the service definition so that bx status can tell why it fails to start: %v)\n", err)
+	} else if changed {
+		fmt.Println("  The service definition now records why the core fails to start, so bx status can say it (takes effect the next time the service starts).")
+	}
 
 	// 绝不为了加载新二进制而重启服务。守护进程退出会撤销路由/TUN,在真正
 	// 的进程交接实现前,保留当前受保护会话比"立刻生效"更重要。

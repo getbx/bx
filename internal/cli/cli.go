@@ -4037,6 +4037,14 @@ func statusAction(c *cli.Context) error {
 		if c.Bool("json") {
 			return err // 机器面:不变(返回错误)
 		}
+		// linux 上 Core 由 systemd 直管:服务要跑却起不来时,说出 Core 自报的原因
+		// (known-gaps A9),不说那句「没在跑、去启动它」—— 那时它正在反复重启。
+		if runtime.GOOS == "linux" {
+			if note := liveLinuxStartFailureNote(defaultConfigPath); note != "" {
+				fmt.Print(strings.TrimRight(note, "\n") + "\n")
+				return nil
+			}
+		}
 		fmt.Print(stats.RenderNotRunning()) // 人面:友好 + exit 0
 		return nil
 	}
@@ -5594,7 +5602,9 @@ func buildExecStartWith(goos, bin, configPath, guardianExecutable string) string
 		// 必须加引号,交 install.commandLineFields 按引号拆回 exepath+args。
 		return fmt.Sprintf(`"%s" run -c "%s"`, bin, configPath)
 	default:
-		return fmt.Sprintf("%s run -c %s", bin, configPath)
+		// **带上写失败记录的 flag**(known-gaps A9):linux 上 Core 由 systemd 直管、
+		// 不经 Guardian,起不来时那一个码只能由 Core 自己落盘,`bx status` 再去读。
+		return fmt.Sprintf("%s run -c %s --%s %s", bin, configPath, corestartfailure.FlagName, corestartfailure.DefaultPath)
 	}
 }
 

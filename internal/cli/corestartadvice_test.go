@@ -358,7 +358,7 @@ func TestEveryOutcomeSaysWhereTheFullReasonIs(t *testing.T) {
 	facts := startFailureServers{CurrentHostPort: "203.0.113.92:443"}
 	for _, code := range coreStartFailureCodes() {
 		text := coreStartFailureAdvice(code, facts)
-		if !strings.Contains(text, coreLogPathForAdvice()) {
+		if !strings.Contains(text, coreLogCommandForAdvice()) {
 			t.Errorf("%s 没告诉用户完整原因在哪儿:\n%s\n"+
 				"—— 应答体只有一个码,那句真正的原因只在 root-only 的 Core 日志里", code, text)
 		}
