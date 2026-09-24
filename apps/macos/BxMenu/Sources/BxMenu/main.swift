@@ -1585,7 +1585,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             title: "Add Server",
             hint: "Paste the bx link for the new server. It will be added to your list and used right away.",
             confirmTitle: "Add and Switch",
-            udpHint: udpFieldHint(replacing: false)
+            udpHint: udpFieldHint(replacing: false),
+            offersClearUDP: false
         ) else { return }
         let name = promptForServerName()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1683,16 +1684,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refuseServerEditWithoutTheCapability(title: "Could not replace that link")
             return
         }
+        // 「去掉 UDP 链接」那个勾选框只在 Guardian 认得 clear_udp 时才画(旧 Guardian 会
+        // 默默忽略它、回一个「成功」而 UDP 还在)。提示那句话读同一个判据。
+        let canClearUDP = serverUDPClearingAvailable(capabilities: maintenanceReport?.capabilities)
         guard let links = promptForServerLinks(
             title: "Replace Link",
             hint: "Paste the new bx link for \(name). Nothing else about this server changes, "
                 + "and your exit stays where it is.",
             confirmTitle: "Replace",
-            udpHint: udpFieldHint(replacing: true)
+            udpHint: udpFieldHint(replacing: true, canClear: canClearUDP),
+            offersClearUDP: canClearUDP
         ) else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result {
-                try GuardianClient().replaceServerLink(name: name, link: links.link, udp: links.udp)
+                try GuardianClient().replaceServerLink(name: name, link: links.link, udp: links.udp,
+                                                       clearUDP: links.clearUDP)
             }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -1780,8 +1786,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 「这台没有 UDP 链接」,replace 是「保持它原来那条」—— 菜单今天清不掉一条
     /// UDP 链接,把它写成「留空 = 删掉」就是一句后果静默的假话。
     private func promptForServerLinks(
-        title: String, hint: String, confirmTitle: String, udpHint: String
-    ) -> (link: String, udp: String)? {
+        title: String, hint: String, confirmTitle: String, udpHint: String, offersClearUDP: Bool
+    ) -> (link: String, udp: String, clearUDP: Bool)? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = hint
@@ -1803,11 +1809,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         udpNote.lineBreakMode = .byWordWrapping
         udpNote.preferredMaxLayoutWidth = 420
 
-        let box = NSStackView(views: [field, udpField, udpNote])
+        var views: [NSView] = [field, udpField, udpNote]
+        // 只在 Guardian 认得 clear_udp 时才有这个勾选框(调用方按能力声明决定)。
+        let clearBox = NSButton(checkboxWithTitle: "Remove this server's UDP link", target: nil, action: nil)
+        if offersClearUDP { views.append(clearBox) }
+        let box = NSStackView(views: views)
         box.orientation = .vertical
         box.alignment = .leading
         box.spacing = 6
-        box.frame = NSRect(x: 0, y: 0, width: 420, height: 92)
+        box.frame = NSRect(x: 0, y: 0, width: 420, height: offersClearUDP ? 120 : 92)
         alert.accessoryView = box
         NSApp.activate(ignoringOtherApps: true)
 
@@ -1828,7 +1838,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showMessage("UDP Link Not Recognized", "Paste a bx link, or leave the second box empty.")
             return nil
         }
-        return (link, udp)
+        let clearUDP = offersClearUDP && clearBox.state == .on
+        // 勾了「去掉」又填了一条新的:两句相反的话,不替用户挑(Guardian 那一侧同样拒)。
+        guard !(clearUDP && !udp.isEmpty) else {
+            showMessage("Two Answers for UDP",
+                        "Either paste a new UDP link or tick the box to remove it — not both.")
+            return nil
+        }
+        return (link, udp, clearUDP)
     }
 
     /// 名字可空:空就让 Guardian 按链接推导。

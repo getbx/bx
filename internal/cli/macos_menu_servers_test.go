@@ -1504,7 +1504,8 @@ func TestMacMenuReplaceLinkNeverReconnectsOnItsOwn(t *testing.T) {
 	if !ok {
 		t.Fatal("读不出 replaceServerLinkFromWindow 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	if !strings.Contains(body, "udpHint: udpFieldHint(replacing: true)") {
+	// 2026-09-24 起多带一个 canClear(能不能显式去掉由能力门控);要紧的仍是 replacing: true。
+	if !strings.Contains(body, "udpHint: udpFieldHint(replacing: true, canClear: canClearUDP)") {
 		t.Error("替换表单没有按自己那条路取 UDP 提示 —— " +
 			"服务端对空 UDP 是「保持原样」,说成「留空 = 删掉」是一句后果静默的假话")
 	}

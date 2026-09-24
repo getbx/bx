@@ -234,6 +234,13 @@ const CapabilityServers = "servers"
 // 而代价已经付掉了。
 const CapabilityServersEdit = "servers_edit"
 
+// CapabilityServersClearUDP 表示 POST /v1/servers 的 replace 认得 `clear_udp`(显式去掉
+// 一台服务器的 UDP 链接,known-gaps A5)。
+//
+// **必须单独声明**:旧 Guardian 会默默忽略它不认识的字段,把空 udp 照旧读成「保持不变」,
+// 然后回 200 —— 菜单会说「已去掉」而 UDP 链接还在。能力缺席时菜单不画那个勾选框。
+const CapabilityServersClearUDP = "servers_clear_udp"
+
 // CapabilityApps 表示这一版 Guardian 提供 /v1/apps(应用流量归因报告)。
 // **键缺席 = 旧版 Guardian**,与 CapabilityRules/CapabilityServers 同一机制:
 // 菜单据此决定要不要画出这个功能入口,否则用户对着一个每次点都失败的按钮。
@@ -263,7 +270,7 @@ type MaintenanceHoldStatus struct {
 // 每次调用都返回新切片:它会被塞进 Status 交给 JSON 编码,共享一份底层数组等于
 // 把一个包级可变状态发布出去。
 func GuardianCapabilities() []string {
-	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityServersEdit, CapabilityStatusWatch, CapabilityApps, CapabilityLogs, CapabilityDoctor}
+	return []string{CapabilityDiagnosticsArchive, CapabilityReconcileReport, CapabilityMaintenanceHold, CapabilityRules, CapabilityServers, CapabilityServersEdit, CapabilityServersClearUDP, CapabilityStatusWatch, CapabilityApps, CapabilityLogs, CapabilityDoctor}
 }
 
 // ReconcileReport 是调谐环**最近一轮**的判断与执行结果,随 Status 一起发布。

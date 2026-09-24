@@ -16,7 +16,6 @@
 | # | 问题 | 核过 | 判据在哪 | 估计 |
 |---|---|---|---|---|
 | A3 | **升级路径的健康失败不读 Core 起不来的记录**:`internal/guardian/update.go` 一处都没引用它,升级时 VPS 不通照样只说 `new_core_health_failed`。 | 09-23 | `internal/guardian/CLAUDE.md` Core 起不来 | 中:那条路的码空间是另一套,先定前缀与呈现 |
-| A5 | **`replace` 清不掉服务器的 UDP 链接**:Guardian 把空 `udp` 读作「保持不变」(刻意的,防止顺手抹掉)。界面已如实说「留空 = 保持」,但用户没有办法真的去掉它。 | 09-23 | `apps/macos/BxMenu/CLAUDE.md` Servers 窗口 | 小-中:需要一个显式的「清除」语义,不能复用空串 |
 
 ## B. 要你拍板:产品或安全上的取舍
 

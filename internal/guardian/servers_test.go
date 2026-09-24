@@ -2086,3 +2086,64 @@ func TestAServerListDoesNotShipCurrentServerRunning(t *testing.T) {
 		t.Fatalf("有清单时也发了 current_server_running:%s", w.Body.String())
 	}
 }
+
+// —— 清掉一台服务器的 UDP 链接(known-gaps A5,2026-09-24)——
+//
+// replace 把空 udp 读作「保持不变」(刻意的:只换主链接的人不该顺手抹掉 UDP)。代价是
+// 用户没有任何办法真的去掉它。显式的 clear_udp 才去掉;它与一条非空 udp 同时出现是
+// 矛盾指令,拒绝而不是悄悄挑一个。
+func TestServerReplaceClearsTheUDPLinkOnlyWhenAskedExplicitly(t *testing.T) {
+	path := serversTestConfig(t)
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "replace", Name: "osaka", ClearUDP: true,
+		Link: "vless://" + serversTestUUID + "@203.0.113.99:8443?security=reality",
+	}), 501, true))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d:%s", w.Code, w.Body.String())
+	}
+	list, _, err := setup.ListServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list[1].UDP != "" {
+		t.Fatalf("要求清掉 UDP,osaka 的 UDP 仍是 %q", list[1].UDP)
+	}
+	if list[0].UDP != "" && !strings.Contains(list[0].UDP, "hysteria2://") {
+		t.Fatalf("别的服务器被连带改了:%+v", list[0])
+	}
+}
+
+func TestServerReplaceRejectsClearUDPTogetherWithANewUDPLink(t *testing.T) {
+	path := serversTestConfig(t)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	serversHandler(path, 501, noSwitch(t), nil, nil)(w, withPeer(postServersJSON(t, serversRequest{
+		Action: "replace", Name: "osaka", ClearUDP: true,
+		Link: "vless://" + serversTestUUID + "@203.0.113.99:8443?security=reality",
+		UDP:  "hysteria2://pw@203.0.113.99:8443",
+	}), 501, true))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("clear_udp 与新的 udp 同时给,状态码 = %d,want 400:%s", w.Code, w.Body.String())
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != string(before) {
+		t.Fatal("矛盾指令被拒,配置却被改了")
+	}
+}
+
+// 旧 Guardian 会默默忽略 clear_udp、回一个「成功」而 UDP 还在 —— 菜单只能靠能力门控。
+func TestServersClearUDPCapabilityIsDeclared(t *testing.T) {
+	if CapabilityServersClearUDP != "servers_clear_udp" {
+		t.Fatalf("能力值改了(%q)—— 菜单按字面量门控,改了它清除 UDP 的勾选框就永远画不出来", CapabilityServersClearUDP)
+	}
+	for _, c := range GuardianCapabilities() {
+		if c == CapabilityServersClearUDP {
+			return
+		}
+	}
+	t.Fatal("GuardianCapabilities 没有声明 servers_clear_udp")
+}
