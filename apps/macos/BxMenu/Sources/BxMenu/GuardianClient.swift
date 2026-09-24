@@ -53,7 +53,7 @@ enum GuardianEndpoint {
     ///
     /// `udp` 空 = **保持这台原来那条 UDP 链接不变**(服务端刻意如此,见
     /// `udpFieldHint`)—— 不是「删掉它」。
-    case replaceServer(name: String, link: String, udp: String)
+    case replaceServer(name: String, link: String, udp: String, clearUDP: Bool)
     /// 长轮询:Guardian 在自己的代际号与 generation 不同时立刻应答,相同则挂住。
     case statusWatch(generation: UInt64)
     /// 一份应用流量归因报告。**这一次拉取同时给 Core 的采集订阅续期**(30 秒
@@ -318,8 +318,11 @@ struct GuardianClient {
     /// 就地换掉同名那台的链接。**调用前必须过 `serverEditingAvailable`。**
     /// `udp` 空 = 保持原样(见 `udpFieldHint`)。
     @discardableResult
-    func replaceServerLink(name: String, link: String, udp: String = "") throws -> ServerList {
-        try perform(endpoint: .replaceServer(name: name, link: link, udp: udp), as: ServerList.self)
+    /// `clearUDP` 显式去掉这一台的 UDP 链接 —— **调用前必须过
+    /// `serverUDPClearingAvailable`**(旧 Guardian 会默默忽略它、回一个「成功」)。
+    func replaceServerLink(name: String, link: String, udp: String = "", clearUDP: Bool = false) throws -> ServerList {
+        try perform(endpoint: .replaceServer(name: name, link: link, udp: udp, clearUDP: clearUDP),
+                    as: ServerList.self)
     }
 
     /// 长轮询一次。**只有 `watchIsAvailable(capabilities:)` 判定这一版 Guardian
@@ -509,11 +512,10 @@ private func guardianRequest(for endpoint: GuardianEndpoint) -> Data {
         // 是 JSON 解码失败 ⇒ 400,fail-closed。
         body = (try? JSONSerialization.data(withJSONObject: ["action": "remove", "name": name]))
             ?? Data()
-    case let .replaceServer(name, link, udp):
+    case let .replaceServer(name, link, udp, clearUDP):
         method = "POST"
         path = "/v1/servers"
-        var payload: [String: String] = ["action": "replace", "name": name, "link": link]
-        if !udp.isEmpty { payload["udp"] = udp }
+        let payload = replaceServerPayload(name: name, link: link, udp: udp, clearUDP: clearUDP)
         // 兜底同 removeServer:`{}` 会落进「换到 Name 那一台」的兼容分支。
         body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
     case let .statusWatch(generation):
@@ -824,3 +826,4 @@ private func isGuardianHeaderTokenByte(_ byte: UInt8) -> Bool {
         return false
     }
 }
+

@@ -140,6 +140,11 @@ type serversRequest struct {
 	Name   string `json:"name"`
 	Link   string `json:"link,omitempty"`
 	UDP    string `json:"udp,omitempty"`
+	// ClearUDP 只对 replace 有意义:**显式**去掉这一台的 UDP 链接。空 UDP 在 replace
+	// 里读作「保持不变」(只换主链接的人不该顺手抹掉 UDP),于是「真的去掉」需要一句
+	// 单独的话(known-gaps A5)。与非空 UDP 同时出现是矛盾指令,拒绝。
+	// 旧 Guardian 会默默忽略它 —— 客户端靠 CapabilityServersClearUDP 门控。
+	ClearUDP bool `json:"clear_udp,omitempty"`
 }
 
 type switchResponse struct {
@@ -742,7 +747,7 @@ func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath str
 	link := strings.TrimSpace(req.Link)
 	udp := strings.TrimSpace(req.UDP)
 	// 链接不写进日志 —— 它就是凭据。
-	log.Printf("guardian_server_replace_requested name=%q uid=%d has_udp=%t", name, uid, udp != "")
+	log.Printf("guardian_server_replace_requested name=%q uid=%d has_udp=%t clear_udp=%t", name, uid, udp != "", req.ClearUDP)
 	if name == "" || link == "" {
 		log.Printf("guardian_server_replace_failed reason=bad_request name=%q", name)
 		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_bad_request"})
@@ -788,7 +793,13 @@ func replaceServerLink(w http.ResponseWriter, req serversRequest, configPath str
 			return
 		}
 	}
-	if udp == "" {
+	if req.ClearUDP && udp != "" {
+		// 一句说「去掉」、一句说「换成这条」:悄悄挑一个,用户不会知道自己拿到的是哪种。
+		log.Printf("guardian_server_replace_rejected reason=clear_udp_with_udp name=%q", target.Name)
+		writeGuardianJSON(w, http.StatusBadRequest, map[string]string{"code": "servers_bad_request"})
+		return
+	}
+	if udp == "" && !req.ClearUDP {
 		// **没让它改的东西不许被顺手抹掉。** 空 UDP 在底下那个原语里是「删掉
 		// udp: 这一行」,而 UDP 传输一旦消失就**静默**回落到主传输 —— 没有任何
 		// 一处会报错,而用户以为自己只换了一条链接。

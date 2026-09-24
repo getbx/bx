@@ -223,6 +223,15 @@ TCP 连得上 —— 与这句话说的一致。50 秒后重试成功。**这只
 unreachable / udp_transport / local_dial / 笼统那档仍然没在真机上出现过。同一次暴露的三处措辞毛病
 (名字就是地址时写两遍、命令留着 `<name>` 占位符、英文里混中文标点)已修,需要升级后再看一眼。
 
+### B9. Replace Link 去掉 UDP 链接(2026-09-24)
+
+Servers 窗口 → 某台带 UDP 链接的服务器的 `⋯` → `Replace Link…`:
+
+- [ ] 表单里有「Remove this server's UDP link」勾选框,UDP 框下的提示说「留空 = 保持,
+      勾选 = 去掉」。**需要先升级 Guardian**;旧 Guardian 上不该出现这个勾选框。
+- [ ] 勾上、主链接照旧粘贴 → 确认后 `/etc/bx/config.yaml` 里那一台的 `udp:` 行没了。
+- [ ] 勾上又填了一条 UDP → 应弹「Two Answers for UDP」,配置一个字节不变。
+
 ### B3. 状态转换通知
 
 - [ ] `sudo bx down && sudo bx up` **不该弹通知**(那是你自己做的)

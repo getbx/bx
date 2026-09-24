@@ -188,7 +188,11 @@ Guardian 侧的线上字段(`single_server`、`measured`、`running`、`current_
   主机比好的 `currentServerRunning`(`serverTrafficState` 对空名字走这一支,门仍是
   `answeringCore`);**不画 `⋯`**(`panel.editable`,两个动词按名字改清单,这台没有条目)。
   快照 `servers-single` 盖着这个画面。
-- **已知缺口**:`replace` 清不掉 UDP 链接(界面已明说「留空 = 保持」)。
+- **Replace Link 能显式去掉 UDP 链接**(2026-09-24):留空仍是「保持不变」,去掉要勾
+  「Remove this server's UDP link」—— 勾选框**只在 Guardian 声明 `servers_clear_udp` 时才画**
+  (旧 Guardian 会默默忽略 `clear_udp` 而回「成功」),提示那句话读同一个判据
+  (`serverUDPClearingAvailable`、`udpFieldHint(replacing:canClear:)`);勾了又填了新 UDP 是
+  矛盾指令,表单先拦、Guardian 也拒。请求体由纯函数 `replaceServerPayload` 组。
 
 ## 按应用窗口(Traffic by App,真机未验)
 

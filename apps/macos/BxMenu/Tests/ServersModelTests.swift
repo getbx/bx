@@ -1031,7 +1031,33 @@ struct ServersModelTests {
                "没说这个框是可选的")
     }
 
+    // —— 去掉一台服务器的 UDP 链接(known-gaps A5)——
+    static func testClearingUDPIsGatedAndSaidHonestly() {
+        expect(!serverUDPClearingAvailable(capabilities: nil), "旧 Guardian(没声明过能力)也画了勾选框")
+        expect(!serverUDPClearingAvailable(capabilities: ["servers", "servers_edit"]),
+               "只声明 servers_edit 的 Guardian 会忽略 clear_udp —— 不许画勾选框")
+        expect(serverUDPClearingAvailable(capabilities: ["servers_edit", "servers_clear_udp"]),
+               "声明了 servers_clear_udp 却不画勾选框")
+        let can = udpFieldHint(replacing: true, canClear: true)
+        let cannot = udpFieldHint(replacing: true, canClear: false)
+        expect(can.lowercased().contains("remove"), "能清却没说怎么清:\(can)")
+        expect(cannot.lowercased().contains("cannot"), "清不掉却没说:\(cannot)")
+        expect(can.lowercased().contains("keep") && cannot.lowercased().contains("keep"),
+               "没说留空是保持不变")
+    }
+
+    static func testReplacePayloadCarriesClearUDPOnlyWhenAsked() {
+        let clear = replaceServerPayload(name: "osaka", link: "bx://x", udp: "", clearUDP: true)
+        expect(clear["clear_udp"] as? Bool == true, "勾了去掉,请求里却没有 clear_udp")
+        expect(clear["udp"] == nil, "去掉 UDP 的请求里还带着一条 udp")
+        let keep = replaceServerPayload(name: "osaka", link: "bx://x", udp: "", clearUDP: false)
+        expect(keep["clear_udp"] == nil, "没勾去掉,请求里却带了 clear_udp —— 会把用户的 UDP 链接抹掉")
+        expect(keep["action"] as? String == "replace", "action 不是 replace:\(keep)")
+    }
+
     static func main() {
+        testClearingUDPIsGatedAndSaidHonestly()
+        testReplacePayloadCarriesClearUDPOnlyWhenAsked()
         testServerListDecodesWhatGuardianSends()
         testSingleServerConfigStillShowsTheCurrentServer()
         testSingleServerConfigSaysWhenCoreRunsSomethingElse()

@@ -735,11 +735,23 @@ func replaceLinkFollowUp(name: String, isCurrent: Bool) -> ReplaceLinkFollowUp {
 /// 一处会报错)。也就是说**这个菜单今天清不掉一条 UDP 链接** —— 那要 Guardian
 /// 侧另加一个显式的「清空」意图,超出这一轮的范围。把它写成「留空 = 没有 UDP」
 /// 就是一句用户当场验不出、而后果是静默的假话。
-func udpFieldHint(replacing: Bool) -> String {
-    replacing
-        ? "Optional. Leave it empty to keep the UDP link this server already has — "
-            + "the menu cannot clear one."
-        : "Optional. A second link for UDP/QUIC traffic, if your server has one."
+func udpFieldHint(replacing: Bool, canClear: Bool = false) -> String {
+    guard replacing else { return "Optional. A second link for UDP/QUIC traffic, if your server has one." }
+    // 能不能清掉由能力门控决定(`serverUDPClearingAvailable`);说「可以清」而清不掉,
+    // 或者说「清不掉」而其实可以,都是这句话在撒谎。
+    return canClear
+        ? "Optional. Leave it empty to keep the UDP link this server already has, "
+            + "or tick the box below to remove it."
+        : "Optional. Leave it empty to keep the UDP link this server already has — "
+            + "this version of bx cannot clear one."
+}
+
+/// 「去掉这一台的 UDP 链接」那个勾选框画不画。**只看能力声明,绝不试着拨**:旧 Guardian
+/// 会默默忽略 `clear_udp`,把空 udp 照旧读成「保持不变」然后回 200 —— 界面会说
+/// 「已去掉」而 UDP 链接还在。能力值由 Go 侧 `TestServersClearUDPCapabilityIsDeclared` 钉住。
+func serverUDPClearingAvailable(capabilities: [String]?) -> Bool {
+    guard let capabilities else { return false }
+    return capabilities.contains("servers_clear_udp")
 }
 
 /// 空串读作「没说」。
@@ -911,4 +923,14 @@ func relativeAge(seconds: Int) -> String? {
         return "\(seconds / 3600)h ago"
     }
     return "\(seconds / 86_400)d ago"
+}
+
+/// replace 那一次请求的请求体。**纯函数,有测试** —— 它决定了「去掉 UDP」这句话有没有
+/// 真的发出去。`clear_udp` 只在要去掉时出现;与一条非空 udp 同时出现是矛盾指令,
+/// Guardian 会拒(表单那一侧也先拦了)。
+func replaceServerPayload(name: String, link: String, udp: String, clearUDP: Bool) -> [String: Any] {
+    var payload: [String: Any] = ["action": "replace", "name": name, "link": link]
+    if !udp.isEmpty { payload["udp"] = udp }
+    if clearUDP { payload["clear_udp"] = true }
+    return payload
 }

@@ -222,6 +222,8 @@ fake-IP 反查全部命中。样本约 150 条,要跑几天再定论。
 - `/v1/servers` 带 `single_server`(「单服务器配置」≠「清单真的空」)、`current_server`
   (**刻意在清单之外**:塞进清单会让 `serverListEmptyReason` 退回 nil)、Core 报的
   `running`(问不出来就缺席,**绝不与 `current` 合并**:热切先写配置再切,失败那刻两者不同)。
+  replace 的空 `udp` 读作「保持不变」;**显式去掉用 `clear_udp: true`**(能力 `servers_clear_udp`
+  单独声明 —— 旧 Guardian 会忽略这个字段而回 200;与非空 udp 同时出现回 400)。
   单服务器配置那台没有名字,「它在不在跑」由 `current_server_running` 说(与 `running` 同一份
   按主机的判据 `hostMatches`;Core 没答话时键缺席)。
   **链接是凭据,从不出门**(`TestServerListNeverShipsTheLinkItself`)。
