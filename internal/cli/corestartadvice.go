@@ -43,8 +43,10 @@ type startFailureServers struct {
 	// 一句渲染读它 —— 一个有测试盖着、没人读的字段与没有这个字段在输出上完全
 	// 一样,只是看起来还活着。要点名就得先有一句话真的说出它。
 	CurrentHostPort string
-	// Others 是别的服务器,形如 `tokyo(203.0.113.123)`。空 = 真的只有一台。
-	Others []string
+	// Others 是别的服务器。空 = 真的只有一台。**存名字与主机两样,不存拼好的串**:
+	// 那句「你还配了另一台」要写出它的名字(命令里要用)与地址(人要认),而名字常常
+	// 就是地址 —— 拼好的串无从知道该不该省掉括号里那一半。
+	Others []otherServerForAdvice
 }
 
 // coreStartFailureCodePrefix 是 Guardian 给这一族码加的前缀(见 guardian 的
@@ -138,8 +140,14 @@ func coreStartFailureAdvice(code string, facts startFailureServers) string {
 	}
 
 	if tunnelOutcome && len(facts.Others) > 0 {
-		steps = append(steps, fmt.Sprintf("You have another server configured: %s — sudo bx server use <name>",
-			strings.Join(facts.Others, "、")))
+		// 只有一台候选时命令里直接写出它的名字:读到这句话的人正处在「bx 起不来」
+		// 的时刻,让他自己把名字抄进一个占位符是白白多一步。
+		use := "sudo bx server use <name>"
+		if len(facts.Others) == 1 {
+			use = "sudo bx server use " + shellQuoteForAdvice(facts.Others[0].Name)
+		}
+		steps = append(steps, fmt.Sprintf("You have another server configured: %s — %s",
+			otherServersLabel(facts.Others), use))
 	}
 	lines := []string{headline}
 	for _, step := range steps {
@@ -239,11 +247,8 @@ func readStartFailureServers(configPath string) startFailureServers {
 			continue
 		}
 		// **只发名字与主机,链接一个字节都不出门。**
-		if host, ok := setup.LinkHost(server.Link); ok {
-			facts.Others = append(facts.Others, fmt.Sprintf("%s(%s)", server.Name, host))
-			continue
-		}
-		facts.Others = append(facts.Others, server.Name)
+		host, _ := setup.LinkHost(server.Link)
+		facts.Others = append(facts.Others, otherServerForAdvice{Name: server.Name, Host: host})
 	}
 	return facts
 }
@@ -275,4 +280,41 @@ func annotateCoreStartFailure(err error, configPath string) error {
 		return err
 	}
 	return fmt.Errorf("%s\n%w", advice, err)
+}
+
+// otherServerForAdvice 是「你还配了另一台」那句话要的两样东西。链接一个字节都不在这里。
+type otherServerForAdvice struct {
+	Name string
+	Host string
+}
+
+// otherServersLabel 把候选服务器写成给人读的一串。名字就是主机时只写一次
+// (2026-09-24 真机上那句话写成了「<地址>(<同一个地址>)」);分隔用 ASCII 的
+// 逗号 —— 这是一段英文。
+func otherServersLabel(others []otherServerForAdvice) string {
+	parts := make([]string, 0, len(others))
+	for _, o := range others {
+		name, host := strings.TrimSpace(o.Name), strings.TrimSpace(o.Host)
+		if host == "" || strings.EqualFold(name, host) {
+			parts = append(parts, name)
+			continue
+		}
+		parts = append(parts, name+" ("+host+")")
+	}
+	return strings.Join(parts, ", ")
+}
+
+// shellQuoteForAdvice 让命令粘贴过去就能跑:名字只含安全字符时原样,否则单引号括起来。
+func shellQuoteForAdvice(name string) string {
+	safe := name != ""
+	for _, r := range name {
+		if !(r == '-' || r == '_' || r == '.' || r == ':' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return name
+	}
+	return "'" + strings.ReplaceAll(name, "'", `'\''`) + "'"
 }

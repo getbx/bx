@@ -253,7 +253,9 @@ func coreStartFailureServers(_ entries: [CoreStartFailureServer]) -> CoreStartFa
             facts.currentHostPort = coreStartFailureHostPort(host: entry.host, port: entry.port)
             continue
         }
-        facts.others.append(entry.host.isEmpty ? entry.name : "\(entry.name) (\(entry.host))")
+        // 名字就是地址时只写一次 —— `bx server add` 不给名字时就用主机当名字,那是常见情形。
+        let sameAsHost = entry.name.caseInsensitiveCompare(entry.host) == .orderedSame
+        facts.others.append(entry.host.isEmpty || sameAsHost ? entry.name : "\(entry.name) (\(entry.host))")
     }
     return facts
 }

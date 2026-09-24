@@ -26,7 +26,7 @@ import (
 func TestEveryStartFailureOutcomeReadsDifferently(t *testing.T) {
 	facts := startFailureServers{
 		CurrentHostPort: "203.0.113.92:443",
-		Others:          []string{"tokyo(203.0.113.123)"},
+		Others:          []otherServerForAdvice{{Name: "tokyo", Host: "203.0.113.123"}},
 	}
 	rendered := map[string]string{}
 	for _, code := range coreStartFailureCodes() {
@@ -116,7 +116,7 @@ func TestTheLocalDialOutcomeSendsTheUserToBxsOwnDialerNotTheVPS(t *testing.T) {
 func TestTheLocalDialAdviceDoesNotContradictItsOwnSwitchSuggestion(t *testing.T) {
 	facts := startFailureServers{
 		CurrentHostPort: "203.0.113.92:443",
-		Others:          []string{"tokyo(203.0.113.123)"},
+		Others:          []otherServerForAdvice{{Name: "tokyo", Host: "203.0.113.123"}},
 	}
 	text := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUndeterminedLocalDial, facts)
 	// 前置自检:那句「你还配了另一台」确实在,否则下面在测一段不存在的矛盾。
@@ -173,7 +173,7 @@ func TestTheOtherServerLineOnlyAppearsWhenThereIsOne(t *testing.T) {
 	}
 
 	pair := alone
-	pair.Others = []string{"tokyo(203.0.113.123)"}
+	pair.Others = []otherServerForAdvice{{Name: "tokyo", Host: "203.0.113.123"}}
 	withOther := coreStartFailureAdvice("core_"+supervisor.StartFailureTunnelUnreachable, pair)
 	if !strings.Contains(withOther, "tokyo") || !strings.Contains(withOther, "bx server use") {
 		t.Fatalf("有另一台却没点名、也没给切换命令:\n%s", withOther)
@@ -184,7 +184,7 @@ func TestNoRenderedAdviceEverCarriesALink(t *testing.T) {
 	const link = "vless://11111111-2222-3333-4444-555555555555@198.51.100.7:443"
 	facts := startFailureServers{
 		CurrentHostPort: "203.0.113.92:443",
-		Others:          []string{"tokyo(203.0.113.123)"},
+		Others:          []otherServerForAdvice{{Name: "tokyo", Host: "203.0.113.123"}},
 	}
 	for _, code := range coreStartFailureCodes() {
 		text := coreStartFailureAdvice(code, facts)
@@ -239,11 +239,11 @@ current: vps
 	if facts.CurrentHostPort != "203.0.113.92:443" {
 		t.Fatalf("当前那台解错了:%+v", facts)
 	}
-	if len(facts.Others) != 1 || !strings.Contains(facts.Others[0], "tokyo") || !strings.Contains(facts.Others[0], "203.0.113.123") {
+	if len(facts.Others) != 1 || facts.Others[0].Name != "tokyo" || facts.Others[0].Host != "203.0.113.123" {
 		t.Fatalf("另一台没被点名:%+v", facts)
 	}
 	// 事实里也不许夹带链接:它会被拼进给用户看的那段话。
-	joined := facts.CurrentHostPort + strings.Join(facts.Others, " ")
+	joined := facts.CurrentHostPort + otherServersLabel(facts.Others)
 	if strings.Contains(joined, "vless://") || strings.Contains(joined, "11111111-2222-3333-4444-555555555555") {
 		t.Fatalf("事实里夹带了链接/凭据:%+v", facts)
 	}
@@ -372,7 +372,7 @@ func TestEveryOutcomeSaysWhereTheFullReasonIs(t *testing.T) {
 // 顺手抄一句进字符串是最自然的动作,而没有任何东西拦着。
 func TestNoRenderedAdviceCarriesMarkdown(t *testing.T) {
 	for _, facts := range []startFailureServers{
-		{CurrentHostPort: "203.0.113.92:443", Others: []string{"tokyo(203.0.113.123)"}},
+		{CurrentHostPort: "203.0.113.92:443", Others: []otherServerForAdvice{{Name: "tokyo", Host: "203.0.113.123"}}},
 		{},
 	} {
 		for _, code := range coreStartFailureCodes() {
@@ -479,5 +479,44 @@ func TestABrokenConfigFileIsReportedAsConfigUnusable(t *testing.T) {
 	}
 	if got := supervisor.StartFailureCode(missingErr); got == supervisor.StartFailureConfig {
 		t.Fatal("「读不到配置」借用了 config_unusable —— 那会叫用户去改一个他还没写过的文件")
+	}
+}
+
+// —— 2026-09-24 真机上那句话的三个毛病 ——
+//
+// 真机原文:「You have another server configured: <地址>(<同一个地址>) — sudo bx server use <name>」。
+// ① 服务器名就是主机时写了两遍;② 命令里留着占位符,而只有一台候选时名字就在手边 ——
+// 读到这句话的人正处在「bx 起不来」的时刻,要他自己把名字抄进去是多一步;③ 多台时
+// 用中文顿号连接,混在一段英文里。
+func TestTheOtherServerLineReadsLikeEnglishAndNamesTheServer(t *testing.T) {
+	code := coreStartFailureCodePrefix + supervisor.StartFailureTunnelHandshakeFailed
+	same := coreStartFailureAdvice(code, startFailureServers{
+		CurrentHostPort: "203.0.113.92:443",
+		Others:          []otherServerForAdvice{{Name: "203.0.113.30", Host: "203.0.113.30"}},
+	})
+	if strings.Count(same, "203.0.113.30") != 2 {
+		// 一次在标签里,一次在命令里。
+		t.Errorf("名字就是主机时应该只写一次(外加命令里那一次):\n%s", same)
+	}
+	if !strings.Contains(same, "sudo bx server use 203.0.113.30") {
+		t.Errorf("只有一台候选时,命令里应直接写出它的名字:\n%s", same)
+	}
+	if strings.Contains(same, "<name>") {
+		t.Errorf("只有一台候选时仍留着占位符:\n%s", same)
+	}
+	two := coreStartFailureAdvice(code, startFailureServers{
+		CurrentHostPort: "203.0.113.92:443",
+		Others: []otherServerForAdvice{
+			{Name: "tokyo", Host: "203.0.113.123"}, {Name: "osaka", Host: "203.0.113.124"},
+		},
+	})
+	if strings.ContainsAny(two, "、。") {
+		t.Errorf("英文句子里混进了中文标点:\n%s", two)
+	}
+	if !strings.Contains(two, "tokyo (203.0.113.123), osaka (203.0.113.124)") {
+		t.Errorf("多台候选的写法不对:\n%s", two)
+	}
+	if !strings.Contains(two, "sudo bx server use <name>") {
+		t.Errorf("多台候选时命令该留占位符让用户挑:\n%s", two)
 	}
 }
