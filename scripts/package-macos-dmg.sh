@@ -31,7 +31,23 @@ ln -s /Applications "$STAGE/Applications"
 cp "$RELEASE_DIR/README.txt" "$STAGE/Open me first - macOS will say bx is unverified.txt"
 
 rm -f "$DMG"
-hdiutil create -volname "bx $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+# **显式给足镜像大小,并在失败时再试一次。** 只给 -srcfolder 时 hdiutil 自己估算
+# 中间镜像的大小,而那个估算会偏小 —— 于是在盘上明明有几十 GB 空闲时报
+# `hdiutil: create failed - No space left on device`(v0.4.0 与 v0.4.5 两次发版都
+# 栽在这一句上,free-macos-disk 的诊断早就排除了「盘真的满了」)。大小取实际内容的
+# 1.5 倍再加 64MB 余量;最终的 UDZO 是压缩过的,这个数只影响中间那一份。
+STAGE_MB="$(du -sm "$STAGE" | awk '{print $1}')"
+DMG_SIZE_MB=$((STAGE_MB * 3 / 2 + 64))
+create_dmg() {
+	hdiutil create -volname "bx $VERSION" -srcfolder "$STAGE" -size "${DMG_SIZE_MB}m" \
+		-ov -format UDZO "$DMG" >/dev/null
+}
+if ! create_dmg; then
+	echo "hdiutil create failed once (size ${DMG_SIZE_MB}m); retrying after a short pause" >&2
+	rm -f "$DMG"
+	sleep 5
+	create_dmg
+fi
 
 # **签名必须活过封装。** ditto 会保留签名,但一次失手(用 cp -r 而不是 ditto、
 # 或事后动了 bundle 里的文件)就会把它弄坏 —— 而坏签名给用户的是「已损坏,
