@@ -823,6 +823,8 @@ type controlHooks struct {
 	RefollowServerBypass func(context.Context, []string) (refollowOutcome, error)
 	// ReassertRoutes 重新落实全部路由(bypass_route_repair.go)。
 	ReassertRoutes func(context.Context) error
+	// ReinstallRoutesIfNotReady 在就绪位为假时重新落实全部路由(routes_ready_repair.go)。
+	ReinstallRoutesIfNotReady func(context.Context, func() bool) error
 }
 
 // controlMuxOptionsFromServe 把 serveControlWithPathRecovery 收到的依赖翻译成
@@ -894,8 +896,9 @@ func serveControlWithPathRecovery(ctx context.Context, opts controlServeOptions)
 	cs, handler := newControlServerFull(muxOpts)
 	if opts.OnControlReady != nil {
 		opts.OnControlReady(controlHooks{
-			RefollowServerBypass: cs.refollowServerBypass,
-			ReassertRoutes:       cs.reassertRoutes,
+			RefollowServerBypass:      cs.refollowServerBypass,
+			ReassertRoutes:            cs.reassertRoutes,
+			ReinstallRoutesIfNotReady: cs.reinstallRoutesIfNotReady,
 		})
 	}
 	srv := &http.Server{

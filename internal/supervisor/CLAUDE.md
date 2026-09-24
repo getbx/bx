@@ -19,11 +19,12 @@ kill-switch 不变量在根目录 `CLAUDE.md`,这里不重复。2026-09-23 从�
   内核里的 ip rule 还在而 TUN 没了 ⇒ 整机断网。守卫 `TestRunLaunchesNoBareGoroutines` 取 **AST**
   (`Run` 函数体里真实的 `GoStmt`),读不出 `func Run` 时响亮失败。**一律 recover-and-continue,
   代价是静默降级**,所以每个工人「死了会降级成什么」必须列全(判据是 grep `workers.start` 的
-  次数,今天 8 个):mutation-engine ⇒ 切服务器不工作 · tailscale-bypass ⇒ 旁路停在兜底表 ·
+  次数,今天 9 个):mutation-engine ⇒ 切服务器不工作 · tailscale-bypass ⇒ 旁路停在兜底表 ·
   transport-failover ⇒ 不再自动切备(kill-switch 仍在)· direct-egress-repair ⇒ 直连出口不再自愈 ·
   rule-history ⇒ 历史停止累计 · server-bypass-refollow ⇒ 服务器换 IP 后旁路不跟 ·
   server-bypass-route-repair(darwin)⇒ 休眠后 `/32` 旁路不再自愈、隧道成环 ·
-  china-list-refresh ⇒ 列表不再更新。**加工人时回来补这一行。** `names()`/`panickedNames()`
+  china-list-refresh ⇒ 列表不再更新 · routes-ready-repair ⇒ 一次拆到一半的换路由之后,就绪位
+  又会永久停在 false(见下文)。**加工人时回来补这一行。** `names()`/`panickedNames()`
   **零生产调用方**,既不进 `bx status` 也不进控制 socket,今天唯一的办法是翻日志。
 - **按判据切相位,不按行数切**:`buildSplitBrain`(global 一个字节的 china 列表都不读;CLI flag
   压过 `config.lists`)与 `buildSplitRoutes`(顺序即优先级)已经抽出;剩下的粘合留在相位内。
@@ -42,8 +43,14 @@ Guardian 的 health 门(`/v1/update`)、`recoverySupersededByCore`。一次**一
   `TestLiveMutatorRehijackLeavesRoutesNotReadyAfterFailure`(少后者,「干脆不碰这一位」也能
   全绿)。接线 `TestEveryRehijackPreflightFailureIsTaggedAsNoChange` 要求前置区段里**每一个**
   return 都带标记,**先剥注释再找锚点**(解释性注释里恰好写着锚点,曾让它假绿)。
-- **仍存在的缺口**:拆到一半才失败的 rehijack 照样把它永久清成 false。根治要把它变成一次观测
-  (darwin 有 `underlay.ValidateCapture`),那会朝放宽 fail-closed 的方向动,是产品决定,没做。
+- **拆到一半才失败的 rehijack 仍会把它清成 false(那是对的),但现在有东西把它设回来**
+  (`routes_ready_repair.go`,2026-09-23,真机未验):就绪位为假、又没有待确认的改动时,后台
+  **重新完整装一遍路由**(与服务器旁路自愈同一个入口、同一把锁,锁里再查一遍就绪位),就绪位
+  **只在真的装成功之后**才回到 true。**刻意没有选「去内核看一眼、看着没问题就置真」** ——
+  那是凭观测放行,覆盖不到的那条路由会被一起宣布完好。让路 / 已就绪都返回哨兵错误,**不许报成
+  「重装成功」**。**顺序承重**:这个工人在 Hijack 成功之后才起,停止那一步 push 在「restore default
+  route」之后(LIFO 下先停,且等循环真的退出)—— 从 `OnControlReady` 里起的话,正常关机时就绪位
+  一被置假,它会把刚拆掉的劫持路由装回去(`TestRunStartsTheRoutesReadyRepairAfterHijackAndStopsItBeforeRestore`)。
 
 ## 内核路由的自愈(问内核,不信记账)
 
