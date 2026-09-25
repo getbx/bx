@@ -26,6 +26,14 @@ const (
 )
 
 // GuardianPlistText returns the root LaunchDaemon contract used on macOS.
+//
+// **AbandonProcessGroup 是 fail-closed 的一部分,不是可选项(2026-09-25)。** Core 是
+// Guardian 的子进程、同一个进程组;没有这个键时 launchd 在 Guardian 退出(崩溃、被
+// kill、升级后重启、bootout)那一刻收掉整个进程组,Core 收到 SIGTERM 就还原它装的
+// 路由 —— 从那一刻到新 Guardian 把新 Core 带到健康,流量从物理网卡直出,真实 IP
+// 泄漏。带上它,Core 活过 Guardian,新 Guardian 起来经启动恢复接管它。
+// 代价:凡是「用户明确要停掉 bx」的路径必须显式停 Core(强制拆除、卸载都经
+// stopOrphanedCore),不能再指望 bootout 顺手收掉它。
 func GuardianPlistText(executable, configPath string) string {
 	args := []string{
 		executable,
@@ -60,6 +68,8 @@ func GuardianPlistText(executable, configPath string) string {
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
+  <true/>
+  <key>AbandonProcessGroup</key>
   <true/>
   <key>StandardOutPath</key>
   <string>`)

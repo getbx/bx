@@ -26,6 +26,9 @@ func TestGuardianPlistTextUsesCanonicalLifecycleOwner(t *testing.T) {
 		"<string>127.0.0.1:53</string>",
 		"<key>RunAtLoad</key>\n  <true/>",
 		"<key>KeepAlive</key>\n  <true/>",
+		// Core 活过 Guardian:Guardian 退出时不让 launchd 收掉 Core(否则 Core 还原
+		// 路由、流量直连 —— 泄漏真实 IP)。见 GuardianPlistText 的注释。
+		"<key>AbandonProcessGroup</key>\n  <true/>",
 		"<key>UserName</key>\n  <string>root</string>",
 		"<key>GroupName</key>\n  <string>wheel</string>",
 		"<string>/var/log/bx-guard.log</string>",
