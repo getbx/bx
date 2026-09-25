@@ -80,6 +80,7 @@ func TestStrayConnectionsFindsOnlyTheConnectionsThatBypassBx(t *testing.T) {
 		{LocalAddr: en0, RemoteAddr: netip.MustParseAddr("100.100.1.1"), LastPID: app},  // CGNAT(overlay)
 		{LocalAddr: netip.MustParseAddr("198.51.100.1"), RemoteAddr: pub, LastPID: app}, // 本地地址在 TUN 上
 		{LocalAddr: en0, LastPID: app},                                                  // 没连接的 UDP socket
+		{LocalAddr: en0, RemoteAddr: netip.MustParseAddr("198.18.0.16"), LastPID: app},  // bx 的 fake IP:到不了真实主机
 		{LocalAddr: en0, RemoteAddr: netip.MustParseAddr("224.0.0.251"), LastPID: app},  // 组播
 	}
 	got := StrayConnections(pcbs, []netip.Addr{en0}, ours)

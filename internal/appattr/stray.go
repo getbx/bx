@@ -36,9 +36,15 @@ func StrayConnections(pcbs []PCB, physical []netip.Addr, ours func(pid int32) bo
 	return out
 }
 
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+var (
+	cgnat = netip.MustParsePrefix("100.64.0.0/10")
+	// benchmarking 是 RFC 2544 保留段,也是 bx 的 fake-IP 池(198.18/15)。发往它的
+	// 连接到不了任何真实主机,不是泄漏。真机 2026-09-25:trustd 一条绑在物理网卡源地址
+	// 上、发往 fake IP 198.18.0.16 的 SYN 卡在 SYN_SENT,被当成了「绕过 bx」。
+	benchmarking = netip.MustParsePrefix("198.18.0.0/15")
+)
 
 func publicUnicast(a netip.Addr) bool {
 	a = a.Unmap()
-	return a.IsValid() && a.IsGlobalUnicast() && !a.IsPrivate() && !cgnat.Contains(a)
+	return a.IsValid() && a.IsGlobalUnicast() && !a.IsPrivate() && !cgnat.Contains(a) && !benchmarking.Contains(a)
 }

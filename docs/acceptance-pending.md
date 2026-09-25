@@ -314,8 +314,12 @@ plist**(没有 AbandonProcessGroup)。修复:交接请求落盘,`bx up` 认出�
 plist 带 AbandonProcessGroup、能力里有 `core_outlives_guardian`、observed 全绿。**07:22:04–07:22:17
 en0 上发往公网(服务器除外)的包 0 个。** 新 Core 起来之后 en0 上的公网流量逐个对过:直连规则
 (Apple push / 腾讯 / Steam / 223.5.5.5,切换前稳态就有)、Tailscale(绑网卡,设计如此)、以及一条
-known-gaps A11 的 Chrome 连接。**D2(下一次 `bx update` 由 Guardian 自己重启)尚未真跑**,
-要等下一个版本。
+known-gaps A11 的 Chrome 连接。**D2 真机已验(2026-09-25,v0.4.7 → v0.4.8)**:`bx update` 提交后 Guardian 日志
+`guardian_restart_for_update running=v0.4.7 installed=v0.4.8` → `guardian_exiting_for_restart
+core_left_running=true`;新 Core 1899(08:07:35 由旧 Guardian 起)在旧 Guardian 退出后活着,新 Guardian
+(08:07:41 起,v0.4.8)接管它(`core_pid` 仍是 1899),Protected,全程不断网。en0 上的公网流量与切换前
+稳态同一批(直连规则、Tailscale、A11 那几条旧连接)。同一次 v0.4.8 的 A11 检测在真机上点名了 Chrome、
+Steam —— 以及一个假阳性 trustd(发往 bx 自己的 fake IP 198.18.0.16 的 SYN),已修:198.18/15 不算公网。
 
 ## C. 要等机会,不值得专门制造
 
