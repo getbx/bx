@@ -385,6 +385,10 @@ func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
 		f.events = append(f.events, "guardian.forceTeardown")
 		return nil
 	}
+	f.macOSLifecycleDeps.stopOrphanedCore = func(context.Context) error {
+		f.events = append(f.events, "core.orphanStop")
+		return nil
+	}
 	f.macOSLifecycleDeps.bootoutLegacyUnit = func(context.Context) error {
 		f.bootoutLegacyCount++
 		f.events = append(f.events, "legacy.bootout")
@@ -723,9 +727,10 @@ func TestMacOSDownForcedTeardownFailureIsActionable(t *testing.T) {
 // `launchctl bootout` on Guardian and hoped for the best:
 //
 //   - the running Core was expected to die from a SIGTERM that happened to
-//     reach the whole process group — nothing in the code establishes that
-//     process group (no Setpgid/Setsid), Guardian's Shutdown never signals
-//     Core, and launchd may follow up with SIGKILL and cut Core's defer-based
+//     reach the whole process group — it did under plists written before
+//     2026-09-25, but the current plist sets AbandonProcessGroup so it no
+//     longer does (step 3b stops what is left), Guardian's Shutdown never
+//     signals Core, and launchd may follow up with SIGKILL and cut Core's defer-based
 //     restore in half. Asking Core to shut itself down over its own control
 //     socket (the same cooperative path Guardian's runner uses) removes the
 //     guesswork entirely, and must happen BEFORE Guardian is booted out so
@@ -752,7 +757,7 @@ func TestMacOSDownForcedTeardownStopsCoreClearsBarrierAndPersistsOff(t *testing.
 	if !result.Forced {
 		t.Error("Guardian 不可达时应报告走了强制拆除")
 	}
-	want := "desired.off|core.shutdown|guardian.forceTeardown|barrier.clear|dns.restore|desired.off"
+	want := "desired.off|core.shutdown|guardian.forceTeardown|core.orphanStop|barrier.clear|dns.restore|desired.off"
 	if got := deps.trace(); got != want {
 		t.Fatalf("强制拆除调用序列 = %q, want %q", got, want)
 	}

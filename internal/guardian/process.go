@@ -125,12 +125,14 @@ type ExecCoreRunner struct {
 	// 落回 defaultProcessStatePath 一模一样(那条对称是承重的,理由写在
 	// startFailurePath 头上)。要把记录挪走就给它一个真路径 —— 清空它只会让
 	// 两个字段一起指回 /var/lib/bx。
-	StartFailurePath     string
-	ControlSocket        string
-	StopTimeout          time.Duration
-	InspectInterval      time.Duration
-	Operations           ProcessOperations
-	ShutdownCore         func(context.Context, string, int) error
+	StartFailurePath string
+	ControlSocket    string
+	StopTimeout      time.Duration
+	InspectInterval  time.Duration
+	Operations       ProcessOperations
+	ShutdownCore     func(context.Context, string, int) error
+	// SignalProcess 只给测试用;nil 走 os.Process.Signal。见 StopOrphanedCore。
+	SignalProcess        func(pid int, sig os.Signal) error
 	LaunchCleanupTimeout time.Duration
 	SaveProcessRecord    func(string, processRecord) error
 	RemoveProcessRecord  func(string) error

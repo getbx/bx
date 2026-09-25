@@ -174,13 +174,18 @@ type macOSLifecycleDeps struct {
 	// stopCore asks a running Core to cancel its own Run context over its
 	// control socket, so Core's defer-based teardown restores the routes it
 	// installed. This must happen before forceTeardown: it is the only
-	// deterministic way to stop Core. (Relying on `launchctl bootout`'s
-	// SIGTERM reaching Core through a shared process group is guesswork —
-	// nothing here calls Setpgid/Setsid, Guardian's Shutdown never signals
-	// Core, and launchd may follow up with SIGKILL mid-teardown.)
+	// deterministic way to stop Core. (Guardian's Shutdown never signals
+	// Core. Plists written before 2026-09-25 let launchd kill Guardian's
+	// whole process group on bootout — Core included, verified on a real
+	// Mac — but the current plist sets AbandonProcessGroup so Core outlives
+	// a Guardian restart; stopOrphanedCore covers the case this step
+	// cannot reach.)
 	stopCore func(context.Context) error
 	// forceTeardown stops the Guardian launchd service (only).
 	forceTeardown func(context.Context) error
+	// stopOrphanedCore stops the recorded Core if it outlived the Guardian
+	// bootout (see forcedMacOSTeardown step 3b).
+	stopOrphanedCore func(context.Context) error
 	// markDesiredOff persists desired=off. It runs *first*, before Core is
 	// stopped: a live Guardian's monitor reacts to Core's exit by reading
 	// this very state off the store (Manager.handleUnexpectedExit), and
@@ -258,13 +263,14 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		migrationRequest: func(ctx context.Context, configPath string) (guardian.MigrationRequest, error) {
 			return legacyMigrationRequest(ctx, configPath, migrationMetadataDeps{})
 		},
-		client:         client,
-		consoleUID:     consoleUserUID,
-		ensureMenu:     ensureMacOSMenuRunning,
-		pollInterval:   100 * time.Millisecond,
-		stopCore:       shutdownRunningCore,
-		forceTeardown:  install.BootoutGuardian,
-		markDesiredOff: func() error { return guardian.OpenDefaultStore().SaveDesired(guardian.DesiredOff) },
+		client:           client,
+		consoleUID:       consoleUserUID,
+		ensureMenu:       ensureMacOSMenuRunning,
+		pollInterval:     100 * time.Millisecond,
+		stopCore:         shutdownRunningCore,
+		forceTeardown:    install.BootoutGuardian,
+		stopOrphanedCore: stopOrphanedCore,
+		markDesiredOff:   func() error { return guardian.OpenDefaultStore().SaveDesired(guardian.DesiredOff) },
 		armMaintenanceHold: func(reason string) error {
 			return guardian.OpenDefaultStore().ArmMaintenanceHold(reason, time.Now())
 		},
@@ -286,6 +292,19 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 			return err
 		},
 	}
+}
+
+// stopOrphanedCore 停掉 core-process.json 记下、在 Guardian 退出之后还活着的那个
+// Core(guardian.ExecCoreRunner.StopOrphanedCore)。Guardian 的 plist 带
+// AbandonProcessGroup 之后,「bootout Guardian 顺带杀掉 Core」不再成立,凡是
+// 用户明确要停掉 bx 的路径(强制拆除、卸载)都经它显式收尾。
+func stopOrphanedCore(ctx context.Context) error {
+	runner := guardian.NewExecCoreRunner(install.GuardianExecutable(), defaultConfigPath, darwinDNSListen)
+	stopped, err := runner.StopOrphanedCore(ctx)
+	if stopped {
+		fmt.Println("✓ Stopped a Core that was still running after Guardian exited")
+	}
+	return err
 }
 
 // shutdownRunningCore asks the Core process that owns the control socket to
@@ -757,6 +776,17 @@ func forcedMacOSTeardown(ctx context.Context, stop stopIntent, deps macOSLifecyc
 	// 3. Stop the Guardian service so it cannot restart Core behind us.
 	if err := deps.forceTeardown(ctx); err != nil {
 		failures = append(failures, fmt.Errorf("stopping the Guardian service: %w", err))
+	}
+	// 3b. Stop a Core that outlived its Guardian. Guardian's plist carries
+	//     AbandonProcessGroup (so a Guardian crash or restart no longer takes
+	//     Core — and its routes — down with it), which also means bootout no
+	//     longer kills a Core that step 2 could not reach (socket gone, Core
+	//     hung). The user asked for protection off: stop it explicitly, the
+	//     record-matched Core only, escalating signal by signal.
+	if deps.stopOrphanedCore != nil {
+		if err := deps.stopOrphanedCore(ctx); err != nil {
+			failures = append(failures, fmt.Errorf("stopping a Core left behind by Guardian: %w", err))
+		}
 	}
 	// 4. Remove the barrier's blocking routes. Nothing else can: Guardian
 	//    is gone along with its ownership record. This is the step that

@@ -41,7 +41,14 @@ W2 因此消失:Guardian 不在的那几秒里,流量仍然经隧道,kill-switch
 - **显式停止不受影响**:`bx down` / 强制拆除一律先经 Core 的 `/v0/shutdown` 协作关闭,不依赖 launchd
   收进程组。卸载同理。**需要逐一核对**:凡是依赖「bootout Guardian 顺便杀掉 Core」的路径都要改成显式
   关闭,否则 Core 会变成没人管的孤儿(保护照常、但没有 Guardian)。
-- 四处 plist 生成器必须字面一致(与菜单 `KeepAlive` 那次同一条纪律),由守卫钉住。
+- Guardian 的 plist 只有**一个**生成器(`install.GuardianPlistText`;「四处必须字面一致」是菜单 agent
+  那份,不是这份),`TestGuardianPlistTextUsesCanonicalLifecycleOwner` 钉住这个键。
+- **核对结果(开放问题 2,2026-09-25)**:依赖「bootout 顺带杀 Core」的只有两处 —— `bx uninstall`
+  (Guardian 不可达或不在活跃态时直接 bootout)与强制拆除在 Core 不应答时的那一支。两处都改成 bootout
+  之后调 `StopOrphanedCore`(只认 core-process.json 记下且身份核对得上的那一个;协作关闭 → SIGTERM →
+  SIGKILL,每次发信号前重新核对身份)。`kickstart -k` 与崩溃重启是**想要的**新行为:Core 活下来,
+  新 Guardian 接管。**D1 只在 plist 被重写并重新 bootstrap 之后生效**(`EnableGuardian` 对已加载的
+  任务什么都不做),所以旧机器第一次拿到它就是 D3 那一次切换。
 
 ### D2 升级后让 Guardian 自己换成新版:事务提交后**退出**,由 launchd 以新二进制重启
 
@@ -68,6 +75,25 @@ W2 因此消失:Guardian 不在的那几秒里,流量仍然经隧道,kill-switch
 6. **拆屏障**(`RemoveBlockingBarrierRoutes`,与逃生口同一个原语),确认 `route get 1.1.1.1` 落在我们的 TUN。
 
 **任何一步失败都停在屏障后面**(断网,不泄漏),并打印唯一的出路 `sudo bx down`(用户显式选择不要保护)。
+
+**实现上复用 `/v1/migrate`,不另写一份交接**(2026-09-25 读代码定)。`Manager.Migrate` 本来就是
+「一个不归我管的 Core 在跑 → 在屏障下接过来」:装屏障(`file exists` 被容忍,所以 CLI 先装过的那几条
+不冲突,且装完 Guardian 自己**持有**这份屏障的所有权)→ 停 legacy(机器上没有 legacy unit 时是空操作)→
+`ReassertBypass`(旧 Core 退出时可能删掉了那条服务器 `/32`)→ 带 handoff 起新 Core → 释放屏障。
+网关与服务器地址由 `legacyMigrationRequest` 从**正在跑的 Core** 的运行时事实里取,开放问题 3 因此不需要
+第二份。所以 CLI 这一侧的顺序是:
+
+1. `legacyMigrationRequest` 取网关 + 服务器 `/32`(问不出来就**不开始**,什么都没动过);
+2. 武装维护挂起(旧 Guardian 看到 Core 退出时不重启它;新 Guardian 启动恢复时不自己起 Core ——
+   否则新 Core 在没有 handoff 的情况下去装那条已被屏障占着的 `/32`);
+3. CLI 自己装屏障(同一份 `migrationBarrierContext` 计划)。**从这一刻起公网包被拒**;
+4. bootout 旧 Guardian(launchd 收掉 Core,Core 还原自己的 `/1`;屏障还在,DNS 仍指 127.0.0.1 而没人
+   在听 ⇒ 解析失败,不回落到系统解析器);等到 `ScanRunning` 数不到 Core 为止;
+5. 写新 plist(带 D1)、bootstrap、等 Guardian socket;
+6. `/v1/migrate`(它清挂起、写 desired=on、接过屏障、起 Core、释放屏障);
+7. 核对:Guardian 报 Protected,`route get 1.1.1.1` 落在 TUN,`/2` reject 不在了。
+
+第 3 步之后任何一步失败:**不拆屏障**,打印 `sudo bx down`。第 1、2 步失败:什么都没改,照常退出。
 
 ### D4 版本漂移如实说出来(先做,不依赖以上)
 

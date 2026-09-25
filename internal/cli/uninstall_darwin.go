@@ -18,6 +18,10 @@ import (
 	urfavecli "github.com/urfave/cli/v2"
 )
 
+// uninstallCoreStopTimeout 给 StopOrphanedCore 的上限:协作关闭 → SIGTERM → SIGKILL
+// 三级各自有等待,这里只防一个卡住的 Inspect 把卸载挂住。
+const uninstallCoreStopTimeout = 90 * time.Second
+
 // uninstallDarwinAction 是 darwin `bx uninstall` 的完整卸载执行器:守护进程状态
 // 校验 + 计划执行(plists、bridge、统一 runtime、App、登录项),保留配置/数据。
 func uninstallDarwinAction(c *urfavecli.Context) error {
@@ -41,6 +45,15 @@ func uninstallDarwinAction(c *urfavecli.Context) error {
 	// 与菜单 agent 都带 KeepAlive —— job 还在域里时把文件删掉,launchd 会不停
 	// 重拉一个不存在的二进制,而卸载已经报了成功。
 	waitForLaunchdTargetsGone(bootoutWaitTargets(plan))
+	// **Guardian 走了不等于 Core 走了。** Guardian 的 plist 带 AbandonProcessGroup
+	// (Guardian 崩溃或重启时 Core 不随之还原路由、不漏流量),于是 bootout 不再顺带
+	// 杀掉 Core。下面要删掉它的二进制与 core-process.json,在那之前显式停掉它;
+	// 停不掉只是一条警告 —— 卸载与「停止」一样,不许因为一步没做成而中止。
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), uninstallCoreStopTimeout)
+	if err := stopOrphanedCore(stopCtx); err != nil {
+		fmt.Printf("! could not stop the Core that was still running: %v\n", err)
+	}
+	cancelStop()
 
 	if err := install.Uninstall(); err != nil {
 		fmt.Printf("! could not clean up the legacy service: %v\n", err)
