@@ -29,7 +29,7 @@ bx 是一个隐私优先的透明全局代理。作为一个"防止真实 IP 泄
   - **白名单域名的 DNS 被投毒**:on-path/GFW 级攻击者若能篡改你白名单域名(如 `www.baidu.com`)的直连 DNS 应答,可把你的真实 IP 引到冒牌服务器。缓解:把直连解析改用 **DoH(DNS-over-HTTPS,TLS 校验抗投毒)**——config 里设 `dns.china: https://223.5.5.5/resolve`(或其它 dns-json DoH 端点)即启用;默认仍是明文 UDP:53(向后兼容),隐私优先建议开 DoH。要"对任何人都不暴露"则用 **global 全量走隧道**。
   - **裸 IP 直连**:分流模式下,应用直接连一个中国 IP 字面量(无域名)会命中 geoip 直连。global 模式关掉此路径。
 - **不是匿名工具**:bx 不提供对抗全局观测者的匿名性(不是 Tor)。它防的是"真实 IP 泄漏给公网目标 / 明文旁路",不是流量分析、时序关联或你 VPS 被取证。
-- **传输的抗封锁性取决于协议与配置**:REALITY 借壳 SNI 抗 DPI;弱协议(明文 brook 等)在强审查网络下更易被识别/干扰。协议选择见 `docs/multi-transport-guide.md`。
+- **传输的抗封锁性取决于协议与配置**:REALITY 借壳 SNI 抗 DPI;弱协议(明文 brook 等)在强审查网络下更易被识别/干扰。协议选择见 `docs/guide/multi-transport-guide.md`。
 
 ## 4. 数据与隐私
 

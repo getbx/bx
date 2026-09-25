@@ -20,9 +20,22 @@ import (
 // README 是普通用户唯一会照着敲的东西 —— 一条不存在的命令在这里的代价,
 // 比在任何设计文档里都高。
 func TestREADMEOnlyMentionsRealCommands(t *testing.T) {
+	// 2026-09-25 起 README 只留快速开始,命令、配置、macOS 那些长段搬进了 docs/guide/ ——
+	// 用户照着敲的地方跟着搬家,守卫也得跟着读过去,否则搬走的那一半就没人看了。
 	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
 	if err != nil {
 		t.Fatalf("读不到 README,守卫失去意义: %v", err)
+	}
+	guides, err := filepath.Glob(filepath.Join("..", "..", "docs", "guide", "*.md"))
+	if err != nil || len(guides) == 0 {
+		t.Fatalf("docs/guide 下一个 .md 都没找到(%v),守卫失去意义", err)
+	}
+	for _, g := range guides {
+		raw, err := os.ReadFile(g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		readme = append(append(readme, '\n'), raw...)
 	}
 
 	known := map[string]bool{}
@@ -40,7 +53,8 @@ func TestREADMEOnlyMentionsRealCommands(t *testing.T) {
 	// 与 `bx fake-IP`(一个概念名)都不是命令,而用户照着敲的恰恰是带代码格式的那些。
 	// 第一版没有这道限制,两条散文当场变成假阳性 —— 判据要挡的是「照着敲会失败」,
 	// 那就该只看用户会照着敲的地方。
-	re := regexp.MustCompile(`bx ([a-z][a-z0-9-]*)`)
+	// 前面紧挨着 `/` 的不算:`/etc/init.d/bx start` 是 OpenWrt 的 init 脚本,不是 bx 的子命令。
+	re := regexp.MustCompile(`(?:^|[^/\w.])bx ([a-z][a-z0-9-]*)`)
 	var bad []string
 	seen := map[string]bool{}
 	for _, m := range re.FindAllStringSubmatch(codeSpansAndFences(string(readme)), -1) {

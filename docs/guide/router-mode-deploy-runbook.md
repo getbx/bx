@@ -63,7 +63,7 @@ ssh root@192.168.8.1 '
 - `https://www.cloudflare.com/cdn-cgi/trace` → `ip=203.0.113.10` (VPS) for foreign; a CN site shows direct.
 - **Leak test (CLI):** from the LAN client, `scripts/leak-test.sh 203.0.113.10` → IPv4 egress = VPS, no IPv6 egress, google → fake-IP. Then **browserleaks.com** (/ip /dns /webrtc) in a browser: public IP = VPS, no DNS leak, **no WebRTC IP**, no IPv6.
 - On the router: `tailscale status` → gl-e5800 stays **online** (the host-mode failure mode — must NOT recur).
-- Kill-switch: `ssh root@192.168.8.1 '/etc/init.d/bx stop'` → LAN client loses internet (no leak), `bx start` restores. Confirms fail-closed.
+- Kill-switch: `ssh root@192.168.8.1 '/etc/init.d/bx stop'` → LAN client loses internet (no leak), `/etc/init.d/bx start` restores. Confirms fail-closed.
 
 ## 5. If anything is wrong → rollback immediately
 ```sh
