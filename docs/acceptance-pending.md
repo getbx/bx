@@ -300,6 +300,15 @@ sudo kill -9 <Core PID>
 4. D2 顺带验:之后一次 `bx update` 提交后 Guardian 日志出现 `guardian_restart_for_update`、
    Core PID 不变、全程不断网。
 
+**第一次真跑(2026-09-25,v0.4.6)**:步骤 1 演练过(51 包,0 个发往服务器/私网之外)。步骤 2 停在
+「停旧 Core」:launchd 正在收掉 Core,读它的可执行路径报 EINVAL,切换失败 —— **屏障守住了**:
+06:38:35–06:45:50 这 7 分钟里 en0 上发往公网(服务器除外)的包 **0 个**。但接下来用户敲 `bx up`,
+那条路不知道有个没做完的切换,在一道它不拥有、且服务器 /32 已被删的屏障后面起 Core,报了一句
+误导的 local_dial 诊断;之后 `bx down` / `bx up` 恢复。Guardian 因此换到了 v0.4.6,但**用的是旧
+plist**(没有 AbandonProcessGroup)。修复:交接请求落盘,`bx up` 认出没做完的切换并经 migrate
+做完、`bx down` 拆掉那道屏障;停旧 Core 先等它自己退、读不动隔拍重试;服务器 /32 在 bootout
+之后立刻补。另见 known-gaps A11(down 期间开的连接在 up 之后仍走 en0)。
+
 ## C. 要等机会,不值得专门制造
 
 - [ ] **菜单栏 LaunchAgent 的 EIO(5) 不再出现**:下次升级(或 `bx app-install`)时看输出里有没有

@@ -161,10 +161,14 @@ type macOSLifecycleDeps struct {
 	bootoutLegacyUnit func(context.Context) error
 	removeLegacyUnit  func() error
 	migrationRequest  func(context.Context, string) (guardian.MigrationRequest, error)
-	client            guardianLifecycleClient
-	consoleUID        func() (int, error)
-	ensureMenu        func(int) error
-	pollInterval      time.Duration
+	// pendingSwitch / clearPendingSwitch:一次没交接完的屏障下切换(switchhandoff.go)。
+	// nil 表示本平台没有这回事。
+	pendingSwitch      func() (guardian.MigrationRequest, bool, error)
+	clearPendingSwitch func() error
+	client             guardianLifecycleClient
+	consoleUID         func() (int, error)
+	ensureMenu         func(int) error
+	pollInterval       time.Duration
 	// The five hooks below make up the `bx down` escape hatch, run by
 	// forcedMacOSTeardown whenever the clean Guardian transaction is
 	// unavailable or fails. None of them installs or bootstraps anything,
@@ -263,14 +267,16 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		migrationRequest: func(ctx context.Context, configPath string) (guardian.MigrationRequest, error) {
 			return legacyMigrationRequest(ctx, configPath, migrationMetadataDeps{})
 		},
-		client:           client,
-		consoleUID:       consoleUserUID,
-		ensureMenu:       ensureMacOSMenuRunning,
-		pollInterval:     100 * time.Millisecond,
-		stopCore:         shutdownRunningCore,
-		forceTeardown:    install.BootoutGuardian,
-		stopOrphanedCore: stopOrphanedCore,
-		markDesiredOff:   func() error { return guardian.OpenDefaultStore().SaveDesired(guardian.DesiredOff) },
+		pendingSwitch:      loadSwitchHandoff,
+		clearPendingSwitch: clearSwitchHandoff,
+		client:             client,
+		consoleUID:         consoleUserUID,
+		ensureMenu:         ensureMacOSMenuRunning,
+		pollInterval:       100 * time.Millisecond,
+		stopCore:           shutdownRunningCore,
+		forceTeardown:      install.BootoutGuardian,
+		stopOrphanedCore:   stopOrphanedCore,
+		markDesiredOff:     func() error { return guardian.OpenDefaultStore().SaveDesired(guardian.DesiredOff) },
 		armMaintenanceHold: func(reason string) error {
 			return guardian.OpenDefaultStore().ArmMaintenanceHold(reason, time.Now())
 		},
@@ -568,6 +574,23 @@ func macOSDownLifecycleFor(ctx context.Context, purpose downPurpose, configPath 
 	// **每一条返回路径都要带上退回的事实。** 退回发生在这里,而下面有五个 return;
 	// 挑其中几个填正是这一期反复抓到的那种「改动落在旁边而不是那条路上」。
 	defer func() { result.HoldFallback = stop.holdErr }()
+	// 用户明确要关保护,而一次屏障下切换没交接完:那道屏障是 CLI 装的,Guardian 不
+	// 拥有它,干净的 Down 不会去拆 —— 不拆就是「关掉了保护却还断着网」。拆掉并销掉
+	// 记录;两步都对 Down 的成败无条件(与销挂起同一条:停止不许依赖别的先成功)。
+	if purpose == downPurposeUser && deps.pendingSwitch != nil {
+		if _, pending, _ := deps.pendingSwitch(); pending {
+			defer func() {
+				if deps.clearBarrierRoutes != nil {
+					if clearErr := deps.clearBarrierRoutes(ctx); clearErr != nil {
+						err = errors.Join(err, fmt.Errorf("removing the barrier left by an unfinished Guardian switch: %w", clearErr))
+					}
+				}
+				if deps.clearPendingSwitch != nil {
+					_ = deps.clearPendingSwitch()
+				}
+			}()
+		}
+	}
 	if deps.guardianReady != nil && deps.guardianReady(ctx) {
 		// 一个便宜的判定,决定走哪条路 —— 不是启动的活。
 		if mayRun, known := legacyCoreMayBeRunning(ctx, deps); mayRun {
@@ -1078,6 +1101,19 @@ func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSL
 		return guardian.Status{}, false, fmt.Errorf("inspect legacy Core: %w", err)
 	}
 	var request guardian.MigrationRequest
+	// 一次没交接完的屏障下切换:屏障可能还在、服务器 /32 可能已被旧 Core 删掉。
+	// 普通的 Up 在这里起不来(新 Guardian 不拥有那道屏障,它起的 Core 连不上服务器),
+	// 用记下的那份交接请求走 migrate 才是把它做完。判据读不出来就不猜。
+	pendingSwitch := false
+	if deps.pendingSwitch != nil && !legacyLoaded {
+		pending, ok, err := deps.pendingSwitch()
+		if err != nil {
+			return guardian.Status{}, false, err
+		}
+		if ok {
+			request, pendingSwitch = pending, true
+		}
+	}
 	switch {
 	case legacyLoaded:
 		// A live legacy Core is running: it must go through the
@@ -1103,12 +1139,20 @@ func ensureGuardianOwnership(ctx context.Context, configPath string, deps macOSL
 			guardian.SocketPath, install.GuardianLogTail(10),
 		)
 	}
-	if !legacyLoaded {
+	if !legacyLoaded && !pendingSwitch {
 		return guardian.Status{}, false, nil
 	}
 	status, err := deps.client.Migrate(ctx, request)
 	if err != nil {
+		if pendingSwitch {
+			return guardian.Status{}, false, fmt.Errorf("finish the unfinished Guardian switch: %w", err)
+		}
 		return guardian.Status{}, false, fmt.Errorf("migrate legacy Core: %w", err)
+	}
+	if pendingSwitch && deps.clearPendingSwitch != nil {
+		if err := deps.clearPendingSwitch(); err != nil {
+			fmt.Fprintf(os.Stderr, "! the Guardian switch finished, but its record %s could not be removed: %v\n", switchHandoffPath, err)
+		}
 	}
 	return status, true, nil
 }
