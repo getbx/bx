@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -48,7 +49,11 @@ func darwinStrayConnectionWarning(ctx context.Context) stats.Warning {
 		}
 		pcbs = append(pcbs, parsed...)
 	}
-	stray := appattr.StrayConnections(pcbs, physical, isOwnProcess)
+	// 主人已经退出的 socket(TIME_WAIT / CLOSE_WAIT 里的残骸)不承载任何应用的流量,
+	// 不点名。真机 2026-09-25:v0.4.9 升级换掉旧 Core 之后,它的隧道子进程留下的
+	// 几十个收尾中的 socket 被报成了「PID 1913 绕过 bx」,20 秒后自己消失。
+	skip := func(pid int32) bool { return isOwnProcess(pid) || !processAlive(pid) }
+	stray := appattr.StrayConnections(pcbs, physical, skip)
 	return strayConnectionWarning(device, stray, func(pid int32) string {
 		return appattr.DisplayName(executablePathOf(pid))
 	})
@@ -99,6 +104,14 @@ func interfaceIPv4s(name string) []netip.Addr {
 		}
 	}
 	return out
+}
+
+// processAlive:kill(pid, 0) 只有明确 ESRCH 才算不在(与 OwnersByPort 的活性判据同源)。
+func processAlive(pid int32) bool {
+	if pid <= 0 {
+		return false
+	}
+	return !errors.Is(unix.Kill(int(pid), 0), unix.ESRCH)
 }
 
 // isOwnProcess:bx 自己(Core)或它直接起的子进程(sing-box / brook 隧道)。隧道到服务器的
