@@ -2504,7 +2504,22 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 平时的版本号不是信息(项目所有者 review:常驻在菜单中间是墙纸),它搬去
     /// Troubleshoot ▸ 里那一行(installedVersionForMenu)。
     private func addUpdateActionIfAvailable(to menu: NSMenu) {
-        guard let title = menuUpdateActionTitle(check: updateCheck) else { return }
+        // 判据在 menuUpdateRow(纯函数、有测试):Guardian 落后于已装版本时给一句说明而不是
+        // 一个点了什么都不改变的「Update bx…」。
+        let row = menuUpdateRow(check: updateCheck,
+                                guardianVersion: maintenanceReport?.guardianVersion,
+                                runtimeVersion: maintenanceReport?.runtimeVersion)
+        guard let row else { return }
+        let title: String
+        switch row {
+        case .note(let text):
+            let note = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            menu.addItem(note)
+            return
+        case .action(let text):
+            title = text
+        }
         let item = NSMenuItem(title: title, action: #selector(updateBx), keyEquivalent: "")
         item.target = self
         item.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: title)

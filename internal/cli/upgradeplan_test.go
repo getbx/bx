@@ -231,8 +231,10 @@ func TestUpVersionMismatchIsReported(t *testing.T) {
 	if strings.Contains(msg, "bx down && "+elevate.Prefix+"bx up") {
 		t.Fatalf("不得给出那条无效建议,实际 = %q", msg)
 	}
-	if !strings.Contains(msg, "app-install") {
-		t.Fatalf("必须指向真正能完成切换的入口,实际 = %q", msg)
+	// 2026-09-25 起**不许**再推荐那条切换命令:它的「停保护」不装屏障,切换那几秒里流量
+	// 无保护地直连(所有者:断网可以,泄漏 IP 不行)。屏障下的切换落地之前,只如实说处境。
+	if strings.Contains(msg, "app-install") || strings.Contains(msg, upgradeSwitchCommand) {
+		t.Fatalf("推荐了会泄漏 IP 的切换命令,实际 = %q", msg)
 	}
 }
 
@@ -437,5 +439,48 @@ func TestUnifiedRepairHintStillRunsTheBundleCopy(t *testing.T) {
 	if !strings.Contains(unifiedRepairHint, darwinAppBundlePath+"/Contents/Resources/bx-cli") {
 		t.Fatalf("修复提示不再指向 bundle 里那份 —— runtime 坏掉时 bridge exec 不过去,"+
 			"那份是唯一保证在的二进制:%q", unifiedRepairHint)
+	}
+}
+
+// bx status 必须说出版本漂移(2026-09-25 真机:两次升级之后 Guardian 仍是 v0.4.3,而 status
+// 一个字不说、菜单还显示「有更新」)。两个版本相同或问不出来时一个字都不说。
+func TestStatusSaysWhenGuardianIsBehindTheInstalledVersion(t *testing.T) {
+	drifted := clientStatusReport{ProtectionState: "protected", GuardianVersion: "v0.4.3", RuntimeVersion: "v0.4.5"}
+	out := renderClientStatus(drifted)
+	if !strings.Contains(out, "v0.4.5 is installed") || !strings.Contains(out, "v0.4.3") {
+		t.Fatalf("版本漂移没有说出来:\n%s", out)
+	}
+	if strings.Contains(out, "app-install") {
+		t.Fatalf("status 推荐了会泄漏 IP 的切换命令:\n%s", out)
+	}
+	for _, same := range []clientStatusReport{
+		{ProtectionState: "protected", GuardianVersion: "v0.4.5", RuntimeVersion: "v0.4.5"},
+		{ProtectionState: "protected", GuardianVersion: "", RuntimeVersion: "v0.4.5"},
+	} {
+		if strings.Contains(renderClientStatus(same), "is installed, but Guardian") {
+			t.Fatalf("版本一致或问不出来时也说了漂移:%+v", same)
+		}
+	}
+}
+
+// 更新检查拿「装着的那一版」去比,不拿 Guardian 自己的版本:Guardian 落后于
+// runtime 时(2026-09-25 真机:v0.4.3 对 v0.4.5),拿后者去比会把已经装好的
+// 新版永远报成「有更新」。runtime 读不出来时退回进程自己的版本。
+func TestUpdateCheckComparesTheInstalledRuntimeNotTheGuardian(t *testing.T) {
+	got := updateCheckInstalledVersion("v0.4.3", func() (string, error) { return "v0.4.5", nil })
+	if got != "v0.4.5" {
+		t.Fatalf("installed version = %q, want the runtime's v0.4.5", got)
+	}
+	if newerAvailable(got, "v0.4.5") {
+		t.Fatal("an installed v0.4.5 must not be reported as an available update to v0.4.5")
+	}
+	for name, read := range map[string]func() (string, error){
+		"unreadable": func() (string, error) { return "", errors.New("no runtime") },
+		"empty":      func() (string, error) { return " ", nil },
+		"absent":     nil,
+	} {
+		if got := updateCheckInstalledVersion("v0.4.3", read); got != "v0.4.3" {
+			t.Fatalf("%s runtime: installed version = %q, want the process's own v0.4.3", name, got)
+		}
 	}
 }
