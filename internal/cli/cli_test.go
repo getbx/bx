@@ -1797,7 +1797,8 @@ func swiftFunctionBody(source, signature string) (string, bool) {
 // 断言因此从「两处都要有」收成「README 要有」。**能力仍然被守着,只是守在它该在的
 // 那一处** —— 而不是把一句话钉在两个界面上,其中一个还不适合它。
 func TestReadmeDescribesAutomaticSafeNetworkRecovery(t *testing.T) {
-	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	// 2026-09-25 起这段住在 docs/guide/macos.md(README 只留快速开始)。
+	readme, err := os.ReadFile(filepath.Join("..", "..", "docs", "guide", "macos.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

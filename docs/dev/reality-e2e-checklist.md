@@ -9,7 +9,7 @@
 - `bypass` 必须含**管理网 / SSH 源网段**(reality 服务器自身的 bypass 由 bx 自动加,不用管)。
 
 ## 0. 服务端(一次性)
-> 完整步骤见 [reality-server-setup.md](reality-server-setup.md);下面是速记。
+> 完整步骤见 [reality-server-setup.md](../guide/reality-server-setup.md);下面是速记。
 ```bash
 # 在 VPS 上,sing-box REALITY 服务端落 443(默认;443 被占才换一个已放行的高端口,见末尾坑①)
 sing-box generate reality-keypair   # 记 PrivateKey / PublicKey
@@ -84,6 +84,6 @@ bx status                                          # 已停
 ```
 
 ## 已知坑(验证踩出)
-1. **reality 就该用 443** —— 「服务端别用 443」是 brook 明文时代的 folklore,[reality-server-setup.md](reality-server-setup.md) 已明确撤回,`srvgen` 的默认端口就是 443:reality 伪装的是访问真站的 HTTPS,落到 9998 这种怪端口反而更可疑。当年疑似「443 挂」的真因是坑 2(SNI 证书链过大),与端口无关。**唯一真实约束是防火墙**:ufw / 云安全组必须放行 443;443 已被真 web 服务占着,才换一个已放行的高端口。
+1. **reality 就该用 443** —— 「服务端别用 443」是 brook 明文时代的 folklore,[reality-server-setup.md](../guide/reality-server-setup.md) 已明确撤回,`srvgen` 的默认端口就是 443:reality 伪装的是访问真站的 HTTPS,落到 9998 这种怪端口反而更可疑。当年疑似「443 挂」的真因是坑 2(SNI 证书链过大),与端口无关。**唯一真实约束是防火墙**:ufw / 云安全组必须放行 443;443 已被真 web 服务占着,才换一个已放行的高端口。
 2. **借用 SNI 挑证书链够小的站** —— **别用 `www.microsoft.com`**:它的完整证书链 ~5879B,超出 REALITY 借壳中继证书的承受,握手必失败(服务端报 `processed invalid connection`),而这**不是**网络或密钥问题,换 SNI 即通。实测可用:`www.cloudflare.com` 2505B(`srvgen` 默认)、`www.apple.com` 3230B、`dl.google.com` 3543B、`addons.mozilla.org` 4085B。先在服务端 `openssl s_client -tls1_3` 验该站可达、支持 TLS1.3 + X25519。
 3. **`bx run --test-timeout`** 是远程实测的保命绳,`bx up`(systemd 持久)无死手 —— 远程务必先 run 后 up。

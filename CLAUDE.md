@@ -2,7 +2,7 @@
 
 基于 brook 的 **Linux 透明全局代理**(自研「类 ipio」,单一 Go 静态二进制)。整机 TCP/UDP 经 TUN 自动分流:中国直连、其余走加密隧道,对应用零配置。隧道是**可插拔黑盒子进程**:`brook://` 链接→内嵌 brook(默认),`vless://` 链接→sing-box 的 **VLESS-REALITY**(抗 DPI 伪装);两者其余全自有代码。
 
-- 用户文档见 `README.md`;设计/计划见 `docs/superpowers/specs/` 与 `docs/superpowers/plans/`。
+- 用户文档:`README.md` 只放快速开始,正文在 `docs/guide/`(`docs/README.md` 是整个 docs 的索引);开发/测试文档在 `docs/dev/`;设计/计划见 `docs/superpowers/specs/` 与 `docs/superpowers/plans/`。
 - **过程记录见 `docs/lessons/`**(事故复盘、施工日志、守卫的七种失效写法);
   **待人工验收的清单见 `docs/acceptance-pending.md`** —— 那上面每一条都只有人在机器前
   才能做(要在屏幕上点,或要制造一次真实故障),**agent 不要去跑它,也不要替它下结论**;

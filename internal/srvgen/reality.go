@@ -18,7 +18,7 @@ import (
 // **绝不用 www.microsoft.com**——它证书过大(实测 ~3410B 叶证书),reality 借壳握手失败
 // (真机 e2e 坐实:microsoft 全挂、换 cloudflare 即通,含跨 GFW 出口)。www.cloudflare.com
 // 证书最小(~1322B)且已端到端验过,故选它;可被 GenerateReality 的 sni 参数(--sni)覆盖
-// (备选 www.apple.com / addons.mozilla.org,见 docs/reality-server-setup.md)。
+// (备选 www.apple.com / addons.mozilla.org,见 docs/guide/reality-server-setup.md)。
 const DefaultRealitySNI = "www.cloudflare.com"
 
 // RealityParams 是一套 reality 服务端 + 对应客户端链接所需的全部参数。

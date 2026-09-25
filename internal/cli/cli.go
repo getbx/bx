@@ -3519,7 +3519,7 @@ func protocolAdvisory(link string) string {
 			"   to be blocked by various services' risk controls (Claude/OpenAI/Google among them).\n" +
 			"   It works fine as a client; but under heavy blocking, or when you need AI services to stay reachable,\n" +
 			"   move the server side to VLESS-REALITY (the most covert option) and add hysteria2 on top as the fast\n" +
-			"   lane (UDP; see docs/multi-transport-guide.md)."
+			"   lane (UDP; see docs/guide/multi-transport-guide.md)."
 	case "hysteria2":
 		if !strings.Contains(link, "obfs=") {
 			return "💡 hysteria2 is the fast lane (UDP/QUIC). Bare QUIC gets identified by SNI and throttled on some\n" +

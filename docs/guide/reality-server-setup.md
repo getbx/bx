@@ -2,7 +2,7 @@
 
 > 目标:在你自己的 VPS 上立一个 **sing-box VLESS-REALITY 服务端**,产出一条 `vless://` 链接,
 > 直接喂给 `bx setup vless://…`。客户端侧 sing-box 由 bx **内嵌**,服务端这份是你要自己跑的。
-> 整机验证见 [reality-e2e-checklist.md](reality-e2e-checklist.md)。
+> 整机验证见 [reality-e2e-checklist.md](../dev/reality-e2e-checklist.md)。
 
 > ## ⭐ 最简:`bx server install` 已自动化这整篇
 >

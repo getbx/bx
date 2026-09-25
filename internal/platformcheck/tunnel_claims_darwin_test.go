@@ -116,7 +116,11 @@ func TestProductListStoppedSpeculating(t *testing.T) {
 func TestDocsDoNotReferenceDeletedCommands(t *testing.T) {
 	for _, rel := range []string{
 		filepath.Join("..", "..", "README.md"),
-		filepath.Join("..", "..", "docs", "leak-surfaces.md"),
+		filepath.Join("..", "..", "docs", "guide", "leak-surfaces.md"),
+		filepath.Join("..", "..", "docs", "guide", "commands.md"),
+		filepath.Join("..", "..", "docs", "guide", "client.md"),
+		filepath.Join("..", "..", "docs", "guide", "coexistence.md"),
+		filepath.Join("..", "..", "docs", "guide", "install-tutorial.md"),
 	} {
 		raw, err := os.ReadFile(rel)
 		if err != nil {
