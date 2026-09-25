@@ -49,19 +49,13 @@ func appInstallAction(c *urfavecli.Context) error {
 		guardianRunning: func() (bool, error) { return install.GuardianLoaded(c.Context) },
 		loadDesiredOn:   func() bool { return upgradeDesiredOn(c.Context) },
 		confirm:         confirmOnTTY,
-		stopProtection: func(protectionWanted bool) (macOSDownResult, error) {
-			// downPurposeUpgrade:这一跳把「停下来换二进制」记成一次**维护
-			// 挂起**,而不是把 desired 改写成 off —— 用户想要保护,只是此刻
-			// 不能有,而磁盘上那句「用户不想要保护」会被任何忠实的调谐器照办。
-			// 它同时保住前一步刚武装的那张挂起:用普通的 Down,Guardian 会把
-			// 这一跳当作「用户不要保护了」,立刻销挂起并写 desired=off,于是装
-			// 文件一失败,重跑读到 off,「成功」地把机器永久留在无保护状态
-			// (2026-08-08 复审 C1)。
-			//
-			// **保护本来就关着的机器不武装挂起**:没有「恢复保护」那一步会去清
-			// 它,那 15 分钟里菜单与 bx status 会把一台用户主动关掉的机器说成
-			// 「维护中」(见 downPurposeUpgradeUnprotected)。
-			return macOSDownLifecycleFor(c.Context, upgradeStopPurpose(protectionWanted), configPath, defaultMacOSLifecycleDeps())
+		stopProtection: func() (macOSDownResult, error) {
+			// 只有保护本就关着的机器会走到这里(保护开着时在屏障下切换,不停保护)。
+			// downPurposeUpgradeUnprotected:走 DownForUpgrade,**不武装挂起、不写
+			// desired=off、不销挂起** —— 没有「恢复保护」那一步会去清一张挂起,那
+			// 15 分钟里菜单与 bx status 会把一台用户主动关掉的机器说成「维护中」;
+			// 而普通的 Down 会被 Guardian 当作用户显式的关闭。
+			return macOSDownLifecycleFor(c.Context, downPurposeUpgradeUnprotected, configPath, defaultMacOSLifecycleDeps())
 		},
 		installFiles: func() (installedFiles, error) {
 			result, err := install.UnifiedInstall(install.UnifiedInstallOptions{
@@ -152,14 +146,14 @@ func configured(configPath string) bool {
 // 保护的状态,也是 bx down 写 off 的地方。文件不存在按 off(Store.LoadDesired
 // 的语义),即从未装过/从未开过。
 //
-// 升级欠条(upgrade-intent.json)连同它的 OR 语义已经退休:升级的停机改为武装
-// 维护挂起、一个字节都不动 desired,所以一次中途失败之后重跑读到的就是用户本来
-// 的意图 —— 那正是欠条能被删掉的全部依据。而它带来的危害也随之消失:一张
+// 升级欠条(upgrade-intent.json)连同它的 OR 语义已经退休:升级一个字节都不动
+// desired(保护开着时在屏障下切换,「此刻不能起 Core」由屏障那一步武装的维护挂起
+// 表达;保护关着时停机也不写 desired),所以一次中途失败之后重跑读到的就是用户
+// 本来的意图 —— 那正是欠条能被删掉的全部依据。而它带来的危害也随之消失:一张
 // 因为某次拆除报错而留在盘上的陈旧欠条,曾能在下一次 app-install(菜单的 Repair
 // 带 --yes,连问都不问)里压过用户明确的关闭请求把保护打开。
 //
-// 调用点仍必须早于第一步:**退回路径**(挂起写不成时退回写 desired=off,设计
-// 取舍三)照旧会把 desired 记成 off,而在这里读一次就与它先后无关了。
+// 调用点仍必须早于第一步:它决定整条计划走哪条路(屏障下切换还是先停保护)。
 func upgradeDesiredOn(ctx context.Context) bool {
 	return desiredOnFrom(ctx, guardian.OpenDefaultStore(), guardian.SocketPath)
 }

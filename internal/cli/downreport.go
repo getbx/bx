@@ -18,25 +18,6 @@ import (
 // the network was restored on the forced path, because six best-effort
 // steps cannot promise that.
 func downReportLines(result macOSDownResult) (stdout []string, stderr []string) {
-	// 「两条意图都没写成」必须自己占一行,而且在最前面。
-	//
-	// 它与下面每一条都正交:保护可能干净地停了、Guardian 可能一切正常,而盘上
-	// 仍然既没有维护挂起也没有 desired=off。macOSDownLifecycleFor 同时返回一个
-	// error,但**这一行是给忽略 error 的调用方留的** —— 这个文件顶上那条既有的
-	// 教训(零值 result 会平静地渲染成「✅ bx 已停止」)说的正是这种调用方。
-	if result.IntentUnrecorded != nil {
-		stderr = append(stderr, fmt.Sprintf(
-			"⚠️  Could not record the intent to stop (neither the maintenance hold nor desired=off was written): %v; protection may still start itself on the next boot.",
-			result.IntentUnrecorded,
-		))
-	}
-	// **HoldFallback 不在这里渲染,这是有意的。**
-	//
-	// 退回只发生在升级那条来由上(recordStopIntent 对 downPurposeUser 直接返回),
-	// 而这个函数唯一的生产调用方是 macOSDownAction —— 也就是 `bx down`,
-	// downPurposeUser。在这里写一支分支,就是写一段生产永远走不到的代码,再配一条
-	// 「自己把两头接起来」的测试;这一期已经抓到过同样的形状。
-	// 升级那条路的渲染住在 runUpgrade(holdFallbackWarning),那里才有真的 producer。
 	if result.Forced {
 		stderr = append(stderr, "⚠️  "+forcedTeardownReason(result)+".")
 		// 如实描述做过的动作,不断言"网络已还原"——是否真的恢复要用户自己确认。
@@ -68,21 +49,6 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 	}
 	stdout = append(stdout, "✅ bx stopped, and start-at-boot is off.")
 	return stdout, stderr
-}
-
-// holdFallbackWarning 是「没能武装维护挂起,已退回写 desired=off」那一行的措辞。
-//
-// 它住在这个文件(而不是 upgraderun.go)只为一件事:与它旁边那几行 `bx down`
-// 的文案受同一份约束 —— 它们是用户在最糟糕的时刻唯一的指引,改字要连着测试一起改。
-//
-// **它不是失败**:保护干净地停了、升级会照常走完。它说的是盘上留下的那句
-// desired=off 会撒谎,以及那句谎在升级结束时会被纠正。
-func holdFallbackWarning(cause error) string {
-	return fmt.Sprintf(
-		"Could not arm the maintenance hold (%v), so desired=off was recorded instead: during the upgrade bx status will say \"off\" rather than \"on hold\"; "+
-			"protection is turned back on when the upgrade finishes.",
-		cause,
-	)
 }
 
 // downConfirmedStopped 报告 Guardian 是否**确认**保护已经关闭。

@@ -27,7 +27,7 @@ import (
 // 之前两轮复审都放过了 C1(「升级前记下的意图被它下一步自己删掉」),原因不是
 // 没写测试,而是写的测试全是替身:upgraderun_test.go 的 stopProtection 是个只记
 // 一笔的闭包,从不经过 Manager.Down;manager_down_test.go 从不跑 runUpgrade。
-// 两边各自全绿,而它们之间那条真实的路 —— 武装挂起 → client.DownForUpgrade →
+// 两边各自全绿,而它们之间那条真实的路 —— client.Down / DownForUpgrade →
 // unix socket → LocalAPI → Manager.Down → 销不销挂起、改不改 desired ——
 // 没有任何一个用例走过。
 //
@@ -81,7 +81,7 @@ func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
 		// 缺路径时 Store 报错(holdmigrate.go 的取舍)。留着省下一次红鲱鱼。
 		UpgradeIntent: filepath.Join(stateDir, "upgrade-intent.json"),
 		// 挂起路径必须填:这里正是**升级路径**的旗舰 e2e(真 Manager、真 socket),
-		// 而升级停机就在这条路上武装挂起 —— 缺路径会表现为一句
+		// 而屏障下切换就在这条路上武装挂起 —— 缺路径会表现为一句
 		// 「maintenance hold unreadable: guardian maintenance hold path required」,
 		// 与被测逻辑毫无关系。
 		MaintenanceHold: filepath.Join(stateDir, "maintenance-hold.json"),
@@ -107,13 +107,7 @@ func newUpgradeE2EEnv(t *testing.T) *upgradeE2EEnv {
 
 	env := &upgradeE2EEnv{store: store, client: serveGuardian(t, guardian.NewLocalAPI(manager))}
 	env.deps = testMacOSLifecycleDeps(&env.events, env.client)
-	// 挂起的两个钩子接到**同一个真 Store** 上。不接的话 armMaintenanceHold 会
-	// 报「此平台不可用」,recordStopIntent 于是退回写 desired=off —— 这条旗舰
-	// e2e 就会在盘上看到 off、照样绿,而它自称验的正是「升级不再写 off」。
-	// (那是本仓库反复出现的那个形状:替身缺一个钩子,测试测的是退化路径。)
-	env.deps.armMaintenanceHold = func(reason string) error {
-		return store.ArmMaintenanceHold(reason, time.Now())
-	}
+	// 销挂起的钩子接到**同一个真 Store** 上:强制路径上用户显式的 down 靠它销挂起。
 	env.deps.clearMaintenanceHold = func() error {
 		_, err := store.ClearMaintenanceHold()
 		return err
@@ -185,7 +179,7 @@ func TestRunUpgradeKeepsTheIntentAcrossAFailedSwitchBehindTheBarrier(t *testing.
 		guardianRunning: func() (bool, error) { return true, nil },
 		loadDesiredOn:   func() bool { return desiredOnFrom(context.Background(), env.store, "/nonexistent/guardian.sock") },
 		confirm:         func(string) (bool, error) { return true, nil },
-		stopProtection: func(bool) (macOSDownResult, error) {
+		stopProtection: func() (macOSDownResult, error) {
 			stopCalled = true
 			return macOSDownResult{}, nil
 		},

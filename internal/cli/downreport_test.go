@@ -174,11 +174,11 @@ func (errReportSentinel) Error() string { return "recovery-incomplete-sentinel" 
 // 编译不过 —— 而 CI 的三平台矩阵正是在那两台机器上跑 `go test ./...`,于是整个
 // internal/cli 在两条腿上根本没跑过。被测的 forcedMacOSTeardown 自己是平台无关的。
 func TestForcedTeardownFailureCarriesTheManualRecoveryCommands(t *testing.T) {
-	deps := teardownDeps(&teardownCalls{}, nil, nil, nil)
+	deps := teardownDeps(&teardownCalls{}, nil, nil)
 	boom := errors.New("bootout-refused")
 	deps.forceTeardown = func(context.Context) error { return boom }
 
-	err := forcedMacOSTeardown(context.Background(), stopIntent{purpose: downPurposeUser}, deps, nil)
+	err := forcedMacOSTeardown(context.Background(), downPurposeUser, deps, nil)
 	if err == nil {
 		t.Fatal("有步骤失败时必须报错 —— 静默成功会让用户以为网络已经还原")
 	}
@@ -209,10 +209,10 @@ func TestForcedTeardownFailureCarriesTheManualRecoveryCommands(t *testing.T) {
 
 // 干净路径失败导致的回落,原因同样要出现在这条错误里 —— 它解释了「为什么没能干净停下」。
 func TestForcedTeardownFailureAlsoCarriesTheCleanPathCause(t *testing.T) {
-	deps := teardownDeps(&teardownCalls{}, nil, nil, errors.New("dns-stuck"))
+	deps := teardownDeps(&teardownCalls{}, nil, errors.New("dns-stuck"))
 	cause := errors.New("recovery-incomplete")
 
-	err := forcedMacOSTeardown(context.Background(), stopIntent{purpose: downPurposeUser}, deps, cause)
+	err := forcedMacOSTeardown(context.Background(), downPurposeUser, deps, cause)
 	if err == nil {
 		t.Fatal("有步骤失败时必须报错")
 	}

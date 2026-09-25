@@ -28,9 +28,9 @@ type upgradeIO struct {
 	guardianRunning func() (bool, error)
 	// loadDesiredOn 回答「升级前这台机器想不想开着保护」。
 	//
-	// 它**只问 Guardian 的 desired**:升级的停机改为武装维护挂起、不再改写
-	// desired,所以一次中途失败之后重跑读到的就是用户本来的意图 —— 那正是
-	// 升级欠条(upgrade-intent.json)能被删掉的全部依据。
+	// 它**只问 Guardian 的 desired**:升级不改写 desired(保护开着时在屏障下
+	// 切换,挂起由屏障那一步武装),所以一次中途失败之后重跑读到的就是用户本来的
+	// 意图 —— 那正是升级欠条(upgrade-intent.json)能被删掉的全部依据。
 	loadDesiredOn func() bool
 	// confirm 询问用户。返回 (同意, 错误):false+nil 是「用户说不」,
 	// 非 nil error 是「问不出来」—— 后者必须把整条命令带成非零退出,否则调用它的
@@ -40,12 +40,9 @@ type upgradeIO struct {
 	// 带回来(而不是拆成 forced+cause 两个值)是有理由的:强制路径的**原因**不止
 	// 两种,收尾文案要靠 forcedTeardownReason 区分,少带一个字段就会打印出假话。
 	// 那条路是 best-effort,bx down 自己都拒绝断言「网络已还原」。
-	// stopProtection 停保护。参数是「这台机器此刻要不要保护」——**升级一开始
-	// 就读好的那个值**,由它决定这次停机要不要武装维护挂起。
-	//
-	// 不在停机里自己再读一次:退回路径(挂起写不成)会在停机途中把 desired 写成
-	// off,第二次读拿到的就不是用户的意图了。
-	stopProtection  func(protectionWanted bool) (macOSDownResult, error)
+	// 只有保护本就关着(desiredOn=false)的机器会走到这一步:保护开着时升级在屏障下
+	// 切换,根本不停保护(见 upgradeSteps)。
+	stopProtection  func() (macOSDownResult, error)
 	installFiles    func() (installedFiles, error)
 	restartGuardian func() error
 	// configUsable 回答「Guardian 现在起得来吗」。
@@ -93,8 +90,7 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 		io.log(fmt.Sprintf("! could not determine whether Guardian is running (%v): treating it as running, so protection will be stopped and the service restarted", err))
 	}
 
-	// 意图必须在动手之前读完:退回路径(挂起写不成)上停机仍会写 desired=off,
-	// 读晚了就只能读到那个 off。
+	// 意图必须在动手之前读完:它决定整条计划走哪条路。
 	desiredOn := io.loadDesiredOn()
 	steps := upgradeSteps(running, desiredOn, io.guardianConfigUsable())
 	// 两条路都会断网(屏障下切换是「拦住」,停保护是「停服务」),都要先问。
@@ -128,20 +124,11 @@ func runUpgrade(io upgradeIO, assumeYes bool) (upgradeOutcome, error) {
 		switch step {
 		case UpgradeStopProtection:
 			io.log("• Stopping protection (the network goes back to direct for now)")
-			down, err := io.stopProtection(desiredOn)
+			down, err := io.stopProtection()
 			outcome.Down = down
 			outcome.ForcedTeardown = down.Forced || err != nil
 			if outcome.ForcedTeardown {
 				networkRestored = false
-			}
-			// **退回规则触发时必须让用户看到。** 它不产生 error(保护干净地停了、
-			// 升级会照常走完),所以不专门报一行就彻底无声 —— 而后果实打实:盘上
-			// 留下的是「用户不想要保护」,一台正在升级的机器于是与一台用户关掉了
-			// 保护的机器再次长得一模一样。**这里是它唯一的生产渲染点**:
-			// downReportLines 只被 `bx down`(downPurposeUser)调用,而那条路
-			// 从不退回。
-			if down.HoldFallback != nil {
-				io.log("! " + holdFallbackWarning(down.HoldFallback))
 			}
 			stepErr = err
 			// **Guardian 没能确认保护关掉时,不许继续换二进制。**
