@@ -772,7 +772,26 @@ struct RulesModelTests {
                "三种在屏幕上必须两两不同")
     }
 
+    /// 2026-09-25:服务器打印的整条命令里第一条链接是 UDP 的、最后一条才是主链接,
+    /// 而 Set Up 此前只收一条 —— 最自然的挑法恰好挑错。现在整条命令原样贴进来就行。
+    static func testSetUpReadsTheWholeCommandTheServerPrinted() {
+        let printed = "sudo bx setup --udp 'bx://UDP' 'bx://MAIN'"
+        expect(parseSetupLinks(printed) == SetupLinks(main: "bx://MAIN", udp: "bx://UDP"),
+               "整条命令没读成「主链接 + UDP 链接」:\(String(describing: parseSetupLinks(printed)))")
+        expect(parseSetupLinks("bx://ONLY") == SetupLinks(main: "bx://ONLY", udp: nil), "裸链接不认了")
+        expect(parseSetupLinks("sudo /usr/local/bin/bx setup --udp=bx://U \"bx://M\"") == SetupLinks(main: "bx://M", udp: "bx://U"),
+               "--udp= 形式或双引号没认")
+        expect(parseSetupLinks("sudo bx setup 'bx://A' 'bx://B'") == nil, "两条主链接是歧义,不许猜一条")
+        expect(parseSetupLinks("sudo bx setup --udp 'bx://A'") == nil, "只有 UDP 链接、没有主链接,不许把它当主链接")
+        expect(parseSetupLinks("sudo bx setup --udp 'bx://A' 'bx://B") == nil, "引号没闭合要拒绝")
+        expect(clipboardCandidateLink(printed) == printed, "剪贴板里的整条命令没被预填")
+        expect(setupArguments(SetupLinks(main: "bx://M", udp: "bx://U"), quote: { "'\($0)'" }) == "--udp 'bx://U' 'bx://M'",
+               "flag 必须在链接之前,否则 bx setup 会拒绝")
+        expect(setupArguments(SetupLinks(main: "bx://M", udp: nil), quote: { "'\($0)'" }) == "'bx://M'", "单链接的参数变了")
+    }
+
     static func main() {
+        testSetUpReadsTheWholeCommandTheServerPrinted()
         testCustomRulesHeadingSaysWhatTheModeMakesTheseRulesMean()
         testReplaceMessageShowsTheExitChangeNotALecture()
         testReplaceMessageOmitsTheOldServerWhenUnknown()

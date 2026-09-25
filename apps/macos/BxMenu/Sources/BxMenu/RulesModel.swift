@@ -544,7 +544,88 @@ func clipboardCandidateLink(_ raw: String?) -> String? {
     guard !text.isEmpty, text.count < 8192 else { return nil }
     // 只吃**单行**:多行文本多半是聊天记录,把整段塞进输入框只会让人困惑。
     guard !text.contains("\n") else { return nil }
-    return looksLikeClientLinkText(text) ? text : nil
+    return parseSetupLinks(text) != nil ? text : nil
+}
+
+/// 「Set Up bx」收到的东西:一条主链接,可能还带一条专给 UDP 的链接。
+struct SetupLinks: Equatable {
+    let main: String
+    let udp: String?
+}
+
+/// 把用户贴进来的东西读成 SetupLinks。认两种:
+///   - 一条裸链接;
+///   - 服务器打印的**整条命令** `sudo bx setup --udp 'bx://B' 'bx://A'`。
+///
+/// **为什么要认整条命令(2026-09-25)**:`bx server up` 打印的是整条命令,里面**第一条**
+/// 链接是 UDP 的、**最后一条**才是主链接。此前这里只收一条链接,用户从那一行里挑一条
+/// 贴 —— 最自然的挑法(第一条)恰好挑错,菜单就把 UDP 专用的 hysteria2 链接当成了
+/// 主传输;挑对了也白丢 UDP 加速。
+///
+/// 读不出来一律 nil,不猜:主链接必须恰好一条,`--udp` 后面必须跟一条链接。
+func parseSetupLinks(_ raw: String) -> SetupLinks? {
+    let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty, !text.contains("\n") else { return nil }
+    guard let tokens = shellWords(text) else { return nil }
+    var mains: [String] = []
+    var udp: String?
+    var i = 0
+    while i < tokens.count {
+        let token = tokens[i]
+        if token == "--udp" || token == "-udp" {
+            guard i + 1 < tokens.count, looksLikeClientLinkText(tokens[i + 1]), udp == nil else { return nil }
+            udp = tokens[i + 1]
+            i += 2
+            continue
+        }
+        if token.hasPrefix("--udp=") {
+            let value = String(token.dropFirst("--udp=".count))
+            guard looksLikeClientLinkText(value), udp == nil else { return nil }
+            udp = value
+        } else if looksLikeClientLinkText(token) {
+            mains.append(token)
+        }
+        // 其余(sudo、bx 的路径、setup、--force 之类)不影响要装什么,跳过。
+        i += 1
+    }
+    guard mains.count == 1 else { return nil }
+    return SetupLinks(main: mains[0], udp: udp)
+}
+
+/// 按 shell 的单/双引号规则切词(只做这里需要的那一点:不认转义、不展开任何东西)。
+/// 引号没闭合 ⇒ nil。
+func shellWords(_ text: String) -> [String]? {
+    var words: [String] = []
+    var current = ""
+    var inWord = false
+    var quote: Character?
+    for ch in text {
+        if let q = quote {
+            if ch == q { quote = nil } else { current.append(ch) }
+            continue
+        }
+        if ch == "'" || ch == "\"" {
+            quote = ch
+            inWord = true
+        } else if ch == " " || ch == "\t" {
+            if inWord { words.append(current); current = ""; inWord = false }
+        } else {
+            current.append(ch)
+            inWord = true
+        }
+    }
+    guard quote == nil else { return nil }
+    if inWord { words.append(current) }
+    return words
+}
+
+/// `bx setup` 后面该跟的参数:flag 在链接**之前**(urfave/cli 遇到第一个位置参数就
+/// 停止解析 flag,写在后面会被静默吞掉 —— 见 internal/cli 的 checkSetupArgs)。
+func setupArguments(_ links: SetupLinks, quote: (String) -> String) -> String {
+    if let udp = links.udp {
+        return "--udp \(quote(udp)) \(quote(links.main))"
+    }
+    return quote(links.main)
 }
 
 /// 认得出的客户端链接前缀。与 CLI 侧 `tunnel.IsClientLink` 同一套取值。
