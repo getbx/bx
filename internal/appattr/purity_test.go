@@ -53,6 +53,12 @@ func TestAppattrPackageStaysPure(t *testing.T) {
 				t.Fatalf("%s 的 import 解析失败: %v", name, err)
 			}
 			for prefix, why := range banned {
+				// 明写的例外(与 internal/leakcheck 的纯度守卫同一条):net/netip 是纯值类型,
+				// 不拨号、不解析名字、不碰 syscall。2026-09-25 为 StrayConnections 引入 ——
+				// 判据要比较的正是地址。
+				if path == "net/netip" {
+					continue
+				}
 				if path == prefix || strings.HasPrefix(path, prefix+"/") {
 					t.Errorf("%s import 了 %q:本包必须保持纯判据 —— %s", name, path, why)
 				}

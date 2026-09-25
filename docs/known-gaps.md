@@ -16,7 +16,7 @@
 | # | 问题 | 核过 | 判据在哪 | 估计 |
 |---|---|---|---|---|
 | A10 | **升级停机那套「武装挂起」的死代码**:2026-09-25 起保护开着时 `app-install` 在屏障下切换、不再调 `Manager.Down`,于是 `downPurposeUpgrade` 的挂起武装与退回、`runUpgrade` 里 `HoldFallback` 那一行渲染在 app-install 上走不到了(还有直接调 `macOSDownLifecycleFor` 的单测盖着)。确认没有别的调用方后整块拿掉。 | 2026-09-25 | `docs/superpowers/specs/2026-09-25-fail-closed-guardian-switch-design.md` §6 | 半天 |
-| A11 | **关掉保护期间建立的连接,重新 `bx up` 之后仍从物理网卡直出**(2026-09-25 真机抓包:`bx down` 那 14 秒里 Chrome 开的一条 TCP 连接(`192.168.50.15:49528 → 178.128.133.161:443`),**36 分钟后、中间又经过一次完整的 Guardian 切换,仍在 en0 上以真实 IP 收发**)。macOS 已连接的 socket 不会因为路由表变了而改走 TUN;所有 VPN 都有同一个性质,但 bx 的承诺是「不泄漏」,而用户从菜单开关一次保护就会碰上。修法方向:up 之后用 `appattr` 已有的 pcblist 采集找出「本地地址是物理网卡、对端是公网、进程不是 bx 自己也不是绑网卡的(Tailscale)」的已建连接,在 `bx up`/菜单/`bx status` 里点名那几个应用(「重启它们」);能不能主动 reset 另查。**不是切换本身的问题。** | 2026-09-25 | `docs/acceptance-pending.md` B9 | 待定 |
+| A11 | **关掉保护期间建立的连接,重新 `bx up` 之后仍从物理网卡直出**(2026-09-25 真机抓包:`bx down` 那 14 秒里 Chrome 开的一条 TCP 连接(`192.168.50.15:49528 → 203.0.113.11:443`),**36 分钟后、中间又经过一次完整的 Guardian 切换,仍在 en0 上以真实 IP 收发**)。macOS 已连接的 socket 不会因为路由表变了而改走 TUN;所有 VPN 都有同一个性质,但 bx 的承诺是「不泄漏」,而用户从菜单开关一次保护就会碰上。**看得见了(2026-09-25)**:Core 每 15 秒读一次内核 socket 表(`appattr.StrayConnections`:本地地址在物理网卡、远端公网、没绑网卡、不是 bx 自己),有这种连接时 `bx status`/菜单出一条 error 级告警 `connections_bypassing_bx`,点名应用、叫用户重开它们。**仍没做的是主动断掉它们**(macOS 没有按 socket reset 的现成原语;要不要为此动 pf 待定)。 | 2026-09-25 | `docs/acceptance-pending.md` B9 | 待定 |
 
 ## B. 要你拍板:产品或安全上的取舍
 
