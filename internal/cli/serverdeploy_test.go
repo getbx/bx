@@ -99,7 +99,7 @@ func TestClientLinkFromInstallOutput(t *testing.T) {
 客户端链接:
 bx://eyJ2IjoxLCJ0cmFuc3BvcnQiOiJyZWFsaXR5In0
 下一步:在客户端上跑 bx setup <链接>`
-	link, err := clientLinkFromInstallOutput(good)
+	link, _, err := clientLinksFromInstallOutput(good)
 	if err != nil {
 		t.Fatalf("认不出链接:%v", err)
 	}
@@ -108,7 +108,7 @@ bx://eyJ2IjoxLCJ0cmFuc3BvcnQiOiJyZWFsaXR5In0
 	}
 
 	// 取不到:报错里必须带上远端到底说了什么。
-	_, err = clientLinkFromInstallOutput("Permission denied (publickey).")
+	_, _, err = clientLinksFromInstallOutput("Permission denied (publickey).")
 	if err == nil {
 		t.Fatal("没有链接却报告成功 —— 那会写出一份没有服务器的配置")
 	}
@@ -120,25 +120,50 @@ bx://eyJ2IjoxLCJ0cmFuc3BvcnQiOiJyZWFsaXR5In0
 // 多条链接时取**第一条** —— server install 先打主链接,后面可能还有 UDP 那条。
 func TestClientLinkTakesTheFirstOne(t *testing.T) {
 	out := "bx://AAAA\nUDP:\nbx://BBBB\n"
-	link, err := clientLinkFromInstallOutput(out)
+	link, _, err := clientLinksFromInstallOutput(out)
 	if err != nil || link != "bx://AAAA" {
 		t.Fatalf("= %q,%v", link, err)
 	}
 }
 
-// **部署计划:传之前先问架构,装完再取链接。顺序不能乱。**
+// **部署的真实顺序:先问架构,再按那个架构取二进制、上传,装完才取链接、写本机配置。**
 //
-// 特别是「先探架构」——它决定了传哪个二进制,放在传输之后就没有意义了。
-func TestDeployPlanOrder(t *testing.T) {
-	steps := deployPlanSteps()
-	want := []string{"detect-arch", "upload", "install", "read-link"}
-	if len(steps) != len(want) {
-		t.Fatalf("步骤数 = %d,want %d:%v", len(steps), len(want), steps)
+// 特别是「先探架构」——它决定了传哪个二进制,放在传输之后就没有意义了;而链接
+// 只能从 install 的输出里取,取到之前绝不写本机配置。判据打在 runServerDeploy
+// 真实发出的调用序列上(此前钉的是一张没有任何代码读的步骤常量表)。
+func TestDeployRunsInTheOrderThatMakesSense(t *testing.T) {
+	var events []string
+	err := runServerDeploy(deployOptions{Host: "root@h", Protocol: "reality"}, deployDeps{
+		run: func(name string, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			switch {
+			case name == "ssh" && strings.Contains(joined, "id -u"):
+				events = append(events, "detect-arch")
+				return "0\naarch64\n", nil
+			case name == "scp":
+				events = append(events, "upload")
+				return "", nil
+			case name == "ssh" && strings.Contains(joined, "server install"):
+				events = append(events, "install")
+				return "sudo bx setup 'bx://MAIN'", nil
+			}
+			return "", nil
+		},
+		fetchBinary: func(arch string) (string, error) {
+			events = append(events, "fetch-"+arch)
+			return "/tmp/bx", nil
+		},
+		writeLocalConfig: func(link string) error {
+			events = append(events, "write-config "+link)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("部署失败:%v", err)
 	}
-	for i := range want {
-		if steps[i] != want[i] {
-			t.Fatalf("第 %d 步是 %q,want %q —— 顺序错了整条流程就没有意义", i, steps[i], want[i])
-		}
+	want := []string{"detect-arch", "fetch-arm64", "upload", "install", "write-config bx://MAIN"}
+	if strings.Join(events, " | ") != strings.Join(want, " | ") {
+		t.Fatalf("部署顺序 = %q\nwant      %q —— 顺序错了整条流程就没有意义", events, want)
 	}
 }
 

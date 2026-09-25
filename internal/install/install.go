@@ -479,18 +479,6 @@ func firstExistingPath(paths ...string) string {
 	return ""
 }
 
-// Restart 重启已安装的 bx 客户端服务,不改变开机自启状态。
-func Restart() error {
-	switch runtime.GOOS {
-	case "darwin":
-		return runLaunchctl("kickstart", "-k", "system/"+launchdLabel)
-	case "windows":
-		return windowsRestartService()
-	default:
-		return runSystemctl("restart", ServiceName)
-	}
-}
-
 // EnableServer 启动 bx server 并设为开机自启。
 func EnableServer() error { return runSystemctl("enable", "--now", ServerServiceName) }
 
@@ -502,9 +490,6 @@ func RestartServer() error { return runSystemctl("restart", ServerServiceName) }
 
 // EnableShare 启动命名分享并设为开机自启。
 func EnableShare(name string) error { return runSystemctl("enable", "--now", ShareServiceName(name)) }
-
-// DisableShare 停止命名分享并取消开机自启。
-func DisableShare(name string) error { return runSystemctl("disable", "--now", ShareServiceName(name)) }
 
 // UnitInstalled 报告 unit 文件是否已就位(用于 up 前置校验)。
 func UnitInstalled() bool {
@@ -604,45 +589,6 @@ func execStartCmd(unitText string) string {
 		return ""
 	}
 	return ""
-}
-
-// LaunchdPlistText 返回 macOS LaunchDaemon plist。execStart 是完整启动命令。
-func LaunchdPlistText(execStart string) string {
-	args := strings.Fields(execStart)
-	var b strings.Builder
-	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>`)
-	writeXMLEscaped(&b, launchdLabel)
-	b.WriteString(`</string>
-  <key>ProgramArguments</key>
-  <array>
-`)
-	for _, arg := range args {
-		b.WriteString("    <string>")
-		writeXMLEscaped(&b, arg)
-		b.WriteString("</string>\n")
-	}
-	b.WriteString(`  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>`)
-	writeXMLEscaped(&b, launchdStdoutPath)
-	b.WriteString(`</string>
-  <key>StandardErrorPath</key>
-  <string>`)
-	writeXMLEscaped(&b, launchdStderrPath)
-	b.WriteString(`</string>
-</dict>
-</plist>
-`)
-	return b.String()
 }
 
 func writeXMLEscaped(b *strings.Builder, s string) {
@@ -1026,20 +972,6 @@ func dnsServersMatchState(state dnsState, servers []string) bool {
 	return true
 }
 
-func existingPaths(paths ...string) []string {
-	out := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			out = append(out, path)
-		}
-	}
-	return out
-}
-
-func resolveDNSService(service string) (string, error) {
-	return resolveDNSServiceContextWithRunner(context.Background(), execDNSCommandRunner{}, service)
-}
-
 func resolveDNSServiceContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -1052,10 +984,6 @@ func resolveDNSServiceContextWithRunner(ctx context.Context, runner dnsCommandRu
 		return "", err
 	}
 	return serviceForDeviceDarwinContextWithRunner(ctx, runner, dev)
-}
-
-func defaultDeviceDarwin() (string, error) {
-	return defaultDeviceDarwinContextWithRunner(context.Background(), execDNSCommandRunner{})
 }
 
 func defaultDeviceDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner) (string, error) {
@@ -1073,10 +1001,6 @@ func defaultDeviceDarwinContextWithRunner(ctx context.Context, runner dnsCommand
 		}
 	}
 	return "", fmt.Errorf("无法检测默认网络接口")
-}
-
-func serviceForDeviceDarwin(dev string) (string, error) {
-	return serviceForDeviceDarwinContextWithRunner(context.Background(), execDNSCommandRunner{}, dev)
 }
 
 func serviceForDeviceDarwinContextWithRunner(ctx context.Context, runner dnsCommandRunner, dev string) (string, error) {
@@ -1108,10 +1032,6 @@ func isNetworkServiceLine(line string) bool {
 	return len(line) > 3 && line[0] == '(' && line[1] >= '0' && line[1] <= '9'
 }
 
-func currentDNSServers(service string) ([]string, error) {
-	return currentDNSServersContextWithRunner(context.Background(), execDNSCommandRunner{}, service)
-}
-
 func currentDNSServersContextWithRunner(ctx context.Context, runner dnsCommandRunner, service string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -1134,10 +1054,6 @@ func currentDNSServersContextWithRunner(ctx context.Context, runner dnsCommandRu
 	return servers, nil
 }
 
-func writeDNSState(state dnsState) error {
-	return writeDNSStateAtPath(dnsStatePath, state)
-}
-
 func writeDNSStateAtPath(statePath string, state dnsState) error {
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
 		return fmt.Errorf("创建 DNS 状态目录: %w", err)
@@ -1150,10 +1066,6 @@ func writeDNSStateAtPath(statePath string, state dnsState) error {
 		return fmt.Errorf("写 DNS 状态 %s: %w", statePath, err)
 	}
 	return nil
-}
-
-func readDNSState() (dnsState, error) {
-	return readDNSStateAtPath(dnsStatePath)
 }
 
 func readDNSStateAtPath(statePath string) (dnsState, error) {
@@ -1171,10 +1083,6 @@ func readDNSStateAtPath(statePath string) (dnsState, error) {
 	return state, nil
 }
 
-func runNetworksetup(args ...string) error {
-	return runNetworksetupContextWithRunner(context.Background(), execDNSCommandRunner{}, args...)
-}
-
 func runNetworksetupContextWithRunner(ctx context.Context, runner dnsCommandRunner, args ...string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1190,10 +1098,6 @@ func runNetworksetupContextWithRunner(ctx context.Context, runner dnsCommandRunn
 		return fmt.Errorf("networksetup %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
-}
-
-func flushDNSCache() error {
-	return flushDNSCacheContextWithRunner(context.Background(), execDNSCommandRunner{})
 }
 
 func flushDNSCacheContextWithRunner(ctx context.Context, runner dnsCommandRunner) error {

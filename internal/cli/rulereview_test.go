@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/doctor"
 	"github.com/getbx/bx/internal/embedded"
 	"github.com/getbx/bx/internal/rulereview"
 )
@@ -98,7 +99,7 @@ func TestBuildRuleReviewInputUsesCoresLiveChinaListWhenReadable(t *testing.T) {
 		t.Fatal("Report.BuiltinListFallback = true —— 没有回落")
 	}
 
-	lines := ruleReviewDoctorLines(rep)
+	lines := doctor.RuleReviewLines(rep)
 	var found bool
 	for _, l := range lines {
 		if l.Key != "covered by builtin list" {
@@ -150,7 +151,7 @@ func TestBuildRuleReviewInputFallsBackToEmbeddedWhenCoreListUnreadable(t *testin
 		t.Fatal("Report.BuiltinListFallback = false —— 没有把回落状态透传给报告")
 	}
 
-	lines := ruleReviewDoctorLines(rep)
+	lines := doctor.RuleReviewLines(rep)
 	var sawFallbackNotice bool
 	for _, l := range lines {
 		if l.Key == "builtin list source" && strings.Contains(l.Value, "回落") {
@@ -194,7 +195,7 @@ func TestBuildRuleReviewInputUserOverrideUnreadableDoesNotFallBack(t *testing.T)
 		t.Fatal("BuiltinListChecked = true —— 用户覆盖且读不到时不该比")
 	}
 
-	lines := ruleReviewDoctorLines(rep)
+	lines := doctor.RuleReviewLines(rep)
 	var said bool
 	for _, l := range lines {
 		if l.Key == "builtin list check" && strings.Contains(l.Value, missing) {
@@ -239,7 +240,7 @@ func TestBuildRuleReviewInputUsesUserOverrideChinaListWhenReadable(t *testing.T)
 		t.Fatal("BuiltinListChecked = false —— 用户指定的列表读得到,该比")
 	}
 
-	lines := ruleReviewDoctorLines(rep)
+	lines := doctor.RuleReviewLines(rep)
 	var found bool
 	for _, l := range lines {
 		if l.Key == "covered by builtin list" && strings.Contains(l.Value, "*.override-only.example") {
@@ -270,7 +271,7 @@ func TestBuildRuleReviewInputFlattensEveryRulesEntry(t *testing.T) {
 // 噪声的前提(与按规则失败计数同一条纪律)。
 func TestCleanConfigProducesNoDoctorLines(t *testing.T) {
 	rep := rulereview.NewReport(nil, true, "")
-	if lines := ruleReviewDoctorLines(rep); len(lines) != 0 {
+	if lines := doctor.RuleReviewLines(rep); len(lines) != 0 {
 		t.Fatalf("干净配置说了 %d 行话:%+v", len(lines), lines)
 	}
 }
@@ -281,7 +282,7 @@ func TestRiskyRuleGetsAWarnLineNamingTheRule(t *testing.T) {
 		Kind: "direct", Rule: "*.myqcloud.com", Class: rulereview.ClassRisky, Summary: "…",
 	}}, true, "")
 
-	lines := ruleReviewDoctorLines(rep)
+	lines := doctor.RuleReviewLines(rep)
 	if len(lines) == 0 {
 		t.Fatal("危险规则一个字都没说")
 	}
@@ -302,7 +303,7 @@ func TestRiskyRuleGetsAWarnLineNamingTheRule(t *testing.T) {
 // 「没查」不许长得像「零条」。
 func TestNotCheckedBuiltinListSaysSo(t *testing.T) {
 	rep := rulereview.NewReport(nil, false, "in global mode the built-in china list does not apply at all, so this class was not compared")
-	lines := ruleReviewDoctorLines(rep)
+	lines := doctor.RuleReviewLines(rep)
 	var said bool
 	for _, l := range lines {
 		if strings.Contains(l.Value, "was not compared") || strings.Contains(l.Value, "does not apply") {
@@ -337,7 +338,7 @@ func TestProxyOnlyBuiltinListHitsAreFiledAsExceptionsNotSafeToDelete(t *testing.
 		},
 	}, true, "")
 
-	lines := ruleReviewDoctorLines(rep)
+	lines := doctor.RuleReviewLines(rep)
 
 	// **必须没有**「covered by builtin list」这一行——那是 direct 专用,意思是
 	// 「删掉没有影响」;这份配置只有 proxy 例外,一条都不该落进那个 key。
@@ -395,7 +396,7 @@ func TestBuiltinListHitsSplitByKindIntoTwoLinesAndTwoCheckNames(t *testing.T) {
 		},
 	}, true, "")
 
-	lines := ruleReviewDoctorLines(rep)
+	lines := doctor.RuleReviewLines(rep)
 	var direct, proxy *doctorFinding
 	for i := range lines {
 		switch lines[i].Key {
@@ -418,8 +419,8 @@ func TestBuiltinListHitsSplitByKindIntoTwoLinesAndTwoCheckNames(t *testing.T) {
 		t.Errorf("两行都应是 info(建议,不是安全告警):direct=%q proxy=%q", direct.Status, proxy.Status)
 	}
 
-	nameDirect := ruleReviewCheckName(direct.Key)
-	nameProxy := ruleReviewCheckName(proxy.Key)
+	nameDirect := doctor.RuleReviewCheckName(direct.Key)
+	nameProxy := doctor.RuleReviewCheckName(proxy.Key)
 	if nameDirect == nameProxy {
 		t.Fatalf("两条 check 用了同一个名字 %q —— --json 消费方按名字取,会静默丢掉一条", nameDirect)
 	}
@@ -440,7 +441,7 @@ func TestBuiltinListHitsSplitByKindIntoTwoLinesAndTwoCheckNames(t *testing.T) {
 // 里同样含有子串 "*.myqcloud.com"。brief 里按子串扫全部 checks 的写法在合成小
 // report(Step 1 那几条单测)下没问题,换成真实内嵌列表跑就会撞见这第二条同文
 // 的 info 行,把断言判错——这正是「fixture 必须是生产解析器/生产数据能读的
-// 那种」在这里的具体形状。改按 ruleReviewCheckName("risky direct rule") 这个
+// 那种」在这里的具体形状。改按 doctor.RuleReviewCheckName("risky direct rule") 这个
 // 稳定的 check name 定位,不受同一子串还出现在别的 finding 里影响。
 func TestDoctorSurfacesRiskyRuleOnBothPaths(t *testing.T) {
 	dir := t.TempDir()
@@ -452,7 +453,7 @@ func TestDoctorSurfacesRiskyRuleOnBothPaths(t *testing.T) {
 
 	rep := collectClientDoctorWith(path, "", time.Second, true, false)
 
-	wantName := ruleReviewCheckName("risky direct rule")
+	wantName := doctor.RuleReviewCheckName("risky direct rule")
 	var found bool
 	for _, c := range rep.Checks {
 		if c.Name != wantName {
@@ -474,7 +475,7 @@ func TestDoctorSurfacesRiskyRuleOnBothPaths(t *testing.T) {
 // **回归 review finding**:policy.DirectRisk 的名单有 19 个域
 // (aliyuncs/myqcloud/amazonaws/cloudfront/github.io…),配置里同时有两条危险直连
 // 完全现实。此前的实现按每条 finding 各调一次 rep.AddCheck(同一个 name),
-// --json 里会出现**多个同名** checkReport;ruleReviewCheckName 的注释自己写的
+// --json 里会出现**多个同名** checkReport;doctor.RuleReviewCheckName 的注释自己写的
 // 就是「agent 与 MCP 按名字取」,按名字取的消费方只会拿到其中一条,静默丢掉
 // 其余的安全结论 —— 一个去匿名化风险被静默丢掉,方向正好是这个功能要防的
 // 那个错误的反面。
@@ -491,7 +492,7 @@ func TestDoctorJSONMergesMultipleRiskyRulesIntoOneNamedCheck(t *testing.T) {
 
 	rep := collectClientDoctorWith(path, "", time.Second, true, false)
 
-	wantName := ruleReviewCheckName("risky direct rule")
+	wantName := doctor.RuleReviewCheckName("risky direct rule")
 	var matches []checkReport
 	for _, c := range rep.Checks {
 		if c.Name == wantName {
@@ -536,12 +537,12 @@ func captureStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// 同一个 review finding,文本路径这一侧:doctorAction 把 ruleReviewDoctorLines
+// 同一个 review finding,文本路径这一侧:doctorAction 把 doctor.RuleReviewLines
 // 的每一条按 doctorLine(status, key, value) 打一行,合并后仍必须**两条规则都
 // 出现在输出里**——只打第一条的话,用户会以为按提示删掉那一条就完了。
 //
 // 这里真的跑一遍 bx doctor(经 New() 装配的完整 App,与命令行用户看到的路径
-// 一致),不是直接调 ruleReviewDoctorLines——后者已经被上面那条 JSON 测试
+// 一致),不是直接调 doctor.RuleReviewLines——后者已经被上面那条 JSON 测试
 // 和这条共用同一份判据的事实覆盖了;这条要证明的是**渲染那一层没有偷偷截断**。
 func TestDoctorTextPathListsEveryRiskyRuleNotJustTheFirst(t *testing.T) {
 	dir := t.TempDir()

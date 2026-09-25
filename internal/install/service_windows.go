@@ -89,21 +89,6 @@ func windowsDisableService() error {
 	return nil
 }
 
-// windowsRestartService 重启(不改自启状态)。
-func windowsRestartService() error {
-	m, s, err := openService()
-	if err != nil {
-		return err
-	}
-	defer m.Disconnect()
-	defer s.Close()
-	_ = stopAndWait(s)
-	if err := s.Start(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
-		return fmt.Errorf("启动服务: %w", err)
-	}
-	return nil
-}
-
 // windowsUninstallService 停止并删除服务。区分「连不上 SCM(如非管理员)」= 真错误(不谎报成功)
 // 与「服务本就没注册」= 已卸(nil)。
 func windowsUninstallService() error {

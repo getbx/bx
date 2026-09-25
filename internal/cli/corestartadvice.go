@@ -56,18 +56,6 @@ type startFailureServers struct {
 // Guardian 自己拨不通。
 const coreStartFailureCodePrefix = "core_"
 
-// coreStartFailureCodes 是这一族在 Guardian 应答里出现的全部码。
-// **从 supervisor 那张表派生**,不是这里抄一份 —— 加一个码而忘了给它一句话,
-// TestEveryStartFailureOutcomeReadsDifferently 当场转红。
-func coreStartFailureCodes() []string {
-	codes := supervisor.StartFailureCodes()
-	out := make([]string, 0, len(codes))
-	for _, code := range codes {
-		out = append(out, coreStartFailureCodePrefix+code)
-	}
-	return out
-}
-
 // coreStartFailureAdvice 把一个码拼成用户能照做的那几行。
 //
 // **认不出的码返回空串** —— 宁可不给,也不编一句错的(与菜单

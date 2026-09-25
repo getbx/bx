@@ -105,61 +105,6 @@ func Classify(err error) string {
 	return Other
 }
 
-// Blame 说明一类失败**指向谁**。
-//
-// 它取代了原来那个 bool(`LooksLikeOurFault`)。换掉的理由有两条,第二条更要紧:
-//
-//   - 那个 bool **零生产调用方** —— 判据写下来了、测试盖着,而从没有一个字
-//     印给用户看过。一个没人调用而测试盖着的函数,与没有这个功能在输出上
-//     完全一样。
-//   - **两态不够**:`Other`(认不出这次失败是怎么回事)在 bool 下与 `Timeout`
-//     (确知是对端的问题)返回同一个 false,于是「我判不出来」被渲染成
-//     「不是 bx 的问题」。本仓库为这个形状栽过很多次 —— 「没问出来」不许被
-//     解成好消息。
-type Blame uint8
-
-const (
-	// BlameUndetermined 是**零值**:这一类说不出指向谁。
-	// 零值取它而不是取任何一个确定的答案,与 observe.Tristate、
-	// leakcheck.ReachUndetermined 同一条纪律 —— 漏填一类时多报好过漏报。
-	BlameUndetermined Blame = iota
-	// BlameLocal:指向本机 / bx 自己这一侧。**这一档要立刻去查。**
-	BlameLocal
-	// BlameRemote:指向对端或路上。改 bx 的规则一个字都没用。
-	BlameRemote
-	// BlameNotAFailure:压根不是「这条路走不通」——是应用自己的行为。
-	BlameNotAFailure
-)
-
-func (b Blame) String() string {
-	switch b {
-	case BlameLocal:
-		return "local"
-	case BlameRemote:
-		return "remote"
-	case BlameNotAFailure:
-		return "not_a_failure"
-	default:
-		return "undetermined"
-	}
-}
-
-// BlameFor 把一个类别名映射成它指向谁。
-//
-// 认不出的名字(含空串)一律 BlameUndetermined —— 绝不悄悄归进「不是 bx 的问题」。
-func BlameFor(kind string) Blame {
-	switch kind {
-	case Unreachable, DNS, EgressUnwired:
-		return BlameLocal
-	case Timeout, Refused, Reset:
-		return BlameRemote
-	case DNSNotFound, Canceled:
-		return BlameNotAFailure
-	default:
-		return BlameUndetermined
-	}
-}
-
 // Dominant 找出占**严格多数**的那一类,没有就说没有。
 //
 // **门槛是多数不是最多,这是判据的一部分。** 一份 4/3/3 的失败里最多的那一类

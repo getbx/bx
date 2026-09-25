@@ -174,10 +174,6 @@ func upVersionMismatchMessage(guardianVersion, runtimeVersion string) string {
 	)
 }
 
-func upgradeFailureMessage(step UpgradeStep, err error) string {
-	return upgradeFailureMessageWithNetwork(step, err, true)
-}
-
 // upgradeFailureMessageWithNetwork 在失败时如实说清「现在处于什么状态」。
 //
 // networkRestored=false 表示停保护那一步走了强制拆除(`bx down` 的逃生路径)。

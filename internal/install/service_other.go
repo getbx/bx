@@ -11,7 +11,6 @@ var errNotWindows = errors.New("bx: Windows 服务操作仅在 Windows 可用")
 func windowsInstallService(execStart string) error { return errNotWindows }
 func windowsEnableService() error                  { return errNotWindows }
 func windowsDisableService() error                 { return errNotWindows }
-func windowsRestartService() error                 { return errNotWindows }
 func windowsUninstallService() error               { return errNotWindows }
 func windowsServiceInstalled() bool                { return false }
 func windowsServiceExecCmd() (string, error)       { return "", errNotWindows }

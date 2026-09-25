@@ -16,6 +16,7 @@
 | # | 问题 | 核过 | 判据在哪 | 估计 |
 |---|---|---|---|---|
 | A11 | **关掉保护期间建立的连接,重新 `bx up` 之后仍从物理网卡直出**(2026-09-25 真机抓包:`bx down` 那 14 秒里 Chrome 开的一条 TCP 连接(`192.168.50.15:49528 → 203.0.113.11:443`),**36 分钟后、中间又经过一次完整的 Guardian 切换,仍在 en0 上以真实 IP 收发**)。macOS 已连接的 socket 不会因为路由表变了而改走 TUN;所有 VPN 都有同一个性质,但 bx 的承诺是「不泄漏」,而用户从菜单开关一次保护就会碰上。**看得见了(2026-09-25)**:Core 每 15 秒读一次内核 socket 表(`appattr.StrayConnections`:本地地址在物理网卡、远端公网、没绑网卡、不是 bx 自己),有这种连接时 `bx status`/菜单出一条 error 级告警 `connections_bypassing_bx`,点名应用、叫用户重开它们。**仍没做的是主动断掉它们**(macOS 没有按 socket reset 的现成原语;要不要为此动 pf 待定)。 | 2026-09-25 | `docs/acceptance-pending.md` B9 | 待定 |
+| A12 | **ZeroTier 根节点的旁路只有写死的 IP,主机名从没被解析过**。`internal/overlay` 的租户表给 ZeroTier 声明了 `RelayHosts`(五个 `root-*.zerotier.com`)与 `RelayFallbackCIDRs`(2026-08-12 核对的五个 IP),注释写着「主机名是权威来源、IP 只是兜底、解析结果压过兜底值」—— 而没有任何代码去解析那些主机名(汇总它们的 `overlay.RelayHosts()` 零调用方,2026-09-25 随死代码一起删掉)。装上的只有兜底 IP:根节点换 IP 后 ZeroTier 在 fail-closed 时连不上根,而旧 IP 被回收给别人后那几条 `/32` 会把发往陌生人的流量放出隧道(只在 ZeroTier 在跑时才装,影响面有界)。Tailscale 不受影响(DERP map 由 `tailscale_bypass.go` 动态抓)。 | 2026-09-25 | `internal/overlay/overlay.go` 的 `Tenant.RelayHosts` 注释 | 小:解析走防环解析器,并进 `extraCIDRs` 那条活的旁路 |
 
 ## B. 要你拍板:产品或安全上的取舍
 

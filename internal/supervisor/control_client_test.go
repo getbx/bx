@@ -331,7 +331,7 @@ func TestReconnectControl(t *testing.T) {
 	go srv.Serve(ln) //nolint:errcheck
 	defer srv.Close()
 
-	state, err := ReconnectControl(sock)
+	state, err := ReconnectControlContext(context.Background(), sock)
 	if err != nil || state != "reconnected" {
 		t.Fatalf("state=%q err=%v", state, err)
 	}

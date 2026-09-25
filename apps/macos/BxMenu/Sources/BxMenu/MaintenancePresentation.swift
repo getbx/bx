@@ -89,11 +89,14 @@ func maintenanceRow(status: GuardianStatus?, now: Date) -> MenuRow? {
 /// 判据直接复用 maintenanceRow(同一个能力门、同一次过期判定):两处各写一遍
 /// 条件,迟早出现「表头说 Paused、下面一行挂起却不显示」这种自相矛盾。
 ///
-/// **刻意不看 desired。** 一度考虑过「desired=off 就别说 Paused」,但那个组合
-/// 今天只有一个来源:过渡升级(新 CLI 武装了挂起,服务那次停机的旧 Guardian
-/// 无条件写下 off)—— 那台机器确实正在升级,Paused 是实话。而「用户自己关掉的
-/// 保护」根本不会有挂起:升级一台不要保护的机器不武装挂起(Go 侧
-/// downPurposeUpgradeUnprotected),用户显式的 up/down 一律销挂起。
+/// **刻意不看 desired。** 一度考虑过「desired=off 就别说 Paused」。今天一次正常
+/// 的升级不会产生 desired=off + 挂起:CLI 只在屏障下切换 Guardian 时武装挂起
+/// (Go 侧 switchbarrier_darwin.go,只在保护开着时跑、不经 Manager.Down,没人写
+/// off);升级一台不要保护的机器不武装挂起(downPurposeUpgradeUnprotected);用户
+/// 显式的 up/down 一律销挂起。这个组合只剩几种非常态来源:legacy 升级欠条的迁移
+/// 做到一半、旧版 bx 在一次旧式升级中途留在盘上的状态(这两种机器确实在升级,
+/// Paused 是实话),以及用户 down 之后销挂起失败(这一种 Paused 不是实话 —— 用户
+/// 自己关的;已知代价)。挂起最多 15 分钟,过期即不再显示,所以最坏是一次有界的错标。
 func offSubtitle(status: GuardianStatus?, now: Date) -> String {
     maintenanceRow(status: status, now: now) == nil ? "Off" : "Paused"
 }

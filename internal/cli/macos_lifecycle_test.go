@@ -317,11 +317,12 @@ func TestMacOSDownLifecycleCallsGuardianOnly(t *testing.T) {
 		downStatus: guardian.Status{Desired: guardian.DesiredOff, Phase: guardian.PhaseIdle, Protection: guardian.ProtectionOff},
 	}
 	deps := testMacOSLifecycleDeps(&events, client)
-	status, err := macOSDownLifecycle(context.Background(), "/etc/bx/config.yaml", deps)
+	result, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The leading "guardian.ready" is macOSDownLifecycle's own upfront
+	status := result.Status
+	// The leading "guardian.ready" is macOSDownLifecycleDetailed's own upfront
 	// reachability probe (see TestMacOSDownDoesNotRequireGuardianBootstrap).
 	// "legacy.loaded" is the path decision: a legacy Core can only be stopped
 	// by the forced path, so down must ask (see
@@ -675,7 +676,7 @@ func TestMacOSDownDoesNotRequireGuardianBootstrap(t *testing.T) {
 	deps.guardianReady = func(context.Context) bool { return false }
 	deps.enableGuardian = func() error { return errors.New("bootstrap Guardian: launchctl failed") }
 
-	if _, err := macOSDownLifecycle(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
+	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
 		t.Fatalf("Guardian 起不来时 down 仍必须完成拆除,实际返回错误: %v", err)
 	}
 	if !deps.forcedTeardownCalled() {
@@ -693,7 +694,7 @@ func TestMacOSDownUsesGuardianTransactionWhenAvailable(t *testing.T) {
 	deps := newFakeMacOSLifecycleDeps()
 	deps.guardianReady = func(context.Context) bool { return true }
 
-	if _, err := macOSDownLifecycle(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
+	if _, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps); err != nil {
 		t.Fatal(err)
 	}
 	if !deps.clientDownCalled() {
@@ -713,7 +714,7 @@ func TestMacOSDownForcedTeardownFailureIsActionable(t *testing.T) {
 	deps.guardianReady = func(context.Context) bool { return false }
 	deps.forceTeardown = func(context.Context) error { return errors.New("launchctl bootout: operation not permitted") }
 
-	_, err := macOSDownLifecycle(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
+	_, err := macOSDownLifecycleDetailed(context.Background(), "/etc/bx/config.yaml", deps.macOSLifecycleDeps)
 	if err == nil {
 		t.Fatal("forced teardown failure must not be swallowed")
 	}

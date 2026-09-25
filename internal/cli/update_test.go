@@ -14,15 +14,6 @@ import (
 	"github.com/getbx/bx/internal/elevate"
 )
 
-func TestAssetName(t *testing.T) {
-	if got := assetName("linux", "amd64"); got != "bx_linux_amd64.tar.gz" {
-		t.Fatalf("assetName = %q", got)
-	}
-	if got := assetName("darwin", "arm64"); got != "bx_darwin_arm64.tar.gz" {
-		t.Fatalf("assetName = %q", got)
-	}
-}
-
 func TestUpdateDoesNotRestartProtection(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("update.go"))
 	if err != nil {
@@ -102,19 +93,6 @@ func TestShouldBypassManifest(t *testing.T) {
 				t.Fatalf("shouldBypassManifest(%v, %q, %v) = %v, want %v", tc.unifiedLayout, tc.packageFile, tc.checkOnly, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestExpectedSum(t *testing.T) {
-	sums := "abc123  bx_linux_amd64.tar.gz\ndef456  bx_darwin_arm64.tar.gz\n"
-	if got := expectedSum(sums, "bx_linux_amd64.tar.gz"); got != "abc123" {
-		t.Fatalf("expectedSum linux = %q", got)
-	}
-	if got := expectedSum(sums, "bx_darwin_arm64.tar.gz"); got != "def456" {
-		t.Fatalf("expectedSum darwin = %q", got)
-	}
-	if got := expectedSum(sums, "bx_windows_amd64.tar.gz"); got != "" {
-		t.Fatalf("缺失项应返回空,得 %q", got)
 	}
 }
 

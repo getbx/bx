@@ -27,18 +27,15 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-// renderExplain 是**纯函数**:给定一份 ExplainResponse,产出人读的那几行。
+// renderExplainWithReview 是**纯函数**:给定一份 ExplainResponse(与可选的体检),
+// 产出人读的那几行。
 //
 // 抽出来的理由与本仓库其它渲染层相同 —— 「说了什么」与「说得像句人话」是两件
 // 事,而后者只有把它变成可断言的字符串才盯得住(summarizeFindings 那次无条件
 // 拼 `← CoveredBy`、输出 `*.a ← 、*.b ← ` 一句没写完的话,既有断言全绿)。
-// renderExplain 是 renderExplainWithReview 的薄壳(体检缺席那一路)。
-// **判定只有一份**:既有的几十条测试原样喂它,而新加的那一路多带一个参数。
-func renderExplain(rep supervisor.ExplainResponse) string {
-	return renderExplainWithReview(rep, nil)
-}
-
-// renderExplainWithReview 多答一个问题:**把这个目标送上这条路的那一行本身
+// 测试直接喂它(体检缺席那一路传 nil),与生产的 explainOutput 走同一个函数。
+//
+// 它比单纯的渲染多答一个问题:**把这个目标送上这条路的那一行本身
 // 有没有问题。** review 为 nil = 这一轮没拿到体检(读不到配置、Guardian 没发、
 // 或这台机器上压根没有那条路)—— 此时一个字都不说,**绝不渲染成「这条规则
 // 没问题」**:「没查」与「查了没有」是两件事。
@@ -561,9 +558,11 @@ func explainFailureVerdict(run, history *stats.RuleOutcome) string {
 	return fmt.Sprintf("  Blame    by %s: %s\n", source, explainVerdictText(kind))
 }
 
-// explainVerdictText 是每一类的处置。**措辞按 dialfail.Blame 分组,但逐类写** ——
-// 同一档里的两类要去查的东西并不一样(路由不可达查路由表、够不着解析器查解析器),
-// 压成一句「这是 bx 的问题」就又退回一个不可行动的结论。
+// explainVerdictText 是每一类的处置。**措辞按「指向谁」分四档(本机 / 对端 /
+// 不算失败 / 认不出),但逐类写** —— 同一档里的两类要去查的东西并不一样(路由
+// 不可达查路由表、够不着解析器查解析器),压成一句「这是 bx 的问题」就又退回一个
+// 不可行动的结论。分档本身由 TestEveryDialfailKindGetsADeliberateVerdict 穷举
+// dialfail 的每一个类别钉住:那个包新加一类而这里忘了写,它当场转红。
 //
 // 认不出的类别落最后那一支:如实说认不出,**绝不悄悄归进「不是 bx 的问题」**。
 func explainVerdictText(kind string) string {

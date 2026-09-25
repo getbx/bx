@@ -471,15 +471,6 @@ func macOSUpLifecycle(ctx context.Context, configPath string, deps macOSLifecycl
 	return result, nil
 }
 
-// macOSDownLifecycle is the plain two-value entry point kept for callers
-// (and tests) that don't need to distinguish the forced-teardown path from
-// the clean one. macOSDownAction uses macOSDownLifecycleDetailed instead, so
-// it can report honestly when it had to fall back.
-func macOSDownLifecycle(ctx context.Context, configPath string, deps macOSLifecycleDeps) (guardian.Status, error) {
-	result, err := macOSDownLifecycleDetailed(ctx, configPath, deps)
-	return result.Status, err
-}
-
 // macOSDownResult reports which path `bx down` actually took, so the command
 // can describe honestly what it did rather than claiming a clean shutdown it
 // did not perform.

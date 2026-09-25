@@ -11,15 +11,3 @@ type Snapshotter interface {
 	Capture() (Snapshot, error)
 	Restore(Snapshot) error
 }
-
-// ArmWithSnapshot 先抓 last-known-good,再武装死手;Capture 失败不武装、不改动。
-func ArmWithSnapshot(g *Guard, s Snapshotter) (Snapshot, error) {
-	snap, err := s.Capture()
-	if err != nil {
-		return nil, err
-	}
-	if err := g.Arm(func() error { return s.Restore(snap) }); err != nil {
-		return nil, err
-	}
-	return snap, nil
-}

@@ -17,6 +17,21 @@ import (
 	"github.com/getbx/bx/internal/supervisor"
 )
 
+// coreStartFailureCodes 是这一族在 Guardian 应答里出现的全部码,供下面几条穷举
+// 用。**从 supervisor 那张表派生**,不是这里抄一份 —— 加一个码而忘了给它一句话,
+// TestEveryStartFailureOutcomeReadsDifferently 当场转红。
+//
+// 它住在测试里,因为生产上没有「列出全部码」这件事:Guardian 只发一个码,
+// coreStartFailureAdvice 只认一个码。前缀取的是生产那一份 coreStartFailureCodePrefix。
+func coreStartFailureCodes() []string {
+	codes := supervisor.StartFailureCodes()
+	out := make([]string, 0, len(codes))
+	for _, code := range codes {
+		out = append(out, coreStartFailureCodePrefix+code)
+	}
+	return out
+}
+
 // 每一种结局在**渲染出来的整段话**上两两不同。
 //
 // 判据刻意不是「枚举值不同」:把五个分支映射到同一句「隧道没起来」照样能让

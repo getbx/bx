@@ -2946,29 +2946,6 @@ func (r *webrtcCheckReport) addCheck(name, status, detail, hint string) {
 	r.Checks = append(r.Checks, checkReport{Name: name, Status: status, Detail: detail, Hint: hint})
 }
 
-func extractCandidateIPs(candidates ...string) []string {
-	var out []string
-	for _, candidate := range candidates {
-		for _, field := range strings.Fields(candidate) {
-			field = strings.Trim(field, "[](),;")
-			ip := net.ParseIP(field)
-			if ip == nil {
-				continue
-			}
-			out = append(out, ip.String())
-		}
-	}
-	return uniqueStrings(out)
-}
-
-func isPrivateCandidateIP(ip net.IP) bool {
-	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
-}
-
-func isIgnoredCandidateIP(ip net.IP) bool {
-	return ip.IsUnspecified() || ip.IsMulticast()
-}
-
 func stringSet(values []string) map[string]bool {
 	set := map[string]bool{}
 	for _, v := range values {
@@ -3015,34 +2992,6 @@ func openBrowserURL(ctx context.Context, u string) error {
 		return fmt.Errorf("open browser: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
-}
-
-func expectedWebRTCIPs(configPath string) []string {
-	cfg, err := loadConfig(configPath)
-	if err != nil {
-		return nil
-	}
-	var hosts []string
-	for _, link := range cfg.Transports {
-		hosts = append(hosts, hostFromClientLink(link))
-	}
-	hosts = append(hosts, hostFromClientLink(cfg.UDP.Transport))
-	return uniqueStrings(hosts)
-}
-
-func hostFromClientLink(link string) string {
-	if link == "" {
-		return ""
-	}
-	u, err := url.Parse(link)
-	if err != nil {
-		return ""
-	}
-	host := u.Hostname()
-	if net.ParseIP(host) != nil {
-		return host
-	}
-	return ""
 }
 
 func updateCheck(r *webrtcCheckReport, name, status, detail, hint string) {
@@ -4093,14 +4042,6 @@ func liveObservation(ctx context.Context) observe.ObservedState {
 	return observe.Observe(ctx, observe.LiveDeps(statusSocketPath()))
 }
 
-func readClientStatusReportWith(
-	readCore func() (stats.Report, error),
-	readGuardian func() (guardian.Status, error),
-	platform string,
-) (clientStatusReport, error) {
-	return readClientStatusReportWithObserver(readCore, readGuardian, platform, nil)
-}
-
 func readClientStatusReportWithObserver(
 	readCore func() (stats.Report, error),
 	readGuardian func() (guardian.Status, error),
@@ -4184,10 +4125,6 @@ func readGuardianStatus() (guardian.Status, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	return guardian.NewClient(guardian.SocketPath).Status(ctx)
-}
-
-func assembleClientStatusReport(core stats.Report, status guardian.Status) clientStatusReport {
-	return assembleClientStatusReportWithCore(&core, "local_status_socket", status)
 }
 
 func assemblePartialClientStatusReport(status guardian.Status) clientStatusReport {
@@ -4665,15 +4602,6 @@ func captiveNetworkHint(recovery guardian.RecoverySnapshot) string {
 		"          Already in a terminal: open \"http://$(route -n get default | awk '/gateway:/{print $2}')\"\n" +
 		"          If the sign-in page will not open, or it still does not work after signing in: " +
 		elevate.Prefix + "bx down → sign in → " + elevate.Prefix + "bx up\n"
-}
-
-func recoveryDoctorCheck(snapshot guardian.RecoverySnapshot) checkReport {
-	return doctor.RecoveryCheck(doctor.RecoveryFact{State: snapshot.State, Stage: snapshot.Stage, Attempt: snapshot.Attempt, ErrorCode: snapshot.ErrorCode})
-}
-
-func guardianDNSDoctorCheck(status guardian.Status) checkReport {
-	fact := guardianFactFrom(status)
-	return doctor.DNSCheck(fact.DNS, fact.Desired)
 }
 
 func readStatusReport() (stats.Report, error) {
@@ -5561,23 +5489,6 @@ func statusSocketPath() string {
 		return path
 	}
 	return supervisor.SockPath
-}
-
-func waitStatusSocket(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var last error
-	for time.Now().Before(deadline) {
-		if err := checkStatusSocket(); err != nil {
-			last = err
-			time.Sleep(250 * time.Millisecond)
-			continue
-		}
-		return nil
-	}
-	if last != nil {
-		return last
-	}
-	return fmt.Errorf("timeout waiting for %s", statusSocketPath())
 }
 
 func redactLink(link string) string { return doctor.RedactLink(link) }

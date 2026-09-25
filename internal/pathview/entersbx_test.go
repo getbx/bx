@@ -73,7 +73,7 @@ func TestViewSaysWhetherTrafficEntersBx(t *testing.T) {
 	}
 }
 
-// **零值是 Unknown。** 与 observe.Tristate、dialfail.Blame、rulereview 的 Class
+// **零值是 Unknown。** 与 observe.Tristate、leakcheck.ReachUndetermined、rulereview 的 Class
 // 同一条:漏填时多报好过漏报,而这里「漏报」的具体形状是让一条永远不会发生的
 // 判定继续冒充实际行为。
 func TestEntersBxZeroValueIsUnknown(t *testing.T) {

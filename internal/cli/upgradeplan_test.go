@@ -126,7 +126,7 @@ func TestUpgradeConfirmMessageStatesTheOutage(t *testing.T) {
 
 // 失败文案必须说清「现在处于什么状态」,而不只是抛出错误。
 func TestUpgradeFailureMessageSaysNetworkIsUsable(t *testing.T) {
-	msg := upgradeFailureMessage(UpgradeRestartGuardian, errors.New("boom"))
+	msg := upgradeFailureMessageWithNetwork(UpgradeRestartGuardian, errors.New("boom"), true)
 	if !strings.Contains(msg, "The network still works") {
 		t.Fatalf("装文件之后的失败必须说明网络仍可用(直连),实际 = %q", msg)
 	}
@@ -142,7 +142,7 @@ func TestUpgradeFailureMessageSaysNetworkIsUsable(t *testing.T) {
 // bootout Guardian、删屏障阻断路由、还原 DNS)。说「状态未变」是把机器的实际
 // 状态说反了。
 func TestUpgradeFailureMessageForStopDoesNotClaimNothingChanged(t *testing.T) {
-	msg := upgradeFailureMessage(UpgradeStopProtection, errors.New("boom"))
+	msg := upgradeFailureMessageWithNetwork(UpgradeStopProtection, errors.New("boom"), true)
 	if strings.Contains(msg, "nothing changed") {
 		t.Fatalf("强制拆除已经跑过了,不得声称状态未变,实际 = %q", msg)
 	}

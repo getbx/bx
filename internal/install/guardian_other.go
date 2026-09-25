@@ -13,8 +13,6 @@ func WriteGuardianUnit(string, string) error { return errGuardianUnsupported }
 
 func EnableGuardian() error { return errGuardianUnsupported }
 
-func EnableGuardianWithProbe(func() bool) error { return errGuardianUnsupported }
-
 func BootoutGuardian(context.Context) error { return errGuardianUnsupported }
 
 func GuardianLogTail(int) string { return "" }

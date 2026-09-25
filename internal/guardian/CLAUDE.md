@@ -238,7 +238,7 @@ verify 在 105 秒内耗尽,醒来全部自愈,菜单裂开一个多小时)。**
   Manager 说 Protected ⇒ 发布 idle 并退场。**调谐环一个人不够**(退避最长 10 分钟,刻意不从
   恢复代码叫醒它)。Core 问不出来一律不算。
 观测层也补了反方向:believed=blocked 而 `barrier_present=False` 会产出一行 divergence。
-CLI `assembleClientStatusReport` 与菜单 `recoveryPresentation` 各自那份「有 failed 快照 ⇒ Blocked」
+CLI `assembleClientStatusReportWithCoreForPlatform` 与菜单 `recoveryPresentation` 各自那份「有 failed 快照 ⇒ Blocked」
 的拷贝没动 —— 修在源头,三处按构造一致。**真机未验。**
 
 ## 更新的预算(`Update`,2026-09-23)

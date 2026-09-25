@@ -7,12 +7,8 @@ import (
 	"github.com/getbx/bx/internal/tunnel"
 )
 
-// hostToCIDRs 把服务器主机(IP 或域名)转成 bypass 用的 /32、/128 CIDR 列表。
-// 域名会经系统解析(此时 tun 尚未接管,解析正常)。
-func hostToCIDRs(host string) []string {
-	return addrsToCIDRs(hostToAddrs(host))
-}
-
+// hostToAddrs 把服务器主机(IP 或域名)转成 bypass 用的地址列表(addrsToCIDRs 再把
+// 它们变成 /32、/128)。域名经系统解析(启动时 tun 尚未接管,解析正常)。
 func hostToAddrs(host string) []netip.Addr {
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return []netip.Addr{addr.Unmap()}

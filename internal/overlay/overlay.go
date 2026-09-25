@@ -31,20 +31,28 @@ type Tenant struct {
 	// OverlayPrefix 非零时,任一接口上出现该段内的地址即认定它在跑。
 	OverlayPrefix netip.Prefix
 
-	// DirectCIDRs 是必须额外声明直连的地址空间。
+	// DirectCIDRs 是这个租户的地址空间里、需要额外直连的那部分。
 	//
 	// **为空是信息,不是遗漏**:ZeroTier 默认发 RFC1918 地址,而那些段本来就在
 	// route.DefaultPrivateCIDRs 里恒直连 —— 它不需要特例,恰恰因为它守规矩。
-	// Tailscale 用 CGNAT(100.64/10),不在 RFC1918 里,所以必须专门声明。
+	// Tailscale 用 CGNAT(100.64/10),不在 RFC1918 里,所以在这里声明。
+	//
+	// **今天这一栏只是声明,没有任何代码读它**(汇总它的 DirectCIDRs() 零调用方,
+	// 2026-09-25 删掉了)。CGNAT 在分流判定上恒直连,靠的是
+	// route.DefaultPrivateCIDRs 无条件带着 100.64/10,与 Tailscale 在不在跑无关;
+	// macOS 的路由层则刻意不认领 CGNAT(supervisor 的 darwinDirectCIDRs)。
 	DirectCIDRs []string
 
 	// RelayHosts 是控制面/中继的**主机名**,这是稳定的那一半;RelayFallbackCIDRs
 	// 是写这张表时核对过的地址,只在解析不出来时兜底。
 	//
 	// 上游文档明说 root IP 会变(少见但会),推荐解析主机名 —— 所以主机名是
-	// 权威来源,IP 只是启动那几秒的垫脚石。**写死的公网 IP 是一种泄漏面**:
+	// 权威来源,IP 本该只是启动那几秒的垫脚石。**写死的公网 IP 是一种泄漏面**:
 	// 地址被回收给别人之后,那条旁路仍在,于是发往陌生人的流量绕过隧道。
 	// 缓解是它只在这个租户**确实在跑**时才装(见 BypassCIDRs)。
+	//
+	// **今天没有任何代码去解析 RelayHosts**(汇总它的 RelayHosts() 零调用方,
+	// 2026-09-25 删掉了):装上的只有 RelayFallbackCIDRs。见 docs/known-gaps.md。
 	RelayHosts         []string
 	RelayFallbackCIDRs []string
 
@@ -143,26 +151,13 @@ func tenantPresent(tenant Tenant, signals Signals) bool {
 	return false
 }
 
-// DirectCIDRs 汇总在跑的租户要求额外直连的地址空间。
-//
-// 注意它**不包含** route.DefaultPrivateCIDRs:那一份是无条件的,与租户在不在跑无关。
-// 这里只出「因为某个 overlay 在跑,所以额外要直连」的那部分。
-func DirectCIDRs(present []Tenant) []string {
-	return collect(present, func(t Tenant) []string { return t.DirectCIDRs })
-}
-
 // BypassCIDRs 汇总在跑的租户的中继兜底地址。
 //
 // **只对在跑的租户出**:写死的公网 IP 是泄漏面(地址被回收给别人后那条旁路仍在),
-// 按在跑与否门控把影响面限制在真正需要它的机器上。主机名那一半由调用方解析,
-// 解析得到的结果应当**压过**这里的兜底值。
+// 按在跑与否门控把影响面限制在真正需要它的机器上。按设计主机名那一半应由调用方
+// 解析、结果**压过**这里的兜底值 —— 但今天没有调用方这么做(见 Tenant.RelayHosts)。
 func BypassCIDRs(present []Tenant) []string {
 	return collect(present, func(t Tenant) []string { return t.RelayFallbackCIDRs })
-}
-
-// RelayHosts 汇总在跑的租户的中继主机名,供调用方解析成实时地址。
-func RelayHosts(present []Tenant) []string {
-	return collect(present, func(t Tenant) []string { return t.RelayHosts })
 }
 
 // SplitRoute 是「这个后缀交给这个解析器」。

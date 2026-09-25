@@ -26,6 +26,7 @@ import (
 
 	"github.com/getbx/bx/internal/blink"
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/doctor"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/observe"
@@ -2335,8 +2336,9 @@ func TestCollectClientDoctorWithIncludePlatformChecksToggle(t *testing.T) {
 
 func TestStatusReportIncludesTruthfulGuardianRecovery(t *testing.T) {
 	started := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
-	rep := assembleClientStatusReport(
-		stats.Report{TunnelHealthy: true, LatencyMS: 18},
+	rep := assembleClientStatusReportWithCore(
+		&stats.Report{TunnelHealthy: true, LatencyMS: 18},
+		"local_status_socket",
 		guardian.Status{
 			SchemaVersion:     1,
 			Protection:        guardian.ProtectionProtected,
@@ -2380,12 +2382,16 @@ func TestStatusReportIncludesTruthfulGuardianRecovery(t *testing.T) {
 }
 
 func TestStatusReportIncludesGuardianDNSState(t *testing.T) {
-	rep := assembleClientStatusReport(stats.Report{TunnelHealthy: true}, guardian.Status{
-		Protection: guardian.ProtectionProtected,
-		DNSState:   guardian.DNSManaged,
-		DNSManaged: true,
-		DNSService: "Wi-Fi",
-	})
+	rep := assembleClientStatusReportWithCore(
+		&stats.Report{TunnelHealthy: true},
+		"local_status_socket",
+		guardian.Status{
+			Protection: guardian.ProtectionProtected,
+			DNSState:   guardian.DNSManaged,
+			DNSManaged: true,
+			DNSService: "Wi-Fi",
+		},
+	)
 	data, err := json.Marshal(rep)
 	if err != nil {
 		t.Fatal(err)
@@ -2419,10 +2425,11 @@ func TestDarwinStatusDowngradesProtectedWhenGuardianDNSIsNotManaged(t *testing.T
 		{name: "managed state without managed evidence", status: guardian.Status{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSManaged}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			rep, err := readClientStatusReportWith(
+			rep, err := readClientStatusReportWithObserver(
 				func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
 				func() (guardian.Status, error) { return tt.status, nil },
 				"darwin",
+				nil,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -2433,12 +2440,13 @@ func TestDarwinStatusDowngradesProtectedWhenGuardianDNSIsNotManaged(t *testing.T
 		})
 	}
 
-	rep, err := readClientStatusReportWith(
+	rep, err := readClientStatusReportWithObserver(
 		func() (stats.Report, error) { return stats.Report{TunnelHealthy: true}, nil },
 		func() (guardian.Status, error) {
 			return guardian.Status{Protection: guardian.ProtectionProtected, DNSState: guardian.DNSUnknown}, nil
 		},
 		"linux",
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -2451,7 +2459,7 @@ func TestDarwinStatusDowngradesProtectedWhenGuardianDNSIsNotManaged(t *testing.T
 func TestStatusUsesGuardianWhenCoreSocketIsUnavailable(t *testing.T) {
 	coreCalls := 0
 	guardianCalls := 0
-	rep, err := readClientStatusReportWith(
+	rep, err := readClientStatusReportWithObserver(
 		func() (stats.Report, error) {
 			coreCalls++
 			return stats.Report{}, errors.New("missing Core socket")
@@ -2466,6 +2474,7 @@ func TestStatusUsesGuardianWhenCoreSocketIsUnavailable(t *testing.T) {
 			}, nil
 		},
 		"darwin",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("status rejected authoritative Guardian state: %v", err)
@@ -2525,10 +2534,11 @@ func TestCoreUnavailableStatusIsPartialAndTruthful(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rep, err := readClientStatusReportWith(
+			rep, err := readClientStatusReportWithObserver(
 				func() (stats.Report, error) { return stats.Report{}, errors.New("missing Core socket") },
 				func() (guardian.Status, error) { return tt.status, nil },
 				"darwin",
+				nil,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -2570,7 +2580,7 @@ func TestCoreUnavailableStatusIsPartialAndTruthful(t *testing.T) {
 }
 
 func TestStatusDoesNotClaimProtectedWithoutCoreEvidence(t *testing.T) {
-	rep, err := readClientStatusReportWith(
+	rep, err := readClientStatusReportWithObserver(
 		func() (stats.Report, error) { return stats.Report{}, errors.New("missing Core socket") },
 		func() (guardian.Status, error) {
 			return guardian.Status{
@@ -2579,6 +2589,7 @@ func TestStatusDoesNotClaimProtectedWithoutCoreEvidence(t *testing.T) {
 			}, nil
 		},
 		"darwin",
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -2589,10 +2600,14 @@ func TestStatusDoesNotClaimProtectedWithoutCoreEvidence(t *testing.T) {
 }
 
 func TestCLIRepairRequiredOutranksTransientRecovery(t *testing.T) {
-	rep := assembleClientStatusReport(stats.Report{TunnelHealthy: true}, guardian.Status{
-		Protection: guardian.ProtectionNeedsAttention,
-		Recovery:   guardian.RecoverySnapshot{State: "accepted", Stage: "queued"},
-	})
+	rep := assembleClientStatusReportWithCore(
+		&stats.Report{TunnelHealthy: true},
+		"local_status_socket",
+		guardian.Status{
+			Protection: guardian.ProtectionNeedsAttention,
+			Recovery:   guardian.RecoverySnapshot{State: "accepted", Stage: "queued"},
+		},
+	)
 	if rep.ProtectionState != guardian.ProtectionNeedsAttention {
 		t.Fatalf("protection = %q, want needs_attention", rep.ProtectionState)
 	}
@@ -2658,8 +2673,24 @@ func TestDarwinStatusFallbackRequiresRepairWhenGuardianIsUnavailable(t *testing.
 	}
 }
 
+// guardianDoctorCheck 走生产那条路拿 Guardian 那两行 doctor 判定:
+// guardian.Status → guardianFactFrom → doctor.Judge(darwin 分支),再按名字取。
+// 不在测试里另拼一份「Status → Check」—— 那正是被删掉的两个零调用方薄壳
+// (recoveryDoctorCheck / guardianDNSDoctorCheck)当年做的事,而它们与 Judge
+// 之间没有任何东西保证一致。
+func guardianDoctorCheck(t *testing.T, status guardian.Status, name string) checkReport {
+	t.Helper()
+	fact := guardianFactFrom(status)
+	rep := doctor.Judge(doctor.Facts{Config: doctor.FileFact{ReadErr: "not read by this test"}, Darwin: true, Guardian: &fact})
+	check := findCheck(rep.Checks, name)
+	if check.Name != name {
+		t.Fatalf("doctor.Judge 的报告里没有 %s 这一行:%+v", name, rep.Checks)
+	}
+	return check
+}
+
 func TestDoctorReportsLatestRecoveryWithoutDirectFallback(t *testing.T) {
-	check := recoveryDoctorCheck(guardian.RecoverySnapshot{
+	check := guardianDoctorCheck(t, guardian.Status{Recovery: guardian.RecoverySnapshot{
 		ID:         "recovery-8",
 		State:      "failed",
 		Stage:      "transport_health",
@@ -2667,7 +2698,7 @@ func TestDoctorReportsLatestRecoveryWithoutDirectFallback(t *testing.T) {
 		Generation: "wifi-b",
 		ErrorCode:  "transport_unavailable",
 		Attempt:    3,
-	})
+	}}, "network_recovery")
 	if check.Name != "network_recovery" || check.Status != "warn" {
 		t.Fatalf("recovery doctor check = %+v", check)
 	}
@@ -2685,13 +2716,13 @@ func TestDoctorReportsLatestRecoveryWithoutDirectFallback(t *testing.T) {
 }
 
 func TestGuardianDNSDoctorCheck(t *testing.T) {
-	managed := guardianDNSDoctorCheck(guardian.Status{
+	managed := guardianDoctorCheck(t, guardian.Status{
 		DNSState: guardian.DNSManaged, DNSManaged: true, DNSService: "Wi-Fi",
-	})
+	}, "guardian_dns")
 	if managed.Status != "ok" {
 		t.Fatalf("managed = %+v", managed)
 	}
-	unmanaged := guardianDNSDoctorCheck(guardian.Status{DNSState: guardian.DNSUnmanaged})
+	unmanaged := guardianDoctorCheck(t, guardian.Status{DNSState: guardian.DNSUnmanaged}, "guardian_dns")
 	if unmanaged.Status != "fail" || unmanaged.Hint == "" {
 		t.Fatalf("unmanaged = %+v", unmanaged)
 	}
@@ -3930,8 +3961,9 @@ func TestVlessUUIDHelpers(t *testing.T) {
 }
 
 func TestStatusReportIncludesUpdateObservabilityFields(t *testing.T) {
-	rep := assembleClientStatusReport(
-		stats.Report{TunnelHealthy: true},
+	rep := assembleClientStatusReportWithCore(
+		&stats.Report{TunnelHealthy: true},
+		"local_status_socket",
 		guardian.Status{
 			Protection:      guardian.ProtectionProtected,
 			Phase:           guardian.PhaseActivating,
@@ -3966,8 +3998,9 @@ func TestStatusReportIncludesUpdateObservabilityFields(t *testing.T) {
 }
 
 func TestStatusReportOmitsEmptyPhase(t *testing.T) {
-	rep := assembleClientStatusReport(
-		stats.Report{TunnelHealthy: true},
+	rep := assembleClientStatusReportWithCore(
+		&stats.Report{TunnelHealthy: true},
+		"local_status_socket",
 		guardian.Status{
 			Protection: guardian.ProtectionProtected,
 			// Phase is empty (default)

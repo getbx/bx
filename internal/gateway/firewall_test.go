@@ -93,14 +93,6 @@ func TestFirewallCoversAllLANIfaces(t *testing.T) {
 	}
 }
 
-func TestFirewallTeardownTargetsComment(t *testing.T) {
-	// teardown must reference the comment so it deletes exactly our rules
-	td := strings.Join(fwplan().TeardownMatch(), " ")
-	if !strings.Contains(td, "bxr") {
-		t.Fatalf("teardown match does not target the comment: %q", td)
-	}
-}
-
 // The LAN→tun accept rule MUST be IPv4-only; otherwise (since both rules are
 // inserted at position 0) the accept sits above the IPv6 drop and accepts v6
 // into the tun, defeating the IPv6 leak prevention.
