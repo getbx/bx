@@ -48,9 +48,8 @@ func legacyIntentStore(t *testing.T, desired guardian.DesiredState) *guardian.St
 // /var/lib/bx —— 那是 root 的目录,测不了。两者之间只隔一次 OpenDefaultStore()。
 //
 // **另一个方向在别处**:一次夭折的**过渡**升级(新 CLI × 旧 Guardian)之后,
-// 把用户的意图找回来的不再是这张欠条,而是停机之后那次 desired=on 的写回 ——
-// 见 TestTransitionUpgradeKeepsTheIntentAgainstAHoldUnawareGuardian(它一路跑到
-// 重跑并断言保护真的被起回来)。Guardian 侧那半(盘上真有欠条时的迁移)由
+// 意图不再被这张欠条保住,而是根本没人改它:保护开着时升级在屏障下切换、从不
+// 停保护 —— 见 TestRunUpgradeKeepsTheIntentAcrossAFailedSwitchBehindTheBarrier。Guardian 侧那半(盘上真有欠条时的迁移)由
 // guardian 包的 TestLegacyUpgradeIntentRestoresDesiredOn 及其顺序用例守着。
 // 两个方向都要有人盯:只钉「陈旧欠条不许翻盘」,一个恒 false 的实现照样绿。
 func TestStaleLegacyIntentFileDoesNotTurnProtectionBackOn(t *testing.T) {
@@ -59,7 +58,7 @@ func TestStaleLegacyIntentFileDoesNotTurnProtectionBackOn(t *testing.T) {
 		t.Fatal("陈旧欠条把保护打开了 —— 用户明确说过 off")
 	}
 	steps := upgradeSteps(true, false, true)
-	if stepsContain(steps, UpgradeStartProtection) {
+	if stepsContain(steps, UpgradeHandOver) {
 		t.Fatalf("升级计划里不该有「恢复保护」:%v", steps)
 	}
 }

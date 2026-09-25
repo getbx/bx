@@ -1,5 +1,9 @@
 # Guardian 切换与崩溃不许泄漏真实 IP —— 设计(2026-09-25)
 
+> **状态(2026-09-25)**:D1–D4 已实现(`internal/guardian/orphancore.go`、`install.GuardianPlistText`、
+> `restartAfterCommittedUpdate`、`internal/cli/switchbarrier_darwin.go`),单测与 e2e 全绿;
+> **真机未验** —— 第一次真跑就是所有者 Mac 从 v0.4.3 Guardian 切到新版那一次,按 §4 带 tcpdump 做。
+
 **所有者的边界(原话):「断网是允许的,但不允许泄漏 ip」。** 本文每一个切换窗口都要回答
 同一个问题:**这一刻,一个 App 发往公网的包是被拦住,还是从物理网卡直出?**
 
@@ -127,3 +131,18 @@ running <旧>`;`bx up` 那句提示不再推荐切换命令;菜单解码 `guardi
    (不许手抄第二份)。
 4. linux(systemd 直管 Core,不经 Guardian)有没有同形的问题:`bx update` 在 linux 上刻意不重启服务,
    但 `systemctl restart` 与崩溃重启时 Core 的路由还原是否同样 fail-open。
+
+## 6. 落地时的取舍与留下的尾巴
+
+- 保护开着时 `app-install` **不再调用 `Manager.Down`**,于是为「升级停机」专门做的那套 ——
+  `downPurposeUpgrade` 武装挂起、旧 Guardian 写 off 之后的意图写回(`restoreIntentAfterHoldUnawareStop`,
+  已删)、`HoldFallback` 在 `runUpgrade` 里的渲染 —— 在 app-install 上走不到了。意图写回与它的测试
+  已删;`downPurposeUpgrade` 本身与它在 `macOSDownLifecycleFor` 里的判据仍在(有直接调它的单测),
+  `runUpgrade` 里 `HoldFallback` 那一行渲染也仍在但不可达。**下一步清理**:确认没有别的调用方之后
+  整块拿掉,别让它变成被绿测试盖着的死代码。
+- 屏障那一步失败时撤回自己装上的 reject 并销挂起;之后任何一步失败**不拆屏障**,说「在拦、没漏」,
+  出路是重跑或 `sudo bx down`。
+- 交接请求(网关 + 服务器 /32)没有落盘:重跑一次半途失败的切换时 Core 已不在,
+  `legacyMigrationRequest` 退回按配置解析服务器 —— 服务器写的是域名时,DNS 此刻指着没人听的
+  127.0.0.1,解析会失败,重跑停在第一步(不泄漏,但要 `sudo bx down` 才能拿回网络)。
+  服务器写 IP 字面量的配置不受影响。

@@ -21,7 +21,6 @@ const (
 	// UpgradeRestartGuardian 重启 daemon。仅仅换掉 runtime/current 符号链接
 	// 是不够的 —— 一个已在跑的进程不会因此换代码。
 	UpgradeRestartGuardian
-	UpgradeStartProtection
 	// UpgradeEnableGuardian 在**全新安装**之后把 Guardian 服务拉起来。
 	//
 	// 它不开启保护 —— Guardian 起来时 desired 还是 off,它只是开始服务那个
@@ -37,6 +36,24 @@ const (
 	// 升级路径一直没有这个问题:restartGuardianForUpgrade 会 bootout 再 bootstrap。
 	// 也就是说菜单栏第①期的免密开关,**在全新安装这条路上从没能工作过**。
 	UpgradeEnableGuardian
+	// 以下四步是**保护开着时**的升级(D3,2026-09-25):在屏障下换掉 Guardian 自己。
+	// 旧路子是先 UpgradeStopProtection(停 Core、DNS 还给系统、不装屏障)—— 从那一刻
+	// 到新 Core 劫持完成,流量无保护地直连,泄漏真实 IP。所有者的边界是「断网可以,
+	// 泄漏 IP 不行」,所以这四步把那个窗口换成「屏障在、公网被拒」:
+	//
+	// UpgradeBarrierUp 取网关与服务器地址(从正在跑的 Core 问,问不出来就不开始,
+	// 什么都没改过)、武装维护挂起、装屏障。**从这一步成功起,公网包只有被拒这一条路。**
+	UpgradeBarrierUp
+	// UpgradeStopGuardianBehindBarrier bootout 旧 Guardian;Core 随之退出(旧 plist)或
+	// 被显式停掉(新 plist 带 AbandonProcessGroup),等到系统里数不到 Core,再把服务器
+	// /32 补回来。DNS 不还给系统:仍指着 127.0.0.1,没人听 ⇒ 解析失败,不回落明文。
+	UpgradeStopGuardianBehindBarrier
+	// UpgradeStartGuardianBehindBarrier 以新 plist bootstrap 新 Guardian;挂起让它起来
+	// 之后不自己起 Core(那个 Core 没有屏障 handoff,会去装一条已被屏障占着的 /32)。
+	UpgradeStartGuardianBehindBarrier
+	// UpgradeHandOver 经 /v1/migrate 把屏障交给新 Guardian:它接过同一份屏障、清挂起、
+	// 在屏障下起新 Core、Core 健康后释放屏障。这一步成功才算保护恢复。
+	UpgradeHandOver
 )
 
 // configUsable 说的是「Guardian 起得来吗」,不是「配置内容对不对」:daemon 启动时
@@ -52,11 +69,26 @@ func upgradeSteps(guardianRunning bool, desiredOn bool, configUsable bool) []Upg
 		}
 		return []UpgradeStep{UpgradeInstallFiles}
 	}
-	steps := []UpgradeStep{UpgradeStopProtection, UpgradeInstallFiles, UpgradeRestartGuardian}
 	if desiredOn {
-		steps = append(steps, UpgradeStartProtection)
+		// 保护开着:在屏障下换(见 UpgradeBarrierUp)。装文件夹在 Guardian 停掉之后,
+		// 与旧路子同一条理由 —— 不在一个活着的 Guardian 底下换它的二进制。
+		return []UpgradeStep{UpgradeBarrierUp, UpgradeStopGuardianBehindBarrier, UpgradeInstallFiles, UpgradeStartGuardianBehindBarrier, UpgradeHandOver}
 	}
-	return steps
+	// 保护关着:没有流量在走隧道,停保护不会让任何东西从隧道外漏出去。
+	return []UpgradeStep{UpgradeStopProtection, UpgradeInstallFiles, UpgradeRestartGuardian}
+}
+
+// upgradeFailureBehindBarrier 是屏障已经装上之后任何一步失败时的那句话。
+//
+// 屏障在:断网,但没有东西从隧道外出去。**不自动拆屏障** —— 拆了就是泄漏,而「要网络
+// 还是要不泄漏」是用户的决定,不是升级器替他做的。
+func upgradeFailureBehindBarrier(err error) string {
+	return fmt.Sprintf(
+		"the upgrade did not finish: %v\n"+
+			"bx is blocking all traffic, so the network is down but nothing is leaving unprotected. "+
+			"Run the same upgrade again to finish it, or run "+elevate.Prefix+"bx down to get the network back without protection. "+
+			"Details: sudo tail -50 /var/log/bx-guard.err.log", err,
+	)
 }
 
 // upgradeConfirmMessage 明说会断网。
@@ -66,7 +98,7 @@ func upgradeSteps(guardianRunning bool, desiredOn bool, configUsable bool) []Upg
 // 需要的是一个能据以决定「现在还是待会」的事实。
 func upgradeConfirmMessage(desiredOn bool) string {
 	if desiredOn {
-		return "The upgrade has to restart protection, and the network drops for a few seconds. Continue now?"
+		return "The upgrade has to restart protection. While it does, bx blocks all traffic for a few seconds, so the network drops but nothing leaves unprotected. Continue now?"
 	}
 	return "The upgrade has to restart the protection service. Protection is off right now, so the network is unaffected. Continue now?"
 }
@@ -130,15 +162,15 @@ func upVersionMismatchMessage(guardianVersion, runtimeVersion string) string {
 	// .notInstalled 状态才有那一项 —— 那个状态与「检测到版本不一致」互斥(能检测到
 	// 不一致,说明 runtime 装着且 CLI 可用,此时菜单是 .connected/.warning)。
 	// 给一条指向不存在菜单项的指引,与本函数要消灭的那类假话同级。
-	// **不再给切换命令**(2026-09-25):那条路(app-install)的「停保护」不装屏障,切换那几秒里
-	// 流量无保护地直连 —— 所有者的边界是「断网可以,泄漏 IP 不行」。在屏障下完成切换的做法
-	// 落地之前(docs/superpowers/specs/2026-09-25-fail-closed-guardian-switch-design.md 的 D3),
-	// 这句话只如实说出处境,不把用户派去做一件会泄漏的事。
+	// **这条命令现在是不泄漏的**(2026-09-25,D3):保护开着时 app-install 不再「先停保护」
+	// (停 Core、DNS 还给系统、不装屏障 —— 那几秒流量无保护地直连),而是先装屏障、在屏障下
+	// 换 Guardian、再把屏障交给新 Guardian。所有者的边界是「断网可以,泄漏 IP 不行」,所以
+	// 文案如实说会断网、并说清为什么没漏。
 	return fmt.Sprintf(
 		"! Guardian is still running the old version %s (%s is installed); the switch has not finished. "+
-			"Protection is working meanwhile. Finishing it by hand today would let traffic out unprotected for a few seconds, "+
-			"so bx does not suggest doing that.",
-		guardianVersion, runtimeVersion,
+			"Protection is working meanwhile. To finish it: %s "+
+			"(bx blocks all traffic for a few seconds while it switches, so the network drops but nothing leaves unprotected).",
+		guardianVersion, runtimeVersion, upgradeSwitchCommand,
 	)
 }
 
@@ -154,6 +186,13 @@ func upgradeFailureMessage(step UpgradeStep, err error) string {
 // 说给一个可能正断着网的用户听。
 func upgradeFailureMessageWithNetwork(step UpgradeStep, err error, networkRestored bool) string {
 	switch step {
+	case UpgradeBarrierUp:
+		// 这一步失败时它自己装上的东西已经撤回,Guardian 与 Core 都没被碰过。**不说「保护
+		// 还在跑」**:重跑一次半途失败的切换时,机器可能本来就停在屏障后面,那句话是假的。
+		return fmt.Sprintf(
+			"the upgrade did not start: %v\nThis run changed nothing. If the network is down because an earlier attempt stopped partway, "+
+				"run the upgrade again once the cause is fixed, or run "+elevate.Prefix+"bx down to get the network back without protection.", err,
+		)
 	case UpgradeStopProtection:
 		// 「当前状态未变」是假的:macOSDownLifecycleDetailed 只会在
 		// forcedMacOSTeardown 报错时返回错误,而那条逃生路径按设计会把六个

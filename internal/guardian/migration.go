@@ -1,6 +1,7 @@
 package guardian
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -64,4 +65,30 @@ func migrationBarrierContext(request MigrationRequest) BarrierContext {
 		}
 	}
 	return BarrierContext{Gateway: request.Gateway, ServerBypass: bypasses, BlockIPv6: true}
+}
+
+// InstallHandoffBarrier 由 CLI 在 Guardian 之外装上与 Manager.Migrate **同一份**屏障计划
+// (migrationBarrierContext):服务器 /32 经物理网关、其余公网一律 reject。
+//
+// 用途只有一个:切换 Guardian 自己(D3,docs/superpowers/specs/2026-09-25-fail-closed-guardian-switch-design.md)。
+// 旧 Guardian 的 launchd 任务没有 AbandonProcessGroup,bootout 它会顺带收掉 Core,Core 还原
+// 路由 —— 没有屏障的话从那一刻起流量从物理网卡直出。屏障先装,那几秒就是断网而不是泄漏。
+// 新 Guardian 起来后经 /v1/migrate 用同一份计划接过它(`file exists` 被容忍),再按自己的
+// 所有权记录释放。
+func InstallHandoffBarrier(ctx context.Context, request MigrationRequest) error {
+	normalized, err := ValidateMigrationRequest(request)
+	if err != nil {
+		return err
+	}
+	return NewBarrier(nil).Install(ctx, migrationBarrierContext(normalized))
+}
+
+// ReassertHandoffBypass 把屏障里的服务器 /32 旁路补回来:旧 Core 退出时会删掉它自己
+// 装的那条同名路由,而新 Core 的隧道正是要经它出去。
+func ReassertHandoffBypass(ctx context.Context, request MigrationRequest) error {
+	normalized, err := ValidateMigrationRequest(request)
+	if err != nil {
+		return err
+	}
+	return NewBarrier(nil).ReassertBypass(ctx, migrationBarrierContext(normalized))
 }
