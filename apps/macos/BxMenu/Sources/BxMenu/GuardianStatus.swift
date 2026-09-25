@@ -25,6 +25,10 @@ struct GuardianStatus: Decodable {
     let dnsService: String?
     let dnsServers: [String]?
     let coreVersion: String?
+    /// Guardian **进程自己**的版本与盘上**已装**的 runtime 版本。两者不同 = 升级换了文件、
+    /// 没换掉 Guardian 进程(2026-09-25 真机)。缺席 = 这一版没说。
+    let guardianVersion: String?
+    let runtimeVersion: String?
     /// nil == Guardian 没接 CoreRuntime provider(压根没问过 Core)。
     /// 非 nil 时再看 `.reachable`——那才是「问了但 Core 没答」与「答了」的分界。
     /// 绝不能让这两种「没有健康数据」的场景在 Swift 里塌缩成同一件事。
@@ -54,6 +58,8 @@ struct GuardianStatus: Decodable {
         case dnsService = "dns_service"
         case dnsServers = "dns_servers"
         case coreVersion = "core_version"
+        case guardianVersion = "guardian_version"
+        case runtimeVersion = "runtime_version"
         case core
         case capabilities
         case maintenanceHold = "maintenance_hold"
@@ -72,6 +78,8 @@ struct GuardianStatus: Decodable {
         dnsService = try container.decodeIfPresent(String.self, forKey: .dnsService)
         dnsServers = try container.decodeIfPresent([String].self, forKey: .dnsServers)
         coreVersion = try container.decodeIfPresent(String.self, forKey: .coreVersion)
+        guardianVersion = try container.decodeIfPresent(String.self, forKey: .guardianVersion)
+        runtimeVersion = try container.decodeIfPresent(String.self, forKey: .runtimeVersion)
         core = try container.decodeIfPresent(CoreRuntime.self, forKey: .core)
         capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities)
         maintenanceHold = try container.decodeIfPresent(MaintenanceHold.self, forKey: .maintenanceHold)

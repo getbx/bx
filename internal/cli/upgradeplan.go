@@ -130,9 +130,15 @@ func upVersionMismatchMessage(guardianVersion, runtimeVersion string) string {
 	// .notInstalled 状态才有那一项 —— 那个状态与「检测到版本不一致」互斥(能检测到
 	// 不一致,说明 runtime 装着且 CLI 可用,此时菜单是 .connected/.warning)。
 	// 给一条指向不存在菜单项的指引,与本函数要消灭的那类假话同级。
+	// **不再给切换命令**(2026-09-25):那条路(app-install)的「停保护」不装屏障,切换那几秒里
+	// 流量无保护地直连 —— 所有者的边界是「断网可以,泄漏 IP 不行」。在屏障下完成切换的做法
+	// 落地之前(docs/superpowers/specs/2026-09-25-fail-closed-guardian-switch-design.md 的 D3),
+	// 这句话只如实说出处境,不把用户派去做一件会泄漏的事。
 	return fmt.Sprintf(
-		"! Guardian is still running the old version %s (%s is installed). Run %s to finish the switch (the network drops for a few seconds).",
-		guardianVersion, runtimeVersion, upgradeSwitchCommand,
+		"! Guardian is still running the old version %s (%s is installed); the switch has not finished. "+
+			"Protection is working meanwhile. Finishing it by hand today would let traffic out unprotected for a few seconds, "+
+			"so bx does not suggest doing that.",
+		guardianVersion, runtimeVersion,
 	)
 }
 

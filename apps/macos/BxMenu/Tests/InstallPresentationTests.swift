@@ -31,6 +31,22 @@ struct InstallPresentationTests {
         expect(menuUpdateActionTitle(check: nil) == nil,
                "no check yields no update action")
 
+        // 2026-09-25 真机:升级之后 Guardian 仍是旧版,它拿自己的版本去比,于是「有更新」挂着不走。
+        // 已装的就是最新 ⇒ 不许再给「Update bx…」,改成一行说明;真有更新的发布时照旧给入口。
+        let guardianBehind = UpdateCheck(current: "v0.4.3", latest: "v0.4.5", available: true, verified: true)
+        expect(menuUpdateRow(check: guardianBehind, guardianVersion: "v0.4.3", runtimeVersion: "v0.4.5")
+                   == .note("v0.4.5 installed · Guardian switch pending"),
+               "已装的就是最新,却仍给了「Update bx…」")
+        let reallyNewer = UpdateCheck(current: "v0.4.3", latest: "v0.4.6", available: true, verified: true)
+        expect(menuUpdateRow(check: reallyNewer, guardianVersion: "v0.4.3", runtimeVersion: "v0.4.5")
+                   == .action("Update bx…"),
+               "真有比已装更新的发布,入口却没了")
+        expect(menuUpdateRow(check: verifiedAvailable, guardianVersion: nil, runtimeVersion: nil)
+                   == .action("Update bx…"),
+               "问不到两个版本时应维持原判")
+        expect(menuUpdateRow(check: notAvailable, guardianVersion: "1.0.0", runtimeVersion: "1.0.0") == nil,
+               "没有更新、也没有漂移时不该有这一行")
+
         expect(updatingBanner(phase: "prepared") == "Updating bx…", "prepared phase shows updating banner")
         expect(updatingBanner(phase: "barrier_active") == "Updating bx…", "barrier_active phase shows updating banner")
         expect(updatingBanner(phase: "activating") == "Updating bx…", "activating phase shows updating banner")

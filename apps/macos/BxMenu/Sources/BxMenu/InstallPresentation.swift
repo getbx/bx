@@ -25,6 +25,34 @@ func menuUpdateActionTitle(check: UpdateCheck?) -> String? {
     updateActionTitle(for: check)
 }
 
+/// 菜单顶部那一行更新相关的东西:一个可点的入口,或一句不可点的说明。
+enum MenuUpdateRow: Equatable {
+    case action(String)
+    case note(String)
+}
+
+/// **更新检查拿的是 Guardian 自己的版本去比**,而保护开着时 `bx update` 换不掉 Guardian
+/// 自己(2026-09-25 真机:两次升级之后 Guardian 仍是 v0.4.3)。于是已装的就是最新时,
+/// 「Update bx…」会一直挂着,点下去什么都不改变。判据:
+/// - 真有比**已装版本**更新的发布 ⇒ 照旧给入口;
+/// - 已装的就是最新、只是 Guardian 还在旧版 ⇒ 一句说明,不给入口(今天的切换会让流量
+///   在那几秒里无保护地外出,见 fail-closed-guardian-switch 设计);
+/// - 两个版本问不到 ⇒ 维持原判,不猜。
+func menuUpdateRow(check: UpdateCheck?, guardianVersion: String?, runtimeVersion: String?) -> MenuUpdateRow? {
+    let installed = (runtimeVersion ?? "").trimmingCharacters(in: .whitespaces)
+    let running = (guardianVersion ?? "").trimmingCharacters(in: .whitespaces)
+    if let check, check.available, check.verified, !installed.isEmpty, check.latest != installed {
+        return .action("Update bx…")
+    }
+    if !installed.isEmpty, !running.isEmpty, installed != running {
+        return .note("\(installed) installed · Guardian switch pending")
+    }
+    if installed.isEmpty, let title = updateActionTitle(for: check) {
+        return .action(title)
+    }
+    return nil
+}
+
 func updatingBanner(phase: String?) -> String? {
     guard let phase else { return nil }
     switch phase {

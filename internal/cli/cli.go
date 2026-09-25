@@ -4248,6 +4248,7 @@ func renderClientStatus(report clientStatusReport) string {
 		}
 		writeClientRecovery(&b, report.Recovery)
 		writeClientMaintenanceHold(&b, report)
+		writeClientVersionDrift(&b, report)
 		writeClientReconcile(&b, report)
 		return b.String()
 	}
@@ -4264,9 +4265,24 @@ func renderClientStatus(report clientStatusReport) string {
 	writeClientDNS(&b, report.DNSState, report.DNSService)
 	writeClientRecovery(&b, report.Recovery)
 	writeClientMaintenanceHold(&b, report)
+	writeClientVersionDrift(&b, report)
 	writeClientReconcile(&b, report)
 	b.WriteString(stats.Render(*report.Report))
 	return b.String()
+}
+
+// writeClientVersionDrift 说出「新版已装好,Guardian 还在跑旧版」(2026-09-25)。
+//
+// 保护开着时 `bx update` 换得掉 Core 与盘上文件、换不掉 Guardian 自己,于是两次升级之后
+// Guardian 都停在旧版,而 `bx status` 一个字不说、菜单还显示「有更新」。两个版本都问得到
+// 且不同才写;任一为空不猜。**不给切换命令**:今天那条路会让流量在切换的几秒里无保护地
+// 外出(见 docs/superpowers/specs/2026-09-25-fail-closed-guardian-switch-design.md)。
+func writeClientVersionDrift(b *strings.Builder, report clientStatusReport) {
+	g, r := strings.TrimSpace(report.GuardianVersion), strings.TrimSpace(report.RuntimeVersion)
+	if g == "" || r == "" || g == r {
+		return
+	}
+	fmt.Fprintf(b, "  Update  %s is installed, but Guardian is still running %s (the switch has not finished)\n", r, g)
 }
 
 // maintenanceHoldStatusPrefix 是那一行的完整行首,含把它对进 Status/Network/DNS

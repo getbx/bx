@@ -24,6 +24,7 @@ import (
 	"github.com/getbx/bx/internal/corestartfailure"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/runtimedir"
 	updatepkg "github.com/getbx/bx/internal/update"
 	"github.com/getbx/bx/internal/version"
 	"github.com/urfave/cli/v2"
@@ -301,6 +302,31 @@ func verifiedReleaseManifestContext(ctx context.Context, client *http.Client, ta
 // 只是防止一个没有 ctx 的调用路径将来把它跑成无限等待。
 const guardianUpdateCheckClientTimeout = 15 * time.Second
 
+// updateCheckInstalledVersion 回答「这台机器装的是哪一版」—— 更新检查要拿它去比。
+//
+// **不是 Guardian 自己的版本。** `/v1/update` 换得掉 Core 与 runtime,换不掉正在跑的
+// Guardian(2026-09-25 真机:runtime v0.4.5,Guardian 停在 v0.4.3),而拿 Guardian
+// 自己的版本去比,会把一个已经装好的新版一直报成「有更新」,用户点下去只会再装一遍
+// 同一个版本。runtime 读不出来时才退回进程自己的版本 —— 那是这一版之前的答法,不是
+// 一个新猜测。
+func updateCheckInstalledVersion(self string, runtimeVersion func() (string, error)) string {
+	if runtimeVersion != nil {
+		if v, err := runtimeVersion(); err == nil && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return self
+}
+
+// currentRuntimeVersion 读 runtime/current 指向的那一版。
+func currentRuntimeVersion() (string, error) {
+	info, _, err := runtimedir.Current(runtimedir.Root)
+	if err != nil {
+		return "", err
+	}
+	return info.Version, nil
+}
+
 // checkLatestReleaseAvailability 是 Guardian GET /v1/update-check 背后的取数函数。
 //
 // 它跑的是 `bx update --check --json` 那条完全相同的路径(latest tag → 下载并用
@@ -323,7 +349,7 @@ func checkLatestReleaseAvailability(ctx context.Context) (guardian.UpdateAvailab
 	if err != nil {
 		return guardian.UpdateAvailability{}, err
 	}
-	current := version.Version
+	current := updateCheckInstalledVersion(version.Version, currentRuntimeVersion)
 	return guardian.UpdateAvailability{
 		Current:   current,
 		Latest:    manifest.Version,
