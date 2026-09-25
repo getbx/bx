@@ -2,7 +2,7 @@
 
 > **状态(2026-09-25)**:D1–D4 已实现(`internal/guardian/orphancore.go`、`install.GuardianPlistText`、
 > `restartAfterCommittedUpdate`、`internal/cli/switchbarrier_darwin.go`),单测与 e2e 全绿;
-> **D3 真机已验**(2026-09-25 第二次真跑通过,见 `docs/acceptance-pending.md` B9);**D2 未真跑**(等下一个版本的 `bx update`)。
+> **D3 真机已验**(2026-09-25 第二次真跑通过,见 `docs/acceptance-pending.md` B9);**D2 真机已验**(同一份清单 B9,v0.4.7 → v0.4.8)。
 
 **所有者的边界(原话):「断网是允许的,但不允许泄漏 ip」。** 本文每一个切换窗口都要回答
 同一个问题:**这一刻,一个 App 发往公网的包是被拦住,还是从物理网卡直出?**
