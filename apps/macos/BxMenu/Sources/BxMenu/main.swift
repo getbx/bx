@@ -2660,14 +2660,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func replaceConfiguration() {
         guard ensureCLIUsable() else { return }
         let current = maintenanceReport?.core?.server
-        guard let link = promptForClientLink(
+        guard let (links, pasted) = promptForClientLink(
             title: "Replace Configuration",
-            hint: "Paste the bx link you were given.",
+            hint: "Paste the bx link you were given, or the whole setup command your server printed.",
             confirmTitle: "Continue"
         ) else { return }
 
         let origin: ReplaceLinkOrigin =
-            clipboardCandidateLink(NSPasteboard.general.string(forType: .string)) == link ? .clipboard : .typed
+            clipboardCandidateLink(NSPasteboard.general.string(forType: .string)) == pasted ? .clipboard : .typed
         let confirm = NSAlert()
         confirm.messageText = "Change where your traffic leaves?"
         confirm.informativeText = replaceConfigurationMessage(currentServer: current, pastedFrom: origin)
@@ -2676,7 +2676,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
-        guard runPrivileged("'\(bxPath)' setup \(shellSingleQuoted(link))") else {
+        guard runPrivileged("'\(bxPath)' setup \(setupArguments(links, quote: shellSingleQuoted))") else {
             showFailure("Replace Failed", "bx kept its previous configuration.")
             refresh(userInitiated: true)
             return
@@ -2698,8 +2698,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 一次真去执行 CLI 的探测,它接手了 `bx logs --help` 被删之后留下的那一档:
         // 文件在、却跑不起来。
         guard ensureCLIUsable() else { return }
-        guard let link = promptForClientLink() else { return }
-        let command = "'\(bxPath)' setup \(shellSingleQuoted(link))"
+        guard let (links, _) = promptForClientLink() else { return }
+        let command = "'\(bxPath)' setup \(setupArguments(links, quote: shellSingleQuoted))"
         guard runPrivileged(command) else {
             showFailure("Setup Failed", "bx was not configured.")
             refresh(userInitiated: true)
@@ -3347,9 +3347,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func promptForClientLink(
         title: String = "Set Up bx",
-        hint: String = "Paste your bx link.",
+        hint: String = "Paste your bx link, or the whole setup command your server printed.",
         confirmTitle: String = "Set Up"
-    ) -> String? {
+    ) -> (SetupLinks, String)? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = hint
@@ -3372,11 +3372,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showMessage("No Link", "Paste a bx link to continue.")
             return nil
         }
-        guard looksLikeClientLink(link) else {
-            showMessage("Link Not Recognized", "Paste a bx link to continue.")
+        guard let links = parseSetupLinks(link), looksLikeClientLink(links.main) else {
+            showMessage("Link Not Recognized", "Paste a bx link, or the whole setup command your server printed, to continue.")
             return nil
         }
-        return link
+        return (links, link)
     }
 
     private func confirmStartProtection(title: String = "Start protection?", cancelTitle: String = "Cancel") -> Bool {
