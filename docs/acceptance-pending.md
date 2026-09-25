@@ -288,6 +288,18 @@ sudo kill -9 <Core PID>
 
 ---
 
+### B9. 在屏障下切换 Guardian(D1–D3,2026-09-25)—— 由 agent 做,带抓包
+
+第一次真跑就是所有者 Mac 从 v0.4.3 Guardian 切到带 D1–D3 的那一版。步骤:
+1. 先演练屏障本身:装屏障 → `route -n get 1.1.1.1` 应是 reject、`curl https://icanhazip.com` 失败 →
+   拆屏障 → 恢复。断网几秒,不泄漏。
+2. 真切换:`sudo tcpdump -ni en0 -w <scratch>/switch.pcap` 开着,跑
+   `sudo bx app-install --app-source /Applications/Bx.app --yes`。
+3. 判据:pcap 里除了发往服务器 IP 与私网/链路本地的包,**一个都没有**;`bx status` 报 Protected,
+   `guardian_version == runtime_version`,能力里有 `core_outlives_guardian`。
+4. D2 顺带验:之后一次 `bx update` 提交后 Guardian 日志出现 `guardian_restart_for_update`、
+   Core PID 不变、全程不断网。
+
 ## C. 要等机会,不值得专门制造
 
 - [ ] **菜单栏 LaunchAgent 的 EIO(5) 不再出现**:下次升级(或 `bx app-install`)时看输出里有没有
