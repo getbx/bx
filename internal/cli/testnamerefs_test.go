@@ -381,7 +381,10 @@ func scanSwiftProse(t *testing.T, root string, refs map[string][]proseSite) {
 }
 
 func skippedScanDir(base string) bool {
-	return base == ".git" || base == "vendor" || base == "node_modules"
+	// .worktrees / .claude/worktrees 是本地的 git worktree:整棵仓库的另一份拷贝。扫进去,
+	// 每一份文档与守卫都被算两遍 —— 2026-09-25 一个子代理的 worktree 让预算守卫把它那份
+	// CLAUDE.md 当成「没登记的子目录判据」报红。它们不在 git 里,CI 看不见,只在本地出事。
+	return base == ".git" || base == "vendor" || base == "node_modules" || base == ".worktrees" || base == ".claude"
 }
 
 // collectProseRefs 把一份源码里散文中点名的测试收进 refs。
