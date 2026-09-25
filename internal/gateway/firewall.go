@@ -75,9 +75,3 @@ func (p FirewallPlan) IncludeRules() []string {
 	}
 	return rules
 }
-
-// TeardownMatch is the predicate the platform layer greps for in `nft -a list
-// chain <table> <chain>` output to find the rule handles to delete.
-func (p FirewallPlan) TeardownMatch() []string {
-	return []string{"comment", "\"" + p.Comment + "\""}
-}

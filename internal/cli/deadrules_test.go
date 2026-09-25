@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getbx/bx/internal/doctor"
 	"github.com/getbx/bx/internal/rulereview"
 )
 
@@ -33,7 +34,7 @@ func lineByKey(lines []doctorFinding, key string) *doctorFinding {
 // 1. 报出来的那一行要说清条数,并点名规则原文。
 func TestDoctorReportsDeadRules(t *testing.T) {
 	rep := deadReviewReport(t, []string{"*.never-used.example"}, map[rulereview.RuleKey]rulereview.RuleCounts{})
-	lines := ruleReviewDoctorLines(rep)
+	lines := doctor.RuleReviewLines(rep)
 	got := lineByKey(lines, deadRulesCheckName)
 	if got == nil {
 		t.Fatalf("死规则一个字都没说 —— 判据产出了 %d 条,渲染层却按 Class 字面枚举、"+
@@ -54,7 +55,7 @@ func TestDoctorSaysHowManyVersionsTheHistorySpans(t *testing.T) {
 		HistoryDecisions: 25_000,
 		HistoryVersions:  3,
 	}
-	got := lineByKey(ruleReviewDoctorLines(rulereview.Review(in)), deadRulesCheckName)
+	got := lineByKey(doctor.RuleReviewLines(rulereview.Review(in)), deadRulesCheckName)
 	if got == nil {
 		t.Fatal("死规则那一行不见了")
 	}
@@ -103,7 +104,7 @@ func TestDoctorSaysWhyDeadRulesWereNotChecked(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := lineByKey(ruleReviewDoctorLines(rulereview.Review(tc.in)), deadRulesCheckName)
+			got := lineByKey(doctor.RuleReviewLines(rulereview.Review(tc.in)), deadRulesCheckName)
 			if got == nil {
 				t.Fatalf("没查却一个字都没说 —— 用户会以为这一项查过了、而且没问题")
 			}
@@ -125,7 +126,7 @@ func TestDoctorSaysNothingWhenEveryRuleIsAlive(t *testing.T) {
 	rep := deadReviewReport(t, []string{"*.busy.example"}, map[rulereview.RuleKey]rulereview.RuleCounts{
 		{Source: "user_direct", Rule: "*.busy.example"}: {Attempts: 42},
 	})
-	if got := lineByKey(ruleReviewDoctorLines(rep), deadRulesCheckName); got != nil {
+	if got := lineByKey(doctor.RuleReviewLines(rep), deadRulesCheckName); got != nil {
 		t.Fatalf("每条规则都在用,却还是说了一句:%+v —— 恒出现的行会变成墙纸", got)
 	}
 }
@@ -136,7 +137,7 @@ func TestDoctorSaysNothingWhenEveryRuleIsAlive(t *testing.T) {
 // 它只是从输出里消失。这个仓库为这个形状栽过四次(同名 check 互相覆盖、
 // hint 指向不存在的子命令、Kind 被整个丢掉、守卫在测试里重造一遍生产表达式)。
 //
-// 判据是**穷举 Class**:每一类都造一份只含它的报告,断言 ruleReviewDoctorLines
+// 判据是**穷举 Class**:每一类都造一份只含它的报告,断言 doctor.RuleReviewLines
 // 至少说了一句。加第六类时这条会红,那正是回来补渲染的时刻。
 func TestEveryRuleReviewClassHasARenderingPath(t *testing.T) {
 	classes := []struct {
@@ -174,7 +175,7 @@ func TestEveryRuleReviewClassHasARenderingPath(t *testing.T) {
 			rulereview.Class(int(last)+1).String())
 	}
 	for _, tc := range classes {
-		if lines := ruleReviewDoctorLines(tc.rep); len(lines) == 0 {
+		if lines := doctor.RuleReviewLines(tc.rep); len(lines) == 0 {
 			t.Errorf("Class %s 产出了 finding,而 doctor 一个字都没说 —— "+
 				"渲染层按 Class 字面枚举,新加一类只会静默消失", tc.class)
 		}
@@ -191,7 +192,7 @@ func TestEveryRuleReviewClassHasARenderingPath(t *testing.T) {
 // 两件事,这条补的是后者。
 func TestSummaryHasNoDanglingArrowWhenNothingCoversTheRule(t *testing.T) {
 	rep := deadReviewReport(t, []string{"*.a.example", "*.b.example"}, map[rulereview.RuleKey]rulereview.RuleCounts{})
-	got := lineByKey(ruleReviewDoctorLines(rep), deadRulesCheckName)
+	got := lineByKey(doctor.RuleReviewLines(rep), deadRulesCheckName)
 	if got == nil {
 		t.Fatal("死规则那一行不见了")
 	}
@@ -201,7 +202,7 @@ func TestSummaryHasNoDanglingArrowWhenNothingCoversTheRule(t *testing.T) {
 	// 反向:有 CoveredBy 的那几类,箭头必须还在 —— 那是「被哪一条盖住」的唯一交代,
 	// 少了它用户没法核对。
 	shadow := rulereview.Review(rulereview.Input{Direct: []string{"*.a.com", "b.a.com"}})
-	line := lineByKey(ruleReviewDoctorLines(shadow), "redundant rules")
+	line := lineByKey(doctor.RuleReviewLines(shadow), "redundant rules")
 	if line == nil {
 		t.Fatal("这条测试的前提不成立:没造出被覆盖的那一类")
 	}

@@ -49,14 +49,6 @@ type deployDeps struct {
 	writeLocalConfig func(link string) error
 }
 
-// deployPlanSteps 是这条流程的固定顺序。
-//
-// **先探架构**决定了传哪个二进制,放到传输之后就没有意义了;**装完才取链接**,
-// 而链接取不到就绝不往下走。
-func deployPlanSteps() []string {
-	return []string{"detect-arch", "upload", "install", "read-link"}
-}
-
 // releaseArchFromUname 把远端 `uname -m` 的输出映射成 release 的架构名。
 //
 // **认不出来硬失败。** 装错架构的二进制,远端报的是 `exec format error` ——
@@ -100,15 +92,6 @@ func remoteInstallCommand(opts deployOptions) string {
 		parts = append(parts, "--force")
 	}
 	return strings.Join(parts, " ")
-}
-
-// clientLinkFromInstallOutput 从远端安装输出里取出客户端链接。
-//
-// **取不到就硬失败,并把远端的原话原样交出去。** 在没拿到链接的情况下继续,
-// 会写出一份没有服务器的本机配置,而用户以为部署成功了。
-func clientLinkFromInstallOutput(out string) (string, error) {
-	main, _, err := clientLinksFromInstallOutput(out)
-	return main, err
 }
 
 // clientLinksFromInstallOutput 取出主链接与(如果有的)UDP 链接。

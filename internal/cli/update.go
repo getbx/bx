@@ -44,11 +44,6 @@ type updateCheckReport struct {
 	Verified  bool   `json:"verified"`
 }
 
-// assetName 是某平台的 release 资产名,与 release.yml 的命名一致。
-func assetName(goos, goarch string) string {
-	return fmt.Sprintf("bx_%s_%s.tar.gz", goos, goarch)
-}
-
 // parseReleaseTag 从 /releases/tag/<tag> 形态的 URL 提取 tag;非该形态(如无 release 时停在
 // /releases)返回空。容忍尾斜杠与 query。
 func parseReleaseTag(u string) string {
@@ -82,18 +77,6 @@ func newerAvailable(current, latest string) bool {
 // 触发器。
 func shouldBypassManifest(unifiedLayout bool, packageFile string, checkOnly bool) bool {
 	return unifiedLayout && packageFile != "" && !checkOnly
-}
-
-// expectedSum 从 SHA256SUMS 内容里取某资产的十六进制校验和(缺失返回空)。
-// 行格式:"<hex>  <filename>"(两空格,coreutils 风格)。
-func expectedSum(sums, asset string) string {
-	for _, line := range strings.Split(sums, "\n") {
-		f := strings.Fields(line)
-		if len(f) >= 2 && f[len(f)-1] == asset {
-			return f[0]
-		}
-	}
-	return ""
 }
 
 // verifyChecksum 校验 data 的 sha256 是否等于 wantHex(空 wantHex 视为失败,拒绝未校验的下载)。
@@ -187,11 +170,7 @@ func updateFlags() []cli.Flag {
 	}
 }
 
-func httpGet(client *http.Client, url string) (*http.Response, error) {
-	return httpGetContext(context.Background(), client, url)
-}
-
-// httpGetContext 是 httpGet 的 ctx 版兄弟。Guardian 的 /v1/update-check 给这条
+// httpGetContext 带着调用方的 ctx 发 GET。Guardian 的 /v1/update-check 给这条
 // 查询套了 20 秒上限,而 http.Client.Timeout 只管单次请求、管不到调用方的截止
 // 时间;没有 ctx 就没法让那个上限真正生效(一次挂住的 TLS 握手会拖满整条链)。
 func httpGetContext(ctx context.Context, client *http.Client, url string) (*http.Response, error) {

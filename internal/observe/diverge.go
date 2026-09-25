@@ -101,11 +101,17 @@ func Diverge(intent Intent, observed ObservedState, believed Believed) []Diverge
 
 	// 挂起武装期间不谈残留:升级正在进行,屏障与 DNS 接管此刻本来就还在。
 	//
-	// **可达性**(别把它当死代码删掉):`desired=off` 与一张武装着的挂起并存,
-	// 是**过渡升级**的样子 —— 新 CLI 在停机之前武装挂起,而服务那次停机的旧
-	// Guardian 不认识挂起、无条件写下 off(它随后会被写回 on,写不成就停在这里)。
-	// 升级一台本来就不要保护的机器**不再**产生这个组合(那种停机根本不武装挂起,
-	// 见 cli 的 downPurposeUpgradeUnprotected)。
+	// **可达性**(别把它当死代码删掉):`desired=off` 与一张武装着的挂起并存今天
+	// 仍然可能,只是**不再来自一次正常的升级**。CLI 今天唯一武装挂起的地方是屏障下
+	// 切换 Guardian(cli 的 switchbarrier_darwin.go):它只在保护开着时跑,换 Guardian
+	// 靠 bootout、从不调 Manager.Down,所以没有谁在那时写下 off;升级一台本来就不要
+	// 保护的机器根本不武装挂起(cli 的 downPurposeUpgradeUnprotected)。还走得到这里的:
+	//   - legacy 升级欠条的迁移(guardian 的 holdmigrate.go)先武装挂起、再把 desired
+	//     复位成 on —— 两步之间崩掉或复位失败,盘上就是 off + 挂起;
+	//   - 用户显式的 down 写下 off 之后销挂起失败(ClearMaintenanceHold 只有 ENOENT
+	//     幂等;销不掉只记一条,停止路径不为它中止);
+	//   - 旧版 bx 留在盘上的状态:那一版 CLI 在停机之前武装挂起,而服务那次停机的
+	//     旧 Guardian 不认识挂起、无条件写下 off —— 挂起过期之前一直是这个组合。
 	// 代价是那 15 分钟里真实的残留会被压住 —— 已知取舍,挂起过期即恢复报告。
 	if intent.Desired == "off" && !held {
 		if observed.BarrierPresent == True {

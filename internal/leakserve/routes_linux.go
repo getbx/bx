@@ -78,20 +78,3 @@ func parseLinuxRoutes(out, defaultDest string) []leakcheck.RouteEntry {
 	}
 	return entries
 }
-
-// parseLinuxRouteGetInterface 从 `ip route get <dst>` 取出口接口。
-//
-// 真实输出:`1.1.1.1 dev lo  src 198.51.100.1`。**它是「谁在管这条路」唯一权威的
-// 答案** —— 它经过策略路由,而 bx 在 Linux 上正是靠 ip rule 分流的,读 main 表
-// 会得出完全错误的结论。
-func parseLinuxRouteGetInterface(out string) string {
-	for _, line := range splitLines(out) {
-		fields := fieldsOf(line)
-		for i := 0; i+1 < len(fields); i++ {
-			if fields[i] == "dev" {
-				return fields[i+1]
-			}
-		}
-	}
-	return ""
-}

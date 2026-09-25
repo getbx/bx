@@ -80,18 +80,3 @@ func TestParseLinuxRoutesSkipsRoutesWithoutADevice(t *testing.T) {
 		}
 	}
 }
-
-// `ip route get` 是「谁在管这条路」唯一权威的答案 —— 它经过策略路由,
-// 而 bx 在 Linux 上正是靠 ip rule 分流的,读 main 表会得出完全错误的结论。
-func TestParseLinuxRouteGetInterface(t *testing.T) {
-	if got := parseLinuxRouteGetInterface("1.1.1.1 dev bx0  src 198.51.100.1 \n    cache \n"); got != "bx0" {
-		t.Fatalf("= %q, want bx0", got)
-	}
-	if got := parseLinuxRouteGetInterface("1.1.1.1 via 172.17.0.1 dev eth0 src 172.17.0.4 uid 0 \n"); got != "eth0" {
-		t.Fatalf("= %q, want eth0", got)
-	}
-	// 问不出来就是空 —— 调用方据此报「没问出来」,而不是编一个接口。
-	if got := parseLinuxRouteGetInterface("RTNETLINK answers: Network is unreachable\n"); got != "" {
-		t.Fatalf("= %q, want 空", got)
-	}
-}

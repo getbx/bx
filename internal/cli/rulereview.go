@@ -43,14 +43,6 @@ var guardianRulesForDoctor = func() (review *rulereview.Report, configPath strin
 // TestDoctorReportHasNoDuplicateCheckNames 盯着这件事。
 const deadRulesCheckName = doctor.DeadRulesCheckName
 
-// ruleReviewDoctorLines 把体检报告翻成 doctor 的行。判据本体在
-// internal/doctor.RuleReviewLines,这里只是薄壳,供 CLI 既有调用点使用。
-func ruleReviewDoctorLines(rep rulereview.Report) []doctorFinding { return doctor.RuleReviewLines(rep) }
-
-// ruleReviewCheckName 把人话 key 换成 JSON 里稳定的 snake_case 名 ——
-// agent 与 MCP 按名字取,名字变了就是接口变了。
-func ruleReviewCheckName(key string) string { return doctor.RuleReviewCheckName(key) }
-
 // buildRuleReviewInput 是共享组装(internal/rulereviewsrc)的薄壳。
 //
 // **保留这个名字而不是逐个改调用点**,是因为它在 doctor 的两条路径上各被调一次,

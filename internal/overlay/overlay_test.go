@@ -94,18 +94,17 @@ func TestNothingIsAppliedForTenantsThatAreNotRunning(t *testing.T) {
 	if got := SplitRoutes(none); len(got) != 0 {
 		t.Errorf("没有租户在跑却出了 split %v —— 查询会被送给一个没起来的解析器", got)
 	}
-	if got := DirectCIDRs(none); len(got) != 0 {
-		t.Errorf("没有租户在跑却出了直连段 %v", got)
-	}
 }
 
 // Tailscale 在跑时:CGNAT 要额外直连,ts.net 要交给 MagicDNS。
 //
 // **CGNAT 必须显式声明**,因为它不在 RFC1918 —— 通用私网规则盖不住它。
+// (这一格今天只是表里的声明、没有消费方;CGNAT 真正恒直连靠的是
+// route.DefaultPrivateCIDRs,见 Tenant.DirectCIDRs 的注释。)
 func TestTailscaleGetsItsAddressSpaceAndNamespace(t *testing.T) {
 	present := Detect(Signals{Addresses: addrs("100.64.1.1")})
-	if got := DirectCIDRs(present); len(got) != 1 || got[0] != "100.64.0.0/10" {
-		t.Fatalf("DirectCIDRs = %v,want CGNAT —— 它不在 RFC1918,通用规则盖不住", got)
+	if len(present) != 1 || len(present[0].DirectCIDRs) != 1 || present[0].DirectCIDRs[0] != "100.64.0.0/10" {
+		t.Fatalf("认出的租户 = %+v,want tailscale 声明 CGNAT —— 它不在 RFC1918,通用规则盖不住", present)
 	}
 	routes := SplitRoutes(present)
 	if len(routes) != 1 || routes[0].Suffix != "ts.net" || routes[0].Resolver != "100.100.100.100" {
@@ -119,14 +118,17 @@ func TestTailscaleGetsItsAddressSpaceAndNamespace(t *testing.T) {
 // 它不需要特例,恰恰因为它守规矩。谁哪天给它补上一段 RFC1918,那是重复而不是修复。
 func TestZeroTierNeedsNoExtraDirectCIDRsBecauseItUsesRFC1918(t *testing.T) {
 	present := Detect(Signals{InterfaceNames: []string{"ztabcdef12"}})
-	if got := DirectCIDRs(present); len(got) != 0 {
-		t.Errorf("ZeroTier 出了额外直连段 %v —— 它用 RFC1918,已被通用私网规则覆盖", got)
+	if len(present) != 1 {
+		t.Fatalf("zt 接口应当认出恰好一个租户,得到 %+v", present)
+	}
+	if got := present[0].DirectCIDRs; len(got) != 0 {
+		t.Errorf("ZeroTier 声明了额外直连段 %v —— 它用 RFC1918,已被通用私网规则覆盖", got)
 	}
 	// 但它的根节点是**公网** IP,那一半今天完全没有旁路,是这次要补的。
 	if got := BypassCIDRs(present); len(got) == 0 {
 		t.Error("ZeroTier 在跑却没有根节点旁路 —— 隧道 fail-closed 时它连根都连不上")
 	}
-	if got := RelayHosts(present); len(got) == 0 {
+	if got := present[0].RelayHosts; len(got) == 0 {
 		t.Error("必须声明根节点主机名 —— 上游明说 IP 会变,主机名才是权威来源")
 	}
 }

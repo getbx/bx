@@ -34,7 +34,7 @@ import (
 // 一个域名,内嵌快照仍带着它,拿它比就会指着一条**仍然生效**的手写规则说「已被
 // 内建列表覆盖,可以删」——这是「判据没错、读错了输入」那类事故,而不是新判据。
 //
-// 三种结局,报告里都能分清用的是哪一份(见 ruleReviewDoctorLines/builtinListLines):
+// 三种结局,报告里都能分清用的是哪一份(见 internal/doctor 的 RuleReviewLines/builtinListLines):
 //  1. 读到 Core 实际会用的那个文件(用户没设 lists.china_domain 时是 dataDir 下的
 //     默认路径,设了就是那个路径)⇒ 用它比,报告点名这是「Core 当前实际使用的」。
 //  2. **默认路径**读不到(非 root 进不去 /var/lib/bx,或 Core 从没跑过 provision)

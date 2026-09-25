@@ -55,7 +55,7 @@ func TestDNSNotNeededRendersAsHealthyNotAsUnavailable(t *testing.T) {
 	if got := guardianDNSLabel(guardian.DNSNotNeeded, ""); got != "Handled by bx (data plane)" {
 		t.Fatalf("label = %q —— 「查了,无此事」不许说成「没查」", got)
 	}
-	check := guardianDNSDoctorCheck(guardian.Status{DNSState: guardian.DNSNotNeeded})
+	check := guardianDoctorCheck(t, guardian.Status{DNSState: guardian.DNSNotNeeded}, "guardian_dns")
 	if check.Status != "ok" {
 		t.Fatalf("doctor 对健康态判了 %s(hint=%q)", check.Status, check.Hint)
 	}

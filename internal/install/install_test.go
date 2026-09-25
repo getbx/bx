@@ -73,32 +73,55 @@ func TestExecStartCmd(t *testing.T) {
 	}
 }
 
-func TestLaunchdPlistText(t *testing.T) {
-	plist := LaunchdPlistText("/usr/local/bin/bx run -c /etc/bx/config.yaml")
-	for _, want := range []string{
-		"<key>Label</key>",
-		"<string>com.getbx.bx</string>",
-		"<key>ProgramArguments</key>",
-		"<string>/usr/local/bin/bx</string>",
-		"<string>run</string>",
-		"<string>-c</string>",
-		"<string>/etc/bx/config.yaml</string>",
-		"<key>RunAtLoad</key>",
-		"<key>KeepAlive</key>",
-		"<string>/var/log/bx.log</string>",
-		"<string>/var/log/bx.err.log</string>",
-	} {
-		if !strings.Contains(plist, want) {
-			t.Errorf("launchd plist 应含 %q,实际:\n%s", want, plist)
-		}
+// legacyCoreLaunchdPlistFixture 造一份旧版 Core LaunchDaemon plist 的样子。
+//
+// 生产里已经没有写这份 plist 的代码了(Core 由 Guardian 起);今天还活着的是
+// **读**它的那几条路 —— launchdExecStartCmd、migrateLegacyLaunchdPlistText ——
+// 它们面对的是旧安装留在盘上的文件。这份夹具就是那种文件的形状,原样取自
+// 当年的生成器。
+func legacyCoreLaunchdPlistFixture(execStart string) string {
+	args := strings.Fields(execStart)
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>`)
+	writeXMLEscaped(&b, launchdLabel)
+	b.WriteString(`</string>
+  <key>ProgramArguments</key>
+  <array>
+`)
+	for _, arg := range args {
+		b.WriteString("    <string>")
+		writeXMLEscaped(&b, arg)
+		b.WriteString("</string>\n")
 	}
+	b.WriteString(`  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>`)
+	writeXMLEscaped(&b, launchdStdoutPath)
+	b.WriteString(`</string>
+  <key>StandardErrorPath</key>
+  <string>`)
+	writeXMLEscaped(&b, launchdStderrPath)
+	b.WriteString(`</string>
+</dict>
+</plist>
+`)
+	return b.String()
 }
 
 func TestLaunchdExecStartCmd(t *testing.T) {
-	if got := launchdExecStartCmd(LaunchdPlistText("/usr/local/bin/bx run -c /etc/bx/config.yaml")); got != "run" {
+	if got := launchdExecStartCmd(legacyCoreLaunchdPlistFixture("/usr/local/bin/bx run -c /etc/bx/config.yaml")); got != "run" {
 		t.Fatalf("launchdExecStartCmd = %q, want run", got)
 	}
-	if got := launchdExecStartCmd(LaunchdPlistText("/usr/local/bin/bx up -c /etc/bx/config.yaml")); got != "up" {
+	if got := launchdExecStartCmd(legacyCoreLaunchdPlistFixture("/usr/local/bin/bx up -c /etc/bx/config.yaml")); got != "up" {
 		t.Fatalf("launchdExecStartCmd = %q, want up", got)
 	}
 }
@@ -183,7 +206,7 @@ func TestLaunchdDisableCommandsAreIdempotentWhenNothingLoaded(t *testing.T) {
 
 func TestMigrateLegacyLaunchdPlistText(t *testing.T) {
 	legacy := strings.Replace(
-		LaunchdPlistText("/usr/local/bin/bx run -c /etc/bx/config.yaml --listen-dns 127.0.0.1:53"),
+		legacyCoreLaunchdPlistFixture("/usr/local/bin/bx run -c /etc/bx/config.yaml --listen-dns 127.0.0.1:53"),
 		launchdLabel,
 		legacyLaunchdLabel,
 		1,
@@ -203,19 +226,6 @@ func TestMigrateLegacyLaunchdPlistText(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("migrated plist missing %q", want)
 		}
-	}
-}
-
-func TestExistingPaths(t *testing.T) {
-	dir := t.TempDir()
-	one := filepath.Join(dir, "one.log")
-	two := filepath.Join(dir, "two.log")
-	if err := os.WriteFile(one, []byte("ok\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got := existingPaths(one, two)
-	if len(got) != 1 || got[0] != one {
-		t.Fatalf("existingPaths = %#v, want [%q]", got, one)
 	}
 }
 
@@ -300,7 +310,7 @@ func TestRunNetworksetupContextWithRunnerHonorsCancellation(t *testing.T) {
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("runNetworksetup error = %v, want context canceled", err)
+			t.Fatalf("runNetworksetupContextWithRunner error = %v, want context canceled", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("networksetup did not stop after context cancellation")
@@ -396,10 +406,10 @@ func TestFlushDNSCacheContextWithRunnerSkipsUnavailableCommandOnlyWhenAlternativ
 
 			err := flushDNSCacheContextWithRunner(context.Background(), runner)
 			if tc.wantErr && err == nil {
-				t.Fatal("flushDNSCache accepted no available cache flush command")
+				t.Fatal("flushDNSCacheContextWithRunner accepted no available cache flush command")
 			}
 			if !tc.wantErr && err != nil {
-				t.Fatalf("flushDNSCache error = %v, want nil", err)
+				t.Fatalf("flushDNSCacheContextWithRunner error = %v, want nil", err)
 			}
 		})
 	}

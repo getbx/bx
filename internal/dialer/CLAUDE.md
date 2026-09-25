@@ -38,8 +38,10 @@
   (MCP 的 `bx_explain` 直接转发)。
 
 **两句判决(2026-09-14,真机未验)**:
-- **`Blame` 那一行**:`dialfail.Blame` 四态,**零值 `BlameUndetermined`**(两态时 `Other` 与
-  `Timeout` 都返回 false,「判不出」被渲染成「不是 bx 的问题」);新类别忘了分类由 AST 穷举守卫红。
+- **`Blame` 那一行**:措辞在 `explainVerdictText`,按四档(本机 / 对端 / 不算失败 / 认不出)逐类写;
+  认不出的落「认不出」那句,**绝不归进「不是 bx 的问题」**。新类别忘了写由 AST 穷举守卫红
+  (`TestEveryDialfailKindGetsADeliberateVerdict`)。曾有一张 `dialfail.Blame` 四态表,零生产调用方,
+  2026-09-25 删掉、守卫搬到了真正产出措辞的函数上。
   **`dialfail.Dominant` 要严格多数**(40/30/30 挑一个是编答案,5/5 是两句相反的话)。选样本的判据
   是「哪份答得出这个问题」不是「哪份有失败」,读的是哪份要印出来。指向对端的那一档**绝不断言
   对方状态**;渲染的话里**没有 markdown、没有反引号**。

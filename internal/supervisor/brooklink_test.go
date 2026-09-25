@@ -34,10 +34,10 @@ func TestServerHostFromLink_BareHost(t *testing.T) {
 	}
 }
 
-func TestHostToCIDRs_IP(t *testing.T) {
-	got := hostToCIDRs("203.0.113.10")
+func TestHostToAddrs_IPBecomesAHostCIDR(t *testing.T) {
+	got := addrsToCIDRs(hostToAddrs("203.0.113.10"))
 	if len(got) != 1 || got[0] != "203.0.113.10/32" {
-		t.Fatalf("hostToCIDRs(IP) = %v, want [203.0.113.10/32]", got)
+		t.Fatalf("addrsToCIDRs(hostToAddrs(IP)) = %v, want [203.0.113.10/32]", got)
 	}
 }
 

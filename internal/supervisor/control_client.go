@@ -311,13 +311,6 @@ func SetServerControl(sockPath, link, udp string) (string, error) {
 	return postControlBody(sockPath, "/v0/server", map[string]string{"link": link, "udp": udp})
 }
 
-// ReconnectControl 让守护进程安全重建当前传输。TUN、路由和 DNS 保持不变。
-func ReconnectControl(sockPath string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
-	return ReconnectControlContext(ctx, sockPath)
-}
-
 func ReconnectControlContext(ctx context.Context, sockPath string) (string, error) {
 	return reconnectControlContext(ctx, sockPath, controlHTTPClientForOperation)
 }

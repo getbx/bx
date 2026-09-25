@@ -1,25 +1,9 @@
 package srvgen
 
 import (
-	"crypto/ecdh"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 )
-
-// PubKeyFromPrivate 由 reality 私钥(base64url x25519)推导公钥(pbk)。
-// 服务端 sbserver.json 只存 private_key,share/link 重建客户端链接时要用它算 pbk。
-func PubKeyFromPrivate(priv string) (string, error) {
-	pb, err := base64.RawURLEncoding.DecodeString(priv)
-	if err != nil {
-		return "", fmt.Errorf("私钥 base64url 解码: %w", err)
-	}
-	k, err := ecdh.X25519().NewPrivateKey(pb)
-	if err != nil {
-		return "", fmt.Errorf("私钥非合法 x25519: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(k.PublicKey().Bytes()), nil
-}
 
 // NewUUID 生成一个 RFC4122 v4 UUID(供 share 给新用户分配)。
 func NewUUID() (string, error) { return uuidV4() }
@@ -42,27 +26,6 @@ func realityInbound(cfg map[string]any) (map[string]any, []any, error) {
 		}
 	}
 	return nil, nil, fmt.Errorf("配置里没有 vless(reality)入站")
-}
-
-// RealityUsers 列出 reality 入站的所有 uuid。
-func RealityUsers(configBytes []byte) ([]string, error) {
-	var cfg map[string]any
-	if err := json.Unmarshal(configBytes, &cfg); err != nil {
-		return nil, err
-	}
-	_, users, err := realityInbound(cfg)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(users))
-	for _, u := range users {
-		if m, ok := u.(map[string]any); ok {
-			if id, _ := m["uuid"].(string); id != "" {
-				out = append(out, id)
-			}
-		}
-	}
-	return out, nil
 }
 
 // AddRealityUser 给 reality 入站加一个用户(带 vision flow)。uuid 已存在则报错。
