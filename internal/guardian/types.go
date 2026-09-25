@@ -255,6 +255,13 @@ const CapabilityApps = "apps"
 // (与 /v1/rules、/v1/servers 同一条门控纪律。)
 const CapabilityStatusWatch = "status_watch"
 
+// CapabilityCoreOutlivesGuardian:这个 Guardian 退出时 Core 不会跟着死(它的 launchd
+// 任务带 AbandonProcessGroup,由 install.CoreOutlivesGuardianEnv 证明)。**只在真的
+// 成立时才声明**(不在 GuardianCapabilities 那份静态清单里):客户端据它判断升级能不能
+// 走「提交后 Guardian 自己重启」那条不断网的路;不成立时要切换 Guardian 就必须在屏障
+// 下做(D3),否则切换那几秒流量直连、泄漏真实 IP。
+const CapabilityCoreOutlivesGuardian = "core_outlives_guardian"
+
 // MaintenanceHoldStatus 是**正在生效**的那次挂起,随 Status 发布。
 //
 // 过期的挂起不出现在这里:键缺席的意思是「此刻没有挂起」。它与 MaintenanceHold

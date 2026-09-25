@@ -51,7 +51,10 @@ type DaemonOptions struct {
 	// (internal/cli) because the release lookup + signed manifest verification
 	// already lives there; Guardian publishes the answer, it does not
 	// reimplement the question. Nil leaves the endpoint answering 501.
-	UpdateCheck            func(context.Context) (UpdateAvailability, error)
+	UpdateCheck func(context.Context) (UpdateAvailability, error)
+	// coreOutlivesGuardian / restartForUpdate 由 RunDaemon 填(见 LocalAPIOptions 同名字段)。
+	coreOutlivesGuardian   bool
+	restartForUpdate       func()
 	networkObserver        daemonNetworkObserver
 	networkObserverDesired func() DesiredState
 }
@@ -500,13 +503,33 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	if err != nil {
 		return err
 	}
-	daemon, err := startRecoveredDaemon(ctx, options, manager, StartDaemon)
+	// D2:升级提交之后退出、由 launchd 以新二进制重启。只在加载着的任务带
+	// AbandonProcessGroup 时成立(见 install.CoreOutlivesGuardianEnv)——否则退出会
+	// 让 launchd 收掉 Core,那几秒流量直连。
+	options.coreOutlivesGuardian = os.Getenv(install.CoreOutlivesGuardianEnv) == "1"
+	runCtx, stopForRestart := context.WithCancel(ctx)
+	defer stopForRestart()
+	restartRequested := make(chan struct{})
+	var restartOnce sync.Once
+	options.restartForUpdate = func() {
+		restartOnce.Do(func() {
+			close(restartRequested)
+			stopForRestart()
+		})
+	}
+	daemon, err := startRecoveredDaemon(runCtx, options, manager, StartDaemon)
 	if err != nil {
 		return err
 	}
 	defer daemon.Close()
-	<-ctx.Done()
-	return daemon.Close()
+	<-runCtx.Done()
+	closeErr := daemon.Close()
+	select {
+	case <-restartRequested:
+		log.Printf("guardian_exiting_for_restart core_left_running=true")
+	default:
+	}
+	return closeErr
 }
 
 // startRecoveredDaemon starts the LocalAPI socket first and runs the startup
@@ -833,8 +856,10 @@ func localAPIOptionsFor(options DaemonOptions) LocalAPIOptions {
 			}
 			return info.Version
 		},
-		CoreRuntime: fetchCoreRuntime,
-		UpdateCheck: options.UpdateCheck,
+		CoreOutlivesGuardian: options.coreOutlivesGuardian,
+		RestartAfterUpdate:   options.restartForUpdate,
+		CoreRuntime:          fetchCoreRuntime,
+		UpdateCheck:          options.UpdateCheck,
 		// /v1/rules 改的就是这个文件 —— 与 Core 启动用的、与 owner_uid 读出来的
 		// 是**同一个路径**,不另猜一份(两处漂开会让菜单改了 A 而 Core 读 B)。
 		ConfigPath: options.ConfigPath,

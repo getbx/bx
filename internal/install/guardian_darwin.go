@@ -71,6 +71,13 @@ func GuardianPlistText(executable, configPath string) string {
   <true/>
   <key>AbandonProcessGroup</key>
   <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>`)
+	writeXMLEscaped(&b, CoreOutlivesGuardianEnv)
+	b.WriteString(`</key>
+    <string>1</string>
+  </dict>
   <key>StandardOutPath</key>
   <string>`)
 	writeXMLEscaped(&b, guardianLaunchdStdoutPath)
