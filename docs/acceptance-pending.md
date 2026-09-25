@@ -309,6 +309,14 @@ plist**(没有 AbandonProcessGroup)。修复:交接请求落盘,`bx up` 认出�
 做完、`bx down` 拆掉那道屏障;停旧 Core 先等它自己退、读不动隔拍重试;服务器 /32 在 bootout
 之后立刻补。另见 known-gaps A11(down 期间开的连接在 up 之后仍走 en0)。
 
+**第二次真跑(2026-09-25,v0.4.6 Guardian 旧 plist → v0.4.7):通过。** 屏障 07:22:04 装上,旧 Core
+约 2 秒自己退出,新 Guardian 07:22:17 起、新 Core 07:22:18 起,07:22:30 完成;Guardian=v0.4.7、
+plist 带 AbandonProcessGroup、能力里有 `core_outlives_guardian`、observed 全绿。**07:22:04–07:22:17
+en0 上发往公网(服务器除外)的包 0 个。** 新 Core 起来之后 en0 上的公网流量逐个对过:直连规则
+(Apple push / 腾讯 / Steam / 223.5.5.5,切换前稳态就有)、Tailscale(绑网卡,设计如此)、以及一条
+known-gaps A11 的 Chrome 连接。**D2(下一次 `bx update` 由 Guardian 自己重启)尚未真跑**,
+要等下一个版本。
+
 ## C. 要等机会,不值得专门制造
 
 - [ ] **菜单栏 LaunchAgent 的 EIO(5) 不再出现**:下次升级(或 `bx app-install`)时看输出里有没有
