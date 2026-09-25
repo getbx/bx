@@ -22,20 +22,17 @@ type fakeUpgradeIO struct {
 	confirmErr     error
 	confirmPrompts []string
 
-	stopForced      bool
-	stopCause       error
-	stopStatus      guardian.Status
-	stopHoldFalback error
-	stopErr         error
-	installErr      error
-	restartErr      error
+	stopForced bool
+	stopCause  error
+	stopStatus guardian.Status
+	stopErr    error
+	installErr error
+	restartErr error
 
 	configUsable bool
 	enableErr    error
 
 	barrierErr, stopBehindErr, startBehindErr, handOverErr error
-
-	stopProtectionWanted []bool
 
 	logs []string
 }
@@ -55,14 +52,12 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 			f.confirmPrompts = append(f.confirmPrompts, prompt)
 			return f.confirmAnswer, f.confirmErr
 		},
-		stopProtection: func(protectionWanted bool) (macOSDownResult, error) {
+		stopProtection: func() (macOSDownResult, error) {
 			f.calls = append(f.calls, "stopProtection")
-			f.stopProtectionWanted = append(f.stopProtectionWanted, protectionWanted)
 			return macOSDownResult{
-				Forced:       f.stopForced,
-				Cause:        f.stopCause,
-				Status:       f.stopStatus,
-				HoldFallback: f.stopHoldFalback,
+				Forced: f.stopForced,
+				Cause:  f.stopCause,
+				Status: f.stopStatus,
 			}, f.stopErr
 		},
 		installFiles: func() (installedFiles, error) {
@@ -107,11 +102,7 @@ func indexOfCall(calls []string, want string) int {
 	return -1
 }
 
-// 意图必须在停保护之前读完。
-//
-// **退回路径**(挂起写不成时退回写 desired=off,设计取舍三)上停保护仍会把
-// Guardian 的 desired 写成 off,之后再读就永远是 off —— 读晚了,保护就再也回不来。
-// 这条此前只由一句注释保证。
+// 意图必须在第一个动作之前读完:它决定整条计划走哪条路。
 func TestRunUpgradeReadsIntentBeforeStoppingProtection(t *testing.T) {
 	// 意图决定走哪条路(保护开着 ⇒ 屏障下切换),所以两条路都必须先读它。
 	for _, tc := range []struct {

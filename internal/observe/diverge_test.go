@@ -134,9 +134,10 @@ func TestDivergeStaysQuietDuringArmedHold(t *testing.T) {
 
 // desired=off 那一支的 !held 门也要有覆盖。
 //
-// **可达性**(reviewer 认为这个组合不可达,实际可达,故留此说明):一台用户已经
-// 关掉保护的机器上跑升级,recordStopIntent 照样武装挂起 —— 于是 desired=off 与
-// 一张武装着的挂起并存。这不是退回路径(退回恰恰发生在武装失败时,那时没有挂起)。
+// **可达性**:此前这里点名的来源(保护关着的机器上升级,CLI 照样武装挂起)已经
+// 不存在 —— 今天升级只在保护开着时武装挂起(屏障下切换),保护关着的升级不武装。
+// 这一格仍然留着:挂起与 desired 由不同进程、不同文件写,Diverge 不该靠「这个
+// 组合今天造不出来」来保持安静。
 func TestDivergeStaysQuietAboutResidueWhenDesiredOffUnderHold(t *testing.T) {
 	now := time.Now()
 	got := Diverge(

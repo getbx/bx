@@ -189,7 +189,8 @@ NewNetworkObserver / PeerCredentials 六个构造器字段,反射 `validate()` +
 `recoveryBlocked` ⇒ `Manager.Down` 永久报错,而升级恰是新旧共存的时刻)。会自己起 Core
 的路径共五条(干净 `Down`、强制拆除、启动恢复、`Down` 的 DNS 补偿重启、
 `recoverUpdateLocked`),**前四条必须认挂起**,第五条刻意不拦(拦住会把没做完的自更新永久
-搁浅)。**挂起写失败就退回写 `desired=off` 并照常拆除**。用户显式 up/down 无条件清挂起,
+搁浅)。挂起今天只由屏障下切换武装(`internal/cli/switchbarrier_darwin.go`),**写失败就
+中止、什么都不改**(旧的「退回写 `desired=off`」随停机武装一起删了)。用户显式 up/down 无条件清挂起,
 且清挂起对拆除成败无条件。
 
 ## 状态 watch:`GET /v1/status?wait=<generation>`(2026-08-17)

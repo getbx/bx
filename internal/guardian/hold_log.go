@@ -9,7 +9,7 @@ import (
 // 本文件让维护挂起的一生在 **Guardian 日志**里留下痕迹。
 //
 // 为什么记在 Guardian 而不是武装它的那一侧:**武装挂起的是 CLI 进程**
-// (internal/cli 的 recordStopIntent / forcedMacOSTeardown),而 internal/cli
+// (internal/cli 的 switchbarrier_darwin.go,屏障下切换 Guardian 那一步),而 internal/cli
 // 几乎不打日志 —— 它的 log 输出是终端 stderr,一次 `bx app-install` 结束就没了,
 // 而 Guardian 日志(/var/log/bx-guard.log)是真机上唯一留得住的那份。
 //

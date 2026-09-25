@@ -20,7 +20,7 @@ import "testing"
 //     没有第三种;而强制拆除自己那几步「任一步失败都继续做完剩下的」。
 //
 // **今天在守这件事的是 internal/cli 那几条**,不是这一条:
-// TestUpgradeDownRecordsTheHoldOnEveryForcedEntrance 与
+// TestUnprotectedUpgradeDownRecordsNothingOnEveryForcedEntrance 与
 // TestUserDownRecordsDesiredOffOnEveryForcedEntrance 表驱动地走遍**每一个**
 // 强制入口(Guardian 不可达 / legacy 可能在跑 / legacy 探测本身失败 /
 // 干净事务失败后回落),每一格都断言 `err == nil` 且 `result.Forced` ——
