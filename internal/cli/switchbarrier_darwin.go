@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"slices"
 	"time"
 
@@ -118,6 +120,11 @@ func (s *barrierSwitch) stopGuardian(parent context.Context) error {
 
 func waitNoCoreRunningFor(ctx context.Context, d time.Duration) error {
 	runner := guardian.NewExecCoreRunner(install.GuardianExecutable(), defaultConfigPath, darwinDNSListen)
+	// 每一次扫描都打一行 guardian_core_scan —— 那是写给 Guardian 日志的审计线索,在这里
+	// 每 200ms 一行刷到用户终端上(2026-09-25 真机)。这一段轮询期间静音,结束后原样恢复。
+	restore := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(restore)
 	waitCtx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
 	for {
