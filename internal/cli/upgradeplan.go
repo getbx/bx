@@ -86,7 +86,7 @@ func upgradeFailureBehindBarrier(err error) string {
 	return fmt.Sprintf(
 		"the upgrade did not finish: %v\n"+
 			"bx is blocking all traffic, so the network is down but nothing is leaving unprotected. "+
-			"Run the same upgrade again to finish it, or run "+elevate.Prefix+"bx down to get the network back without protection. "+
+			"Run the same upgrade again, or "+elevate.Prefix+"bx up, to finish it; or run "+elevate.Prefix+"bx down to get the network back without protection. "+
 			"Details: sudo tail -50 /var/log/bx-guard.err.log", err,
 	)
 }

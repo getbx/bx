@@ -1440,6 +1440,8 @@ type recordingGuardianClient struct {
 	upCalls       int
 	downCalls     int
 	migrateCalls  int
+	migrateErr    error
+	lastMigrate   guardian.MigrationRequest
 	downErr       error
 
 	downForUpgradeCalls int
@@ -1496,9 +1498,13 @@ func (c *recordingGuardianClient) DownForUpgrade(ctx context.Context) (guardian.
 	return c.downStatus, nil
 }
 
-func (c *recordingGuardianClient) Migrate(context.Context, guardian.MigrationRequest) (guardian.Status, error) {
+func (c *recordingGuardianClient) Migrate(_ context.Context, request guardian.MigrationRequest) (guardian.Status, error) {
 	c.migrateCalls++
+	c.lastMigrate = request
 	*c.events = append(*c.events, "guardian.migrate")
+	if c.migrateErr != nil {
+		return guardian.Status{}, c.migrateErr
+	}
 	return c.migrateStatus, nil
 }
 
