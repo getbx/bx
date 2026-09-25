@@ -596,46 +596,12 @@ func TestHoldFallbackIsReportedOnEveryDownPath(t *testing.T) {
 			if !errors.Is(result.HoldFallback, armFailure) {
 				t.Fatalf("报的不是武装失败的原因,下次还会照样发生:%v", result.HoldFallback)
 			}
-			// **渲染要走生产真的走的那条路。**
-			//
-			// 这里曾经直接调 downReportLines —— 而它唯一的生产调用方是
-			// macOSDownAction(`bx down`,downPurposeUser),那条路上
-			// HoldFallback 恒为 nil。测试自己把两头接起来,于是「用户看得到」
-			// 在生产里从来不成立:真正会渲染它的是 runUpgrade。
-			lines := upgradeStopLines(t, deps)
-			if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "maintenance hold") }) {
-				t.Fatalf("用户看不到这次退回:%v", lines)
-			}
-			if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, armFailure.Error()) }) {
-				t.Fatalf("没说清是为什么武装不成,下次还会照样发生:%v", lines)
-			}
+			// 此前这里还经 runUpgrade 断言「用户看得到这次退回」。2026-09-25 起保护开着
+			// 时的升级不再停保护(在屏障下切换,D3),runUpgrade 只对保护关着的机器停机,
+			// 而那种停机不武装挂起 —— 这条退回在 app-install 上已经走不到,渲染那半
+			// 随之退场;判据这半(退回时如实带回原因)仍由上面几句钉住。
 		})
 	}
-}
-
-// upgradeStopLines 复刻 `sudo bx app-install` 停保护那一步真的会打印的东西:
-// 同一个 runUpgrade、同一个 macOSDownLifecycleFor、同一条 io.log。
-//
-// 它刻意在装文件那一步停下 —— 本函数关心的只有停机那一步的输出,而让编排继续
-// 往下走会把无关的失败混进来。
-func upgradeStopLines(t *testing.T, deps macOSLifecycleDeps) []string {
-	t.Helper()
-	var lines []string
-	_, _ = runUpgrade(upgradeIO{
-		guardianRunning: func() (bool, error) { return true, nil },
-		loadDesiredOn:   func() bool { return true },
-		stopProtection: func(protectionWanted bool) (macOSDownResult, error) {
-			return macOSDownLifecycleFor(context.Background(), upgradeStopPurpose(protectionWanted), "/etc/bx/config.yaml", deps)
-		},
-		reassertDesiredOn: func() error { return nil },
-		installFiles: func() (installedFiles, error) {
-			return installedFiles{}, errors.New("到此为止:这条用例只看停机那一步的输出")
-		},
-		restartGuardian: func() error { return nil },
-		startProtection: func() error { return nil },
-		log:             func(line string) { lines = append(lines, line) },
-	}, true)
-	return lines
 }
 
 // 没退回就一个字都不说 —— 与这一期其余每一条新增输出同一条纪律:
@@ -657,15 +623,6 @@ func TestNoHoldFallbackMeansNoExtraLine(t *testing.T) {
 	}
 	if result.HoldFallback != nil {
 		t.Fatalf("没退回却报了退回:%v", result.HoldFallback)
-	}
-	lines := upgradeStopLines(t, deps)
-	// **这条禁词此前一个字都没守住**:生产那句写的是「没能武装维护挂起」,
-	// 而这里查的是「未能」—— 一字之差,从来匹配不上。2026-09-17 改英文时才
-	// 显形。现在钉的是 holdFallbackWarning 的原话。
-	if slices.ContainsFunc(lines, func(line string) bool {
-		return strings.Contains(line, "Could not arm the maintenance hold")
-	}) {
-		t.Fatalf("没退回却多写了一行:%v", lines)
 	}
 }
 

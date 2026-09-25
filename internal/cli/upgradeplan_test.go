@@ -52,7 +52,7 @@ func TestUpgradeStepsOnFreshInstallStartsGuardianWhenConfigIsUsable(t *testing.T
 		}
 		// 全新安装绝不开保护 —— 那是用户的决定,README 也是这么承诺的。
 		for _, step := range got {
-			if step == UpgradeStartProtection {
+			if step == UpgradeHandOver {
 				t.Fatalf("desired=%v:全新安装不许开启保护, got %v", desired, got)
 			}
 		}
@@ -70,63 +70,45 @@ func TestUpgradeStepsOnFreshInstallSkipsGuardianWhenConfigIsUnusable(t *testing.
 	}
 }
 
-// 关键顺序:停保护必须排在装文件之前。
-//
-// 它让网络在整个换装期间是直连可用的,于是其后任何一步失败,最差只是「没有保护」,
-// 而不是「路由指向已消失的 TUN、整机断网」—— 对一个翻墙工具,后者意味着用户连
-// 重装包都下不了。
-func TestUpgradeStepsStopProtectionBeforeInstalling(t *testing.T) {
-	steps := upgradeSteps(true, true, true)
-	stop, install := -1, -1
-	for i, s := range steps {
-		switch s {
-		case UpgradeStopProtection:
-			stop = i
-		case UpgradeInstallFiles:
-			install = i
-		}
+// 保护关着时:停保护(此时它只是停服务,没有流量在走隧道)排在装文件之前,
+// 并且 Guardian 必须被重启 —— 换了符号链接,已在跑的进程也不会因此换代码
+// (2026-08-08 那次真机事故的根因)。原本关着就不许擅自打开。
+func TestUpgradeStepsWhenProtectionIsOff(t *testing.T) {
+	got := upgradeSteps(true, false, true)
+	want := []UpgradeStep{UpgradeStopProtection, UpgradeInstallFiles, UpgradeRestartGuardian}
+	if len(got) != len(want) {
+		t.Fatalf("steps = %v, want %v", got, want)
 	}
-	if stop < 0 || install < 0 {
-		t.Fatalf("steps = %v, 必须同时包含停保护与装文件", steps)
-	}
-	if stop > install {
-		t.Fatalf("停保护(%d)必须早于装文件(%d),否则失败会留下断网状态", stop, install)
-	}
-}
-
-// 升级前开着,升级后要开回来;原本关着就不要擅自打开。
-func TestUpgradeStepsRestoreDesiredState(t *testing.T) {
-	on := upgradeSteps(true, true, true)
-	if on[len(on)-1] != UpgradeStartProtection {
-		t.Fatalf("原本开着,最后一步必须是起保护,实际 %v", on)
-	}
-	for _, s := range upgradeSteps(true, false, true) {
-		if s == UpgradeStartProtection {
-			t.Fatal("原本关着,不得擅自打开保护")
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("steps = %v, want %v", got, want)
 		}
 	}
 }
 
-// Guardian 必须被重启,否则换了符号链接也没用 —— 已在跑的进程不会因此换代码。
-// 这正是 2026-08-08 那次真机事故的根因。
-func TestUpgradeStepsAlwaysRestartGuardianWhenItIsRunning(t *testing.T) {
-	for _, desired := range []bool{true, false} {
-		found := false
-		for _, s := range upgradeSteps(true, desired, true) {
-			if s == UpgradeRestartGuardian {
-				found = true
-			}
+// 保护开着时:**绝不**先停保护(停保护 = 流量无保护地直连,泄漏真实 IP),而是先装
+// 屏障、在屏障下换 Guardian、最后把屏障交给新 Guardian。装文件夹在旧 Guardian 停掉
+// 之后,交接在最后 —— 交接成功才算保护恢复。
+func TestUpgradeStepsWhenProtectionIsOnSwitchBehindABarrier(t *testing.T) {
+	got := upgradeSteps(true, true, true)
+	want := []UpgradeStep{UpgradeBarrierUp, UpgradeStopGuardianBehindBarrier, UpgradeInstallFiles, UpgradeStartGuardianBehindBarrier, UpgradeHandOver}
+	if len(got) != len(want) {
+		t.Fatalf("steps = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("steps = %v, want %v", got, want)
 		}
-		if !found {
-			t.Fatalf("desired=%v:Guardian 在跑就必须重启它", desired)
-		}
+	}
+	if stepsContain(got, UpgradeStopProtection) {
+		t.Fatal("保护开着时计划里出现了「停保护」")
 	}
 }
 
 // 确认文案必须明说会断网,而不是含糊的「可能有短暂中断」。
 func TestUpgradeConfirmMessageStatesTheOutage(t *testing.T) {
 	on := upgradeConfirmMessage(true)
-	for _, must := range []string{"network drops", "restart protection"} {
+	for _, must := range []string{"network drops", "restart protection", "nothing leaves unprotected"} {
 		if !strings.Contains(on, must) {
 			t.Fatalf("确认文案必须包含 %q,实际 = %q", must, on)
 		}
@@ -144,7 +126,7 @@ func TestUpgradeConfirmMessageStatesTheOutage(t *testing.T) {
 
 // 失败文案必须说清「现在处于什么状态」,而不只是抛出错误。
 func TestUpgradeFailureMessageSaysNetworkIsUsable(t *testing.T) {
-	msg := upgradeFailureMessage(UpgradeStartProtection, errors.New("boom"))
+	msg := upgradeFailureMessage(UpgradeRestartGuardian, errors.New("boom"))
 	if !strings.Contains(msg, "The network still works") {
 		t.Fatalf("装文件之后的失败必须说明网络仍可用(直连),实际 = %q", msg)
 	}
@@ -174,7 +156,7 @@ func TestUpgradeFailureMessageForStopDoesNotClaimNothingChanged(t *testing.T) {
 
 // 走过强制拆除之后,不得替 bx down 说出它自己拒绝说的那句话。
 func TestUpgradeFailureMessageWithoutRestoredNetworkDoesNotPromiseConnectivity(t *testing.T) {
-	msg := upgradeFailureMessageWithNetwork(UpgradeStartProtection, errors.New("boom"), false)
+	msg := upgradeFailureMessageWithNetwork(UpgradeRestartGuardian, errors.New("boom"), false)
 	if strings.Contains(msg, "The network still works") {
 		t.Fatalf("强制拆除是 best-effort,不得断言网络可用,实际 = %q", msg)
 	}
@@ -182,7 +164,7 @@ func TestUpgradeFailureMessageWithoutRestoredNetworkDoesNotPromiseConnectivity(t
 		t.Fatalf("必须说明未经确认并给出下一步,实际 = %q", msg)
 	}
 	// 干净停过保护那条路的措辞不变(既有断言仍然成立)。
-	clean := upgradeFailureMessageWithNetwork(UpgradeStartProtection, errors.New("boom"), true)
+	clean := upgradeFailureMessageWithNetwork(UpgradeRestartGuardian, errors.New("boom"), true)
 	if !strings.Contains(clean, "The network still works") {
 		t.Fatalf("干净路径仍应如实告知网络可用,实际 = %q", clean)
 	}
@@ -231,10 +213,15 @@ func TestUpVersionMismatchIsReported(t *testing.T) {
 	if strings.Contains(msg, "bx down && "+elevate.Prefix+"bx up") {
 		t.Fatalf("不得给出那条无效建议,实际 = %q", msg)
 	}
-	// 2026-09-25 起**不许**再推荐那条切换命令:它的「停保护」不装屏障,切换那几秒里流量
-	// 无保护地直连(所有者:断网可以,泄漏 IP 不行)。屏障下的切换落地之前,只如实说处境。
-	if strings.Contains(msg, "app-install") || strings.Contains(msg, upgradeSwitchCommand) {
-		t.Fatalf("推荐了会泄漏 IP 的切换命令,实际 = %q", msg)
+	// 给的就是那条真能跑通的命令(TestUpgradeSwitchCommandCanActuallyRun 钉它能跑)。
+	// 它在屏障下切换(D3),所以可以推荐;而文案必须说清会断网、不会漏 —— 保护开着时
+	// 升级的那个「先停保护」的旧路子已经从 upgradeSteps 里拿掉
+	// (TestUpgradeStepsWhenProtectionIsOnSwitchBehindABarrier)。
+	if !strings.Contains(msg, upgradeSwitchCommand) {
+		t.Fatalf("没给出那条切换命令,实际 = %q", msg)
+	}
+	if !strings.Contains(msg, "nothing leaves unprotected") {
+		t.Fatalf("要说清切换期间断网但不泄漏,实际 = %q", msg)
 	}
 }
 

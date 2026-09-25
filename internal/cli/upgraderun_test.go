@@ -29,13 +29,11 @@ type fakeUpgradeIO struct {
 	stopErr         error
 	installErr      error
 	restartErr      error
-	startErr        error
-
-	reassertErr   error
-	reassertCalls int
 
 	configUsable bool
 	enableErr    error
+
+	barrierErr, stopBehindErr, startBehindErr, handOverErr error
 
 	stopProtectionWanted []bool
 
@@ -67,11 +65,6 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 				HoldFallback: f.stopHoldFalback,
 			}, f.stopErr
 		},
-		reassertDesiredOn: func() error {
-			f.calls = append(f.calls, "reassertDesiredOn")
-			f.reassertCalls++
-			return f.reassertErr
-		},
 		installFiles: func() (installedFiles, error) {
 			f.calls = append(f.calls, "installFiles")
 			return installedFiles{Version: "2.0.0", AppPath: "/Applications/Bx.app"}, f.installErr
@@ -85,9 +78,21 @@ func (f *fakeUpgradeIO) io() upgradeIO {
 			f.calls = append(f.calls, "enableGuardian")
 			return f.enableErr
 		},
-		startProtection: func() error {
-			f.calls = append(f.calls, "startProtection")
-			return f.startErr
+		barrierUp: func() error {
+			f.calls = append(f.calls, "barrierUp")
+			return f.barrierErr
+		},
+		stopGuardianBehindBarrier: func() error {
+			f.calls = append(f.calls, "stopGuardianBehindBarrier")
+			return f.stopBehindErr
+		},
+		startGuardianBehindBarrier: func() error {
+			f.calls = append(f.calls, "startGuardianBehindBarrier")
+			return f.startBehindErr
+		},
+		handOver: func() error {
+			f.calls = append(f.calls, "handOver")
+			return f.handOverErr
 		},
 		log: func(line string) { f.logs = append(f.logs, line) },
 	}
@@ -108,17 +113,23 @@ func indexOfCall(calls []string, want string) int {
 // Guardian 的 desired 写成 off,之后再读就永远是 off —— 读晚了,保护就再也回不来。
 // 这条此前只由一句注释保证。
 func TestRunUpgradeReadsIntentBeforeStoppingProtection(t *testing.T) {
-	fake := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
-	if _, err := runUpgrade(fake.io(), false); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	load := indexOfCall(fake.calls, "loadDesiredOn")
-	stop := indexOfCall(fake.calls, "stopProtection")
-	if load < 0 || stop < 0 {
-		t.Fatalf("calls = %v,必须读意图、停保护", fake.calls)
-	}
-	if load > stop {
-		t.Fatalf("读意图(%d)必须早于停保护(%d),否则读到的永远是 off:%v", load, stop, fake.calls)
+	// 意图决定走哪条路(保护开着 ⇒ 屏障下切换),所以两条路都必须先读它。
+	for _, tc := range []struct {
+		desiredOn bool
+		firstMove string
+	}{{false, "stopProtection"}, {true, "barrierUp"}} {
+		fake := &fakeUpgradeIO{running: true, desiredOn: tc.desiredOn, confirmAnswer: true}
+		if _, err := runUpgrade(fake.io(), false); err != nil {
+			t.Fatalf("desiredOn=%v: unexpected error: %v", tc.desiredOn, err)
+		}
+		load := indexOfCall(fake.calls, "loadDesiredOn")
+		move := indexOfCall(fake.calls, tc.firstMove)
+		if load < 0 || move < 0 {
+			t.Fatalf("desiredOn=%v: calls = %v,必须读意图、再 %s", tc.desiredOn, fake.calls, tc.firstMove)
+		}
+		if load > move {
+			t.Fatalf("desiredOn=%v: 读意图(%d)必须早于 %s(%d):%v", tc.desiredOn, load, tc.firstMove, move, fake.calls)
+		}
 	}
 }
 
@@ -129,8 +140,9 @@ func TestRunUpgradeReportsNoRestoreWhenAStepFails(t *testing.T) {
 		set  func(*fakeUpgradeIO)
 	}{
 		{"装文件失败", func(f *fakeUpgradeIO) { f.installErr = errors.New("boom") }},
-		{"重启 Guardian 失败", func(f *fakeUpgradeIO) { f.restartErr = errors.New("boom") }},
-		{"起保护失败", func(f *fakeUpgradeIO) { f.startErr = errors.New("boom") }},
+		{"停旧 Guardian 失败", func(f *fakeUpgradeIO) { f.stopBehindErr = errors.New("boom") }},
+		{"起新 Guardian 失败", func(f *fakeUpgradeIO) { f.startBehindErr = errors.New("boom") }},
+		{"交接失败", func(f *fakeUpgradeIO) { f.handOverErr = errors.New("boom") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
@@ -156,7 +168,7 @@ func TestRunUpgradeTreatsUnknownGuardianStateAsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, want := range []string{"stopProtection", "restartGuardian", "startProtection"} {
+	for _, want := range []string{"barrierUp", "stopGuardianBehindBarrier", "installFiles", "startGuardianBehindBarrier", "handOver"} {
 		if indexOfCall(fake.calls, want) < 0 {
 			t.Fatalf("问不出来就得按「在跑」走完整流程,缺 %s:%v", want, fake.calls)
 		}
@@ -189,7 +201,7 @@ func TestRunUpgradeCancelledDoesNothing(t *testing.T) {
 	if err != nil || !outcome.Cancelled {
 		t.Fatalf("取消不该报错,outcome=%+v err=%v", outcome, err)
 	}
-	for _, forbidden := range []string{"stopProtection", "installFiles", "restartGuardian", "startProtection"} {
+	for _, forbidden := range []string{"stopProtection", "barrierUp", "stopGuardianBehindBarrier", "installFiles", "restartGuardian", "handOver"} {
 		if indexOfCall(fake.calls, forbidden) >= 0 {
 			t.Fatalf("取消后不得执行 %s:%v", forbidden, fake.calls)
 		}
@@ -205,7 +217,7 @@ func TestRunUpgradeAssumeYesSkipsOnlyTheQuestion(t *testing.T) {
 	if indexOfCall(fake.calls, "confirm") >= 0 {
 		t.Fatalf("--yes 不该再问:%v", fake.calls)
 	}
-	if indexOfCall(fake.calls, "stopProtection") < 0 {
+	if indexOfCall(fake.calls, "barrierUp") < 0 || indexOfCall(fake.calls, "handOver") < 0 {
 		t.Fatalf("--yes 不改变要做的事:%v", fake.calls)
 	}
 }
@@ -214,7 +226,7 @@ func TestRunUpgradeAssumeYesSkipsOnlyTheQuestion(t *testing.T) {
 // bx down 自己在同样处境下都拒绝这么说。
 func TestRunUpgradeDoesNotClaimUsableNetworkAfterForcedTeardown(t *testing.T) {
 	fake := &fakeUpgradeIO{
-		running: true, desiredOn: true, confirmAnswer: true,
+		running: true, desiredOn: false, confirmAnswer: true,
 		stopForced: true, stopCause: errors.New("guardian 无响应"),
 		installErr: errors.New("boom"),
 	}
@@ -253,7 +265,7 @@ func TestRunUpgradeFailsLoudlyWhenItCannotAsk(t *testing.T) {
 	if !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("必须告诉调用方怎么显式表态,实际 = %q", err)
 	}
-	for _, forbidden := range []string{"stopProtection", "installFiles"} {
+	for _, forbidden := range []string{"stopProtection", "barrierUp", "installFiles"} {
 		if indexOfCall(fake.calls, forbidden) >= 0 {
 			t.Fatalf("没问成就不得动手 %s:%v", forbidden, fake.calls)
 		}
@@ -279,7 +291,7 @@ func TestRunUpgradeExplicitNoIsNotAnError(t *testing.T) {
 // Core 还跑着老二进制、占着 TUN。症状要到之后才现:startProtection 撞上 latch 住的
 // core_ownership_uncertain,而那个状态只有 down+up 能解 —— 远比现在中止更难懂。
 func TestRunUpgradeStopsBeforeTouchingFilesWhenTheStopWasUnconfirmed(t *testing.T) {
-	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f := &fakeUpgradeIO{running: true, desiredOn: false, confirmAnswer: true}
 	f.stopStatus = guardian.Status{
 		Protection: guardian.ProtectionNeedsAttention,
 		LastError:  "core_still_running",
@@ -313,7 +325,7 @@ func TestRunUpgradeStopsBeforeTouchingFilesWhenTheStopWasUnconfirmed(t *testing.
 
 // 回归:Guardian 确认关掉了,升级照常走完。
 func TestRunUpgradeProceedsWhenTheStopWasConfirmed(t *testing.T) {
-	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f := &fakeUpgradeIO{running: true, desiredOn: false, confirmAnswer: true}
 	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff}
 
 	if _, err := runUpgrade(f.io(), false); err != nil {
@@ -324,71 +336,70 @@ func TestRunUpgradeProceedsWhenTheStopWasConfirmed(t *testing.T) {
 	}
 }
 
-// **「这台机器此刻要不要保护」必须由停机那一步知道。**
-//
-// 它决定要不要武装维护挂起:一台用户自己关着保护的机器上跑升级,武装出来的挂起
-// 没有任何东西会去清它 —— upgradeSteps(true,false) 里根本没有「恢复保护」这一步,
-// 而销挂起只发生在用户显式的 up/down/migrate 上。于是那 15 分钟里菜单表头写着
-// Paused、bx status 写着「保护此刻被有意压制」,而机器关着只是因为用户想关着。
-//
-// 传的是**升级一开始就读好的那个值**,不是在停机里再读一次:退回路径会在停机
-// 途中把 desired 写成 off,第二次读拿到的就不是用户的意图了。
-func TestRunUpgradePassesTheProtectionIntentIntoTheStop(t *testing.T) {
-	for _, desiredOn := range []bool{true, false} {
-		f := &fakeUpgradeIO{running: true, desiredOn: desiredOn, confirmAnswer: true}
-		f.stopStatus = holdAwareStopStatus()
-		if _, err := runUpgrade(f.io(), false); err != nil {
-			t.Fatalf("desiredOn=%v: %v", desiredOn, err)
-		}
-		if len(f.stopProtectionWanted) != 1 || f.stopProtectionWanted[0] != desiredOn {
-			t.Fatalf("desiredOn=%v:停机那一步收到的是 %v", desiredOn, f.stopProtectionWanted)
-		}
-	}
-}
-
-// holdAwareStopStatus 是**本版** Guardian 服务这次停机之后回的那份状态:它声明了
-// maintenance_hold,于是 desired 一个字节都没被动过。
-func holdAwareStopStatus() guardian.Status {
-	return guardian.Status{Protection: guardian.ProtectionOff, Capabilities: guardian.GuardianCapabilities()}
-}
-
-// **过渡升级(新 CLI × 旧 Guardian)必须把用户的意图写回盘上。**
-//
-// 旧 Guardian 的 Manager.Down 无条件 SaveDesired(DesiredOff)——`?reason=upgrade`
-// 在那一版里只保住欠条,从不抑制那次写入。而欠条本身已经在这条分支里被删掉,
-// 于是这次升级停机之后盘上是一句自洽的假话:desired=off,没有挂起,没有欠条。
-// 后果不是「这一次升级失败」,是**永久无保护且悄无声息**:中途崩一次,重跑读到
-// off、不再有「恢复保护」这一步,还会报「升级完成」;desired=off 自洽,
-// Diverge 一个字都不说。
-func TestRunUpgradeRestoresIntentWhenTheStopWasServedByAHoldUnawareGuardian(t *testing.T) {
+// **保护开着的机器,升级绝不先停保护。** 停保护 = 停 Core、DNS 还给系统、不装屏障,
+// 从那一刻到新 Core 劫持完成,流量无保护地直连 —— 泄漏真实 IP。所有者的边界是
+// 「断网可以,泄漏 IP 不行」(2026-09-25),所以那条路上只能是「先装屏障」。
+func TestRunUpgradeNeverStopsProtectionOnAProtectedMachine(t *testing.T) {
 	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
-	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff} // 旧 Guardian:不声明任何能力
-
-	if _, err := runUpgrade(f.io(), false); err != nil {
+	outcome, err := runUpgrade(f.io(), false)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.reassertCalls != 1 {
-		t.Fatalf("旧 Guardian 服务的停机之后必须把 desired 写回 on,实际调用 %d 次:%v", f.reassertCalls, f.calls)
+	if indexOfCall(f.calls, "stopProtection") >= 0 || indexOfCall(f.calls, "restartGuardian") >= 0 {
+		t.Fatalf("保护开着时走了会泄漏的「先停保护」那条路:%v", f.calls)
 	}
-	// **必须早于换二进制。** 崩在装文件那一步的机器,重跑时读到的就是这次写回的值;
-	// 写在末尾等于只覆盖「一切顺利」那条路,而那条路本来就不需要它。
-	reassert, install := indexOfCall(f.calls, "reassertDesiredOn"), indexOfCall(f.calls, "installFiles")
-	if reassert < 0 || install < 0 || reassert > install {
-		t.Fatalf("写回意图(%d)必须早于装文件(%d):%v", reassert, install, f.calls)
+	want := []string{"barrierUp", "stopGuardianBehindBarrier", "installFiles", "startGuardianBehindBarrier", "handOver"}
+	last := -1
+	for _, step := range want {
+		i := indexOfCall(f.calls, step)
+		if i < 0 || i < last {
+			t.Fatalf("屏障下切换的顺序应为 %v,实际 %v", want, f.calls)
+		}
+		last = i
+	}
+	if !outcome.ProtectionRestored {
+		t.Fatal("交接成功就是保护恢复了")
 	}
 }
 
-// 本版 Guardian 服务的停机**不许**再写一次 desired:它从来就没被改过,
-// 而多一个写入点就是多一个能撒谎的地方(设计取舍:desired 只由用户改)。
-func TestRunUpgradeLeavesDesiredAloneWhenTheGuardianDeclaresMaintenanceHold(t *testing.T) {
-	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
-	f.stopStatus = holdAwareStopStatus()
-
-	if _, err := runUpgrade(f.io(), false); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// 屏障装上之后任何一步失败:断网,但没有东西漏出去 —— 话要这么说,而且绝不能说
+// 「网络还能用(直连)」,更不能自己把屏障拆了。
+func TestRunUpgradeFailureBehindTheBarrierSaysBlockedNotDirect(t *testing.T) {
+	for _, set := range []func(*fakeUpgradeIO){
+		func(f *fakeUpgradeIO) { f.stopBehindErr = errors.New("boom") },
+		func(f *fakeUpgradeIO) { f.installErr = errors.New("boom") },
+		func(f *fakeUpgradeIO) { f.startBehindErr = errors.New("boom") },
+		func(f *fakeUpgradeIO) { f.handOverErr = errors.New("boom") },
+	} {
+		f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+		set(f)
+		_, err := runUpgrade(f.io(), false)
+		if err == nil {
+			t.Fatal("这一步失败必须报错")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "blocking all traffic") || !strings.Contains(msg, "nothing is leaving unprotected") {
+			t.Fatalf("屏障下的失败要说「在拦、没漏」:%q", msg)
+		}
+		if strings.Contains(msg, "The network still works") {
+			t.Fatalf("屏障在却说网络能用:%q", msg)
+		}
+		if !strings.Contains(msg, elevate.Prefix+"bx down") {
+			t.Fatalf("要给出用户自己选择不要保护的那条出路:%q", msg)
+		}
 	}
-	if f.reassertCalls != 0 {
-		t.Fatalf("认识挂起的 Guardian 没动过 desired,不该再写一次:%v", f.calls)
+}
+
+// 屏障没装上:什么都没改过,后面一步都不许做。
+func TestRunUpgradeBarrierFailureTouchesNothingElse(t *testing.T) {
+	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true, barrierErr: errors.New("no gateway")}
+	if _, err := runUpgrade(f.io(), false); err == nil {
+		t.Fatal("屏障装不上必须报错")
+	}
+	for _, forbidden := range []string{"stopGuardianBehindBarrier", "installFiles", "startGuardianBehindBarrier", "handOver", "stopProtection"} {
+		if indexOfCall(f.calls, forbidden) >= 0 {
+			t.Fatalf("屏障没装上就不许往下走(%s):%v", forbidden, f.calls)
+		}
 	}
 }
 
@@ -398,42 +409,12 @@ func TestRunUpgradeNeverTurnsProtectionOnForAMachineThatWantsItOff(t *testing.T)
 	f := &fakeUpgradeIO{running: true, desiredOn: false, confirmAnswer: true}
 	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff}
 
-	if _, err := runUpgrade(f.io(), false); err != nil {
+	outcome, err := runUpgrade(f.io(), false)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.reassertCalls != 0 {
-		t.Fatalf("desired 本来就是 off,升级不得把它写成 on:%v", f.calls)
-	}
-}
-
-// 停机那一步**自己失败**时更要写回:那正是「中途崩了」的样子,而强制拆除已经
-// 把六步破坏性动作做完、旧 Guardian 也已经写下 off。
-func TestRunUpgradeRestoresIntentEvenWhenTheStopItselfFailed(t *testing.T) {
-	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
-	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff}
-	f.stopErr = errors.New("强制拆除未能全部完成")
-
-	if _, err := runUpgrade(f.io(), false); err == nil {
-		t.Fatal("停机失败必须报错")
-	}
-	if f.reassertCalls != 1 {
-		t.Fatalf("停机失败之后同样要写回意图,实际调用 %d 次:%v", f.reassertCalls, f.calls)
-	}
-}
-
-// 写回失败不许静悄悄:那时这台机器就落在 C1 描述的那个状态里,而用户唯一的
-// 线索只能是这一行。
-func TestRunUpgradeWarnsWhenItCannotRestoreTheIntent(t *testing.T) {
-	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
-	f.stopStatus = guardian.Status{Protection: guardian.ProtectionOff}
-	f.reassertErr = errors.New("read-only file system")
-
-	if _, err := runUpgrade(f.io(), false); err != nil {
-		t.Fatalf("写回失败不该让这次升级整个失败(这一次仍会在末尾起保护): %v", err)
-	}
-	joined := strings.Join(f.logs, "\n")
-	if !strings.Contains(joined, "read-only file system") || !strings.Contains(joined, ""+elevate.Prefix+"bx up") {
-		t.Fatalf("必须说清失败原因与用户的出路:\n%s", joined)
+	if indexOfCall(f.calls, "handOver") >= 0 || outcome.ProtectionRestored {
+		t.Fatalf("desired 本来就是 off,升级不得把保护打开:%v", f.calls)
 	}
 }
 
@@ -443,7 +424,7 @@ func TestRunUpgradeWarnsWhenItCannotRestoreTheIntent(t *testing.T) {
 // Repair 走的正是 app-install —— 送修复的通道自己被堵住了。方向要与「停止不许依赖
 // 别的先成功」一致:不确定不该变成寸步难行。
 func TestRunUpgradeProceedsWithAWarningWhenTheScanItselfFailed(t *testing.T) {
-	f := &fakeUpgradeIO{running: true, desiredOn: true, confirmAnswer: true}
+	f := &fakeUpgradeIO{running: true, desiredOn: false, confirmAnswer: true}
 	f.stopStatus = guardian.Status{
 		Protection: guardian.ProtectionNeedsAttention,
 		LastError:  "core_scan_failed",

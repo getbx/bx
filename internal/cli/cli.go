@@ -4313,9 +4313,10 @@ func writeClientMaintenanceHold(b *strings.Builder, report clientStatusReport) {
 //
 // desired=on 是常态:挂起一过期,机器就回到「用户要保护」那条线上。
 //
-// **desired=off 配一张挂起不是矛盾,是过渡升级的样子**:新 CLI 在停机之前武装了
-// 挂起,而服务那次停机的**旧** Guardian 不认识挂起、无条件写下了 off
-// (restoreIntentAfterHoldUnawareStop 随即把它写回 on,写不成时就停在这里)。
+// **desired=off 配一张挂起不是矛盾,是过渡升级留下的样子**:更早版本的 CLI 在停机
+// 之前武装了挂起,而服务那次停机的**旧** Guardian 不认识挂起、无条件写下了 off。
+// (2026-09-25 起保护开着时的升级不再停保护,而是在屏障下切换,这条路不再产生新的
+// 这种状态,但盘上可能还留着一份。)
 // 这时印一句「desired 仍是 off」等于把最要紧的那半句咽回去:**过期不会恢复
 // 保护**(设计取舍五:过期买到的是「不再压制」,不是「自动修好」),而盘上写着
 // off,于是下一次开机也不会。用户需要知道的是那条出路。

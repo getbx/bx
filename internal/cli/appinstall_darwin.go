@@ -44,6 +44,7 @@ func appInstallAction(c *urfavecli.Context) error {
 	}
 	configPath := c.String("config")
 
+	switcher := &barrierSwitch{configPath: configPath}
 	outcome, err := runUpgrade(upgradeIO{
 		guardianRunning: func() (bool, error) { return install.GuardianLoaded(c.Context) },
 		loadDesiredOn:   func() bool { return upgradeDesiredOn(c.Context) },
@@ -61,12 +62,6 @@ func appInstallAction(c *urfavecli.Context) error {
 			// 它,那 15 分钟里菜单与 bx status 会把一台用户主动关掉的机器说成
 			// 「维护中」(见 downPurposeUpgradeUnprotected)。
 			return macOSDownLifecycleFor(c.Context, upgradeStopPurpose(protectionWanted), configPath, defaultMacOSLifecycleDeps())
-		},
-		// 只有旧 Guardian 服务过这次停机时才会被调到(见
-		// restoreIntentAfterHoldUnawareStop):它写的是**用户的意图**,与升级
-		// 停机武装的那张挂起正交 —— 挂起说「此刻不能有」,这句说「用户要」。
-		reassertDesiredOn: func() error {
-			return guardian.OpenDefaultStore().SaveDesired(guardian.DesiredOn)
 		},
 		installFiles: func() (installedFiles, error) {
 			result, err := install.UnifiedInstall(install.UnifiedInstallOptions{
@@ -91,11 +86,12 @@ func appInstallAction(c *urfavecli.Context) error {
 		enableGuardian: func() error {
 			return install.EnableGuardian()
 		},
-		startProtection: func() error {
-			_, err := macOSUpLifecycle(c.Context, configPath, defaultMacOSLifecycleDeps())
-			return err
-		},
-		log: func(line string) { fmt.Println(line) },
+		// 保护开着时:在屏障下换(D3)。见 switchbarrier_darwin.go。
+		barrierUp:                  func() error { return switcher.up(c.Context) },
+		stopGuardianBehindBarrier:  func() error { return switcher.stopGuardian(c.Context) },
+		startGuardianBehindBarrier: func() error { return switcher.startGuardian(c.Context) },
+		handOver:                   func() error { return switcher.handOver(c.Context) },
+		log:                        func(line string) { fmt.Println(line) },
 	}, c.Bool("yes"))
 	if outcome.ForcedTeardown {
 		// bx down 走逃生路径时会如实告知,这里不能把它吞掉:那条路是 best-effort,
