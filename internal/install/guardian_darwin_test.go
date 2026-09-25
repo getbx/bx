@@ -29,6 +29,8 @@ func TestGuardianPlistTextUsesCanonicalLifecycleOwner(t *testing.T) {
 		// Core 活过 Guardian:Guardian 退出时不让 launchd 收掉 Core(否则 Core 还原
 		// 路由、流量直连 —— 泄漏真实 IP)。见 GuardianPlistText 的注释。
 		"<key>AbandonProcessGroup</key>\n  <true/>",
+		// 与上一条同一处写出:它在 Guardian 环境里出现 ⇒ 加载着的任务带着上一条。
+		"<key>BX_CORE_OUTLIVES_GUARDIAN</key>\n    <string>1</string>",
 		"<key>UserName</key>\n  <string>root</string>",
 		"<key>GroupName</key>\n  <string>wheel</string>",
 		"<string>/var/log/bx-guard.log</string>",

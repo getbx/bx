@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +56,13 @@ type LocalAPIOptions struct {
 	WakeReconcile   func()
 	GuardianVersion string
 	RuntimeVersion  func() string
+	// CoreOutlivesGuardian:加载着的 launchd 任务带 AbandonProcessGroup(见
+	// install.CoreOutlivesGuardianEnv)。为 true 时声明 CapabilityCoreOutlivesGuardian,
+	// 并允许升级提交之后经 RestartAfterUpdate 退出自己。
+	CoreOutlivesGuardian bool
+	// RestartAfterUpdate 让 Guardian 退出,由 launchd(KeepAlive)以 runtime/current
+	// 指向的新二进制重启它;Core 活着,新 Guardian 经启动恢复接管。nil = 不重启。
+	RestartAfterUpdate func()
 	// CoreRuntime, if set, is called on every GET /v1/status to fetch the
 	// Core's runtime statistics (tunnel health, latency, server, transport,
 	// UDP mode) so the menu can read them from Guardian instead of spawning
@@ -194,7 +202,7 @@ func NewLocalAPI(controller Controller, provided ...LocalAPIOptions) http.Handle
 	migrationController, _ := controller.(MigrationController)
 	mux.HandleFunc("/v1/migrate", migrationHandler(controller, migrationController, mutations, options, watch))
 	updateController, _ := controller.(UpdateController)
-	mux.HandleFunc("/v1/update", updateHandler(controller, updateController, mutations))
+	mux.HandleFunc("/v1/update", updateHandler(controller, updateController, mutations, options))
 	pathRecoveryController, _ := controller.(PathRecoveryController)
 	mux.HandleFunc("/v1/update-check", updateCheckHandler(newUpdateCheckCache(options.UpdateCheck), options.OwnerUID))
 	mux.HandleFunc("/v1/recoveries", recoveryRequestHandler(controller, pathRecoveryController, options.OwnerUID))
@@ -244,6 +252,19 @@ func applyVersionFields(status *Status, options LocalAPIOptions) {
 	// 填、经同一批响应发布。它是编译期常量,不问任何外部进程 —— 这正是它取代
 	// `bx logs --help` 文本探测的理由。
 	status.Capabilities = GuardianCapabilities()
+	if options.CoreOutlivesGuardian {
+		status.Capabilities = append(status.Capabilities, CapabilityCoreOutlivesGuardian)
+	}
+}
+
+// restartAfterCommittedUpdate:一次**已提交**的升级之后,Guardian 该不该退出让 launchd
+// 以新二进制重启自己(D2)。三件事同时成立才退:
+//   - 退出时 Core 不会跟着死(否则 Core 还原路由,流量直连 —— 泄漏);
+//   - 盘上装的版本读得出来;
+//   - 且与正在跑的 Guardian 不同(相同就没有东西要换)。
+func restartAfterCommittedUpdate(coreOutlivesGuardian bool, running, installed string) bool {
+	installed = strings.TrimSpace(installed)
+	return coreOutlivesGuardian && installed != "" && installed != strings.TrimSpace(running)
 }
 
 // publishedIntentReporter 由能一次读出**两半意图**的 controller 实现:用户要
@@ -671,7 +692,7 @@ func authorizeOwnerPeer(ctx context.Context, ownerUID uint32) bool {
 	return credentials.uid == 0 || (ownerUID != 0 && credentials.uid == ownerUID)
 }
 
-func updateHandler(controller Controller, updater UpdateController, mutations *acceptedMutations) http.HandlerFunc {
+func updateHandler(controller Controller, updater UpdateController, mutations *acceptedMutations, options LocalAPIOptions) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeGuardianJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -722,6 +743,15 @@ func updateHandler(controller Controller, updater UpdateController, mutations *a
 			return
 		}
 		writeGuardianJSON(w, http.StatusOK, result)
+		// **应答写出之后**才安排退出:客户端拿到的是这次升级的真实结局,而不是一个
+		// 被关掉的连接。退出本身是异步的 —— Daemon.Shutdown 会等这个 handler 返回。
+		if options.RestartAfterUpdate != nil && options.RuntimeVersion != nil {
+			installed := options.RuntimeVersion()
+			if restartAfterCommittedUpdate(options.CoreOutlivesGuardian, options.GuardianVersion, installed) {
+				log.Printf("guardian_restart_for_update running=%s installed=%s", options.GuardianVersion, installed)
+				go options.RestartAfterUpdate()
+			}
+		}
 	}
 }
 
