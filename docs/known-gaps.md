@@ -15,6 +15,8 @@
 
 | # | 问题 | 核过 | 判据在哪 | 估计 |
 |---|---|---|---|---|
+| A10 | **升级停机那套「武装挂起」的死代码**:2026-09-25 起保护开着时 `app-install` 在屏障下切换、不再调 `Manager.Down`,于是 `downPurposeUpgrade` 的挂起武装与退回、`runUpgrade` 里 `HoldFallback` 那一行渲染在 app-install 上走不到了(还有直接调 `macOSDownLifecycleFor` 的单测盖着)。确认没有别的调用方后整块拿掉。 | 2026-09-25 | `docs/superpowers/specs/2026-09-25-fail-closed-guardian-switch-design.md` §6 | 半天 |
+| A11 | **屏障下切换的交接请求没落盘**:重跑一次半途失败的切换时 Core 已不在,退回按配置解析服务器;服务器写的是域名时 DNS 指着没人听的 127.0.0.1,解析失败,重跑停在第一步(不泄漏,要 `sudo bx down` 才拿回网络)。IP 字面量配置不受影响。 | 2026-09-25 | 同上 §6 | 小 |
 
 ## B. 要你拍板:产品或安全上的取舍
 
