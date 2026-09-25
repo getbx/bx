@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/netip"
 )
 
 // xgen_n 的 kind。每个块自带长度与种类,所以不必知道全部字段布局。
@@ -27,12 +28,40 @@ const (
 	minSocketLen = offSoEPID + 4
 )
 
+// XSO_INPCB(struct xinpcb_n)里的字段偏移。**实测得来**(2026-09-25,macOS 26,
+// 与 netstat -anv 逐条对账):
+//
+//	[16] inp_fport  [18] inp_lport  [36] inp_flags  [44] inp_vflag
+//	[60] 远端 IPv4(inp_dependfaddr 的 in_addr_4in6 末 4 字节)
+//	[76] 本地 IPv4(inp_dependladdr 同上)
+//
+// **inpBoundIF 是 XNU 的 INP_BOUND_IF(0x4000),不是 0x00800000** —— 后者在所有 socket
+// 上都置着,拿它当判据会把每一条连接都判成「绑了网卡」。实测判别:Tailscale 的
+// socket 0x804840、Chrome 0x800840,差的正是 0x4000;bx Core 自己的直连(IP_BOUND_IF)
+// 也都带着它。
+const (
+	offInpFlags     = 36
+	offInpVflag     = 44
+	offInpFaddr4    = 60
+	offInpLaddr4    = 76
+	minInpcbAddrLen = offInpLaddr4 + 4
+
+	inpBoundIF = 0x4000
+	inpIPv4    = 0x1
+)
+
 // PCB 是一条内核 socket 记录里我们关心的全部内容。
 type PCB struct {
 	LocalPort  uint16 // 应用侧本地端口 —— 与 route.Meta.SrcPort 的 join 键
 	RemotePort uint16
 	LastPID    int32 // 最后一个用过这个 socket 的进程
 	EPID       int32 // 「替谁干活」;可能指向已退出的进程,取用前必须查活性
+
+	// LocalAddr / RemoteAddr 只对 IPv4 socket 填(inp_vflag 带 INP_IPV4),否则零值。
+	LocalAddr  netip.Addr
+	RemoteAddr netip.Addr
+	// BoundToInterface:socket 用 IP_BOUND_IF 绑在了某块网卡上(INP_BOUND_IF)。
+	BoundToInterface bool
 }
 
 var errShortPcbList = errors.New("pcblist too short")
@@ -68,6 +97,13 @@ func ParsePcbList(raw []byte) ([]PCB, error) {
 				cur = PCB{
 					RemotePort: binary.BigEndian.Uint16(blk[16:18]),
 					LocalPort:  binary.BigEndian.Uint16(blk[18:20]),
+				}
+				if blkLen >= minInpcbAddrLen {
+					cur.BoundToInterface = binary.NativeEndian.Uint32(blk[offInpFlags:offInpFlags+4])&inpBoundIF != 0
+					if blk[offInpVflag]&inpIPv4 != 0 {
+						cur.RemoteAddr = netip.AddrFrom4([4]byte(blk[offInpFaddr4 : offInpFaddr4+4]))
+						cur.LocalAddr = netip.AddrFrom4([4]byte(blk[offInpLaddr4 : offInpLaddr4+4]))
+					}
 				}
 				haveInpcb = true
 			}

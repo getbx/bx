@@ -23,6 +23,9 @@ func collectNetworkWarnings(ctx context.Context) []stats.Warning {
 	if warning := darwinPacketTunnelWarning(ctx); warning.Name != "" {
 		warnings = append(warnings, warning)
 	}
+	if warning := darwinStrayConnectionWarning(ctx); warning.Name != "" {
+		warnings = append(warnings, warning)
+	}
 	return warnings
 }
 
