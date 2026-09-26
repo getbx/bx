@@ -83,7 +83,7 @@ func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bo
 		// 它的流量绕开隧道)。「仍然写着」这一条由遍历范围天然保证 —— 只有
 		// 从 fresh 配置(和调用方点名)推出的主机才会被查到。
 		//
-		// 基准取 serverEntries() 而**不是** staticEntries():后者含用户 `hosts:`
+		// 基准取 serverEntries() 而**不是**本轮的静态 DNS 表:后者含用户 `hosts:`
 		// 覆盖,一个先在 hosts 里、后来变成传输服务器的域名一旦这轮解析失败,
 		// 用户配的那个任意 IPv4 就会被「保留」成服务器地址,同时进静态表与
 		// Guardian 屏障开口 —— 而 mergeHostOverrides 在同一次刷新里正拒绝着它。
@@ -114,7 +114,7 @@ func newBypassRefresher(d bypassRefreshDeps) func(context.Context, []string) (bo
 		// 仍拿旧答案。
 		// serverStatic 是合并用户 hosts **之前**的那一半,屏障开口与下一轮的
 		// 保留基准用的正是它。
-		d.store.set(next, staticA, serverStatic)
+		d.store.set(next, serverStatic)
 		if d.setStaticA != nil {
 			d.setStaticA(staticA)
 		}
@@ -219,7 +219,6 @@ func wireBypass(p bypassWiringParams) bypassWiring {
 	}
 	store := newBypassStore(
 		mergeBypassCIDRs(addrsToCIDRs(flattenServerAddrs(p.serverStatics)), extraNow()),
-		p.staticA,
 		p.serverStatics,
 	)
 	refresh := newBypassRefresher(bypassRefreshDeps{

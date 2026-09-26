@@ -12,7 +12,7 @@ import (
 // 为什么不能只用字符串匹配:复审拿一个能编译、`go test ./...` 全绿的改动
 // 打穿了原来那条守卫 ——
 //
-//	bypass: newBypassStore(bypassState.cidrs(), bypassState.staticEntries(),
+//	bypass: newBypassStore(bypassState.cidrs(),
 //	        bypassState.serverEntries()),   // 含 "bypass:" 与 "bypassState"
 //
 // 它恢复了守卫名字里写着的那个 bug(路径恢复用冻结拷贝 = 静默成环),
