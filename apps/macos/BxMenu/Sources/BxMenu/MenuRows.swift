@@ -82,6 +82,15 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
         rows.append(MenuRow(label: "Latency", value: notObserved, mark: .unknown))
     }
 
+    // **有应用正在绕过 bx、以真实 IP 收发**(多半是保护关着时开的连接 —— macOS 不会
+    // 把已建立的连接挪进隧道)。这是一次真实的泄漏,所以是 .bad:它会让图标裂开、
+    // 在压缩后的菜单里照样露面。只在 Core 报了才出现,连接一关就消失。
+    if let apps = core?.bypassingApps, !apps.isEmpty {
+        rows.append(MenuRow(label: "Outside bx",
+                            value: apps.joined(separator: ", ") + " — quit and reopen",
+                            mark: .bad))
+    }
+
     if let dns, !dns.isEmpty {
         rows.append(MenuRow(label: "DNS", value: dns, mark: .ok))
     } else {

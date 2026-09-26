@@ -15,7 +15,7 @@
 
 | # | 问题 | 核过 | 判据在哪 | 估计 |
 |---|---|---|---|---|
-| A11 | **关掉保护期间建立的连接,重新 `bx up` 之后仍从物理网卡直出**(2026-09-25 真机抓包:`bx down` 那 14 秒里 Chrome 开的一条 TCP 连接(`192.168.50.15:49528 → 203.0.113.11:443`),**36 分钟后、中间又经过一次完整的 Guardian 切换,仍在 en0 上以真实 IP 收发**)。macOS 已连接的 socket 不会因为路由表变了而改走 TUN;所有 VPN 都有同一个性质,但 bx 的承诺是「不泄漏」,而用户从菜单开关一次保护就会碰上。**看得见了(2026-09-25)**:Core 每 15 秒读一次内核 socket 表(`appattr.StrayConnections`:本地地址在物理网卡、远端公网、没绑网卡、不是 bx 自己),有这种连接时 `bx status`/菜单出一条 error 级告警 `connections_bypassing_bx`,点名应用、叫用户重开它们。**仍没做的是主动断掉它们**(macOS 没有按 socket reset 的现成原语;要不要为此动 pf 待定)。 | 2026-09-25 | `docs/acceptance-pending.md` B9 | 待定 |
+| A11 | **关掉保护期间建立的连接,重新 `bx up` 之后仍从物理网卡直出**(2026-09-25 真机抓包:`bx down` 那 14 秒里 Chrome 开的一条 TCP 连接(`192.168.50.15:49528 → 203.0.113.11:443`),**36 分钟后、中间又经过一次完整的 Guardian 切换,仍在 en0 上以真实 IP 收发**)。macOS 已连接的 socket 不会因为路由表变了而改走 TUN;所有 VPN 都有同一个性质,但 bx 的承诺是「不泄漏」,而用户从菜单开关一次保护就会碰上。**看得见了(2026-09-25)**:Core 每 15 秒读一次内核 socket 表(`appattr.StrayConnections`:本地地址在物理网卡、远端公网、没绑网卡、不是 bx 自己),有这种连接时 `bx status` 出一条 error 级告警 `connections_bypassing_bx`,点名应用、叫用户重开它们;菜单同时出一行红的 `Outside bx`(图标裂开,经 Guardian 的 `CoreRuntime.bypassing_apps`,2026-09-26)。**仍没做的是主动断掉它们**(macOS 没有按 socket reset 的现成原语;要不要为此动 pf 待定)。 | 2026-09-25 | `docs/acceptance-pending.md` B9 | 待定 |
 
 ## B. 要你拍板:产品或安全上的取舍
 
