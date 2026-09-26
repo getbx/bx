@@ -559,7 +559,7 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
         name: listed == nil ? singleServerTitle : entry.name,
         host: entry.host,
         port: entry.port,
-        transport: nonEmpty(live?.transport),
+        transport: nonEmpty(live?.transport).map { transportDroppingHost($0, host: entry.host) },
         latencyMS: live?.latencyMS.map { Int($0) },
         tunnelHealthy: live?.tunnelHealthy,
         udpTransport: nonEmpty(live?.udpTransport),
@@ -582,6 +582,16 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
         runningConfirmed: confirmed,
         traffic: traffic,
         editable: listed != nil)
+}
+
+/// Core 报的传输写成 `reality@203.0.113.30`,而那个地址已经画在标题旁边。
+///
+/// **与 `bx status` 的 `Via` 同一条判据:与服务器相同才省,不是无脑去掉 `@` 后面**
+/// —— 传输指向另一台主机时,那个差别恰恰是这一行最值钱的信息。
+func transportDroppingHost(_ transport: String, host: String) -> String {
+    guard let at = transport.lastIndex(of: "@") else { return transport }
+    let named = transport[transport.index(after: at)...]
+    return named == host[...] ? String(transport[..<at]) : transport
 }
 
 /// 单服务器配置那一台的标题。它真的没有名字(Guardian 刻意不编一个),地址已经

@@ -277,7 +277,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             }
         }
         stack.addFullWidthRow(gap())
-        let again = NSButton(title: "Run again", target: self, action: #selector(runAgain))
+        let again = NSButton(title: "Run Again", target: self, action: #selector(runAgain))
         again.bezelStyle = .rounded
         again.controlSize = .small
         again.toolTip = "Asks bx to check again. This probes your server once, outside the tunnel."
