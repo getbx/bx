@@ -514,6 +514,8 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	//
 	// 当初不门控的理由是「会让『开机时抓不到就永远停在兜底表』更糟」,而那个缺口
 	// 已经由重试循环补上了:租户晚于 bx 启动时,下一轮探测就会看见它。
+	// overlay 中继主机名(ZeroTier 根节点)经 TLS 的 DoH 解析,解析不出才用兜底表(A12)。
+	relayResolve := newOverlayRelayResolver(direct)
 	tailscaleBypass := newTailscaleBypassSource(initialOverlayBypass(ctx, direct, presentOverlays))
 	workers.start(ctx, "tailscale-bypass", func(c context.Context) {
 		tailscaleBypass.Run(c, overlayAwareBypassFetch(
@@ -525,7 +527,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 				}
 				return tailscaleDERPBypassCIDRs(c, direct)
 			},
-			func() []string { return overlay.BypassCIDRs(detectOverlayTenants()) },
+			func() []string { return overlayRelayBypass(detectOverlayTenants(), relayResolve) },
 		))
 	})
 	bypassWire := wireBypass(bypassWiringParams{

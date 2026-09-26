@@ -102,7 +102,7 @@ var errNoTailscaleForBypass = errors.New("tailscale not present on this machine"
 // **没有 Tailscale 就一条 DERP 都不装** —— 连内置兜底表也不装。那张表是十个写死的
 // 公网 /32,给一台与 Tailscale 无关的机器装上它们,等于常开十条绕过隧道的路。
 func initialOverlayBypass(ctx context.Context, direct *net.Dialer, present []overlay.Tenant) []string {
-	tenant := overlay.BypassCIDRs(present)
+	tenant := overlayRelayBypass(present, newOverlayRelayResolver(direct))
 	if !overlayPresent(present, "tailscale") {
 		return tenant
 	}

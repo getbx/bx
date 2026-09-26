@@ -51,8 +51,7 @@ type Tenant struct {
 	// 地址被回收给别人之后,那条旁路仍在,于是发往陌生人的流量绕过隧道。
 	// 缓解是它只在这个租户**确实在跑**时才装(见 BypassCIDRs)。
 	//
-	// **今天没有任何代码去解析 RelayHosts**(汇总它的 RelayHosts() 零调用方,
-	// 2026-09-25 删掉了):装上的只有 RelayFallbackCIDRs。见 docs/known-gaps.md。
+	// 解析在 RelayBypassCIDRs 里(调用方供解析函数);解析不出来才用 RelayFallbackCIDRs。
 	RelayHosts         []string
 	RelayFallbackCIDRs []string
 
@@ -151,13 +150,57 @@ func tenantPresent(tenant Tenant, signals Signals) bool {
 	return false
 }
 
-// BypassCIDRs 汇总在跑的租户的中继兜底地址。
-//
-// **只对在跑的租户出**:写死的公网 IP 是泄漏面(地址被回收给别人后那条旁路仍在),
-// 按在跑与否门控把影响面限制在真正需要它的机器上。按设计主机名那一半应由调用方
-// 解析、结果**压过**这里的兜底值 —— 但今天没有调用方这么做(见 Tenant.RelayHosts)。
+// BypassCIDRs 汇总在跑的租户的中继兜底地址(不解析主机名)。等价于
+// RelayBypassCIDRs(present, nil)。
 func BypassCIDRs(present []Tenant) []string {
-	return collect(present, func(t Tenant) []string { return t.RelayFallbackCIDRs })
+	return RelayBypassCIDRs(present, nil)
+}
+
+// RelayBypassCIDRs 给出在跑的租户的中继旁路:**主机名解析得出来就用解析结果,解析不出来
+// 才用写死的兜底**(known-gaps A12,2026-09-25 补上)。
+//
+// **只对在跑的租户出**:写死的公网 IP 是泄漏面(地址被回收给别人后那条旁路仍在,发往
+// 陌生人的流量绕过隧道),按在跑与否门控把影响面限制在真正需要它的机器上;解析主机名
+// 让那条旁路跟着真实地址走。
+//
+// 只作用于**有兜底表**的租户:没有兜底表的(Tailscale)中继旁路另有自己的来源
+// (supervisor 抓 DERP map),这里不替它做主。
+//
+// resolve 一次拿一个租户的**全部**主机名(调用方可以并发、共用一个时限),返回解析出的
+// 地址。resolve 为 nil 或对某个租户一条都没解析出来 ⇒ 那个租户用兜底。解析结果只收
+// 公网单播(私网、回环、fake-IP 段一律丢弃)—— 一个被投毒或出错的应答不许变成一条把
+// 私网或 bx 自己的地址放出去的旁路。调用方必须用**防投毒**的解析器(TLS 的 DoH),
+// 这个函数判断不了应答真假。
+func RelayBypassCIDRs(present []Tenant, resolve func(hosts []string) []netip.Addr) []string {
+	return collect(present, func(t Tenant) []string {
+		if len(t.RelayFallbackCIDRs) == 0 {
+			return nil
+		}
+		if resolve == nil {
+			return t.RelayFallbackCIDRs
+		}
+		var resolved []string
+		for _, a := range resolve(t.RelayHosts) {
+			a = a.Unmap()
+			if !relayAddressUsable(a) {
+				continue
+			}
+			resolved = append(resolved, netip.PrefixFrom(a, a.BitLen()).String())
+		}
+		if len(resolved) == 0 {
+			return t.RelayFallbackCIDRs
+		}
+		return resolved
+	})
+}
+
+var (
+	relayCGNAT     = netip.MustParsePrefix("100.64.0.0/10")
+	relayBenchmark = netip.MustParsePrefix("198.18.0.0/15") // bx 的 fake-IP 池
+)
+
+func relayAddressUsable(a netip.Addr) bool {
+	return a.IsValid() && a.IsGlobalUnicast() && !a.IsPrivate() && !relayCGNAT.Contains(a) && !relayBenchmark.Contains(a)
 }
 
 // SplitRoute 是「这个后缀交给这个解析器」。
