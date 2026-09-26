@@ -147,6 +147,10 @@ type CoreRuntime struct {
 	// 它是规则编辑界面存在的理由:列出规则本身没什么价值(用户自己写的),
 	// 有价值的是「这一条把 8113 条连接逼上了一条不通的路」—— 那点名了该删哪一行。
 	FailingRules []FailingRule `json:"failing_rules,omitempty"`
+	// BypassingApps 是此刻有连接**绕过 bx、从物理网卡以真实 IP 收发**的应用
+	// (Core 网络守卫的 stats.WarningConnectionsBypassingBX)。空 = Core 没报;
+	// 缺席的键不许读成「查过、没有」—— 旧 Core 根本不查。
+	BypassingApps []string `json:"bypassing_apps,omitempty"`
 }
 
 // FailingRule 是一条正在成片失败的用户规则。

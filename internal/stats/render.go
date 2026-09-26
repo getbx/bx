@@ -56,7 +56,16 @@ type Warning struct {
 	Severity string `json:"severity"`
 	Detail   string `json:"detail"`
 	Hint     string `json:"hint,omitempty"`
+	// Apps 是这条告警点名的应用(结构化的那一份,给菜单用,免得从 Detail 的
+	// 文字里抠名字)。只有 WarningConnectionsBypassingBX 填它。
+	Apps []string `json:"apps,omitempty"`
 }
+
+// WarningConnectionsBypassingBX:有应用的连接正从物理网卡以真实 IP 收发、绕过 bx
+// (多半是保护关着时开的,macOS 不会把已建立的连接挪进隧道)。产出方在 supervisor 的
+// 网络守卫,消费方是 Guardian 发给菜单的 CoreRuntime.BypassingApps —— 名字是两边
+// 对齐的唯一东西,所以只有这一处。
+const WarningConnectionsBypassingBX = "connections_bypassing_bx"
 
 // modeLabel 给分流模式配一句说明,让 status 一眼看懂当前流量策略。
 func modeLabel(mode string) string {

@@ -166,6 +166,10 @@ struct CoreRuntime: Decodable {
     /// stats.FailingRules:同时看绝对数与比例),**不是**「没问出来」——
     /// 后者由 reachable 表达。
     let failingRules: [FailingRule]
+    /// 此刻有连接**绕过 bx、以真实 IP 收发**的应用(Core 网络守卫报的)。空 = 没报;
+    /// 旧 Guardian 不发这个键,也读作空 —— 菜单只在非空时才开口,所以「没报」不会
+    /// 被说成「查过、没有」。
+    let bypassingApps: [String]
 
     enum CodingKeys: String, CodingKey {
         case reachable
@@ -177,6 +181,7 @@ struct CoreRuntime: Decodable {
         case udpTransport = "udp_transport"
         case dnsUpstream = "dns_upstream"
         case failingRules = "failing_rules"
+        case bypassingApps = "bypassing_apps"
     }
 
     init(from decoder: Decoder) throws {
@@ -197,6 +202,7 @@ struct CoreRuntime: Decodable {
         // 一句安慰。这是本文件里唯一一个失败方式是静默的字段;其余十几个都是
         // 「缺席 ⇒ nil / 默认值,在场而类型不对 ⇒ 整份响亮失败」,这里回到同一档。
         failingRules = try container.decodeIfPresent([FailingRule].self, forKey: .failingRules) ?? []
+        bypassingApps = try container.decodeIfPresent([String].self, forKey: .bypassingApps) ?? []
     }
 
     /// 给判据测试造输入用。**每一项都可省略,而省略读作 nil(没说)** ——
@@ -204,7 +210,7 @@ struct CoreRuntime: Decodable {
     init(reachable: Bool? = nil, tunnelHealthy: Bool? = nil, latencyMS: Int64? = nil,
          server: String? = nil, transport: String? = nil, udpMode: String? = nil,
          udpTransport: String? = nil, dnsUpstream: String? = nil,
-         failingRules: [FailingRule] = []) {
+         failingRules: [FailingRule] = [], bypassingApps: [String] = []) {
         self.reachable = reachable
         self.tunnelHealthy = tunnelHealthy
         self.latencyMS = latencyMS
@@ -214,5 +220,6 @@ struct CoreRuntime: Decodable {
         self.udpTransport = udpTransport
         self.dnsUpstream = dnsUpstream
         self.failingRules = failingRules
+        self.bypassingApps = bypassingApps
     }
 }

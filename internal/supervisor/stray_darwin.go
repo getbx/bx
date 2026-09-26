@@ -79,12 +79,13 @@ func strayConnectionWarning(device string, stray []appattr.PCB, name func(int32)
 	sort.Strings(names)
 	apps := strings.Join(names, ", ")
 	return stats.Warning{
-		Name:     "connections_bypassing_bx",
+		Name:     stats.WarningConnectionsBypassingBX,
 		Severity: "error",
 		Detail: fmt.Sprintf("%d connection(s) from %s leave through %s with your real IP, outside bx "+
 			"(most likely opened while protection was off; macOS never moves an open connection into the tunnel)",
 			len(stray), apps, device),
 		Hint: "quit and reopen " + apps + "; their new connections go through bx",
+		Apps: names,
 	}
 }
 

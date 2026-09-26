@@ -459,6 +459,7 @@ func coreRuntimeFrom(report stats.Report, state supervisor.RuntimeState, stateEr
 		UDPMode:       report.UDPMode,
 		UDPTransport:  report.UDPTransport,
 		FailingRules:  failingRulesFrom(report),
+		BypassingApps: bypassingAppsFrom(report),
 	}
 	if stateErr != nil {
 		return runtime
@@ -469,6 +470,16 @@ func coreRuntimeFrom(report stats.Report, state supervisor.RuntimeState, stateEr
 	runtime.UDPRequired = state.UDPRequired
 	runtime.UDPReady = state.UDPReady
 	return runtime
+}
+
+// bypassingAppsFrom 从 Core 的告警里取出「绕过 bx 的应用」那一份结构化名单。
+func bypassingAppsFrom(report stats.Report) []string {
+	for _, w := range report.Warnings {
+		if w.Name == stats.WarningConnectionsBypassingBX && len(w.Apps) > 0 {
+			return append([]string(nil), w.Apps...)
+		}
+	}
+	return nil
 }
 
 func RunDaemon(ctx context.Context, options DaemonOptions) error {

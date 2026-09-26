@@ -72,6 +72,8 @@ var nestedDigestSignals = []string{
 	"Core.DNSUpstream",
 	"Core.FailingRules[].Kind",
 	"Core.FailingRules[].Rule",
+	// 有应用绕过 bx 以真实 IP 收发是**真事件**(一次泄漏),菜单该醒;名单不变时不自激。
+	"Core.BypassingApps",
 	"Reconcile.Actions",
 	"Reconcile.Held",
 	"Reconcile.Unobservable",

@@ -75,6 +75,21 @@ struct MenuRowsTests {
         expect(set.anomalyCount == 0,
                "全部正常时异常数必须为 0,实际 \(set.anomalyCount) —— 未观测不是异常")
 
+        // 有应用绕过 bx 以真实 IP 收发(A11):一行点名、标成异常(图标裂开),健康机器上一个字都没有。
+        let leaking = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":390,"server":"vps","udp_mode":"proxy",
+                 "bypassing_apps":["Google Chrome","steam_osx"]}}
+        """)
+        let leakSet = menuRows(status: leaking, dns: "127.0.0.1")
+        expect(row(leakSet, "Outside bx")?.value == "Google Chrome, steam_osx — quit and reopen",
+               "绕过 bx 的应用没被点名,实际 \(String(describing: row(leakSet, "Outside bx")))")
+        expect(row(leakSet, "Outside bx")?.mark == .bad && leakSet.anomalyCount == 1,
+               "一次真实泄漏必须是异常(让图标裂开)")
+        expect(compactMenuRows(leakSet).contains { $0.label == "Outside bx" },
+               "压缩后的菜单把泄漏那一行藏掉了")
+        expect(row(set, "Outside bx") == nil, "没有绕过 bx 的连接时不许出现这一行")
+
         // 隧道不健康是真异常
         let unhealthy = decode("""
         {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
