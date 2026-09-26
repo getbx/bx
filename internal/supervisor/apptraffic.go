@@ -36,7 +36,7 @@ var errAppSourceUnsupported = errors.New("app attribution is only available on m
 //
 // 实际上 Record 是全网每条连接都要走的路径,真正的静默几乎不可能发生;
 // 不加定时器是刻意的(它会变成「没人看时也有个 goroutine 在滴答」,
-// 与 internal/toolkeys 那个唯一的持久化过期先例同一手法)。
+// 与维护挂起「读取时判过期」同一手法)。
 // 但边界写在这里:代码里声称的性质,要么做到,要么如实写明边界。
 const appTrafficTTL = 30 * time.Second
 
