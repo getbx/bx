@@ -482,7 +482,7 @@ struct ServersModelTests {
         }
         expect(panel.latencyMS == 1051, "实时延迟没接上:\(String(describing: panel.latencyMS))")
         expect(panel.tunnelHealthy == true, "隧道健康没接上")
-        expect(panel.transport == "reality@203.0.113.10", "传输没接上")
+        expect(panel.transport == "reality", "传输没接上:\(panel.transport ?? "nil")")
         expect(panel.udpMode == "proxy", "UDP 档没接上")
         expect(panel.udpTransport == "hysteria2@203.0.113.21", "UDP 传输没接上")
         expect(panel.coreSilentNote == nil, "Core 明明答了话却说没量到")
@@ -866,10 +866,20 @@ struct ServersModelTests {
 
     // 当前那一块中间那几行:**「tunnel healthy / unhealthy」这个映射是判据**,
     // 不许留在窗口里 —— `healthy ?? false` 会把「没说」显示成「不健康」。
+    // 地址已经画在标题旁边,传输那行再写一遍只是重复;**只有与服务器相同才省**,
+    // 传输指向另一台主机时那个差别是这一行最值钱的信息。
+    static func testTransportDropsTheHostOnlyWhenItIsTheServerItself() {
+        expect(transportDroppingHost("reality@203.0.113.10", host: "203.0.113.10") == "reality",
+               "与服务器相同的地址没省掉")
+        expect(transportDroppingHost("reality@203.0.113.99", host: "203.0.113.10") == "reality@203.0.113.99",
+               "另一台主机被无脑去掉了 —— 用户从此看不出传输走的是别处")
+        expect(transportDroppingHost("reality", host: "203.0.113.10") == "reality", "没有 @ 的被改了")
+    }
+
     static func testCurrentPanelLinesComeFromTheModelNotTheWindow() {
         guard let panel = currentServerPanel(list: listWithCurrent(), core: answeringCoreRuntime())
         else { fail("拿不到当前那一块"); return }
-        expect(panel.statusLine == "reality@203.0.113.10 · 1051 ms · tunnel healthy",
+        expect(panel.statusLine == "reality · 1051 ms · tunnel healthy",
                "statusLine = \(panel.statusLine ?? "nil")")
         expect(!panel.statusLineIsBad, "健康的隧道被标红了")
         expect(panel.udpLine == "UDP  hysteria2@203.0.113.21 · proxy",
@@ -1115,6 +1125,7 @@ struct ServersModelTests {
         testEditingVerbsNeedTheirOwnCapability()
         testOnlyOneServerStillGetsAnEmptyStateSentence()
         testCurrentPanelLinesComeFromTheModelNotTheWindow()
+        testTransportDropsTheHostOnlyWhenItIsTheServerItself()
         testRemoveConfirmationSaysTheLinkIsGoneForGood()
         testRemoveConfirmationNamesTheServerCarryingTrafficRightNow()
         testRemoveConfirmationAnswersTheThreeStateQuestion()

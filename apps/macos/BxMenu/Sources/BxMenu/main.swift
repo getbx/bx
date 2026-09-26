@@ -1825,23 +1825,23 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let link = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let udp = udpField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !link.isEmpty else {
-            showMessage("No Link", "Paste a bx link to continue.")
+            showMessage("No link", "Paste a bx link to continue.")
             return nil
         }
         guard looksLikeClientLink(link) else {
-            showMessage("Link Not Recognized", "Paste a bx link to continue.")
+            showMessage("Link not recognized", "Paste a bx link to continue.")
             return nil
         }
         // **UDP 那条也要过同一道校验。** 空是合法的(它是可选的);填了却不是
         // 一条 bx 链接,就在这里说,而不是让服务端回一句关于 base64 的错误。
         guard udp.isEmpty || looksLikeClientLink(udp) else {
-            showMessage("UDP Link Not Recognized", "Paste a bx link, or leave the second box empty.")
+            showMessage("UDP link not recognized", "Paste a bx link, or leave the second box empty.")
             return nil
         }
         let clearUDP = offersClearUDP && clearBox.state == .on
         // 勾了「去掉」又填了一条新的:两句相反的话,不替用户挑(Guardian 那一侧同样拒)。
         guard !(clearUDP && !udp.isEmpty) else {
-            showMessage("Two Answers for UDP",
+            showMessage("Two answers for UDP",
                         "Either paste a new UDP link or tick the box to remove it — not both.")
             return nil
         }
@@ -2568,7 +2568,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             NSWorkspace.shared.open(url)
         } catch {
-            showMessage("Logs Unavailable", error.localizedDescription)
+            showMessage("Logs are not available", error.localizedDescription)
         }
     }
 
@@ -3097,11 +3097,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         switch parseUpdateOutcome(logData) {
         case .succeeded:
-            showMessage("Update Complete", updateSucceededMessage)
+            showMessage("Update complete", updateSucceededMessage)
             refresh(userInitiated: true)
             refreshUpdateCheck()
         case .rolledBack(_, let reason):
-            showMessage("Update Rolled Back", updateRolledBackMessage(reason: reason))
+            showMessage("Update rolled back", updateRolledBackMessage(reason: reason))
         case .failed:
             // **把真正的原因说出来。** 它就在这份刚读过的日志里 —— 上一版
             // 读到了、解析了,然后只报一句"Run Doctor for details"。
@@ -3335,7 +3335,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         end tell
         """
         if !runAppleScript(script) {
-            showMessage("Terminal Permission Needed", "Allow bx to control Terminal when macOS asks, then try again. You can review this in System Settings > Privacy & Security > Automation.")
+            showMessage("Terminal permission needed", "Allow bx to control Terminal when macOS asks, then try again. You can review this in System Settings > Privacy & Security > Automation.")
         }
     }
 
@@ -3369,11 +3369,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let link = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !link.isEmpty else {
-            showMessage("No Link", "Paste a bx link to continue.")
+            showMessage("No link", "Paste a bx link to continue.")
             return nil
         }
         guard let links = parseSetupLinks(link), looksLikeClientLink(links.main) else {
-            showMessage("Link Not Recognized", "Paste a bx link, or the whole setup command your server printed, to continue.")
+            showMessage("Link not recognized", "Paste a bx link, or the whole setup command your server printed, to continue.")
             return nil
         }
         return (links, link)

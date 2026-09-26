@@ -113,7 +113,7 @@ enum UninstallPresentation {
     static func shouldQuitAfter(uninstallSucceeded: Bool) -> Bool { uninstallSucceeded }
 
     /// 失败时说人话,并给出**不依赖菜单**的那条出路 —— 菜单此刻可能已经半残。
-    static let failureTitle = "Uninstall Failed"
+    static let failureTitle = "Uninstall failed"
     static let failureMessage =
         "bx could not finish uninstalling. Protection may still be running.\n\n"
         + "You can finish it from Terminal:\n    sudo bx uninstall"
