@@ -238,12 +238,18 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             row.alignment = .firstBaseline
             row.spacing = 8
             row.translatesAutoresizingMaskIntoConstraints = false
-            let badge = NSTextField(labelWithString: check.status.uppercased())
-            badge.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-            badge.textColor = statusColor(check.status)
+            // 状态画成带颜色的 SF Symbol(与泄漏检测页的状态徽章同一套词汇),
+            // 那个词进读屏描述与悬停提示 —— 颜色不是唯一的信号。
+            let look = doctorStatusLook(check.status)
+            let badge = NSImageView()
+            badge.image = NSImage(systemSymbolName: look.symbol, accessibilityDescription: look.label)
+            badge.contentTintColor = statusColor(check.status)
+            badge.toolTip = look.label
             badge.setContentHuggingPriority(.required, for: .horizontal)
+            badge.setContentCompressionResistancePriority(.required, for: .horizontal)
             row.addArrangedSubview(badge)
             let title = NSTextField(labelWithString: doctorCheckTitle(check.name))
+            title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
             title.setContentHuggingPriority(.required, for: .horizontal)
             row.addArrangedSubview(title)
             if !check.detail.isEmpty {
