@@ -102,8 +102,15 @@ struct DiagnosticsModelTests {
     }
 
     static func testCheckTitleReadsLikeProse() {
-        expect(doctorCheckTitle("config_readable") == "config readable", "下划线换空格")
-        expect(doctorCheckTitle("rule_rules_never_in_effect") == "rule rules never in effect", "全部下划线")
+        expect(doctorCheckTitle("config_readable") == "Config readable", "下划线换空格、首字母大写")
+        expect(doctorCheckTitle("rule_rules_never_in_effect") == "Rule rules never in effect", "全部下划线")
+        expect(doctorCheckTitle("guardian_dns") == "Guardian DNS", "缩写写成缩写")
+        expect(doctorCheckTitle("ipv6_leak") == "IPv6 leak", "首词是缩写时照写缩写")
+        // 状态词汇:不许再出现 NOT_CHECKED 这种枚举原文;认不出的状态原样给出,不猜好坏。
+        expect(doctorStatusLook("not_checked").label == "Not checked", "not_checked 的人话")
+        expect(doctorStatusLook("fail") == DoctorStatusLook(symbol: "xmark.circle.fill", label: "Failed"), "fail 的符号")
+        expect(doctorStatusLook("weird").label == "weird" && doctorStatusLook("weird").symbol == "questionmark.circle",
+               "认不出的状态原样给出")
     }
 
     // Run again 之后数据常常与上一次一模一样,页面重画完看起来毫无变化 ——

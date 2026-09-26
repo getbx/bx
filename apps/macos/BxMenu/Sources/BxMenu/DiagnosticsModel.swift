@@ -96,9 +96,39 @@ func doctorSummaryLine(_ checks: [DoctorCheck]) -> String {
     return "\(failed) failed · \(warned) warning\(warned == 1 ? "" : "s") · \(notChecked) not checked"
 }
 
-/// check 名转成人话:与 `bx doctor` 文本路径同一个规则(下划线换空格)。
+/// check 名转成人话:下划线换空格、首字母大写、缩写写成缩写(`guardian_dns` →
+/// 「Guardian DNS」)。2026-09-26 之前这里只换下划线,Checks 页因此满屏
+/// `guardian dns` / `traffic failing rules` 这样的机器名,与泄漏检测页、菜单其余
+/// 地方的措辞不是一个产品。
 func doctorCheckTitle(_ name: String) -> String {
-    name.replacingOccurrences(of: "_", with: " ")
+    let acronyms: [String: String] = [
+        "dns": "DNS", "ipv6": "IPv6", "ipv4": "IPv4", "ip": "IP", "udp": "UDP", "tcp": "TCP",
+        "api": "API", "tun": "TUN", "cli": "CLI", "vpn": "VPN",
+    ]
+    let words = name.split(separator: "_").map(String.init).filter { !$0.isEmpty }
+    guard !words.isEmpty else { return name }
+    return words.enumerated().map { i, w in
+        if let a = acronyms[w.lowercased()] { return a }
+        return i == 0 ? w.prefix(1).uppercased() + w.dropFirst() : w
+    }.joined(separator: " ")
+}
+
+/// 一条 check 状态在界面上的样子:SF Symbol + 给读屏与悬停用的一个词。
+/// 认不出的状态**原样**给出(不猜它是好是坏),符号用问号。
+struct DoctorStatusLook: Equatable {
+    let symbol: String
+    let label: String
+}
+
+func doctorStatusLook(_ status: String) -> DoctorStatusLook {
+    switch status {
+    case "fail": return DoctorStatusLook(symbol: "xmark.circle.fill", label: "Failed")
+    case "warn": return DoctorStatusLook(symbol: "exclamationmark.triangle.fill", label: "Warning")
+    case "not_checked": return DoctorStatusLook(symbol: "minus.circle", label: "Not checked")
+    case "ok": return DoctorStatusLook(symbol: "checkmark.circle.fill", label: "OK")
+    case "info": return DoctorStatusLook(symbol: "info.circle", label: "Info")
+    default: return DoctorStatusLook(symbol: "questionmark.circle", label: status)
+    }
 }
 
 /// Checks 页那行「上次检查」的时间。**它是这个页面唯一的「刚才那一下发生过」的
