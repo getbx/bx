@@ -62,7 +62,7 @@ func testRefresherDeps(t *testing.T, path string, resolve func(context.Context, 
 	return bypassRefreshDeps{
 		configPath: path,
 		resolve:    resolve,
-		store:      newBypassStore(nil, nil, nil),
+		store:      newBypassStore(nil, nil),
 		timeout:    2 * time.Second,
 	}
 }
@@ -159,11 +159,7 @@ func TestBypassRefreshRetainsKnownServerThatFailedThisRound(t *testing.T) {
 	}))
 	deps.store = newBypassStore(
 		[]string{"1.1.1.1/32", "2.2.2.2/32", "8.8.8.8/32"},
-		map[string][]netip.Addr{
-			"tokyo.example":   {netip.MustParseAddr("2.2.2.2")},
-			"deleted.example": {netip.MustParseAddr("8.8.8.8")}, // 已从配置里删掉
-		},
-		map[string][]netip.Addr{
+		map[string][]netip.Addr{ // 已从配置里删掉的 deleted.example 也在上一轮的保留基准里
 			"tokyo.example":   {netip.MustParseAddr("2.2.2.2")},
 			"deleted.example": {netip.MustParseAddr("8.8.8.8")},
 		},
@@ -218,8 +214,10 @@ func TestBypassRefreshPublishesStaticDNSToo(t *testing.T) {
 	if len(published["new.example"]) != 1 || published["new.example"][0] != netip.MustParseAddr("9.9.9.9") {
 		t.Fatalf("静态 DNS 必须与路由一起更新, got %v", published)
 	}
-	if len(deps.store.staticEntries()["new.example"]) == 0 {
-		t.Fatal("store 里也要留一份,否则下轮刷新无从保留")
+	// 下一轮刷新的保留基准是 serverEntries(不是静态 DNS 表):新服务器必须进去,
+	// 否则它下一轮 DNS 抖一下就掉出 bypass。
+	if len(deps.store.serverEntries()["new.example"]) == 0 {
+		t.Fatal("store 的保留基准里也要有新服务器,否则下轮刷新无从保留")
 	}
 }
 
@@ -264,16 +262,16 @@ func TestBypassRefreshNeverPromotesHostOverrideIntoServerAddrs(t *testing.T) {
 		// tokyo.example 这轮解析不了
 	}))
 	// 上一轮的 store:tokyo.example 那条来自用户 `hosts:`,不是解析出来的服务器地址。
+	// (tokyo.example 那条 203.0.113.77 当时来自用户 hosts 覆盖,只进过静态 DNS 表,
+	// 从没进过服务器那一半 —— store 今天也只存服务器那一半。)
 	deps.store = newBypassStore(
 		[]string{"1.1.1.1/32", "203.0.113.77/32"},
-		map[string][]netip.Addr{
-			"hk.example":    {netip.MustParseAddr("1.1.1.1")},
-			"tokyo.example": {netip.MustParseAddr("203.0.113.77")}, // 用户 hosts 覆盖
-		},
 		map[string][]netip.Addr{
 			"hk.example": {netip.MustParseAddr("1.1.1.1")}, // 真正的传输服务器只有 hk
 		},
 	)
+	var published map[string][]netip.Addr
+	deps.setStaticA = func(m map[string][]netip.Addr) { published = m }
 	refresh := newBypassRefresher(deps)
 
 	if _, err := refresh(context.Background(), nil); err != nil {
@@ -283,7 +281,7 @@ func TestBypassRefreshNeverPromotesHostOverrideIntoServerAddrs(t *testing.T) {
 	if containsString(carve, "203.0.113.77/32") {
 		t.Fatalf("用户 hosts 里的 IP 进了 Guardian 屏障开口 —— 这是 fail-closed 屏障上的一个洞, got %v", carve)
 	}
-	if got := deps.store.staticEntries()["tokyo.example"]; len(got) > 0 {
+	if got := published["tokyo.example"]; len(got) > 0 {
 		t.Fatalf("被 mergeHostOverrides 当场拒绝的覆盖不该从「保留」那条路走回静态表, got %v", got)
 	}
 }
@@ -302,10 +300,6 @@ func TestBypassRefreshRefusesWhenNamedTargetOnlyHasRetainedAddress(t *testing.T)
 	}))
 	deps.store = newBypassStore(
 		[]string{"1.1.1.1/32", "2.2.2.2/32"},
-		map[string][]netip.Addr{
-			"hk.example":    {netip.MustParseAddr("1.1.1.1")},
-			"tokyo.example": {netip.MustParseAddr("2.2.2.2")},
-		},
 		map[string][]netip.Addr{
 			"hk.example":    {netip.MustParseAddr("1.1.1.1")},
 			"tokyo.example": {netip.MustParseAddr("2.2.2.2")},
@@ -556,7 +550,7 @@ func TestRunWiresPathRecovererToLiveBypassStore(t *testing.T) {
 	}
 
 	// 上面那两个子串挡不住这个(复审实测,能编译、`go test ./...` 全绿):
-	//   bypass: newBypassStore(bypassState.cidrs(), bypassState.staticEntries(), …)
+	//   bypass: newBypassStore(bypassState.cidrs(), bypassState.serverEntries())
 	// 它含 "bypass:" 也含 "bypassState",而 store 是**新的一份**,刷新写不进去
 	// —— 正是本守卫名字里那个 bug。改判身份:那个位置必须是 bypassState 本身。
 	why := "路径恢复读的必须是那份共享 store,不是它的任何拷贝/快照:\n" +
@@ -605,10 +599,12 @@ func TestRunFeedsBypassWiringTheLoopSafeResolver(t *testing.T) {
 }
 
 // 屏障开口那条守卫此前只钉了**启动**那一次转置(wireBypass 的入参),没钉**刷新**
-// 那一次发布。而 `d.store.set(next, staticA, serverStatic)` 里后两个实参同型
+// 那一次发布。而当时的 `d.store.set(next, staticA, serverStatic)` 里后两个实参同型
 // (都是 map[string][]netip.Addr),写反了照样编译 —— 这正是 6c28339 把 servers
 // 视图从 []netip.Addr 改成 map 时丢掉的那道编译期保护。
 //
+// (2026-09-25 起 store 不再存静态表,set 只剩 `set(next, serverStatic)`;写反没有了,
+// 但把 staticA 传进去照样编译 —— 这条测试守的正是那一种。)
 // 复审实测:把它改成 `set(next, staticA, staticA)`,既有守卫全绿,而用户 hosts:
 // 里写的任意 IPv4 就此进了 fail-closed 屏障的放行口。既有守卫抓不到是因为它用的
 // twoServerConfig 根本没有 hosts: 段,staticA == serverStatic,那个变异是空操作。

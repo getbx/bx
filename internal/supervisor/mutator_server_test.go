@@ -108,13 +108,13 @@ func TestRehijackReadsBypassAtApplyTime(t *testing.T) {
 	fp := &fakePlatform{}
 	// 发布 bypass 的唯一入口是 bypassStore(旧的 liveMutator.SetServerBypass 已删:
 	// 零生产调用方,且它只换三份视图里的一份)。断言一字未改。
-	store := newBypassStore([]string{"1.1.1.1/32"}, nil, nil)
+	store := newBypassStore([]string{"1.1.1.1/32"}, nil)
 	m := &liveMutator{plat: fp, store: store}
 	apply, _, err := m.Rehijack()
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.set([]string{"1.1.1.1/32", "2.2.2.2/32"}, nil, nil)
+	store.set([]string{"1.1.1.1/32", "2.2.2.2/32"}, nil)
 	if err := apply(); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestRehijackReadsBypassAtApplyTime(t *testing.T) {
 // 竞态要在真实并发下才暴露,而单测默认不并发。这条补的就是那个空档 ——
 // 它只在 `go test -race` 下有意义,而 -race 已经是本项目的固定验证命令之一。
 func TestServerBypassIsSafeUnderConcurrentUpdateAndRehijack(t *testing.T) {
-	store := newBypassStore([]string{"1.1.1.1/32"}, nil, nil)
+	store := newBypassStore([]string{"1.1.1.1/32"}, nil)
 	m := &liveMutator{plat: &fakePlatform{}, store: store}
 	apply, _, err := m.Rehijack()
 	if err != nil {
@@ -144,9 +144,7 @@ func TestServerBypassIsSafeUnderConcurrentUpdateAndRehijack(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
 			store.set([]string{"1.1.1.1/32", "2.2.2.2/32"},
-				map[string][]netip.Addr{"h": {netip.MustParseAddr("2.2.2.2")}},
 				map[string][]netip.Addr{"h": {netip.MustParseAddr("2.2.2.2")}})
-			_ = store.staticEntries()
 			_ = store.serverEntries()
 			_ = store.serverAddrs()
 		}
@@ -167,10 +165,10 @@ func TestServerBypassIsSafeUnderConcurrentUpdateAndRehijack(t *testing.T) {
 // 刷新写进去、路径恢复读不到,反之亦然 —— 每多一份冻结拷贝就多一个成环入口。
 func TestLiveMutatorReadsSharedBypassStore(t *testing.T) {
 	fp := &fakePlatform{}
-	store := newBypassStore([]string{"1.1.1.1/32"}, nil, nil)
+	store := newBypassStore([]string{"1.1.1.1/32"}, nil)
 	m := &liveMutator{plat: fp, store: store}
 
-	store.set([]string{"1.1.1.1/32", "2.2.2.2/32"}, nil, nil)
+	store.set([]string{"1.1.1.1/32", "2.2.2.2/32"}, nil)
 	apply, _, err := m.Rehijack()
 	if err != nil {
 		t.Fatal(err)
@@ -191,10 +189,10 @@ func TestLiveMutatorReadsSharedBypassStore(t *testing.T) {
 // currentServerBypass 改成优先读 m.serverBypass,整套测试全绿。
 func TestLiveMutatorCurrentBypassFollowsTheStoreNotTheStartupSlice(t *testing.T) {
 	empty := map[string][]netip.Addr{}
-	s := newBypassStore([]string{"1.1.1.1/32"}, empty, empty)
+	s := newBypassStore([]string{"1.1.1.1/32"}, empty)
 	m := &liveMutator{serverBypass: []string{"1.1.1.1/32"}, store: s}
 
-	s.set([]string{"2.2.2.2/32"}, empty, empty)
+	s.set([]string{"2.2.2.2/32"}, empty)
 
 	got := m.currentServerBypass()
 	if len(got) != 1 || got[0] != "2.2.2.2/32" {

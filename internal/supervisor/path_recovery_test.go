@@ -377,7 +377,7 @@ func (u *bypassCapturingUnderlay) Rebind(_ context.Context, _ tunHandle, _, _ Un
 func TestLivePathRecovererUsesLiveBypassSet(t *testing.T) {
 	next := mustUnderlaySnapshot(t, "en1", "198.51.100.1", "198.51.100.0/24")
 	underlay := &bypassCapturingUnderlay{next: next}
-	store := newBypassStore([]string{"203.0.113.9/32"}, nil, nil)
+	store := newBypassStore([]string{"203.0.113.9/32"}, nil)
 	recoverer := &livePathRecoverer{
 		underlay:     underlay,
 		transports:   &fakeLiveTransportSet{recorder: &chronologicalRecoveryRecorder{}},
@@ -388,7 +388,7 @@ func TestLivePathRecovererUsesLiveBypassSet(t *testing.T) {
 		verify:       func(context.Context) error { return nil },
 	}
 	// 切到新服务器:刷新把新集合发布进 store。
-	store.set([]string{"203.0.113.9/32", "198.51.100.77/32"}, nil, nil)
+	store.set([]string{"203.0.113.9/32", "198.51.100.77/32"}, nil)
 
 	if _, err := recoverer.RecoverPath(context.Background(), PathRecoveryRequest{Reason: "underlay_changed"}, nil); err != nil {
 		t.Fatal(err)
