@@ -113,7 +113,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
 
     private func updatePreview() {
         let target = currentTarget()
-        preview?.stringValue = deployCommandLine(target)
+        preview?.stringValue = deployCommandPreview(target)
         // 打字过程中不红脸:只有按下按钮才报问题。
         problem?.stringValue = ""
     }
@@ -125,7 +125,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
             return
         }
         problem?.stringValue = ""
-        preview?.stringValue = deployCommandLine(target)
+        preview?.stringValue = deployCommandPreview(target)
         onRun?(target)
         window?.close()
     }

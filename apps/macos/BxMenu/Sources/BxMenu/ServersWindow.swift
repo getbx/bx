@@ -307,8 +307,19 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // **`●` 只在 Core 确认过的时候才加粗打点。** 热切换是先写配置再切,
         // 所以切换失败的那一刻配置已经是新那台了 —— 此时给它打点就是断言用户
         // 的流量从一台其实没在用的服务器出去。
-        let dot = panel.runningConfirmed ? "● " : "○ "
-        let title = NSTextField(labelWithString: dot + panel.name)
+        // 画成 SF Symbol(与 Checks 页、泄漏检测页的状态徽章同一套视觉),不再是文字里的
+        // ●/○;那句话进读屏描述与悬停提示。
+        let confirmed = panel.runningConfirmed
+        let dotLabel = confirmed
+            ? "Carrying your traffic now (confirmed by bx)"
+            : "Not confirmed as carrying your traffic right now"
+        let dot = NSImageView(image: NSImage(systemSymbolName: confirmed ? "circle.fill" : "circle.dashed",
+                                             accessibilityDescription: dotLabel) ?? NSImage())
+        dot.contentTintColor = confirmed ? .systemGreen : .tertiaryLabelColor
+        dot.toolTip = dotLabel
+        dot.setContentHuggingPriority(.required, for: .horizontal)
+        head.addArrangedSubview(dot)
+        let title = NSTextField(labelWithString: panel.name)
         title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
         head.addArrangedSubview(title)
         let endpoint = hint(panel.endpoint)

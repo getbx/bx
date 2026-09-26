@@ -29,6 +29,17 @@ struct DeployModelTests {
     // **每一个插值都必须单引号包起来。** 值来自文本框;不包的话一个引号就能改变
     // 这条命令的结构 —— 与 GuardianClient 用 JSONSerialization 而不是手拼 JSON
     // 同一条纪律。校验会挡住大部分,但拼命令这一步不许依赖上一步。
+    // 表单上的预览是给人读的:没有完整路径,地址没填时说「<server address>」而不是悬空的
+    // 'root@';值里有需要转义的字符时照样加引号(预览不许把一条危险的值显示得像安全的)。
+    static func testPreviewReadsLikeACommandAPersonWouldType() {
+        expect(deployCommandPreview(DeployTarget(host: "", user: "root")) == "bx server deploy root@<server address>",
+               "空地址的预览:\(deployCommandPreview(DeployTarget(host: "", user: "root")))")
+        expect(deployCommandPreview(DeployTarget(host: "1.2.3.4", user: "root", name: "osaka")) == "bx server deploy --name osaka root@1.2.3.4",
+               "正常预览:\(deployCommandPreview(DeployTarget(host: "1.2.3.4", user: "root", name: "osaka")))")
+        expect(deployCommandPreview(DeployTarget(host: "h", user: "u", name: "a'b")).contains(#"'a'\''b'"#),
+               "带引号的值在预览里也必须转义")
+    }
+
     static func testEveryInterpolationIsQuoted() {
         let command = deployCommandLine(DeployTarget(host: "h", user: "u", name: "a'b"))
         expect(command.contains(#"'a'\''b'"#), "单引号没有被正确转义:\(command)")
@@ -82,6 +93,7 @@ struct DeployModelTests {
         testCommandLineShape()
         testNoNameMeansNoFlag()
         testEveryInterpolationIsQuoted()
+        testPreviewReadsLikeACommandAPersonWouldType()
         testValidationCatchesTypos()
         testNameRulesMatchTheConfig()
         testCredentialNoteIsVisibleInBothPlaces()

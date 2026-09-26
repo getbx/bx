@@ -77,6 +77,27 @@ func deployCommandLine(_ target: DeployTarget, bxPath: String = "/usr/local/bin/
     return parts.joined(separator: " ")
 }
 
+/// 表单上那行**给人看的**命令预览。执行的仍是 deployCommandLine(完整路径、每个值都
+/// 单引号包起来);这里只为读得懂:`bx` 而不是 `'/usr/local/bin/bx'`,值只在需要时才加
+/// 引号,地址还没填时写成 `<server address>` 而不是一个悬空的 `'root@'`。
+func deployCommandPreview(_ target: DeployTarget) -> String {
+    let host = target.host.trimmingCharacters(in: .whitespaces)
+    let user = target.user.trimmingCharacters(in: .whitespaces)
+    let name = target.name.trimmingCharacters(in: .whitespaces)
+    func show(_ v: String) -> String {
+        let plain = v.allSatisfy { $0.isLetter || $0.isNumber || "._-@<> ".contains($0) } && !v.contains(" ")
+        return plain ? v : shellQuoted(v)
+    }
+    var parts = ["bx", "server", "deploy"]
+    if !name.isEmpty {
+        parts.append("--name")
+        parts.append(show(name))
+    }
+    let who = user.isEmpty ? "" : user + "@"
+    parts.append(host.isEmpty ? who + "<server address>" : show(who + host))
+    return parts.joined(separator: " ")
+}
+
 /// 交给 Terminal 执行的那个脚本。
 ///
 /// **头两行是给人看的**:用户在自己的终端里看到 bx 将要做什么,以及一句
