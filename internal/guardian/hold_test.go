@@ -14,8 +14,8 @@ func holdPaths(root string) Paths {
 	return p
 }
 
-// 挂起在**读取时**判过期,不靠任何定时器 —— 照 internal/toolkeys/store.go:154,182
-// 那个唯一持久化过期的先例。
+// 挂起在**读取时**判过期,不靠任何定时器(一个没人看时也在滴答的 goroutine 会让
+// 「到期」依赖进程还活着)。
 func TestMaintenanceHoldExpiresAtReadTime(t *testing.T) {
 	s := OpenStore(holdPaths(t.TempDir()))
 	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)

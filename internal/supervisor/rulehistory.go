@@ -81,8 +81,8 @@ func loadRuleHistory(path string) (ruleHistory, error) {
 
 // saveRuleHistory 原子替换写盘。
 //
-// **走既有的 atomicWriteFile,不新写一份原子写** —— 本仓库已经有两份手写的
-// (guardian/store.go 的 writeJSONAtomically、toolkeys/store.go 的 save),
+// **走既有的 atomicWriteFile,不新写一份原子写** —— 本仓库已经有一份手写的
+// (guardian/store.go 的 writeJSONAtomically),
 // 第三份只会让「原子性到底由谁保证」这个问题多一个答案。
 func saveRuleHistory(path string, h ruleHistory) error {
 	h.SchemaVersion = ruleHistorySchema
