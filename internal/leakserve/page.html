@@ -2,108 +2,153 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>bx leak check</title>
+<link rel="icon" href="data:image/png;base64,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">
 <style>
- /* 深浅两套只换 token,组件一律走 token —— 不在媒体查询里给组件写第二遍样式。 */
+ /* 产品视觉:与 Bx.app 菜单窗口同一套 —— 系统字体、浅灰窗底 + 白卡片、系统红/绿、
+    品牌蓝(bx 标志里那个 x)只用在唯一的主按钮上。深浅两套只换 token。 */
  :root{
-   --ground:#FBFAF8; --raise:#FFFFFF; --ink:#1A1D21; --ink-dim:#5D5A55;
-   --rule:#E4E1DB; --ok:#0F6E4C; --bad:#B3261E; --idle:#9A948C;
-   --disc:#FFFCF0; --disc-rule:#E8DFC0;
+   --ground:#F5F5F7; --card:#FFFFFF; --ink:#1D1D1F; --ink-dim:#6E6E73; --ink-faint:#AEAEB2;
+   --rule:rgba(0,0,0,.08); --well:#F2F2F4;
+   --ok:#1F8A3D; --ok-soft:rgba(52,199,89,.14);
+   --bad:#D70015; --bad-soft:rgba(255,59,48,.12);
+   --warn:#B25000; --warn-soft:rgba(255,149,0,.15);
+   --idle:#8E8E93; --idle-soft:rgba(142,142,147,.14);
+   --accent:#2F6BFF; --accent-ink:#FFFFFF;
+   --shadow:0 1px 2px rgba(0,0,0,.05),0 0 0 .5px rgba(0,0,0,.06);
  }
  @media (prefers-color-scheme: dark){
    :root{
-     --ground:#16181B; --raise:#1D2024; --ink:#E9E7E3; --ink-dim:#A39E97;
-     --rule:#2E3238; --ok:#5FD3A0; --bad:#F2837B; --idle:#75706A;
-     --disc:#231F14; --disc-rule:#4A4025;
+     --ground:#1C1C1E; --card:#2C2C2E; --ink:#F5F5F7; --ink-dim:#A1A1A6; --ink-faint:#636366;
+     --rule:rgba(255,255,255,.09); --well:#232325;
+     --ok:#32D74B; --ok-soft:rgba(50,215,75,.16);
+     --bad:#FF453A; --bad-soft:rgba(255,69,58,.16);
+     --warn:#FF9F0A; --warn-soft:rgba(255,159,10,.16);
+     --idle:#98989D; --idle-soft:rgba(152,152,157,.16);
+     --accent:#4C82FF; --accent-ink:#FFFFFF;
+     --shadow:0 0 0 .5px rgba(255,255,255,.08);
    }
  }
  *{box-sizing:border-box}
  body{
-   font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
-   background:var(--ground); color:var(--ink);
-   margin:0; padding:40px 20px 64px;
+   font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+   -webkit-font-smoothing:antialiased;
+   background:var(--ground); color:var(--ink); margin:0; padding:44px 20px 72px;
  }
- main{max-width:46rem;margin:0 auto}
- h1{font-size:1.15rem;font-weight:600;letter-spacing:-.01em;margin:0 0 4px}
- .sub{color:var(--ink-dim);margin:0 0 28px}
- /* 机器值一律等宽 —— 「可以自己核对的值」与「bx 写的句子」不该长得一样。 */
- code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}
+ main{max-width:44rem;margin:0 auto}
+ code,.mono{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;font-size:.8rem}
 
- .sect{margin:30px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--rule)}
- .sect:first-child{margin-top:0}
- .sect h2{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;margin:0;color:var(--ink)}
- .sect p{margin:4px 0 0;font-size:.8rem;color:var(--ink-dim)}
- .disc{background:var(--disc);border:1px solid var(--disc-rule);border-radius:10px;padding:16px 18px;margin-bottom:28px}
- .disc p{margin:0 0 10px}
- .disc ul{margin:0 0 14px;padding-left:1.1rem}
- .disc li{margin:2px 0}
+ .brand{display:flex;align-items:center;gap:12px;margin:0 0 6px}
+ .brand img{width:36px;height:36px;border-radius:9px;box-shadow:var(--shadow)}
+ h1{font-size:1.45rem;font-weight:700;letter-spacing:-.02em;margin:0;line-height:1.15}
+ .sub{color:var(--ink-dim);margin:10px 0 26px;max-width:38rem}
+
+ .card{background:var(--card);border-radius:12px;box-shadow:var(--shadow);overflow:hidden}
+ .disc{padding:18px 20px 20px;margin-bottom:30px}
+ .disc p{margin:0 0 12px}
+ .disc .lead{font-weight:600;margin-bottom:12px}
+ .endpoints{list-style:none;margin:0 0 14px;padding:0;background:var(--well);border-radius:9px}
+ .endpoints li{display:flex;justify-content:space-between;gap:16px;padding:8px 12px;border-top:1px solid var(--rule)}
+ .endpoints li:first-child{border-top:0}
+ .endpoints .k{color:var(--ink-dim)}
+ .endpoints code{color:var(--ink);text-align:right;word-break:break-all}
+ .disc .fine{font-size:.86rem;color:var(--ink-dim)}
+ .actions{display:flex;align-items:center;gap:12px;margin-top:6px}
  button{
-   font:inherit;font-weight:560;color:var(--ground);background:var(--ink);
-   border:0;border-radius:7px;padding:9px 18px;cursor:pointer;
+   font:inherit;font-weight:600;color:var(--accent-ink);background:var(--accent);
+   border:0;border-radius:8px;padding:8px 18px;cursor:pointer;
  }
- button:disabled{opacity:.4;cursor:default}
- button:focus-visible{outline:2px solid var(--ok);outline-offset:2px}
+ button:hover{filter:brightness(1.06)}
+ button:disabled{opacity:.45;cursor:default;filter:none}
+ button:focus-visible,summary:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:2px}
 
- /* ── 签名:每一行显示它在等哪几半证据 ──────────────────────────
-    左边一列小格 = 这条结论的输入。探测落定就点亮一格,bx 判完整行才上色。
-    用户于是看见「证据在到齐」,而不是一个转圈的图标 —— 而两半合起来才判得了,
-    正是这个功能与纯网页检测的区别。 */
- .row{border-top:1px solid var(--rule);padding:18px 0;display:grid;grid-template-columns:auto 1fr;gap:16px}
- .row:last-of-type{border-bottom:1px solid var(--rule)}
- .feed{display:flex;flex-direction:column;gap:5px;padding-top:3px;align-items:center;width:34px}
- .cell{width:9px;height:9px;border-radius:2px;border:1.5px solid var(--idle);background:transparent}
- .cell[data-got="yes"]{background:var(--idle);border-color:var(--idle)}
- .cell[data-got="no"]{border-style:dashed}
- .local{font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;color:var(--idle);writing-mode:vertical-rl;transform:rotate(180deg)}
- .mark{font-size:1rem;line-height:1;margin-top:4px;color:var(--idle)}
+ /* 结果摘要:几个数**并排**,绝不合成一个总数(与菜单 Checks 页、CLI 同一条纪律)。 */
+ .summary{display:none;flex-wrap:wrap;gap:8px;margin:0 0 26px}
+ .summary.shown{display:flex}
+ .chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 12px;font-weight:600;font-size:.86rem;background:var(--card);box-shadow:var(--shadow)}
+ .chip .n{font-variant-numeric:tabular-nums}
+ .chip[data-tone="bad"]{color:var(--bad);background:var(--bad-soft);box-shadow:none}
+ .chip[data-tone="ok"]{color:var(--ok);background:var(--ok-soft);box-shadow:none}
+ .chip[data-tone="warn"]{color:var(--warn);background:var(--warn-soft);box-shadow:none}
+ .chip[data-tone="idle"]{color:var(--ink-dim);background:var(--idle-soft);box-shadow:none}
 
+ .sect{margin:28px 0 8px;padding:0 4px}
+ .sect h2{font-size:.8rem;font-weight:600;color:var(--ink-dim);margin:0}
+ .sect p{margin:2px 0 0;font-size:.8rem;color:var(--ink-faint)}
+
+ /* 每一行:左边状态徽章,右边标题 / 状态标签 / bx 的原话 / 依据。
+    徽章下那排小点 = 这条结论在等的浏览器探测,落定一个亮一个 —— 用户看见证据在到齐,
+    而绿色只在 bx 判完之后出现。 */
+ .row{display:grid;grid-template-columns:28px 1fr;gap:14px;padding:14px 16px;border-top:1px solid var(--rule)}
+ .row:first-child{border-top:0}
+ .badge{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:.8rem;font-weight:700;
+   color:var(--idle);background:var(--idle-soft);margin-top:1px}
+ .feed{display:flex;gap:4px;justify-content:center;margin-top:7px}
+ .cell{width:6px;height:6px;border-radius:50%;border:1.5px solid var(--ink-faint);background:transparent}
+ .cell[data-got="yes"]{background:var(--ink-faint)}
+ .cell[data-got="no"]{border-style:dashed;opacity:.7}
+ .head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
  .name{font-weight:600;margin:0}
- .state{font-size:.66rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--idle);margin:2px 0 6px}
- .say{margin:0;color:var(--ink-dim)}
- .row[data-verdict="ok"] .state,.row[data-verdict="ok"] .mark{color:var(--ok)}
- .row[data-verdict="bad"] .state,.row[data-verdict="bad"] .mark{color:var(--bad)}
+ .state{font-size:.7rem;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--idle);margin:0;
+   padding:1px 7px;border-radius:5px;background:var(--idle-soft)}
+ .local{font-size:.72rem;color:var(--ink-faint)}
+ .say{margin:3px 0 0;color:var(--ink-dim)}
+ .row[data-verdict="pending"] .badge{animation:none}
+ .row[data-verdict="ok"] .badge,.row[data-verdict="ok"] .state{color:var(--ok);background:var(--ok-soft)}
+ .row[data-verdict="bad"] .badge,.row[data-verdict="bad"] .state{color:var(--bad);background:var(--bad-soft)}
  .row[data-verdict="bad"] .say{color:var(--ink)}
+ /* 可达性不是安全问题:「连不上」是「你用不了」,不是「你泄漏了」—— 画成红色就读成了泄漏。 */
+ .row[data-section="reach"][data-verdict="bad"] .badge,.row[data-section="reach"][data-verdict="bad"] .state{color:var(--warn);background:var(--warn-soft)}
+ .row[data-section="reach"][data-verdict="bad"] .say{color:var(--ink-dim)}
  /* info has no polarity on purpose: a screen size is neither safe nor unsafe.
     Colouring it would hand it a verdict the judge deliberately withheld. */
- .row[data-verdict="info"] .state,.row[data-verdict="info"] .mark{color:var(--ink-dim)}
+ .row[data-verdict="info"] .badge,.row[data-verdict="info"] .state{color:var(--ink-dim);background:var(--idle-soft)}
 
- details{margin-top:10px}
- summary{cursor:pointer;font-size:.8rem;color:var(--ink-dim);width:fit-content}
- summary:focus-visible{outline:2px solid var(--ok);outline-offset:2px}
+ details{margin-top:8px}
+ summary{cursor:pointer;font-size:.8rem;color:var(--accent);width:fit-content;list-style:none}
+ summary::-webkit-details-marker{display:none}
+ summary::before{content:"\203A";display:inline-block;width:.9em;transition:transform .15s ease}
+ details[open]>summary::before{transform:rotate(90deg)}
  pre{
-   background:var(--raise);border:1px solid var(--rule);border-radius:7px;
-   padding:10px 12px;margin:8px 0 0;overflow-x:auto;
-   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.78rem;
+   background:var(--well);border-radius:8px;padding:10px 12px;margin:8px 0 0;overflow-x:auto;
+   font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;font-size:.76rem;
    white-space:pre-wrap;word-break:break-word;color:var(--ink-dim);
  }
- .tail{margin-top:26px;color:var(--ink-dim);font-size:.86rem;white-space:pre-wrap}
+ .tail{margin-top:24px;color:var(--ink-dim);font-size:.86rem;white-space:pre-wrap}
+ .tail>details{margin-bottom:14px}
  @media (prefers-reduced-motion:no-preference){
-   .cell{transition:background .18s ease,border-color .18s ease}
-   .mark,.state{transition:color .18s ease}
+   .cell{transition:background .2s ease,border-color .2s ease}
+   .badge,.state{transition:color .2s ease,background .2s ease}
+   .row[data-verdict="pending"] .badge{animation:bxpulse 1.4s ease-in-out infinite}
+   @keyframes bxpulse{50%{opacity:.45}}
  }
 </style>
 
 <main>
-<h1>bx leak check</h1>
+<div class="brand">
+  <img alt="" src="data:image/png;base64,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">
+  <h1>bx leak check</h1>
+</div>
 <p class="sub">Two halves of the evidence: what your browser reveals, and what bx sees on this machine.
 Neither half alone can tell you whether traffic is leaking.</p>
 
-<div class="disc">
-  <p><strong>Before this page sends anything:</strong> it will contact the following
+<div class="card disc">
+  <p class="lead">Before this page sends anything: it will contact the following
   third parties from your browser. They will see your real exit address.</p>
-  <ul>
-    <li>IPv4 echo: <code>{{.Endpoints.EchoV4}}</code></li>
-    <li>IPv6 echo: <code>{{.Endpoints.EchoV6}}</code></li>
-    <li>STUN (WebRTC): <code>{{.Endpoints.STUN}}</code></li>
-    <li>Exit country: <code>{{.Endpoints.Trace}}</code></li>
+  <ul class="endpoints">
+    <li><span class="k">IPv4 echo</span> <code>{{.Endpoints.EchoV4}}</code></li>
+    <li><span class="k">IPv6 echo</span> <code>{{.Endpoints.EchoV6}}</code></li>
+    <li><span class="k">STUN (WebRTC)</span> <code>{{.Endpoints.STUN}}</code></li>
+    <li><span class="k">Exit country</span> <code>{{.Endpoints.Trace}}</code></li>
   </ul>
-  <p>This page is only half of the check, and the other half has already run. Unless
+  <p class="fine">This page is only half of the check, and the other half has already run. Unless
   you passed <code>--no-reach</code>, bx probed the AI service endpoints from this
   machine over your current network path before opening this page, and listed those
   addresses in the terminal.</p>
-  <p>Nothing is stored. bx keeps no history of this check.</p>
-  <button id="go">Run the check</button>
+  <p class="fine">Nothing is stored. bx keeps no history of this check.</p>
+  <div class="actions"><button id="go">Run the check</button></div>
 </div>
 
+<div id="summary" class="summary"></div>
 <div id="rows"></div>
 <div id="tail" class="tail"></div>
 </main>
@@ -129,6 +174,7 @@ Neither half alone can tell you whether traffic is leaking.</p>
 
   var rowsEl = document.getElementById("rows");
   var tailEl = document.getElementById("tail");
+  var summaryEl = document.getElementById("summary");
   var PROBE_TIMEOUT_MS = 9000;
   var EXPIRED = "__bx_service_gone__";
   var cells = {};   // probe name -> [cell elements]
@@ -248,6 +294,7 @@ Neither half alone can tell you whether traffic is leaking.</p>
   function skeleton() {
     rowsEl.innerHTML = "";
     var shownSection = null;
+    var card = null;
     CHECKS.forEach(function (c) {
       // Each section says who is answerable for it, because that differs and the
       // difference is the point: a leak is bx's problem to fix, a fingerprint
@@ -277,9 +324,15 @@ Neither half alone can tell you whether traffic is leaking.</p>
         head.appendChild(text(el("h2"), t[0]));
         head.appendChild(text(el("p"), t[1]));
         rowsEl.appendChild(head);
+        // 每一段一张卡片(与菜单窗口里的分组列表同一种形状)。
+        card = el("div", "card");
+        rowsEl.appendChild(card);
       }
       var row = el("div", "row");
       row.setAttribute("data-verdict", "pending");
+      row.setAttribute("data-section", c.section);
+      var gutter = el("div");
+      gutter.appendChild(text(el("div", "badge"), "\u2026"));
       var feed = el("div", "feed");
       if (c.inputs && c.inputs.length) {
         c.inputs.forEach(function (p) {
@@ -288,15 +341,17 @@ Neither half alone can tell you whether traffic is leaking.</p>
           feed.appendChild(cell);
           (cells[p] = cells[p] || []).push(cell);
         });
-      } else {
-        // 不吃浏览器探测。照实说 —— 这一项根本不需要联网就能答。
-        feed.appendChild(text(el("div", "local"), "local"));
       }
-      var mark = text(el("div", "mark"), "·");
-      feed.appendChild(mark);
+      gutter.appendChild(feed);
       var body = el("div");
-      body.appendChild(text(el("p", "name"), c.title));
-      body.appendChild(text(el("p", "state"), "checking"));
+      var head2 = el("div", "head");
+      head2.appendChild(text(el("p", "name"), c.title));
+      head2.appendChild(text(el("p", "state"), "checking"));
+      if (!(c.inputs && c.inputs.length)) {
+        // 不吃浏览器探测。照实说 —— 这一项根本不需要浏览器那半就能答。
+        head2.appendChild(text(el("span", "local"), c.section === "reach" ? "probed by bx" : "this machine"));
+      }
+      body.appendChild(head2);
       // "Judged from this machine alone" is true of the rows that read the
       // routing table — it is not true of the reach rows, which bx answers by
       // contacting a third party. Saying it there would understate what this
@@ -304,8 +359,8 @@ Neither half alone can tell you whether traffic is leaking.</p>
       var waiting = "Waiting for the browser half.";
       var local = c.section === "reach" ? "Probed by bx from this machine." : "Judged from this machine alone.";
       body.appendChild(text(el("p", "say"), c.inputs && c.inputs.length ? waiting : local));
-      row.appendChild(feed); row.appendChild(body);
-      rowsEl.appendChild(row);
+      row.appendChild(gutter); row.appendChild(body);
+      card.appendChild(row);
       rowEls[c.id] = row;
     });
   }
@@ -448,11 +503,11 @@ Neither half alone can tell you whether traffic is leaking.</p>
       row.setAttribute("data-verdict", f.verdict);
       text(row.querySelector(".state"), f.verdict);
       text(row.querySelector(".say"), f.summary);
-      var glyph = "–";
-      if (f.verdict === "ok") glyph = "✓";
-      else if (f.verdict === "bad") glyph = "✕";
-      else if (f.verdict === "info") glyph = "·";
-      text(row.querySelector(".mark"), glyph);
+      var glyph = "\u2013";
+      if (f.verdict === "ok") glyph = "\u2713";
+      else if (f.verdict === "bad") glyph = "\u2715";
+      else if (f.verdict === "info") glyph = "i";
+      text(row.querySelector(".badge"), glyph);
       var old = row.querySelector("details");
       if (old) old.remove();
       if (f.evidence && f.evidence.length) {
@@ -462,6 +517,7 @@ Neither half alone can tell you whether traffic is leaking.</p>
         row.lastChild.appendChild(d);
       }
     });
+    summarize(report);
     tailEl.innerHTML = "";
     if (report.evidence && report.evidence.length) {
       var d2 = el("details");
@@ -470,6 +526,33 @@ Neither half alone can tell you whether traffic is leaking.</p>
       tailEl.appendChild(d2);
     }
     tailEl.appendChild(text(el("p"), "You can close this tab. bx has already shut the local server down."));
+  }
+
+  // 摘要:几个数**并排**,绝不合成一个总数 —— 合成出来的数在一台普通的机器上永远
+  // 不为零(普通 Chrome 就是不防指纹),于是被训练成噪声、把真正的泄漏一起淹掉。
+  // 泄漏与身份两个数是 Go 算的;「没查」数的是结论本身;可达性一段自己一行。
+  function summarize(report) {
+    summaryEl.innerHTML = "";
+    var notChecked = 0;
+    (report.findings || []).forEach(function (f) {
+      if (f.section !== "reach" && f.verdict === "not checked") notChecked++;
+    });
+    function chip(n, one, many, badTone) {
+      var c = el("span", "chip");
+      c.setAttribute("data-tone", n > 0 ? badTone : "ok");
+      c.appendChild(text(el("span", "n"), String(n)));
+      c.appendChild(text(el("span"), n === 1 ? one : many));
+      summaryEl.appendChild(c);
+    }
+    chip(report.anomaly_count || 0, "leak", "leaks", "bad");
+    chip(report.identity_count || 0, "identifying trait", "identifying traits", "warn");
+    chip(notChecked, "not checked", "not checked", "idle");
+    var r = report.reach;
+    if (r) {
+      var down = (r.unreachable || 0) + (r.refused || 0);
+      chip(down, "AI service unreachable", "AI services unreachable", "warn");
+    }
+    summaryEl.className = "summary shown";
   }
 
   document.getElementById("go").addEventListener("click", function () {
