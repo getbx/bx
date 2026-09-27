@@ -123,18 +123,18 @@ enum GuardianClientError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .socket(let code):
-            return "Guardian connection failed (\(code))."
+            return L("Guardian connection failed ({0}).", code)
         case .invalidResponse:
-            return "Guardian returned an invalid response."
+            return L("Guardian returned an invalid response.")
         case .responseTooLarge:
-            return "Guardian response exceeded its safety limit."
+            return L("Guardian response exceeded its safety limit.")
         case .contentType:
-            return "Guardian returned a non-JSON response."
+            return L("Guardian returned a non-JSON response.")
         case .status(let status, let code):
             guard let code, !code.isEmpty else {
-                return "Guardian request failed (\(status))."
+                return L("Guardian request failed ({0}).", status)
             }
-            return "Guardian request failed (\(status), code=\(code))."
+            return L("Guardian request failed ({0}, code={1}).", status, code)
         }
     }
 }

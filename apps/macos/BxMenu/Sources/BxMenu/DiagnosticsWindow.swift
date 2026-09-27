@@ -44,6 +44,21 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     private var checksRendered = false
     private var logsRendered = false
 
+    /// 两页最近一次渲染用的数据。**只为切换语言之后能原样重画** —— 重新拉一次
+    /// 会在隧道外再探测一次服务器,而用户只是换了个语言。
+    private var lastChecks: DoctorReport?
+    private var lastLogs: (report: LogsReport, code: String?)?
+
+    /// 切换界面语言之后调:标题、两个标签、两页内容按新语言重画。
+    func relocalize() {
+        guard let window, window.isVisible else { return }
+        window.title = L("Diagnostics")
+        tabs?.tabViewItem(at: 0).label = L("Checks")
+        tabs?.tabViewItem(at: 1).label = L("Logs")
+        if let lastChecks { renderChecks(lastChecks) } else { seedChecksPlaceholder() }
+        if let lastLogs { renderLogs(lastLogs.report, code: lastLogs.code) } else { seedLogsPlaceholder() }
+    }
+
     /// 能力门。**它不藏标签页**:两页都在,缺的那一页如实说这一版没有这个功能。
     /// 藏掉标签页会让用户以为菜单坏了(他刚在别处见过 Logs 这两个字);说出来
     /// 才是「旧 Guardian」这个事实本身。
@@ -78,7 +93,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Diagnostics"
+        window.title = L("Diagnostics")
         window.isReleasedWhenClosed = false
         // 窗口可缩放,而日志行是任意长度的散文 —— 给一个下限,免得被拖到一格
         // 宽度、每行折成十几行。上限不设:日志本来就该越宽越好读。
@@ -102,13 +117,13 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
 
         // **顺序即索引**:showChecks 选 0、showLogs 选 1,别调换。
         let checksItem = NSTabViewItem(identifier: "checks")
-        checksItem.label = "Checks"
+        checksItem.label = L("Checks")
         let (checksScroll, checksStack) = makePageStack()
         checksItem.view = hosting(checksScroll)
         tabs.addTabViewItem(checksItem)
 
         let logsItem = NSTabViewItem(identifier: "logs")
-        logsItem.label = "Logs"
+        logsItem.label = L("Logs")
         let (logsScroll, logsStack) = makePageStack()
         logsItem.view = hosting(logsScroll)
         tabs.addTabViewItem(logsItem)
@@ -184,15 +199,15 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         guard let stack = checksStack else { return }
         clear(stack)
         guard doctorCapable else {
-            stack.addFullWidthRow(hint("This version of bx Guardian does not provide checks."))
+            stack.addFullWidthRow(hint(L("This version of bx Guardian does not provide checks.")))
             return
         }
-        stack.addFullWidthRow(hint("No checks yet."))
+        stack.addFullWidthRow(hint(L("No checks yet.")))
         stack.addFullWidthRow(gap())
-        let now = NSButton(title: "Check Now", target: self, action: #selector(runAgain))
+        let now = NSButton(title: L("Check Now"), target: self, action: #selector(runAgain))
         now.bezelStyle = .rounded
         now.controlSize = .small
-        now.toolTip = "Asks bx to check now. This probes your server once, outside the tunnel."
+        now.toolTip = L("Asks bx to check now. This probes your server once, outside the tunnel.")
         stack.addFullWidthRow(now)
     }
 
@@ -201,15 +216,15 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         guard let stack = logsStack else { return }
         clear(stack)
         guard logsCapable else {
-            stack.addFullWidthRow(hint("This version of bx Guardian does not provide logs."))
+            stack.addFullWidthRow(hint(L("This version of bx Guardian does not provide logs.")))
             return
         }
-        stack.addFullWidthRow(hint("No logs loaded yet."))
+        stack.addFullWidthRow(hint(L("No logs loaded yet.")))
         stack.addFullWidthRow(gap())
-        let load = NSButton(title: "Load Logs", target: self, action: #selector(loadLogs))
+        let load = NSButton(title: L("Load Logs"), target: self, action: #selector(loadLogs))
         load.bezelStyle = .rounded
         load.controlSize = .small
-        load.toolTip = "Reads the tail of bx's own logs."
+        load.toolTip = L("Reads the tail of bx's own logs.")
         stack.addFullWidthRow(load)
     }
 
@@ -220,6 +235,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     /// Checks 页:合计一句在顶,坏的排前,每条 = 状态标签 + 名字 + detail,hint 另起一行暗色小字。
     /// **排序、合计、标题全由纯模型给**(DiagnosticsModel),这里只摆。
     private func renderChecks(_ report: DoctorReport) {
+        lastChecks = report
         guard let stack = checksStack else { return }
         clear(stack)
         checksRendered = true
@@ -277,10 +293,10 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             }
         }
         stack.addFullWidthRow(gap())
-        let again = NSButton(title: "Run Again", target: self, action: #selector(runAgain))
+        let again = NSButton(title: L("Run Again"), target: self, action: #selector(runAgain))
         again.bezelStyle = .rounded
         again.controlSize = .small
-        again.toolTip = "Asks bx to check again. This probes your server once, outside the tunnel."
+        again.toolTip = L("Asks bx to check again. This probes your server once, outside the tunnel.")
         stack.addFullWidthRow(again)
         scrollToTop(checksScroll)
     }
@@ -306,11 +322,12 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     }
 
     private func renderLogs(_ report: LogsReport, code: String?) {
+        lastLogs = (report, code)
         guard let stack = logsStack else { return }
         clear(stack)
         logsRendered = true
         if let code, !code.isEmpty {
-            let banner = NSTextField(labelWithString: "Highlighting lines that mention \(code).")
+            let banner = NSTextField(labelWithString: L("Highlighting lines that mention {0}.", code))
             banner.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
             banner.textColor = .secondaryLabelColor
             stack.addFullWidthRow(banner)
@@ -318,11 +335,11 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         for tail in report.logs {
             stack.addFullWidthRow(header("\(tail.name)  ·  \(tail.path)"))
             if !tail.unavailable.isEmpty {
-                stack.addFullWidthRow(hint("Not available: \(tail.unavailable)"))
+                stack.addFullWidthRow(hint(L("Not available: {0}", tail.unavailable)))
                 continue
             }
             if tail.lines.isEmpty {
-                stack.addFullWidthRow(hint("This log is empty."))
+                stack.addFullWidthRow(hint(L("This log is empty.")))
                 continue
             }
             let marks = logLinesMatching(tail.lines, code: code)
@@ -355,10 +372,10 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             // 唯一依据 —— 少了它 wrappingLabel 会按自己的内在宽度摊成一行。
             text.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -36).isActive = true
         }
-        let export = NSButton(title: "Export Diagnostics…", target: self, action: #selector(exportDiagnostics))
+        let export = NSButton(title: L("Export Diagnostics…"), target: self, action: #selector(exportDiagnostics))
         export.bezelStyle = .rounded
         export.controlSize = .small
-        export.toolTip = "Runs bx doctor in Terminal and collects a diagnostics folder you can share."
+        export.toolTip = L("Runs bx doctor in Terminal and collects a diagnostics folder you can share.")
         stack.addFullWidthRow(export)
         scrollToTop(logsScroll)
     }

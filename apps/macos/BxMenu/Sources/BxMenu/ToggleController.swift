@@ -15,8 +15,8 @@ enum ToggleAction {
     /// 菜单全英文:这是用户看得见的字,与 rebuildMenu 里的表头/数据行同一语言。
     var progressVerb: String {
         switch self {
-        case .turnOn: return "Connecting"
-        case .turnOff: return "Disconnecting"
+        case .turnOn: return L("Connecting")
+        case .turnOff: return L("Disconnecting")
         }
     }
 }
@@ -26,7 +26,7 @@ enum ToggleAction {
 /// 秒数是这一期最核心的产出:2026-08-04 事故里 `bx down` 卡了 71 分钟,
 /// 界面全程没有一个字。
 func toggleProgressText(action: ToggleAction, elapsedSeconds: Int) -> String {
-    "\(action.progressVerb)… \(max(0, elapsedSeconds))s"
+    L("{0}… {1}s", action.progressVerb, max(0, elapsedSeconds))
 }
 
 /// 逾时提示;未达阈值返回 nil(调用方据此决定要不要多画一行)。
@@ -36,7 +36,7 @@ func toggleProgressText(action: ToggleAction, elapsedSeconds: Int) -> String {
 /// 恒定被忽略的入参。
 func toggleSlowHint(elapsedSeconds: Int) -> String? {
     guard elapsedSeconds >= toggleSlowThresholdSeconds else { return nil }
-    return "Taking longer than usual — this normally finishes within about 3 seconds"
+    return L("Taking longer than usual — this normally finishes within about 3 seconds")
 }
 
 /// 失败码 → 用户能照做的下一步。
@@ -204,7 +204,7 @@ func quitDisposition(inFlight: ToggleAction?) -> QuitDisposition {
 /// Quit 排队等待当前动作完成时,菜单该显示的一行——不能让界面看起来
 /// 像没事发生:用户已经确认退出,必须能看到"退出请求收到了"。
 func quitQueuedStatusText() -> String {
-    "Will quit once the current operation finishes"
+    L("Will quit once the current operation finishes")
 }
 
 /// 拼「Core 起不来」那句话所需的**最小**一条服务器事实。
@@ -303,7 +303,7 @@ func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> St
     let bare = String(code.dropFirst(coreStartFailureCodePrefix.count))
     let where_ = servers.currentHostPort
     let named = !where_.isEmpty
-    let logLine = "Full reason: sudo tail -50 /var/log/bx.log"
+    let logLine = L("Full reason: {0}", "sudo tail -50 /var/log/bx.log")
 
     var headline: String
     var steps: [String] = []
@@ -312,69 +312,69 @@ func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> St
     case "tunnel_unreachable":
         // 「bx cannot reach X」是关于**这次尝试**的事实;「X is down」是关于
         // 那台服务器的断言,而本机自己没网时同样连不上。
-        headline = "bx could not start: " +
-            (named ? "bx cannot reach \(where_)" : "bx cannot reach your server") +
-            " — no TCP connection was established to that address."
-        steps.append("That machine may be down or may have changed IP, but this Mac's own network could be at fault too."
+        headline = named
+            ? L("bx could not start: bx cannot reach {0} — no TCP connection was established to that address.", where_)
+            : L("bx could not start: bx cannot reach your server — no TCP connection was established to that address.")
+        steps.append(L("That machine may be down or may have changed IP, but this Mac's own network could be at fault too.")
             + coreStartFailureSelfCheckSuffix(where_))
         // **这一族里最要紧的一条偏偏此前没给这句话** —— 事故那一次就是它,而
         // `dial tcp <server>:443: i/o timeout` 那句原文只在 Core 日志里。
         steps.append(logLine)
     case "tunnel_handshake_failed":
         // 措辞与上面**相反**:那台机器活着,去修它是白费力气。
-        headline = "bx could not start: " +
-            (named ? "\(where_) is answering on TCP" : "your server is answering on TCP") +
-            ", but the tunnel did not come up within the start-up window."
-        steps.append("That machine is alive — look at the link, its credentials, the SNI, or interference on the way, not at whether the server is down.")
+        headline = named
+            ? L("bx could not start: {0} is answering on TCP, but the tunnel did not come up within the start-up window.", where_)
+            : L("bx could not start: your server is answering on TCP, but the tunnel did not come up within the start-up window.")
+        steps.append(L("That machine is alive — look at the link, its credentials, the SNI, or interference on the way, not at whether the server is down."))
         steps.append(logLine)
     case "tunnel_unhealthy_undetermined_udp_transport":
-        headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there — it runs a UDP transport (hysteria2/QUIC), which a single TCP probe cannot observe."
+        headline = L("bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there — it runs a UDP transport (hysteria2/QUIC), which a single TCP probe cannot observe.")
         steps.append(named
-            ? "To confirm that machine is alive, try ping or ssh to \(coreStartFailureHostOnly(where_))"
-            : "To confirm that machine is alive, try ping or ssh to it")
+            ? L("To confirm that machine is alive, try ping or ssh to {0}", coreStartFailureHostOnly(where_))
+            : L("To confirm that machine is alive, try ping or ssh to it"))
         steps.append(logLine)
     case "tunnel_unhealthy_undetermined_local_dial":
         // **这一档也要点名 host:port**(与 Go 侧同一条):从前它是这一族里唯一
         // 一句连地址都没有的话,而 2026-08-13 那种机器上最容易落进来的恰恰是
         // 「VPS 真的挂了」那一次。
-        headline = "bx could not start: the tunnel did not come up, and bx could not tell whether "
-            + (named ? "\(where_) is still there" : "that server is still there")
-            + " — its probe failed on this Mac before any SYN left it."
-        steps.append("Check bx's own direct route first (the signature of the 2026-08-13 failure): route -n get -ifscope <your interface> 1.1.1.1 — if it says \"not in table\", bx's own direct dialer on this Mac is broken and switching servers will not help.")
+        headline = named
+            ? L("bx could not start: the tunnel did not come up, and bx could not tell whether {0} is still there — its probe failed on this Mac before any SYN left it.", where_)
+            : L("bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there — its probe failed on this Mac before any SYN left it.")
+        steps.append(L("Check bx's own direct route first (the signature of the 2026-08-13 failure): route -n get -ifscope <your interface> 1.1.1.1 — if it says \"not in table\", bx's own direct dialer on this Mac is broken and switching servers will not help."))
         // **这条不许省。** 同一个码还盖着「解析不出那台服务器的主机名」——
         // 那一种是服务器特有的,换一台确实有用。少了它,下面那句「你还配了
         // 另一台」就与上面那句读起来自相矛盾,而两句各自都只对一半情形成立。
-        steps.append("If the route is there, this Mac most likely cannot resolve that server's host name — for that one, switching servers does help.")
+        steps.append(L("If the route is there, this Mac most likely cannot resolve that server's host name — for that one, switching servers does help."))
         steps.append(logLine)
     case "tunnel_unhealthy_undetermined":
-        headline = "bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there (the check itself did not complete)."
+        headline = L("bx could not start: the tunnel did not come up, and bx could not tell whether that server is still there (the check itself did not complete).")
         steps.append(coreStartFailureNCCheckable(where_)
-            ? "To check the server yourself: \(coreStartFailureNCCommand(where_))"
-            : "Check that the server link in the configuration is still right")
+            ? L("To check the server yourself: {0}", coreStartFailureNCCommand(where_))
+            : L("Check that the server link in the configuration is still right"))
         steps.append(logLine)
     case "config_unusable":
         tunnelOutcome = false
-        headline = "bx could not start: something in the configuration is unusable (a rule, a CIDR, a hosts entry, or a server link). After editing it, run sudo bx down && sudo bx up."
+        headline = L("bx could not start: something in the configuration is unusable (a rule, a CIDR, a hosts entry, or a server link). After editing it, run sudo bx down && sudo bx up.")
         steps.append(logLine)
     case "config_unreadable":
         tunnelOutcome = false
-        headline = "bx could not start: it could not read its configuration file — most likely bx has not been set up on this Mac yet, or the file is not readable. To set it up: sudo bx setup <your link>."
+        headline = L("bx could not start: it could not read its configuration file — most likely bx has not been set up on this Mac yet, or the file is not readable. To set it up: sudo bx setup <your link>.")
         steps.append(logLine)
     case "provision_failed":
         tunnelOutcome = false
-        headline = "bx could not start: the embedded transport binary could not be unpacked into data_dir (usually a full disk or an unwritable directory)."
+        headline = L("bx could not start: the embedded transport binary could not be unpacked into data_dir (usually a full disk or an unwritable directory).")
         steps.append(logLine)
     case "tun_open_failed":
         tunnelOutcome = false
-        headline = "bx could not start: the TUN device could not be opened (permissions, or the device is in use)."
+        headline = L("bx could not start: the TUN device could not be opened (permissions, or the device is in use).")
         steps.append(logLine)
     case "hijack_failed":
         tunnelOutcome = false
-        headline = "bx could not start: the TUN came up but hijacking the default route failed."
+        headline = L("bx could not start: the TUN came up but hijacking the default route failed.")
         steps.append(logLine)
     case "other":
         tunnelOutcome = false
-        headline = "bx could not start: Core reported a failure this version of bx has no specific wording for."
+        headline = L("bx could not start: Core reported a failure this version of bx has no specific wording for.")
         steps.append(logLine)
     default:
         // 认不出的码一个字都不编。
@@ -383,7 +383,7 @@ func coreStartFailureHint(code: String?, servers: CoreStartFailureServers) -> St
 
     // 换一台服务器只对隧道那几种结局有用。
     if tunnelOutcome, !servers.others.isEmpty {
-        steps.append("You also have another server configured: \(servers.others.joined(separator: ", ")) — switch to it in Servers…")
+        steps.append(L("You also have another server configured: {0} — switch to it in Servers…", servers.others.joined(separator: ", ")))
     }
     return ([headline] + steps.map { "  • " + $0 }).joined(separator: "\n")
 }
@@ -403,7 +403,7 @@ func coreStartFailureNCCommand(_ hostPort: String) -> String {
 
 func coreStartFailureSelfCheckSuffix(_ hostPort: String) -> String {
     guard coreStartFailureNCCheckable(hostPort) else { return "" }
-    return " Check it yourself: \(coreStartFailureNCCommand(hostPort))"
+    return " " + L("Check it yourself: {0}", coreStartFailureNCCommand(hostPort))
 }
 
 func coreStartFailureHostOnly(_ hostPort: String) -> String {
@@ -420,16 +420,11 @@ func toggleFailureHint(code: String?) -> String? {
     guard let code, !code.isEmpty else { return nil }
     switch code {
     case "core_ownership_uncertain":
-        return "bx re-checks this on every attempt and still cannot prove no second bx Core is running. " +
-            "Quit any sudo bx run you have open, then try again. " +
-            "sudo bx down then sudo bx up makes Guardian forget the judgement, but it will refuse just the same " +
-            "while a Core really is running — see sudo tail -50 /var/log/bx-guard.err.log for the process it found"
+        return L("bx re-checks this on every attempt and still cannot prove no second bx Core is running. Quit any sudo bx run you have open, then try again. sudo bx down then sudo bx up makes Guardian forget the judgement, but it will refuse just the same while a Core really is running — see sudo tail -50 /var/log/bx-guard.err.log for the process it found")
     case "recovery_incomplete":
-        return "The menu's direct call has no fallback. Run sudo bx down in Terminal " +
-            "(not this toggle again) — the command line forces a teardown when Guardian " +
-            "refuses to stop. Then try sudo bx up"
+        return L("The menu's direct call has no fallback. Run sudo bx down in Terminal (not this toggle again) — the command line forces a teardown when Guardian refuses to stop. Then try sudo bx up")
     case "guardian_busy":
-        return "Guardian is still handling the previous request — retry shortly"
+        return L("Guardian is still handling the previous request — retry shortly")
     default:
         return nil
     }
@@ -501,7 +496,7 @@ func toggleFailureMessage(code: String?, transportDescription: String?, servers:
         return hint
     }
     if let code, !code.isEmpty {
-        return "Failure code \(code)"
+        return L("Failure code {0}", code)
     }
     return transportDescription
 }
@@ -518,10 +513,10 @@ func toggleResultText(code: String?, transportDescription: String?, servers: Cor
     case .notAttempted:
         return base
     case .succeeded:
-        return "Guardian could not turn bx off; completed by forced teardown via sudo bx down"
+        return L("Guardian could not turn bx off; completed by forced teardown via sudo bx down")
     case .failed:
-        let reason = base ?? "Turning bx off through Guardian failed"
-        return reason + "; sudo bx down did not complete either — run sudo bx down in Terminal yourself"
+        let reason = base ?? L("Turning bx off through Guardian failed")
+        return L("{0}; sudo bx down did not complete either — run sudo bx down in Terminal yourself", reason)
     }
 }
 
@@ -555,7 +550,5 @@ func turnOffConfirmedProtectionStopped(protectionState: String?) -> Bool {
 
 /// 关不掉因而没有退出时,弹给用户的那句话。
 func quitBlockedByFailedTurnOffMessage() -> String {
-    "bx did not stop, so the menu stays. Quitting now would leave protection running " +
-        "with no indicator at all. Run sudo bx down in Terminal (it forces a teardown when " +
-        "Guardian refuses to stop), then click Quit bx again."
+    L("bx did not stop, so the menu stays. Quitting now would leave protection running with no indicator at all. Run sudo bx down in Terminal (it forces a teardown when Guardian refuses to stop), then click Quit bx again.")
 }

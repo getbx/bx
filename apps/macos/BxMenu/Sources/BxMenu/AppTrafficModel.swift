@@ -215,9 +215,9 @@ struct AppTrafficReport: Decodable, Equatable {
 
     static func sectionTitle(for path: AppTrafficPath) -> String {
         switch path {
-        case .tunnel: return "Through the tunnel"
-        case .direct: return "Direct"
-        case .blocked: return "Blocked"
+        case .tunnel: return L("Through the tunnel")
+        case .direct: return L("Direct")
+        case .blocked: return L("Blocked")
         }
     }
 
@@ -237,10 +237,10 @@ struct AppTrafficReport: Decodable, Equatable {
     /// 消失,那会让读者分不清「这个组没有匹配」与「这个组本来就是空的」)。
     func rows(query: String = "") -> [Row] {
         guard subscribed else {
-            return [.notice("Not collecting app traffic right now.")]
+            return [.notice(L("Not collecting app traffic right now."))]
         }
         guard error.isEmpty else {
-            return [.notice("Couldn't read app traffic: \(error)")]
+            return [.notice(L("Couldn't read app traffic: {0}", error))]
         }
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let byPath = Dictionary(
@@ -255,7 +255,7 @@ struct AppTrafficReport: Decodable, Equatable {
             if matched.isEmpty {
                 // 只有 needle 非空时才可能走到这里(上面的 guard 已经保证
                 // group.rows 本身非空,needle 为空时 matched == group.rows)。
-                out.append(.emptySection("No matches"))
+                out.append(.emptySection(L("No matches")))
             } else {
                 for row in matched {
                     out.append(.entry(AppTrafficReport.entry(for: row)))
@@ -263,7 +263,7 @@ struct AppTrafficReport: Decodable, Equatable {
             }
         }
         guard !out.isEmpty else {
-            return [.notice("No app traffic seen yet.")]
+            return [.notice(L("No app traffic seen yet."))]
         }
         return out
     }
@@ -319,7 +319,7 @@ struct AppTrafficReport: Decodable, Equatable {
     /// 时用的也是这个同一份显示名,免得「显示的是 Unknown app,搜 unknown 却
     /// 搜不到」这种对不上的情况。
     private static func displayName(_ app: String) -> String {
-        app.isEmpty ? "Unknown app" : app
+        app.isEmpty ? L("Unknown app") : app
     }
 
     /// 应用名格下面那一行暗色小字:第一条目的地 + 其余去重后的条数。
@@ -349,7 +349,7 @@ struct AppTrafficReport: Decodable, Equatable {
         guard !dests.isEmpty else { return "" }
         var lines = dests
         if destsMore > 0 {
-            lines.append("…and \(destsMore) more")
+            lines.append(L("…and {0} more", destsMore))
         }
         return lines.joined(separator: "\n")
     }
@@ -438,9 +438,9 @@ func appTrafficRuleMenu(dests: [String]) -> [AppTrafficRuleMenuItem] {
     for dest in dests {
         for pattern in ruleCandidates(for: dest) where seen.insert(pattern).inserted {
             if !coversOpenSubdomainPlatform(pattern) {
-                out.append(AppTrafficRuleMenuItem(title: "Always direct: \(pattern)", kind: "direct", pattern: pattern))
+                out.append(AppTrafficRuleMenuItem(title: L("Always direct: {0}", pattern), kind: "direct", pattern: pattern))
             }
-            out.append(AppTrafficRuleMenuItem(title: "Always through tunnel: \(pattern)", kind: "proxy", pattern: pattern))
+            out.append(AppTrafficRuleMenuItem(title: L("Always through tunnel: {0}", pattern), kind: "proxy", pattern: pattern))
         }
     }
     return out
@@ -464,7 +464,7 @@ func formatRate(_ bytesPerSecond: Double?) -> String {
 ///
 /// 标题只出现一次(在整张表最上面),不是每组重复一遍 —— 三组各来一行标题会把
 /// 这个窗口变成一屏表头。
-let appTrafficColumnTitles = ["App", "Conns", "Up/s", "Down/s", "Up", "Down", "Rule"]
+var appTrafficColumnTitles: [String] { [L("App"), L("Conns"), L("Up/s"), L("Down/s"), L("Up"), L("Down"), L("Rule")] }
 
 /// 哪几列是数字列 —— 也就是**必须右对齐**的那几列。
 ///
@@ -576,13 +576,13 @@ let appTrafficSubscriptionTTLSeconds: TimeInterval = 30
 /// 底部这两句(连同「报告只覆盖最近 60 秒」)是**整份数据的性质**,不是某几行的
 /// 性质 —— 与那句已经删掉的「订阅前的连接可能只出现在一个组里」不同,后者是行内
 /// 注记该干的事,而它本身在并存流被拆开之后已经不成立了。
-let appTrafficApproximateNote =
-    "Byte counts are approximate: ports get reused, and an app listed in two sections "
-    + "may show all its bytes on one side."
+var appTrafficApproximateNote: String {
+    L("Byte counts are approximate: ports get reused, and an app listed in two sections may show all its bytes on one side.")
+}
 
 /// 右键能加规则这件事要有人告诉用户 —— 右键菜单是发现不了的。只在这一版 Guardian
 /// 支持规则编辑时显示(窗口按 `ruleEditingAvailable` 决定),旧版一个字不提。
-let appTrafficRuleHint = "Right-click an app to always send one of its destinations direct or through the tunnel."
+var appTrafficRuleHint: String { L("Right-click an app to always send one of its destinations direct or through the tunnel.") }
 
 /// 连续失败多少次之后,就不再把手上那份快照当作「此刻的事实」。
 ///
@@ -602,5 +602,5 @@ let appTrafficStaleAfterFailures = 3
 /// 「Core 刚重启」,断言其中一个就是编一个自己没查过的答案。
 func appTrafficStaleNotice(consecutiveFailures: Int) -> String? {
     guard consecutiveFailures >= appTrafficStaleAfterFailures else { return nil }
-    return "Not updating — this is the last report bx could read. Protection may be off."
+    return L("Not updating — this is the last report bx could read. Protection may be off.")
 }

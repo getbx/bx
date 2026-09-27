@@ -27,12 +27,12 @@ final class ProtectionSwitchRow: NSView {
 
         let icon = NSImageView()
         icon.image = NSImage(systemSymbolName: isOn ? "shield.fill" : "shield",
-                             accessibilityDescription: "Protection")
+                             accessibilityDescription: L("Protection"))
         icon.symbolConfiguration = .init(pointSize: 14, weight: .regular)
         icon.contentTintColor = enabled ? .labelColor : .tertiaryLabelColor
         icon.translatesAutoresizingMaskIntoConstraints = false
 
-        let title = NSTextField(labelWithString: "Protection")
+        let title = NSTextField(labelWithString: L("Protection"))
         title.font = .menuFont(ofSize: 0)
         title.textColor = enabled ? .labelColor : .tertiaryLabelColor
         title.translatesAutoresizingMaskIntoConstraints = false
@@ -42,7 +42,7 @@ final class ProtectionSwitchRow: NSView {
         toggle.isEnabled = enabled
         toggle.target = self
         toggle.action = #selector(flipped(_:))
-        toggle.setAccessibilityLabel("Protection")
+        toggle.setAccessibilityLabel(L("Protection"))
         toggle.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(icon)

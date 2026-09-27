@@ -53,8 +53,21 @@ func TestMacMenuWindowsKeepEveryControlInsideTheContentWidth(t *testing.T) {
 	if len(trees) == 0 {
 		t.Fatal("一个视图树都没产出 —— 这时候必须响亮失败,而不是「没有越界」")
 	}
+	// 中文那一套与英文逐张对应:少一张就是那扇窗口的中文版没人查过。
+	zhTrees, err := filepath.Glob(filepath.Join(out, "zh-Hans", "*.tree"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(zhTrees) != len(trees) {
+		t.Fatalf("中文快照 %d 张、英文 %d 张 —— 两种语言必须各出一整套", len(zhTrees), len(trees))
+	}
+	trees = append(trees, zhTrees...)
 	for _, tree := range trees {
-		t.Run(filepath.Base(tree), func(t *testing.T) {
+		name := filepath.Base(tree)
+		if filepath.Base(filepath.Dir(tree)) == "zh-Hans" {
+			name = "zh-Hans/" + name
+		}
+		t.Run(name, func(t *testing.T) {
 			checkTree(t, tree)
 		})
 	}

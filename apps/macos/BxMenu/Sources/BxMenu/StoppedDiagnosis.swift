@@ -58,7 +58,7 @@ enum StoppedDiagnosis: Equatable {
 ///
 /// **绝不能写成任何暗示「已经停了」的话。** 这一行会同时出现在菜单正文的 Status
 /// 行和指示灯 tooltip 上,而那一刻整机流量很可能仍然经由 TUN 被保护着。
-let guardianUnreachableCoreAliveMessage = "Guardian not responding; protection may still be on"
+var guardianUnreachableCoreAliveMessage: String { L("Guardian not responding; protection may still be on") }
 
 /// Guardian 的 socket 拨不通之后,拿直接观测判菜单该显示什么。
 ///
@@ -88,9 +88,9 @@ func stoppedDiagnosis(_ evidence: StoppedEvidence) -> StoppedDiagnosis {
         return .serviceStopped
     }
     if evidence.coreSocketAnswering == false {
-        return .warning(evidence.coreSocketDetail ?? "Status socket unavailable")
+        return .warning(evidence.coreSocketDetail ?? L("Status socket unavailable"))
     }
-    return .warning(evidence.guardianDetail ?? "Needs attention")
+    return .warning(evidence.guardianDetail ?? L("Needs attention"))
 }
 
 /// 把一次 `stat(2)` 的结果翻译成三态观测。

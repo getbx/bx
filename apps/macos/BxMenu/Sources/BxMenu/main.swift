@@ -851,9 +851,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let snapshot = recoverySnapshot {
             let presentation = recoveryPresentation(for: snapshot)
             if let reason = presentation.shortReason {
-                return "bx: \(presentation.title), \(reason)"
+                return L("bx: {0}, {1}", presentation.title, reason)
             }
-            return "bx: \(presentation.title)"
+            return L("bx: {0}", presentation.title)
         }
         switch state {
         case .connected(let report, _, _):
@@ -861,23 +861,23 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // (menuProtectionVerdict 拦在前面),这里的兜底是为了不让类型上的
             // 可选性被一句 `!` 抹掉 —— 零值延迟比没有延迟更像谎话。
             guard let core = report.core, core.reachable == true, let latency = core.latencyMS else {
-                return "bx: Protected"
+                return L("bx: Protected")
             }
-            return "bx: Protected, \(latency) ms"
+            return L("bx: Protected, {0} ms", latency)
         case .warning(let message, _):
-            return "bx: \(message)"
+            return L("bx: {0}", menuStateMessageText(message))
         case .updateNeeded:
-            return "bx: Update Required"
+            return L("bx: Update Required")
         case .setupNeeded:
-            return "bx: Setup Required"
+            return L("bx: Setup Required")
         case .missing:
-            return "bx: Not Installed"
+            return L("bx: Not Installed")
         case .notInstalled:
-            return "bx: Not Installed"
+            return L("bx: Not Installed")
         case .off:
             // 与表头同一个判定同一份数据(offSubtitle):鼠标悬停是不点开菜单就
             // 看得到的唯一一句话,让它和菜单里说的不一样毫无道理。
-            return "bx: \(offSubtitle(status: maintenanceReport, now: Date()))"
+            return L("bx: {0}", offSubtitle(status: maintenanceReport, now: Date()))
         }
     }
 
@@ -1065,7 +1065,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let rules = self.lastRules else {
                     guard forceShow else { return }
                     self.showGuardianFailure(
-                        title: "Routing rules are not available",
+                        title: L("Routing rules are not available"),
                         message: self.fetchFailureAlertInfo(fetchError, what: "rules"),
                         error: fetchError)
                     return
@@ -1104,9 +1104,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
         } catch {
             let alert = NSAlert()
-            alert.messageText = "Could not start the installer"
+            alert.messageText = L("Could not start the installer")
             alert.informativeText = "\(error.localizedDescription)\n\n"
-                + "You can run this yourself in Terminal:\n\(deployCommandLine(target))"
+                + L("You can run this yourself in Terminal:") + "\n" + deployCommandLine(target)
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
             return
@@ -1195,10 +1195,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // 一台好服务器说成坏的。
                     self.presentServers(self.lastServers ?? ServerList(), forceShow: false)
                     let alert = NSAlert()
-                    alert.messageText = "Could not test the servers"
+                    alert.messageText = L("Could not test the servers")
                     alert.informativeText = "\(error.localizedDescription)\n\n"
-                        + "Testing needs bx to be running: it measures from outside the tunnel, "
-                        + "which only bx itself can do."
+                        + L("Testing needs bx to be running: it measures from outside the tunnel, which only bx itself can do.")
                     NSApp.activate(ignoringOtherApps: true)
                     alert.runModal()
                 }
@@ -1281,7 +1280,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.applyDiagnosticsAvailability()
                     self.diagnosticsWindow.showLogs(report, highlightingCode: code)
                 case .failure(let error):
-                    self.showMessage("Logs are not available", "bx could not read its logs: \(error.localizedDescription)")
+                    self.showMessage(L("Logs are not available"), L("bx could not read its logs: {0}", error.localizedDescription))
                 }
             }
         }
@@ -1302,7 +1301,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.applyDiagnosticsAvailability()
                     self.diagnosticsWindow.showChecks(report)
                 case .failure(let error):
-                    self.showMessage("Checks are not available", "bx could not run its checks: \(error.localizedDescription)")
+                    self.showMessage(L("Checks are not available"), L("bx could not run its checks: {0}", error.localizedDescription))
                 }
             }
         }
@@ -1328,10 +1327,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: L("OK"))
         let canShow = logsAvailable(capabilities: maintenanceReport?.capabilities)
         if canShow {
-            alert.addButton(withTitle: "Show Details")
+            alert.addButton(withTitle: L("Show Details"))
         }
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
@@ -1431,7 +1430,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // 的假报告会把「没问出来」显示成「没在采集」,而那是两件事。
                     guard forceShow else { return }
                     if case .failure(let error) = outcome {
-                        self.showGuardianFailure(title: "App traffic is not available", error: error)
+                        self.showGuardianFailure(title: L("App traffic is not available"), error: error)
                     }
                     return
                 }
@@ -1502,7 +1501,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let servers = self.lastServers else {
                     guard forceShow else { return }
                     self.showGuardianFailure(
-                        title: "Servers are not available",
+                        title: L("Servers are not available"),
                         message: self.fetchFailureAlertInfo(fetchError, what: "servers"),
                         error: fetchError)
                     return
@@ -1525,10 +1524,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 「点了没反应」。
         guard switchingTo == nil else { return }
         let alert = NSAlert()
-        alert.messageText = "Switch server?"
+        alert.messageText = L("Switch server?")
         alert.informativeText = serverSwitchConfirmMessage(name: name, host: host)
-        alert.addButton(withTitle: "Switch")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Switch"))
+        alert.addButton(withTitle: L("Cancel"))
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
@@ -1537,7 +1536,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let done = NSAlert()
             // **热切没成功时不许说「已切换」** —— 判据在 ServersModel 的
             // 纯函数里,由 Swift 套件钉住。
-            done.messageText = outcome.applied ? "Switched" : "Saved, but not applied yet"
+            done.messageText = outcome.applied ? L("Switched") : L("Saved, but not applied yet")
             done.informativeText = switchOutcomeMessage(outcome)
             NSApp.activate(ignoringOtherApps: true)
             done.runModal()
@@ -1568,7 +1567,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .success(let outcome):
                     completion?(outcome)
                 case .failure(let error):
-                    self.showGuardianFailure(title: "Could not switch server", error: error)
+                    self.showGuardianFailure(title: L("Could not switch server"), error: error)
                     completion?(nil)
                 }
                 // 用户刚做完动作,这一次刷新不许被丢掉。
@@ -1582,9 +1581,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 的 Guardian 端点(spec §4)。旧的那台留在清单里,随时能 Use 回去。
     private func addServerFromWindow() {
         guard let links = promptForServerLinks(
-            title: "Add Server",
-            hint: "Paste the bx link for the new server. It will be added to your list and used right away.",
-            confirmTitle: "Add and Switch",
+            title: L("Add Server"),
+            hint: L("Paste the bx link for the new server. It will be added to your list and used right away."),
+            confirmTitle: L("Add and Switch"),
             udpHint: udpFieldHint(replacing: false),
             offersClearUDP: false
         ) else { return }
@@ -1609,7 +1608,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let target = list.added.isEmpty ? name : list.added
                     self.switchServer(name: target) { outcome in
                         let alert = NSAlert()
-                        alert.messageText = outcome?.applied == true ? "Switched" : "Added"
+                        alert.messageText = outcome?.applied == true ? L("Switched") : L("Added")
                         alert.informativeText = addServerOutcomeMessage(added: target, switched: outcome)
                         NSApp.activate(ignoringOtherApps: true)
                         alert.runModal()
@@ -1624,9 +1623,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         let sentence = addServerFailureMessage(code: code, status: status)
                     {
                         self.showGuardianFailure(
-                            title: "Could not add that server", message: sentence, error: error)
+                            title: L("Could not add that server"), message: sentence, error: error)
                     } else {
-                        self.showGuardianFailure(title: "Could not add that server", error: error)
+                        self.showGuardianFailure(title: L("Could not add that server"), error: error)
                     }
                 }
             }
@@ -1644,16 +1643,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func confirmAndRemoveServer(name: String, host: String,
                                         traffic: ServerTrafficState) {
         guard serverEditingAvailable(capabilities: maintenanceReport?.capabilities) else {
-            refuseServerEditWithoutTheCapability(title: "Could not remove that server")
+            refuseServerEditWithoutTheCapability(title: L("Could not remove that server"))
             return
         }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Remove server?"
+        alert.messageText = L("Remove server?")
         alert.informativeText = serverRemoveConfirmMessage(
             name: name, host: host, traffic: traffic)
-        alert.addButton(withTitle: "Remove")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Remove"))
+        alert.addButton(withTitle: L("Cancel"))
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1668,7 +1667,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastServers = list
                     self.presentServers(list, forceShow: false)
                 case .failure(let error):
-                    self.showServerEditFailure(title: "Could not remove that server", error: error)
+                    self.showServerEditFailure(title: L("Could not remove that server"), error: error)
                 }
             }
         }
@@ -1681,17 +1680,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// (与规则热生效那条收尾同一条:重连会断掉正在跑的连接)。
     private func replaceServerLinkFromWindow(name: String) {
         guard serverEditingAvailable(capabilities: maintenanceReport?.capabilities) else {
-            refuseServerEditWithoutTheCapability(title: "Could not replace that link")
+            refuseServerEditWithoutTheCapability(title: L("Could not replace that link"))
             return
         }
         // 「去掉 UDP 链接」那个勾选框只在 Guardian 认得 clear_udp 时才画(旧 Guardian 会
         // 默默忽略它、回一个「成功」而 UDP 还在)。提示那句话读同一个判据。
         let canClearUDP = serverUDPClearingAvailable(capabilities: maintenanceReport?.capabilities)
         guard let links = promptForServerLinks(
-            title: "Replace Link",
-            hint: "Paste the new bx link for \(name). Nothing else about this server changes, "
-                + "and your exit stays where it is.",
-            confirmTitle: "Replace",
+            title: L("Replace Link"),
+            hint: L("Paste the new bx link for {0}. Nothing else about this server changes, and your exit stays where it is.", name),
+            confirmTitle: L("Replace"),
             udpHint: udpFieldHint(replacing: true, canClear: canClearUDP),
             offersClearUDP: canClearUDP
         ) else { return }
@@ -1712,7 +1710,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let isCurrent = list.servers.contains { $0.current && $0.name == name }
                     self.followUpAfterLinkReplaced(replaceLinkFollowUp(name: name, isCurrent: isCurrent))
                 case .failure(let error):
-                    self.showServerEditFailure(title: "Could not replace that link", error: error)
+                    self.showServerEditFailure(title: L("Could not replace that link"), error: error)
                 }
             }
         }
@@ -1722,16 +1720,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// (`replaceLinkFollowUp`),这里只摆。
     private func followUpAfterLinkReplaced(_ follow: ReplaceLinkFollowUp) {
         let alert = NSAlert()
-        alert.messageText = "Link replaced"
+        alert.messageText = L("Link replaced")
         alert.informativeText = follow.message
         guard follow.offersReconnect else {
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: L("OK"))
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
             return
         }
-        alert.addButton(withTitle: "Reconnect Now")
-        alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: L("Reconnect Now"))
+        alert.addButton(withTitle: L("Later"))
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         reconnectBx()
@@ -1755,10 +1753,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func refuseServerEditWithoutTheCapability(title: String) {
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = "The bx background service that is running does not handle "
-            + "changes to the server list. It may have been replaced on disk without being "
-            + "restarted. Reopen this window after turning protection off and on again."
-        alert.addButton(withTitle: "OK")
+        alert.informativeText = L("The bx background service that is running does not handle changes to the server list. It may have been replaced on disk without being restarted. Reopen this window after turning protection off and on again.")
+        alert.addButton(withTitle: L("OK"))
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
@@ -1792,7 +1788,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.messageText = title
         alert.informativeText = hint
         alert.addButton(withTitle: confirmTitle)
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Cancel"))
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
         field.placeholderString = "bx://..."
@@ -1802,7 +1798,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             field.stringValue = candidate
         }
         let udpField = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
-        udpField.placeholderString = "UDP link (optional)"
+        udpField.placeholderString = L("UDP link (optional)")
         let udpNote = NSTextField(labelWithString: udpHint)
         udpNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         udpNote.textColor = .secondaryLabelColor
@@ -1811,7 +1807,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         var views: [NSView] = [field, udpField, udpNote]
         // 只在 Guardian 认得 clear_udp 时才有这个勾选框(调用方按能力声明决定)。
-        let clearBox = NSButton(checkboxWithTitle: "Remove this server's UDP link", target: nil, action: nil)
+        let clearBox = NSButton(checkboxWithTitle: L("Remove this server's UDP link"), target: nil, action: nil)
         if offersClearUDP { views.append(clearBox) }
         let box = NSStackView(views: views)
         box.orientation = .vertical
@@ -1825,24 +1821,24 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let link = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let udp = udpField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !link.isEmpty else {
-            showMessage("No link", "Paste a bx link to continue.")
+            showMessage(L("No link"), L("Paste a bx link to continue."))
             return nil
         }
         guard looksLikeClientLink(link) else {
-            showMessage("Link not recognized", "Paste a bx link to continue.")
+            showMessage(L("Link not recognized"), L("Paste a bx link to continue."))
             return nil
         }
         // **UDP 那条也要过同一道校验。** 空是合法的(它是可选的);填了却不是
         // 一条 bx 链接,就在这里说,而不是让服务端回一句关于 base64 的错误。
         guard udp.isEmpty || looksLikeClientLink(udp) else {
-            showMessage("UDP link not recognized", "Paste a bx link, or leave the second box empty.")
+            showMessage(L("UDP link not recognized"), L("Paste a bx link, or leave the second box empty."))
             return nil
         }
         let clearUDP = offersClearUDP && clearBox.state == .on
         // 勾了「去掉」又填了一条新的:两句相反的话,不替用户挑(Guardian 那一侧同样拒)。
         guard !(clearUDP && !udp.isEmpty) else {
-            showMessage("Two answers for UDP",
-                        "Either paste a new UDP link or tick the box to remove it — not both.")
+            showMessage(L("Two answers for UDP"),
+                        L("Either paste a new UDP link or tick the box to remove it — not both."))
             return nil
         }
         return (link, udp, clearUDP)
@@ -1851,12 +1847,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 名字可空:空就让 Guardian 按链接推导。
     private func promptForServerName() -> String {
         let alert = NSAlert()
-        alert.messageText = "Name this server"
-        alert.informativeText = "Leave it empty to name it after the server's address."
+        alert.messageText = L("Name this server")
+        alert.informativeText = L("Leave it empty to name it after the server's address.")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.placeholderString = "e.g. tokyo"
+        field.placeholderString = L("e.g. tokyo")
         alert.accessoryView = field
-        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: L("Continue"))
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
         return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1903,9 +1899,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .success(let list):
                     self.lastRules = list
                     self.presentRules(list, forceShow: false)
-                    self.followUpAfterRuleChange(title: enable ? "Turned on \(group)" : "Turned off \(group)", list: list)
+                    self.followUpAfterRuleChange(title: enable ? L("Turned on {0}", group) : L("Turned off {0}", group), list: list)
                 case .failure(let error):
-                    self.showGuardianFailure(title: "Could not change that group", error: error)
+                    self.showGuardianFailure(title: L("Could not change that group"), error: error)
                 }
             }
         }
@@ -1927,10 +1923,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .success(let list):
                     self.lastRules = list
                     self.presentRules(list, forceShow: false)
-                    let verb = ruleKind == .direct ? "direct" : "through the tunnel"
-                    self.followUpAfterRuleChange(title: "\(pattern) will always go \(verb)", list: list)
+                    self.followUpAfterRuleChange(title: ruleKind == .direct
+                        ? L("{0} will always go direct", pattern)
+                        : L("{0} will always go through the tunnel", pattern), list: list)
                 case .failure(let error):
-                    self.showGuardianFailure(title: "Could not add that rule", error: error)
+                    self.showGuardianFailure(title: L("Could not add that rule"), error: error)
                 }
             }
         }
@@ -1970,7 +1967,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastRules = list
                     self.rulesWindow.markRemoved(kind: kind, pattern: pattern)
                 case .failure(let error):
-                    self.showGuardianFailure(title: "Could not remove that rule", error: error)
+                    self.showGuardianFailure(title: L("Could not remove that rule"), error: error)
                 }
             }
         }
@@ -1987,7 +1984,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 if case .failure(let error) = result {
-                    self.showGuardianFailure(title: "Could not restore that rule", error: error)
+                    self.showGuardianFailure(title: L("Could not restore that rule"), error: error)
                 }
                 // 成功也好失败也好,窗口上那一行现在写着 Removed —— 而它已经不是
                 // 事实了。重拉一次让表回到真相;走 forceShow: false 是因为窗口
@@ -2011,7 +2008,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let field = NSTextField(frame: NSRect(x: 0, y: 32, width: 300, height: 24))
         field.placeholderString = "*.example.com"
         let picker = NSSegmentedControl(
-            labels: ["Direct", "Through tunnel"], trackingMode: .selectOne, target: nil, action: nil)
+            labels: [L("Direct"), L("Through tunnel")], trackingMode: .selectOne, target: nil, action: nil)
         picker.translatesAutoresizingMaskIntoConstraints = true
         picker.sizeToFit()
         picker.setFrameOrigin(NSPoint(x: 0, y: 0))
@@ -2021,7 +2018,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         accessory.addSubview(picker)
         askForNewRule(
             accessory: accessory, field: field, picker: picker,
-            note: "bx will always send this domain the way you pick.", refused: nil)
+            note: L("bx will always send this domain the way you pick."), refused: nil)
     }
 
     /// 摆一次表单,返回用户按了哪个按钮。**只做呈现,不含任何判断** ——
@@ -2030,13 +2027,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         accessory: NSView, field: NSTextField, note: String, offerForce: Bool
     ) -> NSApplication.ModalResponse {
         let alert = NSAlert()
-        alert.messageText = "Add a Routing Rule"
+        alert.messageText = L("Add a Routing Rule")
         alert.informativeText = note
         alert.accessoryView = accessory
-        alert.addButton(withTitle: "Add")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Add"))
+        alert.addButton(withTitle: L("Cancel"))
         if offerForce {
-            alert.addButton(withTitle: "Add Anyway")
+            alert.addButton(withTitle: L("Add Anyway"))
         }
         NSApp.activate(ignoringOtherApps: true)
         alert.window.initialFirstResponder = field
@@ -2086,9 +2083,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .success(let list):
                     self.lastRules = list
                     self.presentRules(list, forceShow: false)
-                    let verb = kind == .direct ? "direct" : "through the tunnel"
                     self.followUpAfterRuleChange(
-                        title: "\(pattern) will always go \(verb)", list: list)
+                        title: kind == .direct
+                            ? L("{0} will always go direct", pattern)
+                            : L("{0} will always go through the tunnel", pattern), list: list)
                 case .failure(let error):
                     if case GuardianClientError.status(409, let code) = error,
                         code == "rules_risky_direct"
@@ -2098,7 +2096,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             note: riskyDirectRuleWarning, refused: pattern)
                         return
                     }
-                    self.showGuardianFailure(title: "Could not add that rule", error: error)
+                    self.showGuardianFailure(title: L("Could not add that rule"), error: error)
                 }
             }
         }
@@ -2114,15 +2112,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.messageText = title
         switch ruleChangeFollowUp(requiresRestart: list.requiresRestart) {
         case .applied:
-            alert.informativeText = "The change is already in effect. New connections follow the new rules."
-            alert.addButton(withTitle: "OK")
+            alert.informativeText = L("The change is already in effect. New connections follow the new rules.")
+            alert.addButton(withTitle: L("OK"))
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
         case .reconnectNeeded:
-            alert.informativeText = "bx applies routing rules when it reconnects. "
-                + "Until then, traffic keeps following the old rules."
-            alert.addButton(withTitle: "Reconnect Now")
-            alert.addButton(withTitle: "Later")
+            alert.informativeText = L("bx applies routing rules when it reconnects. Until then, traffic keeps following the old rules.")
+            alert.addButton(withTitle: L("Reconnect Now"))
+            alert.addButton(withTitle: L("Later"))
             NSApp.activate(ignoringOtherApps: true)
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             reconnectBx()
@@ -2164,6 +2161,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 item.attributedTitle?.string ?? "",
                 item.attributedTitle == nil ? "plain" : "rich",
                 item.isEnabled ? "on" : "off",
+                // 打勾与否也是看得见的(Language ▸ 里当前那一项);漏了它,选了一个
+                // 恰好不改变任何标题的语言(比如系统本来就是英文时选 English)
+                // 之后勾会停在原来那一项上。
+                item.state == .on ? "checked" : "",
                 item.image?.name() ?? item.image?.accessibilityDescription ?? "",
                 item.action.map { NSStringFromSelector($0) } ?? "",
             ]
@@ -2201,17 +2202,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defer { commitMenu(menu) }
         if let startedAt = updateInFlight {
             let elapsed = Int(Date().timeIntervalSince(startedAt))
-            menu.addHeadline("Updating bx")
+            menu.addHeadline(L("Updating bx"))
             // 说清"在做什么"与"到哪儿了"。**按字节报,不按秒报**:一个时钟在
             // 下载死掉之后照样在涨,它结构上答不了用户唯一想问的那个问题
             // (2026-09-18 真机:39MB 的包经隧道下了十几分钟,屏幕上只有 `199s`,
             // 于是「是不是卡住了」只能由人来问)。两段也分开说 —— 下载可以走开,
             // 换文件那几秒网络会停;问不出来是哪一段时一段都不猜。
-            menu.addInfo("Status", updateStageText(
+            menu.addInfo(L("Status"), updateStageText(
                 installing: updateStageInstalling(),
                 progress: lastDownloadProgressLine(updateLogTail()),
                 elapsedSeconds: elapsed))
-            menu.addPlainText("This can take a few minutes on a slow connection.")
+            menu.addPlainText(L("This can take a few minutes on a slow connection."))
             menu.addItem(.separator())
             menu.addQuit(quitBxActionTitle, target: self, action: #selector(quitBx))
             return
@@ -2230,7 +2231,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addPlainText(quitQueuedStatusText())
             } else if let hint = toggleSlowHint(elapsedSeconds: elapsed) {
                 menu.addPlainText(hint)
-                menu.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+                menu.addAction(L("Open Logs"), symbol: "doc.text", target: self, action: #selector(openLogs))
             }
             menu.addItem(.separator())
             menu.addQuit(quitBxActionTitle, target: self, action: #selector(quitBx))
@@ -2239,14 +2240,14 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let snapshot = recoverySnapshot {
             let presentation = recoveryPresentation(for: snapshot)
             menu.addHeadline(presentation.title)
-            menu.addInfo("Status", presentation.shortReason ?? presentation.title)
+            menu.addInfo(L("Status"), presentation.shortReason ?? presentation.title)
             if !snapshot.recoveryID.isEmpty {
-                menu.addInfo("Recovery", snapshot.recoveryID)
+                menu.addInfo(L("Recovery"), snapshot.recoveryID)
             }
             menu.addItem(.separator())
             if presentation.isRunning {
                 menu.addAction(
-                    "Reconnect",
+                    L("Reconnect"),
                     symbol: "arrow.clockwise",
                     target: self,
                     action: #selector(reconnectBx),
@@ -2265,13 +2266,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // 而它把最危险的动作包装成小事、且自动重新武装是个可能悄悄违约的
                 // 承诺。这一个只是打开一个 URL。
                 if recoveryLooksLikeCaptiveNetwork(snapshot) {
-                    menu.addAction("Open Wi-Fi Sign-In Page", symbol: "wifi.exclamationmark",
+                    menu.addAction(L("Open Wi-Fi Sign-In Page"), symbol: "wifi.exclamationmark",
                                    target: self, action: #selector(openWiFiSignIn))
                 }
-                menu.addAction("Details", symbol: "info.circle", target: self, action: #selector(showRecoveryDetails))
-                menu.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctorFromMenu))
+                menu.addAction(L("Details"), symbol: "info.circle", target: self, action: #selector(showRecoveryDetails))
+                menu.addAction(L("Check for Problems"), symbol: "stethoscope", target: self, action: #selector(runDoctorFromMenu))
             } else {
-                menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+                menu.addAction(L("Reconnect"), symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
             }
             // 恢复进行中也要有离场的出口:Quit 先关保护再退出,恢复卡住时它恰恰是
             // 唯一的出路(2026-08-04 那次卡了 71 分钟、全程关不掉就是这个形状)。
@@ -2305,7 +2306,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .bad: suffix = "  ✗"
                 case .unknown: suffix = ""
                 }
-                menu.addInfo(row.label, row.value + suffix)
+                menu.addInfo(row.displayLabel, row.value + suffix)
             }
             // 版本号不再常驻(它只在有新版时才是信息,见 addUpdateActionIfAvailable);
             // 「装的是哪一版」搬进 Troubleshoot ▸ 里那一行。
@@ -2313,38 +2314,38 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .warning(let message, let version):
             // 原因(Repair Required / DNS not managed)写在开关下面那行、标红 ——
             // 图标说不出原因,这一行是唯一说得出的地方。
-            if let row = protectionSwitchRow(subtitle: message, subtitleIsBad: true) {
+            if let row = protectionSwitchRow(subtitle: menuStateMessageText(message), subtitleIsBad: true) {
                 menu.addProtectionSwitch(row)
             }
             if message == "Repair Required", let versions = repairVersions {
                 if let bundle = versions.bundle {
-                    menu.addInfo("App", bundle)
+                    menu.addInfo(L("App"), bundle)
                 }
                 if let runtime = versions.runtime {
-                    menu.addInfo("Runtime", runtime)
+                    menu.addInfo(L("Runtime"), runtime)
                 }
                 if let core = versions.core {
-                    menu.addInfo("Core", core)
+                    menu.addInfo(L("Core"), core)
                 }
             } else {
                 _ = version
             }
         case .updateNeeded(let message, let version):
-            menu.addHeadline("Update Required")
-            menu.addInfo("Status", message)
+            menu.addHeadline(L("Update Required"))
+            menu.addInfo(L("Status"), menuStateMessageText(message))
             if let version {
-                menu.addInfo("Version", version)
+                menu.addInfo(L("Version"), version)
             }
         case .setupNeeded(let message):
-            menu.addHeadline("Setup Required")
-            menu.addInfo("Status", message)
+            menu.addHeadline(L("Setup Required"))
+            menu.addInfo(L("Status"), menuStateMessageText(message))
         case .missing(let message):
-            menu.addHeadline("Not Installed")
-            menu.addInfo("Status", message)
+            menu.addHeadline(L("Not Installed"))
+            menu.addInfo(L("Status"), menuStateMessageText(message))
         case .notInstalled(let bundleVersion):
-            menu.addHeadline("Not Installed")
+            menu.addHeadline(L("Not Installed"))
             if let bundleVersion {
-                menu.addInfo("Version", bundleVersion)
+                menu.addInfo(L("Version"), bundleVersion)
             }
         case .off:
             // 副标题是这一屏最大的那几个字。维护挂起期间 protection_state 就是
@@ -2354,7 +2355,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 就是 `off`,判定在 offSubtitle(纯函数):那时开关下面写一句 Paused,
             // 挂起的详情由下面那行 Maintenance 说;平时什么都不写。
             let off = offSubtitle(status: maintenanceReport, now: Date())
-            if let row = protectionSwitchRow(subtitle: off == "Off" ? nil : off, subtitleIsBad: false) {
+            if let row = protectionSwitchRow(subtitle: off == L("Off") ? nil : off, subtitleIsBad: false) {
                 menu.addProtectionSwitch(row)
             }
         }
@@ -2362,18 +2363,18 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // `.connected` 那一支的数据行已经带出同一行(menuRows 的第一行),这里
         // 跳过它以免同一句话说两遍。
         if !stateShowsDataRows, let hold = maintenanceRow(status: maintenanceReport, now: Date()) {
-            menu.addInfo(hold.label, hold.value)
+            menu.addInfo(hold.displayLabel, hold.value)
         }
         // 「Guardian 跑的是旧版」是一条**与保护状态并排**的事实,不是一个顶掉它的
         // 状态。此前它被拿来门控整个状态机(见 loadState 里那段),于是升级窗口
         // 里保护状态整个消失;现在它只占这一行,降级的那一项与真能解决它的那条
         // 命令都写明,Protected/Off、Turn Off、Reconnect 一个不少。
         if let notice = outdatedRuntime {
-            menu.addInfo("Guardian", notice.summary)
+            menu.addInfo(L("Guardian"), notice.summary)
             menu.addPlainText(notice.remedy)
         }
         if let failure = toggleFailureText {
-            menu.addInfo("Last operation failed", failure)
+            menu.addInfo(L("Last operation failed"), failure)
         }
         // **更新入口只有一个,而且只在有新版时出现**(强调色,紧贴顶部那组)。
         // 平时的版本号不是信息,它住在 Troubleshoot ▸ 里。
@@ -2388,23 +2389,23 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 打开保护 = 拨第一行那个开关(protectionSwitchRow),不再另给文字项。
             break
         case .setupNeeded:
-            menu.addAction("Set Up bx...", symbol: "link", target: self, action: #selector(setUpBx))
+            menu.addAction(L("Set Up bx..."), symbol: "link", target: self, action: #selector(setUpBx))
         case .notInstalled:
-            menu.addAction("Install bx…", symbol: "arrow.down.circle", target: self, action: #selector(installBx))
+            menu.addAction(L("Install bx…"), symbol: "arrow.down.circle", target: self, action: #selector(installBx))
         case .missing, .updateNeeded:
-            menu.addAction("Open Install Guide", symbol: "book", target: self, action: #selector(openInstallGuide))
+            menu.addAction(L("Open Install Guide"), symbol: "book", target: self, action: #selector(openInstallGuide))
         case .connected, .warning:
             break
         }
         // 关掉保护 = 拨第一行那个开关;这里只剩修复与重连。
         switch state {
         case .connected:
-            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction(L("Reconnect"), symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
         case .warning("Repair Required", _):
             menu.addAction(repairActionTitle, symbol: "wrench.and.screwdriver", target: self, action: #selector(repairBx))
-            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction(L("Reconnect"), symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
         case .warning:
-            menu.addAction("Reconnect", symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
+            menu.addAction(L("Reconnect"), symbol: "arrow.clockwise", target: self, action: #selector(reconnectBx))
         case .off, .updateNeeded, .setupNeeded, .missing, .notInstalled:
             // 这些状态的主动作已经排在上面了。
             break
@@ -2417,7 +2418,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // (在任何分支之前落定)。**不另存一份副本**:两份会漂,而漂开时菜单会
         // 按一份的能力去画、按另一份的数据去填。
         if rulesEditingAvailable(capabilities: maintenanceReport?.capabilities) {
-            menu.addAction("Routing Rules…", symbol: "arrow.triangle.branch", target: self, action: #selector(openRulesWindow))
+            menu.addAction(L("Routing Rules…"), symbol: "arrow.triangle.branch", target: self, action: #selector(openRulesWindow))
         }
         // 服务器入口:同样只在 Guardian 声明了这个能力时出现。旧版没有
         // /v1/servers,画出来的按钮每次点都失败,而用户看不出为什么。
@@ -2425,7 +2426,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 这个窗口里(它们说的都是服务器这件事);后者在没有这个窗口的旧 Guardian
         // 上仍留在菜单里,见 replaceConfigurationLivesInMenu。
         if serverSwitchingAvailable(capabilities: maintenanceReport?.capabilities) {
-            menu.addAction("Servers…", symbol: "globe", target: self, action: #selector(openServersWindow))
+            menu.addAction(L("Servers…"), symbol: "globe", target: self, action: #selector(openServersWindow))
         }
         // 应用流量入口:同样只在 Guardian 声明了 apps 能力时出现。旧版没有
         // /v1/apps,画出来的菜单项每次点都 404,而 404 在菜单上根本表达不出来
@@ -2433,26 +2434,26 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Guardian 与「支持但此刻没数据」在客户端看来必须分得开(status watch
         // 那次真机实测过绕过门的代价:CPU 常驻 26%~46%、吞吐上千次/秒)。
         if appTrafficAvailable(capabilities: maintenanceReport?.capabilities) {
-            menu.addAction("Traffic by App…", symbol: "chart.bar.doc.horizontal",
+            menu.addAction(L("Traffic by App…"), symbol: "chart.bar.doc.horizontal",
                            target: self, action: #selector(openAppTrafficWindow))
         }
         if replaceConfigurationLivesInMenu(capabilities: maintenanceReport?.capabilities) {
-            menu.addAction("Replace Configuration…", symbol: "arrow.triangle.2.circlepath",
+            menu.addAction(L("Replace Configuration…"), symbol: "arrow.triangle.2.circlepath",
                            target: self, action: #selector(replaceConfiguration))
         }
         // Check for leaks 在**每一个**状态下都在场。这是刻意的:这个功能的
         // 立身之本就是「保护关着也有用」——只在 .connected 里给它,等于把它
         // 藏在最不需要它的那个状态里(TestMacMenuLeakCheckRunsUnprivileged
         // 按花括号深度钉住它在顶层)。
-        menu.addAction("Check for Leaks…", symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
+        menu.addAction(L("Check for Leaks…"), symbol: "magnifyingglass", target: self, action: #selector(checkForLeaks))
         // ---- Troubleshoot ▸:一年点一次的东西收进一个子菜单 ----
         // 子菜单能用的前提是 commitMenu 只在内容变了才重建(否则每 2 秒被拆一次)。
         // 卸载入口也在这里:**只在装过的时候出现**(没装就没什么可卸),但它必须
         // 存在于其余每一个状态里 —— 想删掉 bx 的人最可能正处在「它出问题了」
         // 那几个状态。它排在子菜单最底,与破坏性动作归底部的通例一致。
         let troubleshoot = NSMenu()
-        troubleshoot.addAction("Check for Problems", symbol: "stethoscope", target: self, action: #selector(runDoctorFromMenu))
-        troubleshoot.addAction("Open Logs", symbol: "doc.text", target: self, action: #selector(openLogs))
+        troubleshoot.addAction(L("Check for Problems"), symbol: "stethoscope", target: self, action: #selector(runDoctorFromMenu))
+        troubleshoot.addAction(L("Open Logs"), symbol: "doc.text", target: self, action: #selector(openLogs))
         // 「装的是哪一版」:从一级菜单搬进来的那行版本号,只答这一个问题。
         if let version = installedVersionForMenu() {
             troubleshoot.addItem(.separator())
@@ -2463,13 +2464,46 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             troubleshoot.addAction(UninstallPresentation.actionTitle, symbol: "trash", target: self, action: #selector(uninstallBx))
         }
         menu.addItem(.separator())
-        menu.addSubmenu("Troubleshoot", symbol: "wrench.adjustable", troubleshoot)
+        menu.addSubmenu(L("Troubleshoot"), symbol: "wrench.adjustable", troubleshoot)
+        // 界面语言。每一项用它自己的文字写(见 MenuLanguageChoice.menuTitle):
+        // 选错了、看不懂界面的人也认得出回去的那一项。
+        menu.addSubmenu(L("Language"), symbol: "character.bubble", languageMenu())
         // 退出入口无条件加一次。**不要挪回上面任何一个 case**:此前它只在
         // .connected/.warning 里,于是 .off/.setupNeeded/.missing/.notInstalled/
         // .updateNeeded 下菜单没有任何退出入口(TestMacMenuQuitActionPresentInEveryState)。
         // 不带图标(电源符号在这条菜单里会被读成「关掉保护」,而真正的开关就在
         // 第一行),带 ⌘Q —— 与系统菜单栏应用同款。
         menu.addQuit(quitBxActionTitle, target: self, action: #selector(quitBx))
+    }
+
+    /// Language ▸ 子菜单:跟随系统 / English / 简体中文,当前那一项打勾。
+    private func languageMenu() -> NSMenu {
+        let submenu = NSMenu()
+        let chosen = currentMenuLanguageChoice()
+        for choice in MenuLanguageChoice.allCases {
+            let item = NSMenuItem(title: choice.menuTitle, action: #selector(chooseMenuLanguage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.rawValue
+            item.state = choice == chosen ? .on : .off
+            submenu.addItem(item)
+            if choice == .system { submenu.addItem(.separator()) }
+        }
+        return submenu
+    }
+
+    /// 切换界面语言。**立刻生效,不重启**:菜单按新语言重建,开着的窗口原地重画。
+    /// 只存进菜单 App 自己的设置,不碰系统设置,也不影响 CLI。
+    @objc private func chooseMenuLanguage(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let choice = MenuLanguageChoice(rawValue: raw) else { return }
+        setMenuLanguageChoice(choice)
+        rebuildMenu()
+        updateIcon()
+        rulesWindow.relocalize()
+        serversWindow.relocalize()
+        appTrafficWindow.relocalize()
+        diagnosticsWindow.relocalize()
+        deployWindow.relocalize()
     }
 
     /// 把带 payload 的 `BxState` 收成可测的 `MenuStateKind`。**只是映射,没有判定**
@@ -2568,7 +2602,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             NSWorkspace.shared.open(url)
         } catch {
-            showMessage("Logs are not available", error.localizedDescription)
+            showMessage(L("Logs are not available"), error.localizedDescription)
         }
     }
 
@@ -2602,8 +2636,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.leakCheckInFlight = false
                 if result.code != 0 {
                     self.showMessage(
-                        "Leak Check Did Not Start",
-                        "bx could not start the leak check. Run `bx leakcheck` in Terminal to see why."
+                        L("Leak check did not start"),
+                        L("bx could not start the leak check. Run `bx leakcheck` in Terminal to see why.")
                     )
                 }
             }
@@ -2661,31 +2695,31 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard ensureCLIUsable() else { return }
         let current = maintenanceReport?.core?.server
         guard let (links, pasted) = promptForClientLink(
-            title: "Replace Configuration",
-            hint: "Paste the bx link you were given, or the whole setup command your server printed.",
-            confirmTitle: "Continue"
+            title: L("Replace Configuration"),
+            hint: L("Paste the bx link you were given, or the whole setup command your server printed."),
+            confirmTitle: L("Continue")
         ) else { return }
 
         let origin: ReplaceLinkOrigin =
             clipboardCandidateLink(NSPasteboard.general.string(forType: .string)) == pasted ? .clipboard : .typed
         let confirm = NSAlert()
-        confirm.messageText = "Change where your traffic leaves?"
+        confirm.messageText = L("Change where your traffic leaves?")
         confirm.informativeText = replaceConfigurationMessage(currentServer: current, pastedFrom: origin)
-        confirm.addButton(withTitle: "Replace")
-        confirm.addButton(withTitle: "Cancel")
+        confirm.addButton(withTitle: L("Replace"))
+        confirm.addButton(withTitle: L("Cancel"))
         NSApp.activate(ignoringOtherApps: true)
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
         guard runPrivileged("'\(bxPath)' setup \(setupArguments(links, quote: shellSingleQuoted))") else {
-            showFailure("Replace Failed", "bx kept its previous configuration.")
+            showFailure(L("Replace failed"), L("bx kept its previous configuration."))
             refresh(userInitiated: true)
             return
         }
         // 配置不热重载 —— 不重连的话用户会以为已经换过去了(这正是 2026-08-06
         // 那次「以为换了服务器其实没换」的形状)。
         if !runPrivileged("'\(bxPath)' down") || !runPrivileged("'\(bxPath)' up") {
-            showFailure("Reconnect Failed",
-                        "The new configuration is saved, but bx did not come back up. Try Turn On from the menu.")
+            showFailure(L("Reconnect failed"),
+                        L("The new configuration is saved, but bx did not come back up. Try Turn On from the menu."))
         }
         refresh(userInitiated: true)
     }
@@ -2701,13 +2735,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let (links, _) = promptForClientLink() else { return }
         let command = "'\(bxPath)' setup \(setupArguments(links, quote: shellSingleQuoted))"
         guard runPrivileged(command) else {
-            showFailure("Setup Failed", "bx was not configured.")
+            showFailure(L("Setup failed"), L("bx was not configured."))
             refresh(userInitiated: true)
             return
         }
-        if confirmStartProtection(title: "bx is set up", cancelTitle: "Later") {
+        if confirmStartProtection(title: L("bx is set up"), cancelTitle: L("Later")) {
             if !runPrivileged("'\(bxPath)' up") {
-                showFailure("Start Failed", "bx is configured, but did not start.")
+                showFailure(L("Start failed"), L("bx is configured, but did not start."))
             }
         }
         refresh(userInitiated: true)
@@ -2720,11 +2754,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func beginInstall() {
         runEmbeddedInstaller(
-            confirmTitle: "Install bx?",
+            confirmTitle: L("Install bx?"),
             // 断网这句必须出现在这里:菜单调用走 osascript,CLI 的确认提示进了
             // 一个没人看的管道,这个 NSAlert 是 GUI 用户唯一看得到的告知。
-            confirmMessage: "bx will install its command line tool and background protection service. macOS will ask for administrator authorization. If protection is already running, it is stopped and restarted to complete the upgrade — your network drops for a few seconds. On a fresh install, protection is not started until you set up and turn it on.",
-            confirmButton: "Install"
+            confirmMessage: L("bx will install its command line tool and background protection service. macOS will ask for administrator authorization. If protection is already running, it is stopped and restarted to complete the upgrade — your network drops for a few seconds. On a fresh install, protection is not started until you set up and turn it on."),
+            confirmButton: L("Install")
         )
     }
 
@@ -2735,7 +2769,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.messageText = UninstallPresentation.confirmTitle
         alert.informativeText = UninstallPresentation.confirmMessage
         alert.addButton(withTitle: UninstallPresentation.confirmButton)
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Cancel"))
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
@@ -2755,9 +2789,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func repairBx() {
         runEmbeddedInstaller(
-            confirmTitle: "Repair bx?",
-            confirmMessage: "bx will reinstall its components from this app. Your connection settings are kept. If protection is running, it is stopped and restarted to finish the change — your network drops for a few seconds, then protection comes back on.",
-            confirmButton: "Repair"
+            confirmTitle: L("Repair bx?"),
+            confirmMessage: L("bx will reinstall its components from this app. Your connection settings are kept. If protection is running, it is stopped and restarted to finish the change — your network drops for a few seconds, then protection comes back on."),
+            confirmButton: L("Repair")
         )
     }
 
@@ -2766,12 +2800,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.messageText = confirmTitle
         alert.informativeText = confirmMessage
         alert.addButton(withTitle: confirmButton)
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let bundlePath = Bundle.main.bundleURL.path
         let installer = bundlePath + "/Contents/Resources/bx-cli"
         guard FileManager.default.isExecutableFile(atPath: installer) else {
-            showFailure("Install Failed", "This copy of Bx.app has no embedded installer. Download the full bx-macos package.")
+            showFailure(L("Install failed"), L("This copy of Bx.app has no embedded installer. Download the full bx-macos package."))
             return
         }
         // --yes:这条命令跑在 osascript 里,没有终端可问,而同意已经在上面那个
@@ -2790,15 +2824,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         } else {
-            showFailure("Install Failed", "bx could not complete the installation.")
+            showFailure(L("Install failed"), L("bx could not complete the installation."))
         }
     }
 
     @objc private func openInstallGuide() {
         let alert = NSAlert()
-        alert.messageText = "Install bx"
-        alert.informativeText = "Install the macOS bx package again, or update the CLI at /usr/local/bin/bx, then restart the menu bar app."
-        alert.addButton(withTitle: "OK")
+        alert.messageText = L("Install bx")
+        alert.informativeText = L("Install the macOS bx package again, or update the CLI at /usr/local/bin/bx, then restart the menu bar app.")
+        alert.addButton(withTitle: L("OK"))
         alert.runModal()
     }
 
@@ -2963,9 +2997,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // **读不到就说读不到,不摆一个猜出来的地址。** 网关是公网 IP 时
                     // 也走这一支:那种情况下打开它会在隧道外发一个明文请求。
                     let alert = NSAlert()
-                    alert.messageText = "Couldn't find this network's sign-in page"
-                    alert.informativeText = "bx couldn't read a private gateway address for this "
-                        + "network. Turn bx off, sign in with your browser, then turn it back on."
+                    alert.messageText = L("Couldn't find this network's sign-in page")
+                    alert.informativeText = L("bx couldn't read a private gateway address for this network. Turn bx off, sign in with your browser, then turn it back on.")
                     alert.runModal()
                     return
                 }
@@ -2981,11 +3014,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.messageText = presentation.title
         alert.informativeText = [
             presentation.shortReason,
-            snapshot.recoveryID.isEmpty ? nil : "Recovery: \(snapshot.recoveryID)",
-            "Stage: \(snapshot.stage)",
+            snapshot.recoveryID.isEmpty ? nil : L("Recovery: {0}", snapshot.recoveryID),
+            L("Stage: {0}", snapshot.stage),
         ].compactMap { $0 }.joined(separator: "\n")
-        alert.addButton(withTitle: "Check for Problems")
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: L("Check for Problems"))
+        alert.addButton(withTitle: L("OK"))
         if alert.runModal() == .alertFirstButtonReturn {
             exportDiagnostics()
         }
@@ -3026,8 +3059,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = updateConfirmTitle
         alert.informativeText = updateConfirmMessage
-        alert.addButton(withTitle: "Update")
-        alert.addButton(withTitle: "Not Now")
+        alert.addButton(withTitle: L("Update"))
+        alert.addButton(withTitle: L("Not Now"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let logDir = FileManager.default.homeDirectoryForCurrentUser
@@ -3037,7 +3070,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
             FileManager.default.createFile(atPath: logPath, contents: nil)
         } catch {
-            showFailure("Update Failed", "bx could not prepare its update log.")
+            showFailure(L("Update failed"), L("bx could not prepare its update log."))
             return
         }
         let command = "'\(bxPath)' update --json > \(shellSingleQuoted(logPath)) 2>&1"
@@ -3092,20 +3125,20 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func finishUpdate(logData: Data?) {
         rebuildMenu()
         guard let logData else {
-            showFailure("Update Failed", updateFailureMessage(nil))
+            showFailure(L("Update failed"), updateFailureMessage(nil))
             return
         }
         switch parseUpdateOutcome(logData) {
         case .succeeded:
-            showMessage("Update complete", updateSucceededMessage)
+            showMessage(L("Update complete"), updateSucceededMessage)
             refresh(userInitiated: true)
             refreshUpdateCheck()
         case .rolledBack(_, let reason):
-            showMessage("Update rolled back", updateRolledBackMessage(reason: reason))
+            showMessage(L("Update rolled back"), updateRolledBackMessage(reason: reason))
         case .failed:
             // **把真正的原因说出来。** 它就在这份刚读过的日志里 —— 上一版
             // 读到了、解析了,然后只报一句"Run Doctor for details"。
-            showFailure("Update Failed", updateFailureMessage(updateFailureDetail(logData)))
+            showFailure(L("Update failed"), updateFailureMessage(updateFailureDetail(logData)))
         }
     }
 
@@ -3114,17 +3147,17 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 读到的就是同一句话连着出现两次 —— 2026-09-17 真机截图里就是这样。
     private func updateFailureMessage(_ detail: String?) -> String {
         guard let detail, !detail.isEmpty else {
-            return "bx could not complete the update."
+            return L("bx could not complete the update.")
         }
         return detail
     }
 
     @objc private func quitBx() {
         let alert = NSAlert()
-        alert.messageText = "Quit bx?"
+        alert.messageText = L("Quit bx?")
         alert.informativeText = quitBxConfirmMessage
-        alert.addButton(withTitle: "Quit bx")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Quit bx"))
+        alert.addButton(withTitle: L("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         // 没有东西可关就直接退出:在 .notInstalled/.missing/.setupNeeded 下走
         // turnOff 是一次注定失败的 socket 调用,而失败之后按阶段①的裁决又不退出
@@ -3150,10 +3183,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func turnOffBx() {
         let alert = NSAlert()
-        alert.messageText = "Turn off bx?"
-        alert.informativeText = "bx will stop protecting system traffic and restore managed DNS settings. The menu stays open."
-        alert.addButton(withTitle: "Turn Off")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = L("Turn off bx?")
+        alert.informativeText = L("bx will stop protecting system traffic and restore managed DNS settings. The menu stays open.")
+        alert.addButton(withTitle: L("Turn Off"))
+        alert.addButton(withTitle: L("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         performToggle(.turnOff)
     }
@@ -3191,7 +3224,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pendingQuit = nil
             toggleFailureText = quitBlockedByFailedTurnOffMessage()
             refresh(userInitiated: true)
-            showFailure("bx Is Still Running", quitBlockedByFailedTurnOffMessage())
+            showFailure(L("bx is still running"), quitBlockedByFailedTurnOffMessage())
             return
         }
         NSApp.terminate(nil)
@@ -3335,7 +3368,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         end tell
         """
         if !runAppleScript(script) {
-            showMessage("Terminal permission needed", "Allow bx to control Terminal when macOS asks, then try again. You can review this in System Settings > Privacy & Security > Automation.")
+            showMessage(L("Terminal permission needed"), L("Allow bx to control Terminal when macOS asks, then try again. You can review this in System Settings > Privacy & Security > Automation."))
         }
     }
 
@@ -3346,15 +3379,15 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func promptForClientLink(
-        title: String = "Set Up bx",
-        hint: String = "Paste your bx link, or the whole setup command your server printed.",
-        confirmTitle: String = "Set Up"
+        title: String = L("Set Up bx"),
+        hint: String = L("Paste your bx link, or the whole setup command your server printed."),
+        confirmTitle: String = L("Set Up")
     ) -> (SetupLinks, String)? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = hint
         alert.addButton(withTitle: confirmTitle)
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Cancel"))
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
         field.placeholderString = "bx://..."
@@ -3369,21 +3402,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let link = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !link.isEmpty else {
-            showMessage("No link", "Paste a bx link to continue.")
+            showMessage(L("No link"), L("Paste a bx link to continue."))
             return nil
         }
         guard let links = parseSetupLinks(link), looksLikeClientLink(links.main) else {
-            showMessage("Link not recognized", "Paste a bx link, or the whole setup command your server printed, to continue.")
+            showMessage(L("Link not recognized"), L("Paste a bx link, or the whole setup command your server printed, to continue."))
             return nil
         }
         return (links, link)
     }
 
-    private func confirmStartProtection(title: String = "Start protection?", cancelTitle: String = "Cancel") -> Bool {
+    private func confirmStartProtection(title: String = L("Start protection?"), cancelTitle: String = L("Cancel")) -> Bool {
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = "bx will take over system traffic until you turn it off."
-        alert.addButton(withTitle: "Start Protection")
+        alert.informativeText = L("bx will take over system traffic until you turn it off.")
+        alert.addButton(withTitle: L("Start Protection"))
         alert.addButton(withTitle: cancelTitle)
         return alert.runModal() == .alertFirstButtonReturn
     }
@@ -3396,16 +3429,16 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: L("OK"))
         alert.runModal()
     }
 
     private func showFailure(_ title: String, _ message: String) {
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = "\(message) Run Doctor to collect diagnostics."
-        alert.addButton(withTitle: "Check for Problems")
-        alert.addButton(withTitle: "OK")
+        alert.informativeText = message + " " + L("Run Doctor to collect diagnostics.")
+        alert.addButton(withTitle: L("Check for Problems"))
+        alert.addButton(withTitle: L("OK"))
         if alert.runModal() == .alertFirstButtonReturn {
             exportDiagnostics()
         }
@@ -3518,13 +3551,13 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 跑不起来的二进制。
     private func ensureCLIUsable() -> Bool {
         guard cliIsInstalled() else {
-            showMessage("bx Not Found", "bx is not installed at \(bxPath). Install bx, then try again.")
+            showMessage(L("bx not found"), L("bx is not installed at {0}. Install bx, then try again.", bxPath))
             return false
         }
         guard cliRuns() else {
             showMessage(
-                "bx Can't Run",
-                "bx is installed at \(bxPath) but could not be started. Reinstall bx from Bx.app, then try again."
+                L("bx can't run"),
+                L("bx is installed at {0} but could not be started. Reinstall bx from Bx.app, then try again.", bxPath)
             )
             return false
         }
@@ -3668,7 +3701,7 @@ private extension NSMenu {
     }
 
     func addInfo(_ label: String, _ value: String) {
-        let item = NSMenuItem(title: "\(label): \(value)", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: L("{0}: {1}", label, value), action: nil, keyEquivalent: "")
         item.isEnabled = false
         addItem(item)
     }
@@ -3683,7 +3716,7 @@ private extension NSMenu {
 
     /// 菜单第一行的开关(ProtectionSwitchRow):一个挂了自定义视图的 item。
     func addProtectionSwitch(_ row: ProtectionSwitchRow) {
-        let item = NSMenuItem(title: "Protection", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: L("Protection"), action: nil, keyEquivalent: "")
         item.view = row
         addItem(item)
     }

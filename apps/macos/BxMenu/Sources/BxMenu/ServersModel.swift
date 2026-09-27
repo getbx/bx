@@ -58,19 +58,19 @@ struct ProbeReport: Decodable, Equatable {
 /// 英文,而不是服务端那句话** —— 说得不够细好过说错语言。
 func probeFailureText(code: String, fallback: String) -> String {
     switch code {
-    case "timeout": return "no answer (timed out)"
-    case "canceled": return "canceled"
-    case "dns": return "could not resolve that host name"
-    case "refused": return "connection refused (nothing is listening)"
-    case "network_unreachable": return "network unreachable"
-    case "no_route": return "no route to that host"
-    case "no_host": return "no host to test"
-    case "bad_port": return "the port in that link is not valid"
-    case "core_unreachable": return "could not measure (is bx running?)"
-    case "link_unparsed": return "could not read a host from that link"
+    case "timeout": return L("no answer (timed out)")
+    case "canceled": return L("canceled")
+    case "dns": return L("could not resolve that host name")
+    case "refused": return L("connection refused (nothing is listening)")
+    case "network_unreachable": return L("network unreachable")
+    case "no_route": return L("no route to that host")
+    case "no_host": return L("no host to test")
+    case "bad_port": return L("the port in that link is not valid")
+    case "core_unreachable": return L("could not measure (is bx running?)")
+    case "link_unparsed": return L("could not read a host from that link")
     // 服务端归不了类的那一档。它**仍然要有自己的一句话**:退回 `fallback`
     // 读起来与「这一版 Guardian 压根没发码」一模一样,而那是两件事。
-    case "unknown": return "could not connect"
+    case "unknown": return L("could not connect")
     default: return fallback
     }
 }
@@ -109,7 +109,7 @@ enum ProbePresentation: Equatable {
 func probePresentation(_ probe: ProbeReport?) -> ProbePresentation {
     guard let probe else { return .notChecked }
     guard probe.measured else {
-        return .notMeasured(probeFailureText(code: probe.errorCode, fallback: "could not measure"))
+        return .notMeasured(probeFailureText(code: probe.errorCode, fallback: L("could not measure")))
     }
     return .measured(
         reachable: probe.reachable,
@@ -118,7 +118,7 @@ func probePresentation(_ probe: ProbeReport?) -> ProbePresentation {
         // 无从判断是服务器关了、还是自己这条网络的问题。
         reason: probe.reachable
             ? ""
-            : probeFailureText(code: probe.errorCode, fallback: "unreachable"))
+            : probeFailureText(code: probe.errorCode, fallback: L("unreachable")))
 }
 
 /// 清单里的一台。
@@ -382,7 +382,7 @@ struct ServerRow: Equatable {
 
     /// 「它正在被用」那句话。不成立时 nil —— 每一行都挂一句是墙纸。
     var runningNote: String? {
-        isRunningNow ? "in use right now" : nil
+        isRunningNow ? L("in use right now") : nil
     }
 
     /// `host:port` **之外**还要说的那些:UDP 走了别处、探测结论、吞吐峰值。
@@ -412,7 +412,7 @@ struct ServerRow: Equatable {
     /// 不是一次测速,也不是承诺。
     var throughputLine: String? {
         guard entry.peakBPS > 0 else { return nil }
-        let rate = "peak \(humanBytesPerSecond(entry.peakBPS))"
+        let rate = L("peak {0}", humanBytesPerSecond(entry.peakBPS))
         guard let age = relativeAge(seconds: entry.peakAgeSeconds) else { return rate }
         return "\(rate) · \(age)"
     }
@@ -428,10 +428,10 @@ struct ServerRow: Equatable {
         case .notChecked:
             return nil
         case let .notMeasured(why):
-            return why.isEmpty ? "not measured" : "not measured — \(why)"
+            return why.isEmpty ? L("not measured") : L("not measured — {0}", why)
         case let .measured(reachable, rttMS, reason):
-            if reachable { return "\(rttMS) ms" }
-            return reason.isEmpty ? "unreachable" : reason
+            if reachable { return L("{0} ms", rttMS) }
+            return reason.isEmpty ? L("unreachable") : reason
         }
     }
 
@@ -442,7 +442,7 @@ struct ServerRow: Equatable {
 
 /// `host:port`,端口问不出来时只写主机。主机也没有时给一句人话,不给一个空格。
 func endpointText(host: String, port: Int) -> String {
-    if host.isEmpty { return "Link could not be parsed" }
+    if host.isEmpty { return L("Link could not be parsed") }
     return port > 0 ? "\(host):\(port)" : host
 }
 
@@ -501,8 +501,8 @@ struct CurrentServerPanel: Equatable {
     var statusLine: String? {
         var parts: [String] = []
         if let transport { parts.append(transport) }
-        if let latencyMS { parts.append("\(latencyMS) ms") }
-        if let tunnelHealthy { parts.append(tunnelHealthy ? "tunnel healthy" : "tunnel unhealthy") }
+        if let latencyMS { parts.append(L("{0} ms", latencyMS)) }
+        if let tunnelHealthy { parts.append(tunnelHealthy ? L("tunnel healthy") : L("tunnel unhealthy")) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -548,10 +548,10 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
     if live != nil, !confirmed {
         if traffic == .idle {
             runningNote = listed == nil || running.isEmpty
-                ? "bx is actually using a different server right now."
-                : "bx is actually using \(running) right now."
+                ? L("bx is actually using a different server right now.")
+                : L("bx is actually using {0} right now.", running)
         } else {
-            runningNote = "bx could not confirm which server is running."
+            runningNote = L("bx could not confirm which server is running.")
         }
     }
 
@@ -576,7 +576,7 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
         // 那行 `peak 6.4 MB/s · 2h ago` 当场证伪,而这个窗口全部的纪律就是
         // 不说这种话。
         coreSilentNote: live == nil
-            ? "Core not answering — the live readings below are missing."
+            ? L("Core not answering — the live readings below are missing.")
             : nil,
         runningNote: runningNote,
         runningConfirmed: confirmed,
@@ -596,7 +596,7 @@ func transportDroppingHost(_ transport: String, host: String) -> String {
 
 /// 单服务器配置那一台的标题。它真的没有名字(Guardian 刻意不编一个),地址已经
 /// 画在标题旁边,再写一遍主机只是重复。
-let singleServerTitle = "Your server"
+var singleServerTitle: String { L("Your server") }
 
 /// 候选那几台:清单里除了当前那台以外的全部。
 ///
@@ -618,10 +618,9 @@ func otherServerRows(list: ServerList, core: CoreRuntime?) -> [ServerRow] {
 func serverListEmptyReason(list: ServerList) -> String? {
     guard list.servers.isEmpty else { return nil }
     if list.singleServer {
-        return "This config has a single server, not a server list. "
-            + "Adding a second one turns it into a list you can switch between."
+        return L("This config has a single server, not a server list. Adding a second one turns it into a list you can switch between.")
     }
-    return "No servers yet. Add one to switch between exits."
+    return L("No servers yet. Add one to switch between exits.")
 }
 
 /// 候选那一段为空时说哪一句。**它与 `serverListEmptyReason` 的条件不是同一个,
@@ -639,7 +638,7 @@ func otherServersEmptyNote(list: ServerList, core: CoreRuntime?) -> String? {
     // 「清单是空的」,而这里说不出那个区别。两句都摆就是同一件事说两遍。
     guard !list.servers.isEmpty else { return nil }
     guard otherServerRows(list: list, core: core).isEmpty else { return nil }
-    return "No servers to switch to. Add another one to switch your exit between them."
+    return L("No servers to switch to. Add another one to switch your exit between them.")
 }
 
 /// 删掉一台之前那句确认。
@@ -664,24 +663,19 @@ func otherServersEmptyNote(list: ServerList, core: CoreRuntime?) -> String? {
 ///   整个确认框读成一段套话。
 func serverRemoveConfirmMessage(name: String, host: String, traffic: ServerTrafficState) -> String {
     let where_ = host.isEmpty ? name : "\(name) (\(host))"
-    var text = "Remove \(where_) from your list?\n\n"
+    var text = L("Remove {0} from your list?", where_) + "\n\n"
     switch traffic {
     case .carrying:
-        text += "Your traffic is going through this server right now, even though your config "
-            + "points at another one. Removing it does not move your traffic: the running "
-            + "tunnel keeps using it until bx reconnects, and the link is gone by then.\n\n"
+        text += L("Your traffic is going through this server right now, even though your config points at another one. Removing it does not move your traffic: the running tunnel keeps using it until bx reconnects, and the link is gone by then.") + "\n\n"
     case .unconfirmed:
-        text += "bx could not confirm which server is carrying your traffic right now, so this "
-            + "may be the one in use. Removing it does not move your traffic: a running tunnel "
-            + "keeps using it until bx reconnects, and the link is gone by then.\n\n"
+        text += L("bx could not confirm which server is carrying your traffic right now, so this may be the one in use. Removing it does not move your traffic: a running tunnel keeps using it until bx reconnects, and the link is gone by then.") + "\n\n"
     case .idle:
         // **确认闲着的那台一个字都不多说。** 每一台都挂一句提醒就是墙纸,
         // 而墙纸会训练人把整个确认框读成一段套话。
         break
     }
     return text
-        + "Its link goes with it. bx never hands the link to this menu, so this "
-        + "cannot be undone from here — you would have to paste the link again."
+        + L("Its link goes with it. bx never hands the link to this menu, so this cannot be undone from here — you would have to paste the link again.")
 }
 
 /// 改清单那两个动词(remove / replace)的失败**码**翻成一句用户做得了的话。
@@ -696,16 +690,15 @@ func serverEditFailureMessage(code: String?, status: Int?) -> String? {
     _ = status
     switch code {
     case "servers_remove_current":
-        return "That is the server your traffic uses right now. Switch to another one first, "
-            + "then remove this one."
+        return L("That is the server your traffic uses right now. Switch to another one first, then remove this one.")
     case "servers_unknown_name":
-        return "That server is not in your list any more — it may already be gone."
+        return L("That server is not in your list any more — it may already be gone.")
     case "servers_remove_failed":
-        return "bx could not remove that server from the config file."
+        return L("bx could not remove that server from the config file.")
     case "servers_replace_failed":
-        return "bx could not save that link. Check that you pasted a complete bx link."
+        return L("bx could not save that link. Check that you pasted a complete bx link.")
     case "servers_read_failed":
-        return "bx could not read the config file, so nothing was changed."
+        return L("bx could not read the config file, so nothing was changed.")
     default:
         return nil
     }
@@ -727,13 +720,11 @@ struct ReplaceLinkFollowUp: Equatable {
 func replaceLinkFollowUp(name: String, isCurrent: Bool) -> ReplaceLinkFollowUp {
     if isCurrent {
         return ReplaceLinkFollowUp(
-            message: "Saved the new link for \(name). The tunnel that is running still uses the "
-                + "old address — bx picks up the new one when it reconnects.",
+            message: L("Saved the new link for {0}. The tunnel that is running still uses the old address — bx picks up the new one when it reconnects.", name),
             offersReconnect: true)
     }
     return ReplaceLinkFollowUp(
-        message: "Saved the new link for \(name). Your exit does not change: press Use on it "
-            + "when you want to switch over.",
+        message: L("Saved the new link for {0}. Your exit does not change: press Use on it when you want to switch over.", name),
         offersReconnect: false)
 }
 
@@ -746,14 +737,12 @@ func replaceLinkFollowUp(name: String, isCurrent: Bool) -> ReplaceLinkFollowUp {
 /// 侧另加一个显式的「清空」意图,超出这一轮的范围。把它写成「留空 = 没有 UDP」
 /// 就是一句用户当场验不出、而后果是静默的假话。
 func udpFieldHint(replacing: Bool, canClear: Bool = false) -> String {
-    guard replacing else { return "Optional. A second link for UDP/QUIC traffic, if your server has one." }
+    guard replacing else { return L("Optional. A second link for UDP/QUIC traffic, if your server has one.") }
     // 能不能清掉由能力门控决定(`serverUDPClearingAvailable`);说「可以清」而清不掉,
     // 或者说「清不掉」而其实可以,都是这句话在撒谎。
     return canClear
-        ? "Optional. Leave it empty to keep the UDP link this server already has, "
-            + "or tick the box below to remove it."
-        : "Optional. Leave it empty to keep the UDP link this server already has — "
-            + "this version of bx cannot clear one."
+        ? L("Optional. Leave it empty to keep the UDP link this server already has, or tick the box below to remove it.")
+        : L("Optional. Leave it empty to keep the UDP link this server already has — this version of bx cannot clear one.")
 }
 
 /// 「去掉这一台的 UDP 链接」那个勾选框画不画。**只看能力声明,绝不试着拨**:旧 Guardian
@@ -776,9 +765,8 @@ private func nonEmpty(_ value: String?) -> String? {
 /// 一件有后果的事(正在登录的会话、风控、正在下载的东西),必须是用户明知的一下。
 func serverSwitchConfirmMessage(name: String, host: String) -> String {
     let where_ = host.isEmpty ? name : "\(name) (\(host))"
-    return "Switch your exit to \(where_)?\n\n"
-        + "Your public IP changes immediately. Sites you are signed in to may "
-        + "ask you to verify again, and downloads in flight will break."
+    return L("Switch your exit to {0}?", where_) + "\n\n"
+        + L("Your public IP changes immediately. Sites you are signed in to may ask you to verify again, and downloads in flight will break.")
 }
 
 /// 换完之后说人话。**四种结局四句话,而其中两句此前是错的。**
@@ -797,31 +785,22 @@ func switchOutcomeMessage(_ result: ServerSwitchResult) -> String {
     let where_ = result.host.isEmpty ? result.name : "\(result.name) (\(result.host))"
     if result.applied {
         // 走到这里说明服务端已经确认过(commit),死手不会再把它还原。
-        return "Your traffic now leaves from \(where_)."
+        return L("Your traffic now leaves from {0}.", where_)
     }
     // 逃生命令与 `bx server use` 在终端里给的是同一条 —— 它今天比 GUI 诚实,
     // 两边说的必须是同一件事。
-    let escape = "Run `sudo bx down && sudo bx up` in Terminal"
+    let escape = "sudo bx down && sudo bx up"
     switch result.outcome {
     case "arm_failed":
-        return "Saved \(where_) as your server, but bx could not start the switch. "
-            + "Your traffic still leaves from the previous server. "
-            + "Turn bx off and on again to use it."
+        return L("Saved {0} as your server, but bx could not start the switch. Your traffic still leaves from the previous server. Turn bx off and on again to use it.", where_)
     case "rolled_back":
-        return "Saved \(where_) as your server, but its tunnel did not come up, "
-            + "so bx switched back. Your traffic still leaves from the previous server."
+        return L("Saved {0} as your server, but its tunnel did not come up, so bx switched back. Your traffic still leaves from the previous server.", where_)
     case "rollback_failed":
-        return "Saved \(where_) as your server. Its tunnel did not come up and bx could "
-            + "not switch back, so your connection may be down right now. "
-            + escape + " to recover."
+        return L("Saved {0} as your server. Its tunnel did not come up and bx could not switch back, so your connection may be down right now. Run `{1}` in Terminal to recover.", where_, escape)
     case "commit_failed":
-        return "Your traffic already leaves from \(where_), but bx could not confirm the "
-            + "switch, so a safety timer may put it back on the previous server. "
-            + escape + " now to make it stick."
+        return L("Your traffic already leaves from {0}, but bx could not confirm the switch, so a safety timer may put it back on the previous server. Run `{1}` in Terminal now to make it stick.", where_, escape)
     default:
-        return "Saved \(where_) as your server, but bx could not tell whether the running "
-            + "tunnel switched. Check `bx status`; if it is still on the previous server, "
-            + "turn bx off and on again."
+        return L("Saved {0} as your server, but bx could not tell whether the running tunnel switched. Check `bx status`; if it is still on the previous server, turn bx off and on again.", where_)
     }
 }
 
@@ -830,12 +809,12 @@ func switchOutcomeMessage(_ result: ServerSwitchResult) -> String {
 /// add 成功 + switch 那一步根本没成(抛错)—— 第三种要告诉他清单里已经有了、可以手动 Use。
 func addServerOutcomeMessage(added: String, switched: ServerSwitchResult?) -> String {
     guard let switched else {
-        return "Added \(added) to your servers, but could not switch to it. Open Servers… and press Use to try again."
+        return L("Added {0} to your servers, but could not switch to it. Open Servers… and press Use to try again.", added)
     }
     // **结局那句话只有一份。** 这条路上此前自己写了一句「它停在原来那台」——
     // 对「已生效但确认失败」那种结局,那句话是假的,而它与切换那条路上刚被
     // 修好的是同一个谎。
-    return "Added \(added). " + switchOutcomeMessage(switched)
+    return L("Added {0}.", added) + " " + switchOutcomeMessage(switched)
 }
 
 /// 把 Add Server 这条路上的失败**码**翻成一句用户做得了的话。
@@ -851,11 +830,9 @@ func addServerFailureMessage(code: String?, status: Int?) -> String? {
     _ = status
     switch code {
     case "servers_name_exists":
-        return "A server with that name is already in your list. "
-            + "Pick another name, or use it from Servers…."
+        return L("A server with that name is already in your list. Pick another name, or use it from Servers….")
     case "servers_add_failed":
-        return "bx could not add that server. Check the link, and use only letters, digits, "
-            + "dots, underscores or hyphens in the name."
+        return L("bx could not add that server. Check the link, and use only letters, digits, dots, underscores or hyphens in the name.")
     default:
         return nil
     }
@@ -879,14 +856,14 @@ enum ExitIPProbe: Equatable {
 /// 纪律:问不出来不是「没有泄漏」,也不是「没换过去」。
 func exitIPLine(_ probe: ExitIPProbe, expected: String = "") -> String {
     switch probe {
-    case .unknown: return "Exit IP: not checked"
-    case .checking: return "Exit IP: checking…"
-    case .failed: return "Exit IP: could not check"
+    case .unknown: return L("Exit IP: not checked")
+    case .checking: return L("Exit IP: checking…")
+    case .failed: return L("Exit IP: could not check")
     case let .address(ip):
         // 只有**两边都知道**的时候才敢比。expected 为空是常态(链接里是主机名,
         // 而服务器的出口 IP 未必等于它的入口地址),那时只报事实、不下判断。
-        guard !expected.isEmpty else { return "Exit IP: \(ip)" }
-        return ip == expected ? "Exit IP: \(ip) — matches \(expected)" : "Exit IP: \(ip)"
+        guard !expected.isEmpty else { return L("Exit IP: {0}", ip) }
+        return ip == expected ? L("Exit IP: {0} — matches {1}", ip, expected) : L("Exit IP: {0}", ip)
     }
 }
 
@@ -927,12 +904,12 @@ func humanBytesPerSecond(_ bps: Int) -> String {
 func relativeAge(seconds: Int) -> String? {
     guard seconds >= 120 else { return nil }
     if seconds < 3600 {
-        return "\(seconds / 60)m ago"
+        return L("{0}m ago", seconds / 60)
     }
     if seconds < 86_400 {
-        return "\(seconds / 3600)h ago"
+        return L("{0}h ago", seconds / 3600)
     }
-    return "\(seconds / 86_400)d ago"
+    return L("{0}d ago", seconds / 86_400)
 }
 
 /// replace 那一次请求的请求体。**纯函数,有测试** —— 它决定了「去掉 UDP」这句话有没有

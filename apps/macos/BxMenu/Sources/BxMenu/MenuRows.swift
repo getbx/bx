@@ -11,9 +11,30 @@ enum MenuRowMark: Equatable {
 }
 
 struct MenuRow: Equatable {
+    /// **英文原词,同时是判据**(`quietWhenFine`、`== "Via"`、各处按标签找行)。
+    /// 显示用 `displayLabel`,别把译文塞回这里 —— 塞回来那几处判据在中文界面上
+    /// 会一起悄悄失效(Via 行找不到、该藏的行不藏)。
     let label: String
     let value: String
     let mark: MenuRowMark
+
+    var displayLabel: String { menuRowLabelText(label) }
+}
+
+/// 行标签的译文。认不出的原样返回(新加的行在中文界面上露出英文,吵的失效
+/// 好过安静的)。
+func menuRowLabelText(_ label: String) -> String {
+    switch label {
+    case "Route": return L("Route")
+    case "Latency": return L("Latency")
+    case "Outside bx": return L("Outside bx")
+    case "DNS": return L("DNS")
+    case "Direct lookups": return L("Direct lookups")
+    case "UDP Relay": return L("UDP Relay")
+    case "Via": return L("Via")
+    case "Maintenance": return L("Maintenance")
+    default: return label
+    }
 }
 
 struct MenuRowSet: Equatable {
@@ -24,7 +45,7 @@ struct MenuRowSet: Equatable {
 
 /// 阶段③才有数据的行的占位文案。刻意不是空字符串:留白会被读成「没这回事」,
 /// 而「未观测」如实说明我们没问过。
-private let notObserved = "Not checked"
+private var notObserved: String { L("Not checked") }
 
 /// 把一份 Guardian 状态摊成菜单里的数据行。
 ///
@@ -70,10 +91,10 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
         // 画一行 "Tunnel unhealthy ✗" 就是拿一个缺失的键造出一个坏答案。
         switch core.tunnelHealthy {
         case .some(true):
-            rows.append(core.latencyMS.map { MenuRow(label: "Latency", value: "\($0) ms", mark: .ok) }
+            rows.append(core.latencyMS.map { MenuRow(label: "Latency", value: L("{0} ms", $0), mark: .ok) }
                 ?? MenuRow(label: "Latency", value: notObserved, mark: .unknown))
         case .some(false):
-            rows.append(MenuRow(label: "Latency", value: "Tunnel unhealthy", mark: .bad))
+            rows.append(MenuRow(label: "Latency", value: L("Tunnel unhealthy"), mark: .bad))
         case .none:
             rows.append(MenuRow(label: "Latency", value: notObserved, mark: .unknown))
         }
@@ -87,7 +108,7 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
     // 在压缩后的菜单里照样露面。只在 Core 报了才出现,连接一关就消失。
     if let apps = core?.bypassingApps, !apps.isEmpty {
         rows.append(MenuRow(label: "Outside bx",
-                            value: apps.joined(separator: ", ") + " — quit and reopen",
+                            value: L("{0} — quit and reopen", apps.joined(separator: ", ")),
                             mark: .bad))
     }
 

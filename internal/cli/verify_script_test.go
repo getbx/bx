@@ -76,6 +76,8 @@ func TestMacMenuDroppedTheConstantRows(t *testing.T) {
 	source := string(raw)
 	for _, gone := range []struct{ needle, why string }{
 		{`menu.addInfo("Status", "Protected")`, "图标与标题栏已经说过两遍了"},
+		// 2026-09-26 起文案经 `L("…")` 取;只查裸字面量的话,这一行换个写法回来也照样绿。
+		{`menu.addInfo(L("Status"), L("Protected"))`, "图标与标题栏已经说过两遍了"},
 		{`"Network changes"`, "一个永远不变的常量串,是安慰文案不是状态"},
 	} {
 		if strings.Contains(source, gone.needle) {
@@ -88,7 +90,7 @@ func TestMacMenuDroppedTheConstantRows(t *testing.T) {
 	// 要守的那一处之后,守卫被另一处满足、照样通过。
 	warning := scopeAfter(t, source, "case .warning(let message, let version):", 600)
 	// 2026-09-08 起原因写在开关行下面那行小字(标红),不再是单独的 Status 行。
-	if !strings.Contains(warning, `protectionSwitchRow(subtitle: message, subtitleIsBad: true)`) {
+	if !strings.Contains(warning, `protectionSwitchRow(subtitle: menuStateMessageText(message), subtitleIsBad: true)`) {
 		t.Error("`.warning` 的原因(Repair Required / DNS not managed)不见了 —— 图标说不出原因," +
 			"开关下面那行是唯一说得出的地方;删掉它用户就只剩一个「有点不对劲」的图标")
 	}

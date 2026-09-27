@@ -42,20 +42,20 @@ func TestMacMenuTroubleshootSubmenuHoldsTheRareActions(t *testing.T) {
 	}
 	tail := body[switchAt:]
 	for _, want := range []string{
-		`troubleshoot.addAction("Check for Problems"`,
-		`troubleshoot.addAction("Open Logs"`,
+		`troubleshoot.addAction(L("Check for Problems")`,
+		`troubleshoot.addAction(L("Open Logs")`,
 		`troubleshoot.addAction(UninstallPresentation.actionTitle`,
-		`menu.addSubmenu("Troubleshoot"`,
+		`menu.addSubmenu(L("Troubleshoot")`,
 	} {
 		if !strings.Contains(tail, want) {
 			t.Fatalf("状态分支之后缺 %s —— 子菜单没装全或没挂进主菜单", want)
 		}
 	}
 	for _, stray := range []string{
-		`menu.addAction("Check for Problems"`,
-		`menu.addAction("Open Logs"`,
+		`menu.addAction(L("Check for Problems")`,
+		`menu.addAction(L("Open Logs")`,
 		`menu.addAction(UninstallPresentation.actionTitle`,
-		`menu.addAction("Set Up a New Server…"`,
+		`menu.addAction(L("Set Up a New Server…")`,
 	} {
 		if strings.Contains(tail, stray) {
 			t.Fatalf("状态分支之后一级菜单里仍有 %s —— 精简的东西又长回来了", stray)

@@ -9,8 +9,12 @@ trap 'rm -rf "$TMP"' EXIT
 run_test() {
   local name="$1"
   shift
-  swiftc "$@" -o "$TMP/$name"
-  "$TMP/$name"
+  # 每个套件都带上本地化的两份文件:模型里的文案经 `L(…)` 取,少了它们编不过。
+  swiftc "$MENU/Sources/BxMenu/Localization.swift" \
+    "$MENU/Sources/BxMenu/Localization_zhHans.swift" \
+    "$@" -o "$TMP/$name"
+  # **语言钉在英文**:断言按英文原句写,系统语言是中文的机器上不许整片变红。
+  BX_MENU_LANGUAGE=en "$TMP/$name"
 }
 
 run_test status-indicator \
@@ -221,4 +225,6 @@ run_test transition-notice \
   "$MENU/Sources/BxMenu/TransitionNotice.swift" \
   "$MENU/Tests/TransitionNoticeTests.swift"
 
+run_test localization \
+  "$MENU/Tests/LocalizationTests.swift"
 echo "macOS menu tests passed"

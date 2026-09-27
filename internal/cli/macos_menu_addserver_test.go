@@ -43,8 +43,14 @@ func swiftButtonTitleFor(src, selector string) (string, bool) {
 		if !strings.Contains(line, "#selector("+selector+")") {
 			continue
 		}
-		const marker = `NSButton(title: "`
+		// 标题经 `L("…")` 取当前语言(2026-09-26 起);两种写法都认,认出来的是
+		// 英文原句 —— 判据仍是那句话本身。
+		marker := `NSButton(title: L("`
 		i := strings.Index(line, marker)
+		if i < 0 {
+			marker = `NSButton(title: "`
+			i = strings.Index(line, marker)
+		}
 		if i < 0 {
 			continue
 		}

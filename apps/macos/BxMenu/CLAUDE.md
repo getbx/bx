@@ -42,6 +42,25 @@
 - **shell-out 只许落在白名单那几个函数里**(`TestMacMenuShellOutsStayOnTheAllowlist`);
   加一个可以,悄悄加不行。
 
+## 界面语言(2026-09-26,真机未验)
+
+Language ▸ 子菜单:跟随系统 / English / 简体中文,**立刻生效、不重启**,只存在菜单 App
+自己的 UserDefaults(`BxMenuLanguage`),不碰系统、不影响 CLI(CLI 保持英文:agent 与脚本在解析它)。
+- **英文原句就是 key**:`L("…")`(`Localization.swift`),译文在 `Localization_zhHans.swift`
+  的一个字典里 —— 那是 Sources 里**唯一**允许中文的非注释位置。填值用位置占位符 `{0}`,
+  **不许在 `L(` 里插值**(插出来的句子查不了表)。拼接的半句一律改成整句查表:半句各自翻完语序是错的。
+- **既当判据又要显示的英文原词不许在构造处翻**(`"Repair Required"`、`"Blocked"`、行标签
+  `"Via"`/`"DNS"`……):状态里存英文,显示时经 `menuStateMessageText` / `menuRowLabelText` 翻。
+  在构造处翻,中文界面上 `case .warning("Repair Required")`、`row.label == "Via"` 会一起悄悄落空。
+- 测试与快照**钉在英文**(`BX_MENU_LANGUAGE=en`,测试脚本里设),否则中文系统的机器上整片变红;
+  快照另出一套 `zh-Hans/`,越界与截断两种语言都查。
+- 守卫:`TestMenuEveryLocalizedStringHasAChineseTranslation`(每个 `L` 有译文、没有陈旧条目、
+  占位符一一对应)、`TestMenuUserVisibleEnglishGoesThroughL`(长得像人话的裸字面量必须是映射表里的
+  原词或写明理由的白名单)。四条变异各咬中一条。
+- **仍是英文的**(服务端发的话,菜单不改写):Checks 页每一项的 detail、规则体检的 `summary`、
+  日志正文、Guardian 的错误描述。
+- 切语言时开着的窗口原地重画(各窗口 `relocalize()`);部署表单整扇重建但保住已填的三格。
+
 ## 菜单本身(9 行 2 条分隔线,2026-09-08,真机未验)
 
 - **第一行是保护开关**(`ProtectionSwitch.swift` 纯判据 + `ProtectionSwitchRow.swift`

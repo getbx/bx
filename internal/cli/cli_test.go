@@ -1695,7 +1695,8 @@ func TestGuardianDNSLabelMatchesMenuWording(t *testing.T) {
 	// **两个界面必须用同一套措辞**,否则同一台机器在 CLI 与菜单里读起来不一样。
 	// 「Wi-Fi managed」曾让真人读成「DNS 归 Wi-Fi 管」(正好是事实的反面),
 	// 两处一起改成主语是 bx 的写法。
-	for _, literal := range []string{`"Handled by bx (\(service))"`, `"Handled by bx"`, `"Not managed"`, `"Status unavailable"`} {
+	// 文案经 `L("…")` 取(2026-09-26 起),英文原句就是 key,所以比的仍是那句英文。
+	for _, literal := range []string{`L("Handled by bx ({0})", service)`, `L("Handled by bx")`, `L("Not managed")`, `L("Status unavailable")`} {
 		if !strings.Contains(swift, literal) {
 			t.Errorf("StatusPresentation.swift should render DNS with the same wording as the CLI: %s", literal)
 		}
@@ -4657,6 +4658,12 @@ func TestMacMenuUserFacingStringsAreEnglish(t *testing.T) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".swift") {
 			continue
 		}
+		// 简体中文词表是**唯一**允许中文的地方:中文只能经 `L("英文原句")` 查表出现,
+		// 那张表由 TestMenuEveryLocalizedStringHasAChineseTranslation 双向钉住。
+		// 别处出现中文仍然是缺陷 —— 那是一句绕过了语言选择、英文界面上也会露出来的话。
+		if entry.Name() == zhHansTableFile {
+			continue
+		}
 		source, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			t.Fatal(err)
@@ -5798,7 +5805,9 @@ func TestMacMenuWiresMaintenanceHoldIntoTheOffScreen(t *testing.T) {
 	}
 	// ③ 表头不许写死 "Off":挂起期间 protection_state 就是 off,写死等于把
 	//    「bx 正在自我升级」显示成「你把它关了」。
-	if strings.Contains(rebuildCode, `subtitle: "Off"`) {
+	// 两种写法都拦:2026-09-26 起文案经 `L("…")` 取,只查裸字面量的话写死
+	// `L("Off")` 就能绕过这条守卫。
+	if strings.Contains(rebuildCode, `subtitle: "Off"`) || strings.Contains(rebuildCode, `subtitle: L("Off")`) {
 		t.Error(`.off 的副标题不许写死 "Off" —— 维护挂起与用户主动关闭在这一屏必须分得开(见 offSubtitle)`)
 	}
 	subtitle := regexp.MustCompile(`offSubtitle\(status:\s*([A-Za-z_][A-Za-z0-9_.]*)`).FindStringSubmatch(rebuildCode)

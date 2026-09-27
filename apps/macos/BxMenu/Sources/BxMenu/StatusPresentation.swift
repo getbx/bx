@@ -28,27 +28,27 @@ func dnsPresentation(state: String?, managed: Bool, service: String?, servers: [
             // 真人第一次读到它时问的就是「意思是 dns 不是 bx 管理?」—— 一句会被
             // 读成反面的状态文案,比不写更糟:它让用户以为保护漏了一块。
             // 主语必须是 bx,网络服务名退到括号里当限定语。
-            return DNSPresentation(allowsProtected: true, label: "Handled by bx (\(service))", menuWarning: nil)
+            return DNSPresentation(allowsProtected: true, label: L("Handled by bx ({0})", service), menuWarning: nil)
         }
-        return DNSPresentation(allowsProtected: true, label: "Handled by bx", menuWarning: nil)
+        return DNSPresentation(allowsProtected: true, label: L("Handled by bx"), menuWarning: nil)
     }
     // not_needed:本平台没有「DNS 接管」这件事(linux 数据面自己管)。菜单今天
     // 只在 darwin 跑、按构造收不到它,但这份函数是 CLI guardianDNSLabel 的字面
     // 孪生 —— 孪生缺一类,下一个平台接上菜单时它会落进「Status unavailable」,
     // 把「查了,无此事」说成「没查」。
     if state == "not_needed" {
-        return DNSPresentation(allowsProtected: true, label: "Handled by bx (data plane)", menuWarning: nil)
+        return DNSPresentation(allowsProtected: true, label: L("Handled by bx (data plane)"), menuWarning: nil)
     }
     if state == "unmanaged" {
         return DNSPresentation(
             allowsProtected: false,
-            label: "Not managed" + suffix,
-            menuWarning: "DNS not managed" + suffix
+            label: L("Not managed") + suffix,
+            menuWarning: L("DNS not managed") + suffix
         )
     }
     return DNSPresentation(
         allowsProtected: false,
-        label: "Status unavailable",
-        menuWarning: "DNS status unavailable"
+        label: L("Status unavailable"),
+        menuWarning: L("DNS status unavailable")
     )
 }

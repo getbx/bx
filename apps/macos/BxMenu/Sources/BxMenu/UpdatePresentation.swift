@@ -9,7 +9,7 @@ struct UpdateCheck: Decodable, Equatable {
 
 func updateActionTitle(for check: UpdateCheck?) -> String? {
     guard let check, check.available, check.verified else { return nil }
-    return "Update bx…"
+    return L("Update bx…")
 }
 
 /// 一次更新检查的结果如何并入既有答案。
@@ -24,8 +24,8 @@ func mergedUpdateCheck(previous: UpdateCheck?, fetched: UpdateCheck?) -> UpdateC
     fetched ?? previous
 }
 
-let quitBxActionTitle = "Quit bx…"
-let quitBxConfirmMessage = "bx will stop protecting system traffic, restore managed DNS settings, and close this menu. To start bx again, open Bx.app from Applications."
+var quitBxActionTitle: String { L("Quit bx…") }
+var quitBxConfirmMessage: String { L("bx will stop protecting system traffic, restore managed DNS settings, and close this menu. To start bx again, open Bx.app from Applications.") }
 
 struct UpdateResultJSON: Decodable, Equatable {
     let fromVersion: String
@@ -72,10 +72,10 @@ func parseUpdateOutcome(_ logData: Data) -> UpdateOutcome {
     return .failed
 }
 
-let updateConfirmTitle = "Update bx?"
-let updateConfirmMessage = "Internet access may pause briefly. bx will reconnect automatically."
-let updateSucceededMessage = "bx is up to date"
-let updateRolledBackMessage = "Update couldn't be completed. Previous version restored."
+var updateConfirmTitle: String { L("Update bx?") }
+var updateConfirmMessage: String { L("Internet access may pause briefly. bx will reconnect automatically.") }
+var updateSucceededMessage: String { L("bx is up to date") }
+var updateRolledBackMessage: String { L("Update couldn't be completed. Previous version restored.") }
 
 /// 回滚那句话按原因分三种(A3)。**隧道那一族**(与 Go 的 supervisor.IsTunnelStartFailureCode
 /// 同一组码,由 Go 侧守卫钉住)指向服务器或路径、**不是升级** —— 否则「VPS 刚好不通」
@@ -83,11 +83,9 @@ let updateRolledBackMessage = "Update couldn't be completed. Previous version re
 func updateRolledBackMessage(reason: String?) -> String {
     guard let reason, !reason.isEmpty else { return updateRolledBackMessage }
     if isTunnelStartFailure(reason) {
-        return "Update couldn't be completed: during the switch the new version could not bring up the tunnel. "
-            + "That points at your server or the path to it, not the update itself. "
-            + "Previous version restored — try updating again later."
+        return L("Update couldn't be completed: during the switch the new version could not bring up the tunnel. That points at your server or the path to it, not the update itself. Previous version restored — try updating again later.")
     }
-    return "Update couldn't be completed: the new version could not start on this Mac. Previous version restored."
+    return L("Update couldn't be completed: the new version could not start on this Mac. Previous version restored.")
 }
 
 /// 「隧道没起来」那一族。**码与 Go 那一份逐字相同**(TestMenuTunnelStartFailureCodesMatchGo 钉住)。
@@ -105,9 +103,9 @@ func isTunnelStartFailure(_ code: String) -> Bool {
 func versionRowTitle(current: String, check: UpdateCheck?) -> String {
     guard let check, check.available, check.verified,
           !check.latest.isEmpty, check.latest != current else {
-        return "Version: \(current)"
+        return L("Version: {0}", current)
     }
-    return "Version: \(current) → \(check.latest) available"
+    return L("Version: {0} → {1} available", current, check.latest)
 }
 
 /// 版本那一行是不是同时充当「去更新」的入口。
@@ -198,12 +196,12 @@ func updateStageText(installing: Bool?, progress: String?, elapsedSeconds: Int) 
     let progressText = (progress?.isEmpty == false) ? progress : nil
     switch installing {
     case .some(true):
-        return "Installing… the network pauses for a few seconds (\(elapsedSeconds)s)"
+        return L("Installing… the network pauses for a few seconds ({0}s)", elapsedSeconds)
     case .some(false):
-        if let progressText { return "Downloading — \(progressText)" }
-        return "Downloading… \(elapsedSeconds)s"
+        if let progressText { return L("Downloading — {0}", progressText) }
+        return L("Downloading… {0}s", elapsedSeconds)
     case .none:
-        if let progressText { return "Downloading and installing — \(progressText)" }
-        return "Downloading and installing… \(elapsedSeconds)s"
+        if let progressText { return L("Downloading and installing — {0}", progressText) }
+        return L("Downloading and installing… {0}s", elapsedSeconds)
     }
 }

@@ -65,12 +65,35 @@ func outdatedRuntimeNotice(capabilities: [String]?) -> OutdatedRuntimeNotice? {
     // Run Doctor,转头看见裂盾就合理地以为保护坏了(而 Turn Off 就在两行下面)。
     // 两个后果同源,必须一起说,并由同一条 remedy 一起解决。
     let summary = capabilities == nil
-        ? "Older build; live Core status and diagnostics archive unavailable"
-        : "Diagnostics archive unavailable"
+        ? L("Older build; live Core status and diagnostics archive unavailable")
+        : L("Diagnostics archive unavailable")
     return OutdatedRuntimeNotice(
         summary: summary,
-        remedy: "To finish updating, run: \(outdatedRuntimeRepairCommand)"
+        remedy: L("To finish updating, run: {0}", outdatedRuntimeRepairCommand)
     )
+}
+
+/// 菜单状态里那句话(`.warning(…)`、`.setupNeeded(…)`、`.missing(…)` 带的字符串)
+/// 显示之前翻成当前语言。
+///
+/// **这几句同时是判据**(`case .warning("Repair Required", _)`、`message == "Repair Required"`),
+/// 所以状态里存英文原句、只在显示的那一刻翻 —— 在构造处翻,中文界面上那几处
+/// 判据会一起悄悄失效(修复入口不出现、Blocked 的图标分支落空)。
+/// 认不出的原样返回:它们多半已经在构造处翻过(DNS、Guardian 不应答那几句),
+/// 或者来自一段英文错误描述。
+func menuStateMessageText(_ message: String) -> String {
+    switch message {
+    case "Repair Required": return L("Repair Required")
+    case "Blocked": return L("Blocked")
+    case "Core status unavailable": return L("Core status unavailable")
+    case "Core unavailable": return L("Core unavailable")
+    case "Tunnel unhealthy": return L("Tunnel unhealthy")
+    case "Status unreadable": return L("Status unreadable")
+    case "DNS status unavailable": return L("DNS status unavailable")
+    case "Install bx at /usr/local/bin/bx": return L("Install bx at /usr/local/bin/bx")
+    case "Run sudo bx setup <client-link>": return L("Run sudo bx setup <client-link>")
+    default: return message
+    }
 }
 
 /// MenuProtectionVerdict 是「这份状态该让菜单显示什么」的判定。

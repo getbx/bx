@@ -28,7 +28,7 @@ struct RecoveryPresentation: Equatable {
     let showsSuccessAlert: Bool
 
     var isRunning: Bool {
-        title == "Reconnecting"
+        title == L("Reconnecting")
     }
 }
 
@@ -125,27 +125,27 @@ func recoveryPresentation(for snapshot: RecoverySnapshot) -> RecoveryPresentatio
     switch snapshot.state {
     case "accepted":
         return RecoveryPresentation(
-            title: "Reconnecting",
+            title: L("Reconnecting"),
             indicator: .yellow,
             shortReason: recoveryStageReason(snapshot.stage),
             showsSuccessAlert: false
         )
     case "running":
         return RecoveryPresentation(
-            title: "Reconnecting",
+            title: L("Reconnecting"),
             indicator: .yellow,
             shortReason: recoveryStageReason(snapshot.stage),
             showsSuccessAlert: false
         )
     case "succeeded":
         return RecoveryPresentation(
-            title: "Reconnected",
+            title: L("Reconnected"),
             indicator: .green,
             shortReason: nil,
             showsSuccessAlert: false
         )
     case "failed", "blocked":
-        let title = snapshot.reason == "underlay_changed" ? "Blocked" : "Reconnect Failed"
+        let title = snapshot.reason == "underlay_changed" ? L("Blocked") : L("Reconnect Failed")
         return RecoveryPresentation(
             title: title,
             indicator: .red,
@@ -167,9 +167,9 @@ func recoveryPresentation(for snapshot: RecoverySnapshot) -> RecoveryPresentatio
         // 是刻意的 —— 一条正常时永不出现的路径一旦出现,它本身就是信号,而它得
         // 让看到的人有东西可查。
         return RecoveryPresentation(
-            title: "Recovery",
+            title: L("Recovery"),
             indicator: .yellow,
-            shortReason: "Unrecognized recovery state (\(snapshot.state))",
+            shortReason: L("Unrecognized recovery state ({0})", snapshot.state),
             showsSuccessAlert: false
         )
     }
@@ -178,21 +178,21 @@ func recoveryPresentation(for snapshot: RecoverySnapshot) -> RecoveryPresentatio
 private func recoveryStageReason(_ stage: String) -> String {
     switch stage {
     case "queued":
-        return "Waiting for Guardian"
+        return L("Waiting for Guardian")
     case "observe":
-        return "Checking network path"
+        return L("Checking network path")
     case "validate_capture":
-        return "Validating protected path"
+        return L("Validating protected path")
     case "rebind_underlay":
-        return "Rebinding network path"
+        return L("Rebinding network path")
     case "transport_health":
-        return "Checking protected transport"
+        return L("Checking protected transport")
     case "commit":
-        return "Applying protected path"
+        return L("Applying protected path")
     case "verify":
-        return "Verifying protection"
+        return L("Verifying protection")
     default:
-        return "Reconnecting protected path"
+        return L("Reconnecting protected path")
     }
 }
 
@@ -211,31 +211,31 @@ private func recoveryFailureReason(_ snapshot: RecoverySnapshot) -> String {
     // 同一条纪律。完整的做法(先试网关、再退到 down/up)在 `bx status` 里,菜单这
     // 一行放不下。
     if recoveryLooksLikeCaptiveNetwork(snapshot) {
-        return "Can't reach the server — cafés and hotels often need sign-in first"
+        return L("Can't reach the server — cafés and hotels often need sign-in first")
     }
     switch snapshot.lastErrorCode {
     case "capture_invalid":
-        return "Protected path changed"
+        return L("Protected path changed")
     case "capture_missing":
-        return "Protected path unavailable"
+        return L("Protected path unavailable")
     case "network_unavailable":
-        return "Network unavailable"
+        return L("Network unavailable")
     case "recovery_canceled":
-        return "Recovery canceled"
+        return L("Recovery canceled")
     case "recovery_unavailable":
-        return "Recovery unavailable"
+        return L("Recovery unavailable")
     case "recovery_replaced":
-        return "Recovery was replaced"
+        return L("Recovery was replaced")
     case "transport_unavailable":
-        return "Protected transport unavailable"
+        return L("Protected transport unavailable")
     case "underlay_rebind_failed":
-        return "Could not rebind network path"
+        return L("Could not rebind network path")
     case "underlay_unavailable":
-        return "Network path unavailable"
+        return L("Network path unavailable")
     case "verification_failed":
-        return "Protection verification failed"
+        return L("Protection verification failed")
     default:
-        return "Recovery failed"
+        return L("Recovery failed")
     }
 }
 

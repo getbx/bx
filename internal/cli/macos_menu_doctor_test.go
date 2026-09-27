@@ -216,7 +216,7 @@ func TestMacMenuDiagnosticsWindowRendersChecksByThePureModel(t *testing.T) {
 		"This version of bx Guardian does not provide checks.",
 		"This version of bx Guardian does not provide logs.",
 		"No checks yet.", "No logs loaded yet.",
-		`NSButton(title: "Check Now"`, `NSButton(title: "Load Logs"`,
+		`NSButton(title: L("Check Now")`, `NSButton(title: L("Load Logs")`,
 	} {
 		if !strings.Contains(raw, want) {
 			t.Fatalf("Diagnostics 窗口缺 %s", want)

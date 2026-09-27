@@ -93,18 +93,18 @@ struct TransitionNotice: Equatable {
 func transitionNoticeText(kind: TransitionNoticeKind, signal: ProtectionSignal) -> (title: String, body: String) {
     switch kind {
     case .recovered:
-        return ("bx is protected again", "The tunnel is back. Traffic is flowing through bx.")
+        return (L("bx is protected again"), L("The tunnel is back. Traffic is flowing through bx."))
     case .degraded:
         switch signal {
         case .attention:
-            return ("bx needs attention",
-                    "Protection could not be restored on its own. Open the bx menu for details.")
+            return (L("bx needs attention"),
+                    L("Protection could not be restored on its own. Open the bx menu for details."))
         case .protectedTunnelDown:
-            return ("bx: tunnel is down",
-                    "The tunnel has been down for a while. bx is blocking traffic so nothing leaks (kill-switch).")
+            return (L("bx: tunnel is down"),
+                    L("The tunnel has been down for a while. bx is blocking traffic so nothing leaks (kill-switch)."))
         default:
-            return ("bx: traffic blocked",
-                    "Protection is on but the tunnel is unavailable. bx is blocking traffic so nothing leaks (kill-switch).")
+            return (L("bx: traffic blocked"),
+                    L("Protection is on but the tunnel is unavailable. bx is blocking traffic so nothing leaks (kill-switch)."))
         }
     }
 }

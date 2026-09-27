@@ -587,7 +587,7 @@ func TestMacMenuAppTrafficWindowSaysByteCountsAreApproximate(t *testing.T) {
 			"界面把一笔近似账显示成了精确账(共解析出 %d 次 addArrangedSubview)", len(args))
 	}
 	// 常量必须来自纯模型那一份,窗口里不许再抄一句自己的。
-	if !strings.Contains(menuAppTrafficModelCode(t), "let appTrafficApproximateNote") {
+	if !strings.Contains(menuAppTrafficModelCode(t), "var appTrafficApproximateNote: String") {
 		t.Fatal("appTrafficApproximateNote 不在纯模型里 —— 那句话就没有任何 Swift 测试盯着")
 	}
 	// **窗口不许自己造一份零值报告。** `AppTrafficReport(subscribed: false)` 渲染
@@ -886,6 +886,8 @@ func swiftBracketedLiteral(source, marker string) (string, bool) {
 	if start < 0 {
 		return "", false
 	}
+	// 从标记**之后**找:标记本身可能带着类型里的 `[`(`var x: [String] {`)。
+	start += len(marker)
 	open := strings.IndexByte(scan[start:], '[')
 	if open < 0 {
 		return "", false
@@ -1048,7 +1050,7 @@ func TestMacMenuAppTrafficNumbersAreRightAligned(t *testing.T) {
 		t.Errorf("数字列没有被摆成右对齐(循环体:%q)", strings.TrimSpace(inLoop))
 	}
 
-	titles, ok := swiftBracketedLiteral(menuAppTrafficModelCode(t), "let appTrafficColumnTitles")
+	titles, ok := swiftBracketedLiteral(menuAppTrafficModelCode(t), "var appTrafficColumnTitles: [String] {")
 	if !ok {
 		t.Fatal("读不出 appTrafficColumnTitles —— 守卫已经失效,先修守卫")
 	}
@@ -1169,7 +1171,7 @@ func TestMacMenuAppTrafficWindowShowsTheApproximateNote(t *testing.T) {
 		t.Fatalf("那句「字节数是近似值」没有出现在任何一次 addArrangedSubview 的实参里 —— "+
 			"这个窗口上唯一一句准确性声明对用户是不可见的(共解析出 %d 次 addArrangedSubview)", len(args))
 	}
-	if !strings.Contains(menuAppTrafficModelCode(t), "let appTrafficApproximateNote") {
+	if !strings.Contains(menuAppTrafficModelCode(t), "var appTrafficApproximateNote: String") {
 		t.Fatal("appTrafficApproximateNote 不在纯模型里 —— 那句话就没有任何 Swift 测试盯着")
 	}
 	// 那句假话不许回来。

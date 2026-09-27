@@ -31,6 +31,8 @@ trap 'rm -rf "$TMP"' EXIT
 # **窗口那几个文件互相牵连**(FlippedView 曾住在 ServersWindow 里),
 # 所以这里带上整组,而不是逐个试到编过为止。
 xcrun swiftc -O \
+  "$MENU/Sources/BxMenu/Localization.swift" \
+  "$MENU/Sources/BxMenu/Localization_zhHans.swift" \
   "$MENU/Sources/BxMenu/StatusIndicator.swift" \
   "$MENU/Sources/BxMenu/RecoveryPresentation.swift" \
   "$MENU/Sources/BxMenu/MaintenancePresentation.swift" \
@@ -52,7 +54,13 @@ xcrun swiftc -O \
   "$MENU/Snapshots/main.swift" \
   -o "$TMP/snapshot"
 
-if ! "$TMP/snapshot" "$MENU/Snapshots/fixtures" "$OUT" 2>"$TMP/err"; then
+# 两种语言各出一套:英文在 $OUT,简体中文在 $OUT/zh-Hans。中文句子的长短与
+# 英文不同,「按英文选的宽度」对中文不作数 —— 截断与越界要两套都查。
+render() {
+  BX_MENU_LANGUAGE="$1" "$TMP/snapshot" "$MENU/Snapshots/fixtures" "$2"
+}
+mkdir -p "$OUT/zh-Hans"
+if ! { render en "$OUT" && render zh-Hans "$OUT/zh-Hans"; } 2>"$TMP/err"; then
   # 没有 WindowServer(纯 headless 会话)时 AppKit 会在连接窗口服务器时失败。
   # 那是「跑不了」,不是「跑了没过」——两者必须分开报。
   if grep -qiE 'window server|WindowServer|not permitted|Connection.*refused' "$TMP/err"; then

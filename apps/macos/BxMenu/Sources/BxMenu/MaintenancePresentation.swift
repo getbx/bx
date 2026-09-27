@@ -44,11 +44,11 @@ func maintenanceHoldExpiry(_ raw: String) -> Date? {
 func maintenanceHoldReasonLabel(_ reason: String?) -> String {
     guard let reason, !reason.isEmpty else {
         // 连来由都没有:说「维护」是它字面上的意思,不多说一个字。
-        return "maintenance"
+        return L("maintenance")
     }
     let labels = [
-        "upgrade": "updating bx",
-        "legacy_upgrade": "updating bx, migrated from an older upgrade record",
+        "upgrade": L("updating bx"),
+        "legacy_upgrade": L("updating bx, migrated from an older upgrade record"),
     ]
     guard let label = labels[reason] else { return reason }
     return "\(label) (\(reason))"
@@ -75,7 +75,7 @@ func maintenanceRow(status: GuardianStatus?, now: Date) -> MenuRow? {
     // maintenanceHoldRemaining 把剩余时间钳到零是同一条纪律。
     let minutes = max(1, Int(expires.timeIntervalSince(now) / 60))
     return MenuRow(label: "Maintenance",
-                   value: "Paused for \(maintenanceHoldReasonLabel(hold.reason)) — up to \(minutes) min",
+                   value: L("Paused for {0} — up to {1} min", maintenanceHoldReasonLabel(hold.reason), minutes),
                    mark: .unknown)
 }
 
@@ -98,5 +98,5 @@ func maintenanceRow(status: GuardianStatus?, now: Date) -> MenuRow? {
 /// Paused 是实话),以及用户 down 之后销挂起失败(这一种 Paused 不是实话 —— 用户
 /// 自己关的;已知代价)。挂起最多 15 分钟,过期即不再显示,所以最坏是一次有界的错标。
 func offSubtitle(status: GuardianStatus?, now: Date) -> String {
-    maintenanceRow(status: status, now: now) == nil ? "Off" : "Paused"
+    maintenanceRow(status: status, now: now) == nil ? L("Off") : L("Paused")
 }

@@ -25,6 +25,24 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// 切换界面语言之后调。表单是一次性摆好的,所以整扇重建 —— **保住用户已经
+    /// 填的三格**,换个语言不该把他打了一半的地址清掉。窗口没开着就什么都不做。
+    func relocalize() {
+        guard let old = window, old.isVisible else { return }
+        let typed = currentTarget()
+        let frame = old.frame
+        old.delegate = nil
+        old.close()
+        window = nil
+        let fresh = ensureWindow()
+        hostField?.stringValue = typed.host
+        userField?.stringValue = typed.user
+        nameField?.stringValue = typed.name
+        fresh.setFrame(frame, display: false)
+        updatePreview()
+        fresh.makeKeyAndOrderFront(nil)
+    }
+
     private func ensureWindow() -> NSWindow {
         if let window { return window }
         let window = NSWindow(
@@ -33,7 +51,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Set Up a New Server"
+        window.title = L("Set Up a New Server")
         window.isReleasedWhenClosed = false
         window.center()
         window.delegate = self
@@ -47,16 +65,16 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
 
         // **占位符已经说明了每个框是什么**,上面再加一行标签是说两遍。
         // 三个框、每个一句占位符,比「标签 + 空框」少一半行数而信息一样多。
-        let host = field(placeholder: "Server address — 1.2.3.4 or an ssh_config alias")
+        let host = field(placeholder: L("Server address — 1.2.3.4 or an ssh_config alias"))
         hostField = host
         stack.addFullWidthRow(host)
 
-        let user = field(placeholder: "SSH login")
+        let user = field(placeholder: L("SSH login"))
         user.stringValue = "root"
         userField = user
         stack.addFullWidthRow(user)
 
-        let name = field(placeholder: "Name it in your list (optional)")
+        let name = field(placeholder: L("Name it in your list (optional)"))
         nameField = name
         stack.addFullWidthRow(name)
         // **这一行留着,而且是两个事实合成一行。**
@@ -66,7 +84,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         // tooltip,那是错的:装饰可以删,披露不行,而 tooltip 要悬停才看得到。
         // 合成一行之后既没多占地方,两件事也都还在。
         stack.addFullWidthRow(caption(
-            "Your current exit does not change. bx never sees your SSH password."))
+            L("Your current exit does not change. bx never sees your SSH password.")))
 
         stack.addFullWidthRow(gap())
         let preview = caption("")
@@ -83,7 +101,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         self.problem = problem
         stack.addFullWidthRow(problem)
 
-        let run = NSButton(title: "Open in Terminal", target: self, action: #selector(run))
+        let run = NSButton(title: L("Open in Terminal"), target: self, action: #selector(run))
         run.bezelStyle = .rounded
         run.toolTip = deployCredentialNote
         run.keyEquivalent = "\r"

@@ -136,8 +136,8 @@ enum RuleKind: String, Codable, CaseIterable {
     /// 说明这条规则把流量**逼去哪**,用户据此判断删掉它的后果。
     var actionLabel: String {
         switch self {
-        case .direct: return "Bypasses the tunnel"
-        case .proxy: return "Forced through the tunnel"
+        case .direct: return L("Bypasses the tunnel")
+        case .proxy: return L("Forced through the tunnel")
         }
     }
 }

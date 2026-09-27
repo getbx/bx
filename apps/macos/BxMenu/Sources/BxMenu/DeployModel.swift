@@ -29,31 +29,31 @@ struct DeployTarget: Equatable {
 func deployValidationError(_ target: DeployTarget) -> String? {
     let host = target.host.trimmingCharacters(in: .whitespaces)
     if host.isEmpty {
-        return "Enter the server address (an IP, a hostname, or an ssh_config alias)."
+        return L("Enter the server address (an IP, a hostname, or an ssh_config alias).")
     }
     if host.contains(where: { $0.isWhitespace }) || host.contains("'") || host.contains("@") {
-        return "The address cannot contain spaces, quotes, or @ — put the login name in the User field."
+        return L("The address cannot contain spaces, quotes, or @ — put the login name in the User field.")
     }
     let user = target.user.trimmingCharacters(in: .whitespaces)
     if user.isEmpty {
-        return "Enter the SSH login name (usually root)."
+        return L("Enter the SSH login name (usually root).")
     }
     if user.contains(where: { $0.isWhitespace }) || user.contains("'") || user.contains("@") {
-        return "The login name cannot contain spaces, quotes, or @."
+        return L("The login name cannot contain spaces, quotes, or @.")
     }
     let name = target.name.trimmingCharacters(in: .whitespaces)
     if !name.isEmpty {
         // 与 Go 侧 config.ValidateServerName 同一条规则。**两边必须一致**:
         // 这里放行而那边拒绝,用户会看着一条成功的部署以一句配置错误收场。
         if name.count > 64 {
-            return "The name is too long (64 characters maximum)."
+            return L("The name is too long (64 characters maximum).")
         }
         // **必须是 ASCII 判据,不能用 CharacterSet.alphanumerics** —— 后者是
         // Unicode 的,`东京` 在它眼里是合法的字母,而 Go 侧的
         // `^[A-Za-z0-9._-]+$` 会当场拒绝。测试第一次跑就抓到了这个分叉。
         let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
         if name.contains(where: { !allowed.contains($0) }) {
-            return "The name may only contain letters, digits, and . _ -"
+            return L("The name may only contain letters, digits, and . _ -")
         }
     }
     return nil
@@ -94,7 +94,7 @@ func deployCommandPreview(_ target: DeployTarget) -> String {
         parts.append(show(name))
     }
     let who = user.isEmpty ? "" : user + "@"
-    parts.append(host.isEmpty ? who + "<server address>" : show(who + host))
+    parts.append(host.isEmpty ? who + L("<server address>") : show(who + host))
     return parts.joined(separator: " ")
 }
 
@@ -105,17 +105,17 @@ func deployCommandPreview(_ target: DeployTarget) -> String {
 func deployScriptText(_ target: DeployTarget, bxPath: String = "/usr/local/bin/bx") -> String {
     """
     #!/bin/sh
-    echo 'bx is about to install a server on \(target.host.trimmingCharacters(in: .whitespaces)) over ssh.'
-    echo 'Your SSH password or key is handled by ssh itself — bx never sees it.'
+    echo '\(L("bx is about to install a server on {0} over ssh.", target.host.trimmingCharacters(in: .whitespaces)))'
+    echo '\(L("Your SSH password or key is handled by ssh itself — bx never sees it."))'
     echo
     exec \(deployCommandLine(target, bxPath: bxPath))
     """
 }
 
 /// 表单上那句解释。**说清楚凭据去哪儿了**,这是这个设计唯一需要用户理解的事。
-let deployCredentialNote =
-    "bx never handles your SSH password or key. The command runs in Terminal, "
-    + "where ssh asks for whatever it needs."
+var deployCredentialNote: String {
+    L("bx never handles your SSH password or key. The command runs in Terminal, where ssh asks for whatever it needs.")
+}
 
 func shellQuoted(_ value: String) -> String {
     "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"

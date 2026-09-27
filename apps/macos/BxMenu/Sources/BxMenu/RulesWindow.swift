@@ -120,7 +120,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Routing Rules"
+        window.title = L("Routing Rules")
         window.isReleasedWhenClosed = false
         window.center()
         window.delegate = self
@@ -137,6 +137,14 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         self.scroll = scroll
         self.window = window
         return window
+    }
+
+    /// 切换界面语言之后调:标题与整张表按新语言重画,滚动位置不动。
+    /// 窗口没开着就什么都不做(下次打开时本来就按当前语言摆)。
+    func relocalize() {
+        guard let window, window.isVisible else { return }
+        window.title = L("Routing Rules")
+        render(preservingScroll: true)
     }
 
     /// **这个窗口只有三样东西:开关、你自己写的那些规则、以及去改它们。**
@@ -195,7 +203,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         // 任何标题 —— 于是「这里能按组勾选」整个看不出来,用户的原话是
         // 「分类要清晰……用户是否可以简单勾选」。
         if !lastGroupRows.isEmpty {
-            let presetsHeading = sectionHeading("Presets")
+            let presetsHeading = sectionHeading(L("Presets"))
             stack.addFullWidthRow(presetsHeading)
             for row in lastGroupRows {
                 stack.addFullWidthRow(groupRow(row))
@@ -222,12 +230,12 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         let footer = NSStackView()
         footer.orientation = .horizontal
         footer.spacing = 8
-        let add = NSButton(title: "Add Rule…", target: self, action: #selector(addRule))
+        let add = NSButton(title: L("Add Rule…"), target: self, action: #selector(addRule))
         add.bezelStyle = .rounded
         add.controlSize = .small
         footer.addArrangedSubview(add)
         if !lastConfigPath.isEmpty {
-            let reveal = NSButton(title: "Show Config", target: self, action: #selector(revealConfig))
+            let reveal = NSButton(title: L("Show Config"), target: self, action: #selector(revealConfig))
             reveal.bezelStyle = .rounded
             reveal.controlSize = .small
             footer.addArrangedSubview(reveal)
@@ -284,7 +292,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         }
 
         box.setHuggingPriority(.defaultLow, for: .horizontal)
-        let remove = NSButton(title: "Remove", target: self, action: #selector(removeRule(_:)))
+        let remove = NSButton(title: L("Remove"), target: self, action: #selector(removeRule(_:)))
         remove.bezelStyle = .rounded
         remove.controlSize = .small
         remove.identifier = NSUserInterfaceItemIdentifier(ruleEntryKey(row.kind, row.pattern))
@@ -304,13 +312,13 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         box.alignment = .firstBaseline
         box.spacing = 8
 
-        let label = NSTextField(labelWithString: "Removed \(pattern)")
+        let label = NSTextField(labelWithString: L("Removed {0}", pattern))
         label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         label.textColor = .secondaryLabelColor
         box.addArrangedSubview(label)
         box.setHuggingPriority(.defaultLow, for: .horizontal)
 
-        let undo = NSButton(title: "Undo", target: self, action: #selector(undoRemove(_:)))
+        let undo = NSButton(title: L("Undo"), target: self, action: #selector(undoRemove(_:)))
         undo.bezelStyle = .rounded
         undo.controlSize = .small
         undo.identifier = NSUserInterfaceItemIdentifier(ruleEntryKey(kind, pattern))
@@ -437,7 +445,7 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         let name = row.group.name
         let expanded = expandedGroups.contains(name)
         let disclose = NSButton(
-            title: expanded ? "Hide" : "Show",
+            title: expanded ? L("Hide") : L("Show"),
             target: self, action: #selector(toggleGroupExpansion(_:)))
         disclose.bezelStyle = .inline
         disclose.controlSize = .small

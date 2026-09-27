@@ -106,7 +106,7 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Servers"
+        window.title = L("Servers")
         window.isReleasedWhenClosed = false
         window.center()
         window.delegate = self
@@ -124,6 +124,14 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         self.scroll = scroll
         self.window = window
         return window
+    }
+
+    /// 切换界面语言之后调:标题与整张表按新语言重画,滚动位置不动。
+    /// 窗口没开着就什么都不做(下次打开时本来就按当前语言摆)。
+    func relocalize() {
+        guard let window, window.isVisible else { return }
+        window.title = L("Servers")
+        render(preservingScroll: true)
     }
 
     /// **当前那台一整块,其余是候选**(spec §4)。
@@ -151,14 +159,14 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         }
 
         if let panel = currentServerPanel(list: list, core: core) {
-            stack.addFullWidthRow(sectionTitle("Currently using"))
+            stack.addFullWidthRow(sectionTitle(L("Currently using")))
             stack.addFullWidthRow(currentPanelView(panel))
             stack.addFullWidthRow(gap())
         }
 
         let rows = otherServerRows(list: list, core: core)
         if !rows.isEmpty {
-            stack.addFullWidthRow(sectionTitle("Other servers"))
+            stack.addFullWidthRow(sectionTitle(L("Other servers")))
             for row in rows {
                 stack.addFullWidthRow(serverView(row))
             }
@@ -209,19 +217,19 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 8
-        let test = NSButton(title: probing ? "Testing…" : "Test All", target: self, action: #selector(probeAll))
+        let test = NSButton(title: probing ? L("Testing…") : L("Test All"), target: self, action: #selector(probeAll))
         test.bezelStyle = .rounded
         test.controlSize = .small
         test.isEnabled = !probing
         // 那条要紧但不该常驻的话,挂在这里。
-        test.toolTip = "Measures the round trip from this Mac to each server, outside the tunnel."
+        test.toolTip = L("Measures the round trip from this Mac to each server, outside the tunnel.")
         buttons.addArrangedSubview(test)
 
-        let check = NSButton(title: "Exit IP", target: self, action: #selector(checkExitIP))
+        let check = NSButton(title: L("Exit IP"), target: self, action: #selector(checkExitIP))
         check.bezelStyle = .rounded
         check.controlSize = .small
         check.isEnabled = probe != .checking
-        check.toolTip = "Asks a public service where your traffic appears to come from."
+        check.toolTip = L("Asks a public service where your traffic appears to come from.")
         buttons.addArrangedSubview(check)
 
         // 两个从一级菜单搬进来的入口:它们说的都是「服务器」这件事,归这里。
@@ -230,16 +238,16 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // 名字近义、动作不同,而点错第一个的代价是对着一台陌生机器跑 ssh。
         // 2026-09-18 用离屏快照第一次并排看到它们之后改名:现在一个说「我有台空机器」,
         // 另一个说「我已经有链接了」。
-        let deploy = NSButton(title: "Set Up a New VPS…", target: self, action: #selector(deployServer))
+        let deploy = NSButton(title: L("Set Up a New VPS…"), target: self, action: #selector(deployServer))
         deploy.bezelStyle = .rounded
         deploy.controlSize = .small
-        deploy.toolTip = "Install bx server on a fresh VPS over SSH."
+        deploy.toolTip = L("Install bx server on a fresh VPS over SSH.")
         buttons.addArrangedSubview(deploy)
 
-        let add = NSButton(title: "Add Existing Server…", target: self, action: #selector(addServer))
+        let add = NSButton(title: L("Add Existing Server…"), target: self, action: #selector(addServer))
         add.bezelStyle = .rounded
         add.controlSize = .small
-        add.toolTip = "Paste a bx link to add a server and switch to it. The previous server stays in the list."
+        add.toolTip = L("Paste a bx link to add a server and switch to it. The previous server stays in the list.")
         buttons.addArrangedSubview(add)
 
         return buttons
@@ -311,8 +319,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // ●/○;那句话进读屏描述与悬停提示。
         let confirmed = panel.runningConfirmed
         let dotLabel = confirmed
-            ? "Carrying your traffic now (confirmed by bx)"
-            : "Not confirmed as carrying your traffic right now"
+            ? L("Carrying your traffic now (confirmed by bx)")
+            : L("Not confirmed as carrying your traffic right now")
         let dot = NSImageView(image: NSImage(systemSymbolName: confirmed ? "circle.fill" : "circle.dashed",
                                              accessibilityDescription: dotLabel) ?? NSImage())
         dot.contentTintColor = confirmed ? .systemGreen : .tertiaryLabelColor
@@ -425,7 +433,7 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
             // 于是点了确认之后二十几秒屏幕上什么都不发生,再点一次连对话框都不弹。
             let switching = switchingTo != nil
             let mine = switchingTo == row.name
-            let use = NSButton(title: mine ? "Switching…" : "Use",
+            let use = NSButton(title: mine ? L("Switching…") : L("Use"),
                                target: self, action: #selector(switchTo(_:)))
             use.bezelStyle = .rounded
             use.controlSize = .small
@@ -458,7 +466,7 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         more.identifier = NSUserInterfaceItemIdentifier(
             rowMenuKey(name: name, host: host, isCurrent: isCurrent, traffic: traffic))
         more.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        more.toolTip = "More actions for \(name)"
+        more.toolTip = L("More actions for {0}", name)
         return more
     }
 
@@ -482,12 +490,12 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     @objc private func showRowMenu(_ sender: NSButton) {
         guard let raw = sender.identifier?.rawValue, let row = parseRowMenuKey(raw) else { return }
         let menu = NSMenu()
-        let replace = NSMenuItem(title: "Replace Link…", action: #selector(replaceLink(_:)), keyEquivalent: "")
+        let replace = NSMenuItem(title: L("Replace Link…"), action: #selector(replaceLink(_:)), keyEquivalent: "")
         replace.target = self
         replace.representedObject = row.name
         menu.addItem(replace)
 
-        let remove = NSMenuItem(title: "Remove…", action: #selector(removeServer(_:)), keyEquivalent: "")
+        let remove = NSMenuItem(title: L("Remove…"), action: #selector(removeServer(_:)), keyEquivalent: "")
         remove.target = self
         remove.representedObject = raw
         // **当前那台的删除置灰。** 删掉正在用的那一台会让下一次拨号无处可去,
@@ -495,7 +503,7 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // 就知道,而不是点完读一句拒绝。
         remove.isEnabled = !row.isCurrent
         remove.toolTip = row.isCurrent
-            ? "Switch to another server first, then you can remove this one."
+            ? L("Switch to another server first, then you can remove this one.")
             : nil
         menu.addItem(remove)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)

@@ -122,7 +122,11 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         let window = NSWindow(
             // 七列(应用名 + 五个数字列 + 规则原文)摆得下的宽度。图标不再单独
             // 占一列 —— 它搬进了应用名那一格。上一版是 460,那时一行是一句散文。
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+            // 560 → 640(2026-09-26):560 时应用名那一列只剩 182pt,一个真实的
+            // googlevideo 目的地(`rr1---sn-….googlevideo.com +4`)被截断。英文界面
+            // 一直没露馅,只是因为底部那句近似说明更长、把窗口撑到了 ~630;中文那句
+            // 短,窗口回到 560,截断就出来了 —— 宽度不该靠一句不相干的说明来撑。
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
             // **`.resizable` 是承重的,不是讲究。** 最后一列是规则原文(变长文本、
             // 会截断),而这个窗口既不横向滚动(clip 的宽度锚死在 scroll 上)、
             // 也没有别的地方能读到全文 —— 少了它,一条被截断的规则就**永久不可见**,
@@ -132,7 +136,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
             backing: .buffered,
             defer: false
         )
-        window.title = "Traffic by App"
+        window.title = L("Traffic by App")
         // 悬浮:一边用别的应用一边看,沉下去就等于没开。
         window.level = .floating
         window.isReleasedWhenClosed = false
@@ -152,6 +156,14 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         self.stack = stack
         self.window = window
         return window
+    }
+
+    /// 切换界面语言之后调:标题与整张表按新语言重画,滚动位置不动。
+    /// 窗口没开着就什么都不做(下次打开时本来就按当前语言摆)。
+    func relocalize() {
+        guard let window, window.isVisible else { return }
+        window.title = L("Traffic by App")
+        render(preservingScroll: true)
     }
 
     /// 按 `rows()` 给的行摆。**顺序与内容一个字都不重新判断** —— 三种「空」

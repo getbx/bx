@@ -151,12 +151,12 @@ do {
         configPath: list.configPath,
         caveatNote: nil,
         global: list.global)
-    let window = windowTitled("Routing Rules")
+    let window = windowTitled(L("Routing Rules"))
     capture(window, as: "rules-collapsed")
 
     // 展开一组:**「里面有哪些域名」那条路只有点开才量得到**,
     // 而展开会把一行变成十几行,恰恰是最容易把布局撑坏的输入。
-    guard let show = findButton(window.contentView!, title: "Show", id: "china-cdn") else {
+    guard let show = findButton(window.contentView!, title: L("Show"), id: "china-cdn") else {
         fail("找不到 China CDN 的 Show 按钮 —— 展开那条路没接上,或者判据认不出它了")
     }
     show.performClick(nil)
@@ -172,7 +172,7 @@ do {
     let controller = serversController
     controller.show(list: list, core: nil, probe: .address("203.0.113.92"),
                     switchingTo: nil, canEdit: true)
-    capture(windowTitled("Servers"), as: "servers")
+    capture(windowTitled(L("Servers")), as: "servers")
 }
 
 // —— Servers:单服务器配置(`bx setup` 写出来的那种,也是最常见的那种)——
@@ -186,7 +186,7 @@ do {
     let controller = serversController
     controller.show(list: list, core: core, probe: .unknown,
                     switchingTo: nil, canEdit: true)
-    capture(windowTitled("Servers"), as: "servers-single")
+    capture(windowTitled(L("Servers")), as: "servers-single")
 }
 
 // —— Diagnostics(两页各一张)——
@@ -194,23 +194,23 @@ do {
     let controller = DiagnosticsWindowController()
     controller.setAvailability(doctor: true, logs: true)
     controller.showChecks(loadFixture("doctor.json", as: DoctorReport.self))
-    capture(windowTitled("Diagnostics"), as: "diagnostics-checks")
+    capture(windowTitled(L("Diagnostics")), as: "diagnostics-checks")
     controller.showLogs(loadFixture("logs.json", as: LogsReport.self), highlightingCode: nil)
-    capture(windowTitled("Diagnostics"), as: "diagnostics-logs")
+    capture(windowTitled(L("Diagnostics")), as: "diagnostics-logs")
 }
 
 // —— Traffic by App ——
 do {
     let controller = AppTrafficWindowController()
     controller.show(report: loadFixture("apptraffic.json", as: AppTrafficReport.self))
-    capture(windowTitled("Traffic by App"), as: "apptraffic")
+    capture(windowTitled(L("Traffic by App")), as: "apptraffic")
 }
 
 // —— Set Up a New Server(无数据,纯表单)——
 do {
     let controller = DeployWindowController()
     controller.show()
-    capture(windowTitled("Set Up a New Server"), as: "deploy")
+    capture(windowTitled(L("Set Up a New Server")), as: "deploy")
 }
 
 print("macOS menu snapshots written")

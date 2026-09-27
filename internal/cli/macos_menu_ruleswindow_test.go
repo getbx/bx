@@ -42,7 +42,7 @@ func TestMacMenuRulesWindowRendersByThePureModel(t *testing.T) {
 	}
 	// **按钮要点名。** 只查 `NSButton(title: ` 的话,早就存在的 Show Config
 	// 一个人就能满足它 —— 那样这条守卫对「这张表根本没长出来」毫无反应。
-	for _, button := range []string{`NSButton(title: "Add Rule…"`, `NSButton(title: "Remove"`, `NSButton(title: "Undo"`} {
+	for _, button := range []string{`NSButton(title: L("Add Rule…")`, `NSButton(title: L("Remove")`, `NSButton(title: L("Undo")`} {
 		if !strings.Contains(text, button) {
 			t.Errorf("窗口里没有 %s", button)
 		}
@@ -455,7 +455,7 @@ func TestMacMenuRulesWindowKeepsTheUndoAcrossAnAmbientRerender(t *testing.T) {
 	if !strings.Contains(render, "removedRow(kind: kind, pattern: pattern)") {
 		t.Error("render 不摆「Removed … · Undo」那种行 —— 挂起记下了却没人把它画出来")
 	}
-	if !strings.Contains(text, `NSButton(title: "Undo"`) {
+	if !strings.Contains(text, `NSButton(title: L("Undo")`) {
 		t.Error("窗口里没有 Undo 按钮")
 	}
 	removed, ok := swiftFunctionBody(window, "private func removedRow(")

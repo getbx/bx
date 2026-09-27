@@ -18,7 +18,7 @@ func unifiedRuntimeVersion(root: String = "/Library/Application Support/bx/runti
 func installActionTitle(runtimeInstalled: Bool, cliUsable: Bool) -> String? {
     if runtimeInstalled && cliUsable { return nil }
     if !runtimeInstalled && cliUsable { return nil } // legacy 布局:沿用既有指引,不递归安装
-    return "Install bx…"
+    return L("Install bx…")
 }
 
 func menuUpdateActionTitle(check: UpdateCheck?) -> String? {
@@ -42,10 +42,10 @@ func menuUpdateRow(check: UpdateCheck?, guardianVersion: String?, runtimeVersion
     let installed = (runtimeVersion ?? "").trimmingCharacters(in: .whitespaces)
     let running = (guardianVersion ?? "").trimmingCharacters(in: .whitespaces)
     if let check, check.available, check.verified, !installed.isEmpty, check.latest != installed {
-        return .action("Update bx…")
+        return .action(L("Update bx…"))
     }
     if !installed.isEmpty, !running.isEmpty, installed != running {
-        return .note("\(installed) installed · Guardian switch pending")
+        return .note(L("{0} installed · Guardian switch pending", installed))
     }
     if installed.isEmpty, let title = updateActionTitle(for: check) {
         return .action(title)
@@ -57,15 +57,15 @@ func updatingBanner(phase: String?) -> String? {
     guard let phase else { return nil }
     switch phase {
     case "prepared", "barrier_active", "activating", "rolling_back":
-        return "Updating bx…"
+        return L("Updating bx…")
     default:
         return nil
     }
 }
 
-let turnOffActionTitle = "Turn Off bx"
+var turnOffActionTitle: String { L("Turn Off bx") }
 
-let repairActionTitle = "Repair bx…"
+var repairActionTitle: String { L("Repair bx…") }
 
 func repairActionNeeded(bundleVersion: String?, runtimeVersion: String?, coreVersion: String?, phase: String?) -> Bool {
     // Mid-transaction: brief version drift across bundle/runtime/core is expected and not a fault.
@@ -89,21 +89,19 @@ func repairActionNeeded(bundleVersion: String?, runtimeVersion: String?, coreVer
 /// 这不是加一个功能,是**堵掉一条会把人锁住的路**:给出正确的删除方式,他就
 /// 不会去用错误的那个。
 enum UninstallPresentation {
-    static let actionTitle = "Uninstall bx…"
-    static let confirmTitle = "Uninstall bx?"
+    static var actionTitle: String { L("Uninstall bx…") }
+    static var confirmTitle: String { L("Uninstall bx?") }
 
     /// **必须说清三件事**:会停掉保护(网络回到没有 bx 的状态)、会删掉什么、
     /// 以及**什么被保留**。
     ///
     /// 最后一件最容易漏而最要紧:用户在决定「删了以后还装得回来吗」。连接配置
     /// 留着,意味着重装之后不用重新贴链接 —— 这句话直接改变他会不会点确认。
-    static let confirmMessage =
-        "bx will stop protection and remove its background service, the menu bar app, "
-        + "and the bx command. Your network returns to how it was before bx.\n\n"
-        + "Your connection settings are kept, so reinstalling does not need the link again. "
-        + "macOS will ask for administrator authorization."
+    static var confirmMessage: String {
+        L("bx will stop protection and remove its background service, the menu bar app, and the bx command. Your network returns to how it was before bx.\n\nYour connection settings are kept, so reinstalling does not need the link again. macOS will ask for administrator authorization.")
+    }
 
-    static let confirmButton = "Uninstall"
+    static var confirmButton: String { L("Uninstall") }
 
     /// 卸载完成之后菜单要退出 —— 它自己的程序体正在被删掉。
     ///
@@ -113,8 +111,8 @@ enum UninstallPresentation {
     static func shouldQuitAfter(uninstallSucceeded: Bool) -> Bool { uninstallSucceeded }
 
     /// 失败时说人话,并给出**不依赖菜单**的那条出路 —— 菜单此刻可能已经半残。
-    static let failureTitle = "Uninstall failed"
-    static let failureMessage =
-        "bx could not finish uninstalling. Protection may still be running.\n\n"
-        + "You can finish it from Terminal:\n    sudo bx uninstall"
+    static var failureTitle: String { L("Uninstall failed") }
+    static var failureMessage: String {
+        L("bx could not finish uninstalling. Protection may still be running.\n\nYou can finish it from Terminal:\n    sudo bx uninstall")
+    }
 }

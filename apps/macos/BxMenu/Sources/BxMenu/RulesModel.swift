@@ -27,27 +27,29 @@ func guardianFetchFailureInfo(
     httpStatus: Int?, failureCode: String?, describedError: String?, logsAvailable: Bool
 ) -> String {
     if let status = httpStatus {
+        // 整句查表,不拼半句:拼出来的碎片各自翻译之后语序是错的。
+        let code = (failureCode ?? "").isEmpty ? nil : failureCode
         if status == 500 {
-            var info = "bx answered with an error (HTTP 500"
-            if let code = failureCode, !code.isEmpty {
-                info += ", code=\(code)"
+            switch (code, logsAvailable) {
+            case (let code?, true):
+                return L("bx answered with an error (HTTP 500, code={0}). Use Show Details for the reason.", code)
+            case (let code?, false):
+                return L("bx answered with an error (HTTP 500, code={0}). bx recorded the reason in its log.", code)
+            case (nil, true):
+                return L("bx answered with an error (HTTP 500). Use Show Details for the reason.")
+            case (nil, false):
+                return L("bx answered with an error (HTTP 500). bx recorded the reason in its log.")
             }
-            info += logsAvailable
-                ? "). Use Show Details for the reason."
-                : "). bx recorded the reason in its log."
-            return info
         }
-        var info = "bx answered HTTP \(status)"
-        if let code = failureCode, !code.isEmpty {
-            info += " (code=\(code))"
+        if let code {
+            return L("bx answered HTTP {0} (code={1}).", status, code)
         }
-        info += "."
-        return info
+        return L("bx answered HTTP {0}.", status)
     }
     if let described = describedError, !described.isEmpty {
-        return "The menu could not fetch this from bx: \(described)"
+        return L("The menu could not fetch this from bx: {0}", described)
     }
-    return "The menu could not fetch this from bx, and the reason was not recorded."
+    return L("The menu could not fetch this from bx, and the reason was not recorded.")
 }
 
 /// 一组规则在配置里的状态。**三态,不是布尔。**
@@ -233,7 +235,7 @@ struct RuleRow: Equatable {
         if let failure, failure.attempts > 0 {
             let pct = Int((Double(failure.failures) / Double(failure.attempts) * 100).rounded())
             parts.append(
-                "\(failure.failures) of \(failure.attempts) connections failed (\(pct)%) — this path is not working")
+                L("{0} of {1} connections failed ({2}%) — this path is not working", failure.failures, failure.attempts, pct))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -261,8 +263,8 @@ func verdictText(_ finding: RuleFinding) -> String {
     let summary = finding.summary.trimmingCharacters(in: .whitespacesAndNewlines)
     if !summary.isEmpty { return summary }
     return finding.cls.isEmpty
-        ? "bx flagged this rule, and this version could not say why."
-        : "bx flagged this rule (\(finding.cls))."
+        ? L("bx flagged this rule, and this version could not say why.")
+        : L("bx flagged this rule ({0}).", finding.cls)
 }
 
 /// 这张表**有半边是问不出来的**时,窗口顶上要说的那句话。两个半边:
@@ -286,16 +288,17 @@ func verdictText(_ finding: RuleFinding) -> String {
 /// 都得记得把话带上;两条独立的横幅就是两次机会漏掉其中一条 —— 正是这次要修的
 /// 那个缺陷的形状(`failing:` 那半在**每一处**都算错了)。
 func ruleWindowCaveatNote(_ list: RuleList, coreAnswering: Bool) -> String? {
-    var halves: [String] = []
-    if list.review == nil {
-        halves.append("this version of bx did not check these rules for problems")
+    // 三种组合各一整句:拼接的半句翻成中文后语序对不上。
+    switch (list.review == nil, coreAnswering) {
+    case (false, true):
+        return nil
+    case (true, true):
+        return L("A rule with nothing written under it here has not been checked: this version of bx did not check these rules for problems.")
+    case (false, false):
+        return L("A rule with nothing written under it here has not been checked: bx's core is not answering, so it could not say which rules are failing.")
+    case (true, false):
+        return L("A rule with nothing written under it here has not been checked: this version of bx did not check these rules for problems, and bx's core is not answering, so it could not say which rules are failing.")
     }
-    if !coreAnswering {
-        halves.append("bx's core is not answering, so it could not say which rules are failing")
-    }
-    guard !halves.isEmpty else { return nil }
-    return "A rule with nothing written under it here has not been checked: "
-        + halves.joined(separator: ", and ") + "."
 }
 
 /// 越小越靠前。**有问题的在前,健康的一个字不写** —— 与 Checks 页同一条纪律。
@@ -385,20 +388,20 @@ func ruleRows(from list: RuleList, failing: [FailingRule], customOnly: Bool) -> 
 /// 在用户敲完的当下就说话,而不是让他点了保存、断了一次网,才发现写错了。
 func validateRulePattern(_ raw: String) -> String? {
     let pattern = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    if pattern.isEmpty { return "Enter a domain, for example *.example.com" }
+    if pattern.isEmpty { return L("Enter a domain, for example *.example.com") }
     if pattern.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
-        return "Domains cannot contain spaces"
+        return L("Domains cannot contain spaces")
     }
     if pattern.contains("'") || pattern.contains("\"") {
-        return "Leave out the quotes — bx adds them itself"
+        return L("Leave out the quotes — bx adds them itself")
     }
     let body = pattern.hasPrefix("*.") ? String(pattern.dropFirst(2)) : pattern
     if !body.contains(".") || body.hasPrefix(".") || body.hasSuffix(".") || body.contains("..") {
-        return "\(raw) is not a domain"
+        return L("{0} is not a domain", raw)
     }
     let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.-")
     if body.unicodeScalars.contains(where: { !allowed.contains($0) }) {
-        return "\(raw) is not a domain"
+        return L("{0} is not a domain", raw)
     }
     return nil
 }
@@ -415,11 +418,9 @@ func validateRulePattern(_ raw: String) -> String? {
 /// **不许说成「用确切主机代替」**:bx 的规则是后缀匹配,`bucket.s3.amazonaws.com`
 /// 照样覆盖它的子域,改窄并不能让这条规则通过 —— 那句话会把用户送进一个
 /// 永远出不来的循环。真正的出路是旁边那个 Add Anyway。
-let riskyDirectRuleWarning =
-    "Anyone can register a subdomain on this platform, and a bx direct rule covers every "
-    + "subdomain of what you write — so a stranger could make your real IP leave outside "
-    + "the tunnel. Writing a deeper host narrows this but does not remove it. "
-    + "Use Add Anyway only if you control that host."
+var riskyDirectRuleWarning: String {
+    L("Anyone can register a subdomain on this platform, and a bx direct rule covers every subdomain of what you write — so a stranger could make your real IP leave outside the tunnel. Writing a deeper host narrows this but does not remove it. Use Add Anyway only if you control that host.")
+}
 
 /// 归一化成写进配置的形式。校验通过后才调用。
 func normalizedRulePattern(_ raw: String) -> String {
@@ -472,7 +473,7 @@ struct RuleGroupRow: Equatable {
     /// 只有两种情况会说话:有东西在失败(要行动),或者装了一半(状态本身含混)。
     var trailing: String? {
         if failing > 0 {
-            return "\(failures) failed"
+            return L("{0} failed", failures)
         }
         if isMixed {
             return "\(group.installed)/\(group.total)"
@@ -514,16 +515,16 @@ func ruleGroupRows(from list: RuleList, failing: [FailingRule]) -> [RuleGroupRow
 func replaceConfigurationMessage(currentServer: String?, pastedFrom: ReplaceLinkOrigin) -> String {
     var lines: [String] = []
     if let current = currentServer, !current.isEmpty {
-        lines.append("Your traffic leaves from \(current) today.")
+        lines.append(L("Your traffic leaves from {0} today.", current))
     }
-    lines.append("After this change it will leave from the server in the link you just provided.")
+    lines.append(L("After this change it will leave from the server in the link you just provided."))
     switch pastedFrom {
     case .clipboard:
-        lines.append("The link was read from your clipboard.")
+        lines.append(L("The link was read from your clipboard."))
     case .typed:
         break
     }
-    lines.append("bx reconnects to apply it.")
+    lines.append(L("bx reconnects to apply it."))
     return lines.joined(separator: "\n\n")
 }
 
@@ -728,15 +729,15 @@ func ruleTableEntries(rows: [RuleRow], pending: [PendingRuleRemoval]) -> [RuleTa
 func ruleGroupSubtitle(_ group: RuleGroup) -> String {
     switch group.name {
     case "gaming":
-        return "Game downloads and cloud saves come straight from the CDN"
+        return L("Game downloads and cloud saves come straight from the CDN")
     case "apple":
-        return "iCloud sync, Game Center and the App Store stay responsive"
+        return L("iCloud sync, Game Center and the App Store stay responsive")
     case "tencent":
-        return "WeChat, Tencent Meeting and QQ sign-in, chat and media"
+        return L("WeChat, Tencent Meeting and QQ sign-in, chat and media")
     case "china-cdn":
-        return "Chinese apps, video and shopping load from nearby servers"
+        return L("Chinese apps, video and shopping load from nearby servers")
     default:
-        return "\(group.total) domains"
+        return L("{0} domains", group.total)
     }
 }
 
@@ -756,13 +757,12 @@ func ruleGroupSubtitle(_ group: RuleGroup) -> String {
 /// **问不出来时只说条数**(旧 Guardian 不发这个键)—— 绝不替它猜一个模式,
 /// 因为猜错的那一半正好会把上面那句话说反。
 func customRulesHeading(count: Int, global: Bool?) -> String {
-    let head = "Your own rules (\(count))"
     switch global {
     case .some(true):
-        return head + " — global mode: these are the only domains that go direct"
+        return L("Your own rules ({0}) — global mode: these are the only domains that go direct", count)
     case .some(false):
-        return head + " — split mode: exceptions on top of the built-in China list"
+        return L("Your own rules ({0}) — split mode: exceptions on top of the built-in China list", count)
     case .none:
-        return head
+        return L("Your own rules ({0})", count)
     }
 }
