@@ -80,6 +80,11 @@ Language ▸ 子菜单:跟随系统 / English / 简体中文,**立刻生效、�
   比渲染签名(`menuSignature`,递归到子菜单)变了才换 item。`removeAllItems()` 全文件
   **只许在 commitMenu 里出现一次**,菜单对象始终是同一个(`TestMacMenuRebuildsMenuInPlace`)
   ——别处清空会绕过签名比对,展开的子菜单每 2 秒被拆掉(本仓库两次因此选窗口不选子菜单)。
+- **升级之后菜单自己换成新版**(2026-09-26,A13):盘上 Bx.app 的 `release.json` 与启动时记下的
+  不一样、由 launchd 托管、且没人在用(无弹窗/窗口/展开的菜单/在飞动作)时,每轮刷新末尾以
+  非零码 75 退出,由 `KeepAlive{SuccessfulExit:false}` 拉起新版。判据 `menuShouldRelaunchForNewBundle`,
+  接线 `TestMacMenuRelaunchesItselfWhenTheBundleIsReplaced`。**退 0 等于把菜单关掉**;读不出版本
+  绝不据此退出。**真机未验**:下一次升级后看菜单进程的 PID 与启动时刻有没有变。
 - **常驻版本号删了**:更新入口只剩 `addUpdateActionIfAvailable` 一处;平时装的哪版在
   Troubleshoot ▸ 里(`installedVersionForMenu`,只取状态里已带的版本、不读盘)。
 - **Quit 不带图标、带 ⌘Q**(`TestMacMenuQuitHasNoIconAndUsesCommandQ`):电源符号紧挨

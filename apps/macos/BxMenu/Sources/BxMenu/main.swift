@@ -120,7 +120,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `watchQueue` 上的 `runWatchLoop` 读写它,主线程再也不碰。**
     private var watchGeneration: UInt64 = 0
 
+    /// 这个进程启动时盘上 Bx.app 的版本。与之后每一轮读到的比,不一致就说明
+    /// 包在进程底下被换过了(见 `relaunchIfBundleReplaced`)。
+    private var launchedBundleVersion: String?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        launchedBundleVersion = bundleReleaseVersion()
         enforceSingleInstance()
         ensureLoginItemIfCanonical()
         configureMenu()
@@ -466,6 +471,29 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if refreshGate.end() {
             refresh(userInitiated: true)
         }
+        relaunchIfBundleReplaced()
+    }
+
+    /// 盘上的 Bx.app 换成了新版而这个进程还是旧的:没人在用时退出,由 launchd
+    /// 拉起新版(known-gaps A13)。判据在 `menuShouldRelaunchForNewBundle`(纯函数,
+    /// 有测试);这里只负责采集「有没有人在用」与真正退出。
+    ///
+    /// 挂在每一轮刷新的末尾:更新一落地,Guardian 的状态随之变化,刷新就会来;
+    /// 用户正忙时这一轮放过,下一轮再判。
+    private func relaunchIfBundleReplaced() {
+        let windowOpen = NSApp.windows.contains { $0.isVisible && $0.styleMask.contains(.titled) }
+        let busy = updateInFlight != nil || toggleInFlight != nil || pendingQuit != nil
+            || NSApp.modalWindow != nil || menuIsOpen || windowOpen
+        let onDisk = bundleReleaseVersion()
+        guard menuShouldRelaunchForNewBundle(
+            launchedVersion: launchedBundleVersion,
+            onDiskVersion: onDisk,
+            launchdManaged: ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == menuLaunchdLabel,
+            busy: busy
+        ) else { return }
+        FileHandle.standardError.write(Data(
+            "bx-menu: Bx.app on disk is \(onDisk ?? "?"), this process is \(launchedBundleVersion ?? "?"); exiting so launchd starts the new one\n".utf8))
+        exit(menuRelaunchExitCode)
     }
 
     /// 把这一轮 Guardian 的应答喂给转换通知的状态机;它说要响才响。

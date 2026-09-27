@@ -116,3 +116,35 @@ enum UninstallPresentation {
         L("bx could not finish uninstalling. Protection may still be running.\n\nYou can finish it from Terminal:\n    sudo bx uninstall")
     }
 }
+
+/// 菜单 LaunchAgent 的 label。launchd 拉起的进程环境里 `XPC_SERVICE_NAME` 就是它 ——
+/// 那是「退出之后有人会把我拉起来」的唯一可靠证据。
+let menuLaunchdLabel = "com.getbx.bx.menu"
+
+/// 为换成新版本而退出时用的退出码。**必须非零**:LaunchAgent 是
+/// `KeepAlive{SuccessfulExit:false}`,只有非零退出才会被拉起;退 0 等于把菜单关掉。
+let menuRelaunchExitCode: Int32 = 75
+
+/// 盘上的 Bx.app 已经换成新版本、而跑着的还是旧进程时,该不该现在退出,
+/// 让 launchd 拉起新版。
+///
+/// **缺口是真机撞到的(known-gaps A13,2026-09-26)**:`bx update` 与菜单里的
+/// Update bx… 都会换掉 `/Applications/Bx.app`,却都不重启菜单 —— Guardian、Core、
+/// runtime 全是新版,菜单还是早上那个进程,新菜单项一个都不出现,直到下次登录。
+///
+/// 只在四件事同时成立时退出:
+/// - 两个版本**都读得出来且不同**(读不出来 = 不知道,绝不据此退出:一个装到一半
+///   的包、一次读盘失败都会长成这个样子);
+/// - 由 launchd 托管(否则退出之后没人拉起,菜单栏指示灯就这么没了 —— 那正是
+///   这个菜单最不许出现的「保护在跑、指示灯不在」);
+/// - 此刻**没有人在用它**(更新 / 开关在飞、排队中的 Quit、弹窗、打开的窗口、
+///   展开的菜单):退出会把用户正在看或正在填的东西一起抹掉。等他忙完,
+///   下一次刷新再判一次就是了。
+func menuShouldRelaunchForNewBundle(
+    launchedVersion: String?, onDiskVersion: String?, launchdManaged: Bool, busy: Bool
+) -> Bool {
+    let launched = (launchedVersion ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let onDisk = (onDiskVersion ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !launched.isEmpty, !onDisk.isEmpty, launched != onDisk else { return false }
+    return launchdManaged && !busy
+}

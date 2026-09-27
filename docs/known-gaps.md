@@ -16,7 +16,6 @@
 | # | 问题 | 核过 | 判据在哪 | 估计 |
 |---|---|---|---|---|
 | A11 | **关掉保护期间建立的连接,重新 `bx up` 之后仍从物理网卡直出**(2026-09-25 真机抓包:`bx down` 那 14 秒里 Chrome 开的一条 TCP 连接(`192.168.50.15:49528 → 203.0.113.11:443`),**36 分钟后、中间又经过一次完整的 Guardian 切换,仍在 en0 上以真实 IP 收发**)。macOS 已连接的 socket 不会因为路由表变了而改走 TUN;所有 VPN 都有同一个性质,但 bx 的承诺是「不泄漏」,而用户从菜单开关一次保护就会碰上。**看得见了(2026-09-25)**:Core 每 15 秒读一次内核 socket 表(`appattr.StrayConnections`:本地地址在物理网卡、远端公网、没绑网卡、不是 bx 自己),有这种连接时 `bx status` 出一条 error 级告警 `connections_bypassing_bx`,点名应用、叫用户重开它们;菜单同时出一行红的 `Outside bx`(图标裂开,经 Guardian 的 `CoreRuntime.bypassing_apps`,2026-09-26)。**仍没做的是主动断掉它们**(macOS 没有按 socket reset 的现成原语;要不要为此动 pf 待定)。 | 2026-09-25 | `docs/acceptance-pending.md` B9 | 待定 |
-| A13 | **升级之后菜单栏 App 还跑着旧版本**(2026-09-26 真机:`sudo bx update` 到 v0.4.11,Guardian/Core/runtime 都换了、盘上 `/Applications/Bx.app` 也是新的,而 BxMenu 进程仍是早上 08:14 起的那个旧进程,新菜单项一个都看不到;手动 `launchctl kickstart -k gui/$UID/com.getbx.bx.menu` 之后才生效)。`bx update` 与菜单里的「Update bx…」都不重启菜单(`menuLaunchdCommands` 在已加载时只发不带 `-k` 的 kickstart,那是为了 `bx up` 不闪图标,见 `internal/cli/menu_darwin.go`)。修法大致:更新提交之后,由菜单自己比较「启动时的版本」与盘上 Info.plist 的版本,不一致且没有更新在飞时以非零码退出,交给 `KeepAlive{SuccessfulExit:false}` 拉起新版(不是手动启动时要另想办法)。 | 2026-09-26 | `apps/macos/BxMenu/CLAUDE.md`「菜单本身」 | 半天 |
 
 ## B. 要你拍板:产品或安全上的取舍
 

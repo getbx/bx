@@ -7,7 +7,30 @@ struct InstallPresentationTests {
         if !c { failures += 1; FileHandle.standardError.write(Data(("FAIL: " + m + "\n").utf8)) }
     }
 
+    // A13:盘上换了新版而进程是旧的 —— 只在确实知道、有人会拉起、没人在用时退出。
+    static func testRelaunchOnlyWhenItIsSafeAndKnown() {
+        expect(menuShouldRelaunchForNewBundle(launchedVersion: "v0.4.10", onDiskVersion: "v0.4.11",
+                                              launchdManaged: true, busy: false),
+               "盘上已是新版、launchd 托管、没人在用,却不重启 —— 菜单会一直是旧的")
+        expect(!menuShouldRelaunchForNewBundle(launchedVersion: "v0.4.11", onDiskVersion: "v0.4.11",
+                                               launchdManaged: true, busy: false), "版本相同也重启了")
+        expect(!menuShouldRelaunchForNewBundle(launchedVersion: "v0.4.10", onDiskVersion: nil,
+                                               launchdManaged: true, busy: false),
+               "读不出盘上版本(装到一半、读盘失败)却据此退出")
+        expect(!menuShouldRelaunchForNewBundle(launchedVersion: nil, onDiskVersion: "v0.4.11",
+                                               launchdManaged: true, busy: false),
+               "不知道自己是哪一版却据此退出")
+        expect(!menuShouldRelaunchForNewBundle(launchedVersion: "v0.4.10", onDiskVersion: "v0.4.11",
+                                               launchdManaged: false, busy: false),
+               "不是 launchd 拉起的也退出了 —— 没人会把它拉起来,指示灯就没了")
+        expect(!menuShouldRelaunchForNewBundle(launchedVersion: "v0.4.10", onDiskVersion: "v0.4.11",
+                                               launchdManaged: true, busy: true),
+               "用户正在用(弹窗、窗口、开关在飞)时退出了")
+        expect(menuRelaunchExitCode != 0, "退出码为 0 时 KeepAlive{SuccessfulExit:false} 不会把菜单拉起来")
+    }
+
     static func main() {
+        testRelaunchOnlyWhenItIsSafeAndKnown()
         expect(decodeRuntimeVersion(Data(#"{"schema_version":1,"version":"1.2.3","platform":"darwin/arm64","assets":{"bx-cli":"ab"}}"#.utf8)) == "1.2.3",
                "decode version from release.json")
         expect(decodeRuntimeVersion(Data("not json".utf8)) == nil, "garbage yields nil")
