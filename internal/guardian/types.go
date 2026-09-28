@@ -151,6 +151,10 @@ type CoreRuntime struct {
 	// (Core 网络守卫的 stats.WarningConnectionsBypassingBX)。空 = Core 没报;
 	// 缺席的键不许读成「查过、没有」—— 旧 Core 根本不查。
 	BypassingApps []string `json:"bypassing_apps,omitempty"`
+	// SettlingConnections 是同一种连接里**还没到门槛**的那些的条数(Core 的
+	// stats.WarningConnectionsSettling.Count):多半几分钟内自己就没了,只报数、不点名、
+	// 不裂图标。0 = Core 没报;缺席的键同样不许读成「查过、没有」。
+	SettlingConnections int `json:"settling_connections,omitempty"`
 }
 
 // FailingRule 是一条正在成片失败的用户规则。

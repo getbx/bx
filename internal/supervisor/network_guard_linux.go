@@ -17,7 +17,7 @@ import (
 // 100.64/10 地址」。少一次 fork,也少一条会被 PATH / busybox 差异搞坏的路径 ——
 // bx 的 Linux 目标里就有 OpenWrt/musl 那种 `netstat` 行为与 GNU 不一致的环境。
 // routedAround(bx 自己绕开隧道的网段)只有 darwin 的绕过检测在用;Linux 还没有那条检测。
-func collectNetworkWarnings(ctx context.Context, _ func() []netip.Prefix) []stats.Warning {
+func collectNetworkWarnings(ctx context.Context, _ func() []netip.Prefix, _ *strayTracker) []stats.Warning {
 	if err := ctx.Err(); err != nil {
 		return nil
 	}

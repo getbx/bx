@@ -90,6 +90,32 @@ struct MenuRowsTests {
                "压缩后的菜单把泄漏那一行藏掉了")
         expect(row(set, "Outside bx") == nil, "没有绕过 bx 的连接时不许出现这一行")
 
+        // 两段式(2026-09-28):刚开始退场的连接只报数 —— 灰字一行、不裂图标、压缩后照样露面
+        // (数字随刷新变小,本身就是「在好转」的信号);顽固的那组仍走上面那行红的。
+        let settling = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":390,"server":"vps","udp_mode":"proxy",
+                 "settling_connections":3}}
+        """)
+        let settlingSet = menuRows(status: settling, dns: "127.0.0.1")
+        expect(row(settlingSet, "Settling")?.value == "3 connections from before protection was on — they move into bx as apps reconnect",
+               "退场中的连接数没有被陈述,实际 \(String(describing: row(settlingSet, "Settling")))")
+        expect(row(settlingSet, "Settling")?.mark != .bad && settlingSet.anomalyCount == 0,
+               "退场中的连接不是异常:图标不许裂")
+        expect(compactMenuRows(settlingSet).contains { $0.label == "Settling" },
+               "压缩后的菜单把退场中那一行藏掉了 —— 用户要看着那个数变小")
+        expect(row(settlingSet, "Outside bx") == nil, "只有退场中的连接时不许点名任何应用")
+        expect(row(set, "Settling") == nil, "没有退场中的连接时不许出现这一行")
+        // 两组同时在:两行都在,只有顽固那行算异常。
+        let both = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":390,"server":"vps","udp_mode":"proxy",
+                 "bypassing_apps":["Google Chrome"],"settling_connections":1}}
+        """)
+        let bothSet = menuRows(status: both, dns: "127.0.0.1")
+        expect(row(bothSet, "Outside bx") != nil && row(bothSet, "Settling")?.value.hasPrefix("1 connection ") == true && bothSet.anomalyCount == 1,
+               "两组同时在时两行都要在、且只有顽固那行是异常,实际 \(bothSet.rows.map(\.label)) anomalies=\(bothSet.anomalyCount)")
+
         // 隧道不健康是真异常
         let unhealthy = decode("""
         {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",

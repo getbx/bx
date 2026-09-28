@@ -9,6 +9,6 @@ import (
 	"github.com/getbx/bx/internal/stats"
 )
 
-func collectNetworkWarnings(context.Context, func() []netip.Prefix) []stats.Warning {
+func collectNetworkWarnings(context.Context, func() []netip.Prefix, *strayTracker) []stats.Warning {
 	return nil
 }

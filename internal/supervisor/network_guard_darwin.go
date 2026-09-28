@@ -13,7 +13,7 @@ import (
 	"github.com/getbx/bx/internal/stats"
 )
 
-func collectNetworkWarnings(ctx context.Context, routedAround func() []netip.Prefix) []stats.Warning {
+func collectNetworkWarnings(ctx context.Context, routedAround func() []netip.Prefix, tracker *strayTracker) []stats.Warning {
 	var warnings []stats.Warning
 	if warning := darwinTailscaleWarning(ctx); warning.Name != "" {
 		warnings = append(warnings, warning)
@@ -24,9 +24,7 @@ func collectNetworkWarnings(ctx context.Context, routedAround func() []netip.Pre
 	if warning := darwinPacketTunnelWarning(ctx); warning.Name != "" {
 		warnings = append(warnings, warning)
 	}
-	if warning := darwinStrayConnectionWarning(ctx, routedAround); warning.Name != "" {
-		warnings = append(warnings, warning)
-	}
+	warnings = append(warnings, darwinStrayWarnings(ctx, routedAround, tracker)...)
 	return warnings
 }
 

@@ -19,7 +19,10 @@ type networkGuard struct {
 	routedAround func() []netip.Prefix
 	// collect 是平台的共存检测(collectNetworkWarnings);做成字段只为让「刷新时递给
 	// 它的是 routedAround 本尊」这一跳可测 —— 递 nil 全仓照样编译。
-	collect func(context.Context, func() []netip.Prefix) []stats.Warning
+	collect func(context.Context, func() []netip.Prefix, *strayTracker) []stats.Warning
+	// stray 记每条绕过 bx 的连接第一次被看见的时刻(两段式的判据住在 Core,不在菜单:
+	// 菜单被杀或睡眠一次,两边的计时就对不上)。
+	stray *strayTracker
 	// baseline 是**第一次刷新时**在跑的 overlay 集合。每轮与现状比对,晚到的租户
 	// 要报出来 —— 它的 DNS split 拿不到(见 lateTenantWarning)。
 	//
@@ -61,7 +64,7 @@ func startNetworkGuard(ctx context.Context, routedAround func() []netip.Prefix) 
 	if routedAround == nil {
 		routedAround = func() []netip.Prefix { return nil }
 	}
-	g := &networkGuard{routedAround: routedAround, collect: collectNetworkWarnings}
+	g := &networkGuard{routedAround: routedAround, collect: collectNetworkWarnings, stray: &strayTracker{}}
 	g.value.Store([]stats.Warning(nil))
 	g.refresh(ctx)
 	go func() {
@@ -82,7 +85,7 @@ func startNetworkGuard(ctx context.Context, routedAround func() []netip.Prefix) 
 func (g *networkGuard) refresh(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
 	defer cancel()
-	warnings := g.collect(ctx, g.routedAround)
+	warnings := g.collect(ctx, g.routedAround, g.stray)
 	// 平台无关的那一条:有没有 overlay 是 bx 起来之后才跑的。
 	now := detectOverlayTenants()
 	g.baselineOnce.Do(func() { g.baseline = now })

@@ -28,6 +28,7 @@ func menuRowLabelText(_ label: String) -> String {
     case "Route": return L("Route")
     case "Latency": return L("Latency")
     case "Outside bx": return L("Outside bx")
+    case "Settling": return L("Settling")
     case "DNS": return L("DNS")
     case "Direct lookups": return L("Direct lookups")
     case "UDP Relay": return L("UDP Relay")
@@ -110,6 +111,17 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
         rows.append(MenuRow(label: "Outside bx",
                             value: L("{0} — quit and reopen", apps.joined(separator: ", ")),
                             mark: .bad))
+    }
+    // **同一种连接里刚开始退场的那些**(两段式,2026-09-28):保护开着之后 Core 看见它
+    // 还不到五分钟,多半是 keep-alive / 推送到期就自己没了。只陈述条数,不点名、不叫人
+    // 重开、不裂图标(.unknown 不计入 anomalyCount)—— 每次 `bx up` 都裂一次图标,人
+    // 很快学会「裂了也没事」。它不在 quietWhenFine 里,压缩后的菜单照样露面:用户要
+    // 看着那个数变小,那本身就是「在好转」的信号。满了门槛还在的会升级到上面那行。
+    if let count = core?.settlingConnections, count > 0 {
+        let value = count == 1
+            ? L("1 connection from before protection was on — it moves into bx as the app reconnects")
+            : L("{0} connections from before protection was on — they move into bx as apps reconnect", String(count))
+        rows.append(MenuRow(label: "Settling", value: value, mark: .unknown))
     }
 
     if let dns, !dns.isEmpty {

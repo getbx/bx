@@ -84,7 +84,7 @@ func TestNetworkGuardRefreshHandsItsRoutedAroundToTheCollector(t *testing.T) {
 	var received func() []netip.Prefix
 	g := &networkGuard{
 		routedAround: func() []netip.Prefix { return want },
-		collect: func(_ context.Context, routedAround func() []netip.Prefix) []stats.Warning {
+		collect: func(_ context.Context, routedAround func() []netip.Prefix, _ *strayTracker) []stats.Warning {
 			received = routedAround
 			return nil
 		},

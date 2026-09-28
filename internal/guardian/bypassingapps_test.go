@@ -25,3 +25,21 @@ func TestCoreRuntimeCarriesTheAppsBypassingBX(t *testing.T) {
 		t.Fatalf("no warning must mean no apps, got %v", clean.BypassingApps)
 	}
 }
+
+// 两段式(2026-09-28):Core 把「刚开始退场」的连接只报数(stats.WarningConnectionsSettling
+// 的 Count),菜单要显示那个数、而且不裂图标。取的是结构化的 Count,不从文字里抠。
+func TestCoreRuntimeCarriesTheSettlingConnectionCount(t *testing.T) {
+	report := stats.Report{Warnings: []stats.Warning{
+		{Name: stats.WarningConnectionsSettling, Severity: "warn", Detail: "3 connection(s) …", Count: 3},
+	}}
+	got := coreRuntimeFrom(report, supervisor.RuntimeState{}, errors.New("no runtime state"))
+	if got.SettlingConnections != 3 {
+		t.Fatalf("SettlingConnections = %d, want the count from the Core's warning", got.SettlingConnections)
+	}
+	if got.BypassingApps != nil {
+		t.Fatalf("settling connections are not named apps, got %v", got.BypassingApps)
+	}
+	if clean := coreRuntimeFrom(stats.Report{}, supervisor.RuntimeState{}, nil); clean.SettlingConnections != 0 {
+		t.Fatalf("no warning must mean zero, got %d", clean.SettlingConnections)
+	}
+}

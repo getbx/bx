@@ -170,6 +170,9 @@ struct CoreRuntime: Decodable {
     /// 旧 Guardian 不发这个键,也读作空 —— 菜单只在非空时才开口,所以「没报」不会
     /// 被说成「查过、没有」。
     let bypassingApps: [String]
+    /// 同一种连接里**还没到门槛**的那些的条数(两段式,2026-09-28):多半几分钟内自己
+    /// 就没了,菜单只陈述这个数、不点名、不裂图标。0 = Core 没报(旧 Guardian 不发这个键)。
+    let settlingConnections: Int
 
     enum CodingKeys: String, CodingKey {
         case reachable
@@ -182,6 +185,7 @@ struct CoreRuntime: Decodable {
         case dnsUpstream = "dns_upstream"
         case failingRules = "failing_rules"
         case bypassingApps = "bypassing_apps"
+        case settlingConnections = "settling_connections"
     }
 
     init(from decoder: Decoder) throws {
@@ -203,6 +207,7 @@ struct CoreRuntime: Decodable {
         // 「缺席 ⇒ nil / 默认值,在场而类型不对 ⇒ 整份响亮失败」,这里回到同一档。
         failingRules = try container.decodeIfPresent([FailingRule].self, forKey: .failingRules) ?? []
         bypassingApps = try container.decodeIfPresent([String].self, forKey: .bypassingApps) ?? []
+        settlingConnections = try container.decodeIfPresent(Int.self, forKey: .settlingConnections) ?? 0
     }
 
     /// 给判据测试造输入用。**每一项都可省略,而省略读作 nil(没说)** ——
@@ -210,7 +215,7 @@ struct CoreRuntime: Decodable {
     init(reachable: Bool? = nil, tunnelHealthy: Bool? = nil, latencyMS: Int64? = nil,
          server: String? = nil, transport: String? = nil, udpMode: String? = nil,
          udpTransport: String? = nil, dnsUpstream: String? = nil,
-         failingRules: [FailingRule] = [], bypassingApps: [String] = []) {
+         failingRules: [FailingRule] = [], bypassingApps: [String] = [], settlingConnections: Int = 0) {
         self.reachable = reachable
         self.tunnelHealthy = tunnelHealthy
         self.latencyMS = latencyMS
@@ -221,5 +226,6 @@ struct CoreRuntime: Decodable {
         self.dnsUpstream = dnsUpstream
         self.failingRules = failingRules
         self.bypassingApps = bypassingApps
+        self.settlingConnections = settlingConnections
     }
 }

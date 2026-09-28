@@ -74,6 +74,9 @@ var nestedDigestSignals = []string{
 	"Core.FailingRules[].Rule",
 	// 有应用绕过 bx 以真实 IP 收发是**真事件**(一次泄漏),菜单该醒;名单不变时不自激。
 	"Core.BypassingApps",
+	// 退场中的连接数每 15 秒变一次、只在有残留时非零:它变小正是菜单那行要显示的
+	// 「在好转」;清零那一刻行要消失。不是记账,是那一行的内容本身。
+	"Core.SettlingConnections",
 	"Reconcile.Actions",
 	"Reconcile.Held",
 	"Reconcile.Unobservable",

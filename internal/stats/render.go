@@ -59,6 +59,9 @@ type Warning struct {
 	// Apps 是这条告警点名的应用(结构化的那一份,给菜单用,免得从 Detail 的
 	// 文字里抠名字)。只有 WarningConnectionsBypassingBX 填它。
 	Apps []string `json:"apps,omitempty"`
+	// Count 是这条告警数的连接数(结构化的那一份,给菜单用)。只有
+	// WarningConnectionsSettling 填它:那条刻意不点名,菜单要显示的就是这个数。
+	Count int `json:"count,omitempty"`
 }
 
 // WarningConnectionsBypassingBX:有应用的连接正从物理网卡以真实 IP 收发、绕过 bx
@@ -66,6 +69,12 @@ type Warning struct {
 // 网络守卫,消费方是 Guardian 发给菜单的 CoreRuntime.BypassingApps —— 名字是两边
 // 对齐的唯一东西,所以只有这一处。
 const WarningConnectionsBypassingBX = "connections_bypassing_bx"
+
+// WarningConnectionsSettling:同一种连接,但 Core 看见它还不到门槛(supervisor 的
+// strayStubbornAfter)—— 多半几分钟内自己就没了(keep-alive 到期、推送重连),
+// 「退出重开」对它们是白要求,所以只报数、不点名、warn 级(不降总状态、不裂图标)。
+// 消费方是 Guardian 发给菜单的 CoreRuntime.SettlingConnections。
+const WarningConnectionsSettling = "connections_settling_outside_bx"
 
 // modeLabel 给分流模式配一句说明,让 status 一眼看懂当前流量策略。
 func modeLabel(mode string) string {

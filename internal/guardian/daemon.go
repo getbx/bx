@@ -460,6 +460,8 @@ func coreRuntimeFrom(report stats.Report, state supervisor.RuntimeState, stateEr
 		UDPTransport:  report.UDPTransport,
 		FailingRules:  failingRulesFrom(report),
 		BypassingApps: bypassingAppsFrom(report),
+		// 同一份告警列表里的另一条:只报数的那组(两段式)。
+		SettlingConnections: settlingConnectionsFrom(report),
 	}
 	if stateErr != nil {
 		return runtime
@@ -480,6 +482,16 @@ func bypassingAppsFrom(report stats.Report) []string {
 		}
 	}
 	return nil
+}
+
+// settlingConnectionsFrom 取出「刚开始退场、还没到门槛」的绕过连接数。
+func settlingConnectionsFrom(report stats.Report) int {
+	for _, w := range report.Warnings {
+		if w.Name == stats.WarningConnectionsSettling {
+			return w.Count
+		}
+	}
+	return 0
 }
 
 func RunDaemon(ctx context.Context, options DaemonOptions) error {

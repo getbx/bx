@@ -6,8 +6,10 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getbx/bx/internal/appattr"
+	"github.com/getbx/bx/internal/stats"
 )
 
 // 没有绕过 bx 的连接就一个字都不说(常驻的告警会被训练成墙纸);有的时候点名应用、
@@ -44,15 +46,69 @@ func TestStrayWarningSparesConnectionsToBxOwnServerButStillNamesRealLeaks(t *tes
 	name := func(pid int32) string { return names[pid] }
 	routedAround := func() []netip.Prefix { return []netip.Prefix{netip.PrefixFrom(server, 32)} }
 
-	w := strayWarningFrom("en0", []appattr.PCB{ssh, chrome}, []netip.Addr{en0}, nil, routedAround, name)
-	if w.Name == "" || strings.Contains(w.Detail, "ssh") || !strings.Contains(w.Detail, "1 connection(s) from Google Chrome") {
+	// tracker 为 nil:全部当顽固(点名那条路),这里要验的是旁路那一跳。
+	in := strayInputs{device: "en0", physical: []netip.Addr{en0}, routedAround: routedAround, name: name}
+	w := strayWarningsFrom(in, []appattr.PCB{ssh, chrome}, time.Now())
+	if len(w) != 1 || strings.Contains(w[0].Detail, "ssh") || !strings.Contains(w[0].Detail, "1 connection(s) from Google Chrome") {
 		t.Fatalf("ssh to bx's own server must not be named while the real leak still is, got %+v", w)
 	}
-	if w := strayWarningFrom("en0", []appattr.PCB{ssh}, []netip.Addr{en0}, nil, routedAround, name); w.Name != "" {
+	if w := strayWarningsFrom(in, []appattr.PCB{ssh}, time.Now()); len(w) != 0 {
 		t.Fatalf("only a connection to bx's own server: no warning at all, got %+v", w)
 	}
 	// 不知道旁路(nil)时那条 ssh 仍然算 —— 排除只来自明说的网段,不是对 ssh 网开一面。
-	if w := strayWarningFrom("en0", []appattr.PCB{ssh}, []netip.Addr{en0}, nil, nil, name); !strings.Contains(w.Detail, "ssh") {
+	in.routedAround = nil
+	if w := strayWarningsFrom(in, []appattr.PCB{ssh}, time.Now()); len(w) != 1 || !strings.Contains(w[0].Detail, "ssh") {
 		t.Fatalf("without a routed-around list ssh is stray like anything else, got %+v", w)
+	}
+}
+
+// 两段式(2026-09-28):刚开始退场的连接只报数、不点名、不升级(warn:CLI 不把总状态
+// 降成 Needs Attention,菜单不裂图标);满了门槛还在的才是 error 并点名「退出重开」。
+// 两组同时在时两条都发;哪组空哪条就不发。
+func TestStrayWarningsSplitSettlingCountFromStubbornNames(t *testing.T) {
+	en0 := netip.MustParseAddr("172.20.10.2")
+	chrome := appattr.PCB{LocalPort: 49528, LocalAddr: en0, RemoteAddr: netip.MustParseAddr("203.0.113.11"), RemotePort: 443, LastPID: 77335}
+	mail := appattr.PCB{LocalPort: 56589, LocalAddr: en0, RemoteAddr: netip.MustParseAddr("203.0.113.12"), RemotePort: 993, LastPID: 5156}
+	names := map[int32]string{77335: "Google Chrome", 5156: "Mail"}
+	name := func(pid int32) string { return names[pid] }
+	t0 := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	tr := &strayTracker{}
+	in := strayInputs{device: "en0", physical: []netip.Addr{en0}, name: name, tracker: tr}
+
+	first := strayWarningsFrom(in, []appattr.PCB{chrome, mail}, t0)
+	if len(first) != 1 || first[0].Name != stats.WarningConnectionsSettling || first[0].Severity != "warn" || first[0].Count != 2 || len(first[0].Apps) != 0 {
+		t.Fatalf("fresh leftovers must be one warn-level count-only warning, got %+v", first)
+	}
+	if strings.Contains(first[0].Detail, "Chrome") || strings.Contains(first[0].Hint, "reopen") {
+		t.Fatalf("settling connections are neither named nor told to reopen, got %+v", first[0])
+	}
+	if !strings.Contains(first[0].Detail, "2 connection(s)") || !strings.Contains(first[0].Detail, "before protection") {
+		t.Fatalf("the count and the reason must be in the text, got %q", first[0].Detail)
+	}
+
+	// 五分钟后 Chrome 还在、Mail 走了、WeChat 新来:一条 error 点名 Chrome,一条 warn 数 WeChat。
+	wechat := appattr.PCB{LocalPort: 55390, LocalAddr: en0, RemoteAddr: netip.MustParseAddr("203.0.113.13"), RemotePort: 443, LastPID: 44301}
+	names[44301] = "WeChat"
+	later := strayWarningsFrom(in, []appattr.PCB{chrome, wechat}, t0.Add(strayStubbornAfter))
+	if len(later) != 2 {
+		t.Fatalf("stubborn + settling must be two warnings, got %+v", later)
+	}
+	var stubborn, settling *stats.Warning
+	for i := range later {
+		switch later[i].Name {
+		case stats.WarningConnectionsBypassingBX:
+			stubborn = &later[i]
+		case stats.WarningConnectionsSettling:
+			settling = &later[i]
+		}
+	}
+	if stubborn == nil || stubborn.Severity != "error" || len(stubborn.Apps) != 1 || stubborn.Apps[0] != "Google Chrome" || !strings.Contains(stubborn.Hint, "quit and reopen Google Chrome") {
+		t.Fatalf("a connection that outlived the threshold must be named and told to reopen, got %+v", stubborn)
+	}
+	if settling == nil || settling.Count != 1 || strings.Contains(settling.Detail, "WeChat") {
+		t.Fatalf("the newcomer is counted, not named, got %+v", settling)
+	}
+	if got := strayWarningsFrom(in, nil, t0.Add(time.Hour)); len(got) != 0 {
+		t.Fatalf("nothing stray must mean no warning at all, got %+v", got)
 	}
 }

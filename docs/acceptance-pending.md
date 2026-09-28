@@ -214,6 +214,15 @@ ProxyJump 跳板、连的是 bx 自己的 VPS 的 22141 端口 —— 服务器�
       —— `Outside bx` 那行**要**出现并点名那个应用;关掉它,那行消失。
 - [ ] 切换服务器之后,到**旧** VPS 的 ssh 若还开着,应被点名(它现在真的在隧道外面)。
 
+两段式(同日,v0.4.13 起):
+- [ ] `bx down`,开几个网页 / 让 Mail、WeChat 重连,再 `bx up`:菜单出现灰字
+      `Settling: N connections from before protection was on — …`,**图标不裂**,数字随刷新
+      变小,几分钟内那行消失;整个过程**不**出现红字 `Outside bx`。
+- [ ] 对照组:`bx down` 期间开一个会活很久的连接(比如浏览器里一个视频流、或一条到公网
+      主机的 ssh),`bx up` 五分钟后它还在 → 升级成红字 `Outside bx: <app> — quit and reopen`,
+      图标裂开;关掉它,那行消失。
+- [ ] `bx status` 里前者是 `Notice`、总状态仍是 Protected;后者把总状态降成 Needs Attention。
+
 ## B. 要制造一次故障(每条都会真的动网络,自己挑时间)
 
 ### B1. 段重置 —— 2026-09-13 刚修的那个,**唯一没被任何真机证据覆盖的新代码**
