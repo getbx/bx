@@ -48,21 +48,38 @@ if [[ -d "$TARGET" ]]; then
 fi
 trap '[[ -n "$CLEANUP" ]] && rm -rf "$CLEANUP"' EXIT
 
-echo "Notarizing $(basename "$TARGET") (this waits for Apple, usually 1–5 minutes)..."
-RESULT="$(xcrun notarytool submit "$SUBMIT" \
-  --key "$KEY_PATH" --key-id "$KEY_ID" --issuer "$ISSUER_ID" \
-  --wait --timeout 30m --output-format json)" || {
+echo "Notarizing $(basename "$TARGET") (this waits for Apple, usually minutes; a new team's first submissions can take an hour)..."
+NOTARY=(--key "$KEY_PATH" --key-id "$KEY_ID" --issuer "$ISSUER_ID")
+# **先提交、再单独等,而不是 submit --wait。** 首跑实测:提交成功(Apple 那边有记录、
+# 后来也 Accepted),而 `submit --wait` 在等的途中因一次网络抖动非零退出、一个字没
+# 打 —— 于是脚本报「提交失败」,票据没钉,而重跑又会再传一遍 45MB。拆开之后提交
+# id 在手上,等待可以重试,不用重传。
+RESULT="$(xcrun notarytool submit "$SUBMIT" "${NOTARY[@]}" --output-format json)" || {
   echo "notarize: notarytool submit failed" >&2
   echo "$RESULT" >&2
   exit 1
 }
 SUBMISSION_ID="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("id",""))' <<<"$RESULT")"
-STATUS="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("status",""))' <<<"$RESULT")"
+[[ -n "$SUBMISSION_ID" ]] || { echo "notarize: Apple accepted the upload but returned no submission id: $RESULT" >&2; exit 1; }
+echo "Submitted as $SUBMISSION_ID; waiting..."
+STATUS=""
+for attempt in 1 2 3 4 5 6; do
+  if WAITED="$(xcrun notarytool wait "$SUBMISSION_ID" "${NOTARY[@]}" --timeout 30m --output-format json)"; then
+    STATUS="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("status",""))' <<<"$WAITED")"
+    break
+  fi
+  echo "notarize: waiting on $SUBMISSION_ID failed (attempt $attempt); retrying in 30s" >&2
+  sleep 30
+done
+if [[ -z "$STATUS" ]]; then
+  echo "notarize: could not learn the outcome of submission $SUBMISSION_ID; rerun 'xcrun notarytool wait $SUBMISSION_ID' and staple by hand" >&2
+  exit 1
+fi
 if [[ "$STATUS" != "Accepted" ]]; then
   # **失败时把 Apple 的日志打出来**:那里面才写着是哪个文件、缺了什么(没 hardened
   # runtime / 没时间戳 / 用了 ad-hoc)。只报一句「Invalid」等于什么也没说。
   echo "notarize: Apple returned status '$STATUS' for submission $SUBMISSION_ID" >&2
-  xcrun notarytool log "$SUBMISSION_ID" --key "$KEY_PATH" --key-id "$KEY_ID" --issuer "$ISSUER_ID" >&2 || true
+  xcrun notarytool log "$SUBMISSION_ID" "${NOTARY[@]}" >&2 || true
   exit 1
 fi
 echo "Notarization accepted (submission $SUBMISSION_ID). Stapling the ticket..."
