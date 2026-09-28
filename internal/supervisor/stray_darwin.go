@@ -38,21 +38,9 @@ func darwinStrayWarnings(ctx context.Context, routedAround func() []netip.Prefix
 	if err != nil || device == "" {
 		return nil
 	}
-	physical := interfaceIPv4s(device)
-	if len(physical) == 0 {
+	pcbs, physical := darwinStraySnapshot(device)
+	if len(physical) == 0 || pcbs == nil {
 		return nil
-	}
-	var pcbs []appattr.PCB
-	for _, tbl := range pcbTables {
-		raw, err := unix.SysctlRaw(tbl.mib)
-		if err != nil {
-			return nil
-		}
-		parsed, err := appattr.ParsePcbList(raw)
-		if err != nil {
-			return nil
-		}
-		pcbs = append(pcbs, parsed...)
 	}
 	in := strayInputs{
 		device:   device,
@@ -66,6 +54,30 @@ func darwinStrayWarnings(ctx context.Context, routedAround func() []netip.Prefix
 		tracker:      tracker,
 	}
 	return strayWarningsFrom(in, pcbs, time.Now())
+}
+
+// darwinStraySnapshot 读物理网卡的地址与内核的 socket 表(取数据那一半;网络守卫的
+// 告警与 pf 重置的观测共用)。读不到就返回 nil pcbs —— 问不出来不许编。
+func darwinStraySnapshot(device string) (pcbs []appattr.PCB, physical []netip.Addr) {
+	physical = interfaceIPv4s(device)
+	if len(physical) == 0 {
+		return nil, nil
+	}
+	for _, tbl := range pcbTables {
+		raw, err := unix.SysctlRaw(tbl.mib)
+		if err != nil {
+			return nil, physical
+		}
+		parsed, err := appattr.ParsePcbList(raw)
+		if err != nil {
+			return nil, physical
+		}
+		pcbs = append(pcbs, parsed...)
+	}
+	if pcbs == nil {
+		pcbs = []appattr.PCB{}
+	}
+	return pcbs, physical
 }
 
 // strayInputs 是取完数据之后那一半的全部输入。做成结构体是因为它有六项,位置参数

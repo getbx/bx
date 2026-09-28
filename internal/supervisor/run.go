@@ -110,6 +110,7 @@ type Options struct {
 	DNSListen       string        // 可选:本地 DNS 监听地址,如 127.0.0.1:53(macOS 系统 DNS 接入)
 	ConfigPath      string        // 可选:配置文件路径;非空则 /v0/reload 重读它热重建 router(bx direct/proxy 用)
 	NoHijack        bool          // 分步验证:起隧道+TUN+引擎但跳过 Hijack(不劫路由/不设 DNS/不装 WFP),系统网络零改动
+	PFReset         string        // darwin:Hijack 之后一次性重置保护关着时开的连接。""/"on" 跑,"off" 不跑,"dry-run" 只打印
 
 	// BuildTunnel 可选:替换建隧道的方式。nil = 生产默认(拉起 brook/sing-box 子进程)。
 	//
@@ -903,6 +904,12 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 			routes.set(false)
 			teardown()
 		})
+		// pf 重置的兜底:Run 的 defer 正常会拆干净,这条只在它没走到时有事做。
+		teardowns.push("flush bx pf anchor", flushStalePFReset)
+		// 一次性把保护关着时开的连接重置掉(darwin;spec 2026-09-28):它们仍从物理
+		// 网卡以真实 IP 收发,而 macOS 不会把已建立的 socket 挪进 TUN。阻塞最多
+		// pfResetDeadline,每条退出路径都拆规则;没有残留就一个 pfctl 都不调。
+		runPFReset(ctx, opts.PFReset, serverBypass, cfg.Bypass)
 		// 路由就绪位自愈(routes_ready_repair.go):拆到一半失败的换路由会把就绪位
 		// 永久清成 false,此后路径恢复与升级都卡住直到 Core 重启。它重新完整装一遍,
 		// 就绪位只在真的装成功之后才回来。
