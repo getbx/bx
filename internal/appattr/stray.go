@@ -15,10 +15,14 @@ import "net/netip"
 //   - 远端是公网单播地址 —— 私网、链路本地、组播、CGNAT 恒直连,本来就不走隧道;
 //   - socket **没有**用 IP_BOUND_IF 绑网卡 —— 绑了的是有意为之(Tailscale 这类
 //     overlay、bx Core 自己的直连规则拨号器);
-//   - 不是 bx 自己的进程(ours)—— 隧道子进程到服务器的连接正是这样出去的。
+//   - 不是 bx 自己的进程(ours)—— 隧道子进程到服务器的连接正是这样出去的;
+//   - 远端不在 bx **自己绕开隧道**的网段里(routedAround:服务器旁路 /32 与用户
+//     配置的 bypass:)—— 真机 2026-09-28,一条 ssh 跳板连的是 bx 的 VPS,服务器
+//     旁路把它送去 en0 是 bx 的设计,而且「退出重开」改不了它走哪儿:点名它等于
+//     给一条走不通的出路,那行红字永远不会消失。
 //
-// 纯函数:取数据(sysctl、网卡地址、进程树)是调用方的事。
-func StrayConnections(pcbs []PCB, physical []netip.Addr, ours func(pid int32) bool) []PCB {
+// 纯函数:取数据(sysctl、网卡地址、进程树、旁路清单)是调用方的事。
+func StrayConnections(pcbs []PCB, physical []netip.Addr, ours func(pid int32) bool, routedAround []netip.Prefix) []PCB {
 	local := make(map[netip.Addr]bool, len(physical))
 	for _, a := range physical {
 		local[a.Unmap()] = true
@@ -29,6 +33,9 @@ func StrayConnections(pcbs []PCB, physical []netip.Addr, ours func(pid int32) bo
 			continue
 		}
 		if ours != nil && ours(p.LastPID) {
+			continue
+		}
+		if deliberatelyOutside(p.RemoteAddr, routedAround) {
 			continue
 		}
 		out = append(out, p)
@@ -43,6 +50,16 @@ var (
 	// 上、发往 fake IP 198.18.0.16 的 SYN 卡在 SYN_SENT,被当成了「绕过 bx」。
 	benchmarking = netip.MustParsePrefix("198.18.0.0/15")
 )
+
+func deliberatelyOutside(remote netip.Addr, routedAround []netip.Prefix) bool {
+	remote = remote.Unmap()
+	for _, p := range routedAround {
+		if p.IsValid() && p.Contains(remote) {
+			return true
+		}
+	}
+	return false
+}
 
 func publicUnicast(a netip.Addr) bool {
 	a = a.Unmap()

@@ -1078,6 +1078,7 @@ func TestControlMuxOptionsForServeCarriesEveryField(t *testing.T) {
 		UDPMode:        "carried-udp",
 		TransportInfo:  func() (string, []string, string) { return "t", []string{"t"}, "u" },
 		Runtime:        func() RuntimeState { return RuntimeState{ServerHost: "carried-runtime"} },
+		UserBypass:     []string{"10.0.0.0/8"},
 		Engine:         &fakeControlEngine{},
 		Mutator:        &fakeMutator{},
 		Reload:         func() error { return nil },

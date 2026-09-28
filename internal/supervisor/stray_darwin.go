@@ -28,7 +28,10 @@ import (
 //
 // 取数据失败一律不报(返回空):这是一条附加的告警,问不出来时不许编一句「有泄漏」,
 // 也不许让别的告警跟着消失。
-func darwinStrayConnectionWarning(ctx context.Context) stats.Warning {
+//
+// routedAround 是 bx 自己绕开隧道的网段(服务器旁路 + 用户 bypass):发往那里的连接
+// 从物理网卡出去是 bx 安排的,不点名(真机 2026-09-28:ssh 跳板连 bx 自己的 VPS)。
+func darwinStrayConnectionWarning(ctx context.Context, routedAround func() []netip.Prefix) stats.Warning {
 	_, device, err := PhysicalDefaultRoute(ctx)
 	if err != nil || device == "" {
 		return stats.Warning{}
@@ -53,10 +56,20 @@ func darwinStrayConnectionWarning(ctx context.Context) stats.Warning {
 	// 不点名。真机 2026-09-25:v0.4.9 升级换掉旧 Core 之后,它的隧道子进程留下的
 	// 几十个收尾中的 socket 被报成了「PID 1913 绕过 bx」,20 秒后自己消失。
 	skip := func(pid int32) bool { return isOwnProcess(pid) || !processAlive(pid) }
-	stray := appattr.StrayConnections(pcbs, physical, skip)
-	return strayConnectionWarning(device, stray, func(pid int32) string {
+	return strayWarningFrom(device, pcbs, physical, skip, routedAround, func(pid int32) string {
 		return appattr.DisplayName(executablePathOf(pid))
 	})
+}
+
+// strayWarningFrom 是取完数据之后的那一半(判据 + 渲染),抽出来只为让「bx 绕开的
+// 网段真的递到了判据手上」这一跳可测 —— 上面那半要读 sysctl,测不了。
+func strayWarningFrom(device string, pcbs []appattr.PCB, physical []netip.Addr, skip func(int32) bool, routedAround func() []netip.Prefix, name func(int32) string) stats.Warning {
+	var outside []netip.Prefix
+	if routedAround != nil {
+		outside = routedAround()
+	}
+	stray := appattr.StrayConnections(pcbs, physical, skip, outside)
+	return strayConnectionWarning(device, stray, name)
 }
 
 // strayConnectionWarning 是纯渲染:名字去重排序、说清几条、从哪块网卡、怎么办。

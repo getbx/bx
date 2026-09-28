@@ -83,11 +83,37 @@ func TestStrayConnectionsFindsOnlyTheConnectionsThatBypassBx(t *testing.T) {
 		{LocalAddr: en0, RemoteAddr: netip.MustParseAddr("198.18.0.16"), LastPID: app},  // bx 的 fake IP:到不了真实主机
 		{LocalAddr: en0, RemoteAddr: netip.MustParseAddr("224.0.0.251"), LastPID: app},  // 组播
 	}
-	got := StrayConnections(pcbs, []netip.Addr{en0}, ours)
+	got := StrayConnections(pcbs, []netip.Addr{en0}, ours, nil)
 	if len(got) != 1 || got[0] != stray {
 		t.Fatalf("stray = %+v, want only the unbound app connection %+v", got, stray)
 	}
-	if got := StrayConnections(pcbs, nil, ours); len(got) != 0 {
+	if got := StrayConnections(pcbs, nil, ours, nil); len(got) != 0 {
 		t.Fatalf("without knowing the physical addresses nothing can be judged stray, got %+v", got)
+	}
+}
+
+// 真机 2026-09-28:ssh 跳板连的是 bx 自己的服务器(`ssh -W … vps`,远端 = 传输服务器
+// 的 22 端口)。发往那台机器的包由 bx 的服务器旁路 /32 **刻意**送去物理网卡 —— 不然
+// 隧道自己就成环了;用户 `bypass:` 里的网段同理。这种连接从 en0 出去是 bx 安排的,
+// 不是绕过 bx,而且「退出重开」也改不了它走哪儿:点名它等于给一条走不通的出路。
+// 对照组必须在:真泄漏那条(远端不在任何旁路里)照样要点名。
+func TestStrayConnectionsSpareDestinationsBxItselfRoutesAroundTheTunnel(t *testing.T) {
+	en0 := netip.MustParseAddr("172.20.10.2")
+	const app = 42
+	toServer := PCB{LocalPort: 55536, LocalAddr: en0, RemoteAddr: netip.MustParseAddr("203.0.113.92"), RemotePort: 22, LastPID: app}
+	toUserBypass := PCB{LocalPort: 55537, LocalAddr: en0, RemoteAddr: netip.MustParseAddr("198.51.100.77"), RemotePort: 443, LastPID: app}
+	leak := PCB{LocalPort: 49528, LocalAddr: en0, RemoteAddr: netip.MustParseAddr("203.0.113.11"), RemotePort: 443, LastPID: app}
+	pcbs := []PCB{toServer, toUserBypass, leak}
+	routedAround := []netip.Prefix{
+		netip.MustParsePrefix("203.0.113.92/32"), // 服务器旁路
+		netip.MustParsePrefix("198.51.100.0/24"), // 用户 bypass
+	}
+	got := StrayConnections(pcbs, []netip.Addr{en0}, nil, routedAround)
+	if len(got) != 1 || got[0] != leak {
+		t.Fatalf("stray = %+v, want only the real leak %+v (server bypass and user bypass are bx's own doing)", got, leak)
+	}
+	// 没告诉判据任何旁路时,三条都从物理网卡出去、都算 —— 排除只来自明说的网段。
+	if got := StrayConnections(pcbs, []netip.Addr{en0}, nil, nil); len(got) != 3 {
+		t.Fatalf("with no routed-around prefixes all three are stray, got %+v", got)
 	}
 }

@@ -801,13 +801,16 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	closer, err := requireControlSocket(func() (io.Closer, error) {
 		refresh := func(requiredLinks []string) (bool, error) { return refreshServerBypass(ctx, requiredLinks) }
 		return serveControlWithPathRecovery(ctx, controlServeOptions{
-			Counters:       counters,
-			Tunnel:         lt,
-			Server:         serverHost,
-			Mode:           proxyMode(global, cfg.Mode),
-			UDPMode:        cfg.UDP.Mode,
-			TransportInfo:  transportInfo,
-			Runtime:        runtimeState,
+			Counters:      counters,
+			Tunnel:        lt,
+			Server:        serverHost,
+			Mode:          proxyMode(global, cfg.Mode),
+			UDPMode:       cfg.UDP.Mode,
+			TransportInfo: transportInfo,
+			Runtime:       runtimeState,
+			// 用户 bypass 原文:与 Hijack 收到的是同一份,network guard 拿它认出
+			// 「从物理网卡出去是 bx 自己安排的」连接(服务器旁路那半走 Runtime)。
+			UserBypass:     cfg.Bypass,
 			Engine:         mutEng,
 			Mutator:        mut,
 			Reload:         reloadRouter,

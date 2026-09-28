@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"context"
+	"net/netip"
 	"os/exec"
 	"strings"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/getbx/bx/internal/stats"
 )
 
-func collectNetworkWarnings(ctx context.Context) []stats.Warning {
+func collectNetworkWarnings(ctx context.Context, routedAround func() []netip.Prefix) []stats.Warning {
 	var warnings []stats.Warning
 	if warning := darwinTailscaleWarning(ctx); warning.Name != "" {
 		warnings = append(warnings, warning)
@@ -23,7 +24,7 @@ func collectNetworkWarnings(ctx context.Context) []stats.Warning {
 	if warning := darwinPacketTunnelWarning(ctx); warning.Name != "" {
 		warnings = append(warnings, warning)
 	}
-	if warning := darwinStrayConnectionWarning(ctx); warning.Name != "" {
+	if warning := darwinStrayConnectionWarning(ctx, routedAround); warning.Name != "" {
 		warnings = append(warnings, warning)
 	}
 	return warnings

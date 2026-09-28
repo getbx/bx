@@ -784,13 +784,17 @@ func appendDeliveryWarning(warnings []stats.Warning, m *deliveryMonitor) []stats
 // 它承载的「哪些能力这个部署没有」这份信息,现在由 controlServeOptions 的
 // 字段零值 + 字段名本身表达得更清楚,不需要一个没人调用的包装函数来演示。
 type controlServeOptions struct {
-	Counters       *stats.Counters
-	Tunnel         tunnelStatser
-	Server         string
-	Mode           string
-	UDPMode        string
-	TransportInfo  func() (string, []string, string)
-	Runtime        func() RuntimeState
+	Counters      *stats.Counters
+	Tunnel        tunnelStatser
+	Server        string
+	Mode          string
+	UDPMode       string
+	TransportInfo func() (string, []string, string)
+	Runtime       func() RuntimeState
+	// UserBypass 是配置里 bypass: 的原文(Hijack 收到的同一份):路由层绕开 TUN 的
+	// 网段。network guard 拿它与 Runtime().ServerBypass 一起认出「从物理网卡出去是
+	// bx 自己安排的」那些连接,不把它们报成绕过 bx。
+	UserBypass     []string
 	Engine         controlEngine
 	Mutator        mutator
 	Reload         func() error
@@ -869,7 +873,7 @@ func controlMuxOptionsFromServe(opts controlServeOptions, report func() stats.Re
 // 不碰 socket、不碰 /var/run —— 那一半仍留在 serveControlWithPathRecovery 里,
 // 它非 root 测不了(secdir.Ensure 要 MkdirAll 到 /var/run)。
 func controlMuxOptionsForServe(ctx context.Context, opts controlServeOptions, pid int) controlMuxOptions {
-	guard := startNetworkGuard(ctx)
+	guard := networkGuardForServe(ctx, opts)
 	// **吞吐要按固定节拍采样,不能搭在读状态那条路上。**
 	// 读状态的间隔由调用方决定(菜单开着 2 秒、关着 30 秒、CLI 一次就走),
 	// 而峰值是一个「有没有在那一秒看到」的问题 —— 采样疏了就整个错过。

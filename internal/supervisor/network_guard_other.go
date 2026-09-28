@@ -4,10 +4,11 @@ package supervisor
 
 import (
 	"context"
+	"net/netip"
 
 	"github.com/getbx/bx/internal/stats"
 )
 
-func collectNetworkWarnings(context.Context) []stats.Warning {
+func collectNetworkWarnings(context.Context, func() []netip.Prefix) []stats.Warning {
 	return nil
 }
