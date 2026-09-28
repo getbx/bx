@@ -3538,6 +3538,7 @@ func runFlags() []cli.Flag {
 		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "global mode: everything (China included) is proxied except private networks (bypass) and your own direct rules"},
 		&cli.StringFlag{Name: "listen-dns", Value: "", Usage: "local DNS listen address (off by default; 127.0.0.1:53 works for macOS testing)"},
 		&cli.BoolFlag{Name: "no-hijack", Usage: "step-by-step verification: bring up the tunnel, TUN and engine but hijack no routes, set no DNS and install no WFP filters (zero change to the system network; for bring-up on real hardware)"},
+		&cli.StringFlag{Name: "pf-reset", Value: "on", Usage: "macOS: after the routes are hijacked, reset connections opened while protection was off so their apps reconnect through bx: on, off, or dry-run (print what would be reset; touch nothing)"},
 		// **只由 Guardian 传**,故 Hidden:手敲的 `sudo bx run` 不传就一个字节
 		// 都不写,陈旧记录在构造上不可能串味(见 runWithStartFailureRecord)。
 		&cli.StringFlag{Name: corestartfailure.FlagName, Hidden: true, Usage: "write the failure code here when startup fails (used by Guardian only)"},
@@ -3609,6 +3610,7 @@ func optsFromFlags(c *cli.Context) supervisor.Options {
 		Global:          c.Bool("global"),
 		DNSListen:       c.String("listen-dns"),
 		NoHijack:        c.Bool("no-hijack"),
+		PFReset:         c.String("pf-reset"),
 		// resolveConfigPath 与 bx direct/proxy 写配置走同一解析(含 /etc 缺失时的 ~/.config 兜底),
 		// 否则热重载会去重读一个和 CLI 写入不同的文件,rule 永远热生效不了。
 		ConfigPath: resolveConfigPath(c.String("config")),

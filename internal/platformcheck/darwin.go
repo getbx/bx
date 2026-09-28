@@ -4,12 +4,16 @@ package platformcheck
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/elevate"
 	"github.com/getbx/bx/internal/macnetprobe"
+	"github.com/getbx/bx/internal/pfreset"
+	"github.com/getbx/bx/internal/supervisor"
 )
 
 func Collect(ctx context.Context) []Check {
@@ -28,7 +32,28 @@ func Collect(ctx context.Context) []Check {
 		checks = append(checks, darwinTunnelClaimChecks("", "")...)
 	}
 	checks = append(checks, darwinCompetingTunnelChecks(ctx)...)
+	// bx 自己的一次性 pf 重置(internal/pfreset)留下的残留:只该存在几秒的东西还在,
+	// 就是上一个 Core 没走完拆除。读 anchor 与 token 文件都是只读;读不到当作没有
+	// (非 root 读 pfctl 会失败,那时 doctor 报不出这一项,而不是报一个编出来的 warn)。
+	rules, _ := darwinCommand(ctx, "pfctl", "-a", pfreset.Anchor, "-s", "rules")
+	_, tokenErr := os.Stat(supervisor.PFTokenPath())
+	checks = append(checks, darwinPFResetResidueCheck(rules, tokenErr == nil))
 	return checks
+}
+
+// darwinPFResetResidueCheck 是纯判定:anchor 里有规则或引用 token 还在 ⇒ warn,出路是
+// `sudo bx down`(它的强制拆除第 4b 步会冲掉);都没有 ⇒ ok。
+func darwinPFResetResidueCheck(anchorRules string, tokenExists bool) Check {
+	hasRules := strings.TrimSpace(anchorRules) != ""
+	switch {
+	case hasRules && tokenExists:
+		return Check{Name: "pf_reset_residue", Status: "warn", Detail: "bx's pf reset anchor still holds rules and its pf token file is still present (a previous Core did not finish tearing down; non-root public TCP/UDP on the physical interface is being rejected)", Hint: elevate.Prefix + "bx down clears it (then " + elevate.Prefix + "bx up)"}
+	case hasRules:
+		return Check{Name: "pf_reset_residue", Status: "warn", Detail: "bx's pf reset anchor still holds rules (a previous Core did not finish tearing down; non-root public TCP/UDP on the physical interface is being rejected)", Hint: elevate.Prefix + "bx down clears it (then " + elevate.Prefix + "bx up)"}
+	case tokenExists:
+		return Check{Name: "pf_reset_residue", Status: "warn", Detail: "bx's pf token file is still present: a pf reference from a previous Core was never released", Hint: elevate.Prefix + "bx down clears it (then " + elevate.Prefix + "bx up)"}
+	}
+	return Check{Name: "pf_reset_residue", Status: "ok", Detail: "no leftover bx pf rules or token"}
 }
 
 func darwinTailscaleCheck(parent context.Context) Check {

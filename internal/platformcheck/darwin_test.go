@@ -2,7 +2,10 @@
 
 package platformcheck
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDarwinHasTailscaleOverlayRoute(t *testing.T) {
 	routes := `
@@ -112,5 +115,22 @@ Available network connection services in the current set (*=enabled):
 `
 	if got := darwinConnectedNetworkService(out); got != "" {
 		t.Fatalf("connected service = %q, want empty", got)
+	}
+}
+
+// bx 的一次性 pf 重置(internal/pfreset)只该存在几秒;Core 崩溃留下的 anchor 或引用
+// token 会把物理网卡上非 root 的公网 TCP/UDP 全拒掉,用户读到的是「网坏了」。
+// 判定纯函数:anchor 里有规则或 token 文件在 ⇒ warn 并指向 bx down(它的强制拆除会冲);
+// 都没有 ⇒ ok。
+func TestPFResetResidueCheckReadsTheAnchorAndTheToken(t *testing.T) {
+	c := darwinPFResetResidueCheck("block return-rst out quick on en0 ...\n", false)
+	if c.Name != "pf_reset_residue" || c.Status != "warn" || !strings.Contains(c.Hint, "bx down") {
+		t.Fatalf("leftover rules must warn and point at bx down, got %+v", c)
+	}
+	if c := darwinPFResetResidueCheck("", true); c.Status != "warn" || !strings.Contains(c.Detail, "token") {
+		t.Fatalf("a leftover token must warn and say so, got %+v", c)
+	}
+	if c := darwinPFResetResidueCheck("", false); c.Status != "ok" {
+		t.Fatalf("clean must be ok, got %+v", c)
 	}
 }
