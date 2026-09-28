@@ -84,6 +84,31 @@ Guardian 的 health 门(`/v1/update`)、`recoverySupersededByCore`。一次**一
   iproute2 ≥ 4.17,busybox 没有,混进必装会让能起的机器起不来)。netns 台子只能证明退路,证明
   不了规则真装上了。
 
+## 一次性 pf 重置残留连接(`pfreset.go` + `internal/pfreset`,2026-09-28,真机未验)
+
+**问题**:`bx down` 到 `bx up` 之间应用开的连接,`bx up` 之后仍从物理网卡以真实 IP 收发
+(macOS 不会把已建立的 socket 挪进 TUN,known-gaps A11)。两段式告警只是让它看得见。
+**修法**:macOS 没有按 socket 重置的原语,能做的是让本机 TCP 栈自己把它判死 —— pf 的
+`block return-rst out`(UDP `return-icmp`)。所有者定死:**一次性、不常驻、含 UDP**。
+
+- **判据只有一份**:观测用 `appattr.StrayConnections` + 同一组 routedAround
+  (`pfResetPrefixes` = `route.DefaultPrivateCIDRs` + 服务器旁路 + 用户 `bypass:`,经
+  `pfreset.RoutedAround`,裸 IP 补 /32、认不出的丢掉);规则里 `user != root` 放过 Core、
+  隧道子进程、tailscaled。**没有残留就一个 pfctl 都不调**(`pfreset.Run` 先看一次)。
+- **时序**:`Run()` 在 `plat.Hijack` 成功、就绪位置真之后调 `runPFReset`,阻塞最多
+  `pfResetDeadline`(10s),每秒看一次;清零 / 到点 / ctx 取消都拆(flush + `pfctl -X`,
+  在 defer 里、用 `context.WithoutCancel`)。顺序由 `TestRunWiresThePFResetAfterHijack` 钉住。
+- **三条清理路,同一个 `pfreset.FlushStaleDarwin`**:拆除台账 `flush bx pf anchor`(Run 正常
+  退出时它多半无事可做)、`bx down` 强制拆除第 4b 步(紧跟屏障路由,不等 DNS 还原)、
+  Guardian `startCoreLockedWithBarrierRelease` fork 之前(`Manager.flushStalePF`,冲不掉
+  只记日志:残留是「网坏了」,不起 Core 是「没保护」)。token 落
+  `PFTokenPath()`(`/var/run/bx/pf.token`),`bx doctor` 的 `pf_reset_residue` 读它与 anchor。
+- **三态** `Options.PFReset`:`""`/`on` 跑、`off` 不跑、`dry-run` 只打印规则与将被重置的
+  条数;认不出的当 off(少做只是多漏几分钟,多做是断人连接)。`bx run --pf-reset`。
+- **真机未验的两件事**:anchor `com.apple/250.bx` 会不会被主规则集求值;`return-rst`
+  对本机发出的包是否真把 socket 判死。验收 `docs/acceptance-pending.md` A13,**首跑所有者
+  在场、带抓包**。
+
 ## 按应用看分流(`apptraffic.go` + `internal/appattr`,2026-08-19,整套真机未验)
 
 起因:腾讯会议绕一圈查了半小时,而 bx 在数据面上每条连接都看见了(源端口在

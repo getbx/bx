@@ -1,6 +1,9 @@
-# 让保护关着时开的连接当场重连:一次性 pf 回 RST(design,未实施)
+# 让保护关着时开的连接当场重连:一次性 pf 回 RST(design)
 
-**状态:待所有者拍板。本文只定形状与验证方式,不动代码。**
+**状态:所有者 2026-09-28 拍板(一次性 + 含 UDP),同日实施(`internal/pfreset`,
+计划 `docs/superpowers/plans/2026-09-28-pf-reset-stray-connections.md`),**真机未验**
+(`docs/acceptance-pending.md` A13)。下文是当初的设计,判据的现状以
+`internal/supervisor/CLAUDE.md`「一次性 pf 重置」一节为准。**
 
 ## 问题与证据
 

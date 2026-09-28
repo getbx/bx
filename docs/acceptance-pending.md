@@ -223,6 +223,28 @@ ProxyJump 跳板、连的是 bx 自己的 VPS 的 22141 端口 —— 服务器�
       图标裂开;关掉它,那行消失。
 - [ ] `bx status` 里前者是 `Notice`、总状态仍是 Protected;后者把总状态降成 Needs Attention。
 
+### A13. 一次性 pf 重置残留连接(2026-09-28,v0.4.14 起)—— 由 agent 做,带抓包,所有者在场
+
+它在 `bx up` 劫持完路由之后装两条 pf 规则(TCP 回 RST、UDP 回 ICMP,白名单 = 私网 +
+服务器旁路 + 用户 `bypass:`,`user != root`),每秒看一次,残留清零或满 10 秒就拆。
+**没有残留时一个 pfctl 都不调**,所以健康机器上什么都看不见。spec 第三点(anchor
+`com.apple/250.bx` 会不会被主规则集求值)只有这一步能答。
+
+前提:所有者在场;`bx status` Protected;`sudo tcpdump -ni en0 -w <scratch>/pfreset.pcap` 开着。
+1. `bx down`,开几个网页、让 Mail/WeChat 重连,等 20 秒。
+2. `bx up`。看 `/var/log/bx.log` 里 `pf reset:` 那几行:初始几条、几秒清零、有没有封顶。
+   (`bx run --pf-reset dry-run` 只在 Guardian 没在管的机器上可用 —— 所有者的 Mac 上
+   Guardian 管着 Core,两个 Core 冲突;所以这里直接看日志。)
+3. 抓包用 python 逐包分类(不用 tcpdump 的复合过滤式):`bx up` 之后 en0 上非 bx 进程到
+   公网的 TCP 是否在几秒内只剩 RST;之后没有新的明文 SYN。
+4. 菜单:`Settling` 那行要么不出现、要么几秒内消失;`Outside bx` 不出现。
+5. 到自己 VPS 的 ssh(Codex 跳板)**不许断**;局域网设备不许断;Tailscale 不许断。
+6. `bx down` 之后 `sudo pfctl -a com.apple/250.bx -s rules` 为空、`/var/run/bx/pf.token` 不在;
+   `bx doctor` 的 `pf_reset_residue` 是 ok。
+7. 对照:`sudo pfctl -s info` 里 pf 的状态与 `bx up` 之前一致(bx 释放了自己的引用)。
+8. 若第 2 步日志显示 `loading the reset rules` 失败,先怀疑 anchor 落点(spec 第三点):
+   `sudo pfctl -s Anchors` 看 `com.apple/*` 下有没有 `250.bx`。
+
 ## B. 要制造一次故障(每条都会真的动网络,自己挑时间)
 
 ### B1. 段重置 —— 2026-09-13 刚修的那个,**唯一没被任何真机证据覆盖的新代码**
