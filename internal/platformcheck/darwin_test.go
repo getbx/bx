@@ -3,6 +3,8 @@
 package platformcheck
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -132,5 +134,36 @@ func TestPFResetResidueCheckReadsTheAnchorAndTheToken(t *testing.T) {
 	}
 	if c := darwinPFResetResidueCheck("", false); c.Status != "ok" {
 		t.Fatalf("clean must be ok, got %+v", c)
+	}
+}
+
+// 组装根:Collect 必须真的发出 pf_reset_residue(复审变异实测:删掉那一句 append,本包、
+// doctor、cli 全绿 —— 纯判定成了零调用方的壳)。探针经 pfResetProbe 这个缝替换。
+func TestCollectEmitsThePFResetResidueCheck(t *testing.T) {
+	saved := pfResetProbe
+	defer func() { pfResetProbe = saved }()
+	pfResetProbe = func(context.Context) (string, error, bool) { return "block return-rst ...", nil, false }
+	found := false
+	for _, c := range Collect(context.Background()) {
+		if c.Name == "pf_reset_residue" {
+			found = true
+			if c.Status != "warn" {
+				t.Fatalf("the probe's answer must reach the check, got %+v", c)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Collect does not emit pf_reset_residue")
+	}
+}
+
+// 非 root 读不了 pfctl:那是「没查」,不是「没有残留」—— 用 doctor 的 not_checked,别编一个 ok。
+func TestPFResetResidueCheckSaysNotCheckedWhenPfctlCannotBeRead(t *testing.T) {
+	c := darwinPFResetResidueCheckFrom("", errors.New("pfctl: /dev/pf: Permission denied"), false)
+	if c.Status != "not_checked" || !strings.Contains(c.Detail, "pfctl") {
+		t.Fatalf("a failed pfctl read must be not_checked and say why, got %+v", c)
+	}
+	if c := darwinPFResetResidueCheckFrom("", errors.New("denied"), true); c.Status != "warn" {
+		t.Fatalf("a leftover token is visible without pfctl and must still warn, got %+v", c)
 	}
 }

@@ -21,7 +21,8 @@ type Options struct {
 	Device       string
 	RoutedAround []netip.Prefix
 	// Observe 回答「此刻还有几条连接在绕过 bx」(与 appattr.StrayConnections 同一份判据)。
-	Observe  func() int
+	// ok=false 是「问不出来」:不是 0 —— 把它读成 0 会在读不到 socket 表时编出一次成功。
+	Observe  func() (n int, ok bool)
 	Tick     <-chan time.Time
 	Deadline time.Duration
 	Log      func(format string, args ...any)
@@ -43,9 +44,14 @@ func Run(ctx context.Context, d Driver, o Options) (out Outcome) {
 	if o.Log == nil {
 		o.Log = func(string, ...any) {}
 	}
-	out.Initial = o.Observe()
-	out.Remaining = out.Initial
-	if out.Initial == 0 || d == nil {
+	initial, ok := o.Observe()
+	if !ok {
+		out.Err = errors.New("could not read the socket table; nothing was reset")
+		return out
+	}
+	out.Initial = initial
+	out.Remaining = initial
+	if initial == 0 || d == nil {
 		return out
 	}
 	out.Attempted = true
@@ -72,17 +78,28 @@ func Run(ctx context.Context, d Driver, o Options) (out Outcome) {
 	}
 	o.Log("pf reset: %d connection(s) opened before protection was on are being reset on %s", out.Initial, o.Device)
 	deadline := time.After(o.Deadline)
+	unreadable := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return out
 		case <-deadline:
-			o.Log("pf reset: gave up after %s with %d connection(s) still outside bx", o.Deadline, out.Remaining)
+			// 到点还在的多半是**空闲**的 socket:`return-rst` 只在它发包时才打得到,窗口里
+			// 没发包的这次没重置,交给两段式去点名。这行不是失败,是如实的余额。
+			o.Log("pf reset: %s elapsed, %d of %d connection(s) still outside bx (idle sockets are only reset when they next send; the menu keeps tracking them)", time.Since(start).Round(time.Millisecond), out.Remaining, out.Initial)
+			if unreadable > 0 {
+				out.Err = errors.Join(out.Err, fmt.Errorf("the socket table could not be read %d time(s) during the reset", unreadable))
+			}
 			return out
 		case <-o.Tick:
-			out.Remaining = o.Observe()
-			if out.Remaining == 0 {
-				o.Log("pf reset: done, all %d connection(s) reconnected through bx", out.Initial)
+			n, ok := o.Observe()
+			if !ok {
+				unreadable++ // 问不出来不是 0:继续等,不走「清零」那条路
+				continue
+			}
+			out.Remaining = n
+			if n == 0 {
+				o.Log("pf reset: none of the %d connection(s) is outside bx any more (%s)", out.Initial, time.Since(start).Round(time.Millisecond))
 				return out
 			}
 		}

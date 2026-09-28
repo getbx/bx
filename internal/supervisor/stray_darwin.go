@@ -184,6 +184,16 @@ func processAlive(pid int32) bool {
 	return !errors.Is(unix.Kill(int(pid), 0), unix.ESRCH)
 }
 
+// isRootProcess:进程的有效 uid 是 0。pf 重置的规则带 `user != root`,观测必须用同一条
+// 边界;问不出来(进程刚退出)按「不是 root」处理 —— 那条 socket 随即会因 !processAlive 出局。
+func isRootProcess(pid int32) bool {
+	info, err := unix.SysctlKinfoProc("kern.proc.pid", int(pid))
+	if err != nil {
+		return false
+	}
+	return info.Eproc.Ucred.Uid == 0
+}
+
 // isOwnProcess:bx 自己(Core)或它直接起的子进程(sing-box / brook 隧道)。隧道到服务器的
 // 连接正是从物理网卡出去的,那是设计。
 func isOwnProcess(pid int32) bool {

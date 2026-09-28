@@ -105,9 +105,14 @@ Guardian 的 health 门(`/v1/update`)、`recoverySupersededByCore`。一次**一
   `PFTokenPath()`(`/var/run/bx/pf.token`),`bx doctor` 的 `pf_reset_residue` 读它与 anchor。
 - **三态** `Options.PFReset`:`""`/`on` 跑、`off` 不跑、`dry-run` 只打印规则与将被重置的
   条数;认不出的当 off(少做只是多漏几分钟,多做是断人连接)。`bx run --pf-reset`。
+- **观测与规则打得到的集合必须一致**(复审 2026-09-28):规则放过 root,观测就跳过
+  root 进程(`isRootProcess`,kinfo 的 euid);读不到 socket 表是 `ok=false` 不是 0
+  (`pfreset.Options.Observe` 回两个值,第一次读不到就不碰 pf,中途读不到不走「清零」)。
+  **空闲 socket 这次不会被重置**(`return-rst` 只在它发包时才打得到),到点那行日志报的
+  是余额不是失败,它们留给两段式。
 - **真机未验的两件事**:anchor `com.apple/250.bx` 会不会被主规则集求值;`return-rst`
-  对本机发出的包是否真把 socket 判死。验收 `docs/acceptance-pending.md` A13,**首跑所有者
-  在场、带抓包**。
+  对本机发出的包是否真把 socket 判死。验收 `docs/acceptance-pending.md` A13 —— **关保护
+  那几秒会泄漏 IP,只由所有者自己在菜单上做,agent 不请求、不替做**。
 
 ## 按应用看分流(`apptraffic.go` + `internal/appattr`,2026-08-19,整套真机未验)
 

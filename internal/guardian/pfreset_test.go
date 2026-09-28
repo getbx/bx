@@ -46,3 +46,28 @@ func TestAFailedStalePFFlushDoesNotBlockCoreStart(t *testing.T) {
 		t.Fatal("Core was not started")
 	}
 }
+
+// 组装根:生产的 NewManager 必须接上真的 flushStalePF(复审变异实测:删掉默认值,上面两条
+// 照样绿 —— 它们自己注入了字段)。这里只钉「非 nil」,exec pfctl 那一半只有真机能验。
+func TestNewManagerWiresTheStalePFFlush(t *testing.T) {
+	env := newManagerTestEnv(t)
+	m, err := NewManager(env.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.flushStalePF == nil {
+		t.Fatal("NewManager must wire flushStalePF; a nil field silently skips the flush before every Core start")
+	}
+}
+
+// 测试环境必须把它换成空操作:否则每条 Manager 测试都在 exec /sbin/pfctl 并读真机的
+// /var/run/bx/pf.token —— 一个真的 token 文件会被测试 `-X` 掉。
+func TestManagerTestEnvNeutralizesTheStalePFFlush(t *testing.T) {
+	env := newManagerTestEnv(t)
+	if env.manager.flushStalePF == nil {
+		t.Fatal("env must set a no-op flushStalePF, not nil (nil would also skip, but hides that the env forgot)")
+	}
+	if flushed, err := env.manager.flushStalePF(context.Background()); flushed || err != nil {
+		t.Fatalf("env's flushStalePF must be a no-op, got %v %v", flushed, err)
+	}
+}

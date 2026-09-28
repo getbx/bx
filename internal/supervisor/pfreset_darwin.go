@@ -27,13 +27,20 @@ func runPFReset(ctx context.Context, mode string, serverBypass, userBypass []str
 		return
 	}
 	around := pfResetPrefixes(serverBypass, userBypass)
-	observe := func() int {
+	// 观测要与规则打得到的集合一致(复审第 1 条):规则放过 root(`user != root`),观测就
+	// 不能数 root 的连接(apsd、tailscaled 之类),否则循环永远不收敛、每次 up 白等 10 秒。
+	// 读不到 socket 表 ⇒ ok=false,不是 0。
+	observe := func() (int, bool) {
 		pcbs, physical := darwinStraySnapshot(device)
-		skip := func(pid int32) bool { return isOwnProcess(pid) || !processAlive(pid) }
-		return len(appattr.StrayConnections(pcbs, physical, skip, around))
+		if pcbs == nil {
+			return 0, false
+		}
+		skip := func(pid int32) bool { return isOwnProcess(pid) || !processAlive(pid) || isRootProcess(pid) }
+		return len(appattr.StrayConnections(pcbs, physical, skip, around)), true
 	}
 	if decision == pfResetDryRun {
-		log.Printf("pf reset dry-run: %d connection(s) would be reset on %s with these rules:\n%s", observe(), device, pfreset.Rules(device, around))
+		n, ok := observe()
+		log.Printf("pf reset dry-run: %d connection(s) would be reset on %s (socket table readable: %v) with these rules:\n%s", n, device, ok, pfreset.Rules(device, around))
 		return
 	}
 	ticker := time.NewTicker(time.Second)
@@ -42,7 +49,7 @@ func runPFReset(ctx context.Context, mode string, serverBypass, userBypass []str
 		Device: device, RoutedAround: around, Observe: observe, Tick: ticker.C, Deadline: pfResetDeadline, Log: log.Printf,
 	})
 	if out.Err != nil {
-		log.Printf("pf reset: %v (initial %d, remaining %d)", out.Err, out.Initial, out.Remaining)
+		log.Printf("pf reset: %v (initial %d, remaining %d, %s)", out.Err, out.Initial, out.Remaining, out.Elapsed.Round(time.Millisecond))
 	}
 }
 

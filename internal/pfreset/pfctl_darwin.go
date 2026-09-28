@@ -51,8 +51,7 @@ func (d pfctlDriver) Load(ctx context.Context, rules string) error {
 }
 
 func (d pfctlDriver) Flush(ctx context.Context) error {
-	_, err := runPfctl(ctx, "-a", Anchor, "-F", "all")
-	return err
+	return flushAnchor(ctx, runPfctl)
 }
 
 func (d pfctlDriver) Release(ctx context.Context, token string) error {

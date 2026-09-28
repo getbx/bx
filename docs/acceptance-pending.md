@@ -223,18 +223,25 @@ ProxyJump 跳板、连的是 bx 自己的 VPS 的 22141 端口 —— 服务器�
       图标裂开;关掉它,那行消失。
 - [ ] `bx status` 里前者是 `Notice`、总状态仍是 Protected;后者把总状态降成 Needs Attention。
 
-### A13. 一次性 pf 重置残留连接(2026-09-28,v0.4.14 起)—— 由 agent 做,带抓包,所有者在场
+### A13. 一次性 pf 重置残留连接(2026-09-28,v0.4.14 起)—— **关保护那一步只能由所有者自己做**
 
 它在 `bx up` 劫持完路由之后装两条 pf 规则(TCP 回 RST、UDP 回 ICMP,白名单 = 私网 +
 服务器旁路 + 用户 `bypass:`,`user != root`),每秒看一次,残留清零或满 10 秒就拆。
 **没有残留时一个 pfctl 都不调**,所以健康机器上什么都看不见。spec 第三点(anchor
 `com.apple/250.bx` 会不会被主规则集求值)只有这一步能答。
 
-前提:所有者在场;`bx status` Protected;`sudo tcpdump -ni en0 -w <scratch>/pfreset.pcap` 开着。
-1. `bx down`,开几个网页、让 Mail/WeChat 重连,等 20 秒。
-2. `bx up`。看 `/var/log/bx.log` 里 `pf reset:` 那几行:初始几条、几秒清零、有没有封顶。
-   (`bx run --pf-reset dry-run` 只在 Guardian 没在管的机器上可用 —— 所有者的 Mac 上
-   Guardian 管着 Core,两个 Core 冲突;所以这里直接看日志。)
+**所有者 2026-09-28 定死:造残留必须关保护几秒,那几秒会泄漏真实 IP,这个动作只由他
+自己在菜单上做,agent 不请求、不替做**;agent 只事先起观察器、事后读日志。2026-09-28
+第一次尝试没跑成:装上的本地测试构建被菜单的「更新」催回了 v0.4.13(判据「运行版本 ≠
+最新发布」),所以要验就先发 v0.4.14 再从菜单更新。
+**已知不会被重置的**:窗口里没发过包的空闲 socket(`return-rst` 只在它发包时才打得到),
+它们留给两段式去点名;日志末行报的是余额不是失败。
+
+前提:`bx status` Protected;所有者自己决定要不要抓包(`sudo tcpdump -ni en0 -w …`)。
+1. **所有者**在菜单上关保护,开几个网页、让 Mail/WeChat 重连,等 20 秒,再在菜单上打开。
+2. agent 看 Guardian 日志端点里 Core 的 `pf reset:` 那几行:初始几条、几秒清零、还剩几条。
+   (`bx run --pf-reset dry-run` 只在 Guardian 没在管的机器上可用;`bx run` 那条路上
+   `runPFReset` 的 ≤10 秒里按 Ctrl-C 会把 anchor 留下 —— `sudo bx down` 会冲掉。)
 3. 抓包用 python 逐包分类(不用 tcpdump 的复合过滤式):`bx up` 之后 en0 上非 bx 进程到
    公网的 TCP 是否在几秒内只剩 RST;之后没有新的明文 SYN。
 4. 菜单:`Settling` 那行要么不出现、要么几秒内消失;`Outside bx` 不出现。

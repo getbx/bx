@@ -1102,10 +1102,10 @@ func TestShutdownRunningCoreIsNoopWhenNoCoreIsReachable(t *testing.T) {
 func TestDefaultMacOSLifecycleDepsWiresEveryForcedTeardownStep(t *testing.T) {
 	deps := defaultMacOSLifecycleDeps()
 	if deps.forceTeardown == nil || deps.stopCore == nil || deps.clearBarrierRoutes == nil ||
-		deps.markDesiredOff == nil || deps.restoreSystemDNS == nil {
-		t.Fatalf("强制拆除挂钩未接全: forceTeardown=%v stopCore=%v clearBarrierRoutes=%v markDesiredOff=%v restoreSystemDNS=%v",
+		deps.markDesiredOff == nil || deps.restoreSystemDNS == nil || deps.flushPFReset == nil {
+		t.Fatalf("强制拆除挂钩未接全: forceTeardown=%v stopCore=%v clearBarrierRoutes=%v markDesiredOff=%v restoreSystemDNS=%v flushPFReset=%v",
 			deps.forceTeardown != nil, deps.stopCore != nil, deps.clearBarrierRoutes != nil,
-			deps.markDesiredOff != nil, deps.restoreSystemDNS != nil)
+			deps.markDesiredOff != nil, deps.restoreSystemDNS != nil, deps.flushPFReset != nil)
 	}
 	// 销挂起的钩子同样是生产接线的一部分:用户显式的 bx down 走强制路径时靠它
 	// 销掉一张可能存在的挂起,漏接就是静默地不销(clearMaintenanceHold 缺钩子

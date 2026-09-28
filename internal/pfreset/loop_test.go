@@ -31,7 +31,38 @@ func (f *fakeDriver) Release(_ context.Context, token string) error {
 func opts(observe func() int, tick <-chan time.Time) Options {
 	return Options{
 		Device: "en0", RoutedAround: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
-		Observe: observe, Tick: tick, Deadline: 10 * time.Second, Log: func(string, ...any) {},
+		Observe: func() (int, bool) { return observe(), true }, Tick: tick, Deadline: 10 * time.Second, Log: func(string, ...any) {},
+	}
+}
+
+// 「问不出来」不是 0(复审第 2 条):第一次就读不到 socket 表 ⇒ 不碰 pf、报错;循环中途读
+// 不到 ⇒ 不许走「清零」那条路,继续等到期,拆的动作照做。
+func TestRunNeverTreatsAnUnreadableSocketTableAsZero(t *testing.T) {
+	d := &fakeDriver{}
+	o := opts(func() int { return 0 }, nil)
+	o.Observe = func() (int, bool) { return 0, false }
+	out := Run(context.Background(), d, o)
+	if out.Attempted || len(d.calls) != 0 || out.Err == nil {
+		t.Fatalf("an unreadable table must touch nothing and say so, got %+v calls %v", out, d.calls)
+	}
+
+	d = &fakeDriver{}
+	tick := make(chan time.Time, 2)
+	tick <- time.Time{}
+	tick <- time.Time{}
+	calls := 0
+	o = opts(func() int { return 0 }, tick)
+	o.Deadline = 20 * time.Millisecond
+	o.Observe = func() (int, bool) {
+		calls++
+		if calls == 1 {
+			return 2, true
+		}
+		return 0, false // 之后每次都读不到
+	}
+	out = Run(context.Background(), d, o)
+	if out.Remaining != 2 || out.Err == nil || d.calls[len(d.calls)-1] != "release:tok" {
+		t.Fatalf("unreadable mid-loop must not claim done; remaining stays 2, err says so, teardown runs: %+v calls %v", out, d.calls)
 	}
 }
 

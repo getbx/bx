@@ -1974,14 +1974,15 @@ func dnsActivationFailureCases() []dnsActivationFailureCase {
 }
 
 type managerTestEnv struct {
-	manager *Manager
-	store   *recordingDesiredStore
-	runner  *fakeCoreRunner
-	health  *fakeHealthGate
-	barrier *fakeBarrier
-	dns     *fakeDNSManager
-	legacy  *fakeLegacyCore
-	events  *eventLog
+	managerOptions ManagerOptions
+	manager        *Manager
+	store          *recordingDesiredStore
+	runner         *fakeCoreRunner
+	health         *fakeHealthGate
+	barrier        *fakeBarrier
+	dns            *fakeDNSManager
+	legacy         *fakeLegacyCore
+	events         *eventLog
 	// legacyIntentPath 是这台「机器」上 legacy 升级欠条的位置。暴露出来是为了让
 	// 迁移垫片的测试能真的在盘上放一张欠条 —— 路径藏在字面量里的话,那些测试
 	// 只能改成读 Store 内部,或者干脆平凡地绿。
@@ -2014,7 +2015,7 @@ func newManagerTestEnv(t *testing.T) *managerTestEnv {
 	barrier := &fakeBarrier{events: events}
 	dns := newFakeDNSManager(events)
 	legacy := &fakeLegacyCore{events: events}
-	manager, err := NewManager(ManagerOptions{
+	options := ManagerOptions{
 		Store:          store,
 		Runner:         runner,
 		Health:         health,
@@ -2023,21 +2024,29 @@ func newManagerTestEnv(t *testing.T) *managerTestEnv {
 		Legacy:         legacy,
 		BarrierContext: BarrierContext{Gateway: "192.0.2.1", ServerBypass: []string{"203.0.113.92/32"}, BlockIPv6: true},
 		CoreVersion:    version.Version,
-	})
+	}
+	manager, err := NewManager(options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := &managerTestEnv{
 		manager: manager, store: store, runner: runner, health: health,
 		barrier: barrier, dns: dns, legacy: legacy, events: events,
-		legacyIntentPath: legacyIntentPath,
+		legacyIntentPath: legacyIntentPath, managerOptions: options,
 	}
 	// 孤儿屏障清理换成替身:生产默认(NewManager 里)是包级
 	// RemoveBlockingBarrierRoutes,它会真的 exec route/ip —— 纯逻辑测试
 	// 不碰真实路由,这条纪律在这里落点。
 	manager.clearOrphanBarrier = env.clearOrphanBarrierForTest
+	// 同一条纪律:生产默认的 flushStalePF 会 exec /sbin/pfctl 并读真机的
+	// /var/run/bx/pf.token(一个真的 token 文件会被测试 `-X` 掉)。换成空操作。
+	manager.flushStalePF = func(context.Context) (bool, error) { return false, nil }
 	return env
 }
+
+// options 交出构造这个 Manager 用的 ManagerOptions,给「NewManager 接线是否齐全」
+// 那类测试再构造一个生产形状的 Manager。
+func (e *managerTestEnv) options() ManagerOptions { return e.managerOptions }
 
 func (e *managerTestEnv) clearOrphanBarrierForTest(context.Context) error {
 	e.orphanBarrierMu.Lock()

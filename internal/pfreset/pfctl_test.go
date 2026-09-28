@@ -49,7 +49,9 @@ func TestFlushStaleClearsALeftoverAnchorAndToken(t *testing.T) {
 		t.Fatalf("flushed = %v err = %v", flushed, err)
 	}
 	joined := strings.Join(calls, "|")
-	for _, want := range []string{"-a " + Anchor + " -s rules", "-a " + Anchor + " -F all", "-X 42"} {
+	// 冲的是本 anchor 的 rules 与 Tables,不用 `-F all`:后者在 anchor 名为空时会把整机的
+	// 状态表一起冲掉,而 Apple 那份 pfctl 对 `-a … -F all` 的作用域没有文档背书。
+	for _, want := range []string{"-a " + Anchor + " -s rules", "-a " + Anchor + " -F rules", "-a " + Anchor + " -F Tables", "-X 42"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("calls %v miss %q", calls, want)
 		}

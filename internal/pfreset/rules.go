@@ -30,7 +30,11 @@ func RoutedAround(private, serverBypass, userBypass []string) []netip.Prefix {
 	for _, group := range [][]string{private, serverBypass, userBypass} {
 		for _, e := range group {
 			p, ok := policy.RuleCIDR(e)
-			if !ok || seen[p] {
+			if !ok {
+				continue
+			}
+			p = p.Masked() // 带主机位的条目 pf 的表拒收,整份规则会装不上
+			if seen[p] {
 				continue
 			}
 			seen[p] = true

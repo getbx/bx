@@ -35,14 +35,30 @@ func Collect(ctx context.Context) []Check {
 	// bx 自己的一次性 pf 重置(internal/pfreset)留下的残留:只该存在几秒的东西还在,
 	// 就是上一个 Core 没走完拆除。读 anchor 与 token 文件都是只读;读不到当作没有
 	// (非 root 读 pfctl 会失败,那时 doctor 报不出这一项,而不是报一个编出来的 warn)。
-	rules, _ := darwinCommand(ctx, "pfctl", "-a", pfreset.Anchor, "-s", "rules")
-	_, tokenErr := os.Stat(supervisor.PFTokenPath())
-	checks = append(checks, darwinPFResetResidueCheck(rules, tokenErr == nil))
+	rules, rulesErr, tokenExists := pfResetProbe(ctx)
+	checks = append(checks, darwinPFResetResidueCheckFrom(rules, rulesErr, tokenExists))
 	return checks
 }
 
-// darwinPFResetResidueCheck 是纯判定:anchor 里有规则或引用 token 还在 ⇒ warn,出路是
-// `sudo bx down`(它的强制拆除第 4b 步会冲掉);都没有 ⇒ ok。
+// pfResetProbe 取 anchor 的规则与 token 文件的在否。做成变量只为让「Collect 真的发出
+// pf_reset_residue」可测(它此前是一个零调用方的纯判定,复审变异实测全绿)。
+var pfResetProbe = func(ctx context.Context) (rules string, rulesErr error, tokenExists bool) {
+	rules, rulesErr = darwinCommand(ctx, "pfctl", "-a", pfreset.Anchor, "-s", "rules")
+	_, statErr := os.Stat(supervisor.PFTokenPath())
+	return rules, rulesErr, statErr == nil
+}
+
+// darwinPFResetResidueCheckFrom 是纯判定:anchor 里有规则或引用 token 还在 ⇒ warn,出路
+// 是 `sudo bx down`(它的强制拆除第 4b 步会冲掉);pfctl 读不到(非 root)而 token 也不在
+// ⇒ not_checked,**不是 ok** —— 「没查」与「没有」在 doctor 里是两种状态;都没有 ⇒ ok。
+func darwinPFResetResidueCheckFrom(anchorRules string, rulesErr error, tokenExists bool) Check {
+	if rulesErr != nil && !tokenExists {
+		return Check{Name: "pf_reset_residue", Status: "not_checked", Detail: "could not read bx's pf anchor (pfctl needs root): " + rulesErr.Error(), Hint: elevate.Prefix + "bx doctor"}
+	}
+	return darwinPFResetResidueCheck(anchorRules, tokenExists)
+}
+
+// darwinPFResetResidueCheck 是读到了 anchor 之后的判定。
 func darwinPFResetResidueCheck(anchorRules string, tokenExists bool) Check {
 	hasRules := strings.TrimSpace(anchorRules) != ""
 	switch {

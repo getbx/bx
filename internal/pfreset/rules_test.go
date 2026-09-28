@@ -30,8 +30,9 @@ func TestRulesNameTheDeviceAndEveryRoutedAroundPrefix(t *testing.T) {
 
 // 白名单 = 私网 + 服务器旁路 + 用户 bypass;裸 IP 补 /32,认不出的丢掉不编,去重。
 func TestRoutedAroundJoinsPrivateServerAndUserBypass(t *testing.T) {
-	got := RoutedAround([]string{"10.0.0.0/8", "192.168.0.0/16"}, []string{"203.0.113.92/32"}, []string{"198.51.100.7", "garbage", "10.0.0.0/8"})
-	want := []string{"10.0.0.0/8", "192.168.0.0/16", "203.0.113.92/32", "198.51.100.7/32"}
+	// 203.0.113.5/24 带主机位:pf 的表拒收这种条目,整份规则会装不上 —— 先 Masked。
+	got := RoutedAround([]string{"10.0.0.0/8", "192.168.0.0/16"}, []string{"203.0.113.92/32"}, []string{"198.51.100.7", "garbage", "10.0.0.0/8", "203.0.113.5/24"})
+	want := []string{"10.0.0.0/8", "192.168.0.0/16", "203.0.113.92/32", "198.51.100.7/32", "203.0.113.0/24"}
 	if len(got) != len(want) {
 		t.Fatalf("routed-around = %v, want %v", got, want)
 	}
