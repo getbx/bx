@@ -25,10 +25,10 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 ditto "$RELEASE_DIR/Bx.app" "$STAGE/Bx.app"
 ln -s /Applications "$STAGE/Applications"
-# **名字要让人想点开它。** 那段「macOS 会说无法验证开发者、去哪里放行」的说明
-# 是首装唯一一道过不去的坎,而它此前叫 README.txt —— 没有人会在拖完图标之后去
-# 点开一个叫 README 的文件,于是他卡在系统弹窗前,而说明就在旁边。
-cp "$RELEASE_DIR/README.txt" "$STAGE/Open me first - macOS will say bx is unverified.txt"
+# **名字要让人在出事的那一刻想点开它。** 正式发布从 2026-09-28 起带 Developer ID
+# 签名与 Apple 公证,正常下载不会再弹「无法验证开发者」;但一旦弹了(拿到的不是
+# 官方包、或包被改过),说明就在旁边 —— 而没有人会去点开一个叫 README 的文件。
+cp "$RELEASE_DIR/README.txt" "$STAGE/Read me if macOS refuses to open bx.txt"
 
 rm -f "$DMG"
 # **显式给足镜像大小,并在失败时再试一次。** 只给 -srcfolder 时 hdiutil 自己估算
@@ -62,6 +62,18 @@ if ! codesign --verify --deep --strict "$MOUNT/Bx.app" 2>/dev/null; then
 fi
 hdiutil detach "$MOUNT" >/dev/null
 rm -rf "$MOUNT"
+
+# **dmg 自己也要签名、公证并钉票据**(bundle 里那张票据在上一步已经钉好)。Gatekeeper
+# 对从网上下载的镜像先评估镜像本身:镜像没签名没票据就先弹一次「无法验证」,与 app
+# 有没有公证无关。镜像签名不带 hardened runtime(那是给可执行文件的),只要身份与
+# 时间戳。钉票据会改动镜像的字节,所以必须排在算校验和之前。没有 Developer ID 时
+# 不签镜像(ad-hoc 签一个 dmg 没有任何意义),凭据不全时公证安静跳过(本机开发打包)。
+SIGN_IDENTITY="${BX_CODESIGN_IDENTITY:--}"
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+	echo "Signing $RELEASE_NAME.dmg (identity: $SIGN_IDENTITY)..."
+	codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
+fi
+"$ROOT/scripts/macos-notarize.sh" "$DMG"
 
 (cd "$DIST_ROOT" && shasum -a 256 "$RELEASE_NAME.dmg" >> SHA256SUMS)
 echo "DMG: $DMG"

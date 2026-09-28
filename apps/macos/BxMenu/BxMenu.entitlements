@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Hardened runtime(公证的前提)默认禁止向别的 app 发 Apple Events。菜单栏
+    App 经 /usr/bin/osascript 子进程打开 Terminal(Run Doctor)与做提权确认,
+    这条权利只是允许系统弹那道授权框,不新增任何能力。
+  -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

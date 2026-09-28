@@ -58,7 +58,8 @@
 | `bx logs --json` | 输出 agent 可读的客户端日志文本、错误和提示 |
 | `scripts/package-macos-menu.sh` | 打包 macOS 菜单栏 App 到 `dist.noindex/macos/Bx.app`(`.noindex` 后缀让 Spotlight 不去索引构建产物,否则 `mdfind` 会把它当成一个装好的 Bx.app) |
 | `scripts/package-macos-release.sh` | 生成 macOS release 目录和 `.tar.gz` |
-| `scripts/verify-macos-release.sh` | 验证 macOS release 目录、压缩包和 SHA256SUMS |
+| `scripts/verify-macos-release.sh` | 验证 macOS release 目录、压缩包和 SHA256SUMS;签了 Developer ID 时还验公证票据与 Gatekeeper 放行 |
+| `scripts/macos-notarize.sh <path>` | 把签好的 Bx.app 或 .dmg 送去 Apple 公证并钉票据(凭据 `BX_NOTARY_KEY_ID/ISSUER_ID/KEY_PATH`,不全时跳过) |
 | `scripts/darwin-unified-install-check.sh` | 统一安装真机验收(默认 dry-run) |
 | `scripts/darwin-unified-update-check.sh` | 统一更新真机验收(默认 dry-run) |
 | `scripts/open-privacy-checks.sh` | 打开第三方浏览器指纹参考页(默认 dry-run;不采集、不判断) |

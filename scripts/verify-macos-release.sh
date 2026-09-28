@@ -74,6 +74,10 @@ ACTUAL_BRIDGE_SHA=$(shasum -a 256 "$RESOURCES/bx-bridge" | awk '{print $1}')
 [[ "$RELEASE_BRIDGE_SHA" == "$ACTUAL_BRIDGE_SHA" ]] || fail "release.json bx-bridge digest mismatch"
 
 grep -qF "install.sh never runs bx setup" "$RELEASE_DIR/README.txt" || fail "README missing no-setup note"
+# README 说「官方发布带 Developer ID 签名与公证」—— 这句只有在发布真的是这样时才
+# 成立,下面那段 Developer ID 检查就是它的承重墙。
+grep -qF "signed with an Apple Developer ID and notarized by Apple" "$RELEASE_DIR/README.txt" || fail "README missing the notarized-release note"
+grep -qF "do not run any xattr command" "$RELEASE_DIR/README.txt" || fail "README missing the tampered-package warning"
 # 升级路径改成「一次做完」之后,「不会执行 bx up、不修改 DNS/路由」只对全新安装
 # 成立:覆盖安装到一台已经装过 bx 的机器上时,安装会在用户确认后把保护重启回来。
 # 这里钉住的必须是真话,否则 CI 会把一句假话钉死在发布物里(旧版正是如此:
@@ -122,6 +126,32 @@ grep -qF '[ "$(id -u)" -ne 0 ]' "$RELEASE_DIR/install.sh" || fail "install.sh mi
 grep -qF '[ -x "$DIR/Bx.app/Contents/Resources/bx-cli" ]' "$RELEASE_DIR/install.sh" || fail "install.sh missing bx-cli preflight"
 
 grep -qF "bx uninstall" "$RELEASE_DIR/uninstall.sh" || fail "uninstall.sh missing bx uninstall pointer"
+
+# **Developer ID 签了就必须公证到底。**
+#
+# 打包脚本在凭据不全时会安静跳过公证(本机开发打包要能跑),所以「签了、没公证」
+# 的包与「签了、公证了」的包在打包那一步的输出上没有区别 —— 而前者给用户的仍是
+# 「无法验证开发者」,README 里那句「官方发布已公证」就成了假话。这里按身份分支:
+# ad-hoc(本机开发、ci.yml 的 fresh-install)只验签名有效;Developer ID 则逐项验
+# hardened runtime、票据、Gatekeeper 放行,少一样就红。
+APP="$RELEASE_DIR/Bx.app"
+codesign --verify --deep --strict "$APP" || fail "Bx.app signature is invalid (users would see 'damaged')"
+if [[ "${BX_CODESIGN_IDENTITY:--}" != "-" ]]; then
+  # 先取整段输出再匹配:`codesign … | grep -q` 在 pipefail 下会因 grep 提前关管道而
+  # 把 codesign 判成失败(macos-notarize.sh 首跑撞上过)。
+  grep -q 'Authority=Developer ID Application' <<<"$(codesign -dvv "$APP" 2>&1)" || fail "Bx.app is not signed by a Developer ID Application certificate"
+  # 公证要求每一个 Mach-O 都带 hardened runtime;Resources 下那两个不算 nested code,
+  # --deep 不会替它们签,所以三样各查一遍。
+  for bin in "$APP/Contents/MacOS/BxMenu" "$RESOURCES/bx-cli" "$RESOURCES/bx-bridge"; do
+    grep -q 'Authority=Developer ID Application' <<<"$(codesign -dvv "$bin" 2>&1)" || fail "$(basename "$bin") is not signed by the Developer ID"
+    grep -qE 'flags=.*\(runtime\)' <<<"$(codesign -d --verbose "$bin" 2>&1)" || fail "$(basename "$bin") lacks the hardened runtime (notarization would reject it)"
+  done
+  xcrun stapler validate -q "$APP" || fail "Bx.app has no notarization ticket stapled"
+  xcrun stapler validate -q "$DIST_ROOT/$RELEASE_NAME.dmg" || fail "$RELEASE_NAME.dmg has no notarization ticket stapled"
+  # 最后问 Gatekeeper 本人:这是它给用户放行时用的同一条判据。
+  spctl --assess --type execute "$APP" || fail "Gatekeeper rejects Bx.app"
+  spctl --assess --type open --context context:primary-signature "$DIST_ROOT/$RELEASE_NAME.dmg" || fail "Gatekeeper rejects $RELEASE_NAME.dmg"
+fi
 
 (
   cd "$DIST_ROOT"

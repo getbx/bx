@@ -132,12 +132,61 @@ jobs:
       # (2026-09-15 实测)。共用一份之后漂移在构造上不可能。
       - uses: ./.github/actions/free-macos-disk
 
-      - name: Package macOS release
+      # **Developer ID 签名 + Apple 公证(2026-09-28 起,the publisher's LLC)。**
+      #
+      # 证书与 API 密钥住在仓库 secrets 里(fork 的 PR 拿不到,release.yml 只在打 tag
+      # 与手动触发时跑)。证书导进一个**临时钥匙串**,job 结束无条件删掉 —— runner 本
+      # 就是一次性的,但删的动作要在这里看得见。
+      # 五个 secret 缺任何一个,这一步就失败,而不是悄悄退回 ad-hoc 签名:发出去一个
+      # 「无法验证开发者」的包与 README 里那句「官方发布已公证」互相打脸。
+      - name: Import the Developer ID certificate
+        env:
+          MACOS_SIGNING_CERT_P12: ${{ secrets.MACOS_SIGNING_CERT_P12 }}
+          MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
         run: |
           set -euo pipefail
+          [ -n "$MACOS_SIGNING_CERT_P12" ] || { echo "secret MACOS_SIGNING_CERT_P12 is missing" >&2; exit 1; }
+          [ -n "$MACOS_SIGNING_CERT_PASSWORD" ] || { echo "secret MACOS_SIGNING_CERT_PASSWORD is missing" >&2; exit 1; }
+          KEYCHAIN="$RUNNER_TEMP/bx-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "$MACOS_SIGNING_CERT_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/signing.p12" -P "$MACOS_SIGNING_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          # 让 codesign(非交互)能用这把私钥,否则 runner 上会卡在一个没人点的授权框。
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$RUNNER_TEMP/signing.p12"
+          # 身份从证书本身读出来,不在 workflow 里手抄一遍(换证书只换 secret)。
+          identity="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')"
+          [ -n "$identity" ] || { echo "the imported certificate has no Developer ID Application identity" >&2; exit 1; }
+          echo "BX_CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "BX_SIGNING_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Package macOS release
+        env:
+          BX_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          BX_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          [ -n "$BX_NOTARY_KEY_ID" ] || { echo "secret APPLE_NOTARY_KEY_ID is missing" >&2; exit 1; }
+          [ -n "$BX_NOTARY_ISSUER_ID" ] || { echo "secret APPLE_NOTARY_ISSUER_ID is missing" >&2; exit 1; }
+          [ -n "$APPLE_NOTARY_KEY_P8" ] || { echo "secret APPLE_NOTARY_KEY_P8 is missing" >&2; exit 1; }
+          export BX_NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$APPLE_NOTARY_KEY_P8" > "$BX_NOTARY_KEY_PATH"
+          chmod 600 "$BX_NOTARY_KEY_PATH"
           version="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           BX_ARCH="${{ matrix.arch }}" BX_VERSION="$version" scripts/package-macos-release.sh
           BX_ARCH="${{ matrix.arch }}" BX_VERSION="$version" scripts/verify-macos-release.sh
+          rm -f "$BX_NOTARY_KEY_PATH"
+
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          [ -z "${BX_SIGNING_KEYCHAIN:-}" ] || security delete-keychain "$BX_SIGNING_KEYCHAIN" || true
 
       - name: Upload macOS package artifact
         uses: actions/upload-artifact@v4

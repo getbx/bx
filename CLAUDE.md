@@ -854,10 +854,9 @@ release 里有 `bx-macos-<arch>.dmg`,包内是标准形状(`Bx.app` + `Applicati
 `TestTheMacOSPackageSpeaksToUsersInEnglish` 钉住三段 heredoc 里**用户可见的行**
 (以 `#` 开头的注释不在射程内,与全仓「注释中文、用户可见英文」同一条)。
 
-**dmg 里那份说明改了名字**:`README.txt` → `Open me first - macOS will say bx is unverified.txt`,
-并且把 Gatekeeper 那一段**提到了最前面**。理由是那段说明是首装唯一一道过不去的坎,
-而没有人会在拖完图标之后去点开一个叫 README 的文件 —— 他卡在系统弹窗前,而说明
-就在旁边。那一段现在**先说两个对话框的区别**:「无法验证开发者」可以放行;
+**dmg 里那份说明叫 `Read me if macOS refuses to open bx.txt`**,Gatekeeper 那一段在最
+前面:出事的人卡在系统弹窗前,而没有人会去点开一个叫 README 的文件。那一段**先说
+两个对话框的区别**:「无法验证开发者」= 拿到的不是官方包(自己构建的才该放行);
 「已损坏,应移到废纸篓」**不许放行、也不许照网上说的跑 `xattr`** —— 后者正好关掉
 包被改动过的检测,而那是这个产品唯一能给用户的防篡改信号。
 
@@ -886,10 +885,15 @@ DNS/路由」「覆盖安装会在你确认后重启保护」)。**翻译一段�
 
 **剩下的首装摩擦都不在代码里,写下来省得下一个人再查一遍**:
 
-1. **Gatekeeper**(「无法验证开发者」→ 系统设置 → 隐私与安全性 → 仍要打开)是最大
-   的一道,而它只能用 Apple Developer ID 签名 + 公证解决 —— 那是一笔年费与一个账号,
-   不是代码。打包脚本里的 ad-hoc 签名(`codesign -s -`)满足不了 Gatekeeper,它防的
-   是另一件事(包被改动过会显示「已损坏」,那条路**没有**放行入口)。
+1. ~~**Gatekeeper**~~ —— **2026-09-28 起已解**:所有者以 `the publisher's LLC`(Wyoming
+   LLC,Team `XXXXXXXXXX`)办了 Apple Developer;正式发布由 release.yml 用 Developer ID
+   签(每个 Mach-O 各签、hardened runtime、时间戳)、经 `scripts/macos-notarize.sh` 公证
+   并钉票据(app 与 dmg 各一次),`verify-macos-release.sh` 在身份是 Developer ID 时逐项
+   验到 `spctl` 放行。凭据在仓库 secrets(`MACOS_SIGNING_CERT_P12/PASSWORD`、
+   `APPLE_NOTARY_KEY_ID/ISSUER_ID/KEY_P8`),本机在 `~/.private_keys/`;证书到 2027-02-01
+   要续。无证书的本机打包仍是 ad-hoc(它防的是「已损坏」那条没有放行入口的路)。
+   本机首跑撞到 `codesign … | grep -q` 在 pipefail 下被 grep 提前关管道判成失败 ——
+   先取整段输出再匹配。
 2. **鸡生蛋**:dmg 从 GitHub 下载,而 GitHub 正是你还没有 bx 时够不着的地方。
 3. **首装必须先有一条 `bx://`**,也就是先有一台服务器 —— 对一个从零开始的人,
    「装客户端」和「有服务器」是两件事,而 dmg 只解决前者。

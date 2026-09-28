@@ -52,6 +52,30 @@ RESOURCES="$RELEASE_DIR/Bx.app/Contents/Resources"
 install -m 0755 "$RELEASE_DIR/bx" "$RESOURCES/bx-cli"
 GOOS=darwin GOARCH="$ARCH" go build -trimpath -ldflags "-X github.com/getbx/bx/internal/version.Version=$VERSION" \
   -o "$RESOURCES/bx-bridge" "$ROOT/cmd/bx-bridge"
+
+# **签名:有 Developer ID 就按公证的要求签,没有就 ad-hoc;两条路都要签。**
+#
+# 为什么没有证书也要签(2026-08-13 真机):Go 的链接器只给二进制打 ad-hoc 签名,
+# 不签 bundle,而装配好的 Bx.app 在 Contents/Resources 下还塞了 bx-cli / bx-bridge /
+# release.json —— 它们不在任何签名的覆盖范围里,于是
+#   codesign --verify  →  code has no resources but signature indicates they must be present
+# **那不是「不受信任」,是「无效」**,而这两者对用户是天差地别的两个弹窗:
+#   签名无效  →  「已损坏,应移到废纸篓」,**没有任何放行入口**;
+#   签名有效但不受信任 → 「无法验证开发者」,系统设置 → 隐私与安全性 里有 Open Anyway。
+#
+# 有 Developer ID(2026-09-28 起,the publisher's LLC)时公证要求**每一个 Mach-O** 都
+# 带 hardened runtime 与可信时间戳,而 Resources 下的两个可执行文件不算 nested code,
+# `--deep` 不会替它们签 —— 所以三样各签一遍,顺序由内到外:先两个二进制,再算它们
+# 的摘要写进 release.json(签名改变字节,先算摘要再签会让 app-install 的校验对不上),
+# 最后签整个 bundle(封住 Resources)。
+SIGN_IDENTITY="${BX_CODESIGN_IDENTITY:--}"
+SIGN_FLAGS=(--force --sign "$SIGN_IDENTITY")
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+  SIGN_FLAGS+=(--options runtime --timestamp)
+fi
+echo "Signing bx-cli and bx-bridge (identity: $SIGN_IDENTITY)..."
+codesign "${SIGN_FLAGS[@]}" "$RESOURCES/bx-cli"
+codesign "${SIGN_FLAGS[@]}" "$RESOURCES/bx-bridge"
 CLI_SHA=$(shasum -a 256 "$RESOURCES/bx-cli" | awk '{print $1}')
 BRIDGE_SHA=$(shasum -a 256 "$RESOURCES/bx-bridge" | awk '{print $1}')
 cat > "$RESOURCES/release.json" <<EOF
@@ -148,15 +172,18 @@ SCRIPT
 cat > "$RELEASE_DIR/README.txt" <<TXT
 bx macOS $ARCH release ($VERSION)
 
-FIRST, THE ONE THING THAT WILL LOOK BROKEN
-------------------------------------------
-The first time you open bx, macOS will refuse to run it. There are two different
-messages and they mean opposite things:
+IF macOS REFUSES TO OPEN bx
+---------------------------
+Official bx releases are signed with an Apple Developer ID and notarized by Apple,
+so a normal download opens without any warning. If macOS refuses anyway, the
+message tells you what went wrong:
 
   "bx cannot be opened because the developer cannot be verified"
-      -> This is expected. bx is not signed with an Apple Developer ID.
-         Allow it: System Settings -> Privacy & Security -> scroll down to the
-         bx entry -> Open Anyway.
+  "Apple could not verify bx is free of malware"
+      -> This copy is not an official release build, or its notarization could not
+         be checked. Download it again from the official releases page.
+         (Built it yourself? Then this is expected: System Settings ->
+         Privacy & Security -> scroll down to the bx entry -> Open Anyway.)
 
   "bx is damaged and can't be opened. You should move it to the Trash"
       -> Do NOT allow this one, and do not run any xattr command you find online:
@@ -204,28 +231,26 @@ TXT
 
 chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh"
 
-# **给整个 bundle 签名 —— 没有证书时也要签。**
-#
-# Go 的链接器会给它产出的二进制自动打一个 ad-hoc 签名,但那只签了**二进制**,
-# 没签 bundle:装配好的 Bx.app 里 Contents/Resources 下还塞了 bx-cli / bx-bridge /
-# release.json,它们不在任何签名的覆盖范围里。后果实测(2026-08-13,macOS 26.5.2):
-#
-#   codesign --verify  →  code has no resources but signature indicates they must be present
-#
-# **那不是「不受信任」,是「无效」** —— 而这两者对用户是天差地别的两个弹窗:
-#   签名无效  →  「已损坏,应移到废纸篓」,**没有任何放行入口**;
-#   签名有效但不受信任 → 「无法验证开发者」,系统设置 → 隐私与安全性 里有 Open Anyway。
-#
-# ad-hoc 签整个 bundle 不需要任何证书,而它正好把前者变成后者。有 Developer ID 时
-# 把 BX_CODESIGN_IDENTITY 设成那个身份即可(之后还要 notarytool 公证,那是另一步)。
-SIGN_IDENTITY="${BX_CODESIGN_IDENTITY:--}"
 echo "Signing Bx.app (identity: $SIGN_IDENTITY)..."
-codesign --force --deep --sign "$SIGN_IDENTITY" "$RELEASE_DIR/Bx.app"
+# 不带 --deep:Resources 下那两个二进制上面已经各自签过,这里签的是 bundle 本身
+# (主可执行文件 BxMenu + 资源封条)。entitlements 见文件内注释。
+codesign "${SIGN_FLAGS[@]}" --entitlements "$ROOT/apps/macos/BxMenu/BxMenu.entitlements" "$RELEASE_DIR/Bx.app"
 # **签完必须验。** 一个签失败却继续打包的脚本,产出的正是上面那个「已损坏」。
 codesign --verify --deep --strict "$RELEASE_DIR/Bx.app" || {
   echo "签名验证失败 —— 这个包会让用户看到「已损坏,应移到废纸篓」,而那条路没有放行入口" >&2
   exit 1
 }
+
+# **公证并把票据钉进 Bx.app,再进 tar.gz 与 dmg。**
+#
+# 三个变量齐了就公证(scripts/macos-notarize.sh),缺了就一个字不做 —— 本机
+# 无证书的开发打包照旧能跑。但 Developer ID 签了却没公证的包**不许发出去**:
+# verify-macos-release.sh 在身份是 Developer ID 时要求票据在、spctl 放行,少一步就红。
+#
+# 顺序是刻意的:先公证 app、把票据钉进 bundle,之后打的 tar.gz 与 dmg 里装的都是
+# 带票据的那一份;dmg 自己再公证一次并钉票据(package-macos-dmg.sh)。用户拖出
+# app 之后离线也能过 Gatekeeper,靠的就是 bundle 里那张票据。
+"$ROOT/scripts/macos-notarize.sh" "$RELEASE_DIR/Bx.app"
 
 (
   cd "$DIST_ROOT"
