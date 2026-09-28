@@ -410,6 +410,10 @@ func newFakeMacOSLifecycleDeps() *fakeMacOSLifecycleDeps {
 		f.events = append(f.events, "barrier.clear")
 		return nil
 	}
+	f.macOSLifecycleDeps.flushPFReset = func(context.Context) error {
+		f.events = append(f.events, "pf.flush")
+		return nil
+	}
 	f.macOSLifecycleDeps.restoreSystemDNS = func(context.Context) error {
 		f.restoreDNSCount++
 		f.events = append(f.events, "dns.restore")
@@ -758,7 +762,7 @@ func TestMacOSDownForcedTeardownStopsCoreClearsBarrierAndPersistsOff(t *testing.
 	if !result.Forced {
 		t.Error("Guardian 不可达时应报告走了强制拆除")
 	}
-	want := "desired.off|core.shutdown|guardian.forceTeardown|core.orphanStop|barrier.clear|dns.restore|desired.off"
+	want := "desired.off|core.shutdown|guardian.forceTeardown|core.orphanStop|barrier.clear|pf.flush|dns.restore|desired.off"
 	if got := deps.trace(); got != want {
 		t.Fatalf("强制拆除调用序列 = %q, want %q", got, want)
 	}

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/getbx/bx/internal/pfreset"
 	"github.com/getbx/bx/internal/protectionstate"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -314,9 +315,12 @@ type Manager struct {
 	statusMu          sync.RWMutex
 	store             DesiredStore
 	runner            CoreRunner
-	health            HealthGate
-	barrier           Barrier
-	dns               DNSManager
+	// flushStalePF 在 fork Core 之前冲掉上一个 Core 留下的 bx pf anchor(internal/pfreset)。
+	// 做成字段只为让「真的在 fork 之前叫了」可测;生产接 pfreset.FlushStaleDarwin。
+	flushStalePF func(context.Context) (bool, error)
+	health       HealthGate
+	barrier      Barrier
+	dns          DNSManager
 	// clearOrphanBarrier 是 ③b 执行器清孤儿屏障的原语,默认
 	// RemoveBlockingBarrierRoutes(见 NewManager),测试注入替身。
 	clearOrphanBarrier func(context.Context) error
@@ -458,8 +462,11 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		updateOperation: make(chan struct{}, 1),
 		store:           options.Store,
 		runner:          options.Runner,
-		health:          options.Health,
-		barrier:         options.Barrier,
+		flushStalePF: func(ctx context.Context) (bool, error) {
+			return pfreset.FlushStaleDarwin(ctx, supervisor.PFTokenPath())
+		},
+		health:  options.Health,
+		barrier: options.Barrier,
 		// 孤儿屏障清理的默认实现是逃生口同款的 ownership-free 原语;测试替换
 		// 这个字段(包级函数会真的 exec route/ip,纯逻辑测试不碰真实路由)。
 		clearOrphanBarrier: func(ctx context.Context) error {
@@ -1384,6 +1391,14 @@ func (m *Manager) startCoreLocked(ctx context.Context) (supervisor.RuntimeState,
 }
 
 func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, releaseBarrier bool) (supervisor.RuntimeState, error) {
+	// 上一个 Core 崩溃留下的 bx pf anchor(internal/pfreset)会把物理网卡上非 root 的
+	// 公网 TCP/UDP 全拒掉,而新 Core 起来之后一切看起来正常。fork 之前先冲;冲不掉
+	// 只记日志 —— 残留是「网坏了」,不起 Core 是「没保护」,后者更糟。
+	if m.flushStalePF != nil {
+		if flushed, err := m.flushStalePF(ctx); flushed || err != nil {
+			log.Printf("guardian_pf_reset_stale flushed=%v err=%v", flushed, err)
+		}
+	}
 	operationCtx, cancelOperation, err := m.reserveCleanup(ctx)
 	if err != nil {
 		m.needsAttention(DesiredOn, "core_start_failed")

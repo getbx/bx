@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/getbx/bx/internal/guardian"
@@ -18,6 +19,7 @@ type teardownCalls struct {
 	stopCore      int
 	forceTeardown int
 	barrier       int
+	pf            int
 	dns           int
 }
 
@@ -31,7 +33,27 @@ func teardownDeps(calls *teardownCalls, stopErr, dnsErr error) macOSLifecycleDep
 		stopCore:             func(context.Context) error { calls.stopCore++; calls.record("core.stop"); return stopErr },
 		forceTeardown:        func(context.Context) error { calls.forceTeardown++; calls.record("guardian.bootout"); return nil },
 		clearBarrierRoutes:   func(context.Context) error { calls.barrier++; calls.record("barrier.clear"); return nil },
+		flushPFReset:         func(context.Context) error { calls.pf++; calls.record("pf.flush"); return nil },
 		restoreSystemDNS:     func(context.Context) error { calls.dns++; calls.record("dns.restore"); return dnsErr },
+	}
+}
+
+// 第 7 步(2026-09-28):上一个 Core 留下的 bx pf anchor 会把物理网卡上非 root 的公网
+// TCP 全拒掉。强制拆除必须冲它;冲失败只进失败清单,不许挡住后面的 DNS 还原。
+func TestForcedTeardownFlushesTheStalePFAnchorAndKeepsGoingWhenThatFails(t *testing.T) {
+	calls := &teardownCalls{}
+	deps := teardownDeps(calls, nil, nil)
+	deps.flushPFReset = func(context.Context) error {
+		calls.pf++
+		calls.record("pf.flush")
+		return errors.New("pfctl: permission denied")
+	}
+	err := forcedMacOSTeardown(context.Background(), downPurposeUser, deps, nil)
+	if err == nil || !strings.Contains(err.Error(), "pfctl: permission denied") {
+		t.Fatalf("a failed pf flush must be reported, got %v", err)
+	}
+	if calls.pf != 1 || calls.dns != 1 {
+		t.Fatalf("pf flush must run once and DNS restore must still run, calls = %+v", calls)
 	}
 }
 

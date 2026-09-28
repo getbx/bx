@@ -17,6 +17,7 @@ import (
 	"github.com/getbx/bx/internal/config"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/install"
+	"github.com/getbx/bx/internal/pfreset"
 	"github.com/getbx/bx/internal/supervisor"
 	urfavecli "github.com/urfave/cli/v2"
 )
@@ -228,6 +229,10 @@ type macOSLifecycleDeps struct {
 	// state, so the two steps have no ordering dependency in the other
 	// direction either.
 	clearBarrierRoutes func(context.Context) error
+	// flushPFReset 冲掉上一个 Core 留下的 bx pf anchor 并释放它的 pf 引用
+	// (internal/pfreset)。残留会把物理网卡上非 root 的公网 TCP 全拒掉 —— 用户读到的
+	// 是「网坏了」。可空 = 该平台没有 pf。
+	flushPFReset func(context.Context) error
 }
 
 type macOSUpResult struct {
@@ -272,6 +277,10 @@ func defaultMacOSLifecycleDeps() macOSLifecycleDeps {
 		},
 		clearBarrierRoutes: func(ctx context.Context) error {
 			return guardian.RemoveBlockingBarrierRoutes(ctx, nil)
+		},
+		flushPFReset: func(ctx context.Context) error {
+			_, err := pfreset.FlushStaleDarwin(ctx, supervisor.PFTokenPath())
+			return err
 		},
 		// An empty service name means "the network service recorded when
 		// DNS was taken over" (install.disableDNSDarwinContextWithRunner
@@ -733,6 +742,16 @@ func forcedMacOSTeardown(ctx context.Context, purpose downPurpose, deps macOSLif
 	if deps.clearBarrierRoutes != nil {
 		if err := deps.clearBarrierRoutes(ctx); err != nil {
 			failures = append(failures, fmt.Errorf("removing the barrier blocking routes: %w", err))
+		}
+	}
+	// 4b. Flush the bx pf anchor a crashed Core may have left behind
+	//     (internal/pfreset). Same class of kernel residue as the barrier
+	//     routes — it rejects every non-root public TCP/UDP packet on the
+	//     physical interface — so it goes right after them and, like them,
+	//     never blocks the steps below.
+	if deps.flushPFReset != nil {
+		if err := deps.flushPFReset(ctx); err != nil {
+			failures = append(failures, fmt.Errorf("flushing the leftover bx pf anchor: %w", err))
 		}
 	}
 	// 5. Put the system resolver back. Guardian owns the DNS takeover and
