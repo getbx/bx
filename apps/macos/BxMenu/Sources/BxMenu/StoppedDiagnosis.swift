@@ -88,7 +88,7 @@ func stoppedDiagnosis(_ evidence: StoppedEvidence) -> StoppedDiagnosis {
         return .serviceStopped
     }
     if evidence.coreSocketAnswering == false {
-        return .warning(evidence.coreSocketDetail ?? L("Status socket unavailable"))
+        return .warning(evidence.coreSocketDetail ?? L("bx is not answering"))
     }
     return .warning(evidence.guardianDetail ?? L("Needs attention"))
 }

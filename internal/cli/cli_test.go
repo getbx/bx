@@ -2703,8 +2703,8 @@ func TestDoctorReportsLatestRecoveryWithoutDirectFallback(t *testing.T) {
 	if check.Name != "network_recovery" || check.Status != "warn" {
 		t.Fatalf("recovery doctor check = %+v", check)
 	}
-	if !strings.Contains(check.Detail, "stage=transport_health") ||
-		!strings.Contains(check.Detail, "error_code=transport_unavailable") {
+	if !strings.Contains(check.Detail, "transport_health") ||
+		!strings.Contains(check.Detail, "transport_unavailable") {
 		t.Fatalf("recovery doctor detail = %q", check.Detail)
 	}
 	guidance := strings.ToLower(check.Hint)

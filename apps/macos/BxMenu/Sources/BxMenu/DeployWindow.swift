@@ -15,7 +15,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
     private var preview: NSTextField?
     private var problem: NSTextField?
 
-    /// 用户按了「Open in Terminal」。参数是校验通过的目标。
+    /// 用户按了「Install over SSH in Terminal」。参数是校验通过的目标。
     var onRun: ((DeployTarget) -> Void)?
 
     func show() {
@@ -65,7 +65,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
 
         // **占位符已经说明了每个框是什么**,上面再加一行标签是说两遍。
         // 三个框、每个一句占位符,比「标签 + 空框」少一半行数而信息一样多。
-        let host = field(placeholder: L("Server address — 1.2.3.4 or an ssh_config alias"))
+        let host = field(placeholder: L("Server address (IP or hostname)"))
         hostField = host
         stack.addFullWidthRow(host)
 
@@ -101,7 +101,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         self.problem = problem
         stack.addFullWidthRow(problem)
 
-        let run = NSButton(title: L("Open in Terminal"), target: self, action: #selector(run))
+        let run = NSButton(title: L("Install over SSH in Terminal"), target: self, action: #selector(run))
         run.bezelStyle = .rounded
         run.toolTip = deployCredentialNote
         run.keyEquivalent = "\r"

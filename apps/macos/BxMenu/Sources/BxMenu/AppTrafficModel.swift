@@ -237,7 +237,7 @@ struct AppTrafficReport: Decodable, Equatable {
     /// 消失,那会让读者分不清「这个组没有匹配」与「这个组本来就是空的」)。
     func rows(query: String = "") -> [Row] {
         guard subscribed else {
-            return [.notice(L("Not collecting app traffic right now."))]
+            return [.notice(L("bx is off, so nothing is being counted."))]
         }
         guard error.isEmpty else {
             return [.notice(L("Couldn't read app traffic: {0}", error))]
@@ -332,10 +332,25 @@ struct AppTrafficReport: Decodable, Equatable {
     ///
     /// **nil = 没有目的地,这一行不加** —— 不是留一行空白,那是另一句话。
     static func destSummary(dests: [String], destsMore: Int) -> String? {
-        guard let first = dests.first else { return nil }
+        guard let first = dests.first.map(foldedHost) else { return nil }
         let remaining = dests.count - 1 + destsMore
         guard remaining > 0 else { return first }
         return "\(first) +\(remaining)"
+    }
+
+    /// 摘要行里的主机名折到注册域(可读性一轮,2026-09-28):
+    /// `rr1---sn-4g5e6nsz.googlevideo.com` 占满一行还被截断,而用户要认的只是
+    /// `googlevideo.com`。IP 原样;`com.cn` / `co.uk` 这类两段后缀保三段。完整主机名
+    /// 仍在 toolTip 里(destDetail 不折)。
+    static func foldedHost(_ host: String) -> String {
+        let labels = host.split(separator: ".").map(String.init)
+        guard labels.count > 2, labels.allSatisfy({ Int($0) == nil }) else { return host }
+        // `alicdn.com.cn` / `bbc.co.uk`:顶级域是两字母的国别码、二级是公共后缀时保三段;
+        // `weixin.qq.com` 不是(qq 只是短,不是公共后缀)。
+        let publicSecondLevel: Set<String> = ["com", "net", "org", "gov", "edu", "co", "ac"]
+        let tld = labels[labels.count - 1], second = labels[labels.count - 2]
+        let keep = tld.count == 2 && publicSecondLevel.contains(second) ? 3 : 2
+        return labels.suffix(keep).joined(separator: ".")
     }
 
     /// 完整目的地清单,给 toolTip 用:一行一条 `dests`,`destsMore > 0` 时
@@ -464,7 +479,7 @@ func formatRate(_ bytesPerSecond: Double?) -> String {
 ///
 /// 标题只出现一次(在整张表最上面),不是每组重复一遍 —— 三组各来一行标题会把
 /// 这个窗口变成一屏表头。
-var appTrafficColumnTitles: [String] { [L("App"), L("Conns"), L("Up/s"), L("Down/s"), L("Up"), L("Down"), L("Rule")] }
+var appTrafficColumnTitles: [String] { [L("App"), L("Connections"), L("Upload/s"), L("Download/s"), L("Up"), L("Down"), L("Rule")] }
 
 /// 哪几列是数字列 —— 也就是**必须右对齐**的那几列。
 ///
@@ -582,7 +597,7 @@ var appTrafficApproximateNote: String {
 
 /// 右键能加规则这件事要有人告诉用户 —— 右键菜单是发现不了的。只在这一版 Guardian
 /// 支持规则编辑时显示(窗口按 `ruleEditingAvailable` 决定),旧版一个字不提。
-var appTrafficRuleHint: String { L("Right-click an app to always send one of its destinations direct or through the tunnel.") }
+var appTrafficRuleHint: String { L("Right-click an app to add a rule for one of its destinations.") }
 
 /// 连续失败多少次之后,就不再把手上那份快照当作「此刻的事实」。
 ///
@@ -602,5 +617,5 @@ let appTrafficStaleAfterFailures = 3
 /// 「Core 刚重启」,断言其中一个就是编一个自己没查过的答案。
 func appTrafficStaleNotice(consecutiveFailures: Int) -> String? {
     guard consecutiveFailures >= appTrafficStaleAfterFailures else { return nil }
-    return L("Not updating — this is the last report bx could read. Protection may be off.")
+    return L("Not updating — last report shown. bx may be off.")
 }

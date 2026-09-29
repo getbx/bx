@@ -1404,7 +1404,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///
     /// **它同时是订阅的心跳**:Core 侧采集订阅靠每一次拉取续期(30 秒 TTL),
     /// 间隔必须明显短于 TTL,否则订阅会在两次刷新之间过期 —— 窗口开着而界面
-    /// 反复跳回「Not collecting app traffic right now.」,且每次续上都从零计数
+    /// 反复跳回「bx is off, so nothing is being counted.」,且每次续上都从零计数
     /// (那条余量由 Swift 套件钉住)。
     ///
     /// 单靠 `applyRefresh` 那一路不够:watch 时代稳态下状态可以很久不变,而

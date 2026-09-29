@@ -54,7 +54,7 @@ struct StoppedDiagnosisTests {
         "socket 有问题时把观测到的 detail 原样带给用户")
         expect(stoppedDiagnosis(StoppedEvidence(
             serviceInstalled: true, guardianListening: true, coreSocketAnswering: false
-        )) == .warning("Status socket unavailable"),
+        )) == .warning("bx is not answering"),
         "socket 有问题但没有 detail 时给一句兜底")
 
         // ⑥ 什么都说不上来

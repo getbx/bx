@@ -91,7 +91,7 @@ func trafficChecks(f *TrafficFact) []Check {
 		// 机器与一台完全健康的机器,在 doctor 的这一段里逐字节相同。
 		return []Check{{
 			Name: TrafficOutcomesCheckName, Status: StatusNotChecked,
-			Detail: "Could not ask (is Core running?): " + f.Err,
+			Detail: "Could not ask bx (is it running?): " + f.Err,
 			Hint:   "" + elevate.Prefix + "bx up",
 		}}
 	}
@@ -119,7 +119,7 @@ func trafficChecks(f *TrafficFact) []Check {
 		checks = append(checks, Check{
 			Name:   TrafficFailingRulesCheckName,
 			Status: "fail",
-			Detail: fmt.Sprintf("%d rule(s) failing in bulk — %s", len(failing), strings.Join(named, "、")),
+			Detail: fmt.Sprintf("these rules are failing: %s", strings.Join(named, "; ")),
 			Hint:   failingRuleHint(report.ConfigPath, f.DirectEgress),
 		})
 	}
@@ -128,7 +128,7 @@ func trafficChecks(f *TrafficFact) []Check {
 	if f.DirectEgress == tristate.False {
 		checks = append(checks, Check{
 			Name: directEgressCheckName, Status: "fail",
-			Detail: "bx's own direct dialer cannot get out (the scoped default route is gone)",
+			Detail: "bx cannot reach the internet directly (its direct route is gone)",
 			Hint:   directEgressHint,
 		})
 	}

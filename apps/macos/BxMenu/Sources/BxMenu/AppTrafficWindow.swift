@@ -174,7 +174,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         let offset = preservingScroll ? scroll?.contentView.bounds.origin : nil
         // **没有报告就什么都不画。** 上一版在这里用零值兜底
         // (`?? AppTrafficReport(subscribed: false)`),而那份零值渲染出来的正是
-        // "Not collecting app traffic right now." —— 恰恰是拨号失败分支明令禁止
+        // "bx is off, so nothing is being counted." —— 恰恰是拨号失败分支明令禁止
         // 的那句话:「没问出来」与「没在采集」是两件事,替 Core 回答一个它没被
         // 问过的问题就是编一句自洽的假话。今天三个调用点都保证有报告,这条
         // guard 是不让下一个调用点把那句谎话带回来。

@@ -591,7 +591,7 @@ func TestMacMenuAppTrafficWindowSaysByteCountsAreApproximate(t *testing.T) {
 		t.Fatal("appTrafficApproximateNote 不在纯模型里 —— 那句话就没有任何 Swift 测试盯着")
 	}
 	// **窗口不许自己造一份零值报告。** `AppTrafficReport(subscribed: false)` 渲染
-	// 出来的正是 "Not collecting app traffic right now." —— 而那句话是
+	// 出来的正是 "bx is off, so nothing is being counted." —— 而那句话是
 	// fetchAppTrafficOnDemand 的失败分支明令禁止的那一句(「读不到就说读不到,
 	// 不摆一个空报告」:「没问出来」与「没在采集」是两件事)。没有报告就什么都
 	// 不画,别替 Core 回答一个它没被问过的问题。
@@ -740,7 +740,7 @@ func TestMacMenuMarksAppTrafficStaleWhenItCannotRefresh(t *testing.T) {
 // 就在读 Swift 源码,把两个数当场比对,跨语言那道缝就此关死。
 //
 // 不做的代价很具体:Go 那边把 TTL 调到 ≤9 秒,没有任何东西转红,而窗口开着会
-// 周期性跳回 `Not collecting app traffic right now.` 并把计数清零 —— 正是心跳
+// 周期性跳回 `bx is off, so nothing is being counted.` 并把计数清零 —— 正是心跳
 // 要防的那个现象。
 //
 // **上下界一起钉。** 上界(间隔 × 3 ≤ TTL)保证订阅不会在两次刷新之间过期;

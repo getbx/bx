@@ -99,39 +99,39 @@ func doctorSummaryLine(_ checks: [DoctorCheck]) -> String {
 }
 
 /// check 名转成人话:下划线换空格、首字母大写、缩写写成缩写(`guardian_dns` →
-/// 「Guardian DNS」)。2026-09-26 之前这里只换下划线,Checks 页因此满屏
+/// 「System DNS」)。2026-09-26 之前这里只换下划线,Checks 页因此满屏
 /// `guardian dns` / `traffic failing rules` 这样的机器名,与泄漏检测页、菜单其余
 /// 地方的措辞不是一个产品。
 func doctorCheckTitle(_ name: String) -> String {
     // 认得的检查项走词表(英文与下面那条通用规则算出来的逐字相同,中文界面上
     // 才有译文);认不出的(新 Guardian 多发了一项)退回通用规则,仍是一句人话。
     switch name {
-    case "guardian_dns": return L("Guardian DNS")
-    case "guardian_installed": return L("Guardian installed")
-    case "service_installed": return L("Service installed")
-    case "service_enabled": return L("Service enabled")
-    case "service_active": return L("Service active")
+    case "guardian_dns": return L("System DNS")
+    case "guardian_installed": return L("Background service installed")
+    case "service_installed": return L("Protection service installed")
+    case "service_enabled": return L("Protection service starts at login")
+    case "service_active": return L("Protection service running")
     case "config": return L("Config")
     case "config_readable": return L("Config readable")
     case "config_parse": return L("Config parse")
     case "config_permissions": return L("Config permissions")
     case "server_link": return L("Server link")
     case "transports": return L("Transports")
-    case "status_socket": return L("Status socket")
-    case "udp_policy": return L("UDP policy")
-    case "udp_transport": return L("UDP transport")
+    case "status_socket": return L("bx running")
+    case "udp_policy": return L("UDP handling")
+    case "udp_transport": return L("UDP tunnel")
     case "udp_traffic": return L("UDP traffic")
     case "network_recovery": return L("Network recovery")
-    case "traffic_failing_rules": return L("Traffic failing rules")
+    case "traffic_failing_rules": return L("Rules that keep failing")
     case "traffic_outcomes": return L("Traffic outcomes")
-    case "direct_egress": return L("Direct egress")
+    case "direct_egress": return L("Direct route")
     case "tunnel": return L("Tunnel")
     case "probe": return L("Probe")
-    case "desired_off": return L("Desired off")
+    case "desired_off": return L("Protection turned off on purpose")
     case "failing_rules": return L("Failing rules")
     case "terminal_proxy": return L("Terminal proxy")
-    case "tunnel_claims": return L("Tunnel claims")
-    case "permission_fallback": return L("Permission fallback")
+    case "tunnel_claims": return L("Other VPNs")
+    case "permission_fallback": return L("Checked without admin rights")
     default: return humanizedCheckName(name)
     }
 }

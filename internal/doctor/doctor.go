@@ -211,7 +211,7 @@ func Judge(f Facts) Report {
 			}
 		}
 	} else {
-		rep.AddCheck("config_readable", "ok", "yes", "")
+		rep.AddCheck("config_readable", "ok", "settings file found", "")
 		switch f.Config.Mode0600 {
 		case tristate.True:
 			rep.AddCheck("config_permissions", "ok", "0600", "")
@@ -232,7 +232,7 @@ func Judge(f Facts) Report {
 			rep.AddCheck("config_parse", "fail", detail, "")
 		} else {
 			cfg := f.Parsed
-			rep.AddCheck("config_parse", "ok", "yes", "")
+			rep.AddCheck("config_parse", "ok", "settings file is valid", "")
 			udpMode = cfg.UDP.Mode
 			if cfg.Server == "" {
 				rep.AddCheck("server_link", "fail", "empty", ""+elevate.Prefix+"bx setup <client-link>")
@@ -259,9 +259,9 @@ func Judge(f Facts) Report {
 		rep.AddReport(c)
 	}
 	if f.StatusSocketErr != "" {
-		rep.AddCheck("status_socket", "warn", f.StatusSocketErr, "bx logs")
+		rep.AddCheck("status_socket", "warn", "bx is not running: "+f.StatusSocketErr, "turn protection on ("+elevate.Prefix+"bx up)")
 	} else {
-		rep.AddCheck("status_socket", "ok", "reachable", "")
+		rep.AddCheck("status_socket", "ok", "bx is running", "")
 	}
 	status, detail, hint := UDPPolicy(udpMode)
 	rep.AddCheck("udp_policy", status, detail, hint)
@@ -323,9 +323,17 @@ func DNSCheck(d DNSFact, desired string) Check {
 	if state == "" {
 		state = DNSStateUnknown
 	}
-	detail := fmt.Sprintf("state=%s managed=%t", state, d.Managed)
+	// 人话,不是键值对(可读性一轮,2026-09-28):这一行同时喂 `bx doctor` 与菜单的
+	// Checks 页,而用户在那页读到过 `state=unknown managed=false`。
+	detail := "bx is handling this Mac's DNS"
+	if !d.Managed {
+		detail = "bx is not handling this Mac's DNS"
+	}
+	if state != DNSStateManaged && state != DNSStateNotNeeded {
+		detail += " (" + string(state) + ")"
+	}
 	if d.Service != "" {
-		detail += " service=" + d.Service
+		detail += " on " + d.Service
 	}
 	// NotNeeded 是「本平台没有这件事」(linux:数据面自己管,dns_managed 如实为
 	// false),与用户意图无关,先判。
@@ -342,7 +350,7 @@ func DNSCheck(d DNSFact, desired string) Check {
 				Hint:   "" + elevate.Prefix + "bx down",
 			}
 		}
-		return Check{Name: "guardian_dns", Status: "ok", Detail: detail + " — bx is off and DNS has been handed back to the system"}
+		return Check{Name: "guardian_dns", Status: "ok", Detail: "bx is off and DNS has been handed back to the system"}
 	}
 	if state == DNSStateManaged && d.Managed {
 		return Check{Name: "guardian_dns", Status: "ok", Detail: detail}
@@ -350,7 +358,7 @@ func DNSCheck(d DNSFact, desired string) Check {
 	// 意图问不出来(desired 为空)时按「要保护」判:这个字段只由 Guardian 填,
 	// 而 Guardian 总是知道自己的 desired,空值只出现在旧版事实与测试里。那时
 	// 宁可多报一次,也不能把「DNS 被别人接管了」漏掉 —— 两种错的代价不对称。
-	return Check{Name: "guardian_dns", Status: "fail", Detail: detail, Hint: "" + elevate.Prefix + "bx up; bx logs"}
+	return Check{Name: "guardian_dns", Status: "fail", Detail: detail, Hint: "turn protection on (" + elevate.Prefix + "bx up)"}
 }
 
 func RecoveryCheck(r RecoveryFact) Check {
@@ -363,9 +371,16 @@ func RecoveryCheck(r RecoveryFact) Check {
 		status = "warn"
 		hint = "bx logs --json; bx reconnect (troubleshooting only)"
 	}
-	detail := fmt.Sprintf("state=%s stage=%s attempt=%d", r.State, r.Stage, r.Attempt)
+	// 人话,不是键值对(可读性一轮,2026-09-28);码仍然带上,agent 与脚本按它认。
+	var detail string
+	switch r.State {
+	case "idle", "":
+		detail = "no network recovery in progress"
+	default:
+		detail = fmt.Sprintf("network recovery %s at stage %s (attempt %d)", r.State, r.Stage, r.Attempt)
+	}
 	if r.ErrorCode != "" {
-		detail += " error_code=" + r.ErrorCode
+		detail += " — " + r.ErrorCode
 	}
 	return Check{Name: "network_recovery", Status: status, Detail: detail, Hint: hint}
 }

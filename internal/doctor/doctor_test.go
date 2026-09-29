@@ -102,7 +102,7 @@ func TestJudgeParsedConfigProducesTheFullLadder(t *testing.T) {
 	if c := find(r, "config_permissions"); c.Hint != "chmod 600 /etc/bx/config.yaml" {
 		t.Fatalf("权限提示 = %+v", c)
 	}
-	if c := find(r, "status_socket"); c.Hint != "bx logs" {
+	if c := find(r, "status_socket"); c.Hint != "turn protection on (sudo bx up)" {
 		t.Fatalf("status_socket 提示 = %+v", c)
 	}
 	if c := find(r, "udp_policy"); !strings.Contains(c.Detail, "may expose real network path") {
@@ -127,10 +127,10 @@ func TestJudgeParseFailureAndEmptyServer(t *testing.T) {
 // darwin:Guardian 没问到走退路(DNS unknown ⇒ fail;recovery failed/unknown/recovery_unavailable ⇒ warn)。
 func TestJudgeDarwinGuardianChecksWithAndWithoutGuardian(t *testing.T) {
 	noGuardian := Judge(Facts{Config: FileFact{ReadErr: "x"}, Darwin: true})
-	if c := find(noGuardian, "guardian_dns"); c.Status != "fail" || c.Detail != "state=unknown managed=false" {
+	if c := find(noGuardian, "guardian_dns"); c.Status != "fail" || c.Detail != "bx is not handling this Mac's DNS (unknown)" {
 		t.Fatalf("没问到 Guardian 的 DNS 行 = %+v", c)
 	}
-	if c := find(noGuardian, "network_recovery"); c.Status != "warn" || !strings.Contains(c.Detail, "error_code=recovery_unavailable") {
+	if c := find(noGuardian, "network_recovery"); c.Status != "warn" || !strings.Contains(c.Detail, "recovery_unavailable") {
 		t.Fatalf("没问到 Guardian 的恢复行 = %+v", c)
 	}
 	healthy := Judge(Facts{
@@ -140,10 +140,10 @@ func TestJudgeDarwinGuardianChecksWithAndWithoutGuardian(t *testing.T) {
 			Recovery: RecoveryFact{State: "idle", Stage: "idle"},
 		},
 	})
-	if c := find(healthy, "guardian_dns"); c.Status != "ok" || c.Detail != "state=managed managed=true service=Wi-Fi" {
+	if c := find(healthy, "guardian_dns"); c.Status != "ok" || c.Detail != "bx is handling this Mac's DNS on Wi-Fi" {
 		t.Fatalf("健康 DNS 行 = %+v", c)
 	}
-	if c := find(healthy, "network_recovery"); c.Status != "ok" || c.Detail != "state=idle stage=idle attempt=0" {
+	if c := find(healthy, "network_recovery"); c.Status != "ok" || c.Detail != "no network recovery in progress" {
 		t.Fatalf("空闲恢复行 = %+v", c)
 	}
 	notNeeded := Judge(Facts{

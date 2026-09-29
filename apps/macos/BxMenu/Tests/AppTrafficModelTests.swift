@@ -197,7 +197,7 @@ struct AppTrafficModelTests {
     //
     // 订阅是靠每一次拉取续期的(Core 侧 appTrafficTTL = 30 秒,惰性结算)。
     // 间隔一旦逼近 TTL,订阅就会在两次刷新之间过期:窗口开着,界面却反复跳回
-    // 「Not collecting app traffic right now.」,而且每次续上都从零开始计数。
+    // 「bx is off, so nothing is being counted.」,而且每次续上都从零开始计数。
     //
     // **这一对数字是跨语言手抄的**(Go 侧 appTrafficTTL 未导出),所以**这条**
     // 只钉得住 Swift 这一侧留了余量。证明两边真的相等的是 Go 侧那条守卫
@@ -446,6 +446,20 @@ struct AppTrafficModelTests {
 
     // **nil 不是空串。** 空串会让窗口画出一行空白,而一行空白读作「这个应用
     // 没连任何地方」—— 那是另一句话。
+// 目的地小字折到注册域(可读性一轮,2026-09-28):`rr1---sn-4g5e6nsz.googlevideo.com +4`
+// 占满一行还被截断,而用户要认的只是「googlevideo.com」。IP 原样;`com.cn`/`co.uk` 这类
+// 两段后缀保三段;完整主机名仍在 toolTip 里(destDetail 不变)。
+    static func testDestSummaryFoldsHostsToTheirRegistrableDomain() {
+        expect(AppTrafficReport.foldedHost("rr1---sn-4g5e6nsz.googlevideo.com") == "googlevideo.com",
+               "长主机名要折到注册域")
+        expect(AppTrafficReport.foldedHost("short.weixin.qq.com") == "qq.com", "三段以上只留最后两段")
+        expect(AppTrafficReport.foldedHost("img.alicdn.com.cn") == "alicdn.com.cn", "com.cn 这类两段后缀保三段")
+        expect(AppTrafficReport.foldedHost("203.0.113.5") == "203.0.113.5", "IP 原样")
+        expect(AppTrafficReport.foldedHost("localhost") == "localhost", "单段原样")
+        expect(AppTrafficReport.destSummary(dests: ["rr1---sn-4g5e6nsz.googlevideo.com", "a.example.com"], destsMore: 3) == "googlevideo.com +4",
+               "摘要行用折过的主机名")
+    }
+
     static func testDestSummaryIsNilWithoutDestinations() {
         expect(AppTrafficReport.destSummary(dests: [], destsMore: 0) == nil,
                "没有目的地时摘要不是 nil")
@@ -471,7 +485,7 @@ struct AppTrafficModelTests {
             ]),
         ]))
         guard let entry = firstEntry(report.rows()) else { return }
-        expect(entry.destSummary == "chat.slack.com +5", "摘要没接到 Entry 上:\(String(describing: entry.destSummary))")
+        expect(entry.destSummary == "slack.com +5", "摘要没接到 Entry 上(主机名已折到注册域):\(String(describing: entry.destSummary))")
         expect(entry.destTooltip.contains("edge.slack.com"), "toolTip 没接到 Entry 上")
     }
 
@@ -533,7 +547,7 @@ struct AppTrafficModelTests {
     // 不会有任何编译错误,现象只是右对齐落在错的列上 —— 所以这里逐条钉死,
     // 而不是只数个数。
     static func testNumericColumnsCoverEveryNumberAndNothingElse() {
-        expect(appTrafficColumnTitles == ["App", "Conns", "Up/s", "Down/s", "Up", "Down", "Rule"],
+        expect(appTrafficColumnTitles == ["App", "Connections", "Upload/s", "Download/s", "Up", "Down", "Rule"],
                "列变了:\(appTrafficColumnTitles)")
         expect(!appTrafficColumnTitles.contains(""), "又出现了一个没有标题的列 —— 图标列回来了?")
         expect(!appTrafficNumericColumns.contains(0), "应用名列被右对齐了")
@@ -704,6 +718,7 @@ struct AppTrafficModelTests {
         testSectionsStayAndSayWhenTheyHaveNoMatch()
         testDestSummaryCountsEverythingNotShown()
         testDestSummaryIsNilWithoutDestinations()
+        testDestSummaryFoldsHostsToTheirRegistrableDomain()
         testDestTooltipListsEveryDestination()
         testEntryCarriesTheDestinationSummary()
         testDecodesDestinationsAndToleratesTheirAbsence()

@@ -19,7 +19,7 @@
         {
           "name": "config_readable",
           "status": "ok",
-          "detail": "yes"
+          "detail": "settings file found"
         },
         {
           "name": "config_permissions",
@@ -29,7 +29,7 @@
         {
           "name": "config_parse",
           "status": "ok",
-          "detail": "yes"
+          "detail": "settings file is valid"
         },
         {
           "name": "server_link",
@@ -85,8 +85,8 @@
         {
           "name": "status_socket",
           "status": "warn",
-          "detail": "dial unix /var/run/bx/core.sock: connect: no such file or directory",
-          "hint": "bx logs"
+          "detail": "bx is not running: dial unix /var/run/bx/core.sock: connect: no such file or directory",
+          "hint": "turn protection on (sudo bx up)"
         },
         {
           "name": "udp_policy",
@@ -97,12 +97,12 @@
         {
           "name": "guardian_dns",
           "status": "ok",
-          "detail": "state=managed managed=true service=Wi-Fi"
+          "detail": "bx is handling this Mac's DNS on Wi-Fi"
         },
         {
           "name": "network_recovery",
           "status": "ok",
-          "detail": "state=idle stage=idle attempt=0"
+          "detail": "no network recovery in progress"
         },
         {
           "name": "traffic_outcomes",
@@ -168,7 +168,7 @@
         {
           "name": "status_socket",
           "status": "ok",
-          "detail": "reachable"
+          "detail": "bx is running"
         },
         {
           "name": "udp_policy",
@@ -178,13 +178,13 @@
         {
           "name": "guardian_dns",
           "status": "fail",
-          "detail": "state=unknown managed=false",
-          "hint": "sudo bx up; bx logs"
+          "detail": "bx is not handling this Mac's DNS (unknown)",
+          "hint": "turn protection on (sudo bx up)"
         },
         {
           "name": "network_recovery",
           "status": "warn",
-          "detail": "state=failed stage=unknown attempt=0 error_code=recovery_unavailable",
+          "detail": "network recovery failed at stage unknown (attempt 0) — recovery_unavailable",
           "hint": "bx logs --json; bx reconnect (troubleshooting only)"
         },
         {
@@ -220,7 +220,7 @@
         {
           "name": "config_readable",
           "status": "ok",
-          "detail": "yes"
+          "detail": "settings file found"
         },
         {
           "name": "config_permissions",
@@ -230,7 +230,7 @@
         {
           "name": "config_parse",
           "status": "ok",
-          "detail": "yes"
+          "detail": "settings file is valid"
         },
         {
           "name": "server_link",
@@ -270,8 +270,8 @@
         {
           "name": "status_socket",
           "status": "warn",
-          "detail": "dial unix /var/run/bx/core.sock: connect: no such file or directory",
-          "hint": "bx logs"
+          "detail": "bx is not running: dial unix /var/run/bx/core.sock: connect: no such file or directory",
+          "hint": "turn protection on (sudo bx up)"
         },
         {
           "name": "udp_policy",
@@ -282,17 +282,17 @@
         {
           "name": "guardian_dns",
           "status": "ok",
-          "detail": "state=unmanaged managed=false service=Wi-Fi — bx is off and DNS has been handed back to the system"
+          "detail": "bx is off and DNS has been handed back to the system"
         },
         {
           "name": "network_recovery",
           "status": "ok",
-          "detail": "state=ignored stage=off attempt=0"
+          "detail": "network recovery ignored at stage off (attempt 0)"
         },
         {
           "name": "traffic_outcomes",
           "status": "not_checked",
-          "detail": "Could not ask (is Core running?): dial unix /var/run/bx/core.sock: connect: no such file or directory",
+          "detail": "Could not ask bx (is it running?): dial unix /var/run/bx/core.sock: connect: no such file or directory",
           "hint": "sudo bx up"
         },
         {
@@ -323,7 +323,7 @@
         {
           "name": "config_readable",
           "status": "ok",
-          "detail": "yes"
+          "detail": "settings file found"
         },
         {
           "name": "config_permissions",
@@ -333,7 +333,7 @@
         {
           "name": "config_parse",
           "status": "ok",
-          "detail": "yes"
+          "detail": "settings file is valid"
         },
         {
           "name": "server_link",
@@ -353,7 +353,7 @@
         {
           "name": "status_socket",
           "status": "ok",
-          "detail": "reachable"
+          "detail": "bx is running"
         },
         {
           "name": "udp_policy",
@@ -369,13 +369,13 @@
         {
           "name": "traffic_failing_rules",
           "status": "fail",
-          "detail": "2 rule(s) failing in bulk — *.qq.com: 1289 of 1291 failed (100%)、*.icloud.com: 6 of 6 failed (100%)",
+          "detail": "these rules are failing: *.qq.com: 1289 of 1291 failed (100%); *.icloud.com: 6 of 6 failed (100%)",
           "hint": "Not your rules: bx's own direct dialer cannot get out, so every direct rule will fail. Reinstall the routes: sudo bx down \u0026\u0026 sudo bx up"
         },
         {
           "name": "direct_egress",
           "status": "fail",
-          "detail": "bx's own direct dialer cannot get out (the scoped default route is gone)",
+          "detail": "bx cannot reach the internet directly (its direct route is gone)",
           "hint": "Not your rules: bx's own direct dialer cannot get out, so every direct rule will fail. Reinstall the routes: sudo bx down \u0026\u0026 sudo bx up"
         }
       ]

@@ -46,7 +46,7 @@ func TestDNSCheckReadsTheUserIntent(t *testing.T) {
 			fact:     DNSFact{State: DNSStateUnmanaged, Managed: false, Service: "Wi-Fi"},
 			desired:  DesiredOn,
 			status:   "fail",
-			wantHint: "" + elevate.Prefix + "bx up; bx logs",
+			wantHint: "turn protection on (" + elevate.Prefix + "bx up)",
 		},
 		{
 			// 意图问不出来时保持旧答案:这个字段只由 Guardian 填,而 Guardian 总是
@@ -56,7 +56,7 @@ func TestDNSCheckReadsTheUserIntent(t *testing.T) {
 			fact:     DNSFact{State: DNSStateUnmanaged, Managed: false},
 			desired:  "",
 			status:   "fail",
-			wantHint: "" + elevate.Prefix + "bx up; bx logs",
+			wantHint: "turn protection on (" + elevate.Prefix + "bx up)",
 		},
 		{
 			// NotNeeded 是「本平台没有这件事」(linux 数据面自己管),与意图无关。

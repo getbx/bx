@@ -333,7 +333,11 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             stack.addFullWidthRow(banner)
         }
         for tail in report.logs {
-            stack.addFullWidthRow(header("\(tail.name)  ·  \(tail.path)"))
+            // 标题说人话(「bx」/「Background service」),路径进 hover:两个文件路径当
+            // 标题是可读性一轮(2026-09-28)点名的那种句子。服务端发的名字认不出就原样。
+            let head = header(logDisplayName(tail.name))
+            head.toolTip = tail.path
+            stack.addFullWidthRow(head)
             if !tail.unavailable.isEmpty {
                 stack.addFullWidthRow(hint(L("Not available: {0}", tail.unavailable)))
                 continue
@@ -382,6 +386,15 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
 
     @objc private func exportDiagnostics() {
         onExportDiagnostics?()
+    }
+
+    /// Guardian 发来的日志名(Core / Guardian)在屏幕上叫什么。认不出的原样返回。
+    private func logDisplayName(_ name: String) -> String {
+        switch name {
+        case "Core": return L("bx")
+        case "Guardian": return L("Background service")
+        default: return name
+        }
     }
 
     private func header(_ title: String) -> NSTextField {

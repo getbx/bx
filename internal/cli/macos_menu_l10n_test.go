@@ -169,8 +169,10 @@ var (
 // 不经 `L(…)`、而刻意保持英文的裸字面量。**加一条就要写一句为什么** ——
 // 这张表的存在就是那句要被逼着回答的话:「这是用户看不见的,还是我忘了翻?」
 var bareEnglishAllowed = map[string]string{
-	"Library": "路径的一段(~/Library/Logs),不是显示给人看的字",
-	"Logs":    "路径的一段(~/Library/Logs),不是显示给人看的字",
+	"Library":  "路径的一段(~/Library/Logs),不是显示给人看的字",
+	"Logs":     "路径的一段(~/Library/Logs),不是显示给人看的字",
+	"Core":     "Guardian 发来的日志名,DiagnosticsWindow.logDisplayName 拿它当判据,显示的是 L(\"bx\")",
+	"Guardian": "Guardian 发来的日志名,DiagnosticsWindow.logDisplayName 拿它当判据,显示的是 L(\"Background service\")",
 }
 
 // **忘了包 `L(…)` 的那句英文,在中文界面上就是一句英文 —— 而没有任何东西会报错。**
