@@ -75,22 +75,27 @@ func (v vlessLink) singboxConfig(socksAddr, httpAddr string) ([]byte, error) {
 		return nil, err
 	}
 	cfg := map[string]any{
-		"log":      map[string]any{"level": "warn", "timestamp": false},
-		"inbounds": inbounds,
-		"outbounds": []any{map[string]any{
-			"type":        "vless",
-			"tag":         "reality-out",
-			"server":      v.Host,
-			"server_port": v.Port,
-			"uuid":        v.UUID,
-			"flow":        v.Flow,
-			"tls": map[string]any{
-				"enabled":     true,
-				"server_name": v.SNI,
-				"utls":        map[string]any{"enabled": true, "fingerprint": v.Fingerprint},
-				"reality":     map[string]any{"enabled": true, "public_key": v.PublicKey, "short_id": v.ShortID},
-			},
-		}},
+		"log":       map[string]any{"level": "warn", "timestamp": false},
+		"inbounds":  inbounds,
+		"outbounds": []any{v.outbound("reality-out")},
 	}
 	return json.MarshalIndent(cfg, "", "  ")
+}
+
+// outbound 是 vless-reality 出站本身。桌面(singboxConfig)与手机(SingboxOutbound)共用这一份。
+func (v vlessLink) outbound(tag string) map[string]any {
+	return map[string]any{
+		"type":        "vless",
+		"tag":         tag,
+		"server":      v.Host,
+		"server_port": v.Port,
+		"uuid":        v.UUID,
+		"flow":        v.Flow,
+		"tls": map[string]any{
+			"enabled":     true,
+			"server_name": v.SNI,
+			"utls":        map[string]any{"enabled": true, "fingerprint": v.Fingerprint},
+			"reality":     map[string]any{"enabled": true, "public_key": v.PublicKey, "short_id": v.ShortID},
+		},
+	}
 }
