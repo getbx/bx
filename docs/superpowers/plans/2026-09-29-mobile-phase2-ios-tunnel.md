@@ -44,3 +44,18 @@ kill-switch,第三期)、DNS 分流、UDP 档、china 直连的国内 DNS。
 3. `cmd/bx-ios-devconfig`:读配置、写三个文件 + deadserver 变体、0600、chown。
 4. `apps/ios` 工程 + `scripts/build-libbox-ios.sh` + `scripts/ios-dev.sh`;真机构建装机。
 5. 真机:`connect`、`deadserver`、`remove`;结论写回 spec §4.4 与本计划。
+
+## 结果(2026-09-29,`cc`:iPhone SE 3,iOS 26.6.2)
+
+| 场景 | 判据 | 实测 |
+|---|---|---|
+| connect | 出口 == 服务器 | ✅ 探测域名解析到假 IP `198.18.0.7`,HTTP 200,出口 == 服务器,957 ms;其他应用(iCloud 邮件等)同样经假 IP 进代理 |
+| deadserver | 一个字节都拿不到 | ✅ 假 IP `198.18.0.6` → `outbound/vless[proxy]` → 5.0 s `dial tcp 192.0.2.1:443: i/o timeout`,App 端 TLS 失败 |
+| remove | 不留配置 | ✅ `removed: 1` |
+
+deadserver 那段日志里唯一的直连是 `gspe1-ssl.ls.apple.com`,命中所有者自己的 `*.apple.com`
+直连规则;Mac 上 `bx explain` 对同一主机给出同一答案 —— 第一期一致性守卫要的正是这个。
+
+**过程中实测到的三件事**:① App Store Connect API key 过不了 provisioning(bearer token
+认证失败),Xcode 已登录的账号可以;② 上游 gomobile 不认 sing-box 的 `-libname`,要用
+`sagernet/gomobile@v0.1.13`;③ libbox 引用 UIKit 的后台任务符号,扩展要显式链 UIKit。

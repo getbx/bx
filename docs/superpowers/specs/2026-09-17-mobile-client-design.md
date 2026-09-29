@@ -130,6 +130,13 @@ DNS server 格式**(旧格式直接 FATAL,不是 warning)。
 - **kill-switch**:sing-box 没有 bx 那种"隧道不健康就在拨号前 Block"的语义。
   预期是"不配 fallback 出站 ⇒ 连接直接失败 ⇒ 等效不泄漏",但**这是推理不是实测**,
   而 fail-closed 是 bx 最核心的不变量,不许靠推理。
+  **2026-09-29 真机实测(iPhone SE 3,iOS 26.6.2,libbox 1.14.2)成立**:代理出站指向
+  `192.0.2.1`,探测域名先拿到假 IP `198.18.0.6`(DNS 没出去),连接落 `outbound/vless[proxy]`,
+  5.0 秒后 `dial tcp 192.0.2.1:443: i/o timeout`,App 端 TLS 失败、一个字节都没拿到;同一段
+  日志里没有任何连接改走直连,除了用户自己的 `*.apple.com` 直连规则命中的那一条(Mac 上
+  `bx explain` 对同一主机给同一答案)。**仍未验的是另一半**:隧道**没起着**时(扩展崩溃、
+  被系统杀掉、用户关掉)iOS 让流量直接走物理网卡 —— 那要 `includeAllNetworks` + on-demand,
+  是第三期。
 - `rule_set` 对 12k 条 china 域名的表达与体积
 
 ## 5. iOS 的两个真实约束(以及一个我一开始说错了的)
@@ -189,7 +196,7 @@ bx 贡献的是判断,不是管道。
 | | 做什么 | 桌面能验完吗 |
 |---|---|---|
 | ① ✅ 2026-09-29 | 翻译层 + 判定一致性守卫(`bx export` 随 L1 撤回,没做) | ✅ 全部 |
-| ② | 最小 iOS Network Extension + libbox,能连上即可,无 UI | ❌ 要真机 |
+| ② ✅ 2026-09-29 | 最小 iOS Network Extension + libbox,能连上即可,无 UI(connect / deadserver 真机过) | ❌ 要真机 |
 | ③ | 诊断(六个纯判据包) | 判据 ✅ / 呈现 ❌ |
 | ④ | UI | ❌ |
 
