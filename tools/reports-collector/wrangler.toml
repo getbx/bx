@@ -1,0 +1,11 @@
+name = "bx-reports"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "REPORTS"
+id = "__KV_ID__"
+
+[vars]
+GITHUB_REPO = "getbx/bx-reports"

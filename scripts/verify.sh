@@ -223,8 +223,16 @@ if command -v node >/dev/null 2>&1; then
 			|| { echo "页面 JS 测试脚本未跑到收尾横幅 —— 可能中途 exit 或断言块被清空"; return 1; }
 	}
 	step "leakcheck page js" page_js_tests
+	# 问题上报的收集端(Cloudflare Worker)的纯函数,同一个形状。
+	reports_collector_tests() {
+		bash scripts/test-reports-collector.sh || return 1
+		bash scripts/test-reports-collector.sh 2>/dev/null | grep -q '^reports collector tests passed$' \
+			|| { echo "收集端测试脚本未跑到收尾横幅 —— 可能中途 exit 或断言块被清空"; return 1; }
+	}
+	step "reports collector js" reports_collector_tests
 else
 	skip "leakcheck page js" "node 未安装"
+	skip "reports collector js" "node 未安装"
 fi
 
 echo
