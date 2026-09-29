@@ -7,6 +7,9 @@ import Foundation
 enum MenuRowMark: Equatable {
     case ok
     case bad
+    /// 值得一说、但不需要人动手的事(橙字、不裂图标、不计入 anomalyCount)。
+    /// 2026-09-28 所有者:「红字有点吓人?这是需要被用户处理的么?」
+    case warn
     case unknown
 }
 
@@ -46,7 +49,7 @@ struct MenuRowSet: Equatable {
 
 /// 阶段③才有数据的行的占位文案。刻意不是空字符串:留白会被读成「没这回事」,
 /// 而「未观测」如实说明我们没问过。
-private var notObserved: String { L("Not checked") }
+private var notObserved: String { L("Couldn't check") }
 
 /// 把一份 Guardian 状态摊成菜单里的数据行。
 ///
@@ -56,7 +59,7 @@ private var notObserved: String { L("Not checked") }
 /// **「没有答案」有两种,都记 `.unknown` 而不是 `.bad`:**
 ///   `core == nil`        Guardian 压根没问过 Core;
 ///   `reachable == false` 问了,Core 没答。
-/// 两种情况下 `tunnelHealthy` 都是 Go 侧承诺的零值,拿它画一行 "Tunnel unhealthy ✗"
+/// 两种情况下 `tunnelHealthy` 都是 Go 侧承诺的零值,拿它画一行 "Tunnel not responding ✗"
 /// 就是把「问不出来」伪装成一个自信的坏答案。二者的区别由 menuProtectionVerdict
 /// 用两句不同的告警文案承担(它进菜单正文的 Status 行),这里不重复表达。
 func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> MenuRowSet {
@@ -89,13 +92,13 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
         rows.append(line.map { MenuRow(label: "Route", value: $0, mark: .ok) }
             ?? MenuRow(label: "Route", value: notObserved, mark: .unknown))
         // 三档,不是两档:`tunnel_healthy` 缺席时 Guardian 没说过隧道好不好,
-        // 画一行 "Tunnel unhealthy ✗" 就是拿一个缺失的键造出一个坏答案。
+        // 画一行 "Tunnel not responding ✗" 就是拿一个缺失的键造出一个坏答案。
         switch core.tunnelHealthy {
         case .some(true):
             rows.append(core.latencyMS.map { MenuRow(label: "Latency", value: L("{0} ms", $0), mark: .ok) }
                 ?? MenuRow(label: "Latency", value: notObserved, mark: .unknown))
         case .some(false):
-            rows.append(MenuRow(label: "Latency", value: L("Tunnel unhealthy"), mark: .bad))
+            rows.append(MenuRow(label: "Latency", value: L("Tunnel not responding"), mark: .bad))
         case .none:
             rows.append(MenuRow(label: "Latency", value: notObserved, mark: .unknown))
         }
@@ -107,10 +110,15 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
     // **有应用正在绕过 bx、以真实 IP 收发**(多半是保护关着时开的连接 —— macOS 不会
     // 把已建立的连接挪进隧道)。这是一次真实的泄漏,所以是 .bad:它会让图标裂开、
     // 在压缩后的菜单里照样露面。只在 Core 报了才出现,连接一关就消失。
+    // **有应用的老连接还在 bx 外以真实 IP 收发**(保护关着时开的,macOS 不会把已建立的
+    // 连接挪进隧道,五分钟了还在)。风险只有那一条连接、只对它本来就在连的站点;活跃的
+    // 已被 pf 重置掉,剩下的是空闲的。所以是 .warn:橙字、不裂图标,句子是陈述加可选动作
+    // (所有者 2026-09-28 定:不需要用户处理的事不许是红的)。
     if let apps = core?.bypassingApps, !apps.isEmpty {
-        rows.append(MenuRow(label: "Outside bx",
-                            value: L("{0} — quit and reopen", apps.joined(separator: ", ")),
-                            mark: .bad))
+        let value = apps.count == 1
+            ? L("{0} still has an older connection outside bx — quit and reopen it to move it in", apps[0])
+            : L("{0} still have an older connection outside bx — quit and reopen them to move it in", apps.joined(separator: ", "))
+        rows.append(MenuRow(label: "Outside bx", value: value, mark: .warn))
     }
     // **同一种连接里刚开始退场的那些**(两段式,2026-09-28):保护开着之后 Core 看见它
     // 还不到五分钟,多半是 keep-alive / 推送到期就自己没了。只陈述条数,不点名、不叫人
@@ -119,8 +127,8 @@ func menuRows(status: GuardianStatus?, dns: String?, now: Date = Date()) -> Menu
     // 看着那个数变小,那本身就是「在好转」的信号。满了门槛还在的会升级到上面那行。
     if let count = core?.settlingConnections, count > 0 {
         let value = count == 1
-            ? L("1 connection from before protection was on — it moves into bx as the app reconnects")
-            : L("{0} connections from before protection was on — they move into bx as apps reconnect", String(count))
+            ? L("1 older connection is still finishing outside bx")
+            : L("{0} older connections are still finishing outside bx", String(count))
         rows.append(MenuRow(label: "Settling", value: value, mark: .unknown))
     }
 

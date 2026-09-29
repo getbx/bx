@@ -20,10 +20,11 @@ func TestStrayConnectionWarningNamesTheAppsOnlyWhenThereAreAny(t *testing.T) {
 	}
 	names := map[int32]string{42: "Google Chrome", 43: "steam_osx"}
 	w := strayConnectionWarning("en0", []appattr.PCB{{LastPID: 43}, {LastPID: 42}, {LastPID: 42}, {LastPID: 7}}, func(pid int32) string { return names[pid] })
-	if w.Severity != "error" {
-		t.Fatalf("a live leak must be an error, got %q", w.Severity)
+	// warn 不是 error(所有者 2026-09-28):老连接不是要人动手的事故,不许拉总状态、不许裂图标。
+	if w.Severity != "warn" {
+		t.Fatalf("stubborn leftovers are a warning, not an error, got %q", w.Severity)
 	}
-	for _, want := range []string{"4 connection(s)", "Google Chrome, PID 7, steam_osx", "en0", "real IP"} {
+	for _, want := range []string{"Google Chrome, PID 7, steam_osx still have an older connection outside bx", "4,", "en0", "real IP"} {
 		if !strings.Contains(w.Detail, want) {
 			t.Fatalf("detail %q misses %q", w.Detail, want)
 		}
@@ -49,7 +50,7 @@ func TestStrayWarningSparesConnectionsToBxOwnServerButStillNamesRealLeaks(t *tes
 	// tracker 为 nil:全部当顽固(点名那条路),这里要验的是旁路那一跳。
 	in := strayInputs{device: "en0", physical: []netip.Addr{en0}, routedAround: routedAround, name: name}
 	w := strayWarningsFrom(in, []appattr.PCB{ssh, chrome}, time.Now())
-	if len(w) != 1 || strings.Contains(w[0].Detail, "ssh") || !strings.Contains(w[0].Detail, "1 connection(s) from Google Chrome") {
+	if len(w) != 1 || strings.Contains(w[0].Detail, "ssh") || !strings.Contains(w[0].Detail, "Google Chrome still has an older connection outside bx") {
 		t.Fatalf("ssh to bx's own server must not be named while the real leak still is, got %+v", w)
 	}
 	if w := strayWarningsFrom(in, []appattr.PCB{ssh}, time.Now()); len(w) != 0 {
@@ -102,7 +103,7 @@ func TestStrayWarningsSplitSettlingCountFromStubbornNames(t *testing.T) {
 			settling = &later[i]
 		}
 	}
-	if stubborn == nil || stubborn.Severity != "error" || len(stubborn.Apps) != 1 || stubborn.Apps[0] != "Google Chrome" || !strings.Contains(stubborn.Hint, "quit and reopen Google Chrome") {
+	if stubborn == nil || stubborn.Severity != "warn" || len(stubborn.Apps) != 1 || stubborn.Apps[0] != "Google Chrome" || !strings.Contains(stubborn.Hint, "quit and reopen Google Chrome") {
 		t.Fatalf("a connection that outlived the threshold must be named and told to reopen, got %+v", stubborn)
 	}
 	if settling == nil || settling.Count != 1 || strings.Contains(settling.Detail, "WeChat") {

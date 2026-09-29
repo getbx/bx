@@ -267,7 +267,7 @@ func TestMacMenuNeverProbesServersOnATimer(t *testing.T) {
 	// 唯一的调用点必须挂在窗口那个按钮的回调上。
 	callers := strings.Count(source, "self?.probeServers()") + strings.Count(source, "self.probeServers()")
 	if callers != 1 {
-		t.Errorf("probeServers 有 %d 个调用点,应当只有「用户点了 Test All」那一个", callers)
+		t.Errorf("probeServers 有 %d 个调用点,应当只有「用户点了 Test Latency」那一个", callers)
 	}
 	if !strings.Contains(source, "controller.onProbe = { [weak self] in") {
 		t.Error("那唯一的调用点不是窗口按钮的回调")
@@ -544,7 +544,7 @@ func TestProbeErrorCodesAllHaveAnEnglishSentenceInTheMenu(t *testing.T) {
 // `render` 的 `rows.isEmpty` 分支摆一句「No servers yet」加一行
 // `bx setup --name <name> '<link>'` 然后 `return`,而按钮带是在那个 return
 // **之后**才画的。于是零行时:没有 Add Server、没有 New Server、没有 Test、
-// 没有 Exit IP,只剩一条 `urfave/cli` 会直接拒掉的命令(`bx setup` 没有
+// 没有 Check Exit IP,只剩一条 `urfave/cli` 会直接拒掉的命令(`bx setup` 没有
 // `--name` 这个 flag)。**空清单恰恰是最需要 Add Server… 的那一刻。**
 //
 // 判据打在**视图树**上,不是「文件里出现过 Add Server」:那个字符串在
@@ -1309,8 +1309,8 @@ func minInt(a, b int) int {
 //
 // 变异实测:`if row.probe.isFailure` 改成 `if row.probe != .notChecked`,整个
 // internal/cli 套件与 24 个 Swift 套件全绿 —— 而那是这扇窗要消灭的第二句假话
-// **逐字重现**:bx 没在跑时点一下 Test All,每一行都变红,各配一句
-// `not measured — could not measure (is bx running?)`。
+// **逐字重现**:bx 没在跑时点一下 Test Latency,每一行都变红,各配一句
+// `not measured — could not measure (bx is off)`。
 //
 // 判据是「**包着那个 `.systemRed` 的条件**是哪一个」,不是「文件里提到过
 // isFailure」;另外钉住这个函数里**只有一处** `.systemRed`,否则再加一处

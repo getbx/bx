@@ -4756,7 +4756,7 @@ func isCJK(r rune) bool {
 // 三态行模型(ok / bad / unknown)整个存在的理由就是这一条:`.connected` 不是
 // 「一切都好」的同义词 —— 隧道不健康、DNS 掉管,报告仍然解码成功、状态仍然是
 // `.connected`,而图标若只看 `state` 就会画一面**实心绿盾**,同时菜单正文里那行
-// 明晃晃写着 "Tunnel unhealthy ✗"。图标是余光扫过唯一看得到的东西,正文没人盯着。
+// 明晃晃写着 "Tunnel not responding ✗"。图标是余光扫过唯一看得到的东西,正文没人盯着。
 //
 // 判定(哪些行算 bad、unknown 为什么不计入)在 MenuRows.swift 由 MenuRowsTests
 // 钉着,但**接不接线在 main.swift**:把 `menuRowsNow().anomalyCount > 0 ? … :`
@@ -4793,7 +4793,7 @@ func TestMacMenuAnomalyCountDrivesTheIcon(t *testing.T) {
 	//    `_ = menuRowsNow().anomalyCount` + 无条件 `return .protected` 骗过;
 	// ② 第二版按行查 `.attention`/`.protected`/`return` 三个词都在,却仍被
 	//    `anomalyCount < 0 ? .attention : .protected` 骗过 —— 计数永远不小于 0,
-	//    于是盾牌恒为实心绿,而菜单正文里那行正写着 `Tunnel unhealthy ✗`。
+	//    于是盾牌恒为实心绿,而菜单正文里那行正写着 `Tunnel not responding ✗`。
 	// 谓词是一句机械的表达式,原样钉住即可;改写它的人应当先读这段。
 	const decisionExpr = "anomalyCount > 0 ? .attention : .protected"
 	if !strings.Contains(collapseSpaces(decision), decisionExpr) {

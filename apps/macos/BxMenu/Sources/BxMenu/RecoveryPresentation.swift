@@ -178,7 +178,7 @@ func recoveryPresentation(for snapshot: RecoverySnapshot) -> RecoveryPresentatio
 private func recoveryStageReason(_ stage: String) -> String {
     switch stage {
     case "queued":
-        return L("Waiting for Guardian")
+        return L("Waiting for bx to start")
     case "observe":
         return L("Checking network path")
     case "validate_capture":

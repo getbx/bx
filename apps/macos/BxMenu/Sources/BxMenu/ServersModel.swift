@@ -66,7 +66,7 @@ func probeFailureText(code: String, fallback: String) -> String {
     case "no_route": return L("no route to that host")
     case "no_host": return L("no host to test")
     case "bad_port": return L("the port in that link is not valid")
-    case "core_unreachable": return L("could not measure (is bx running?)")
+    case "core_unreachable": return L("could not measure (bx is off)")
     case "link_unparsed": return L("could not read a host from that link")
     // 服务端归不了类的那一档。它**仍然要有自己的一句话**:退回 `fallback`
     // 读起来与「这一版 Guardian 压根没发码」一模一样,而那是两件事。
@@ -78,7 +78,7 @@ func probeFailureText(code: String, fallback: String) -> String {
 /// 探测的**三态**。
 ///
 /// 这个类型存在的全部理由是:「没测过」/「没测成」/「测了不通」是三个不同的
-/// 答案,而此前只有两个位置放它们 —— 于是 bx 没在跑的时候点一下 Test All,
+/// 答案,而此前只有两个位置放它们 —— 于是 bx 没在跑的时候点一下 Test Latency,
 /// 一整排好服务器全被画成红的,各配一句它自己也解释不了的错误。
 enum ProbePresentation: Equatable {
     /// 用户还没点过 Test。**一个字都不说** —— 一行「未测试」在每台后面重复
@@ -471,7 +471,7 @@ struct CurrentServerPanel: Equatable {
     ///
     /// **它此前整个不在这一块上,而那是一条这一支引入的回归**:探测结论只长在
     /// 候选行上,而 `otherServerRows` 按定义排除当前那台 —— 于是 `servers:` 里
-    /// 只有一台时(单次 Add Server… 之后就是这个形状)按下 `Test All`:真的发了
+    /// 只有一台时(单次 Add Server… 之后就是这个形状)按下 `Test Latency`:真的发了
     /// 一次探测,屏幕上一个字都不变。这个仓库为「点了没反应」付过两次代价。
     let probe: ProbePresentation
     /// 上面那个三态要说的那句话;没测过时 nil(一行「未测试」是墙纸)。
@@ -551,7 +551,7 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
                 ? L("bx is actually using a different server right now.")
                 : L("bx is actually using {0} right now.", running)
         } else {
-            runningNote = L("bx could not confirm which server is running.")
+            runningNote = L("bx could not confirm which server is in use.")
         }
     }
 
@@ -576,7 +576,7 @@ func currentServerPanel(list: ServerList, core: CoreRuntime?) -> CurrentServerPa
         // 那行 `peak 6.4 MB/s · 2h ago` 当场证伪,而这个窗口全部的纪律就是
         // 不说这种话。
         coreSilentNote: live == nil
-            ? L("Core not answering — the live readings below are missing.")
+            ? L("bx is off right now, so live readings are unavailable.")
             : nil,
         runningNote: runningNote,
         runningConfirmed: confirmed,
@@ -618,7 +618,7 @@ func otherServerRows(list: ServerList, core: CoreRuntime?) -> [ServerRow] {
 func serverListEmptyReason(list: ServerList) -> String? {
     guard list.servers.isEmpty else { return nil }
     if list.singleServer {
-        return L("This config has a single server, not a server list. Adding a second one turns it into a list you can switch between.")
+        return L("You have a single server. Add another to switch between them.")
     }
     return L("No servers yet. Add one to switch between exits.")
 }

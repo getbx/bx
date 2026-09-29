@@ -68,7 +68,7 @@ struct MenuRowsTests {
         //
         // 现在钉的是**规则**而不是那三个名字:一行只有在这次真的没问出来时才配说
         // "Not checked"。谁再加一行永远答不上来的占位符,这里就会红。
-        for r in set.rows where r.value == "Not checked" {
+        for r in set.rows where r.value == "Couldn't check" {
             expect(false, "「\(r.label)」在一台全部答上话的机器上仍是「未观测」——" +
                           "那不是一项检查,是占位符在冒充检查")
         }
@@ -82,12 +82,21 @@ struct MenuRowsTests {
                  "bypassing_apps":["Google Chrome","steam_osx"]}}
         """)
         let leakSet = menuRows(status: leaking, dns: "127.0.0.1")
-        expect(row(leakSet, "Outside bx")?.value == "Google Chrome, steam_osx — quit and reopen",
+        // 所有者 2026-09-28:「红字有点吓人?这是需要被用户处理的么?」—— 不需要:风险只有那一条
+        // 老连接、只对它本来就在连的站点。所以是 .warn(橙字、不裂图标),句子是陈述加可选动作。
+        expect(row(leakSet, "Outside bx")?.value == "Google Chrome, steam_osx still have an older connection outside bx — quit and reopen them to move it in",
                "绕过 bx 的应用没被点名,实际 \(String(describing: row(leakSet, "Outside bx")))")
-        expect(row(leakSet, "Outside bx")?.mark == .bad && leakSet.anomalyCount == 1,
-               "一次真实泄漏必须是异常(让图标裂开)")
+        expect(row(leakSet, "Outside bx")?.mark == .warn && leakSet.anomalyCount == 0,
+               "老连接不是要人动手的事故:warn 级、图标不裂,实际 mark=\(String(describing: row(leakSet, "Outside bx")?.mark)) anomalies=\(leakSet.anomalyCount)")
         expect(compactMenuRows(leakSet).contains { $0.label == "Outside bx" },
-               "压缩后的菜单把泄漏那一行藏掉了")
+               "压缩后的菜单把那一行藏掉了")
+        let single = decode("""
+        {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
+         "core":{"reachable":true,"tunnel_healthy":true,"latency_ms":390,"server":"vps","udp_mode":"proxy",
+                 "bypassing_apps":["Google Chrome"]}}
+        """)
+        expect(row(menuRows(status: single, dns: "127.0.0.1"), "Outside bx")?.value == "Google Chrome still has an older connection outside bx — quit and reopen it to move it in",
+               "单个应用要用单数句")
         expect(row(set, "Outside bx") == nil, "没有绕过 bx 的连接时不许出现这一行")
 
         // 两段式(2026-09-28):刚开始退场的连接只报数 —— 灰字一行、不裂图标、压缩后照样露面
@@ -98,7 +107,7 @@ struct MenuRowsTests {
                  "settling_connections":3}}
         """)
         let settlingSet = menuRows(status: settling, dns: "127.0.0.1")
-        expect(row(settlingSet, "Settling")?.value == "3 connections from before protection was on — they move into bx as apps reconnect",
+        expect(row(settlingSet, "Settling")?.value == "3 older connections are still finishing outside bx",
                "退场中的连接数没有被陈述,实际 \(String(describing: row(settlingSet, "Settling")))")
         expect(row(settlingSet, "Settling")?.mark != .bad && settlingSet.anomalyCount == 0,
                "退场中的连接不是异常:图标不许裂")
@@ -113,8 +122,8 @@ struct MenuRowsTests {
                  "bypassing_apps":["Google Chrome"],"settling_connections":1}}
         """)
         let bothSet = menuRows(status: both, dns: "127.0.0.1")
-        expect(row(bothSet, "Outside bx") != nil && row(bothSet, "Settling")?.value.hasPrefix("1 connection ") == true && bothSet.anomalyCount == 1,
-               "两组同时在时两行都要在、且只有顽固那行是异常,实际 \(bothSet.rows.map(\.label)) anomalies=\(bothSet.anomalyCount)")
+        expect(row(bothSet, "Outside bx") != nil && row(bothSet, "Settling")?.value == "1 older connection is still finishing outside bx" && bothSet.anomalyCount == 0,
+               "两组同时在时两行都要在、都不是异常,实际 \(bothSet.rows.map(\.label)) anomalies=\(bothSet.anomalyCount)")
 
         // 隧道不健康是真异常
         let unhealthy = decode("""
@@ -147,7 +156,7 @@ struct MenuRowsTests {
         expect(unasked.anomalyCount == 0, "没问过不等于有异常,实际 \(unasked.anomalyCount)")
 
         // Core 答了,但 Guardian 没给 tunnel_healthy/latency_ms:同样只是未观测。
-        // 拿缺席的键画一行 "Tunnel unhealthy ✗" 会让指示灯裂开在一个没人报告过
+        // 拿缺席的键画一行 "Tunnel not responding ✗" 会让指示灯裂开在一个没人报告过
         // 的故障上。
         let partial = decode("""
         {"schema_version":1,"desired":"on","phase":"idle","protection_state":"protected",
@@ -210,11 +219,11 @@ struct MenuRowsTests {
          "core":{"reachable":true,"tunnel_healthy":false,"server":"vps","transport":"reality@vps"}}
         """)
         let sick = compactMenuRows(menuRows(status: tunnelDown, dns: "127.0.0.1"))
-        expect(sick.first?.value == "vps · Tunnel unhealthy", "隧道坏了要在 Via 行说出来,实际 \(String(describing: sick.first?.value))")
+        expect(sick.first?.value == "vps · Tunnel not responding", "隧道坏了要在 Via 行说出来,实际 \(String(describing: sick.first?.value))")
         expect(sick.first?.mark == .bad, "隧道坏了 Via 行是 bad")
 
         let blind = compactMenuRows(menuRows(status: nil, dns: nil))
-        expect(blind.first?.label == "Via" && blind.first?.value == "Not checked" && blind.first?.mark == .unknown,
+        expect(blind.first?.label == "Via" && blind.first?.value == "Couldn't check" && blind.first?.mark == .unknown,
                "什么都问不出来时头一行是 Not checked,实际 \(blind.map { "\($0.label)=\($0.value)" })")
         // **这一行此前钉的是 `blind.count == 1`,现在不再成立,而那是刻意的。**
         // 压缩的判据从「不是 ✗ 就藏」改成「是 ok 才藏」之后,这份全 unknown 的
@@ -258,7 +267,7 @@ struct MenuRowsTests {
         expect(screen(allKnown) != screen(udpBlind),
                "UDP 中继问不出来那次与全部答上话那次在屏幕上一模一样(\(screen(allKnown)))——" +
                "「没问出来」被压成了「一切正常」")
-        expect(udpBlind.contains { $0.label == "UDP Relay" && $0.value == "Not checked" },
+        expect(udpBlind.contains { $0.label == "UDP Relay" && $0.value == "Couldn't check" },
                "问不出来的那一行必须露面,实际 \(screen(udpBlind))")
         expect(!allKnown.contains { $0.label == "UDP Relay" },
                "正常时那一行仍不该占地方,实际 \(screen(allKnown))")

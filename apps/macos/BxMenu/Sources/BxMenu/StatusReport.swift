@@ -87,7 +87,7 @@ func menuStateMessageText(_ message: String) -> String {
     case "Blocked": return L("Blocked")
     case "Core status unavailable": return L("Core status unavailable")
     case "Core unavailable": return L("Core unavailable")
-    case "Tunnel unhealthy": return L("Tunnel unhealthy")
+    case "Tunnel not responding": return L("Tunnel not responding")
     case "Status unreadable": return L("Status unreadable")
     case "DNS status unavailable": return L("DNS status unavailable")
     case "Install bx at /usr/local/bin/bx": return L("Install bx at /usr/local/bin/bx")
@@ -142,7 +142,7 @@ func menuProtectionVerdict(_ status: GuardianStatus) -> MenuProtectionVerdict {
     // 「答案是坏的」,正是 internal/observe 的三态 Tristate 存在的理由。
     // 键缺席(`nil`)与 `false` 也是两回事:缺席是「Guardian 没说」,同样归入
     // 「问不出来」那一档,绝不能当成一个自信的坏答案 —— 尤其 `tunnel_healthy`
-    // 缺席若被读成 false,就会凭空造出一句 "Tunnel unhealthy"。
+    // 缺席若被读成 false,就会凭空造出一句 "Tunnel not responding"。
     guard let core = status.core, let reachable = core.reachable else {
         return .attention("Core status unavailable")
     }
@@ -153,7 +153,7 @@ func menuProtectionVerdict(_ status: GuardianStatus) -> MenuProtectionVerdict {
         return .attention("Core status unavailable")
     }
     if !tunnelHealthy {
-        return .attention("Tunnel unhealthy")
+        return .attention("Tunnel not responding")
     }
     return .healthy
 }

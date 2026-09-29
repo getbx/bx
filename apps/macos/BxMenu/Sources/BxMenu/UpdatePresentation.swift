@@ -75,7 +75,7 @@ func parseUpdateOutcome(_ logData: Data) -> UpdateOutcome {
 var updateConfirmTitle: String { L("Update bx?") }
 var updateConfirmMessage: String { L("Internet access may pause briefly. bx will reconnect automatically.") }
 var updateSucceededMessage: String { L("bx is up to date") }
-var updateRolledBackMessage: String { L("Update couldn't be completed. Previous version restored.") }
+var updateRolledBackMessage: String { L("The update was rolled back. Your previous version is running.") }
 
 /// 回滚那句话按原因分三种(A3)。**隧道那一族**(与 Go 的 supervisor.IsTunnelStartFailureCode
 /// 同一组码,由 Go 侧守卫钉住)指向服务器或路径、**不是升级** —— 否则「VPS 刚好不通」
@@ -83,9 +83,9 @@ var updateRolledBackMessage: String { L("Update couldn't be completed. Previous 
 func updateRolledBackMessage(reason: String?) -> String {
     guard let reason, !reason.isEmpty else { return updateRolledBackMessage }
     if isTunnelStartFailure(reason) {
-        return L("Update couldn't be completed: during the switch the new version could not bring up the tunnel. That points at your server or the path to it, not the update itself. Previous version restored — try updating again later.")
+        return L("The update was rolled back: the new version could not reach your server — that points at the server or the path to it, not the update. Your previous version is running. Try again later.")
     }
-    return L("Update couldn't be completed: the new version could not start on this Mac. Previous version restored.")
+    return L("The update was rolled back: the new version could not start on this Mac. Your previous version is running.")
 }
 
 /// 「隧道没起来」那一族。**码与 Go 那一份逐字相同**(TestMenuTunnelStartFailureCodesMatchGo 钉住)。

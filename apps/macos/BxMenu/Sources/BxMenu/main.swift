@@ -2332,6 +2332,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 switch row.mark {
                 case .ok: suffix = ""
                 case .bad: suffix = "  ✗"
+                case .warn:
+                    // 橙字、整句、不带「标签: 」前缀:这一行是一句话不是一个字段。
+                    menu.addNotice(row.value)
+                    continue
                 case .unknown: suffix = ""
                 }
                 menu.addInfo(row.displayLabel, row.value + suffix)
@@ -3731,6 +3735,17 @@ private extension NSMenu {
     func addInfo(_ label: String, _ value: String) {
         let item = NSMenuItem(title: L("{0}: {1}", label, value), action: nil, keyEquivalent: "")
         item.isEnabled = false
+        addItem(item)
+    }
+
+    /// 一行橙色的整句提示(warn 级:值得一说、不需要动手)。禁用态的 NSMenuItem 会把
+    /// attributedTitle 的颜色压灰,所以它是启用态但没有 action —— 点了什么也不发生。
+    func addNotice(_ text: String) {
+        let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+        item.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [.foregroundColor: NSColor.systemOrange, .font: NSFont.menuFont(ofSize: 0)]
+        )
         addItem(item)
     }
 

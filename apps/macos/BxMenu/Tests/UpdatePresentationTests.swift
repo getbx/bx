@@ -91,7 +91,7 @@ struct UpdatePresentationTests {
         expect(updateConfirmMessage == "Internet access may pause briefly. bx will reconnect automatically.",
                "update confirm message pinned")
         expect(updateSucceededMessage == "bx is up to date", "update succeeded message pinned")
-        expect(updateRolledBackMessage == "Update couldn't be completed. Previous version restored.",
+        expect(updateRolledBackMessage == "The update was rolled back. Your previous version is running.",
                "update rolled back message pinned")
         testVersionRowCarriesTheUpdateInItsText()
         testDownloadProgressIsReadFromTheLastLine()

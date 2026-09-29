@@ -20,11 +20,11 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     var onSwitch: ((String, String) -> Void)?
     /// 用户点了「测一下现在从哪出去」。
     var onCheckExitIP: (() -> Void)?
-    /// 用户点了「Test All」—— 逐台量直连往返时间。
+    /// 用户点了「Test Latency」—— 逐台量直连往返时间。
     var onProbe: (() -> Void)?
-    /// 用户点了「Set Up a New VPS…」(从一级菜单搬进来的「Set Up a New Server…」)。
+    /// 用户点了「Set Up a New Server…」(从一级菜单搬进来的「Set Up a New Server…」)。
     var onDeploy: (() -> Void)?
-    /// 用户点了「Add Existing Server…」—— 贴一条链接加进清单并切换过去(spec §4)。
+    /// 用户点了「Add an Existing Server…」—— 贴一条链接加进清单并切换过去(spec §4)。
     var onAddServer: (() -> Void)?
     /// `⋯` 里的删除。参数是名字、出口主机、以及**这一台此刻在不在承载流量**
     /// (三态)—— 三样都只用来写确认文案。
@@ -176,7 +176,7 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         //
         // 原来这一支摆一句「No servers yet」加一行 `bx setup --name …` 然后
         // `return` —— 而按钮带是在那个 return 之后才画的。于是零行时:没有
-        // Add Server、没有 New Server、没有 Test、没有 Exit IP,只剩一条
+        // Add Server、没有 New Server、没有 Test、没有 Check Exit IP,只剩一条
         // **`urfave/cli` 会直接拒掉的命令**(`bx setup` 没有 `--name` 这个 flag)。
         // 空清单恰恰是最需要 Add Server… 的那一刻。
         //
@@ -217,7 +217,7 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 8
-        let test = NSButton(title: probing ? L("Testing…") : L("Test All"), target: self, action: #selector(probeAll))
+        let test = NSButton(title: probing ? L("Testing…") : L("Test Latency"), target: self, action: #selector(probeAll))
         test.bezelStyle = .rounded
         test.controlSize = .small
         test.isEnabled = !probing
@@ -225,7 +225,7 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         test.toolTip = L("Measures the round trip from this Mac to each server, outside the tunnel.")
         buttons.addArrangedSubview(test)
 
-        let check = NSButton(title: L("Exit IP"), target: self, action: #selector(checkExitIP))
+        let check = NSButton(title: L("Check Exit IP"), target: self, action: #selector(checkExitIP))
         check.bezelStyle = .rounded
         check.controlSize = .small
         check.isEnabled = probe != .checking
@@ -238,16 +238,16 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // 名字近义、动作不同,而点错第一个的代价是对着一台陌生机器跑 ssh。
         // 2026-09-18 用离屏快照第一次并排看到它们之后改名:现在一个说「我有台空机器」,
         // 另一个说「我已经有链接了」。
-        let deploy = NSButton(title: L("Set Up a New VPS…"), target: self, action: #selector(deployServer))
+        let deploy = NSButton(title: L("Set Up a New Server…"), target: self, action: #selector(deployServer))
         deploy.bezelStyle = .rounded
         deploy.controlSize = .small
-        deploy.toolTip = L("Install bx server on a fresh VPS over SSH.")
+        deploy.toolTip = L("Installs bx on a fresh server over SSH.")
         buttons.addArrangedSubview(deploy)
 
-        let add = NSButton(title: L("Add Existing Server…"), target: self, action: #selector(addServer))
+        let add = NSButton(title: L("Add an Existing Server…"), target: self, action: #selector(addServer))
         add.bezelStyle = .rounded
         add.controlSize = .small
-        add.toolTip = L("Paste a bx link to add a server and switch to it. The previous server stays in the list.")
+        add.toolTip = L("Paste a bx link to add a server and switch to it. Your current server stays in the list.")
         buttons.addArrangedSubview(add)
 
         return buttons
@@ -319,8 +319,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // ●/○;那句话进读屏描述与悬停提示。
         let confirmed = panel.runningConfirmed
         let dotLabel = confirmed
-            ? L("Carrying your traffic now (confirmed by bx)")
-            : L("Not confirmed as carrying your traffic right now")
+            ? L("Your traffic goes through this server")
+            : L("bx could not confirm this is the server in use")
         let dot = NSImageView(image: NSImage(systemSymbolName: confirmed ? "circle.fill" : "circle.dashed",
                                              accessibilityDescription: dotLabel) ?? NSImage())
         dot.contentTintColor = confirmed ? .systemGreen : .tertiaryLabelColor
@@ -458,7 +458,9 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     /// **换到那一台**去,而那正是这个设计唯一明令禁止的事。
     private func moreButton(name: String, host: String, isCurrent: Bool,
                             traffic: ServerTrafficState) -> NSButton {
-        let more = NSButton(title: "⋯", target: self, action: #selector(showRowMenu(_:)))
+        // 「Edit…」而不是「⋯」:一个省略号看起来像装饰,用户不知道换链接与删除藏在里面
+        // (可读性一轮,2026-09-28)。点开仍是 Replace Link… / Remove…,门与守卫不变。
+        let more = NSButton(title: L("Edit…"), target: self, action: #selector(showRowMenu(_:)))
         more.bezelStyle = .rounded
         more.controlSize = .small
         // `name|host|current` 塞进 identifier:回调要的就是这三样,而从界面上的

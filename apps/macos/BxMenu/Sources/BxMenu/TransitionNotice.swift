@@ -101,10 +101,10 @@ func transitionNoticeText(kind: TransitionNoticeKind, signal: ProtectionSignal) 
                     L("Protection could not be restored on its own. Open the bx menu for details."))
         case .protectedTunnelDown:
             return (L("bx: tunnel is down"),
-                    L("The tunnel has been down for a while. bx is blocking traffic so nothing leaks (kill-switch)."))
+                    L("The tunnel has been down for a while. bx is blocking traffic so nothing leaks."))
         default:
             return (L("bx: traffic blocked"),
-                    L("Protection is on but the tunnel is unavailable. bx is blocking traffic so nothing leaks (kill-switch)."))
+                    L("Protection stays on: bx is blocking traffic so nothing leaks while it reconnects."))
         }
     }
 }

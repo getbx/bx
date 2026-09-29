@@ -331,7 +331,7 @@ struct ServersModelTests {
     static func testProbeHasThreeStatesNotTwo() {
         expect(probePresentation(nil) == .notChecked, "没测过")
         expect(probePresentation(ProbeReport(measured: false, errorCode: "core_unreachable"))
-            == .notMeasured("could not measure (is bx running?)"), "没测成 —— 绝不许画成不可达")
+            == .notMeasured("could not measure (bx is off)"), "没测成 —— 绝不许画成不可达")
         expect(probePresentation(ProbeReport(measured: true, reachable: false, errorCode: "refused"))
             == .measured(reachable: false, rttMS: 0,
                          reason: "connection refused (nothing is listening)"), "测了不通")
@@ -535,12 +535,12 @@ struct ServersModelTests {
         expect(!stale.runningConfirmed, "Core 静默时拿一份可能陈旧的 running 加了粗")
     }
 
-    // **`Test All` 对一份只有一台的清单必须有可见的结果 —— 而这一支引入的
+    // **`Test Latency` 对一份只有一台的清单必须有可见的结果 —— 而这一支引入的
     // 回归恰恰是它没有。**
     //
     // 探测结论此前只长在候选行上,而 `otherServerRows` 按定义排除当前那台。
     // 于是 `servers:` 里只有一台时(单次 Add Server… 之后就是这个形状)按下
-    // `Test All`:真的发了一次探测,屏幕上一个字都不变。这正是这个仓库付过
+    // `Test Latency`:真的发了一次探测,屏幕上一个字都不变。这正是这个仓库付过
     // 两次代价的「点了没反应」,也让 spec §10 第 2 条在单条清单上无从验收。
     //
     // 三态与候选行**共用** `probePresentation`:灰的仍然是灰的,红只从实测

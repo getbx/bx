@@ -147,15 +147,24 @@ func strayConnectionWarning(device string, stray []appattr.PCB, name func(int32)
 	}
 	sort.Strings(names)
 	apps := strings.Join(names, ", ")
+	// warn 而不是 error(所有者 2026-09-28):风险只有那几条老连接、只对它们本来就在连的
+	// 站点;活跃的已被 pf 重置掉,剩下的是空闲的。不把总状态拉成 Needs Attention,菜单不裂
+	// 图标;红色留给真正要人动手的事(隧道挂了、恢复失败)。
 	return stats.Warning{
 		Name:     stats.WarningConnectionsBypassingBX,
-		Severity: "error",
-		Detail: fmt.Sprintf("%d connection(s) from %s have been leaving through %s with your real IP for over %d minutes, outside bx "+
-			"(opened while protection was off; macOS never moves an open connection into the tunnel)",
-			len(stray), apps, device, int(strayStubbornAfter/time.Minute)),
-		Hint: "quit and reopen " + apps + "; their new connections go through bx",
+		Severity: "warn",
+		Detail: fmt.Sprintf("%s still %s an older connection outside bx (%d, opened before protection was on, leaving through %s with your real IP for over %d minutes)",
+			apps, hasOrHave(len(names)), len(stray), device, int(strayStubbornAfter/time.Minute)),
+		Hint: "quit and reopen " + apps + " to move it in",
 		Apps: names,
 	}
+}
+
+func hasOrHave(n int) string {
+	if n == 1 {
+		return "has"
+	}
+	return "have"
 }
 
 func interfaceIPv4s(name string) []netip.Addr {

@@ -91,7 +91,7 @@ struct RecoveryPresentationTests {
         let accepted = recoveryPresentation(for: recoverySnapshot(state: "accepted", stage: "queued"))
         expect(accepted.title == "Reconnecting", "accepted title")
         expect(accepted.indicator == .yellow, "accepted indicator")
-        expect(accepted.shortReason == "Waiting for Guardian", "accepted reason")
+        expect(accepted.shortReason == "Waiting for bx to start", "accepted reason")
 
         let running = recoveryPresentation(for: recoverySnapshot(state: "running", stage: "rebind_underlay"))
         expect(running.title == "Reconnecting", "running title")
