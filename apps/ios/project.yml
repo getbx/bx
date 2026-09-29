@@ -11,6 +11,14 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.0.1"
     CURRENT_PROJECT_VERSION: "1"
+schemes:
+  BxApp:
+    build:
+      targets:
+        BxApp: all
+    test:
+      targets:
+        - BxAppUITests
 targets:
   BxApp:
     type: application
@@ -57,3 +65,14 @@ targets:
         embed: false
       - sdk: libresolv.tbd
       - sdk: UIKit.framework # libbox references UIApplication background-task symbols
+  BxAppUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.getbx.bx.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: BxApp

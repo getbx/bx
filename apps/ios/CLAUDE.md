@@ -29,6 +29,14 @@
 - **v6 在手机上一律拒绝**(mobileconfig 的前导规则),explain 如实说 blocked;tun 必须同时占住
   v4 与 v6 默认路由,否则 iOS 把 v6 从物理网卡放出去。
 
+## 界面的检查
+
+`scripts/ios-dev.sh snapshot` 出截图给人(和 agent)看;`scripts/ios-dev.sh uitest` 跑 `UITests/` 里的
+XCUITest 做判定:答案三行在屏幕上、说的与 Mac 相同、不越出窗口。**测试按无障碍标识找行**
+(`explain.goes` / `explain.because` / `explain.rule`),不按 SwiftUI 怎么合并标签与值 —— 按文字找
+「Direct」时它根本不是单独的元素。两者都只用 `--fixture` 的合成规则。**每项封顶 2 分钟**:断言失败后
+XCUITest 抓整棵无障碍树做排查,本机实测会挂住半小时以上。
+
 ## 构建的几个坑(都实测过)
 
 - 签名走 **Xcode 已登录的团队账号**;App Store Connect API key 过不了 provisioning(bearer token

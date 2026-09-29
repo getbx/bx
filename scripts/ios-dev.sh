@@ -5,6 +5,7 @@
 #   scripts/ios-dev.sh config            以 root 读 /etc/bx/config.yaml,生成 apps/ios/Dev/(要 sudo 密码)
 #   scripts/ios-dev.sh build             构建 libbox(若缺)、生成工程、签名构建、装到手机
 #   scripts/ios-dev.sh snapshot          模拟器里用合成夹具(不含你的规则)截 Explain 页,浅色/深色各一张
+#   scripts/ios-dev.sh uitest            模拟器里跑 Explain 页的 XCUITest(合成夹具),每项封顶 2 分钟
 #   scripts/ios-dev.sh run <scenario>    connect | deadserver | armed | armedbroken | explain --target <x> | stop | remove
 #
 # 设备:BX_IOS_DEVICE(默认第一台已连接的真机)。
@@ -65,6 +66,20 @@ snapshot)
 	done
 	xcrun simctl ui "$sim" appearance light
 	ls "$out"
+	;;
+uitest)
+	# 每项测试封顶 2 分钟:XCUITest 在断言失败后会去抓整棵无障碍树做排查,这一步在本机实测会
+	# 挂住半小时以上(2026-09-29)—— 封顶之后失败照样是失败,只是不再挂住。
+	sim="${BX_IOS_SIM:-$(xcrun simctl list devices available | awk -F'[()]' '/iPhone 1[0-9] Pro \(/ {print $2; exit}')}"
+	[ -n "$sim" ] || { echo "no iPhone simulator" >&2; exit 1; }
+	bash scripts/build-libbox-ios.sh
+	bash scripts/build-bxkit-ios.sh
+	mkdir -p apps/ios/Dev
+	(cd apps/ios && xcodegen generate --quiet)
+	xcodebuild test -project apps/ios/BxiOS.xcodeproj -scheme BxApp -destination "id=$sim" \
+		-derivedDataPath apps/ios/build-sim -test-timeouts-enabled YES -maximum-test-execution-time-allowance 120 \
+		2>&1 | grep -E "Test Case .*(passed|failed)|error:|\*\* TEST"
+	exit "${PIPESTATUS[0]}"
 	;;
 run)
 	scenario="${2:?scenario: connect | deadserver | armed | armedbroken | stop | remove}"

@@ -27,11 +27,16 @@ struct ExplainView: View {
                 }
                 if let answer {
                     Section {
+                        // Stable identifiers: VoiceOver and the UI tests (UITests/) address the rows
+                        // by these, not by how SwiftUI happens to merge a label and its value.
                         LabeledContent("Goes", value: answer.verdictTitle)
                             .font(.headline)
+                            .accessibilityIdentifier("explain.goes")
                         LabeledContent("Because", value: answer.because)
+                            .accessibilityIdentifier("explain.because")
                         if let rule = answer.rule, !rule.isEmpty {
                             LabeledContent("Rule", value: rule)
+                                .accessibilityIdentifier("explain.rule")
                         }
                     } header: {
                         Text(answer.target)
