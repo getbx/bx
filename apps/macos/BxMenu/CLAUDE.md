@@ -106,6 +106,13 @@ Language ▸ 子菜单:跟随系统 / English / 简体中文,**立刻生效、�
 
 ## 图标(轮廓编码状态)
 
+**两个图标,两件事(2026-09-28)**:菜单栏那个盾牌是**保护状态**(本节),Bx.app 的图标
+(Dock、更新弹窗、Finder)是**产品标识** —— b+x 那个标,来自设计包
+`bx_B_integrated_production_v3/macos/Bx.iconset`,vendored 在 `apps/macos/BxMenu/Resources/Bx.iconset/`
+(十档尺寸各自单独出图,设计包 README 明说别自己从 1024 缩),`package-macos-menu.sh` 用
+`iconutil` 直接打成 icns。此前从 `winres/icon1024.png`(Windows 时代的绿盾 + b)缩,于是
+泄漏检测页与 server ui 早换了新标而弹窗里还是旧的。守卫 `TestMacOSAppIconComesFromTheDesignPackIconset`。
+
 **状态编码在轮廓,不在颜色**(实心/空心/虚线/沿中线裂开),判据是**去掉动效后四形态
 仍两两可分**(开「减弱动态效果」时只靠呼吸周期区分的两态会同形)。无色两态走 template
 让系统上色,且必须用**不透明黑**绘制:template 只取 alpha,用 `secondaryLabelColor` 画出
