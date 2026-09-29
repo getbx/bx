@@ -681,7 +681,12 @@ func TestManagerUpdateReservesDeadlineForTargetCleanup(t *testing.T) {
 	env.manager.cleanupTimeout = 100 * time.Millisecond
 	env.health.blockVersions = map[string]bool{"v2": true}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// **2 秒,与下面 TestManagerUpdateLeavesARealBudgetForTheRollback 同一个数,同一个理由。**
+	// 09-23 那次修复把新版的健康窗口定为「(总预算 - 清理预留)/2」,回滚拿剩下的一半再减清理
+	// 预留。总预算 500ms 时回滚只剩约 100ms,CI 忙的时候量到整次 720ms、旧版健康等待先到期
+	// ⇒ previous_core_health_failed(2026-09-29,ubuntu 腿)。这条要钉的性质是「清理新版不继承
+	// 已到期的健康上下文」,与总预算大小无关;2 秒给回滚约 850ms,离调度抖动很远。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	result, err := env.manager.Update(ctx, env.request)
 	if err != nil {
