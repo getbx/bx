@@ -3,7 +3,7 @@
 `bx.exe` 的 manifest(UAC / DPI / long-path)、应用图标、版本信息。
 
 - **真相源**:`winres.json`(文本,可 review)。
-- **图标源**:`icon.png`(256²)+ `icon16.png`(32²),go-winres 合成 icon group。
+- **图标源**:`bx-{16,32,48,256}.png`(设计包 `bx_B_integrated_production_v3/app_icon/light/`,b+x 产品标,每档单独出图;go-winres 只认 PNG,不吃 .ico),winres.json 直接引用;托盘四态盾牌另在 `internal/tray/icons`,由 `gen-icons.py` 生成。
 - **产物**:`rsrc_windows_amd64.syso` / `rsrc_windows_arm64.syso`(提交进仓库根),
   Go 链接器按 GOOS/GOARCH 自动链入 windows 构建。
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"image"
 	_ "image/png"
 	"os"
@@ -50,5 +51,43 @@ func TestMacOSAppIconComesFromTheDesignPackIconset(t *testing.T) {
 	// 钉的是动作不是提及:注释里可以谈论旧源图,但不许再 sips 缩它。
 	if strings.Contains(s, `ICON_SRC="$ROOT/winres/icon1024.png"`) || strings.Contains(s, "sips -z") {
 		t.Fatal("package-macos-menu.sh 仍从 winres/icon1024.png 缩图标 —— 那是旧的绿盾 + b")
+	}
+}
+
+// **Windows 的 exe 图标与 macOS 同一个标**(所有者 2026-09-28:「win 上的 ico 也要改吧,统一下」)。
+// 设计包 app_icon/light 的 16/32/48/256 四档 PNG vendored 成 winres/bx-{px}.png,winres.json 的
+// icon group 直接引用它们(go-winres 只认 PNG,不吃设计包那份 .ico);托盘四态盾牌
+// (internal/tray/icons)是保护状态,不动。
+func TestWindowsExeIconIsTheDesignPackMark(t *testing.T) {
+	for _, px := range []int{16, 32, 48, 256} {
+		name := fmt.Sprintf("bx-%d.png", px)
+		f, err := os.Open(filepath.Join("..", "..", "winres", name))
+		if err != nil {
+			t.Fatalf("winres/%s 缺:%v", name, err)
+		}
+		cfg, _, err := image.DecodeConfig(f)
+		f.Close()
+		if err != nil || cfg.Width != px || cfg.Height != px {
+			t.Fatalf("winres/%s 应是 %dx%d 的 PNG,实际 %dx%d err=%v", name, px, px, cfg.Width, cfg.Height, err)
+		}
+	}
+	cfg, err := os.ReadFile(filepath.Join("..", "..", "winres", "winres.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"bx-256.png"`, `"bx-16.png"`} {
+		if !strings.Contains(string(cfg), want) {
+			t.Fatalf("winres.json 的 icon group 缺 %s", want)
+		}
+	}
+	if strings.Contains(string(cfg), `"icon.png"`) {
+		t.Fatal("winres.json 仍引用 icon.png(旧的绿盾 + b)")
+	}
+	gen, err := os.ReadFile(filepath.Join("..", "..", "winres", "gen-icons.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(gen), `"icon.png"`) || strings.Contains(string(gen), `"icon1024.png"`) {
+		t.Fatal("gen-icons.py 仍在生成 exe 图标(icon.png / icon1024.png)—— 它只该生成托盘四态")
 	}
 }

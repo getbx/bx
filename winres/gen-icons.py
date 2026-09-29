@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""bx Windows 图标生成器(真相源)。heater 盾牌 + 白色 "b"。
+"""bx Windows 托盘图标生成器(真相源)。heater 盾牌 + 白色 "b",四态各一色。
 用法: python3 winres/gen-icons.py   # 从仓库根跑
-产物: winres/icon.png(256) winres/icon16.png(32)
-      internal/tray/icons/{protected,warning,failed,off}.ico(各含 16/20/24/32)
+产物: internal/tray/icons/{protected,warning,failed,off}.ico(各含 16/20/24/32)
+**exe 的图标不在这里出**:那是产品标(b+x),来自设计包,vendored 成 winres/bx-{16,32,48,256}.png,
+winres.json 直接引用;盾牌只表示保护状态(2026-09-28,与 macOS 同一条规则)。
 改完重生成 .syso: go generate ./...
 """
 import glob, math, os
@@ -82,10 +83,6 @@ def render(color, size):
 
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    render("green", 256).save(os.path.join(root, "winres", "icon.png"))
-    # 1024 供 macOS 的 .icns(Retina 下 Dock 会用到 512@2x)。
-    render("green", 1024).save(os.path.join(root, "winres", "icon1024.png"))
-    render("green", 32).save(os.path.join(root, "winres", "icon16.png"))
     ico_dir = os.path.join(root, "internal", "tray", "icons")
     sizes = [16, 20, 24, 32]
     for name, color in [("protected", "green"), ("warning", "amber"),
