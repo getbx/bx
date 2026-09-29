@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -24,6 +25,9 @@ func TestEmbeddedSingboxAcceptsTheMobileConfig(t *testing.T) {
 	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "sing-box")
+	if runtime.GOOS == "windows" {
+		bin += ".exe" // Windows 只执行带 .exe 的文件(CI 的 test-windows 腿撞到过)
+	}
 	if err := os.WriteFile(bin, raw, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -102,7 +102,7 @@ func TestJudgeParsedConfigProducesTheFullLadder(t *testing.T) {
 	if c := find(r, "config_permissions"); c.Hint != "chmod 600 /etc/bx/config.yaml" {
 		t.Fatalf("权限提示 = %+v", c)
 	}
-	if c := find(r, "status_socket"); c.Hint != "turn protection on (sudo bx up)" {
+	if c := find(r, "status_socket"); c.Hint != "turn protection on ("+elevate.Prefix+"bx up)" {
 		t.Fatalf("status_socket 提示 = %+v", c)
 	}
 	if c := find(r, "udp_policy"); !strings.Contains(c.Detail, "may expose real network path") {

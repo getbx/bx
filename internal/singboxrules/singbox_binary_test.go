@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -27,6 +28,9 @@ func singboxBinary(t *testing.T) string {
 		t.Skip("this build embeds no sing-box; the binary guards cannot run here")
 	}
 	path := filepath.Join(t.TempDir(), "sing-box")
+	if runtime.GOOS == "windows" {
+		path += ".exe" // Windows 只执行带 .exe 的文件(CI 的 test-windows 腿撞到过)
+	}
 	if err := os.WriteFile(path, raw, 0o755); err != nil {
 		t.Fatal(err)
 	}
