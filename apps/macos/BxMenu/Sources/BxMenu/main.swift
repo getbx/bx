@@ -3101,8 +3101,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 而且它跑在一次授权框之后 —— 跑不起来的二进制不该先向用户要密码。
         guard ensureCLIUsable() else { return }
         let alert = NSAlert()
-        alert.messageText = updateConfirmTitle
-        alert.informativeText = updateConfirmMessage
+        alert.messageText = updateConfirmTitle(latest: updateCheck?.latest)
+        alert.informativeText = updateConfirmMessage(current: updateCheck?.current)
         alert.addButton(withTitle: L("Update"))
         alert.addButton(withTitle: L("Not Now"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }

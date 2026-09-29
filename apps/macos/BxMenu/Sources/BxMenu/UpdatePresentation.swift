@@ -72,8 +72,22 @@ func parseUpdateOutcome(_ logData: Data) -> UpdateOutcome {
     return .failed
 }
 
-var updateConfirmTitle: String { L("Update bx?") }
-var updateConfirmMessage: String { L("Internet access may pause briefly. bx will reconnect automatically.") }
+/// 更新确认弹窗(可读性一轮,2026-09-28):说从哪版到哪版、停多久、会不会漏。
+/// 版本问不出来时退回不带版本的句子,绝不编一个。
+func updateConfirmTitle(latest: String?) -> String {
+    if let latest, !latest.isEmpty {
+        return L("Update bx to {0}?", latest)
+    }
+    return L("Update bx?")
+}
+
+func updateConfirmMessage(current: String?) -> String {
+    let body = L("Your connection pauses for a few seconds while bx switches versions; nothing leaks in the meantime, and protection comes back on by itself.")
+    if let current, !current.isEmpty {
+        return L("You have {0}.", current) + " " + body
+    }
+    return body
+}
 var updateSucceededMessage: String { L("bx is up to date") }
 var updateRolledBackMessage: String { L("The update was rolled back. Your previous version is running.") }
 

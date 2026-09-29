@@ -87,9 +87,13 @@ struct UpdatePresentationTests {
         let garbage = "not json at all\nstill not json"
         expect(parseUpdateOutcome(Data(garbage.utf8)) == .failed, "garbage log yields failed")
 
-        expect(updateConfirmTitle == "Update bx?", "update confirm title pinned")
-        expect(updateConfirmMessage == "Internet access may pause briefly. bx will reconnect automatically.",
-               "update confirm message pinned")
+        // 可读性一轮(2026-09-28):弹窗要说从哪版到哪版、停多久、会不会漏。版本问不出来时退回不带版本的句子。
+        expect(updateConfirmTitle(latest: "v0.4.15") == "Update bx to v0.4.15?", "update confirm title names the version")
+        expect(updateConfirmTitle(latest: nil) == "Update bx?", "no version known: plain title")
+        expect(updateConfirmMessage(current: "v0.4.13") == "You have v0.4.13. Your connection pauses for a few seconds while bx switches versions; nothing leaks in the meantime, and protection comes back on by itself.",
+               "update confirm message says what happens")
+        expect(updateConfirmMessage(current: nil) == "Your connection pauses for a few seconds while bx switches versions; nothing leaks in the meantime, and protection comes back on by itself.",
+               "no current version known: same message without the first sentence")
         expect(updateSucceededMessage == "bx is up to date", "update succeeded message pinned")
         expect(updateRolledBackMessage == "The update was rolled back. Your previous version is running.",
                "update rolled back message pinned")
