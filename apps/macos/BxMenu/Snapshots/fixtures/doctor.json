@@ -4,23 +4,23 @@
   {
    "name": "guardian_dns",
    "status": "fail",
-   "detail": "state=unknown managed=false",
-   "hint": "sudo bx up; bx logs"
+   "detail": "bx is not handling this Mac's DNS (unknown)",
+   "hint": "turn protection on (sudo bx up)"
   },
   {
    "name": "traffic_failing_rules",
    "status": "warn",
-   "detail": "1 rule(s) failing in bulk — *.qq.com: 1289 of 1291 failed (100%)"
+   "detail": "these rules are failing: *.qq.com: 1289 of 1291 failed (100%)"
   },
   {
    "name": "config_readable",
    "status": "ok",
-   "detail": "/etc/bx/config.yaml"
+   "detail": "settings file found"
   },
   {
    "name": "tunnel",
    "status": "not_checked",
-   "detail": "bx is not running, so this round could not look"
+   "detail": "not checked: bx is not running"
   }
  ]
 }
