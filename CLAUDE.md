@@ -34,6 +34,7 @@ Claude Code 在读到那个子树的文件时才加载它。**登记在这里的
 - `internal/rulereview/CLAUDE.md` —— 规则体检的分类与渲染、死规则。
 - `internal/doctor/CLAUDE.md` —— 诊断判据(`bx doctor` 与 `/v1/doctor` 共用),流量成败。
 - `internal/dialer/CLAUDE.md` —— 分流决策里的 SNI 规则,`bx explain`(含 `pathview`、`dialfail`)。
+- `apps/ios/CLAUDE.md` —— iPhone 开发构建:libbox 扩展、kill-switch 的真值与探测边界、凭据怎么进手机。
 
 ## 架构(数据面 vs 控制面)
 
