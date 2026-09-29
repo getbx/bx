@@ -4,7 +4,8 @@
 #
 #   scripts/ios-dev.sh config            以 root 读 /etc/bx/config.yaml,生成 apps/ios/Dev/(要 sudo 密码)
 #   scripts/ios-dev.sh build             构建 libbox(若缺)、生成工程、签名构建、装到手机
-#   scripts/ios-dev.sh run <scenario>    connect | deadserver | armed | armedbroken | stop | remove,打出 BX-RESULT 那一行
+#   scripts/ios-dev.sh snapshot          模拟器里用合成夹具(不含你的规则)截 Explain 页,浅色/深色各一张
+#   scripts/ios-dev.sh run <scenario>    connect | deadserver | armed | armedbroken | explain --target <x> | stop | remove
 #
 # 设备:BX_IOS_DEVICE(默认第一台已连接的真机)。
 set -euo pipefail
@@ -25,6 +26,7 @@ config)
 build)
 	[ -f apps/ios/Dev/libbox-config.json ] || { echo "apps/ios/Dev is empty: run scripts/ios-dev.sh config first" >&2; exit 1; }
 	bash scripts/build-libbox-ios.sh
+	bash scripts/build-bxkit-ios.sh
 	(cd apps/ios && xcodegen generate --quiet)
 	dev="$(device)"
 	[ -n "$dev" ] || { echo "no connected iPhone" >&2; exit 1; }
@@ -36,11 +38,40 @@ build)
 		-allowProvisioningUpdates build -quiet
 	xcrun devicectl device install app --device "$dev" apps/ios/build/Build/Products/Debug-iphoneos/bx.app
 	;;
+snapshot)
+	# spec §8 在第四步之前要回答的问题:界面能不能让 agent 自己看。能 —— 真实渲染路径
+	# (模拟器里真跑 App),用 --fixture 的合成规则,截图落 apps/ios/build-sim/snapshots/。
+	sim="${BX_IOS_SIM:-$(xcrun simctl list devices available | awk -F'[()]' '/iPhone 1[0-9] Pro \(/ {print $2; exit}')}"
+	[ -n "$sim" ] || { echo "no iPhone simulator" >&2; exit 1; }
+	bash scripts/build-libbox-ios.sh
+	bash scripts/build-bxkit-ios.sh
+	mkdir -p apps/ios/Dev
+	(cd apps/ios && xcodegen generate --quiet)
+	xcodebuild -project apps/ios/BxiOS.xcodeproj -scheme BxApp -configuration Debug \
+		-destination "id=$sim" -derivedDataPath apps/ios/build-sim CODE_SIGNING_ALLOWED=NO build -quiet
+	xcrun simctl boot "$sim" 2>/dev/null || true
+	xcrun simctl bootstatus "$sim" -b >/dev/null
+	xcrun simctl install "$sim" apps/ios/build-sim/Build/Products/Debug-iphonesimulator/bx.app
+	out=apps/ios/build-sim/snapshots
+	mkdir -p "$out"
+	for look in light dark; do
+		for target in www.apple.com https://chat.example.net/c/1 2001:db8::1; do
+			xcrun simctl ui "$sim" appearance "$look"
+			xcrun simctl launch --terminate-running-process "$sim" com.getbx.bx.ios --fixture --target "$target" >/dev/null
+			sleep 3
+			name="$(echo "$target" | tr -c 'A-Za-z0-9' '_')"
+			xcrun simctl io "$sim" screenshot "$out/explain-${look}-${name}.png" >/dev/null 2>&1
+		done
+	done
+	xcrun simctl ui "$sim" appearance light
+	ls "$out"
+	;;
 run)
 	scenario="${2:?scenario: connect | deadserver | armed | armedbroken | stop | remove}"
 	dev="$(device)"
+	shift 2
 	xcrun devicectl device process launch --device "$dev" --terminate-existing --console \
-		com.getbx.bx.ios --scenario "$scenario" 2>&1 | tee /dev/stderr | grep '^BX-RESULT ' | sed 's/^BX-RESULT //'
+		com.getbx.bx.ios --scenario "$scenario" "$@" 2>&1 | tee /dev/stderr | grep '^BX-RESULT ' | sed 's/^BX-RESULT //'
 	;;
 *)
 	sed -n '2,11p' "$0"

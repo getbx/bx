@@ -6,6 +6,7 @@ enum Scenario: String {
     case deadserver   // proxy points at 192.0.2.1: every request must fail, nothing may leave
     case armed        // kill-switch on (includeAllNetworks + on-demand), real server: normal traffic still works
     case armedbroken  // kill-switch on, tunnel cannot start: nothing may reach even our own server
+    case explain      // headless explain: --target <x> [--fixture]
     case stop
     case remove       // delete the VPN configuration from Settings (run at the end of every session)
 
@@ -29,7 +30,7 @@ struct Driver {
         }
     }
 
-    func run(_ scenario: Scenario) async -> [String: Any] {
+    func run(_ scenario: Scenario, args: [String] = []) async -> [String: Any] {
         var out: [String: Any] = ["scenario": scenario.rawValue]
         do {
             switch scenario {
@@ -73,6 +74,10 @@ struct Driver {
                 }
                 out["box_log_tail"] = boxLogTail(lines: 12)
                 out["disarm"] = await disarm()
+            case .explain:
+                let target = BxApp.value(after: "--target", in: args) ?? ""
+                let answer = try ExplainInputs.load(fixture: args.contains("--fixture")).explain(target)
+                out["answer"] = ["target": answer.target, "kind": answer.kind, "verdict": answer.verdict, "because": answer.because, "rule": answer.rule ?? ""]
             case .stop:
                 let manager = try await loadOrCreateManager()
                 try await stop(manager)

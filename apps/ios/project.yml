@@ -32,6 +32,8 @@ targets:
     dependencies:
       - target: BxTunnel
         embed: true
+      - framework: Frameworks/Bxkit.xcframework
+        embed: false
   BxTunnel:
     type: app-extension
     platform: iOS
@@ -41,6 +43,8 @@ targets:
       path: Tunnel/Info.plist
       properties:
         CFBundleDisplayName: bx tunnel
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider

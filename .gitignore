@@ -14,3 +14,4 @@ apps/ios/Dev/
 apps/ios/Frameworks/
 apps/ios/*.xcodeproj/
 apps/ios/build/
+apps/ios/build-sim/

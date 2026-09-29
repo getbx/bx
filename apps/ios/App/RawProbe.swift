@@ -9,33 +9,48 @@ enum RawProbe {
     static func run(host: String, port: UInt16, seconds: Double) async -> [String: Any] {
         await withCheckedContinuation { cont in
             let conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
-            var states: [String] = []
-            var done = false
             let queue = DispatchQueue(label: "bx.rawprobe")
-            let started = Date()
-            func finish(_ ready: Bool) {
-                guard !done else { return }
-                done = true
-                let path = conn.currentPath
-                conn.cancel()
-                cont.resume(returning: [
-                    "target_is_own_server": true,
-                    "ready": ready,
-                    "states": states,
-                    "interface": path?.availableInterfaces.first.map { "\($0.name)/\($0.type)" } ?? "",
-                    "elapsed_ms": Int(Date().timeIntervalSince(started) * 1000),
-                ])
-            }
-            conn.stateUpdateHandler = { state in
-                states.append("\(state)")
-                switch state {
-                case .ready: finish(true)
-                case .failed, .cancelled: finish(false)
+            let state = ProbeState(conn: conn, started: Date(), cont: cont)
+            conn.stateUpdateHandler = { s in
+                state.states.append("\(s)")
+                switch s {
+                case .ready: state.finish(true)
+                case .failed, .cancelled: state.finish(false)
                 default: break
                 }
             }
             conn.start(queue: queue)
-            queue.asyncAfter(deadline: .now() + seconds) { finish(false) }
+            queue.asyncAfter(deadline: .now() + seconds) { state.finish(false) }
         }
+    }
+}
+
+// Every touch happens on the connection's serial queue; the class only carries state across
+// the two callbacks.
+private final class ProbeState: @unchecked Sendable {
+    let conn: NWConnection
+    let started: Date
+    let cont: CheckedContinuation<[String: Any], Never>
+    var states: [String] = []
+    private var done = false
+
+    init(conn: NWConnection, started: Date, cont: CheckedContinuation<[String: Any], Never>) {
+        self.conn = conn
+        self.started = started
+        self.cont = cont
+    }
+
+    func finish(_ ready: Bool) {
+        guard !done else { return }
+        done = true
+        let path = conn.currentPath
+        conn.cancel()
+        cont.resume(returning: [
+            "target_is_own_server": true,
+            "ready": ready,
+            "states": states,
+            "interface": path?.availableInterfaces.first.map { "\($0.name)/\($0.type)" } ?? "",
+            "elapsed_ms": Int(Date().timeIntervalSince(started) * 1000),
+        ])
     }
 }

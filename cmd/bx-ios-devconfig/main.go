@@ -84,6 +84,15 @@ func run(cfgPath, outDir string) error {
 	for name, body := range live.RuleSets {
 		files[name] = body
 	}
+	// explain 那一半(bxkit)要的是 bx 自己的意图与原始列表,不是翻译后的 sing-box 规则 ——
+	// 它要按 route.Explain 说出「命中了你哪一行」。policy.json 不含服务器链接。
+	policyJSON, err := json.Marshal(policyOf(cfg))
+	if err != nil {
+		return err
+	}
+	files["policy.json"] = policyJSON
+	files["china_domain.txt"] = embedded.ChinaDomain()
+	files["china_cidr.txt"] = embedded.ChinaCIDR()
 	uid, gid := sudoOwner()
 	for name, body := range files {
 		p := filepath.Join(outDir, name)
@@ -101,6 +110,22 @@ func run(cfgPath, outDir string) error {
 	}
 	fmt.Printf("wrote %d files to %s (server host %s)\n", len(files), outDir, expect["server_host"])
 	return nil
+}
+
+// phonePolicy 是 bxkit.Explain 吃的那份意图:只有规则与 global,没有链接、没有具名出口。
+type phonePolicy struct {
+	Global bool     `json:"global"`
+	Direct []string `json:"direct"`
+	Proxy  []string `json:"proxy"`
+}
+
+func policyOf(cfg *config.Config) phonePolicy {
+	p := phonePolicy{Global: cfg.Global, Direct: []string{}, Proxy: []string{}}
+	for _, r := range cfg.Rules {
+		p.Direct = append(p.Direct, r.Direct...)
+		p.Proxy = append(p.Proxy, r.Proxy...)
+	}
+	return p
 }
 
 // deadServer 复制出站,只把地址换成必然不可达的那个;其余握手参数原样,所以失败只可能来自
