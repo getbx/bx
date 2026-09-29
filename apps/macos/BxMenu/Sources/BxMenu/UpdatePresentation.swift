@@ -24,6 +24,19 @@ func mergedUpdateCheck(previous: UpdateCheck?, fetched: UpdateCheck?) -> UpdateC
     fetched ?? previous
 }
 
+/// 打开菜单时补查更新的下限:上次**尝试**至少过去这么久。一小时是 known-gaps A12 写下的界:
+/// 发布落在两次 24 小时检查之间也能在打开菜单时看见,而开菜单再频繁也最多一小时问一次。
+let menuUpdateRecheckAfter: TimeInterval = 60 * 60
+
+/// 打开菜单这一刻要不要补查一次更新。按尝试计时(不按成功):Guardian 答不上来时,
+/// 按成功计时会让每次开菜单都去问。上次尝试「在未来」(钟往回拨)按陈旧处理。
+func shouldRecheckUpdateOnMenuOpen(lastAttempt: Date?, now: Date, inFlight: Bool) -> Bool {
+    if inFlight { return false }
+    guard let lastAttempt else { return true }
+    if lastAttempt > now { return true }
+    return now.timeIntervalSince(lastAttempt) >= menuUpdateRecheckAfter
+}
+
 var quitBxActionTitle: String { L("Quit bx…") }
 var quitBxConfirmMessage: String { L("bx will stop protecting system traffic, restore managed DNS settings, and close this menu. To start bx again, open Bx.app from Applications.") }
 

@@ -71,6 +71,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 这个窗口里点 Quit 应当走关闭路径,而不是凭一个还没问过的假设就退出。
     private var state: BxState = .off(.guardianResponding)
     private var updateCheck: UpdateCheck?
+    private var updateCheckLastAttempt: Date?
+    private var updateCheckInFlight = false
     /// 这两个是恢复状态的全部载体。**写入即 bump 代际号**——用 didSet 而不是逐个
     /// 改写者,是因为漏掉任何一个写者都不会有编译错误,只会在真机上偶发一次假红。
     private var recoverySnapshot: RecoverySnapshot? {
@@ -354,6 +356,11 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 且不补 —— 两条本该兜底的路径都不保证「打开之后采过一次」。补跑正好保证
         // 这一次,且每次打开最多补一次,不会像定时器那样接成满占空比。
         refresh(userInitiated: true)
+        // known-gaps A12:24 小时一拍会让白天发的版一整天看不见。开菜单时若上次尝试已过
+        // 一小时就补查一次;答案回来后 rebuildMenu 就地把 Update 入口加进这个已展开的菜单。
+        if shouldRecheckUpdateOnMenuOpen(lastAttempt: updateCheckLastAttempt, now: Date(), inFlight: updateCheckInFlight) {
+            refreshUpdateCheck()
+        }
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -3630,6 +3637,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 变成一个「有新版」或「已最新」的断言。Guardian 侧同样只在真拿到答案时才
     /// 回 200(见 updateCheckHandler)。
     private func refreshUpdateCheck() {
+        updateCheckLastAttempt = Date()
+        updateCheckInFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let fetched = try? self.guardianClient.updateCheck()
@@ -3638,6 +3647,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // 查不动时保留上一次的已知答案,别把「有新版」抹成 nil —— 判据住在
                 // mergedUpdateCheck(有单测)。
                 self.updateCheck = mergedUpdateCheck(previous: self.updateCheck, fetched: fetched)
+                self.updateCheckInFlight = false
                 self.rebuildMenu()
             }
         }

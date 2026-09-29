@@ -91,6 +91,10 @@ Language ▸ 子菜单:跟随系统 / English / 简体中文,**立刻生效、�
   (所有者截图问「logo 还没变么」)。修在启动时直接读自己包里的 `AppIcon.icns`
   (`adoptBundledAppIcon`,`TestMacMenuAdoptsItsOwnBundledIconAtLaunch` 钉三跳与资源名对得上
   打包脚本);**换图标不再依赖缓存刷新**。这一条 v0.4.17 起生效,真机未验。
+- **打开菜单时补查更新**(2026-09-29,known-gaps A12):上次**尝试**超过一小时且没有在飞的检查
+  才补(`shouldRecheckUpdateOnMenuOpen`,按尝试计时 —— 按成功计时时 Guardian 答不上来会让每次
+  开菜单都去问);答案回来后就地重画已展开的菜单。接线 `TestMacMenuRechecksUpdatesWhenOpenedAfterAnHour`
+  (含在飞标志必须被清掉:清不掉就只补查一次)。**真机未验。**
 - **常驻版本号删了**:更新入口只剩 `addUpdateActionIfAvailable` 一处;平时装的哪版在
   Troubleshoot ▸ 里(`installedVersionForMenu`,只取状态里已带的版本、不读盘)。
 - **Quit 不带图标、带 ⌘Q**(`TestMacMenuQuitHasNoIconAndUsesCommandQ`):电源符号紧挨

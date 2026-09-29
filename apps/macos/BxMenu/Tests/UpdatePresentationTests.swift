@@ -30,6 +30,22 @@ struct UpdatePresentationTests {
         expect(updateFailureDetail(Data(#"{"phase":"done"}"#.utf8)) == nil, "把 JSON 当成了给人读的原因")
     }
 
+    /// known-gaps A12(真机 2026-09-28):菜单只在启动、每 24 小时、更新完各查一次,
+    /// 19:00 发的版一整天没出现在菜单上。打开菜单时补查 —— 但只在上次**尝试**超过一小时、
+    /// 且没有一次正在飞的时候;按「尝试」而不是「成功」计时,Guardian 答不上来时也不会
+    /// 每开一次菜单就问一次。
+    static func testOpeningTheMenuRechecksAStaleUpdateAnswerAtMostHourly() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        expect(shouldRecheckUpdateOnMenuOpen(lastAttempt: nil, now: now, inFlight: false), "never checked: check")
+        expect(!shouldRecheckUpdateOnMenuOpen(lastAttempt: nil, now: now, inFlight: true), "one already in flight: do not stack")
+        expect(!shouldRecheckUpdateOnMenuOpen(lastAttempt: now.addingTimeInterval(-59 * 60), now: now, inFlight: false), "59 minutes old: leave it")
+        expect(shouldRecheckUpdateOnMenuOpen(lastAttempt: now.addingTimeInterval(-menuUpdateRecheckAfter), now: now, inFlight: false), "an hour old: check")
+        expect(!shouldRecheckUpdateOnMenuOpen(lastAttempt: now.addingTimeInterval(-3 * 3600), now: now, inFlight: true), "stale but in flight: do not stack")
+        // 钟往回拨(睡眠唤醒、手动改时间):上次尝试「在未来」时按陈旧处理,否则会一直等到钟追上来。
+        expect(shouldRecheckUpdateOnMenuOpen(lastAttempt: now.addingTimeInterval(3600), now: now, inFlight: false), "clock went backwards: check")
+        expect(menuUpdateRecheckAfter == 3600, "the hourly floor is the documented bound")
+    }
+
     static func main() {
         testUpdateFailureDetailSurfacesTheRealReason()
         testUpdateFailureDetailStaysSilentWhenThereIsNothingToSay()
@@ -100,6 +116,7 @@ struct UpdatePresentationTests {
         testVersionRowCarriesTheUpdateInItsText()
         testDownloadProgressIsReadFromTheLastLine()
         testUpdateStageNeverGuessesWhichHalfItIsIn()
+        testOpeningTheMenuRechecksAStaleUpdateAnswerAtMostHourly()
     }
 
     /// 进度是一行行追加的,第一行永远是 0% —— 取最后一行。
