@@ -84,7 +84,13 @@ Language ▸ 子菜单:跟随系统 / English / 简体中文,**立刻生效、�
   不一样、由 launchd 托管、且没人在用(无弹窗/窗口/展开的菜单/在飞动作)时,每轮刷新末尾以
   非零码 75 退出,由 `KeepAlive{SuccessfulExit:false}` 拉起新版。判据 `menuShouldRelaunchForNewBundle`,
   接线 `TestMacMenuRelaunchesItselfWhenTheBundleIsReplaced`。**退 0 等于把菜单关掉**;读不出版本
-  绝不据此退出。**真机未验**:下一次升级后看菜单进程的 PID 与启动时刻有没有变。
+  绝不据此退出。**真机已验(2026-09-29,v0.4.13→v0.4.16)**:包换掉 20 秒内旧进程以 75 退出
+  (`menu.err.log`:`Bx.app on disk is v0.4.16, this process is v0.4.13; exiting so launchd
+  starts the new one`),launchd 拉起的新 PID 启动时刻晚于包的写入时刻。**它同时暴露了一条**:
+  重启得太快,系统的图标缓存还没刷到新 icns,新进程把旧图记进内存,活着期间每个弹窗都是旧图
+  (所有者截图问「logo 还没变么」)。修在启动时直接读自己包里的 `AppIcon.icns`
+  (`adoptBundledAppIcon`,`TestMacMenuAdoptsItsOwnBundledIconAtLaunch` 钉三跳与资源名对得上
+  打包脚本);**换图标不再依赖缓存刷新**。这一条 v0.4.17 起生效,真机未验。
 - **常驻版本号删了**:更新入口只剩 `addUpdateActionIfAvailable` 一处;平时装的哪版在
   Troubleshoot ▸ 里(`installedVersionForMenu`,只取状态里已带的版本、不读盘)。
 - **Quit 不带图标、带 ⌘Q**(`TestMacMenuQuitHasNoIconAndUsesCommandQ`):电源符号紧挨

@@ -91,3 +91,40 @@ func TestWindowsExeIconIsTheDesignPackMark(t *testing.T) {
 		t.Fatal("gen-icons.py 仍在生成 exe 图标(icon.png / icon1024.png)—— 它只该生成托盘四态")
 	}
 }
+
+// 弹窗、Dock 里的 App 图标默认由 NSApplication 向 iconservices 要,而那份缓存在升级换掉
+// icns 之后要过一会儿才刷新;菜单换新版是在包被换掉 20 秒内自己重启的(A13),于是新进程
+// 把旧图记进内存、活着期间每个弹窗都是旧图(2026-09-29 真机,v0.4.16 第一次换图标)。
+// 修法:启动时直接从自己包里的 AppIcon.icns 读,不经缓存。守卫钉三跳:启动时调、从 Bundle
+// 里按打包脚本写进 CFBundleIconFile 的那个名字读、真的赋给 applicationIconImage。
+func TestMacMenuAdoptsItsOwnBundledIconAtLaunch(t *testing.T) {
+	src := stripSwiftComments(menuMainSwiftSource(t))
+	launch, ok := swiftFunctionBody(src, "func applicationDidFinishLaunching(_ notification: Notification) {")
+	if !ok {
+		t.Fatal("main.swift 里找不到 applicationDidFinishLaunching —— 锚点漂了")
+	}
+	if !strings.Contains(launch, "adoptBundledAppIcon()") {
+		t.Fatal("applicationDidFinishLaunching 不再调 adoptBundledAppIcon —— 升级换图标之后弹窗会停在旧图")
+	}
+	body, ok := swiftFunctionBody(src, "private func adoptBundledAppIcon() {")
+	if !ok {
+		t.Fatal("main.swift 里找不到 adoptBundledAppIcon")
+	}
+	for _, want := range []string{
+		`Bundle.main.url(forResource: "AppIcon", withExtension: "icns")`,
+		"NSImage(contentsOf:",
+		"NSApp.applicationIconImage = ",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("adoptBundledAppIcon 缺 %s —— 读的不是包里那份,或读了没用上", want)
+		}
+	}
+	// 资源名必须与打包脚本写进 CFBundleIconFile 的一致,否则 Bundle 里找不到、静默退回缓存那份。
+	pack, err := os.ReadFile(filepath.Join(repoRootForMenuGuard(t), "scripts", "package-macos-menu.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pack), "<string>AppIcon</string>") || !strings.Contains(string(pack), `-o "$RESOURCES_DIR/AppIcon.icns"`) {
+		t.Fatal("package-macos-menu.sh 不再把图标打成 Resources/AppIcon.icns —— 与 main.swift 里的资源名对不上")
+	}
+}

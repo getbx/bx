@@ -124,8 +124,20 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 包在进程底下被换过了(见 `relaunchIfBundleReplaced`)。
     private var launchedBundleVersion: String?
 
+    /// 弹窗与 Dock 用的 App 图标。默认由 NSApplication 向系统的图标缓存要,而那份缓存在
+    /// 升级换掉 icns 之后要过一会儿才刷新;菜单换新版是在包被换掉 20 秒内自己重启的
+    /// (relaunchIfBundleReplaced),新进程于是把旧图记进内存,活着期间每个弹窗都是旧图
+    /// (2026-09-29 真机,v0.4.16 第一次换图标)。直接读自己包里那份,不经缓存;裸
+    /// `swift run` 没有包,找不到就什么都不做。
+    private func adoptBundledAppIcon() {
+        guard let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+              let image = NSImage(contentsOf: url) else { return }
+        NSApp.applicationIconImage = image
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         launchedBundleVersion = bundleReleaseVersion()
+        adoptBundledAppIcon()
         enforceSingleInstance()
         ensureLoginItemIfCanonical()
         configureMenu()
