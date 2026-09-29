@@ -102,7 +102,17 @@ func TestEmbeddedSingboxAcceptsTheTranslatedConfig(t *testing.T) {
 	}
 	dir := t.TempDir()
 	writeBundle(t, dir, b)
-	for _, probe := range []struct{ tag, input string }{{singboxrules.RuleSetChinaDomain, "www.qq.com"}, {singboxrules.RuleSetChinaCIDR, "1.0.1.9"}} {
+	chinaAddr := ""
+	for _, line := range lists.ChinaCIDR {
+		if p, err := netip.ParsePrefix(strings.TrimSpace(line)); err == nil {
+			chinaAddr = p.Addr().Next().String()
+			break
+		}
+	}
+	if chinaAddr == "" {
+		t.Fatal("no parsable prefix in the embedded china cidr list")
+	}
+	for _, probe := range []struct{ tag, input string }{{singboxrules.RuleSetChinaDomain, "www.qq.com"}, {singboxrules.RuleSetChinaCIDR, chinaAddr}} {
 		out, err := exec.Command(bin, "rule-set", "match", filepath.Join(dir, probe.tag+".json"), probe.input).CombinedOutput()
 		if err != nil || !strings.Contains(string(out), "match rules.[") {
 			t.Fatalf("sing-box could not use the %s rule-set for %s: err=%v\n%s", probe.tag, probe.input, err, out)
@@ -132,7 +142,7 @@ func TestEvaluateAgreesWithEmbeddedSingboxRuleSetMatch(t *testing.T) {
 	sets := map[string]singboxrules.RuleSetFile{
 		"synthetic": {Version: 1, Rules: []singboxrules.Rule{
 			{DomainSuffix: []string{"a.com", "zoom.us", "example"}},
-			{IPCIDR: []string{"1.0.1.0/24", "2001:db8::/32", "1.2.3.4/32"}},
+			{IPCIDR: []string{"192.0.2.0/24", "2001:db8::/32", "192.0.2.4/32"}},
 		}},
 	}
 	b := singboxrules.Bundle{
@@ -151,7 +161,7 @@ func TestEvaluateAgreesWithEmbeddedSingboxRuleSetMatch(t *testing.T) {
 	inputs := []string{
 		"a.com", "x.a.com", "y.x.a.com", "xa.com", "evila.com", "a.com.evil.net", "com", "example", "sub.example", "myexample",
 		"zoom.us", "us04web.zoom.us", "zoom.usa", "A.COM",
-		"1.0.1.9", "1.0.2.1", "2001:db8::1", "2001:db9::1", "1.2.3.4", "1.2.3.5",
+		"192.0.2.9", "198.51.100.7", "2001:db8::1", "2001:db9::1", "192.0.2.4", "192.0.2.5",
 	}
 	agreed, matchedOnce, unmatchedOnce := 0, false, false
 	for _, in := range inputs {

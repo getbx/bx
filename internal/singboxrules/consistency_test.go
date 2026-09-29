@@ -26,7 +26,7 @@ const consistencyYAML = `
 server: brook://example.invalid
 rules:
   - proxy: ['*.zoom.us', 'X.A.com', '10.9.0.0/16', 'CDN.qq.com']
-    direct: ['zoom.us', '*.A.com', '1.2.3.4', '2001:db8::/32', 'proxy-me.example', '8.8.8.0/24']
+    direct: ['zoom.us', '*.A.com', '192.0.2.4', '2001:db8::/32', 'proxy-me.example', '203.0.113.0/24']
   - proxy: ['proxy-me.example']
 `
 
@@ -79,8 +79,10 @@ func TestTranslatedRulesAgreeWithRouteExplainOnEveryInput(t *testing.T) {
 		domains = append(domains, d, "www."+d, "evil"+d, strings.ToUpper(d))
 	}
 	var ips []netip.Addr
-	for _, s := range []string{"10.9.1.1", "10.8.1.1", "1.2.3.4", "1.2.3.5", "2001:db8::1", "2001:db9::1", "8.8.8.8", "8.8.4.4",
-		"192.168.1.1", "172.16.0.1", "100.64.0.1", "169.254.1.1", "127.0.0.1", "1.1.1.1", "203.0.113.9", "2400:da00::1", "2606:4700::1"} {
+	for _, s := range []string{
+		"10.9.1.1", "10.8.1.1", "192.0.2.4", "192.0.2.5", "2001:db8::1", "2001:db9::1", "203.0.113.8", "203.0.113.200",
+		"192.168.1.1", "172.16.0.1", "100.64.0.1", "169.254.1.1", "127.0.0.1", "1.1.1.1", "203.0.113.9", "2400:da00::1", "2606:4700::1",
+	} {
 		ips = append(ips, netip.MustParseAddr(s))
 	}
 	for _, c := range sample(chinaCIDR) {

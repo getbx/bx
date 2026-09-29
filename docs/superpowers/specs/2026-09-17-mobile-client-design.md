@@ -1,6 +1,17 @@
 # bx 手机端:设计准备(2026-09-17)
 
-**状态:未决定要做,也不着急。** 这份文件是**准备** —— 把已经测到的事实、必须
+**状态:决定做了(所有者 2026-09-29,「不会上架中国区 App Store」);第一期(§8 ①)
+同日落地**:`internal/singboxrules`(纯判据叶子包)—— `Translate` 把 config 的分流意图翻成
+sing-box 1.14.2 的 `route.rules` + 两个 source 格式 rule-set,`Evaluate` 按 §4 实测的语义评估
+翻译结果;三道守卫:`TestTranslatedRulesAgreeWithRouteExplainOnEveryInput`(走生产路径
+`config.Parse → supervisor.BuildRouter → route.Explain` 逐输入比对,四条变异各咬中一条)、
+`TestEmbeddedSingboxAcceptsTheTranslatedConfig` + `TestEvaluateAgreesWithEmbeddedSingboxRuleSetMatch`
+(内嵌 sing-box 离线跑 `check` 与 `rule-set match`)、`TestTranslatorPinsTheEmbeddedSingboxVersion`
+(§4.3 的版本钉)。**刻意没有用户可见命令**(L1 已撤回)。第一期挖到两条实测:sing-box 的
+`check` 只验键名与值写法,空 rule / 未知出站 / 未知 rule_set 引用都 exit 0;rule-set 里的
+空 rule 什么都不匹配。计划 `docs/superpowers/plans/2026-09-29-mobile-rules-translation.md`。
+
+**原文(2026-09-17)**:这份文件是**准备** —— 把已经测到的事实、必须
 现在划的架构线、以及"桌面开发时别把路堵死"的约束写下来,免得将来动手的人重新推
 一遍(或者推错)。
 
@@ -75,7 +86,7 @@ config.yaml ──► 唯一的翻译器 ──► sing-box route rules
 **这条守卫完全在 Go 里、完全在桌面上跑**,不需要任何移动端工具链 —— 所以它可以
 在决定做不做 L2 之前就存在。
 
-## 4. 已实测的语义对照(sing-box 1.14.0,仓库内嵌那份)
+## 4. 已实测的语义对照(sing-box 1.14.0 手测;2026-09-29 起由 `singbox_binary_test.go` 对内嵌的 1.14.2 自动复核 §4.1/§4.2)
 
 方法:最小配置 + 两个 `block` 出站,经 socks5h 发请求,读 sing-box 自己的日志看
 它选了哪个出站。
@@ -177,7 +188,7 @@ bx 贡献的是判断,不是管道。
 
 | | 做什么 | 桌面能验完吗 |
 |---|---|---|
-| ① | 翻译层 + 判定一致性守卫 + `bx export` | ✅ 全部 |
+| ① ✅ 2026-09-29 | 翻译层 + 判定一致性守卫(`bx export` 随 L1 撤回,没做) | ✅ 全部 |
 | ② | 最小 iOS Network Extension + libbox,能连上即可,无 UI | ❌ 要真机 |
 | ③ | 诊断(六个纯判据包) | 判据 ✅ / 呈现 ❌ |
 | ④ | UI | ❌ |

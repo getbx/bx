@@ -68,13 +68,13 @@ func TestEvaluateExpandsRuleSets(t *testing.T) {
 		{RuleSet: []string{RuleSetChinaCIDR, "missing"}, Outbound: OutboundDirect},
 	}, map[string]RuleSetFile{
 		RuleSetChinaDomain: {Version: 1, Rules: []Rule{{DomainSuffix: []string{"qq.com"}}}},
-		RuleSetChinaCIDR:   {Version: 1, Rules: []Rule{{IPCIDR: []string{"1.0.1.0/24"}}}},
+		RuleSetChinaCIDR:   {Version: 1, Rules: []Rule{{IPCIDR: []string{"192.0.2.0/24"}}}},
 	})
 	if got := b.Evaluate(domain("im.qq.com")); got.RuleIndex != 0 {
 		t.Fatalf("qq.com → rule %d, want 0", got.RuleIndex)
 	}
-	if got := b.Evaluate(ip("1.0.1.9")); got.RuleIndex != 1 {
-		t.Fatalf("1.0.1.9 → rule %d, want 1", got.RuleIndex)
+	if got := b.Evaluate(ip("192.0.2.9")); got.RuleIndex != 1 {
+		t.Fatalf("192.0.2.9 → rule %d, want 1", got.RuleIndex)
 	}
 	if got := b.Evaluate(ip("9.9.9.9")); got.RuleIndex != -1 {
 		t.Fatalf("9.9.9.9 → rule %d, want final", got.RuleIndex)

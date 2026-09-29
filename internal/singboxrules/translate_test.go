@@ -23,12 +23,12 @@ const fixtureYAML = `
 server: brook://example.invalid
 rules:
   - proxy: ['*.zoom.us', 'X.A.com', '10.9.0.0/16']
-    direct: ['zoom.us', '*.A.com', '1.2.3.4', '2001:db8::/32']
+    direct: ['zoom.us', '*.A.com', '192.0.2.4', '2001:db8::/32']
 `
 
 var fixtureLists = Lists{
 	ChinaDomain: []string{"# comment", "", "*.baidu.com", "qq.com"},
-	ChinaCIDR:   []string{"1.0.1.0/24", "# c", "", "2400:da00::/32"},
+	ChinaCIDR:   []string{"192.0.2.0/24", "# c", "", "2400:da00::/32"},
 }
 
 func ruleWith(t *testing.T, rules []Rule, pred func(Rule) bool, what string) (int, Rule) {
@@ -77,7 +77,7 @@ func TestTranslateSplitsCIDRRulesLikeBuildRouter(t *testing.T) {
 	if want := []string{"10.9.0.0/16"}; !slices.Equal(proxy.IPCIDR, want) {
 		t.Fatalf("proxy ip_cidr = %v, want %v", proxy.IPCIDR, want)
 	}
-	if want := []string{"1.2.3.4/32", "2001:db8::/32"}; !slices.Equal(direct.IPCIDR, want) {
+	if want := []string{"192.0.2.4/32", "2001:db8::/32"}; !slices.Equal(direct.IPCIDR, want) {
 		t.Fatalf("direct ip_cidr = %v, want %v", direct.IPCIDR, want)
 	}
 }
@@ -92,7 +92,7 @@ func TestTranslateKeepsPrivateNetworksDirectAfterUserCIDRsAndBeforeChina(t *test
 	if private.Outbound != OutboundDirect || !slices.Equal(private.IPCIDR, route.DefaultPrivateCIDRs) {
 		t.Fatalf("private rule = %+v, want direct over %v", private, route.DefaultPrivateCIDRs)
 	}
-	ui, _ := ruleWith(t, b.Route.Rules, func(r Rule) bool { return slices.Contains(r.IPCIDR, "1.2.3.4/32") }, "user direct cidr")
+	ui, _ := ruleWith(t, b.Route.Rules, func(r Rule) bool { return slices.Contains(r.IPCIDR, "192.0.2.4/32") }, "user direct cidr")
 	ci, _ := ruleWith(t, b.Route.Rules, func(r Rule) bool { return slices.Contains(r.RuleSet, RuleSetChinaCIDR) }, "china cidr")
 	if !(ui < pi && pi < ci) {
 		t.Fatalf("order user(%d) < private(%d) < china(%d) violated", ui, pi, ci)
@@ -133,7 +133,7 @@ func TestTranslateReferencesChinaRuleSetsAndNormalisesTheLists(t *testing.T) {
 		t.Fatalf("china domain rule-set = %+v; comments/blank lines must go, *. must be stripped", dom)
 	}
 	cidr := b.RuleSets[RuleSetChinaCIDR]
-	if cidr.Version != 1 || len(cidr.Rules) != 1 || !slices.Equal(cidr.Rules[0].IPCIDR, []string{"1.0.1.0/24", "2400:da00::/32"}) {
+	if cidr.Version != 1 || len(cidr.Rules) != 1 || !slices.Equal(cidr.Rules[0].IPCIDR, []string{"192.0.2.0/24", "2400:da00::/32"}) {
 		t.Fatalf("china cidr rule-set = %+v", cidr)
 	}
 	if b.Route.Final != OutboundProxy {
