@@ -37,6 +37,8 @@ func TestVerifyScriptCoversEveryGate(t *testing.T) {
 		{"macOS menu tests passed", "收尾横幅 —— 脚本提前 exit 0 时退出码是 0,只有它抓得住"},
 		{"windows_test_typecheck", "Windows 那半的 _test.go —— 上面那圈 go build 不编测试文件,\n" +
 			"而 windows-tagged 的行为断言只在 CI 的 windows runner 上跑,写坏了本地一路绿灯"},
+		{"ios_app_typecheck", "iOS App 与扩展调 Libbox/Bxkit 的 API —— 不属于任何 Go 包也不属于 SwiftPM,\n" +
+			"bxkit 改个名其余每一步照样绿"},
 		{"integration_test_typecheck", "netns 集成台的 _test.go —— 它们既不被 go build 编(不编测试文件)\n" +
 			"也不被 go test ./... 编(缺 integration tag),本机一个字都看不见,只有 CI 那条 sudo 腿会红"},
 	} {

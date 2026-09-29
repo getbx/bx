@@ -204,6 +204,28 @@ if [ "$(uname -s)" = "Darwin" ]; then
 				|| { echo "快照脚本未跑到收尾横幅 —— 可能中途 exit 0 而一个窗口都没渲染"; return 1; }
 		}
 		step "macos menu snapshots" menu_snapshots
+		# iOS 开发构建(apps/ios)。App 与隧道扩展都在调两个 Go 框架(Libbox、Bxkit)的 API,
+		# 那边一改名(bxkit 的函数、libbox 升版改了协议)这里就编不过,而其余每一步照样绿 ——
+		# 它不属于任何 Go 包,也不属于 SwiftPM。两个框架不进仓库(几百 MB,由
+		# scripts/build-libbox-ios.sh / build-bxkit-ios.sh 构建),没有时明说跳过。
+		# Bxkit 每次都重绑:它来自本仓库的 Go 代码,旧产物恰恰会掩盖这一步要抓的漂移。
+		ios_app_typecheck() {
+			bash scripts/build-bxkit-ios.sh >/dev/null || return 1
+			mkdir -p apps/ios/Dev
+			(cd apps/ios && xcodegen generate --quiet) || return 1
+			xcodebuild -project apps/ios/BxiOS.xcodeproj -scheme BxApp -configuration Debug \
+				-destination 'generic/platform=iOS' -derivedDataPath apps/ios/build \
+				CODE_SIGNING_ALLOWED=NO build -quiet
+		}
+		if [ "$QUICK" = 1 ]; then
+			skip "ios app typecheck" "--quick"
+		elif ! command -v xcodebuild >/dev/null 2>&1 || ! command -v xcodegen >/dev/null 2>&1; then
+			skip "ios app typecheck" "xcodebuild / xcodegen 未安装"
+		elif [ ! -d apps/ios/Frameworks/Libbox.xcframework ]; then
+			skip "ios app typecheck" "没有 Libbox.xcframework(scripts/build-libbox-ios.sh)"
+		else
+			step "ios app typecheck" ios_app_typecheck
+		fi
 	else
 		skip "swift build + menu suites" "swift 未安装"
 	fi
