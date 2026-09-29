@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-
-	"github.com/getbx/bx/internal/tunnel"
 )
 
 // Server 是清单里的一台服务器:一对链接(主传输 + 可选 UDP 专用传输)。
@@ -37,18 +35,6 @@ func ValidateServerName(name string) error {
 		return fmt.Errorf("服务器名字只允许字母数字与 . _ -,got %q", name)
 	}
 	return nil
-}
-
-// DeriveServerName 在用户没给 --name 时,从主链接取主机名当名字。
-func DeriveServerName(link string) (string, error) {
-	host, err := tunnel.ServerHost(link)
-	if err != nil {
-		return "", fmt.Errorf("从链接推导服务器名字: %w", err)
-	}
-	if err := ValidateServerName(host); err != nil {
-		return "", err
-	}
-	return host, nil
 }
 
 // normalizeServerName 是比较用的形式(大小写不敏感);存储始终保留用户给的原样。

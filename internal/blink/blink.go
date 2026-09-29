@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/getbx/bx/internal/tunnel"
+	"github.com/getbx/bx/internal/linkkind"
 )
 
 const (
@@ -23,11 +23,11 @@ type envelope struct {
 	Links     []string `json:"links,omitempty"`     // 多传输 bundle(有序优先级)
 }
 
-// transportOf 由链接 scheme 推传输标识。委托 tunnel.Kind(唯一真相源,与 supervisor/setup 同源)。
-func transportOf(link string) string { return tunnel.Kind(link) }
+// transportOf 由链接 scheme 推传输标识。委托 linkkind.Kind(唯一真相源,与 supervisor/setup 同源)。
+func transportOf(link string) string { return linkkind.Kind(link) }
 
-// supportedLink 报告链接内容是否为受支持的裸传输链接。委托 tunnel.IsClientLink(单一识别口径)。
-func supportedLink(link string) bool { return tunnel.IsClientLink(link) }
+// supportedLink 报告链接内容是否为受支持的裸传输链接。委托 linkkind.IsClientLink(单一识别口径)。
+func supportedLink(link string) bool { return linkkind.IsClientLink(link) }
 
 // Encode 把单个内部传输链接(brook:// 或 vless://)包成 bx://(legacy 单格式)。
 func Encode(link string) string {

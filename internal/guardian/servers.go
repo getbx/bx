@@ -603,7 +603,7 @@ func addServerEntry(w http.ResponseWriter, req serversRequest, configPath string
 	link := strings.TrimSpace(req.Link)
 	log.Printf("guardian_server_add_requested name=%q uid=%d has_udp=%t", name, uid, strings.TrimSpace(req.UDP) != "")
 	if name == "" {
-		// 名字可省略:按链接推导。**用 setup.LinkHost,不用 config.DeriveServerName**——
+		// 名字可省略:按链接推导。**用 setup.LinkHost,不用 setup.DeriveServerName**——
 		// 两条理由都要:① 用户手里的几乎全是 bx:// 换壳,DeriveServerName→
 		// tunnel.ServerHost 不解壳,会把整串 base64 当成"名字";LinkHost 是
 		// serverEntries 用的同一份判据,认得壳。② LinkHost 只回 (host, ok),

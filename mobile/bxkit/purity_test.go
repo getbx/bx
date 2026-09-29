@@ -67,9 +67,9 @@ func TestBxkitPackageStaysPure(t *testing.T) {
 	}
 }
 
-// 直接 import 之外,**传递**依赖也要看:config 为解 bx:// 链接经 blink 拉进了 tunnel(于是
-// os/exec 被链进 App,但从不被调用)—— 那条已知,写在这里;不许再多出来的是会把起进程的
-// 编排、内嵌的 sing-box/brook 二进制、下载逻辑带进 iPhone App 的那几个。
+// 直接 import 之外,**传递**依赖也要看:起进程的编排、tunnel(子进程隧道)、内嵌的 sing-box/brook
+// 二进制、下载逻辑,一个都不许被带进 iPhone App。tunnel 曾经经 config → blink 混进来过(那张
+// scheme 表后来下沉成 internal/linkkind,DeriveServerName 搬去了 setup)。
 func TestBxkitPullsInNoPlumbingTransitively(t *testing.T) {
 	cmd := exec.Command("go", "list", "-deps", ".")
 	cmd.Env = append(os.Environ(), "GOOS=ios", "GOARCH=arm64", "CGO_ENABLED=0")
@@ -78,11 +78,16 @@ func TestBxkitPullsInNoPlumbingTransitively(t *testing.T) {
 		t.Fatalf("go list failed, the guard cannot see anything: %v", err)
 	}
 	deps := strings.Split(string(out), "\n")
+	for _, d := range deps {
+		if strings.TrimSpace(d) == "os/exec" {
+			t.Error("bxkit transitively links os/exec: something that spawns processes crept into the iPhone app's dependency graph")
+		}
+	}
 	if len(deps) < 10 {
 		t.Fatal("go list listed almost nothing; its output format changed and this guard no longer reads it")
 	}
 	for _, d := range deps {
-		for _, banned := range []string{"/internal/supervisor", "/internal/embedded", "/internal/provision", "/internal/guardian", "/internal/cli", "/internal/install"} {
+		for _, banned := range []string{"/internal/supervisor", "/internal/tunnel", "/internal/embedded", "/internal/provision", "/internal/guardian", "/internal/cli", "/internal/install"} {
 			if strings.HasSuffix(strings.TrimSpace(d), banned) {
 				t.Errorf("bxkit transitively depends on %s; that drags plumbing (or embedded binaries) into the iPhone app", d)
 			}

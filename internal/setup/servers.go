@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/tunnel"
 	"gopkg.in/yaml.v3"
 )
 
@@ -99,7 +100,7 @@ func addServer(path, name, link, udp string, makeCurrent bool) (added bool, err 
 		appendKey(root, "servers", list)
 		// **迁移旧式单服务器配置。** 丢掉它的 UDP 会让切回去时 UDP 静默走主传输。
 		if legacy := scalarValue(mappingValue(root, "server")); legacy != "" {
-			legacyName, nerr := config.DeriveServerName(legacy)
+			legacyName, nerr := DeriveServerName(legacy)
 			if nerr != nil {
 				legacyName = "legacy"
 			}
@@ -274,4 +275,17 @@ func serverNames(servers []config.Server) []string {
 		out = append(out, s.Name)
 	}
 	return out
+}
+
+// DeriveServerName 在用户没给 --name 时,从主链接取主机名当名字。
+// 它原在 config,搬到这里是为了让 config 不依赖 tunnel(起进程的包)—— 手机端的 bxkit 依赖 config。
+func DeriveServerName(link string) (string, error) {
+	host, err := tunnel.ServerHost(link)
+	if err != nil {
+		return "", fmt.Errorf("从链接推导服务器名字: %w", err)
+	}
+	if err := config.ValidateServerName(host); err != nil {
+		return "", err
+	}
+	return host, nil
 }

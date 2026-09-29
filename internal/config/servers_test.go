@@ -115,16 +115,6 @@ func TestValidateServerName(t *testing.T) {
 	}
 }
 
-func TestDeriveServerNameFromLink(t *testing.T) {
-	got, err := DeriveServerName("vless://u@203.0.113.92:443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "203.0.113.92" {
-		t.Fatalf("没给 --name 时应取主机名, got %q", got)
-	}
-}
-
 // 用户实际粘贴的从来不是裸 vless://,而是 `bx server install` / `bx invite` 生成的
 // bx:// 换壳链接 —— 也就是说清单里**每一项**的真实形状都是它。
 //

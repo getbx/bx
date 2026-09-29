@@ -350,7 +350,7 @@ func TestAddServerNeverMovesTheServerInUseWhenCurrentIsBlank(t *testing.T) {
 			name: "bx setup 写的 legacy server:(迁移建清单时不写 current)",
 			body: "global: true\nkillswitch: true\nserver: vless://a@203.0.113.10:443\n" +
 				"udp:\n    transport: hysteria2://a@203.0.113.10:443\n",
-			want: "203.0.113.10", // config.DeriveServerName 从链接取的主机名
+			want: "203.0.113.10", // DeriveServerName 从链接取的主机名
 		},
 		{
 			name: "手改出来的清单:有 servers 没有 current",
@@ -383,5 +383,15 @@ func TestAddServerNeverMovesTheServerInUseWhenCurrentIsBlank(t *testing.T) {
 				t.Fatalf("新加的那台没落在清单末尾:%+v", list)
 			}
 		})
+	}
+}
+
+func TestDeriveServerNameFromLink(t *testing.T) {
+	got, err := DeriveServerName("vless://u@203.0.113.92:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "203.0.113.92" {
+		t.Fatalf("没给 --name 时应取主机名, got %q", got)
 	}
 }

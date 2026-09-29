@@ -85,7 +85,7 @@ func TestAddServerRejectsAnEmptyLink(t *testing.T) {
 }
 
 // 用户手里的链接几乎全是 bx:// 换壳 —— 推导必须解得开壳,否则「名字」会是一串
-// base64。这条钉住 setup.LinkHost(而不是不解壳的 config.DeriveServerName)真的
+// base64。这条钉住 setup.LinkHost(而不是不解壳的 setup.DeriveServerName)真的
 // 接在了推导路径上。
 func TestAddServerDerivesTheNameFromABxEnvelope(t *testing.T) {
 	path := serversTestConfig(t)

@@ -1,4 +1,4 @@
-package tunnel
+package linkkind
 
 import (
 	"slices"
