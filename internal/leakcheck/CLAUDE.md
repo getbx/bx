@@ -48,6 +48,22 @@
   判据是同一会话画两遍 canvas 是否相同。
 - **检测结果不留存**,页面与 CLI 都明说。
 
+## 页面的中文(2026-09-28,真机未验)
+
+- **结论句在 Go 里翻,页面外壳在页面里翻,`bx leak-check` 的 JSON 与终端输出永远英文**
+  (agent 与脚本在解析它们)。判据:`say(key, args…)` / `also` / `tail` 记下英文原句与参数,
+  Summary 立刻按英文渲染(既有测试与 JSON 一个字不变),`Localize(report, lang)` 用同一份
+  key + 参数重渲染;**值(接口名、地址、国家)不翻**,只有 `zhHansFragments` 里那几个固定短语
+  (「the exit country was not observed」)作为参数时会一起翻。
+- **英文原句就是 key**,译文在 `i18n.go` 的 `zhHans`;守卫 `TestEveryLeakSentenceHasAChineseTranslation`
+  扫每一处 say/also/tail 与骨架 Title:都有译文、`%s` 数目相同、没有陈旧条目。
+  **别再用 `f.Summary = "…" + x`**:那句会留在英文,守卫也看不见它。
+- 语言怎么定:URL 上的 `?lang=`(菜单是中文时经 `bx leakcheck --lang zh-Hans` 传)优先,
+  没传页面按 `navigator.language`(`foldLang`,与 Go 的 `ParseLang` 同一条折法:zh 开头且非
+  繁体地区 → 简体,其余英文);`/report?lang=` 由服务端 `Localize`;骨架标题的译文由
+  `pageData.TitlesJSON` 下发,页面不抄第二份。页面外壳那三十来句在 `ZH` JSON 字典里,
+  `TestPageShellStringsAllHaveChinese` 钉住每个 `tr(…)`/`data-i18n` 都有译文、没有陈旧条目。
+
 ## 跨语言契约与端点
 
 - **探测名**:`leakcheck.Probe*` 常量与页面里 `probeLanded("srflx", …)` 那几个手抄字面量必须

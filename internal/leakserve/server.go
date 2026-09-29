@@ -172,10 +172,23 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		checks = []byte("[]")
 	}
+	// 语言:URL 上明说的(菜单传的)优先;没传就留空,页面按浏览器语言自己定。
+	// 译文表按**最终会用到的**语言下发不了(那一半在页面里决定),所以两种都给:
+	// 页面拿 LANG 或浏览器语言查同一张表。
+	lang := ""
+	if raw := r.URL.Query().Get("lang"); raw != "" {
+		lang = string(leakcheck.ParseLang(raw))
+	}
+	titles, err := json.Marshal(leakcheck.TitleTranslations(leakcheck.LangZHHans))
+	if err != nil {
+		titles = []byte("{}")
+	}
 	if err := pageTemplate.Execute(w, pageData{
 		Token:      s.gate.Token(),
 		Endpoints:  leakcheck.Endpoints(),
 		ChecksJSON: template.JS(checks),
+		Lang:       lang,
+		TitlesJSON: template.JS(titles),
 	}); err != nil {
 		// 头已经发出去了,这里只能停止写入。
 		return
@@ -194,12 +207,13 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	report := s.judge(browser)
+	// 通道里那份永远英文(CLI 打印、agent 解析);页面那份按它要的语言。
 	select {
 	case s.reports <- report:
 	default:
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(report)
+	_ = json.NewEncoder(w).Encode(leakcheck.Localize(report, leakcheck.ParseLang(r.URL.Query().Get("lang"))))
 	// **拿到结果即关**(约束四)。用户关掉标签页就走人是常态,没有这一步就会
 	// 留一个开着的口。
 	//

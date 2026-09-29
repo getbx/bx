@@ -154,7 +154,7 @@ func judgeReachTarget(tgt ReachTarget, probes []ReachProbe) Finding {
 		// 发生的观测。
 		f.Reach = ReachUndetermined
 		f.Verdict = NotChecked
-		f.Summary = "Reachability to " + host + " was not checked in this run."
+		f.say("Reachability to %s was not checked in this run.", host)
 		return f
 	}
 
@@ -166,34 +166,33 @@ func judgeReachTarget(tgt ReachTarget, probes []ReachProbe) Finding {
 		f.Verdict = OK
 		// **绝不说「你可以用 X」**(spec §3.4):地区限制可能发生在登录或 API 调用层,
 		// 这里只观测到了边缘——bx 无权替对方的产品说话。
-		f.Summary = "bx can reach " + host + "."
+		f.say("bx can reach %s.", host)
 	case ReachRefused:
 		f.Verdict = Bad
-		f.Summary = host + " has refused connections from the region this exit is in."
+		f.say("%s has refused connections from the region this exit is in.", host)
 	case ReachUnreachable:
 		f.Verdict = Bad
 		// **不断言对方服务的状态**(与 core_tunnel_unreachable 同一条纪律):
 		// 本机自己没网时同样拨不通,这句话只说 bx 观测到了什么。
-		f.Summary = "This path could not reach " + host + "."
+		f.say("This path could not reach %s.", host)
 	case ReachChallenged:
 		f.Verdict = NotChecked
 		// **主动否掉用户会自己脑补的坏消息**(spec §3.4):这不是「你的出口有问题」。
 		// 这句话**只对这一态成立** —— 判据手里有 CF 的特征串这份真凭据,才敢替
 		// 用户否掉那句坏消息;下面的 ReachUndetermined 没有这份凭据,不许借用它。
-		f.Summary = "This looks like Cloudflare's bot-verification challenge, not a " +
-			"problem with your exit — a browser can get through this even though the " +
-			"command line cannot."
+		f.say("This looks like Cloudflare's bot-verification challenge, not a problem with your exit — a browser can get through this even though the command line cannot.")
 	default: // ReachUndetermined:探过了,但认不出是哪一种(未知状态码/重定向)。
 		f.Verdict = NotChecked
 		// **不猜原因**(2026-09-14 review 修正)——此前这一格与 ReachChallenged
 		// 共用同一句 CF 措辞,而一个真实的地区封禁页(HTML,不含 CF 那几个特征串)
 		// 会落在这里,读到的却是一句主动否掉坏消息的假话。判据自己都说「认不出
 		// 就是认不出,不猜」(JudgeReach 步骤⑦),这里的措辞必须同样诚实。
-		f.Summary = "bx could not determine whether " + host + " is reachable — " +
-			"this path returned something that wasn't recognized as either reachable or blocked."
+		f.say("bx could not determine whether %s is reachable — this path returned something that wasn't recognized as either reachable or blocked.", host)
 	}
 	if bypass, hasBypass := findReachProbe(probes, tgt.ID, ReachPathBypass); hasBypass {
-		f.Summary += reachComparison(current.State, bypass.State)
+		if tail := reachComparison(current.State, bypass.State); tail != "" {
+			f.also(tail)
+		}
 	}
 	return f
 }
@@ -224,13 +223,13 @@ func reachComparison(current, bypass ReachState) string {
 	}
 	switch {
 	case cur && byp:
-		return " It is reachable directly too."
+		return tail("It is reachable directly too.")
 	case cur && !byp:
-		return " It is reachable through your current path but not directly — the tunnel is what gets you there."
+		return tail("It is reachable through your current path but not directly — the tunnel is what gets you there.")
 	case !cur && byp:
-		return " bx can reach it directly, without the tunnel — so what fails is this path (most likely your tunnel's exit), not your own network."
+		return tail("bx can reach it directly, without the tunnel — so what fails is this path (most likely your tunnel's exit), not your own network.")
 	default:
-		return " bx could not reach it directly either."
+		return tail("bx could not reach it directly either.")
 	}
 }
 

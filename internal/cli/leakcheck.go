@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 func leakcheckFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "json", Usage: "print machine-readable results"},
+		&cli.StringFlag{Name: "lang", Usage: "language for the browser page: en or zh-Hans (default: the browser's own language; the terminal output stays English)"},
 		// **路径 A 也要有关掉的办法。** spec §5.1 只为「绕过隧道」那条路(路径 B)
 		// 规定了开关,而接线之后路径 A 同样是 bx 从用户真实出口向四家 AI 厂商发出
 		// 的请求 —— 两条路一个有开关一个没有,不对称。而且 `bx leakcheck` 的立身
@@ -94,7 +96,7 @@ func leakcheckAction(c *cli.Context) error {
 		fmt.Println("Address (paste it by hand if the browser did not open):", srv.URL())
 		fmt.Println("It waits at most 2 minutes, after which the local service shuts itself down.")
 	}
-	if err := openBrowserURL(ctx, srv.URL()); err != nil {
+	if err := openBrowserURL(ctx, leakcheckPageURL(srv.URL(), c.String("lang"))); err != nil {
 		// 打不开浏览器不是失败:URL 已经打印出来了,用户可以自己粘。
 		if !c.Bool("json") {
 			fmt.Println("Could not open the browser automatically (", err, "), so please open the address above by hand.")
@@ -307,4 +309,13 @@ func reachDepsFor(noReach bool) leakserve.ReachDeps {
 		return leakserve.ReachDeps{}
 	}
 	return leakserve.LiveReachDeps()
+}
+
+// leakcheckPageURL 把 --lang 挂到页面 URL 上(`&lang=`);没传就原样。页面与 /report 按它
+// 翻结论;终端输出与 --json 永远英文。
+func leakcheckPageURL(base, lang string) string {
+	if lang == "" {
+		return base
+	}
+	return base + "&lang=" + url.QueryEscape(lang)
 }

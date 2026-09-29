@@ -13,20 +13,17 @@ func judgeFingerprint(browser BrowserReport) Finding {
 		return browserNeverArrived(f)
 	}
 	if browser.CanvasA == "" || browser.CanvasB == "" {
-		f.Summary = "Not checked: the browser did not return two canvas readings to compare."
+		f.say("Not checked: the browser did not return two canvas readings to compare.")
 		return f
 	}
 	if browser.CanvasA == browser.CanvasB {
 		f.Verdict = Bad
-		f.Summary = "This browser drew the same canvas twice and got the same result both " +
-			"times, so it is not defending against fingerprinting. Sites can build a stable " +
-			"id for this machine and recognise it across visits — no IP address needed."
+		f.say("This browser drew the same canvas twice and got the same result both times, so it is not defending against fingerprinting. Sites can build a stable id for this machine and recognise it across visits — no IP address needed.")
 		f.Evidence = append(f.Evidence, "canvas read twice: identical")
 		return f
 	}
 	f.Verdict = OK
-	f.Summary = "This browser returned a different canvas each time it was asked, " +
-		"which is what anti-fingerprinting defences do."
+	f.say("This browser returned a different canvas each time it was asked, which is what anti-fingerprinting defences do.")
 	f.Evidence = append(f.Evidence, "canvas read twice: different")
 	return f
 }
@@ -56,11 +53,10 @@ func judgeSurface(browser BrowserReport) Finding {
 
 	if len(f.Evidence) == 0 {
 		// 一个字都没采到时不摆空壳 —— 那是刚从菜单里删掉的占位符换个地方回来。
-		f.Summary = "Not checked: the browser reported none of these."
+		f.say("Not checked: the browser reported none of these.")
 		return f
 	}
 	f.Verdict = Info
-	f.Summary = "Every site you open can read these without asking. None of them is good " +
-		"or bad on its own; together they narrow down which machine you are."
+	f.say("Every site you open can read these without asking. None of them is good or bad on its own; together they narrow down which machine you are.")
 	return f
 }

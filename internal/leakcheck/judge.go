@@ -66,9 +66,7 @@ func Judge(now time.Time, browser BrowserReport, local LocalFacts) Report {
 // 而它恰恰是用户唯一会读的那一行(设计风险四)。
 func browserNeverArrived(f Finding) Finding {
 	f.Verdict = NotChecked
-	f.Summary = "Not checked: the browser half of this check never arrived. " +
-		"The page was never run to completion — the tab was closed, the browser never " +
-		"opened, or the check timed out. Nothing was contacted, so nothing can be concluded."
+	f.say("Not checked: the browser half of this check never arrived. The page was never run to completion — the tab was closed, the browser never opened, or the check timed out. Nothing was contacted, so nothing can be concluded.")
 	f.Evidence = append(f.Evidence, "browser report: never arrived")
 	return f
 }
@@ -87,13 +85,13 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 	// 顺序刻意是「先说没问出来,再说好坏」。任何一半缺席都到不了比较那一步。
 	switch {
 	case browser.STUNErr != "":
-		f.Summary = "WebRTC could not be checked: " + browser.STUNErr
+		f.say("WebRTC could not be checked: %s", browser.STUNErr)
 		f.Evidence = append(f.Evidence, "stun: "+STUNURL, "stun error: "+browser.STUNErr)
 		return f
 	case len(browser.SRFLX) == 0:
 		// ICE 跑完了但一个 srflx 都没有(常见于 UDP 被完全阻断)。
 		// 「没拿到」不是「没泄漏」。
-		f.Summary = "WebRTC could not be checked: no server-reflexive candidate was returned."
+		f.say("WebRTC could not be checked: no server-reflexive candidate was returned.")
 		f.Evidence = append(f.Evidence, "stun: "+STUNURL)
 		return f
 	case browser.ExitV4 == "":
@@ -101,7 +99,7 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 		if reason == "" {
 			reason = "the HTTP exit address was not observed"
 		}
-		f.Summary = "WebRTC could not be compared: " + reason
+		f.say("WebRTC could not be compared: %s", reason)
 		f.Evidence = append(f.Evidence, "srflx: "+strings.Join(browser.SRFLX, ", "), "echo v4: "+EchoV4URL)
 		return f
 	}
@@ -117,9 +115,8 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 	// 训练成装饰。judgeIPv6 早就这么挡了,这里此前一处校验都没有。
 	exit, err := netip.ParseAddr(strings.TrimSpace(browser.ExitV4))
 	if err != nil {
-		f.Summary = "WebRTC could not be compared: the IPv4 echo answered with " +
-			abbreviate(browser.ExitV4) + ", which is not an IP address — the response " +
-			"did not come from the echo service (a captive portal or an error page, most likely)."
+		f.say("WebRTC could not be compared: the IPv4 echo answered with %s, which is not an IP address — the response did not come from the echo service (a captive portal or an error page, most likely).",
+			abbreviate(browser.ExitV4))
 		f.Evidence = append(
 			f.Evidence,
 			"echo v4 answered: "+abbreviate(browser.ExitV4)+"  via "+EchoV4URL,
@@ -148,8 +145,7 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 		// 不一致仍然判 bad,**与归谁管无关**:两条路出口不同本身就是观测到的事实,
 		// 不依赖隧道是否存在。规则是单边的 —— ok 需要前提,bad 不需要。
 		f.Verdict = Bad
-		f.Summary = "WebRTC reached the internet from " + strings.Join(mismatched, ", ") +
-			", but HTTP traffic left from " + exitAddr + ". "
+		f.say("WebRTC reached the internet from %s, but HTTP traffic left from %s.", strings.Join(mismatched, ", "), exitAddr)
 
 		// **bx 自己的按类分流会长得和泄漏一模一样。**
 		//
@@ -165,11 +161,7 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 		// VPN 就是张冠李戴,代价是把别人的真实泄漏说成「查不了」。
 		if owner == OwnerBX && local.BXUDPTransport != "" {
 			f.Verdict = NotChecked
-			f.Summary += "bx is configured to send UDP through a separate tunnel " +
-				"(udp.transport), so WebRTC leaving from a different address is expected — " +
-				"but bx cannot tell that tunnel's exit apart from your real address, " +
-				"so this cannot be settled either way. To get a definitive answer, " +
-				"remove udp.transport and check again."
+			f.also("bx is configured to send UDP through a separate tunnel (udp.transport), so WebRTC leaving from a different address is expected — but bx cannot tell that tunnel's exit apart from your real address, so this cannot be settled either way. To get a definitive answer, remove udp.transport and check again.")
 			f.Evidence = append(f.Evidence, "bx udp.transport: "+local.BXUDPTransport)
 			return f
 		}
@@ -178,20 +170,17 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 		case owner == OwnerBX && local.BXUDPMode == "direct-realtime":
 			// 真的以真实 IP 直连,这就是泄漏 —— 但它是配置选的,不是故障,
 			// 措辞要让用户知道该去关哪个开关。
-			f.Summary += "This is what udp.mode=direct-realtime does: it sends all UDP " +
-				"(including QUIC and WebRTC) straight out with your real address, trading " +
-				"anonymity for latency."
+			f.also("This is what udp.mode=direct-realtime does: it sends all UDP (including QUIC and WebRTC) straight out with your real address, trading anonymity for latency.")
 			f.Evidence = append(f.Evidence, "bx udp.mode: direct-realtime")
 			return f
 		}
 		switch owner {
 		case OwnerBX:
-			f.Summary += "WebRTC is bypassing the tunnel."
+			f.also("WebRTC is bypassing the tunnel.")
 		case OwnerOther:
-			f.Summary += "WebRTC is bypassing " + describeRef(local.DefaultRouteV4) + "."
+			f.also("WebRTC is bypassing %s.", describeRef(local.DefaultRouteV4))
 		default:
-			f.Summary += "Those are two different ways out of this machine — " +
-				"whichever one you believe you are using, the other one is also reachable."
+			f.also("Those are two different ways out of this machine — whichever one you believe you are using, the other one is also reachable.")
 		}
 		return f
 	}
@@ -199,8 +188,7 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 	switch owner {
 	case OwnerBX, OwnerOther:
 		f.Verdict = OK
-		f.Summary = "WebRTC and HTTP both left from " + exitAddr + ", through " +
-			describeOwner(owner, local) + "."
+		f.say("WebRTC and HTTP both left from %s, through %s.", exitAddr, describeOwner(owner, local))
 		if owner == OwnerOther {
 			// **免责声明进证据区,不进结论句。** 结论句只说这条发现本身;
 			// 而「这条隧道不是我建的、我看不到它怎么配的」是关于本工具能力边界的话。
@@ -223,13 +211,10 @@ func judgeWebRTC(browser BrowserReport, local LocalFacts) Finding {
 	case OwnerNone:
 		// **没有隧道时,「没有绕过隧道」不是好消息。**
 		f.Verdict = NotChecked
-		f.Summary = "There is no tunnel to bypass: WebRTC and HTTP both left from " +
-			exitAddr + ", which is this machine's own address on the internet."
+		f.say("There is no tunnel to bypass: WebRTC and HTTP both left from %s, which is this machine's own address on the internet.", exitAddr)
 	default:
 		f.Verdict = NotChecked
-		f.Summary = "WebRTC and HTTP both left from " + exitAddr + ", but it could not be " +
-			"determined whether any tunnel is carrying this machine's traffic — so this " +
-			"agreement does not by itself mean anything is protected."
+		f.say("WebRTC and HTTP both left from %s, but it could not be determined whether any tunnel is carrying this machine's traffic — so this agreement does not by itself mean anything is protected.", exitAddr)
 	}
 	return f
 }
@@ -326,7 +311,7 @@ func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 	// 一句断言从未发生的观测的假话(2026-08-11 整枝复审的 Critical 就是它)。
 	if local.IPv6DefaultPresent == tristate.False {
 		f.Verdict = OK
-		f.Summary = "This machine has no route to the IPv6 internet, so nothing can leak over IPv6."
+		f.say("This machine has no route to the IPv6 internet, so nothing can leak over IPv6.")
 		f.Evidence = append(f.Evidence, "ipv6 default route: none")
 		if browser.ExitV6 != "" {
 			f.Evidence = append(f.Evidence,
@@ -344,7 +329,7 @@ func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 
 	// 「v4 走 VPN 而 v6 是 ISP」的前半句:v4 归谁必须先知道。
 	if !local.DefaultRouteV4.Known() {
-		f.Summary = "IPv6 could not be judged: the local IPv4 default route was not observed."
+		f.say("IPv6 could not be judged: the local IPv4 default route was not observed.")
 		return f
 	}
 	f.Evidence = append(f.Evidence, "default route (v4): "+describeRef(local.DefaultRouteV4))
@@ -360,11 +345,10 @@ func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 		switch local.IPv6DefaultPresent {
 		case tristate.False:
 			f.Verdict = OK
-			f.Summary = "This machine has no IPv6 default route and no IPv6 exit was observed, " +
-				"so there is no IPv6 path to leak through."
+			f.say("This machine has no IPv6 default route and no IPv6 exit was observed, so there is no IPv6 path to leak through.")
 			f.Evidence = append(f.Evidence, "ipv6 default route: none", "echo v6: "+reason)
 		default:
-			f.Summary = "IPv6 could not be checked: " + reason
+			f.say("IPv6 could not be checked: %s", reason)
 			f.Evidence = append(
 				f.Evidence,
 				"ipv6 default route: "+describeRef(local.DefaultRouteV6),
@@ -380,8 +364,7 @@ func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 	// 解析不出来的串(错误页、被中间设备替换的响应)同样不是答案。
 	addr, err := netip.ParseAddr(strings.TrimSpace(browser.ExitV6))
 	if err != nil || addr.Is4() || addr.Is4In6() {
-		f.Summary = "IPv6 could not be checked: the IPv6 echo answered with " +
-			abbreviate(browser.ExitV6) + ", which is not an IPv6 address — the browser did not use IPv6."
+		f.say("IPv6 could not be checked: the IPv6 echo answered with %s, which is not an IPv6 address — the browser did not use IPv6.", abbreviate(browser.ExitV6))
 		f.Evidence = append(f.Evidence, "echo v6 answered: "+abbreviate(browser.ExitV6)+"  via "+EchoV6URL)
 		return f
 	}
@@ -395,13 +378,11 @@ func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 	// 拿它做同一性判断会把两个不同接口判成同一个 → 一条真泄漏被说成 ok。
 	if local.DefaultRouteV6.Known() && local.DefaultRouteV6.Name == local.DefaultRouteV4.Name {
 		f.Verdict = OK
-		f.Summary = "IPv6 leaves through the same interface as IPv4 (" +
-			describeRef(local.DefaultRouteV4) + ")."
+		f.say("IPv6 leaves through the same interface as IPv4 (%s).", describeRef(local.DefaultRouteV4))
 		return f
 	}
 	if !local.DefaultRouteV6.Known() {
-		f.Summary = "A public IPv6 exit was observed (" + browser.ExitV6 +
-			") but the local IPv6 default route was not observed, so it cannot be attributed."
+		f.say("A public IPv6 exit was observed (%s) but the local IPv6 default route was not observed, so it cannot be attributed.", browser.ExitV6)
 		return f
 	}
 	// **设计的前提是「v4 走 VPN 而 v6 出口是 ISP」,前半句必须自己成立。**
@@ -415,18 +396,14 @@ func judgeIPv6(browser BrowserReport, local LocalFacts) Finding {
 	// 来就说推不出来**,不许把一句判不了的话说成指控 —— 乱喊狼来了与恒绿是同一
 	// 条设计风险的两面。
 	if !isTunnelPath(local) {
-		f.Summary = "IPv4 leaves through " + describeRef(local.DefaultRouteV4) +
-			" and IPv6 through " + describeRef(local.DefaultRouteV6) +
-			" — two different interfaces, but bx found no tunnel on the IPv4 path, " +
-			"so it cannot say IPv6 is bypassing anything. An ordinary dual-homed machine " +
-			"(wired IPv4, Wi-Fi IPv6) looks exactly like this."
+		f.say("IPv4 leaves through %s and IPv6 through %s — two different interfaces, but bx found no tunnel on the IPv4 path, so it cannot say IPv6 is bypassing anything. An ordinary dual-homed machine (wired IPv4, Wi-Fi IPv6) looks exactly like this.",
+			describeRef(local.DefaultRouteV4), describeRef(local.DefaultRouteV6))
 		return f
 	}
 
 	f.Verdict = Bad
-	f.Summary = "IPv4 leaves through " + describeRef(local.DefaultRouteV4) +
-		" but IPv6 reached the internet as " + browser.ExitV6 + " through " +
-		describeRef(local.DefaultRouteV6) + ". IPv6 is bypassing the tunnel."
+	f.say("IPv4 leaves through %s but IPv6 reached the internet as %s through %s. IPv6 is bypassing the tunnel.",
+		describeRef(local.DefaultRouteV4), browser.ExitV6, describeRef(local.DefaultRouteV6))
 	return f
 }
 
@@ -479,17 +456,16 @@ func judgeDNS(browser BrowserReport, local LocalFacts) Finding {
 	f := Finding{ID: FindingDNS, Title: "DNS path", Section: SectionPath}
 
 	if local.DNSErr != "" {
-		f.Summary = "DNS could not be checked: " + local.DNSErr
+		f.say("DNS could not be checked: %s", local.DNSErr)
 		f.Evidence = append(f.Evidence, "dns error: "+local.DNSErr)
 		return f
 	}
 	if len(local.DNSServers) == 0 {
-		f.Summary = "DNS could not be checked: no resolver was observed on this machine."
+		f.say("DNS could not be checked: no resolver was observed on this machine.")
 		return f
 	}
 	if !local.DefaultRouteV4.Known() {
-		f.Summary = "DNS could not be judged: the local IPv4 default route was not observed, " +
-			"so there is nothing to compare the resolvers against."
+		f.say("DNS could not be judged: the local IPv4 default route was not observed, so there is nothing to compare the resolvers against.")
 		f.Evidence = append(f.Evidence, "resolvers: "+strings.Join(local.DNSServers, ", "))
 		return f
 	}
@@ -520,16 +496,12 @@ func judgeDNS(browser BrowserReport, local LocalFacts) Finding {
 	switch {
 	case len(outside) > 0:
 		f.Verdict = Bad
-		f.Summary = "Resolver(s) " + strings.Join(outside, ", ") +
-			" are reached outside " + describeRef(route) +
-			", which owns the default route. DNS queries may bypass the tunnel."
+		f.say("Resolver(s) %s are reached outside %s, which owns the default route. DNS queries may bypass the tunnel.", strings.Join(outside, ", "), describeRef(route))
 	case len(unknown) > 0:
-		f.Summary = "DNS could not be fully checked: the egress interface of " +
-			strings.Join(unknown, ", ") + " was not observed."
+		f.say("DNS could not be fully checked: the egress interface of %s was not observed.", strings.Join(unknown, ", "))
 	default:
 		f.Verdict = OK
-		f.Summary = "All resolvers (" + strings.Join(local.DNSServers, ", ") +
-			") are reached through " + describeRef(route) + " or the local machine."
+		f.say("All resolvers (%s) are reached through %s or the local machine.", strings.Join(local.DNSServers, ", "), describeRef(route))
 	}
 	return f
 }

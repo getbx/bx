@@ -176,6 +176,10 @@ type Finding struct {
 	// `Status.Capabilities`、`ProbeReport.measured` 刻意不带 omitempty 同一条纪律。
 	Reach    ReachState `json:"reach"`
 	Evidence []string   `json:"evidence,omitempty"`
+
+	// summary 是 Summary 的原句与参数(见 i18n.go 的 say / also):Localize 用它们
+	// 按别的语言重渲染。不进 JSON;Summary 本身仍是英文成品,契约不变。
+	summary []sentence
 }
 
 // Report 是一次检测的全部产出。**没有任何字段是 BrowserReport 或 LocalFacts** ——

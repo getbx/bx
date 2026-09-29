@@ -2675,7 +2675,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         leakCheckInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            let result = self.runBx(["leakcheck"])
+            // 菜单是中文时把语言传给页面(`--lang zh-Hans`);英文或跟随系统解析成英文时
+            // 不传,页面按浏览器语言自己定(2026-09-28:菜单切中文后这一页也要中文)。
+            let args = currentMenuLanguage == .simplifiedChinese ? ["leakcheck", "--lang", "zh-Hans"] : ["leakcheck"]
+            let result = self.runBx(args)
             DispatchQueue.main.async {
                 self.leakCheckInFlight = false
                 if result.code != 0 {

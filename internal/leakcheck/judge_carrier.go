@@ -24,7 +24,7 @@ func judgeCarrier(local LocalFacts) Finding {
 
 	owner := WhoOwnsTheRoute(local)
 	if owner == OwnerUnknown {
-		f.Summary = "Not checked: it could not be determined which interface public traffic leaves through."
+		f.say("Not checked: it could not be determined which interface public traffic leaves through.")
 		if err := local.DefaultRouteV4.Err; err != "" {
 			f.Evidence = append(f.Evidence, "route lookup: "+err)
 		}
@@ -40,15 +40,14 @@ func judgeCarrier(local LocalFacts) Finding {
 	// 路由可能已经指向 TUN 而隧道还没起来,此刻打绿勾与喊泄漏一样没有依据。
 	if running == runningUnknown {
 		f.Verdict = NotChecked
-		f.Summary = "bx is in a transitional state (" +
-			strings.ToLower(strings.TrimSpace(local.BXProtection)) +
-			"), so whether it should be carrying this traffic cannot be judged yet."
+		f.say("bx is in a transitional state (%s), so whether it should be carrying this traffic cannot be judged yet.",
+			strings.ToLower(strings.TrimSpace(local.BXProtection)))
 		return f
 	}
 
 	if owner == OwnerBX {
 		f.Verdict = OK
-		f.Summary = "Your public traffic is carried by bx (" + carrier + ")."
+		f.say("Your public traffic is carried by bx (%s).", carrier)
 		// **第二个 claimant 说出来,但不改判定。** 此刻流量确实走 bx,不是泄漏;
 		// 但内核是按 metric 挑的,对方重连或改 metric 就可能悄悄接管。值得说,
 		// 不值得报红 —— 报红会与另外几条「流量确实从 VPS 出去」的结论当面打架。
@@ -70,11 +69,9 @@ func judgeCarrier(local LocalFacts) Finding {
 		// 「Guardian 没答上话」——见 bxRunningVerdict。
 		f.Verdict = Info
 		if owner == OwnerNone {
-			f.Summary = "No tunnel is carrying this machine's traffic — it leaves directly through " +
-				carrier + "."
+			f.say("No tunnel is carrying this machine's traffic — it leaves directly through %s.", carrier)
 		} else {
-			f.Summary = "Your public traffic is carried by " + carrier +
-				", which bx is not managing. No sign of bx carrying traffic on this machine."
+			f.say("Your public traffic is carried by %s, which bx is not managing. No sign of bx carrying traffic on this machine.", carrier)
 		}
 		return f
 	}
@@ -83,14 +80,12 @@ func judgeCarrier(local LocalFacts) Finding {
 	//
 	f.Verdict = Bad
 	if owner == OwnerNone {
-		f.Summary = "bx is running" + bxWhere(local) + ", but public traffic is not " +
-			"entering its tunnel at all — it leaves directly through " + carrier +
-			". Whatever bx reports about itself, this traffic is not protected."
+		f.say("bx is running%s, but public traffic is not entering its tunnel at all — it leaves directly through %s. Whatever bx reports about itself, this traffic is not protected.",
+			bxWhere(local), carrier)
 		return f
 	}
-	f.Summary = "bx is running" + bxWhere(local) + ", but your public traffic is " +
-		"carried by " + carrier + " instead. Whatever bx reports about itself, it is not " +
-		"the one carrying this traffic."
+	f.say("bx is running%s, but your public traffic is carried by %s instead. Whatever bx reports about itself, it is not the one carrying this traffic.",
+		bxWhere(local), carrier)
 	f.Evidence = append(f.Evidence, tenantSuspicion(local)...)
 	return f
 }

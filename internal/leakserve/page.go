@@ -33,4 +33,8 @@ type pageData struct {
 	// 一致时没有任何东西会红。骨架与真实产出由
 	// leakcheck.TestOutlineMatchesWhatJudgeActuallyEmits 钉住。
 	ChecksJSON template.JS
+	// Lang 是 URL 上明说的语言(菜单启动时传 --lang);空 = 页面按浏览器语言自己定。
+	Lang string
+	// TitlesJSON 是骨架标题的译文表(英文 → 该语言),由 leakcheck.TitleTranslations 下发。
+	TitlesJSON template.JS
 }

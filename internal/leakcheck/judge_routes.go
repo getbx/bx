@@ -138,19 +138,18 @@ func judgeRouteEscape(local LocalFacts) Finding {
 	f := Finding{ID: FindingRouteEscape, Title: "Routes around the tunnel", Section: SectionPath}
 
 	if local.RoutesErr != "" {
-		f.Summary = "Not checked: the routing table could not be read (" + local.RoutesErr + ")."
+		f.say("Not checked: the routing table could not be read (%s).", local.RoutesErr)
 		return f
 	}
 	if len(local.Routes) == 0 {
-		f.Summary = "Not checked: the routing table was not read."
+		f.say("Not checked: the routing table was not read.")
 		return f
 	}
 	switch WhoOwnsTheRoute(local) {
 	case OwnerBX, OwnerOther:
 	default:
 		// 没有隧道就没有「绕过隧道」这回事。判 ok 会被读成「你很安全」。
-		f.Summary = "Not checked: no tunnel is carrying this machine's traffic, " +
-			"so there is nothing for a route to go around."
+		f.say("Not checked: no tunnel is carrying this machine's traffic, so there is nothing for a route to go around.")
 		return f
 	}
 
@@ -175,15 +174,13 @@ func judgeRouteEscape(local LocalFacts) Finding {
 	}
 	if len(escapes) > 0 {
 		f.Verdict = Bad
-		f.Summary = "Something has installed routes that send whole ranges of the internet " +
-			"around the tunnel: " + strings.Join(escapes, ", ") + ". Traffic to those addresses " +
-			"leaves with your real address. A hostile DHCP server on this network can do exactly " +
-			"this (CVE-2024-3661)."
+		f.say("Something has installed routes that send whole ranges of the internet around the tunnel: %s. Traffic to those addresses leaves with your real address. A hostile DHCP server on this network can do exactly this (CVE-2024-3661).",
+			strings.Join(escapes, ", "))
 		f.Evidence = append(f.Evidence, "escaping routes: "+strings.Join(escapes, ", "))
 		return f
 	}
 	f.Verdict = OK
-	f.Summary = "No route sends whole ranges of the internet around the tunnel."
+	f.say("No route sends whole ranges of the internet around the tunnel.")
 	return f
 }
 

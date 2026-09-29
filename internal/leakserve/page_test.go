@@ -166,7 +166,9 @@ func TestReportTypeCarriesNoRawMaterial(t *testing.T) {
 // leakcheck.TestOutlineMatchesWhatJudgeActuallyEmits 拿真实的 Judge 输出钉住这一点。
 func TestPageDataCarriesOnlyTokenDisclosureAndSkeleton(t *testing.T) {
 	typ := reflect.TypeOf(pageData{})
-	want := map[string]bool{"Token": true, "Endpoints": true, "ChecksJSON": true}
+	// Lang 与 TitlesJSON(2026-09-28,页面中文)都是**呈现**,不是原料:前者是 URL 上的
+	// 语言偏好,后者是骨架标题的译文表(英文 → 中文),里面没有任何一条观测,判断搬不进去。
+	want := map[string]bool{"Token": true, "Endpoints": true, "ChecksJSON": true, "Lang": true, "TitlesJSON": true}
 	if typ.NumField() != len(want) {
 		t.Fatalf("pageData 现在有 %d 个字段,守卫只认识 %d 个 —— 加字段请连同这条守卫"+
 			"一起论证:页面多拿到一样原料,判断就可能搬进测不到的 JS 里",

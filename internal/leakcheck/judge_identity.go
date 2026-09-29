@@ -21,15 +21,13 @@ func judgeLocalAddresses(browser BrowserReport) Finding {
 		return browserNeverArrived(f)
 	}
 	if browser.STUNErr != "" {
-		f.Summary = "Not checked: the browser's ICE gathering failed (" + browser.STUNErr +
-			"), so it never reported any local addresses."
+		f.say("Not checked: the browser's ICE gathering failed (%s), so it never reported any local addresses.", browser.STUNErr)
 		f.Evidence = append(f.Evidence, "ice error: "+browser.STUNErr)
 		return f
 	}
 	if len(browser.HostCandidates) == 0 {
 		// **「没拿到」不是「没暴露」。** 浏览器可能压根没给 host candidate。
-		f.Summary = "Not checked: the browser reported no local addresses at all, " +
-			"so nothing can be said about whether it hides them."
+		f.say("Not checked: the browser reported no local addresses at all, so nothing can be said about whether it hides them.")
 		return f
 	}
 
@@ -51,14 +49,12 @@ func judgeLocalAddresses(browser BrowserReport) Finding {
 
 	if len(exposed) > 0 {
 		f.Verdict = Bad
-		f.Summary = "Any website you open can read this machine's address on your local " +
-			"network: " + strings.Join(exposed, ", ") + ". That address stays the same " +
-			"across sites and across sessions, so it can be used to recognise you."
+		f.say("Any website you open can read this machine's address on your local network: %s. That address stays the same across sites and across sessions, so it can be used to recognise you.",
+			strings.Join(exposed, ", "))
 		return f
 	}
 	f.Verdict = OK
-	f.Summary = "Your browser replaced this machine's local addresses with random " +
-		".local names, so websites cannot read them."
+	f.say("Your browser replaced this machine's local addresses with random .local names, so websites cannot read them.")
 	return f
 }
 
@@ -90,20 +86,18 @@ func judgeTimezone(browser BrowserReport, local LocalFacts) Finding {
 		if reason == "" {
 			reason = "the exit country was not observed"
 		}
-		f.Summary = "Not checked: " + reason + ", so there is nothing to compare the clock against."
+		f.say("Not checked: %s, so there is nothing to compare the clock against.", reason)
 		f.Evidence = append(f.Evidence, "trace: "+TraceURL)
 		return f
 	case zone == "":
-		f.Summary = "Not checked: neither the browser nor this machine reported a time zone."
+		f.say("Not checked: neither the browser nor this machine reported a time zone.")
 		return f
 	}
 
 	areas, known := countryTimeAreas[country]
 	if !known {
 		// **认不出的国家必须说认不出。** 编一个大区去比,得到的是一条随机的红或绿。
-		f.Summary = "Not checked: this exit looks like it is in " + country +
-			", and bx does not carry a time-zone region for that country, so the two " +
-			"cannot be compared."
+		f.say("Not checked: this exit looks like it is in %s, and bx does not carry a time-zone region for that country, so the two cannot be compared.", country)
 		f.Evidence = append(f.Evidence, "exit country: "+country, zoneFrom+" time zone: "+zone)
 		return f
 	}
@@ -117,16 +111,12 @@ func judgeTimezone(browser BrowserReport, local LocalFacts) Finding {
 	for _, valid := range areas {
 		if area == valid {
 			f.Verdict = OK
-			f.Summary = "This browser's clock (" + zone + ") is in a time-zone region that " +
-				"fits an exit in " + country + ". Only the region was compared, so a closer " +
-				"mismatch inside it would not show up here."
+			f.say("This browser's clock (%s) is in a time-zone region that fits an exit in %s. Only the region was compared, so a closer mismatch inside it would not show up here.", zone, country)
 			return f
 		}
 	}
 	f.Verdict = Bad
-	f.Summary = "Your traffic leaves in " + country + ", but this browser's clock is set to " +
-		zone + ". Any site can read both, and the combination is unusual enough to single " +
-		"you out even though nothing leaked."
+	f.say("Your traffic leaves in %s, but this browser's clock is set to %s. Any site can read both, and the combination is unusual enough to single you out even though nothing leaked.", country, zone)
 	return f
 }
 
@@ -161,16 +151,15 @@ func judgeLanguage(browser BrowserReport, local LocalFacts) Finding {
 		if reason == "" {
 			reason = "the exit country was not observed"
 		}
-		f.Summary = "Not checked: " + reason + ", so there is nothing to compare the language against."
+		f.say("Not checked: %s, so there is nothing to compare the language against.", reason)
 		return f
 	case primary == "":
-		f.Summary = "Not checked: neither the browser nor this machine reported a language."
+		f.say("Not checked: neither the browser nor this machine reported a language.")
 		return f
 	}
 	expected, known := countryLanguages[country]
 	if !known {
-		f.Summary = "Not checked: this exit looks like it is in " + country +
-			", and bx does not carry a language list for that country, so the two cannot be compared."
+		f.say("Not checked: this exit looks like it is in %s, and bx does not carry a language list for that country, so the two cannot be compared.", country)
 		f.Evidence = append(f.Evidence, "exit country: "+country, langFrom+" language: "+primary)
 		return f
 	}
@@ -178,20 +167,18 @@ func judgeLanguage(browser BrowserReport, local LocalFacts) Finding {
 	// **英语一律放过** —— 见上面的说明。
 	if primary == "en" {
 		f.Verdict = OK
-		f.Summary = "Your browser asks for English, which is unremarkable from any exit."
+		f.say("Your browser asks for English, which is unremarkable from any exit.")
 		return f
 	}
 	for _, want := range expected {
 		if primary == want {
 			f.Verdict = OK
-			f.Summary = "Your browser asks for " + primary + ", which fits an exit in " + country + "."
+			f.say("Your browser asks for %s, which fits an exit in %s.", primary, country)
 			return f
 		}
 	}
 	f.Verdict = Bad
-	f.Summary = "Your browser asks for " + primary + " while your traffic leaves from " + country +
-		". Nothing leaked, but that combination is uncommon, and it separates you from the other " +
-		"people using this exit. Adding the local language to your browser's language list makes it blend in."
+	f.say("Your browser asks for %s while your traffic leaves from %s. Nothing leaked, but that combination is uncommon, and it separates you from the other people using this exit. Adding the local language to your browser's language list makes it blend in.", primary, country)
 	return f
 }
 
