@@ -131,8 +131,8 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         // 组装走共用原语(MenuLayout.swift):四扇窗口此前各抄一份,而那份拷贝里
         // 有一个「行溢出到窗口外面、行尾按钮点不到」的缺陷,四处一模一样。
         let (scroll, stack) = makeScrollingStack(
-            insets: NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18),
-            spacing: 10
+            insets: MenuStyle.insets,
+            spacing: MenuStyle.rowSpacing
         )
         pinToEdges(scroll, in: content)
         self.stack = stack
@@ -317,9 +317,8 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         }
 
         box.setHuggingPriority(.defaultLow, for: .horizontal)
-        let remove = NSButton(title: L("Remove"), target: self, action: #selector(removeRule(_:)))
-        remove.bezelStyle = .rounded
-        remove.controlSize = .small
+        // inline 分量(MenuStyle.swift):十一行十一个一样重的整块按钮,会让表看起来全是按钮。
+        let remove = menuButton(L("Remove"), weight: .inline, target: self, action: #selector(removeRule(_:)))
         remove.identifier = NSUserInterfaceItemIdentifier(ruleEntryKey(row.kind, row.pattern))
         remove.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         box.addArrangedSubview(remove)

@@ -148,7 +148,7 @@ final class AppTrafficWindowController: NSObject, NSWindowDelegate, NSSearchFiel
         // 而那份拷贝里有同一个缺陷:行没被钉到容器宽度,塞不下时整行溢出
         // 到窗口外面,行尾按钮点不到 —— 2026-09-17 离屏快照量出来的。
         let (scroll, stack) = makeScrollingStack(
-            insets: NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18),
+            insets: MenuStyle.insets,
             spacing: 8
         )
         pinToEdges(scroll, in: content)

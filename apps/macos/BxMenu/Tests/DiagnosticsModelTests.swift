@@ -126,7 +126,22 @@ struct DiagnosticsModelTests {
         expect(shifted == "Checked at 14:47:05", "跟随时区:\(shifted)")
     }
 
+    /// 2026-09-29 可读性:Checks 页的提示来自 doctor(CLI 与菜单共用),形如
+    /// 「turn protection on (sudo bx up)」—— 在菜单里,括号里那条终端命令是多余的,
+    /// 前面那句话已经说完了,而开关就在菜单第一行。**只剥「前面有人话」的那种**:
+    /// 整条提示就是一条命令时(chmod 600 …),那是唯一的出路,原样留着。
+    static func testMenuHintDropsATrailingCommandWhenPlainWordsAlreadySayIt() {
+        expect(menuHintText("turn protection on (sudo bx up)") == "turn protection on", "括号里的命令没剥掉")
+        expect(menuHintText("turn protection on (bx up)") == "turn protection on", "Windows 形式(无 sudo)没剥掉")
+        expect(menuHintText("chmod 600 /etc/bx/config.yaml") == "chmod 600 /etc/bx/config.yaml", "整条就是命令的被改了")
+        expect(menuHintText("sudo bx up") == "sudo bx up", "整条就是命令的被剥成了空")
+        expect(menuHintText("restart the network (it usually recovers in a minute)") == "restart the network (it usually recovers in a minute)",
+               "括号里是人话也被剥了 —— 只剥命令")
+        expect(menuHintText("") == "", "空提示")
+    }
+
     static func main() {
+        testMenuHintDropsATrailingCommandWhenPlainWordsAlreadySayIt()
         testDecodesReportWithOptionalDetailAndHint()
         testDoctorAvailableIsGatedByCapability()
         testSortedChecksPutBadFirstAndKeepOrderWithinATier()

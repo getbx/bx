@@ -398,7 +398,7 @@ struct ServerRow: Equatable {
     var note: String? {
         var parts: [String] = []
         if !entry.udpHost.isEmpty, entry.udpHost != entry.host {
-            parts.append("UDP → \(entry.udpHost)")
+            parts.append(L("UDP traffic leaves from {0}", entry.udpHost))
         }
         if let line = probeLine { parts.append(line) }
         if let line = throughputLine { parts.append(line) }
@@ -498,11 +498,14 @@ struct CurrentServerPanel: Equatable {
     /// 三态的 `Bool?` 折成一句话,而那是判据:窗口写 `healthy ?? false` 就会把
     /// 「没说」显示成「不健康」—— 一台好机器被说成坏的。三项全缺席时返回 nil
     /// (Core 静默那一档,上面那句 `coreSilentNote` 已经把话说完了)。
+    ///
+    /// **协议名不上屏**(2026-09-29 可读性):传输就是这台服务器时它只是一个内部词(reality);
+    /// 只有 `transportDroppingHost` 留下了 `@另一台` 时才说 —— 那时差别本身就是信息。
     var statusLine: String? {
         var parts: [String] = []
-        if let transport { parts.append(transport) }
+        if let transport, transport.contains("@") { parts.append(transport) }
         if let latencyMS { parts.append(L("{0} ms", latencyMS)) }
-        if let tunnelHealthy { parts.append(tunnelHealthy ? L("tunnel healthy") : L("tunnel unhealthy")) }
+        if let tunnelHealthy { parts.append(tunnelHealthy ? L("connected") : L("not responding")) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -510,14 +513,23 @@ struct CurrentServerPanel: Equatable {
     /// 把它画红等于替一份从没收到过的观测下结论。
     var statusLineIsBad: Bool { tunnelHealthy == false }
 
-    /// UDP 那一行:走哪条传输、出口是不是另一台、当前是哪个档。
-    /// 三样都问不出来就一个字都不说。
+    /// UDP 那一行,**只在 UDP 走得和主隧道不一样时才有**(2026-09-29 可读性):
+    /// 直连档要说出会带真实 IP,阻断档要说出通不了,从另一台出去要点名那台;
+    /// 与主隧道同一台、默认档 ⇒ 没有什么可说的,一个字都不占。
     var udpLine: String? {
-        var parts: [String] = []
-        if let udpTransport { parts.append(udpTransport) }
-        if let udpHost { parts.append("→ \(udpHost)") }
-        if let udpMode { parts.append(udpMode) }
-        return parts.isEmpty ? nil : "UDP  " + parts.joined(separator: " · ")
+        switch udpMode {
+        case "direct-realtime": return L("UDP traffic goes direct, with your real IP")
+        case "block": return L("UDP traffic is blocked")
+        default: break
+        }
+        let transportHost = udpTransport.flatMap { t -> String? in
+            guard let at = t.lastIndex(of: "@") else { return nil }
+            return String(t[t.index(after: at)...])
+        }
+        if let exit = udpHost ?? transportHost, !exit.isEmpty, exit != host {
+            return L("UDP traffic leaves from {0}", exit)
+        }
+        return nil
     }
 }
 

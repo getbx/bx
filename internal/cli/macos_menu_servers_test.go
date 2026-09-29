@@ -591,36 +591,39 @@ func TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty(t *testing.T) {
 		t.Error("空状态文案又长回了窗口里 —— 判据(与措辞)归 ServersModel,这一半测不到")
 	}
 
-	// 按钮带必须在**顶层**摆进视图树:深度 0 = 任何 if / for 都管不着它。
+	// 两条按钮带都必须在**顶层**摆进视图树:深度 0 = 任何 if / for 都管不着它。
 	// 写法认全(viewPlacementCallees):只认一种的守卫会在换共用原语那天假红。
-	at := -1
-	for _, callee := range viewPlacementCallees {
-		if i := strings.Index(body, "stack."+callee+"(buttonBar())"); i >= 0 {
-			at = i
-			break
-		}
-	}
-	if at < 0 {
-		t.Fatal("按钮带压根没进视图树 —— 守卫已经失效,先修守卫")
-	}
-	if depth := swiftBraceDepthAt(body, at); depth != 0 {
-		t.Errorf("按钮带落在 render 的第 %d 层花括号里 —— 它是有条件画的,"+
-			"而空清单恰恰是最需要 Add Server… 的那一刻", depth)
-	}
-	// 而按钮带里那四个按钮必须真的都在。「摆了一条空的按钮带」与没有按钮带
-	// 在屏幕上是同一件事。
-	barBody, ok := swiftFunctionBody(window, "private func buttonBar() -> NSView")
-	if !ok {
-		t.Fatal("读不出 buttonBar 的函数体 —— 守卫已经失效,先修守卫")
-	}
-	for _, marker := range []string{
-		"buttons.addArrangedSubview(add)",
-		"buttons.addArrangedSubview(deploy)",
-		"buttons.addArrangedSubview(test)",
-		"buttons.addArrangedSubview(check)",
+	// 2026-09-29 一条拆成两条(「看看这条隧道」/「再加一台」),性质不变:空清单恰恰是
+	// 最需要 Add Server… 的那一刻,两条都不许有条件画。
+	for _, bar := range []struct {
+		call, sig string
+		buttons   []string
+	}{
+		{"checkBar()", "private func checkBar() -> NSView", []string{"test", "check"}},
+		{"addBar()", "private func addBar() -> NSView", []string{"add", "deploy"}},
 	} {
-		if !strings.Contains(barBody, marker) {
-			t.Errorf("%s 不在按钮带里 —— 用户拿到的是一条缺了按钮的带子", marker)
+		at := -1
+		for _, callee := range viewPlacementCallees {
+			if i := strings.Index(body, "stack."+callee+"("+bar.call+")"); i >= 0 {
+				at = i
+				break
+			}
+		}
+		if at < 0 {
+			t.Fatalf("%s 压根没进视图树 —— 守卫已经失效,先修守卫", bar.call)
+		}
+		if depth := swiftBraceDepthAt(body, at); depth != 0 {
+			t.Errorf("%s 落在 render 的第 %d 层花括号里 —— 它是有条件画的,"+
+				"而空清单恰恰是最需要 Add Server… 的那一刻", bar.call, depth)
+		}
+		// 带里的按钮必须真的都在。「摆了一条空的按钮带」与没有按钮带在屏幕上是同一件事。
+		barBody, ok := swiftFunctionBody(window, bar.sig)
+		if !ok {
+			t.Fatalf("读不出 %s 的函数体 —— 守卫已经失效,先修守卫", bar.call)
+		}
+		row := "menuButtonRow([" + strings.Join(bar.buttons, ", ") + "])"
+		if !strings.Contains(barBody, row) {
+			t.Errorf("%s 没有把 %v 都摆进那一排(找 %s)—— 用户拿到的是一条缺了按钮的带子", bar.call, bar.buttons, row)
 		}
 	}
 }

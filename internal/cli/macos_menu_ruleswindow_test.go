@@ -42,9 +42,11 @@ func TestMacMenuRulesWindowRendersByThePureModel(t *testing.T) {
 	}
 	// **按钮要点名。** 只查 `NSButton(title: ` 的话,早就存在的 Show Config
 	// 一个人就能满足它 —— 那样这条守卫对「这张表根本没长出来」毫无反应。
-	for _, button := range []string{`NSButton(title: L("Add Rule…")`, `NSButton(title: L("Remove")`, `NSButton(title: L("Undo")`} {
-		if !strings.Contains(text, button) {
-			t.Errorf("窗口里没有 %s", button)
+	// 2026-09-29 起按钮也可以经共用原语 menuButton(…)(MenuStyle.swift)构造,两种写法都认;
+	// 要点名的仍是那句标题本身。
+	for _, title := range []string{`L("Add Rule…")`, `L("Remove")`, `L("Undo")`} {
+		if !strings.Contains(text, "NSButton(title: "+title) && !strings.Contains(text, "menuButton("+title) {
+			t.Errorf("窗口里没有标题为 %s 的按钮", title)
 		}
 	}
 }

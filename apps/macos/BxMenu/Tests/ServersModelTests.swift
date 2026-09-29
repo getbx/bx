@@ -89,7 +89,7 @@ struct ServersModelTests {
         // 写一遍就是同一个串并排两次。
         expect(rows[0].endpoint == "203.0.113.10:443", "endpoint = \(rows[0].endpoint)")
         expect(rows[0].note == nil, "没话说却摆了一句:\(rows[0].note ?? "")")
-        expect(rows[1].note?.contains("UDP → 203.0.113.21") == true,
+        expect(rows[1].note?.contains("UDP traffic leaves from 203.0.113.21") == true,
                "UDP 出口没显示:\(rows[1].note ?? "nil")")
         expect(rows[1].note?.contains("203.0.113.20") == false,
                "主机在 note 里又写了一遍:\(rows[1].note ?? "nil")")
@@ -879,24 +879,46 @@ struct ServersModelTests {
     static func testCurrentPanelLinesComeFromTheModelNotTheWindow() {
         guard let panel = currentServerPanel(list: listWithCurrent(), core: answeringCoreRuntime())
         else { fail("拿不到当前那一块"); return }
-        expect(panel.statusLine == "reality · 1051 ms · tunnel healthy",
+        // 2026-09-29 可读性:不再印协议名(reality)与内部档名(proxy);传输就是这台服务器时
+        // 只说延迟与连没连上。
+        expect(panel.statusLine == "1051 ms · connected",
                "statusLine = \(panel.statusLine ?? "nil")")
         expect(!panel.statusLineIsBad, "健康的隧道被标红了")
-        expect(panel.udpLine == "UDP  hysteria2@203.0.113.21 · proxy",
+        // UDP 走的专用传输在**另一台**(.21,当前那台是 .10)⇒ 这一行必须说出来。
+        expect(panel.udpLine == "UDP traffic leaves from 203.0.113.21",
                "udpLine = \(panel.udpLine ?? "nil")")
         // UDP 从**另一台**出去时必须单独点名 —— 少了它,UDP 会静默走别的出口。
         var elsewhere = listWithCurrent()
         elsewhere.servers[0].udpHost = "198.51.100.9"
         expect(currentServerPanel(list: elsewhere, core: answeringCoreRuntime())?
-                .udpLine?.contains("→ 198.51.100.9") == true,
+                .udpLine == "UDP traffic leaves from 198.51.100.9",
                "UDP 走了另一台却没说出来")
+        // UDP 与 TCP 走同一台、档是默认的 proxy ⇒ 没有什么可说的,**不说**。
+        let sameWay = CoreRuntime(reachable: true, tunnelHealthy: true, latencyMS: 20, server: "tokyo",
+                                  transport: "reality@203.0.113.10", udpMode: "proxy", udpTransport: "hysteria2@203.0.113.10")
+        expect(currentServerPanel(list: listWithCurrent(), core: sameWay)?.udpLine == nil,
+               "UDP 与主隧道同一台同一档,却还占一行")
+        // 两个特殊档必须用人话说出来:直连会带真实 IP、阻断会让通话/游戏不通。
+        let direct = CoreRuntime(reachable: true, tunnelHealthy: true, latencyMS: 20, server: "tokyo",
+                                 transport: "reality@203.0.113.10", udpMode: "direct-realtime")
+        expect(currentServerPanel(list: listWithCurrent(), core: direct)?.udpLine == "UDP traffic goes direct, with your real IP",
+               "direct-realtime 没说出会带真实 IP")
+        let blocked = CoreRuntime(reachable: true, tunnelHealthy: true, latencyMS: 20, server: "tokyo",
+                                  transport: "reality@203.0.113.10", udpMode: "block")
+        expect(currentServerPanel(list: listWithCurrent(), core: blocked)?.udpLine == "UDP traffic is blocked",
+               "block 档没说出来")
+        // 传输指向**另一台主机**时那个差别仍然要说(transportDroppingHost 留下了 @)。
+        let routedElsewhere = CoreRuntime(reachable: true, tunnelHealthy: true, latencyMS: 20, server: "tokyo",
+                                          transport: "reality@198.51.100.4")
+        expect(currentServerPanel(list: listWithCurrent(), core: routedElsewhere)?.statusLine == "reality@198.51.100.4 · 20 ms · connected",
+               "传输走的是另一台主机却没说出来")
 
         // 明确说了不健康 ⇒ 标红;**没说 ⇒ 不标红**(那是替一份从没收到过的观测下结论)。
         let sick = CoreRuntime(reachable: true, tunnelHealthy: false, latencyMS: 12, transport: "reality@h")
         guard let sickPanel = currentServerPanel(list: listWithCurrent(), core: sick) else {
             fail("拿不到当前那一块"); return
         }
-        expect(sickPanel.statusLine?.contains("tunnel unhealthy") == true,
+        expect(sickPanel.statusLine?.contains("not responding") == true,
                "不健康没说出来:\(sickPanel.statusLine ?? "nil")")
         expect(sickPanel.statusLineIsBad, "明确说了不健康却没标红")
         let quiet = CoreRuntime(reachable: true, latencyMS: 12)

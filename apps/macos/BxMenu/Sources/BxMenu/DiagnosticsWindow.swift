@@ -15,6 +15,7 @@ import AppKit
 final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var tabs: NSTabView?
+    private var pager: NSSegmentedControl?
     private var checksStack: NSStackView?
     private var logsStack: NSStackView?
     /// 两页各自的滚动视图。**留着只为渲染完能滚回顶部** —— 见 scrollToTop:
@@ -55,6 +56,8 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
         window.title = L("Diagnostics")
         tabs?.tabViewItem(at: 0).label = L("Checks")
         tabs?.tabViewItem(at: 1).label = L("Logs")
+        pager?.setLabel(L("Checks"), forSegment: 0)
+        pager?.setLabel(L("Logs"), forSegment: 1)
         if let lastChecks { renderChecks(lastChecks) } else { seedChecksPlaceholder() }
         if let lastLogs { renderLogs(lastLogs.report, code: lastLogs.code) } else { seedLogsPlaceholder() }
     }
@@ -72,7 +75,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     func showChecks(_ report: DoctorReport) {
         let window = ensureWindow()
         renderChecks(report)
-        tabs?.selectTabViewItem(at: 0)
+        select(page: 0)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
@@ -80,7 +83,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     func showLogs(_ report: LogsReport, highlightingCode code: String?) {
         let window = ensureWindow()
         renderLogs(report, code: code)
-        tabs?.selectTabViewItem(at: 1)
+        select(page: 1)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
@@ -105,15 +108,28 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
 
         // 两页一个窗口(不是两个窗口):用户排查时要在「结论」与「原始日志」之间
         // 来回看,两个窗口会互相盖住,而标签页保住「同一件事的两个视角」这层关系。
+        //
+        // 2026-09-29 起标签框不画(`.noTabsNoBorder`):带边框的 NSTabView 给整页铺一层灰底,
+        // 挨着其余几扇白底窗口像另一个 App 的。页签改成顶上一个分段控件,两者由
+        // `select(page:)` 一处同步。
+        let pager = NSSegmentedControl(labels: [L("Checks"), L("Logs")], trackingMode: .selectOne,
+                                       target: self, action: #selector(pagerChanged(_:)))
+        pager.selectedSegment = 0
+        pager.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(pager)
         let tabs = NSTabView()
+        tabs.tabViewType = .noTabsNoBorder
         tabs.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(tabs)
         NSLayoutConstraint.activate([
+            pager.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            pager.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             tabs.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            tabs.topAnchor.constraint(equalTo: content.topAnchor),
+            tabs.topAnchor.constraint(equalTo: pager.bottomAnchor, constant: 4),
             tabs.bottomAnchor.constraint(equalTo: content.bottomAnchor),
         ])
+        self.pager = pager
 
         // **顺序即索引**:showChecks 选 0、showLogs 选 1,别调换。
         let checksItem = NSTabViewItem(identifier: "checks")
@@ -149,7 +165,7 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
     /// 外面,行尾按钮点不到(2026-09-17 离屏快照量出来的)。挂载在 hosting() 里。
     private func makePageStack() -> (NSScrollView, NSStackView) {
         makeScrollingStack(
-            insets: NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18),
+            insets: MenuStyle.insets,
             spacing: 8
         )
     }
@@ -283,22 +299,29 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
                 row.addArrangedSubview(detail)
             }
             stack.addFullWidthRow(row)
-            // 行宽跟着栈走(减去左右 18pt 的 edgeInsets),与 renderLogs 里那条
-            // `text.widthAnchor…constant: -36` 同一个写法。
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -36).isActive = true
+            // 行宽跟着栈走(减去左右 edgeInsets),与 renderLogs 里那条同一个写法。
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -(MenuStyle.insets.left + MenuStyle.insets.right)).isActive = true
             if !check.hint.isEmpty {
-                let h = hint("→ " + check.hint)
+                let h = hint("→ " + menuHintText(check.hint))
                 h.textColor = .tertiaryLabelColor
                 stack.addFullWidthRow(h)
             }
         }
         stack.addFullWidthRow(gap())
-        let again = NSButton(title: L("Run Again"), target: self, action: #selector(runAgain))
-        again.bezelStyle = .rounded
-        again.controlSize = .small
+        let again = menuButton(L("Run Again"), target: self, action: #selector(runAgain))
         again.toolTip = L("Asks bx to check again. This probes your server once, outside the tunnel.")
-        stack.addFullWidthRow(again)
+        stack.addFullWidthRow(menuButtonRow([again]))
         scrollToTop(checksScroll)
+    }
+
+    /// 页签与分段控件的唯一同步点:代码切页(showChecks/showLogs)与用户点分段控件都走这里。
+    private func select(page: Int) {
+        tabs?.selectTabViewItem(at: page)
+        pager?.selectedSegment = page
+    }
+
+    @objc private func pagerChanged(_ sender: NSSegmentedControl) {
+        select(page: sender.selectedSegment)
     }
 
     @objc private func runAgain() {
@@ -372,15 +395,13 @@ final class DiagnosticsWindowController: NSObject, NSWindowDelegate {
             // 水平抗压缩降到最低:窗口变窄时让它折行,而不是把栈顶出去。
             text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             stack.addFullWidthRow(text)
-            // 宽度跟着栈走(减去左右 18pt 的 edgeInsets),这是它知道该在哪折行的
+            // 宽度跟着栈走(减去左右 edgeInsets),这是它知道该在哪折行的
             // 唯一依据 —— 少了它 wrappingLabel 会按自己的内在宽度摊成一行。
-            text.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -36).isActive = true
+            text.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -(MenuStyle.insets.left + MenuStyle.insets.right)).isActive = true
         }
-        let export = NSButton(title: L("Export Diagnostics…"), target: self, action: #selector(exportDiagnostics))
-        export.bezelStyle = .rounded
-        export.controlSize = .small
+        let export = menuButton(L("Export Diagnostics…"), target: self, action: #selector(exportDiagnostics))
         export.toolTip = L("Runs bx doctor in Terminal and collects a diagnostics folder you can share.")
-        stack.addFullWidthRow(export)
+        stack.addFullWidthRow(menuButtonRow([export]))
         scrollToTop(logsScroll)
     }
 

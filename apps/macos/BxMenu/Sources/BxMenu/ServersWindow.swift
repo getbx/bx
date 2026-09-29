@@ -116,8 +116,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         // 而那份拷贝里有同一个缺陷:行没被钉到容器宽度,塞不下时整行溢出
         // 到窗口外面,行尾按钮点不到 —— 2026-09-17 离屏快照量出来的。
         let (scroll, stack) = makeScrollingStack(
-            insets: NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18),
-            spacing: 10
+            insets: MenuStyle.insets,
+            spacing: MenuStyle.rowSpacing
         )
         pinToEdges(scroll, in: content)
         self.stack = stack
@@ -152,11 +152,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
             view.removeFromSuperview()
         }
 
-        // 配置路径摆右上角(与 Rules 窗口同一处)。它会截断,而这个窗口不横向
-        // 滚动 —— toolTip 是那条出路。
-        if !list.configPath.isEmpty {
-            stack.addFullWidthRow(configPathRow(list.configPath))
-        }
+        // 配置路径进标题栏(文件代理图标,MenuStyle.swift),不再占内容区右上角。
+        if let window { menuShowConfigFile(list.configPath, in: window) }
 
         if let panel = currentServerPanel(list: list, core: core) {
             stack.addFullWidthRow(sectionTitle(L("Currently using")))
@@ -195,12 +192,17 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         }
 
         stack.addFullWidthRow(gap())
-        stack.addFullWidthRow(buttonBar())
+        stack.addFullWidthRow(checkBar())
 
         // **只在有话说时才有这一行。** 「not checked」是常态不是信息。
         if probe != .unknown {
             stack.addFullWidthRow(hint(exitIPLine(probe)))
         }
+
+        // 加服务器是另一件事,单独一个分区 —— 它此前与「测延迟」「查出口」四个一样大排成一排。
+        stack.addFullWidthRow(menuSectionGap())
+        stack.addFullWidthRow(sectionTitle(L("Add a server")))
+        stack.addFullWidthRow(addBar())
 
         if let offset, let scroll {
             // **先布局再滚。** 少了这一步滚的是按旧内容算出来的坐标,于是
@@ -211,46 +213,31 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// 底部那条按钮带。**它在任何一支之外无条件画** —— 见 render 里那段注释:
-    /// 把它挪进某个分支里,就是刚修掉的那个 bug 的镜像。
-    private func buttonBar() -> NSView {
-        let buttons = NSStackView()
-        buttons.orientation = .horizontal
-        buttons.spacing = 8
-        let test = NSButton(title: probing ? L("Testing…") : L("Test Latency"), target: self, action: #selector(probeAll))
-        test.bezelStyle = .rounded
-        test.controlSize = .small
+    /// 底部两条按钮带。**它们在任何一支之外无条件画** —— 见 render 里那段注释:
+    /// 把它们挪进某个分支里,就是刚修掉的那个 bug 的镜像。
+    /// 第一条是「看看这条隧道」,第二条是「再加一台」—— 两件事,两个分区。
+    private func checkBar() -> NSView {
+        let test = menuButton(probing ? L("Testing…") : L("Test Latency"), target: self, action: #selector(probeAll))
         test.isEnabled = !probing
         // 那条要紧但不该常驻的话,挂在这里。
         test.toolTip = L("Measures the round trip from this Mac to each server, outside the tunnel.")
-        buttons.addArrangedSubview(test)
-
-        let check = NSButton(title: L("Check Exit IP"), target: self, action: #selector(checkExitIP))
-        check.bezelStyle = .rounded
-        check.controlSize = .small
+        let check = menuButton(L("Check Exit IP"), target: self, action: #selector(checkExitIP))
         check.isEnabled = probe != .checking
         check.toolTip = L("Asks a public service where your traffic appears to come from.")
-        buttons.addArrangedSubview(check)
+        return menuButtonRow([test, check])
+    }
 
-        // 两个从一级菜单搬进来的入口:它们说的都是「服务器」这件事,归这里。
+    private func addBar() -> NSView {
         // **「New Server…」与「Add Server…」曾经并排站着,而它们是两件完全不同的事**:
         // 前者 ssh 进一台空 VPS 把 bx server 装上去,后者只是把一条已有的链接加进清单。
         // 名字近义、动作不同,而点错第一个的代价是对着一台陌生机器跑 ssh。
         // 2026-09-18 用离屏快照第一次并排看到它们之后改名:现在一个说「我有台空机器」,
         // 另一个说「我已经有链接了」。
-        let deploy = NSButton(title: L("Set Up a New Server…"), target: self, action: #selector(deployServer))
-        deploy.bezelStyle = .rounded
-        deploy.controlSize = .small
-        deploy.toolTip = L("Installs bx on a fresh server over SSH.")
-        buttons.addArrangedSubview(deploy)
-
-        let add = NSButton(title: L("Add an Existing Server…"), target: self, action: #selector(addServer))
-        add.bezelStyle = .rounded
-        add.controlSize = .small
+        let add = menuButton(L("Add an Existing Server…"), target: self, action: #selector(addServer))
         add.toolTip = L("Paste a bx link to add a server and switch to it. Your current server stays in the list.")
-        buttons.addArrangedSubview(add)
-
-        return buttons
+        let deploy = menuButton(L("Set Up a New Server…"), target: self, action: #selector(deployServer))
+        deploy.toolTip = L("Installs bx on a fresh server over SSH.")
+        return menuButtonRow([add, deploy])
     }
 
     private func gap() -> NSView {
@@ -273,29 +260,7 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         return label
     }
 
-    private func sectionTitle(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        label.textColor = .secondaryLabelColor
-        return label
-    }
-
-    private func configPathRow(_ path: String) -> NSView {
-        let box = NSStackView()
-        box.orientation = .horizontal
-        box.spacing = 8
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        box.addArrangedSubview(spacer)
-        let label = hint(path)
-        label.lineBreakMode = .byTruncatingHead
-        // 截断了还看得全:这个窗口不横向滚动,少了 toolTip 那半路径就永久不可见。
-        label.toolTip = path
-        label.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        box.addArrangedSubview(label)
-        box.setHuggingPriority(.defaultLow, for: .horizontal)
-        return box
-    }
+    private func sectionTitle(_ text: String) -> NSTextField { menuSectionHeader(text) }
 
     /// 当前那台的一整块:身份来自配置,纵深来自 Core。
     ///

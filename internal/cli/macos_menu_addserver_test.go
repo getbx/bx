@@ -45,11 +45,14 @@ func swiftButtonTitleFor(src, selector string) (string, bool) {
 		}
 		// 标题经 `L("…")` 取当前语言(2026-09-26 起);两种写法都认,认出来的是
 		// 英文原句 —— 判据仍是那句话本身。
-		marker := `NSButton(title: L("`
-		i := strings.Index(line, marker)
-		if i < 0 {
-			marker = `NSButton(title: "`
-			i = strings.Index(line, marker)
+		// 2026-09-29 起按钮经共用原语 menuButton(…)(MenuStyle.swift)构造,三种写法都认。
+		i := -1
+		marker := ""
+		for _, m := range []string{`NSButton(title: L("`, `NSButton(title: "`, `menuButton(L("`} {
+			if k := strings.Index(line, m); k >= 0 {
+				i, marker = k, m
+				break
+			}
 		}
 		if i < 0 {
 			continue

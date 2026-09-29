@@ -60,7 +60,7 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
+        stack.edgeInsets = MenuStyle.insets
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         // **占位符已经说明了每个框是什么**,上面再加一行标签是说两遍。
@@ -101,11 +101,10 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         self.problem = problem
         stack.addFullWidthRow(problem)
 
-        let run = NSButton(title: L("Install over SSH in Terminal"), target: self, action: #selector(run))
-        run.bezelStyle = .rounded
+        // 这扇窗口唯一的 primary(MenuStyle.swift):表单的提交,靠右,回车触发。
+        let run = menuButton(L("Install over SSH in Terminal"), weight: .primary, target: self, action: #selector(run))
         run.toolTip = deployCredentialNote
-        run.keyEquivalent = "\r"
-        stack.addFullWidthRow(run)
+        stack.addFullWidthRow(menuButtonRow([run], trailing: true))
 
         guard let content = window.contentView else { return window }
         content.addSubview(stack)

@@ -181,3 +181,16 @@ func doctorCheckedAtLine(_ at: Date, timeZone: TimeZone = .current) -> String {
     formatter.dateFormat = "HH:mm:ss"
     return L("Checked at {0}", formatter.string(from: at))
 }
+
+/// Checks 页上的提示在菜单里怎么说。doctor 的提示 CLI 与菜单共用,形如
+/// 「turn protection on (sudo bx up)」:括号里那条终端命令对 CLI 是出路,在菜单里是多余的 ——
+/// 前面那句话已经说完了,开关就在菜单第一行。**只剥「前面已有人话、括号里是 bx 命令」的那种**;
+/// 整条提示就是一条命令(`chmod 600 …`)时那是唯一的出路,原样留着。
+func menuHintText(_ hint: String) -> String {
+    guard hint.hasSuffix(")"), let open = hint.lastIndex(of: "(") else { return hint }
+    let inside = hint[hint.index(after: open)..<hint.index(before: hint.endIndex)]
+    let words = hint[..<open].trimmingCharacters(in: .whitespaces)
+    let isCommand = inside.hasPrefix("bx ") || inside.hasPrefix("sudo bx ")
+    guard isCommand, !words.isEmpty else { return hint }
+    return words
+}

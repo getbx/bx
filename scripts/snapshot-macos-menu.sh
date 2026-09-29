@@ -40,6 +40,7 @@ xcrun swiftc -O \
   "$MENU/Sources/BxMenu/StatusReport.swift" \
   "$MENU/Sources/BxMenu/MenuRows.swift" \
   "$MENU/Sources/BxMenu/MenuLayout.swift" \
+  "$MENU/Sources/BxMenu/MenuStyle.swift" \
   "$MENU/Sources/BxMenu/RulesModel.swift" \
   "$MENU/Sources/BxMenu/RulesWindow.swift" \
   "$MENU/Sources/BxMenu/ServersModel.swift" \

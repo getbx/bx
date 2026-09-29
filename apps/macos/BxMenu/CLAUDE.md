@@ -265,6 +265,19 @@ Guardian 侧的线上字段(`single_server`、`measured`、`running`、`current_
   吃 `logsAvailable:`):旧 Guardian 上按钮画不出来,文案就不许许诺它。
 - **Checks 页的 `probe` 行比 `bx doctor --skip-probe` 多一行是预期**,不是漂移。
 
+## 共同的样式(`MenuStyle.swift`,2026-09-29)
+
+几扇窗口并排看时像五个人各做了一扇(灰底带标签框的诊断窗口、各自一套标题字号、四个一样大
+的按钮排成一排)。现在共用一套:四边留白 `MenuStyle.insets`、分区标题 `menuSectionHeader`、
+按钮三种分量 `menuButton(_:weight:)` —— **一扇窗口至多一个 primary**(部署表单的「安装」),
+其余 secondary,挂在每一行上的动作(规则那一行的 Remove)是 inline 链接;按钮排进
+`menuButtonRow`,保持自身宽度(少了那根弹簧第一个按钮会被拉成通栏)。配置文件路径进标题栏
+(`menuShowConfigFile`,文件代理图标),不再印在内容区。诊断窗口的页签是顶上的分段控件,
+标签框不画(`.noTabsNoBorder`)。同一轮去掉的内部词:当前服务器那行不再印协议名与「tunnel
+healthy」(`statusLine`:`293 ms · connected`),UDP 那行只在走得和主隧道不一样时才出现
+(`udpLine`);Checks 页的提示剥掉括号里的 bx 命令(`menuHintText`,整条就是命令的原样留)。
+加新窗口从这里取,不要再各写一份。
+
 ## 离屏快照:菜单窗口的闸门(2026-09-17)
 
 `scripts/snapshot-macos-menu.sh` 走**真实路径**(真实 wire JSON → 真实解码 → 真实窗口
