@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 ver="$(sed -n 's/^const TargetSingboxVersion = "\(.*\)"$/\1/p' internal/singboxrules/version.go)"
 [ -n "$ver" ] || { echo "cannot read TargetSingboxVersion" >&2; exit 1; }
 dest="apps/ios/Frameworks/Libbox.xcframework"
-if [ -f "$dest/.bx-version" ] && [ "$(cat "$dest/.bx-version")" = "$ver" ]; then
+# 标记带上切片清单:只有真机切片的旧产物不算数(模拟器要跑界面快照)。
+stamp="${ver}+ios,iossimulator"
+if [ -f "$dest/.bx-version" ] && [ "$(cat "$dest/.bx-version")" = "$stamp" ]; then
 	echo "Libbox.xcframework $ver already built"
 	exit 0
 fi
@@ -19,9 +21,9 @@ fi
 gobin="$(go env GOPATH)/bin"
 GOFLAGS= go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.13
 GOFLAGS= go install github.com/sagernet/gomobile/cmd/gobind@v0.1.13
-(cd "$cache" && rm -rf Libbox.xcframework && PATH="$gobin:$PATH" go run ./cmd/internal/build_libbox -target apple -platform ios)
+(cd "$cache" && rm -rf Libbox.xcframework && PATH="$gobin:$PATH" go run ./cmd/internal/build_libbox -target apple -platform ios,iossimulator)
 mkdir -p apps/ios/Frameworks
 rm -rf "$dest"
 mv "$cache/Libbox.xcframework" "$dest"
-echo "$ver" > "$dest/.bx-version"
+echo "$stamp" > "$dest/.bx-version"
 echo "built Libbox.xcframework $ver"

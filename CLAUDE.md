@@ -291,7 +291,7 @@ fake-IP 反查全部命中。样本约 150 条,要跑几天再定论。
 
 **判定收敛成一份**:`policy.ParseRulePattern`(归一化走 `config.NormalizeHostName`、
 形状走原先住在 setup 的那条正则、最后拿**生产那份 `route.NewDomainSet`** 验一遍
-匹配得上)· `policy.RuleCIDR`(网段识别,`supervisor.BuildRouter` 的 `asCIDR` 现在
+匹配得上)· `policy.RuleCIDR`(网段识别,`routerbuild.Build` 的 `asCIDR` 现在
 是它的薄壳)· `policy.CoverageKey`(覆盖键:`zoom.us` 与 `*.zoom.us` 同键)。
 `setup.ValidateRulePattern` 变薄壳。**顺带修掉另一条路上的窄校验**:setup 那条
 域名正则一直拒 IP 与 CIDR,而 `BuildRouter` 一直支持、菜单右键对 IP 目的地给的

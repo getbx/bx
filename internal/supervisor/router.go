@@ -2,88 +2,13 @@
 package supervisor
 
 import (
-	"strings"
-
 	"github.com/getbx/bx/internal/config"
-	"github.com/getbx/bx/internal/policy"
 	"github.com/getbx/bx/internal/route"
+	"github.com/getbx/bx/internal/routerbuild"
 )
 
-// BuildRouter 从配置规则 + china 列表构建分流脑。
-// 规则里的条目按"是不是 CIDR/IP"分流到 IP 集或域名集。
+// BuildRouter 从配置规则 + china 列表构建分流脑。**判据在 internal/routerbuild,这里是薄壳**
+// (手机端要按同一份判据回答「走哪」,而它不能依赖 supervisor)。
 func BuildRouter(cfg *config.Config, chinaDomain, chinaCIDR []string) (*route.Router, error) {
-	var directDoms, proxyDoms, directCIDRs, proxyCIDRs []string
-	for _, rule := range cfg.Rules {
-		for _, e := range rule.Direct {
-			if cidr, ok := asCIDR(e); ok {
-				directCIDRs = append(directCIDRs, cidr)
-			} else {
-				directDoms = append(directDoms, e)
-			}
-		}
-		for _, e := range rule.Proxy {
-			if cidr, ok := asCIDR(e); ok {
-				proxyCIDRs = append(proxyCIDRs, cidr)
-			} else {
-				proxyDoms = append(proxyDoms, e)
-			}
-		}
-	}
-
-	directIP, err := route.NewCIDRSet(directCIDRs)
-	if err != nil {
-		return nil, err
-	}
-	proxyIP, err := route.NewCIDRSet(proxyCIDRs)
-	if err != nil {
-		return nil, err
-	}
-	cnIP, err := route.NewCIDRSet(chinaCIDR)
-	if err != nil {
-		return nil, err
-	}
-	privateIP, err := route.NewCIDRSet(route.DefaultPrivateCIDRs)
-	if err != nil {
-		return nil, err
-	}
-	// 具名出口的白名单。**只收 rules 里带 via 的那几条**,没有任何推断。
-	var egressPairs [][2]string
-	for _, rule := range cfg.Rules {
-		via := strings.TrimSpace(rule.Via)
-		if via == "" {
-			continue
-		}
-		for _, c := range rule.CIDR {
-			egressPairs = append(egressPairs, [2]string{via, strings.TrimSpace(c)})
-		}
-	}
-	egressSet, err := route.NewEgressSet(egressPairs)
-	if err != nil {
-		return nil, err
-	}
-
-	return &route.Router{
-		UserDirect:    route.NewDomainSet(directDoms),
-		UserProxy:     route.NewDomainSet(proxyDoms),
-		UserDirectIP:  directIP,
-		UserProxyIP:   proxyIP,
-		PrivateDirect: privateIP,
-		UserEgress:    egressSet,
-		ChinaDomain:   route.NewDomainSet(chinaDomain),
-		ChinaCIDR:     cnIP,
-	}, nil
-}
-
-// asCIDR 把条目识别为网段:已是 CIDR 原样返回;裸 IP 补成 /32 或 /128;
-// 否则(域名模式)返回 ok=false。
-//
-// **判定住在 internal/policy,这里是薄壳。** 写入路径(policy.Apply/Edit、
-// setup.AddRule)拿同一个函数决定「这条要不要按域名校验」—— 两处各写一份的
-// 后果是静默的:写入侧按域名拒掉一条这里本来会当网段接受的规则。
-func asCIDR(s string) (string, bool) {
-	p, ok := policy.RuleCIDR(s)
-	if !ok {
-		return "", false
-	}
-	return p.String(), true
+	return routerbuild.Build(cfg, chinaDomain, chinaCIDR)
 }
