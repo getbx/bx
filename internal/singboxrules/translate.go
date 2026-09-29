@@ -86,7 +86,9 @@ func Translate(cfg *config.Config, lists Lists) (Bundle, error) {
 	var rules []Rule
 	add := func(r Rule) {
 		if len(r.DomainSuffix)+len(r.IPCIDR)+len(r.RuleSet) == 0 {
-			return // sing-box 对空 rule 报错;bx 里空列表就是「没有这层」
+			// bx 里空列表就是「没有这层」。sing-box 的 check 不拦空 rule(实测 exit 0),
+			// 而一条没有任何条件的 rule 在路由里意味着什么不该由我们赌 —— 不发。
+			return
 		}
 		rules = append(rules, r)
 	}

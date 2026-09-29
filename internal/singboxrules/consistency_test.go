@@ -68,7 +68,7 @@ func TestTranslatedRulesAgreeWithRouteExplainOnEveryInput(t *testing.T) {
 			}
 			picked = append(picked, l)
 		}
-		rng.Shuffle(len(picked), func(i, j int) { picked[i], picked[j] = picked[i], picked[j] })
+		rng.Shuffle(len(picked), func(i, j int) { picked[i], picked[j] = picked[j], picked[i] })
 		if len(picked) > 300 {
 			picked = picked[:300]
 		}
