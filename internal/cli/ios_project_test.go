@@ -38,3 +38,28 @@ func TestIOSIdentifiersAgreeAcrossTheProject(t *testing.T) {
 		}
 	}
 }
+
+// includeAllNetworks 必须报真值:sing-tun 按它挑 TCP 栈,报成常量 false 时 kill-switch 构建
+// DNS 通、TCP 全死(2026-09-29 真机)。另钉 raw 探测只打自己的服务器 —— kill-switch 测试里
+// 那一枪若漏出去,只许落在已经知道我们家 IP 的那台机器上。
+func TestIOSKillSwitchWiringStaysHonest(t *testing.T) {
+	root := repoRootForMenuGuard(t)
+	pi, err := os.ReadFile(filepath.Join(root, "apps/ios/Tunnel/PlatformInterface.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := swiftFunctionBody(string(pi), "func includeAllNetworks() -> Bool {")
+	if !ok {
+		t.Fatal("includeAllNetworks() not found (or became a one-liner constant) in PlatformInterface.swift")
+	}
+	if !strings.Contains(body, "protocolConfiguration") || strings.Contains(body, "return false") || strings.Contains(body, "return true") {
+		t.Fatalf("includeAllNetworks() must read the tunnel's protocol configuration, got:\n%s", body)
+	}
+	drv, err := os.ReadFile(filepath.Join(root, "apps/ios/App/Driver.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(drv), `if let host = exp["server_host"] as? String {`) || strings.Count(string(drv), "RawProbe.run(") != 1 {
+		t.Fatal("the raw kill-switch probe must target only the configured server host, from exactly one call site")
+	}
+}

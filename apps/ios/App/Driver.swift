@@ -4,6 +4,8 @@ import NetworkExtension
 enum Scenario: String {
     case connect      // real server: the exit must be the server
     case deadserver   // proxy points at 192.0.2.1: every request must fail, nothing may leave
+    case armed        // kill-switch on (includeAllNetworks + on-demand), real server: normal traffic still works
+    case armedbroken  // kill-switch on, tunnel cannot start: nothing may reach even our own server
     case stop
     case remove       // delete the VPN configuration from Settings (run at the end of every session)
 
@@ -45,6 +47,32 @@ struct Driver {
                 out["box_log_tail"] = boxLogTail(lines: 25)
                 try await stop(manager)
                 out["tunnel_status_after"] = describe(manager.connection.status)
+            case .armed, .armedbroken:
+                let broken = scenario == .armedbroken
+                try stageStartConfig(broken: broken)
+                let manager = try await loadOrCreateManager(killSwitch: true)
+                out["kill_switch"] = describeKillSwitch(manager)
+                do {
+                    try manager.connection.startVPNTunnel()
+                } catch {
+                    out["start_error"] = error.localizedDescription
+                }
+                if broken {
+                    // on-demand keeps retrying a start that always throws: the tunnel stays "not up"
+                    try await Task.sleep(nanoseconds: 6_000_000_000)
+                    out["tunnel_status"] = describe(manager.connection.status)
+                } else {
+                    out["tunnel_status"] = describe(await waitFor(manager, .connected, seconds: 20))
+                    try await Task.sleep(nanoseconds: 1_500_000_000)
+                    out["probe"] = await Probe.run()
+                }
+                let exp = expectation()
+                out["expect"] = exp
+                if let host = exp["server_host"] as? String {
+                    out["raw_probe"] = await RawProbe.run(host: host, port: 443, seconds: 6)
+                }
+                out["box_log_tail"] = boxLogTail(lines: 12)
+                out["disarm"] = await disarm()
             case .stop:
                 let manager = try await loadOrCreateManager()
                 try await stop(manager)
@@ -83,6 +111,50 @@ struct Driver {
         return try String(contentsOf: dev.appendingPathComponent(configName), encoding: .utf8)
     }
 
+    // The persisted config for on-demand starts (no start options). `broken` writes a marker the
+    // extension refuses, holding the tunnel down.
+    private func stageStartConfig(broken: Bool) throws {
+        let live = try stageFiles(configName: "libbox-config.json")
+        guard let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroup) else {
+            throw DriverError("app group \(Self.appGroup) is not available")
+        }
+        let body = broken ? "BX-BROKEN-CONFIG" : live
+        try body.write(to: group.appendingPathComponent("Working/start-config.json"), atomically: true, encoding: .utf8)
+    }
+
+    // Always the last step of an armed scenario, inside the same launch: if includeAllNetworks
+    // cut the Mac's channel to the phone, the phone must still not be left offline.
+    private func disarm() async -> [String: Any] {
+        var out: [String: Any] = [:]
+        do {
+            let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+            for m in managers {
+                m.isOnDemandEnabled = false
+                try? await m.saveToPreferences()
+                m.connection.stopVPNTunnel()
+                try await m.removeFromPreferences()
+            }
+            out["removed"] = managers.count
+        } catch {
+            out["error"] = error.localizedDescription
+        }
+        if let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroup) {
+            try? FileManager.default.removeItem(at: group.appendingPathComponent("Working/start-config.json"))
+        }
+        return out
+    }
+
+    private func describeKillSwitch(_ m: NETunnelProviderManager) -> [String: Any] {
+        let p = m.protocolConfiguration
+        var out: [String: Any] = [
+            "include_all_networks": p?.includeAllNetworks ?? false,
+            "exclude_local_networks": p?.excludeLocalNetworks ?? false,
+            "on_demand": m.isOnDemandEnabled,
+        ]
+        if #available(iOS 17.4, *) { out["exclude_device_communication"] = p?.excludeDeviceCommunication ?? false }
+        return out
+    }
+
     private func expectation() -> [String: Any] {
         guard let dev = Bundle.main.url(forResource: "Dev", withExtension: nil),
               let data = try? Data(contentsOf: dev.appendingPathComponent("expect.json")),
@@ -96,16 +168,24 @@ struct Driver {
         return Array(text.split(separator: "\n").suffix(lines)).map(String.init)
     }
 
-    private func loadOrCreateManager() async throws -> NETunnelProviderManager {
+    private func loadOrCreateManager(killSwitch: Bool = false) async throws -> NETunnelProviderManager {
         let existing = try await NETunnelProviderManager.loadAllFromPreferences()
         let manager = existing.first ?? NETunnelProviderManager()
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = Self.tunnelBundleID
         proto.serverAddress = "bx"
+        // The iOS kill-switch: while the tunnel is not up, traffic that would have entered it is
+        // dropped instead of leaving on the physical interface. LAN and the USB/Wi-Fi link to the
+        // Mac stay open (excludeLocalNetworks / excludeDeviceCommunication), otherwise the test
+        // would cut its own control channel.
+        proto.includeAllNetworks = killSwitch
+        proto.excludeLocalNetworks = killSwitch
+        if #available(iOS 17.4, *) { proto.excludeDeviceCommunication = killSwitch }
         manager.protocolConfiguration = proto
         manager.localizedDescription = "bx (dev)"
         manager.isEnabled = true
-        manager.isOnDemandEnabled = false
+        manager.onDemandRules = killSwitch ? [NEOnDemandRuleConnect()] : nil
+        manager.isOnDemandEnabled = killSwitch
         try await manager.saveToPreferences() // first time: iOS asks the owner to allow a VPN configuration
         try await manager.loadFromPreferences()
         return manager

@@ -157,7 +157,13 @@ final class PlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Libbox
     // MARK: facts about this platform
 
     func underNetworkExtension() -> Bool { true }
-    func includeAllNetworks() -> Bool { false } // phase 3: on-demand + includeAllNetworks
+    // Must be the truth, not a constant: sing-tun chooses its TCP stack from it. Under
+    // includeAllNetworks the default "mixed" stack cannot carry TCP (sing-tun
+    // ErrIncludeAllNetworks); told the truth it picks gVisor. Hard-coding false left the
+    // kill-switch build with DNS working and every TCP connection dead (2026-09-29, on device).
+    func includeAllNetworks() -> Bool {
+        (tunnel.protocolConfiguration as? NETunnelProviderProtocol)?.includeAllNetworks ?? false
+    }
     func usePlatformAutoDetectControl() -> Bool { false }
     func autoDetectControl(_: Int32) throws {}
     func useProcFS() -> Bool { false }

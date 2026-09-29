@@ -134,9 +134,14 @@ DNS server 格式**(旧格式直接 FATAL,不是 warning)。
   `192.0.2.1`,探测域名先拿到假 IP `198.18.0.6`(DNS 没出去),连接落 `outbound/vless[proxy]`,
   5.0 秒后 `dial tcp 192.0.2.1:443: i/o timeout`,App 端 TLS 失败、一个字节都没拿到;同一段
   日志里没有任何连接改走直连,除了用户自己的 `*.apple.com` 直连规则命中的那一条(Mac 上
-  `bx explain` 对同一主机给同一答案)。**仍未验的是另一半**:隧道**没起着**时(扩展崩溃、
-  被系统杀掉、用户关掉)iOS 让流量直接走物理网卡 —— 那要 `includeAllNetworks` + on-demand,
-  是第三期。
+  `bx explain` 对同一主机给同一答案)。**另一半同日也验了(第三期)**:`includeAllNetworks` + on-demand(`excludeLocalNetworks`、
+  `excludeDeviceCommunication` 同开,局域网与 Mac 的调试通道不断),扩展**故意起不来**时,6 秒
+  里对自己服务器 443 的裸 TCP 一次都没连上(`Network is down` → `No route to host`);同样的
+  开关下隧道起着时一切照常(出口 == 服务器,2.1 s)。**一个真坑**:libbox 的
+  `includeAllNetworks()` 必须报真值 —— sing-tun 按它选 TCP 栈,默认的 mixed 栈在
+  `includeAllNetworks` 下 TCP 全死(DNS 却照常通,非常像别的故障),报成常量 false 就是这样;
+  `TestIOSKillSwitchWiringStaysHonest` 钉住。**没测的**:扩展被系统杀掉那一瞬间(窗口约一秒,
+  抓不稳;与「起不来」是同一个系统状态)、APNs(iOS 16.4 起默认 `excludeAPNs`,推送长连接走物理网卡)。
 - `rule_set` 对 12k 条 china 域名的表达与体积
 
 ## 5. iOS 的两个真实约束(以及一个我一开始说错了的)

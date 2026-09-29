@@ -4,7 +4,7 @@
 #
 #   scripts/ios-dev.sh config            以 root 读 /etc/bx/config.yaml,生成 apps/ios/Dev/(要 sudo 密码)
 #   scripts/ios-dev.sh build             构建 libbox(若缺)、生成工程、签名构建、装到手机
-#   scripts/ios-dev.sh run <scenario>    connect | deadserver | stop | remove,打出 BX-RESULT 那一行
+#   scripts/ios-dev.sh run <scenario>    connect | deadserver | armed | armedbroken | stop | remove,打出 BX-RESULT 那一行
 #
 # 设备:BX_IOS_DEVICE(默认第一台已连接的真机)。
 set -euo pipefail
@@ -37,7 +37,7 @@ build)
 	xcrun devicectl device install app --device "$dev" apps/ios/build/Build/Products/Debug-iphoneos/bx.app
 	;;
 run)
-	scenario="${2:?scenario: connect | deadserver | stop | remove}"
+	scenario="${2:?scenario: connect | deadserver | armed | armedbroken | stop | remove}"
 	dev="$(device)"
 	xcrun devicectl device process launch --device "$dev" --terminate-existing --console \
 		com.getbx.bx.ios --scenario "$scenario" 2>&1 | tee /dev/stderr | grep '^BX-RESULT ' | sed 's/^BX-RESULT //'

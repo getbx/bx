@@ -59,3 +59,14 @@ deadserver 那段日志里唯一的直连是 `gspe1-ssl.ls.apple.com`,命中所�
 **过程中实测到的三件事**:① App Store Connect API key 过不了 provisioning(bearer token
 认证失败),Xcode 已登录的账号可以;② 上游 gomobile 不认 sing-box 的 `-libname`,要用
 `sagernet/gomobile@v0.1.13`;③ libbox 引用 UIKit 的后台任务符号,扩展要显式链 UIKit。
+
+## 第三期(同日):隧道没起着时整机不漏
+
+| 场景 | 判据 | 实测 |
+|---|---|---|
+| armed | kill-switch 开着,隧道起着时照常 | ✅ 出口 == 服务器,2124 ms;裸 TCP 到服务器走 `utun7` |
+| armedbroken | 隧道起不来时连自己服务器都连不上 | ✅ 6.4 s 内 `Network is down` / `No route to host`,从未 ready |
+
+两个场景都在同一次启动里自己解除按需连接并删掉配置(`disarm`),不依赖 Mac 到手机的通道。
+第一次跑 armed 时 TCP 全死、DNS 却通:扩展把 `includeAllNetworks()` 写成了常量 false,
+sing-tun 因此用了在该设置下不能承载 TCP 的 mixed 栈。改成报真值后通过。

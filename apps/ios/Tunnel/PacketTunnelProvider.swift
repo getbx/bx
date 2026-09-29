@@ -10,10 +10,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private lazy var platform = PlatformInterface(self)
 
     override func startTunnel(options: [String: NSObject]?) async throws {
-        guard let raw = options?["configContent"] as? String else {
-            throw TunnelError("missing configContent in start options")
-        }
         let paths = try SharedPaths.make()
+        // On-demand starts carry no options: the app leaves the config in the shared working
+        // directory. A config the app marked broken must fail here — that is how the phase-3
+        // test holds the tunnel in "not up" while on-demand keeps retrying.
+        let raw: String
+        if let fromOptions = options?["configContent"] as? String {
+            raw = fromOptions
+        } else if let persisted = try? String(contentsOf: paths.working.appendingPathComponent(SharedPaths.startConfigName), encoding: .utf8) {
+            raw = persisted
+        } else {
+            throw TunnelError("no config: neither start options nor \(SharedPaths.startConfigName)")
+        }
+        if raw == SharedPaths.brokenMarker {
+            throw TunnelError("config deliberately broken (fail-closed test)")
+        }
         let config = try SharedPaths.anchor(raw, workingDirectory: paths.working)
 
         let setup = LibboxSetupOptions()
@@ -71,6 +82,8 @@ struct TunnelError: LocalizedError {
 
 enum SharedPaths {
     static let appGroup = "group.com.getbx.bx"
+    static let startConfigName = "start-config.json"
+    static let brokenMarker = "BX-BROKEN-CONFIG"
 
     struct Paths {
         let base: URL
