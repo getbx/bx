@@ -974,6 +974,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onAddRule = { [weak self] in
             self?.addRuleFromWindow()
         }
+        controller.onAddRulePrefilled = { [weak self] pattern, kind in
+            // 预填放在属性里再走同一个入口:入口的签名被 TestMacMenuAddRuleKeepsTheSheetOnRefusal
+            // 钉着(它按函数体找 askForNewRule),一条路只许有一个入口。
+            self?.pendingRulePrefill = (pattern, kind)
+            self?.addRuleFromWindow()
+        }
         return controller
     }()
 
@@ -2028,19 +2034,25 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 重新挂到一个新的 NSAlert 上 —— 被风险门拒绝时用户敲的那串因此还原样
     /// 留在框里,他要做的是把它改窄,不是重打一遍。文本活下来靠的是这个,
     /// 与拨号同步还是异步无关(拨号在后台队列,与本文件其余每一处一样)。
+    /// 规则窗口那行输入框交过来的内容;进入 addRuleFromWindow 那一刻取走并清空。
+    private var pendingRulePrefill: (String, RuleKind)?
+
     private func addRuleFromWindow() {
+        let (prefill, kind) = pendingRulePrefill ?? ("", .direct)
+        pendingRulePrefill = nil
         // 手摆 frame(与本文件另外两处 accessoryView 同一个写法,不用
         // NSStackView):NSAlert 按 accessoryView 的 frame 定尺寸,而一个交给
         // 自动布局的容器给不出这个 frame —— 那时输入框会缩成一条看不见的缝。
         // NSView 的原点在左下,所以输入框在上、方向选择在下。
         let field = NSTextField(frame: NSRect(x: 0, y: 32, width: 300, height: 24))
         field.placeholderString = "*.example.com"
+        field.stringValue = prefill // 规则窗口那行输入框填的内容带进来;空就是原来的空表单
         let picker = NSSegmentedControl(
             labels: [L("Direct"), L("Through tunnel")], trackingMode: .selectOne, target: nil, action: nil)
         picker.translatesAutoresizingMaskIntoConstraints = true
         picker.sizeToFit()
         picker.setFrameOrigin(NSPoint(x: 0, y: 0))
-        picker.selectedSegment = 0
+        picker.selectedSegment = kind == .proxy ? 1 : 0
         let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 56))
         accessory.addSubview(field)
         accessory.addSubview(picker)

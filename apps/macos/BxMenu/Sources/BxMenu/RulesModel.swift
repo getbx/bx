@@ -32,13 +32,13 @@ func guardianFetchFailureInfo(
         if status == 500 {
             switch (code, logsAvailable) {
             case (let code?, true):
-                return L("bx answered with an error (HTTP 500, code={0}). Use Show Details for the reason.", code)
+                return L("bx could not do that (HTTP 500, code {0}). Show Details has the reason.", code)
             case (let code?, false):
-                return L("bx answered with an error (HTTP 500, code={0}). bx recorded the reason in its log.", code)
+                return L("bx could not do that (HTTP 500, code {0}). The reason is in its log.", code)
             case (nil, true):
-                return L("bx answered with an error (HTTP 500). Use Show Details for the reason.")
+                return L("bx could not do that (HTTP 500). Show Details has the reason.")
             case (nil, false):
-                return L("bx answered with an error (HTTP 500). bx recorded the reason in its log.")
+                return L("bx could not do that (HTTP 500). The reason is in its log.")
             }
         }
         if let code {
@@ -293,11 +293,11 @@ func ruleWindowCaveatNote(_ list: RuleList, coreAnswering: Bool) -> String? {
     case (false, true):
         return nil
     case (true, true):
-        return L("A rule with nothing written under it here has not been checked: this version of bx did not check these rules for problems.")
+        return L("Rules have not been checked: this version of bx does not check them.")
     case (false, false):
-        return L("A rule with nothing written under it here has not been checked: bx's core is not answering, so it could not say which rules are failing.")
+        return L("Rules have not been checked: bx is off, so it could not see which rules are failing.")
     case (true, false):
-        return L("A rule with nothing written under it here has not been checked: this version of bx did not check these rules for problems, and bx's core is not answering, so it could not say which rules are failing.")
+        return L("Rules have not been checked: this version of bx does not check them, and bx is off, so it could not see which rules are failing.")
     }
 }
 
@@ -419,7 +419,7 @@ func validateRulePattern(_ raw: String) -> String? {
 /// 照样覆盖它的子域,改窄并不能让这条规则通过 —— 那句话会把用户送进一个
 /// 永远出不来的循环。真正的出路是旁边那个 Add Anyway。
 var riskyDirectRuleWarning: String {
-    L("Anyone can register a subdomain on this platform, and a bx direct rule covers every subdomain of what you write — so a stranger could make your real IP leave outside the tunnel. Writing a deeper host narrows this but does not remove it. Use Add Anyway only if you control that host.")
+    L("Anyone can create a subdomain there, and a direct rule covers every subdomain — a stranger's page could send your real IP outside the tunnel. Use Add Anyway only if you control that host.")
 }
 
 /// 归一化成写进配置的形式。校验通过后才调用。
@@ -476,7 +476,7 @@ struct RuleGroupRow: Equatable {
             return L("{0} failed", failures)
         }
         if isMixed {
-            return "\(group.installed)/\(group.total)"
+            return L("{0} of {1} on", String(group.installed), String(group.total))
         }
         return nil
     }
@@ -757,12 +757,20 @@ func ruleGroupSubtitle(_ group: RuleGroup) -> String {
 /// **问不出来时只说条数**(旧 Guardian 不发这个键)—— 绝不替它猜一个模式,
 /// 因为猜错的那一半正好会把上面那句话说反。
 func customRulesHeading(count: Int, global: Bool?) -> String {
+    // 标题只报条数;模式的含义单独一行小字(customRulesNote)—— 一句话塞三个概念
+    // 是可读性一轮(2026-09-28)点名的那种句子。两者仍然来自同一个 `global`。
+    _ = global
+    return L("Your rules ({0})", count)
+}
+
+/// 标题下面那行小字:这份列表在当前模式下**意味着什么**。问不出来时 nil,绝不猜。
+func customRulesNote(global: Bool?) -> String? {
     switch global {
     case .some(true):
-        return L("Your own rules ({0}) — global mode: these are the only domains that go direct", count)
+        return L("Everything goes through the tunnel except these — they are the only domains that go direct.")
     case .some(false):
-        return L("Your own rules ({0}) — split mode: exceptions on top of the built-in China list", count)
+        return L("These are exceptions on top of the built-in China list.")
     case .none:
-        return L("Your own rules ({0})", count)
+        return nil
     }
 }

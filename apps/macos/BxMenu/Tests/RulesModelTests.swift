@@ -606,7 +606,7 @@ struct RulesModelTests {
         let unreachable = ruleWindowCaveatNote(list, coreAnswering: false)
         expect(unreachable != nil, "Core 没答话时窗口一个字都不说")
         let lowered = unreachable!.lowercased()
-        expect(lowered.contains("core is not answering"),
+        expect(lowered.contains("bx is off"),
                "没说清是哪一半问不出来:\(unreachable!)")
         // 不许替这半下结论 —— 与体检那半同一条纪律。
         for forbidden in ["healthy", "no problems", "all good", "looks good", "nothing is failing"] {
@@ -619,9 +619,9 @@ struct RulesModelTests {
             RuleList.self, from: Data(#"{"direct":["*.icloud.com"]}"#.utf8))
         let both = ruleWindowCaveatNote(noReview, coreAnswering: false)
         expect(both != nil, "两半都缺席时反而不说话")
-        expect(both!.lowercased().contains("core is not answering"),
+        expect(both!.lowercased().contains("bx is off"),
                "两半都缺席,而失败那半没被提到:\(both!)")
-        expect(both!.lowercased().contains("did not check these rules"),
+        expect(both!.lowercased().contains("does not check them"),
                "两半都缺席,而体检那半没被提到:\(both!)")
         // 三种缺席方式必须给出三句不同的话:压成同一句就等于说不清缺的是哪半。
         expect(Set([both!, unreachable!, ruleWindowCaveatNote(noReview, coreAnswering: true)!]).count == 3,
@@ -756,9 +756,10 @@ struct RulesModelTests {
     /// 真实造成过一次错判(体检把 22 条正在工作的规则报成「被 china 列表覆盖」,
     /// 而那台机器是 global、那份列表整个不生效)。
     static func testCustomRulesHeadingSaysWhatTheModeMakesTheseRulesMean() {
-        let global = customRulesHeading(count: 17, global: true)
-        let split = customRulesHeading(count: 17, global: false)
-        let unknown = customRulesHeading(count: 17, global: nil)
+        // 标题只报条数,模式的含义在标题下面那行小字(customRulesNote);判据看两者合起来。
+        let global = customRulesHeading(count: 17, global: true) + " " + (customRulesNote(global: true) ?? "")
+        let split = customRulesHeading(count: 17, global: false) + " " + (customRulesNote(global: false) ?? "")
+        let unknown = customRulesHeading(count: 17, global: nil) + " " + (customRulesNote(global: nil) ?? "")
 
         for text in [global, split, unknown] {
             expect(text.contains("17"), "条数必须在:\(text)")

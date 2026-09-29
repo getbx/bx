@@ -41,6 +41,8 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
     var onUndoRemove: ((RuleKind, String) -> Void)?
     /// 用户点了 Add Rule…。
     var onAddRule: (() -> Void)?
+    /// 表下面那行输入框填了内容时走这条:把内容与方向带进同一个弹窗(风险门在那里)。
+    var onAddRulePrefilled: ((String, RuleKind) -> Void)?
 
     func show(rows: [RuleGroupRow], ruleRows: [RuleRow], configPath: String, caveatNote: String?, global: Bool?) {
         let window = ensureWindow()
@@ -216,6 +218,10 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
             // 数量写进标题:一眼看出下面这一长串是「你自己加的」,而不是预设的一部分。
             let customHeading = sectionHeading(customRulesHeading(count: lastRuleRows.count, global: lastGlobal))
             stack.addFullWidthRow(customHeading)
+            // 模式的含义单独一行小字,不塞进标题(可读性一轮,2026-09-28)。
+            if let note = customRulesNote(global: lastGlobal) {
+                stack.addFullWidthRow(sectionNote(note))
+            }
             for entry in entries {
                 switch entry {
                 case .rule(let row):
@@ -227,12 +233,31 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         }
 
         stack.addFullWidthRow(gap())
+        // **加规则的入口常驻在表下面**(可读性一轮,2026-09-28):此前只有右键与一个
+        // 「Add Rule…」按钮,用户看不出「在这里能加」。输入框 + 方向 + 按钮;按钮走的仍是
+        // 原来那条带风险门的弹窗路(askForNewRule),只是把这里填的内容带过去。
         let footer = NSStackView()
         footer.orientation = .horizontal
         footer.spacing = 8
+        let field = NSTextField()
+        field.placeholderString = L("Add a domain, e.g. *.example.com")
+        field.controlSize = .small
+        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        footer.addArrangedSubview(field)
+        let picker = NSSegmentedControl(
+            labels: [L("Direct"), L("Through tunnel")], trackingMode: .selectOne, target: nil, action: nil)
+        picker.controlSize = .small
+        picker.selectedSegment = 0
+        picker.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        footer.addArrangedSubview(picker)
+        addRuleField = field
+        addRulePicker = picker
         let add = NSButton(title: L("Add Rule…"), target: self, action: #selector(addRule))
         add.bezelStyle = .rounded
         add.controlSize = .small
+        add.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         footer.addArrangedSubview(add)
         if !lastConfigPath.isEmpty {
             let reveal = NSButton(title: L("Show Config"), target: self, action: #selector(revealConfig))
@@ -386,6 +411,14 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         return label
     }
 
+    /// 标题下面的一行说明(小字、次要色、可换行)。
+    private func sectionNote(_ text: String) -> NSView {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
     /// 展开状态按组名记 —— 每次刷新都重建视图树,存在视图上会跟着一起没。
     private var expandedGroups: Set<String> = []
 
@@ -447,7 +480,8 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         let disclose = NSButton(
             title: expanded ? L("Hide") : L("Show"),
             target: self, action: #selector(toggleGroupExpansion(_:)))
-        disclose.bezelStyle = .inline
+        // 真按钮而不是 .inline 的灰字:灰字看起来像被禁用(可读性一轮,2026-09-28)。
+        disclose.bezelStyle = .rounded
         disclose.controlSize = .small
         disclose.identifier = NSUserInterfaceItemIdentifier(name)
         disclose.setContentHuggingPriority(.defaultHigh, for: .horizontal)
@@ -497,7 +531,18 @@ final class RulesWindowController: NSObject, NSWindowDelegate {
         onUndoRemove?(kind, pattern)
     }
 
+    /// 表下面那一行输入框与方向选择;每次刷新重建视图树,所以按需重连(与搜索框那类
+    /// 「长在会被拆掉的树里」不同:这里的内容在点 Add 那一刻就交出去了)。
+    private var addRuleField: NSTextField?
+    private var addRulePicker: NSSegmentedControl?
+
     @objc private func addRule() {
+        let pattern = addRuleField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let kind: RuleKind = addRulePicker?.selectedSegment == 1 ? .proxy : .direct
+        if !pattern.isEmpty, let prefilled = onAddRulePrefilled {
+            prefilled(pattern, kind)
+            return
+        }
         onAddRule?()
     }
 
