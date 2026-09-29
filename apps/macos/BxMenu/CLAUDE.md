@@ -204,7 +204,7 @@ Language ▸ 子菜单:跟随系统 / English / 简体中文,**立刻生效、�
   或「要重连」(nil = 旧 Guardian 没说 = 按要重连);要重连时给按钮,**绝不替他重连**。
 - **已知并接受**:`Add Rule…` 可重入(409 时 modal 会叠,不丢字);Undo(`addRuleBack`)
   没有在飞守卫,**无害的承重理由是 `setup.AddRule` 幂等**——那个幂等没了就要补守卫;
-  窗口开着时每次环境刷新都会让 Guardian 重建一次约 12k 条的 `DomainSet`,没量过。
+  窗口开着时每次环境刷新都会让 Guardian 重建一次约 12k 条的 `DomainSet`:量过,约 1.8 ms / 次(`BenchmarkRuleReviewRequest`),不缓存。
 
 ## Servers 窗口(2026-09-12,真机未验)
 
