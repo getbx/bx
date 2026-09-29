@@ -1121,8 +1121,14 @@ func TestManagerHealthFailureUsesLiveBoundedCleanupAndBlocksRetryWhenExitUnprove
 func TestManagerReservesCleanupWithinAcceptedMutationDeadline(t *testing.T) {
 	env := newManagerTestEnv(t)
 	env.manager.cleanupTimeout = 30 * time.Millisecond
-	env.health.waitForContext = true
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	// **不拿挂钟指定「在健康等待那一步到期」**:原来给 Up 一个 120ms 的真 deadline、让 fake
+	// health 等到它的派生上下文过期;忙碌的 CI runner 上健康检查之前那几步就把 120ms 吃完,
+	// health 一次都没被叫到(2026-09-29 integration 腿红过)。生产里那一刻到期的**只是**
+	// 健康等待的派生上下文(调用方的上下文还剩着预留给清理的那一截),所以这里如实模拟:
+	// 调用方的 deadline 在一小时之后(前面几步永远够用),fake health 记下它拿到的 deadline、
+	// 直接报「我的 deadline 到了」。三条断言的含义不变,不再依赖调度。
+	env.health.err = context.DeadlineExceeded
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 
